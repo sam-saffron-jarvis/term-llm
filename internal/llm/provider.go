@@ -16,7 +16,7 @@ type CommandSuggestion struct {
 
 // Provider is the interface for LLM providers
 type Provider interface {
-	SuggestCommands(ctx context.Context, userInput string, shell string, systemContext string) ([]CommandSuggestion, error)
+	SuggestCommands(ctx context.Context, userInput string, shell string, systemContext string, enableSearch bool, debug bool) ([]CommandSuggestion, error)
 }
 
 // NewProvider creates a new LLM provider based on the config

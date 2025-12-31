@@ -7,7 +7,7 @@ import (
 )
 
 // SystemPrompt returns the system prompt for command suggestions
-func SystemPrompt(shell string, customContext string) string {
+func SystemPrompt(shell string, customContext string, enableSearch bool) string {
 	cwd, _ := os.Getwd()
 	base := fmt.Sprintf(`You are a CLI command expert. The user will describe what they want to do, and you must suggest exactly 3 shell commands that accomplish their goal.
 
@@ -32,6 +32,12 @@ Rules:
 5. Keep explanations brief (under 50 words)
 6. If the request is dangerous (rm -rf /, etc), still provide the command but warn in the explanation`
 
+	if enableSearch {
+		base += `
+7. You have access to web search. Use it to find current documentation, latest versions, or up-to-date syntax when relevant
+8. After searching (if needed), call the suggest_commands tool with your suggestions`
+	}
+
 	return base
 }
 
@@ -43,12 +49,14 @@ func UserPrompt(userInput string) string {
 // JSONSchema returns the JSON schema for structured output
 func JSONSchema() map[string]interface{} {
 	return map[string]interface{}{
-		"type": "object",
+		"type":                 "object",
+		"additionalProperties": false,
 		"properties": map[string]interface{}{
 			"suggestions": map[string]interface{}{
 				"type": "array",
 				"items": map[string]interface{}{
-					"type": "object",
+					"type":                 "object",
+					"additionalProperties": false,
 					"properties": map[string]interface{}{
 						"command": map[string]interface{}{
 							"type":        "string",
@@ -60,8 +68,6 @@ func JSONSchema() map[string]interface{} {
 						},
 						"likelihood": map[string]interface{}{
 							"type":        "integer",
-							"minimum":     1,
-							"maximum":     10,
 							"description": "How likely this command matches user intent (1=unlikely, 10=very likely)",
 						},
 					},

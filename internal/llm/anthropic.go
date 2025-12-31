@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 
 	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/samsaffron/term-llm/internal/prompt"
@@ -26,8 +27,14 @@ type suggestionsResponse struct {
 	Suggestions []CommandSuggestion `json:"suggestions"`
 }
 
-func (p *AnthropicProvider) SuggestCommands(ctx context.Context, userInput string, shell string, systemContext string) ([]CommandSuggestion, error) {
-	// Define the tool schema for structured output
+func (p *AnthropicProvider) SuggestCommands(ctx context.Context, userInput string, shell string, systemContext string, enableSearch bool, debug bool) ([]CommandSuggestion, error) {
+	if enableSearch {
+		return p.suggestWithSearch(ctx, userInput, shell, systemContext, debug)
+	}
+	return p.suggestWithoutSearch(ctx, userInput, shell, systemContext, debug)
+}
+
+func (p *AnthropicProvider) suggestWithoutSearch(ctx context.Context, userInput string, shell string, systemContext string, debug bool) ([]CommandSuggestion, error) {
 	inputSchema := anthropic.ToolInputSchemaParam{
 		Type: "object",
 		Properties: map[string]interface{}{
@@ -60,18 +67,28 @@ func (p *AnthropicProvider) SuggestCommands(ctx context.Context, userInput strin
 		Required: []string{"suggestions"},
 	}
 
-	// Create tool using the helper function
 	tool := anthropic.ToolUnionParamOfTool(inputSchema, "suggest_commands")
 	tool.OfTool.Description = anthropic.String("Suggest shell commands based on user input")
+
+	systemPrompt := prompt.SystemPrompt(shell, systemContext, false)
+	userPrompt := prompt.UserPrompt(userInput)
+
+	if debug {
+		fmt.Fprintln(os.Stderr, "=== DEBUG: Anthropic Request ===")
+		fmt.Fprintf(os.Stderr, "Model: %s\n", p.model)
+		fmt.Fprintf(os.Stderr, "System:\n%s\n", systemPrompt)
+		fmt.Fprintf(os.Stderr, "User:\n%s\n", userPrompt)
+		fmt.Fprintln(os.Stderr, "================================")
+	}
 
 	message, err := p.client.Messages.New(ctx, anthropic.MessageNewParams{
 		Model:     anthropic.Model(p.model),
 		MaxTokens: 1024,
 		System: []anthropic.TextBlockParam{
-			{Text: prompt.SystemPrompt(shell, systemContext)},
+			{Text: systemPrompt},
 		},
 		Messages: []anthropic.MessageParam{
-			anthropic.NewUserMessage(anthropic.NewTextBlock(prompt.UserPrompt(userInput))),
+			anthropic.NewUserMessage(anthropic.NewTextBlock(userPrompt)),
 		},
 		Tools:      []anthropic.ToolUnionParam{tool},
 		ToolChoice: anthropic.ToolChoiceParamOfTool("suggest_commands"),
@@ -80,8 +97,130 @@ func (p *AnthropicProvider) SuggestCommands(ctx context.Context, userInput strin
 		return nil, fmt.Errorf("anthropic API error: %w", err)
 	}
 
-	// Extract tool use from response
-	for _, block := range message.Content {
+	if debug {
+		fmt.Fprintln(os.Stderr, "=== DEBUG: Anthropic Response ===")
+		for _, block := range message.Content {
+			if block.Type == "tool_use" {
+				fmt.Fprintf(os.Stderr, "Tool: %s\n", block.Name)
+				fmt.Fprintf(os.Stderr, "Arguments:\n%s\n", block.JSON.Input.Raw())
+			} else if block.Type == "text" {
+				fmt.Fprintf(os.Stderr, "Text: %s\n", block.Text)
+			}
+		}
+		fmt.Fprintln(os.Stderr, "=================================")
+	}
+
+	return p.extractSuggestions(message.Content)
+}
+
+func (p *AnthropicProvider) suggestWithSearch(ctx context.Context, userInput string, shell string, systemContext string, debug bool) ([]CommandSuggestion, error) {
+	// Tool schema for suggest_commands
+	inputSchema := anthropic.BetaToolInputSchemaParam{
+		Type: "object",
+		Properties: map[string]interface{}{
+			"suggestions": map[string]interface{}{
+				"type": "array",
+				"items": map[string]interface{}{
+					"type": "object",
+					"properties": map[string]interface{}{
+						"command": map[string]interface{}{
+							"type":        "string",
+							"description": "The shell command to execute",
+						},
+						"explanation": map[string]interface{}{
+							"type":        "string",
+							"description": "Brief explanation of what the command does",
+						},
+						"likelihood": map[string]interface{}{
+							"type":        "integer",
+							"minimum":     1,
+							"maximum":     10,
+							"description": "How likely this command matches user intent (1=unlikely, 10=very likely)",
+						},
+					},
+					"required": []string{"command", "explanation", "likelihood"},
+				},
+				"minItems": 3,
+				"maxItems": 3,
+			},
+		},
+		Required: []string{"suggestions"},
+	}
+
+	// Create suggest_commands tool
+	suggestTool := anthropic.BetaToolUnionParam{
+		OfTool: &anthropic.BetaToolParam{
+			Name:        "suggest_commands",
+			Description: anthropic.String("Suggest shell commands based on user input. Call this after gathering any needed information from web search."),
+			InputSchema: inputSchema,
+		},
+	}
+
+	// Create web search tool
+	webSearchTool := anthropic.BetaToolUnionParam{
+		OfWebSearchTool20250305: &anthropic.BetaWebSearchTool20250305Param{
+			MaxUses: anthropic.Int(3),
+		},
+	}
+
+	systemPrompt := prompt.SystemPrompt(shell, systemContext, true)
+	userPrompt := prompt.UserPrompt(userInput)
+
+	if debug {
+		fmt.Fprintln(os.Stderr, "=== DEBUG: Anthropic Request (with search) ===")
+		fmt.Fprintf(os.Stderr, "Model: %s\n", p.model)
+		fmt.Fprintln(os.Stderr, "Tools: web_search, suggest_commands")
+		fmt.Fprintf(os.Stderr, "System:\n%s\n", systemPrompt)
+		fmt.Fprintf(os.Stderr, "User:\n%s\n", userPrompt)
+		fmt.Fprintln(os.Stderr, "===============================================")
+	}
+
+	message, err := p.client.Beta.Messages.New(ctx, anthropic.BetaMessageNewParams{
+		Model:     anthropic.Model(p.model),
+		MaxTokens: 4096,
+		Betas:     []anthropic.AnthropicBeta{"web-search-2025-03-05"},
+		System: []anthropic.BetaTextBlockParam{
+			{Text: systemPrompt},
+		},
+		Messages: []anthropic.BetaMessageParam{
+			anthropic.NewBetaUserMessage(anthropic.NewBetaTextBlock(userPrompt)),
+		},
+		Tools: []anthropic.BetaToolUnionParam{webSearchTool, suggestTool},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("anthropic API error: %w", err)
+	}
+
+	if debug {
+		fmt.Fprintln(os.Stderr, "=== DEBUG: Anthropic Response (with search) ===")
+		fmt.Fprintf(os.Stderr, "Stop reason: %s\n", message.StopReason)
+		for i, block := range message.Content {
+			fmt.Fprintf(os.Stderr, "Block %d: type=%s\n", i, block.Type)
+			switch block.Type {
+			case "tool_use":
+				fmt.Fprintf(os.Stderr, "  Tool: %s\n", block.Name)
+				fmt.Fprintf(os.Stderr, "  Arguments:\n%s\n", block.JSON.Input.Raw())
+			case "text":
+				fmt.Fprintf(os.Stderr, "  Text: %s\n", block.Text)
+			case "web_search_tool_result":
+				fmt.Fprintf(os.Stderr, "  Search ID: %s\n", block.ToolUseID)
+			case "server_tool_use":
+				fmt.Fprintf(os.Stderr, "  Server Tool: %s (id=%s)\n", block.Name, block.ID)
+			default:
+				// Log raw JSON for unknown types
+				if rawJSON, err := json.Marshal(block); err == nil {
+					fmt.Fprintf(os.Stderr, "  Raw: %s\n", string(rawJSON))
+				}
+			}
+		}
+		fmt.Fprintln(os.Stderr, "================================================")
+	}
+
+	return p.extractBetaSuggestions(message.Content)
+}
+
+func (p *AnthropicProvider) extractSuggestions(content []anthropic.ContentBlockUnion) ([]CommandSuggestion, error) {
+	for _, block := range content {
 		if block.Type == "tool_use" {
 			var resp suggestionsResponse
 			if err := json.Unmarshal([]byte(block.JSON.Input.Raw()), &resp); err != nil {
@@ -90,6 +229,18 @@ func (p *AnthropicProvider) SuggestCommands(ctx context.Context, userInput strin
 			return resp.Suggestions, nil
 		}
 	}
-
 	return nil, fmt.Errorf("no tool use in response")
+}
+
+func (p *AnthropicProvider) extractBetaSuggestions(content []anthropic.BetaContentBlockUnion) ([]CommandSuggestion, error) {
+	for _, block := range content {
+		if block.Type == "tool_use" && block.Name == "suggest_commands" {
+			var resp suggestionsResponse
+			if err := json.Unmarshal([]byte(block.JSON.Input.Raw()), &resp); err != nil {
+				return nil, fmt.Errorf("failed to parse response: %w", err)
+			}
+			return resp.Suggestions, nil
+		}
+	}
+	return nil, fmt.Errorf("no suggest_commands tool use in response")
 }

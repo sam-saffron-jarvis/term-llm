@@ -17,6 +17,8 @@ import (
 
 var configFlag string
 var printOnly bool
+var enableSearch bool
+var debugMode bool
 
 var rootCmd = &cobra.Command{
 	Use:   "term-llm [request]",
@@ -36,6 +38,8 @@ Examples:
 func init() {
 	rootCmd.Flags().StringVar(&configFlag, "config", "", "Config operation: 'show' or 'edit'")
 	rootCmd.Flags().BoolVarP(&printOnly, "print-only", "p", false, "Print selected command instead of executing")
+	rootCmd.Flags().BoolVarP(&enableSearch, "search", "s", false, "Enable web search for current information")
+	rootCmd.Flags().BoolVarP(&debugMode, "debug", "d", false, "Show full LLM request and response")
 }
 
 func Execute() {
@@ -84,9 +88,12 @@ func run(cmd *cobra.Command, args []string) error {
 
 	// Main loop for refinement
 	for {
-		// Get suggestions from LLM
-		suggestions, err := provider.SuggestCommands(ctx, userInput, shell, cfg.SystemContext)
+		// Get suggestions from LLM with spinner
+		suggestions, err := ui.RunWithSpinner(ctx, provider, userInput, shell, cfg.SystemContext, enableSearch, debugMode)
 		if err != nil {
+			if err.Error() == "cancelled" {
+				return nil
+			}
 			return fmt.Errorf("failed to get suggestions: %w", err)
 		}
 

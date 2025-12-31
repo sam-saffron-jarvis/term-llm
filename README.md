@@ -47,6 +47,20 @@ term-llm "your request here"
 
 Use arrow keys to select a command, Enter to execute. Select "something else..." to refine your request.
 
+### Web Search
+
+Use `-s` or `--search` to enable web search for queries that need current information:
+
+```bash
+term-llm -s "install the latest version of node.js"
+term-llm --search "current recommended way to set up a rust project"
+```
+
+This is useful for:
+- Latest software versions and installation methods
+- Current documentation and syntax
+- Recently changed CLI tools or APIs
+
 ## Shell Integration (Recommended)
 
 Commands run by term-llm don't appear in your shell history. To fix this, add a shell function that uses `--print-only` mode.
@@ -83,6 +97,7 @@ Then use `tl` instead of `term-llm`:
 
 ```bash
 tl "find large files"
+tl -s "install latest docker"  # with web search
 ```
 
 ## Configuration
