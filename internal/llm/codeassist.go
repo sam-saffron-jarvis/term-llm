@@ -234,6 +234,260 @@ func (p *CodeAssistProvider) ensureProjectID(ctx context.Context) error {
 }
 
 func (p *CodeAssistProvider) SuggestCommands(ctx context.Context, req SuggestRequest) ([]CommandSuggestion, error) {
+	if req.EnableSearch {
+		return p.suggestWithSearch(ctx, req)
+	}
+	return p.suggestWithoutSearch(ctx, req)
+}
+
+// performSearch performs a Google Search query and returns the search context
+func (p *CodeAssistProvider) performSearch(ctx context.Context, query string, debug bool) (string, error) {
+	if err := p.ensureProjectID(ctx); err != nil {
+		return "", err
+	}
+
+	token, err := p.getAccessToken()
+	if err != nil {
+		return "", err
+	}
+
+	searchPrompt := fmt.Sprintf("Search for current information about: %s\n\nProvide a concise summary of the most relevant and up-to-date information found.", query)
+
+	requestInner := map[string]interface{}{
+		"contents": []map[string]interface{}{
+			{
+				"role": "user",
+				"parts": []map[string]interface{}{
+					{"text": searchPrompt},
+				},
+			},
+		},
+		"tools": []map[string]interface{}{
+			{"googleSearch": map[string]interface{}{}},
+		},
+	}
+
+	reqBody := map[string]interface{}{
+		"model":          p.model,
+		"project":        p.projectID,
+		"user_prompt_id": fmt.Sprintf("search-%d", time.Now().UnixNano()),
+		"request":        requestInner,
+	}
+
+	if debug {
+		fmt.Fprintln(os.Stderr, "=== DEBUG: Code Assist Search Request ===")
+		fmt.Fprintf(os.Stderr, "Provider: %s\n", p.Name())
+		fmt.Fprintf(os.Stderr, "Query: %s\n", query)
+		fmt.Fprintln(os.Stderr, "==========================================")
+	}
+
+	reqJSON, _ := json.Marshal(reqBody)
+	url := fmt.Sprintf("%s/%s:generateContent", codeAssistEndpoint, codeAssistAPIVersion)
+
+	httpReq, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(reqJSON))
+	if err != nil {
+		return "", err
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Authorization", "Bearer "+token)
+
+	resp, err := http.DefaultClient.Do(httpReq)
+	if err != nil {
+		return "", fmt.Errorf("search request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		body, _ := io.ReadAll(resp.Body)
+		return "", fmt.Errorf("search failed with status %d: %s", resp.StatusCode, string(body))
+	}
+
+	var genResp struct {
+		Response struct {
+			Candidates []struct {
+				Content struct {
+					Parts []struct {
+						Text string `json:"text"`
+					} `json:"parts"`
+				} `json:"content"`
+			} `json:"candidates"`
+		} `json:"response"`
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&genResp); err != nil {
+		return "", fmt.Errorf("failed to parse search response: %w", err)
+	}
+
+	if len(genResp.Response.Candidates) == 0 || len(genResp.Response.Candidates[0].Content.Parts) == 0 {
+		return "", fmt.Errorf("no search results from model")
+	}
+
+	searchResult := genResp.Response.Candidates[0].Content.Parts[0].Text
+
+	if debug {
+		fmt.Fprintln(os.Stderr, "=== DEBUG: Code Assist Search Response ===")
+		fmt.Fprintf(os.Stderr, "Result: %s\n", searchResult)
+		fmt.Fprintln(os.Stderr, "===========================================")
+	}
+
+	return searchResult, nil
+}
+
+func (p *CodeAssistProvider) suggestWithSearch(ctx context.Context, req SuggestRequest) ([]CommandSuggestion, error) {
+	// Phase 1: Perform search to get current information
+	searchContext, err := p.performSearch(ctx, req.UserInput, req.Debug)
+	if err != nil {
+		// If search fails, fall back to suggestions without search
+		if req.Debug {
+			fmt.Fprintf(os.Stderr, "Search failed, falling back: %v\n", err)
+		}
+		return p.suggestWithoutSearch(ctx, req)
+	}
+
+	// Phase 2: Generate suggestions with search context
+	if err := p.ensureProjectID(ctx); err != nil {
+		return nil, err
+	}
+
+	token, err := p.getAccessToken()
+	if err != nil {
+		return nil, err
+	}
+
+	numSuggestions := req.NumSuggestions
+	if numSuggestions <= 0 {
+		numSuggestions = 3
+	}
+
+	systemPrompt := prompt.SuggestSystemPrompt(req.Shell, req.Instructions, numSuggestions, true)
+
+	// Include search results in the user prompt
+	userPrompt := prompt.SuggestUserPrompt(req.UserInput)
+	if searchContext != "" {
+		userPrompt = fmt.Sprintf("%s\n\n<search_results>\n%s\n</search_results>", userPrompt, searchContext)
+	}
+
+	// Build inner request with JSON schema (no search tool - incompatible)
+	requestInner := map[string]interface{}{
+		"contents": []map[string]interface{}{
+			{
+				"role": "user",
+				"parts": []map[string]interface{}{
+					{"text": userPrompt},
+				},
+			},
+		},
+		"systemInstruction": map[string]interface{}{
+			"parts": []map[string]interface{}{
+				{"text": systemPrompt},
+			},
+		},
+		"generationConfig": map[string]interface{}{
+			"responseMimeType": "application/json",
+			"responseSchema": map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"suggestions": map[string]interface{}{
+						"type": "array",
+						"items": map[string]interface{}{
+							"type": "object",
+							"properties": map[string]interface{}{
+								"command": map[string]interface{}{
+									"type":        "string",
+									"description": "The shell command to execute",
+								},
+								"explanation": map[string]interface{}{
+									"type":        "string",
+									"description": "Brief explanation of what the command does",
+								},
+								"likelihood": map[string]interface{}{
+									"type":        "integer",
+									"description": "How likely this command matches user intent (1=unlikely, 10=very likely)",
+								},
+							},
+							"required": []string{"command", "explanation", "likelihood"},
+						},
+					},
+				},
+				"required": []string{"suggestions"},
+			},
+		},
+	}
+
+	reqBody := map[string]interface{}{
+		"model":          p.model,
+		"project":        p.projectID,
+		"user_prompt_id": fmt.Sprintf("suggest-%d", time.Now().UnixNano()),
+		"request":        requestInner,
+	}
+
+	if req.Debug {
+		fmt.Fprintln(os.Stderr, "=== DEBUG: Code Assist Request (with search) ===")
+		fmt.Fprintf(os.Stderr, "Provider: %s\n", p.Name())
+		fmt.Fprintf(os.Stderr, "Project: %s\n", p.projectID)
+		fmt.Fprintf(os.Stderr, "System:\n%s\n", systemPrompt)
+		fmt.Fprintf(os.Stderr, "User:\n%s\n", userPrompt)
+		fmt.Fprintln(os.Stderr, "=================================================")
+	}
+
+	reqJSON, _ := json.Marshal(reqBody)
+	url := fmt.Sprintf("%s/%s:generateContent", codeAssistEndpoint, codeAssistAPIVersion)
+
+	httpReq, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(reqJSON))
+	if err != nil {
+		return nil, err
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Authorization", "Bearer "+token)
+
+	resp, err := http.DefaultClient.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("generateContent request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("generateContent failed with status %d: %s", resp.StatusCode, string(body))
+	}
+
+	var genResp struct {
+		Response struct {
+			Candidates []struct {
+				Content struct {
+					Parts []struct {
+						Text string `json:"text"`
+					} `json:"parts"`
+				} `json:"content"`
+			} `json:"candidates"`
+		} `json:"response"`
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&genResp); err != nil {
+		return nil, fmt.Errorf("failed to parse response: %w", err)
+	}
+
+	if len(genResp.Response.Candidates) == 0 || len(genResp.Response.Candidates[0].Content.Parts) == 0 {
+		return nil, fmt.Errorf("no response from model")
+	}
+
+	text := genResp.Response.Candidates[0].Content.Parts[0].Text
+
+	if req.Debug {
+		fmt.Fprintln(os.Stderr, "=== DEBUG: Code Assist Response (with search) ===")
+		fmt.Fprintf(os.Stderr, "Raw JSON: %s\n", text)
+		fmt.Fprintln(os.Stderr, "==================================================")
+	}
+
+	var suggestions suggestionsResponse
+	if err := json.Unmarshal([]byte(text), &suggestions); err != nil {
+		return nil, fmt.Errorf("failed to parse suggestions JSON: %w", err)
+	}
+
+	return suggestions.Suggestions, nil
+}
+
+func (p *CodeAssistProvider) suggestWithoutSearch(ctx context.Context, req SuggestRequest) ([]CommandSuggestion, error) {
 	if err := p.ensureProjectID(ctx); err != nil {
 		return nil, err
 	}
@@ -298,10 +552,6 @@ func (p *CodeAssistProvider) SuggestCommands(ctx context.Context, req SuggestReq
 		},
 	}
 
-	// Note: Search/grounding is not compatible with JSON schema output,
-	// so we don't enable it for SuggestCommands. Use 'ask -s' for search.
-
-	// Build request with JSON schema for structured output
 	reqBody := map[string]interface{}{
 		"model":          p.model,
 		"project":        p.projectID,
