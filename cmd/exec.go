@@ -121,8 +121,8 @@ func runExec(cmd *cobra.Command, args []string) error {
 			return executeCommand(command, shell)
 		}
 
-		// Interactive mode: show selection UI
-		selected, err := ui.SelectCommand(suggestions)
+		// Interactive mode: show selection UI (with help support via 'h' key)
+		selected, err := ui.SelectCommand(suggestions, shell, provider)
 		if err != nil {
 			return fmt.Errorf("selection cancelled: %w", err)
 		}

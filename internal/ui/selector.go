@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"
@@ -133,56 +134,146 @@ func RunWithSpinner(ctx context.Context, provider llm.Provider, req llm.SuggestR
 	return m.result.suggestions, m.result.err
 }
 
-// SelectCommand presents the user with a list of command suggestions and returns the selected one
-// Returns the selected command or SomethingElse if user wants to refine their request
-func SelectCommand(suggestions []llm.CommandSuggestion) (string, error) {
-	var selected string
+// selectModel is a bubbletea model for command selection with help support
+type selectModel struct {
+	suggestions []llm.CommandSuggestion
+	cursor      int
+	selected    string
+	cancelled   bool
+	showHelp    bool // signal to show help for current selection
+	styles      *Styles
+	tty         *os.File
+}
 
-	// Get tty for proper color rendering
-	tty, ttyErr := getTTY()
-	if ttyErr != nil {
-		tty = os.Stderr // fallback
-	} else {
-		defer tty.Close()
+func newSelectModel(suggestions []llm.CommandSuggestion, tty *os.File) selectModel {
+	return selectModel{
+		suggestions: suggestions,
+		cursor:      0,
+		styles:      NewStyles(tty),
+		tty:         tty,
 	}
+}
 
-	_, explanationStyle := getStyles(tty)
+func (m selectModel) Init() tea.Cmd {
+	return nil
+}
 
-	// Build options from suggestions
-	options := make([]huh.Option[string], 0, len(suggestions)+1)
-	for i, s := range suggestions {
-		label := formatOption(tty, s.Command, s.Explanation)
-		// Add trailing newline to last command for visual separation
-		if i == len(suggestions)-1 {
-			label += "\n"
+func (m selectModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch msg := msg.(type) {
+	case tea.KeyMsg:
+		switch msg.String() {
+		case "up", "k":
+			if m.cursor > 0 {
+				m.cursor--
+			}
+		case "down", "j":
+			if m.cursor < len(m.suggestions) { // +1 for "something else"
+				m.cursor++
+			}
+		case "enter":
+			if m.cursor == len(m.suggestions) {
+				m.selected = SomethingElse
+			} else {
+				m.selected = m.suggestions[m.cursor].Command
+			}
+			return m, tea.Quit
+		case "h", "H":
+			// Only show help for actual commands, not "something else"
+			if m.cursor < len(m.suggestions) {
+				m.showHelp = true
+				return m, tea.Quit
+			}
+		case "esc", "q", "ctrl+c":
+			m.cancelled = true
+			return m, tea.Quit
 		}
-		options = append(options, huh.NewOption(label, s.Command))
 	}
-	// Add "something else" option
-	options = append(options, huh.NewOption(explanationStyle.Render("something else..."), SomethingElse))
+	return m, nil
+}
 
-	form := huh.NewForm(
-		huh.NewGroup(
-			huh.NewSelect[string]().
-				Title("Select a command to run").
-				Options(options...).
-				Value(&selected),
-		),
-	)
+func (m selectModel) View() string {
+	var b strings.Builder
 
-	// Use /dev/tty directly to bypass shell redirections
-	if ttyErr == nil {
-		tty2, _ := getTTY()
-		defer tty2.Close()
-		form = form.WithInput(tty2).WithOutput(tty2)
+	cmdStyle, explanationStyle := getStyles(m.tty)
+
+	b.WriteString(m.styles.Bold.Render("Select a command to run"))
+	b.WriteString(m.styles.Muted.Render("  [h] help"))
+	b.WriteString("\n\n")
+
+	for i, s := range m.suggestions {
+		cursor := "  "
+		if m.cursor == i {
+			cursor = m.styles.Highlighted.Render("> ")
+		}
+
+		b.WriteString(cursor)
+		b.WriteString(cmdStyle.Render(s.Command))
+		b.WriteString("\n")
+		b.WriteString("    ")
+		b.WriteString(explanationStyle.Render(s.Explanation))
+		b.WriteString("\n")
+		if i < len(m.suggestions)-1 {
+			b.WriteString("\n")
+		}
 	}
 
-	err := form.Run()
-	if err != nil {
-		return "", err
+	// "something else" option
+	b.WriteString("\n")
+	cursor := "  "
+	if m.cursor == len(m.suggestions) {
+		cursor = m.styles.Highlighted.Render("> ")
 	}
+	b.WriteString(cursor)
+	b.WriteString(explanationStyle.Render("something else..."))
+	b.WriteString("\n")
 
-	return selected, nil
+	return b.String()
+}
+
+// SelectCommand presents the user with a list of command suggestions and returns the selected one.
+// Returns the selected command or SomethingElse if user wants to refine their request.
+// If provider is non-nil and user presses 'h', shows help for the highlighted command.
+func SelectCommand(suggestions []llm.CommandSuggestion, shell string, provider llm.Provider) (string, error) {
+	for {
+		// Get tty for proper rendering
+		tty, ttyErr := getTTY()
+		if ttyErr != nil {
+			// Fallback to simple first option if no TTY
+			if len(suggestions) > 0 {
+				return suggestions[0].Command, nil
+			}
+			return "", fmt.Errorf("no TTY available")
+		}
+
+		model := newSelectModel(suggestions, tty)
+		p := tea.NewProgram(model, tea.WithInput(tty), tea.WithOutput(tty))
+
+		finalModel, err := p.Run()
+		tty.Close()
+
+		if err != nil {
+			return "", err
+		}
+
+		m := finalModel.(selectModel)
+
+		if m.cancelled {
+			return "", fmt.Errorf("cancelled")
+		}
+
+		if m.showHelp && provider != nil {
+			// Show help for the selected command
+			cmd := m.suggestions[m.cursor].Command
+			if err := ShowCommandHelp(cmd, shell, provider); err != nil {
+				// Log error but continue with selection
+				ShowError(fmt.Sprintf("help failed: %v", err))
+			}
+			// Loop back to selection after help
+			continue
+		}
+
+		return m.selected, nil
+	}
 }
 
 // GetRefinement prompts the user for additional guidance

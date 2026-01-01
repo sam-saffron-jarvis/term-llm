@@ -128,65 +128,13 @@ func getTerminalWidth() int {
 	return width
 }
 
-// countTerminalLines counts how many terminal lines a string occupies
-// accounting for line wrapping at the given width
-func countTerminalLines(s string, termWidth int) int {
-	lines := strings.Split(s, "\n")
-	count := 0
-	for _, line := range lines {
-		if line == "" {
-			count++
-			continue
-		}
-		// Use reflow's ansi-aware width calculation
-		visibleWidth := printableWidth(line)
-		if visibleWidth == 0 {
-			count++
-		} else {
-			// How many terminal lines does this line wrap to?
-			count += (visibleWidth + termWidth - 1) / termWidth
-		}
-	}
-	return count
-}
-
-// printableWidth returns the visible width of a string (ignoring ANSI codes)
-func printableWidth(s string) int {
-	width := 0
-	inEscape := false
-	for _, r := range s {
-		if r == '\x1b' {
-			inEscape = true
-			continue
-		}
-		if inEscape {
-			if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') {
-				inEscape = false
-			}
-			continue
-		}
-		width++
-	}
-	return width
-}
-
-// streamWithGlamour renders markdown incrementally as content streams in
+// streamWithGlamour renders markdown incrementally as content streams in (line-by-line, no clearing)
 func streamWithGlamour(output <-chan string) error {
 	var content strings.Builder
-	lastRendered := ""
+	var printedLines int
 	gotFirstChunk := false
 	spinnerDone := make(chan struct{})
 	termWidth := getTerminalWidth()
-	altScreenExited := false
-
-	// Enter alternate screen buffer to avoid eating shell history
-	fmt.Print("\033[?1049h") // Enter alternate screen
-	fmt.Print("\033[H")      // Move cursor to top-left
-	defer func() {
-		if !altScreenExited {
-			fmt.Print("\033[?1049l") // Exit alternate screen
-		}
-	}()
 
 	// Start spinner
 	go func() {
@@ -199,6 +147,8 @@ func streamWithGlamour(output <-chan string) error {
 		for {
 			select {
 			case <-spinnerDone:
+				// Clear spinner line
+				fmt.Print("\r\033[K")
 				return
 			case <-ticker.C:
 				i = (i + 1) % len(frames)
@@ -216,20 +166,20 @@ func streamWithGlamour(output <-chan string) error {
 
 		content.WriteString(chunk)
 
-		// Re-render when we get a newline (complete line)
+		// When we get a newline, render and print new lines only
 		if strings.Contains(chunk, "\n") {
-			currentContent := content.String()
-			rendered, err := renderMarkdown(currentContent, termWidth)
+			rendered, err := renderMarkdown(content.String(), termWidth)
 			if err != nil {
-				rendered = currentContent
+				rendered = content.String()
 			}
 
-			// Only update if content changed
-			if rendered != lastRendered {
-				// Clear screen and redraw from top
-				fmt.Print("\033[H\033[J") // Home + clear screen
-				fmt.Print(rendered)
-				lastRendered = rendered
+			// Split into lines and print only new ones
+			lines := strings.Split(rendered, "\n")
+			for i := printedLines; i < len(lines); i++ {
+				if i < len(lines)-1 { // Don't print the last partial line
+					fmt.Println(lines[i])
+					printedLines++
+				}
 			}
 		}
 	}
@@ -239,23 +189,21 @@ func streamWithGlamour(output <-chan string) error {
 		close(spinnerDone)
 	}
 
-	// Final render - store it for after we exit alternate screen
-	var finalOutput string
+	// Final render - print any remaining lines
 	finalContent := content.String()
 	if finalContent != "" {
 		rendered, err := renderMarkdown(finalContent, termWidth)
 		if err != nil {
-			finalOutput = finalContent
-		} else {
-			finalOutput = rendered
+			rendered = finalContent
 		}
-	}
 
-	// Exit alternate screen then print final result to main screen
-	fmt.Print("\033[?1049l")
-	altScreenExited = true
-	if finalOutput != "" {
-		fmt.Print(finalOutput)
+		lines := strings.Split(rendered, "\n")
+		for i := printedLines; i < len(lines); i++ {
+			line := lines[i]
+			if line != "" || i < len(lines)-1 {
+				fmt.Println(line)
+			}
+		}
 	}
 
 	return nil
