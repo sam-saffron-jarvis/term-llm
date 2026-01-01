@@ -14,9 +14,23 @@ type Config struct {
 	Provider  string          `mapstructure:"provider"`
 	Exec      ExecConfig      `mapstructure:"exec"`
 	Ask       AskConfig       `mapstructure:"ask"`
+	Theme     ThemeConfig     `mapstructure:"theme"`
 	Anthropic AnthropicConfig `mapstructure:"anthropic"`
 	OpenAI    OpenAIConfig    `mapstructure:"openai"`
 	Gemini    GeminiConfig    `mapstructure:"gemini"`
+}
+
+// ThemeConfig allows customization of UI colors
+// Colors can be ANSI color numbers (0-255) or hex codes (#RRGGBB)
+type ThemeConfig struct {
+	Primary   string `mapstructure:"primary"`   // main accent (commands, highlights)
+	Secondary string `mapstructure:"secondary"` // secondary accent (headers, borders)
+	Success   string `mapstructure:"success"`   // success states
+	Error     string `mapstructure:"error"`     // error states
+	Warning   string `mapstructure:"warning"`   // warnings
+	Muted     string `mapstructure:"muted"`     // dimmed text
+	Text      string `mapstructure:"text"`      // primary text
+	Spinner   string `mapstructure:"spinner"`   // loading spinner
 }
 
 type ExecConfig struct {

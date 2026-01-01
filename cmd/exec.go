@@ -67,6 +67,18 @@ func runExec(cmd *cobra.Command, args []string) error {
 		}
 	}
 
+	// Initialize theme from config
+	ui.InitTheme(ui.ThemeConfig{
+		Primary:   cfg.Theme.Primary,
+		Secondary: cfg.Theme.Secondary,
+		Success:   cfg.Theme.Success,
+		Error:     cfg.Theme.Error,
+		Warning:   cfg.Theme.Warning,
+		Muted:     cfg.Theme.Muted,
+		Text:      cfg.Theme.Text,
+		Spinner:   cfg.Theme.Spinner,
+	})
+
 	// Create LLM provider
 	provider, err := llm.NewProvider(cfg)
 	if err != nil {

@@ -11,7 +11,6 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/glamour"
 	"github.com/charmbracelet/glamour/styles"
-	"github.com/charmbracelet/lipgloss"
 	"github.com/muesli/reflow/wordwrap"
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/prompt"
@@ -82,26 +81,30 @@ type errorMsg struct{ err error }
 
 // helpModel is the bubbletea model for streaming help
 type helpModel struct {
-	viewport   viewport.Model
-	spinner    spinner.Model
-	content    *strings.Builder // pointer to avoid copy issues
-	rendered   string
-	width      int
-	height     int
-	loading    bool
-	err        error
+	viewport viewport.Model
+	spinner  spinner.Model
+	styles   *Styles
+	content  *strings.Builder // pointer to avoid copy issues
+	rendered string
+	width    int
+	height   int
+	loading  bool
+	err      error
 }
 
 func newHelpModel(width, height int) helpModel {
+	styles := DefaultStyles()
+
 	sp := spinner.New()
 	sp.Spinner = spinner.Dot
-	sp.Style = lipgloss.NewStyle().Foreground(lipgloss.Color("205"))
+	sp.Style = styles.Spinner
 
 	vp := viewport.New(width, height-1) // -1 for footer
 
 	return helpModel{
 		viewport: vp,
 		spinner:  sp,
+		styles:   styles,
 		content:  &strings.Builder{},
 		width:    width,
 		height:   height,
@@ -171,19 +174,13 @@ func (m helpModel) View() string {
 	var footer string
 
 	if m.err != nil {
-		footer = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("196")).
-			Render(fmt.Sprintf("Error: %v • q to exit", m.err))
+		footer = m.styles.Error.Render(fmt.Sprintf("Error: %v • q to exit", m.err))
 	} else if m.loading && m.content.Len() == 0 {
 		footer = m.spinner.View() + " Generating help..."
 	} else if m.loading {
-		footer = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("241")).
-			Render("↑/↓ scroll • streaming...")
+		footer = m.styles.Footer.Render("↑/↓ scroll • streaming...")
 	} else {
-		footer = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("241")).
-			Render("↑/↓ scroll • q/Esc/Enter to exit")
+		footer = m.styles.Footer.Render("↑/↓ scroll • q/Esc/Enter to exit")
 	}
 
 	return m.viewport.View() + "\n" + footer

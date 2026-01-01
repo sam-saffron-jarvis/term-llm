@@ -9,26 +9,11 @@ import (
 	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/huh"
-	"github.com/charmbracelet/lipgloss"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
 )
 
 const SomethingElse = "__something_else__"
-
-// getStyles creates lipgloss styles using a renderer tied to the given output
-func getStyles(output *os.File) (cmdStyle, explanationStyle lipgloss.Style) {
-	r := lipgloss.NewRenderer(output)
-	cmdStyle = r.NewStyle().Bold(true).Foreground(lipgloss.Color("10"))  // bright green
-	explanationStyle = r.NewStyle().Foreground(lipgloss.Color("8"))      // grey
-	return
-}
-
-// formatOption renders a command suggestion with lipgloss styling
-func formatOption(tty *os.File, cmd, explanation string) string {
-	cmdStyle, explanationStyle := getStyles(tty)
-	return cmdStyle.Render(cmd) + "\n" + explanationStyle.Render("  "+explanation)
-}
 
 // getTTY opens /dev/tty for direct terminal access (bypasses redirections)
 func getTTY() (*os.File, error) {
@@ -37,11 +22,11 @@ func getTTY() (*os.File, error) {
 
 // spinnerModel is the bubbletea model for the loading spinner
 type spinnerModel struct {
-	spinner     spinner.Model
-	cancel      context.CancelFunc
-	cancelled   bool
-	result      *llmResultMsg
-	dimStyle    lipgloss.Style
+	spinner   spinner.Model
+	cancel    context.CancelFunc
+	cancelled bool
+	result    *llmResultMsg
+	styles    *Styles
 }
 
 type llmResultMsg struct {
@@ -50,13 +35,14 @@ type llmResultMsg struct {
 }
 
 func newSpinnerModel(cancel context.CancelFunc, tty *os.File) spinnerModel {
+	styles := NewStyles(tty)
 	s := spinner.New()
 	s.Spinner = spinner.Dot
-	r := lipgloss.NewRenderer(tty)
+	s.Style = styles.Spinner
 	return spinnerModel{
-		spinner:  s,
-		cancel:   cancel,
-		dimStyle: r.NewStyle().Foreground(lipgloss.Color("8")),
+		spinner: s,
+		cancel:  cancel,
+		styles:  styles,
 	}
 }
 
@@ -84,7 +70,7 @@ func (m spinnerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m spinnerModel) View() string {
-	return m.spinner.View() + " Thinking... " + m.dimStyle.Render("(esc to cancel)")
+	return m.spinner.View() + " Thinking... " + m.styles.Muted.Render("(esc to cancel)")
 }
 
 // RunWithSpinner shows a spinner while executing the LLM request
@@ -194,8 +180,6 @@ func (m selectModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m selectModel) View() string {
 	var b strings.Builder
 
-	cmdStyle, explanationStyle := getStyles(m.tty)
-
 	b.WriteString(m.styles.Bold.Render("Select a command to run"))
 	b.WriteString(m.styles.Muted.Render("  [h] help"))
 	b.WriteString("\n\n")
@@ -207,10 +191,9 @@ func (m selectModel) View() string {
 		}
 
 		b.WriteString(cursor)
-		b.WriteString(cmdStyle.Render(s.Command))
-		b.WriteString("\n")
-		b.WriteString("    ")
-		b.WriteString(explanationStyle.Render(s.Explanation))
+		b.WriteString(m.styles.Command.Render(s.Command))
+		b.WriteString("\n  ")
+		b.WriteString(m.styles.Muted.Render(s.Explanation))
 		b.WriteString("\n")
 		if i < len(m.suggestions)-1 {
 			b.WriteString("\n")
@@ -224,7 +207,7 @@ func (m selectModel) View() string {
 		cursor = m.styles.Highlighted.Render("> ")
 	}
 	b.WriteString(cursor)
-	b.WriteString(explanationStyle.Render("something else..."))
+	b.WriteString(m.styles.Muted.Render("something else..."))
 	b.WriteString("\n")
 
 	return b.String()
