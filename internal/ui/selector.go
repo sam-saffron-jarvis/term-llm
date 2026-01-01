@@ -216,11 +216,15 @@ func (m selectModel) View() string {
 // SelectCommand presents the user with a list of command suggestions and returns the selected one.
 // Returns the selected command or SomethingElse if user wants to refine their request.
 // If provider is non-nil and user presses 'h', shows help for the highlighted command.
-func SelectCommand(suggestions []llm.CommandSuggestion, shell string, provider llm.Provider) (string, error) {
+// allowNonTTY permits a non-interactive fallback when no TTY is available.
+func SelectCommand(suggestions []llm.CommandSuggestion, shell string, provider llm.Provider, allowNonTTY bool) (string, error) {
 	for {
 		// Get tty for proper rendering
 		tty, ttyErr := getTTY()
 		if ttyErr != nil {
+			if !allowNonTTY {
+				return "", fmt.Errorf("no TTY available (set TERM_LLM_ALLOW_NON_TTY=1 to allow non-interactive selection)")
+			}
 			// Fallback to simple first option if no TTY
 			if len(suggestions) > 0 {
 				return suggestions[0].Command, nil

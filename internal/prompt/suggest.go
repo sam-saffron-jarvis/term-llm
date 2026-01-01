@@ -30,12 +30,12 @@ Rules:
 3. Prefer common tools that are likely to be installed
 4. Order suggestions from most likely to be useful to least
 5. Keep explanations brief (under 50 words)
-6. If the request is dangerous (rm -rf /, etc), still provide the command but warn in the explanation`, numSuggestions)
+`, numSuggestions)
 
 	if enableSearch {
 		base += `
-7. You have access to web search. Use it to find current documentation, latest versions, or up-to-date syntax when relevant
-8. After searching (if needed), call the suggest_commands tool with your suggestions`
+6. You have access to web search. Use it to find current documentation, latest versions, or up-to-date syntax when relevant
+7. After searching (if needed), call the suggest_commands tool with your suggestions`
 	}
 
 	return base

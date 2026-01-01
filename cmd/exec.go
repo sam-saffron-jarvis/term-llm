@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"fmt"
+	"os"
 	"sort"
 	"strings"
 
@@ -21,6 +22,11 @@ var (
 	execProvider  string
 )
 
+const (
+	allowAutoRunEnv = "TERM_LLM_ALLOW_AUTORUN"
+	allowNonTTYEnv  = "TERM_LLM_ALLOW_NON_TTY"
+)
+
 var execCmd = &cobra.Command{
 	Use:   "exec <request>",
 	Short: "Translate natural language to CLI commands",
@@ -28,6 +34,9 @@ var execCmd = &cobra.Command{
 
 By default, shows an interactive selection UI. Use --auto-pick to
 automatically execute the highest-likelihood suggestion.
+
+Safety: auto-pick execution requires TERM_LLM_ALLOW_AUTORUN=1, and
+non-TTY selection requires TERM_LLM_ALLOW_NON_TTY=1 (unless --print-only).
 
 Examples:
   term-llm exec "list files by size"
@@ -142,6 +151,9 @@ func runExec(cmd *cobra.Command, args []string) error {
 		// Auto-pick mode: execute the best suggestion immediately
 		if execAutoPick {
 			command := suggestions[0].Command
+			if !execPrintOnly && !envEnabled(allowAutoRunEnv) {
+				return fmt.Errorf("auto-pick requires %s=1 to execute; use --print-only or set %s=1", allowAutoRunEnv, allowAutoRunEnv)
+			}
 			if execPrintOnly {
 				fmt.Println(command)
 				return nil
@@ -150,7 +162,8 @@ func runExec(cmd *cobra.Command, args []string) error {
 		}
 
 		// Interactive mode: show selection UI (with help support via 'h' key)
-		selected, err := ui.SelectCommand(suggestions, shell, provider)
+		allowNonTTY := execPrintOnly || envEnabled(allowNonTTYEnv)
+		selected, err := ui.SelectCommand(suggestions, shell, provider, allowNonTTY)
 		if err != nil {
 			if err.Error() == "cancelled" {
 				return nil
@@ -182,5 +195,15 @@ func runExec(cmd *cobra.Command, args []string) error {
 
 		// Execute the selected command
 		return executeCommand(selected, shell)
+	}
+}
+
+func envEnabled(name string) bool {
+	value := strings.ToLower(strings.TrimSpace(os.Getenv(name)))
+	switch value {
+	case "1", "true", "yes", "y":
+		return true
+	default:
+		return false
 	}
 }
