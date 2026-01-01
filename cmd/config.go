@@ -366,7 +366,7 @@ func installShellCompletion(shell string) error {
 		fmt.Fprintf(os.Stderr, "  fpath+=(%s)\n", dir)
 		fmt.Fprintln(os.Stderr, "  autoload -U compinit && compinit")
 		fmt.Fprintln(os.Stderr)
-		fmt.Fprintln(os.Stderr, "Then restart your shell or run: exec zsh")
+		fmt.Fprintln(os.Stderr, "Then restart your shell")
 	case "fish":
 		fmt.Fprintln(os.Stderr)
 		fmt.Fprintln(os.Stderr, "Completions will be loaded automatically.")
