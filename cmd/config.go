@@ -19,6 +19,7 @@ var configCmd = &cobra.Command{
 Examples:
   term-llm config                     # show current config
   term-llm config edit                # edit in $EDITOR
+  term-llm config reset               # reset to defaults
   term-llm config completion zsh      # generate shell completions`,
 	RunE: configShow, // Default to show
 }
@@ -49,11 +50,19 @@ Examples:
 	RunE:      configCompletion,
 }
 
+var configResetCmd = &cobra.Command{
+	Use:   "reset",
+	Short: "Reset configuration to defaults",
+	Long:  `Reset the configuration file to default values. This will overwrite any existing configuration.`,
+	RunE:  configReset,
+}
+
 func init() {
 	rootCmd.AddCommand(configCmd)
 	configCmd.AddCommand(configEditCmd)
 	configCmd.AddCommand(configPathCmd)
 	configCmd.AddCommand(configCompletionCmd)
+	configCmd.AddCommand(configResetCmd)
 }
 
 func configShow(cmd *cobra.Command, args []string) error {
@@ -169,29 +178,74 @@ func configPath(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
+func configReset(cmd *cobra.Command, args []string) error {
+	configPath, err := config.GetConfigPath()
+	if err != nil {
+		return fmt.Errorf("failed to get config path: %w", err)
+	}
+
+	// Ensure config directory exists
+	configDir := filepath.Dir(configPath)
+	if err := os.MkdirAll(configDir, 0755); err != nil {
+		return fmt.Errorf("failed to create config directory: %w", err)
+	}
+
+	// Write default config
+	if err := os.WriteFile(configPath, []byte(defaultConfigContent()), 0644); err != nil {
+		return fmt.Errorf("failed to write config file: %w", err)
+	}
+
+	fmt.Printf("Config reset to defaults: %s\n", configPath)
+	return nil
+}
+
 func defaultConfigContent() string {
-	return `provider: anthropic  # or "openai" or "gemini"
+	return `# term-llm configuration
+# Run 'term-llm config edit' to modify
 
-# Custom context added to system prompt
-system_context: |
+provider: anthropic  # anthropic, openai, or gemini
 
+# exec command settings
+exec:
+  suggestions: 3  # number of command suggestions to show
+  # instructions: |
+  #   Custom context for command suggestions, e.g.:
+  #   - I use macOS with zsh
+  #   - Prefer ripgrep over grep, fd over find
+  #   - Always use --color=auto for grep
 
+# ask command settings
+ask:
+  # instructions: |
+  #   Custom system prompt for ask command, e.g.:
+  #   - Be concise, I'm an experienced developer
+  #   - Prefer practical examples over theory
+
+# UI theme colors (ANSI 0-255 or hex #RRGGBB)
+# theme:
+#   primary: "10"     # commands, highlights (default: bright green)
+#   muted: "245"      # explanations, footers (default: light grey)
+#   spinner: "205"    # loading spinner (default: pink)
+#   error: "9"        # error messages (default: bright red)
+
+# Provider configurations
 anthropic:
   model: claude-sonnet-4-5
   # credentials: api_key or claude
-  # - api_key: use ANTHROPIC_API_KEY env var (default)
-  # - claude: use Claude Code credentials (if installed)
-  credentials: claude
+  #   api_key: uses ANTHROPIC_API_KEY env var (default)
+  #   claude: uses Claude Code credentials (requires 'claude' CLI)
 
 openai:
   model: gpt-5.2
-  # credentials: api_key (uses OPENAI_API_KEY env var)
+  # credentials: api_key or codex
+  #   api_key: uses OPENAI_API_KEY env var (default)
+  #   codex: uses Codex credentials (requires 'codex' CLI)
 
 gemini:
   model: gemini-3-flash-preview
   # credentials: api_key or gemini-cli
-  # - api_key: use GEMINI_API_KEY env var (default)
-  # - gemini-cli: use gemini-cli credentials (if installed)
+  #   api_key: uses GEMINI_API_KEY env var (default)
+  #   gemini-cli: uses gemini-cli OAuth (requires 'gemini' CLI)
 `
 }
 
