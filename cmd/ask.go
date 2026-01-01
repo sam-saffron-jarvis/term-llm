@@ -143,12 +143,13 @@ func getTerminalWidth() int {
 
 // askStreamModel is a bubbletea model for streaming ask responses
 type askStreamModel struct {
-	spinner  spinner.Model
-	styles   *ui.Styles
-	content  *strings.Builder
-	rendered string
-	width    int
-	loading  bool
+	spinner     spinner.Model
+	styles      *ui.Styles
+	content     *strings.Builder
+	rendered    string
+	finalOutput string // stored for printing after tea exits
+	width       int
+	loading     bool
 }
 
 type askContentMsg string
@@ -195,6 +196,9 @@ func (m askStreamModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case askDoneMsg:
 		m.loading = false
+		// Store final output for printing after tea exits, clear view
+		m.finalOutput = m.rendered
+		m.rendered = ""
 		return m, tea.Quit
 
 	case spinner.TickMsg:
@@ -250,7 +254,13 @@ func streamWithGlamour(output <-chan string) error {
 		p.Send(askDoneMsg{})
 	}()
 
-	_, err := p.Run()
+	finalModel, err := p.Run()
+
+	// Print final output after tea cleanup to ensure it persists
+	if m, ok := finalModel.(askStreamModel); ok && m.finalOutput != "" {
+		fmt.Println(m.finalOutput)
+	}
+
 	return err
 }
 
