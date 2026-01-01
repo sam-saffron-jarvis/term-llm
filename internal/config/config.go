@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/samsaffron/term-llm/internal/credentials"
 	"github.com/spf13/viper"
 )
 
@@ -17,13 +18,16 @@ type Config struct {
 }
 
 type AnthropicConfig struct {
-	APIKey string `mapstructure:"api_key"`
-	Model  string `mapstructure:"model"`
+	APIKey      string `mapstructure:"api_key"`
+	Model       string `mapstructure:"model"`
+	Credentials string `mapstructure:"credentials"` // "api_key" (default) or "claude"
 }
 
 type OpenAIConfig struct {
-	APIKey string `mapstructure:"api_key"`
-	Model  string `mapstructure:"model"`
+	APIKey      string `mapstructure:"api_key"`
+	Model       string `mapstructure:"model"`
+	Credentials string `mapstructure:"credentials"` // "api_key" (default) or "codex"
+	AccountID   string // Populated at runtime when using Codex OAuth credentials
 }
 
 func Load() (*Config, error) {
@@ -56,19 +60,54 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("failed to unmarshal config: %w", err)
 	}
 
-	// Expand environment variables in API keys
-	cfg.Anthropic.APIKey = expandEnv(cfg.Anthropic.APIKey)
-	cfg.OpenAI.APIKey = expandEnv(cfg.OpenAI.APIKey)
-
-	// Fall back to environment variables if API keys not set
-	if cfg.Anthropic.APIKey == "" {
-		cfg.Anthropic.APIKey = os.Getenv("ANTHROPIC_API_KEY")
+	// Resolve API keys based on credentials setting
+	if err := resolveAnthropicCredentials(&cfg.Anthropic); err != nil {
+		return nil, fmt.Errorf("anthropic credentials: %w", err)
 	}
-	if cfg.OpenAI.APIKey == "" {
-		cfg.OpenAI.APIKey = os.Getenv("OPENAI_API_KEY")
+	if err := resolveOpenAICredentials(&cfg.OpenAI); err != nil {
+		return nil, fmt.Errorf("openai credentials: %w", err)
 	}
 
 	return &cfg, nil
+}
+
+// resolveAnthropicCredentials resolves Anthropic API credentials
+func resolveAnthropicCredentials(cfg *AnthropicConfig) error {
+	switch cfg.Credentials {
+	case "claude":
+		token, err := credentials.GetClaudeToken()
+		if err != nil {
+			return err
+		}
+		cfg.APIKey = token
+	default:
+		// Default: "api_key" - use config value or environment variable
+		cfg.APIKey = expandEnv(cfg.APIKey)
+		if cfg.APIKey == "" {
+			cfg.APIKey = os.Getenv("ANTHROPIC_API_KEY")
+		}
+	}
+	return nil
+}
+
+// resolveOpenAICredentials resolves OpenAI API credentials
+func resolveOpenAICredentials(cfg *OpenAIConfig) error {
+	switch cfg.Credentials {
+	case "codex":
+		creds, err := credentials.GetCodexCredentials()
+		if err != nil {
+			return err
+		}
+		cfg.APIKey = creds.AccessToken
+		cfg.AccountID = creds.AccountID
+	default:
+		// Default: "api_key" - use config value or environment variable
+		cfg.APIKey = expandEnv(cfg.APIKey)
+		if cfg.APIKey == "" {
+			cfg.APIKey = os.Getenv("OPENAI_API_KEY")
+		}
+	}
+	return nil
 }
 
 // expandEnv expands ${VAR} or $VAR in a string

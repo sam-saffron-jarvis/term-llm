@@ -14,9 +14,27 @@ type CommandSuggestion struct {
 	Likelihood  int    `json:"likelihood"` // 1-10, how likely this matches user intent
 }
 
+// suggestionsResponse is the common response format for all providers
+type suggestionsResponse struct {
+	Suggestions []CommandSuggestion `json:"suggestions"`
+}
+
 // Provider is the interface for LLM providers
 type Provider interface {
-	SuggestCommands(ctx context.Context, userInput string, shell string, systemContext string, enableSearch bool, debug bool) ([]CommandSuggestion, error)
+	// Name returns the provider name for logging/debugging
+	Name() string
+
+	// SuggestCommands generates command suggestions based on user input
+	SuggestCommands(ctx context.Context, req SuggestRequest) ([]CommandSuggestion, error)
+}
+
+// SuggestRequest contains all parameters for a suggestion request
+type SuggestRequest struct {
+	UserInput     string
+	Shell         string
+	SystemContext string
+	EnableSearch  bool
+	Debug         bool
 }
 
 // NewProvider creates a new LLM provider based on the config
@@ -27,11 +45,17 @@ func NewProvider(cfg *config.Config) (Provider, error) {
 			return nil, fmt.Errorf("anthropic API key not configured. Set ANTHROPIC_API_KEY or add to config")
 		}
 		return NewAnthropicProvider(cfg.Anthropic.APIKey, cfg.Anthropic.Model), nil
+
 	case "openai":
 		if cfg.OpenAI.APIKey == "" {
 			return nil, fmt.Errorf("openai API key not configured. Set OPENAI_API_KEY or add to config")
 		}
+		// Use CodexProvider when using Codex OAuth credentials (has account ID)
+		if cfg.OpenAI.AccountID != "" {
+			return NewCodexProvider(cfg.OpenAI.APIKey, cfg.OpenAI.Model, cfg.OpenAI.AccountID), nil
+		}
 		return NewOpenAIProvider(cfg.OpenAI.APIKey, cfg.OpenAI.Model), nil
+
 	default:
 		return nil, fmt.Errorf("unknown provider: %s", cfg.Provider)
 	}

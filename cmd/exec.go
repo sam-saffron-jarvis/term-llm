@@ -79,8 +79,17 @@ func runExec(cmd *cobra.Command, args []string) error {
 
 	// Main loop for refinement
 	for {
+		// Build request
+		req := llm.SuggestRequest{
+			UserInput:     userInput,
+			Shell:         shell,
+			SystemContext: systemContext,
+			EnableSearch:  execSearch,
+			Debug:         execDebug,
+		}
+
 		// Get suggestions from LLM with spinner
-		suggestions, err := ui.RunWithSpinner(ctx, provider, userInput, shell, systemContext, execSearch, execDebug)
+		suggestions, err := ui.RunWithSpinner(ctx, provider, req)
 		if err != nil {
 			if err.Error() == "cancelled" {
 				return nil

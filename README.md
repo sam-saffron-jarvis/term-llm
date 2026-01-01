@@ -29,6 +29,21 @@ go build
 
 On first run, term-llm will prompt you to choose a provider (Anthropic or OpenAI).
 
+### Option 1: Use existing CLI credentials (recommended)
+
+If you have [Claude Code](https://claude.ai/code) or [Codex](https://github.com/openai/codex) installed and logged in, term-llm can use those credentials:
+
+```yaml
+# In ~/.config/term-llm/config.yaml
+anthropic:
+  credentials: claude   # uses Claude Code credentials
+
+openai:
+  credentials: codex    # uses Codex credentials
+```
+
+### Option 2: Use API key
+
 Set your API key as an environment variable:
 
 ```bash
@@ -127,10 +142,29 @@ system_context: |
 
 anthropic:
   model: claude-sonnet-4-5
+  credentials: claude  # or "api_key" (default)
 
 openai:
   model: gpt-5.2
+  credentials: codex  # or "api_key" (default)
 ```
+
+### Credentials
+
+Each provider supports a `credentials` field:
+
+| Value | Description |
+|-------|-------------|
+| `api_key` | Use environment variable (default) |
+| `claude` | Use Claude Code credentials (Anthropic) |
+| `codex` | Use Codex CLI credentials (OpenAI) |
+
+**Claude Code** (`credentials: claude`):
+- **macOS**: System keychain (via `security` command)
+- **Linux**: `~/.claude/.credentials.json`
+
+**Codex** (`credentials: codex`):
+- Reads from `~/.codex/auth.json`
 
 ### Shell Completions
 

@@ -78,20 +78,36 @@ func configShow(cmd *cobra.Command, args []string) error {
 	fmt.Printf("provider: %s\n\n", cfg.Provider)
 	fmt.Printf("anthropic:\n")
 	fmt.Printf("  model: %s\n", cfg.Anthropic.Model)
-	if cfg.Anthropic.APIKey != "" {
-		fmt.Printf("  api_key: [set via ANTHROPIC_API_KEY]\n")
-	} else {
-		fmt.Printf("  api_key: [NOT SET - export ANTHROPIC_API_KEY]\n")
-	}
+	printCredentialStatus("anthropic", cfg.Anthropic.Credentials, cfg.Anthropic.APIKey, "ANTHROPIC_API_KEY")
+
 	fmt.Printf("\nopenai:\n")
 	fmt.Printf("  model: %s\n", cfg.OpenAI.Model)
-	if cfg.OpenAI.APIKey != "" {
-		fmt.Printf("  api_key: [set via OPENAI_API_KEY]\n")
-	} else {
-		fmt.Printf("  api_key: [NOT SET - export OPENAI_API_KEY]\n")
-	}
+	printCredentialStatus("openai", cfg.OpenAI.Credentials, cfg.OpenAI.APIKey, "OPENAI_API_KEY")
 
 	return nil
+}
+
+func printCredentialStatus(provider, credType, apiKey, envVar string) {
+	switch credType {
+	case "claude":
+		if apiKey != "" {
+			fmt.Printf("  credentials: claude [OK]\n")
+		} else {
+			fmt.Printf("  credentials: claude [FAILED - run 'claude' to login]\n")
+		}
+	case "codex":
+		if apiKey != "" {
+			fmt.Printf("  credentials: codex [OK]\n")
+		} else {
+			fmt.Printf("  credentials: codex [FAILED - run 'codex login']\n")
+		}
+	default:
+		if apiKey != "" {
+			fmt.Printf("  credentials: api_key [set via %s]\n", envVar)
+		} else {
+			fmt.Printf("  credentials: api_key [NOT SET - export %s]\n", envVar)
+		}
+	}
 }
 
 func configEdit(cmd *cobra.Command, args []string) error {
@@ -141,19 +157,20 @@ func configPath(cmd *cobra.Command, args []string) error {
 func defaultConfigContent() string {
 	return `provider: anthropic  # or "openai"
 
-# API keys are read from environment variables:
-#   ANTHROPIC_API_KEY for Anthropic
-#   OPENAI_API_KEY for OpenAI
-
 # Custom context added to system prompt
 system_context: |
 
 
 anthropic:
   model: claude-sonnet-4-5
+  # credentials: api_key or claude
+  # - api_key: use ANTHROPIC_API_KEY env var (default)
+  # - claude: use Claude Code credentials (if installed)
+  credentials: claude
 
 openai:
   model: gpt-5.2
+  # credentials: api_key (uses OPENAI_API_KEY env var)
 `
 }
 

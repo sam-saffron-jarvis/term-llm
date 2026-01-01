@@ -88,7 +88,7 @@ func (m spinnerModel) View() string {
 
 // RunWithSpinner shows a spinner while executing the LLM request
 // Returns suggestions, or error if cancelled or failed
-func RunWithSpinner(ctx context.Context, provider llm.Provider, userInput, shell, systemContext string, enableSearch bool, debug bool) ([]llm.CommandSuggestion, error) {
+func RunWithSpinner(ctx context.Context, provider llm.Provider, req llm.SuggestRequest) ([]llm.CommandSuggestion, error) {
 	// Create cancellable context
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -97,13 +97,13 @@ func RunWithSpinner(ctx context.Context, provider llm.Provider, userInput, shell
 	tty, ttyErr := getTTY()
 	if ttyErr != nil {
 		// Fallback: no spinner, just run directly
-		return provider.SuggestCommands(ctx, userInput, shell, systemContext, enableSearch, debug)
+		return provider.SuggestCommands(ctx, req)
 	}
 	defer tty.Close()
 
 	// In debug mode, skip spinner so output isn't garbled
-	if debug {
-		return provider.SuggestCommands(ctx, userInput, shell, systemContext, enableSearch, debug)
+	if req.Debug {
+		return provider.SuggestCommands(ctx, req)
 	}
 
 	// Create and run spinner
@@ -112,7 +112,7 @@ func RunWithSpinner(ctx context.Context, provider llm.Provider, userInput, shell
 
 	// Start LLM request in background and send result to program
 	go func() {
-		suggestions, err := provider.SuggestCommands(ctx, userInput, shell, systemContext, enableSearch, debug)
+		suggestions, err := provider.SuggestCommands(ctx, req)
 		p.Send(llmResultMsg{suggestions: suggestions, err: err})
 	}()
 

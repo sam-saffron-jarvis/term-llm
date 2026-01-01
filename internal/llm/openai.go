@@ -13,10 +13,10 @@ import (
 	"github.com/samsaffron/term-llm/internal/prompt"
 )
 
+// OpenAIProvider implements Provider using the standard OpenAI API
 type OpenAIProvider struct {
 	client *openai.Client
 	model  string
-	apiKey string
 }
 
 func NewOpenAIProvider(apiKey, model string) *OpenAIProvider {
@@ -24,11 +24,14 @@ func NewOpenAIProvider(apiKey, model string) *OpenAIProvider {
 	return &OpenAIProvider{
 		client: &client,
 		model:  model,
-		apiKey: apiKey,
 	}
 }
 
-func (p *OpenAIProvider) SuggestCommands(ctx context.Context, userInput string, shell string, systemContext string, enableSearch bool, debug bool) ([]CommandSuggestion, error) {
+func (p *OpenAIProvider) Name() string {
+	return fmt.Sprintf("OpenAI (%s)", p.model)
+}
+
+func (p *OpenAIProvider) SuggestCommands(ctx context.Context, req SuggestRequest) ([]CommandSuggestion, error) {
 	// Define the function tool for structured output
 	functionTool := responses.ToolParamOfFunction(
 		"suggest_commands",
@@ -40,18 +43,18 @@ func (p *OpenAIProvider) SuggestCommands(ctx context.Context, userInput string, 
 	tools := []responses.ToolUnionParam{functionTool}
 
 	// Add web search tool if enabled
-	if enableSearch {
+	if req.EnableSearch {
 		webSearchTool := responses.ToolParamOfWebSearchPreview(responses.WebSearchToolTypeWebSearchPreview)
-		tools = append([]responses.ToolUnionParam{webSearchTool}, tools...)
+		tools = []responses.ToolUnionParam{webSearchTool, functionTool}
 	}
 
-	systemPrompt := prompt.SystemPrompt(shell, systemContext, enableSearch)
-	userPrompt := prompt.UserPrompt(userInput)
+	systemPrompt := prompt.SystemPrompt(req.Shell, req.SystemContext, req.EnableSearch)
+	userPrompt := prompt.UserPrompt(req.UserInput)
 
-	if debug {
+	if req.Debug {
 		fmt.Fprintln(os.Stderr, "=== DEBUG: OpenAI Request ===")
-		fmt.Fprintf(os.Stderr, "Model: %s\n", p.model)
-		if enableSearch {
+		fmt.Fprintf(os.Stderr, "Provider: %s\n", p.Name())
+		if req.EnableSearch {
 			fmt.Fprintln(os.Stderr, "Tools: web_search_preview, suggest_commands")
 		} else {
 			fmt.Fprintln(os.Stderr, "Tools: suggest_commands")
@@ -73,7 +76,7 @@ func (p *OpenAIProvider) SuggestCommands(ctx context.Context, userInput string, 
 		return nil, fmt.Errorf("openai API error: %w", err)
 	}
 
-	if debug {
+	if req.Debug {
 		fmt.Fprintln(os.Stderr, "=== DEBUG: OpenAI Response ===")
 		fmt.Fprintf(os.Stderr, "Status: %s\n", resp.Status)
 		for i, item := range resp.Output {
@@ -92,7 +95,6 @@ func (p *OpenAIProvider) SuggestCommands(ctx context.Context, userInput string, 
 			case "web_search_call":
 				fmt.Fprintf(os.Stderr, "  Web search invoked (id=%s)\n", item.ID)
 			default:
-				// Log raw JSON for unknown types
 				if rawJSON, err := json.Marshal(item); err == nil {
 					fmt.Fprintf(os.Stderr, "  Raw: %s\n", string(rawJSON))
 				}

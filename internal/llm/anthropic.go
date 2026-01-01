@@ -10,6 +10,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/prompt"
 )
 
+// AnthropicProvider implements Provider using the Anthropic API
 type AnthropicProvider struct {
 	client *anthropic.Client
 	model  string
@@ -23,18 +24,18 @@ func NewAnthropicProvider(apiKey, model string) *AnthropicProvider {
 	}
 }
 
-type suggestionsResponse struct {
-	Suggestions []CommandSuggestion `json:"suggestions"`
+func (p *AnthropicProvider) Name() string {
+	return fmt.Sprintf("Anthropic (%s)", p.model)
 }
 
-func (p *AnthropicProvider) SuggestCommands(ctx context.Context, userInput string, shell string, systemContext string, enableSearch bool, debug bool) ([]CommandSuggestion, error) {
-	if enableSearch {
-		return p.suggestWithSearch(ctx, userInput, shell, systemContext, debug)
+func (p *AnthropicProvider) SuggestCommands(ctx context.Context, req SuggestRequest) ([]CommandSuggestion, error) {
+	if req.EnableSearch {
+		return p.suggestWithSearch(ctx, req)
 	}
-	return p.suggestWithoutSearch(ctx, userInput, shell, systemContext, debug)
+	return p.suggestWithoutSearch(ctx, req)
 }
 
-func (p *AnthropicProvider) suggestWithoutSearch(ctx context.Context, userInput string, shell string, systemContext string, debug bool) ([]CommandSuggestion, error) {
+func (p *AnthropicProvider) suggestWithoutSearch(ctx context.Context, req SuggestRequest) ([]CommandSuggestion, error) {
 	inputSchema := anthropic.ToolInputSchemaParam{
 		Type: "object",
 		Properties: map[string]interface{}{
@@ -70,12 +71,13 @@ func (p *AnthropicProvider) suggestWithoutSearch(ctx context.Context, userInput 
 	tool := anthropic.ToolUnionParamOfTool(inputSchema, "suggest_commands")
 	tool.OfTool.Description = anthropic.String("Suggest shell commands based on user input")
 
-	systemPrompt := prompt.SystemPrompt(shell, systemContext, false)
-	userPrompt := prompt.UserPrompt(userInput)
+	systemPrompt := prompt.SystemPrompt(req.Shell, req.SystemContext, false)
+	userPrompt := prompt.UserPrompt(req.UserInput)
 
-	if debug {
+	if req.Debug {
 		fmt.Fprintln(os.Stderr, "=== DEBUG: Anthropic Request ===")
-		fmt.Fprintf(os.Stderr, "Model: %s\n", p.model)
+		fmt.Fprintf(os.Stderr, "Provider: %s\n", p.Name())
+		fmt.Fprintf(os.Stderr, "Tools: suggest_commands\n")
 		fmt.Fprintf(os.Stderr, "System:\n%s\n", systemPrompt)
 		fmt.Fprintf(os.Stderr, "User:\n%s\n", userPrompt)
 		fmt.Fprintln(os.Stderr, "================================")
@@ -97,7 +99,7 @@ func (p *AnthropicProvider) suggestWithoutSearch(ctx context.Context, userInput 
 		return nil, fmt.Errorf("anthropic API error: %w", err)
 	}
 
-	if debug {
+	if req.Debug {
 		fmt.Fprintln(os.Stderr, "=== DEBUG: Anthropic Response ===")
 		for _, block := range message.Content {
 			if block.Type == "tool_use" {
@@ -113,8 +115,7 @@ func (p *AnthropicProvider) suggestWithoutSearch(ctx context.Context, userInput 
 	return p.extractSuggestions(message.Content)
 }
 
-func (p *AnthropicProvider) suggestWithSearch(ctx context.Context, userInput string, shell string, systemContext string, debug bool) ([]CommandSuggestion, error) {
-	// Tool schema for suggest_commands
+func (p *AnthropicProvider) suggestWithSearch(ctx context.Context, req SuggestRequest) ([]CommandSuggestion, error) {
 	inputSchema := anthropic.BetaToolInputSchemaParam{
 		Type: "object",
 		Properties: map[string]interface{}{
@@ -147,7 +148,6 @@ func (p *AnthropicProvider) suggestWithSearch(ctx context.Context, userInput str
 		Required: []string{"suggestions"},
 	}
 
-	// Create suggest_commands tool
 	suggestTool := anthropic.BetaToolUnionParam{
 		OfTool: &anthropic.BetaToolParam{
 			Name:        "suggest_commands",
@@ -156,19 +156,18 @@ func (p *AnthropicProvider) suggestWithSearch(ctx context.Context, userInput str
 		},
 	}
 
-	// Create web search tool
 	webSearchTool := anthropic.BetaToolUnionParam{
 		OfWebSearchTool20250305: &anthropic.BetaWebSearchTool20250305Param{
 			MaxUses: anthropic.Int(3),
 		},
 	}
 
-	systemPrompt := prompt.SystemPrompt(shell, systemContext, true)
-	userPrompt := prompt.UserPrompt(userInput)
+	systemPrompt := prompt.SystemPrompt(req.Shell, req.SystemContext, true)
+	userPrompt := prompt.UserPrompt(req.UserInput)
 
-	if debug {
+	if req.Debug {
 		fmt.Fprintln(os.Stderr, "=== DEBUG: Anthropic Request (with search) ===")
-		fmt.Fprintf(os.Stderr, "Model: %s\n", p.model)
+		fmt.Fprintf(os.Stderr, "Provider: %s\n", p.Name())
 		fmt.Fprintln(os.Stderr, "Tools: web_search, suggest_commands")
 		fmt.Fprintf(os.Stderr, "System:\n%s\n", systemPrompt)
 		fmt.Fprintf(os.Stderr, "User:\n%s\n", userPrompt)
@@ -191,7 +190,7 @@ func (p *AnthropicProvider) suggestWithSearch(ctx context.Context, userInput str
 		return nil, fmt.Errorf("anthropic API error: %w", err)
 	}
 
-	if debug {
+	if req.Debug {
 		fmt.Fprintln(os.Stderr, "=== DEBUG: Anthropic Response (with search) ===")
 		fmt.Fprintf(os.Stderr, "Stop reason: %s\n", message.StopReason)
 		for i, block := range message.Content {
@@ -207,7 +206,6 @@ func (p *AnthropicProvider) suggestWithSearch(ctx context.Context, userInput str
 			case "server_tool_use":
 				fmt.Fprintf(os.Stderr, "  Server Tool: %s (id=%s)\n", block.Name, block.ID)
 			default:
-				// Log raw JSON for unknown types
 				if rawJSON, err := json.Marshal(block); err == nil {
 					fmt.Fprintf(os.Stderr, "  Raw: %s\n", string(rawJSON))
 				}
