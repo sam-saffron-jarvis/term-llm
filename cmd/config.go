@@ -84,6 +84,15 @@ func configShow(cmd *cobra.Command, args []string) error {
 	fmt.Printf("  model: %s\n", cfg.OpenAI.Model)
 	printCredentialStatus("openai", cfg.OpenAI.Credentials, cfg.OpenAI.APIKey, "OPENAI_API_KEY")
 
+	fmt.Printf("\ngemini:\n")
+	fmt.Printf("  model: %s\n", cfg.Gemini.Model)
+	// For gemini-cli, check OAuthCreds instead of APIKey
+	geminiKey := cfg.Gemini.APIKey
+	if cfg.Gemini.Credentials == "gemini-cli" && cfg.Gemini.OAuthCreds != nil {
+		geminiKey = "oauth" // non-empty to indicate success
+	}
+	printCredentialStatus("gemini", cfg.Gemini.Credentials, geminiKey, "GEMINI_API_KEY")
+
 	return nil
 }
 
@@ -100,6 +109,12 @@ func printCredentialStatus(provider, credType, apiKey, envVar string) {
 			fmt.Printf("  credentials: codex [OK]\n")
 		} else {
 			fmt.Printf("  credentials: codex [FAILED - run 'codex login']\n")
+		}
+	case "gemini-cli":
+		if apiKey != "" {
+			fmt.Printf("  credentials: gemini-cli [OK]\n")
+		} else {
+			fmt.Printf("  credentials: gemini-cli [FAILED - run 'gemini' to configure]\n")
 		}
 	default:
 		if apiKey != "" {
@@ -155,7 +170,7 @@ func configPath(cmd *cobra.Command, args []string) error {
 }
 
 func defaultConfigContent() string {
-	return `provider: anthropic  # or "openai"
+	return `provider: anthropic  # or "openai" or "gemini"
 
 # Custom context added to system prompt
 system_context: |
@@ -171,6 +186,12 @@ anthropic:
 openai:
   model: gpt-5.2
   # credentials: api_key (uses OPENAI_API_KEY env var)
+
+gemini:
+  model: gemini-3-flash-preview
+  # credentials: api_key or gemini-cli
+  # - api_key: use GEMINI_API_KEY env var (default)
+  # - gemini-cli: use gemini-cli credentials (if installed)
 `
 }
 

@@ -16,6 +16,7 @@ type Config struct {
 	Ask       AskConfig       `mapstructure:"ask"`
 	Anthropic AnthropicConfig `mapstructure:"anthropic"`
 	OpenAI    OpenAIConfig    `mapstructure:"openai"`
+	Gemini    GeminiConfig    `mapstructure:"gemini"`
 }
 
 type ExecConfig struct {
@@ -40,6 +41,14 @@ type OpenAIConfig struct {
 	AccountID   string // Populated at runtime when using Codex OAuth credentials
 }
 
+type GeminiConfig struct {
+	APIKey      string `mapstructure:"api_key"`
+	Model       string `mapstructure:"model"`
+	Credentials string `mapstructure:"credentials"` // "api_key" (default) or "gemini-cli"
+	// OAuth credentials populated at runtime when using gemini-cli
+	OAuthCreds *credentials.GeminiOAuthCredentials
+}
+
 func Load() (*Config, error) {
 	configDir, err := os.UserConfigDir()
 	if err != nil {
@@ -58,6 +67,7 @@ func Load() (*Config, error) {
 	viper.SetDefault("exec.suggestions", 3)
 	viper.SetDefault("anthropic.model", "claude-sonnet-4-5")
 	viper.SetDefault("openai.model", "gpt-5.2")
+	viper.SetDefault("gemini.model", "gemini-3-flash-preview")
 
 	// Read config file (optional - won't error if missing)
 	if err := viper.ReadInConfig(); err != nil {
@@ -77,6 +87,9 @@ func Load() (*Config, error) {
 	}
 	if err := resolveOpenAICredentials(&cfg.OpenAI); err != nil {
 		return nil, fmt.Errorf("openai credentials: %w", err)
+	}
+	if err := resolveGeminiCredentials(&cfg.Gemini); err != nil {
+		return nil, fmt.Errorf("gemini credentials: %w", err)
 	}
 
 	return &cfg, nil
@@ -116,6 +129,26 @@ func resolveOpenAICredentials(cfg *OpenAIConfig) error {
 		cfg.APIKey = expandEnv(cfg.APIKey)
 		if cfg.APIKey == "" {
 			cfg.APIKey = os.Getenv("OPENAI_API_KEY")
+		}
+	}
+	return nil
+}
+
+// resolveGeminiCredentials resolves Gemini API credentials
+func resolveGeminiCredentials(cfg *GeminiConfig) error {
+	switch cfg.Credentials {
+	case "gemini-cli":
+		// Load OAuth credentials from gemini-cli
+		creds, err := credentials.GetGeminiOAuthCredentials()
+		if err != nil {
+			return err
+		}
+		cfg.OAuthCreds = creds
+	default:
+		// Default: "api_key" - use config value or environment variable
+		cfg.APIKey = expandEnv(cfg.APIKey)
+		if cfg.APIKey == "" {
+			cfg.APIKey = os.Getenv("GEMINI_API_KEY")
 		}
 	}
 	return nil
@@ -189,7 +222,10 @@ anthropic:
 
 openai:
   model: %s
-`, cfg.Provider, cfg.Exec.Suggestions, cfg.Anthropic.Model, cfg.OpenAI.Model)
+
+gemini:
+  model: %s
+`, cfg.Provider, cfg.Exec.Suggestions, cfg.Anthropic.Model, cfg.OpenAI.Model, cfg.Gemini.Model)
 
 	return os.WriteFile(path, []byte(content), 0600)
 }

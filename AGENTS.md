@@ -4,10 +4,12 @@
 - `main.go` is the CLI entry point.
 - `cmd/` holds command wiring and top-level CLI helpers.
 - `internal/config/`, `internal/llm/`, `internal/prompt/`, and `internal/ui/` contain the core implementation.
-- `internal/llm/` has a clean `Provider` interface with three implementations:
+- `internal/llm/` has a clean `Provider` interface with implementations:
   - `anthropic.go` – Anthropic API (Claude)
   - `openai.go` – Standard OpenAI API
   - `codex.go` – ChatGPT backend via Codex OAuth
+  - `gemini.go` – Google Gemini API (consumer API key)
+  - `codeassist.go` – Google Code Assist API (gemini-cli OAuth)
 - `term-llm` is the built binary when compiled locally.
 
 ## Build, Test, and Development Commands
@@ -18,9 +20,11 @@
 
 ## Configuration & Secrets
 - Config lives at `~/.config/term-llm/config.yaml` (or `~/Library/Application Support/term-llm/` on macOS).
-- Set provider keys via environment variables: `ANTHROPIC_API_KEY` or `OPENAI_API_KEY`.
-- Alternatively, use Codex OAuth credentials from `~/.codex/auth.json` (auto-detected if present).
-- For Claude, credentials can be read from the Claude Code keychain.
+- Set provider keys via environment variables: `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, or `GEMINI_API_KEY`.
+- Alternatively, use OAuth credentials from companion CLIs:
+  - Codex OAuth credentials from `~/.codex/auth.json`
+  - Claude Code credentials from system keychain
+  - gemini-cli OAuth credentials from `~/.gemini/oauth_creds.json`
 - Do not commit API keys or local config changes.
 
 ## Coding Style & Naming Conventions

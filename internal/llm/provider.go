@@ -68,6 +68,21 @@ func NewProvider(cfg *config.Config) (Provider, error) {
 		}
 		return NewOpenAIProvider(cfg.OpenAI.APIKey, cfg.OpenAI.Model), nil
 
+	case "gemini":
+		// Use CodeAssistProvider when using gemini-cli OAuth credentials
+		if cfg.Gemini.OAuthCreds != nil {
+			creds := &GeminiOAuthCredentials{
+				AccessToken:  cfg.Gemini.OAuthCreds.AccessToken,
+				RefreshToken: cfg.Gemini.OAuthCreds.RefreshToken,
+				ExpiryDate:   cfg.Gemini.OAuthCreds.ExpiryDate,
+			}
+			return NewCodeAssistProvider(creds, cfg.Gemini.Model), nil
+		}
+		if cfg.Gemini.APIKey == "" {
+			return nil, fmt.Errorf("gemini API key not configured. Set GEMINI_API_KEY or add to config")
+		}
+		return NewGeminiProvider(cfg.Gemini.APIKey, cfg.Gemini.Model, false), nil
+
 	default:
 		return nil, fmt.Errorf("unknown provider: %s", cfg.Provider)
 	}

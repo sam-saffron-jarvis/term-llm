@@ -27,19 +27,22 @@ go build
 
 ## Setup
 
-On first run, term-llm will prompt you to choose a provider (Anthropic or OpenAI).
+On first run, term-llm will prompt you to choose a provider (Anthropic, OpenAI, or Gemini).
 
 ### Option 1: Use existing CLI credentials (recommended)
 
-If you have [Claude Code](https://claude.ai/code) or [Codex](https://github.com/openai/codex) installed and logged in, term-llm can use those credentials:
+If you have [Claude Code](https://claude.ai/code), [Codex](https://github.com/openai/codex), or [gemini-cli](https://github.com/google-gemini/gemini-cli) installed and logged in, term-llm can use those credentials:
 
 ```yaml
 # In ~/.config/term-llm/config.yaml
 anthropic:
-  credentials: claude   # uses Claude Code credentials
+  credentials: claude      # uses Claude Code credentials
 
 openai:
-  credentials: codex    # uses Codex credentials
+  credentials: codex       # uses Codex credentials
+
+gemini:
+  credentials: gemini-cli  # uses gemini-cli OAuth credentials
 ```
 
 ### Option 2: Use API key
@@ -52,6 +55,9 @@ export ANTHROPIC_API_KEY=your-key
 
 # For OpenAI
 export OPENAI_API_KEY=your-key
+
+# For Gemini
+export GEMINI_API_KEY=your-key
 ```
 
 ## Usage
@@ -137,7 +143,7 @@ term-llm config path   # Print config file path
 Config is stored at `~/.config/term-llm/config.yaml`:
 
 ```yaml
-provider: anthropic  # or "openai"
+provider: anthropic  # or "openai" or "gemini"
 
 exec:
   suggestions: 3  # number of command suggestions
@@ -156,6 +162,10 @@ anthropic:
 openai:
   model: gpt-5.2
   credentials: codex  # or "api_key" (default)
+
+gemini:
+  model: gemini-3-flash-preview
+  credentials: gemini-cli  # or "api_key" (default)
 ```
 
 ### Credentials
@@ -167,6 +177,7 @@ Each provider supports a `credentials` field:
 | `api_key` | Use environment variable (default) |
 | `claude` | Use Claude Code credentials (Anthropic) |
 | `codex` | Use Codex CLI credentials (OpenAI) |
+| `gemini-cli` | Use gemini-cli OAuth credentials (Gemini) |
 
 **Claude Code** (`credentials: claude`):
 - **macOS**: System keychain (via `security` command)
@@ -174,6 +185,10 @@ Each provider supports a `credentials` field:
 
 **Codex** (`credentials: codex`):
 - Reads from `~/.codex/auth.json`
+
+**gemini-cli** (`credentials: gemini-cli`):
+- Reads OAuth credentials from `~/.gemini/oauth_creds.json`
+- Uses Google Code Assist API (same backend as gemini-cli)
 
 ### Shell Completions
 
