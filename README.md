@@ -1,6 +1,6 @@
 # term-llm
 
-Translate natural language into shell commands using LLMs.
+Translate natural language into shell commands using LLMs. Generate and edit images with AI.
 
 ```
 $ term-llm exec "find all go files modified today"
@@ -127,7 +127,65 @@ term-llm exec --provider zen "git status"       # use specific provider
 term-llm ask "What is the difference between TCP and UDP?"
 term-llm ask "latest node.js version" -s        # with web search
 term-llm ask --provider zen "explain docker"    # use specific provider
+
+# Generate images
+term-llm image "a sunset over mountains"
+term-llm image "logo design" --provider flux    # use specific provider
+term-llm image "make it purple" -i photo.png    # edit existing image
 ```
+
+## Image Generation
+
+Generate and edit images using AI models from Gemini, OpenAI, or Flux (Black Forest Labs).
+
+```bash
+term-llm image "a robot cat on a rainbow"
+```
+
+By default, images are:
+- Saved to `~/Pictures/term-llm/` with timestamped filenames
+- Displayed in terminal via `icat` (if available)
+- Copied to clipboard (actual image data, paste-able in apps)
+
+### Image Flags
+
+| Flag | Short | Description |
+|------|-------|-------------|
+| `--input` | `-i` | Input image to edit |
+| `--provider` | | Override provider (gemini, openai, flux) |
+| `--output` | `-o` | Custom output path |
+| `--no-display` | | Skip terminal display |
+| `--no-clipboard` | | Skip clipboard copy |
+| `--no-save` | | Don't save to default location |
+| `--debug` | `-d` | Show debug information |
+
+### Image Examples
+
+```bash
+# Generate
+term-llm image "cyberpunk cityscape at night"
+term-llm image "minimalist logo" --provider flux
+term-llm image "watercolor painting" -o ./art.png
+
+# Edit existing image
+term-llm image "add a hat" -i photo.png
+term-llm image "make it look vintage" -i input.png --provider gemini
+term-llm image "add sparkles" -i clipboard       # edit from clipboard
+
+# Options
+term-llm image "portrait" --no-clipboard        # don't copy to clipboard
+term-llm image "landscape" --no-display         # don't show in terminal
+```
+
+### Image Providers
+
+| Provider | Model | Environment Variable | Config Key |
+|----------|-------|---------------------|------------|
+| Gemini (default) | gemini-2.5-flash-image | `GEMINI_API_KEY` | `image.gemini.api_key` |
+| OpenAI | gpt-image-1 | `OPENAI_API_KEY` | `image.openai.api_key` |
+| Flux | flux-2-pro / flux-kontext-pro | `BFL_API_KEY` | `image.flux.api_key` |
+
+Image providers use their own credentials, separate from text providers. This allows using different API keys or accounts for text vs image generation.
 
 ## Shell Integration (Recommended)
 
@@ -219,6 +277,22 @@ gemini:
 zen:
   model: glm-4.7-free
   # api_key is optional - leave empty for free tier
+
+image:
+  provider: gemini  # gemini, openai, or flux
+  output_dir: ~/Pictures/term-llm
+
+  gemini:
+    api_key: ${GEMINI_API_KEY}
+    # model: gemini-2.5-flash-image
+
+  openai:
+    api_key: ${OPENAI_API_KEY}
+    # model: gpt-image-1
+
+  flux:
+    api_key: ${BFL_API_KEY}
+    # model: flux-2-pro
 ```
 
 ### Credentials

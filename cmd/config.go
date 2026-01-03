@@ -106,6 +106,19 @@ func configShow(cmd *cobra.Command, args []string) error {
 	fmt.Printf("  model: %s\n", cfg.Zen.Model)
 	printZenCredentialStatus(cfg.Zen.APIKey)
 
+	fmt.Printf("\nimage:\n")
+	fmt.Printf("  provider: %s\n", cfg.Image.Provider)
+	fmt.Printf("  output_dir: %s\n", cfg.Image.OutputDir)
+	fmt.Printf("  gemini:\n")
+	fmt.Printf("    model: %s\n", cfg.Image.Gemini.Model)
+	printImageCredentialStatus("gemini", cfg.Image.Gemini.APIKey, "GEMINI_API_KEY")
+	fmt.Printf("  openai:\n")
+	fmt.Printf("    model: %s\n", cfg.Image.OpenAI.Model)
+	printImageCredentialStatus("openai", cfg.Image.OpenAI.APIKey, "OPENAI_API_KEY")
+	fmt.Printf("  flux:\n")
+	fmt.Printf("    model: %s\n", cfg.Image.Flux.Model)
+	printImageCredentialStatus("flux", cfg.Image.Flux.APIKey, "BFL_API_KEY")
+
 	return nil
 }
 
@@ -145,6 +158,15 @@ func printZenCredentialStatus(apiKey string) {
 		fmt.Printf("  credentials: api_key [set via ZEN_API_KEY]\n")
 	} else {
 		fmt.Printf("  credentials: [free tier - no API key required]\n")
+	}
+}
+
+// printImageCredentialStatus shows credential status for image providers
+func printImageCredentialStatus(provider, apiKey, envVar string) {
+	if apiKey != "" {
+		fmt.Printf("    credentials: api_key [set via %s]\n", envVar)
+	} else {
+		fmt.Printf("    credentials: api_key [NOT SET - export %s]\n", envVar)
 	}
 }
 
@@ -266,6 +288,23 @@ zen:
   # OpenCode Zen - free tier access to GLM 4.7 and other models
   # api_key is optional - leave empty for free tier access
   # Set ZEN_API_KEY env var if you have a paid API key
+
+# Image generation settings
+image:
+  provider: gemini  # gemini, openai, or flux
+  output_dir: ~/Pictures/term-llm
+
+  gemini:
+    model: gemini-2.5-flash-image
+    # api_key: uses GEMINI_API_KEY env var
+
+  openai:
+    model: gpt-image-1
+    # api_key: uses OPENAI_API_KEY env var
+
+  flux:
+    model: flux-2-pro
+    # api_key: uses BFL_API_KEY env var
 `
 }
 

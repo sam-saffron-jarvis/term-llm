@@ -14,6 +14,7 @@ type Config struct {
 	Provider  string          `mapstructure:"provider"`
 	Exec      ExecConfig      `mapstructure:"exec"`
 	Ask       AskConfig       `mapstructure:"ask"`
+	Image     ImageConfig     `mapstructure:"image"`
 	Theme     ThemeConfig     `mapstructure:"theme"`
 	Anthropic AnthropicConfig `mapstructure:"anthropic"`
 	OpenAI    OpenAIConfig    `mapstructure:"openai"`
@@ -72,6 +73,33 @@ type ZenConfig struct {
 	Model  string `mapstructure:"model"`
 }
 
+// ImageConfig configures image generation settings
+type ImageConfig struct {
+	Provider  string            `mapstructure:"provider"`   // default image provider: gemini, openai, flux
+	OutputDir string            `mapstructure:"output_dir"` // default save directory
+	Gemini    ImageGeminiConfig `mapstructure:"gemini"`
+	OpenAI    ImageOpenAIConfig `mapstructure:"openai"`
+	Flux      ImageFluxConfig   `mapstructure:"flux"`
+}
+
+// ImageGeminiConfig configures Gemini image generation
+type ImageGeminiConfig struct {
+	APIKey string `mapstructure:"api_key"`
+	Model  string `mapstructure:"model"`
+}
+
+// ImageOpenAIConfig configures OpenAI image generation
+type ImageOpenAIConfig struct {
+	APIKey string `mapstructure:"api_key"`
+	Model  string `mapstructure:"model"`
+}
+
+// ImageFluxConfig configures Flux (Black Forest Labs) image generation
+type ImageFluxConfig struct {
+	APIKey string `mapstructure:"api_key"`
+	Model  string `mapstructure:"model"` // flux-2-pro for generation, flux-kontext-pro for editing
+}
+
 func Load() (*Config, error) {
 	configPath, err := GetConfigDir()
 	if err != nil {
@@ -90,6 +118,12 @@ func Load() (*Config, error) {
 	viper.SetDefault("openai.model", "gpt-5.2")
 	viper.SetDefault("gemini.model", "gemini-3-flash-preview")
 	viper.SetDefault("zen.model", "glm-4.7-free")
+	// Image defaults
+	viper.SetDefault("image.provider", "gemini")
+	viper.SetDefault("image.output_dir", "~/Pictures/term-llm")
+	viper.SetDefault("image.gemini.model", "gemini-2.5-flash-image")
+	viper.SetDefault("image.openai.model", "gpt-image-1")
+	viper.SetDefault("image.flux.model", "flux-2-pro")
 
 	// Read config file (optional - won't error if missing)
 	if err := viper.ReadInConfig(); err != nil {
@@ -114,6 +148,7 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("gemini credentials: %w", err)
 	}
 	resolveZenCredentials(&cfg.Zen)
+	resolveImageCredentials(&cfg.Image)
 
 	return &cfg, nil
 }
@@ -185,6 +220,27 @@ func resolveZenCredentials(cfg *ZenConfig) {
 		cfg.APIKey = os.Getenv("ZEN_API_KEY")
 	}
 	// Empty API key is valid - Zen offers free tier access
+}
+
+// resolveImageCredentials resolves API credentials for all image providers
+func resolveImageCredentials(cfg *ImageConfig) {
+	// Gemini image credentials
+	cfg.Gemini.APIKey = expandEnv(cfg.Gemini.APIKey)
+	if cfg.Gemini.APIKey == "" {
+		cfg.Gemini.APIKey = os.Getenv("GEMINI_API_KEY")
+	}
+
+	// OpenAI image credentials
+	cfg.OpenAI.APIKey = expandEnv(cfg.OpenAI.APIKey)
+	if cfg.OpenAI.APIKey == "" {
+		cfg.OpenAI.APIKey = os.Getenv("OPENAI_API_KEY")
+	}
+
+	// Flux (BFL) image credentials
+	cfg.Flux.APIKey = expandEnv(cfg.Flux.APIKey)
+	if cfg.Flux.APIKey == "" {
+		cfg.Flux.APIKey = os.Getenv("BFL_API_KEY")
+	}
 }
 
 // expandEnv expands ${VAR} or $VAR in a string
