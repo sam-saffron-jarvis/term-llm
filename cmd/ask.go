@@ -12,6 +12,7 @@ import (
 	"github.com/charmbracelet/glamour/ansi"
 	"github.com/charmbracelet/glamour/styles"
 	"github.com/samsaffron/term-llm/internal/config"
+	"github.com/samsaffron/term-llm/internal/input"
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/ui"
 	"github.com/spf13/cobra"
@@ -23,6 +24,7 @@ var (
 	askSearch   bool
 	askText     bool
 	askProvider string
+	askFiles    []string
 )
 
 var askCmd = &cobra.Command{
@@ -35,7 +37,10 @@ Examples:
   term-llm ask "How do I reverse a string in Go?"
   term-llm ask "What is the latest version of Node.js?" -s
   term-llm ask "Explain the difference between TCP and UDP" -d
-  term-llm ask "List 5 programming languages" --text`,
+  term-llm ask "List 5 programming languages" --text
+  term-llm ask -f code.go "Explain this code"
+  term-llm ask -f clipboard "What is this?"
+  cat error.log | term-llm ask "What went wrong?"`,
 	Args: cobra.MinimumNArgs(1),
 	RunE: runAsk,
 }
@@ -45,6 +50,7 @@ func init() {
 	askCmd.Flags().BoolVarP(&askDebug, "debug", "d", false, "Show debug information")
 	askCmd.Flags().BoolVarP(&askText, "text", "t", false, "Output plain text instead of rendered markdown")
 	askCmd.Flags().StringVar(&askProvider, "provider", "", "Override provider (anthropic, openai, gemini, zen)")
+	askCmd.Flags().StringArrayVarP(&askFiles, "file", "f", nil, "File(s) to include as context (supports globs, 'clipboard')")
 	askCmd.RegisterFlagCompletionFunc("provider", func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 		return []string{"anthropic", "openai", "gemini", "zen"}, cobra.ShellCompDirectiveNoFileComp
 	})
@@ -94,12 +100,29 @@ func runAsk(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	// Read files if provided
+	var files []input.FileContent
+	if len(askFiles) > 0 {
+		files, err = input.ReadFiles(askFiles)
+		if err != nil {
+			return fmt.Errorf("failed to read files: %w", err)
+		}
+	}
+
+	// Read stdin if available
+	stdinContent, err := input.ReadStdin()
+	if err != nil {
+		return fmt.Errorf("failed to read stdin: %w", err)
+	}
+
 	// Build request
 	req := llm.AskRequest{
 		Question:     question,
 		Instructions: cfg.Ask.Instructions,
 		EnableSearch: askSearch,
 		Debug:        askDebug,
+		Files:        files,
+		Stdin:        stdinContent,
 	}
 
 	// Check if we're in a TTY and can use glamour

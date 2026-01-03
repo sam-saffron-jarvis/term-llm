@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"os"
 	"runtime"
+
+	"github.com/samsaffron/term-llm/internal/input"
 )
 
 // SuggestSystemPrompt returns the system prompt for command suggestions
@@ -41,9 +43,18 @@ Rules:
 	return base
 }
 
-// SuggestUserPrompt formats the user's request
-func SuggestUserPrompt(userInput string) string {
-	return fmt.Sprintf("I want to: %s", userInput)
+// SuggestUserPrompt formats the user's request with optional file context
+func SuggestUserPrompt(userInput string, files []input.FileContent, stdin string) string {
+	var result string
+
+	// Add file context if provided
+	fileContext := input.FormatFilesXML(files, stdin)
+	if fileContext != "" {
+		result = fileContext + "\n\n"
+	}
+
+	result += fmt.Sprintf("I want to: %s", userInput)
+	return result
 }
 
 // SuggestSchema returns the JSON schema for structured output

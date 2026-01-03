@@ -54,7 +54,7 @@ func (p *OpenAIProvider) SuggestCommands(ctx context.Context, req SuggestRequest
 	}
 
 	systemPrompt := prompt.SuggestSystemPrompt(req.Shell, req.Instructions, numSuggestions, req.EnableSearch)
-	userPrompt := prompt.SuggestUserPrompt(req.UserInput)
+	userPrompt := prompt.SuggestUserPrompt(req.UserInput, req.Files, req.Stdin)
 
 	if req.Debug {
 		fmt.Fprintln(os.Stderr, "=== DEBUG: OpenAI Request ===")
@@ -125,6 +125,8 @@ func (p *OpenAIProvider) SuggestCommands(ctx context.Context, req SuggestRequest
 func (p *OpenAIProvider) StreamResponse(ctx context.Context, req AskRequest, output chan<- string) error {
 	defer close(output)
 
+	userMessage := prompt.AskUserPrompt(req.Question, req.Files, req.Stdin)
+
 	if req.Debug {
 		fmt.Fprintln(os.Stderr, "=== DEBUG: OpenAI Stream Request ===")
 		fmt.Fprintf(os.Stderr, "Provider: %s\n", p.Name())
@@ -136,7 +138,7 @@ func (p *OpenAIProvider) StreamResponse(ctx context.Context, req AskRequest, out
 	params := responses.ResponseNewParams{
 		Model: shared.ResponsesModel(p.model),
 		Input: responses.ResponseNewParamsInputUnion{
-			OfString: openai.String(req.Question),
+			OfString: openai.String(userMessage),
 		},
 	}
 

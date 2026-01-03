@@ -362,7 +362,7 @@ func (p *CodeAssistProvider) suggestWithSearch(ctx context.Context, req SuggestR
 	systemPrompt := prompt.SuggestSystemPrompt(req.Shell, req.Instructions, numSuggestions, true)
 
 	// Include search results in the user prompt
-	userPrompt := prompt.SuggestUserPrompt(req.UserInput)
+	userPrompt := prompt.SuggestUserPrompt(req.UserInput, req.Files, req.Stdin)
 	if searchContext != "" {
 		userPrompt = fmt.Sprintf("%s\n\n<search_results>\n%s\n</search_results>", userPrompt, searchContext)
 	}
@@ -503,7 +503,7 @@ func (p *CodeAssistProvider) suggestWithoutSearch(ctx context.Context, req Sugge
 	}
 
 	systemPrompt := prompt.SuggestSystemPrompt(req.Shell, req.Instructions, numSuggestions, false)
-	userPrompt := prompt.SuggestUserPrompt(req.UserInput)
+	userPrompt := prompt.SuggestUserPrompt(req.UserInput, req.Files, req.Stdin)
 
 	// Build inner request
 	requestInner := map[string]interface{}{
@@ -637,12 +637,14 @@ func (p *CodeAssistProvider) StreamResponse(ctx context.Context, req AskRequest,
 		return err
 	}
 
+	userMessage := prompt.AskUserPrompt(req.Question, req.Files, req.Stdin)
+
 	requestInner := map[string]interface{}{
 		"contents": []map[string]interface{}{
 			{
 				"role": "user",
 				"parts": []map[string]interface{}{
-					{"text": req.Question},
+					{"text": userMessage},
 				},
 			},
 		},

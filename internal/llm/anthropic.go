@@ -77,7 +77,7 @@ func (p *AnthropicProvider) suggestWithoutSearch(ctx context.Context, req Sugges
 	tool.OfTool.Description = anthropic.String("Suggest shell commands based on user input")
 
 	systemPrompt := prompt.SuggestSystemPrompt(req.Shell, req.Instructions, numSuggestions, false)
-	userPrompt := prompt.SuggestUserPrompt(req.UserInput)
+	userPrompt := prompt.SuggestUserPrompt(req.UserInput, req.Files, req.Stdin)
 
 	if req.Debug {
 		fmt.Fprintln(os.Stderr, "=== DEBUG: Anthropic Request ===")
@@ -173,7 +173,7 @@ func (p *AnthropicProvider) suggestWithSearch(ctx context.Context, req SuggestRe
 	}
 
 	systemPrompt := prompt.SuggestSystemPrompt(req.Shell, req.Instructions, numSuggestions, true)
-	userPrompt := prompt.SuggestUserPrompt(req.UserInput)
+	userPrompt := prompt.SuggestUserPrompt(req.UserInput, req.Files, req.Stdin)
 
 	if req.Debug {
 		fmt.Fprintln(os.Stderr, "=== DEBUG: Anthropic Request (with search) ===")
@@ -271,11 +271,13 @@ func (p *AnthropicProvider) StreamResponse(ctx context.Context, req AskRequest, 
 }
 
 func (p *AnthropicProvider) streamWithoutSearch(ctx context.Context, req AskRequest, output chan<- string) error {
+	userMessage := prompt.AskUserPrompt(req.Question, req.Files, req.Stdin)
+
 	params := anthropic.MessageNewParams{
 		Model:     anthropic.Model(p.model),
 		MaxTokens: 4096,
 		Messages: []anthropic.MessageParam{
-			anthropic.NewUserMessage(anthropic.NewTextBlock(req.Question)),
+			anthropic.NewUserMessage(anthropic.NewTextBlock(userMessage)),
 		},
 	}
 
@@ -303,6 +305,8 @@ func (p *AnthropicProvider) streamWithoutSearch(ctx context.Context, req AskRequ
 }
 
 func (p *AnthropicProvider) streamWithSearch(ctx context.Context, req AskRequest, output chan<- string) error {
+	userMessage := prompt.AskUserPrompt(req.Question, req.Files, req.Stdin)
+
 	webSearchTool := anthropic.BetaToolUnionParam{
 		OfWebSearchTool20250305: &anthropic.BetaWebSearchTool20250305Param{
 			MaxUses: anthropic.Int(5),
@@ -314,7 +318,7 @@ func (p *AnthropicProvider) streamWithSearch(ctx context.Context, req AskRequest
 		MaxTokens: 4096,
 		Betas:     []anthropic.AnthropicBeta{"web-search-2025-03-05"},
 		Messages: []anthropic.BetaMessageParam{
-			anthropic.NewBetaUserMessage(anthropic.NewBetaTextBlock(req.Question)),
+			anthropic.NewBetaUserMessage(anthropic.NewBetaTextBlock(userMessage)),
 		},
 		Tools: []anthropic.BetaToolUnionParam{webSearchTool},
 	}

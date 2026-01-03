@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/samsaffron/term-llm/internal/config"
+	"github.com/samsaffron/term-llm/internal/input"
 )
 
 // CommandSuggestion represents a single command suggestion from the LLM
@@ -37,16 +38,20 @@ type AskRequest struct {
 	Instructions string // Custom system prompt
 	EnableSearch bool
 	Debug        bool
+	Files        []input.FileContent // Files to include as context
+	Stdin        string              // Content piped via stdin
 }
 
 // SuggestRequest contains all parameters for a suggestion request
 type SuggestRequest struct {
 	UserInput      string
 	Shell          string
-	Instructions   string // Custom user instructions/context
-	NumSuggestions int    // Number of suggestions to request (default 3)
+	Instructions   string              // Custom user instructions/context
+	NumSuggestions int                 // Number of suggestions to request (default 3)
 	EnableSearch   bool
 	Debug          bool
+	Files          []input.FileContent // Files to include as context
+	Stdin          string              // Content piped via stdin
 }
 
 // NewProvider creates a new LLM provider based on the config

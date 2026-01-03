@@ -129,7 +129,7 @@ func (p *ZenProvider) SuggestCommands(ctx context.Context, req SuggestRequest) (
 	}
 
 	systemPrompt := prompt.SuggestSystemPrompt(req.Shell, req.Instructions, numSuggestions, req.EnableSearch)
-	userPrompt := prompt.SuggestUserPrompt(req.UserInput)
+	userPrompt := prompt.SuggestUserPrompt(req.UserInput, req.Files, req.Stdin)
 
 	chatReq := zenChatRequest{
 		Model: p.model,
@@ -225,6 +225,8 @@ func (p *ZenProvider) SuggestCommands(ctx context.Context, req SuggestRequest) (
 func (p *ZenProvider) StreamResponse(ctx context.Context, req AskRequest, output chan<- string) error {
 	defer close(output)
 
+	userMessage := prompt.AskUserPrompt(req.Question, req.Files, req.Stdin)
+
 	if req.Debug {
 		fmt.Fprintln(os.Stderr, "=== DEBUG: OpenCode Zen Stream Request ===")
 		fmt.Fprintf(os.Stderr, "Provider: %s\n", p.Name())
@@ -233,13 +235,13 @@ func (p *ZenProvider) StreamResponse(ctx context.Context, req AskRequest, output
 	}
 
 	messages := []zenMessage{
-		{Role: "user", Content: req.Question},
+		{Role: "user", Content: userMessage},
 	}
 
 	if req.Instructions != "" {
 		messages = []zenMessage{
 			{Role: "system", Content: req.Instructions},
-			{Role: "user", Content: req.Question},
+			{Role: "user", Content: userMessage},
 		}
 	}
 

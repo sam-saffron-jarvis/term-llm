@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/samsaffron/term-llm/internal/config"
+	"github.com/samsaffron/term-llm/internal/input"
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/ui"
 	"github.com/spf13/cobra"
@@ -20,6 +21,7 @@ var (
 	execAutoPick  bool
 	execMaxOpts   int
 	execProvider  string
+	execFiles     []string
 )
 
 const (
@@ -43,7 +45,10 @@ Examples:
   term-llm exec "find go files" --auto-pick    # auto-execute best
   term-llm exec "install latest node" -s       # with web search
   term-llm exec "compress folder" -n 5         # show max 5 options
-  term-llm exec "disk usage" -p                # print only, don't execute`,
+  term-llm exec "disk usage" -p                # print only, don't execute
+  term-llm exec -f log.txt "find errors"       # with file context
+  term-llm exec -f clipboard "explain this"    # from clipboard
+  git diff | term-llm exec "commit message"    # from stdin`,
 	Args: cobra.MinimumNArgs(1),
 	RunE: runExec,
 }
@@ -55,6 +60,7 @@ func init() {
 	execCmd.Flags().BoolVarP(&execAutoPick, "auto-pick", "a", false, "Auto-execute the best suggestion without prompting")
 	execCmd.Flags().IntVarP(&execMaxOpts, "max", "n", 0, "Maximum number of options to show (0 = no limit)")
 	execCmd.Flags().StringVar(&execProvider, "provider", "", "Override provider (anthropic, openai, gemini, zen)")
+	execCmd.Flags().StringArrayVarP(&execFiles, "file", "f", nil, "File(s) to include as context (supports globs, 'clipboard')")
 	execCmd.RegisterFlagCompletionFunc("provider", func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 		return []string{"anthropic", "openai", "gemini", "zen"}, cobra.ShellCompDirectiveNoFileComp
 	})
@@ -107,6 +113,22 @@ func runExec(cmd *cobra.Command, args []string) error {
 	// Detect shell
 	shell := detectShell()
 
+	// Read files if provided
+	var files []input.FileContent
+	if len(execFiles) > 0 {
+		var err error
+		files, err = input.ReadFiles(execFiles)
+		if err != nil {
+			return fmt.Errorf("failed to read files: %w", err)
+		}
+	}
+
+	// Read stdin if available
+	stdinContent, err := input.ReadStdin()
+	if err != nil {
+		return fmt.Errorf("failed to read stdin: %w", err)
+	}
+
 	// Determine number of suggestions: use -n flag if set, otherwise config default
 	numSuggestions := cfg.Exec.Suggestions
 	if execMaxOpts > 0 {
@@ -123,6 +145,8 @@ func runExec(cmd *cobra.Command, args []string) error {
 			NumSuggestions: numSuggestions,
 			EnableSearch:   execSearch,
 			Debug:          execDebug,
+			Files:          files,
+			Stdin:          stdinContent,
 		}
 
 		// Get suggestions from LLM with spinner

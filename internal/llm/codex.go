@@ -93,7 +93,7 @@ func (p *CodexProvider) SuggestCommands(ctx context.Context, req SuggestRequest)
 
 	// Combine system context with user prompt (instructions must stay unchanged)
 	systemPrompt := prompt.SuggestSystemPrompt(req.Shell, req.Instructions, numSuggestions, req.EnableSearch)
-	userPrompt := prompt.SuggestUserPrompt(req.UserInput)
+	userPrompt := prompt.SuggestUserPrompt(req.UserInput, req.Files, req.Stdin)
 	combinedPrompt := systemPrompt + "\n\n" + userPrompt
 
 	if req.Debug {
@@ -444,6 +444,8 @@ func (p *CodexProvider) StreamResponse(ctx context.Context, req AskRequest, outp
 		return fmt.Errorf("failed to get Codex instructions: %w", err)
 	}
 
+	userMessage := prompt.AskUserPrompt(req.Question, req.Files, req.Stdin)
+
 	if req.Debug {
 		fmt.Fprintln(os.Stderr, "=== DEBUG: Codex Stream Request ===")
 		fmt.Fprintf(os.Stderr, "Provider: %s\n", p.Name())
@@ -456,7 +458,7 @@ func (p *CodexProvider) StreamResponse(ctx context.Context, req AskRequest, outp
 	reqBody := map[string]interface{}{
 		"model":        p.model,
 		"instructions": codexInstructions,
-		"input":        p.buildInput(req.Question),
+		"input":        p.buildInput(userMessage),
 		"stream":       true,
 		"store":        false,
 	}

@@ -1,6 +1,17 @@
 # term-llm
 
-Translate natural language into shell commands using LLMs. Generate and edit images with AI.
+A Swiss Army Knife for using LLMs in your terminal.
+
+[![Release](https://img.shields.io/github/v/release/samsaffron/term-llm?style=flat-square)](https://github.com/samsaffron/term-llm/releases)
+
+## Features
+
+- **Command suggestions**: Natural language → executable shell commands
+- **Ask questions**: Get answers with optional web search
+- **File context**: Include files, clipboard, or stdin as context (`-f`)
+- **Image generation**: Create and edit images (Gemini, OpenAI, Flux)
+- **Multiple providers**: Anthropic, OpenAI, Gemini, Zen (free tier)
+- **Credential reuse**: Works with Claude Code, Codex, gemini-cli credentials
 
 ```
 $ term-llm exec "find all go files modified today"
@@ -107,6 +118,7 @@ Use arrow keys to select a command, Enter to execute, or press `h` for detailed 
 | Flag | Short | Description |
 |------|-------|-------------|
 | `--provider` | | Override provider (anthropic, openai, gemini, zen) |
+| `--file` | `-f` | File(s) to include as context (supports globs, 'clipboard') |
 | `--auto-pick` | `-a` | Auto-execute the best suggestion without prompting |
 | `--max N` | `-n N` | Limit to N options in the selection UI |
 | `--search` | `-s` | Enable web search for current information |
@@ -123,10 +135,18 @@ term-llm exec "install latest node" -s          # with web search
 term-llm exec "disk usage" -p                   # print only
 term-llm exec --provider zen "git status"       # use specific provider
 
+# With file context
+term-llm exec -f error.log "find the cause"     # analyze a file
+term-llm exec -f "*.go" "run tests for these"   # glob pattern
+git diff | term-llm exec "commit message"       # pipe stdin
+
 # Ask a question
 term-llm ask "What is the difference between TCP and UDP?"
 term-llm ask "latest node.js version" -s        # with web search
 term-llm ask --provider zen "explain docker"    # use specific provider
+term-llm ask -f code.go "explain this code"     # with file context
+term-llm ask -f clipboard "what is this?"       # from clipboard
+cat README.md | term-llm ask "summarize this"   # pipe stdin
 
 # Generate images
 term-llm image "a sunset over mountains"

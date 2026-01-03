@@ -142,7 +142,7 @@ func (p *GeminiProvider) suggestWithSearch(ctx context.Context, req SuggestReque
 	systemPrompt := prompt.SuggestSystemPrompt(req.Shell, req.Instructions, numSuggestions, true)
 
 	// Include search results in the user prompt
-	userPrompt := prompt.SuggestUserPrompt(req.UserInput)
+	userPrompt := prompt.SuggestUserPrompt(req.UserInput, req.Files, req.Stdin)
 	if searchContext != "" {
 		userPrompt = fmt.Sprintf("%s\n\n<search_results>\n%s\n</search_results>", userPrompt, searchContext)
 	}
@@ -231,7 +231,7 @@ func (p *GeminiProvider) suggestWithoutSearch(ctx context.Context, req SuggestRe
 	}
 
 	systemPrompt := prompt.SuggestSystemPrompt(req.Shell, req.Instructions, numSuggestions, false)
-	userPrompt := prompt.SuggestUserPrompt(req.UserInput)
+	userPrompt := prompt.SuggestUserPrompt(req.UserInput, req.Files, req.Stdin)
 
 	config := &genai.GenerateContentConfig{
 		SystemInstruction: genai.NewContentFromText(systemPrompt, genai.RoleUser),
@@ -319,6 +319,8 @@ func (p *GeminiProvider) streamWithoutSearch(ctx context.Context, req AskRequest
 		return fmt.Errorf("failed to create gemini client: %w", err)
 	}
 
+	userMessage := prompt.AskUserPrompt(req.Question, req.Files, req.Stdin)
+
 	config := &genai.GenerateContentConfig{}
 
 	// Add system prompt if instructions provided
@@ -333,7 +335,7 @@ func (p *GeminiProvider) streamWithoutSearch(ctx context.Context, req AskRequest
 		fmt.Fprintln(os.Stderr, "=====================================")
 	}
 
-	for resp, err := range client.Models.GenerateContentStream(ctx, p.model, genai.Text(req.Question), config) {
+	for resp, err := range client.Models.GenerateContentStream(ctx, p.model, genai.Text(userMessage), config) {
 		if err != nil {
 			return fmt.Errorf("gemini streaming error: %w", err)
 		}
@@ -350,6 +352,8 @@ func (p *GeminiProvider) streamWithSearch(ctx context.Context, req AskRequest, o
 	if err != nil {
 		return fmt.Errorf("failed to create gemini client: %w", err)
 	}
+
+	userMessage := prompt.AskUserPrompt(req.Question, req.Files, req.Stdin)
 
 	config := &genai.GenerateContentConfig{
 		Tools: []*genai.Tool{
@@ -370,7 +374,7 @@ func (p *GeminiProvider) streamWithSearch(ctx context.Context, req AskRequest, o
 	}
 
 	var sources []string
-	for resp, err := range client.Models.GenerateContentStream(ctx, p.model, genai.Text(req.Question), config) {
+	for resp, err := range client.Models.GenerateContentStream(ctx, p.model, genai.Text(userMessage), config) {
 		if err != nil {
 			return fmt.Errorf("gemini streaming error: %w", err)
 		}
