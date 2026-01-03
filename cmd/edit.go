@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"regexp"
 	"runtime"
 	"strconv"
@@ -65,6 +66,15 @@ type FileSpec struct {
 	StartLine int // 1-indexed, 0 means from beginning
 	EndLine   int // 1-indexed, 0 means to end
 	HasGuard  bool
+}
+
+// absPath converts a path to absolute, returning the original if conversion fails
+func absPath(path string) string {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return path
+	}
+	return abs
 }
 
 // parseFileSpec parses a file specification like "main.go:11-22"
@@ -171,18 +181,23 @@ func runEdit(cmd *cobra.Command, args []string) error {
 				return fmt.Errorf("failed to read files: %w", err)
 			}
 			for _, ef := range expanded {
+				// Normalize to absolute path for consistent lookups
+				ef.Path = absPath(ef.Path)
 				files = append(files, ef)
 				specs = append(specs, FileSpec{Path: ef.Path})
 			}
 		} else {
-			content, err := os.ReadFile(spec.Path)
+			// Normalize to absolute path for consistent lookups
+			absFilePath := absPath(spec.Path)
+			content, err := os.ReadFile(absFilePath)
 			if err != nil {
 				return fmt.Errorf("failed to read %s: %w", spec.Path, err)
 			}
 			files = append(files, input.FileContent{
-				Path:    spec.Path,
+				Path:    absFilePath,
 				Content: string(content),
 			})
+			spec.Path = absFilePath
 			specs = append(specs, spec)
 		}
 	}
@@ -233,11 +248,13 @@ func processEditsConsolidated(edits []llm.EditToolCall, fileContents map[string]
 	editsByFile := make(map[string]*fileEdits)
 
 	for _, edit := range edits {
-		if _, exists := editsByFile[edit.FilePath]; !exists {
-			fileOrder = append(fileOrder, edit.FilePath)
-			editsByFile[edit.FilePath] = &fileEdits{path: edit.FilePath}
+		// Normalize LLM's path to absolute for consistent lookup
+		normalizedPath := absPath(edit.FilePath)
+		if _, exists := editsByFile[normalizedPath]; !exists {
+			fileOrder = append(fileOrder, normalizedPath)
+			editsByFile[normalizedPath] = &fileEdits{path: normalizedPath}
 		}
-		editsByFile[edit.FilePath].edits = append(editsByFile[edit.FilePath].edits, edit)
+		editsByFile[normalizedPath].edits = append(editsByFile[normalizedPath].edits, edit)
 	}
 
 	// Process each file: apply all edits sequentially to compute final content
@@ -373,6 +390,8 @@ func processEditsIndividually(edits []llm.EditToolCall, fileContents map[string]
 
 	for _, editCall := range edits {
 		pe := processedEdit{edit: editCall}
+		// Normalize LLM's path to absolute for consistent lookup
+		normalizedPath := absPath(editCall.FilePath)
 
 		// Skip no-op edits
 		if editCall.OldString == editCall.NewString {
@@ -382,7 +401,7 @@ func processEditsIndividually(edits []llm.EditToolCall, fileContents map[string]
 			continue
 		}
 
-		content, ok := fileContents[editCall.FilePath]
+		content, ok := fileContents[normalizedPath]
 		if !ok {
 			pe.skip = true
 			pe.skipReason = "file not in context"
@@ -393,7 +412,7 @@ func processEditsIndividually(edits []llm.EditToolCall, fileContents map[string]
 		// Find the matching spec to check for guards
 		var matchSpec *FileSpec
 		for i := range specs {
-			if specs[i].Path == editCall.FilePath {
+			if specs[i].Path == normalizedPath {
 				matchSpec = &specs[i]
 				break
 			}
@@ -453,13 +472,14 @@ func processEditsIndividually(edits []llm.EditToolCall, fileContents map[string]
 			continue
 		}
 
-		if err := os.WriteFile(pe.edit.FilePath, []byte(pe.newContent), 0644); err != nil {
+		writePath := absPath(pe.edit.FilePath)
+		if err := os.WriteFile(writePath, []byte(pe.newContent), 0644); err != nil {
 			fmt.Printf("  error: %s\n", err.Error())
 			skipped++
 			continue
 		}
 
-		fileContents[pe.edit.FilePath] = pe.newContent
+		fileContents[writePath] = pe.newContent
 		applied++
 	}
 
