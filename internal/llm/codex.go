@@ -44,19 +44,25 @@ type CodexProvider struct {
 	accessToken string
 	accountID   string
 	model       string
+	effort      string // reasoning effort: "low", "medium", "high", "xhigh", or ""
 	client      *http.Client
 }
 
 func NewCodexProvider(accessToken, model, accountID string) *CodexProvider {
+	actualModel, effort := parseModelEffort(model)
 	return &CodexProvider{
 		accessToken: accessToken,
 		accountID:   accountID,
-		model:       model,
+		model:       actualModel,
+		effort:      effort,
 		client:      &http.Client{},
 	}
 }
 
 func (p *CodexProvider) Name() string {
+	if p.effort != "" {
+		return fmt.Sprintf("Codex (%s, effort=%s)", p.model, p.effort)
+	}
 	return fmt.Sprintf("Codex (%s)", p.model)
 }
 
@@ -121,6 +127,13 @@ func (p *CodexProvider) SuggestCommands(ctx context.Context, req SuggestRequest)
 		"stream":              true,
 		"store":               false,
 		"include":             []string{},
+	}
+
+	// Add reasoning effort if set
+	if p.effort != "" {
+		reqBody["reasoning"] = map[string]interface{}{
+			"effort": p.effort,
+		}
 	}
 
 	body, err := json.Marshal(reqBody)
@@ -470,6 +483,13 @@ func (p *CodexProvider) StreamResponse(ctx context.Context, req AskRequest, outp
 		}
 	}
 
+	// Add reasoning effort if set
+	if p.effort != "" {
+		reqBody["reasoning"] = map[string]interface{}{
+			"effort": p.effort,
+		}
+	}
+
 	body, err := json.Marshal(reqBody)
 	if err != nil {
 		return fmt.Errorf("failed to marshal request: %w", err)
@@ -543,4 +563,133 @@ func (p *CodexProvider) StreamResponse(ctx context.Context, req AskRequest, outp
 	}
 
 	return nil
+}
+
+// GetEdits calls the LLM with the edit tool and returns all proposed edits
+func (p *CodexProvider) GetEdits(ctx context.Context, systemPrompt, userPrompt string, debug bool) ([]EditToolCall, error) {
+	// Fetch Codex instructions from GitHub (required by ChatGPT backend)
+	codexInstructions, err := p.getCodexInstructions()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get Codex instructions: %w", err)
+	}
+
+	// Build edit tool using centralized schema
+	editTool := map[string]interface{}{
+		"type":        "function",
+		"name":        "edit",
+		"description": prompt.EditDescription,
+		"strict":      true,
+		"parameters":  prompt.EditSchema(),
+	}
+
+	// Combine system and user prompts
+	combinedPrompt := systemPrompt + "\n\n" + userPrompt
+
+	if debug {
+		fmt.Fprintln(os.Stderr, "=== DEBUG: Codex Edit Request ===")
+		fmt.Fprintf(os.Stderr, "System: %s\n", systemPrompt)
+		fmt.Fprintf(os.Stderr, "User: %s\n", userPrompt)
+		fmt.Fprintln(os.Stderr, "=================================")
+	}
+
+	// Build request body
+	reqBody := map[string]interface{}{
+		"model":               p.model,
+		"instructions":        codexInstructions,
+		"input":               p.buildInput(combinedPrompt),
+		"tools":               []interface{}{editTool},
+		"tool_choice":         "auto",
+		"parallel_tool_calls": true,
+		"stream":              true,
+		"store":               false,
+		"include":             []string{},
+	}
+
+	// Add reasoning effort if set
+	if p.effort != "" {
+		reqBody["reasoning"] = map[string]interface{}{
+			"effort": p.effort,
+		}
+	}
+
+	body, err := json.Marshal(reqBody)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal request: %w", err)
+	}
+
+	httpReq, err := http.NewRequestWithContext(ctx, "POST", chatGPTResponsesURL, bytes.NewReader(body))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+
+	// Set required headers
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Authorization", "Bearer "+p.accessToken)
+	httpReq.Header.Set("ChatGPT-Account-ID", p.accountID)
+	httpReq.Header.Set("OpenAI-Beta", "responses=experimental")
+	httpReq.Header.Set("originator", "codex_cli_rs")
+	httpReq.Header.Set("Accept", "text/event-stream")
+
+	resp, err := p.client.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("API error (%d): %s", resp.StatusCode, string(respBody))
+	}
+
+	// Parse SSE response
+	result, err := p.parseSSEResponse(respBody)
+	if err != nil {
+		return nil, err
+	}
+
+	if debug {
+		fmt.Fprintln(os.Stderr, "=== DEBUG: Codex Edit Response ===")
+		fmt.Fprintf(os.Stderr, "Status: %s\n", result.Status)
+		for i, item := range result.Output {
+			fmt.Fprintf(os.Stderr, "Output %d: type=%s", i, item.Type)
+			if item.Name != "" {
+				fmt.Fprintf(os.Stderr, " name=%s", item.Name)
+			}
+			fmt.Fprintln(os.Stderr)
+		}
+		fmt.Fprintln(os.Stderr, "==================================")
+	}
+
+	// Print any text output first
+	for _, item := range result.Output {
+		if item.Type == "message" {
+			for _, c := range item.Content {
+				if c.Type == "output_text" && c.Text != "" {
+					fmt.Println(c.Text)
+				}
+			}
+		}
+	}
+
+	// Collect all edits from function calls
+	var edits []EditToolCall
+	for _, item := range result.Output {
+		if item.Type != "function_call" || item.Name != "edit" {
+			continue
+		}
+
+		var editCall EditToolCall
+		if err := json.Unmarshal([]byte(item.Arguments), &editCall); err != nil {
+			fmt.Fprintf(os.Stderr, "Error parsing edit: %v\n", err)
+			continue
+		}
+
+		edits = append(edits, editCall)
+	}
+
+	return edits, nil
 }

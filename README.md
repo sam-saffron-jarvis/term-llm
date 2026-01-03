@@ -117,7 +117,7 @@ Use arrow keys to select a command, Enter to execute, or press `h` for detailed 
 
 | Flag | Short | Description |
 |------|-------|-------------|
-| `--provider` | | Override provider (anthropic, openai, gemini, zen) |
+| `--provider` | | Override provider, optionally with model (e.g., `openai:gpt-4o`) |
 | `--file` | `-f` | File(s) to include as context (supports globs, 'clipboard') |
 | `--auto-pick` | `-a` | Auto-execute the best suggestion without prompting |
 | `--max N` | `-n N` | Limit to N options in the selection UI |
@@ -134,6 +134,9 @@ term-llm exec "find large files" -n 3           # show max 3 options
 term-llm exec "install latest node" -s          # with web search
 term-llm exec "disk usage" -p                   # print only
 term-llm exec --provider zen "git status"       # use specific provider
+term-llm exec --provider openai:gpt-4o "list"   # provider with specific model
+term-llm ask --provider openai:gpt-5.2-xhigh "complex question"  # max reasoning
+term-llm exec --provider openai:gpt-5.2-low "quick task"         # faster/cheaper
 
 # With file context
 term-llm exec -f error.log "find the cause"     # analyze a file
@@ -165,7 +168,7 @@ term-llm image "a robot cat on a rainbow"
 By default, images are:
 - Saved to `~/Pictures/term-llm/` with timestamped filenames
 - Displayed in terminal via `icat` (if available)
-- Copied to clipboard (actual image data, paste-able in apps)
+- Copied to clipboard (actual image data, pasteable in apps)
 
 ### Image Flags
 
@@ -274,13 +277,21 @@ provider: anthropic  # anthropic, openai, gemini, or zen
 
 exec:
   suggestions: 3  # number of command suggestions
+  # provider: openai    # override provider for exec only
+  # model: gpt-4o       # override model for exec only
   instructions: |
     I use Arch Linux with zsh.
     I prefer ripgrep over grep, fd over find.
 
 ask:
+  # provider: anthropic
+  # model: claude-opus-4  # use a smarter model for questions
   instructions: |
     Be concise. I'm an experienced developer.
+
+edit:
+  # provider: anthropic
+  # model: claude-opus-4  # use a smarter model for code edits
 
 anthropic:
   model: claude-sonnet-4-5
@@ -314,6 +325,68 @@ image:
     api_key: ${BFL_API_KEY}
     # model: flux-2-pro
 ```
+
+### Per-Command Provider/Model
+
+Each command (exec, ask, edit) can have its own provider and model, overriding the global default:
+
+```yaml
+provider: anthropic  # global default
+
+exec:
+  provider: zen       # exec uses Zen (free)
+  model: glm-4.7-free
+
+ask:
+  model: claude-opus-4  # ask uses global provider with a smarter model
+
+edit:
+  provider: openai
+  model: gpt-4o       # edit uses OpenAI
+```
+
+**Precedence** (highest to lowest):
+1. CLI flag: `--provider openai:gpt-4o`
+2. Per-command config: `exec.provider` / `exec.model`
+3. Global config: `provider` + `<provider>.model`
+
+### Reasoning Effort (OpenAI)
+
+For OpenAI models, you can control reasoning effort by appending `-low`, `-medium`, `-high`, or `-xhigh` to the model name:
+
+```bash
+term-llm ask --provider openai:gpt-5.2-xhigh "complex question"  # max reasoning
+term-llm exec --provider openai:gpt-5.2-low "quick task"         # faster/cheaper
+```
+
+Or in config:
+```yaml
+openai:
+  model: gpt-5.2-high  # effort parsed from suffix
+```
+
+| Effort | Description |
+|--------|-------------|
+| `low` | Faster, cheaper, less thorough |
+| `medium` | Balanced (default if not specified) |
+| `high` | More thorough reasoning |
+| `xhigh` | Maximum reasoning (only on gpt-5.2) |
+
+### Extended Thinking (Anthropic)
+
+For Anthropic models, you can enable extended thinking by appending `-thinking` to the model name:
+
+```bash
+term-llm ask --provider anthropic:claude-sonnet-4-5-thinking "complex question"
+```
+
+Or in config:
+```yaml
+anthropic:
+  model: claude-sonnet-4-5-thinking  # enables 10k token thinking budget
+```
+
+Extended thinking allows Claude to reason through complex problems before responding. The thinking process uses ~10,000 tokens and is not shown in the output.
 
 ### Credentials
 

@@ -3,25 +3,23 @@ package ui
 import (
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"golang.org/x/term"
 )
 
-const (
-	diffPrefixWidth = 6 // "1234- " or "1234+ " or "1234  "
-)
-
 // getMaxContentWidth returns the max content width for diff lines based on terminal width
 // Prefers 100, but falls back to 80 or 60 for narrow terminals
-func getMaxContentWidth() int {
+func getMaxContentWidth(prefixWidth int) int {
 	width, _, err := term.GetSize(int(os.Stdout.Fd()))
 	if err != nil || width <= 0 {
 		width = 80 // fallback
 	}
 
 	// Available width for content after prefix
-	available := width - diffPrefixWidth
+	available := width - prefixWidth
 
 	// Prefer 100, but use 80 or 60 for narrow terminals
 	switch {
@@ -36,10 +34,29 @@ func getMaxContentWidth() int {
 	}
 }
 
-// wrapLine wraps a line to maxWidth, returning multiple lines
-// Continuation lines are indented with 2 spaces
-func wrapLine(line string, maxWidth int) []string {
-	if maxWidth <= 0 || len(line) <= maxWidth {
+func diffPrefixWidths(oldLines, newLines []string) (lineNumWidth int, prefixWidth int) {
+	maxLine := len(oldLines)
+	if len(newLines) > maxLine {
+		maxLine = len(newLines)
+	}
+	if maxLine < 1 {
+		maxLine = 1
+	}
+	lineNumWidth = len(strconv.Itoa(maxLine))
+	if lineNumWidth < 1 {
+		lineNumWidth = 1
+	}
+	prefixWidth = lineNumWidth + 2 // marker + trailing space
+	return lineNumWidth, prefixWidth
+}
+
+// wrapLine wraps a line to maxWidth, returning multiple lines.
+// Continuation lines are indented with 2 spaces.
+// startCol is the column where the line begins (used for tab alignment).
+// This version is ANSI-aware and handles escape codes properly.
+func wrapLine(line string, maxWidth int, startCol int) []string {
+	displayLen := ANSILen(line)
+	if maxWidth <= 0 || displayLen <= maxWidth {
 		return []string{line}
 	}
 
@@ -47,7 +64,7 @@ func wrapLine(line string, maxWidth int) []string {
 	remaining := line
 	first := true
 
-	for len(remaining) > 0 {
+	for ANSILen(remaining) > 0 {
 		width := maxWidth
 		if !first {
 			width = maxWidth - 2 // account for continuation indent
@@ -56,7 +73,7 @@ func wrapLine(line string, maxWidth int) []string {
 			width = 10 // minimum
 		}
 
-		if len(remaining) <= width {
+		if ansiDisplayWidth(remaining, startCol) <= width {
 			if first {
 				result = append(result, remaining)
 			} else {
@@ -65,27 +82,90 @@ func wrapLine(line string, maxWidth int) []string {
 			break
 		}
 
-		// Find a good break point (prefer space/punctuation)
-		breakAt := width
-		for i := width - 1; i > width/2; i-- {
-			if remaining[i] == ' ' || remaining[i] == ',' || remaining[i] == ';' ||
-				remaining[i] == '.' || remaining[i] == ')' || remaining[i] == '}' {
-				breakAt = i + 1
-				break
-			}
-		}
+		// Split at display width, preferring word boundaries
+		segment, rest := splitAtDisplayWidthPreferBreak(remaining, width, startCol)
 
 		if first {
-			result = append(result, remaining[:breakAt])
+			result = append(result, segment)
 		} else {
-			result = append(result, "  "+remaining[:breakAt])
+			result = append(result, "  "+segment)
 		}
-		remaining = remaining[breakAt:]
+		remaining = rest
 		first = false
+
+		if rest == "" {
+			break
+		}
 	}
 
 	return result
 }
+
+// splitAtDisplayWidthPreferBreak splits a string at approximately the given display width,
+// preferring to break at word boundaries (space, punctuation)
+// preserving ANSI sequences intact, using startCol for tab alignment.
+func splitAtDisplayWidthPreferBreak(s string, width int, startCol int) (before, after string) {
+	inEscape := false
+	col := startCol
+	lastBreakDisplay := -1
+	lastBreakByte := -1
+
+	for i := 0; i < len(s); {
+		c := s[i]
+		if c == '\x1b' {
+			inEscape = true
+			i++
+			continue
+		}
+		if inEscape {
+			if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') {
+				inEscape = false
+			}
+			i++
+			continue
+		}
+
+		r, size := utf8.DecodeRuneInString(s[i:])
+		if r == utf8.RuneError && size == 1 {
+			r = rune(c)
+			size = 1
+		}
+
+		// Check if this is a break character
+		isBreak := r == ' ' || r == ',' || r == ';' || r == '.' || r == ')' || r == '}'
+
+		col = advanceColumn(col, r)
+		displayPos := col - startCol
+		byteEnd := i + size
+
+		if isBreak && displayPos <= width {
+			lastBreakDisplay = displayPos
+			lastBreakByte = byteEnd
+		}
+
+		if displayPos >= width {
+			// We've hit the width limit
+			// Prefer breaking at last break point if it's in the second half
+			if lastBreakByte > 0 && lastBreakDisplay > width/2 {
+				return s[:lastBreakByte], s[lastBreakByte:]
+			}
+			// No good break point, hard break at width
+			return s[:byteEnd], s[byteEnd:]
+		}
+
+		i += size
+	}
+
+	return s, ""
+}
+
+// Background colors for diff lines (RGB values for true color)
+// These are very subtle tints - almost black with a slight color hint
+var (
+	diffAddBg    = [3]int{26, 47, 26} // dark green tint #1a2f1a
+	diffRemoveBg = [3]int{47, 26, 26} // dark red tint #2f1a1a
+	diffNoBg     = [3]int{-1, -1, -1} // sentinel for no background (context lines)
+)
 
 // PrintCompactDiff prints a compact diff with 2 lines of context and line numbers
 // padWidth specifies the total line width for consistent backgrounds across diffs
@@ -94,6 +174,9 @@ func PrintCompactDiff(filePath, oldContent, newContent string, padWidth int) {
 
 	oldLines := strings.Split(oldContent, "\n")
 	newLines := strings.Split(newContent, "\n")
+
+	// Create highlighter based on file extension
+	highlighter := NewHighlighter(filePath)
 
 	// Find all changed regions
 	changes := computeChanges(oldLines, newLines)
@@ -107,34 +190,90 @@ func PrintCompactDiff(filePath, oldContent, newContent string, padWidth int) {
 
 	const contextLines = 2
 
+	lineNumWidth, prefixWidth := diffPrefixWidths(oldLines, newLines)
+
 	// Get max content width based on terminal
-	maxContentWidth := getMaxContentWidth()
+	maxContentWidth := getMaxContentWidth(prefixWidth)
 
 	// Cap padWidth to maxContentWidth + prefix
-	maxPadWidth := maxContentWidth + diffPrefixWidth
-	if padWidth > maxPadWidth {
+	maxPadWidth := maxContentWidth + prefixWidth
+	if padWidth <= 0 || padWidth > maxPadWidth {
 		padWidth = maxPadWidth
 	}
+	contentWidth := padWidth - prefixWidth
+	if contentWidth < 1 {
+		contentWidth = maxContentWidth
+		padWidth = contentWidth + prefixWidth
+	}
 
+	// padLine pads a string to padWidth, accounting for ANSI codes
 	padLine := func(s string) string {
-		if len(s) < padWidth {
-			return s + strings.Repeat(" ", padWidth-len(s)) + " "
+		displayLen := ANSILen(s)
+		if displayLen < padWidth {
+			return s + strings.Repeat(" ", padWidth-displayLen) + " "
 		}
 		return s + " "
 	}
 
-	// printWrapped prints a line with wrapping, applying style to each wrapped segment
-	printWrapped := func(lineNum int, marker string, content string, style func(...string) string) {
-		wrapped := wrapLine(content, maxContentWidth)
-		for i, segment := range wrapped {
-			var formatted string
-			if i == 0 {
-				formatted = fmt.Sprintf("%4d%s %s", lineNum, marker, segment)
-			} else {
-				// Continuation: no line number, keep marker column aligned
-				formatted = fmt.Sprintf("    %s %s", marker, segment)
+	// hasBg checks if background should be applied
+	hasBg := func(bg [3]int) bool {
+		return bg[0] >= 0
+	}
+
+	// bgCode generates ANSI true color background escape sequence
+	bgCode := func(bg [3]int) string {
+		if !hasBg(bg) {
+			return ""
+		}
+		return fmt.Sprintf("\x1b[48;2;%d;%d;%dm", bg[0], bg[1], bg[2])
+	}
+
+	// highlightLine applies syntax highlighting with optional background
+	highlightLine := func(line string, bg [3]int) string {
+		if highlighter != nil {
+			if hasBg(bg) {
+				return highlighter.HighlightLineWithBg(line, bg)
 			}
-			fmt.Println(style(padLine(formatted)))
+			return highlighter.HighlightLine(line)
+		}
+		// No syntax highlighting
+		if hasBg(bg) {
+			return fmt.Sprintf("%s%s\x1b[0m", bgCode(bg), line)
+		}
+		return line
+	}
+
+	// printWrapped prints a line with wrapping and syntax highlighting
+	printWrapped := func(lineNum int, marker, content string, bg [3]int) {
+		highlighted := highlightLine(content, bg)
+		wrapped := wrapLine(highlighted, contentWidth, prefixWidth)
+		// Color for line number and marker based on diff type
+		var prefixColor string
+		switch marker {
+		case "+":
+			prefixColor = "\x1b[38;2;80;160;80m" // green for additions
+		case "-":
+			prefixColor = "\x1b[38;2;160;80;80m" // red for removals
+		default:
+			prefixColor = "\x1b[38;2;100;100;100m" // grey for context
+		}
+		useBg := hasBg(bg)
+		for i, segment := range wrapped {
+			var prefix string
+			if i == 0 {
+				prefix = fmt.Sprintf("%s%s%*d%s ", bgCode(bg), prefixColor, lineNumWidth, lineNum, marker)
+			} else {
+				prefix = fmt.Sprintf("%s%s%s%s ", bgCode(bg), prefixColor, strings.Repeat(" ", lineNumWidth), marker)
+			}
+			line := prefix + segment
+			// Only pad with background for changed lines
+			if useBg {
+				displayLen := ANSILen(line)
+				if displayLen < padWidth {
+					line = line + bgCode(bg) + strings.Repeat(" ", padWidth-displayLen)
+				}
+			}
+			fmt.Println(line + "\x1b[0m")
 		}
 	}
 
@@ -163,7 +302,7 @@ func PrintCompactDiff(filePath, oldContent, newContent string, padWidth int) {
 		// Print context before (skip if already printed by previous hunk)
 		for j := ctxStart; j < ch.oldStart; j++ {
 			if j > lastPrintedOld && j < len(oldLines) {
-				printWrapped(j+1, " ", oldLines[j], styles.DiffContext.Render)
+				printWrapped(j+1, " ", oldLines[j], diffNoBg)
 				lastPrintedOld = j
 			}
 		}
@@ -171,7 +310,7 @@ func PrintCompactDiff(filePath, oldContent, newContent string, padWidth int) {
 		// Print removed lines
 		for j := ch.oldStart; j < ch.oldStart+ch.oldCount; j++ {
 			if j < len(oldLines) {
-				printWrapped(j+1, "-", oldLines[j], styles.DiffRemove.Render)
+				printWrapped(j+1, "-", oldLines[j], diffRemoveBg)
 				lastPrintedOld = j
 			}
 		}
@@ -179,14 +318,14 @@ func PrintCompactDiff(filePath, oldContent, newContent string, padWidth int) {
 		// Print added lines
 		for j := ch.newStart; j < ch.newStart+ch.newCount; j++ {
 			if j < len(newLines) {
-				printWrapped(j+1, "+", newLines[j], styles.DiffAdd.Render)
+				printWrapped(j+1, "+", newLines[j], diffAddBg)
 			}
 		}
 
 		// Print context after
 		for j := ch.oldStart + ch.oldCount; j < ctxEnd; j++ {
 			if j > lastPrintedOld && j < len(oldLines) {
-				printWrapped(j+1, " ", oldLines[j], styles.DiffContext.Render)
+				printWrapped(j+1, " ", oldLines[j], diffNoBg)
 				lastPrintedOld = j
 			}
 		}
@@ -202,6 +341,7 @@ func CalcDiffWidth(oldContent, newContent string) int {
 
 	const contextLines = 2
 	maxLen := 0
+	_, prefixWidth := diffPrefixWidths(oldLines, newLines)
 
 	for _, ch := range changes {
 		start := ch.oldStart - contextLines
@@ -213,25 +353,29 @@ func CalcDiffWidth(oldContent, newContent string) int {
 			end = len(oldLines)
 		}
 		for i := start; i < end; i++ {
-			if len(oldLines[i]) > maxLen {
-				maxLen = len(oldLines[i])
+			lineWidth := ansiDisplayWidth(oldLines[i], prefixWidth)
+			if lineWidth > maxLen {
+				maxLen = lineWidth
 			}
 		}
 		for i := ch.newStart; i < ch.newStart+ch.newCount; i++ {
-			if i < len(newLines) && len(newLines[i]) > maxLen {
-				maxLen = len(newLines[i])
+			if i < len(newLines) {
+				lineWidth := ansiDisplayWidth(newLines[i], prefixWidth)
+				if lineWidth > maxLen {
+					maxLen = lineWidth
+				}
 			}
 		}
 	}
 
 	// Cap to terminal-aware max content width
-	maxContentWidth := getMaxContentWidth()
+	maxContentWidth := getMaxContentWidth(prefixWidth)
 	if maxLen > maxContentWidth {
 		maxLen = maxContentWidth
 	}
 
-	// Add prefix width (line number + marker + space = 6 chars)
-	return maxLen + diffPrefixWidth
+	// Add prefix width (line number + marker + space)
+	return maxLen + prefixWidth
 }
 
 type change struct {

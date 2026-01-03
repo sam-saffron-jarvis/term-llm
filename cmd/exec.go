@@ -59,7 +59,7 @@ func init() {
 	execCmd.Flags().BoolVarP(&execDebug, "debug", "d", false, "Show full LLM request and response")
 	execCmd.Flags().BoolVarP(&execAutoPick, "auto-pick", "a", false, "Auto-execute the best suggestion without prompting")
 	execCmd.Flags().IntVarP(&execMaxOpts, "max", "n", 0, "Maximum number of options to show (0 = no limit)")
-	execCmd.Flags().StringVar(&execProvider, "provider", "", "Override provider (anthropic, openai, gemini, zen)")
+	execCmd.Flags().StringVar(&execProvider, "provider", "", "Override provider, optionally with model (e.g., openai:gpt-4o)")
 	execCmd.Flags().StringArrayVarP(&execFiles, "file", "f", nil, "File(s) to include as context (supports globs, 'clipboard')")
 	execCmd.RegisterFlagCompletionFunc("provider", func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 		return []string{"anthropic", "openai", "gemini", "zen"}, cobra.ShellCompDirectiveNoFileComp
@@ -87,9 +87,16 @@ func runExec(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	// Override provider if flag is set
+	// Apply per-command config overrides
+	cfg.ApplyOverrides(cfg.Exec.Provider, cfg.Exec.Model)
+
+	// CLI flag takes precedence (supports provider:model syntax)
 	if execProvider != "" {
-		cfg.Provider = execProvider
+		provider, model, err := llm.ParseProviderModel(execProvider)
+		if err != nil {
+			return err
+		}
+		cfg.ApplyOverrides(provider, model)
 	}
 
 	// Initialize theme from config

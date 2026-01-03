@@ -244,6 +244,8 @@ provider: anthropic  # anthropic, openai, gemini, or zen
 # exec command settings
 exec:
   suggestions: 3  # number of command suggestions to show
+  # provider: anthropic    # override provider for exec only
+  # model: claude-opus-4   # override model for exec only
   # instructions: |
   #   Custom context for command suggestions, e.g.:
   #   - I use macOS with zsh
@@ -252,10 +254,17 @@ exec:
 
 # ask command settings
 ask:
+  # provider: openai       # override provider for ask only
+  # model: gpt-4o          # override model for ask only
   # instructions: |
   #   Custom system prompt for ask command, e.g.:
   #   - Be concise, I'm an experienced developer
   #   - Prefer practical examples over theory
+
+# edit command settings
+edit:
+  # provider: anthropic    # override provider for edit only
+  # model: claude-opus-4   # override model for edit only
 
 # UI theme colors (ANSI 0-255 or hex #RRGGBB)
 # theme:

@@ -49,7 +49,7 @@ func init() {
 	askCmd.Flags().BoolVarP(&askSearch, "search", "s", false, "Enable web search for current information")
 	askCmd.Flags().BoolVarP(&askDebug, "debug", "d", false, "Show debug information")
 	askCmd.Flags().BoolVarP(&askText, "text", "t", false, "Output plain text instead of rendered markdown")
-	askCmd.Flags().StringVar(&askProvider, "provider", "", "Override provider (anthropic, openai, gemini, zen)")
+	askCmd.Flags().StringVar(&askProvider, "provider", "", "Override provider, optionally with model (e.g., openai:gpt-4o)")
 	askCmd.Flags().StringArrayVarP(&askFiles, "file", "f", nil, "File(s) to include as context (supports globs, 'clipboard')")
 	askCmd.RegisterFlagCompletionFunc("provider", func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 		return []string{"anthropic", "openai", "gemini", "zen"}, cobra.ShellCompDirectiveNoFileComp
@@ -77,9 +77,16 @@ func runAsk(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	// Override provider if flag is set
+	// Apply per-command config overrides
+	cfg.ApplyOverrides(cfg.Ask.Provider, cfg.Ask.Model)
+
+	// CLI flag takes precedence (supports provider:model syntax)
 	if askProvider != "" {
-		cfg.Provider = askProvider
+		provider, model, err := llm.ParseProviderModel(askProvider)
+		if err != nil {
+			return err
+		}
+		cfg.ApplyOverrides(provider, model)
 	}
 
 	// Initialize theme from config

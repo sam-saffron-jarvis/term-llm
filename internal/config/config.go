@@ -37,15 +37,21 @@ type ThemeConfig struct {
 }
 
 type ExecConfig struct {
+	Provider     string `mapstructure:"provider"`     // Override provider for exec
+	Model        string `mapstructure:"model"`        // Override model for exec
 	Suggestions  int    `mapstructure:"suggestions"`  // Number of command suggestions (default 3)
 	Instructions string `mapstructure:"instructions"` // Custom context for suggestions
 }
 
 type AskConfig struct {
+	Provider     string `mapstructure:"provider"`     // Override provider for ask
+	Model        string `mapstructure:"model"`        // Override model for ask
 	Instructions string `mapstructure:"instructions"` // Custom system prompt for ask
 }
 
 type EditConfig struct {
+	Provider        string `mapstructure:"provider"`          // Override provider for edit
+	Model           string `mapstructure:"model"`             // Override model for edit
 	Instructions    string `mapstructure:"instructions"`      // Custom instructions for edits
 	ShowLineNumbers bool   `mapstructure:"show_line_numbers"` // Show line numbers in diff
 	ContextLines    int    `mapstructure:"context_lines"`     // Lines of context in diff
@@ -122,6 +128,8 @@ func Load() (*Config, error) {
 	// Set defaults
 	viper.SetDefault("provider", "anthropic")
 	viper.SetDefault("exec.suggestions", 3)
+	viper.SetDefault("edit.provider", "openai")
+	viper.SetDefault("edit.model", "gpt-5.2-codex-medium")
 	viper.SetDefault("edit.show_line_numbers", true)
 	viper.SetDefault("edit.context_lines", 3)
 	viper.SetDefault("anthropic.model", "claude-sonnet-4-5")
@@ -161,6 +169,27 @@ func Load() (*Config, error) {
 	resolveImageCredentials(&cfg.Image)
 
 	return &cfg, nil
+}
+
+// ApplyOverrides applies provider and model overrides to the config.
+// If provider is non-empty, it overrides the global provider.
+// If model is non-empty, it overrides the model for the active provider.
+func (c *Config) ApplyOverrides(provider, model string) {
+	if provider != "" {
+		c.Provider = provider
+	}
+	if model != "" {
+		switch c.Provider {
+		case "anthropic":
+			c.Anthropic.Model = model
+		case "openai":
+			c.OpenAI.Model = model
+		case "gemini":
+			c.Gemini.Model = model
+		case "zen":
+			c.Zen.Model = model
+		}
+	}
 }
 
 // resolveAnthropicCredentials resolves Anthropic API credentials

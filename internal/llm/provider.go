@@ -3,6 +3,7 @@ package llm
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/input"
@@ -64,6 +65,24 @@ type EditToolCall struct {
 // EditToolProvider is an optional interface for providers that support the edit tool
 type EditToolProvider interface {
 	GetEdits(ctx context.Context, systemPrompt, userPrompt string, debug bool) ([]EditToolCall, error)
+}
+
+// ParseProviderModel parses "provider:model" or just "provider" from a flag value.
+// Returns (provider, model, error). Model will be empty if not specified.
+func ParseProviderModel(s string) (string, string, error) {
+	parts := strings.SplitN(s, ":", 2)
+	provider := parts[0]
+	model := ""
+	if len(parts) == 2 {
+		model = parts[1]
+	}
+	// Validate provider name
+	switch provider {
+	case "anthropic", "openai", "gemini", "zen":
+		return provider, model, nil
+	default:
+		return "", "", fmt.Errorf("unknown provider: %s (valid: anthropic, openai, gemini, zen)", provider)
+	}
 }
 
 // NewProvider creates a new LLM provider based on the config

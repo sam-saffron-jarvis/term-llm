@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/samsaffron/term-llm/internal/prompt"
@@ -12,19 +13,35 @@ import (
 
 // AnthropicProvider implements Provider using the Anthropic API
 type AnthropicProvider struct {
-	client *anthropic.Client
-	model  string
+	client         *anthropic.Client
+	model          string
+	thinkingBudget int64 // 0 = disabled, >0 = enabled with budget
+}
+
+// parseModelThinking extracts -thinking suffix from model name
+// "claude-sonnet-4-5-thinking" -> ("claude-sonnet-4-5", 10000)
+// "claude-sonnet-4-5" -> ("claude-sonnet-4-5", 0)
+func parseModelThinking(model string) (string, int64) {
+	if strings.HasSuffix(model, "-thinking") {
+		return strings.TrimSuffix(model, "-thinking"), 10000
+	}
+	return model, 0
 }
 
 func NewAnthropicProvider(apiKey, model string) *AnthropicProvider {
+	actualModel, thinkingBudget := parseModelThinking(model)
 	client := anthropic.NewClient()
 	return &AnthropicProvider{
-		client: &client,
-		model:  model,
+		client:         &client,
+		model:          actualModel,
+		thinkingBudget: thinkingBudget,
 	}
 }
 
 func (p *AnthropicProvider) Name() string {
+	if p.thinkingBudget > 0 {
+		return fmt.Sprintf("Anthropic (%s, thinking=%dk)", p.model, p.thinkingBudget/1000)
+	}
 	return fmt.Sprintf("Anthropic (%s)", p.model)
 }
 
@@ -88,7 +105,7 @@ func (p *AnthropicProvider) suggestWithoutSearch(ctx context.Context, req Sugges
 		fmt.Fprintln(os.Stderr, "================================")
 	}
 
-	message, err := p.client.Messages.New(ctx, anthropic.MessageNewParams{
+	params := anthropic.MessageNewParams{
 		Model:     anthropic.Model(p.model),
 		MaxTokens: 1024,
 		System: []anthropic.TextBlockParam{
@@ -99,7 +116,19 @@ func (p *AnthropicProvider) suggestWithoutSearch(ctx context.Context, req Sugges
 		},
 		Tools:      []anthropic.ToolUnionParam{tool},
 		ToolChoice: anthropic.ToolChoiceParamOfTool("suggest_commands"),
-	})
+	}
+
+	// Add extended thinking if enabled
+	if p.thinkingBudget > 0 {
+		params.MaxTokens = 16000
+		params.Thinking = anthropic.ThinkingConfigParamUnion{
+			OfEnabled: &anthropic.ThinkingConfigEnabledParam{
+				BudgetTokens: p.thinkingBudget,
+			},
+		}
+	}
+
+	message, err := p.client.Messages.New(ctx, params)
 	if err != nil {
 		return nil, fmt.Errorf("anthropic API error: %w", err)
 	}
@@ -184,7 +213,7 @@ func (p *AnthropicProvider) suggestWithSearch(ctx context.Context, req SuggestRe
 		fmt.Fprintln(os.Stderr, "===============================================")
 	}
 
-	message, err := p.client.Beta.Messages.New(ctx, anthropic.BetaMessageNewParams{
+	params := anthropic.BetaMessageNewParams{
 		Model:     anthropic.Model(p.model),
 		MaxTokens: 4096,
 		Betas:     []anthropic.AnthropicBeta{"web-search-2025-03-05"},
@@ -195,7 +224,19 @@ func (p *AnthropicProvider) suggestWithSearch(ctx context.Context, req SuggestRe
 			anthropic.NewBetaUserMessage(anthropic.NewBetaTextBlock(userPrompt)),
 		},
 		Tools: []anthropic.BetaToolUnionParam{webSearchTool, suggestTool},
-	})
+	}
+
+	// Add extended thinking if enabled
+	if p.thinkingBudget > 0 {
+		params.MaxTokens = 16000
+		params.Thinking = anthropic.BetaThinkingConfigParamUnion{
+			OfEnabled: &anthropic.BetaThinkingConfigEnabledParam{
+				BudgetTokens: p.thinkingBudget,
+			},
+		}
+	}
+
+	message, err := p.client.Beta.Messages.New(ctx, params)
 	if err != nil {
 		return nil, fmt.Errorf("anthropic API error: %w", err)
 	}
@@ -288,10 +329,21 @@ func (p *AnthropicProvider) streamWithoutSearch(ctx context.Context, req AskRequ
 		}
 	}
 
+	// Add extended thinking if enabled
+	if p.thinkingBudget > 0 {
+		params.MaxTokens = 16000
+		params.Thinking = anthropic.ThinkingConfigParamUnion{
+			OfEnabled: &anthropic.ThinkingConfigEnabledParam{
+				BudgetTokens: p.thinkingBudget,
+			},
+		}
+	}
+
 	stream := p.client.Messages.NewStreaming(ctx, params)
 
 	for stream.Next() {
 		event := stream.Current()
+		// Skip thinking blocks - only output text
 		if event.Type == "content_block_delta" && event.Delta.Text != "" {
 			output <- event.Delta.Text
 		}
@@ -330,10 +382,21 @@ func (p *AnthropicProvider) streamWithSearch(ctx context.Context, req AskRequest
 		}
 	}
 
+	// Add extended thinking if enabled
+	if p.thinkingBudget > 0 {
+		params.MaxTokens = 16000
+		params.Thinking = anthropic.BetaThinkingConfigParamUnion{
+			OfEnabled: &anthropic.BetaThinkingConfigEnabledParam{
+				BudgetTokens: p.thinkingBudget,
+			},
+		}
+	}
+
 	stream := p.client.Beta.Messages.NewStreaming(ctx, params)
 
 	for stream.Next() {
 		event := stream.Current()
+		// Skip thinking blocks - only output text
 		if event.Type == "content_block_delta" && event.Delta.Text != "" {
 			output <- event.Delta.Text
 		}
@@ -366,7 +429,7 @@ func (p *AnthropicProvider) GetEdits(ctx context.Context, systemPrompt, userProm
 		fmt.Fprintln(os.Stderr, "=====================================")
 	}
 
-	message, err := p.client.Messages.New(ctx, anthropic.MessageNewParams{
+	params := anthropic.MessageNewParams{
 		Model:     anthropic.Model(p.model),
 		MaxTokens: 4096,
 		System: []anthropic.TextBlockParam{
@@ -377,7 +440,19 @@ func (p *AnthropicProvider) GetEdits(ctx context.Context, systemPrompt, userProm
 		},
 		Tools:      []anthropic.ToolUnionParam{tool},
 		ToolChoice: anthropic.ToolChoiceUnionParam{OfAny: &anthropic.ToolChoiceAnyParam{}},
-	})
+	}
+
+	// Add extended thinking if enabled
+	if p.thinkingBudget > 0 {
+		params.MaxTokens = 16000
+		params.Thinking = anthropic.ThinkingConfigParamUnion{
+			OfEnabled: &anthropic.ThinkingConfigEnabledParam{
+				BudgetTokens: p.thinkingBudget,
+			},
+		}
+	}
+
+	message, err := p.client.Messages.New(ctx, params)
 	if err != nil {
 		return nil, fmt.Errorf("anthropic API error: %w", err)
 	}

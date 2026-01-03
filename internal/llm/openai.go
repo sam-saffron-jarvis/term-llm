@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/openai/openai-go"
 	"github.com/openai/openai-go/option"
@@ -17,17 +18,39 @@ import (
 type OpenAIProvider struct {
 	client *openai.Client
 	model  string
+	effort string // reasoning effort: "low", "medium", "high", "xhigh", or ""
+}
+
+// parseModelEffort extracts effort suffix from model name
+// "gpt-5.2-high" -> ("gpt-5.2", "high")
+// "gpt-5.2-xhigh" -> ("gpt-5.2", "xhigh")
+// "gpt-5.2" -> ("gpt-5.2", "")
+func parseModelEffort(model string) (string, string) {
+	// Check suffixes in order from longest to shortest to avoid "-high" matching "-xhigh"
+	suffixes := []string{"xhigh", "medium", "high", "low"}
+	for _, effort := range suffixes {
+		suffix := "-" + effort
+		if strings.HasSuffix(model, suffix) {
+			return strings.TrimSuffix(model, suffix), effort
+		}
+	}
+	return model, ""
 }
 
 func NewOpenAIProvider(apiKey, model string) *OpenAIProvider {
+	actualModel, effort := parseModelEffort(model)
 	client := openai.NewClient(option.WithAPIKey(apiKey))
 	return &OpenAIProvider{
 		client: &client,
-		model:  model,
+		model:  actualModel,
+		effort: effort,
 	}
 }
 
 func (p *OpenAIProvider) Name() string {
+	if p.effort != "" {
+		return fmt.Sprintf("OpenAI (%s, effort=%s)", p.model, p.effort)
+	}
 	return fmt.Sprintf("OpenAI (%s)", p.model)
 }
 
@@ -69,14 +92,23 @@ func (p *OpenAIProvider) SuggestCommands(ctx context.Context, req SuggestRequest
 		fmt.Fprintln(os.Stderr, "=============================")
 	}
 
-	resp, err := p.client.Responses.New(ctx, responses.ResponseNewParams{
+	params := responses.ResponseNewParams{
 		Model:        shared.ResponsesModel(p.model),
 		Instructions: openai.String(systemPrompt),
 		Input: responses.ResponseNewParamsInputUnion{
 			OfString: openai.String(userPrompt),
 		},
 		Tools: tools,
-	})
+	}
+
+	// Add reasoning effort if set
+	if p.effort != "" {
+		params.Reasoning = shared.ReasoningParam{
+			Effort: shared.ReasoningEffort(p.effort),
+		}
+	}
+
+	resp, err := p.client.Responses.New(ctx, params)
 	if err != nil {
 		return nil, fmt.Errorf("openai API error: %w", err)
 	}
@@ -135,14 +167,23 @@ func (p *OpenAIProvider) GetEdits(ctx context.Context, systemPrompt, userPrompt 
 		fmt.Fprintln(os.Stderr, "==================================")
 	}
 
-	resp, err := p.client.Responses.New(ctx, responses.ResponseNewParams{
+	params := responses.ResponseNewParams{
 		Model:        shared.ResponsesModel(p.model),
 		Instructions: openai.String(systemPrompt),
 		Input: responses.ResponseNewParamsInputUnion{
 			OfString: openai.String(userPrompt),
 		},
 		Tools: []responses.ToolUnionParam{editTool},
-	})
+	}
+
+	// Add reasoning effort if set
+	if p.effort != "" {
+		params.Reasoning = shared.ReasoningParam{
+			Effort: shared.ReasoningEffort(p.effort),
+		}
+	}
+
+	resp, err := p.client.Responses.New(ctx, params)
 	if err != nil {
 		return nil, fmt.Errorf("openai API error: %w", err)
 	}
@@ -213,6 +254,13 @@ func (p *OpenAIProvider) StreamResponse(ctx context.Context, req AskRequest, out
 	if req.EnableSearch {
 		webSearchTool := responses.ToolParamOfWebSearchPreview(responses.WebSearchToolTypeWebSearchPreview)
 		params.Tools = []responses.ToolUnionParam{webSearchTool}
+	}
+
+	// Add reasoning effort if set
+	if p.effort != "" {
+		params.Reasoning = shared.ReasoningParam{
+			Effort: shared.ReasoningEffort(p.effort),
+		}
 	}
 
 	stream := p.client.Responses.NewStreaming(ctx, params)

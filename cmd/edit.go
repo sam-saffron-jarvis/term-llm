@@ -49,7 +49,7 @@ Line range syntax:
 func init() {
 	editCmd.Flags().StringArrayVarP(&editFiles, "file", "f", nil, "File(s) to edit (required, supports line ranges like file.go:10-20)")
 	editCmd.Flags().BoolVar(&editDryRun, "dry-run", false, "Show what would change without applying")
-	editCmd.Flags().StringVar(&editProvider, "provider", "", "Override provider (anthropic, openai, gemini, zen)")
+	editCmd.Flags().StringVar(&editProvider, "provider", "", "Override provider, optionally with model (e.g., openai:gpt-4o)")
 	editCmd.Flags().BoolVarP(&editDebug, "debug", "d", false, "Show debug information")
 	editCmd.Flags().BoolVar(&editPerEdit, "per-edit", false, "Prompt for each edit separately instead of consolidating per file")
 	editCmd.MarkFlagRequired("file")
@@ -118,8 +118,16 @@ func runEdit(cmd *cobra.Command, args []string) error {
 		}
 	}
 
+	// Apply per-command config overrides
+	cfg.ApplyOverrides(cfg.Edit.Provider, cfg.Edit.Model)
+
+	// CLI flag takes precedence (supports provider:model syntax)
 	if editProvider != "" {
-		cfg.Provider = editProvider
+		provider, model, err := llm.ParseProviderModel(editProvider)
+		if err != nil {
+			return err
+		}
+		cfg.ApplyOverrides(provider, model)
 	}
 
 	// Initialize theme
@@ -193,9 +201,12 @@ func runEdit(cmd *cobra.Command, args []string) error {
 		fileContents[f.Path] = f.Content
 	}
 
-	// Get all edits from LLM
-	edits, err := editProv.GetEdits(ctx, systemPrompt, userPrompt, editDebug)
+	// Get all edits from LLM with spinner
+	edits, err := ui.RunEditWithSpinner(ctx, editProv, systemPrompt, userPrompt, editDebug)
 	if err != nil {
+		if err.Error() == "cancelled" {
+			return nil
+		}
 		return fmt.Errorf("edit failed: %w", err)
 	}
 
