@@ -11,7 +11,8 @@ A Swiss Army knife for your terminal—AI-powered commands, answers, and images 
 - **File editing**: Edit code with AI assistance (supports line ranges)
 - **File context**: Include files, clipboard, or stdin as context (`-f`)
 - **Image generation**: Create and edit images (Gemini, OpenAI, Flux)
-- **Multiple providers**: Anthropic, OpenAI, Gemini, Zen (free tier)
+- **Multiple providers**: Anthropic, OpenAI, Gemini, Zen (free tier), Ollama, LM Studio
+- **Local LLMs**: Run with Ollama, LM Studio, or any OpenAI-compatible server
 - **Credential reuse**: Works with Claude Code, Codex, gemini-cli credentials
 
 ```
@@ -53,7 +54,7 @@ go build
 
 ## Setup
 
-On first run, term-llm will prompt you to choose a provider (Anthropic, OpenAI, Gemini, or Zen).
+On first run, term-llm will prompt you to choose a provider (Anthropic, OpenAI, Gemini, Zen, Ollama, or LM Studio).
 
 ### Option 1: Use existing CLI credentials (recommended)
 
@@ -106,6 +107,51 @@ term-llm exec --provider zen "list files"
 term-llm ask --provider zen "explain git rebase"
 ```
 
+### Model Discovery
+
+List available models from any supported provider:
+
+```bash
+term-llm models --provider anthropic  # List Anthropic models
+term-llm models --provider ollama     # List local Ollama models
+term-llm models --provider lmstudio   # List local LM Studio models
+term-llm models --json                # Output as JSON
+```
+
+### Option 4: Use local LLMs (Ollama, LM Studio)
+
+Run models locally with [Ollama](https://ollama.com) or [LM Studio](https://lmstudio.ai):
+
+```bash
+# List available models from your local server
+term-llm models --provider ollama
+term-llm models --provider lmstudio
+
+# Configure in ~/.config/term-llm/config.yaml
+```
+
+```yaml
+provider: ollama  # or lmstudio
+
+ollama:
+  model: llama3.2:latest
+  # base_url: http://localhost:11434/v1  # default
+
+lmstudio:
+  model: deepseek-coder-v2
+  # base_url: http://localhost:1234/v1   # default
+```
+
+For other OpenAI-compatible servers (vLLM, text-generation-inference, etc.):
+
+```yaml
+provider: openai-compat
+
+openai-compat:
+  base_url: http://your-server:8080/v1  # required
+  model: mixtral-8x7b
+```
+
 ## Usage
 
 ```bash
@@ -136,6 +182,8 @@ term-llm exec "install latest node" -s          # with web search
 term-llm exec "disk usage" -p                   # print only
 term-llm exec --provider zen "git status"       # use specific provider
 term-llm exec --provider openai:gpt-4o "list"   # provider with specific model
+term-llm exec --provider ollama:llama3.2 "list" # use local Ollama model
+term-llm exec --provider lmstudio:deepseek "list"  # use LM Studio model
 term-llm ask --provider openai:gpt-5.2-xhigh "complex question"  # max reasoning
 term-llm exec --provider openai:gpt-5.2-low "quick task"         # faster/cheaper
 
@@ -343,7 +391,7 @@ To disable update checks, set `TERM_LLM_SKIP_UPDATE_CHECK=1`.
 Config is stored at `~/.config/term-llm/config.yaml`:
 
 ```yaml
-provider: anthropic  # anthropic, openai, gemini, or zen
+provider: anthropic  # anthropic, openai, gemini, zen, ollama, lmstudio, or openai-compat
 
 exec:
   suggestions: 3  # number of command suggestions
@@ -379,6 +427,20 @@ gemini:
 zen:
   model: glm-4.7-free
   # api_key is optional - leave empty for free tier
+
+# Local LLM providers (OpenAI-compatible)
+# Run 'term-llm models --provider ollama' to list available models
+ollama:
+  model: llama3.2:latest
+  # base_url: http://localhost:11434/v1  # default
+
+lmstudio:
+  model: deepseek-coder-v2
+  # base_url: http://localhost:1234/v1   # default
+
+# openai-compat:
+#   base_url: http://your-server:8080/v1  # required
+#   model: mixtral-8x7b
 
 image:
   provider: gemini  # gemini, openai, or flux

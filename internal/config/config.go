@@ -11,16 +11,19 @@ import (
 )
 
 type Config struct {
-	Provider  string          `mapstructure:"provider"`
-	Exec      ExecConfig      `mapstructure:"exec"`
-	Ask       AskConfig       `mapstructure:"ask"`
-	Edit      EditConfig      `mapstructure:"edit"`
-	Image     ImageConfig     `mapstructure:"image"`
-	Theme     ThemeConfig     `mapstructure:"theme"`
-	Anthropic AnthropicConfig `mapstructure:"anthropic"`
-	OpenAI    OpenAIConfig    `mapstructure:"openai"`
-	Gemini    GeminiConfig    `mapstructure:"gemini"`
-	Zen       ZenConfig       `mapstructure:"zen"`
+	Provider     string             `mapstructure:"provider"`
+	Exec         ExecConfig         `mapstructure:"exec"`
+	Ask          AskConfig          `mapstructure:"ask"`
+	Edit         EditConfig         `mapstructure:"edit"`
+	Image        ImageConfig        `mapstructure:"image"`
+	Theme        ThemeConfig        `mapstructure:"theme"`
+	Anthropic    AnthropicConfig    `mapstructure:"anthropic"`
+	OpenAI       OpenAIConfig       `mapstructure:"openai"`
+	Gemini       GeminiConfig       `mapstructure:"gemini"`
+	Zen          ZenConfig          `mapstructure:"zen"`
+	Ollama       OllamaConfig       `mapstructure:"ollama"`
+	LMStudio     LMStudioConfig     `mapstructure:"lmstudio"`
+	OpenAICompat OpenAICompatConfig `mapstructure:"openai-compat"`
 }
 
 // ThemeConfig allows customization of UI colors
@@ -88,6 +91,27 @@ type ZenConfig struct {
 	Model  string `mapstructure:"model"`
 }
 
+// OllamaConfig configures the Ollama provider (OpenAI-compatible)
+type OllamaConfig struct {
+	BaseURL string `mapstructure:"base_url"` // Default: http://localhost:11434/v1
+	Model   string `mapstructure:"model"`
+	APIKey  string `mapstructure:"api_key"` // Optional, Ollama ignores it
+}
+
+// LMStudioConfig configures the LM Studio provider (OpenAI-compatible)
+type LMStudioConfig struct {
+	BaseURL string `mapstructure:"base_url"` // Default: http://localhost:1234/v1
+	Model   string `mapstructure:"model"`
+	APIKey  string `mapstructure:"api_key"` // Optional, LM Studio ignores it
+}
+
+// OpenAICompatConfig configures a generic OpenAI-compatible server
+type OpenAICompatConfig struct {
+	BaseURL string `mapstructure:"base_url"` // Required - no default
+	Model   string `mapstructure:"model"`
+	APIKey  string `mapstructure:"api_key"` // Optional
+}
+
 // ImageConfig configures image generation settings
 type ImageConfig struct {
 	Provider  string            `mapstructure:"provider"`   // default image provider: gemini, openai, flux
@@ -138,6 +162,10 @@ func Load() (*Config, error) {
 	viper.SetDefault("openai.model", "gpt-5.2")
 	viper.SetDefault("gemini.model", "gemini-3-flash-preview")
 	viper.SetDefault("zen.model", "glm-4.7-free")
+	// OpenAI-compatible provider defaults
+	viper.SetDefault("ollama.base_url", "http://localhost:11434/v1")
+	viper.SetDefault("lmstudio.base_url", "http://localhost:1234/v1")
+	// openai-compat has no base_url default - it's required
 	// Image defaults
 	viper.SetDefault("image.provider", "gemini")
 	viper.SetDefault("image.output_dir", "~/Pictures/term-llm")
@@ -168,6 +196,9 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("gemini credentials: %w", err)
 	}
 	resolveZenCredentials(&cfg.Zen)
+	resolveOllamaCredentials(&cfg.Ollama)
+	resolveLMStudioCredentials(&cfg.LMStudio)
+	resolveOpenAICompatCredentials(&cfg.OpenAICompat)
 	resolveImageCredentials(&cfg.Image)
 
 	return &cfg, nil
@@ -190,6 +221,12 @@ func (c *Config) ApplyOverrides(provider, model string) {
 			c.Gemini.Model = model
 		case "zen":
 			c.Zen.Model = model
+		case "ollama":
+			c.Ollama.Model = model
+		case "lmstudio":
+			c.LMStudio.Model = model
+		case "openai-compat":
+			c.OpenAICompat.Model = model
 		}
 	}
 }
@@ -261,6 +298,32 @@ func resolveZenCredentials(cfg *ZenConfig) {
 		cfg.APIKey = os.Getenv("ZEN_API_KEY")
 	}
 	// Empty API key is valid - Zen offers free tier access
+}
+
+// resolveOllamaCredentials resolves Ollama credentials
+// API key is optional - Ollama ignores it
+func resolveOllamaCredentials(cfg *OllamaConfig) {
+	cfg.APIKey = expandEnv(cfg.APIKey)
+	if cfg.APIKey == "" {
+		cfg.APIKey = os.Getenv("OLLAMA_API_KEY")
+	}
+	cfg.BaseURL = expandEnv(cfg.BaseURL)
+}
+
+// resolveLMStudioCredentials resolves LM Studio credentials
+// API key is optional - LM Studio ignores it
+func resolveLMStudioCredentials(cfg *LMStudioConfig) {
+	cfg.APIKey = expandEnv(cfg.APIKey)
+	if cfg.APIKey == "" {
+		cfg.APIKey = os.Getenv("LMSTUDIO_API_KEY")
+	}
+	cfg.BaseURL = expandEnv(cfg.BaseURL)
+}
+
+// resolveOpenAICompatCredentials resolves generic OpenAI-compatible credentials
+func resolveOpenAICompatCredentials(cfg *OpenAICompatConfig) {
+	cfg.APIKey = expandEnv(cfg.APIKey)
+	cfg.BaseURL = expandEnv(cfg.BaseURL)
 }
 
 // resolveImageCredentials resolves API credentials for all image providers

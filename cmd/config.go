@@ -106,6 +106,20 @@ func configShow(cmd *cobra.Command, args []string) error {
 	fmt.Printf("  model: %s\n", cfg.Zen.Model)
 	printZenCredentialStatus(cfg.Zen.APIKey)
 
+	fmt.Printf("\nollama:\n")
+	fmt.Printf("  base_url: %s\n", cfg.Ollama.BaseURL)
+	fmt.Printf("  model: %s\n", cfg.Ollama.Model)
+
+	fmt.Printf("\nlmstudio:\n")
+	fmt.Printf("  base_url: %s\n", cfg.LMStudio.BaseURL)
+	fmt.Printf("  model: %s\n", cfg.LMStudio.Model)
+
+	if cfg.OpenAICompat.BaseURL != "" {
+		fmt.Printf("\nopenai-compat:\n")
+		fmt.Printf("  base_url: %s\n", cfg.OpenAICompat.BaseURL)
+		fmt.Printf("  model: %s\n", cfg.OpenAICompat.Model)
+	}
+
 	fmt.Printf("\nimage:\n")
 	fmt.Printf("  provider: %s\n", cfg.Image.Provider)
 	fmt.Printf("  output_dir: %s\n", cfg.Image.OutputDir)
@@ -239,7 +253,7 @@ func defaultConfigContent() string {
 	return `# term-llm configuration
 # Run 'term-llm config edit' to modify
 
-provider: anthropic  # anthropic, openai, gemini, or zen
+provider: anthropic  # anthropic, openai, gemini, zen, ollama, lmstudio, or openai-compat
 
 # exec command settings
 exec:
@@ -297,6 +311,21 @@ zen:
   # OpenCode Zen - free tier access to GLM 4.7 and other models
   # api_key is optional - leave empty for free tier access
   # Set ZEN_API_KEY env var if you have a paid API key
+
+# Local LLM providers (OpenAI-compatible)
+# Run 'term-llm models --provider ollama' to list available models
+# ollama:
+#   model: llama3.2:latest
+#   base_url: http://localhost:11434/v1  # default
+
+# lmstudio:
+#   model: deepseek-coder-v2
+#   base_url: http://localhost:1234/v1   # default
+
+# Generic OpenAI-compatible endpoint (for custom servers)
+# openai-compat:
+#   base_url: http://your-server:8080/v1  # required
+#   model: mixtral-8x7b
 
 # Image generation settings
 image:

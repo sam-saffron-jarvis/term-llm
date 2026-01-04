@@ -91,10 +91,10 @@ func ParseProviderModel(s string) (string, string, error) {
 	}
 	// Validate provider name
 	switch provider {
-	case "anthropic", "openai", "gemini", "zen":
+	case "anthropic", "openai", "gemini", "zen", "ollama", "lmstudio", "openai-compat":
 		return provider, model, nil
 	default:
-		return "", "", fmt.Errorf("unknown provider: %s (valid: anthropic, openai, gemini, zen)", provider)
+		return "", "", fmt.Errorf("unknown provider: %s (valid: anthropic, openai, gemini, zen, ollama, lmstudio, openai-compat)", provider)
 	}
 }
 
@@ -135,6 +135,35 @@ func NewProvider(cfg *config.Config) (Provider, error) {
 	case "zen":
 		// OpenCode Zen - free tier works without API key
 		return NewZenProvider(cfg.Zen.APIKey, cfg.Zen.Model), nil
+
+	case "ollama":
+		if cfg.Ollama.Model == "" {
+			return nil, fmt.Errorf("ollama model not configured. Run 'term-llm models --provider ollama' to list available models")
+		}
+		baseURL := cfg.Ollama.BaseURL
+		if baseURL == "" {
+			baseURL = "http://localhost:11434/v1"
+		}
+		return NewOpenAICompatProvider(baseURL, cfg.Ollama.APIKey, cfg.Ollama.Model, "Ollama"), nil
+
+	case "lmstudio":
+		if cfg.LMStudio.Model == "" {
+			return nil, fmt.Errorf("lmstudio model not configured. Run 'term-llm models --provider lmstudio' to list available models")
+		}
+		baseURL := cfg.LMStudio.BaseURL
+		if baseURL == "" {
+			baseURL = "http://localhost:1234/v1"
+		}
+		return NewOpenAICompatProvider(baseURL, cfg.LMStudio.APIKey, cfg.LMStudio.Model, "LM Studio"), nil
+
+	case "openai-compat":
+		if cfg.OpenAICompat.BaseURL == "" {
+			return nil, fmt.Errorf("openai-compat requires base_url to be configured")
+		}
+		if cfg.OpenAICompat.Model == "" {
+			return nil, fmt.Errorf("openai-compat model not configured")
+		}
+		return NewOpenAICompatProvider(cfg.OpenAICompat.BaseURL, cfg.OpenAICompat.APIKey, cfg.OpenAICompat.Model, "OpenAI-Compatible"), nil
 
 	default:
 		return nil, fmt.Errorf("unknown provider: %s", cfg.Provider)

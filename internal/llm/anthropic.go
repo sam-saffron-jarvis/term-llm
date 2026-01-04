@@ -11,6 +11,25 @@ import (
 	"github.com/samsaffron/term-llm/internal/prompt"
 )
 
+// ListModels returns available models from Anthropic
+func (p *AnthropicProvider) ListModels(ctx context.Context) ([]ModelInfo, error) {
+	page, err := p.client.Models.List(ctx, anthropic.ModelListParams{})
+	if err != nil {
+		return nil, fmt.Errorf("failed to list models: %w", err)
+	}
+
+	var models []ModelInfo
+	for _, m := range page.Data {
+		models = append(models, ModelInfo{
+			ID:          m.ID,
+			DisplayName: m.DisplayName,
+			Created:     m.CreatedAt.Unix(),
+		})
+	}
+
+	return models, nil
+}
+
 // AnthropicProvider implements Provider using the Anthropic API
 type AnthropicProvider struct {
 	client         *anthropic.Client
