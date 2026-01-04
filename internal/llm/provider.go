@@ -75,14 +75,22 @@ type UnifiedDiffProvider interface {
 	GetUnifiedDiff(ctx context.Context, systemPrompt, userPrompt string, debug bool) (string, error)
 }
 
+// ToolCallProvider is an interface for providers that support generic tool calling.
+// Providers implementing this interface automatically get EditToolProvider and UnifiedDiffProvider.
+type ToolCallProvider interface {
+	Provider
+	CallWithTool(ctx context.Context, req ToolCallRequest) (*ToolCallResult, error)
+}
+
 // ToolCallRequest holds parameters for a single-tool LLM call
 type ToolCallRequest struct {
-	SystemPrompt string
-	UserPrompt   string
-	ToolName     string
-	ToolDesc     string
-	ToolSchema   map[string]interface{}
-	Debug        bool
+	SystemPrompt      string
+	UserPrompt        string
+	ToolName          string
+	ToolDesc          string
+	ToolSchema        map[string]interface{}
+	Debug             bool
+	ParallelToolCalls bool // Allow multiple tool calls in response (for edit tool)
 }
 
 // ToolCallResult holds the raw results from a tool call
@@ -128,6 +136,115 @@ func ParseUnifiedDiff(toolCalls []ToolCallArguments) (string, error) {
 		}
 	}
 	return "", fmt.Errorf("no unified_diff function call in response")
+}
+
+// GetEditsFromProvider calls the LLM with the edit tool using any ToolCallProvider.
+// This is the shared implementation used by all providers.
+func GetEditsFromProvider(ctx context.Context, p ToolCallProvider, systemPrompt, userPrompt string, debug bool) ([]EditToolCall, error) {
+	result, err := p.CallWithTool(ctx, ToolCallRequest{
+		SystemPrompt:      systemPrompt,
+		UserPrompt:        userPrompt,
+		ToolName:          "edit",
+		ToolDesc:          EditToolDescription,
+		ToolSchema:        EditToolSchema(),
+		Debug:             debug,
+		ParallelToolCalls: true, // Edit tool can return multiple calls
+	})
+	if err != nil {
+		return nil, err
+	}
+	if result.TextOutput != "" {
+		fmt.Print(result.TextOutput)
+	}
+	return ParseEditToolCalls(result.ToolCalls), nil
+}
+
+// GetUnifiedDiffFromProvider calls the LLM with the unified_diff tool using any ToolCallProvider.
+// This is the shared implementation used by all providers.
+func GetUnifiedDiffFromProvider(ctx context.Context, p ToolCallProvider, systemPrompt, userPrompt string, debug bool) (string, error) {
+	result, err := p.CallWithTool(ctx, ToolCallRequest{
+		SystemPrompt: systemPrompt,
+		UserPrompt:   userPrompt,
+		ToolName:     "unified_diff",
+		ToolDesc:     UnifiedDiffToolDescription,
+		ToolSchema:   UnifiedDiffToolSchema(),
+		Debug:        debug,
+	})
+	if err != nil {
+		return "", err
+	}
+	if result.TextOutput != "" {
+		fmt.Print(result.TextOutput)
+	}
+	return ParseUnifiedDiff(result.ToolCalls)
+}
+
+// EditToolDescription is the description for the edit tool
+const EditToolDescription = "Edit a file by replacing old_string with new_string. You may include the literal token <<<elided>>> in old_string to match any sequence of characters (including newlines). Use multiple tool calls for multiple edits."
+
+// EditToolSchema returns the JSON schema for the edit tool
+func EditToolSchema() map[string]interface{} {
+	return map[string]interface{}{
+		"type": "object",
+		"properties": map[string]interface{}{
+			"file_path": map[string]interface{}{
+				"type":        "string",
+				"description": "Path to the file to edit",
+			},
+			"old_string": map[string]interface{}{
+				"type":        "string",
+				"description": "The exact text to find and replace. Include enough context to be unique. You may include the literal token <<<elided>>> to match any sequence of characters (including newlines).",
+			},
+			"new_string": map[string]interface{}{
+				"type":        "string",
+				"description": "The text to replace old_string with",
+			},
+		},
+		"required":             []string{"file_path", "old_string", "new_string"},
+		"additionalProperties": false,
+	}
+}
+
+// UnifiedDiffToolDescription is the description for the unified diff tool
+const UnifiedDiffToolDescription = `Apply file edits using unified diff format. Output a single diff containing all changes.
+
+Format:
+--- path/to/file
++++ path/to/file
+@@ context to locate (e.g., func Name) @@
+ context line (unchanged, space prefix)
+-line to remove
++line to add
+
+Elision (-...) for replacing large blocks:
+-func Example() {
+-...
+-}
++func Example() { return nil }
+
+The -... matches everything between the start anchor (-func Example...) and end anchor (-}).
+IMPORTANT: After -... you MUST include an end anchor (another - line) so we know where elision stops.
+
+Rules:
+1. @@ headers help locate changes - use function/class names, not line numbers
+2. Context lines (space prefix) anchor the position - must match file exactly
+3. Use -... ONLY when replacing 10+ lines; for small changes list all - lines explicitly
+4. After -... always include the closing line (e.g., -}) as the end anchor
+5. Multiple files: use separate --- +++ blocks for each file`
+
+// UnifiedDiffToolSchema returns the JSON schema for the unified diff tool
+func UnifiedDiffToolSchema() map[string]interface{} {
+	return map[string]interface{}{
+		"type": "object",
+		"properties": map[string]interface{}{
+			"diff": map[string]interface{}{
+				"type":        "string",
+				"description": "Unified diff with all changes. Format: --- and +++ for paths, @@ for context headers, space prefix for context lines, - for removals, + for additions. Use -... to elide large removed blocks (must have end anchor after).",
+			},
+		},
+		"required":             []string{"diff"},
+		"additionalProperties": false,
+	}
 }
 
 // IsCodexModel returns true if the model name indicates a Codex model

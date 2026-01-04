@@ -431,8 +431,9 @@ func (p *AnthropicProvider) streamWithSearch(ctx context.Context, req AskRequest
 	return nil
 }
 
-// callWithTool makes an API call with a single tool and returns raw results
-func (p *AnthropicProvider) callWithTool(ctx context.Context, req ToolCallRequest) (*ToolCallResult, error) {
+// CallWithTool makes an API call with a single tool and returns raw results.
+// Implements ToolCallProvider interface.
+func (p *AnthropicProvider) CallWithTool(ctx context.Context, req ToolCallRequest) (*ToolCallResult, error) {
 	inputSchema := anthropic.ToolInputSchemaParam{
 		Type:       "object",
 		Properties: req.ToolSchema["properties"],
@@ -508,34 +509,12 @@ func (p *AnthropicProvider) callWithTool(ctx context.Context, req ToolCallReques
 	return result, nil
 }
 
-// GetEdits calls the LLM once with the edit tool and returns all proposed edits
+// GetEdits calls the LLM with the edit tool and returns all proposed edits.
 func (p *AnthropicProvider) GetEdits(ctx context.Context, systemPrompt, userPrompt string, debug bool) ([]EditToolCall, error) {
-	result, err := p.callWithTool(ctx, ToolCallRequest{
-		SystemPrompt: systemPrompt, UserPrompt: userPrompt,
-		ToolName: "edit", ToolDesc: prompt.EditDescription,
-		ToolSchema: prompt.EditSchema(), Debug: debug,
-	})
-	if err != nil {
-		return nil, err
-	}
-	if result.TextOutput != "" {
-		fmt.Print(result.TextOutput)
-	}
-	return ParseEditToolCalls(result.ToolCalls), nil
+	return GetEditsFromProvider(ctx, p, systemPrompt, userPrompt, debug)
 }
 
 // GetUnifiedDiff calls the LLM with the unified_diff tool and returns the diff string.
 func (p *AnthropicProvider) GetUnifiedDiff(ctx context.Context, systemPrompt, userPrompt string, debug bool) (string, error) {
-	result, err := p.callWithTool(ctx, ToolCallRequest{
-		SystemPrompt: systemPrompt, UserPrompt: userPrompt,
-		ToolName: "unified_diff", ToolDesc: prompt.UnifiedDiffDescription,
-		ToolSchema: prompt.UnifiedDiffSchema(), Debug: debug,
-	})
-	if err != nil {
-		return "", err
-	}
-	if result.TextOutput != "" {
-		fmt.Print(result.TextOutput)
-	}
-	return ParseUnifiedDiff(result.ToolCalls)
+	return GetUnifiedDiffFromProvider(ctx, p, systemPrompt, userPrompt, debug)
 }

@@ -419,3 +419,143 @@ func (p *GeminiProvider) streamWithSearch(ctx context.Context, req AskRequest, o
 
 	return nil
 }
+
+// CallWithTool makes an API call with a single tool and returns raw results.
+// Implements ToolCallProvider interface.
+func (p *GeminiProvider) CallWithTool(ctx context.Context, req ToolCallRequest) (*ToolCallResult, error) {
+	client, err := p.newClient(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create gemini client: %w", err)
+	}
+
+	// Build the tool declaration
+	tool := &genai.Tool{
+		FunctionDeclarations: []*genai.FunctionDeclaration{
+			{
+				Name:        req.ToolName,
+				Description: req.ToolDesc,
+				Parameters: &genai.Schema{
+					Type:       genai.TypeObject,
+					Properties: convertSchemaProperties(req.ToolSchema),
+					Required:   getRequiredFields(req.ToolSchema),
+				},
+			},
+		},
+	}
+
+	config := &genai.GenerateContentConfig{
+		SystemInstruction: genai.NewContentFromText(req.SystemPrompt, genai.RoleUser),
+		Tools:             []*genai.Tool{tool},
+		ToolConfig: &genai.ToolConfig{
+			FunctionCallingConfig: &genai.FunctionCallingConfig{
+				Mode: genai.FunctionCallingConfigModeAny,
+			},
+		},
+	}
+
+	if req.Debug {
+		fmt.Fprintf(os.Stderr, "=== DEBUG: Gemini %s Request ===\n", req.ToolName)
+		fmt.Fprintf(os.Stderr, "Provider: %s\n", p.Name())
+		fmt.Fprintf(os.Stderr, "System:\n%s\n", req.SystemPrompt)
+		fmt.Fprintf(os.Stderr, "User:\n%s\n", req.UserPrompt)
+		fmt.Fprintln(os.Stderr, "=================================")
+	}
+
+	resp, err := client.Models.GenerateContent(ctx, p.model, genai.Text(req.UserPrompt), config)
+	if err != nil {
+		return nil, fmt.Errorf("gemini API error: %w", err)
+	}
+
+	if req.Debug {
+		fmt.Fprintf(os.Stderr, "=== DEBUG: Gemini %s Response ===\n", req.ToolName)
+		p.debugPrintResponse(resp)
+		fmt.Fprintln(os.Stderr, "==================================")
+	}
+
+	// Extract results from response
+	result := &ToolCallResult{}
+	if text := resp.Text(); text != "" {
+		result.TextOutput = text
+	}
+	for _, fc := range resp.FunctionCalls() {
+		argsJSON, _ := json.Marshal(fc.Args)
+		result.ToolCalls = append(result.ToolCalls, ToolCallArguments{
+			Name:      fc.Name,
+			Arguments: argsJSON,
+		})
+	}
+
+	return result, nil
+}
+
+// convertSchemaProperties converts the generic schema properties to genai.Schema format
+func convertSchemaProperties(schema map[string]interface{}) map[string]*genai.Schema {
+	props := make(map[string]*genai.Schema)
+	if properties, ok := schema["properties"].(map[string]interface{}); ok {
+		for name, prop := range properties {
+			if propMap, ok := prop.(map[string]interface{}); ok {
+				props[name] = &genai.Schema{
+					Type:        getSchemaType(propMap),
+					Description: getStringField(propMap, "description"),
+				}
+			}
+		}
+	}
+	return props
+}
+
+// getRequiredFields extracts the required fields from a schema
+func getRequiredFields(schema map[string]interface{}) []string {
+	if required, ok := schema["required"].([]string); ok {
+		return required
+	}
+	if required, ok := schema["required"].([]interface{}); ok {
+		result := make([]string, 0, len(required))
+		for _, r := range required {
+			if s, ok := r.(string); ok {
+				result = append(result, s)
+			}
+		}
+		return result
+	}
+	return nil
+}
+
+// getSchemaType converts a type string to genai.Type
+func getSchemaType(prop map[string]interface{}) genai.Type {
+	if t, ok := prop["type"].(string); ok {
+		switch t {
+		case "string":
+			return genai.TypeString
+		case "integer":
+			return genai.TypeInteger
+		case "number":
+			return genai.TypeNumber
+		case "boolean":
+			return genai.TypeBoolean
+		case "array":
+			return genai.TypeArray
+		case "object":
+			return genai.TypeObject
+		}
+	}
+	return genai.TypeString
+}
+
+// getStringField safely extracts a string field from a map
+func getStringField(m map[string]interface{}, key string) string {
+	if v, ok := m[key].(string); ok {
+		return v
+	}
+	return ""
+}
+
+// GetEdits calls the LLM with the edit tool and returns all proposed edits.
+func (p *GeminiProvider) GetEdits(ctx context.Context, systemPrompt, userPrompt string, debug bool) ([]EditToolCall, error) {
+	return GetEditsFromProvider(ctx, p, systemPrompt, userPrompt, debug)
+}
+
+// GetUnifiedDiff calls the LLM with the unified_diff tool and returns the diff string.
+func (p *GeminiProvider) GetUnifiedDiff(ctx context.Context, systemPrompt, userPrompt string, debug bool) (string, error) {
+	return GetUnifiedDiffFromProvider(ctx, p, systemPrompt, userPrompt, debug)
+}

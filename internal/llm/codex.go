@@ -568,14 +568,9 @@ func (p *CodexProvider) StreamResponse(ctx context.Context, req AskRequest, outp
 	return nil
 }
 
-// codexToolRequest extends ToolCallRequest with Codex-specific options
-type codexToolRequest struct {
-	ToolCallRequest
-	ParallelToolCalls bool
-}
-
-// callWithTool makes an API call with a single tool and returns raw results
-func (p *CodexProvider) callWithTool(ctx context.Context, req codexToolRequest) (*ToolCallResult, error) {
+// CallWithTool makes an API call with a single tool and returns raw results.
+// Implements ToolCallProvider interface.
+func (p *CodexProvider) CallWithTool(ctx context.Context, req ToolCallRequest) (*ToolCallResult, error) {
 	// Fetch Codex instructions from GitHub (required by ChatGPT backend)
 	codexInstructions, err := p.getCodexInstructions()
 	if err != nil {
@@ -689,40 +684,12 @@ func (p *CodexProvider) callWithTool(ctx context.Context, req codexToolRequest) 
 	return result, nil
 }
 
-// GetEdits calls the LLM with the edit tool and returns all proposed edits
+// GetEdits calls the LLM with the edit tool and returns all proposed edits.
 func (p *CodexProvider) GetEdits(ctx context.Context, systemPrompt, userPrompt string, debug bool) ([]EditToolCall, error) {
-	result, err := p.callWithTool(ctx, codexToolRequest{
-		ToolCallRequest: ToolCallRequest{
-			SystemPrompt: systemPrompt, UserPrompt: userPrompt,
-			ToolName: "edit", ToolDesc: prompt.EditDescription,
-			ToolSchema: prompt.EditSchema(), Debug: debug,
-		},
-		ParallelToolCalls: true,
-	})
-	if err != nil {
-		return nil, err
-	}
-	if result.TextOutput != "" {
-		fmt.Print(result.TextOutput)
-	}
-	return ParseEditToolCalls(result.ToolCalls), nil
+	return GetEditsFromProvider(ctx, p, systemPrompt, userPrompt, debug)
 }
 
 // GetUnifiedDiff calls the LLM with the unified_diff tool and returns the diff string.
 func (p *CodexProvider) GetUnifiedDiff(ctx context.Context, systemPrompt, userPrompt string, debug bool) (string, error) {
-	result, err := p.callWithTool(ctx, codexToolRequest{
-		ToolCallRequest: ToolCallRequest{
-			SystemPrompt: systemPrompt, UserPrompt: userPrompt,
-			ToolName: "unified_diff", ToolDesc: prompt.UnifiedDiffDescription,
-			ToolSchema: prompt.UnifiedDiffSchema(), Debug: debug,
-		},
-		ParallelToolCalls: false, // Single tool call for Codex models
-	})
-	if err != nil {
-		return "", err
-	}
-	if result.TextOutput != "" {
-		fmt.Print(result.TextOutput)
-	}
-	return ParseUnifiedDiff(result.ToolCalls)
+	return GetUnifiedDiffFromProvider(ctx, p, systemPrompt, userPrompt, debug)
 }

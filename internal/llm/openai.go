@@ -154,8 +154,9 @@ func (p *OpenAIProvider) SuggestCommands(ctx context.Context, req SuggestRequest
 	return nil, fmt.Errorf("no suggest_commands function call in response")
 }
 
-// callWithTool makes an API call with a single tool and returns raw results
-func (p *OpenAIProvider) callWithTool(ctx context.Context, req ToolCallRequest) (*ToolCallResult, error) {
+// CallWithTool makes an API call with a single tool and returns raw results.
+// Implements ToolCallProvider interface.
+func (p *OpenAIProvider) CallWithTool(ctx context.Context, req ToolCallRequest) (*ToolCallResult, error) {
 	tool := responses.ToolParamOfFunction(req.ToolName, req.ToolSchema, true)
 	tool.OfFunction.Description = openai.String(req.ToolDesc)
 
@@ -219,36 +220,14 @@ func (p *OpenAIProvider) callWithTool(ctx context.Context, req ToolCallRequest) 
 	return result, nil
 }
 
-// GetEdits calls the LLM with the edit tool and returns all proposed edits
+// GetEdits calls the LLM with the edit tool and returns all proposed edits.
 func (p *OpenAIProvider) GetEdits(ctx context.Context, systemPrompt, userPrompt string, debug bool) ([]EditToolCall, error) {
-	result, err := p.callWithTool(ctx, ToolCallRequest{
-		SystemPrompt: systemPrompt, UserPrompt: userPrompt,
-		ToolName: "edit", ToolDesc: prompt.EditDescription,
-		ToolSchema: prompt.EditSchema(), Debug: debug,
-	})
-	if err != nil {
-		return nil, err
-	}
-	if result.TextOutput != "" {
-		fmt.Print(result.TextOutput)
-	}
-	return ParseEditToolCalls(result.ToolCalls), nil
+	return GetEditsFromProvider(ctx, p, systemPrompt, userPrompt, debug)
 }
 
 // GetUnifiedDiff calls the LLM with the unified_diff tool and returns the diff string.
 func (p *OpenAIProvider) GetUnifiedDiff(ctx context.Context, systemPrompt, userPrompt string, debug bool) (string, error) {
-	result, err := p.callWithTool(ctx, ToolCallRequest{
-		SystemPrompt: systemPrompt, UserPrompt: userPrompt,
-		ToolName: "unified_diff", ToolDesc: prompt.UnifiedDiffDescription,
-		ToolSchema: prompt.UnifiedDiffSchema(), Debug: debug,
-	})
-	if err != nil {
-		return "", err
-	}
-	if result.TextOutput != "" {
-		fmt.Print(result.TextOutput)
-	}
-	return ParseUnifiedDiff(result.ToolCalls)
+	return GetUnifiedDiffFromProvider(ctx, p, systemPrompt, userPrompt, debug)
 }
 
 func (p *OpenAIProvider) StreamResponse(ctx context.Context, req AskRequest, output chan<- string) error {

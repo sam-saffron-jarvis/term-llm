@@ -731,3 +731,142 @@ func (p *CodeAssistProvider) StreamResponse(ctx context.Context, req AskRequest,
 
 	return scanner.Err()
 }
+
+// CallWithTool makes an API call with a single tool and returns raw results.
+// Implements ToolCallProvider interface.
+func (p *CodeAssistProvider) CallWithTool(ctx context.Context, req ToolCallRequest) (*ToolCallResult, error) {
+	if err := p.ensureProjectID(ctx); err != nil {
+		return nil, err
+	}
+
+	token, err := p.getAccessToken()
+	if err != nil {
+		return nil, err
+	}
+
+	// Build the tool declaration
+	tool := map[string]interface{}{
+		"functionDeclarations": []map[string]interface{}{
+			{
+				"name":        req.ToolName,
+				"description": req.ToolDesc,
+				"parameters":  req.ToolSchema,
+			},
+		},
+	}
+
+	requestInner := map[string]interface{}{
+		"contents": []map[string]interface{}{
+			{
+				"role": "user",
+				"parts": []map[string]interface{}{
+					{"text": req.UserPrompt},
+				},
+			},
+		},
+		"systemInstruction": map[string]interface{}{
+			"parts": []map[string]interface{}{
+				{"text": req.SystemPrompt},
+			},
+		},
+		"tools": []map[string]interface{}{tool},
+		"toolConfig": map[string]interface{}{
+			"functionCallingConfig": map[string]interface{}{
+				"mode": "ANY",
+			},
+		},
+	}
+
+	reqBody := map[string]interface{}{
+		"model":          p.model,
+		"project":        p.projectID,
+		"user_prompt_id": fmt.Sprintf("%s-%d", req.ToolName, time.Now().UnixNano()),
+		"request":        requestInner,
+	}
+
+	if req.Debug {
+		fmt.Fprintf(os.Stderr, "=== DEBUG: Code Assist %s Request ===\n", req.ToolName)
+		fmt.Fprintf(os.Stderr, "Provider: %s\n", p.Name())
+		fmt.Fprintf(os.Stderr, "Project: %s\n", p.projectID)
+		fmt.Fprintf(os.Stderr, "System:\n%s\n", req.SystemPrompt)
+		fmt.Fprintf(os.Stderr, "User:\n%s\n", req.UserPrompt)
+		fmt.Fprintln(os.Stderr, "========================================")
+	}
+
+	reqJSON, _ := json.Marshal(reqBody)
+	reqURL := fmt.Sprintf("%s/%s:generateContent", codeAssistEndpoint, codeAssistAPIVersion)
+
+	httpReq, err := http.NewRequestWithContext(ctx, "POST", reqURL, bytes.NewReader(reqJSON))
+	if err != nil {
+		return nil, err
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Authorization", "Bearer "+token)
+
+	resp, err := http.DefaultClient.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("generateContent request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("generateContent failed with status %d: %s", resp.StatusCode, string(body))
+	}
+
+	var genResp struct {
+		Response struct {
+			Candidates []struct {
+				Content struct {
+					Parts []struct {
+						Text         string `json:"text"`
+						FunctionCall *struct {
+							Name string                 `json:"name"`
+							Args map[string]interface{} `json:"args"`
+						} `json:"functionCall"`
+					} `json:"parts"`
+				} `json:"content"`
+			} `json:"candidates"`
+		} `json:"response"`
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&genResp); err != nil {
+		return nil, fmt.Errorf("failed to parse response: %w", err)
+	}
+
+	if req.Debug {
+		fmt.Fprintf(os.Stderr, "=== DEBUG: Code Assist %s Response ===\n", req.ToolName)
+		respJSON, _ := json.MarshalIndent(genResp, "", "  ")
+		fmt.Fprintf(os.Stderr, "%s\n", string(respJSON))
+		fmt.Fprintln(os.Stderr, "=========================================")
+	}
+
+	// Extract results from response
+	result := &ToolCallResult{}
+	if len(genResp.Response.Candidates) > 0 {
+		for _, part := range genResp.Response.Candidates[0].Content.Parts {
+			if part.Text != "" {
+				result.TextOutput += part.Text
+			}
+			if part.FunctionCall != nil {
+				argsJSON, _ := json.Marshal(part.FunctionCall.Args)
+				result.ToolCalls = append(result.ToolCalls, ToolCallArguments{
+					Name:      part.FunctionCall.Name,
+					Arguments: argsJSON,
+				})
+			}
+		}
+	}
+
+	return result, nil
+}
+
+// GetEdits calls the LLM with the edit tool and returns all proposed edits.
+func (p *CodeAssistProvider) GetEdits(ctx context.Context, systemPrompt, userPrompt string, debug bool) ([]EditToolCall, error) {
+	return GetEditsFromProvider(ctx, p, systemPrompt, userPrompt, debug)
+}
+
+// GetUnifiedDiff calls the LLM with the unified_diff tool and returns the diff string.
+func (p *CodeAssistProvider) GetUnifiedDiff(ctx context.Context, systemPrompt, userPrompt string, debug bool) (string, error) {
+	return GetUnifiedDiffFromProvider(ctx, p, systemPrompt, userPrompt, debug)
+}
