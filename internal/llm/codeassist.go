@@ -20,9 +20,14 @@ import (
 )
 
 const (
-	codeAssistEndpoint   = "https://cloudcode-pa.googleapis.com"
-	codeAssistAPIVersion = "v1internal"
-	googleTokenEndpoint  = "https://oauth2.googleapis.com/token"
+	codeAssistEndpoint             = "https://cloudcode-pa.googleapis.com"
+	codeAssistAPIVersion           = "v1internal"
+	googleTokenEndpoint            = "https://oauth2.googleapis.com/token"
+	codeAssistProjectCacheFile     = "project.json"
+	codeAssistTokenCacheFile       = "access-token.json"
+	codeAssistClientCredsCacheFile = "client-creds.json"
+	codeAssistProjectCacheTTL      = 24 * time.Hour
+	codeAssistTokenExpiryBuffer    = 5 * time.Minute
 )
 
 // GeminiOAuthCredentials holds the OAuth credentials loaded from ~/.gemini/oauth_creds.json
@@ -32,14 +37,103 @@ type GeminiOAuthCredentials struct {
 	ExpiryDate   int64  `json:"expiry_date"`
 }
 
+type codeAssistProjectCache struct {
+	ProjectID string `json:"project_id"`
+	Platform  string `json:"platform"`
+	FetchedAt int64  `json:"fetched_at"`
+}
+
+type codeAssistTokenCache struct {
+	AccessToken string `json:"access_token"`
+	ExpiryDate  int64  `json:"expiry_date"`
+	CachedAt    int64  `json:"cached_at"`
+}
+
+type codeAssistClientCredsCache struct {
+	ClientID     string `json:"client_id"`
+	ClientSecret string `json:"client_secret"`
+	SourcePath   string `json:"source_path,omitempty"`
+	SourceMTime  int64  `json:"source_mtime,omitempty"`
+	CachedAt     int64  `json:"cached_at,omitempty"`
+}
+
 // geminiOAuthClientCreds holds the OAuth client ID and secret
 type geminiOAuthClientCreds struct {
 	clientID     string
 	clientSecret string
 }
 
-// getGeminiOAuthClientCreds reads the OAuth client credentials from gemini-cli installation
-func getGeminiOAuthClientCreds() (*geminiOAuthClientCreds, error) {
+func loadClientCredsFromCache(debug bool) (*geminiOAuthClientCreds, bool) {
+	start := time.Now()
+	var cache codeAssistClientCredsCache
+	if err := readCodeAssistCache(codeAssistClientCredsCacheFile, &cache); err != nil {
+		logTiming(debug, "client creds cache read", start, "miss")
+		return nil, false
+	}
+	if cache.ClientID == "" || cache.ClientSecret == "" {
+		logTiming(debug, "client creds cache read", start, "empty")
+		return nil, false
+	}
+
+	detail := "hit"
+	if cache.SourcePath != "" && cache.SourceMTime != 0 {
+		info, err := os.Stat(cache.SourcePath)
+		if err != nil {
+			detail = "hit-source-missing"
+		} else if info.ModTime().UnixMilli() != cache.SourceMTime {
+			logTiming(debug, "client creds cache read", start, "stale")
+			return nil, false
+		}
+	}
+
+	logTiming(debug, "client creds cache read", start, detail)
+	return &geminiOAuthClientCreds{
+		clientID:     cache.ClientID,
+		clientSecret: cache.ClientSecret,
+	}, true
+}
+
+func saveClientCredsToCache(debug bool, sourcePath string, creds *geminiOAuthClientCreds) {
+	if creds == nil || creds.clientID == "" || creds.clientSecret == "" {
+		return
+	}
+
+	start := time.Now()
+	cache := codeAssistClientCredsCache{
+		ClientID:     creds.clientID,
+		ClientSecret: creds.clientSecret,
+		SourcePath:   sourcePath,
+		CachedAt:     time.Now().UnixMilli(),
+	}
+
+	if sourcePath != "" {
+		if info, err := os.Stat(sourcePath); err == nil {
+			cache.SourceMTime = info.ModTime().UnixMilli()
+		}
+	}
+
+	if err := writeCodeAssistCache(codeAssistClientCredsCacheFile, &cache); err != nil {
+		if debug {
+			fmt.Fprintf(os.Stderr, "Cache: client creds write failed: %v\n", err)
+		}
+		return
+	}
+
+	logTiming(debug, "client creds cache write", start, "")
+}
+
+// getGeminiOAuthClientCreds reads the OAuth client credentials, preferring cache.
+func getGeminiOAuthClientCreds(debug bool) (*geminiOAuthClientCreds, bool, error) {
+	if creds, ok := loadClientCredsFromCache(debug); ok {
+		return creds, true, nil
+	}
+
+	creds, err := loadGeminiOAuthClientCredsFromCLI(debug)
+	return creds, false, err
+}
+
+func loadGeminiOAuthClientCredsFromCLI(debug bool) (*geminiOAuthClientCreds, error) {
+	loadStart := time.Now()
 	// Try to find gemini-cli installation and read credentials from oauth2.js
 	geminiPath, err := exec.LookPath("gemini")
 	if err != nil {
@@ -63,6 +157,8 @@ func getGeminiOAuthClientCreds() (*geminiOAuthClientCreds, error) {
 		return nil, fmt.Errorf("failed to read oauth2.js from gemini-cli: %w", err)
 	}
 
+	logTiming(debug, "client creds load", loadStart, "gemini-cli")
+
 	// Extract client ID and secret using simple string matching
 	contentStr := string(content)
 
@@ -73,10 +169,14 @@ func getGeminiOAuthClientCreds() (*geminiOAuthClientCreds, error) {
 		return nil, fmt.Errorf("failed to extract OAuth credentials from gemini-cli")
 	}
 
-	return &geminiOAuthClientCreds{
+	creds := &geminiOAuthClientCreds{
 		clientID:     clientID,
 		clientSecret: clientSecret,
-	}, nil
+	}
+
+	saveClientCredsToCache(debug, oauth2Path, creds)
+
+	return creds, nil
 }
 
 // extractConstant extracts a string constant value from JS source
@@ -95,86 +195,56 @@ func extractConstant(content, name string) string {
 	return content[start : start+end]
 }
 
-// CodeAssistProvider implements Provider using Google Code Assist API with OAuth
-type CodeAssistProvider struct {
-	creds       *GeminiOAuthCredentials
-	model       string
-	projectID   string                  // cached after loadCodeAssist
-	clientCreds *geminiOAuthClientCreds // cached OAuth client credentials
+func logTiming(debug bool, label string, start time.Time, detail string) {
+	if !debug {
+		return
+	}
+	elapsed := time.Since(start).Round(time.Millisecond)
+	if detail != "" {
+		fmt.Fprintf(os.Stderr, "Timing: %s (%s) %s\n", label, detail, elapsed)
+		return
+	}
+	fmt.Fprintf(os.Stderr, "Timing: %s %s\n", label, elapsed)
 }
 
-func NewCodeAssistProvider(creds *GeminiOAuthCredentials, model string) *CodeAssistProvider {
-	return &CodeAssistProvider{
-		creds: creds,
-		model: model,
-	}
-}
-
-func (p *CodeAssistProvider) Name() string {
-	return fmt.Sprintf("Gemini Code Assist (%s)", p.model)
-}
-
-// getAccessToken returns a valid access token, refreshing if needed
-func (p *CodeAssistProvider) getAccessToken() (string, error) {
-	now := time.Now().UnixMilli()
-	bufferMs := int64(5 * 60 * 1000) // 5 minute buffer
-
-	if p.creds.ExpiryDate == 0 || now < p.creds.ExpiryDate-bufferMs {
-		return p.creds.AccessToken, nil
-	}
-
-	// Ensure we have client credentials for refresh
-	if p.clientCreds == nil {
-		creds, err := getGeminiOAuthClientCreds()
-		if err != nil {
-			return "", fmt.Errorf("failed to get OAuth client credentials: %w", err)
-		}
-		p.clientCreds = creds
-	}
-
-	// Refresh the token
-	data := url.Values{}
-	data.Set("client_id", p.clientCreds.clientID)
-	data.Set("client_secret", p.clientCreds.clientSecret)
-	data.Set("refresh_token", p.creds.RefreshToken)
-	data.Set("grant_type", "refresh_token")
-
-	resp, err := http.Post(googleTokenEndpoint, "application/x-www-form-urlencoded", strings.NewReader(data.Encode()))
+func codeAssistCacheDir() (string, error) {
+	cacheDir, err := os.UserCacheDir()
 	if err != nil {
-		return "", fmt.Errorf("failed to refresh token: %w", err)
+		return "", err
 	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != 200 {
-		body, _ := io.ReadAll(resp.Body)
-		return "", fmt.Errorf("token refresh failed: %s", string(body))
-	}
-
-	var tokenResp struct {
-		AccessToken string `json:"access_token"`
-		ExpiresIn   int    `json:"expires_in"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&tokenResp); err != nil {
-		return "", fmt.Errorf("failed to parse token response: %w", err)
-	}
-
-	p.creds.AccessToken = tokenResp.AccessToken
-	p.creds.ExpiryDate = time.Now().UnixMilli() + int64(tokenResp.ExpiresIn)*1000
-
-	return tokenResp.AccessToken, nil
+	return filepath.Join(cacheDir, "term-llm", "codeassist"), nil
 }
 
-// ensureProjectID calls loadCodeAssist to get the project ID if not already cached
-func (p *CodeAssistProvider) ensureProjectID(ctx context.Context) error {
-	if p.projectID != "" {
-		return nil
-	}
-
-	token, err := p.getAccessToken()
+func readCodeAssistCache(fileName string, dest any) error {
+	cacheDir, err := codeAssistCacheDir()
 	if err != nil {
 		return err
 	}
+	cachePath := filepath.Join(cacheDir, fileName)
+	data, err := os.ReadFile(cachePath)
+	if err != nil {
+		return err
+	}
+	return json.Unmarshal(data, dest)
+}
 
+func writeCodeAssistCache(fileName string, src any) error {
+	cacheDir, err := codeAssistCacheDir()
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(cacheDir, 0755); err != nil {
+		return err
+	}
+	data, err := json.Marshal(src)
+	if err != nil {
+		return err
+	}
+	cachePath := filepath.Join(cacheDir, fileName)
+	return os.WriteFile(cachePath, data, 0600)
+}
+
+func codeAssistPlatform() string {
 	platform := "PLATFORM_UNSPECIFIED"
 	switch runtime.GOOS {
 	case "darwin":
@@ -191,6 +261,215 @@ func (p *CodeAssistProvider) ensureProjectID(ctx context.Context) error {
 		}
 	case "windows":
 		platform = "WINDOWS_AMD64"
+	}
+	return platform
+}
+
+// CodeAssistProvider implements Provider using Google Code Assist API with OAuth
+type CodeAssistProvider struct {
+	creds       *GeminiOAuthCredentials
+	model       string
+	projectID   string                  // cached after loadCodeAssist
+	clientCreds *geminiOAuthClientCreds // cached OAuth client credentials
+	// Tracks whether client credentials came from disk cache (so we can retry on failure).
+	clientCredsFromCache bool
+}
+
+func NewCodeAssistProvider(creds *GeminiOAuthCredentials, model string) *CodeAssistProvider {
+	return &CodeAssistProvider{
+		creds: creds,
+		model: model,
+	}
+}
+
+func (p *CodeAssistProvider) Name() string {
+	return fmt.Sprintf("Gemini Code Assist (%s)", p.model)
+}
+
+// getAccessToken returns a valid access token, refreshing if needed
+func (p *CodeAssistProvider) getAccessToken(debug bool) (string, error) {
+	now := time.Now().UnixMilli()
+	bufferMs := int64(codeAssistTokenExpiryBuffer.Milliseconds())
+
+	if p.creds.AccessToken != "" && (p.creds.ExpiryDate == 0 || now < p.creds.ExpiryDate-bufferMs) {
+		logTiming(debug, "access token", time.Now(), "memory")
+		return p.creds.AccessToken, nil
+	}
+
+	if p.loadAccessTokenFromCache(debug) {
+		return p.creds.AccessToken, nil
+	}
+
+	// Ensure we have client credentials for refresh
+	if p.clientCreds == nil {
+		creds, fromCache, err := getGeminiOAuthClientCreds(debug)
+		if err != nil {
+			return "", fmt.Errorf("failed to get OAuth client credentials: %w", err)
+		}
+		p.clientCreds = creds
+		p.clientCredsFromCache = fromCache
+	}
+
+	token, expiryDate, err := p.refreshAccessToken(debug, "")
+	if err != nil && p.clientCredsFromCache {
+		if debug {
+			fmt.Fprintln(os.Stderr, "Cache: client creds refresh failed, reloading from gemini-cli")
+		}
+		creds, loadErr := loadGeminiOAuthClientCredsFromCLI(debug)
+		if loadErr == nil {
+			p.clientCreds = creds
+			p.clientCredsFromCache = false
+			token, expiryDate, err = p.refreshAccessToken(debug, "retry")
+		}
+	}
+	if err != nil {
+		return "", err
+	}
+
+	p.creds.AccessToken = token
+	p.creds.ExpiryDate = expiryDate
+	p.saveAccessTokenToCache(debug)
+
+	return token, nil
+}
+
+func (p *CodeAssistProvider) refreshAccessToken(debug bool, detail string) (string, int64, error) {
+	refreshStart := time.Now()
+	data := url.Values{}
+	data.Set("client_id", p.clientCreds.clientID)
+	data.Set("client_secret", p.clientCreds.clientSecret)
+	data.Set("refresh_token", p.creds.RefreshToken)
+	data.Set("grant_type", "refresh_token")
+
+	resp, err := http.Post(googleTokenEndpoint, "application/x-www-form-urlencoded", strings.NewReader(data.Encode()))
+	if err != nil {
+		return "", 0, fmt.Errorf("failed to refresh token: %w", err)
+	}
+	defer resp.Body.Close()
+
+	logTiming(debug, "token refresh", refreshStart, detail)
+
+	if resp.StatusCode != 200 {
+		body, _ := io.ReadAll(resp.Body)
+		return "", 0, fmt.Errorf("token refresh failed: %s", string(body))
+	}
+
+	var tokenResp struct {
+		AccessToken string `json:"access_token"`
+		ExpiresIn   int    `json:"expires_in"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&tokenResp); err != nil {
+		return "", 0, fmt.Errorf("failed to parse token response: %w", err)
+	}
+
+	expiryDate := time.Now().UnixMilli() + int64(tokenResp.ExpiresIn)*1000
+	return tokenResp.AccessToken, expiryDate, nil
+}
+
+func (p *CodeAssistProvider) loadAccessTokenFromCache(debug bool) bool {
+	start := time.Now()
+	var cache codeAssistTokenCache
+	if err := readCodeAssistCache(codeAssistTokenCacheFile, &cache); err != nil {
+		logTiming(debug, "access token cache read", start, "miss")
+		return false
+	}
+	if cache.AccessToken == "" || cache.ExpiryDate == 0 {
+		logTiming(debug, "access token cache read", start, "empty")
+		return false
+	}
+
+	bufferMs := int64(codeAssistTokenExpiryBuffer.Milliseconds())
+	now := time.Now().UnixMilli()
+	if now >= cache.ExpiryDate-bufferMs {
+		logTiming(debug, "access token cache read", start, "expired")
+		return false
+	}
+
+	p.creds.AccessToken = cache.AccessToken
+	p.creds.ExpiryDate = cache.ExpiryDate
+	logTiming(debug, "access token cache read", start, "hit")
+	return true
+}
+
+func (p *CodeAssistProvider) saveAccessTokenToCache(debug bool) {
+	if p.creds.AccessToken == "" || p.creds.ExpiryDate == 0 {
+		return
+	}
+
+	start := time.Now()
+	cache := codeAssistTokenCache{
+		AccessToken: p.creds.AccessToken,
+		ExpiryDate:  p.creds.ExpiryDate,
+		CachedAt:    time.Now().UnixMilli(),
+	}
+	if err := writeCodeAssistCache(codeAssistTokenCacheFile, &cache); err != nil {
+		if debug {
+			fmt.Fprintf(os.Stderr, "Cache: access token write failed: %v\n", err)
+		}
+		return
+	}
+	logTiming(debug, "access token cache write", start, "")
+}
+
+func (p *CodeAssistProvider) loadProjectIDFromCache(debug bool, platform string) bool {
+	start := time.Now()
+	var cache codeAssistProjectCache
+	if err := readCodeAssistCache(codeAssistProjectCacheFile, &cache); err != nil {
+		logTiming(debug, "project ID cache read", start, "miss")
+		return false
+	}
+	if cache.ProjectID == "" {
+		logTiming(debug, "project ID cache read", start, "empty")
+		return false
+	}
+	if cache.Platform != "" && cache.Platform != platform {
+		logTiming(debug, "project ID cache read", start, "platform-mismatch")
+		return false
+	}
+	if cache.FetchedAt == 0 || time.Since(time.UnixMilli(cache.FetchedAt)) > codeAssistProjectCacheTTL {
+		logTiming(debug, "project ID cache read", start, "expired")
+		return false
+	}
+
+	p.projectID = cache.ProjectID
+	logTiming(debug, "project ID cache read", start, "hit")
+	return true
+}
+
+func (p *CodeAssistProvider) saveProjectIDToCache(debug bool, platform string) {
+	if p.projectID == "" {
+		return
+	}
+
+	start := time.Now()
+	cache := codeAssistProjectCache{
+		ProjectID: p.projectID,
+		Platform:  platform,
+		FetchedAt: time.Now().UnixMilli(),
+	}
+	if err := writeCodeAssistCache(codeAssistProjectCacheFile, &cache); err != nil {
+		if debug {
+			fmt.Fprintf(os.Stderr, "Cache: project ID write failed: %v\n", err)
+		}
+		return
+	}
+	logTiming(debug, "project ID cache write", start, "")
+}
+
+// ensureProjectID calls loadCodeAssist to get the project ID if not already cached
+func (p *CodeAssistProvider) ensureProjectID(ctx context.Context, debug bool) error {
+	if p.projectID != "" {
+		return nil
+	}
+
+	platform := codeAssistPlatform()
+	if p.loadProjectIDFromCache(debug, platform) {
+		return nil
+	}
+
+	token, err := p.getAccessToken(debug)
+	if err != nil {
+		return err
 	}
 
 	reqBody := map[string]interface{}{
@@ -211,11 +490,14 @@ func (p *CodeAssistProvider) ensureProjectID(ctx context.Context) error {
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+token)
 
+	loadStart := time.Now()
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("loadCodeAssist request failed: %w", err)
 	}
 	defer resp.Body.Close()
+
+	logTiming(debug, "loadCodeAssist request", loadStart, "")
 
 	if resp.StatusCode != 200 {
 		body, _ := io.ReadAll(resp.Body)
@@ -230,6 +512,7 @@ func (p *CodeAssistProvider) ensureProjectID(ctx context.Context) error {
 	}
 
 	p.projectID = loadResp.CloudaicompanionProject
+	p.saveProjectIDToCache(debug, platform)
 	return nil
 }
 
@@ -242,11 +525,11 @@ func (p *CodeAssistProvider) SuggestCommands(ctx context.Context, req SuggestReq
 
 // performSearch performs a Google Search query and returns the search context
 func (p *CodeAssistProvider) performSearch(ctx context.Context, query string, debug bool) (string, error) {
-	if err := p.ensureProjectID(ctx); err != nil {
+	if err := p.ensureProjectID(ctx, debug); err != nil {
 		return "", err
 	}
 
-	token, err := p.getAccessToken()
+	token, err := p.getAccessToken(debug)
 	if err != nil {
 		return "", err
 	}
@@ -345,11 +628,11 @@ func (p *CodeAssistProvider) suggestWithSearch(ctx context.Context, req SuggestR
 	}
 
 	// Phase 2: Generate suggestions with search context
-	if err := p.ensureProjectID(ctx); err != nil {
+	if err := p.ensureProjectID(ctx, req.Debug); err != nil {
 		return nil, err
 	}
 
-	token, err := p.getAccessToken()
+	token, err := p.getAccessToken(req.Debug)
 	if err != nil {
 		return nil, err
 	}
@@ -462,11 +745,11 @@ func (p *CodeAssistProvider) suggestWithSearch(ctx context.Context, req SuggestR
 }
 
 func (p *CodeAssistProvider) suggestWithoutSearch(ctx context.Context, req SuggestRequest) ([]CommandSuggestion, error) {
-	if err := p.ensureProjectID(ctx); err != nil {
+	if err := p.ensureProjectID(ctx, req.Debug); err != nil {
 		return nil, err
 	}
 
-	token, err := p.getAccessToken()
+	token, err := p.getAccessToken(req.Debug)
 	if err != nil {
 		return nil, err
 	}
@@ -576,11 +859,11 @@ func (p *CodeAssistProvider) suggestWithoutSearch(ctx context.Context, req Sugge
 func (p *CodeAssistProvider) StreamResponse(ctx context.Context, req AskRequest, output chan<- string) error {
 	defer close(output)
 
-	if err := p.ensureProjectID(ctx); err != nil {
+	if err := p.ensureProjectID(ctx, req.Debug); err != nil {
 		return err
 	}
 
-	token, err := p.getAccessToken()
+	token, err := p.getAccessToken(req.Debug)
 	if err != nil {
 		return err
 	}
@@ -640,11 +923,15 @@ func (p *CodeAssistProvider) StreamResponse(ctx context.Context, req AskRequest,
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Authorization", "Bearer "+token)
 
+	streamStart := time.Now()
+	headerStart := time.Now()
 	resp, err := http.DefaultClient.Do(httpReq)
 	if err != nil {
 		return fmt.Errorf("streamGenerateContent request failed: %w", err)
 	}
 	defer resp.Body.Close()
+
+	logTiming(req.Debug, "streamGenerateContent headers", headerStart, "")
 
 	if resp.StatusCode != 200 {
 		body, _ := io.ReadAll(resp.Body)
@@ -660,10 +947,16 @@ func (p *CodeAssistProvider) StreamResponse(ctx context.Context, req AskRequest,
 	var sources []groundingSource
 
 	scanner := bufio.NewScanner(resp.Body)
+	firstChunkLogged := false
 	for scanner.Scan() {
 		line := scanner.Text()
 		if !strings.HasPrefix(line, "data: ") {
 			continue
+		}
+
+		if !firstChunkLogged {
+			firstChunkLogged = true
+			logTiming(req.Debug, "streamGenerateContent first chunk", streamStart, "")
 		}
 
 		data := line[6:]
@@ -729,17 +1022,23 @@ func (p *CodeAssistProvider) StreamResponse(ctx context.Context, req AskRequest,
 		}
 	}
 
+	if firstChunkLogged {
+		logTiming(req.Debug, "streamGenerateContent total", streamStart, "")
+	} else {
+		logTiming(req.Debug, "streamGenerateContent total", streamStart, "no chunks")
+	}
+
 	return scanner.Err()
 }
 
 // CallWithTool makes an API call with a single tool and returns raw results.
 // Implements ToolCallProvider interface.
 func (p *CodeAssistProvider) CallWithTool(ctx context.Context, req ToolCallRequest) (*ToolCallResult, error) {
-	if err := p.ensureProjectID(ctx); err != nil {
+	if err := p.ensureProjectID(ctx, req.Debug); err != nil {
 		return nil, err
 	}
 
-	token, err := p.getAccessToken()
+	token, err := p.getAccessToken(req.Debug)
 	if err != nil {
 		return nil, err
 	}
