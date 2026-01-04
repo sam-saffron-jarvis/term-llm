@@ -169,7 +169,7 @@ Use arrow keys to select a command, Enter to execute, or press `h` for detailed 
 | `--auto-pick` | `-a` | Auto-execute the best suggestion without prompting |
 | `--max N` | `-n N` | Limit to N options in the selection UI |
 | `--search` | `-s` | Enable web search for current information |
-| `--print-only` | `-p` | Print the command instead of executing |
+| `--print-only` | `-p` | Print the command instead of executing it |
 | `--debug` | `-d` | Show full LLM request and response |
 
 ### Examples

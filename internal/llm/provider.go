@@ -2,7 +2,9 @@ package llm
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
 
 	"github.com/samsaffron/term-llm/internal/config"
@@ -71,6 +73,61 @@ type EditToolProvider interface {
 // This is more efficient for models fine-tuned on single tool calls (e.g., Codex models).
 type UnifiedDiffProvider interface {
 	GetUnifiedDiff(ctx context.Context, systemPrompt, userPrompt string, debug bool) (string, error)
+}
+
+// ToolCallRequest holds parameters for a single-tool LLM call
+type ToolCallRequest struct {
+	SystemPrompt string
+	UserPrompt   string
+	ToolName     string
+	ToolDesc     string
+	ToolSchema   map[string]interface{}
+	Debug        bool
+}
+
+// ToolCallResult holds the raw results from a tool call
+type ToolCallResult struct {
+	TextOutput string
+	ToolCalls  []ToolCallArguments
+}
+
+// ToolCallArguments holds a single tool call's data
+type ToolCallArguments struct {
+	Name      string
+	Arguments json.RawMessage
+}
+
+// ParseEditToolCalls extracts EditToolCall structs from raw tool call results
+func ParseEditToolCalls(toolCalls []ToolCallArguments) []EditToolCall {
+	var edits []EditToolCall
+	for _, tc := range toolCalls {
+		if tc.Name != "edit" {
+			continue
+		}
+		var edit EditToolCall
+		if err := json.Unmarshal(tc.Arguments, &edit); err != nil {
+			fmt.Fprintf(os.Stderr, "Error parsing edit: %v\n", err)
+			continue
+		}
+		edits = append(edits, edit)
+	}
+	return edits
+}
+
+// ParseUnifiedDiff extracts the diff string from raw tool call results
+func ParseUnifiedDiff(toolCalls []ToolCallArguments) (string, error) {
+	for _, tc := range toolCalls {
+		if tc.Name == "unified_diff" {
+			var result struct {
+				Diff string `json:"diff"`
+			}
+			if err := json.Unmarshal(tc.Arguments, &result); err != nil {
+				return "", fmt.Errorf("failed to parse unified_diff response: %w", err)
+			}
+			return result.Diff, nil
+		}
+	}
+	return "", fmt.Errorf("no unified_diff function call in response")
 }
 
 // IsCodexModel returns true if the model name indicates a Codex model

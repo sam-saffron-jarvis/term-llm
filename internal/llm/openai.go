@@ -154,26 +154,25 @@ func (p *OpenAIProvider) SuggestCommands(ctx context.Context, req SuggestRequest
 	return nil, fmt.Errorf("no suggest_commands function call in response")
 }
 
-// GetEdits calls the LLM with the edit tool and returns all proposed edits
-func (p *OpenAIProvider) GetEdits(ctx context.Context, systemPrompt, userPrompt string, debug bool) ([]EditToolCall, error) {
-	// Define the edit tool using centralized schema
-	editTool := responses.ToolParamOfFunction("edit", prompt.EditSchema(), true)
-	editTool.OfFunction.Description = openai.String(prompt.EditDescription)
+// callWithTool makes an API call with a single tool and returns raw results
+func (p *OpenAIProvider) callWithTool(ctx context.Context, req ToolCallRequest) (*ToolCallResult, error) {
+	tool := responses.ToolParamOfFunction(req.ToolName, req.ToolSchema, true)
+	tool.OfFunction.Description = openai.String(req.ToolDesc)
 
-	if debug {
-		fmt.Fprintln(os.Stderr, "=== DEBUG: OpenAI Edit Request ===")
-		fmt.Fprintf(os.Stderr, "System: %s\n", systemPrompt)
-		fmt.Fprintf(os.Stderr, "User: %s\n", userPrompt)
+	if req.Debug {
+		fmt.Fprintf(os.Stderr, "=== DEBUG: OpenAI %s Request ===\n", req.ToolName)
+		fmt.Fprintf(os.Stderr, "System: %s\n", req.SystemPrompt)
+		fmt.Fprintf(os.Stderr, "User: %s\n", req.UserPrompt)
 		fmt.Fprintln(os.Stderr, "==================================")
 	}
 
 	params := responses.ResponseNewParams{
 		Model:        shared.ResponsesModel(p.model),
-		Instructions: openai.String(systemPrompt),
+		Instructions: openai.String(req.SystemPrompt),
 		Input: responses.ResponseNewParamsInputUnion{
-			OfString: openai.String(userPrompt),
+			OfString: openai.String(req.UserPrompt),
 		},
-		Tools: []responses.ToolUnionParam{editTool},
+		Tools: []responses.ToolUnionParam{tool},
 	}
 
 	// Add reasoning effort if set
@@ -188,8 +187,8 @@ func (p *OpenAIProvider) GetEdits(ctx context.Context, systemPrompt, userPrompt 
 		return nil, fmt.Errorf("openai API error: %w", err)
 	}
 
-	if debug {
-		fmt.Fprintln(os.Stderr, "=== DEBUG: OpenAI Edit Response ===")
+	if req.Debug {
+		fmt.Fprintf(os.Stderr, "=== DEBUG: OpenAI %s Response ===\n", req.ToolName)
 		fmt.Fprintf(os.Stderr, "Status: %s\n", resp.Status)
 		for i, item := range resp.Output {
 			fmt.Fprintf(os.Stderr, "Output %d: type=%s\n", i, item.Type)
@@ -201,109 +200,55 @@ func (p *OpenAIProvider) GetEdits(ctx context.Context, systemPrompt, userPrompt 
 		fmt.Fprintln(os.Stderr, "===================================")
 	}
 
-	// Print any text output first
+	result := &ToolCallResult{}
 	for _, item := range resp.Output {
 		if item.Type == "message" {
 			for _, content := range item.Content {
 				if content.Type == "output_text" && content.Text != "" {
-					fmt.Println(content.Text)
+					result.TextOutput += content.Text + "\n"
 				}
 			}
+		} else if item.Type == "function_call" {
+			result.ToolCalls = append(result.ToolCalls, ToolCallArguments{
+				Name:      item.Name,
+				Arguments: json.RawMessage(item.Arguments),
+			})
 		}
 	}
 
-	// Collect all edits from function calls
-	var edits []EditToolCall
-	for _, item := range resp.Output {
-		if item.Type != "function_call" || item.Name != "edit" {
-			continue
-		}
+	return result, nil
+}
 
-		var editCall EditToolCall
-		if err := json.Unmarshal([]byte(item.Arguments), &editCall); err != nil {
-			fmt.Fprintf(os.Stderr, "Error parsing edit: %v\n", err)
-			continue
-		}
-
-		edits = append(edits, editCall)
+// GetEdits calls the LLM with the edit tool and returns all proposed edits
+func (p *OpenAIProvider) GetEdits(ctx context.Context, systemPrompt, userPrompt string, debug bool) ([]EditToolCall, error) {
+	result, err := p.callWithTool(ctx, ToolCallRequest{
+		SystemPrompt: systemPrompt, UserPrompt: userPrompt,
+		ToolName: "edit", ToolDesc: prompt.EditDescription,
+		ToolSchema: prompt.EditSchema(), Debug: debug,
+	})
+	if err != nil {
+		return nil, err
 	}
-
-	return edits, nil
+	if result.TextOutput != "" {
+		fmt.Print(result.TextOutput)
+	}
+	return ParseEditToolCalls(result.ToolCalls), nil
 }
 
 // GetUnifiedDiff calls the LLM with the unified_diff tool and returns the diff string.
-// This is more efficient for Codex models which are fine-tuned for single tool calls.
 func (p *OpenAIProvider) GetUnifiedDiff(ctx context.Context, systemPrompt, userPrompt string, debug bool) (string, error) {
-	// Define the unified diff tool using centralized schema
-	diffTool := responses.ToolParamOfFunction("unified_diff", prompt.UnifiedDiffSchema(), true)
-	diffTool.OfFunction.Description = openai.String(prompt.UnifiedDiffDescription)
-
-	if debug {
-		fmt.Fprintln(os.Stderr, "=== DEBUG: OpenAI UnifiedDiff Request ===")
-		fmt.Fprintf(os.Stderr, "System: %s\n", systemPrompt)
-		fmt.Fprintf(os.Stderr, "User: %s\n", userPrompt)
-		fmt.Fprintln(os.Stderr, "=========================================")
-	}
-
-	params := responses.ResponseNewParams{
-		Model:        shared.ResponsesModel(p.model),
-		Instructions: openai.String(systemPrompt),
-		Input: responses.ResponseNewParamsInputUnion{
-			OfString: openai.String(userPrompt),
-		},
-		Tools: []responses.ToolUnionParam{diffTool},
-	}
-
-	// Add reasoning effort if set
-	if p.effort != "" {
-		params.Reasoning = shared.ReasoningParam{
-			Effort: shared.ReasoningEffort(p.effort),
-		}
-	}
-
-	resp, err := p.client.Responses.New(ctx, params)
+	result, err := p.callWithTool(ctx, ToolCallRequest{
+		SystemPrompt: systemPrompt, UserPrompt: userPrompt,
+		ToolName: "unified_diff", ToolDesc: prompt.UnifiedDiffDescription,
+		ToolSchema: prompt.UnifiedDiffSchema(), Debug: debug,
+	})
 	if err != nil {
-		return "", fmt.Errorf("openai API error: %w", err)
+		return "", err
 	}
-
-	if debug {
-		fmt.Fprintln(os.Stderr, "=== DEBUG: OpenAI UnifiedDiff Response ===")
-		fmt.Fprintf(os.Stderr, "Status: %s\n", resp.Status)
-		for i, item := range resp.Output {
-			fmt.Fprintf(os.Stderr, "Output %d: type=%s\n", i, item.Type)
-			if item.Type == "function_call" {
-				fmt.Fprintf(os.Stderr, "  Function: %s\n", item.Name)
-				fmt.Fprintf(os.Stderr, "  Arguments: %s\n", item.Arguments)
-			}
-		}
-		fmt.Fprintln(os.Stderr, "==========================================")
+	if result.TextOutput != "" {
+		fmt.Print(result.TextOutput)
 	}
-
-	// Print any text output first
-	for _, item := range resp.Output {
-		if item.Type == "message" {
-			for _, content := range item.Content {
-				if content.Type == "output_text" && content.Text != "" {
-					fmt.Println(content.Text)
-				}
-			}
-		}
-	}
-
-	// Find the unified_diff function call
-	for _, item := range resp.Output {
-		if item.Type == "function_call" && item.Name == "unified_diff" {
-			var diffResult struct {
-				Diff string `json:"diff"`
-			}
-			if err := json.Unmarshal([]byte(item.Arguments), &diffResult); err != nil {
-				return "", fmt.Errorf("failed to parse diff result: %w", err)
-			}
-			return diffResult.Diff, nil
-		}
-	}
-
-	return "", fmt.Errorf("no unified_diff function call in response")
+	return ParseUnifiedDiff(result.ToolCalls)
 }
 
 func (p *OpenAIProvider) StreamResponse(ctx context.Context, req AskRequest, output chan<- string) error {
