@@ -13,6 +13,7 @@ import (
 	"github.com/charmbracelet/glamour/styles"
 	"github.com/samsaffron/term-llm/internal/input"
 	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/signal"
 	"github.com/samsaffron/term-llm/internal/ui"
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
@@ -56,7 +57,8 @@ func init() {
 
 func runAsk(cmd *cobra.Command, args []string) error {
 	question := strings.Join(args, " ")
-	ctx := context.Background()
+	ctx, stop := signal.NotifyContext()
+	defer stop()
 
 	cfg, err := loadConfigWithSetup()
 	if err != nil {
@@ -114,9 +116,9 @@ func runAsk(cmd *cobra.Command, args []string) error {
 	}()
 
 	if useGlamour {
-		err = streamWithGlamour(output)
+		err = streamWithGlamour(ctx, output)
 	} else {
-		err = streamPlainText(output)
+		err = streamPlainText(ctx, output)
 	}
 
 	if err != nil {
@@ -132,12 +134,19 @@ func runAsk(cmd *cobra.Command, args []string) error {
 }
 
 // streamPlainText streams text directly without formatting
-func streamPlainText(output <-chan string) error {
-	for chunk := range output {
-		fmt.Print(chunk)
+func streamPlainText(ctx context.Context, output <-chan string) error {
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case chunk, ok := <-output:
+			if !ok {
+				fmt.Println()
+				return nil
+			}
+			fmt.Print(chunk)
+		}
 	}
-	fmt.Println()
-	return nil
 }
 
 // getTerminalWidth returns the terminal width or a default
@@ -162,6 +171,7 @@ type askStreamModel struct {
 
 type askContentMsg string
 type askDoneMsg struct{}
+type askCancelledMsg struct{}
 
 func newAskStreamModel() askStreamModel {
 	width := getTerminalWidth()
@@ -209,6 +219,9 @@ func (m askStreamModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.rendered = ""
 		return m, tea.Quit
 
+	case askCancelledMsg:
+		return m, tea.Quit
+
 	case spinner.TickMsg:
 		if m.loading {
 			var cmd tea.Cmd
@@ -246,13 +259,19 @@ func (m askStreamModel) View() string {
 }
 
 // streamWithGlamour renders markdown beautifully as content streams in
-func streamWithGlamour(output <-chan string) error {
+func streamWithGlamour(ctx context.Context, output <-chan string) error {
 	model := newAskStreamModel()
 
 	// Create program - use inline mode so output stays in terminal
 	p := tea.NewProgram(model,
 		tea.WithoutSignalHandler(),
 	)
+
+	// Watch for context cancellation and quit immediately
+	go func() {
+		<-ctx.Done()
+		p.Send(askCancelledMsg{})
+	}()
 
 	// Stream content in background
 	go func() {

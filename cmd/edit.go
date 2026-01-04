@@ -14,6 +14,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/input"
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/prompt"
+	"github.com/samsaffron/term-llm/internal/signal"
 	"github.com/samsaffron/term-llm/internal/ui"
 	"github.com/spf13/cobra"
 )
@@ -208,7 +209,8 @@ func parseFileSpec(spec string) (FileSpec, error) {
 
 func runEdit(cmd *cobra.Command, args []string) error {
 	request := strings.Join(args, " ")
-	ctx := context.Background()
+	ctx, stop := signal.NotifyContext()
+	defer stop()
 
 	cfg, err := loadConfigWithSetup()
 	if err != nil {

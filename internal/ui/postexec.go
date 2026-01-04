@@ -47,6 +47,7 @@ func ShowCommandHelp(command, shell string, provider llm.Provider) error {
 		tea.WithMouseCellMotion(),
 		tea.WithInput(tty),
 		tea.WithOutput(tty),
+		tea.WithoutSignalHandler(),
 	)
 
 	// Stream content in background, sending chunks to the program

@@ -54,7 +54,7 @@ func (m spinnerModel) Init() tea.Cmd {
 func (m spinnerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
-		if msg.Type == tea.KeyEscape {
+		if msg.Type == tea.KeyEscape || msg.String() == "ctrl+c" {
 			m.cancelled = true
 			m.cancel()
 			return m, tea.Quit
@@ -94,7 +94,7 @@ func runWithSpinner(ctx context.Context, debug bool, run func(context.Context) (
 
 	// Create and run spinner
 	model := newSpinnerModel(cancel, tty)
-	p := tea.NewProgram(model, tea.WithInput(tty), tea.WithOutput(tty))
+	p := tea.NewProgram(model, tea.WithInput(tty), tea.WithOutput(tty), tea.WithoutSignalHandler())
 
 	// Start request in background and send result to program
 	go func() {
@@ -338,7 +338,7 @@ func SelectCommand(suggestions []llm.CommandSuggestion, shell string, provider l
 		}
 
 		model := newSelectModel(suggestions, tty)
-		p := tea.NewProgram(model, tea.WithInput(tty), tea.WithOutput(tty))
+		p := tea.NewProgram(model, tea.WithInput(tty), tea.WithOutput(tty), tea.WithoutSignalHandler())
 
 		finalModel, err := p.Run()
 		tty.Close()

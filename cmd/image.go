@@ -11,6 +11,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/samsaffron/term-llm/internal/image"
+	"github.com/samsaffron/term-llm/internal/signal"
 	"github.com/spf13/cobra"
 )
 
@@ -60,7 +61,8 @@ func init() {
 
 func runImage(cmd *cobra.Command, args []string) error {
 	prompt := strings.Join(args, " ")
-	ctx := context.Background()
+	ctx, stop := signal.NotifyContext()
+	defer stop()
 
 	// Load config
 	cfg, err := loadConfig()
@@ -260,7 +262,7 @@ func runImageWithSpinner(ctx context.Context, provider image.ImageProvider, gene
 	}
 	defer tty.Close()
 
-	p := tea.NewProgram(m, tea.WithInput(tty), tea.WithOutput(os.Stderr))
+	p := tea.NewProgram(m, tea.WithInput(tty), tea.WithOutput(os.Stderr), tea.WithoutSignalHandler())
 	finalModel, err := p.Run()
 	if err != nil {
 		return nil, err
