@@ -101,43 +101,7 @@ func (p *GeminiProvider) suggestWithSearch(ctx context.Context, req SuggestReque
 		numSuggestions = 3
 	}
 
-	// Define the function schema for structured output
-	suggestTool := &genai.Tool{
-		FunctionDeclarations: []*genai.FunctionDeclaration{
-			{
-				Name:        "suggest_commands",
-				Description: "Suggest shell commands based on user input",
-				Parameters: &genai.Schema{
-					Type: genai.TypeObject,
-					Properties: map[string]*genai.Schema{
-						"suggestions": {
-							Type:        genai.TypeArray,
-							Description: "List of command suggestions",
-							Items: &genai.Schema{
-								Type: genai.TypeObject,
-								Properties: map[string]*genai.Schema{
-									"command": {
-										Type:        genai.TypeString,
-										Description: "The shell command to execute",
-									},
-									"explanation": {
-										Type:        genai.TypeString,
-										Description: "Brief explanation of what the command does",
-									},
-									"likelihood": {
-										Type:        genai.TypeInteger,
-										Description: "How likely this command matches user intent (1=unlikely, 10=very likely)",
-									},
-								},
-								Required: []string{"command", "explanation", "likelihood"},
-							},
-						},
-					},
-					Required: []string{"suggestions"},
-				},
-			},
-		},
-	}
+	suggestTool := geminiSuggestTool(numSuggestions)
 
 	systemPrompt := prompt.SuggestSystemPrompt(req.Shell, req.Instructions, numSuggestions, true)
 
@@ -153,7 +117,7 @@ func (p *GeminiProvider) suggestWithSearch(ctx context.Context, req SuggestReque
 		ToolConfig: &genai.ToolConfig{
 			FunctionCallingConfig: &genai.FunctionCallingConfig{
 				Mode:                 genai.FunctionCallingConfigModeAny,
-				AllowedFunctionNames: []string{"suggest_commands"},
+				AllowedFunctionNames: []string{suggestCommandsToolName},
 			},
 		},
 	}
@@ -192,43 +156,7 @@ func (p *GeminiProvider) suggestWithoutSearch(ctx context.Context, req SuggestRe
 		numSuggestions = 3
 	}
 
-	// Define the function schema for structured output
-	suggestTool := &genai.Tool{
-		FunctionDeclarations: []*genai.FunctionDeclaration{
-			{
-				Name:        "suggest_commands",
-				Description: "Suggest shell commands based on user input",
-				Parameters: &genai.Schema{
-					Type: genai.TypeObject,
-					Properties: map[string]*genai.Schema{
-						"suggestions": {
-							Type:        genai.TypeArray,
-							Description: "List of command suggestions",
-							Items: &genai.Schema{
-								Type: genai.TypeObject,
-								Properties: map[string]*genai.Schema{
-									"command": {
-										Type:        genai.TypeString,
-										Description: "The shell command to execute",
-									},
-									"explanation": {
-										Type:        genai.TypeString,
-										Description: "Brief explanation of what the command does",
-									},
-									"likelihood": {
-										Type:        genai.TypeInteger,
-										Description: "How likely this command matches user intent (1=unlikely, 10=very likely)",
-									},
-								},
-								Required: []string{"command", "explanation", "likelihood"},
-							},
-						},
-					},
-					Required: []string{"suggestions"},
-				},
-			},
-		},
-	}
+	suggestTool := geminiSuggestTool(numSuggestions)
 
 	systemPrompt := prompt.SuggestSystemPrompt(req.Shell, req.Instructions, numSuggestions, false)
 	userPrompt := prompt.SuggestUserPrompt(req.UserInput, req.Files, req.Stdin)
@@ -239,7 +167,7 @@ func (p *GeminiProvider) suggestWithoutSearch(ctx context.Context, req SuggestRe
 		ToolConfig: &genai.ToolConfig{
 			FunctionCallingConfig: &genai.FunctionCallingConfig{
 				Mode:                 genai.FunctionCallingConfigModeAny,
-				AllowedFunctionNames: []string{"suggest_commands"},
+				AllowedFunctionNames: []string{suggestCommandsToolName},
 			},
 		},
 	}
@@ -280,7 +208,7 @@ func (p *GeminiProvider) debugPrintResponse(resp *genai.GenerateContentResponse)
 
 func (p *GeminiProvider) extractSuggestions(resp *genai.GenerateContentResponse) ([]CommandSuggestion, error) {
 	for _, fc := range resp.FunctionCalls() {
-		if fc.Name == "suggest_commands" {
+		if fc.Name == suggestCommandsToolName {
 			// Extract suggestions from the function call arguments
 			suggestionsRaw, ok := fc.Args["suggestions"]
 			if !ok {
@@ -434,11 +362,7 @@ func (p *GeminiProvider) CallWithTool(ctx context.Context, req ToolCallRequest) 
 			{
 				Name:        req.ToolName,
 				Description: req.ToolDesc,
-				Parameters: &genai.Schema{
-					Type:       genai.TypeObject,
-					Properties: convertSchemaProperties(req.ToolSchema),
-					Required:   getRequiredFields(req.ToolSchema),
-				},
+				Parameters:  schemaToGenai(req.ToolSchema),
 			},
 		},
 	}
@@ -486,68 +410,6 @@ func (p *GeminiProvider) CallWithTool(ctx context.Context, req ToolCallRequest) 
 	}
 
 	return result, nil
-}
-
-// convertSchemaProperties converts the generic schema properties to genai.Schema format
-func convertSchemaProperties(schema map[string]interface{}) map[string]*genai.Schema {
-	props := make(map[string]*genai.Schema)
-	if properties, ok := schema["properties"].(map[string]interface{}); ok {
-		for name, prop := range properties {
-			if propMap, ok := prop.(map[string]interface{}); ok {
-				props[name] = &genai.Schema{
-					Type:        getSchemaType(propMap),
-					Description: getStringField(propMap, "description"),
-				}
-			}
-		}
-	}
-	return props
-}
-
-// getRequiredFields extracts the required fields from a schema
-func getRequiredFields(schema map[string]interface{}) []string {
-	if required, ok := schema["required"].([]string); ok {
-		return required
-	}
-	if required, ok := schema["required"].([]interface{}); ok {
-		result := make([]string, 0, len(required))
-		for _, r := range required {
-			if s, ok := r.(string); ok {
-				result = append(result, s)
-			}
-		}
-		return result
-	}
-	return nil
-}
-
-// getSchemaType converts a type string to genai.Type
-func getSchemaType(prop map[string]interface{}) genai.Type {
-	if t, ok := prop["type"].(string); ok {
-		switch t {
-		case "string":
-			return genai.TypeString
-		case "integer":
-			return genai.TypeInteger
-		case "number":
-			return genai.TypeNumber
-		case "boolean":
-			return genai.TypeBoolean
-		case "array":
-			return genai.TypeArray
-		case "object":
-			return genai.TypeObject
-		}
-	}
-	return genai.TypeString
-}
-
-// getStringField safely extracts a string field from a map
-func getStringField(m map[string]interface{}, key string) string {
-	if v, ok := m[key].(string); ok {
-		return v
-	}
-	return ""
 }
 
 // GetEdits calls the LLM with the edit tool and returns all proposed edits.

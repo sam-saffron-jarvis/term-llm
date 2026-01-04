@@ -21,23 +21,18 @@ func getTTY() (*os.File, error) {
 	return os.OpenFile("/dev/tty", os.O_RDWR, 0)
 }
 
+type spinnerResultMsg struct {
+	value any
+	err   error
+}
+
 // spinnerModel is the bubbletea model for the loading spinner
 type spinnerModel struct {
 	spinner   spinner.Model
 	cancel    context.CancelFunc
 	cancelled bool
-	result    *llmResultMsg
+	result    *spinnerResultMsg
 	styles    *Styles
-}
-
-type llmResultMsg struct {
-	suggestions []llm.CommandSuggestion
-	err         error
-}
-
-type editResultMsg struct {
-	edits []llm.EditToolCall
-	err   error
 }
 
 func newSpinnerModel(cancel context.CancelFunc, tty *os.File) spinnerModel {
@@ -64,7 +59,7 @@ func (m spinnerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.cancel()
 			return m, tea.Quit
 		}
-	case llmResultMsg:
+	case spinnerResultMsg:
 		m.result = &msg
 		return m, tea.Quit
 	case spinner.TickMsg:
@@ -79,9 +74,7 @@ func (m spinnerModel) View() string {
 	return m.spinner.View() + " Thinking... " + m.styles.Muted.Render("(esc to cancel)")
 }
 
-// RunWithSpinner shows a spinner while executing the LLM request
-// Returns suggestions, or error if cancelled or failed
-func RunWithSpinner(ctx context.Context, provider llm.Provider, req llm.SuggestRequest) ([]llm.CommandSuggestion, error) {
+func runWithSpinner(ctx context.Context, debug bool, run func(context.Context) (any, error)) (any, error) {
 	// Create cancellable context
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -90,23 +83,23 @@ func RunWithSpinner(ctx context.Context, provider llm.Provider, req llm.SuggestR
 	tty, ttyErr := getTTY()
 	if ttyErr != nil {
 		// Fallback: no spinner, just run directly
-		return provider.SuggestCommands(ctx, req)
+		return run(ctx)
 	}
 	defer tty.Close()
 
 	// In debug mode, skip spinner so output isn't garbled
-	if req.Debug {
-		return provider.SuggestCommands(ctx, req)
+	if debug {
+		return run(ctx)
 	}
 
 	// Create and run spinner
 	model := newSpinnerModel(cancel, tty)
 	p := tea.NewProgram(model, tea.WithInput(tty), tea.WithOutput(tty))
 
-	// Start LLM request in background and send result to program
+	// Start request in background and send result to program
 	go func() {
-		suggestions, err := provider.SuggestCommands(ctx, req)
-		p.Send(llmResultMsg{suggestions: suggestions, err: err})
+		value, err := run(ctx)
+		p.Send(spinnerResultMsg{value: value, err: err})
 	}()
 
 	finalModel, err := p.Run()
@@ -123,203 +116,61 @@ func RunWithSpinner(ctx context.Context, provider llm.Provider, req llm.SuggestR
 		return nil, fmt.Errorf("no result received")
 	}
 
-	return m.result.suggestions, m.result.err
+	return m.result.value, m.result.err
 }
 
-// editSpinnerModel is the bubbletea model for the edit loading spinner
-type editSpinnerModel struct {
-	spinner   spinner.Model
-	cancel    context.CancelFunc
-	cancelled bool
-	result    *editResultMsg
-	styles    *Styles
-}
-
-func newEditSpinnerModel(cancel context.CancelFunc, tty *os.File) editSpinnerModel {
-	styles := NewStyles(tty)
-	s := spinner.New()
-	s.Spinner = spinner.Dot
-	s.Style = styles.Spinner
-	return editSpinnerModel{
-		spinner: s,
-		cancel:  cancel,
-		styles:  styles,
+// RunWithSpinner shows a spinner while executing the LLM request
+// Returns suggestions, or error if cancelled or failed
+func RunWithSpinner(ctx context.Context, provider llm.Provider, req llm.SuggestRequest) ([]llm.CommandSuggestion, error) {
+	result, err := runWithSpinner(ctx, req.Debug, func(ctx context.Context) (any, error) {
+		return provider.SuggestCommands(ctx, req)
+	})
+	if result == nil {
+		return nil, err
 	}
-}
 
-func (m editSpinnerModel) Init() tea.Cmd {
-	return m.spinner.Tick
-}
-
-func (m editSpinnerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	switch msg := msg.(type) {
-	case tea.KeyMsg:
-		if msg.Type == tea.KeyEscape {
-			m.cancelled = true
-			m.cancel()
-			return m, tea.Quit
-		}
-	case editResultMsg:
-		m.result = &msg
-		return m, tea.Quit
-	case spinner.TickMsg:
-		var cmd tea.Cmd
-		m.spinner, cmd = m.spinner.Update(msg)
-		return m, cmd
+	suggestions, ok := result.([]llm.CommandSuggestion)
+	if !ok {
+		return nil, fmt.Errorf("unexpected result type")
 	}
-	return m, nil
-}
 
-func (m editSpinnerModel) View() string {
-	return m.spinner.View() + " Thinking... " + m.styles.Muted.Render("(esc to cancel)")
+	return suggestions, err
 }
 
 // RunEditWithSpinner shows a spinner while executing the edit request
 // Returns edits, or error if cancelled or failed
 func RunEditWithSpinner(ctx context.Context, provider llm.EditToolProvider, systemPrompt, userPrompt string, debug bool) ([]llm.EditToolCall, error) {
-	// Create cancellable context
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
-
-	// Get tty for proper rendering
-	tty, ttyErr := getTTY()
-	if ttyErr != nil {
-		// Fallback: no spinner, just run directly
+	result, err := runWithSpinner(ctx, debug, func(ctx context.Context) (any, error) {
 		return provider.GetEdits(ctx, systemPrompt, userPrompt, debug)
-	}
-	defer tty.Close()
-
-	// In debug mode, skip spinner so output isn't garbled
-	if debug {
-		return provider.GetEdits(ctx, systemPrompt, userPrompt, debug)
-	}
-
-	// Create and run spinner
-	model := newEditSpinnerModel(cancel, tty)
-	p := tea.NewProgram(model, tea.WithInput(tty), tea.WithOutput(tty))
-
-	// Start edit request in background and send result to program
-	go func() {
-		edits, err := provider.GetEdits(ctx, systemPrompt, userPrompt, debug)
-		p.Send(editResultMsg{edits: edits, err: err})
-	}()
-
-	finalModel, err := p.Run()
-	if err != nil {
+	})
+	if result == nil {
 		return nil, err
 	}
 
-	m := finalModel.(editSpinnerModel)
-	if m.cancelled {
-		return nil, fmt.Errorf("cancelled")
+	edits, ok := result.([]llm.EditToolCall)
+	if !ok {
+		return nil, fmt.Errorf("unexpected result type")
 	}
 
-	if m.result == nil {
-		return nil, fmt.Errorf("no result received")
-	}
-
-	return m.result.edits, m.result.err
-}
-
-// udiffResultMsg is sent when the unified diff request completes
-type udiffResultMsg struct {
-	diff string
-	err  error
-}
-
-// udiffSpinnerModel is a bubbletea model that shows a spinner while waiting for unified diff
-type udiffSpinnerModel struct {
-	spinner   spinner.Model
-	cancel    context.CancelFunc
-	cancelled bool
-	result    *udiffResultMsg
-	styles    *Styles
-}
-
-func newUdiffSpinnerModel(cancel context.CancelFunc, tty *os.File) udiffSpinnerModel {
-	styles := NewStyles(tty)
-	s := spinner.New()
-	s.Spinner = spinner.Dot
-	s.Style = styles.Spinner
-	return udiffSpinnerModel{
-		spinner: s,
-		cancel:  cancel,
-		styles:  styles,
-	}
-}
-
-func (m udiffSpinnerModel) Init() tea.Cmd {
-	return m.spinner.Tick
-}
-
-func (m udiffSpinnerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	switch msg := msg.(type) {
-	case tea.KeyMsg:
-		if msg.Type == tea.KeyEscape {
-			m.cancelled = true
-			m.cancel()
-			return m, tea.Quit
-		}
-	case udiffResultMsg:
-		m.result = &msg
-		return m, tea.Quit
-	case spinner.TickMsg:
-		var cmd tea.Cmd
-		m.spinner, cmd = m.spinner.Update(msg)
-		return m, cmd
-	}
-	return m, nil
-}
-
-func (m udiffSpinnerModel) View() string {
-	return m.spinner.View() + " Thinking... " + m.styles.Muted.Render("(esc to cancel)")
+	return edits, err
 }
 
 // RunUnifiedDiffWithSpinner shows a spinner while executing the unified diff request
 // Returns the diff string, or error if cancelled or failed
 func RunUnifiedDiffWithSpinner(ctx context.Context, provider llm.UnifiedDiffProvider, systemPrompt, userPrompt string, debug bool) (string, error) {
-	// Create cancellable context
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
-
-	// Get tty for proper rendering
-	tty, ttyErr := getTTY()
-	if ttyErr != nil {
-		// Fallback: no spinner, just run directly
+	result, err := runWithSpinner(ctx, debug, func(ctx context.Context) (any, error) {
 		return provider.GetUnifiedDiff(ctx, systemPrompt, userPrompt, debug)
-	}
-	defer tty.Close()
-
-	// In debug mode, skip spinner so output isn't garbled
-	if debug {
-		return provider.GetUnifiedDiff(ctx, systemPrompt, userPrompt, debug)
-	}
-
-	// Create and run spinner
-	model := newUdiffSpinnerModel(cancel, tty)
-	p := tea.NewProgram(model, tea.WithInput(tty), tea.WithOutput(tty))
-
-	// Start unified diff request in background and send result to program
-	go func() {
-		diff, err := provider.GetUnifiedDiff(ctx, systemPrompt, userPrompt, debug)
-		p.Send(udiffResultMsg{diff: diff, err: err})
-	}()
-
-	finalModel, err := p.Run()
-	if err != nil {
+	})
+	if result == nil {
 		return "", err
 	}
 
-	m := finalModel.(udiffSpinnerModel)
-	if m.cancelled {
-		return "", fmt.Errorf("cancelled")
+	diff, ok := result.(string)
+	if !ok {
+		return "", fmt.Errorf("unexpected result type")
 	}
 
-	if m.result == nil {
-		return "", fmt.Errorf("no result received")
-	}
-
-	return m.result.diff, m.result.err
+	return diff, err
 }
 
 // selectModel is a bubbletea model for command selection with help support

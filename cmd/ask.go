@@ -11,7 +11,6 @@ import (
 	"github.com/charmbracelet/glamour"
 	"github.com/charmbracelet/glamour/ansi"
 	"github.com/charmbracelet/glamour/styles"
-	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/input"
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/ui"
@@ -59,45 +58,16 @@ func runAsk(cmd *cobra.Command, args []string) error {
 	question := strings.Join(args, " ")
 	ctx := context.Background()
 
-	// Load or setup config
-	var cfg *config.Config
-	var err error
-
-	if config.NeedsSetup() {
-		cfg, err = ui.RunSetupWizard()
-		if err != nil {
-			return fmt.Errorf("setup cancelled: %w", err)
-		}
-	} else {
-		cfg, err = config.Load()
-		if err != nil {
-			return fmt.Errorf("failed to load config: %w", err)
-		}
+	cfg, err := loadConfigWithSetup()
+	if err != nil {
+		return err
 	}
 
-	// Apply per-command config overrides
-	cfg.ApplyOverrides(cfg.Ask.Provider, cfg.Ask.Model)
-
-	// CLI flag takes precedence (supports provider:model syntax)
-	if askProvider != "" {
-		provider, model, err := llm.ParseProviderModel(askProvider)
-		if err != nil {
-			return err
-		}
-		cfg.ApplyOverrides(provider, model)
+	if err := applyProviderOverrides(cfg, cfg.Ask.Provider, cfg.Ask.Model, askProvider); err != nil {
+		return err
 	}
 
-	// Initialize theme from config
-	ui.InitTheme(ui.ThemeConfig{
-		Primary:   cfg.Theme.Primary,
-		Secondary: cfg.Theme.Secondary,
-		Success:   cfg.Theme.Success,
-		Error:     cfg.Theme.Error,
-		Warning:   cfg.Theme.Warning,
-		Muted:     cfg.Theme.Muted,
-		Text:      cfg.Theme.Text,
-		Spinner:   cfg.Theme.Spinner,
-	})
+	initThemeFromConfig(cfg)
 
 	// Create LLM provider
 	provider, err := llm.NewProvider(cfg)

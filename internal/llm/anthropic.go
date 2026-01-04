@@ -77,40 +77,7 @@ func (p *AnthropicProvider) suggestWithoutSearch(ctx context.Context, req Sugges
 		numSuggestions = 3
 	}
 
-	inputSchema := anthropic.ToolInputSchemaParam{
-		Type: "object",
-		Properties: map[string]interface{}{
-			"suggestions": map[string]interface{}{
-				"type": "array",
-				"items": map[string]interface{}{
-					"type": "object",
-					"properties": map[string]interface{}{
-						"command": map[string]interface{}{
-							"type":        "string",
-							"description": "The shell command to execute",
-						},
-						"explanation": map[string]interface{}{
-							"type":        "string",
-							"description": "Brief explanation of what the command does",
-						},
-						"likelihood": map[string]interface{}{
-							"type":        "integer",
-							"minimum":     1,
-							"maximum":     10,
-							"description": "How likely this command matches user intent (1=unlikely, 10=very likely)",
-						},
-					},
-					"required": []string{"command", "explanation", "likelihood"},
-				},
-				"minItems": numSuggestions,
-				"maxItems": numSuggestions,
-			},
-		},
-		Required: []string{"suggestions"},
-	}
-
-	tool := anthropic.ToolUnionParamOfTool(inputSchema, "suggest_commands")
-	tool.OfTool.Description = anthropic.String("Suggest shell commands based on user input")
+	tool := anthropicSuggestTool(numSuggestions)
 
 	systemPrompt := prompt.SuggestSystemPrompt(req.Shell, req.Instructions, numSuggestions, false)
 	userPrompt := prompt.SuggestUserPrompt(req.UserInput, req.Files, req.Stdin)
@@ -147,7 +114,7 @@ func (p *AnthropicProvider) suggestWithoutSearch(ctx context.Context, req Sugges
 		}
 	} else {
 		// Only force tool choice when thinking is disabled
-		params.ToolChoice = anthropic.ToolChoiceParamOfTool("suggest_commands")
+		params.ToolChoice = anthropic.ToolChoiceParamOfTool(suggestCommandsToolName)
 	}
 
 	message, err := p.client.Messages.New(ctx, params)
@@ -177,45 +144,7 @@ func (p *AnthropicProvider) suggestWithSearch(ctx context.Context, req SuggestRe
 		numSuggestions = 3
 	}
 
-	inputSchema := anthropic.BetaToolInputSchemaParam{
-		Type: "object",
-		Properties: map[string]interface{}{
-			"suggestions": map[string]interface{}{
-				"type": "array",
-				"items": map[string]interface{}{
-					"type": "object",
-					"properties": map[string]interface{}{
-						"command": map[string]interface{}{
-							"type":        "string",
-							"description": "The shell command to execute",
-						},
-						"explanation": map[string]interface{}{
-							"type":        "string",
-							"description": "Brief explanation of what the command does",
-						},
-						"likelihood": map[string]interface{}{
-							"type":        "integer",
-							"minimum":     1,
-							"maximum":     10,
-							"description": "How likely this command matches user intent (1=unlikely, 10=very likely)",
-						},
-					},
-					"required": []string{"command", "explanation", "likelihood"},
-				},
-				"minItems": numSuggestions,
-				"maxItems": numSuggestions,
-			},
-		},
-		Required: []string{"suggestions"},
-	}
-
-	suggestTool := anthropic.BetaToolUnionParam{
-		OfTool: &anthropic.BetaToolParam{
-			Name:        "suggest_commands",
-			Description: anthropic.String("Suggest shell commands based on user input. Call this after gathering any needed information from web search."),
-			InputSchema: inputSchema,
-		},
-	}
+	suggestTool := anthropicSuggestToolBeta(numSuggestions)
 
 	webSearchTool := anthropic.BetaToolUnionParam{
 		OfWebSearchTool20250305: &anthropic.BetaWebSearchTool20250305Param{
@@ -305,7 +234,7 @@ func (p *AnthropicProvider) extractSuggestions(content []anthropic.ContentBlockU
 
 func (p *AnthropicProvider) extractBetaSuggestions(content []anthropic.BetaContentBlockUnion) ([]CommandSuggestion, error) {
 	for _, block := range content {
-		if block.Type == "tool_use" && block.Name == "suggest_commands" {
+		if block.Type == "tool_use" && block.Name == suggestCommandsToolName {
 			var resp suggestionsResponse
 			if err := json.Unmarshal([]byte(block.JSON.Input.Raw()), &resp); err != nil {
 				return nil, fmt.Errorf("failed to parse response: %w", err)

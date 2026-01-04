@@ -91,8 +91,8 @@ func (p *CodexProvider) SuggestCommands(ctx context.Context, req SuggestRequest)
 	// ChatGPT backend uses flat format (name at top level, not nested in function)
 	tools = append(tools, map[string]interface{}{
 		"type":        "function",
-		"name":        "suggest_commands",
-		"description": "Suggest shell commands based on user input",
+		"name":        suggestCommandsToolName,
+		"description": suggestToolDescription(false),
 		"strict":      true,
 		"parameters":  prompt.SuggestSchema(numSuggestions),
 	})
@@ -197,7 +197,7 @@ func (p *CodexProvider) SuggestCommands(ctx context.Context, req SuggestRequest)
 
 	// Find the function call output
 	for _, item := range result.Output {
-		if item.Type == "function_call" && item.Name == "suggest_commands" {
+		if item.Type == "function_call" && item.Name == suggestCommandsToolName {
 			var suggestions suggestionsResponse
 			if err := json.Unmarshal([]byte(item.Arguments), &suggestions); err != nil {
 				return nil, fmt.Errorf("failed to parse response: %w", err)

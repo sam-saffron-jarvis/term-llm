@@ -216,8 +216,8 @@ func (p *OpenAICompatProvider) SuggestCommands(ctx context.Context, req SuggestR
 			{
 				Type: "function",
 				Function: oaiFunction{
-					Name:        "suggest_commands",
-					Description: "Suggest shell commands based on user input",
+					Name:        suggestCommandsToolName,
+					Description: suggestToolDescription(false),
 					Parameters:  schema,
 				},
 			},
@@ -286,7 +286,7 @@ func (p *OpenAICompatProvider) SuggestCommands(ctx context.Context, req SuggestR
 
 	// Extract suggestions from tool call
 	for _, tc := range msg.ToolCalls {
-		if tc.Function.Name == "suggest_commands" {
+		if tc.Function.Name == suggestCommandsToolName {
 			var result suggestionsResponse
 			if err := json.Unmarshal([]byte(tc.Function.Arguments), &result); err != nil {
 				return nil, fmt.Errorf("failed to parse suggestions: %w", err)

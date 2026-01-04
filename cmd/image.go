@@ -10,9 +10,7 @@ import (
 	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
-	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/image"
-	"github.com/samsaffron/term-llm/internal/ui"
 	"github.com/spf13/cobra"
 )
 
@@ -65,22 +63,13 @@ func runImage(cmd *cobra.Command, args []string) error {
 	ctx := context.Background()
 
 	// Load config
-	cfg, err := config.Load()
+	cfg, err := loadConfig()
 	if err != nil {
-		return fmt.Errorf("failed to load config: %w", err)
+		return err
 	}
 
 	// Initialize theme from config
-	ui.InitTheme(ui.ThemeConfig{
-		Primary:   cfg.Theme.Primary,
-		Secondary: cfg.Theme.Secondary,
-		Success:   cfg.Theme.Success,
-		Error:     cfg.Theme.Error,
-		Warning:   cfg.Theme.Warning,
-		Muted:     cfg.Theme.Muted,
-		Text:      cfg.Theme.Text,
-		Spinner:   cfg.Theme.Spinner,
-	})
+	initThemeFromConfig(cfg)
 
 	// Create image provider
 	provider, err := image.NewImageProvider(cfg, imageProvider)

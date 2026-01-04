@@ -62,11 +62,11 @@ func (p *OpenAIProvider) SuggestCommands(ctx context.Context, req SuggestRequest
 
 	// Define the function tool for structured output
 	functionTool := responses.ToolParamOfFunction(
-		"suggest_commands",
+		suggestCommandsToolName,
 		prompt.SuggestSchema(numSuggestions),
 		true,
 	)
-	functionTool.OfFunction.Description = openai.String("Suggest shell commands based on user input")
+	functionTool.OfFunction.Description = openai.String(suggestToolDescription(false))
 
 	tools := []responses.ToolUnionParam{functionTool}
 
@@ -142,7 +142,7 @@ func (p *OpenAIProvider) SuggestCommands(ctx context.Context, req SuggestRequest
 
 	// Find the function call output
 	for _, item := range resp.Output {
-		if item.Type == "function_call" && item.Name == "suggest_commands" {
+		if item.Type == "function_call" && item.Name == suggestCommandsToolName {
 			var result suggestionsResponse
 			if err := json.Unmarshal([]byte(item.Arguments), &result); err != nil {
 				return nil, fmt.Errorf("failed to parse response: %w", err)

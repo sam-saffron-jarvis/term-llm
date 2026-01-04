@@ -7,7 +7,6 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/input"
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/ui"
@@ -69,45 +68,16 @@ func runExec(cmd *cobra.Command, args []string) error {
 	userInput := strings.Join(args, " ")
 	ctx := context.Background()
 
-	// Check if setup is needed
-	var cfg *config.Config
-	var err error
-
-	if config.NeedsSetup() {
-		cfg, err = ui.RunSetupWizard()
-		if err != nil {
-			return fmt.Errorf("setup cancelled: %w", err)
-		}
-	} else {
-		cfg, err = config.Load()
-		if err != nil {
-			return fmt.Errorf("failed to load config: %w", err)
-		}
+	cfg, err := loadConfigWithSetup()
+	if err != nil {
+		return err
 	}
 
-	// Apply per-command config overrides
-	cfg.ApplyOverrides(cfg.Exec.Provider, cfg.Exec.Model)
-
-	// CLI flag takes precedence (supports provider:model syntax)
-	if execProvider != "" {
-		provider, model, err := llm.ParseProviderModel(execProvider)
-		if err != nil {
-			return err
-		}
-		cfg.ApplyOverrides(provider, model)
+	if err := applyProviderOverrides(cfg, cfg.Exec.Provider, cfg.Exec.Model, execProvider); err != nil {
+		return err
 	}
 
-	// Initialize theme from config
-	ui.InitTheme(ui.ThemeConfig{
-		Primary:   cfg.Theme.Primary,
-		Secondary: cfg.Theme.Secondary,
-		Success:   cfg.Theme.Success,
-		Error:     cfg.Theme.Error,
-		Warning:   cfg.Theme.Warning,
-		Muted:     cfg.Theme.Muted,
-		Text:      cfg.Theme.Text,
-		Spinner:   cfg.Theme.Spinner,
-	})
+	initThemeFromConfig(cfg)
 
 	// Create LLM provider
 	provider, err := llm.NewProvider(cfg)

@@ -6,7 +6,6 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"runtime"
 	"strconv"
 	"strings"
 
@@ -14,6 +13,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/input"
 	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/prompt"
 	"github.com/samsaffron/term-llm/internal/ui"
 	"github.com/spf13/cobra"
 )
@@ -67,6 +67,105 @@ type FileSpec struct {
 	HasGuard  bool
 }
 
+type diffEntry struct {
+	path              string
+	writePath         string
+	oldContent        string
+	newContent        string
+	skipReasons       []string
+	countSkipIfNoDiff bool
+	onApplied         func(path, newContent string)
+}
+
+type diffApplyOptions struct {
+	separatorOnAnyOutput bool
+}
+
+func toPromptSpecs(specs []FileSpec) []prompt.EditSpec {
+	result := make([]prompt.EditSpec, 0, len(specs))
+	for _, spec := range specs {
+		result = append(result, prompt.EditSpec{
+			Path:      spec.Path,
+			StartLine: spec.StartLine,
+			EndLine:   spec.EndLine,
+			HasGuard:  spec.HasGuard,
+		})
+	}
+	return result
+}
+
+func applyDiffEntries(entries []diffEntry, dryRun bool, opts diffApplyOptions) (int, int) {
+	globalWidth := 0
+	for _, entry := range entries {
+		if entry.oldContent != entry.newContent {
+			w := ui.CalcDiffWidth(entry.oldContent, entry.newContent)
+			if w > globalWidth {
+				globalWidth = w
+			}
+		}
+	}
+
+	var applied, skipped int
+	firstDiff := true
+	printed := false
+
+	for _, entry := range entries {
+		for _, reason := range entry.skipReasons {
+			ui.ShowEditSkipped(entry.path, reason)
+		}
+		if len(entry.skipReasons) > 0 {
+			printed = true
+		}
+
+		if entry.oldContent == entry.newContent {
+			if entry.countSkipIfNoDiff && len(entry.skipReasons) > 0 {
+				skipped++
+			}
+			continue
+		}
+
+		if opts.separatorOnAnyOutput {
+			if printed {
+				fmt.Println()
+			}
+		} else if !firstDiff {
+			fmt.Println()
+		}
+		firstDiff = false
+
+		ui.PrintCompactDiff(entry.path, entry.oldContent, entry.newContent, globalWidth)
+		printed = true
+
+		if dryRun {
+			continue
+		}
+
+		if !ui.PromptApplyEdit() {
+			skipped++
+			continue
+		}
+
+		writePath := entry.writePath
+		if writePath == "" {
+			writePath = entry.path
+		}
+
+		if err := os.WriteFile(writePath, []byte(entry.newContent), 0644); err != nil {
+			fmt.Printf("  error: %s\n", err.Error())
+			skipped++
+			continue
+		}
+
+		if entry.onApplied != nil {
+			entry.onApplied(writePath, entry.newContent)
+		}
+
+		applied++
+	}
+
+	return applied, skipped
+}
+
 // absPath converts a path to absolute, returning the original if conversion fails
 func absPath(path string) string {
 	abs, err := filepath.Abs(path)
@@ -111,45 +210,16 @@ func runEdit(cmd *cobra.Command, args []string) error {
 	request := strings.Join(args, " ")
 	ctx := context.Background()
 
-	// Load config
-	var cfg *config.Config
-	var err error
-
-	if config.NeedsSetup() {
-		cfg, err = ui.RunSetupWizard()
-		if err != nil {
-			return fmt.Errorf("setup cancelled: %w", err)
-		}
-	} else {
-		cfg, err = config.Load()
-		if err != nil {
-			return fmt.Errorf("failed to load config: %w", err)
-		}
+	cfg, err := loadConfigWithSetup()
+	if err != nil {
+		return err
 	}
 
-	// Apply per-command config overrides
-	cfg.ApplyOverrides(cfg.Edit.Provider, cfg.Edit.Model)
-
-	// CLI flag takes precedence (supports provider:model syntax)
-	if editProvider != "" {
-		provider, model, err := llm.ParseProviderModel(editProvider)
-		if err != nil {
-			return err
-		}
-		cfg.ApplyOverrides(provider, model)
+	if err := applyProviderOverrides(cfg, cfg.Edit.Provider, cfg.Edit.Model, editProvider); err != nil {
+		return err
 	}
 
-	// Initialize theme
-	ui.InitTheme(ui.ThemeConfig{
-		Primary:   cfg.Theme.Primary,
-		Secondary: cfg.Theme.Secondary,
-		Success:   cfg.Theme.Success,
-		Error:     cfg.Theme.Error,
-		Warning:   cfg.Theme.Warning,
-		Muted:     cfg.Theme.Muted,
-		Text:      cfg.Theme.Text,
-		Spinner:   cfg.Theme.Spinner,
-	})
+	initThemeFromConfig(cfg)
 
 	// Create provider
 	provider, err := llm.NewProvider(cfg)
@@ -208,8 +278,10 @@ func runEdit(cmd *cobra.Command, args []string) error {
 		fileContents[f.Path] = f.Content
 	}
 
+	promptSpecs := toPromptSpecs(specs)
+
 	// Build prompts based on diff format
-	userPrompt := buildEditUserPrompt(request, files, specs)
+	userPrompt := prompt.EditUserPrompt(request, files, promptSpecs)
 
 	if useUnifiedDiff {
 		// Check if provider supports unified diff
@@ -218,7 +290,7 @@ func runEdit(cmd *cobra.Command, args []string) error {
 			return fmt.Errorf("provider %s does not support unified diff format", provider.Name())
 		}
 
-		systemPrompt := buildUnifiedDiffSystemPrompt(cfg.Edit.Instructions, specs)
+		systemPrompt := prompt.UnifiedDiffSystemPrompt(cfg.Edit.Instructions, promptSpecs)
 		return processUnifiedDiff(ctx, udiffProv, systemPrompt, userPrompt, fileContents, specs)
 	}
 
@@ -228,7 +300,7 @@ func runEdit(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("provider %s does not support edit tool", provider.Name())
 	}
 
-	systemPrompt := buildEditSystemPrompt(cfg.Edit.Instructions, specs)
+	systemPrompt := prompt.EditSystemPrompt(cfg.Edit.Instructions, promptSpecs, editWildcardToken)
 
 	// Get all edits from LLM with spinner
 	edits, err := ui.RunEditWithSpinner(ctx, editProv, systemPrompt, userPrompt, editDebug)
@@ -332,56 +404,17 @@ func processEditsConsolidated(edits []llm.EditToolCall, fileContents map[string]
 		consolidated = append(consolidated, cf)
 	}
 
-	// Calculate global max width
-	globalWidth := 0
+	entries := make([]diffEntry, 0, len(consolidated))
 	for _, cf := range consolidated {
-		if cf.editCount > 0 {
-			w := ui.CalcDiffWidth(cf.oldContent, cf.newContent)
-			if w > globalWidth {
-				globalWidth = w
-			}
-		}
+		entries = append(entries, diffEntry{
+			path:        cf.path,
+			oldContent:  cf.oldContent,
+			newContent:  cf.newContent,
+			skipReasons: cf.skipReasons,
+		})
 	}
 
-	// Display and apply
-	var applied, skipped int
-	first := true
-	for _, cf := range consolidated {
-		// Show any skip reasons
-		for _, reason := range cf.skipReasons {
-			ui.ShowEditSkipped(cf.path, reason)
-		}
-
-		// Skip if no edits or content unchanged
-		if cf.editCount == 0 || cf.oldContent == cf.newContent {
-			continue
-		}
-
-		if !first {
-			fmt.Println()
-		}
-		first = false
-
-		// Show consolidated diff
-		ui.PrintCompactDiff(cf.path, cf.oldContent, cf.newContent, globalWidth)
-
-		if editDryRun {
-			continue
-		}
-
-		if !ui.PromptApplyEdit() {
-			skipped++
-			continue
-		}
-
-		if err := os.WriteFile(cf.path, []byte(cf.newContent), 0644); err != nil {
-			fmt.Printf("  error: %s\n", err.Error())
-			skipped++
-			continue
-		}
-
-		applied++
-	}
+	applied, skipped := applyDiffEntries(entries, editDryRun, diffApplyOptions{})
 
 	if !editDryRun && applied+skipped > 3 {
 		fmt.Printf("\n%d files updated, %d skipped\n", applied, skipped)
@@ -453,49 +486,30 @@ func processEditsIndividually(edits []llm.EditToolCall, fileContents map[string]
 		processed = append(processed, pe)
 	}
 
-	globalWidth := 0
+	entries := make([]diffEntry, 0, len(processed))
 	for _, pe := range processed {
-		if !pe.skip {
-			w := ui.CalcDiffWidth(pe.oldContent, pe.newContent)
-			if w > globalWidth {
-				globalWidth = w
-			}
-		}
-	}
-
-	var applied, skipped int
-	for i, pe := range processed {
 		if pe.skip {
-			ui.ShowEditSkipped(pe.edit.FilePath, pe.skipReason)
-			skipped++
-			continue
-		}
-
-		if i > 0 {
-			fmt.Println()
-		}
-
-		ui.PrintCompactDiff(pe.edit.FilePath, pe.oldContent, pe.newContent, globalWidth)
-
-		if editDryRun {
-			continue
-		}
-
-		if !ui.PromptApplyEdit() {
-			skipped++
+			entries = append(entries, diffEntry{
+				path:              pe.edit.FilePath,
+				skipReasons:       []string{pe.skipReason},
+				countSkipIfNoDiff: true,
+			})
 			continue
 		}
 
 		writePath := absPath(pe.edit.FilePath)
-		if err := os.WriteFile(writePath, []byte(pe.newContent), 0644); err != nil {
-			fmt.Printf("  error: %s\n", err.Error())
-			skipped++
-			continue
-		}
-
-		fileContents[writePath] = pe.newContent
-		applied++
+		entries = append(entries, diffEntry{
+			path:       pe.edit.FilePath,
+			writePath:  writePath,
+			oldContent: pe.oldContent,
+			newContent: pe.newContent,
+			onApplied: func(path, newContent string) {
+				fileContents[path] = newContent
+			},
+		})
 	}
+
+	applied, skipped := applyDiffEntries(entries, editDryRun, diffApplyOptions{separatorOnAnyOutput: true})
 
 	if !editDryRun && applied+skipped > 5 {
 		fmt.Printf("\n%d applied, %d skipped\n", applied, skipped)
@@ -505,106 +519,6 @@ func processEditsIndividually(edits []llm.EditToolCall, fileContents map[string]
 	return nil
 }
 
-func buildEditSystemPrompt(instructions string, specs []FileSpec) string {
-	cwd, _ := os.Getwd()
-	base := fmt.Sprintf(`You are an expert code editor. Use the edit tool to make changes to files.
-
-Context:
-- Operating System: %s
-- Architecture: %s
-- Current Directory: %s`, runtime.GOOS, runtime.GOARCH, cwd)
-
-	if instructions != "" {
-		base += fmt.Sprintf("\n- User Context: %s", instructions)
-	}
-
-	base += fmt.Sprintf(`
-
-Rules:
-1. Make minimal, focused changes
-2. Preserve existing code style
-3. Use the edit tool for each change - you can call it multiple times
-4. The edit tool does find/replace: old_string must match exactly
-5. You may include the literal token %s in old_string to match any sequence of characters (including newlines)
-6. Include enough context in old_string (especially around %s) to be unique`, editWildcardToken, editWildcardToken)
-
-	// Add guard info
-	hasGuards := false
-	for _, spec := range specs {
-		if spec.HasGuard {
-			hasGuards = true
-			base += fmt.Sprintf("\n\nIMPORTANT: For %s, only modify lines %d-%d. The <editable-region> block shows the exact content you may edit with line numbers.",
-				spec.Path, spec.StartLine, spec.EndLine)
-		}
-	}
-	if hasGuards {
-		base += "\n\nYour old_string MUST match text within the editable region. Use the line numbers in <editable-region> to ensure your edit is within bounds."
-	}
-
-	return base
-}
-
-func buildEditUserPrompt(request string, files []input.FileContent, specs []FileSpec) string {
-	var sb strings.Builder
-
-	sb.WriteString("Files:\n\n")
-	for _, f := range files {
-		sb.WriteString(fmt.Sprintf("<file path=\"%s\">\n", f.Path))
-		sb.WriteString(f.Content)
-		if !strings.HasSuffix(f.Content, "\n") {
-			sb.WriteString("\n")
-		}
-		sb.WriteString("</file>\n\n")
-	}
-
-	// Add editable region blocks for guarded files
-	for _, spec := range specs {
-		if spec.HasGuard {
-			// Find the matching file content
-			for _, f := range files {
-				if f.Path == spec.Path {
-					excerpt := extractLineRange(f.Content, spec.StartLine, spec.EndLine)
-					sb.WriteString(fmt.Sprintf("<editable-region path=\"%s\" lines=\"%d-%d\">\n",
-						spec.Path, spec.StartLine, spec.EndLine))
-					sb.WriteString(excerpt)
-					if !strings.HasSuffix(excerpt, "\n") {
-						sb.WriteString("\n")
-					}
-					sb.WriteString("</editable-region>\n\n")
-					break
-				}
-			}
-		}
-	}
-
-	sb.WriteString(fmt.Sprintf("Request: %s", request))
-	return sb.String()
-}
-
-// extractLineRange extracts lines startLine to endLine (1-indexed, inclusive) from content
-func extractLineRange(content string, startLine, endLine int) string {
-	lines := strings.Split(content, "\n")
-
-	// Adjust for 0-based indexing
-	start := startLine - 1
-	if start < 0 {
-		start = 0
-	}
-	end := endLine
-	if end <= 0 || end > len(lines) {
-		end = len(lines)
-	}
-	if start >= len(lines) {
-		return ""
-	}
-
-	// Build output with line numbers
-	var sb strings.Builder
-	for i := start; i < end; i++ {
-		sb.WriteString(fmt.Sprintf("%d: %s\n", i+1, lines[i]))
-	}
-	return strings.TrimSuffix(sb.String(), "\n")
-}
 
 func validateGuardForReplace(content string, match editMatch, spec FileSpec) error {
 	// Count lines before
@@ -652,87 +566,6 @@ func getActiveModel(cfg *config.Config) string {
 	}
 }
 
-// buildUnifiedDiffSystemPrompt builds a system prompt for unified diff format
-func buildUnifiedDiffSystemPrompt(instructions string, specs []FileSpec) string {
-	cwd, _ := os.Getwd()
-	base := fmt.Sprintf(`You are an expert code editor. Use the unified_diff tool to make changes to files.
-
-Context:
-- Operating System: %s
-- Architecture: %s
-- Current Directory: %s`, runtime.GOOS, runtime.GOARCH, cwd)
-
-	if instructions != "" {
-		base += fmt.Sprintf("\n- User Context: %s", instructions)
-	}
-
-	base += `
-
-UNIFIED DIFF FORMAT:
-
---- path/to/file
-+++ path/to/file
-@@ context to locate (e.g., func ProcessData) @@
- context line (space prefix = unchanged, used to find location)
--line being removed
-+line being added
-
-LINE PREFIXES:
-- Space " " = context line (unchanged, anchors position)
-- Minus "-" = line being removed from original
-- Plus "+"  = line being added in replacement
-
-ELISION (-...) FOR LARGE REPLACEMENTS:
-When replacing 10+ lines, use -... instead of listing every removed line:
-
---- file.go
-+++ file.go
-@@ func BigFunction @@
--func BigFunction() error {
--...
--}
-+func BigFunction() error {
-+    return simplifiedImpl()
-+}
-
-CRITICAL: After -... you MUST have an end anchor (the -} above) so we know where elision stops.
-The -... matches everything between -func BigFunction()... and -}.
-
-SMALL CHANGES - LIST ALL LINES:
-For changes under 10 lines, list each line explicitly:
-
---- file.go
-+++ file.go
-@@ func SmallFunc @@
- func SmallFunc() {
--    oldLine1()
--    oldLine2()
-+    newLine1()
-+    newLine2()
- }
-
-ADDING NEW CODE (no - lines needed):
-
---- file.go
-+++ file.go
-@@ func Existing @@
- func Existing() {
-     keepThis()
-+    addedLine()
- }
-
-MULTIPLE FILES: Use separate --- +++ blocks for each file.`
-
-	// Add guard info
-	for _, spec := range specs {
-		if spec.HasGuard {
-			base += fmt.Sprintf("\n\nIMPORTANT: For %s, only modify lines %d-%d.",
-				spec.Path, spec.StartLine, spec.EndLine)
-		}
-	}
-
-	return base
-}
 
 // processUnifiedDiff handles the unified diff flow
 func processUnifiedDiff(ctx context.Context, provider llm.UnifiedDiffProvider, systemPrompt, userPrompt string, fileContents map[string]string, specs []FileSpec) error {
@@ -809,60 +642,18 @@ func processUnifiedDiffResults(fileDiffs []udiff.FileDiff, fileContents map[stri
 		})
 	}
 
-	// Calculate global max width for consistent diff display
-	globalWidth := 0
+	entries := make([]diffEntry, 0, len(results))
 	for _, r := range results {
-		if r.oldContent != r.newContent {
-			w := ui.CalcDiffWidth(r.oldContent, r.newContent)
-			if w > globalWidth {
-				globalWidth = w
-			}
-		}
+		entries = append(entries, diffEntry{
+			path:              r.path,
+			oldContent:        r.oldContent,
+			newContent:        r.newContent,
+			skipReasons:       r.warnings,
+			countSkipIfNoDiff: len(r.warnings) > 0,
+		})
 	}
 
-	// Display and apply
-	var applied, skipped int
-	first := true
-
-	for _, r := range results {
-		// Show warnings for skipped hunks
-		for _, warning := range r.warnings {
-			ui.ShowEditSkipped(r.path, warning)
-		}
-
-		// Skip if no actual changes (all hunks may have failed)
-		if r.oldContent == r.newContent {
-			if len(r.warnings) > 0 {
-				skipped++
-			}
-			continue
-		}
-
-		if !first {
-			fmt.Println()
-		}
-		first = false
-
-		// Show diff
-		ui.PrintCompactDiff(r.path, r.oldContent, r.newContent, globalWidth)
-
-		if editDryRun {
-			continue
-		}
-
-		if !ui.PromptApplyEdit() {
-			skipped++
-			continue
-		}
-
-		if err := os.WriteFile(r.path, []byte(r.newContent), 0644); err != nil {
-			fmt.Printf("  error: %s\n", err.Error())
-			skipped++
-			continue
-		}
-
-		applied++
-	}
+	applied, skipped := applyDiffEntries(entries, editDryRun, diffApplyOptions{})
 
 	if !editDryRun && applied+skipped > 3 {
 		fmt.Printf("\n%d files updated, %d skipped\n", applied, skipped)
