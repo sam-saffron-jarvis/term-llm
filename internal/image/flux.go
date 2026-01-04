@@ -12,17 +12,19 @@ import (
 )
 
 const (
-	fluxGenerateEndpoint = "https://api.bfl.ai/v1/flux-2-pro"
-	fluxKontextEndpoint  = "https://api.bfl.ai/v1/flux-kontext-pro"
+	fluxBaseURL                  = "https://api.bfl.ai/v1"
+	fluxDefaultGenerateModel     = "flux-2-pro"
+	fluxDefaultEditModel         = "flux-kontext-pro"
 )
 
 // FluxProvider implements ImageProvider using Black Forest Labs' Flux API
 type FluxProvider struct {
 	apiKey string
+	model  string // model override (empty = use defaults)
 }
 
-func NewFluxProvider(apiKey string) *FluxProvider {
-	return &FluxProvider{apiKey: apiKey}
+func NewFluxProvider(apiKey, model string) *FluxProvider {
+	return &FluxProvider{apiKey: apiKey, model: model}
 }
 
 func (p *FluxProvider) Name() string {
@@ -39,7 +41,13 @@ func (p *FluxProvider) Generate(ctx context.Context, req GenerateRequest) (*Imag
 		AspectRatio: "1:1",
 	}
 
-	pollingURL, err := p.submitRequest(ctx, fluxGenerateEndpoint, genReq)
+	model := p.model
+	if model == "" {
+		model = fluxDefaultGenerateModel
+	}
+	endpoint := fluxBaseURL + "/" + model
+
+	pollingURL, err := p.submitRequest(ctx, endpoint, genReq)
 	if err != nil {
 		return nil, err
 	}
@@ -58,7 +66,13 @@ func (p *FluxProvider) Edit(ctx context.Context, req EditRequest) (*ImageResult,
 		OutputFormat: "png",
 	}
 
-	pollingURL, err := p.submitRequest(ctx, fluxKontextEndpoint, editReq)
+	model := p.model
+	if model == "" {
+		model = fluxDefaultEditModel
+	}
+	endpoint := fluxBaseURL + "/" + model
+
+	pollingURL, err := p.submitRequest(ctx, endpoint, editReq)
 	if err != nil {
 		return nil, err
 	}

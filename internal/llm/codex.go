@@ -188,6 +188,9 @@ func (p *CodexProvider) SuggestCommands(ctx context.Context, req SuggestRequest)
 				fmt.Fprintf(os.Stderr, " id=%s", item.ID)
 			}
 			fmt.Fprintln(os.Stderr)
+			if item.Type == "function_call" && item.Arguments != "" {
+				fmt.Fprintf(os.Stderr, "  Arguments: %s\n", item.Arguments)
+			}
 		}
 		fmt.Fprintln(os.Stderr, "=============================")
 	}
@@ -660,6 +663,9 @@ func (p *CodexProvider) GetEdits(ctx context.Context, systemPrompt, userPrompt s
 				fmt.Fprintf(os.Stderr, " name=%s", item.Name)
 			}
 			fmt.Fprintln(os.Stderr)
+			if item.Type == "function_call" && item.Arguments != "" {
+				fmt.Fprintf(os.Stderr, "  Arguments: %s\n", item.Arguments)
+			}
 		}
 		fmt.Fprintln(os.Stderr, "==================================")
 	}
@@ -790,6 +796,9 @@ func (p *CodexProvider) GetUnifiedDiff(ctx context.Context, systemPrompt, userPr
 				fmt.Fprintf(os.Stderr, " name=%s", item.Name)
 			}
 			fmt.Fprintln(os.Stderr)
+			if item.Type == "function_call" && item.Arguments != "" {
+				fmt.Fprintf(os.Stderr, "  Arguments: %s\n", item.Arguments)
+			}
 		}
 		fmt.Fprintln(os.Stderr, "=========================================")
 	}

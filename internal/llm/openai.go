@@ -273,6 +273,7 @@ func (p *OpenAIProvider) GetUnifiedDiff(ctx context.Context, systemPrompt, userP
 			fmt.Fprintf(os.Stderr, "Output %d: type=%s\n", i, item.Type)
 			if item.Type == "function_call" {
 				fmt.Fprintf(os.Stderr, "  Function: %s\n", item.Name)
+				fmt.Fprintf(os.Stderr, "  Arguments: %s\n", item.Arguments)
 			}
 		}
 		fmt.Fprintln(os.Stderr, "==========================================")

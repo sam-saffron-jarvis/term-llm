@@ -5,7 +5,14 @@ import (
 	"strings"
 )
 
+// ApplyResult contains the result of applying hunks with warnings for failures.
+type ApplyResult struct {
+	Content  string   // Modified content (with successful hunks applied)
+	Warnings []string // Warnings for hunks that failed to apply
+}
+
 // Apply applies the hunks to the given content and returns the modified content.
+// Returns an error on the first failed hunk (strict mode).
 func Apply(content string, hunks []Hunk) (string, error) {
 	lines := strings.Split(content, "\n")
 
@@ -19,6 +26,28 @@ func Apply(content string, hunks []Hunk) (string, error) {
 	}
 
 	return strings.Join(lines, "\n"), nil
+}
+
+// ApplyWithWarnings applies hunks, skipping failures and collecting warnings.
+// Returns modified content with all successful hunks applied.
+func ApplyWithWarnings(content string, hunks []Hunk) ApplyResult {
+	lines := strings.Split(content, "\n")
+	var warnings []string
+
+	// Apply hunks in order, collecting warnings for failures
+	for i, hunk := range hunks {
+		newLines, err := applyHunk(lines, hunk)
+		if err != nil {
+			warnings = append(warnings, fmt.Sprintf("hunk %d: %v", i+1, err))
+			continue
+		}
+		lines = newLines
+	}
+
+	return ApplyResult{
+		Content:  strings.Join(lines, "\n"),
+		Warnings: warnings,
+	}
 }
 
 // ApplyFileDiffs applies multiple file diffs to a map of file contents.
@@ -169,7 +198,7 @@ func findMatch(lines []string, oldSeq []string, startPos int, hasElision bool, e
 	return findExactMatch(lines, oldSeq, startPos)
 }
 
-// findExactMatch finds an exact sequence match (with fuzzy fallback).
+// findExactMatch finds an exact sequence match (with fuzzy and similarity fallbacks).
 func findExactMatch(lines []string, oldSeq []string, startPos int) (int, int, error) {
 	// Try exact match first
 	for i := startPos; i <= len(lines)-len(oldSeq); i++ {
@@ -181,6 +210,13 @@ func findExactMatch(lines []string, oldSeq []string, startPos int) (int, int, er
 	// Try fuzzy match (trimmed whitespace)
 	for i := startPos; i <= len(lines)-len(oldSeq); i++ {
 		if matchSequence(lines[i:], oldSeq, true) {
+			return i, i + len(oldSeq), nil
+		}
+	}
+
+	// Try similarity-based matching (Levenshtein)
+	for i := startPos; i <= len(lines)-len(oldSeq); i++ {
+		if matchSequenceSimilar(lines[i:], oldSeq) {
 			return i, i + len(oldSeq), nil
 		}
 	}
@@ -364,4 +400,97 @@ func matchSequence(content []string, pattern []string, fuzzy bool) bool {
 	}
 
 	return true
+}
+
+// similarityThreshold is the minimum similarity ratio for fuzzy matching.
+const similarityThreshold = 0.8
+
+// matchSequenceSimilar checks if lines match pattern using similarity scoring.
+// Returns true if average similarity across all lines exceeds threshold.
+func matchSequenceSimilar(content []string, pattern []string) bool {
+	if len(content) < len(pattern) {
+		return false
+	}
+
+	totalSim := 0.0
+	for i, p := range pattern {
+		sim := lineSimilarity(content[i], p)
+		if sim < similarityThreshold {
+			return false // Early exit if any line is too different
+		}
+		totalSim += sim
+	}
+
+	// Check average similarity
+	avgSim := totalSim / float64(len(pattern))
+	return avgSim >= similarityThreshold
+}
+
+// lineSimilarity computes similarity ratio between two strings (0.0 to 1.0).
+// Uses Levenshtein distance normalized by max length.
+func lineSimilarity(a, b string) float64 {
+	// Trim for comparison but compute on trimmed strings
+	a = strings.TrimSpace(a)
+	b = strings.TrimSpace(b)
+
+	if a == b {
+		return 1.0
+	}
+
+	maxLen := len(a)
+	if len(b) > maxLen {
+		maxLen = len(b)
+	}
+	if maxLen == 0 {
+		return 1.0 // Both empty
+	}
+
+	dist := levenshteinDistance(a, b)
+	return 1.0 - float64(dist)/float64(maxLen)
+}
+
+// levenshteinDistance computes the edit distance between two strings.
+func levenshteinDistance(a, b string) int {
+	if len(a) == 0 {
+		return len(b)
+	}
+	if len(b) == 0 {
+		return len(a)
+	}
+
+	// Use two rows for space efficiency
+	prev := make([]int, len(b)+1)
+	curr := make([]int, len(b)+1)
+
+	for j := range prev {
+		prev[j] = j
+	}
+
+	for i := 1; i <= len(a); i++ {
+		curr[0] = i
+		for j := 1; j <= len(b); j++ {
+			cost := 1
+			if a[i-1] == b[j-1] {
+				cost = 0
+			}
+			curr[j] = min(
+				prev[j]+1,      // deletion
+				curr[j-1]+1,    // insertion
+				prev[j-1]+cost, // substitution
+			)
+		}
+		prev, curr = curr, prev
+	}
+
+	return prev[len(b)]
+}
+
+func min(nums ...int) int {
+	m := nums[0]
+	for _, n := range nums[1:] {
+		if n < m {
+			m = n
+		}
+	}
+	return m
 }

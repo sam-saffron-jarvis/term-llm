@@ -771,7 +771,7 @@ func processUnifiedDiffResults(fileDiffs []udiff.FileDiff, fileContents map[stri
 		path       string
 		oldContent string
 		newContent string
-		err        error
+		warnings   []string // Warnings for hunks that failed to apply
 	}
 
 	results := make([]fileResult, 0, len(fileDiffs))
@@ -798,26 +798,21 @@ func processUnifiedDiffResults(fileDiffs []udiff.FileDiff, fileContents map[stri
 			continue
 		}
 
-		newContent, err := udiff.Apply(oldContent, fd.Hunks)
-		if err != nil {
-			results = append(results, fileResult{
-				path: normalizedPath,
-				err:  err,
-			})
-			continue
-		}
+		// Use ApplyWithWarnings to skip failed hunks gracefully
+		applyResult := udiff.ApplyWithWarnings(oldContent, fd.Hunks)
 
 		results = append(results, fileResult{
 			path:       normalizedPath,
 			oldContent: oldContent,
-			newContent: newContent,
+			newContent: applyResult.Content,
+			warnings:   applyResult.Warnings,
 		})
 	}
 
 	// Calculate global max width for consistent diff display
 	globalWidth := 0
 	for _, r := range results {
-		if r.err == nil && r.oldContent != r.newContent {
+		if r.oldContent != r.newContent {
 			w := ui.CalcDiffWidth(r.oldContent, r.newContent)
 			if w > globalWidth {
 				globalWidth = w
@@ -830,13 +825,16 @@ func processUnifiedDiffResults(fileDiffs []udiff.FileDiff, fileContents map[stri
 	first := true
 
 	for _, r := range results {
-		if r.err != nil {
-			ui.ShowEditSkipped(r.path, r.err.Error())
-			skipped++
-			continue
+		// Show warnings for skipped hunks
+		for _, warning := range r.warnings {
+			ui.ShowEditSkipped(r.path, warning)
 		}
 
+		// Skip if no actual changes (all hunks may have failed)
 		if r.oldContent == r.newContent {
+			if len(r.warnings) > 0 {
+				skipped++
+			}
 			continue
 		}
 

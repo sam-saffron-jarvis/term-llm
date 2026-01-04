@@ -3,6 +3,7 @@ package image
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/samsaffron/term-llm/internal/config"
 )
@@ -44,13 +45,16 @@ type ImageProvider interface {
 
 // NewImageProvider creates an image provider based on config
 func NewImageProvider(cfg *config.Config, providerOverride string) (ImageProvider, error) {
-	provider := providerOverride
-	if provider == "" {
-		provider = cfg.Image.Provider
+	providerStr := providerOverride
+	if providerStr == "" {
+		providerStr = cfg.Image.Provider
 	}
-	if provider == "" {
-		provider = "gemini" // default
+	if providerStr == "" {
+		providerStr = "gemini" // default
 	}
+
+	// Parse provider:model syntax
+	provider, model := parseImageProviderModel(providerStr)
 
 	switch provider {
 	case "gemini":
@@ -72,9 +76,21 @@ func NewImageProvider(cfg *config.Config, providerOverride string) (ImageProvide
 		if apiKey == "" {
 			return nil, fmt.Errorf("BFL_API_KEY not configured. Set environment variable or add to image.flux.api_key in config")
 		}
-		return NewFluxProvider(apiKey), nil
+		return NewFluxProvider(apiKey, model), nil
 
 	default:
 		return nil, fmt.Errorf("unknown image provider: %s (valid: gemini, openai, flux)", provider)
 	}
+}
+
+// parseImageProviderModel parses "provider:model" or just "provider" from a string.
+// Returns (provider, model). Model will be empty if not specified.
+func parseImageProviderModel(s string) (string, string) {
+	parts := strings.SplitN(s, ":", 2)
+	provider := parts[0]
+	model := ""
+	if len(parts) == 2 {
+		model = parts[1]
+	}
+	return provider, model
 }
