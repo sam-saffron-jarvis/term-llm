@@ -146,18 +146,15 @@ func (p *CodexProvider) Stream(ctx context.Context, req Request) (Stream, error)
 			if err != nil {
 				return fmt.Errorf("failed to read response: %w", err)
 			}
-			parsed, err := p.parseSSEResponse(respBody)
+			if req.DebugRaw {
+				DebugRawSection(req.DebugRaw, "Codex SSE Raw", strings.TrimSpace(string(respBody)))
+			}
+			toolCalls, err := parseCodexToolCallsFromSSE(respBody)
 			if err != nil {
 				return err
 			}
-			for _, item := range parsed.Output {
-				if item.Type == "function_call" {
-					events <- Event{Type: EventToolCall, Tool: &ToolCall{
-						ID:        item.ID,
-						Name:      item.Name,
-						Arguments: json.RawMessage(item.Arguments),
-					}}
-				}
+			for _, call := range toolCalls {
+				events <- Event{Type: EventToolCall, Tool: &call}
 			}
 			events <- Event{Type: EventDone}
 			return nil
@@ -266,6 +263,148 @@ func (p *CodexProvider) parseSSEResponse(data []byte) (*codexResponse, error) {
 		return nil, fmt.Errorf("no response found in SSE stream")
 	}
 	return lastResponse, nil
+}
+
+type codexSSEEvent struct {
+	Type string `json:"type"`
+	Item struct {
+		Type      string `json:"type"`
+		ID        string `json:"id"`
+		CallID    string `json:"call_id"`
+		Name      string `json:"name"`
+		Arguments string `json:"arguments"`
+	} `json:"item"`
+	ItemID    string `json:"item_id"`
+	Delta     string `json:"delta"`
+	Arguments string `json:"arguments"`
+}
+
+type codexToolAccumulator struct {
+	order    []string
+	calls    map[string]ToolCall
+	partials map[string]*strings.Builder
+	final    map[string]string
+}
+
+func newCodexToolAccumulator() *codexToolAccumulator {
+	return &codexToolAccumulator{
+		calls:    make(map[string]ToolCall),
+		partials: make(map[string]*strings.Builder),
+		final:    make(map[string]string),
+	}
+}
+
+func (a *codexToolAccumulator) ensureCall(id string) {
+	if id == "" {
+		return
+	}
+	if _, ok := a.calls[id]; ok {
+		return
+	}
+	a.calls[id] = ToolCall{ID: id}
+	a.order = append(a.order, id)
+}
+
+func (a *codexToolAccumulator) setCall(call ToolCall) {
+	if call.ID == "" {
+		return
+	}
+	if _, ok := a.calls[call.ID]; !ok {
+		a.order = append(a.order, call.ID)
+	}
+	a.calls[call.ID] = call
+}
+
+func (a *codexToolAccumulator) appendArgs(id, delta string) {
+	if id == "" || delta == "" {
+		return
+	}
+	if a.final[id] != "" {
+		return
+	}
+	builder := a.partials[id]
+	if builder == nil {
+		builder = &strings.Builder{}
+		a.partials[id] = builder
+	}
+	builder.WriteString(delta)
+}
+
+func (a *codexToolAccumulator) setArgs(id, args string) {
+	if id == "" || args == "" {
+		return
+	}
+	a.final[id] = args
+	delete(a.partials, id)
+}
+
+func (a *codexToolAccumulator) finalize() []ToolCall {
+	out := make([]ToolCall, 0, len(a.order))
+	for _, id := range a.order {
+		call, ok := a.calls[id]
+		if !ok {
+			continue
+		}
+		if args := a.final[id]; args != "" {
+			call.Arguments = json.RawMessage(args)
+		} else if builder := a.partials[id]; builder != nil && builder.Len() > 0 {
+			call.Arguments = json.RawMessage(builder.String())
+		}
+		out = append(out, call)
+	}
+	return out
+}
+
+func parseCodexToolCallsFromSSE(data []byte) ([]ToolCall, error) {
+	lines := strings.Split(string(data), "\n")
+	acc := newCodexToolAccumulator()
+
+	for _, line := range lines {
+		if !strings.HasPrefix(line, "data:") {
+			continue
+		}
+		payload := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+		if payload == "" || payload == "[DONE]" {
+			continue
+		}
+
+		var event codexSSEEvent
+		if err := json.Unmarshal([]byte(payload), &event); err != nil {
+			continue
+		}
+
+		switch event.Type {
+		case "response.output_item.added", "response.output_item.done":
+			if event.Item.Type != "function_call" {
+				continue
+			}
+			id := event.Item.ID
+			if id == "" {
+				id = event.Item.CallID
+			}
+			call := ToolCall{
+				ID:        id,
+				Name:      event.Item.Name,
+				Arguments: json.RawMessage(event.Item.Arguments),
+			}
+			acc.setCall(call)
+			if event.Item.Arguments != "" {
+				acc.setArgs(id, event.Item.Arguments)
+			}
+		case "response.function_call_arguments.delta":
+			acc.ensureCall(event.ItemID)
+			acc.appendArgs(event.ItemID, event.Delta)
+		case "response.function_call_arguments.done":
+			acc.ensureCall(event.ItemID)
+			acc.setArgs(event.ItemID, event.Arguments)
+		}
+	}
+
+	calls := acc.finalize()
+	if len(calls) == 0 {
+		return nil, fmt.Errorf("no tool calls found in SSE stream")
+	}
+	return calls, nil
 }
 
 func (p *CodexProvider) getCodexInstructions() (string, error) {

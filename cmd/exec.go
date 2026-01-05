@@ -115,7 +115,7 @@ func runExec(cmd *cobra.Command, args []string) error {
 		numSuggestions = execMaxOpts
 	}
 
-	debugMode := execDebug || debugRaw
+	debugMode := execDebug
 
 	// Main loop for refinement
 	for {
@@ -139,7 +139,7 @@ func runExec(cmd *cobra.Command, args []string) error {
 			DebugRaw:          debugRaw,
 		}
 
-		result, err := ui.RunWithSpinner(ctx, debugMode, func(ctx context.Context) (any, error) {
+		result, err := ui.RunWithSpinner(ctx, debugMode || debugRaw, func(ctx context.Context) (any, error) {
 			return collectSuggestions(ctx, engine, req)
 		})
 		if err != nil {

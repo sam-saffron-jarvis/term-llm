@@ -102,7 +102,7 @@ func runAsk(cmd *cobra.Command, args []string) error {
 	}
 	messages = append(messages, llm.UserText(userPrompt))
 
-	debugMode := askDebug || debugRaw
+	debugMode := askDebug
 	req := llm.Request{
 		Messages: messages,
 		Search:   askSearch,

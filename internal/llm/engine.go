@@ -7,6 +7,11 @@ import (
 	"strings"
 )
 
+const (
+	maxExternalSearchLoops = 6
+	stopSearchToolHint     = "IMPORTANT: Do not call any tools. Use the information already retrieved and answer directly."
+)
+
 // Engine orchestrates provider calls and external tool execution.
 type Engine struct {
 	provider Provider
@@ -25,20 +30,12 @@ func NewEngine(provider Provider, tools *ToolRegistry) *Engine {
 
 // Stream returns a stream, applying external search when needed.
 func (e *Engine) Stream(ctx context.Context, req Request) (Stream, error) {
-	if req.DebugRaw {
-		DebugRawRequest(req.DebugRaw, e.provider.Name(), req, "Request (initial)")
-	}
 	if req.Search && !e.provider.Capabilities().NativeSearch {
-		debugSection(req.Debug, "External Search", "provider lacks native search; using web_search tool")
-		DebugRawSection(req.DebugRaw, "External Search", "provider lacks native search; using web_search tool")
-		updated, err := e.applyExternalSearch(ctx, req)
-		if err != nil {
-			return nil, err
-		}
-		req = updated
-		if req.DebugRaw {
-			DebugRawRequest(req.DebugRaw, e.provider.Name(), req, "Request (with search results)")
-		}
+		return e.streamWithExternalSearch(ctx, req)
+	}
+
+	if req.DebugRaw {
+		DebugRawRequest(req.DebugRaw, e.provider.Name(), req, "Request")
 	}
 	stream, err := e.provider.Stream(ctx, req)
 	if err != nil {
@@ -62,6 +59,11 @@ func (e *Engine) applyExternalSearch(ctx context.Context, req Request) (Request,
 	searchReq.Tools = []ToolSpec{searchTool.Spec()}
 	searchReq.ToolChoice = ToolChoice{Mode: ToolChoiceName, Name: WebSearchToolName}
 	searchReq.ParallelToolCalls = false
+	searchReq.DebugRaw = req.DebugRaw
+
+	if searchReq.DebugRaw {
+		DebugRawRequest(searchReq.DebugRaw, e.provider.Name(), searchReq, "Request (search tool call)")
+	}
 
 	stream, err := e.provider.Stream(ctx, searchReq)
 	if err != nil {
@@ -69,7 +71,7 @@ func (e *Engine) applyExternalSearch(ctx context.Context, req Request) (Request,
 	}
 	defer stream.Close()
 
-	toolCalls, err := collectToolCalls(stream)
+	toolCalls, err := collectToolCalls(stream, req.DebugRaw)
 	if err != nil {
 		return Request{}, err
 	}
@@ -79,7 +81,6 @@ func (e *Engine) applyExternalSearch(ctx context.Context, req Request) (Request,
 	toolCalls = ensureToolCallIDs(toolCalls)
 
 	for _, call := range toolCalls {
-		DebugRawToolCall(req.DebugRaw, call)
 		DebugToolCall(req.Debug, call)
 		if call.Name != WebSearchToolName {
 			return Request{}, fmt.Errorf("unexpected tool call during search: %s", call.Name)
@@ -97,7 +98,7 @@ func (e *Engine) applyExternalSearch(ctx context.Context, req Request) (Request,
 	return req, nil
 }
 
-func collectToolCalls(stream Stream) ([]ToolCall, error) {
+func collectToolCalls(stream Stream, debugRaw bool) ([]ToolCall, error) {
 	var calls []ToolCall
 	for {
 		event, err := stream.Recv()
@@ -110,11 +111,108 @@ func collectToolCalls(stream Stream) ([]ToolCall, error) {
 		if event.Type == EventError && event.Err != nil {
 			return nil, event.Err
 		}
+		if debugRaw {
+			DebugRawEvent(true, event)
+		}
 		if event.Type == EventToolCall && event.Tool != nil {
 			calls = append(calls, *event.Tool)
 		}
 	}
 	return calls, nil
+}
+
+func (e *Engine) streamWithExternalSearch(ctx context.Context, req Request) (Stream, error) {
+	return newEventStream(ctx, func(ctx context.Context, events chan<- Event) error {
+		if req.DebugRaw {
+			DebugRawRequest(req.DebugRaw, e.provider.Name(), req, "Request (initial)")
+		}
+		debugSection(req.Debug, "External Search", "provider lacks native search; using web_search tool")
+		DebugRawSection(req.DebugRaw, "External Search", "provider lacks native search; using web_search tool")
+
+		updated, err := e.applyExternalSearch(ctx, req)
+		if err != nil {
+			return err
+		}
+		req = updated
+		if req.DebugRaw {
+			DebugRawRequest(req.DebugRaw, e.provider.Name(), req, "Request (with search results)")
+		}
+
+		for attempt := 0; attempt < maxExternalSearchLoops; attempt++ {
+			if attempt == maxExternalSearchLoops-1 {
+				req.Messages = append(req.Messages, SystemText(stopSearchToolHint))
+			}
+
+			stream, err := e.provider.Stream(ctx, req)
+			if err != nil {
+				return err
+			}
+
+			var buffered []Event
+			var toolCalls []ToolCall
+			for {
+				event, err := stream.Recv()
+				if err == io.EOF {
+					break
+				}
+				if err != nil {
+					stream.Close()
+					return err
+				}
+				if event.Type == EventError && event.Err != nil {
+					stream.Close()
+					return event.Err
+				}
+				if req.DebugRaw {
+					DebugRawEvent(true, event)
+				}
+				if event.Type == EventToolCall && event.Tool != nil {
+					toolCalls = append(toolCalls, *event.Tool)
+				}
+				buffered = append(buffered, event)
+			}
+			stream.Close()
+
+			searchCalls, otherCalls := splitSearchCalls(toolCalls)
+			if len(searchCalls) == 0 {
+				for _, event := range buffered {
+					if event.Type == EventDone {
+						continue
+					}
+					events <- event
+				}
+				events <- Event{Type: EventDone}
+				return nil
+			}
+
+			if len(otherCalls) > 0 {
+				return fmt.Errorf("mixed tool calls during external search")
+			}
+
+			if attempt == maxExternalSearchLoops-1 {
+				return fmt.Errorf("external search exceeded max tool call loops (%d)", maxExternalSearchLoops)
+			}
+
+			searchCalls = ensureToolCallIDs(searchCalls)
+			for _, call := range searchCalls {
+				DebugToolCall(req.Debug, call)
+			}
+
+			toolResults, err := e.executeToolCalls(ctx, searchCalls, req.Debug, req.DebugRaw)
+			if err != nil {
+				return err
+			}
+
+			req.Messages = append(req.Messages, toolCallMessage(searchCalls))
+			req.Messages = append(req.Messages, toolResults...)
+
+			if req.DebugRaw {
+				DebugRawRequest(req.DebugRaw, e.provider.Name(), req, fmt.Sprintf("Request (search loop %d)", attempt+1))
+			}
+		}
+
+		return fmt.Errorf("external search loop ended unexpectedly")
+	}), nil
 }
 
 func (e *Engine) executeToolCalls(ctx context.Context, calls []ToolCall, debug bool, debugRaw bool) ([]Message, error) {
@@ -157,4 +255,17 @@ func ensureToolCallIDs(calls []ToolCall) []ToolCall {
 		}
 	}
 	return calls
+}
+
+func splitSearchCalls(calls []ToolCall) ([]ToolCall, []ToolCall) {
+	var searchCalls []ToolCall
+	var otherCalls []ToolCall
+	for _, call := range calls {
+		if call.Name == WebSearchToolName {
+			searchCalls = append(searchCalls, call)
+		} else {
+			otherCalls = append(otherCalls, call)
+		}
+	}
+	return searchCalls, otherCalls
 }

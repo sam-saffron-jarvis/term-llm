@@ -81,6 +81,7 @@ func (p *AnthropicProvider) Stream(ctx context.Context, req Request) (Stream, er
 func (p *AnthropicProvider) streamStandard(ctx context.Context, req Request) (Stream, error) {
 	return newEventStream(ctx, func(ctx context.Context, events chan<- Event) error {
 		system, messages := buildAnthropicMessages(req.Messages)
+		accumulator := newToolCallAccumulator()
 
 		params := anthropic.MessageNewParams{
 			Model:     anthropic.Model(chooseModel(req.Model, p.model)),
@@ -118,13 +119,24 @@ func (p *AnthropicProvider) streamStandard(ctx context.Context, req Request) (St
 		stream := p.client.Messages.NewStreaming(ctx, params)
 		for stream.Next() {
 			event := stream.Current()
-			switch event.Type {
-			case "content_block_delta":
-				if event.Delta.Text != "" {
-					events <- Event{Type: EventTextDelta, Text: event.Delta.Text}
+			switch variant := event.AsAny().(type) {
+			case anthropic.ContentBlockDeltaEvent:
+				switch delta := variant.Delta.AsAny().(type) {
+				case anthropic.InputJSONDelta:
+					if delta.PartialJSON != "" {
+						accumulator.Append(variant.Index, delta.PartialJSON)
+					}
+				case anthropic.TextDelta:
+					if delta.Text != "" {
+						events <- Event{Type: EventTextDelta, Text: delta.Text}
+					}
 				}
-			case "content_block_start":
-				if toolCall, ok := anthropicToolCall(event.ContentBlock); ok {
+			case anthropic.ContentBlockStartEvent:
+				if toolCall, ok := anthropicToolCall(variant.ContentBlock); ok {
+					accumulator.Start(variant.Index, toolCall)
+				}
+			case anthropic.ContentBlockStopEvent:
+				if toolCall, ok := accumulator.Finish(variant.Index); ok {
 					events <- Event{Type: EventToolCall, Tool: &toolCall}
 				}
 			}
@@ -140,6 +152,7 @@ func (p *AnthropicProvider) streamStandard(ctx context.Context, req Request) (St
 func (p *AnthropicProvider) streamWithSearch(ctx context.Context, req Request) (Stream, error) {
 	return newEventStream(ctx, func(ctx context.Context, events chan<- Event) error {
 		system, messages := buildAnthropicBetaMessages(req.Messages)
+		accumulator := newToolCallAccumulator()
 
 		tools := buildAnthropicBetaTools(req.Tools)
 		webSearchTool := anthropic.BetaToolUnionParam{
@@ -184,13 +197,24 @@ func (p *AnthropicProvider) streamWithSearch(ctx context.Context, req Request) (
 		stream := p.client.Beta.Messages.NewStreaming(ctx, params)
 		for stream.Next() {
 			event := stream.Current()
-			switch event.Type {
-			case "content_block_delta":
-				if event.Delta.Text != "" {
-					events <- Event{Type: EventTextDelta, Text: event.Delta.Text}
+			switch variant := event.AsAny().(type) {
+			case anthropic.BetaRawContentBlockDeltaEvent:
+				switch delta := variant.Delta.AsAny().(type) {
+				case anthropic.BetaInputJSONDelta:
+					if delta.PartialJSON != "" {
+						accumulator.Append(variant.Index, delta.PartialJSON)
+					}
+				case anthropic.BetaTextDelta:
+					if delta.Text != "" {
+						events <- Event{Type: EventTextDelta, Text: delta.Text}
+					}
 				}
-			case "content_block_start":
-				if toolCall, ok := anthropicBetaToolCall(event.ContentBlock); ok {
+			case anthropic.BetaRawContentBlockStartEvent:
+				if toolCall, ok := anthropicBetaToolCall(variant.ContentBlock); ok {
+					accumulator.Start(variant.Index, toolCall)
+				}
+			case anthropic.BetaRawContentBlockStopEvent:
+				if toolCall, ok := accumulator.Finish(variant.Index); ok {
 					events <- Event{Type: EventToolCall, Tool: &toolCall}
 				}
 			}
@@ -418,6 +442,56 @@ func toolInputToRaw(input any) json.RawMessage {
 		}
 		return json.RawMessage(data)
 	}
+}
+
+type toolCallAccumulator struct {
+	calls    map[int64]ToolCall
+	fallback map[int64]json.RawMessage
+	partial  map[int64]*strings.Builder
+}
+
+func newToolCallAccumulator() *toolCallAccumulator {
+	return &toolCallAccumulator{
+		calls:    make(map[int64]ToolCall),
+		fallback: make(map[int64]json.RawMessage),
+		partial:  make(map[int64]*strings.Builder),
+	}
+}
+
+func (a *toolCallAccumulator) Start(index int64, call ToolCall) {
+	if len(call.Arguments) > 0 {
+		a.fallback[index] = call.Arguments
+	}
+	call.Arguments = nil
+	a.calls[index] = call
+}
+
+func (a *toolCallAccumulator) Append(index int64, partial string) {
+	if partial == "" {
+		return
+	}
+	builder := a.partial[index]
+	if builder == nil {
+		builder = &strings.Builder{}
+		a.partial[index] = builder
+	}
+	builder.WriteString(partial)
+}
+
+func (a *toolCallAccumulator) Finish(index int64) (ToolCall, bool) {
+	call, ok := a.calls[index]
+	if !ok {
+		return ToolCall{}, false
+	}
+	if builder := a.partial[index]; builder != nil && builder.Len() > 0 {
+		call.Arguments = json.RawMessage(builder.String())
+	} else if fallback, ok := a.fallback[index]; ok {
+		call.Arguments = fallback
+	}
+	delete(a.calls, index)
+	delete(a.partial, index)
+	delete(a.fallback, index)
+	return call, true
 }
 
 func maxTokens(requested, fallback int) int64 {

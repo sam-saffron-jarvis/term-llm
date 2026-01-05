@@ -300,7 +300,7 @@ func runEdit(cmd *cobra.Command, args []string) error {
 	systemPrompt := prompt.EditSystemPrompt(cfg.Edit.Instructions, promptSpecs, editWildcardToken)
 
 	// Get all edits from LLM with spinner
-	debugMode := editDebug || debugRaw
+	debugMode := editDebug
 	req := llm.Request{
 		Messages: []llm.Message{
 			llm.SystemText(systemPrompt),
@@ -317,7 +317,7 @@ func runEdit(cmd *cobra.Command, args []string) error {
 		Debug:             debugMode,
 		DebugRaw:          debugRaw,
 	}
-	result, err := ui.RunWithSpinner(ctx, debugMode, func(ctx context.Context) (any, error) {
+	result, err := ui.RunWithSpinner(ctx, debugMode || debugRaw, func(ctx context.Context) (any, error) {
 		return collectEdits(ctx, engine, req)
 	})
 	if err != nil {
@@ -624,7 +624,7 @@ func getActiveModel(cfg *config.Config) string {
 
 // processUnifiedDiff handles the unified diff flow
 func processUnifiedDiff(ctx context.Context, engine *llm.Engine, systemPrompt, userPrompt string, fileContents map[string]string, specs []FileSpec) error {
-	debugMode := editDebug || debugRaw
+	debugMode := editDebug
 	req := llm.Request{
 		Messages: []llm.Message{
 			llm.SystemText(systemPrompt),
@@ -641,7 +641,7 @@ func processUnifiedDiff(ctx context.Context, engine *llm.Engine, systemPrompt, u
 		Debug:             debugMode,
 		DebugRaw:          debugRaw,
 	}
-	result, err := ui.RunWithSpinner(ctx, debugMode, func(ctx context.Context) (any, error) {
+	result, err := ui.RunWithSpinner(ctx, debugMode || debugRaw, func(ctx context.Context) (any, error) {
 		return collectUnifiedDiff(ctx, engine, req)
 	})
 	if err != nil {
