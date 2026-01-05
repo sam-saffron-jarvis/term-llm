@@ -12,10 +12,16 @@ import (
 )
 
 const (
-	fluxBaseURL                  = "https://api.bfl.ai/v1"
-	fluxDefaultGenerateModel     = "flux-2-pro"
-	fluxDefaultEditModel         = "flux-kontext-pro"
+	fluxBaseURL              = "https://api.bfl.ai/v1"
+	fluxDefaultGenerateModel = "flux-2-pro"
+	fluxDefaultEditModel     = "flux-kontext-pro"
+	fluxHTTPTimeout          = 10 * time.Minute
 )
+
+// fluxHTTPClient is a shared HTTP client with reasonable timeouts
+var fluxHTTPClient = &http.Client{
+	Timeout: fluxHTTPTimeout,
+}
 
 // FluxProvider implements ImageProvider using Black Forest Labs' Flux API
 type FluxProvider struct {
@@ -94,8 +100,7 @@ func (p *FluxProvider) submitRequest(ctx context.Context, endpoint string, reqBo
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("x-key", p.apiKey)
 
-	client := &http.Client{}
-	resp, err := client.Do(httpReq)
+	resp, err := fluxHTTPClient.Do(httpReq)
 	if err != nil {
 		return "", fmt.Errorf("request failed: %w", err)
 	}
@@ -119,8 +124,14 @@ func (p *FluxProvider) submitRequest(ctx context.Context, endpoint string, reqBo
 }
 
 func (p *FluxProvider) pollAndDownload(ctx context.Context, pollingURL string) (*ImageResult, error) {
-	client := &http.Client{}
-	maxAttempts := 120 // 2 minutes max
+	const (
+		maxAttempts      = 60          // Maximum number of poll attempts
+		initialBackoff   = time.Second // Start with 1 second
+		maxBackoff       = 5 * time.Second
+		backoffMultiplier = 1.5
+	)
+
+	backoff := initialBackoff
 
 	for i := 0; i < maxAttempts; i++ {
 		select {
@@ -135,7 +146,7 @@ func (p *FluxProvider) pollAndDownload(ctx context.Context, pollingURL string) (
 		}
 		httpReq.Header.Set("x-key", p.apiKey)
 
-		resp, err := client.Do(httpReq)
+		resp, err := fluxHTTPClient.Do(httpReq)
 		if err != nil {
 			return nil, fmt.Errorf("poll request failed: %w", err)
 		}
@@ -158,7 +169,12 @@ func (p *FluxProvider) pollAndDownload(ctx context.Context, pollingURL string) (
 			}
 			return p.downloadImage(ctx, pollResp.Result.Sample)
 		case "Pending", "Processing":
-			time.Sleep(1 * time.Second)
+			time.Sleep(backoff)
+			// Exponential backoff with cap
+			backoff = time.Duration(float64(backoff) * backoffMultiplier)
+			if backoff > maxBackoff {
+				backoff = maxBackoff
+			}
 		default:
 			return nil, fmt.Errorf("unexpected status: %s (body: %s)", pollResp.Status, string(body))
 		}
@@ -173,8 +189,7 @@ func (p *FluxProvider) downloadImage(ctx context.Context, url string) (*ImageRes
 		return nil, fmt.Errorf("failed to create download request: %w", err)
 	}
 
-	client := &http.Client{}
-	resp, err := client.Do(httpReq)
+	resp, err := fluxHTTPClient.Do(httpReq)
 	if err != nil {
 		return nil, fmt.Errorf("failed to download image: %w", err)
 	}

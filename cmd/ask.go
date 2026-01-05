@@ -53,7 +53,9 @@ func init() {
 	askCmd.Flags().BoolVarP(&askText, "text", "t", false, "Output plain text instead of rendered markdown")
 	askCmd.Flags().StringVar(&askProvider, "provider", "", "Override provider, optionally with model (e.g., openai:gpt-4o)")
 	askCmd.Flags().StringArrayVarP(&askFiles, "file", "f", nil, "File(s) to include as context (supports globs, 'clipboard')")
-	askCmd.RegisterFlagCompletionFunc("provider", ProviderFlagCompletion)
+	if err := askCmd.RegisterFlagCompletionFunc("provider", ProviderFlagCompletion); err != nil {
+		panic(fmt.Sprintf("failed to register provider completion: %v", err))
+	}
 	rootCmd.AddCommand(askCmd)
 }
 
@@ -300,18 +302,21 @@ func streamWithGlamour(ctx context.Context, output <-chan string) error {
 		tea.WithoutSignalHandler(),
 	)
 
-	// Watch for context cancellation and quit immediately
+	// Stream content in background, respecting context cancellation
 	go func() {
-		<-ctx.Done()
-		p.Send(askCancelledMsg{})
-	}()
-
-	// Stream content in background
-	go func() {
-		for chunk := range output {
-			p.Send(askContentMsg(chunk))
+		for {
+			select {
+			case <-ctx.Done():
+				p.Send(askCancelledMsg{})
+				return
+			case chunk, ok := <-output:
+				if !ok {
+					p.Send(askDoneMsg{})
+					return
+				}
+				p.Send(askContentMsg(chunk))
+			}
 		}
-		p.Send(askDoneMsg{})
 	}()
 
 	finalModel, err := p.Run()

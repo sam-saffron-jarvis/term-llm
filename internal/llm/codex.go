@@ -37,13 +37,20 @@ type cachedInstructions struct {
 	fetchedAt time.Time
 }
 
+// codexHTTPTimeout is the timeout for Codex HTTP requests
+const codexHTTPTimeout = 10 * time.Minute
+
+// codexHTTPClient is a shared HTTP client with reasonable timeouts
+var codexHTTPClient = &http.Client{
+	Timeout: codexHTTPTimeout,
+}
+
 // CodexProvider implements Provider using the ChatGPT backend API with Codex OAuth.
 type CodexProvider struct {
 	accessToken string
 	accountID   string
 	model       string
 	effort      string // reasoning effort: "low", "medium", "high", "xhigh", or ""
-	client      *http.Client
 }
 
 func NewCodexProvider(accessToken, model, accountID string) *CodexProvider {
@@ -53,7 +60,6 @@ func NewCodexProvider(accessToken, model, accountID string) *CodexProvider {
 		accountID:   accountID,
 		model:       actualModel,
 		effort:      effort,
-		client:      &http.Client{},
 	}
 }
 
@@ -130,7 +136,7 @@ func (p *CodexProvider) Stream(ctx context.Context, req Request) (Stream, error)
 		httpReq.Header.Set("originator", "codex_cli_rs")
 		httpReq.Header.Set("Accept", "text/event-stream")
 
-		resp, err := p.client.Do(httpReq)
+		resp, err := codexHTTPClient.Do(httpReq)
 		if err != nil {
 			return fmt.Errorf("request failed: %w", err)
 		}
@@ -447,7 +453,7 @@ func (p *CodexProvider) getCodexInstructions() (string, error) {
 	}
 
 	url := fmt.Sprintf("https://raw.githubusercontent.com/openai/codex/%s/codex-rs/core/%s", latestTag, promptFile)
-	resp, err := http.Get(url)
+	resp, err := codexHTTPClient.Get(url)
 	if err != nil {
 		return "", fmt.Errorf("failed to fetch instructions: %w", err)
 	}
@@ -486,7 +492,7 @@ func (p *CodexProvider) getModelFamily() string {
 }
 
 func (p *CodexProvider) getLatestReleaseTag() (string, error) {
-	resp, err := http.Get("https://api.github.com/repos/openai/codex/releases/latest")
+	resp, err := codexHTTPClient.Get("https://api.github.com/repos/openai/codex/releases/latest")
 	if err != nil {
 		return "", fmt.Errorf("failed to fetch latest release: %w", err)
 	}
@@ -516,8 +522,17 @@ func (p *CodexProvider) getLatestReleaseTag() (string, error) {
 
 func (p *CodexProvider) cacheInstructions(family, content string) {
 	instructionsCacheMu.Lock()
-	instructionsCache[family] = cachedInstructions{content: content, fetchedAt: time.Now()}
-	instructionsCacheMu.Unlock()
+	defer instructionsCacheMu.Unlock()
+
+	// Evict stale entries to prevent unbounded growth
+	now := time.Now()
+	for key, cached := range instructionsCache {
+		if now.Sub(cached.fetchedAt) > instructionsCacheTTL {
+			delete(instructionsCache, key)
+		}
+	}
+
+	instructionsCache[family] = cachedInstructions{content: content, fetchedAt: now}
 }
 
 func (p *CodexProvider) saveCacheMeta(path, tag string) {

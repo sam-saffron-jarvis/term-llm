@@ -15,7 +15,7 @@ type GeminiProvider struct {
 	model  string
 }
 
-func NewGeminiProvider(apiKey, model string, _ bool) *GeminiProvider {
+func NewGeminiProvider(apiKey, model string) *GeminiProvider {
 	return &GeminiProvider{
 		apiKey: apiKey,
 		model:  model,

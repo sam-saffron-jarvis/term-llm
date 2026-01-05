@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/anthropics/anthropic-sdk-go"
+	"github.com/anthropics/anthropic-sdk-go/option"
 	"github.com/anthropics/anthropic-sdk-go/shared/constant"
 )
 
@@ -49,7 +50,12 @@ func parseModelThinking(model string) (string, int64) {
 
 func NewAnthropicProvider(apiKey, model string) *AnthropicProvider {
 	actualModel, thinkingBudget := parseModelThinking(model)
-	client := anthropic.NewClient()
+	var client anthropic.Client
+	if apiKey != "" {
+		client = anthropic.NewClient(option.WithAPIKey(apiKey))
+	} else {
+		client = anthropic.NewClient()
+	}
 	return &AnthropicProvider{
 		client:         &client,
 		model:          actualModel,

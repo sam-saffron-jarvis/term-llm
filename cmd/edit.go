@@ -56,8 +56,12 @@ func init() {
 	editCmd.Flags().StringVar(&editProvider, "provider", "", "Override provider, optionally with model (e.g., openai:gpt-4o)")
 	editCmd.Flags().BoolVarP(&editDebug, "debug", "d", false, "Show debug information")
 	editCmd.Flags().BoolVar(&editPerEdit, "per-edit", false, "Prompt for each edit separately instead of consolidating per file")
-	editCmd.MarkFlagRequired("file")
-	editCmd.RegisterFlagCompletionFunc("provider", ProviderFlagCompletion)
+	if err := editCmd.MarkFlagRequired("file"); err != nil {
+		panic(fmt.Sprintf("failed to mark file flag required: %v", err))
+	}
+	if err := editCmd.RegisterFlagCompletionFunc("provider", ProviderFlagCompletion); err != nil {
+		panic(fmt.Sprintf("failed to register provider completion: %v", err))
+	}
 	rootCmd.AddCommand(editCmd)
 }
 

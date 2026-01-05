@@ -56,7 +56,7 @@ func NewProvider(cfg *config.Config) (Provider, error) {
 		if cfg.Gemini.Credentials == "gemini-cli" && cfg.Gemini.OAuthCreds != nil {
 			return NewCodeAssistProvider(cfg.Gemini.OAuthCreds, cfg.Gemini.Model), nil
 		}
-		return NewGeminiProvider(cfg.Gemini.APIKey, cfg.Gemini.Model, false), nil
+		return NewGeminiProvider(cfg.Gemini.APIKey, cfg.Gemini.Model), nil
 	case "zen":
 		return NewZenProvider(cfg.Zen.APIKey, cfg.Zen.Model), nil
 	case "ollama":

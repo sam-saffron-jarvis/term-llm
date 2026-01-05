@@ -11,7 +11,16 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"time"
 )
+
+// httpClientTimeout is the default timeout for HTTP requests
+const httpClientTimeout = 10 * time.Minute
+
+// defaultHTTPClient is a shared HTTP client with reasonable timeouts
+var defaultHTTPClient = &http.Client{
+	Timeout: httpClientTimeout,
+}
 
 // OpenAICompatProvider implements Provider for OpenAI-compatible APIs
 // Used by Ollama, LM Studio, and other compatible servers.
@@ -155,7 +164,7 @@ func (p *OpenAICompatProvider) makeRequest(ctx context.Context, method, endpoint
 		httpReq.Header.Set(key, value)
 	}
 
-	return http.DefaultClient.Do(httpReq)
+	return defaultHTTPClient.Do(httpReq)
 }
 
 func (p *OpenAICompatProvider) makeChatRequest(ctx context.Context, req oaiChatRequest) (*http.Response, error) {
