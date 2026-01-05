@@ -186,9 +186,10 @@ Use arrow keys to select a command, Enter to execute, or press `h` for detailed 
 | `--file` | `-f` | File(s) to include as context (supports globs, 'clipboard') |
 | `--auto-pick` | `-a` | Auto-execute the best suggestion without prompting |
 | `--max N` | `-n N` | Limit to N options in the selection UI |
-| `--search` | `-s` | Enable web search for current information |
+| `--search` | `-s` | Enable web search for current information (DuckDuckGo fallback if needed) |
 | `--print-only` | `-p` | Print the command instead of executing it |
-| `--debug` | `-d` | Show full LLM request and response |
+| `--debug` | `-d` | Show provider debug information |
+| `--debug-raw` | | Emit raw debug logs with timestamps (tool calls/results, raw requests) |
 
 ### Examples
 
@@ -200,6 +201,7 @@ term-llm exec "install latest node" -s          # with web search
 term-llm exec "disk usage" -p                   # print only
 term-llm exec --provider zen "git status"       # use specific provider
 term-llm exec --provider openai:gpt-4o "list"   # provider with specific model
+term-llm exec --debug-raw "list files"          # raw debug logs with timestamps
 term-llm exec --provider ollama:llama3.2 "list" # use local Ollama model
 term-llm exec --provider lmstudio:deepseek "list"  # use LM Studio model
 term-llm ask --provider openai:gpt-5.2-xhigh "complex question"  # max reasoning
@@ -217,17 +219,23 @@ term-llm ask --provider zen "explain docker"    # use specific provider
 term-llm ask -f code.go "explain this code"     # with file context
 term-llm ask -f clipboard "what is this?"       # from clipboard
 cat README.md | term-llm ask "summarize this"   # pipe stdin
+term-llm ask --debug-raw "latest zig release"   # raw debug logs with timestamps
 
 # Edit files
 term-llm edit "add error handling" -f main.go
 term-llm edit "refactor loop" -f utils.go:20-40  # only lines 20-40
 term-llm edit "add tests" -f "*.go" --dry-run    # preview changes
+term-llm edit --debug-raw "fix typos" -f README.md
 
 # Generate images
 term-llm image "a sunset over mountains"
 term-llm image "logo design" --provider flux    # use specific provider
 term-llm image "make it purple" -i photo.png    # edit existing image
 ```
+
+## Debugging
+
+Use `--debug` to print provider-level diagnostics (requests, model info, etc.). Use `--debug-raw` for a timestamped, raw view of tool calls, tool results, and reconstructed requests. Raw debug is most useful for troubleshooting tool calling and search.
 
 ## Image Generation
 
