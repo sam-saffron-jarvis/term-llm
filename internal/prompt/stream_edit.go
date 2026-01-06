@@ -166,12 +166,12 @@ func StreamEditUserPrompt(request string, files []input.FileContent, specs []Edi
 
 	sb.WriteString("Files to edit:\n\n")
 	for _, f := range files {
-		sb.WriteString(fmt.Sprintf("<file path=\"%s\">\n", f.Path))
+		sb.WriteString(fmt.Sprintf("[FILE: %s]\n", f.Path))
 		sb.WriteString(f.Content)
 		if !strings.HasSuffix(f.Content, "\n") {
 			sb.WriteString("\n")
 		}
-		sb.WriteString("</file>\n\n")
+		sb.WriteString("[/FILE]\n\n")
 	}
 
 	// Add editable region blocks for guarded files
@@ -180,13 +180,13 @@ func StreamEditUserPrompt(request string, files []input.FileContent, specs []Edi
 			for _, f := range files {
 				if f.Path == spec.Path {
 					excerpt := extractLineRange(f.Content, spec.StartLine, spec.EndLine)
-					sb.WriteString(fmt.Sprintf("<editable-region path=\"%s\" lines=\"%d-%d\">\n",
+					sb.WriteString(fmt.Sprintf("[EDITABLE-REGION: %s lines=%d-%d]\n",
 						spec.Path, spec.StartLine, spec.EndLine))
 					sb.WriteString(excerpt)
 					if !strings.HasSuffix(excerpt, "\n") {
 						sb.WriteString("\n")
 					}
-					sb.WriteString("</editable-region>\n\n")
+					sb.WriteString("[/EDITABLE-REGION]\n\n")
 					break
 				}
 			}
