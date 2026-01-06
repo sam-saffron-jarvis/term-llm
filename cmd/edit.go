@@ -350,8 +350,19 @@ func runStreamEdit(ctx context.Context, cfg *config.Config, provider llm.Provide
 	// Build prompts
 	promptSpecs := toPromptSpecs(specs)
 	useUnifiedDiff := prompt.ShouldUseUnifiedDiff(model, diffFormat)
-	systemPrompt := prompt.StreamEditSystemPrompt(cfg.Edit.Instructions, promptSpecs, model, diffFormat)
-	userPrompt := prompt.StreamEditUserPrompt(request, files, promptSpecs, useUnifiedDiff)
+	useLazyContext := prompt.ShouldUseLazyContext(files, promptSpecs)
+
+	var systemPrompt, userPrompt string
+	if useLazyContext {
+		// Lazy context mode: only send editable region + padding, LLM can request more
+		systemPrompt = prompt.StreamEditSystemPromptLazy(cfg.Edit.Instructions, promptSpecs, model, diffFormat)
+		userPrompt = prompt.StreamEditUserPromptLazy(request, files, promptSpecs, useUnifiedDiff)
+		execConfig.LazyContext = true
+	} else {
+		// Full context mode: send entire file
+		systemPrompt = prompt.StreamEditSystemPrompt(cfg.Edit.Instructions, promptSpecs, model, diffFormat)
+		userPrompt = prompt.StreamEditUserPrompt(request, files, promptSpecs, useUnifiedDiff)
+	}
 
 	messages := []llm.Message{
 		llm.SystemText(systemPrompt),

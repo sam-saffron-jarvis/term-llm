@@ -2,6 +2,7 @@ package edit
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -14,6 +15,27 @@ import (
 
 // MaxRetryAttempts is the maximum number of retry attempts for failed edits.
 const MaxRetryAttempts = 3
+
+// MaxToolCallLoops is the maximum iterations for tool call handling.
+const MaxToolCallLoops = 5
+
+// ReadContextToolName is the name of the context reading tool.
+const ReadContextToolName = "read_context"
+
+// ReadContextToolSpec defines the tool for lazy context loading.
+var ReadContextToolSpec = llm.ToolSpec{
+	Name:        ReadContextToolName,
+	Description: "Read lines from a file to get additional context. Use this when you need to see more of the file beyond what was initially provided.",
+	Schema: map[string]interface{}{
+		"type": "object",
+		"properties": map[string]interface{}{
+			"path":       map[string]interface{}{"type": "string", "description": "File path"},
+			"start_line": map[string]interface{}{"type": "integer", "description": "Start line (1-indexed, defaults to 1)"},
+			"end_line":   map[string]interface{}{"type": "integer", "description": "End line (1-indexed, defaults to end of file)"},
+		},
+		"required": []interface{}{"path"},
+	},
+}
 
 // EditResult represents the result of applying an edit to a file.
 type EditResult struct {
@@ -58,6 +80,11 @@ type ExecutorConfig struct {
 
 	// DebugRaw enables raw request/response output.
 	DebugRaw bool
+
+	// LazyContext enables on-demand context loading for guarded edits.
+	// When true, only the editable region + padding is sent initially,
+	// and the LLM can use read_context tool to fetch more.
+	LazyContext bool
 }
 
 // StreamEditExecutor executes streaming edits with validation and retry.
@@ -359,7 +386,7 @@ func (e *StreamEditExecutor) executeOnce(ctx context.Context, messages []llm.Mes
 
 	e.parser = NewStreamParser(callbacks)
 
-	// Create stream request (no tools)
+	// Create stream request
 	req := llm.Request{
 		Model:    e.model,
 		Messages: messages,
@@ -367,56 +394,99 @@ func (e *StreamEditExecutor) executeOnce(ctx context.Context, messages []llm.Mes
 		DebugRaw: e.config.DebugRaw,
 	}
 
-	// Debug output before streaming
-	if e.config.DebugRaw {
-		llm.DebugRawRequest(true, e.provider.Name(), e.provider.Credential(), req, "Request")
+	// Add read_context tool if lazy context mode
+	if e.config.LazyContext {
+		req.Tools = []llm.ToolSpec{ReadContextToolSpec}
 	}
 
-	// Create cancellable context for halting
-	streamCtx, cancel := context.WithCancel(ctx)
-	defer cancel()
+	// Tool call loop - allows LLM to request more context
+	for toolLoop := 0; toolLoop < MaxToolCallLoops; toolLoop++ {
+		// Debug output before streaming
+		if e.config.DebugRaw {
+			label := "Request"
+			if toolLoop > 0 {
+				label = fmt.Sprintf("Request (tool loop %d)", toolLoop)
+			}
+			llm.DebugRawRequest(true, e.provider.Name(), e.provider.Credential(), req, label)
+		}
 
-	rawStream, err := e.provider.Stream(streamCtx, req)
-	if err != nil {
-		return nil, "", nil, fmt.Errorf("failed to start stream: %w", err)
-	}
-	defer rawStream.Close()
+		// Create cancellable context for halting
+		streamCtx, cancel := context.WithCancel(ctx)
 
-	// Wrap stream for debug output
-	stream := llm.WrapDebugStream(e.config.DebugRaw, rawStream)
+		rawStream, err := e.provider.Stream(streamCtx, req)
+		if err != nil {
+			cancel()
+			return nil, "", nil, fmt.Errorf("failed to start stream: %w", err)
+		}
 
-	// Process stream events
-	for {
-		event, err := stream.Recv()
-		if err == io.EOF {
+		// Wrap stream for debug output
+		stream := llm.WrapDebugStream(e.config.DebugRaw, rawStream)
+
+		// Collect tool calls during streaming
+		var toolCalls []llm.ToolCall
+
+		// Process stream events
+		streamErr := func() error {
+			defer rawStream.Close()
+			defer cancel()
+
+			for {
+				event, err := stream.Recv()
+				if err == io.EOF {
+					return nil
+				}
+				if err != nil {
+					// Check if we halted intentionally
+					if e.parser.IsHalted() {
+						return e.parser.HaltError()
+					}
+					// Check for context cancellation (from our halt)
+					if ctx.Err() != nil {
+						return e.parser.HaltError()
+					}
+					return fmt.Errorf("stream error: %w", err)
+				}
+
+				switch event.Type {
+				case llm.EventTextDelta:
+					e.accumulated.WriteString(event.Text)
+					if err := e.parser.Feed(event.Text); err != nil {
+						return err
+					}
+
+				case llm.EventToolCall:
+					if event.Tool != nil {
+						toolCalls = append(toolCalls, *event.Tool)
+					}
+
+				case llm.EventError:
+					return event.Err
+
+				case llm.EventDone:
+					// Stream complete
+				}
+			}
+		}()
+
+		if streamErr != nil {
+			return nil, "", e.retryContext, streamErr
+		}
+
+		// If no tool calls, we're done streaming
+		if len(toolCalls) == 0 {
 			break
 		}
-		if err != nil {
-			// Check if we halted intentionally
-			if e.parser.IsHalted() {
-				return nil, "", e.retryContext, e.parser.HaltError()
-			}
-			// Check for context cancellation (from our halt)
-			if ctx.Err() != nil {
-				return nil, "", e.retryContext, e.parser.HaltError()
-			}
-			return nil, "", nil, fmt.Errorf("stream error: %w", err)
+
+		// Execute read_context tool calls
+		if e.config.Debug {
+			fmt.Fprintf(os.Stderr, "[DEBUG] Handling %d tool call(s)\n", len(toolCalls))
 		}
 
-		switch event.Type {
-		case llm.EventTextDelta:
-			e.accumulated.WriteString(event.Text)
-			if err := e.parser.Feed(event.Text); err != nil {
-				cancel() // Halt the stream
-				return nil, "", e.retryContext, err
-			}
+		toolResults := e.executeReadContextCalls(toolCalls, workingContents)
 
-		case llm.EventError:
-			return nil, "", nil, event.Err
-
-		case llm.EventDone:
-			// Stream complete
-		}
+		// Add tool calls and results to messages for next iteration
+		req.Messages = append(req.Messages, toolCallMessage(toolCalls))
+		req.Messages = append(req.Messages, toolResults...)
 	}
 
 	// Finish parsing any remaining content
@@ -440,6 +510,119 @@ func (e *StreamEditExecutor) AboutText() string {
 // AccumulatedOutput returns the full LLM output accumulated during execution.
 func (e *StreamEditExecutor) AccumulatedOutput() string {
 	return e.accumulated.String()
+}
+
+// readContextArgs holds the parsed arguments for read_context tool.
+type readContextArgs struct {
+	Path      string `json:"path"`
+	StartLine int    `json:"start_line"`
+	EndLine   int    `json:"end_line"`
+}
+
+// executeReadContextCalls executes read_context tool calls and returns result messages.
+func (e *StreamEditExecutor) executeReadContextCalls(calls []llm.ToolCall, contents map[string]string) []llm.Message {
+	results := make([]llm.Message, 0, len(calls))
+
+	for _, call := range calls {
+		// Ensure tool call has an ID
+		callID := call.ID
+		if callID == "" {
+			callID = fmt.Sprintf("call_%d", len(results))
+		}
+
+		if call.Name != ReadContextToolName {
+			// Unknown tool - return error
+			results = append(results, llm.ToolResultMessage(callID, call.Name,
+				fmt.Sprintf("error: unknown tool %q", call.Name)))
+			continue
+		}
+
+		// Parse arguments from JSON
+		var args readContextArgs
+		if err := json.Unmarshal(call.Arguments, &args); err != nil {
+			results = append(results, llm.ToolResultMessage(callID, call.Name,
+				fmt.Sprintf("error: invalid arguments: %v", err)))
+			continue
+		}
+
+		if args.Path == "" {
+			results = append(results, llm.ToolResultMessage(callID, call.Name,
+				"error: path is required"))
+			continue
+		}
+
+		// Find the file content
+		content, resolvedPath, ok := findWorkingContent(contents, args.Path)
+		if !ok {
+			results = append(results, llm.ToolResultMessage(callID, call.Name,
+				fmt.Sprintf("error: file not found: %s", args.Path)))
+			continue
+		}
+
+		// Use defaults for line range
+		startLine := args.StartLine
+		if startLine <= 0 {
+			startLine = 1
+		}
+		endLine := args.EndLine // 0 means EOF
+
+		// Extract the requested lines
+		excerpt := extractLineRangeNumbered(content, startLine, endLine)
+
+		if e.config.Debug {
+			fmt.Fprintf(os.Stderr, "[DEBUG] read_context: %s lines %d-%d (%d chars)\n",
+				resolvedPath, startLine, endLine, len(excerpt))
+		}
+
+		results = append(results, llm.ToolResultMessage(callID, call.Name, excerpt))
+	}
+
+	return results
+}
+
+// toolCallMessage creates an assistant message containing tool calls.
+func toolCallMessage(calls []llm.ToolCall) llm.Message {
+	parts := make([]llm.Part, 0, len(calls))
+	for i := range calls {
+		call := calls[i]
+		// Ensure ID
+		if call.ID == "" {
+			call.ID = fmt.Sprintf("call_%d", i)
+		}
+		parts = append(parts, llm.Part{
+			Type:     llm.PartToolCall,
+			ToolCall: &call,
+		})
+	}
+	return llm.Message{
+		Role:  llm.RoleAssistant,
+		Parts: parts,
+	}
+}
+
+// extractLineRangeNumbered extracts lines startLine to endLine (1-indexed) with line numbers.
+func extractLineRangeNumbered(content string, startLine, endLine int) string {
+	lines := strings.Split(content, "\n")
+
+	// Adjust for 0-based indexing
+	start := startLine - 1
+	if start < 0 {
+		start = 0
+	}
+	end := endLine
+	if end <= 0 || end > len(lines) {
+		end = len(lines)
+	}
+	if start >= len(lines) {
+		return ""
+	}
+
+	// Build output with line numbers
+	var sb strings.Builder
+	for i := start; i < end; i++ {
+		sb.WriteString(fmt.Sprintf("%d: %s\n", i+1, lines[i]))
+	}
+	return strings.TrimSuffix(sb.String(), "\n")
 }
 
 // findWorkingContent finds content for a path, handling both absolute and relative paths.

@@ -203,3 +203,131 @@ func StreamEditUserPrompt(request string, files []input.FileContent, specs []Edi
 
 	return sb.String()
 }
+
+// LazyContextThreshold is the minimum file size (in lines) to use lazy context loading.
+const LazyContextThreshold = 100
+
+// LazyContextPadding is the number of lines to show around the editable region.
+const LazyContextPadding = 10
+
+// StreamEditSystemPromptLazy builds a system prompt for lazy context loading mode.
+// This is similar to StreamEditSystemPrompt but adds info about the read_context tool.
+func StreamEditSystemPromptLazy(instructions string, specs []EditSpec, model, diffFormat string) string {
+	// Start with base prompt
+	prompt := StreamEditSystemPrompt(instructions, specs, model, diffFormat)
+
+	// Add read_context tool documentation
+	prompt += `
+
+## Context Tool
+
+You have access to the read_context tool to fetch additional file context:
+- read_context(path, start_line?, end_line?) - Read lines from a file
+
+Only use this tool if you need context beyond what's shown. The editable region
+and surrounding context are already provided. Most edits won't need extra context.`
+
+	return prompt
+}
+
+// StreamEditUserPromptLazy builds a user prompt with lazy context loading.
+// For large guarded files, only the editable region + padding is included.
+// The LLM can use read_context tool to fetch more if needed.
+func StreamEditUserPromptLazy(request string, files []input.FileContent, specs []EditSpec, useUnifiedDiff bool) string {
+	var sb strings.Builder
+
+	sb.WriteString("Files to edit:\n\n")
+
+	for _, f := range files {
+		lineCount := countLines(f.Content)
+
+		// Find if this file has a guard
+		var guard *EditSpec
+		for i := range specs {
+			if specs[i].Path == f.Path && specs[i].HasGuard {
+				guard = &specs[i]
+				break
+			}
+		}
+
+		if guard != nil && lineCount > LazyContextThreshold {
+			// Lazy mode: show only region + padding
+			start := guard.StartLine - LazyContextPadding
+			if start < 1 {
+				start = 1
+			}
+			end := guard.EndLine + LazyContextPadding
+			if end > lineCount {
+				end = lineCount
+			}
+
+			sb.WriteString(fmt.Sprintf("[FILE: %s (%d lines total)]\n", f.Path, lineCount))
+			sb.WriteString(fmt.Sprintf("[SHOWING: lines %d-%d]\n", start, end))
+			excerpt := extractLineRange(f.Content, start, end)
+			sb.WriteString(excerpt)
+			if !strings.HasSuffix(excerpt, "\n") {
+				sb.WriteString("\n")
+			}
+			sb.WriteString("[/FILE]\n\n")
+
+			sb.WriteString(fmt.Sprintf("Editable region: lines %d-%d\n", guard.StartLine, guard.EndLine))
+			sb.WriteString("Use read_context tool if you need more context from this file.\n\n")
+		} else {
+			// Full file (small or no guard)
+			sb.WriteString(fmt.Sprintf("[FILE: %s]\n", f.Path))
+			sb.WriteString(f.Content)
+			if !strings.HasSuffix(f.Content, "\n") {
+				sb.WriteString("\n")
+			}
+			sb.WriteString("[/FILE]\n\n")
+
+			// Still show editable region marker for guarded files
+			if guard != nil {
+				sb.WriteString(fmt.Sprintf("Editable region: lines %d-%d\n\n", guard.StartLine, guard.EndLine))
+			}
+		}
+	}
+
+	sb.WriteString(fmt.Sprintf("Request: %s\n\n", request))
+
+	if useUnifiedDiff {
+		sb.WriteString("Output unified diff with --- and +++ headers, then [ABOUT]...[/ABOUT] summary.")
+	} else {
+		sb.WriteString("Respond with [FILE]...[/FILE] blocks for each change, then [ABOUT]...[/ABOUT] with a summary.")
+	}
+
+	return sb.String()
+}
+
+// ShouldUseLazyContext determines if lazy context loading should be used.
+// Returns true if any guarded file exceeds the threshold.
+func ShouldUseLazyContext(files []input.FileContent, specs []EditSpec) bool {
+	for _, spec := range specs {
+		if !spec.HasGuard {
+			continue
+		}
+		for _, f := range files {
+			if f.Path == spec.Path {
+				lineCount := countLines(f.Content)
+				if lineCount > LazyContextThreshold {
+					return true
+				}
+				break
+			}
+		}
+	}
+	return false
+}
+
+// countLines returns the number of lines in content.
+func countLines(content string) int {
+	if content == "" {
+		return 0
+	}
+	count := strings.Count(content, "\n")
+	// Add 1 if content doesn't end with newline (last line)
+	if !strings.HasSuffix(content, "\n") {
+		count++
+	}
+	return count
+}
