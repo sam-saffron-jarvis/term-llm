@@ -9,7 +9,7 @@ A Swiss Army knife for your terminal—AI-powered commands, answers, and images 
 - **Command suggestions**: Natural language → executable shell commands
 - **Ask questions**: Get answers with optional web search
 - **File editing**: Edit code with AI assistance (supports line ranges)
-- **File context**: Include files, clipboard, or stdin as context (`-f`)
+- **File context**: Include files, clipboard, stdin, or line ranges as context (`-f`)
 - **Image generation**: Create and edit images (Gemini, OpenAI, Flux)
 - **Multiple providers**: Anthropic, OpenAI, OpenRouter, Gemini, Zen (free tier), Ollama, LM Studio
 - **Local LLMs**: Run with Ollama, LM Studio, or any OpenAI-compatible server
@@ -183,7 +183,7 @@ Use arrow keys to select a command, Enter to execute, or press `h` for detailed 
 | Flag | Short | Description |
 |------|-------|-------------|
 | `--provider` | | Override provider, optionally with model (e.g., `openai:gpt-4o`) |
-| `--file` | `-f` | File(s) to include as context (supports globs, 'clipboard') |
+| `--file` | `-f` | File(s) to include as context (supports globs, line ranges, 'clipboard') |
 | `--auto-pick` | `-a` | Auto-execute the best suggestion without prompting |
 | `--max N` | `-n N` | Limit to N options in the selection UI |
 | `--search` | `-s` | Enable web search for current information (DuckDuckGo fallback if needed) |
@@ -217,6 +217,7 @@ term-llm ask "What is the difference between TCP and UDP?"
 term-llm ask "latest node.js version" -s        # with web search
 term-llm ask --provider zen "explain docker"    # use specific provider
 term-llm ask -f code.go "explain this code"     # with file context
+term-llm ask -f code.go:50-100 "explain this function"  # specific lines
 term-llm ask -f clipboard "what is this?"       # from clipboard
 cat README.md | term-llm ask "summarize this"   # pipe stdin
 term-llm ask --debug-raw "latest zig release"   # raw debug logs with timestamps
@@ -312,12 +313,16 @@ term-llm edit "fix the bug" --file utils.go:45-60     # only lines 45-60
 
 ### Line Range Syntax
 
-Restrict edits to specific line ranges:
+Both `edit` and `ask` support line range syntax to focus on specific parts of a file:
 
 ```bash
+# Edit specific lines
 term-llm edit "fix this" --file main.go:11-22    # lines 11 to 22
 term-llm edit "fix this" --file main.go:11-      # line 11 to end
 term-llm edit "fix this" --file main.go:-22      # start to line 22
+
+# Ask about specific lines
+term-llm ask -f main.go:50-100 "explain this function"
 ```
 
 ### Diff Format
