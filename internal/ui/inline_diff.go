@@ -579,16 +579,16 @@ func PromptBatchApproval(hasInfo bool, reprompt bool) EditApprovalResult {
 			// Don't print anything - we'll reprompt after info view
 			return EditApprovalInfo
 		}
-		// No info available, treat as yes
-		fmt.Println("Y")
-		return EditApprovalYes
-	case 'n', 'N':
+		// No info available, reject
 		fmt.Println("n")
 		return EditApprovalNo
-	default:
-		// Enter, y, Y, or anything else = yes
+	case 'y', 'Y', '\r', '\n':
 		fmt.Println("Y")
 		return EditApprovalYes
+	default:
+		// Any other key = no
+		fmt.Println("n")
+		return EditApprovalNo
 	}
 }
 
