@@ -277,8 +277,8 @@ func (m selectModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.done = true
 			}
 			return m, tea.Quit
-		case "h", "H":
-			// Only show help for actual commands, not "something else"
+		case "i", "I":
+			// Only show info for actual commands, not "something else"
 			if m.cursor < len(m.suggestions) {
 				m.showHelp = true
 				return m, tea.Quit
@@ -322,7 +322,7 @@ func (m selectModel) View() string {
 	var b strings.Builder
 
 	b.WriteString(m.styles.Bold.Render("Select a command to run"))
-	b.WriteString(m.styles.Muted.Render("  [h] help"))
+	b.WriteString(m.styles.Muted.Render("  [i] info"))
 	b.WriteString("\n\n")
 
 	for i, s := range m.suggestions {
