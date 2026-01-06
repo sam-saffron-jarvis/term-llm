@@ -580,6 +580,28 @@ Each provider supports a `credentials` field:
 - Reads OAuth credentials from `~/.gemini/oauth_creds.json`
 - Uses Google Code Assist API (same backend as gemini-cli)
 
+### Diagnostics
+
+Enable diagnostic logging to capture detailed information when edits fail and retry. This is useful for debugging and tuning prompts:
+
+```yaml
+diagnostics:
+  enabled: true
+  # dir: /custom/path  # optional, defaults to ~/.local/share/term-llm/diagnostics/
+```
+
+When an edit fails and retries, two files are written:
+- `edit-retry-{timestamp}.json` - Structured data for programmatic analysis
+- `edit-retry-{timestamp}.md` - Human-readable with syntax-highlighted code blocks
+
+Each diagnostic captures:
+- Provider and model used
+- Full system and user prompts
+- LLM's partial response before failure
+- Failed search pattern or diff
+- Current file content
+- Error reason
+
 ### Shell Completions
 
 Generate and install shell completions:

@@ -12,6 +12,7 @@ import (
 
 type Config struct {
 	Provider     string             `mapstructure:"provider"`
+	Diagnostics  DiagnosticsConfig  `mapstructure:"diagnostics"`
 	Exec         ExecConfig         `mapstructure:"exec"`
 	Ask          AskConfig          `mapstructure:"ask"`
 	Edit         EditConfig         `mapstructure:"edit"`
@@ -25,6 +26,12 @@ type Config struct {
 	Ollama       OllamaConfig       `mapstructure:"ollama"`
 	LMStudio     LMStudioConfig     `mapstructure:"lmstudio"`
 	OpenAICompat OpenAICompatConfig `mapstructure:"openai-compat"`
+}
+
+// DiagnosticsConfig configures diagnostic data collection
+type DiagnosticsConfig struct {
+	Enabled bool   `mapstructure:"enabled"` // Enable diagnostic data collection
+	Dir     string `mapstructure:"dir"`     // Override default directory
 }
 
 // ThemeConfig allows customization of UI colors
@@ -402,6 +409,19 @@ func GetConfigPath() (string, error) {
 		return "", err
 	}
 	return filepath.Join(configDir, "config.yaml"), nil
+}
+
+// GetDiagnosticsDir returns the XDG data directory for term-llm diagnostics.
+// Uses $XDG_DATA_HOME if set, otherwise ~/.local/share
+func GetDiagnosticsDir() string {
+	if xdgData := os.Getenv("XDG_DATA_HOME"); xdgData != "" {
+		return filepath.Join(xdgData, "term-llm", "diagnostics")
+	}
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return filepath.Join(".", "term-llm-diagnostics") // fallback
+	}
+	return filepath.Join(homeDir, ".local", "share", "term-llm", "diagnostics")
 }
 
 // Exists returns true if a config file exists

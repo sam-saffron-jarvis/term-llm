@@ -78,6 +78,10 @@ type ExecutorConfig struct {
 	// OnTokens is called with output token count updates during streaming.
 	OnTokens func(outputTokens int)
 
+	// OnRetry is called when an edit fails and will be retried.
+	// Provides full context for diagnostics.
+	OnRetry func(diag RetryDiagnostic)
+
 	// Debug enables debug output.
 	Debug bool
 
@@ -131,6 +135,19 @@ func (e *StreamEditExecutor) Execute(ctx context.Context, messages []llm.Message
 		retryPrompt := BuildRetryPrompt(*retryCtx)
 		if e.config.OnProgress != nil {
 			e.config.OnProgress(fmt.Sprintf("Retry attempt %d/%d", attempt+1, MaxRetryAttempts))
+		}
+
+		// Call OnRetry for diagnostics
+		if e.config.OnRetry != nil {
+			diag := RetryDiagnostic{
+				AttemptNumber: attempt + 1,
+				RetryContext:  retryCtx,
+				SystemPrompt:  extractSystemPrompt(messages),
+				UserPrompt:    extractUserPrompt(messages),
+				Provider:      e.provider.Name(),
+				Model:         e.model,
+			}
+			e.config.OnRetry(diag)
 		}
 
 		// Add the partial assistant response and error feedback
@@ -701,4 +718,32 @@ func filterDiffEmptyLines(lines []string) []string {
 	}
 
 	return result
+}
+
+// extractSystemPrompt extracts the system prompt from messages.
+func extractSystemPrompt(messages []llm.Message) string {
+	for _, msg := range messages {
+		if msg.Role == llm.RoleSystem {
+			for _, part := range msg.Parts {
+				if part.Type == llm.PartText {
+					return part.Text
+				}
+			}
+		}
+	}
+	return ""
+}
+
+// extractUserPrompt extracts the first user prompt from messages.
+func extractUserPrompt(messages []llm.Message) string {
+	for _, msg := range messages {
+		if msg.Role == llm.RoleUser {
+			for _, part := range msg.Parts {
+				if part.Type == llm.PartText {
+					return part.Text
+				}
+			}
+		}
+	}
+	return ""
 }

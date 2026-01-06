@@ -6,8 +6,10 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/samsaffron/term-llm/internal/config"
+	"github.com/samsaffron/term-llm/internal/diagnostics"
 	"github.com/samsaffron/term-llm/internal/edit"
 	"github.com/samsaffron/term-llm/internal/input"
 	"github.com/samsaffron/term-llm/internal/llm"
@@ -265,6 +267,9 @@ func runStreamEdit(ctx context.Context, cfg *config.Config, provider llm.Provide
 	// Create progress channel for spinner updates
 	progressCh := make(chan ui.ProgressUpdate, 10)
 
+	// Get model from config (needed for diagnostics callback)
+	model := getActiveModel(cfg)
+
 	// Create executor config
 	execConfig := edit.ExecutorConfig{
 		FileContents: fileContents,
@@ -324,8 +329,32 @@ func runStreamEdit(ctx context.Context, cfg *config.Config, provider llm.Provide
 		// About text is stored and shown on demand via (i)nfo
 	}
 
-	// Get model from config
-	model := getActiveModel(cfg)
+	// Add OnRetry callback for diagnostics if enabled
+	if cfg.Diagnostics.Enabled {
+		execConfig.OnRetry = func(diag edit.RetryDiagnostic) {
+			d := &diagnostics.EditRetryDiagnostic{
+				Timestamp:     time.Now(),
+				Provider:      provider.Name(),
+				Model:         model,
+				FilePath:      diag.RetryContext.FilePath,
+				AttemptNumber: diag.AttemptNumber,
+				Reason:        diag.RetryContext.Reason,
+				LLMResponse:   diag.RetryContext.PartialOutput,
+				FailedSearch:  diag.RetryContext.FailedSearch,
+				DiffLines:     diag.RetryContext.DiffLines,
+				FileContent:   diag.RetryContext.FileContent,
+				SystemPrompt:  diag.SystemPrompt,
+				UserPrompt:    diag.UserPrompt,
+			}
+			dir := cfg.Diagnostics.Dir
+			if dir == "" {
+				dir = config.GetDiagnosticsDir()
+			}
+			if err := diagnostics.WriteEditRetry(dir, d); err != nil {
+				fmt.Fprintf(os.Stderr, "warning: failed to write diagnostics: %v\n", err)
+			}
+		}
+	}
 
 	// Create executor
 	executor := edit.NewStreamEditExecutor(provider, model, execConfig)
