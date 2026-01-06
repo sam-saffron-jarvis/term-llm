@@ -5,8 +5,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"regexp"
-	"strconv"
 	"strings"
 
 	"github.com/samsaffron/term-llm/internal/config"
@@ -64,14 +62,6 @@ func init() {
 	rootCmd.AddCommand(editCmd)
 }
 
-// FileSpec represents a file with optional line range guard
-type FileSpec struct {
-	Path      string
-	StartLine int // 1-indexed, 0 means from beginning
-	EndLine   int // 1-indexed, 0 means to end
-	HasGuard  bool
-}
-
 type diffEntry struct {
 	path              string
 	writePath         string
@@ -86,14 +76,14 @@ type diffApplyOptions struct {
 	separatorOnAnyOutput bool
 }
 
-func toPromptSpecs(specs []FileSpec) []prompt.EditSpec {
+func toPromptSpecs(specs []input.FileSpec) []prompt.EditSpec {
 	result := make([]prompt.EditSpec, 0, len(specs))
 	for _, spec := range specs {
 		result = append(result, prompt.EditSpec{
 			Path:      spec.Path,
 			StartLine: spec.StartLine,
 			EndLine:   spec.EndLine,
-			HasGuard:  spec.HasGuard,
+			HasGuard:  spec.HasRegion,
 		})
 	}
 	return result
@@ -170,36 +160,6 @@ func absPath(path string) string {
 	return abs
 }
 
-// parseFileSpec parses a file specification like "main.go:11-22"
-func parseFileSpec(spec string) (FileSpec, error) {
-	re := regexp.MustCompile(`^(.+?)(?::(\d*)-(\d*))?$`)
-	matches := re.FindStringSubmatch(spec)
-	if matches == nil {
-		return FileSpec{}, fmt.Errorf("invalid file spec: %s", spec)
-	}
-
-	fs := FileSpec{Path: matches[1]}
-
-	if strings.Contains(spec, ":") && len(matches) > 1 {
-		fs.HasGuard = true
-		if matches[2] != "" {
-			start, err := strconv.Atoi(matches[2])
-			if err != nil {
-				return FileSpec{}, fmt.Errorf("invalid start line: %s", matches[2])
-			}
-			fs.StartLine = start
-		}
-		if matches[3] != "" {
-			end, err := strconv.Atoi(matches[3])
-			if err != nil {
-				return FileSpec{}, fmt.Errorf("invalid end line: %s", matches[3])
-			}
-			fs.EndLine = end
-		}
-	}
-
-	return fs, nil
-}
 
 func runEdit(cmd *cobra.Command, args []string) error {
 	request := strings.Join(args, " ")
@@ -225,10 +185,10 @@ func runEdit(cmd *cobra.Command, args []string) error {
 
 	// Parse file specs and read files
 	var files []input.FileContent
-	var specs []FileSpec
+	var specs []input.FileSpec
 
 	for _, f := range editFiles {
-		spec, err := parseFileSpec(f)
+		spec, err := input.ParseFileSpec(f)
 		if err != nil {
 			return err
 		}
@@ -243,7 +203,7 @@ func runEdit(cmd *cobra.Command, args []string) error {
 				// Normalize to absolute path for consistent lookups
 				ef.Path = absPath(ef.Path)
 				files = append(files, ef)
-				specs = append(specs, FileSpec{Path: ef.Path})
+				specs = append(specs, input.FileSpec{Path: ef.Path})
 			}
 		} else {
 			// Normalize to absolute path for consistent lookups
@@ -287,7 +247,7 @@ func getActiveModel(cfg *config.Config) string {
 }
 
 // runStreamEdit runs the streaming edit flow (one-shot, no tools)
-func runStreamEdit(ctx context.Context, cfg *config.Config, provider llm.Provider, request string, files []input.FileContent, specs []FileSpec) error {
+func runStreamEdit(ctx context.Context, cfg *config.Config, provider llm.Provider, request string, files []input.FileContent, specs []input.FileSpec) error {
 	// Build file contents map
 	fileContents := make(map[string]string)
 	for _, f := range files {
@@ -297,7 +257,7 @@ func runStreamEdit(ctx context.Context, cfg *config.Config, provider llm.Provide
 	// Build guards map
 	guards := make(map[string][2]int)
 	for _, spec := range specs {
-		if spec.HasGuard {
+		if spec.HasRegion {
 			guards[spec.Path] = [2]int{spec.StartLine, spec.EndLine}
 		}
 	}

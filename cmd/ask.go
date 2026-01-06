@@ -41,8 +41,15 @@ Examples:
   term-llm ask "Explain the difference between TCP and UDP" -d
   term-llm ask "List 5 programming languages" --text
   term-llm ask -f code.go "Explain this code"
+  term-llm ask -f code.go:10-50 "Explain this function"
   term-llm ask -f clipboard "What is this?"
-  cat error.log | term-llm ask "What went wrong?"`,
+  cat error.log | term-llm ask "What went wrong?"
+
+Line range syntax for files:
+  main.go       - Include entire file
+  main.go:11-22 - Include only lines 11-22
+  main.go:11-   - Include lines 11 to end of file
+  main.go:-22   - Include lines 1-22`,
 	Args: cobra.MinimumNArgs(1),
 	RunE: runAsk,
 }
@@ -52,7 +59,7 @@ func init() {
 	askCmd.Flags().BoolVarP(&askDebug, "debug", "d", false, "Show debug information")
 	askCmd.Flags().BoolVarP(&askText, "text", "t", false, "Output plain text instead of rendered markdown")
 	askCmd.Flags().StringVar(&askProvider, "provider", "", "Override provider, optionally with model (e.g., openai:gpt-4o)")
-	askCmd.Flags().StringArrayVarP(&askFiles, "file", "f", nil, "File(s) to include as context (supports globs, 'clipboard')")
+	askCmd.Flags().StringArrayVarP(&askFiles, "file", "f", nil, "File(s) to include as context (supports globs, line ranges like file.go:10-20, 'clipboard')")
 	if err := askCmd.RegisterFlagCompletionFunc("provider", ProviderFlagCompletion); err != nil {
 		panic(fmt.Sprintf("failed to register provider completion: %v", err))
 	}

@@ -22,6 +22,7 @@ type FileContent struct {
 //   - "clipboard": reads text from system clipboard
 //   - Glob patterns (e.g., "*.go"): expands and reads all matching files
 //   - Regular paths: reads file content directly
+//   - Line ranges (e.g., "main.go:11-22"): reads only specified lines
 func ReadFiles(paths []string) ([]FileContent, error) {
 	var result []FileContent
 
@@ -39,18 +40,24 @@ func ReadFiles(paths []string) ([]FileContent, error) {
 			continue
 		}
 
-		// Expand ~ to home directory
-		expandedPath := expandPath(path)
+		// Parse file spec to extract line range if present
+		spec, err := ParseFileSpec(path)
+		if err != nil {
+			return nil, fmt.Errorf("invalid file spec %q: %w", path, err)
+		}
 
-		// Try glob expansion
+		// Expand ~ to home directory
+		expandedPath := expandPath(spec.Path)
+
+		// Try glob expansion (only on the path part, not the line range)
 		matches, err := filepath.Glob(expandedPath)
 		if err != nil {
-			return nil, fmt.Errorf("invalid glob pattern %q: %w", path, err)
+			return nil, fmt.Errorf("invalid glob pattern %q: %w", spec.Path, err)
 		}
 
 		// If no matches but no wildcard chars, treat as literal path
 		if len(matches) == 0 {
-			if !containsGlobChars(path) {
+			if !containsGlobChars(spec.Path) {
 				matches = []string{expandedPath}
 			} else {
 				// Glob pattern matched nothing
@@ -74,9 +81,18 @@ func ReadFiles(paths []string) ([]FileContent, error) {
 				return nil, fmt.Errorf("failed to read %q: %w", match, err)
 			}
 
+			contentStr := string(content)
+			displayPath := match
+
+			// Extract line range if specified
+			if spec.HasRegion {
+				contentStr = ExtractLines(contentStr, spec.StartLine, spec.EndLine)
+				displayPath = fmt.Sprintf("%s:%d-%d", match, spec.StartLine, spec.EndLine)
+			}
+
 			result = append(result, FileContent{
-				Path:    match,
-				Content: string(content),
+				Path:    displayPath,
+				Content: contentStr,
 			})
 		}
 	}
