@@ -326,6 +326,24 @@ func runStreamEdit(ctx context.Context, cfg *config.Config, provider llm.Provide
 			default:
 			}
 		},
+		OnFirstToken: func() {
+			// Send phase update to spinner - transition from "Thinking" to "Responding"
+			select {
+			case progressCh <- ui.ProgressUpdate{Phase: "Responding"}:
+			default:
+			}
+		},
+		OnToolStart: func(toolName string) {
+			// Send phase update for tool execution
+			phase := "Running " + toolName
+			if toolName == edit.ReadContextToolName {
+				phase = "Reading"
+			}
+			select {
+			case progressCh <- ui.ProgressUpdate{Phase: phase}:
+			default:
+			}
+		},
 		// About text is stored and shown on demand via (i)nfo
 	}
 

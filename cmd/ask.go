@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"
@@ -126,12 +127,16 @@ func runAsk(cmd *cobra.Command, args []string) error {
 	// Create channel for streaming output
 	output := make(chan string)
 
+	// Channel for tool events (for phase updates)
+	toolEvents := make(chan string, 10)
+
 	errChan := make(chan error, 1)
 	go func() {
 		stream, err := engine.Stream(ctx, req)
 		if err != nil {
 			errChan <- err
 			close(output)
+			close(toolEvents)
 			return
 		}
 		defer stream.Close()
@@ -139,18 +144,27 @@ func runAsk(cmd *cobra.Command, args []string) error {
 			event, err := stream.Recv()
 			if err == io.EOF {
 				close(output)
+				close(toolEvents)
 				errChan <- nil
 				return
 			}
 			if err != nil {
 				errChan <- err
 				close(output)
+				close(toolEvents)
 				return
 			}
 			if event.Type == llm.EventError && event.Err != nil {
 				errChan <- event.Err
 				close(output)
+				close(toolEvents)
 				return
+			}
+			if event.Type == llm.EventToolExecStart {
+				select {
+				case toolEvents <- event.ToolName:
+				default:
+				}
 			}
 			if event.Type == llm.EventTextDelta && event.Text != "" {
 				output <- event.Text
@@ -159,9 +173,9 @@ func runAsk(cmd *cobra.Command, args []string) error {
 	}()
 
 	if useGlamour {
-		err = streamWithGlamour(ctx, output)
+		err = streamWithGlamour(ctx, output, toolEvents)
 	} else {
-		err = streamPlainText(ctx, output)
+		err = streamPlainText(ctx, output, toolEvents)
 	}
 
 	if err != nil {
@@ -176,11 +190,13 @@ func runAsk(cmd *cobra.Command, args []string) error {
 }
 
 // streamPlainText streams text directly without formatting
-func streamPlainText(ctx context.Context, output <-chan string) error {
+func streamPlainText(ctx context.Context, output <-chan string, toolEvents <-chan string) error {
 	for {
 		select {
 		case <-ctx.Done():
 			return nil
+		case <-toolEvents:
+			// Ignore tool events in plain text mode
 		case chunk, ok := <-output:
 			if !ok {
 				fmt.Println()
@@ -209,11 +225,15 @@ type askStreamModel struct {
 	finalOutput string // stored for printing after tea exits
 	width       int
 	loading     bool
+	phase       string    // Current phase: "Thinking", "Responding"
+	startTime   time.Time // For elapsed time display
 }
 
 type askContentMsg string
 type askDoneMsg struct{}
 type askCancelledMsg struct{}
+type askTickMsg time.Time
+type askToolStartMsg string // Tool name being executed
 
 func newAskStreamModel() askStreamModel {
 	width := getTerminalWidth()
@@ -224,16 +244,25 @@ func newAskStreamModel() askStreamModel {
 	s.Style = styles.Spinner
 
 	return askStreamModel{
-		spinner: s,
-		styles:  styles,
-		content: &strings.Builder{},
-		width:   width,
-		loading: true,
+		spinner:   s,
+		styles:    styles,
+		content:   &strings.Builder{},
+		width:     width,
+		loading:   true,
+		phase:     "Thinking",
+		startTime: time.Now(),
 	}
 }
 
 func (m askStreamModel) Init() tea.Cmd {
-	return m.spinner.Tick
+	return tea.Batch(m.spinner.Tick, m.tickEvery())
+}
+
+// tickEvery returns a command that sends a tick every second for elapsed time updates.
+func (m askStreamModel) tickEvery() tea.Cmd {
+	return tea.Tick(1*time.Second, func(t time.Time) tea.Msg {
+		return askTickMsg(t)
+	})
 }
 
 func (m askStreamModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -251,6 +280,7 @@ func (m askStreamModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case askContentMsg:
 		m.loading = false
+		m.phase = "Responding"
 		m.content.WriteString(string(msg))
 		m.rendered = m.render()
 
@@ -263,6 +293,26 @@ func (m askStreamModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case askCancelledMsg:
 		return m, tea.Quit
+
+	case askTickMsg:
+		// Continue ticking for elapsed time updates
+		if m.loading {
+			return m, m.tickEvery()
+		}
+
+	case askToolStartMsg:
+		// Tool execution starting/ending - update phase
+		toolName := string(msg)
+		if toolName == "" {
+			// Empty tool name means back to thinking
+			m.phase = "Thinking"
+		} else if toolName == llm.WebSearchToolName {
+			m.phase = "Searching"
+		} else if toolName == llm.ReadURLToolName {
+			m.phase = "Reading"
+		} else {
+			m.phase = "Running " + toolName
+		}
 
 	case spinner.TickMsg:
 		if m.loading {
@@ -290,7 +340,8 @@ func (m askStreamModel) render() string {
 
 func (m askStreamModel) View() string {
 	if m.loading {
-		return m.spinner.View() + " Thinking... " + m.styles.Muted.Render("(esc to cancel)")
+		elapsed := time.Since(m.startTime)
+		return fmt.Sprintf("%s %s... %.0fs %s", m.spinner.View(), m.phase, elapsed.Seconds(), m.styles.Muted.Render("(esc to cancel)"))
 	}
 
 	if m.rendered == "" {
@@ -301,7 +352,7 @@ func (m askStreamModel) View() string {
 }
 
 // streamWithGlamour renders markdown beautifully as content streams in
-func streamWithGlamour(ctx context.Context, output <-chan string) error {
+func streamWithGlamour(ctx context.Context, output <-chan string, toolEvents <-chan string) error {
 	model := newAskStreamModel()
 
 	// Create program - use inline mode so output stays in terminal
@@ -316,6 +367,10 @@ func streamWithGlamour(ctx context.Context, output <-chan string) error {
 			case <-ctx.Done():
 				p.Send(askCancelledMsg{})
 				return
+			case toolName, ok := <-toolEvents:
+				if ok {
+					p.Send(askToolStartMsg(toolName))
+				}
 			case chunk, ok := <-output:
 				if !ok {
 					p.Send(askDoneMsg{})

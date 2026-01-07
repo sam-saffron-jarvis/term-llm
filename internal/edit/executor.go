@@ -78,6 +78,13 @@ type ExecutorConfig struct {
 	// OnTokens is called with output token count updates during streaming.
 	OnTokens func(outputTokens int)
 
+	// OnFirstToken is called when the first text token is received from the LLM.
+	// Used to indicate the transition from "Thinking" to "Responding".
+	OnFirstToken func()
+
+	// OnToolStart is called when a tool execution begins (e.g., read_context).
+	OnToolStart func(toolName string)
+
 	// OnRetry is called when an edit fails and will be retried.
 	// Provides full context for diagnostics.
 	OnRetry func(diag RetryDiagnostic)
@@ -106,6 +113,9 @@ type StreamEditExecutor struct {
 	// For retry handling
 	retryContext *RetryContext
 	accumulated  strings.Builder // Full LLM output accumulated
+
+	// First token tracking
+	sentFirstToken bool
 }
 
 // NewStreamEditExecutor creates a new executor.
@@ -469,6 +479,11 @@ func (e *StreamEditExecutor) executeOnce(ctx context.Context, messages []llm.Mes
 
 				switch event.Type {
 				case llm.EventTextDelta:
+					// Notify on first token
+					if !e.sentFirstToken && e.config.OnFirstToken != nil {
+						e.sentFirstToken = true
+						e.config.OnFirstToken()
+					}
 					e.accumulated.WriteString(event.Text)
 					if err := e.parser.Feed(event.Text); err != nil {
 						return err
@@ -546,6 +561,11 @@ type readContextArgs struct {
 
 // executeReadContextCalls executes read_context tool calls and returns result messages.
 func (e *StreamEditExecutor) executeReadContextCalls(calls []llm.ToolCall, contents map[string]string) []llm.Message {
+	// Notify that tool execution is starting
+	if len(calls) > 0 && e.config.OnToolStart != nil {
+		e.config.OnToolStart(ReadContextToolName)
+	}
+
 	results := make([]llm.Message, 0, len(calls))
 
 	for _, call := range calls {

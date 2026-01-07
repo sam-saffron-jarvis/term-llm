@@ -44,7 +44,7 @@ func (e *Engine) Stream(ctx context.Context, req Request) (Stream, error) {
 	return WrapDebugStream(req.DebugRaw, stream), nil
 }
 
-func (e *Engine) applyExternalSearch(ctx context.Context, req Request) (Request, error) {
+func (e *Engine) applyExternalSearch(ctx context.Context, req Request, events chan<- Event) (Request, error) {
 	if !e.provider.Capabilities().ToolCalls {
 		return Request{}, fmt.Errorf("provider does not support tool calls for external search")
 	}
@@ -85,6 +85,11 @@ func (e *Engine) applyExternalSearch(ctx context.Context, req Request) (Request,
 		if call.Name != WebSearchToolName {
 			return Request{}, fmt.Errorf("unexpected tool call during search: %s", call.Name)
 		}
+	}
+
+	// Notify that search is starting (after LLM returned tool call, before execution)
+	if events != nil {
+		events <- Event{Type: EventToolExecStart, ToolName: WebSearchToolName}
 	}
 
 	toolResults, err := e.executeToolCalls(ctx, toolCalls, req.Debug, req.DebugRaw)
@@ -129,11 +134,26 @@ func (e *Engine) streamWithExternalSearch(ctx context.Context, req Request) (Str
 		debugSection(req.Debug, "External Search", "provider lacks native search; using web_search tool")
 		DebugRawSection(req.DebugRaw, "External Search", "provider lacks native search; using web_search tool")
 
-		updated, err := e.applyExternalSearch(ctx, req)
+		updated, err := e.applyExternalSearch(ctx, req, events)
 		if err != nil {
 			return err
 		}
 		req = updated
+
+		// Back to thinking - LLM will process search results
+		events <- Event{Type: EventToolExecStart, ToolName: ""}
+
+		// Provide both search tools for follow-up requests
+		var searchTools []ToolSpec
+		if searchTool, ok := e.tools.Get(WebSearchToolName); ok {
+			searchTools = append(searchTools, searchTool.Spec())
+		}
+		if readTool, ok := e.tools.Get(ReadURLToolName); ok {
+			searchTools = append(searchTools, readTool.Spec())
+		}
+		req.Tools = searchTools
+		req.ToolChoice = ToolChoice{Mode: ToolChoiceAuto}
+
 		if req.DebugRaw {
 			DebugRawRequest(req.DebugRaw, e.provider.Name(), e.provider.Credential(), req, "Request (with search results)")
 		}
@@ -198,6 +218,11 @@ func (e *Engine) streamWithExternalSearch(ctx context.Context, req Request) (Str
 				DebugToolCall(req.Debug, call)
 			}
 
+			// Notify which tool is starting (for each call)
+			for _, call := range searchCalls {
+				events <- Event{Type: EventToolExecStart, ToolName: call.Name}
+			}
+
 			toolResults, err := e.executeToolCalls(ctx, searchCalls, req.Debug, req.DebugRaw)
 			if err != nil {
 				return err
@@ -205,6 +230,9 @@ func (e *Engine) streamWithExternalSearch(ctx context.Context, req Request) (Str
 
 			req.Messages = append(req.Messages, toolCallMessage(searchCalls))
 			req.Messages = append(req.Messages, toolResults...)
+
+			// Back to thinking - LLM will process search results
+			events <- Event{Type: EventToolExecStart, ToolName: ""}
 
 			if req.DebugRaw {
 				DebugRawRequest(req.DebugRaw, e.provider.Name(), e.provider.Credential(), req, fmt.Sprintf("Request (search loop %d)", attempt+1))
@@ -261,7 +289,7 @@ func splitSearchCalls(calls []ToolCall) ([]ToolCall, []ToolCall) {
 	var searchCalls []ToolCall
 	var otherCalls []ToolCall
 	for _, call := range calls {
-		if call.Name == WebSearchToolName {
+		if call.Name == WebSearchToolName || call.Name == ReadURLToolName {
 			searchCalls = append(searchCalls, call)
 		} else {
 			otherCalls = append(otherCalls, call)

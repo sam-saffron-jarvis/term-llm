@@ -142,7 +142,7 @@ func UnifiedDiffToolSchema() map[string]interface{} {
 func WebSearchToolSpec() ToolSpec {
 	return ToolSpec{
 		Name:        WebSearchToolName,
-		Description: "Search the web for current information.",
+		Description: "Search the web for current information. Use max_results=20 for comprehensive results.",
 		Schema: map[string]interface{}{
 			"type": "object",
 			"properties": map[string]interface{}{
@@ -152,7 +152,8 @@ func WebSearchToolSpec() ToolSpec {
 				},
 				"max_results": map[string]interface{}{
 					"type":        "integer",
-					"description": "Maximum number of results to return",
+					"description": "Maximum number of results to return (recommended: 20)",
+					"default":     20,
 				},
 			},
 			"required":             []string{"query"},

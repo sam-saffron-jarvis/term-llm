@@ -141,8 +141,12 @@ func runExec(cmd *cobra.Command, args []string) error {
 			DebugRaw:          debugRaw,
 		}
 
-		result, err := ui.RunWithSpinner(ctx, debugMode || debugRaw, func(ctx context.Context) (any, error) {
-			return collectSuggestions(ctx, engine, req)
+		// Create progress channel for spinner updates
+		progressCh := make(chan ui.ProgressUpdate, 10)
+
+		result, err := ui.RunWithSpinnerProgress(ctx, debugMode || debugRaw, progressCh, func(ctx context.Context) (any, error) {
+			defer close(progressCh)
+			return collectSuggestions(ctx, engine, req, progressCh)
 		})
 		if err != nil {
 			if err.Error() == "cancelled" {
@@ -216,7 +220,7 @@ func runExec(cmd *cobra.Command, args []string) error {
 	}
 }
 
-func collectSuggestions(ctx context.Context, engine *llm.Engine, req llm.Request) ([]llm.CommandSuggestion, error) {
+func collectSuggestions(ctx context.Context, engine *llm.Engine, req llm.Request, progressCh chan<- ui.ProgressUpdate) ([]llm.CommandSuggestion, error) {
 	stream, err := engine.Stream(ctx, req)
 	if err != nil {
 		return nil, err
@@ -224,6 +228,7 @@ func collectSuggestions(ctx context.Context, engine *llm.Engine, req llm.Request
 	defer stream.Close()
 
 	var suggestions []llm.CommandSuggestion
+	sentFirstToken := false
 	for {
 		event, err := stream.Recv()
 		if err == io.EOF {
@@ -232,6 +237,36 @@ func collectSuggestions(ctx context.Context, engine *llm.Engine, req llm.Request
 		if err != nil {
 			return nil, err
 		}
+
+		// Handle tool execution events
+		if event.Type == llm.EventToolExecStart {
+			var phase string
+			if event.ToolName == "" {
+				// Empty tool name means back to thinking
+				phase = "Thinking"
+			} else if event.ToolName == llm.WebSearchToolName {
+				phase = "Searching"
+			} else if event.ToolName == llm.ReadURLToolName {
+				phase = "Reading"
+			} else {
+				phase = "Running " + event.ToolName
+			}
+			select {
+			case progressCh <- ui.ProgressUpdate{Phase: phase}:
+			default:
+			}
+			continue
+		}
+
+		// Send phase update on first event
+		if !sentFirstToken {
+			sentFirstToken = true
+			select {
+			case progressCh <- ui.ProgressUpdate{Phase: "Responding"}:
+			default:
+			}
+		}
+
 		if event.Type == llm.EventError && event.Err != nil {
 			return nil, event.Err
 		}

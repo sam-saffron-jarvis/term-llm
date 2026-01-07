@@ -115,20 +115,22 @@ type ToolResult struct {
 type EventType string
 
 const (
-	EventTextDelta EventType = "text_delta"
-	EventToolCall  EventType = "tool_call"
-	EventUsage     EventType = "usage"
-	EventDone      EventType = "done"
-	EventError     EventType = "error"
+	EventTextDelta     EventType = "text_delta"
+	EventToolCall      EventType = "tool_call"
+	EventToolExecStart EventType = "tool_exec_start" // Emitted when tool execution begins
+	EventUsage         EventType = "usage"
+	EventDone          EventType = "done"
+	EventError         EventType = "error"
 )
 
 // Event represents a streamed output update.
 type Event struct {
-	Type EventType
-	Text string
-	Tool *ToolCall
-	Use  *Usage
-	Err  error
+	Type     EventType
+	Text     string
+	Tool     *ToolCall
+	ToolName string // For EventToolExecStart: name of tool being executed
+	Use      *Usage
+	Err      error
 }
 
 // Usage captures token usage if available.

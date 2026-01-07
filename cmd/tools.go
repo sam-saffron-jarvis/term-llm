@@ -8,5 +8,6 @@ import (
 func defaultToolRegistry() *llm.ToolRegistry {
 	registry := llm.NewToolRegistry()
 	registry.Register(llm.NewWebSearchTool(search.NewDuckDuckGoLite(nil)))
+	registry.Register(llm.NewReadURLTool())
 	return registry
 }

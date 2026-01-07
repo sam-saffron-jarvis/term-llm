@@ -11,4 +11,8 @@ type ProgressUpdate struct {
 	// Milestone is a completed milestone to print above the spinner
 	// (e.g., "✓ Found edit for main.go").
 	Milestone string
+
+	// Phase is the current phase of the operation (e.g., "Thinking", "Responding").
+	// Used to show state transitions in the spinner.
+	Phase string
 }

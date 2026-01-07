@@ -45,6 +45,7 @@ type spinnerModel struct {
 	startTime    time.Time
 	outputTokens int
 	status       string
+	phase        string // Current phase: "Thinking", "Responding", etc.
 	progress     <-chan ProgressUpdate
 	milestones   []string
 }
@@ -59,6 +60,7 @@ func newSpinnerModel(cancel context.CancelFunc, tty *os.File, progress <-chan Pr
 		cancel:    cancel,
 		styles:    styles,
 		startTime: time.Now(),
+		phase:     "Thinking",
 		progress:  progress,
 	}
 }
@@ -71,9 +73,9 @@ func (m spinnerModel) Init() tea.Cmd {
 	return tea.Batch(cmds...)
 }
 
-// tickEvery returns a command that sends a tick every 100ms for elapsed time updates.
+// tickEvery returns a command that sends a tick every second for elapsed time updates.
 func (m spinnerModel) tickEvery() tea.Cmd {
-	return tea.Tick(100*time.Millisecond, func(t time.Time) tea.Msg {
+	return tea.Tick(1*time.Second, func(t time.Time) tea.Msg {
 		return tickMsg(t)
 	})
 }
@@ -111,7 +113,7 @@ func (m spinnerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Refresh for elapsed time - continue ticking
 		return m, m.tickEvery()
 	case progressUpdateMsg:
-		// Update tokens/status
+		// Update tokens/status/phase
 		if msg.OutputTokens > 0 {
 			m.outputTokens = msg.OutputTokens
 		}
@@ -120,6 +122,9 @@ func (m spinnerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if msg.Milestone != "" {
 			m.milestones = append(m.milestones, msg.Milestone)
+		}
+		if msg.Phase != "" {
+			m.phase = msg.Phase
 		}
 		// Continue listening for more progress
 		return m, m.listenProgress()
@@ -136,9 +141,9 @@ func (m spinnerModel) View() string {
 		b.WriteString("\n")
 	}
 
-	// Spinner with dynamic status
+	// Spinner with dynamic phase
 	b.WriteString(m.spinner.View())
-	b.WriteString(" Thinking...")
+	b.WriteString(" " + m.phase + "...")
 
 	// Output tokens (if available)
 	if m.outputTokens > 0 {

@@ -161,6 +161,8 @@ func DebugRawEvent(enabled bool, event Event) {
 		} else {
 			DebugRawSection(enabled, "Event Usage", "(nil)")
 		}
+	case EventToolExecStart:
+		DebugRawSection(enabled, "Event Tool Exec Start", event.ToolName)
 	case EventDone:
 		DebugRawSection(enabled, "Event Done", "")
 	case EventError:
