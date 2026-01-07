@@ -344,6 +344,14 @@ func runStreamEdit(ctx context.Context, cfg *config.Config, provider llm.Provide
 			default:
 			}
 		},
+		OnAPIRetry: func(attempt, maxAttempts int, waitSecs float64) {
+			// Send rate limit retry progress to spinner
+			msg := fmt.Sprintf("⏳ Rate limited, retrying (%d/%d) in %.0fs...", attempt+1, maxAttempts, waitSecs)
+			select {
+			case progressCh <- ui.ProgressUpdate{Milestone: msg}:
+			default:
+			}
+		},
 		// About text is stored and shown on demand via (i)nfo
 	}
 

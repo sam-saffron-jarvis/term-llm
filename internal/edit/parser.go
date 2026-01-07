@@ -206,6 +206,10 @@ func (p *StreamParser) processBuffer() error {
 		lines = lines[:len(lines)-1]
 	} else {
 		p.buffer.Reset()
+		// Strip trailing empty string from split when content ends with newline
+		if len(lines) > 0 && lines[len(lines)-1] == "" {
+			lines = lines[:len(lines)-1]
+		}
 	}
 
 	// Add complete lines to queue

@@ -218,62 +218,68 @@ func (p *OpenAICompatProvider) ListModels(ctx context.Context) ([]ModelInfo, err
 }
 
 func (p *OpenAICompatProvider) Stream(ctx context.Context, req Request) (Stream, error) {
+	// Build messages and tools synchronously
+	messages := buildCompatMessages(req.Messages)
+	if len(messages) == 0 {
+		return nil, fmt.Errorf("no messages provided")
+	}
+
+	tools, err := buildCompatTools(req.Tools)
+	if err != nil {
+		return nil, err
+	}
+
+	chatReq := oaiChatRequest{
+		Model:    chooseModel(req.Model, p.model),
+		Messages: messages,
+		Tools:    tools,
+		Stream:   true,
+	}
+
+	if req.ToolChoice.Mode != "" {
+		chatReq.ToolChoice = buildCompatToolChoice(req.ToolChoice)
+	}
+	if req.ParallelToolCalls {
+		chatReq.ParallelToolCalls = boolPtr(true)
+	}
+	if req.Temperature > 0 {
+		v := float64(req.Temperature)
+		chatReq.Temperature = &v
+	}
+	if req.TopP > 0 {
+		v := float64(req.TopP)
+		chatReq.TopP = &v
+	}
+	if req.MaxOutputTokens > 0 {
+		v := req.MaxOutputTokens
+		chatReq.MaxTokens = &v
+	}
+
+	if req.Debug {
+		fmt.Fprintf(os.Stderr, "=== DEBUG: %s Stream Request ===\n", p.name)
+		fmt.Fprintf(os.Stderr, "Provider: %s\n", p.Name())
+		fmt.Fprintf(os.Stderr, "URL: %s/chat/completions\n", p.baseURL)
+		fmt.Fprintf(os.Stderr, "Messages: %d\n", len(messages))
+		fmt.Fprintf(os.Stderr, "Tools: %d\n", len(tools))
+		fmt.Fprintln(os.Stderr, "===================================")
+	}
+
+	// Make HTTP request synchronously - this allows retry wrapper to catch errors like 429
+	resp, err := p.makeChatRequest(ctx, chatReq)
+	if err != nil {
+		return nil, fmt.Errorf("%s API request failed: %w", p.name, err)
+	}
+
+	// Check for error responses synchronously so retry logic can handle them
+	if resp.StatusCode != 200 {
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		return nil, fmt.Errorf("%s API error (status %d): %s", p.name, resp.StatusCode, string(body))
+	}
+
+	// Only create async stream for successful HTTP responses
 	return newEventStream(ctx, func(ctx context.Context, events chan<- Event) error {
-		messages := buildCompatMessages(req.Messages)
-		if len(messages) == 0 {
-			return fmt.Errorf("no messages provided")
-		}
-
-		tools, err := buildCompatTools(req.Tools)
-		if err != nil {
-			return err
-		}
-
-		chatReq := oaiChatRequest{
-			Model:    chooseModel(req.Model, p.model),
-			Messages: messages,
-			Tools:    tools,
-			Stream:   true,
-		}
-
-		if req.ToolChoice.Mode != "" {
-			chatReq.ToolChoice = buildCompatToolChoice(req.ToolChoice)
-		}
-		if req.ParallelToolCalls {
-			chatReq.ParallelToolCalls = boolPtr(true)
-		}
-		if req.Temperature > 0 {
-			v := float64(req.Temperature)
-			chatReq.Temperature = &v
-		}
-		if req.TopP > 0 {
-			v := float64(req.TopP)
-			chatReq.TopP = &v
-		}
-		if req.MaxOutputTokens > 0 {
-			v := req.MaxOutputTokens
-			chatReq.MaxTokens = &v
-		}
-
-		if req.Debug {
-			fmt.Fprintf(os.Stderr, "=== DEBUG: %s Stream Request ===\n", p.name)
-			fmt.Fprintf(os.Stderr, "Provider: %s\n", p.Name())
-			fmt.Fprintf(os.Stderr, "URL: %s/chat/completions\n", p.baseURL)
-			fmt.Fprintf(os.Stderr, "Messages: %d\n", len(messages))
-			fmt.Fprintf(os.Stderr, "Tools: %d\n", len(tools))
-			fmt.Fprintln(os.Stderr, "===================================")
-		}
-
-		resp, err := p.makeChatRequest(ctx, chatReq)
-		if err != nil {
-			return fmt.Errorf("%s API request failed: %w", p.name, err)
-		}
 		defer resp.Body.Close()
-
-		if resp.StatusCode != 200 {
-			body, _ := io.ReadAll(resp.Body)
-			return fmt.Errorf("%s API error (status %d): %s", p.name, resp.StatusCode, string(body))
-		}
 
 		scanner := bufio.NewScanner(resp.Body)
 		buf := make([]byte, 0, 64*1024)

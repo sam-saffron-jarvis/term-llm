@@ -89,6 +89,9 @@ type ExecutorConfig struct {
 	// Provides full context for diagnostics.
 	OnRetry func(diag RetryDiagnostic)
 
+	// OnAPIRetry is called when the API returns a rate limit error and will be retried.
+	OnAPIRetry func(attempt, maxAttempts int, waitSecs float64)
+
 	// Debug enables debug output.
 	Debug bool
 
@@ -497,6 +500,11 @@ func (e *StreamEditExecutor) executeOnce(ctx context.Context, messages []llm.Mes
 				case llm.EventUsage:
 					if e.config.OnTokens != nil && event.Use != nil {
 						e.config.OnTokens(event.Use.OutputTokens)
+					}
+
+				case llm.EventRetry:
+					if e.config.OnAPIRetry != nil {
+						e.config.OnAPIRetry(event.RetryAttempt, event.RetryMaxAttempts, event.RetryWaitSecs)
 					}
 
 				case llm.EventError:
