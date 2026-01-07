@@ -266,16 +266,27 @@ type CodeAssistProvider struct {
 	clientCreds *geminiOAuthClientCreds // cached OAuth client credentials
 	// Tracks whether client credentials came from disk cache (so we can retry on failure).
 	clientCredsFromCache bool
+	thinkingLevel        string // for Gemini 3: "MINIMAL", "LOW", "HIGH"
+	thinkingBudget       *int32 // for Gemini 2.5: 0, 8192, etc.
 }
 
 func NewCodeAssistProvider(creds *credentials.GeminiOAuthCredentials, model string) *CodeAssistProvider {
+	baseModel, thinkingCfg := parseGeminiModelThinking(model)
 	return &CodeAssistProvider{
-		creds: creds,
-		model: model,
+		creds:          creds,
+		model:          baseModel,
+		thinkingLevel:  string(thinkingCfg.level),
+		thinkingBudget: thinkingCfg.budget,
 	}
 }
 
 func (p *CodeAssistProvider) Name() string {
+	if p.thinkingLevel != "" {
+		return fmt.Sprintf("Gemini Code Assist (%s, thinking=%s)", p.model, strings.ToLower(p.thinkingLevel))
+	}
+	if p.thinkingBudget != nil {
+		return fmt.Sprintf("Gemini Code Assist (%s, thinkingBudget=%d)", p.model, *p.thinkingBudget)
+	}
 	return fmt.Sprintf("Gemini Code Assist (%s)", p.model)
 }
 
@@ -323,6 +334,26 @@ func (p *CodeAssistProvider) Stream(ctx context.Context, req Request) (Stream, e
 				"parts": []map[string]interface{}{
 					{"text": system},
 				},
+			}
+		}
+
+		// Add thinking config based on model generation
+		// Note: Skip thinking config when search or tools are enabled (not supported together)
+		if !req.Search && len(req.Tools) == 0 {
+			if p.thinkingLevel != "" {
+				// Gemini 3 - use thinkingLevel
+				requestInner["generationConfig"] = map[string]interface{}{
+					"thinkingConfig": map[string]interface{}{
+						"thinkingLevel": p.thinkingLevel,
+					},
+				}
+			} else if p.thinkingBudget != nil {
+				// Gemini 2.5 - use thinkingBudget
+				requestInner["generationConfig"] = map[string]interface{}{
+					"thinkingConfig": map[string]interface{}{
+						"thinkingBudget": *p.thinkingBudget,
+					},
+				}
 			}
 		}
 

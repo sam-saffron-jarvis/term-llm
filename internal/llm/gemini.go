@@ -12,18 +12,68 @@ import (
 
 // GeminiProvider implements Provider using the Google Gemini API.
 type GeminiProvider struct {
-	apiKey string
-	model  string
+	apiKey         string
+	model          string
+	thinkingLevel  genai.ThinkingLevel // for Gemini 3: MINIMAL, LOW, HIGH
+	thinkingBudget *int32              // for Gemini 2.5: 0, 8192, etc.
+}
+
+// geminiThinkingConfig holds thinking configuration for a Gemini model
+type geminiThinkingConfig struct {
+	level  genai.ThinkingLevel // for Gemini 3
+	budget *int32              // for Gemini 2.5 (nil = no config)
+}
+
+// parseGeminiModelThinking extracts the base model name and determines thinking config.
+// Gemini 3 models use thinkingLevel (MINIMAL/LOW/HIGH).
+// Gemini 2.5 models use thinkingBudget (0 = disabled).
+func parseGeminiModelThinking(model string) (string, geminiThinkingConfig) {
+	hasThinkingSuffix := strings.HasSuffix(model, "-thinking")
+	baseModel := strings.TrimSuffix(model, "-thinking")
+
+	switch {
+	// Gemini 3 Flash - supports MINIMAL, LOW, MEDIUM, HIGH
+	case strings.HasPrefix(baseModel, "gemini-3-flash"):
+		if hasThinkingSuffix {
+			return baseModel, geminiThinkingConfig{level: genai.ThinkingLevelHigh}
+		}
+		return baseModel, geminiThinkingConfig{level: genai.ThinkingLevelMinimal}
+
+	// Gemini 3 Pro - only supports LOW and HIGH (not MINIMAL)
+	case strings.HasPrefix(baseModel, "gemini-3-pro"):
+		if hasThinkingSuffix {
+			return baseModel, geminiThinkingConfig{level: genai.ThinkingLevelHigh}
+		}
+		return baseModel, geminiThinkingConfig{level: genai.ThinkingLevelLow}
+
+	// Gemini 2.5 models - disable thinking with thinkingBudget=0
+	case strings.HasPrefix(baseModel, "gemini-2.5"):
+		zero := int32(0)
+		return baseModel, geminiThinkingConfig{budget: &zero}
+
+	// Unknown model - no thinking config
+	default:
+		return model, geminiThinkingConfig{}
+	}
 }
 
 func NewGeminiProvider(apiKey, model string) *GeminiProvider {
+	baseModel, thinkingCfg := parseGeminiModelThinking(model)
 	return &GeminiProvider{
-		apiKey: apiKey,
-		model:  model,
+		apiKey:         apiKey,
+		model:          baseModel,
+		thinkingLevel:  thinkingCfg.level,
+		thinkingBudget: thinkingCfg.budget,
 	}
 }
 
 func (p *GeminiProvider) Name() string {
+	if p.thinkingLevel != "" {
+		return fmt.Sprintf("Gemini (%s, thinking=%s)", p.model, strings.ToLower(string(p.thinkingLevel)))
+	}
+	if p.thinkingBudget != nil {
+		return fmt.Sprintf("Gemini (%s, thinkingBudget=%d)", p.model, *p.thinkingBudget)
+	}
 	return fmt.Sprintf("Gemini (%s)", p.model)
 }
 
@@ -58,6 +108,20 @@ func (p *GeminiProvider) Stream(ctx context.Context, req Request) (Stream, error
 		config := &genai.GenerateContentConfig{}
 		if system != "" {
 			config.SystemInstruction = genai.NewContentFromText(system, genai.RoleUser)
+		}
+
+		// Apply thinking config based on model generation
+		// Note: Skip thinking config when search or tools are enabled (not supported together)
+		if !req.Search && len(req.Tools) == 0 {
+			if p.thinkingLevel != "" {
+				config.ThinkingConfig = &genai.ThinkingConfig{
+					ThinkingLevel: p.thinkingLevel,
+				}
+			} else if p.thinkingBudget != nil {
+				config.ThinkingConfig = &genai.ThinkingConfig{
+					ThinkingBudget: p.thinkingBudget,
+				}
+			}
 		}
 
 		if req.Search {

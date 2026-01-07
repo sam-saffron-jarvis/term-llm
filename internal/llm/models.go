@@ -27,7 +27,9 @@ var ProviderModels = map[string][]string{
 	},
 	"gemini": {
 		"gemini-3-pro-preview",
+		"gemini-3-pro-preview-thinking",
 		"gemini-3-flash-preview",
+		"gemini-3-flash-preview-thinking",
 		"gemini-2.5-flash",
 		"gemini-2.5-flash-lite",
 	},
