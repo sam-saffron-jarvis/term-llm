@@ -55,6 +55,7 @@ func printUnifiedDiffInternal(filePath, oldContent, newContent string, multiFile
 
 	// Track current line numbers
 	var oldLineNum, newLineNum int
+	var deletionOffset int // Tracks position within a deletion block
 	hunkCount := 0
 
 	// Regex to parse hunk header: @@ -start,count +start,count @@
@@ -94,18 +95,20 @@ func printUnifiedDiffInternal(filePath, oldContent, newContent string, multiFile
 			hunkCount++
 
 		case '-':
-			// Removed line - red background with old line number
+			// Removed line - red background, show virtual new file position
 			highlighted := content
 			if highlighter != nil {
 				highlighted = highlighter.HighlightLineWithBg(content, diffRemoveBg)
 			} else {
 				highlighted = fmt.Sprintf("\x1b[48;2;%d;%d;%dm%s\x1b[0m", diffRemoveBg[0], diffRemoveBg[1], diffRemoveBg[2], content)
 			}
-			fmt.Printf("\x1b[38;2;160;80;80m%*d- \x1b[0m%s\n", lineNumWidth, oldLineNum, highlighted)
+			fmt.Printf("\x1b[38;2;160;80;80m%*d- \x1b[0m%s\n", lineNumWidth, newLineNum+deletionOffset, highlighted)
 			oldLineNum++
+			deletionOffset++
 
 		case '+':
 			// Added line - green background with new line number
+			deletionOffset = 0 // Reset deletion offset when we see additions
 			highlighted := content
 			if highlighter != nil {
 				highlighted = highlighter.HighlightLineWithBg(content, diffAddBg)
@@ -117,11 +120,12 @@ func printUnifiedDiffInternal(filePath, oldContent, newContent string, multiFile
 
 		case ' ':
 			// Context line - no background, show line number in grey
+			deletionOffset = 0 // Reset deletion offset when we see context
 			highlighted := content
 			if highlighter != nil {
 				highlighted = highlighter.HighlightLine(content)
 			}
-			fmt.Printf("\x1b[38;2;100;100;100m%*d  \x1b[0m%s\n", lineNumWidth, oldLineNum, highlighted)
+			fmt.Printf("\x1b[38;2;100;100;100m%*d  \x1b[0m%s\n", lineNumWidth, newLineNum, highlighted)
 			oldLineNum++
 			newLineNum++
 
