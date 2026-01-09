@@ -192,7 +192,7 @@ func mcpBrowse(cmd *cobra.Command, args []string) error {
 			}
 		}
 	} else {
-		fmt.Println("Curated MCP servers (type a query to search registry):\n")
+		fmt.Println("Curated MCP servers (type a query to search registry):")
 	}
 
 	if len(servers) == 0 {

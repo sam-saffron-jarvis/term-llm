@@ -57,10 +57,8 @@ func (e *Engine) Stream(ctx context.Context, req Request) (Stream, error) {
 	if req.Search {
 		caps := e.provider.Capabilities()
 		needsExternalSearch := !caps.NativeWebSearch || req.ForceExternalSearch
-		// Add external fetch if using external search and either:
-		// 1. Provider lacks native fetch, OR
-		// 2. We're forcing external search (--no-native-search)
-		needsExternalFetch := needsExternalSearch && (!caps.NativeWebFetch || req.ForceExternalSearch)
+		// Add external fetch if provider lacks native fetch (regardless of search mode)
+		needsExternalFetch := !caps.NativeWebFetch || req.ForceExternalSearch
 
 		if needsExternalSearch || needsExternalFetch {
 			return e.streamWithExternalTools(ctx, req, needsExternalSearch, needsExternalFetch)
@@ -94,9 +92,12 @@ func (e *Engine) applyExternalSearch(ctx context.Context, req Request, events ch
 
 	searchReq := req
 	searchReq.Search = false
+	// Pass both search and fetch tools from the start
 	searchReq.Tools = []ToolSpec{searchTool.Spec()}
+	if fetchTool, ok := e.tools.Get(ReadURLToolName); ok {
+		searchReq.Tools = append(searchReq.Tools, fetchTool.Spec())
+	}
 	searchReq.ToolChoice = ToolChoice{Mode: ToolChoiceName, Name: WebSearchToolName}
-	searchReq.ParallelToolCalls = false
 	searchReq.DebugRaw = req.DebugRaw
 
 	if searchReq.DebugRaw {
@@ -204,6 +205,9 @@ func (e *Engine) streamWithExternalTools(ctx context.Context, req Request, addSe
 
 		// Add external tools for follow-up requests
 		req.Tools = append(req.Tools, externalTools...)
+
+		// Track if this is the first streaming call (for native search + external fetch case)
+		firstCall := true
 		req.ToolChoice = ToolChoice{Mode: ToolChoiceAuto}
 
 		if req.DebugRaw {
@@ -254,6 +258,12 @@ func (e *Engine) streamWithExternalTools(ctx context.Context, req Request, addSe
 				events <- event
 			}
 			stream.Close()
+
+			// After first call, disable search to avoid repeating native search
+			if firstCall {
+				req.Search = false
+				firstCall = false
+			}
 
 			// Split calls into our external tools vs other tools
 			ourCalls, otherCalls := splitExternalToolCalls(toolCalls, externalToolNames)
