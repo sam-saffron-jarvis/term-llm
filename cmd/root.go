@@ -13,6 +13,7 @@ import (
 func init() {
 	update.SetupUpdateChecks(rootCmd, Version)
 	rootCmd.PersistentFlags().BoolVar(&debugRaw, "debug-raw", false, "Emit raw debug logs with timestamps")
+	rootCmd.PersistentFlags().BoolVar(&showStats, "stats", false, "Show session statistics (time, tokens, tool calls)")
 }
 
 var rootCmd = &cobra.Command{
@@ -31,6 +32,7 @@ Examples:
 }
 
 var debugRaw bool
+var showStats bool
 
 func Execute() {
 	if err := rootCmd.Execute(); err != nil {

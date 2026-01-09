@@ -120,7 +120,7 @@ func runChat(cmd *cobra.Command, args []string) error {
 	forceExternalSearch := resolveForceExternalSearch(cfg, chatNativeSearch, chatNoNativeSearch)
 
 	// Create chat model
-	model := chat.New(cfg, provider, engine, modelName, mcpManager, chatMaxTurns, forceExternalSearch)
+	model := chat.New(cfg, provider, engine, modelName, mcpManager, chatMaxTurns, forceExternalSearch, showStats)
 
 	// Set initial search state from flag
 	if chatSearch {

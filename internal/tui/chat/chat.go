@@ -85,17 +85,25 @@ type Model struct {
 
 	// Inline mode state
 	program *tea.Program // Reference to program for tea.Println
+
+	// Stats tracking
+	showStats bool
+	stats     *ui.SessionStats
 }
 
 // streamEvent represents an event from the streaming goroutine
 type streamEvent struct {
-	chunk       string
-	phase       string
-	tokens      int
-	done        bool
-	err         error
-	retryStatus string
-	webSearch   bool
+	chunk        string
+	phase        string
+	tokens       int
+	inputTokens  int
+	outputTokens int
+	done         bool
+	err          error
+	retryStatus  string
+	webSearch    bool
+	toolStart    bool // Tool execution started
+	toolEnd      bool // Tool execution ended (back to thinking)
 }
 
 // Messages for tea.Program
@@ -107,7 +115,7 @@ type (
 )
 
 // New creates a new chat model
-func New(cfg *config.Config, provider llm.Provider, engine *llm.Engine, modelName string, mcpManager *mcp.Manager, maxTurns int, forceExternalSearch bool) *Model {
+func New(cfg *config.Config, provider llm.Provider, engine *llm.Engine, modelName string, mcpManager *mcp.Manager, maxTurns int, forceExternalSearch bool, showStats bool) *Model {
 	// Get terminal size
 	width := 80
 	height := 24
@@ -177,6 +185,8 @@ func New(cfg *config.Config, provider llm.Provider, engine *llm.Engine, modelNam
 		mcpManager:          mcpManager,
 		maxTurns:            maxTurns,
 		forceExternalSearch: forceExternalSearch,
+		showStats:           showStats,
+		stats:               ui.NewSessionStats(),
 	}
 }
 
@@ -225,6 +235,17 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 
+		// Track stats
+		if msg.toolStart {
+			m.stats.ToolStart()
+		}
+		if msg.toolEnd {
+			m.stats.ToolEnd()
+		}
+		if msg.inputTokens > 0 || msg.outputTokens > 0 {
+			m.stats.AddUsage(msg.inputTokens, msg.outputTokens)
+		}
+
 		if msg.chunk != "" {
 			m.currentResponse.WriteString(msg.chunk)
 			m.phase = "Responding"
@@ -248,6 +269,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.streaming = false
 			m.currentTokens = msg.tokens
 			duration := time.Since(m.streamStartTime)
+
+			// Track turn for stats
+			m.stats.AddTurn()
 
 			// Get the response content before resetting
 			responseContent := m.currentResponse.String()
@@ -505,6 +529,11 @@ func (m *Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.quitting = true
+		// Print stats if enabled
+		if m.showStats && m.stats.TurnCount > 0 {
+			m.stats.Finalize()
+			return m, tea.Sequence(tea.Println(m.stats.Render()), tea.Quit)
+		}
 		return m, tea.Quit
 	}
 
@@ -885,16 +914,22 @@ func (m *Model) startStream(content string) tea.Cmd {
 					}
 				case llm.EventToolExecStart:
 					var phase string
-					if event.ToolName == llm.WebSearchToolName {
+					if event.ToolName == "" {
+						// Empty tool name = back to thinking
+						m.streamChan <- streamEvent{toolEnd: true}
+					} else if event.ToolName == llm.WebSearchToolName {
 						phase = "Searching"
-						m.streamChan <- streamEvent{phase: phase, webSearch: true}
+						m.streamChan <- streamEvent{phase: phase, webSearch: true, toolStart: true}
 					} else if event.ToolName == llm.ReadURLToolName {
 						if event.ToolInfo != "" {
 							phase = fmt.Sprintf("Reading %s", truncateURL(event.ToolInfo, 40))
 						} else {
 							phase = "Reading"
 						}
-						m.streamChan <- streamEvent{phase: phase}
+						m.streamChan <- streamEvent{phase: phase, toolStart: true}
+					} else {
+						phase = "Running " + event.ToolName
+						m.streamChan <- streamEvent{phase: phase, toolStart: true}
 					}
 				case llm.EventRetry:
 					status := fmt.Sprintf("Rate limited (%d/%d), waiting %.0fs...",
@@ -903,6 +938,7 @@ func (m *Model) startStream(content string) tea.Cmd {
 				case llm.EventUsage:
 					if event.Use != nil {
 						totalTokens = event.Use.OutputTokens
+						m.streamChan <- streamEvent{inputTokens: event.Use.InputTokens, outputTokens: event.Use.OutputTokens}
 					}
 				}
 			}

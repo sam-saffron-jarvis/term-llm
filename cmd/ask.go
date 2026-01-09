@@ -163,6 +163,9 @@ func runAsk(cmd *cobra.Command, args []string) error {
 	// Channel for tool events (for phase updates)
 	toolEvents := make(chan toolEvent, 10)
 
+	// Track session stats
+	stats := ui.NewSessionStats()
+
 	errChan := make(chan error, 1)
 	go func() {
 		stream, err := engine.Stream(ctx, req)
@@ -194,6 +197,11 @@ func runAsk(cmd *cobra.Command, args []string) error {
 				return
 			}
 			if event.Type == llm.EventToolExecStart {
+				if event.ToolName != "" {
+					stats.ToolStart()
+				} else {
+					stats.ToolEnd()
+				}
 				select {
 				case toolEvents <- toolEvent{Name: event.ToolName, Info: event.ToolInfo}:
 				default:
@@ -211,6 +219,7 @@ func runAsk(cmd *cobra.Command, args []string) error {
 				}
 			}
 			if event.Type == llm.EventUsage && event.Use != nil {
+				stats.AddUsage(event.Use.InputTokens, event.Use.OutputTokens)
 				select {
 				case toolEvents <- toolEvent{
 					IsUsage:      true,
@@ -238,6 +247,11 @@ func runAsk(cmd *cobra.Command, args []string) error {
 
 	if err := <-errChan; err != nil {
 		return fmt.Errorf("streaming failed: %w", err)
+	}
+
+	if showStats {
+		stats.Finalize()
+		fmt.Fprintln(cmd.ErrOrStderr(), stats.Render())
 	}
 
 	return nil

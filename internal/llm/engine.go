@@ -97,7 +97,7 @@ func (e *Engine) applyExternalSearch(ctx context.Context, req Request, events ch
 	if fetchTool, ok := e.tools.Get(ReadURLToolName); ok {
 		searchReq.Tools = append(searchReq.Tools, fetchTool.Spec())
 	}
-	searchReq.ToolChoice = ToolChoice{Mode: ToolChoiceName, Name: WebSearchToolName}
+	searchReq.ToolChoice = ToolChoice{Mode: ToolChoiceAuto}
 	searchReq.DebugRaw = req.DebugRaw
 
 	if searchReq.DebugRaw {
@@ -115,20 +115,25 @@ func (e *Engine) applyExternalSearch(ctx context.Context, req Request, events ch
 		return Request{}, err
 	}
 	if len(toolCalls) == 0 {
-		return Request{}, fmt.Errorf("search step returned no tool calls")
+		// No tools called - just continue without search results
+		req.Search = false
+		return req, nil
 	}
 	toolCalls = ensureToolCallIDs(toolCalls)
 
 	for _, call := range toolCalls {
 		DebugToolCall(req.Debug, call)
-		if call.Name != WebSearchToolName {
+		if call.Name != WebSearchToolName && call.Name != ReadURLToolName {
 			return Request{}, fmt.Errorf("unexpected tool call during search: %s", call.Name)
 		}
 	}
 
-	// Notify that search is starting (after LLM returned tool call, before execution)
+	// Notify which tools are starting (after LLM returned tool call, before execution)
 	if events != nil {
-		events <- Event{Type: EventToolExecStart, ToolName: WebSearchToolName}
+		for _, call := range toolCalls {
+			info := extractToolInfo(call)
+			events <- Event{Type: EventToolExecStart, ToolName: call.Name, ToolInfo: info}
+		}
 	}
 
 	toolResults, err := e.executeToolCalls(ctx, toolCalls, req.Debug, req.DebugRaw)

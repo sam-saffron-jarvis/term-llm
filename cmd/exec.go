@@ -143,6 +143,15 @@ func runExec(cmd *cobra.Command, args []string) error {
 
 	debugMode := execDebug
 
+	// Track session stats
+	stats := ui.NewSessionStats()
+	defer func() {
+		if showStats {
+			stats.Finalize()
+			fmt.Fprintln(cmd.ErrOrStderr(), stats.Render())
+		}
+	}()
+
 	// Main loop for refinement
 	for {
 		systemPrompt := prompt.SuggestSystemPrompt(shell, cfg.Exec.Instructions, numSuggestions, execSearch)
@@ -172,7 +181,7 @@ func runExec(cmd *cobra.Command, args []string) error {
 
 		result, err := ui.RunWithSpinnerProgress(ctx, debugMode || debugRaw, progressCh, func(ctx context.Context) (any, error) {
 			defer close(progressCh)
-			return collectSuggestions(ctx, engine, req, progressCh)
+			return collectSuggestions(ctx, engine, req, progressCh, stats)
 		})
 		if err != nil {
 			if err.Error() == "cancelled" {
@@ -246,7 +255,7 @@ func runExec(cmd *cobra.Command, args []string) error {
 	}
 }
 
-func collectSuggestions(ctx context.Context, engine *llm.Engine, req llm.Request, progressCh chan<- ui.ProgressUpdate) ([]llm.CommandSuggestion, error) {
+func collectSuggestions(ctx context.Context, engine *llm.Engine, req llm.Request, progressCh chan<- ui.ProgressUpdate, stats *ui.SessionStats) ([]llm.CommandSuggestion, error) {
 	stream, err := engine.Stream(ctx, req)
 	if err != nil {
 		return nil, err
@@ -266,6 +275,11 @@ func collectSuggestions(ctx context.Context, engine *llm.Engine, req llm.Request
 
 		// Handle tool execution events
 		if event.Type == llm.EventToolExecStart {
+			if event.ToolName != "" {
+				stats.ToolStart()
+			} else {
+				stats.ToolEnd()
+			}
 			var phase string
 			if event.ToolName == "" {
 				// Empty tool name means back to thinking
@@ -292,6 +306,12 @@ func collectSuggestions(ctx context.Context, engine *llm.Engine, req llm.Request
 			case progressCh <- ui.ProgressUpdate{Status: status}:
 			default:
 			}
+			continue
+		}
+
+		// Track usage for stats
+		if event.Type == llm.EventUsage && event.Use != nil {
+			stats.AddUsage(event.Use.InputTokens, event.Use.OutputTokens)
 			continue
 		}
 
