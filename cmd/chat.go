@@ -2,10 +2,12 @@ package cmd
 
 import (
 	"fmt"
+	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/mcp"
 	"github.com/samsaffron/term-llm/internal/signal"
 	"github.com/samsaffron/term-llm/internal/tui/chat"
 	"github.com/spf13/cobra"
@@ -15,6 +17,8 @@ var (
 	chatDebug    bool
 	chatSearch   bool
 	chatProvider string
+	chatMCP      string
+	chatMaxTurns int
 )
 
 var chatCmd = &cobra.Command{
@@ -24,8 +28,9 @@ var chatCmd = &cobra.Command{
 
 Examples:
   term-llm chat
-  term-llm chat -s              # with web search enabled
-  term-llm chat --provider zen  # use specific provider
+  term-llm chat -s                        # with web search enabled
+  term-llm chat --provider zen            # use specific provider
+  term-llm chat --mcp playwright          # with MCP server(s) enabled
 
 Keyboard shortcuts:
   Enter        - Send message
@@ -41,6 +46,7 @@ Slash commands:
   /clear       - Clear conversation
   /model       - Show current model
   /search      - Toggle web search
+  /mcp         - Manage MCP servers
   /quit        - Exit chat`,
 	RunE: runChat,
 }
@@ -49,14 +55,19 @@ func init() {
 	chatCmd.Flags().BoolVarP(&chatSearch, "search", "s", false, "Enable web search")
 	chatCmd.Flags().BoolVarP(&chatDebug, "debug", "d", false, "Show debug information")
 	chatCmd.Flags().StringVar(&chatProvider, "provider", "", "Override provider, optionally with model (e.g., openai:gpt-4o)")
+	chatCmd.Flags().StringVar(&chatMCP, "mcp", "", "Enable MCP server(s), comma-separated (e.g., playwright,filesystem)")
+	chatCmd.Flags().IntVar(&chatMaxTurns, "max-turns", 200, "Max agentic turns for tool execution")
 	if err := chatCmd.RegisterFlagCompletionFunc("provider", ProviderFlagCompletion); err != nil {
 		panic(fmt.Sprintf("failed to register provider completion: %v", err))
+	}
+	if err := chatCmd.RegisterFlagCompletionFunc("mcp", MCPFlagCompletion); err != nil {
+		panic(fmt.Sprintf("failed to register mcp completion: %v", err))
 	}
 	rootCmd.AddCommand(chatCmd)
 }
 
 func runChat(cmd *cobra.Command, args []string) error {
-	_, stop := signal.NotifyContext()
+	ctx, stop := signal.NotifyContext()
 	defer stop()
 
 	cfg, err := loadConfigWithSetup()
@@ -80,8 +91,29 @@ func runChat(cmd *cobra.Command, args []string) error {
 	// Determine model name
 	modelName := getModelName(cfg)
 
+	// Create MCP manager
+	mcpManager := mcp.NewManager()
+	if err := mcpManager.LoadConfig(); err != nil {
+		// Non-fatal: continue without MCP
+		fmt.Fprintf(cmd.ErrOrStderr(), "Warning: failed to load MCP config: %v\n", err)
+	}
+
+	// Enable MCP servers from --mcp flag
+	if chatMCP != "" {
+		servers := strings.Split(chatMCP, ",")
+		for _, server := range servers {
+			server = strings.TrimSpace(server)
+			if server == "" {
+				continue
+			}
+			if err := mcpManager.Enable(ctx, server); err != nil {
+				fmt.Fprintf(cmd.ErrOrStderr(), "Warning: failed to enable MCP server '%s': %v\n", server, err)
+			}
+		}
+	}
+
 	// Create chat model
-	model := chat.New(cfg, provider, engine, modelName)
+	model := chat.New(cfg, provider, engine, modelName, mcpManager, chatMaxTurns)
 
 	// Set initial search state from flag
 	if chatSearch {
@@ -93,6 +125,10 @@ func runChat(cmd *cobra.Command, args []string) error {
 	// Run the TUI (inline mode - no alt screen)
 	p := tea.NewProgram(model)
 	_, err = p.Run()
+
+	// Cleanup MCP servers
+	mcpManager.StopAll()
+
 	if err != nil {
 		return fmt.Errorf("failed to run chat: %w", err)
 	}

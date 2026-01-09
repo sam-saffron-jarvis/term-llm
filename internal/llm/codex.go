@@ -105,7 +105,7 @@ func (p *CodexProvider) Stream(ctx context.Context, req Request) (Stream, error)
 				"name":        spec.Name,
 				"description": spec.Description,
 				"strict":      true,
-				"parameters":  spec.Schema,
+				"parameters":  normalizeSchemaForOpenAI(spec.Schema),
 			})
 		}
 

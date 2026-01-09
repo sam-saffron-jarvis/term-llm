@@ -15,6 +15,7 @@ import (
 	"github.com/charmbracelet/glamour/styles"
 	"github.com/samsaffron/term-llm/internal/input"
 	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/mcp"
 	"github.com/samsaffron/term-llm/internal/prompt"
 	"github.com/samsaffron/term-llm/internal/signal"
 	"github.com/samsaffron/term-llm/internal/ui"
@@ -28,6 +29,8 @@ var (
 	askText     bool
 	askProvider string
 	askFiles    []string
+	askMCP      string
+	askMaxTurns int
 )
 
 var askCmd = &cobra.Command{
@@ -61,8 +64,13 @@ func init() {
 	askCmd.Flags().BoolVarP(&askText, "text", "t", false, "Output plain text instead of rendered markdown")
 	askCmd.Flags().StringVar(&askProvider, "provider", "", "Override provider, optionally with model (e.g., openai:gpt-4o)")
 	askCmd.Flags().StringArrayVarP(&askFiles, "file", "f", nil, "File(s) to include as context (supports globs, line ranges like file.go:10-20, 'clipboard')")
+	askCmd.Flags().StringVar(&askMCP, "mcp", "", "Enable MCP server(s), comma-separated (e.g., playwright,filesystem)")
+	askCmd.Flags().IntVar(&askMaxTurns, "max-turns", 20, "Max agentic turns for tool execution")
 	if err := askCmd.RegisterFlagCompletionFunc("provider", ProviderFlagCompletion); err != nil {
 		panic(fmt.Sprintf("failed to register provider completion: %v", err))
+	}
+	if err := askCmd.RegisterFlagCompletionFunc("mcp", MCPFlagCompletion); err != nil {
+		panic(fmt.Sprintf("failed to register mcp completion: %v", err))
 	}
 	rootCmd.AddCommand(askCmd)
 }
@@ -89,6 +97,18 @@ func runAsk(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	engine := llm.NewEngine(provider, defaultToolRegistry())
+
+	// Initialize MCP servers if --mcp flag is set
+	var mcpManager *mcp.Manager
+	if askMCP != "" {
+		mcpManager, err = enableMCPServersWithFeedback(ctx, askMCP, engine, cmd.ErrOrStderr())
+		if err != nil {
+			fmt.Fprintf(cmd.ErrOrStderr(), "Warning: %v\n", err)
+		}
+		if mcpManager != nil {
+			defer mcpManager.StopAll()
+		}
+	}
 
 	// Read files if provided
 	var files []input.FileContent
@@ -117,8 +137,15 @@ func runAsk(cmd *cobra.Command, args []string) error {
 		Messages:          messages,
 		Search:            askSearch,
 		ParallelToolCalls: true,
+		MaxTurns:          askMaxTurns,
 		Debug:             debugMode,
 		DebugRaw:          debugRaw,
+	}
+
+	// Add MCP tools to request if any are registered
+	if mcpManager != nil {
+		req.Tools = engine.Tools().AllSpecs()
+		req.ToolChoice = llm.ToolChoice{Mode: llm.ToolChoiceAuto}
 	}
 
 	// Check if we're in a TTY and can use glamour
@@ -521,6 +548,78 @@ func renderMarkdown(content string, width int) (string, error) {
 
 func uintPtr(v uint) *uint {
 	return &v
+}
+
+// enableMCPServersWithFeedback initializes MCP servers with user feedback.
+// Returns the manager (caller must call StopAll) or nil if setup failed.
+func enableMCPServersWithFeedback(ctx context.Context, mcpFlag string, engine *llm.Engine, errWriter io.Writer) (*mcp.Manager, error) {
+	serverNames := parseServerList(mcpFlag)
+	if len(serverNames) == 0 {
+		return nil, nil
+	}
+
+	mcpManager := mcp.NewManager()
+	if err := mcpManager.LoadConfig(); err != nil {
+		return nil, fmt.Errorf("failed to load MCP config: %w", err)
+	}
+
+	// Show starting message
+	fmt.Fprintf(errWriter, "Starting MCP: %s", strings.Join(serverNames, ", "))
+
+	// Enable all servers (async)
+	for _, server := range serverNames {
+		if err := mcpManager.Enable(ctx, server); err != nil {
+			fmt.Fprintf(errWriter, "\nWarning: failed to enable MCP server '%s': %v", server, err)
+		}
+	}
+
+	// Wait for servers with spinner animation
+	spinChars := []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
+	spinIdx := 0
+	timeout := 10 * time.Second
+	deadline := time.Now().Add(timeout)
+
+	for time.Now().Before(deadline) {
+		allReady := true
+		for _, name := range mcpManager.EnabledServers() {
+			status, _ := mcpManager.ServerStatus(name)
+			if status == mcp.StatusStarting {
+				allReady = false
+				break
+			}
+		}
+		if allReady {
+			break
+		}
+		fmt.Fprintf(errWriter, "\r%s Starting MCP: %s", spinChars[spinIdx], strings.Join(serverNames, ", "))
+		spinIdx = (spinIdx + 1) % len(spinChars)
+		time.Sleep(80 * time.Millisecond)
+	}
+
+	// Register MCP tools
+	mcp.RegisterMCPTools(mcpManager, engine.Tools())
+	tools := mcpManager.AllTools()
+
+	// Show result
+	if len(tools) > 0 {
+		fmt.Fprintf(errWriter, "\r✓ MCP ready: %d tools from %s\n", len(tools), strings.Join(serverNames, ", "))
+	} else {
+		fmt.Fprintf(errWriter, "\r⚠ MCP: no tools available from %s\n", strings.Join(serverNames, ", "))
+	}
+
+	return mcpManager, nil
+}
+
+// parseServerList splits comma-separated server names and trims whitespace.
+func parseServerList(mcpFlag string) []string {
+	var servers []string
+	for _, s := range strings.Split(mcpFlag, ",") {
+		s = strings.TrimSpace(s)
+		if s != "" {
+			servers = append(servers, s)
+		}
+	}
+	return servers
 }
 
 // Ensure ansi package is imported for style config

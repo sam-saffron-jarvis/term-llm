@@ -18,6 +18,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/mcp"
 	"github.com/samsaffron/term-llm/internal/ui"
 	"golang.org/x/term"
 )
@@ -61,6 +62,10 @@ type Model struct {
 	files         []FileAttachment // Attached files for next message
 	searchEnabled bool             // Web search toggle
 
+	// MCP (Model Context Protocol)
+	mcpManager *mcp.Manager
+	maxTurns   int
+
 	// Directory approval
 	approvedDirs       *ApprovedDirs
 	pendingFilePath    string // File waiting for directory approval
@@ -101,7 +106,7 @@ type (
 )
 
 // New creates a new chat model
-func New(cfg *config.Config, provider llm.Provider, engine *llm.Engine, modelName string) *Model {
+func New(cfg *config.Config, provider llm.Provider, engine *llm.Engine, modelName string, mcpManager *mcp.Manager, maxTurns int) *Model {
 	// Get terminal size
 	width := 80
 	height := 24
@@ -168,6 +173,8 @@ func New(cfg *config.Config, provider llm.Provider, engine *llm.Engine, modelNam
 		completions:  completions,
 		dialog:       dialog,
 		approvedDirs: approvedDirs,
+		mcpManager:   mcpManager,
+		maxTurns:     maxTurns,
 	}
 }
 
@@ -338,7 +345,56 @@ func (m *Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 
-		// Other dialogs use standard handling
+		// MCP picker supports typing to filter and toggle without closing
+		if m.dialog.Type() == DialogMCPPicker {
+			switch {
+			case key.Matches(msg, key.NewBinding(key.WithKeys("enter"))):
+				selected := m.dialog.Selected()
+				if selected != nil {
+					// Toggle the selected MCP server
+					name := selected.ID
+					status, _ := m.mcpManager.ServerStatus(name)
+					if status == "ready" || status == "starting" {
+						m.mcpManager.Disable(name)
+					} else {
+						m.mcpManager.Enable(context.Background(), name)
+					}
+					// Refresh the picker to show updated state (stays open!)
+					// Preserve query and cursor position
+					query := m.dialog.Query()
+					cursor := m.dialog.Cursor()
+					m.dialog.ShowMCPPicker(m.mcpManager)
+					m.dialog.SetQuery(query)
+					m.dialog.SetCursor(cursor)
+				}
+				return m, nil
+			case key.Matches(msg, key.NewBinding(key.WithKeys("esc"))):
+				m.dialog.Close()
+				return m, nil
+			case key.Matches(msg, key.NewBinding(key.WithKeys("up", "k", "ctrl+p"))):
+				m.dialog.Update(msg)
+				return m, nil
+			case key.Matches(msg, key.NewBinding(key.WithKeys("down", "j", "ctrl+n"))):
+				m.dialog.Update(msg)
+				return m, nil
+			case key.Matches(msg, key.NewBinding(key.WithKeys("backspace"))):
+				// Update query on backspace
+				query := m.dialog.Query()
+				if len(query) > 0 {
+					m.dialog.SetQuery(query[:len(query)-1])
+				}
+				return m, nil
+			default:
+				// Type to filter
+				if len(msg.String()) == 1 {
+					m.dialog.SetQuery(m.dialog.Query() + msg.String())
+					return m, nil
+				}
+			}
+			return m, nil
+		}
+
+		// Other dialogs (SessionList, DirApproval) use standard handling
 		switch {
 		case key.Matches(msg, key.NewBinding(key.WithKeys("enter", "tab"))):
 			selected := m.dialog.Selected()
@@ -422,7 +478,7 @@ func (m *Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			value := m.textarea.Value()
 			if len(value) > 1 {
 				m.textarea.SetValue(value[:len(value)-1])
-				m.completions.SetQuery(strings.TrimPrefix(m.textarea.Value(), "/"))
+				m.updateCompletions()
 			} else if len(value) == 1 {
 				m.textarea.SetValue("")
 				m.textarea.SetHeight(1)
@@ -433,7 +489,7 @@ func (m *Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			// Add character to query
 			if len(msg.String()) == 1 {
 				m.textarea.SetValue(m.textarea.Value() + msg.String())
-				m.completions.SetQuery(strings.TrimPrefix(m.textarea.Value(), "/"))
+				m.updateCompletions()
 				return m, nil
 			}
 		}
@@ -489,6 +545,18 @@ func (m *Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.cmdNew()
 	}
 
+	// Handle MCP picker (Ctrl+M)
+	if key.Matches(msg, m.keyMap.MCPPicker) {
+		if m.mcpManager == nil {
+			return m.showSystemMessage("MCP not initialized.")
+		}
+		if len(m.mcpManager.AvailableServers()) == 0 {
+			return m.showMCPQuickStart()
+		}
+		m.dialog.ShowMCPPicker(m.mcpManager)
+		return m, nil
+	}
+
 	// Handle clear
 	if key.Matches(msg, m.keyMap.Clear) {
 		return m.cmdClear()
@@ -498,6 +566,76 @@ func (m *Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if key.Matches(msg, m.keyMap.Newline) || key.Matches(msg, m.keyMap.NewlineAlt) {
 		m.textarea.SetValue(m.textarea.Value() + "\n")
 		m.updateTextareaHeight()
+		return m, nil
+	}
+
+	// Handle tab completion for /mcp commands
+	if key.Matches(msg, key.NewBinding(key.WithKeys("tab"))) {
+		value := m.textarea.Value()
+		valueLower := strings.ToLower(value)
+
+		// Tab completion for /mcp add <server> (from bundled servers)
+		if strings.HasPrefix(valueLower, "/mcp add ") {
+			partial := strings.TrimSpace(value[9:]) // after "/mcp add "
+			if partial != "" {
+				bundled := mcp.GetBundledServers()
+				partialLower := strings.ToLower(partial)
+
+				var match string
+				for _, s := range bundled {
+					if strings.HasPrefix(strings.ToLower(s.Name), partialLower) {
+						match = s.Name
+						break
+					}
+				}
+				if match == "" {
+					for _, s := range bundled {
+						if strings.Contains(strings.ToLower(s.Name), partialLower) {
+							match = s.Name
+							break
+						}
+					}
+				}
+				if match != "" {
+					m.textarea.SetValue("/mcp add " + match)
+				}
+			}
+			return m, nil
+		}
+
+		// Tab completion for /mcp start <server> (from configured servers)
+		if strings.HasPrefix(valueLower, "/mcp start ") && m.mcpManager != nil {
+			partial := strings.TrimSpace(value[11:]) // after "/mcp start "
+			if partial != "" {
+				if match := m.mcpFindServerMatch(partial); match != "" {
+					m.textarea.SetValue("/mcp start " + match)
+				}
+			}
+			return m, nil
+		}
+
+		// Tab completion for /mcp stop <server> (from configured servers)
+		if strings.HasPrefix(valueLower, "/mcp stop ") && m.mcpManager != nil {
+			partial := strings.TrimSpace(value[10:]) // after "/mcp stop "
+			if partial != "" {
+				if match := m.mcpFindServerMatch(partial); match != "" {
+					m.textarea.SetValue("/mcp stop " + match)
+				}
+			}
+			return m, nil
+		}
+
+		// Tab completion for /mcp restart <server> (from configured servers)
+		if strings.HasPrefix(valueLower, "/mcp restart ") && m.mcpManager != nil {
+			partial := strings.TrimSpace(value[13:]) // after "/mcp restart "
+			if partial != "" {
+				if match := m.mcpFindServerMatch(partial); match != "" {
+					m.textarea.SetValue("/mcp restart " + match)
+				}
+			}
+			return m, nil
+		}
+
 		return m, nil
 	}
 
@@ -686,10 +824,27 @@ func (m *Model) startStream(content string) tea.Cmd {
 		// Build messages from conversation history
 		messages := m.buildMessages()
 
+		// Collect MCP tools if available and register them with the engine
+		var tools []llm.ToolSpec
+		if m.mcpManager != nil {
+			mcpTools := m.mcpManager.AllTools()
+			for _, t := range mcpTools {
+				tools = append(tools, llm.ToolSpec{
+					Name:        t.Name,
+					Description: t.Description,
+					Schema:      t.Schema,
+				})
+				// Register MCP tool with engine for execution
+				m.engine.RegisterTool(mcp.NewMCPTool(m.mcpManager, t))
+			}
+		}
+
 		req := llm.Request{
 			Messages:          messages,
+			Tools:             tools,
 			Search:            m.searchEnabled,
 			ParallelToolCalls: true,
+			MaxTurns:          m.maxTurns,
 		}
 
 		// Start streaming in background
@@ -980,6 +1135,22 @@ func (m *Model) renderStatusLine() string {
 		parts = append(parts, lipgloss.NewStyle().Foreground(theme.Success).Render("web:on"))
 	}
 
+	// MCP server status
+	if m.mcpManager != nil {
+		available := m.mcpManager.AvailableServers()
+		if len(available) > 0 {
+			enabled := m.mcpManager.EnabledServers()
+			if len(enabled) > 0 {
+				parts = append(parts, lipgloss.NewStyle().Foreground(theme.Success).Render("mcp:"+strings.Join(enabled, ",")))
+			} else {
+				parts = append(parts, mutedStyle.Render("mcp:off"))
+			}
+		} else if len(m.session.Messages) == 0 {
+			// Show hint for new users on empty conversation
+			parts = append(parts, mutedStyle.Render("Ctrl+T:mcp"))
+		}
+	}
+
 	// File count if any
 	if len(m.files) > 0 {
 		parts = append(parts, fmt.Sprintf("%d file(s)", len(m.files)))
@@ -991,6 +1162,116 @@ func (m *Model) renderStatusLine() string {
 	}
 
 	return mutedStyle.Render(strings.Join(parts, " · "))
+}
+
+// mcpFindServerMatch finds the best matching server name for tab completion
+func (m *Model) mcpFindServerMatch(partial string) string {
+	if m.mcpManager == nil {
+		return ""
+	}
+	available := m.mcpManager.AvailableServers()
+	partialLower := strings.ToLower(partial)
+
+	// Try prefix match first
+	for _, s := range available {
+		if strings.HasPrefix(strings.ToLower(s), partialLower) {
+			return s
+		}
+	}
+	// Try contains match
+	for _, s := range available {
+		if strings.Contains(strings.ToLower(s), partialLower) {
+			return s
+		}
+	}
+	return ""
+}
+
+// updateCompletions updates the completions popup based on current input
+// Handles both static command completions and dynamic server completions
+func (m *Model) updateCompletions() {
+	value := m.textarea.Value()
+	query := strings.TrimPrefix(value, "/")
+
+	// Check for MCP server argument completions
+	// /mcp start <server>, /mcp stop <server>, /mcp add <server>
+	lowerQuery := strings.ToLower(query)
+
+	// Check for "/mcp start ", "/mcp stop ", "/mcp restart " - show configured servers
+	if strings.HasPrefix(lowerQuery, "mcp start ") ||
+		strings.HasPrefix(lowerQuery, "mcp stop ") ||
+		strings.HasPrefix(lowerQuery, "mcp restart ") {
+		if m.mcpManager != nil {
+			// Extract the partial server name after the subcommand
+			parts := strings.SplitN(query, " ", 3)
+			partial := ""
+			if len(parts) >= 3 {
+				partial = strings.ToLower(parts[2])
+			}
+
+			// Get configured servers
+			servers := m.mcpManager.AvailableServers()
+			var items []Command
+			for _, s := range servers {
+				if partial == "" || strings.Contains(strings.ToLower(s), partial) {
+					status, _ := m.mcpManager.ServerStatus(s)
+					desc := "stopped"
+					if status == "ready" {
+						desc = "running"
+					} else if status == "starting" {
+						desc = "starting..."
+					}
+					items = append(items, Command{
+						Name:        parts[0] + " " + parts[1] + " " + s,
+						Description: desc,
+					})
+				}
+			}
+			m.completions.SetItems(items)
+			return
+		}
+	}
+
+	// Check for "/mcp add " - show bundled servers not yet configured
+	if strings.HasPrefix(lowerQuery, "mcp add ") {
+		bundled := mcp.GetBundledServers()
+
+		// Get already configured servers
+		configured := make(map[string]bool)
+		if m.mcpManager != nil {
+			for _, s := range m.mcpManager.AvailableServers() {
+				configured[strings.ToLower(s)] = true
+			}
+		}
+
+		// Extract partial name
+		parts := strings.SplitN(query, " ", 3)
+		partial := ""
+		if len(parts) >= 3 {
+			partial = strings.ToLower(parts[2])
+		}
+
+		var items []Command
+		for _, s := range bundled {
+			if configured[strings.ToLower(s.Name)] {
+				continue // Skip already configured
+			}
+			if partial == "" || strings.Contains(strings.ToLower(s.Name), partial) {
+				items = append(items, Command{
+					Name:        "mcp add " + s.Name,
+					Description: s.Description,
+				})
+			}
+			if len(items) >= 15 { // Limit to avoid huge list
+				break
+			}
+		}
+		m.completions.SetItems(items)
+		return
+	}
+
+	// Default: use standard command filtering
+	m.completions.SetQuery(query)
 }
 
 // shortenModelName removes date suffixes from model names (e.g., "claude-sonnet-4-20250514" -> "claude-sonnet-4")

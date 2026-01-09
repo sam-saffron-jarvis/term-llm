@@ -43,6 +43,19 @@ func (r *ToolRegistry) Get(name string) (Tool, bool) {
 	return tool, ok
 }
 
+func (r *ToolRegistry) Unregister(name string) {
+	delete(r.tools, name)
+}
+
+// AllSpecs returns the specs for all registered tools.
+func (r *ToolRegistry) AllSpecs() []ToolSpec {
+	specs := make([]ToolSpec, 0, len(r.tools))
+	for _, tool := range r.tools {
+		specs = append(specs, tool.Spec())
+	}
+	return specs
+}
+
 // SuggestCommandsToolSpec returns the tool spec for command suggestions.
 func SuggestCommandsToolSpec(numSuggestions int) ToolSpec {
 	return ToolSpec{

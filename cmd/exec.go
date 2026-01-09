@@ -10,6 +10,7 @@ import (
 
 	"github.com/samsaffron/term-llm/internal/input"
 	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/mcp"
 	"github.com/samsaffron/term-llm/internal/prompt"
 	"github.com/samsaffron/term-llm/internal/signal"
 	"github.com/samsaffron/term-llm/internal/ui"
@@ -24,6 +25,8 @@ var (
 	execMaxOpts   int
 	execProvider  string
 	execFiles     []string
+	execMCP       string
+	execMaxTurns  int
 )
 
 const (
@@ -63,8 +66,13 @@ func init() {
 	execCmd.Flags().IntVarP(&execMaxOpts, "max", "n", 0, "Maximum number of options to show (0 = no limit)")
 	execCmd.Flags().StringVar(&execProvider, "provider", "", "Override provider, optionally with model (e.g., openai:gpt-4o)")
 	execCmd.Flags().StringArrayVarP(&execFiles, "file", "f", nil, "File(s) to include as context (supports globs, 'clipboard')")
+	execCmd.Flags().StringVar(&execMCP, "mcp", "", "Enable MCP server(s), comma-separated (e.g., playwright,filesystem)")
+	execCmd.Flags().IntVar(&execMaxTurns, "max-turns", 20, "Max agentic turns for tool execution")
 	if err := execCmd.RegisterFlagCompletionFunc("provider", ProviderFlagCompletion); err != nil {
 		panic(fmt.Sprintf("failed to register provider completion: %v", err))
+	}
+	if err := execCmd.RegisterFlagCompletionFunc("mcp", MCPFlagCompletion); err != nil {
+		panic(fmt.Sprintf("failed to register mcp completion: %v", err))
 	}
 	rootCmd.AddCommand(execCmd)
 }
@@ -91,6 +99,18 @@ func runExec(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	engine := llm.NewEngine(provider, defaultToolRegistry())
+
+	// Initialize MCP servers if --mcp flag is set
+	var mcpManager *mcp.Manager
+	if execMCP != "" {
+		mcpManager, err = enableMCPServersWithFeedback(ctx, execMCP, engine, cmd.ErrOrStderr())
+		if err != nil {
+			fmt.Fprintf(cmd.ErrOrStderr(), "Warning: %v\n", err)
+		}
+		if mcpManager != nil {
+			defer mcpManager.StopAll()
+		}
+	}
 
 	// Detect shell
 	shell := detectShell()
@@ -137,6 +157,7 @@ func runExec(cmd *cobra.Command, args []string) error {
 			},
 			ParallelToolCalls: true,
 			Search:            execSearch,
+			MaxTurns:          execMaxTurns,
 			Debug:             debugMode,
 			DebugRaw:          debugRaw,
 		}

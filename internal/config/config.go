@@ -58,6 +58,7 @@ type AskConfig struct {
 	Provider     string `mapstructure:"provider"`     // Override provider for ask
 	Model        string `mapstructure:"model"`        // Override model for ask
 	Instructions string `mapstructure:"instructions"` // Custom system prompt for ask
+	MaxTurns     int    `mapstructure:"max_turns"`    // Max agentic turns (default 20)
 }
 
 type EditConfig struct {

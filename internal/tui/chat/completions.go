@@ -65,6 +65,15 @@ func (c *CompletionsModel) SetQuery(query string) {
 	}
 }
 
+// SetItems sets custom completion items (for dynamic completions like server names)
+func (c *CompletionsModel) SetItems(items []Command) {
+	c.filtered = items
+	c.cursor = 0
+	if !c.visible && len(items) > 0 {
+		c.visible = true
+	}
+}
+
 // Selected returns the currently selected command
 func (c *CompletionsModel) Selected() *Command {
 	if len(c.filtered) == 0 {

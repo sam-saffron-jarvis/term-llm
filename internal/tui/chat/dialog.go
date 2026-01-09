@@ -6,6 +6,7 @@ import (
 	"github.com/charmbracelet/bubbles/key"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/samsaffron/term-llm/internal/mcp"
 	"github.com/samsaffron/term-llm/internal/ui"
 )
 
@@ -17,6 +18,7 @@ const (
 	DialogModelPicker
 	DialogSessionList
 	DialogDirApproval
+	DialogMCPPicker
 )
 
 // DialogModel handles modal dialogs
@@ -150,6 +152,40 @@ func (d *DialogModel) ShowDirApproval(filePath string, options []string) {
 	})
 }
 
+// ShowMCPPicker opens the MCP server picker dialog
+func (d *DialogModel) ShowMCPPicker(mcpManager *mcp.Manager) {
+	d.dialogType = DialogMCPPicker
+	d.title = "MCP Servers"
+	d.cursor = 0
+	d.query = ""
+	d.items = nil
+
+	available := mcpManager.AvailableServers()
+	states := mcpManager.GetAllStates()
+
+	// Build status map
+	statusMap := make(map[string]string)
+	for _, state := range states {
+		statusMap[state.Name] = string(state.Status)
+	}
+
+	for _, name := range available {
+		status := statusMap[name]
+		if status == "" {
+			status = "stopped"
+		}
+		isRunning := status == "ready" || status == "starting"
+
+		d.items = append(d.items, DialogItem{
+			ID:          name,
+			Label:       name,
+			Description: status,
+			Selected:    isRunning,
+		})
+	}
+	d.filtered = d.items
+}
+
 // GetDirApprovalPath returns the path that triggered the approval request
 func (d *DialogModel) GetDirApprovalPath() string {
 	return d.dirApprovalPath
@@ -174,10 +210,10 @@ func (d *DialogModel) ItemAt(idx int) *DialogItem {
 	return &d.filtered[idx]
 }
 
-// SetQuery updates the filter query for model picker
+// SetQuery updates the filter query for model picker or MCP picker
 func (d *DialogModel) SetQuery(query string) {
 	d.query = query
-	if d.dialogType == DialogModelPicker {
+	if d.dialogType == DialogModelPicker || d.dialogType == DialogMCPPicker {
 		d.filterItems()
 	}
 }
@@ -205,10 +241,32 @@ func (d *DialogModel) Query() string {
 	return d.query
 }
 
+// Cursor returns the current cursor position
+func (d *DialogModel) Cursor() int {
+	return d.cursor
+}
+
+// SetCursor sets the cursor position, clamping to valid range
+func (d *DialogModel) SetCursor(pos int) {
+	if pos < 0 {
+		pos = 0
+	}
+	if len(d.filtered) > 0 && pos >= len(d.filtered) {
+		pos = len(d.filtered) - 1
+	}
+	d.cursor = pos
+}
+
 // Update handles messages
 func (d *DialogModel) Update(msg tea.Msg) (*DialogModel, tea.Cmd) {
 	if d.dialogType == DialogNone {
 		return d, nil
+	}
+
+	// Use filtered list for navigation bounds when filtering is active
+	listLen := len(d.items)
+	if len(d.filtered) > 0 || d.query != "" {
+		listLen = len(d.filtered)
 	}
 
 	switch msg := msg.(type) {
@@ -219,7 +277,7 @@ func (d *DialogModel) Update(msg tea.Msg) (*DialogModel, tea.Cmd) {
 				d.cursor--
 			}
 		case key.Matches(msg, key.NewBinding(key.WithKeys("down", "j"))):
-			if d.cursor < len(d.items)-1 {
+			if d.cursor < listLen-1 {
 				d.cursor++
 			}
 		case key.Matches(msg, key.NewBinding(key.WithKeys("esc", "q"))):
@@ -239,6 +297,11 @@ func (d *DialogModel) View() string {
 	// Use completions-style for model picker
 	if d.dialogType == DialogModelPicker {
 		return d.viewModelPicker()
+	}
+
+	// Use MCP-specific view for MCP picker
+	if d.dialogType == DialogMCPPicker {
+		return d.viewMCPPicker()
 	}
 
 	// Original style for other dialogs (dir approval, session list)
@@ -383,6 +446,137 @@ func (d *DialogModel) viewStandardDialog() string {
 
 	b.WriteString("\n\n")
 	b.WriteString(mutedStyle.Render("j/k navigate · enter select · esc cancel"))
+
+	return borderStyle.Render(b.String())
+}
+
+// viewMCPPicker renders the MCP server picker dialog
+func (d *DialogModel) viewMCPPicker() string {
+	theme := d.styles.Theme()
+
+	dialogWidth := 50
+	if dialogWidth > d.width-4 {
+		dialogWidth = d.width - 4
+	}
+
+	borderStyle := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(theme.Border).
+		Padding(1, 2).
+		Width(dialogWidth)
+
+	titleStyle := lipgloss.NewStyle().
+		Bold(true).
+		Foreground(theme.Primary).
+		MarginBottom(1)
+
+	selectedStyle := lipgloss.NewStyle().
+		Background(theme.Primary).
+		Foreground(lipgloss.Color("0"))
+
+	mutedStyle := lipgloss.NewStyle().
+		Foreground(theme.Muted)
+
+	successStyle := lipgloss.NewStyle().
+		Foreground(theme.Success)
+
+	warningStyle := lipgloss.NewStyle().
+		Foreground(theme.Warning)
+
+	errorStyle := lipgloss.NewStyle().
+		Foreground(theme.Error)
+
+	var b strings.Builder
+
+	b.WriteString(titleStyle.Render(d.title))
+	b.WriteString("\n\n")
+
+	// Handle empty state (no servers configured)
+	if len(d.items) == 0 {
+		b.WriteString(mutedStyle.Render("No servers configured yet."))
+		b.WriteString("\n")
+		b.WriteString(mutedStyle.Render("Use /mcp add <name> to add one."))
+		b.WriteString("\n\n")
+		b.WriteString(mutedStyle.Render("esc close"))
+		return borderStyle.Render(b.String())
+	}
+
+	// Handle empty filter results
+	if len(d.filtered) == 0 && d.query != "" {
+		b.WriteString(mutedStyle.Render("No matches for \"" + d.query + "\""))
+		b.WriteString("\n\n")
+		b.WriteString(mutedStyle.Render("filter: " + d.query + " · backspace clear · esc close"))
+		return borderStyle.Render(b.String())
+	}
+
+	maxItems := 15
+	items := d.filtered
+	startIdx := 0
+	if len(items) > maxItems {
+		if d.cursor >= maxItems {
+			startIdx = d.cursor - maxItems + 1
+		}
+		items = items[startIdx:]
+		if len(items) > maxItems {
+			items = items[:maxItems]
+		}
+	}
+
+	for i, item := range items {
+		actualIdx := startIdx + i
+
+		// Status indicator with new icons
+		var statusIcon string
+		switch item.Description {
+		case "ready":
+			statusIcon = successStyle.Render("●")
+		case "starting":
+			statusIcon = warningStyle.Render("◐")
+		case "failed":
+			statusIcon = errorStyle.Render("○")
+		default:
+			statusIcon = mutedStyle.Render(" ")
+		}
+
+		// Cursor indicator
+		cursor := "  "
+		if actualIdx == d.cursor {
+			cursor = "❯ "
+		}
+
+		// Status text
+		statusText := ""
+		switch item.Description {
+		case "ready":
+			statusText = successStyle.Render(" ready")
+		case "starting":
+			statusText = warningStyle.Render(" starting...")
+		case "failed":
+			statusText = errorStyle.Render(" failed")
+		default:
+			// No status text for stopped servers - cleaner look
+		}
+
+		line := cursor + statusIcon + " " + item.Label + statusText
+		if actualIdx == d.cursor {
+			b.WriteString(selectedStyle.Render(line))
+		} else {
+			b.WriteString(line)
+		}
+
+		if i < len(items)-1 {
+			b.WriteString("\n")
+		}
+	}
+
+	b.WriteString("\n\n")
+
+	// Show filter query if active, otherwise show help text
+	if d.query != "" {
+		b.WriteString(mutedStyle.Render("filter: " + d.query + " · enter toggle · backspace clear · esc close"))
+	} else {
+		b.WriteString(mutedStyle.Render("↑↓ navigate · enter toggle · type to filter · esc close"))
+	}
 
 	return borderStyle.Render(b.String())
 }

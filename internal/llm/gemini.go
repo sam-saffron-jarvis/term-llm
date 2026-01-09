@@ -202,12 +202,14 @@ func buildGeminiTools(specs []ToolSpec) []*genai.Tool {
 	}
 	tools := make([]*genai.Tool, 0, len(specs))
 	for _, spec := range specs {
+		// Normalize schema for Gemini's requirements (similar to OpenAI normalization)
+		schema := normalizeSchemaForGemini(spec.Schema)
 		tools = append(tools, &genai.Tool{
 			FunctionDeclarations: []*genai.FunctionDeclaration{
 				{
 					Name:        spec.Name,
 					Description: spec.Description,
-					Parameters:  schemaToGenai(spec.Schema),
+					Parameters:  schemaToGenai(schema),
 				},
 			},
 		})

@@ -1,6 +1,7 @@
 package chat
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"strings"
@@ -8,6 +9,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/sahilm/fuzzy"
+	"github.com/samsaffron/term-llm/internal/mcp"
 )
 
 // Command represents a slash command
@@ -16,6 +18,13 @@ type Command struct {
 	Aliases     []string
 	Description string
 	Usage       string
+	Subcommands []Subcommand // Optional subcommands
+}
+
+// Subcommand represents a subcommand of a slash command
+type Subcommand struct {
+	Name        string
+	Description string
 }
 
 // AllCommands returns all available slash commands
@@ -94,6 +103,18 @@ func AllCommands() []Command {
 			Description: "Manage approved directories",
 			Usage:       "/dirs [add|remove <path>]",
 		},
+		{
+			Name:        "mcp",
+			Description: "MCP servers (browser, database, git tools)",
+			Usage:       "/mcp [start|stop|add|list]",
+			Subcommands: []Subcommand{
+				{Name: "start", Description: "Start a configured server"},
+				{Name: "stop", Description: "Stop a running server"},
+				{Name: "add", Description: "Add a new server"},
+				{Name: "list", Description: "Show available servers"},
+				{Name: "status", Description: "Show server status"},
+			},
+		},
 	}
 }
 
@@ -109,6 +130,7 @@ func (c CommandSource) Len() int {
 }
 
 // FilterCommands returns commands matching the query using fuzzy search
+// If query contains a space (e.g., "mcp "), it returns subcommands for that command
 func FilterCommands(query string) []Command {
 	commands := AllCommands()
 	if query == "" {
@@ -118,15 +140,46 @@ func FilterCommands(query string) []Command {
 	// Remove leading slash if present
 	query = strings.TrimPrefix(query, "/")
 
-	// First check for exact alias matches
-	queryLower := strings.ToLower(query)
-	for _, cmd := range commands {
-		if cmd.Name == queryLower {
-			return []Command{cmd}
+	// Check for subcommand completion (query contains space)
+	if idx := strings.Index(query, " "); idx != -1 {
+		cmdName := strings.ToLower(query[:idx])
+		subQuery := strings.ToLower(strings.TrimSpace(query[idx+1:]))
+
+		// Find the parent command
+		for _, cmd := range commands {
+			if cmd.Name == cmdName || contains(cmd.Aliases, cmdName) {
+				if len(cmd.Subcommands) == 0 {
+					return nil // No subcommands for this command
+				}
+				// Return subcommands as pseudo-commands
+				var result []Command
+				for _, sub := range cmd.Subcommands {
+					// Filter by subquery if present
+					if subQuery == "" || strings.HasPrefix(sub.Name, subQuery) {
+						result = append(result, Command{
+							Name:        cmd.Name + " " + sub.Name,
+							Description: sub.Description,
+						})
+					}
+				}
+				return result
+			}
 		}
-		for _, alias := range cmd.Aliases {
-			if alias == queryLower {
+		return nil
+	}
+
+	// First check for exact name/alias matches, but only short-circuit
+	// for multi-character queries (so "/m" shows both "model" and "mcp")
+	queryLower := strings.ToLower(query)
+	if len(query) > 1 {
+		for _, cmd := range commands {
+			if cmd.Name == queryLower {
 				return []Command{cmd}
+			}
+			for _, alias := range cmd.Aliases {
+				if alias == queryLower {
+					return []Command{cmd}
+				}
 			}
 		}
 	}
@@ -150,6 +203,16 @@ func FilterCommands(query string) []Command {
 	}
 
 	return result
+}
+
+// contains checks if a slice contains a string
+func contains(slice []string, s string) bool {
+	for _, item := range slice {
+		if item == s {
+			return true
+		}
+	}
+	return false
 }
 
 // ExecuteCommand handles slash command execution
@@ -238,6 +301,8 @@ func (m *Model) ExecuteCommand(input string) (tea.Model, tea.Cmd) {
 		return m.cmdFile(args)
 	case "dirs":
 		return m.cmdDirs(args)
+	case "mcp":
+		return m.cmdMcp(args)
 	default:
 		return m.showSystemMessage(fmt.Sprintf("Command /%s is not yet implemented.", cmd.Name))
 	}
@@ -274,6 +339,7 @@ func (m *Model) cmdHelp() (tea.Model, tea.Cmd) {
 	b.WriteString("- `Ctrl+C` - Quit\n")
 	b.WriteString("- `Ctrl+K` - Clear conversation\n")
 	b.WriteString("- `Ctrl+S` - Toggle web search\n")
+	b.WriteString("- `Ctrl+T` - MCP servers (tools)\n")
 	b.WriteString("- `Ctrl+P` - Command palette\n")
 	b.WriteString("- `Ctrl+L` - Switch model\n")
 	b.WriteString("- `Ctrl+N` - New session\n")
@@ -289,7 +355,7 @@ func (m *Model) cmdClear() (tea.Model, tea.Cmd) {
 
 	// Print confirmation and save session
 	return m, tea.Batch(
-		tea.Println("Conversation cleared.\n"),
+		tea.Println("Conversation cleared."),
 		m.saveSessionCmd(),
 	)
 }
@@ -669,4 +735,372 @@ func (m *Model) cmdDirs(args []string) (tea.Model, tea.Cmd) {
 	default:
 		return m.showSystemMessage(fmt.Sprintf("Unknown subcommand: %s\n\nUsage:\n- `/dirs` - List approved directories\n- `/dirs add <path>` - Approve a directory\n- `/dirs remove <path>` - Revoke approval", subCmd))
 	}
+}
+
+func (m *Model) cmdMcp(args []string) (tea.Model, tea.Cmd) {
+	// No args - open the MCP picker dialog
+	if len(args) == 0 {
+		if m.mcpManager == nil || len(m.mcpManager.AvailableServers()) == 0 {
+			return m.showMCPQuickStart()
+		}
+		m.dialog.ShowMCPPicker(m.mcpManager)
+		m.textarea.SetValue("")
+		return m, nil
+	}
+
+	subCmd := strings.ToLower(args[0])
+	subArgs := args[1:]
+
+	switch subCmd {
+	case "list":
+		return m.showBundledServersList()
+
+	case "add":
+		if len(subArgs) == 0 {
+			return m.showSystemMessage("Usage: `/mcp add <server>`\n\nUse `/mcp list` to see available servers.")
+		}
+		return m.quickAddMCP(strings.Join(subArgs, " "))
+
+	case "start":
+		if m.mcpManager == nil {
+			return m.showMCPQuickStart()
+		}
+		if len(subArgs) == 0 {
+			return m.showSystemMessage("Usage: `/mcp start <server>`\n\nUse `/mcp` to see configured servers.")
+		}
+		return m.mcpStartServer(strings.Join(subArgs, " "))
+
+	case "stop":
+		if m.mcpManager == nil {
+			return m.showSystemMessage("No MCP servers configured.")
+		}
+		if len(subArgs) == 0 {
+			return m.showSystemMessage("Usage: `/mcp stop <server>`\n\nUse `/mcp` to see running servers.")
+		}
+		return m.mcpStopServer(strings.Join(subArgs, " "))
+
+	case "restart":
+		if m.mcpManager == nil {
+			return m.showSystemMessage("No MCP servers configured.")
+		}
+		if len(subArgs) == 0 {
+			return m.showSystemMessage("Usage: `/mcp restart <server>`")
+		}
+		name, err := m.mcpFindServer(subArgs[0])
+		if err != nil {
+			return m.showSystemMessage(err.Error())
+		}
+		if err := m.mcpManager.Restart(context.Background(), name); err != nil {
+			return m.showSystemMessage(fmt.Sprintf("Failed to restart %s: %v", name, err))
+		}
+		m.textarea.SetValue("")
+		return m.showSystemMessage(fmt.Sprintf("Restarting MCP server: %s", name))
+
+	case "status":
+		if m.mcpManager == nil {
+			return m.showMCPQuickStart()
+		}
+		return m.mcpShowStatus()
+
+	default:
+		return m.showSystemMessage(fmt.Sprintf("Unknown subcommand: %s\n\n**Commands:**\n- `/mcp start <server>` - Start a server\n- `/mcp stop <server>` - Stop a server\n- `/mcp add <server>` - Add a new server\n- `/mcp list` - Show available servers\n- `/mcp status` - Show current status", subCmd))
+	}
+}
+
+// mcpFindServer finds a server by fuzzy matching
+func (m *Model) mcpFindServer(query string) (string, error) {
+	available := m.mcpManager.AvailableServers()
+	if len(available) == 0 {
+		return "", fmt.Errorf("no MCP servers configured\n\nUse `/mcp add %s` to add it", query)
+	}
+
+	queryLower := strings.ToLower(query)
+	var exactMatch string
+	var prefixMatches []string
+	var containsMatches []string
+
+	for _, s := range available {
+		sLower := strings.ToLower(s)
+		if sLower == queryLower {
+			exactMatch = s
+			break
+		}
+		if strings.HasPrefix(sLower, queryLower) {
+			prefixMatches = append(prefixMatches, s)
+		} else if strings.Contains(sLower, queryLower) {
+			containsMatches = append(containsMatches, s)
+		}
+	}
+
+	if exactMatch != "" {
+		return exactMatch, nil
+	}
+	if len(prefixMatches) == 1 {
+		return prefixMatches[0], nil
+	}
+	if len(prefixMatches) > 1 {
+		return "", fmt.Errorf("multiple servers match '%s':\n\n- %s\n\nBe more specific", query, strings.Join(prefixMatches, "\n- "))
+	}
+	if len(containsMatches) == 1 {
+		return containsMatches[0], nil
+	}
+	if len(containsMatches) > 1 {
+		return "", fmt.Errorf("multiple servers match '%s':\n\n- %s\n\nBe more specific", query, strings.Join(containsMatches, "\n- "))
+	}
+	return "", fmt.Errorf("no server matches '%s'\n\nConfigured: %s", query, strings.Join(available, ", "))
+}
+
+// mcpStartServer starts a server by name (with fuzzy matching)
+func (m *Model) mcpStartServer(query string) (tea.Model, tea.Cmd) {
+	name, err := m.mcpFindServer(query)
+	if err != nil {
+		return m.showSystemMessage(err.Error())
+	}
+
+	status, _ := m.mcpManager.ServerStatus(name)
+	if status == "ready" {
+		return m.showSystemMessage(fmt.Sprintf("Server '%s' is already running.", name))
+	}
+	if status == "starting" {
+		return m.showSystemMessage(fmt.Sprintf("Server '%s' is already starting.", name))
+	}
+
+	if err := m.mcpManager.Enable(context.Background(), name); err != nil {
+		return m.showSystemMessage(fmt.Sprintf("Failed to start %s: %v", name, err))
+	}
+	m.textarea.SetValue("")
+	return m.showSystemMessage(fmt.Sprintf("Starting **%s**... tools will be available shortly.", name))
+}
+
+// mcpStopServer stops a server by name (with fuzzy matching)
+func (m *Model) mcpStopServer(query string) (tea.Model, tea.Cmd) {
+	name, err := m.mcpFindServer(query)
+	if err != nil {
+		return m.showSystemMessage(err.Error())
+	}
+
+	status, _ := m.mcpManager.ServerStatus(name)
+	if status == "stopped" || status == "" {
+		return m.showSystemMessage(fmt.Sprintf("Server '%s' is not running.", name))
+	}
+
+	if err := m.mcpManager.Disable(name); err != nil {
+		return m.showSystemMessage(fmt.Sprintf("Failed to stop %s: %v", name, err))
+	}
+	m.textarea.SetValue("")
+	return m.showSystemMessage(fmt.Sprintf("Stopped **%s**", name))
+}
+
+func (m *Model) mcpShowStatus() (tea.Model, tea.Cmd) {
+	var b strings.Builder
+
+	available := m.mcpManager.AvailableServers()
+	states := m.mcpManager.GetAllStates()
+
+	if len(available) == 0 {
+		b.WriteString("## MCP Servers\n\n")
+		b.WriteString("No MCP servers configured.\n\n")
+		b.WriteString("**Quick start:**\n")
+		b.WriteString("- `/mcp add playwright` - Browser automation\n")
+		b.WriteString("- `/mcp add github` - GitHub integration\n")
+		b.WriteString("- `/mcp add filesystem` - File operations\n")
+		b.WriteString("- `/mcp list` - See all available servers\n")
+		return m.showSystemMessage(b.String())
+	}
+
+	b.WriteString("## MCP Servers\n\n")
+
+	// Build status map
+	statusMap := make(map[string]string)
+	for _, state := range states {
+		switch state.Status {
+		case "starting":
+			statusMap[state.Name] = "starting..."
+		case "ready":
+			statusMap[state.Name] = "running"
+		case "failed":
+			errMsg := "failed"
+			if state.Error != nil {
+				errMsg = fmt.Sprintf("failed: %v", state.Error)
+			}
+			statusMap[state.Name] = errMsg
+		default:
+			statusMap[state.Name] = "stopped"
+		}
+	}
+
+	hasStoppedServers := false
+	for _, name := range available {
+		status := statusMap[name]
+		if status == "" {
+			status = "stopped"
+		}
+		if status == "stopped" {
+			hasStoppedServers = true
+		}
+
+		icon := "  "
+		if status == "running" {
+			icon = "* "
+		} else if status == "starting..." {
+			icon = ". "
+		}
+
+		b.WriteString(fmt.Sprintf("%s**%s** - %s\n", icon, name, status))
+	}
+
+	// Add hint for stopped servers
+	if hasStoppedServers {
+		b.WriteString("\n`/mcp start <name>` to start a server\n")
+	}
+
+	// Show tools from running servers
+	tools := m.mcpManager.AllTools()
+	if len(tools) > 0 {
+		b.WriteString(fmt.Sprintf("\n**Available tools (%d):**\n", len(tools)))
+		for _, t := range tools {
+			// Tool name is prefixed with "servername__toolname"
+			parts := strings.SplitN(t.Name, "__", 2)
+			if len(parts) == 2 {
+				b.WriteString(fmt.Sprintf("- `%s` (%s)\n", parts[1], parts[0]))
+			} else {
+				b.WriteString(fmt.Sprintf("- `%s`\n", t.Name))
+			}
+		}
+	}
+
+	b.WriteString("\n**Commands:**\n")
+	b.WriteString("- `/mcp start <server>` - Start a server\n")
+	b.WriteString("- `/mcp stop <server>` - Stop a server\n")
+	b.WriteString("- `/mcp add <name>` - Add a new server\n")
+	b.WriteString("- `/mcp list` - Show available servers\n")
+
+	m.textarea.SetValue("")
+	return m.showSystemMessage(b.String())
+}
+
+// showMCPQuickStart shows helpful info when user presses Ctrl+M with no MCPs configured
+func (m *Model) showMCPQuickStart() (tea.Model, tea.Cmd) {
+	var b strings.Builder
+	b.WriteString("## MCP Quick Start\n\n")
+	b.WriteString("MCP servers give the LLM tools like browser automation, database access, and more.\n\n")
+	b.WriteString("**Popular servers:**\n")
+	b.WriteString("- `playwright` - Browser automation with accessibility snapshots\n")
+	b.WriteString("- `filesystem` - Secure file operations\n")
+	b.WriteString("- `git` - Git repository operations\n")
+	b.WriteString("- `github` - GitHub API integration\n")
+	b.WriteString("- `fetch` - Web content fetching\n")
+	b.WriteString("\n**Get started:**\n")
+	b.WriteString("- `/mcp add playwright` - Add a server\n")
+	b.WriteString("- `/mcp list` - See all available servers\n")
+
+	m.textarea.SetValue("")
+	return m.showSystemMessage(b.String())
+}
+
+// quickAddMCP adds an MCP server from bundled servers
+func (m *Model) quickAddMCP(query string) (tea.Model, tea.Cmd) {
+	bundled := mcp.GetBundledServers()
+	queryLower := strings.ToLower(query)
+
+	// First try exact name match
+	var match *mcp.BundledServer
+	for i, s := range bundled {
+		if strings.ToLower(s.Name) == queryLower {
+			match = &bundled[i]
+			break
+		}
+	}
+
+	// Then try fuzzy match on name or description
+	if match == nil {
+		for i, s := range bundled {
+			if strings.Contains(strings.ToLower(s.Name), queryLower) ||
+				strings.Contains(strings.ToLower(s.Description), queryLower) {
+				match = &bundled[i]
+				break
+			}
+		}
+	}
+
+	if match == nil {
+		return m.showSystemMessage(fmt.Sprintf(
+			"No server found matching '%s'.\n\nUse `/mcp list` to see available servers.",
+			query))
+	}
+
+	// Load config
+	cfg, err := mcp.LoadConfig()
+	if err != nil {
+		return m.showSystemMessage(fmt.Sprintf("Failed to load MCP config: %v", err))
+	}
+
+	// Check if already configured
+	if _, exists := cfg.Servers[match.Name]; exists {
+		return m.showSystemMessage(fmt.Sprintf("Server '%s' is already configured.\n\nUse `/mcp %s` to enable it.", match.Name, match.Name))
+	}
+
+	// Add to config
+	serverConfig := match.ToServerConfig()
+	if cfg.Servers == nil {
+		cfg.Servers = make(map[string]mcp.ServerConfig)
+	}
+	cfg.Servers[match.Name] = serverConfig
+
+	if err := cfg.Save(); err != nil {
+		return m.showSystemMessage(fmt.Sprintf("Failed to save MCP config: %v", err))
+	}
+
+	// Reload manager config and auto-enable the server
+	if m.mcpManager != nil {
+		if err := m.mcpManager.LoadConfig(); err != nil {
+			return m.showSystemMessage(fmt.Sprintf("Added '%s' but failed to reload config: %v\n\nRestart chat to use it.", match.Name, err))
+		}
+		// Auto-enable the newly added server
+		if err := m.mcpManager.Enable(context.Background(), match.Name); err != nil {
+			m.textarea.SetValue("")
+			return m.showSystemMessage(fmt.Sprintf(
+				"Added **%s** but failed to start: %v\n\nUse `/mcp %s` to try again.",
+				match.Name, err, match.Name))
+		}
+	}
+
+	m.textarea.SetValue("")
+	return m.showSystemMessage(fmt.Sprintf(
+		"Enabled **%s**\n\n%s\n\nTools will be available shortly.",
+		match.Name, match.Description))
+}
+
+// showBundledServersList shows available bundled servers
+func (m *Model) showBundledServersList() (tea.Model, tea.Cmd) {
+	bundled := mcp.GetBundledServers()
+
+	// Group by category
+	byCategory := make(map[string][]mcp.BundledServer)
+	for _, s := range bundled {
+		byCategory[s.Category] = append(byCategory[s.Category], s)
+	}
+
+	// Define category order
+	categoryOrder := []string{"Reference", "Browser", "DevTools", "Database", "Cloud", "Productivity", "Search", "Data", "Finance", "Communication", "Other"}
+
+	var b strings.Builder
+	b.WriteString("## Available MCP Servers\n\n")
+
+	for _, cat := range categoryOrder {
+		servers, ok := byCategory[cat]
+		if !ok || len(servers) == 0 {
+			continue
+		}
+		b.WriteString(fmt.Sprintf("**%s:**\n", cat))
+		for _, s := range servers {
+			b.WriteString(fmt.Sprintf("- `%s` - %s\n", s.Name, s.Description))
+		}
+		b.WriteString("\n")
+	}
+
+	b.WriteString("Use `/mcp add <name>` to add a server.\n")
+
+	m.textarea.SetValue("")
+	return m.showSystemMessage(b.String())
 }

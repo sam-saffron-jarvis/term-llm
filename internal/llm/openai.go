@@ -162,13 +162,118 @@ func buildOpenAITools(specs []ToolSpec) ([]responses.ToolUnionParam, error) {
 	}
 	tools := make([]responses.ToolUnionParam, 0, len(specs))
 	for _, spec := range specs {
-		tool := responses.ToolParamOfFunction(spec.Name, spec.Schema, true)
+		// Normalize schema for OpenAI's strict requirements
+		schema := normalizeSchemaForOpenAI(spec.Schema)
+		tool := responses.ToolParamOfFunction(spec.Name, schema, true)
 		if spec.Description != "" {
 			tool.OfFunction.Description = openai.String(spec.Description)
 		}
 		tools = append(tools, tool)
 	}
 	return tools, nil
+}
+
+// normalizeSchemaForOpenAI ensures schema meets OpenAI's strict requirements:
+// - 'required' must include every key in properties
+// - 'additionalProperties' must be false
+// - unsupported 'format' values must be removed
+func normalizeSchemaForOpenAI(schema map[string]interface{}) map[string]interface{} {
+	if schema == nil {
+		return schema
+	}
+	return normalizeSchemaRecursive(deepCopyMap(schema))
+}
+
+// deepCopyMap creates a deep copy of a map[string]interface{}
+func deepCopyMap(m map[string]interface{}) map[string]interface{} {
+	if m == nil {
+		return nil
+	}
+	result := make(map[string]interface{}, len(m))
+	for k, v := range m {
+		switch val := v.(type) {
+		case map[string]interface{}:
+			result[k] = deepCopyMap(val)
+		case []interface{}:
+			result[k] = deepCopySlice(val)
+		default:
+			result[k] = v
+		}
+	}
+	return result
+}
+
+func deepCopySlice(s []interface{}) []interface{} {
+	if s == nil {
+		return nil
+	}
+	result := make([]interface{}, len(s))
+	for i, v := range s {
+		switch val := v.(type) {
+		case map[string]interface{}:
+			result[i] = deepCopyMap(val)
+		case []interface{}:
+			result[i] = deepCopySlice(val)
+		default:
+			result[i] = v
+		}
+	}
+	return result
+}
+
+// normalizeSchemaRecursive applies OpenAI normalization recursively
+func normalizeSchemaRecursive(schema map[string]interface{}) map[string]interface{} {
+	// Remove unsupported format values (OpenAI only supports a limited set)
+	if format, ok := schema["format"].(string); ok {
+		// OpenAI supported formats: date-time, date, time, email
+		// Remove uri, uri-reference, hostname, ipv4, ipv6, uuid, etc.
+		switch format {
+		case "date-time", "date", "time", "email":
+			// Keep these
+		default:
+			delete(schema, "format")
+		}
+	}
+
+	// Handle properties
+	if props, ok := schema["properties"].(map[string]interface{}); ok && len(props) > 0 {
+		// Recursively normalize each property
+		for key, val := range props {
+			if propSchema, ok := val.(map[string]interface{}); ok {
+				props[key] = normalizeSchemaRecursive(propSchema)
+			}
+		}
+
+		// Build required array with all property keys
+		required := make([]string, 0, len(props))
+		for key := range props {
+			required = append(required, key)
+		}
+		schema["required"] = required
+	}
+
+	// Handle array items
+	if items, ok := schema["items"].(map[string]interface{}); ok {
+		schema["items"] = normalizeSchemaRecursive(items)
+	}
+
+	// Handle anyOf, oneOf, allOf
+	for _, key := range []string{"anyOf", "oneOf", "allOf"} {
+		if arr, ok := schema[key].([]interface{}); ok {
+			for i, item := range arr {
+				if itemSchema, ok := item.(map[string]interface{}); ok {
+					arr[i] = normalizeSchemaRecursive(itemSchema)
+				}
+			}
+		}
+	}
+
+	// OpenAI requires additionalProperties to be false for objects
+	if schema["type"] == "object" || schema["properties"] != nil {
+		schema["additionalProperties"] = false
+	}
+
+	return schema
 }
 
 func buildOpenAIToolChoice(choice ToolChoice) responses.ResponseNewParamsToolChoiceUnion {

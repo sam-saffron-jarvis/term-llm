@@ -35,6 +35,7 @@ type KeyMap struct {
 	AttachFile  key.Binding
 	Clear       key.Binding
 	NewSession  key.Binding
+	MCPPicker   key.Binding
 }
 
 // DefaultKeyMap returns the default keybindings
@@ -142,6 +143,10 @@ func DefaultKeyMap() KeyMap {
 		NewSession: key.NewBinding(
 			key.WithKeys("ctrl+n"),
 			key.WithHelp("ctrl+n", "new session"),
+		),
+		MCPPicker: key.NewBinding(
+			key.WithKeys("ctrl+t"),
+			key.WithHelp("ctrl+t", "mcp servers"),
 		),
 	}
 }

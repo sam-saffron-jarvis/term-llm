@@ -366,10 +366,12 @@ func (p *CodeAssistProvider) Stream(ctx context.Context, req Request) (Stream, e
 		if len(req.Tools) > 0 {
 			decls := make([]map[string]interface{}, 0, len(req.Tools))
 			for _, spec := range req.Tools {
+				// Normalize schema for Gemini's requirements (same as GeminiProvider)
+				schema := normalizeSchemaForGemini(spec.Schema)
 				decls = append(decls, map[string]interface{}{
 					"name":        spec.Name,
 					"description": spec.Description,
-					"parameters":  spec.Schema,
+					"parameters":  schema,
 				})
 			}
 			requestInner["tools"] = []map[string]interface{}{

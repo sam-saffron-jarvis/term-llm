@@ -38,6 +38,7 @@ type Request struct {
 	MaxOutputTokens   int
 	Temperature       float32
 	TopP              float32
+	MaxTurns          int // Max agentic turns for tool execution (0 = use default)
 	Debug             bool
 	DebugRaw          bool
 }

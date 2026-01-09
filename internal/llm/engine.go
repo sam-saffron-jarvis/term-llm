@@ -9,9 +9,17 @@ import (
 )
 
 const (
-	maxExternalSearchLoops = 6
-	stopSearchToolHint     = "IMPORTANT: Do not call any tools. Use the information already retrieved and answer directly."
+	defaultMaxTurns    = 20
+	stopSearchToolHint = "IMPORTANT: Do not call any tools. Use the information already retrieved and answer directly."
 )
+
+// getMaxTurns returns the max turns from request, with fallback to default
+func getMaxTurns(req Request) int {
+	if req.MaxTurns > 0 {
+		return req.MaxTurns
+	}
+	return defaultMaxTurns
+}
 
 // Engine orchestrates provider calls and external tool execution.
 type Engine struct {
@@ -29,6 +37,21 @@ func NewEngine(provider Provider, tools *ToolRegistry) *Engine {
 	}
 }
 
+// RegisterTool adds a tool to the engine's registry.
+func (e *Engine) RegisterTool(tool Tool) {
+	e.tools.Register(tool)
+}
+
+// UnregisterTool removes a tool from the engine's registry.
+func (e *Engine) UnregisterTool(name string) {
+	e.tools.Unregister(name)
+}
+
+// Tools returns the engine's tool registry.
+func (e *Engine) Tools() *ToolRegistry {
+	return e.tools
+}
+
 // Stream returns a stream, applying external tools when needed.
 func (e *Engine) Stream(ctx context.Context, req Request) (Stream, error) {
 	if req.Search {
@@ -41,6 +64,11 @@ func (e *Engine) Stream(ctx context.Context, req Request) (Stream, error) {
 		if needsExternalSearch || needsExternalFetch {
 			return e.streamWithExternalTools(ctx, req, needsExternalSearch, needsExternalFetch)
 		}
+	}
+
+	// If request has tools (e.g., MCP tools), use tool execution loop
+	if len(req.Tools) > 0 && e.provider.Capabilities().ToolCalls {
+		return e.streamWithToolExecution(ctx, req)
 	}
 
 	if req.DebugRaw {
@@ -185,8 +213,9 @@ func (e *Engine) streamWithExternalTools(ctx context.Context, req Request, addSe
 			DebugRawRequest(req.DebugRaw, e.provider.Name(), e.provider.Credential(), req, label)
 		}
 
-		for attempt := 0; attempt < maxExternalSearchLoops; attempt++ {
-			if attempt == maxExternalSearchLoops-1 {
+		maxTurns := getMaxTurns(req)
+		for attempt := 0; attempt < maxTurns; attempt++ {
+			if attempt == maxTurns-1 {
 				req.Messages = append(req.Messages, SystemText(stopSearchToolHint))
 			}
 
@@ -237,8 +266,8 @@ func (e *Engine) streamWithExternalTools(ctx context.Context, req Request, addSe
 				return fmt.Errorf("mixed tool calls during external tool execution")
 			}
 
-			if attempt == maxExternalSearchLoops-1 {
-				return fmt.Errorf("external tools exceeded max loops (%d)", maxExternalSearchLoops)
+			if attempt == maxTurns-1 {
+				return fmt.Errorf("external tools exceeded max turns (%d)", maxTurns)
 			}
 
 			ourCalls = ensureToolCallIDs(ourCalls)
@@ -346,4 +375,118 @@ func extractToolInfo(call ToolCall) string {
 		return ""
 	}
 	return args.URL
+}
+
+// streamWithToolExecution handles arbitrary tool calls (e.g., MCP tools).
+func (e *Engine) streamWithToolExecution(ctx context.Context, req Request) (Stream, error) {
+	return newEventStream(ctx, func(ctx context.Context, events chan<- Event) error {
+		if req.DebugRaw {
+			DebugRawRequest(req.DebugRaw, e.provider.Name(), e.provider.Credential(), req, "Request (with tools)")
+		}
+
+		maxTurns := getMaxTurns(req)
+		for attempt := 0; attempt < maxTurns; attempt++ {
+			if attempt == maxTurns-1 {
+				req.Messages = append(req.Messages, SystemText(stopSearchToolHint))
+			}
+
+			stream, err := e.provider.Stream(ctx, req)
+			if err != nil {
+				return err
+			}
+
+			// Stream events in real-time, collect tool calls
+			var toolCalls []ToolCall
+			for {
+				event, err := stream.Recv()
+				if err == io.EOF {
+					break
+				}
+				if err != nil {
+					stream.Close()
+					return err
+				}
+				if event.Type == EventError && event.Err != nil {
+					stream.Close()
+					return event.Err
+				}
+				if req.DebugRaw {
+					DebugRawEvent(true, event)
+				}
+				if event.Type == EventToolCall && event.Tool != nil {
+					toolCalls = append(toolCalls, *event.Tool)
+					continue // Don't forward tool calls yet
+				}
+				if event.Type == EventDone {
+					continue // Don't forward done yet
+				}
+				// Forward all other events in real-time (text, etc.)
+				events <- event
+			}
+			stream.Close()
+
+			// If no tool calls, we're done
+			if len(toolCalls) == 0 {
+				events <- Event{Type: EventDone}
+				return nil
+			}
+
+			toolCalls = ensureToolCallIDs(toolCalls)
+
+			// Split into registered (executable) and unregistered (passthrough) tools
+			var registeredCalls, unregisteredCalls []ToolCall
+			for _, call := range toolCalls {
+				if _, ok := e.tools.Get(call.Name); ok {
+					registeredCalls = append(registeredCalls, call)
+				} else {
+					unregisteredCalls = append(unregisteredCalls, call)
+				}
+			}
+
+			// Forward unregistered tool calls as events (e.g., suggest_commands)
+			for i := range unregisteredCalls {
+				call := unregisteredCalls[i]
+				DebugToolCall(req.Debug, call)
+				events <- Event{Type: EventToolCall, Tool: &call}
+			}
+
+			// If only unregistered calls, we're done
+			if len(registeredCalls) == 0 {
+				events <- Event{Type: EventDone}
+				return nil
+			}
+
+			if attempt == maxTurns-1 {
+				return fmt.Errorf("tool execution exceeded max turns (%d)", maxTurns)
+			}
+
+			for _, call := range registeredCalls {
+				DebugToolCall(req.Debug, call)
+			}
+
+			// Notify which tool is starting (for each call)
+			for _, call := range registeredCalls {
+				events <- Event{Type: EventToolExecStart, ToolName: call.Name}
+			}
+
+			// Execute registered tool calls
+			toolResults, err := e.executeToolCalls(ctx, registeredCalls, req.Debug, req.DebugRaw)
+			if err != nil {
+				return fmt.Errorf("tool execution: %w", err)
+			}
+
+			// Append tool call message and results to conversation (only registered calls)
+			req.Messages = append(req.Messages, toolCallMessage(registeredCalls))
+			req.Messages = append(req.Messages, toolResults...)
+
+			// Back to thinking - LLM will process results
+			events <- Event{Type: EventToolExecStart, ToolName: ""}
+
+			if req.DebugRaw {
+				DebugRawRequest(req.DebugRaw, e.provider.Name(), e.provider.Credential(), req, fmt.Sprintf("Request (tool loop %d)", attempt+1))
+			}
+		}
+
+		return fmt.Errorf("tool execution loop ended unexpectedly")
+	}), nil
 }
