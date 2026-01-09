@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/samsaffron/term-llm/internal/config"
+	"github.com/samsaffron/term-llm/internal/mcp"
 	"github.com/spf13/cobra"
 )
 
@@ -59,12 +60,19 @@ var configResetCmd = &cobra.Command{
 	RunE:  configReset,
 }
 
+var configEditMcpCmd = &cobra.Command{
+	Use:   "edit-mcp",
+	Short: "Edit MCP configuration file in $EDITOR",
+	RunE:  configEditMcp,
+}
+
 func init() {
 	rootCmd.AddCommand(configCmd)
 	configCmd.AddCommand(configEditCmd)
 	configCmd.AddCommand(configPathCmd)
 	configCmd.AddCommand(configCompletionCmd)
 	configCmd.AddCommand(configResetCmd)
+	configCmd.AddCommand(configEditMcpCmd)
 }
 
 func configShow(cmd *cobra.Command, args []string) error {
@@ -239,6 +247,42 @@ func configEdit(cmd *cobra.Command, args []string) error {
 	}
 
 	editorCmd := exec.Command(editor, configPath)
+	editorCmd.Stdin = os.Stdin
+	editorCmd.Stdout = os.Stdout
+	editorCmd.Stderr = os.Stderr
+	return editorCmd.Run()
+}
+
+func configEditMcp(cmd *cobra.Command, args []string) error {
+	mcpPath, err := mcp.DefaultConfigPath()
+	if err != nil {
+		return fmt.Errorf("failed to get MCP config path: %w", err)
+	}
+
+	// Ensure config directory exists
+	mcpDir := filepath.Dir(mcpPath)
+	if err := os.MkdirAll(mcpDir, 0755); err != nil {
+		return fmt.Errorf("failed to create MCP config directory: %w", err)
+	}
+
+	// Create default config if it doesn't exist
+	if _, err := os.Stat(mcpPath); os.IsNotExist(err) {
+		defaultCfg := &mcp.Config{Servers: make(map[string]mcp.ServerConfig)}
+		if err := defaultCfg.SaveToPath(mcpPath); err != nil {
+			return fmt.Errorf("failed to create MCP config file: %w", err)
+		}
+	}
+
+	// Get editor from environment
+	editor := os.Getenv("EDITOR")
+	if editor == "" {
+		editor = os.Getenv("VISUAL")
+	}
+	if editor == "" {
+		editor = "vi"
+	}
+
+	editorCmd := exec.Command(editor, mcpPath)
 	editorCmd.Stdin = os.Stdin
 	editorCmd.Stdout = os.Stdout
 	editorCmd.Stderr = os.Stderr
