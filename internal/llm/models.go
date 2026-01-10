@@ -45,6 +45,11 @@ var ProviderModels = map[string][]string{
 		"big-pickle",
 		"gpt-5-nano",
 	},
+	"claude-bin": {
+		"opus",
+		"sonnet",
+		"haiku",
+	},
 }
 
 var ImageProviderModels = map[string][]string{
@@ -55,7 +60,7 @@ var ImageProviderModels = map[string][]string{
 
 // GetBuiltInProviderNames returns the built-in provider type names
 func GetBuiltInProviderNames() []string {
-	return []string{"anthropic", "openai", "openrouter", "gemini", "zen"}
+	return []string{"anthropic", "openai", "openrouter", "gemini", "zen", "claude-bin"}
 }
 
 // GetProviderNames returns valid provider names from config plus built-in types.

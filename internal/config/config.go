@@ -19,6 +19,7 @@ const (
 	ProviderTypeGemini       ProviderType = "gemini"
 	ProviderTypeOpenRouter   ProviderType = "openrouter"
 	ProviderTypeZen          ProviderType = "zen"
+	ProviderTypeClaudeBin    ProviderType = "claude-bin"
 	ProviderTypeOpenAICompat ProviderType = "openai_compatible"
 )
 
@@ -29,6 +30,7 @@ var builtInProviderTypes = map[string]ProviderType{
 	"gemini":     ProviderTypeGemini,
 	"openrouter": ProviderTypeOpenRouter,
 	"zen":        ProviderTypeZen,
+	"claude-bin": ProviderTypeClaudeBin,
 }
 
 // InferProviderType returns the provider type for a given provider name

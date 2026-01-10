@@ -57,10 +57,25 @@ func NewProvider(cfg *config.Config) (Provider, error) {
 
 // NewProviderByName creates a provider by name from the config.
 // This is useful for per-command provider overrides.
+// If the provider is a built-in type but not explicitly configured,
+// it will be created with default settings.
 func NewProviderByName(cfg *config.Config, name string) (Provider, error) {
 	providerCfg, ok := cfg.Providers[name]
 	if !ok {
-		return nil, fmt.Errorf("provider %q not configured", name)
+		// Check if it's a built-in provider type that can work without config
+		providerType := config.InferProviderType(name, "")
+		switch providerType {
+		case config.ProviderTypeClaudeBin:
+			// claude-bin doesn't need API key, can create directly
+			provider := NewClaudeBinProvider("")
+			return WrapWithRetry(provider, DefaultRetryConfig()), nil
+		case config.ProviderTypeZen:
+			// zen can work without API key (free tier)
+			provider := NewZenProvider("", "")
+			return WrapWithRetry(provider, DefaultRetryConfig()), nil
+		default:
+			return nil, fmt.Errorf("provider %q not configured", name)
+		}
 	}
 	provider, err := createProviderFromConfig(name, &providerCfg)
 	if err != nil {
@@ -73,7 +88,18 @@ func NewProviderByName(cfg *config.Config, name string) (Provider, error) {
 func newProviderInternal(cfg *config.Config) (Provider, error) {
 	providerCfg, ok := cfg.Providers[cfg.DefaultProvider]
 	if !ok {
-		return nil, fmt.Errorf("provider %q not configured", cfg.DefaultProvider)
+		// Check if it's a built-in provider type that can work without config
+		providerType := config.InferProviderType(cfg.DefaultProvider, "")
+		switch providerType {
+		case config.ProviderTypeClaudeBin:
+			// claude-bin doesn't need API key, can create directly
+			return NewClaudeBinProvider(""), nil
+		case config.ProviderTypeZen:
+			// zen can work without API key (free tier)
+			return NewZenProvider("", ""), nil
+		default:
+			return nil, fmt.Errorf("provider %q not configured", cfg.DefaultProvider)
+		}
 	}
 	return createProviderFromConfig(cfg.DefaultProvider, &providerCfg)
 }
@@ -110,6 +136,9 @@ func createProviderFromConfig(name string, cfg *config.ProviderConfig) (Provider
 
 	case config.ProviderTypeZen:
 		return NewZenProvider(cfg.ResolvedAPIKey, cfg.Model), nil
+
+	case config.ProviderTypeClaudeBin:
+		return NewClaudeBinProvider(cfg.Model), nil
 
 	case config.ProviderTypeOpenAICompat:
 		// Use ResolvedURL if available (from srv:// or $() resolution), otherwise use config values
