@@ -917,8 +917,12 @@ func (m *Model) startStream(content string) tea.Cmd {
 					if event.ToolName == "" {
 						// Empty tool name = back to thinking
 						m.streamChan <- streamEvent{toolEnd: true}
-					} else if event.ToolName == llm.WebSearchToolName {
-						phase = "Searching"
+					} else if event.ToolName == llm.WebSearchToolName || event.ToolName == "WebSearch" {
+						if event.ToolInfo != "" {
+							phase = fmt.Sprintf("Searching: %s", event.ToolInfo)
+						} else {
+							phase = "Searching"
+						}
 						m.streamChan <- streamEvent{phase: phase, webSearch: true, toolStart: true}
 					} else if event.ToolName == llm.ReadURLToolName {
 						if event.ToolInfo != "" {

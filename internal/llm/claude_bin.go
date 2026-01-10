@@ -126,6 +126,13 @@ func (p *ClaudeBinProvider) Stream(ctx context.Context, req Request) (Stream, er
 							Name:      mapClaudeToolName(content.Name),
 							Arguments: content.Input,
 						}
+
+						// Emit tool execution start event for UI feedback
+						events <- Event{
+							Type:     EventToolExecStart,
+							ToolName: content.Name,
+							ToolInfo: extractToolInfo(toolCall),
+						}
 						events <- Event{Type: EventToolCall, Tool: &toolCall}
 					}
 				}

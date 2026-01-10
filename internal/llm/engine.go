@@ -382,18 +382,53 @@ func splitExternalToolCalls(calls []ToolCall, externalToolNames []string) ([]Too
 	return ourCalls, otherCalls
 }
 
-// extractToolInfo extracts display info from a tool call (e.g., URL for read_url)
+// extractToolInfo extracts display info from a tool call (e.g., URL for read_url, query for web_search)
 func extractToolInfo(call ToolCall) string {
-	if call.Name != ReadURLToolName {
+	if len(call.Arguments) == 0 {
 		return ""
 	}
-	var args struct {
-		URL string `json:"url"`
-	}
+
+	var args map[string]any
 	if err := json.Unmarshal(call.Arguments, &args); err != nil {
 		return ""
 	}
-	return args.URL
+
+	switch call.Name {
+	case ReadURLToolName, "web_fetch":
+		if url, ok := args["url"].(string); ok {
+			return url
+		}
+	case "web_search":
+		if query, ok := args["query"].(string); ok {
+			return query
+		}
+	case "read_file":
+		if path, ok := args["file_path"].(string); ok {
+			return path
+		}
+	case "write_file", "edit_file":
+		if path, ok := args["file_path"].(string); ok {
+			return path
+		}
+	case "execute":
+		if cmd, ok := args["command"].(string); ok {
+			// Truncate long commands
+			if len(cmd) > 50 {
+				return cmd[:47] + "..."
+			}
+			return cmd
+		}
+	case "glob":
+		if pattern, ok := args["pattern"].(string); ok {
+			return pattern
+		}
+	case "grep":
+		if pattern, ok := args["pattern"].(string); ok {
+			return pattern
+		}
+	}
+
+	return ""
 }
 
 // streamWithToolExecution handles arbitrary tool calls (e.g., MCP tools).

@@ -439,8 +439,12 @@ func (m askStreamModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.Name == "" {
 			// Empty tool name means back to thinking
 			newPhase = "Thinking"
-		} else if msg.Name == llm.WebSearchToolName {
-			newPhase = "Searching"
+		} else if msg.Name == llm.WebSearchToolName || msg.Name == "WebSearch" {
+			if msg.Info != "" {
+				newPhase = fmt.Sprintf("Searching: \x1b[2m%s\x1b[0m", msg.Info)
+			} else {
+				newPhase = "Searching"
+			}
 		} else if msg.Name == llm.ReadURLToolName {
 			if msg.Info != "" {
 				// Show truncated URL in dim style

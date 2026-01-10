@@ -284,8 +284,12 @@ func collectSuggestions(ctx context.Context, engine *llm.Engine, req llm.Request
 			if event.ToolName == "" {
 				// Empty tool name means back to thinking
 				phase = "Thinking"
-			} else if event.ToolName == llm.WebSearchToolName {
-				phase = "Searching"
+			} else if event.ToolName == llm.WebSearchToolName || event.ToolName == "WebSearch" {
+				if event.ToolInfo != "" {
+					phase = fmt.Sprintf("Searching: %s", event.ToolInfo)
+				} else {
+					phase = "Searching"
+				}
 			} else if event.ToolName == llm.ReadURLToolName {
 				phase = "Reading"
 			} else {
