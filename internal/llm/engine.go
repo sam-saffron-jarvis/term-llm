@@ -325,11 +325,19 @@ func (e *Engine) executeToolCalls(ctx context.Context, calls []ToolCall, debug b
 	for _, call := range calls {
 		tool, ok := e.tools.Get(call.Name)
 		if !ok {
-			return nil, fmt.Errorf("tool not registered: %s", call.Name)
+			// Return error result to LLM instead of failing the stream
+			errMsg := fmt.Sprintf("Error: tool not registered: %s", call.Name)
+			DebugToolResult(debug, call.ID, call.Name, errMsg)
+			results = append(results, ToolErrorMessage(call.ID, call.Name, errMsg))
+			continue
 		}
 		output, err := tool.Execute(ctx, call.Arguments)
 		if err != nil {
-			return nil, fmt.Errorf("tool %s failed: %w", call.Name, err)
+			// Return error result to LLM instead of failing the stream
+			errMsg := fmt.Sprintf("Error: %v", err)
+			DebugToolResult(debug, call.ID, call.Name, errMsg)
+			results = append(results, ToolErrorMessage(call.ID, call.Name, errMsg))
+			continue
 		}
 		DebugToolResult(debug, call.ID, call.Name, output)
 		DebugRawToolResult(debugRaw, call.ID, call.Name, output)

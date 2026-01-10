@@ -13,6 +13,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/edit"
 	"github.com/samsaffron/term-llm/internal/input"
 	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/mcp"
 	"github.com/samsaffron/term-llm/internal/prompt"
 	"github.com/samsaffron/term-llm/internal/signal"
 	"github.com/samsaffron/term-llm/internal/ui"
@@ -20,11 +21,12 @@ import (
 )
 
 var (
-	editDryRun    bool
-	editDebug     bool
-	editProvider  string
-	editFiles     []string
+	editDryRun     bool
+	editDebug      bool
+	editProvider   string
+	editFiles      []string
 	editDiffFormat string
+	editMCP        string
 )
 
 var editCmd = &cobra.Command{
@@ -55,11 +57,15 @@ func init() {
 	editCmd.Flags().StringVar(&editProvider, "provider", "", "Override provider, optionally with model (e.g., openai:gpt-4o)")
 	editCmd.Flags().BoolVarP(&editDebug, "debug", "d", false, "Show debug information")
 	editCmd.Flags().StringVar(&editDiffFormat, "diff-format", "", "Force diff format: 'udiff' or 'replace' (default: auto)")
+	editCmd.Flags().StringVar(&editMCP, "mcp", "", "Enable MCP server(s), comma-separated (e.g., playwright,filesystem)")
 	if err := editCmd.MarkFlagRequired("file"); err != nil {
 		panic(fmt.Sprintf("failed to mark file flag required: %v", err))
 	}
 	if err := editCmd.RegisterFlagCompletionFunc("provider", ProviderFlagCompletion); err != nil {
 		panic(fmt.Sprintf("failed to register provider completion: %v", err))
+	}
+	if err := editCmd.RegisterFlagCompletionFunc("mcp", MCPFlagCompletion); err != nil {
+		panic(fmt.Sprintf("failed to register mcp completion: %v", err))
 	}
 	rootCmd.AddCommand(editCmd)
 }
@@ -183,6 +189,19 @@ func runEdit(cmd *cobra.Command, args []string) error {
 	provider, err := llm.NewProvider(cfg)
 	if err != nil {
 		return err
+	}
+
+	// Initialize MCP servers if --mcp flag is set
+	var mcpManager *mcp.Manager
+	if editMCP != "" {
+		engine := llm.NewEngine(provider, defaultToolRegistry(cfg))
+		mcpManager, err = enableMCPServersWithFeedback(ctx, editMCP, engine, cmd.ErrOrStderr())
+		if err != nil {
+			fmt.Fprintf(cmd.ErrOrStderr(), "Warning: %v\n", err)
+		}
+		if mcpManager != nil {
+			defer mcpManager.StopAll()
+		}
 	}
 
 	// Parse file specs and read files

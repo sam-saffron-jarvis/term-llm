@@ -11,6 +11,7 @@ A Swiss Army knife for your terminal—AI-powered commands, answers, and images 
 - **File editing**: Edit code with AI assistance (supports line ranges)
 - **File context**: Include files, clipboard, stdin, or line ranges as context (`-f`)
 - **Image generation**: Create and edit images (Gemini, OpenAI, Flux)
+- **MCP servers**: Extend with external tools via [Model Context Protocol](https://modelcontextprotocol.io)
 - **Multiple providers**: Anthropic, OpenAI, OpenRouter, Gemini, Zen (free tier), Claude CLI, Ollama, LM Studio
 - **Local LLMs**: Run with Ollama, LM Studio, or any OpenAI-compatible server
 - **Credential reuse**: Works with Claude Code, Codex, gemini-cli credentials
@@ -400,6 +401,108 @@ edit:
 - `auto` (default): Uses `udiff` for Codex models, `replace` for others
 - `udiff`: Always use unified diff format
 - `replace`: Always use multiple find/replace calls
+
+## MCP Servers
+
+[MCP (Model Context Protocol)](https://modelcontextprotocol.io) lets you extend term-llm with external tools—browser automation, database access, API integrations, and more.
+
+```bash
+# Add from registry
+term-llm mcp add playwright              # search and install
+term-llm mcp add @anthropic/mcp-server-fetch
+
+# Add from URL (HTTP transport)
+term-llm mcp add https://developers.openai.com/mcp
+
+# Use with any command
+term-llm exec --mcp playwright "take a screenshot of google.com"
+term-llm ask --mcp github "list my open PRs"
+term-llm chat --mcp playwright,filesystem
+```
+
+### MCP Commands
+
+| Command | Description |
+|---------|-------------|
+| `mcp add <name-or-url>` | Add server from registry or URL |
+| `mcp list` | List configured servers |
+| `mcp test <name>` | Test server connection |
+| `mcp remove <name>` | Remove a server |
+| `mcp browse [query]` | Browse/search the MCP registry |
+| `mcp path` | Print config file path |
+
+### Adding Servers
+
+**From the registry** (stdio transport):
+```bash
+term-llm mcp add playwright           # search by name
+term-llm mcp add @playwright/mcp      # exact package
+term-llm mcp browse                   # interactive browser
+```
+
+**From a URL** (HTTP transport):
+```bash
+term-llm mcp add https://developers.openai.com/mcp
+term-llm mcp add https://mcp.example.com/api
+```
+
+### Using MCP Tools
+
+The `--mcp` flag works with all commands (`ask`, `exec`, `edit`, `chat`):
+
+```bash
+# Single server
+term-llm ask --mcp fetch "summarize https://example.com"
+term-llm exec --mcp playwright "take a screenshot of google.com"
+term-llm edit --mcp github -f main.go "update based on latest API"
+
+# Multiple servers (comma-separated)
+term-llm chat --mcp playwright,filesystem,github
+
+# In chat, toggle servers with Ctrl+M
+```
+
+### Configuration
+
+MCP servers are stored in `~/.config/term-llm/mcp.json`:
+
+```json
+{
+  "servers": {
+    "playwright": {
+      "command": "npx",
+      "args": ["-y", "@playwright/mcp"]
+    },
+    "openai-docs": {
+      "type": "http",
+      "url": "https://developers.openai.com/mcp"
+    },
+    "github": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-github"],
+      "env": {
+        "GITHUB_PERSONAL_ACCESS_TOKEN": "ghp_xxx"
+      }
+    },
+    "authenticated-api": {
+      "type": "http",
+      "url": "https://api.example.com/mcp",
+      "headers": {
+        "Authorization": "Bearer your-token"
+      }
+    }
+  }
+}
+```
+
+### Transport Types
+
+| Type | Config | Description |
+|------|--------|-------------|
+| stdio | `command` + `args` | Runs as subprocess (npm/pypi packages) |
+| http | `url` | Connects to remote HTTP endpoint |
+
+HTTP transport uses [Streamable HTTP](https://modelcontextprotocol.io/specification/2025-03-26/basic/transports) (MCP spec 2025-03-26).
 
 ## Shell Integration (Recommended)
 

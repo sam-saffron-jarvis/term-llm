@@ -373,7 +373,7 @@ func buildAnthropicBlocks(parts []Part, allowToolUse bool) []anthropic.ContentBl
 			}
 		case PartToolResult:
 			if part.ToolResult != nil {
-				blocks = append(blocks, anthropic.NewToolResultBlock(part.ToolResult.ID, part.ToolResult.Content, false))
+				blocks = append(blocks, anthropic.NewToolResultBlock(part.ToolResult.ID, part.ToolResult.Content, part.ToolResult.IsError))
 			}
 		}
 	}
@@ -394,16 +394,17 @@ func buildAnthropicBetaBlocks(parts []Part, allowToolUse bool) []anthropic.BetaC
 			}
 		case PartToolResult:
 			if part.ToolResult != nil {
-				blocks = append(blocks, betaToolResultBlock(part.ToolResult.ID, part.ToolResult.Content))
+				blocks = append(blocks, betaToolResultBlock(part.ToolResult.ID, part.ToolResult.Content, part.ToolResult.IsError))
 			}
 		}
 	}
 	return blocks
 }
 
-func betaToolResultBlock(id, content string) anthropic.BetaContentBlockParamUnion {
+func betaToolResultBlock(id, content string, isError bool) anthropic.BetaContentBlockParamUnion {
 	block := anthropic.BetaToolResultBlockParam{
 		ToolUseID: id,
+		IsError:   anthropic.Bool(isError),
 		Content: []anthropic.BetaToolResultBlockParamContentUnion{{
 			OfText: &anthropic.BetaTextBlockParam{Text: content},
 		}},

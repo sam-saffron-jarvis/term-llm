@@ -112,6 +112,7 @@ type ToolResult struct {
 	ID      string
 	Name    string
 	Content string
+	IsError bool // True if this result represents a tool execution error
 }
 
 // EventType describes streaming events.
@@ -200,6 +201,23 @@ func ToolResultMessage(id, name, content string) Message {
 				ID:      id,
 				Name:    name,
 				Content: content,
+			},
+		}},
+	}
+}
+
+// ToolErrorMessage creates a tool result message that indicates an error.
+// The error is passed to the LLM so it can respond gracefully instead of failing the stream.
+func ToolErrorMessage(id, name, errorText string) Message {
+	return Message{
+		Role: RoleTool,
+		Parts: []Part{{
+			Type: PartToolResult,
+			ToolResult: &ToolResult{
+				ID:      id,
+				Name:    name,
+				Content: errorText,
+				IsError: true,
 			},
 		}},
 	}

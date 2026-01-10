@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"os/exec"
 	"sync"
 
@@ -56,14 +57,14 @@ func (c *Client) Start(ctx context.Context) error {
 		Version: "1.0.0",
 	}, nil)
 
-	// Build command with environment
-	cmd := exec.CommandContext(ctx, c.config.Command, c.config.Args...)
-	for k, v := range c.config.Env {
-		cmd.Env = append(cmd.Env, fmt.Sprintf("%s=%s", k, v))
+	// Create transport based on config type
+	var transport mcp.Transport
+	if c.config.TransportType() == "http" {
+		transport = c.createHTTPTransport()
+	} else {
+		transport = c.createStdioTransport(ctx)
 	}
 
-	// Connect via stdio transport
-	transport := &mcp.CommandTransport{Command: cmd}
 	session, err := c.client.Connect(ctx, transport, nil)
 	if err != nil {
 		return fmt.Errorf("connect to MCP server %s: %w", c.name, err)
@@ -79,6 +80,51 @@ func (c *Client) Start(ctx context.Context) error {
 
 	c.running = true
 	return nil
+}
+
+// createStdioTransport creates a stdio transport for command-based servers.
+func (c *Client) createStdioTransport(ctx context.Context) mcp.Transport {
+	cmd := exec.CommandContext(ctx, c.config.Command, c.config.Args...)
+	for k, v := range c.config.Env {
+		cmd.Env = append(cmd.Env, fmt.Sprintf("%s=%s", k, v))
+	}
+	return &mcp.CommandTransport{Command: cmd}
+}
+
+// createHTTPTransport creates an HTTP transport for URL-based servers.
+func (c *Client) createHTTPTransport() mcp.Transport {
+	// Create HTTP client with custom headers if specified
+	httpClient := &http.Client{}
+
+	// Use StreamableClientTransport (the modern MCP transport)
+	transport := &mcp.StreamableClientTransport{
+		Endpoint:   c.config.URL,
+		HTTPClient: httpClient,
+		MaxRetries: 5,
+	}
+
+	// If headers are specified, wrap the transport with a custom round tripper
+	if len(c.config.Headers) > 0 {
+		httpClient.Transport = &headerTransport{
+			base:    http.DefaultTransport,
+			headers: c.config.Headers,
+		}
+	}
+
+	return transport
+}
+
+// headerTransport is an http.RoundTripper that adds custom headers to requests.
+type headerTransport struct {
+	base    http.RoundTripper
+	headers map[string]string
+}
+
+func (t *headerTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	for k, v := range t.headers {
+		req.Header.Set(k, v)
+	}
+	return t.base.RoundTrip(req)
 }
 
 // Stop closes the MCP server connection.

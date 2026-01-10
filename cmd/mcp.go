@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -49,15 +50,17 @@ Examples:
 }
 
 var mcpAddCmd = &cobra.Command{
-	Use:   "add <name>",
-	Short: "Add an MCP server from the registry",
-	Long: `Add an MCP server by searching the registry and installing it.
+	Use:   "add <name-or-url>",
+	Short: "Add an MCP server from the registry or URL",
+	Long: `Add an MCP server by searching the registry or connecting to a URL.
 
-The name can be:
+The argument can be:
+  - A URL like https://example.com/mcp (HTTP transport)
   - A package name like @playwright/mcp
   - A search term like playwright
 
 Examples:
+  term-llm mcp add https://developers.openai.com/mcp
   term-llm mcp add @playwright/mcp
   term-llm mcp add playwright`,
 	Args: cobra.ExactArgs(1),
@@ -65,10 +68,11 @@ Examples:
 }
 
 var mcpRemoveCmd = &cobra.Command{
-	Use:   "remove <name>",
-	Short: "Remove an MCP server",
-	Args:  cobra.ExactArgs(1),
-	RunE:  mcpRemove,
+	Use:               "remove <name>",
+	Short:             "Remove an MCP server",
+	Args:              cobra.ExactArgs(1),
+	RunE:              mcpRemove,
+	ValidArgsFunction: MCPServerArgCompletion,
 }
 
 var mcpTestCmd = &cobra.Command{
@@ -84,8 +88,9 @@ This will:
 
 Examples:
   term-llm mcp test playwright`,
-	Args: cobra.ExactArgs(1),
-	RunE: mcpTest,
+	Args:              cobra.ExactArgs(1),
+	RunE:              mcpTest,
+	ValidArgsFunction: MCPServerArgCompletion,
 }
 
 var mcpPathCmd = &cobra.Command{
@@ -122,7 +127,14 @@ func mcpList(cmd *cobra.Command, args []string) error {
 	fmt.Printf("Configured MCP servers (%d):\n\n", len(cfg.Servers))
 	for name, server := range cfg.Servers {
 		fmt.Printf("  %s\n", name)
-		fmt.Printf("    command: %s %s\n", server.Command, strings.Join(server.Args, " "))
+		if server.TransportType() == "http" {
+			fmt.Printf("    url: %s\n", server.URL)
+			if len(server.Headers) > 0 {
+				fmt.Printf("    headers: %d configured\n", len(server.Headers))
+			}
+		} else {
+			fmt.Printf("    command: %s %s\n", server.Command, strings.Join(server.Args, " "))
+		}
 		if len(server.Env) > 0 {
 			fmt.Printf("    env: %d variables\n", len(server.Env))
 		}
@@ -253,6 +265,86 @@ func mcpBrowse(cmd *cobra.Command, args []string) error {
 func mcpAdd(cmd *cobra.Command, args []string) error {
 	name := args[0]
 
+	// Check if it's a URL
+	if strings.HasPrefix(name, "http://") || strings.HasPrefix(name, "https://") {
+		return mcpAddURL(name)
+	}
+
+	// Otherwise, search the registry
+	return mcpAddFromRegistry(name)
+}
+
+// mcpAddURL adds an MCP server from a URL (HTTP transport).
+func mcpAddURL(urlStr string) error {
+	// Parse and validate the URL
+	u, err := url.Parse(urlStr)
+	if err != nil {
+		return fmt.Errorf("invalid URL: %w", err)
+	}
+
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return fmt.Errorf("URL must use http or https scheme")
+	}
+
+	// Derive a local name from the URL
+	// Use hostname, stripping common prefixes/suffixes
+	localName := u.Hostname()
+	localName = strings.TrimPrefix(localName, "www.")
+	localName = strings.TrimPrefix(localName, "api.")
+	localName = strings.TrimPrefix(localName, "mcp.")
+
+	// Remove common TLDs and suffixes for cleaner names
+	localName = strings.TrimSuffix(localName, ".com")
+	localName = strings.TrimSuffix(localName, ".io")
+	localName = strings.TrimSuffix(localName, ".ai")
+	localName = strings.TrimSuffix(localName, ".dev")
+
+	// Replace dots with hyphens
+	localName = strings.ReplaceAll(localName, ".", "-")
+
+	// If the path has a meaningful segment, append it
+	pathParts := strings.Split(strings.Trim(u.Path, "/"), "/")
+	if len(pathParts) > 0 && pathParts[0] != "" && pathParts[0] != "mcp" {
+		localName = localName + "-" + pathParts[0]
+	}
+
+	fmt.Printf("Adding MCP server from URL: %s\n", urlStr)
+	fmt.Printf("  name: %s\n", localName)
+	fmt.Printf("  transport: http (streamable)\n")
+	fmt.Println()
+
+	// Create the server config
+	serverConfig := mcp.ServerConfig{
+		Type: "http",
+		URL:  urlStr,
+	}
+
+	// Load and update config
+	cfg, err := mcp.LoadConfig()
+	if err != nil {
+		return fmt.Errorf("load config: %w", err)
+	}
+
+	if _, exists := cfg.Servers[localName]; exists {
+		return fmt.Errorf("server '%s' already exists in config", localName)
+	}
+
+	cfg.AddServer(localName, serverConfig)
+	if err := cfg.Save(); err != nil {
+		return fmt.Errorf("save config: %w", err)
+	}
+
+	path, _ := mcp.DefaultConfigPath()
+	fmt.Printf("Added '%s' to %s\n", localName, path)
+	fmt.Println()
+	fmt.Printf("Test it with: term-llm mcp test %s\n", localName)
+	fmt.Printf("Use with: term-llm [ask|exec|edit|chat] --mcp %s ...\n", localName)
+
+	return nil
+}
+
+// mcpAddFromRegistry adds an MCP server from the registry.
+func mcpAddFromRegistry(name string) error {
 	registry := mcp.NewRegistryClient()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -349,7 +441,7 @@ func mcpAdd(cmd *cobra.Command, args []string) error {
 	fmt.Printf("Added '%s' to %s\n", localName, path)
 	fmt.Println()
 	fmt.Printf("Test it with: term-llm mcp test %s\n", localName)
-	fmt.Printf("Use in chat: term-llm chat --mcp %s\n", localName)
+	fmt.Printf("Use with: term-llm [ask|exec|edit|chat] --mcp %s ...\n", localName)
 
 	return nil
 }
@@ -388,7 +480,11 @@ func mcpTest(cmd *cobra.Command, args []string) error {
 	}
 
 	fmt.Printf("Testing MCP server '%s'...\n", name)
-	fmt.Printf("  command: %s %s\n", serverCfg.Command, strings.Join(serverCfg.Args, " "))
+	if serverCfg.TransportType() == "http" {
+		fmt.Printf("  url: %s\n", serverCfg.URL)
+	} else {
+		fmt.Printf("  command: %s %s\n", serverCfg.Command, strings.Join(serverCfg.Args, " "))
+	}
 	fmt.Println()
 
 	client := mcp.NewClient(name, serverCfg)
@@ -396,10 +492,14 @@ func mcpTest(cmd *cobra.Command, args []string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	fmt.Print("Starting server...")
+	if serverCfg.TransportType() == "http" {
+		fmt.Print("Connecting to server...")
+	} else {
+		fmt.Print("Starting server...")
+	}
 	if err := client.Start(ctx); err != nil {
 		fmt.Println(" FAILED")
-		return fmt.Errorf("start server: %w", err)
+		return fmt.Errorf("connect to server: %w", err)
 	}
 	fmt.Println(" OK")
 	defer client.Stop()

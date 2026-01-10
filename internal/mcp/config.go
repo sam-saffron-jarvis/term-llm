@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 )
@@ -12,10 +13,50 @@ type Config struct {
 }
 
 // ServerConfig represents a configured MCP server.
+// Supports both stdio transport (Command/Args) and HTTP transport (URL).
 type ServerConfig struct {
-	Command string            `json:"command"`
-	Args    []string          `json:"args"`
-	Env     map[string]string `json:"env,omitempty"`
+	// Type discriminator: "stdio" (default if command present) or "http"
+	Type string `json:"type,omitempty"`
+
+	// Stdio transport fields
+	Command string   `json:"command,omitempty"`
+	Args    []string `json:"args,omitempty"`
+
+	// HTTP transport fields
+	URL     string            `json:"url,omitempty"`
+	Headers map[string]string `json:"headers,omitempty"`
+
+	// Shared fields
+	Env map[string]string `json:"env,omitempty"`
+}
+
+// TransportType returns the effective transport type for this server.
+func (c *ServerConfig) TransportType() string {
+	if c.Type == "http" || c.URL != "" {
+		return "http"
+	}
+	return "stdio"
+}
+
+// Validate checks that the server configuration is valid.
+func (c *ServerConfig) Validate() error {
+	transport := c.TransportType()
+	if transport == "http" {
+		if c.URL == "" {
+			return fmt.Errorf("http transport requires url")
+		}
+		if c.Command != "" {
+			return fmt.Errorf("cannot specify both url and command")
+		}
+	} else {
+		if c.Command == "" {
+			return fmt.Errorf("stdio transport requires command")
+		}
+		if c.URL != "" {
+			return fmt.Errorf("cannot specify both url and command")
+		}
+	}
+	return nil
 }
 
 // DefaultConfigPath returns the default path for mcp.json.

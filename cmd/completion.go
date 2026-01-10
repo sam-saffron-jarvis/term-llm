@@ -33,6 +33,28 @@ func ImageProviderFlagCompletion(cmd *cobra.Command, args []string, toComplete s
 	return completions, cobra.ShellCompDirectiveNoFileComp
 }
 
+// MCPServerArgCompletion provides completions for MCP server names as positional arguments.
+// Used by commands like "mcp test <server>" and "mcp remove <server>".
+func MCPServerArgCompletion(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+	// Only complete first argument
+	if len(args) > 0 {
+		return nil, cobra.ShellCompDirectiveNoFileComp
+	}
+
+	cfg, err := mcp.LoadConfig()
+	if err != nil || cfg == nil {
+		return nil, cobra.ShellCompDirectiveNoFileComp
+	}
+
+	var completions []string
+	for _, server := range cfg.ServerNames() {
+		if strings.HasPrefix(server, toComplete) {
+			completions = append(completions, server)
+		}
+	}
+	return completions, cobra.ShellCompDirectiveNoFileComp
+}
+
 // MCPFlagCompletion provides completions for --mcp flag with comma-separated support.
 // When typing "playwright,file<TAB>", completes to "playwright,filesystem".
 func MCPFlagCompletion(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
