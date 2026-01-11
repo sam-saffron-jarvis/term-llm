@@ -11,6 +11,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/samsaffron/term-llm/internal/image"
+	"github.com/samsaffron/term-llm/internal/input"
 	"github.com/samsaffron/term-llm/internal/signal"
 	"github.com/samsaffron/term-llm/internal/ui"
 	"github.com/spf13/cobra"
@@ -41,8 +42,9 @@ Examples:
   term-llm image "make it purple" -i photo.png
   term-llm image "add a hat" -i clipboard        # edit from clipboard
   term-llm image "sunset over mountains" --provider flux
-  term-llm image "logo design" -o ./output.png --no-display`,
-	Args: cobra.MinimumNArgs(1),
+  term-llm image "logo design" -o ./output.png --no-display
+  echo "a sunset" | term-llm image                # prompt from stdin`,
+	Args: cobra.ArbitraryArgs,
 	RunE: runImage,
 }
 
@@ -61,7 +63,21 @@ func init() {
 }
 
 func runImage(cmd *cobra.Command, args []string) error {
-	prompt := strings.Join(args, " ")
+	var prompt string
+	if len(args) > 0 {
+		prompt = strings.Join(args, " ")
+	} else {
+		stdinContent, err := input.ReadStdin()
+		if err != nil {
+			return fmt.Errorf("failed to read stdin: %w", err)
+		}
+		prompt = strings.TrimSpace(stdinContent)
+	}
+
+	if prompt == "" {
+		return fmt.Errorf("prompt required: provide as argument or via stdin")
+	}
+
 	ctx, stop := signal.NotifyContext()
 	defer stop()
 
