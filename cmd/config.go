@@ -6,7 +6,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"sort"
 	"strings"
 
 	"github.com/samsaffron/term-llm/internal/config"
@@ -114,106 +113,21 @@ func configShow(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to get config path: %w", err)
 	}
 
-	cfg, err := config.Load()
-	if err != nil {
-		return err
-	}
-
-	// Check if file exists
-	if _, statErr := os.Stat(configPath); os.IsNotExist(statErr) {
-		fmt.Printf("# No config file (using defaults)\n")
-		fmt.Printf("# Create one at: %s\n\n", configPath)
-	} else {
+	// If config file exists, just print it as-is (preserves comments, all keys)
+	if data, err := os.ReadFile(configPath); err == nil {
 		fmt.Printf("# %s\n\n", configPath)
+		os.Stdout.Write(data)
+		if len(data) > 0 && data[len(data)-1] != '\n' {
+			fmt.Println()
+		}
+		return nil
 	}
 
-	fmt.Printf("default_provider: %s\n\n", cfg.DefaultProvider)
-	fmt.Printf("providers:\n")
-
-	// Sort provider names for consistent output
-	providerNames := make([]string, 0, len(cfg.Providers))
-	for name := range cfg.Providers {
-		providerNames = append(providerNames, name)
-	}
-	sort.Strings(providerNames)
-
-	for _, name := range providerNames {
-		p := cfg.Providers[name]
-		fmt.Printf("  %s:\n", name)
-		if p.Type != "" {
-			fmt.Printf("    type: %s\n", p.Type)
-		}
-		if p.Model != "" {
-			fmt.Printf("    model: %s\n", p.Model)
-		}
-		if p.BaseURL != "" {
-			fmt.Printf("    base_url: %s\n", p.BaseURL)
-		}
-		if p.AppURL != "" {
-			fmt.Printf("    app_url: %s\n", p.AppURL)
-		}
-		if p.AppTitle != "" {
-			fmt.Printf("    app_title: %s\n", p.AppTitle)
-		}
-
-		// Show credential status based on provider type
-		providerType := config.InferProviderType(name, p.Type)
-		switch providerType {
-		case config.ProviderTypeAnthropic:
-			printCredentialStatus("anthropic", p.Credentials, p.ResolvedAPIKey, "ANTHROPIC_API_KEY")
-		case config.ProviderTypeOpenAI:
-			printCredentialStatus("openai", p.Credentials, p.ResolvedAPIKey, "OPENAI_API_KEY")
-		case config.ProviderTypeGemini:
-			key := p.ResolvedAPIKey
-			if p.Credentials == "gemini-cli" && p.OAuthCreds != nil {
-				key = "oauth"
-			}
-			printCredentialStatus("gemini", p.Credentials, key, "GEMINI_API_KEY")
-		case config.ProviderTypeOpenRouter:
-			printCredentialStatus("openrouter", "", p.ResolvedAPIKey, "OPENROUTER_API_KEY")
-		case config.ProviderTypeZen:
-			printZenCredentialStatus(p.ResolvedAPIKey)
-		case config.ProviderTypeOpenAICompat:
-			envVar := strings.ToUpper(name) + "_API_KEY"
-			if p.ResolvedAPIKey != "" {
-				fmt.Printf("    credentials: api_key [set]\n")
-			} else if strings.HasPrefix(p.APIKey, "op://") {
-				fmt.Printf("    credentials: api_key [set via 1password]\n")
-			} else if strings.HasPrefix(p.APIKey, "$(") {
-				fmt.Printf("    credentials: api_key [set via command]\n")
-			} else {
-				fmt.Printf("    credentials: api_key [NOT SET - export %s]\n", envVar)
-			}
-		}
-	}
-
-	fmt.Printf("\nimage:\n")
-	fmt.Printf("  provider: %s\n", cfg.Image.Provider)
-	fmt.Printf("  output_dir: %s\n", cfg.Image.OutputDir)
-	fmt.Printf("  gemini:\n")
-	fmt.Printf("    model: %s\n", cfg.Image.Gemini.Model)
-	printImageCredentialStatus("gemini", cfg.Image.Gemini.APIKey, "GEMINI_API_KEY")
-	fmt.Printf("  openai:\n")
-	fmt.Printf("    model: %s\n", cfg.Image.OpenAI.Model)
-	printImageCredentialStatus("openai", cfg.Image.OpenAI.APIKey, "OPENAI_API_KEY")
-	fmt.Printf("  flux:\n")
-	fmt.Printf("    model: %s\n", cfg.Image.Flux.Model)
-	printImageCredentialStatus("flux", cfg.Image.Flux.APIKey, "BFL_API_KEY")
-
-	fmt.Printf("\nsearch:\n")
-	fmt.Printf("  provider: %s\n", cfg.Search.Provider)
-	fmt.Printf("  exa:\n")
-	printSearchCredentialStatus(cfg.Search.Exa.APIKey, "EXA_API_KEY")
-	fmt.Printf("  brave:\n")
-	printSearchCredentialStatus(cfg.Search.Brave.APIKey, "BRAVE_API_KEY")
-	fmt.Printf("  google:\n")
-	printSearchCredentialStatus(cfg.Search.Google.APIKey, "GOOGLE_SEARCH_API_KEY")
-	if cfg.Search.Google.CX != "" {
-		fmt.Printf("    cx: [set]\n")
-	} else {
-		fmt.Printf("    cx: [NOT SET - export GOOGLE_SEARCH_CX]\n")
-	}
-
+	// No config file - show helpful message with defaults
+	fmt.Printf("# No config file (using defaults)\n")
+	fmt.Printf("# Create one with: term-llm config reset\n")
+	fmt.Printf("# Or edit directly: term-llm config edit\n")
+	fmt.Printf("# Config path: %s\n", configPath)
 	return nil
 }
 
