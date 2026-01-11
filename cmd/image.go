@@ -50,7 +50,7 @@ Examples:
 
 func init() {
 	imageCmd.Flags().StringVarP(&imageInput, "input", "i", "", "Input image to edit")
-	imageCmd.Flags().StringVar(&imageProvider, "provider", "", "Override provider (gemini, openai, flux)")
+	imageCmd.Flags().StringVar(&imageProvider, "provider", "", "Override provider (gemini, openai, flux, openrouter)")
 	imageCmd.Flags().StringVarP(&imageOutput, "output", "o", "", "Custom output path")
 	imageCmd.Flags().BoolVar(&imageNoDisplay, "no-display", false, "Skip terminal display")
 	imageCmd.Flags().BoolVar(&imageNoClipboard, "no-clipboard", false, "Skip clipboard copy")

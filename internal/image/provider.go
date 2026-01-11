@@ -78,8 +78,18 @@ func NewImageProvider(cfg *config.Config, providerOverride string) (ImageProvide
 		}
 		return NewFluxProvider(apiKey, model), nil
 
+	case "openrouter":
+		apiKey := cfg.Image.OpenRouter.APIKey
+		if apiKey == "" {
+			return nil, fmt.Errorf("OPENROUTER_API_KEY not configured. Set environment variable or add to image.openrouter.api_key in config")
+		}
+		if model == "" {
+			model = cfg.Image.OpenRouter.Model
+		}
+		return NewOpenRouterProvider(apiKey, model), nil
+
 	default:
-		return nil, fmt.Errorf("unknown image provider: %s (valid: gemini, openai, flux)", provider)
+		return nil, fmt.Errorf("unknown image provider: %s (valid: gemini, openai, flux, openrouter)", provider)
 	}
 }
 

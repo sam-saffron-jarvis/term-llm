@@ -53,9 +53,10 @@ var ProviderModels = map[string][]string{
 }
 
 var ImageProviderModels = map[string][]string{
-	"gemini": {"gemini-2.5-flash-image", "gemini-3-pro-image-preview"},
-	"openai": {"gpt-image-1.5", "gpt-image-1-mini"},
-	"flux":   {"flux-2-pro", "flux-kontext-pro", "flux-2-max"},
+	"gemini":     {"gemini-2.5-flash-image", "gemini-3-pro-image-preview"},
+	"openai":     {"gpt-image-1.5", "gpt-image-1-mini"},
+	"flux":       {"flux-2-pro", "flux-kontext-pro", "flux-2-max"},
+	"openrouter": {"google/gemini-2.5-flash-image", "google/gemini-3-pro-image-preview", "openai/gpt-5-image", "openai/gpt-5-image-mini", "bytedance-seed/seedream-4.5", "black-forest-labs/flux.2-pro"},
 }
 
 // GetBuiltInProviderNames returns the built-in provider type names
@@ -91,7 +92,7 @@ func GetProviderNames(cfg *config.Config) []string {
 
 // GetImageProviderNames returns valid provider names for image generation
 func GetImageProviderNames() []string {
-	return []string{"gemini", "openai", "flux"}
+	return []string{"gemini", "openai", "flux", "openrouter"}
 }
 
 // GetProviderCompletions returns completions for the --provider flag
@@ -144,7 +145,8 @@ func GetProviderCompletions(toComplete string, isImage bool, cfg *config.Config)
 			} else {
 			providerType := string(config.InferProviderType(provider, ""))
 
-			if providerType == "openrouter" || provider == "openrouter" {
+			// For LLM (non-image) openrouter, fetch models from API cache
+			if !isImage && (providerType == "openrouter" || provider == "openrouter") {
 				var apiKey string
 				if cfg != nil {
 					if providerCfg, ok := cfg.Providers[provider]; ok {

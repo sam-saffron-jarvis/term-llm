@@ -135,11 +135,12 @@ type EditConfig struct {
 
 // ImageConfig configures image generation settings
 type ImageConfig struct {
-	Provider  string            `mapstructure:"provider"`   // default image provider: gemini, openai, flux
-	OutputDir string            `mapstructure:"output_dir"` // default save directory
-	Gemini    ImageGeminiConfig `mapstructure:"gemini"`
-	OpenAI    ImageOpenAIConfig `mapstructure:"openai"`
-	Flux      ImageFluxConfig   `mapstructure:"flux"`
+	Provider   string                `mapstructure:"provider"`   // default image provider: gemini, openai, flux, openrouter
+	OutputDir  string                `mapstructure:"output_dir"` // default save directory
+	Gemini     ImageGeminiConfig     `mapstructure:"gemini"`
+	OpenAI     ImageOpenAIConfig     `mapstructure:"openai"`
+	Flux       ImageFluxConfig       `mapstructure:"flux"`
+	OpenRouter ImageOpenRouterConfig `mapstructure:"openrouter"`
 }
 
 // ImageGeminiConfig configures Gemini image generation
@@ -158,6 +159,12 @@ type ImageOpenAIConfig struct {
 type ImageFluxConfig struct {
 	APIKey string `mapstructure:"api_key"`
 	Model  string `mapstructure:"model"` // flux-2-pro for generation, flux-kontext-pro for editing
+}
+
+// ImageOpenRouterConfig configures OpenRouter image generation
+type ImageOpenRouterConfig struct {
+	APIKey string `mapstructure:"api_key"`
+	Model  string `mapstructure:"model"` // e.g., google/gemini-2.5-flash-image
 }
 
 // SearchConfig configures web search providers
@@ -216,6 +223,7 @@ func Load() (*Config, error) {
 	viper.SetDefault("image.gemini.model", "gemini-2.5-flash-image")
 	viper.SetDefault("image.openai.model", "gpt-image-1")
 	viper.SetDefault("image.flux.model", "flux-2-pro")
+	viper.SetDefault("image.openrouter.model", "google/gemini-2.5-flash-image")
 	// Search defaults
 	viper.SetDefault("search.provider", "duckduckgo")
 	viper.SetDefault("search.force_external", false)
@@ -439,6 +447,12 @@ func resolveImageCredentials(cfg *ImageConfig) {
 	cfg.Flux.APIKey = expandEnv(cfg.Flux.APIKey)
 	if cfg.Flux.APIKey == "" {
 		cfg.Flux.APIKey = os.Getenv("BFL_API_KEY")
+	}
+
+	// OpenRouter image credentials
+	cfg.OpenRouter.APIKey = expandEnv(cfg.OpenRouter.APIKey)
+	if cfg.OpenRouter.APIKey == "" {
+		cfg.OpenRouter.APIKey = os.Getenv("OPENROUTER_API_KEY")
 	}
 }
 
