@@ -192,6 +192,12 @@ func (e *Engine) streamWithExternalTools(ctx context.Context, req Request, addSe
 			}
 		}
 
+		// Also include any tools already in the request (e.g., MCP tools) as external tools
+		// so they get executed in the agentic loop
+		for _, tool := range req.Tools {
+			externalToolNames = append(externalToolNames, tool.Name)
+		}
+
 		debugMsg := fmt.Sprintf("adding external tools: %v", externalToolNames)
 		debugSection(req.Debug, "External Tools", debugMsg)
 		DebugRawSection(req.DebugRaw, "External Tools", debugMsg)
