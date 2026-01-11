@@ -10,8 +10,10 @@ import (
 	"strings"
 
 	"github.com/samsaffron/term-llm/internal/config"
+	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/mcp"
 	"github.com/spf13/cobra"
+	"gopkg.in/yaml.v3"
 )
 
 var configCmd = &cobra.Command{
@@ -66,6 +68,35 @@ var configEditMcpCmd = &cobra.Command{
 	RunE:  configEditMcp,
 }
 
+var configSetCmd = &cobra.Command{
+	Use:   "set <key> <value>",
+	Short: "Set a configuration value",
+	Long: `Set a configuration value while preserving comments.
+
+Examples:
+  term-llm config set default_provider openai
+  term-llm config set default_provider gemini
+  term-llm config set providers.anthropic.model claude-opus-4-5
+  term-llm config set exec.suggestions 5
+  term-llm config set image.provider flux`,
+	Args:              cobra.ExactArgs(2),
+	RunE:              configSet,
+	ValidArgsFunction: configSetCompletion,
+}
+
+var configGetCmd = &cobra.Command{
+	Use:   "get <key>",
+	Short: "Get a configuration value",
+	Long: `Get a configuration value.
+
+Examples:
+  term-llm config get default_provider
+  term-llm config get providers.anthropic.model`,
+	Args:              cobra.ExactArgs(1),
+	RunE:              configGet,
+	ValidArgsFunction: configGetCompletion,
+}
+
 func init() {
 	rootCmd.AddCommand(configCmd)
 	configCmd.AddCommand(configEditCmd)
@@ -73,6 +104,8 @@ func init() {
 	configCmd.AddCommand(configCompletionCmd)
 	configCmd.AddCommand(configResetCmd)
 	configCmd.AddCommand(configEditMcpCmd)
+	configCmd.AddCommand(configSetCmd)
+	configCmd.AddCommand(configGetCmd)
 }
 
 func configShow(cmd *cobra.Command, args []string) error {
@@ -545,4 +578,399 @@ func installShellCompletion(shell string) error {
 	}
 
 	return nil
+}
+
+// configSet sets a configuration value while preserving comments
+func configSet(cmd *cobra.Command, args []string) error {
+	key := args[0]
+	value := args[1]
+
+	configPath, err := config.GetConfigPath()
+	if err != nil {
+		return fmt.Errorf("failed to get config path: %w", err)
+	}
+
+	// Ensure config directory exists
+	configDir := filepath.Dir(configPath)
+	if err := os.MkdirAll(configDir, 0755); err != nil {
+		return fmt.Errorf("failed to create config directory: %w", err)
+	}
+
+	// Read existing file or create empty document
+	var root yaml.Node
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			// Create new document with empty mapping
+			root = yaml.Node{
+				Kind: yaml.DocumentNode,
+				Content: []*yaml.Node{{
+					Kind: yaml.MappingNode,
+				}},
+			}
+		} else {
+			return fmt.Errorf("failed to read config: %w", err)
+		}
+	} else {
+		if err := yaml.Unmarshal(data, &root); err != nil {
+			return fmt.Errorf("failed to parse config: %w", err)
+		}
+	}
+
+	// Navigate/create path and set value
+	keyParts := strings.Split(key, ".")
+	if err := setYAMLValue(&root, keyParts, value); err != nil {
+		return fmt.Errorf("failed to set value: %w", err)
+	}
+
+	// Write back
+	var buf bytes.Buffer
+	encoder := yaml.NewEncoder(&buf)
+	encoder.SetIndent(2)
+	if err := encoder.Encode(&root); err != nil {
+		return fmt.Errorf("failed to encode config: %w", err)
+	}
+	encoder.Close()
+
+	if err := os.WriteFile(configPath, buf.Bytes(), 0644); err != nil {
+		return fmt.Errorf("failed to write config: %w", err)
+	}
+
+	fmt.Printf("%s = %s\n", key, value)
+	return nil
+}
+
+// setYAMLValue navigates/creates the path in a yaml.Node tree and sets the value
+func setYAMLValue(root *yaml.Node, path []string, value string) error {
+	if root.Kind != yaml.DocumentNode || len(root.Content) == 0 {
+		return fmt.Errorf("invalid document structure")
+	}
+
+	current := root.Content[0]
+	if current.Kind != yaml.MappingNode {
+		return fmt.Errorf("root is not a mapping")
+	}
+
+	for i, part := range path {
+		isLast := i == len(path)-1
+
+		// Find or create the key
+		found := false
+		for j := 0; j < len(current.Content); j += 2 {
+			keyNode := current.Content[j]
+			if keyNode.Value == part {
+				if isLast {
+					// Set the value
+					valueNode := current.Content[j+1]
+					valueNode.Value = value
+					valueNode.Tag = ""
+					valueNode.Kind = yaml.ScalarNode
+				} else {
+					// Navigate deeper
+					current = current.Content[j+1]
+					if current.Kind != yaml.MappingNode {
+						// Convert to mapping if needed
+						current.Kind = yaml.MappingNode
+						current.Content = nil
+						current.Value = ""
+						current.Tag = ""
+					}
+				}
+				found = true
+				break
+			}
+		}
+
+		if !found {
+			// Create the key
+			keyNode := &yaml.Node{
+				Kind:  yaml.ScalarNode,
+				Value: part,
+			}
+
+			if isLast {
+				// Create scalar value
+				valueNode := &yaml.Node{
+					Kind:  yaml.ScalarNode,
+					Value: value,
+				}
+				current.Content = append(current.Content, keyNode, valueNode)
+			} else {
+				// Create mapping for intermediate path
+				newMapping := &yaml.Node{
+					Kind: yaml.MappingNode,
+				}
+				current.Content = append(current.Content, keyNode, newMapping)
+				current = newMapping
+			}
+		}
+	}
+
+	return nil
+}
+
+// configGet gets a configuration value
+func configGet(cmd *cobra.Command, args []string) error {
+	key := args[0]
+
+	configPath, err := config.GetConfigPath()
+	if err != nil {
+		return fmt.Errorf("failed to get config path: %w", err)
+	}
+
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return fmt.Errorf("config file does not exist")
+		}
+		return fmt.Errorf("failed to read config: %w", err)
+	}
+
+	var root yaml.Node
+	if err := yaml.Unmarshal(data, &root); err != nil {
+		return fmt.Errorf("failed to parse config: %w", err)
+	}
+
+	value, err := getYAMLValue(&root, strings.Split(key, "."))
+	if err != nil {
+		return err
+	}
+
+	fmt.Println(value)
+	return nil
+}
+
+// getYAMLValue navigates the yaml.Node tree and returns the value at path
+func getYAMLValue(root *yaml.Node, path []string) (string, error) {
+	if root.Kind != yaml.DocumentNode || len(root.Content) == 0 {
+		return "", fmt.Errorf("invalid document structure")
+	}
+
+	current := root.Content[0]
+	for _, part := range path {
+		if current.Kind != yaml.MappingNode {
+			return "", fmt.Errorf("path not found: expected mapping")
+		}
+
+		found := false
+		for j := 0; j < len(current.Content); j += 2 {
+			if current.Content[j].Value == part {
+				current = current.Content[j+1]
+				found = true
+				break
+			}
+		}
+		if !found {
+			return "", fmt.Errorf("key not found: %s", part)
+		}
+	}
+
+	if current.Kind == yaml.ScalarNode {
+		return current.Value, nil
+	}
+	return "", fmt.Errorf("value is not a scalar")
+}
+
+// configSetCompletion provides completions for config set
+func configSetCompletion(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+	if len(args) == 0 {
+		// Complete config keys
+		return configKeyCompletions(toComplete), cobra.ShellCompDirectiveNoFileComp
+	}
+	if len(args) == 1 {
+		// Complete values based on the key
+		return configValueCompletions(args[0], toComplete), cobra.ShellCompDirectiveNoFileComp
+	}
+	return nil, cobra.ShellCompDirectiveNoFileComp
+}
+
+// configGetCompletion provides completions for config get
+func configGetCompletion(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+	if len(args) == 0 {
+		return configKeyCompletions(toComplete), cobra.ShellCompDirectiveNoFileComp
+	}
+	return nil, cobra.ShellCompDirectiveNoFileComp
+}
+
+// configKeyCompletions returns completions for config keys
+func configKeyCompletions(toComplete string) []string {
+	// Load config to get dynamic provider names
+	cfg, _ := config.Load()
+
+	keys := []string{
+		"default_provider",
+		"exec.provider",
+		"exec.model",
+		"exec.suggestions",
+		"exec.instructions",
+		"ask.provider",
+		"ask.model",
+		"ask.instructions",
+		"ask.max_turns",
+		"edit.provider",
+		"edit.model",
+		"edit.instructions",
+		"edit.show_line_numbers",
+		"edit.context_lines",
+		"edit.diff_format",
+		"image.provider",
+		"image.output_dir",
+		"image.gemini.model",
+		"image.openai.model",
+		"image.flux.model",
+		"search.provider",
+		"search.force_external",
+		"theme.primary",
+		"theme.secondary",
+		"theme.success",
+		"theme.error",
+		"theme.warning",
+		"theme.muted",
+		"theme.spinner",
+	}
+
+	// Add provider-specific keys
+	providerNames := llm.GetProviderNames(cfg)
+	for _, name := range providerNames {
+		keys = append(keys, "providers."+name+".model")
+		keys = append(keys, "providers."+name+".credentials")
+	}
+
+	var completions []string
+	for _, key := range keys {
+		if strings.HasPrefix(key, toComplete) {
+			completions = append(completions, key)
+		}
+	}
+	return completions
+}
+
+// configValueCompletions returns completions for config values based on key
+func configValueCompletions(key, toComplete string) []string {
+	cfg, _ := config.Load()
+
+	switch key {
+	case "default_provider", "exec.provider", "ask.provider", "edit.provider":
+		// Provider names
+		names := llm.GetProviderNames(cfg)
+		var completions []string
+		for _, name := range names {
+			if strings.HasPrefix(name, toComplete) {
+				completions = append(completions, name)
+			}
+		}
+		return completions
+
+	case "image.provider":
+		providers := []string{"gemini", "openai", "flux"}
+		var completions []string
+		for _, p := range providers {
+			if strings.HasPrefix(p, toComplete) {
+				completions = append(completions, p)
+			}
+		}
+		return completions
+
+	case "search.provider":
+		providers := []string{"duckduckgo", "exa", "brave", "google"}
+		var completions []string
+		for _, p := range providers {
+			if strings.HasPrefix(p, toComplete) {
+				completions = append(completions, p)
+			}
+		}
+		return completions
+
+	case "edit.diff_format":
+		formats := []string{"auto", "udiff", "replace"}
+		var completions []string
+		for _, f := range formats {
+			if strings.HasPrefix(f, toComplete) {
+				completions = append(completions, f)
+			}
+		}
+		return completions
+
+	case "edit.show_line_numbers", "search.force_external":
+		bools := []string{"true", "false"}
+		var completions []string
+		for _, b := range bools {
+			if strings.HasPrefix(b, toComplete) {
+				completions = append(completions, b)
+			}
+		}
+		return completions
+	}
+
+	// Check for provider model keys
+	if strings.HasPrefix(key, "providers.") && strings.HasSuffix(key, ".model") {
+		parts := strings.Split(key, ".")
+		if len(parts) == 3 {
+			provider := parts[1]
+			models := llm.ProviderModels[provider]
+			if models == nil {
+				// Try inferring type
+				providerType := string(config.InferProviderType(provider, ""))
+				models = llm.ProviderModels[providerType]
+			}
+			var completions []string
+			for _, m := range models {
+				if strings.HasPrefix(m, toComplete) {
+					completions = append(completions, m)
+				}
+			}
+			return completions
+		}
+	}
+
+	// Check for provider credentials keys
+	if strings.HasPrefix(key, "providers.") && strings.HasSuffix(key, ".credentials") {
+		parts := strings.Split(key, ".")
+		if len(parts) == 3 {
+			provider := parts[1]
+			providerType := config.InferProviderType(provider, "")
+			var creds []string
+			switch providerType {
+			case config.ProviderTypeAnthropic:
+				creds = []string{"api_key", "claude"}
+			case config.ProviderTypeOpenAI:
+				creds = []string{"api_key", "codex"}
+			case config.ProviderTypeGemini:
+				creds = []string{"api_key", "gemini-cli"}
+			default:
+				creds = []string{"api_key"}
+			}
+			var completions []string
+			for _, c := range creds {
+				if strings.HasPrefix(c, toComplete) {
+					completions = append(completions, c)
+				}
+			}
+			return completions
+		}
+	}
+
+	// Image model completions
+	if key == "image.gemini.model" {
+		return filterPrefix(llm.ImageProviderModels["gemini"], toComplete)
+	}
+	if key == "image.openai.model" {
+		return filterPrefix(llm.ImageProviderModels["openai"], toComplete)
+	}
+	if key == "image.flux.model" {
+		return filterPrefix(llm.ImageProviderModels["flux"], toComplete)
+	}
+
+	return nil
+}
+
+// filterPrefix filters a slice to items starting with prefix
+func filterPrefix(items []string, prefix string) []string {
+	var result []string
+	for _, item := range items {
+		if strings.HasPrefix(item, prefix) {
+			result = append(result, item)
+		}
+	}
+	return result
 }
