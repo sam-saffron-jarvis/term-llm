@@ -555,7 +555,7 @@ func runStreamEdit(ctx context.Context, cfg *config.Config, provider llm.Provide
 				applied++
 			}
 			if len(changedResults) > 1 {
-				fmt.Printf("\n%d files updated\n", applied)
+				fmt.Printf("\r%d files updated\n", applied)
 			}
 			fmt.Println()
 			return nil
