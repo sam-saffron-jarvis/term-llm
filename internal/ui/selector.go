@@ -636,8 +636,11 @@ func RunSetupWizard() (*config.Config, error) {
 				Model: "gemini-2.5-pro",
 			},
 			"zen": {
-				Model: "glm-4.7-free",
+				Model: "minimax-m2.1-free",
 			},
+		},
+		Exec: config.ExecConfig{
+			Suggestions: 3,
 		},
 	}
 
