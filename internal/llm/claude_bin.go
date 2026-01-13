@@ -15,8 +15,9 @@ import (
 // This provider shells out to the claude command for inference,
 // using Claude Code's existing authentication.
 type ClaudeBinProvider struct {
-	model     string
-	sessionID string // For session continuity with --resume
+	model        string
+	sessionID    string // For session continuity with --resume
+	messagesSent int    // Track messages already in session to avoid re-sending
 }
 
 // NewClaudeBinProvider creates a new provider that uses the claude binary.
@@ -54,8 +55,14 @@ func (p *ClaudeBinProvider) Stream(ctx context.Context, req Request) (Stream, er
 			defer cleanup()
 		}
 
+		// When resuming a session, only send new messages (claude CLI has the rest)
+		messagesToSend := req.Messages
+		if p.sessionID != "" && p.messagesSent > 0 && p.messagesSent < len(req.Messages) {
+			messagesToSend = req.Messages[p.messagesSent:]
+		}
+
 		// Build the prompt from messages
-		systemPrompt, userPrompt := p.buildPrompt(req.Messages)
+		systemPrompt, userPrompt := p.buildPrompt(messagesToSend)
 
 		// Add system prompt if present
 		if systemPrompt != "" {
@@ -173,6 +180,9 @@ func (p *ClaudeBinProvider) Stream(ctx context.Context, req Request) (Stream, er
 		if err := cmd.Wait(); err != nil {
 			return fmt.Errorf("claude command failed: %w", err)
 		}
+
+		// Track messages sent so we don't re-send them on resume
+		p.messagesSent = len(req.Messages)
 
 		if lastUsage != nil {
 			events <- Event{Type: EventUsage, Use: lastUsage}
