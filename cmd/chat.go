@@ -93,7 +93,7 @@ func runChat(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	if err := applyProviderOverrides(cfg, cfg.Ask.Provider, cfg.Ask.Model, chatProvider); err != nil {
+	if err := applyProviderOverrides(cfg, cfg.Chat.Provider, cfg.Chat.Model, chatProvider); err != nil {
 		return err
 	}
 
@@ -104,14 +104,23 @@ func runChat(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
+
+	// Use max turns from flag if set, otherwise from config
+	maxTurns := chatMaxTurns
+	if !cmd.Flags().Changed("max-turns") && cfg.Chat.MaxTurns > 0 {
+		maxTurns = cfg.Chat.MaxTurns
+	}
+
 	engine := llm.NewEngine(provider, defaultToolRegistry(cfg))
 
 	// Initialize local tools if --tools flag is set
+	var enabledLocalTools []string
 	if chatTools != "" {
 		toolConfig := buildToolConfig(chatTools, chatReadDirs, chatWriteDirs, chatShellAllow, cfg)
 		if errs := toolConfig.Validate(); len(errs) > 0 {
 			return fmt.Errorf("invalid tool config: %v", errs[0])
 		}
+		enabledLocalTools = toolConfig.Enabled
 		toolMgr, err := tools.NewToolManager(&toolConfig, cfg)
 		if err != nil {
 			return fmt.Errorf("failed to initialize tools: %w", err)
@@ -148,14 +157,7 @@ func runChat(cmd *cobra.Command, args []string) error {
 	forceExternalSearch := resolveForceExternalSearch(cfg, chatNativeSearch, chatNoNativeSearch)
 
 	// Create chat model
-	model := chat.New(cfg, provider, engine, modelName, mcpManager, chatMaxTurns, forceExternalSearch, showStats)
-
-	// Set initial search state from flag
-	if chatSearch {
-		// The model doesn't expose searchEnabled directly,
-		// but we could add a method for this if needed
-		// For now, user can toggle with /search or Ctrl+S
-	}
+	model := chat.New(cfg, provider, engine, modelName, mcpManager, maxTurns, forceExternalSearch, chatSearch, enabledLocalTools, showStats)
 
 	// Run the TUI (inline mode - no alt screen)
 	p := tea.NewProgram(model)

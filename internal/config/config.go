@@ -83,6 +83,7 @@ type Config struct {
 	Diagnostics     DiagnosticsConfig         `mapstructure:"diagnostics"`
 	Exec            ExecConfig                `mapstructure:"exec"`
 	Ask             AskConfig                 `mapstructure:"ask"`
+	Chat            ChatConfig                `mapstructure:"chat"`
 	Edit            EditConfig                `mapstructure:"edit"`
 	Image           ImageConfig               `mapstructure:"image"`
 	Search          SearchConfig              `mapstructure:"search"`
@@ -129,10 +130,17 @@ type ExecConfig struct {
 }
 
 type AskConfig struct {
-	Provider     string `mapstructure:"provider"`     // Override provider for ask
-	Model        string `mapstructure:"model"`        // Override model for ask
+	Provider     string `mapstructure:"provider"`     // Override provider for ask only
+	Model        string `mapstructure:"model"`        // Override model for ask only
 	Instructions string `mapstructure:"instructions"` // Custom system prompt for ask
 	MaxTurns     int    `mapstructure:"max_turns"`    // Max agentic turns (default 20)
+}
+
+type ChatConfig struct {
+	Provider     string `mapstructure:"provider"`     // Override provider for chat only
+	Model        string `mapstructure:"model"`        // Override model for chat only
+	Instructions string `mapstructure:"instructions"` // Custom system prompt for chat
+	MaxTurns     int    `mapstructure:"max_turns"`    // Max agentic turns (default 200)
 }
 
 type EditConfig struct {
@@ -215,9 +223,13 @@ func Load() (*Config, error) {
 	viper.AddConfigPath(configPath)
 	viper.AddConfigPath(".")
 
+	viper.RegisterAlias("provider", "default_provider")
+
 	// Set defaults
 	viper.SetDefault("default_provider", "anthropic")
 	viper.SetDefault("exec.suggestions", 3)
+	viper.SetDefault("ask.max_turns", 20)
+	viper.SetDefault("chat.max_turns", 200)
 	viper.SetDefault("edit.show_line_numbers", true)
 	viper.SetDefault("edit.context_lines", 3)
 	viper.SetDefault("edit.diff_format", "auto")
@@ -279,6 +291,15 @@ func Load() (*Config, error) {
 	return &cfg, nil
 }
 
+// GetBuiltInProviderNames returns a list of all built-in provider type names.
+func GetBuiltInProviderNames() []string {
+	names := make([]string, 0, len(builtInProviderTypes))
+	for name := range builtInProviderTypes {
+		names = append(names, name)
+	}
+	return names
+}
+
 // ApplyOverrides applies provider and model overrides to the config.
 // If provider is non-empty, it overrides the global provider.
 // If model is non-empty, it overrides the model for the active provider.
@@ -287,10 +308,16 @@ func (c *Config) ApplyOverrides(provider, model string) {
 		c.DefaultProvider = provider
 	}
 	if model != "" && c.DefaultProvider != "" {
-		if cfg, ok := c.Providers[c.DefaultProvider]; ok {
+		cfg, ok := c.Providers[c.DefaultProvider]
+		if !ok {
+			// Initialize new provider config if it doesn't exist
+			cfg = ProviderConfig{
+				Model: model,
+			}
+		} else {
 			cfg.Model = model
-			c.Providers[c.DefaultProvider] = cfg
 		}
+		c.Providers[c.DefaultProvider] = cfg
 	}
 }
 

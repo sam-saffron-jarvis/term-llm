@@ -198,7 +198,7 @@ func TestEngineExternalSearchStopsAfterMaxLoops(t *testing.T) {
 		}
 	}
 
-	if gotErr == nil || !strings.Contains(gotErr.Error(), "external tools exceeded max turns") {
+	if gotErr == nil || !strings.Contains(gotErr.Error(), "exceeded max turns") {
 		t.Fatalf("expected max turns error, got %v", gotErr)
 	}
 

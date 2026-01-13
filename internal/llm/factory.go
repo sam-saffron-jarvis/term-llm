@@ -55,11 +55,11 @@ func NewProvider(cfg *config.Config) (Provider, error) {
 	return WrapWithRetry(provider, DefaultRetryConfig()), nil
 }
 
-// NewProviderByName creates a provider by name from the config.
+// NewProviderByName creates a provider by name from the config, with an optional model override.
 // This is useful for per-command provider overrides.
 // If the provider is a built-in type but not explicitly configured,
 // it will be created with default settings.
-func NewProviderByName(cfg *config.Config, name string) (Provider, error) {
+func NewProviderByName(cfg *config.Config, name string, model string) (Provider, error) {
 	providerCfg, ok := cfg.Providers[name]
 	if !ok {
 		// Check if it's a built-in provider type that can work without config
@@ -67,16 +67,22 @@ func NewProviderByName(cfg *config.Config, name string) (Provider, error) {
 		switch providerType {
 		case config.ProviderTypeClaudeBin:
 			// claude-bin doesn't need API key, can create directly
-			provider := NewClaudeBinProvider("")
+			provider := NewClaudeBinProvider(model)
 			return WrapWithRetry(provider, DefaultRetryConfig()), nil
 		case config.ProviderTypeZen:
 			// zen can work without API key (free tier)
-			provider := NewZenProvider("", "")
+			provider := NewZenProvider("", model)
 			return WrapWithRetry(provider, DefaultRetryConfig()), nil
 		default:
 			return nil, fmt.Errorf("provider %q not configured", name)
 		}
 	}
+
+	// Apply model override if provided
+	if model != "" {
+		providerCfg.Model = model
+	}
+
 	provider, err := createProviderFromConfig(name, &providerCfg)
 	if err != nil {
 		return nil, err

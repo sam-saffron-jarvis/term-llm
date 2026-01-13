@@ -19,6 +19,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/mcp"
+	"github.com/samsaffron/term-llm/internal/tools"
 	"github.com/samsaffron/term-llm/internal/ui"
 	"golang.org/x/term"
 )
@@ -62,6 +63,7 @@ type Model struct {
 	files               []FileAttachment // Attached files for next message
 	searchEnabled       bool             // Web search toggle
 	forceExternalSearch bool             // Force external search tools even if provider supports native
+	localTools          []string         // Names of enabled local tools (read, write, etc.)
 
 	// MCP (Model Context Protocol)
 	mcpManager *mcp.Manager
@@ -119,7 +121,7 @@ type (
 )
 
 // New creates a new chat model
-func New(cfg *config.Config, provider llm.Provider, engine *llm.Engine, modelName string, mcpManager *mcp.Manager, maxTurns int, forceExternalSearch bool, showStats bool) *Model {
+func New(cfg *config.Config, provider llm.Provider, engine *llm.Engine, modelName string, mcpManager *mcp.Manager, maxTurns int, forceExternalSearch bool, searchEnabled bool, localTools []string, showStats bool) *Model {
 	// Get terminal size
 	width := 80
 	height := 24
@@ -189,6 +191,8 @@ func New(cfg *config.Config, provider llm.Provider, engine *llm.Engine, modelNam
 		mcpManager:          mcpManager,
 		maxTurns:            maxTurns,
 		forceExternalSearch: forceExternalSearch,
+		searchEnabled:       searchEnabled,
+		localTools:          localTools,
 		showStats:           showStats,
 		stats:               ui.NewSessionStats(),
 	}
@@ -1170,6 +1174,15 @@ func (m *Model) renderStatusLine() string {
 		parts = append(parts, lipgloss.NewStyle().Foreground(theme.Success).Render("web:on"))
 	}
 
+	// Local tools status
+	if len(m.localTools) > 0 {
+		toolsStr := strings.Join(m.localTools, ",")
+		if len(m.localTools) == len(tools.AllToolNames()) {
+			toolsStr = "all"
+		}
+		parts = append(parts, lipgloss.NewStyle().Foreground(theme.Success).Render("tools:"+toolsStr))
+	}
+
 	// MCP server status
 	if m.mcpManager != nil {
 		available := m.mcpManager.AvailableServers()
@@ -1750,31 +1763,16 @@ func (m *Model) switchModel(providerModel string) (tea.Model, tea.Cmd) {
 	providerName := parts[0]
 	modelName := parts[1]
 
-	// Update config temporarily
-	oldProvider := m.config.DefaultProvider
-	m.config.DefaultProvider = providerName
-
-	// Set model in the provider config
-	if providerCfg, ok := m.config.Providers[providerName]; ok {
-		providerCfg.Model = modelName
-		m.config.Providers[providerName] = providerCfg
-	} else {
-		// Provider not configured
-		m.config.DefaultProvider = oldProvider
-		return m.showSystemMessage(fmt.Sprintf("Provider %s is not configured", providerName))
-	}
-
-	// Create new provider
-	provider, err := llm.NewProvider(m.config)
+	// Create new provider using the centralized factory
+	provider, err := llm.NewProviderByName(m.config, providerName, modelName)
 	if err != nil {
-		// Restore old provider
-		m.config.DefaultProvider = oldProvider
 		return m.showSystemMessage(fmt.Sprintf("Failed to switch model: %v", err))
 	}
 
 	// Update model state
 	m.provider = provider
-	m.engine = llm.NewEngine(provider, nil)
+	// Preserve existing tool registry when creating new engine
+	m.engine = llm.NewEngine(provider, m.engine.Tools())
 	m.providerName = providerName
 	m.modelName = modelName
 
