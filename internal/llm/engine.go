@@ -240,6 +240,10 @@ func (e *Engine) streamWithExternalTools(ctx context.Context, req Request, addSe
 		for attempt := 0; attempt < maxTurns; attempt++ {
 			if attempt == maxTurns-1 {
 				req.Messages = append(req.Messages, SystemText(stopSearchToolHint))
+				// Apply LastTurnToolChoice if set
+				if req.LastTurnToolChoice != nil {
+					req.ToolChoice = *req.LastTurnToolChoice
+				}
 			}
 
 			stream, err := e.provider.Stream(ctx, req)
@@ -520,6 +524,10 @@ func (e *Engine) streamWithToolExecution(ctx context.Context, req Request) (Stre
 		for attempt := 0; attempt < maxTurns; attempt++ {
 			if attempt == maxTurns-1 {
 				req.Messages = append(req.Messages, SystemText(stopSearchToolHint))
+				// Apply LastTurnToolChoice if set
+				if req.LastTurnToolChoice != nil {
+					req.ToolChoice = *req.LastTurnToolChoice
+				}
 			}
 
 			stream, err := e.provider.Stream(ctx, req)

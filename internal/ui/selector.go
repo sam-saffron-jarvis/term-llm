@@ -32,6 +32,12 @@ type progressUpdateMsg ProgressUpdate
 // tickMsg triggers a refresh of the elapsed time display.
 type tickMsg time.Time
 
+// spinnerPauseMsg pauses the spinner (e.g., during approval prompts).
+type spinnerPauseMsg struct{}
+
+// spinnerResumeMsg resumes the spinner after pause.
+type spinnerResumeMsg struct{}
+
 // spinnerModel is the bubbletea model for the loading spinner
 type spinnerModel struct {
 	spinner   spinner.Model
@@ -42,6 +48,9 @@ type spinnerModel struct {
 
 	// Progress tracking
 	startTime    time.Time
+	pausedAt     time.Time     // When pause started (for elapsed time adjustment)
+	pausedTotal  time.Duration // Total time spent paused
+	paused       bool          // Whether spinner is paused (e.g., during approval)
 	outputTokens int
 	status       string
 	phase        string // Current phase: "Thinking", "Responding", etc.
@@ -104,6 +113,18 @@ func (m spinnerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case spinnerResultMsg:
 		m.result = &msg
 		return m, tea.Quit
+	case spinnerPauseMsg:
+		if !m.paused {
+			m.paused = true
+			m.pausedAt = time.Now()
+		}
+		return m, nil
+	case spinnerResumeMsg:
+		if m.paused {
+			m.pausedTotal += time.Since(m.pausedAt)
+			m.paused = false
+		}
+		return m, nil
 	case spinner.TickMsg:
 		var cmd tea.Cmd
 		m.spinner, cmd = m.spinner.Update(msg)
@@ -132,6 +153,11 @@ func (m spinnerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m spinnerModel) View() string {
+	// When paused (e.g., during approval prompt), hide the spinner
+	if m.paused {
+		return ""
+	}
+
 	var b strings.Builder
 
 	// Print completed milestones above spinner
@@ -140,11 +166,14 @@ func (m spinnerModel) View() string {
 		b.WriteString("\n")
 	}
 
+	// Calculate elapsed time, excluding paused duration
+	elapsed := time.Since(m.startTime) - m.pausedTotal
+
 	// Streaming indicator
 	b.WriteString(StreamingIndicator{
 		Spinner:    m.spinner.View(),
 		Phase:      m.phase,
-		Elapsed:    time.Since(m.startTime),
+		Elapsed:    elapsed,
 		Tokens:     m.outputTokens,
 		Status:     m.status,
 		ShowCancel: true,
@@ -154,6 +183,14 @@ func (m spinnerModel) View() string {
 }
 
 func runWithSpinnerInternal(ctx context.Context, debug bool, progress <-chan ProgressUpdate, run func(context.Context) (any, error)) (any, error) {
+	return runWithSpinnerInternalWithHooks(ctx, debug, progress, run, nil)
+}
+
+// ApprovalHookSetup is called with functions to pause/resume the spinner.
+// It should set up approval hooks that call these functions.
+type ApprovalHookSetup func(pause, resume func())
+
+func runWithSpinnerInternalWithHooks(ctx context.Context, debug bool, progress <-chan ProgressUpdate, run func(context.Context) (any, error), setupHooks ApprovalHookSetup) (any, error) {
 	// Create cancellable context
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -174,6 +211,14 @@ func runWithSpinnerInternal(ctx context.Context, debug bool, progress <-chan Pro
 	// Create and run spinner
 	model := newSpinnerModel(cancel, tty, progress)
 	p := tea.NewProgram(model, tea.WithInput(tty), tea.WithOutput(tty), tea.WithoutSignalHandler())
+
+	// Set up approval hooks if provided
+	if setupHooks != nil {
+		setupHooks(
+			func() { p.Send(spinnerPauseMsg{}) },
+			func() { p.Send(spinnerResumeMsg{}) },
+		)
+	}
 
 	// Start request in background and send result to program
 	go func() {
@@ -211,6 +256,13 @@ func RunWithSpinner(ctx context.Context, debug bool, run func(context.Context) (
 // The progress channel can receive updates with token counts, status messages, and milestones.
 func RunWithSpinnerProgress(ctx context.Context, debug bool, progress <-chan ProgressUpdate, run func(context.Context) (any, error)) (any, error) {
 	return runWithSpinnerInternal(ctx, debug, progress, run)
+}
+
+// RunWithSpinnerProgressAndHooks is like RunWithSpinnerProgress but also sets up approval hooks.
+// The setupHooks function is called with pause/resume functions that should be used to set up
+// tools.SetApprovalHooks() so the spinner pauses during tool approval prompts.
+func RunWithSpinnerProgressAndHooks(ctx context.Context, debug bool, progress <-chan ProgressUpdate, run func(context.Context) (any, error), setupHooks ApprovalHookSetup) (any, error) {
+	return runWithSpinnerInternalWithHooks(ctx, debug, progress, run, setupHooks)
 }
 
 // selectModel is a bubbletea model for command selection with help support

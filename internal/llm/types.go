@@ -32,6 +32,7 @@ type Request struct {
 	Messages          []Message
 	Tools             []ToolSpec
 	ToolChoice        ToolChoice
+	LastTurnToolChoice *ToolChoice // If set, force this tool choice on the last agentic turn
 	ParallelToolCalls bool
 	Search            bool
 	ForceExternalSearch bool // If true, use external search even if provider supports native

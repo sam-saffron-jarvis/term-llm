@@ -119,6 +119,7 @@ func runExec(cmd *cobra.Command, args []string) error {
 	engine := llm.NewEngine(provider, defaultToolRegistry(cfg))
 
 	// Initialize local tools if --tools flag is set
+	var localToolSpecs []llm.ToolSpec
 	if execTools != "" {
 		toolConfig := buildToolConfig(execTools, execReadDirs, execWriteDirs, execShellAllow, cfg)
 		if errs := toolConfig.Validate(); len(errs) > 0 {
@@ -130,6 +131,7 @@ func runExec(cmd *cobra.Command, args []string) error {
 		}
 		toolMgr.ApprovalMgr.PromptFunc = tools.HuhApprovalPrompt
 		toolMgr.SetupEngine(engine)
+		localToolSpecs = toolMgr.GetSpecs()
 	}
 
 	// Initialize MCP servers if --mcp flag is set
@@ -184,18 +186,27 @@ func runExec(cmd *cobra.Command, args []string) error {
 	for {
 		systemPrompt := prompt.SuggestSystemPrompt(shell, cfg.Exec.Instructions, numSuggestions, execSearch)
 		userPrompt := prompt.SuggestUserPrompt(userInput, files, stdinContent)
+		// Build tools list: suggest_commands + any local tools
+		reqTools := []llm.ToolSpec{llm.SuggestCommandsToolSpec(numSuggestions)}
+		reqTools = append(reqTools, localToolSpecs...)
+
+		// Use auto tool choice if we have local tools (so model can use them first),
+		// otherwise force suggest_commands. Always force suggest_commands on last turn.
+		toolChoice := llm.ToolChoice{Mode: llm.ToolChoiceName, Name: llm.SuggestCommandsToolName}
+		var lastTurnToolChoice *llm.ToolChoice
+		if len(localToolSpecs) > 0 {
+			toolChoice = llm.ToolChoice{Mode: llm.ToolChoiceAuto}
+			lastTurnToolChoice = &llm.ToolChoice{Mode: llm.ToolChoiceName, Name: llm.SuggestCommandsToolName}
+		}
+
 		req := llm.Request{
 			Messages: []llm.Message{
 				llm.SystemText(systemPrompt),
 				llm.UserText(userPrompt),
 			},
-			Tools: []llm.ToolSpec{
-				llm.SuggestCommandsToolSpec(numSuggestions),
-			},
-			ToolChoice: llm.ToolChoice{
-				Mode: llm.ToolChoiceName,
-				Name: llm.SuggestCommandsToolName,
-			},
+			Tools:              reqTools,
+			ToolChoice:         toolChoice,
+			LastTurnToolChoice: lastTurnToolChoice,
 			ParallelToolCalls:   true,
 			Search:              execSearch,
 			ForceExternalSearch: resolveForceExternalSearch(cfg, execNativeSearch, execNoNativeSearch),
@@ -207,10 +218,22 @@ func runExec(cmd *cobra.Command, args []string) error {
 		// Create progress channel for spinner updates
 		progressCh := make(chan ui.ProgressUpdate, 10)
 
-		result, err := ui.RunWithSpinnerProgress(ctx, debugMode || debugRaw, progressCh, func(ctx context.Context) (any, error) {
-			defer close(progressCh)
-			return collectSuggestions(ctx, engine, req, progressCh, stats)
-		})
+		// Use approval hooks when tools are enabled to pause spinner during prompts
+		var result any
+		if len(localToolSpecs) > 0 {
+			result, err = ui.RunWithSpinnerProgressAndHooks(ctx, debugMode || debugRaw, progressCh, func(ctx context.Context) (any, error) {
+				defer close(progressCh)
+				return collectSuggestions(ctx, engine, req, progressCh, stats)
+			}, func(pause, resume func()) {
+				tools.SetApprovalHooks(pause, resume)
+			})
+			tools.ClearApprovalHooks()
+		} else {
+			result, err = ui.RunWithSpinnerProgress(ctx, debugMode || debugRaw, progressCh, func(ctx context.Context) (any, error) {
+				defer close(progressCh)
+				return collectSuggestions(ctx, engine, req, progressCh, stats)
+			})
+		}
 		if err != nil {
 			if err.Error() == "cancelled" {
 				return nil

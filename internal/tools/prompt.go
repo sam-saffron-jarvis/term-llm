@@ -108,6 +108,16 @@ func TTYApprovalPrompt(req *ApprovalRequest) (ConfirmOutcome, string) {
 // HuhApprovalPrompt prompts the user for approval using a huh form.
 // This provides a nicer UI than the TTY-based prompt.
 func HuhApprovalPrompt(req *ApprovalRequest) (ConfirmOutcome, string) {
+	// Notify TUI to pause (e.g., stop spinner during approval)
+	approvalMu.Lock()
+	startHook := OnApprovalStart
+	endHook := OnApprovalEnd
+	approvalMu.Unlock()
+
+	if startHook != nil {
+		startHook()
+	}
+
 	form := huh.NewForm(
 		huh.NewGroup(
 			huh.NewConfirm().
@@ -119,7 +129,14 @@ func HuhApprovalPrompt(req *ApprovalRequest) (ConfirmOutcome, string) {
 		),
 	).WithShowHelp(false).WithShowErrors(false)
 
-	if err := form.Run(); err != nil {
+	err := form.Run()
+
+	// Notify TUI to resume
+	if endHook != nil {
+		endHook()
+	}
+
+	if err != nil {
 		return Cancel, ""
 	}
 
