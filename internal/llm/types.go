@@ -125,6 +125,7 @@ const (
 	EventToolExecStart EventType = "tool_exec_start" // Emitted when tool execution begins
 	EventToolExecEnd   EventType = "tool_exec_end"   // Emitted when tool execution completes
 	EventUsage         EventType = "usage"
+	EventPhase         EventType = "phase"         // Emitted for high-level phase changes (Thinking, Searching, etc.)
 	EventDone          EventType = "done"
 	EventError         EventType = "error"
 	EventRetry         EventType = "retry" // Emitted when retrying after rate limit

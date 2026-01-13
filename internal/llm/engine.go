@@ -70,12 +70,25 @@ func (e *Engine) Stream(ctx context.Context, req Request) (Stream, error) {
 
 		if needsExternalSearch || needsExternalFetch {
 			isExternalSearch = true
-			if needsExternalSearch {
+
+			// Check existing tools to avoid duplicates
+			hasSearch := false
+			hasFetch := false
+			for _, t := range req.Tools {
+				if t.Name == WebSearchToolName {
+					hasSearch = true
+				}
+				if t.Name == ReadURLToolName {
+					hasFetch = true
+				}
+			}
+
+			if needsExternalSearch && !hasSearch {
 				if t, ok := e.tools.Get(WebSearchToolName); ok {
 					externalTools = append(externalTools, t.Spec())
 				}
 			}
-			if needsExternalFetch {
+			if needsExternalFetch && !hasFetch {
 				if t, ok := e.tools.Get(ReadURLToolName); ok {
 					externalTools = append(externalTools, t.Spec())
 				}
@@ -216,7 +229,16 @@ func (e *Engine) runLoop(ctx context.Context, req Request, events chan<- Event, 
 		for _, call := range registered {
 			DebugToolCall(req.Debug, call)
 			info := e.getToolPreview(call)
-			events <- Event{Type: EventToolExecStart, ToolName: call.Name, ToolInfo: info}
+
+			// Emit high-level phase change for specific tools
+			if events != nil {
+				if call.Name == WebSearchToolName {
+					events <- Event{Type: EventPhase, Text: "Searching"}
+				} else if call.Name == ReadURLToolName {
+					events <- Event{Type: EventPhase, Text: "Reading"}
+				}
+				events <- Event{Type: EventToolExecStart, ToolName: call.Name, ToolInfo: info}
+			}
 		}
 
 		toolResults, err := e.executeToolCalls(ctx, registered, events, req.Debug, req.DebugRaw)
@@ -274,7 +296,14 @@ func (e *Engine) applyExternalSearch(ctx context.Context, req Request, events ch
 
 	// Notify start
 	for _, call := range toolCalls {
-		events <- Event{Type: EventToolExecStart, ToolName: call.Name, ToolInfo: e.getToolPreview(call)}
+		if events != nil {
+			if call.Name == WebSearchToolName {
+				events <- Event{Type: EventPhase, Text: "Searching"}
+			} else if call.Name == ReadURLToolName {
+				events <- Event{Type: EventPhase, Text: "Reading"}
+			}
+			events <- Event{Type: EventToolExecStart, ToolName: call.Name, ToolInfo: e.getToolPreview(call)}
+		}
 	}
 
 	toolResults, err := e.executeToolCalls(ctx, toolCalls, events, req.Debug, req.DebugRaw)

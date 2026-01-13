@@ -37,12 +37,16 @@ type Segment struct {
 // Tool status indicator colors using raw ANSI for reliable true color
 const (
 	pendingCircleANSI = "\033[38;5;245m\u25cb\033[0m" // gray hollow circle
+	workingCircleANSI = "\033[38;2;255;165;0m\u25cf\033[0m"  // orange filled circle for active tools
 	successCircleANSI = "\033[38;2;79;185;101m\u25cf\033[0m" // #4FB965 green filled circle
 	errorCircleANSI   = "\033[38;2;239;68;68m\u25cf\033[0m"  // #ef4444 red filled circle
 )
 
 // PendingCircle returns the pending status indicator
 func PendingCircle() string { return pendingCircleANSI }
+
+// WorkingCircle returns the working status indicator
+func WorkingCircle() string { return workingCircleANSI }
 
 // SuccessCircle returns the success status indicator
 func SuccessCircle() string { return successCircleANSI }
@@ -176,12 +180,13 @@ func GetPendingToolTextLen(segments []Segment) int {
 	return 0
 }
 
-// UpdateToolStatus updates the status of a pending tool matching the given name
-func UpdateToolStatus(segments []Segment, toolName string, success bool) []Segment {
+// UpdateToolStatus updates the status of a pending tool matching the given name and info
+func UpdateToolStatus(segments []Segment, toolName, toolInfo string, success bool) []Segment {
 	for i := len(segments) - 1; i >= 0; i-- {
 		if segments[i].Type == SegmentTool &&
 			segments[i].ToolStatus == ToolPending &&
-			segments[i].ToolName == toolName {
+			segments[i].ToolName == toolName &&
+			segments[i].ToolInfo == toolInfo {
 			if success {
 				segments[i].ToolStatus = ToolSuccess
 			} else {

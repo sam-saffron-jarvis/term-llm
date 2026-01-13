@@ -47,19 +47,40 @@ type StreamingIndicator struct {
 	Spinner    string        // spinner.View() output
 	Phase      string        // "Thinking", "Searching", etc.
 	Elapsed    time.Duration
-	Tokens     int    // 0 = don't show
-	Status     string // optional status (e.g., "editing main.go")
-	ShowCancel bool   // show "(esc to cancel)"
+	Tokens     int          // 0 = don't show
+	Status     string       // optional status (e.g., "editing main.go")
+	ShowCancel bool         // show "(esc to cancel)"
+	Segments   []Segment    // active tool segments for wave animation
+	WavePos    int          // current wave position
 }
 
 // Render returns the formatted streaming indicator string
 func (s StreamingIndicator) Render(styles *Styles) string {
 	var b strings.Builder
 
-	b.WriteString(s.Spinner)
-	b.WriteString(" ")
-	b.WriteString(s.Phase)
-	b.WriteString("...")
+	// Render active tools if any
+	if len(s.Segments) > 0 {
+		b.WriteString(RenderSegments(s.Segments, 0, s.WavePos, nil))
+		// When tools are active, we don't show the spinner/phase line
+		// as the wave animation provides the progress feedback.
+	} else {
+		// No active tools, show the standard spinner and phase
+		b.WriteString(s.Spinner)
+		b.WriteString(" ")
+		b.WriteString(s.Phase)
+		b.WriteString("...")
+	}
+
+	// Always show stats/meta if present
+	hasContent := len(s.Segments) > 0 || s.Spinner != ""
+
+	if hasContent {
+		if len(s.Segments) > 0 {
+			b.WriteString(" |")
+		} else {
+			b.WriteString(" ")
+		}
+	}
 
 	if s.Tokens > 0 {
 		b.WriteString(fmt.Sprintf(" %s tokens |", formatTokenCount(s.Tokens)))
