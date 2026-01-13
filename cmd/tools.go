@@ -51,3 +51,18 @@ func buildToolConfig(toolsFlag string, readDirs, writeDirs, shellAllow []string,
 
 	return tc
 }
+
+// filterOutTools removes specified tools from the enabled list.
+func filterOutTools(enabled []string, exclude ...string) []string {
+	excludeSet := make(map[string]bool)
+	for _, e := range exclude {
+		excludeSet[e] = true
+	}
+	var filtered []string
+	for _, t := range enabled {
+		if !excludeSet[t] {
+			filtered = append(filtered, t)
+		}
+	}
+	return filtered
+}

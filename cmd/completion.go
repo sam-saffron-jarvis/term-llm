@@ -136,6 +136,12 @@ func ToolsFlagCompletion(cmd *cobra.Command, args []string, toComplete string) (
 	if prefix != "" {
 		prefix += ","
 	}
+
+	// Show "all" as first option only when starting fresh (no tools entered yet)
+	if len(alreadyEntered) == 0 && strings.HasPrefix("all", currentPrefix) {
+		completions = append(completions, "all")
+	}
+
 	for _, tool := range allTools {
 		if enteredSet[tool] {
 			continue

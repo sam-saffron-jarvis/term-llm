@@ -80,7 +80,7 @@ func init() {
 	askCmd.Flags().BoolVar(&askNativeSearch, "native-search", false, "Use provider's native search (override config)")
 	askCmd.Flags().BoolVar(&askNoNativeSearch, "no-native-search", false, "Use external search tools instead of provider's native search")
 	// Tool flags
-	askCmd.Flags().StringVar(&askTools, "tools", "", "Enable local tools (comma-separated: read,write,edit,shell,grep,find,view,image)")
+	askCmd.Flags().StringVar(&askTools, "tools", "", "Enable local tools (comma-separated, or 'all' for everything: read,write,edit,shell,grep,find,view,image)")
 	askCmd.Flags().StringArrayVar(&askReadDirs, "read-dir", nil, "Directories for read/grep/find/view tools (repeatable)")
 	askCmd.Flags().StringArrayVar(&askWriteDirs, "write-dir", nil, "Directories for write/edit tools (repeatable)")
 	askCmd.Flags().StringArrayVar(&askShellAllow, "shell-allow", nil, "Shell command patterns to allow (repeatable, glob syntax)")

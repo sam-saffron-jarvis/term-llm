@@ -68,7 +68,7 @@ func init() {
 	chatCmd.Flags().BoolVar(&chatNativeSearch, "native-search", false, "Use provider's native search (override config)")
 	chatCmd.Flags().BoolVar(&chatNoNativeSearch, "no-native-search", false, "Use external search tools instead of provider's native search")
 	// Tool flags
-	chatCmd.Flags().StringVar(&chatTools, "tools", "", "Enable local tools (comma-separated: read,write,edit,shell,grep,find,view,image)")
+	chatCmd.Flags().StringVar(&chatTools, "tools", "", "Enable local tools (comma-separated, or 'all' for everything: read,write,edit,shell,grep,find,view,image)")
 	chatCmd.Flags().StringArrayVar(&chatReadDirs, "read-dir", nil, "Directories for read/grep/find/view tools (repeatable)")
 	chatCmd.Flags().StringArrayVar(&chatWriteDirs, "write-dir", nil, "Directories for write/edit tools (repeatable)")
 	chatCmd.Flags().StringArrayVar(&chatShellAllow, "shell-allow", nil, "Shell command patterns to allow (repeatable, glob syntax)")

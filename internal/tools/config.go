@@ -141,9 +141,15 @@ func (c *ToolConfig) CanRunShellNonTTY() bool {
 }
 
 // ParseToolsFlag parses a comma-separated list of tool names.
+// Special values: "all" or "*" expand to all available tools.
 func ParseToolsFlag(value string) []string {
 	if value == "" {
 		return nil
+	}
+	// Handle "all" or "*" to enable all tools
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "all" || trimmed == "*" {
+		return AllToolNames()
 	}
 	parts := strings.Split(value, ",")
 	var tools []string

@@ -79,7 +79,7 @@ func init() {
 	execCmd.Flags().BoolVar(&execNativeSearch, "native-search", false, "Use provider's native search (override config)")
 	execCmd.Flags().BoolVar(&execNoNativeSearch, "no-native-search", false, "Use external search tools instead of provider's native search")
 	// Tool flags
-	execCmd.Flags().StringVar(&execTools, "tools", "", "Enable local tools (comma-separated: read,write,edit,shell,grep,find,view,image)")
+	execCmd.Flags().StringVar(&execTools, "tools", "", "Enable local tools (comma-separated, or 'all' for everything: read,write,edit,shell,grep,find,view,image)")
 	execCmd.Flags().StringArrayVar(&execReadDirs, "read-dir", nil, "Directories for read/grep/find/view tools (repeatable)")
 	execCmd.Flags().StringArrayVar(&execWriteDirs, "write-dir", nil, "Directories for write/edit tools (repeatable)")
 	execCmd.Flags().StringArrayVar(&execShellAllow, "shell-allow", nil, "Shell command patterns to allow (repeatable, glob syntax)")

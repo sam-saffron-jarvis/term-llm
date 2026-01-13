@@ -73,7 +73,7 @@ func init() {
 	editCmd.Flags().StringVar(&editDiffFormat, "diff-format", "", "Force diff format: 'udiff' or 'replace' (default: auto)")
 	editCmd.Flags().StringVar(&editMCP, "mcp", "", "Enable MCP server(s), comma-separated (e.g., playwright,filesystem)")
 	// Tool flags
-	editCmd.Flags().StringVar(&editTools, "tools", "", "Enable local tools (comma-separated: read,write,edit,shell,grep,find,view,image)")
+	editCmd.Flags().StringVar(&editTools, "tools", "", "Enable local tools (comma-separated, or 'all'; excludes edit/write to avoid conflicts)")
 	editCmd.Flags().StringArrayVar(&editReadDirs, "read-dir", nil, "Directories for read/grep/find/view tools (repeatable)")
 	editCmd.Flags().StringArrayVar(&editWriteDirs, "write-dir", nil, "Directories for write/edit tools (repeatable)")
 	editCmd.Flags().StringArrayVar(&editShellAllow, "shell-allow", nil, "Shell command patterns to allow (repeatable, glob syntax)")
@@ -217,6 +217,11 @@ func runEdit(cmd *cobra.Command, args []string) error {
 	if editTools != "" {
 		engine := llm.NewEngine(provider, defaultToolRegistry(cfg))
 		toolConfig := buildToolConfig(editTools, editReadDirs, editWriteDirs, editShellAllow, cfg)
+		// For edit command, exclude edit/write tools to avoid conflicts with the command's own editing
+		toolConfig.Enabled = filterOutTools(toolConfig.Enabled, "edit", "write")
+		if len(toolConfig.Enabled) == 0 {
+			return fmt.Errorf("no tools remaining after excluding edit/write (edit command handles file modifications)")
+		}
 		if errs := toolConfig.Validate(); len(errs) > 0 {
 			return fmt.Errorf("invalid tool config: %v", errs[0])
 		}
