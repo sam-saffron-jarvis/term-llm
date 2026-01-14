@@ -21,6 +21,7 @@ const (
 	ProviderTypeZen          ProviderType = "zen"
 	ProviderTypeClaudeBin    ProviderType = "claude-bin"
 	ProviderTypeOpenAICompat ProviderType = "openai_compatible"
+	ProviderTypeXAI          ProviderType = "xai"
 )
 
 // builtInProviderTypes maps known provider names to their types
@@ -31,6 +32,7 @@ var builtInProviderTypes = map[string]ProviderType{
 	"openrouter": ProviderTypeOpenRouter,
 	"zen":        ProviderTypeZen,
 	"claude-bin": ProviderTypeClaudeBin,
+	"xai":        ProviderTypeXAI,
 }
 
 // InferProviderType returns the provider type for a given provider name
@@ -155,10 +157,11 @@ type EditConfig struct {
 
 // ImageConfig configures image generation settings
 type ImageConfig struct {
-	Provider   string                `mapstructure:"provider"`   // default image provider: gemini, openai, flux, openrouter
+	Provider   string                `mapstructure:"provider"`   // default image provider: gemini, openai, xai, flux, openrouter
 	OutputDir  string                `mapstructure:"output_dir"` // default save directory
 	Gemini     ImageGeminiConfig     `mapstructure:"gemini"`
 	OpenAI     ImageOpenAIConfig     `mapstructure:"openai"`
+	XAI        ImageXAIConfig        `mapstructure:"xai"`
 	Flux       ImageFluxConfig       `mapstructure:"flux"`
 	OpenRouter ImageOpenRouterConfig `mapstructure:"openrouter"`
 }
@@ -173,6 +176,12 @@ type ImageGeminiConfig struct {
 type ImageOpenAIConfig struct {
 	APIKey string `mapstructure:"api_key"`
 	Model  string `mapstructure:"model"`
+}
+
+// ImageXAIConfig configures xAI (Grok) image generation
+type ImageXAIConfig struct {
+	APIKey string `mapstructure:"api_key"`
+	Model  string `mapstructure:"model"` // grok-2-image or grok-2-image-1212
 }
 
 // ImageFluxConfig configures Flux (Black Forest Labs) image generation
@@ -236,6 +245,7 @@ func Load() (*Config, error) {
 	// Provider defaults
 	viper.SetDefault("providers.anthropic.model", "claude-sonnet-4-5")
 	viper.SetDefault("providers.openai.model", "gpt-5.2")
+	viper.SetDefault("providers.xai.model", "grok-4-1-fast")
 	viper.SetDefault("providers.openrouter.model", "x-ai/grok-code-fast-1")
 	viper.SetDefault("providers.openrouter.app_url", "https://github.com/samsaffron/term-llm")
 	viper.SetDefault("providers.openrouter.app_title", "term-llm")
@@ -246,6 +256,7 @@ func Load() (*Config, error) {
 	viper.SetDefault("image.output_dir", "~/Pictures/term-llm")
 	viper.SetDefault("image.gemini.model", "gemini-2.5-flash-image")
 	viper.SetDefault("image.openai.model", "gpt-image-1")
+	viper.SetDefault("image.xai.model", "grok-2-image-1212")
 	viper.SetDefault("image.flux.model", "flux-2-pro")
 	viper.SetDefault("image.openrouter.model", "google/gemini-2.5-flash-image")
 	// Search defaults
@@ -420,6 +431,12 @@ func resolveProviderCredentials(name string, cfg *ProviderConfig) error {
 		}
 		// Empty API key is valid for free tier
 
+	case ProviderTypeXAI:
+		cfg.ResolvedAPIKey = expandEnv(cfg.APIKey)
+		if cfg.ResolvedAPIKey == "" {
+			cfg.ResolvedAPIKey = os.Getenv("XAI_API_KEY")
+		}
+
 	case ProviderTypeOpenAICompat:
 		cfg.ResolvedAPIKey = expandEnv(cfg.APIKey)
 		if cfg.ResolvedAPIKey == "" {
@@ -479,6 +496,12 @@ func resolveImageCredentials(cfg *ImageConfig) {
 	cfg.OpenAI.APIKey = expandEnv(cfg.OpenAI.APIKey)
 	if cfg.OpenAI.APIKey == "" {
 		cfg.OpenAI.APIKey = os.Getenv("OPENAI_API_KEY")
+	}
+
+	// xAI image credentials
+	cfg.XAI.APIKey = expandEnv(cfg.XAI.APIKey)
+	if cfg.XAI.APIKey == "" {
+		cfg.XAI.APIKey = os.Getenv("XAI_API_KEY")
 	}
 
 	// Flux (BFL) image credentials

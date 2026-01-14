@@ -10,9 +10,9 @@ A Swiss Army knife for your terminal—AI-powered commands, answers, and images 
 - **Ask questions**: Get answers with optional web search
 - **File editing**: Edit code with AI assistance (supports line ranges)
 - **File context**: Include files, clipboard, stdin, or line ranges as context (`-f`)
-- **Image generation**: Create and edit images (Gemini, OpenAI, Flux)
+- **Image generation**: Create and edit images (Gemini, OpenAI, xAI, Flux)
 - **MCP servers**: Extend with external tools via [Model Context Protocol](https://modelcontextprotocol.io)
-- **Multiple providers**: Anthropic, OpenAI, OpenRouter, Gemini, Zen (free tier), Claude CLI, Ollama, LM Studio
+- **Multiple providers**: Anthropic, OpenAI, xAI (Grok), OpenRouter, Gemini, Zen (free tier), Claude CLI, Ollama, LM Studio
 - **Local LLMs**: Run with Ollama, LM Studio, or any OpenAI-compatible server
 - **Credential reuse**: Works with Codex, gemini-cli credentials
 
@@ -55,7 +55,7 @@ go build
 
 ## Setup
 
-On first run, term-llm will prompt you to choose a provider (Anthropic, OpenAI, OpenRouter, Gemini, Zen, Ollama, or LM Studio).
+On first run, term-llm will prompt you to choose a provider (Anthropic, OpenAI, xAI, OpenRouter, Gemini, Zen, Ollama, or LM Studio).
 
 ### Option 1: Use existing CLI credentials (recommended)
 
@@ -82,6 +82,9 @@ export ANTHROPIC_API_KEY=your-key
 # For OpenAI
 export OPENAI_API_KEY=your-key
 
+# For xAI (Grok)
+export XAI_API_KEY=your-key
+
 # For OpenRouter
 export OPENROUTER_API_KEY=your-key
 
@@ -89,7 +92,40 @@ export OPENROUTER_API_KEY=your-key
 export GEMINI_API_KEY=your-key
 ```
 
-### Option 3: Use OpenRouter
+### Option 3: Use xAI (Grok)
+
+[xAI](https://x.ai) provides access to Grok models with native web search and X (Twitter) search capabilities.
+
+```yaml
+# In ~/.config/term-llm/config.yaml
+default_provider: xai
+
+providers:
+  xai:
+    model: grok-4-1-fast  # default model
+```
+
+**Available models:**
+| Model | Context | Description |
+|-------|---------|-------------|
+| `grok-4-1-fast` | 2M | Latest, best for tool calling (default) |
+| `grok-4-1-fast-reasoning` | 2M | With chain-of-thought reasoning |
+| `grok-4-1-fast-non-reasoning` | 2M | Faster, no reasoning overhead |
+| `grok-4` | 256K | Base Grok 4 model |
+| `grok-3` / `grok-3-fast` | 131K | Previous generation |
+| `grok-3-mini` / `grok-3-mini-fast` | 131K | Smaller, faster |
+| `grok-code-fast-1` | 256K | Optimized for coding tasks |
+
+Or use the `--provider` flag:
+
+```bash
+term-llm ask --provider xai "explain quantum computing"
+term-llm ask --provider xai -s "latest xAI news"  # uses native web + X search
+term-llm ask --provider xai:grok-4-1-fast-reasoning "solve this step by step"
+term-llm ask --provider xai:grok-code-fast-1 "review this code"
+```
+
+### Option 4: Use OpenRouter
 
 [OpenRouter](https://openrouter.ai) provides a unified OpenAI-compatible API across many models. term-llm sends attribution headers by default.
 
@@ -104,7 +140,7 @@ providers:
     app_title: term-llm
 ```
 
-### Option 4: Use OpenCode Zen (free tier available)
+### Option 5: Use OpenCode Zen (free tier available)
 
 [OpenCode Zen](https://opencode.ai) provides free access to GLM 4.7 and other models. No API key required for free tier, or set `ZEN_API_KEY` for paid models:
 
@@ -137,7 +173,7 @@ term-llm models --provider lmstudio   # List local LM Studio models
 term-llm models --json                # Output as JSON
 ```
 
-### Option 5: Use local LLMs (Ollama, LM Studio)
+### Option 6: Use local LLMs (Ollama, LM Studio)
 
 Run models locally with [Ollama](https://ollama.com) or [LM Studio](https://lmstudio.ai):
 
@@ -179,7 +215,7 @@ providers:
 
 The `models` list enables tab completion for `--provider my-server:<TAB>`. The configured `model` is always included in completions.
 
-### Option 6: Use Claude Code (claude-bin)
+### Option 7: Use Claude Code (claude-bin)
 
 If you have [Claude Code](https://claude.ai/code) installed and logged in, you can use the `claude-bin` provider to run completions via the [Claude Agent SDK](https://docs.anthropic.com/en/docs/claude-code/sdk). This requires no API key - it uses Claude Code's existing authentication.
 
@@ -315,9 +351,10 @@ By default, images are:
 # Generate
 term-llm image "cyberpunk cityscape at night"
 term-llm image "minimalist logo" --provider flux
+term-llm image "futuristic city" --provider xai  # uses Grok image model
 term-llm image "watercolor painting" -o ./art.png
 
-# Edit existing image
+# Edit existing image (not supported by xAI)
 term-llm image "add a hat" -i photo.png
 term-llm image "make it look vintage" -i input.png --provider gemini
 term-llm image "add sparkles" -i clipboard       # edit from clipboard
@@ -333,9 +370,12 @@ term-llm image "landscape" --no-display         # don't show in terminal
 |----------|-------|---------------------|------------|
 | Gemini (default) | gemini-2.5-flash-image | `GEMINI_API_KEY` | `image.gemini.api_key` |
 | OpenAI | gpt-image-1 | `OPENAI_API_KEY` | `image.openai.api_key` |
+| xAI | grok-2-image-1212 | `XAI_API_KEY` | `image.xai.api_key` |
 | Flux | flux-2-pro / flux-kontext-pro | `BFL_API_KEY` | `image.flux.api_key` |
 
 Image providers use their own credentials, separate from text providers. This allows using different API keys or accounts for text vs image generation.
+
+**Note:** xAI image generation does not support image editing (`-i` flag).
 
 ## File Editing
 
@@ -600,6 +640,9 @@ providers:
     model: gpt-5.2
     credentials: codex  # or "api_key" (default)
 
+  xai:
+    model: grok-4-1-fast  # grok-4, grok-3, grok-code-fast-1
+
   openrouter:
     model: x-ai/grok-code-fast-1
     app_url: https://github.com/samsaffron/term-llm
@@ -652,7 +695,7 @@ edit:
   diff_format: auto  # auto, udiff, or replace
 
 image:
-  provider: gemini  # gemini, openai, or flux
+  provider: gemini  # gemini, openai, xai, or flux
   output_dir: ~/Pictures/term-llm
 
   gemini:
@@ -662,6 +705,10 @@ image:
   openai:
     api_key: ${OPENAI_API_KEY}
     # model: gpt-image-1
+
+  xai:
+    api_key: ${XAI_API_KEY}
+    # model: grok-2-image-1212
 
   flux:
     api_key: ${BFL_API_KEY}
@@ -755,7 +802,7 @@ Extended thinking allows Claude to reason through complex problems before respon
 
 ### Web Search
 
-When using `-s`/`--search`, some providers (Anthropic, OpenAI, Gemini) have native web search built-in. Others use external tools (configurable search provider + [Jina Reader](https://jina.ai/reader/)).
+When using `-s`/`--search`, some providers (Anthropic, OpenAI, xAI, Gemini) have native web search built-in. xAI also includes X (Twitter) search. Others use external tools (configurable search provider + [Jina Reader](https://jina.ai/reader/)).
 
 You can force external search even for providers with native support—useful for consistency, debugging, or when native search doesn't work well for your use case.
 

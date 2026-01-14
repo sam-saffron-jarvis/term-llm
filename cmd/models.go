@@ -36,8 +36,9 @@ Examples:
 
 func init() {
 	rootCmd.AddCommand(modelsCmd)
-	modelsCmd.Flags().StringVarP(&modelsProvider, "provider", "p", "", "Provider to list models from (anthropic, openrouter, ollama, lmstudio, openai-compat)")
+	modelsCmd.Flags().StringVarP(&modelsProvider, "provider", "p", "", "Provider to list models from (anthropic, openrouter, xai, ollama, lmstudio, openai-compat)")
 	modelsCmd.Flags().BoolVar(&modelsJSON, "json", false, "Output as JSON")
+	modelsCmd.RegisterFlagCompletionFunc("provider", ProviderFlagCompletion)
 }
 
 // ModelLister is an interface for providers that can list available models
@@ -71,11 +72,12 @@ func runModels(cmd *cobra.Command, args []string) error {
 		config.ProviderTypeOpenRouter:   true,
 		config.ProviderTypeOpenAICompat: true,
 		config.ProviderTypeZen:          true,
+		config.ProviderTypeXAI:          true,
 	}
 
 	if !supportedTypes[providerType] {
 		return fmt.Errorf("provider '%s' (type: %s) does not support model listing.\n"+
-			"Model listing is supported for: anthropic, openrouter, zen, and openai_compatible providers", providerName, providerType)
+			"Model listing is supported for: anthropic, openrouter, xai, zen, and openai_compatible providers", providerName, providerType)
 	}
 
 	// Create provider to query models
@@ -98,6 +100,15 @@ func runModels(cmd *cobra.Command, args []string) error {
 		lister = llm.NewOpenAICompatProvider(providerCfg.BaseURL, providerCfg.ResolvedAPIKey, "", providerName)
 	case config.ProviderTypeZen:
 		lister = llm.NewZenProvider(providerCfg.ResolvedAPIKey, "")
+	case config.ProviderTypeXAI:
+		apiKey := providerCfg.ResolvedAPIKey
+		if apiKey == "" {
+			apiKey = os.Getenv("XAI_API_KEY")
+		}
+		if apiKey == "" {
+			return fmt.Errorf("xAI API key not configured. Set XAI_API_KEY or configure api_key")
+		}
+		lister = llm.NewXAIProvider(apiKey, providerCfg.Model)
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -131,6 +142,10 @@ func runModels(cmd *cobra.Command, args []string) error {
 
 	// Pretty print
 	fmt.Printf("Available models from %s:\n\n", providerName)
+
+	// Only these providers return actual pricing info
+	providerHasPricing := providerType == config.ProviderTypeOpenRouter || providerType == config.ProviderTypeZen
+
 	for _, m := range models {
 		if m.DisplayName != "" {
 			fmt.Printf("  %s (%s)", m.ID, m.DisplayName)
@@ -138,11 +153,13 @@ func runModels(cmd *cobra.Command, args []string) error {
 			fmt.Printf("  %s", m.ID)
 		}
 
-		// Show pricing info if available
-		if m.InputPrice == 0 && m.OutputPrice == 0 {
-			fmt.Printf(" [FREE]")
-		} else if m.InputPrice > 0 || m.OutputPrice > 0 {
-			fmt.Printf(" [$%.2f/$%.2f per 1M tokens]", m.InputPrice, m.OutputPrice)
+		// Show pricing info only if provider returns it
+		if providerHasPricing {
+			if m.InputPrice == 0 && m.OutputPrice == 0 {
+				fmt.Printf(" [FREE]")
+			} else {
+				fmt.Printf(" [$%.2f/$%.2f per 1M tokens]", m.InputPrice, m.OutputPrice)
+			}
 		}
 		fmt.Println()
 	}

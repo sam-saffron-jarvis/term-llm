@@ -2,6 +2,7 @@ package llm
 
 import (
 	"fmt"
+	"os"
 	"strings"
 
 	"github.com/samsaffron/term-llm/internal/config"
@@ -73,6 +74,14 @@ func NewProviderByName(cfg *config.Config, name string, model string) (Provider,
 			// zen can work without API key (free tier)
 			provider := NewZenProvider("", model)
 			return WrapWithRetry(provider, DefaultRetryConfig()), nil
+		case config.ProviderTypeXAI:
+			// xai can use XAI_API_KEY env var
+			apiKey := os.Getenv("XAI_API_KEY")
+			if apiKey == "" {
+				return nil, fmt.Errorf("provider %q requires XAI_API_KEY environment variable or explicit config", name)
+			}
+			provider := NewXAIProvider(apiKey, model)
+			return WrapWithRetry(provider, DefaultRetryConfig()), nil
 		default:
 			return nil, fmt.Errorf("provider %q not configured", name)
 		}
@@ -103,6 +112,13 @@ func newProviderInternal(cfg *config.Config) (Provider, error) {
 		case config.ProviderTypeZen:
 			// zen can work without API key (free tier)
 			return NewZenProvider("", ""), nil
+		case config.ProviderTypeXAI:
+			// xai can use XAI_API_KEY env var
+			apiKey := os.Getenv("XAI_API_KEY")
+			if apiKey == "" {
+				return nil, fmt.Errorf("provider %q requires XAI_API_KEY environment variable or explicit config", cfg.DefaultProvider)
+			}
+			return NewXAIProvider(apiKey, ""), nil
 		default:
 			return nil, fmt.Errorf("provider %q not configured", cfg.DefaultProvider)
 		}
@@ -142,6 +158,13 @@ func createProviderFromConfig(name string, cfg *config.ProviderConfig) (Provider
 
 	case config.ProviderTypeZen:
 		return NewZenProvider(cfg.ResolvedAPIKey, cfg.Model), nil
+
+	case config.ProviderTypeXAI:
+		apiKey := cfg.ResolvedAPIKey
+		if apiKey == "" {
+			apiKey = os.Getenv("XAI_API_KEY")
+		}
+		return NewXAIProvider(apiKey, cfg.Model), nil
 
 	case config.ProviderTypeClaudeBin:
 		return NewClaudeBinProvider(cfg.Model), nil

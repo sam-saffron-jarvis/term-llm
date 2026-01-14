@@ -50,6 +50,25 @@ var ProviderModels = map[string][]string{
 		"sonnet",
 		"haiku",
 	},
+	"xai": {
+		// Grok 4.1 (latest, 2M context)
+		"grok-4-1-fast",
+		"grok-4-1-fast-reasoning",
+		"grok-4-1-fast-non-reasoning",
+		// Grok 4 (256K-2M context)
+		"grok-4",
+		"grok-4-fast-reasoning",
+		"grok-4-fast-non-reasoning",
+		// Grok 3 (131K context)
+		"grok-3",
+		"grok-3-fast",
+		"grok-3-mini",
+		"grok-3-mini-fast",
+		// Specialized
+		"grok-code-fast-1",
+		// Grok 2
+		"grok-2",
+	},
 }
 
 var ImageProviderModels = map[string][]string{
@@ -61,7 +80,7 @@ var ImageProviderModels = map[string][]string{
 
 // GetBuiltInProviderNames returns the built-in provider type names
 func GetBuiltInProviderNames() []string {
-	return []string{"anthropic", "openai", "openrouter", "gemini", "zen", "claude-bin"}
+	return []string{"anthropic", "openai", "openrouter", "gemini", "zen", "claude-bin", "xai"}
 }
 
 // GetProviderNames returns valid provider names from config plus built-in types.

@@ -71,6 +71,16 @@ func NewImageProvider(cfg *config.Config, providerOverride string) (ImageProvide
 		}
 		return NewOpenAIProvider(apiKey), nil
 
+	case "xai", "grok":
+		apiKey := cfg.Image.XAI.APIKey
+		if apiKey == "" {
+			return nil, fmt.Errorf("XAI_API_KEY not configured. Set environment variable or add to image.xai.api_key in config")
+		}
+		if model == "" {
+			model = cfg.Image.XAI.Model
+		}
+		return NewXAIProvider(apiKey, model), nil
+
 	case "flux", "bfl":
 		apiKey := cfg.Image.Flux.APIKey
 		if apiKey == "" {
@@ -89,7 +99,7 @@ func NewImageProvider(cfg *config.Config, providerOverride string) (ImageProvide
 		return NewOpenRouterProvider(apiKey, model), nil
 
 	default:
-		return nil, fmt.Errorf("unknown image provider: %s (valid: gemini, openai, flux, openrouter)", provider)
+		return nil, fmt.Errorf("unknown image provider: %s (valid: gemini, openai, xai, flux, openrouter)", provider)
 	}
 }
 

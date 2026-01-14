@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -89,22 +90,38 @@ func (p *OpenAICompatProvider) Capabilities() Capabilities {
 // OpenAI-compatible request/response structures
 // Tool choice can be string ("none"/"auto") or object.
 type oaiChatRequest struct {
-	Model             string       `json:"model"`
-	Messages          []oaiMessage `json:"messages"`
-	Tools             []oaiTool    `json:"tools,omitempty"`
-	ToolChoice        interface{}  `json:"tool_choice,omitempty"`
-	ParallelToolCalls *bool        `json:"parallel_tool_calls,omitempty"`
-	Temperature       *float64     `json:"temperature,omitempty"`
-	TopP              *float64     `json:"top_p,omitempty"`
-	MaxTokens         *int         `json:"max_tokens,omitempty"`
-	Stream            bool         `json:"stream,omitempty"`
+	Model             string            `json:"model"`
+	Messages          []oaiMessage      `json:"messages"`
+	Tools             []oaiTool         `json:"tools,omitempty"`
+	ToolChoice        interface{}       `json:"tool_choice,omitempty"`
+	ParallelToolCalls *bool             `json:"parallel_tool_calls,omitempty"`
+	Temperature       *float64          `json:"temperature,omitempty"`
+	TopP              *float64          `json:"top_p,omitempty"`
+	MaxTokens         *int              `json:"max_tokens,omitempty"`
+	Stream            bool              `json:"stream,omitempty"`
+	StreamOptions     *oaiStreamOptions `json:"stream_options,omitempty"`
+}
+
+type oaiStreamOptions struct {
+	IncludeUsage bool `json:"include_usage"`
 }
 
 type oaiMessage struct {
 	Role       string        `json:"role"`
-	Content    string        `json:"content,omitempty"`
+	Content    interface{}   `json:"content,omitempty"` // string or []oaiContentPart for multimodal
 	ToolCalls  []oaiToolCall `json:"tool_calls,omitempty"`
 	ToolCallID string        `json:"tool_call_id,omitempty"`
+}
+
+type oaiContentPart struct {
+	Type     string       `json:"type"`
+	Text     string       `json:"text,omitempty"`
+	ImageURL *oaiImageURL `json:"image_url,omitempty"`
+}
+
+type oaiImageURL struct {
+	URL    string `json:"url"`
+	Detail string `json:"detail,omitempty"`
 }
 
 type oaiTool struct {
@@ -168,6 +185,14 @@ type oaiModel struct {
 	Object  string `json:"object"`
 	Created int64  `json:"created"`
 	OwnedBy string `json:"owned_by"`
+	// OpenRouter-specific fields
+	Name    string           `json:"name,omitempty"`
+	Pricing *oaiModelPricing `json:"pricing,omitempty"`
+}
+
+type oaiModelPricing struct {
+	Prompt     string `json:"prompt"`
+	Completion string `json:"completion"`
 }
 
 func (p *OpenAICompatProvider) makeRequest(ctx context.Context, method, endpoint string, body []byte) (*http.Response, error) {
@@ -258,11 +283,22 @@ func (p *OpenAICompatProvider) ListModels(ctx context.Context) ([]ModelInfo, err
 
 	models := make([]ModelInfo, len(modelsResp.Data))
 	for i, m := range modelsResp.Data {
-		models[i] = ModelInfo{
-			ID:      m.ID,
-			Created: m.Created,
-			OwnedBy: m.OwnedBy,
+		info := ModelInfo{
+			ID:          m.ID,
+			DisplayName: m.Name,
+			Created:     m.Created,
+			OwnedBy:     m.OwnedBy,
 		}
+		// Parse OpenRouter-style pricing (per-token prices as strings)
+		if m.Pricing != nil {
+			if v, err := strconv.ParseFloat(m.Pricing.Prompt, 64); err == nil {
+				info.InputPrice = v * 1_000_000 // Convert to per-million tokens
+			}
+			if v, err := strconv.ParseFloat(m.Pricing.Completion, 64); err == nil {
+				info.OutputPrice = v * 1_000_000
+			}
+		}
+		models[i] = info
 	}
 
 	return models, nil
@@ -377,8 +413,8 @@ func (p *OpenAICompatProvider) Stream(ctx context.Context, req Request) (Stream,
 
 			for _, choice := range chatResp.Choices {
 				if choice.Delta != nil {
-					if choice.Delta.Content != "" {
-						events <- Event{Type: EventTextDelta, Text: choice.Delta.Content}
+					if content, ok := choice.Delta.Content.(string); ok && content != "" {
+						events <- Event{Type: EventTextDelta, Text: content}
 					}
 					if len(choice.Delta.ToolCalls) > 0 {
 						toolState.Add(choice.Delta.ToolCalls)
@@ -428,15 +464,62 @@ func buildCompatMessages(messages []Message) []oaiMessage {
 				if part.Type != PartToolResult || part.ToolResult == nil {
 					continue
 				}
+				// Check for embedded image data in tool result
+				mimeType, base64Data, textContent := parseCompatImageData(part.ToolResult.Content)
+
+				// Add tool result with text content (without image marker)
 				result = append(result, oaiMessage{
 					Role:       "tool",
-					Content:    part.ToolResult.Content,
+					Content:    textContent,
 					ToolCallID: part.ToolResult.ID,
 				})
+
+				// If there's image data, add a user message with the image
+				if base64Data != "" {
+					dataURL := fmt.Sprintf("data:%s;base64,%s", mimeType, base64Data)
+					result = append(result, oaiMessage{
+						Role: "user",
+						Content: []oaiContentPart{
+							{Type: "text", Text: "Here is the image from the tool result:"},
+							{Type: "image_url", ImageURL: &oaiImageURL{URL: dataURL, Detail: "auto"}},
+						},
+					})
+				}
 			}
 		}
 	}
 	return result
+}
+
+// parseCompatImageData extracts image data from a tool result.
+// Returns mime type, base64 data, and the text content with the image marker removed.
+func parseCompatImageData(content string) (mimeType, base64Data, textContent string) {
+	const prefix = "[IMAGE_DATA:"
+	const suffix = "]"
+
+	start := strings.Index(content, prefix)
+	if start == -1 {
+		return "", "", content
+	}
+
+	end := strings.Index(content[start:], suffix)
+	if end == -1 {
+		return "", "", content
+	}
+
+	// Extract the image data portion
+	imageMarker := content[start : start+end+1]
+	data := content[start+len(prefix) : start+end]
+	parts := strings.SplitN(data, ":", 2)
+	if len(parts) != 2 {
+		return "", "", content
+	}
+
+	// Remove the image marker from text content
+	textContent = strings.Replace(content, imageMarker, "", 1)
+	textContent = strings.TrimSpace(textContent)
+
+	return parts[0], parts[1], textContent
 }
 
 func splitParts(parts []Part) (string, []oaiToolCall) {
