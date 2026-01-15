@@ -12,10 +12,8 @@ import (
 	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/glamour"
-	"github.com/charmbracelet/glamour/ansi"
 	"github.com/charmbracelet/huh"
 	"github.com/charmbracelet/lipgloss"
-	"github.com/charmbracelet/glamour/styles"
 	"github.com/samsaffron/term-llm/internal/input"
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/mcp"
@@ -957,11 +955,12 @@ func streamWithGlamour(ctx context.Context, output <-chan string, toolEvents <-c
 
 // renderMarkdown renders markdown content using glamour
 func renderMarkdown(content string, width int) (string, error) {
-	style := styles.DraculaStyleConfig
-	style.Document.Margin = uintPtr(0)
+	style := ui.GlamourStyle()
+	margin := uint(0)
+	style.Document.Margin = &margin
 	style.Document.BlockPrefix = ""
 	style.Document.BlockSuffix = ""
-	style.CodeBlock.Margin = uintPtr(0)
+	style.CodeBlock.Margin = &margin
 
 	renderer, err := glamour.NewTermRenderer(
 		glamour.WithStyles(style),
@@ -979,10 +978,6 @@ func renderMarkdown(content string, width int) (string, error) {
 	// Don't apply wordwrap - glamour already handles wrapping,
 	// and wordwrap breaks ANSI escape codes
 	return strings.TrimSpace(rendered), nil
-}
-
-func uintPtr(v uint) *uint {
-	return &v
 }
 
 // enableMCPServersWithFeedback initializes MCP servers with user feedback.
@@ -1102,6 +1097,3 @@ func parseServerList(mcpFlag string) []string {
 	}
 	return servers
 }
-
-// Ensure ansi package is imported for style config
-var _ = ansi.StyleConfig{}

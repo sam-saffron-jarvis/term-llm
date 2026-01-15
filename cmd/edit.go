@@ -60,8 +60,9 @@ Line range syntax:
 Context files:
   Use --context/-c to include read-only reference files that inform the edit
   but won't be modified themselves.`,
-	Args: cobra.MinimumNArgs(1),
-	RunE: runEdit,
+	Args:         cobra.MinimumNArgs(1),
+	SilenceUsage: true,
+	RunE:         runEdit,
 }
 
 func init() {

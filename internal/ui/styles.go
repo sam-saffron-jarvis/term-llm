@@ -3,6 +3,7 @@ package ui
 import (
 	"os"
 
+	"github.com/charmbracelet/glamour/ansi"
 	"github.com/charmbracelet/lipgloss"
 )
 
@@ -30,22 +31,22 @@ type Theme struct {
 	DiffContextBg lipgloss.Color // background for context lines
 }
 
-// DefaultTheme returns the default color theme
+// DefaultTheme returns the default color theme (gruvbox)
 func DefaultTheme() *Theme {
 	return &Theme{
-		Primary:       lipgloss.Color("10"),      // bright green
-		Secondary:     lipgloss.Color("4"),       // blue
-		Success:       lipgloss.Color("10"),      // bright green
-		Error:         lipgloss.Color("9"),       // bright red
-		Warning:       lipgloss.Color("11"),      // yellow
-		Muted:         lipgloss.Color("245"),     // light grey
-		Text:          lipgloss.Color("15"),      // white
-		Spinner:       lipgloss.Color("205"),     // pink/magenta
-		Border:        lipgloss.Color("240"),     // grey border
+		Primary:       lipgloss.Color("#b8bb26"), // gruvbox green
+		Secondary:     lipgloss.Color("#83a598"), // gruvbox aqua
+		Success:       lipgloss.Color("#b8bb26"), // gruvbox green
+		Error:         lipgloss.Color("#fb4934"), // gruvbox red
+		Warning:       lipgloss.Color("#fabd2f"), // gruvbox yellow
+		Muted:         lipgloss.Color("#928374"), // gruvbox gray
+		Text:          lipgloss.Color("#ebdbb2"), // gruvbox foreground
+		Spinner:       lipgloss.Color("#d3869b"), // gruvbox purple
+		Border:        lipgloss.Color("#83a598"), // gruvbox aqua (matches secondary)
 		Background:    lipgloss.Color(""),        // default/transparent
-		DiffAddBg:     lipgloss.Color("#1a2f1a"), // dark green tint
-		DiffRemoveBg:  lipgloss.Color("#2f1a1a"), // dark red tint
-		DiffContextBg: lipgloss.Color("#1a1a1a"), // dark gray
+		DiffAddBg:     lipgloss.Color("#1d2021"), // gruvbox dark bg with green tint
+		DiffRemoveBg:  lipgloss.Color("#1d2021"), // gruvbox dark bg with red tint
+		DiffContextBg: lipgloss.Color("#1d2021"), // gruvbox dark bg
 	}
 }
 
@@ -262,4 +263,241 @@ func Truncate(s string, maxLen int) string {
 		return s[:maxLen]
 	}
 	return s[:maxLen-3] + "..."
+}
+
+// GlamourStyle returns a glamour StyleConfig based on the current theme
+func GlamourStyle() ansi.StyleConfig {
+	return GlamourStyleFromTheme(currentTheme)
+}
+
+// GlamourStyleFromTheme creates a glamour StyleConfig from the given theme
+func GlamourStyleFromTheme(theme *Theme) ansi.StyleConfig {
+	// Convert lipgloss colors to string pointers
+	primary := string(theme.Primary)
+	secondary := string(theme.Secondary)
+	success := string(theme.Success)
+	warning := string(theme.Warning)
+	muted := string(theme.Muted)
+	text := string(theme.Text)
+
+	return ansi.StyleConfig{
+		Document: ansi.StyleBlock{
+			StylePrimitive: ansi.StylePrimitive{
+				BlockPrefix: "\n",
+				BlockSuffix: "\n",
+				Color:       &text,
+			},
+			Margin: uintPtr(2),
+		},
+		BlockQuote: ansi.StyleBlock{
+			StylePrimitive: ansi.StylePrimitive{
+				Color:  &warning,
+				Italic: boolPtr(true),
+			},
+			Indent: uintPtr(2),
+		},
+		List: ansi.StyleList{
+			LevelIndent: 2,
+			StyleBlock: ansi.StyleBlock{
+				StylePrimitive: ansi.StylePrimitive{
+					Color: &text,
+				},
+			},
+		},
+		Heading: ansi.StyleBlock{
+			StylePrimitive: ansi.StylePrimitive{
+				BlockSuffix: "\n",
+				Color:       &secondary,
+				Bold:        boolPtr(true),
+			},
+		},
+		H1: ansi.StyleBlock{
+			StylePrimitive: ansi.StylePrimitive{
+				Prefix: "# ",
+			},
+		},
+		H2: ansi.StyleBlock{
+			StylePrimitive: ansi.StylePrimitive{
+				Prefix: "## ",
+			},
+		},
+		H3: ansi.StyleBlock{
+			StylePrimitive: ansi.StylePrimitive{
+				Prefix: "### ",
+			},
+		},
+		H4: ansi.StyleBlock{
+			StylePrimitive: ansi.StylePrimitive{
+				Prefix: "#### ",
+			},
+		},
+		H5: ansi.StyleBlock{
+			StylePrimitive: ansi.StylePrimitive{
+				Prefix: "##### ",
+			},
+		},
+		H6: ansi.StyleBlock{
+			StylePrimitive: ansi.StylePrimitive{
+				Prefix: "###### ",
+			},
+		},
+		Strikethrough: ansi.StylePrimitive{
+			CrossedOut: boolPtr(true),
+		},
+		Emph: ansi.StylePrimitive{
+			Color:  &warning,
+			Italic: boolPtr(true),
+		},
+		Strong: ansi.StylePrimitive{
+			Bold:  boolPtr(true),
+			Color: &primary,
+		},
+		HorizontalRule: ansi.StylePrimitive{
+			Color:  &muted,
+			Format: "\n--------\n",
+		},
+		Item: ansi.StylePrimitive{
+			BlockPrefix: "• ",
+		},
+		Enumeration: ansi.StylePrimitive{
+			BlockPrefix: ". ",
+			Color:       &secondary,
+		},
+		Task: ansi.StyleTask{
+			StylePrimitive: ansi.StylePrimitive{},
+			Ticked:         "[✓] ",
+			Unticked:       "[ ] ",
+		},
+		Link: ansi.StylePrimitive{
+			Color:     &secondary,
+			Underline: boolPtr(true),
+		},
+		LinkText: ansi.StylePrimitive{
+			Color: &primary,
+		},
+		Image: ansi.StylePrimitive{
+			Color:     &secondary,
+			Underline: boolPtr(true),
+		},
+		ImageText: ansi.StylePrimitive{
+			Color:  &muted,
+			Format: "Image: {{.text}} →",
+		},
+		Code: ansi.StyleBlock{
+			StylePrimitive: ansi.StylePrimitive{
+				Color: &primary,
+			},
+		},
+		CodeBlock: ansi.StyleCodeBlock{
+			StyleBlock: ansi.StyleBlock{
+				StylePrimitive: ansi.StylePrimitive{
+					Color: &text,
+				},
+				Margin: uintPtr(2),
+			},
+			Chroma: &ansi.Chroma{
+				Text: ansi.StylePrimitive{
+					Color: &text,
+				},
+				Comment: ansi.StylePrimitive{
+					Color: &muted,
+				},
+				CommentPreproc: ansi.StylePrimitive{
+					Color: &muted,
+				},
+				Keyword: ansi.StylePrimitive{
+					Color: &primary,
+				},
+				KeywordReserved: ansi.StylePrimitive{
+					Color: &primary,
+				},
+				KeywordNamespace: ansi.StylePrimitive{
+					Color: &primary,
+				},
+				KeywordType: ansi.StylePrimitive{
+					Color: &secondary,
+				},
+				Operator: ansi.StylePrimitive{
+					Color: &text,
+				},
+				Punctuation: ansi.StylePrimitive{
+					Color: &text,
+				},
+				Name: ansi.StylePrimitive{
+					Color: &text,
+				},
+				NameBuiltin: ansi.StylePrimitive{
+					Color: &secondary,
+				},
+				NameTag: ansi.StylePrimitive{
+					Color: &primary,
+				},
+				NameAttribute: ansi.StylePrimitive{
+					Color: &success,
+				},
+				NameClass: ansi.StylePrimitive{
+					Color:     &secondary,
+					Underline: boolPtr(true),
+					Bold:      boolPtr(true),
+				},
+				NameConstant: ansi.StylePrimitive{
+					Color: &secondary,
+				},
+				NameDecorator: ansi.StylePrimitive{
+					Color: &success,
+				},
+				NameFunction: ansi.StylePrimitive{
+					Color: &success,
+				},
+				LiteralNumber: ansi.StylePrimitive{
+					Color: &secondary,
+				},
+				LiteralString: ansi.StylePrimitive{
+					Color: &warning,
+				},
+				LiteralStringEscape: ansi.StylePrimitive{
+					Color: &primary,
+				},
+				GenericDeleted: ansi.StylePrimitive{
+					Color: &muted,
+				},
+				GenericEmph: ansi.StylePrimitive{
+					Italic: boolPtr(true),
+				},
+				GenericInserted: ansi.StylePrimitive{
+					Color: &success,
+				},
+				GenericStrong: ansi.StylePrimitive{
+					Bold: boolPtr(true),
+				},
+				GenericSubheading: ansi.StylePrimitive{
+					Color: &secondary,
+				},
+				Background: ansi.StylePrimitive{},
+			},
+		},
+		Table: ansi.StyleTable{
+			StyleBlock: ansi.StyleBlock{
+				StylePrimitive: ansi.StylePrimitive{},
+			},
+			CenterSeparator: stringPtr("┼"),
+			ColumnSeparator: stringPtr("│"),
+			RowSeparator:    stringPtr("─"),
+		},
+		DefinitionDescription: ansi.StylePrimitive{
+			BlockPrefix: "\n🠶 ",
+		},
+	}
+}
+
+func boolPtr(b bool) *bool {
+	return &b
+}
+
+func uintPtr(u uint) *uint {
+	return &u
+}
+
+func stringPtr(s string) *string {
+	return &s
 }

@@ -10,7 +10,6 @@ import (
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/glamour"
-	"github.com/charmbracelet/glamour/styles"
 	"golang.org/x/term"
 )
 
@@ -682,11 +681,12 @@ func (m infoModel) View() string {
 
 // renderInfoMarkdown renders content with glamour for info display
 func renderInfoMarkdown(content string, width int) string {
-	style := styles.DraculaStyleConfig
-	style.Document.Margin = uintPtr(0)
+	style := GlamourStyle()
+	margin := uint(0)
+	style.Document.Margin = &margin
 	style.Document.BlockPrefix = ""
 	style.Document.BlockSuffix = ""
-	style.CodeBlock.Margin = uintPtr(0)
+	style.CodeBlock.Margin = &margin
 
 	renderer, err := glamour.NewTermRenderer(
 		glamour.WithStyles(style),

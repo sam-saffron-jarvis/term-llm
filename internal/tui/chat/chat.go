@@ -14,7 +14,6 @@ import (
 	"github.com/charmbracelet/bubbles/textarea"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/glamour"
-	"github.com/charmbracelet/glamour/styles"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/mattn/go-runewidth"
 	"github.com/samsaffron/term-llm/internal/config"
@@ -1850,11 +1849,12 @@ func (m *Model) renderMarkdown(content string) string {
 		return ""
 	}
 
-	style := styles.DraculaStyleConfig
-	style.Document.Margin = uintPtr(0)
+	style := ui.GlamourStyle()
+	margin := uint(0)
+	style.Document.Margin = &margin
 	style.Document.BlockPrefix = ""
 	style.Document.BlockSuffix = ""
-	style.CodeBlock.Margin = uintPtr(0)
+	style.CodeBlock.Margin = &margin
 
 	renderer, err := glamour.NewTermRenderer(
 		glamour.WithStyles(style),
@@ -1870,10 +1870,6 @@ func (m *Model) renderMarkdown(content string) string {
 	}
 
 	return strings.TrimSpace(rendered)
-}
-
-func uintPtr(v uint) *uint {
-	return &v
 }
 
 // attachFile attempts to attach a file, prompting for directory approval if needed

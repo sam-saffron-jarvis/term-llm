@@ -11,7 +11,6 @@ import (
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/glamour"
-	"github.com/charmbracelet/glamour/styles"
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/prompt"
 	"golang.org/x/term"
@@ -200,11 +199,12 @@ func (m helpModel) View() string {
 
 // renderMarkdown renders content with glamour
 func renderMarkdown(content string, width int) string {
-	style := styles.DraculaStyleConfig
-	style.Document.Margin = uintPtr(0)
+	style := GlamourStyle()
+	margin := uint(0)
+	style.Document.Margin = &margin
 	style.Document.BlockPrefix = ""
 	style.Document.BlockSuffix = ""
-	style.CodeBlock.Margin = uintPtr(0)
+	style.CodeBlock.Margin = &margin
 
 	renderer, err := glamour.NewTermRenderer(
 		glamour.WithStyles(style),
@@ -239,8 +239,4 @@ func getTerminalSize() (int, int) {
 		height = 24
 	}
 	return width, height
-}
-
-func uintPtr(v uint) *uint {
-	return &v
 }
