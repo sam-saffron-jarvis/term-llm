@@ -6,10 +6,10 @@
 - `internal/config/`, `internal/llm/`, `internal/prompt/`, and `internal/ui/` contain the core implementation.
 - `internal/llm/` has a clean `Provider` interface with implementations:
   - `anthropic.go` – Anthropic API (Claude)
-  - `openai.go` – Standard OpenAI API
-  - `codex.go` – ChatGPT backend via Codex OAuth
+  - `openai.go` – OpenAI Responses API (API key auth, OPENAI_API_KEY)
+  - `codex.go` – OpenAI Responses API via Codex OAuth (~/.codex/auth.json)
   - `gemini.go` – Google Gemini API (consumer API key)
-  - `codeassist.go` – Google Code Assist API (gemini-cli OAuth)
+  - `gemini_cli.go` – Google Code Assist API (gemini-cli OAuth)
   - `zen.go` – OpenCode Zen API (free tier, no API key required)
 - `internal/image/` has `ImageProvider` interface for image generation:
   - `gemini.go` – Gemini image generation (gemini-2.5-flash-image)

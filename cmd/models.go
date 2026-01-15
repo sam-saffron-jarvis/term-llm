@@ -58,17 +58,23 @@ func runModels(cmd *cobra.Command, args []string) error {
 		providerName = cfg.DefaultProvider
 	}
 
-	// Get provider config
+	// Get provider config - handle built-in providers that may not be explicitly configured
 	providerCfg, ok := cfg.Providers[providerName]
+	providerType := config.InferProviderType(providerName, providerCfg.Type)
+
+	// For built-in providers without explicit config, check if they have a static model list
 	if !ok {
+		// Check if it's a built-in provider with a static model list
+		if staticModels, hasStatic := llm.ProviderModels[providerName]; hasStatic {
+			return printStaticModels(providerName, staticModels)
+		}
 		return fmt.Errorf("provider '%s' is not configured", providerName)
 	}
-
-	providerType := config.InferProviderType(providerName, providerCfg.Type)
 
 	// Validate provider supports model listing
 	supportedTypes := map[config.ProviderType]bool{
 		config.ProviderTypeAnthropic:    true,
+		config.ProviderTypeOpenAI:       true,
 		config.ProviderTypeOpenRouter:   true,
 		config.ProviderTypeOpenAICompat: true,
 		config.ProviderTypeZen:          true,
@@ -76,6 +82,10 @@ func runModels(cmd *cobra.Command, args []string) error {
 	}
 
 	if !supportedTypes[providerType] {
+		// Fall back to static model list if available
+		if staticModels, hasStatic := llm.ProviderModels[providerName]; hasStatic {
+			return printStaticModels(providerName, staticModels)
+		}
 		return fmt.Errorf("provider '%s' (type: %s) does not support model listing.\n"+
 			"Model listing is supported for: anthropic, openrouter, xai, zen, and openai_compatible providers", providerName, providerType)
 	}
@@ -88,6 +98,11 @@ func runModels(cmd *cobra.Command, args []string) error {
 			return fmt.Errorf("anthropic API key not configured. Set ANTHROPIC_API_KEY or configure credentials")
 		}
 		lister = llm.NewAnthropicProvider(providerCfg.ResolvedAPIKey, providerCfg.Model)
+	case config.ProviderTypeOpenAI:
+		if providerCfg.ResolvedAPIKey == "" {
+			return fmt.Errorf("openai API key not configured. Set OPENAI_API_KEY or configure api_key")
+		}
+		lister = llm.NewOpenAIProvider(providerCfg.ResolvedAPIKey, providerCfg.Model)
 	case config.ProviderTypeOpenRouter:
 		if providerCfg.ResolvedAPIKey == "" {
 			return fmt.Errorf("openrouter API key not configured. Set OPENROUTER_API_KEY or configure api_key")
@@ -168,5 +183,30 @@ func runModels(cmd *cobra.Command, args []string) error {
 	fmt.Printf("  providers:\n    %s:\n", providerName)
 	fmt.Printf("    model: <model-name>\n")
 
+	return nil
+}
+
+// printStaticModels prints a static list of models for providers without a ListModels API
+func printStaticModels(providerName string, models []string) error {
+	if modelsJSON {
+		type staticModel struct {
+			ID string `json:"id"`
+		}
+		var jsonModels []staticModel
+		for _, m := range models {
+			jsonModels = append(jsonModels, staticModel{ID: m})
+		}
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		return enc.Encode(jsonModels)
+	}
+
+	fmt.Printf("Available models for %s:\n\n", providerName)
+	for _, m := range models {
+		fmt.Printf("  %s\n", m)
+	}
+	fmt.Printf("\nTo use a model, add to your config:\n")
+	fmt.Printf("  providers:\n    %s:\n", providerName)
+	fmt.Printf("      model: <model-name>\n")
 	return nil
 }

@@ -103,17 +103,19 @@ type ToolChoice struct {
 
 // ToolCall is a model-requested tool invocation.
 type ToolCall struct {
-	ID        string
-	Name      string
-	Arguments json.RawMessage
+	ID             string
+	Name           string
+	Arguments      json.RawMessage
+	ThoughtSig     []byte // Gemini 3 thought signature (must be passed back in result)
 }
 
 // ToolResult is the output from executing a tool call.
 type ToolResult struct {
-	ID      string
-	Name    string
-	Content string
-	IsError bool // True if this result represents a tool execution error
+	ID         string
+	Name       string
+	Content    string
+	IsError    bool   // True if this result represents a tool execution error
+	ThoughtSig []byte // Gemini 3 thought signature (passed through from ToolCall)
 }
 
 // EventType describes streaming events.
@@ -200,15 +202,16 @@ func AssistantText(text string) Message {
 	}
 }
 
-func ToolResultMessage(id, name, content string) Message {
+func ToolResultMessage(id, name, content string, thoughtSig []byte) Message {
 	return Message{
 		Role: RoleTool,
 		Parts: []Part{{
 			Type: PartToolResult,
 			ToolResult: &ToolResult{
-				ID:      id,
-				Name:    name,
-				Content: content,
+				ID:         id,
+				Name:       name,
+				Content:    content,
+				ThoughtSig: thoughtSig,
 			},
 		}},
 	}
@@ -216,16 +219,17 @@ func ToolResultMessage(id, name, content string) Message {
 
 // ToolErrorMessage creates a tool result message that indicates an error.
 // The error is passed to the LLM so it can respond gracefully instead of failing the stream.
-func ToolErrorMessage(id, name, errorText string) Message {
+func ToolErrorMessage(id, name, errorText string, thoughtSig []byte) Message {
 	return Message{
 		Role: RoleTool,
 		Parts: []Part{{
 			Type: PartToolResult,
 			ToolResult: &ToolResult{
-				ID:      id,
-				Name:    name,
-				Content: errorText,
-				IsError: true,
+				ID:         id,
+				Name:       name,
+				Content:    errorText,
+				IsError:    true,
+				ThoughtSig: thoughtSig,
 			},
 		}},
 	}

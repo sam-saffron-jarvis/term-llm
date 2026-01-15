@@ -7,14 +7,15 @@ import (
 	"path/filepath"
 )
 
+// codexAuth matches the structure of ~/.codex/auth.json
 type codexAuth struct {
-	OpenAIAPIKey *string      `json:"OPENAI_API_KEY"`
-	Tokens       *codexTokens `json:"tokens"`
+	OpenAIAPIKey *string      `json:"OPENAI_API_KEY,omitempty"`
+	Tokens       *codexTokens `json:"tokens,omitempty"`
 }
 
 type codexTokens struct {
 	AccessToken string  `json:"access_token"`
-	AccountID   *string `json:"account_id"`
+	AccountID   *string `json:"account_id,omitempty"`
 }
 
 // CodexCredentials holds the token and optional account ID for Codex auth
@@ -26,6 +27,7 @@ type CodexCredentials struct {
 // GetCodexCredentials retrieves the OpenAI credentials from Codex auth.
 // It reads from ~/.codex/auth.json and returns the OAuth access_token
 // along with the account_id (needed for ChatGPT backend API).
+// If tokens are expired, run 'codex login' to refresh them.
 func GetCodexCredentials() (*CodexCredentials, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {

@@ -15,6 +15,7 @@ import (
 )
 
 const chatGPTResponsesURL = "https://chatgpt.com/backend-api/codex/responses"
+const codexDefaultModel = "gpt-5.2-codex"
 
 // Model family -> prompt file mapping (from openai/codex repo)
 var codexPromptFiles = map[string]string{
@@ -54,6 +55,9 @@ type CodexProvider struct {
 }
 
 func NewCodexProvider(accessToken, model, accountID string) *CodexProvider {
+	if model == "" {
+		model = codexDefaultModel
+	}
 	actualModel, effort := parseModelEffort(model)
 	return &CodexProvider{
 		accessToken: accessToken,

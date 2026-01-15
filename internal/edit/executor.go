@@ -586,7 +586,7 @@ func (e *StreamEditExecutor) executeReadContextCalls(calls []llm.ToolCall, conte
 		if call.Name != ReadContextToolName {
 			// Unknown tool - return error
 			results = append(results, llm.ToolResultMessage(callID, call.Name,
-				fmt.Sprintf("error: unknown tool %q", call.Name)))
+				fmt.Sprintf("error: unknown tool %q", call.Name), call.ThoughtSig))
 			continue
 		}
 
@@ -594,13 +594,13 @@ func (e *StreamEditExecutor) executeReadContextCalls(calls []llm.ToolCall, conte
 		var args readContextArgs
 		if err := json.Unmarshal(call.Arguments, &args); err != nil {
 			results = append(results, llm.ToolResultMessage(callID, call.Name,
-				fmt.Sprintf("error: invalid arguments: %v", err)))
+				fmt.Sprintf("error: invalid arguments: %v", err), call.ThoughtSig))
 			continue
 		}
 
 		if args.Path == "" {
 			results = append(results, llm.ToolResultMessage(callID, call.Name,
-				"error: path is required"))
+				"error: path is required", call.ThoughtSig))
 			continue
 		}
 
@@ -608,7 +608,7 @@ func (e *StreamEditExecutor) executeReadContextCalls(calls []llm.ToolCall, conte
 		content, resolvedPath, ok := findWorkingContent(contents, args.Path)
 		if !ok {
 			results = append(results, llm.ToolResultMessage(callID, call.Name,
-				fmt.Sprintf("error: file not found: %s", args.Path)))
+				fmt.Sprintf("error: file not found: %s", args.Path), call.ThoughtSig))
 			continue
 		}
 
@@ -627,7 +627,7 @@ func (e *StreamEditExecutor) executeReadContextCalls(calls []llm.ToolCall, conte
 				resolvedPath, startLine, endLine, len(excerpt))
 		}
 
-		results = append(results, llm.ToolResultMessage(callID, call.Name, excerpt))
+		results = append(results, llm.ToolResultMessage(callID, call.Name, excerpt, call.ThoughtSig))
 	}
 
 	return results

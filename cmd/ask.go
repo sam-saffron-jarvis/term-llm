@@ -181,7 +181,20 @@ func runAsk(cmd *cobra.Command, args []string) error {
 
 	// Add tools to request if any are registered (local or MCP)
 	if toolMgr != nil || mcpManager != nil {
-		req.Tools = engine.Tools().AllSpecs()
+		allSpecs := engine.Tools().AllSpecs()
+		// Filter out search tools unless search is enabled
+		// (Engine adds them automatically when req.Search is true)
+		if !askSearch {
+			var filtered []llm.ToolSpec
+			for _, spec := range allSpecs {
+				if spec.Name != llm.WebSearchToolName && spec.Name != llm.ReadURLToolName {
+					filtered = append(filtered, spec)
+				}
+			}
+			req.Tools = filtered
+		} else {
+			req.Tools = allSpecs
+		}
 		req.ToolChoice = llm.ToolChoice{Mode: llm.ToolChoiceAuto}
 	}
 

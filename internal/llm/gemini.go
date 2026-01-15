@@ -59,6 +59,9 @@ func parseGeminiModelThinking(model string) (string, geminiThinkingConfig) {
 }
 
 func NewGeminiProvider(apiKey, model string) *GeminiProvider {
+	if model == "" {
+		model = "gemini-3-flash-preview"
+	}
 	baseModel, thinkingCfg := parseGeminiModelThinking(model)
 	return &GeminiProvider{
 		apiKey:         apiKey,
@@ -150,9 +153,34 @@ func (p *GeminiProvider) Stream(ctx context.Context, req Request) (Stream, error
 			if err != nil {
 				return fmt.Errorf("gemini API error: %w", err)
 			}
-			for _, fc := range resp.FunctionCalls() {
-				argsJSON, _ := jsonMarshal(fc.Args)
-				events <- Event{Type: EventToolCall, Tool: &ToolCall{ID: "", Name: fc.Name, Arguments: argsJSON}}
+			// Extract text and function calls with thought signatures from Parts
+			// Gemini 3 returns thought signature that must be passed back with tool results
+			var lastThoughtSig []byte
+			if len(resp.Candidates) > 0 && resp.Candidates[0].Content != nil {
+				for _, part := range resp.Candidates[0].Content.Parts {
+					// Capture thought signature from thought parts
+					if part.Thought && len(part.ThoughtSignature) > 0 {
+						lastThoughtSig = part.ThoughtSignature
+					}
+					// Emit text parts (skip thought parts which are internal)
+					if part.Text != "" && !part.Thought {
+						events <- Event{Type: EventTextDelta, Text: part.Text}
+					}
+					if part.FunctionCall != nil {
+						argsJSON, _ := jsonMarshal(part.FunctionCall.Args)
+						// Use thought signature from this part or preceding thought part
+						thoughtSig := part.ThoughtSignature
+						if thoughtSig == nil {
+							thoughtSig = lastThoughtSig
+						}
+						events <- Event{Type: EventToolCall, Tool: &ToolCall{
+							ID:         part.FunctionCall.ID,
+							Name:       part.FunctionCall.Name,
+							Arguments:  argsJSON,
+							ThoughtSig: thoughtSig,
+						}}
+					}
+				}
 			}
 			emitGeminiUsage(events, resp)
 			events <- Event{Type: EventDone}
@@ -298,6 +326,7 @@ func buildGeminiContent(role string, parts []Part) *genai.Content {
 					Name: part.ToolCall.Name,
 					Args: args,
 				},
+				ThoughtSignature: part.ToolCall.ThoughtSig, // Required for Gemini 3 thinking models
 			})
 		}
 	}
@@ -323,12 +352,14 @@ func buildGeminiToolResultContent(parts []Part) *genai.Content {
 			mimeType, base64Data, textContent := parseToolResultImageData(part.ToolResult.Content)
 
 			// Add the function response with text content only
+			// Include ThoughtSignature if present (required for Gemini 3 thinking models)
 			content.Parts = append(content.Parts, &genai.Part{
 				FunctionResponse: &genai.FunctionResponse{
 					ID:       part.ToolResult.ID,
 					Name:     part.ToolResult.Name,
 					Response: map[string]any{"output": textContent},
 				},
+				ThoughtSignature: part.ToolResult.ThoughtSig,
 			})
 
 			// If image data was found, add it as inline data

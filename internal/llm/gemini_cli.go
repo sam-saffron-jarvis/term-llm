@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -258,8 +259,8 @@ func codeAssistPlatform() string {
 	return platform
 }
 
-// CodeAssistProvider implements Provider using Google Code Assist API with OAuth
-type CodeAssistProvider struct {
+// GeminiCLIProvider implements Provider using Google Code Assist API with OAuth
+type GeminiCLIProvider struct {
 	creds       *credentials.GeminiOAuthCredentials
 	model       string
 	projectID   string                  // cached after loadCodeAssist
@@ -270,9 +271,12 @@ type CodeAssistProvider struct {
 	thinkingBudget       *int32 // for Gemini 2.5: 0, 8192, etc.
 }
 
-func NewCodeAssistProvider(creds *credentials.GeminiOAuthCredentials, model string) *CodeAssistProvider {
+func NewGeminiCLIProvider(creds *credentials.GeminiOAuthCredentials, model string) *GeminiCLIProvider {
+	if model == "" {
+		model = "gemini-3-flash-preview"
+	}
 	baseModel, thinkingCfg := parseGeminiModelThinking(model)
-	return &CodeAssistProvider{
+	return &GeminiCLIProvider{
 		creds:          creds,
 		model:          baseModel,
 		thinkingLevel:  string(thinkingCfg.level),
@@ -280,21 +284,21 @@ func NewCodeAssistProvider(creds *credentials.GeminiOAuthCredentials, model stri
 	}
 }
 
-func (p *CodeAssistProvider) Name() string {
+func (p *GeminiCLIProvider) Name() string {
 	if p.thinkingLevel != "" {
-		return fmt.Sprintf("Gemini Code Assist (%s, thinking=%s)", p.model, strings.ToLower(p.thinkingLevel))
+		return fmt.Sprintf("Gemini CLI (%s, thinking=%s)", p.model, strings.ToLower(p.thinkingLevel))
 	}
 	if p.thinkingBudget != nil {
-		return fmt.Sprintf("Gemini Code Assist (%s, thinkingBudget=%d)", p.model, *p.thinkingBudget)
+		return fmt.Sprintf("Gemini CLI (%s, thinkingBudget=%d)", p.model, *p.thinkingBudget)
 	}
-	return fmt.Sprintf("Gemini Code Assist (%s)", p.model)
+	return fmt.Sprintf("Gemini CLI (%s)", p.model)
 }
 
-func (p *CodeAssistProvider) Credential() string {
+func (p *GeminiCLIProvider) Credential() string {
 	return "gemini-cli"
 }
 
-func (p *CodeAssistProvider) Capabilities() Capabilities {
+func (p *GeminiCLIProvider) Capabilities() Capabilities {
 	return Capabilities{
 		NativeWebSearch: true,
 		NativeWebFetch:  false, // No native URL fetch (Gemini-based)
@@ -302,7 +306,7 @@ func (p *CodeAssistProvider) Capabilities() Capabilities {
 	}
 }
 
-func (p *CodeAssistProvider) Stream(ctx context.Context, req Request) (Stream, error) {
+func (p *GeminiCLIProvider) Stream(ctx context.Context, req Request) (Stream, error) {
 	return newEventStream(ctx, func(ctx context.Context, events chan<- Event) error {
 		if err := p.ensureProjectID(ctx, req.Debug); err != nil {
 			return err
@@ -313,20 +317,13 @@ func (p *CodeAssistProvider) Stream(ctx context.Context, req Request) (Stream, e
 			return err
 		}
 
-		system, user := flattenSystemUser(req.Messages)
-		if user == "" {
+		system, contents := buildGeminiCLIContents(req.Messages)
+		if len(contents) == 0 {
 			return fmt.Errorf("no user content provided")
 		}
 
 		requestInner := map[string]interface{}{
-			"contents": []map[string]interface{}{
-				{
-					"role": "user",
-					"parts": []map[string]interface{}{
-						{"text": user},
-					},
-				},
-			},
+			"contents": contents,
 		}
 
 		if system != "" {
@@ -378,7 +375,7 @@ func (p *CodeAssistProvider) Stream(ctx context.Context, req Request) (Stream, e
 				{"functionDeclarations": decls},
 			}
 			requestInner["toolConfig"] = map[string]interface{}{
-				"functionCallingConfig": map[string]interface{}{"mode": "ANY"},
+				"functionCallingConfig": map[string]interface{}{"mode": "AUTO"},
 			}
 		}
 
@@ -416,10 +413,14 @@ func (p *CodeAssistProvider) Stream(ctx context.Context, req Request) (Stream, e
 					Candidates []struct {
 						Content struct {
 							Parts []struct {
-								FunctionCall *struct {
+								Text             string `json:"text,omitempty"`
+								Thought          bool   `json:"thought,omitempty"`
+								ThoughtSignature string `json:"thoughtSignature,omitempty"`
+								FunctionCall     *struct {
+									ID   string                 `json:"id"`
 									Name string                 `json:"name"`
 									Args map[string]interface{} `json:"args"`
-								} `json:"functionCall"`
+								} `json:"functionCall,omitempty"`
 							} `json:"parts"`
 						} `json:"content"`
 					} `json:"candidates"`
@@ -430,17 +431,36 @@ func (p *CodeAssistProvider) Stream(ctx context.Context, req Request) (Stream, e
 				return fmt.Errorf("failed to parse response: %w", err)
 			}
 
+			// Extract text and function calls with thought signatures from Parts
+			// Gemini 3 returns thought signature that must be passed back with tool results
+			var lastThoughtSig []byte
 			for _, cand := range genResp.Response.Candidates {
 				for _, part := range cand.Content.Parts {
-					if part.FunctionCall == nil {
-						continue
+					// Capture thought signature from thought parts
+					if part.Thought && part.ThoughtSignature != "" {
+						lastThoughtSig, _ = base64.StdEncoding.DecodeString(part.ThoughtSignature)
 					}
-					argsJSON, _ := json.Marshal(part.FunctionCall.Args)
-					call := ToolCall{
-						Name:      part.FunctionCall.Name,
-						Arguments: argsJSON,
+					// Emit text parts (skip thought parts which are internal)
+					if part.Text != "" && !part.Thought {
+						events <- Event{Type: EventTextDelta, Text: part.Text}
 					}
-					events <- Event{Type: EventToolCall, Tool: &call}
+					if part.FunctionCall != nil {
+						argsJSON, _ := json.Marshal(part.FunctionCall.Args)
+						// Use thought signature from this part or preceding thought part
+						var thoughtSig []byte
+						if part.ThoughtSignature != "" {
+							thoughtSig, _ = base64.StdEncoding.DecodeString(part.ThoughtSignature)
+						} else {
+							thoughtSig = lastThoughtSig
+						}
+						call := ToolCall{
+							ID:         part.FunctionCall.ID,
+							Name:       part.FunctionCall.Name,
+							Arguments:  argsJSON,
+							ThoughtSig: thoughtSig,
+						}
+						events <- Event{Type: EventToolCall, Tool: &call}
+					}
 				}
 			}
 			events <- Event{Type: EventDone}
@@ -561,7 +581,7 @@ func (p *CodeAssistProvider) Stream(ctx context.Context, req Request) (Stream, e
 }
 
 // getAccessToken returns a valid access token, refreshing if needed
-func (p *CodeAssistProvider) getAccessToken(debug bool) (string, error) {
+func (p *GeminiCLIProvider) getAccessToken(debug bool) (string, error) {
 	now := time.Now().UnixMilli()
 	bufferMs := int64(codeAssistTokenExpiryBuffer.Milliseconds())
 
@@ -607,7 +627,7 @@ func (p *CodeAssistProvider) getAccessToken(debug bool) (string, error) {
 	return token, nil
 }
 
-func (p *CodeAssistProvider) refreshAccessToken(debug bool, detail string) (string, int64, error) {
+func (p *GeminiCLIProvider) refreshAccessToken(debug bool, detail string) (string, int64, error) {
 	refreshStart := time.Now()
 	data := url.Values{}
 	data.Set("client_id", p.clientCreds.clientID)
@@ -640,7 +660,7 @@ func (p *CodeAssistProvider) refreshAccessToken(debug bool, detail string) (stri
 	return tokenResp.AccessToken, expiryDate, nil
 }
 
-func (p *CodeAssistProvider) loadAccessTokenFromCache(debug bool) bool {
+func (p *GeminiCLIProvider) loadAccessTokenFromCache(debug bool) bool {
 	start := time.Now()
 	var cache codeAssistTokenCache
 	if err := readCodeAssistCache(codeAssistTokenCacheFile, &cache); err != nil {
@@ -665,7 +685,7 @@ func (p *CodeAssistProvider) loadAccessTokenFromCache(debug bool) bool {
 	return true
 }
 
-func (p *CodeAssistProvider) saveAccessTokenToCache(debug bool) {
+func (p *GeminiCLIProvider) saveAccessTokenToCache(debug bool) {
 	if p.creds.AccessToken == "" || p.creds.ExpiryDate == 0 {
 		return
 	}
@@ -685,7 +705,7 @@ func (p *CodeAssistProvider) saveAccessTokenToCache(debug bool) {
 	logTiming(debug, "access token cache write", start, "")
 }
 
-func (p *CodeAssistProvider) loadProjectIDFromCache(debug bool, platform string) bool {
+func (p *GeminiCLIProvider) loadProjectIDFromCache(debug bool, platform string) bool {
 	start := time.Now()
 	var cache codeAssistProjectCache
 	if err := readCodeAssistCache(codeAssistProjectCacheFile, &cache); err != nil {
@@ -710,7 +730,7 @@ func (p *CodeAssistProvider) loadProjectIDFromCache(debug bool, platform string)
 	return true
 }
 
-func (p *CodeAssistProvider) saveProjectIDToCache(debug bool, platform string) {
+func (p *GeminiCLIProvider) saveProjectIDToCache(debug bool, platform string) {
 	if p.projectID == "" {
 		return
 	}
@@ -731,7 +751,7 @@ func (p *CodeAssistProvider) saveProjectIDToCache(debug bool, platform string) {
 }
 
 // ensureProjectID calls loadCodeAssist to get the project ID if not already cached
-func (p *CodeAssistProvider) ensureProjectID(ctx context.Context, debug bool) error {
+func (p *GeminiCLIProvider) ensureProjectID(ctx context.Context, debug bool) error {
 	if p.projectID != "" {
 		return nil
 	}
@@ -791,7 +811,7 @@ func (p *CodeAssistProvider) ensureProjectID(ctx context.Context, debug bool) er
 }
 
 // performSearch performs a Google Search query and returns the search context
-func (p *CodeAssistProvider) performSearch(ctx context.Context, query string, debug bool) (string, error) {
+func (p *GeminiCLIProvider) performSearch(ctx context.Context, query string, debug bool) (string, error) {
 	if err := p.ensureProjectID(ctx, debug); err != nil {
 		return "", err
 	}
@@ -881,4 +901,157 @@ func (p *CodeAssistProvider) performSearch(ctx context.Context, query string, de
 	}
 
 	return searchResult, nil
+}
+
+// buildGeminiCLIContents builds the contents array for the Code Assist API from messages.
+// Returns system instruction text and contents array.
+// Note: Consecutive RoleTool messages are merged into a single content block as required by Gemini API.
+func buildGeminiCLIContents(messages []Message) (string, []map[string]interface{}) {
+	var systemParts []string
+	contents := make([]map[string]interface{}, 0, len(messages))
+
+	for i := 0; i < len(messages); i++ {
+		msg := messages[i]
+		switch msg.Role {
+		case RoleSystem:
+			if text := collectTextParts(msg.Parts); text != "" {
+				systemParts = append(systemParts, text)
+			}
+		case RoleUser:
+			content := buildGeminiCLIUserContent(msg.Parts)
+			if content != nil {
+				contents = append(contents, content)
+			}
+		case RoleAssistant:
+			content := buildGeminiCLIModelContent(msg.Parts)
+			if content != nil {
+				contents = append(contents, content)
+			}
+		case RoleTool:
+			// Collect all consecutive RoleTool messages into a single content block
+			// This is required by Gemini API - all function responses for a turn must be together
+			var allToolParts []Part
+			for ; i < len(messages) && messages[i].Role == RoleTool; i++ {
+				allToolParts = append(allToolParts, messages[i].Parts...)
+			}
+			i-- // Adjust for the outer loop increment
+			content := buildGeminiCLIToolResultContent(allToolParts)
+			if content != nil {
+				contents = append(contents, content)
+			}
+		}
+	}
+
+	return strings.Join(systemParts, "\n\n"), contents
+}
+
+func buildGeminiCLIUserContent(parts []Part) map[string]interface{} {
+	apiParts := make([]map[string]interface{}, 0)
+	for _, part := range parts {
+		switch part.Type {
+		case PartText:
+			if part.Text != "" {
+				apiParts = append(apiParts, map[string]interface{}{"text": part.Text})
+			}
+		}
+	}
+	if len(apiParts) == 0 {
+		return nil
+	}
+	return map[string]interface{}{
+		"role":  "user",
+		"parts": apiParts,
+	}
+}
+
+func buildGeminiCLIModelContent(parts []Part) map[string]interface{} {
+	apiParts := make([]map[string]interface{}, 0)
+	for _, part := range parts {
+		switch part.Type {
+		case PartText:
+			if part.Text != "" {
+				apiParts = append(apiParts, map[string]interface{}{"text": part.Text})
+			}
+		case PartToolCall:
+			if part.ToolCall != nil {
+				args := toolArgsToMap(part.ToolCall.Arguments)
+				fcPart := map[string]interface{}{
+					"functionCall": map[string]interface{}{
+						"id":   part.ToolCall.ID,
+						"name": part.ToolCall.Name,
+						"args": args,
+					},
+				}
+				// Include thoughtSignature (required for Gemini 3 thinking models)
+				// Use synthetic signature if not present to skip validation
+				if len(part.ToolCall.ThoughtSig) > 0 {
+					fcPart["thoughtSignature"] = base64.StdEncoding.EncodeToString(part.ToolCall.ThoughtSig)
+				} else {
+					fcPart["thoughtSignature"] = "skip_thought_signature_validator"
+				}
+				apiParts = append(apiParts, fcPart)
+			}
+		}
+	}
+	if len(apiParts) == 0 {
+		return nil
+	}
+	return map[string]interface{}{
+		"role":  "model",
+		"parts": apiParts,
+	}
+}
+
+func buildGeminiCLIToolResultContent(parts []Part) map[string]interface{} {
+	apiParts := make([]map[string]interface{}, 0)
+	for _, part := range parts {
+		switch part.Type {
+		case PartText:
+			if part.Text != "" {
+				apiParts = append(apiParts, map[string]interface{}{"text": part.Text})
+			}
+		case PartToolResult:
+			if part.ToolResult != nil {
+				// Check for embedded image data in tool result
+				mimeType, base64Data, textContent := parseToolResultImageData(part.ToolResult.Content)
+
+				// Add the function response with text content only
+				// Include ThoughtSignature if present (required for Gemini 3 thinking models)
+				frPart := map[string]interface{}{
+					"functionResponse": map[string]interface{}{
+						"name":     part.ToolResult.Name,
+						"response": map[string]interface{}{"output": textContent},
+					},
+				}
+				// Include thoughtSignature (required for Gemini 3 thinking models)
+				// Use synthetic signature if not present to skip validation
+				if len(part.ToolResult.ThoughtSig) > 0 {
+					frPart["thoughtSignature"] = base64.StdEncoding.EncodeToString(part.ToolResult.ThoughtSig)
+				} else {
+					frPart["thoughtSignature"] = "skip_thought_signature_validator"
+				}
+				apiParts = append(apiParts, frPart)
+
+				// If image data was found, add it as inline data
+				if base64Data != "" {
+					imageData, err := base64.StdEncoding.DecodeString(base64Data)
+					if err == nil {
+						apiParts = append(apiParts, map[string]interface{}{
+							"inlineData": map[string]interface{}{
+								"mimeType": mimeType,
+								"data":     base64.StdEncoding.EncodeToString(imageData),
+							},
+						})
+					}
+				}
+			}
+		}
+	}
+	if len(apiParts) == 0 {
+		return nil
+	}
+	return map[string]interface{}{
+		"role":  "user",
+		"parts": apiParts,
+	}
 }

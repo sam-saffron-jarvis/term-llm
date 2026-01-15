@@ -347,7 +347,7 @@ func (e *Engine) executeToolCalls(ctx context.Context, calls []ToolCall, events 
 		if !ok {
 			errMsg := fmt.Sprintf("Error: tool not registered: %s", call.Name)
 			DebugToolResult(debug, call.ID, call.Name, errMsg)
-			results = append(results, ToolErrorMessage(call.ID, call.Name, errMsg))
+			results = append(results, ToolErrorMessage(call.ID, call.Name, errMsg, call.ThoughtSig))
 			if events != nil {
 				events <- Event{Type: EventToolExecEnd, ToolName: call.Name, ToolInfo: e.getToolPreview(call), ToolSuccess: false}
 			}
@@ -358,7 +358,7 @@ func (e *Engine) executeToolCalls(ctx context.Context, calls []ToolCall, events 
 		if err != nil {
 			errMsg := fmt.Sprintf("Error: %v", err)
 			DebugToolResult(debug, call.ID, call.Name, errMsg)
-			results = append(results, ToolErrorMessage(call.ID, call.Name, errMsg))
+			results = append(results, ToolErrorMessage(call.ID, call.Name, errMsg, call.ThoughtSig))
 			if events != nil {
 				events <- Event{Type: EventToolExecEnd, ToolName: call.Name, ToolInfo: info, ToolSuccess: false}
 			}
@@ -366,7 +366,7 @@ func (e *Engine) executeToolCalls(ctx context.Context, calls []ToolCall, events 
 		}
 		DebugToolResult(debug, call.ID, call.Name, output)
 		DebugRawToolResult(debugRaw, call.ID, call.Name, output)
-		results = append(results, ToolResultMessage(call.ID, call.Name, output))
+		results = append(results, ToolResultMessage(call.ID, call.Name, output, call.ThoughtSig))
 		if events != nil {
 			events <- Event{Type: EventToolExecEnd, ToolName: call.Name, ToolInfo: info, ToolSuccess: true}
 		}

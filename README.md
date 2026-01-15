@@ -12,9 +12,9 @@ A Swiss Army knife for your terminal—AI-powered commands, answers, and images 
 - **File context**: Include files, clipboard, stdin, or line ranges as context (`-f`)
 - **Image generation**: Create and edit images (Gemini, OpenAI, xAI, Flux)
 - **MCP servers**: Extend with external tools via [Model Context Protocol](https://modelcontextprotocol.io)
-- **Multiple providers**: Anthropic, OpenAI, xAI (Grok), OpenRouter, Gemini, Zen (free tier), Claude CLI, Ollama, LM Studio
+- **Multiple providers**: Anthropic, OpenAI, Codex, xAI (Grok), OpenRouter, Gemini, Gemini CLI, Zen (free tier), Claude CLI, Ollama, LM Studio
 - **Local LLMs**: Run with Ollama, LM Studio, or any OpenAI-compatible server
-- **Credential reuse**: Works with Codex, gemini-cli credentials
+- **Free tier available**: Try it out with Zen (no API key required)
 
 ```
 $ term-llm exec "find all go files modified today"
@@ -55,20 +55,22 @@ go build
 
 ## Setup
 
-On first run, term-llm will prompt you to choose a provider (Anthropic, OpenAI, xAI, OpenRouter, Gemini, Zen, Ollama, or LM Studio).
+On first run, term-llm will prompt you to choose a provider (Anthropic, OpenAI, Codex, xAI, OpenRouter, Gemini, Gemini CLI, Zen, Ollama, or LM Studio).
 
-### Option 1: Use existing CLI credentials (recommended)
+### Option 1: Try it free with Zen
 
-If you have [Codex](https://github.com/openai/codex) or [gemini-cli](https://github.com/google-gemini/gemini-cli) installed and logged in, term-llm can use those credentials:
+[OpenCode Zen](https://opencode.ai) provides free access to GLM 4.7 and other models. No API key required:
+
+```bash
+term-llm exec --provider zen "list files"
+term-llm ask --provider zen "explain git rebase"
+```
+
+Or configure as default:
 
 ```yaml
 # In ~/.config/term-llm/config.yaml
-providers:
-  openai:
-    credentials: codex       # uses Codex credentials
-
-  gemini:
-    credentials: gemini-cli  # uses gemini-cli OAuth credentials
+default_provider: zen
 ```
 
 ### Option 2: Use API key
@@ -140,27 +142,6 @@ providers:
     app_title: term-llm
 ```
 
-### Option 5: Use OpenCode Zen (free tier available)
-
-[OpenCode Zen](https://opencode.ai) provides free access to GLM 4.7 and other models. No API key required for free tier, or set `ZEN_API_KEY` for paid models:
-
-```yaml
-# In ~/.config/term-llm/config.yaml
-default_provider: zen
-
-providers:
-  zen:
-    model: glm-4.7-free  # default model (free)
-    # api_key: optional - leave empty for free tier, or set for paid models
-```
-
-Or use the `--provider` flag:
-
-```bash
-term-llm exec --provider zen "list files"
-term-llm ask --provider zen "explain git rebase"
-```
-
 ### Model Discovery
 
 List available models from any supported provider:
@@ -173,7 +154,7 @@ term-llm models --provider lmstudio   # List local LM Studio models
 term-llm models --json                # Output as JSON
 ```
 
-### Option 6: Use local LLMs (Ollama, LM Studio)
+### Option 5: Use local LLMs (Ollama, LM Studio)
 
 Run models locally with [Ollama](https://ollama.com) or [LM Studio](https://lmstudio.ai):
 
@@ -215,7 +196,7 @@ providers:
 
 The `models` list enables tab completion for `--provider my-server:<TAB>`. The configured `model` is always included in completions.
 
-### Option 7: Use Claude Code (claude-bin)
+### Option 6: Use Claude Code (claude-bin)
 
 If you have [Claude Code](https://claude.ai/code) installed and logged in, you can use the `claude-bin` provider to run completions via the [Claude Agent SDK](https://docs.anthropic.com/en/docs/claude-code/sdk). This requires no API key - it uses Claude Code's existing authentication.
 
@@ -243,6 +224,28 @@ providers:
 - Full tool support via MCP (exec, search, edit all work)
 - Model selection: `opus`, `sonnet` (default), `haiku`
 - Works immediately if Claude Code is installed and logged in
+
+### Option 7: Use existing CLI credentials
+
+If you have [Codex](https://github.com/openai/codex) or [gemini-cli](https://github.com/google-gemini/gemini-cli) installed and logged in, term-llm can use those credentials directly:
+
+```bash
+# Use Codex credentials (no config needed)
+term-llm ask --provider codex "explain this code"
+
+# Use gemini-cli credentials (no config needed)
+term-llm ask --provider gemini-cli "explain this code"
+```
+
+Or configure as default:
+
+```yaml
+# In ~/.config/term-llm/config.yaml
+default_provider: codex      # uses ~/.codex/auth.json
+
+# Or for Gemini CLI:
+default_provider: gemini-cli  # uses ~/.gemini/oauth_creds.json
+```
 
 OpenAI-compatible providers support two URL options:
 - `base_url`: Base URL (e.g., `https://api.cerebras.ai/v1`) - `/chat/completions` is appended automatically
@@ -649,8 +652,10 @@ providers:
     app_title: term-llm
 
   gemini:
-    model: gemini-3-flash-preview
-    credentials: gemini-cli  # or "api_key" (default)
+    model: gemini-3-flash-preview  # uses GEMINI_API_KEY
+
+  gemini-cli:
+    model: gemini-3-flash-preview  # uses ~/.gemini/oauth_creds.json
 
   zen:
     model: glm-4.7-free
@@ -867,21 +872,25 @@ Run `term-llm config` to see which search providers have credentials configured.
 
 ### Credentials
 
-Each provider supports a `credentials` field:
+Most providers use API keys via environment variables. Some providers use OAuth credentials from companion CLIs:
 
-| Provider | Value | Description |
-|----------|-------|-------------|
-| All | `api_key` | Use environment variable (default) |
-| OpenAI | `codex` | Use Codex CLI credentials |
-| Gemini | `gemini-cli` | Use gemini-cli OAuth credentials |
-| Zen | `api_key` | Optional: empty for free tier, or set `ZEN_API_KEY` for paid models |
+| Provider | Credentials Source | Description |
+|----------|-------------------|-------------|
+| `anthropic` | `ANTHROPIC_API_KEY` | Anthropic API key |
+| `openai` | `OPENAI_API_KEY` | OpenAI API key |
+| `gemini` | `GEMINI_API_KEY` | Google AI Studio API key |
+| `gemini-cli` | `~/.gemini/oauth_creds.json` | gemini-cli OAuth (Google Code Assist) |
+| `codex` | `~/.codex/auth.json` | Codex CLI OAuth |
+| `xai` | `XAI_API_KEY` | xAI API key |
+| `openrouter` | `OPENROUTER_API_KEY` | OpenRouter API key |
+| `zen` | `ZEN_API_KEY` (optional) | Empty for free tier |
 
-**Codex** (`credentials: codex`):
-- Reads from `~/.codex/auth.json`
+**Codex** and **Gemini CLI** work without any configuration if you have the respective CLI tools installed and logged in:
 
-**gemini-cli** (`credentials: gemini-cli`):
-- Reads OAuth credentials from `~/.gemini/oauth_creds.json`
-- Uses Google Code Assist API (same backend as gemini-cli)
+```bash
+term-llm ask --provider codex "question"      # uses ~/.codex/auth.json
+term-llm ask --provider gemini-cli "question" # uses ~/.gemini/oauth_creds.json
+```
 
 ### Dynamic Configuration
 

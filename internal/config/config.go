@@ -16,7 +16,9 @@ type ProviderType string
 const (
 	ProviderTypeAnthropic    ProviderType = "anthropic"
 	ProviderTypeOpenAI       ProviderType = "openai"
+	ProviderTypeCodex        ProviderType = "codex"
 	ProviderTypeGemini       ProviderType = "gemini"
+	ProviderTypeGeminiCLI    ProviderType = "gemini-cli"
 	ProviderTypeOpenRouter   ProviderType = "openrouter"
 	ProviderTypeZen          ProviderType = "zen"
 	ProviderTypeClaudeBin    ProviderType = "claude-bin"
@@ -28,7 +30,9 @@ const (
 var builtInProviderTypes = map[string]ProviderType{
 	"anthropic":  ProviderTypeAnthropic,
 	"openai":     ProviderTypeOpenAI,
+	"codex":      ProviderTypeCodex,
 	"gemini":     ProviderTypeGemini,
+	"gemini-cli": ProviderTypeGeminiCLI,
 	"openrouter": ProviderTypeOpenRouter,
 	"zen":        ProviderTypeZen,
 	"claude-bin": ProviderTypeClaudeBin,
@@ -388,35 +392,31 @@ func resolveProviderCredentials(name string, cfg *ProviderConfig) error {
 		}
 
 	case ProviderTypeOpenAI:
-		switch cfg.Credentials {
-		case "codex":
-			creds, err := credentials.GetCodexCredentials()
-			if err != nil {
-				return err
-			}
-			cfg.ResolvedAPIKey = creds.AccessToken
-			cfg.AccountID = creds.AccountID
-		default:
-			cfg.ResolvedAPIKey = expandEnv(cfg.APIKey)
-			if cfg.ResolvedAPIKey == "" {
-				cfg.ResolvedAPIKey = os.Getenv("OPENAI_API_KEY")
-			}
+		cfg.ResolvedAPIKey = expandEnv(cfg.APIKey)
+		if cfg.ResolvedAPIKey == "" {
+			cfg.ResolvedAPIKey = os.Getenv("OPENAI_API_KEY")
 		}
 
-	case ProviderTypeGemini:
-		switch cfg.Credentials {
-		case "gemini-cli":
-			creds, err := credentials.GetGeminiOAuthCredentials()
-			if err != nil {
-				return err
-			}
-			cfg.OAuthCreds = creds
-		default:
-			cfg.ResolvedAPIKey = expandEnv(cfg.APIKey)
-			if cfg.ResolvedAPIKey == "" {
-				cfg.ResolvedAPIKey = os.Getenv("GEMINI_API_KEY")
-			}
+	case ProviderTypeCodex:
+		creds, err := credentials.GetCodexCredentials()
+		if err != nil {
+			return err
 		}
+		cfg.ResolvedAPIKey = creds.AccessToken
+		cfg.AccountID = creds.AccountID
+
+	case ProviderTypeGemini:
+		cfg.ResolvedAPIKey = expandEnv(cfg.APIKey)
+		if cfg.ResolvedAPIKey == "" {
+			cfg.ResolvedAPIKey = os.Getenv("GEMINI_API_KEY")
+		}
+
+	case ProviderTypeGeminiCLI:
+		creds, err := credentials.GetGeminiOAuthCredentials()
+		if err != nil {
+			return err
+		}
+		cfg.OAuthCreds = creds
 
 	case ProviderTypeOpenRouter:
 		cfg.ResolvedAPIKey = expandEnv(cfg.APIKey)

@@ -65,6 +65,23 @@ func (p *OpenAIProvider) Capabilities() Capabilities {
 	}
 }
 
+func (p *OpenAIProvider) ListModels(ctx context.Context) ([]ModelInfo, error) {
+	page, err := p.client.Models.List(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list models: %w", err)
+	}
+
+	var models []ModelInfo
+	for _, m := range page.Data {
+		models = append(models, ModelInfo{
+			ID:      m.ID,
+			Created: m.Created,
+		})
+	}
+
+	return models, nil
+}
+
 func (p *OpenAIProvider) Stream(ctx context.Context, req Request) (Stream, error) {
 	return newEventStream(ctx, func(ctx context.Context, events chan<- Event) error {
 		system, inputItems := buildOpenAIInput(req.Messages)
@@ -146,8 +163,8 @@ func (p *OpenAIProvider) Stream(ctx context.Context, req Request) (Stream, error
 		stream := p.client.Responses.NewStreaming(ctx, params)
 		for stream.Next() {
 			event := stream.Current()
-			if event.Type == "response.output_text.delta" && event.Text != "" {
-				events <- Event{Type: EventTextDelta, Text: event.Text}
+			if event.Type == "response.output_text.delta" && event.Delta.OfString != "" {
+				events <- Event{Type: EventTextDelta, Text: event.Delta.OfString}
 			}
 			if event.Type == "response.completed" {
 				lastResp = &event.Response

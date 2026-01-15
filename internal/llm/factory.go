@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/samsaffron/term-llm/internal/config"
+	"github.com/samsaffron/term-llm/internal/credentials"
 )
 
 // IsCodexModel returns true if the model name indicates a Codex model.
@@ -82,6 +83,30 @@ func NewProviderByName(cfg *config.Config, name string, model string) (Provider,
 			}
 			provider := NewXAIProvider(apiKey, model)
 			return WrapWithRetry(provider, DefaultRetryConfig()), nil
+		case config.ProviderTypeGemini:
+			// gemini can use GEMINI_API_KEY env var
+			apiKey := os.Getenv("GEMINI_API_KEY")
+			if apiKey == "" {
+				return nil, fmt.Errorf("provider %q requires GEMINI_API_KEY environment variable or explicit config", name)
+			}
+			provider := NewGeminiProvider(apiKey, model)
+			return WrapWithRetry(provider, DefaultRetryConfig()), nil
+		case config.ProviderTypeCodex:
+			// codex uses OAuth credentials from ~/.codex/auth.json
+			creds, err := credentials.GetCodexCredentials()
+			if err != nil {
+				return nil, fmt.Errorf("provider codex: %w", err)
+			}
+			provider := NewCodexProvider(creds.AccessToken, model, creds.AccountID)
+			return WrapWithRetry(provider, DefaultRetryConfig()), nil
+		case config.ProviderTypeGeminiCLI:
+			// gemini-cli uses OAuth credentials from ~/.gemini/oauth_creds.json
+			creds, err := credentials.GetGeminiOAuthCredentials()
+			if err != nil {
+				return nil, fmt.Errorf("provider gemini-cli: %w", err)
+			}
+			provider := NewGeminiCLIProvider(creds, model)
+			return WrapWithRetry(provider, DefaultRetryConfig()), nil
 		default:
 			return nil, fmt.Errorf("provider %q not configured", name)
 		}
@@ -119,6 +144,27 @@ func newProviderInternal(cfg *config.Config) (Provider, error) {
 				return nil, fmt.Errorf("provider %q requires XAI_API_KEY environment variable or explicit config", cfg.DefaultProvider)
 			}
 			return NewXAIProvider(apiKey, ""), nil
+		case config.ProviderTypeCodex:
+			// codex uses OAuth credentials from ~/.codex/auth.json
+			creds, err := credentials.GetCodexCredentials()
+			if err != nil {
+				return nil, fmt.Errorf("provider codex: %w", err)
+			}
+			return NewCodexProvider(creds.AccessToken, "", creds.AccountID), nil
+		case config.ProviderTypeGemini:
+			// gemini can use GEMINI_API_KEY env var
+			apiKey := os.Getenv("GEMINI_API_KEY")
+			if apiKey == "" {
+				return nil, fmt.Errorf("provider %q requires GEMINI_API_KEY environment variable or explicit config", cfg.DefaultProvider)
+			}
+			return NewGeminiProvider(apiKey, ""), nil
+		case config.ProviderTypeGeminiCLI:
+			// gemini-cli uses OAuth credentials from ~/.gemini/oauth_creds.json
+			creds, err := credentials.GetGeminiOAuthCredentials()
+			if err != nil {
+				return nil, fmt.Errorf("provider gemini-cli: %w", err)
+			}
+			return NewGeminiCLIProvider(creds, ""), nil
 		default:
 			return nil, fmt.Errorf("provider %q not configured", cfg.DefaultProvider)
 		}
@@ -140,21 +186,39 @@ func createProviderFromConfig(name string, cfg *config.ProviderConfig) (Provider
 		return NewAnthropicProvider(cfg.ResolvedAPIKey, cfg.Model), nil
 
 	case config.ProviderTypeOpenAI:
-		// Use CodexProvider when using Codex OAuth credentials (has account ID)
-		if cfg.AccountID != "" {
-			return NewCodexProvider(cfg.ResolvedAPIKey, cfg.Model, cfg.AccountID), nil
-		}
 		return NewOpenAIProvider(cfg.ResolvedAPIKey, cfg.Model), nil
+
+	case config.ProviderTypeCodex:
+		// Fetch credentials from ~/.codex/auth.json if not explicitly configured
+		apiKey := cfg.ResolvedAPIKey
+		accountID := cfg.AccountID
+		if apiKey == "" {
+			creds, err := credentials.GetCodexCredentials()
+			if err != nil {
+				return nil, fmt.Errorf("codex: %w", err)
+			}
+			apiKey = creds.AccessToken
+			accountID = creds.AccountID
+		}
+		return NewCodexProvider(apiKey, cfg.Model, accountID), nil
 
 	case config.ProviderTypeOpenRouter:
 		return NewOpenRouterProvider(cfg.ResolvedAPIKey, cfg.Model, cfg.AppURL, cfg.AppTitle), nil
 
 	case config.ProviderTypeGemini:
-		// Use CodeAssistProvider when using gemini-cli OAuth credentials
-		if cfg.Credentials == "gemini-cli" && cfg.OAuthCreds != nil {
-			return NewCodeAssistProvider(cfg.OAuthCreds, cfg.Model), nil
-		}
 		return NewGeminiProvider(cfg.ResolvedAPIKey, cfg.Model), nil
+
+	case config.ProviderTypeGeminiCLI:
+		// Fetch credentials from ~/.gemini/oauth_creds.json if not explicitly configured
+		oauthCreds := cfg.OAuthCreds
+		if oauthCreds == nil {
+			creds, err := credentials.GetGeminiOAuthCredentials()
+			if err != nil {
+				return nil, fmt.Errorf("gemini-cli: %w", err)
+			}
+			oauthCreds = creds
+		}
+		return NewGeminiCLIProvider(oauthCreds, cfg.Model), nil
 
 	case config.ProviderTypeZen:
 		return NewZenProvider(cfg.ResolvedAPIKey, cfg.Model), nil

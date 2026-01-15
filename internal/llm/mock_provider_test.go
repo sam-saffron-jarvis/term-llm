@@ -173,7 +173,7 @@ func TestMockProvider_MultiTurn(t *testing.T) {
 	// Second turn: text response (after tool result)
 	stream2, err := p.Stream(ctx, Request{Messages: []Message{
 		UserText("What's in main.go?"),
-		ToolResultMessage("call_1", "read_file", "package main\n\nfunc main() {}"),
+		ToolResultMessage("call_1", "read_file", "package main\n\nfunc main() {}", nil),
 	}})
 	if err != nil {
 		t.Fatalf("Stream() turn 2 error = %v", err)
