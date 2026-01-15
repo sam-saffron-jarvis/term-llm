@@ -8,11 +8,12 @@ A Swiss Army knife for your terminal—AI-powered commands, answers, and images 
 
 - **Command suggestions**: Natural language → executable shell commands
 - **Ask questions**: Get answers with optional web search
+- **Chat mode**: Persistent sessions with tool and MCP support
 - **File editing**: Edit code with AI assistance (supports line ranges)
 - **File context**: Include files, clipboard, stdin, or line ranges as context (`-f`)
 - **Image generation**: Create and edit images (Gemini, OpenAI, xAI, Flux)
 - **MCP servers**: Extend with external tools via [Model Context Protocol](https://modelcontextprotocol.io)
-- **Multiple providers**: Anthropic, OpenAI, Codex, xAI (Grok), OpenRouter, Gemini, Gemini CLI, Zen (free tier), Claude CLI, Ollama, LM Studio
+- **Multiple providers**: Anthropic, OpenAI, Codex, xAI (Grok), OpenRouter, Gemini, Gemini CLI, Zen (free tier), Claude Code (claude-bin), Ollama, LM Studio
 - **Local LLMs**: Run with Ollama, LM Studio, or any OpenAI-compatible server
 - **Free tier available**: Try it out with Zen (no API key required)
 
@@ -55,7 +56,7 @@ go build
 
 ## Setup
 
-On first run, term-llm will prompt you to choose a provider (Anthropic, OpenAI, Codex, xAI, OpenRouter, Gemini, Gemini CLI, Zen, Ollama, or LM Studio).
+On first run, term-llm will prompt you to choose a provider (Anthropic, OpenAI, Codex, xAI, OpenRouter, Gemini, Gemini CLI, Zen, Claude Code (claude-bin), Ollama, or LM Studio).
 
 ### Option 1: Try it free with Zen
 
@@ -260,6 +261,12 @@ term-llm exec "your request here"
 ```
 
 Use arrow keys to select a command, Enter to execute, or press `h` for detailed help on the highlighted command. Select "something else..." to refine your request.
+
+Use `term-llm chat` for a persistent session.
+
+```bash
+term-llm chat
+```
 
 ### Flags
 
