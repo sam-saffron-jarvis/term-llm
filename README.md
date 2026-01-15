@@ -272,7 +272,7 @@ term-llm chat
 
 | Flag | Short | Description |
 |------|-------|-------------|
-| `--provider` | | Override provider, optionally with model (e.g., `openai:gpt-4o`) |
+| `--provider` | | Override provider, optionally with model (e.g., `openai:gpt-5.2`) |
 | `--file` | `-f` | File(s) to include as context (supports globs, line ranges, 'clipboard') |
 | `--auto-pick` | `-a` | Auto-execute the best suggestion without prompting |
 | `--max N` | `-n N` | Limit to N options in the selection UI |
@@ -292,7 +292,7 @@ term-llm exec "find large files" -n 3           # show max 3 options
 term-llm exec "install latest node" -s          # with web search
 term-llm exec "disk usage" -p                   # print only
 term-llm exec --provider zen "git status"       # use specific provider
-term-llm exec --provider openai:gpt-4o "list"   # provider with specific model
+term-llm exec --provider openai:gpt-5.2 "list"   # provider with specific model
 term-llm exec --debug-raw "list files"          # raw debug logs with timestamps
 term-llm exec --provider ollama:llama3.2 "list" # use local Ollama model
 term-llm exec --provider lmstudio:deepseek "list"  # use LM Studio model
@@ -764,11 +764,11 @@ ask:
 
 edit:
   provider: openai
-  model: gpt-4o       # edit uses OpenAI
+  model: gpt-5.2       # edit uses OpenAI
 ```
 
 **Precedence** (highest to lowest):
-1. CLI flag: `--provider openai:gpt-4o`
+1. CLI flag: `--provider openai:gpt-5.2`
 2. Per-command config: `exec.provider` / `exec.model`
 3. Global config: `default_provider` + `providers.<name>.model`
 
