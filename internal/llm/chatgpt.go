@@ -145,15 +145,8 @@ func (p *ChatGPTProvider) Stream(ctx context.Context, req Request) (Stream, erro
 	}
 
 	return newEventStream(ctx, func(ctx context.Context, events chan<- Event) error {
-		// Get Codex instructions (same as codex provider)
-		codexInstructions, err := (&CodexProvider{model: p.model}).getCodexInstructions()
-		if err != nil {
-			return fmt.Errorf("failed to get Codex instructions: %w", err)
-		}
-
 		system, user := flattenSystemUser(req.Messages)
-		combinedPrompt := strings.TrimSpace(strings.Join([]string{system, user}, "\n\n"))
-		if combinedPrompt == "" {
+		if system == "" && user == "" {
 			return fmt.Errorf("no prompt content provided")
 		}
 
@@ -181,8 +174,8 @@ func (p *ChatGPTProvider) Stream(ctx context.Context, req Request) (Stream, erro
 
 		reqBody := map[string]interface{}{
 			"model":               model,
-			"instructions":        codexInstructions,
-			"input":               p.buildInput(combinedPrompt),
+			"instructions":        system,
+			"input":               p.buildInput(user),
 			"tools":               tools,
 			"tool_choice":         "auto",
 			"parallel_tool_calls": req.ParallelToolCalls,
