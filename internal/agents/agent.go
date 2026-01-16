@@ -29,7 +29,8 @@ type Agent struct {
 	Read  ReadConfig  `yaml:"read,omitempty"`
 
 	// Behavior
-	MaxTurns int `yaml:"max_turns,omitempty"`
+	MaxTurns int  `yaml:"max_turns,omitempty"`
+	Search   bool `yaml:"search,omitempty"` // Enable web search tools
 
 	// MCP servers to auto-connect
 	MCP []MCPConfig `yaml:"mcp,omitempty"`

@@ -1,0 +1,9 @@
+name: agent-builder
+description: "Create and edit custom agents interactively"
+
+tools:
+  enabled: [read, write, edit, find, grep, ask_user]
+
+search: true
+
+max_turns: 200

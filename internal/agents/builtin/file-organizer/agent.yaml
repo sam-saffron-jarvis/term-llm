@@ -1,0 +1,26 @@
+name: file-organizer
+description: Organizes files by renaming them to sensible names and optionally creating subfolders
+
+tools:
+  enabled: [read, shell, find, grep, ask_user]
+
+shell:
+  allow:
+    - "ls *"
+    - "mv *"
+    - "mkdir *"
+    - "file *"
+    - "stat *"
+    - "find *"
+    - "du *"
+    - "identify *"
+    - "exiftool *"
+    - "mdls *"
+    - "pdfinfo *"
+    - "mediainfo *"
+    - "ffprobe *"
+    - "head *"
+    - "wc *"
+  auto_run: true
+
+max_turns: 100

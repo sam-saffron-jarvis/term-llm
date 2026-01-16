@@ -65,10 +65,12 @@ func TestIsBuiltinAgent(t *testing.T) {
 		name     string
 		expected bool
 	}{
+		{"agent-builder", true},
 		{"artist", true},
 		{"codebase", true},
 		{"commit", true},
 		{"editor", true},
+		{"file-organizer", true},
 		{"researcher", true},
 		{"reviewer", true},
 		{"shell", true},
@@ -95,14 +97,17 @@ func TestBuiltinAgentConfigs(t *testing.T) {
 		expectedHasShell   bool
 		expectedAutoRun    bool
 		expectedHasScripts bool
+		expectedSearch     bool
 	}{
-		{"artist", true, 50, true, true, false},
-		{"codebase", true, 50, true, true, true},
-		{"commit", true, 200, true, true, true},
-		{"editor", true, 200, false, false, false},
-		{"researcher", true, 200, false, false, false},
-		{"reviewer", true, 200, true, true, true},
-		{"shell", true, 200, false, false, false},
+		{"agent-builder", true, 200, false, false, false, true},
+		{"artist", true, 50, true, true, false, false},
+		{"codebase", true, 50, true, true, true, false},
+		{"commit", true, 200, true, true, true, false},
+		{"editor", true, 200, false, false, false, false},
+		{"file-organizer", true, 100, true, true, false, false},
+		{"researcher", true, 200, false, false, false, false},
+		{"reviewer", true, 200, true, true, true, false},
+		{"shell", true, 200, false, false, false, false},
 	}
 
 	for _, tt := range tests {
@@ -134,6 +139,10 @@ func TestBuiltinAgentConfigs(t *testing.T) {
 			if hasScripts != tt.expectedHasScripts {
 				t.Errorf("hasScripts = %v, want %v", hasScripts, tt.expectedHasScripts)
 			}
+
+			if agent.Search != tt.expectedSearch {
+				t.Errorf("Search = %v, want %v", agent.Search, tt.expectedSearch)
+			}
 		})
 	}
 }
@@ -141,18 +150,20 @@ func TestBuiltinAgentConfigs(t *testing.T) {
 func TestGetBuiltinAgentNames(t *testing.T) {
 	names := GetBuiltinAgentNames()
 
-	if len(names) != 7 {
-		t.Errorf("len(GetBuiltinAgentNames()) = %d, want 7", len(names))
+	if len(names) != 9 {
+		t.Errorf("len(GetBuiltinAgentNames()) = %d, want 9", len(names))
 	}
 
 	expected := map[string]bool{
-		"artist":     true,
-		"codebase":   true,
-		"commit":     true,
-		"editor":     true,
-		"researcher": true,
-		"reviewer":   true,
-		"shell":      true,
+		"agent-builder":  true,
+		"artist":         true,
+		"codebase":       true,
+		"commit":         true,
+		"editor":         true,
+		"file-organizer": true,
+		"researcher":     true,
+		"reviewer":       true,
+		"shell":          true,
 	}
 
 	for _, name := range names {

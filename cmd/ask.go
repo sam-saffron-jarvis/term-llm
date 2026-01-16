@@ -47,7 +47,7 @@ var (
 )
 
 var askCmd = &cobra.Command{
-	Use:   "ask <question>",
+	Use:   "ask [@agent] <question>",
 	Short: "Ask a question and stream the answer",
 	Long: `Ask the LLM a question and receive a streaming response.
 
@@ -62,18 +62,20 @@ Examples:
   term-llm ask -f clipboard "What is this?"
   cat error.log | term-llm ask "What went wrong?"
 
-Agent examples:
-  term-llm ask --agent reviewer "Review this code" -f main.go
-  term-llm ask -a commit "Write a commit message"
-  term-llm ask -a editor "Add error handling to this function" -f utils.go
+Agent examples (use @agent shortcut or --agent flag):
+  term-llm ask @reviewer "Review this code" -f main.go
+  term-llm ask @commit "Write a commit message"
+  term-llm ask @editor "Add error handling" -f utils.go
+  term-llm ask --agent researcher "Find info about Go 1.22"
 
 Line range syntax for files:
   main.go       - Include entire file
   main.go:11-22 - Include only lines 11-22
   main.go:11-   - Include lines 11 to end of file
   main.go:-22   - Include lines 1-22`,
-	Args: cobra.MinimumNArgs(1),
-	RunE: runAsk,
+	Args:              cobra.MinimumNArgs(1),
+	RunE:              runAsk,
+	ValidArgsFunction: AtAgentCompletion,
 }
 
 func init() {
@@ -109,7 +111,13 @@ func init() {
 }
 
 func runAsk(cmd *cobra.Command, args []string) error {
-	question := strings.Join(args, " ")
+	// Extract @agent from args if present
+	atAgent, filteredArgs := ExtractAgentFromArgs(args)
+	if atAgent != "" && askAgent == "" {
+		askAgent = atAgent
+	}
+
+	question := strings.Join(filteredArgs, " ")
 	ctx, stop := signal.NotifyContext()
 	defer stop()
 
@@ -284,10 +292,16 @@ func runAsk(cmd *cobra.Command, args []string) error {
 		effectiveMaxTurns = agent.MaxTurns
 	}
 
+	// Determine effective search: CLI flag or agent setting
+	effectiveSearch := askSearch
+	if agent != nil && agent.Search {
+		effectiveSearch = true
+	}
+
 	debugMode := askDebug
 	req := llm.Request{
 		Messages:            messages,
-		Search:              askSearch,
+		Search:              effectiveSearch,
 		ForceExternalSearch: resolveForceExternalSearch(cfg, askNativeSearch, askNoNativeSearch),
 		ParallelToolCalls:   true,
 		MaxTurns:            effectiveMaxTurns,
@@ -300,7 +314,7 @@ func runAsk(cmd *cobra.Command, args []string) error {
 		allSpecs := engine.Tools().AllSpecs()
 		// Filter out search tools unless search is enabled
 		// (Engine adds them automatically when req.Search is true)
-		if !askSearch {
+		if !effectiveSearch {
 			var filtered []llm.ToolSpec
 			for _, spec := range allSpecs {
 				if spec.Name != llm.WebSearchToolName && spec.Name != llm.ReadURLToolName {

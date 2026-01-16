@@ -153,3 +153,39 @@ func ToolsFlagCompletion(cmd *cobra.Command, args []string, toComplete string) (
 
 	return completions, cobra.ShellCompDirectiveNoFileComp | cobra.ShellCompDirectiveNoSpace
 }
+
+// ExtractAgentFromArgs checks args for @agent-name syntax and returns the agent name
+// and filtered args. Returns empty string if no @agent found.
+func ExtractAgentFromArgs(args []string) (agentName string, filteredArgs []string) {
+	for _, arg := range args {
+		if strings.HasPrefix(arg, "@") && len(arg) > 1 {
+			agentName = arg[1:] // strip the @
+		} else {
+			filteredArgs = append(filteredArgs, arg)
+		}
+	}
+	return agentName, filteredArgs
+}
+
+// AtAgentCompletion provides completions for @agent syntax in positional args.
+// When typing "@<TAB>", completes to "@agent-builder", "@commit", etc.
+func AtAgentCompletion(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+	// Only complete if starts with @
+	if !strings.HasPrefix(toComplete, "@") {
+		return nil, cobra.ShellCompDirectiveDefault
+	}
+
+	// Get agent names
+	agentNames, directive := AgentFlagCompletion(cmd, args, toComplete[1:])
+	if directive == cobra.ShellCompDirectiveError {
+		return nil, directive
+	}
+
+	// Prefix with @
+	var completions []string
+	for _, name := range agentNames {
+		completions = append(completions, "@"+name)
+	}
+
+	return completions, cobra.ShellCompDirectiveNoFileComp
+}

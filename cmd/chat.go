@@ -34,7 +34,7 @@ var (
 )
 
 var chatCmd = &cobra.Command{
-	Use:   "chat",
+	Use:   "chat [@agent]",
 	Short: "Start an interactive chat session",
 	Long: `Start an interactive TUI chat session with the LLM.
 
@@ -43,12 +43,13 @@ Examples:
   term-llm chat -s                        # with web search enabled
   term-llm chat --provider zen            # use specific provider
   term-llm chat --mcp playwright          # with MCP server(s) enabled
-  term-llm chat --agent reviewer          # with agent configuration
 
-Agent examples:
-  term-llm chat --agent reviewer          # code review session
-  term-llm chat -a editor                 # code editing session
-  term-llm chat -a researcher             # research session
+Agent examples (use @agent shortcut or --agent flag):
+  term-llm chat @reviewer                 # code review session
+  term-llm chat @editor                   # code editing session
+  term-llm chat @researcher               # research session
+  term-llm chat @agent-builder            # create custom agents
+  term-llm chat --agent commit            # alternative syntax
 
 Keyboard shortcuts:
   Enter        - Send message
@@ -66,7 +67,8 @@ Slash commands:
   /search      - Toggle web search
   /mcp         - Manage MCP servers
   /quit        - Exit chat`,
-	RunE: runChat,
+	RunE:              runChat,
+	ValidArgsFunction: AtAgentCompletion,
 }
 
 func init() {
@@ -100,6 +102,12 @@ func init() {
 }
 
 func runChat(cmd *cobra.Command, args []string) error {
+	// Extract @agent from args if present
+	atAgent, _ := ExtractAgentFromArgs(args)
+	if atAgent != "" && chatAgent == "" {
+		chatAgent = atAgent
+	}
+
 	ctx, stop := signal.NotifyContext()
 	defer stop()
 
@@ -274,8 +282,14 @@ func runChat(cmd *cobra.Command, args []string) error {
 	// Resolve force external search setting from config and flags
 	forceExternalSearch := resolveForceExternalSearch(cfg, chatNativeSearch, chatNoNativeSearch)
 
+	// Determine effective search: CLI flag or agent setting
+	effectiveSearch := chatSearch
+	if agent != nil && agent.Search {
+		effectiveSearch = true
+	}
+
 	// Create chat model
-	model := chat.New(cfg, provider, engine, modelName, mcpManager, maxTurns, forceExternalSearch, chatSearch, enabledLocalTools, showStats)
+	model := chat.New(cfg, provider, engine, modelName, mcpManager, maxTurns, forceExternalSearch, effectiveSearch, enabledLocalTools, showStats)
 
 	// Run the TUI (inline mode - no alt screen)
 	p := tea.NewProgram(model)
