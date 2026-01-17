@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/logo.png" alt="term-llm logo" width="200">
+</p>
+
 # term-llm
 
 A Swiss Army knife for your terminal—AI-powered commands, answers, and images at your fingertips.
