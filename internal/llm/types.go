@@ -138,6 +138,7 @@ type Event struct {
 	Type        EventType
 	Text        string
 	Tool        *ToolCall
+	ToolCallID  string // For EventToolExecStart/End: unique ID of this tool invocation
 	ToolName    string // For EventToolExecStart/End: name of tool being executed
 	ToolInfo    string // For EventToolExecStart/End: additional info (e.g., URL being fetched)
 	ToolSuccess bool   // For EventToolExecEnd: whether tool execution succeeded

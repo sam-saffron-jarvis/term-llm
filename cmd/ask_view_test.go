@@ -3,6 +3,7 @@ package cmd
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/charmbracelet/huh"
 	"github.com/charmbracelet/lipgloss"
@@ -92,7 +93,8 @@ func TestAfterApproval_ToolSuccess(t *testing.T) {
 		ToolInfo:   "(wow.png)",
 		ToolStatus: ui.ToolSuccess,
 	})
-	model.thinking = true // Waiting for LLM response after tool
+	// Set LastActivity to >1 second ago to trigger idle/thinking state
+	model.tracker.LastActivity = time.Now().Add(-2 * time.Second)
 
 	// Render
 	rendered := model.View()
@@ -127,7 +129,8 @@ func TestAfterApproval_ToolError(t *testing.T) {
 		ToolInfo:   "(wow.png)",
 		ToolStatus: ui.ToolError,
 	})
-	model.thinking = true
+	// Set LastActivity to >1 second ago to trigger idle/thinking state
+	model.tracker.LastActivity = time.Now().Add(-2 * time.Second)
 
 	// Render
 	rendered := model.View()
@@ -152,7 +155,8 @@ func TestPendingTool_ShowsWaveAnimation(t *testing.T) {
 		ToolInfo:   "(wow.png)",
 		ToolStatus: ui.ToolPending,
 	})
-	model.thinking = false    // Not thinking, tool is running
+	// Recent activity - not idle (tool is running)
+	model.tracker.LastActivity = time.Now()
 	model.tracker.WavePos = 5 // Mid-wave animation
 
 	// Render
@@ -176,8 +180,8 @@ func TestPendingTool_ShowsWaveAnimation(t *testing.T) {
 func TestThinkingState(t *testing.T) {
 	model := newAskStreamModel()
 
-	// Initial state: thinking
-	model.thinking = true
+	// Initial state: idle (no activity for >1s triggers thinking state)
+	model.tracker.LastActivity = time.Now().Add(-2 * time.Second)
 
 	rendered := model.View()
 	plain := testutil.StripANSI(rendered)
@@ -214,7 +218,8 @@ func TestTextStreaming(t *testing.T) {
 		Complete: true,
 		Rendered: "Hello, this is a test response.",
 	})
-	model.thinking = false
+	// Recent activity - not idle (text just streamed)
+	model.tracker.LastActivity = time.Now()
 
 	rendered := model.View()
 	plain := testutil.StripANSI(rendered)
@@ -257,7 +262,8 @@ func TestMultipleSegments(t *testing.T) {
 			Rendered: "Here is what I found.",
 		},
 	}
-	model.thinking = false
+	// Recent activity - not idle (text just streamed)
+	model.tracker.LastActivity = time.Now()
 
 	rendered := model.View()
 	plain := testutil.StripANSI(rendered)

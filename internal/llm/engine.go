@@ -242,7 +242,7 @@ func (e *Engine) runLoop(ctx context.Context, req Request, events chan<- Event, 
 				} else if call.Name == ReadURLToolName {
 					events <- Event{Type: EventPhase, Text: "Reading"}
 				}
-				events <- Event{Type: EventToolExecStart, ToolName: call.Name, ToolInfo: info}
+				events <- Event{Type: EventToolExecStart, ToolCallID: call.ID, ToolName: call.Name, ToolInfo: info}
 			}
 		}
 
@@ -307,7 +307,7 @@ func (e *Engine) applyExternalSearch(ctx context.Context, req Request, events ch
 			} else if call.Name == ReadURLToolName {
 				events <- Event{Type: EventPhase, Text: "Reading"}
 			}
-			events <- Event{Type: EventToolExecStart, ToolName: call.Name, ToolInfo: e.getToolPreview(call)}
+			events <- Event{Type: EventToolExecStart, ToolCallID: call.ID, ToolName: call.Name, ToolInfo: e.getToolPreview(call)}
 		}
 	}
 
@@ -354,7 +354,7 @@ func (e *Engine) executeToolCalls(ctx context.Context, calls []ToolCall, events 
 			DebugToolResult(debug, call.ID, call.Name, errMsg)
 			results = append(results, ToolErrorMessage(call.ID, call.Name, errMsg, call.ThoughtSig))
 			if events != nil {
-				events <- Event{Type: EventToolExecEnd, ToolName: call.Name, ToolInfo: e.getToolPreview(call), ToolSuccess: false}
+				events <- Event{Type: EventToolExecEnd, ToolCallID: call.ID, ToolName: call.Name, ToolInfo: e.getToolPreview(call), ToolSuccess: false}
 			}
 			continue
 		}
@@ -365,7 +365,7 @@ func (e *Engine) executeToolCalls(ctx context.Context, calls []ToolCall, events 
 			DebugToolResult(debug, call.ID, call.Name, errMsg)
 			results = append(results, ToolErrorMessage(call.ID, call.Name, errMsg, call.ThoughtSig))
 			if events != nil {
-				events <- Event{Type: EventToolExecEnd, ToolName: call.Name, ToolInfo: info, ToolSuccess: false}
+				events <- Event{Type: EventToolExecEnd, ToolCallID: call.ID, ToolName: call.Name, ToolInfo: info, ToolSuccess: false}
 			}
 			continue
 		}
@@ -373,7 +373,7 @@ func (e *Engine) executeToolCalls(ctx context.Context, calls []ToolCall, events 
 		DebugRawToolResult(debugRaw, call.ID, call.Name, output)
 		results = append(results, ToolResultMessage(call.ID, call.Name, output, call.ThoughtSig))
 		if events != nil {
-			events <- Event{Type: EventToolExecEnd, ToolName: call.Name, ToolInfo: info, ToolSuccess: true}
+			events <- Event{Type: EventToolExecEnd, ToolCallID: call.ID, ToolName: call.Name, ToolInfo: info, ToolSuccess: true}
 		}
 	}
 	return results, nil

@@ -109,6 +109,7 @@ type streamEvent struct {
 	webSearch    bool
 	toolStart    bool   // Tool execution started
 	toolEnd      bool   // Tool execution completed
+	toolCallID   string // Unique ID for this tool invocation
 	toolName     string // For tool start/end events
 	toolInfo     string // For tool start/end events
 	toolSuccess  bool   // For tool end: whether it succeeded
@@ -277,7 +278,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.tracker.MarkCurrentTextComplete(func(text string) string {
 					return m.renderMarkdown(text)
 				})
-				if m.tracker.HandleToolStart(msg.toolName, msg.toolInfo) {
+				if m.tracker.HandleToolStart(msg.toolCallID, msg.toolName, msg.toolInfo) {
 					// New segment added, start wave animation
 					cmds = append(cmds, m.tracker.StartWave())
 				} else {
@@ -290,7 +291,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.stats.ToolEnd()
 			// Update segment status
 			if m.tracker != nil {
-				m.tracker.HandleToolEnd(msg.toolName, msg.toolSuccess)
+				m.tracker.HandleToolEnd(msg.toolCallID, msg.toolSuccess)
 
 				// Back to thinking phase if no more pending tools
 				if !m.tracker.HasPending() {
@@ -1013,11 +1014,12 @@ func (m *Model) startStream(content string) tea.Cmd {
 					phase := ui.FormatToolPhase(event.ToolName, event.ToolInfo).Active
 					isSearch := event.ToolName == llm.WebSearchToolName || event.ToolName == "WebSearch"
 					m.streamChan <- streamEvent{
-						phase:     phase,
-						webSearch: isSearch,
-						toolStart: true,
-						toolName:  event.ToolName,
-						toolInfo:  event.ToolInfo,
+						phase:      phase,
+						webSearch:  isSearch,
+						toolStart:  true,
+						toolCallID: event.ToolCallID,
+						toolName:   event.ToolName,
+						toolInfo:   event.ToolInfo,
 					}
 				case llm.EventToolExecEnd:
 					// Skip tool indicator for ask_user - it has its own UI
@@ -1026,6 +1028,7 @@ func (m *Model) startStream(content string) tea.Cmd {
 					}
 					m.streamChan <- streamEvent{
 						toolEnd:     true,
+						toolCallID:  event.ToolCallID,
 						toolName:    event.ToolName,
 						toolInfo:    event.ToolInfo,
 						toolSuccess: event.ToolSuccess,

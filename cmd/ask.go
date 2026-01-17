@@ -411,7 +411,7 @@ func runAsk(cmd *cobra.Command, args []string) error {
 					continue
 				}
 				select {
-				case toolEvents <- toolEvent{Name: event.ToolName, Info: event.ToolInfo}:
+				case toolEvents <- toolEvent{CallID: event.ToolCallID, Name: event.ToolName, Info: event.ToolInfo}:
 				default:
 				}
 			}
@@ -423,6 +423,7 @@ func runAsk(cmd *cobra.Command, args []string) error {
 				}
 				select {
 				case toolEvents <- toolEvent{
+					CallID:      event.ToolCallID,
 					Name:        event.ToolName,
 					Info:        event.ToolInfo,
 					IsToolEnd:   true,
@@ -496,8 +497,9 @@ func runAsk(cmd *cobra.Command, args []string) error {
 
 // toolEvent represents a tool execution event with name and additional info
 type toolEvent struct {
-	Name string // Tool name (e.g., "web_search", "read_url")
-	Info string // Additional info (e.g., URL being fetched)
+	CallID string // Unique ID for this tool invocation
+	Name   string // Tool name (e.g., "web_search", "read_url")
+	Info   string // Additional info (e.g., URL being fetched)
 	// Tool end fields (when IsToolEnd is true)
 	IsToolEnd   bool
 	ToolSuccess bool
@@ -631,7 +633,7 @@ type askStreamModel struct {
 	printedLines int // Number of lines already printed to scrollback
 
 	// State flags
-	thinking bool // True only when waiting for LLM response (not during tools or streaming)
+	done bool // True when streaming is complete (prevents spinner from showing)
 
 	// Status display
 	retryStatus string    // Retry status (e.g., "Rate limited (2/5), waiting 5s...")
@@ -655,12 +657,12 @@ type askUsageMsg struct {
 }
 type askTickMsg time.Time
 type askToolStartMsg struct {
-	Name string // Tool name being executed
-	Info string // Additional info (e.g., URL)
+	CallID string // Unique ID for this tool invocation
+	Name   string // Tool name being executed
+	Info   string // Additional info (e.g., URL)
 }
 type askToolEndMsg struct {
-	Name    string // Tool name that completed
-	Info    string // Additional info
+	CallID  string // Unique ID for this tool invocation
 	Success bool   // Whether the tool succeeded
 }
 type askRetryMsg struct {
@@ -694,7 +696,6 @@ func newAskStreamModel() askStreamModel {
 		styles:    styles,
 		width:     width,
 		tracker:   ui.NewToolTracker(),
-		thinking:  true,
 		startTime: time.Now(),
 	}
 }
@@ -740,7 +741,7 @@ func (m *askStreamModel) maybeFlushToScrollback() tea.Cmd {
 func (m askStreamModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// Handle tool start messages even while approval form is active
 	if toolMsg, ok := msg.(askToolStartMsg); ok && m.approvalForm != nil {
-		if m.tracker.HandleToolStart(toolMsg.Name, toolMsg.Info) {
+		if m.tracker.HandleToolStart(toolMsg.CallID, toolMsg.Name, toolMsg.Info) {
 			// New segment added, but don't start wave yet (approval form is active)
 		}
 	}
@@ -804,7 +805,6 @@ func (m askStreamModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case askContentMsg:
-		m.thinking = false
 		m.tracker.AddTextSegment(string(msg))
 
 		// Flush excess content to scrollback to keep View() small
@@ -813,7 +813,8 @@ func (m askStreamModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case askDoneMsg:
-		m.thinking = false
+		m.done = true // Prevent spinner from showing in final View()
+
 		// Mark all text segments as complete but don't pre-render.
 		// This ensures RenderSegments uses the same renderMarkdown path
 		// as streaming, keeping line counts consistent for scrollback tracking.
@@ -835,16 +836,19 @@ func (m askStreamModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Quit
 
 	case askCancelledMsg:
+		m.done = true
 		return m, tea.Quit
 
 	case askUsageMsg:
 		m.totalTokens = msg.InputTokens + msg.OutputTokens
 
 	case askTickMsg:
-		// Continue ticking for elapsed time updates during thinking
-		if m.thinking {
-			return m, m.tickEvery()
+		// Stop ticking when done
+		if m.done {
+			return m, nil
 		}
+		// Continue ticking for elapsed time and idle detection updates
+		return m, m.tickEvery()
 
 	case askRetryMsg:
 		m.retryStatus = fmt.Sprintf("Rate limited (%d/%d), waiting %.0fs...",
@@ -879,20 +883,18 @@ func (m askStreamModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case askToolStartMsg:
 		m.retryStatus = ""
-		m.thinking = false
-		if m.tracker.HandleToolStart(msg.Name, msg.Info) {
+		if m.tracker.HandleToolStart(msg.CallID, msg.Name, msg.Info) {
 			// New segment added, start wave animation
 			return m, m.tracker.StartWave()
 		}
-		// Already have pending segment for this tool, just restart wave
+		// Already have pending segment for this call, just restart wave
 		return m, m.tracker.StartWave()
 
 	case askToolEndMsg:
-		m.tracker.HandleToolEnd(msg.Name, msg.Success)
+		m.tracker.HandleToolEnd(msg.CallID, msg.Success)
 
-		// If no more pending tools, go back to thinking
+		// If no more pending tools, start spinner for idle state
 		if !m.tracker.HasPending() {
-			m.thinking = true
 			return m, m.spinner.Tick
 		}
 
@@ -927,7 +929,9 @@ func (m askStreamModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.approvalForm.Init()
 
 	case spinner.TickMsg:
-		if m.thinking {
+		// Update spinner when idle (no activity for >1s and no pending tools)
+		// Don't update spinner when done
+		if !m.done && m.tracker.IsIdle(time.Second) {
 			var cmd tea.Cmd
 			m.spinner, cmd = m.spinner.Update(msg)
 			return m, cmd
@@ -978,14 +982,15 @@ func (m askStreamModel) View() string {
 		return b.String()
 	}
 
-	// Show thinking spinner or active tools
-	if m.thinking || len(active) > 0 {
+	// Show spinner when idle (no activity for >1s) or when tools are active
+	// Don't show spinner when done - we're about to quit
+	if !m.done && (len(active) > 0 || m.tracker.IsIdle(time.Second)) {
 		if b.Len() > 0 {
 			b.WriteString("\n\n")
 		}
 		phase := m.phase
 		if phase == "" {
-			if m.thinking {
+			if m.tracker.IsIdle(time.Second) {
 				phase = "Thinking"
 			} else {
 				phase = "Working"
@@ -1063,13 +1068,12 @@ func streamWithGlamour(ctx context.Context, output <-chan string, toolEvents <-c
 			}
 			if ev.IsToolEnd {
 				p.Send(askToolEndMsg{
-					Name:    ev.Name,
-					Info:    ev.Info,
+					CallID:  ev.CallID,
 					Success: ev.ToolSuccess,
 				})
 				continue
 			}
-			p.Send(askToolStartMsg{Name: ev.Name, Info: ev.Info})
+			p.Send(askToolStartMsg{CallID: ev.CallID, Name: ev.Name, Info: ev.Info})
 
 		case chunk, ok := <-output:
 			if !ok {

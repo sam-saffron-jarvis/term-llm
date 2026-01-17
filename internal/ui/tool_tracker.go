@@ -15,27 +15,44 @@ type WavePauseMsg struct{}
 // ToolTracker manages tool segment state and wave animation.
 // Designed to be embedded in larger models (ask, chat) for consistent tool tracking.
 type ToolTracker struct {
-	Segments   []Segment
-	WavePos    int
-	WavePaused bool
+	Segments     []Segment
+	WavePos      int
+	WavePaused   bool
+	LastActivity time.Time
 }
 
 // NewToolTracker creates a new ToolTracker
 func NewToolTracker() *ToolTracker {
 	return &ToolTracker{
-		Segments: make([]Segment, 0),
+		Segments:     make([]Segment, 0),
+		LastActivity: time.Now(),
 	}
 }
 
-// HandleToolStart adds a pending segment if none exists for this tool name.
+// RecordActivity records the current time as the last activity.
+// Call this when text is received, tools start, or tools end.
+func (t *ToolTracker) RecordActivity() {
+	t.LastActivity = time.Now()
+}
+
+// IsIdle returns true if there has been no activity for the given duration
+// and there are no pending tools (tools have their own wave animation).
+func (t *ToolTracker) IsIdle(d time.Duration) bool {
+	return time.Since(t.LastActivity) > d && !t.HasPending()
+}
+
+// HandleToolStart adds a pending segment for this tool call.
+// Uses the unique callID to track this specific invocation.
 // Returns true if a new segment was added (caller should start wave animation).
-func (t *ToolTracker) HandleToolStart(toolName, toolInfo string) bool {
-	// Check if we already have a pending segment for this tool name
+func (t *ToolTracker) HandleToolStart(callID, toolName, toolInfo string) bool {
+	t.RecordActivity()
+
+	// Check if we already have a pending segment for this call ID
 	for i := len(t.Segments) - 1; i >= 0; i-- {
 		seg := t.Segments[i]
 		if seg.Type == SegmentTool &&
 			seg.ToolStatus == ToolPending &&
-			seg.ToolName == toolName {
+			seg.ToolCallID == callID {
 			return false
 		}
 	}
@@ -43,6 +60,7 @@ func (t *ToolTracker) HandleToolStart(toolName, toolInfo string) bool {
 	// Add new pending segment
 	t.Segments = append(t.Segments, Segment{
 		Type:       SegmentTool,
+		ToolCallID: callID,
 		ToolName:   toolName,
 		ToolInfo:   toolInfo,
 		ToolStatus: ToolPending,
@@ -50,9 +68,10 @@ func (t *ToolTracker) HandleToolStart(toolName, toolInfo string) bool {
 	return true
 }
 
-// HandleToolEnd updates the status of a pending tool.
-func (t *ToolTracker) HandleToolEnd(toolName string, success bool) {
-	t.Segments = UpdateToolStatus(t.Segments, toolName, "", success)
+// HandleToolEnd updates the status of a pending tool by its call ID.
+func (t *ToolTracker) HandleToolEnd(callID string, success bool) {
+	t.RecordActivity()
+	t.Segments = UpdateToolStatus(t.Segments, callID, success)
 }
 
 // HasPending returns true if there are any pending tool segments.
@@ -134,6 +153,8 @@ func (t *ToolTracker) CompletedSegments() []Segment {
 // AddTextSegment adds or appends to a text segment.
 // Returns true if this created a new segment.
 func (t *ToolTracker) AddTextSegment(text string) bool {
+	t.RecordActivity()
+
 	// Find or create current text segment
 	if len(t.Segments) > 0 {
 		last := &t.Segments[len(t.Segments)-1]

@@ -28,6 +28,7 @@ type Segment struct {
 	Type       SegmentType
 	Text       string     // For text segments: markdown content
 	Rendered   string     // For text segments: cached rendered markdown
+	ToolCallID string     // For tool segments: unique ID for this invocation
 	ToolName   string     // For tool segments
 	ToolInfo   string     // For tool segments: additional context
 	ToolStatus ToolStatus // For tool segments
@@ -186,14 +187,14 @@ func GetPendingToolTextLen(segments []Segment) int {
 	return 0
 }
 
-// UpdateToolStatus updates the status of a pending tool matching the given name.
-// We match by name only (not info) because a single tool execution may have multiple
-// events with different info values (e.g., during permission approvals).
-func UpdateToolStatus(segments []Segment, toolName, toolInfo string, success bool) []Segment {
+// UpdateToolStatus updates the status of a pending tool matching the given call ID.
+// Matching by unique ID ensures we update the correct tool when multiple calls
+// to the same tool may be in progress.
+func UpdateToolStatus(segments []Segment, callID string, success bool) []Segment {
 	for i := len(segments) - 1; i >= 0; i-- {
 		if segments[i].Type == SegmentTool &&
 			segments[i].ToolStatus == ToolPending &&
-			segments[i].ToolName == toolName {
+			segments[i].ToolCallID == callID {
 			if success {
 				segments[i].ToolStatus = ToolSuccess
 			} else {
