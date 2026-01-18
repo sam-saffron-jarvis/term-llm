@@ -10,9 +10,10 @@ import (
 
 // AskUserQuestion represents a question to present to the user.
 type AskUserQuestion struct {
-	Header   string          `json:"header"`
-	Question string          `json:"question"`
-	Options  []AskUserOption `json:"options"`
+	Header      string          `json:"header"`
+	Question    string          `json:"question"`
+	Options     []AskUserOption `json:"options"`
+	MultiSelect bool            `json:"multi_select"`
 }
 
 // AskUserOption represents a choice for a question.
@@ -23,10 +24,12 @@ type AskUserOption struct {
 
 // AskUserAnswer represents the user's answer to a question.
 type AskUserAnswer struct {
-	QuestionIndex int    `json:"question_index"`
-	Header        string `json:"header"`
-	Selected      string `json:"selected"`
-	IsCustom      bool   `json:"is_custom"`
+	QuestionIndex int      `json:"question_index"`
+	Header        string   `json:"header"`
+	Selected      string   `json:"selected"`
+	SelectedList  []string `json:"selected_list,omitempty"`
+	IsCustom      bool     `json:"is_custom"`
+	IsMultiSelect bool     `json:"is_multi_select,omitempty"`
 }
 
 // AskUserResult is the complete result returned by the tool.
@@ -53,13 +56,14 @@ func NewAskUserTool() *AskUserTool {
 func (t *AskUserTool) Spec() llm.ToolSpec {
 	return llm.ToolSpec{
 		Name: AskUserToolName,
-		Description: `Present questions to the user and gather their responses. Use this when you need clarification, preferences, or decisions from the user. Each question can have 2-4 predefined options plus an automatic 'Other' option for custom input.
+		Description: `Present questions to the user and gather their responses. Use this when you need clarification, preferences, or decisions from the user. Each question can have 2-8 predefined options plus an automatic 'Other' option for custom input.
 
 Guidelines:
 - Use for implementation choices, preferences, or clarifications
 - Keep questions focused and actionable
 - Provide clear, distinct options with helpful descriptions
-- Use descriptive headers (max 12 chars) for tab navigation`,
+- Use descriptive headers (max 12 chars) for tab navigation
+- Set multi_select: true when users should be able to select multiple options`,
 		Schema: map[string]interface{}{
 			"type": "object",
 			"properties": map[string]interface{}{
@@ -79,7 +83,7 @@ Guidelines:
 							},
 							"options": map[string]interface{}{
 								"type":        "array",
-								"description": "2-4 predefined answer options",
+								"description": "2-8 predefined answer options",
 								"items": map[string]interface{}{
 									"type": "object",
 									"properties": map[string]interface{}{
@@ -95,7 +99,12 @@ Guidelines:
 									"required": []string{"label", "description"},
 								},
 								"minItems": 2,
-								"maxItems": 4,
+								"maxItems": 8,
+							},
+							"multi_select": map[string]interface{}{
+								"type":        "boolean",
+								"description": "If true, user can select multiple options",
+								"default":     false,
 							},
 						},
 						"required": []string{"header", "question", "options"},
@@ -138,8 +147,8 @@ func (t *AskUserTool) Execute(ctx context.Context, args json.RawMessage) (string
 		if len(q.Options) < 2 {
 			return formatAskUserError(ErrInvalidParams, fmt.Sprintf("question %d: at least 2 options required", i+1)), nil
 		}
-		if len(q.Options) > 4 {
-			return formatAskUserError(ErrInvalidParams, fmt.Sprintf("question %d: maximum 4 options allowed", i+1)), nil
+		if len(q.Options) > 8 {
+			return formatAskUserError(ErrInvalidParams, fmt.Sprintf("question %d: maximum 8 options allowed", i+1)), nil
 		}
 		for j, opt := range q.Options {
 			if opt.Label == "" {

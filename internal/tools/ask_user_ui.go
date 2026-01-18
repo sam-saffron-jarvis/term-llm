@@ -87,6 +87,7 @@ var (
 type askUIAnswer struct {
 	questionIndex int
 	text          string
+	selected      []int // indices of selected options for multi-select
 	isCustom      bool
 }
 
@@ -103,12 +104,48 @@ type askModel struct {
 }
 
 // isOnCustomOption returns true if cursor is on "Type your own answer"
+// Multi-select questions don't have a custom option
 func (m askModel) isOnCustomOption() bool {
 	if m.isOnConfirmTab() {
 		return false
 	}
 	q := m.questions[m.currentTab]
+	if q.MultiSelect {
+		return false
+	}
 	return m.cursor == len(q.Options)
+}
+
+// isMultiSelect returns true if the current question allows multiple selections
+func (m askModel) isMultiSelect() bool {
+	if m.isOnConfirmTab() {
+		return false
+	}
+	return m.questions[m.currentTab].MultiSelect
+}
+
+// isOptionSelected returns true if the option at idx is selected in multi-select mode
+func (m askModel) isOptionSelected(idx int) bool {
+	for _, sel := range m.answers[m.currentTab].selected {
+		if sel == idx {
+			return true
+		}
+	}
+	return false
+}
+
+// toggleOption toggles the selection of the option at idx for multi-select
+func (m *askModel) toggleOption(idx int) {
+	ans := &m.answers[m.currentTab]
+	for i, sel := range ans.selected {
+		if sel == idx {
+			// Remove from selection
+			ans.selected = append(ans.selected[:i], ans.selected[i+1:]...)
+			return
+		}
+	}
+	// Add to selection
+	ans.selected = append(ans.selected, idx)
 }
 
 func newAskModel(questions []AskUserQuestion) askModel {
@@ -140,6 +177,9 @@ func (m askModel) Init() tea.Cmd {
 }
 
 func (m askModel) isAnswered(idx int) bool {
+	if m.questions[idx].MultiSelect {
+		return len(m.answers[idx].selected) > 0
+	}
 	return m.answers[idx].text != ""
 }
 
@@ -241,25 +281,34 @@ func (m askModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		// Question navigation
 		q := m.questions[m.currentTab]
-		totalOptions := len(q.Options) + 1 // +1 for "Type your own"
+		// Multi-select questions don't have "Type your own" option
+		totalOptions := len(q.Options)
+		if !q.MultiSelect {
+			totalOptions++ // +1 for "Type your own"
+		}
 
 		switch msg.String() {
 		case "up", "k":
 			m.cursor = (m.cursor - 1 + totalOptions) % totalOptions
-			// If moved to custom option, focus the input
-			if m.cursor == len(q.Options) {
+			// If moved to custom option (single-select only), focus the input
+			if !q.MultiSelect && m.cursor == len(q.Options) {
 				m.textInput.Focus()
 				return m, textinput.Blink
 			}
 		case "down", "j":
 			m.cursor = (m.cursor + 1) % totalOptions
-			// If moved to custom option, focus the input
-			if m.cursor == len(q.Options) {
+			// If moved to custom option (single-select only), focus the input
+			if !q.MultiSelect && m.cursor == len(q.Options) {
 				m.textInput.Focus()
 				return m, textinput.Blink
 			}
 		case "enter", " ":
-			// Regular option selected
+			if q.MultiSelect {
+				// Multi-select: toggle the current option
+				m.toggleOption(m.cursor)
+				return m, nil
+			}
+			// Single-select: select and advance
 			m.answers[m.currentTab].text = q.Options[m.cursor].Label
 			m.answers[m.currentTab].isCustom = false
 			return m.advanceToNext()
@@ -372,18 +421,29 @@ func (m askModel) renderQuestion() string {
 	// Options
 	for i, opt := range q.Options {
 		isSelected := m.cursor == i
-		isPicked := m.isAnswered(m.currentTab) && m.answers[m.currentTab].text == opt.Label && !m.answers[m.currentTab].isCustom
 
-		// Option line: "1. Label  ✓"
 		var optLine strings.Builder
 		style := askOptionStyle
 		if isSelected {
 			style = askSelectedOptionStyle
 		}
-		optLine.WriteString(style.Render(fmt.Sprintf("%d. %s", i+1, opt.Label)))
-		if isPicked {
-			optLine.WriteString(" ")
-			optLine.WriteString(askCheckStyle.Render("✓"))
+
+		if q.MultiSelect {
+			// Multi-select: show checkbox
+			isChecked := m.isOptionSelected(i)
+			checkbox := "[ ]"
+			if isChecked {
+				checkbox = "[✓]"
+			}
+			optLine.WriteString(style.Render(fmt.Sprintf("%d. %s %s", i+1, checkbox, opt.Label)))
+		} else {
+			// Single-select: show checkmark when picked
+			isPicked := m.isAnswered(m.currentTab) && m.answers[m.currentTab].text == opt.Label && !m.answers[m.currentTab].isCustom
+			optLine.WriteString(style.Render(fmt.Sprintf("%d. %s", i+1, opt.Label)))
+			if isPicked {
+				optLine.WriteString(" ")
+				optLine.WriteString(askCheckStyle.Render("✓"))
+			}
 		}
 		b.WriteString(optLine.String())
 		b.WriteString("\n")
@@ -395,7 +455,12 @@ func (m askModel) renderQuestion() string {
 		}
 	}
 
-	// "Type your own answer" option - show input inline
+	// Multi-select: no custom option
+	if q.MultiSelect {
+		return b.String()
+	}
+
+	// "Type your own answer" option - show input inline (single-select only)
 	isOnCustom := m.isOnCustomOption()
 	isPicked := m.isAnswered(m.currentTab) && m.answers[m.currentTab].isCustom
 
@@ -440,7 +505,18 @@ func (m askModel) renderConfirm() string {
 
 		b.WriteString(askReviewLabelStyle.Render(q.Header + ": "))
 		if answered {
-			b.WriteString(askReviewValueStyle.Render(m.answers[i].text))
+			if q.MultiSelect {
+				// Build comma-separated list of selected options
+				var labels []string
+				for _, idx := range m.answers[i].selected {
+					if idx >= 0 && idx < len(q.Options) {
+						labels = append(labels, q.Options[idx].Label)
+					}
+				}
+				b.WriteString(askReviewValueStyle.Render(strings.Join(labels, ", ")))
+			} else {
+				b.WriteString(askReviewValueStyle.Render(m.answers[i].text))
+			}
 		} else {
 			b.WriteString(askNotAnsweredStyle.Render("(not answered)"))
 		}
@@ -462,7 +538,7 @@ func (m askModel) renderHelp() string {
 	var parts []string
 
 	if !m.isSingleQuestion() {
-		parts = append(parts, "tab switch")
+		parts = append(parts, "tab next")
 	}
 
 	if !m.isOnConfirmTab() {
@@ -471,6 +547,8 @@ func (m askModel) renderHelp() string {
 
 	if m.isOnConfirmTab() {
 		parts = append(parts, "enter submit")
+	} else if m.isMultiSelect() {
+		parts = append(parts, "space toggle")
 	} else if m.isOnCustomOption() {
 		parts = append(parts, "enter confirm")
 	} else {
@@ -491,7 +569,18 @@ func (m askModel) renderSummary() string {
 		}
 		b.WriteString(askCheckStyle.Render("✓ "))
 		b.WriteString(askReviewLabelStyle.Render(q.Question + " "))
-		b.WriteString(askReviewValueStyle.Render(m.answers[i].text))
+		if q.MultiSelect {
+			// Build comma-separated list of selected options
+			var labels []string
+			for _, idx := range m.answers[i].selected {
+				if idx >= 0 && idx < len(q.Options) {
+					labels = append(labels, q.Options[idx].Label)
+				}
+			}
+			b.WriteString(askReviewValueStyle.Render(strings.Join(labels, ", ")))
+		} else {
+			b.WriteString(askReviewValueStyle.Render(m.answers[i].text))
+		}
 	}
 
 	// Newlines outside container so they're not affected by container styling
@@ -539,11 +628,31 @@ func RunAskUser(questions []AskUserQuestion) ([]AskUserAnswer, error) {
 	// Convert internal answers to external format
 	answers := make([]AskUserAnswer, len(result.answers))
 	for i, a := range result.answers {
-		answers[i] = AskUserAnswer{
-			QuestionIndex: a.questionIndex,
-			Header:        questions[i].Header,
-			Selected:      a.text,
-			IsCustom:      a.isCustom,
+		q := questions[i]
+		if q.MultiSelect {
+			// Build list of selected option labels
+			var labels []string
+			for _, idx := range a.selected {
+				if idx >= 0 && idx < len(q.Options) {
+					labels = append(labels, q.Options[idx].Label)
+				}
+			}
+			answers[i] = AskUserAnswer{
+				QuestionIndex: a.questionIndex,
+				Header:        q.Header,
+				Selected:      strings.Join(labels, ", "),
+				SelectedList:  labels,
+				IsCustom:      false,
+				IsMultiSelect: true,
+			}
+		} else {
+			answers[i] = AskUserAnswer{
+				QuestionIndex: a.questionIndex,
+				Header:        q.Header,
+				Selected:      a.text,
+				IsCustom:      a.isCustom,
+				IsMultiSelect: false,
+			}
 		}
 	}
 
