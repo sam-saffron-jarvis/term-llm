@@ -1,0 +1,9 @@
+name: changelog
+description: "Generate human-readable reports on interesting activity in a git repo"
+
+tools:
+  enabled: [read_file, grep, shell]
+
+shell:
+  allow: ["git *"]
+  auto_run: true

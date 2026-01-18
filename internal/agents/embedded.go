@@ -18,6 +18,7 @@ var builtinFS embed.FS
 var builtinAgentNames = []string{
 	"agent-builder",
 	"artist",
+	"changelog",
 	"codebase",
 	"commit",
 	"editor",
