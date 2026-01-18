@@ -171,23 +171,55 @@ type ApprovalRequest struct {
 
 // ApprovalManager coordinates approval requests and caching.
 type ApprovalManager struct {
-	cache       *ApprovalCache
-	dirCache    *DirCache // Tool-agnostic directory approvals
-	shellCache  *ShellApprovalCache
-	permissions *ToolPermissions
+	cache        *ApprovalCache
+	dirCache     *DirCache // Tool-agnostic directory approvals
+	shellCache   *ShellApprovalCache
+	permissions  *ToolPermissions
+	projectCache map[string]*ProjectApprovals // repo root -> approvals
+	projectMu    sync.Mutex
 
 	// Callback for prompting user (set by TUI or CLI)
+	// Legacy callback - will be replaced by PromptUIFunc
 	PromptFunc func(req *ApprovalRequest) (ConfirmOutcome, string)
+
+	// New UI callback for improved approval prompts
+	// Takes path/command, isWrite (for files), and returns ApprovalResult
+	// If nil, falls back to PromptFunc
+	PromptUIFunc func(path string, isWrite bool, isShell bool) (ApprovalResult, error)
 }
 
 // NewApprovalManager creates a new ApprovalManager.
 func NewApprovalManager(perms *ToolPermissions) *ApprovalManager {
 	return &ApprovalManager{
-		cache:       NewApprovalCache(),
-		dirCache:    NewDirCache(),
-		shellCache:  NewShellApprovalCache(),
-		permissions: perms,
+		cache:        NewApprovalCache(),
+		dirCache:     NewDirCache(),
+		shellCache:   NewShellApprovalCache(),
+		permissions:  perms,
+		projectCache: make(map[string]*ProjectApprovals),
 	}
+}
+
+// getProjectApprovals returns or loads project approvals for the given path.
+func (m *ApprovalManager) getProjectApprovals(path string) *ProjectApprovals {
+	repoInfo := DetectGitRepo(path)
+	if !repoInfo.IsRepo {
+		return nil
+	}
+
+	m.projectMu.Lock()
+	defer m.projectMu.Unlock()
+
+	if pa, ok := m.projectCache[repoInfo.Root]; ok {
+		return pa
+	}
+
+	pa, err := LoadProjectApprovals(repoInfo.Root)
+	if err != nil {
+		return nil
+	}
+
+	m.projectCache[repoInfo.Root] = pa
+	return pa
 }
 
 // CheckPathApproval checks if a path is approved for the given tool.
@@ -213,21 +245,40 @@ func (m *ApprovalManager) CheckPathApproval(toolName, path, toolInfo string, isW
 		return ProceedOnce, nil
 	}
 
-	// 2. Check if path is in any approved directory (tool-agnostic)
+	// 2. Check if path is in any approved directory (session cache, tool-agnostic)
 	if m.dirCache.IsPathInApprovedDir(path) {
 		return ProceedAlways, nil
 	}
 
-	// 3. Determine which directory to approve
+	// 3. Check project-level approvals (persisted)
+	absPath, err := filepath.Abs(path)
+	if err != nil {
+		absPath = path
+	}
+
+	projectApprovals := m.getProjectApprovals(absPath)
+	if projectApprovals != nil && projectApprovals.IsPathApproved(absPath, isWrite) {
+		return ProceedAlways, nil
+	}
+
+	// 4. Need to prompt user - try new UI first, then fall back to legacy
+	if m.PromptUIFunc != nil {
+		result, err := m.PromptUIFunc(absPath, isWrite, false)
+		if err != nil {
+			return Cancel, err
+		}
+		return m.handleFileApprovalResult(result, absPath, isWrite, projectApprovals)
+	}
+
+	// Fall back to legacy PromptFunc
+	if m.PromptFunc == nil {
+		return Cancel, NewToolError(ErrPermissionDenied, "path not in allowlist and no TTY for approval")
+	}
+
 	dir := getDirectoryForApproval(path)
 	absDir, err := filepath.Abs(dir)
 	if err != nil {
 		return Cancel, NewToolError(ErrPermissionDenied, "invalid path")
-	}
-
-	// 4. Prompt user for directory approval
-	if m.PromptFunc == nil {
-		return Cancel, NewToolError(ErrPermissionDenied, "path not in allowlist and no TTY for approval")
 	}
 
 	actionType := "read"
@@ -249,6 +300,63 @@ func (m *ApprovalManager) CheckPathApproval(toolName, path, toolInfo string, isW
 	}
 
 	return outcome, nil
+}
+
+// handleFileApprovalResult processes the result from the approval UI.
+func (m *ApprovalManager) handleFileApprovalResult(result ApprovalResult, path string, isWrite bool, projectApprovals *ProjectApprovals) (ConfirmOutcome, error) {
+	if result.Cancelled {
+		return Cancel, nil
+	}
+
+	switch result.Choice {
+	case ApprovalChoiceDeny:
+		return Cancel, nil
+
+	case ApprovalChoiceOnce:
+		return ProceedOnce, nil
+
+	case ApprovalChoiceFile:
+		// Session-only file approval - just proceed once
+		return ProceedOnce, nil
+
+	case ApprovalChoiceDirectory:
+		// Session-only directory approval
+		absDir, err := filepath.Abs(result.Path)
+		if err != nil {
+			absDir = result.Path
+		}
+		m.dirCache.Set(absDir, ProceedAlways)
+		return ProceedAlways, nil
+
+	case ApprovalChoiceRepoRead:
+		// Approve read for entire repo (persisted)
+		if projectApprovals != nil {
+			if err := projectApprovals.ApproveRead(); err != nil {
+				// Log error but don't fail - still allow access for this session
+			}
+		}
+		// Also add to session cache for fast lookups
+		if result.Path != "" {
+			m.dirCache.Set(result.Path, ProceedAlways)
+		}
+		return ProceedAlways, nil
+
+	case ApprovalChoiceRepoWrite:
+		// Approve write for entire repo (persisted)
+		if projectApprovals != nil {
+			if err := projectApprovals.ApproveWrite(); err != nil {
+				// Log error but don't fail
+			}
+		}
+		// Also add to session cache
+		if result.Path != "" {
+			m.dirCache.Set(result.Path, ProceedAlways)
+		}
+		return ProceedAlways, nil
+
+	default:
+		return Cancel, nil
+	}
 }
 
 // getDirectoryForApproval determines which directory to ask approval for.
@@ -277,7 +385,23 @@ func (m *ApprovalManager) CheckShellApproval(command string) (ConfirmOutcome, er
 		}
 	}
 
-	// Need to prompt
+	// Check project-level approvals (persisted)
+	cwd, _ := os.Getwd()
+	projectApprovals := m.getProjectApprovals(cwd)
+	if projectApprovals != nil && projectApprovals.IsShellPatternApproved(command) {
+		return ProceedAlways, nil
+	}
+
+	// Need to prompt - try new UI first, then fall back to legacy
+	if m.PromptUIFunc != nil {
+		result, err := m.PromptUIFunc(command, false, true)
+		if err != nil {
+			return Cancel, err
+		}
+		return m.handleShellApprovalResult(result, command, projectApprovals)
+	}
+
+	// Fall back to legacy PromptFunc
 	if m.PromptFunc == nil {
 		return Cancel, NewToolError(ErrPermissionDenied, "command not in allowlist and no TTY for approval")
 	}
@@ -303,12 +427,43 @@ func (m *ApprovalManager) CheckShellApproval(command string) (ConfirmOutcome, er
 	return outcome, nil
 }
 
-// truncateForDisplay shortens a string for display purposes.
-func truncateForDisplay(s string, maxLen int) string {
-	if len(s) <= maxLen {
-		return s
+// handleShellApprovalResult processes the result from the shell approval UI.
+func (m *ApprovalManager) handleShellApprovalResult(result ApprovalResult, command string, projectApprovals *ProjectApprovals) (ConfirmOutcome, error) {
+	if result.Cancelled {
+		return Cancel, nil
 	}
-	return s[:maxLen-3] + "..."
+
+	switch result.Choice {
+	case ApprovalChoiceDeny:
+		return Cancel, nil
+
+	case ApprovalChoiceOnce:
+		return ProceedOnce, nil
+
+	case ApprovalChoiceCommand:
+		// Session-only command approval
+		m.shellCache.AddPattern(command)
+		return ProceedAlways, nil
+
+	case ApprovalChoicePattern:
+		// Approve pattern in repo (persisted if in repo, session otherwise)
+		pattern := result.Pattern
+		if pattern == "" {
+			pattern = GenerateShellPattern(command)
+		}
+
+		if result.SaveToRepo && projectApprovals != nil {
+			if err := projectApprovals.ApproveShellPattern(pattern); err != nil {
+				// Log error but don't fail
+			}
+		}
+		// Also add to session cache for fast lookups
+		m.shellCache.AddPattern(pattern)
+		return ProceedAlways, nil
+
+	default:
+		return Cancel, nil
+	}
 }
 
 // ApproveShellPattern adds a pattern to the session cache.

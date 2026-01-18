@@ -163,7 +163,7 @@ func runChat(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	if toolMgr != nil {
-		toolMgr.ApprovalMgr.PromptFunc = tools.HuhApprovalPrompt
+		// PromptUIFunc will be set up below after tea.Program is created
 	}
 
 	// Store resolved instructions in config for chat TUI
@@ -201,6 +201,21 @@ func runChat(cmd *cobra.Command, args []string) error {
 
 	// Run the TUI (inline mode - no alt screen)
 	p := tea.NewProgram(model)
+
+	// Set up the improved approval UI with git-aware heuristics
+	if toolMgr != nil {
+		toolMgr.ApprovalMgr.PromptUIFunc = func(path string, isWrite bool, isShell bool) (tools.ApprovalResult, error) {
+			// Pause the TUI first
+			p.ReleaseTerminal()
+			defer p.RestoreTerminal()
+
+			// Run the appropriate approval UI
+			if isShell {
+				return tools.RunShellApprovalUI(path)
+			}
+			return tools.RunFileApprovalUI(path, isWrite)
+		}
+	}
 
 	// Set up hooks to pause TUI during ask_user prompts
 	start, end := tools.CreateTUIHooks(p, func() {

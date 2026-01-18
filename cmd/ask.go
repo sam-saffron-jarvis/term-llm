@@ -338,26 +338,26 @@ func runAsk(cmd *cobra.Command, args []string) error {
 	adapter := ui.NewStreamAdapter(ui.DefaultStreamBufferSize)
 	adapter.ToolNameFilter = tools.AskUserToolName // Skip ask_user tool (has its own UI)
 
-	// For glamour mode, create the tea.Program and set PromptFunc BEFORE starting the stream
-	// This avoids a race condition where tool execution starts before PromptFunc is set
+	// For glamour mode, create the tea.Program and set PromptUIFunc BEFORE starting the stream
+	// This avoids a race condition where tool execution starts before PromptUIFunc is set
 	var teaProgram *tea.Program
 	if useGlamour && toolMgr != nil {
 		model := newAskStreamModel()
 		teaProgram = tea.NewProgram(model, tea.WithoutSignalHandler())
-		toolMgr.ApprovalMgr.PromptFunc = func(req *tools.ApprovalRequest) (tools.ConfirmOutcome, string) {
-			responseCh := make(chan bool, 1)
-			teaProgram.Send(askApprovalRequestMsg{
-				Description: req.Description,
-				ToolName:    req.ToolName,
-				ToolInfo:    req.ToolInfo,
-				ResponseCh:  responseCh,
-			})
-			approved := <-responseCh
-			if approved {
-				return tools.ProceedAlways, req.Path
+
+		// Set up the improved approval UI with git-aware heuristics
+		toolMgr.ApprovalMgr.PromptUIFunc = func(path string, isWrite bool, isShell bool) (tools.ApprovalResult, error) {
+			// Pause the TUI first
+			teaProgram.ReleaseTerminal()
+			defer teaProgram.RestoreTerminal()
+
+			// Run the appropriate approval UI
+			if isShell {
+				return tools.RunShellApprovalUI(path)
 			}
-			return tools.Cancel, ""
+			return tools.RunFileApprovalUI(path, isWrite)
 		}
+
 		// Set up ask_user hooks to pause/resume the TUI during the interactive UI
 		start, end := tools.CreateTUIHooks(teaProgram, func() {
 			done := make(chan struct{})
@@ -365,6 +365,14 @@ func runAsk(cmd *cobra.Command, args []string) error {
 			<-done // Wait for flush to complete
 		})
 		tools.SetAskUserHooks(start, end)
+	} else if toolMgr != nil {
+		// Non-TUI mode: set up approval UI directly (no tea.Program to pause)
+		toolMgr.ApprovalMgr.PromptUIFunc = func(path string, isWrite bool, isShell bool) (tools.ApprovalResult, error) {
+			if isShell {
+				return tools.RunShellApprovalUI(path)
+			}
+			return tools.RunFileApprovalUI(path, isWrite)
+		}
 	}
 
 	errChan := make(chan error, 1)

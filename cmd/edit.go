@@ -156,7 +156,13 @@ func runEdit(cmd *cobra.Command, args []string) error {
 		if err != nil {
 			return fmt.Errorf("failed to initialize tools: %w", err)
 		}
-		toolMgr.ApprovalMgr.PromptFunc = tools.HuhApprovalPrompt
+		// Set up the improved approval UI with git-aware heuristics
+		toolMgr.ApprovalMgr.PromptUIFunc = func(path string, isWrite bool, isShell bool) (tools.ApprovalResult, error) {
+			if isShell {
+				return tools.RunShellApprovalUI(path)
+			}
+			return tools.RunFileApprovalUI(path, isWrite)
+		}
 		toolMgr.SetupEngine(engine)
 	}
 

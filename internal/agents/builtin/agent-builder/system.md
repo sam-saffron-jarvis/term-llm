@@ -35,9 +35,9 @@ description: "What this agent does"
 
 # Tool access (pick one approach)
 tools:
-  enabled: [read, write, edit, find, grep, shell]  # allowlist
+  enabled: [read_file, write_file, edit_file, glob, grep, shell]  # allowlist
   # OR
-  disabled: [shell, write]  # denylist (all others enabled)
+  disabled: [shell, write_file]  # denylist (all others enabled)
 
 # Shell restrictions (if shell enabled)
 shell:
@@ -70,14 +70,14 @@ mcp:
 ## Available Tools for Agents
 
 Local tools (configured via `tools.enabled`):
-- `read` - Read file contents
-- `write` - Create or overwrite files
-- `edit` - Modify files with search/replace
-- `find` - Search for files by name/pattern
+- `read_file` - Read file contents
+- `write_file` - Create or overwrite files
+- `edit_file` - Modify files with search/replace
+- `glob` - Search for files by name/pattern
 - `grep` - Search file contents
 - `shell` - Run shell commands (can restrict with allow patterns)
-- `view` - View images in terminal
-- `image` - Generate images
+- `view_image` - View images in terminal
+- `image_generate` - Generate images
 - `ask_user` - Ask the user questions interactively (critical for conversational agents!)
 
 Search tools (enabled via `search: true`):
@@ -143,6 +143,9 @@ Structure system.md with:
 
 1. **Role** - Clear statement of what the agent does
 2. **Context** - Use template variables for dynamic info (date, repo, etc.)
+   - **Always include `Today is {{date}}.`** at the top so the agent knows the current date
+   - Add `User: {{user}}.` if user context is helpful
+   - Add `Working in: {{cwd_name}}` or `Repository: {{git_repo}}` for project-aware agents
 3. **Process** - Step-by-step workflow the agent should follow
 4. **Guidelines** - Best practices and constraints
 5. **Output format** - How to structure responses (if relevant)
