@@ -97,7 +97,10 @@ type Session struct {
 	Turns       int // Number of request/response cycles
 	TotalTokens TokenUsage
 	HasErrors   bool
-	Entries     []any // RequestEntry or EventEntry
+	Command     string   // CLI command that started the session
+	Args        []string // CLI arguments
+	Cwd         string   // Working directory
+	Entries     []any    // RequestEntry or EventEntry
 }
 
 // TokenUsage tracks token consumption

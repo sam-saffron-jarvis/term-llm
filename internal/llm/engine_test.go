@@ -202,7 +202,8 @@ func TestEngineExternalSearchStopsAfterMaxLoops(t *testing.T) {
 		t.Fatalf("expected max turns error, got %v", gotErr)
 	}
 
-	expectedCalls := 1 + defaultMaxTurns
+	// Without pre-emptive search, the loop runs exactly defaultMaxTurns times
+	expectedCalls := defaultMaxTurns
 	if len(provider.calls) != expectedCalls {
 		t.Fatalf("expected %d provider calls, got %d", expectedCalls, len(provider.calls))
 	}

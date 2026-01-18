@@ -57,15 +57,9 @@ type ResponsesInputItem struct {
 
 // ResponsesContentPart represents a content part (text or image)
 type ResponsesContentPart struct {
-	Type     string                    `json:"type"`
-	Text     string                    `json:"text,omitempty"`
-	ImageURL *ResponsesContentImageURL `json:"image_url,omitempty"`
-}
-
-// ResponsesContentImageURL represents an image URL in content
-type ResponsesContentImageURL struct {
-	URL    string `json:"url"`
-	Detail string `json:"detail,omitempty"`
+	Type     string `json:"type"`
+	Text     string `json:"text,omitempty"`
+	ImageURL string `json:"image_url,omitempty"` // Plain URL string for Responses API (not object)
 }
 
 // ResponsesTool represents a tool definition in Open Responses format
@@ -172,7 +166,7 @@ func BuildResponsesInput(messages []Message) []ResponsesInputItem {
 						Type: "message",
 						Role: "user",
 						Content: []ResponsesContentPart{
-							{Type: "input_image", ImageURL: &ResponsesContentImageURL{URL: dataURL, Detail: "auto"}},
+							{Type: "input_image", ImageURL: dataURL},
 						},
 					})
 				}

@@ -106,6 +106,12 @@ type (
 	tickMsg          time.Time
 )
 
+// FlushBeforeAskUserMsg signals the TUI to flush content to scrollback
+// before releasing the terminal for ask_user prompts.
+type FlushBeforeAskUserMsg struct {
+	Done chan<- struct{} // Signal when flush is complete
+}
+
 // Use ui.WaveTickMsg and ui.WavePauseMsg from the shared ToolTracker
 
 // New creates a new chat model
@@ -392,6 +398,32 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case clipboardCopiedMsg:
 		// Show brief confirmation - add as system message
 		return m.showSystemMessage("Copied last response to clipboard.")
+
+	case FlushBeforeAskUserMsg:
+		// Flush all completed content to scrollback before ask_user takes over terminal
+		if m.tracker != nil {
+			// Mark current text as complete
+			m.tracker.MarkCurrentTextComplete(func(text string) string {
+				return m.renderMarkdown(text)
+			})
+
+			// Flush all remaining content
+			result := m.tracker.FlushAllRemaining(m.width, m.printedLines, m.renderMd)
+			if result.ToPrint != "" {
+				m.printedLines = result.NewPrintedLines
+				// Signal that flush is complete after the print finishes
+				return m, tea.Sequence(
+					tea.Println(result.ToPrint),
+					func() tea.Msg {
+						close(msg.Done)
+						return nil
+					},
+				)
+			}
+		}
+		// Nothing to flush, signal done immediately
+		close(msg.Done)
+		return m, nil
 	}
 
 	// Update textarea if not streaming
@@ -946,11 +978,11 @@ func (m *Model) startStream(content string) tea.Cmd {
 			}
 		}
 
-		// Add local tools (read, write, shell, etc.) if enabled
+		// Add local tools (read_file, write_file, shell, etc.) if enabled
 		// These are already registered in the engine, we just need their specs
 		if len(m.localTools) > 0 {
-			for _, toolName := range m.localTools {
-				if tool, ok := m.engine.Tools().Get(toolName); ok {
+			for _, specName := range m.localTools {
+				if tool, ok := m.engine.Tools().Get(specName); ok {
 					reqTools = append(reqTools, tool.Spec())
 				}
 			}
@@ -1006,8 +1038,8 @@ func (m *Model) buildMessages() []llm.Message {
 	var messages []llm.Message
 
 	// Add system instructions if configured
-	if m.config.Ask.Instructions != "" {
-		messages = append(messages, llm.SystemText(m.config.Ask.Instructions))
+	if m.config.Chat.Instructions != "" {
+		messages = append(messages, llm.SystemText(m.config.Chat.Instructions))
 	}
 
 	// Add conversation history
@@ -1124,9 +1156,9 @@ func (m *Model) renderStreamingInline() string {
 
 	// Only show content after what's been printed to scrollback
 	if m.printedLines > 0 && content != "" {
-		lines := strings.Split(content, "\n")
+		lines := ui.SplitLines(content)
 		if m.printedLines < len(lines) {
-			content = strings.Join(lines[m.printedLines:], "\n")
+			content = ui.JoinLines(lines[m.printedLines:])
 		} else {
 			content = ""
 		}

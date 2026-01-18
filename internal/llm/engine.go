@@ -71,56 +71,35 @@ func (e *Engine) Stream(ctx context.Context, req Request) (Stream, error) {
 	caps := e.provider.Capabilities()
 
 	// 1. Handle external search/fetch tool injection
-	var externalTools []ToolSpec
-	isExternalSearch := false
+	// If Search is enabled, add web_search and read_url tools to the tool list.
+	// The LLM will use them naturally during conversation like any other tool.
 	if req.Search {
 		needsExternalSearch := !caps.NativeWebSearch || req.ForceExternalSearch
 		needsExternalFetch := !caps.NativeWebFetch || req.ForceExternalSearch
 
-		if needsExternalSearch || needsExternalFetch {
-			isExternalSearch = true
-
-			// Check existing tools to avoid duplicates
-			hasSearch := false
-			hasFetch := false
-			for _, t := range req.Tools {
-				if t.Name == WebSearchToolName {
-					hasSearch = true
-				}
-				if t.Name == ReadURLToolName {
-					hasFetch = true
+		if needsExternalSearch {
+			if t, ok := e.tools.Get(WebSearchToolName); ok {
+				if !hasToolNamed(req.Tools, WebSearchToolName) {
+					req.Tools = append(req.Tools, t.Spec())
 				}
 			}
-
-			if needsExternalSearch && !hasSearch {
-				if t, ok := e.tools.Get(WebSearchToolName); ok {
-					externalTools = append(externalTools, t.Spec())
-				}
-			}
-			if needsExternalFetch && !hasFetch {
-				if t, ok := e.tools.Get(ReadURLToolName); ok {
-					externalTools = append(externalTools, t.Spec())
+		}
+		if needsExternalFetch {
+			if t, ok := e.tools.Get(ReadURLToolName); ok {
+				if !hasToolNamed(req.Tools, ReadURLToolName) {
+					req.Tools = append(req.Tools, t.Spec())
 				}
 			}
 		}
 	}
 
 	// 2. Decide if we use the agentic loop
-	// We use it if:
-	// - We injected external tools
-	// - Request has tools AND provider supports tool calls
-	useLoop := len(externalTools) > 0 || (len(req.Tools) > 0 && caps.ToolCalls)
+	// We use it if request has tools AND provider supports tool calls
+	useLoop := len(req.Tools) > 0 && caps.ToolCalls
 
 	if useLoop {
-		req.Tools = append(req.Tools, externalTools...)
-
-		// Log request after tool injection so debug logs reflect actual tools sent
-		if e.debugLogger != nil {
-			e.debugLogger.LogRequest(e.provider.Name(), req.Model, req)
-		}
-
 		stream := newEventStream(ctx, func(ctx context.Context, events chan<- Event) error {
-			return e.runLoop(ctx, req, events, isExternalSearch)
+			return e.runLoop(ctx, req, events)
 		})
 		stream = wrapLoggingStream(stream, e.provider.Name(), req.Model)
 		return e.wrapDebugLoggingStream(stream), nil
@@ -141,19 +120,20 @@ func (e *Engine) Stream(ctx context.Context, req Request) (Stream, error) {
 	return e.wrapDebugLoggingStream(stream), nil
 }
 
-func (e *Engine) runLoop(ctx context.Context, req Request, events chan<- Event, isExternalSearch bool) error {
+// hasToolNamed checks if a tool with the given name exists in the tool list.
+func hasToolNamed(tools []ToolSpec, name string) bool {
+	for _, t := range tools {
+		if t.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
+func (e *Engine) runLoop(ctx context.Context, req Request, events chan<- Event) error {
 	maxTurns := getMaxTurns(req)
 	originalToolChoice := req.ToolChoice
 	restoredToolChoice := false
-
-	// Initial pre-emptive search if requested and using external tools
-	if isExternalSearch && req.Search {
-		updated, err := e.applyExternalSearch(ctx, req, events)
-		if err != nil {
-			return err
-		}
-		req = updated
-	}
 
 	for attempt := 0; attempt < maxTurns; attempt++ {
 		// Prepare turn
@@ -162,9 +142,8 @@ func (e *Engine) runLoop(ctx context.Context, req Request, events chan<- Event, 
 			if req.LastTurnToolChoice != nil {
 				req.ToolChoice = *req.LastTurnToolChoice
 			}
-		} else if attempt > 0 || isExternalSearch {
+		} else if attempt > 0 {
 			// Ensure we are in Auto mode for follow-up turns in the loop
-			// unless we are in the very first turn of a non-search request
 			req.ToolChoice = ToolChoice{Mode: ToolChoiceAuto}
 		}
 
@@ -276,88 +255,6 @@ func (e *Engine) runLoop(ctx context.Context, req Request, events chan<- Event, 
 	}
 
 	return fmt.Errorf("agentic loop ended unexpectedly")
-}
-
-func (e *Engine) applyExternalSearch(ctx context.Context, req Request, events chan<- Event) (Request, error) {
-	searchTool, ok := e.tools.Get(WebSearchToolName)
-	if !ok {
-		return Request{}, fmt.Errorf("web_search tool is not registered")
-	}
-
-	searchReq := req
-	searchReq.Search = false
-	searchReq.Tools = []ToolSpec{searchTool.Spec()}
-	if fetchTool, ok := e.tools.Get(ReadURLToolName); ok {
-		searchReq.Tools = append(searchReq.Tools, fetchTool.Spec())
-	}
-	searchReq.ToolChoice = ToolChoice{Mode: ToolChoiceAuto}
-
-	if searchReq.DebugRaw {
-		DebugRawRequest(searchReq.DebugRaw, e.provider.Name(), e.provider.Credential(), searchReq, "Request (pre-emptive search)")
-	}
-
-	stream, err := e.provider.Stream(ctx, searchReq)
-	if err != nil {
-		return Request{}, err
-	}
-	defer stream.Close()
-
-	toolCalls, err := collectToolCalls(stream, req.DebugRaw)
-	if err != nil {
-		return Request{}, err
-	}
-	if len(toolCalls) == 0 {
-		req.Search = false
-		return req, nil
-	}
-	toolCalls = ensureToolCallIDs(toolCalls)
-
-	// Validate search calls
-	for _, call := range toolCalls {
-		if call.Name != WebSearchToolName && call.Name != ReadURLToolName {
-			return Request{}, fmt.Errorf("unexpected tool call during pre-emptive search: %s", call.Name)
-		}
-	}
-
-	// Notify start
-	for _, call := range toolCalls {
-		if events != nil {
-			events <- Event{Type: EventToolExecStart, ToolCallID: call.ID, ToolName: call.Name, ToolInfo: e.getToolPreview(call)}
-		}
-	}
-
-	toolResults, err := e.executeToolCalls(ctx, toolCalls, events, req.Debug, req.DebugRaw)
-	if err != nil {
-		return Request{}, err
-	}
-
-	req.Messages = append(req.Messages, toolCallMessage(toolCalls))
-	req.Messages = append(req.Messages, toolResults...)
-	req.Search = false
-	return req, nil
-}
-
-func collectToolCalls(stream Stream, debugRaw bool) ([]ToolCall, error) {
-	var calls []ToolCall
-	for {
-		event, err := stream.Recv()
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			return nil, err
-		}
-		if event.Type == EventError && event.Err != nil {
-			return nil, event.Err
-		}
-		if debugRaw {
-			DebugRawEvent(true, event)
-		}
-		if event.Type == EventToolCall && event.Tool != nil {
-			calls = append(calls, *event.Tool)
-		}
-	}
-	return calls, nil
 }
 
 func (e *Engine) executeToolCalls(ctx context.Context, calls []ToolCall, events chan<- Event, debug bool, debugRaw bool) ([]Message, error) {

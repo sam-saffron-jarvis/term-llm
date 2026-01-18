@@ -118,9 +118,9 @@ func TestEngineOrchestration_ExternalSearch(t *testing.T) {
 	provider := NewMockProvider("test")
 	provider.WithCapabilities(Capabilities{ToolCalls: true, NativeWebSearch: false})
 
-	// Turn 0: applyExternalSearch calls provider to get tool calls
+	// Turn 0: LLM decides to search naturally during conversation
 	provider.AddToolCall("search-1", WebSearchToolName, map[string]any{"query": "zig"})
-	// Turn 1: loop starts, provider returns text based on search results
+	// Turn 1: LLM provides answer based on search results
 	provider.AddTextResponse("zig is a language")
 
 	engine := NewEngine(provider, registry)
@@ -142,9 +142,22 @@ func TestEngineOrchestration_ExternalSearch(t *testing.T) {
 		}
 	}
 
-	// Verify provider calls
+	// Verify provider calls - should be exactly 2 (search + answer)
 	if len(provider.Requests) != 2 {
 		t.Errorf("Expected 2 provider calls, got %d", len(provider.Requests))
+	}
+
+	// Verify first request has web_search tool injected
+	firstReq := provider.Requests[0]
+	hasSearchTool := false
+	for _, tool := range firstReq.Tools {
+		if tool.Name == WebSearchToolName {
+			hasSearchTool = true
+			break
+		}
+	}
+	if !hasSearchTool {
+		t.Error("First request should have web_search tool injected")
 	}
 }
 
@@ -237,13 +250,11 @@ func TestEngineOrchestration_ExternalSearchMixedCalls(t *testing.T) {
 	provider := NewMockProvider("test")
 	provider.WithCapabilities(Capabilities{ToolCalls: true, NativeWebSearch: false})
 
-	// Turn 0: applyExternalSearch returns just search
-	provider.AddToolCall("search-1", WebSearchToolName, map[string]any{"query": "zig"})
-
-	// Turn 1: loop returns BOTH search AND an unregistered tool
+	// Turn 0: LLM returns BOTH search AND an unregistered tool
+	// This tests that search tools work alongside other tools naturally
 	provider.AddTurn(MockTurn{
 		ToolCalls: []ToolCall{
-			{ID: "search-2", Name: WebSearchToolName, Arguments: json.RawMessage(`{"query":"zig"}`)},
+			{ID: "search-1", Name: WebSearchToolName, Arguments: json.RawMessage(`{"query":"zig"}`)},
 			{ID: "unreg-1", Name: "suggest_something", Arguments: json.RawMessage(`{}`)},
 		},
 	})
@@ -262,6 +273,7 @@ func TestEngineOrchestration_ExternalSearchMixedCalls(t *testing.T) {
 	defer stream.Close()
 
 	var gotErr error
+	var unregisteredToolCalls []ToolCall
 	for {
 		event, err := stream.Recv()
 		if err != nil {
@@ -270,9 +282,19 @@ func TestEngineOrchestration_ExternalSearchMixedCalls(t *testing.T) {
 		if event.Type == EventError {
 			gotErr = event.Err
 		}
+		if event.Type == EventToolCall {
+			unregisteredToolCalls = append(unregisteredToolCalls, *event.Tool)
+		}
 	}
 
 	if gotErr != nil {
-		t.Errorf("Did not expect error for mixed calls in external search, got: %v", gotErr)
+		t.Errorf("Did not expect error for mixed calls, got: %v", gotErr)
+	}
+
+	// Unregistered tool calls should be passed through as events
+	if len(unregisteredToolCalls) != 1 {
+		t.Errorf("Expected 1 unregistered tool call event, got %d", len(unregisteredToolCalls))
+	} else if unregisteredToolCalls[0].Name != "suggest_something" {
+		t.Errorf("Expected suggest_something tool call, got %s", unregisteredToolCalls[0].Name)
 	}
 }

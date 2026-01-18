@@ -2,7 +2,7 @@ name: file-organizer
 description: Organizes files by renaming them to sensible names and optionally creating subfolders
 
 tools:
-  enabled: [read, shell, find, grep, ask_user]
+  enabled: [read_file, shell, glob, grep, ask_user]
 
 shell:
   allow:

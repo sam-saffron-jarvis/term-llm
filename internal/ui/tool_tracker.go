@@ -224,14 +224,14 @@ func (t *ToolTracker) FlushToScrollback(
 	// Render current completed content
 	completed := t.CompletedSegments()
 	content := RenderSegments(completed, width, -1, renderMd)
-	totalLines := countLines(content)
+	totalLines := CountLines(content)
 
 	// If content exceeds threshold, calculate what to print
 	if totalLines > maxViewLines+printedLines {
-		lines := splitLines(content)
+		lines := SplitLines(content)
 		splitAt := len(lines) - maxViewLines
 		if splitAt > printedLines {
-			toPrint := joinLines(lines[printedLines:splitAt])
+			toPrint := JoinLines(lines[printedLines:splitAt])
 			return FlushToScrollbackResult{
 				ToPrint:         toPrint,
 				NewPrintedLines: splitAt,
@@ -255,9 +255,9 @@ func (t *ToolTracker) FlushAllRemaining(
 	content := RenderSegments(completed, width, -1, renderMd)
 
 	if content != "" {
-		lines := splitLines(content)
+		lines := SplitLines(content)
 		if printedLines < len(lines) {
-			remaining := joinLines(lines[printedLines:])
+			remaining := JoinLines(lines[printedLines:])
 			return FlushToScrollbackResult{
 				ToPrint:         remaining,
 				NewPrintedLines: len(lines),
@@ -270,8 +270,8 @@ func (t *ToolTracker) FlushAllRemaining(
 	}
 }
 
-// countLines counts the number of newlines in content
-func countLines(content string) int {
+// CountLines counts the number of newlines in content
+func CountLines(content string) int {
 	count := 0
 	for _, c := range content {
 		if c == '\n' {
@@ -281,8 +281,10 @@ func countLines(content string) int {
 	return count
 }
 
-// splitLines splits content by newlines (similar to strings.Split but handles edge cases)
-func splitLines(content string) []string {
+// SplitLines splits content by newlines. Unlike strings.Split, this does NOT
+// include an empty trailing element for content ending in newline.
+// Example: "hello\nworld\n" → ["hello", "world"] (not ["hello", "world", ""])
+func SplitLines(content string) []string {
 	if content == "" {
 		return nil
 	}
@@ -300,7 +302,7 @@ func splitLines(content string) []string {
 	return lines
 }
 
-// joinLines joins lines with newlines
-func joinLines(lines []string) string {
+// JoinLines joins lines with newlines
+func JoinLines(lines []string) string {
 	return strings.Join(lines, "\n")
 }

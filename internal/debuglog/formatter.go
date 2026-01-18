@@ -119,6 +119,23 @@ func FormatSession(w io.Writer, session *Session, opts FormatOptions) {
 		styles.Highlighted.Render("Session:"),
 		session.ID,
 	)
+
+	// CLI invocation
+	if session.Command != "" {
+		cmdLine := session.Command
+		if len(session.Args) > 0 {
+			cmdLine += " " + strings.Join(session.Args, " ")
+		}
+		// Truncate if too long
+		if len(cmdLine) > 120 {
+			cmdLine = cmdLine[:117] + "..."
+		}
+		fmt.Fprintf(w, "%s %s\n", styles.Muted.Render("Command:"), cmdLine)
+	}
+	if session.Cwd != "" {
+		fmt.Fprintf(w, "%s %s\n", styles.Muted.Render("Cwd:"), session.Cwd)
+	}
+
 	fmt.Fprintf(w, "%s %s/%s\n",
 		styles.Muted.Render("Provider:"),
 		session.Provider,
@@ -173,10 +190,40 @@ func formatRequestEntry(w io.Writer, req RequestEntry, opts FormatOptions, style
 		req.Model,
 	)
 
-	// Summary of messages
+	// Summary of messages and tools
 	msgCount := len(req.Request.Messages)
 	toolCount := len(req.Request.Tools)
-	fmt.Fprintf(w, "         Messages: %d, Tools: %d\n", msgCount, toolCount)
+	if toolCount == 0 {
+		fmt.Fprintf(w, "         Messages: %d, Tools: none\n", msgCount)
+	} else {
+		// Extract tool names for display
+		var toolNames []string
+		for _, t := range req.Request.Tools {
+			toolNames = append(toolNames, t.Name)
+		}
+		toolsStr := strings.Join(toolNames, ", ")
+		// Truncate if too long
+		if len(toolsStr) > 80 {
+			toolsStr = toolsStr[:77] + "..."
+		}
+		fmt.Fprintf(w, "         Messages: %d, Tools: %s\n", msgCount, toolsStr)
+	}
+
+	// Show system prompt if present
+	for _, msg := range req.Request.Messages {
+		if msg.Role == "system" {
+			if text, ok := msg.Content.(string); ok && text != "" {
+				// Truncate long system prompts
+				if len(text) > 500 {
+					text = text[:497] + "..."
+				}
+				// Replace newlines for compact display
+				text = strings.ReplaceAll(text, "\n", " ")
+				fmt.Fprintf(w, "         %s: %s\n", styles.Muted.Render("System"), text)
+			}
+			break
+		}
+	}
 
 	// Show tool choice if specified
 	if req.Request.ToolChoice != nil && req.Request.ToolChoice.Mode != "" {
@@ -334,7 +381,19 @@ func FormatTailEntry(w io.Writer, line []byte) {
 		var req RequestData
 		if entry.Request != nil {
 			json.Unmarshal(entry.Request, &req)
-			fmt.Fprintf(w, "           Messages: %d, Tools: %d\n", len(req.Messages), len(req.Tools))
+			if len(req.Tools) == 0 {
+				fmt.Fprintf(w, "           Messages: %d, Tools: none\n", len(req.Messages))
+			} else {
+				var toolNames []string
+				for _, t := range req.Tools {
+					toolNames = append(toolNames, t.Name)
+				}
+				toolsStr := strings.Join(toolNames, ", ")
+				if len(toolsStr) > 60 {
+					toolsStr = toolsStr[:57] + "..."
+				}
+				fmt.Fprintf(w, "           Messages: %d, Tools: %s\n", len(req.Messages), toolsStr)
+			}
 		}
 
 	case "event":

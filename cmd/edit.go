@@ -145,7 +145,7 @@ func runEdit(cmd *cobra.Command, args []string) error {
 		engine := llm.NewEngine(provider, defaultToolRegistry(cfg))
 		toolConfig := buildToolConfig(editTools, editReadDirs, editWriteDirs, editShellAllow, cfg)
 		// For edit command, exclude edit/write tools to avoid conflicts with the command's own editing
-		toolConfig.Enabled = filterOutTools(toolConfig.Enabled, "edit", "write")
+		toolConfig.Enabled = filterOutTools(toolConfig.Enabled, "edit_file", "write_file")
 		if len(toolConfig.Enabled) == 0 {
 			return fmt.Errorf("no tools remaining after excluding edit/write (edit command handles file modifications)")
 		}

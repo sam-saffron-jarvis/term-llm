@@ -4,6 +4,8 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/config"
@@ -138,6 +140,12 @@ func createDebugLogger(cfg *config.Config) (*llm.DebugLogger, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to create debug logger: %w", err)
 	}
+
+	// Log session start with CLI invocation
+	command := filepath.Base(os.Args[0])
+	args := os.Args[1:]
+	cwd, _ := os.Getwd()
+	logger.LogSessionStart(command, args, cwd)
 
 	return logger, nil
 }

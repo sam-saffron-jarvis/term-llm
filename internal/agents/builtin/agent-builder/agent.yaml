@@ -2,7 +2,7 @@ name: agent-builder
 description: "Create and edit custom agents interactively"
 
 tools:
-  enabled: [read, write, edit, find, grep, ask_user]
+  enabled: [read_file, write_file, edit_file, glob, grep, ask_user]
 
 search: true
 

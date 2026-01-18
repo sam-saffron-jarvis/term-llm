@@ -11,7 +11,7 @@ import (
 
 // ToolConfig holds configuration for the local tool system.
 type ToolConfig struct {
-	Enabled         []string `mapstructure:"enabled"`            // Enabled tool names (CLI names)
+	Enabled         []string `mapstructure:"enabled"`            // Enabled tool spec names
 	ReadDirs        []string `mapstructure:"read_dirs"`          // Directories for read operations
 	WriteDirs       []string `mapstructure:"write_dirs"`         // Directories for write operations
 	ShellAllow      []string `mapstructure:"shell_allow"`        // Shell command patterns
@@ -106,9 +106,9 @@ func (c *ToolConfig) Validate() []error {
 }
 
 // IsToolEnabled checks if a tool is enabled.
-func (c *ToolConfig) IsToolEnabled(cliName string) bool {
+func (c *ToolConfig) IsToolEnabled(specName string) bool {
 	for _, name := range c.Enabled {
-		if name == cliName {
+		if name == specName {
 			return true
 		}
 	}
@@ -117,13 +117,8 @@ func (c *ToolConfig) IsToolEnabled(cliName string) bool {
 
 // EnabledSpecNames returns the spec names for all enabled tools.
 func (c *ToolConfig) EnabledSpecNames() []string {
-	var specs []string
-	for _, cliName := range c.Enabled {
-		if specName, ok := ToolNameMapping[cliName]; ok {
-			specs = append(specs, specName)
-		}
-	}
-	return specs
+	// Enabled list now contains spec names directly
+	return c.Enabled
 }
 
 // CanAutoRunShell checks if shell commands can be auto-run.

@@ -302,7 +302,8 @@ func (m askModel) advanceToNext() (tea.Model, tea.Cmd) {
 
 func (m askModel) View() string {
 	if m.done {
-		return m.renderSummary()
+		// Summary is printed separately after program quits to persist through TUI redraw
+		return ""
 	}
 
 	var b strings.Builder
@@ -530,6 +531,10 @@ func RunAskUser(questions []AskUserQuestion) ([]AskUserAnswer, error) {
 	if result.cancelled {
 		return nil, fmt.Errorf("cancelled by user")
 	}
+
+	// Print the summary explicitly to the TTY so it persists after TUI resumes
+	// (bubbletea's final View() gets overwritten when the main TUI redraws)
+	fmt.Fprint(tty, result.renderSummary())
 
 	// Convert internal answers to external format
 	answers := make([]AskUserAnswer, len(result.answers))

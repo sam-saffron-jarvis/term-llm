@@ -105,13 +105,10 @@ func MCPFlagCompletion(cmd *cobra.Command, args []string, toComplete string) ([]
 }
 
 // ToolsFlagCompletion provides completions for --tools flag with comma-separated support.
-// When typing "read,wr<TAB>", completes to "read,write".
+// When typing "read_file,wr<TAB>", completes to "read_file,write_file".
 func ToolsFlagCompletion(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
-	// Get all available tool names
-	allTools := make([]string, 0, len(tools.ToolNameMapping))
-	for name := range tools.ToolNameMapping {
-		allTools = append(allTools, name)
-	}
+	// Get all available tool names (spec names)
+	allTools := tools.AllToolNames()
 	sort.Strings(allTools)
 
 	// Parse comma-separated list

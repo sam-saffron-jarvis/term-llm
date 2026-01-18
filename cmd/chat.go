@@ -201,6 +201,16 @@ func runChat(cmd *cobra.Command, args []string) error {
 
 	// Run the TUI (inline mode - no alt screen)
 	p := tea.NewProgram(model)
+
+	// Set up hooks to pause TUI during ask_user prompts
+	start, end := tools.CreateTUIHooks(p, func() {
+		done := make(chan struct{})
+		p.Send(chat.FlushBeforeAskUserMsg{Done: done})
+		<-done
+	})
+	tools.SetAskUserHooks(start, end)
+	defer tools.ClearAskUserHooks()
+
 	_, err = p.Run()
 
 	// Cleanup MCP servers

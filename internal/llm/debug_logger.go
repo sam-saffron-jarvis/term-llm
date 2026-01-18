@@ -108,6 +108,14 @@ type debugEventEntry struct {
 	Data      any    `json:"data,omitempty"`
 }
 
+// debugSessionStartEntry logs the session start with CLI args
+type debugSessionStartEntry struct {
+	debugLogEntry
+	Command string   `json:"command"`
+	Args    []string `json:"args"`
+	Cwd     string   `json:"cwd"`
+}
+
 // NewDebugLogger creates a new DebugLogger.
 // The sessionID is used to create a unique filename for this session.
 // Old log files (>7 days) are automatically cleaned up.
@@ -131,6 +139,27 @@ func NewDebugLogger(baseDir, sessionID string) (*DebugLogger, error) {
 		file:      file,
 		writer:    bufio.NewWriter(file),
 	}, nil
+}
+
+// LogSessionStart logs the session start with CLI invocation details.
+func (l *DebugLogger) LogSessionStart(command string, args []string, cwd string) {
+	if l == nil {
+		return
+	}
+
+	entry := debugSessionStartEntry{
+		debugLogEntry: debugLogEntry{
+			Timestamp: time.Now().UTC().Format(time.RFC3339Nano),
+			SessionID: l.sessionID,
+			Type:      "session_start",
+		},
+		Command: command,
+		Args:    args,
+		Cwd:     cwd,
+	}
+
+	l.writeEntry(entry)
+	l.Flush()
 }
 
 // LogRequest logs an LLM request.

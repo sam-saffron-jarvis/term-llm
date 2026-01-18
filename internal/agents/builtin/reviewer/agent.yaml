@@ -2,7 +2,7 @@ name: reviewer
 description: "Code review assistant (read-only)"
 
 tools:
-  enabled: [read, find, grep, shell]
+  enabled: [read_file, glob, grep, shell]
 
 shell:
   allow: ["git diff *", "git log *", "git status", "git show *", "git blame *"]

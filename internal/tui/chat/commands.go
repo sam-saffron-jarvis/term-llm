@@ -635,15 +635,15 @@ func (m *Model) cmdExport(args []string) (tea.Model, tea.Cmd) {
 
 func (m *Model) cmdSystem(args []string) (tea.Model, tea.Cmd) {
 	if len(args) == 0 {
-		if m.config.Ask.Instructions != "" {
-			return m.showSystemMessage(fmt.Sprintf("Current system prompt:\n\n%s", m.config.Ask.Instructions))
+		if m.config.Chat.Instructions != "" {
+			return m.showSystemMessage(fmt.Sprintf("Current system prompt:\n\n%s", m.config.Chat.Instructions))
 		}
 		return m.showSystemMessage("No system prompt set.\nUsage: `/system <prompt>`")
 	}
 
 	// Set custom system prompt (session-only, doesn't persist to config)
 	prompt := strings.Join(args, " ")
-	m.config.Ask.Instructions = prompt
+	m.config.Chat.Instructions = prompt
 	m.textarea.SetValue("")
 	return m.showSystemMessage(fmt.Sprintf("System prompt set for this session:\n\n%s", prompt))
 }

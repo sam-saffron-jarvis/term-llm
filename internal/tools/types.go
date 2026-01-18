@@ -123,43 +123,39 @@ const (
 	AskUserToolName       = "ask_user"
 )
 
-// CLI name to spec name mapping
-var ToolNameMapping = map[string]string{
-	"read":       ReadFileToolName,
-	"write":      WriteFileToolName,
-	"edit":       EditFileToolName,
-	"shell":      ShellToolName,
-	"grep":       GrepToolName,
-	"find":       GlobToolName,
-	"view":       ViewImageToolName,
-	"show_image": ShowImageToolName,
-	"image":      ImageGenerateToolName,
-	"ask_user":   AskUserToolName,
-}
-
-// SpecToCliName returns the CLI name for a tool spec name.
-var SpecToCliName = map[string]string{
-	ReadFileToolName:      "read",
-	WriteFileToolName:     "write",
-	EditFileToolName:      "edit",
-	ShellToolName:         "shell",
-	GrepToolName:          "grep",
-	GlobToolName:          "find",
-	ViewImageToolName:     "view",
-	ShowImageToolName:     "show_image",
-	ImageGenerateToolName: "image",
-	AskUserToolName:       "ask_user",
-}
-
-// AllToolNames returns all valid CLI tool names.
+// AllToolNames returns all valid tool spec names.
 func AllToolNames() []string {
-	return []string{"read", "write", "edit", "shell", "grep", "find", "view", "show_image", "image", "ask_user"}
+	return []string{
+		ReadFileToolName,
+		WriteFileToolName,
+		EditFileToolName,
+		ShellToolName,
+		GrepToolName,
+		GlobToolName,
+		ViewImageToolName,
+		ShowImageToolName,
+		ImageGenerateToolName,
+		AskUserToolName,
+	}
 }
 
-// ValidToolName checks if a name is a valid CLI tool name.
+// validToolNames is a set of valid tool spec names for fast lookup.
+var validToolNames = map[string]bool{
+	ReadFileToolName:      true,
+	WriteFileToolName:     true,
+	EditFileToolName:      true,
+	ShellToolName:         true,
+	GrepToolName:          true,
+	GlobToolName:          true,
+	ViewImageToolName:     true,
+	ShowImageToolName:     true,
+	ImageGenerateToolName: true,
+	AskUserToolName:       true,
+}
+
+// ValidToolName checks if a name is a valid tool spec name.
 func ValidToolName(name string) bool {
-	_, ok := ToolNameMapping[name]
-	return ok
+	return validToolNames[name]
 }
 
 // GetToolKind returns the kind for a tool spec name.

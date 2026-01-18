@@ -2,7 +2,7 @@ name: shell
 description: "Shell command helper"
 
 tools:
-  enabled: [shell, read]
+  enabled: [shell, read_file]
 
 shell:
   auto_run: false

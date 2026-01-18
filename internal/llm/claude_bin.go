@@ -213,6 +213,7 @@ func (p *ClaudeBinProvider) buildArgs(req Request) ([]string, func()) {
 		"--verbose",
 		"--strict-mcp-config",            // Ignore Claude's configured MCPs
 		"--dangerously-skip-permissions", // Allow MCP tool execution
+		"--setting-sources", "user",      // Skip project CLAUDE.md files (term-llm provides its own context)
 	}
 
 	// Always limit to 1 turn - term-llm handles tool execution loop

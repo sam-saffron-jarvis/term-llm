@@ -2,6 +2,6 @@ name: editor
 description: "File editing assistant"
 
 tools:
-  enabled: [read, write, edit, find, grep]
+  enabled: [read_file, write_file, edit_file, glob, grep]
 
 max_turns: 200

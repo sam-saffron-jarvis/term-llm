@@ -2,7 +2,7 @@ name: commit
 description: "Write git commit messages"
 
 tools:
-  enabled: [shell, read]
+  enabled: [shell, read_file]
 
 shell:
   allow: ["git diff *", "git log *", "git status", "git show *"]

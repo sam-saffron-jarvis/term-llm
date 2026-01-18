@@ -20,6 +20,12 @@ type rawEntry struct {
 	Request   json.RawMessage `json:"request,omitempty"`
 	EventType string          `json:"event_type,omitempty"`
 	Data      json.RawMessage `json:"data,omitempty"`
+	// session_start fields
+	Command string   `json:"command,omitempty"`
+	Args    []string `json:"args,omitempty"`
+	Cwd     string   `json:"cwd,omitempty"`
+	// turn_request fields
+	Turn int `json:"turn,omitempty"`
 }
 
 // ListSessions returns summaries of all sessions in the debug log directory,
@@ -97,7 +103,7 @@ func parseSessionSummary(filePath string) (SessionSummary, error) {
 		}
 
 		switch entry.Type {
-		case "request":
+		case "request", "turn_request":
 			if !requestSeen {
 				summary.Provider = entry.Provider
 				summary.Model = entry.Model
@@ -162,7 +168,12 @@ func ParseSession(filePath string) (*Session, error) {
 		}
 
 		switch entry.Type {
-		case "request":
+		case "session_start":
+			session.Command = entry.Command
+			session.Args = entry.Args
+			session.Cwd = entry.Cwd
+
+		case "request", "turn_request":
 			reqEntry := parseRequestEntry(entry, ts)
 			session.Entries = append(session.Entries, reqEntry)
 			session.Turns++

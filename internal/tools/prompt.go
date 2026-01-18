@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/huh"
 	"github.com/charmbracelet/lipgloss"
 	"golang.org/x/term"
@@ -57,6 +58,22 @@ func ClearAskUserHooks() {
 	defer askUserMu.Unlock()
 	OnAskUserStart = nil
 	OnAskUserEnd = nil
+}
+
+// CreateTUIHooks creates start/end hook functions for TUI coordination.
+// flushAndWait is called to flush content before releasing terminal.
+// prog is the tea.Program to release/restore.
+func CreateTUIHooks(prog *tea.Program, flushAndWait func()) (start, end func()) {
+	start = func() {
+		if flushAndWait != nil {
+			flushAndWait()
+		}
+		prog.ReleaseTerminal()
+	}
+	end = func() {
+		prog.RestoreTerminal()
+	}
+	return
 }
 
 // TTYApprovalPrompt prompts the user for directory access approval via /dev/tty.

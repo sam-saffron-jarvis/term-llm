@@ -50,19 +50,18 @@ func NewLocalToolRegistry(toolConfig *ToolConfig, appConfig *config.Config, appr
 
 // registerEnabledTools registers all tools that are enabled in config.
 func (r *LocalToolRegistry) registerEnabledTools() error {
-	for _, cliName := range r.config.Enabled {
-		if err := r.registerTool(cliName); err != nil {
+	for _, specName := range r.config.Enabled {
+		if err := r.registerTool(specName); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-// registerTool registers a single tool by CLI name.
-func (r *LocalToolRegistry) registerTool(cliName string) error {
-	specName, ok := ToolNameMapping[cliName]
-	if !ok {
-		return NewToolErrorf(ErrInvalidParams, "unknown tool: %s", cliName)
+// registerTool registers a single tool by spec name.
+func (r *LocalToolRegistry) registerTool(specName string) error {
+	if !ValidToolName(specName) {
+		return NewToolErrorf(ErrInvalidParams, "unknown tool: %s", specName)
 	}
 
 	var tool llm.Tool
@@ -119,8 +118,8 @@ func (r *LocalToolRegistry) Get(specName string) (llm.Tool, bool) {
 }
 
 // IsEnabled checks if a tool is enabled.
-func (r *LocalToolRegistry) IsEnabled(cliName string) bool {
-	return r.config.IsToolEnabled(cliName)
+func (r *LocalToolRegistry) IsEnabled(specName string) bool {
+	return r.config.IsToolEnabled(specName)
 }
 
 // Permissions returns the underlying permissions manager.
@@ -132,17 +131,14 @@ func (r *LocalToolRegistry) Permissions() *ToolPermissions {
 func (r *LocalToolRegistry) SetLimits(limits OutputLimits) {
 	r.limits = limits
 	// Re-register tools that use limits
-	for cliName := range ToolNameMapping {
-		if r.config.IsToolEnabled(cliName) {
-			specName := ToolNameMapping[cliName]
-			switch specName {
-			case ReadFileToolName:
-				r.tools[specName] = NewReadFileTool(r.approval, r.limits)
-			case ShellToolName:
-				r.tools[specName] = NewShellTool(r.approval, r.config, r.limits)
-			case GrepToolName:
-				r.tools[specName] = NewGrepTool(r.approval, r.limits)
-			}
+	for _, specName := range r.config.Enabled {
+		switch specName {
+		case ReadFileToolName:
+			r.tools[specName] = NewReadFileTool(r.approval, r.limits)
+		case ShellToolName:
+			r.tools[specName] = NewShellTool(r.approval, r.config, r.limits)
+		case GrepToolName:
+			r.tools[specName] = NewGrepTool(r.approval, r.limits)
 		}
 	}
 }

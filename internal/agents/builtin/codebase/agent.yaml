@@ -2,7 +2,7 @@ name: codebase
 description: "Answer questions about source code repositories"
 
 tools:
-  enabled: [read, find, grep, shell]
+  enabled: [read_file, glob, grep, shell]
 
 shell:
   allow: ["git log *", "git show *", "git blame *", "git branch *", "git tag *", "git ls-files *"]

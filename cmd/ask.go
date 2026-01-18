@@ -359,16 +359,12 @@ func runAsk(cmd *cobra.Command, args []string) error {
 			return tools.Cancel, ""
 		}
 		// Set up ask_user hooks to pause/resume the TUI during the interactive UI
-		tools.SetAskUserHooks(
-			func() {
-				// Flush content to scrollback before releasing terminal
-				done := make(chan struct{})
-				teaProgram.Send(askFlushBeforeAskUserMsg{Done: done})
-				<-done // Wait for flush to complete
-				teaProgram.ReleaseTerminal()
-			},
-			func() { teaProgram.RestoreTerminal() },
-		)
+		start, end := tools.CreateTUIHooks(teaProgram, func() {
+			done := make(chan struct{})
+			teaProgram.Send(askFlushBeforeAskUserMsg{Done: done})
+			<-done // Wait for flush to complete
+		})
+		tools.SetAskUserHooks(start, end)
 	}
 
 	errChan := make(chan error, 1)
@@ -721,9 +717,9 @@ func (m askStreamModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		content := ui.RenderSegments(completed, m.width, -1, renderMd)
 
 		if content != "" {
-			lines := strings.Split(content, "\n")
+			lines := ui.SplitLines(content)
 			if m.printedLines < len(lines) {
-				remaining := strings.Join(lines[m.printedLines:], "\n")
+				remaining := ui.JoinLines(lines[m.printedLines:])
 				// Mark all lines as printed so View() returns empty
 				m.printedLines = len(lines)
 				return m, tea.Sequence(tea.Println(remaining), tea.Quit)
@@ -762,9 +758,9 @@ func (m askStreamModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		var cmds []tea.Cmd
 		if content != "" {
-			lines := strings.Split(content, "\n")
+			lines := ui.SplitLines(content)
 			if m.printedLines < len(lines) {
-				toPrint := strings.Join(lines[m.printedLines:], "\n")
+				toPrint := ui.JoinLines(lines[m.printedLines:])
 				m.printedLines = len(lines)
 				cmds = append(cmds, tea.Println(toPrint))
 			}
@@ -854,9 +850,9 @@ func (m askStreamModel) View() string {
 
 	// Only show content after what's been printed to scrollback
 	if m.printedLines > 0 && content != "" {
-		lines := strings.Split(content, "\n")
+		lines := ui.SplitLines(content)
 		if m.printedLines < len(lines) {
-			content = strings.Join(lines[m.printedLines:], "\n")
+			content = ui.JoinLines(lines[m.printedLines:])
 		} else {
 			content = ""
 		}
