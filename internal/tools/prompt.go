@@ -23,9 +23,11 @@ var (
 
 // AskUserUIHooks allows the TUI to coordinate with ask_user tool prompts.
 var (
-	askUserMu      sync.Mutex
-	OnAskUserStart func() // Called before showing ask_user UI (pause TUI)
-	OnAskUserEnd   func() // Called after ask_user UI answered (resume TUI)
+	askUserMu         sync.Mutex
+	OnAskUserStart    func()     // Called before showing ask_user UI (pause TUI)
+	OnAskUserEnd      func()     // Called after ask_user UI answered (resume TUI)
+	lastAskUserResult string     // Stores the last ask_user summary for TUI to display
+	askUserResultMu   sync.Mutex // Protects lastAskUserResult
 )
 
 // SetApprovalHooks sets callbacks for TUI coordination during approval prompts.
@@ -58,6 +60,24 @@ func ClearAskUserHooks() {
 	defer askUserMu.Unlock()
 	OnAskUserStart = nil
 	OnAskUserEnd = nil
+}
+
+// SetLastAskUserResult stores the summary from the last ask_user execution.
+// This should be called by the ask_user UI before signaling completion.
+func SetLastAskUserResult(summary string) {
+	askUserResultMu.Lock()
+	defer askUserResultMu.Unlock()
+	lastAskUserResult = summary
+}
+
+// GetAndClearAskUserResult retrieves and clears the last ask_user summary.
+// Returns empty string if no result was stored.
+func GetAndClearAskUserResult() string {
+	askUserResultMu.Lock()
+	defer askUserResultMu.Unlock()
+	result := lastAskUserResult
+	lastAskUserResult = ""
+	return result
 }
 
 // CreateTUIHooks creates start/end hook functions for TUI coordination.

@@ -198,6 +198,21 @@ func (t *ToolTracker) MarkCurrentTextComplete(renderFunc func(string) string) {
 	}
 }
 
+// AddExternalUIResult adds a result from external UI (like ask_user) as a completed segment.
+// The summary is plain text - styling is applied at render time to avoid ANSI corruption
+// when passing through different tea.Program instances.
+func (t *ToolTracker) AddExternalUIResult(summary string) {
+	if summary == "" {
+		return
+	}
+	t.RecordActivity()
+	t.Segments = append(t.Segments, Segment{
+		Type:     SegmentAskUserResult,
+		Text:     summary,
+		Complete: true,
+	})
+}
+
 // FlushToScrollbackResult contains the result of a scrollback flush operation.
 type FlushToScrollbackResult struct {
 	// ToPrint is the content to print to scrollback (empty if nothing to flush)
@@ -267,6 +282,38 @@ func (t *ToolTracker) FlushAllRemaining(
 
 	return FlushToScrollbackResult{
 		NewPrintedLines: printedLines,
+	}
+}
+
+// FlushBeforeExternalUI flushes content to scrollback but keeps keepLines
+// visible for display after returning from external UI (ask_user/approval).
+func (t *ToolTracker) FlushBeforeExternalUI(
+	width int,
+	printedLines int,
+	keepLines int,
+	renderMd func(string, int) string,
+) FlushToScrollbackResult {
+	completed := t.CompletedSegments()
+	content := RenderSegments(completed, width, -1, renderMd)
+
+	if content == "" {
+		return FlushToScrollbackResult{NewPrintedLines: printedLines}
+	}
+
+	lines := SplitLines(content)
+	totalLines := len(lines)
+
+	// Calculate how many lines to flush (keeping keepLines visible)
+	flushUpTo := totalLines - keepLines
+	if flushUpTo <= printedLines {
+		// Nothing new to flush while keeping keepLines visible
+		return FlushToScrollbackResult{NewPrintedLines: printedLines}
+	}
+
+	toPrint := JoinLines(lines[printedLines:flushUpTo])
+	return FlushToScrollbackResult{
+		ToPrint:         toPrint,
+		NewPrintedLines: flushUpTo,
 	}
 }
 

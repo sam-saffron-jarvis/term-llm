@@ -12,6 +12,7 @@ type SegmentType int
 const (
 	SegmentText SegmentType = iota
 	SegmentTool
+	SegmentAskUserResult // For ask_user answers (plain text, styled at render time)
 )
 
 // ToolStatus represents the execution state of a tool
@@ -126,6 +127,34 @@ func RenderToolSegment(seg *Segment, wavePos int) string {
 	return ""
 }
 
+// renderAskUserResult renders an ask_user result with styling applied at render time.
+// Input format: "Header: Value" or "Header: Value | Header2: Value2"
+func renderAskUserResult(text string) string {
+	checkStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("10"))
+	borderStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("10"))
+	labelStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
+	valueStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("15")).Bold(true)
+
+	var b strings.Builder
+	b.WriteString(borderStyle.Render("│") + " ")
+	b.WriteString(checkStyle.Render("✓") + " ")
+
+	// Parse "Header: Value | Header2: Value2"
+	parts := strings.Split(text, " | ")
+	for i, part := range parts {
+		if i > 0 {
+			b.WriteString(" ")
+		}
+		if idx := strings.Index(part, ": "); idx != -1 {
+			b.WriteString(labelStyle.Render(part[:idx+2]))
+			b.WriteString(valueStyle.Render(part[idx+2:]))
+		} else {
+			b.WriteString(part)
+		}
+	}
+	return b.String() + "\n"
+}
+
 // RenderSegments renders a list of segments with proper spacing.
 // This is the main entry point for rendering the stream content.
 // renderMarkdown should be a function that renders markdown content.
@@ -135,16 +164,18 @@ func RenderSegments(segments []Segment, width int, wavePos int, renderMarkdown f
 	for i, seg := range segments {
 		if i > 0 {
 			prev := segments[i-1]
-			// Blank line between text and tools
-			if prev.Type == SegmentText && seg.Type == SegmentTool {
+			prevIsTool := prev.Type == SegmentTool || prev.Type == SegmentAskUserResult
+			currIsTool := seg.Type == SegmentTool || seg.Type == SegmentAskUserResult
+			// Blank line between text and tools/ask_user results
+			if prev.Type == SegmentText && currIsTool {
 				b.WriteString("\n\n")
 			}
-			// Single newline between consecutive tools
-			if prev.Type == SegmentTool && seg.Type == SegmentTool {
+			// Single newline between consecutive tools/ask_user results
+			if prevIsTool && currIsTool {
 				b.WriteString("\n")
 			}
-			// Blank line between tools and text
-			if prev.Type == SegmentTool && seg.Type == SegmentText {
+			// Blank line between tools/ask_user results and text
+			if prevIsTool && seg.Type == SegmentText {
 				b.WriteString("\n\n")
 			}
 		}
@@ -160,6 +191,8 @@ func RenderSegments(segments []Segment, width int, wavePos int, renderMarkdown f
 			}
 		case SegmentTool:
 			b.WriteString(RenderToolSegment(&seg, wavePos))
+		case SegmentAskUserResult:
+			b.WriteString(renderAskUserResult(seg.Text))
 		}
 	}
 

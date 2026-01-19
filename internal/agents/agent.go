@@ -33,6 +33,23 @@ type Agent struct {
 	MaxTurns int  `yaml:"max_turns,omitempty"`
 	Search   bool `yaml:"search,omitempty"` // Enable web search tools
 
+	// DefaultPrompt is used when agent is invoked without a message
+	DefaultPrompt string `yaml:"default_prompt,omitempty"`
+
+	// Output specifies where to write agent response (deprecated, use OutputTool + OnComplete)
+	// Valid: "" (stdout), "commit_editmsg" (.git/COMMIT_EDITMSG)
+	Output string `yaml:"output,omitempty"`
+
+	// OutputTool configures a tool for capturing structured output.
+	// When set, a tool with the configured name is dynamically created
+	// and added to the agent's enabled tools.
+	OutputTool OutputToolConfig `yaml:"output_tool,omitempty"`
+
+	// OnComplete is a shell command to run with captured output piped to stdin.
+	// Runs in the git repo root (if in a git repo) or cwd.
+	// Replaces the hardcoded "output: commit_editmsg" approach.
+	OnComplete string `yaml:"on_complete,omitempty"`
+
 	// Include additional .md files in the system prompt
 	// Files are loaded from the agent directory and appended after system.md
 	Include []string `yaml:"include,omitempty"`
@@ -103,6 +120,18 @@ type SpawnConfig struct {
 type MCPConfig struct {
 	Name    string `yaml:"name"`
 	Command string `yaml:"command,omitempty"`
+}
+
+// OutputToolConfig configures a tool for capturing structured output.
+type OutputToolConfig struct {
+	Name        string `yaml:"name"`        // Tool name (e.g., "set_commit_message")
+	Param       string `yaml:"param"`       // Parameter to capture (default: "content")
+	Description string `yaml:"description"` // Tool description
+}
+
+// IsConfigured returns true if the output tool is configured.
+func (c *OutputToolConfig) IsConfigured() bool {
+	return c.Name != ""
 }
 
 // LoadFromDir loads an agent from a directory containing agent.yaml and optionally system.md.
@@ -251,6 +280,23 @@ func (a *Agent) Validate() error {
 	// Can't have both enabled and disabled lists
 	if a.HasEnabledList() && a.HasDisabledList() {
 		return fmt.Errorf("cannot specify both tools.enabled and tools.disabled")
+	}
+
+	// Validate output field (deprecated, but still supported)
+	if a.Output != "" && a.Output != "commit_editmsg" {
+		return fmt.Errorf("invalid output: %q (valid: commit_editmsg)", a.Output)
+	}
+
+	// Can't use both old output and new output_tool
+	if a.Output != "" && a.OutputTool.IsConfigured() {
+		return fmt.Errorf("cannot specify both output and output_tool; use output_tool + on_complete instead")
+	}
+
+	// Validate output_tool if configured
+	if a.OutputTool.IsConfigured() {
+		if a.OutputTool.Name == "" {
+			return fmt.Errorf("output_tool.name is required when output_tool is configured")
+		}
 	}
 
 	return nil

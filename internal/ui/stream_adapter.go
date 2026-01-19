@@ -17,9 +17,6 @@ const DefaultStreamBufferSize = 100
 type StreamAdapter struct {
 	events chan StreamEvent
 	stats  *SessionStats
-
-	// ToolNameFilter is a tool name to skip (e.g., "ask_user" which has its own UI)
-	ToolNameFilter string
 }
 
 // NewStreamAdapter creates a new StreamAdapter with the specified buffer size.
@@ -92,18 +89,10 @@ func (a *StreamAdapter) ProcessStream(ctx context.Context, stream llm.Stream) {
 
 		case llm.EventToolExecStart:
 			a.stats.ToolStart()
-			// Skip filtered tool (e.g., ask_user has its own UI)
-			if a.ToolNameFilter != "" && event.ToolName == a.ToolNameFilter {
-				continue
-			}
 			a.events <- ToolStartEvent(event.ToolCallID, event.ToolName, event.ToolInfo)
 
 		case llm.EventToolExecEnd:
 			a.stats.ToolEnd()
-			// Skip filtered tool
-			if a.ToolNameFilter != "" && event.ToolName == a.ToolNameFilter {
-				continue
-			}
 			a.events <- ToolEndEvent(event.ToolCallID, event.ToolName, event.ToolInfo, event.ToolSuccess)
 
 		case llm.EventRetry:

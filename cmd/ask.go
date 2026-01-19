@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -65,7 +67,8 @@ Examples:
 
 Agent examples (use @agent shortcut or --agent flag):
   term-llm ask @reviewer "Review this code" -f main.go
-  term-llm ask @commit "Write a commit message"
+  term-llm ask @commit-message              (uses default prompt)
+  term-llm ask @commit-message "focus on the bug fix"
   term-llm ask @editor "Add error handling" -f utils.go
   term-llm ask --agent researcher "Find info about Go 1.22"
 
@@ -74,7 +77,7 @@ Line range syntax for files:
   main.go:11-22 - Include only lines 11-22
   main.go:11-   - Include lines 11 to end of file
   main.go:-22   - Include lines 1-22`,
-	Args:              cobra.MinimumNArgs(1),
+	Args:              cobra.MinimumNArgs(0),
 	RunE:              runAsk,
 	ValidArgsFunction: AtAgentCompletion,
 }
@@ -138,6 +141,17 @@ func runAsk(cmd *cobra.Command, args []string) error {
 		if err := agent.Validate(); err != nil {
 			return fmt.Errorf("invalid agent: %w", err)
 		}
+	}
+
+	// Handle default prompt for agents invoked without a message
+	if question == "" {
+		if agent == nil {
+			return fmt.Errorf("question required (or use @agent with a default prompt)")
+		}
+		if agent.DefaultPrompt == "" {
+			return fmt.Errorf("agent %q has no default prompt; provide a question", agent.Name)
+		}
+		question = agent.DefaultPrompt
 	}
 
 	// Apply provider overrides: CLI > agent > config
@@ -208,6 +222,7 @@ func runAsk(cmd *cobra.Command, args []string) error {
 
 	// Initialize local tools if we have any
 	var toolMgr *tools.ToolManager
+	var outputTool *tools.SetOutputTool
 	if effectiveTools != "" {
 		toolConfig := buildToolConfig(effectiveTools, effectiveReadDirs, effectiveWriteDirs, effectiveShellAllow, cfg)
 		if shellAutoRun {
@@ -227,6 +242,17 @@ func runAsk(cmd *cobra.Command, args []string) error {
 		if askYolo {
 			toolMgr.ApprovalMgr.SetYoloMode(true)
 		}
+
+		// Register output tool if agent configures one
+		if agent != nil && agent.OutputTool.IsConfigured() {
+			cfg := agent.OutputTool
+			param := cfg.Param
+			if param == "" {
+				param = "content" // default
+			}
+			outputTool = toolMgr.Registry.RegisterOutputTool(cfg.Name, param, cfg.Description)
+		}
+
 		// PromptFunc is set in streamWithGlamour to use bubbletea UI
 		toolMgr.SetupEngine(engine)
 
@@ -348,7 +374,6 @@ func runAsk(cmd *cobra.Command, args []string) error {
 
 	// Create stream adapter for unified event handling with proper buffering
 	adapter := ui.NewStreamAdapter(ui.DefaultStreamBufferSize)
-	adapter.ToolNameFilter = tools.AskUserToolName // Skip ask_user tool (has its own UI)
 
 	// For glamour mode, create the tea.Program and set PromptUIFunc BEFORE starting the stream
 	// This avoids a race condition where tool execution starts before PromptUIFunc is set
@@ -414,10 +439,18 @@ func runAsk(cmd *cobra.Command, args []string) error {
 		errChan <- nil
 	}()
 
+	// Set up text collection for output capture (commit_editmsg or on_complete fallback)
+	var collector *textCollector
+	events := adapter.Events()
+	if agent != nil && (agent.Output == "commit_editmsg" || agent.OnComplete != "") {
+		collector = &textCollector{}
+		events = collector.wrapEvents(events)
+	}
+
 	if useGlamour {
-		err = streamWithGlamour(ctx, adapter.Events(), teaProgram)
+		err = streamWithGlamour(ctx, events, teaProgram)
 	} else {
-		err = streamPlainText(ctx, adapter.Events())
+		err = streamPlainText(ctx, events)
 	}
 	tools.ClearAskUserHooks() // Safe to call even if hooks weren't set
 
@@ -430,6 +463,32 @@ func runAsk(cmd *cobra.Command, args []string) error {
 			return nil
 		}
 		return fmt.Errorf("streaming failed: %w", err)
+	}
+
+	// Run on_complete handler if configured
+	if agent != nil && agent.OnComplete != "" {
+		var output string
+		if outputTool != nil && outputTool.Value() != "" {
+			output = outputTool.Value() // Tool output (preferred)
+		} else if collector != nil {
+			output = collector.Text() // Fallback to text
+		}
+
+		if output != "" {
+			if err := runOnComplete(agent.OnComplete, output); err != nil {
+				fmt.Fprintf(cmd.ErrOrStderr(), "warning: on_complete failed: %v\n", err)
+			}
+		}
+	} else if agent != nil && agent.Output == "commit_editmsg" {
+		// Backwards compat: keep old output: commit_editmsg (deprecated path)
+		if collector != nil {
+			if err := writeCommitEditMsg(collector.Text()); err != nil {
+				fmt.Fprintf(cmd.ErrOrStderr(), "warning: failed to write commit message: %v\n", err)
+			} else {
+				fmt.Fprintf(cmd.ErrOrStderr(), "\nCommit message written to .git/COMMIT_EDITMSG and .git/GITGUI_MSG\n")
+				fmt.Fprintf(cmd.ErrOrStderr(), "Run 'git commit' to use it.\n")
+			}
+		}
 	}
 
 	if showStats {
@@ -796,18 +855,13 @@ func (m askStreamModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Set flag to suppress spinner in View() while external UI is active
 		m.pausedForExternalUI = true
 
-		// Flush all completed content to scrollback before ask_user takes over terminal
-		completed := m.tracker.CompletedSegments()
-		content := ui.RenderSegments(completed, m.width, -1, renderMd)
+		// Partial flush - keep last maxViewLines visible for after external UI returns
+		result := m.tracker.FlushBeforeExternalUI(m.width, m.printedLines, maxViewLines, renderMd)
 
 		var cmds []tea.Cmd
-		if content != "" {
-			lines := ui.SplitLines(content)
-			if m.printedLines < len(lines) {
-				toPrint := ui.JoinLines(lines[m.printedLines:])
-				m.printedLines = len(lines)
-				cmds = append(cmds, tea.Println(toPrint))
-			}
+		if result.ToPrint != "" {
+			m.printedLines = result.NewPrintedLines
+			cmds = append(cmds, tea.Println(result.ToPrint))
 		}
 
 		// Signal that flush is complete (use a command to ensure tea.Println finishes first)
@@ -821,18 +875,13 @@ func (m askStreamModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Set flag to suppress spinner in View() while approval UI is active
 		m.pausedForExternalUI = true
 
-		// Flush all completed content to scrollback before approval takes over terminal
-		completed := m.tracker.CompletedSegments()
-		content := ui.RenderSegments(completed, m.width, -1, renderMd)
+		// Partial flush - keep last maxViewLines visible for after external UI returns
+		result := m.tracker.FlushBeforeExternalUI(m.width, m.printedLines, maxViewLines, renderMd)
 
 		var cmds []tea.Cmd
-		if content != "" {
-			lines := ui.SplitLines(content)
-			if m.printedLines < len(lines) {
-				toPrint := ui.JoinLines(lines[m.printedLines:])
-				m.printedLines = len(lines)
-				cmds = append(cmds, tea.Println(toPrint))
-			}
+		if result.ToPrint != "" {
+			m.printedLines = result.NewPrintedLines
+			cmds = append(cmds, tea.Println(result.ToPrint))
 		}
 
 		// Signal that flush is complete (use a command to ensure tea.Println finishes first)
@@ -845,16 +894,32 @@ func (m askStreamModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case askResumeFromExternalUIMsg:
 		// Resume from external UI (ask_user or approval)
 		m.pausedForExternalUI = false
+
+		// Check if there's an ask_user summary to display
+		// Add to tracker so it appears in correct order, then flush
+		if summary := tools.GetAndClearAskUserResult(); summary != "" {
+			m.tracker.AddExternalUIResult(summary)
+			if cmd := m.maybeFlushToScrollback(); cmd != nil {
+				return m, tea.Batch(cmd, m.spinner.Tick)
+			}
+		}
+
 		return m, m.spinner.Tick
 
 	case askToolStartMsg:
 		m.retryStatus = ""
 		if m.tracker.HandleToolStart(msg.CallID, msg.Name, msg.Info) {
-			// New segment added, start wave animation
+			// New segment added, start wave animation (but not for ask_user which has its own UI)
+			if msg.Name != tools.AskUserToolName {
+				return m, m.tracker.StartWave()
+			}
+			return m, nil
+		}
+		// Already have pending segment for this call, just restart wave (but not for ask_user)
+		if msg.Name != tools.AskUserToolName {
 			return m, m.tracker.StartWave()
 		}
-		// Already have pending segment for this call, just restart wave
-		return m, m.tracker.StartWave()
+		return m, nil
 
 	case askToolEndMsg:
 		m.tracker.HandleToolEnd(msg.CallID, msg.Success)
@@ -1178,4 +1243,67 @@ func parseServerList(mcpFlag string) []string {
 		}
 	}
 	return servers
+}
+
+// writeCommitEditMsg writes the commit message to .git/COMMIT_EDITMSG and .git/GITGUI_MSG.
+func writeCommitEditMsg(message string) error {
+	gitInfo := tools.DetectGitRepo(".")
+	if !gitInfo.IsRepo {
+		return fmt.Errorf("not in a git repository")
+	}
+	message = strings.TrimSpace(message) + "\n"
+	data := []byte(message)
+
+	// Write to both files - COMMIT_EDITMSG for git commit, GITGUI_MSG for git gui
+	commitPath := filepath.Join(gitInfo.Root, ".git", "COMMIT_EDITMSG")
+	guiPath := filepath.Join(gitInfo.Root, ".git", "GITGUI_MSG")
+
+	if err := os.WriteFile(commitPath, data, 0644); err != nil {
+		return err
+	}
+	return os.WriteFile(guiPath, data, 0644)
+}
+
+// runOnComplete executes the on_complete shell command with input piped to stdin.
+// Runs in the git repo root if available, else cwd.
+func runOnComplete(command, input string) error {
+	// Run in git repo root if available, else cwd
+	dir := "."
+	if gitInfo := tools.DetectGitRepo("."); gitInfo.IsRepo {
+		dir = gitInfo.Root
+	}
+
+	cmd := exec.Command("sh", "-c", command)
+	cmd.Dir = dir
+	cmd.Stdin = strings.NewReader(input)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+
+	return cmd.Run()
+}
+
+// textCollector wraps an event channel and collects all text events.
+type textCollector struct {
+	text strings.Builder
+}
+
+// wrapEventsWithCollector creates a new channel that forwards all events from the input
+// channel while collecting text events. Returns the wrapped channel.
+func (tc *textCollector) wrapEvents(events <-chan ui.StreamEvent) <-chan ui.StreamEvent {
+	wrapped := make(chan ui.StreamEvent, 100)
+	go func() {
+		defer close(wrapped)
+		for ev := range events {
+			if ev.Type == ui.StreamEventText {
+				tc.text.WriteString(ev.Text)
+			}
+			wrapped <- ev
+		}
+	}()
+	return wrapped
+}
+
+// Text returns the collected text.
+func (tc *textCollector) Text() string {
+	return tc.text.String()
 }

@@ -21,7 +21,7 @@ var (
 
 // Styles
 var (
-	// Container with left border accent
+	// Container with left border accent (for interactive UI)
 	askContainerStyle = lipgloss.NewStyle().
 				BorderStyle(lipgloss.NormalBorder()).
 				BorderLeft(true).
@@ -30,6 +30,13 @@ var (
 				PaddingRight(2).
 				PaddingTop(1).
 				PaddingBottom(1)
+
+	// Compact container for summary display (no vertical padding)
+	askSummaryStyle = lipgloss.NewStyle().
+			BorderStyle(lipgloss.NormalBorder()).
+			BorderLeft(true).
+			BorderForeground(askAccentColor).
+			PaddingLeft(1)
 
 	// Tab styles - simple horizontal tabs
 	askActiveTabStyle = lipgloss.NewStyle().
@@ -583,8 +590,27 @@ func (m askModel) renderSummary() string {
 		}
 	}
 
-	// Newlines outside container so they're not affected by container styling
-	return "\n" + askContainerStyle.Render(b.String()) + "\n"
+	// Return styled container with trailing newlines for separation
+	return askSummaryStyle.Render(b.String()) + "\n\n"
+}
+
+// renderPlainSummary returns a plain text summary (styling applied at display time)
+func (m askModel) renderPlainSummary() string {
+	var parts []string
+	for i, q := range m.questions {
+		answer := m.answers[i].text
+		if q.MultiSelect {
+			var labels []string
+			for _, idx := range m.answers[i].selected {
+				if idx >= 0 && idx < len(q.Options) {
+					labels = append(labels, q.Options[idx].Label)
+				}
+			}
+			answer = strings.Join(labels, ", ")
+		}
+		parts = append(parts, fmt.Sprintf("%s: %s", q.Header, answer))
+	}
+	return strings.Join(parts, " | ")
 }
 
 // getTTY opens /dev/tty for direct terminal access
@@ -621,9 +647,10 @@ func RunAskUser(questions []AskUserQuestion) ([]AskUserAnswer, error) {
 		return nil, fmt.Errorf("cancelled by user")
 	}
 
-	// Print the summary explicitly to the TTY so it persists after TUI resumes
-	// (bubbletea's final View() gets overwritten when the main TUI redraws)
-	fmt.Fprint(tty, result.renderSummary())
+	// Store the summary for the TUI to display via the segment system.
+	// This replaces direct TTY printing which gets overwritten when the main TUI redraws.
+	// Use plain text summary - styling is applied at render time to avoid ANSI corruption.
+	SetLastAskUserResult(result.renderPlainSummary())
 
 	// Convert internal answers to external format
 	answers := make([]AskUserAnswer, len(result.answers))

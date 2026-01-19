@@ -216,3 +216,23 @@ func (r *LocalToolRegistry) GetSpawnAgentTool() *SpawnAgentTool {
 	}
 	return nil
 }
+
+// RegisterOutputTool creates and registers a SetOutputTool with the given configuration.
+// Returns the tool so the caller can retrieve the captured value later.
+func (r *LocalToolRegistry) RegisterOutputTool(name, param, desc string) *SetOutputTool {
+	tool := NewSetOutputTool(name, param, desc)
+	r.tools[name] = tool
+	return tool
+}
+
+// GetOutputTool returns the output tool by name if it exists and is a SetOutputTool.
+func (r *LocalToolRegistry) GetOutputTool(name string) *SetOutputTool {
+	tool, ok := r.tools[name]
+	if !ok {
+		return nil
+	}
+	if outputTool, ok := tool.(*SetOutputTool); ok {
+		return outputTool
+	}
+	return nil
+}

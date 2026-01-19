@@ -20,7 +20,7 @@ var builtinAgentNames = []string{
 	"artist",
 	"changelog",
 	"codebase",
-	"commit",
+	"commit-message",
 	"editor",
 	"file-organizer",
 	"researcher",

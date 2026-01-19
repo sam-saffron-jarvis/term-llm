@@ -127,7 +127,7 @@ type ResumeFromExternalUIMsg struct{}
 // Use ui.WaveTickMsg and ui.WavePauseMsg from the shared ToolTracker
 
 // New creates a new chat model
-func New(cfg *config.Config, provider llm.Provider, engine *llm.Engine, modelName string, mcpManager *mcp.Manager, maxTurns int, forceExternalSearch bool, searchEnabled bool, localTools []string, showStats bool) *Model {
+func New(cfg *config.Config, provider llm.Provider, engine *llm.Engine, modelName string, mcpManager *mcp.Manager, maxTurns int, forceExternalSearch bool, searchEnabled bool, localTools []string, showStats bool, initialText string) *Model {
 	// Get terminal size
 	width := 80
 	height := 24
@@ -158,6 +158,11 @@ func New(cfg *config.Config, provider llm.Provider, engine *llm.Engine, modelNam
 	ta.FocusedStyle.Prompt = lipgloss.NewStyle().Foreground(styles.Theme().Primary).Bold(true)
 	ta.BlurredStyle = ta.FocusedStyle
 	ta.Focus()
+
+	// Prefill with initial text if provided
+	if initialText != "" {
+		ta.SetValue(initialText)
+	}
 
 	// Always start with a fresh session
 	// Users can load previous sessions with /load command
@@ -283,11 +288,15 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return m.renderMarkdown(text)
 				})
 				if m.tracker.HandleToolStart(ev.ToolCallID, ev.ToolName, ev.ToolInfo) {
-					// New segment added, start wave animation
-					cmds = append(cmds, m.tracker.StartWave())
+					// New segment added, start wave animation (but not for ask_user which has its own UI)
+					if ev.ToolName != tools.AskUserToolName {
+						cmds = append(cmds, m.tracker.StartWave())
+					}
 				} else {
-					// Already have pending segment, just restart wave
-					cmds = append(cmds, m.tracker.StartWave())
+					// Already have pending segment, just restart wave (but not for ask_user)
+					if ev.ToolName != tools.AskUserToolName {
+						cmds = append(cmds, m.tracker.StartWave())
+					}
 				}
 			}
 
@@ -415,15 +424,15 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Set flag to suppress spinner in View() while external UI is active
 		m.pausedForExternalUI = true
 
-		// Flush all completed content to scrollback before ask_user takes over terminal
+		// Partial flush - keep last maxViewLines visible for after external UI returns
 		if m.tracker != nil {
 			// Mark current text as complete
 			m.tracker.MarkCurrentTextComplete(func(text string) string {
 				return m.renderMarkdown(text)
 			})
 
-			// Flush all remaining content
-			result := m.tracker.FlushAllRemaining(m.width, m.printedLines, m.renderMd)
+			// Partial flush - keep last maxViewLines visible
+			result := m.tracker.FlushBeforeExternalUI(m.width, m.printedLines, maxViewLines, m.renderMd)
 			if result.ToPrint != "" {
 				m.printedLines = result.NewPrintedLines
 				// Signal that flush is complete after the print finishes
@@ -444,15 +453,15 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Set flag to suppress spinner in View() while approval UI is active
 		m.pausedForExternalUI = true
 
-		// Flush all completed content to scrollback before approval takes over terminal
+		// Partial flush - keep last maxViewLines visible for after external UI returns
 		if m.tracker != nil {
 			// Mark current text as complete
 			m.tracker.MarkCurrentTextComplete(func(text string) string {
 				return m.renderMarkdown(text)
 			})
 
-			// Flush all remaining content
-			result := m.tracker.FlushAllRemaining(m.width, m.printedLines, m.renderMd)
+			// Partial flush - keep last maxViewLines visible
+			result := m.tracker.FlushBeforeExternalUI(m.width, m.printedLines, maxViewLines, m.renderMd)
 			if result.ToPrint != "" {
 				m.printedLines = result.NewPrintedLines
 				// Signal that flush is complete after the print finishes
@@ -472,6 +481,17 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case ResumeFromExternalUIMsg:
 		// Resume from external UI (ask_user or approval)
 		m.pausedForExternalUI = false
+
+		// Check if there's an ask_user summary to display
+		// Add to tracker so it appears in correct order, then flush immediately
+		if summary := tools.GetAndClearAskUserResult(); summary != "" && m.tracker != nil {
+			m.tracker.AddExternalUIResult(summary)
+			// Flush now to ensure it's printed in correct sequence
+			if cmd := m.maybeFlushToScrollback(); cmd != nil {
+				return m, tea.Batch(cmd, m.spinner.Tick)
+			}
+		}
+
 		return m, m.spinner.Tick
 	}
 
@@ -1006,7 +1026,6 @@ func (m *Model) startStream(content string) tea.Cmd {
 
 		// Create stream adapter for unified event handling with proper buffering
 		adapter := ui.NewStreamAdapter(ui.DefaultStreamBufferSize)
-		adapter.ToolNameFilter = tools.AskUserToolName // Skip ask_user tool (has its own UI)
 		m.streamChan = adapter.Events()
 
 		// Build messages from conversation history
@@ -1189,9 +1208,6 @@ func (m *Model) maybeFlushToScrollback() tea.Cmd {
 // renderStreamingInline renders the streaming response for inline mode
 func (m *Model) renderStreamingInline() string {
 	var b strings.Builder
-
-	// Extra newline after user's message for visual separation
-	b.WriteString("\n")
 
 	// Get segments from tracker
 	var completed, active []ui.Segment
@@ -1654,63 +1670,35 @@ func (m *Model) renderHistory() string {
 		b.WriteString("\n\n")
 	}
 
+	promptStyle := lipgloss.NewStyle().Foreground(theme.Primary).Bold(true)
+
 	for _, msg := range visibleMessages {
-		// Role header
-		b.WriteString(m.renderHR())
-		b.WriteString("\n")
-
-		roleStyle := lipgloss.NewStyle().Foreground(theme.Primary).Bold(true)
 		if msg.Role == RoleUser {
-			header := "❯"
-			// Show file attachment indicator
+			// User message: ❯ content
+			b.WriteString(promptStyle.Render("❯") + " ")
+
+			// Extract content before file attachments
+			displayContent := msg.Content
 			if len(msg.Files) > 0 {
-				header += fmt.Sprintf("  📎 %d file(s)", len(msg.Files))
+				if idx := strings.Index(displayContent, "\n\n---\n**Attached files:**"); idx != -1 {
+					displayContent = strings.TrimSpace(displayContent[:idx])
+				}
 			}
-			b.WriteString(roleStyle.Render(header) + " ")
-		} else {
-			b.WriteString(roleStyle.Render("❯ Assistant"))
-		}
-		b.WriteString("\n")
-		b.WriteString(m.renderHR())
-		b.WriteString("\n")
+			b.WriteString(displayContent)
 
-		// Content - for user messages, extract just the text before file attachments
-		displayContent := msg.Content
-		if msg.Role == RoleUser && len(msg.Files) > 0 {
-			// Extract content before the file attachment marker
-			if idx := strings.Index(displayContent, "\n\n---\n**Attached files:**"); idx != -1 {
-				displayContent = strings.TrimSpace(displayContent[:idx])
+			// Show file indicator
+			if len(msg.Files) > 0 {
+				b.WriteString("\n")
+				b.WriteString(lipgloss.NewStyle().Foreground(theme.Muted).Render(
+					fmt.Sprintf("[with: %s]", strings.Join(msg.Files, ", "))))
 			}
-		}
-
-		rendered := m.renderMarkdown(displayContent)
-		b.WriteString(rendered)
-
-		// Show file names for user messages
-		if msg.Role == RoleUser && len(msg.Files) > 0 {
 			b.WriteString("\n")
-			fileList := strings.Join(msg.Files, ", ")
-			b.WriteString(lipgloss.NewStyle().Foreground(theme.Muted).Render("Files: " + fileList))
+		} else {
+			// Assistant message: just the rendered content
+			rendered := m.renderMarkdown(msg.Content)
+			b.WriteString(rendered)
+			b.WriteString("\n")
 		}
-
-		// Metadata for assistant messages
-		if msg.Role == RoleAssistant && (msg.Tokens > 0 || msg.WebSearch) {
-			var meta []string
-			if msg.Tokens > 0 {
-				meta = append(meta, fmt.Sprintf("%d tokens", msg.Tokens))
-			}
-			if msg.WebSearch {
-				meta = append(meta, "web search")
-			}
-			metaStr := strings.Join(meta, " · ")
-			padding := m.width - len(metaStr)
-			if padding > 0 {
-				b.WriteString(strings.Repeat(" ", padding))
-			}
-			b.WriteString(lipgloss.NewStyle().Foreground(theme.Muted).Render(metaStr))
-		}
-
-		b.WriteString("\n\n")
 	}
 
 	return b.String()

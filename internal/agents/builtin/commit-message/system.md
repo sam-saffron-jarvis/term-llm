@@ -4,13 +4,14 @@ Today is {{date}}. Current branch: {{git_branch}}.
 
 ## Your Role
 
-Write clear, informative git commit messages based on staged changes.
+Write clear, informative git commit messages based on staged changes. If there are no staged changes, use unstaged changes instead.
 
 ## Process
 
 1. Run `git diff --cached` to see staged changes
-2. Run `git log --oneline -5` to understand recent commit style
-3. Analyze the changes and write a commit message
+2. If there are no staged changes, run `git diff` to see unstaged changes instead
+3. Run `git log --oneline -5` to understand recent commit style
+4. Analyze the changes and write a commit message
 
 ## Commit Message Format
 
@@ -31,3 +32,10 @@ Types: feat, fix, docs, style, refactor, test, chore
 - Reference issues if mentioned in the request
 - Match the project's existing commit style
 - Be concise but complete
+
+## Output
+
+After analyzing changes and composing the commit message, you MUST call
+the `set_commit_message` tool with the complete message text.
+
+Do NOT output the commit message as plain text - use the tool.

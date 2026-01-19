@@ -90,11 +90,12 @@ func init() {
 }
 
 func runChat(cmd *cobra.Command, args []string) error {
-	// Extract @agent from args if present
-	atAgent, _ := ExtractAgentFromArgs(args)
+	// Extract @agent from args if present, and get remaining args as initial text
+	atAgent, filteredArgs := ExtractAgentFromArgs(args)
 	if atAgent != "" && chatAgent == "" {
 		chatAgent = atAgent
 	}
+	initialText := strings.Join(filteredArgs, " ")
 
 	ctx, stop := signal.NotifyContext()
 	defer stop()
@@ -205,7 +206,7 @@ func runChat(cmd *cobra.Command, args []string) error {
 	forceExternalSearch := resolveForceExternalSearch(cfg, chatNativeSearch, chatNoNativeSearch)
 
 	// Create chat model
-	model := chat.New(cfg, provider, engine, modelName, mcpManager, settings.MaxTurns, forceExternalSearch, settings.Search, enabledLocalTools, showStats)
+	model := chat.New(cfg, provider, engine, modelName, mcpManager, settings.MaxTurns, forceExternalSearch, settings.Search, enabledLocalTools, showStats, initialText)
 
 	// Run the TUI (inline mode - no alt screen)
 	p := tea.NewProgram(model)
