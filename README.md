@@ -17,7 +17,9 @@ A Swiss Army knife for your terminal—AI-powered commands, answers, and images 
 - **File context**: Include files, clipboard, stdin, or line ranges as context (`-f`)
 - **Image generation**: Create and edit images (Gemini, OpenAI, xAI, Flux)
 - **MCP servers**: Extend with external tools via [Model Context Protocol](https://modelcontextprotocol.io)
-- **Multiple providers**: Anthropic, OpenAI, ChatGPT, xAI (Grok), OpenRouter, Gemini, Gemini CLI, Zen (free tier), Claude Code (claude-bin), Ollama, LM Studio
+- **Agents**: Named configuration bundles for different workflows
+- **Skills**: Portable instruction bundles for specialized tasks
+- **Multiple providers**: Anthropic, OpenAI, ChatGPT, GitHub Copilot, xAI (Grok), OpenRouter, Gemini, Gemini CLI, Zen (free tier), Claude Code (claude-bin), Ollama, LM Studio
 - **Local LLMs**: Run with Ollama, LM Studio, or any OpenAI-compatible server
 - **Free tier available**: Try it out with Zen (no API key required)
 
@@ -60,16 +62,19 @@ go build
 
 ## Setup
 
-On first run, term-llm will prompt you to choose a provider (Anthropic, OpenAI, ChatGPT, xAI, OpenRouter, Gemini, Gemini CLI, Zen, Claude Code (claude-bin), Ollama, or LM Studio).
+On first run, term-llm will prompt you to choose a provider (Anthropic, OpenAI, ChatGPT, GitHub Copilot, xAI, OpenRouter, Gemini, Gemini CLI, Zen, Claude Code (claude-bin), Ollama, or LM Studio).
 
 ### Option 1: Try it free with Zen
 
-[OpenCode Zen](https://opencode.ai) provides free access to GLM 4.7 and other models. No API key required:
+[OpenCode Zen](https://opencode.ai) provides free access to multiple models. No API key required:
 
 ```bash
 term-llm exec --provider zen "list files"
 term-llm ask --provider zen "explain git rebase"
+term-llm ask --provider zen:gpt-5-nano "quick question"  # use specific model
 ```
+
+**Available free models:** `glm-4.7-free`, `minimax-m2.1-free`, `grok-code`, `big-pickle`, `gpt-5-nano`
 
 Or configure as default:
 
@@ -284,6 +289,41 @@ OpenAI-compatible providers support two URL options:
 
 Use `url` when your endpoint doesn't follow the standard `/chat/completions` path, or to paste URLs directly from API documentation.
 
+### Option 9: Use GitHub Copilot
+
+If you have [GitHub Copilot](https://github.com/features/copilot) (free, Individual, or Business), you can use the `copilot` provider with OAuth device flow authentication:
+
+```bash
+term-llm ask --provider copilot "explain this code"
+term-llm ask --provider copilot:claude-opus-4.5 "complex question"
+```
+
+On first use, you'll be prompted to authenticate via GitHub device flow. Credentials are stored locally and refreshed automatically.
+
+```yaml
+# In ~/.config/term-llm/config.yaml
+default_provider: copilot
+
+providers:
+  copilot:
+    model: gpt-4.1  # free tier, or gpt-5.2-codex for paid
+```
+
+**Available models:**
+| Model | Description |
+|-------|-------------|
+| `gpt-4.1` | Default, works on free tier |
+| `gpt-5.2-codex` | Advanced coding model (paid) |
+| `gpt-5.1` | GPT-5.1 (paid) |
+| `claude-opus-4.5` | Claude Opus 4.5 via Copilot (paid) |
+| `gemini-3-pro` | Gemini 3 Pro via Copilot (paid) |
+| `grok-code-fast-1` | Grok coding model via Copilot (paid) |
+
+**Features:**
+- Free tier with GPT-4.1 (no Copilot subscription required, just GitHub account)
+- OAuth device flow authentication (no API key needed)
+- Full tool support via MCP
+
 ## Usage
 
 ```bash
@@ -297,6 +337,19 @@ Use `term-llm chat` for a persistent session.
 ```bash
 term-llm chat
 ```
+
+### Using Agents
+
+Use the `@agent` prefix syntax to use a specific agent:
+
+```bash
+term-llm ask @reviewer "review this code"     # use reviewer agent
+term-llm chat @coder                          # start chat with coder agent
+term-llm loop @researcher --done-file ...     # use researcher agent in loop
+term-llm exec @bash-expert "find large files" # use bash-expert agent
+```
+
+See [Agents](#agents) for more details on creating and managing agents.
 
 ### Chat Keyboard Shortcuts
 
@@ -328,7 +381,9 @@ term-llm chat
 |------|-------|-------------|
 | `--provider` | | Override provider, optionally with model (e.g., `openai:gpt-5.2`) |
 | `--file` | `-f` | File(s) to include as context (supports globs, line ranges, 'clipboard') |
-| `--auto-pick` | `-a` | Auto-execute the best suggestion without prompting |
+| `--auto-pick` | `-a` | Auto-execute the best suggestion without prompting (exec only) |
+| `--agent` | `-a` | Use a specific agent (ask/chat only; see also `@agent` syntax) |
+| `--skills` | | Skills mode: all, none, or comma-separated names |
 | `--max N` | `-n N` | Limit to N options in the selection UI |
 | `--search` | `-s` | Enable web search (configurable: Exa, Brave, Google, DuckDuckGo) and page reading |
 | `--native-search` | | Use provider's native search (override config) |
@@ -339,6 +394,11 @@ term-llm chat
 | `--system-message` | `-m` | Custom system message/instructions |
 | `--stats` | | Show session statistics (time, tokens, tool calls) |
 | `--max-turns` | | Max agentic turns for tool execution (default: 20 for exec, 200 for chat) |
+| `--yolo` | | Auto-approve all tool operations (for unattended runs) |
+
+**Note:** The `-a` short flag has different meanings:
+- In `exec`: `-a` is `--auto-pick` (auto-execute best suggestion)
+- In `ask`/`chat`: `-a` is `--agent` (use a specific agent)
 
 ### Examples
 
@@ -387,6 +447,35 @@ term-llm image "make it purple" -i photo.png    # edit existing image
 
 Use `--debug` to print provider-level diagnostics (requests, model info, etc.). Use `--debug-raw` for a timestamped, raw view of tool calls, tool results, and reconstructed requests. Raw debug is most useful for troubleshooting tool calling and search.
 
+### Debug Logging
+
+term-llm maintains debug logs for troubleshooting. Use the `debug-log` command to view and manage them:
+
+```bash
+term-llm debug-log                           # Show recent logs
+term-llm debug-log list                      # List available log files
+term-llm debug-log show [file]               # Show a specific log file
+term-llm debug-log tail                      # Show last N lines
+term-llm debug-log tail --follow             # Follow logs in real-time
+term-llm debug-log search "pattern"          # Search logs for a pattern
+term-llm debug-log clean                     # Clean old log files
+term-llm debug-log clean --days 7            # Keep only last 7 days
+term-llm debug-log export --json             # Export logs as JSON
+term-llm debug-log enable                    # Enable debug logging
+term-llm debug-log disable                   # Disable debug logging
+term-llm debug-log status                    # Show logging status
+term-llm debug-log path                      # Print log directory path
+```
+
+**Key flags:**
+| Flag | Description |
+|------|-------------|
+| `--days N` | Limit to logs from last N days |
+| `--show-tools` | Include tool calls/results in output |
+| `--raw` | Show raw log entries without formatting |
+| `--json` | Output as JSON |
+| `--follow` | Follow logs in real-time (with tail) |
+
 ## Image Generation
 
 Generate and edit images using AI models from Gemini, OpenAI, or Flux (Black Forest Labs).
@@ -433,12 +522,12 @@ term-llm image "landscape" --no-display         # don't show in terminal
 
 ### Image Providers
 
-| Provider | Model | Environment Variable | Config Key |
-|----------|-------|---------------------|------------|
+| Provider | Models | Environment Variable | Config Key |
+|----------|--------|---------------------|------------|
 | Gemini (default) | gemini-2.5-flash-image | `GEMINI_API_KEY` | `image.gemini.api_key` |
-| OpenAI | gpt-image-1 | `OPENAI_API_KEY` | `image.openai.api_key` |
+| OpenAI | gpt-image-1, gpt-image-1.5, gpt-image-1-mini | `OPENAI_API_KEY` | `image.openai.api_key` |
 | xAI | grok-2-image-1212 | `XAI_API_KEY` | `image.xai.api_key` |
-| Flux | flux-2-pro / flux-kontext-pro | `BFL_API_KEY` | `image.flux.api_key` |
+| Flux | flux-2-pro, flux-2-max, flux-kontext-pro | `BFL_API_KEY` | `image.flux.api_key` |
 | OpenRouter | various | `OPENROUTER_API_KEY` | `image.openrouter.api_key` |
 
 Image providers use their own credentials, separate from text providers. This allows using different API keys or accounts for text vs image generation.
@@ -695,28 +784,138 @@ MCP servers are stored in `~/.config/term-llm/mcp.json`:
 
 HTTP transport uses [Streamable HTTP](https://modelcontextprotocol.io/specification/2025-03-26/basic/transports) (MCP spec 2025-03-26).
 
+## Agents
+
+Agents are named configuration bundles that define a persona with specific provider, model, system prompt, tools, and MCP servers. Use agents to switch between different workflows quickly.
+
+### Using Agents
+
+Use the `@agent` prefix syntax or `--agent` flag:
+
+```bash
+term-llm ask @reviewer "review this code"     # use reviewer agent
+term-llm chat @coder                          # start chat with coder agent
+term-llm ask --agent reviewer "question"      # alternative syntax
+```
+
+### Managing Agents
+
+```bash
+term-llm agents                              # List all agents
+term-llm agents list                         # Same as above
+term-llm agents list --builtin               # Only built-in agents
+term-llm agents list --local                 # Only local agents
+term-llm agents list --user                  # Only user agents
+term-llm agents new my-agent                 # Create new agent
+term-llm agents show reviewer                # Show agent configuration
+term-llm agents edit reviewer                # Edit agent configuration
+term-llm agents copy builtin/coder my-coder  # Copy agent to customize
+term-llm agents path                         # Print agents directory
+```
+
+### Agent Configuration
+
+Agents are YAML files stored in `~/.config/term-llm/agents/`:
+
+```yaml
+# ~/.config/term-llm/agents/reviewer.yaml
+name: Code Reviewer
+description: Reviews code for best practices and potential issues
+
+provider: anthropic
+model: claude-sonnet-4-5
+
+system_message: |
+  You are a code reviewer. Focus on:
+  - Code quality and best practices
+  - Potential bugs and edge cases
+  - Performance considerations
+  - Security issues
+
+tools:
+  - read_file
+  - grep
+  - glob
+
+mcp:
+  - github
+```
+
+**Agent search order:** user agents → local agents → built-in agents
+
+## Skills
+
+Skills are portable instruction bundles that provide specialized knowledge for specific tasks. Unlike agents, skills don't change the provider or model—they just add context.
+
+### Using Skills
+
+```bash
+term-llm ask --skills git "how to squash commits"   # use git skill
+term-llm chat --skills git,docker                   # multiple skills
+term-llm edit --skills refactoring -f main.go "refactor this"
+```
+
+### Managing Skills
+
+```bash
+term-llm skills                              # List all skills
+term-llm skills list                         # Same as above
+term-llm skills list --local                 # Only local skills
+term-llm skills list --user                  # Only user skills
+term-llm skills new my-skill                 # Create new skill
+term-llm skills show git                     # Show skill content
+term-llm skills edit git                     # Edit skill
+term-llm skills copy builtin/git my-git      # Copy skill to customize
+term-llm skills browse                       # Browse available skills
+term-llm skills validate my-skill            # Validate skill syntax
+term-llm skills update                       # Update skills from sources
+term-llm skills path                         # Print skills directory
+```
+
+### Skill Configuration
+
+Skills are YAML files stored in `~/.config/term-llm/skills/`:
+
+```yaml
+# ~/.config/term-llm/skills/git.yaml
+name: Git Expert
+description: Expertise in Git version control
+
+instructions: |
+  You are an expert in Git version control. When helping with Git:
+  - Prefer rebase over merge for cleaner history
+  - Use conventional commit messages
+  - Explain the implications of destructive operations
+  - Suggest .gitignore patterns when appropriate
+```
+
+**Skill search order:** user skills → local skills → built-in skills
+
 ## Built-in Tools
 
 term-llm includes built-in tools for file operations and shell access. Enable them with the `--tools` flag:
 
 ```bash
-term-llm chat --tools read,shell,grep    # Enable specific tools
-term-llm exec --tools read,write,edit,shell,grep,find,view  # Multiple tools
+term-llm chat --tools read_file,shell,grep        # Enable specific tools
+term-llm exec --tools read_file,write_file,edit_file,shell,grep,glob,view_image
 ```
 
 ### Available Tools
 
 | Tool | Description |
 |------|-------------|
-| `read` | Read file contents (with line ranges) |
-| `write` | Create/overwrite files |
-| `edit` | Edit existing files |
+| `read_file` | Read file contents (with line ranges) |
+| `write_file` | Create/overwrite files |
+| `edit_file` | Edit existing files |
 | `shell` | Execute shell commands |
 | `grep` | Search file contents (uses ripgrep) |
-| `find` | Find files by glob pattern |
-| `view` | Display images in terminal |
-| `image` | Generate images via configured provider |
+| `glob` | Find files by glob pattern |
+| `view_image` | Display images in terminal (icat) |
+| `show_image` | Show image file info |
+| `image_generate` | Generate images via configured provider |
 | `ask_user` | Prompt user for input |
+| `spawn_agent` | Spawn child agents for parallel tasks |
+| `activate_skill` | Activate a skill by name |
 
 ### Tool Permissions
 
@@ -844,6 +1043,9 @@ providers:
   zen:
     model: glm-4.7-free
     # api_key is optional - leave empty for free tier
+
+  copilot:
+    model: gpt-4.1  # free tier, or gpt-5.2-codex for paid
 
   # Local LLM providers (require explicit type)
   # Run 'term-llm models --provider ollama' to list available models
@@ -1067,16 +1269,18 @@ Most providers use API keys via environment variables. Some providers use OAuth 
 | `anthropic` | `ANTHROPIC_API_KEY` | Anthropic API key |
 | `openai` | `OPENAI_API_KEY` | OpenAI API key |
 | `chatgpt` | `~/.config/term-llm/chatgpt_creds.json` | ChatGPT Plus/Pro OAuth |
+| `copilot` | `~/.config/term-llm/copilot_creds.json` | GitHub Copilot OAuth |
 | `gemini` | `GEMINI_API_KEY` | Google AI Studio API key |
 | `gemini-cli` | `~/.gemini/oauth_creds.json` | gemini-cli OAuth (Google Code Assist) |
 | `xai` | `XAI_API_KEY` | xAI API key |
 | `openrouter` | `OPENROUTER_API_KEY` | OpenRouter API key |
 | `zen` | `ZEN_API_KEY` (optional) | Empty for free tier |
 
-**ChatGPT** and **Gemini CLI** work without any API key if you have a subscription or the CLI installed and logged in:
+**ChatGPT**, **Copilot**, and **Gemini CLI** work without any API key if you have a subscription or the CLI installed and logged in:
 
 ```bash
 term-llm ask --provider chatgpt "question"    # uses ChatGPT Plus/Pro subscription
+term-llm ask --provider copilot "question"    # uses GitHub Copilot OAuth
 term-llm ask --provider gemini-cli "question" # uses ~/.gemini/oauth_creds.json
 ```
 
