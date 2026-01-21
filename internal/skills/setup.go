@@ -16,28 +16,20 @@ type Setup struct {
 }
 
 // NewSetup initializes the skills system from config.
-// Returns nil if skills mode is "none" or no skills are available.
+// Returns nil if skills are disabled or no skills are available.
 func NewSetup(cfg *config.SkillsConfig) (*Setup, error) {
-	if cfg.Mode == "none" {
+	if !cfg.Enabled {
 		return nil, nil
 	}
 
 	registry, err := NewRegistry(RegistryConfig{
-		Mode:                  cfg.Mode,
 		AutoInvoke:            cfg.AutoInvoke,
 		MetadataBudgetTokens:  cfg.MetadataBudgetTokens,
 		MaxActive:             cfg.MaxActive,
-		SearchPaths:           cfg.SearchPaths,
-		ExcludePaths:          cfg.ExcludePaths,
 		IncludeProjectSkills:  cfg.IncludeProjectSkills,
-		IncludeCodexPaths:     cfg.IncludeCodexPaths,
-		IncludeClaudePaths:    cfg.IncludeClaudePaths,
-		IncludeGeminiPaths:    cfg.IncludeGeminiPaths,
-		IncludeUniversalPaths: cfg.IncludeUniversalPaths,
+		IncludeEcosystemPaths: cfg.IncludeEcosystemPaths,
 		AlwaysEnabled:         cfg.AlwaysEnabled,
 		NeverAuto:             cfg.NeverAuto,
-		Disabled:              cfg.Disabled,
-		UseBuiltin:            cfg.UseBuiltin,
 	})
 	if err != nil {
 		return nil, err

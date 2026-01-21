@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/samsaffron/term-llm/internal/config"
@@ -113,22 +114,518 @@ func configShow(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to get config path: %w", err)
 	}
 
-	// If config file exists, just print it as-is (preserves comments, all keys)
-	if data, err := os.ReadFile(configPath); err == nil {
-		fmt.Printf("# %s\n\n", configPath)
-		os.Stdout.Write(data)
-		if len(data) > 0 && data[len(data)-1] != '\n' {
-			fmt.Println()
+	// Get defaults
+	defaults := config.GetDefaults()
+
+	// Try to read raw config file and extract keys
+	rawKeys := make(map[string]bool)
+	unknownKeys := make(map[string]bool)
+	var rawRoot yaml.Node
+
+	data, readErr := os.ReadFile(configPath)
+	if readErr == nil {
+		if err := yaml.Unmarshal(data, &rawRoot); err == nil {
+			extractConfigKeys(&rawRoot, "", rawKeys, unknownKeys)
 		}
-		return nil
 	}
 
-	// No config file - show helpful message with defaults
-	fmt.Printf("# No config file (using defaults)\n")
-	fmt.Printf("# Create one with: term-llm config reset\n")
-	fmt.Printf("# Or edit directly: term-llm config edit\n")
-	fmt.Printf("# Config path: %s\n", configPath)
+	// Print header
+	fmt.Printf("# %s\n", configPath)
+	if readErr != nil {
+		fmt.Printf("# (no config file - showing defaults)\n")
+	}
+	fmt.Println()
+
+	// Print annotated config
+	printAnnotatedConfig(defaults, rawKeys, unknownKeys, &rawRoot, readErr == nil)
+
 	return nil
+}
+
+// extractConfigKeys walks a yaml.Node tree and extracts all key paths
+// It also identifies unknown keys
+func extractConfigKeys(node *yaml.Node, prefix string, rawKeys, unknownKeys map[string]bool) {
+	if node == nil {
+		return
+	}
+
+	switch node.Kind {
+	case yaml.DocumentNode:
+		for _, child := range node.Content {
+			extractConfigKeys(child, prefix, rawKeys, unknownKeys)
+		}
+	case yaml.MappingNode:
+		for i := 0; i+1 < len(node.Content); i += 2 {
+			keyNode := node.Content[i]
+			valueNode := node.Content[i+1]
+
+			var keyPath string
+			if prefix == "" {
+				keyPath = keyNode.Value
+			} else {
+				keyPath = prefix + "." + keyNode.Value
+			}
+
+			rawKeys[keyPath] = true
+
+			// Check if this key is unknown
+			if !config.IsKnownKey(keyPath) {
+				unknownKeys[keyPath] = true
+			}
+
+			// Recurse into nested mappings
+			if valueNode.Kind == yaml.MappingNode {
+				extractConfigKeys(valueNode, keyPath, rawKeys, unknownKeys)
+			}
+		}
+	}
+}
+
+// printAnnotatedConfig outputs the effective config with annotations
+func printAnnotatedConfig(defaults map[string]any, rawKeys, unknownKeys map[string]bool, rawRoot *yaml.Node, hasFile bool) {
+	// Define the order and structure of sections to print
+	sections := []struct {
+		name   string
+		keys   []string
+		nested map[string][]string
+	}{
+		{
+			name: "",
+			keys: []string{"default_provider"},
+		},
+		{
+			name: "exec",
+			keys: []string{"provider", "model", "suggestions", "instructions"},
+		},
+		{
+			name: "ask",
+			keys: []string{"provider", "model", "instructions", "max_turns"},
+		},
+		{
+			name: "chat",
+			keys: []string{"provider", "model", "instructions", "max_turns"},
+		},
+		{
+			name: "edit",
+			keys: []string{"provider", "model", "instructions", "show_line_numbers", "context_lines", "editor", "diff_format"},
+		},
+		{
+			name: "image",
+			keys: []string{"provider", "output_dir"},
+			nested: map[string][]string{
+				"gemini":     {"model", "api_key"},
+				"openai":     {"model", "api_key"},
+				"xai":        {"model", "api_key"},
+				"flux":       {"model", "api_key"},
+				"openrouter": {"model", "api_key"},
+			},
+		},
+		{
+			name: "search",
+			keys: []string{"provider", "force_external"},
+			nested: map[string][]string{
+				"exa":    {"api_key"},
+				"brave":  {"api_key"},
+				"google": {"api_key", "cx"},
+			},
+		},
+		{
+			name: "theme",
+			keys: []string{"primary", "secondary", "success", "error", "warning", "muted", "text", "spinner"},
+		},
+		{
+			name: "tools",
+			keys: []string{"enabled", "read_dirs", "write_dirs", "shell_allow", "shell_auto_run", "shell_auto_run_env", "shell_non_tty_env", "image_provider"},
+		},
+		{
+			name: "agents",
+			keys: []string{"use_builtin", "search_paths"},
+		},
+		{
+			name: "skills",
+			keys: []string{"enabled", "include_project_skills", "include_ecosystem_paths"},
+		},
+		{
+			name: "agents_md",
+			keys: []string{"enabled"},
+		},
+		{
+			name: "diagnostics",
+			keys: []string{"enabled", "dir"},
+		},
+		{
+			name: "debug_logs",
+			keys: []string{"enabled", "dir"},
+		},
+	}
+
+	// Get raw values from the config file for comparison
+	rawValues := make(map[string]string)
+	if hasFile && rawRoot != nil {
+		extractRawValues(rawRoot, "", rawValues)
+	}
+
+	// Print unknown keys first as warnings
+	if len(unknownKeys) > 0 {
+		fmt.Println("# Unknown keys (will be ignored):")
+		for key := range unknownKeys {
+			if val, ok := rawValues[key]; ok {
+				fmt.Printf("# %s: %s\n", key, val)
+			} else {
+				fmt.Printf("# %s\n", key)
+			}
+		}
+		fmt.Println()
+	}
+
+	// Print providers section specially (dynamic keys)
+	printProvidersSection(defaults, rawKeys, rawValues, hasFile)
+
+	// Print each section
+	for _, section := range sections {
+		if section.name == "" {
+			// Top-level keys
+			for _, key := range section.keys {
+				printConfigValue(key, defaults, rawKeys, rawValues, hasFile, 0)
+			}
+			fmt.Println()
+		} else {
+			// Check if section has any explicit values or if we should show defaults
+			sectionHasValues := false
+			for _, key := range section.keys {
+				fullKey := section.name + "." + key
+				if rawKeys[fullKey] || defaults[fullKey] != nil {
+					sectionHasValues = true
+					break
+				}
+			}
+			for nestedSection := range section.nested {
+				for _, key := range section.nested[nestedSection] {
+					fullKey := section.name + "." + nestedSection + "." + key
+					if rawKeys[fullKey] || defaults[fullKey] != nil {
+						sectionHasValues = true
+						break
+					}
+				}
+			}
+
+			if sectionHasValues {
+				fmt.Printf("%s:\n", section.name)
+				for _, key := range section.keys {
+					fullKey := section.name + "." + key
+					printConfigValue(fullKey, defaults, rawKeys, rawValues, hasFile, 1)
+				}
+
+				// Print nested sections
+				for nestedSection, nestedKeys := range section.nested {
+					nestedHasValues := false
+					for _, key := range nestedKeys {
+						fullKey := section.name + "." + nestedSection + "." + key
+						if rawKeys[fullKey] || defaults[fullKey] != nil {
+							nestedHasValues = true
+							break
+						}
+					}
+					if nestedHasValues {
+						fmt.Printf("  %s:\n", nestedSection)
+						for _, key := range nestedKeys {
+							fullKey := section.name + "." + nestedSection + "." + key
+							printConfigValue(fullKey, defaults, rawKeys, rawValues, hasFile, 2)
+						}
+					}
+				}
+				fmt.Println()
+			}
+		}
+	}
+}
+
+// extractRawValues extracts scalar values from the YAML tree
+func extractRawValues(node *yaml.Node, prefix string, values map[string]string) {
+	if node == nil {
+		return
+	}
+
+	switch node.Kind {
+	case yaml.DocumentNode:
+		for _, child := range node.Content {
+			extractRawValues(child, prefix, values)
+		}
+	case yaml.MappingNode:
+		for i := 0; i+1 < len(node.Content); i += 2 {
+			keyNode := node.Content[i]
+			valueNode := node.Content[i+1]
+
+			var keyPath string
+			if prefix == "" {
+				keyPath = keyNode.Value
+			} else {
+				keyPath = prefix + "." + keyNode.Value
+			}
+
+			switch valueNode.Kind {
+			case yaml.ScalarNode:
+				values[keyPath] = valueNode.Value
+			case yaml.MappingNode:
+				extractRawValues(valueNode, keyPath, values)
+			case yaml.SequenceNode:
+				// Format sequence as inline array with proper quoting
+				var items []string
+				for _, item := range valueNode.Content {
+					if item.Kind == yaml.ScalarNode {
+						items = append(items, quoteArrayItem(item.Value))
+					}
+				}
+				values[keyPath] = "[" + strings.Join(items, ", ") + "]"
+			}
+		}
+	}
+}
+
+// printProvidersSection prints the providers section with annotations
+func printProvidersSection(defaults map[string]any, rawKeys map[string]bool, rawValues map[string]string, hasFile bool) {
+	// Collect all provider names from defaults and raw config
+	providerNames := make(map[string]bool)
+
+	// Default providers
+	defaultProviders := []string{"anthropic", "openai", "xai", "openrouter", "gemini", "zen"}
+	for _, p := range defaultProviders {
+		providerNames[p] = true
+	}
+
+	// Providers from raw config
+	for key := range rawKeys {
+		if strings.HasPrefix(key, "providers.") {
+			parts := strings.SplitN(key, ".", 3)
+			if len(parts) >= 2 {
+				providerNames[parts[1]] = true
+			}
+		}
+	}
+
+	fmt.Println("providers:")
+
+	// Print in a consistent order (defaults first, then custom)
+	for _, pName := range defaultProviders {
+		printProviderConfig(pName, defaults, rawKeys, rawValues, hasFile)
+	}
+
+	// Print any custom providers
+	for pName := range providerNames {
+		isDefault := false
+		for _, dp := range defaultProviders {
+			if pName == dp {
+				isDefault = true
+				break
+			}
+		}
+		if !isDefault {
+			printProviderConfig(pName, defaults, rawKeys, rawValues, hasFile)
+		}
+	}
+
+	fmt.Println()
+}
+
+// printProviderConfig prints a single provider's config
+func printProviderConfig(name string, defaults map[string]any, rawKeys map[string]bool, rawValues map[string]string, hasFile bool) {
+	providerKeys := []string{"type", "model", "api_key", "credentials", "base_url", "url", "app_url", "app_title", "use_native_search", "models"}
+
+	// Check if provider has any values
+	hasValues := false
+	for _, key := range providerKeys {
+		fullKey := "providers." + name + "." + key
+		if rawKeys[fullKey] || defaults[fullKey] != nil {
+			hasValues = true
+			break
+		}
+	}
+
+	if !hasValues {
+		return
+	}
+
+	fmt.Printf("  %s:\n", name)
+	for _, key := range providerKeys {
+		fullKey := "providers." + name + "." + key
+		printConfigValue(fullKey, defaults, rawKeys, rawValues, hasFile, 2)
+	}
+}
+
+// printConfigValue prints a single config value with annotation
+func printConfigValue(fullKey string, defaults map[string]any, rawKeys map[string]bool, rawValues map[string]string, hasFile bool, indent int) {
+	// Get the key name (last part of the path)
+	parts := strings.Split(fullKey, ".")
+	keyName := parts[len(parts)-1]
+
+	defaultVal := defaults[fullKey]
+	rawVal, hasRawVal := rawValues[fullKey]
+	isExplicit := rawKeys[fullKey]
+
+	// Determine what value to show
+	var valueStr string
+	var annotation string
+
+	if isExplicit && hasRawVal {
+		// Value was explicitly set in config
+		valueStr = rawVal
+		// Check if it matches default
+		if defaultVal != nil && valueMatchesDefault(rawVal, defaultVal) {
+			annotation = "# (same as default)"
+		}
+	} else if defaultVal != nil {
+		// Show default value
+		valueStr = formatDefaultValue(defaultVal)
+		annotation = "# (default)"
+	} else {
+		// No default and not set - skip
+		return
+	}
+
+	// Print with proper indentation
+	indentStr := strings.Repeat("  ", indent)
+
+	// Check if value is multiline - use block scalar style
+	if strings.Contains(valueStr, "\n") {
+		if annotation != "" {
+			fmt.Printf("%s%s: |  %s\n", indentStr, keyName, annotation)
+		} else {
+			fmt.Printf("%s%s: |\n", indentStr, keyName)
+		}
+		// Print each line with extra indentation
+		blockIndent := indentStr + "  "
+		for _, line := range strings.Split(valueStr, "\n") {
+			fmt.Printf("%s%s\n", blockIndent, line)
+		}
+		return
+	}
+
+	// Format single-line value
+	formattedVal := formatValue(valueStr, defaultVal)
+	if annotation != "" {
+		fmt.Printf("%s%s: %s  %s\n", indentStr, keyName, formattedVal, annotation)
+	} else {
+		fmt.Printf("%s%s: %s\n", indentStr, keyName, formattedVal)
+	}
+}
+
+// formatValue formats a raw value for display
+func formatValue(raw string, defaultVal any) string {
+	// If it looks like a sequence marker, return as-is
+	if strings.HasPrefix(raw, "[") {
+		return raw
+	}
+	// Handle booleans
+	if raw == "true" || raw == "false" {
+		return raw
+	}
+	// Handle numbers
+	if _, err := fmt.Sscanf(raw, "%d", new(int)); err == nil {
+		return raw
+	}
+	if _, err := fmt.Sscanf(raw, "%f", new(float64)); err == nil {
+		return raw
+	}
+	// String value - check if it needs quoting
+	if needsQuoting(raw) {
+		return fmt.Sprintf("%q", raw)
+	}
+	return raw
+}
+
+// formatDefaultValue formats a default value for display
+func formatDefaultValue(val any) string {
+	switch v := val.(type) {
+	case string:
+		if needsQuoting(v) {
+			return fmt.Sprintf("%q", v)
+		}
+		return v
+	case bool:
+		return fmt.Sprintf("%t", v)
+	case int:
+		return fmt.Sprintf("%d", v)
+	case []string:
+		if len(v) == 0 {
+			return "[]"
+		}
+		var items []string
+		for _, item := range v {
+			items = append(items, quoteArrayItem(item))
+		}
+		return "[" + strings.Join(items, ", ") + "]"
+	default:
+		return fmt.Sprintf("%v", v)
+	}
+}
+
+// needsQuoting checks if a string value needs YAML quoting
+func needsQuoting(s string) bool {
+	if s == "" {
+		return true
+	}
+	// Already quoted
+	if strings.HasPrefix(s, "\"") && strings.HasSuffix(s, "\"") {
+		return false
+	}
+	if strings.HasPrefix(s, "'") && strings.HasSuffix(s, "'") {
+		return false
+	}
+	// Check for special YAML characters that require quoting
+	// Note: colon followed by space is special, but colon in URLs is fine
+	if strings.Contains(s, ": ") || strings.Contains(s, "#") {
+		return true
+	}
+	// Characters that always need quoting
+	special := []string{"{", "}", "[", "]", "&", "*", "!", "|", ">", "'", "\"", "%", "@", "`"}
+	for _, sp := range special {
+		if strings.Contains(s, sp) {
+			return true
+		}
+	}
+	// Check if it starts with special characters
+	if strings.HasPrefix(s, "-") || strings.HasPrefix(s, "?") || strings.HasPrefix(s, ":") {
+		return true
+	}
+	return false
+}
+
+// quoteArrayItem quotes an array item if it contains spaces, commas, or special chars
+func quoteArrayItem(s string) string {
+	// Empty string needs quoting
+	if s == "" {
+		return `""`
+	}
+	// Already quoted
+	if strings.HasPrefix(s, "\"") && strings.HasSuffix(s, "\"") {
+		return s
+	}
+	// Check if quoting is needed for inline array format
+	// Spaces and commas are delimiters, special YAML chars also need quoting
+	if strings.ContainsAny(s, " ,") || needsQuoting(s) {
+		return fmt.Sprintf("%q", s)
+	}
+	return s
+}
+
+// valueMatchesDefault checks if a raw value matches the default
+func valueMatchesDefault(raw string, defaultVal any) bool {
+	switch v := defaultVal.(type) {
+	case string:
+		return raw == v
+	case bool:
+		return raw == fmt.Sprintf("%t", v)
+	case int:
+		return raw == fmt.Sprintf("%d", v)
+	case []string:
+		// Compare array representation
+		if len(v) == 0 {
+			return raw == "[]" || raw == ""
+		}
+		expected := "[" + strings.Join(v, ", ") + "]"
+		return raw == expected
+	}
+	return false
 }
 
 func configEdit(cmd *cobra.Command, args []string) error {
@@ -257,7 +754,7 @@ providers:
     app_title: term-llm
 
   zen:
-    model: glm-4.7-free
+    model: minimax-m2.1-free
     # api_key optional - free tier access via opencode.ai
 
   # Local LLM providers (require explicit type)
@@ -658,44 +1155,74 @@ func configKeyCompletions(toComplete string) []string {
 	// Load config to get dynamic provider names
 	cfg, _ := config.Load()
 
-	keys := []string{
-		"default_provider",
+	// Start with keys from GetDefaults() - single source of truth
+	defaults := config.GetDefaults()
+	keySet := make(map[string]bool)
+	for key := range defaults {
+		keySet[key] = true
+	}
+
+	// Add keys that don't have defaults but are valid config keys
+	extraKeys := []string{
+		// Command overrides (provider/model/instructions)
 		"exec.provider",
 		"exec.model",
-		"exec.suggestions",
-		"exec.instructions",
 		"ask.provider",
 		"ask.model",
 		"ask.instructions",
-		"ask.max_turns",
+		"chat.provider",
+		"chat.model",
+		"chat.instructions",
 		"edit.provider",
 		"edit.model",
 		"edit.instructions",
-		"edit.show_line_numbers",
-		"edit.context_lines",
-		"edit.diff_format",
-		"image.provider",
-		"image.output_dir",
-		"image.gemini.model",
-		"image.openai.model",
-		"image.flux.model",
-		"search.provider",
-		"search.force_external",
+		"edit.editor",
+		// Theme
 		"theme.primary",
 		"theme.secondary",
 		"theme.success",
 		"theme.error",
 		"theme.warning",
 		"theme.muted",
+		"theme.text",
 		"theme.spinner",
+		// Debug/diagnostics
+		"debug_logs.enabled",
+		"debug_logs.dir",
+		"diagnostics.enabled",
+		"diagnostics.dir",
+		// Image API keys
+		"image.gemini.api_key",
+		"image.openai.api_key",
+		"image.xai.api_key",
+		"image.flux.api_key",
+		"image.openrouter.api_key",
+		// Search API keys
+		"search.exa.api_key",
+		"search.brave.api_key",
+		"search.google.api_key",
+		"search.google.cx",
+		// Tools
+		"tools.image_provider",
+	}
+	for _, key := range extraKeys {
+		keySet[key] = true
 	}
 
 	// Add provider-specific keys
 	providerNames := llm.GetProviderNames(cfg)
 	for _, name := range providerNames {
-		keys = append(keys, "providers."+name+".model")
-		keys = append(keys, "providers."+name+".credentials")
+		keySet["providers."+name+".model"] = true
+		keySet["providers."+name+".credentials"] = true
+		keySet["providers."+name+".api_key"] = true
 	}
+
+	// Convert to sorted slice
+	var keys []string
+	for key := range keySet {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
 
 	var completions []string
 	for _, key := range keys {

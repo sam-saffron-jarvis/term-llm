@@ -20,7 +20,6 @@ import (
 )
 
 var (
-	skillsBuiltin   bool
 	skillsLocal     bool
 	skillsUser      bool
 	skillsSource    string
@@ -173,10 +172,9 @@ var skillsUpdateYes bool
 var skillsValidateAll bool
 
 func init() {
-	skillsCmd.Flags().BoolVar(&skillsBuiltin, "builtin", false, "Show only built-in skills")
 	skillsCmd.Flags().BoolVar(&skillsLocal, "local", false, "Show only project-local skills")
 	skillsCmd.Flags().BoolVar(&skillsUser, "user", false, "Show only user-global skills")
-	skillsCmd.Flags().StringVar(&skillsSource, "source", "", "Filter by source: local, user, builtin, claude, codex, gemini")
+	skillsCmd.Flags().StringVar(&skillsSource, "source", "", "Filter by source: local, user, claude, codex, gemini, cursor")
 	skillsNewCmd.Flags().BoolVar(&skillsLocal, "local", false, "Create in project's .skills/ instead of user config")
 	skillsCopyCmd.Flags().BoolVar(&skillsLocal, "local", false, "Copy to project's .skills/ instead of user config")
 	skillsValidateCmd.Flags().BoolVar(&skillsValidateAll, "all", false, "Validate all discovered skills")
@@ -204,21 +202,13 @@ func getSkillsRegistry() (*skills.Registry, error) {
 	}
 
 	return skills.NewRegistry(skills.RegistryConfig{
-		Mode:                  cfg.Skills.Mode,
 		AutoInvoke:            cfg.Skills.AutoInvoke,
 		MetadataBudgetTokens:  cfg.Skills.MetadataBudgetTokens,
 		MaxActive:             cfg.Skills.MaxActive,
-		SearchPaths:           cfg.Skills.SearchPaths,
-		ExcludePaths:          cfg.Skills.ExcludePaths,
 		IncludeProjectSkills:  true, // Always include for CLI listing
-		IncludeCodexPaths:     cfg.Skills.IncludeCodexPaths,
-		IncludeClaudePaths:    cfg.Skills.IncludeClaudePaths,
-		IncludeGeminiPaths:    cfg.Skills.IncludeGeminiPaths,
-		IncludeUniversalPaths: cfg.Skills.IncludeUniversalPaths,
+		IncludeEcosystemPaths: cfg.Skills.IncludeEcosystemPaths,
 		AlwaysEnabled:         cfg.Skills.AlwaysEnabled,
 		NeverAuto:             cfg.Skills.NeverAuto,
-		Disabled:              cfg.Skills.Disabled,
-		UseBuiltin:            cfg.Skills.UseBuiltin,
 	})
 }
 
@@ -231,16 +221,14 @@ func runSkillsList(cmd *cobra.Command, args []string) error {
 	var skillList []*skills.Skill
 
 	// Filter by source if flags are set
-	if skillsBuiltin {
-		skillList, err = registry.ListBySource(skills.SourceBuiltin)
-	} else if skillsLocal {
+	if skillsLocal {
 		skillList, err = registry.ListBySource(skills.SourceLocal)
 	} else if skillsUser {
 		skillList, err = registry.ListBySource(skills.SourceUser)
 	} else if skillsSource != "" {
 		source := parseSkillSource(skillsSource)
 		if source == -1 {
-			return fmt.Errorf("unknown source: %s (valid: local, user, builtin, claude, codex, gemini)", skillsSource)
+			return fmt.Errorf("unknown source: %s (valid: local, user, claude, codex, gemini, cursor)", skillsSource)
 		}
 		skillList, err = registry.ListBySource(source)
 	} else {
@@ -252,7 +240,7 @@ func runSkillsList(cmd *cobra.Command, args []string) error {
 	}
 
 	if len(skillList) == 0 {
-		if skillsBuiltin || skillsLocal || skillsUser || skillsSource != "" {
+		if skillsLocal || skillsUser || skillsSource != "" {
 			fmt.Println("No skills found matching filter.")
 		} else {
 			fmt.Println("No skills configured.")
@@ -308,8 +296,6 @@ func printSkillSourceHeader(source skills.SkillSource) {
 	case skills.SourceUser:
 		userDir, _ := skills.GetUserSkillsDir()
 		fmt.Printf("  [user] %s/\n", userDir)
-	case skills.SourceBuiltin:
-		fmt.Println("  [builtin]")
 	case skills.SourceClaude:
 		fmt.Println("  [claude] ~/.claude/skills/")
 	case skills.SourceCodex:
@@ -327,8 +313,6 @@ func parseSkillSource(s string) skills.SkillSource {
 		return skills.SourceLocal
 	case "user":
 		return skills.SourceUser
-	case "builtin":
-		return skills.SourceBuiltin
 	case "claude":
 		return skills.SourceClaude
 	case "codex":
@@ -576,9 +560,6 @@ func runSkillsPath(cmd *cobra.Command, args []string) error {
 		fmt.Printf("    term-llm: %s (not created)\n", userDir)
 	}
 	fmt.Println("    ~/.skills/, ~/.claude/skills/, ~/.codex/skills/, ~/.gemini/skills/, ~/.cursor/skills/")
-	fmt.Println()
-
-	fmt.Println("  Built-in: (embedded in binary)")
 
 	return nil
 }

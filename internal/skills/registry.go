@@ -30,9 +30,6 @@ type searchPath struct {
 
 // RegistryConfig configures the skill registry.
 type RegistryConfig struct {
-	// Mode controls skill activation: auto, none, explicit
-	Mode string
-
 	// AutoInvoke allows model-driven skill activation
 	AutoInvoke bool
 
@@ -42,41 +39,23 @@ type RegistryConfig struct {
 	// MaxActive limits skills included in metadata injection
 	MaxActive int
 
-	// Path configuration
-	SearchPaths  []string // Additional directories
-	ExcludePaths []string // Exclude paths from discovery
-
 	// Ecosystem integration
 	IncludeProjectSkills  bool // Discover from project-local paths
-	IncludeCodexPaths     bool
-	IncludeClaudePaths    bool
-	IncludeGeminiPaths    bool
-	IncludeCursorPaths    bool
-	IncludeUniversalPaths bool
+	IncludeEcosystemPaths bool // Include ~/.codex/skills, ~/.claude/skills, ~/.gemini/skills, .skills/
 
 	// Skill lists
 	AlwaysEnabled []string // Always include in metadata
 	NeverAuto     []string // Must be explicit
-	Disabled      []string // Do not load
-
-	// Built-in skills
-	UseBuiltin bool
 }
 
 // DefaultRegistryConfig returns the default configuration.
 func DefaultRegistryConfig() RegistryConfig {
 	return RegistryConfig{
-		Mode:                  "auto",
 		AutoInvoke:            true,
 		MetadataBudgetTokens:  8000,
 		MaxActive:             8,
-		IncludeProjectSkills:  false, // Safe default
-		IncludeCodexPaths:     true,
-		IncludeClaudePaths:    true,
-		IncludeGeminiPaths:    true,
-		IncludeCursorPaths:    true,
-		IncludeUniversalPaths: true,
-		UseBuiltin:            true,
+		IncludeProjectSkills:  true,
+		IncludeEcosystemPaths: true,
 	}
 }
 
@@ -117,14 +96,6 @@ func (r *Registry) buildSearchPaths() error {
 	// 2. User-scope paths (always included)
 	r.addUserPaths(home, configDir)
 
-	// 3. Additional search paths from config
-	for _, p := range r.config.SearchPaths {
-		r.searchPaths = append(r.searchPaths, searchPath{
-			path:   expandPath(p, home),
-			source: SourceUser,
-		})
-	}
-
 	return nil
 }
 
@@ -158,45 +129,41 @@ func (r *Registry) addProjectPaths(cwd string) {
 
 // addProjectPathsAtLevel adds skill directories at a specific directory level.
 func (r *Registry) addProjectPathsAtLevel(dir string) {
-	// Universal convention
-	if r.config.IncludeUniversalPaths {
-		r.searchPaths = append(r.searchPaths, searchPath{
-			path:   filepath.Join(dir, ".skills"),
-			source: SourceLocal,
-		})
+	// Universal convention - always included when IncludeProjectSkills is true
+	// (the caller already checks IncludeProjectSkills before calling addProjectPaths)
+	r.searchPaths = append(r.searchPaths, searchPath{
+		path:   filepath.Join(dir, ".skills"),
+		source: SourceLocal,
+	})
+
+	// Ecosystem paths are gated by IncludeEcosystemPaths
+	if !r.config.IncludeEcosystemPaths {
+		return
 	}
 
 	// Claude Code
-	if r.config.IncludeClaudePaths {
-		r.searchPaths = append(r.searchPaths, searchPath{
-			path:   filepath.Join(dir, ".claude", "skills"),
-			source: SourceClaude,
-		})
-	}
+	r.searchPaths = append(r.searchPaths, searchPath{
+		path:   filepath.Join(dir, ".claude", "skills"),
+		source: SourceClaude,
+	})
 
 	// Codex
-	if r.config.IncludeCodexPaths {
-		r.searchPaths = append(r.searchPaths, searchPath{
-			path:   filepath.Join(dir, ".codex", "skills"),
-			source: SourceCodex,
-		})
-	}
+	r.searchPaths = append(r.searchPaths, searchPath{
+		path:   filepath.Join(dir, ".codex", "skills"),
+		source: SourceCodex,
+	})
 
 	// Gemini CLI
-	if r.config.IncludeGeminiPaths {
-		r.searchPaths = append(r.searchPaths, searchPath{
-			path:   filepath.Join(dir, ".gemini", "skills"),
-			source: SourceGemini,
-		})
-	}
+	r.searchPaths = append(r.searchPaths, searchPath{
+		path:   filepath.Join(dir, ".gemini", "skills"),
+		source: SourceGemini,
+	})
 
 	// Cursor
-	if r.config.IncludeCursorPaths {
-		r.searchPaths = append(r.searchPaths, searchPath{
-			path:   filepath.Join(dir, ".cursor", "skills"),
-			source: SourceCursor,
-		})
-	}
+	r.searchPaths = append(r.searchPaths, searchPath{
+		path:   filepath.Join(dir, ".cursor", "skills"),
+		source: SourceCursor,
+	})
 }
 
 // addUserPaths adds user-scope skill directories.
@@ -213,58 +180,48 @@ func (r *Registry) addUserPaths(home, configDir string) {
 		return
 	}
 
-	// Universal user skills
-	if r.config.IncludeUniversalPaths {
-		r.searchPaths = append(r.searchPaths, searchPath{
-			path:   filepath.Join(home, ".skills"),
-			source: SourceUser,
-		})
+	// Universal user skills - always included
+	r.searchPaths = append(r.searchPaths, searchPath{
+		path:   filepath.Join(home, ".skills"),
+		source: SourceUser,
+	})
+
+	// Ecosystem paths are gated by IncludeEcosystemPaths
+	if !r.config.IncludeEcosystemPaths {
+		return
 	}
 
 	// Claude Code user skills
-	if r.config.IncludeClaudePaths {
-		r.searchPaths = append(r.searchPaths, searchPath{
-			path:   filepath.Join(home, ".claude", "skills"),
-			source: SourceClaude,
-		})
-	}
+	r.searchPaths = append(r.searchPaths, searchPath{
+		path:   filepath.Join(home, ".claude", "skills"),
+		source: SourceClaude,
+	})
 
 	// Codex user skills
-	if r.config.IncludeCodexPaths {
-		codexHome := os.Getenv("CODEX_HOME")
-		if codexHome == "" {
-			codexHome = filepath.Join(home, ".codex")
-		}
-		r.searchPaths = append(r.searchPaths, searchPath{
-			path:   filepath.Join(codexHome, "skills"),
-			source: SourceCodex,
-		})
+	codexHome := os.Getenv("CODEX_HOME")
+	if codexHome == "" {
+		codexHome = filepath.Join(home, ".codex")
 	}
+	r.searchPaths = append(r.searchPaths, searchPath{
+		path:   filepath.Join(codexHome, "skills"),
+		source: SourceCodex,
+	})
 
 	// Gemini CLI user skills
-	if r.config.IncludeGeminiPaths {
-		r.searchPaths = append(r.searchPaths, searchPath{
-			path:   filepath.Join(home, ".gemini", "skills"),
-			source: SourceGemini,
-		})
-	}
+	r.searchPaths = append(r.searchPaths, searchPath{
+		path:   filepath.Join(home, ".gemini", "skills"),
+		source: SourceGemini,
+	})
 
 	// Cursor user skills
-	if r.config.IncludeCursorPaths {
-		r.searchPaths = append(r.searchPaths, searchPath{
-			path:   filepath.Join(home, ".cursor", "skills"),
-			source: SourceCursor,
-		})
-	}
+	r.searchPaths = append(r.searchPaths, searchPath{
+		path:   filepath.Join(home, ".cursor", "skills"),
+		source: SourceCursor,
+	})
 }
 
 // Get retrieves a skill by name, loading full content.
 func (r *Registry) Get(name string) (*Skill, error) {
-	// Check if disabled
-	if r.isDisabled(name) {
-		return nil, fmt.Errorf("skill is disabled: %s", name)
-	}
-
 	// Check cache first
 	if skill, ok := r.cache[name]; ok {
 		// If we have metadata only, load full content
@@ -281,10 +238,6 @@ func (r *Registry) Get(name string) (*Skill, error) {
 
 	// Search filesystem paths
 	for _, sp := range r.searchPaths {
-		if r.isExcluded(sp.path) {
-			continue
-		}
-
 		skillDir := filepath.Join(sp.path, name)
 		if IsSkillDir(skillDir) {
 			skill, err := LoadFromDir(skillDir, sp.source, true)
@@ -294,14 +247,6 @@ func (r *Registry) Get(name string) (*Skill, error) {
 			if err := skill.Validate(); err != nil {
 				return nil, fmt.Errorf("invalid skill %s: %w", name, err)
 			}
-			r.cache[name] = skill
-			return skill, nil
-		}
-	}
-
-	// Check built-in skills
-	if r.config.UseBuiltin {
-		if skill := getBuiltinSkill(name); skill != nil {
 			r.cache[name] = skill
 			return skill, nil
 		}
@@ -319,35 +264,12 @@ func (r *Registry) List() ([]*Skill, error) {
 
 	// Scan filesystem paths
 	for _, sp := range r.searchPaths {
-		if r.isExcluded(sp.path) {
-			continue
-		}
-
 		found, err := r.scanDir(sp.path, sp.source)
 		if err != nil {
 			continue // Skip directories that don't exist or can't be read
 		}
 
 		for _, skill := range found {
-			if r.isDisabled(skill.Name) {
-				continue
-			}
-
-			if seen[skill.Name] {
-				r.shadowCounts[skill.Name]++
-			} else {
-				seen[skill.Name] = true
-				skills = append(skills, skill)
-			}
-		}
-	}
-
-	// Add built-in skills (not shadowed by user skills)
-	if r.config.UseBuiltin {
-		for _, skill := range getBuiltinSkills() {
-			if r.isDisabled(skill.Name) {
-				continue
-			}
 			if seen[skill.Name] {
 				r.shadowCounts[skill.Name]++
 			} else {
@@ -372,31 +294,12 @@ func (r *Registry) ListAll() ([]*Skill, error) {
 
 	// Scan filesystem paths
 	for _, sp := range r.searchPaths {
-		if r.isExcluded(sp.path) {
-			continue
-		}
-
 		found, err := r.scanDir(sp.path, sp.source)
 		if err != nil {
 			continue // Skip directories that don't exist or can't be read
 		}
 
-		for _, skill := range found {
-			if r.isDisabled(skill.Name) {
-				continue
-			}
-			allSkills = append(allSkills, skill)
-		}
-	}
-
-	// Add built-in skills
-	if r.config.UseBuiltin {
-		for _, skill := range getBuiltinSkills() {
-			if r.isDisabled(skill.Name) {
-				continue
-			}
-			allSkills = append(allSkills, skill)
-		}
+		allSkills = append(allSkills, found...)
 	}
 
 	// Sort by name, then by path
@@ -473,26 +376,6 @@ func (r *Registry) scanDir(dir string, source SkillSource) ([]*Skill, error) {
 	}
 
 	return skills, nil
-}
-
-// isDisabled checks if a skill is in the disabled list.
-func (r *Registry) isDisabled(name string) bool {
-	for _, d := range r.config.Disabled {
-		if d == name {
-			return true
-		}
-	}
-	return false
-}
-
-// isExcluded checks if a path is in the exclude list.
-func (r *Registry) isExcluded(path string) bool {
-	for _, e := range r.config.ExcludePaths {
-		if path == e || strings.HasPrefix(path, e+string(filepath.Separator)) {
-			return true
-		}
-	}
-	return false
 }
 
 // IsNeverAuto checks if a skill requires explicit activation.

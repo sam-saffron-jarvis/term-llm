@@ -111,29 +111,16 @@ type AgentsConfig struct {
 
 // SkillsConfig configures the Agent Skills system
 type SkillsConfig struct {
-	Mode                 string `mapstructure:"mode"`                   // auto, none, explicit
-	AutoInvoke           bool   `mapstructure:"auto_invoke"`            // Allow model-driven activation
-	MetadataBudgetTokens int    `mapstructure:"metadata_budget_tokens"` // Max tokens for skill metadata
-	MaxActive            int    `mapstructure:"max_active"`             // Max skills in metadata injection
-
-	SearchPaths  []string `mapstructure:"search_paths"`  // Additional skill directories
-	ExcludePaths []string `mapstructure:"exclude_paths"` // Exclude paths from discovery
+	Enabled              bool `mapstructure:"enabled"`                // Enable the skills system
+	AutoInvoke           bool `mapstructure:"auto_invoke"`            // Allow model-driven activation
+	MetadataBudgetTokens int  `mapstructure:"metadata_budget_tokens"` // Max tokens for skill metadata
+	MaxActive            int  `mapstructure:"max_active"`             // Max skills in metadata injection
 
 	IncludeProjectSkills  bool `mapstructure:"include_project_skills"`  // Discover from project-local paths
-	IncludeCodexPaths     bool `mapstructure:"include_codex_paths"`     // Include ~/.codex/skills etc
-	IncludeClaudePaths    bool `mapstructure:"include_claude_paths"`    // Include ~/.claude/skills etc
-	IncludeGeminiPaths    bool `mapstructure:"include_gemini_paths"`    // Include ~/.gemini/skills etc
-	IncludeUniversalPaths bool `mapstructure:"include_universal_paths"` // Include .skills/ etc
+	IncludeEcosystemPaths bool `mapstructure:"include_ecosystem_paths"` // Include ~/.codex/skills, ~/.claude/skills, ~/.gemini/skills, .skills/
 
 	AlwaysEnabled []string `mapstructure:"always_enabled"` // Always include in metadata
 	NeverAuto     []string `mapstructure:"never_auto"`     // Must be explicit activation
-	Disabled      []string `mapstructure:"disabled"`       // Do not load
-
-	UseBuiltin bool `mapstructure:"use_builtin"` // Use built-in skills
-
-	// SkillsMP.com browsing configuration
-	APIKey              string   `mapstructure:"api_key"`               // SkillsMP API key (or use SKILLSMP_API_KEY env)
-	DefaultInstallPaths []string `mapstructure:"default_install_paths"` // Default install destinations: term-llm, local, claude, codex, gemini
 }
 
 // AgentsMdConfig configures optional AGENTS.md loading
@@ -288,63 +275,10 @@ func Load() (*Config, error) {
 
 	viper.RegisterAlias("provider", "default_provider")
 
-	// Set defaults
-	viper.SetDefault("default_provider", "anthropic")
-	viper.SetDefault("exec.suggestions", 3)
-	viper.SetDefault("ask.max_turns", 20)
-	viper.SetDefault("chat.max_turns", 200)
-	viper.SetDefault("edit.show_line_numbers", true)
-	viper.SetDefault("edit.context_lines", 3)
-	viper.SetDefault("edit.diff_format", "auto")
-	// Provider defaults
-	viper.SetDefault("providers.anthropic.model", "claude-sonnet-4-5")
-	viper.SetDefault("providers.openai.model", "gpt-5.2")
-	viper.SetDefault("providers.xai.model", "grok-4-1-fast")
-	viper.SetDefault("providers.openrouter.model", "x-ai/grok-code-fast-1")
-	viper.SetDefault("providers.openrouter.app_url", "https://github.com/samsaffron/term-llm")
-	viper.SetDefault("providers.openrouter.app_title", "term-llm")
-	viper.SetDefault("providers.gemini.model", "gemini-3-flash-preview")
-	viper.SetDefault("providers.zen.model", "minimax-m2.1-free")
-	// Image defaults
-	viper.SetDefault("image.provider", "gemini")
-	viper.SetDefault("image.output_dir", "~/Pictures/term-llm")
-	viper.SetDefault("image.gemini.model", "gemini-2.5-flash-image")
-	viper.SetDefault("image.openai.model", "gpt-image-1")
-	viper.SetDefault("image.xai.model", "grok-2-image-1212")
-	viper.SetDefault("image.flux.model", "flux-2-pro")
-	viper.SetDefault("image.openrouter.model", "google/gemini-2.5-flash-image")
-	// Search defaults
-	viper.SetDefault("search.provider", "duckduckgo")
-	viper.SetDefault("search.force_external", false)
-	// Tools defaults
-	viper.SetDefault("tools.enabled", []string{})
-	viper.SetDefault("tools.read_dirs", []string{})
-	viper.SetDefault("tools.write_dirs", []string{})
-	viper.SetDefault("tools.shell_allow", []string{})
-	viper.SetDefault("tools.shell_auto_run", false)
-	viper.SetDefault("tools.shell_auto_run_env", "TERM_LLM_ALLOW_AUTORUN")
-	viper.SetDefault("tools.shell_non_tty_env", "TERM_LLM_ALLOW_NON_TTY")
-	// Agents defaults
-	viper.SetDefault("agents.use_builtin", true)
-	viper.SetDefault("agents.search_paths", []string{})
-	// Skills defaults
-	viper.SetDefault("skills.mode", "auto")
-	viper.SetDefault("skills.auto_invoke", true)
-	viper.SetDefault("skills.metadata_budget_tokens", 8000)
-	viper.SetDefault("skills.max_active", 8)
-	viper.SetDefault("skills.search_paths", []string{})
-	viper.SetDefault("skills.exclude_paths", []string{})
-	viper.SetDefault("skills.include_project_skills", false)
-	viper.SetDefault("skills.include_codex_paths", true)
-	viper.SetDefault("skills.include_claude_paths", true)
-	viper.SetDefault("skills.include_gemini_paths", true)
-	viper.SetDefault("skills.include_universal_paths", true)
-	viper.SetDefault("skills.always_enabled", []string{})
-	viper.SetDefault("skills.never_auto", []string{})
-	viper.SetDefault("skills.disabled", []string{})
-	viper.SetDefault("skills.use_builtin", true)
-	// AGENTS.md defaults
-	viper.SetDefault("agents_md.enabled", false)
+	// Set defaults from GetDefaults() - single source of truth
+	for key, value := range GetDefaults() {
+		viper.SetDefault(key, value)
+	}
 
 	// Read config file (optional - won't error if missing)
 	if err := viper.ReadInConfig(); err != nil {
@@ -663,6 +597,215 @@ func GetDebugLogsDir() string {
 		return filepath.Join(".", "term-llm-debug") // fallback
 	}
 	return filepath.Join(homeDir, ".local", "share", "term-llm", "debug")
+}
+
+// KnownKeys contains all valid configuration key paths
+// Dynamic keys like providers.* and image.* have their subkeys validated separately
+var KnownKeys = map[string]bool{
+	// Top-level
+	"default_provider": true,
+	"providers":        true,
+	"diagnostics":      true,
+	"debug_logs":       true,
+	"exec":             true,
+	"ask":              true,
+	"chat":             true,
+	"edit":             true,
+	"image":            true,
+	"search":           true,
+	"theme":            true,
+	"tools":            true,
+	"agents":           true,
+	"skills":           true,
+	"agents_md":        true,
+
+	// Diagnostics
+	"diagnostics.enabled": true,
+	"diagnostics.dir":     true,
+
+	// Debug logs
+	"debug_logs.enabled": true,
+	"debug_logs.dir":     true,
+
+	// Exec
+	"exec.provider":     true,
+	"exec.model":        true,
+	"exec.suggestions":  true,
+	"exec.instructions": true,
+
+	// Ask
+	"ask.provider":     true,
+	"ask.model":        true,
+	"ask.instructions": true,
+	"ask.max_turns":    true,
+
+	// Chat
+	"chat.provider":     true,
+	"chat.model":        true,
+	"chat.instructions": true,
+	"chat.max_turns":    true,
+
+	// Edit
+	"edit.provider":          true,
+	"edit.model":             true,
+	"edit.instructions":      true,
+	"edit.show_line_numbers": true,
+	"edit.context_lines":     true,
+	"edit.editor":            true,
+	"edit.diff_format":       true,
+
+	// Image
+	"image.provider":           true,
+	"image.output_dir":         true,
+	"image.gemini":             true,
+	"image.gemini.api_key":     true,
+	"image.gemini.model":       true,
+	"image.openai":             true,
+	"image.openai.api_key":     true,
+	"image.openai.model":       true,
+	"image.xai":                true,
+	"image.xai.api_key":        true,
+	"image.xai.model":          true,
+	"image.flux":               true,
+	"image.flux.api_key":       true,
+	"image.flux.model":         true,
+	"image.openrouter":         true,
+	"image.openrouter.api_key": true,
+	"image.openrouter.model":   true,
+
+	// Search
+	"search.provider":       true,
+	"search.force_external": true,
+	"search.exa":            true,
+	"search.exa.api_key":    true,
+	"search.brave":          true,
+	"search.brave.api_key":  true,
+	"search.google":         true,
+	"search.google.api_key": true,
+	"search.google.cx":      true,
+
+	// Theme
+	"theme.primary":   true,
+	"theme.secondary": true,
+	"theme.success":   true,
+	"theme.error":     true,
+	"theme.warning":   true,
+	"theme.muted":     true,
+	"theme.text":      true,
+	"theme.spinner":   true,
+
+	// Tools
+	"tools.enabled":            true,
+	"tools.read_dirs":          true,
+	"tools.write_dirs":         true,
+	"tools.shell_allow":        true,
+	"tools.shell_auto_run":     true,
+	"tools.shell_auto_run_env": true,
+	"tools.shell_non_tty_env":  true,
+	"tools.image_provider":     true,
+
+	// Agents
+	"agents.use_builtin":  true,
+	"agents.search_paths": true,
+
+	// Skills
+	"skills.enabled":                 true,
+	"skills.auto_invoke":             true,
+	"skills.metadata_budget_tokens":  true,
+	"skills.max_active":              true,
+	"skills.include_project_skills":  true,
+	"skills.include_ecosystem_paths": true,
+	"skills.always_enabled":          true,
+	"skills.never_auto":              true,
+
+	// AGENTS.md
+	"agents_md.enabled": true,
+}
+
+// KnownProviderKeys contains valid keys for provider configurations
+var KnownProviderKeys = map[string]bool{
+	"type":              true,
+	"api_key":           true,
+	"model":             true,
+	"models":            true,
+	"credentials":       true,
+	"use_native_search": true,
+	"base_url":          true,
+	"url":               true,
+	"app_url":           true,
+	"app_title":         true,
+}
+
+// GetDefaults returns a map of all default configuration values
+func GetDefaults() map[string]any {
+	return map[string]any{
+		"default_provider":               "anthropic",
+		"exec.suggestions":               3,
+		"ask.max_turns":                  20,
+		"chat.max_turns":                 200,
+		"edit.show_line_numbers":         true,
+		"edit.context_lines":             3,
+		"edit.diff_format":               "auto",
+		"providers.anthropic.model":      "claude-sonnet-4-5",
+		"providers.openai.model":         "gpt-5.2",
+		"providers.xai.model":            "grok-4-1-fast",
+		"providers.openrouter.model":     "x-ai/grok-code-fast-1",
+		"providers.openrouter.app_url":   "https://github.com/samsaffron/term-llm",
+		"providers.openrouter.app_title": "term-llm",
+		"providers.gemini.model":         "gemini-3-flash-preview",
+		"providers.zen.model":            "minimax-m2.1-free",
+		"image.provider":                 "gemini",
+		"image.output_dir":               "~/Pictures/term-llm",
+		"image.gemini.model":             "gemini-2.5-flash-image",
+		"image.openai.model":             "gpt-image-1",
+		"image.xai.model":                "grok-2-image-1212",
+		"image.flux.model":               "flux-2-pro",
+		"image.openrouter.model":         "google/gemini-2.5-flash-image",
+		"search.provider":                "duckduckgo",
+		"search.force_external":          false,
+		"tools.enabled":                  []string{},
+		"tools.read_dirs":                []string{},
+		"tools.write_dirs":               []string{},
+		"tools.shell_allow":              []string{},
+		"tools.shell_auto_run":           false,
+		"tools.shell_auto_run_env":       "TERM_LLM_ALLOW_AUTORUN",
+		"tools.shell_non_tty_env":        "TERM_LLM_ALLOW_NON_TTY",
+		"agents.use_builtin":             true,
+		"agents.search_paths":            []string{},
+		"skills.enabled":                 false,
+		"skills.auto_invoke":             true,
+		"skills.metadata_budget_tokens":  8000,
+		"skills.max_active":              8,
+		"skills.include_project_skills":  true,
+		"skills.include_ecosystem_paths": true,
+		"skills.always_enabled":          []string{},
+		"skills.never_auto":              []string{},
+		"agents_md.enabled":              false,
+	}
+}
+
+// IsKnownKey checks if a key path is a known configuration key
+// For provider keys (providers.*), validates the sub-keys
+func IsKnownKey(keyPath string) bool {
+	// Check direct match
+	if KnownKeys[keyPath] {
+		return true
+	}
+
+	// Check for providers.* pattern
+	if strings.HasPrefix(keyPath, "providers.") {
+		parts := strings.SplitN(keyPath, ".", 3)
+		if len(parts) == 2 {
+			// providers.<name> is always valid
+			return true
+		}
+		if len(parts) == 3 {
+			// providers.<name>.<key> - check if <key> is valid
+			return KnownProviderKeys[parts[2]]
+		}
+	}
+
+	return false
 }
 
 // Exists returns true if a config file exists

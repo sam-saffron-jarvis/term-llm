@@ -29,17 +29,17 @@ description: "A test skill"
 
 	// Create registry with custom search path
 	registry, err := NewRegistry(RegistryConfig{
-		SearchPaths:           []string{filepath.Join(tmpDir, "skills")},
 		IncludeProjectSkills:  false,
-		IncludeCodexPaths:     false,
-		IncludeClaudePaths:    false,
-		IncludeGeminiPaths:    false,
-		IncludeUniversalPaths: false,
-		UseBuiltin:            false,
+		IncludeEcosystemPaths: false,
 	})
 	if err != nil {
 		t.Fatalf("failed to create registry: %v", err)
 	}
+	// Manually add the test search path
+	registry.searchPaths = append(registry.searchPaths, searchPath{
+		path:   filepath.Join(tmpDir, "skills"),
+		source: SourceUser,
+	})
 
 	// List skills
 	skills, err := registry.List()
@@ -77,17 +77,17 @@ description: "Testing Get method"
 	}
 
 	registry, err := NewRegistry(RegistryConfig{
-		SearchPaths:           []string{filepath.Join(tmpDir, "skills")},
 		IncludeProjectSkills:  false,
-		IncludeCodexPaths:     false,
-		IncludeClaudePaths:    false,
-		IncludeGeminiPaths:    false,
-		IncludeUniversalPaths: false,
-		UseBuiltin:            false,
+		IncludeEcosystemPaths: false,
 	})
 	if err != nil {
 		t.Fatalf("failed to create registry: %v", err)
 	}
+	// Manually add the test search path
+	registry.searchPaths = append(registry.searchPaths, searchPath{
+		path:   filepath.Join(tmpDir, "skills"),
+		source: SourceUser,
+	})
 
 	// Get the skill
 	skill, err := registry.Get("get-test")
@@ -111,11 +111,7 @@ description: "Testing Get method"
 func TestRegistryGetNotFound(t *testing.T) {
 	registry, err := NewRegistry(RegistryConfig{
 		IncludeProjectSkills:  false,
-		IncludeCodexPaths:     false,
-		IncludeClaudePaths:    false,
-		IncludeGeminiPaths:    false,
-		IncludeUniversalPaths: false,
-		UseBuiltin:            false,
+		IncludeEcosystemPaths: false,
 	})
 	if err != nil {
 		t.Fatalf("failed to create registry: %v", err)
@@ -163,17 +159,17 @@ description: "Low priority version"
 
 	// Create registry with high priority first
 	registry, err := NewRegistry(RegistryConfig{
-		SearchPaths:           []string{highPrioDir, lowPrioDir},
 		IncludeProjectSkills:  false,
-		IncludeCodexPaths:     false,
-		IncludeClaudePaths:    false,
-		IncludeGeminiPaths:    false,
-		IncludeUniversalPaths: false,
-		UseBuiltin:            false,
+		IncludeEcosystemPaths: false,
 	})
 	if err != nil {
 		t.Fatalf("failed to create registry: %v", err)
 	}
+	// Manually add search paths in priority order
+	registry.searchPaths = append(registry.searchPaths,
+		searchPath{path: highPrioDir, source: SourceUser},
+		searchPath{path: lowPrioDir, source: SourceUser},
+	)
 
 	// List skills
 	skills, err := registry.List()
@@ -192,57 +188,6 @@ description: "Low priority version"
 	// Check shadow count
 	if registry.ShadowCount("same-skill") != 1 {
 		t.Errorf("expected shadow count of 1, got %d", registry.ShadowCount("same-skill"))
-	}
-}
-
-func TestRegistryDisabled(t *testing.T) {
-	tmpDir := t.TempDir()
-
-	// Create skills
-	for _, name := range []string{"enabled-skill", "disabled-skill"} {
-		skillDir := filepath.Join(tmpDir, "skills", name)
-		if err := os.MkdirAll(skillDir, 0755); err != nil {
-			t.Fatalf("failed to create skill dir: %v", err)
-		}
-
-		content := "---\nname: " + name + "\ndescription: \"Test\"\n---\n"
-		if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte(content), 0644); err != nil {
-			t.Fatalf("failed to write SKILL.md: %v", err)
-		}
-	}
-
-	registry, err := NewRegistry(RegistryConfig{
-		SearchPaths:           []string{filepath.Join(tmpDir, "skills")},
-		IncludeProjectSkills:  false,
-		IncludeCodexPaths:     false,
-		IncludeClaudePaths:    false,
-		IncludeGeminiPaths:    false,
-		IncludeUniversalPaths: false,
-		UseBuiltin:            false,
-		Disabled:              []string{"disabled-skill"},
-	})
-	if err != nil {
-		t.Fatalf("failed to create registry: %v", err)
-	}
-
-	// List should not include disabled skill
-	skills, err := registry.List()
-	if err != nil {
-		t.Fatalf("failed to list skills: %v", err)
-	}
-
-	if len(skills) != 1 {
-		t.Fatalf("expected 1 skill (disabled filtered out), got %d", len(skills))
-	}
-
-	if skills[0].Name != "enabled-skill" {
-		t.Errorf("expected enabled-skill, got %q", skills[0].Name)
-	}
-
-	// Get disabled skill should error
-	_, err = registry.Get("disabled-skill")
-	if err == nil {
-		t.Error("expected error getting disabled skill")
 	}
 }
 
@@ -265,17 +210,16 @@ description: "A user skill"
 	}
 
 	registry, err := NewRegistry(RegistryConfig{
-		SearchPaths:           []string{filepath.Join(tmpDir, "user-skills")},
 		IncludeProjectSkills:  false,
-		IncludeCodexPaths:     false,
-		IncludeClaudePaths:    false,
-		IncludeGeminiPaths:    false,
-		IncludeUniversalPaths: false,
-		UseBuiltin:            false,
+		IncludeEcosystemPaths: false,
 	})
 	if err != nil {
 		t.Fatalf("failed to create registry: %v", err)
 	}
+	registry.searchPaths = append(registry.searchPaths, searchPath{
+		path:   filepath.Join(tmpDir, "user-skills"),
+		source: SourceUser,
+	})
 
 	// List by user source
 	userSkills, err := registry.ListBySource(SourceUser)
@@ -318,17 +262,16 @@ description: "Initial skill"
 	}
 
 	registry, err := NewRegistry(RegistryConfig{
-		SearchPaths:           []string{skillsDir},
 		IncludeProjectSkills:  false,
-		IncludeCodexPaths:     false,
-		IncludeClaudePaths:    false,
-		IncludeGeminiPaths:    false,
-		IncludeUniversalPaths: false,
-		UseBuiltin:            false,
+		IncludeEcosystemPaths: false,
 	})
 	if err != nil {
 		t.Fatalf("failed to create registry: %v", err)
 	}
+	registry.searchPaths = append(registry.searchPaths, searchPath{
+		path:   skillsDir,
+		source: SourceUser,
+	})
 
 	// Initial list
 	skills, _ := registry.List()
@@ -474,10 +417,6 @@ description: "Original skill"
 func TestDefaultRegistryConfig(t *testing.T) {
 	cfg := DefaultRegistryConfig()
 
-	if cfg.Mode != "auto" {
-		t.Errorf("expected mode 'auto', got %q", cfg.Mode)
-	}
-
 	if !cfg.AutoInvoke {
 		t.Error("expected AutoInvoke to be true")
 	}
@@ -490,15 +429,11 @@ func TestDefaultRegistryConfig(t *testing.T) {
 		t.Errorf("expected MaxActive 8, got %d", cfg.MaxActive)
 	}
 
-	if cfg.IncludeProjectSkills {
-		t.Error("expected IncludeProjectSkills to be false by default")
+	if !cfg.IncludeProjectSkills {
+		t.Error("expected IncludeProjectSkills to be true by default")
 	}
 
-	if !cfg.IncludeCodexPaths {
-		t.Error("expected IncludeCodexPaths to be true")
-	}
-
-	if !cfg.UseBuiltin {
-		t.Error("expected UseBuiltin to be true")
+	if !cfg.IncludeEcosystemPaths {
+		t.Error("expected IncludeEcosystemPaths to be true")
 	}
 }

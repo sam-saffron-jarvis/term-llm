@@ -95,9 +95,9 @@ func AddYoloFlag(cmd *cobra.Command, dest *bool) {
 }
 
 // AddSkillsFlag adds the --skills flag with completion
-// Values: "none" to disable, skill names (comma-separated), or skill,+ for explicit + auto
+// Values: "all" or "*" to enable all, "none" to disable, skill names (comma-separated), or skill,+ for explicit + auto
 func AddSkillsFlag(cmd *cobra.Command, dest *string) {
-	cmd.Flags().StringVar(dest, "skills", "", "Skills mode: 'none' to disable, skill names (comma-separated), or 'skill,+' for explicit + auto")
+	cmd.Flags().StringVar(dest, "skills", "", "Skills mode: 'all'/'*' to enable all, 'none' to disable, names (comma-separated), or 'name,+' for explicit + auto")
 	if err := cmd.RegisterFlagCompletionFunc("skills", SkillsFlagCompletion); err != nil {
 		panic("failed to register skills completion: " + err.Error())
 	}
@@ -134,11 +134,11 @@ func applySkillsFlag(cfg *config.SkillsConfig, flag string) *config.SkillsConfig
 
 	switch strings.TrimSpace(flag) {
 	case "none":
-		result.Mode = "none"
+		result.Enabled = false
 		return &result
 	case "all", "*":
 		// Enable all skills with auto mode
-		result.Mode = "auto"
+		result.Enabled = true
 		result.AutoInvoke = true
 		return &result
 	}
@@ -159,9 +159,9 @@ func applySkillsFlag(cfg *config.SkillsConfig, flag string) *config.SkillsConfig
 		}
 	}
 
-	// Set mode and skills
+	// Enable skills with specified list
 	if len(skills) > 0 {
-		result.Mode = "explicit"
+		result.Enabled = true
 		result.AlwaysEnabled = skills
 		// When explicit skills are specified, auto-invoke is disabled
 		// unless "+" is included to also include auto-discovered skills

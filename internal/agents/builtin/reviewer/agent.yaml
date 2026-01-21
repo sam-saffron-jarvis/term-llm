@@ -1,6 +1,8 @@
 name: reviewer
 description: "Code review assistant (read-only)"
 
+default_prompt: "Review the current uncommitted changes"
+
 tools:
   enabled: [read_file, glob, grep, shell]
 

@@ -183,7 +183,7 @@ func runChat(cmd *cobra.Command, args []string) error {
 	// Initialize skills system
 	var skillsSetup *skills.Setup
 	skillsCfg := applySkillsFlag(&cfg.Skills, chatSkills)
-	if skillsCfg.Mode != "none" {
+	if skillsCfg.Enabled {
 		skillsSetup, err = skills.NewSetup(skillsCfg)
 		if err != nil {
 			fmt.Fprintf(cmd.ErrOrStderr(), "warning: skills initialization failed: %v\n", err)
