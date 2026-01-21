@@ -28,6 +28,31 @@ type ServerConfig struct {
 
 	// Shared fields
 	Env map[string]string `json:"env,omitempty"`
+
+	// Sampling configuration
+	Sampling *SamplingConfig `json:"sampling,omitempty"`
+}
+
+// SamplingConfig configures MCP sampling behavior for a server.
+type SamplingConfig struct {
+	// Enabled controls whether sampling is allowed for this server (default: true)
+	Enabled *bool `json:"enabled,omitempty"`
+	// AutoApprove skips the approval prompt for this server
+	AutoApprove bool `json:"auto_approve,omitempty"`
+	// Provider overrides the provider used for sampling (e.g., "zen", "anthropic")
+	Provider string `json:"provider,omitempty"`
+	// Model overrides the model used for sampling
+	Model string `json:"model,omitempty"`
+	// MaxTokens limits the maximum tokens per sampling request
+	MaxTokens int `json:"max_tokens,omitempty"`
+}
+
+// IsSamplingEnabled returns whether sampling is enabled for this server.
+func (c *SamplingConfig) IsSamplingEnabled() bool {
+	if c == nil || c.Enabled == nil {
+		return true // Enabled by default
+	}
+	return *c.Enabled
 }
 
 // TransportType returns the effective transport type for this server.

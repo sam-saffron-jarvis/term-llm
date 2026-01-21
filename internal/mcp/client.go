@@ -20,13 +20,14 @@ type ToolSpec struct {
 
 // Client wraps an MCP server connection.
 type Client struct {
-	name    string
-	config  ServerConfig
-	client  *mcp.Client
-	session *mcp.ClientSession
-	tools   []ToolSpec
-	mu      sync.RWMutex
-	running bool
+	name            string
+	config          ServerConfig
+	client          *mcp.Client
+	session         *mcp.ClientSession
+	tools           []ToolSpec
+	samplingHandler *SamplingHandler
+	mu              sync.RWMutex
+	running         bool
 }
 
 // NewClient creates a new MCP client for the given server configuration.
@@ -35,6 +36,13 @@ func NewClient(name string, config ServerConfig) *Client {
 		name:   name,
 		config: config,
 	}
+}
+
+// SetSamplingHandler sets the sampling handler for this client.
+func (c *Client) SetSamplingHandler(handler *SamplingHandler) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.samplingHandler = handler
 }
 
 // Name returns the server name.
@@ -51,11 +59,22 @@ func (c *Client) Start(ctx context.Context) error {
 		return nil
 	}
 
-	// Create the MCP client
+	// Build client options with sampling handler if available
+	var clientOpts *mcp.ClientOptions
+	if c.samplingHandler != nil {
+		clientName := c.name
+		clientOpts = &mcp.ClientOptions{
+			CreateMessageHandler: func(ctx context.Context, req *mcp.CreateMessageRequest) (*mcp.CreateMessageResult, error) {
+				return c.samplingHandler.Handle(ctx, clientName, req)
+			},
+		}
+	}
+
+	// Create the MCP client with options
 	c.client = mcp.NewClient(&mcp.Implementation{
 		Name:    "term-llm",
 		Version: "1.0.0",
-	}, nil)
+	}, clientOpts)
 
 	// Create transport based on config type
 	var transport mcp.Transport

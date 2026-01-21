@@ -378,7 +378,14 @@ func runAsk(cmd *cobra.Command, args []string) error {
 	// Initialize MCP servers if any (after session settings are applied)
 	var mcpManager *mcp.Manager
 	if effectiveMCP != "" {
-		mcpManager, err = enableMCPServersWithFeedback(ctx, effectiveMCP, engine, cmd.ErrOrStderr())
+		mcpOpts := &MCPOptions{
+			Provider: provider,
+			YoloMode: askYolo,
+		}
+		if providerCfg := cfg.GetActiveProviderConfig(); providerCfg != nil {
+			mcpOpts.Model = providerCfg.Model
+		}
+		mcpManager, err = enableMCPServersWithFeedback(ctx, effectiveMCP, engine, cmd.ErrOrStderr(), mcpOpts)
 		if err != nil {
 			return err
 		}
@@ -1312,9 +1319,16 @@ func streamWithGlamour(ctx context.Context, events <-chan ui.StreamEvent, p *tea
 	return err
 }
 
+// MCPOptions contains options for enabling MCP servers.
+type MCPOptions struct {
+	Provider llm.Provider
+	Model    string
+	YoloMode bool
+}
+
 // enableMCPServersWithFeedback initializes MCP servers with user feedback.
 // Returns the manager (caller must call StopAll) or error if setup failed.
-func enableMCPServersWithFeedback(ctx context.Context, mcpFlag string, engine *llm.Engine, errWriter io.Writer) (*mcp.Manager, error) {
+func enableMCPServersWithFeedback(ctx context.Context, mcpFlag string, engine *llm.Engine, errWriter io.Writer, opts *MCPOptions) (*mcp.Manager, error) {
 	serverNames := parseServerList(mcpFlag)
 	if len(serverNames) == 0 {
 		return nil, nil
@@ -1323,6 +1337,11 @@ func enableMCPServersWithFeedback(ctx context.Context, mcpFlag string, engine *l
 	mcpManager := mcp.NewManager()
 	if err := mcpManager.LoadConfig(); err != nil {
 		return nil, fmt.Errorf("failed to load MCP config: %w", err)
+	}
+
+	// Set up sampling handler if provider is available
+	if opts != nil && opts.Provider != nil {
+		mcpManager.SetSamplingProvider(opts.Provider, opts.Model, opts.YoloMode)
 	}
 
 	// Validate all servers exist before starting any

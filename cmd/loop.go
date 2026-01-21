@@ -300,7 +300,14 @@ func runLoop(cmd *cobra.Command, args []string) error {
 	// Initialize MCP servers
 	var mcpManager *mcp.Manager
 	if settings.MCP != "" {
-		mcpManager, err = enableMCPServersWithFeedback(ctx, settings.MCP, engine, cmd.ErrOrStderr())
+		mcpOpts := &MCPOptions{
+			Provider: provider,
+			YoloMode: loopYolo,
+		}
+		if providerCfg := cfg.GetActiveProviderConfig(); providerCfg != nil {
+			mcpOpts.Model = providerCfg.Model
+		}
+		mcpManager, err = enableMCPServersWithFeedback(ctx, settings.MCP, engine, cmd.ErrOrStderr(), mcpOpts)
 		if err != nil {
 			return err
 		}

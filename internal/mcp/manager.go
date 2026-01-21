@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"sync"
+
+	"github.com/samsaffron/term-llm/internal/llm"
 )
 
 // ServerStatus represents the current state of an MCP server.
@@ -41,6 +43,9 @@ type Manager struct {
 
 	// Channel for status updates (optional, for UI notifications)
 	statusChan chan StatusUpdate
+
+	// Sampling handler for createMessage requests
+	samplingHandler *SamplingHandler
 }
 
 // NewManager creates a new MCP manager.
@@ -75,6 +80,22 @@ func (m *Manager) SetStatusChannel(ch chan StatusUpdate) {
 	m.mu.Lock()
 	m.statusChan = ch
 	m.mu.Unlock()
+}
+
+// SetSamplingProvider configures the provider and model for MCP sampling requests.
+// If yoloMode is true, sampling requests are auto-approved without prompting.
+func (m *Manager) SetSamplingProvider(provider llm.Provider, model string, yoloMode bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.samplingHandler = NewSamplingHandler(provider, model)
+	m.samplingHandler.SetYoloMode(yoloMode)
+}
+
+// GetSamplingHandler returns the current sampling handler.
+func (m *Manager) GetSamplingHandler() *SamplingHandler {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.samplingHandler
 }
 
 // sendStatus sends a status update if a channel is configured.
@@ -148,6 +169,14 @@ func (m *Manager) Enable(ctx context.Context, name string) error {
 
 	// Create client and set status to starting
 	client := NewClient(name, serverCfg)
+
+	// Set sampling handler if available
+	if m.samplingHandler != nil {
+		client.SetSamplingHandler(m.samplingHandler)
+		// Register server config with handler for per-server settings
+		m.samplingHandler.SetServerConfig(name, serverCfg)
+	}
+
 	m.clients[name] = client
 	m.statuses[name] = &ServerState{
 		Name:   name,

@@ -158,7 +158,14 @@ func runExec(cmd *cobra.Command, args []string) error {
 	// Initialize MCP servers if --mcp flag is set
 	var mcpManager *mcp.Manager
 	if execMCP != "" {
-		mcpManager, err = enableMCPServersWithFeedback(ctx, execMCP, engine, cmd.ErrOrStderr())
+		mcpOpts := &MCPOptions{
+			Provider: provider,
+			YoloMode: execYolo,
+		}
+		if providerCfg := cfg.GetActiveProviderConfig(); providerCfg != nil {
+			mcpOpts.Model = providerCfg.Model
+		}
+		mcpManager, err = enableMCPServersWithFeedback(ctx, execMCP, engine, cmd.ErrOrStderr(), mcpOpts)
 		if err != nil {
 			return err
 		}

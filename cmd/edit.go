@@ -185,7 +185,14 @@ func runEdit(cmd *cobra.Command, args []string) error {
 	var mcpManager *mcp.Manager
 	if editMCP != "" {
 		engine := llm.NewEngine(provider, defaultToolRegistry(cfg))
-		mcpManager, err = enableMCPServersWithFeedback(ctx, editMCP, engine, cmd.ErrOrStderr())
+		mcpOpts := &MCPOptions{
+			Provider: provider,
+			YoloMode: editYolo,
+		}
+		if providerCfg := cfg.GetActiveProviderConfig(); providerCfg != nil {
+			mcpOpts.Model = providerCfg.Model
+		}
+		mcpManager, err = enableMCPServersWithFeedback(ctx, editMCP, engine, cmd.ErrOrStderr(), mcpOpts)
 		if err != nil {
 			return err
 		}
