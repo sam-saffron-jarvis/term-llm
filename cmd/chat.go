@@ -37,6 +37,8 @@ var (
 	chatSkills string
 	// Session resume flag
 	chatResume string
+	// Yolo mode
+	chatYolo bool
 )
 
 var chatCmd = &cobra.Command{
@@ -90,6 +92,7 @@ func init() {
 	AddSystemMessageFlag(chatCmd, &chatSystemMessage)
 	AddAgentFlag(chatCmd, &chatAgent)
 	AddSkillsFlag(chatCmd, &chatSkills)
+	AddYoloFlag(chatCmd, &chatYolo)
 
 	// Session resume flag - NoOptDefVal allows --resume without a value
 	chatCmd.Flags().StringVarP(&chatResume, "resume", "r", "", "Resume session (empty for most recent, or session ID)")
@@ -239,10 +242,15 @@ func runChat(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	if toolMgr != nil {
+		// Enable yolo mode if flag is set
+		if chatYolo {
+			toolMgr.ApprovalMgr.SetYoloMode(true)
+		}
+
 		// PromptUIFunc will be set up below after tea.Program is created
 
 		// Wire spawn_agent runner if enabled
-		if err := WireSpawnAgentRunner(cfg, toolMgr, false); err != nil {
+		if err := WireSpawnAgentRunner(cfg, toolMgr, chatYolo); err != nil {
 			if debugLogger != nil {
 				debugLogger.Close()
 			}
@@ -307,6 +315,9 @@ func runChat(cmd *cobra.Command, args []string) error {
 			}
 		}
 	}
+
+	// Set up MCP sampling provider (for sampling/createMessage requests)
+	mcpManager.SetSamplingProvider(provider, modelName, chatYolo)
 
 	// Resolve force external search setting
 	forceExternalSearch := resolveForceExternalSearch(cfg, chatNativeSearch, chatNoNativeSearch)
