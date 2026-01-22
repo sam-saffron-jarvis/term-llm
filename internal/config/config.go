@@ -206,13 +206,14 @@ type EditConfig struct {
 
 // ImageConfig configures image generation settings
 type ImageConfig struct {
-	Provider   string                `mapstructure:"provider"`   // default image provider: gemini, openai, xai, flux, openrouter
+	Provider   string                `mapstructure:"provider"`   // default image provider: gemini, openai, xai, flux, openrouter, debug
 	OutputDir  string                `mapstructure:"output_dir"` // default save directory
 	Gemini     ImageGeminiConfig     `mapstructure:"gemini"`
 	OpenAI     ImageOpenAIConfig     `mapstructure:"openai"`
 	XAI        ImageXAIConfig        `mapstructure:"xai"`
 	Flux       ImageFluxConfig       `mapstructure:"flux"`
 	OpenRouter ImageOpenRouterConfig `mapstructure:"openrouter"`
+	Debug      ImageDebugConfig      `mapstructure:"debug"`
 }
 
 // ImageGeminiConfig configures Gemini image generation
@@ -243,6 +244,11 @@ type ImageFluxConfig struct {
 type ImageOpenRouterConfig struct {
 	APIKey string `mapstructure:"api_key"`
 	Model  string `mapstructure:"model"` // e.g., google/gemini-2.5-flash-image
+}
+
+// ImageDebugConfig configures the debug image provider (local random images)
+type ImageDebugConfig struct {
+	Delay float64 `mapstructure:"delay"` // delay in seconds before returning (e.g., 1.5)
 }
 
 // SearchConfig configures web search providers
@@ -686,6 +692,8 @@ var KnownKeys = map[string]bool{
 	"image.openrouter":         true,
 	"image.openrouter.api_key": true,
 	"image.openrouter.model":   true,
+	"image.debug":              true,
+	"image.debug.delay":        true,
 
 	// Search
 	"search.provider":       true,
@@ -775,6 +783,7 @@ func GetDefaults() map[string]any {
 		"image.xai.model":                "grok-2-image-1212",
 		"image.flux.model":               "flux-2-pro",
 		"image.openrouter.model":         "google/gemini-2.5-flash-image",
+		"image.debug.delay":              0.0,
 		"search.provider":                "duckduckgo",
 		"search.force_external":          false,
 		"tools.enabled":                  []string{},

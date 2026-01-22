@@ -106,8 +106,11 @@ func NewImageProvider(cfg *config.Config, providerOverride string) (ImageProvide
 		}
 		return NewOpenRouterProvider(apiKey, model), nil
 
+	case "debug":
+		return NewDebugProvider(cfg.Image.Debug.Delay), nil
+
 	default:
-		return nil, fmt.Errorf("unknown image provider: %s (valid: gemini, openai, xai, flux, openrouter)", provider)
+		return nil, fmt.Errorf("unknown image provider: %s (valid: debug, gemini, openai, xai, flux, openrouter)", provider)
 	}
 }
 

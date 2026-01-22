@@ -132,6 +132,7 @@ var ProviderModels = map[string][]string{
 }
 
 var ImageProviderModels = map[string][]string{
+	"debug":      {"random"},
 	"gemini":     {"gemini-2.5-flash-image", "gemini-3-pro-image-preview"},
 	"openai":     {"gpt-image-1.5", "gpt-image-1-mini"},
 	"flux":       {"flux-2-pro", "flux-kontext-pro", "flux-2-max"},
@@ -171,7 +172,7 @@ func GetProviderNames(cfg *config.Config) []string {
 
 // GetImageProviderNames returns valid provider names for image generation
 func GetImageProviderNames() []string {
-	return []string{"gemini", "openai", "flux", "openrouter"}
+	return []string{"debug", "gemini", "openai", "flux", "openrouter"}
 }
 
 // GetProviderCompletions returns completions for the --provider flag
