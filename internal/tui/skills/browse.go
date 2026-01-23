@@ -177,7 +177,7 @@ func New(initialQuery string, useAISearch bool) *Model {
 	installNameInput.Width = 40
 
 	// Build install paths
-	installPaths := buildInstallPaths()
+	installPaths := BuildInstallPaths()
 
 	// Check installed skills
 	installed := checkInstalledSkills()
@@ -197,8 +197,9 @@ func New(initialQuery string, useAISearch bool) *Model {
 	}
 }
 
-// buildInstallPaths creates the list of available install destinations
-func buildInstallPaths() []InstallPath {
+// BuildInstallPaths creates the list of available install destinations.
+// Exported for use by add.go.
+func BuildInstallPaths() []InstallPath {
 	home, _ := os.UserHomeDir()
 	configDir := os.Getenv("XDG_CONFIG_HOME")
 	if configDir == "" && home != "" {

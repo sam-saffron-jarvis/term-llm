@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"strings"
 	"time"
 )
 
@@ -269,4 +270,112 @@ func (r *RemoteRegistryClient) FetchRawURL(ctx context.Context, rawURL string) (
 	}
 
 	return io.ReadAll(resp.Body)
+}
+
+// InjectGitHubProvenance adds GitHub-specific provenance metadata to SKILL.md content.
+// It also updates the skill name to match the directory name for validation.
+func InjectGitHubProvenance(content []byte, skill DiscoveredSkill) []byte {
+	contentStr := string(content)
+
+	// Find the closing --- of frontmatter
+	// Format: ---\n<frontmatter>\n---\n<body>
+	parts := splitByDelimiter(contentStr, "---", 3)
+	if len(parts) < 3 {
+		// No valid frontmatter, return as-is
+		return content
+	}
+
+	frontmatter := parts[1]
+	body := parts[2]
+
+	// Update the skill name to match the directory name
+	// This is needed because skill names must match directory names for validation
+	lines := strings.Split(frontmatter, "\n")
+	var updatedLines []string
+	originalName := ""
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "name:") {
+			// Extract the original name for provenance tracking
+			namePart := strings.TrimPrefix(trimmed, "name:")
+			originalName = strings.TrimSpace(namePart)
+			originalName = strings.Trim(originalName, "\"'")
+			// Replace with directory name
+			updatedLines = append(updatedLines, fmt.Sprintf("name: %s", skill.Name))
+		} else {
+			updatedLines = append(updatedLines, line)
+		}
+	}
+	frontmatter = strings.Join(updatedLines, "\n")
+
+	// Store original name in provenance if different
+	remoteNameForProvenance := skill.Name
+	if originalName != "" && originalName != skill.Name {
+		remoteNameForProvenance = originalName
+	}
+
+	// Build provenance metadata block
+	var provenance strings.Builder
+	provenance.WriteString("metadata:\n")
+	provenance.WriteString("  _provenance_source: github\n")
+	provenance.WriteString(fmt.Sprintf("  _provenance_repository: %s/%s\n", skill.RepoRef.Owner, skill.RepoRef.Repo))
+	provenance.WriteString(fmt.Sprintf("  _provenance_branch: %s\n", skill.RepoRef.Branch))
+	provenance.WriteString(fmt.Sprintf("  _provenance_path: %s\n", skill.Path))
+	provenance.WriteString(fmt.Sprintf("  _provenance_remote_name: %s\n", remoteNameForProvenance))
+	provenance.WriteString(fmt.Sprintf("  _provenance_raw_url: %s\n", skill.RawURL()))
+	provenance.WriteString(fmt.Sprintf("  _provenance_installed_at: %s\n", time.Now().UTC().Format(time.RFC3339)))
+
+	// Check if metadata already exists in frontmatter
+	if strings.Contains(frontmatter, "metadata:") {
+		// Append our provenance fields to existing metadata
+		lines := strings.Split(frontmatter, "\n")
+		var newLines []string
+		inMetadata := false
+		provenanceAdded := false
+
+		for _, line := range lines {
+			newLines = append(newLines, line)
+			trimmed := strings.TrimSpace(line)
+
+			if trimmed == "metadata:" {
+				inMetadata = true
+				continue
+			}
+
+			if inMetadata && !provenanceAdded {
+				// Add provenance fields right after metadata:
+				newLines = append(newLines,
+					"  _provenance_source: github",
+					fmt.Sprintf("  _provenance_repository: %s/%s", skill.RepoRef.Owner, skill.RepoRef.Repo),
+					fmt.Sprintf("  _provenance_branch: %s", skill.RepoRef.Branch),
+					fmt.Sprintf("  _provenance_path: %s", skill.Path),
+					fmt.Sprintf("  _provenance_remote_name: %s", remoteNameForProvenance),
+					fmt.Sprintf("  _provenance_raw_url: %s", skill.RawURL()),
+					fmt.Sprintf("  _provenance_installed_at: %s", time.Now().UTC().Format(time.RFC3339)),
+				)
+				provenanceAdded = true
+			}
+		}
+		frontmatter = strings.Join(newLines, "\n")
+	} else {
+		// No existing metadata, append our block
+		frontmatter = strings.TrimRight(frontmatter, "\n") + "\n" + provenance.String()
+	}
+
+	return []byte("---" + frontmatter + "---" + body)
+}
+
+// splitByDelimiter splits a string by a delimiter up to n parts.
+func splitByDelimiter(s, delim string, n int) []string {
+	var result []string
+	for i := 0; i < n-1; i++ {
+		idx := strings.Index(s, delim)
+		if idx == -1 {
+			break
+		}
+		result = append(result, s[:idx])
+		s = s[idx+len(delim):]
+	}
+	result = append(result, s)
+	return result
 }

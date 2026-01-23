@@ -171,6 +171,34 @@ var skillsUpdateYes bool
 
 var skillsValidateAll bool
 
+// skills add flags
+var skillsAddNoTUI bool
+var skillsAddBranch string
+var skillsAddPath string
+var skillsAddAll bool
+
+var skillsAddCmd = &cobra.Command{
+	Use:   "add <github-repo>",
+	Short: "Add skills from a GitHub repository",
+	Long: `Download and install skills from a GitHub repository.
+
+Looks for skills in the repository's skills/ directory and prompts
+for which ones to install. Each skill is a folder containing a SKILL.md
+file and optionally additional resources (rules/, references/, etc.).
+
+Examples:
+  term-llm skills add remotion-dev/skills           # Install from main branch
+  term-llm skills add owner/repo@branch             # Install from specific branch
+  term-llm skills add https://github.com/owner/repo # Full URL also works
+  term-llm skills add owner/repo --path custom/path # Custom skills directory
+  term-llm skills add owner/repo --all              # Install all skills non-interactively
+
+GitHub rate limits: Set GITHUB_TOKEN environment variable for higher limits
+(60 req/hr without, 5000 req/hr with token).`,
+	Args: cobra.ExactArgs(1),
+	RunE: runSkillsAdd,
+}
+
 func init() {
 	skillsCmd.Flags().BoolVar(&skillsLocal, "local", false, "Show only project-local skills")
 	skillsCmd.Flags().BoolVar(&skillsUser, "user", false, "Show only user-global skills")
@@ -183,6 +211,10 @@ func init() {
 	skillsUpdateCmd.Flags().BoolVar(&skillsUpdateDryRun, "dry-run", false, "Show what would be updated without making changes")
 	skillsUpdateCmd.Flags().BoolVar(&skillsUpdateForce, "force", false, "Update even if content hasn't changed")
 	skillsUpdateCmd.Flags().BoolVarP(&skillsUpdateYes, "yes", "y", false, "Skip confirmation prompts")
+	skillsAddCmd.Flags().BoolVar(&skillsAddNoTUI, "no-tui", false, "Non-interactive mode (use with --all)")
+	skillsAddCmd.Flags().StringVar(&skillsAddBranch, "branch", "", "Git branch to fetch from (default: main)")
+	skillsAddCmd.Flags().StringVar(&skillsAddPath, "path", "skills", "Path within repo to look for skills")
+	skillsAddCmd.Flags().BoolVar(&skillsAddAll, "all", false, "Install all discovered skills without prompting")
 
 	rootCmd.AddCommand(skillsCmd)
 	skillsCmd.AddCommand(skillsNewCmd)
@@ -193,6 +225,7 @@ func init() {
 	skillsCmd.AddCommand(skillsValidateCmd)
 	skillsCmd.AddCommand(skillsBrowseCmd)
 	skillsCmd.AddCommand(skillsUpdateCmd)
+	skillsCmd.AddCommand(skillsAddCmd)
 }
 
 func getSkillsRegistry() (*skills.Registry, error) {
@@ -765,6 +798,94 @@ func runSkillsBrowse(cmd *cobra.Command, args []string) error {
 	}
 
 	fmt.Println("Use the interactive browser for installation: term-llm skills browse")
+	return nil
+}
+
+func runSkillsAdd(cmd *cobra.Command, args []string) error {
+	repoRef := args[0]
+
+	// Parse repo reference
+	ref, err := skills.ParseRepoRef(repoRef)
+	if err != nil {
+		return fmt.Errorf("invalid repository: %w", err)
+	}
+
+	// Apply flags
+	if skillsAddBranch != "" {
+		ref.Branch = skillsAddBranch
+	}
+	if skillsAddPath != "" {
+		ref.Path = skillsAddPath
+	}
+
+	// Non-interactive mode
+	if skillsAddNoTUI || skillsAddAll {
+		return runSkillsAddCLI(*ref)
+	}
+
+	// Interactive TUI mode
+	return skillsTui.RunAdd(*ref)
+}
+
+func runSkillsAddCLI(ref skills.GitHubRepoRef) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	client := skills.NewGitHubClient()
+
+	// Check for token warning
+	if !client.HasToken() {
+		fmt.Fprintln(os.Stderr, "Note: Set GITHUB_TOKEN for higher API rate limits")
+	}
+
+	fmt.Printf("Discovering skills in %s/%s/%s...\n", ref.Owner, ref.Repo, ref.Path)
+
+	// Discover skills
+	discovered, err := client.DiscoverSkills(ctx, ref)
+	if err != nil {
+		return err
+	}
+
+	fmt.Printf("Found %d skill(s):\n", len(discovered))
+	for _, s := range discovered {
+		fmt.Printf("  - %s (%d files)\n", s.Name, s.FileCount)
+	}
+
+	if !skillsAddAll {
+		fmt.Println("\nUse --all to install all skills, or run without --no-tui for interactive selection.")
+		return nil
+	}
+
+	// Get default install path
+	installPaths := skillsTui.BuildInstallPaths()
+	if len(installPaths) == 0 {
+		return fmt.Errorf("no install paths available")
+	}
+	destPath := installPaths[0].Path // Default to first path (term-llm global)
+
+	fmt.Printf("\nInstalling to %s...\n", destPath)
+
+	// Install each skill
+	for _, skill := range discovered {
+		fmt.Printf("  Installing %s... ", skill.Name)
+
+		if err := client.DownloadSkillDir(ctx, skill, destPath); err != nil {
+			fmt.Printf("FAILED: %v\n", err)
+			continue
+		}
+
+		// Inject provenance metadata into SKILL.md
+		skillDir := filepath.Join(destPath, skill.Name)
+		skillMDPath := filepath.Join(skillDir, "SKILL.md")
+		if content, err := os.ReadFile(skillMDPath); err == nil {
+			updatedContent := skills.InjectGitHubProvenance(content, skill)
+			os.WriteFile(skillMDPath, updatedContent, 0644)
+		}
+
+		fmt.Println("OK")
+	}
+
+	fmt.Printf("\nInstalled %d skill(s) to %s\n", len(discovered), destPath)
 	return nil
 }
 
