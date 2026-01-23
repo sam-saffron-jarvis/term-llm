@@ -114,9 +114,6 @@ func (t *ShowImageTool) Execute(ctx context.Context, args json.RawMessage) (stri
 		return formatToolError(NewToolErrorf(ErrUnsupportedFormat, "unsupported format: %s (supported: PNG, JPEG, GIF, WebP, BMP)", ext)), nil
 	}
 
-	// Display image
-	image.DisplayImage(a.FilePath)
-
 	// Copy to clipboard if requested (default: true)
 	copyClipboard := a.CopyToClipboard == nil || *a.CopyToClipboard
 	if copyClipboard {
@@ -130,15 +127,17 @@ func (t *ShowImageTool) Execute(ctx context.Context, args json.RawMessage) (stri
 
 	// Build result
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("Displayed image: %s\n", a.FilePath))
+	sb.WriteString(fmt.Sprintf("Image: %s\n", a.FilePath))
 	sb.WriteString(fmt.Sprintf("Size: %d bytes\n", info.Size()))
-	sb.WriteString(fmt.Sprintf("Format: %s", strings.TrimPrefix(ext, ".")))
+	sb.WriteString(fmt.Sprintf("Format: %s\n", strings.TrimPrefix(ext, ".")))
 	if copyClipboard {
-		sb.WriteString("\nCopied to clipboard: yes")
+		sb.WriteString("Copied to clipboard: yes\n")
 	}
 	if a.Prompt != "" {
-		sb.WriteString(fmt.Sprintf("\nFocus: %s", a.Prompt))
+		sb.WriteString(fmt.Sprintf("Focus: %s\n", a.Prompt))
 	}
+	// Emit image marker for deferred display
+	sb.WriteString(fmt.Sprintf("__IMAGE__:%s\n", a.FilePath))
 
 	return sb.String(), nil
 }

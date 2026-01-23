@@ -142,6 +142,7 @@ type Event struct {
 	ToolName    string // For EventToolExecStart/End: name of tool being executed
 	ToolInfo    string // For EventToolExecStart/End: additional info (e.g., URL being fetched)
 	ToolSuccess bool   // For EventToolExecEnd: whether tool execution succeeded
+	ToolOutput  string // For EventToolExecEnd: the tool's output (for image marker parsing)
 	Use         *Usage
 	Err         error
 	// Retry fields (for EventRetry)

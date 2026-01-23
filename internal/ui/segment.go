@@ -13,6 +13,7 @@ const (
 	SegmentText SegmentType = iota
 	SegmentTool
 	SegmentAskUserResult // For ask_user answers (plain text, styled at render time)
+	SegmentImage         // For inline image display
 )
 
 // ToolStatus represents the execution state of a tool
@@ -34,6 +35,8 @@ type Segment struct {
 	ToolInfo   string     // For tool segments: additional context
 	ToolStatus ToolStatus // For tool segments
 	Complete   bool       // For text segments: whether streaming is complete
+	ImagePath  string     // For image segments: path to image file
+	Flushed    bool       // True if this segment has been printed to scrollback
 }
 
 // Tool status indicator colors using raw ANSI for reliable true color
@@ -158,7 +161,9 @@ func renderAskUserResult(text string) string {
 // RenderSegments renders a list of segments with proper spacing.
 // This is the main entry point for rendering the stream content.
 // renderMarkdown should be a function that renders markdown content.
-func RenderSegments(segments []Segment, width int, wavePos int, renderMarkdown func(string, int) string) string {
+// includeImages controls whether image segments are rendered - should be false
+// for View() (called constantly) and true for scrollback flush (one-time).
+func RenderSegments(segments []Segment, width int, wavePos int, renderMarkdown func(string, int) string, includeImages bool) string {
 	var b strings.Builder
 
 	for i, seg := range segments {
@@ -178,6 +183,14 @@ func RenderSegments(segments []Segment, width int, wavePos int, renderMarkdown f
 			if prevIsTool && seg.Type == SegmentText {
 				b.WriteString("\n\n")
 			}
+			// Blank line between tools/ask_user results and images
+			if prevIsTool && seg.Type == SegmentImage {
+				b.WriteString("\n\n")
+			}
+			// Blank line between text and images
+			if prev.Type == SegmentText && seg.Type == SegmentImage {
+				b.WriteString("\n\n")
+			}
 		}
 
 		switch seg.Type {
@@ -193,6 +206,14 @@ func RenderSegments(segments []Segment, width int, wavePos int, renderMarkdown f
 			b.WriteString(RenderToolSegment(&seg, wavePos))
 		case SegmentAskUserResult:
 			b.WriteString(renderAskUserResult(seg.Text))
+		case SegmentImage:
+			// Render images inline when includeImages is true
+			if includeImages {
+				if rendered := RenderInlineImage(seg.ImagePath); rendered != "" {
+					b.WriteString(rendered)
+					b.WriteString("\r\n")
+				}
+			}
 		}
 	}
 

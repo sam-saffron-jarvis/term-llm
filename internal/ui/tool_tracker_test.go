@@ -39,7 +39,7 @@ func TestAddExternalUIResult(t *testing.T) {
 	rendered := RenderSegments(tracker.Segments, 80, -1, func(s string, w int) string {
 		// This markdown renderer should NOT be called for ask_user results
 		return "MARKDOWN_PROCESSED:" + s
-	})
+	}, true)
 
 	// Should NOT contain "MARKDOWN_PROCESSED" since ask_user results have their own renderer
 	if strings.Contains(rendered, "MARKDOWN_PROCESSED") {

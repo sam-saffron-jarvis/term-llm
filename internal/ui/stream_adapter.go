@@ -3,6 +3,7 @@ package ui
 import (
 	"context"
 	"io"
+	"strings"
 
 	"github.com/samsaffron/term-llm/internal/llm"
 )
@@ -95,6 +96,13 @@ func (a *StreamAdapter) ProcessStream(ctx context.Context, stream llm.Stream) {
 			a.stats.ToolEnd()
 			a.events <- ToolEndEvent(event.ToolCallID, event.ToolName, event.ToolInfo, event.ToolSuccess)
 
+			// Parse image markers from tool output and emit image events
+			if event.ToolOutput != "" {
+				for _, imagePath := range parseImageMarkers(event.ToolOutput) {
+					a.events <- ImageEvent(imagePath)
+				}
+			}
+
 		case llm.EventRetry:
 			a.events <- RetryEvent(event.RetryAttempt, event.RetryMaxAttempts, event.RetryWaitSecs)
 
@@ -111,4 +119,19 @@ func (a *StreamAdapter) ProcessStream(ctx context.Context, stream llm.Stream) {
 			}
 		}
 	}
+}
+
+// parseImageMarkers extracts image paths from tool output that contain __IMAGE__: markers
+func parseImageMarkers(output string) []string {
+	var images []string
+	for _, line := range strings.Split(output, "\n") {
+		if strings.HasPrefix(line, "__IMAGE__:") {
+			path := strings.TrimPrefix(line, "__IMAGE__:")
+			path = strings.TrimSpace(path)
+			if path != "" {
+				images = append(images, path)
+			}
+		}
+	}
+	return images
 }

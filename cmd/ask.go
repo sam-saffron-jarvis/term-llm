@@ -790,6 +790,17 @@ func streamPlainText(ctx context.Context, events <-chan ui.StreamEvent) error {
 					lastEndedWithNewline = strings.HasSuffix(ev.Text, "\n")
 				}
 
+			case ui.StreamEventImage:
+				// Display image inline in plain text mode
+				if ev.ImagePath != "" {
+					if rendered := ui.RenderInlineImage(ev.ImagePath); rendered != "" {
+						fmt.Print(rendered)
+						fmt.Print("\r\n") // CR+LF to reset cursor position after image
+						printedAny = true
+						lastEndedWithNewline = true
+					}
+				}
+
 			case ui.StreamEventDone:
 				if len(pendingTools) > 0 {
 					printTools()
@@ -820,8 +831,7 @@ type askStreamModel struct {
 	width   int
 
 	// Tool and segment tracking (shared component)
-	tracker      *ui.ToolTracker
-	printedLines int // Number of lines already printed to scrollback
+	tracker *ui.ToolTracker
 
 	// State flags
 	done bool // True when streaming is complete (prevents spinner from showing)
@@ -865,6 +875,7 @@ type askRetryMsg struct {
 	WaitSecs    float64
 }
 type askPhaseMsg string
+type askImageMsg string // Image path to display
 type askFlushBeforeAskUserMsg struct {
 	Done chan<- struct{} // Signal when flush is complete
 }
@@ -913,15 +924,13 @@ func (m askStreamModel) tickEvery() tea.Cmd {
 // Content beyond this is printed to scrollback to prevent scroll issues.
 const maxViewLines = 8
 
-// maybeFlushToScrollback checks if content exceeds maxViewLines and prints
-// excess to scrollback, keeping View() small to avoid terminal scroll issues.
+// maybeFlushToScrollback checks if there are segments to flush to scrollback,
+// keeping View() small to avoid terminal scroll issues.
 func (m *askStreamModel) maybeFlushToScrollback() tea.Cmd {
-	result := m.tracker.FlushToScrollback(m.width, m.printedLines, maxViewLines, renderMd)
+	result := m.tracker.FlushToScrollback(m.width, 0, maxViewLines, renderMd)
 	if result.ToPrint != "" {
-		m.printedLines = result.NewPrintedLines
 		return tea.Println(result.ToPrint)
 	}
-	m.printedLines = result.NewPrintedLines
 	return nil
 }
 
@@ -999,23 +1008,13 @@ func (m askStreamModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case askDoneMsg:
 		m.done = true // Prevent spinner from showing in final View()
 
-		// Mark all text segments as complete but don't pre-render.
-		// This ensures RenderSegments uses the same renderMarkdown path
-		// as streaming, keeping line counts consistent for scrollback tracking.
+		// Mark all text segments as complete
 		m.tracker.CompleteTextSegments(nil)
 
-		// Print any remaining content to scrollback before quitting
-		completed := m.tracker.CompletedSegments()
-		content := ui.RenderSegments(completed, m.width, -1, renderMd)
-
-		if content != "" {
-			lines := ui.SplitLines(content)
-			if m.printedLines < len(lines) {
-				remaining := ui.JoinLines(lines[m.printedLines:])
-				// Mark all lines as printed so View() returns empty
-				m.printedLines = len(lines)
-				return m, tea.Sequence(tea.Println(remaining), tea.Quit)
-			}
+		// Flush any remaining content to scrollback before quitting
+		result := m.tracker.FlushAllRemaining(m.width, 0, renderMd)
+		if result.ToPrint != "" {
+			return m, tea.Sequence(tea.Println(result.ToPrint), tea.Quit)
 		}
 		return m, tea.Quit
 
@@ -1043,16 +1042,25 @@ func (m askStreamModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.phase = string(msg)
 		return m, nil
 
+	case askImageMsg:
+		// Add image segment for inline display
+		m.tracker.AddImageSegment(string(msg))
+
+		// Flush to scrollback so image appears
+		if cmd := m.maybeFlushToScrollback(); cmd != nil {
+			return m, cmd
+		}
+		return m, nil
+
 	case askFlushBeforeAskUserMsg:
 		// Set flag to suppress spinner in View() while external UI is active
 		m.pausedForExternalUI = true
 
-		// Partial flush - keep last maxViewLines visible for after external UI returns
-		result := m.tracker.FlushBeforeExternalUI(m.width, m.printedLines, maxViewLines, renderMd)
+		// Partial flush - keep some context visible for after external UI returns
+		result := m.tracker.FlushBeforeExternalUI(m.width, 0, maxViewLines, renderMd)
 
 		var cmds []tea.Cmd
 		if result.ToPrint != "" {
-			m.printedLines = result.NewPrintedLines
 			cmds = append(cmds, tea.Println(result.ToPrint))
 		}
 
@@ -1067,12 +1075,11 @@ func (m askStreamModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Set flag to suppress spinner in View() while approval UI is active
 		m.pausedForExternalUI = true
 
-		// Partial flush - keep last maxViewLines visible for after external UI returns
-		result := m.tracker.FlushBeforeExternalUI(m.width, m.printedLines, maxViewLines, renderMd)
+		// Partial flush - keep some context visible for after external UI returns
+		result := m.tracker.FlushBeforeExternalUI(m.width, 0, maxViewLines, renderMd)
 
 		var cmds []tea.Cmd
 		if result.ToPrint != "" {
-			m.printedLines = result.NewPrintedLines
 			cmds = append(cmds, tea.Println(result.ToPrint))
 		}
 
@@ -1172,22 +1179,12 @@ func renderMd(text string, width int) string {
 func (m askStreamModel) View() string {
 	var b strings.Builder
 
-	// Get segments from tracker
+	// Get segments from tracker (excludes flushed segments)
 	completed := m.tracker.CompletedSegments()
 	active := m.tracker.ActiveSegments()
 
-	// Render completed segments
-	content := ui.RenderSegments(completed, m.width, -1, renderMd)
-
-	// Only show content after what's been printed to scrollback
-	if m.printedLines > 0 && content != "" {
-		lines := ui.SplitLines(content)
-		if m.printedLines < len(lines) {
-			content = ui.JoinLines(lines[m.printedLines:])
-		} else {
-			content = ""
-		}
-	}
+	// Render completed segments (segment-based tracking handles what's already flushed)
+	content := ui.RenderSegments(completed, m.width, -1, renderMd, false)
 
 	if content != "" {
 		b.WriteString(content)
@@ -1297,6 +1294,9 @@ func streamWithGlamour(ctx context.Context, events <-chan ui.StreamEvent, p *tea
 			case ui.StreamEventText:
 				p.Send(askContentMsg(ev.Text))
 
+			case ui.StreamEventImage:
+				p.Send(askImageMsg(ev.ImagePath))
+
 			case ui.StreamEventDone:
 				p.Send(askDoneMsg{})
 				events = nil
@@ -1312,6 +1312,7 @@ func streamWithGlamour(ctx context.Context, events <-chan ui.StreamEvent, p *tea
 	}
 
 	err := <-programDone
+
 	// Note: Don't print finalOutput here - bubbletea's final View() already persists on screen
 	if streamErr != nil {
 		return streamErr

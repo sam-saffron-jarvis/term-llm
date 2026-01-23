@@ -150,13 +150,14 @@ func TestBuiltinAgentConfigs(t *testing.T) {
 func TestGetBuiltinAgentNames(t *testing.T) {
 	names := GetBuiltinAgentNames()
 
-	if len(names) != 9 {
-		t.Errorf("len(GetBuiltinAgentNames()) = %d, want 9", len(names))
+	if len(names) != 10 {
+		t.Errorf("len(GetBuiltinAgentNames()) = %d, want 10", len(names))
 	}
 
 	expected := map[string]bool{
 		"agent-builder":  true,
 		"artist":         true,
+		"changelog":      true,
 		"codebase":       true,
 		"commit-message": true,
 		"editor":         true,

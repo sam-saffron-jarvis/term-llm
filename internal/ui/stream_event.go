@@ -12,6 +12,7 @@ const (
 	StreamEventRetry
 	StreamEventDone
 	StreamEventError
+	StreamEventImage // Image produced by tool
 )
 
 // StreamEvent represents a unified event from the LLM stream.
@@ -45,6 +46,9 @@ type StreamEvent struct {
 
 	// Error (for StreamEventError)
 	Err error
+
+	// Image (for StreamEventImage)
+	ImagePath string
 }
 
 // TextEvent creates a text delta event
@@ -118,5 +122,13 @@ func ErrorEvent(err error) StreamEvent {
 	return StreamEvent{
 		Type: StreamEventError,
 		Err:  err,
+	}
+}
+
+// ImageEvent creates an image event
+func ImageEvent(path string) StreamEvent {
+	return StreamEvent{
+		Type:      StreamEventImage,
+		ImagePath: path,
 	}
 }

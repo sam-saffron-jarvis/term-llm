@@ -140,10 +140,13 @@ func (t *ToolTracker) ActiveSegments() []Segment {
 	return active
 }
 
-// CompletedSegments returns all non-pending segments (for rendering).
+// CompletedSegments returns all non-pending, non-flushed segments (for View() rendering).
 func (t *ToolTracker) CompletedSegments() []Segment {
 	var completed []Segment
 	for _, s := range t.Segments {
+		if s.Flushed {
+			continue
+		}
 		if !(s.Type == SegmentTool && s.ToolStatus == ToolPending) {
 			completed = append(completed, s)
 		}
@@ -213,22 +216,35 @@ func (t *ToolTracker) AddExternalUIResult(summary string) {
 	})
 }
 
+// AddImageSegment adds an image segment for inline display.
+func (t *ToolTracker) AddImageSegment(path string) {
+	if path == "" {
+		return
+	}
+	t.RecordActivity()
+	t.Segments = append(t.Segments, Segment{
+		Type:      SegmentImage,
+		ImagePath: path,
+		Complete:  true,
+	})
+}
+
 // FlushToScrollbackResult contains the result of a scrollback flush operation.
 type FlushToScrollbackResult struct {
 	// ToPrint is the content to print to scrollback (empty if nothing to flush)
 	ToPrint string
-	// NewPrintedLines is the updated count of lines printed to scrollback
+	// NewPrintedLines is kept for API compatibility but no longer used for tracking
 	NewPrintedLines int
 }
 
-// FlushToScrollback checks if content exceeds maxViewLines and returns content
-// to print to scrollback, keeping View() small to avoid terminal scroll issues.
-// Returns the content to print (if any) and the new printedLines value.
+// FlushToScrollback checks if there are completed segments to flush to scrollback.
+// Uses segment-based tracking: completed segments are marked as Flushed and won't
+// appear in View() again.
 //
 // Parameters:
 //   - width: terminal width for rendering
-//   - printedLines: number of lines already printed to scrollback
-//   - maxViewLines: maximum lines to keep in View()
+//   - printedLines: (unused, kept for API compatibility)
+//   - maxViewLines: minimum completed segments to keep unflushed for View()
 //   - renderMd: markdown render function (text, width) -> rendered
 func (t *ToolTracker) FlushToScrollback(
 	width int,
@@ -236,84 +252,146 @@ func (t *ToolTracker) FlushToScrollback(
 	maxViewLines int,
 	renderMd func(string, int) string,
 ) FlushToScrollbackResult {
-	// Render current completed content
-	completed := t.CompletedSegments()
-	content := RenderSegments(completed, width, -1, renderMd)
-	totalLines := CountLines(content)
-
-	// If content exceeds threshold, calculate what to print
-	if totalLines > maxViewLines+printedLines {
-		lines := SplitLines(content)
-		splitAt := len(lines) - maxViewLines
-		if splitAt > printedLines {
-			toPrint := JoinLines(lines[printedLines:splitAt])
-			return FlushToScrollbackResult{
-				ToPrint:         toPrint,
-				NewPrintedLines: splitAt,
-			}
+	// Count unflushed completed segments
+	var unflushedCount int
+	for i := range t.Segments {
+		seg := &t.Segments[i]
+		if !seg.Flushed && !(seg.Type == SegmentTool && seg.ToolStatus == ToolPending) {
+			unflushedCount++
 		}
 	}
 
+	// Keep at least 1 segment unflushed for View() (or maxViewLines worth)
+	// But always flush images immediately since they need to go to scrollback
+	minKeep := 1
+	if unflushedCount <= minKeep {
+		// Check if there's an image that needs flushing
+		hasUnflushedImage := false
+		for i := range t.Segments {
+			seg := &t.Segments[i]
+			if seg.Type == SegmentImage && !seg.Flushed {
+				hasUnflushedImage = true
+				break
+			}
+		}
+		if !hasUnflushedImage {
+			return FlushToScrollbackResult{NewPrintedLines: 0}
+		}
+	}
+
+	// Collect segments to flush (all unflushed completed segments except the last few)
+	var toFlush []Segment
+	unflushedSeen := 0
+	for i := range t.Segments {
+		seg := &t.Segments[i]
+		if seg.Flushed {
+			continue
+		}
+		isPending := seg.Type == SegmentTool && seg.ToolStatus == ToolPending
+		if isPending {
+			continue
+		}
+		unflushedSeen++
+		// Flush if: it's an image OR we have more than minKeep unflushed segments
+		shouldFlush := seg.Type == SegmentImage || unflushedSeen <= unflushedCount-minKeep
+		if shouldFlush {
+			toFlush = append(toFlush, *seg)
+			seg.Flushed = true
+		}
+	}
+
+	if len(toFlush) == 0 {
+		return FlushToScrollbackResult{NewPrintedLines: 0}
+	}
+
+	// Render the segments to flush
+	content := RenderSegments(toFlush, width, -1, renderMd, true)
 	return FlushToScrollbackResult{
-		NewPrintedLines: printedLines,
+		ToPrint:         content,
+		NewPrintedLines: 0, // No longer used
 	}
 }
 
-// FlushAllRemaining returns any remaining content that hasn't been printed to scrollback.
+// FlushAllRemaining returns any remaining unflushed content.
 // Use this at the end of streaming to ensure all content is visible.
 func (t *ToolTracker) FlushAllRemaining(
 	width int,
 	printedLines int,
 	renderMd func(string, int) string,
 ) FlushToScrollbackResult {
-	completed := t.CompletedSegments()
-	content := RenderSegments(completed, width, -1, renderMd)
-
-	if content != "" {
-		lines := SplitLines(content)
-		if printedLines < len(lines) {
-			remaining := JoinLines(lines[printedLines:])
-			return FlushToScrollbackResult{
-				ToPrint:         remaining,
-				NewPrintedLines: len(lines),
-			}
+	// Collect all unflushed completed segments
+	var toFlush []Segment
+	for i := range t.Segments {
+		seg := &t.Segments[i]
+		if seg.Flushed {
+			continue
 		}
+		isPending := seg.Type == SegmentTool && seg.ToolStatus == ToolPending
+		if isPending {
+			continue
+		}
+		toFlush = append(toFlush, *seg)
+		seg.Flushed = true
 	}
 
+	if len(toFlush) == 0 {
+		return FlushToScrollbackResult{NewPrintedLines: 0}
+	}
+
+	content := RenderSegments(toFlush, width, -1, renderMd, true)
 	return FlushToScrollbackResult{
-		NewPrintedLines: printedLines,
+		ToPrint:         content,
+		NewPrintedLines: 0,
 	}
 }
 
-// FlushBeforeExternalUI flushes content to scrollback but keeps keepLines
-// visible for display after returning from external UI (ask_user/approval).
+// FlushBeforeExternalUI flushes content to scrollback before showing external UI.
+// Keeps some recent content visible for context.
 func (t *ToolTracker) FlushBeforeExternalUI(
 	width int,
 	printedLines int,
 	keepLines int,
 	renderMd func(string, int) string,
 ) FlushToScrollbackResult {
-	completed := t.CompletedSegments()
-	content := RenderSegments(completed, width, -1, renderMd)
+	// Flush all but the last segment (keep some context visible)
+	var toFlush []Segment
+	unflushedCompleted := 0
 
-	if content == "" {
-		return FlushToScrollbackResult{NewPrintedLines: printedLines}
+	// First count unflushed completed segments
+	for i := range t.Segments {
+		seg := &t.Segments[i]
+		if !seg.Flushed && !(seg.Type == SegmentTool && seg.ToolStatus == ToolPending) {
+			unflushedCompleted++
+		}
 	}
 
-	lines := SplitLines(content)
-	totalLines := len(lines)
-
-	// Calculate how many lines to flush (keeping keepLines visible)
-	flushUpTo := totalLines - keepLines
-	if flushUpTo <= printedLines {
-		// Nothing new to flush while keeping keepLines visible
-		return FlushToScrollbackResult{NewPrintedLines: printedLines}
+	// Flush all but the last one
+	seen := 0
+	for i := range t.Segments {
+		seg := &t.Segments[i]
+		if seg.Flushed {
+			continue
+		}
+		isPending := seg.Type == SegmentTool && seg.ToolStatus == ToolPending
+		if isPending {
+			continue
+		}
+		seen++
+		// Keep the last segment unflushed for context
+		if seen < unflushedCompleted {
+			toFlush = append(toFlush, *seg)
+			seg.Flushed = true
+		}
 	}
 
-	toPrint := JoinLines(lines[printedLines:flushUpTo])
+	if len(toFlush) == 0 {
+		return FlushToScrollbackResult{NewPrintedLines: 0}
+	}
+
+	content := RenderSegments(toFlush, width, -1, renderMd, true)
 	return FlushToScrollbackResult{
-		ToPrint:         toPrint,
-		NewPrintedLines: flushUpTo,
+		ToPrint:         content,
+		NewPrintedLines: 0,
 	}
 }
 

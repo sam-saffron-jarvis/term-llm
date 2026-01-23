@@ -388,7 +388,7 @@ func (e *Engine) executeSingleToolCall(ctx context.Context, call ToolCall, event
 	DebugToolResult(debug, call.ID, call.Name, output)
 	DebugRawToolResult(debugRaw, call.ID, call.Name, output)
 	if events != nil {
-		events <- Event{Type: EventToolExecEnd, ToolCallID: call.ID, ToolName: call.Name, ToolInfo: info, ToolSuccess: true}
+		events <- Event{Type: EventToolExecEnd, ToolCallID: call.ID, ToolName: call.Name, ToolInfo: info, ToolSuccess: true, ToolOutput: output}
 	}
 	return []Message{ToolResultMessage(call.ID, call.Name, output, call.ThoughtSig)}, nil
 }

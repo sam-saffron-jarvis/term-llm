@@ -62,7 +62,7 @@ func (s StreamingIndicator) Render(styles *Styles) string {
 
 	// Render active tools if any
 	if len(s.Segments) > 0 {
-		b.WriteString(RenderSegments(s.Segments, s.Width, s.WavePos, s.RenderMarkdown))
+		b.WriteString(RenderSegments(s.Segments, s.Width, s.WavePos, s.RenderMarkdown, false))
 		// When tools are active, we don't show the spinner/phase line
 		// as the wave animation provides the progress feedback.
 	} else {

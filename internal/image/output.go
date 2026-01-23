@@ -3,7 +3,6 @@ package image
 import (
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -32,28 +31,18 @@ func SaveImage(data []byte, outputDir, prompt string) (string, error) {
 	return path, nil
 }
 
-// DisplayImage displays the image in terminal using icat if available
-// Returns nil if icat is not available or fails (display is non-critical)
+// DisplayImage displays the image in terminal using rasterm
+// Returns nil if terminal doesn't support images (graceful degradation)
 func DisplayImage(imagePath string) error {
-	// Try kitten icat first (newer kitty)
-	if kittenPath, err := exec.LookPath("kitten"); err == nil {
-		cmd := exec.Command(kittenPath, "icat", imagePath)
-		cmd.Stdout = os.Stdout
-		// Suppress stderr - icat errors are non-critical
-		cmd.Run()
-		return nil
+	cap := DetectCapability()
+	if cap == CapNone {
+		return nil // graceful degradation
 	}
-
-	// Try icat directly
-	if icatPath, err := exec.LookPath("icat"); err == nil {
-		cmd := exec.Command(icatPath, imagePath)
-		cmd.Stdout = os.Stdout
-		// Suppress stderr - icat errors are non-critical
-		cmd.Run()
-		return nil
+	if err := RenderImageToWriter(os.Stdout, imagePath); err != nil {
+		return err
 	}
-
-	// icat not available - silent fail
+	// Print CR+LF to reset cursor position after image
+	fmt.Fprint(os.Stdout, "\r\n")
 	return nil
 }
 

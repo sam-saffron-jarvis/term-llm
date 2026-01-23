@@ -235,11 +235,8 @@ func (t *ImageGenerateTool) Execute(ctx context.Context, args json.RawMessage) (
 	// Get image dimensions (approximate from data size)
 	width, height := estimateImageDimensions(result.Data)
 
-	// Display image via icat if requested (default: true)
+	// Emit image marker for deferred display (default: true)
 	showImage := a.ShowImage == nil || *a.ShowImage
-	if showImage {
-		image.DisplayImage(outputPath)
-	}
 
 	// Copy to clipboard if requested (default: true)
 	copyClipboard := a.CopyToClipboard == nil || *a.CopyToClipboard
@@ -257,11 +254,12 @@ func (t *ImageGenerateTool) Execute(ctx context.Context, args json.RawMessage) (
 		sb.WriteString(fmt.Sprintf("Dimensions: ~%dx%d\n", width, height))
 	}
 	sb.WriteString(fmt.Sprintf("Provider: %s\n", provider.Name()))
-	if showImage {
-		sb.WriteString("Displayed: yes\n")
-	}
 	if copyClipboard {
-		sb.WriteString("Copied to clipboard: yes")
+		sb.WriteString("Copied to clipboard: yes\n")
+	}
+	// Emit image marker for deferred display
+	if showImage {
+		sb.WriteString(fmt.Sprintf("__IMAGE__:%s\n", outputPath))
 	}
 
 	return sb.String(), nil

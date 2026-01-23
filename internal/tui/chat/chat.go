@@ -51,7 +51,6 @@ type Model struct {
 	retryStatus      string
 	streamCancelFunc context.CancelFunc
 	tracker          *ui.ToolTracker // Tool and segment tracking (shared component)
-	printedLines     int             // Number of lines already printed to scrollback
 
 	// Streaming channels
 	streamChan <-chan ui.StreamEvent
@@ -396,6 +395,18 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.retryStatus = fmt.Sprintf("Rate limited (%d/%d), waiting %.0fs...",
 				ev.RetryAttempt, ev.RetryMax, ev.RetryWait)
 
+		case ui.StreamEventImage:
+			// Add image segment for inline display
+			if m.tracker != nil && ev.ImagePath != "" {
+				m.tracker.AddImageSegment(ev.ImagePath)
+				// Flush to scrollback so image appears
+				if m.scrollOffset == 0 {
+					if cmd := m.maybeFlushToScrollback(); cmd != nil {
+						cmds = append(cmds, cmd)
+					}
+				}
+			}
+
 		case ui.StreamEventDone:
 			m.streaming = false
 			m.currentTokens = ev.Tokens
@@ -408,11 +419,10 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				})
 
 				// Print any remaining content to scrollback using FlushAllRemaining
-				result := m.tracker.FlushAllRemaining(m.width, m.printedLines, m.renderMd)
+				result := m.tracker.FlushAllRemaining(m.width, 0, m.renderMd)
 				if result.ToPrint != "" {
 					cmds = append(cmds, tea.Println(result.ToPrint))
 				}
-				m.printedLines = result.NewPrintedLines
 			}
 			cmds = append(cmds, tea.Println("")) // blank line
 
@@ -440,7 +450,6 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.webSearchUsed = false
 			m.retryStatus = ""
 			m.tracker = ui.NewToolTracker() // Reset tracker
-			m.printedLines = 0
 
 			// Auto-save session
 			cmds = append(cmds, m.saveSessionCmd())
@@ -482,10 +491,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m.renderMarkdown(text)
 			})
 
-			// Partial flush - keep last maxViewLines visible
-			result := m.tracker.FlushBeforeExternalUI(m.width, m.printedLines, maxViewLines, m.renderMd)
+			// Partial flush - keep some context visible
+			result := m.tracker.FlushBeforeExternalUI(m.width, 0, maxViewLines, m.renderMd)
 			if result.ToPrint != "" {
-				m.printedLines = result.NewPrintedLines
 				// Signal that flush is complete after the print finishes
 				return m, tea.Sequence(
 					tea.Println(result.ToPrint),
@@ -504,17 +512,16 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Set flag to suppress spinner in View() while approval UI is active
 		m.pausedForExternalUI = true
 
-		// Partial flush - keep last maxViewLines visible for after external UI returns
+		// Partial flush - keep some context visible for after external UI returns
 		if m.tracker != nil {
 			// Mark current text as complete
 			m.tracker.MarkCurrentTextComplete(func(text string) string {
 				return m.renderMarkdown(text)
 			})
 
-			// Partial flush - keep last maxViewLines visible
-			result := m.tracker.FlushBeforeExternalUI(m.width, m.printedLines, maxViewLines, m.renderMd)
+			// Partial flush - keep some context visible
+			result := m.tracker.FlushBeforeExternalUI(m.width, 0, maxViewLines, m.renderMd)
 			if result.ToPrint != "" {
-				m.printedLines = result.NewPrintedLines
 				// Signal that flush is complete after the print finishes
 				return m, tea.Sequence(
 					tea.Println(result.ToPrint),
@@ -1250,19 +1257,17 @@ func (m *Model) renderMd(text string, width int) string {
 // Content beyond this is printed to scrollback to prevent scroll issues.
 const maxViewLines = 8
 
-// maybeFlushToScrollback checks if content exceeds maxViewLines and prints
-// excess to scrollback, keeping View() small to avoid terminal scroll issues.
+// maybeFlushToScrollback checks if there are segments to flush to scrollback,
+// keeping View() small to avoid terminal scroll issues.
 func (m *Model) maybeFlushToScrollback() tea.Cmd {
 	if m.tracker == nil {
 		return nil
 	}
 
-	result := m.tracker.FlushToScrollback(m.width, m.printedLines, maxViewLines, m.renderMd)
+	result := m.tracker.FlushToScrollback(m.width, 0, maxViewLines, m.renderMd)
 	if result.ToPrint != "" {
-		m.printedLines = result.NewPrintedLines
 		return tea.Println(result.ToPrint)
 	}
-	m.printedLines = result.NewPrintedLines
 	return nil
 }
 
@@ -1270,25 +1275,15 @@ func (m *Model) maybeFlushToScrollback() tea.Cmd {
 func (m *Model) renderStreamingInline() string {
 	var b strings.Builder
 
-	// Get segments from tracker
+	// Get segments from tracker (excludes flushed segments)
 	var completed, active []ui.Segment
 	if m.tracker != nil {
 		completed = m.tracker.CompletedSegments()
 		active = m.tracker.ActiveSegments()
 	}
 
-	// Render completed segments
-	content := ui.RenderSegments(completed, m.width, -1, m.renderMd)
-
-	// Only show content after what's been printed to scrollback
-	if m.printedLines > 0 && content != "" {
-		lines := ui.SplitLines(content)
-		if m.printedLines < len(lines) {
-			content = ui.JoinLines(lines[m.printedLines:])
-		} else {
-			content = ""
-		}
-	}
+	// Render completed segments (segment-based tracking handles what's already flushed)
+	content := ui.RenderSegments(completed, m.width, -1, m.renderMd, false)
 
 	if content != "" {
 		b.WriteString(content)
