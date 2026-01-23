@@ -55,6 +55,9 @@ type Model struct {
 	// Streaming channels
 	streamChan <-chan ui.StreamEvent
 
+	// Smooth text buffer for 60fps rendering
+	smoothBuffer *ui.SmoothBuffer
+
 	// External UI state
 	pausedForExternalUI bool // True when paused for ask_user or approval prompts
 
@@ -235,6 +238,7 @@ func New(cfg *config.Config, provider llm.Provider, engine *llm.Engine, modelNam
 		phase:               "Thinking",
 		viewportRows:        height - 8, // Reserve space for input and status
 		tracker:             ui.NewToolTracker(),
+		smoothBuffer:        ui.NewSmoothBuffer(),
 		completions:         completions,
 		dialog:              dialog,
 		approvedDirs:        approvedDirs,
@@ -307,12 +311,46 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 
+	case ui.SmoothTickMsg:
+		// Release buffered text word-by-word for smooth 60fps rendering
+		if m.smoothBuffer != nil && m.streaming {
+			words := m.smoothBuffer.NextWords()
+			if words != "" {
+				m.currentResponse.WriteString(words)
+				if m.tracker != nil {
+					m.tracker.AddTextSegment(words)
+				}
+				m.phase = "Responding"
+				// Flush excess content if needed
+				if m.scrollOffset == 0 {
+					if cmd := m.maybeFlushToScrollback(); cmd != nil {
+						cmds = append(cmds, cmd)
+					}
+				}
+			}
+			// Continue ticking if not drained
+			if !m.smoothBuffer.IsDrained() {
+				cmds = append(cmds, ui.SmoothTick())
+			}
+		}
+
 	case streamEventMsg:
 		ev := msg.event
 
 		switch ev.Type {
 		case ui.StreamEventError:
 			if ev.Err != nil {
+				// Flush any buffered text on error
+				if m.smoothBuffer != nil {
+					remaining := m.smoothBuffer.FlushAll()
+					if remaining != "" {
+						m.currentResponse.WriteString(remaining)
+						if m.tracker != nil {
+							m.tracker.AddTextSegment(remaining)
+						}
+					}
+					m.smoothBuffer.Reset()
+				}
 				m.streaming = false
 				m.err = ev.Err
 				m.textarea.Focus()
@@ -321,6 +359,17 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		case ui.StreamEventToolStart:
 			m.stats.ToolStart()
+
+			// Flush smooth buffer before tool starts (user wants to see tool output right away)
+			if m.smoothBuffer != nil {
+				remaining := m.smoothBuffer.FlushAll()
+				if remaining != "" {
+					m.currentResponse.WriteString(remaining)
+					if m.tracker != nil {
+						m.tracker.AddTextSegment(remaining)
+					}
+				}
+			}
 
 			// Mark current text segment as complete before starting tool
 			if m.tracker != nil {
@@ -370,22 +419,21 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 
 		case ui.StreamEventText:
-			m.currentResponse.WriteString(ev.Text)
-
-			// Update segments for chronological rendering
-			if m.tracker != nil {
-				m.tracker.AddTextSegment(ev.Text)
+			// Buffer text for smooth 60fps rendering instead of immediate display
+			if m.smoothBuffer != nil {
+				m.smoothBuffer.Write(ev.Text)
+				// Start smooth tick if not already running
+				cmds = append(cmds, ui.SmoothTick())
+			} else {
+				// Fallback: direct display if no smooth buffer
+				m.currentResponse.WriteString(ev.Text)
+				if m.tracker != nil {
+					m.tracker.AddTextSegment(ev.Text)
+				}
 			}
 
 			m.phase = "Responding"
 			m.retryStatus = ""
-
-			// Flush excess content if needed
-			if m.scrollOffset == 0 {
-				if cmd := m.maybeFlushToScrollback(); cmd != nil {
-					cmds = append(cmds, cmd)
-				}
-			}
 
 		case ui.StreamEventPhase:
 			m.phase = ev.Phase
@@ -408,9 +456,22 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 
 		case ui.StreamEventDone:
-			m.streaming = false
 			m.currentTokens = ev.Tokens
 			duration := time.Since(m.streamStartTime)
+
+			// Flush any remaining buffered text and mark done
+			if m.smoothBuffer != nil {
+				remaining := m.smoothBuffer.FlushAll()
+				if remaining != "" {
+					m.currentResponse.WriteString(remaining)
+					if m.tracker != nil {
+						m.tracker.AddTextSegment(remaining)
+					}
+				}
+				m.smoothBuffer.MarkDone()
+			}
+
+			m.streaming = false
 
 			// Mark all text segments as complete and render
 			if m.tracker != nil {
@@ -450,6 +511,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.webSearchUsed = false
 			m.retryStatus = ""
 			m.tracker = ui.NewToolTracker() // Reset tracker
+			if m.smoothBuffer != nil {
+				m.smoothBuffer.Reset()
+			}
 
 			// Auto-save session
 			cmds = append(cmds, m.saveSessionCmd())
@@ -757,6 +821,11 @@ func (m *Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// Handle quit
 	if key.Matches(msg, m.keyMap.Quit) {
 		if m.streaming && m.streamCancelFunc != nil {
+			// Flush buffered text on cancel
+			if m.smoothBuffer != nil {
+				m.smoothBuffer.FlushAll()
+				m.smoothBuffer.Reset()
+			}
 			m.streamCancelFunc()
 			m.streaming = false
 			return m, nil
@@ -773,6 +842,11 @@ func (m *Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// Handle cancel during streaming
 	if key.Matches(msg, m.keyMap.Cancel) {
 		if m.streaming && m.streamCancelFunc != nil {
+			// Flush buffered text on cancel
+			if m.smoothBuffer != nil {
+				m.smoothBuffer.FlushAll()
+				m.smoothBuffer.Reset()
+			}
 			m.streamCancelFunc()
 			m.streaming = false
 			m.textarea.Focus()
@@ -1082,6 +1156,9 @@ func (m *Model) sendMessage(content string) (tea.Model, tea.Cmd) {
 	m.streamStartTime = time.Now()
 	m.currentResponse.Reset()
 	m.webSearchUsed = false
+	if m.smoothBuffer != nil {
+		m.smoothBuffer.Reset()
+	}
 
 	// Start the stream (print user message first)
 	return m, tea.Batch(
