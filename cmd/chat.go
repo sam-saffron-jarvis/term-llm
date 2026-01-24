@@ -155,6 +155,10 @@ func runChat(cmd *cobra.Command, args []string) error {
 			// Continue with nil store (no persistence)
 		} else {
 			defer store.Close()
+			// Wrap store with logging to surface persistence errors
+			store = session.NewLoggingStore(store, func(format string, args ...any) {
+				fmt.Fprintf(cmd.ErrOrStderr(), "warning: "+format+"\n", args...)
+			})
 		}
 	}
 

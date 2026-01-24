@@ -33,7 +33,14 @@ CREATE TABLE IF NOT EXISTS sessions (
     parent_id TEXT REFERENCES sessions(id),
     search BOOLEAN DEFAULT FALSE,
     tools TEXT,
-    mcp TEXT
+    mcp TEXT,
+    user_turns INTEGER DEFAULT 0,
+    llm_turns INTEGER DEFAULT 0,
+    tool_calls INTEGER DEFAULT 0,
+    input_tokens INTEGER DEFAULT 0,
+    output_tokens INTEGER DEFAULT 0,
+    status TEXT DEFAULT 'active',
+    tags TEXT
 );
 
 CREATE TABLE IF NOT EXISTS messages (
@@ -116,7 +123,7 @@ func NewSQLiteStore(cfg Config) (*SQLiteStore, error) {
 // - Fresh databases get the full schema from `schema` const and start at this version
 // - Existing databases run migrations to reach this version
 // Increment when adding new migrations.
-const schemaVersion = 1
+const schemaVersion = 3
 
 // migration represents a schema migration.
 type migration struct {
@@ -152,6 +159,110 @@ var migrations = []migration{
 					}
 				}
 			}
+			return nil
+		},
+	},
+	{
+		// Migration 2: Add session metrics columns
+		// Tracks user turns, LLM turns, tool calls, tokens, status, and tags
+		version:     2,
+		description: "add session metrics columns (user_turns, llm_turns, tool_calls, tokens, status, tags)",
+		up: func(db *sql.DB) error {
+			alterStatements := []string{
+				"ALTER TABLE sessions ADD COLUMN user_turns INTEGER DEFAULT 0",
+				"ALTER TABLE sessions ADD COLUMN llm_turns INTEGER DEFAULT 0",
+				"ALTER TABLE sessions ADD COLUMN tool_calls INTEGER DEFAULT 0",
+				"ALTER TABLE sessions ADD COLUMN input_tokens INTEGER DEFAULT 0",
+				"ALTER TABLE sessions ADD COLUMN output_tokens INTEGER DEFAULT 0",
+				"ALTER TABLE sessions ADD COLUMN status TEXT DEFAULT 'active'",
+				"ALTER TABLE sessions ADD COLUMN tags TEXT",
+			}
+			for _, stmt := range alterStatements {
+				if _, err := db.Exec(stmt); err != nil {
+					if !isDuplicateColumnError(err) {
+						return err
+					}
+				}
+			}
+			return nil
+		},
+	},
+	{
+		// Migration 3: Add unique constraint on message sequences and status index
+		// Fixes TOCTOU race condition in AddMessage by enforcing uniqueness at DB level.
+		// Also adds index on sessions.status for query performance.
+		version:     3,
+		description: "add unique constraint on message sequences and status index",
+		up: func(db *sql.DB) error {
+			// First, fix any existing duplicate sequences within sessions.
+			// Renumber messages by created_at order within each session.
+			rows, err := db.Query(`
+				SELECT DISTINCT session_id FROM messages
+				WHERE session_id IN (
+					SELECT session_id FROM messages
+					GROUP BY session_id, sequence
+					HAVING COUNT(*) > 1
+				)
+			`)
+			if err != nil {
+				return fmt.Errorf("find duplicate sequences: %w", err)
+			}
+			defer rows.Close()
+
+			var sessionsToFix []string
+			for rows.Next() {
+				var sid string
+				if err := rows.Scan(&sid); err != nil {
+					return fmt.Errorf("scan session id: %w", err)
+				}
+				sessionsToFix = append(sessionsToFix, sid)
+			}
+			if err := rows.Err(); err != nil {
+				return fmt.Errorf("iterate sessions: %w", err)
+			}
+
+			// Renumber messages in each affected session
+			for _, sid := range sessionsToFix {
+				msgRows, err := db.Query(`
+					SELECT id FROM messages
+					WHERE session_id = ?
+					ORDER BY created_at ASC, id ASC
+				`, sid)
+				if err != nil {
+					return fmt.Errorf("get messages for session %s: %w", sid, err)
+				}
+
+				var msgIDs []int64
+				for msgRows.Next() {
+					var id int64
+					if err := msgRows.Scan(&id); err != nil {
+						msgRows.Close()
+						return fmt.Errorf("scan message id: %w", err)
+					}
+					msgIDs = append(msgIDs, id)
+				}
+				msgRows.Close()
+
+				// Update sequences
+				for seq, msgID := range msgIDs {
+					if _, err := db.Exec(`UPDATE messages SET sequence = ? WHERE id = ?`, seq, msgID); err != nil {
+						return fmt.Errorf("update message sequence: %w", err)
+					}
+				}
+			}
+
+			// Now add the unique index (also serves as the constraint)
+			_, err = db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_session_sequence ON messages(session_id, sequence)`)
+			if err != nil {
+				return fmt.Errorf("create unique index: %w", err)
+			}
+
+			// Add index on sessions.status for query performance
+			_, err = db.Exec(`CREATE INDEX IF NOT EXISTS idx_sessions_status ON sessions(status)`)
+			if err != nil {
+				return fmt.Errorf("create status index: %w", err)
+			}
+
 			return nil
 		},
 	},
@@ -289,13 +400,19 @@ func (s *SQLiteStore) Create(ctx context.Context, sess *Session) error {
 	if sess.UpdatedAt.IsZero() {
 		sess.UpdatedAt = sess.CreatedAt
 	}
+	if sess.Status == "" {
+		sess.Status = StatusActive
+	}
 
 	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO sessions (id, name, summary, provider, model, cwd, created_at, updated_at, archived, parent_id, search, tools, mcp)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		INSERT INTO sessions (id, name, summary, provider, model, cwd, created_at, updated_at, archived, parent_id, search, tools, mcp,
+		                      user_turns, llm_turns, tool_calls, input_tokens, output_tokens, status, tags)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		sess.ID, sess.Name, sess.Summary, sess.Provider, sess.Model, sess.CWD,
 		sess.CreatedAt, sess.UpdatedAt, sess.Archived, nullString(sess.ParentID),
-		sess.Search, nullString(sess.Tools), nullString(sess.MCP))
+		sess.Search, nullString(sess.Tools), nullString(sess.MCP),
+		sess.UserTurns, sess.LLMTurns, sess.ToolCalls, sess.InputTokens, sess.OutputTokens,
+		string(sess.Status), nullString(sess.Tags))
 	if err != nil {
 		return fmt.Errorf("insert session: %w", err)
 	}
@@ -305,14 +422,17 @@ func (s *SQLiteStore) Create(ctx context.Context, sess *Session) error {
 // Get retrieves a session by ID.
 func (s *SQLiteStore) Get(ctx context.Context, id string) (*Session, error) {
 	row := s.db.QueryRowContext(ctx, `
-		SELECT id, name, summary, provider, model, cwd, created_at, updated_at, archived, parent_id, search, tools, mcp
+		SELECT id, name, summary, provider, model, cwd, created_at, updated_at, archived, parent_id, search, tools, mcp,
+		       user_turns, llm_turns, tool_calls, input_tokens, output_tokens, status, tags
 		FROM sessions WHERE id = ?`, id)
 
 	var sess Session
-	var parentID, tools, mcp sql.NullString
+	var parentID, tools, mcp, status, tags sql.NullString
 	err := row.Scan(&sess.ID, &sess.Name, &sess.Summary, &sess.Provider, &sess.Model,
 		&sess.CWD, &sess.CreatedAt, &sess.UpdatedAt, &sess.Archived, &parentID,
-		&sess.Search, &tools, &mcp)
+		&sess.Search, &tools, &mcp,
+		&sess.UserTurns, &sess.LLMTurns, &sess.ToolCalls, &sess.InputTokens, &sess.OutputTokens,
+		&status, &tags)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -328,6 +448,12 @@ func (s *SQLiteStore) Get(ctx context.Context, id string) (*Session, error) {
 	if mcp.Valid {
 		sess.MCP = mcp.String
 	}
+	if status.Valid {
+		sess.Status = SessionStatus(status.String)
+	}
+	if tags.Valid {
+		sess.Tags = tags.String
+	}
 	return &sess, nil
 }
 
@@ -336,11 +462,15 @@ func (s *SQLiteStore) Update(ctx context.Context, sess *Session) error {
 	sess.UpdatedAt = time.Now()
 	result, err := s.db.ExecContext(ctx, `
 		UPDATE sessions SET name = ?, summary = ?, provider = ?, model = ?, cwd = ?,
-		       updated_at = ?, archived = ?, parent_id = ?, search = ?, tools = ?, mcp = ?
+		       updated_at = ?, archived = ?, parent_id = ?, search = ?, tools = ?, mcp = ?,
+		       user_turns = ?, llm_turns = ?, tool_calls = ?, input_tokens = ?, output_tokens = ?,
+		       status = ?, tags = ?
 		WHERE id = ?`,
 		sess.Name, sess.Summary, sess.Provider, sess.Model, sess.CWD,
 		sess.UpdatedAt, sess.Archived, nullString(sess.ParentID),
-		sess.Search, nullString(sess.Tools), nullString(sess.MCP), sess.ID)
+		sess.Search, nullString(sess.Tools), nullString(sess.MCP),
+		sess.UserTurns, sess.LLMTurns, sess.ToolCalls, sess.InputTokens, sess.OutputTokens,
+		string(sess.Status), nullString(sess.Tags), sess.ID)
 	if err != nil {
 		return fmt.Errorf("update session: %w", err)
 	}
@@ -349,6 +479,38 @@ func (s *SQLiteStore) Update(ctx context.Context, sess *Session) error {
 		return fmt.Errorf("session not found: %s", sess.ID)
 	}
 	return nil
+}
+
+// UpdateMetrics updates just the metrics fields (used for incremental saves).
+func (s *SQLiteStore) UpdateMetrics(ctx context.Context, id string, llmTurns, toolCalls, inputTokens, outputTokens int) error {
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE sessions SET
+		       llm_turns = llm_turns + ?,
+		       tool_calls = tool_calls + ?,
+		       input_tokens = input_tokens + ?,
+		       output_tokens = output_tokens + ?,
+		       updated_at = ?
+		WHERE id = ?`,
+		llmTurns, toolCalls, inputTokens, outputTokens, time.Now(), id)
+	return err
+}
+
+// UpdateStatus updates just the session status.
+func (s *SQLiteStore) UpdateStatus(ctx context.Context, id string, status SessionStatus) error {
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE sessions SET status = ?, updated_at = ?
+		WHERE id = ?`,
+		string(status), time.Now(), id)
+	return err
+}
+
+// IncrementUserTurns increments the user turn count.
+func (s *SQLiteStore) IncrementUserTurns(ctx context.Context, id string) error {
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE sessions SET user_turns = user_turns + 1, updated_at = ?
+		WHERE id = ?`,
+		time.Now(), id)
+	return err
 }
 
 // Delete removes a session and its messages.
@@ -369,7 +531,8 @@ func (s *SQLiteStore) Delete(ctx context.Context, id string) error {
 func (s *SQLiteStore) List(ctx context.Context, opts ListOptions) ([]SessionSummary, error) {
 	query := `
 		SELECT s.id, s.name, s.summary, s.provider, s.model, s.created_at, s.updated_at,
-		       (SELECT COUNT(*) FROM messages WHERE session_id = s.id) as message_count
+		       (SELECT COUNT(*) FROM messages WHERE session_id = s.id) as message_count,
+		       s.user_turns, s.llm_turns, s.tool_calls, s.input_tokens, s.output_tokens, s.status, s.tags
 		FROM sessions s
 		WHERE 1=1`
 	args := []any{}
@@ -381,6 +544,15 @@ func (s *SQLiteStore) List(ctx context.Context, opts ListOptions) ([]SessionSumm
 	if opts.Model != "" {
 		query += " AND s.model = ?"
 		args = append(args, opts.Model)
+	}
+	if opts.Status != "" {
+		query += " AND s.status = ?"
+		args = append(args, string(opts.Status))
+	}
+	if opts.Tag != "" {
+		// Substring match on comma-separated tags
+		query += " AND (',' || s.tags || ',' LIKE '%,' || ? || ',%')"
+		args = append(args, opts.Tag)
 	}
 	if !opts.Archived {
 		query += " AND s.archived = FALSE"
@@ -406,10 +578,19 @@ func (s *SQLiteStore) List(ctx context.Context, opts ListOptions) ([]SessionSumm
 	var results []SessionSummary
 	for rows.Next() {
 		var sum SessionSummary
+		var status, tags sql.NullString
 		err := rows.Scan(&sum.ID, &sum.Name, &sum.Summary, &sum.Provider, &sum.Model,
-			&sum.CreatedAt, &sum.UpdatedAt, &sum.MessageCount)
+			&sum.CreatedAt, &sum.UpdatedAt, &sum.MessageCount,
+			&sum.UserTurns, &sum.LLMTurns, &sum.ToolCalls, &sum.InputTokens, &sum.OutputTokens,
+			&status, &tags)
 		if err != nil {
 			return nil, fmt.Errorf("scan session summary: %w", err)
+		}
+		if status.Valid {
+			sum.Status = SessionStatus(status.String)
+		}
+		if tags.Valid {
+			sum.Tags = tags.String
 		}
 		results = append(results, sum)
 	}
@@ -450,6 +631,7 @@ func (s *SQLiteStore) Search(ctx context.Context, query string, limit int) ([]Se
 }
 
 // AddMessage adds a message to a session.
+// If msg.Sequence < 0, the sequence number is auto-allocated atomically.
 func (s *SQLiteStore) AddMessage(ctx context.Context, sessionID string, msg *Message) error {
 	msg.SessionID = sessionID
 	if msg.CreatedAt.IsZero() {
@@ -461,7 +643,30 @@ func (s *SQLiteStore) AddMessage(ctx context.Context, sessionID string, msg *Mes
 		return fmt.Errorf("serialize parts: %w", err)
 	}
 
-	result, err := s.db.ExecContext(ctx, `
+	// Use transaction for atomic sequence allocation
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	// Auto-allocate sequence if not specified (Sequence < 0)
+	if msg.Sequence < 0 {
+		var maxSeq sql.NullInt64
+		err = tx.QueryRowContext(ctx,
+			`SELECT MAX(sequence) FROM messages WHERE session_id = ?`,
+			sessionID).Scan(&maxSeq)
+		if err != nil {
+			return fmt.Errorf("get max sequence: %w", err)
+		}
+		if maxSeq.Valid {
+			msg.Sequence = int(maxSeq.Int64) + 1
+		} else {
+			msg.Sequence = 0
+		}
+	}
+
+	result, err := tx.ExecContext(ctx, `
 		INSERT INTO messages (session_id, role, parts, text_content, duration_ms, created_at, sequence)
 		VALUES (?, ?, ?, ?, ?, ?, ?)`,
 		sessionID, string(msg.Role), partsJSON, msg.TextContent, msg.DurationMs, msg.CreatedAt, msg.Sequence)
@@ -474,10 +679,14 @@ func (s *SQLiteStore) AddMessage(ctx context.Context, sessionID string, msg *Mes
 	msg.ID = id
 
 	// Update session's updated_at
-	_, err = s.db.ExecContext(ctx, "UPDATE sessions SET updated_at = ? WHERE id = ?",
+	_, err = tx.ExecContext(ctx, "UPDATE sessions SET updated_at = ? WHERE id = ?",
 		time.Now(), sessionID)
 	if err != nil {
 		return fmt.Errorf("update session timestamp: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit transaction: %w", err)
 	}
 
 	return nil

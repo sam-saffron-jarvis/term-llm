@@ -41,6 +41,18 @@ func (s *NoopStore) GetMessages(ctx context.Context, sessionID string, limit, of
 	return nil, nil
 }
 
+func (s *NoopStore) UpdateMetrics(ctx context.Context, id string, llmTurns, toolCalls, inputTokens, outputTokens int) error {
+	return nil
+}
+
+func (s *NoopStore) UpdateStatus(ctx context.Context, id string, status SessionStatus) error {
+	return nil
+}
+
+func (s *NoopStore) IncrementUserTurns(ctx context.Context, id string) error {
+	return nil
+}
+
 func (s *NoopStore) SetCurrent(ctx context.Context, sessionID string) error {
 	return nil
 }

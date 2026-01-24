@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"slices"
 	"strings"
 	"time"
 
@@ -70,17 +71,56 @@ You must type 'yes' to confirm.`,
 	RunE: runSessionsReset,
 }
 
+var sessionsNameCmd = &cobra.Command{
+	Use:   "name <id> <name>",
+	Short: "Set a custom name for a session",
+	Long: `Set a custom name for a session. The name is displayed instead of
+the auto-generated summary in listings.
+
+Example:
+  term-llm sessions name abc123 "Auth refactor"`,
+	Args: cobra.ExactArgs(2),
+	RunE: runSessionsName,
+}
+
+var sessionsTagCmd = &cobra.Command{
+	Use:   "tag <id> <tags...>",
+	Short: "Add tags to a session",
+	Long: `Add one or more tags to a session. Tags can be used to organize
+and filter sessions.
+
+Example:
+  term-llm sessions tag abc123 bug feature`,
+	Args: cobra.MinimumNArgs(2),
+	RunE: runSessionsTag,
+}
+
+var sessionsUntagCmd = &cobra.Command{
+	Use:   "untag <id> <tags...>",
+	Short: "Remove tags from a session",
+	Long: `Remove one or more tags from a session.
+
+Example:
+  term-llm sessions untag abc123 bug`,
+	Args: cobra.MinimumNArgs(2),
+	RunE: runSessionsUntag,
+}
+
 // Flags
 var (
 	sessionsProvider string
 	sessionsLimit    int
 	sessionsJSON     bool
+	sessionsStatus   string
+	sessionsTag      string
 )
 
 func init() {
 	// List flags
 	sessionsListCmd.Flags().StringVar(&sessionsProvider, "provider", "", "Filter by provider")
 	sessionsListCmd.Flags().IntVar(&sessionsLimit, "limit", 20, "Maximum number of sessions to list")
+	sessionsListCmd.Flags().StringVar(&sessionsStatus, "status", "", "Filter by status (active, complete, error, interrupted)")
+	sessionsListCmd.Flags().StringVar(&sessionsTag, "tag", "", "Filter by tag")
 
 	// Show flags
 	sessionsShowCmd.Flags().BoolVar(&sessionsJSON, "json", false, "Output as JSON")
@@ -92,6 +132,9 @@ func init() {
 	sessionsCmd.AddCommand(sessionsDeleteCmd)
 	sessionsCmd.AddCommand(sessionsExportCmd)
 	sessionsCmd.AddCommand(sessionsResetCmd)
+	sessionsCmd.AddCommand(sessionsNameCmd)
+	sessionsCmd.AddCommand(sessionsTagCmd)
+	sessionsCmd.AddCommand(sessionsUntagCmd)
 
 	rootCmd.AddCommand(sessionsCmd)
 }
@@ -114,6 +157,14 @@ func getSessionStore() (session.Store, error) {
 }
 
 func runSessionsList(cmd *cobra.Command, args []string) error {
+	// Validate status if provided
+	if sessionsStatus != "" {
+		validStatuses := []string{"active", "complete", "error", "interrupted"}
+		if !slices.Contains(validStatuses, sessionsStatus) {
+			return fmt.Errorf("invalid status %q: must be one of %v", sessionsStatus, validStatuses)
+		}
+	}
+
 	store, err := getSessionStore()
 	if err != nil {
 		return err
@@ -123,6 +174,8 @@ func runSessionsList(cmd *cobra.Command, args []string) error {
 	ctx := context.Background()
 	summaries, err := store.List(ctx, session.ListOptions{
 		Provider: sessionsProvider,
+		Status:   session.SessionStatus(sessionsStatus),
+		Tag:      sessionsTag,
 		Limit:    sessionsLimit,
 	})
 	if err != nil {
@@ -134,26 +187,65 @@ func runSessionsList(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
-	fmt.Printf("%-20s %-12s %-20s %s\n", "ID", "Provider", "Updated", "Summary")
-	fmt.Println(strings.Repeat("-", 80))
+	// Header line
+	fmt.Printf("%-15s %-25s %4s %5s %5s %-11s %-8s %s\n",
+		"ID", "SUMMARY", "MSGS", "TURNS", "TOOLS", "TOKENS", "STATUS", "AGE")
+	fmt.Println(strings.Repeat("-", 100))
 
 	for _, s := range summaries {
-		id := s.ID
-		if len(id) > 20 {
-			id = id[:17] + "..."
-		}
+		id := session.ShortID(s.ID)
 		summary := s.Summary
 		if s.Name != "" {
 			summary = s.Name
 		}
-		if len(summary) > 35 {
-			summary = summary[:32] + "..."
+		if len(summary) > 25 {
+			summary = summary[:22] + "..."
 		}
-		updated := formatRelativeTime(s.UpdatedAt)
-		fmt.Printf("%-20s %-12s %-20s %s\n", id, s.Provider, updated, summary)
+
+		// Format tokens as "input/output" in k format
+		tokens := formatSessionTokens(s.InputTokens, s.OutputTokens)
+
+		// Format status
+		status := string(s.Status)
+		if status == "" {
+			status = "active"
+		}
+
+		age := formatRelativeTime(s.UpdatedAt)
+
+		// MSGS shows actual message count (MessageCount), TURNS shows LLM API round-trips
+		fmt.Printf("%-15s %-25s %4d %5d %5d %-11s %-8s %s\n",
+			id, summary, s.MessageCount, s.LLMTurns, s.ToolCalls, tokens, status, age)
 	}
 
 	return nil
+}
+
+// formatSessionTokens formats input/output tokens in compact form
+func formatSessionTokens(input, output int) string {
+	if input == 0 && output == 0 {
+		return "-"
+	}
+	return fmt.Sprintf("%s/%s", formatSessionCount(input), formatSessionCount(output))
+}
+
+// formatSessionCount formats a number in compact form (e.g., 1k, 1.2k, 3.4M)
+func formatSessionCount(n int) string {
+	if n < 1000 {
+		return fmt.Sprintf("%d", n)
+	}
+	if n < 1000000 {
+		val := float64(n) / 1000
+		if val == float64(int(val)) {
+			return fmt.Sprintf("%dk", int(val))
+		}
+		return fmt.Sprintf("%.1fk", val)
+	}
+	val := float64(n) / 1000000
+	if val == float64(int(val)) {
+		return fmt.Sprintf("%dM", int(val))
+	}
+	return fmt.Sprintf("%.1fM", val)
 }
 
 func runSessionsSearch(cmd *cobra.Command, args []string) error {
@@ -235,6 +327,22 @@ func runSessionsShow(cmd *cobra.Command, args []string) error {
 		fmt.Printf("CWD: %s\n", sess.CWD)
 	}
 	fmt.Printf("Messages: %d\n", len(messages))
+
+	// Show metrics
+	status := string(sess.Status)
+	if status == "" {
+		status = "active"
+	}
+	fmt.Printf("Status: %s\n", status)
+	fmt.Printf("User Turns: %d\n", sess.UserTurns)
+	fmt.Printf("LLM Turns: %d\n", sess.LLMTurns)
+	fmt.Printf("Tool Calls: %d\n", sess.ToolCalls)
+	fmt.Printf("Tokens: %s (input: %d, output: %d)\n",
+		formatSessionTokens(sess.InputTokens, sess.OutputTokens),
+		sess.InputTokens, sess.OutputTokens)
+	if sess.Tags != "" {
+		fmt.Printf("Tags: %s\n", sess.Tags)
+	}
 	fmt.Println()
 
 	for _, msg := range messages {
@@ -391,4 +499,153 @@ func runSessionsReset(cmd *cobra.Command, args []string) error {
 
 	fmt.Println("Sessions database deleted.")
 	return nil
+}
+
+func runSessionsName(cmd *cobra.Command, args []string) error {
+	store, err := getSessionStore()
+	if err != nil {
+		return err
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+	sess, err := store.Get(ctx, args[0])
+	if err != nil {
+		return fmt.Errorf("failed to get session: %w", err)
+	}
+	if sess == nil {
+		return fmt.Errorf("session '%s' not found", args[0])
+	}
+
+	sess.Name = args[1]
+	if err := store.Update(ctx, sess); err != nil {
+		return fmt.Errorf("failed to update session: %w", err)
+	}
+
+	fmt.Printf("Session %s named: %s\n", session.ShortID(sess.ID), sess.Name)
+	return nil
+}
+
+func runSessionsTag(cmd *cobra.Command, args []string) error {
+	store, err := getSessionStore()
+	if err != nil {
+		return err
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+	sess, err := store.Get(ctx, args[0])
+	if err != nil {
+		return fmt.Errorf("failed to get session: %w", err)
+	}
+	if sess == nil {
+		return fmt.Errorf("session '%s' not found", args[0])
+	}
+
+	// Parse existing tags
+	existingTags := parseTags(sess.Tags)
+
+	// Add new tags (normalize and avoid duplicates)
+	addedTags := []string{}
+	for _, tag := range args[1:] {
+		normalized := normalizeTag(tag)
+		if normalized == "" {
+			continue // Skip empty tags
+		}
+		if !containsTag(existingTags, normalized) {
+			existingTags = append(existingTags, normalized)
+			addedTags = append(addedTags, normalized)
+		}
+	}
+
+	if len(addedTags) == 0 {
+		fmt.Println("No new tags to add (all already present or empty).")
+		return nil
+	}
+
+	sess.Tags = strings.Join(existingTags, ",")
+	if err := store.Update(ctx, sess); err != nil {
+		return fmt.Errorf("failed to update session: %w", err)
+	}
+
+	fmt.Printf("Added tags to session %s: %s\n", session.ShortID(sess.ID), strings.Join(addedTags, ", "))
+	return nil
+}
+
+func runSessionsUntag(cmd *cobra.Command, args []string) error {
+	store, err := getSessionStore()
+	if err != nil {
+		return err
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+	sess, err := store.Get(ctx, args[0])
+	if err != nil {
+		return fmt.Errorf("failed to get session: %w", err)
+	}
+	if sess == nil {
+		return fmt.Errorf("session '%s' not found", args[0])
+	}
+
+	// Parse existing tags (already normalized)
+	existingTags := parseTags(sess.Tags)
+
+	// Normalize tags to remove
+	tagsToRemove := make([]string, 0, len(args[1:]))
+	for _, t := range args[1:] {
+		if nt := normalizeTag(t); nt != "" {
+			tagsToRemove = append(tagsToRemove, nt)
+		}
+	}
+
+	// Remove specified tags
+	removedTags := []string{}
+	newTags := []string{}
+	for _, tag := range existingTags {
+		if slices.Contains(tagsToRemove, tag) {
+			removedTags = append(removedTags, tag)
+		} else {
+			newTags = append(newTags, tag)
+		}
+	}
+
+	if len(removedTags) == 0 {
+		fmt.Println("No tags to remove (none present).")
+		return nil
+	}
+
+	sess.Tags = strings.Join(newTags, ",")
+	if err := store.Update(ctx, sess); err != nil {
+		return fmt.Errorf("failed to update session: %w", err)
+	}
+
+	fmt.Printf("Removed tags from session %s: %s\n", session.ShortID(sess.ID), strings.Join(removedTags, ", "))
+	return nil
+}
+
+// parseTags parses a comma-separated tag string into a slice of normalized tags.
+func parseTags(tags string) []string {
+	if tags == "" {
+		return nil
+	}
+	parts := strings.Split(tags, ",")
+	var result []string
+	for _, tag := range parts {
+		normalized := normalizeTag(tag)
+		if normalized != "" {
+			result = append(result, normalized)
+		}
+	}
+	return result
+}
+
+// normalizeTag normalizes a tag: trim whitespace, lowercase.
+func normalizeTag(tag string) string {
+	return strings.ToLower(strings.TrimSpace(tag))
+}
+
+// containsTag checks if a slice contains a tag (already normalized)
+func containsTag(tags []string, tag string) bool {
+	return slices.Contains(tags, normalizeTag(tag))
 }

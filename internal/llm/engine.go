@@ -26,6 +26,18 @@ func getMaxTurns(req Request) int {
 	return defaultMaxTurns
 }
 
+// TurnMetrics contains metrics collected during a turn.
+type TurnMetrics struct {
+	InputTokens  int // Tokens consumed as input this turn
+	OutputTokens int // Tokens generated as output this turn
+	ToolCalls    int // Number of tools executed this turn
+}
+
+// TurnCompletedCallback is called after each turn completes with the messages
+// generated during that turn and metrics about the turn.
+// turnIndex is 0-based, messages contains assistant message(s) and tool result(s).
+type TurnCompletedCallback func(ctx context.Context, turnIndex int, messages []Message, metrics TurnMetrics) error
+
 // Engine orchestrates provider calls and external tool execution.
 type Engine struct {
 	provider    Provider
@@ -37,6 +49,11 @@ type Engine struct {
 	// Used by skills with allowed-tools to restrict tool access.
 	allowedTools map[string]bool
 	allowedMu    sync.RWMutex
+
+	// onTurnCompleted is called after each turn with messages generated.
+	// Used for incremental session saving. Protected by callbackMu.
+	onTurnCompleted TurnCompletedCallback
+	callbackMu      sync.RWMutex
 }
 
 func NewEngine(provider Provider, tools *ToolRegistry) *Engine {
@@ -96,6 +113,23 @@ func (e *Engine) ClearAllowedTools() {
 	e.allowedMu.Lock()
 	defer e.allowedMu.Unlock()
 	e.allowedTools = nil
+}
+
+// SetTurnCompletedCallback sets the callback for incremental turn completion.
+// The callback receives messages generated each turn for incremental persistence.
+// Thread-safe: can be called while streaming is in progress.
+func (e *Engine) SetTurnCompletedCallback(cb TurnCompletedCallback) {
+	e.callbackMu.Lock()
+	e.onTurnCompleted = cb
+	e.callbackMu.Unlock()
+}
+
+// getCallback returns the current callback under read lock.
+func (e *Engine) getCallback() TurnCompletedCallback {
+	e.callbackMu.RLock()
+	cb := e.onTurnCompleted
+	e.callbackMu.RUnlock()
+	return cb
 }
 
 // IsToolAllowed checks if a tool can be executed under current restrictions.
@@ -165,7 +199,79 @@ func (e *Engine) Stream(ctx context.Context, req Request) (Stream, error) {
 	}
 	stream = WrapDebugStream(req.DebugRaw, stream)
 	stream = wrapLoggingStream(stream, e.provider.Name(), req.Model)
+
+	// Wrap to call turn callback even for simple streams
+	// Copy callback under lock to avoid race with SetTurnCompletedCallback
+	if cb := e.getCallback(); cb != nil {
+		stream = wrapCallbackStream(ctx, stream, cb)
+	}
+
 	return e.wrapDebugLoggingStream(stream), nil
+}
+
+// wrapCallbackStream wraps a stream to call the turn callback on completion.
+// Used for simple (non-agentic) streams to enable incremental session saving.
+func wrapCallbackStream(ctx context.Context, inner Stream, cb TurnCompletedCallback) Stream {
+	return &callbackStream{
+		inner:    inner,
+		ctx:      ctx,
+		text:     &strings.Builder{},
+		metrics:  TurnMetrics{},
+		callback: cb,
+	}
+}
+
+// callbackStream wraps a stream to accumulate text/usage and call callback on EOF.
+type callbackStream struct {
+	inner    Stream
+	ctx      context.Context
+	text     *strings.Builder
+	metrics  TurnMetrics
+	callback TurnCompletedCallback
+	done     bool
+}
+
+func (s *callbackStream) Recv() (Event, error) {
+	event, err := s.inner.Recv()
+	if err == io.EOF {
+		// Call callback with accumulated content on normal completion
+		s.fireCallback()
+		return event, err
+	}
+	if err != nil {
+		// Call callback on error too (best-effort save of partial output)
+		s.fireCallback()
+		return event, err
+	}
+
+	// Accumulate text and usage
+	if event.Type == EventTextDelta && event.Text != "" {
+		s.text.WriteString(event.Text)
+	}
+	if event.Type == EventUsage && event.Use != nil {
+		s.metrics.InputTokens += event.Use.InputTokens
+		s.metrics.OutputTokens += event.Use.OutputTokens
+	}
+
+	return event, nil
+}
+
+// fireCallback invokes the callback once if there's accumulated content.
+func (s *callbackStream) fireCallback() {
+	if s.callback != nil && !s.done && s.text.Len() > 0 {
+		s.done = true
+		msg := Message{
+			Role:  RoleAssistant,
+			Parts: []Part{{Type: PartText, Text: s.text.String()}},
+		}
+		_ = s.callback(s.ctx, 0, []Message{msg}, s.metrics)
+	}
+}
+
+func (s *callbackStream) Close() error {
+	// Best-effort: fire callback if stream closed without EOF/error
+	s.fireCallback()
+	return s.inner.Close()
 }
 
 // hasToolNamed checks if a tool with the given name exists in the tool list.
@@ -182,6 +288,9 @@ func (e *Engine) runLoop(ctx context.Context, req Request, events chan<- Event) 
 	maxTurns := getMaxTurns(req)
 	originalToolChoice := req.ToolChoice
 	restoredToolChoice := false
+
+	// Copy callback at start - protects against concurrent modification from UI thread
+	callback := e.getCallback()
 
 	for attempt := 0; attempt < maxTurns; attempt++ {
 		// Prepare turn
@@ -211,8 +320,10 @@ func (e *Engine) runLoop(ctx context.Context, req Request, events chan<- Event) 
 			return err
 		}
 
-		// Collect tool calls, forward all other events
+		// Collect tool calls and text, forward events, track metrics
 		var toolCalls []ToolCall
+		var textBuilder strings.Builder
+		var turnMetrics TurnMetrics
 		for {
 			event, err := stream.Recv()
 			if err == io.EOF {
@@ -228,6 +339,15 @@ func (e *Engine) runLoop(ctx context.Context, req Request, events chan<- Event) 
 			}
 			if req.DebugRaw {
 				DebugRawEvent(true, event)
+			}
+			// Track usage metrics
+			if event.Type == EventUsage && event.Use != nil {
+				turnMetrics.InputTokens += event.Use.InputTokens
+				turnMetrics.OutputTokens += event.Use.OutputTokens
+			}
+			// Accumulate text for callback
+			if event.Type == EventTextDelta && event.Text != "" {
+				textBuilder.WriteString(event.Text)
 			}
 			if event.Type == EventToolCall && event.Tool != nil {
 				toolCalls = append(toolCalls, *event.Tool)
@@ -249,6 +369,14 @@ func (e *Engine) runLoop(ctx context.Context, req Request, events chan<- Event) 
 				req.ToolChoice = originalToolChoice
 				restoredToolChoice = true
 				continue
+			}
+			// Call callback with final text-only response (no tools)
+			if callback != nil && textBuilder.Len() > 0 {
+				finalMsg := Message{
+					Role:  RoleAssistant,
+					Parts: []Part{{Type: PartText, Text: textBuilder.String()}},
+				}
+				_ = callback(ctx, attempt, []Message{finalMsg}, turnMetrics)
 			}
 			events <- Event{Type: EventDone}
 			return nil
@@ -275,6 +403,21 @@ func (e *Engine) runLoop(ctx context.Context, req Request, events chan<- Event) 
 
 		// If nothing to execute, we are done
 		if len(registered) == 0 {
+			// Call callback with text + unregistered tool calls
+			if callback != nil {
+				var parts []Part
+				if textBuilder.Len() > 0 {
+					parts = append(parts, Part{Type: PartText, Text: textBuilder.String()})
+				}
+				for i := range unregistered {
+					call := unregistered[i]
+					parts = append(parts, Part{Type: PartToolCall, ToolCall: &call})
+				}
+				if len(parts) > 0 {
+					finalMsg := Message{Role: RoleAssistant, Parts: parts}
+					_ = callback(ctx, attempt, []Message{finalMsg}, turnMetrics)
+				}
+			}
 			events <- Event{Type: EventDone}
 			return nil
 		}
@@ -298,11 +441,34 @@ func (e *Engine) runLoop(ctx context.Context, req Request, events chan<- Event) 
 			return err
 		}
 
-		req.Messages = append(req.Messages, toolCallMessage(registered))
+		// Build assistant message with text + tool calls
+		assistantMsg := buildAssistantMessage(textBuilder.String(), registered)
+		req.Messages = append(req.Messages, assistantMsg)
 		req.Messages = append(req.Messages, toolResults...)
+
+		// Call turn completed callback for incremental persistence
+		if callback != nil {
+			turnMetrics.ToolCalls = len(registered)
+			turnMessages := []Message{assistantMsg}
+			turnMessages = append(turnMessages, toolResults...)
+			_ = callback(ctx, attempt, turnMessages, turnMetrics)
+		}
 	}
 
 	return fmt.Errorf("agentic loop ended unexpectedly")
+}
+
+// buildAssistantMessage creates an assistant message with text and tool calls.
+func buildAssistantMessage(text string, toolCalls []ToolCall) Message {
+	var parts []Part
+	if text != "" {
+		parts = append(parts, Part{Type: PartText, Text: text})
+	}
+	for i := range toolCalls {
+		call := toolCalls[i]
+		parts = append(parts, Part{Type: PartToolCall, ToolCall: &call})
+	}
+	return Message{Role: RoleAssistant, Parts: parts}
 }
 
 // executeToolCalls executes multiple tool calls, potentially in parallel.
@@ -391,21 +557,6 @@ func (e *Engine) executeSingleToolCall(ctx context.Context, call ToolCall, event
 		events <- Event{Type: EventToolExecEnd, ToolCallID: call.ID, ToolName: call.Name, ToolInfo: info, ToolSuccess: true, ToolOutput: output}
 	}
 	return []Message{ToolResultMessage(call.ID, call.Name, output, call.ThoughtSig)}, nil
-}
-
-func toolCallMessage(calls []ToolCall) Message {
-	parts := make([]Part, 0, len(calls))
-	for i := range calls {
-		call := calls[i]
-		parts = append(parts, Part{
-			Type:     PartToolCall,
-			ToolCall: &call,
-		})
-	}
-	return Message{
-		Role:  RoleAssistant,
-		Parts: parts,
-	}
 }
 
 func ensureToolCallIDs(calls []ToolCall) []ToolCall {

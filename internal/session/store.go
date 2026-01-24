@@ -23,6 +23,11 @@ type Store interface {
 	AddMessage(ctx context.Context, sessionID string, msg *Message) error
 	GetMessages(ctx context.Context, sessionID string, limit, offset int) ([]Message, error)
 
+	// Metrics operations (for incremental session saving)
+	UpdateMetrics(ctx context.Context, id string, llmTurns, toolCalls, inputTokens, outputTokens int) error
+	UpdateStatus(ctx context.Context, id string, status SessionStatus) error
+	IncrementUserTurns(ctx context.Context, id string) error
+
 	// Current session tracking (for auto-resume)
 	SetCurrent(ctx context.Context, sessionID string) error
 	GetCurrent(ctx context.Context) (*Session, error)

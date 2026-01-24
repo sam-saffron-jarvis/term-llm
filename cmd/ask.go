@@ -274,6 +274,10 @@ func runAsk(cmd *cobra.Command, args []string) error {
 			fmt.Fprintf(cmd.ErrOrStderr(), "warning: session store unavailable: %v\n", storeErr)
 		} else {
 			defer store.Close()
+			// Wrap store with logging to surface persistence errors
+			store = session.NewLoggingStore(store, func(format string, args ...any) {
+				fmt.Fprintf(cmd.ErrOrStderr(), "warning: "+format+"\n", args...)
+			})
 		}
 	}
 
@@ -301,6 +305,8 @@ func runAsk(cmd *cobra.Command, args []string) error {
 
 		// Update current session marker so --resume without ID targets this session
 		_ = store.SetCurrent(ctx, sess.ID)
+		// Mark session as active since we're resuming it for a new turn
+		_ = store.UpdateStatus(ctx, sess.ID, session.StatusActive)
 
 		// Apply session settings for flags not explicitly set on CLI
 		// (unconditionally - session may have had search/tools/MCP disabled)
@@ -426,12 +432,15 @@ func runAsk(cmd *cobra.Command, args []string) error {
 			Search:    effectiveSearch,
 			Tools:     effectiveTools,
 			MCP:       effectiveMCP,
+			Status:    session.StatusActive,
 		}
 		if cwd, cwdErr := os.Getwd(); cwdErr == nil {
 			sess.CWD = cwd
 		}
 		_ = store.Create(ctx, sess)
 	}
+
+	// Sequence numbers are now auto-allocated by the store (pass Sequence: -1)
 
 	// Determine system instructions: CLI > agent > config
 	instructions := cfg.Ask.Instructions
@@ -575,6 +584,48 @@ func runAsk(cmd *cobra.Command, args []string) error {
 		}
 	}
 
+	// Save user message BEFORE streaming (incremental save)
+	// Capture start time for duration tracking in callback
+	streamStartTime := time.Now()
+	if store != nil && sess != nil {
+		userMsg := &session.Message{
+			SessionID:   sess.ID,
+			Role:        llm.RoleUser,
+			Parts:       []llm.Part{{Type: llm.PartText, Text: userPrompt}},
+			TextContent: userPrompt,
+			CreatedAt:   time.Now(),
+			Sequence:    -1, // Auto-allocate sequence
+		}
+		_ = store.AddMessage(ctx, sess.ID, userMsg)
+		_ = store.IncrementUserTurns(ctx, sess.ID)
+		sess.UserTurns++ // Keep in-memory value in sync
+
+		// Update session summary from first user message
+		if sess.Summary == "" {
+			sess.Summary = session.TruncateSummary(question)
+			_ = store.Update(ctx, sess)
+		}
+
+		// Set up turn callback for incremental message saving
+		engine.SetTurnCompletedCallback(func(ctx context.Context, turnIndex int, turnMessages []llm.Message, metrics llm.TurnMetrics) error {
+			// Calculate duration from stream start
+			durationMs := time.Since(streamStartTime).Milliseconds()
+
+			// Save each message from this turn (sequence auto-allocated)
+			for _, msg := range turnMessages {
+				sessionMsg := session.NewMessage(sess.ID, msg, -1)
+				// Set duration on assistant messages only
+				if msg.Role == llm.RoleAssistant {
+					sessionMsg.DurationMs = durationMs
+				}
+				_ = store.AddMessage(ctx, sess.ID, sessionMsg)
+			}
+			// Update metrics
+			_ = store.UpdateMetrics(ctx, sess.ID, 1, metrics.ToolCalls, metrics.InputTokens, metrics.OutputTokens)
+			return nil
+		})
+	}
+
 	errChan := make(chan error, 1)
 	go func() {
 		stream, err := engine.Stream(ctx, req)
@@ -608,52 +659,28 @@ func runAsk(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	if err := <-errChan; err != nil {
-		if errors.Is(err, context.Canceled) {
+	// Clear turn callback and update status
+	engine.SetTurnCompletedCallback(nil)
+
+	streamErr := <-errChan
+	if streamErr != nil {
+		// Update session status based on error type
+		if store != nil && sess != nil {
+			if errors.Is(streamErr, context.Canceled) {
+				_ = store.UpdateStatus(ctx, sess.ID, session.StatusInterrupted)
+			} else {
+				_ = store.UpdateStatus(ctx, sess.ID, session.StatusError)
+			}
+		}
+		if errors.Is(streamErr, context.Canceled) {
 			return nil
 		}
-		return fmt.Errorf("streaming failed: %w", err)
+		return fmt.Errorf("streaming failed: %w", streamErr)
 	}
 
-	// Save to session
+	// Update session status to complete
 	if store != nil && sess != nil {
-		// Get current message count for sequence
-		existingMsgs, _ := store.GetMessages(ctx, sess.ID, 0, 0)
-		seq := len(existingMsgs)
-
-		// Save user message
-		userMsg := &session.Message{
-			SessionID:   sess.ID,
-			Role:        llm.RoleUser,
-			Parts:       []llm.Part{{Type: llm.PartText, Text: userPrompt}},
-			TextContent: userPrompt,
-			CreatedAt:   time.Now(),
-			Sequence:    seq,
-		}
-		_ = store.AddMessage(ctx, sess.ID, userMsg)
-
-		// Update session summary from first user message
-		if sess.Summary == "" {
-			sess.Summary = session.TruncateSummary(question)
-			_ = store.Update(ctx, sess)
-		}
-
-		// Save assistant message
-		var responseText string
-		if collector != nil {
-			responseText = collector.Text()
-		}
-		if responseText != "" {
-			assistantMsg := &session.Message{
-				SessionID:   sess.ID,
-				Role:        llm.RoleAssistant,
-				Parts:       []llm.Part{{Type: llm.PartText, Text: responseText}},
-				TextContent: responseText,
-				CreatedAt:   time.Now(),
-				Sequence:    seq + 1,
-			}
-			_ = store.AddMessage(ctx, sess.ID, assistantMsg)
-		}
+		_ = store.UpdateStatus(ctx, sess.ID, session.StatusComplete)
 		_ = store.SetCurrent(ctx, sess.ID)
 	}
 

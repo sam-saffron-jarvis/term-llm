@@ -3,6 +3,7 @@ package chat
 import (
 	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -353,6 +354,18 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				m.streaming = false
 				m.err = ev.Err
+
+				// Clear turn callback and update status
+				m.engine.SetTurnCompletedCallback(nil)
+				if m.store != nil {
+					// Use interrupted for cancellation, error for other failures
+					status := session.StatusError
+					if errors.Is(ev.Err, context.Canceled) {
+						status = session.StatusInterrupted
+					}
+					_ = m.store.UpdateStatus(context.Background(), m.sess.ID, status)
+				}
+
 				m.textarea.Focus()
 				return m, nil
 			}
@@ -457,7 +470,6 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		case ui.StreamEventDone:
 			m.currentTokens = ev.Tokens
-			duration := time.Since(m.streamStartTime)
 
 			// Flush any remaining buffered text and mark done
 			if m.smoothBuffer != nil {
@@ -473,6 +485,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 			m.streaming = false
 
+			// Clear turn callback
+			m.engine.SetTurnCompletedCallback(nil)
+
 			// Mark all text segments as complete and render
 			if m.tracker != nil {
 				m.tracker.CompleteTextSegments(func(text string) string {
@@ -487,22 +502,27 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			cmds = append(cmds, tea.Println("")) // blank line
 
-			// Get the response content for the session
-			responseContent := m.currentResponse.String()
-
-			// Create assistant message and store it
-			assistantMsg := &session.Message{
-				SessionID:   m.sess.ID,
-				Role:        llm.RoleAssistant,
-				Parts:       []llm.Part{{Type: llm.PartText, Text: responseContent}},
-				TextContent: responseContent,
-				DurationMs:  duration.Milliseconds(),
-				CreatedAt:   time.Now(),
-				Sequence:    len(m.messages),
-			}
-			m.messages = append(m.messages, *assistantMsg)
+			// Sync in-memory messages with persisted state
 			if m.store != nil {
-				_ = m.store.AddMessage(context.Background(), m.sess.ID, assistantMsg)
+				// Reload from store to ensure consistency (callback saved messages incrementally)
+				if loadedMsgs, err := m.store.GetMessages(context.Background(), m.sess.ID, 0, 0); err == nil {
+					m.messages = loadedMsgs
+				}
+				_ = m.store.UpdateStatus(context.Background(), m.sess.ID, session.StatusComplete)
+			} else {
+				// No store - append locally for in-memory only sessions
+				responseContent := m.currentResponse.String()
+				if responseContent != "" {
+					assistantMsg := session.Message{
+						SessionID:   m.sess.ID,
+						Role:        llm.RoleAssistant,
+						Parts:       []llm.Part{{Type: llm.PartText, Text: responseContent}},
+						TextContent: responseContent,
+						CreatedAt:   time.Now(),
+						Sequence:    len(m.messages),
+					}
+					m.messages = append(m.messages, assistantMsg)
+				}
 			}
 
 			// Reset streaming state
@@ -828,6 +848,13 @@ func (m *Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 			m.streamCancelFunc()
 			m.streaming = false
+
+			// Clear turn callback and update status
+			m.engine.SetTurnCompletedCallback(nil)
+			if m.store != nil {
+				_ = m.store.UpdateStatus(context.Background(), m.sess.ID, session.StatusInterrupted)
+			}
+
 			return m, nil
 		}
 		m.quitting = true
@@ -849,6 +876,13 @@ func (m *Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 			m.streamCancelFunc()
 			m.streaming = false
+
+			// Clear turn callback and update status
+			m.engine.SetTurnCompletedCallback(nil)
+			if m.store != nil {
+				_ = m.store.UpdateStatus(context.Background(), m.sess.ID, session.StatusInterrupted)
+			}
+
 			m.textarea.Focus()
 			return m, nil
 		}
@@ -1120,11 +1154,13 @@ func (m *Model) sendMessage(content string) (tea.Model, tea.Cmd) {
 		Parts:       []llm.Part{{Type: llm.PartText, Text: fullContent}},
 		TextContent: fullContent,
 		CreatedAt:   time.Now(),
-		Sequence:    len(m.messages),
+		Sequence:    -1, // Auto-allocate sequence
 	}
 	m.messages = append(m.messages, *userMsg)
 	if m.store != nil {
 		_ = m.store.AddMessage(context.Background(), m.sess.ID, userMsg)
+		_ = m.store.IncrementUserTurns(context.Background(), m.sess.ID)
+		m.sess.UserTurns++ // Keep in-memory value in sync
 		// Update session summary from first user message
 		if m.sess.Summary == "" {
 			m.sess.Summary = session.TruncateSummary(content)
@@ -1174,6 +1210,11 @@ func (m *Model) startStream(content string) tea.Cmd {
 		ctx, cancel := context.WithCancel(context.Background())
 		m.streamCancelFunc = cancel
 
+		// Mark session as active when starting a new stream
+		if m.store != nil && m.sess != nil {
+			_ = m.store.UpdateStatus(ctx, m.sess.ID, session.StatusActive)
+		}
+
 		// Create stream adapter for unified event handling with proper buffering
 		adapter := ui.NewStreamAdapter(ui.DefaultStreamBufferSize)
 		m.streamChan = adapter.Events()
@@ -1213,6 +1254,29 @@ func (m *Model) startStream(content string) tea.Cmd {
 			ForceExternalSearch: m.forceExternalSearch,
 			ParallelToolCalls:   true,
 			MaxTurns:            m.maxTurns,
+		}
+
+		// Set up turn callback for incremental message saving (sequence auto-allocated)
+		// Capture streamStartTime for duration calculation
+		streamStart := m.streamStartTime
+		if m.store != nil && m.sess != nil {
+			m.engine.SetTurnCompletedCallback(func(ctx context.Context, turnIndex int, turnMessages []llm.Message, metrics llm.TurnMetrics) error {
+				// Calculate duration from stream start
+				durationMs := time.Since(streamStart).Milliseconds()
+
+				// Save each message from this turn (sequence auto-allocated)
+				for _, msg := range turnMessages {
+					sessionMsg := session.NewMessage(m.sess.ID, msg, -1)
+					// Set duration on assistant messages only
+					if msg.Role == llm.RoleAssistant {
+						sessionMsg.DurationMs = durationMs
+					}
+					_ = m.store.AddMessage(ctx, m.sess.ID, sessionMsg)
+				}
+				// Update metrics
+				_ = m.store.UpdateMetrics(ctx, m.sess.ID, 1, metrics.ToolCalls, metrics.InputTokens, metrics.OutputTokens)
+				return nil
+			})
 		}
 
 		// Start streaming in background - adapter handles all event conversion
