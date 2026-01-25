@@ -55,6 +55,11 @@ type Agent struct {
 	// Files are loaded from the agent directory and appended after system.md
 	Include []string `yaml:"include,omitempty"`
 
+	// ProjectInstructions controls auto-loading of AGENTS.md, CLAUDE.md, etc.
+	// Values: "auto" (default), "true", "false"
+	// "auto" includes project instructions if the agent has coding tools (write_file, edit_file, shell)
+	ProjectInstructions string `yaml:"project_instructions,omitempty"`
+
 	// MCP servers to auto-connect
 	MCP []MCPConfig `yaml:"mcp,omitempty"`
 
@@ -300,7 +305,64 @@ func (a *Agent) Validate() error {
 		}
 	}
 
+	// Validate project_instructions field
+	switch a.ProjectInstructions {
+	case "", "auto", "true", "false":
+		// Valid values
+	default:
+		return fmt.Errorf("invalid project_instructions: %q (valid: auto, true, false)", a.ProjectInstructions)
+	}
+
 	return nil
+}
+
+// ShouldLoadProjectInstructions returns true if this agent should load project instruction files.
+// Uses "auto" logic by default: include if agent has coding tools (write_file, edit_file, shell).
+func (a *Agent) ShouldLoadProjectInstructions() bool {
+	switch a.ProjectInstructions {
+	case "true":
+		return true
+	case "false":
+		return false
+	default: // "auto" or empty
+		return a.hasCodingTools()
+	}
+}
+
+// hasCodingTools returns true if the agent has tools that modify code.
+func (a *Agent) hasCodingTools() bool {
+	coding := map[string]bool{
+		"write_file": true,
+		"edit_file":  true,
+		"shell":      true,
+	}
+
+	// If enabled list is set, check if any coding tool is in it
+	if len(a.Tools.Enabled) > 0 {
+		for _, tool := range a.Tools.Enabled {
+			if coding[tool] {
+				return true
+			}
+		}
+		return false
+	}
+
+	// If disabled list is set, coding tools are enabled unless explicitly disabled
+	if len(a.Tools.Disabled) > 0 {
+		disabled := map[string]bool{}
+		for _, tool := range a.Tools.Disabled {
+			disabled[tool] = true
+		}
+		for tool := range coding {
+			if !disabled[tool] {
+				return true
+			}
+		}
+		return false
+	}
+
+	// No tool configuration specified - assume default tool set which includes coding tools
+	return true
 }
 
 // Merge applies preferences on top of the agent's existing configuration.

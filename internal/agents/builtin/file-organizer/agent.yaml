@@ -1,6 +1,8 @@
 name: file-organizer
 description: Organizes files by renaming them to sensible names and optionally creating subfolders
 
+project_instructions: false
+
 tools:
   enabled: [read_file, shell, glob, grep, ask_user]
 

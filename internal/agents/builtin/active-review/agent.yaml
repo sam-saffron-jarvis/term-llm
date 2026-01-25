@@ -1,6 +1,8 @@
 name: active-review
 description: "Review code and implement fixes using sub-agents"
 
+default_prompt: "Review uncommitted changes and fix any issues found"
+
 tools:
   enabled: [spawn_agent, read_file, glob, grep]
 

@@ -1,8 +1,10 @@
 package ui
 
 import (
+	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/lipgloss"
 )
@@ -40,12 +42,13 @@ type Segment struct {
 	Flushed    bool       // True if this segment has been printed to scrollback
 
 	// Subagent stats (for spawn_agent tools only)
-	SubagentToolCalls   int      // Number of tool calls made by subagent
-	SubagentTotalTokens int      // Total tokens used by subagent
-	SubagentHasProgress bool     // True if we have progress from this subagent
-	SubagentProvider    string   // Provider name if different from parent
-	SubagentModel       string   // Model name if different from parent
-	SubagentPreview     []string // Preview lines (active tools + last few text lines)
+	SubagentToolCalls   int       // Number of tool calls made by subagent
+	SubagentTotalTokens int       // Total tokens used by subagent
+	SubagentHasProgress bool      // True if we have progress from this subagent
+	SubagentProvider    string    // Provider name if different from parent
+	SubagentModel       string    // Model name if different from parent
+	SubagentPreview     []string  // Preview lines (active tools + last few text lines)
+	SubagentStartTime   time.Time // Start time for elapsed time display
 }
 
 // Tool status indicator colors using raw ANSI for reliable true color
@@ -123,7 +126,7 @@ func RenderToolSegment(seg *Segment, wavePos int) string {
 	case ToolPending:
 		// spawn_agent tools with progress show stats instead of wave animation
 		if seg.ToolName == "spawn_agent" && seg.SubagentHasProgress {
-			return PendingCircle() + " " + renderSpawnAgentStats(seg.ToolInfo, seg.SubagentToolCalls, seg.SubagentTotalTokens, seg.SubagentProvider, seg.SubagentModel)
+			return PendingCircle() + " " + renderSpawnAgentStats(seg.ToolInfo, seg.SubagentToolCalls, seg.SubagentTotalTokens, seg.SubagentStartTime, seg.SubagentProvider, seg.SubagentModel)
 		}
 		// Wave animation for other pending tools
 		phase := FormatToolPhase(seg.ToolName, seg.ToolInfo)
@@ -131,7 +134,7 @@ func RenderToolSegment(seg *Segment, wavePos int) string {
 	case ToolSuccess:
 		// spawn_agent shows final stats on success
 		if seg.ToolName == "spawn_agent" && seg.SubagentHasProgress {
-			return SuccessCircle() + " " + renderSpawnAgentStats(seg.ToolInfo, seg.SubagentToolCalls, seg.SubagentTotalTokens, seg.SubagentProvider, seg.SubagentModel)
+			return SuccessCircle() + " " + renderSpawnAgentStats(seg.ToolInfo, seg.SubagentToolCalls, seg.SubagentTotalTokens, seg.SubagentStartTime, seg.SubagentProvider, seg.SubagentModel)
 		}
 		// Tool name normal, params slightly muted (with space before info if present)
 		if seg.ToolInfo != "" {
@@ -141,7 +144,7 @@ func RenderToolSegment(seg *Segment, wavePos int) string {
 	case ToolError:
 		// spawn_agent shows stats even on error
 		if seg.ToolName == "spawn_agent" && seg.SubagentHasProgress {
-			return ErrorCircle() + " " + renderSpawnAgentStats(seg.ToolInfo, seg.SubagentToolCalls, seg.SubagentTotalTokens, seg.SubagentProvider, seg.SubagentModel)
+			return ErrorCircle() + " " + renderSpawnAgentStats(seg.ToolInfo, seg.SubagentToolCalls, seg.SubagentTotalTokens, seg.SubagentStartTime, seg.SubagentProvider, seg.SubagentModel)
 		}
 		// Tool name normal, params slightly muted (with space before info if present)
 		if seg.ToolInfo != "" {
@@ -153,8 +156,8 @@ func RenderToolSegment(seg *Segment, wavePos int) string {
 }
 
 // renderSpawnAgentStats renders the stats line for a spawn_agent tool.
-// Format: @agentName  N calls · X.Xk tokens [provider:model]
-func renderSpawnAgentStats(agentName string, toolCalls, totalTokens int, provider, model string) string {
+// Format: @agentName  N calls · X.Xk tokens · 12s [provider:model]
+func renderSpawnAgentStats(agentName string, toolCalls, totalTokens int, startTime time.Time, provider, model string) string {
 	var b strings.Builder
 
 	// Extract just the agent name from toolInfo (format: "@name: prompt..." or "name")
@@ -166,7 +169,7 @@ func renderSpawnAgentStats(agentName string, toolCalls, totalTokens int, provide
 		b.WriteString("agent")
 	}
 	b.WriteString("  ")
-	b.WriteString(paramStyle.Render(formatSpawnAgentStats(toolCalls, totalTokens)))
+	b.WriteString(paramStyle.Render(formatSpawnAgentStats(toolCalls, totalTokens, startTime)))
 
 	// Show provider:model if set (indicates different from parent)
 	if provider != "" || model != "" {
@@ -237,16 +240,41 @@ func shortenModelName(model string) string {
 	return model
 }
 
-// formatSpawnAgentStats formats tool count and tokens as "N calls · X.Xk tokens"
-func formatSpawnAgentStats(toolCalls, totalTokens int) string {
+// formatSpawnAgentStats formats tool count, tokens, and elapsed time as "N calls · X.Xk tokens · 12s"
+func formatSpawnAgentStats(toolCalls, totalTokens int, startTime time.Time) string {
 	if toolCalls == 0 && totalTokens == 0 {
+		if !startTime.IsZero() {
+			return "starting… · " + formatElapsed(time.Since(startTime))
+		}
 		return "starting..."
 	}
 	calls := "calls"
 	if toolCalls == 1 {
 		calls = "call"
 	}
-	return formatToolCount(toolCalls) + " " + calls + " · " + formatTokensCompact(totalTokens) + " tokens"
+	result := formatToolCount(toolCalls) + " " + calls + " · " + formatTokensCompact(totalTokens) + " tokens"
+	if !startTime.IsZero() {
+		result += " · " + formatElapsed(time.Since(startTime))
+	}
+	return result
+}
+
+// formatElapsed formats a duration in a compact human-readable form.
+// Examples: 0s, 5s, 1m30s, 5m
+func formatElapsed(d time.Duration) string {
+	if d < 0 {
+		d = 0
+	}
+	d = d.Round(time.Second)
+	if d < time.Minute {
+		return fmt.Sprintf("%ds", int(d.Seconds()))
+	}
+	minutes := int(d.Minutes())
+	seconds := int(d.Seconds()) % 60
+	if seconds == 0 {
+		return fmt.Sprintf("%dm", minutes)
+	}
+	return fmt.Sprintf("%dm%ds", minutes, seconds)
 }
 
 // formatToolCount formats a tool count

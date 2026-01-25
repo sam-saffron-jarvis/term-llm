@@ -80,6 +80,7 @@ func UpdateSegmentFromSubagentProgress(tracker *ToolTracker, callID string, p *S
 			tracker.Segments[i].SubagentProvider = p.Provider
 			tracker.Segments[i].SubagentModel = p.Model
 			tracker.Segments[i].SubagentPreview = BuildSubagentPreview(p, 4)
+			tracker.Segments[i].SubagentStartTime = p.StartTime
 			break
 		}
 	}

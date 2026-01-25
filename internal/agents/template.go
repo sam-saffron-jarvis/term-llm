@@ -255,6 +255,15 @@ var agentInstructionFiles = []string{
 	".github/CONTRIBUTING.md",         // GitHub-style location
 }
 
+// DiscoverProjectInstructions searches for project agent instruction files.
+// First checks the current directory, then walks up to the git root (if any).
+// Returns the content of the first file found, with a header indicating the source.
+// Returns empty string if no files are found.
+// Exported for use by cmd packages when project_instructions is enabled.
+func DiscoverProjectInstructions() string {
+	return discoverAgentInstructions()
+}
+
 // discoverAgentInstructions searches for project agent instruction files.
 // First checks the current directory, then walks up to the git root (if any).
 // Returns the content of the first file found, with a header indicating the source.

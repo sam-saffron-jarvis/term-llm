@@ -119,11 +119,94 @@ func TestRegistry_List(t *testing.T) {
 		t.Errorf("len(agents) = %d, expected at least %d", len(agents), 2+len(builtinAgentNames))
 	}
 
-	// Check that agents are sorted
+	// Check that agents are sorted by source (builtin > user > local) then by name within source
 	for i := 1; i < len(agents); i++ {
-		if agents[i-1].Name > agents[i].Name {
-			t.Errorf("agents not sorted: %s > %s", agents[i-1].Name, agents[i].Name)
+		prev, curr := agents[i-1], agents[i]
+		if prev.Source != curr.Source {
+			// Source should be in descending order (Builtin=2 > User=1 > Local=0)
+			if prev.Source < curr.Source {
+				t.Errorf("agents not sorted by source: %s (%v) before %s (%v)",
+					prev.Name, prev.Source, curr.Name, curr.Source)
+			}
+		} else {
+			// Within same source, names should be in ascending order
+			if prev.Name > curr.Name {
+				t.Errorf("agents not sorted by name within source %v: %s > %s",
+					prev.Source, prev.Name, curr.Name)
+			}
 		}
+	}
+
+	// Verify builtin agents come first
+	if len(agents) > 0 && agents[0].Source != SourceBuiltin {
+		t.Errorf("first agent should be builtin, got source %v", agents[0].Source)
+	}
+
+	// Verify user agents "alpha" and "beta" exist and come after builtins
+	foundUser := 0
+	for _, a := range agents {
+		if a.Source == SourceUser && (a.Name == "alpha" || a.Name == "beta") {
+			foundUser++
+		}
+	}
+	if foundUser != 2 {
+		t.Errorf("expected 2 user agents (alpha, beta), found %d", foundUser)
+	}
+}
+
+func TestRegistry_ListNames(t *testing.T) {
+	tmpDir := t.TempDir()
+	userDir := filepath.Join(tmpDir, "user-agents")
+
+	// Create two user agents
+	for _, name := range []string{"alpha", "beta"} {
+		agentDir := filepath.Join(userDir, name)
+		if err := os.MkdirAll(agentDir, 0755); err != nil {
+			t.Fatal(err)
+		}
+		yaml := "name: " + name
+		if err := os.WriteFile(filepath.Join(agentDir, "agent.yaml"), []byte(yaml), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	r := &Registry{
+		useBuiltin: true,
+		cache:      make(map[string]*Agent),
+		searchPaths: []searchPath{
+			{path: userDir, source: SourceUser},
+		},
+	}
+
+	names, err := r.ListNames()
+	if err != nil {
+		t.Fatalf("ListNames(): %v", err)
+	}
+
+	// Should have user agents + builtin agents
+	if len(names) < 2+len(builtinAgentNames) {
+		t.Errorf("len(names) = %d, expected at least %d", len(names), 2+len(builtinAgentNames))
+	}
+
+	// Check that names are sorted
+	for i := 1; i < len(names); i++ {
+		if names[i-1] > names[i] {
+			t.Errorf("names not sorted: %s > %s", names[i-1], names[i])
+		}
+	}
+
+	// Check that alpha and beta are present
+	hasAlpha, hasBeta := false, false
+	for _, name := range names {
+		if name == "alpha" {
+			hasAlpha = true
+		}
+		if name == "beta" {
+			hasBeta = true
+		}
+	}
+	if !hasAlpha || !hasBeta {
+		t.Errorf("missing user agents: alpha=%v, beta=%v", hasAlpha, hasBeta)
 	}
 }
 

@@ -169,6 +169,13 @@ func ResolveSettings(cfg *config.Config, agent *agents.Agent, cli CLIFlags, conf
 			}
 		}
 		s.SystemPrompt = agents.ExpandTemplate(agent.SystemPrompt, templateCtx)
+
+		// Append project instructions if agent requests them
+		if agent.ShouldLoadProjectInstructions() {
+			if projectInstructions := agents.DiscoverProjectInstructions(); projectInstructions != "" {
+				s.SystemPrompt += "\n\n---\n\n" + projectInstructions
+			}
+		}
 	} else {
 		// Expand template variables in config instructions
 		templateCtx := agents.NewTemplateContext().WithFiles(cli.Files)

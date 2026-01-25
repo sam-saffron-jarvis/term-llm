@@ -470,6 +470,17 @@ func runAsk(cmd *cobra.Command, args []string) error {
 		instructions = agents.ExpandTemplate(askSystemMessage, cliTemplateCtx)
 	}
 
+	// Append project instructions if agent requests them (auto-detected or explicit)
+	if agent != nil && agent.ShouldLoadProjectInstructions() {
+		if projectInstructions := agents.DiscoverProjectInstructions(); projectInstructions != "" {
+			if instructions != "" {
+				instructions += "\n\n---\n\n" + projectInstructions
+			} else {
+				instructions = projectInstructions
+			}
+		}
+	}
+
 	// Inject skills metadata if available and not already in AGENTS.md
 	if skillsSetup != nil && skillsSetup.HasSkillsXML() && !skills.CheckAgentsMdForSkills() {
 		if instructions != "" {

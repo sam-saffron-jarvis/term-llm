@@ -2153,7 +2153,7 @@ func (m *Model) switchModel(providerModel string) (tea.Model, tea.Cmd) {
 	m.provider = provider
 	// Preserve existing tool registry when creating new engine
 	m.engine = llm.NewEngine(provider, m.engine.Tools())
-	m.providerName = providerName
+	m.providerName = provider.Name() // Use provider.Name() to include effort info
 	m.modelName = modelName
 
 	return m.showSystemMessage(fmt.Sprintf("Switched to %s (%s)", providerName, modelName))

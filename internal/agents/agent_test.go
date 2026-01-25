@@ -179,6 +179,54 @@ func TestAgent_Validate(t *testing.T) {
 			},
 			wantErr: true,
 		},
+		{
+			name: "valid project_instructions empty",
+			agent: Agent{
+				Name:                "test",
+				ProjectInstructions: "",
+			},
+			wantErr: false,
+		},
+		{
+			name: "valid project_instructions auto",
+			agent: Agent{
+				Name:                "test",
+				ProjectInstructions: "auto",
+			},
+			wantErr: false,
+		},
+		{
+			name: "valid project_instructions true",
+			agent: Agent{
+				Name:                "test",
+				ProjectInstructions: "true",
+			},
+			wantErr: false,
+		},
+		{
+			name: "valid project_instructions false",
+			agent: Agent{
+				Name:                "test",
+				ProjectInstructions: "false",
+			},
+			wantErr: false,
+		},
+		{
+			name: "invalid project_instructions",
+			agent: Agent{
+				Name:                "test",
+				ProjectInstructions: "yes",
+			},
+			wantErr: true,
+		},
+		{
+			name: "invalid project_instructions typo",
+			agent: Agent{
+				Name:                "test",
+				ProjectInstructions: "tru",
+			},
+			wantErr: true,
+		},
 	}
 
 	for _, tt := range tests {
@@ -209,5 +257,104 @@ func TestAgent_GetMCPServerNames(t *testing.T) {
 	}
 	if names[1] != "playwright" {
 		t.Errorf("names[1] = %q, want %q", names[1], "playwright")
+	}
+}
+
+func TestAgent_ShouldLoadProjectInstructions(t *testing.T) {
+	tests := []struct {
+		name     string
+		agent    Agent
+		expected bool
+	}{
+		{
+			name: "auto with coding tools (write_file)",
+			agent: Agent{
+				Name:  "developer",
+				Tools: ToolsConfig{Enabled: []string{"read_file", "write_file"}},
+			},
+			expected: true,
+		},
+		{
+			name: "auto with coding tools (edit_file)",
+			agent: Agent{
+				Name:  "editor",
+				Tools: ToolsConfig{Enabled: []string{"read_file", "edit_file"}},
+			},
+			expected: true,
+		},
+		{
+			name: "auto with coding tools (shell)",
+			agent: Agent{
+				Name:  "shell",
+				Tools: ToolsConfig{Enabled: []string{"shell"}},
+			},
+			expected: true,
+		},
+		{
+			name: "auto without coding tools",
+			agent: Agent{
+				Name:  "researcher",
+				Tools: ToolsConfig{Enabled: []string{"read_file", "glob", "grep"}},
+			},
+			expected: false,
+		},
+		{
+			name: "explicit true without coding tools",
+			agent: Agent{
+				Name:                "custom",
+				ProjectInstructions: "true",
+				Tools:               ToolsConfig{Enabled: []string{"read_file"}},
+			},
+			expected: true,
+		},
+		{
+			name: "explicit false with coding tools",
+			agent: Agent{
+				Name:                "artist",
+				ProjectInstructions: "false",
+				Tools:               ToolsConfig{Enabled: []string{"shell", "image_generate"}},
+			},
+			expected: false,
+		},
+		{
+			name: "empty tools (auto defaults to true - assumes default tool set)",
+			agent: Agent{
+				Name: "empty",
+			},
+			expected: true,
+		},
+		{
+			name: "disabled list - coding tools not disabled",
+			agent: Agent{
+				Name:  "searcher",
+				Tools: ToolsConfig{Disabled: []string{"image_generate", "web_search"}},
+			},
+			expected: true,
+		},
+		{
+			name: "disabled list - all coding tools disabled",
+			agent: Agent{
+				Name:  "readonly",
+				Tools: ToolsConfig{Disabled: []string{"write_file", "edit_file", "shell"}},
+			},
+			expected: false,
+		},
+		{
+			name: "disabled list - some coding tools disabled",
+			agent: Agent{
+				Name:  "limited",
+				Tools: ToolsConfig{Disabled: []string{"shell", "image_generate"}},
+			},
+			expected: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := tt.agent.ShouldLoadProjectInstructions()
+			if got != tt.expected {
+				t.Errorf("ShouldLoadProjectInstructions() = %v, want %v", got, tt.expected)
+			}
+		})
 	}
 }

@@ -1,6 +1,8 @@
 name: artist
 description: "Image generation and editing expert"
 
+project_instructions: false
+
 tools:
   enabled: [image_generate, view_image, read_file, glob, grep, shell, ask_user]
 

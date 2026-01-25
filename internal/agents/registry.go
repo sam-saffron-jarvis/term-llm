@@ -172,12 +172,61 @@ func (r *Registry) List() ([]*Agent, error) {
 		}
 	}
 
-	// Sort by name
+	// Sort by source first (builtin first), then by name
 	sort.Slice(agents, func(i, j int) bool {
+		if agents[i].Source != agents[j].Source {
+			// Builtin (2) > User (1) > Local (0) - reverse enum order
+			return agents[i].Source > agents[j].Source
+		}
 		return agents[i].Name < agents[j].Name
 	})
 
 	return agents, nil
+}
+
+// ListNames returns just the names of available agents without loading full content.
+// This is optimized for completions where only names are needed.
+func (r *Registry) ListNames() ([]string, error) {
+	seen := make(map[string]bool)
+	var names []string
+
+	// Scan filesystem paths (just get directory names)
+	for _, sp := range r.searchPaths {
+		entries, err := os.ReadDir(sp.path)
+		if err != nil {
+			continue // Skip directories that don't exist
+		}
+		for _, entry := range entries {
+			if !entry.IsDir() {
+				continue
+			}
+			// Check if it's a valid agent dir (has agent.yaml)
+			agentDir := filepath.Join(sp.path, entry.Name())
+			if !isAgentDir(agentDir) {
+				continue
+			}
+			name := entry.Name()
+			if !seen[name] {
+				seen[name] = true
+				names = append(names, name)
+			}
+		}
+	}
+
+	// Add built-in agent names
+	if r.useBuiltin {
+		for _, name := range builtinAgentNames {
+			if !seen[name] {
+				seen[name] = true
+				names = append(names, name)
+			}
+		}
+	}
+
+	// Sort by name
+	sort.Strings(names)
+
+	return names, nil
 }
 
 // ListBySource returns agents from a specific source.

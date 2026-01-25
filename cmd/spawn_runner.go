@@ -110,6 +110,13 @@ func (r *SpawnAgentRunner) runAgentInternal(ctx context.Context, agentName strin
 			}
 		}
 		systemPrompt = agents.ExpandTemplate(agent.SystemPrompt, templateCtx)
+
+		// Append project instructions if agent requests them
+		if agent.ShouldLoadProjectInstructions() {
+			if projectInstructions := agents.DiscoverProjectInstructions(); projectInstructions != "" {
+				systemPrompt += "\n\n---\n\n" + projectInstructions
+			}
+		}
 	}
 
 	// Build messages
@@ -153,9 +160,11 @@ func (r *SpawnAgentRunner) runAgentInternal(ctx context.Context, agentName strin
 
 	// Get provider name and model for the init event
 	providerName := provider.Name()
-	modelName := ""
-	if providerCfg := cfg.GetActiveProviderConfig(); providerCfg != nil {
-		modelName = providerCfg.Model
+	modelName := agent.Model
+	if modelName == "" {
+		if providerCfg := cfg.GetActiveProviderConfig(); providerCfg != nil {
+			modelName = providerCfg.Model
+		}
 	}
 
 	// Run the agent and collect output

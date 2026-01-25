@@ -522,6 +522,7 @@ func runAgentsPath(cmd *cobra.Command, args []string) error {
 }
 
 // agentNameCompletion provides shell completion for agent names.
+// Uses ListNames() for faster completion (avoids loading full agent content).
 func agentNameCompletion(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 	if len(args) > 0 {
 		return nil, cobra.ShellCompDirectiveNoFileComp
@@ -539,17 +540,17 @@ func agentNameCompletion(cmd *cobra.Command, args []string, toComplete string) (
 	if err != nil {
 		return nil, cobra.ShellCompDirectiveError
 	}
-	registry.SetPreferences(cfg.Agents.Preferences)
 
-	agentList, err := registry.List()
+	// Use ListNames() for faster completion (skips loading system prompts)
+	agentNames, err := registry.ListNames()
 	if err != nil {
 		return nil, cobra.ShellCompDirectiveError
 	}
 
 	var names []string
-	for _, agent := range agentList {
-		if strings.HasPrefix(agent.Name, toComplete) {
-			names = append(names, agent.Name)
+	for _, name := range agentNames {
+		if strings.HasPrefix(name, toComplete) {
+			names = append(names, name)
 		}
 	}
 
