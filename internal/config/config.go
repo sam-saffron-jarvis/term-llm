@@ -803,9 +803,13 @@ func GetDefaults() map[string]any {
 	return map[string]any{
 		"default_provider":               "anthropic",
 		"exec.suggestions":               3,
+		"exec.instructions":              "",
 		"ask.max_turns":                  20,
+		"ask.instructions":               "You are a helpful assistant. Today's date is {{date}}.",
 		"chat.max_turns":                 200,
+		"chat.instructions":              "You are a helpful assistant. Today's date is {{date}}.",
 		"edit.show_line_numbers":         true,
+		"edit.instructions":              "",
 		"edit.context_lines":             3,
 		"edit.diff_format":               "auto",
 		"providers.anthropic.model":      "claude-sonnet-4-5",

@@ -5,6 +5,29 @@ import (
 	"encoding/json"
 )
 
+// contextKey is a private type for context keys to prevent collisions.
+type contextKey string
+
+// toolCallIDKey is the context key for the current tool call ID.
+const toolCallIDKey contextKey = "tool_call_id"
+
+// ContextWithCallID returns a new context with the tool call ID set.
+// Used by the engine to pass the call ID to spawn_agent for event bubbling.
+func ContextWithCallID(ctx context.Context, callID string) context.Context {
+	return context.WithValue(ctx, toolCallIDKey, callID)
+}
+
+// CallIDFromContext extracts the tool call ID from context, or returns empty string.
+// Used by spawn_agent to get the call ID for event bubbling.
+func CallIDFromContext(ctx context.Context) string {
+	if v := ctx.Value(toolCallIDKey); v != nil {
+		if id, ok := v.(string); ok {
+			return id
+		}
+	}
+	return ""
+}
+
 // Provider streams model output events for a request.
 type Provider interface {
 	Name() string

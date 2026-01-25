@@ -26,6 +26,37 @@ type SpawnAgentResult struct {
 	Duration  int64  `json:"duration_ms,omitempty"`
 }
 
+// SubagentEventType identifies the type of subagent event.
+type SubagentEventType string
+
+const (
+	SubagentEventInit      SubagentEventType = "init" // Sent first with provider/model info
+	SubagentEventText      SubagentEventType = "text"
+	SubagentEventToolStart SubagentEventType = "tool_start"
+	SubagentEventToolEnd   SubagentEventType = "tool_end"
+	SubagentEventPhase     SubagentEventType = "phase"
+	SubagentEventUsage     SubagentEventType = "usage"
+	SubagentEventDone      SubagentEventType = "done"
+)
+
+// SubagentEvent represents an event from a running subagent.
+type SubagentEvent struct {
+	Type         SubagentEventType // "init", "text", "tool_start", "tool_end", "phase", "usage", "done"
+	Text         string            // for "text" events
+	ToolName     string            // for tool events
+	ToolInfo     string            // for tool events
+	Success      bool              // for "tool_end" events
+	Phase        string            // for "phase" events
+	InputTokens  int               // for "usage" events
+	OutputTokens int               // for "usage" events
+	Provider     string            // for "init" events - provider name
+	Model        string            // for "init" events - model name
+}
+
+// SubagentEventCallback is called to bubble up events from a running subagent.
+// callID is the tool call ID of the spawn_agent call.
+type SubagentEventCallback func(callID string, event SubagentEvent)
+
 // SpawnAgentRunner is the interface for running sub-agents.
 // This is set by the cmd package to avoid circular imports.
 type SpawnAgentRunner interface {
@@ -33,6 +64,11 @@ type SpawnAgentRunner interface {
 	// ctx is used for cancellation, agentName is the agent to load,
 	// prompt is the task, and depth is the current nesting level.
 	RunAgent(ctx context.Context, agentName string, prompt string, depth int) (string, error)
+
+	// RunAgentWithCallback runs a sub-agent with an event callback for progress reporting.
+	// callID is used to correlate events with the parent's spawn_agent tool call.
+	RunAgentWithCallback(ctx context.Context, agentName string, prompt string, depth int,
+		callID string, cb SubagentEventCallback) (string, error)
 }
 
 // SpawnConfig configures spawn_agent behavior.
@@ -54,11 +90,12 @@ func DefaultSpawnConfig() SpawnConfig {
 
 // SpawnAgentTool implements the spawn_agent tool.
 type SpawnAgentTool struct {
-	runner    SpawnAgentRunner
-	config    SpawnConfig
-	semaphore chan struct{} // Limits concurrent agents
-	depth     int           // Current nesting depth
-	mu        sync.Mutex    // Protects runner updates
+	runner        SpawnAgentRunner
+	config        SpawnConfig
+	semaphore     chan struct{}         // Limits concurrent agents
+	depth         int                   // Current nesting depth
+	mu            sync.Mutex            // Protects runner updates
+	eventCallback SubagentEventCallback // Optional callback for event bubbling
 }
 
 // NewSpawnAgentTool creates a new spawn_agent tool.
@@ -94,6 +131,21 @@ func (t *SpawnAgentTool) SetDepth(depth int) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.depth = depth
+}
+
+// SetEventCallback sets the callback for receiving subagent progress events.
+// Events are bubbled up to the parent for display during execution.
+func (t *SpawnAgentTool) SetEventCallback(cb SubagentEventCallback) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.eventCallback = cb
+}
+
+// GetEventCallback returns the current event callback (thread-safe).
+func (t *SpawnAgentTool) GetEventCallback() SubagentEventCallback {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.eventCallback
 }
 
 // Spec returns the tool specification.
@@ -195,9 +247,22 @@ func (t *SpawnAgentTool) Execute(ctx context.Context, args json.RawMessage) (str
 	childCtx, cancel := context.WithTimeout(ctx, time.Duration(timeout)*time.Second)
 	defer cancel()
 
-	// Run the sub-agent
+	// Run the sub-agent (with callback if available)
 	start := time.Now()
-	output, err := runner.RunAgent(childCtx, a.AgentName, a.Prompt, t.depth+1)
+	var output string
+	var err error
+
+	// Get callback and call ID for event bubbling
+	cb := t.GetEventCallback()
+	callID := llm.CallIDFromContext(ctx)
+
+	if cb != nil && callID != "" {
+		// Use callback version for progress reporting
+		output, err = runner.RunAgentWithCallback(childCtx, a.AgentName, a.Prompt, t.depth+1, callID, cb)
+	} else {
+		// Fall back to simple version
+		output, err = runner.RunAgent(childCtx, a.AgentName, a.Prompt, t.depth+1)
+	}
 	duration := time.Since(start).Milliseconds()
 
 	if err != nil {

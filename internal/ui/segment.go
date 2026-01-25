@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"strconv"
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
@@ -37,6 +38,14 @@ type Segment struct {
 	Complete   bool       // For text segments: whether streaming is complete
 	ImagePath  string     // For image segments: path to image file
 	Flushed    bool       // True if this segment has been printed to scrollback
+
+	// Subagent stats (for spawn_agent tools only)
+	SubagentToolCalls   int      // Number of tool calls made by subagent
+	SubagentTotalTokens int      // Total tokens used by subagent
+	SubagentHasProgress bool     // True if we have progress from this subagent
+	SubagentProvider    string   // Provider name if different from parent
+	SubagentModel       string   // Model name if different from parent
+	SubagentPreview     []string // Preview lines (active tools + last few text lines)
 }
 
 // Tool status indicator colors using raw ANSI for reliable true color
@@ -108,19 +117,32 @@ var paramStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("250"))
 // RenderToolSegment renders a tool segment with its status indicator.
 // For pending tools, wavePos controls the wave animation (-1 = paused/all dim).
 // Tool name is rendered normally, params are rendered in slightly muted gray.
+// For spawn_agent tools with progress, stats are shown instead of wave animation.
 func RenderToolSegment(seg *Segment, wavePos int) string {
 	switch seg.ToolStatus {
 	case ToolPending:
-		// Wave animation for pending tools - animate the full text
+		// spawn_agent tools with progress show stats instead of wave animation
+		if seg.ToolName == "spawn_agent" && seg.SubagentHasProgress {
+			return PendingCircle() + " " + renderSpawnAgentStats(seg.ToolInfo, seg.SubagentToolCalls, seg.SubagentTotalTokens, seg.SubagentProvider, seg.SubagentModel)
+		}
+		// Wave animation for other pending tools
 		phase := FormatToolPhase(seg.ToolName, seg.ToolInfo)
 		return PendingCircle() + " " + RenderWaveText(phase.Active, wavePos)
 	case ToolSuccess:
+		// spawn_agent shows final stats on success
+		if seg.ToolName == "spawn_agent" && seg.SubagentHasProgress {
+			return SuccessCircle() + " " + renderSpawnAgentStats(seg.ToolInfo, seg.SubagentToolCalls, seg.SubagentTotalTokens, seg.SubagentProvider, seg.SubagentModel)
+		}
 		// Tool name normal, params slightly muted (with space before info if present)
 		if seg.ToolInfo != "" {
 			return SuccessCircle() + " " + seg.ToolName + " " + paramStyle.Render(seg.ToolInfo)
 		}
 		return SuccessCircle() + " " + seg.ToolName
 	case ToolError:
+		// spawn_agent shows stats even on error
+		if seg.ToolName == "spawn_agent" && seg.SubagentHasProgress {
+			return ErrorCircle() + " " + renderSpawnAgentStats(seg.ToolInfo, seg.SubagentToolCalls, seg.SubagentTotalTokens, seg.SubagentProvider, seg.SubagentModel)
+		}
 		// Tool name normal, params slightly muted (with space before info if present)
 		if seg.ToolInfo != "" {
 			return ErrorCircle() + " " + seg.ToolName + " " + paramStyle.Render(seg.ToolInfo)
@@ -128,6 +150,123 @@ func RenderToolSegment(seg *Segment, wavePos int) string {
 		return ErrorCircle() + " " + seg.ToolName
 	}
 	return ""
+}
+
+// renderSpawnAgentStats renders the stats line for a spawn_agent tool.
+// Format: @agentName  N calls · X.Xk tokens [provider:model]
+func renderSpawnAgentStats(agentName string, toolCalls, totalTokens int, provider, model string) string {
+	var b strings.Builder
+
+	// Extract just the agent name from toolInfo (format: "@name: prompt..." or "name")
+	displayName := extractAgentName(agentName)
+	b.WriteString("@")
+	if displayName != "" {
+		b.WriteString(displayName)
+	} else {
+		b.WriteString("agent")
+	}
+	b.WriteString("  ")
+	b.WriteString(paramStyle.Render(formatSpawnAgentStats(toolCalls, totalTokens)))
+
+	// Show provider:model if set (indicates different from parent)
+	if provider != "" || model != "" {
+		b.WriteString("  ")
+		providerModel := formatProviderModel(provider, model)
+		b.WriteString(paramStyle.Render(providerModel))
+	}
+	return b.String()
+}
+
+// extractAgentName extracts just the agent name from tool info.
+// Input formats: "(@reviewer: prompt...)", "@reviewer: prompt...", "reviewer: prompt...", "reviewer"
+func extractAgentName(toolInfo string) string {
+	if toolInfo == "" {
+		return ""
+	}
+	// Remove leading ( if present (from getToolPreview wrapping)
+	name := strings.TrimPrefix(toolInfo, "(")
+	// Remove leading @ if present
+	name = strings.TrimPrefix(name, "@")
+	// Take everything before : or first space
+	if idx := strings.Index(name, ":"); idx > 0 {
+		name = name[:idx]
+	} else if idx := strings.Index(name, " "); idx > 0 {
+		name = name[:idx]
+	}
+	return strings.TrimSpace(name)
+}
+
+// formatProviderModel formats provider and model for display.
+// Returns formats like "anthropic:claude-sonnet" or just "openai" if no model.
+func formatProviderModel(provider, model string) string {
+	if provider == "" && model == "" {
+		return ""
+	}
+	if model == "" {
+		return "[" + provider + "]"
+	}
+	// Shorten common model names for display
+	shortModel := shortenModelName(model)
+	if provider == "" {
+		return "[" + shortModel + "]"
+	}
+	return "[" + provider + ":" + shortModel + "]"
+}
+
+// shortenModelName shortens common model names for compact display.
+func shortenModelName(model string) string {
+	// Common shortenings
+	replacements := map[string]string{
+		"claude-sonnet-4-20250514":   "sonnet-4",
+		"claude-opus-4-20250514":     "opus-4",
+		"claude-3-5-sonnet-20241022": "sonnet-3.5",
+		"claude-3-opus-20240229":     "opus-3",
+		"gpt-4o":                     "4o",
+		"gpt-4o-mini":                "4o-mini",
+		"gpt-4-turbo":                "4-turbo",
+		"gemini-2.0-flash":           "flash-2",
+		"gemini-1.5-pro":             "pro-1.5",
+	}
+	if short, ok := replacements[model]; ok {
+		return short
+	}
+	// If model is very long, truncate
+	if len(model) > 20 {
+		return model[:17] + "..."
+	}
+	return model
+}
+
+// formatSpawnAgentStats formats tool count and tokens as "N calls · X.Xk tokens"
+func formatSpawnAgentStats(toolCalls, totalTokens int) string {
+	if toolCalls == 0 && totalTokens == 0 {
+		return "starting..."
+	}
+	calls := "calls"
+	if toolCalls == 1 {
+		calls = "call"
+	}
+	return formatToolCount(toolCalls) + " " + calls + " · " + formatTokensCompact(totalTokens) + " tokens"
+}
+
+// formatToolCount formats a tool count
+func formatToolCount(n int) string {
+	if n < 1000 {
+		return strings.TrimLeft(strings.Repeat(" ", 3)+strconv.Itoa(n), " ")
+	}
+	return strconv.Itoa(n)
+}
+
+// formatTokensCompact formats tokens in compact form (1.2k, 12k, etc.)
+func formatTokensCompact(n int) string {
+	if n < 1000 {
+		return strconv.Itoa(n)
+	}
+	k := float64(n) / 1000
+	if k < 10 {
+		return strings.TrimRight(strings.TrimRight(strconv.FormatFloat(k, 'f', 1, 64), "0"), ".") + "k"
+	}
+	return strconv.FormatFloat(k, 'f', 0, 64) + "k"
 }
 
 // renderAskUserResult renders an ask_user result with styling applied at render time.
@@ -204,6 +343,13 @@ func RenderSegments(segments []Segment, width int, wavePos int, renderMarkdown f
 			}
 		case SegmentTool:
 			b.WriteString(RenderToolSegment(&seg, wavePos))
+			// Render subagent preview lines beneath spawn_agent tools
+			if seg.ToolName == "spawn_agent" && len(seg.SubagentPreview) > 0 {
+				for _, line := range seg.SubagentPreview {
+					b.WriteString("\n  │ ")
+					b.WriteString(line)
+				}
+			}
 		case SegmentAskUserResult:
 			b.WriteString(renderAskUserResult(seg.Text))
 		case SegmentImage:

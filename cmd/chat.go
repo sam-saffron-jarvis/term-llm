@@ -332,6 +332,15 @@ func runChat(cmd *cobra.Command, args []string) error {
 	// Run the TUI (inline mode - no alt screen)
 	p := tea.NewProgram(model)
 
+	// Set up spawn_agent event callback for subagent progress visibility
+	if toolMgr != nil {
+		if spawnTool := toolMgr.GetSpawnAgentTool(); spawnTool != nil {
+			spawnTool.SetEventCallback(func(callID string, event tools.SubagentEvent) {
+				p.Send(chat.SubagentProgressMsg{CallID: callID, Event: event})
+			})
+		}
+	}
+
 	// Set up the improved approval UI with git-aware heuristics
 	if toolMgr != nil {
 		toolMgr.ApprovalMgr.PromptUIFunc = func(path string, isWrite bool, isShell bool) (tools.ApprovalResult, error) {

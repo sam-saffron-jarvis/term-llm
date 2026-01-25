@@ -446,7 +446,9 @@ func runAsk(cmd *cobra.Command, args []string) error {
 	// Sequence numbers are now auto-allocated by the store (pass Sequence: -1)
 
 	// Determine system instructions: CLI > agent > config
-	instructions := cfg.Ask.Instructions
+	// Expand template variables in config instructions
+	templateCtx := agents.NewTemplateContextForTemplate(cfg.Ask.Instructions).WithFiles(askFiles)
+	instructions := agents.ExpandTemplate(cfg.Ask.Instructions, templateCtx)
 	if agent != nil && agent.SystemPrompt != "" {
 		// Expand template variables in agent system prompt
 		// Use NewTemplateContextForTemplate to avoid expensive git operations
@@ -463,7 +465,9 @@ func runAsk(cmd *cobra.Command, args []string) error {
 		instructions = agents.ExpandTemplate(agent.SystemPrompt, templateCtx)
 	}
 	if askSystemMessage != "" {
-		instructions = askSystemMessage
+		// Expand template variables in CLI system message
+		cliTemplateCtx := agents.NewTemplateContextForTemplate(askSystemMessage).WithFiles(askFiles)
+		instructions = agents.ExpandTemplate(askSystemMessage, cliTemplateCtx)
 	}
 
 	// Inject skills metadata if available and not already in AGENTS.md
@@ -541,7 +545,23 @@ func runAsk(cmd *cobra.Command, args []string) error {
 	var teaProgram *tea.Program
 	if useGlamour && toolMgr != nil {
 		model := newAskStreamModel()
+
+		// Set main provider/model for subagent comparison
+		mainProviderName := provider.Name()
+		mainModelName := ""
+		if providerCfg := cfg.GetActiveProviderConfig(); providerCfg != nil {
+			mainModelName = providerCfg.Model
+		}
+		model.subagentTracker.SetMainProviderModel(mainProviderName, mainModelName)
+
 		teaProgram = tea.NewProgram(model, tea.WithoutSignalHandler())
+
+		// Set up spawn_agent event callback for subagent progress visibility
+		if spawnTool := toolMgr.GetSpawnAgentTool(); spawnTool != nil {
+			spawnTool.SetEventCallback(func(callID string, event tools.SubagentEvent) {
+				teaProgram.Send(askSubagentProgressMsg{CallID: callID, Event: event})
+			})
+		}
 
 		// Set up the improved approval UI with git-aware heuristics
 		toolMgr.ApprovalMgr.PromptUIFunc = func(path string, isWrite bool, isShell bool) (tools.ApprovalResult, error) {
@@ -863,6 +883,9 @@ type askStreamModel struct {
 	// Tool and segment tracking (shared component)
 	tracker *ui.ToolTracker
 
+	// Subagent progress tracking
+	subagentTracker *ui.SubagentTracker
+
 	// State flags
 	done bool // True when streaming is complete (prevents spinner from showing)
 
@@ -920,6 +943,12 @@ type askApprovalRequestMsg struct {
 	ResponseCh  chan<- bool
 }
 
+// Subagent progress messages
+type askSubagentProgressMsg struct {
+	CallID string
+	Event  tools.SubagentEvent
+}
+
 // Use ui.WaveTickMsg and ui.WavePauseMsg from the shared ToolTracker
 
 func newAskStreamModel() askStreamModel {
@@ -931,11 +960,12 @@ func newAskStreamModel() askStreamModel {
 	s.Style = styles.Spinner
 
 	return askStreamModel{
-		spinner:   s,
-		styles:    styles,
-		width:     width,
-		tracker:   ui.NewToolTracker(),
-		startTime: time.Now(),
+		spinner:         s,
+		styles:          styles,
+		width:           width,
+		tracker:         ui.NewToolTracker(),
+		subagentTracker: ui.NewSubagentTracker(),
+		startTime:       time.Now(),
 	}
 }
 
@@ -1153,10 +1183,17 @@ func (m askStreamModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case askToolEndMsg:
 		m.tracker.HandleToolEnd(msg.CallID, msg.Success)
 
+		// Remove from subagent tracker when spawn_agent completes
+		m.subagentTracker.Remove(msg.CallID)
+
 		// If no more pending tools, start spinner for idle state
 		if !m.tracker.HasPending() {
 			return m, m.spinner.Tick
 		}
+
+	case askSubagentProgressMsg:
+		// Handle subagent progress events and update segment stats
+		ui.HandleSubagentProgress(m.tracker, m.subagentTracker, msg.CallID, msg.Event)
 
 	case ui.WaveTickMsg:
 		if cmd := m.tracker.HandleWaveTick(); cmd != nil {

@@ -327,6 +327,17 @@ func TestApprovalManager_CheckPathApproval_NoPromptFunc(t *testing.T) {
 }
 
 func TestApprovalManager_CheckShellApproval_NoPromptFunc(t *testing.T) {
+	// Create temp directory and change to it to avoid picking up project approvals
+	tempDir, err := os.MkdirTemp("", "test-no-prompt-*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	oldCwd, _ := os.Getwd()
+	os.Chdir(tempDir)
+	defer os.Chdir(oldCwd)
+
 	perms := NewToolPermissions()
 	mgr := NewApprovalManager(perms)
 	// Don't set PromptFunc or PromptUIFunc

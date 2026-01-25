@@ -539,7 +539,9 @@ func (e *Engine) executeSingleToolCall(ctx context.Context, call ToolCall, event
 		return []Message{ToolErrorMessage(call.ID, call.Name, errMsg, call.ThoughtSig)}, nil
 	}
 
-	output, err := tool.Execute(ctx, call.Arguments)
+	// Add call ID to context for spawn_agent event bubbling
+	toolCtx := ContextWithCallID(ctx, call.ID)
+	output, err := tool.Execute(toolCtx, call.Arguments)
 	info := e.getToolPreview(call)
 
 	if err != nil {

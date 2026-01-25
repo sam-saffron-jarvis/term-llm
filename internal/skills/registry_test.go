@@ -35,11 +35,11 @@ description: "A test skill"
 	if err != nil {
 		t.Fatalf("failed to create registry: %v", err)
 	}
-	// Manually add the test search path
-	registry.searchPaths = append(registry.searchPaths, searchPath{
+	// Replace search paths with only the test directory
+	registry.searchPaths = []searchPath{{
 		path:   filepath.Join(tmpDir, "skills"),
 		source: SourceUser,
-	})
+	}}
 
 	// List skills
 	skills, err := registry.List()
@@ -83,11 +83,11 @@ description: "Testing Get method"
 	if err != nil {
 		t.Fatalf("failed to create registry: %v", err)
 	}
-	// Manually add the test search path
-	registry.searchPaths = append(registry.searchPaths, searchPath{
+	// Replace search paths with only the test directory
+	registry.searchPaths = []searchPath{{
 		path:   filepath.Join(tmpDir, "skills"),
 		source: SourceUser,
-	})
+	}}
 
 	// Get the skill
 	skill, err := registry.Get("get-test")
@@ -165,11 +165,11 @@ description: "Low priority version"
 	if err != nil {
 		t.Fatalf("failed to create registry: %v", err)
 	}
-	// Manually add search paths in priority order
-	registry.searchPaths = append(registry.searchPaths,
-		searchPath{path: highPrioDir, source: SourceUser},
-		searchPath{path: lowPrioDir, source: SourceUser},
-	)
+	// Replace search paths in priority order
+	registry.searchPaths = []searchPath{
+		{path: highPrioDir, source: SourceUser},
+		{path: lowPrioDir, source: SourceUser},
+	}
 
 	// List skills
 	skills, err := registry.List()
@@ -216,10 +216,11 @@ description: "A user skill"
 	if err != nil {
 		t.Fatalf("failed to create registry: %v", err)
 	}
-	registry.searchPaths = append(registry.searchPaths, searchPath{
+	// Replace search paths with only the test directory
+	registry.searchPaths = []searchPath{{
 		path:   filepath.Join(tmpDir, "user-skills"),
 		source: SourceUser,
-	})
+	}}
 
 	// List by user source
 	userSkills, err := registry.ListBySource(SourceUser)
@@ -268,10 +269,11 @@ description: "Initial skill"
 	if err != nil {
 		t.Fatalf("failed to create registry: %v", err)
 	}
-	registry.searchPaths = append(registry.searchPaths, searchPath{
+	// Replace search paths with only the test directory
+	registry.searchPaths = []searchPath{{
 		path:   skillsDir,
 		source: SourceUser,
-	})
+	}}
 
 	// Initial list
 	skills, _ := registry.List()
@@ -316,10 +318,16 @@ description: "New skill"
 		t.Errorf("expected cached skill name 'initial-skill', got %q", skill.Name)
 	}
 
-	// Reload clears the cache
+	// Save the test search paths before reload
+	testSearchPaths := registry.searchPaths
+
+	// Reload clears the cache (and rebuilds search paths from config)
 	if err := registry.Reload(); err != nil {
 		t.Fatalf("failed to reload: %v", err)
 	}
+
+	// Restore the test search paths after reload
+	registry.searchPaths = testSearchPaths
 
 	// After reload, cache is empty but List still works
 	skills, _ = registry.List()

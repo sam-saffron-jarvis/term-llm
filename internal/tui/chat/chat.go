@@ -51,7 +51,8 @@ type Model struct {
 	webSearchUsed    bool
 	retryStatus      string
 	streamCancelFunc context.CancelFunc
-	tracker          *ui.ToolTracker // Tool and segment tracking (shared component)
+	tracker          *ui.ToolTracker     // Tool and segment tracking (shared component)
+	subagentTracker  *ui.SubagentTracker // Subagent progress tracking
 
 	// Streaming channels
 	streamChan <-chan ui.StreamEvent
@@ -130,6 +131,12 @@ type FlushBeforeAskUserMsg struct {
 // before releasing the terminal for approval prompts.
 type FlushBeforeApprovalMsg struct {
 	Done chan<- struct{} // Signal when flush is complete
+}
+
+// SubagentProgressMsg carries progress events from running subagents.
+type SubagentProgressMsg struct {
+	CallID string
+	Event  tools.SubagentEvent
 }
 
 // ResumeFromExternalUIMsg signals that external UI (ask_user/approval) is done
@@ -221,6 +228,10 @@ func New(cfg *config.Config, provider llm.Provider, engine *llm.Engine, modelNam
 	dialog := NewDialogModel(styles)
 	dialog.SetSize(width, height)
 
+	subagentTracker := ui.NewSubagentTracker()
+	// Set main provider/model for subagent comparison
+	subagentTracker.SetMainProviderModel(provider.Name(), modelName)
+
 	return &Model{
 		width:               width,
 		height:              height,
@@ -239,6 +250,7 @@ func New(cfg *config.Config, provider llm.Provider, engine *llm.Engine, modelNam
 		phase:               "Thinking",
 		viewportRows:        height - 8, // Reserve space for input and status
 		tracker:             ui.NewToolTracker(),
+		subagentTracker:     subagentTracker,
 		smoothBuffer:        ui.NewSmoothBuffer(),
 		completions:         completions,
 		dialog:              dialog,
@@ -412,6 +424,11 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Update segment status
 			if m.tracker != nil {
 				m.tracker.HandleToolEnd(ev.ToolCallID, ev.ToolSuccess)
+
+				// Remove from subagent tracker when spawn_agent completes
+				if m.subagentTracker != nil {
+					m.subagentTracker.Remove(ev.ToolCallID)
+				}
 
 				// Back to thinking phase if no more pending tools
 				if !m.tracker.HasPending() {
@@ -635,6 +652,10 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		return m, m.spinner.Tick
+
+	case SubagentProgressMsg:
+		// Handle subagent progress events and update segment stats
+		ui.HandleSubagentProgress(m.tracker, m.subagentTracker, msg.CallID, msg.Event)
 	}
 
 	// Update textarea if not streaming
@@ -926,6 +947,14 @@ func (m *Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m.showMCPQuickStart()
 		}
 		m.dialog.ShowMCPPicker(m.mcpManager)
+		return m, nil
+	}
+
+	// Handle subagent view toggle (Ctrl+O)
+	if key.Matches(msg, m.keyMap.SubagentView) {
+		if m.subagentTracker != nil {
+			m.subagentTracker.ToggleExpanded()
+		}
 		return m, nil
 	}
 

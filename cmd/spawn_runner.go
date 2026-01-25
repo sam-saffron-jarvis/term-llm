@@ -43,6 +43,18 @@ func NewSpawnAgentRunner(cfg *config.Config, yoloMode bool) (*SpawnAgentRunner, 
 // RunAgent loads and runs a sub-agent with the given prompt.
 // It returns the text output from the agent.
 func (r *SpawnAgentRunner) RunAgent(ctx context.Context, agentName string, prompt string, depth int) (string, error) {
+	return r.runAgentInternal(ctx, agentName, prompt, depth, "", nil)
+}
+
+// RunAgentWithCallback loads and runs a sub-agent with an event callback for progress reporting.
+func (r *SpawnAgentRunner) RunAgentWithCallback(ctx context.Context, agentName string, prompt string, depth int,
+	callID string, cb tools.SubagentEventCallback) (string, error) {
+	return r.runAgentInternal(ctx, agentName, prompt, depth, callID, cb)
+}
+
+// runAgentInternal is the shared implementation for running sub-agents.
+func (r *SpawnAgentRunner) runAgentInternal(ctx context.Context, agentName string, prompt string, depth int,
+	callID string, cb tools.SubagentEventCallback) (string, error) {
 	// Load the agent
 	agent, err := r.registry.Get(agentName)
 	if err != nil {
@@ -139,8 +151,15 @@ func (r *SpawnAgentRunner) RunAgent(ctx context.Context, agentName string, promp
 		req.ToolChoice = llm.ToolChoice{Mode: llm.ToolChoiceAuto}
 	}
 
+	// Get provider name and model for the init event
+	providerName := provider.Name()
+	modelName := ""
+	if providerCfg := cfg.GetActiveProviderConfig(); providerCfg != nil {
+		modelName = providerCfg.Model
+	}
+
 	// Run the agent and collect output
-	return r.runAndCollect(ctx, engine, req)
+	return r.runAndCollectWithCallback(ctx, engine, req, callID, cb, providerName, modelName)
 }
 
 // setupAgentTools sets up tools based on agent configuration.
@@ -219,13 +238,25 @@ func (r *SpawnAgentRunner) setupAgentTools(cfg *config.Config, engine *llm.Engin
 	return toolMgr, nil
 }
 
-// runAndCollect runs the engine and collects text output.
-func (r *SpawnAgentRunner) runAndCollect(ctx context.Context, engine *llm.Engine, req llm.Request) (string, error) {
+// runAndCollectWithCallback runs the engine and collects text output, optionally forwarding events.
+func (r *SpawnAgentRunner) runAndCollectWithCallback(
+	ctx context.Context, engine *llm.Engine, req llm.Request,
+	callID string, cb tools.SubagentEventCallback,
+	providerName, modelName string) (string, error) {
 	stream, err := engine.Stream(ctx, req)
 	if err != nil {
 		return "", err
 	}
 	defer stream.Close()
+
+	// Send init event with provider/model info
+	if cb != nil && callID != "" {
+		cb(callID, tools.SubagentEvent{
+			Type:     tools.SubagentEventInit,
+			Provider: providerName,
+			Model:    modelName,
+		})
+	}
 
 	var output strings.Builder
 	for {
@@ -234,17 +265,60 @@ func (r *SpawnAgentRunner) runAndCollect(ctx context.Context, engine *llm.Engine
 			break
 		}
 		if err != nil {
+			// Send done event before returning on stream error
+			if cb != nil && callID != "" {
+				cb(callID, tools.SubagentEvent{Type: tools.SubagentEventDone})
+			}
 			return "", err
 		}
 
 		switch event.Type {
 		case llm.EventTextDelta:
 			output.WriteString(event.Text)
+			if cb != nil && callID != "" {
+				cb(callID, tools.SubagentEvent{Type: tools.SubagentEventText, Text: event.Text})
+			}
+		case llm.EventToolExecStart:
+			if cb != nil && callID != "" {
+				cb(callID, tools.SubagentEvent{
+					Type:     tools.SubagentEventToolStart,
+					ToolName: event.ToolName,
+					ToolInfo: event.ToolInfo,
+				})
+			}
+		case llm.EventToolExecEnd:
+			if cb != nil && callID != "" {
+				cb(callID, tools.SubagentEvent{
+					Type:     tools.SubagentEventToolEnd,
+					ToolName: event.ToolName,
+					Success:  event.ToolSuccess,
+				})
+			}
+		case llm.EventPhase:
+			if cb != nil && callID != "" {
+				cb(callID, tools.SubagentEvent{Type: tools.SubagentEventPhase, Phase: event.Text})
+			}
+		case llm.EventUsage:
+			if cb != nil && callID != "" && event.Use != nil {
+				cb(callID, tools.SubagentEvent{
+					Type:         tools.SubagentEventUsage,
+					InputTokens:  event.Use.InputTokens,
+					OutputTokens: event.Use.OutputTokens,
+				})
+			}
 		case llm.EventError:
 			if event.Err != nil {
+				if cb != nil && callID != "" {
+					cb(callID, tools.SubagentEvent{Type: tools.SubagentEventDone})
+				}
 				return output.String(), event.Err
 			}
 		}
+	}
+
+	// Send done event
+	if cb != nil && callID != "" {
+		cb(callID, tools.SubagentEvent{Type: tools.SubagentEventDone})
 	}
 
 	return output.String(), nil

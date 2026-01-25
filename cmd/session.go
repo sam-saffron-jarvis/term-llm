@@ -157,7 +157,9 @@ func ResolveSettings(cfg *config.Config, agent *agents.Agent, cli CLIFlags, conf
 
 	// System prompt: CLI > agent > config
 	if cli.SystemMessage != "" {
-		s.SystemPrompt = cli.SystemMessage
+		// Expand template variables in CLI system message
+		templateCtx := agents.NewTemplateContext().WithFiles(cli.Files)
+		s.SystemPrompt = agents.ExpandTemplate(cli.SystemMessage, templateCtx)
 	} else if agent != nil && agent.SystemPrompt != "" {
 		// Expand template variables
 		templateCtx := agents.NewTemplateContext().WithFiles(cli.Files)
@@ -168,7 +170,9 @@ func ResolveSettings(cfg *config.Config, agent *agents.Agent, cli CLIFlags, conf
 		}
 		s.SystemPrompt = agents.ExpandTemplate(agent.SystemPrompt, templateCtx)
 	} else {
-		s.SystemPrompt = configInstructions
+		// Expand template variables in config instructions
+		templateCtx := agents.NewTemplateContext().WithFiles(cli.Files)
+		s.SystemPrompt = agents.ExpandTemplate(configInstructions, templateCtx)
 	}
 
 	// Max turns: CLI (if set) > agent > config > default
