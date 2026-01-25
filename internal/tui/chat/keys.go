@@ -30,13 +30,13 @@ type KeyMap struct {
 	Copy       key.Binding
 
 	// Shortcuts
-	SwitchModel  key.Binding
-	ToggleWeb    key.Binding
-	AttachFile   key.Binding
-	Clear        key.Binding
-	NewSession   key.Binding
-	MCPPicker    key.Binding
-	SubagentView key.Binding
+	SwitchModel key.Binding
+	ToggleWeb   key.Binding
+	AttachFile  key.Binding
+	Clear       key.Binding
+	NewSession  key.Binding
+	MCPPicker   key.Binding
+	Inspector   key.Binding
 }
 
 // DefaultKeyMap returns the default keybindings
@@ -149,9 +149,9 @@ func DefaultKeyMap() KeyMap {
 			key.WithKeys("ctrl+t"),
 			key.WithHelp("ctrl+t", "mcp servers"),
 		),
-		SubagentView: key.NewBinding(
+		Inspector: key.NewBinding(
 			key.WithKeys("ctrl+o"),
-			key.WithHelp("ctrl+o", "subagent view"),
+			key.WithHelp("ctrl+o", "inspect"),
 		),
 	}
 }

@@ -1,0 +1,175 @@
+package inspector
+
+import (
+	"testing"
+	"time"
+
+	tea "github.com/charmbracelet/bubbletea"
+	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/session"
+	"github.com/samsaffron/term-llm/internal/ui"
+)
+
+func TestNew(t *testing.T) {
+	messages := []session.Message{
+		{
+			ID:          1,
+			SessionID:   "test-session",
+			Role:        llm.RoleUser,
+			Parts:       []llm.Part{{Type: llm.PartText, Text: "Hello, world!"}},
+			TextContent: "Hello, world!",
+			CreatedAt:   time.Now(),
+			Sequence:    0,
+		},
+		{
+			ID:          2,
+			SessionID:   "test-session",
+			Role:        llm.RoleAssistant,
+			Parts:       []llm.Part{{Type: llm.PartText, Text: "Hello! How can I help you today?"}},
+			TextContent: "Hello! How can I help you today?",
+			CreatedAt:   time.Now(),
+			Sequence:    1,
+		},
+	}
+
+	m := New(messages, 80, 24, ui.DefaultStyles())
+
+	if m == nil {
+		t.Fatal("New returned nil")
+	}
+
+	if len(m.messages) != 2 {
+		t.Errorf("expected 2 messages, got %d", len(m.messages))
+	}
+
+	if m.width != 80 {
+		t.Errorf("expected width 80, got %d", m.width)
+	}
+
+	if m.height != 24 {
+		t.Errorf("expected height 24, got %d", m.height)
+	}
+}
+
+func TestScrolling(t *testing.T) {
+	// Create a message that will result in many lines
+	longText := ""
+	for i := 0; i < 100; i++ {
+		longText += "This is line " + string(rune('0'+i%10)) + " of the long text message.\n"
+	}
+
+	messages := []session.Message{
+		{
+			ID:          1,
+			SessionID:   "test-session",
+			Role:        llm.RoleAssistant,
+			Parts:       []llm.Part{{Type: llm.PartText, Text: longText}},
+			TextContent: longText,
+			CreatedAt:   time.Now(),
+			Sequence:    0,
+		},
+	}
+
+	m := New(messages, 80, 24, ui.DefaultStyles())
+
+	// Should start at top
+	if m.scrollY != 0 {
+		t.Errorf("expected scrollY 0, got %d", m.scrollY)
+	}
+
+	// Scroll down
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'j'}})
+	if m.scrollY != 1 {
+		t.Errorf("expected scrollY 1 after scrolling down, got %d", m.scrollY)
+	}
+
+	// Scroll up
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'k'}})
+	if m.scrollY != 0 {
+		t.Errorf("expected scrollY 0 after scrolling up, got %d", m.scrollY)
+	}
+
+	// Go to bottom
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'G'}})
+	if m.scrollY != m.maxScroll() {
+		t.Errorf("expected scrollY %d (maxScroll) after G, got %d", m.maxScroll(), m.scrollY)
+	}
+
+	// Go to top
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'g'}})
+	if m.scrollY != 0 {
+		t.Errorf("expected scrollY 0 after g, got %d", m.scrollY)
+	}
+}
+
+func TestQuit(t *testing.T) {
+	messages := []session.Message{
+		{
+			ID:          1,
+			SessionID:   "test-session",
+			Role:        llm.RoleUser,
+			Parts:       []llm.Part{{Type: llm.PartText, Text: "Test"}},
+			TextContent: "Test",
+			CreatedAt:   time.Now(),
+			Sequence:    0,
+		},
+	}
+
+	m := New(messages, 80, 24, ui.DefaultStyles())
+
+	// Test q key
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}})
+	if cmd == nil {
+		t.Error("expected non-nil command from q key")
+	}
+
+	// Execute command and check for CloseMsg
+	msg := cmd()
+	if _, ok := msg.(CloseMsg); !ok {
+		t.Errorf("expected CloseMsg, got %T", msg)
+	}
+}
+
+func TestView(t *testing.T) {
+	messages := []session.Message{
+		{
+			ID:          1,
+			SessionID:   "test-session",
+			Role:        llm.RoleUser,
+			Parts:       []llm.Part{{Type: llm.PartText, Text: "Hello"}},
+			TextContent: "Hello",
+			CreatedAt:   time.Now(),
+			Sequence:    0,
+		},
+	}
+
+	m := New(messages, 80, 24, ui.DefaultStyles())
+	view := m.View()
+
+	if view == "" {
+		t.Error("View() returned empty string")
+	}
+
+	// Check for header
+	if !contains(view, "Conversation Inspector") {
+		t.Error("View() should contain header")
+	}
+
+	// Check for help text
+	if !contains(view, "q:close") {
+		t.Error("View() should contain help text")
+	}
+}
+
+func contains(s, substr string) bool {
+	return len(s) >= len(substr) && (s == substr || len(s) > 0 && containsHelper(s, substr))
+}
+
+func containsHelper(s, substr string) bool {
+	for i := 0; i <= len(s)-len(substr); i++ {
+		if s[i:i+len(substr)] == substr {
+			return true
+		}
+	}
+	return false
+}

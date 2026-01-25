@@ -13,6 +13,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/mcp"
 	"github.com/samsaffron/term-llm/internal/session"
+	"github.com/samsaffron/term-llm/internal/tui/inspector"
 )
 
 // Command represents a slash command
@@ -123,6 +124,12 @@ func AllCommands() []Command {
 			Aliases:     []string{"sk"},
 			Description: "Show available skills",
 			Usage:       "/skills",
+		},
+		{
+			Name:        "inspect",
+			Aliases:     []string{"debug", "i"},
+			Description: "View full conversation with tool details",
+			Usage:       "/inspect",
 		},
 	}
 }
@@ -314,6 +321,8 @@ func (m *Model) ExecuteCommand(input string) (tea.Model, tea.Cmd) {
 		return m.cmdMcp(args)
 	case "skills":
 		return m.cmdSkills()
+	case "inspect":
+		return m.cmdInspect()
 	default:
 		return m.showSystemMessage(fmt.Sprintf("Command /%s is not yet implemented.", cmd.Name))
 	}
@@ -1226,4 +1235,16 @@ func (m *Model) cmdSkills() (tea.Model, tea.Cmd) {
 
 	m.textarea.SetValue("")
 	return m.showSystemMessage(b.String())
+}
+
+func (m *Model) cmdInspect() (tea.Model, tea.Cmd) {
+	m.textarea.SetValue("")
+
+	if len(m.messages) == 0 {
+		return m.showSystemMessage("No messages to inspect. Send a message first.")
+	}
+
+	m.inspectorMode = true
+	m.inspectorModel = inspector.New(m.messages, m.width, m.height, m.styles)
+	return m, tea.EnterAltScreen
 }

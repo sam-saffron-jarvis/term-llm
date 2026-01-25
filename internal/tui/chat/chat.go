@@ -21,6 +21,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/mcp"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/tools"
+	"github.com/samsaffron/term-llm/internal/tui/inspector"
 	"github.com/samsaffron/term-llm/internal/ui"
 	"golang.org/x/term"
 )
@@ -104,6 +105,10 @@ type Model struct {
 	// Stats tracking
 	showStats bool
 	stats     *ui.SessionStats
+
+	// Inspector mode
+	inspectorMode  bool
+	inspectorModel *inspector.Model
 }
 
 // streamEventMsg wraps ui.StreamEvent for bubbletea
@@ -279,6 +284,11 @@ func (m *Model) Init() tea.Cmd {
 // Update handles messages
 func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmds []tea.Cmd
+
+	// Handle inspector mode
+	if m.inspectorMode {
+		return m.updateInspectorMode(msg)
+	}
 
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
@@ -671,6 +681,45 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, tea.Batch(cmds...)
 }
 
+// updateInspectorMode handles updates while in inspector mode
+func (m *Model) updateInspectorMode(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch msg := msg.(type) {
+	case tea.WindowSizeMsg:
+		m.width = msg.Width
+		m.height = msg.Height
+		// Pass to inspector
+		if m.inspectorModel != nil {
+			m.inspectorModel, _ = m.inspectorModel.Update(msg)
+		}
+		return m, nil
+
+	case tea.KeyMsg:
+		// Pass to inspector
+		if m.inspectorModel != nil {
+			var cmd tea.Cmd
+			m.inspectorModel, cmd = m.inspectorModel.Update(msg)
+			return m, cmd
+		}
+		return m, nil
+
+	case inspector.CloseMsg:
+		// Exit inspector mode
+		m.inspectorMode = false
+		m.inspectorModel = nil
+		return m, tea.ExitAltScreen
+
+	default:
+		// Pass through to inspector
+		if m.inspectorModel != nil {
+			var cmd tea.Cmd
+			m.inspectorModel, cmd = m.inspectorModel.Update(msg)
+			return m, cmd
+		}
+	}
+
+	return m, nil
+}
+
 func (m *Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// Handle dialog first if open
 	if m.dialog.IsOpen() {
@@ -916,6 +965,17 @@ func (m *Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
+	// Handle inspector view (Ctrl+O) - works even during streaming
+	if key.Matches(msg, m.keyMap.Inspector) {
+		// Only open inspector if we have messages
+		if len(m.messages) > 0 {
+			m.inspectorMode = true
+			m.inspectorModel = inspector.New(m.messages, m.width, m.height, m.styles)
+			return m, tea.EnterAltScreen
+		}
+		return m, nil
+	}
+
 	// Don't process other keys while streaming
 	if m.streaming {
 		return m, nil
@@ -948,14 +1008,6 @@ func (m *Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m.showMCPQuickStart()
 		}
 		m.dialog.ShowMCPPicker(m.mcpManager)
-		return m, nil
-	}
-
-	// Handle subagent view toggle (Ctrl+O)
-	if key.Matches(msg, m.keyMap.SubagentView) {
-		if m.subagentTracker != nil {
-			m.subagentTracker.ToggleExpanded()
-		}
 		return m, nil
 	}
 
@@ -1382,6 +1434,11 @@ func (m *Model) View() string {
 		return ""
 	}
 
+	// Inspector mode uses alternate screen
+	if m.inspectorMode && m.inspectorModel != nil {
+		return m.inspectorModel.View()
+	}
+
 	var b strings.Builder
 
 	// History (if scrolling)
@@ -1623,6 +1680,11 @@ func (m *Model) renderStatusLine() string {
 	// File count if any
 	if len(m.files) > 0 {
 		parts = append(parts, fmt.Sprintf("%d file(s)", len(m.files)))
+	}
+
+	// Inspector hint (only show when we have messages)
+	if len(m.messages) > 0 {
+		parts = append(parts, mutedStyle.Render("^O:inspect"))
 	}
 
 	// Help tip (only show when no messages yet)

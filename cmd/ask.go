@@ -24,6 +24,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/signal"
 	"github.com/samsaffron/term-llm/internal/skills"
 	"github.com/samsaffron/term-llm/internal/tools"
+	"github.com/samsaffron/term-llm/internal/tui/inspector"
 	"github.com/samsaffron/term-llm/internal/ui"
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
@@ -556,6 +557,8 @@ func runAsk(cmd *cobra.Command, args []string) error {
 	var teaProgram *tea.Program
 	if useGlamour && toolMgr != nil {
 		model := newAskStreamModel()
+		model.store = store
+		model.sess = sess
 
 		// Set main provider/model for subagent comparison
 		// Use cfg.DefaultProvider (e.g. "chatgpt") for cleaner display
@@ -683,7 +686,7 @@ func runAsk(cmd *cobra.Command, args []string) error {
 	}
 
 	if useGlamour {
-		err = streamWithGlamour(ctx, events, teaProgram)
+		err = streamWithGlamour(ctx, events, teaProgram, store, sess)
 	} else {
 		err = streamPlainText(ctx, events)
 	}
@@ -890,6 +893,7 @@ type askStreamModel struct {
 	spinner spinner.Model
 	styles  *ui.Styles
 	width   int
+	height  int
 
 	// Tool and segment tracking (shared component)
 	tracker *ui.ToolTracker
@@ -914,6 +918,14 @@ type askStreamModel struct {
 	approvalDesc       string
 	approvalToolInfo   string      // Info for the tool that triggered approval (to avoid duplicates)
 	approvalResponseCh chan<- bool // channel to send y/n response back to tool
+
+	// Session for inspector (to fetch messages)
+	store session.Store
+	sess  *session.Session
+
+	// Inspector mode
+	inspectorMode  bool
+	inspectorModel *inspector.Model
 }
 
 type askContentMsg string
@@ -964,6 +976,10 @@ type askSubagentProgressMsg struct {
 
 func newAskStreamModel() askStreamModel {
 	width := getTerminalWidth()
+	height := 24
+	if _, h, err := term.GetSize(int(os.Stdout.Fd())); err == nil {
+		height = h
+	}
 	styles := ui.DefaultStyles()
 
 	s := spinner.New()
@@ -974,6 +990,7 @@ func newAskStreamModel() askStreamModel {
 		spinner:         s,
 		styles:          styles,
 		width:           width,
+		height:          height,
 		tracker:         ui.NewToolTracker(),
 		subagentTracker: ui.NewSubagentTracker(),
 		startTime:       time.Now(),
@@ -1006,6 +1023,11 @@ func (m *askStreamModel) maybeFlushToScrollback() tea.Cmd {
 }
 
 func (m askStreamModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	// Handle inspector mode
+	if m.inspectorMode {
+		return m.updateInspectorMode(msg)
+	}
+
 	// Handle tool start messages even while approval form is active
 	if toolMsg, ok := msg.(askToolStartMsg); ok && m.approvalForm != nil {
 		if m.tracker.HandleToolStart(toolMsg.CallID, toolMsg.Name, toolMsg.Info) {
@@ -1058,9 +1080,25 @@ func (m askStreamModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.String() == "ctrl+c" || msg.String() == "esc" {
 			return m, tea.Quit
 		}
+		// Handle CTRL-O to open inspector (works during streaming too)
+		if msg.String() == "ctrl+o" && m.store != nil && m.sess != nil {
+			// Fetch messages from session store
+			messages, err := m.store.GetMessages(context.Background(), m.sess.ID, 0, 0)
+			if err != nil {
+				// Log error but don't interrupt the user - just don't open inspector
+				m.tracker.AddTextSegment(fmt.Sprintf("\n[Inspector error: %v]\n", err))
+				return m, nil
+			}
+			if len(messages) > 0 {
+				m.inspectorMode = true
+				m.inspectorModel = inspector.New(messages, m.width, m.height, m.styles)
+				return m, tea.EnterAltScreen
+			}
+		}
 
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
+		m.height = msg.Height
 		// Re-render text segments with new width
 		for i := range m.tracker.Segments {
 			if m.tracker.Segments[i].Type == ui.SegmentText && m.tracker.Segments[i].Complete {
@@ -1254,7 +1292,51 @@ func renderMd(text string, width int) string {
 	return ui.RenderMarkdown(text, width)
 }
 
+// updateInspectorMode handles updates while in inspector mode
+func (m askStreamModel) updateInspectorMode(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch msg := msg.(type) {
+	case tea.WindowSizeMsg:
+		m.width = msg.Width
+		m.height = msg.Height
+		// Pass to inspector
+		if m.inspectorModel != nil {
+			m.inspectorModel, _ = m.inspectorModel.Update(msg)
+		}
+		return m, nil
+
+	case tea.KeyMsg:
+		// Pass to inspector
+		if m.inspectorModel != nil {
+			var cmd tea.Cmd
+			m.inspectorModel, cmd = m.inspectorModel.Update(msg)
+			return m, cmd
+		}
+		return m, nil
+
+	case inspector.CloseMsg:
+		// Exit inspector mode and return to stream UI
+		m.inspectorMode = false
+		m.inspectorModel = nil
+		return m, tea.ExitAltScreen
+
+	default:
+		// Pass through to inspector
+		if m.inspectorModel != nil {
+			var cmd tea.Cmd
+			m.inspectorModel, cmd = m.inspectorModel.Update(msg)
+			return m, cmd
+		}
+	}
+
+	return m, nil
+}
+
 func (m askStreamModel) View() string {
+	// Inspector mode uses alternate screen
+	if m.inspectorMode && m.inspectorModel != nil {
+		return m.inspectorModel.View()
+	}
+
 	var b strings.Builder
 
 	// Get segments from tracker (excludes flushed segments)
@@ -1313,10 +1395,12 @@ func (m askStreamModel) View() string {
 
 // streamWithGlamour renders markdown beautifully as content streams in
 // If p is nil, creates a new tea.Program; otherwise uses the provided one.
-func streamWithGlamour(ctx context.Context, events <-chan ui.StreamEvent, p *tea.Program) error {
+func streamWithGlamour(ctx context.Context, events <-chan ui.StreamEvent, p *tea.Program, store session.Store, sess *session.Session) error {
 	// Create program if not provided (when no tools are used)
 	if p == nil {
 		model := newAskStreamModel()
+		model.store = store
+		model.sess = sess
 		p = tea.NewProgram(model, tea.WithoutSignalHandler())
 	}
 
