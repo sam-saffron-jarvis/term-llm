@@ -356,12 +356,16 @@ See [Agents](#agents) for more details on creating and managing agents.
 | Key | Action |
 |-----|--------|
 | `Enter` | Send message |
-| `Shift+Enter` | Insert newline |
+| `Ctrl+J` or `Alt+Enter` | Insert newline |
 | `Ctrl+C` | Quit |
 | `Ctrl+K` | Clear conversation |
 | `Ctrl+S` | Toggle web search |
 | `Ctrl+P` | Command palette |
-| `Ctrl+M` | Toggle MCP servers |
+| `Ctrl+T` | MCP server picker |
+| `Ctrl+L` | Switch model |
+| `Ctrl+N` | New session |
+| `Ctrl+F` | Attach file |
+| `Ctrl+O` | Conversation inspector |
 | `Esc` | Cancel streaming |
 
 ### Chat Slash Commands
@@ -1011,6 +1015,41 @@ term-llm usage --json                    # JSON output
 ```
 
 Supported sources: Claude Code, Gemini CLI, and term-llm's own usage logs.
+
+## Session Management
+
+Chat sessions are automatically stored locally and can be managed with the `sessions` command:
+
+```bash
+term-llm sessions                        # List recent sessions
+term-llm sessions list --provider anthropic  # Filter by provider
+term-llm sessions search "kubernetes"    # Search session content
+term-llm sessions show <id>              # Show session details
+term-llm sessions export <id> [path.md]  # Export as markdown
+term-llm sessions name <id> "my session" # Set custom name
+term-llm sessions delete <id>            # Delete a session
+term-llm sessions reset                  # Delete all sessions
+```
+
+Sessions are stored in a SQLite database at `~/.local/share/term-llm/sessions.db`. Configure session storage in your config:
+
+```yaml
+sessions:
+  enabled: true       # Master switch (default: true)
+  max_age_days: 0     # Auto-delete sessions older than N days (0=never)
+  max_count: 0        # Keep at most N sessions (0=unlimited)
+```
+
+### Conversation Inspector
+
+While in `chat` or `ask` mode, press `Ctrl+O` to open the conversation inspector. This shows the full conversation history including tool calls and results, with vim-style navigation:
+
+| Key | Action |
+|-----|--------|
+| `j/k` | Scroll up/down |
+| `g/G` | Go to top/bottom |
+| `e` | Toggle expand/collapse |
+| `q` | Close inspector |
 
 Config is stored at `~/.config/term-llm/config.yaml`:
 
