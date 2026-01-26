@@ -367,6 +367,15 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		return m.handleKeyMsg(msg)
 
+	case tea.MouseMsg:
+		// Forward mouse events to viewport in alt-screen mode for scroll wheel support
+		if m.altScreen {
+			var cmd tea.Cmd
+			m.viewport, cmd = m.viewport.Update(msg)
+			return m, cmd
+		}
+		return m, nil
+
 	case spinner.TickMsg:
 		if m.streaming {
 			var cmd tea.Cmd
@@ -1101,6 +1110,23 @@ func (m *Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			var cmd tea.Cmd
 			m.viewport, cmd = m.viewport.Update(msg)
 			return m, cmd
+		}
+		// Arrow keys scroll viewport when textarea is empty
+		if m.textarea.Value() == "" {
+			// Scroll faster during streaming when content is out of view
+			// This provides smooth scrolling through history while new content streams in
+			scrollAmount := 1
+			if m.streaming && !m.viewport.AtBottom() {
+				scrollAmount = 5
+			}
+			if key.Matches(msg, m.keyMap.HistoryUp) {
+				m.viewport.LineUp(scrollAmount)
+				return m, nil
+			}
+			if key.Matches(msg, m.keyMap.HistoryDown) {
+				m.viewport.LineDown(scrollAmount)
+				return m, nil
+			}
 		}
 	}
 
