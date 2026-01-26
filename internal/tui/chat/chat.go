@@ -12,6 +12,7 @@ import (
 	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textarea"
+	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/glamour"
 	"github.com/charmbracelet/lipgloss"
@@ -110,6 +111,10 @@ type Model struct {
 	inspectorMode  bool
 	inspectorModel *inspector.Model
 
+	// Alt screen mode (full-screen rendering)
+	altScreen bool
+	viewport  viewport.Model // Scrollable viewport for alt screen mode
+
 	// Cached glamour renderer (avoids expensive recreation during streaming)
 	rendererCache struct {
 		renderer *glamour.TermRenderer
@@ -156,7 +161,7 @@ type ResumeFromExternalUIMsg struct{}
 // Use ui.WaveTickMsg and ui.WavePauseMsg from the shared ToolTracker
 
 // New creates a new chat model
-func New(cfg *config.Config, provider llm.Provider, engine *llm.Engine, modelName string, mcpManager *mcp.Manager, maxTurns int, forceExternalSearch bool, searchEnabled bool, localTools []string, toolsStr string, mcpStr string, showStats bool, initialText string, store session.Store, sess *session.Session) *Model {
+func New(cfg *config.Config, provider llm.Provider, engine *llm.Engine, modelName string, mcpManager *mcp.Manager, maxTurns int, forceExternalSearch bool, searchEnabled bool, localTools []string, toolsStr string, mcpStr string, showStats bool, initialText string, store session.Store, sess *session.Session, altScreen bool) *Model {
 	// Get terminal size
 	width := 80
 	height := 24
@@ -244,6 +249,15 @@ func New(cfg *config.Config, provider llm.Provider, engine *llm.Engine, modelNam
 	// Use cfg.DefaultProvider (e.g. "chatgpt") for cleaner display
 	subagentTracker.SetMainProviderModel(cfg.DefaultProvider, modelName)
 
+	// Create viewport for alt screen scrolling
+	// Reserve space for input (3 lines) and status line (1 line)
+	vpHeight := height - 4
+	if vpHeight < 1 {
+		vpHeight = 1
+	}
+	vp := viewport.New(width, vpHeight)
+	vp.Style = lipgloss.NewStyle()
+
 	return &Model{
 		width:               width,
 		height:              height,
@@ -276,6 +290,8 @@ func New(cfg *config.Config, provider llm.Provider, engine *llm.Engine, modelNam
 		mcpStr:              mcpStr,
 		showStats:           showStats,
 		stats:               ui.NewSessionStats(),
+		altScreen:           altScreen,
+		viewport:            vp,
 	}
 }
 
@@ -305,7 +321,29 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.completions.SetSize(m.width, m.height)
 		m.dialog.SetSize(m.width, m.height)
 
-		// Reprint history to scrollback after clearing screen
+		// Invalidate cached markdown renderings since they are width-dependent
+		if m.tracker != nil {
+			for i := range m.tracker.Segments {
+				m.tracker.Segments[i].Rendered = ""
+				m.tracker.Segments[i].SafeRendered = ""
+				m.tracker.Segments[i].SafePos = 0
+			}
+		}
+
+		// Resize viewport for alt screen mode
+		// Reserve space for input area (textarea + separators + status)
+		vpHeight := m.height - 4
+		if vpHeight < 1 {
+			vpHeight = 1
+		}
+		m.viewport.Width = m.width
+		m.viewport.Height = vpHeight
+
+		// In alt screen mode, just clear screen (View() renders history)
+		// In inline mode, reprint history to scrollback after clearing
+		if m.altScreen {
+			return m, nil
+		}
 		if len(m.messages) > 0 {
 			history := m.renderHistory()
 			return m, tea.Sequence(tea.ClearScreen, tea.Println(history))
@@ -540,13 +578,18 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return m.renderMarkdown(text)
 				})
 
-				// Print any remaining content to scrollback using FlushAllRemaining
-				result := m.tracker.FlushAllRemaining(m.width, 0, m.renderMd)
-				if result.ToPrint != "" {
-					cmds = append(cmds, tea.Println(result.ToPrint))
+				// In alt screen mode, View() renders everything, so no need to flush
+				// In inline mode, print any remaining content to scrollback
+				if !m.altScreen {
+					result := m.tracker.FlushAllRemaining(m.width, 0, m.renderMd)
+					if result.ToPrint != "" {
+						cmds = append(cmds, tea.Println(result.ToPrint))
+					}
+					cmds = append(cmds, tea.Println("")) // blank line
 				}
+			} else if !m.altScreen {
+				cmds = append(cmds, tea.Println("")) // blank line
 			}
-			cmds = append(cmds, tea.Println("")) // blank line
 
 			// Sync in-memory messages with persisted state
 			if m.store != nil {
@@ -614,6 +657,21 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Set flag to suppress spinner in View() while external UI is active
 		m.pausedForExternalUI = true
 
+		// In alt screen mode, no flushing needed - just mark text complete and signal done.
+		// NOTE: External UIs (ask_user prompts) are handed off via ReleaseTerminal/RestoreTerminal
+		// in cmd/chat.go. The external UI inherits cooked mode from ReleaseTerminal(), but the
+		// cursor visibility state may vary. If external UIs appear to have cursor issues,
+		// consider explicitly showing the cursor before handoff.
+		if m.altScreen {
+			if m.tracker != nil {
+				m.tracker.MarkCurrentTextComplete(func(text string) string {
+					return m.renderMarkdown(text)
+				})
+			}
+			close(msg.Done)
+			return m, nil
+		}
+
 		// Partial flush - keep last maxViewLines visible for after external UI returns
 		if m.tracker != nil {
 			// Mark current text as complete
@@ -641,6 +699,21 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case FlushBeforeApprovalMsg:
 		// Set flag to suppress spinner in View() while approval UI is active
 		m.pausedForExternalUI = true
+
+		// In alt screen mode, no flushing needed - just mark text complete and signal done.
+		// NOTE: Approval UIs are handed off via ReleaseTerminal/RestoreTerminal in cmd/chat.go.
+		// The external UI inherits cooked mode from ReleaseTerminal(), but the cursor visibility
+		// state may vary. If approval UIs appear to have cursor issues, consider explicitly
+		// showing the cursor before handoff.
+		if m.altScreen {
+			if m.tracker != nil {
+				m.tracker.MarkCurrentTextComplete(func(text string) string {
+					return m.renderMarkdown(text)
+				})
+			}
+			close(msg.Done)
+			return m, nil
+		}
 
 		// Partial flush - keep some context visible for after external UI returns
 		if m.tracker != nil {
@@ -725,7 +798,11 @@ func (m *Model) updateInspectorMode(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.inspectorMode = false
 		m.inspectorModel = nil
 		m.textarea.Focus()
-		return m, tea.ExitAltScreen
+		// Only exit alt screen if chat isn't in alt screen mode
+		if !m.altScreen {
+			return m, tea.ExitAltScreen
+		}
+		return m, nil
 
 	default:
 		// Pass through to inspector
@@ -990,9 +1067,27 @@ func (m *Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if len(m.messages) > 0 {
 			m.inspectorMode = true
 			m.inspectorModel = inspector.NewWithStore(m.messages, m.width, m.height, m.styles, m.store)
-			return m, tea.EnterAltScreen
+			// Only enter alt screen if chat isn't already in alt screen mode
+			if !m.altScreen {
+				return m, tea.EnterAltScreen
+			}
+			return m, nil
 		}
 		return m, nil
+	}
+
+	// Allow viewport scrolling even while streaming (in alt screen mode)
+	if m.altScreen {
+		if key.Matches(msg, m.keyMap.PageUp) {
+			var cmd tea.Cmd
+			m.viewport, cmd = m.viewport.Update(msg)
+			return m, cmd
+		}
+		if key.Matches(msg, m.keyMap.PageDown) {
+			var cmd tea.Cmd
+			m.viewport, cmd = m.viewport.Update(msg)
+			return m, cmd
+		}
 	}
 
 	// Don't process other keys while streaming
@@ -1149,26 +1244,28 @@ func (m *Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	// Page up/down for scrolling
-	if key.Matches(msg, m.keyMap.PageUp) {
-		totalMessages := len(m.messages)
-		maxScroll := totalMessages - 1
-		if maxScroll < 0 {
-			maxScroll = 0
+	// Page up/down for scrolling (inline mode only - alt screen handled above)
+	if !m.altScreen {
+		if key.Matches(msg, m.keyMap.PageUp) {
+			totalMessages := len(m.messages)
+			maxScroll := totalMessages - 1
+			if maxScroll < 0 {
+				maxScroll = 0
+			}
+			m.scrollOffset += 5
+			if m.scrollOffset > maxScroll {
+				m.scrollOffset = maxScroll
+			}
+			return m, nil
 		}
-		m.scrollOffset += 5
-		if m.scrollOffset > maxScroll {
-			m.scrollOffset = maxScroll
-		}
-		return m, nil
-	}
 
-	if key.Matches(msg, m.keyMap.PageDown) {
-		m.scrollOffset -= 5
-		if m.scrollOffset < 0 {
-			m.scrollOffset = 0
+		if key.Matches(msg, m.keyMap.PageDown) {
+			m.scrollOffset -= 5
+			if m.scrollOffset < 0 {
+				m.scrollOffset = 0
+			}
+			return m, nil
 		}
-		return m, nil
 	}
 
 	// Update textarea for other keys
@@ -1246,7 +1343,16 @@ func (m *Model) sendMessage(content string) (tea.Model, tea.Cmd) {
 		m.smoothBuffer.Reset()
 	}
 
-	// Start the stream (print user message first)
+	// Start the stream
+	// In alt screen mode, View() renders history including user message
+	// In inline mode, print user message to scrollback first
+	if m.altScreen {
+		return m, tea.Batch(
+			m.startStream(fullContent),
+			m.spinner.Tick,
+			m.tickEvery(),
+		)
+	}
 	return m, tea.Batch(
 		tea.Println(userDisplay.String()),
 		m.startStream(fullContent),
@@ -1396,7 +1502,7 @@ func (m *Model) saveSessionCmd() tea.Cmd {
 	}
 }
 
-// View renders the model (inline mode - only active frame)
+// View renders the model
 func (m *Model) View() string {
 	if m.quitting {
 		return ""
@@ -1407,6 +1513,16 @@ func (m *Model) View() string {
 		return m.inspectorModel.View()
 	}
 
+	// Set terminal title
+	title := m.getTerminalTitle()
+	titleSeq := fmt.Sprintf("\x1b]0;%s\x07", title)
+
+	// Alt screen mode: use viewport for scrollable content
+	if m.altScreen {
+		return titleSeq + m.viewAltScreen()
+	}
+
+	// Inline mode: traditional rendering
 	var b strings.Builder
 
 	// History (if scrolling)
@@ -1435,11 +1551,50 @@ func (m *Model) View() string {
 	// Input prompt
 	b.WriteString(m.renderInputInline())
 
-	// Set terminal title
-	title := m.getTerminalTitle()
-	titleSeq := fmt.Sprintf("\x1b]0;%s\x07", title)
-
 	return titleSeq + b.String()
+}
+
+// viewAltScreen renders the full-screen alt screen view with scrollable viewport
+func (m *Model) viewAltScreen() string {
+	var b strings.Builder
+
+	// Build scrollable content (history + streaming response)
+	var content strings.Builder
+
+	// Render history
+	content.WriteString(m.renderHistory())
+
+	// Render streaming response if active
+	if m.streaming {
+		content.WriteString(m.renderStreamingInline())
+	}
+
+	// Update viewport content and auto-scroll to bottom when streaming
+	m.viewport.SetContent(content.String())
+	if m.streaming {
+		m.viewport.GotoBottom()
+	}
+
+	// Render viewport (scrollable area)
+	b.WriteString(m.viewport.View())
+	b.WriteString("\n")
+
+	// Completions popup (if visible) - overlaid on content
+	if m.completions.IsVisible() {
+		b.WriteString(m.completions.View())
+		b.WriteString("\n")
+	}
+
+	// Dialog (if open) - overlaid on content
+	if m.dialog.IsOpen() {
+		b.WriteString(m.dialog.View())
+		b.WriteString("\n")
+	}
+
+	// Input area (fixed at bottom)
+	b.WriteString(m.renderInputInline())
+
+	return b.String()
 }
 
 func (m *Model) renderMd(text string, width int) string {
@@ -1455,8 +1610,9 @@ const maxViewLines = 8
 
 // maybeFlushToScrollback checks if there are segments to flush to scrollback,
 // keeping View() small to avoid terminal scroll issues.
+// In alt screen mode, we never flush to scrollback since View() renders everything.
 func (m *Model) maybeFlushToScrollback() tea.Cmd {
-	if m.tracker == nil {
+	if m.altScreen || m.tracker == nil {
 		return nil
 	}
 

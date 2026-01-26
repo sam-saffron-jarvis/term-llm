@@ -1246,5 +1246,9 @@ func (m *Model) cmdInspect() (tea.Model, tea.Cmd) {
 
 	m.inspectorMode = true
 	m.inspectorModel = inspector.NewWithStore(m.messages, m.width, m.height, m.styles, m.store)
-	return m, tea.EnterAltScreen
+	// Only enter alt screen if chat isn't already in alt screen mode
+	if !m.altScreen {
+		return m, tea.EnterAltScreen
+	}
+	return m, nil
 }

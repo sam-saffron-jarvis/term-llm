@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"fmt"
+	"os"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -15,6 +16,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/tools"
 	"github.com/samsaffron/term-llm/internal/tui/chat"
 	"github.com/spf13/cobra"
+	"golang.org/x/term"
 )
 
 var (
@@ -306,11 +308,20 @@ func runChat(cmd *cobra.Command, args []string) error {
 	// Resolve force external search setting
 	forceExternalSearch := resolveForceExternalSearch(cfg, chatNativeSearch, chatNoNativeSearch)
 
-	// Create chat model
-	model := chat.New(cfg, provider, engine, modelName, mcpManager, settings.MaxTurns, forceExternalSearch, settings.Search, enabledLocalTools, settings.Tools, settings.MCP, showStats, initialText, store, sess)
+	// Only enable alt-screen when stdout is a terminal (avoid corrupting piped output)
+	useAltScreen := term.IsTerminal(int(os.Stdout.Fd()))
 
-	// Run the TUI (inline mode - no alt screen)
-	p := tea.NewProgram(model)
+	// Create chat model
+	model := chat.New(cfg, provider, engine, modelName, mcpManager, settings.MaxTurns, forceExternalSearch, settings.Search, enabledLocalTools, settings.Tools, settings.MCP, showStats, initialText, store, sess, useAltScreen)
+
+	// Build program options
+	var opts []tea.ProgramOption
+	if useAltScreen {
+		opts = append(opts, tea.WithAltScreen())
+	}
+
+	// Run the TUI
+	p := tea.NewProgram(model, opts...)
 
 	// Set up spawn_agent event callback for subagent progress visibility
 	if toolMgr != nil {
@@ -358,6 +369,13 @@ func runChat(cmd *cobra.Command, args []string) error {
 	}
 	tools.SetAskUserHooks(start, end)
 	defer tools.ClearAskUserHooks()
+
+	// Wire signal handling to quit the Bubble Tea program gracefully.
+	// This ensures SIGTERM/SIGINT properly exit alt-screen mode.
+	go func() {
+		<-ctx.Done()
+		p.Quit()
+	}()
 
 	_, err = p.Run()
 

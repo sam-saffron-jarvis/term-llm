@@ -154,6 +154,12 @@ func (t *ToolTracker) CompletedSegments() []Segment {
 	return completed
 }
 
+// AllSegments returns all segments regardless of Flushed status.
+// Use for alt screen mode where we render everything in View().
+func (t *ToolTracker) AllSegments() []Segment {
+	return t.Segments
+}
+
 // AddTextSegment adds or appends to a text segment.
 // Returns true if this created a new segment.
 func (t *ToolTracker) AddTextSegment(text string) bool {
@@ -164,6 +170,14 @@ func (t *ToolTracker) AddTextSegment(text string) bool {
 		last := &t.Segments[len(t.Segments)-1]
 		if last.Type == SegmentText && !last.Complete {
 			last.Text += text
+			// Update safe boundary periodically (every ~100 chars since last check)
+			if len(last.Text)-last.SafePos > 100 {
+				newSafe := FindSafeBoundary(last.Text)
+				if newSafe > last.SafePos {
+					last.SafePos = newSafe
+					last.SafeRendered = "" // Will be populated on next render
+				}
+			}
 			return false
 		}
 	}

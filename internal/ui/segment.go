@@ -45,6 +45,10 @@ type Segment struct {
 	DiffNew    string     // For diff segments: new content
 	Flushed    bool       // True if this segment has been printed to scrollback
 
+	// Incremental rendering cache (streaming optimization)
+	SafePos      int    // Byte position of last safe markdown boundary
+	SafeRendered string // Cached render of text[:SafePos]
+
 	// Subagent stats (for spawn_agent tools only)
 	SubagentToolCalls   int            // Number of tool calls made by subagent
 	SubagentTotalTokens int            // Total tokens used by subagent
@@ -393,7 +397,20 @@ func RenderSegments(segments []Segment, width int, wavePos int, renderMarkdown f
 			if seg.Complete && seg.Rendered != "" {
 				b.WriteString(seg.Rendered)
 			} else if seg.Text != "" && renderMarkdown != nil {
-				b.WriteString(renderMarkdown(seg.Text, width))
+				// Incremental rendering: render safe prefix once, only re-render suffix
+				if seg.SafePos > 0 {
+					// Populate cache if empty
+					if segments[i].SafeRendered == "" {
+						segments[i].SafeRendered = renderMarkdown(seg.Text[:seg.SafePos], width)
+					}
+					b.WriteString(segments[i].SafeRendered)
+					// Render the unsafe suffix
+					if seg.SafePos < len(seg.Text) {
+						b.WriteString(renderMarkdown(seg.Text[seg.SafePos:], width))
+					}
+				} else {
+					b.WriteString(renderMarkdown(seg.Text, width))
+				}
 			} else if seg.Text != "" {
 				b.WriteString(seg.Text)
 			}
