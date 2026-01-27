@@ -541,6 +541,43 @@ func RenderSegments(segments []*Segment, width int, wavePos int, renderMarkdown 
 	return b.String()
 }
 
+// RenderImagesAndDiffs renders only image and diff segments from a list.
+// This is used for alt screen mode to preserve images/diffs after streaming ends,
+// since text content is already stored in message history.
+func RenderImagesAndDiffs(segments []*Segment, width int) string {
+	var b strings.Builder
+	first := true
+
+	for _, seg := range segments {
+		switch seg.Type {
+		case SegmentImage:
+			if !first {
+				b.WriteString("\n")
+			}
+			if rendered := RenderInlineImage(seg.ImagePath); rendered != "" {
+				b.WriteString(rendered)
+				b.WriteString("\r\n")
+				first = false
+			}
+		case SegmentDiff:
+			if !first {
+				b.WriteString("\n")
+			}
+			if seg.DiffRendered != "" && seg.DiffWidth == width {
+				b.WriteString(seg.DiffRendered)
+				first = false
+			} else if rendered := RenderDiffSegment(seg.DiffPath, seg.DiffOld, seg.DiffNew, width); rendered != "" {
+				seg.DiffRendered = rendered
+				seg.DiffWidth = width
+				b.WriteString(rendered)
+				first = false
+			}
+		}
+	}
+
+	return b.String()
+}
+
 // HasPendingTool returns true if any segment has a pending tool
 func HasPendingTool(segments []Segment) bool {
 	for i := len(segments) - 1; i >= 0; i-- {

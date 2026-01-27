@@ -160,23 +160,33 @@ func (t *AskUserTool) Execute(ctx context.Context, args json.RawMessage) (string
 		}
 	}
 
-	// Get hooks under mutex protection
+	// Get hooks and UI func under mutex protection
 	askUserMu.Lock()
 	startHook := OnAskUserStart
 	endHook := OnAskUserEnd
+	uiFunc := AskUserUIFunc
 	askUserMu.Unlock()
 
-	// Call the hooks to pause spinner/TUI before showing UI
-	if startHook != nil {
-		startHook()
-	}
+	var answers []AskUserAnswer
+	var err error
 
-	// Run the interactive UI
-	answers, err := RunAskUser(a.Questions)
+	if uiFunc != nil {
+		// Use custom UI function (inline rendering in alt screen mode)
+		answers, err = uiFunc(a.Questions)
+	} else {
+		// Use default RunAskUser with hooks
+		// Call the hooks to pause spinner/TUI before showing UI
+		if startHook != nil {
+			startHook()
+		}
 
-	// Resume spinner/TUI after UI completes
-	if endHook != nil {
-		endHook()
+		// Run the interactive UI
+		answers, err = RunAskUser(a.Questions)
+
+		// Resume spinner/TUI after UI completes
+		if endHook != nil {
+			endHook()
+		}
 	}
 
 	if err != nil {
@@ -191,6 +201,11 @@ func (t *AskUserTool) Execute(ctx context.Context, args json.RawMessage) (string
 		}
 		// Other errors (e.g., no TTY)
 		return formatAskUserError(ErrExecutionFailed, err.Error()), nil
+	}
+
+	// Validate answers from custom UI
+	if len(answers) != len(a.Questions) {
+		return formatAskUserError(ErrExecutionFailed, "ask_user UI returned incomplete answers"), nil
 	}
 
 	// Return successful result

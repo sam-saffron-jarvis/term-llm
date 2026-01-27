@@ -52,8 +52,9 @@ var (
 	approvalMutedColor = lipgloss.Color("245") // gray
 )
 
-// approvalModel is the bubbletea model for approval prompts.
-type approvalModel struct {
+// ApprovalModel is the bubbletea model for approval prompts.
+// It can be embedded in a parent TUI for inline rendering.
+type ApprovalModel struct {
 	title       string           // "Read Access Request" or "Write Access Request" or "Shell Command Request"
 	path        string           // The path or command being requested
 	repoInfo    *GitRepoInfo     // Git repo info (nil if not in repo)
@@ -62,13 +63,82 @@ type approvalModel struct {
 	width       int              // Terminal width
 	isWrite     bool             // Whether this is a write request
 	isShell     bool             // Whether this is a shell request
-	done        bool             // Prompt completed
+	Done        bool             // Prompt completed
 	result      ApprovalResult   // The result of the prompt
 	accentColor lipgloss.Color   // Color for the border accent
 }
 
-// newApprovalModel creates a new approval model for file access.
-func newApprovalModel(path string, repoInfo *GitRepoInfo, isWrite bool) approvalModel {
+// Result returns the user's selection after the prompt is done.
+func (m *ApprovalModel) Result() ApprovalResult {
+	return m.result
+}
+
+// IsDone returns true if the user has made a selection.
+func (m *ApprovalModel) IsDone() bool {
+	return m.Done
+}
+
+// SetWidth updates the width for rendering.
+func (m *ApprovalModel) SetWidth(width int) {
+	m.width = width
+}
+
+// NewEmbeddedApprovalModel creates an approval model for file access that can be embedded in a parent TUI.
+func NewEmbeddedApprovalModel(path string, isWrite bool, width int) *ApprovalModel {
+	// Detect git repo
+	repoInfo := DetectGitRepo(path)
+	var repoInfoPtr *GitRepoInfo
+	if repoInfo.IsRepo {
+		repoInfoPtr = &repoInfo
+	}
+
+	title := "Read Access Request"
+	accentColor := approvalReadColor
+	if isWrite {
+		title = "Write Access Request"
+		accentColor = approvalWriteColor
+	}
+
+	options := buildFileOptions(path, repoInfoPtr, isWrite)
+
+	return &ApprovalModel{
+		title:       title,
+		path:        path,
+		repoInfo:    repoInfoPtr,
+		options:     options,
+		cursor:      0,
+		width:       width,
+		isWrite:     isWrite,
+		accentColor: accentColor,
+	}
+}
+
+// NewEmbeddedShellApprovalModel creates an approval model for shell commands that can be embedded in a parent TUI.
+func NewEmbeddedShellApprovalModel(command string, width int) *ApprovalModel {
+	// Detect git repo from current directory
+	cwd, _ := os.Getwd()
+	repoInfo := DetectGitRepo(cwd)
+	var repoInfoPtr *GitRepoInfo
+	if repoInfo.IsRepo {
+		repoInfoPtr = &repoInfo
+	}
+
+	options := buildShellOptions(command, repoInfoPtr)
+
+	return &ApprovalModel{
+		title:       "Shell Command Request",
+		path:        command,
+		repoInfo:    repoInfoPtr,
+		options:     options,
+		cursor:      0,
+		width:       width,
+		isShell:     true,
+		accentColor: approvalWriteColor, // Shell commands use write color
+	}
+}
+
+// newApprovalModel creates a new approval model for file access (internal use).
+func newApprovalModel(path string, repoInfo *GitRepoInfo, isWrite bool) *ApprovalModel {
 	width := 80
 	if w, _, err := term.GetSize(int(os.Stdout.Fd())); err == nil && w > 0 {
 		width = w
@@ -83,7 +153,7 @@ func newApprovalModel(path string, repoInfo *GitRepoInfo, isWrite bool) approval
 
 	options := buildFileOptions(path, repoInfo, isWrite)
 
-	return approvalModel{
+	return &ApprovalModel{
 		title:       title,
 		path:        path,
 		repoInfo:    repoInfo,
@@ -95,8 +165,8 @@ func newApprovalModel(path string, repoInfo *GitRepoInfo, isWrite bool) approval
 	}
 }
 
-// newShellApprovalModel creates a new approval model for shell commands.
-func newShellApprovalModel(command string, repoInfo *GitRepoInfo) approvalModel {
+// newShellApprovalModel creates a new approval model for shell commands (internal use).
+func newShellApprovalModel(command string, repoInfo *GitRepoInfo) *ApprovalModel {
 	width := 80
 	if w, _, err := term.GetSize(int(os.Stdout.Fd())); err == nil && w > 0 {
 		width = w
@@ -104,7 +174,7 @@ func newShellApprovalModel(command string, repoInfo *GitRepoInfo) approvalModel 
 
 	options := buildShellOptions(command, repoInfo)
 
-	return approvalModel{
+	return &ApprovalModel{
 		title:       "Shell Command Request",
 		path:        command,
 		repoInfo:    repoInfo,
@@ -255,16 +325,17 @@ func truncateCmdDisplay(cmd string, maxLen int) string {
 	return cmd[:maxLen-3] + "..."
 }
 
-func (m approvalModel) Init() tea.Cmd {
+func (m *ApprovalModel) Init() tea.Cmd {
 	return nil
 }
 
-func (m approvalModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+// Update handles messages for standalone tea.Program use (calls tea.Quit on completion).
+func (m *ApprovalModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "ctrl+c", "esc":
-			m.done = true
+			m.Done = true
 			m.result = ApprovalResult{
 				Choice:    ApprovalChoiceCancelled,
 				Cancelled: true,
@@ -287,7 +358,7 @@ func (m approvalModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		case "enter", " ":
 			opt := m.options[m.cursor]
-			m.done = true
+			m.Done = true
 			m.result = ApprovalResult{
 				Choice:     opt.Choice,
 				Path:       opt.Path,
@@ -302,7 +373,7 @@ func (m approvalModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if idx < len(m.options) {
 				m.cursor = idx
 				opt := m.options[m.cursor]
-				m.done = true
+				m.Done = true
 				m.result = ApprovalResult{
 					Choice:     opt.Choice,
 					Path:       opt.Path,
@@ -320,8 +391,71 @@ func (m approvalModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m approvalModel) View() string {
-	if m.done {
+// UpdateEmbedded handles messages for embedded use (does not call tea.Quit).
+// Returns true if the model finished (user made a selection or cancelled).
+func (m *ApprovalModel) UpdateEmbedded(msg tea.Msg) bool {
+	switch msg := msg.(type) {
+	case tea.KeyMsg:
+		switch msg.String() {
+		case "ctrl+c", "esc":
+			m.Done = true
+			m.result = ApprovalResult{
+				Choice:    ApprovalChoiceCancelled,
+				Cancelled: true,
+			}
+			return true
+
+		case "up", "k":
+			if m.cursor > 0 {
+				m.cursor--
+			} else {
+				m.cursor = len(m.options) - 1
+			}
+
+		case "down", "j":
+			if m.cursor < len(m.options)-1 {
+				m.cursor++
+			} else {
+				m.cursor = 0
+			}
+
+		case "enter", " ":
+			opt := m.options[m.cursor]
+			m.Done = true
+			m.result = ApprovalResult{
+				Choice:     opt.Choice,
+				Path:       opt.Path,
+				Pattern:    opt.Pattern,
+				SaveToRepo: opt.SaveToRepo,
+			}
+			return true
+
+		// Quick number selection (1-9)
+		case "1", "2", "3", "4", "5", "6", "7", "8", "9":
+			idx := int(msg.String()[0] - '1')
+			if idx < len(m.options) {
+				m.cursor = idx
+				opt := m.options[m.cursor]
+				m.Done = true
+				m.result = ApprovalResult{
+					Choice:     opt.Choice,
+					Path:       opt.Path,
+					Pattern:    opt.Pattern,
+					SaveToRepo: opt.SaveToRepo,
+				}
+				return true
+			}
+		}
+
+	case tea.WindowSizeMsg:
+		m.width = msg.Width
+	}
+
+	return false
+}
+
+func (m *ApprovalModel) View() string {
+	if m.Done {
 		return ""
 	}
 
@@ -413,8 +547,8 @@ func (m approvalModel) View() string {
 	return containerStyle.Render(b.String())
 }
 
-// renderSummary returns a summary of the user's choice for display after the UI closes.
-func (m approvalModel) renderSummary() string {
+// RenderSummary returns a summary of the user's choice for display after the UI closes.
+func (m *ApprovalModel) RenderSummary() string {
 	if m.result.Cancelled {
 		return ""
 	}
@@ -476,11 +610,11 @@ func RunFileApprovalUI(path string, isWrite bool) (ApprovalResult, error) {
 		return ApprovalResult{Cancelled: true}, err
 	}
 
-	result := finalModel.(approvalModel)
+	result := finalModel.(*ApprovalModel)
 
 	// Print summary to TTY so it persists
 	if !result.result.Cancelled {
-		fmt.Fprint(tty, result.renderSummary())
+		fmt.Fprint(tty, result.RenderSummary())
 	}
 
 	return result.result, nil
@@ -518,11 +652,11 @@ func RunShellApprovalUI(command string) (ApprovalResult, error) {
 		return ApprovalResult{Cancelled: true}, err
 	}
 
-	result := finalModel.(approvalModel)
+	result := finalModel.(*ApprovalModel)
 
 	// Print summary to TTY so it persists
 	if !result.result.Cancelled {
-		fmt.Fprint(tty, result.renderSummary())
+		fmt.Fprint(tty, result.RenderSummary())
 	}
 
 	return result.result, nil

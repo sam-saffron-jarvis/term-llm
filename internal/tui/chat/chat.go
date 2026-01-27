@@ -65,6 +65,14 @@ type Model struct {
 	// External UI state
 	pausedForExternalUI bool // True when paused for ask_user or approval prompts
 
+	// Embedded inline approval UI (alt screen mode only)
+	approvalModel  *tools.ApprovalModel
+	approvalDoneCh chan<- tools.ApprovalResult
+
+	// Embedded inline ask_user UI (alt screen mode only)
+	askUserModel  *tools.AskUserModel
+	askUserDoneCh chan<- []tools.AskUserAnswer
+
 	// LLM context
 	provider     llm.Provider
 	engine       *llm.Engine
@@ -174,6 +182,20 @@ type SubagentProgressMsg struct {
 
 // ResumeFromExternalUIMsg signals that external UI (ask_user/approval) is done
 type ResumeFromExternalUIMsg struct{}
+
+// ApprovalRequestMsg triggers an inline approval prompt.
+type ApprovalRequestMsg struct {
+	Path    string
+	IsWrite bool
+	IsShell bool
+	DoneCh  chan<- tools.ApprovalResult
+}
+
+// AskUserRequestMsg triggers an inline ask_user prompt.
+type AskUserRequestMsg struct {
+	Questions []tools.AskUserQuestion
+	DoneCh    chan<- []tools.AskUserAnswer
+}
 
 // Use ui.WaveTickMsg and ui.WavePauseMsg from the shared ToolTracker
 
@@ -366,6 +388,14 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.viewport.Width = m.width
 		m.viewport.Height = vpHeight
+
+		// Propagate size to embedded dialogs if active
+		if m.approvalModel != nil {
+			m.approvalModel.SetWidth(m.width)
+		}
+		if m.askUserModel != nil {
+			m.askUserModel.SetWidth(m.width)
+		}
 
 		// In alt screen mode, just clear screen (View() renders history)
 		// In inline mode, reprint history to scrollback after clearing
@@ -616,10 +646,11 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				})
 
 				if m.altScreen {
-					// In alt screen mode, save the rendered streaming content so it
-					// persists after the tracker is reset. This preserves diffs/tools.
+					// In alt screen mode, save the full rendered content to completedStream.
+					// This preserves the correct position of images/diffs relative to text.
+					// The last assistant message will be skipped in renderHistory() to avoid duplication.
 					completed := m.tracker.CompletedSegments()
-					m.viewCache.completedStream = ui.RenderSegments(completed, m.width, -1, m.renderMd, false)
+					m.viewCache.completedStream = ui.RenderSegments(completed, m.width, -1, m.renderMd, true)
 				} else {
 					// In inline mode, print remaining content to scrollback
 					result := m.tracker.FlushAllRemaining(m.width, 0, m.renderMd)
@@ -796,6 +827,46 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		return m, m.spinner.Tick
 
+	case ApprovalRequestMsg:
+		// In alt screen mode, render approval UI inline
+		if m.altScreen {
+			m.pausedForExternalUI = true
+			m.approvalDoneCh = msg.DoneCh
+			if msg.IsShell {
+				m.approvalModel = tools.NewEmbeddedShellApprovalModel(msg.Path, m.width)
+			} else {
+				m.approvalModel = tools.NewEmbeddedApprovalModel(msg.Path, msg.IsWrite, m.width)
+			}
+			// Mark current text as complete so it shows above the approval UI
+			if m.tracker != nil {
+				m.tracker.MarkCurrentTextComplete(func(text string) string {
+					return m.renderMarkdown(text)
+				})
+			}
+			return m, nil
+		}
+		// Non-alt screen mode: shouldn't happen, but fall back to immediate deny
+		msg.DoneCh <- tools.ApprovalResult{Choice: tools.ApprovalChoiceCancelled, Cancelled: true}
+		return m, nil
+
+	case AskUserRequestMsg:
+		// In alt screen mode, render ask_user UI inline
+		if m.altScreen {
+			m.pausedForExternalUI = true
+			m.askUserDoneCh = msg.DoneCh
+			m.askUserModel = tools.NewEmbeddedAskUserModel(msg.Questions, m.width)
+			// Mark current text as complete so it shows above the ask_user UI
+			if m.tracker != nil {
+				m.tracker.MarkCurrentTextComplete(func(text string) string {
+					return m.renderMarkdown(text)
+				})
+			}
+			return m, nil
+		}
+		// Non-alt screen mode: shouldn't happen, but fall back to cancelled
+		msg.DoneCh <- nil
+		return m, nil
+
 	case SubagentProgressMsg:
 		// Handle subagent progress events and update segment stats
 		ui.HandleSubagentProgress(m.tracker, m.subagentTracker, msg.CallID, msg.Event)
@@ -858,6 +929,50 @@ func (m *Model) updateInspectorMode(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m *Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	// Handle embedded approval UI first if active
+	if m.approvalModel != nil {
+		done := m.approvalModel.UpdateEmbedded(msg)
+		if done {
+			result := m.approvalModel.Result()
+			// Add summary to tracker for display
+			if m.tracker != nil && !result.Cancelled {
+				m.tracker.AddExternalUIResult(m.approvalModel.RenderSummary())
+			}
+			// Send result and clean up
+			m.approvalDoneCh <- result
+			m.approvalModel = nil
+			m.approvalDoneCh = nil
+			m.pausedForExternalUI = false
+			return m, m.spinner.Tick
+		}
+		return m, nil
+	}
+
+	// Handle embedded ask_user UI first if active
+	if m.askUserModel != nil {
+		cmd := m.askUserModel.UpdateEmbedded(msg)
+		if m.askUserModel.IsDone() || m.askUserModel.IsCancelled() {
+			// Add summary to tracker for display
+			if m.tracker != nil && !m.askUserModel.IsCancelled() {
+				m.tracker.AddExternalUIResult(m.askUserModel.RenderPlainSummary())
+			}
+			// Send result and clean up
+			if m.askUserModel.IsCancelled() {
+				m.askUserDoneCh <- nil
+			} else {
+				m.askUserDoneCh <- m.askUserModel.Answers()
+			}
+			m.askUserModel = nil
+			m.askUserDoneCh = nil
+			m.pausedForExternalUI = false
+			return m, m.spinner.Tick
+		}
+		if cmd != nil {
+			return m, cmd
+		}
+		return m, nil
+	}
+
 	// Handle dialog first if open
 	if m.dialog.IsOpen() {
 		// Model picker supports typing to filter (like completions)
@@ -1669,6 +1784,13 @@ func (m *Model) viewAltScreen() string {
 		// During streaming, combine history + streaming content
 		streamingContent := m.renderStreamingInline()
 		contentStr = m.viewCache.historyContent + streamingContent
+
+		// If an embedded UI is active, append it to the content
+		if m.approvalModel != nil {
+			contentStr += "\n" + m.approvalModel.View()
+		} else if m.askUserModel != nil {
+			contentStr += "\n" + m.askUserModel.View()
+		}
 	} else {
 		// Include any completed streaming content (diffs, tools) that was saved
 		// when the last stream ended. This persists until a new prompt is sent.
@@ -1762,7 +1884,8 @@ func (m *Model) renderStreamingInline() string {
 	}
 
 	// Render completed segments (segment-based tracking handles what's already flushed)
-	content := ui.RenderSegments(completed, m.width, -1, m.renderMd, false)
+	// In alt screen mode, include images since we never flush to scrollback
+	content := ui.RenderSegments(completed, m.width, -1, m.renderMd, m.altScreen)
 
 	if content != "" {
 		b.WriteString(content)
@@ -2254,6 +2377,14 @@ func (m *Model) renderHistory() string {
 		}
 	}
 	visibleMessages := messages[:endIdx]
+
+	// In alt screen mode, skip the last assistant message if completedStream is showing it
+	// (completedStream contains the full rendered response with images in correct position)
+	if m.altScreen && m.viewCache.completedStream != "" && len(visibleMessages) > 0 {
+		if visibleMessages[len(visibleMessages)-1].Role == llm.RoleAssistant {
+			visibleMessages = visibleMessages[:len(visibleMessages)-1]
+		}
+	}
 
 	// Show scroll indicator if not at bottom
 	if m.scrollOffset > 0 {

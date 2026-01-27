@@ -347,7 +347,21 @@ func runChat(cmd *cobra.Command, args []string) error {
 	// Set up the improved approval UI with git-aware heuristics
 	if toolMgr != nil {
 		toolMgr.ApprovalMgr.PromptUIFunc = func(path string, isWrite bool, isShell bool) (tools.ApprovalResult, error) {
-			// Flush content and suppress spinner before releasing terminal
+			// In alt screen mode, use inline approval UI
+			if useAltScreen {
+				doneCh := make(chan tools.ApprovalResult)
+				p.Send(chat.ApprovalRequestMsg{
+					Path:    path,
+					IsWrite: isWrite,
+					IsShell: isShell,
+					DoneCh:  doneCh,
+				})
+				// Block until user responds
+				result := <-doneCh
+				return result, nil
+			}
+
+			// Inline mode: use external UI with terminal release
 			done := make(chan struct{})
 			p.Send(chat.FlushBeforeApprovalMsg{Done: done})
 			<-done
@@ -367,20 +381,39 @@ func runChat(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	// Set up hooks to pause TUI during ask_user prompts
-	start, end := tools.CreateTUIHooks(p, func() {
-		done := make(chan struct{})
-		p.Send(chat.FlushBeforeAskUserMsg{Done: done})
-		<-done
-	})
-	// Wrap end hook to also send resume message after terminal is restored
-	originalEnd := end
-	end = func() {
-		originalEnd()
-		p.Send(chat.ResumeFromExternalUIMsg{})
+	// Set up ask_user handling
+	if useAltScreen {
+		// In alt screen mode, use inline rendering
+		tools.SetAskUserUIFunc(func(questions []tools.AskUserQuestion) ([]tools.AskUserAnswer, error) {
+			doneCh := make(chan []tools.AskUserAnswer)
+			p.Send(chat.AskUserRequestMsg{
+				Questions: questions,
+				DoneCh:    doneCh,
+			})
+			// Block until user responds
+			answers := <-doneCh
+			if answers == nil {
+				return nil, fmt.Errorf("cancelled by user")
+			}
+			return answers, nil
+		})
+		defer tools.ClearAskUserUIFunc()
+	} else {
+		// In inline mode, use external UI with hooks
+		start, end := tools.CreateTUIHooks(p, func() {
+			done := make(chan struct{})
+			p.Send(chat.FlushBeforeAskUserMsg{Done: done})
+			<-done
+		})
+		// Wrap end hook to also send resume message after terminal is restored
+		originalEnd := end
+		end = func() {
+			originalEnd()
+			p.Send(chat.ResumeFromExternalUIMsg{})
+		}
+		tools.SetAskUserHooks(start, end)
+		defer tools.ClearAskUserHooks()
 	}
-	tools.SetAskUserHooks(start, end)
-	defer tools.ClearAskUserHooks()
 
 	// Wire signal handling to quit the Bubble Tea program gracefully.
 	// This ensures SIGTERM/SIGINT properly exit alt-screen mode.

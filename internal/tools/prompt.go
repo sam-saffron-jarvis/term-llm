@@ -28,6 +28,11 @@ var (
 	OnAskUserEnd      func()     // Called after ask_user UI answered (resume TUI)
 	lastAskUserResult string     // Stores the last ask_user summary for TUI to display
 	askUserResultMu   sync.Mutex // Protects lastAskUserResult
+
+	// AskUserUIFunc allows custom UI rendering for ask_user prompts.
+	// When set, this function is called instead of RunAskUser.
+	// This is used for inline rendering in alt screen mode.
+	AskUserUIFunc func(questions []AskUserQuestion) ([]AskUserAnswer, error)
 )
 
 // SetApprovalHooks sets callbacks for TUI coordination during approval prompts.
@@ -52,6 +57,21 @@ func SetAskUserHooks(onStart, onEnd func()) {
 	defer askUserMu.Unlock()
 	OnAskUserStart = onStart
 	OnAskUserEnd = onEnd
+}
+
+// SetAskUserUIFunc sets the function to call for ask_user prompts.
+// When set, this replaces the default RunAskUser with custom rendering.
+func SetAskUserUIFunc(fn func(questions []AskUserQuestion) ([]AskUserAnswer, error)) {
+	askUserMu.Lock()
+	defer askUserMu.Unlock()
+	AskUserUIFunc = fn
+}
+
+// ClearAskUserUIFunc removes the custom ask_user UI function.
+func ClearAskUserUIFunc() {
+	askUserMu.Lock()
+	defer askUserMu.Unlock()
+	AskUserUIFunc = nil
 }
 
 // ClearAskUserHooks removes the ask_user hooks.
