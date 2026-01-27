@@ -107,10 +107,12 @@ type oaiStreamOptions struct {
 }
 
 type oaiMessage struct {
-	Role       string        `json:"role"`
-	Content    interface{}   `json:"content,omitempty"` // string or []oaiContentPart for multimodal
-	ToolCalls  []oaiToolCall `json:"tool_calls,omitempty"`
-	ToolCallID string        `json:"tool_call_id,omitempty"`
+	Role             string        `json:"role"`
+	Content          interface{}   `json:"content,omitempty"` // string or []oaiContentPart for multimodal
+	ToolCalls        []oaiToolCall `json:"tool_calls,omitempty"`
+	ToolCallID       string        `json:"tool_call_id,omitempty"`
+	ReasoningContent string        `json:"reasoning_content,omitempty"` // For sending to API (thinking models)
+	Reasoning        string        `json:"reasoning,omitempty"`         // For receiving from API delta (thinking models)
 }
 
 type oaiContentPart struct {
@@ -375,6 +377,7 @@ func (p *OpenAICompatProvider) Stream(ctx context.Context, req Request) (Stream,
 		toolState := newCompatToolState()
 		var lastUsage *Usage
 		var lastEventType string
+		var reasoningBuilder strings.Builder
 
 		for scanner.Scan() {
 			line := scanner.Text()
@@ -416,6 +419,11 @@ func (p *OpenAICompatProvider) Stream(ctx context.Context, req Request) (Stream,
 					if content, ok := choice.Delta.Content.(string); ok && content != "" {
 						events <- Event{Type: EventTextDelta, Text: content}
 					}
+					// Capture reasoning from thinking models (OpenRouter streaming uses "reasoning" field)
+					if choice.Delta.Reasoning != "" {
+						reasoningBuilder.WriteString(choice.Delta.Reasoning)
+						events <- Event{Type: EventReasoningDelta, Text: choice.Delta.Reasoning}
+					}
 					if len(choice.Delta.ToolCalls) > 0 {
 						toolState.Add(choice.Delta.ToolCalls)
 					}
@@ -445,20 +453,21 @@ func buildCompatMessages(messages []Message) []oaiMessage {
 	for _, msg := range messages {
 		switch msg.Role {
 		case RoleSystem, RoleUser, RoleAssistant:
-			text, toolCalls := splitParts(msg.Parts)
+			text, toolCalls, reasoning := splitParts(msg.Parts)
 			if msg.Role == RoleAssistant && len(toolCalls) > 0 {
 				result = append(result, oaiMessage{
-					Role:      "assistant",
-					Content:   text,
-					ToolCalls: toolCalls,
+					Role:             "assistant",
+					Content:          text,
+					ToolCalls:        toolCalls,
+					ReasoningContent: reasoning, // For thinking models (OpenRouter)
 				})
 				continue
 			}
-			if text == "" {
+			if text == "" && reasoning == "" {
 				continue
 			}
 			role := string(msg.Role)
-			result = append(result, oaiMessage{Role: role, Content: text})
+			result = append(result, oaiMessage{Role: role, Content: text, ReasoningContent: reasoning})
 		case RoleTool:
 			for _, part := range msg.Parts {
 				if part.Type != PartToolResult || part.ToolResult == nil {
@@ -522,14 +531,21 @@ func parseCompatImageData(content string) (mimeType, base64Data, textContent str
 	return parts[0], parts[1], textContent
 }
 
-func splitParts(parts []Part) (string, []oaiToolCall) {
+// splitParts extracts text, tool calls, and reasoning content from message parts.
+// Returns (text, toolCalls, reasoningContent).
+func splitParts(parts []Part) (string, []oaiToolCall, string) {
 	var textParts []string
 	var toolCalls []oaiToolCall
+	var reasoning string
 	for _, part := range parts {
 		switch part.Type {
 		case PartText:
 			if part.Text != "" {
 				textParts = append(textParts, part.Text)
+			}
+			// Capture reasoning_content from thinking models
+			if part.ReasoningContent != "" {
+				reasoning = part.ReasoningContent
 			}
 		case PartToolCall:
 			if part.ToolCall == nil {
@@ -548,7 +564,7 @@ func splitParts(parts []Part) (string, []oaiToolCall) {
 			})
 		}
 	}
-	return strings.Join(textParts, ""), toolCalls
+	return strings.Join(textParts, ""), toolCalls, reasoning
 }
 
 func buildCompatTools(specs []ToolSpec) ([]oaiTool, error) {

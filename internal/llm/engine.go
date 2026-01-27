@@ -342,6 +342,7 @@ func (e *Engine) runLoop(ctx context.Context, req Request, events chan<- Event) 
 		// Collect tool calls and text, forward events, track metrics
 		var toolCalls []ToolCall
 		var textBuilder strings.Builder
+		var reasoningBuilder strings.Builder // For thinking models (OpenRouter reasoning_content)
 		var turnMetrics TurnMetrics
 		var syncToolsExecuted bool     // Track if tools were executed via sync path (MCP)
 		var finishingToolExecuted bool // Track if a finishing tool was executed (agent done)
@@ -371,6 +372,10 @@ func (e *Engine) runLoop(ctx context.Context, req Request, events chan<- Event) 
 			// Accumulate text for callback
 			if event.Type == EventTextDelta && event.Text != "" {
 				textBuilder.WriteString(event.Text)
+			}
+			// Accumulate reasoning for thinking models (OpenRouter)
+			if event.Type == EventReasoningDelta && event.Text != "" {
+				reasoningBuilder.WriteString(event.Text)
 			}
 			if event.Type == EventToolCall && event.Tool != nil {
 				// Check if this is a synchronous tool execution request (from claude_bin MCP)
@@ -428,7 +433,7 @@ func (e *Engine) runLoop(ctx context.Context, req Request, events chan<- Event) 
 		if len(toolCalls) == 0 && syncToolsExecuted {
 			// Build assistant message with text and sync tool calls
 			// This is needed so claude-bin gets proper context when resuming
-			assistantMsg := buildAssistantMessage(textBuilder.String(), syncToolCalls)
+			assistantMsg := buildAssistantMessage(textBuilder.String(), syncToolCalls, reasoningBuilder.String())
 			req.Messages = append(req.Messages, assistantMsg)
 			req.Messages = append(req.Messages, syncToolResults...)
 
@@ -510,8 +515,8 @@ func (e *Engine) runLoop(ctx context.Context, req Request, events chan<- Event) 
 			return err
 		}
 
-		// Build assistant message with text + tool calls
-		assistantMsg := buildAssistantMessage(textBuilder.String(), registered)
+		// Build assistant message with text + tool calls + reasoning
+		assistantMsg := buildAssistantMessage(textBuilder.String(), registered, reasoningBuilder.String())
 		req.Messages = append(req.Messages, assistantMsg)
 		req.Messages = append(req.Messages, toolResults...)
 
@@ -527,11 +532,12 @@ func (e *Engine) runLoop(ctx context.Context, req Request, events chan<- Event) 
 	return fmt.Errorf("agentic loop ended unexpectedly")
 }
 
-// buildAssistantMessage creates an assistant message with text and tool calls.
-func buildAssistantMessage(text string, toolCalls []ToolCall) Message {
+// buildAssistantMessage creates an assistant message with text, tool calls, and optional reasoning.
+// The reasoning parameter is for thinking models (OpenRouter reasoning_content).
+func buildAssistantMessage(text string, toolCalls []ToolCall, reasoning string) Message {
 	var parts []Part
-	if text != "" {
-		parts = append(parts, Part{Type: PartText, Text: text})
+	if text != "" || reasoning != "" {
+		parts = append(parts, Part{Type: PartText, Text: text, ReasoningContent: reasoning})
 	}
 	for i := range toolCalls {
 		call := toolCalls[i]

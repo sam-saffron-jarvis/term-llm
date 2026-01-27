@@ -528,3 +528,64 @@ func TestEngineAllowedToolsEnforcement(t *testing.T) {
 		t.Error("tool_b should be allowed after setting empty filter")
 	}
 }
+
+func TestBuildAssistantMessage_WithReasoning(t *testing.T) {
+	// Test building assistant message with reasoning content
+	toolCalls := []ToolCall{
+		{
+			ID:        "call-123",
+			Name:      "list_files",
+			Arguments: json.RawMessage(`{"path": "."}`),
+		},
+	}
+
+	msg := buildAssistantMessage("Here are the files", toolCalls, "I should list the files in the current directory")
+
+	if msg.Role != RoleAssistant {
+		t.Errorf("expected role RoleAssistant, got %v", msg.Role)
+	}
+	if len(msg.Parts) != 2 {
+		t.Fatalf("expected 2 parts, got %d", len(msg.Parts))
+	}
+
+	// First part should be text with reasoning
+	textPart := msg.Parts[0]
+	if textPart.Type != PartText {
+		t.Errorf("expected first part type PartText, got %v", textPart.Type)
+	}
+	if textPart.Text != "Here are the files" {
+		t.Errorf("expected text 'Here are the files', got %q", textPart.Text)
+	}
+	if textPart.ReasoningContent != "I should list the files in the current directory" {
+		t.Errorf("expected reasoning content, got %q", textPart.ReasoningContent)
+	}
+
+	// Second part should be tool call
+	toolPart := msg.Parts[1]
+	if toolPart.Type != PartToolCall {
+		t.Errorf("expected second part type PartToolCall, got %v", toolPart.Type)
+	}
+	if toolPart.ToolCall.ID != "call-123" {
+		t.Errorf("expected tool call ID 'call-123', got %q", toolPart.ToolCall.ID)
+	}
+}
+
+func TestBuildAssistantMessage_ReasoningOnlyCreatesTextPart(t *testing.T) {
+	// Test that reasoning alone (without text) still creates a text part
+	msg := buildAssistantMessage("", nil, "Some reasoning content")
+
+	if len(msg.Parts) != 1 {
+		t.Fatalf("expected 1 part for reasoning-only message, got %d", len(msg.Parts))
+	}
+
+	part := msg.Parts[0]
+	if part.Type != PartText {
+		t.Errorf("expected part type PartText, got %v", part.Type)
+	}
+	if part.Text != "" {
+		t.Errorf("expected empty text, got %q", part.Text)
+	}
+	if part.ReasoningContent != "Some reasoning content" {
+		t.Errorf("expected reasoning content, got %q", part.ReasoningContent)
+	}
+}

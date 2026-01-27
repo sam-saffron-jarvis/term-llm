@@ -95,10 +95,11 @@ type Message struct {
 
 // Part represents a single content part.
 type Part struct {
-	Type       PartType
-	Text       string
-	ToolCall   *ToolCall
-	ToolResult *ToolResult
+	Type             PartType
+	Text             string
+	ReasoningContent string // For thinking models (OpenRouter reasoning_content)
+	ToolCall         *ToolCall
+	ToolResult       *ToolResult
 }
 
 // ToolSpec describes a callable tool.
@@ -145,15 +146,16 @@ type ToolResult struct {
 type EventType string
 
 const (
-	EventTextDelta     EventType = "text_delta"
-	EventToolCall      EventType = "tool_call"
-	EventToolExecStart EventType = "tool_exec_start" // Emitted when tool execution begins
-	EventToolExecEnd   EventType = "tool_exec_end"   // Emitted when tool execution completes
-	EventUsage         EventType = "usage"
-	EventPhase         EventType = "phase" // Emitted for high-level phase changes (Thinking, Searching, etc.)
-	EventDone          EventType = "done"
-	EventError         EventType = "error"
-	EventRetry         EventType = "retry" // Emitted when retrying after rate limit
+	EventTextDelta      EventType = "text_delta"
+	EventReasoningDelta EventType = "reasoning_delta" // For thinking models (OpenRouter reasoning_content)
+	EventToolCall       EventType = "tool_call"
+	EventToolExecStart  EventType = "tool_exec_start" // Emitted when tool execution begins
+	EventToolExecEnd    EventType = "tool_exec_end"   // Emitted when tool execution completes
+	EventUsage          EventType = "usage"
+	EventPhase          EventType = "phase" // Emitted for high-level phase changes (Thinking, Searching, etc.)
+	EventDone           EventType = "done"
+	EventError          EventType = "error"
+	EventRetry          EventType = "retry" // Emitted when retrying after rate limit
 )
 
 // ToolExecutionResponse holds the result of a synchronous tool execution.
