@@ -62,6 +62,12 @@ type ToolExecutorSetter interface {
 	SetToolExecutor(func(ctx context.Context, name string, args json.RawMessage) (string, error))
 }
 
+// ProviderCleaner is an optional interface for providers that need cleanup
+// after a conversation ends (e.g., claude-bin's persistent MCP server).
+type ProviderCleaner interface {
+	CleanupMCP()
+}
+
 func NewEngine(provider Provider, tools *ToolRegistry) *Engine {
 	if tools == nil {
 		tools = NewToolRegistry()
@@ -203,7 +209,14 @@ func (e *Engine) Stream(ctx context.Context, req Request) (Stream, error) {
 			return e.runLoop(ctx, req, events)
 		})
 		stream = wrapLoggingStream(stream, e.provider.Name(), req.Model)
-		return e.wrapDebugLoggingStream(stream), nil
+		stream = e.wrapDebugLoggingStream(stream)
+
+		// Wrap with cleanup for providers that need it (e.g., claude-bin MCP server)
+		if cleaner, ok := e.provider.(ProviderCleaner); ok {
+			stream = &cleanupStream{inner: stream, cleanup: cleaner.CleanupMCP}
+		}
+
+		return stream, nil
 	}
 
 	// 3. Simple stream (no tools or no provider support for tools)
@@ -380,6 +393,17 @@ func (e *Engine) runLoop(ctx context.Context, req Request, events chan<- Event) 
 			if event.Type == EventToolCall && event.Tool != nil {
 				// Check if this is a synchronous tool execution request (from claude_bin MCP)
 				if event.ToolResponse != nil {
+					// Forward the EventToolCall so consumers can see tool calls (e.g., exec.go needs
+					// to see suggest_commands calls to parse suggestions from the arguments).
+					// Create a copy without ToolResponse to avoid confusion.
+					forwardEvent := Event{
+						Type:       EventToolCall,
+						ToolCallID: event.ToolCallID,
+						ToolName:   event.ToolName,
+						Tool:       event.Tool,
+					}
+					events <- forwardEvent
+
 					// Handle synchronous execution: emit events to TUI and send result back
 					call, result, execErr := e.handleSyncToolExecution(ctx, event, events, req.Debug, req.DebugRaw)
 					syncToolsExecuted = true
@@ -673,7 +697,13 @@ func (e *Engine) handleSyncToolExecution(ctx context.Context, event Event, event
 	var err error
 
 	if !ok {
-		err = fmt.Errorf("tool not found: %s", call.Name)
+		// suggest_commands is a passthrough tool - it captures structured output
+		// and doesn't need actual execution. Just return success.
+		if call.Name == SuggestCommandsToolName {
+			result = "OK"
+		} else {
+			err = fmt.Errorf("tool not found: %s", call.Name)
+		}
 	} else if !e.IsToolAllowed(call.Name) {
 		err = fmt.Errorf("tool '%s' is not in the active skill's allowed-tools list", call.Name)
 	} else {
@@ -946,4 +976,34 @@ func (s *debugLoggingStream) Recv() (Event, error) {
 
 func (s *debugLoggingStream) Close() error {
 	return s.inner.Close()
+}
+
+// cleanupStream wraps a stream to call provider cleanup when closed.
+// Used to ensure MCP servers are cleaned up after multi-turn conversations.
+// Cleanup runs on Close() OR when Recv() returns io.EOF/EventDone to handle
+// consumers that only loop until EOF without calling Close().
+type cleanupStream struct {
+	inner     Stream
+	cleanup   func()
+	closeOnce sync.Once
+}
+
+func (s *cleanupStream) Recv() (Event, error) {
+	event, err := s.inner.Recv()
+	// Trigger cleanup on terminal conditions (EOF or EventDone)
+	// This ensures cleanup runs even if consumer doesn't call Close()
+	if err == io.EOF || (err == nil && event.Type == EventDone) {
+		if s.cleanup != nil {
+			s.closeOnce.Do(s.cleanup)
+		}
+	}
+	return event, err
+}
+
+func (s *cleanupStream) Close() error {
+	err := s.inner.Close()
+	if s.cleanup != nil {
+		s.closeOnce.Do(s.cleanup)
+	}
+	return err
 }

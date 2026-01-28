@@ -155,10 +155,62 @@ func (t *ToolTracker) CompletedSegments() []*Segment {
 	return completed
 }
 
+// AllCompletedSegments returns all non-pending segments regardless of Flushed status.
+// Use this for the final View() to ensure nothing is lost when segments were flushed
+// to scrollback during streaming but we need the complete content for the final render.
+func (t *ToolTracker) AllCompletedSegments() []*Segment {
+	var completed []*Segment
+	for i := range t.Segments {
+		if t.Segments[i].Type == SegmentTool && t.Segments[i].ToolStatus == ToolPending {
+			continue
+		}
+		completed = append(completed, &t.Segments[i])
+	}
+	return completed
+}
+
 // AllSegments returns all segments regardless of Flushed status.
 // Use for alt screen mode where we render everything in View().
 func (t *ToolTracker) AllSegments() []Segment {
 	return t.Segments
+}
+
+// UnflushedSegments returns segments with unflushed content for final rendering.
+// For text segments with partial flushes (FlushedPos > 0), creates a copy with only
+// the unflushed portion. This ensures we don't duplicate content that was already
+// printed to scrollback during streaming.
+func (t *ToolTracker) UnflushedSegments() []*Segment {
+	var result []*Segment
+	for i := range t.Segments {
+		seg := &t.Segments[i]
+		// Skip fully flushed segments
+		if seg.Flushed {
+			continue
+		}
+		// Skip pending tools
+		if seg.Type == SegmentTool && seg.ToolStatus == ToolPending {
+			continue
+		}
+		// For text segments with partial flushes, create a copy with unflushed portion
+		if seg.Type == SegmentText && seg.FlushedPos > 0 {
+			text := seg.Text
+			if text == "" && seg.TextBuilder != nil {
+				text = seg.TextBuilder.String()
+			}
+			if seg.FlushedPos < len(text) {
+				// Create a partial segment with only unflushed content
+				partial := &Segment{
+					Type:     SegmentText,
+					Text:     text[seg.FlushedPos:],
+					Complete: seg.Complete,
+				}
+				result = append(result, partial)
+			}
+			continue
+		}
+		result = append(result, seg)
+	}
+	return result
 }
 
 // AddTextSegment adds or appends to a text segment.
@@ -166,66 +218,42 @@ func (t *ToolTracker) AllSegments() []Segment {
 func (t *ToolTracker) AddTextSegment(text string) bool {
 	t.RecordActivity()
 
-	// Find or create current text segment
+	// Find or append to current incomplete text segment
 	if len(t.Segments) > 0 {
 		last := &t.Segments[len(t.Segments)-1]
 		if last.Type == SegmentText && !last.Complete {
-			// Use TextBuilder for O(1) append instead of O(n) string concat
 			if last.TextBuilder == nil {
-				// Migrate existing Text to TextBuilder (first append after segment creation)
 				last.TextBuilder = &strings.Builder{}
 				last.TextBuilder.WriteString(last.Text)
-				last.Text = "" // Clear to avoid confusion
+				last.Text = ""
 			}
 			last.TextBuilder.WriteString(text)
-
-			// Always update snapshot immediately after WriteString.
-			// This ensures GetText() can return the cached snapshot without
-			// calling TextBuilder.String() on every render tick.
-			// The snapshot update is O(n) but happens once per append rather
-			// than potentially multiple times per render cycle.
-			//
-			// IMPORTANT: We must clone the string because strings.Builder.String()
-			// returns a string that shares memory with the internal buffer.
-			// Subsequent WriteString calls can corrupt the previously returned
-			// string if the buffer has enough capacity (no reallocation).
-			currentLen := last.TextBuilder.Len()
 			last.TextSnapshot = strings.Clone(last.TextBuilder.String())
-			last.TextSnapshotLen = currentLen
-
-			// Update safe boundary periodically (every ~100 chars since last check)
-			// Use incremental scanning for O(delta) instead of O(n) complexity
-			if currentLen-last.SafePos > 100 {
-				// Use incremental boundary finder that only scans from last SafePos
-				newSafe := FindSafeBoundaryIncremental(last.TextSnapshot, last.SafePos)
-				if newSafe > last.SafePos {
-					last.SafePos = newSafe
-					last.SafeRendered = "" // Will be populated on next render
-				}
-			}
+			last.TextSnapshotLen = last.TextBuilder.Len()
 			return false
 		}
 	}
 
-	// Create new text segment with TextBuilder for streaming
+	// Create new text segment - clone text to avoid sharing memory with caller's buffer
 	builder := &strings.Builder{}
 	builder.WriteString(text)
 	t.Segments = append(t.Segments, Segment{
 		Type:            SegmentText,
 		TextBuilder:     builder,
-		TextSnapshot:    text,
+		TextSnapshot:    strings.Clone(text),
 		TextSnapshotLen: len(text),
 	})
 	return true
 }
 
 // CompleteTextSegments marks all incomplete text segments as complete.
+// Renders the full text with glamour on completion.
 func (t *ToolTracker) CompleteTextSegments(renderFunc func(string) string) {
 	for i := range t.Segments {
 		if t.Segments[i].Type == SegmentText && !t.Segments[i].Complete {
-			// Finalize TextBuilder to Text
+			// Finalize TextBuilder to Text - clone to avoid sharing memory with builder
 			if t.Segments[i].TextBuilder != nil {
-				t.Segments[i].Text = t.Segments[i].TextBuilder.String()
+				t.Segments[i].Text = strings.Clone(t.Segments[i].TextBuilder.String())
 				t.Segments[i].TextBuilder = nil
 			}
 			t.Segments[i].Complete = true
@@ -237,13 +265,14 @@ func (t *ToolTracker) CompleteTextSegments(renderFunc func(string) string) {
 }
 
 // MarkCurrentTextComplete marks the current text segment as complete before a tool starts.
+// Renders the full text with glamour.
 func (t *ToolTracker) MarkCurrentTextComplete(renderFunc func(string) string) {
 	if len(t.Segments) > 0 {
 		last := &t.Segments[len(t.Segments)-1]
 		if last.Type == SegmentText && !last.Complete {
-			// Finalize TextBuilder to Text
+			// Finalize TextBuilder to Text - clone to avoid sharing memory with builder
 			if last.TextBuilder != nil {
-				last.Text = last.TextBuilder.String()
+				last.Text = strings.Clone(last.TextBuilder.String())
 				last.TextBuilder = nil
 			}
 			last.Complete = true
@@ -297,6 +326,84 @@ func (t *ToolTracker) AddDiffSegment(path, old, new string) {
 	})
 }
 
+// FlushStreamingTextResult contains the result of a streaming text flush.
+type FlushStreamingTextResult struct {
+	// ToPrint is the rendered content to print to scrollback (empty if nothing to flush)
+	ToPrint string
+}
+
+// FlushStreamingText flushes portions of in-progress text segments to scrollback
+// when they exceed the threshold. Uses safe markdown boundaries to avoid breaking
+// formatting. Returns rendered content to print, or empty if nothing to flush.
+//
+// Parameters:
+//   - threshold: minimum bytes before attempting flush (e.g., 4000)
+//   - width: terminal width for rendering
+//   - renderMd: markdown render function (text, width) -> rendered
+func (t *ToolTracker) FlushStreamingText(threshold int, width int, renderMd func(string, int) string) FlushStreamingTextResult {
+	// Find the current incomplete text segment
+	var seg *Segment
+	for i := range t.Segments {
+		if t.Segments[i].Type == SegmentText && !t.Segments[i].Complete {
+			seg = &t.Segments[i]
+			break
+		}
+	}
+	if seg == nil {
+		return FlushStreamingTextResult{}
+	}
+
+	// Get current text length
+	textLen := 0
+	if seg.TextBuilder != nil {
+		textLen = seg.TextBuilder.Len()
+	} else {
+		textLen = len(seg.Text)
+	}
+
+	// Check if we have enough unflushed content to bother flushing
+	unflushedLen := textLen - seg.FlushedPos
+	if unflushedLen < threshold {
+		return FlushStreamingTextResult{}
+	}
+
+	// Get the full text
+	var fullText string
+	if seg.TextBuilder != nil {
+		fullText = seg.TextSnapshot
+		if fullText == "" || seg.TextSnapshotLen != seg.TextBuilder.Len() {
+			fullText = seg.TextBuilder.String()
+		}
+	} else {
+		fullText = seg.Text
+	}
+
+	// Find a safe boundary to flush up to (don't break markdown)
+	safeBoundary := FindSafeBoundaryIncremental(fullText, seg.FlushedPos)
+	if safeBoundary <= seg.FlushedPos {
+		// No safe boundary found, can't flush yet
+		return FlushStreamingTextResult{}
+	}
+
+	// Render the portion to flush
+	toFlush := fullText[seg.FlushedPos:safeBoundary]
+	if toFlush == "" {
+		return FlushStreamingTextResult{}
+	}
+
+	rendered := renderMd(toFlush, width)
+	if rendered == "" {
+		return FlushStreamingTextResult{}
+	}
+
+	// Update flushed position
+	seg.FlushedPos = safeBoundary
+
+	return FlushStreamingTextResult{
+		ToPrint: rendered,
+	}
+}
+
 // FlushToScrollbackResult contains the result of a scrollback flush operation.
 type FlushToScrollbackResult struct {
 	// ToPrint is the content to print to scrollback (empty if nothing to flush)
@@ -305,9 +412,9 @@ type FlushToScrollbackResult struct {
 	NewPrintedLines int
 }
 
-// FlushToScrollback checks if there are completed segments to flush to scrollback.
-// Uses segment-based tracking: completed segments are marked as Flushed and won't
-// appear in View() again.
+// FlushToScrollback flushes completed segments to scrollback.
+// Incomplete text segments are NOT flushed - they show as raw text in View()
+// and get rendered with glamour only when completed.
 //
 // Parameters:
 //   - width: terminal width for rendering
@@ -320,11 +427,26 @@ func (t *ToolTracker) FlushToScrollback(
 	maxViewLines int,
 	renderMd func(string, int) string,
 ) FlushToScrollbackResult {
-	// Count unflushed completed segments
+	var contentBuilder strings.Builder
+
+	// Only flush complete segments - incomplete text shows as raw in View()
+	isFlushable := func(seg *Segment) bool {
+		if seg.Flushed {
+			return false // already flushed
+		}
+		if seg.Type == SegmentTool && seg.ToolStatus == ToolPending {
+			return false // pending tools can't be flushed
+		}
+		if seg.Type == SegmentText && !seg.Complete {
+			return false // incomplete text can't be flushed as a whole
+		}
+		return true
+	}
+
+	// Count unflushed flushable segments
 	var unflushedCount int
 	for i := range t.Segments {
-		seg := &t.Segments[i]
-		if !seg.Flushed && !(seg.Type == SegmentTool && seg.ToolStatus == ToolPending) {
+		if isFlushable(&t.Segments[i]) {
 			unflushedCount++
 		}
 	}
@@ -342,21 +464,17 @@ func (t *ToolTracker) FlushToScrollback(
 				break
 			}
 		}
-		if !hasUnflushedSpecial {
+		if !hasUnflushedSpecial && contentBuilder.Len() == 0 {
 			return FlushToScrollbackResult{NewPrintedLines: 0}
 		}
 	}
 
-	// Collect segments to flush (all unflushed completed segments except the last few)
+	// Collect segments to flush (all flushable segments except the last few)
 	var toFlush []*Segment
 	unflushedSeen := 0
 	for i := range t.Segments {
 		seg := &t.Segments[i]
-		if seg.Flushed {
-			continue
-		}
-		isPending := seg.Type == SegmentTool && seg.ToolStatus == ToolPending
-		if isPending {
+		if !isFlushable(seg) {
 			continue
 		}
 		unflushedSeen++
@@ -368,14 +486,20 @@ func (t *ToolTracker) FlushToScrollback(
 		}
 	}
 
-	if len(toFlush) == 0 {
+	// Render complete segments to flush
+	if len(toFlush) > 0 {
+		content := RenderSegments(toFlush, width, -1, renderMd, true)
+		if content != "" {
+			contentBuilder.WriteString(content)
+		}
+	}
+
+	if contentBuilder.Len() == 0 {
 		return FlushToScrollbackResult{NewPrintedLines: 0}
 	}
 
-	// Render the segments to flush
-	content := RenderSegments(toFlush, width, -1, renderMd, true)
 	return FlushToScrollbackResult{
-		ToPrint:         content,
+		ToPrint:         contentBuilder.String(),
 		NewPrintedLines: 0, // No longer used
 	}
 }
@@ -407,6 +531,9 @@ func (t *ToolTracker) FlushAllRemaining(
 	}
 
 	content := RenderSegments(toFlush, width, -1, renderMd, true)
+	if content == "" {
+		return FlushToScrollbackResult{NewPrintedLines: 0}
+	}
 	return FlushToScrollbackResult{
 		ToPrint:         content,
 		NewPrintedLines: 0,
@@ -457,6 +584,9 @@ func (t *ToolTracker) FlushBeforeExternalUI(
 	}
 
 	content := RenderSegments(toFlush, width, -1, renderMd, true)
+	if content == "" {
+		return FlushToScrollbackResult{NewPrintedLines: 0}
+	}
 	return FlushToScrollbackResult{
 		ToPrint:         content,
 		NewPrintedLines: 0,

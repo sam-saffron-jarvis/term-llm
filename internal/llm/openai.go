@@ -59,9 +59,10 @@ func (p *OpenAIProvider) Credential() string {
 
 func (p *OpenAIProvider) Capabilities() Capabilities {
 	return Capabilities{
-		NativeWebSearch: true,
-		NativeWebFetch:  false, // No native URL fetch
-		ToolCalls:       true,
+		NativeWebSearch:    true,
+		NativeWebFetch:     false, // No native URL fetch
+		ToolCalls:          true,
+		SupportsToolChoice: true,
 	}
 }
 

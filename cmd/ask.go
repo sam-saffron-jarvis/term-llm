@@ -794,7 +794,8 @@ type askStreamModel struct {
 	subagentTracker *ui.SubagentTracker
 
 	// State flags
-	done bool // True when streaming is complete (prevents spinner from showing)
+	done        bool   // True when streaming is complete (prevents spinner from showing)
+	finalOutput string // Rendered content to print after program exits
 
 	// Status display
 	retryStatus string    // Retry status (e.g., "Rate limited (2/5), waiting 5s...")
@@ -916,12 +917,13 @@ const maxViewLines = 8
 
 // maybeFlushToScrollback checks if there are segments to flush to scrollback,
 // keeping View() small to avoid terminal scroll issues.
+// Note: Only flushes images/diffs immediately; text is accumulated and printed at end.
 func (m *askStreamModel) maybeFlushToScrollback() tea.Cmd {
 	result := m.tracker.FlushToScrollback(m.width, 0, maxViewLines, renderMd)
 	if result.ToPrint != "" {
 		m.cachedContent = "" // Invalidate cache since segments were flushed
 		m.contentDirty = true
-		return tea.Println(result.ToPrint)
+		return tea.Printf("%s", result.ToPrint)
 	}
 	return nil
 }
@@ -1017,25 +1019,39 @@ func (m askStreamModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case askContentMsg:
+		// Track text for final rendering
 		m.tracker.AddTextSegment(string(msg))
-		m.cachedContent = ""  // Invalidate cache
-		m.contentDirty = true // Mark content as needing re-render
+		m.cachedContent = ""
+		m.contentDirty = true
 
-		// Flush excess content to scrollback to keep View() small
-		if cmd := m.maybeFlushToScrollback(); cmd != nil {
-			return m, cmd
+		// Flush text incrementally when it exceeds threshold (4KB) to bound view size
+		// This prevents unbounded memory growth for long streaming responses
+		const streamingFlushThreshold = 4000
+		if m.width > 0 {
+			result := m.tracker.FlushStreamingText(streamingFlushThreshold, m.width, renderMd)
+			if result.ToPrint != "" {
+				return m, tea.Printf("%s", result.ToPrint)
+			}
 		}
 
 	case askDoneMsg:
 		m.done = true // Prevent spinner from showing in final View()
-
-		// Mark all text segments as complete and render markdown for final view
+		// Ensure we have a valid width
+		if m.width <= 0 {
+			m.width = getTerminalWidth()
+		}
+		// Complete text segments (finalizes TextBuilder -> Text)
 		m.tracker.CompleteTextSegments(func(text string) string {
 			return renderMd(text, m.width)
 		})
-		completed := m.tracker.CompletedSegments()
-		m.cachedContent = ui.RenderSegments(completed, m.width, -1, renderMd, false)
-		m.contentDirty = false
+		// Get only unflushed content to avoid duplicating already-printed text
+		unflushed := m.tracker.UnflushedSegments()
+		rendered := ui.RenderSegments(unflushed, m.width, -1, renderMd, true)
+
+		if rendered != "" {
+			// Store for printing after program exits (avoids tea.Printf buffer issues)
+			m.finalOutput = rendered
+		}
 		return m, tea.Quit
 
 	case askCancelledMsg:
@@ -1090,7 +1106,7 @@ func (m askStreamModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		var cmds []tea.Cmd
 		if result.ToPrint != "" {
-			cmds = append(cmds, tea.Println(result.ToPrint))
+			cmds = append(cmds, tea.Printf("%s", result.ToPrint))
 		}
 
 		// Signal that flush is complete (use a command to ensure tea.Println finishes first)
@@ -1109,7 +1125,7 @@ func (m askStreamModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		var cmds []tea.Cmd
 		if result.ToPrint != "" {
-			cmds = append(cmds, tea.Println(result.ToPrint))
+			cmds = append(cmds, tea.Printf("%s", result.ToPrint))
 		}
 
 		// Signal that flush is complete (use a command to ensure tea.Println finishes first)
@@ -1283,6 +1299,12 @@ func (m askStreamModel) View() string {
 		return m.inspectorModel.View()
 	}
 
+	// When done, return empty string - final output is printed via finalOutput after p.Run()
+	// to avoid duplicate rendering (View() content + finalOutput both being shown)
+	if m.done {
+		return ""
+	}
+
 	var b strings.Builder
 
 	// Get segments from tracker (excludes flushed segments)
@@ -1354,10 +1376,14 @@ func streamWithGlamour(ctx context.Context, events <-chan ui.StreamEvent, p *tea
 		p = tea.NewProgram(model, tea.WithoutSignalHandler())
 	}
 
-	programDone := make(chan error, 1)
+	type programResult struct {
+		model tea.Model
+		err   error
+	}
+	programDone := make(chan programResult, 1)
 	go func() {
-		_, err := p.Run()
-		programDone <- err
+		m, err := p.Run()
+		programDone <- programResult{model: m, err: err}
 	}()
 
 	var streamErr error
@@ -1430,13 +1456,25 @@ func streamWithGlamour(ctx context.Context, events <-chan ui.StreamEvent, p *tea
 		}
 	}
 
-	err := <-programDone
+	result := <-programDone
 
-	// Note: Don't print finalOutput here - bubbletea's final View() already persists on screen
+	// Print final output directly to stdout (bypasses tea.Printf buffer issues)
+	// Accept both value and pointer types since Bubble Tea may return either
+	switch m := result.model.(type) {
+	case askStreamModel:
+		if m.finalOutput != "" {
+			fmt.Print(m.finalOutput)
+		}
+	case *askStreamModel:
+		if m != nil && m.finalOutput != "" {
+			fmt.Print(m.finalOutput)
+		}
+	}
+
 	if streamErr != nil {
 		return streamErr
 	}
-	return err
+	return result.err
 }
 
 // MCPOptions contains options for enabling MCP servers.

@@ -118,6 +118,8 @@ func runExec(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
+
+	caps := provider.Capabilities()
 	engine := llm.NewEngine(provider, defaultToolRegistry(cfg))
 
 	// Set up debug logger if enabled
@@ -224,11 +226,15 @@ func runExec(cmd *cobra.Command, args []string) error {
 
 		// Use auto tool choice if we have local tools (so model can use them first),
 		// otherwise force suggest_commands. Always force suggest_commands on last turn.
-		toolChoice := llm.ToolChoice{Mode: llm.ToolChoiceName, Name: llm.SuggestCommandsToolName}
+		// If provider doesn't support tool_choice, rely on the strong prompt hint instead.
+		var toolChoice llm.ToolChoice
 		var lastTurnToolChoice *llm.ToolChoice
-		if len(localToolSpecs) > 0 {
-			toolChoice = llm.ToolChoice{Mode: llm.ToolChoiceAuto}
-			lastTurnToolChoice = &llm.ToolChoice{Mode: llm.ToolChoiceName, Name: llm.SuggestCommandsToolName}
+		if caps.SupportsToolChoice {
+			toolChoice = llm.ToolChoice{Mode: llm.ToolChoiceName, Name: llm.SuggestCommandsToolName}
+			if len(localToolSpecs) > 0 {
+				toolChoice = llm.ToolChoice{Mode: llm.ToolChoiceAuto}
+				lastTurnToolChoice = &llm.ToolChoice{Mode: llm.ToolChoiceName, Name: llm.SuggestCommandsToolName}
+			}
 		}
 
 		req := llm.Request{

@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"sync"
 	"sync/atomic"
 
 	"github.com/samsaffron/term-llm/internal/mcphttp"
@@ -29,6 +30,18 @@ type ClaudeBinProvider struct {
 	sessionID    string // For session continuity with --resume
 	messagesSent int    // Track messages already in session to avoid re-sending
 	toolExecutor mcphttp.ToolExecutor
+
+	// Persistent MCP server for multi-turn conversations.
+	// The server is kept alive across turns so Claude CLI can maintain
+	// its connection to the same URL/token throughout the session.
+	mcpServer     *mcphttp.Server
+	mcpConfigPath string
+
+	// currentEvents holds the events channel for the current turn.
+	// This is updated at the start of each turn so the MCP executor
+	// can send events to the correct channel (not a stale closed one).
+	currentEvents chan<- Event
+	eventsMu      sync.Mutex
 }
 
 // NewClaudeBinProvider creates a new provider that uses the claude binary.
@@ -60,19 +73,18 @@ func (p *ClaudeBinProvider) Credential() string {
 
 func (p *ClaudeBinProvider) Capabilities() Capabilities {
 	return Capabilities{
-		NativeWebSearch: false, // Use term-llm's external tools instead
-		NativeWebFetch:  false,
-		ToolCalls:       true,
+		NativeWebSearch:    false, // Use term-llm's external tools instead
+		NativeWebFetch:     false,
+		ToolCalls:          true,
+		SupportsToolChoice: false, // Claude CLI doesn't support forcing specific tool use
 	}
 }
 
 func (p *ClaudeBinProvider) Stream(ctx context.Context, req Request) (Stream, error) {
 	return newEventStream(ctx, func(ctx context.Context, events chan<- Event) error {
-		// Build the command arguments, passing events channel for tool execution routing
-		args, cleanup := p.buildArgs(ctx, req, events)
-		if cleanup != nil {
-			defer cleanup()
-		}
+		// Build the command arguments, passing events channel for tool execution routing.
+		// MCP server is kept alive across turns - caller should call CleanupMCP() when done.
+		args := p.buildArgs(ctx, req, events)
 
 		// Always extract system prompt from full messages (it should persist across turns)
 		systemPrompt := p.extractSystemPrompt(req.Messages)
@@ -224,9 +236,9 @@ func (p *ClaudeBinProvider) Stream(ctx context.Context, req Request) (Stream, er
 }
 
 // buildArgs constructs the command line arguments for the claude binary.
-// Returns args and a cleanup function to stop HTTP server and remove temp files.
 // The events channel is passed to the MCP server for routing tool execution events.
-func (p *ClaudeBinProvider) buildArgs(ctx context.Context, req Request, events chan<- Event) ([]string, func()) {
+// The MCP server is kept alive across turns - call CleanupMCP() when the conversation ends.
+func (p *ClaudeBinProvider) buildArgs(ctx context.Context, req Request, events chan<- Event) []string {
 	args := []string{
 		"--print",
 		"--output-format", "stream-json",
@@ -249,24 +261,16 @@ func (p *ClaudeBinProvider) buildArgs(ctx context.Context, req Request, events c
 	// Disable all built-in tools - we use MCP for custom tools
 	args = append(args, "--tools", "")
 
-	var cleanup func()
-
-	// If we have tools and a tool executor, start HTTP MCP server
+	// If we have tools and a tool executor, use persistent MCP server
 	debug := req.Debug || req.DebugRaw
 	if len(req.Tools) > 0 {
 		if p.toolExecutor == nil {
 			slog.Warn("tools requested but no tool executor configured", "tool_count", len(req.Tools))
 		} else {
-			if debug {
-				fmt.Fprintf(os.Stderr, "[claude-bin] Starting HTTP MCP server for %d tools\n", len(req.Tools))
-			}
-			mcpConfig, cleanupFn := p.createHTTPMCPConfig(ctx, req.Tools, events, debug)
+			// Reuse existing MCP server if available, otherwise create new one
+			mcpConfig := p.getOrCreateMCPConfig(ctx, req.Tools, events, debug)
 			if mcpConfig != "" {
-				if debug {
-					fmt.Fprintf(os.Stderr, "[claude-bin] MCP config created: %s\n", mcpConfig)
-				}
 				args = append(args, "--mcp-config", mcpConfig)
-				cleanup = cleanupFn
 			} else if debug {
 				fmt.Fprintf(os.Stderr, "[claude-bin] ERROR: MCP config creation failed\n")
 			}
@@ -278,13 +282,56 @@ func (p *ClaudeBinProvider) buildArgs(ctx context.Context, req Request, events c
 		args = append(args, "--resume", p.sessionID)
 	}
 
-	return args, cleanup
+	return args
+}
+
+// getOrCreateMCPConfig returns the MCP config path, reusing existing server if available.
+// This ensures the MCP server URL/token stays constant across turns in a multi-turn conversation.
+func (p *ClaudeBinProvider) getOrCreateMCPConfig(ctx context.Context, tools []ToolSpec, events chan<- Event, debug bool) string {
+	// Always update the current events channel for this turn.
+	// This is critical: the MCP executor uses p.currentEvents, so we must
+	// update it before any tool execution happens this turn.
+	p.eventsMu.Lock()
+	p.currentEvents = events
+	p.eventsMu.Unlock()
+
+	// If we already have a running MCP server, reuse its config
+	if p.mcpServer != nil && p.mcpConfigPath != "" {
+		if debug {
+			fmt.Fprintf(os.Stderr, "[claude-bin] Reusing existing MCP server at %s\n", p.mcpServer.URL())
+		}
+		return p.mcpConfigPath
+	}
+
+	// Create new MCP server
+	if debug {
+		fmt.Fprintf(os.Stderr, "[claude-bin] Starting HTTP MCP server for %d tools\n", len(tools))
+	}
+
+	configPath := p.createHTTPMCPConfig(ctx, tools, debug)
+	if configPath != "" && debug {
+		fmt.Fprintf(os.Stderr, "[claude-bin] MCP config created: %s\n", configPath)
+	}
+	return configPath
+}
+
+// CleanupMCP stops the MCP server and removes the config file.
+// This should be called when the conversation is complete.
+func (p *ClaudeBinProvider) CleanupMCP() {
+	if p.mcpServer != nil {
+		p.mcpServer.Stop(context.Background())
+		p.mcpServer = nil
+	}
+	if p.mcpConfigPath != "" {
+		os.Remove(p.mcpConfigPath)
+		p.mcpConfigPath = ""
+	}
 }
 
 // createHTTPMCPConfig starts an HTTP MCP server and creates a config file pointing to it.
-// Returns the config file path and a cleanup function that stops the server.
-// The events channel is used for routing tool execution events back to the engine.
-func (p *ClaudeBinProvider) createHTTPMCPConfig(ctx context.Context, tools []ToolSpec, events chan<- Event, debug bool) (string, func()) {
+// The server and config path are stored in the provider for reuse across turns.
+// Tool execution events are routed through p.currentEvents (set by getOrCreateMCPConfig).
+func (p *ClaudeBinProvider) createHTTPMCPConfig(ctx context.Context, tools []ToolSpec, debug bool) string {
 	// Convert llm.ToolSpec to mcphttp.ToolSpec
 	mcpTools := make([]mcphttp.ToolSpec, len(tools))
 	for i, t := range tools {
@@ -300,8 +347,15 @@ func (p *ClaudeBinProvider) createHTTPMCPConfig(ctx context.Context, tools []Too
 
 	// Create a wrapper executor that routes tool calls through the engine
 	// by emitting EventToolCall with a response channel and waiting for the result.
-	// Note: events is captured from the function parameter, making this safe for concurrent streams.
+	// NOTE: We read p.currentEvents under mutex each time to get the current turn's
+	// channel. This is critical because the MCP server persists across turns but
+	// the events channel changes with each turn.
 	wrappedExecutor := func(ctx context.Context, name string, args json.RawMessage) (string, error) {
+		// Get the current events channel for this turn
+		p.eventsMu.Lock()
+		events := p.currentEvents
+		p.eventsMu.Unlock()
+
 		// If no events channel, fall back to direct execution
 		if events == nil {
 			return p.toolExecutor(ctx, name, args)
@@ -314,7 +368,6 @@ func (p *ClaudeBinProvider) createHTTPMCPConfig(ctx context.Context, tools []Too
 		responseChan := make(chan ToolExecutionResponse, 1)
 
 		// Emit EventToolCall with response channel - engine will execute and respond
-		// Use select to avoid blocking forever if the engine loop has exited
 		event := Event{
 			Type:         EventToolCall,
 			ToolCallID:   callID,
@@ -322,11 +375,18 @@ func (p *ClaudeBinProvider) createHTTPMCPConfig(ctx context.Context, tools []Too
 			Tool:         &ToolCall{ID: callID, Name: name, Arguments: args},
 			ToolResponse: responseChan,
 		}
-		select {
-		case events <- event:
-			// Event sent successfully
-		case <-ctx.Done():
-			return "", ctx.Err()
+
+		// Try to send the event. The channel may be closed if the stream ended
+		// between when we grabbed it and now (race condition with stream cleanup).
+		// Use safeSendEvent to handle this gracefully.
+		if !safeSendEvent(ctx, events, event) {
+			// Channel closed or context cancelled - do NOT fall back to direct execution
+			// as that would bypass engine-level permission checks (allow-list + UI approval).
+			// Return an error instead to signal the tool call cannot be processed safely.
+			if ctx.Err() != nil {
+				return "", ctx.Err()
+			}
+			return "", fmt.Errorf("tool execution rejected: stream closed during tool call %q", name)
 		}
 
 		// Wait for engine to execute and return result
@@ -346,7 +406,7 @@ func (p *ClaudeBinProvider) createHTTPMCPConfig(ctx context.Context, tools []Too
 		if debug {
 			fmt.Fprintf(os.Stderr, "[claude-bin] Failed to start MCP server: %v\n", err)
 		}
-		return "", nil
+		return ""
 	}
 	if debug {
 		fmt.Fprintf(os.Stderr, "[claude-bin] MCP server started at %s\n", url)
@@ -369,34 +429,33 @@ func (p *ClaudeBinProvider) createHTTPMCPConfig(ctx context.Context, tools []Too
 	configJSON, err := json.Marshal(mcpConfig)
 	if err != nil {
 		server.Stop(ctx)
-		return "", nil
+		return ""
 	}
 
 	// Write to temp file using os.CreateTemp to avoid symlink attacks
 	tmpFile, err := os.CreateTemp("", "term-llm-mcp-*.json")
 	if err != nil {
 		server.Stop(ctx)
-		return "", nil
+		return ""
 	}
 	configPath := tmpFile.Name()
 	if _, err := tmpFile.Write(configJSON); err != nil {
 		tmpFile.Close()
 		os.Remove(configPath)
 		server.Stop(ctx)
-		return "", nil
+		return ""
 	}
 	if err := tmpFile.Close(); err != nil {
 		os.Remove(configPath)
 		server.Stop(ctx)
-		return "", nil
+		return ""
 	}
 
-	cleanup := func() {
-		server.Stop(context.Background())
-		os.Remove(configPath)
-	}
+	// Store server and config for reuse across turns
+	p.mcpServer = server
+	p.mcpConfigPath = configPath
 
-	return configPath, cleanup
+	return configPath
 }
 
 // extractSystemPrompt extracts system messages from the full message list.
@@ -499,6 +558,25 @@ func (p *ClaudeBinProvider) processToolResultContent(content string) string {
 	imageMarker := content[start : start+end+1]
 	result := strings.Replace(content, imageMarker, "[Image data stripped - Claude can read the file path above]", 1)
 	return strings.TrimSpace(result)
+}
+
+// safeSendEvent attempts to send an event to the channel, returning false if
+// the channel is closed or context is cancelled. This prevents panics when
+// the stream is closed while MCP tool execution is still in progress.
+func safeSendEvent(ctx context.Context, ch chan<- Event, event Event) (sent bool) {
+	// Recover from panic if channel is closed
+	defer func() {
+		if r := recover(); r != nil {
+			sent = false
+		}
+	}()
+
+	select {
+	case ch <- event:
+		return true
+	case <-ctx.Done():
+		return false
+	}
 }
 
 // JSON message types from claude CLI output

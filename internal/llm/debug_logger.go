@@ -292,6 +292,14 @@ func (l *DebugLogger) LogEvent(event Event) {
 		}
 		if event.Type == EventToolExecEnd {
 			data["success"] = event.ToolSuccess
+			if event.ToolOutput != "" {
+				// Truncate long outputs to avoid bloating logs
+				output := event.ToolOutput
+				if len(output) > 500 {
+					output = output[:500] + "...[truncated]"
+				}
+				data["output"] = output
+			}
 		}
 		entry.Data = data
 	case EventUsage:

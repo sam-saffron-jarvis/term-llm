@@ -169,3 +169,253 @@ func TestTextSnapshotStressTest(t *testing.T) {
 		}
 	}
 }
+
+// TestAllCompletedSegments_IncludesFlushed verifies that AllCompletedSegments
+// returns both flushed and unflushed segments, unlike CompletedSegments.
+// This is critical for the final View() render to include all content.
+func TestAllCompletedSegments_IncludesFlushed(t *testing.T) {
+	tracker := NewToolTracker()
+
+	// Add and mark first segment as flushed (simulates scrollback flush)
+	tracker.AddTextSegment("First text")
+	tracker.Segments[0].Complete = true
+	tracker.Segments[0].Flushed = true
+
+	// Add unflushed segment
+	tracker.AddTextSegment("Second text")
+	tracker.Segments[1].Complete = true
+
+	// CompletedSegments should only return unflushed
+	completed := tracker.CompletedSegments()
+	if len(completed) != 1 {
+		t.Errorf("CompletedSegments should return 1, got %d", len(completed))
+	}
+	if completed[0].GetText() != "Second text" {
+		t.Errorf("CompletedSegments should return unflushed segment, got %q", completed[0].GetText())
+	}
+
+	// AllCompletedSegments should return both
+	all := tracker.AllCompletedSegments()
+	if len(all) != 2 {
+		t.Errorf("AllCompletedSegments should return 2, got %d", len(all))
+	}
+	if all[0].GetText() != "First text" {
+		t.Errorf("AllCompletedSegments[0] should be 'First text', got %q", all[0].GetText())
+	}
+	if all[1].GetText() != "Second text" {
+		t.Errorf("AllCompletedSegments[1] should be 'Second text', got %q", all[1].GetText())
+	}
+}
+
+// TestAllCompletedSegments_ExcludesPending verifies that pending tool segments
+// are excluded from AllCompletedSegments.
+func TestAllCompletedSegments_ExcludesPending(t *testing.T) {
+	tracker := NewToolTracker()
+
+	// Add a completed text segment
+	tracker.AddTextSegment("Some text")
+	tracker.Segments[0].Complete = true
+
+	// Add a pending tool segment
+	tracker.HandleToolStart("call-1", "shell", "(git status)")
+	// Note: tool is pending, not ended
+
+	// AllCompletedSegments should only return the text segment
+	all := tracker.AllCompletedSegments()
+	if len(all) != 1 {
+		t.Errorf("AllCompletedSegments should return 1 (excluding pending tool), got %d", len(all))
+	}
+	if all[0].Type != SegmentText {
+		t.Errorf("AllCompletedSegments should return text segment, got type %v", all[0].Type)
+	}
+}
+
+// TestAllCompletedSegments_MixedScenario tests a realistic scenario with
+// multiple segment types, some flushed, some not.
+func TestAllCompletedSegments_MixedScenario(t *testing.T) {
+	tracker := NewToolTracker()
+
+	// Simulate: text -> tool (flushed) -> text (flushed) -> tool -> text
+	tracker.AddTextSegment("First paragraph")
+	tracker.Segments[0].Complete = true
+
+	tracker.HandleToolStart("call-1", "read_file", "main.go")
+	tracker.HandleToolEnd("call-1", true)
+	tracker.Segments[1].Flushed = true // Flushed to scrollback
+
+	tracker.AddTextSegment("Second paragraph")
+	tracker.Segments[2].Complete = true
+	tracker.Segments[2].Flushed = true // Flushed to scrollback
+
+	tracker.HandleToolStart("call-2", "shell", "(ls)")
+	tracker.HandleToolEnd("call-2", true)
+
+	tracker.AddTextSegment("Third paragraph")
+	tracker.Segments[4].Complete = true
+
+	// CompletedSegments: only unflushed (first text, second tool, third text)
+	completed := tracker.CompletedSegments()
+	if len(completed) != 3 {
+		t.Errorf("CompletedSegments should return 3 unflushed, got %d", len(completed))
+	}
+
+	// AllCompletedSegments: all 5 segments
+	all := tracker.AllCompletedSegments()
+	if len(all) != 5 {
+		t.Errorf("AllCompletedSegments should return 5, got %d", len(all))
+	}
+}
+
+// TestFlushToScrollback_IncompleteTextNotFlushed verifies that incomplete
+// text segments are NOT flushed to scrollback. This prevents content loss
+// during streaming.
+func TestFlushToScrollback_IncompleteTextNotFlushed(t *testing.T) {
+	tracker := NewToolTracker()
+
+	// Add incomplete text segment (simulates mid-stream)
+	tracker.AddTextSegment("Streaming text...")
+	// Note: segment is NOT marked Complete
+
+	// Add a completed tool segment
+	tracker.HandleToolStart("call-1", "shell", "(pwd)")
+	tracker.HandleToolEnd("call-1", true)
+
+	// Now we have 2 "unflushed" segments, but text is incomplete
+	// FlushToScrollback should NOT flush the incomplete text
+
+	mockRender := func(s string, w int) string { return s }
+	_ = tracker.FlushToScrollback(80, 0, 1, mockRender)
+
+	// The incomplete text should NOT be flushed
+	if tracker.Segments[0].Flushed {
+		t.Error("Incomplete text segment should NOT be flushed")
+	}
+}
+
+// TestFlushToScrollback_CompleteTextCanBeFlushed verifies that complete
+// text segments CAN be flushed when there are multiple segments.
+func TestFlushToScrollback_CompleteTextCanBeFlushed(t *testing.T) {
+	tracker := NewToolTracker()
+
+	// Add complete text segment
+	tracker.AddTextSegment("First paragraph")
+	tracker.Segments[0].Complete = true
+
+	// Add another complete text segment
+	tracker.AddTextSegment("Second paragraph")
+	tracker.Segments[1].Complete = true
+
+	// Add a third complete segment
+	tracker.AddTextSegment("Third paragraph")
+	tracker.Segments[2].Complete = true
+
+	// With 3 segments and minKeep=1, we should flush 2
+	mockRender := func(s string, w int) string { return s }
+	result := tracker.FlushToScrollback(80, 0, 1, mockRender)
+
+	// Should have flushed content
+	if result.ToPrint == "" {
+		t.Error("Expected some content to be flushed")
+	}
+
+	// First two segments should be flushed
+	if !tracker.Segments[0].Flushed {
+		t.Error("First complete segment should be flushed")
+	}
+	if !tracker.Segments[1].Flushed {
+		t.Error("Second complete segment should be flushed")
+	}
+	// Last segment should NOT be flushed (minKeep=1)
+	if tracker.Segments[2].Flushed {
+		t.Error("Last segment should NOT be flushed (minKeep)")
+	}
+}
+
+// TestDebugStreamingSimulation simulates streaming where text accumulates
+// in a single segment, shown as raw text during streaming, rendered on completion.
+func TestDebugStreamingSimulation(t *testing.T) {
+	tracker := NewToolTracker()
+
+	// Simulate streaming text - all goes into one segment
+	chunks := []string{
+		"# Debug\n\n",
+		"This is a test.\n\n",
+		"More content here.",
+	}
+
+	for _, chunk := range chunks {
+		tracker.AddTextSegment(chunk)
+	}
+
+	// Should have 1 segment (all text accumulated)
+	if len(tracker.Segments) != 1 {
+		t.Errorf("Expected 1 segment, got %d", len(tracker.Segments))
+	}
+
+	// Segment should be incomplete during streaming
+	if tracker.Segments[0].Complete {
+		t.Error("Segment should be incomplete during streaming")
+	}
+
+	// CompletedSegments should include incomplete text for View()
+	segments := tracker.CompletedSegments()
+	content := RenderSegments(segments, 80, -1, nil, false)
+
+	// Should show raw text during streaming
+	if !strings.Contains(content, "# Debug") {
+		t.Errorf("Should show raw markdown during streaming: %q", content)
+	}
+
+	// Mark complete and render
+	tracker.CompleteTextSegments(func(s string) string { return "[RENDERED:" + s + "]" })
+
+	// Now segment should be complete with rendered content
+	if !tracker.Segments[0].Complete {
+		t.Error("Segment should be complete after CompleteTextSegments")
+	}
+	if !strings.Contains(tracker.Segments[0].Rendered, "[RENDERED:") {
+		t.Errorf("Should have rendered content: %q", tracker.Segments[0].Rendered)
+	}
+}
+
+// TestStreamingThenComplete verifies that streaming text shows raw,
+// then gets rendered on completion.
+func TestStreamingThenComplete(t *testing.T) {
+	tracker := NewToolTracker()
+
+	// Add streaming content
+	tracker.AddTextSegment("# Header\n\n")
+	tracker.AddTextSegment("Some **bold** text.\n\n")
+
+	// During streaming, nothing should be flushed (incomplete segment)
+	result := tracker.FlushToScrollback(80, 0, 1, func(s string, w int) string {
+		return "«" + s + "»"
+	})
+	if result.ToPrint != "" {
+		t.Errorf("Should not flush incomplete segment: %q", result.ToPrint)
+	}
+
+	// View should show raw text
+	segments := tracker.CompletedSegments()
+	content := RenderSegments(segments, 80, -1, nil, false)
+	if !strings.Contains(content, "# Header") {
+		t.Errorf("View should show raw text: %q", content)
+	}
+	if !strings.Contains(content, "**bold**") {
+		t.Errorf("View should show raw markdown: %q", content)
+	}
+
+	// Complete the segment
+	tracker.CompleteTextSegments(func(s string) string {
+		return "«RENDERED:" + s + "»"
+	})
+
+	// Now it should be flushable
+	result = tracker.FlushToScrollback(80, 0, 0, func(s string, w int) string {
+		return "«" + s + "»"
+	})
+	// With minKeep=0, it should flush
+	if !tracker.Segments[0].Complete {
+		t.Error("Segment should be complete")
+	}
+}

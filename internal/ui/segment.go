@@ -58,6 +58,11 @@ type Segment struct {
 	// Incremental rendering cache (streaming optimization)
 	SafePos      int    // Byte position of last safe markdown boundary
 	SafeRendered string // Cached render of text[:SafePos]
+	FlushedPos   int    // Byte position up to which content has been flushed to scrollback
+
+	// Stitched rendering state (for correct inter-chunk spacing)
+	LastFlushedRaw         string // Raw markdown of last flushed chunk (for stitched rendering)
+	LastFlushedRenderedLen int    // Byte length of rendered LastFlushedRaw
 
 	// Subagent stats (for spawn_agent tools only)
 	SubagentToolCalls   int            // Number of tool calls made by subagent
@@ -412,6 +417,8 @@ func RenderSegments(segments []*Segment, width int, wavePos int, renderMarkdown 
 			prev := segments[i-1]
 			prevIsTool := prev.Type == SegmentTool || prev.Type == SegmentAskUserResult
 			currIsTool := seg.Type == SegmentTool || seg.Type == SegmentAskUserResult
+			// No extra spacing between consecutive text segments
+			// (each segment already ends with \n from rendering)
 			// Blank line between text and tools/ask_user results
 			if prev.Type == SegmentText && currIsTool {
 				b.WriteString("\n\n")
@@ -452,43 +459,20 @@ func RenderSegments(segments []*Segment, width int, wavePos int, renderMarkdown 
 
 		switch seg.Type {
 		case SegmentText:
-			if seg.Complete && seg.Rendered != "" {
-				// Completed segment with cached render
-				b.WriteString(seg.Rendered)
-			} else {
-				// Get text from TextBuilder (streaming) or Text (completed)
-				text := seg.GetText()
-				if text == "" {
-					break
-				}
+			text := seg.GetText()
+			if text == "" {
+				break
+			}
 
-				if !seg.Complete {
-					// STREAMING: Skip expensive Glamour rendering entirely.
-					// Use plain text with only safe boundary caching for prefix.
-					if seg.SafePos > 0 && seg.SafeRendered != "" {
-						// Write cached rendered prefix
-						b.WriteString(seg.SafeRendered)
-						// Write remaining text as plain (no Glamour)
-						if seg.SafePos < len(text) {
-							b.WriteString(text[seg.SafePos:])
-						}
-					} else if seg.SafePos > 0 && renderMarkdown != nil {
-						// First time seeing this safe boundary - render and cache it
-						seg.SafeRendered = renderMarkdown(text[:seg.SafePos], width)
-						b.WriteString(seg.SafeRendered)
-						if seg.SafePos < len(text) {
-							b.WriteString(text[seg.SafePos:])
-						}
-					} else {
-						// No safe boundary yet - just output plain text
-						b.WriteString(text)
-					}
-				} else if renderMarkdown != nil {
-					// COMPLETED but no cached Rendered: render with Glamour
-					b.WriteString(renderMarkdown(text, width))
-				} else {
-					b.WriteString(text)
-				}
+			if seg.Complete && seg.Rendered != "" {
+				// Completed segment with cached glamour render
+				b.WriteString(seg.Rendered)
+			} else if seg.Complete && renderMarkdown != nil {
+				// Completed but no cache - render now
+				b.WriteString(renderMarkdown(text, width))
+			} else {
+				// Incomplete (streaming) - show raw text
+				b.WriteString(text)
 			}
 		case SegmentTool:
 			b.WriteString(RenderToolSegment(seg, wavePos))

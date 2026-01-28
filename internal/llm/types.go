@@ -38,9 +38,10 @@ type Provider interface {
 
 // Capabilities describe optional provider features.
 type Capabilities struct {
-	NativeWebSearch bool // Provider has native web search capability
-	NativeWebFetch  bool // Provider has native URL fetch capability
-	ToolCalls       bool
+	NativeWebSearch    bool // Provider has native web search capability
+	NativeWebFetch     bool // Provider has native URL fetch capability
+	ToolCalls          bool
+	SupportsToolChoice bool // Provider supports tool_choice to force specific tool use
 }
 
 // Stream yields events until io.EOF.

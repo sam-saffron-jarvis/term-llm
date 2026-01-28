@@ -45,9 +45,10 @@ func (p *XAIProvider) Credential() string {
 
 func (p *XAIProvider) Capabilities() Capabilities {
 	return Capabilities{
-		NativeWebSearch: true,
-		NativeWebFetch:  false,
-		ToolCalls:       true,
+		NativeWebSearch:    true,
+		NativeWebFetch:     false,
+		ToolCalls:          true,
+		SupportsToolChoice: true,
 	}
 }
 

@@ -60,6 +60,15 @@ func (r *RetryProvider) SetToolExecutor(executor func(ctx context.Context, name 
 	}
 }
 
+// CleanupMCP forwards to the inner provider if it implements ProviderCleaner.
+// This ensures providers like ClaudeBinProvider get cleaned up properly
+// even when wrapped with retry logic.
+func (r *RetryProvider) CleanupMCP() {
+	if cleaner, ok := r.inner.(ProviderCleaner); ok {
+		cleaner.CleanupMCP()
+	}
+}
+
 func (r *RetryProvider) Stream(ctx context.Context, req Request) (Stream, error) {
 	return newEventStream(ctx, func(ctx context.Context, events chan<- Event) error {
 		var lastErr error

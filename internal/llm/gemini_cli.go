@@ -300,9 +300,10 @@ func (p *GeminiCLIProvider) Credential() string {
 
 func (p *GeminiCLIProvider) Capabilities() Capabilities {
 	return Capabilities{
-		NativeWebSearch: true,
-		NativeWebFetch:  false, // No native URL fetch (Gemini-based)
-		ToolCalls:       true,
+		NativeWebSearch:    true,
+		NativeWebFetch:     false, // No native URL fetch (Gemini-based)
+		ToolCalls:          true,
+		SupportsToolChoice: false, // CLI interface doesn't support forcing specific tool use
 	}
 }
 

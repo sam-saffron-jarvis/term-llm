@@ -81,9 +81,10 @@ func (p *AnthropicProvider) Credential() string {
 
 func (p *AnthropicProvider) Capabilities() Capabilities {
 	return Capabilities{
-		NativeWebSearch: true,
-		NativeWebFetch:  true,
-		ToolCalls:       true,
+		NativeWebSearch:    true,
+		NativeWebFetch:     true,
+		ToolCalls:          true,
+		SupportsToolChoice: true,
 	}
 }
 
