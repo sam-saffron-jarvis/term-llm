@@ -73,6 +73,10 @@ type Model struct {
 	// Streaming channels
 	streamChan <-chan ui.StreamEvent
 
+	// Partial insert tracking for streaming
+	partialInsertAfter string // The anchor text for current partial insert
+	partialInsertIdx   int    // Next insertion index (-1 if not tracking)
+
 	// UI components
 	spinner  spinner.Model
 	viewport viewport.Model
@@ -92,6 +96,11 @@ type Model struct {
 	// Status message
 	statusMsg     string
 	statusMsgTime time.Time
+
+	// Async chat channel for queued instructions
+	chatInput      textarea.Model // Input for queued instructions
+	pendingPrompts []string       // Queue of user instructions
+	chatFocused    bool           // true when chat input has focus
 }
 
 // New creates a new plan model.
@@ -118,7 +127,7 @@ func New(cfg *config.Config, provider llm.Provider, engine *llm.Engine, modelNam
 	ta.ShowLineNumbers = false
 	ta.CharLimit = 0 // No limit
 	ta.SetWidth(width - 4)
-	ta.SetHeight(height - 4) // Leave room for status line
+	ta.SetHeight(height - 9) // Leave room for status line, chat input, and separators
 	ta.FocusedStyle.CursorLine = lipgloss.NewStyle().Background(lipgloss.Color("236"))
 	ta.FocusedStyle.Base = lipgloss.NewStyle()
 	ta.FocusedStyle.Placeholder = lipgloss.NewStyle().Foreground(styles.Theme().Muted)
@@ -140,25 +149,41 @@ func New(cfg *config.Config, provider llm.Provider, engine *llm.Engine, modelNam
 	engine.Tools().Register(addLineTool)
 	engine.Tools().Register(removeLineTool)
 
+	// Create chat input for async instructions
+	chatInput := textarea.New()
+	chatInput.Placeholder = "Type instruction (Enter to queue)..."
+	chatInput.Prompt = ""
+	chatInput.ShowLineNumbers = false
+	chatInput.CharLimit = 500
+	chatInput.SetWidth(width - 4)
+	chatInput.SetHeight(1)
+	chatInput.FocusedStyle.Base = lipgloss.NewStyle()
+	chatInput.FocusedStyle.Placeholder = lipgloss.NewStyle().Foreground(styles.Theme().Muted)
+	chatInput.BlurredStyle = chatInput.FocusedStyle
+	chatInput.Blur() // Start unfocused
+
 	return &Model{
-		width:          width,
-		height:         height,
-		doc:            doc,
-		editor:         ta,
-		focusEditor:    true,
-		spinner:        s,
-		viewport:       vp,
-		styles:         styles,
-		provider:       provider,
-		engine:         engine,
-		config:         cfg,
-		modelName:      modelName,
-		maxTurns:       maxTurns,
-		addLineTool:    addLineTool,
-		removeLineTool: removeLineTool,
-		history:        make([]llm.Message, 0),
-		filePath:       filePath,
-		tracker:        ui.NewToolTracker(),
+		width:            width,
+		height:           height,
+		doc:              doc,
+		editor:           ta,
+		focusEditor:      true,
+		spinner:          s,
+		viewport:         vp,
+		styles:           styles,
+		provider:         provider,
+		engine:           engine,
+		config:           cfg,
+		modelName:        modelName,
+		maxTurns:         maxTurns,
+		addLineTool:      addLineTool,
+		removeLineTool:   removeLineTool,
+		history:          make([]llm.Message, 0),
+		filePath:         filePath,
+		tracker:          ui.NewToolTracker(),
+		partialInsertIdx: -1,
+		chatInput:        chatInput,
+		pendingPrompts:   make([]string, 0),
 	}
 }
 
@@ -185,6 +210,11 @@ type AskUserRequestMsg struct {
 	DoneCh    chan<- []tools.AskUserAnswer
 }
 
+// pendingPromptMsg triggers the planner with a pending user prompt.
+type pendingPromptMsg struct {
+	prompt string
+}
+
 // Update handles messages.
 func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmds []tea.Cmd
@@ -193,10 +223,12 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
+		// Adjust editor height to leave room for status line, chat input, and separators
 		m.editor.SetWidth(m.width - 4)
-		m.editor.SetHeight(m.height - 4)
+		m.editor.SetHeight(m.height - 9)
 		m.viewport.Width = m.width
 		m.viewport.Height = m.height - 2
+		m.chatInput.SetWidth(m.width - 4)
 		if m.askUserModel != nil {
 			m.askUserModel.SetWidth(m.width)
 		}
@@ -247,6 +279,10 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.askUserDoneCh = msg.DoneCh
 		m.askUserModel = tools.NewEmbeddedAskUserModel(msg.Questions, m.width)
 		return m, nil
+
+	case pendingPromptMsg:
+		// Trigger planner with the pending prompt
+		return m.triggerPlannerWithPrompt(msg.prompt)
 	}
 
 	return m, tea.Batch(cmds...)
@@ -290,11 +326,30 @@ func (m *Model) handleStreamEvent(ev ui.StreamEvent) []tea.Cmd {
 		// Agent might emit text - we don't display it directly since edits go to document
 		m.agentPhase = "Editing"
 
+	case ui.StreamEventPartialInsert:
+		// Handle streaming partial insert - insert a single line as it arrives
+		m.executePartialInsert(ev.InlineAfter, ev.InlineLine)
+		m.agentPhase = "Inserting"
+
+	case ui.StreamEventInlineInsert:
+		// Handle inline INSERT marker (complete) - reset partial tracking
+		// The lines have already been inserted via partial inserts
+		m.partialInsertIdx = -1
+		m.partialInsertAfter = ""
+		m.agentPhase = "Inserting"
+
+	case ui.StreamEventInlineDelete:
+		// Handle inline DELETE marker - delete lines
+		m.executeInlineDelete(ev.InlineFrom, ev.InlineTo)
+		m.agentPhase = "Deleting"
+
 	case ui.StreamEventDone:
 		m.agentActive = false
 		m.agentStreaming = false
 		m.agentPhase = ""
 		m.tracker = ui.NewToolTracker() // Reset tracker
+		m.partialInsertIdx = -1         // Reset partial insert tracking
+		m.partialInsertAfter = ""
 
 		// Sync editor with document content
 		m.syncEditorFromDoc()
@@ -302,7 +357,18 @@ func (m *Model) handleStreamEvent(ev ui.StreamEvent) []tea.Cmd {
 		// Add turn to history so agent has context for next invocation
 		m.addTurnToHistory()
 
-		m.setStatus("Agent finished")
+		// Check for pending prompts and auto-trigger next one
+		if len(m.pendingPrompts) > 0 {
+			prompt := m.pendingPrompts[0]
+			m.pendingPrompts = m.pendingPrompts[1:]
+			m.setStatus(fmt.Sprintf("Processing queued: %s", truncateResult(prompt, 30)))
+			// Return a command to trigger the planner with the pending prompt
+			cmds = append(cmds, func() tea.Msg {
+				return pendingPromptMsg{prompt: prompt}
+			})
+		} else {
+			m.setStatus("Agent finished")
+		}
 	}
 
 	return cmds
@@ -423,6 +489,11 @@ func (m *Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
+	// Handle chat input focus mode
+	if m.chatFocused {
+		return m.handleChatInput(msg)
+	}
+
 	// Handle command mode (for :w, :q, :wq)
 	if m.commandMode {
 		return m.handleCommandMode(msg)
@@ -453,6 +524,18 @@ func (m *Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "ctrl+s":
 		// Save document
 		return m.saveDocument()
+
+	case "ctrl+k":
+		// Clear pending prompt queue
+		if len(m.pendingPrompts) > 0 {
+			m.pendingPrompts = nil
+			m.setStatus("Cleared pending queue")
+		}
+		return m, nil
+
+	case "tab":
+		// Toggle focus between editor and chat input
+		return m.toggleChatFocus()
 
 	case "esc":
 		// Exit command/visual mode or switch to normal mode (vim)
@@ -708,6 +791,66 @@ func (m *Model) executeCommand() (tea.Model, tea.Cmd) {
 		m.setStatus(fmt.Sprintf("Unknown command: %s", cmd))
 		return m, nil
 	}
+}
+
+// handleChatInput processes keys when chat input is focused.
+func (m *Model) handleChatInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.Type {
+	case tea.KeyEnter:
+		// Submit the instruction
+		text := strings.TrimSpace(m.chatInput.Value())
+		if text == "" {
+			return m, nil
+		}
+
+		// Clear the input
+		m.chatInput.SetValue("")
+
+		if m.agentActive {
+			// Queue the instruction for after current turn
+			if len(m.pendingPrompts) >= 10 {
+				m.setStatus("Queue full (max 10) - clear with Ctrl+K")
+				return m, nil
+			}
+			m.pendingPrompts = append(m.pendingPrompts, text)
+			m.setStatus(fmt.Sprintf("Queued: %s", truncateResult(text, 40)))
+		} else {
+			// Agent is idle - trigger immediately with this prompt
+			return m.triggerPlannerWithPrompt(text)
+		}
+		return m, nil
+
+	case tea.KeyEsc:
+		// Return focus to editor
+		return m.toggleChatFocus()
+
+	case tea.KeyTab:
+		// Return focus to editor
+		return m.toggleChatFocus()
+
+	default:
+		// Pass to chat input textarea
+		var cmd tea.Cmd
+		m.chatInput, cmd = m.chatInput.Update(msg)
+		return m, cmd
+	}
+}
+
+// toggleChatFocus switches focus between editor and chat input.
+func (m *Model) toggleChatFocus() (tea.Model, tea.Cmd) {
+	m.chatFocused = !m.chatFocused
+
+	if m.chatFocused {
+		m.editor.Blur()
+		m.chatInput.Focus()
+		// Exit vim normal mode so we can type
+		m.vimMode = false
+	} else {
+		m.chatInput.Blur()
+		m.editor.Focus()
+	}
+
+	return m, nil
 }
 
 // vimEnterVisualMode enters visual line mode.
@@ -992,6 +1135,10 @@ func (m *Model) vimPaste() {
 }
 
 func (m *Model) triggerPlanner() (tea.Model, tea.Cmd) {
+	return m.triggerPlannerWithPrompt("")
+}
+
+func (m *Model) triggerPlannerWithPrompt(userInstruction string) (tea.Model, tea.Cmd) {
 	// Sync document from editor
 	m.syncDocFromEditor()
 
@@ -1014,7 +1161,7 @@ func (m *Model) triggerPlanner() (tea.Model, tea.Cmd) {
 	m.removeLineTool.SetExecutor(m.executeRemoveLine)
 
 	// Build request
-	req := m.buildPlannerRequest()
+	req := m.buildPlannerRequest(userInstruction)
 
 	// Note: ask_user handling is set up in SetProgram() once the program reference is available
 
@@ -1028,8 +1175,8 @@ func (m *Model) triggerPlanner() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	// Create stream adapter
-	adapter := ui.NewStreamAdapter(ui.DefaultStreamBufferSize)
+	// Create plan stream adapter with inline edit parsing
+	adapter := ui.NewPlanStreamAdapter(ui.DefaultStreamBufferSize)
 	go adapter.ProcessStream(ctx, stream)
 	m.streamChan = adapter.Events()
 
@@ -1039,7 +1186,7 @@ func (m *Model) triggerPlanner() (tea.Model, tea.Cmd) {
 	)
 }
 
-func (m *Model) buildPlannerRequest() llm.Request {
+func (m *Model) buildPlannerRequest(userInstruction string) llm.Request {
 	// Build context with document state
 	docContent := m.doc.Text()
 	var userChanges string
@@ -1048,36 +1195,105 @@ func (m *Model) buildPlannerRequest() llm.Request {
 	}
 
 	// Build system prompt
-	systemPrompt := `You are a planning assistant helping the user structure their ideas into a clear plan.
+	systemPrompt := `You are an expert software architect and planning assistant. Your role is to help the user develop comprehensive, actionable implementation plans.
 
-The user is editing a plan document. Your job is to help organize, structure, and improve the document.
+The user is editing a plan document. Your job is to transform rough ideas into detailed, well-structured plans that can be directly executed.
 
-You have access to investigation tools to explore the codebase:
+## Investigation Tools
+
+You have access to tools to explore the codebase:
 - glob: Find files by pattern (e.g., "**/*.go", "src/**/*.ts")
 - grep: Search file contents for patterns
 - read_file: Read file contents
 - shell: Run shell commands for git, npm, etc.
 
-Use these tools to understand the codebase context when planning implementation details.
+**IMPORTANT**: Before making edits, use these tools to understand:
+- Existing code patterns and conventions
+- Related implementations to reference
+- Dependencies and integration points
+- Test patterns used in the codebase
 
-Document editing tools:
-- add_line: Add lines to the document. Content can include multiple lines (newline-separated) - each streams to UI immediately.
-- remove_line: Remove a line by fuzzy matching its content.
+## Document Editing with Inline Markers
 
-IMPORTANT: Put multiple lines in a SINGLE add_line call using newlines in the content. Each line streams to the UI as it's added.
+To edit the document, use inline XML markers directly in your response. These are parsed in real-time for instant feedback.
 
-Example - adding a section with one tool call:
-  add_line(content: "## Overview\n- First point\n- Second point\n- Third point", after: "existing text")
+**INSERT** - Add content after a line matching the anchor text:
+<INSERT after="anchor text to match">
+line 1
+line 2
+</INSERT>
 
-Guidelines:
-- Batch multiple lines into single add_line calls using newlines in content
-- Use text anchoring (partial content match) to specify insertion points
-- Investigate the codebase first if you need to understand existing code or patterns
+If 'after' is omitted, content is appended at the end:
+<INSERT>
+new content at end
+</INSERT>
+
+**DELETE** - Remove a single line or range:
+<DELETE from="text of line to remove" />
+<DELETE from="start line" to="end line" />
+
+**CRITICAL**: Always INSERT new content first, then DELETE old content. This preserves context for subsequent edits.
+
+## Plan Structure Requirements
+
+Every plan section should address:
+
+### 1. Task Breakdown
+- Break features into small, independently testable steps
+- Each step should be completable in isolation
+- Order steps by dependencies (prerequisites first)
+- Include specific file paths and function names
+
+### 2. Edge Cases & Error Handling
+- What inputs could break this?
+- What external failures could occur? (network, disk, permissions)
+- How should errors propagate or be handled?
+- What validation is needed at boundaries?
+
+### 3. Testing Strategy
+- Unit tests: What functions need direct testing?
+- Integration tests: What interactions need verification?
+- Edge case tests: What boundary conditions to cover?
+- Reference existing test patterns in the codebase
+
+### 4. Dependencies & Prerequisites
+- What existing code does this build on?
+- What packages or tools are needed?
+- What must be completed before each step?
+- Are there database migrations or config changes?
+
+### 5. Security Considerations
+- Input validation requirements
+- Authentication/authorization impacts
+- Sensitive data handling
+- Potential injection vectors
+
+### 6. Performance Implications
+- Will this affect hot paths?
+- Database query impacts
+- Memory/CPU considerations for large inputs
+- Caching opportunities or requirements
+
+### 7. Rollback & Migration
+- Can this be deployed incrementally?
+- What's the rollback procedure if issues arise?
+- Are there breaking changes to handle?
+- Data migration steps if applicable
+
+### 8. Acceptance Criteria
+- Concrete conditions that define "done"
+- Measurable outcomes where possible
+- User-facing behavior expectations
+
+## Editing Guidelines
+- Use fuzzy text matching - partial matches work (e.g., after="## Overview" matches "## Overview Section")
+- INSERT content appears immediately as it streams
+- Multiple edits in one response are processed sequentially
 - Preserve the user's intent and phrasing where possible
 - Add structure (headers, bullets, numbered lists) to make the plan clearer
 - If something is unclear, ask the user using ask_user tool
-- Be concise in your edits
-- Reference specific files and code when adding implementation details`
+- Reference specific files and line numbers when adding implementation details
+- Be thorough but avoid unnecessary padding - every line should add value`
 
 	// Build user message with document state
 	var userMsg strings.Builder
@@ -1096,7 +1312,12 @@ Guidelines:
 		userMsg.WriteString(fmt.Sprintf("\nUser made changes since your last edit: %s\n", userChanges))
 	}
 
-	userMsg.WriteString("\nPlease help improve and structure this plan. Make targeted edits using plan_edit.")
+	if userInstruction != "" {
+		userMsg.WriteString(fmt.Sprintf("\n**User instruction**: %s\n", userInstruction))
+		userMsg.WriteString("\nPlease follow the user's instruction above. Use INSERT and DELETE markers to make targeted edits.")
+	} else {
+		userMsg.WriteString("\nPlease help improve and structure this plan. Use INSERT and DELETE markers to make targeted edits.")
+	}
 
 	// Save user message for history
 	m.lastUserMessage = userMsg.String()
@@ -1181,6 +1402,109 @@ func (m *Model) executeRemoveLine(matchText string) (string, error) {
 	m.syncEditorFromDoc()
 
 	return fmt.Sprintf("Removed: %s", truncateResult(removedContent, 40)), nil
+}
+
+// executePartialInsert handles a streaming partial insert - a single line as it arrives.
+func (m *Model) executePartialInsert(afterText string, line string) {
+	// Check if this is a new INSERT block (different anchor or first time)
+	if m.partialInsertIdx < 0 || m.partialInsertAfter != afterText {
+		// New INSERT block - find the anchor point
+		lines := m.doc.Lines()
+		lineTexts := make([]string, len(lines))
+		for i, l := range lines {
+			lineTexts[i] = l.Content
+		}
+
+		// Find insertion point using fuzzy matching
+		insertAfterIdx := len(lines) - 1 // Default: append at end
+		if afterText != "" {
+			matchIdx := tools.FindBestMatch(lineTexts, afterText)
+			if matchIdx >= 0 {
+				insertAfterIdx = matchIdx
+			}
+		} else if len(lines) == 0 {
+			insertAfterIdx = -1 // Empty doc, insert at beginning
+		}
+
+		// Set up tracking for this INSERT block
+		m.partialInsertAfter = afterText
+		m.partialInsertIdx = insertAfterIdx
+	}
+
+	// Insert the line at the tracked position
+	m.doc.InsertLine(m.partialInsertIdx, line, "agent")
+	m.partialInsertIdx++ // Next line goes after the one we just inserted
+	m.syncEditorFromDoc()
+}
+
+// executeInlineInsert handles an inline INSERT edit from the stream.
+func (m *Model) executeInlineInsert(afterText string, content []string) {
+	if len(content) == 0 {
+		return
+	}
+
+	// Get current lines for fuzzy matching
+	lines := m.doc.Lines()
+	lineTexts := make([]string, len(lines))
+	for i, line := range lines {
+		lineTexts[i] = line.Content
+	}
+
+	// Find insertion point using fuzzy matching
+	insertAfterIdx := len(lines) - 1 // Default: append at end
+	if afterText != "" {
+		matchIdx := tools.FindBestMatch(lineTexts, afterText)
+		if matchIdx >= 0 {
+			insertAfterIdx = matchIdx
+		}
+	} else if len(lines) == 0 {
+		insertAfterIdx = -1 // Empty doc, insert at beginning
+	}
+
+	// Insert each line and sync editor after each for streaming effect
+	for _, line := range content {
+		m.doc.InsertLine(insertAfterIdx, line, "agent")
+		insertAfterIdx++ // Next line goes after the one we just inserted
+		m.syncEditorFromDoc()
+	}
+}
+
+// executeInlineDelete handles an inline DELETE edit from the stream.
+func (m *Model) executeInlineDelete(fromText string, toText string) {
+	if fromText == "" {
+		return
+	}
+
+	// Get current lines for fuzzy matching
+	lines := m.doc.Lines()
+	lineTexts := make([]string, len(lines))
+	for i, line := range lines {
+		lineTexts[i] = line.Content
+	}
+
+	// Find start line using fuzzy matching
+	startIdx := tools.FindBestMatch(lineTexts, fromText)
+	if startIdx < 0 {
+		return // Line not found
+	}
+
+	// Determine end index
+	endIdx := startIdx // Default: single line delete
+	if toText != "" {
+		// Find end line for range delete
+		endMatchIdx := tools.FindBestMatch(lineTexts, toText)
+		if endMatchIdx >= 0 && endMatchIdx >= startIdx {
+			endIdx = endMatchIdx
+		}
+	}
+
+	// Delete lines from end to start (to avoid index shifting issues)
+	for i := endIdx; i >= startIdx; i-- {
+		m.doc.DeleteLine(i)
+	}
+
+	// Sync editor to show the change immediately
+	m.syncEditorFromDoc()
 }
 
 func truncateResult(s string, maxLen int) string {
@@ -1290,14 +1614,96 @@ func (m *Model) View() string {
 		return b.String()
 	}
 
-	// Main content: editor
-	b.WriteString(m.editor.View())
+	// Main content: editor with visual selection highlighting
+	editorView := m.editor.View()
+	if m.visualMode {
+		editorView = m.applyVisualHighlight(editorView)
+	}
+	b.WriteString(editorView)
+	b.WriteString("\n")
+
+	// Separator line above chat section
+	separator := strings.Repeat("─", m.width)
+	b.WriteString(m.styles.Muted.Render(separator))
+	b.WriteString("\n")
+
+	// Pending prompts indicator
+	if pending := m.renderPendingPrompts(); pending != "" {
+		b.WriteString(pending)
+		b.WriteString("\n")
+	}
+
+	// Chat input
+	b.WriteString(m.renderChatInput())
+	b.WriteString("\n")
+
+	// Separator line below chat section
+	b.WriteString(m.styles.Muted.Render(separator))
 	b.WriteString("\n")
 
 	// Status line
 	b.WriteString(m.renderStatusLine())
 
 	return b.String()
+}
+
+// applyVisualHighlight applies reverse video highlighting to selected lines in visual mode.
+func (m *Model) applyVisualHighlight(editorView string) string {
+	lines := strings.Split(editorView, "\n")
+
+	startLine := min(m.visualStart, m.visualEnd)
+	endLine := max(m.visualStart, m.visualEnd)
+
+	// Apply highlight style to selected lines
+	highlightStyle := lipgloss.NewStyle().Reverse(true)
+
+	for i := startLine; i <= endLine && i < len(lines); i++ {
+		if i >= 0 {
+			lines[i] = highlightStyle.Render(lines[i])
+		}
+	}
+
+	return strings.Join(lines, "\n")
+}
+
+// renderPendingPrompts renders the pending prompt queue indicator.
+func (m *Model) renderPendingPrompts() string {
+	if len(m.pendingPrompts) == 0 {
+		return ""
+	}
+
+	theme := m.styles.Theme()
+	style := lipgloss.NewStyle().Foreground(theme.Warning)
+
+	preview := truncateResult(m.pendingPrompts[0], 50)
+	if len(m.pendingPrompts) > 1 {
+		return style.Render(fmt.Sprintf("Queued: %q (+%d more)", preview, len(m.pendingPrompts)-1))
+	}
+	return style.Render(fmt.Sprintf("Queued: %q", preview))
+}
+
+// renderChatInput renders the chat input area.
+func (m *Model) renderChatInput() string {
+	theme := m.styles.Theme()
+
+	// Border style based on focus
+	var prefix string
+	if m.chatFocused {
+		prefix = lipgloss.NewStyle().Foreground(theme.Primary).Render("> ")
+	} else {
+		prefix = lipgloss.NewStyle().Foreground(theme.Muted).Render("> ")
+	}
+
+	// Render the textarea (single line)
+	inputView := m.chatInput.View()
+
+	// Add hint when not focused
+	if !m.chatFocused && m.chatInput.Value() == "" {
+		hint := lipgloss.NewStyle().Foreground(theme.Muted).Render("(Tab to focus chat)")
+		return prefix + hint
+	}
+
+	return prefix + inputView
 }
 
 func (m *Model) renderDocument() string {
@@ -1329,7 +1735,9 @@ func (m *Model) renderStatusLine() string {
 
 	// Left side: vim mode indicator
 	var vimIndicator string
-	if m.visualMode {
+	if m.chatFocused {
+		vimIndicator = "-- CHAT --"
+	} else if m.visualMode {
 		vimIndicator = "-- VISUAL LINE --"
 	} else if m.vimMode {
 		vimIndicator = "-- NORMAL --"
@@ -1369,11 +1777,18 @@ func (m *Model) renderStatusLine() string {
 			middle += fmt.Sprintf(" | %d turns", turns)
 		}
 	}
+	if len(m.pendingPrompts) > 0 {
+		middle += fmt.Sprintf(" | %d queued", len(m.pendingPrompts))
+	}
 
 	// Right side: shortcuts
-	right := "Ctrl+P: planner  Ctrl+S: save  Ctrl+Q: quit"
+	var right string
 	if m.agentActive {
-		right = "Ctrl+C: cancel  (you can keep editing)"
+		right = "Ctrl+C: cancel  Tab: chat"
+	} else if m.chatFocused {
+		right = "Enter: send  Esc/Tab: editor  Ctrl+K: clear"
+	} else {
+		right = "Ctrl+P: plan  Tab: chat  Ctrl+S: save"
 	}
 
 	// Build status line
