@@ -996,7 +996,7 @@ func (m askStreamModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			messages, err := m.store.GetMessages(context.Background(), m.sess.ID, 0, 0)
 			if err != nil {
 				// Log error but don't interrupt the user - just don't open inspector
-				m.tracker.AddTextSegment(fmt.Sprintf("\n[Inspector error: %v]\n", err))
+				m.tracker.AddTextSegment(fmt.Sprintf("\n[Inspector error: %v]\n", err), m.width)
 				return m, nil
 			}
 			if len(messages) > 0 {
@@ -1021,10 +1021,12 @@ func (m askStreamModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.tracker.Segments[i].SafePos = 0
 			}
 		}
+		// Resize active streaming renderers
+		m.tracker.ResizeStreamRenderers(m.width)
 
 	case askContentMsg:
 		// Track text for final rendering
-		m.tracker.AddTextSegment(string(msg))
+		m.tracker.AddTextSegment(string(msg), m.width)
 		m.cachedContent = ""
 		m.contentDirty = true
 

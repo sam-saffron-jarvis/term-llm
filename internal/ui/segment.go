@@ -55,6 +55,9 @@ type Segment struct {
 	TextSnapshot    string // Cached result of TextBuilder.String()
 	TextSnapshotLen int    // Length when snapshot was taken (0 = invalid)
 
+	// Streaming markdown renderer - renders complete blocks as they arrive
+	StreamRenderer *TextSegmentRenderer // Active streaming renderer; nil when Complete
+
 	// Incremental rendering cache (streaming optimization)
 	SafePos      int    // Byte position of last safe markdown boundary
 	SafeRendered string // Cached render of text[:SafePos]
@@ -467,11 +470,15 @@ func RenderSegments(segments []*Segment, width int, wavePos int, renderMarkdown 
 			if seg.Complete && seg.Rendered != "" {
 				// Completed segment with cached glamour render
 				b.WriteString(seg.Rendered)
+			} else if seg.StreamRenderer != nil {
+				// Streaming: use only unflushed portion to avoid duplicating content
+				// that was already printed to scrollback via FlushStreamingText
+				b.WriteString(seg.StreamRenderer.RenderedUnflushed())
 			} else if seg.Complete && renderMarkdown != nil {
 				// Completed but no cache - render now
 				b.WriteString(renderMarkdown(text, width))
 			} else {
-				// Incomplete (streaming) - show raw text
+				// Fallback: incomplete without streaming renderer - show raw text
 				b.WriteString(text)
 			}
 		case SegmentTool:

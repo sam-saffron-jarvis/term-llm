@@ -218,8 +218,9 @@ func (t *ToolTracker) UnflushedSegments() []*Segment {
 }
 
 // AddTextSegment adds or appends to a text segment.
+// width is used to create the streaming markdown renderer for proper formatting.
 // Returns true if this created a new segment.
-func (t *ToolTracker) AddTextSegment(text string) bool {
+func (t *ToolTracker) AddTextSegment(text string, width int) bool {
 	t.RecordActivity()
 
 	// Find or append to current incomplete text segment
@@ -234,6 +235,14 @@ func (t *ToolTracker) AddTextSegment(text string) bool {
 			last.TextBuilder.WriteString(text)
 			last.TextSnapshot = strings.Clone(last.TextBuilder.String())
 			last.TextSnapshotLen = last.TextBuilder.Len()
+
+			// Write to streaming renderer if present
+			if last.StreamRenderer != nil {
+				if err := last.StreamRenderer.Write(text); err != nil {
+					// Disable renderer on error to avoid inconsistent output
+					last.StreamRenderer = nil
+				}
+			}
 			return false
 		}
 	}
@@ -241,11 +250,27 @@ func (t *ToolTracker) AddTextSegment(text string) bool {
 	// Create new text segment - clone text to avoid sharing memory with caller's buffer
 	builder := &strings.Builder{}
 	builder.WriteString(text)
+
+	// Create streaming renderer for progressive markdown rendering
+	var renderer *TextSegmentRenderer
+	if width > 0 {
+		var err error
+		renderer, err = NewTextSegmentRenderer(width)
+		if err == nil {
+			if err := renderer.Write(text); err != nil {
+				// Disable renderer on write error
+				renderer = nil
+			}
+		}
+		// If renderer creation fails, fall back to raw text display
+	}
+
 	t.Segments = append(t.Segments, Segment{
 		Type:            SegmentText,
 		TextBuilder:     builder,
 		TextSnapshot:    strings.Clone(text),
 		TextSnapshotLen: len(text),
+		StreamRenderer:  renderer,
 	})
 	return true
 }
@@ -260,10 +285,25 @@ func (t *ToolTracker) CompleteTextSegments(renderFunc func(string) string) {
 				t.Segments[i].Text = strings.Clone(t.Segments[i].TextBuilder.String())
 				t.Segments[i].TextBuilder = nil
 			}
-			t.Segments[i].Complete = true
-			if t.Segments[i].Text != "" && renderFunc != nil {
+
+			// Flush and close streaming renderer, capturing its output
+			if t.Segments[i].StreamRenderer != nil {
+				if err := t.Segments[i].StreamRenderer.Flush(); err != nil {
+					// Flush failed, fall back to renderFunc
+					t.Segments[i].StreamRenderer = nil
+					if t.Segments[i].Text != "" && renderFunc != nil {
+						t.Segments[i].Rendered = renderFunc(t.Segments[i].Text)
+					}
+				} else {
+					t.Segments[i].Rendered = t.Segments[i].StreamRenderer.Rendered()
+					t.Segments[i].StreamRenderer = nil
+				}
+			} else if t.Segments[i].Text != "" && renderFunc != nil {
+				// Fallback: no streaming renderer, render full text
 				t.Segments[i].Rendered = renderFunc(t.Segments[i].Text)
 			}
+
+			t.Segments[i].Complete = true
 		}
 	}
 }
@@ -279,10 +319,25 @@ func (t *ToolTracker) MarkCurrentTextComplete(renderFunc func(string) string) {
 				last.Text = strings.Clone(last.TextBuilder.String())
 				last.TextBuilder = nil
 			}
-			last.Complete = true
-			if last.Text != "" && renderFunc != nil {
+
+			// Flush and close streaming renderer, capturing its output
+			if last.StreamRenderer != nil {
+				if err := last.StreamRenderer.Flush(); err != nil {
+					// Flush failed, fall back to renderFunc
+					last.StreamRenderer = nil
+					if last.Text != "" && renderFunc != nil {
+						last.Rendered = renderFunc(last.Text)
+					}
+				} else {
+					last.Rendered = last.StreamRenderer.Rendered()
+					last.StreamRenderer = nil
+				}
+			} else if last.Text != "" && renderFunc != nil {
+				// Fallback: no streaming renderer, render full text
 				last.Rendered = renderFunc(last.Text)
 			}
+
+			last.Complete = true
 		}
 	}
 }
@@ -402,6 +457,12 @@ func (t *ToolTracker) FlushStreamingText(threshold int, width int, renderMd func
 
 	// Update flushed position
 	seg.FlushedPos = safeBoundary
+
+	// Also mark the StreamRenderer's current output as flushed so that
+	// RenderSegments (which uses RenderedUnflushed) won't duplicate content
+	if seg.StreamRenderer != nil {
+		seg.StreamRenderer.MarkFlushed()
+	}
 
 	return FlushStreamingTextResult{
 		ToPrint: rendered,
@@ -594,6 +655,19 @@ func (t *ToolTracker) FlushBeforeExternalUI(
 	return FlushToScrollbackResult{
 		ToPrint:         content,
 		NewPrintedLines: 0,
+	}
+}
+
+// ResizeStreamRenderers updates all active streaming renderers with new width.
+// On resize error, the renderer is disabled to avoid inconsistent output.
+func (t *ToolTracker) ResizeStreamRenderers(width int) {
+	for i := range t.Segments {
+		if t.Segments[i].StreamRenderer != nil {
+			if err := t.Segments[i].StreamRenderer.Resize(width); err != nil {
+				// Disable renderer on resize error to avoid inconsistent output
+				t.Segments[i].StreamRenderer = nil
+			}
+		}
 	}
 }
 

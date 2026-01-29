@@ -376,6 +376,8 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.tracker.Segments[i].SubagentDiffs[j].Width = 0
 				}
 			}
+			// Resize active streaming renderers
+			m.tracker.ResizeStreamRenderers(m.width)
 		}
 
 		// Invalidate completed stream cache since it's width-dependent (Issue 1)
@@ -454,7 +456,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if words != "" {
 				m.currentResponse.WriteString(words)
 				if m.tracker != nil {
-					m.tracker.AddTextSegment(words)
+					m.tracker.AddTextSegment(words, m.width)
 				}
 				m.phase = "Responding"
 				// Flush excess content if needed
@@ -482,7 +484,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					if remaining != "" {
 						m.currentResponse.WriteString(remaining)
 						if m.tracker != nil {
-							m.tracker.AddTextSegment(remaining)
+							m.tracker.AddTextSegment(remaining, m.width)
 						}
 					}
 					m.smoothBuffer.Reset()
@@ -514,7 +516,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if remaining != "" {
 					m.currentResponse.WriteString(remaining)
 					if m.tracker != nil {
-						m.tracker.AddTextSegment(remaining)
+						m.tracker.AddTextSegment(remaining, m.width)
 					}
 				}
 			}
@@ -581,7 +583,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// Fallback: direct display if no smooth buffer
 				m.currentResponse.WriteString(ev.Text)
 				if m.tracker != nil {
-					m.tracker.AddTextSegment(ev.Text)
+					m.tracker.AddTextSegment(ev.Text, m.width)
 				}
 			}
 
@@ -629,7 +631,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if remaining != "" {
 					m.currentResponse.WriteString(remaining)
 					if m.tracker != nil {
-						m.tracker.AddTextSegment(remaining)
+						m.tracker.AddTextSegment(remaining, m.width)
 					}
 				}
 				m.smoothBuffer.MarkDone()

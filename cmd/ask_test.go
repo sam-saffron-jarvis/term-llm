@@ -115,7 +115,9 @@ func TestAskDoneRendersMarkdown(t *testing.T) {
 	model := newAskStreamModel()
 	model.width = 80
 
-	updated, _ := model.Update(askContentMsg("**bold**"))
+	// Note: glamour requires paragraph structure (trailing newlines) to render inline markdown.
+	// Without newlines, **bold** is not recognized as a complete paragraph.
+	updated, _ := model.Update(askContentMsg("**bold**\n\n"))
 	model = updated.(askStreamModel)
 
 	updated, _ = model.Update(askDoneMsg{})
