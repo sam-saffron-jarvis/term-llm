@@ -51,7 +51,7 @@ func HandleSubagentProgress(tracker *ToolTracker, subagentTracker *SubagentTrack
 			// Diffs go to the spawn_agent segment itself (so they render within the subagent block)
 			if event.ToolName == tools.EditFileToolName {
 				for _, d := range parseDiffMarkers(event.ToolOutput) {
-					addDiffToSpawnAgentSegment(tracker, callID, d.File, d.Old, d.New)
+					addDiffToSpawnAgentSegment(tracker, callID, d.File, d.Old, d.New, d.Line)
 				}
 			}
 		}
@@ -160,7 +160,7 @@ func BuildSubagentPreview(p *SubagentProgress, maxLines int) []string {
 }
 
 // addDiffToSpawnAgentSegment adds a diff to the spawn_agent segment for display after the preview.
-func addDiffToSpawnAgentSegment(tracker *ToolTracker, callID string, path, old, new string) {
+func addDiffToSpawnAgentSegment(tracker *ToolTracker, callID string, path, old, new string, line int) {
 	if tracker == nil || path == "" {
 		return
 	}
@@ -170,6 +170,7 @@ func addDiffToSpawnAgentSegment(tracker *ToolTracker, callID string, path, old, 
 				Path: path,
 				Old:  old,
 				New:  new,
+				Line: line,
 			})
 			break
 		}

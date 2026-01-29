@@ -150,7 +150,7 @@ func (a *StreamAdapter) ProcessStream(ctx context.Context, stream llm.Stream) {
 				// Parse diff markers from edit_file tool output and emit diff events
 				if event.ToolName == tools.EditFileToolName {
 					for _, d := range parseDiffMarkers(event.ToolOutput) {
-						a.events <- DiffEvent(d.File, d.Old, d.New)
+						a.events <- DiffEvent(d.File, d.Old, d.New, d.Line)
 					}
 				}
 			}
@@ -193,6 +193,7 @@ type diffData struct {
 	File string `json:"f"`
 	Old  string `json:"o"`
 	New  string `json:"n"`
+	Line int    `json:"l"` // 1-indexed starting line number
 }
 
 // parseDiffMarkers extracts diff data from tool output that contain __DIFF__: markers

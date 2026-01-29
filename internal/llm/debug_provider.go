@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"regexp"
 	"strconv"
 	"strings"
@@ -544,6 +545,46 @@ func parseSleepPrefix(ctx context.Context, prompt string) string {
 // multiplierRegex matches a trailing "xN" multiplier (e.g., "x3", "x5").
 var multiplierRegex = regexp.MustCompile(`\s+x(\d+)$`)
 
+// generateSyntheticEdits reads a file and creates N random edits.
+// Returns edit pairs (old_text, new_text) that will match the file content.
+func generateSyntheticEdits(filePath string, count int) [][2]string {
+	content, err := os.ReadFile(filePath)
+	if err != nil {
+		// Fallback to placeholder edits if file can't be read
+		edits := make([][2]string, count)
+		for i := range edits {
+			edits[i] = [2]string{
+				fmt.Sprintf("[DEBUG_OLD_%d]", i+1),
+				fmt.Sprintf("[DEBUG_NEW_%d]", i+1),
+			}
+		}
+		return edits
+	}
+
+	lines := strings.Split(string(content), "\n")
+	if len(lines) == 0 {
+		return nil
+	}
+
+	edits := make([][2]string, 0, count)
+	// Pick evenly spaced lines to avoid overlapping edits
+	step := max(1, len(lines)/count)
+
+	for i := 0; i < count && i*step < len(lines); i++ {
+		lineIdx := i * step
+		line := lines[lineIdx]
+		if strings.TrimSpace(line) == "" {
+			continue // skip blank lines
+		}
+		// Simple edit: append " // edited by debug" to the line
+		edits = append(edits, [2]string{
+			line,
+			line + " // edited by debug",
+		})
+	}
+	return edits
+}
+
 // parseCommand parses the prompt into tool calls if it matches a known pattern.
 // Supports a trailing "xN" suffix to generate N parallel tool calls (e.g., "read README.md x3").
 // Returns nil if no match or if the required tool is not available.
@@ -646,6 +687,37 @@ func parseCommand(prompt string, tools []ToolSpec) []*ToolCall {
 		}
 		toolName = "shell"
 		argsMap = map[string]string{"command": strings.Join(args, " ")}
+
+	case "edit":
+		if !toolSet["edit_file"] || len(args) < 1 {
+			return nil
+		}
+		filePath := args[0]
+		editCount := 3 // default
+		if multiplier > 1 {
+			editCount = multiplier
+			multiplier = 1 // don't multiply the edits themselves
+		}
+
+		edits := generateSyntheticEdits(filePath, editCount)
+		if len(edits) == 0 {
+			return nil
+		}
+
+		calls := make([]*ToolCall, len(edits))
+		for i, e := range edits {
+			argsJSON, _ := json.Marshal(map[string]string{
+				"file_path": filePath,
+				"old_text":  e[0],
+				"new_text":  e[1],
+			})
+			calls[i] = &ToolCall{
+				ID:        nextDebugCallID(),
+				Name:      "edit_file",
+				Arguments: argsJSON,
+			}
+		}
+		return calls
 
 	default:
 		return nil

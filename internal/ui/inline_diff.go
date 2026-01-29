@@ -168,6 +168,10 @@ var (
 	diffAddBg    = [3]int{30, 60, 30} // dark green tint
 	diffRemoveBg = [3]int{60, 30, 30} // dark red tint
 	diffNoBg     = [3]int{-1, -1, -1} // sentinel for no background (context lines)
+
+	// Stronger backgrounds for word-level changes within a line
+	diffAddBgStrong    = [3]int{40, 90, 40} // brighter green for changed words
+	diffRemoveBgStrong = [3]int{90, 40, 40} // brighter red for changed words
 )
 
 // PrintCompactDiff prints a compact diff with 2 lines of context and line numbers

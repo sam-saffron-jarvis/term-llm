@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"regexp"
+	"strings"
 	"testing"
 )
 
@@ -87,5 +88,218 @@ func TestUnifiedDiffLineNumbers(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestSplitIntoTokens(t *testing.T) {
+	tests := []struct {
+		name   string
+		input  string
+		expect []string
+	}{
+		{
+			name:   "simple words",
+			input:  "hello world",
+			expect: []string{"hello", " ", "world"},
+		},
+		{
+			name:   "multiple spaces",
+			input:  "hello  world",
+			expect: []string{"hello", "  ", "world"},
+		},
+		{
+			name:   "tabs and spaces",
+			input:  "\tindented code",
+			expect: []string{"\t", "indented", " ", "code"},
+		},
+		{
+			name:   "code with parens",
+			input:  "func(x int)",
+			expect: []string{"func(x", " ", "int)"},
+		},
+		{
+			name:   "empty string",
+			input:  "",
+			expect: nil,
+		},
+		{
+			name:   "only whitespace",
+			input:  "   ",
+			expect: []string{"   "},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := splitIntoTokens(tt.input)
+			if len(got) != len(tt.expect) {
+				t.Errorf("got %d tokens, want %d\ngot:  %q\nwant: %q",
+					len(got), len(tt.expect), got, tt.expect)
+				return
+			}
+			for i := range tt.expect {
+				if got[i] != tt.expect[i] {
+					t.Errorf("token %d: got %q, want %q", i, got[i], tt.expect[i])
+				}
+			}
+		})
+	}
+}
+
+func TestWordDiff(t *testing.T) {
+	tests := []struct {
+		name            string
+		oldLine         string
+		newLine         string
+		expectOldChange []bool // which segments are changed in old
+		expectNewChange []bool // which segments are changed in new
+	}{
+		{
+			name:            "single word change",
+			oldLine:         "func doSomething(x int) {",
+			newLine:         "func doSomething(y int) {",
+			expectOldChange: []bool{false, false, true, false, false, false, false}, // x is changed
+			expectNewChange: []bool{false, false, true, false, false, false, false}, // y is changed
+		},
+		{
+			name:    "word addition at end",
+			oldLine: "return value",
+			newLine: "return value // comment",
+			// old: "return", " ", "value" (3 tokens)
+			// new: "return", " ", "value", " ", "//", " ", "comment" (7 tokens)
+			// LCS: "return", " ", "value"
+			expectOldChange: []bool{false, false, false},
+			expectNewChange: []bool{false, false, false, true, true, true, true}, // added: " ", "//", " ", "comment"
+		},
+		{
+			name:    "completely different",
+			oldLine: "old line",
+			newLine: "new text",
+			// old: "old", " ", "line" (3 tokens)
+			// new: "new", " ", "text" (3 tokens)
+			// LCS: " " (single space is common)
+			expectOldChange: []bool{true, false, true}, // "old" and "line" changed, space unchanged
+			expectNewChange: []bool{true, false, true}, // "new" and "text" changed, space unchanged
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			oldSegs, newSegs := wordDiff(tt.oldLine, tt.newLine)
+
+			// Check old segments
+			if len(oldSegs) != len(tt.expectOldChange) {
+				t.Errorf("old segments: got %d, want %d", len(oldSegs), len(tt.expectOldChange))
+			} else {
+				for i, seg := range oldSegs {
+					if seg.isChanged != tt.expectOldChange[i] {
+						t.Errorf("old segment %d (%q): isChanged=%v, want %v",
+							i, seg.text, seg.isChanged, tt.expectOldChange[i])
+					}
+				}
+			}
+
+			// Check new segments
+			if len(newSegs) != len(tt.expectNewChange) {
+				t.Errorf("new segments: got %d, want %d", len(newSegs), len(tt.expectNewChange))
+			} else {
+				for i, seg := range newSegs {
+					if seg.isChanged != tt.expectNewChange[i] {
+						t.Errorf("new segment %d (%q): isChanged=%v, want %v",
+							i, seg.text, seg.isChanged, tt.expectNewChange[i])
+					}
+				}
+			}
+		})
+	}
+}
+
+func TestShouldUseWordDiff(t *testing.T) {
+	tests := []struct {
+		name    string
+		oldLine string
+		newLine string
+		expect  bool
+	}{
+		{
+			name:    "similar lines",
+			oldLine: "func doSomething(x int) {",
+			newLine: "func doSomething(y int) {",
+			expect:  true, // most words are the same
+		},
+		{
+			name:    "completely different",
+			oldLine: "func old() {",
+			newLine: "type NewStruct struct {",
+			expect:  false, // too different
+		},
+		{
+			name:    "same line",
+			oldLine: "return nil",
+			newLine: "return nil",
+			expect:  true,
+		},
+		{
+			name:    "empty lines",
+			oldLine: "",
+			newLine: "",
+			expect:  false, // empty lines
+		},
+		{
+			name:    "small change in comment",
+			oldLine: "// This is a comment about foo",
+			newLine: "// This is a comment about bar",
+			expect:  true, // most words match
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := shouldUseWordDiff(tt.oldLine, tt.newLine)
+			if got != tt.expect {
+				t.Errorf("shouldUseWordDiff(%q, %q) = %v, want %v",
+					tt.oldLine, tt.newLine, got, tt.expect)
+			}
+		})
+	}
+}
+
+func TestRenderDiffSegmentWordDiff(t *testing.T) {
+	// Test that word-level diff applies stronger backgrounds to changed words
+	oldContent := "func doSomething(x int) {"
+	newContent := "func doSomething(y int) {"
+
+	result := RenderDiffSegment("test.go", oldContent, newContent, 120, 1)
+
+	// The result should contain both normal and strong background colors
+	// Strong backgrounds may be combined with foreground colors in the same ANSI sequence
+	// e.g., \x1b[48;2;90;40;40;38;2;r;g;bm
+	strongRedBgPattern := "48;2;90;40;40"
+	strongGreenBgPattern := "48;2;40;90;40"
+
+	if !strings.Contains(result, strongRedBgPattern) {
+		t.Errorf("expected strong red background (90;40;40) for changed word, not found in output")
+	}
+	if !strings.Contains(result, strongGreenBgPattern) {
+		t.Errorf("expected strong green background (40;90;40) for changed word, not found in output")
+	}
+}
+
+func TestRenderDiffSegmentNoWordDiff(t *testing.T) {
+	// Test that completely different lines don't get word-level diff
+	oldContent := "func oldFunction() {"
+	newContent := "type NewStruct struct {"
+
+	result := RenderDiffSegment("test.go", oldContent, newContent, 120, 1)
+
+	// Strong backgrounds should NOT appear for completely different lines
+	strongRedBg := "\x1b[48;2;90;40;40m"
+	strongGreenBg := "\x1b[48;2;40;90;40m"
+
+	if strings.Contains(result, strongRedBg) {
+		t.Errorf("strong red background should not appear for completely different lines")
+	}
+	if strings.Contains(result, strongGreenBg) {
+		t.Errorf("strong green background should not appear for completely different lines")
 	}
 }

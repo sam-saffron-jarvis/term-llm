@@ -44,6 +44,7 @@ type Segment struct {
 	DiffPath     string     // For diff segments: file path
 	DiffOld      string     // For diff segments: old content
 	DiffNew      string     // For diff segments: new content
+	DiffLine     int        // For diff segments: 1-indexed starting line (0 = unknown)
 	DiffRendered string     // For diff segments: cached rendered output
 	DiffWidth    int        // For diff segments: width when rendered (for cache invalidation)
 	Flushed      bool       // True if this segment has been printed to scrollback
@@ -84,6 +85,7 @@ type SubagentDiff struct {
 	Path     string
 	Old      string
 	New      string
+	Line     int    // 1-indexed starting line (0 = unknown)
 	Rendered string // Cached rendered output
 	Width    int    // Width when rendered (for cache invalidation)
 }
@@ -498,7 +500,7 @@ func RenderSegments(segments []*Segment, width int, wavePos int, renderMarkdown 
 					// Use cached render if available and width matches
 					if diff.Rendered != "" && diff.Width == width {
 						b.WriteString(diff.Rendered)
-					} else if rendered := RenderDiffSegment(diff.Path, diff.Old, diff.New, width); rendered != "" {
+					} else if rendered := RenderDiffSegment(diff.Path, diff.Old, diff.New, width, diff.Line); rendered != "" {
 						diff.Rendered = rendered
 						diff.Width = width
 						b.WriteString(rendered)
@@ -520,7 +522,7 @@ func RenderSegments(segments []*Segment, width int, wavePos int, renderMarkdown 
 			if seg.DiffRendered != "" && seg.DiffWidth == width {
 				// Use cached render
 				b.WriteString(seg.DiffRendered)
-			} else if rendered := RenderDiffSegment(seg.DiffPath, seg.DiffOld, seg.DiffNew, width); rendered != "" {
+			} else if rendered := RenderDiffSegment(seg.DiffPath, seg.DiffOld, seg.DiffNew, width, seg.DiffLine); rendered != "" {
 				// Cache the render
 				seg.DiffRendered = rendered
 				seg.DiffWidth = width
@@ -557,7 +559,7 @@ func RenderImagesAndDiffs(segments []*Segment, width int) string {
 			if seg.DiffRendered != "" && seg.DiffWidth == width {
 				b.WriteString(seg.DiffRendered)
 				first = false
-			} else if rendered := RenderDiffSegment(seg.DiffPath, seg.DiffOld, seg.DiffNew, width); rendered != "" {
+			} else if rendered := RenderDiffSegment(seg.DiffPath, seg.DiffOld, seg.DiffNew, width, seg.DiffLine); rendered != "" {
 				seg.DiffRendered = rendered
 				seg.DiffWidth = width
 				b.WriteString(rendered)

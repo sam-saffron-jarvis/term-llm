@@ -6,7 +6,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
+	"syscall"
 
 	"github.com/samsaffron/term-llm/internal/diff"
 	"github.com/samsaffron/term-llm/internal/edit"
@@ -122,7 +124,26 @@ func (t *EditFileTool) Execute(ctx context.Context, args json.RawMessage) (strin
 
 // executeDirectEdit performs a deterministic string replacement using 5-level matching.
 func (t *EditFileTool) executeDirectEdit(ctx context.Context, a EditFileArgs) (string, error) {
-	// Read file
+	// Use a lock file to serialize concurrent edits to the same file.
+	// We can't lock the file itself because rename() replaces the inode,
+	// and other goroutines holding fds to the old inode won't see changes.
+	lockPath := a.FilePath + ".lock"
+	lockFile, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0644)
+	if err != nil {
+		return formatToolError(NewToolErrorf(ErrExecutionFailed, "failed to create lock file: %v", err)), nil
+	}
+	defer func() {
+		lockFile.Close()
+		os.Remove(lockPath) // Best-effort cleanup
+	}()
+
+	// Acquire exclusive lock (blocks until available)
+	if err := syscall.Flock(int(lockFile.Fd()), syscall.LOCK_EX); err != nil {
+		return formatToolError(NewToolErrorf(ErrExecutionFailed, "failed to lock: %v", err)), nil
+	}
+	defer syscall.Flock(int(lockFile.Fd()), syscall.LOCK_UN)
+
+	// Read file content while holding lock
 	data, err := os.ReadFile(a.FilePath)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -148,14 +169,27 @@ func (t *EditFileTool) executeDirectEdit(ctx context.Context, a EditFileArgs) (s
 	// Apply the replacement
 	newContent := edit.ApplyMatch(content, result, a.NewText)
 
-	// Write back atomically
-	tempFile := a.FilePath + ".tmp"
-	if err := os.WriteFile(tempFile, []byte(newContent), 0644); err != nil {
+	// Write back atomically using a unique temp file
+	dir := filepath.Dir(a.FilePath)
+	base := filepath.Base(a.FilePath)
+	tempFile, err := os.CreateTemp(dir, "."+base+".*.tmp")
+	if err != nil {
+		return formatToolError(NewToolErrorf(ErrExecutionFailed, "failed to create temp file: %v", err)), nil
+	}
+	tempPath := tempFile.Name()
+
+	if _, err := tempFile.WriteString(newContent); err != nil {
+		tempFile.Close()
+		os.Remove(tempPath)
 		return formatToolError(NewToolErrorf(ErrExecutionFailed, "failed to write temp file: %v", err)), nil
 	}
+	if err := tempFile.Close(); err != nil {
+		os.Remove(tempPath)
+		return formatToolError(NewToolErrorf(ErrExecutionFailed, "failed to close temp file: %v", err)), nil
+	}
 
-	if err := os.Rename(tempFile, a.FilePath); err != nil {
-		os.Remove(tempFile)
+	if err := os.Rename(tempPath, a.FilePath); err != nil {
+		os.Remove(tempPath)
 		return formatToolError(NewToolErrorf(ErrExecutionFailed, "failed to rename temp file: %v", err)), nil
 	}
 
@@ -173,11 +207,14 @@ func (t *EditFileTool) executeDirectEdit(ctx context.Context, a EditFileArgs) (s
 
 	// Emit diff marker for streaming display (skip if content is too large)
 	if len(result.Original) < diff.MaxDiffSize && len(a.NewText) < diff.MaxDiffSize {
+		// Compute starting line number (1-indexed) from byte offset
+		startLine := strings.Count(content[:result.Start], "\n") + 1
 		diffData := struct {
 			File string `json:"f"`
 			Old  string `json:"o"`
 			New  string `json:"n"`
-		}{a.FilePath, result.Original, a.NewText}
+			Line int    `json:"l"`
+		}{a.FilePath, result.Original, a.NewText, startLine}
 		if encoded, err := json.Marshal(diffData); err == nil {
 			sb.WriteString("\n__DIFF__:" + base64.StdEncoding.EncodeToString(encoded))
 		}

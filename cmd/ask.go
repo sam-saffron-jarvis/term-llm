@@ -854,6 +854,7 @@ type askDiffMsg struct {
 	Path string
 	Old  string
 	New  string
+	Line int
 }
 type askFlushBeforeAskUserMsg struct {
 	Done chan<- struct{} // Signal when flush is complete
@@ -1096,7 +1097,7 @@ func (m askStreamModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case askDiffMsg:
 		// Add diff segment for inline display
-		m.tracker.AddDiffSegment(msg.Path, msg.Old, msg.New)
+		m.tracker.AddDiffSegment(msg.Path, msg.Old, msg.New, msg.Line)
 		// Flush to scrollback so diff appears
 		if cmd := m.maybeFlushToScrollback(); cmd != nil {
 			return m, cmd
@@ -1453,6 +1454,7 @@ func streamWithGlamour(ctx context.Context, events <-chan ui.StreamEvent, p *tea
 					Path: ev.DiffPath,
 					Old:  ev.DiffOld,
 					New:  ev.DiffNew,
+					Line: ev.DiffLine,
 				})
 
 			case ui.StreamEventDone:

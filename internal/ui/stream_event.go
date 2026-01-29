@@ -58,6 +58,7 @@ type StreamEvent struct {
 	DiffPath string
 	DiffOld  string
 	DiffNew  string
+	DiffLine int // 1-indexed starting line number (0 = unknown)
 
 	// Inline edits (for StreamEventInlineInsert, StreamEventInlineDelete, StreamEventPartialInsert)
 	InlineAfter   string   // INSERT: anchor text to insert after
@@ -150,12 +151,13 @@ func ImageEvent(path string) StreamEvent {
 }
 
 // DiffEvent creates a diff event from edit tool
-func DiffEvent(path, old, new string) StreamEvent {
+func DiffEvent(path, old, new string, line int) StreamEvent {
 	return StreamEvent{
 		Type:     StreamEventDiff,
 		DiffPath: path,
 		DiffOld:  old,
 		DiffNew:  new,
+		DiffLine: line,
 	}
 }
 

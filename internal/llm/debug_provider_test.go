@@ -550,3 +550,139 @@ func TestDebugProviderDSLEdgeCases(t *testing.T) {
 		})
 	}
 }
+
+func TestDebugProviderEditCommand(t *testing.T) {
+	p := NewDebugProvider("fast")
+	ctx := context.Background()
+
+	tools := []ToolSpec{
+		{Name: "edit_file"},
+	}
+
+	// Use a .go file that exists in this package directory
+	testFile := "debug_provider.go"
+
+	stream, err := p.Stream(ctx, Request{
+		Tools: tools,
+		Messages: []Message{{
+			Role:  RoleUser,
+			Parts: []Part{{Type: PartText, Text: "edit " + testFile}},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("Stream() error = %v", err)
+	}
+	defer stream.Close()
+
+	var toolCalls []*ToolCall
+	for {
+		event, err := stream.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("stream error: %v", err)
+		}
+		if event.Type == EventToolCall {
+			toolCalls = append(toolCalls, event.Tool)
+		}
+	}
+
+	// Should get 3 edit_file tool calls by default
+	if len(toolCalls) != 3 {
+		t.Fatalf("got %d tool calls, want 3", len(toolCalls))
+	}
+
+	// Check all calls are edit_file with valid content
+	for i, call := range toolCalls {
+		if call.Name != "edit_file" {
+			t.Errorf("tool call %d: got name %q, want %q", i, call.Name, "edit_file")
+		}
+
+		var args map[string]string
+		if err := json.Unmarshal(call.Arguments, &args); err != nil {
+			t.Errorf("tool call %d: failed to parse args: %v", i, err)
+			continue
+		}
+
+		if args["file_path"] != testFile {
+			t.Errorf("tool call %d: got file_path %q, want %q", i, args["file_path"], testFile)
+		}
+		if args["old_text"] == "" {
+			t.Errorf("tool call %d: old_text is empty", i)
+		}
+		if args["new_text"] == "" {
+			t.Errorf("tool call %d: new_text is empty", i)
+		}
+		// new_text should be old_text + " // edited by debug"
+		if !strings.Contains(args["new_text"], "// edited by debug") {
+			t.Errorf("tool call %d: new_text %q should contain '// edited by debug'", i, args["new_text"])
+		}
+		if !strings.HasPrefix(args["new_text"], args["old_text"]) {
+			t.Errorf("tool call %d: new_text should start with old_text", i)
+		}
+	}
+}
+
+func TestDebugProviderEditCommandFallback(t *testing.T) {
+	// Test fallback behavior when file doesn't exist
+	p := NewDebugProvider("fast")
+	ctx := context.Background()
+
+	tools := []ToolSpec{
+		{Name: "edit_file"},
+	}
+
+	stream, err := p.Stream(ctx, Request{
+		Tools: tools,
+		Messages: []Message{{
+			Role:  RoleUser,
+			Parts: []Part{{Type: PartText, Text: "edit nonexistent_file.txt"}},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("Stream() error = %v", err)
+	}
+	defer stream.Close()
+
+	var toolCalls []*ToolCall
+	for {
+		event, err := stream.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("stream error: %v", err)
+		}
+		if event.Type == EventToolCall {
+			toolCalls = append(toolCalls, event.Tool)
+		}
+	}
+
+	// Should get 3 fallback edit_file tool calls
+	if len(toolCalls) != 3 {
+		t.Fatalf("got %d tool calls, want 3", len(toolCalls))
+	}
+
+	// Check fallback placeholder content
+	for i, call := range toolCalls {
+		if call.Name != "edit_file" {
+			t.Errorf("tool call %d: got name %q, want %q", i, call.Name, "edit_file")
+		}
+
+		var args map[string]string
+		if err := json.Unmarshal(call.Arguments, &args); err != nil {
+			t.Errorf("tool call %d: failed to parse args: %v", i, err)
+			continue
+		}
+
+		expectedOld := "[DEBUG_OLD_" + string(rune('1'+i)) + "]"
+		expectedNew := "[DEBUG_NEW_" + string(rune('1'+i)) + "]"
+		if args["old_text"] != expectedOld {
+			t.Errorf("tool call %d: got old_text %q, want %q", i, args["old_text"], expectedOld)
+		}
+		if args["new_text"] != expectedNew {
+			t.Errorf("tool call %d: got new_text %q, want %q", i, args["new_text"], expectedNew)
+		}
+	}
+}

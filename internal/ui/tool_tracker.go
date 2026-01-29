@@ -371,7 +371,7 @@ func (t *ToolTracker) AddImageSegment(path string) {
 }
 
 // AddDiffSegment adds a diff segment for inline display.
-func (t *ToolTracker) AddDiffSegment(path, old, new string) {
+func (t *ToolTracker) AddDiffSegment(path, old, new string, line int) {
 	if path == "" {
 		return
 	}
@@ -381,6 +381,7 @@ func (t *ToolTracker) AddDiffSegment(path, old, new string) {
 		DiffPath: path,
 		DiffOld:  old,
 		DiffNew:  new,
+		DiffLine: line,
 		Complete: true,
 	})
 }
