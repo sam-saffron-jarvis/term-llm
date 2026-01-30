@@ -147,6 +147,12 @@ func (m *Model) viewAltScreen() string {
 	// Only call SetContent if content actually changed (expensive operation)
 	// Use version comparison instead of O(n) string comparison
 	contentChanged := m.viewCache.contentVersion != m.viewCache.lastRenderedVersion
+
+	// Force update if embedded UI is active (since it's interactive and doesn't affect tracker version)
+	if m.approvalModel != nil || m.askUserModel != nil {
+		contentChanged = true
+	}
+
 	if contentChanged {
 		// Check if user is at bottom BEFORE setting content (which changes maxYOffset)
 		wasAtBottom := m.viewport.AtBottom()
