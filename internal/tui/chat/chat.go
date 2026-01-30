@@ -21,6 +21,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/mcp"
+	render "github.com/samsaffron/term-llm/internal/render/chat"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/tools"
 	"github.com/samsaffron/term-llm/internal/tui/inspector"
@@ -132,7 +133,6 @@ type Model struct {
 		historyWidth        int    // Width when cache was built
 		historyScrollOffset int    // Scroll offset when cache was built
 		historyValid        bool   // Whether cache has been populated
-		lastViewport        string // Last content set to viewport
 		lastViewportView    string // Cached viewport.View() output
 		lastYOffset         int    // Viewport Y offset when view was cached
 		lastVPWidth         int    // Viewport width when view was cached
@@ -140,6 +140,14 @@ type Model struct {
 		// completedStream holds rendered streaming content (diffs, tools) that should
 		// persist after streaming ends. Cleared when a new prompt is sent.
 		completedStream string
+		// Content versioning to avoid expensive string comparisons
+		contentVersion      uint64 // Incremented when content changes
+		lastRenderedVersion uint64 // Version that was last rendered to viewport
+		lastTrackerVersion  uint64 // Last seen tracker.Version (to detect content changes)
+		// Caching for streaming segments to avoid re-rendering on every frame
+		cachedCompletedContent string // Rendered completed segments
+		cachedTrackerVersion   uint64 // Tracker version when cache was built
+		lastWavePos            int    // Last wave position for animation
 	}
 
 	// Cached glamour renderer (avoids expensive recreation during streaming)
@@ -147,6 +155,15 @@ type Model struct {
 		renderer *glamour.TermRenderer
 		width    int
 	}
+
+	// New chat renderer (virtualized rendering for large histories)
+	chatRenderer *render.Renderer
+
+	// Auto-send mode (for benchmarking) - queue of messages to send
+	autoSendQueue []string
+
+	// Text mode (no markdown rendering)
+	textMode bool
 }
 
 // streamEventMsg wraps ui.StreamEvent for bubbletea
@@ -185,6 +202,9 @@ type SubagentProgressMsg struct {
 // ResumeFromExternalUIMsg signals that external UI (ask_user/approval) is done
 type ResumeFromExternalUIMsg struct{}
 
+// autoSendMsg triggers automatic message send (for benchmarking mode)
+type autoSendMsg struct{}
+
 // ApprovalRequestMsg triggers an inline approval prompt.
 type ApprovalRequestMsg struct {
 	Path    string
@@ -202,7 +222,7 @@ type AskUserRequestMsg struct {
 // Use ui.WaveTickMsg and ui.WavePauseMsg from the shared ToolTracker
 
 // New creates a new chat model
-func New(cfg *config.Config, provider llm.Provider, engine *llm.Engine, modelName string, mcpManager *mcp.Manager, maxTurns int, forceExternalSearch bool, searchEnabled bool, localTools []string, toolsStr string, mcpStr string, showStats bool, initialText string, store session.Store, sess *session.Session, altScreen bool) *Model {
+func New(cfg *config.Config, provider llm.Provider, engine *llm.Engine, modelName string, mcpManager *mcp.Manager, maxTurns int, forceExternalSearch bool, searchEnabled bool, localTools []string, toolsStr string, mcpStr string, showStats bool, initialText string, store session.Store, sess *session.Session, altScreen bool, autoSendQueue []string, textMode bool) *Model {
 	// Get terminal size
 	width := 80
 	height := 24
@@ -300,6 +320,13 @@ func New(cfg *config.Config, provider llm.Provider, engine *llm.Engine, modelNam
 	vp := viewport.New(width, vpHeight)
 	vp.Style = lipgloss.NewStyle()
 
+	// Create chat renderer for virtualized history rendering
+	chatRenderer := render.NewRenderer(width, vpHeight)
+
+	// Create tracker with text mode setting
+	tracker := ui.NewToolTracker()
+	tracker.TextMode = textMode
+
 	return &Model{
 		width:               width,
 		height:              height,
@@ -317,7 +344,7 @@ func New(cfg *config.Config, provider llm.Provider, engine *llm.Engine, modelNam
 		modelName:           modelName,
 		phase:               "Thinking",
 		viewportRows:        height - 8, // Reserve space for input and status
-		tracker:             ui.NewToolTracker(),
+		tracker:             tracker,
 		subagentTracker:     subagentTracker,
 		smoothBuffer:        ui.NewSmoothBuffer(),
 		completions:         completions,
@@ -334,6 +361,9 @@ func New(cfg *config.Config, provider llm.Provider, engine *llm.Engine, modelNam
 		stats:               ui.NewSessionStats(),
 		altScreen:           altScreen,
 		viewport:            vp,
+		chatRenderer:        chatRenderer,
+		autoSendQueue:       autoSendQueue,
+		textMode:            textMode,
 	}
 }
 
@@ -341,6 +371,25 @@ func New(cfg *config.Config, provider llm.Provider, engine *llm.Engine, modelNam
 func (m *Model) Init() tea.Cmd {
 	// Update textarea height for any initial text
 	m.updateTextareaHeight()
+
+	// Set markdown renderer for chat renderer
+	if m.chatRenderer != nil {
+		m.chatRenderer.SetMarkdownRenderer(m.renderMd)
+	}
+
+	// In auto-send mode, pop first message from queue and send it
+	if len(m.autoSendQueue) > 0 {
+		// Set textarea to first queued message
+		m.textarea.SetValue(m.autoSendQueue[0])
+		m.autoSendQueue = m.autoSendQueue[1:]
+		m.updateTextareaHeight()
+		return tea.Batch(
+			textarea.Blink,
+			m.spinner.Tick,
+			func() tea.Msg { return autoSendMsg{} },
+		)
+	}
+
 	return tea.Batch(
 		textarea.Blink,
 		m.spinner.Tick,
@@ -386,6 +435,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		// Invalidate completed stream cache since it's width-dependent (Issue 1)
 		m.viewCache.completedStream = ""
+		m.viewCache.contentVersion++
 
 		// Resize viewport for alt screen mode
 		// Reserve space for input area (textarea + separators + status)
@@ -402,6 +452,11 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if m.askUserModel != nil {
 			m.askUserModel.SetWidth(m.width)
+		}
+
+		// Update chat renderer size (invalidates cache)
+		if m.chatRenderer != nil {
+			m.chatRenderer.SetSize(m.width, vpHeight)
 		}
 
 		// In alt screen mode, just clear screen (View() renders history)
@@ -452,6 +507,10 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				cmds = append(cmds, cmd)
 			}
 		}
+
+	case autoSendMsg:
+		// In auto-send mode, immediately send the initial message
+		return m.sendMessage(m.textarea.Value())
 
 	case ui.SmoothTickMsg:
 		// Release buffered text word-by-word for smooth 60fps rendering
@@ -665,6 +724,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					// The last assistant message will be skipped in renderHistory() to avoid duplication.
 					completed := m.tracker.CompletedSegments()
 					m.viewCache.completedStream = ui.RenderSegments(completed, m.width, -1, m.renderMd, true)
+					m.viewCache.contentVersion++
 				} else {
 					// In inline mode, print remaining content to scrollback
 					result := m.tracker.FlushAllRemaining(m.width, 0, m.renderMd)
@@ -706,12 +766,38 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.webSearchUsed = false
 			m.retryStatus = ""
 			m.tracker = ui.NewToolTracker() // Reset tracker
+			m.tracker.TextMode = m.textMode // Preserve text mode setting
 			if m.smoothBuffer != nil {
 				m.smoothBuffer.Reset()
 			}
 
 			// Auto-save session
 			cmds = append(cmds, m.saveSessionCmd())
+
+			// In auto-send mode, check if there are more messages to send
+			if m.autoSendQueue != nil {
+				// Print per-message stats if enabled
+				if m.showStats {
+					elapsed := time.Since(m.streamStartTime)
+					fmt.Printf("[Message %d] %.1fs\n", m.stats.LLMCallCount, elapsed.Seconds())
+				}
+
+				if len(m.autoSendQueue) > 0 {
+					// Pop next message and send it
+					m.textarea.SetValue(m.autoSendQueue[0])
+					m.autoSendQueue = m.autoSendQueue[1:]
+					m.updateTextareaHeight()
+					return m.sendMessage(m.textarea.Value())
+				}
+
+				// Queue exhausted, quit
+				m.quitting = true
+				if m.showStats && m.stats.LLMCallCount > 0 {
+					m.stats.Finalize()
+					return m, tea.Sequence(tea.Println(m.stats.Render()), tea.Quit)
+				}
+				return m, tea.Quit
+			}
 
 			// Re-enable textarea
 			m.textarea.Focus()
@@ -1281,10 +1367,11 @@ func (m *Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.viewport, cmd = m.viewport.Update(msg)
 			return m, cmd
 		}
-		// Arrow keys scroll viewport when textarea is empty
-		if m.textarea.Value() == "" {
+		// Arrow keys/j/k scroll viewport when:
+		// - Textarea is empty (normal vim mode), OR
+		// - Streaming is active (always allow scrolling during stream)
+		if m.textarea.Value() == "" || m.streaming {
 			// Scroll faster during streaming when content is out of view
-			// This provides smooth scrolling through history while new content streams in
 			scrollAmount := 1
 			if m.streaming && !m.viewport.AtBottom() {
 				scrollAmount = 5
@@ -1485,11 +1572,14 @@ func (m *Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	}
 
-	// Update textarea for other keys
-	var cmd tea.Cmd
-	m.textarea, cmd = m.textarea.Update(msg)
-	m.updateTextareaHeight()
-	return m, cmd
+	// Update textarea for other keys (skip during streaming - no text input needed)
+	if !m.streaming {
+		var cmd tea.Cmd
+		m.textarea, cmd = m.textarea.Update(msg)
+		m.updateTextareaHeight()
+		return m, cmd
+	}
+	return m, nil
 }
 
 func (m *Model) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
@@ -1575,6 +1665,7 @@ func (m *Model) sendMessage(content string) (tea.Model, tea.Cmd) {
 	m.err = nil // Clear any previous error
 	m.webSearchUsed = false
 	m.viewCache.completedStream = "" // Clear previous response's diffs/tools
+	m.viewCache.contentVersion++
 	if m.smoothBuffer != nil {
 		m.smoothBuffer.Reset()
 	}
@@ -1768,6 +1859,11 @@ func (m *Model) View() string {
 		return titleSeq + m.viewAltScreen()
 	}
 
+	// Auto-send mode: minimal rendering for benchmarking (skip expensive UI)
+	if m.autoSendQueue != nil {
+		return titleSeq + m.viewAutoSend()
+	}
+
 	// Inline mode: traditional rendering
 	var b strings.Builder
 
@@ -1823,6 +1919,7 @@ func (m *Model) viewAltScreen() string {
 		m.viewCache.historyWidth = m.width
 		m.viewCache.historyScrollOffset = m.scrollOffset
 		m.viewCache.historyValid = true
+		m.viewCache.contentVersion++ // History changed
 	}
 
 	// Build combined content
@@ -1838,6 +1935,20 @@ func (m *Model) viewAltScreen() string {
 		} else if m.askUserModel != nil {
 			contentStr += "\n" + m.askUserModel.View()
 		}
+		// Only increment version when tracker content or wave position changes
+		// The completed segment rendering is cached, but we still need SetContent
+		// for wave animation updates
+		if m.tracker != nil {
+			trackerVersion := m.tracker.Version
+			wavePos := m.tracker.WavePos
+			contentChanged := trackerVersion != m.viewCache.lastTrackerVersion
+			waveChanged := wavePos != m.viewCache.lastWavePos && m.tracker.HasPending()
+			if contentChanged || waveChanged {
+				m.viewCache.lastTrackerVersion = trackerVersion
+				m.viewCache.lastWavePos = wavePos
+				m.viewCache.contentVersion++
+			}
+		}
 	} else {
 		// Include any completed streaming content (diffs, tools) that was saved
 		// when the last stream ended. This persists until a new prompt is sent.
@@ -1850,12 +1961,13 @@ func (m *Model) viewAltScreen() string {
 	}
 
 	// Only call SetContent if content actually changed (expensive operation)
-	contentChanged := contentStr != m.viewCache.lastViewport
+	// Use version comparison instead of O(n) string comparison
+	contentChanged := m.viewCache.contentVersion != m.viewCache.lastRenderedVersion
 	if contentChanged {
 		// Check if user is at bottom BEFORE setting content (which changes maxYOffset)
 		wasAtBottom := m.viewport.AtBottom()
 		m.viewport.SetContent(contentStr)
-		m.viewCache.lastViewport = contentStr
+		m.viewCache.lastRenderedVersion = m.viewCache.contentVersion
 		// Only auto-scroll to bottom if user was already at bottom
 		// This allows users to scroll up and read during streaming
 		// GotoBottom() is expensive as it calls visibleLines() internally
@@ -1904,6 +2016,19 @@ func (m *Model) viewAltScreen() string {
 	return b.String()
 }
 
+// viewAutoSend renders a minimal view for auto-send benchmarking mode.
+// This skips expensive UI elements like textarea, separators, and status line
+// to measure pure LLM response time without rendering overhead.
+func (m *Model) viewAutoSend() string {
+	if m.streaming {
+		// Minimal status line during streaming
+		elapsed := time.Since(m.streamStartTime)
+		return fmt.Sprintf("%s:%s · mcp:off · %s  Responding %.1fs",
+			m.providerName, m.modelName, m.spinner.View(), elapsed.Seconds())
+	}
+	return ""
+}
+
 func (m *Model) renderMd(text string, width int) string {
 	if text == "" {
 		return ""
@@ -1941,9 +2066,20 @@ func (m *Model) renderStreamingInline() string {
 		active = m.tracker.ActiveSegments()
 	}
 
-	// Render completed segments (segment-based tracking handles what's already flushed)
-	// In alt screen mode, include images since we never flush to scrollback
-	content := ui.RenderSegments(completed, m.width, -1, m.renderMd, m.altScreen)
+	// Cache rendered completed segments - only rebuild when tracker.Version changes
+	// This avoids expensive re-rendering during wave animation
+	var content string
+	if m.tracker != nil && m.viewCache.cachedTrackerVersion == m.tracker.Version {
+		content = m.viewCache.cachedCompletedContent
+	} else {
+		// Render completed segments (segment-based tracking handles what's already flushed)
+		// In alt screen mode, include images since we never flush to scrollback
+		content = ui.RenderSegments(completed, m.width, -1, m.renderMd, m.altScreen)
+		if m.tracker != nil {
+			m.viewCache.cachedCompletedContent = content
+			m.viewCache.cachedTrackerVersion = m.tracker.Version
+		}
+	}
 
 	if content != "" {
 		b.WriteString(content)
@@ -2349,90 +2485,6 @@ func (m *Model) getTerminalTitle() string {
 	return fmt.Sprintf("term-llm · %d messages · %s", msgCount, m.modelName)
 }
 
-// overlayPopup positions the completions popup above the input
-func (m *Model) overlayPopup(base, popup string) string {
-	baseLines := strings.Split(base, "\n")
-	popupLines := strings.Split(popup, "\n")
-
-	// Insert popup before the last few lines (input + status bar)
-	insertAt := len(baseLines) - 5 // Before input area
-	if insertAt < 0 {
-		insertAt = 0
-	}
-
-	var result []string
-	result = append(result, baseLines[:insertAt]...)
-	result = append(result, popupLines...)
-	result = append(result, baseLines[insertAt:]...)
-
-	return strings.Join(result, "\n")
-}
-
-// overlayDialog centers the dialog on screen
-func (m *Model) overlayDialog(base, dialog string) string {
-	baseLines := strings.Split(base, "\n")
-	dialogLines := strings.Split(dialog, "\n")
-
-	// Calculate position to center dialog
-	dialogHeight := len(dialogLines)
-	dialogWidth := 0
-	for _, line := range dialogLines {
-		if w := lipgloss.Width(line); w > dialogWidth {
-			dialogWidth = w
-		}
-	}
-
-	startY := (m.height - dialogHeight) / 2
-	startX := (m.width - dialogWidth) / 2
-
-	if startY < 0 {
-		startY = 0
-	}
-	if startX < 0 {
-		startX = 0
-	}
-
-	// Overlay dialog onto base
-	for i, dialogLine := range dialogLines {
-		y := startY + i
-		if y >= len(baseLines) {
-			break
-		}
-
-		baseLine := baseLines[y]
-		// Simple overlay - replace portion of base line
-		padding := strings.Repeat(" ", startX)
-		if startX < len(baseLine) {
-			// Keep beginning, insert dialog, keep end if any
-			endX := startX + lipgloss.Width(dialogLine)
-			if endX < len(baseLine) {
-				baseLines[y] = baseLine[:startX] + dialogLine + baseLine[endX:]
-			} else {
-				baseLines[y] = baseLine[:startX] + dialogLine
-			}
-		} else {
-			baseLines[y] = padding + dialogLine
-		}
-	}
-
-	return strings.Join(baseLines, "\n")
-}
-
-func (m *Model) renderHeader() string {
-	theme := m.styles.Theme()
-
-	left := lipgloss.NewStyle().Bold(true).Render("term-llm chat")
-	right := lipgloss.NewStyle().Foreground(theme.Muted).Render(m.modelName)
-
-	// Calculate padding
-	padding := m.width - lipgloss.Width(left) - lipgloss.Width(right)
-	if padding < 1 {
-		padding = 1
-	}
-
-	return left + strings.Repeat(" ", padding) + right
-}
-
 func (m *Model) renderHR() string {
 	theme := m.styles.Theme()
 	return lipgloss.NewStyle().Foreground(theme.Border).Render(strings.Repeat("─", m.width))
@@ -2440,265 +2492,75 @@ func (m *Model) renderHR() string {
 
 func (m *Model) renderHistory() string {
 	if len(m.messages) == 0 {
-		return lipgloss.NewStyle().Foreground(m.styles.Theme().Muted).Render("No messages yet. Type your question and press Enter.\n\n")
+		return render.RenderEmptyHistory(m.styles.Theme())
 	}
 
-	var b strings.Builder
-	theme := m.styles.Theme()
+	var mode render.RenderMode
+	if m.altScreen {
+		mode = render.RenderModeAltScreen
+	} else {
+		mode = render.RenderModeInline
+	}
 
-	// Determine which messages to show based on scroll offset
-	// scrollOffset=0 means show all (bottom), higher values scroll up
+	// Prepare messages to render
+	// In alt-screen mode, viewport handles scrolling via YOffset, so render all messages
+	// In inline mode, use message-based scrollOffset to slice visible messages
 	messages := m.messages
-	endIdx := len(messages)
-	if m.scrollOffset > 0 {
-		endIdx = len(messages) - m.scrollOffset
+	scrollOffset := 0
+	if !m.altScreen && m.scrollOffset > 0 {
+		// Inline mode: pre-slice messages based on scroll offset
+		endIdx := len(messages) - m.scrollOffset
 		if endIdx < 1 {
 			endIdx = 1
 		}
+		messages = messages[:endIdx]
+		scrollOffset = m.scrollOffset
 	}
-	visibleMessages := messages[:endIdx]
 
 	// In alt screen mode, skip the last assistant message if completedStream is showing it
-	// (completedStream contains the full rendered response with images in correct position)
-	if m.altScreen && m.viewCache.completedStream != "" && len(visibleMessages) > 0 {
-		if visibleMessages[len(visibleMessages)-1].Role == llm.RoleAssistant {
-			visibleMessages = visibleMessages[:len(visibleMessages)-1]
+	if m.altScreen && m.viewCache.completedStream != "" && len(messages) > 0 {
+		if messages[len(messages)-1].Role == llm.RoleAssistant {
+			messages = messages[:len(messages)-1]
 		}
 	}
+
+	state := render.RenderState{
+		Messages: messages,
+		Viewport: render.ViewportState{
+			Height:       m.viewportRows,
+			ScrollOffset: scrollOffset,
+			AtBottom:     scrollOffset == 0,
+		},
+		Mode:   mode,
+		Width:  m.width,
+		Height: m.height,
+	}
+
+	var b strings.Builder
 
 	// Show scroll indicator if not at bottom
 	if m.scrollOffset > 0 {
-		scrollInfo := fmt.Sprintf("↑ Scrolled up %d message(s) · Press G to go to bottom", m.scrollOffset)
-		b.WriteString(lipgloss.NewStyle().Foreground(theme.Warning).Render(scrollInfo))
-		b.WriteString("\n\n")
+		b.WriteString(render.RenderScrollIndicator(m.scrollOffset, m.styles.Theme()))
 	}
 
-	promptStyle := lipgloss.NewStyle().
-		Foreground(theme.Primary).
-		Bold(true).
-		Background(theme.UserMsgBg)
-	userMsgStyle := lipgloss.NewStyle().Background(theme.UserMsgBg)
-
-	for _, msg := range visibleMessages {
-		if msg.Role == llm.RoleUser {
-			// User message: ❯ content (with background)
-			// Extract content before file attachments for display
-			displayContent := msg.TextContent
-			if idx := strings.Index(displayContent, "\n\n---\n**Attached files:**"); idx != -1 {
-				displayContent = strings.TrimSpace(displayContent[:idx])
-			}
-
-			// Wrap content to fit terminal width minus prompt
-			promptWidth := 2 // "❯ " is 2 cells
-			wrapWidth := m.width - promptWidth
-			if wrapWidth < 20 {
-				wrapWidth = 20
-			}
-			wrappedContent := wordwrap.String(displayContent, wrapWidth)
-
-			// Render with prompt on first line, indent continuation lines
-			lines := strings.Split(wrappedContent, "\n")
-			for i, line := range lines {
-				if i == 0 {
-					b.WriteString(promptStyle.Render("❯ "))
-				} else {
-					b.WriteString(userMsgStyle.Render("  ")) // 2-space indent for continuation
-				}
-				b.WriteString(userMsgStyle.Render(line))
-				b.WriteString("\n")
-			}
-			b.WriteString("\n")
-		} else {
-			// Assistant message: render all parts (text + tool calls)
-			hasContent := false
-			for _, part := range msg.Parts {
-				switch part.Type {
-				case llm.PartText:
-					if part.Text != "" {
-						rendered := m.renderMarkdown(part.Text)
-						b.WriteString(rendered)
-						hasContent = true
-					}
-				case llm.PartToolCall:
-					if part.ToolCall != nil {
-						b.WriteString(ui.RenderToolCallFromPart(part.ToolCall))
-						b.WriteString("\n")
-						hasContent = true
-					}
-					// Skip PartToolResult - they're in user messages and verbose
-				}
-			}
-			// Fallback: if no parts rendered, use TextContent (for backward compatibility)
-			if !hasContent && msg.TextContent != "" {
-				rendered := m.renderMarkdown(msg.TextContent)
-				b.WriteString(rendered)
-			}
-			b.WriteString("\n")
-		}
-	}
+	// Render messages using virtualized renderer
+	b.WriteString(m.chatRenderer.Render(state))
 
 	return b.String()
-}
-
-func (m *Model) renderStreamingResponse() string {
-	var b strings.Builder
-	theme := m.styles.Theme()
-
-	b.WriteString(m.renderHR())
-	b.WriteString("\n")
-
-	// Role header with phase
-	roleStyle := lipgloss.NewStyle().Foreground(theme.Primary).Bold(true)
-	b.WriteString(roleStyle.Render("> Assistant"))
-
-	// Phase on the right
-	elapsed := time.Since(m.streamStartTime)
-	phaseStr := fmt.Sprintf("%s...", m.phase)
-	padding := m.width - 12 - len(phaseStr) - 10 // Account for elapsed time
-	if padding > 0 {
-		b.WriteString(strings.Repeat(" ", padding))
-	}
-	b.WriteString(lipgloss.NewStyle().Foreground(theme.Muted).Render(phaseStr))
-
-	b.WriteString("\n")
-	b.WriteString(m.renderHR())
-	b.WriteString("\n")
-
-	// Spinner and content
-	if m.currentResponse.Len() == 0 {
-		// Still waiting for first token
-		b.WriteString(m.spinner.View())
-		b.WriteString(" ")
-		b.WriteString(lipgloss.NewStyle().Foreground(theme.Muted).Render(fmt.Sprintf("%s... %.0fs", m.phase, elapsed.Seconds())))
-	} else {
-		// Render streamed content
-		rendered := m.renderMarkdown(m.currentResponse.String())
-		b.WriteString(rendered)
-	}
-
-	// Retry status if present
-	if m.retryStatus != "" {
-		b.WriteString("\n")
-		b.WriteString(lipgloss.NewStyle().Foreground(theme.Warning).Render("⚠ " + m.retryStatus))
-	}
-
-	b.WriteString("\n")
-
-	return b.String()
-}
-
-func (m *Model) renderInput() string {
-	theme := m.styles.Theme()
-
-	// Show attached files if any
-	var filesLine string
-	if len(m.files) > 0 {
-		var fileNames []string
-		for _, f := range m.files {
-			fileNames = append(fileNames, fmt.Sprintf("📎 %s (%s)", f.Name, FormatFileSize(f.Size)))
-		}
-		filesLine = strings.Join(fileNames, "  ")
-		filesLine = lipgloss.NewStyle().Foreground(theme.Secondary).Render(filesLine)
-		filesLine += "  " + lipgloss.NewStyle().Foreground(theme.Muted).Render("[/file clear to remove]")
-		filesLine += "\n" + m.renderHR() + "\n"
-	}
-
-	// Input prompt
-	if m.streaming {
-		theme := m.styles.Theme()
-		prompt := lipgloss.NewStyle().Foreground(theme.Primary).Bold(true).Render("❯ ")
-		// Show disabled state during streaming
-		return filesLine + prompt + lipgloss.NewStyle().Foreground(theme.Muted).Render("Waiting for response...") +
-			"  " + lipgloss.NewStyle().Foreground(theme.Muted).Render("[Esc to cancel]")
-	}
-
-	return filesLine + m.textarea.View()
-}
-
-func (m *Model) renderStatusBar() string {
-	theme := m.styles.Theme()
-	mutedStyle := lipgloss.NewStyle().Foreground(theme.Muted)
-	keyStyle := lipgloss.NewStyle().Foreground(theme.Secondary)
-
-	// Contextual hints based on state
-	var hints []string
-
-	if m.dialog.IsOpen() {
-		// Dialog open
-		hints = []string{
-			keyStyle.Render("↑↓") + " navigate",
-			keyStyle.Render("Enter") + " select",
-			keyStyle.Render("Esc") + " cancel",
-		}
-	} else if m.completions.IsVisible() {
-		// Completions visible
-		hints = []string{
-			keyStyle.Render("↑↓") + " navigate",
-			keyStyle.Render("Tab") + " select",
-			keyStyle.Render("Esc") + " cancel",
-		}
-	} else if m.streaming {
-		// Streaming response
-		hints = []string{
-			keyStyle.Render("Esc") + " cancel",
-		}
-	} else if m.textarea.Value() == "" {
-		// Empty input - vim navigation active
-		hints = []string{
-			keyStyle.Render("j/k") + " scroll",
-			keyStyle.Render("g/G") + " top/bottom",
-			keyStyle.Render("y") + " copy",
-			keyStyle.Render("/") + " commands",
-			keyStyle.Render("?") + " help",
-		}
-	} else {
-		// Typing
-		hints = []string{
-			keyStyle.Render("Enter") + " send",
-			keyStyle.Render("Shift+Enter") + " newline",
-			keyStyle.Render("Esc") + " clear",
-		}
-	}
-
-	left := mutedStyle.Render(strings.Join(hints, "  "))
-
-	// Right side: status indicators
-	var statusParts []string
-
-	// File count if any
-	if len(m.files) > 0 {
-		statusParts = append(statusParts, lipgloss.NewStyle().Foreground(theme.Secondary).Render(
-			fmt.Sprintf("📎 %d", len(m.files))))
-	}
-
-	// Web search status
-	if m.searchEnabled {
-		statusParts = append(statusParts, lipgloss.NewStyle().Foreground(theme.Success).Render("web: on"))
-	} else {
-		statusParts = append(statusParts, mutedStyle.Render("web: off"))
-	}
-
-	// Model name (abbreviated)
-	modelDisplay := m.modelName
-	if len(modelDisplay) > 20 {
-		modelDisplay = modelDisplay[:17] + "..."
-	}
-	statusParts = append(statusParts, mutedStyle.Render(modelDisplay))
-
-	right := strings.Join(statusParts, "  ")
-
-	// Calculate padding
-	padding := m.width - lipgloss.Width(left) - lipgloss.Width(right)
-	if padding < 1 {
-		padding = 1
-	}
-
-	return left + strings.Repeat(" ", padding) + right
 }
 
 func (m *Model) renderMarkdown(content string) string {
 	if content == "" {
 		return ""
+	}
+
+	// In text mode, skip markdown rendering but still apply word wrapping
+	if m.textMode {
+		targetWidth := m.width - 2
+		if targetWidth < 20 {
+			targetWidth = 20
+		}
+		return wordwrap.String(content, targetWidth)
 	}
 
 	targetWidth := m.width - 2

@@ -71,20 +71,10 @@ func DefaultKeyMap() KeyMap {
 			key.WithKeys("esc"),
 			key.WithHelp("esc", "cancel"),
 		),
-		HistoryUp: key.NewBinding(
-			key.WithKeys("up"),
-			key.WithHelp("up", "history up"),
-		),
-		HistoryDown: key.NewBinding(
-			key.WithKeys("down"),
-			key.WithHelp("down", "history down"),
-		),
 		Tab: key.NewBinding(
 			key.WithKeys("tab"),
 			key.WithHelp("tab", "complete"),
 		),
-
-		// History navigation
 		PageUp: key.NewBinding(
 			key.WithKeys("pgup"),
 			key.WithHelp("pgup", "page up"),
@@ -93,8 +83,6 @@ func DefaultKeyMap() KeyMap {
 			key.WithKeys("pgdown"),
 			key.WithHelp("pgdown", "page down"),
 		),
-
-		// Shortcuts
 		SwitchModel: key.NewBinding(
 			key.WithKeys("ctrl+l"),
 			key.WithHelp("ctrl+l", "model"),

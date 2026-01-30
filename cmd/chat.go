@@ -41,6 +41,10 @@ var (
 	chatResume string
 	// Yolo mode
 	chatYolo bool
+	// Auto-send mode (for benchmarking) - queue of messages to send
+	chatAutoSend []string
+	// Text mode (no markdown rendering)
+	chatTextMode bool
 )
 
 var chatCmd = &cobra.Command{
@@ -95,6 +99,12 @@ func init() {
 	AddAgentFlag(chatCmd, &chatAgent)
 	AddSkillsFlag(chatCmd, &chatSkills)
 	AddYoloFlag(chatCmd, &chatYolo)
+
+	// Auto-send flag for benchmarking (repeatable for multiple messages)
+	chatCmd.Flags().StringArrayVar(&chatAutoSend, "auto-send", nil, "Queue message(s) to send automatically and exit after all responses (repeatable)")
+
+	// Text mode flag (no markdown rendering)
+	chatCmd.Flags().BoolVar(&chatTextMode, "text", false, "Disable markdown rendering (plain text output)")
 
 	// Session resume flag - NoOptDefVal allows --resume without a value
 	chatCmd.Flags().StringVarP(&chatResume, "resume", "r", "", "Resume session (empty for most recent, or session ID)")
@@ -320,15 +330,23 @@ func runChat(cmd *cobra.Command, args []string) error {
 	forceExternalSearch := resolveForceExternalSearch(cfg, chatNativeSearch, chatNoNativeSearch)
 
 	// Only enable alt-screen when stdout is a terminal (avoid corrupting piped output)
-	useAltScreen := term.IsTerminal(int(os.Stdout.Fd()))
+	// Disable alt-screen in auto-send mode for clean output
+	autoSendMode := len(chatAutoSend) > 0
+	useAltScreen := term.IsTerminal(int(os.Stdout.Fd())) && !autoSendMode
 
 	// Create chat model
-	model := chat.New(cfg, provider, engine, modelName, mcpManager, settings.MaxTurns, forceExternalSearch, settings.Search, enabledLocalTools, settings.Tools, settings.MCP, showStats, initialText, store, sess, useAltScreen)
+	model := chat.New(cfg, provider, engine, modelName, mcpManager, settings.MaxTurns, forceExternalSearch, settings.Search, enabledLocalTools, settings.Tools, settings.MCP, showStats, initialText, store, sess, useAltScreen, chatAutoSend, chatTextMode)
 
 	// Build program options
 	var opts []tea.ProgramOption
 	if useAltScreen {
 		opts = append(opts, tea.WithAltScreen())
+	}
+	if autoSendMode {
+		// In auto-send mode, don't require TTY input (allows piped/non-interactive use)
+		opts = append(opts, tea.WithInput(nil))
+	} else {
+		opts = append(opts, tea.WithMouseCellMotion()) // Enable mouse support
 	}
 
 	// Run the TUI

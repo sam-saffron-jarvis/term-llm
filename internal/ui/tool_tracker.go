@@ -20,6 +20,8 @@ type ToolTracker struct {
 	WavePos      int
 	WavePaused   bool
 	LastActivity time.Time
+	Version      uint64 // Incremented when content changes (segments added/modified)
+	TextMode     bool   // When true, skip markdown rendering (plain text output)
 }
 
 // NewToolTracker creates a new ToolTracker
@@ -65,6 +67,7 @@ func (t *ToolTracker) HandleToolStart(callID, toolName, toolInfo string) bool {
 		ToolInfo:   toolInfo,
 		ToolStatus: ToolPending,
 	})
+	t.Version++
 	return true
 }
 
@@ -72,6 +75,7 @@ func (t *ToolTracker) HandleToolStart(callID, toolName, toolInfo string) bool {
 func (t *ToolTracker) HandleToolEnd(callID string, success bool) {
 	t.RecordActivity()
 	t.Segments = UpdateToolStatus(t.Segments, callID, success)
+	t.Version++
 }
 
 // HasPending returns true if there are any pending tool segments.
@@ -243,6 +247,7 @@ func (t *ToolTracker) AddTextSegment(text string, width int) bool {
 					last.StreamRenderer = nil
 				}
 			}
+			t.Version++
 			return false
 		}
 	}
@@ -252,8 +257,9 @@ func (t *ToolTracker) AddTextSegment(text string, width int) bool {
 	builder.WriteString(text)
 
 	// Create streaming renderer for progressive markdown rendering
+	// Skip in text mode to avoid glamour rendering entirely
 	var renderer *TextSegmentRenderer
-	if width > 0 {
+	if width > 0 && !t.TextMode {
 		var err error
 		renderer, err = NewTextSegmentRenderer(width)
 		if err == nil {
@@ -272,6 +278,7 @@ func (t *ToolTracker) AddTextSegment(text string, width int) bool {
 		TextSnapshotLen: len(text),
 		StreamRenderer:  renderer,
 	})
+	t.Version++
 	return true
 }
 
@@ -355,6 +362,7 @@ func (t *ToolTracker) AddExternalUIResult(summary string) {
 		Text:     summary,
 		Complete: true,
 	})
+	t.Version++
 }
 
 // AddImageSegment adds an image segment for inline display.
@@ -368,6 +376,7 @@ func (t *ToolTracker) AddImageSegment(path string) {
 		ImagePath: path,
 		Complete:  true,
 	})
+	t.Version++
 }
 
 // AddDiffSegment adds a diff segment for inline display.
@@ -384,6 +393,7 @@ func (t *ToolTracker) AddDiffSegment(path, old, new string, line int) {
 		DiffLine: line,
 		Complete: true,
 	})
+	t.Version++
 }
 
 // FlushStreamingTextResult contains the result of a streaming text flush.

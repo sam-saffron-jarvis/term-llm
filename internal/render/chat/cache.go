@@ -1,0 +1,117 @@
+package chat
+
+import (
+	"container/list"
+	"sync"
+)
+
+// BlockCache is an LRU cache for rendered MessageBlocks.
+// It keeps memory bounded while avoiding re-rendering unchanged messages.
+type BlockCache struct {
+	mu      sync.RWMutex
+	maxSize int
+	cache   map[string]*list.Element
+	lruList *list.List
+}
+
+// cacheEntry holds a cache key-value pair for the LRU list.
+type cacheEntry struct {
+	key   string
+	block *MessageBlock
+}
+
+// NewBlockCache creates a new block cache with the given maximum size.
+func NewBlockCache(maxSize int) *BlockCache {
+	if maxSize <= 0 {
+		maxSize = 100
+	}
+	return &BlockCache{
+		maxSize: maxSize,
+		cache:   make(map[string]*list.Element),
+		lruList: list.New(),
+	}
+}
+
+// Get retrieves a block from the cache, returning nil if not found.
+// Accessing a block moves it to the front of the LRU list.
+func (c *BlockCache) Get(key string) *MessageBlock {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if elem, ok := c.cache[key]; ok {
+		// Move to front (most recently used)
+		c.lruList.MoveToFront(elem)
+		return elem.Value.(*cacheEntry).block
+	}
+	return nil
+}
+
+// Put adds a block to the cache, evicting the least recently used
+// block if the cache is at capacity.
+func (c *BlockCache) Put(key string, block *MessageBlock) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	// Check if key already exists
+	if elem, ok := c.cache[key]; ok {
+		// Update existing entry and move to front
+		c.lruList.MoveToFront(elem)
+		elem.Value.(*cacheEntry).block = block
+		return
+	}
+
+	// Evict oldest if at capacity
+	if c.lruList.Len() >= c.maxSize {
+		c.evictOldest()
+	}
+
+	// Add new entry at front
+	entry := &cacheEntry{key: key, block: block}
+	elem := c.lruList.PushFront(entry)
+	c.cache[key] = elem
+}
+
+// evictOldest removes the least recently used entry.
+// Must be called with lock held.
+func (c *BlockCache) evictOldest() {
+	oldest := c.lruList.Back()
+	if oldest != nil {
+		entry := oldest.Value.(*cacheEntry)
+		delete(c.cache, entry.key)
+		c.lruList.Remove(oldest)
+	}
+}
+
+// Remove removes a specific key from the cache.
+func (c *BlockCache) Remove(key string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if elem, ok := c.cache[key]; ok {
+		delete(c.cache, key)
+		c.lruList.Remove(elem)
+	}
+}
+
+// InvalidateAll clears the entire cache.
+// Call this on terminal resize when all cached renders are invalid.
+func (c *BlockCache) InvalidateAll() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	c.cache = make(map[string]*list.Element)
+	c.lruList.Init()
+}
+
+// Size returns the current number of cached blocks.
+func (c *BlockCache) Size() int {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return len(c.cache)
+}
+
+// Clear removes all entries from the cache.
+// Alias for InvalidateAll for semantic clarity.
+func (c *BlockCache) Clear() {
+	c.InvalidateAll()
+}
