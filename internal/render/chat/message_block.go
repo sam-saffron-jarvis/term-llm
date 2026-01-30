@@ -1,6 +1,7 @@
 package chat
 
 import (
+	"encoding/json"
 	"strconv"
 	"strings"
 
@@ -33,6 +34,8 @@ type MessageBlockRenderer struct {
 	width            int
 	markdownRenderer MarkdownRenderer
 	theme            *ui.Theme
+	messages         []session.Message // Full message list for tool result lookup
+	currentIndex     int               // Current message index in the list
 }
 
 // Shared theme instance to avoid allocations
@@ -44,6 +47,19 @@ func NewMessageBlockRenderer(width int, mdRenderer MarkdownRenderer) *MessageBlo
 		width:            width,
 		markdownRenderer: mdRenderer,
 		theme:            sharedTheme,
+	}
+}
+
+// NewMessageBlockRendererWithContext creates a new renderer with message context for tool result lookup.
+// This allows rendering diffs for edit_file tool calls by finding the corresponding tool result
+// in subsequent messages.
+func NewMessageBlockRendererWithContext(width int, mdRenderer MarkdownRenderer, messages []session.Message, index int) *MessageBlockRenderer {
+	return &MessageBlockRenderer{
+		width:            width,
+		markdownRenderer: mdRenderer,
+		theme:            sharedTheme,
+		messages:         messages,
+		currentIndex:     index,
 	}
 }
 
@@ -109,6 +125,47 @@ func (r *MessageBlockRenderer) renderUserMessage(msg *session.Message) string {
 	return b.String()
 }
 
+// findToolResult looks for a tool result matching the given tool call ID in subsequent messages.
+// Tool results are typically stored in tool messages following the assistant message.
+func (r *MessageBlockRenderer) findToolResult(toolCallID string) *llm.ToolResult {
+	if r.messages == nil || toolCallID == "" {
+		return nil
+	}
+
+	// Look through subsequent messages (tool results follow the assistant message)
+	for i := r.currentIndex + 1; i < len(r.messages); i++ {
+		msg := &r.messages[i]
+
+		// Stop looking if we hit another assistant message
+		if msg.Role == llm.RoleAssistant {
+			break
+		}
+
+		for _, part := range msg.Parts {
+			if part.Type == llm.PartToolResult && part.ToolResult != nil {
+				if part.ToolResult.ID == toolCallID {
+					return part.ToolResult
+				}
+			}
+		}
+
+		// If we hit a user message that has no tool results, we've likely passed the tool turn
+		if msg.Role == llm.RoleUser && len(msg.Parts) > 0 {
+			hasToolResult := false
+			for _, part := range msg.Parts {
+				if part.Type == llm.PartToolResult {
+					hasToolResult = true
+					break
+				}
+			}
+			if !hasToolResult {
+				break
+			}
+		}
+	}
+	return nil
+}
+
 // renderAssistantMessage renders an assistant message with all parts.
 func (r *MessageBlockRenderer) renderAssistantMessage(msg *session.Message) string {
 	var b strings.Builder
@@ -127,6 +184,31 @@ func (r *MessageBlockRenderer) renderAssistantMessage(msg *session.Message) stri
 				b.WriteString(ui.RenderToolCallFromPart(part.ToolCall))
 				b.WriteString("\n")
 				hasContent = true
+
+				// Render diffs for supported tool calls by looking up the tool result
+				switch part.ToolCall.Name {
+				case "edit_file", "unified_diff", "spawn_agent", "write_file":
+					if result := r.findToolResult(part.ToolCall.ID); result != nil {
+						// For spawn_agent, the diffs might be inside the JSON output
+						content := result.Content
+						if part.ToolCall.Name == "spawn_agent" {
+							var res struct {
+								Output string `json:"output"`
+							}
+							if err := json.Unmarshal([]byte(content), &res); err == nil {
+								content = res.Output
+							}
+						}
+
+						for _, diff := range ui.ParseDiffMarkers(content) {
+							rendered := ui.RenderDiffSegment(diff.File, diff.Old, diff.New, r.width, diff.Line)
+							if rendered != "" {
+								b.WriteString(rendered)
+								b.WriteString("\n")
+							}
+						}
+					}
+				}
 			}
 			// Skip PartToolResult - they're in user messages and verbose
 		}

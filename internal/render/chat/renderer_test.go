@@ -1,6 +1,8 @@
 package chat
 
 import (
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
@@ -8,6 +10,7 @@ import (
 
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/session"
+	"github.com/samsaffron/term-llm/internal/ui"
 )
 
 // generateMessages creates a slice of test messages for benchmarking.
@@ -259,6 +262,156 @@ func BenchmarkRender500MessagesCached(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		renderer.Render(state)
+	}
+}
+
+// TestMessageBlockRenderer_DiffsOnHydration tests that edit_file diffs are rendered
+// when loading messages from the session store (hydration).
+func TestMessageBlockRenderer_DiffsOnHydration(t *testing.T) {
+	// Helper to create a __DIFF__: marker
+	makeDiffMarker := func(file, old, new string, line int) string {
+		data := ui.DiffData{File: file, Old: old, New: new, Line: line}
+		jsonData, _ := json.Marshal(data)
+		return "__DIFF__:" + base64.StdEncoding.EncodeToString(jsonData)
+	}
+
+	toolCallID := "call-123"
+	messages := []session.Message{
+		// Message 0: Assistant message with edit_file tool call
+		{
+			ID:   1,
+			Role: llm.RoleAssistant,
+			Parts: []llm.Part{
+				{Type: llm.PartText, Text: "I'll update the file."},
+				{
+					Type: llm.PartToolCall,
+					ToolCall: &llm.ToolCall{
+						ID:        toolCallID,
+						Name:      "edit_file",
+						Arguments: []byte(`{"file_path":"test.go","old_string":"x = 1","new_string":"x = 2"}`),
+					},
+				},
+			},
+			CreatedAt: time.Now(),
+		},
+		// Message 1: Tool result message containing diff marker (Role=RoleTool, not RoleUser)
+		{
+			ID:   2,
+			Role: llm.RoleTool,
+			Parts: []llm.Part{
+				{
+					Type: llm.PartToolResult,
+					ToolResult: &llm.ToolResult{
+						ID:      toolCallID,
+						Name:    "edit_file",
+						Content: "Edit applied successfully.\n" + makeDiffMarker("test.go", "x = 1", "x = 2", 10),
+					},
+				},
+			},
+			CreatedAt: time.Now(),
+		},
+	}
+
+	// Use the context-aware renderer with full message list
+	rb := NewMessageBlockRendererWithContext(80, simpleMarkdownRenderer, messages, 0)
+	block := rb.Render(&messages[0])
+
+	// The rendered output should contain the diff
+	// The diff renderer outputs the file path and +/- lines
+	if !strings.Contains(block.Rendered, "test.go") {
+		t.Errorf("Expected rendered block to contain file path 'test.go', got:\n%s", block.Rendered)
+	}
+
+	// Should contain the edit_file tool indication
+	if !strings.Contains(block.Rendered, "edit_file") {
+		t.Errorf("Expected rendered block to contain tool name 'edit_file', got:\n%s", block.Rendered)
+	}
+}
+
+// TestMessageBlockRenderer_NoDiffsWithoutContext tests that diffs are NOT rendered
+// when using the basic renderer without message context.
+func TestMessageBlockRenderer_NoDiffsWithoutContext(t *testing.T) {
+	toolCallID := "call-456"
+	msg := session.Message{
+		ID:   1,
+		Role: llm.RoleAssistant,
+		Parts: []llm.Part{
+			{Type: llm.PartText, Text: "I'll update the file."},
+			{
+				Type: llm.PartToolCall,
+				ToolCall: &llm.ToolCall{
+					ID:        toolCallID,
+					Name:      "edit_file",
+					Arguments: []byte(`{"file_path":"test.go"}`),
+				},
+			},
+		},
+		CreatedAt: time.Now(),
+	}
+
+	// Use basic renderer without context (no messages slice)
+	rb := NewMessageBlockRenderer(80, simpleMarkdownRenderer)
+	block := rb.Render(&msg)
+
+	// Should still have the tool call rendered
+	if !strings.Contains(block.Rendered, "edit_file") {
+		t.Errorf("Expected rendered block to contain tool name 'edit_file', got:\n%s", block.Rendered)
+	}
+
+	// The diff should NOT be rendered since we don't have access to the tool result
+	// (The diff content is in the next message which we don't have access to)
+}
+
+// TestMessageBlockRenderer_NonEditFileToolNoDiff tests that non-edit_file tools don't try to render diffs.
+func TestMessageBlockRenderer_NonEditFileToolNoDiff(t *testing.T) {
+	// Helper to create a __DIFF__: marker (even though shell shouldn't produce diffs)
+	makeDiffMarker := func(file, old, new string, line int) string {
+		data := ui.DiffData{File: file, Old: old, New: new, Line: line}
+		jsonData, _ := json.Marshal(data)
+		return "__DIFF__:" + base64.StdEncoding.EncodeToString(jsonData)
+	}
+
+	toolCallID := "call-789"
+	messages := []session.Message{
+		{
+			ID:   1,
+			Role: llm.RoleAssistant,
+			Parts: []llm.Part{
+				{
+					Type: llm.PartToolCall,
+					ToolCall: &llm.ToolCall{
+						ID:        toolCallID,
+						Name:      "shell", // Not edit_file
+						Arguments: []byte(`{"command":"ls -la"}`),
+					},
+				},
+			},
+			CreatedAt: time.Now(),
+		},
+		{
+			ID:   2,
+			Role: llm.RoleTool,
+			Parts: []llm.Part{
+				{
+					Type: llm.PartToolResult,
+					ToolResult: &llm.ToolResult{
+						ID:      toolCallID,
+						Name:    "shell",
+						Content: "file1.txt\nfile2.txt\n" + makeDiffMarker("fake.go", "a", "b", 1),
+					},
+				},
+			},
+			CreatedAt: time.Now(),
+		},
+	}
+
+	rb := NewMessageBlockRendererWithContext(80, simpleMarkdownRenderer, messages, 0)
+	block := rb.Render(&messages[0])
+
+	// Should NOT contain diff output for non-edit_file tools
+	// The diff marker should be in the tool result but not rendered
+	if strings.Contains(block.Rendered, "fake.go") {
+		t.Errorf("Expected rendered block to NOT contain diff for non-edit_file tool, got:\n%s", block.Rendered)
 	}
 }
 

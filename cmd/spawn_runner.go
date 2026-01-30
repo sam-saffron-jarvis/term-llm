@@ -502,7 +502,7 @@ func (r *SpawnAgentRunner) runAndCollectWithCallback(
 // have their output forwarded to the parent to avoid memory bloat.
 func toolEmitsMarkers(toolName string) bool {
 	switch toolName {
-	case tools.EditFileToolName, tools.ShowImageToolName, tools.ImageGenerateToolName:
+	case tools.EditFileToolName, tools.UnifiedDiffToolName, tools.WriteFileToolName, tools.ShowImageToolName, tools.ImageGenerateToolName:
 		return true
 	default:
 		return false

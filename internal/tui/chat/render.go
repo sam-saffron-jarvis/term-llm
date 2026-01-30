@@ -698,11 +698,16 @@ func (m *Model) renderHistory() string {
 		scrollOffset = m.scrollOffset
 	}
 
-	// In alt screen mode, skip the last assistant message if completedStream is showing it
+	// In alt screen mode, skip all messages from the last turn if completedStream is showing it.
+	// completedStream contains everything from the tracker (all turns since the last user message).
 	if m.altScreen && m.viewCache.completedStream != "" && len(messages) > 0 {
-		if messages[len(messages)-1].Role == llm.RoleAssistant {
-			messages = messages[:len(messages)-1]
+		i := len(messages) - 1
+		// Skip all assistant and tool messages at the end of the list
+		for i >= 0 && (messages[i].Role == llm.RoleAssistant || messages[i].Role == llm.RoleTool) {
+			i--
 		}
+		// Include up to the last user message
+		messages = messages[:i+1]
 	}
 
 	state := render.RenderState{

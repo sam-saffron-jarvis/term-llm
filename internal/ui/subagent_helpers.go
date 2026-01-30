@@ -48,13 +48,14 @@ func HandleSubagentProgress(tracker *ToolTracker, subagentTracker *SubagentTrack
 			for _, imagePath := range parseImageMarkers(event.ToolOutput) {
 				tracker.AddImageSegment(imagePath)
 			}
-			// Diffs go to the spawn_agent segment itself (so they render within the subagent block)
-			if event.ToolName == tools.EditFileToolName {
-				for _, d := range parseDiffMarkers(event.ToolOutput) {
-					addDiffToSpawnAgentSegment(tracker, callID, d.File, d.Old, d.New, d.Line)
-				}
-			}
-		}
+											// Diffs go to the spawn_agent segment itself (so they render within the subagent block)
+											if event.ToolName == tools.EditFileToolName || event.ToolName == tools.UnifiedDiffToolName || event.ToolName == tools.WriteFileToolName {
+												for _, d := range ParseDiffMarkers(event.ToolOutput) {
+													addDiffToSpawnAgentSegment(tracker, callID, d.File, d.Old, d.New, d.Line)
+												}
+											}
+									
+							}
 	case tools.SubagentEventPhase:
 		subagentTracker.HandlePhase(callID, event.Phase)
 	case tools.SubagentEventUsage:
@@ -64,6 +65,14 @@ func HandleSubagentProgress(tracker *ToolTracker, subagentTracker *SubagentTrack
 		// Store completion time so elapsed timer freezes
 		if seg := FindSegmentByCallID(tracker, callID); seg != nil {
 			seg.SubagentEndTime = time.Now()
+
+			// Parse any final markers from the accumulated output (captured in progress)
+			accumulatedOutput := p.TextBuffer.String()
+			if accumulatedOutput != "" {
+				for _, d := range ParseDiffMarkers(accumulatedOutput) {
+					addDiffToSpawnAgentSegment(tracker, callID, d.File, d.Old, d.New, d.Line)
+				}
+			}
 		}
 	}
 
@@ -166,6 +175,12 @@ func addDiffToSpawnAgentSegment(tracker *ToolTracker, callID string, path, old, 
 	}
 	for i := range tracker.Segments {
 		if tracker.Segments[i].ToolCallID == callID && tracker.Segments[i].ToolName == "spawn_agent" {
+			// Deduplicate: check if this file is already in SubagentDiffs
+			for _, d := range tracker.Segments[i].SubagentDiffs {
+				if d.Path == path && d.Old == old && d.New == new && d.Line == line {
+					return
+				}
+			}
 			tracker.Segments[i].SubagentDiffs = append(tracker.Segments[i].SubagentDiffs, SubagentDiff{
 				Path: path,
 				Old:  old,

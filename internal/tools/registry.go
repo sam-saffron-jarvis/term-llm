@@ -74,6 +74,8 @@ func (r *LocalToolRegistry) registerTool(specName string) error {
 		tool = NewWriteFileTool(r.approval)
 	case EditFileToolName:
 		tool = NewEditFileTool(r.approval)
+	case UnifiedDiffToolName:
+		tool = NewUnifiedDiffTool(r.approval)
 	case ShellToolName:
 		tool = NewShellTool(r.approval, r.config, r.limits)
 	case GrepToolName:

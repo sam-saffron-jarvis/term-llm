@@ -116,6 +116,7 @@ const (
 	ReadFileToolName      = "read_file"
 	WriteFileToolName     = "write_file"
 	EditFileToolName      = "edit_file"
+	UnifiedDiffToolName   = "unified_diff"
 	ShellToolName         = "shell"
 	GrepToolName          = "grep"
 	GlobToolName          = "glob"
@@ -133,6 +134,7 @@ func AllToolNames() []string {
 		ReadFileToolName,
 		WriteFileToolName,
 		EditFileToolName,
+		UnifiedDiffToolName,
 		ShellToolName,
 		GrepToolName,
 		GlobToolName,
@@ -150,6 +152,7 @@ var validToolNames = map[string]bool{
 	ReadFileToolName:      true,
 	WriteFileToolName:     true,
 	EditFileToolName:      true,
+	UnifiedDiffToolName:   true,
 	ShellToolName:         true,
 	GrepToolName:          true,
 	GlobToolName:          true,
@@ -170,7 +173,7 @@ func GetToolKind(specName string) ToolKind {
 	switch specName {
 	case ReadFileToolName, ViewImageToolName:
 		return KindRead
-	case WriteFileToolName, EditFileToolName:
+	case WriteFileToolName, EditFileToolName, UnifiedDiffToolName:
 		return KindEdit
 	case GrepToolName, GlobToolName:
 		return KindSearch

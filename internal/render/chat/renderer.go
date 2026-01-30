@@ -220,8 +220,18 @@ func (r *Renderer) HandleEvent(event RenderEvent) tea.Cmd {
 		r.SetSize(event.Width, event.Height)
 		return nil
 
-	case RenderEventMessageAdded, RenderEventMessagesLoaded:
-		// Message cache invalidation is handled lazily during Render
+	case RenderEventMessageAdded:
+		// When a new message is added, it might be a tool result for a previous message.
+		// The previous message (with tool calls) may have been cached without the diff
+		// because the tool result didn't exist yet. Invalidate all caches to ensure
+		// diffs are rendered correctly. This is conservative but necessary for correctness.
+		r.blockCache.InvalidateAll()
+		return nil
+
+	case RenderEventMessagesLoaded:
+		// When messages are loaded from storage, invalidate caches to ensure
+		// fresh rendering with the complete message context.
+		r.blockCache.InvalidateAll()
 		return nil
 
 	case RenderEventMessagesClear:
@@ -298,7 +308,7 @@ func (r *Renderer) renderHistory(state RenderState) string {
 	var b strings.Builder
 	for i := start; i < end; i++ {
 		msg := &state.Messages[i]
-		block := r.getOrRenderBlock(msg, i)
+		block := r.getOrRenderBlock(msg, i, state.Messages)
 		b.WriteString(block.Rendered)
 	}
 
@@ -306,7 +316,7 @@ func (r *Renderer) renderHistory(state RenderState) string {
 }
 
 // getOrRenderBlock gets a rendered block from cache or renders it.
-func (r *Renderer) getOrRenderBlock(msg *session.Message, index int) *MessageBlock {
+func (r *Renderer) getOrRenderBlock(msg *session.Message, index int, messages []session.Message) *MessageBlock {
 	// Check cache first
 	cacheKey := r.blockCacheKey(msg, index)
 	if block := r.blockCache.Get(cacheKey); block != nil {
@@ -314,7 +324,7 @@ func (r *Renderer) getOrRenderBlock(msg *session.Message, index int) *MessageBlo
 	}
 
 	// Render the message
-	block := r.renderMessageBlock(msg, index)
+	block := r.renderMessageBlock(msg, index, messages)
 
 	// Cache it
 	r.blockCache.Put(cacheKey, block)
@@ -332,8 +342,8 @@ func (r *Renderer) blockCacheKey(msg *session.Message, index int) string {
 }
 
 // renderMessageBlock renders a single message to a block.
-func (r *Renderer) renderMessageBlock(msg *session.Message, index int) *MessageBlock {
-	rb := NewMessageBlockRenderer(r.width, r.markdownRenderer)
+func (r *Renderer) renderMessageBlock(msg *session.Message, index int, messages []session.Message) *MessageBlock {
+	rb := NewMessageBlockRendererWithContext(r.width, r.markdownRenderer, messages, index)
 	return rb.Render(msg)
 }
 

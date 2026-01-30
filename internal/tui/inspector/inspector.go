@@ -122,6 +122,9 @@ func (m *Model) Update(msg tea.Msg) (*Model, tea.Cmd) {
 	case tea.KeyMsg:
 		return m.handleKeyMsg(msg)
 
+	case tea.MouseMsg:
+		return m.handleMouseMsg(msg)
+
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
@@ -130,6 +133,19 @@ func (m *Model) Update(msg tea.Msg) (*Model, tea.Cmd) {
 		m.clampScroll()
 	}
 
+	return m, nil
+}
+
+// handleMouseMsg handles mouse input
+func (m *Model) handleMouseMsg(msg tea.MouseMsg) (*Model, tea.Cmd) {
+	switch msg.Button {
+	case tea.MouseButtonWheelUp:
+		m.scrollY -= 3
+		m.clampScroll()
+	case tea.MouseButtonWheelDown:
+		m.scrollY += 3
+		m.clampScroll()
+	}
 	return m, nil
 }
 

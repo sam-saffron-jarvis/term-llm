@@ -10,6 +10,7 @@ import (
 	"strings"
 	"syscall"
 
+	"github.com/samsaffron/term-llm/cmd/udiff"
 	"github.com/samsaffron/term-llm/internal/diff"
 	"github.com/samsaffron/term-llm/internal/edit"
 	"github.com/samsaffron/term-llm/internal/llm"
@@ -217,6 +218,152 @@ func (t *EditFileTool) executeDirectEdit(ctx context.Context, a EditFileArgs) (s
 		}{a.FilePath, result.Original, a.NewText, startLine}
 		if encoded, err := json.Marshal(diffData); err == nil {
 			sb.WriteString("\n__DIFF__:" + base64.StdEncoding.EncodeToString(encoded))
+		}
+	}
+
+	return sb.String(), nil
+}
+
+// UnifiedDiffTool implements the unified_diff tool.
+type UnifiedDiffTool struct {
+	approval *ApprovalManager
+}
+
+// NewUnifiedDiffTool creates a new UnifiedDiffTool.
+func NewUnifiedDiffTool(approval *ApprovalManager) *UnifiedDiffTool {
+	return &UnifiedDiffTool{
+		approval: approval,
+	}
+}
+
+// UnifiedDiffArgs are the arguments for unified_diff.
+type UnifiedDiffArgs struct {
+	Diff string `json:"diff"`
+}
+
+func (t *UnifiedDiffTool) Spec() llm.ToolSpec {
+	return llm.UnifiedDiffToolSpec()
+}
+
+func (t *UnifiedDiffTool) Preview(args json.RawMessage) string {
+	var a UnifiedDiffArgs
+	if err := json.Unmarshal(args, &a); err != nil || a.Diff == "" {
+		return ""
+	}
+	// Extract first filename from diff for preview
+	lines := strings.Split(a.Diff, "\n")
+	for _, line := range lines {
+		if strings.HasPrefix(line, "--- ") {
+			path := strings.TrimPrefix(line, "--- ")
+			path = strings.TrimPrefix(path, "a/")
+			return path
+		}
+	}
+	return "multiple files"
+}
+
+func (t *UnifiedDiffTool) Execute(ctx context.Context, args json.RawMessage) (string, error) {
+	var a UnifiedDiffArgs
+	if err := json.Unmarshal(args, &a); err != nil {
+		return formatToolError(NewToolError(ErrInvalidParams, err.Error())), nil
+	}
+
+	if a.Diff == "" {
+		return formatToolError(NewToolError(ErrInvalidParams, "diff is required")), nil
+	}
+
+	// Parse the unified diff
+	fileDiffs, err := udiff.Parse(a.Diff)
+	if err != nil {
+		return formatToolError(NewToolErrorf(ErrInvalidParams, "failed to parse diff: %v", err)), nil
+	}
+
+	if len(fileDiffs) == 0 {
+		return "No changes to apply", nil
+	}
+
+	// Check permissions for all files first
+	for _, fd := range fileDiffs {
+		if t.approval != nil {
+			outcome, err := t.approval.CheckPathApproval(UnifiedDiffToolName, fd.Path, fd.Path, true)
+			if err != nil {
+				if toolErr, ok := err.(*ToolError); ok {
+					return formatToolError(toolErr), nil
+				}
+				return formatToolError(NewToolError(ErrPermissionDenied, err.Error())), nil
+			}
+			if outcome == Cancel {
+				return formatToolError(NewToolErrorf(ErrPermissionDenied, "access denied: %s", fd.Path)), nil
+			}
+		}
+	}
+
+	var sb strings.Builder
+	var allWarnings []string
+
+	for _, fd := range fileDiffs {
+		// Read file content
+		data, err := os.ReadFile(fd.Path)
+		if err != nil {
+			allWarnings = append(allWarnings, fmt.Sprintf("%s: %v", fd.Path, err))
+			continue
+		}
+		content := string(data)
+
+		// Apply the diff
+		result := udiff.ApplyWithWarnings(content, fd.Hunks)
+		if len(result.Warnings) > 0 {
+			allWarnings = append(allWarnings, result.Warnings...)
+		}
+
+		// Write back if any changes
+		if result.Content != content {
+			dir := filepath.Dir(fd.Path)
+			base := filepath.Base(fd.Path)
+			tempFile, err := os.CreateTemp(dir, "."+base+".*.tmp")
+			if err != nil {
+				allWarnings = append(allWarnings, fmt.Sprintf("%s: failed to create temp file: %v", fd.Path, err))
+				continue
+			}
+			tempPath := tempFile.Name()
+
+			if _, err := tempFile.WriteString(result.Content); err != nil {
+				tempFile.Close()
+				os.Remove(tempPath)
+				allWarnings = append(allWarnings, fmt.Sprintf("%s: failed to write temp file: %v", fd.Path, err))
+				continue
+			}
+			tempFile.Close()
+
+			if err := os.Rename(tempPath, fd.Path); err != nil {
+				os.Remove(tempPath)
+				allWarnings = append(allWarnings, fmt.Sprintf("%s: failed to rename: %v", fd.Path, err))
+				continue
+			}
+
+			sb.WriteString(fmt.Sprintf("Applied changes to %s\n", fd.Path))
+
+			// Emit diff marker
+			if len(content) < diff.MaxDiffSize && len(result.Content) < diff.MaxDiffSize {
+				diffData := struct {
+					File string `json:"f"`
+					Old  string `json:"o"`
+					New  string `json:"n"`
+					Line int    `json:"l"`
+				}{fd.Path, content, result.Content, 1}
+				if encoded, err := json.Marshal(diffData); err == nil {
+					sb.WriteString("\n__DIFF__:" + base64.StdEncoding.EncodeToString(encoded) + "\n")
+				}
+			}
+		} else {
+			sb.WriteString(fmt.Sprintf("No changes for %s\n", fd.Path))
+		}
+	}
+
+	if len(allWarnings) > 0 {
+		sb.WriteString("\nWarnings:\n")
+		for _, w := range allWarnings {
+			sb.WriteString("- " + w + "\n")
 		}
 	}
 

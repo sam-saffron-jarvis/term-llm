@@ -2,12 +2,14 @@ package tools
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 
+	"github.com/samsaffron/term-llm/internal/diff"
 	"github.com/samsaffron/term-llm/internal/llm"
 )
 
@@ -126,6 +128,19 @@ func (t *WriteFileTool) Execute(ctx context.Context, args json.RawMessage) (stri
 		newLines := countLines(a.Content)
 		sb.WriteString(fmt.Sprintf("Lines: %d -> %d\n", oldLines, newLines))
 		sb.WriteString(fmt.Sprintf("Size: %d -> %d bytes", len(existingContent), len(a.Content)))
+
+		// Emit diff marker for streaming display (skip if content is too large)
+		if len(existingContent) < diff.MaxDiffSize && len(a.Content) < diff.MaxDiffSize {
+			diffData := struct {
+				File string `json:"f"`
+				Old  string `json:"o"`
+				New  string `json:"n"`
+				Line int    `json:"l"`
+			}{a.FilePath, existingContent, a.Content, 1}
+			if encoded, err := json.Marshal(diffData); err == nil {
+				sb.WriteString("\n__DIFF__:" + base64.StdEncoding.EncodeToString(encoded))
+			}
+		}
 	}
 
 	return sb.String(), nil

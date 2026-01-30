@@ -147,9 +147,9 @@ func (a *StreamAdapter) ProcessStream(ctx context.Context, stream llm.Stream) {
 				for _, imagePath := range parseImageMarkers(event.ToolOutput) {
 					a.events <- ImageEvent(imagePath)
 				}
-				// Parse diff markers from edit_file tool output and emit diff events
-				if event.ToolName == tools.EditFileToolName {
-					for _, d := range parseDiffMarkers(event.ToolOutput) {
+				// Parse diff markers from edit_file, unified_diff and write_file tool output and emit diff events
+				if event.ToolName == tools.EditFileToolName || event.ToolName == tools.UnifiedDiffToolName || event.ToolName == tools.WriteFileToolName {
+					for _, d := range ParseDiffMarkers(event.ToolOutput) {
 						a.events <- DiffEvent(d.File, d.Old, d.New, d.Line)
 					}
 				}
@@ -188,18 +188,18 @@ func parseImageMarkers(output string) []string {
 	return images
 }
 
-// diffData represents the JSON structure in __DIFF__: markers
-type diffData struct {
+// DiffData represents the JSON structure in __DIFF__: markers (exported for reuse)
+type DiffData struct {
 	File string `json:"f"`
 	Old  string `json:"o"`
 	New  string `json:"n"`
 	Line int    `json:"l"` // 1-indexed starting line number
 }
 
-// parseDiffMarkers extracts diff data from tool output that contain __DIFF__: markers
+// ParseDiffMarkers extracts diff data from tool output that contain __DIFF__: markers (exported for reuse).
 // Format: __DIFF__:<base64-encoded JSON>
-func parseDiffMarkers(output string) []diffData {
-	var diffs []diffData
+func ParseDiffMarkers(output string) []DiffData {
+	var diffs []DiffData
 	for _, line := range strings.Split(output, "\n") {
 		if strings.HasPrefix(line, "__DIFF__:") {
 			encoded := strings.TrimPrefix(line, "__DIFF__:")
@@ -218,7 +218,7 @@ func parseDiffMarkers(output string) []diffData {
 				continue
 			}
 			// Parse JSON
-			var d diffData
+			var d DiffData
 			if err := json.Unmarshal(decoded, &d); err != nil {
 				continue
 			}

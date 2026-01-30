@@ -385,6 +385,15 @@ func (t *ToolTracker) AddDiffSegment(path, old, new string, line int) {
 		return
 	}
 	t.RecordActivity()
+
+	// Deduplicate: check if this diff already exists in the tracker
+	for i := len(t.Segments) - 1; i >= 0; i-- {
+		seg := t.Segments[i]
+		if seg.Type == SegmentDiff && seg.DiffPath == path && seg.DiffOld == old && seg.DiffNew == new && seg.DiffLine == line {
+			return
+		}
+	}
+
 	t.Segments = append(t.Segments, Segment{
 		Type:     SegmentDiff,
 		DiffPath: path,
