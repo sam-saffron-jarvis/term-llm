@@ -4,8 +4,10 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/sahilm/fuzzy"
 )
 
@@ -16,6 +18,11 @@ type FileAttachment struct {
 	Content string
 	Size    int64
 }
+
+// maxAttachmentSize is the maximum file size allowed for attachments (2MB).
+// This prevents accidental attachment of very large files that could hang the TUI
+// or consume excessive memory.
+const maxAttachmentSize = 2 * 1024 * 1024
 
 // AttachFile reads a file and creates an attachment
 func AttachFile(path string) (*FileAttachment, error) {
@@ -35,10 +42,21 @@ func AttachFile(path string) (*FileAttachment, error) {
 		return nil, fmt.Errorf("cannot attach directory: %s", path)
 	}
 
+	// Check file size before reading
+	if info.Size() > maxAttachmentSize {
+		return nil, fmt.Errorf("file too large: %s (%s, max %s)",
+			path, FormatFileSize(info.Size()), FormatFileSize(maxAttachmentSize))
+	}
+
 	// Read file content
 	content, err := os.ReadFile(absPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read file: %w", err)
+	}
+
+	// Check for binary content (NUL bytes indicate binary file)
+	if isBinaryContent(content) {
+		return nil, fmt.Errorf("cannot attach binary file: %s", path)
 	}
 
 	return &FileAttachment{
@@ -47,6 +65,21 @@ func AttachFile(path string) (*FileAttachment, error) {
 		Content: string(content),
 		Size:    info.Size(),
 	}, nil
+}
+
+// isBinaryContent checks if content appears to be binary (contains NUL bytes).
+// Only checks the first 8KB for efficiency.
+func isBinaryContent(content []byte) bool {
+	checkLen := len(content)
+	if checkLen > 8192 {
+		checkLen = 8192
+	}
+	for i := 0; i < checkLen; i++ {
+		if content[i] == 0 {
+			return true
+		}
+	}
+	return false
 }
 
 // FileCompletion represents a file path completion item
@@ -165,6 +198,9 @@ func ExpandGlob(pattern string) ([]string, error) {
 		}
 	}
 
+	// Sort for deterministic ordering across filesystems
+	sort.Strings(files)
+
 	return files, nil
 }
 
@@ -186,4 +222,95 @@ func FormatFileSize(bytes int64) string {
 	default:
 		return fmt.Sprintf("%dB", bytes)
 	}
+}
+
+// attachFile attempts to attach a file, prompting for directory approval if needed
+func (m *Model) attachFile(path string) (tea.Model, tea.Cmd) {
+	// Check if the path is approved
+	if !m.approvedDirs.IsPathApproved(path) {
+		// Need approval - show dialog
+		options := GetParentOptions(path)
+		m.pendingFilePath = path
+		m.dialog.ShowDirApproval(path, options)
+		return m, nil
+	}
+
+	// Path is approved, attach the file
+	attachment, err := AttachFile(path)
+	if err != nil {
+		return m.showSystemMessage(fmt.Sprintf("Failed to attach file: %v", err))
+	}
+
+	// Check if already attached
+	for _, f := range m.files {
+		if f.Path == attachment.Path {
+			return m.showSystemMessage(fmt.Sprintf("File already attached: %s", attachment.Name))
+		}
+	}
+
+	m.files = append(m.files, *attachment)
+	return m.showSystemMessage(fmt.Sprintf("Attached: %s (%s)", attachment.Name, FormatFileSize(attachment.Size)))
+}
+
+// attachFiles attaches multiple files from a glob pattern
+func (m *Model) attachFiles(pattern string) (tea.Model, tea.Cmd) {
+	// Expand the glob pattern
+	paths, err := ExpandGlob(pattern)
+	if err != nil {
+		return m.showSystemMessage(fmt.Sprintf("Failed to expand pattern: %v", err))
+	}
+
+	if len(paths) == 0 {
+		return m.showSystemMessage(fmt.Sprintf("No files match pattern: %s", pattern))
+	}
+
+	// For multiple files, check approval first
+	for _, path := range paths {
+		if !m.approvedDirs.IsPathApproved(path) {
+			// Need approval for this path - show dialog for first unapproved
+			options := GetParentOptions(path)
+			m.pendingFilePath = path
+			m.dialog.ShowDirApproval(path, options)
+			return m, nil
+		}
+	}
+
+	// All paths approved, attach them
+	var attached []string
+	var totalSize int64
+	for _, path := range paths {
+		attachment, err := AttachFile(path)
+		if err != nil {
+			continue // Skip files that can't be read
+		}
+
+		// Check if already attached
+		alreadyAttached := false
+		for _, f := range m.files {
+			if f.Path == attachment.Path {
+				alreadyAttached = true
+				break
+			}
+		}
+		if !alreadyAttached {
+			m.files = append(m.files, *attachment)
+			attached = append(attached, attachment.Name)
+			totalSize += attachment.Size
+		}
+	}
+
+	if len(attached) == 0 {
+		return m.showSystemMessage("No new files attached (all may already be attached or unreadable).")
+	}
+
+	if len(attached) == 1 {
+		return m.showSystemMessage(fmt.Sprintf("Attached: %s (%s)", attached[0], FormatFileSize(totalSize)))
+	}
+	return m.showSystemMessage(fmt.Sprintf("Attached %d files (%s):\n- %s",
+		len(attached), FormatFileSize(totalSize), strings.Join(attached, "\n- ")))
+}
+
+// clearFiles removes all attached files
+func (m *Model) clearFiles() {
+	m.files = nil
 }

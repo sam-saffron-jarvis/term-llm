@@ -1,0 +1,269 @@
+package chat
+
+import (
+	"context"
+	"fmt"
+	"strings"
+	"time"
+
+	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
+	"github.com/muesli/reflow/wordwrap"
+	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/mcp"
+	"github.com/samsaffron/term-llm/internal/session"
+	"github.com/samsaffron/term-llm/internal/ui"
+)
+
+func (m *Model) sendMessage(content string) (tea.Model, tea.Cmd) {
+	// Build the full message content including file attachments
+	fullContent := content
+	var fileNames []string
+
+	if len(m.files) > 0 {
+		var filesContent strings.Builder
+		filesContent.WriteString("\n\n---\n**Attached files:**\n")
+		for _, f := range m.files {
+			fileNames = append(fileNames, f.Name)
+			filesContent.WriteString(fmt.Sprintf("\n### %s\n```\n%s\n```\n", f.Name, f.Content))
+		}
+		fullContent += filesContent.String()
+	}
+
+	// Create user message and store it
+	userMsg := &session.Message{
+		SessionID:   m.sess.ID,
+		Role:        llm.RoleUser,
+		Parts:       []llm.Part{{Type: llm.PartText, Text: fullContent}},
+		TextContent: fullContent,
+		CreatedAt:   time.Now(),
+		Sequence:    -1, // Auto-allocate sequence
+	}
+	m.messages = append(m.messages, *userMsg)
+	if m.store != nil {
+		_ = m.store.AddMessage(context.Background(), m.sess.ID, userMsg)
+		_ = m.store.IncrementUserTurns(context.Background(), m.sess.ID)
+		m.sess.UserTurns++ // Keep in-memory value in sync
+		// Update session summary from first user message
+		if m.sess.Summary == "" {
+			m.sess.Summary = session.TruncateSummary(content)
+			_ = m.store.Update(context.Background(), m.sess)
+		}
+	}
+
+	// Print user message permanently to scrollback (inline mode)
+	theme := m.styles.Theme()
+	promptStyle := lipgloss.NewStyle().Foreground(theme.Primary).Bold(true)
+	prompt := promptStyle.Render("❯") + " "
+	promptWidth := lipgloss.Width(prompt)
+
+	// Wrap content to fit terminal width minus prompt
+	wrapWidth := m.width - promptWidth
+	if wrapWidth < 20 {
+		wrapWidth = 20
+	}
+	wrappedContent := wordwrap.String(content, wrapWidth)
+
+	// Add prompt to first line, indent continuation lines
+	lines := strings.Split(wrappedContent, "\n")
+	var userDisplay strings.Builder
+	for i, line := range lines {
+		if i == 0 {
+			userDisplay.WriteString(prompt)
+		} else {
+			userDisplay.WriteString("\n  ") // 2-space indent for continuation
+		}
+		userDisplay.WriteString(line)
+	}
+	if len(fileNames) > 0 {
+		userDisplay.WriteString("\n")
+		userDisplay.WriteString(lipgloss.NewStyle().Foreground(theme.Muted).Render(
+			fmt.Sprintf("[with: %s]", strings.Join(fileNames, ", "))))
+	}
+	// tea.Println adds newline, no need for extra
+
+	// Clear input and files
+	m.setTextareaValue("")
+	m.files = nil
+
+	// Start streaming
+	m.streaming = true
+	m.phase = "Thinking"
+	m.streamStartTime = time.Now()
+	m.currentResponse.Reset()
+	m.err = nil // Clear any previous error
+	m.webSearchUsed = false
+	m.viewCache.completedStream = "" // Clear previous response's diffs/tools
+	m.viewCache.contentVersion++
+	if m.smoothBuffer != nil {
+		m.smoothBuffer.Reset()
+	}
+
+	// Start the stream
+	// In alt screen mode, View() renders history including user message
+	// In inline mode, print user message to scrollback first
+	if m.altScreen {
+		return m, tea.Batch(
+			m.startStream(fullContent),
+			m.spinner.Tick,
+			m.tickEvery(),
+		)
+	}
+	return m, tea.Batch(
+		tea.Println(userDisplay.String()),
+		m.startStream(fullContent),
+		m.spinner.Tick,
+		m.tickEvery(),
+	)
+}
+
+func (m *Model) startStream(content string) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithCancel(context.Background())
+		m.streamCancelFunc = cancel
+
+		// Mark session as active when starting a new stream
+		if m.store != nil && m.sess != nil {
+			_ = m.store.UpdateStatus(ctx, m.sess.ID, session.StatusActive)
+		}
+
+		// Create stream adapter for unified event handling with proper buffering
+		adapter := ui.NewStreamAdapter(ui.DefaultStreamBufferSize)
+		m.streamChan = adapter.Events()
+
+		// Build messages from conversation history
+		messages := m.buildMessages()
+
+		// Collect MCP tools if available and register them with the engine
+		var reqTools []llm.ToolSpec
+		if m.mcpManager != nil {
+			mcpTools := m.mcpManager.AllTools()
+			for _, t := range mcpTools {
+				reqTools = append(reqTools, llm.ToolSpec{
+					Name:        t.Name,
+					Description: t.Description,
+					Schema:      t.Schema,
+				})
+				// Register MCP tool with engine for execution
+				m.engine.RegisterTool(mcp.NewMCPTool(m.mcpManager, t))
+			}
+		}
+
+		// Add local tools (read_file, write_file, shell, etc.) if enabled
+		// These are already registered in the engine, we just need their specs
+		if len(m.localTools) > 0 {
+			for _, specName := range m.localTools {
+				if tool, ok := m.engine.Tools().Get(specName); ok {
+					reqTools = append(reqTools, tool.Spec())
+				}
+			}
+		}
+
+		req := llm.Request{
+			Messages:            messages,
+			Tools:               reqTools,
+			Search:              m.searchEnabled,
+			ForceExternalSearch: m.forceExternalSearch,
+			ParallelToolCalls:   true,
+			MaxTurns:            m.maxTurns,
+		}
+
+		// Set up callbacks for incremental message saving (sequence auto-allocated)
+		// Capture streamStartTime for duration calculation
+		streamStart := m.streamStartTime
+		if m.store != nil && m.sess != nil {
+			// Response callback saves assistant message immediately (before tool execution)
+			// This ensures the message is persisted even if tool execution fails/crashes
+			m.engine.SetResponseCompletedCallback(func(ctx context.Context, turnIndex int, assistantMsg llm.Message, metrics llm.TurnMetrics) error {
+				// Calculate duration from stream start
+				durationMs := time.Since(streamStart).Milliseconds()
+
+				sessionMsg := session.NewMessage(m.sess.ID, assistantMsg, -1)
+				sessionMsg.DurationMs = durationMs
+				_ = m.store.AddMessage(ctx, m.sess.ID, sessionMsg)
+				return nil
+			})
+
+			// Turn callback saves tool result messages (not assistant - those are saved in ResponseCompletedCallback)
+			// and updates metrics
+			m.engine.SetTurnCompletedCallback(func(ctx context.Context, turnIndex int, turnMessages []llm.Message, metrics llm.TurnMetrics) error {
+				// Save only tool result messages - assistant messages are already saved by ResponseCompletedCallback
+				for _, msg := range turnMessages {
+					if msg.Role == llm.RoleAssistant {
+						continue // Skip - already saved in ResponseCompletedCallback
+					}
+					sessionMsg := session.NewMessage(m.sess.ID, msg, -1)
+					_ = m.store.AddMessage(ctx, m.sess.ID, sessionMsg)
+				}
+				// Update metrics
+				_ = m.store.UpdateMetrics(ctx, m.sess.ID, 1, metrics.ToolCalls, metrics.InputTokens, metrics.OutputTokens)
+				return nil
+			})
+		}
+
+		// Start streaming in background - adapter handles all event conversion
+		go func() {
+			stream, err := m.engine.Stream(ctx, req)
+			if err != nil {
+				adapter.EmitErrorAndClose(err)
+				return
+			}
+			defer stream.Close()
+			// ProcessStream handles all events and closes the channel when done
+			adapter.ProcessStream(ctx, stream)
+		}()
+
+		// Return initial listen command
+		return m.listenForStreamEventsSync()
+	}
+}
+
+// listenForStreamEvents returns a command that listens for the next stream event
+func (m *Model) listenForStreamEvents() tea.Cmd {
+	return func() tea.Msg {
+		return m.listenForStreamEventsSync()
+	}
+}
+
+// listenForStreamEventsSync synchronously waits for the next stream event
+func (m *Model) listenForStreamEventsSync() tea.Msg {
+	if m.streamChan == nil {
+		return streamEventMsg{event: ui.DoneEvent(0)}
+	}
+
+	event, ok := <-m.streamChan
+	if !ok {
+		return streamEventMsg{event: ui.DoneEvent(0)}
+	}
+	return streamEventMsg{event: event}
+}
+
+func (m *Model) buildMessages() []llm.Message {
+	var messages []llm.Message
+
+	// Add system instructions if configured
+	if m.config.Chat.Instructions != "" {
+		messages = append(messages, llm.SystemText(m.config.Chat.Instructions))
+	}
+
+	// Add conversation history - convert session messages to llm messages
+	for _, msg := range m.messages {
+		messages = append(messages, msg.ToLLMMessage())
+	}
+
+	return messages
+}
+
+func (m *Model) tickEvery() tea.Cmd {
+	return tea.Tick(1*time.Second, func(t time.Time) tea.Msg {
+		return tickMsg(t)
+	})
+}
+
+func (m *Model) saveSessionCmd() tea.Cmd {
+	return func() tea.Msg {
+		// Sessions are now auto-saved via the store
+		// This is kept for compatibility but does nothing
+		return sessionSavedMsg{}
+	}
+}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"slices"
 	"strings"
 	"time"
 
@@ -163,7 +164,7 @@ func FilterCommands(query string) []Command {
 
 		// Find the parent command
 		for _, cmd := range commands {
-			if cmd.Name == cmdName || contains(cmd.Aliases, cmdName) {
+			if cmd.Name == cmdName || slices.Contains(cmd.Aliases, cmdName) {
 				if len(cmd.Subcommands) == 0 {
 					return nil // No subcommands for this command
 				}
@@ -219,16 +220,6 @@ func FilterCommands(query string) []Command {
 	}
 
 	return result
-}
-
-// contains checks if a slice contains a string
-func contains(slice []string, s string) bool {
-	for _, item := range slice {
-		if item == s {
-			return true
-		}
-	}
-	return false
 }
 
 // ExecuteCommand handles slash command execution
@@ -369,6 +360,11 @@ func (m *Model) cmdHelp() (tea.Model, tea.Cmd) {
 }
 
 func (m *Model) cmdClear() (tea.Model, tea.Cmd) {
+	// Mark the old session as complete before creating a new one
+	if m.store != nil && m.sess != nil {
+		_ = m.store.UpdateStatus(context.Background(), m.sess.ID, session.StatusComplete)
+	}
+
 	// Create a new session to clear the conversation
 	// This preserves the old session in history while starting fresh
 	m.sess = &session.Session{
@@ -1253,4 +1249,30 @@ func (m *Model) cmdInspect() (tea.Model, tea.Cmd) {
 		return m, tea.EnterAltScreen
 	}
 	return m, nil
+}
+
+// switchModel switches to a new provider:model
+func (m *Model) switchModel(providerModel string) (tea.Model, tea.Cmd) {
+	parts := strings.SplitN(providerModel, ":", 2)
+	if len(parts) != 2 {
+		return m.showSystemMessage(fmt.Sprintf("Invalid model format: %s", providerModel))
+	}
+
+	providerName := parts[0]
+	modelName := parts[1]
+
+	// Create new provider using the centralized factory
+	provider, err := llm.NewProviderByName(m.config, providerName, modelName)
+	if err != nil {
+		return m.showSystemMessage(fmt.Sprintf("Failed to switch model: %v", err))
+	}
+
+	// Update model state
+	m.provider = provider
+	// Preserve existing tool registry when creating new engine
+	m.engine = llm.NewEngine(provider, m.engine.Tools())
+	m.providerName = providerName
+	m.modelName = modelName
+
+	return m.showSystemMessage(fmt.Sprintf("Switched to %s:%s", providerName, modelName))
 }
