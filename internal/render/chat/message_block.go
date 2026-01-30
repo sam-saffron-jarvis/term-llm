@@ -138,7 +138,7 @@ func (r *MessageBlockRenderer) renderAssistantMessage(msg *session.Message) stri
 		b.WriteString(rendered)
 	}
 
-	b.WriteString("\n") // Extra blank line after assistant messages
+	b.WriteString("\n\n") // Extra blank line after assistant messages
 
 	return b.String()
 }

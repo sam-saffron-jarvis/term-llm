@@ -42,6 +42,9 @@ func (m *Model) sendMessage(content string) (tea.Model, tea.Cmd) {
 	m.messages = append(m.messages, *userMsg)
 	if m.store != nil {
 		_ = m.store.AddMessage(context.Background(), m.sess.ID, userMsg)
+		// Sync the assigned ID back to the copy in m.messages to avoid cache collisions
+		// (AddMessage sets userMsg.ID, but the copy was made before that)
+		m.messages[len(m.messages)-1].ID = userMsg.ID
 		_ = m.store.IncrementUserTurns(context.Background(), m.sess.ID)
 		m.sess.UserTurns++ // Keep in-memory value in sync
 		// Update session summary from first user message

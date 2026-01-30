@@ -38,15 +38,6 @@ func (v *VirtualViewport) GetVisibleRange(messages []session.Message, scrollOffs
 		return 0, 0
 	}
 
-	// Calculate end index based on scroll offset
-	endIdx := total - scrollOffset
-	if endIdx < 1 {
-		endIdx = 1
-	}
-	if endIdx > total {
-		endIdx = total
-	}
-
 	// For now, use a simple heuristic: render enough messages to fill the viewport
 	// plus a small buffer for smooth scrolling.
 	//
@@ -54,7 +45,7 @@ func (v *VirtualViewport) GetVisibleRange(messages []session.Message, scrollOffs
 	// blocks and use binary search to find the visible range. For now, we estimate
 	// based on typical message heights.
 
-	// Estimate how many messages fit in the viewport
+	// Calculate how many messages fit in the viewport first
 	avgMsgHeight := (v.defaultUserMsgHeight + v.defaultAssistantMsgHeight) / 2
 	if avgMsgHeight < 1 {
 		avgMsgHeight = 1
@@ -62,6 +53,21 @@ func (v *VirtualViewport) GetVisibleRange(messages []session.Message, scrollOffs
 
 	// Messages that fit + buffer for partial visibility
 	messagesNeeded := (v.height / avgMsgHeight) + 4
+
+	// Calculate end index based on scroll offset
+	endIdx := total - scrollOffset
+	if endIdx > total {
+		endIdx = total
+	}
+	// Minimum endIdx is messagesNeeded (or total if fewer messages)
+	// This ensures we can fill the viewport when scrolled to top
+	minEnd := messagesNeeded
+	if minEnd > total {
+		minEnd = total
+	}
+	if endIdx < minEnd {
+		endIdx = minEnd
+	}
 
 	startIdx := endIdx - messagesNeeded
 	if startIdx < 0 {
@@ -80,13 +86,30 @@ func (v *VirtualViewport) GetVisibleRangeWithHeights(messages []session.Message,
 		return v.GetVisibleRange(messages, scrollOffset)
 	}
 
+	// First, calculate how many messages we need to fill the viewport
+	// by walking backwards from the end to estimate minimum messages needed
+	messagesNeeded := 0
+	accHeight := 0
+	for i := total - 1; i >= 0 && accHeight < v.height+10; i-- {
+		accHeight += heights[i]
+		messagesNeeded++
+	}
+	if messagesNeeded < 1 {
+		messagesNeeded = 1
+	}
+
 	// Calculate end index based on scroll offset
 	endIdx := total - scrollOffset
-	if endIdx < 1 {
-		endIdx = 1
-	}
 	if endIdx > total {
 		endIdx = total
+	}
+	// Minimum endIdx ensures we can fill the viewport when scrolled to top
+	minEnd := messagesNeeded
+	if minEnd > total {
+		minEnd = total
+	}
+	if endIdx < minEnd {
+		endIdx = minEnd
 	}
 
 	// Walk backwards from end, accumulating heights until we fill the viewport

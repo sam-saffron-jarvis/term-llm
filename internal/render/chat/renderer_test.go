@@ -160,13 +160,17 @@ func TestVirtualViewport_GetVisibleRange(t *testing.T) {
 		msgCount     int
 		scrollOffset int
 		wantStart    int // Approximate - just check it's reasonable
-		wantEnd      int
+		wantEnd      int // -1 means "check > 0 and fills viewport"
 	}{
 		{"empty", 0, 0, 0, 0},
 		{"small list no scroll", 5, 0, 0, 5},
-		{"small list scroll up 1", 5, 1, 0, 4},
-		{"large list no scroll", 100, 0, -1, 100}, // -1 means "check > 0"
+		// When scrolled up but messages fit in viewport, still show all
+		{"small list scroll up 1", 5, 1, 0, 5},
+		{"large list no scroll", 100, 0, -1, 100},
 		{"large list scroll up", 100, 10, -1, 90},
+		// Scroll to top should fill viewport, not show just 1 message
+		{"large list scroll to top", 100, 99, 0, -1},
+		{"large list max scroll", 100, 100, 0, -1},
 	}
 
 	for _, tt := range tests {
@@ -180,8 +184,16 @@ func TestVirtualViewport_GetVisibleRange(t *testing.T) {
 			if tt.wantStart == -1 && start < 0 {
 				t.Errorf("start = %d, want >= 0", start)
 			}
-			if end != tt.wantEnd {
+			if tt.wantEnd >= 0 && end != tt.wantEnd {
 				t.Errorf("end = %d, want %d", end, tt.wantEnd)
+			}
+			// -1 for wantEnd means "check that viewport is filled"
+			if tt.wantEnd == -1 {
+				// With height=24 and avg msg height ~6.5, we need ~7 messages
+				// Check that end-start is reasonable (at least a few messages)
+				if end-start < 3 {
+					t.Errorf("end-start = %d, should fill viewport (at least 3)", end-start)
+				}
 			}
 
 			// Sanity checks
