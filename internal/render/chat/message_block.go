@@ -180,6 +180,7 @@ func (r *MessageBlockRenderer) renderAssistantMessage(msg *session.Message) stri
 			if part.Text != "" {
 				rendered := r.renderMarkdown(part.Text)
 				b.WriteString(rendered)
+				b.WriteString("\n\n")
 				hasContent = true
 			}
 		case llm.PartToolCall:

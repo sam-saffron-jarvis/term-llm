@@ -276,12 +276,12 @@ func (m *Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case key.Matches(msg, m.keyMap.Select):
 		if len(m.sessions) > 0 && m.cursor < len(m.sessions) {
-			return m, func() tea.Msg { return InspectMsg{SessionID: m.sessions[m.cursor].ID} }
+			return m, func() tea.Msg { return ChatMsg{SessionID: m.sessions[m.cursor].ID} }
 		}
 
-	case key.Matches(msg, m.keyMap.Chat):
+	case key.Matches(msg, m.keyMap.Inspect):
 		if len(m.sessions) > 0 && m.cursor < len(m.sessions) {
-			return m, func() tea.Msg { return ChatMsg{SessionID: m.sessions[m.cursor].ID} }
+			return m, func() tea.Msg { return InspectMsg{SessionID: m.sessions[m.cursor].ID} }
 		}
 
 	case key.Matches(msg, m.keyMap.Delete):
@@ -618,7 +618,7 @@ func (m *Model) View() string {
 		b.WriteString(errorStyle.Render(fmt.Sprintf("Error: %v", m.err)))
 	} else {
 		// Help
-		help := "[enter] inspect  [c] chat  [d] delete  [/] search  [s] sort  [f] filter  [q] quit"
+		help := "[enter] chat  [i] inspect  [d] delete  [/] search  [s] sort  [f] filter  [q] quit"
 		b.WriteString(mutedStyle.Render(help))
 	}
 
