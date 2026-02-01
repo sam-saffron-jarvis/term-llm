@@ -44,3 +44,5 @@
 ## Commits
 - Short, imperative, unprefixed messages (e.g., "add shell history integration")
 - Keep commits focused; don't mix unrelated changes
+
+Always build and test test changes you make, never commit anything the user will handle it.

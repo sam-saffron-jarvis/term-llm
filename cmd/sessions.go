@@ -744,8 +744,20 @@ func runSessionsBrowse(cmd *cobra.Command, args []string) error {
 	model := sessions.New(store, width, height, styles)
 
 	p := tea.NewProgram(model, tea.WithAltScreen())
-	if _, err := p.Run(); err != nil {
+	finalModel, err := p.Run()
+	if err != nil {
 		return fmt.Errorf("failed to run browser: %w", err)
+	}
+
+	// Check if user wants to chat with a session
+	if m, ok := finalModel.(*sessions.Model); ok && m.ChatSessionID() != "" {
+		// Set the resume flag and call runChat
+		chatResume = m.ChatSessionID()
+		// Mark the flag as changed so runChat processes it
+		if err := chatCmd.Flags().Set("resume", chatResume); err != nil {
+			return fmt.Errorf("failed to set resume flag: %w", err)
+		}
+		return runChat(chatCmd, nil)
 	}
 
 	return nil

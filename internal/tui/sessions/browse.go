@@ -71,6 +71,11 @@ type InspectMsg struct {
 	SessionID string
 }
 
+// ChatMsg signals that a session should be opened for chat
+type ChatMsg struct {
+	SessionID string
+}
+
 // DeleteConfirmMsg signals a delete was confirmed
 type DeleteConfirmMsg struct {
 	SessionID string
@@ -111,6 +116,9 @@ type Model struct {
 	inspecting bool
 	inspector  *inspector.Model
 
+	// Chat request (set when user wants to chat with a session)
+	chatSessionID string
+
 	// Components
 	styles *ui.Styles
 	keyMap KeyMap
@@ -140,6 +148,12 @@ func New(store session.Store, width, height int, styles *ui.Styles) *Model {
 	}
 
 	return m
+}
+
+// ChatSessionID returns the session ID the user wants to chat with, if any.
+// Check this after the TUI exits to determine if chat should be launched.
+func (m *Model) ChatSessionID() string {
+	return m.chatSessionID
 }
 
 // Init initializes the model
@@ -189,6 +203,10 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case InspectMsg:
 		return m.openInspector(msg.SessionID)
+
+	case ChatMsg:
+		m.chatSessionID = msg.SessionID
+		return m, tea.Quit
 
 	case DeleteConfirmMsg:
 		return m.doDelete(msg.SessionID)
@@ -259,6 +277,11 @@ func (m *Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case key.Matches(msg, m.keyMap.Select):
 		if len(m.sessions) > 0 && m.cursor < len(m.sessions) {
 			return m, func() tea.Msg { return InspectMsg{SessionID: m.sessions[m.cursor].ID} }
+		}
+
+	case key.Matches(msg, m.keyMap.Chat):
+		if len(m.sessions) > 0 && m.cursor < len(m.sessions) {
+			return m, func() tea.Msg { return ChatMsg{SessionID: m.sessions[m.cursor].ID} }
 		}
 
 	case key.Matches(msg, m.keyMap.Delete):
@@ -539,24 +562,27 @@ func (m *Model) View() string {
 			status = "active"
 		}
 
-		// Mode indicator
-		mode := string(s.Mode)
-		if mode == "" {
-			mode = "chat"
+		// Mode indicator (style: chat/ask)
+		style := string(s.Mode)
+		if style == "" {
+			style = "chat"
 		}
+
+		// Tokens
+		tokens := formatTokens(s.InputTokens, s.OutputTokens)
 
 		// Age
 		age := formatRelativeTime(s.UpdatedAt)
 
-		// Format: cursor # summary mode model msgs status age
+		// Format: cursor # summary style model msgs tokens status age
 		cursor := "  "
 		if i == m.cursor {
 			cursor = "> "
 		}
 
 		// Build row
-		row := fmt.Sprintf("%s%4d %-25s %-4s %-10s %3d %-8s %s",
-			cursor, s.Number, summary, mode, truncateModel(s.Model, 10), s.MessageCount, status, age)
+		row := fmt.Sprintf("%s%4d %-25s %-4s %-10s %3d %-11s %-8s %s",
+			cursor, s.Number, summary, style, truncateModel(s.Model, 10), s.MessageCount, tokens, status, age)
 
 		// Truncate or pad to width
 		if len(row) > m.width {
@@ -592,7 +618,7 @@ func (m *Model) View() string {
 		b.WriteString(errorStyle.Render(fmt.Sprintf("Error: %v", m.err)))
 	} else {
 		// Help
-		help := "[enter] inspect  [d] delete  [/] search  [s] sort  [f] filter  [q] quit"
+		help := "[enter] inspect  [c] chat  [d] delete  [/] search  [s] sort  [f] filter  [q] quit"
 		b.WriteString(mutedStyle.Render(help))
 	}
 
@@ -622,4 +648,31 @@ func truncateModel(model string, maxLen int) string {
 		return model
 	}
 	return model[:maxLen-2] + ".."
+}
+
+// formatTokens formats input/output tokens in compact form (e.g., "1k/2k")
+func formatTokens(input, output int) string {
+	if input == 0 && output == 0 {
+		return "-"
+	}
+	return fmt.Sprintf("%s/%s", formatCount(input), formatCount(output))
+}
+
+// formatCount formats a number in compact form (e.g., 1k, 1.2k, 3.4M)
+func formatCount(n int) string {
+	if n < 1000 {
+		return fmt.Sprintf("%d", n)
+	}
+	if n < 1000000 {
+		val := float64(n) / 1000
+		if val == float64(int(val)) {
+			return fmt.Sprintf("%dk", int(val))
+		}
+		return fmt.Sprintf("%.1fk", val)
+	}
+	val := float64(n) / 1000000
+	if val == float64(int(val)) {
+		return fmt.Sprintf("%dM", int(val))
+	}
+	return fmt.Sprintf("%.1fM", val)
 }

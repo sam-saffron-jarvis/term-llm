@@ -12,6 +12,7 @@ type KeyMap struct {
 	GoToTop    key.Binding
 	GoToBottom key.Binding
 	Select     key.Binding
+	Chat       key.Binding
 	Delete     key.Binding
 	Search     key.Binding
 	Sort       key.Binding
@@ -54,6 +55,10 @@ func DefaultKeyMap() KeyMap {
 			key.WithKeys("enter"),
 			key.WithHelp("enter", "inspect"),
 		),
+		Chat: key.NewBinding(
+			key.WithKeys("c"),
+			key.WithHelp("c", "chat"),
+		),
 		Delete: key.NewBinding(
 			key.WithKeys("d"),
 			key.WithHelp("d", "delete"),
@@ -79,14 +84,14 @@ func DefaultKeyMap() KeyMap {
 
 // ShortHelp returns keybindings for the short help view
 func (k KeyMap) ShortHelp() []key.Binding {
-	return []key.Binding{k.Select, k.Delete, k.Search, k.Sort, k.Filter, k.Quit}
+	return []key.Binding{k.Select, k.Chat, k.Delete, k.Search, k.Sort, k.Filter, k.Quit}
 }
 
 // FullHelp returns keybindings for the full help view
 func (k KeyMap) FullHelp() [][]key.Binding {
 	return [][]key.Binding{
 		{k.Up, k.Down, k.PageUp, k.PageDown},
-		{k.GoToTop, k.GoToBottom, k.Select, k.Delete},
+		{k.GoToTop, k.GoToBottom, k.Select, k.Chat, k.Delete},
 		{k.Search, k.Sort, k.Filter, k.ToggleFTS, k.Quit},
 	}
 }
