@@ -314,7 +314,7 @@ func GlamourStyleFromTheme(theme *Theme) ansi.StyleConfig {
 		},
 		Heading: ansi.StyleBlock{
 			StylePrimitive: ansi.StylePrimitive{
-				BlockSuffix: "\n",
+				BlockPrefix: "\n",
 				Color:       &secondary,
 				Bold:        boolPtr(true),
 			},

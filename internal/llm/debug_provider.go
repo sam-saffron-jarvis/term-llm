@@ -138,10 +138,15 @@ Here's a longer paragraph to test word wrapping behavior. The quick brown fox ju
 ## Headers at All Levels
 
 # Header 1
+
 ## Header 2
+
 ### Header 3
+
 #### Header 4
+
 ##### Header 5
+
 ###### Header 6
 
 ## Additional Content

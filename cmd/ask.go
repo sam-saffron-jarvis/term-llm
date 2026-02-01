@@ -1061,6 +1061,9 @@ func (m askStreamModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return renderMd(text, m.width)
 		})
 
+		// Force-complete any pending tools (defensive - shouldn't happen normally)
+		m.tracker.ForceCompletePendingTools()
+
 		// Flush everything remaining to scrollback
 		res := m.tracker.FlushAllRemaining(m.width, 0, renderMd)
 		if res.ToPrint != "" {

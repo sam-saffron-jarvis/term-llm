@@ -24,6 +24,55 @@ func debugFlushf(format string, args ...any) {
 	fmt.Fprintf(os.Stderr, "[flush] "+format+"\n", args...)
 }
 
+// stripLeadingBlankLine removes exactly ONE leading blank line from content.
+// A blank line is defined as a line containing only whitespace (spaces/tabs) and ANSI codes.
+// This is used to prevent double blank lines when tea.Printf adds its own newline
+// after each flush and the next flush starts with a blank line.
+func stripLeadingBlankLine(s string) string {
+	if s == "" {
+		return s
+	}
+	// Find the first newline
+	idx := strings.Index(s, "\n")
+	if idx == -1 {
+		return s
+	}
+	// Check if everything before the newline is whitespace/ANSI
+	firstLine := s[:idx]
+	if isBlankOrANSI(firstLine) {
+		// Strip this one blank line
+		return s[idx+1:]
+	}
+	return s
+}
+
+// isBlankOrANSI returns true if the string contains only whitespace and ANSI escape codes.
+func isBlankOrANSI(s string) bool {
+	i := 0
+	for i < len(s) {
+		if s[i] == '\x1b' {
+			// Skip ANSI escape sequence
+			i++
+			if i < len(s) && s[i] == '[' {
+				i++
+				// Skip until we hit the terminating letter
+				for i < len(s) && !((s[i] >= 'a' && s[i] <= 'z') || (s[i] >= 'A' && s[i] <= 'Z')) {
+					i++
+				}
+				if i < len(s) {
+					i++ // Skip the terminating letter
+				}
+			}
+		} else if s[i] == ' ' || s[i] == '\t' {
+			i++
+		} else {
+			// Non-whitespace, non-ANSI character
+			return false
+		}
+	}
+	return true
+}
+
 // ToolTracker manages tool segment state and wave animation.
 // Designed to be embedded in larger models (ask, chat) for consistent tool tracking.
 type ToolTracker struct {
@@ -496,6 +545,11 @@ func (t *ToolTracker) FlushStreamingText(threshold int, width int, renderMd func
 			b.WriteString(t.LeadingSeparator(SegmentText))
 		}
 
+		// Strip leading blank line if we've already flushed content,
+		// since tea.Printf adds a newline after each flush
+		if t.HasFlushed {
+			rendered = stripLeadingBlankLine(rendered)
+		}
 		b.WriteString(rendered)
 
 		// Update tracker state
@@ -556,6 +610,10 @@ func (t *ToolTracker) FlushStreamingText(threshold int, width int, renderMd func
 	// Only add leading separator if this is the very FIRST flush for this segment.
 	if t.HasFlushed && seg.FlushedPos == 0 {
 		b.WriteString(t.LeadingSeparator(SegmentText))
+	}
+	// Strip leading blank line since tea.Printf adds a newline after each flush
+	if t.HasFlushed {
+		rendered = stripLeadingBlankLine(rendered)
 	}
 	b.WriteString(rendered)
 
@@ -664,6 +722,9 @@ func (t *ToolTracker) FlushToScrollback(
 	if len(toFlush) > 0 {
 		content := RenderSegments(toFlush, width, -1, renderMd, true)
 		if t.HasFlushed {
+			// Strip leading blank line FIRST since tea.Printf adds a newline after each flush
+			// This prevents double blank lines without removing intentional separator prefix
+			content = stripLeadingBlankLine(content)
 			prefix := t.LeadingSeparator(toFlush[0].Type)
 			if prefix != "" {
 				content = prefix + content
@@ -702,6 +763,18 @@ func (t *ToolTracker) FlushToScrollback(
 	}
 }
 
+// ForceCompletePendingTools marks any pending tools as complete.
+// Call this before FlushAllRemaining when streaming is done to ensure
+// no tools are left in pending state (which would be skipped during flush).
+func (t *ToolTracker) ForceCompletePendingTools() {
+	for i := range t.Segments {
+		seg := &t.Segments[i]
+		if seg.Type == SegmentTool && seg.ToolStatus == ToolPending {
+			seg.ToolStatus = ToolSuccess
+		}
+	}
+}
+
 // FlushAllRemaining returns any remaining unflushed content.
 // Use this at the end of streaming to ensure all content is visible.
 func (t *ToolTracker) FlushAllRemaining(
@@ -729,17 +802,16 @@ func (t *ToolTracker) FlushAllRemaining(
 
 	content := RenderSegments(toFlush, width, -1, renderMd, true)
 	if t.HasFlushed {
+		// Strip leading blank line FIRST since tea.Printf adds a newline after each flush
+		// This prevents double blank lines without removing intentional separator prefix
+		content = stripLeadingBlankLine(content)
 		prefix := t.LeadingSeparator(toFlush[0].Type)
 		if prefix != "" {
 			content = prefix + content
 		}
 	}
-	if content == "" {
-		debugFlushf("flush-all skip reason=empty-render count=%d", len(toFlush))
-		return FlushToScrollbackResult{NewPrintedLines: 0}
-	}
 
-	// Mark all processed segments as flushed
+	// Always mark segments as flushed, even if content is empty (already streamed out)
 	for _, seg := range toFlush {
 		seg.Flushed = true
 		if seg.StreamRenderer != nil {
@@ -748,6 +820,11 @@ func (t *ToolTracker) FlushAllRemaining(
 		} else if seg.Type == SegmentText && seg.Complete && seg.Rendered != "" {
 			seg.FlushedRenderedPos = len(seg.Rendered)
 		}
+	}
+
+	if content == "" {
+		debugFlushf("flush-all skip reason=empty-render count=%d (segments marked flushed)", len(toFlush))
+		return FlushToScrollbackResult{NewPrintedLines: 0}
 	}
 
 	t.HasFlushed = true
@@ -806,6 +883,9 @@ func (t *ToolTracker) FlushBeforeExternalUI(
 
 	content := RenderSegments(toFlush, width, -1, renderMd, true)
 	if t.HasFlushed {
+		// Strip leading blank line FIRST since tea.Printf adds a newline after each flush
+		// This prevents double blank lines without removing intentional separator prefix
+		content = stripLeadingBlankLine(content)
 		prefix := t.LeadingSeparator(toFlush[0].Type)
 		if prefix != "" {
 			content = prefix + content

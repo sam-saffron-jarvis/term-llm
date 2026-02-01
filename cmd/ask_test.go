@@ -212,3 +212,92 @@ func simulateStreaming(content string) []string {
 
 	return chunks
 }
+
+func TestHeadingSpacing(t *testing.T) {
+	md := `## Headers at All Levels
+
+# Header 1
+
+## Header 2
+
+### Header 3
+
+#### Header 4
+
+##### Header 5
+
+###### Header 6`
+
+	width := 80
+	tracker := ui.NewToolTracker()
+
+	// Simulate streaming - write in small chunks
+	chunkSize := 20
+	for i := 0; i < len(md); i += chunkSize {
+		end := i + chunkSize
+		if end > len(md) {
+			end = len(md)
+		}
+		chunk := md[i:end]
+		tracker.AddTextSegment(chunk, width)
+	}
+
+	// Complete and get final output
+	tracker.CompleteTextSegments(func(text string) string {
+		return renderMd(text, width)
+	})
+
+	result := tracker.FlushAllRemaining(width, 0, renderMd)
+
+	// Strip ANSI for counting
+	clean := stripAnsi(result.ToPrint)
+
+	// Count lines
+	lines := strings.Split(clean, "\n")
+
+	// Should be 14 lines: 7 headers + 6 blank lines + 1 leading blank
+	// Allow for trimming variations
+	lineCount := len(lines)
+	for lineCount > 0 && strings.TrimSpace(lines[lineCount-1]) == "" {
+		lineCount--
+	}
+	if lineCount == 0 {
+		t.Fatalf("No output produced")
+	}
+
+	// Log actual output for debugging
+	t.Logf("Line count: %d", lineCount)
+	for i, line := range lines[:lineCount] {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			t.Logf("Line %d: (blank)", i)
+		} else {
+			t.Logf("Line %d: %q", i, trimmed)
+		}
+	}
+
+	// We expect around 14 lines (7 headers + 6 blank lines + potentially leading blank)
+	if lineCount < 13 || lineCount > 15 {
+		t.Errorf("Expected 13-15 lines, got %d", lineCount)
+	}
+}
+
+// stripAnsi removes ANSI escape sequences for testing
+func stripAnsi(s string) string {
+	result := ""
+	inEscape := false
+	for _, c := range s {
+		if c == '\x1b' {
+			inEscape = true
+			continue
+		}
+		if inEscape {
+			if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') {
+				inEscape = false
+			}
+			continue
+		}
+		result += string(c)
+	}
+	return result
+}
