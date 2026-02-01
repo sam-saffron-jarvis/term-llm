@@ -9,14 +9,17 @@ import (
 	"strings"
 
 	"github.com/samsaffron/term-llm/internal/agents"
+	"github.com/samsaffron/term-llm/internal/agents/gist"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/spf13/cobra"
+	"gopkg.in/yaml.v3"
 )
 
 var (
-	agentsBuiltin bool
-	agentsLocal   bool
-	agentsUser    bool
+	agentsBuiltin    bool
+	agentsLocal      bool
+	agentsUser       bool
+	agentsGistPublic bool
 )
 
 var agentsCmd = &cobra.Command{
@@ -90,6 +93,52 @@ var agentsPathCmd = &cobra.Command{
 	RunE:  runAgentsPath,
 }
 
+var agentsExportCmd = &cobra.Command{
+	Use:   "export",
+	Short: "Export an agent",
+	Long:  `Export an agent to various destinations.`,
+}
+
+var agentsImportCmd = &cobra.Command{
+	Use:   "import",
+	Short: "Import an agent",
+	Long:  `Import an agent from various sources.`,
+}
+
+var agentsExportGistCmd = &cobra.Command{
+	Use:   "gist <agent-name>",
+	Short: "Export agent to GitHub Gist",
+	Long: `Export an agent to a GitHub Gist for sharing.
+
+Requires the gh CLI to be installed and authenticated.
+Creates a new gist or updates an existing one if the agent
+already has a gist_id set.
+
+Examples:
+  term-llm agents export gist my-agent
+  term-llm agents export gist my-agent --public`,
+	Args:              cobra.ExactArgs(1),
+	RunE:              runAgentsExportGist,
+	ValidArgsFunction: exportableAgentCompletion,
+	SilenceUsage:      true,
+}
+
+var agentsImportGistCmd = &cobra.Command{
+	Use:   "gist <gist-url-or-id>",
+	Short: "Import agent from GitHub Gist",
+	Long: `Import an agent from a GitHub Gist.
+
+Requires the gh CLI to be installed. Authentication is only
+required for private gists.
+
+Examples:
+  term-llm agents import gist https://gist.github.com/user/abc123
+  term-llm agents import gist abc123 --local`,
+	Args:         cobra.ExactArgs(1),
+	RunE:         runAgentsImportGist,
+	SilenceUsage: true,
+}
+
 var agentsPrefSetCmd = &cobra.Command{
 	Use:   "set <agent> key=value [key=value...]",
 	Short: "Set preferences for an agent",
@@ -143,6 +192,8 @@ func init() {
 	agentsCmd.Flags().BoolVar(&agentsUser, "user", false, "Show only user-global agents")
 	agentsNewCmd.Flags().BoolVar(&agentsLocal, "local", false, "Create in project's term-llm-agents/ instead of user config")
 	agentsCopyCmd.Flags().BoolVar(&agentsLocal, "local", false, "Copy to project's term-llm-agents/ instead of user config")
+	agentsExportGistCmd.Flags().BoolVar(&agentsGistPublic, "public", false, "Create a public gist (default: secret)")
+	agentsImportGistCmd.Flags().BoolVar(&agentsLocal, "local", false, "Import to project's term-llm-agents/ instead of user config")
 
 	rootCmd.AddCommand(agentsCmd)
 	agentsCmd.AddCommand(agentsNewCmd)
@@ -153,6 +204,10 @@ func init() {
 	agentsCmd.AddCommand(agentsPrefSetCmd)
 	agentsCmd.AddCommand(agentsPrefGetCmd)
 	agentsCmd.AddCommand(agentsPrefClearCmd)
+	agentsCmd.AddCommand(agentsExportCmd)
+	agentsCmd.AddCommand(agentsImportCmd)
+	agentsExportCmd.AddCommand(agentsExportGistCmd)
+	agentsImportCmd.AddCommand(agentsImportGistCmd)
 }
 
 func runAgentsList(cmd *cobra.Command, args []string) error {
@@ -562,6 +617,44 @@ func AgentFlagCompletion(cmd *cobra.Command, args []string, toComplete string) (
 	return agentNameCompletion(cmd, nil, toComplete)
 }
 
+// exportableAgentCompletion provides completion for exportable agents (excludes built-ins).
+func exportableAgentCompletion(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+	if len(args) > 0 {
+		return nil, cobra.ShellCompDirectiveNoFileComp
+	}
+
+	cfg, err := loadConfigWithSetup()
+	if err != nil {
+		return nil, cobra.ShellCompDirectiveError
+	}
+
+	registry, err := agents.NewRegistry(agents.RegistryConfig{
+		UseBuiltin:  cfg.Agents.UseBuiltin,
+		SearchPaths: cfg.Agents.SearchPaths,
+	})
+	if err != nil {
+		return nil, cobra.ShellCompDirectiveError
+	}
+
+	// Get non-builtin agents only
+	agentList, err := registry.List()
+	if err != nil {
+		return nil, cobra.ShellCompDirectiveError
+	}
+
+	var names []string
+	for _, agent := range agentList {
+		if agent.Source == agents.SourceBuiltin {
+			continue
+		}
+		if strings.HasPrefix(agent.Name, toComplete) {
+			names = append(names, agent.Name)
+		}
+	}
+
+	return names, cobra.ShellCompDirectiveNoFileComp
+}
+
 // agentPrefSetCompletion provides completion for "agents set <agent> key=value"
 func agentPrefSetCompletion(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 	// First arg: agent name
@@ -707,5 +800,233 @@ func runAgentsPrefClear(cmd *cobra.Command, args []string) error {
 	}
 
 	fmt.Printf("Cleared preferences for '%s'\n", agentName)
+	return nil
+}
+
+func runAgentsExportGist(cmd *cobra.Command, args []string) error {
+	name := args[0]
+
+	cfg, err := loadConfigWithSetup()
+	if err != nil {
+		return err
+	}
+
+	registry, err := agents.NewRegistry(agents.RegistryConfig{
+		UseBuiltin:  cfg.Agents.UseBuiltin,
+		SearchPaths: cfg.Agents.SearchPaths,
+	})
+	if err != nil {
+		return fmt.Errorf("create registry: %w", err)
+	}
+	registry.SetPreferences(cfg.Agents.Preferences)
+
+	agent, err := registry.Get(name)
+	if err != nil {
+		return err
+	}
+
+	// Built-in agents can't be exported directly
+	if agent.Source == agents.SourceBuiltin {
+		return fmt.Errorf("cannot export built-in agent '%s'. Copy it first: term-llm agents copy %s my-%s", name, name, name)
+	}
+
+	// Initialize gist client
+	client, err := gist.NewClient()
+	if err != nil {
+		return err
+	}
+
+	// Collect files to upload
+	files := make(map[string]string)
+
+	// Read agent.yaml
+	agentYAMLPath := filepath.Join(agent.SourcePath, "agent.yaml")
+	agentYAML, err := os.ReadFile(agentYAMLPath)
+	if err != nil {
+		return fmt.Errorf("read agent.yaml: %w", err)
+	}
+	files["agent.yaml"] = string(agentYAML)
+
+	// Read system.md if exists
+	systemMDPath := filepath.Join(agent.SourcePath, "system.md")
+	if systemMD, err := os.ReadFile(systemMDPath); err == nil {
+		files["system.md"] = string(systemMD)
+	}
+
+	// Read include files
+	for _, include := range agent.Include {
+		includePath := filepath.Join(agent.SourcePath, include)
+		// Security: validate path stays within agent directory
+		absInclude, err := filepath.Abs(includePath)
+		if err != nil {
+			continue
+		}
+		absDir, err := filepath.Abs(agent.SourcePath)
+		if err != nil {
+			continue
+		}
+		if !strings.HasPrefix(absInclude, absDir+string(filepath.Separator)) && absInclude != absDir {
+			fmt.Fprintf(os.Stderr, "warning: skipping include outside agent directory: %s\n", include)
+			continue
+		}
+		if data, err := os.ReadFile(includePath); err == nil {
+			files[include] = string(data)
+		}
+	}
+
+	description := fmt.Sprintf("term-llm agent: %s", agent.Name)
+	if agent.Description != "" {
+		description = fmt.Sprintf("term-llm agent: %s - %s", agent.Name, agent.Description)
+	}
+
+	var gistURL string
+	var gistID string
+
+	if agent.GistID != "" {
+		// Update existing gist
+		fmt.Printf("Updating gist %s...\n", agent.GistID)
+		if err := client.Update(agent.GistID, files); err != nil {
+			return fmt.Errorf("update gist: %w", err)
+		}
+		gistURL = gist.GetURL(agent.GistID)
+		gistID = agent.GistID
+		fmt.Printf("Updated: %s\n", gistURL)
+	} else {
+		// Create new gist
+		fmt.Printf("Creating gist...\n")
+		g, err := client.Create(description, agentsGistPublic, files)
+		if err != nil {
+			return fmt.Errorf("create gist: %w", err)
+		}
+		gistURL = g.URL
+		gistID = g.ID
+
+		// Save gist_id back to agent.yaml
+		if err := saveGistIDToAgent(agentYAMLPath, gistID); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: could not save gist_id to agent.yaml: %v\n", err)
+		}
+
+		fmt.Printf("Created: %s\n", gistURL)
+	}
+
+	fmt.Println()
+	fmt.Println("Share with:")
+	fmt.Printf("  term-llm agents import gist %s\n", gistURL)
+
+	return nil
+}
+
+// saveGistIDToAgent adds gist_id to an existing agent.yaml file.
+func saveGistIDToAgent(agentYAMLPath, gistID string) error {
+	data, err := os.ReadFile(agentYAMLPath)
+	if err != nil {
+		return err
+	}
+
+	// Parse existing YAML
+	var agentMap map[string]interface{}
+	if err := yaml.Unmarshal(data, &agentMap); err != nil {
+		return err
+	}
+
+	// Add gist_id
+	agentMap["gist_id"] = gistID
+
+	// Marshal back
+	newData, err := yaml.Marshal(agentMap)
+	if err != nil {
+		return err
+	}
+
+	return os.WriteFile(agentYAMLPath, newData, 0644)
+}
+
+func runAgentsImportGist(cmd *cobra.Command, args []string) error {
+	ref := args[0]
+
+	// Parse gist reference
+	gistID, err := gist.ParseGistRef(ref)
+	if err != nil {
+		return err
+	}
+
+	// Initialize gist client
+	client, err := gist.NewClient()
+	if err != nil {
+		return err
+	}
+
+	// Fetch gist
+	fmt.Printf("Fetching gist %s...\n", gistID)
+	g, err := client.Get(gistID)
+	if err != nil {
+		return fmt.Errorf("fetch gist: %w", err)
+	}
+
+	// Validate: must have agent.yaml
+	agentYAML, ok := g.Files["agent.yaml"]
+	if !ok {
+		return fmt.Errorf("invalid agent gist: missing agent.yaml")
+	}
+
+	// Parse agent.yaml to get name
+	var agentConfig struct {
+		Name string `yaml:"name"`
+	}
+	if err := yaml.Unmarshal([]byte(agentYAML), &agentConfig); err != nil {
+		return fmt.Errorf("parse agent.yaml: %w", err)
+	}
+	if agentConfig.Name == "" {
+		return fmt.Errorf("invalid agent gist: agent.yaml missing 'name' field")
+	}
+
+	// Determine destination directory
+	var baseDir string
+	if agentsLocal {
+		baseDir, err = agents.GetLocalAgentsDir()
+	} else {
+		baseDir, err = agents.GetUserAgentsDir()
+	}
+	if err != nil {
+		return fmt.Errorf("get agents dir: %w", err)
+	}
+
+	agentDir := filepath.Join(baseDir, agentConfig.Name)
+
+	// Check if agent already exists
+	if _, err := os.Stat(agentDir); err == nil {
+		return fmt.Errorf("agent already exists: %s\nUse a different name or delete existing agent first", agentDir)
+	}
+
+	// Create agent directory
+	if err := os.MkdirAll(agentDir, 0755); err != nil {
+		return fmt.Errorf("create agent directory: %w", err)
+	}
+
+	// Write all files from gist
+	for filename, content := range g.Files {
+		// Security: validate filename (no path traversal)
+		if strings.Contains(filename, "..") || strings.ContainsAny(filename, "/\\") {
+			fmt.Fprintf(os.Stderr, "warning: skipping unsafe filename: %s\n", filename)
+			continue
+		}
+
+		filePath := filepath.Join(agentDir, filename)
+		if err := os.WriteFile(filePath, []byte(content), 0644); err != nil {
+			return fmt.Errorf("write %s: %w", filename, err)
+		}
+	}
+
+	// Ensure gist_id is saved in agent.yaml
+	agentYAMLPath := filepath.Join(agentDir, "agent.yaml")
+	if err := saveGistIDToAgent(agentYAMLPath, gistID); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: could not save gist_id: %v\n", err)
+	}
+
+	fmt.Printf("Imported agent '%s' to %s\n", agentConfig.Name, agentDir)
+	fmt.Println()
+	fmt.Printf("Use with: term-llm ask --agent %s ...\n", agentConfig.Name)
+	fmt.Printf("Edit with: term-llm agents edit %s\n", agentConfig.Name)
+
 	return nil
 }

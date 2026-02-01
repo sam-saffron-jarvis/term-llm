@@ -63,6 +63,9 @@ type Agent struct {
 	// MCP servers to auto-connect
 	MCP []MCPConfig `yaml:"mcp,omitempty"`
 
+	// GistID for syncing with GitHub Gists (set on export/import)
+	GistID string `yaml:"gist_id,omitempty"`
+
 	// System prompt (loaded from system.md + included files)
 	SystemPrompt string `yaml:"-"`
 
