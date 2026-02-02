@@ -657,7 +657,8 @@ func (t *ToolTracker) FlushStreamingText(threshold int, width int, renderMd func
 			}
 			return FlushStreamingTextResult{}
 		}
-		rendered = renderedAll[seg.FlushedRenderedPos:]
+		// Use safeANSISlice to avoid slicing mid-escape-sequence which would produce broken ANSI output
+		rendered = safeANSISlice(renderedAll, seg.FlushedRenderedPos)
 	}
 	if rendered == "" {
 		debugFlushf("stream skip seg=%d reason=empty-rendered-slice safeBoundary=%d flushedPos=%d", segIdx, safeBoundary, seg.FlushedPos)

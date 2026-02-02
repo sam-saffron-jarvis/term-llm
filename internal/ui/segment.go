@@ -131,6 +131,55 @@ func SuccessCircle() string { return successCircleANSI }
 // ErrorCircle returns the error status indicator
 func ErrorCircle() string { return errorCircleANSI }
 
+// safeANSISlice returns s[pos:] but adjusts pos forward if it would split an ANSI CSI sequence.
+// ANSI CSI sequences: ESC '[' <params> <terminator> where terminator is 0x40-0x7E
+// Only CSI sequences (ESC '[') are handled; other escape sequences (OSC, etc.) are not adjusted.
+func safeANSISlice(s string, pos int) string {
+	if pos <= 0 {
+		return s
+	}
+	if pos >= len(s) {
+		return ""
+	}
+
+	// Scan backwards to find if we're inside a CSI escape sequence.
+	// Use 64 bytes as limit to handle long SGR sequences (multiple params, 256-color, etc.)
+	for i := pos - 1; i >= 0 && i >= pos-64; i-- {
+		if s[i] == 0x1B {
+			// Found ESC, check if this is a CSI sequence (ESC '[')
+			if i+1 >= len(s) || s[i+1] != '[' {
+				// Not a CSI sequence (could be OSC, cursor save, etc.)
+				// Don't attempt to parse - just slice at pos
+				return s[pos:]
+			}
+
+			// This is a CSI sequence - paramStart is after the '['
+			paramStart := i + 2
+
+			// Check if sequence terminates before pos
+			for j := paramStart; j < pos; j++ {
+				if s[j] >= 0x40 && s[j] <= 0x7E { // CSI terminator
+					return s[pos:] // sequence ended, safe to slice
+				}
+			}
+			// No terminator found before pos - we're mid-sequence
+			// Advance pos past the sequence terminator
+			searchStart := pos
+			if searchStart < paramStart {
+				searchStart = paramStart
+			}
+			for j := searchStart; j < len(s); j++ {
+				if s[j] >= 0x40 && s[j] <= 0x7E {
+					return s[j+1:]
+				}
+			}
+			// No terminator found at all - malformed sequence, slice anyway
+			return s[pos:]
+		}
+	}
+	return s[pos:]
+}
+
 // Wave animation colors
 var (
 	waveDimColor = lipgloss.Color("245") // dim gray
@@ -503,9 +552,10 @@ func RenderSegmentsWithLeading(leading *Segment, segments []*Segment, width int,
 			}
 
 			// If this is a completed segment that was partially flushed,
-			// only show the unflushed part.
+			// only show the unflushed part. Use safeANSISlice to avoid slicing
+			// mid-escape-sequence which would produce broken ANSI output.
 			if seg.Complete && seg.FlushedRenderedPos > 0 && seg.FlushedRenderedPos < len(rendered) {
-				rendered = rendered[seg.FlushedRenderedPos:]
+				rendered = safeANSISlice(rendered, seg.FlushedRenderedPos)
 			} else if seg.Complete && seg.FlushedRenderedPos >= len(rendered) {
 				rendered = ""
 			}
