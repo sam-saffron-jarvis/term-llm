@@ -386,6 +386,7 @@ func (c *ResponsesClient) Stream(ctx context.Context, req ResponsesRequest, debu
 		toolState := newResponsesToolState()
 		var lastUsage *Usage
 		var lastEventType string
+		var sawTextDelta bool // Track if any text deltas were emitted
 
 		for scanner.Scan() {
 			line := scanner.Text()
@@ -412,6 +413,7 @@ func (c *ResponsesClient) Stream(ctx context.Context, req ResponsesRequest, debu
 					Delta string `json:"delta"`
 				}
 				if err := json.Unmarshal([]byte(data), &deltaEvent); err == nil && deltaEvent.Delta != "" {
+					sawTextDelta = true
 					events <- Event{Type: EventTextDelta, Text: deltaEvent.Delta}
 				}
 
@@ -446,9 +448,11 @@ func (c *ResponsesClient) Stream(ctx context.Context, req ResponsesRequest, debu
 						// Complete the tool call with final arguments using output_index
 						toolState.FinishCall(doneEvent.OutputIndex, doneEvent.Item.CallID, doneEvent.Item.Name, doneEvent.Item.Arguments)
 					} else if doneEvent.Item.Type == "message" {
-						// Emit any text content from completed message items
+						// Text content is normally streamed via response.output_text.delta events.
+						// Fall back to emitting here if no deltas were seen (provider inconsistency).
+						// Always emit refusals since those may not be streamed.
 						for _, content := range doneEvent.Item.Content {
-							if content.Type == "output_text" && content.Text != "" {
+							if content.Type == "output_text" && content.Text != "" && !sawTextDelta {
 								events <- Event{Type: EventTextDelta, Text: content.Text}
 							} else if content.Type == "refusal" && content.Refusal != "" {
 								events <- Event{Type: EventTextDelta, Text: content.Refusal}

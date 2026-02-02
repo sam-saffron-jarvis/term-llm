@@ -46,3 +46,5 @@
 - Keep commits focused; don't mix unrelated changes
 
 Always build and test test changes you make, never commit anything the user will handle it.
+
+This is a go project, files use tabs, be mindful when editing.
