@@ -1,10 +1,15 @@
 package tools
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 )
 
 func TestMatchPattern(t *testing.T) {
@@ -139,6 +144,91 @@ func TestApprovalManager_CheckPathApproval_SessionCache(t *testing.T) {
 	}
 	if outcome != ProceedAlways {
 		t.Errorf("expected ProceedAlways from session cache, got %v", outcome)
+	}
+}
+
+func TestApprovalManager_CheckPathApproval_RecheckSkipsQueuedPrompt(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "test-approval-queue-*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	// Resolve symlinks (macOS /var -> /private/var)
+	tempDir, err = filepath.EvalSymlinks(tempDir)
+	if err != nil {
+		t.Fatalf("failed to resolve symlinks: %v", err)
+	}
+
+	file1 := filepath.Join(tempDir, "file1.txt")
+	file2 := filepath.Join(tempDir, "file2.txt")
+	if err := os.WriteFile(file1, []byte("test"), 0644); err != nil {
+		t.Fatalf("failed to create file1: %v", err)
+	}
+	if err := os.WriteFile(file2, []byte("test"), 0644); err != nil {
+		t.Fatalf("failed to create file2: %v", err)
+	}
+
+	perms := NewToolPermissions()
+	mgr := NewApprovalManager(perms)
+
+	promptStarted := make(chan struct{}, 1)
+	promptRelease := make(chan struct{})
+	var promptCalls int32
+
+	mgr.PromptUIFunc = func(path string, isWrite bool, isShell bool) (ApprovalResult, error) {
+		if atomic.AddInt32(&promptCalls, 1) > 1 {
+			return ApprovalResult{}, fmt.Errorf("prompt called more than once")
+		}
+		promptStarted <- struct{}{}
+		<-promptRelease
+		return ApprovalResult{
+			Choice: ApprovalChoiceDirectory,
+			Path:   tempDir,
+		}, nil
+	}
+
+	oldProcs := runtime.GOMAXPROCS(2)
+	defer runtime.GOMAXPROCS(oldProcs)
+
+	start := make(chan struct{})
+	errCh := make(chan error, 2)
+	var wg sync.WaitGroup
+
+	run := func(path string) {
+		defer wg.Done()
+		<-start
+		_, err := mgr.CheckPathApproval(ReadFileToolName, path, path, false)
+		errCh <- err
+	}
+
+	wg.Add(2)
+	go run(file1)
+	go run(file2)
+
+	close(start)
+
+	select {
+	case <-promptStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for prompt to start")
+	}
+
+	// Give the second goroutine time to queue behind the prompt lock.
+	time.Sleep(50 * time.Millisecond)
+	close(promptRelease)
+
+	wg.Wait()
+	close(errCh)
+
+	for err := range errCh {
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	}
+
+	if got := atomic.LoadInt32(&promptCalls); got != 1 {
+		t.Fatalf("expected 1 prompt call, got %d", got)
 	}
 }
 

@@ -281,16 +281,10 @@ func (m *ApprovalManager) getProjectApprovals(path string) *ProjectApprovals {
 	return pa
 }
 
-// CheckPathApproval checks if a path is approved for the given tool.
-// Approvals are directory-scoped and tool-agnostic - approving a directory
-// for one tool allows all tools to access files within it.
-// toolInfo is optional context for display (e.g., filename being accessed).
-func (m *ApprovalManager) CheckPathApproval(toolName, path, toolInfo string, isWrite bool) (ConfirmOutcome, error) {
-	// 0. Yolo mode - auto-approve everything
-	if m.YoloMode {
-		return ProceedOnce, nil
-	}
-
+// checkPathApprovalNoPrompt runs the non-interactive approval checks.
+// Returns (outcome, true, nil) when a decision is made, or (Cancel, false, nil)
+// when prompting is still required.
+func (m *ApprovalManager) checkPathApprovalNoPrompt(toolName, path, absPath string, isWrite bool) (ConfirmOutcome, bool, error) {
 	// 1. Check pre-approved allowlist first (--read-dir / --write-dir flags)
 	var allowed bool
 	var err error
@@ -302,39 +296,102 @@ func (m *ApprovalManager) CheckPathApproval(toolName, path, toolInfo string, isW
 	}
 
 	if err != nil {
-		return Cancel, err
+		return Cancel, true, err
 	}
 
 	if allowed {
-		return ProceedOnce, nil
+		return ProceedOnce, true, nil
 	}
 
 	// 2. Check if path is in any approved directory (session cache, tool-agnostic)
 	if m.dirCache.IsPathInApprovedDir(path) {
-		return ProceedAlways, nil
+		return ProceedAlways, true, nil
 	}
 
 	// 2a. Check parent's session cache (inherited approvals)
 	if m.parent != nil && m.parent.dirCache.IsPathInApprovedDir(path) {
-		return ProceedAlways, nil
+		return ProceedAlways, true, nil
 	}
 
 	// 2b. Check parent's tool+path specific cache (inherited approvals)
 	if m.parent != nil {
 		if outcome, ok := m.parent.cache.Get(toolName, path); ok {
-			return outcome, nil
+			return outcome, true, nil
 		}
 	}
 
 	// 3. Check project-level approvals (persisted)
-	absPath, err := filepath.Abs(path)
-	if err != nil {
+	if absPath == "" {
 		absPath = path
+		if resolved, err := filepath.Abs(path); err == nil {
+			absPath = resolved
+		}
 	}
 
 	projectApprovals := m.getProjectApprovals(absPath)
 	if projectApprovals != nil && projectApprovals.IsPathApproved(absPath, isWrite) {
-		return ProceedAlways, nil
+		return ProceedAlways, true, nil
+	}
+
+	return Cancel, false, nil
+}
+
+// checkShellApprovalNoPrompt runs the non-interactive shell approval checks.
+// Returns (outcome, true) when a decision is made, or (Cancel, false) when
+// prompting is still required.
+func (m *ApprovalManager) checkShellApprovalNoPrompt(command string) (ConfirmOutcome, bool) {
+	// Check pre-approved patterns
+	if m.permissions.IsShellCommandAllowed(command) {
+		return ProceedOnce, true
+	}
+
+	// Check session-approved patterns
+	for _, pattern := range m.shellCache.GetPatterns() {
+		if matchPattern(pattern, command) {
+			return ProceedAlways, true
+		}
+	}
+
+	// Check parent's session-approved patterns (inherited approvals)
+	if m.parent != nil {
+		for _, pattern := range m.parent.shellCache.GetPatterns() {
+			if matchPattern(pattern, command) {
+				return ProceedAlways, true
+			}
+		}
+	}
+
+	// Check project-level approvals (persisted)
+	cwd, _ := os.Getwd()
+	projectApprovals := m.getProjectApprovals(cwd)
+	if projectApprovals != nil && projectApprovals.IsShellPatternApproved(command) {
+		return ProceedAlways, true
+	}
+
+	return Cancel, false
+}
+
+// CheckPathApproval checks if a path is approved for the given tool.
+// Approvals are directory-scoped and tool-agnostic - approving a directory
+// for one tool allows all tools to access files within it.
+// toolInfo is optional context for display (e.g., filename being accessed).
+func (m *ApprovalManager) CheckPathApproval(toolName, path, toolInfo string, isWrite bool) (ConfirmOutcome, error) {
+	// 0. Yolo mode - auto-approve everything
+	if m.YoloMode {
+		return ProceedOnce, nil
+	}
+
+	absPath := path
+	if resolved, err := filepath.Abs(path); err == nil {
+		absPath = resolved
+	}
+
+	outcome, ok, err := m.checkPathApprovalNoPrompt(toolName, path, absPath, isWrite)
+	if err != nil {
+		return Cancel, err
+	}
+	if ok {
+		return outcome, nil
 	}
 
 	// 4. Need to prompt user - serialize prompts to avoid UI conflicts
@@ -342,6 +399,17 @@ func (m *ApprovalManager) CheckPathApproval(toolName, path, toolInfo string, isW
 	promptLock := m.PromptLock()
 	promptLock.Lock()
 	defer promptLock.Unlock()
+
+	// Recheck now that we hold the prompt lock to avoid duplicate prompts
+	outcome, ok, err = m.checkPathApprovalNoPrompt(toolName, path, absPath, isWrite)
+	if err != nil {
+		return Cancel, err
+	}
+	if ok {
+		return outcome, nil
+	}
+
+	projectApprovals := m.getProjectApprovals(absPath)
 
 	// Try new UI first (local, then parent), then fall back to legacy
 	promptUIFunc := m.PromptUIFunc
@@ -383,7 +451,7 @@ func (m *ApprovalManager) CheckPathApproval(toolName, path, toolInfo string, isW
 		ToolInfo:    toolInfo,
 	}
 
-	outcome, _ := promptFunc(req)
+	outcome, _ = promptFunc(req)
 
 	if outcome == ProceedAlways || outcome == ProceedAlwaysAndSave {
 		m.dirCache.Set(absDir, outcome)
@@ -468,32 +536,8 @@ func (m *ApprovalManager) CheckShellApproval(command string) (ConfirmOutcome, er
 		return ProceedOnce, nil
 	}
 
-	// Check pre-approved patterns
-	if m.permissions.IsShellCommandAllowed(command) {
-		return ProceedOnce, nil
-	}
-
-	// Check session-approved patterns
-	for _, pattern := range m.shellCache.GetPatterns() {
-		if matchPattern(pattern, command) {
-			return ProceedAlways, nil
-		}
-	}
-
-	// Check parent's session-approved patterns (inherited approvals)
-	if m.parent != nil {
-		for _, pattern := range m.parent.shellCache.GetPatterns() {
-			if matchPattern(pattern, command) {
-				return ProceedAlways, nil
-			}
-		}
-	}
-
-	// Check project-level approvals (persisted)
-	cwd, _ := os.Getwd()
-	projectApprovals := m.getProjectApprovals(cwd)
-	if projectApprovals != nil && projectApprovals.IsShellPatternApproved(command) {
-		return ProceedAlways, nil
+	if outcome, ok := m.checkShellApprovalNoPrompt(command); ok {
+		return outcome, nil
 	}
 
 	// Need to prompt - serialize prompts to avoid UI conflicts
@@ -501,6 +545,14 @@ func (m *ApprovalManager) CheckShellApproval(command string) (ConfirmOutcome, er
 	promptLock := m.PromptLock()
 	promptLock.Lock()
 	defer promptLock.Unlock()
+
+	// Recheck now that we hold the prompt lock to avoid duplicate prompts
+	if outcome, ok := m.checkShellApprovalNoPrompt(command); ok {
+		return outcome, nil
+	}
+
+	cwd, _ := os.Getwd()
+	projectApprovals := m.getProjectApprovals(cwd)
 
 	// Try new UI first (local, then parent), then fall back to legacy
 	promptUIFunc := m.PromptUIFunc
