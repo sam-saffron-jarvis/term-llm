@@ -155,6 +155,30 @@ func TestPartialTextFlushSpacing(t *testing.T) {
 	}
 }
 
+func TestRenderUnflushed_ShowsPendingParagraphContent(t *testing.T) {
+	tracker := NewToolTracker()
+	width := 80
+
+	tracker.AddTextSegment("This paragraph should stream before block completion", width)
+
+	output := stripAnsi(tracker.RenderUnflushed(width, RenderMarkdown, false))
+	if !strings.Contains(output, "This paragraph should stream before block completion") {
+		t.Fatalf("expected pending paragraph content to be visible, got %q", output)
+	}
+}
+
+func TestRenderUnflushed_HidesPendingTableContent(t *testing.T) {
+	tracker := NewToolTracker()
+	width := 80
+
+	tracker.AddTextSegment("| A | B |\n|---|---|\n| 1 |", width)
+
+	output := stripAnsi(tracker.RenderUnflushed(width, RenderMarkdown, false))
+	if strings.Contains(output, "| A | B |") || strings.Contains(output, "|---|---|") {
+		t.Fatalf("expected pending table lines to stay hidden, got %q", output)
+	}
+}
+
 // stripAnsiForTest removes ANSI escape sequences for testing
 func stripAnsiForTest(s string) string {
 	result := ""

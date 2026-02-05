@@ -180,6 +180,12 @@ func safeANSISlice(s string, pos int) string {
 	return s[pos:]
 }
 
+// renderPendingMarkdownPreview renders in-progress markdown tail content.
+// Keep this raw so words appear immediately before the block is complete.
+func renderPendingMarkdownPreview(pending string) string {
+	return pending
+}
+
 // Wave animation colors
 var (
 	waveDimColor = lipgloss.Color("245") // dim gray
@@ -545,6 +551,13 @@ func RenderSegmentsWithLeading(leading *Segment, segments []*Segment, width int,
 				rendered = seg.Rendered
 			} else if seg.StreamRenderer != nil {
 				rendered = seg.StreamRenderer.RenderedUnflushed()
+
+				// Show pending in-progress text for word-by-word feedback, except
+				// tables which are withheld until the table block is complete.
+				pending := seg.StreamRenderer.PendingMarkdown()
+				if pending != "" && !seg.StreamRenderer.PendingIsTable() {
+					rendered += renderPendingMarkdownPreview(pending)
+				}
 			} else if seg.Complete && renderMarkdown != nil {
 				rendered = renderMarkdown(text, width)
 			} else {

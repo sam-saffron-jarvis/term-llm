@@ -98,6 +98,22 @@ func (r *TextSegmentRenderer) CommittedMarkdownLen() int {
 	return r.sr.CommittedMarkdownLen()
 }
 
+// PendingMarkdown returns the markdown that belongs to the current incomplete block.
+func (r *TextSegmentRenderer) PendingMarkdown() string {
+	if r.sr == nil {
+		return ""
+	}
+	return r.sr.PendingMarkdown()
+}
+
+// PendingIsTable reports whether the current incomplete block is a table.
+func (r *TextSegmentRenderer) PendingIsTable() bool {
+	if r.sr == nil {
+		return false
+	}
+	return r.sr.PendingIsTable()
+}
+
 // Flush renders any remaining incomplete blocks.
 // Call this when the segment is complete.
 func (r *TextSegmentRenderer) Flush() error {

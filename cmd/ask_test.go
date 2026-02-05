@@ -174,6 +174,40 @@ func TestAskDoneNoDoubleRendering(t *testing.T) {
 	}
 }
 
+func TestAskStreamsTextOnSmoothTicks(t *testing.T) {
+	model := newAskStreamModel()
+	model.width = 80
+
+	updated, _ := model.Update(askContentMsg("hello world"))
+	model = updated.(askStreamModel)
+
+	// Text should be buffered first; no segment until a smooth tick is processed.
+	if len(model.tracker.Segments) != 0 {
+		t.Fatalf("expected 0 segments before smooth tick, got %d", len(model.tracker.Segments))
+	}
+
+	updated, _ = model.Update(ui.SmoothTickMsg{})
+	model = updated.(askStreamModel)
+	if len(model.tracker.Segments) == 0 {
+		t.Fatal("expected text segment after first smooth tick")
+	}
+
+	first := model.tracker.Segments[0].GetText()
+	if first == "hello world" {
+		t.Fatalf("expected partial word-paced content after first tick, got %q", first)
+	}
+	if !strings.Contains(first, "hello") {
+		t.Fatalf("expected first word after first tick, got %q", first)
+	}
+
+	updated, _ = model.Update(ui.SmoothTickMsg{})
+	model = updated.(askStreamModel)
+	got := model.tracker.Segments[0].GetText()
+	if got != "hello world" {
+		t.Fatalf("expected full content after second tick, got %q", got)
+	}
+}
+
 func TestAskViewNoForcedTrailingNewline(t *testing.T) {
 	model := newAskStreamModel()
 	model.pausedForExternalUI = true

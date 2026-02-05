@@ -819,6 +819,9 @@ type askStreamModel struct {
 	// Tool and segment tracking (shared component)
 	tracker *ui.ToolTracker
 
+	// Smooth text buffer for word-by-word rendering (shared with chat)
+	smoothBuffer *ui.SmoothBuffer
+
 	// Subagent progress tracking
 	subagentTracker *ui.SubagentTracker
 
@@ -924,6 +927,7 @@ func newAskStreamModel() askStreamModel {
 		width:           width,
 		height:          height,
 		tracker:         ui.NewToolTracker(),
+		smoothBuffer:    ui.NewSmoothBuffer(),
 		subagentTracker: ui.NewSubagentTracker(),
 		startTime:       time.Now(),
 	}
@@ -957,6 +961,21 @@ func (m *askStreamModel) maybeFlushToScrollback() tea.Cmd {
 	return nil
 }
 
+// flushSmoothBufferToTracker flushes any buffered words into the text tracker.
+func (m *askStreamModel) flushSmoothBufferToTracker() {
+	if m.smoothBuffer == nil {
+		return
+	}
+
+	remaining := m.smoothBuffer.FlushAll()
+	if remaining == "" {
+		return
+	}
+
+	m.tracker.AddTextSegment(remaining, m.width)
+	m.contentDirty = true
+}
+
 func (m askStreamModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// Handle inspector mode
 	if m.inspectorMode {
@@ -965,6 +984,7 @@ func (m askStreamModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	// Handle tool start messages even while approval form is active
 	if toolMsg, ok := msg.(askToolStartMsg); ok && m.approvalForm != nil {
+		m.flushSmoothBufferToTracker()
 		// Mark current text segment as complete before starting tool
 		m.tracker.MarkCurrentTextComplete(func(text string) string {
 			return renderMd(text, m.width)
@@ -1054,25 +1074,25 @@ func (m askStreamModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.tracker.ResizeStreamRenderers(m.width)
 
 	case askContentMsg:
-		// Track text for final rendering
+		// Buffer text and release it in smooth word-paced ticks.
+		if m.smoothBuffer != nil {
+			m.smoothBuffer.Write(string(msg))
+			return m, ui.SmoothTick()
+		}
+		// Fallback: direct append if smooth buffer is unavailable.
 		m.tracker.AddTextSegment(string(msg), m.width)
 		m.contentDirty = true
-
-		// Flush as soon as we have any safe boundary to avoid duplication/corruption
-		const streamingFlushThreshold = 0
-		if m.width > 0 {
-			result := m.tracker.FlushStreamingText(streamingFlushThreshold, m.width, renderMd)
-			if result.ToPrint != "" {
-				m.cachedContent = "" // Invalidate cache since state changed
-				return m, tea.Printf("%s", result.ToPrint)
-			}
-		}
 
 	case askDoneMsg:
 		m.done = true // Prevent spinner from showing in final View()
 		// Ensure we have a valid width
 		if m.width <= 0 {
 			m.width = getTerminalWidth()
+		}
+		// Flush buffered words before final segment completion.
+		m.flushSmoothBufferToTracker()
+		if m.smoothBuffer != nil {
+			m.smoothBuffer.MarkDone()
 		}
 		// Complete text segments (finalizes TextBuilder -> Text)
 		m.tracker.CompleteTextSegments(func(text string) string {
@@ -1095,12 +1115,49 @@ func (m askStreamModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.width <= 0 {
 			m.width = getTerminalWidth()
 		}
+		// Flush buffered words so cancellation keeps latest visible text.
+		m.flushSmoothBufferToTracker()
+		if m.smoothBuffer != nil {
+			m.smoothBuffer.MarkDone()
+		}
 		// Flush whatever has been rendered so far (including partial text) to scrollback
 		res := m.tracker.FlushAllRemaining(m.width, 0, renderMd)
 		if res.ToPrint != "" {
 			return m, tea.Sequence(tea.Printf("%s", res.ToPrint), tea.Quit)
 		}
 		return m, tea.Quit
+
+	case ui.SmoothTickMsg:
+		if m.smoothBuffer == nil || m.done {
+			return m, nil
+		}
+
+		var cmds []tea.Cmd
+
+		words := m.smoothBuffer.NextWords()
+		if words != "" {
+			m.tracker.AddTextSegment(words, m.width)
+			m.contentDirty = true
+
+			// Flush as soon as we have any safe boundary to avoid duplication/corruption.
+			const streamingFlushThreshold = 0
+			if m.width > 0 {
+				result := m.tracker.FlushStreamingText(streamingFlushThreshold, m.width, renderMd)
+				if result.ToPrint != "" {
+					m.cachedContent = "" // Invalidate cache since state changed
+					cmds = append(cmds, tea.Printf("%s", result.ToPrint))
+				}
+			}
+		}
+
+		if !m.smoothBuffer.IsDrained() {
+			cmds = append(cmds, ui.SmoothTick())
+		}
+
+		if len(cmds) == 0 {
+			return m, nil
+		}
+		return m, tea.Batch(cmds...)
 
 	case askUsageMsg:
 		m.totalTokens = msg.InputTokens + msg.OutputTokens
@@ -1144,6 +1201,7 @@ func (m askStreamModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case askFlushBeforeAskUserMsg:
 		// Set flag to suppress spinner in View() while external UI is active
 		m.pausedForExternalUI = true
+		m.flushSmoothBufferToTracker()
 
 		// Partial flush - keep some context visible for after external UI returns
 		result := m.tracker.FlushBeforeExternalUI(m.width, 0, maxViewLines, renderMd)
@@ -1163,6 +1221,7 @@ func (m askStreamModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case askFlushBeforeApprovalMsg:
 		// Set flag to suppress spinner in View() while approval UI is active
 		m.pausedForExternalUI = true
+		m.flushSmoothBufferToTracker()
 
 		// Partial flush - keep some context visible for after external UI returns
 		result := m.tracker.FlushBeforeExternalUI(m.width, 0, maxViewLines, renderMd)
@@ -1197,6 +1256,7 @@ func (m askStreamModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case askToolStartMsg:
 		m.retryStatus = ""
 		m.contentDirty = true // Tool state changed
+		m.flushSmoothBufferToTracker()
 
 		// Mark current text segment as complete before starting tool
 		// This preserves interleaving order: text -> tool -> text

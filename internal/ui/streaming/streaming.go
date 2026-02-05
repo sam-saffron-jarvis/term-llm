@@ -186,6 +186,39 @@ func (sr *StreamRenderer) CommittedMarkdownLen() int {
 	return sr.allMarkdown.Len()
 }
 
+// PendingMarkdown returns the current incomplete block markdown.
+// This includes pending complete lines plus any partial line in the buffer.
+func (sr *StreamRenderer) PendingMarkdown() string {
+	return sr.currentBlockContent()
+}
+
+// PendingIsTable reports whether the current incomplete block should be treated
+// as a table for preview purposes.
+func (sr *StreamRenderer) PendingIsTable() bool {
+	if sr.state == stateInTable {
+		return true
+	}
+
+	content := sr.currentBlockContent()
+	if content == "" {
+		return false
+	}
+
+	firstLine := content
+	if idx := strings.Index(firstLine, "\n"); idx >= 0 {
+		firstLine = firstLine[:idx]
+	}
+	firstLine = strings.TrimSuffix(firstLine, "\r")
+	trimmed := strings.TrimLeft(firstLine, " \t")
+	if trimmed == "" {
+		return false
+	}
+
+	// Prefer deterministic table starts (pipe-first rows), which avoids
+	// suppressing preview for normal prose that merely contains a pipe character.
+	return strings.HasPrefix(trimmed, "|")
+}
+
 // processLine handles a single complete line of input.
 func (sr *StreamRenderer) processLine(line string) error {
 	// Remove the trailing newline for analysis, but keep track of it
