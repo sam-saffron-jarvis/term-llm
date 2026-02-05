@@ -152,6 +152,61 @@ func TestAskDoneFlushesSegments(t *testing.T) {
 	}
 }
 
+func TestAskToolStartFlushesCompletedTextBoundary(t *testing.T) {
+	model := newAskStreamModel()
+	model.width = 80
+
+	updated, _ := model.Update(askContentMsg("Let me grab the announcement.\n\n"))
+	model = updated.(askStreamModel)
+
+	updated, _ = model.Update(askToolStartMsg{CallID: "call-1", Name: "read_file", Info: "(announcement.md)"})
+	model = updated.(askStreamModel)
+
+	if len(model.tracker.Segments) != 2 {
+		t.Fatalf("expected 2 segments (text + tool), got %d", len(model.tracker.Segments))
+	}
+
+	textSeg := model.tracker.Segments[0]
+	if textSeg.Type != ui.SegmentText {
+		t.Fatalf("expected first segment to be text, got %v", textSeg.Type)
+	}
+	if !textSeg.Complete {
+		t.Fatal("expected pre-tool text segment to be complete")
+	}
+	if !textSeg.Flushed {
+		t.Fatal("expected pre-tool text segment to flush at tool boundary")
+	}
+
+	toolSeg := model.tracker.Segments[1]
+	if toolSeg.Type != ui.SegmentTool {
+		t.Fatalf("expected second segment to be tool, got %v", toolSeg.Type)
+	}
+	if toolSeg.ToolStatus != ui.ToolPending {
+		t.Fatalf("expected tool to be pending, got %v", toolSeg.ToolStatus)
+	}
+}
+
+func TestAskToolEndFlushesCompletedToolBoundary(t *testing.T) {
+	model := newAskStreamModel()
+	model.width = 80
+
+	updated, _ := model.Update(askToolStartMsg{CallID: "call-1", Name: "shell", Info: "(pwd)"})
+	model = updated.(askStreamModel)
+
+	updated, _ = model.Update(askToolEndMsg{CallID: "call-1", Success: true})
+	model = updated.(askStreamModel)
+
+	if len(model.tracker.Segments) != 1 {
+		t.Fatalf("expected 1 tool segment, got %d", len(model.tracker.Segments))
+	}
+	if model.tracker.Segments[0].ToolStatus != ui.ToolSuccess {
+		t.Fatalf("expected tool to be successful, got %v", model.tracker.Segments[0].ToolStatus)
+	}
+	if !model.tracker.Segments[0].Flushed {
+		t.Fatal("expected completed tool segment to flush at tool-end boundary")
+	}
+}
+
 // TestAskDoneNoDoubleRendering verifies that content appears exactly once
 // in the final flush, preventing double rendering issues.
 func TestAskDoneNoDoubleRendering(t *testing.T) {

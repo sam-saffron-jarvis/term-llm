@@ -961,6 +961,18 @@ func (m *askStreamModel) maybeFlushToScrollback() tea.Cmd {
 	return nil
 }
 
+// flushCompletedBoundaryNow flushes all completed segments immediately.
+// Use this at tool boundaries to preserve strict text/tool interleaving order.
+func (m *askStreamModel) flushCompletedBoundaryNow() tea.Cmd {
+	result := m.tracker.FlushCompletedNow(m.width, renderMd)
+	if result.ToPrint != "" {
+		m.cachedContent = "" // Invalidate cache since segments were flushed
+		m.contentDirty = true
+		return tea.Printf("%s", result.ToPrint)
+	}
+	return nil
+}
+
 // flushSmoothBufferToTracker flushes any buffered words into the text tracker.
 func (m *askStreamModel) flushSmoothBufferToTracker() {
 	if m.smoothBuffer == nil {
@@ -1264,18 +1276,23 @@ func (m askStreamModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return renderMd(text, m.width)
 		})
 
-		if m.tracker.HandleToolStart(msg.CallID, msg.Name, msg.Info) {
-			// New segment added, start wave animation (but not for ask_user which has its own UI)
-			if msg.Name != tools.AskUserToolName {
-				return m, m.tracker.StartWave()
-			}
+		// Add or dedupe pending tool segment for this call.
+		m.tracker.HandleToolStart(msg.CallID, msg.Name, msg.Info)
+
+		var cmds []tea.Cmd
+		if cmd := m.flushCompletedBoundaryNow(); cmd != nil {
+			cmds = append(cmds, cmd)
+		}
+
+		// Start (or restart) wave animation for non-ask_user tools.
+		if msg.Name != tools.AskUserToolName {
+			cmds = append(cmds, m.tracker.StartWave())
+		}
+
+		if len(cmds) == 0 {
 			return m, nil
 		}
-		// Already have pending segment for this call, just restart wave (but not for ask_user)
-		if msg.Name != tools.AskUserToolName {
-			return m, m.tracker.StartWave()
-		}
-		return m, nil
+		return m, tea.Batch(cmds...)
 
 	case askToolEndMsg:
 		m.tracker.HandleToolEnd(msg.CallID, msg.Success)
@@ -1283,9 +1300,9 @@ func (m askStreamModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Remove from subagent tracker when spawn_agent completes
 		m.subagentTracker.Remove(msg.CallID)
 
-		// Flush completed tool to scrollback immediately to prevent duplicate rendering
+		// Flush completed segments immediately at tool boundary.
 		var flushCmd tea.Cmd
-		if cmd := m.maybeFlushToScrollback(); cmd != nil {
+		if cmd := m.flushCompletedBoundaryNow(); cmd != nil {
 			flushCmd = cmd
 		}
 

@@ -80,13 +80,13 @@ func (s SessionStats) Render() string {
 	var tokensStr string
 	if s.CachedInputTokens > 0 {
 		tokensStr = fmt.Sprintf("%s in (%s cached) / %s out",
-			formatTokenCount(s.InputTokens),
-			formatTokenCount(s.CachedInputTokens),
-			formatTokenCount(s.OutputTokens))
+			FormatTokenCount(s.InputTokens),
+			FormatTokenCount(s.CachedInputTokens),
+			FormatTokenCount(s.OutputTokens))
 	} else {
 		tokensStr = fmt.Sprintf("%s in / %s out",
-			formatTokenCount(s.InputTokens),
-			formatTokenCount(s.OutputTokens))
+			FormatTokenCount(s.InputTokens),
+			FormatTokenCount(s.OutputTokens))
 	}
 
 	// Format time breakdown

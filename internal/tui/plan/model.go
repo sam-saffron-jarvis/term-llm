@@ -57,6 +57,13 @@ type Model struct {
 	streamCancel   context.CancelFunc
 	tracker        *ui.ToolTracker // For tool tracking during agent runs
 
+	// Activity panel state
+	activityExpanded bool             // toggle with Ctrl+A
+	agentText        strings.Builder  // accumulated reasoning text
+	streamStartTime  time.Time        // when current agent run started
+	stats            *ui.SessionStats // usage/timing tracking for current run
+	currentTurn      int              // which LLM turn we're on
+
 	// Embedded inline ask_user UI
 	askUserModel  *tools.AskUserModel
 	askUserDoneCh chan<- []tools.AskUserAnswer
@@ -219,6 +226,9 @@ type pendingPromptMsg struct {
 	prompt string
 }
 
+// tickMsg is sent periodically to update elapsed time display.
+type tickMsg time.Time
+
 // Update handles messages.
 func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmds []tea.Cmd
@@ -227,9 +237,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
-		// Adjust editor height to leave room for status line, chat input, and separators
-		m.editor.SetWidth(m.width - 4)
-		m.editor.SetHeight(m.height - 9)
+		m.recalcEditorHeight()
 		m.viewport.Width = m.width
 		m.viewport.Height = m.height - 2
 		m.chatInput.SetWidth(m.width - 4)
@@ -287,6 +295,12 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case pendingPromptMsg:
 		// Trigger planner with the pending prompt
 		return m.triggerPlannerWithPrompt(msg.prompt)
+
+	case tickMsg:
+		// Periodic tick for elapsed time updates
+		if m.agentActive {
+			cmds = append(cmds, m.tickEvery())
+		}
 	}
 
 	return m, tea.Batch(cmds...)
@@ -313,6 +327,9 @@ func (m *Model) handleStreamEvent(ev ui.StreamEvent) []tea.Cmd {
 				}
 			}
 		}
+		if m.stats != nil {
+			m.stats.ToolStart()
+		}
 		m.agentPhase = fmt.Sprintf("Using %s...", ev.ToolName)
 
 	case ui.StreamEventToolEnd:
@@ -322,13 +339,25 @@ func (m *Model) handleStreamEvent(ev ui.StreamEvent) []tea.Cmd {
 				m.agentPhase = "Thinking"
 			}
 		}
+		if m.stats != nil {
+			m.stats.ToolEnd()
+		}
+
+	case ui.StreamEventUsage:
+		if m.stats != nil {
+			m.stats.AddUsage(ev.InputTokens, ev.OutputTokens, ev.CachedTokens)
+		}
+		m.currentTurn = m.stats.LLMCallCount
 
 	case ui.StreamEventPhase:
 		m.agentPhase = ev.Phase
 
 	case ui.StreamEventText:
-		// Agent might emit text - we don't display it directly since edits go to document
-		m.agentPhase = "Editing"
+		// Capture agent reasoning text for activity panel
+		m.agentText.WriteString(ev.Text)
+		if m.agentPhase != "Inserting" && m.agentPhase != "Deleting" {
+			m.agentPhase = "Analyzing"
+		}
 
 	case ui.StreamEventPartialInsert:
 		// Handle streaming partial insert - insert a single line as it arrives
@@ -528,6 +557,12 @@ func (m *Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "ctrl+s":
 		// Save document
 		return m.saveDocument()
+
+	case "ctrl+a":
+		// Toggle activity panel expanded/collapsed
+		m.activityExpanded = !m.activityExpanded
+		m.recalcEditorHeight()
+		return m, nil
 
 	case "ctrl+k":
 		// Clear pending prompt queue
@@ -1154,6 +1189,11 @@ func (m *Model) triggerPlannerWithPrompt(userInstruction string) (tea.Model, tea
 	m.agentStreaming = true
 	m.agentPhase = "Thinking"
 	m.agentError = nil
+	m.stats = ui.NewSessionStats()
+	m.streamStartTime = time.Now()
+	m.agentText.Reset()
+	m.activityExpanded = true
+	m.currentTurn = 0
 	// Keep editor focused - user can continue editing during agent operation
 
 	// Create context for cancellation
@@ -1187,6 +1227,7 @@ func (m *Model) triggerPlannerWithPrompt(userInstruction string) (tea.Model, tea
 	return m, tea.Batch(
 		m.listenForStreamEvents(),
 		m.spinner.Tick,
+		m.tickEvery(),
 	)
 }
 
@@ -1564,7 +1605,43 @@ func (m *Model) syncDocFromEditor() {
 
 func (m *Model) syncEditorFromDoc() {
 	content := m.doc.Text()
+
+	// Save cursor position before SetValue() resets it
+	savedLine := m.editor.Line()
+	savedCol := 0
+	if li := m.editor.LineInfo(); li.ColumnOffset >= 0 {
+		savedCol = li.ColumnOffset
+	}
+
 	m.editor.SetValue(content)
+
+	// Restore cursor position (clamped to valid range)
+	lines := strings.Split(content, "\n")
+	targetLine := savedLine
+	if targetLine >= len(lines) {
+		targetLine = len(lines) - 1
+	}
+	if targetLine < 0 {
+		targetLine = 0
+	}
+
+	targetCol := savedCol
+	if targetLine < len(lines) {
+		lineLen := len(lines[targetLine])
+		if targetCol > lineLen {
+			targetCol = lineLen
+		}
+	}
+
+	// Navigate to saved position (same pattern as moveCursorToMouse)
+	m.editor.SetCursor(0)
+	for i := 0; i < targetLine; i++ {
+		m.editor, _ = m.editor.Update(tea.KeyMsg{Type: tea.KeyDown})
+	}
+	m.editor, _ = m.editor.Update(tea.KeyMsg{Type: tea.KeyHome})
+	for i := 0; i < targetCol; i++ {
+		m.editor, _ = m.editor.Update(tea.KeyMsg{Type: tea.KeyRight})
+	}
 }
 
 func (m *Model) saveDocument() (tea.Model, tea.Cmd) {
@@ -1588,6 +1665,12 @@ func (m *Model) saveDocument() (tea.Model, tea.Cmd) {
 func (m *Model) setStatus(msg string) {
 	m.statusMsg = msg
 	m.statusMsgTime = time.Now()
+}
+
+func (m *Model) tickEvery() tea.Cmd {
+	return tea.Tick(time.Second, func(t time.Time) tea.Msg {
+		return tickMsg(t)
+	})
 }
 
 func (m *Model) listenForStreamEvents() tea.Cmd {
@@ -1620,6 +1703,9 @@ func (m *Model) View() string {
 		return b.String()
 	}
 
+	// Recalculate editor height for activity panel
+	m.recalcEditorHeight()
+
 	// Main content: editor with visual selection highlighting
 	editorView := m.editor.View()
 	if m.visualMode {
@@ -1627,6 +1713,12 @@ func (m *Model) View() string {
 	}
 	b.WriteString(editorView)
 	b.WriteString("\n")
+
+	// Activity panel (between editor and chat)
+	if panel := m.renderActivityPanel(); panel != "" {
+		b.WriteString(panel)
+		b.WriteString("\n")
+	}
 
 	// Separator line above chat section
 	separator := strings.Repeat("─", m.width)
@@ -1712,6 +1804,214 @@ func (m *Model) renderChatInput() string {
 	return prefix + inputView
 }
 
+// recalcEditorHeight recalculates the editor height accounting for activity panel.
+func (m *Model) recalcEditorHeight() {
+	m.editor.SetWidth(m.width - 4)
+	panelH := m.activityPanelHeight()
+	// Base: height - 9 (status line, chat input, separators, borders)
+	editorH := m.height - 9 - panelH
+	if editorH < 3 {
+		editorH = 3
+	}
+	m.editor.SetHeight(editorH)
+}
+
+// activityPanelHeight returns the number of lines the activity panel uses.
+// Returns 0 when the panel should not be shown.
+func (m *Model) activityPanelHeight() int {
+	if !m.agentActive && m.stats == nil {
+		return 0
+	}
+	if !m.activityExpanded {
+		// Collapsed: just the separator + single summary line + separator
+		return 3
+	}
+
+	// Count: top separator (1) + completed tools + active tools + reasoning line + spinner line + bottom separator (1)
+	lines := 2 // top + bottom separator
+
+	// Completed tool segments
+	if m.tracker != nil {
+		for i := range m.tracker.Segments {
+			seg := &m.tracker.Segments[i]
+			if seg.Type == ui.SegmentTool && seg.ToolStatus != ui.ToolPending {
+				lines++
+			}
+		}
+	}
+
+	// Active tool segments
+	if m.tracker != nil {
+		for i := range m.tracker.Segments {
+			seg := &m.tracker.Segments[i]
+			if seg.Type == ui.SegmentTool && seg.ToolStatus == ui.ToolPending {
+				lines++
+			}
+		}
+	}
+
+	// Reasoning text line (if any)
+	if m.agentText.Len() > 0 {
+		lines++
+	}
+
+	// Spinner/status line
+	lines++
+
+	// Cap panel to reasonable max
+	if lines > 12 {
+		lines = 12
+	}
+	return lines
+}
+
+// renderActivityPanel renders the agent activity panel between editor and chat.
+func (m *Model) renderActivityPanel() string {
+	if !m.agentActive && m.stats == nil {
+		return ""
+	}
+
+	theme := m.styles.Theme()
+	separator := strings.Repeat("─", m.width)
+	mutedSep := m.styles.Muted.Render(separator)
+
+	var b strings.Builder
+
+	// Top separator with label
+	label := " Agent "
+	if m.width > len(label)+4 {
+		leftDash := strings.Repeat("─", 2)
+		rightDash := strings.Repeat("─", m.width-len(label)-2)
+		b.WriteString(m.styles.Muted.Render(leftDash))
+		b.WriteString(lipgloss.NewStyle().Foreground(theme.Primary).Render(label))
+		b.WriteString(m.styles.Muted.Render(rightDash))
+	} else {
+		b.WriteString(mutedSep)
+	}
+	b.WriteString("\n")
+
+	if !m.activityExpanded {
+		// Collapsed: single summary line
+		summary := m.activitySummary()
+		b.WriteString(summary)
+		b.WriteString("\n")
+		b.WriteString(mutedSep)
+		return b.String()
+	}
+
+	// Completed tool segments
+	maxToolLines := 8
+	toolLines := 0
+	if m.tracker != nil {
+		for i := range m.tracker.Segments {
+			seg := &m.tracker.Segments[i]
+			if seg.Type == ui.SegmentTool && seg.ToolStatus != ui.ToolPending {
+				if toolLines >= maxToolLines {
+					break
+				}
+				b.WriteString(ui.RenderToolSegment(seg, -1))
+				b.WriteString("\n")
+				toolLines++
+			}
+		}
+	}
+
+	// Active (pending) tool segments with wave animation
+	if m.tracker != nil {
+		for i := range m.tracker.Segments {
+			seg := &m.tracker.Segments[i]
+			if seg.Type == ui.SegmentTool && seg.ToolStatus == ui.ToolPending {
+				b.WriteString(ui.RenderToolSegment(seg, m.tracker.WavePos))
+				b.WriteString("\n")
+			}
+		}
+	}
+
+	// Last line of agent reasoning text (dimmed)
+	if m.agentText.Len() > 0 {
+		text := m.agentText.String()
+		// Get the last non-empty line
+		lastLine := lastNonEmptyLine(text)
+		if lastLine != "" {
+			// Truncate to width
+			if len(lastLine) > m.width-4 {
+				lastLine = lastLine[:m.width-7] + "..."
+			}
+			b.WriteString(m.styles.Muted.Render("  " + lastLine))
+			b.WriteString("\n")
+		}
+	}
+
+	// Streaming indicator line
+	var elapsed time.Duration
+	if !m.streamStartTime.IsZero() {
+		elapsed = time.Since(m.streamStartTime)
+	}
+
+	b.WriteString(m.spinner.View())
+	b.WriteString(" ")
+	b.WriteString(m.agentPhase)
+
+	// Stats
+	var statParts []string
+	if m.stats != nil && m.stats.ToolCallCount > 0 {
+		if m.stats.ToolCallCount == 1 {
+			statParts = append(statParts, "1 tool")
+		} else {
+			statParts = append(statParts, fmt.Sprintf("%d tools", m.stats.ToolCallCount))
+		}
+	}
+	if m.stats != nil {
+		totalTok := m.stats.InputTokens + m.stats.OutputTokens
+		if totalTok > 0 {
+			statParts = append(statParts, ui.FormatTokenCount(totalTok)+" tok")
+		}
+	}
+	if elapsed > 0 {
+		statParts = append(statParts, fmt.Sprintf("%.1fs", elapsed.Seconds()))
+	}
+	if len(statParts) > 0 {
+		b.WriteString(m.styles.Muted.Render(" | " + strings.Join(statParts, " | ")))
+	}
+	b.WriteString("\n")
+
+	// Bottom separator
+	b.WriteString(mutedSep)
+
+	return b.String()
+}
+
+// activitySummary returns a collapsed single-line summary of agent activity.
+func (m *Model) activitySummary() string {
+	var parts []string
+	parts = append(parts, m.spinner.View()+" "+m.agentPhase)
+	if m.stats != nil && m.stats.ToolCallCount > 0 {
+		parts = append(parts, fmt.Sprintf("%d tools", m.stats.ToolCallCount))
+	}
+	if m.stats != nil {
+		totalTok := m.stats.InputTokens + m.stats.OutputTokens
+		if totalTok > 0 {
+			parts = append(parts, ui.FormatTokenCount(totalTok)+" tok")
+		}
+	}
+	if !m.streamStartTime.IsZero() {
+		parts = append(parts, fmt.Sprintf("%.1fs", time.Since(m.streamStartTime).Seconds()))
+	}
+	return strings.Join(parts, " | ")
+}
+
+// lastNonEmptyLine returns the last non-empty line from text.
+func lastNonEmptyLine(text string) string {
+	lines := strings.Split(strings.TrimRight(text, "\n"), "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		trimmed := strings.TrimSpace(lines[i])
+		if trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
+}
+
 func (m *Model) renderDocument() string {
 	var b strings.Builder
 	lines := m.doc.Lines()
@@ -1751,10 +2051,31 @@ func (m *Model) renderStatusLine() string {
 		vimIndicator = "-- INSERT --"
 	}
 
-	// Second part: agent status
+	// Second part: agent status with inline stats
 	var status string
 	if m.agentActive {
-		status = m.spinner.View() + " " + m.agentPhase
+		var parts []string
+		parts = append(parts, m.spinner.View()+" "+m.agentPhase)
+		if m.currentTurn > 1 {
+			parts = append(parts, fmt.Sprintf("turn %d", m.currentTurn))
+		}
+		if m.stats != nil && m.stats.ToolCallCount > 0 {
+			if m.stats.ToolCallCount == 1 {
+				parts = append(parts, "1 tool")
+			} else {
+				parts = append(parts, fmt.Sprintf("%d tools", m.stats.ToolCallCount))
+			}
+		}
+		if m.stats != nil {
+			totalTok := m.stats.InputTokens + m.stats.OutputTokens
+			if totalTok > 0 {
+				parts = append(parts, ui.FormatTokenCount(totalTok)+" tok")
+			}
+		}
+		if !m.streamStartTime.IsZero() {
+			parts = append(parts, fmt.Sprintf("%.1fs", time.Since(m.streamStartTime).Seconds()))
+		}
+		status = strings.Join(parts, " | ")
 	} else if m.statusMsg != "" && time.Since(m.statusMsgTime) < 5*time.Second {
 		status = m.statusMsg
 	}
@@ -1790,7 +2111,7 @@ func (m *Model) renderStatusLine() string {
 	// Right side: shortcuts
 	var right string
 	if m.agentActive {
-		right = "Ctrl+C: cancel  Tab: chat"
+		right = "Ctrl+C: cancel  Ctrl+A: activity  Tab: chat"
 	} else if m.chatFocused {
 		right = "Enter: send  Esc/Tab: editor  Ctrl+K: clear"
 	} else {

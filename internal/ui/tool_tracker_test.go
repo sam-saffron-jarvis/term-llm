@@ -337,6 +337,53 @@ func TestFlushToScrollback_CompleteTextCanBeFlushed(t *testing.T) {
 	}
 }
 
+func TestFlushCompletedNow_FlushesAllCompletedSegments(t *testing.T) {
+	tracker := NewToolTracker()
+	renderFn := func(s string) string { return s }
+
+	tracker.AddTextSegment("First paragraph\n\n", 0)
+	tracker.MarkCurrentTextComplete(renderFn)
+
+	tracker.AddTextSegment("Second paragraph\n\n", 0)
+	tracker.MarkCurrentTextComplete(renderFn)
+
+	tracker.HandleToolStart("call-1", "shell", "(pwd)")
+	tracker.HandleToolEnd("call-1", true)
+
+	result := tracker.FlushCompletedNow(80, func(s string, w int) string { return s })
+	if result.ToPrint == "" {
+		t.Fatal("expected completed content to be flushed")
+	}
+
+	if !tracker.Segments[0].Flushed {
+		t.Fatal("expected first text segment to be flushed")
+	}
+	if !tracker.Segments[1].Flushed {
+		t.Fatal("expected second text segment to be flushed")
+	}
+	if !tracker.Segments[2].Flushed {
+		t.Fatal("expected completed tool segment to be flushed")
+	}
+}
+
+func TestFlushCompletedNow_DoesNotFlushPendingTools(t *testing.T) {
+	tracker := NewToolTracker()
+
+	tracker.HandleToolStart("call-1", "shell", "(pwd)")
+
+	result := tracker.FlushCompletedNow(80, func(s string, w int) string { return s })
+	if result.ToPrint != "" {
+		t.Fatalf("expected no output for pending tool-only state, got %q", result.ToPrint)
+	}
+
+	if len(tracker.Segments) != 1 {
+		t.Fatalf("expected one tool segment, got %d", len(tracker.Segments))
+	}
+	if tracker.Segments[0].Flushed {
+		t.Fatal("expected pending tool to remain unflushed")
+	}
+}
+
 // TestDebugStreamingSimulation simulates streaming where text accumulates
 // in a single segment. With the streaming renderer, complete blocks are
 // rendered immediately as they arrive.

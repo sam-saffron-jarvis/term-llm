@@ -6,8 +6,8 @@ import (
 	"time"
 )
 
-// formatTokenCount formats a token count in compact form: 1, 999, 1.5k, 12.3k, 1.1M
-func formatTokenCount(n int) string {
+// FormatTokenCount formats a token count in compact form: 1, 999, 1.5k, 12.3k, 1.1M
+func FormatTokenCount(n int) string {
 	if n < 1000 {
 		return fmt.Sprintf("%d", n)
 	}
@@ -91,7 +91,7 @@ func (s StreamingIndicator) Render(styles *Styles) string {
 	if len(s.Segments) == 0 && !s.HideProgress {
 		b.WriteString(" ")
 		if s.Tokens > 0 {
-			b.WriteString(fmt.Sprintf("%s tokens | ", formatTokenCount(s.Tokens)))
+			b.WriteString(fmt.Sprintf("%s tokens | ", FormatTokenCount(s.Tokens)))
 		}
 		b.WriteString(fmt.Sprintf("%.1fs", s.Elapsed.Seconds()))
 	}

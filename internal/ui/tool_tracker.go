@@ -899,6 +899,68 @@ func (t *ToolTracker) FlushAllRemaining(
 	}
 }
 
+// FlushCompletedNow flushes all completed, unflushed segments immediately.
+// Unlike FlushToScrollback, this does not keep any segments for View().
+// Pending tools and incomplete text segments are never flushed.
+func (t *ToolTracker) FlushCompletedNow(
+	width int,
+	renderMd func(string, int) string,
+) FlushToScrollbackResult {
+	var toFlush []*Segment
+	for i := range t.Segments {
+		seg := &t.Segments[i]
+		if seg.Flushed {
+			continue
+		}
+		if seg.Type == SegmentTool && seg.ToolStatus == ToolPending {
+			continue
+		}
+		if seg.Type == SegmentText && !seg.Complete {
+			continue
+		}
+		toFlush = append(toFlush, seg)
+	}
+
+	if len(toFlush) == 0 {
+		debugFlushf("flush-now skip reason=no-completed-segments")
+		return FlushToScrollbackResult{NewPrintedLines: 0}
+	}
+
+	content := RenderSegments(toFlush, width, -1, renderMd, true)
+	if t.HasFlushed {
+		content = stripLeadingBlankLine(content)
+		prefix := t.LeadingSeparator(toFlush[0].Type)
+		if prefix != "" {
+			content = prefix + content
+		}
+	}
+
+	// Always mark segments as flushed, even if rendered content is empty.
+	for _, seg := range toFlush {
+		seg.Flushed = true
+		if seg.StreamRenderer != nil {
+			seg.StreamRenderer.MarkFlushed()
+			seg.FlushedRenderedPos = seg.StreamRenderer.FlushedRenderedPos()
+		} else if seg.Type == SegmentText && seg.Complete && seg.Rendered != "" {
+			seg.FlushedRenderedPos = len(seg.Rendered)
+		}
+	}
+
+	if content == "" {
+		debugFlushf("flush-now skip reason=empty-render count=%d (segments marked flushed)", len(toFlush))
+		return FlushToScrollbackResult{NewPrintedLines: 0}
+	}
+
+	t.HasFlushed = true
+	t.LastFlushedType = toFlush[len(toFlush)-1].Type
+	debugFlushf("flush-now flushed count=%d lastType=%d contentLen=%d", len(toFlush), t.LastFlushedType, len(content))
+
+	return FlushToScrollbackResult{
+		ToPrint:         content,
+		NewPrintedLines: 0,
+	}
+}
+
 // FlushBeforeExternalUI flushes content to scrollback before showing external UI.
 // Keeps some recent content visible for context.
 func (t *ToolTracker) FlushBeforeExternalUI(
