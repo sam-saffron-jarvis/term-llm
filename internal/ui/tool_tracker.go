@@ -498,6 +498,7 @@ func (t *ToolTracker) FlushStreamingText(threshold int, width int, renderMd func
 	// First: flush any completed tool segments before the text segment.
 	// Tool calls are always processed before text continues, so any tool segments
 	// that appear before the current text segment are already complete.
+	hadPriorFlush := t.HasFlushed
 	var contentBuilder strings.Builder
 	var toolsToFlush []*Segment
 	for i := 0; i < segIdx; i++ {
@@ -512,7 +513,7 @@ func (t *ToolTracker) FlushStreamingText(threshold int, width int, renderMd func
 		toolContent := RenderSegments(toolsToFlush, width, -1, nil, true)
 		if t.HasFlushed {
 			toolContent = stripLeadingBlankLine(toolContent)
-			prefix := t.LeadingSeparator(toolsToFlush[0].Type)
+			prefix := t.FlushLeadingSeparator(toolsToFlush[0].Type)
 			if prefix != "" {
 				toolContent = prefix + toolContent
 			}
@@ -580,12 +581,18 @@ func (t *ToolTracker) FlushStreamingText(threshold int, width int, renderMd func
 		}
 
 		if t.HasFlushed && seg.FlushedPos == 0 {
-			contentBuilder.WriteString(t.LeadingSeparator(SegmentText))
+			if hadPriorFlush {
+				// Crossing a tea.Printf boundary: strip one \n since tea.Printf added it
+				contentBuilder.WriteString(t.FlushLeadingSeparator(SegmentText))
+			} else {
+				// Tool+text in same ToPrint: use full separator
+				contentBuilder.WriteString(t.LeadingSeparator(SegmentText))
+			}
 		}
 
-		// Strip leading blank line if we've already flushed content,
-		// since tea.Printf adds a newline after each flush
-		if t.HasFlushed {
+		// Strip leading blank line if we've already flushed content
+		// AND a prior tea.Printf boundary exists
+		if hadPriorFlush {
 			rendered = stripLeadingBlankLine(rendered)
 		}
 		contentBuilder.WriteString(rendered)
@@ -671,10 +678,17 @@ func (t *ToolTracker) FlushStreamingText(threshold int, width int, renderMd func
 
 	// Only add leading separator if this is the very FIRST flush for this segment.
 	if t.HasFlushed && seg.FlushedPos == 0 {
-		contentBuilder.WriteString(t.LeadingSeparator(SegmentText))
+		if hadPriorFlush {
+			// Crossing a tea.Printf boundary: strip one \n since tea.Printf added it
+			contentBuilder.WriteString(t.FlushLeadingSeparator(SegmentText))
+		} else {
+			// Tool+text in same ToPrint: use full separator
+			contentBuilder.WriteString(t.LeadingSeparator(SegmentText))
+		}
 	}
-	// Strip leading blank line since tea.Printf adds a newline after each flush
-	if t.HasFlushed {
+	// Strip leading blank line if we've already flushed content
+	// AND a prior tea.Printf boundary exists
+	if hadPriorFlush {
 		rendered = stripLeadingBlankLine(rendered)
 	}
 	contentBuilder.WriteString(rendered)
@@ -787,7 +801,7 @@ func (t *ToolTracker) FlushToScrollback(
 			// Strip leading blank line FIRST since tea.Printf adds a newline after each flush
 			// This prevents double blank lines without removing intentional separator prefix
 			content = stripLeadingBlankLine(content)
-			prefix := t.LeadingSeparator(toFlush[0].Type)
+			prefix := t.FlushLeadingSeparator(toFlush[0].Type)
 			if prefix != "" {
 				content = prefix + content
 			}
@@ -867,7 +881,7 @@ func (t *ToolTracker) FlushAllRemaining(
 		// Strip leading blank line FIRST since tea.Printf adds a newline after each flush
 		// This prevents double blank lines without removing intentional separator prefix
 		content = stripLeadingBlankLine(content)
-		prefix := t.LeadingSeparator(toFlush[0].Type)
+		prefix := t.FlushLeadingSeparator(toFlush[0].Type)
 		if prefix != "" {
 			content = prefix + content
 		}
@@ -929,7 +943,7 @@ func (t *ToolTracker) FlushCompletedNow(
 	content := RenderSegments(toFlush, width, -1, renderMd, true)
 	if t.HasFlushed {
 		content = stripLeadingBlankLine(content)
-		prefix := t.LeadingSeparator(toFlush[0].Type)
+		prefix := t.FlushLeadingSeparator(toFlush[0].Type)
 		if prefix != "" {
 			content = prefix + content
 		}
@@ -1010,7 +1024,7 @@ func (t *ToolTracker) FlushBeforeExternalUI(
 		// Strip leading blank line FIRST since tea.Printf adds a newline after each flush
 		// This prevents double blank lines without removing intentional separator prefix
 		content = stripLeadingBlankLine(content)
-		prefix := t.LeadingSeparator(toFlush[0].Type)
+		prefix := t.FlushLeadingSeparator(toFlush[0].Type)
 		if prefix != "" {
 			content = prefix + content
 		}
@@ -1097,11 +1111,28 @@ func (t *ToolTracker) RenderUnflushed(width int, renderMd func(string, int) stri
 	return RenderSegmentsWithLeading(leading, unflushed, width, -1, renderMd, includeImages)
 }
 
-// LeadingSeparator returns the required spacing before a segment of the given type,
-// based on the last flushed segment.
+// LeadingSeparator returns the full spacing before a segment of the given type,
+// based on the last flushed segment. Use this for View()/Render() output and
+// when appending multiple parts within a single ToPrint (no tea.Printf between them).
+// For spacing across tea.Printf boundaries, use FlushLeadingSeparator instead.
 func (t *ToolTracker) LeadingSeparator(nextType SegmentType) string {
 	if !t.HasFlushed {
 		return ""
 	}
 	return SegmentSeparator(t.LastFlushedType, nextType)
+}
+
+// FlushLeadingSeparator returns the spacing before a flushed segment,
+// accounting for the trailing newline that tea.Printf/tea.Println adds.
+// Use this only when the previous content was printed via a separate tea.Printf call.
+// For intra-ToPrint spacing (multiple parts in one flush), use LeadingSeparator.
+func (t *ToolTracker) FlushLeadingSeparator(nextType SegmentType) string {
+	if !t.HasFlushed {
+		return ""
+	}
+	sep := SegmentSeparator(t.LastFlushedType, nextType)
+	if len(sep) > 0 && sep[0] == '\n' {
+		return sep[1:]
+	}
+	return sep
 }

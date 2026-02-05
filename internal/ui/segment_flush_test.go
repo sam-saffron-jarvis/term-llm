@@ -55,25 +55,126 @@ func TestFlushSpacingConsistency(t *testing.T) {
 			}
 			reference := RenderSegments(refSegs, 80, -1, mockRender, true)
 
-			// 2. Get concatenated output from individual flushes
-			var concatenated strings.Builder
+			// 2. Get concatenated output from individual flushes.
+			// Simulate tea.Printf's trailing newline between flushes.
+			var parts []string
 			tracker := NewToolTracker()
-			// Need to deep copy segments or at least ensure we don't modify tt.segments
 			tracker.Segments = make([]Segment, len(tt.segments))
 			copy(tracker.Segments, tt.segments)
 
 			for i := 0; i < len(tt.segments); i++ {
-				// FlushToScrollback(width, printedLines, maxViewLines, renderMd)
-				// We want it to flush EXACTLY one segment if possible, or just let it flush what it wants
-				// until everything is flushed.
 				res := tracker.FlushToScrollback(80, 0, len(tt.segments)-i-1, mockRender)
-				concatenated.WriteString(res.ToPrint)
+				if res.ToPrint != "" {
+					parts = append(parts, res.ToPrint)
+				}
 			}
 
-			if concatenated.String() != reference {
-				t.Errorf("Concatenated flush output does not match reference.\nReference:\n%q\nConcatenated:\n%q", reference, concatenated.String())
+			// Join with "\n" to simulate tea.Printf's trailing newline
+			concatenated := strings.Join(parts, "\n")
+
+			if concatenated != reference {
+				t.Errorf("Concatenated flush output does not match reference.\nReference:\n%q\nConcatenated:\n%q", reference, concatenated)
 			}
 		})
+	}
+}
+
+func TestFlushToolToTool_NoBlankLine(t *testing.T) {
+	// Regression test: when two tool segments are flushed separately via tea.Printf,
+	// there should be exactly one newline between them (no blank line).
+	// tea.Printf adds a trailing \n after each flush, so FlushLeadingSeparator
+	// must strip the leading \n from the separator to avoid \n\n.
+	tracker := NewToolTracker()
+	tracker.HandleToolStart("t1", "web_search", "query one")
+	tracker.HandleToolEnd("t1", true)
+
+	// Flush first tool
+	res1 := tracker.FlushCompletedNow(80, nil)
+	if res1.ToPrint == "" {
+		t.Fatal("expected first tool to flush")
+	}
+
+	tracker.HandleToolStart("t2", "web_search", "query two")
+	tracker.HandleToolEnd("t2", true)
+
+	// Flush second tool
+	res2 := tracker.FlushCompletedNow(80, nil)
+	if res2.ToPrint == "" {
+		t.Fatal("expected second tool to flush")
+	}
+
+	// Simulate tea.Printf: each flush gets a trailing \n
+	output := res1.ToPrint + "\n" + res2.ToPrint + "\n"
+	stripped := stripAnsiForTest(output)
+
+	// Find the two tool indicators
+	first := strings.Index(stripped, "web_search")
+	if first == -1 {
+		t.Fatalf("expected first 'web_search' in output, got: %q", stripped)
+	}
+	rest := stripped[first+len("web_search"):]
+	second := strings.Index(rest, "web_search")
+	if second == -1 {
+		t.Fatalf("expected second 'web_search' in output, got: %q", stripped)
+	}
+	between := rest[:second]
+
+	// Should be exactly one newline between (tool line ending + tea \n),
+	// not two (which would be a blank line).
+	newlines := strings.Count(between, "\n")
+	if newlines != 1 {
+		t.Errorf("expected 1 newline between tool segments, got %d\nbetween: %q\nfull output: %q",
+			newlines, between, stripped)
+	}
+}
+
+func TestFlushStreamingText_ToolAndTextInOnePrint(t *testing.T) {
+	// Regression test: when FlushStreamingText returns both a completed tool
+	// and threshold-triggered text in a single ToPrint, the tool→text separator
+	// must use the full SegmentSeparator (not FlushLeadingSeparator) since no
+	// tea.Printf newline occurs between them within the same ToPrint.
+	width := 80
+	renderMd := func(s string, w int) string {
+		return RenderMarkdown(s, w)
+	}
+
+	tracker := NewToolTracker()
+
+	// Add a completed tool segment
+	tracker.HandleToolStart("t1", "web_search", "query")
+	tracker.HandleToolEnd("t1", true)
+
+	// Add enough text to exceed a 0 threshold
+	tracker.AddTextSegment("Hello world.\n\nSecond paragraph.\n\n", width)
+
+	// Single FlushStreamingText call should return both tool and text
+	res := tracker.FlushStreamingText(0, width, renderMd)
+	if res.ToPrint == "" {
+		t.Fatal("expected tool+text flush")
+	}
+
+	stripped := stripAnsiForTest(res.ToPrint)
+
+	// Both tool and text should be present
+	toolIdx := strings.Index(stripped, "web_search")
+	if toolIdx == -1 {
+		t.Fatalf("expected tool in output, got: %q", stripped)
+	}
+	textIdx := strings.Index(stripped, "Hello world")
+	if textIdx == -1 {
+		t.Fatalf("expected text in output, got: %q", stripped)
+	}
+	if toolIdx >= textIdx {
+		t.Errorf("tool should appear before text, tool at %d, text at %d", toolIdx, textIdx)
+	}
+
+	// Check spacing between tool line and text: should have a blank line (\n\n)
+	// since SegmentSeparator(SegmentTool, SegmentText) = "\n\n"
+	between := stripped[toolIdx:textIdx]
+	newlines := strings.Count(between, "\n")
+	if newlines < 2 {
+		t.Errorf("expected at least 2 newlines between tool and text (blank line), got %d\nbetween: %q\nfull: %q",
+			newlines, between, stripped)
 	}
 }
 
