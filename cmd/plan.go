@@ -6,9 +6,12 @@ import (
 	"path/filepath"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/mcp"
 	"github.com/samsaffron/term-llm/internal/signal"
 	"github.com/samsaffron/term-llm/internal/tools"
+	"github.com/samsaffron/term-llm/internal/tui/chat"
 	"github.com/samsaffron/term-llm/internal/tui/plan"
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
@@ -207,10 +210,168 @@ func runPlan(cmd *cobra.Command, args []string) error {
 		p.Quit()
 	}()
 
-	_, err = p.Run()
+	finalModel, err := p.Run()
 	if err != nil {
 		return fmt.Errorf("failed to run plan TUI: %w", err)
 	}
 
+	// Check for handoff to chat
+	if fm, ok := finalModel.(*plan.Model); ok && fm.HandedOff() {
+		planContent := fm.GetContent()
+		agentName := fm.HandoffAgent()
+		return runChatFromPlan(cfg, planContent, agentName, modelName, useAltScreen, forceExternalSearch)
+	}
+
+	return nil
+}
+
+// runChatFromPlan launches a chat session with the plan content as system instructions.
+func runChatFromPlan(cfg *config.Config, planContent string, agentName string, modelName string, useAltScreen bool, forceExternalSearch bool) error {
+	ctx, stop := signal.NotifyContext()
+	defer stop()
+
+	// Load agent if specified
+	agent, err := LoadAgent(agentName, cfg)
+	if err != nil {
+		return fmt.Errorf("load agent: %w", err)
+	}
+
+	// Build system instructions: plan content + agent system prompt
+	planInstruction := "You have a plan to execute. Here is the plan document:\n\n" + planContent + "\n\nFollow this plan step by step."
+	if agent != nil && agent.SystemPrompt != "" {
+		cfg.Chat.Instructions = agent.SystemPrompt + "\n\n" + planInstruction
+	} else {
+		cfg.Chat.Instructions = planInstruction
+	}
+
+	// Apply agent provider/model overrides
+	agentProvider, agentModel := "", ""
+	if agent != nil {
+		agentProvider, agentModel = agent.Provider, agent.Model
+	}
+	if err := applyProviderOverridesWithAgent(cfg, cfg.Chat.Provider, cfg.Chat.Model, "", agentProvider, agentModel); err != nil {
+		return err
+	}
+	modelName = getModelName(cfg)
+
+	// Create a fresh provider and engine for the chat session
+	provider, err := llm.NewProvider(cfg)
+	if err != nil {
+		return err
+	}
+
+	// Use the full chat tool registry (includes search, read_url, etc.)
+	engine := llm.NewEngine(provider, defaultToolRegistry(cfg))
+
+	// Resolve settings using agent configuration
+	cliFlags := CLIFlags{
+		Tools:  "all",
+		Search: planSearch,
+	}
+	settings := ResolveSettings(cfg, agent, cliFlags, cfg.Chat.Provider, cfg.Chat.Model, cfg.Chat.Instructions, cfg.Chat.MaxTurns, 200)
+
+	toolMgr, err := settings.SetupToolManager(cfg, engine)
+	if err != nil {
+		return err
+	}
+
+	// Set up debug logger
+	debugLogger, debugLoggerErr := createDebugLogger(cfg)
+	if debugLoggerErr != nil {
+		fmt.Fprintf(os.Stderr, "warning: %v\n", debugLoggerErr)
+	}
+	if debugLogger != nil {
+		engine.SetDebugLogger(debugLogger)
+	}
+
+	// Create MCP manager (empty, no servers for handoff)
+	mcpManager := mcp.NewManager()
+
+	// Resolve enabled local tools
+	enabledLocalTools := tools.ParseToolsFlag(settings.Tools)
+
+	// Create session store
+	store, storeCleanup := InitSessionStore(cfg, os.Stderr)
+	defer storeCleanup()
+
+	// Create chat model
+	model := chat.New(cfg, provider, engine, modelName, mcpManager, settings.MaxTurns, forceExternalSearch, settings.Search, enabledLocalTools, settings.Tools, "", false, "", store, nil, useAltScreen, nil, false, agentName)
+
+	// Build program options
+	var opts []tea.ProgramOption
+	if useAltScreen {
+		opts = append(opts, tea.WithAltScreen())
+	}
+	opts = append(opts, tea.WithMouseCellMotion())
+
+	p := tea.NewProgram(model, opts...)
+
+	// Set up approval UI
+	if toolMgr != nil {
+		toolMgr.ApprovalMgr.PromptUIFunc = func(path string, isWrite bool, isShell bool) (tools.ApprovalResult, error) {
+			if useAltScreen {
+				doneCh := make(chan tools.ApprovalResult, 1)
+				p.Send(chat.ApprovalRequestMsg{
+					Path:    path,
+					IsWrite: isWrite,
+					IsShell: isShell,
+					DoneCh:  doneCh,
+				})
+				select {
+				case result := <-doneCh:
+					return result, nil
+				case <-ctx.Done():
+					return tools.ApprovalResult{Choice: tools.ApprovalChoiceDeny}, fmt.Errorf("cancelled: %w", ctx.Err())
+				}
+			}
+			p.ReleaseTerminal()
+			defer func() {
+				p.RestoreTerminal()
+				p.Send(chat.ResumeFromExternalUIMsg{})
+			}()
+			if isShell {
+				return tools.RunShellApprovalUI(path)
+			}
+			return tools.RunFileApprovalUI(path, isWrite)
+		}
+	}
+
+	// Set up ask_user handling
+	if useAltScreen {
+		tools.SetAskUserUIFunc(func(questions []tools.AskUserQuestion) ([]tools.AskUserAnswer, error) {
+			doneCh := make(chan []tools.AskUserAnswer, 1)
+			p.Send(chat.AskUserRequestMsg{
+				Questions: questions,
+				DoneCh:    doneCh,
+			})
+			select {
+			case answers := <-doneCh:
+				if answers == nil {
+					return nil, fmt.Errorf("cancelled by user")
+				}
+				return answers, nil
+			case <-ctx.Done():
+				return nil, fmt.Errorf("cancelled: %w", ctx.Err())
+			}
+		})
+		defer tools.ClearAskUserUIFunc()
+	}
+
+	// Wire signal handling
+	go func() {
+		<-ctx.Done()
+		p.Quit()
+	}()
+
+	_, err = p.Run()
+
+	mcpManager.StopAll()
+	if debugLogger != nil {
+		debugLogger.Close()
+	}
+
+	if err != nil {
+		return fmt.Errorf("failed to run chat: %w", err)
+	}
 	return nil
 }

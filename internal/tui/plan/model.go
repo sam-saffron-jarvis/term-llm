@@ -12,6 +12,7 @@ import (
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/samsaffron/term-llm/internal/agents"
 	"github.com/samsaffron/term-llm/internal/clipboard"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
@@ -97,8 +98,16 @@ type Model struct {
 	filePath string // Path to save plan (e.g., plan.md)
 
 	// UI state
-	quitting bool
-	err      error
+	quitting     bool
+	handedOff    bool   // true when handing off to chat agent
+	handoffAgent string // agent name selected during handoff
+	helpVisible  bool   // true when help overlay is shown
+	err          error
+
+	// Agent picker for handoff
+	agentPickerVisible bool
+	agentPickerItems   []string
+	agentPickerCursor  int
 
 	// Status message
 	statusMsg     string
@@ -221,6 +230,20 @@ type tickMsg time.Time
 
 // Update handles messages.
 func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	// Modal overlays consume all input except window resize.
+	if m.hasActiveOverlay() {
+		if ws, ok := msg.(tea.WindowSizeMsg); ok {
+			m.width = ws.Width
+			m.height = ws.Height
+			m.recalcEditorHeight()
+			m.viewport.Width = m.width
+			m.viewport.Height = m.height - 2
+			m.chatInput.SetWidth(m.width - 4)
+			return m, nil
+		}
+		return m.updateOverlay(msg)
+	}
+
 	var cmds []tea.Cmd
 
 	switch msg := msg.(type) {
@@ -433,7 +456,19 @@ func (m *Model) handleMouseMsg(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 
 	case tea.MouseButtonLeft:
 		if msg.Action == tea.MouseActionPress || msg.Action == tea.MouseActionMotion {
-			// Click to position cursor
+			// Determine if click is in chat zone or editor zone
+			chatY := m.chatInputY()
+			if msg.Y >= chatY && msg.Y < chatY+1 {
+				// Click in chat input area — focus chat
+				if !m.chatFocused {
+					return m.toggleChatFocus()
+				}
+				return m, nil
+			}
+			// Click in editor area — focus editor
+			if m.chatFocused {
+				m.toggleChatFocus()
+			}
 			m.moveCursorToMouse(msg.X, msg.Y)
 			return m, nil
 		}
@@ -573,6 +608,15 @@ func (m *Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.pendingPrompts = nil
 			m.setStatus("Cleared pending queue")
 		}
+		return m, nil
+
+	case "ctrl+g":
+		// Hand off plan to chat agent
+		return m.handoff()
+
+	case "ctrl+h":
+		// Toggle help overlay
+		m.helpVisible = !m.helpVisible
 		return m, nil
 
 	case "tab":
@@ -829,6 +873,9 @@ func (m *Model) executeCommand() (tea.Model, tea.Cmd) {
 		// Force quit
 		m.quitting = true
 		return m, tea.Quit
+	case "go":
+		// Hand off to chat agent
+		return m.handoff()
 	default:
 		m.setStatus(fmt.Sprintf("Unknown command: %s", cmd))
 		return m, nil
@@ -1339,6 +1386,11 @@ Every plan section should address:
 - Reference specific files and line numbers when adding implementation details
 - Be thorough but avoid unnecessary padding - every line should add value`
 
+	// Append project instructions (AGENTS.md, CLAUDE.md, etc.) if found
+	if projectInstructions := agents.DiscoverProjectInstructions(); projectInstructions != "" {
+		systemPrompt += "\n\n---\n\n" + projectInstructions
+	}
+
 	// Build user message with document state
 	var userMsg strings.Builder
 	userMsg.WriteString("Current document:\n```\n")
@@ -1585,6 +1637,34 @@ func (m *Model) syncEditorFromDoc() {
 	}
 }
 
+// handoff triggers a plan-to-chat handoff by showing the agent picker.
+func (m *Model) handoff() (tea.Model, tea.Cmd) {
+	if m.agentActive {
+		m.setStatus("Cancel agent first (Ctrl+C)")
+		return m, nil
+	}
+	m.syncDocFromEditor()
+	content := strings.TrimSpace(m.doc.Text())
+	if content == "" {
+		m.setStatus("Nothing to hand off")
+		return m, nil
+	}
+	// Build agent list: "(no agent)" + builtin agents + user agents
+	m.agentPickerItems = []string{"(no agent)"}
+	registry, err := agents.NewRegistry(agents.RegistryConfig{
+		UseBuiltin:  m.config.Agents.UseBuiltin,
+		SearchPaths: m.config.Agents.SearchPaths,
+	})
+	if err == nil {
+		if names, err := registry.ListNames(); err == nil {
+			m.agentPickerItems = append(m.agentPickerItems, names...)
+		}
+	}
+	m.agentPickerCursor = 0
+	m.agentPickerVisible = true
+	return m, nil
+}
+
 func (m *Model) saveDocument() (tea.Model, tea.Cmd) {
 	if m.filePath == "" {
 		m.setStatus("No file path configured")
@@ -1641,6 +1721,12 @@ func (m *Model) View() string {
 		b.WriteString(m.renderDocument())
 		b.WriteString("\n")
 		b.WriteString(m.askUserModel.View())
+		// Pad to push to bottom
+		rendered := b.String()
+		lineCount := strings.Count(rendered, "\n")
+		if gap := m.height - 1 - lineCount; gap > 0 {
+			b.WriteString(strings.Repeat("\n", gap))
+		}
 		return b.String()
 	}
 
@@ -1655,7 +1741,24 @@ func (m *Model) View() string {
 	b.WriteString(editorView)
 	b.WriteString("\n")
 
-	// Activity panel (between editor and chat)
+	// Calculate footer height: activity panel + separator + optional pending + chat + separator + status
+	footerLines := 4 // separator + chat + separator + status
+	if len(m.pendingPrompts) > 0 {
+		footerLines++ // pending prompts indicator
+	}
+	footerLines += m.activityPanelHeight()
+	if m.activityPanelHeight() > 0 {
+		footerLines++ // trailing newline after panel
+	}
+
+	// Pad gap between editor and footer to push everything to bottom
+	rendered := b.String()
+	lineCount := strings.Count(rendered, "\n")
+	if gap := m.height - lineCount - footerLines; gap > 0 {
+		b.WriteString(strings.Repeat("\n", gap))
+	}
+
+	// Activity panel (right above chat)
 	if panel := m.renderActivityPanel(); panel != "" {
 		b.WriteString(panel)
 		b.WriteString("\n")
@@ -1683,7 +1786,19 @@ func (m *Model) View() string {
 	// Status line
 	b.WriteString(m.renderStatusLine())
 
-	return b.String()
+	result := b.String()
+
+	// Overlay agent picker if visible
+	if m.agentPickerVisible {
+		result = m.overlayBox(result, m.renderAgentPicker())
+	}
+
+	// Overlay help if visible
+	if m.helpVisible {
+		result = m.overlayBox(result, m.renderHelpOverlay())
+	}
+
+	return result
 }
 
 // applyVisualHighlight applies reverse video highlighting to selected lines in visual mode.
@@ -1738,24 +1853,43 @@ func (m *Model) renderChatInput() string {
 
 	// Add hint when not focused
 	if !m.chatFocused && m.chatInput.Value() == "" {
-		hint := lipgloss.NewStyle().Foreground(theme.Muted).Render("(Tab to focus chat)")
+		hint := lipgloss.NewStyle().Foreground(theme.Muted).Render("(Tab or click to focus chat)")
 		return prefix + hint
 	}
 
 	return prefix + inputView
 }
 
+// chatInputY returns the Y coordinate of the chat input line on screen.
+func (m *Model) chatInputY() int {
+	// From bottom: status (1) + separator (1) + chat (1) = chat is at height-3
+	// Plus optional pending prompts line above chat
+	y := m.height - 3
+	if len(m.pendingPrompts) > 0 {
+		y--
+	}
+	return y
+}
+
 // recalcEditorHeight recalculates the editor height accounting for activity panel.
 func (m *Model) recalcEditorHeight() {
 	m.editor.SetWidth(m.width - 4)
 	panelH := m.activityPanelHeight()
-	// Base: height - 9 (status line, chat input, separators, borders)
-	editorH := m.height - 9 - panelH
+	// Fixed overhead: 2 separators + 1 chat input + 1 status line + editor borders (~4) = 8
+	overhead := 8
+	if len(m.pendingPrompts) > 0 {
+		overhead++ // pending prompts indicator line
+	}
+	editorH := m.height - overhead - panelH
 	if editorH < 3 {
 		editorH = 3
 	}
 	m.editor.SetHeight(editorH)
 }
+
+// maxVisibleTools is the maximum number of tool lines shown in the activity panel.
+// When more tools exist, a summary line "(N more tool calls)" is shown instead.
+const maxVisibleTools = 3
 
 // activityPanelHeight returns the number of lines the activity panel uses.
 // Returns 0 when the panel should not be shown.
@@ -1768,27 +1902,24 @@ func (m *Model) activityPanelHeight() int {
 		return 3
 	}
 
-	// Count: top separator (1) + completed tools + active tools + reasoning line + spinner line + bottom separator (1)
+	// Count: top separator (1) + tool lines + reasoning line + spinner line + bottom separator (1)
 	lines := 2 // top + bottom separator
 
-	// Completed tool segments
+	// Count total tool segments (completed + active)
+	totalTools := 0
 	if m.tracker != nil {
 		for i := range m.tracker.Segments {
-			seg := &m.tracker.Segments[i]
-			if seg.Type == ui.SegmentTool && seg.ToolStatus != ui.ToolPending {
-				lines++
+			if m.tracker.Segments[i].Type == ui.SegmentTool {
+				totalTools++
 			}
 		}
 	}
 
-	// Active tool segments
-	if m.tracker != nil {
-		for i := range m.tracker.Segments {
-			seg := &m.tracker.Segments[i]
-			if seg.Type == ui.SegmentTool && seg.ToolStatus == ui.ToolPending {
-				lines++
-			}
-		}
+	// Show up to maxVisibleTools, plus a summary line if there are more
+	if totalTools <= maxVisibleTools {
+		lines += totalTools
+	} else {
+		lines += maxVisibleTools + 1 // visible tools + "(N more)" line
 	}
 
 	// Reasoning text line (if any)
@@ -1799,10 +1930,6 @@ func (m *Model) activityPanelHeight() int {
 	// Spinner/status line
 	lines++
 
-	// Cap panel to reasonable max
-	if lines > 12 {
-		lines = 12
-	}
 	return lines
 }
 
@@ -1840,32 +1967,38 @@ func (m *Model) renderActivityPanel() string {
 		return b.String()
 	}
 
-	// Completed tool segments
-	maxToolLines := 8
-	toolLines := 0
+	// Collect all tool segments (completed then active)
+	var completedTools []*ui.Segment
+	var activeTools []*ui.Segment
 	if m.tracker != nil {
 		for i := range m.tracker.Segments {
 			seg := &m.tracker.Segments[i]
-			if seg.Type == ui.SegmentTool && seg.ToolStatus != ui.ToolPending {
-				if toolLines >= maxToolLines {
-					break
+			if seg.Type == ui.SegmentTool {
+				if seg.ToolStatus == ui.ToolPending {
+					activeTools = append(activeTools, seg)
+				} else {
+					completedTools = append(completedTools, seg)
 				}
-				b.WriteString(ui.RenderToolSegment(seg, -1))
-				b.WriteString("\n")
-				toolLines++
 			}
 		}
 	}
 
-	// Active (pending) tool segments with wave animation
-	if m.tracker != nil {
-		for i := range m.tracker.Segments {
-			seg := &m.tracker.Segments[i]
-			if seg.Type == ui.SegmentTool && seg.ToolStatus == ui.ToolPending {
-				b.WriteString(ui.RenderToolSegment(seg, m.tracker.WavePos))
-				b.WriteString("\n")
-			}
+	// Show the most recent tools (up to maxVisibleTools), with overflow summary
+	allTools := append(completedTools, activeTools...)
+	totalTools := len(allTools)
+	if totalTools > maxVisibleTools {
+		hidden := totalTools - maxVisibleTools
+		b.WriteString(m.styles.Muted.Render(fmt.Sprintf("  (%d more tool calls)", hidden)))
+		b.WriteString("\n")
+		allTools = allTools[totalTools-maxVisibleTools:]
+	}
+	for _, seg := range allTools {
+		wavePos := -1
+		if seg.ToolStatus == ui.ToolPending {
+			wavePos = m.tracker.WavePos
 		}
+		b.WriteString(ui.RenderToolSegment(seg, wavePos))
+		b.WriteString("\n")
 	}
 
 	// Last line of agent reasoning text (dimmed)
@@ -2049,14 +2182,14 @@ func (m *Model) renderStatusLine() string {
 		middle += fmt.Sprintf(" | %d queued", len(m.pendingPrompts))
 	}
 
-	// Right side: shortcuts
+	// Right side: compact shortcuts (full list via Ctrl+H help)
 	var right string
 	if m.agentActive {
-		right = "Ctrl+C: cancel  Ctrl+A: activity  Tab: chat"
+		right = "Esc: cancel  ^H: help"
 	} else if m.chatFocused {
-		right = "Enter: send  Esc/Tab: editor  Ctrl+K: clear"
+		right = "Enter: send  ^H: help"
 	} else {
-		right = "Ctrl+P: plan  Tab: chat  Ctrl+S: save"
+		right = "^P: plan  ^H: help"
 	}
 
 	// Build status line
@@ -2093,6 +2226,22 @@ func (m *Model) renderStatusLine() string {
 func (m *Model) SetProgram(p *tea.Program) {
 	// Reserved for future use - program reference may be needed for other callbacks
 	_ = p
+}
+
+// GetContent syncs the editor and returns the current document text.
+func (m *Model) GetContent() string {
+	m.syncDocFromEditor()
+	return m.doc.Text()
+}
+
+// HandedOff returns true if the user triggered a handoff to chat.
+func (m *Model) HandedOff() bool {
+	return m.handedOff
+}
+
+// HandoffAgent returns the agent name selected during handoff (empty for default).
+func (m *Model) HandoffAgent() string {
+	return m.handoffAgent
 }
 
 // LoadContent loads content into the document and editor.

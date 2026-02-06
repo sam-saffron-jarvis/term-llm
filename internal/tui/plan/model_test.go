@@ -8,6 +8,7 @@ import (
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textarea"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/ui"
 )
 
@@ -28,6 +29,7 @@ func newTestModel() *Model {
 		spinner: s,
 		styles:  ui.DefaultStyles(),
 		tracker: ui.NewToolTracker(),
+		config:  &config.Config{},
 	}
 }
 
@@ -316,5 +318,195 @@ func TestLastNonEmptyLine(t *testing.T) {
 		if got != tt.want {
 			t.Errorf("lastNonEmptyLine(%q) = %q, want %q", tt.input, got, tt.want)
 		}
+	}
+}
+
+func TestGetContent_ReturnsEditorContent(t *testing.T) {
+	m := newTestModel()
+	m.editor.SetValue("# My Plan\n\n- Step 1\n- Step 2")
+	content := m.GetContent()
+	if !strings.Contains(content, "Step 1") {
+		t.Errorf("GetContent should return editor content, got %q", content)
+	}
+}
+
+func TestHandedOff_DefaultFalse(t *testing.T) {
+	m := newTestModel()
+	if m.HandedOff() {
+		t.Error("HandedOff should be false by default")
+	}
+}
+
+func TestHandoff_SetsHandedOff(t *testing.T) {
+	m := newTestModel()
+	m.editor.SetValue("# Plan content")
+	m.syncDocFromEditor()
+
+	// Trigger handoff via Ctrl+G — this now shows the agent picker
+	result, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlG})
+	rm := result.(*Model)
+
+	// Agent picker should be visible
+	if !rm.agentPickerVisible {
+		t.Fatal("agent picker should be visible after Ctrl+G")
+	}
+
+	// Select and confirm
+	result, cmd := rm.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	rm = result.(*Model)
+
+	if !rm.HandedOff() {
+		t.Error("HandedOff should be true after confirming agent picker")
+	}
+	if rm.HandoffAgent() != "" {
+		t.Error("first item (no agent) should yield empty agent name")
+	}
+	if cmd == nil {
+		t.Error("expected tea.Quit command")
+	}
+}
+
+func TestHandoff_BlockedDuringAgentRun(t *testing.T) {
+	m := newTestModel()
+	m.editor.SetValue("# Plan content")
+	m.syncDocFromEditor()
+	m.agentActive = true
+
+	result, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlG})
+	rm := result.(*Model)
+
+	if rm.HandedOff() {
+		t.Error("handoff should be blocked while agent is active")
+	}
+	if rm.agentPickerVisible {
+		t.Error("agent picker should not show while agent is active")
+	}
+}
+
+func TestHandoff_BlockedOnEmptyDoc(t *testing.T) {
+	m := newTestModel()
+	// Editor is empty by default
+
+	result, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlG})
+	rm := result.(*Model)
+
+	if rm.HandedOff() {
+		t.Error("handoff should be blocked on empty document")
+	}
+	if rm.agentPickerVisible {
+		t.Error("agent picker should not show for empty document")
+	}
+}
+
+func TestHelpOverlay_CtrlHToggles(t *testing.T) {
+	m := newTestModel()
+
+	// Initially not visible
+	if m.helpVisible {
+		t.Fatal("help should not be visible initially")
+	}
+
+	// Press Ctrl+H to open
+	result, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlH})
+	rm := result.(*Model)
+	if !rm.helpVisible {
+		t.Error("Ctrl+H should toggle help visible")
+	}
+
+	// Press any key to close
+	result, _ = rm.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'x'}})
+	rm = result.(*Model)
+	if rm.helpVisible {
+		t.Error("any key should close help overlay")
+	}
+}
+
+func TestStatusBar_CompactShortcuts(t *testing.T) {
+	m := newTestModel()
+
+	// Normal mode
+	line := m.renderStatusLine()
+	if !strings.Contains(line, "^H: help") {
+		t.Error("status line should contain ^H: help")
+	}
+	if strings.Contains(line, "Ctrl+A: activity") {
+		t.Error("status line should not contain verbose shortcuts")
+	}
+
+	// Agent active
+	m.agentActive = true
+	m.agentPhase = "Thinking"
+	m.stats = ui.NewSessionStats()
+	m.streamStartTime = time.Now()
+	line = m.renderStatusLine()
+	if !strings.Contains(line, "^H: help") {
+		t.Error("agent-active status line should contain ^H: help")
+	}
+	if !strings.Contains(line, "Esc: cancel") {
+		t.Error("agent-active status line should contain Esc: cancel")
+	}
+}
+
+func TestGoCommand_TriggersHandoff(t *testing.T) {
+	m := newTestModel()
+	m.editor.SetValue("# Plan content")
+	m.syncDocFromEditor()
+	m.vimMode = true
+
+	// Enter command mode with ":"
+	result, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{':'}})
+	rm := result.(*Model)
+	if !rm.commandMode {
+		t.Fatal("expected command mode after ':'")
+	}
+
+	// Type "go"
+	result, _ = rm.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'g'}})
+	rm = result.(*Model)
+	result, _ = rm.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'o'}})
+	rm = result.(*Model)
+
+	// Press enter to execute
+	result, _ = rm.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	rm = result.(*Model)
+
+	// Agent picker should be visible
+	if !rm.agentPickerVisible {
+		t.Error(":go command should show agent picker")
+	}
+}
+
+func TestRenderHelpOverlay_ContainsShortcuts(t *testing.T) {
+	m := newTestModel()
+	overlay := m.renderHelpOverlay()
+
+	shortcuts := []string{"Ctrl+P", "Ctrl+S", "Ctrl+G", "Ctrl+A", "Ctrl+H", "Ctrl+C", "Ctrl+K"}
+	for _, s := range shortcuts {
+		if !strings.Contains(overlay, s) {
+			t.Errorf("help overlay should contain %q", s)
+		}
+	}
+}
+
+func TestAgentPicker_EscCancels(t *testing.T) {
+	m := newTestModel()
+	m.editor.SetValue("# Plan content")
+	m.syncDocFromEditor()
+
+	// Trigger handoff to show picker
+	result, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlG})
+	rm := result.(*Model)
+	if !rm.agentPickerVisible {
+		t.Fatal("agent picker should be visible")
+	}
+
+	// Press Esc to cancel
+	result, _ = rm.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	rm = result.(*Model)
+	if rm.agentPickerVisible {
+		t.Error("Esc should close agent picker")
+	}
+	if rm.HandedOff() {
+		t.Error("Esc should not trigger handoff")
 	}
 }
