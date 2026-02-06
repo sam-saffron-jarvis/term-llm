@@ -397,6 +397,7 @@ func (m *Model) Init() tea.Cmd {
 // Update handles messages
 func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmds []tea.Cmd
+	var flushCmds []tea.Cmd
 
 	// Handle inspector mode
 	if m.inspectorMode {
@@ -532,7 +533,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// Flush excess content if needed
 				if m.scrollOffset == 0 {
 					if cmd := m.maybeFlushToScrollback(); cmd != nil {
-						cmds = append(cmds, cmd)
+						flushCmds = append(flushCmds, cmd)
 					}
 				}
 			}
@@ -638,7 +639,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// Flush completed segments (chronological order)
 				if m.scrollOffset == 0 {
 					if cmd := m.maybeFlushToScrollback(); cmd != nil {
-						cmds = append(cmds, cmd)
+						flushCmds = append(flushCmds, cmd)
 					}
 				}
 			}
@@ -680,7 +681,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// Flush to scrollback so image appears
 				if m.scrollOffset == 0 {
 					if cmd := m.maybeFlushToScrollback(); cmd != nil {
-						cmds = append(cmds, cmd)
+						flushCmds = append(flushCmds, cmd)
 					}
 				}
 			}
@@ -692,7 +693,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// Flush to scrollback so diff appears
 				if m.scrollOffset == 0 {
 					if cmd := m.maybeFlushToScrollback(); cmd != nil {
-						cmds = append(cmds, cmd)
+						flushCmds = append(flushCmds, cmd)
 					}
 				}
 			}
@@ -920,7 +921,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.tracker.AddExternalUIResult(summary)
 			// Flush now to ensure it's printed in correct sequence
 			if cmd := m.maybeFlushToScrollback(); cmd != nil {
-				return m, tea.Batch(cmd, m.spinner.Tick)
+				return m, ui.ComposeFlushFirstCommands([]tea.Cmd{cmd}, []tea.Cmd{m.spinner.Tick})
 			}
 		}
 
@@ -980,5 +981,5 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	}
 
-	return m, tea.Batch(cmds...)
+	return m, ui.ComposeFlushFirstCommands(flushCmds, cmds)
 }

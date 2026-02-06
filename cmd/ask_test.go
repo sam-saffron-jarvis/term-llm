@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/samsaffron/term-llm/internal/ui"
 )
 
@@ -260,6 +261,26 @@ func TestAskStreamsTextOnSmoothTicks(t *testing.T) {
 	got := model.tracker.Segments[0].GetText()
 	if got != "hello world" {
 		t.Fatalf("expected full content after second tick, got %q", got)
+	}
+}
+
+func TestAskToolStartFlushUsesOrderedCommandComposition(t *testing.T) {
+	model := newAskStreamModel()
+	model.width = 80
+
+	updated, _ := model.Update(askContentMsg("Before tool boundary.\n\n"))
+	model = updated.(askStreamModel)
+
+	updated, cmd := model.Update(askToolStartMsg{CallID: "call-1", Name: "read_file", Info: "(announcement.md)"})
+	model = updated.(askStreamModel)
+
+	if cmd == nil {
+		t.Fatal("expected command from tool-start boundary flush")
+	}
+
+	msg := cmd()
+	if _, isBatch := msg.(tea.BatchMsg); isBatch {
+		t.Fatalf("expected ordered (sequence) command composition, got concurrent batch")
 	}
 }
 

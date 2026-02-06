@@ -1144,7 +1144,8 @@ func (m askStreamModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 
-		var cmds []tea.Cmd
+		var flushCmds []tea.Cmd
+		var asyncCmds []tea.Cmd
 
 		words := m.smoothBuffer.NextWords()
 		if words != "" {
@@ -1157,19 +1158,20 @@ func (m askStreamModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				result := m.tracker.FlushStreamingText(streamingFlushThreshold, m.width, renderMd)
 				if result.ToPrint != "" {
 					m.cachedContent = "" // Invalidate cache since state changed
-					cmds = append(cmds, tea.Printf("%s", result.ToPrint))
+					flushCmds = append(flushCmds, tea.Printf("%s", result.ToPrint))
 				}
 			}
 		}
 
 		if !m.smoothBuffer.IsDrained() {
-			cmds = append(cmds, ui.SmoothTick())
+			asyncCmds = append(asyncCmds, ui.SmoothTick())
 		}
 
-		if len(cmds) == 0 {
+		cmd := ui.ComposeFlushFirstCommands(flushCmds, asyncCmds)
+		if cmd == nil {
 			return m, nil
 		}
-		return m, tea.Batch(cmds...)
+		return m, cmd
 
 	case askUsageMsg:
 		m.totalTokens = msg.InputTokens + msg.OutputTokens
@@ -1259,7 +1261,7 @@ func (m askStreamModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if summary := tools.GetAndClearAskUserResult(); summary != "" {
 			m.tracker.AddExternalUIResult(summary)
 			if cmd := m.maybeFlushToScrollback(); cmd != nil {
-				return m, tea.Batch(cmd, m.spinner.Tick)
+				return m, ui.ComposeFlushFirstCommands([]tea.Cmd{cmd}, []tea.Cmd{m.spinner.Tick})
 			}
 		}
 
@@ -1279,20 +1281,22 @@ func (m askStreamModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Add or dedupe pending tool segment for this call.
 		m.tracker.HandleToolStart(msg.CallID, msg.Name, msg.Info)
 
-		var cmds []tea.Cmd
+		var flushCmds []tea.Cmd
+		var asyncCmds []tea.Cmd
 		if cmd := m.flushCompletedBoundaryNow(); cmd != nil {
-			cmds = append(cmds, cmd)
+			flushCmds = append(flushCmds, cmd)
 		}
 
 		// Start (or restart) wave animation for non-ask_user tools.
 		if msg.Name != tools.AskUserToolName {
-			cmds = append(cmds, m.tracker.StartWave())
+			asyncCmds = append(asyncCmds, m.tracker.StartWave())
 		}
 
-		if len(cmds) == 0 {
+		cmd := ui.ComposeFlushFirstCommands(flushCmds, asyncCmds)
+		if cmd == nil {
 			return m, nil
 		}
-		return m, tea.Batch(cmds...)
+		return m, cmd
 
 	case askToolEndMsg:
 		m.tracker.HandleToolEnd(msg.CallID, msg.Success)

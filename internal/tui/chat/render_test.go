@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/session"
@@ -119,5 +120,43 @@ func TestViewAltScreen_FirstRenderAnchorsToBottom(t *testing.T) {
 
 	if !m.viewport.AtBottom() {
 		t.Fatalf("expected first alt-screen render to anchor at bottom for resumed history")
+	}
+}
+
+func TestStreamEventDiffFlushUsesOrderedCommandComposition(t *testing.T) {
+	provider := llm.NewMockProvider("mock")
+	engine := llm.NewEngine(provider, nil)
+
+	m := New(
+		&config.Config{DefaultProvider: "mock"},
+		provider,
+		engine,
+		"mock-model",
+		nil,
+		20,
+		false,
+		false,
+		nil,
+		"",
+		"",
+		false,
+		"",
+		nil,
+		nil,
+		false,
+		nil,
+		false,
+		"",
+	)
+	m.streaming = true
+
+	_, cmd := m.Update(streamEventMsg{event: ui.DiffEvent("a.txt", "old", "new", 1)})
+	if cmd == nil {
+		t.Fatal("expected command from diff flush during streaming")
+	}
+
+	msg := cmd()
+	if _, isBatch := msg.(tea.BatchMsg); isBatch {
+		t.Fatalf("expected ordered (sequence) command composition, got concurrent batch")
 	}
 }
