@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
 	"os/exec"
 	"sync"
 
@@ -104,8 +105,11 @@ func (c *Client) Start(ctx context.Context) error {
 // createStdioTransport creates a stdio transport for command-based servers.
 func (c *Client) createStdioTransport(ctx context.Context) mcp.Transport {
 	cmd := exec.CommandContext(ctx, c.config.Command, c.config.Args...)
-	for k, v := range c.config.Env {
-		cmd.Env = append(cmd.Env, fmt.Sprintf("%s=%s", k, v))
+	if len(c.config.Env) > 0 {
+		cmd.Env = os.Environ()
+		for k, v := range c.config.Env {
+			cmd.Env = append(cmd.Env, fmt.Sprintf("%s=%s", k, v))
+		}
 	}
 	return &mcp.CommandTransport{Command: cmd}
 }
