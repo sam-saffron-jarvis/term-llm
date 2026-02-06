@@ -14,6 +14,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/glamour"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/samsaffron/term-llm/internal/clipboard"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/mcp"
@@ -471,6 +472,15 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleKeyMsg(msg)
 
 	case tea.MouseMsg:
+		// Handle middle-click paste
+		if msg.Button == tea.MouseButtonMiddle && msg.Action == tea.MouseActionPress {
+			text, err := clipboard.ReadPrimarySelection()
+			if err == nil && text != "" {
+				m.textarea.InsertString(text)
+				m.updateTextareaHeight()
+			}
+			return m, nil
+		}
 		// Forward mouse events to viewport in alt-screen mode for scroll wheel support
 		if m.altScreen {
 			var cmd tea.Cmd

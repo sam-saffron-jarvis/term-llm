@@ -12,6 +12,7 @@ import (
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/samsaffron/term-llm/internal/clipboard"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/tools"
@@ -416,6 +417,19 @@ func (m *Model) handleMouseMsg(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 			m.editor, _ = m.editor.Update(tea.KeyMsg{Type: tea.KeyDown})
 		}
 		return m, nil
+
+	case tea.MouseButtonMiddle:
+		if msg.Action == tea.MouseActionPress {
+			// Middle-click paste: read from primary selection (Linux) or clipboard (macOS)
+			text, err := clipboard.ReadPrimarySelection()
+			if err == nil && text != "" {
+				// Position cursor at click location first
+				m.moveCursorToMouse(msg.X, msg.Y)
+				// Insert the text at cursor position
+				m.editor.InsertString(text)
+			}
+			return m, nil
+		}
 
 	case tea.MouseButtonLeft:
 		if msg.Action == tea.MouseActionPress || msg.Action == tea.MouseActionMotion {

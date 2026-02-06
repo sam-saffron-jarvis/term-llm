@@ -55,6 +55,43 @@ func readTextLinux() (string, error) {
 	return "", fmt.Errorf("no clipboard utility found (install wl-paste or xclip)")
 }
 
+// ReadPrimarySelection reads from the PRIMARY selection (middle-click buffer on Linux).
+// On macOS, falls back to the regular clipboard since there's no primary selection.
+func ReadPrimarySelection() (string, error) {
+	switch runtime.GOOS {
+	case "darwin":
+		return readTextMacOS() // macOS has no primary selection concept
+	case "linux":
+		return readPrimaryLinux()
+	default:
+		return "", fmt.Errorf("primary selection not supported on %s", runtime.GOOS)
+	}
+}
+
+func readPrimaryLinux() (string, error) {
+	// Try wl-paste --primary first (Wayland)
+	if _, err := exec.LookPath("wl-paste"); err == nil {
+		cmd := exec.Command("wl-paste", "--primary", "--no-newline")
+		var out bytes.Buffer
+		cmd.Stdout = &out
+		if err := cmd.Run(); err == nil {
+			return out.String(), nil
+		}
+	}
+
+	// Fall back to xclip with primary selection (X11)
+	if _, err := exec.LookPath("xclip"); err == nil {
+		cmd := exec.Command("xclip", "-selection", "primary", "-o")
+		var out bytes.Buffer
+		cmd.Stdout = &out
+		if err := cmd.Run(); err == nil {
+			return out.String(), nil
+		}
+	}
+
+	return "", fmt.Errorf("no clipboard utility found (install wl-paste or xclip)")
+}
+
 // ReadImage reads image data from the system clipboard
 // Returns the image data and an error if clipboard doesn't contain an image
 func ReadImage() ([]byte, error) {
