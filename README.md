@@ -747,6 +747,27 @@ term-llm chat --mcp playwright,filesystem,github
 # In chat, toggle servers with Ctrl+M
 ```
 
+### Running Tools Directly
+
+Use `mcp run` to call MCP tools without going through the LLM:
+
+```bash
+# Simple key=value arguments
+term-llm mcp run filesystem read_file path=/tmp/test.txt
+
+# JSON arguments for complex values
+term-llm mcp run server tool '{"nested":{"deep":"value"}}'
+
+# Multiple tools in one invocation
+term-llm mcp run server tool1 key=val tool2 key=val
+
+# Read file contents into a parameter with @path
+term-llm mcp run server tool content=@/tmp/big-file.txt
+
+# Read from stdin with @-
+cat data.json | term-llm mcp run server tool input=@-
+```
+
 ### Configuration
 
 MCP servers are stored in `~/.config/term-llm/mcp.json`:

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/url"
 	"os"
 	"sort"
@@ -120,10 +121,14 @@ Arguments after the server name are parsed sequentially:
 Values in key=value pairs are auto-detected:
   true/false → bool, integers/floats → number, null → nil, else → string
 
+Use key=@path to read a file's contents as the value, or key=@- for stdin.
+
 Examples:
   term-llm mcp run filesystem read_file path=/tmp/test.txt
   term-llm mcp run server tool '{"nested":{"deep":"value"}}'
-  term-llm mcp run server tool1 key=val tool2 key=val`,
+  term-llm mcp run server tool1 key=val tool2 key=val
+  term-llm mcp run server tool content=@/tmp/big-file.txt
+  cat data.json | term-llm mcp run server tool input=@-`,
 	Args:              cobra.MinimumNArgs(2),
 	RunE:              mcpRun,
 	ValidArgsFunction: MCPRunArgCompletion,
@@ -683,6 +688,22 @@ func parseValue(s string) any {
 	return s
 }
 
+// readFileArg reads file contents for @path syntax. Use "-" for stdin.
+func readFileArg(path string) (string, error) {
+	if path == "-" {
+		data, err := io.ReadAll(os.Stdin)
+		if err != nil {
+			return "", err
+		}
+		return string(data), nil
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	return string(data), nil
+}
+
 func mcpRun(cmd *cobra.Command, args []string) error {
 	cmd.SilenceUsage = true
 	serverName := args[0]
@@ -708,7 +729,16 @@ func mcpRun(cmd *cobra.Command, args []string) error {
 				return fmt.Errorf("key=value argument without a tool name")
 			}
 			key, val, _ := strings.Cut(arg, "=")
-			current.args[key] = parseValue(val)
+			if strings.HasPrefix(val, "@") {
+				// @path reads file contents, @- reads stdin
+				content, err := readFileArg(val[1:])
+				if err != nil {
+					return fmt.Errorf("read %s: %w", val, err)
+				}
+				current.args[key] = content
+			} else {
+				current.args[key] = parseValue(val)
+			}
 		} else {
 			// New tool name
 			calls = append(calls, mcpToolCall{name: arg, args: make(map[string]any)})
