@@ -2,10 +2,12 @@ package cmd
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/url"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -29,7 +31,7 @@ Examples:
   term-llm mcp browse playwright       # search registry for playwright
   term-llm mcp add @playwright/mcp     # add server from registry
   term-llm mcp remove playwright       # remove a server
-  term-llm mcp test playwright         # test server connection`,
+  term-llm mcp info playwright         # show server info and tools`,
 }
 
 var mcpListCmd = &cobra.Command{
@@ -76,10 +78,10 @@ var mcpRemoveCmd = &cobra.Command{
 	ValidArgsFunction: MCPServerArgCompletion,
 }
 
-var mcpTestCmd = &cobra.Command{
-	Use:   "test <name>",
-	Short: "Test an MCP server connection",
-	Long: `Start an MCP server and verify it responds correctly.
+var mcpInfoCmd = &cobra.Command{
+	Use:   "info <name>",
+	Short: "Show MCP server info and available tools",
+	Long: `Start an MCP server and show its available tools.
 
 This will:
   1. Start the server process
@@ -88,9 +90,9 @@ This will:
   4. Stop the server
 
 Examples:
-  term-llm mcp test playwright`,
+  term-llm mcp info playwright`,
 	Args:              cobra.ExactArgs(1),
-	RunE:              mcpTest,
+	RunE:              mcpInfo,
 	ValidArgsFunction: MCPServerArgCompletion,
 }
 
@@ -100,6 +102,33 @@ var mcpPathCmd = &cobra.Command{
 	RunE:  mcpPath,
 }
 
+type mcpToolCall struct {
+	name string
+	args map[string]any
+}
+
+var mcpRunCmd = &cobra.Command{
+	Use:   "run <server> <tool> [key=val|json] ...",
+	Short: "Run MCP tool(s) directly",
+	Long: `Run one or more MCP tools directly without going through the LLM.
+
+Arguments after the server name are parsed sequentially:
+  - key=value pairs are added to the current tool's arguments
+  - A JSON object (starting with {) sets the current tool's arguments
+  - Any other bare word starts a new tool call
+
+Values in key=value pairs are auto-detected:
+  true/false → bool, integers/floats → number, null → nil, else → string
+
+Examples:
+  term-llm mcp run filesystem read_file path=/tmp/test.txt
+  term-llm mcp run server tool '{"nested":{"deep":"value"}}'
+  term-llm mcp run server tool1 key=val tool2 key=val`,
+	Args:              cobra.MinimumNArgs(2),
+	RunE:              mcpRun,
+	ValidArgsFunction: MCPRunArgCompletion,
+}
+
 func init() {
 	mcpBrowseCmd.Flags().BoolVar(&mcpBrowseTUI, "no-tui", false, "Use simple CLI output instead of interactive browser")
 	rootCmd.AddCommand(mcpCmd)
@@ -107,7 +136,8 @@ func init() {
 	mcpCmd.AddCommand(mcpBrowseCmd)
 	mcpCmd.AddCommand(mcpAddCmd)
 	mcpCmd.AddCommand(mcpRemoveCmd)
-	mcpCmd.AddCommand(mcpTestCmd)
+	mcpCmd.AddCommand(mcpInfoCmd)
+	mcpCmd.AddCommand(mcpRunCmd)
 	mcpCmd.AddCommand(mcpPathCmd)
 }
 
@@ -338,7 +368,7 @@ func mcpAddURL(urlStr string) error {
 	path, _ := mcp.DefaultConfigPath()
 	fmt.Printf("Added '%s' to %s\n", localName, path)
 	fmt.Println()
-	fmt.Printf("Test it with: term-llm mcp test %s\n", localName)
+	fmt.Printf("Try it with: term-llm mcp info %s\n", localName)
 	fmt.Printf("Use with: term-llm [ask|exec|edit|chat] --mcp %s ...\n", localName)
 
 	return nil
@@ -453,7 +483,7 @@ func mcpAddFromRegistry(name string) error {
 	path, _ := mcp.DefaultConfigPath()
 	fmt.Printf("Added '%s' to %s\n", localName, path)
 	fmt.Println()
-	fmt.Printf("Test it with: term-llm mcp test %s\n", localName)
+	fmt.Printf("Try it with: term-llm mcp info %s\n", localName)
 	fmt.Printf("Use with: term-llm [ask|exec|edit|chat] --mcp %s ...\n", localName)
 
 	return nil
@@ -488,7 +518,7 @@ func addBundledServer(bundled mcp.BundledServer) error {
 	path, _ := mcp.DefaultConfigPath()
 	fmt.Printf("Added '%s' to %s\n", localName, path)
 	fmt.Println()
-	fmt.Printf("Test it with: term-llm mcp test %s\n", localName)
+	fmt.Printf("Try it with: term-llm mcp info %s\n", localName)
 	fmt.Printf("Use with: term-llm [ask|exec|edit|chat] --mcp %s ...\n", localName)
 
 	return nil
@@ -560,7 +590,7 @@ func formatSchemaParams(schema map[string]any, maxParams int) string {
 	return "(" + strings.Join(parts, ", ") + ")"
 }
 
-func mcpTest(cmd *cobra.Command, args []string) error {
+func mcpInfo(cmd *cobra.Command, args []string) error {
 	name := args[0]
 
 	cfg, err := mcp.LoadConfig()
@@ -573,7 +603,7 @@ func mcpTest(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("server '%s' not found in config", name)
 	}
 
-	fmt.Printf("Testing MCP server '%s'...\n", name)
+	fmt.Printf("MCP server '%s':\n", name)
 	if serverCfg.TransportType() == "http" {
 		fmt.Printf("  url: %s\n", serverCfg.URL)
 	} else {
@@ -599,6 +629,7 @@ func mcpTest(cmd *cobra.Command, args []string) error {
 	defer client.Stop()
 
 	tools := client.Tools()
+	mcp.CacheTools(name, tools)
 	fmt.Printf("\nAvailable tools (%d):\n", len(tools))
 	for _, t := range tools {
 		params := formatSchemaParams(t.Schema, 5)
@@ -629,5 +660,107 @@ func mcpPath(cmd *cobra.Command, args []string) error {
 	} else {
 		fmt.Println(path)
 	}
+	return nil
+}
+
+// parseValue auto-detects the type of a string value.
+func parseValue(s string) any {
+	if s == "true" {
+		return true
+	}
+	if s == "false" {
+		return false
+	}
+	if s == "null" {
+		return nil
+	}
+	if i, err := strconv.ParseInt(s, 10, 64); err == nil {
+		return i
+	}
+	if f, err := strconv.ParseFloat(s, 64); err == nil {
+		return f
+	}
+	return s
+}
+
+func mcpRun(cmd *cobra.Command, args []string) error {
+	serverName := args[0]
+
+	// Parse remaining args into tool calls
+	var calls []mcpToolCall
+	var current *mcpToolCall
+
+	for _, arg := range args[1:] {
+		if strings.HasPrefix(arg, "{") {
+			// JSON object — set as args for current tool
+			if current == nil {
+				return fmt.Errorf("JSON argument without a tool name")
+			}
+			var obj map[string]any
+			if err := json.Unmarshal([]byte(arg), &obj); err != nil {
+				return fmt.Errorf("invalid JSON argument: %w", err)
+			}
+			current.args = obj
+		} else if strings.Contains(arg, "=") {
+			// key=value pair
+			if current == nil {
+				return fmt.Errorf("key=value argument without a tool name")
+			}
+			key, val, _ := strings.Cut(arg, "=")
+			current.args[key] = parseValue(val)
+		} else {
+			// New tool name
+			calls = append(calls, mcpToolCall{name: arg, args: make(map[string]any)})
+			current = &calls[len(calls)-1]
+		}
+	}
+
+	if len(calls) == 0 {
+		return fmt.Errorf("no tool name provided")
+	}
+
+	// Load config and start client
+	cfg, err := mcp.LoadConfig()
+	if err != nil {
+		return fmt.Errorf("load config: %w", err)
+	}
+
+	serverCfg, ok := cfg.Servers[serverName]
+	if !ok {
+		return fmt.Errorf("server '%s' not found in config", serverName)
+	}
+
+	client := mcp.NewClient(serverName, serverCfg)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	if err := client.Start(ctx); err != nil {
+		return fmt.Errorf("start server: %w", err)
+	}
+	defer client.Stop()
+
+	mcp.CacheTools(serverName, client.Tools())
+
+	multiple := len(calls) > 1
+
+	for _, call := range calls {
+		argsJSON, err := json.Marshal(call.args)
+		if err != nil {
+			return fmt.Errorf("marshal args for %s: %w", call.name, err)
+		}
+
+		if multiple {
+			fmt.Printf("--- %s ---\n", call.name)
+		}
+
+		result, err := client.CallTool(ctx, call.name, argsJSON)
+		if err != nil {
+			return fmt.Errorf("call %s: %w", call.name, err)
+		}
+
+		fmt.Println(result)
+	}
+
 	return nil
 }

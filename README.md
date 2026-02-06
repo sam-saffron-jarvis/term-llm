@@ -710,7 +710,8 @@ term-llm chat --mcp playwright,filesystem
 |---------|-------------|
 | `mcp add <name-or-url>` | Add server from registry or URL |
 | `mcp list` | List configured servers |
-| `mcp test <name>` | Test server connection |
+| `mcp info <name>` | Show server info and tools |
+| `mcp run <server> <tool> [args]` | Run MCP tool(s) directly |
 | `mcp remove <name>` | Remove a server |
 | `mcp browse [query]` | Browse/search the MCP registry |
 | `mcp path` | Print config file path |

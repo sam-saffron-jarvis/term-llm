@@ -1,8 +1,10 @@
 package cmd
 
 import (
+	"context"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
@@ -36,7 +38,7 @@ func ImageProviderFlagCompletion(cmd *cobra.Command, args []string, toComplete s
 }
 
 // MCPServerArgCompletion provides completions for MCP server names as positional arguments.
-// Used by commands like "mcp test <server>" and "mcp remove <server>".
+// Used by commands like "mcp info <server>", "mcp run <server>" and "mcp remove <server>".
 func MCPServerArgCompletion(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 	// Only complete first argument
 	if len(args) > 0 {
@@ -55,6 +57,96 @@ func MCPServerArgCompletion(cmd *cobra.Command, args []string, toComplete string
 		}
 	}
 	return completions, cobra.ShellCompDirectiveNoFileComp
+}
+
+// MCPRunArgCompletion provides completions for "mcp run <server> <tool> [key=val] ...".
+// Completes server names for the first arg, tool names and key= params for subsequent args.
+// Tool/param data comes from a local cache populated by "mcp info" and "mcp run".
+func MCPRunArgCompletion(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+	noFile := cobra.ShellCompDirectiveNoFileComp
+
+	// First arg: server name
+	if len(args) == 0 {
+		return MCPServerArgCompletion(cmd, args, toComplete)
+	}
+
+	serverName := args[0]
+	tools := mcp.LoadCachedTools(serverName)
+	if tools == nil {
+		// No cache — start the server to populate it
+		tools = mcpFetchAndCacheTools(serverName)
+		if tools == nil {
+			return nil, noFile
+		}
+	}
+
+	// Figure out the "current tool" by scanning args after the server name.
+	// Bare words (no = or {) are tool names; everything else is a param.
+	var currentTool string
+	for _, a := range args[1:] {
+		if !strings.Contains(a, "=") && !strings.HasPrefix(a, "{") {
+			currentTool = a
+		}
+	}
+
+	// If toComplete contains "=", nothing to complete (user is typing a value)
+	if strings.Contains(toComplete, "=") {
+		return nil, noFile | cobra.ShellCompDirectiveNoSpace
+	}
+
+	// Build tool name list and a map for quick lookup
+	toolNames := make([]string, 0, len(tools))
+	toolMap := make(map[string]mcp.ToolSpec, len(tools))
+	for _, t := range tools {
+		toolNames = append(toolNames, t.Name)
+		toolMap[t.Name] = t
+	}
+
+	var completions []string
+
+	// If we have a current tool, offer its parameter keys as "key=" completions
+	if t, ok := toolMap[currentTool]; ok {
+		if props, ok := t.Schema["properties"].(map[string]any); ok {
+			for key := range props {
+				candidate := key + "="
+				if strings.HasPrefix(candidate, toComplete) {
+					completions = append(completions, candidate)
+				}
+			}
+		}
+	}
+
+	// Also offer tool names (for starting a new tool call)
+	for _, name := range toolNames {
+		if strings.HasPrefix(name, toComplete) {
+			completions = append(completions, name)
+		}
+	}
+
+	sort.Strings(completions)
+	return completions, noFile | cobra.ShellCompDirectiveNoSpace
+}
+
+// mcpFetchAndCacheTools starts an MCP server, fetches its tools, caches them, and returns them.
+func mcpFetchAndCacheTools(serverName string) []mcp.ToolSpec {
+	cfg, err := mcp.LoadConfig()
+	if err != nil || cfg == nil {
+		return nil
+	}
+	serverCfg, ok := cfg.Servers[serverName]
+	if !ok {
+		return nil
+	}
+	client := mcp.NewClient(serverName, serverCfg)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := client.Start(ctx); err != nil {
+		return nil
+	}
+	defer client.Stop()
+	tools := client.Tools()
+	mcp.CacheTools(serverName, tools)
+	return tools
 }
 
 // MCPFlagCompletion provides completions for --mcp flag with comma-separated support.

@@ -236,13 +236,16 @@ func runChatFromPlan(cfg *config.Config, planContent string, agentName string, m
 		return fmt.Errorf("load agent: %w", err)
 	}
 
-	// Build system instructions: plan content + agent system prompt
-	planInstruction := "You have a plan to execute. Here is the plan document:\n\n" + planContent + "\n\nFollow this plan step by step."
+	// Use agent's system prompt as-is (plan content goes as first user message)
 	if agent != nil && agent.SystemPrompt != "" {
-		cfg.Chat.Instructions = agent.SystemPrompt + "\n\n" + planInstruction
+		cfg.Chat.Instructions = agent.SystemPrompt
 	} else {
-		cfg.Chat.Instructions = planInstruction
+		cfg.Chat.Instructions = "You are a helpful assistant. Follow the user's plan step by step."
 	}
+
+	// Build the plan as the first user message
+	planMessage := "I have a plan to execute. Here is the plan document:\n\n" + planContent + "\n\nPlease follow this plan step by step."
+	autoSendQueue := []string{planMessage}
 
 	// Apply agent provider/model overrides
 	agentProvider, agentModel := "", ""
@@ -295,7 +298,7 @@ func runChatFromPlan(cfg *config.Config, planContent string, agentName string, m
 	defer storeCleanup()
 
 	// Create chat model
-	model := chat.New(cfg, provider, engine, modelName, mcpManager, settings.MaxTurns, forceExternalSearch, settings.Search, enabledLocalTools, settings.Tools, "", false, "", store, nil, useAltScreen, nil, false, agentName)
+	model := chat.New(cfg, provider, engine, modelName, mcpManager, settings.MaxTurns, forceExternalSearch, settings.Search, enabledLocalTools, settings.Tools, "", false, "", store, nil, useAltScreen, autoSendQueue, false, agentName)
 
 	// Build program options
 	var opts []tea.ProgramOption
