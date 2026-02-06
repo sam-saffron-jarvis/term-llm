@@ -57,9 +57,7 @@ func TestRenderActivityPanel_AgentActive(t *testing.T) {
 	if !strings.Contains(panel, "Agent") {
 		t.Error("panel should contain 'Agent' label")
 	}
-	if !strings.Contains(panel, "Thinking") {
-		t.Error("panel should contain phase 'Thinking'")
-	}
+	// Status (phase/stats) is only shown in the bottom status line, not in the panel
 }
 
 func TestRenderActivityPanel_WithCompletedTools(t *testing.T) {
@@ -105,13 +103,10 @@ func TestRenderActivityPanel_Collapsed(t *testing.T) {
 	m.streamStartTime = time.Now()
 	m.activityExpanded = false
 
+	// Collapsed panel should be empty; status is shown only in the bottom status line
 	panel := m.renderActivityPanel()
-	if panel == "" {
-		t.Fatal("expected non-empty panel even when collapsed")
-	}
-	// Collapsed should contain phase but be shorter
-	if !strings.Contains(panel, "Thinking") {
-		t.Error("collapsed panel should contain phase")
+	if panel != "" {
+		t.Errorf("expected empty panel when collapsed, got: %q", panel)
 	}
 }
 
@@ -138,19 +133,19 @@ func TestActivityPanelHeight(t *testing.T) {
 		t.Errorf("expected 0 height when no agent, got %d", h)
 	}
 
-	// Agent active + expanded = at least separators + spinner
+	// Agent active + expanded = at least separators (2)
 	m.agentActive = true
 	m.stats = ui.NewSessionStats()
 	m.activityExpanded = true
 	h := m.activityPanelHeight()
-	if h < 3 {
-		t.Errorf("expected at least 3 lines for expanded panel, got %d", h)
+	if h < 2 {
+		t.Errorf("expected at least 2 lines for expanded panel, got %d", h)
 	}
 
-	// Collapsed = exactly 3
+	// Collapsed = 0 (status only shown in bottom status line)
 	m.activityExpanded = false
-	if h := m.activityPanelHeight(); h != 3 {
-		t.Errorf("expected 3 lines for collapsed panel, got %d", h)
+	if h := m.activityPanelHeight(); h != 0 {
+		t.Errorf("expected 0 lines for collapsed panel, got %d", h)
 	}
 }
 

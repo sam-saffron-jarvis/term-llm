@@ -209,6 +209,38 @@ func TestInlineEditParser_Streaming(t *testing.T) {
 		}
 	})
 
+	t.Run("insert with long after split across chunks", func(t *testing.T) {
+		var gotEdits []InlineEdit
+
+		p := NewInlineEditParser()
+		p.OnEdit = func(edit InlineEdit) {
+			gotEdits = append(gotEdits, edit)
+		}
+
+		// Long 'after' attribute that exceeds the old 20-char threshold
+		chunks := []string{
+			`Some text before. <INSERT after="## Section 3: Impleme`,
+			`ntation Details">`,
+			"new content\n",
+			"</INSERT>",
+		}
+
+		for _, chunk := range chunks {
+			p.Feed(chunk)
+		}
+		p.Flush()
+
+		if len(gotEdits) != 1 {
+			t.Fatalf("got %d edits, want 1", len(gotEdits))
+		}
+		if gotEdits[0].After != "## Section 3: Implementation Details" {
+			t.Errorf("After = %q, want %q", gotEdits[0].After, "## Section 3: Implementation Details")
+		}
+		if len(gotEdits[0].Content) != 1 || gotEdits[0].Content[0] != "new content" {
+			t.Errorf("Content = %v, want [new content]", gotEdits[0].Content)
+		}
+	})
+
 	t.Run("delete split across chunks", func(t *testing.T) {
 		var gotEdits []InlineEdit
 
@@ -309,6 +341,98 @@ func findSubstring(s, substr string) bool {
 		}
 	}
 	return false
+}
+
+func TestInlineEditParser_DeleteStreamingLongFrom(t *testing.T) {
+	// Regression: DELETE with a long 'from' attribute split across chunks
+	// was lost because the partial marker threshold (20 chars) was too small.
+	t.Run("long from split across chunks", func(t *testing.T) {
+		var gotEdits []InlineEdit
+
+		p := NewInlineEditParser()
+		p.OnEdit = func(edit InlineEdit) {
+			gotEdits = append(gotEdits, edit)
+		}
+
+		// Simulate streaming where the DELETE tag is split across chunks
+		// The full tag: <DELETE from="## 3. Testing Strategy" />
+		// This is >20 chars from the '<', so the old threshold would fail.
+		chunks := []string{
+			`Some reasoning text. <DELETE from="## 3. Te`,
+			`sting Strategy" />`,
+		}
+
+		for _, chunk := range chunks {
+			p.Feed(chunk)
+		}
+		p.Flush()
+
+		if len(gotEdits) != 1 {
+			t.Fatalf("got %d edits, want 1", len(gotEdits))
+		}
+		if gotEdits[0].Type != InlineEditDelete {
+			t.Errorf("edit type = %v, want DELETE", gotEdits[0].Type)
+		}
+		if gotEdits[0].From != "## 3. Testing Strategy" {
+			t.Errorf("From = %q, want %q", gotEdits[0].From, "## 3. Testing Strategy")
+		}
+	})
+
+	t.Run("long range delete split across chunks", func(t *testing.T) {
+		var gotEdits []InlineEdit
+
+		p := NewInlineEditParser()
+		p.OnEdit = func(edit InlineEdit) {
+			gotEdits = append(gotEdits, edit)
+		}
+
+		chunks := []string{
+			`<DELETE from="### Dependencies & Prereq`,
+			`uisites" to="### Security Considerations" />`,
+		}
+
+		for _, chunk := range chunks {
+			p.Feed(chunk)
+		}
+		p.Flush()
+
+		if len(gotEdits) != 1 {
+			t.Fatalf("got %d edits, want 1", len(gotEdits))
+		}
+		if gotEdits[0].From != "### Dependencies & Prerequisites" {
+			t.Errorf("From = %q, want %q", gotEdits[0].From, "### Dependencies & Prerequisites")
+		}
+		if gotEdits[0].To != "### Security Considerations" {
+			t.Errorf("To = %q, want %q", gotEdits[0].To, "### Security Considerations")
+		}
+	})
+
+	t.Run("delete split at angle bracket", func(t *testing.T) {
+		var gotEdits []InlineEdit
+
+		p := NewInlineEditParser()
+		p.OnEdit = func(edit InlineEdit) {
+			gotEdits = append(gotEdits, edit)
+		}
+
+		// Split right at the '<' character
+		chunks := []string{
+			"Here is some analysis.\n<",
+			`DELETE from="remove this long line of text that exceeds threshold" />`,
+		}
+
+		for _, chunk := range chunks {
+			p.Feed(chunk)
+		}
+		p.Flush()
+
+		if len(gotEdits) != 1 {
+			t.Fatalf("got %d edits, want 1", len(gotEdits))
+		}
+		if gotEdits[0].From != "remove this long line of text that exceeds threshold" {
+			t.Errorf("From = %q, want %q", gotEdits[0].From, "remove this long line of text that exceeds threshold")
+		}
+	})
 }
 
 func TestInlineEditParser_PartialInsert(t *testing.T) {

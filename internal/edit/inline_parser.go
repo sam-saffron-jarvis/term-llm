@@ -165,7 +165,7 @@ func (p *InlineEditParser) process() {
 		if firstMarkerStart == -1 {
 			// No complete markers found - check for partial markers
 			partialIdx := strings.LastIndex(text, "<")
-			if partialIdx >= 0 && partialIdx > len(text)-20 {
+			if partialIdx >= 0 && couldBeMarkerStart(text[partialIdx:]) {
 				// Might be start of a marker - emit text before it, keep the rest
 				if partialIdx > 0 && p.OnText != nil {
 					p.OnText(text[:partialIdx])
@@ -222,6 +222,20 @@ func (p *InlineEditParser) process() {
 			p.buffer.WriteString(text[deleteLoc[1]:])
 		}
 	}
+}
+
+// couldBeMarkerStart checks whether s (which starts with '<') could be the
+// beginning of one of our known markers: <INSERT, </INSERT>, or <DELETE.
+// This replaces a fixed-length threshold that broke for long DELETE attributes.
+func couldBeMarkerStart(s string) bool {
+	lower := strings.ToLower(s)
+	prefixes := []string{"<insert", "</insert>", "<delete"}
+	for _, prefix := range prefixes {
+		if strings.HasPrefix(prefix, lower) || strings.HasPrefix(lower, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 // emitPartialLines emits any complete lines that haven't been emitted yet.
