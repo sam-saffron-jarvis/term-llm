@@ -1,6 +1,111 @@
 package update
 
-import "testing"
+import (
+	"context"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+)
+
+func setReleaseBaseURL(t *testing.T, url string) {
+	t.Helper()
+	old := releaseBaseURL
+	releaseBaseURL = url
+	t.Cleanup(func() { releaseBaseURL = old })
+}
+
+func TestFetchLatestRelease(t *testing.T) {
+	t.Run("parses tag from 302 redirect", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Location", "http://"+r.Host+"/samsaffron/term-llm/releases/tag/v1.5.0")
+			w.WriteHeader(http.StatusFound)
+		}))
+		defer srv.Close()
+		setReleaseBaseURL(t, srv.URL)
+
+		info, err := FetchLatestRelease(context.Background())
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if info.TagName != "v1.5.0" {
+			t.Fatalf("got TagName=%q, want %q", info.TagName, "v1.5.0")
+		}
+	})
+
+	t.Run("parses tag from 301 redirect", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Location", "http://"+r.Host+"/samsaffron/term-llm/releases/tag/v2.0.1")
+			w.WriteHeader(http.StatusMovedPermanently)
+		}))
+		defer srv.Close()
+		setReleaseBaseURL(t, srv.URL)
+
+		info, err := FetchLatestRelease(context.Background())
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if info.TagName != "v2.0.1" {
+			t.Fatalf("got TagName=%q, want %q", info.TagName, "v2.0.1")
+		}
+	})
+
+	t.Run("parses tag from relative Location", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Location", "/samsaffron/term-llm/releases/tag/v3.0.0")
+			w.WriteHeader(http.StatusFound)
+		}))
+		defer srv.Close()
+		setReleaseBaseURL(t, srv.URL)
+
+		info, err := FetchLatestRelease(context.Background())
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if info.TagName != "v3.0.0" {
+			t.Fatalf("got TagName=%q, want %q", info.TagName, "v3.0.0")
+		}
+	})
+
+	t.Run("error on non-redirect status", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusNotFound)
+		}))
+		defer srv.Close()
+		setReleaseBaseURL(t, srv.URL)
+
+		_, err := FetchLatestRelease(context.Background())
+		if err == nil {
+			t.Fatal("expected error for non-redirect status")
+		}
+	})
+
+	t.Run("error on missing Location header", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusFound)
+		}))
+		defer srv.Close()
+		setReleaseBaseURL(t, srv.URL)
+
+		_, err := FetchLatestRelease(context.Background())
+		if err == nil {
+			t.Fatal("expected error for missing Location header")
+		}
+	})
+
+	t.Run("error on unexpected redirect path", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Location", "http://"+r.Host+"/login")
+			w.WriteHeader(http.StatusFound)
+		}))
+		defer srv.Close()
+		setReleaseBaseURL(t, srv.URL)
+
+		_, err := FetchLatestRelease(context.Background())
+		if err == nil {
+			t.Fatal("expected error for unexpected redirect path")
+		}
+	})
+}
 
 func TestNormalizeVersion(t *testing.T) {
 	tests := []struct {

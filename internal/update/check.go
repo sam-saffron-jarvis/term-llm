@@ -2,13 +2,14 @@ package update
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
+	"path"
 	"strconv"
 	"strings"
 	"time"
@@ -26,13 +27,10 @@ const (
 	updateCheckCommandArg = "__update-check"
 )
 
-// ReleaseInfo contains information about a GitHub release
+// ReleaseInfo contains information about a GitHub release.
+// Only TagName is populated by FetchLatestRelease (redirect-based detection).
 type ReleaseInfo struct {
 	TagName string `json:"tag_name"`
-	Assets  []struct {
-		Name               string `json:"name"`
-		BrowserDownloadURL string `json:"browser_download_url"`
-	} `json:"assets"`
 }
 
 // UpdateCheckCmd is the hidden command for background update checks
@@ -141,32 +139,51 @@ func WarnIfOutdated(currentVersion string, state *State) {
 	_ = SaveState(state)
 }
 
-// FetchLatestRelease gets the latest release info from GitHub
+// releaseBaseURL is the base URL for release lookups, overridden in tests.
+var releaseBaseURL = "https://github.com"
+
+// FetchLatestRelease gets the latest release tag from GitHub by following the
+// releases/latest redirect. This avoids the GitHub API rate limit (60 req/hour
+// for unauthenticated requests).
 func FetchLatestRelease(ctx context.Context) (*ReleaseInfo, error) {
-	url := fmt.Sprintf("https://api.github.com/repos/%s/%s/releases/latest", RepoOwner, RepoName)
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	releaseURL := fmt.Sprintf("%s/%s/%s/releases/latest", releaseBaseURL, RepoOwner, RepoName)
+	client := &http.Client{
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, releaseURL, nil)
 	if err != nil {
 		return nil, err
 	}
 	req.Header.Set("User-Agent", updateUserAgent)
-	req.Header.Set("Accept", "application/vnd.github+json")
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
+	if resp.StatusCode < 300 || resp.StatusCode >= 400 {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<10))
-		return nil, fmt.Errorf("unexpected response %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+		return nil, fmt.Errorf("expected redirect, got %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
 	}
-	var info ReleaseInfo
-	if err := json.NewDecoder(resp.Body).Decode(&info); err != nil {
-		return nil, err
+	location := resp.Header.Get("Location")
+	if location == "" {
+		return nil, errors.New("redirect response missing Location header")
 	}
-	if strings.TrimSpace(info.TagName) == "" {
-		return nil, errors.New("latest release is missing tag name")
+	parsed, err := url.Parse(location)
+	if err != nil {
+		return nil, fmt.Errorf("invalid redirect URL: %w", err)
 	}
-	return &info, nil
+	// Expect path like /<owner>/<repo>/releases/tag/<tag>
+	expectedPrefix := fmt.Sprintf("/%s/%s/releases/tag/", RepoOwner, RepoName)
+	if !strings.HasPrefix(parsed.Path, expectedPrefix) {
+		return nil, fmt.Errorf("unexpected redirect path: %s", parsed.Path)
+	}
+	tag := path.Base(parsed.Path)
+	if tag == "" || tag == "." || tag == "/" {
+		return nil, fmt.Errorf("could not parse tag from redirect URL: %s", location)
+	}
+	return &ReleaseInfo{TagName: tag}, nil
 }
 
 // IsVersionOutdated returns true if current is older than latest
