@@ -3,6 +3,8 @@ package llm
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"strings"
 	"testing"
 )
 
@@ -206,6 +208,106 @@ func TestMapModelToClaudeArg(t *testing.T) {
 				t.Errorf("mapModelToClaudeArg(%q) = %q, want %q", tt.input, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestIsPromptTooLong(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"exact match", fmt.Errorf("Prompt is too long"), true},
+		{"lowercase", fmt.Errorf("prompt is too long"), true},
+		{"wrapped", fmt.Errorf("API error: Prompt is too long for this model"), true},
+		{"unrelated error", fmt.Errorf("rate limit exceeded"), false},
+		{"empty error", fmt.Errorf(""), false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isPromptTooLong(tt.err); got != tt.want {
+				t.Errorf("isPromptTooLong(%v) = %v, want %v", tt.err, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestTruncateToolResults(t *testing.T) {
+	shortContent := "short result"
+	longContent := strings.Repeat("x", maxToolResultCharsOnRetry+1000)
+
+	messages := []Message{
+		{
+			Role: RoleUser,
+			Parts: []Part{
+				{Type: PartText, Text: "hello"},
+			},
+		},
+		{
+			Role: RoleTool,
+			Parts: []Part{
+				{
+					Type: PartToolResult,
+					ToolResult: &ToolResult{
+						ID:      "1",
+						Name:    "short_tool",
+						Content: shortContent,
+					},
+				},
+				{
+					Type: PartToolResult,
+					ToolResult: &ToolResult{
+						ID:      "2",
+						Name:    "long_tool",
+						Content: longContent,
+					},
+				},
+			},
+		},
+	}
+
+	truncated := truncateToolResults(messages)
+
+	// Should not modify original
+	if messages[1].Parts[1].ToolResult.Content != longContent {
+		t.Fatal("truncateToolResults modified original message")
+	}
+
+	// User message should be unchanged
+	if truncated[0].Parts[0].Text != "hello" {
+		t.Fatalf("user message changed: got %q", truncated[0].Parts[0].Text)
+	}
+
+	// Short tool result should be unchanged
+	if truncated[1].Parts[0].ToolResult.Content != shortContent {
+		t.Fatalf("short result changed: got %q", truncated[1].Parts[0].ToolResult.Content)
+	}
+
+	// Long tool result should be truncated
+	got := truncated[1].Parts[1].ToolResult.Content
+	if len(got) >= len(longContent) {
+		t.Fatalf("long result was not truncated: len=%d", len(got))
+	}
+	if !strings.Contains(got, "[Truncated: showing first") {
+		t.Fatalf("truncation notice missing from result: %s", got[len(got)-80:])
+	}
+	expectedPrefix := longContent[:maxToolResultCharsOnRetry]
+	if !strings.HasPrefix(got, expectedPrefix) {
+		t.Fatal("truncated result does not start with expected prefix")
+	}
+}
+
+func TestTruncateToolResults_NoToolResults(t *testing.T) {
+	messages := []Message{
+		{Role: RoleUser, Parts: []Part{{Type: PartText, Text: "hello"}}},
+		{Role: RoleAssistant, Parts: []Part{{Type: PartText, Text: "hi"}}},
+	}
+	truncated := truncateToolResults(messages)
+	if len(truncated) != 2 {
+		t.Fatalf("expected 2 messages, got %d", len(truncated))
+	}
+	if truncated[0].Parts[0].Text != "hello" || truncated[1].Parts[0].Text != "hi" {
+		t.Fatal("messages were incorrectly modified")
 	}
 }
 

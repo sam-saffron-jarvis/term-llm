@@ -47,4 +47,4 @@
 
 Always build and test test changes you make, never commit anything the user will handle it.
 
-This is a go project, files use tabs, be mindful when editing.
+This is a go project, files use TABS AND SPACES, be mindful when editing, always use `gofmt -w .` after making changes to ensure consistent formatting.

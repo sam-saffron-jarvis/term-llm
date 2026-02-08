@@ -139,163 +139,195 @@ func (p *ClaudeBinProvider) Stream(ctx context.Context, req Request) (Stream, er
 			args = append(args, "--system-prompt", systemPrompt)
 		}
 
-		// Note: We pass the prompt via stdin instead of command line args
-		// to avoid "argument list too long" errors with large tool results (e.g., base64 images)
-
 		debug := req.Debug || req.DebugRaw
-		if debug {
-			fmt.Fprintln(os.Stderr, "=== DEBUG: Claude CLI Command ===")
-			fmt.Fprintf(os.Stderr, "claude %s\n", strings.Join(args, " "))
-			fmt.Fprintf(os.Stderr, "Prompt length: %d bytes (via stdin)\n", len(userPrompt))
-			if effort != "" {
-				fmt.Fprintf(os.Stderr, "CLAUDE_CODE_EFFORT_LEVEL=%s\n", effort)
+
+		err := p.runClaudeCommand(ctx, args, effort, userPrompt, debug, events)
+		if err != nil && isPromptTooLong(err) {
+			// Truncate tool results and retry exactly once
+			truncated := truncateToolResults(messagesToSend)
+			retryPrompt := p.buildConversationPrompt(truncated)
+			// Only retry if truncation actually reduced the prompt
+			if len(retryPrompt) < len(userPrompt) {
+				slog.Info("prompt too long, retrying with truncated tool results",
+					"original_len", len(userPrompt), "truncated_len", len(retryPrompt))
+				err = p.runClaudeCommand(ctx, args, effort, retryPrompt, debug, events)
+			} else {
+				slog.Warn("prompt too long but truncation did not reduce size, not retrying")
 			}
-			fmt.Fprintln(os.Stderr, "=================================")
 		}
-
-		cmd := exec.CommandContext(ctx, "claude", args...)
-
-		// Set up environment - optionally clear ANTHROPIC_API_KEY to prefer OAuth,
-		// and set CLAUDE_CODE_EFFORT_LEVEL for reasoning effort control.
-		if p.preferOAuth || effort != "" {
-			env := os.Environ()
-			filtered := env[:0]
-			for _, e := range env {
-				if p.preferOAuth && strings.HasPrefix(e, "ANTHROPIC_API_KEY=") {
-					continue
-				}
-				if effort != "" && strings.HasPrefix(e, "CLAUDE_CODE_EFFORT_LEVEL=") {
-					continue
-				}
-				filtered = append(filtered, e)
-			}
-			if effort != "" {
-				filtered = append(filtered, "CLAUDE_CODE_EFFORT_LEVEL="+effort)
-			}
-			cmd.Env = filtered
-		}
-
-		// Set up stdin pipe for the prompt
-		stdin, err := cmd.StdinPipe()
 		if err != nil {
-			return fmt.Errorf("failed to get stdin pipe: %w", err)
-		}
-
-		stdout, err := cmd.StdoutPipe()
-		if err != nil {
-			return fmt.Errorf("failed to get stdout pipe: %w", err)
-		}
-
-		stderr, err := cmd.StderrPipe()
-		if err != nil {
-			return fmt.Errorf("failed to get stderr pipe: %w", err)
-		}
-
-		if err := cmd.Start(); err != nil {
-			return fmt.Errorf("failed to start claude: %w", err)
-		}
-
-		// Log stderr in background (claude CLI outputs progress/errors here)
-		go func() {
-			stderrScanner := bufio.NewScanner(stderr)
-			for stderrScanner.Scan() {
-				line := stderrScanner.Text()
-				if debug {
-					fmt.Fprintf(os.Stderr, "[claude stderr] %s\n", line)
-				}
-			}
-		}()
-
-		// Write prompt to stdin and close
-		go func() {
-			defer stdin.Close()
-			stdin.Write([]byte(userPrompt))
-		}()
-
-		scanner := bufio.NewScanner(stdout)
-		// Increase buffer size for large JSON messages
-		scanner.Buffer(make([]byte, 1024*1024), 10*1024*1024)
-
-		var lastUsage *Usage
-
-		for scanner.Scan() {
-			line := scanner.Text()
-			if line == "" {
-				continue
-			}
-
-			// Parse the message type first
-			var baseMsg struct {
-				Type string `json:"type"`
-			}
-			if err := json.Unmarshal([]byte(line), &baseMsg); err != nil {
-				if debug {
-					fmt.Fprintf(os.Stderr, "Failed to parse JSON: %s\n", line[:min(100, len(line))])
-				}
-				continue
-			}
-
-			switch baseMsg.Type {
-			case "system":
-				// Extract session ID for potential resume
-				var sysMsg claudeSystemMessage
-				if err := json.Unmarshal([]byte(line), &sysMsg); err == nil {
-					p.sessionID = sysMsg.SessionID
-					if debug {
-						fmt.Fprintf(os.Stderr, "Session: %s, Model: %s, Tools: %v\n",
-							sysMsg.SessionID, sysMsg.Model, sysMsg.Tools)
-					}
-				}
-
-			case "stream_event":
-				// Handle streaming text deltas
-				var streamEvent claudeStreamEvent
-				if err := json.Unmarshal([]byte(line), &streamEvent); err != nil {
-					continue
-				}
-				if streamEvent.Event.Type == "content_block_delta" &&
-					streamEvent.Event.Delta.Type == "text_delta" &&
-					streamEvent.Event.Delta.Text != "" {
-					events <- Event{Type: EventTextDelta, Text: streamEvent.Event.Delta.Text}
-				}
-
-			case "assistant":
-				// Tool execution is handled via MCP HTTP path (wrappedExecutor).
-				// The "assistant" message is output BEFORE claude calls MCP,
-				// so we can't use it for tracking. Just ignore it - MCP handles everything.
-
-			case "result":
-				var resultMsg claudeResultMessage
-				if err := json.Unmarshal([]byte(line), &resultMsg); err == nil {
-					// Check for API errors (rate limits, auth issues, etc.)
-					if resultMsg.IsError && resultMsg.Result != "" {
-						return fmt.Errorf("%s", resultMsg.Result)
-					}
-					lastUsage = &Usage{
-						InputTokens:  resultMsg.Usage.InputTokens + resultMsg.Usage.CacheReadInputTokens,
-						OutputTokens: resultMsg.Usage.OutputTokens,
-					}
-				}
-			}
-		}
-
-		if err := scanner.Err(); err != nil {
-			return fmt.Errorf("error reading claude output: %w", err)
-		}
-
-		if err := cmd.Wait(); err != nil {
-			return fmt.Errorf("claude command failed: %w", err)
+			return err
 		}
 
 		// Track messages sent so we don't re-send them on resume
 		p.messagesSent = len(req.Messages)
 
-		if lastUsage != nil {
-			events <- Event{Type: EventUsage, Use: lastUsage}
-		}
 		events <- Event{Type: EventDone}
 		return nil
 	}), nil
+}
+
+// runClaudeCommand executes the claude CLI binary with the given arguments and prompt,
+// parsing its streaming JSON output into events. Returns nil on success.
+func (p *ClaudeBinProvider) runClaudeCommand(
+	ctx context.Context,
+	args []string,
+	effort string,
+	userPrompt string,
+	debug bool,
+	events chan<- Event,
+) error {
+	// Note: We pass the prompt via stdin instead of command line args
+	// to avoid "argument list too long" errors with large tool results (e.g., base64 images)
+
+	if debug {
+		fmt.Fprintln(os.Stderr, "=== DEBUG: Claude CLI Command ===")
+		fmt.Fprintf(os.Stderr, "claude %s\n", strings.Join(args, " "))
+		fmt.Fprintf(os.Stderr, "Prompt length: %d bytes (via stdin)\n", len(userPrompt))
+		if effort != "" {
+			fmt.Fprintf(os.Stderr, "CLAUDE_CODE_EFFORT_LEVEL=%s\n", effort)
+		}
+		fmt.Fprintln(os.Stderr, "=================================")
+	}
+
+	cmd := exec.CommandContext(ctx, "claude", args...)
+
+	// Set up environment - optionally clear ANTHROPIC_API_KEY to prefer OAuth,
+	// and set CLAUDE_CODE_EFFORT_LEVEL for reasoning effort control.
+	if p.preferOAuth || effort != "" {
+		env := os.Environ()
+		filtered := env[:0]
+		for _, e := range env {
+			if p.preferOAuth && strings.HasPrefix(e, "ANTHROPIC_API_KEY=") {
+				continue
+			}
+			if effort != "" && strings.HasPrefix(e, "CLAUDE_CODE_EFFORT_LEVEL=") {
+				continue
+			}
+			filtered = append(filtered, e)
+		}
+		if effort != "" {
+			filtered = append(filtered, "CLAUDE_CODE_EFFORT_LEVEL="+effort)
+		}
+		cmd.Env = filtered
+	}
+
+	// Set up stdin pipe for the prompt
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		return fmt.Errorf("failed to get stdin pipe: %w", err)
+	}
+
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return fmt.Errorf("failed to get stdout pipe: %w", err)
+	}
+
+	stderr, err := cmd.StderrPipe()
+	if err != nil {
+		return fmt.Errorf("failed to get stderr pipe: %w", err)
+	}
+
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("failed to start claude: %w", err)
+	}
+
+	// Log stderr in background (claude CLI outputs progress/errors here)
+	go func() {
+		stderrScanner := bufio.NewScanner(stderr)
+		for stderrScanner.Scan() {
+			line := stderrScanner.Text()
+			if debug {
+				fmt.Fprintf(os.Stderr, "[claude stderr] %s\n", line)
+			}
+		}
+	}()
+
+	// Write prompt to stdin and close
+	go func() {
+		defer stdin.Close()
+		stdin.Write([]byte(userPrompt))
+	}()
+
+	scanner := bufio.NewScanner(stdout)
+	// Increase buffer size for large JSON messages
+	scanner.Buffer(make([]byte, 1024*1024), 10*1024*1024)
+
+	var lastUsage *Usage
+
+	for scanner.Scan() {
+		line := scanner.Text()
+		if line == "" {
+			continue
+		}
+
+		// Parse the message type first
+		var baseMsg struct {
+			Type string `json:"type"`
+		}
+		if err := json.Unmarshal([]byte(line), &baseMsg); err != nil {
+			if debug {
+				fmt.Fprintf(os.Stderr, "Failed to parse JSON: %s\n", line[:min(100, len(line))])
+			}
+			continue
+		}
+
+		switch baseMsg.Type {
+		case "system":
+			// Extract session ID for potential resume
+			var sysMsg claudeSystemMessage
+			if err := json.Unmarshal([]byte(line), &sysMsg); err == nil {
+				p.sessionID = sysMsg.SessionID
+				if debug {
+					fmt.Fprintf(os.Stderr, "Session: %s, Model: %s, Tools: %v\n",
+						sysMsg.SessionID, sysMsg.Model, sysMsg.Tools)
+				}
+			}
+
+		case "stream_event":
+			// Handle streaming text deltas
+			var streamEvent claudeStreamEvent
+			if err := json.Unmarshal([]byte(line), &streamEvent); err != nil {
+				continue
+			}
+			if streamEvent.Event.Type == "content_block_delta" &&
+				streamEvent.Event.Delta.Type == "text_delta" &&
+				streamEvent.Event.Delta.Text != "" {
+				events <- Event{Type: EventTextDelta, Text: streamEvent.Event.Delta.Text}
+			}
+
+		case "assistant":
+			// Tool execution is handled via MCP HTTP path (wrappedExecutor).
+			// The "assistant" message is output BEFORE claude calls MCP,
+			// so we can't use it for tracking. Just ignore it - MCP handles everything.
+
+		case "result":
+			var resultMsg claudeResultMessage
+			if err := json.Unmarshal([]byte(line), &resultMsg); err == nil {
+				// Check for API errors (rate limits, auth issues, etc.)
+				if resultMsg.IsError && resultMsg.Result != "" {
+					return fmt.Errorf("%s", resultMsg.Result)
+				}
+				lastUsage = &Usage{
+					InputTokens:  resultMsg.Usage.InputTokens + resultMsg.Usage.CacheReadInputTokens,
+					OutputTokens: resultMsg.Usage.OutputTokens,
+				}
+			}
+		}
+	}
+
+	if err := scanner.Err(); err != nil {
+		return fmt.Errorf("error reading claude output: %w", err)
+	}
+
+	if err := cmd.Wait(); err != nil {
+		return fmt.Errorf("claude command failed: %w", err)
+	}
+
+	if lastUsage != nil {
+		events <- Event{Type: EventUsage, Use: lastUsage}
+	}
+	return nil
 }
 
 // buildArgs constructs the command line arguments for the claude binary.
@@ -646,6 +678,44 @@ func safeSendEvent(ctx context.Context, ch chan<- Event, event Event) (sent bool
 	case <-ctx.Done():
 		return false
 	}
+}
+
+// isPromptTooLong checks whether the error from claude CLI indicates the
+// prompt exceeded the model's context window.
+func isPromptTooLong(err error) bool {
+	return strings.Contains(strings.ToLower(err.Error()), "prompt is too long")
+}
+
+// maxToolResultCharsOnRetry is the maximum character length for each tool result
+// when retrying after a "prompt too long" error (~5.7K tokens at 3.5 chars/token).
+const maxToolResultCharsOnRetry = 20_000
+
+// truncateToolResults returns a copy of messages with oversized tool result
+// content truncated to maxToolResultCharsOnRetry runes.
+// Note: only copies Role and Parts — update if Message gains new fields.
+func truncateToolResults(messages []Message) []Message {
+	out := make([]Message, len(messages))
+	for i, msg := range messages {
+		out[i] = Message{Role: msg.Role}
+		out[i].Parts = make([]Part, len(msg.Parts))
+		for j, part := range msg.Parts {
+			out[i].Parts[j] = part
+			if part.Type == PartToolResult && part.ToolResult != nil {
+				content := part.ToolResult.Content
+				runes := []rune(content)
+				if len(runes) > maxToolResultCharsOnRetry {
+					truncated := string(runes[:maxToolResultCharsOnRetry])
+					truncated += fmt.Sprintf("\n[Truncated: showing first %d of %d chars]",
+						maxToolResultCharsOnRetry, len(runes))
+					// Clone ToolResult to avoid mutating original
+					tr := *part.ToolResult
+					tr.Content = truncated
+					out[i].Parts[j].ToolResult = &tr
+				}
+			}
+		}
+	}
+	return out
 }
 
 // JSON message types from claude CLI output
