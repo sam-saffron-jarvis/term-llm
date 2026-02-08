@@ -120,42 +120,42 @@ Guidelines:
 }
 
 // Execute runs the ask_user tool.
-func (t *AskUserTool) Execute(ctx context.Context, args json.RawMessage) (string, error) {
+func (t *AskUserTool) Execute(ctx context.Context, args json.RawMessage) (llm.ToolOutput, error) {
 	var a AskUserArgs
 	if err := json.Unmarshal(args, &a); err != nil {
-		return formatAskUserError(ErrInvalidParams, fmt.Sprintf("failed to parse arguments: %v", err)), nil
+		return llm.TextOutput(formatAskUserError(ErrInvalidParams, fmt.Sprintf("failed to parse arguments: %v", err))), nil
 	}
 
 	// Validate arguments
 	if len(a.Questions) == 0 {
-		return formatAskUserError(ErrInvalidParams, "at least one question is required"), nil
+		return llm.TextOutput(formatAskUserError(ErrInvalidParams, "at least one question is required")), nil
 	}
 	if len(a.Questions) > 4 {
-		return formatAskUserError(ErrInvalidParams, "maximum 4 questions allowed"), nil
+		return llm.TextOutput(formatAskUserError(ErrInvalidParams, "maximum 4 questions allowed")), nil
 	}
 
 	for i, q := range a.Questions {
 		if q.Header == "" {
-			return formatAskUserError(ErrInvalidParams, fmt.Sprintf("question %d: header is required", i+1)), nil
+			return llm.TextOutput(formatAskUserError(ErrInvalidParams, fmt.Sprintf("question %d: header is required", i+1))), nil
 		}
 		if len(q.Header) > 12 {
-			return formatAskUserError(ErrInvalidParams, fmt.Sprintf("question %d: header must be max 12 characters", i+1)), nil
+			return llm.TextOutput(formatAskUserError(ErrInvalidParams, fmt.Sprintf("question %d: header must be max 12 characters", i+1))), nil
 		}
 		if q.Question == "" {
-			return formatAskUserError(ErrInvalidParams, fmt.Sprintf("question %d: question text is required", i+1)), nil
+			return llm.TextOutput(formatAskUserError(ErrInvalidParams, fmt.Sprintf("question %d: question text is required", i+1))), nil
 		}
 		if len(q.Options) < 2 {
-			return formatAskUserError(ErrInvalidParams, fmt.Sprintf("question %d: at least 2 options required", i+1)), nil
+			return llm.TextOutput(formatAskUserError(ErrInvalidParams, fmt.Sprintf("question %d: at least 2 options required", i+1))), nil
 		}
 		if len(q.Options) > 8 {
-			return formatAskUserError(ErrInvalidParams, fmt.Sprintf("question %d: maximum 8 options allowed", i+1)), nil
+			return llm.TextOutput(formatAskUserError(ErrInvalidParams, fmt.Sprintf("question %d: maximum 8 options allowed", i+1))), nil
 		}
 		for j, opt := range q.Options {
 			if opt.Label == "" {
-				return formatAskUserError(ErrInvalidParams, fmt.Sprintf("question %d, option %d: label is required", i+1, j+1)), nil
+				return llm.TextOutput(formatAskUserError(ErrInvalidParams, fmt.Sprintf("question %d, option %d: label is required", i+1, j+1))), nil
 			}
 			if opt.Description == "" {
-				return formatAskUserError(ErrInvalidParams, fmt.Sprintf("question %d, option %d: description is required", i+1, j+1)), nil
+				return llm.TextOutput(formatAskUserError(ErrInvalidParams, fmt.Sprintf("question %d, option %d: description is required", i+1, j+1))), nil
 			}
 		}
 	}
@@ -197,24 +197,24 @@ func (t *AskUserTool) Execute(ctx context.Context, args json.RawMessage) (string
 				Type:  "USER_CANCELLED",
 			}
 			data, _ := json.Marshal(result)
-			return string(data), nil
+			return llm.TextOutput(string(data)), nil
 		}
 		// Other errors (e.g., no TTY)
-		return formatAskUserError(ErrExecutionFailed, err.Error()), nil
+		return llm.TextOutput(formatAskUserError(ErrExecutionFailed, err.Error())), nil
 	}
 
 	// Validate answers from custom UI
 	if len(answers) != len(a.Questions) {
-		return formatAskUserError(ErrExecutionFailed, "ask_user UI returned incomplete answers"), nil
+		return llm.TextOutput(formatAskUserError(ErrExecutionFailed, "ask_user UI returned incomplete answers")), nil
 	}
 
 	// Return successful result
 	result := AskUserResult{Answers: answers}
 	data, err := json.Marshal(result)
 	if err != nil {
-		return formatAskUserError(ErrExecutionFailed, fmt.Sprintf("failed to marshal result: %v", err)), nil
+		return llm.TextOutput(formatAskUserError(ErrExecutionFailed, fmt.Sprintf("failed to marshal result: %v", err))), nil
 	}
-	return string(data), nil
+	return llm.TextOutput(string(data)), nil
 }
 
 // Preview returns a short description of the tool call.

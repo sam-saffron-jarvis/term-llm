@@ -213,7 +213,7 @@ func TestSpawnAgentTool_TimeoutEnforcement(t *testing.T) {
 				t.Fatalf("unexpected error: %v", err)
 			}
 
-			r := parseResult(t, result)
+			r := parseResult(t, result.Content)
 			if r.Error != "" {
 				t.Errorf("unexpected tool error: %s", r.Error)
 			}
@@ -280,7 +280,7 @@ func TestSpawnAgentTool_DepthLimitEnforcement(t *testing.T) {
 				t.Fatalf("unexpected error: %v", err)
 			}
 
-			r := parseResult(t, result)
+			r := parseResult(t, result.Content)
 
 			if tt.expectError {
 				if r.Error == "" {
@@ -356,7 +356,7 @@ func TestSpawnAgentTool_AllowedAgentsWhitelist(t *testing.T) {
 				t.Fatalf("unexpected error: %v", err)
 			}
 
-			r := parseResult(t, result)
+			r := parseResult(t, result.Content)
 
 			if tt.expectError {
 				if r.Error == "" {
@@ -431,7 +431,7 @@ func TestSpawnAgentTool_RequiredParametersValidation(t *testing.T) {
 				t.Fatalf("unexpected error: %v", err)
 			}
 
-			r := parseResult(t, result)
+			r := parseResult(t, result.Content)
 
 			if tt.expectError {
 				if r.Error == "" {
@@ -467,7 +467,7 @@ func TestSpawnAgentTool_InvalidJSON(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	r := parseResult(t, result)
+	r := parseResult(t, result.Content)
 	if r.Error == "" {
 		t.Error("expected error for invalid JSON")
 	}
@@ -543,7 +543,7 @@ func TestSpawnAgentTool_ContextCancellation(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	r := parseResult(t, result)
+	r := parseResult(t, result.Content)
 	if r.Error == "" {
 		t.Error("expected error for cancelled context")
 	}
@@ -577,7 +577,7 @@ func TestSpawnAgentTool_ContextTimeout(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	r := parseResult(t, result)
+	r := parseResult(t, result.Content)
 	if r.Error == "" {
 		t.Error("expected error for timed out context")
 	}
@@ -641,7 +641,7 @@ func TestSpawnAgentTool_RunnerNotConfigured(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	r := parseResult(t, result)
+	r := parseResult(t, result.Content)
 	if r.Error == "" {
 		t.Error("expected error when runner not configured")
 	}
@@ -668,7 +668,7 @@ func TestSpawnAgentTool_RunnerError(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	r := parseResult(t, result)
+	r := parseResult(t, result.Content)
 	if r.Error == "" {
 		t.Error("expected error when runner returns error")
 	}
@@ -697,7 +697,7 @@ func TestSpawnAgentTool_SuccessResult(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	r := parseResult(t, result)
+	r := parseResult(t, result.Content)
 	if r.Error != "" {
 		t.Errorf("unexpected error: %s", r.Error)
 	}
@@ -758,7 +758,7 @@ func TestSpawnAgentTool_SetDepth(t *testing.T) {
 	args := makeSpawnArgs("test-agent", "do something", 0)
 
 	result, _ := tool.Execute(ctx, args)
-	r := parseResult(t, result)
+	r := parseResult(t, result.Content)
 	if r.Error != "" {
 		t.Errorf("unexpected error at depth 0: %s", r.Error)
 	}
@@ -767,7 +767,7 @@ func TestSpawnAgentTool_SetDepth(t *testing.T) {
 	tool.SetDepth(3)
 
 	result, _ = tool.Execute(ctx, args)
-	r = parseResult(t, result)
+	r = parseResult(t, result.Content)
 	if r.Error == "" {
 		t.Error("expected error at max depth")
 	}
@@ -956,7 +956,7 @@ func TestSpawnAgentTool_SessionIDPropagation(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	r := parseResult(t, result)
+	r := parseResult(t, result.Content)
 	if r.Error != "" {
 		t.Errorf("unexpected error: %s", r.Error)
 	}

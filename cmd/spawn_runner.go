@@ -454,18 +454,12 @@ func (r *SpawnAgentRunner) runAndCollectWithCallback(
 			}
 		case llm.EventToolExecEnd:
 			if cb != nil && callID != "" {
-				// Only forward ToolOutput for tools that emit markers (edit_file, image tools).
-				// This prevents memory/UI bloat from large outputs (read_file, shell) when
-				// multiple sub-agents run in parallel.
-				toolOutput := ""
-				if toolEmitsMarkers(event.ToolName) {
-					toolOutput = event.ToolOutput
-				}
 				cb(callID, tools.SubagentEvent{
-					Type:       tools.SubagentEventToolEnd,
-					ToolName:   event.ToolName,
-					ToolOutput: toolOutput,
-					Success:    event.ToolSuccess,
+					Type:     tools.SubagentEventToolEnd,
+					ToolName: event.ToolName,
+					Diffs:    event.ToolDiffs,
+					Images:   event.ToolImages,
+					Success:  event.ToolSuccess,
 				})
 			}
 		case llm.EventPhase:
@@ -496,16 +490,4 @@ func (r *SpawnAgentRunner) runAndCollectWithCallback(
 	}
 
 	return output.String(), nil
-}
-
-// toolEmitsMarkers returns true for tools whose output may contain markers
-// that the UI needs to parse (e.g., __DIFF__, __IMAGE__). Only these tools
-// have their output forwarded to the parent to avoid memory bloat.
-func toolEmitsMarkers(toolName string) bool {
-	switch toolName {
-	case tools.EditFileToolName, tools.UnifiedDiffToolName, tools.WriteFileToolName, tools.ShowImageToolName, tools.ImageGenerateToolName:
-		return true
-	default:
-		return false
-	}
 }

@@ -243,14 +243,14 @@ func (t *GrepTool) Preview(args json.RawMessage) string {
 	return result
 }
 
-func (t *GrepTool) Execute(ctx context.Context, args json.RawMessage) (string, error) {
+func (t *GrepTool) Execute(ctx context.Context, args json.RawMessage) (llm.ToolOutput, error) {
 	var a GrepArgs
 	if err := json.Unmarshal(args, &a); err != nil {
-		return formatToolError(NewToolError(ErrInvalidParams, err.Error())), nil
+		return llm.TextOutput(formatToolError(NewToolError(ErrInvalidParams, err.Error()))), nil
 	}
 
 	if a.Pattern == "" {
-		return formatToolError(NewToolError(ErrInvalidParams, "pattern is required")), nil
+		return llm.TextOutput(formatToolError(NewToolError(ErrInvalidParams, "pattern is required"))), nil
 	}
 
 	// Set defaults
@@ -259,7 +259,7 @@ func (t *GrepTool) Execute(ctx context.Context, args json.RawMessage) (string, e
 		var err error
 		searchPath, err = os.Getwd()
 		if err != nil {
-			return formatToolError(NewToolErrorf(ErrExecutionFailed, "cannot get working directory: %v", err)), nil
+			return llm.TextOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "cannot get working directory: %v", err))), nil
 		}
 	}
 
@@ -273,12 +273,12 @@ func (t *GrepTool) Execute(ctx context.Context, args json.RawMessage) (string, e
 		outcome, err := t.approval.CheckPathApproval(GrepToolName, searchPath, a.Pattern, false)
 		if err != nil {
 			if toolErr, ok := err.(*ToolError); ok {
-				return formatToolError(toolErr), nil
+				return llm.TextOutput(formatToolError(toolErr)), nil
 			}
-			return formatToolError(NewToolError(ErrPermissionDenied, err.Error())), nil
+			return llm.TextOutput(formatToolError(NewToolError(ErrPermissionDenied, err.Error()))), nil
 		}
 		if outcome == Cancel {
-			return formatToolError(NewToolErrorf(ErrPermissionDenied, "access denied: %s", searchPath)), nil
+			return llm.TextOutput(formatToolError(NewToolErrorf(ErrPermissionDenied, "access denied: %s", searchPath))), nil
 		}
 	}
 
@@ -287,9 +287,9 @@ func (t *GrepTool) Execute(ctx context.Context, args json.RawMessage) (string, e
 		matches, err := t.executeRipgrep(ctx, a.Pattern, searchPath, a.Include, maxResults)
 		if err == nil {
 			if len(matches) == 0 {
-				return "No matches found.", nil
+				return llm.TextOutput("No matches found."), nil
 			}
-			return formatGrepResults(matches, len(matches) >= maxResults), nil
+			return llm.TextOutput(formatGrepResults(matches, len(matches) >= maxResults)), nil
 		}
 		// Fall through to Go implementation on ripgrep error
 	}
@@ -298,13 +298,13 @@ func (t *GrepTool) Execute(ctx context.Context, args json.RawMessage) (string, e
 	// Compile regex
 	re, err := regexp.Compile(a.Pattern)
 	if err != nil {
-		return formatToolError(NewToolErrorf(ErrInvalidParams, "invalid regex pattern: %v", err)), nil
+		return llm.TextOutput(formatToolError(NewToolErrorf(ErrInvalidParams, "invalid regex pattern: %v", err))), nil
 	}
 
 	// Collect files to search
 	files, err := collectFiles(searchPath, a.Include)
 	if err != nil {
-		return formatToolError(NewToolErrorf(ErrExecutionFailed, "failed to collect files: %v", err)), nil
+		return llm.TextOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "failed to collect files: %v", err))), nil
 	}
 
 	// Sort by modification time (newest first)
@@ -325,11 +325,11 @@ func (t *GrepTool) Execute(ctx context.Context, args json.RawMessage) (string, e
 	}
 
 	if len(matches) == 0 {
-		return "No matches found.", nil
+		return llm.TextOutput("No matches found."), nil
 	}
 
 	// Format results
-	return formatGrepResults(matches, len(matches) >= maxResults), nil
+	return llm.TextOutput(formatGrepResults(matches, len(matches) >= maxResults)), nil
 }
 
 // collectFiles collects files to search.

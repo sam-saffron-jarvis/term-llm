@@ -9,7 +9,6 @@ import (
 
 	"github.com/samsaffron/term-llm/internal/diff"
 	"github.com/samsaffron/term-llm/internal/llm"
-	"github.com/samsaffron/term-llm/internal/tools"
 )
 
 // DefaultStreamBufferSize is the default buffer size for the event channel.
@@ -142,17 +141,13 @@ func (a *StreamAdapter) ProcessStream(ctx context.Context, stream llm.Stream) {
 			a.stats.ToolEnd()
 			a.events <- ToolEndEvent(event.ToolCallID, event.ToolName, event.ToolInfo, event.ToolSuccess)
 
-			// Parse image markers from tool output and emit image events
-			if event.ToolOutput != "" {
-				for _, imagePath := range parseImageMarkers(event.ToolOutput) {
-					a.events <- ImageEvent(imagePath)
-				}
-				// Parse diff markers from edit_file, unified_diff and write_file tool output and emit diff events
-				if event.ToolName == tools.EditFileToolName || event.ToolName == tools.UnifiedDiffToolName || event.ToolName == tools.WriteFileToolName {
-					for _, d := range ParseDiffMarkers(event.ToolOutput) {
-						a.events <- DiffEvent(d.File, d.Old, d.New, d.Line)
-					}
-				}
+			// Emit image events from structured data
+			for _, imagePath := range event.ToolImages {
+				a.events <- ImageEvent(imagePath)
+			}
+			// Emit diff events from structured data
+			for _, d := range event.ToolDiffs {
+				a.events <- DiffEvent(d.File, d.Old, d.New, d.Line)
 			}
 
 		case llm.EventRetry:
@@ -173,30 +168,11 @@ func (a *StreamAdapter) ProcessStream(ctx context.Context, stream llm.Stream) {
 	}
 }
 
-// parseImageMarkers extracts image paths from tool output that contain __IMAGE__: markers
-func parseImageMarkers(output string) []string {
-	var images []string
-	for _, line := range strings.Split(output, "\n") {
-		if strings.HasPrefix(line, "__IMAGE__:") {
-			path := strings.TrimPrefix(line, "__IMAGE__:")
-			path = strings.TrimSpace(path)
-			if path != "" {
-				images = append(images, path)
-			}
-		}
-	}
-	return images
-}
+// DiffData is an alias for llm.DiffData for backward compatibility.
+type DiffData = llm.DiffData
 
-// DiffData represents the JSON structure in __DIFF__: markers (exported for reuse)
-type DiffData struct {
-	File string `json:"f"`
-	Old  string `json:"o"`
-	New  string `json:"n"`
-	Line int    `json:"l"` // 1-indexed starting line number
-}
-
-// ParseDiffMarkers extracts diff data from tool output that contain __DIFF__: markers (exported for reuse).
+// ParseDiffMarkers extracts diff data from tool output that contain __DIFF__: markers.
+// Used for backward compatibility when rendering old sessions that have markers in Display/Content.
 // Format: __DIFF__:<base64-encoded JSON>
 func ParseDiffMarkers(output string) []DiffData {
 	var diffs []DiffData

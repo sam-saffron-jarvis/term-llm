@@ -47,7 +47,9 @@ type SubagentEvent struct {
 	Text         string            // for "text" events
 	ToolName     string            // for tool events
 	ToolInfo     string            // for tool events
-	ToolOutput   string            // for "tool_end" events - contains tool output for marker parsing
+	ToolOutput   string            // for "tool_end" events - text content
+	Diffs        []llm.DiffData    // for "tool_end" events - structured diffs
+	Images       []string          // for "tool_end" events - image paths
 	Success      bool              // for "tool_end" events
 	Phase        string            // for "phase" events
 	InputTokens  int               // for "usage" events
@@ -193,23 +195,23 @@ Guidelines:
 }
 
 // Execute runs the spawn_agent tool.
-func (t *SpawnAgentTool) Execute(ctx context.Context, args json.RawMessage) (string, error) {
+func (t *SpawnAgentTool) Execute(ctx context.Context, args json.RawMessage) (llm.ToolOutput, error) {
 	var a SpawnAgentArgs
 	if err := json.Unmarshal(args, &a); err != nil {
-		return t.formatError(ErrInvalidParams, fmt.Sprintf("failed to parse arguments: %v", err)), nil
+		return llm.TextOutput(t.formatError(ErrInvalidParams, fmt.Sprintf("failed to parse arguments: %v", err))), nil
 	}
 
 	// Validate arguments
 	if a.AgentName == "" {
-		return t.formatError(ErrInvalidParams, "agent_name is required"), nil
+		return llm.TextOutput(t.formatError(ErrInvalidParams, "agent_name is required")), nil
 	}
 	if a.Prompt == "" {
-		return t.formatError(ErrInvalidParams, "prompt is required"), nil
+		return llm.TextOutput(t.formatError(ErrInvalidParams, "prompt is required")), nil
 	}
 
 	// Check depth limit
 	if t.depth >= t.config.MaxDepth {
-		return t.formatError(ErrPermissionDenied, fmt.Sprintf("max agent depth exceeded (current: %d, max: %d)", t.depth, t.config.MaxDepth)), nil
+		return llm.TextOutput(t.formatError(ErrPermissionDenied, fmt.Sprintf("max agent depth exceeded (current: %d, max: %d)", t.depth, t.config.MaxDepth))), nil
 	}
 
 	// Check allowed agents whitelist
@@ -222,7 +224,7 @@ func (t *SpawnAgentTool) Execute(ctx context.Context, args json.RawMessage) (str
 			}
 		}
 		if !allowed {
-			return t.formatError(ErrPermissionDenied, fmt.Sprintf("agent '%s' is not in the allowed list", a.AgentName)), nil
+			return llm.TextOutput(t.formatError(ErrPermissionDenied, fmt.Sprintf("agent '%s' is not in the allowed list", a.AgentName))), nil
 		}
 	}
 
@@ -232,7 +234,7 @@ func (t *SpawnAgentTool) Execute(ctx context.Context, args json.RawMessage) (str
 	t.mu.Unlock()
 
 	if runner == nil {
-		return t.formatError(ErrExecutionFailed, "spawn_agent runner not configured"), nil
+		return llm.TextOutput(t.formatError(ErrExecutionFailed, "spawn_agent runner not configured")), nil
 	}
 
 	// Determine timeout.
@@ -257,9 +259,9 @@ func (t *SpawnAgentTool) Execute(ctx context.Context, args json.RawMessage) (str
 	case <-ctx.Done():
 		// Distinguish between deadline exceeded (timeout) and manual cancellation
 		if ctx.Err() == context.DeadlineExceeded {
-			return t.formatError(ErrTimeout, "context deadline exceeded while waiting for agent slot"), nil
+			return llm.TextOutput(t.formatError(ErrTimeout, "context deadline exceeded while waiting for agent slot")), nil
 		}
-		return t.formatError(ErrExecutionFailed, "context cancelled while waiting for agent slot"), nil
+		return llm.TextOutput(t.formatError(ErrExecutionFailed, "context cancelled while waiting for agent slot")), nil
 	}
 
 	// Create child context with timeout
@@ -288,13 +290,13 @@ func (t *SpawnAgentTool) Execute(ctx context.Context, args json.RawMessage) (str
 		// Check for specific error types - check the error itself first, then context state
 		if errors.Is(err, context.DeadlineExceeded) ||
 			ctx.Err() == context.DeadlineExceeded || childCtx.Err() == context.DeadlineExceeded {
-			return t.formatErrorWithDuration(ErrTimeout, fmt.Sprintf("agent '%s' timed out after %d seconds", a.AgentName, timeout), duration), nil
+			return llm.TextOutput(t.formatErrorWithDuration(ErrTimeout, fmt.Sprintf("agent '%s' timed out after %d seconds", a.AgentName, timeout), duration)), nil
 		}
 		if errors.Is(err, context.Canceled) ||
 			ctx.Err() == context.Canceled || childCtx.Err() == context.Canceled {
-			return t.formatErrorWithDuration(ErrExecutionFailed, "agent execution cancelled", duration), nil
+			return llm.TextOutput(t.formatErrorWithDuration(ErrExecutionFailed, "agent execution cancelled", duration)), nil
 		}
-		return t.formatErrorWithDuration(ErrExecutionFailed, fmt.Sprintf("agent execution failed: %v", err), duration), nil
+		return llm.TextOutput(t.formatErrorWithDuration(ErrExecutionFailed, fmt.Sprintf("agent execution failed: %v", err), duration)), nil
 	}
 
 	// Return success result
@@ -305,7 +307,7 @@ func (t *SpawnAgentTool) Execute(ctx context.Context, args json.RawMessage) (str
 		SessionID: runResult.SessionID,
 	}
 	data, _ := json.Marshal(result)
-	return string(data), nil
+	return llm.TextOutput(string(data)), nil
 }
 
 // Preview returns a short description of the tool call.

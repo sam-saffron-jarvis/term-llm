@@ -462,12 +462,10 @@ func runLoopIteration(ctx context.Context, engine *llm.Engine, req llm.Request, 
 			}
 
 			// Display any images from tool output
-			if event.ToolOutput != "" {
-				for _, imagePath := range parseImageMarkers(event.ToolOutput) {
-					if rendered := ui.RenderInlineImage(imagePath); rendered != "" {
-						fmt.Fprint(stdout, rendered)
-						fmt.Fprint(stdout, "\r\n") // CR+LF to reset cursor position after image
-					}
+			for _, imagePath := range event.ToolImages {
+				if rendered := ui.RenderInlineImage(imagePath); rendered != "" {
+					fmt.Fprint(stdout, rendered)
+					fmt.Fprint(stdout, "\r\n") // CR+LF to reset cursor position after image
 				}
 			}
 
@@ -518,19 +516,4 @@ func buildIterationSummary(text string, toolsUsed []string) string {
 	}
 
 	return b.String()
-}
-
-// parseImageMarkers extracts image paths from tool output that contain __IMAGE__: markers
-func parseImageMarkers(output string) []string {
-	var images []string
-	for _, line := range strings.Split(output, "\n") {
-		if strings.HasPrefix(line, "__IMAGE__:") {
-			path := strings.TrimPrefix(line, "__IMAGE__:")
-			path = strings.TrimSpace(path)
-			if path != "" {
-				images = append(images, path)
-			}
-		}
-	}
-	return images
 }

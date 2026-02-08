@@ -84,14 +84,14 @@ func (t *ViewImageTool) Preview(args json.RawMessage) string {
 	return a.FilePath
 }
 
-func (t *ViewImageTool) Execute(ctx context.Context, args json.RawMessage) (string, error) {
+func (t *ViewImageTool) Execute(ctx context.Context, args json.RawMessage) (llm.ToolOutput, error) {
 	var a ViewImageArgs
 	if err := json.Unmarshal(args, &a); err != nil {
-		return formatToolError(NewToolError(ErrInvalidParams, err.Error())), nil
+		return llm.TextOutput(formatToolError(NewToolError(ErrInvalidParams, err.Error()))), nil
 	}
 
 	if a.FilePath == "" {
-		return formatToolError(NewToolError(ErrInvalidParams, "file_path is required")), nil
+		return llm.TextOutput(formatToolError(NewToolError(ErrInvalidParams, "file_path is required"))), nil
 	}
 
 	// Check permissions via approval manager
@@ -99,40 +99,40 @@ func (t *ViewImageTool) Execute(ctx context.Context, args json.RawMessage) (stri
 		outcome, err := t.approval.CheckPathApproval(ViewImageToolName, a.FilePath, a.FilePath, false)
 		if err != nil {
 			if toolErr, ok := err.(*ToolError); ok {
-				return formatToolError(toolErr), nil
+				return llm.TextOutput(formatToolError(toolErr)), nil
 			}
-			return formatToolError(NewToolError(ErrPermissionDenied, err.Error())), nil
+			return llm.TextOutput(formatToolError(NewToolError(ErrPermissionDenied, err.Error()))), nil
 		}
 		if outcome == Cancel {
-			return formatToolError(NewToolErrorf(ErrPermissionDenied, "access denied: %s", a.FilePath)), nil
+			return llm.TextOutput(formatToolError(NewToolErrorf(ErrPermissionDenied, "access denied: %s", a.FilePath))), nil
 		}
 	}
 
 	// Check file exists
 	if _, err := os.Stat(a.FilePath); err != nil {
 		if os.IsNotExist(err) {
-			return formatToolError(NewToolError(ErrFileNotFound, a.FilePath)), nil
+			return llm.TextOutput(formatToolError(NewToolError(ErrFileNotFound, a.FilePath))), nil
 		}
-		return formatToolError(NewToolErrorf(ErrExecutionFailed, "cannot stat file: %v", err)), nil
+		return llm.TextOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "cannot stat file: %v", err))), nil
 	}
 
 	// Check format
 	ext := strings.ToLower(filepath.Ext(a.FilePath))
 	mimeType, ok := supportedImageFormats[ext]
 	if !ok {
-		return formatToolError(NewToolErrorf(ErrUnsupportedFormat, "unsupported format: %s (supported: PNG, JPEG, GIF, WebP)", ext)), nil
+		return llm.TextOutput(formatToolError(NewToolErrorf(ErrUnsupportedFormat, "unsupported format: %s (supported: PNG, JPEG, GIF, WebP)", ext))), nil
 	}
 
 	// Read file
 	data, err := os.ReadFile(a.FilePath)
 	if err != nil {
-		return formatToolError(NewToolErrorf(ErrExecutionFailed, "failed to read image: %v", err)), nil
+		return llm.TextOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "failed to read image: %v", err))), nil
 	}
 
 	// Process image: resize if needed, ensure under size limit
 	processedData, processedMime, resized, err := processImage(data, mimeType)
 	if err != nil {
-		return formatToolError(NewToolErrorf(ErrExecutionFailed, "failed to process image: %v", err)), nil
+		return llm.TextOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "failed to process image: %v", err))), nil
 	}
 
 	// Encode as base64
@@ -160,7 +160,7 @@ Detail: %s
 		encoded,
 	)
 
-	return result, nil
+	return llm.TextOutput(result), nil
 }
 
 // processImage checks if an image needs resizing and processes it accordingly.

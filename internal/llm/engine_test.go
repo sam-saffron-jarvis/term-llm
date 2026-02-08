@@ -65,9 +65,9 @@ func (t *countingSearchTool) Spec() ToolSpec {
 	return WebSearchToolSpec()
 }
 
-func (t *countingSearchTool) Execute(ctx context.Context, args json.RawMessage) (string, error) {
+func (t *countingSearchTool) Execute(ctx context.Context, args json.RawMessage) (ToolOutput, error) {
 	t.calls++
-	return fmt.Sprintf("result %d", t.calls), nil
+	return TextOutput(fmt.Sprintf("result %d", t.calls)), nil
 }
 
 func (t *countingSearchTool) Preview(args json.RawMessage) string {
@@ -86,9 +86,9 @@ func (t *countingTool) Spec() ToolSpec {
 	}
 }
 
-func (t *countingTool) Execute(ctx context.Context, args json.RawMessage) (string, error) {
+func (t *countingTool) Execute(ctx context.Context, args json.RawMessage) (ToolOutput, error) {
 	t.calls++
-	return "ok", nil
+	return TextOutput("ok"), nil
 }
 
 func (t *countingTool) Preview(args json.RawMessage) string {
@@ -349,7 +349,7 @@ func (t *delayingTool) Spec() ToolSpec {
 	}
 }
 
-func (t *delayingTool) Execute(ctx context.Context, args json.RawMessage) (string, error) {
+func (t *delayingTool) Execute(ctx context.Context, args json.RawMessage) (ToolOutput, error) {
 	t.mu.Lock()
 	t.current++
 	if t.current > t.concurrentAt {
@@ -366,7 +366,7 @@ func (t *delayingTool) Execute(ctx context.Context, args json.RawMessage) (strin
 	t.current--
 	t.mu.Unlock()
 
-	return "done", nil
+	return TextOutput("done"), nil
 }
 
 func (t *delayingTool) Preview(args json.RawMessage) string {
@@ -461,8 +461,8 @@ func (t *namedTool) Spec() ToolSpec {
 	return ToolSpec{Name: t.name, Description: "test tool"}
 }
 
-func (t *namedTool) Execute(ctx context.Context, args json.RawMessage) (string, error) {
-	return "ok", nil
+func (t *namedTool) Execute(ctx context.Context, args json.RawMessage) (ToolOutput, error) {
+	return TextOutput("ok"), nil
 }
 
 func (t *namedTool) Preview(args json.RawMessage) string {
@@ -676,5 +676,130 @@ func TestEngineEmitsToolCallAndExecStartForEachTool(t *testing.T) {
 		if _, ok := toolExecStartEvents[id]; !ok {
 			t.Errorf("EventToolCall ID %q has no matching EventToolExecStart", id)
 		}
+	}
+}
+
+// imageTool returns structured ToolOutput with Images and Diffs.
+type imageTool struct{}
+
+func (t *imageTool) Spec() ToolSpec {
+	return ToolSpec{
+		Name:        "image_tool",
+		Description: "Returns images and diffs",
+		Schema:      map[string]any{"type": "object"},
+	}
+}
+
+func (t *imageTool) Execute(ctx context.Context, args json.RawMessage) (ToolOutput, error) {
+	return ToolOutput{
+		Content: "Generated image",
+		Images:  []string{"/tmp/test.png"},
+		Diffs: []DiffData{
+			{File: "test.go", Old: "old", New: "new", Line: 10},
+		},
+	}, nil
+}
+
+func (t *imageTool) Preview(args json.RawMessage) string {
+	return "test.png"
+}
+
+func TestEngineToolOutputStructuredFields(t *testing.T) {
+	// Verify that structured ToolOutput fields (Images, Diffs) propagate
+	// through to EventToolExecEnd events and ToolResult messages.
+	tool := &imageTool{}
+	registry := NewToolRegistry()
+	registry.Register(tool)
+
+	provider := &fakeProvider{
+		script: func(call int, req Request) []Event {
+			switch call {
+			case 0:
+				return []Event{
+					{Type: EventToolCall, Tool: &ToolCall{ID: "img-1", Name: "image_tool", Arguments: json.RawMessage(`{}`)}},
+					{Type: EventDone},
+				}
+			default:
+				return []Event{
+					{Type: EventTextDelta, Text: "done"},
+					{Type: EventDone},
+				}
+			}
+		},
+	}
+
+	engine := NewEngine(provider, registry)
+	req := Request{
+		Messages: []Message{UserText("generate image")},
+		Tools:    []ToolSpec{tool.Spec()},
+	}
+
+	stream, err := engine.Stream(context.Background(), req)
+	if err != nil {
+		t.Fatalf("stream error: %v", err)
+	}
+	defer stream.Close()
+
+	var endEvents []Event
+	for {
+		event, err := stream.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("recv error: %v", err)
+		}
+		if event.Type == EventToolExecEnd {
+			endEvents = append(endEvents, event)
+		}
+	}
+
+	if len(endEvents) != 1 {
+		t.Fatalf("expected 1 EventToolExecEnd, got %d", len(endEvents))
+	}
+
+	end := endEvents[0]
+	if !end.ToolSuccess {
+		t.Error("expected ToolSuccess=true")
+	}
+	if end.ToolOutput != "Generated image" {
+		t.Errorf("expected ToolOutput 'Generated image', got %q", end.ToolOutput)
+	}
+	if len(end.ToolImages) != 1 || end.ToolImages[0] != "/tmp/test.png" {
+		t.Errorf("expected ToolImages=[/tmp/test.png], got %v", end.ToolImages)
+	}
+	if len(end.ToolDiffs) != 1 {
+		t.Fatalf("expected 1 ToolDiff, got %d", len(end.ToolDiffs))
+	}
+	d := end.ToolDiffs[0]
+	if d.File != "test.go" || d.Old != "old" || d.New != "new" || d.Line != 10 {
+		t.Errorf("unexpected diff data: %+v", d)
+	}
+
+	// Verify the provider received the tool result with structured fields
+	// in the second call's messages
+	if len(provider.calls) < 2 {
+		t.Fatalf("expected at least 2 provider calls, got %d", len(provider.calls))
+	}
+	msgs := provider.calls[1].Messages
+	var toolResult *ToolResult
+	for _, msg := range msgs {
+		for _, part := range msg.Parts {
+			if part.Type == PartToolResult && part.ToolResult != nil && part.ToolResult.ID == "img-1" {
+				toolResult = part.ToolResult
+			}
+		}
+	}
+	if toolResult == nil {
+		t.Fatal("tool result not found in second provider call")
+	}
+	if toolResult.Content != "Generated image" {
+		t.Errorf("expected tool result content 'Generated image', got %q", toolResult.Content)
+	}
+	if len(toolResult.Diffs) != 1 {
+		t.Errorf("expected 1 diff in tool result, got %d", len(toolResult.Diffs))
+	}
+	if len(toolResult.Images) != 1 {
+		t.Errorf("expected 1 image in tool result, got %d", len(toolResult.Images))
 	}
 }

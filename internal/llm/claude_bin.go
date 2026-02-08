@@ -83,8 +83,13 @@ func (p *ClaudeBinProvider) SetPreferOAuth(prefer bool) {
 // This must be called before Stream() if tools are needed.
 // Note: The signature uses an anonymous function type (not mcphttp.ToolExecutor)
 // to satisfy the ToolExecutorSetter interface in engine.go.
-func (p *ClaudeBinProvider) SetToolExecutor(executor func(ctx context.Context, name string, args json.RawMessage) (string, error)) {
-	p.toolExecutor = executor
+func (p *ClaudeBinProvider) SetToolExecutor(executor func(ctx context.Context, name string, args json.RawMessage) (ToolOutput, error)) {
+	// Wrap the ToolOutput executor to satisfy the mcphttp.ToolExecutor (string, error) interface.
+	// MCP tools only use the text content — diffs/images are forwarded via events.
+	p.toolExecutor = func(ctx context.Context, name string, args json.RawMessage) (string, error) {
+		output, err := executor(ctx, name, args)
+		return output.Content, err
+	}
 }
 
 func (p *ClaudeBinProvider) Name() string {
@@ -456,7 +461,7 @@ func (p *ClaudeBinProvider) createHTTPMCPConfig(ctx context.Context, tools []Too
 		// Wait for engine to execute and return result
 		select {
 		case response := <-responseChan:
-			return response.Result, response.Err
+			return response.Result.Content, response.Err
 		case <-ctx.Done():
 			return "", ctx.Err()
 		}

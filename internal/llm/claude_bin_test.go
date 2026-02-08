@@ -120,9 +120,9 @@ func TestClaudeBinProvider_ToolExecutorIsWired(t *testing.T) {
 	executorCalled := false
 	registry.Register(&testTool{
 		name: "test_tool",
-		exec: func(ctx context.Context, args json.RawMessage) (string, error) {
+		exec: func(ctx context.Context, args json.RawMessage) (ToolOutput, error) {
 			executorCalled = true
-			return "test result", nil
+			return TextOutput("test result"), nil
 		},
 	})
 
@@ -212,13 +212,13 @@ func TestMapModelToClaudeArg(t *testing.T) {
 // testTool is a simple tool implementation for testing.
 type testTool struct {
 	name string
-	exec func(ctx context.Context, args json.RawMessage) (string, error)
+	exec func(ctx context.Context, args json.RawMessage) (ToolOutput, error)
 }
 
 func (t *testTool) Name() string                        { return t.name }
 func (t *testTool) Description() string                 { return "test tool" }
 func (t *testTool) Spec() ToolSpec                      { return ToolSpec{Name: t.name} }
 func (t *testTool) Preview(args json.RawMessage) string { return "" }
-func (t *testTool) Execute(ctx context.Context, args json.RawMessage) (string, error) {
+func (t *testTool) Execute(ctx context.Context, args json.RawMessage) (ToolOutput, error) {
 	return t.exec(ctx, args)
 }

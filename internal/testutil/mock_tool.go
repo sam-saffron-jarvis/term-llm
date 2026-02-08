@@ -10,7 +10,7 @@ import (
 // MockTool is a configurable tool for testing.
 type MockTool struct {
 	SpecData    llm.ToolSpec
-	ExecuteFn   func(ctx context.Context, args json.RawMessage) (string, error)
+	ExecuteFn   func(ctx context.Context, args json.RawMessage) (llm.ToolOutput, error)
 	PreviewFn   func(args json.RawMessage) string
 	Invocations []MockToolInvocation
 }
@@ -18,7 +18,8 @@ type MockTool struct {
 // MockToolInvocation records a single tool invocation.
 type MockToolInvocation struct {
 	Args   json.RawMessage
-	Result string
+	Output llm.ToolOutput
+	Result string // Shortcut for Output.Content
 	Error  error
 }
 
@@ -28,14 +29,15 @@ func (m *MockTool) Spec() llm.ToolSpec {
 }
 
 // Execute implements llm.Tool.
-func (m *MockTool) Execute(ctx context.Context, args json.RawMessage) (string, error) {
+func (m *MockTool) Execute(ctx context.Context, args json.RawMessage) (llm.ToolOutput, error) {
 	if m.ExecuteFn == nil {
-		return "", nil
+		return llm.ToolOutput{}, nil
 	}
 	result, err := m.ExecuteFn(ctx, args)
 	m.Invocations = append(m.Invocations, MockToolInvocation{
 		Args:   args,
-		Result: result,
+		Output: result,
+		Result: result.Content,
 		Error:  err,
 	})
 	return result, err
@@ -60,14 +62,14 @@ func NewMockTool(name string, result string) *MockTool {
 				"properties": map[string]interface{}{},
 			},
 		},
-		ExecuteFn: func(ctx context.Context, args json.RawMessage) (string, error) {
-			return result, nil
+		ExecuteFn: func(ctx context.Context, args json.RawMessage) (llm.ToolOutput, error) {
+			return llm.TextOutput(result), nil
 		},
 	}
 }
 
 // NewMockToolWithSchema creates a mock tool with a custom schema.
-func NewMockToolWithSchema(name, description string, schema map[string]interface{}, executeFn func(ctx context.Context, args json.RawMessage) (string, error)) *MockTool {
+func NewMockToolWithSchema(name, description string, schema map[string]interface{}, executeFn func(ctx context.Context, args json.RawMessage) (llm.ToolOutput, error)) *MockTool {
 	return &MockTool{
 		SpecData: llm.ToolSpec{
 			Name:        name,

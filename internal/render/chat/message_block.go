@@ -193,22 +193,28 @@ func (r *MessageBlockRenderer) renderAssistantMessage(msg *session.Message) stri
 				switch part.ToolCall.Name {
 				case "edit_file", "unified_diff", "spawn_agent", "write_file":
 					if result := r.findToolResult(part.ToolCall.ID); result != nil {
-						// Use Display (full output with markers) for diff rendering;
-						// fall back to Content for sessions saved before Display existed.
-						content := result.Display
-						if content == "" {
-							content = result.Content
-						}
-						if part.ToolCall.Name == "spawn_agent" {
-							var res struct {
-								Output string `json:"output"`
+						// Prefer structured Diffs (new sessions)
+						diffs := result.Diffs
+						if len(diffs) == 0 {
+							// Fall back to parsing markers from Display/Content (old sessions
+							// saved before structured Diffs were added). This fallback can be
+							// removed once no saved sessions contain __DIFF__ text markers.
+							content := result.Display
+							if content == "" {
+								content = result.Content
 							}
-							if err := json.Unmarshal([]byte(content), &res); err == nil {
-								content = res.Output
+							if part.ToolCall.Name == "spawn_agent" {
+								var res struct {
+									Output string `json:"output"`
+								}
+								if err := json.Unmarshal([]byte(content), &res); err == nil {
+									content = res.Output
+								}
 							}
+							diffs = ui.ParseDiffMarkers(content)
 						}
 
-						for _, diff := range ui.ParseDiffMarkers(content) {
+						for _, diff := range diffs {
 							rendered := ui.RenderDiffSegment(diff.File, diff.Old, diff.New, r.width, diff.Line)
 							if rendered != "" {
 								b.WriteString(rendered)

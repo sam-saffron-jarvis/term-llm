@@ -54,7 +54,7 @@ func (r *RetryProvider) Capabilities() Capabilities {
 // SetToolExecutor forwards to the inner provider if it implements ToolExecutorSetter.
 // This ensures providers like ClaudeBinProvider can receive their tool executor
 // even when wrapped with retry logic.
-func (r *RetryProvider) SetToolExecutor(executor func(ctx context.Context, name string, args json.RawMessage) (string, error)) {
+func (r *RetryProvider) SetToolExecutor(executor func(ctx context.Context, name string, args json.RawMessage) (ToolOutput, error)) {
 	if setter, ok := r.inner.(ToolExecutorSetter); ok {
 		setter.SetToolExecutor(executor)
 	}

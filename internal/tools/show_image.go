@@ -75,14 +75,14 @@ func (t *ShowImageTool) Preview(args json.RawMessage) string {
 	return a.FilePath
 }
 
-func (t *ShowImageTool) Execute(ctx context.Context, args json.RawMessage) (string, error) {
+func (t *ShowImageTool) Execute(ctx context.Context, args json.RawMessage) (llm.ToolOutput, error) {
 	var a ShowImageArgs
 	if err := json.Unmarshal(args, &a); err != nil {
-		return formatToolError(NewToolError(ErrInvalidParams, err.Error())), nil
+		return llm.TextOutput(formatToolError(NewToolError(ErrInvalidParams, err.Error()))), nil
 	}
 
 	if a.FilePath == "" {
-		return formatToolError(NewToolError(ErrInvalidParams, "file_path is required")), nil
+		return llm.TextOutput(formatToolError(NewToolError(ErrInvalidParams, "file_path is required"))), nil
 	}
 
 	// Check permissions via approval manager
@@ -90,12 +90,12 @@ func (t *ShowImageTool) Execute(ctx context.Context, args json.RawMessage) (stri
 		outcome, err := t.approval.CheckPathApproval(ShowImageToolName, a.FilePath, a.FilePath, false)
 		if err != nil {
 			if toolErr, ok := err.(*ToolError); ok {
-				return formatToolError(toolErr), nil
+				return llm.TextOutput(formatToolError(toolErr)), nil
 			}
-			return formatToolError(NewToolError(ErrPermissionDenied, err.Error())), nil
+			return llm.TextOutput(formatToolError(NewToolError(ErrPermissionDenied, err.Error()))), nil
 		}
 		if outcome == Cancel {
-			return formatToolError(NewToolErrorf(ErrPermissionDenied, "access denied: %s", a.FilePath)), nil
+			return llm.TextOutput(formatToolError(NewToolErrorf(ErrPermissionDenied, "access denied: %s", a.FilePath))), nil
 		}
 	}
 
@@ -103,15 +103,15 @@ func (t *ShowImageTool) Execute(ctx context.Context, args json.RawMessage) (stri
 	info, err := os.Stat(a.FilePath)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return formatToolError(NewToolError(ErrFileNotFound, a.FilePath)), nil
+			return llm.TextOutput(formatToolError(NewToolError(ErrFileNotFound, a.FilePath))), nil
 		}
-		return formatToolError(NewToolErrorf(ErrExecutionFailed, "cannot stat file: %v", err)), nil
+		return llm.TextOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "cannot stat file: %v", err))), nil
 	}
 
 	// Check format
 	ext := strings.ToLower(filepath.Ext(a.FilePath))
 	if !showImageSupportedFormats[ext] {
-		return formatToolError(NewToolErrorf(ErrUnsupportedFormat, "unsupported format: %s (supported: PNG, JPEG, GIF, WebP, BMP)", ext)), nil
+		return llm.TextOutput(formatToolError(NewToolErrorf(ErrUnsupportedFormat, "unsupported format: %s (supported: PNG, JPEG, GIF, WebP, BMP)", ext))), nil
 	}
 
 	// Copy to clipboard if requested (default: true)
@@ -120,7 +120,7 @@ func (t *ShowImageTool) Execute(ctx context.Context, args json.RawMessage) (stri
 		// Read file data for clipboard
 		data, err := os.ReadFile(a.FilePath)
 		if err != nil {
-			return formatToolError(NewToolErrorf(ErrExecutionFailed, "failed to read image for clipboard: %v", err)), nil
+			return llm.TextOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "failed to read image for clipboard: %v", err))), nil
 		}
 		image.CopyToClipboard(a.FilePath, data)
 	}
@@ -136,8 +136,9 @@ func (t *ShowImageTool) Execute(ctx context.Context, args json.RawMessage) (stri
 	if a.Prompt != "" {
 		sb.WriteString(fmt.Sprintf("Focus: %s\n", a.Prompt))
 	}
-	// Emit image marker for deferred display
-	sb.WriteString(fmt.Sprintf("__IMAGE__:%s\n", a.FilePath))
 
-	return sb.String(), nil
+	return llm.ToolOutput{
+		Content: sb.String(),
+		Images:  []string{a.FilePath},
+	}, nil
 }

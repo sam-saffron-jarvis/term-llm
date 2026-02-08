@@ -74,21 +74,21 @@ Usage:
 }
 
 // Execute runs the activate_skill tool.
-func (t *ActivateSkillTool) Execute(ctx context.Context, args json.RawMessage) (string, error) {
+func (t *ActivateSkillTool) Execute(ctx context.Context, args json.RawMessage) (llm.ToolOutput, error) {
 	var a ActivateSkillArgs
 	if err := json.Unmarshal(args, &a); err != nil {
-		return t.formatError(ErrInvalidParams, fmt.Sprintf("failed to parse arguments: %v", err)), nil
+		return llm.TextOutput(t.formatError(ErrInvalidParams, fmt.Sprintf("failed to parse arguments: %v", err))), nil
 	}
 
 	// Validate skill name
 	if a.Name == "" {
-		return t.formatError(ErrInvalidParams, "skill name is required"), nil
+		return llm.TextOutput(t.formatError(ErrInvalidParams, "skill name is required")), nil
 	}
 
 	// Get the skill
 	skill, err := t.registry.Get(a.Name)
 	if err != nil {
-		return t.formatError(ErrFileNotFound, fmt.Sprintf("skill not found: %s", a.Name)), nil
+		return llm.TextOutput(t.formatError(ErrFileNotFound, fmt.Sprintf("skill not found: %s", a.Name))), nil
 	}
 
 	// Check if skill directory is in allowed read paths
@@ -103,7 +103,7 @@ func (t *ActivateSkillTool) Execute(ctx context.Context, args json.RawMessage) (
 	// Generate the activation response
 	response := skills.GenerateActivationResponse(skill, a.Prompt)
 
-	return response, nil
+	return llm.TextOutput(response), nil
 }
 
 // Preview returns a short description of the tool call.

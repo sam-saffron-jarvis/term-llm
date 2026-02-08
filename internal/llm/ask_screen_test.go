@@ -42,13 +42,13 @@ func TestAskViewImage_ScreenStates(t *testing.T) {
 				"required": []string{"file_path"},
 			},
 		},
-		ExecuteFn: func(ctx context.Context, args json.RawMessage) (string, error) {
+		ExecuteFn: func(ctx context.Context, args json.RawMessage) (llm.ToolOutput, error) {
 			// Signal that tool execution started (after approval would have happened)
 			close(toolStarted)
 			// Wait for signal to continue
 			<-toolContinue
 			close(toolDone)
-			return "Image loaded: abc.png\nFormat: image/png\nSize: 12345 bytes", nil
+			return llm.TextOutput("Image loaded: abc.png\nFormat: image/png\nSize: 12345 bytes"), nil
 		},
 		PreviewFn: func(args json.RawMessage) string {
 			var a struct {

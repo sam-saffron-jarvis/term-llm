@@ -2,7 +2,6 @@ package tools
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -61,14 +60,14 @@ func (t *WriteFileTool) Preview(args json.RawMessage) string {
 	return a.FilePath
 }
 
-func (t *WriteFileTool) Execute(ctx context.Context, args json.RawMessage) (string, error) {
+func (t *WriteFileTool) Execute(ctx context.Context, args json.RawMessage) (llm.ToolOutput, error) {
 	var a WriteFileArgs
 	if err := json.Unmarshal(args, &a); err != nil {
-		return formatToolError(NewToolError(ErrInvalidParams, err.Error())), nil
+		return llm.TextOutput(formatToolError(NewToolError(ErrInvalidParams, err.Error()))), nil
 	}
 
 	if a.FilePath == "" {
-		return formatToolError(NewToolError(ErrInvalidParams, "file_path is required")), nil
+		return llm.TextOutput(formatToolError(NewToolError(ErrInvalidParams, "file_path is required"))), nil
 	}
 
 	// Check permissions via approval manager
@@ -76,19 +75,19 @@ func (t *WriteFileTool) Execute(ctx context.Context, args json.RawMessage) (stri
 		outcome, err := t.approval.CheckPathApproval(WriteFileToolName, a.FilePath, a.FilePath, true)
 		if err != nil {
 			if toolErr, ok := err.(*ToolError); ok {
-				return formatToolError(toolErr), nil
+				return llm.TextOutput(formatToolError(toolErr)), nil
 			}
-			return formatToolError(NewToolError(ErrPermissionDenied, err.Error())), nil
+			return llm.TextOutput(formatToolError(NewToolError(ErrPermissionDenied, err.Error()))), nil
 		}
 		if outcome == Cancel {
-			return formatToolError(NewToolErrorf(ErrPermissionDenied, "access denied: %s", a.FilePath)), nil
+			return llm.TextOutput(formatToolError(NewToolErrorf(ErrPermissionDenied, "access denied: %s", a.FilePath))), nil
 		}
 	}
 
 	// Resolve absolute path
 	absPath, err := filepath.Abs(a.FilePath)
 	if err != nil {
-		return formatToolError(NewToolErrorf(ErrInvalidParams, "cannot resolve path: %v", err)), nil
+		return llm.TextOutput(formatToolError(NewToolErrorf(ErrInvalidParams, "cannot resolve path: %v", err))), nil
 	}
 
 	// Check if file exists for diff info
@@ -102,45 +101,39 @@ func (t *WriteFileTool) Execute(ctx context.Context, args json.RawMessage) (stri
 	// Create parent directories
 	dir := filepath.Dir(absPath)
 	if err := os.MkdirAll(dir, 0755); err != nil {
-		return formatToolError(NewToolErrorf(ErrExecutionFailed, "failed to create directory: %v", err)), nil
+		return llm.TextOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "failed to create directory: %v", err))), nil
 	}
 
 	// Atomic write: write to temp file, then rename
 	tempFile := absPath + ".tmp"
 	if err := os.WriteFile(tempFile, []byte(a.Content), 0644); err != nil {
-		return formatToolError(NewToolErrorf(ErrExecutionFailed, "failed to write temp file: %v", err)), nil
+		return llm.TextOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "failed to write temp file: %v", err))), nil
 	}
 
 	if err := os.Rename(tempFile, absPath); err != nil {
 		// Clean up temp file on failure
 		os.Remove(tempFile)
-		return formatToolError(NewToolErrorf(ErrExecutionFailed, "failed to rename temp file: %v", err)), nil
+		return llm.TextOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "failed to rename temp file: %v", err))), nil
 	}
 
 	// Build result message
-	var sb strings.Builder
+	output := llm.ToolOutput{}
 	if isNew {
-		sb.WriteString(fmt.Sprintf("Created new file: %s (%d lines).", absPath, countLines(a.Content)))
+		output.Content = fmt.Sprintf("Created new file: %s (%d lines).", absPath, countLines(a.Content))
 	} else {
 		oldLines := countLines(existingContent)
 		newLines := countLines(a.Content)
-		sb.WriteString(fmt.Sprintf("Updated %s: %d lines -> %d lines.", absPath, oldLines, newLines))
+		output.Content = fmt.Sprintf("Updated %s: %d lines -> %d lines.", absPath, oldLines, newLines)
 
-		// Emit diff marker for streaming display (skip if content is too large)
+		// Populate structured diff data (skip if content is too large)
 		if len(existingContent) < diff.MaxDiffSize && len(a.Content) < diff.MaxDiffSize {
-			diffData := struct {
-				File string `json:"f"`
-				Old  string `json:"o"`
-				New  string `json:"n"`
-				Line int    `json:"l"`
-			}{a.FilePath, existingContent, a.Content, 1}
-			if encoded, err := json.Marshal(diffData); err == nil {
-				sb.WriteString("\n__DIFF__:" + base64.StdEncoding.EncodeToString(encoded))
+			output.Diffs = []llm.DiffData{
+				{File: absPath, Old: existingContent, New: a.Content, Line: 1},
 			}
 		}
 	}
 
-	return sb.String(), nil
+	return output, nil
 }
 
 // countLines counts the number of lines in a string.

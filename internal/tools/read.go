@@ -73,14 +73,14 @@ func (t *ReadFileTool) Preview(args json.RawMessage) string {
 	return a.FilePath
 }
 
-func (t *ReadFileTool) Execute(ctx context.Context, args json.RawMessage) (string, error) {
+func (t *ReadFileTool) Execute(ctx context.Context, args json.RawMessage) (llm.ToolOutput, error) {
 	var a ReadFileArgs
 	if err := json.Unmarshal(args, &a); err != nil {
-		return formatToolError(NewToolError(ErrInvalidParams, err.Error())), nil
+		return llm.TextOutput(formatToolError(NewToolError(ErrInvalidParams, err.Error()))), nil
 	}
 
 	if a.FilePath == "" {
-		return formatToolError(NewToolError(ErrInvalidParams, "file_path is required")), nil
+		return llm.TextOutput(formatToolError(NewToolError(ErrInvalidParams, "file_path is required"))), nil
 	}
 
 	// Check permissions via approval manager
@@ -88,12 +88,12 @@ func (t *ReadFileTool) Execute(ctx context.Context, args json.RawMessage) (strin
 		outcome, err := t.approval.CheckPathApproval(ReadFileToolName, a.FilePath, a.FilePath, false)
 		if err != nil {
 			if toolErr, ok := err.(*ToolError); ok {
-				return formatToolError(toolErr), nil
+				return llm.TextOutput(formatToolError(toolErr)), nil
 			}
-			return formatToolError(NewToolError(ErrPermissionDenied, err.Error())), nil
+			return llm.TextOutput(formatToolError(NewToolError(ErrPermissionDenied, err.Error()))), nil
 		}
 		if outcome == Cancel {
-			return formatToolError(NewToolErrorf(ErrPermissionDenied, "access denied: %s", a.FilePath)), nil
+			return llm.TextOutput(formatToolError(NewToolErrorf(ErrPermissionDenied, "access denied: %s", a.FilePath))), nil
 		}
 	}
 
@@ -101,14 +101,14 @@ func (t *ReadFileTool) Execute(ctx context.Context, args json.RawMessage) (strin
 	data, err := os.ReadFile(a.FilePath)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return formatToolError(NewToolError(ErrFileNotFound, a.FilePath)), nil
+			return llm.TextOutput(formatToolError(NewToolError(ErrFileNotFound, a.FilePath))), nil
 		}
-		return formatToolError(NewToolErrorf(ErrExecutionFailed, "read error: %v", err)), nil
+		return llm.TextOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "read error: %v", err))), nil
 	}
 
 	// Check for binary file
 	if isBinaryContent(data) {
-		return formatToolError(NewToolErrorf(ErrBinaryFile, "%s appears to be a binary file", a.FilePath)), nil
+		return llm.TextOutput(formatToolError(NewToolErrorf(ErrBinaryFile, "%s appears to be a binary file", a.FilePath))), nil
 	}
 
 	content := string(data)
@@ -121,7 +121,7 @@ func (t *ReadFileTool) Execute(ctx context.Context, args json.RawMessage) (strin
 		start = a.StartLine - 1
 	}
 	if start >= totalLines {
-		return formatToolError(NewToolErrorf(ErrInvalidParams, "start_line %d exceeds file length %d", a.StartLine, totalLines)), nil
+		return llm.TextOutput(formatToolError(NewToolErrorf(ErrInvalidParams, "start_line %d exceeds file length %d", a.StartLine, totalLines))), nil
 	}
 
 	end := totalLines
@@ -130,7 +130,7 @@ func (t *ReadFileTool) Execute(ctx context.Context, args json.RawMessage) (strin
 	}
 
 	if start >= end {
-		return "", nil
+		return llm.TextOutput("No content in requested range."), nil
 	}
 
 	selectedLines := lines[start:end]
@@ -161,7 +161,7 @@ func (t *ReadFileTool) Execute(ctx context.Context, args json.RawMessage) (strin
 		output += fmt.Sprintf("\n\n[Output truncated. Total lines: %d. Use start_line/end_line for pagination.]", totalLines)
 	}
 
-	return output, nil
+	return llm.TextOutput(output), nil
 }
 
 // isBinaryContent detects if content is binary using http.DetectContentType.

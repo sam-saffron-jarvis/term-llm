@@ -32,23 +32,23 @@ func (t *WebSearchTool) Preview(args json.RawMessage) string {
 	return payload.Query
 }
 
-func (t *WebSearchTool) Execute(ctx context.Context, args json.RawMessage) (string, error) {
+func (t *WebSearchTool) Execute(ctx context.Context, args json.RawMessage) (ToolOutput, error) {
 	var payload struct {
 		Query      string `json:"query"`
 		MaxResults int    `json:"max_results"`
 	}
 	if err := json.Unmarshal(args, &payload); err != nil {
-		return "", fmt.Errorf("parse web_search args: %w", err)
+		return ToolOutput{}, fmt.Errorf("parse web_search args: %w", err)
 	}
 	if payload.MaxResults <= 0 {
 		payload.MaxResults = 20
 	}
 	results, err := t.searcher.Search(ctx, payload.Query, payload.MaxResults)
 	if err != nil {
-		return "", err
+		return ToolOutput{}, err
 	}
 	if len(results) == 0 {
-		return "No results found.", nil
+		return TextOutput("No results found."), nil
 	}
 
 	var b strings.Builder
@@ -67,5 +67,5 @@ func (t *WebSearchTool) Execute(ctx context.Context, args json.RawMessage) (stri
 		}
 		b.WriteString("\n")
 	}
-	return strings.TrimSuffix(b.String(), "\n"), nil
+	return TextOutput(strings.TrimSuffix(b.String(), "\n")), nil
 }

@@ -101,14 +101,14 @@ func (t *ImageGenerateTool) Preview(args json.RawMessage) string {
 	return fmt.Sprintf("Generating image: %s", prompt)
 }
 
-func (t *ImageGenerateTool) Execute(ctx context.Context, args json.RawMessage) (string, error) {
+func (t *ImageGenerateTool) Execute(ctx context.Context, args json.RawMessage) (llm.ToolOutput, error) {
 	var a ImageGenerateArgs
 	if err := json.Unmarshal(args, &a); err != nil {
-		return formatToolError(NewToolError(ErrInvalidParams, err.Error())), nil
+		return llm.TextOutput(formatToolError(NewToolError(ErrInvalidParams, err.Error()))), nil
 	}
 
 	if a.Prompt == "" {
-		return formatToolError(NewToolError(ErrInvalidParams, "prompt is required")), nil
+		return llm.TextOutput(formatToolError(NewToolError(ErrInvalidParams, "prompt is required"))), nil
 	}
 
 	// Check output path permissions if specified
@@ -116,24 +116,24 @@ func (t *ImageGenerateTool) Execute(ctx context.Context, args json.RawMessage) (
 		outcome, err := t.approval.CheckPathApproval(ImageGenerateToolName, a.OutputPath, a.OutputPath, true)
 		if err != nil {
 			if toolErr, ok := err.(*ToolError); ok {
-				return formatToolError(toolErr), nil
+				return llm.TextOutput(formatToolError(toolErr)), nil
 			}
-			return formatToolError(NewToolError(ErrPermissionDenied, err.Error())), nil
+			return llm.TextOutput(formatToolError(NewToolError(ErrPermissionDenied, err.Error()))), nil
 		}
 		if outcome == Cancel {
-			return formatToolError(NewToolErrorf(ErrPermissionDenied, "access denied: %s", a.OutputPath)), nil
+			return llm.TextOutput(formatToolError(NewToolErrorf(ErrPermissionDenied, "access denied: %s", a.OutputPath))), nil
 		}
 	}
 
 	// Check if config is available
 	if t.config == nil {
-		return formatToolError(NewToolError(ErrImageGenFailed, "image provider not configured")), nil
+		return llm.TextOutput(formatToolError(NewToolError(ErrImageGenFailed, "image provider not configured"))), nil
 	}
 
 	// Create image provider
 	provider, err := image.NewImageProvider(t.config, t.providerName)
 	if err != nil {
-		return formatToolError(NewToolErrorf(ErrImageGenFailed, "failed to create image provider: %v", err)), nil
+		return llm.TextOutput(formatToolError(NewToolErrorf(ErrImageGenFailed, "failed to create image provider: %v", err))), nil
 	}
 
 	var result *image.ImageResult
@@ -153,24 +153,24 @@ func (t *ImageGenerateTool) Execute(ctx context.Context, args json.RawMessage) (
 				outcome, err := t.approval.CheckPathApproval(ImageGenerateToolName, inputPath, inputPath, false)
 				if err != nil {
 					if toolErr, ok := err.(*ToolError); ok {
-						return formatToolError(toolErr), nil
+						return llm.TextOutput(formatToolError(toolErr)), nil
 					}
-					return formatToolError(NewToolError(ErrPermissionDenied, err.Error())), nil
+					return llm.TextOutput(formatToolError(NewToolError(ErrPermissionDenied, err.Error()))), nil
 				}
 				if outcome == Cancel {
-					return formatToolError(NewToolErrorf(ErrPermissionDenied, "access denied: %s", inputPath)), nil
+					return llm.TextOutput(formatToolError(NewToolErrorf(ErrPermissionDenied, "access denied: %s", inputPath))), nil
 				}
 			}
 		}
 
 		// Check if provider supports editing
 		if !provider.SupportsEdit() {
-			return formatToolError(NewToolErrorf(ErrImageGenFailed, "provider %s does not support image editing", provider.Name())), nil
+			return llm.TextOutput(formatToolError(NewToolErrorf(ErrImageGenFailed, "provider %s does not support image editing", provider.Name()))), nil
 		}
 
 		// Check if multi-image is supported when multiple images provided
 		if len(inputPaths) > 1 && !provider.SupportsMultiImage() {
-			return formatToolError(NewToolErrorf(ErrImageGenFailed, "provider %s does not support multiple input images", provider.Name())), nil
+			return llm.TextOutput(formatToolError(NewToolErrorf(ErrImageGenFailed, "provider %s does not support multiple input images", provider.Name()))), nil
 		}
 
 		// Read all input images
@@ -179,9 +179,9 @@ func (t *ImageGenerateTool) Execute(ctx context.Context, args json.RawMessage) (
 			inputData, err := os.ReadFile(inputPath)
 			if err != nil {
 				if os.IsNotExist(err) {
-					return formatToolError(NewToolError(ErrFileNotFound, inputPath)), nil
+					return llm.TextOutput(formatToolError(NewToolError(ErrFileNotFound, inputPath))), nil
 				}
-				return formatToolError(NewToolErrorf(ErrExecutionFailed, "failed to read input image: %v", err)), nil
+				return llm.TextOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "failed to read input image: %v", err))), nil
 			}
 			inputImages = append(inputImages, image.InputImage{
 				Data: inputData,
@@ -195,7 +195,7 @@ func (t *ImageGenerateTool) Execute(ctx context.Context, args json.RawMessage) (
 			InputImages: inputImages,
 		})
 		if err != nil {
-			return formatToolError(NewToolErrorf(ErrImageGenFailed, "image edit failed: %v", err)), nil
+			return llm.TextOutput(formatToolError(NewToolErrorf(ErrImageGenFailed, "image edit failed: %v", err))), nil
 		}
 	} else {
 		// Generate new image
@@ -203,7 +203,7 @@ func (t *ImageGenerateTool) Execute(ctx context.Context, args json.RawMessage) (
 			Prompt: a.Prompt,
 		})
 		if err != nil {
-			return formatToolError(NewToolErrorf(ErrImageGenFailed, "image generation failed: %v", err)), nil
+			return llm.TextOutput(formatToolError(NewToolErrorf(ErrImageGenFailed, "image generation failed: %v", err))), nil
 		}
 	}
 
@@ -217,18 +217,18 @@ func (t *ImageGenerateTool) Execute(ctx context.Context, args json.RawMessage) (
 		}
 		outputPath, err = image.SaveImage(result.Data, outputDir, a.Prompt)
 		if err != nil {
-			return formatToolError(NewToolErrorf(ErrExecutionFailed, "failed to save image: %v", err)), nil
+			return llm.TextOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "failed to save image: %v", err))), nil
 		}
 	} else {
 		// Ensure parent directory exists
 		dir := filepath.Dir(outputPath)
 		if err := os.MkdirAll(dir, 0755); err != nil {
-			return formatToolError(NewToolErrorf(ErrExecutionFailed, "failed to create directory: %v", err)), nil
+			return llm.TextOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "failed to create directory: %v", err))), nil
 		}
 
 		// Write to specified path
 		if err := os.WriteFile(outputPath, result.Data, 0644); err != nil {
-			return formatToolError(NewToolErrorf(ErrExecutionFailed, "failed to write image: %v", err)), nil
+			return llm.TextOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "failed to write image: %v", err))), nil
 		}
 	}
 
@@ -257,12 +257,13 @@ func (t *ImageGenerateTool) Execute(ctx context.Context, args json.RawMessage) (
 	if copyClipboard {
 		sb.WriteString("Copied to clipboard: yes\n")
 	}
-	// Emit image marker for deferred display
+
+	output := llm.ToolOutput{Content: sb.String()}
 	if showImage {
-		sb.WriteString(fmt.Sprintf("__IMAGE__:%s\n", outputPath))
+		output.Images = []string{outputPath}
 	}
 
-	return sb.String(), nil
+	return output, nil
 }
 
 // estimateImageDimensions provides rough estimates based on file size.

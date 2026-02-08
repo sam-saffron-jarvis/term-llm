@@ -3,7 +3,6 @@ package llm
 import (
 	"context"
 	"encoding/json"
-	"strings"
 )
 
 // contextKey is a private type for context keys to prevent collisions.
@@ -135,14 +134,37 @@ type ToolCall struct {
 	ThoughtSig []byte // Gemini 3 thought signature (must be passed back in result)
 }
 
+// DiffData represents structured diff information from edit tools.
+type DiffData struct {
+	File string `json:"f"`
+	Old  string `json:"o"`
+	New  string `json:"n"`
+	Line int    `json:"l"` // 1-indexed starting line number
+}
+
+// ToolOutput is the structured return type from Tool.Execute().
+// Most tools only populate Content. Edit/image tools also populate Diffs/Images.
+type ToolOutput struct {
+	Content string     // Text result (sent to LLM)
+	Diffs   []DiffData // Structured diff data (for UI rendering)
+	Images  []string   // Image paths (for UI rendering)
+}
+
+// TextOutput creates a ToolOutput with only text content.
+func TextOutput(s string) ToolOutput {
+	return ToolOutput{Content: s}
+}
+
 // ToolResult is the output from executing a tool call.
 type ToolResult struct {
 	ID         string
 	Name       string
-	Content    string // Clean text sent to LLM (no __DIFF__/__IMAGE__ markers)
-	Display    string // Full output with markers (for UI rendering / session hydration)
-	IsError    bool   // True if this result represents a tool execution error
-	ThoughtSig []byte // Gemini 3 thought signature (passed through from ToolCall)
+	Content    string     // Clean text sent to LLM
+	Display    string     // Deprecated: old marker-based output. Kept only for deserializing pre-structured sessions. TODO: remove once no saved sessions use Display-based diff markers.
+	Diffs      []DiffData `json:"diffs,omitempty"`  // Structured diff data
+	Images     []string   `json:"images,omitempty"` // Image paths
+	IsError    bool       // True if this result represents a tool execution error
+	ThoughtSig []byte     // Gemini 3 thought signature (passed through from ToolCall)
 }
 
 // EventType describes streaming events.
@@ -164,7 +186,7 @@ const (
 // ToolExecutionResponse holds the result of a synchronous tool execution.
 // Used by claude_bin provider to receive results from the engine.
 type ToolExecutionResponse struct {
-	Result string
+	Result ToolOutput
 	Err    error
 }
 
@@ -173,11 +195,13 @@ type Event struct {
 	Type        EventType
 	Text        string
 	Tool        *ToolCall
-	ToolCallID  string // For EventToolExecStart/End: unique ID of this tool invocation
-	ToolName    string // For EventToolExecStart/End: name of tool being executed
-	ToolInfo    string // For EventToolExecStart/End: additional info (e.g., URL being fetched)
-	ToolSuccess bool   // For EventToolExecEnd: whether tool execution succeeded
-	ToolOutput  string // For EventToolExecEnd: the tool's output (for image marker parsing)
+	ToolCallID  string     // For EventToolExecStart/End: unique ID of this tool invocation
+	ToolName    string     // For EventToolExecStart/End: name of tool being executed
+	ToolInfo    string     // For EventToolExecStart/End: additional info (e.g., URL being fetched)
+	ToolSuccess bool       // For EventToolExecEnd: whether tool execution succeeded
+	ToolOutput  string     // For EventToolExecEnd: the tool's text content
+	ToolDiffs   []DiffData // For EventToolExecEnd: structured diffs from edit tools
+	ToolImages  []string   // For EventToolExecEnd: image paths from image tools
 	Use         *Usage
 	Err         error
 	// Retry fields (for EventRetry)
@@ -242,7 +266,7 @@ func AssistantText(text string) Message {
 	}
 }
 
-func ToolResultMessage(id, name, content string, thoughtSig []byte) Message {
+func ToolResultMessageFromOutput(id, name string, output ToolOutput, thoughtSig []byte) Message {
 	return Message{
 		Role: RoleTool,
 		Parts: []Part{{
@@ -250,32 +274,19 @@ func ToolResultMessage(id, name, content string, thoughtSig []byte) Message {
 			ToolResult: &ToolResult{
 				ID:         id,
 				Name:       name,
-				Content:    stripDisplayMarkers(content),
-				Display:    content,
+				Content:    output.Content,
+				Diffs:      output.Diffs,
+				Images:     output.Images,
 				ThoughtSig: thoughtSig,
 			},
 		}},
 	}
 }
 
-// stripDisplayMarkers removes lines starting with __DIFF__: or __IMAGE__:
-// so the LLM receives clean text without large base64 blobs.
-// Returns the input unchanged if no markers are present.
-func stripDisplayMarkers(s string) string {
-	if !strings.Contains(s, "__DIFF__:") && !strings.Contains(s, "__IMAGE__:") {
-		return s
-	}
-	lines := strings.Split(s, "\n")
-	filtered := lines[:0]
-	for _, line := range lines {
-		if strings.HasPrefix(line, "__DIFF__:") || strings.HasPrefix(line, "__IMAGE__:") {
-			continue
-		}
-		filtered = append(filtered, line)
-	}
-	result := strings.Join(filtered, "\n")
-	// Trim trailing newlines left by removed marker lines
-	return strings.TrimRight(result, "\n")
+// ToolResultMessage creates a tool result message from a plain string.
+// Convenience wrapper for callers that only have text content (no diffs/images).
+func ToolResultMessage(id, name, content string, thoughtSig []byte) Message {
+	return ToolResultMessageFromOutput(id, name, TextOutput(content), thoughtSig)
 }
 
 // ToolErrorMessage creates a tool result message that indicates an error.

@@ -19,11 +19,11 @@ func (m *mockTool) Spec() ToolSpec {
 	return ToolSpec{Name: m.name}
 }
 
-func (m *mockTool) Execute(ctx context.Context, args json.RawMessage) (string, error) {
+func (m *mockTool) Execute(ctx context.Context, args json.RawMessage) (ToolOutput, error) {
 	if m.err != nil {
-		return "", m.err
+		return ToolOutput{}, m.err
 	}
-	return m.result, nil
+	return TextOutput(m.result), nil
 }
 
 func (m *mockTool) Preview(args json.RawMessage) string {

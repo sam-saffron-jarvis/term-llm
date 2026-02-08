@@ -61,16 +61,16 @@ func ReadURLToolSpec() ToolSpec {
 	}
 }
 
-func (t *ReadURLTool) Execute(ctx context.Context, args json.RawMessage) (string, error) {
+func (t *ReadURLTool) Execute(ctx context.Context, args json.RawMessage) (ToolOutput, error) {
 	var payload struct {
 		URL string `json:"url"`
 	}
 	if err := json.Unmarshal(args, &payload); err != nil {
-		return "", fmt.Errorf("parse read_url args: %w", err)
+		return ToolOutput{}, fmt.Errorf("parse read_url args: %w", err)
 	}
 
 	if payload.URL == "" {
-		return "", fmt.Errorf("url is required")
+		return ToolOutput{}, fmt.Errorf("url is required")
 	}
 
 	// Ensure URL has a scheme
@@ -84,12 +84,12 @@ func (t *ReadURLTool) Execute(ctx context.Context, args json.RawMessage) (string
 
 	req, err := http.NewRequestWithContext(ctx, "GET", jinaURL, nil)
 	if err != nil {
-		return "", fmt.Errorf("create request: %w", err)
+		return ToolOutput{}, fmt.Errorf("create request: %w", err)
 	}
 
 	resp, err := t.client.Do(req)
 	if err != nil {
-		return fmt.Sprintf("Error fetching URL: %v", err), nil
+		return TextOutput(fmt.Sprintf("Error fetching URL: %v", err)), nil
 	}
 	defer resp.Body.Close()
 
@@ -99,12 +99,12 @@ func (t *ReadURLTool) Execute(ctx context.Context, args json.RawMessage) (string
 		if statusText == "" {
 			statusText = "Unknown"
 		}
-		return fmt.Sprintf("Error: HTTP %d %s - Unable to fetch this URL.", resp.StatusCode, statusText), nil
+		return TextOutput(fmt.Sprintf("Error: HTTP %d %s - Unable to fetch this URL.", resp.StatusCode, statusText)), nil
 	}
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return fmt.Sprintf("Error reading response: %v", err), nil
+		return TextOutput(fmt.Sprintf("Error reading response: %v", err)), nil
 	}
 
 	content := string(body)
@@ -114,5 +114,5 @@ func (t *ReadURLTool) Execute(ctx context.Context, args json.RawMessage) (string
 		content = content[:maxReadURLChars] + "\n\n[Content truncated at 50,000 characters]"
 	}
 
-	return content, nil
+	return TextOutput(content), nil
 }

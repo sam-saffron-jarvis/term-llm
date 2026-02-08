@@ -45,15 +45,15 @@ func (t *SetOutputTool) Spec() llm.ToolSpec {
 	}
 }
 
-func (t *SetOutputTool) Execute(ctx context.Context, args json.RawMessage) (string, error) {
+func (t *SetOutputTool) Execute(ctx context.Context, args json.RawMessage) (llm.ToolOutput, error) {
 	var params map[string]interface{}
 	if err := json.Unmarshal(args, &params); err != nil {
-		return "", err
+		return llm.ToolOutput{}, err
 	}
 	if v, ok := params[t.paramName].(string); ok {
 		t.value = v
 	}
-	return "Output captured.", nil
+	return llm.TextOutput("Output captured."), nil
 }
 
 func (t *SetOutputTool) Preview(args json.RawMessage) string {

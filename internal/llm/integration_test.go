@@ -160,8 +160,8 @@ func TestEngineHarness_ToolError(t *testing.T) {
 		"fail_tool",
 		"A tool that always fails",
 		map[string]interface{}{"type": "object", "properties": map[string]interface{}{}},
-		func(ctx context.Context, args json.RawMessage) (string, error) {
-			return "", context.DeadlineExceeded
+		func(ctx context.Context, args json.RawMessage) (llm.ToolOutput, error) {
+			return llm.ToolOutput{}, context.DeadlineExceeded
 		},
 	))
 

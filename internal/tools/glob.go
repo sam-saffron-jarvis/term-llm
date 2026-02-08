@@ -75,14 +75,14 @@ func (t *GlobTool) Preview(args json.RawMessage) string {
 	return a.Pattern
 }
 
-func (t *GlobTool) Execute(ctx context.Context, args json.RawMessage) (string, error) {
+func (t *GlobTool) Execute(ctx context.Context, args json.RawMessage) (llm.ToolOutput, error) {
 	var a GlobArgs
 	if err := json.Unmarshal(args, &a); err != nil {
-		return formatToolError(NewToolError(ErrInvalidParams, err.Error())), nil
+		return llm.TextOutput(formatToolError(NewToolError(ErrInvalidParams, err.Error()))), nil
 	}
 
 	if a.Pattern == "" {
-		return formatToolError(NewToolError(ErrInvalidParams, "pattern is required")), nil
+		return llm.TextOutput(formatToolError(NewToolError(ErrInvalidParams, "pattern is required"))), nil
 	}
 
 	// Set defaults
@@ -91,7 +91,7 @@ func (t *GlobTool) Execute(ctx context.Context, args json.RawMessage) (string, e
 		var err error
 		basePath, err = os.Getwd()
 		if err != nil {
-			return formatToolError(NewToolErrorf(ErrExecutionFailed, "cannot get working directory: %v", err)), nil
+			return llm.TextOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "cannot get working directory: %v", err))), nil
 		}
 	}
 
@@ -100,19 +100,19 @@ func (t *GlobTool) Execute(ctx context.Context, args json.RawMessage) (string, e
 		outcome, err := t.approval.CheckPathApproval(GlobToolName, basePath, a.Pattern, false)
 		if err != nil {
 			if toolErr, ok := err.(*ToolError); ok {
-				return formatToolError(toolErr), nil
+				return llm.TextOutput(formatToolError(toolErr)), nil
 			}
-			return formatToolError(NewToolError(ErrPermissionDenied, err.Error())), nil
+			return llm.TextOutput(formatToolError(NewToolError(ErrPermissionDenied, err.Error()))), nil
 		}
 		if outcome == Cancel {
-			return formatToolError(NewToolErrorf(ErrPermissionDenied, "access denied: %s", basePath)), nil
+			return llm.TextOutput(formatToolError(NewToolErrorf(ErrPermissionDenied, "access denied: %s", basePath))), nil
 		}
 	}
 
 	// Resolve base path to absolute
 	absBasePath, err := filepath.Abs(basePath)
 	if err != nil {
-		return formatToolError(NewToolErrorf(ErrExecutionFailed, "cannot resolve path: %v", err)), nil
+		return llm.TextOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "cannot resolve path: %v", err))), nil
 	}
 
 	// Find matching files by walking the directory
@@ -170,7 +170,7 @@ func (t *GlobTool) Execute(ctx context.Context, args json.RawMessage) (string, e
 	})
 
 	if err != nil {
-		return formatToolError(NewToolErrorf(ErrExecutionFailed, "walk error: %v", err)), nil
+		return llm.TextOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "walk error: %v", err))), nil
 	}
 
 	// Sort by modification time (newest first)
@@ -179,10 +179,10 @@ func (t *GlobTool) Execute(ctx context.Context, args json.RawMessage) (string, e
 	})
 
 	if len(entries) == 0 {
-		return "No files matched the pattern.", nil
+		return llm.TextOutput("No files matched the pattern."), nil
 	}
 
-	return formatGlobResults(entries, len(entries) >= maxGlobResults), nil
+	return llm.TextOutput(formatGlobResults(entries, len(entries) >= maxGlobResults)), nil
 }
 
 // formatGlobResults formats glob results for the LLM.

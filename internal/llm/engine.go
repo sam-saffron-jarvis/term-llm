@@ -68,7 +68,7 @@ type Engine struct {
 // ToolExecutorSetter is an optional interface for providers that need
 // tool execution wired up externally (e.g., claude-bin with HTTP MCP).
 type ToolExecutorSetter interface {
-	SetToolExecutor(func(ctx context.Context, name string, args json.RawMessage) (string, error))
+	SetToolExecutor(func(ctx context.Context, name string, args json.RawMessage) (ToolOutput, error))
 }
 
 // ProviderCleaner is an optional interface for providers that need cleanup
@@ -88,10 +88,10 @@ func NewEngine(provider Provider, tools *ToolRegistry) *Engine {
 
 	// Wire up tool executor for providers that need it (e.g., claude-bin HTTP MCP)
 	if setter, ok := provider.(ToolExecutorSetter); ok {
-		setter.SetToolExecutor(func(ctx context.Context, name string, args json.RawMessage) (string, error) {
+		setter.SetToolExecutor(func(ctx context.Context, name string, args json.RawMessage) (ToolOutput, error) {
 			tool, ok := e.tools.Get(name)
 			if !ok {
-				return "", fmt.Errorf("tool not found: %s", name)
+				return ToolOutput{}, fmt.Errorf("tool not found: %s", name)
 			}
 			return tool.Execute(ctx, args)
 		})
@@ -439,7 +439,7 @@ func (e *Engine) runLoop(ctx context.Context, req Request, events chan<- Event) 
 					if execErr != nil {
 						syncToolResults = append(syncToolResults, ToolErrorMessage(call.ID, call.Name, execErr.Error(), nil))
 					} else {
-						syncToolResults = append(syncToolResults, ToolResultMessage(call.ID, call.Name, result, nil))
+						syncToolResults = append(syncToolResults, ToolResultMessageFromOutput(call.ID, call.Name, result, nil))
 					}
 					// Check if this was a finishing tool (signals agent completion)
 					if e.tools.IsFinishingTool(event.Tool.Name) {
@@ -708,20 +708,19 @@ func (e *Engine) executeSingleToolCall(ctx context.Context, call ToolCall, event
 		return []Message{ToolErrorMessage(call.ID, call.Name, errMsg, call.ThoughtSig)}, nil
 	}
 
-	cleanOutput := stripDisplayMarkers(output)
-	DebugToolResult(debug, call.ID, call.Name, cleanOutput)
-	DebugRawToolResult(debugRaw, call.ID, call.Name, cleanOutput)
+	DebugToolResult(debug, call.ID, call.Name, output.Content)
+	DebugRawToolResult(debugRaw, call.ID, call.Name, output.Content)
 	if events != nil {
-		events <- Event{Type: EventToolExecEnd, ToolCallID: call.ID, ToolName: call.Name, ToolInfo: info, ToolSuccess: true, ToolOutput: output}
+		events <- Event{Type: EventToolExecEnd, ToolCallID: call.ID, ToolName: call.Name, ToolInfo: info, ToolSuccess: true, ToolOutput: output.Content, ToolDiffs: output.Diffs, ToolImages: output.Images}
 	}
-	return []Message{ToolResultMessage(call.ID, call.Name, output, call.ThoughtSig)}, nil
+	return []Message{ToolResultMessageFromOutput(call.ID, call.Name, output, call.ThoughtSig)}, nil
 }
 
 // handleSyncToolExecution handles synchronous tool execution for providers like claude_bin.
 // It emits EventToolExecStart/End to the outer channel (for TUI) and sends the result
 // back to the provider via the response channel.
-// Returns the tool call, result string, and any error that occurred during execution.
-func (e *Engine) handleSyncToolExecution(ctx context.Context, event Event, events chan<- Event, debug bool, debugRaw bool) (ToolCall, string, error) {
+// Returns the tool call, result content string, and any error that occurred during execution.
+func (e *Engine) handleSyncToolExecution(ctx context.Context, event Event, events chan<- Event, debug bool, debugRaw bool) (ToolCall, ToolOutput, error) {
 	call := event.Tool
 	callID := event.ToolCallID
 	if callID == "" {
@@ -750,14 +749,14 @@ func (e *Engine) handleSyncToolExecution(ctx context.Context, event Event, event
 
 	// Look up and execute the tool
 	tool, ok := e.tools.Get(call.Name)
-	var result string
+	var result ToolOutput
 	var err error
 
 	if !ok {
 		// suggest_commands is a passthrough tool - it captures structured output
 		// and doesn't need actual execution. Just return success.
 		if call.Name == SuggestCommandsToolName {
-			result = "OK"
+			result = TextOutput("OK")
 		} else {
 			err = fmt.Errorf("tool not found: %s", call.Name)
 		}
@@ -772,9 +771,8 @@ func (e *Engine) handleSyncToolExecution(ctx context.Context, event Event, event
 	if err != nil {
 		DebugToolResult(debug, callID, call.Name, fmt.Sprintf("Error: %v", err))
 	} else {
-		cleanResult := stripDisplayMarkers(result)
-		DebugToolResult(debug, callID, call.Name, cleanResult)
-		DebugRawToolResult(debugRaw, callID, call.Name, cleanResult)
+		DebugToolResult(debug, callID, call.Name, result.Content)
+		DebugRawToolResult(debugRaw, callID, call.Name, result.Content)
 	}
 
 	// Emit end event to TUI (non-blocking to avoid deadlock if consumer is slow)
@@ -786,7 +784,9 @@ func (e *Engine) handleSyncToolExecution(ctx context.Context, event Event, event
 			ToolName:    call.Name,
 			ToolInfo:    info,
 			ToolSuccess: err == nil,
-			ToolOutput:  result,
+			ToolOutput:  result.Content,
+			ToolDiffs:   result.Diffs,
+			ToolImages:  result.Images,
 		}:
 		default:
 			// Event dropped due to slow consumer

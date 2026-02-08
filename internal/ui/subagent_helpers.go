@@ -42,19 +42,12 @@ func HandleSubagentProgress(tracker *ToolTracker, subagentTracker *SubagentTrack
 		subagentTracker.HandleToolStart(callID, event.ToolName, event.ToolInfo)
 	case tools.SubagentEventToolEnd:
 		subagentTracker.HandleToolEnd(callID, event.ToolName, event.Success)
-		// Parse markers from tool output (images, diffs)
-		if event.ToolOutput != "" {
-			// Images still go to main tracker (they're standalone)
-			for _, imagePath := range parseImageMarkers(event.ToolOutput) {
-				tracker.AddImageSegment(imagePath)
-			}
-			// Diffs go to the spawn_agent segment itself (so they render within the subagent block)
-			if event.ToolName == tools.EditFileToolName || event.ToolName == tools.UnifiedDiffToolName || event.ToolName == tools.WriteFileToolName {
-				for _, d := range ParseDiffMarkers(event.ToolOutput) {
-					addDiffToSpawnAgentSegment(tracker, callID, d.File, d.Old, d.New, d.Line)
-				}
-			}
-
+		// Process structured image/diff data from subagent events
+		for _, imagePath := range event.Images {
+			tracker.AddImageSegment(imagePath)
+		}
+		for _, d := range event.Diffs {
+			addDiffToSpawnAgentSegment(tracker, callID, d.File, d.Old, d.New, d.Line)
 		}
 	case tools.SubagentEventPhase:
 		subagentTracker.HandlePhase(callID, event.Phase)
@@ -65,14 +58,6 @@ func HandleSubagentProgress(tracker *ToolTracker, subagentTracker *SubagentTrack
 		// Store completion time so elapsed timer freezes
 		if seg := FindSegmentByCallID(tracker, callID); seg != nil {
 			seg.SubagentEndTime = time.Now()
-
-			// Parse any final markers from the accumulated output (captured in progress)
-			accumulatedOutput := p.TextBuffer.String()
-			if accumulatedOutput != "" {
-				for _, d := range ParseDiffMarkers(accumulatedOutput) {
-					addDiffToSpawnAgentSegment(tracker, callID, d.File, d.Old, d.New, d.Line)
-				}
-			}
 		}
 	}
 
