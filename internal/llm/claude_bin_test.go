@@ -142,6 +142,73 @@ func TestClaudeBinProvider_ToolExecutorIsWired(t *testing.T) {
 	}
 }
 
+func TestParseClaudeEffort(t *testing.T) {
+	tests := []struct {
+		input      string
+		wantModel  string
+		wantEffort string
+	}{
+		{"opus-max", "opus", "max"},
+		{"opus-low", "opus", "low"},
+		{"opus-medium", "opus", "medium"},
+		{"opus-high", "opus", "high"},
+		{"opus", "opus", ""},
+		{"sonnet-max", "sonnet-max", ""}, // non-opus ignored
+		{"sonnet", "sonnet", ""},
+		{"haiku", "haiku", ""},
+		{"", "", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			model, effort := parseClaudeEffort(tt.input)
+			if model != tt.wantModel {
+				t.Errorf("parseClaudeEffort(%q) model = %q, want %q", tt.input, model, tt.wantModel)
+			}
+			if effort != tt.wantEffort {
+				t.Errorf("parseClaudeEffort(%q) effort = %q, want %q", tt.input, effort, tt.wantEffort)
+			}
+		})
+	}
+}
+
+func TestClaudeBinProvider_NameWithEffort(t *testing.T) {
+	tests := []struct {
+		model    string
+		wantName string
+	}{
+		{"opus-max", "Claude CLI (opus, effort=max)"},
+		{"opus", "Claude CLI (opus)"},
+		{"sonnet", "Claude CLI (sonnet)"},
+		{"", "Claude CLI (sonnet)"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.model, func(t *testing.T) {
+			p := NewClaudeBinProvider(tt.model)
+			if got := p.Name(); got != tt.wantName {
+				t.Errorf("Name() = %q, want %q", got, tt.wantName)
+			}
+		})
+	}
+}
+
+func TestMapModelToClaudeArg(t *testing.T) {
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{"opus", "opus"},
+		{"sonnet", "sonnet"},
+		{"haiku", "haiku"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			if got := mapModelToClaudeArg(tt.input); got != tt.want {
+				t.Errorf("mapModelToClaudeArg(%q) = %q, want %q", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
 // testTool is a simple tool implementation for testing.
 type testTool struct {
 	name string

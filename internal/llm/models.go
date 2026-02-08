@@ -108,6 +108,10 @@ var ProviderModels = map[string][]string{
 	},
 	"claude-bin": {
 		"opus",
+		"opus-low",
+		"opus-medium",
+		"opus-high",
+		"opus-max",
 		"sonnet",
 		"haiku",
 	},

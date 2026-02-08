@@ -27,6 +27,7 @@ var mcpCallCounter atomic.Int64
 // for concurrent streams.
 type ClaudeBinProvider struct {
 	model        string
+	effort       string // reasoning effort for opus: "low", "medium", "high", "max", or ""
 	sessionID    string // For session continuity with --resume
 	messagesSent int    // Track messages already in session to avoid re-sending
 	toolExecutor mcphttp.ToolExecutor
@@ -45,10 +46,28 @@ type ClaudeBinProvider struct {
 	eventsMu      sync.Mutex
 }
 
+// parseClaudeEffort extracts effort suffix from opus model names only.
+// "opus-max" -> ("opus", "max"), "opus-low" -> ("opus", "low")
+// "sonnet-max" -> ("sonnet-max", "") — non-opus models are not modified.
+func parseClaudeEffort(model string) (string, string) {
+	if !strings.HasPrefix(model, "opus") {
+		return model, ""
+	}
+	for _, effort := range []string{"medium", "max", "high", "low"} {
+		suffix := "-" + effort
+		if strings.HasSuffix(model, suffix) {
+			return strings.TrimSuffix(model, suffix), effort
+		}
+	}
+	return model, ""
+}
+
 // NewClaudeBinProvider creates a new provider that uses the claude binary.
 func NewClaudeBinProvider(model string) *ClaudeBinProvider {
+	actualModel, effort := parseClaudeEffort(model)
 	return &ClaudeBinProvider{
-		model:       model,
+		model:       actualModel,
+		effort:      effort,
 		preferOAuth: true, // Default to OAuth to avoid API key limits
 	}
 }
@@ -73,6 +92,9 @@ func (p *ClaudeBinProvider) Name() string {
 	if model == "" {
 		model = "sonnet"
 	}
+	if p.effort != "" {
+		return fmt.Sprintf("Claude CLI (%s, effort=%s)", model, p.effort)
+	}
 	return fmt.Sprintf("Claude CLI (%s)", model)
 }
 
@@ -93,7 +115,7 @@ func (p *ClaudeBinProvider) Stream(ctx context.Context, req Request) (Stream, er
 	return newEventStream(ctx, func(ctx context.Context, events chan<- Event) error {
 		// Build the command arguments, passing events channel for tool execution routing.
 		// MCP server is kept alive across turns - caller should call CleanupMCP() when done.
-		args := p.buildArgs(ctx, req, events)
+		args, effort := p.buildArgs(ctx, req, events)
 
 		// Always extract system prompt from full messages (it should persist across turns)
 		systemPrompt := p.extractSystemPrompt(req.Messages)
@@ -120,19 +142,30 @@ func (p *ClaudeBinProvider) Stream(ctx context.Context, req Request) (Stream, er
 			fmt.Fprintln(os.Stderr, "=== DEBUG: Claude CLI Command ===")
 			fmt.Fprintf(os.Stderr, "claude %s\n", strings.Join(args, " "))
 			fmt.Fprintf(os.Stderr, "Prompt length: %d bytes (via stdin)\n", len(userPrompt))
+			if effort != "" {
+				fmt.Fprintf(os.Stderr, "CLAUDE_CODE_EFFORT_LEVEL=%s\n", effort)
+			}
 			fmt.Fprintln(os.Stderr, "=================================")
 		}
 
 		cmd := exec.CommandContext(ctx, "claude", args...)
 
-		// Set up environment - optionally clear ANTHROPIC_API_KEY to prefer OAuth
-		if p.preferOAuth {
+		// Set up environment - optionally clear ANTHROPIC_API_KEY to prefer OAuth,
+		// and set CLAUDE_CODE_EFFORT_LEVEL for reasoning effort control.
+		if p.preferOAuth || effort != "" {
 			env := os.Environ()
 			filtered := env[:0]
 			for _, e := range env {
-				if !strings.HasPrefix(e, "ANTHROPIC_API_KEY=") {
-					filtered = append(filtered, e)
+				if p.preferOAuth && strings.HasPrefix(e, "ANTHROPIC_API_KEY=") {
+					continue
 				}
+				if effort != "" && strings.HasPrefix(e, "CLAUDE_CODE_EFFORT_LEVEL=") {
+					continue
+				}
+				filtered = append(filtered, e)
+			}
+			if effort != "" {
+				filtered = append(filtered, "CLAUDE_CODE_EFFORT_LEVEL="+effort)
 			}
 			cmd.Env = filtered
 		}
@@ -263,7 +296,8 @@ func (p *ClaudeBinProvider) Stream(ctx context.Context, req Request) (Stream, er
 // buildArgs constructs the command line arguments for the claude binary.
 // The events channel is passed to the MCP server for routing tool execution events.
 // The MCP server is kept alive across turns - call CleanupMCP() when the conversation ends.
-func (p *ClaudeBinProvider) buildArgs(ctx context.Context, req Request, events chan<- Event) []string {
+// Returns the args and the effective reasoning effort (if any).
+func (p *ClaudeBinProvider) buildArgs(ctx context.Context, req Request, events chan<- Event) ([]string, string) {
 	args := []string{
 		"--print",
 		"--output-format", "stream-json",
@@ -277,10 +311,15 @@ func (p *ClaudeBinProvider) buildArgs(ctx context.Context, req Request, events c
 	// Always limit to 1 turn - term-llm handles tool execution loop
 	args = append(args, "--max-turns", "1")
 
-	// Model selection
+	// Model selection — parse effort from the chosen model, fall back to provider-level effort
 	model := chooseModel(req.Model, p.model)
-	if model != "" {
-		args = append(args, "--model", mapModelToClaudeArg(model))
+	strippedModel, reqEffort := parseClaudeEffort(model)
+	effort := p.effort
+	if effort == "" && reqEffort != "" {
+		effort = reqEffort
+	}
+	if strippedModel != "" {
+		args = append(args, "--model", mapModelToClaudeArg(strippedModel))
 	}
 
 	// Disable all built-in tools - we use MCP for custom tools
@@ -307,7 +346,7 @@ func (p *ClaudeBinProvider) buildArgs(ctx context.Context, req Request, events c
 		args = append(args, "--resume", p.sessionID)
 	}
 
-	return args
+	return args, effort
 }
 
 // getOrCreateMCPConfig returns the MCP config path, reusing existing server if available.
