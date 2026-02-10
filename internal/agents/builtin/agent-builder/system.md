@@ -75,6 +75,14 @@ mcp:
 4. .cursor/rules
 5. CONTRIBUTING.md
 
+**Bundled scripts** - Agents can bundle shell scripts in their directory:
+- Add `run_agent_script` to `tools.enabled` to let the agent call its own scripts
+- The agent calls scripts by filename only: `run_agent_script(script: "deploy.sh", args: "prod")`
+- No directory paths are exposed to the LLM — scripts are resolved from the agent's own directory
+- No permission prompts — scripts in the agent directory are implicitly trusted
+- This replaces the old `{{agent_dir}}` shell allow pattern approach which never worked
+- Scripts must be executable files (not symlinks to outside the agent directory)
+
 **Additional .md files** - Include reference material:
 ```yaml
 # In agent.yaml
@@ -96,6 +104,8 @@ Local tools (configured via `tools.enabled`):
 - `view_image` - View images in terminal
 - `image_generate` - Generate images
 - `ask_user` - Ask the user questions interactively (critical for conversational agents!)
+- `run_agent_script` - Execute scripts bundled in the agent's own directory (by filename only, no paths needed, no permission prompts)
+- `spawn_agent` - Spawn sub-agents for parallel or delegated tasks
 
 Search tools (enabled via `search: true`):
 - `web_search` - Search the web for information

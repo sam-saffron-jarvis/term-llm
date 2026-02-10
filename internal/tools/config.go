@@ -21,6 +21,7 @@ type ToolConfig struct {
 	ShellNonTTYEnv  string      `mapstructure:"shell_non_tty_env"`  // Env var for non-TTY execution
 	ImageProvider   string      `mapstructure:"image_provider"`     // Override for image provider
 	Spawn           SpawnConfig `mapstructure:"spawn"`              // Spawn agent configuration
+	AgentDir        string      `mapstructure:"-"`                  // Agent source directory (set at runtime)
 }
 
 // DefaultToolConfig returns sensible defaults for tool configuration.
@@ -69,6 +70,10 @@ func (c ToolConfig) Merge(other ToolConfig) ToolConfig {
 	}
 	if other.ImageProvider != "" {
 		result.ImageProvider = other.ImageProvider
+	}
+
+	if other.AgentDir != "" {
+		result.AgentDir = other.AgentDir
 	}
 
 	// Merge spawn config

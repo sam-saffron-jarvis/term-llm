@@ -31,6 +31,9 @@ type SessionSettings struct {
 	ShellAutoRun bool
 	Scripts      []string
 
+	// Agent directory (for run_agent_script tool)
+	AgentDir string
+
 	// MCP servers (comma-separated)
 	MCP string
 
@@ -166,6 +169,7 @@ func ResolveSettings(cfg *config.Config, agent *agents.Agent, cli CLIFlags, conf
 		for _, k := range keys {
 			s.Scripts = append(s.Scripts, agent.Shell.Scripts[k])
 		}
+		s.AgentDir = agent.SourcePath
 	}
 
 	// MCP: CLI > agent
@@ -230,6 +234,7 @@ func (s *SessionSettings) SetupToolManager(cfg *config.Config, engine *llm.Engin
 	}
 
 	toolConfig := buildToolConfig(s.Tools, s.ReadDirs, s.WriteDirs, s.ShellAllow, cfg)
+	toolConfig.AgentDir = s.AgentDir
 	if s.ShellAutoRun {
 		toolConfig.ShellAutoRun = true
 	}

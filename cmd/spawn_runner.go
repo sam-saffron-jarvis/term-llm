@@ -333,6 +333,7 @@ func (r *SpawnAgentRunner) setupAgentTools(cfg *config.Config, engine *llm.Engin
 
 	// Build tool config
 	toolConfig := buildToolConfig(enabledTools, agent.Read.Dirs, nil, agent.Shell.Allow, cfg)
+	toolConfig.AgentDir = agent.SourcePath
 	if agent.Shell.AutoRun {
 		toolConfig.ShellAutoRun = true
 	}

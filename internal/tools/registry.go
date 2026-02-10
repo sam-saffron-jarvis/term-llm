@@ -93,6 +93,8 @@ func (r *LocalToolRegistry) registerTool(specName string) error {
 	case SpawnAgentToolName:
 		// SpawnAgentTool requires a runner to be set later via SetRunner
 		tool = NewSpawnAgentTool(r.config.Spawn, 0)
+	case RunAgentScriptToolName:
+		tool = NewRunAgentScriptTool(r.config, r.limits)
 	default:
 		return NewToolErrorf(ErrInvalidParams, "unimplemented tool: %s", specName)
 	}
@@ -145,6 +147,8 @@ func (r *LocalToolRegistry) SetLimits(limits OutputLimits) {
 			r.tools[specName] = NewShellTool(r.approval, r.config, r.limits)
 		case GrepToolName:
 			r.tools[specName] = NewGrepTool(r.approval, r.limits)
+		case RunAgentScriptToolName:
+			r.tools[specName] = NewRunAgentScriptTool(r.config, r.limits)
 		}
 	}
 }
