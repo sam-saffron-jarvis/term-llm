@@ -2,7 +2,6 @@ package ui
 
 import (
 	"bytes"
-	"strings"
 
 	"github.com/charmbracelet/glamour"
 	"github.com/samsaffron/term-llm/internal/ui/streaming"
@@ -53,19 +52,30 @@ func NewTextSegmentRenderer(width int) (*TextSegmentRenderer, error) {
 // Write writes text to the streaming renderer.
 // Complete markdown blocks are rendered immediately.
 func (r *TextSegmentRenderer) Write(text string) error {
-	prevOutput := r.output.String()
+	prevOutput := r.output.Bytes()
+	prevFlushedPos := r.flushedRenderedPos
+	if prevFlushedPos > len(prevOutput) {
+		prevFlushedPos = len(prevOutput)
+		r.flushedRenderedPos = prevFlushedPos
+	}
+
+	var prevFlushedPrefix []byte
+	if prevFlushedPos > 0 {
+		prevFlushedPrefix = append([]byte(nil), prevOutput[:prevFlushedPos]...)
+	}
+
 	_, err := r.sr.Write([]byte(text))
 	if err != nil {
 		return err
 	}
 
-	currentOutput := r.output.String()
+	currentOutput := r.output.Bytes()
 	currentLen := len(currentOutput)
 	if r.flushedRenderedPos > currentLen {
 		r.flushedRenderedPos = currentLen
 	}
-	if r.flushedRenderedPos > 0 && prevOutput != "" && currentOutput != "" && !strings.HasPrefix(currentOutput, prevOutput) {
-		commonPrefix := longestCommonPrefixLen(prevOutput, currentOutput)
+	if prevFlushedPos > 0 && len(currentOutput) > 0 {
+		commonPrefix := longestCommonPrefixLenBytes(prevFlushedPrefix, currentOutput)
 		if r.flushedRenderedPos > commonPrefix {
 			r.flushedRenderedPos = commonPrefix
 		}
@@ -172,7 +182,7 @@ func (r *TextSegmentRenderer) Width() int {
 	return r.width
 }
 
-func longestCommonPrefixLen(a, b string) int {
+func longestCommonPrefixLenBytes(a, b []byte) int {
 	maxLen := len(a)
 	if len(b) < maxLen {
 		maxLen = len(b)

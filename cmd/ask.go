@@ -879,6 +879,11 @@ type askStreamModel struct {
 	contentDirty           bool   // True when new content arrived, needs re-render
 	cachedContent          string // Cached rendered content from last dirty=true render
 	adaptiveFlushThreshold bool   // Scales flush threshold with smooth buffer size when enabled
+
+	// Tool-start boundary gating: defer pending tool-row rendering until
+	// pre-tool completed content has been visibly flushed to scrollback.
+	pendingBoundaryFlushes int
+	pendingWaveStart       bool
 }
 
 const askAdaptiveFlushThresholdEnv = "TERM_LLM_ASK_ADAPTIVE_FLUSH"
@@ -922,6 +927,10 @@ type askDiffMsg struct {
 	Old  string
 	New  string
 	Line int
+}
+type askBoundaryFlushedMsg struct {
+	CallID string
+	Name   string
 }
 type askFlushBeforeAskUserMsg struct {
 	Done chan<- struct{} // Signal when flush is complete
@@ -1028,6 +1037,23 @@ func (m *askStreamModel) flushCompletedBoundaryNow() tea.Cmd {
 		return tea.Printf("%s", result.ToPrint)
 	}
 	return nil
+}
+
+func (m *askStreamModel) flushCompletedBoundaryNowWithAck(callID, name string) tea.Cmd {
+	result := m.tracker.FlushCompletedNow(m.width, renderMd)
+	if result.ToPrint != "" {
+		m.cachedContent = "" // Invalidate cache since segments were flushed
+		m.contentDirty = true
+		return tea.Sequence(
+			tea.Printf("%s", result.ToPrint),
+			func() tea.Msg {
+				return askBoundaryFlushedMsg{CallID: callID, Name: name}
+			},
+		)
+	}
+	return func() tea.Msg {
+		return askBoundaryFlushedMsg{CallID: callID, Name: name}
+	}
 }
 
 // flushSmoothBufferToTracker flushes any buffered words into the text tracker.
@@ -1336,7 +1362,6 @@ func (m askStreamModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case askToolStartMsg:
 		m.retryStatus = ""
-		m.contentDirty = true // Tool state changed
 		m.flushSmoothBufferToTracker()
 		m.smoothTickPending = false
 
@@ -1349,26 +1374,34 @@ func (m askStreamModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Add or dedupe pending tool segment for this call.
 		m.tracker.HandleToolStart(msg.CallID, msg.Name, msg.Info)
 
-		var flushCmds []tea.Cmd
-		var asyncCmds []tea.Cmd
-		if cmd := m.flushCompletedBoundaryNow(); cmd != nil {
-			flushCmds = append(flushCmds, cmd)
+		// Defer pending tool rendering until boundary flush is visibly committed.
+		m.pendingBoundaryFlushes++
+		m.contentDirty = true
+
+		// Start (or restart) wave animation for non-ask_user tools after the
+		// boundary flush acknowledgement arrives.
+		if msg.Name != tools.AskUserToolName {
+			m.pendingWaveStart = true
 		}
-		// Rebuild cache immediately so the pending tool renders in-place without
-		// a transient frame that still contains just-flushed content.
+		return m, m.flushCompletedBoundaryNowWithAck(msg.CallID, msg.Name)
+
+	case askBoundaryFlushedMsg:
+		if m.pendingBoundaryFlushes > 0 {
+			m.pendingBoundaryFlushes--
+		}
+		if m.pendingBoundaryFlushes > 0 {
+			return m, nil
+		}
+
+		// Boundary is now visible in scrollback; refresh content and reveal tools.
 		m.cachedContent = m.tracker.RenderUnflushed(m.width, renderMd, false)
 		m.contentDirty = false
 
-		// Start (or restart) wave animation for non-ask_user tools.
-		if msg.Name != tools.AskUserToolName {
-			asyncCmds = append(asyncCmds, m.tracker.StartWave())
+		if m.pendingWaveStart && m.tracker.HasPending() {
+			m.pendingWaveStart = false
+			return m, m.tracker.StartWave()
 		}
-
-		cmd := ui.ComposeFlushFirstCommands(flushCmds, asyncCmds)
-		if cmd == nil {
-			return m, nil
-		}
-		return m, cmd
+		m.pendingWaveStart = false
 
 	case askToolEndMsg:
 		m.tracker.HandleToolEnd(msg.CallID, msg.Success)
@@ -1441,7 +1474,7 @@ func (m askStreamModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	// Update cached content when dirty (must be done in Update, not View)
 	// View() uses a value receiver so mutations are discarded by Bubble Tea
-	if m.contentDirty {
+	if m.contentDirty && m.pendingBoundaryFlushes == 0 {
 		m.cachedContent = m.tracker.RenderUnflushed(m.width, renderMd, false)
 		m.contentDirty = false
 	}
@@ -1491,7 +1524,7 @@ func (m askStreamModel) updateInspectorMode(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	// Update cached content when dirty (must be done in Update, not View)
 	// View() uses a value receiver so mutations are discarded by Bubble Tea
-	if m.contentDirty {
+	if m.contentDirty && m.pendingBoundaryFlushes == 0 {
 		m.cachedContent = m.tracker.RenderUnflushed(m.width, renderMd, false)
 		m.contentDirty = false
 	}
@@ -1514,12 +1547,15 @@ func (m askStreamModel) View() string {
 
 	// Get segments from tracker (excludes flushed segments)
 	active := m.tracker.ActiveSegments()
+	if m.pendingBoundaryFlushes > 0 {
+		active = nil
+	}
 
 	// Use cached content (updated in Update() when contentDirty was true)
 	// Fall back to rendering on-demand if cache is empty but we have segments
 	// (handles tests that call View() directly without Update())
 	content := m.cachedContent
-	if content == "" {
+	if content == "" && m.pendingBoundaryFlushes == 0 {
 		content = m.tracker.RenderUnflushed(m.width, renderMd, false)
 	}
 	if content != "" {

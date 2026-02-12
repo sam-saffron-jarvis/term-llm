@@ -384,6 +384,49 @@ func TestFlushCompletedNow_DoesNotFlushPendingTools(t *testing.T) {
 	}
 }
 
+func TestMarkCurrentTextComplete_SyncsRendererFlushedOffsetBeforeBoundaryFlush(t *testing.T) {
+	tracker := NewToolTracker()
+	width := 80
+
+	tracker.AddTextSegment("Paragraph one.\n\nParagraph two.", width)
+	if len(tracker.Segments) != 1 {
+		t.Fatalf("expected single text segment, got %d", len(tracker.Segments))
+	}
+
+	seg := &tracker.Segments[0]
+	if seg.StreamRenderer == nil {
+		t.Fatal("expected stream renderer to be initialized")
+	}
+
+	// Simulate stale tracker state: segment-level flushed rendered position can lag
+	// behind renderer state after a renderer rewrite/rebase.
+	seg.FlushedRenderedPos = len(seg.StreamRenderer.RenderedAll())
+	if err := seg.StreamRenderer.Resize(width - 1); err != nil {
+		t.Fatalf("expected resize to succeed: %v", err)
+	}
+	if seg.StreamRenderer.FlushedRenderedPos() != 0 {
+		t.Fatalf("expected renderer flushed position reset after resize, got %d", seg.StreamRenderer.FlushedRenderedPos())
+	}
+
+	tracker.MarkCurrentTextComplete(func(text string) string {
+		return RenderMarkdown(text, width)
+	})
+	tracker.HandleToolStart("call-1", "set_commit_message", "(msg)")
+
+	result := tracker.FlushCompletedNow(width, RenderMarkdown)
+	if result.ToPrint == "" {
+		t.Fatal("expected completed text to flush at tool boundary")
+	}
+
+	output := StripANSI(result.ToPrint)
+	if !strings.Contains(output, "Paragraph one.") {
+		t.Fatalf("expected first paragraph to be preserved before tool boundary, got:\n%s", output)
+	}
+	if !strings.Contains(output, "Paragraph two.") {
+		t.Fatalf("expected second paragraph to be preserved before tool boundary, got:\n%s", output)
+	}
+}
+
 // TestDebugStreamingSimulation simulates streaming where text accumulates
 // in a single segment. With the streaming renderer, complete blocks are
 // rendered immediately as they arrive.

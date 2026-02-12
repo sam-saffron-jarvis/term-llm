@@ -360,36 +360,57 @@ func (t *ToolTracker) AddTextSegment(text string, width int) bool {
 	return true
 }
 
+func completeTextSegment(seg *Segment, renderFunc func(string) string) {
+	if seg == nil || seg.Type != SegmentText || seg.Complete {
+		return
+	}
+
+	// Finalize TextBuilder to Text - clone to avoid sharing memory with builder.
+	if seg.TextBuilder != nil {
+		seg.Text = strings.Clone(seg.TextBuilder.String())
+		seg.TextBuilder = nil
+	}
+
+	// Flush and close streaming renderer, capturing its output.
+	if seg.StreamRenderer != nil {
+		if err := seg.StreamRenderer.Flush(); err != nil {
+			// Flush failed, fall back to renderFunc.
+			seg.StreamRenderer = nil
+			if seg.Text != "" && renderFunc != nil {
+				seg.Rendered = renderFunc(seg.Text)
+			}
+		} else {
+			seg.Rendered = seg.StreamRenderer.RenderedAll()
+			// Keep segment-level flush tracking in sync with the renderer. The
+			// renderer may rewind this offset when markdown re-renders rewrite
+			// earlier output (for example list tightening).
+			seg.FlushedRenderedPos = seg.StreamRenderer.FlushedRenderedPos()
+			if seg.FlushedRenderedPos > len(seg.Rendered) {
+				seg.FlushedRenderedPos = len(seg.Rendered)
+			}
+			seg.StreamRenderer = nil
+		}
+	} else if seg.Text != "" && renderFunc != nil {
+		// Fallback: no streaming renderer, render full text.
+		seg.Rendered = renderFunc(seg.Text)
+	}
+
+	// Clamp in case caller-provided or stale state points past rendered content.
+	if seg.FlushedRenderedPos < 0 {
+		seg.FlushedRenderedPos = 0
+	}
+	if seg.FlushedRenderedPos > len(seg.Rendered) {
+		seg.FlushedRenderedPos = len(seg.Rendered)
+	}
+
+	seg.Complete = true
+}
+
 // CompleteTextSegments marks all incomplete text segments as complete.
 // Renders the full text with glamour on completion.
 func (t *ToolTracker) CompleteTextSegments(renderFunc func(string) string) {
 	for i := range t.Segments {
-		if t.Segments[i].Type == SegmentText && !t.Segments[i].Complete {
-			// Finalize TextBuilder to Text - clone to avoid sharing memory with builder
-			if t.Segments[i].TextBuilder != nil {
-				t.Segments[i].Text = strings.Clone(t.Segments[i].TextBuilder.String())
-				t.Segments[i].TextBuilder = nil
-			}
-
-			// Flush and close streaming renderer, capturing its output
-			if t.Segments[i].StreamRenderer != nil {
-				if err := t.Segments[i].StreamRenderer.Flush(); err != nil {
-					// Flush failed, fall back to renderFunc
-					t.Segments[i].StreamRenderer = nil
-					if t.Segments[i].Text != "" && renderFunc != nil {
-						t.Segments[i].Rendered = renderFunc(t.Segments[i].Text)
-					}
-				} else {
-					t.Segments[i].Rendered = t.Segments[i].StreamRenderer.RenderedAll()
-					t.Segments[i].StreamRenderer = nil
-				}
-			} else if t.Segments[i].Text != "" && renderFunc != nil {
-				// Fallback: no streaming renderer, render full text
-				t.Segments[i].Rendered = renderFunc(t.Segments[i].Text)
-			}
-
-			t.Segments[i].Complete = true
-		}
+		completeTextSegment(&t.Segments[i], renderFunc)
 	}
 }
 
@@ -398,32 +419,7 @@ func (t *ToolTracker) CompleteTextSegments(renderFunc func(string) string) {
 func (t *ToolTracker) MarkCurrentTextComplete(renderFunc func(string) string) {
 	if len(t.Segments) > 0 {
 		last := &t.Segments[len(t.Segments)-1]
-		if last.Type == SegmentText && !last.Complete {
-			// Finalize TextBuilder to Text - clone to avoid sharing memory with builder
-			if last.TextBuilder != nil {
-				last.Text = strings.Clone(last.TextBuilder.String())
-				last.TextBuilder = nil
-			}
-
-			// Flush and close streaming renderer, capturing its output
-			if last.StreamRenderer != nil {
-				if err := last.StreamRenderer.Flush(); err != nil {
-					// Flush failed, fall back to renderFunc
-					last.StreamRenderer = nil
-					if last.Text != "" && renderFunc != nil {
-						last.Rendered = renderFunc(last.Text)
-					}
-				} else {
-					last.Rendered = last.StreamRenderer.RenderedAll()
-					last.StreamRenderer = nil
-				}
-			} else if last.Text != "" && renderFunc != nil {
-				// Fallback: no streaming renderer, render full text
-				last.Rendered = renderFunc(last.Text)
-			}
-
-			last.Complete = true
-		}
+		completeTextSegment(last, renderFunc)
 	}
 }
 

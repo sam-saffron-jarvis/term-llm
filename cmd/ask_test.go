@@ -326,7 +326,7 @@ func TestAskToolStartFlushUsesOrderedCommandComposition(t *testing.T) {
 	}
 }
 
-func TestAskToolStartRefreshesCachedContentBeforeFlush(t *testing.T) {
+func TestAskToolStartDefersCachedContentRefreshUntilBoundaryFlushAck(t *testing.T) {
 	model := newAskStreamModel()
 	model.width = 80
 
@@ -344,12 +344,54 @@ func TestAskToolStartRefreshesCachedContentBeforeFlush(t *testing.T) {
 		t.Fatal("expected command from tool-start boundary flush")
 	}
 
+	if model.pendingBoundaryFlushes != 1 {
+		t.Fatalf("expected one pending boundary flush, got %d", model.pendingBoundaryFlushes)
+	}
+	if !model.contentDirty {
+		t.Fatal("expected contentDirty to remain true until boundary flush ack")
+	}
+
+	updated, _ = model.Update(askBoundaryFlushedMsg{CallID: "call-1", Name: "read_file"})
+	model = updated.(askStreamModel)
+
 	expected := model.tracker.RenderUnflushed(model.width, renderMd, false)
 	if model.cachedContent != expected {
-		t.Fatalf("cached content should reflect post-boundary tracker state\nexpected: %q\ngot: %q", model.cachedContent, expected)
+		t.Fatalf("cached content should refresh after boundary flush ack\nexpected: %q\ngot: %q", expected, model.cachedContent)
 	}
 	if model.contentDirty {
-		t.Fatal("expected contentDirty to be false after refreshing cached content")
+		t.Fatal("expected contentDirty to be false after boundary flush ack refresh")
+	}
+}
+
+func TestAskToolStartViewDefersPendingToolRowUntilBoundaryFlushAck(t *testing.T) {
+	model := newAskStreamModel()
+	model.width = 80
+
+	model.tracker.AddTextSegment("Before tool boundary.\n\n", model.width)
+	model.tracker.MarkCurrentTextComplete(func(text string) string {
+		return renderMd(text, model.width)
+	})
+	model.cachedContent = model.tracker.RenderUnflushed(model.width, renderMd, false)
+	model.contentDirty = false
+
+	updated, cmd := model.Update(askToolStartMsg{CallID: "call-1", Name: "read_file", Info: "(announcement.md)"})
+	model = updated.(askStreamModel)
+
+	if cmd == nil {
+		t.Fatal("expected command from tool-start boundary flush")
+	}
+
+	beforeAck := stripAnsi(model.View())
+	if strings.Contains(beforeAck, "read_file") {
+		t.Fatalf("expected pending tool row to be hidden before boundary flush ack, got: %q", beforeAck)
+	}
+
+	updated, _ = model.Update(askBoundaryFlushedMsg{CallID: "call-1", Name: "read_file"})
+	model = updated.(askStreamModel)
+
+	afterAck := stripAnsi(model.View())
+	if !strings.Contains(afterAck, "read_file") {
+		t.Fatalf("expected pending tool row after boundary flush ack, got: %q", afterAck)
 	}
 }
 
