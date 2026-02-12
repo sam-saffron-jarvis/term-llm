@@ -801,6 +801,56 @@ func TestStreamingFlush_OrderedNestedListRemainsTight(t *testing.T) {
 	}
 }
 
+func TestStreamingFlush_UserReproKeepsOrderedItemsAfterNestedList(t *testing.T) {
+	md := "1. **Step one**: Initialize the system with `init()`\n" +
+		"2. **Step two**: Configure the settings\n" +
+		"   - Set `timeout=30`\n" +
+		"   - Enable `debug=true`\n" +
+		"3. **Step three**: Run the main loop\n" +
+		"4. **Step four**: Cleanup and exit\n" +
+		"\n" +
+		"> **Summary:** This debug output contains headers, code blocks, lists, tables, blockquotes, and various inline formatting elements to thoroughly test markdown rendering performance.\n"
+
+	tracker := NewToolTracker()
+	width := 80
+	chunkSize := 24
+
+	var allPrinted strings.Builder
+	for i := 0; i < len(md); i += chunkSize {
+		end := i + chunkSize
+		if end > len(md) {
+			end = len(md)
+		}
+		chunk := md[i:end]
+		tracker.AddTextSegment(chunk, width)
+		result := tracker.FlushStreamingText(0, width, RenderMarkdown)
+		if result.ToPrint != "" {
+			allPrinted.WriteString(result.ToPrint)
+			allPrinted.WriteString("\n")
+		}
+	}
+
+	tracker.CompleteTextSegments(func(text string) string {
+		return RenderMarkdown(text, width)
+	})
+	result := tracker.FlushAllRemaining(width, 0, RenderMarkdown)
+	if result.ToPrint != "" {
+		allPrinted.WriteString(result.ToPrint)
+		allPrinted.WriteString("\n")
+	}
+
+	output := stripAnsi(allPrinted.String())
+	if !strings.Contains(output, "Step three") {
+		t.Fatalf("expected Step three to remain visible\nOutput:\n%s", output)
+	}
+	if !strings.Contains(output, "Step four") {
+		t.Fatalf("expected Step four to remain visible\nOutput:\n%s", output)
+	}
+	if !strings.Contains(output, "Summary:") {
+		t.Fatalf("expected summary blockquote to remain visible\nOutput:\n%s", output)
+	}
+}
+
 func TestStreamingFlush_HeadingThenText(t *testing.T) {
 	md := "1. **Has heading**\n" +
 		"    ### Nested heading\n" +

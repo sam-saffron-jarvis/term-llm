@@ -328,11 +328,18 @@ func (sr *StreamRenderer) applyRenderedSnapshot(snapshot []byte, allowRewrite bo
 	// Best-effort append-only delta for resettable writers: emit only new tail
 	// bytes beyond the previous rendered length, but avoid slicing mid-ANSI.
 	//
-	// If the new snapshot is shorter, append-only mode cannot safely remove stale
-	// trailing bytes that were already emitted. In that case we keep the previous
-	// authoritative snapshot to stay consistent with append-only output.
+	// If the new snapshot is shorter, append-only cannot represent the change.
+	// Fall back to rewriting the resettable output.
 	prevLen := len(sr.lastRendered)
 	if len(snapshot) <= prevLen {
+		resetter.Reset()
+		if len(snapshot) > 0 {
+			if _, err := sr.output.Write(snapshot); err != nil {
+				return err
+			}
+		}
+		sr.lastRendered = append(sr.lastRendered[:0], snapshot...)
+		sr.renderedLen = len(sr.lastRendered)
 		return nil
 	}
 	delta := ansisafe.SuffixBytes(snapshot, prevLen)

@@ -2,6 +2,7 @@ package ui
 
 import (
 	"bytes"
+	"strings"
 
 	"github.com/charmbracelet/glamour"
 	"github.com/samsaffron/term-llm/internal/ui/streaming"
@@ -52,14 +53,22 @@ func NewTextSegmentRenderer(width int) (*TextSegmentRenderer, error) {
 // Write writes text to the streaming renderer.
 // Complete markdown blocks are rendered immediately.
 func (r *TextSegmentRenderer) Write(text string) error {
+	prevOutput := r.output.String()
 	_, err := r.sr.Write([]byte(text))
 	if err != nil {
 		return err
 	}
 
-	currentLen := r.output.Len()
+	currentOutput := r.output.String()
+	currentLen := len(currentOutput)
 	if r.flushedRenderedPos > currentLen {
 		r.flushedRenderedPos = currentLen
+	}
+	if r.flushedRenderedPos > 0 && prevOutput != "" && currentOutput != "" && !strings.HasPrefix(currentOutput, prevOutput) {
+		commonPrefix := longestCommonPrefixLen(prevOutput, currentOutput)
+		if r.flushedRenderedPos > commonPrefix {
+			r.flushedRenderedPos = commonPrefix
+		}
 	}
 
 	return nil
@@ -161,4 +170,17 @@ func (r *TextSegmentRenderer) Resize(newWidth int) error {
 // Width returns the current terminal width.
 func (r *TextSegmentRenderer) Width() int {
 	return r.width
+}
+
+func longestCommonPrefixLen(a, b string) int {
+	maxLen := len(a)
+	if len(b) < maxLen {
+		maxLen = len(b)
+	}
+	for index := 0; index < maxLen; index++ {
+		if a[index] != b[index] {
+			return index
+		}
+	}
+	return maxLen
 }

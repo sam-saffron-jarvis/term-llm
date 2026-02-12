@@ -537,7 +537,7 @@ func TestApplyRenderedSnapshot_NonResettableWriterErrorsOnPrefixChange(t *testin
 	}
 }
 
-func TestApplyRenderedSnapshot_BestEffortShorterSnapshotKeepsExistingOutput(t *testing.T) {
+func TestApplyRenderedSnapshot_BestEffortShorterSnapshotRewritesOutput(t *testing.T) {
 	var buf bytes.Buffer
 	sr, err := NewRenderer(&buf, glamour.WithStandardStyle("dark"))
 	if err != nil {
@@ -556,14 +556,14 @@ func TestApplyRenderedSnapshot_BestEffortShorterSnapshotKeepsExistingOutput(t *t
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if buf.String() != "abcdef" {
-		t.Fatalf("expected append-only output unchanged, got %q", buf.String())
+	if buf.String() != "ab" {
+		t.Fatalf("expected resettable output to be rewritten, got %q", buf.String())
 	}
-	if string(sr.lastRendered) != "abcdef" {
-		t.Fatalf("expected lastRendered unchanged, got %q", string(sr.lastRendered))
+	if string(sr.lastRendered) != "ab" {
+		t.Fatalf("expected lastRendered rewritten, got %q", string(sr.lastRendered))
 	}
-	if sr.renderedLen != len("abcdef") {
-		t.Fatalf("expected renderedLen unchanged, got %d", sr.renderedLen)
+	if sr.renderedLen != len("ab") {
+		t.Fatalf("expected renderedLen rewritten, got %d", sr.renderedLen)
 	}
 }
 
