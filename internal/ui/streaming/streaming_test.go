@@ -537,7 +537,7 @@ func TestApplyRenderedSnapshot_NonResettableWriterErrorsOnPrefixChange(t *testin
 	}
 }
 
-func TestApplyRenderedSnapshot_BestEffortShorterSnapshotRewritesOutput(t *testing.T) {
+func TestApplyRenderedSnapshot_ChangedPrefixShorterSnapshotRewritesOutput(t *testing.T) {
 	var buf bytes.Buffer
 	sr, err := NewRenderer(&buf, glamour.WithStandardStyle("dark"))
 	if err != nil {
@@ -563,6 +563,40 @@ func TestApplyRenderedSnapshot_BestEffortShorterSnapshotRewritesOutput(t *testin
 		t.Fatalf("expected lastRendered rewritten, got %q", string(sr.lastRendered))
 	}
 	if sr.renderedLen != len("ab") {
+		t.Fatalf("expected renderedLen rewritten, got %d", sr.renderedLen)
+	}
+}
+
+func TestApplyRenderedSnapshot_ChangedPrefixLongerSnapshotRewritesOutput(t *testing.T) {
+	var buf bytes.Buffer
+	sr, err := NewRenderer(&buf, glamour.WithStandardStyle("dark"))
+	if err != nil {
+		t.Fatalf("failed to create renderer: %v", err)
+	}
+
+	original := []byte("prefix-value")
+	sr.lastRendered = append(sr.lastRendered[:0], original...)
+	sr.renderedLen = len(original)
+	if _, err := buf.Write(original); err != nil {
+		t.Fatalf("failed to seed output: %v", err)
+	}
+
+	// The new snapshot differs in the middle and is longer.
+	// Incremental append is not safe here because bytes before len(original)
+	// also changed.
+	next := []byte("prefix-updated-value")
+	err = sr.applyRenderedSnapshot(next, false)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if buf.String() != string(next) {
+		t.Fatalf("expected rewritten output %q, got %q", string(next), buf.String())
+	}
+	if string(sr.lastRendered) != string(next) {
+		t.Fatalf("expected lastRendered rewritten, got %q", string(sr.lastRendered))
+	}
+	if sr.renderedLen != len(next) {
 		t.Fatalf("expected renderedLen rewritten, got %d", sr.renderedLen)
 	}
 }

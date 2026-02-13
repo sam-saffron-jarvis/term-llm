@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -892,6 +893,71 @@ func TestStreamingFlush_HeadingThenText(t *testing.T) {
 	}
 	if !strings.Contains(output, "Next item") {
 		t.Fatalf("Expected following list item to be present in output.\nOutput:\n%s", output)
+	}
+}
+
+func TestStreamingFlush_SuggestionsKeepsAllNumberedItems(t *testing.T) {
+	md := "## Suggestions\n\n" +
+		"1. Major: down migration does not faithfully restore prior schema constraints\n" +
+		"  - Where: db/post_migrate/20260213000001_drop_patch_notes.rb:21-22\n" +
+		"  - Issue: patch_note_id is recreated as non-unique index, while original schema created a unique index\n" +
+		"  (db/migrate/20260210000002_create_patch_discussion_links.rb:19 from history).\n" +
+		"  - Risk: Rollback allows duplicate links per legacy note and diverges from previous behavior.\n" +
+		"  - Fix: Recreate the index with unique: true (and match original column type/constraints as closely as possible).\n\n" +
+		"2. Major: get_patch response contract changed (notes_summary.unhandled_notes removed)\n" +
+		"  - Where: app/controllers/patch_triage_controller.rb:923-926\n" +
+		"  - Issue: notes_summary now exposes counts only; previous payload included unhandled_notes.\n" +
+		"  - Risk: External clients/scripts relying on the old field will break silently.\n" +
+		"  - Fix: Either preserve unhandled_notes for one deprecation window (from discussion links), or explicitly version/document\n" +
+		"  the API contract change.\n\n" +
+		"3. Major (verify): possible ID field mismatch in automation script when marking handled posts\n" +
+		"  - Where: scan/handle_patch_notes:364-372\n" +
+		"  - Issue: Script sends post_id=#{post[\"id\"]} to mark_post_handled.\n" +
+		"  - Risk: If get_discussion returns a separate post_id field (common in this codebase), this may target wrong records.\n" +
+		"  - Fix: Prefer post[\"post_id\"] || post[\"id\"] and fail fast on unsuccessful tool responses.\n"
+
+	chunkSizes := []int{7, 11, 17, 23, 37, 53}
+	for _, chunkSize := range chunkSizes {
+		t.Run(fmt.Sprintf("chunk_%d", chunkSize), func(t *testing.T) {
+			tracker := NewToolTracker()
+			width := 96
+
+			var allPrinted strings.Builder
+			for i := 0; i < len(md); i += chunkSize {
+				end := i + chunkSize
+				if end > len(md) {
+					end = len(md)
+				}
+				chunk := md[i:end]
+				tracker.AddTextSegment(chunk, width)
+				result := tracker.FlushStreamingText(0, width, RenderMarkdown)
+				if result.ToPrint != "" {
+					allPrinted.WriteString(result.ToPrint)
+					allPrinted.WriteString("\n")
+				}
+			}
+
+			tracker.CompleteTextSegments(func(text string) string {
+				return RenderMarkdown(text, width)
+			})
+			result := tracker.FlushAllRemaining(width, 0, RenderMarkdown)
+			if result.ToPrint != "" {
+				allPrinted.WriteString(result.ToPrint)
+				allPrinted.WriteString("\n")
+			}
+
+			output := stripAnsi(allPrinted.String())
+
+			i1 := strings.Index(output, "1. Major: down migration")
+			i2 := strings.Index(output, "2. Major: get_patch response contract changed")
+			i3 := strings.Index(output, "3. Major (verify): possible ID field mismatch")
+			if i1 == -1 || i2 == -1 || i3 == -1 {
+				t.Fatalf("expected all numbered findings, got:\n%s", output)
+			}
+			if !(i1 < i2 && i2 < i3) {
+				t.Fatalf("expected numbered findings in order, indexes=%d,%d,%d\nOutput:\n%s", i1, i2, i3, output)
+			}
+		})
 	}
 }
 

@@ -12,7 +12,6 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/glamour"
-	"github.com/samsaffron/term-llm/internal/ui/ansisafe"
 )
 
 // multiNewlineRe matches 3 or more consecutive newlines.
@@ -284,11 +283,12 @@ func (sr *StreamRenderer) commitPendingLines() error {
 
 // applyRenderedSnapshot writes the next rendered snapshot using one of:
 //  1. append-only delta when snapshot extends previous output
-//  2. append-only best-effort delta (ANSI-safe) when prefix changes and output supports Reset()
+//  2. full rewrite when prefix changes and output supports Reset()
 //  3. explicit error for non-resettable outputs when prefix changes
 //
-// When allowRewrite is true, case (2) rewrites the full resettable output.
-func (sr *StreamRenderer) applyRenderedSnapshot(snapshot []byte, allowRewrite bool) error {
+// Rewriting changed-prefix snapshots guarantees deterministic output and
+// prevents dropped lines when markdown reflows modify earlier bytes.
+func (sr *StreamRenderer) applyRenderedSnapshot(snapshot []byte, _ bool) error {
 	if bytes.Equal(snapshot, sr.lastRendered) {
 		return nil
 	}
@@ -313,43 +313,17 @@ func (sr *StreamRenderer) applyRenderedSnapshot(snapshot []byte, allowRewrite bo
 		return fmt.Errorf("streaming renderer cannot update changed prefix with non-resettable writer")
 	}
 
-	if allowRewrite {
-		resetter.Reset()
-		if len(snapshot) > 0 {
-			if _, err := sr.output.Write(snapshot); err != nil {
-				return err
-			}
-		}
-		sr.lastRendered = append(sr.lastRendered[:0], snapshot...)
-		sr.renderedLen = len(sr.lastRendered)
-		return nil
-	}
-
-	// Best-effort append-only delta for resettable writers: emit only new tail
-	// bytes beyond the previous rendered length, but avoid slicing mid-ANSI.
-	//
-	// If the new snapshot is shorter, append-only cannot represent the change.
-	// Fall back to rewriting the resettable output.
-	prevLen := len(sr.lastRendered)
-	if len(snapshot) <= prevLen {
-		resetter.Reset()
-		if len(snapshot) > 0 {
-			if _, err := sr.output.Write(snapshot); err != nil {
-				return err
-			}
-		}
-		sr.lastRendered = append(sr.lastRendered[:0], snapshot...)
-		sr.renderedLen = len(sr.lastRendered)
-		return nil
-	}
-	delta := ansisafe.SuffixBytes(snapshot, prevLen)
-	if len(delta) > 0 {
-		if _, err := sr.output.Write(delta); err != nil {
+	// Changed prefix on a resettable writer: rewrite the full snapshot.
+	// Append-only deltas are not safe because bytes before the previous length
+	// may have changed.
+	sr.lastRendered = append(sr.lastRendered[:0], snapshot...)
+	sr.renderedLen = len(sr.lastRendered)
+	resetter.Reset()
+	if len(snapshot) > 0 {
+		if _, err := sr.output.Write(snapshot); err != nil {
 			return err
 		}
 	}
-	sr.lastRendered = append(sr.lastRendered[:0], snapshot...)
-	sr.renderedLen = len(sr.lastRendered)
 	return nil
 }
 
