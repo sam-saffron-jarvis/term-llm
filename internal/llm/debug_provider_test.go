@@ -3,6 +3,7 @@ package llm
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"strings"
 	"testing"
@@ -684,5 +685,151 @@ func TestDebugProviderEditCommandFallback(t *testing.T) {
 		if args["new_text"] != expectedNew {
 			t.Errorf("tool call %d: got new_text %q, want %q", i, args["new_text"], expectedNew)
 		}
+	}
+}
+
+func TestGenerateWriteContent(t *testing.T) {
+	tests := []struct {
+		n         int
+		wantLines int
+	}{
+		{1, 1},
+		{5, 5},
+		{40, 40},
+	}
+
+	for _, tt := range tests {
+		t.Run(fmt.Sprintf("n=%d", tt.n), func(t *testing.T) {
+			content := generateWriteContent(tt.n)
+			lines := strings.Split(content, "\n")
+			// Last element is empty because content ends with \n
+			nonEmpty := 0
+			for _, l := range lines {
+				if l != "" {
+					nonEmpty++
+				}
+			}
+			if nonEmpty != tt.wantLines {
+				t.Errorf("got %d non-empty lines, want %d", nonEmpty, tt.wantLines)
+			}
+			// Check format of first line
+			if !strings.Contains(content, "// line 1: auto-generated debug content") {
+				t.Error("content missing expected format")
+			}
+		})
+	}
+}
+
+func TestParseCommandWriteLines(t *testing.T) {
+	tools := []ToolSpec{{Name: "write_file"}}
+
+	tests := []struct {
+		name      string
+		prompt    string
+		wantCalls int
+		wantPath  string
+		wantLines int // 0 means don't check content lines
+	}{
+		{
+			name:      "write*10 default path",
+			prompt:    "write*10",
+			wantCalls: 1,
+			wantPath:  "debug-output.txt",
+			wantLines: 10,
+		},
+		{
+			name:      "write*40 custom path",
+			prompt:    "write*40 myfile.go",
+			wantCalls: 1,
+			wantPath:  "myfile.go",
+			wantLines: 40,
+		},
+		{
+			name:      "write*5 with multiplier",
+			prompt:    "write*5 x3",
+			wantCalls: 3,
+			wantPath:  "debug-output.txt",
+			wantLines: 5,
+		},
+		{
+			name:      "plain write still works",
+			prompt:    "write foo.txt hello world",
+			wantCalls: 1,
+			wantPath:  "foo.txt",
+			wantLines: 0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			calls := parseCommand(tt.prompt, tools)
+			if len(calls) != tt.wantCalls {
+				t.Fatalf("got %d calls, want %d", len(calls), tt.wantCalls)
+			}
+
+			for _, call := range calls {
+				if call.Name != "write_file" {
+					t.Errorf("got name %q, want write_file", call.Name)
+				}
+
+				var args map[string]string
+				if err := json.Unmarshal(call.Arguments, &args); err != nil {
+					t.Fatalf("failed to unmarshal args: %v", err)
+				}
+
+				if args["file_path"] != tt.wantPath {
+					t.Errorf("got file_path %q, want %q", args["file_path"], tt.wantPath)
+				}
+
+				if tt.wantLines > 0 {
+					lines := strings.Split(args["content"], "\n")
+					nonEmpty := 0
+					for _, l := range lines {
+						if l != "" {
+							nonEmpty++
+						}
+					}
+					if nonEmpty != tt.wantLines {
+						t.Errorf("got %d content lines, want %d", nonEmpty, tt.wantLines)
+					}
+				}
+			}
+		})
+	}
+}
+
+func TestParseSequenceDSLWithWrite(t *testing.T) {
+	tools := []ToolSpec{
+		{Name: "write_file"},
+		{Name: "read_file"},
+	}
+
+	actions := parseSequenceDSL("markdown*50,write*40,markdown*100", tools)
+	if len(actions) != 3 {
+		t.Fatalf("got %d actions, want 3", len(actions))
+	}
+
+	// First: markdown text
+	if actions[0].Type != actionText {
+		t.Errorf("action 0: got type %d, want actionText", actions[0].Type)
+	}
+	if len(actions[0].Text) != 50 {
+		t.Errorf("action 0: got text length %d, want 50", len(actions[0].Text))
+	}
+
+	// Second: write tool call
+	if actions[1].Type != actionTool {
+		t.Errorf("action 1: got type %d, want actionTool", actions[1].Type)
+	}
+	if actions[1].ToolCall.Name != "write_file" {
+		t.Errorf("action 1: got tool name %q, want write_file", actions[1].ToolCall.Name)
+	}
+
+	// Third: markdown text
+	if actions[2].Type != actionText {
+		t.Errorf("action 2: got type %d, want actionText", actions[2].Type)
+	}
+	if len(actions[2].Text) != 100 {
+		t.Errorf("action 2: got text length %d, want 100", len(actions[2].Text))
 	}
 }

@@ -435,6 +435,9 @@ type debugAction struct {
 // markdownLengthRegex matches "markdown" or "markdown*N" where N is the length.
 var markdownLengthRegex = regexp.MustCompile(`^markdown(?:\*(\d+))?$`)
 
+// writeLinesRegex matches "write*N" where N is the number of lines to generate.
+var writeLinesRegex = regexp.MustCompile(`^write\*(\d+)$`)
+
 // parseSequenceDSL parses a comma-separated DSL prompt into a sequence of actions.
 // Example: "markdown*50,read README.md,glob **/*.go,markdown*200"
 // Returns nil if the prompt doesn't look like a DSL sequence.
@@ -550,6 +553,15 @@ func parseSleepPrefix(ctx context.Context, prompt string) string {
 // multiplierRegex matches a trailing "xN" multiplier (e.g., "x3", "x5").
 var multiplierRegex = regexp.MustCompile(`\s+x(\d+)$`)
 
+// generateWriteContent generates N lines of synthetic content for write*N commands.
+func generateWriteContent(n int) string {
+	var b strings.Builder
+	for i := 1; i <= n; i++ {
+		fmt.Fprintf(&b, "// line %d: auto-generated debug content\n", i)
+	}
+	return b.String()
+}
+
 // generateSyntheticEdits reads a file and creates N random edits.
 // Returns edit pairs (old_text, new_text) that will match the file content.
 func generateSyntheticEdits(filePath string, count int) [][2]string {
@@ -622,6 +634,15 @@ func parseCommand(prompt string, tools []ToolSpec) []*ToolCall {
 	cmd := strings.ToLower(parts[0])
 	args := parts[1:]
 
+	// Check for write*N syntax (e.g., "write*40", "write*40 myfile.go")
+	writeLines := 0
+	if match := writeLinesRegex.FindStringSubmatch(cmd); match != nil {
+		if n, err := strconv.Atoi(match[1]); err == nil && n > 0 {
+			writeLines = n
+			cmd = "write"
+		}
+	}
+
 	// makeCall creates a single tool call with the given name and arguments
 	makeCall := func(name string, argsMap map[string]string) *ToolCall {
 		argsJSON, _ := json.Marshal(argsMap)
@@ -660,13 +681,28 @@ func parseCommand(prompt string, tools []ToolSpec) []*ToolCall {
 		argsMap = map[string]string{"file_path": args[0]}
 
 	case "write":
-		if !toolSet["write_file"] || len(args) < 2 {
+		if !toolSet["write_file"] {
 			return nil
 		}
-		toolName = "write_file"
-		argsMap = map[string]string{
-			"file_path": args[0],
-			"content":   strings.Join(args[1:], " "),
+		if writeLines > 0 {
+			filePath := "debug-output.txt"
+			if len(args) > 0 {
+				filePath = args[0]
+			}
+			toolName = "write_file"
+			argsMap = map[string]string{
+				"file_path": filePath,
+				"content":   generateWriteContent(writeLines),
+			}
+		} else {
+			if len(args) < 2 {
+				return nil
+			}
+			toolName = "write_file"
+			argsMap = map[string]string{
+				"file_path": args[0],
+				"content":   strings.Join(args[1:], " "),
+			}
 		}
 
 	case "grep":
