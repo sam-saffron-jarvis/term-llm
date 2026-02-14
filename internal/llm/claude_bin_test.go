@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestClaudeBinProvider_ImplementsToolExecutorSetter(t *testing.T) {
@@ -111,6 +112,132 @@ func TestSafeSendEvent_Success(t *testing.T) {
 	received := <-ch
 	if received.Text != "test" {
 		t.Fatalf("expected text 'test', got %q", received.Text)
+	}
+}
+
+func TestDispatchClaudeEvents_PrioritizesTextOverToolRequest(t *testing.T) {
+	provider := NewClaudeBinProvider("sonnet")
+	events := make(chan Event, 8)
+	lines := make(chan string, 4)
+	toolReqs := make(chan claudeToolRequest, 2)
+	cmdDone := make(chan error, 1)
+
+	lines <- `{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"text-before-tool"}}}`
+	req := claudeToolRequest{
+		ctx:      context.Background(),
+		callID:   "call-1",
+		name:     "read_file",
+		args:     json.RawMessage(`{"path":"README.md"}`),
+		response: make(chan ToolExecutionResponse, 1),
+		ack:      make(chan error, 1),
+	}
+	toolReqs <- req
+	close(lines)
+	cmdDone <- nil
+
+	_, err := provider.dispatchClaudeEvents(context.Background(), lines, toolReqs, cmdDone, false, events)
+	if err != nil {
+		t.Fatalf("dispatch failed: %v", err)
+	}
+
+	if ackErr := <-req.ack; ackErr != nil {
+		t.Fatalf("expected tool request ack to succeed, got %v", ackErr)
+	}
+
+	first := <-events
+	if first.Type != EventTextDelta || first.Text != "text-before-tool" {
+		t.Fatalf("expected first event to be text delta, got %+v", first)
+	}
+
+	second := <-events
+	if second.Type != EventToolCall || second.ToolName != "read_file" {
+		t.Fatalf("expected second event to be tool call, got %+v", second)
+	}
+}
+
+func TestDispatchClaudeEvents_PrioritizesSlightlyDelayedTextOverToolRequest(t *testing.T) {
+	provider := NewClaudeBinProvider("sonnet")
+	events := make(chan Event, 8)
+	lines := make(chan string, 4)
+	toolReqs := make(chan claudeToolRequest, 2)
+	cmdDone := make(chan error, 1)
+
+	req := claudeToolRequest{
+		ctx:      context.Background(),
+		callID:   "call-2",
+		name:     "set_commit_message",
+		args:     json.RawMessage(`{"message":"m"}`),
+		response: make(chan ToolExecutionResponse, 1),
+		ack:      make(chan error, 1),
+	}
+	toolReqs <- req
+
+	go func() {
+		time.Sleep(2 * time.Millisecond)
+		lines <- `{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"tail-text"}}}`
+		close(lines)
+		cmdDone <- nil
+	}()
+
+	_, err := provider.dispatchClaudeEvents(context.Background(), lines, toolReqs, cmdDone, false, events)
+	if err != nil {
+		t.Fatalf("dispatch failed: %v", err)
+	}
+
+	if ackErr := <-req.ack; ackErr != nil {
+		t.Fatalf("expected tool request ack to succeed, got %v", ackErr)
+	}
+
+	first := <-events
+	if first.Type != EventTextDelta || first.Text != "tail-text" {
+		t.Fatalf("expected first event to be delayed text delta, got %+v", first)
+	}
+
+	second := <-events
+	if second.Type != EventToolCall || second.ToolName != "set_commit_message" {
+		t.Fatalf("expected second event to be tool call, got %+v", second)
+	}
+}
+
+func TestHandleClaudeToolRequest_ClosedStreamReturnsError(t *testing.T) {
+	provider := NewClaudeBinProvider("sonnet")
+	events := make(chan Event)
+	close(events)
+
+	req := claudeToolRequest{
+		ctx:      context.Background(),
+		callID:   "call-1",
+		name:     "read_file",
+		args:     json.RawMessage(`{"path":"README.md"}`),
+		response: make(chan ToolExecutionResponse, 1),
+		ack:      make(chan error, 1),
+	}
+
+	provider.handleClaudeToolRequest(req, events)
+	if err := <-req.ack; err == nil {
+		t.Fatal("expected closed stream error")
+	}
+}
+
+func TestHandleClaudeLine_ContextCancelledDoesNotBlock(t *testing.T) {
+	provider := NewClaudeBinProvider("sonnet")
+	events := make(chan Event) // unbuffered/no receiver to simulate blocked sink
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	var usage *Usage
+	err := provider.handleClaudeLine(
+		cancelled,
+		`{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"x"}}}`,
+		false,
+		events,
+		&usage,
+	)
+	if err == nil {
+		t.Fatal("expected cancellation error")
+	}
+	if !strings.Contains(err.Error(), "canceled") {
+		t.Fatalf("expected context cancellation error, got %v", err)
 	}
 }
 

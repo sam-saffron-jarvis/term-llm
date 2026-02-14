@@ -8,9 +8,11 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/samsaffron/term-llm/internal/mcphttp"
 )
@@ -40,10 +42,51 @@ type ClaudeBinProvider struct {
 	mcpConfigPath string
 
 	// currentEvents holds the events channel for the current turn.
-	// This is updated at the start of each turn so the MCP executor
-	// can send events to the correct channel (not a stale closed one).
+	// currentBridge is updated at the start of each turn so the MCP executor
+	// can route tool execution requests to the correct active stream.
+	currentBridge *claudeTurnBridge
+	// currentEvents is kept for fallback/direct execution paths.
 	currentEvents chan<- Event
 	eventsMu      sync.Mutex
+}
+
+type claudeToolRequest struct {
+	ctx    context.Context
+	callID string
+	name   string
+	args   json.RawMessage
+	// response is completed by engine tool execution once EventToolCall is handled.
+	response chan<- ToolExecutionResponse
+	// ack is completed by the turn dispatcher after the request is either forwarded
+	// to the stream events channel or rejected (stream closed/cancelled).
+	ack chan error
+}
+
+type claudeTurnBridge struct {
+	// toolReqCh routes wrapped MCP tool requests through the active turn dispatcher,
+	// ensuring deterministic ordering relative to streamed stdout lines.
+	toolReqCh chan claudeToolRequest
+	// done closes when the active runClaudeCommand turn exits.
+	done chan struct{}
+}
+
+const (
+	claudeToolLineDrainGraceDefault = 75 * time.Millisecond
+	claudeToolLineDrainGraceEnv     = "TERM_LLM_CLAUDE_TOOL_LINE_GRACE_MS"
+)
+
+var claudeToolLineDrainGrace = loadClaudeToolLineDrainGrace()
+
+func loadClaudeToolLineDrainGrace() time.Duration {
+	v := strings.TrimSpace(os.Getenv(claudeToolLineDrainGraceEnv))
+	if v == "" {
+		return claudeToolLineDrainGraceDefault
+	}
+	ms, err := strconv.Atoi(v)
+	if err != nil || ms < 0 {
+		return claudeToolLineDrainGraceDefault
+	}
+	return time.Duration(ms) * time.Millisecond
 }
 
 // parseClaudeEffort extracts effort suffix from opus model names only.
@@ -232,6 +275,24 @@ func (p *ClaudeBinProvider) runClaudeCommand(
 		return fmt.Errorf("failed to start claude: %w", err)
 	}
 
+	bridge := &claudeTurnBridge{
+		toolReqCh: make(chan claudeToolRequest, 64),
+		done:      make(chan struct{}),
+	}
+	p.eventsMu.Lock()
+	p.currentBridge = bridge
+	p.currentEvents = events
+	p.eventsMu.Unlock()
+	defer func() {
+		p.eventsMu.Lock()
+		if p.currentBridge == bridge {
+			p.currentBridge = nil
+			p.currentEvents = nil
+		}
+		p.eventsMu.Unlock()
+		close(bridge.done)
+	}()
+
 	// Log stderr in background (claude CLI outputs progress/errors here)
 	go func() {
 		stderrScanner := bufio.NewScanner(stderr)
@@ -249,85 +310,259 @@ func (p *ClaudeBinProvider) runClaudeCommand(
 		stdin.Write([]byte(userPrompt))
 	}()
 
-	scanner := bufio.NewScanner(stdout)
-	// Increase buffer size for large JSON messages
-	scanner.Buffer(make([]byte, 1024*1024), 10*1024*1024)
-
-	var lastUsage *Usage
-
-	for scanner.Scan() {
-		line := scanner.Text()
-		if line == "" {
-			continue
-		}
-
-		// Parse the message type first
-		var baseMsg struct {
-			Type string `json:"type"`
-		}
-		if err := json.Unmarshal([]byte(line), &baseMsg); err != nil {
-			if debug {
-				fmt.Fprintf(os.Stderr, "Failed to parse JSON: %s\n", line[:min(100, len(line))])
-			}
-			continue
-		}
-
-		switch baseMsg.Type {
-		case "system":
-			// Extract session ID for potential resume
-			var sysMsg claudeSystemMessage
-			if err := json.Unmarshal([]byte(line), &sysMsg); err == nil {
-				p.sessionID = sysMsg.SessionID
-				if debug {
-					fmt.Fprintf(os.Stderr, "Session: %s, Model: %s, Tools: %v\n",
-						sysMsg.SessionID, sysMsg.Model, sysMsg.Tools)
-				}
-			}
-
-		case "stream_event":
-			// Handle streaming text deltas
-			var streamEvent claudeStreamEvent
-			if err := json.Unmarshal([]byte(line), &streamEvent); err != nil {
-				continue
-			}
-			if streamEvent.Event.Type == "content_block_delta" &&
-				streamEvent.Event.Delta.Type == "text_delta" &&
-				streamEvent.Event.Delta.Text != "" {
-				events <- Event{Type: EventTextDelta, Text: streamEvent.Event.Delta.Text}
-			}
-
-		case "assistant":
-			// Tool execution is handled via MCP HTTP path (wrappedExecutor).
-			// The "assistant" message is output BEFORE claude calls MCP,
-			// so we can't use it for tracking. Just ignore it - MCP handles everything.
-
-		case "result":
-			var resultMsg claudeResultMessage
-			if err := json.Unmarshal([]byte(line), &resultMsg); err == nil {
-				// Check for API errors (rate limits, auth issues, etc.)
-				if resultMsg.IsError && resultMsg.Result != "" {
-					return fmt.Errorf("%s", resultMsg.Result)
-				}
-				lastUsage = &Usage{
-					InputTokens:  resultMsg.Usage.InputTokens + resultMsg.Usage.CacheReadInputTokens,
-					OutputTokens: resultMsg.Usage.OutputTokens,
+	lineCh := make(chan string, 256)
+	scanErrCh := make(chan error, 1)
+	go func() {
+		scanner := bufio.NewScanner(stdout)
+		// Increase buffer size for large JSON messages
+		scanner.Buffer(make([]byte, 1024*1024), 10*1024*1024)
+		for scanner.Scan() {
+			line := scanner.Text()
+			if line != "" {
+				select {
+				case lineCh <- line:
+				case <-bridge.done:
+					close(lineCh)
+					scanErrCh <- nil
+					return
+				case <-ctx.Done():
+					close(lineCh)
+					scanErrCh <- ctx.Err()
+					return
 				}
 			}
 		}
+		close(lineCh)
+		scanErrCh <- scanner.Err()
+	}()
+
+	cmdDoneCh := make(chan error, 1)
+	go func() {
+		cmdDoneCh <- cmd.Wait()
+	}()
+
+	lastUsage, err := p.dispatchClaudeEvents(ctx, lineCh, bridge.toolReqCh, cmdDoneCh, debug, events)
+	if err != nil {
+		return err
 	}
 
-	if err := scanner.Err(); err != nil {
-		return fmt.Errorf("error reading claude output: %w", err)
-	}
-
-	if err := cmd.Wait(); err != nil {
-		return fmt.Errorf("claude command failed: %w", err)
+	if scanErr := <-scanErrCh; scanErr != nil {
+		return fmt.Errorf("error reading claude output: %w", scanErr)
 	}
 
 	if lastUsage != nil {
 		events <- Event{Type: EventUsage, Use: lastUsage}
 	}
 	return nil
+}
+
+func (p *ClaudeBinProvider) dispatchClaudeEvents(
+	ctx context.Context,
+	lineCh <-chan string,
+	toolReqCh <-chan claudeToolRequest,
+	cmdDoneCh <-chan error,
+	debug bool,
+	events chan<- Event,
+) (*Usage, error) {
+	var (
+		lastUsage *Usage
+		cmdErr    error
+		cmdDone   bool
+		linesOpen = true
+	)
+
+	for linesOpen || !cmdDone {
+		// Process all ready stdout lines first to preserve text/tool ordering.
+		hadLine := false
+		for linesOpen {
+			select {
+			case line, ok := <-lineCh:
+				if !ok {
+					linesOpen = false
+					break
+				}
+				hadLine = true
+				if err := p.handleClaudeLine(ctx, line, debug, events, &lastUsage); err != nil {
+					return nil, err
+				}
+			default:
+				goto drainDone
+			}
+		}
+	drainDone:
+		if hadLine {
+			continue
+		}
+
+		select {
+		case line, ok := <-lineCh:
+			if !ok {
+				linesOpen = false
+				continue
+			}
+			if err := p.handleClaudeLine(ctx, line, debug, events, &lastUsage); err != nil {
+				return nil, err
+			}
+		case req := <-toolReqCh:
+			if err := p.drainClaudeLinesWithGrace(ctx, lineCh, debug, events, &lastUsage); err != nil {
+				return nil, err
+			}
+			p.handleClaudeToolRequest(req, events)
+		case err := <-cmdDoneCh:
+			cmdDone = true
+			cmdErr = err
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+
+	// Drain any queued tool requests that arrived before stream shutdown.
+	for {
+		select {
+		case req := <-toolReqCh:
+			p.handleClaudeToolRequest(req, events)
+		default:
+			goto drained
+		}
+	}
+drained:
+
+	if cmdErr != nil {
+		return nil, fmt.Errorf("claude command failed: %w", cmdErr)
+	}
+	return lastUsage, nil
+}
+
+func (p *ClaudeBinProvider) handleClaudeLine(ctx context.Context, line string, debug bool, events chan<- Event, lastUsage **Usage) error {
+	var baseMsg struct {
+		Type string `json:"type"`
+	}
+	if err := json.Unmarshal([]byte(line), &baseMsg); err != nil {
+		if debug {
+			fmt.Fprintf(os.Stderr, "Failed to parse JSON: %s\n", line[:min(100, len(line))])
+		}
+		return nil
+	}
+
+	switch baseMsg.Type {
+	case "system":
+		// Extract session ID for potential resume
+		var sysMsg claudeSystemMessage
+		if err := json.Unmarshal([]byte(line), &sysMsg); err == nil {
+			p.sessionID = sysMsg.SessionID
+			if debug {
+				fmt.Fprintf(os.Stderr, "Session: %s, Model: %s, Tools: %v\n",
+					sysMsg.SessionID, sysMsg.Model, sysMsg.Tools)
+			}
+		}
+
+	case "stream_event":
+		// Handle streaming text deltas
+		var streamEvent claudeStreamEvent
+		if err := json.Unmarshal([]byte(line), &streamEvent); err != nil {
+			return nil
+		}
+		if streamEvent.Event.Type == "content_block_delta" &&
+			streamEvent.Event.Delta.Type == "text_delta" &&
+			streamEvent.Event.Delta.Text != "" {
+			if !safeSendEvent(ctx, events, Event{Type: EventTextDelta, Text: streamEvent.Event.Delta.Text}) {
+				if ctx.Err() != nil {
+					return ctx.Err()
+				}
+				return fmt.Errorf("failed to emit claude text delta: stream closed")
+			}
+		}
+
+	case "assistant":
+		// Tool execution is handled via MCP HTTP path (wrappedExecutor).
+		// The "assistant" message is output BEFORE claude calls MCP,
+		// so we can't use it for tracking. Just ignore it - MCP handles everything.
+
+	case "result":
+		var resultMsg claudeResultMessage
+		if err := json.Unmarshal([]byte(line), &resultMsg); err == nil {
+			// Check for API errors (rate limits, auth issues, etc.)
+			if resultMsg.IsError && resultMsg.Result != "" {
+				return fmt.Errorf("claude API error: %s", resultMsg.Result)
+			}
+			*lastUsage = &Usage{
+				InputTokens:  resultMsg.Usage.InputTokens + resultMsg.Usage.CacheReadInputTokens,
+				OutputTokens: resultMsg.Usage.OutputTokens,
+			}
+		}
+	}
+
+	return nil
+}
+
+func (p *ClaudeBinProvider) handleClaudeToolRequest(req claudeToolRequest, events chan<- Event) {
+	event := Event{
+		Type:         EventToolCall,
+		ToolCallID:   req.callID,
+		ToolName:     req.name,
+		Tool:         &ToolCall{ID: req.callID, Name: req.name, Arguments: req.args},
+		ToolResponse: req.response,
+	}
+
+	if !safeSendEvent(req.ctx, events, event) {
+		if req.ctx.Err() != nil {
+			req.ack <- req.ctx.Err()
+			return
+		}
+		req.ack <- fmt.Errorf("tool execution rejected: stream closed during tool call %q", req.name)
+		return
+	}
+	req.ack <- nil
+}
+
+func (p *ClaudeBinProvider) drainClaudeLinesWithGrace(
+	ctx context.Context,
+	lineCh <-chan string,
+	debug bool,
+	events chan<- Event,
+	lastUsage **Usage,
+) error {
+	// First, drain any already-buffered lines.
+	for {
+		select {
+		case line, ok := <-lineCh:
+			if !ok {
+				return nil
+			}
+			if err := p.handleClaudeLine(ctx, line, debug, events, lastUsage); err != nil {
+				return err
+			}
+		default:
+			goto wait
+		}
+	}
+
+wait:
+	timer := time.NewTimer(claudeToolLineDrainGrace)
+	defer timer.Stop()
+
+	for {
+		select {
+		case line, ok := <-lineCh:
+			if !ok {
+				return nil
+			}
+			if err := p.handleClaudeLine(ctx, line, debug, events, lastUsage); err != nil {
+				return err
+			}
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
+			}
+			timer.Reset(claudeToolLineDrainGrace)
+		case <-timer.C:
+			return nil
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
 }
 
 // buildArgs constructs the command line arguments for the claude binary.
@@ -389,12 +624,7 @@ func (p *ClaudeBinProvider) buildArgs(ctx context.Context, req Request, events c
 // getOrCreateMCPConfig returns the MCP config path, reusing existing server if available.
 // This ensures the MCP server URL/token stays constant across turns in a multi-turn conversation.
 func (p *ClaudeBinProvider) getOrCreateMCPConfig(ctx context.Context, tools []ToolSpec, events chan<- Event, debug bool) string {
-	// Always update the current events channel for this turn.
-	// This is critical: the MCP executor uses p.currentEvents, so we must
-	// update it before any tool execution happens this turn.
-	p.eventsMu.Lock()
-	p.currentEvents = events
-	p.eventsMu.Unlock()
+	_ = events
 
 	// If we already have a running MCP server, reuse its config
 	if p.mcpServer != nil && p.mcpConfigPath != "" {
@@ -448,18 +678,21 @@ func (p *ClaudeBinProvider) createHTTPMCPConfig(ctx context.Context, tools []Too
 
 	// Create a wrapper executor that routes tool calls through the engine
 	// by emitting EventToolCall with a response channel and waiting for the result.
-	// NOTE: We read p.currentEvents under mutex each time to get the current turn's
-	// channel. This is critical because the MCP server persists across turns but
-	// the events channel changes with each turn.
+	// NOTE: We read p.currentBridge/currentEvents under mutex each time to get the
+	// current turn's stream sink. This is critical because the MCP server persists
+	// across turns but the stream channels change every turn.
 	wrappedExecutor := func(ctx context.Context, name string, args json.RawMessage) (string, error) {
-		// Get the current events channel for this turn
+		// Get the current bridge/events for this turn.
 		p.eventsMu.Lock()
+		bridge := p.currentBridge
 		events := p.currentEvents
 		p.eventsMu.Unlock()
 
-		// If no events channel, fall back to direct execution
-		if events == nil {
-			return p.toolExecutor(ctx, name, args)
+		// If no active stream bridge/events channel, reject execution.
+		// Falling back to direct execution here would bypass stream-level sequencing
+		// and could skip expected UI/event handling semantics.
+		if bridge == nil || events == nil {
+			return "", fmt.Errorf("tool execution rejected: no active stream bridge for tool call %q", name)
 		}
 
 		// Generate a unique call ID for this execution
@@ -468,26 +701,33 @@ func (p *ClaudeBinProvider) createHTTPMCPConfig(ctx context.Context, tools []Too
 		// Create response channel for synchronous execution
 		responseChan := make(chan ToolExecutionResponse, 1)
 
-		// Emit EventToolCall with response channel - engine will execute and respond
-		event := Event{
-			Type:         EventToolCall,
-			ToolCallID:   callID,
-			ToolName:     name,
-			Tool:         &ToolCall{ID: callID, Name: name, Arguments: args},
-			ToolResponse: responseChan,
+		req := claudeToolRequest{
+			ctx:      ctx,
+			callID:   callID,
+			name:     name,
+			args:     args,
+			response: responseChan,
+			ack:      make(chan error, 1),
 		}
 
-		// Try to send the event. The channel may be closed if the stream ended
-		// between when we grabbed it and now (race condition with stream cleanup).
-		// Use safeSendEvent to handle this gracefully.
-		if !safeSendEvent(ctx, events, event) {
-			// Channel closed or context cancelled - do NOT fall back to direct execution
-			// as that would bypass engine-level permission checks (allow-list + UI approval).
-			// Return an error instead to signal the tool call cannot be processed safely.
-			if ctx.Err() != nil {
-				return "", ctx.Err()
-			}
+		// Route tool request through the turn bridge so ordering is handled centrally.
+		select {
+		case bridge.toolReqCh <- req:
+		case <-bridge.done:
 			return "", fmt.Errorf("tool execution rejected: stream closed during tool call %q", name)
+		case <-ctx.Done():
+			return "", ctx.Err()
+		}
+
+		select {
+		case err := <-req.ack:
+			if err != nil {
+				return "", err
+			}
+		case <-bridge.done:
+			return "", fmt.Errorf("tool execution rejected: stream closed during tool call %q", name)
+		case <-ctx.Done():
+			return "", ctx.Err()
 		}
 
 		// Wait for engine to execute and return result
