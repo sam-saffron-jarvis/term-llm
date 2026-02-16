@@ -120,7 +120,6 @@ func TestDispatchClaudeEvents_PrioritizesTextOverToolRequest(t *testing.T) {
 	events := make(chan Event, 8)
 	lines := make(chan string, 4)
 	toolReqs := make(chan claudeToolRequest, 2)
-	cmdDone := make(chan error, 1)
 
 	lines <- `{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"text-before-tool"}}}`
 	req := claudeToolRequest{
@@ -133,9 +132,8 @@ func TestDispatchClaudeEvents_PrioritizesTextOverToolRequest(t *testing.T) {
 	}
 	toolReqs <- req
 	close(lines)
-	cmdDone <- nil
 
-	_, err := provider.dispatchClaudeEvents(context.Background(), lines, toolReqs, cmdDone, false, events)
+	_, err := provider.dispatchClaudeEvents(context.Background(), lines, toolReqs, false, events)
 	if err != nil {
 		t.Fatalf("dispatch failed: %v", err)
 	}
@@ -160,7 +158,6 @@ func TestDispatchClaudeEvents_PrioritizesSlightlyDelayedTextOverToolRequest(t *t
 	events := make(chan Event, 8)
 	lines := make(chan string, 4)
 	toolReqs := make(chan claudeToolRequest, 2)
-	cmdDone := make(chan error, 1)
 
 	req := claudeToolRequest{
 		ctx:      context.Background(),
@@ -176,10 +173,9 @@ func TestDispatchClaudeEvents_PrioritizesSlightlyDelayedTextOverToolRequest(t *t
 		time.Sleep(2 * time.Millisecond)
 		lines <- `{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"tail-text"}}}`
 		close(lines)
-		cmdDone <- nil
 	}()
 
-	_, err := provider.dispatchClaudeEvents(context.Background(), lines, toolReqs, cmdDone, false, events)
+	_, err := provider.dispatchClaudeEvents(context.Background(), lines, toolReqs, false, events)
 	if err != nil {
 		t.Fatalf("dispatch failed: %v", err)
 	}

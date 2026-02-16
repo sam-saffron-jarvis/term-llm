@@ -345,18 +345,28 @@ func (p *ClaudeBinProvider) runClaudeCommand(
 		scanErrCh <- scanner.Err()
 	}()
 
-	cmdDoneCh := make(chan error, 1)
-	go func() {
-		cmdDoneCh <- cmd.Wait()
-	}()
+	lastUsage, err := p.dispatchClaudeEvents(ctx, lineCh, bridge.toolReqCh, debug, events)
+	if err != nil {
+		// Kill the process if dispatch failed (e.g., context cancelled)
+		// to avoid orphan processes.
+		cmd.Process.Kill()
+	}
 
-	lastUsage, err := p.dispatchClaudeEvents(ctx, lineCh, bridge.toolReqCh, cmdDoneCh, debug, events)
+	// Wait for scanner to finish BEFORE cmd.Wait().
+	// Go docs: "It is incorrect to call Wait before all reads from the pipe have completed."
+	scanErr := <-scanErrCh
+
+	// Now safe to call Wait() — all pipe reads are done.
+	cmdErr := cmd.Wait()
+
 	if err != nil {
 		return err
 	}
-
-	if scanErr := <-scanErrCh; scanErr != nil {
+	if scanErr != nil {
 		return fmt.Errorf("error reading claude output: %w", scanErr)
+	}
+	if cmdErr != nil {
+		return fmt.Errorf("claude command failed: %w", cmdErr)
 	}
 
 	if lastUsage != nil {
@@ -369,18 +379,15 @@ func (p *ClaudeBinProvider) dispatchClaudeEvents(
 	ctx context.Context,
 	lineCh <-chan string,
 	toolReqCh <-chan claudeToolRequest,
-	cmdDoneCh <-chan error,
 	debug bool,
 	events chan<- Event,
 ) (*Usage, error) {
 	var (
 		lastUsage *Usage
-		cmdErr    error
-		cmdDone   bool
 		linesOpen = true
 	)
 
-	for linesOpen || !cmdDone {
+	for linesOpen {
 		// Process all ready stdout lines first to preserve text/tool ordering.
 		hadLine := false
 		for linesOpen {
@@ -417,9 +424,6 @@ func (p *ClaudeBinProvider) dispatchClaudeEvents(
 				return nil, err
 			}
 			p.handleClaudeToolRequest(req, events)
-		case err := <-cmdDoneCh:
-			cmdDone = true
-			cmdErr = err
 		case <-ctx.Done():
 			return nil, ctx.Err()
 		}
@@ -436,9 +440,6 @@ func (p *ClaudeBinProvider) dispatchClaudeEvents(
 	}
 drained:
 
-	if cmdErr != nil {
-		return nil, fmt.Errorf("claude command failed: %w", cmdErr)
-	}
 	return lastUsage, nil
 }
 
