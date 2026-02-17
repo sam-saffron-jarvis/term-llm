@@ -160,3 +160,17 @@ func TestStreamEventDiffFlushUsesOrderedCommandComposition(t *testing.T) {
 		t.Fatalf("expected ordered (sequence) command composition, got concurrent batch")
 	}
 }
+
+func TestRenderStatusLine_ShowsCompactModelLabel(t *testing.T) {
+	m := newTestChatModel(false)
+	m.providerName = "ChatGPT (gpt-5.3-codex, effort=xhigh)"
+	m.modelName = "gpt-5.3-codex-xhigh"
+
+	line := ui.StripANSI(m.renderStatusLine())
+	if !strings.Contains(line, "gpt-5.3-codex-xhigh") {
+		t.Fatalf("expected status line to include model name, got %q", line)
+	}
+	if strings.Contains(line, "ChatGPT (") {
+		t.Fatalf("expected status line to omit verbose provider metadata, got %q", line)
+	}
+}

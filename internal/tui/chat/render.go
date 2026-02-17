@@ -438,12 +438,12 @@ func (m *Model) renderStatusLine() string {
 	// Build fixed parts first (these are always shown as-is)
 	var fixedParts []string
 
-	// Provider:model format (e.g. "chatgpt:gpt-5.2-codex")
+	// Model-first label to reduce footer noise.
 	model := shortenModelName(m.modelName)
-	if model == "" {
+	if model != "" {
+		fixedParts = append(fixedParts, model)
+	} else if m.providerName != "" {
 		fixedParts = append(fixedParts, m.providerName)
-	} else {
-		fixedParts = append(fixedParts, fmt.Sprintf("%s:%s", m.providerName, model))
 	}
 
 	// Web search status
