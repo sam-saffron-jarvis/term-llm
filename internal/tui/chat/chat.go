@@ -188,7 +188,10 @@ type (
 	streamRenderTickMsg struct{}
 )
 
-const chatRenderThrottleEnv = "TERM_LLM_CHAT_RENDER_THROTTLE_MS"
+const (
+	chatRenderThrottleEnv  = "TERM_LLM_CHAT_RENDER_THROTTLE_MS"
+	chatSpinnerIntervalEnv = "TERM_LLM_CHAT_SPINNER_MS"
+)
 
 // FlushBeforeAskUserMsg signals the TUI to flush content to scrollback
 // before releasing the terminal for ask_user prompts.
@@ -241,6 +244,7 @@ func New(cfg *config.Config, provider llm.Provider, engine *llm.Engine, modelNam
 	// Create spinner
 	s := spinner.New()
 	s.Spinner = spinner.Dot
+	s.Spinner.FPS = chatSpinnerFPSFromEnv()
 
 	styles := ui.DefaultStyles()
 	s.Style = styles.Spinner
@@ -425,6 +429,19 @@ func chatRenderMinIntervalFromEnv() time.Duration {
 	return time.Duration(millis) * time.Millisecond
 }
 
+func chatSpinnerFPSFromEnv() time.Duration {
+	const defaultFPS = 250 * time.Millisecond
+	raw := strings.TrimSpace(os.Getenv(chatSpinnerIntervalEnv))
+	if raw == "" {
+		return defaultFPS
+	}
+	millis, err := strconv.Atoi(raw)
+	if err != nil || millis <= 0 {
+		return defaultFPS
+	}
+	return time.Duration(millis) * time.Millisecond
+}
+
 // Update handles messages
 func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmds []tea.Cmd
@@ -522,7 +539,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case spinner.TickMsg:
-		if m.streaming {
+		if m.streaming && !m.pausedForExternalUI {
 			var cmd tea.Cmd
 			m.spinner, cmd = m.spinner.Update(msg)
 			cmds = append(cmds, cmd)

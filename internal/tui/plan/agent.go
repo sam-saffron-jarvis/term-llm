@@ -230,7 +230,9 @@ Every plan section should address:
 	})
 
 	return llm.Request{
-		Model:               m.modelName,
+		// Keep model selection centralized in provider initialization (same as ask/chat).
+		// This ensures provider-specific model modifiers like Anthropic "-thinking"
+		// are handled consistently.
 		Messages:            messages,
 		MaxTurns:            m.maxTurns,
 		Tools:               m.engine.Tools().AllSpecs(),

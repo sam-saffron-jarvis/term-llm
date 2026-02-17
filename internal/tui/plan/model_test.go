@@ -10,6 +10,7 @@ import (
 	"github.com/charmbracelet/bubbles/textarea"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/samsaffron/term-llm/internal/config"
+	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/ui"
 )
 
@@ -31,6 +32,23 @@ func newTestModel() *Model {
 		styles:  ui.DefaultStyles(),
 		tracker: ui.NewToolTracker(),
 		config:  &config.Config{},
+	}
+}
+
+func TestBuildPlannerRequest_DoesNotOverrideModel(t *testing.T) {
+	engine := llm.NewEngine(llm.NewMockProvider("mock"), nil)
+
+	m := &Model{
+		doc:       NewPlanDocumentFromText("# Plan", "user"),
+		engine:    engine,
+		modelName: "claude-sonnet-4-6-thinking",
+		maxTurns:  5,
+		search:    true,
+	}
+
+	req := m.buildPlannerRequest("expand this")
+	if req.Model != "" {
+		t.Fatalf("expected planner request to rely on provider model resolution, got model override %q", req.Model)
 	}
 }
 
