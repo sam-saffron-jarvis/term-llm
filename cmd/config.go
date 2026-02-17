@@ -117,6 +117,9 @@ func configShow(cmd *cobra.Command, args []string) error {
 	// Get defaults
 	defaults := config.GetDefaults()
 
+	// Load config to get resolved provider configs for credential source display
+	cfg, _ := config.Load()
+
 	// Try to read raw config file and extract keys
 	rawKeys := make(map[string]bool)
 	unknownKeys := make(map[string]bool)
@@ -137,7 +140,7 @@ func configShow(cmd *cobra.Command, args []string) error {
 	fmt.Println()
 
 	// Print annotated config
-	printAnnotatedConfig(defaults, rawKeys, unknownKeys, &rawRoot, readErr == nil)
+	printAnnotatedConfig(defaults, rawKeys, unknownKeys, &rawRoot, readErr == nil, cfg)
 
 	return nil
 }
@@ -182,7 +185,7 @@ func extractConfigKeys(node *yaml.Node, prefix string, rawKeys, unknownKeys map[
 }
 
 // printAnnotatedConfig outputs the effective config with annotations
-func printAnnotatedConfig(defaults map[string]any, rawKeys, unknownKeys map[string]bool, rawRoot *yaml.Node, hasFile bool) {
+func printAnnotatedConfig(defaults map[string]any, rawKeys, unknownKeys map[string]bool, rawRoot *yaml.Node, hasFile bool, cfg *config.Config) {
 	// Define the order and structure of sections to print
 	sections := []struct {
 		name   string
@@ -283,7 +286,7 @@ func printAnnotatedConfig(defaults map[string]any, rawKeys, unknownKeys map[stri
 	}
 
 	// Print providers section specially (dynamic keys)
-	printProvidersSection(defaults, rawKeys, rawValues, hasFile)
+	printProvidersSection(defaults, rawKeys, rawValues, hasFile, cfg)
 
 	// Print each section
 	for _, section := range sections {
@@ -387,7 +390,7 @@ func extractRawValues(node *yaml.Node, prefix string, values map[string]string) 
 }
 
 // printProvidersSection prints the providers section with annotations
-func printProvidersSection(defaults map[string]any, rawKeys map[string]bool, rawValues map[string]string, hasFile bool) {
+func printProvidersSection(defaults map[string]any, rawKeys map[string]bool, rawValues map[string]string, hasFile bool, cfg *config.Config) {
 	// Collect all provider names from defaults and raw config
 	providerNames := make(map[string]bool)
 
@@ -411,7 +414,7 @@ func printProvidersSection(defaults map[string]any, rawKeys map[string]bool, raw
 
 	// Print in a consistent order (defaults first, then custom)
 	for _, pName := range defaultProviders {
-		printProviderConfig(pName, defaults, rawKeys, rawValues, hasFile)
+		printProviderConfig(pName, defaults, rawKeys, rawValues, hasFile, cfg)
 	}
 
 	// Print any custom providers
@@ -424,7 +427,7 @@ func printProvidersSection(defaults map[string]any, rawKeys map[string]bool, raw
 			}
 		}
 		if !isDefault {
-			printProviderConfig(pName, defaults, rawKeys, rawValues, hasFile)
+			printProviderConfig(pName, defaults, rawKeys, rawValues, hasFile, cfg)
 		}
 	}
 
@@ -432,7 +435,7 @@ func printProvidersSection(defaults map[string]any, rawKeys map[string]bool, raw
 }
 
 // printProviderConfig prints a single provider's config
-func printProviderConfig(name string, defaults map[string]any, rawKeys map[string]bool, rawValues map[string]string, hasFile bool) {
+func printProviderConfig(name string, defaults map[string]any, rawKeys map[string]bool, rawValues map[string]string, hasFile bool, cfg *config.Config) {
 	providerKeys := []string{"type", "model", "api_key", "credentials", "base_url", "url", "app_url", "app_title", "use_native_search", "models"}
 
 	// Check if provider has any values
@@ -453,6 +456,20 @@ func printProviderConfig(name string, defaults map[string]any, rawKeys map[strin
 	for _, key := range providerKeys {
 		fullKey := "providers." + name + "." + key
 		printConfigValue(fullKey, defaults, rawKeys, rawValues, hasFile, 2)
+	}
+
+	// Show resolved credential source
+	if cfg != nil {
+		var providerCfg config.ProviderConfig
+		if pc, ok := cfg.Providers[name]; ok {
+			providerCfg = pc
+		}
+		source, found := config.DescribeCredentialSource(name, &providerCfg)
+		status := "✓"
+		if !found {
+			status = "✗"
+		}
+		fmt.Printf("    # credential: %s %s\n", status, source)
 	}
 }
 
@@ -743,7 +760,13 @@ providers:
   # Built-in providers - type is inferred from the key name
   anthropic:
     model: claude-sonnet-4-6
-    # credentials: api_key (default)
+    # Credential resolution order:
+    #   1. api_key in config (or ${ANTHROPIC_API_KEY} expansion)
+    #   2. ANTHROPIC_API_KEY environment variable
+    #   3. CLAUDE_CODE_OAUTH_TOKEN environment variable (OAuth)
+    #   4. Saved OAuth token (~/.config/term-llm/anthropic_oauth.json)
+    #   5. Interactive prompt (runs 'claude setup-token')
+    # Run 'term-llm config' to see which credential is active
 
   openai:
     model: gpt-5.2

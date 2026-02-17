@@ -167,8 +167,7 @@ func BuildResponsesInput(messages []Message) []ResponsesInputItem {
 				if callID == "" {
 					continue
 				}
-				// Check for embedded image data in tool result
-				mimeType, base64Data, textContent := parseToolResultImageData(part.ToolResult.Content)
+				textContent := toolResultTextContent(part.ToolResult)
 
 				// Add the function call output
 				inputItems = append(inputItems, ResponsesInputItem{
@@ -177,15 +176,29 @@ func BuildResponsesInput(messages []Message) []ResponsesInputItem {
 					Output: textContent,
 				})
 
-				// If image data was found, add a user message with the image
-				if base64Data != "" {
-					dataURL := fmt.Sprintf("data:%s;base64,%s", mimeType, base64Data)
+				var richParts []ResponsesContentPart
+				hasImage := false
+				for _, contentPart := range toolResultContentParts(part.ToolResult) {
+					switch contentPart.Type {
+					case ToolContentPartText:
+						if contentPart.Text != "" {
+							richParts = append(richParts, ResponsesContentPart{Type: "input_text", Text: contentPart.Text})
+						}
+					case ToolContentPartImageData:
+						mimeType, base64Data, ok := toolResultImageData(contentPart)
+						if !ok {
+							continue
+						}
+						hasImage = true
+						dataURL := fmt.Sprintf("data:%s;base64,%s", mimeType, base64Data)
+						richParts = append(richParts, ResponsesContentPart{Type: "input_image", ImageURL: dataURL})
+					}
+				}
+				if hasImage && len(richParts) > 0 {
 					inputItems = append(inputItems, ResponsesInputItem{
-						Type: "message",
-						Role: "user",
-						Content: []ResponsesContentPart{
-							{Type: "input_image", ImageURL: dataURL},
-						},
+						Type:    "message",
+						Role:    "user",
+						Content: richParts,
 					})
 				}
 			}

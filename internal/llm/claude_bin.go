@@ -853,8 +853,8 @@ func (p *ClaudeBinProvider) buildConversationPrompt(messages []Message) string {
 			// Format tool results
 			for _, part := range msg.Parts {
 				if part.Type == PartToolResult && part.ToolResult != nil {
-					// Process content to handle embedded images
-					content := p.processToolResultContent(part.ToolResult.Content)
+					// Process content to keep prompts compact for image tool results.
+					content := p.processToolResultContent(part.ToolResult)
 					conversationParts = append(conversationParts,
 						fmt.Sprintf("Tool result (%s): %s", part.ToolResult.Name, content))
 				}
@@ -887,28 +887,23 @@ func mapClaudeToolName(claudeName string) string {
 	return claudeName
 }
 
-// processToolResultContent handles embedded image data in tool results.
-// It strips [IMAGE_DATA:mime:base64] markers since Claude CLI can read images
-// natively from the file path that's already in the text part of the result.
-func (p *ClaudeBinProvider) processToolResultContent(content string) string {
-	const prefix = "[IMAGE_DATA:"
-	const suffix = "]"
-
-	start := strings.Index(content, prefix)
-	if start == -1 {
-		return content
+// processToolResultContent keeps tool results compact for Claude CLI prompts.
+// Structured image_data parts are intentionally omitted from the prompt text.
+func (p *ClaudeBinProvider) processToolResultContent(result *ToolResult) string {
+	if result == nil {
+		return ""
 	}
 
-	end := strings.Index(content[start:], suffix)
-	if end == -1 {
-		return content
+	textContent := toolResultTextContent(result)
+	if !toolResultHasImageData(result) {
+		return textContent
 	}
 
-	// Strip the image data marker - the file path is already in the text
-	// (e.g., "Image loaded: /path/to/file.png") and Claude CLI can read it natively
-	imageMarker := content[start : start+end+1]
-	result := strings.Replace(content, imageMarker, "[Image data stripped - Claude can read the file path above]", 1)
-	return strings.TrimSpace(result)
+	notice := "[Image data omitted from Claude CLI prompt]"
+	if strings.TrimSpace(textContent) == "" {
+		return notice
+	}
+	return strings.TrimSpace(textContent + "\n" + notice)
 }
 
 // safeSendEvent attempts to send an event to the channel, returning false if

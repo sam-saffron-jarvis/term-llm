@@ -871,3 +871,66 @@ func TestEngineToolOutputStructuredFields(t *testing.T) {
 		t.Errorf("expected 1 image in tool result, got %d", len(toolResult.Images))
 	}
 }
+
+// mockResettableProvider wraps MockProvider and tracks ResetConversation calls.
+type mockResettableProvider struct {
+	*MockProvider
+	resetCalls int
+}
+
+func (m *mockResettableProvider) ResetConversation() {
+	m.resetCalls++
+}
+
+func TestEngineResetConversation(t *testing.T) {
+	provider := NewMockProvider("test")
+	e := NewEngine(provider, nil)
+
+	// Simulate some conversation state
+	e.callbackMu.Lock()
+	e.lastTotalTokens = 500
+	e.lastMessageCount = 10
+	e.systemPrompt = "You are a helpful assistant."
+	e.contextNoticeEmitted = true
+	e.callbackMu.Unlock()
+
+	// Reset conversation
+	e.ResetConversation()
+
+	// Verify all engine state is cleared
+	e.callbackMu.RLock()
+	if e.lastTotalTokens != 0 {
+		t.Errorf("expected lastTotalTokens=0, got %d", e.lastTotalTokens)
+	}
+	if e.lastMessageCount != 0 {
+		t.Errorf("expected lastMessageCount=0, got %d", e.lastMessageCount)
+	}
+	if e.systemPrompt != "" {
+		t.Errorf("expected systemPrompt=\"\", got %q", e.systemPrompt)
+	}
+	if e.contextNoticeEmitted {
+		t.Error("expected contextNoticeEmitted=false")
+	}
+	e.callbackMu.RUnlock()
+}
+
+func TestEngineResetConversationCallsProvider(t *testing.T) {
+	inner := NewMockProvider("test")
+	provider := &mockResettableProvider{MockProvider: inner}
+	e := NewEngine(provider, nil)
+
+	e.ResetConversation()
+
+	if provider.resetCalls != 1 {
+		t.Errorf("expected provider ResetConversation called once, got %d", provider.resetCalls)
+	}
+}
+
+func TestEngineResetConversationSkipsNonResettableProvider(t *testing.T) {
+	// Regular MockProvider doesn't implement ResetConversation
+	provider := NewMockProvider("test")
+	e := NewEngine(provider, nil)
+
+	// Should not panic
+	e.ResetConversation()
+}

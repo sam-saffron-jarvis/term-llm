@@ -15,6 +15,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/mcp"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/tui/inspector"
+	"github.com/samsaffron/term-llm/internal/ui"
 )
 
 // Command represents a slash command
@@ -131,6 +132,11 @@ func AllCommands() []Command {
 			Aliases:     []string{"debug", "i"},
 			Description: "View full conversation with tool details",
 			Usage:       "/inspect",
+		},
+		{
+			Name:        "compact",
+			Description: "Compact conversation context into a summary",
+			Usage:       "/compact",
 		},
 	}
 }
@@ -314,6 +320,8 @@ func (m *Model) ExecuteCommand(input string) (tea.Model, tea.Cmd) {
 		return m.cmdSkills()
 	case "inspect":
 		return m.cmdInspect()
+	case "compact":
+		return m.cmdCompress()
 	default:
 		return m.showSystemMessage(fmt.Sprintf("Command /%s is not yet implemented.", cmd.Name))
 	}
@@ -390,9 +398,42 @@ func (m *Model) cmdClear() (tea.Model, tea.Cmd) {
 		_ = m.store.SetCurrent(ctx, m.sess.ID)
 	}
 
+	// Clear conversation messages and input
 	m.messages = nil
 	m.scrollOffset = 0
 	m.setTextareaValue("")
+	m.clearFiles()
+
+	// Reset engine state (compaction tracking, provider conversation IDs)
+	if m.engine != nil {
+		m.engine.ResetConversation()
+	}
+
+	// Reset streaming and rendering state
+	m.currentResponse.Reset()
+	m.currentTokens = 0
+	m.webSearchUsed = false
+	m.retryStatus = ""
+	if m.tracker != nil {
+		m.tracker = ui.NewToolTracker()
+		m.tracker.TextMode = m.textMode
+	}
+	if m.smoothBuffer != nil {
+		m.smoothBuffer.Reset()
+	}
+	m.smoothTickPending = false
+	m.streamRenderTickPending = false
+
+	// Reset stats for new session
+	if m.stats != nil {
+		m.stats = ui.NewSessionStats()
+	}
+
+	// Invalidate view cache so stale content doesn't bleed through
+	m.viewCache.historyValid = false
+	m.viewCache.completedStream = ""
+	m.viewCache.lastSetContentAt = time.Time{}
+	m.bumpContentVersion()
 
 	return m, tea.Println("Conversation cleared (new session started).")
 }
@@ -508,6 +549,11 @@ func (m *Model) cmdSearch() (tea.Model, tea.Cmd) {
 }
 
 func (m *Model) cmdNew() (tea.Model, tea.Cmd) {
+	// Mark the old session as complete before creating a new one
+	if m.store != nil && m.sess != nil {
+		_ = m.store.UpdateStatus(context.Background(), m.sess.ID, session.StatusComplete)
+	}
+
 	// Create new session with current settings
 	m.sess = &session.Session{
 		ID:        session.NewID(),
@@ -524,9 +570,6 @@ func (m *Model) cmdNew() (tea.Model, tea.Cmd) {
 	if cwd, err := os.Getwd(); err == nil {
 		m.sess.CWD = cwd
 	}
-	m.messages = nil
-	m.scrollOffset = 0
-	m.setTextareaValue("")
 
 	// Persist to store
 	if m.store != nil {
@@ -534,6 +577,43 @@ func (m *Model) cmdNew() (tea.Model, tea.Cmd) {
 		_ = m.store.Create(ctx, m.sess)
 		_ = m.store.SetCurrent(ctx, m.sess.ID)
 	}
+
+	// Clear conversation messages and input
+	m.messages = nil
+	m.scrollOffset = 0
+	m.setTextareaValue("")
+	m.clearFiles()
+
+	// Reset engine state (compaction tracking, provider conversation IDs)
+	if m.engine != nil {
+		m.engine.ResetConversation()
+	}
+
+	// Reset streaming and rendering state
+	m.currentResponse.Reset()
+	m.currentTokens = 0
+	m.webSearchUsed = false
+	m.retryStatus = ""
+	if m.tracker != nil {
+		m.tracker = ui.NewToolTracker()
+		m.tracker.TextMode = m.textMode
+	}
+	if m.smoothBuffer != nil {
+		m.smoothBuffer.Reset()
+	}
+	m.smoothTickPending = false
+	m.streamRenderTickPending = false
+
+	// Reset stats for new session
+	if m.stats != nil {
+		m.stats = ui.NewSessionStats()
+	}
+
+	// Invalidate view cache so stale content doesn't bleed through
+	m.viewCache.historyValid = false
+	m.viewCache.completedStream = ""
+	m.viewCache.lastSetContentAt = time.Time{}
+	m.bumpContentVersion()
 
 	return m.showSystemMessage("Started new session.")
 }
@@ -1251,6 +1331,75 @@ func (m *Model) cmdInspect() (tea.Model, tea.Cmd) {
 		return m, tea.EnterAltScreen
 	}
 	return m, nil
+}
+
+func (m *Model) cmdCompress() (tea.Model, tea.Cmd) {
+	m.setTextareaValue("")
+
+	if m.streaming {
+		return m.showSystemMessage("Cannot compress while streaming. Wait for the response to finish.")
+	}
+
+	// Need at least a couple of messages to make compaction worthwhile
+	m.messagesMu.Lock()
+	snapshot := make([]session.Message, len(m.messages))
+	copy(snapshot, m.messages)
+	m.messagesMu.Unlock()
+
+	if len(snapshot) < 2 {
+		return m.showSystemMessage("Not enough conversation history to compress.")
+	}
+
+	// Build llm.Message slice from session messages, separating system prompt
+	var llmMessages []llm.Message
+	var systemPrompt string
+	for _, msg := range snapshot {
+		if msg.Role == llm.RoleSystem {
+			for _, p := range msg.Parts {
+				if p.Text != "" {
+					systemPrompt = p.Text
+					break
+				}
+			}
+			continue
+		}
+		llmMessages = append(llmMessages, msg.ToLLMMessage())
+	}
+
+	if len(llmMessages) == 0 {
+		return m.showSystemMessage("No conversation messages to compress.")
+	}
+
+	compactConfig := llm.DefaultCompactionConfig()
+	model := m.modelName
+
+	result, err := llm.Compact(context.Background(), m.provider, model, systemPrompt, llmMessages, compactConfig)
+	if err != nil {
+		return m.showSystemMessage(fmt.Sprintf("Compression failed: %v", err))
+	}
+
+	// Update in-memory messages
+	var newSessionMsgs []session.Message
+	for _, msg := range result.NewMessages {
+		newSessionMsgs = append(newSessionMsgs, *session.NewMessage(m.sess.ID, msg, -1))
+	}
+	m.messagesMu.Lock()
+	m.messages = newSessionMsgs
+	m.messagesMu.Unlock()
+
+	// Persist to store
+	if m.store != nil {
+		if err := m.store.ReplaceMessages(context.Background(), m.sess.ID, newSessionMsgs); err != nil {
+			return m.showSystemMessage(fmt.Sprintf("Compressed but failed to save: %v", err))
+		}
+	}
+
+	// Reset engine compaction tracking since we just compacted
+	if m.engine != nil {
+		m.engine.ResetConversation()
+	}
+
+	return m.showSystemMessage(fmt.Sprintf("Compressed conversation: %d messages → %d messages.", result.OriginalCount, result.CompactedCount))
 }
 
 // switchModel switches to a new provider:model

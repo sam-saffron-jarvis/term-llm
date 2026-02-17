@@ -1,6 +1,11 @@
 package config
 
-import "testing"
+import (
+	"strings"
+	"testing"
+
+	"github.com/samsaffron/term-llm/internal/credentials"
+)
 
 func TestApplyOverrides(t *testing.T) {
 	cfg := &Config{
@@ -62,5 +67,136 @@ func TestInferProviderType(t *testing.T) {
 				t.Errorf("InferProviderType(%q, %q) = %q, want %q", tc.name, tc.explicit, got, tc.want)
 			}
 		})
+	}
+}
+
+func TestDescribeCredentialSource_AnthropicExplicitKey(t *testing.T) {
+	t.Setenv("ANTHROPIC_API_KEY", "")
+	t.Setenv("CLAUDE_CODE_OAUTH_TOKEN", "")
+
+	cfg := &ProviderConfig{APIKey: "sk-test-123"}
+	source, found := DescribeCredentialSource("anthropic", cfg)
+	if !found {
+		t.Fatal("expected credential to be found")
+	}
+	if source != "config api_key" {
+		t.Fatalf("source=%q, want %q", source, "config api_key")
+	}
+}
+
+func TestDescribeCredentialSource_AnthropicEnvKey(t *testing.T) {
+	t.Setenv("ANTHROPIC_API_KEY", "sk-env-key-456")
+	t.Setenv("CLAUDE_CODE_OAUTH_TOKEN", "")
+
+	cfg := &ProviderConfig{}
+	source, found := DescribeCredentialSource("anthropic", cfg)
+	if !found {
+		t.Fatal("expected credential to be found")
+	}
+	if source != "ANTHROPIC_API_KEY env" {
+		t.Fatalf("source=%q, want %q", source, "ANTHROPIC_API_KEY env")
+	}
+}
+
+func TestDescribeCredentialSource_AnthropicOAuthEnv(t *testing.T) {
+	t.Setenv("ANTHROPIC_API_KEY", "")
+	t.Setenv("CLAUDE_CODE_OAUTH_TOKEN", "sk-ant-oat01-test")
+
+	cfg := &ProviderConfig{}
+	source, found := DescribeCredentialSource("anthropic", cfg)
+	if !found {
+		t.Fatal("expected credential to be found")
+	}
+	if !strings.Contains(source, "CLAUDE_CODE_OAUTH_TOKEN") {
+		t.Fatalf("source=%q, expected to contain CLAUDE_CODE_OAUTH_TOKEN", source)
+	}
+}
+
+func TestDescribeCredentialSource_AnthropicSavedOAuth(t *testing.T) {
+	t.Setenv("ANTHROPIC_API_KEY", "")
+	t.Setenv("CLAUDE_CODE_OAUTH_TOKEN", "")
+
+	// Save OAuth credentials to temp dir
+	tmpDir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", tmpDir)
+
+	creds := &credentials.AnthropicOAuthCredentials{
+		AccessToken: "sk-ant-oat01-saved-token",
+	}
+	if err := credentials.SaveAnthropicOAuthCredentials(creds); err != nil {
+		t.Fatalf("failed to save test credentials: %v", err)
+	}
+
+	cfg := &ProviderConfig{}
+	source, found := DescribeCredentialSource("anthropic", cfg)
+	if !found {
+		t.Fatal("expected credential to be found")
+	}
+	if !strings.Contains(source, "saved OAuth") {
+		t.Fatalf("source=%q, expected to contain 'saved OAuth'", source)
+	}
+}
+
+func TestDescribeCredentialSource_AnthropicNone(t *testing.T) {
+	t.Setenv("ANTHROPIC_API_KEY", "")
+	t.Setenv("CLAUDE_CODE_OAUTH_TOKEN", "")
+
+	tmpDir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", tmpDir)
+
+	cfg := &ProviderConfig{}
+	source, found := DescribeCredentialSource("anthropic", cfg)
+	if found {
+		t.Fatalf("expected no credential found, got source=%q", source)
+	}
+	if !strings.Contains(source, "prompt") {
+		t.Fatalf("source=%q, expected to mention interactive prompt", source)
+	}
+}
+
+func TestDescribeCredentialSource_AnthropicPriority(t *testing.T) {
+	// When both API key env and OAuth env are set, API key should win
+	t.Setenv("ANTHROPIC_API_KEY", "sk-api-key")
+	t.Setenv("CLAUDE_CODE_OAUTH_TOKEN", "sk-ant-oat01-oauth-token")
+
+	cfg := &ProviderConfig{}
+	source, _ := DescribeCredentialSource("anthropic", cfg)
+	if source != "ANTHROPIC_API_KEY env" {
+		t.Fatalf("source=%q, want %q (API key should take priority)", source, "ANTHROPIC_API_KEY env")
+	}
+}
+
+func TestDescribeCredentialSource_OpenAI(t *testing.T) {
+	t.Setenv("OPENAI_API_KEY", "sk-openai-123")
+	cfg := &ProviderConfig{}
+	source, found := DescribeCredentialSource("openai", cfg)
+	if !found {
+		t.Fatal("expected credential to be found")
+	}
+	if source != "OPENAI_API_KEY env" {
+		t.Fatalf("source=%q, want %q", source, "OPENAI_API_KEY env")
+	}
+}
+
+func TestDescribeCredentialSource_ZenNoKey(t *testing.T) {
+	t.Setenv("ZEN_API_KEY", "")
+	cfg := &ProviderConfig{}
+	source, found := DescribeCredentialSource("zen", cfg)
+	if !found {
+		t.Fatal("expected credential to be found (zen free tier)")
+	}
+	if !strings.Contains(source, "free tier") {
+		t.Fatalf("source=%q, expected to mention free tier", source)
+	}
+}
+
+func TestDescribeCredentialSource_ClaudeBin(t *testing.T) {
+	cfg := &ProviderConfig{}
+	source, found := DescribeCredentialSource("claude-bin", cfg)
+	if !found {
+		t.Fatal("expected credential to be found")
+	}
+	if !strings.Contains(source, "no key needed") {
+		t.Fatalf("source=%q, expected to mention no key needed", source)
 	}
 }

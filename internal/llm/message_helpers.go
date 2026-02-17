@@ -16,7 +16,7 @@ func collectToolResultText(parts []Part) string {
 	var b strings.Builder
 	for _, part := range parts {
 		if part.Type == PartToolResult && part.ToolResult != nil {
-			b.WriteString(part.ToolResult.Content)
+			b.WriteString(toolResultTextContent(part.ToolResult))
 		}
 	}
 	return b.String()

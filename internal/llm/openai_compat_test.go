@@ -115,30 +115,64 @@ func TestBuildCompatMessages_WithReasoningContent(t *testing.T) {
 }
 
 func TestBuildCompatMessages_NoReasoningContent(t *testing.T) {
-	// Test that messages without reasoning_content work correctly
 	messages := []Message{
 		{
-			Role: RoleUser,
-			Parts: []Part{
-				{Type: PartText, Text: "Hello"},
-			},
+			Role:  RoleUser,
+			Parts: []Part{{Type: PartText, Text: "Hello"}},
 		},
 		{
-			Role: RoleAssistant,
-			Parts: []Part{
-				{Type: PartText, Text: "Hi there!"},
-			},
+			Role:  RoleAssistant,
+			Parts: []Part{{Type: PartText, Text: "Hi there!"}},
 		},
 	}
 
 	oaiMsgs := buildCompatMessages(messages)
-
 	if len(oaiMsgs) != 2 {
 		t.Fatalf("expected 2 messages, got %d", len(oaiMsgs))
 	}
-
-	// Verify no reasoning_content is set
 	if oaiMsgs[1].ReasoningContent != "" {
 		t.Errorf("expected empty reasoning_content, got %q", oaiMsgs[1].ReasoningContent)
+	}
+}
+
+func TestBuildCompatMessages_ToolResultStructuredImageParts(t *testing.T) {
+	messages := []Message{
+		{
+			Role: RoleTool,
+			Parts: []Part{{
+				Type: PartToolResult,
+				ToolResult: &ToolResult{
+					ID:      "call-1",
+					Name:    "view_image",
+					Content: "Image loaded",
+					ContentParts: []ToolContentPart{
+						{Type: ToolContentPartText, Text: "Image loaded"},
+						{Type: ToolContentPartImageData, ImageData: &ToolImageData{MediaType: "image/png", Base64: "aGVsbG8="}},
+						{Type: ToolContentPartText, Text: "done"},
+					},
+				},
+			}},
+		},
+	}
+
+	oaiMsgs := buildCompatMessages(messages)
+	if len(oaiMsgs) != 2 {
+		t.Fatalf("expected 2 messages (tool + user multimodal), got %d", len(oaiMsgs))
+	}
+	if oaiMsgs[0].Role != "tool" || oaiMsgs[0].Content != "Image loadeddone" {
+		t.Fatalf("unexpected tool message: %#v", oaiMsgs[0])
+	}
+	if oaiMsgs[1].Role != "user" {
+		t.Fatalf("expected second message role user, got %q", oaiMsgs[1].Role)
+	}
+	parts, ok := oaiMsgs[1].Content.([]oaiContentPart)
+	if !ok {
+		t.Fatalf("expected user content []oaiContentPart, got %T", oaiMsgs[1].Content)
+	}
+	if len(parts) != 3 {
+		t.Fatalf("expected 3 content parts, got %d", len(parts))
+	}
+	if parts[1].Type != "image_url" || parts[1].ImageURL == nil {
+		t.Fatalf("expected second content part image_url, got %#v", parts[1])
 	}
 }

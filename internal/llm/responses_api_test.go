@@ -153,6 +153,50 @@ func TestBuildResponsesInput_ToolCalls(t *testing.T) {
 	}
 }
 
+func TestBuildResponsesInput_ToolResultStructuredImageParts(t *testing.T) {
+	messages := []Message{
+		{Role: RoleAssistant, Parts: []Part{{Type: PartToolCall, ToolCall: &ToolCall{
+			ID:        "call_img",
+			Name:      "view_image",
+			Arguments: json.RawMessage(`{"file_path":"image.png"}`),
+		}}}},
+		{Role: RoleTool, Parts: []Part{{Type: PartToolResult, ToolResult: &ToolResult{
+			ID:      "call_img",
+			Name:    "view_image",
+			Content: "Image loaded",
+			ContentParts: []ToolContentPart{
+				{Type: ToolContentPartText, Text: "Image loaded"},
+				{Type: ToolContentPartImageData, ImageData: &ToolImageData{MediaType: "image/png", Base64: "aGVsbG8="}},
+				{Type: ToolContentPartText, Text: "done"},
+			},
+		}}}},
+	}
+
+	input := BuildResponsesInput(messages)
+	if len(input) != 3 {
+		t.Fatalf("expected 3 input items, got %d", len(input))
+	}
+	if input[1].Type != "function_call_output" {
+		t.Fatalf("expected second input item function_call_output, got %q", input[1].Type)
+	}
+	if input[1].Output != "Image loadeddone" {
+		t.Fatalf("expected function_call_output text from structured text parts, got %q", input[1].Output)
+	}
+	if input[2].Type != "message" || input[2].Role != "user" {
+		t.Fatalf("expected third input item user message, got %#v", input[2])
+	}
+	parts, ok := input[2].Content.([]ResponsesContentPart)
+	if !ok {
+		t.Fatalf("expected message content []ResponsesContentPart, got %T", input[2].Content)
+	}
+	if len(parts) != 3 {
+		t.Fatalf("expected 3 multimodal content parts, got %d", len(parts))
+	}
+	if parts[1].Type != "input_image" {
+		t.Fatalf("expected second multimodal part input_image, got %#v", parts[1])
+	}
+}
+
 func TestBuildResponsesInput_AssistantReasoningReplay(t *testing.T) {
 	messages := []Message{
 		{

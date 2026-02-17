@@ -81,6 +81,7 @@ Slash commands:
   /search      - Toggle web search
   /mcp         - Manage MCP servers
   /skills      - List available skills
+  /compact     - Compact conversation context
   /quit        - Exit chat`,
 	RunE:              runChat,
 	ValidArgsFunction: AtAgentCompletion,

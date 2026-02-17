@@ -349,10 +349,10 @@ func buildGeminiToolResultContent(parts []Part) *genai.Content {
 			if part.ToolResult == nil {
 				continue
 			}
-			// Check for embedded image data in tool result
-			mimeType, base64Data, textContent := parseToolResultImageData(part.ToolResult.Content)
 
-			// Add the function response with text content only
+			textContent := toolResultTextContent(part.ToolResult)
+
+			// Add the function response with text content
 			// Include ThoughtSignature if present (required for Gemini 3 thinking models)
 			content.Parts = append(content.Parts, &genai.Part{
 				FunctionResponse: &genai.FunctionResponse{
@@ -363,17 +363,21 @@ func buildGeminiToolResultContent(parts []Part) *genai.Content {
 				ThoughtSignature: part.ToolResult.ThoughtSig,
 			})
 
-			// If image data was found, add it as inline data
-			if base64Data != "" {
-				imageData, err := base64.StdEncoding.DecodeString(base64Data)
-				if err == nil {
-					content.Parts = append(content.Parts, &genai.Part{
-						InlineData: &genai.Blob{
-							MIMEType: mimeType,
-							Data:     imageData,
-						},
-					})
+			for _, contentPart := range toolResultContentParts(part.ToolResult) {
+				mimeType, base64Data, ok := toolResultImageData(contentPart)
+				if !ok {
+					continue
 				}
+				imageData, err := base64.StdEncoding.DecodeString(base64Data)
+				if err != nil {
+					continue
+				}
+				content.Parts = append(content.Parts, &genai.Part{
+					InlineData: &genai.Blob{
+						MIMEType: mimeType,
+						Data:     imageData,
+					},
+				})
 			}
 		}
 	}

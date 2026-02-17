@@ -524,6 +524,102 @@ func (cfg *ProviderConfig) ResolveForInference() error {
 	return nil
 }
 
+// DescribeCredentialSource returns a human-readable description of which credential
+// source will be used for the given provider. This is used by `config show` to help
+// users understand where their credentials are coming from.
+// Returns a short label (e.g., "ANTHROPIC_API_KEY env") and whether any credential was found.
+func DescribeCredentialSource(name string, cfg *ProviderConfig) (string, bool) {
+	providerType := InferProviderType(name, cfg.Type)
+
+	// If there's a lazy-resolved api_key (op://, $()), describe it
+	if cfg.APIKey != "" && needsLazyResolve(cfg.APIKey) {
+		return fmt.Sprintf("api_key (deferred: %s)", truncateValue(cfg.APIKey, 30)), true
+	}
+
+	switch providerType {
+	case ProviderTypeAnthropic:
+		return describeAnthropicCredential(cfg)
+	case ProviderTypeOpenAI:
+		return describeEnvKeyCredential(cfg, "OPENAI_API_KEY")
+	case ProviderTypeGemini:
+		return describeEnvKeyCredential(cfg, "GEMINI_API_KEY")
+	case ProviderTypeGeminiCLI:
+		if _, err := credentials.GetGeminiOAuthCredentials(); err == nil {
+			return "gemini-cli OAuth (~/.gemini/oauth_creds.json)", true
+		}
+		return "gemini-cli OAuth (not found)", false
+	case ProviderTypeOpenRouter:
+		return describeEnvKeyCredential(cfg, "OPENROUTER_API_KEY")
+	case ProviderTypeZen:
+		source, found := describeEnvKeyCredential(cfg, "ZEN_API_KEY")
+		if !found {
+			return "none (free tier)", true // Zen works without a key
+		}
+		return source, found
+	case ProviderTypeXAI:
+		return describeEnvKeyCredential(cfg, "XAI_API_KEY")
+	case ProviderTypeClaudeBin:
+		return "claude-bin CLI (no key needed)", true
+	case ProviderTypeChatGPT:
+		return "ChatGPT OAuth (interactive)", true
+	case ProviderTypeCopilot:
+		return "GitHub Copilot OAuth (interactive)", true
+	case ProviderTypeOpenAICompat:
+		envName := strings.ToUpper(name) + "_API_KEY"
+		return describeEnvKeyCredential(cfg, envName)
+	}
+
+	return "unknown", false
+}
+
+// describeAnthropicCredential walks the Anthropic credential cascade and returns
+// a description of which source will be used. Mirrors the logic in NewAnthropicProvider.
+func describeAnthropicCredential(cfg *ProviderConfig) (string, bool) {
+	// 1. Explicit API key from config
+	apiKey := expandEnv(cfg.APIKey)
+	if apiKey != "" {
+		return "config api_key", true
+	}
+
+	// 2. ANTHROPIC_API_KEY env
+	if os.Getenv("ANTHROPIC_API_KEY") != "" {
+		return "ANTHROPIC_API_KEY env", true
+	}
+
+	// 3. CLAUDE_CODE_OAUTH_TOKEN env
+	if os.Getenv("CLAUDE_CODE_OAUTH_TOKEN") != "" {
+		return "CLAUDE_CODE_OAUTH_TOKEN env (OAuth)", true
+	}
+
+	// 4. Saved OAuth token
+	if credentials.AnthropicOAuthCredentialsExist() {
+		return "saved OAuth token (~/.config/term-llm/anthropic_oauth.json)", true
+	}
+
+	// 5. Would prompt interactively
+	return "none (will prompt for OAuth token interactively)", false
+}
+
+// describeEnvKeyCredential checks config api_key then an environment variable.
+func describeEnvKeyCredential(cfg *ProviderConfig, envName string) (string, bool) {
+	apiKey := expandEnv(cfg.APIKey)
+	if apiKey != "" {
+		return "config api_key", true
+	}
+	if os.Getenv(envName) != "" {
+		return envName + " env", true
+	}
+	return fmt.Sprintf("none (set %s or config api_key)", envName), false
+}
+
+// truncateValue truncates a string for display, adding "..." if too long.
+func truncateValue(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen-3] + "..."
+}
+
 // resolveImageCredentials resolves API credentials for all image providers
 func resolveImageCredentials(cfg *ImageConfig) {
 	// Gemini image credentials

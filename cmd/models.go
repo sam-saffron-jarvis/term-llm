@@ -106,7 +106,7 @@ func runModels(cmd *cobra.Command, args []string) error {
 	var lister ModelLister
 	switch providerType {
 	case config.ProviderTypeAnthropic:
-		provider, err := llm.NewAnthropicProvider(providerCfg.ResolvedAPIKey, providerCfg.Model)
+		provider, err := llm.NewAnthropicProvider(providerCfg.ResolvedAPIKey, providerCfg.Model, providerCfg.Credentials)
 		if err != nil {
 			return fmt.Errorf("anthropic: %w", err)
 		}

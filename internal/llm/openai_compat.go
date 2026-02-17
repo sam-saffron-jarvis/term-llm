@@ -475,62 +475,43 @@ func buildCompatMessages(messages []Message) []oaiMessage {
 				if part.Type != PartToolResult || part.ToolResult == nil {
 					continue
 				}
-				// Check for embedded image data in tool result
-				mimeType, base64Data, textContent := parseCompatImageData(part.ToolResult.Content)
+				textContent := toolResultTextContent(part.ToolResult)
 
-				// Add tool result with text content (without image marker)
+				// Add tool result with text content
 				result = append(result, oaiMessage{
 					Role:       "tool",
 					Content:    textContent,
 					ToolCallID: part.ToolResult.ID,
 				})
 
-				// If there's image data, add a user message with the image
-				if base64Data != "" {
-					dataURL := fmt.Sprintf("data:%s;base64,%s", mimeType, base64Data)
+				var richParts []oaiContentPart
+				hasImage := false
+				for _, contentPart := range toolResultContentParts(part.ToolResult) {
+					switch contentPart.Type {
+					case ToolContentPartText:
+						if contentPart.Text != "" {
+							richParts = append(richParts, oaiContentPart{Type: "text", Text: contentPart.Text})
+						}
+					case ToolContentPartImageData:
+						mimeType, base64Data, ok := toolResultImageData(contentPart)
+						if !ok {
+							continue
+						}
+						hasImage = true
+						dataURL := fmt.Sprintf("data:%s;base64,%s", mimeType, base64Data)
+						richParts = append(richParts, oaiContentPart{Type: "image_url", ImageURL: &oaiImageURL{URL: dataURL, Detail: "auto"}})
+					}
+				}
+				if hasImage && len(richParts) > 0 {
 					result = append(result, oaiMessage{
-						Role: "user",
-						Content: []oaiContentPart{
-							{Type: "text", Text: "Here is the image from the tool result:"},
-							{Type: "image_url", ImageURL: &oaiImageURL{URL: dataURL, Detail: "auto"}},
-						},
+						Role:    "user",
+						Content: richParts,
 					})
 				}
 			}
 		}
 	}
 	return result
-}
-
-// parseCompatImageData extracts image data from a tool result.
-// Returns mime type, base64 data, and the text content with the image marker removed.
-func parseCompatImageData(content string) (mimeType, base64Data, textContent string) {
-	const prefix = "[IMAGE_DATA:"
-	const suffix = "]"
-
-	start := strings.Index(content, prefix)
-	if start == -1 {
-		return "", "", content
-	}
-
-	end := strings.Index(content[start:], suffix)
-	if end == -1 {
-		return "", "", content
-	}
-
-	// Extract the image data portion
-	imageMarker := content[start : start+end+1]
-	data := content[start+len(prefix) : start+end]
-	parts := strings.SplitN(data, ":", 2)
-	if len(parts) != 2 {
-		return "", "", content
-	}
-
-	// Remove the image marker from text content
-	textContent = strings.Replace(content, imageMarker, "", 1)
-	textContent = strings.TrimSpace(textContent)
-
-	return parts[0], parts[1], textContent
 }
 
 // splitParts extracts text, tool calls, and reasoning content from message parts.

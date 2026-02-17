@@ -146,12 +146,35 @@ type DiffData struct {
 	Line int    `json:"l"` // 1-indexed starting line number
 }
 
+// ToolContentPartType identifies a structured tool result content item.
+type ToolContentPartType string
+
+const (
+	ToolContentPartText      ToolContentPartType = "text"
+	ToolContentPartImageData ToolContentPartType = "image_data"
+)
+
+// ToolImageData represents base64-encoded image data in tool output.
+type ToolImageData struct {
+	MediaType string `json:"media_type,omitempty"`
+	Base64    string `json:"base64,omitempty"`
+}
+
+// ToolContentPart represents one structured piece of tool result content.
+// Use a sequence like [text, image_data, text] to preserve multimodal ordering.
+type ToolContentPart struct {
+	Type      ToolContentPartType `json:"type"`
+	Text      string              `json:"text,omitempty"`
+	ImageData *ToolImageData      `json:"image_data,omitempty"`
+}
+
 // ToolOutput is the structured return type from Tool.Execute().
 // Most tools only populate Content. Edit/image tools also populate Diffs/Images.
 type ToolOutput struct {
-	Content string     // Text result (sent to LLM)
-	Diffs   []DiffData // Structured diff data (for UI rendering)
-	Images  []string   // Image paths (for UI rendering)
+	Content      string            // Text result (sent to LLM)
+	ContentParts []ToolContentPart `json:"content_parts,omitempty"` // Structured multimodal tool content for provider formatting
+	Diffs        []DiffData        // Structured diff data (for UI rendering)
+	Images       []string          // Image paths (for UI rendering)
 }
 
 // TextOutput creates a ToolOutput with only text content.
@@ -161,14 +184,15 @@ func TextOutput(s string) ToolOutput {
 
 // ToolResult is the output from executing a tool call.
 type ToolResult struct {
-	ID         string
-	Name       string
-	Content    string     // Clean text sent to LLM
-	Display    string     // Deprecated: old marker-based output. Kept only for deserializing pre-structured sessions. TODO: remove once no saved sessions use Display-based diff markers.
-	Diffs      []DiffData `json:"diffs,omitempty"`  // Structured diff data
-	Images     []string   `json:"images,omitempty"` // Image paths
-	IsError    bool       // True if this result represents a tool execution error
-	ThoughtSig []byte     // Gemini 3 thought signature (passed through from ToolCall)
+	ID           string
+	Name         string
+	Content      string            // Clean text sent to LLM
+	ContentParts []ToolContentPart `json:"content_parts,omitempty"` // Structured multimodal tool content
+	Display      string            // Deprecated: old marker-based output. Kept only for deserializing pre-structured sessions. TODO: remove once no saved sessions use Display-based diff markers.
+	Diffs        []DiffData        `json:"diffs,omitempty"`  // Structured diff data
+	Images       []string          `json:"images,omitempty"` // Image paths
+	IsError      bool              // True if this result represents a tool execution error
+	ThoughtSig   []byte            // Gemini 3 thought signature (passed through from ToolCall)
 }
 
 // EventType describes streaming events.
@@ -283,12 +307,13 @@ func ToolResultMessageFromOutput(id, name string, output ToolOutput, thoughtSig 
 		Parts: []Part{{
 			Type: PartToolResult,
 			ToolResult: &ToolResult{
-				ID:         id,
-				Name:       name,
-				Content:    output.Content,
-				Diffs:      output.Diffs,
-				Images:     output.Images,
-				ThoughtSig: thoughtSig,
+				ID:           id,
+				Name:         name,
+				Content:      output.Content,
+				ContentParts: output.ContentParts,
+				Diffs:        output.Diffs,
+				Images:       output.Images,
+				ThoughtSig:   thoughtSig,
 			},
 		}},
 	}

@@ -146,21 +146,29 @@ func (t *ViewImageTool) Execute(ctx context.Context, args json.RawMessage) (llm.
 		sizeInfo = fmt.Sprintf("Size: %d bytes", len(processedData))
 	}
 
-	result := fmt.Sprintf(`Image loaded: %s
+	textResult := fmt.Sprintf(`Image loaded: %s
 Format: %s
 %s
-Detail: %s
-
-[IMAGE_DATA:%s:%s]`,
+Detail: %s`,
 		a.FilePath,
 		processedMime,
 		sizeInfo,
 		getDetail(a.Detail),
-		processedMime,
-		encoded,
 	)
 
-	return llm.TextOutput(result), nil
+	return llm.ToolOutput{
+		Content: textResult,
+		ContentParts: []llm.ToolContentPart{
+			{Type: llm.ToolContentPartText, Text: textResult},
+			{
+				Type: llm.ToolContentPartImageData,
+				ImageData: &llm.ToolImageData{
+					MediaType: processedMime,
+					Base64:    encoded,
+				},
+			},
+		},
+	}, nil
 }
 
 // processImage checks if an image needs resizing and processes it accordingly.
@@ -264,29 +272,4 @@ func getDetail(detail string) string {
 	default:
 		return "auto"
 	}
-}
-
-// ParseImageData extracts image data from a view_image tool result.
-// Returns mime type and base64 data if found.
-func ParseImageData(result string) (mimeType string, base64Data string, ok bool) {
-	const prefix = "[IMAGE_DATA:"
-	const suffix = "]"
-
-	start := strings.Index(result, prefix)
-	if start == -1 {
-		return "", "", false
-	}
-
-	end := strings.Index(result[start:], suffix)
-	if end == -1 {
-		return "", "", false
-	}
-
-	data := result[start+len(prefix) : start+end]
-	parts := strings.SplitN(data, ":", 2)
-	if len(parts) != 2 {
-		return "", "", false
-	}
-
-	return parts[0], parts[1], true
 }

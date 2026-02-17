@@ -65,6 +65,31 @@ func TestToolResultMessageFromOutput_WithImages(t *testing.T) {
 	}
 }
 
+func TestToolResultMessageFromOutput_WithContentParts(t *testing.T) {
+	output := ToolOutput{
+		Content: "Image loaded",
+		ContentParts: []ToolContentPart{
+			{Type: ToolContentPartText, Text: "Image loaded"},
+			{
+				Type:      ToolContentPartImageData,
+				ImageData: &ToolImageData{MediaType: "image/png", Base64: "aGVsbG8="},
+			},
+		},
+	}
+	msg := ToolResultMessageFromOutput("call-3", "view_image", output, nil)
+
+	result := msg.Parts[0].ToolResult
+	if len(result.ContentParts) != 2 {
+		t.Fatalf("expected 2 content parts, got %d", len(result.ContentParts))
+	}
+	if result.ContentParts[0].Type != ToolContentPartText {
+		t.Fatalf("expected first content part type text, got %q", result.ContentParts[0].Type)
+	}
+	if result.ContentParts[1].Type != ToolContentPartImageData || result.ContentParts[1].ImageData == nil {
+		t.Fatalf("expected second content part type image_data with data, got %#v", result.ContentParts[1])
+	}
+}
+
 func TestToolResult_SessionRoundTrip(t *testing.T) {
 	original := ToolResult{
 		ID:      "call-1",
@@ -97,6 +122,37 @@ func TestToolResult_SessionRoundTrip(t *testing.T) {
 	}
 	if restored.ID != original.ID {
 		t.Errorf("ID = %q, want %q", restored.ID, original.ID)
+	}
+}
+
+func TestToolResult_SessionRoundTrip_WithContentParts(t *testing.T) {
+	original := ToolResult{
+		ID:      "call-image",
+		Name:    "view_image",
+		Content: "Image loaded",
+		ContentParts: []ToolContentPart{
+			{Type: ToolContentPartText, Text: "Image loaded"},
+			{
+				Type:      ToolContentPartImageData,
+				ImageData: &ToolImageData{MediaType: "image/png", Base64: "aGVsbG8="},
+			},
+		},
+	}
+
+	data, err := json.Marshal(original)
+	if err != nil {
+		t.Fatalf("Marshal failed: %v", err)
+	}
+
+	var restored ToolResult
+	if err := json.Unmarshal(data, &restored); err != nil {
+		t.Fatalf("Unmarshal failed: %v", err)
+	}
+	if len(restored.ContentParts) != 2 {
+		t.Fatalf("expected 2 content parts, got %d", len(restored.ContentParts))
+	}
+	if restored.ContentParts[1].ImageData == nil || restored.ContentParts[1].ImageData.MediaType != "image/png" {
+		t.Fatalf("unexpected image data after round trip: %#v", restored.ContentParts[1])
 	}
 }
 

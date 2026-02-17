@@ -13,7 +13,7 @@ func TestNewAnthropicProviderWithExplicitAPIKey(t *testing.T) {
 	t.Setenv("ANTHROPIC_API_KEY", "")
 	t.Setenv("CLAUDE_CODE_OAUTH_TOKEN", "")
 
-	provider, err := NewAnthropicProvider("sk-test-key-123", "claude-sonnet-4-5")
+	provider, err := NewAnthropicProvider("sk-test-key-123", "claude-sonnet-4-5", "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -26,7 +26,7 @@ func TestNewAnthropicProviderWithEnvAPIKey(t *testing.T) {
 	t.Setenv("ANTHROPIC_API_KEY", "sk-env-key-456")
 	t.Setenv("CLAUDE_CODE_OAUTH_TOKEN", "")
 
-	provider, err := NewAnthropicProvider("", "claude-sonnet-4-5")
+	provider, err := NewAnthropicProvider("", "claude-sonnet-4-5", "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -39,7 +39,7 @@ func TestNewAnthropicProviderWithOAuthEnv(t *testing.T) {
 	t.Setenv("ANTHROPIC_API_KEY", "")
 	t.Setenv("CLAUDE_CODE_OAUTH_TOKEN", "sk-ant-oat01-test-token")
 
-	provider, err := NewAnthropicProvider("", "claude-sonnet-4-5")
+	provider, err := NewAnthropicProvider("", "claude-sonnet-4-5", "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -63,7 +63,7 @@ func TestNewAnthropicProviderWithSavedOAuth(t *testing.T) {
 		t.Fatalf("failed to save test credentials: %v", err)
 	}
 
-	provider, err := NewAnthropicProvider("", "claude-sonnet-4-5")
+	provider, err := NewAnthropicProvider("", "claude-sonnet-4-5", "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -77,7 +77,7 @@ func TestNewAnthropicProviderAPIKeyOverridesOAuthEnv(t *testing.T) {
 	t.Setenv("ANTHROPIC_API_KEY", "sk-api-key")
 	t.Setenv("CLAUDE_CODE_OAUTH_TOKEN", "sk-ant-oat01-oauth-token")
 
-	provider, err := NewAnthropicProvider("", "claude-sonnet-4-5")
+	provider, err := NewAnthropicProvider("", "claude-sonnet-4-5", "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -91,7 +91,7 @@ func TestNewAnthropicProviderExplicitKeyOverridesAll(t *testing.T) {
 	t.Setenv("ANTHROPIC_API_KEY", "sk-env-key")
 	t.Setenv("CLAUDE_CODE_OAUTH_TOKEN", "sk-ant-oat01-oauth-token")
 
-	provider, err := NewAnthropicProvider("sk-explicit-key", "claude-sonnet-4-5")
+	provider, err := NewAnthropicProvider("sk-explicit-key", "claude-sonnet-4-5", "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -204,6 +204,175 @@ func TestBuildAnthropicBlocks_UserDoesNotReplayReasoning(t *testing.T) {
 	}
 	if got := blocks[0].GetSignature(); got != nil {
 		t.Fatalf("did not expect thinking signature in non-assistant block, got %v", got)
+	}
+}
+
+func TestBuildAnthropicToolResult_NonViewImageToolDoesNotParseImageMarker(t *testing.T) {
+	content := "644: \tconst prefix = \"[IMAGE_DATA:\"\n645: \tconst suffix = \"]\""
+	parts := []Part{{
+		Type: PartToolResult,
+		ToolResult: &ToolResult{
+			ID:      "call-1",
+			Name:    "read_file",
+			Content: content,
+		},
+	}}
+
+	blocks := buildAnthropicBlocks(parts, false)
+	if len(blocks) != 1 {
+		t.Fatalf("expected 1 block, got %d", len(blocks))
+	}
+	tr := blocks[0].OfToolResult
+	if tr == nil {
+		t.Fatalf("expected tool_result block")
+	}
+	if len(tr.Content) != 1 {
+		t.Fatalf("expected 1 tool_result content block, got %d", len(tr.Content))
+	}
+	if tr.Content[0].OfText == nil || tr.Content[0].OfImage != nil {
+		t.Fatalf("expected only text content block, got %#v", tr.Content[0])
+	}
+	if got := tr.Content[0].OfText.Text; got != content {
+		t.Fatalf("expected tool_result text to remain unchanged, got %q", got)
+	}
+}
+
+func TestBuildAnthropicToolResult_ViewImageToolUsesStructuredContentParts(t *testing.T) {
+	parts := []Part{{
+		Type: PartToolResult,
+		ToolResult: &ToolResult{
+			ID:      "call-1",
+			Name:    "view_image",
+			Content: "Image loaded",
+			ContentParts: []ToolContentPart{
+				{Type: ToolContentPartText, Text: "Image loaded"},
+				{
+					Type: ToolContentPartImageData,
+					ImageData: &ToolImageData{
+						MediaType: "image/png",
+						Base64:    "aGVsbG8=",
+					},
+				},
+				{Type: ToolContentPartText, Text: "done"},
+			},
+		},
+	}}
+
+	blocks := buildAnthropicBlocks(parts, false)
+	if len(blocks) != 1 {
+		t.Fatalf("expected 1 block, got %d", len(blocks))
+	}
+	tr := blocks[0].OfToolResult
+	if tr == nil {
+		t.Fatalf("expected tool_result block")
+	}
+	if len(tr.Content) != 3 {
+		t.Fatalf("expected 3 tool_result content blocks (text + image + text), got %d", len(tr.Content))
+	}
+	if tr.Content[0].OfText == nil || tr.Content[0].OfText.Text != "Image loaded" {
+		t.Fatalf("expected first content block to be text 'Image loaded', got %#v", tr.Content[0])
+	}
+	if tr.Content[1].OfImage == nil {
+		t.Fatalf("expected second content block to be image, got %#v", tr.Content[1])
+	}
+	if tr.Content[2].OfText == nil || tr.Content[2].OfText.Text != "done" {
+		t.Fatalf("expected third content block to be text 'done', got %#v", tr.Content[2])
+	}
+}
+
+func TestBuildAnthropicToolResult_ViewImageToolDoesNotParseImageMarkerText(t *testing.T) {
+	content := "Image loaded\n[IMAGE_DATA:image/png:aGVsbG8=]"
+	parts := []Part{{
+		Type: PartToolResult,
+		ToolResult: &ToolResult{
+			ID:      "call-1",
+			Name:    "view_image",
+			Content: content,
+		},
+	}}
+
+	blocks := buildAnthropicBlocks(parts, false)
+	if len(blocks) != 1 {
+		t.Fatalf("expected 1 block, got %d", len(blocks))
+	}
+	tr := blocks[0].OfToolResult
+	if tr == nil {
+		t.Fatalf("expected tool_result block")
+	}
+	if len(tr.Content) != 1 {
+		t.Fatalf("expected 1 tool_result content block, got %d", len(tr.Content))
+	}
+	if tr.Content[0].OfText == nil || tr.Content[0].OfImage != nil {
+		t.Fatalf("expected only text content block, got %#v", tr.Content[0])
+	}
+	if got := tr.Content[0].OfText.Text; got != content {
+		t.Fatalf("expected tool_result text to remain unchanged, got %q", got)
+	}
+}
+
+func TestBuildAnthropicBetaToolResult_NonViewImageToolDoesNotParseImageMarker(t *testing.T) {
+	content := "644: \tconst prefix = \"[IMAGE_DATA:\"\n645: \tconst suffix = \"]\""
+	parts := []Part{{
+		Type: PartToolResult,
+		ToolResult: &ToolResult{
+			ID:      "call-1",
+			Name:    "read_file",
+			Content: content,
+		},
+	}}
+
+	blocks := buildAnthropicBetaBlocks(parts, false)
+	if len(blocks) != 1 {
+		t.Fatalf("expected 1 block, got %d", len(blocks))
+	}
+	tr := blocks[0].OfToolResult
+	if tr == nil {
+		t.Fatalf("expected beta tool_result block")
+	}
+	if len(tr.Content) != 1 {
+		t.Fatalf("expected 1 beta tool_result content block, got %d", len(tr.Content))
+	}
+	if tr.Content[0].OfText == nil || tr.Content[0].OfImage != nil {
+		t.Fatalf("expected only beta text content block, got %#v", tr.Content[0])
+	}
+	if got := tr.Content[0].OfText.Text; got != content {
+		t.Fatalf("expected beta tool_result text to remain unchanged, got %q", got)
+	}
+}
+
+func TestBuildAnthropicBetaToolResult_UsesStructuredContentParts(t *testing.T) {
+	parts := []Part{{
+		Type: PartToolResult,
+		ToolResult: &ToolResult{
+			ID:      "call-1",
+			Name:    "view_image",
+			Content: "Image loaded",
+			ContentParts: []ToolContentPart{
+				{Type: ToolContentPartText, Text: "Image loaded"},
+				{
+					Type:      ToolContentPartImageData,
+					ImageData: &ToolImageData{MediaType: "image/png", Base64: "aGVsbG8="},
+				},
+			},
+		},
+	}}
+
+	blocks := buildAnthropicBetaBlocks(parts, false)
+	if len(blocks) != 1 {
+		t.Fatalf("expected 1 block, got %d", len(blocks))
+	}
+	tr := blocks[0].OfToolResult
+	if tr == nil {
+		t.Fatalf("expected beta tool_result block")
+	}
+	if len(tr.Content) != 2 {
+		t.Fatalf("expected 2 beta tool_result content blocks (text + image), got %d", len(tr.Content))
+	}
+	if tr.Content[0].OfText == nil {
+		t.Fatalf("expected first beta tool_result content block to be text, got %#v", tr.Content[0])
+	}
+	if tr.Content[1].OfImage == nil {
+		t.Fatalf("expected second beta tool_result content block to be image, got %#v", tr.Content[1])
 	}
 }
 

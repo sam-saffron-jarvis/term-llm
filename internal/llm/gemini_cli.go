@@ -1013,10 +1013,9 @@ func buildGeminiCLIToolResultContent(parts []Part) map[string]interface{} {
 			}
 		case PartToolResult:
 			if part.ToolResult != nil {
-				// Check for embedded image data in tool result
-				mimeType, base64Data, textContent := parseToolResultImageData(part.ToolResult.Content)
+				textContent := toolResultTextContent(part.ToolResult)
 
-				// Add the function response with text content only
+				// Add the function response with text content
 				// Include ThoughtSignature if present (required for Gemini 3 thinking models)
 				frPart := map[string]interface{}{
 					"functionResponse": map[string]interface{}{
@@ -1033,17 +1032,17 @@ func buildGeminiCLIToolResultContent(parts []Part) map[string]interface{} {
 				}
 				apiParts = append(apiParts, frPart)
 
-				// If image data was found, add it as inline data
-				if base64Data != "" {
-					imageData, err := base64.StdEncoding.DecodeString(base64Data)
-					if err == nil {
-						apiParts = append(apiParts, map[string]interface{}{
-							"inlineData": map[string]interface{}{
-								"mimeType": mimeType,
-								"data":     base64.StdEncoding.EncodeToString(imageData),
-							},
-						})
+				for _, contentPart := range toolResultContentParts(part.ToolResult) {
+					mimeType, base64Data, ok := toolResultImageData(contentPart)
+					if !ok {
+						continue
 					}
+					apiParts = append(apiParts, map[string]interface{}{
+						"inlineData": map[string]interface{}{
+							"mimeType": mimeType,
+							"data":     base64Data,
+						},
+					})
 				}
 			}
 		}

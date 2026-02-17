@@ -35,6 +35,17 @@ func (p *AnthropicProvider) ListModels(ctx context.Context) ([]ModelInfo, error)
 	return models, nil
 }
 
+// Anthropic credential mode constants for the config "credentials" field.
+// These control which authentication method is used. "auto" (or empty) uses
+// the default cascade; any other value forces that specific method.
+const (
+	AnthropicCredAuto     = "auto"      // Default cascade: api_key → env → oauth_env → oauth → interactive
+	AnthropicCredAPIKey   = "api_key"   // Force: explicit api_key from config only
+	AnthropicCredEnv      = "env"       // Force: ANTHROPIC_API_KEY env var only
+	AnthropicCredOAuthEnv = "oauth_env" // Force: CLAUDE_CODE_OAUTH_TOKEN env var only
+	AnthropicCredOAuth    = "oauth"     // Force: saved OAuth token or interactive setup
+)
+
 // AnthropicProvider implements Provider using the Anthropic API.
 type AnthropicProvider struct {
 	client         *anthropic.Client
@@ -66,60 +77,102 @@ func newOAuthClient(token string) anthropic.Client {
 }
 
 // NewAnthropicProvider creates a new Anthropic provider.
-// Credential resolution order:
-//  1. Explicit API key (from config api_key field)
-//  2. ANTHROPIC_API_KEY environment variable
-//  3. CLAUDE_CODE_OAUTH_TOKEN environment variable
-//  4. Saved OAuth token (~/.config/term-llm/anthropic_oauth.json)
-//  5. Interactive: run `claude setup-token` to generate a new token
-func NewAnthropicProvider(apiKey, model string) (*AnthropicProvider, error) {
+// The credentialMode parameter controls which authentication method is used:
+//   - "" or "auto": try the full cascade (api_key → env → oauth_env → oauth → interactive)
+//   - "api_key":    use only the explicit apiKey parameter
+//   - "env":        use only the ANTHROPIC_API_KEY environment variable
+//   - "oauth_env":  use only the CLAUDE_CODE_OAUTH_TOKEN environment variable
+//   - "oauth":      use only saved OAuth token or interactive setup
+func NewAnthropicProvider(apiKey, model, credentialMode string) (*AnthropicProvider, error) {
 	actualModel, thinkingBudget := parseModelThinking(model)
 
-	// 1. Explicit API key provided (from config)
-	if apiKey != "" {
-		client := anthropic.NewClient(option.WithAPIKey(apiKey))
+	// Normalize empty credential mode to "auto"
+	if credentialMode == "" {
+		credentialMode = AnthropicCredAuto
+	}
+
+	mkProvider := func(client anthropic.Client, cred string) *AnthropicProvider {
 		return &AnthropicProvider{
 			client:         &client,
 			model:          actualModel,
 			thinkingBudget: thinkingBudget,
-			credential:     "api_key",
-		}, nil
+			credential:     cred,
+		}
+	}
+
+	// When a specific mode is forced, only try that one source.
+	switch credentialMode {
+	case AnthropicCredAPIKey:
+		if apiKey == "" {
+			return nil, fmt.Errorf("credentials mode %q requires an explicit api_key in provider config", credentialMode)
+		}
+		return mkProvider(anthropic.NewClient(option.WithAPIKey(apiKey)), "api_key"), nil
+
+	case AnthropicCredEnv:
+		envKey := os.Getenv("ANTHROPIC_API_KEY")
+		if envKey == "" {
+			return nil, fmt.Errorf("credentials mode %q requires ANTHROPIC_API_KEY environment variable", credentialMode)
+		}
+		return mkProvider(anthropic.NewClient(option.WithAPIKey(envKey)), "env"), nil
+
+	case AnthropicCredOAuthEnv:
+		envToken := os.Getenv("CLAUDE_CODE_OAUTH_TOKEN")
+		if envToken == "" {
+			return nil, fmt.Errorf("credentials mode %q requires CLAUDE_CODE_OAUTH_TOKEN environment variable", credentialMode)
+		}
+		return mkProvider(newOAuthClient(envToken), "oauth_env"), nil
+
+	case AnthropicCredOAuth:
+		return newAnthropicOAuthProvider(actualModel, thinkingBudget)
+
+	case AnthropicCredAuto:
+		// Fall through to the cascade below.
+
+	default:
+		return nil, fmt.Errorf("unknown Anthropic credentials mode: %q (valid: auto, api_key, env, oauth_env, oauth)", credentialMode)
+	}
+
+	// Auto mode: full credential cascade.
+
+	// 1. Explicit API key provided (from config)
+	if apiKey != "" {
+		return mkProvider(anthropic.NewClient(option.WithAPIKey(apiKey)), "api_key"), nil
 	}
 
 	// 2. ANTHROPIC_API_KEY environment variable
 	if envKey := os.Getenv("ANTHROPIC_API_KEY"); envKey != "" {
-		client := anthropic.NewClient(option.WithAPIKey(envKey))
-		return &AnthropicProvider{
-			client:         &client,
-			model:          actualModel,
-			thinkingBudget: thinkingBudget,
-			credential:     "env",
-		}, nil
+		return mkProvider(anthropic.NewClient(option.WithAPIKey(envKey)), "env"), nil
 	}
 
 	// 3. CLAUDE_CODE_OAUTH_TOKEN environment variable
 	if envToken := os.Getenv("CLAUDE_CODE_OAUTH_TOKEN"); envToken != "" {
-		client := newOAuthClient(envToken)
-		return &AnthropicProvider{
-			client:         &client,
-			model:          actualModel,
-			thinkingBudget: thinkingBudget,
-			credential:     "oauth_env",
-		}, nil
+		return mkProvider(newOAuthClient(envToken), "oauth_env"), nil
 	}
 
 	// 4. Saved OAuth token from local storage
 	if creds, err := credentials.GetAnthropicOAuthCredentials(); err == nil {
+		return mkProvider(newOAuthClient(creds.AccessToken), "oauth"), nil
+	}
+
+	// 5. Interactive: prompt user to run `claude setup-token` and paste the token
+	return newAnthropicOAuthProvider(actualModel, thinkingBudget)
+}
+
+// newAnthropicOAuthProvider creates an Anthropic provider using saved OAuth credentials
+// or interactively prompts the user to set up a new token.
+func newAnthropicOAuthProvider(model string, thinkingBudget int64) (*AnthropicProvider, error) {
+	// Try saved OAuth token first
+	if creds, err := credentials.GetAnthropicOAuthCredentials(); err == nil {
 		client := newOAuthClient(creds.AccessToken)
 		return &AnthropicProvider{
 			client:         &client,
-			model:          actualModel,
+			model:          model,
 			thinkingBudget: thinkingBudget,
 			credential:     "oauth",
 		}, nil
 	}
 
-	// 5. Interactive: prompt user to run `claude setup-token` and paste the token
+	// Interactive: prompt user to run `claude setup-token` and paste the token
 	token, err := promptForAnthropicOAuth()
 	if err != nil {
 		return nil, err
@@ -142,7 +195,7 @@ func NewAnthropicProvider(apiKey, model string) (*AnthropicProvider, error) {
 
 	return &AnthropicProvider{
 		client:         &testClient,
-		model:          actualModel,
+		model:          model,
 		thinkingBudget: thinkingBudget,
 		credential:     "oauth",
 	}, nil
@@ -249,6 +302,9 @@ func (p *AnthropicProvider) streamStandard(ctx context.Context, req Request) (St
 				OfEnabled: &anthropic.ThinkingConfigEnabledParam{
 					BudgetTokens: p.thinkingBudget,
 				},
+			}
+			params.OutputConfig = anthropic.OutputConfigParam{
+				Effort: anthropic.OutputConfigEffortMax,
 			}
 		}
 
@@ -360,6 +416,9 @@ func (p *AnthropicProvider) streamWithSearch(ctx context.Context, req Request) (
 				OfEnabled: &anthropic.BetaThinkingConfigEnabledParam{
 					BudgetTokens: p.thinkingBudget,
 				},
+			}
+			params.OutputConfig = anthropic.BetaOutputConfigParam{
+				Effort: anthropic.BetaOutputConfigEffortMax,
 			}
 		}
 
@@ -522,7 +581,7 @@ func buildAnthropicBlocks(parts []Part, allowToolUse bool) []anthropic.ContentBl
 			}
 		case PartToolResult:
 			if part.ToolResult != nil {
-				blocks = append(blocks, toolResultBlock(part.ToolResult.ID, part.ToolResult.Content, part.ToolResult.IsError))
+				blocks = append(blocks, toolResultBlock(part.ToolResult))
 			}
 		}
 	}
@@ -546,127 +605,102 @@ func buildAnthropicBetaBlocks(parts []Part, allowToolUse bool) []anthropic.BetaC
 			}
 		case PartToolResult:
 			if part.ToolResult != nil {
-				blocks = append(blocks, betaToolResultBlock(part.ToolResult.ID, part.ToolResult.Content, part.ToolResult.IsError))
+				blocks = append(blocks, betaToolResultBlock(part.ToolResult))
 			}
 		}
 	}
 	return blocks
 }
 
-func betaToolResultBlock(id, content string, isError bool) anthropic.BetaContentBlockParamUnion {
-	// Check for embedded image data
-	mimeType, base64Data, textContent := parseToolResultImageData(content)
+func betaToolResultBlock(result *ToolResult) anthropic.BetaContentBlockParamUnion {
+	contentBlocks := make([]anthropic.BetaToolResultBlockParamContentUnion, 0)
 
-	var contentBlocks []anthropic.BetaToolResultBlockParamContentUnion
+	for _, part := range toolResultContentParts(result) {
+		switch part.Type {
+		case ToolContentPartText:
+			if part.Text == "" {
+				continue
+			}
+			contentBlocks = append(contentBlocks, anthropic.BetaToolResultBlockParamContentUnion{
+				OfText: &anthropic.BetaTextBlockParam{Text: part.Text},
+			})
+		case ToolContentPartImageData:
+			mimeType, base64Data, ok := toolResultImageData(part)
+			if !ok {
+				continue
+			}
+			contentBlocks = append(contentBlocks, anthropic.BetaToolResultBlockParamContentUnion{
+				OfImage: &anthropic.BetaImageBlockParam{
+					Source: anthropic.BetaImageBlockParamSourceUnion{
+						OfBase64: &anthropic.BetaBase64ImageSourceParam{
+							Data:      base64Data,
+							MediaType: anthropic.BetaBase64ImageSourceMediaType(mimeType),
+						},
+					},
+				},
+			})
+		}
+	}
 
-	// Add text content (without the image marker)
-	if textContent != "" {
+	if len(contentBlocks) == 0 {
+		textContent := toolResultTextContent(result)
 		contentBlocks = append(contentBlocks, anthropic.BetaToolResultBlockParamContentUnion{
 			OfText: &anthropic.BetaTextBlockParam{Text: textContent},
 		})
 	}
 
-	// Add image content if present
-	if base64Data != "" {
-		contentBlocks = append(contentBlocks, anthropic.BetaToolResultBlockParamContentUnion{
-			OfImage: &anthropic.BetaImageBlockParam{
-				Source: anthropic.BetaImageBlockParamSourceUnion{
-					OfBase64: &anthropic.BetaBase64ImageSourceParam{
-						Data:      base64Data,
-						MediaType: anthropic.BetaBase64ImageSourceMediaType(mimeType),
-					},
-				},
-			},
-		})
-	}
-
-	// Fallback if no content blocks were created
-	if len(contentBlocks) == 0 {
-		contentBlocks = append(contentBlocks, anthropic.BetaToolResultBlockParamContentUnion{
-			OfText: &anthropic.BetaTextBlockParam{Text: content},
-		})
-	}
-
 	block := anthropic.BetaToolResultBlockParam{
-		ToolUseID: id,
-		IsError:   anthropic.Bool(isError),
+		ToolUseID: result.ID,
+		IsError:   anthropic.Bool(result.IsError),
 		Content:   contentBlocks,
 	}
 	return anthropic.BetaContentBlockParamUnion{OfToolResult: &block}
 }
 
-// toolResultBlock creates a non-beta tool result block with image support.
-func toolResultBlock(id, content string, isError bool) anthropic.ContentBlockParamUnion {
-	// Check for embedded image data
-	mimeType, base64Data, textContent := parseToolResultImageData(content)
+// toolResultBlock creates a non-beta tool result block with structured image support.
+func toolResultBlock(result *ToolResult) anthropic.ContentBlockParamUnion {
+	contentBlocks := make([]anthropic.ToolResultBlockParamContentUnion, 0)
 
-	var contentBlocks []anthropic.ToolResultBlockParamContentUnion
+	for _, part := range toolResultContentParts(result) {
+		switch part.Type {
+		case ToolContentPartText:
+			if part.Text == "" {
+				continue
+			}
+			contentBlocks = append(contentBlocks, anthropic.ToolResultBlockParamContentUnion{
+				OfText: &anthropic.TextBlockParam{Text: part.Text},
+			})
+		case ToolContentPartImageData:
+			mimeType, base64Data, ok := toolResultImageData(part)
+			if !ok {
+				continue
+			}
+			contentBlocks = append(contentBlocks, anthropic.ToolResultBlockParamContentUnion{
+				OfImage: &anthropic.ImageBlockParam{
+					Source: anthropic.ImageBlockParamSourceUnion{
+						OfBase64: &anthropic.Base64ImageSourceParam{
+							Data:      base64Data,
+							MediaType: anthropic.Base64ImageSourceMediaType(mimeType),
+						},
+					},
+				},
+			})
+		}
+	}
 
-	// Add text content (without the image marker)
-	if textContent != "" {
+	if len(contentBlocks) == 0 {
+		textContent := toolResultTextContent(result)
 		contentBlocks = append(contentBlocks, anthropic.ToolResultBlockParamContentUnion{
 			OfText: &anthropic.TextBlockParam{Text: textContent},
 		})
 	}
 
-	// Add image content if present
-	if base64Data != "" {
-		contentBlocks = append(contentBlocks, anthropic.ToolResultBlockParamContentUnion{
-			OfImage: &anthropic.ImageBlockParam{
-				Source: anthropic.ImageBlockParamSourceUnion{
-					OfBase64: &anthropic.Base64ImageSourceParam{
-						Data:      base64Data,
-						MediaType: anthropic.Base64ImageSourceMediaType(mimeType),
-					},
-				},
-			},
-		})
-	}
-
-	// Fallback if no content blocks were created
-	if len(contentBlocks) == 0 {
-		contentBlocks = append(contentBlocks, anthropic.ToolResultBlockParamContentUnion{
-			OfText: &anthropic.TextBlockParam{Text: content},
-		})
-	}
-
 	block := anthropic.ToolResultBlockParam{
-		ToolUseID: id,
-		IsError:   anthropic.Bool(isError),
+		ToolUseID: result.ID,
+		IsError:   anthropic.Bool(result.IsError),
 		Content:   contentBlocks,
 	}
 	return anthropic.ContentBlockParamUnion{OfToolResult: &block}
-}
-
-// parseToolResultImageData extracts image data from a tool result.
-// Returns mime type, base64 data, and the text content with the image marker removed.
-func parseToolResultImageData(content string) (mimeType, base64Data, textContent string) {
-	const prefix = "[IMAGE_DATA:"
-	const suffix = "]"
-
-	start := strings.Index(content, prefix)
-	if start == -1 {
-		return "", "", content
-	}
-
-	end := strings.Index(content[start:], suffix)
-	if end == -1 {
-		return "", "", content
-	}
-
-	// Extract the image data portion
-	imageMarker := content[start : start+end+1]
-	data := content[start+len(prefix) : start+end]
-	parts := strings.SplitN(data, ":", 2)
-	if len(parts) != 2 {
-		return "", "", content
-	}
-
-	// Remove the image marker from text content
-	textContent = strings.Replace(content, imageMarker, "", 1)
-	textContent = strings.TrimSpace(textContent)
-
-	return parts[0], parts[1], textContent
 }
 
 func buildAnthropicTools(specs []ToolSpec) []anthropic.ToolUnionParam {

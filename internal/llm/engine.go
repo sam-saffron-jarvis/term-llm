@@ -134,6 +134,27 @@ func (e *Engine) Tools() *ToolRegistry {
 	return e.tools
 }
 
+// ResetConversation clears all conversation-specific state from the engine.
+// Called on /clear or /new to start a fresh conversation. This resets
+// compaction tracking, context notices, and provider-side conversation state
+// (e.g., OpenAI Responses API previous_response_id).
+func (e *Engine) ResetConversation() {
+	e.callbackMu.Lock()
+	e.lastTotalTokens = 0
+	e.lastMessageCount = 0
+	e.systemPrompt = ""
+	e.contextNoticeEmitted = false
+	e.callbackMu.Unlock()
+
+	// Reset provider-side conversation state if supported
+	type conversationResetter interface {
+		ResetConversation()
+	}
+	if r, ok := e.provider.(conversationResetter); ok {
+		r.ResetConversation()
+	}
+}
+
 // SetDebugLogger sets the debug logger for this engine.
 func (e *Engine) SetDebugLogger(logger *DebugLogger) {
 	e.debugLogger = logger
