@@ -96,6 +96,7 @@ type Config struct {
 	Chat            ChatConfig                `mapstructure:"chat"`
 	Edit            EditConfig                `mapstructure:"edit"`
 	Image           ImageConfig               `mapstructure:"image"`
+	Embed           EmbedConfig               `mapstructure:"embed"`
 	Search          SearchConfig              `mapstructure:"search"`
 	Theme           ThemeConfig               `mapstructure:"theme"`
 	Tools           ToolsConfig               `mapstructure:"tools"`
@@ -280,6 +281,46 @@ type ImageDebugConfig struct {
 	Delay float64 `mapstructure:"delay"` // delay in seconds before returning (e.g., 1.5)
 }
 
+// EmbedConfig configures text embedding generation
+type EmbedConfig struct {
+	Provider string              `mapstructure:"provider"` // default embedding provider: gemini, openai, jina, voyage, ollama
+	OpenAI   EmbedOpenAIConfig   `mapstructure:"openai"`
+	Gemini   EmbedGeminiConfig   `mapstructure:"gemini"`
+	Jina     EmbedJinaConfig     `mapstructure:"jina"`
+	Voyage   EmbedVoyageConfig   `mapstructure:"voyage"`
+	Ollama   EmbedOllamaConfig   `mapstructure:"ollama"`
+}
+
+// EmbedOpenAIConfig configures OpenAI embedding generation
+type EmbedOpenAIConfig struct {
+	APIKey string `mapstructure:"api_key"`
+	Model  string `mapstructure:"model"` // text-embedding-3-small (default), text-embedding-3-large
+}
+
+// EmbedGeminiConfig configures Gemini embedding generation
+type EmbedGeminiConfig struct {
+	APIKey string `mapstructure:"api_key"`
+	Model  string `mapstructure:"model"` // gemini-embedding-001 (default)
+}
+
+// EmbedJinaConfig configures Jina AI embedding generation
+type EmbedJinaConfig struct {
+	APIKey string `mapstructure:"api_key"`
+	Model  string `mapstructure:"model"` // jina-embeddings-v3 (default), jina-embeddings-v4
+}
+
+// EmbedVoyageConfig configures Voyage AI embedding generation
+type EmbedVoyageConfig struct {
+	APIKey string `mapstructure:"api_key"`
+	Model  string `mapstructure:"model"` // voyage-3.5 (default), voyage-3-large, voyage-code-3
+}
+
+// EmbedOllamaConfig configures Ollama embedding generation
+type EmbedOllamaConfig struct {
+	BaseURL string `mapstructure:"base_url"` // default: http://localhost:11434
+	Model   string `mapstructure:"model"`    // nomic-embed-text (default)
+}
+
 // SearchConfig configures web search providers
 type SearchConfig struct {
 	Provider      string             `mapstructure:"provider"`       // exa, brave, google, duckduckgo (default)
@@ -349,6 +390,7 @@ func Load() (*Config, error) {
 	}
 
 	resolveImageCredentials(&cfg.Image)
+	resolveEmbedCredentials(&cfg.Embed)
 	resolveSearchCredentials(&cfg.Search)
 
 	return &cfg, nil
@@ -653,6 +695,36 @@ func resolveImageCredentials(cfg *ImageConfig) {
 	}
 }
 
+// resolveEmbedCredentials resolves API credentials for all embedding providers
+func resolveEmbedCredentials(cfg *EmbedConfig) {
+	// OpenAI embed credentials
+	cfg.OpenAI.APIKey = expandEnv(cfg.OpenAI.APIKey)
+	if cfg.OpenAI.APIKey == "" {
+		cfg.OpenAI.APIKey = os.Getenv("OPENAI_API_KEY")
+	}
+
+	// Gemini embed credentials
+	cfg.Gemini.APIKey = expandEnv(cfg.Gemini.APIKey)
+	if cfg.Gemini.APIKey == "" {
+		cfg.Gemini.APIKey = os.Getenv("GEMINI_API_KEY")
+	}
+
+	// Jina embed credentials
+	cfg.Jina.APIKey = expandEnv(cfg.Jina.APIKey)
+	if cfg.Jina.APIKey == "" {
+		cfg.Jina.APIKey = os.Getenv("JINA_API_KEY")
+	}
+
+	// Voyage embed credentials
+	cfg.Voyage.APIKey = expandEnv(cfg.Voyage.APIKey)
+	if cfg.Voyage.APIKey == "" {
+		cfg.Voyage.APIKey = os.Getenv("VOYAGE_API_KEY")
+	}
+
+	// Ollama base URL
+	cfg.Ollama.BaseURL = expandEnv(cfg.Ollama.BaseURL)
+}
+
 // resolveSearchCredentials resolves API credentials for all search providers
 func resolveSearchCredentials(cfg *SearchConfig) {
 	// Exa credentials
@@ -832,6 +904,24 @@ var KnownKeys = map[string]bool{
 	"image.debug":              true,
 	"image.debug.delay":        true,
 
+	// Embed
+	"embed.provider":          true,
+	"embed.openai":            true,
+	"embed.openai.api_key":    true,
+	"embed.openai.model":      true,
+	"embed.gemini":            true,
+	"embed.gemini.api_key":    true,
+	"embed.gemini.model":      true,
+	"embed.jina":              true,
+	"embed.jina.api_key":      true,
+	"embed.jina.model":        true,
+	"embed.voyage":            true,
+	"embed.voyage.api_key":    true,
+	"embed.voyage.model":      true,
+	"embed.ollama":            true,
+	"embed.ollama.base_url":   true,
+	"embed.ollama.model":      true,
+
 	// Search
 	"search.provider":       true,
 	"search.force_external": true,
@@ -930,6 +1020,12 @@ func GetDefaults() map[string]any {
 		"image.flux.model":               "flux-2-pro",
 		"image.openrouter.model":         "google/gemini-2.5-flash-image",
 		"image.debug.delay":              0.0,
+		"embed.openai.model":             "text-embedding-3-small",
+		"embed.gemini.model":             "gemini-embedding-001",
+		"embed.jina.model":               "jina-embeddings-v3",
+		"embed.voyage.model":             "voyage-3.5",
+		"embed.ollama.model":             "nomic-embed-text",
+		"embed.ollama.base_url":          "http://localhost:11434",
 		"search.provider":                "duckduckgo",
 		"search.force_external":          false,
 		"tools.enabled":                  []string{},
