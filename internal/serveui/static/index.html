@@ -1,0 +1,260 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>term-llm serve</title>
+  <style>
+    :root {
+      --bg: #0b1220;
+      --panel: #121a2a;
+      --panel-2: #182338;
+      --text: #e9eefb;
+      --muted: #91a2c6;
+      --accent: #5dd6a0;
+      --danger: #ff6b6b;
+      --border: #2b3a56;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "IBM Plex Sans", "Avenir Next", "Segoe UI", sans-serif;
+      color: var(--text);
+      background: radial-gradient(circle at 20% 10%, #1d2a46 0%, #0b1220 50%, #070b14 100%);
+      min-height: 100vh;
+      padding: 1rem;
+    }
+    .app {
+      max-width: 980px;
+      margin: 0 auto;
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      background: linear-gradient(180deg, rgba(255,255,255,0.03), rgba(255,255,255,0.01));
+      overflow: hidden;
+    }
+    .top {
+      padding: 1rem;
+      background: var(--panel);
+      border-bottom: 1px solid var(--border);
+      display: grid;
+      grid-template-columns: repeat(4, minmax(120px, 1fr));
+      gap: .75rem;
+    }
+    label {
+      display: block;
+      font-size: .75rem;
+      letter-spacing: .04em;
+      text-transform: uppercase;
+      color: var(--muted);
+      margin-bottom: .3rem;
+    }
+    input, button, select, textarea {
+      width: 100%;
+      border-radius: 8px;
+      border: 1px solid var(--border);
+      background: var(--panel-2);
+      color: var(--text);
+      padding: .55rem .65rem;
+      font-size: .95rem;
+    }
+    button {
+      cursor: pointer;
+      background: linear-gradient(90deg, #41c48a, #55d0dd);
+      color: #041018;
+      border: none;
+      font-weight: 700;
+    }
+    button.secondary {
+      background: transparent;
+      border: 1px solid var(--border);
+      color: var(--muted);
+      font-weight: 500;
+    }
+    .body {
+      padding: 1rem;
+      display: grid;
+      gap: .8rem;
+      background: rgba(0,0,0,.18);
+    }
+    #chat {
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      min-height: 360px;
+      max-height: 56vh;
+      overflow: auto;
+      padding: .8rem;
+      background: rgba(0,0,0,.24);
+      white-space: pre-wrap;
+      line-height: 1.35;
+      font-family: "IBM Plex Mono", "SF Mono", Consolas, monospace;
+      font-size: .92rem;
+    }
+    .line-user { color: #8ec9ff; }
+    .line-assistant { color: #dbf5e7; }
+    .line-system { color: var(--muted); }
+    .error { color: var(--danger); }
+    .row { display: grid; grid-template-columns: 1fr auto; gap: .6rem; }
+    .status { color: var(--muted); font-size: .85rem; }
+    @media (max-width: 760px) {
+      .top { grid-template-columns: repeat(2, minmax(120px, 1fr)); }
+      .row { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <div class="top">
+      <div>
+        <label>Token</label>
+        <input id="token" type="password" placeholder="Bearer token">
+      </div>
+      <div>
+        <label>Session ID</label>
+        <input id="session" value="demo-session">
+      </div>
+      <div>
+        <label>Model</label>
+        <input id="model" placeholder="optional model">
+      </div>
+      <div>
+        <label>&nbsp;</label>
+        <button class="secondary" id="loadModels">Load Models</button>
+      </div>
+    </div>
+    <div class="body">
+      <div id="chat"></div>
+      <div class="row">
+        <textarea id="prompt" rows="3" placeholder="Ask something..."></textarea>
+        <button id="send">Send</button>
+      </div>
+      <div class="status" id="status">Ready.</div>
+    </div>
+  </div>
+
+  <script>
+    const chat = document.getElementById('chat');
+    const statusEl = document.getElementById('status');
+    const tokenEl = document.getElementById('token');
+    const sessionEl = document.getElementById('session');
+    const modelEl = document.getElementById('model');
+    const promptEl = document.getElementById('prompt');
+
+    function appendLine(text, cls) {
+      const div = document.createElement('div');
+      div.className = cls;
+      div.textContent = text;
+      chat.appendChild(div);
+      chat.scrollTop = chat.scrollHeight;
+      return div;
+    }
+
+    function authHeaders() {
+      const h = { 'Content-Type': 'application/json' };
+      const token = tokenEl.value.trim();
+      if (token) h['Authorization'] = 'Bearer ' + token;
+      const sessionID = sessionEl.value.trim();
+      if (sessionID) h['session_id'] = sessionID;
+      return h;
+    }
+
+    async function loadModels() {
+      statusEl.textContent = 'Loading models...';
+      try {
+        const res = await fetch('/v1/models', { headers: authHeaders() });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error?.message || 'models request failed');
+        const ids = (data.data || []).map(m => m.id).slice(0, 20);
+        appendLine('system: models => ' + ids.join(', '), 'line-system');
+        statusEl.textContent = 'Models loaded.';
+      } catch (err) {
+        appendLine('error: ' + err.message, 'error');
+        statusEl.textContent = 'Failed loading models.';
+      }
+    }
+
+    function parseEventStream(reader, onEvent) {
+      const decoder = new TextDecoder();
+      let buffer = '';
+      return reader.read().then(function process(result) {
+        if (result.done) return;
+        buffer += decoder.decode(result.value, { stream: true });
+        const parts = buffer.split('\n\n');
+        buffer = parts.pop();
+        for (const chunk of parts) {
+          const lines = chunk.split('\n');
+          let event = '';
+          let data = '';
+          for (const line of lines) {
+            if (line.startsWith('event:')) event = line.slice(6).trim();
+            if (line.startsWith('data:')) data += line.slice(5).trim();
+          }
+          onEvent(event, data);
+        }
+        return reader.read().then(process);
+      });
+    }
+
+    async function sendPrompt() {
+      const prompt = promptEl.value.trim();
+      if (!prompt) return;
+
+      appendLine('user: ' + prompt, 'line-user');
+      const assistantLine = appendLine('assistant: ', 'line-assistant');
+      promptEl.value = '';
+      statusEl.textContent = 'Streaming...';
+
+      const body = {
+        stream: true,
+        input: [{ type: 'message', role: 'user', content: prompt }]
+      };
+      if (modelEl.value.trim()) body.model = modelEl.value.trim();
+
+      try {
+        const res = await fetch('/v1/responses', {
+          method: 'POST',
+          headers: authHeaders(),
+          body: JSON.stringify(body)
+        });
+
+        if (!res.ok) {
+          const data = await res.json().catch(() => ({}));
+          throw new Error(data.error?.message || 'request failed');
+        }
+
+        const reader = res.body.getReader();
+        await parseEventStream(reader, (event, data) => {
+          if (data === '[DONE]') {
+            statusEl.textContent = 'Done.';
+            return;
+          }
+          if (!data) return;
+          try {
+            const payload = JSON.parse(data);
+            if (event === 'response.output_text.delta') {
+              assistantLine.textContent += payload.delta || '';
+            } else if (event === 'response.failed') {
+              assistantLine.textContent += '\n[error] ' + (payload.error?.message || 'unknown error');
+              assistantLine.classList.add('error');
+            }
+          } catch (_) {
+            // ignore malformed chunks
+          }
+          chat.scrollTop = chat.scrollHeight;
+        });
+      } catch (err) {
+        appendLine('error: ' + err.message, 'error');
+        statusEl.textContent = 'Error.';
+      }
+    }
+
+    document.getElementById('send').addEventListener('click', sendPrompt);
+    document.getElementById('loadModels').addEventListener('click', loadModels);
+    promptEl.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        sendPrompt();
+      }
+    });
+  </script>
+</body>
+</html>
