@@ -2,6 +2,7 @@ package chat
 
 import (
 	"errors"
+	"regexp"
 	"strconv"
 	"strings"
 	"testing"
@@ -172,5 +173,103 @@ func TestRenderStatusLine_ShowsCompactModelLabel(t *testing.T) {
 	}
 	if strings.Contains(line, "ChatGPT (") {
 		t.Fatalf("expected status line to omit verbose provider metadata, got %q", line)
+	}
+}
+
+func TestRenderStatusLine_UsesWholeSecondElapsedWhileStreaming(t *testing.T) {
+	m := newTestChatModel(false)
+	m.streaming = true
+	m.phase = "Thinking"
+	m.streamStartTime = time.Now().Add(-1500 * time.Millisecond)
+
+	line := ui.StripANSI(m.renderStatusLine())
+	if regexp.MustCompile(`\d+\.\d+s`).MatchString(line) {
+		t.Fatalf("expected elapsed time without sub-second precision, got %q", line)
+	}
+}
+
+func TestRenderStatusLine_ShowsCachedUsageWhenPresent(t *testing.T) {
+	m := newTestChatModel(false)
+	m.stats.CachedInputTokens = 500_000
+
+	line := ui.StripANSI(m.renderStatusLine())
+	if !strings.Contains(line, "500K cached") && !strings.Contains(line, "cache:500K") {
+		t.Fatalf("expected cached usage in status line, got %q", line)
+	}
+}
+
+func TestRenderStatusLine_ShowsSeededCachedUsageFromSession(t *testing.T) {
+	provider := llm.NewMockProvider("mock")
+	engine := llm.NewEngine(provider, nil)
+	sess := &session.Session{
+		ID:                session.NewID(),
+		Provider:          provider.Name(),
+		Model:             "mock-model",
+		Mode:              session.ModeChat,
+		CreatedAt:         time.Now(),
+		UpdatedAt:         time.Now(),
+		CachedInputTokens: 250_000,
+	}
+
+	m := New(
+		&config.Config{DefaultProvider: "mock"},
+		provider,
+		engine,
+		"mock-model",
+		nil,
+		20,
+		false,
+		false,
+		nil,
+		"",
+		"",
+		false,
+		"",
+		nil,
+		sess,
+		false,
+		nil,
+		false,
+		"",
+	)
+
+	line := ui.StripANSI(m.renderStatusLine())
+	if !strings.Contains(line, "250K cached") && !strings.Contains(line, "cache:250K") {
+		t.Fatalf("expected seeded cached usage in status line, got %q", line)
+	}
+}
+
+func TestRenderStatusLine_HidesCachedUsageWhenZero(t *testing.T) {
+	m := newTestChatModel(false)
+	m.stats.CachedInputTokens = 0
+
+	line := ui.StripANSI(m.renderStatusLine())
+	if strings.Contains(line, "cached") || strings.Contains(line, "cache:") {
+		t.Fatalf("expected no cached usage segment when cached tokens are zero, got %q", line)
+	}
+}
+
+func TestRenderStatusLine_WithCachedUsageNarrowWidthStillRenders(t *testing.T) {
+	m := newTestChatModel(false)
+	m.width = 12
+	m.stats.CachedInputTokens = 500_000
+	m.localTools = []string{"read_file", "write_file", "shell", "grep"}
+
+	line := ui.StripANSI(m.renderStatusLine())
+	if strings.TrimSpace(line) == "" {
+		t.Fatalf("expected non-empty status line for narrow width")
+	}
+	if !strings.Contains(line, "cached") && !strings.Contains(line, "cache:") {
+		t.Fatalf("expected cached usage segment in narrow-width status line, got %q", line)
+	}
+}
+
+func TestUpdate_StreamEventUsage_CacheOnlyUpdatesStats(t *testing.T) {
+	m := newTestChatModel(false)
+	m.stats = ui.NewSessionStats()
+
+	_, _ = m.Update(streamEventMsg{event: ui.UsageEvent(0, 0, 1234, 0)})
+	if got := m.stats.CachedInputTokens; got != 1234 {
+		t.Fatalf("expected cached input tokens to update from cache-only usage event, got %d", got)
 	}
 }

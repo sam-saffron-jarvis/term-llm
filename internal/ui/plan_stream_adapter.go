@@ -147,8 +147,8 @@ func (a *PlanStreamAdapter) ProcessStream(ctx context.Context, stream llm.Stream
 		case llm.EventUsage:
 			if event.Use != nil {
 				totalTokens = event.Use.OutputTokens
-				a.stats.AddUsage(event.Use.InputTokens, event.Use.OutputTokens, event.Use.CachedInputTokens)
-				a.events <- UsageEvent(event.Use.InputTokens, event.Use.OutputTokens, event.Use.CachedInputTokens)
+				a.stats.AddUsage(event.Use.InputTokens, event.Use.OutputTokens, event.Use.CachedInputTokens, event.Use.CacheWriteTokens)
+				a.events <- UsageEvent(event.Use.InputTokens, event.Use.OutputTokens, event.Use.CachedInputTokens, event.Use.CacheWriteTokens)
 			}
 
 		case llm.EventPhase:

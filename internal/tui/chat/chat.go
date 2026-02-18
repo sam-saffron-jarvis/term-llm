@@ -726,10 +726,25 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 
 		case ui.StreamEventUsage:
-			if ev.InputTokens > 0 || ev.OutputTokens > 0 {
-				m.stats.AddUsage(ev.InputTokens, ev.OutputTokens, ev.CachedTokens)
+			inputTokens := ev.InputTokens
+			outputTokens := ev.OutputTokens
+			cachedTokens := ev.CachedTokens
+			writeTokens := ev.WriteTokens
+			if inputTokens < 0 {
+				inputTokens = 0
 			}
-
+			if outputTokens < 0 {
+				outputTokens = 0
+			}
+			if cachedTokens < 0 {
+				cachedTokens = 0
+			}
+			if writeTokens < 0 {
+				writeTokens = 0
+			}
+			if m.stats != nil && (inputTokens > 0 || outputTokens > 0 || cachedTokens > 0 || writeTokens > 0) {
+				m.stats.AddUsage(inputTokens, outputTokens, cachedTokens, writeTokens)
+			}
 		case ui.StreamEventText:
 			// Buffer text for smooth 60fps rendering instead of immediate display
 			if m.smoothBuffer != nil {

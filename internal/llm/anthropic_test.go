@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/anthropics/anthropic-sdk-go"
+	"github.com/anthropics/anthropic-sdk-go/shared/constant"
 	"github.com/samsaffron/term-llm/internal/credentials"
 )
 
@@ -433,5 +434,195 @@ func TestAnthropicThinkingBlockHelpersExposeReplayFields(t *testing.T) {
 	}
 	if got := thinking.GetThinking(); got == nil || *got != "reasoning text" {
 		t.Fatalf("expected helper thinking text, got %v", got)
+	}
+}
+
+func TestBuildAnthropicTools_LastToolHasCacheControl(t *testing.T) {
+	specs := []ToolSpec{
+		{Name: "tool_a", Description: "first tool", Schema: map[string]interface{}{}},
+		{Name: "tool_b", Description: "last tool", Schema: map[string]interface{}{}},
+	}
+	tools := buildAnthropicTools(specs)
+	if len(tools) != 2 {
+		t.Fatalf("expected 2 tools, got %d", len(tools))
+	}
+	// Only last tool should have cache_control set
+	if tools[0].OfTool == nil {
+		t.Fatalf("expected first tool to be OfTool")
+	}
+	first := tools[0].OfTool.CacheControl
+	if first.Type != "" {
+		t.Fatalf("first tool should not have cache_control, got type=%q", first.Type)
+	}
+	if tools[1].OfTool == nil {
+		t.Fatalf("expected last tool to be OfTool")
+	}
+	last := tools[1].OfTool.CacheControl
+	if last.Type != "ephemeral" {
+		t.Fatalf("last tool should have cache_control type=ephemeral, got %q", last.Type)
+	}
+}
+
+func TestBuildAnthropicTools_EmptySpecsReturnsNil(t *testing.T) {
+	tools := buildAnthropicTools(nil)
+	if tools != nil {
+		t.Fatalf("expected nil for empty specs, got %v", tools)
+	}
+}
+
+func TestBuildAnthropicBetaTools_LastToolHasCacheControl(t *testing.T) {
+	specs := []ToolSpec{
+		{Name: "tool_a", Description: "first tool", Schema: map[string]interface{}{}},
+		{Name: "tool_b", Description: "last tool", Schema: map[string]interface{}{}},
+	}
+	tools := buildAnthropicBetaTools(specs)
+	if len(tools) != 2 {
+		t.Fatalf("expected 2 beta tools, got %d", len(tools))
+	}
+	if tools[0].OfTool == nil {
+		t.Fatalf("expected first beta tool to be OfTool")
+	}
+	first := tools[0].OfTool.CacheControl
+	if first.Type != "" {
+		t.Fatalf("first beta tool should not have cache_control, got type=%q", first.Type)
+	}
+	if tools[1].OfTool == nil {
+		t.Fatalf("expected last beta tool to be OfTool")
+	}
+	last := tools[1].OfTool.CacheControl
+	if last.Type != "ephemeral" {
+		t.Fatalf("last beta tool should have cache_control type=ephemeral, got %q", last.Type)
+	}
+}
+
+func TestApplyLastMessageCacheControl_TextBlock(t *testing.T) {
+	messages := []anthropic.MessageParam{
+		anthropic.NewUserMessage(
+			anthropic.NewTextBlock("hello"),
+		),
+	}
+	applyLastMessageCacheControl(messages)
+	block := messages[0].Content[0]
+	if block.OfText == nil {
+		t.Fatalf("expected text block")
+	}
+	if block.OfText.CacheControl.Type != "ephemeral" {
+		t.Fatalf("expected cache_control type=ephemeral, got %q", block.OfText.CacheControl.Type)
+	}
+}
+
+func TestApplyLastMessageCacheControl_ToolResult(t *testing.T) {
+	toolBlock := anthropic.ToolResultBlockParam{
+		ToolUseID: "call-1",
+	}
+	messages := []anthropic.MessageParam{
+		{
+			Role: anthropic.MessageParamRoleUser,
+			Content: []anthropic.ContentBlockParamUnion{
+				{OfToolResult: &toolBlock},
+			},
+		},
+	}
+	applyLastMessageCacheControl(messages)
+	block := messages[0].Content[0]
+	if block.OfToolResult == nil {
+		t.Fatalf("expected tool_result block")
+	}
+	if block.OfToolResult.CacheControl.Type != "ephemeral" {
+		t.Fatalf("expected cache_control type=ephemeral, got %q", block.OfToolResult.CacheControl.Type)
+	}
+}
+
+func TestApplyLastMessageCacheControl_EmptyMessages(t *testing.T) {
+	// Should not panic on empty slice
+	applyLastMessageCacheControl(nil)
+	applyLastMessageCacheControl([]anthropic.MessageParam{})
+}
+
+func TestApplyLastMessageCacheControl_EmptyContent(t *testing.T) {
+	messages := []anthropic.MessageParam{
+		{Role: anthropic.MessageParamRoleUser, Content: []anthropic.ContentBlockParamUnion{}},
+	}
+	// Should not panic on empty content
+	applyLastMessageCacheControl(messages)
+}
+
+func TestApplyLastMessageCacheControl_OnlyLastMessageAffected(t *testing.T) {
+	messages := []anthropic.MessageParam{
+		anthropic.NewUserMessage(anthropic.NewTextBlock("first")),
+		anthropic.NewUserMessage(anthropic.NewTextBlock("second")),
+	}
+	applyLastMessageCacheControl(messages)
+	first := messages[0].Content[0]
+	if first.OfText != nil && first.OfText.CacheControl.Type == "ephemeral" {
+		t.Fatalf("first message should not have cache_control")
+	}
+	last := messages[1].Content[0]
+	if last.OfText == nil || last.OfText.CacheControl.Type != "ephemeral" {
+		t.Fatalf("last message should have cache_control type=ephemeral")
+	}
+}
+
+func TestBuildAnthropicBetaTools_EmptySpecsReturnsNil(t *testing.T) {
+	tools := buildAnthropicBetaTools(nil)
+	if tools != nil {
+		t.Fatalf("expected nil for empty specs, got %v", tools)
+	}
+}
+
+func TestApplyBetaLastMessageCacheControl_TextBlock(t *testing.T) {
+	messages := []anthropic.BetaMessageParam{
+		anthropic.NewBetaUserMessage(anthropic.NewBetaTextBlock("hello")),
+	}
+	applyBetaLastMessageCacheControl(messages)
+	block := messages[0].Content[0]
+	if block.OfText == nil {
+		t.Fatalf("expected text block")
+	}
+	if block.OfText.CacheControl.Type != "ephemeral" {
+		t.Fatalf("expected cache_control type=ephemeral, got %q", block.OfText.CacheControl.Type)
+	}
+}
+
+func TestApplyBetaLastMessageCacheControl_EmptyMessages(t *testing.T) {
+	applyBetaLastMessageCacheControl(nil)
+	applyBetaLastMessageCacheControl([]anthropic.BetaMessageParam{})
+}
+
+func TestBuildAnthropicTools_SingleTool(t *testing.T) {
+	specs := []ToolSpec{
+		{
+			Name:        "only_tool",
+			Description: "the only tool",
+			Schema:      map[string]interface{}{},
+		},
+	}
+	tools := buildAnthropicTools(specs)
+	if len(tools) != 1 {
+		t.Fatalf("expected 1 tool, got %d", len(tools))
+	}
+	if tools[0].OfTool == nil {
+		t.Fatalf("expected OfTool")
+	}
+	if tools[0].OfTool.CacheControl.Type != "ephemeral" {
+		t.Fatalf("single tool should have cache_control type=ephemeral, got %q", tools[0].OfTool.CacheControl.Type)
+	}
+}
+
+func TestBuildAnthropicTools_ToolHasSchema(t *testing.T) {
+	specs := []ToolSpec{
+		{
+			Name:        "read_file",
+			Description: "reads a file",
+			Schema:      map[string]interface{}{},
+		},
+	}
+	tools := buildAnthropicTools(specs)
+	if len(tools) != 1 {
+		t.Fatalf("expected 1 tool, got %d", len(tools))
+	}
+	schema := tools[0].OfTool.InputSchema
+	if schema.Type != constant.Object("object") {
+		t.Fatalf("expected schema type=object")
 	}
 }

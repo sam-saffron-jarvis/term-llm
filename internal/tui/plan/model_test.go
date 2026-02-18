@@ -444,7 +444,7 @@ func TestStatusLine_AgentActive_ShowsStats(t *testing.T) {
 	m.agentActive = true
 	m.agentPhase = "Thinking"
 	m.stats = ui.NewSessionStats()
-	m.stats.AddUsage(1000, 500, 0)
+	m.stats.AddUsage(1000, 500, 0, 0)
 	m.stats.ToolStart()
 	m.stats.ToolEnd()
 	m.stats.ToolStart()

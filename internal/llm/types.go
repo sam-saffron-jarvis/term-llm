@@ -252,7 +252,8 @@ type Event struct {
 type Usage struct {
 	InputTokens       int
 	OutputTokens      int
-	CachedInputTokens int // Tokens read from cache
+	CachedInputTokens int // Tokens read from cache (cache_read_input_tokens)
+	CacheWriteTokens  int // Tokens written to cache (cache_creation_input_tokens)
 }
 
 // CommandSuggestion represents a single command suggestion from the LLM.

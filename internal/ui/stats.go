@@ -11,6 +11,7 @@ type SessionStats struct {
 	InputTokens       int
 	OutputTokens      int
 	CachedInputTokens int // Tokens read from cache
+	CacheWriteTokens  int // Tokens written to cache
 	ToolCallCount     int
 	LLMCallCount      int // Number of LLM API calls made
 
@@ -52,16 +53,18 @@ func (s *SessionStats) SeedTotals(input, output, cached, toolCalls, llmCalls int
 }
 
 // AddUsage adds token usage to the stats and increments the LLM call count.
-func (s *SessionStats) AddUsage(input, output, cached int) {
+func (s *SessionStats) AddUsage(input, output, cached, cacheWrite int) {
 	s.InputTokens += input
 	s.OutputTokens += output
 	s.CachedInputTokens += cached
+	s.CacheWriteTokens += cacheWrite
 	s.LLMCallCount++
-	s.lastInputTokens = input
+	totalContext := input + cached + output
+	s.lastInputTokens = totalContext
 	s.lastOutputTokens = output
 	s.hasPerCallUsage = true
-	if input > s.peakInputTokens {
-		s.peakInputTokens = input
+	if totalContext > s.peakInputTokens {
+		s.peakInputTokens = totalContext
 	}
 }
 
@@ -105,13 +108,25 @@ func (s SessionStats) Render() string {
 
 	// Format tokens with optional cache info
 	var tokensStr string
-	if s.CachedInputTokens > 0 {
-		tokensStr = fmt.Sprintf("%s in (%s cached) / %s out",
+	switch {
+	case s.CachedInputTokens > 0 && s.CacheWriteTokens > 0:
+		tokensStr = fmt.Sprintf("%s in (cache: %s read, %s write) → %s out",
+			FormatTokenCount(s.InputTokens),
+			FormatTokenCount(s.CachedInputTokens),
+			FormatTokenCount(s.CacheWriteTokens),
+			FormatTokenCount(s.OutputTokens))
+	case s.CachedInputTokens > 0:
+		tokensStr = fmt.Sprintf("%s in (cache: %s read) → %s out",
 			FormatTokenCount(s.InputTokens),
 			FormatTokenCount(s.CachedInputTokens),
 			FormatTokenCount(s.OutputTokens))
-	} else {
-		tokensStr = fmt.Sprintf("%s in / %s out",
+	case s.CacheWriteTokens > 0:
+		tokensStr = fmt.Sprintf("%s in (cache: %s write) → %s out",
+			FormatTokenCount(s.InputTokens),
+			FormatTokenCount(s.CacheWriteTokens),
+			FormatTokenCount(s.OutputTokens))
+	default:
+		tokensStr = fmt.Sprintf("%s in → %s out",
 			FormatTokenCount(s.InputTokens),
 			FormatTokenCount(s.OutputTokens))
 	}

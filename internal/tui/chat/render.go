@@ -237,8 +237,8 @@ func (m *Model) viewAutoSend() string {
 	if m.streaming {
 		// Minimal status line during streaming
 		elapsed := time.Since(m.streamStartTime)
-		return fmt.Sprintf("%s:%s · mcp:off · %s  Responding %.1fs",
-			m.providerName, m.modelName, m.spinner.View(), elapsed.Seconds())
+		return fmt.Sprintf("%s:%s · mcp:off · %s  Responding %s",
+			m.providerName, m.modelName, m.spinner.View(), formatChatElapsed(elapsed))
 	}
 	return ""
 }
@@ -427,6 +427,14 @@ func (m *Model) setTextareaValue(s string) {
 	m.updateTextareaHeight()
 }
 
+func formatChatElapsed(elapsed time.Duration) string {
+	seconds := int(elapsed / time.Second)
+	if seconds < 0 {
+		seconds = 0
+	}
+	return fmt.Sprintf("%ds", seconds)
+}
+
 // renderStatusLine renders a tiny status line showing model and options
 func (m *Model) renderStatusLine() string {
 	theme := m.styles.Theme()
@@ -456,14 +464,44 @@ func (m *Model) renderStatusLine() string {
 		fixedParts = append(fixedParts, fmt.Sprintf("%d file(s)", len(m.files)))
 	}
 
-	// Token usage counter (e.g., ~45K/136K)
+	// Token usage counter (e.g., ~45K/136K) with optional cached segment
+	usagePart := ""
 	if m.engine != nil && m.engine.InputLimit() > 0 {
 		last := m.engine.LastTotalTokens()
 		limit := m.engine.InputLimit()
-		if last > 0 {
-			fixedParts = append(fixedParts, fmt.Sprintf("~%s/%s",
-				llm.FormatTokenCount(last), llm.FormatTokenCount(limit)))
+		if last > 0 && limit > 0 {
+			usagePart = fmt.Sprintf("~%s/%s",
+				llm.FormatTokenCount(last), llm.FormatTokenCount(limit))
 		}
+	}
+
+	cachedInputTokens := 0
+	if m.stats != nil && m.stats.CachedInputTokens > 0 {
+		cachedInputTokens = m.stats.CachedInputTokens
+	}
+	if cachedInputTokens > 0 {
+		cachedLabel := llm.FormatTokenCount(cachedInputTokens)
+		if cachedLabel != "" {
+			cachePart := fmt.Sprintf("%s cached", cachedLabel)
+			shortCachePart := fmt.Sprintf("cache:%s", cachedLabel)
+			useShortCacheLabel := m.width > 0 && m.width < 40
+			if usagePart != "" {
+				if useShortCacheLabel {
+					usagePart = fmt.Sprintf("%s (%s)", usagePart, shortCachePart)
+				} else {
+					usagePart = fmt.Sprintf("%s (%s)", usagePart, cachePart)
+				}
+			} else {
+				if useShortCacheLabel {
+					usagePart = shortCachePart
+				} else {
+					usagePart = cachePart
+				}
+			}
+		}
+	}
+	if usagePart != "" {
+		fixedParts = append(fixedParts, usagePart)
 	}
 
 	// During streaming, add progress info
@@ -474,7 +512,7 @@ func (m *Model) renderStatusLine() string {
 		if m.currentTokens > 0 {
 			progressParts = append(progressParts, fmt.Sprintf("%d tok", m.currentTokens))
 		}
-		progressParts = append(progressParts, fmt.Sprintf("%.1fs", elapsed.Seconds()))
+		progressParts = append(progressParts, formatChatElapsed(elapsed))
 		streamingPart = strings.Join(progressParts, " ")
 	}
 

@@ -279,6 +279,7 @@ func (p *AnthropicProvider) Stream(ctx context.Context, req Request) (Stream, er
 func (p *AnthropicProvider) streamStandard(ctx context.Context, req Request) (Stream, error) {
 	return newEventStream(ctx, func(ctx context.Context, events chan<- Event) error {
 		system, messages := buildAnthropicMessages(req.Messages)
+		applyLastMessageCacheControl(messages)
 		accumulator := newToolCallAccumulator()
 
 		params := anthropic.MessageNewParams{
@@ -287,7 +288,10 @@ func (p *AnthropicProvider) streamStandard(ctx context.Context, req Request) (St
 			Messages:  messages,
 		}
 		if system != "" {
-			params.System = []anthropic.TextBlockParam{{Text: system}}
+			params.System = []anthropic.TextBlockParam{{
+				Text:         system,
+				CacheControl: anthropic.NewCacheControlEphemeralParam(),
+			}}
 		}
 		if len(req.Tools) > 0 {
 			params.Tools = buildAnthropicTools(req.Tools)
@@ -352,11 +356,26 @@ func (p *AnthropicProvider) streamStandard(ctx context.Context, req Request) (St
 				if toolCall, ok := accumulator.Finish(variant.Index); ok {
 					events <- Event{Type: EventToolCall, Tool: &toolCall}
 				}
+			case anthropic.MessageStartEvent:
+				lastUsage = &Usage{
+					InputTokens:       int(variant.Message.Usage.InputTokens),
+					CachedInputTokens: int(variant.Message.Usage.CacheReadInputTokens),
+					CacheWriteTokens:  int(variant.Message.Usage.CacheCreationInputTokens),
+				}
 			case anthropic.MessageDeltaEvent:
 				if variant.Usage.OutputTokens > 0 {
-					lastUsage = &Usage{
-						InputTokens:  int(variant.Usage.InputTokens),
-						OutputTokens: int(variant.Usage.OutputTokens),
+					if lastUsage == nil {
+						lastUsage = &Usage{}
+					}
+					lastUsage.OutputTokens = int(variant.Usage.OutputTokens)
+					if lastUsage.InputTokens == 0 && variant.Usage.InputTokens > 0 {
+						lastUsage.InputTokens = int(variant.Usage.InputTokens)
+					}
+					if lastUsage.CachedInputTokens == 0 {
+						lastUsage.CachedInputTokens = int(variant.Usage.CacheReadInputTokens)
+					}
+					if lastUsage.CacheWriteTokens == 0 {
+						lastUsage.CacheWriteTokens = int(variant.Usage.CacheCreationInputTokens)
 					}
 				}
 			}
@@ -375,6 +394,7 @@ func (p *AnthropicProvider) streamStandard(ctx context.Context, req Request) (St
 func (p *AnthropicProvider) streamWithSearch(ctx context.Context, req Request) (Stream, error) {
 	return newEventStream(ctx, func(ctx context.Context, events chan<- Event) error {
 		system, messages := buildAnthropicBetaMessages(req.Messages)
+		applyBetaLastMessageCacheControl(messages)
 		accumulator := newToolCallAccumulator()
 
 		tools := buildAnthropicBetaTools(req.Tools)
@@ -398,7 +418,10 @@ func (p *AnthropicProvider) streamWithSearch(ctx context.Context, req Request) (
 			Tools:     tools,
 		}
 		if system != "" {
-			params.System = []anthropic.BetaTextBlockParam{{Text: system}}
+			params.System = []anthropic.BetaTextBlockParam{{
+				Text:         system,
+				CacheControl: anthropic.NewBetaCacheControlEphemeralParam(),
+			}}
 		}
 		// In search mode, use auto tool choice so model can call web_search first
 		// The model will call the user's requested tool after searching
@@ -483,11 +506,26 @@ func (p *AnthropicProvider) streamWithSearch(ctx context.Context, req Request) (
 				if toolCall, ok := accumulator.Finish(variant.Index); ok {
 					events <- Event{Type: EventToolCall, Tool: &toolCall}
 				}
+			case anthropic.BetaRawMessageStartEvent:
+				lastUsage = &Usage{
+					InputTokens:       int(variant.Message.Usage.InputTokens),
+					CachedInputTokens: int(variant.Message.Usage.CacheReadInputTokens),
+					CacheWriteTokens:  int(variant.Message.Usage.CacheCreationInputTokens),
+				}
 			case anthropic.BetaRawMessageDeltaEvent:
 				if variant.Usage.OutputTokens > 0 {
-					lastUsage = &Usage{
-						InputTokens:  int(variant.Usage.InputTokens),
-						OutputTokens: int(variant.Usage.OutputTokens),
+					if lastUsage == nil {
+						lastUsage = &Usage{}
+					}
+					lastUsage.OutputTokens = int(variant.Usage.OutputTokens)
+					if lastUsage.InputTokens == 0 && variant.Usage.InputTokens > 0 {
+						lastUsage.InputTokens = int(variant.Usage.InputTokens)
+					}
+					if lastUsage.CachedInputTokens == 0 {
+						lastUsage.CachedInputTokens = int(variant.Usage.CacheReadInputTokens)
+					}
+					if lastUsage.CacheWriteTokens == 0 {
+						lastUsage.CacheWriteTokens = int(variant.Usage.CacheCreationInputTokens)
 					}
 				}
 			}
@@ -720,6 +758,9 @@ func buildAnthropicTools(specs []ToolSpec) []anthropic.ToolUnionParam {
 		}
 		tools = append(tools, tool)
 	}
+	if len(tools) > 0 && tools[len(tools)-1].OfTool != nil {
+		tools[len(tools)-1].OfTool.CacheControl = anthropic.NewCacheControlEphemeralParam()
+	}
 	return tools
 }
 
@@ -743,7 +784,59 @@ func buildAnthropicBetaTools(specs []ToolSpec) []anthropic.BetaToolUnionParam {
 		}
 		tools = append(tools, tool)
 	}
+	if len(tools) > 0 && tools[len(tools)-1].OfTool != nil {
+		tools[len(tools)-1].OfTool.CacheControl = anthropic.NewBetaCacheControlEphemeralParam()
+	}
 	return tools
+}
+
+// applyLastMessageCacheControl marks the last content block of the last message
+// for caching. This enables incremental conversation caching: each turn, the
+// prior conversation becomes a cache hit and only the new turn is processed fresh.
+func applyLastMessageCacheControl(messages []anthropic.MessageParam) {
+	if len(messages) == 0 {
+		return
+	}
+	last := &messages[len(messages)-1]
+	if len(last.Content) == 0 {
+		return
+	}
+	cc := anthropic.NewCacheControlEphemeralParam()
+	block := &last.Content[len(last.Content)-1]
+	switch {
+	case block.OfText != nil:
+		block.OfText.CacheControl = cc
+	case block.OfImage != nil:
+		block.OfImage.CacheControl = cc
+	case block.OfDocument != nil:
+		block.OfDocument.CacheControl = cc
+	case block.OfToolResult != nil:
+		block.OfToolResult.CacheControl = cc
+	}
+}
+
+// applyBetaLastMessageCacheControl marks the last content block of the last beta
+// message for caching.
+func applyBetaLastMessageCacheControl(messages []anthropic.BetaMessageParam) {
+	if len(messages) == 0 {
+		return
+	}
+	last := &messages[len(messages)-1]
+	if len(last.Content) == 0 {
+		return
+	}
+	cc := anthropic.NewBetaCacheControlEphemeralParam()
+	block := &last.Content[len(last.Content)-1]
+	switch {
+	case block.OfText != nil:
+		block.OfText.CacheControl = cc
+	case block.OfImage != nil:
+		block.OfImage.CacheControl = cc
+	case block.OfDocument != nil:
+		block.OfDocument.CacheControl = cc
+	case block.OfToolResult != nil:
+		block.OfToolResult.CacheControl = cc
+	}
 }
 
 func buildAnthropicToolChoice(choice ToolChoice, parallel bool) anthropic.ToolChoiceUnionParam {

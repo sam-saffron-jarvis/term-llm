@@ -1284,6 +1284,7 @@ func (s *loggingStream) Recv() (Event, error) {
 		s.totalInput += event.Use.InputTokens
 		s.totalOutput += event.Use.OutputTokens
 		s.totalCacheRead += event.Use.CachedInputTokens
+		s.totalCacheWrite += event.Use.CacheWriteTokens
 	}
 
 	// Log on EOF (stream complete) or EventDone

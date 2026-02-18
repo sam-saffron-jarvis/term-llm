@@ -164,7 +164,7 @@ func (m *Model) handleStreamEvent(ev ui.StreamEvent) []tea.Cmd {
 
 	case ui.StreamEventUsage:
 		if m.stats != nil {
-			m.stats.AddUsage(ev.InputTokens, ev.OutputTokens, ev.CachedTokens)
+			m.stats.AddUsage(ev.InputTokens, ev.OutputTokens, ev.CachedTokens, ev.WriteTokens)
 		}
 		m.currentTurn = m.stats.LLMCallCount
 

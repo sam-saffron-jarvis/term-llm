@@ -37,6 +37,7 @@ type StreamEvent struct {
 	InputTokens  int
 	OutputTokens int
 	CachedTokens int
+	WriteTokens  int
 
 	// Phase/retry (for StreamEventPhase, StreamEventRetry)
 	Phase        string
@@ -98,12 +99,13 @@ func ToolEndEvent(callID, name, info string, success bool) StreamEvent {
 }
 
 // UsageEvent creates a usage/token update event
-func UsageEvent(input, output, cached int) StreamEvent {
+func UsageEvent(input, output, cached, cacheWrite int) StreamEvent {
 	return StreamEvent{
 		Type:         StreamEventUsage,
 		InputTokens:  input,
 		OutputTokens: output,
 		CachedTokens: cached,
+		WriteTokens:  cacheWrite,
 	}
 }
 

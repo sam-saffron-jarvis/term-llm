@@ -8,7 +8,7 @@ import (
 func TestSessionStatsSeedTotals(t *testing.T) {
 	stats := NewSessionStats()
 	stats.SeedTotals(1000, 250, 700, 3, 2)
-	stats.AddUsage(10, 5, 4)
+	stats.AddUsage(10, 5, 4, 0)
 
 	if stats.InputTokens != 1010 {
 		t.Errorf("expected input tokens 1010, got %d", stats.InputTokens)
@@ -30,7 +30,7 @@ func TestSessionStatsSeedTotals(t *testing.T) {
 func TestAddUsageSetsLastAndPeak(t *testing.T) {
 	stats := NewSessionStats()
 
-	stats.AddUsage(100, 20, 0)
+	stats.AddUsage(100, 20, 0, 0)
 	if stats.lastInputTokens != 100 {
 		t.Errorf("expected lastInputTokens 100, got %d", stats.lastInputTokens)
 	}
@@ -42,7 +42,7 @@ func TestAddUsageSetsLastAndPeak(t *testing.T) {
 	}
 
 	// Second call with higher input — peak should update
-	stats.AddUsage(500, 50, 0)
+	stats.AddUsage(500, 50, 0, 0)
 	if stats.lastInputTokens != 500 {
 		t.Errorf("expected lastInputTokens 500, got %d", stats.lastInputTokens)
 	}
@@ -54,7 +54,7 @@ func TestAddUsageSetsLastAndPeak(t *testing.T) {
 	}
 
 	// Third call with lower input — peak should stay at 500
-	stats.AddUsage(200, 30, 0)
+	stats.AddUsage(200, 30, 0, 0)
 	if stats.lastInputTokens != 200 {
 		t.Errorf("expected lastInputTokens 200, got %d", stats.lastInputTokens)
 	}
@@ -83,8 +83,8 @@ func TestSeedTotalsClearsPerCallState(t *testing.T) {
 	stats := NewSessionStats()
 
 	// Build up per-call state
-	stats.AddUsage(5000, 500, 0)
-	stats.AddUsage(2000, 200, 0)
+	stats.AddUsage(5000, 500, 0, 0)
+	stats.AddUsage(2000, 200, 0, 0)
 	if stats.peakInputTokens != 5000 {
 		t.Fatalf("expected peak 5000 before reseed, got %d", stats.peakInputTokens)
 	}
@@ -109,10 +109,90 @@ func TestSeedTotalsClearsPerCallState(t *testing.T) {
 	}
 
 	// New AddUsage should work normally after reseed
-	stats.AddUsage(3000, 300, 0)
+	stats.AddUsage(3000, 300, 0, 0)
 	out = stats.Render()
 	if !strings.Contains(out, "last:") {
 		t.Errorf("expected last info after AddUsage post-reseed, got: %s", out)
+	}
+}
+
+func TestPeakTracksFullContext(t *testing.T) {
+	stats := NewSessionStats()
+
+	// 10 new + 5000 cached + 2000 written = 7010 total context
+	stats.AddUsage(10, 100, 5000, 2000)
+	if stats.lastInputTokens != 7010 {
+		t.Errorf("expected lastInputTokens 7010 (total context), got %d", stats.lastInputTokens)
+	}
+	if stats.peakInputTokens != 7010 {
+		t.Errorf("expected peakInputTokens 7010, got %d", stats.peakInputTokens)
+	}
+
+	// Second call with smaller total context — peak should stay
+	stats.AddUsage(5, 50, 100, 0)
+	if stats.lastInputTokens != 105 {
+		t.Errorf("expected lastInputTokens 105, got %d", stats.lastInputTokens)
+	}
+	if stats.peakInputTokens != 7010 {
+		t.Errorf("expected peakInputTokens to remain 7010, got %d", stats.peakInputTokens)
+	}
+}
+
+func TestRenderCacheLabels(t *testing.T) {
+	cases := []struct {
+		name        string
+		cached      int
+		write       int
+		wantContain string
+		wantAbsent  string
+	}{
+		{
+			name:        "both read and write",
+			cached:      500,
+			write:       7500,
+			wantContain: "cache: 500 read, 7.5k write",
+		},
+		{
+			name:        "read only",
+			cached:      500,
+			write:       0,
+			wantContain: "cache: 500 read",
+			wantAbsent:  "write",
+		},
+		{
+			name:        "write only",
+			cached:      0,
+			write:       7500,
+			wantContain: "cache: 7.5k write",
+			wantAbsent:  "read",
+		},
+		{
+			name:       "no cache",
+			cached:     0,
+			write:      0,
+			wantAbsent: "cache:",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			stats := NewSessionStats()
+			stats.InputTokens = 857
+			stats.OutputTokens = 803
+			stats.CachedInputTokens = tc.cached
+			stats.CacheWriteTokens = tc.write
+
+			out := stats.Render()
+			if tc.wantContain != "" && !strings.Contains(out, tc.wantContain) {
+				t.Errorf("expected %q in render output, got: %s", tc.wantContain, out)
+			}
+			if tc.wantAbsent != "" && strings.Contains(out, tc.wantAbsent) {
+				t.Errorf("did not expect %q in render output, got: %s", tc.wantAbsent, out)
+			}
+			if !strings.Contains(out, "→") {
+				t.Errorf("expected → separator in render output, got: %s", out)
+			}
+		})
 	}
 }
 
@@ -126,7 +206,7 @@ func TestRenderIncludesLastAndPeak(t *testing.T) {
 	}
 
 	// Single call — last == peak, so no "peak:" shown
-	stats.AddUsage(1000, 200, 0)
+	stats.AddUsage(1000, 200, 0, 0)
 	out = stats.Render()
 	if !strings.Contains(out, "(last:") {
 		t.Errorf("expected last info in render, got: %s", out)
@@ -136,7 +216,7 @@ func TestRenderIncludesLastAndPeak(t *testing.T) {
 	}
 
 	// Second call with lower input — peak > last, so "peak:" should appear
-	stats.AddUsage(500, 100, 0)
+	stats.AddUsage(500, 100, 0, 0)
 	out = stats.Render()
 	if !strings.Contains(out, "last:") {
 		t.Errorf("expected last info in render, got: %s", out)
