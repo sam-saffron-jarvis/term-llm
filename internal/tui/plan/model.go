@@ -53,7 +53,8 @@ type Model struct {
 	agentPhase     string
 	agentError     error
 	streamCancel   context.CancelFunc
-	tracker        *ui.ToolTracker // For tool tracking during agent runs
+	tracker        *ui.ToolTracker        // For tool tracking during agent runs
+	subagentTracker *ui.SubagentTracker   // For subagent progress tracking
 
 	// Activity panel state
 	activityExpanded bool             // toggle with Ctrl+A
@@ -201,6 +202,7 @@ func New(cfg *config.Config, provider llm.Provider, engine *llm.Engine, modelNam
 		history:             make([]llm.Message, 0),
 		filePath:            filePath,
 		tracker:             ui.NewToolTracker(),
+		subagentTracker:     ui.NewSubagentTracker(),
 		partialInsertIdx:    -1,
 		chatInput:           chatInput,
 		pendingPrompts:      make([]string, 0),
@@ -228,6 +230,12 @@ type statusClearMsg struct{}
 type AskUserRequestMsg struct {
 	Questions []tools.AskUserQuestion
 	DoneCh    chan<- []tools.AskUserAnswer
+}
+
+// SubagentProgressMsg carries progress events from running subagents.
+type SubagentProgressMsg struct {
+	CallID string
+	Event  tools.SubagentEvent
 }
 
 // pendingPromptMsg triggers the planner with a pending user prompt.

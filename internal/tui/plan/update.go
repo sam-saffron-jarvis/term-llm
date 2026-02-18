@@ -104,6 +104,11 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.askUserModel = tools.NewEmbeddedAskUserModel(msg.Questions, m.width)
 		return m, nil
 
+	case SubagentProgressMsg:
+		// Handle subagent progress events and update tracker
+		ui.HandleSubagentProgress(m.tracker, m.subagentTracker, msg.CallID, msg.Event)
+		return m, nil
+
 	case pendingPromptMsg:
 		// Trigger planner with the pending prompt
 		return m.triggerPlannerWithPrompt(msg.prompt)
@@ -221,7 +226,8 @@ func (m *Model) handleStreamEvent(ev ui.StreamEvent) []tea.Cmd {
 		m.agentActive = false
 		m.agentStreaming = false
 		m.agentPhase = ""
-		m.tracker = ui.NewToolTracker() // Reset tracker
+		m.tracker = ui.NewToolTracker()          // Reset tracker
+		m.subagentTracker = ui.NewSubagentTracker() // Reset subagent tracker
 		m.partialInsertIdx = -1         // Reset partial insert tracking
 		m.partialInsertAfter = ""
 		m.agentReasoningTail = ""

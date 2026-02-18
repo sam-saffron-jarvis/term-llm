@@ -110,7 +110,8 @@ func runPlan(cmd *cobra.Command, args []string) error {
 	}
 
 	// Create tool registry with investigation tools for the planner
-	// The planner can glob, grep, read files, and run shell commands to explore
+	// The planner can glob, grep, read files, run shell commands to explore,
+	// and spawn sub-agents (codebase, researcher) for deeper investigation
 	toolConfig := &tools.ToolConfig{
 		Enabled: []string{
 			tools.AskUserToolName,
@@ -118,6 +119,7 @@ func runPlan(cmd *cobra.Command, args []string) error {
 			tools.GlobToolName,
 			tools.GrepToolName,
 			tools.ShellToolName,
+			tools.SpawnAgentToolName,
 		},
 	}
 
@@ -126,6 +128,14 @@ func runPlan(cmd *cobra.Command, args []string) error {
 	if cwd != "" {
 		toolConfig.ReadDirs = []string{cwd}
 		toolConfig.ShellAllow = []string{"*"} // Allow shell commands for investigation
+	}
+
+	// Configure spawn_agent: read-only agents only, conservative limits
+	toolConfig.Spawn = tools.SpawnConfig{
+		MaxParallel:    2,                              // Conservative for plan mode
+		MaxDepth:       1,                              // Sub-agents don't spawn further sub-agents
+		DefaultTimeout: 120,                            // 2 min per sub-agent task
+		AllowedAgents:  []string{"codebase", "researcher"}, // Read-only agents only
 	}
 
 	perms, err := toolConfig.BuildPermissions()
@@ -140,6 +150,12 @@ func runPlan(cmd *cobra.Command, args []string) error {
 
 	engine := newEngine(provider, cfg)
 	registry.RegisterWithEngine(engine)
+
+	// Wire spawn_agent runner for sub-agent delegation
+	toolMgr := &tools.ToolManager{Registry: registry, ApprovalMgr: approvalMgr}
+	if err := WireSpawnAgentRunner(cfg, toolMgr, true /* yolo for read-only agents */); err != nil {
+		return fmt.Errorf("setup spawn_agent for plan: %w", err)
+	}
 
 	// Set up debug logger if enabled
 	debugLogger, debugLoggerErr := createDebugLogger(cfg)
@@ -186,6 +202,13 @@ func runPlan(cmd *cobra.Command, args []string) error {
 
 	// Set up program reference for ask_user handling
 	model.SetProgram(p)
+
+	// Set up spawn_agent event callback for subagent progress visibility
+	if spawnTool := toolMgr.GetSpawnAgentTool(); spawnTool != nil {
+		spawnTool.SetEventCallback(func(callID string, event tools.SubagentEvent) {
+			go p.Send(plan.SubagentProgressMsg{CallID: callID, Event: event})
+		})
+	}
 
 	// Set up ask_user handling for inline mode
 	if useAltScreen {

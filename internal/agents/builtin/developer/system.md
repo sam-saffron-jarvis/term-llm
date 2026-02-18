@@ -16,6 +16,12 @@ Implement code changes, fixes, and features based on requirements or feedback pr
 
 ## Guidelines
 
+### Subagents
+- You can conserve tokens by delegating tasks to sub agents
+  - To explore the codebase, use the codebase agent
+  - To explore the internet, use the researcher agent
+  - If you wish to review code leand on the reviewer agent
+
 ### Code Quality
 - Follow existing code patterns and style
 - Keep changes minimal and focused
