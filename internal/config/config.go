@@ -104,6 +104,20 @@ type Config struct {
 	Skills          SkillsConfig              `mapstructure:"skills"`
 	AgentsMd        AgentsMdConfig            `mapstructure:"agents_md"`
 	AutoCompact     bool                      `mapstructure:"auto_compact"`
+	Serve           ServeConfig               `mapstructure:"serve"`
+}
+
+// ServeConfig holds configuration for the serve command platforms.
+type ServeConfig struct {
+	Telegram TelegramServeConfig `mapstructure:"telegram" yaml:"telegram,omitempty"`
+}
+
+// TelegramServeConfig holds configuration for the Telegram bot platform.
+type TelegramServeConfig struct {
+	Token            string   `mapstructure:"token" yaml:"token,omitempty"`
+	AllowedUserIDs   []int64  `mapstructure:"allowed_user_ids" yaml:"allowed_user_ids,omitempty"`
+	AllowedUsernames []string `mapstructure:"allowed_usernames" yaml:"allowed_usernames,omitempty"`
+	IdleTimeout      int      `mapstructure:"idle_timeout" yaml:"idle_timeout,omitempty"` // minutes
 }
 
 // AgentsConfig configures the agent system
@@ -1308,6 +1322,33 @@ func ClearAgentPreferences(agentName string) error {
 		v.Set("agents.preferences", nil)
 	} else {
 		v.Set("agents.preferences", prefs)
+	}
+
+	return v.WriteConfig()
+}
+
+// SetServeTelegramConfig saves Telegram bot configuration using viper.
+// Merges with existing config rather than overwriting.
+func SetServeTelegramConfig(c TelegramServeConfig) error {
+	configPath, err := GetConfigPath()
+	if err != nil {
+		return err
+	}
+
+	if err := os.MkdirAll(filepath.Dir(configPath), 0755); err != nil {
+		return fmt.Errorf("create config dir: %w", err)
+	}
+
+	v := viper.New()
+	v.SetConfigFile(configPath)
+	v.SetConfigType("yaml")
+	_ = v.ReadInConfig()
+
+	v.Set("serve.telegram.token", c.Token)
+	v.Set("serve.telegram.allowed_user_ids", c.AllowedUserIDs)
+	v.Set("serve.telegram.allowed_usernames", c.AllowedUsernames)
+	if c.IdleTimeout > 0 {
+		v.Set("serve.telegram.idle_timeout", c.IdleTimeout)
 	}
 
 	return v.WriteConfig()

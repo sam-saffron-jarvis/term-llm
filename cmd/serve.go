@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"mime"
 	"net/http"
 	"sort"
@@ -20,6 +21,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/mcp"
+	"github.com/samsaffron/term-llm/internal/serve"
 	"github.com/samsaffron/term-llm/internal/serveui"
 	"github.com/samsaffron/term-llm/internal/signal"
 	"github.com/samsaffron/term-llm/internal/tools"
@@ -49,20 +51,27 @@ var (
 	serveSystemMessage  string
 	serveAgent          string
 	serveYolo           bool
+	// Platform flags
+	servePlatform string
+	serveSetup    bool
 )
 
 var serveCmd = &cobra.Command{
 	Use:   "serve",
-	Short: "Run an HTTP inference server",
-	Long: `Run an OpenAI-compatible HTTP server powered by term-llm.
+	Short: "Run the agent as a server (web, Telegram, or both)",
+	Long: `Run term-llm as a server on one or more platforms simultaneously.
 
-Endpoints:
+Default platform is "web": an OpenAI-compatible HTTP server.
+
+Web endpoints:
   POST /v1/responses
   POST /v1/chat/completions
   GET  /v1/models
   GET  /healthz
 
-Use --ui to also serve a minimal web chat interface.`,
+Use --ui to also serve a minimal web chat interface.
+Use --platform telegram to run a Telegram bot instead (or alongside web).
+Use --setup to configure credentials for the selected platforms.`,
 	RunE: runServe,
 }
 
@@ -77,6 +86,14 @@ func init() {
 	serveCmd.Flags().StringArrayVar(&serveCORSOrigins, "cors-origin", nil, "Allowed CORS origin (repeatable, or '*' for all)")
 	serveCmd.Flags().DurationVar(&serveSessionTTL, "session-ttl", 30*time.Minute, "Stateful session idle TTL")
 	serveCmd.Flags().IntVar(&serveSessionMax, "session-max", 1000, "Max stateful sessions in memory")
+
+	serveCmd.Flags().StringVar(&servePlatform, "platform", "web", "Comma-separated platforms to serve: web, telegram")
+	if err := serveCmd.RegisterFlagCompletionFunc("platform", func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+		return []string{"web", "telegram", "web,telegram"}, cobra.ShellCompDirectiveNoFileComp
+	}); err != nil {
+		panic("failed to register platform completion: " + err.Error())
+	}
+	serveCmd.Flags().BoolVar(&serveSetup, "setup", false, "Re-run setup wizard for selected platforms")
 
 	AddProviderFlag(serveCmd, &serveProvider)
 	AddDebugFlag(serveCmd, &serveDebug)
@@ -204,37 +221,123 @@ func runServe(cmd *cobra.Command, args []string) error {
 	sessionMgr := newServeSessionManager(serveSessionTTL, serveSessionMax, factory)
 	defer sessionMgr.Close()
 
-	s := &serveServer{
-		cfg: serveServerConfig{
-			host:        serveHost,
-			port:        servePort,
-			requireAuth: requireAuth,
-			token:       token,
-			ui:          serveUI,
-			corsOrigins: append([]string(nil), serveCORSOrigins...),
+	// Parse platform names.
+	platformNames := parsePlatforms(servePlatform)
+
+	// Build the serve.Settings used by non-web platforms.
+	serveSettings := serve.Settings{
+		SystemPrompt: settings.SystemPrompt,
+		IdleTimeout:  serveSessionTTL,
+		MaxTurns:     settings.MaxTurns,
+		Search:       settings.Search,
+		NewEngine: func() (*llm.Engine, error) {
+			p, err := llm.NewProvider(cfg)
+			if err != nil {
+				return nil, err
+			}
+			return newEngine(p, cfg), nil
 		},
-		sessionMgr: sessionMgr,
-		cfgRef:     cfg,
 	}
 
-	if err := s.Start(); err != nil {
-		return err
+	// Instantiate non-web platforms.
+	var platforms []serve.Platform
+	for _, name := range platformNames {
+		switch name {
+		case "web":
+			// Handled by the existing serveServer below.
+		case "telegram":
+			platforms = append(platforms, serve.NewTelegramPlatform(cfg.Serve.Telegram))
+		default:
+			return fmt.Errorf("unknown platform: %s", name)
+		}
 	}
 
-	fmt.Fprintf(cmd.ErrOrStderr(), "term-llm serve listening on http://%s:%d\n", serveHost, servePort)
-	fmt.Fprintf(cmd.ErrOrStderr(), "auth: %s\n", authSummary(requireAuth))
-	if requireAuth {
-		fmt.Fprintf(cmd.ErrOrStderr(), "token: %s\n", token)
+	// Run setup wizard for platforms that need it (or --setup flag).
+	for _, p := range platforms {
+		if serveSetup || p.NeedsSetup() {
+			if err := p.RunSetup(); err != nil {
+				return fmt.Errorf("setup %s: %w", p.Name(), err)
+			}
+		}
 	}
-	fmt.Fprintf(cmd.ErrOrStderr(), "ui: %v\n", serveUI)
-	if modelName != "" {
-		fmt.Fprintf(cmd.ErrOrStderr(), "model: %s\n", modelName)
+
+	hasWeb := platformContains(platformNames, "web")
+
+	var s *serveServer
+	if hasWeb {
+		s = &serveServer{
+			cfg: serveServerConfig{
+				host:        serveHost,
+				port:        servePort,
+				requireAuth: requireAuth,
+				token:       token,
+				ui:          serveUI,
+				corsOrigins: append([]string(nil), serveCORSOrigins...),
+			},
+			sessionMgr: sessionMgr,
+			cfgRef:     cfg,
+		}
+
+		if err := s.Start(); err != nil {
+			return err
+		}
+
+		fmt.Fprintf(cmd.ErrOrStderr(), "term-llm serve listening on http://%s:%d\n", serveHost, servePort)
+		fmt.Fprintf(cmd.ErrOrStderr(), "auth: %s\n", authSummary(requireAuth))
+		if requireAuth {
+			fmt.Fprintf(cmd.ErrOrStderr(), "token: %s\n", token)
+		}
+		fmt.Fprintf(cmd.ErrOrStderr(), "ui: %v\n", serveUI)
+		if modelName != "" {
+			fmt.Fprintf(cmd.ErrOrStderr(), "model: %s\n", modelName)
+		}
+	}
+
+	// Start non-web platforms concurrently.
+	var wg sync.WaitGroup
+	for _, p := range platforms {
+		wg.Add(1)
+		go func(p serve.Platform) {
+			defer wg.Done()
+			if err := p.Run(ctx, cfg, serveSettings); err != nil && !errors.Is(err, context.Canceled) {
+				log.Printf("[%s] error: %v", p.Name(), err)
+			}
+		}(p)
 	}
 
 	<-ctx.Done()
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	return s.Stop(shutdownCtx)
+
+	if s != nil {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		_ = s.Stop(shutdownCtx)
+	}
+
+	wg.Wait()
+	return nil
+}
+
+func parsePlatforms(flag string) []string {
+	var out []string
+	for _, part := range strings.Split(flag, ",") {
+		part = strings.TrimSpace(strings.ToLower(part))
+		if part != "" {
+			out = append(out, part)
+		}
+	}
+	if len(out) == 0 {
+		out = []string{"web"}
+	}
+	return out
+}
+
+func platformContains(platforms []string, name string) bool {
+	for _, p := range platforms {
+		if p == name {
+			return true
+		}
+	}
+	return false
 }
 
 func authSummary(required bool) string {
