@@ -396,8 +396,23 @@ func (m *AskUserModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.textInput.Focus()
 				return m, textinput.Blink
 			}
-		case "enter", " ":
+		case " ":
 			if q.MultiSelect {
+				// Multi-select: toggle the current option
+				m.toggleOption(m.cursor)
+				return m, nil
+			}
+			// Single-select: select and advance
+			m.answers[m.currentTab].text = q.Options[m.cursor].Label
+			m.answers[m.currentTab].isCustom = false
+			return m.advanceToNext()
+		case "enter":
+			if q.MultiSelect {
+				// Single-question multi-select has no confirm tab, so enter submits.
+				if m.isSingleQuestion() && m.isAnswered(m.currentTab) {
+					m.Done = true
+					return m, tea.Quit
+				}
 				// Multi-select: toggle the current option
 				m.toggleOption(m.cursor)
 				return m, nil
@@ -514,8 +529,23 @@ func (m *AskUserModel) UpdateEmbedded(msg tea.Msg) tea.Cmd {
 				m.textInput.Focus()
 				return textinput.Blink
 			}
-		case "enter", " ":
+		case " ":
 			if q.MultiSelect {
+				// Multi-select: toggle the current option
+				m.toggleOption(m.cursor)
+				return nil
+			}
+			// Single-select: select and advance
+			m.answers[m.currentTab].text = q.Options[m.cursor].Label
+			m.answers[m.currentTab].isCustom = false
+			return m.advanceToNextEmbedded()
+		case "enter":
+			if q.MultiSelect {
+				// Single-question multi-select has no confirm tab, so enter submits.
+				if m.isSingleQuestion() && m.isAnswered(m.currentTab) {
+					m.Done = true
+					return nil
+				}
 				// Multi-select: toggle the current option
 				m.toggleOption(m.cursor)
 				return nil
@@ -801,6 +831,9 @@ func (m *AskUserModel) renderHelp() string {
 		parts = append(parts, "enter submit")
 	} else if m.isMultiSelect() {
 		parts = append(parts, "space toggle")
+		if m.isSingleQuestion() {
+			parts = append(parts, "enter submit")
+		}
 	} else if m.isOnCustomOption() {
 		parts = append(parts, "enter confirm")
 	} else {
