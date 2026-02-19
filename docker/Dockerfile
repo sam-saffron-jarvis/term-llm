@@ -47,8 +47,7 @@ RUN pacman -Syu --noconfirm && \
       nmap \
       openbsd-netcat \
       strace \
-      gnupg \
-      runit && \
+      gnupg && \
     pacman -Scc --noconfirm
 
 # Unprivileged user for AUR builds (makepkg refuses root)
@@ -61,6 +60,9 @@ RUN sudo -u aur bash -c " \
       cd /tmp/yay && \
       makepkg -si --noconfirm && \
       rm -rf /tmp/yay"
+
+# runit is AUR-only on Arch
+RUN sudo -u aur yay -S --noconfirm runit
 
 # mise (polyglot version manager — node, python, ruby, etc.)
 RUN curl https://mise.run | MISE_INSTALL_PATH=/usr/local/bin/mise sh
