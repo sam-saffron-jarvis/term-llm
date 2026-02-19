@@ -11,6 +11,10 @@ if [ ! -f "$AGENT_DIR/agent.yaml" ]; then
   echo "Jarvis: bootstrapped agent files"
 fi
 
+if [ -f /root/.config/term-llm/init.sh ]; then
+  bash /root/.config/term-llm/init.sh
+fi
+
 # If no command given, boot runit as PID 1.
 # Services are managed via /etc/runit/runsvdir — symlink /etc/sv/<name> there to enable.
 # The volume at /root persists service configs and state across restarts.
