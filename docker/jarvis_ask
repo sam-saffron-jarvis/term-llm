@@ -1,2 +1,7 @@
 #!/bin/bash
-docker exec jarvis term-llm ask @jarvis --yolo "$@"
+docker exec \
+  -e TERM="${TERM:-xterm-256color}" \
+  -e COLORTERM="${COLORTERM:-truecolor}" \
+  -e TMUX="${TMUX:-}" \
+  -e STY="${STY:-}" \
+  jarvis term-llm ask @jarvis --yolo "$@"
