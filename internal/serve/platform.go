@@ -22,6 +22,8 @@ type Settings struct {
 	SystemPrompt string
 	IdleTimeout  time.Duration
 	MaxTurns     int
+	Debug        bool
+	DebugRaw     bool
 	Search       bool
 	Tools        string
 	MCP          string

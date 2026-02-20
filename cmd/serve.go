@@ -241,6 +241,8 @@ func runServe(cmd *cobra.Command, args []string) error {
 		SystemPrompt: settings.SystemPrompt,
 		IdleTimeout:  serveSessionTTL,
 		MaxTurns:     settings.MaxTurns,
+		Debug:        serveDebug,
+		DebugRaw:     debugRaw,
 		Search:       settings.Search,
 		Tools:        settings.Tools,
 		MCP:          settings.MCP,

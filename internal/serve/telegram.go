@@ -568,6 +568,8 @@ func (m *telegramSessionMgr) streamReply(ctx context.Context, bot botSender, ses
 		SessionID: sessionID,
 		Messages:  messages,
 		MaxTurns:  m.settings.MaxTurns,
+		Debug:     m.settings.Debug,
+		DebugRaw:  m.settings.DebugRaw,
 		Search:    m.settings.Search,
 	}
 
@@ -600,6 +602,14 @@ func (m *telegramSessionMgr) streamReply(ctx context.Context, bot botSender, ses
 		activeTools = make(map[string]string) // toolCallID → toolName
 		activePhase string                    // most-recent EventPhase text, "" when idle
 		toolsRan    bool                      // true once any EventToolExecStart seen
+		textDeltas  int
+		toolStarts  int
+		toolEnds    int
+		toolCalls   int
+		phaseEvents int
+		usageEvents int
+		doneEvents  int
+		otherEvents int
 		streamDone  = make(chan error, 1)
 	)
 
@@ -619,19 +629,39 @@ func (m *telegramSessionMgr) streamReply(ctx context.Context, bot botSender, ses
 			case llm.EventTextDelta:
 				textMu.Lock()
 				textBuf.WriteString(ev.Text)
+				textDeltas++
 				textMu.Unlock()
 			case llm.EventToolExecStart:
 				textMu.Lock()
 				activeTools[ev.ToolCallID] = ev.ToolName
 				toolsRan = true
+				toolStarts++
 				textMu.Unlock()
 			case llm.EventToolExecEnd:
 				textMu.Lock()
 				delete(activeTools, ev.ToolCallID)
+				toolEnds++
 				textMu.Unlock()
 			case llm.EventPhase:
 				textMu.Lock()
 				activePhase = ev.Text
+				phaseEvents++
+				textMu.Unlock()
+			case llm.EventToolCall:
+				textMu.Lock()
+				toolCalls++
+				textMu.Unlock()
+			case llm.EventUsage:
+				textMu.Lock()
+				usageEvents++
+				textMu.Unlock()
+			case llm.EventDone:
+				textMu.Lock()
+				doneEvents++
+				textMu.Unlock()
+			default:
+				textMu.Lock()
+				otherEvents++
 				textMu.Unlock()
 			}
 		}
@@ -719,6 +749,14 @@ loop:
 	// Final edit: show full remaining text without cursor.
 	textMu.Lock()
 	full, ran := textBuf.String(), toolsRan
+	finalTextDeltas := textDeltas
+	finalToolStarts := toolStarts
+	finalToolEnds := toolEnds
+	finalToolCalls := toolCalls
+	finalPhaseEvents := phaseEvents
+	finalUsageEvents := usageEvents
+	finalDoneEvents := doneEvents
+	finalOtherEvents := otherEvents
 	textMu.Unlock()
 
 	prose := full[msgStart:]
@@ -739,6 +777,20 @@ loop:
 			sendEdit(currentMsgID, "(done)")
 		} else {
 			sendEdit(currentMsgID, "(no response)")
+		}
+		if m.settings.Debug || m.settings.DebugRaw {
+			log.Printf("[telegram] empty assistant text for chat %d (toolsRan=%v, text_delta=%d, tool_start=%d, tool_end=%d, tool_call=%d, phase=%d, usage=%d, done=%d, other=%d)",
+				chatID,
+				ran,
+				finalTextDeltas,
+				finalToolStarts,
+				finalToolEnds,
+				finalToolCalls,
+				finalPhaseEvents,
+				finalUsageEvents,
+				finalDoneEvents,
+				finalOtherEvents,
+			)
 		}
 		// else: prose=="" but full!="", all content already shown in previous message(s).
 	}
