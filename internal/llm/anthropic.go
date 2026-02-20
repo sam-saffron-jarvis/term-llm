@@ -342,16 +342,7 @@ func (p *AnthropicProvider) streamStandard(ctx context.Context, req Request) (St
 					emitReasoningDelta(events, "", delta.Signature)
 				}
 			case anthropic.ContentBlockStartEvent:
-				switch block := variant.ContentBlock.AsAny().(type) {
-				case anthropic.ThinkingBlock:
-					emitReasoningDelta(events, block.Thinking, block.Signature)
-				case anthropic.ToolUseBlock:
-					accumulator.Start(variant.Index, ToolCall{
-						ID:        block.ID,
-						Name:      block.Name,
-						Arguments: toolInputToRaw(block.Input),
-					})
-				}
+				handleAnthropicStartBlockContent(variant.ContentBlock.AsAny(), variant.Index, accumulator, events)
 			case anthropic.ContentBlockStopEvent:
 				if toolCall, ok := accumulator.Finish(variant.Index); ok {
 					events <- Event{Type: EventToolCall, Tool: &toolCall}
@@ -491,16 +482,7 @@ func (p *AnthropicProvider) streamWithSearch(ctx context.Context, req Request) (
 					currentServerTool = toolName
 					events <- Event{Type: EventToolExecStart, ToolName: toolName}
 				} else {
-					switch block := variant.ContentBlock.AsAny().(type) {
-					case anthropic.BetaThinkingBlock:
-						emitReasoningDelta(events, block.Thinking, block.Signature)
-					case anthropic.BetaToolUseBlock:
-						accumulator.Start(variant.Index, ToolCall{
-							ID:        block.ID,
-							Name:      block.Name,
-							Arguments: toolInputToRaw(block.Input),
-						})
-					}
+					handleAnthropicBetaStartBlockContent(variant.ContentBlock.AsAny(), variant.Index, accumulator, events)
 				}
 			case anthropic.BetaRawContentBlockStopEvent:
 				if toolCall, ok := accumulator.Finish(variant.Index); ok {
@@ -866,6 +848,40 @@ func buildAnthropicBetaToolChoice(choice ToolChoice, parallel bool) anthropic.Be
 		return anthropic.BetaToolChoiceParamOfTool(choice.Name)
 	default:
 		return anthropic.BetaToolChoiceUnionParam{OfAuto: &anthropic.BetaToolChoiceAutoParam{DisableParallelToolUse: anthropic.Bool(disableParallel)}}
+	}
+}
+
+func handleAnthropicStartBlockContent(block any, index int64, accumulator *toolCallAccumulator, events chan<- Event) {
+	switch variant := block.(type) {
+	case anthropic.TextBlock:
+		if variant.Text != "" {
+			events <- Event{Type: EventTextDelta, Text: variant.Text}
+		}
+	case anthropic.ThinkingBlock:
+		emitReasoningDelta(events, variant.Thinking, variant.Signature)
+	case anthropic.ToolUseBlock:
+		accumulator.Start(index, ToolCall{
+			ID:        variant.ID,
+			Name:      variant.Name,
+			Arguments: toolInputToRaw(variant.Input),
+		})
+	}
+}
+
+func handleAnthropicBetaStartBlockContent(block any, index int64, accumulator *toolCallAccumulator, events chan<- Event) {
+	switch variant := block.(type) {
+	case anthropic.BetaTextBlock:
+		if variant.Text != "" {
+			events <- Event{Type: EventTextDelta, Text: variant.Text}
+		}
+	case anthropic.BetaThinkingBlock:
+		emitReasoningDelta(events, variant.Thinking, variant.Signature)
+	case anthropic.BetaToolUseBlock:
+		accumulator.Start(index, ToolCall{
+			ID:        variant.ID,
+			Name:      variant.Name,
+			Arguments: toolInputToRaw(variant.Input),
+		})
 	}
 }
 

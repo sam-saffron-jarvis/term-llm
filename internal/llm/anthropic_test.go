@@ -406,6 +406,68 @@ func TestBuildAnthropicBetaBlocks_AssistantReasoningReplay(t *testing.T) {
 	}
 }
 
+func TestHandleAnthropicStartBlockContent_TextBlockEmitsTextDelta(t *testing.T) {
+	events := make(chan Event, 1)
+	acc := newToolCallAccumulator()
+
+	handleAnthropicStartBlockContent(anthropic.TextBlock{
+		Text: "hello from start block",
+	}, 0, acc, events)
+
+	select {
+	case ev := <-events:
+		if ev.Type != EventTextDelta {
+			t.Fatalf("expected EventTextDelta, got %v", ev.Type)
+		}
+		if ev.Text != "hello from start block" {
+			t.Fatalf("expected start-block text to be emitted, got %q", ev.Text)
+		}
+	default:
+		t.Fatal("expected one EventTextDelta from start text block")
+	}
+}
+
+func TestHandleAnthropicStartBlockContent_ToolUseStartsAccumulator(t *testing.T) {
+	events := make(chan Event, 1)
+	acc := newToolCallAccumulator()
+
+	handleAnthropicStartBlockContent(anthropic.ToolUseBlock{
+		ID:    "call-1",
+		Name:  "read_file",
+		Input: json.RawMessage(`{"path":"README.md"}`),
+	}, 1, acc, events)
+
+	if _, ok := acc.Finish(1); !ok {
+		t.Fatal("expected tool call to be started in accumulator")
+	}
+	select {
+	case ev := <-events:
+		t.Fatalf("did not expect direct event for tool_use start, got %+v", ev)
+	default:
+	}
+}
+
+func TestHandleAnthropicBetaStartBlockContent_TextBlockEmitsTextDelta(t *testing.T) {
+	events := make(chan Event, 1)
+	acc := newToolCallAccumulator()
+
+	handleAnthropicBetaStartBlockContent(anthropic.BetaTextBlock{
+		Text: "hello from beta start block",
+	}, 0, acc, events)
+
+	select {
+	case ev := <-events:
+		if ev.Type != EventTextDelta {
+			t.Fatalf("expected EventTextDelta, got %v", ev.Type)
+		}
+		if ev.Text != "hello from beta start block" {
+			t.Fatalf("expected beta start-block text to be emitted, got %q", ev.Text)
+		}
+	default:
+		t.Fatal("expected one EventTextDelta from beta start text block")
+	}
+}
+
 func TestEmitReasoningDelta_ProducesReasoningEvent(t *testing.T) {
 	events := make(chan Event, 1)
 
