@@ -418,13 +418,26 @@ func buildChatGPTInput(messages []Message) (string, []interface{}) {
 
 		case RoleUser:
 			text := collectTextParts(msg.Parts)
+			var contentParts []map[string]string
+			for _, part := range msg.Parts {
+				if part.Type == PartImage && part.ImageData != nil {
+					dataURL := fmt.Sprintf("data:%s;base64,%s", part.ImageData.MediaType, part.ImageData.Base64)
+					contentParts = append(contentParts, map[string]string{
+						"type":      "input_image",
+						"image_url": dataURL,
+					})
+				}
+			}
 			if text != "" {
+				contentParts = append([]map[string]string{
+					{"type": "input_text", "text": text},
+				}, contentParts...)
+			}
+			if len(contentParts) > 0 {
 				input = append(input, map[string]interface{}{
-					"type": "message",
-					"role": "user",
-					"content": []map[string]string{
-						{"type": "input_text", "text": text},
-					},
+					"type":    "message",
+					"role":    "user",
+					"content": contentParts,
 				})
 			}
 

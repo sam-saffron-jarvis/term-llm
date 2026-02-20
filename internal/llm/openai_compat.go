@@ -467,6 +467,25 @@ func buildCompatMessages(messages []Message) []oaiMessage {
 				})
 				continue
 			}
+			// Check for user messages with images — build multimodal content.
+			if msg.Role == RoleUser {
+				var imageParts []oaiContentPart
+				for _, part := range msg.Parts {
+					if part.Type == PartImage && part.ImageData != nil {
+						dataURL := fmt.Sprintf("data:%s;base64,%s", part.ImageData.MediaType, part.ImageData.Base64)
+						imageParts = append(imageParts, oaiContentPart{Type: "image_url", ImageURL: &oaiImageURL{URL: dataURL, Detail: "auto"}})
+					}
+				}
+				if len(imageParts) > 0 {
+					var contentParts []oaiContentPart
+					if text != "" {
+						contentParts = append(contentParts, oaiContentPart{Type: "text", Text: text})
+					}
+					contentParts = append(contentParts, imageParts...)
+					result = append(result, oaiMessage{Role: "user", Content: contentParts})
+					continue
+				}
+			}
 			if text == "" && reasoning == "" {
 				continue
 			}

@@ -230,6 +230,18 @@ func buildResponsesMessageItems(role string, parts []Part) []ResponsesInputItem 
 			if part.Text != "" {
 				textBuf.WriteString(part.Text)
 			}
+		case PartImage:
+			if part.ImageData != nil {
+				flushText()
+				dataURL := fmt.Sprintf("data:%s;base64,%s", part.ImageData.MediaType, part.ImageData.Base64)
+				items = append(items, ResponsesInputItem{
+					Type: "message",
+					Role: role,
+					Content: []ResponsesContentPart{
+						{Type: "input_image", ImageURL: dataURL},
+					},
+				})
+			}
 		case PartToolCall:
 			if part.ToolCall == nil {
 				continue

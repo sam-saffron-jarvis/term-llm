@@ -201,3 +201,35 @@ func TestTextOutput(t *testing.T) {
 		t.Errorf("expected no images, got %d", len(output.Images))
 	}
 }
+
+func TestUserImageMessage_WithCaption(t *testing.T) {
+	msg := UserImageMessage("image/jpeg", "base64data", "Look at this")
+	if msg.Role != RoleUser {
+		t.Fatalf("Role = %q, want %q", msg.Role, RoleUser)
+	}
+	if len(msg.Parts) != 2 {
+		t.Fatalf("expected 2 parts, got %d", len(msg.Parts))
+	}
+	if msg.Parts[0].Type != PartImage {
+		t.Fatalf("Parts[0].Type = %q, want %q", msg.Parts[0].Type, PartImage)
+	}
+	if msg.Parts[0].ImageData == nil || msg.Parts[0].ImageData.MediaType != "image/jpeg" {
+		t.Fatalf("Parts[0].ImageData = %v, want image/jpeg", msg.Parts[0].ImageData)
+	}
+	if msg.Parts[0].ImageData.Base64 != "base64data" {
+		t.Fatalf("Parts[0].ImageData.Base64 = %q, want %q", msg.Parts[0].ImageData.Base64, "base64data")
+	}
+	if msg.Parts[1].Type != PartText || msg.Parts[1].Text != "Look at this" {
+		t.Fatalf("Parts[1] = %+v, want text 'Look at this'", msg.Parts[1])
+	}
+}
+
+func TestUserImageMessage_NoCaption(t *testing.T) {
+	msg := UserImageMessage("image/png", "pngdata", "")
+	if len(msg.Parts) != 1 {
+		t.Fatalf("expected 1 part, got %d", len(msg.Parts))
+	}
+	if msg.Parts[0].Type != PartImage {
+		t.Fatalf("Parts[0].Type = %q, want %q", msg.Parts[0].Type, PartImage)
+	}
+}

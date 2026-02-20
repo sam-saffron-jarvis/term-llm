@@ -3,9 +3,11 @@ package serve
 import (
 	"bufio"
 	"context"
+	"encoding/base64"
 	"fmt"
 	"io"
 	"log"
+	"net/http"
 	"os"
 	"strconv"
 	"strings"
@@ -24,6 +26,39 @@ const telegramMaxMessageLen = 4000 // Telegram limit is 4096; leave margin
 // handleMessage, allowing tests to supply a fake without a live connection.
 type botSender interface {
 	Send(c tgbotapi.Chattable) (tgbotapi.Message, error)
+}
+
+// botFileGetter is the subset of tgbotapi.BotAPI used for downloading files.
+type botFileGetter interface {
+	GetFile(config tgbotapi.FileConfig) (tgbotapi.File, error)
+	GetFileDirectURL(fileID string) (string, error)
+}
+
+// downloadTelegramPhoto downloads the largest photo from a Telegram photo array,
+// returning the media type and base64-encoded data.
+func downloadTelegramPhoto(fileGetter botFileGetter, photos []tgbotapi.PhotoSize) (mediaType, base64Data string, err error) {
+	if len(photos) == 0 {
+		return "", "", fmt.Errorf("no photos provided")
+	}
+	// Pick the largest photo (last in the array).
+	photo := photos[len(photos)-1]
+	directURL, err := fileGetter.GetFileDirectURL(photo.FileID)
+	if err != nil {
+		return "", "", fmt.Errorf("get file URL: %w", err)
+	}
+
+	resp, err := http.Get(directURL)
+	if err != nil {
+		return "", "", fmt.Errorf("download photo: %w", err)
+	}
+	defer resp.Body.Close()
+
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", "", fmt.Errorf("read photo data: %w", err)
+	}
+
+	return "image/jpeg", base64.StdEncoding.EncodeToString(data), nil
 }
 
 // TelegramPlatform implements Platform for the Telegram messaging platform.
@@ -403,7 +438,7 @@ func (m *telegramSessionMgr) runStoreOpWithTimeout(sessionID, op string, fn func
 	}
 }
 
-func (m *telegramSessionMgr) handleMessage(ctx context.Context, bot botSender, msg *tgbotapi.Message) {
+func (m *telegramSessionMgr) handleMessage(ctx context.Context, bot *tgbotapi.BotAPI, msg *tgbotapi.Message) {
 	if !m.isAllowed(msg.From.ID, msg.From.UserName) {
 		log.Printf("[telegram] ignoring message from unauthorised user %d (@%s)", msg.From.ID, msg.From.UserName)
 		return
@@ -446,9 +481,22 @@ func (m *telegramSessionMgr) handleMessage(ctx context.Context, bot botSender, m
 		}
 	}
 
-	text := strings.TrimSpace(msg.Text)
-	if text == "" {
-		return
+	// Build the user message: photo or text.
+	var userMsg llm.Message
+	if msg.Photo != nil && len(msg.Photo) > 0 {
+		mediaType, base64Data, err := downloadTelegramPhoto(bot, msg.Photo)
+		if err != nil {
+			log.Printf("[telegram] failed to download photo for chat %d: %v", chatID, err)
+			_, _ = bot.Send(tgbotapi.NewMessage(chatID, "Failed to process photo: "+err.Error()))
+			return
+		}
+		userMsg = llm.UserImageMessage(mediaType, base64Data, strings.TrimSpace(msg.Caption))
+	} else {
+		text := strings.TrimSpace(msg.Text)
+		if text == "" {
+			return
+		}
+		userMsg = llm.UserText(text)
 	}
 
 	sess, err := m.getOrCreate(ctx, chatID)
@@ -503,14 +551,14 @@ func (m *telegramSessionMgr) handleMessage(ctx context.Context, bot botSender, m
 	// Send "typing…" indicator.
 	_, _ = bot.Send(tgbotapi.NewChatAction(chatID, tgbotapi.ChatTyping))
 
-	if err := m.streamReply(ctx, bot, sess, chatID, text); err != nil {
+	if err := m.streamReply(ctx, bot, sess, chatID, userMsg); err != nil {
 		log.Printf("[telegram] error streaming reply for chat %d: %v", chatID, err)
 		_, _ = bot.Send(tgbotapi.NewMessage(chatID, "Sorry, an error occurred: "+err.Error()))
 	}
 }
 
 // streamReply streams an LLM response back to the chat via live message editing.
-func (m *telegramSessionMgr) streamReply(ctx context.Context, bot botSender, sess *telegramSession, chatID int64, userText string) error {
+func (m *telegramSessionMgr) streamReply(ctx context.Context, bot botSender, sess *telegramSession, chatID int64, userMsg llm.Message) error {
 	// We acquire the session lock for the entire streaming call so that
 	// concurrent messages from the same chat are serialised.
 	sess.mu.Lock()
@@ -536,6 +584,9 @@ func (m *telegramSessionMgr) streamReply(ctx context.Context, bot botSender, ses
 		close(replyDone)
 	}()
 
+	// Extract text from the user message for persistence and display.
+	userText := collectUserText(userMsg)
+
 	// Build full message list: system + history + new user turn.
 	messages := make([]llm.Message, 0, len(sess.history)+2)
 	historyHasSystem := containsSystemMsg(sess.history)
@@ -543,7 +594,7 @@ func (m *telegramSessionMgr) streamReply(ctx context.Context, bot botSender, ses
 		messages = append(messages, llm.SystemText(m.settings.SystemPrompt))
 	}
 	messages = append(messages, sess.history...)
-	messages = append(messages, llm.UserText(userText))
+	messages = append(messages, userMsg)
 
 	sessionID := ""
 	if sess.meta != nil {
@@ -565,16 +616,16 @@ func (m *telegramSessionMgr) streamReply(ctx context.Context, bot botSender, ses
 				return m.store.AddMessage(storeCtx, sess.meta.ID, sysMsg)
 			})
 		}
-		userMsg := &session.Message{
+		storeUserMsg := &session.Message{
 			SessionID:   sess.meta.ID,
 			Role:        llm.RoleUser,
-			Parts:       []llm.Part{{Type: llm.PartText, Text: userText}},
+			Parts:       userMsg.Parts,
 			TextContent: userText,
 			CreatedAt:   time.Now(),
 			Sequence:    -1,
 		}
 		m.runStoreOp(ctx, sess.meta.ID, "AddMessage(user)", func(storeCtx context.Context) error {
-			return m.store.AddMessage(storeCtx, sess.meta.ID, userMsg)
+			return m.store.AddMessage(storeCtx, sess.meta.ID, storeUserMsg)
 		})
 		m.runStoreOp(ctx, sess.meta.ID, "IncrementUserTurns", func(storeCtx context.Context) error {
 			return m.store.IncrementUserTurns(storeCtx, sess.meta.ID)
@@ -656,6 +707,7 @@ func (m *telegramSessionMgr) streamReply(ctx context.Context, bot botSender, ses
 		activeTools     = make(map[string]string) // toolCallID → toolName
 		activePhase     string                    // most-recent EventPhase text, "" when idle
 		toolsRan        bool                      // true once any EventToolExecStart seen
+		collectedImages []string                  // image paths from tool executions
 		textDeltas      int
 		reasoningDeltas int
 		toolStarts      int
@@ -703,6 +755,9 @@ func (m *telegramSessionMgr) streamReply(ctx context.Context, bot botSender, ses
 				textMu.Lock()
 				delete(activeTools, ev.ToolCallID)
 				toolEnds++
+				if len(ev.ToolImages) > 0 {
+					collectedImages = append(collectedImages, ev.ToolImages...)
+				}
 				textMu.Unlock()
 			case llm.EventPhase:
 				textMu.Lock()
@@ -840,7 +895,7 @@ loop:
 			// Preserve partial history so conversation context isn't lost.
 			newHistory := make([]llm.Message, 0, len(sess.history)+2+len(produced))
 			newHistory = append(newHistory, sess.history...)
-			newHistory = append(newHistory, llm.UserText(userText))
+			newHistory = append(newHistory, userMsg)
 			producedMu.Lock()
 			newHistory = append(newHistory, produced...)
 			producedMu.Unlock()
@@ -887,6 +942,7 @@ loop:
 	for k, v := range otherTypes {
 		finalOtherTypes[k] = v
 	}
+	imagesToSend := append([]string(nil), collectedImages...)
 	textMu.Unlock()
 
 	prose := full[msgStart:]
@@ -929,6 +985,22 @@ loop:
 		// else: prose=="" but full!="", all content already shown in previous message(s).
 	}
 
+	// Send collected images as Telegram photo messages.
+	for _, imgPath := range imagesToSend {
+		imgData, readErr := os.ReadFile(imgPath)
+		if readErr != nil {
+			log.Printf("[telegram] failed to read image %s: %v", imgPath, readErr)
+			continue
+		}
+		photoMsg := tgbotapi.NewPhoto(chatID, tgbotapi.FileBytes{
+			Name:  imgPath,
+			Bytes: imgData,
+		})
+		if _, sendErr := bot.Send(photoMsg); sendErr != nil {
+			log.Printf("[telegram] failed to send image %s: %v", imgPath, sendErr)
+		}
+	}
+
 	// Persist history: base + user message + produced (assistant + tool results).
 	newHistory := make([]llm.Message, 0, len(sess.history)+2+len(produced))
 	newHistory = append(newHistory, sess.history...)
@@ -967,6 +1039,17 @@ func containsSystemMsg(msgs []llm.Message) bool {
 		}
 	}
 	return false
+}
+
+// collectUserText extracts the text content from a user message for persistence.
+func collectUserText(msg llm.Message) string {
+	var parts []string
+	for _, p := range msg.Parts {
+		if p.Type == llm.PartText && p.Text != "" {
+			parts = append(parts, p.Text)
+		}
+	}
+	return strings.Join(parts, "\n")
 }
 
 // activeToolDisplay returns a short human-readable string describing which tools

@@ -599,6 +599,19 @@ func buildAnthropicBlocks(parts []Part, allowToolUse bool) []anthropic.ContentBl
 			if part.Text != "" {
 				blocks = append(blocks, anthropic.NewTextBlock(part.Text))
 			}
+		case PartImage:
+			if part.ImageData != nil {
+				blocks = append(blocks, anthropic.ContentBlockParamUnion{
+					OfImage: &anthropic.ImageBlockParam{
+						Source: anthropic.ImageBlockParamSourceUnion{
+							OfBase64: &anthropic.Base64ImageSourceParam{
+								Data:      part.ImageData.Base64,
+								MediaType: anthropic.Base64ImageSourceMediaType(part.ImageData.MediaType),
+							},
+						},
+					},
+				})
+			}
 		case PartToolCall:
 			if allowToolUse && part.ToolCall != nil {
 				blocks = append(blocks, anthropic.NewToolUseBlock(part.ToolCall.ID, part.ToolCall.Arguments, part.ToolCall.Name))
@@ -622,6 +635,19 @@ func buildAnthropicBetaBlocks(parts []Part, allowToolUse bool) []anthropic.BetaC
 			}
 			if part.Text != "" {
 				blocks = append(blocks, anthropic.NewBetaTextBlock(part.Text))
+			}
+		case PartImage:
+			if part.ImageData != nil {
+				blocks = append(blocks, anthropic.BetaContentBlockParamUnion{
+					OfImage: &anthropic.BetaImageBlockParam{
+						Source: anthropic.BetaImageBlockParamSourceUnion{
+							OfBase64: &anthropic.BetaBase64ImageSourceParam{
+								Data:      part.ImageData.Base64,
+								MediaType: anthropic.BetaBase64ImageSourceMediaType(part.ImageData.MediaType),
+							},
+						},
+					},
+				})
 			}
 		case PartToolCall:
 			if allowToolUse && part.ToolCall != nil {

@@ -194,6 +194,9 @@ func (r *MessageBlockRenderer) renderAssistantMessage(msg *session.Message) stri
 				b.WriteString("\n\n")
 				hasContent = true
 			}
+		case llm.PartImage:
+			b.WriteString("[Image]\n\n")
+			hasContent = true
 		case llm.PartToolCall:
 			if part.ToolCall != nil {
 				b.WriteString(ui.RenderToolCallFromPart(part.ToolCall, r.width))

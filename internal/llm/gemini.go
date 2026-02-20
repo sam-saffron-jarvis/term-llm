@@ -318,6 +318,18 @@ func buildGeminiContent(role string, parts []Part) *genai.Content {
 			if part.Text != "" {
 				content.Parts = append(content.Parts, &genai.Part{Text: part.Text})
 			}
+		case PartImage:
+			if part.ImageData != nil {
+				imageData, err := base64.StdEncoding.DecodeString(part.ImageData.Base64)
+				if err == nil {
+					content.Parts = append(content.Parts, &genai.Part{
+						InlineData: &genai.Blob{
+							MIMEType: part.ImageData.MediaType,
+							Data:     imageData,
+						},
+					})
+				}
+			}
 		case PartToolCall:
 			if part.ToolCall == nil {
 				continue

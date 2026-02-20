@@ -956,6 +956,15 @@ func buildGeminiCLIUserContent(parts []Part) map[string]interface{} {
 			if part.Text != "" {
 				apiParts = append(apiParts, map[string]interface{}{"text": part.Text})
 			}
+		case PartImage:
+			if part.ImageData != nil {
+				apiParts = append(apiParts, map[string]interface{}{
+					"inline_data": map[string]interface{}{
+						"mime_type": part.ImageData.MediaType,
+						"data":      part.ImageData.Base64,
+					},
+				})
+			}
 		}
 	}
 	if len(apiParts) == 0 {

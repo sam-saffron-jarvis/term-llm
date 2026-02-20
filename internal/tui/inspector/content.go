@@ -510,6 +510,17 @@ func (r *ContentRenderer) renderAssistantContentWithItems(msg session.Message, m
 				currentLine += strings.Count(part.Text, "\n")
 				hasText = true
 			}
+		case llm.PartImage:
+			if part.ImageData != nil {
+				if hasText {
+					b.WriteString("\n")
+					currentLine++
+				}
+				meta := fmt.Sprintf("[Image: %s, %d bytes]", part.ImageData.MediaType, len(part.ImageData.Base64))
+				b.WriteString(meta)
+				currentLine += strings.Count(meta, "\n")
+				hasText = true
+			}
 		case llm.PartToolCall:
 			if part.ToolCall != nil {
 				if b.Len() > 0 {
@@ -869,6 +880,10 @@ func (r *ContentRenderer) renderSubagentSession(sessionID string, startLine int)
 			case llm.PartText:
 				if part.Text != "" {
 					contentText += part.Text
+				}
+			case llm.PartImage:
+				if part.ImageData != nil {
+					contentText += fmt.Sprintf("[Image: %s]", part.ImageData.MediaType)
 				}
 			case llm.PartToolCall:
 				if part.ToolCall != nil {

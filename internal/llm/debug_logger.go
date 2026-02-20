@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
@@ -465,6 +466,10 @@ func convertParts(parts []Part) any {
 			if part.ReasoningEncryptedContent != "" {
 				dp.ReasoningEncryptedContentLen = len(part.ReasoningEncryptedContent)
 				dp.ReasoningEncryptedContentHash = shortContentHash(part.ReasoningEncryptedContent)
+			}
+		case PartImage:
+			if part.ImageData != nil {
+				dp.Text = fmt.Sprintf("[image %s len=%d]", part.ImageData.MediaType, len(part.ImageData.Base64))
 			}
 		case PartToolCall:
 			if part.ToolCall != nil {

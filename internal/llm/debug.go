@@ -97,6 +97,10 @@ func DebugRawRequest(enabled bool, providerName, credential string, req Request,
 						b.WriteString(rawJSON(part.ToolCall.Arguments))
 						b.WriteString("\n")
 					}
+				case PartImage:
+					if part.ImageData != nil {
+						fmt.Fprintf(&b, "[image %s len=%d]\n", part.ImageData.MediaType, len(part.ImageData.Base64))
+					}
 				case PartToolResult:
 					if part.ToolResult != nil {
 						fmt.Fprintf(&b, "tool_result name=%s id=%s\n", part.ToolResult.Name, part.ToolResult.ID)

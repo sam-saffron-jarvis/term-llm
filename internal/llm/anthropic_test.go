@@ -208,6 +208,38 @@ func TestBuildAnthropicBlocks_UserDoesNotReplayReasoning(t *testing.T) {
 	}
 }
 
+func TestBuildAnthropicBlocks_UserImagePart(t *testing.T) {
+	parts := []Part{
+		{
+			Type:      PartImage,
+			ImageData: &ToolImageData{MediaType: "image/jpeg", Base64: "dGVzdA=="},
+		},
+		{
+			Type: PartText,
+			Text: "What is in this image?",
+		},
+	}
+	blocks := buildAnthropicBlocks(parts, false)
+	if len(blocks) != 2 {
+		t.Fatalf("expected 2 blocks, got %d", len(blocks))
+	}
+	if blocks[0].OfImage == nil {
+		t.Fatal("expected first block to be an image block")
+	}
+	if blocks[0].OfImage.Source.OfBase64 == nil {
+		t.Fatal("expected base64 image source")
+	}
+	if blocks[0].OfImage.Source.OfBase64.Data != "dGVzdA==" {
+		t.Fatalf("Base64 data = %q, want %q", blocks[0].OfImage.Source.OfBase64.Data, "dGVzdA==")
+	}
+	if string(blocks[0].OfImage.Source.OfBase64.MediaType) != "image/jpeg" {
+		t.Fatalf("MediaType = %q, want %q", blocks[0].OfImage.Source.OfBase64.MediaType, "image/jpeg")
+	}
+	if blocks[1].OfText == nil || blocks[1].OfText.Text != "What is in this image?" {
+		t.Fatalf("expected second block to be text, got %+v", blocks[1])
+	}
+}
+
 func TestBuildAnthropicToolResult_NonViewImageToolDoesNotParseImageMarker(t *testing.T) {
 	content := "644: \tconst prefix = \"[IMAGE_DATA:\"\n645: \tconst suffix = \"]\""
 	parts := []Part{{

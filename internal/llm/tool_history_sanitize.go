@@ -153,6 +153,11 @@ func clonePart(part Part) (Part, bool) {
 	cloned := part
 
 	switch part.Type {
+	case PartImage:
+		if part.ImageData != nil {
+			imageCopy := *part.ImageData
+			cloned.ImageData = &imageCopy
+		}
 	case PartToolCall:
 		if part.ToolCall == nil {
 			return Part{}, false

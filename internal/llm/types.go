@@ -86,6 +86,7 @@ type PartType string
 
 const (
 	PartText       PartType = "text"
+	PartImage      PartType = "image"
 	PartToolCall   PartType = "tool_call"
 	PartToolResult PartType = "tool_result"
 )
@@ -100,9 +101,10 @@ type Message struct {
 type Part struct {
 	Type                      PartType
 	Text                      string
-	ReasoningContent          string // Reasoning summary text (or thinking content for OpenRouter)
-	ReasoningItemID           string // Responses API reasoning item ID for replay
-	ReasoningEncryptedContent string // Responses API encrypted reasoning content for replay
+	ReasoningContent          string         // Reasoning summary text (or thinking content for OpenRouter)
+	ReasoningItemID           string         // Responses API reasoning item ID for replay
+	ReasoningEncryptedContent string         // Responses API encrypted reasoning content for replay
+	ImageData                 *ToolImageData // User-supplied image (base64-encoded)
 	ToolCall                  *ToolCall
 	ToolResult                *ToolResult
 }
@@ -294,6 +296,18 @@ func UserText(text string) Message {
 		Role:  RoleUser,
 		Parts: []Part{{Type: PartText, Text: text}},
 	}
+}
+
+// UserImageMessage creates a user message with an image and an optional text caption.
+func UserImageMessage(mediaType, base64Data, caption string) Message {
+	parts := []Part{{
+		Type:      PartImage,
+		ImageData: &ToolImageData{MediaType: mediaType, Base64: base64Data},
+	}}
+	if caption != "" {
+		parts = append(parts, Part{Type: PartText, Text: caption})
+	}
+	return Message{Role: RoleUser, Parts: parts}
 }
 
 func AssistantText(text string) Message {

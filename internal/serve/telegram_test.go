@@ -4,6 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
+	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -140,7 +143,7 @@ func TestStreamReply_TextOnly(t *testing.T) {
 	mgr, sess := newTestMgrAndSession(h)
 	bot := &fakeBotSender{}
 
-	if err := mgr.streamReply(context.Background(), bot, sess, 42, "hi"); err != nil {
+	if err := mgr.streamReply(context.Background(), bot, sess, 42, llm.UserText("hi")); err != nil {
 		t.Fatalf("streamReply returned error: %v", err)
 	}
 
@@ -159,7 +162,7 @@ func TestStreamReply_ForwardsForceExternalSearch(t *testing.T) {
 	mgr.settings.ForceExternalSearch = true
 	bot := &fakeBotSender{}
 
-	if err := mgr.streamReply(context.Background(), bot, sess, 42, "hi"); err != nil {
+	if err := mgr.streamReply(context.Background(), bot, sess, 42, llm.UserText("hi")); err != nil {
 		t.Fatalf("streamReply returned error: %v", err)
 	}
 
@@ -184,7 +187,7 @@ func TestStreamReply_ToolThenText(t *testing.T) {
 	mgr, sess := newTestMgrAndSession(h)
 	bot := &fakeBotSender{}
 
-	if err := mgr.streamReply(context.Background(), bot, sess, 42, "run tool"); err != nil {
+	if err := mgr.streamReply(context.Background(), bot, sess, 42, llm.UserText("run tool")); err != nil {
 		t.Fatalf("streamReply returned error: %v", err)
 	}
 
@@ -203,7 +206,7 @@ func TestStreamReply_ToolOnlyNoText(t *testing.T) {
 	mgr, sess := newTestMgrAndSession(h)
 	bot := &fakeBotSender{}
 
-	if err := mgr.streamReply(context.Background(), bot, sess, 42, "run tool"); err != nil {
+	if err := mgr.streamReply(context.Background(), bot, sess, 42, llm.UserText("run tool")); err != nil {
 		t.Fatalf("streamReply returned error: %v", err)
 	}
 
@@ -220,7 +223,7 @@ func TestStreamReply_NoResponse(t *testing.T) {
 	mgr, sess := newTestMgrAndSession(h)
 	bot := &fakeBotSender{}
 
-	if err := mgr.streamReply(context.Background(), bot, sess, 42, "hi"); err != nil {
+	if err := mgr.streamReply(context.Background(), bot, sess, 42, llm.UserText("hi")); err != nil {
 		t.Fatalf("streamReply returned error: %v", err)
 	}
 
@@ -268,7 +271,7 @@ func TestStreamReply_ToolNameShownDuringExec(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		done <- mgr.streamReply(context.Background(), bot, sess, 42, "go slow")
+		done <- mgr.streamReply(context.Background(), bot, sess, 42, llm.UserText("go slow"))
 	}()
 
 	// Wait for the tool to start executing (guarantees EventToolExecStart is in-flight).
@@ -316,7 +319,7 @@ func TestStreamReply_ExactChunkBoundary(t *testing.T) {
 	mgr.tickerInterval = 1 * time.Millisecond
 	bot := &fakeBotSender{}
 
-	if err := mgr.streamReply(context.Background(), bot, sess, 42, "hi"); err != nil {
+	if err := mgr.streamReply(context.Background(), bot, sess, 42, llm.UserText("hi")); err != nil {
 		t.Fatalf("streamReply returned error: %v", err)
 	}
 
@@ -346,7 +349,7 @@ func TestStreamReply_PlaceholderSendFails(t *testing.T) {
 	mgr, sess := newTestMgrAndSession(h)
 	bot := &fakeBotSender{sendErr: errors.New("telegram: forbidden")}
 
-	err := mgr.streamReply(context.Background(), bot, sess, 42, "hi")
+	err := mgr.streamReply(context.Background(), bot, sess, 42, llm.UserText("hi"))
 	if err == nil {
 		t.Fatal("expected streamReply to return error when placeholder Send fails")
 	}
@@ -362,7 +365,7 @@ func TestStreamReply_StreamEventErrorReturnsError(t *testing.T) {
 	mgr, sess := newTestMgrAndSession(h)
 	bot := &fakeBotSender{}
 
-	err := mgr.streamReply(context.Background(), bot, sess, 42, "hi")
+	err := mgr.streamReply(context.Background(), bot, sess, 42, llm.UserText("hi"))
 	if err == nil {
 		t.Fatal("expected streamReply to return error when stream emits EventError")
 	}
@@ -514,7 +517,7 @@ func TestHandleMessage_InterruptCancelsActiveStream(t *testing.T) {
 	// Start the stream in a goroutine (simulates first message handling).
 	streamDone := make(chan error, 1)
 	go func() {
-		streamDone <- mgr.streamReply(context.Background(), bot, sess, 42, "do something slow")
+		streamDone <- mgr.streamReply(context.Background(), bot, sess, 42, llm.UserText("do something slow"))
 	}()
 
 	// Wait for the tool to start executing.
@@ -579,7 +582,7 @@ func TestHandleMessage_GracePeriodAllowsNaturalCompletion(t *testing.T) {
 	// Start the stream.
 	streamDone := make(chan error, 1)
 	go func() {
-		streamDone <- mgr.streamReply(context.Background(), bot, sess, 42, "hello")
+		streamDone <- mgr.streamReply(context.Background(), bot, sess, 42, llm.UserText("hello"))
 	}()
 
 	// Give the stream a moment to start and publish cancel state.
@@ -660,7 +663,7 @@ func TestHandleMessage_InterruptPreservesHistory(t *testing.T) {
 
 	streamDone := make(chan error, 1)
 	go func() {
-		streamDone <- mgr.streamReply(context.Background(), bot, sess, 42, "do slow thing")
+		streamDone <- mgr.streamReply(context.Background(), bot, sess, 42, llm.UserText("do slow thing"))
 	}()
 
 	select {
@@ -739,4 +742,134 @@ func TestTelegramSessionMgrRunStoreOpWithTimeout_UsesLiveContext(t *testing.T) {
 	if !sawDeadline {
 		t.Fatalf("runStoreOpWithTimeout should set a deadline")
 	}
+}
+
+// --- fakeFileGetter for photo download testing ---
+
+type fakeFileGetter struct {
+	fileURL string
+	fileErr error
+}
+
+func (f *fakeFileGetter) GetFile(config tgbotapi.FileConfig) (tgbotapi.File, error) {
+	return tgbotapi.File{FileID: config.FileID}, f.fileErr
+}
+
+func (f *fakeFileGetter) GetFileDirectURL(fileID string) (string, error) {
+	if f.fileErr != nil {
+		return "", f.fileErr
+	}
+	return f.fileURL, nil
+}
+
+func TestDownloadTelegramPhoto_PicksLargest(t *testing.T) {
+	// Start a test HTTP server serving an image
+	ts := newTestImageServer(t, []byte("fake-jpeg-data"))
+	defer ts.Close()
+
+	fg := &fakeFileGetter{fileURL: ts.URL}
+	photos := []tgbotapi.PhotoSize{
+		{FileID: "small", Width: 100, Height: 100},
+		{FileID: "large", Width: 800, Height: 600},
+	}
+
+	mediaType, b64, err := downloadTelegramPhoto(fg, photos)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if mediaType != "image/jpeg" {
+		t.Fatalf("mediaType = %q, want %q", mediaType, "image/jpeg")
+	}
+	if b64 == "" {
+		t.Fatal("expected non-empty base64 data")
+	}
+}
+
+func TestDownloadTelegramPhoto_EmptyPhotos(t *testing.T) {
+	fg := &fakeFileGetter{}
+	_, _, err := downloadTelegramPhoto(fg, nil)
+	if err == nil {
+		t.Fatal("expected error for empty photos")
+	}
+}
+
+func TestCollectUserText(t *testing.T) {
+	msg := llm.UserImageMessage("image/jpeg", "data", "caption text")
+	got := collectUserText(msg)
+	if got != "caption text" {
+		t.Fatalf("collectUserText = %q, want %q", got, "caption text")
+	}
+
+	msg2 := llm.UserText("hello world")
+	got2 := collectUserText(msg2)
+	if got2 != "hello world" {
+		t.Fatalf("collectUserText = %q, want %q", got2, "hello world")
+	}
+}
+
+// --- image output test ---
+
+func TestStreamReply_ToolImagesAreSent(t *testing.T) {
+	h := testutil.NewEngineHarness()
+	// Create a temp image file.
+	tmpFile := t.TempDir() + "/test.png"
+	if err := os.WriteFile(tmpFile, []byte("PNG-DATA"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	imageTool := &testutil.MockTool{
+		SpecData: llm.ToolSpec{
+			Name:        "image_tool",
+			Description: "generates images",
+			Schema: map[string]interface{}{
+				"type":       "object",
+				"properties": map[string]interface{}{},
+			},
+		},
+		ExecuteFn: func(ctx context.Context, args json.RawMessage) (llm.ToolOutput, error) {
+			return llm.ToolOutput{
+				Content: "Generated image",
+				Images:  []string{tmpFile},
+			}, nil
+		},
+	}
+	h.Registry.Register(imageTool)
+
+	h.Provider.AddToolCall("id-1", "image_tool", map[string]any{})
+	h.Provider.AddTextResponse("Here's your image")
+
+	mgr, sess := newTestMgrAndSession(h)
+	bot := &fakeBotSenderWithPhotos{}
+
+	if err := mgr.streamReply(context.Background(), bot, sess, 42, llm.UserText("generate image")); err != nil {
+		t.Fatalf("streamReply returned error: %v", err)
+	}
+
+	if len(bot.photos) == 0 {
+		t.Fatal("expected at least one photo to be sent")
+	}
+}
+
+// fakeBotSenderWithPhotos extends fakeBotSender to detect PhotoConfig sends.
+type fakeBotSenderWithPhotos struct {
+	fakeBotSender
+	photos []tgbotapi.PhotoConfig
+}
+
+func (f *fakeBotSenderWithPhotos) Send(c tgbotapi.Chattable) (tgbotapi.Message, error) {
+	if photo, ok := c.(tgbotapi.PhotoConfig); ok {
+		f.mu.Lock()
+		f.photos = append(f.photos, photo)
+		f.mu.Unlock()
+	}
+	return f.fakeBotSender.Send(c)
+}
+
+// newTestImageServer creates a test HTTP server that serves the given data.
+func newTestImageServer(t *testing.T, data []byte) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "image/jpeg")
+		w.Write(data)
+	}))
 }
