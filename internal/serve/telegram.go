@@ -20,6 +20,12 @@ import (
 
 const telegramMaxMessageLen = 4000 // Telegram limit is 4096; leave margin
 
+// botSender is the subset of tgbotapi.BotAPI used by streamReply and
+// handleMessage, allowing tests to supply a fake without a live connection.
+type botSender interface {
+	Send(c tgbotapi.Chattable) (tgbotapi.Message, error)
+}
+
 // TelegramPlatform implements Platform for the Telegram messaging platform.
 type TelegramPlatform struct {
 	cfg config.TelegramServeConfig
@@ -208,6 +214,7 @@ type telegramSessionMgr struct {
 	idleTimeout      time.Duration
 	allowedUserIDs   map[int64]struct{}
 	allowedUsernames map[string]struct{}
+	tickerInterval   time.Duration // 0 means use default (500ms); overridden in tests
 }
 
 func (m *telegramSessionMgr) isAllowed(userID int64, username string) bool {
@@ -384,7 +391,7 @@ func (m *telegramSessionMgr) runStoreOpWithTimeout(sessionID, op string, fn func
 	}
 }
 
-func (m *telegramSessionMgr) handleMessage(ctx context.Context, bot *tgbotapi.BotAPI, msg *tgbotapi.Message) {
+func (m *telegramSessionMgr) handleMessage(ctx context.Context, bot botSender, msg *tgbotapi.Message) {
 	if !m.isAllowed(msg.From.ID, msg.From.UserName) {
 		log.Printf("[telegram] ignoring message from unauthorised user %d (@%s)", msg.From.ID, msg.From.UserName)
 		return
@@ -467,7 +474,7 @@ func (m *telegramSessionMgr) handleMessage(ctx context.Context, bot *tgbotapi.Bo
 }
 
 // streamReply streams an LLM response back to the chat via live message editing.
-func (m *telegramSessionMgr) streamReply(ctx context.Context, bot *tgbotapi.BotAPI, sess *telegramSession, chatID int64, userText string) error {
+func (m *telegramSessionMgr) streamReply(ctx context.Context, bot botSender, sess *telegramSession, chatID int64, userText string) error {
 	// We acquire the session lock for the entire streaming call so that
 	// concurrent messages from the same chat are serialised.
 	sess.mu.Lock()
@@ -588,9 +595,12 @@ func (m *telegramSessionMgr) streamReply(ctx context.Context, bot *tgbotapi.BotA
 	}
 
 	var (
-		textMu     sync.Mutex
-		textBuf    strings.Builder
-		streamDone = make(chan error, 1)
+		textMu      sync.Mutex
+		textBuf     strings.Builder
+		activeTools = make(map[string]string) // toolCallID → toolName
+		activePhase string                    // most-recent EventPhase text, "" when idle
+		toolsRan    bool                      // true once any EventToolExecStart seen
+		streamDone  = make(chan error, 1)
 	)
 
 	// Goroutine: consume stream events.
@@ -605,24 +615,40 @@ func (m *telegramSessionMgr) streamReply(ctx context.Context, bot *tgbotapi.BotA
 				streamDone <- recvErr
 				return
 			}
-			if ev.Type == llm.EventTextDelta {
+			switch ev.Type {
+			case llm.EventTextDelta:
 				textMu.Lock()
 				textBuf.WriteString(ev.Text)
+				textMu.Unlock()
+			case llm.EventToolExecStart:
+				textMu.Lock()
+				activeTools[ev.ToolCallID] = ev.ToolName
+				toolsRan = true
+				textMu.Unlock()
+			case llm.EventToolExecEnd:
+				textMu.Lock()
+				delete(activeTools, ev.ToolCallID)
+				textMu.Unlock()
+			case llm.EventPhase:
+				textMu.Lock()
+				activePhase = ev.Text
 				textMu.Unlock()
 			}
 		}
 	}()
 
-	ticker := time.NewTicker(500 * time.Millisecond)
+	interval := m.tickerInterval
+	if interval <= 0 {
+		interval = 500 * time.Millisecond
+	}
+	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
 	currentMsgID := placeholder.MessageID
-	msgStart := 0 // byte offset in the full text where the current Telegram message begins
+	msgStart := 0       // byte offset in the full text where the current Telegram message begins
+	needNewMsg := false // true when overflow happened but next placeholder not yet created
 
-	sendEdit := func(msgID int, content string, withCursor bool) {
-		if withCursor {
-			content += "▌"
-		}
+	sendEdit := func(msgID int, content string) {
 		edit := tgbotapi.NewEditMessageText(chatID, msgID, content)
 		_, _ = bot.Send(edit) // rate-limit errors are silently ignored
 	}
@@ -636,25 +662,36 @@ loop:
 			break loop
 		case <-ticker.C:
 			textMu.Lock()
-			full := textBuf.String()
+			full, toolDisplay, phase := textBuf.String(), activeToolDisplay(activeTools), activePhase
 			textMu.Unlock()
 
-			segment := full[msgStart:]
-			if len(segment) == 0 {
+			prose := full[msgStart:]
+			if prose == "" && toolDisplay == "" && phase == "" {
 				continue
 			}
 
-			if len(segment) >= telegramMaxMessageLen {
-				// Finalize current message at the limit, then start a new one.
-				sendEdit(currentMsgID, segment[:telegramMaxMessageLen], false)
-				msgStart += telegramMaxMessageLen
-
-				newMsg, sendErr := bot.Send(tgbotapi.NewMessage(chatID, "⏳"))
-				if sendErr == nil {
-					currentMsgID = newMsg.MessageID
+			rendered := buildSegment(prose, toolDisplay, phase, true)
+			if len(prose) >= telegramMaxMessageLen || len(rendered) >= telegramMaxMessageLen {
+				// Finalize prose at the split point; defer creating the next placeholder
+				// until there is content to show in it (lazy creation avoids a stray "⏳"
+				// when the response length is an exact multiple of the chunk size).
+				splitAt := telegramMaxMessageLen
+				if splitAt > len(prose) {
+					splitAt = len(prose)
 				}
+				sendEdit(currentMsgID, prose[:splitAt])
+				msgStart += splitAt
+				needNewMsg = true
 			} else {
-				sendEdit(currentMsgID, segment, true)
+				if needNewMsg {
+					// Lazily create the next placeholder now that we have content for it.
+					newMsg, sendErr := bot.Send(tgbotapi.NewMessage(chatID, "⏳"))
+					if sendErr == nil {
+						currentMsgID = newMsg.MessageID
+					}
+					needNewMsg = false
+				}
+				sendEdit(currentMsgID, rendered)
 			}
 		case <-ctx.Done():
 			if m.store != nil && sess.meta != nil {
@@ -681,15 +718,29 @@ loop:
 
 	// Final edit: show full remaining text without cursor.
 	textMu.Lock()
-	full := textBuf.String()
+	full, ran := textBuf.String(), toolsRan
 	textMu.Unlock()
 
-	segment := full[msgStart:]
-	if segment == "" && full == "" {
-		segment = "(no response)"
-	}
-	if segment != "" {
-		sendEdit(currentMsgID, segment, false)
+	prose := full[msgStart:]
+	switch {
+	case prose != "":
+		// There is new content to show in the current window.
+		// If a lazy placeholder was pending, create it first.
+		if needNewMsg {
+			newMsg, sendErr := bot.Send(tgbotapi.NewMessage(chatID, "⏳"))
+			if sendErr == nil {
+				currentMsgID = newMsg.MessageID
+			}
+		}
+		sendEdit(currentMsgID, prose)
+	case full == "":
+		// Nothing was produced at all — show a fallback in the original placeholder.
+		if ran {
+			sendEdit(currentMsgID, "(done)")
+		} else {
+			sendEdit(currentMsgID, "(no response)")
+		}
+		// else: prose=="" but full!="", all content already shown in previous message(s).
 	}
 
 	// Persist history: base + user message + produced (assistant + tool results).
@@ -730,4 +781,45 @@ func containsSystemMsg(msgs []llm.Message) bool {
 		}
 	}
 	return false
+}
+
+// activeToolDisplay returns a short human-readable string describing which tools
+// are currently executing. It is called under textMu.
+func activeToolDisplay(tools map[string]string) string {
+	switch len(tools) {
+	case 0:
+		return ""
+	case 1:
+		for _, name := range tools {
+			return name
+		}
+	}
+	return fmt.Sprintf("%d tools running...", len(tools))
+}
+
+// buildSegment formats the display string for a Telegram message window.
+// prose is the accumulated text for this window.
+// tool is the currently-running tool display string ("" if none).
+// phase is the most-recent phase string ("" if none).
+// withCursor appends the streaming cursor ▌.
+func buildSegment(prose, tool, phase string, withCursor bool) string {
+	var sb strings.Builder
+	sb.WriteString(prose)
+	if tool != "" {
+		if prose != "" {
+			sb.WriteString("\n\n")
+		}
+		sb.WriteString("🔧 ")
+		sb.WriteString(tool)
+		sb.WriteString("...")
+	} else if phase != "" {
+		if prose != "" {
+			sb.WriteString("\n\n")
+		}
+		sb.WriteString(phase)
+	}
+	if withCursor {
+		sb.WriteString("▌")
+	}
+	return sb.String()
 }

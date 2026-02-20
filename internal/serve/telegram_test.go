@@ -2,12 +2,335 @@ package serve
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
+	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
+	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/session"
+	"github.com/samsaffron/term-llm/internal/testutil"
 )
+
+// fakeBotSender is a botSender that records all Send calls for test assertions.
+type fakeBotSender struct {
+	mu      sync.Mutex
+	sent    []string // text of each Send call, in order
+	nextID  int      // auto-incrementing MessageID
+	sendErr error    // if non-nil, returned on the very first Send call
+}
+
+func (f *fakeBotSender) Send(c tgbotapi.Chattable) (tgbotapi.Message, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if f.sendErr != nil {
+		err := f.sendErr
+		f.sendErr = nil // consume once
+		return tgbotapi.Message{}, err
+	}
+
+	var text string
+	switch v := c.(type) {
+	case tgbotapi.MessageConfig:
+		text = v.Text
+	case tgbotapi.EditMessageTextConfig:
+		text = v.Text
+	}
+	f.sent = append(f.sent, text)
+
+	id := f.nextID
+	f.nextID++
+	return tgbotapi.Message{MessageID: id}, nil
+}
+
+func (f *fakeBotSender) lastText() string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.sent) == 0 {
+		return ""
+	}
+	return f.sent[len(f.sent)-1]
+}
+
+func (f *fakeBotSender) allTexts() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]string, len(f.sent))
+	copy(out, f.sent)
+	return out
+}
+
+// newTestMgrAndSession builds a minimal manager and session backed by h's engine.
+func newTestMgrAndSession(h *testutil.EngineHarness) (*telegramSessionMgr, *telegramSession) {
+	mgr := &telegramSessionMgr{
+		sessions:       make(map[int64]*telegramSession),
+		tickerInterval: 10 * time.Millisecond,
+		settings:       Settings{MaxTurns: 5},
+	}
+	sess := &telegramSession{
+		runtime: &SessionRuntime{
+			Engine:       h.Engine,
+			ProviderName: "mock",
+			ModelName:    "test",
+		},
+	}
+	return mgr, sess
+}
+
+// --- TestBuildSegment ---
+
+func TestBuildSegment(t *testing.T) {
+	cases := []struct {
+		prose      string
+		tool       string
+		phase      string
+		withCursor bool
+		want       string
+	}{
+		{prose: "Hello", tool: "", phase: "", withCursor: false, want: "Hello"},
+		{prose: "Hello", tool: "", phase: "", withCursor: true, want: "Hello▌"},
+		// No leading \n\n when prose is empty.
+		{prose: "", tool: "bash", phase: "", withCursor: true, want: "🔧 bash...▌"},
+		{prose: "Thinking", tool: "bash", phase: "", withCursor: true, want: "Thinking\n\n🔧 bash...▌"},
+		{prose: "", tool: "", phase: "Searching…", withCursor: false, want: "Searching…"},
+		{prose: "Result", tool: "", phase: "Done", withCursor: false, want: "Result\n\nDone"},
+		{prose: "", tool: "", phase: "", withCursor: true, want: "▌"},
+	}
+
+	for _, tc := range cases {
+		got := buildSegment(tc.prose, tc.tool, tc.phase, tc.withCursor)
+		if got != tc.want {
+			t.Errorf("buildSegment(%q, %q, %q, %v) = %q; want %q",
+				tc.prose, tc.tool, tc.phase, tc.withCursor, got, tc.want)
+		}
+	}
+}
+
+// --- TestActiveToolDisplay ---
+
+func TestActiveToolDisplay(t *testing.T) {
+	cases := []struct {
+		tools map[string]string
+		want  string
+	}{
+		{tools: map[string]string{}, want: ""},
+		{tools: map[string]string{"id-1": "bash"}, want: "bash"},
+		{tools: map[string]string{"id-1": "bash", "id-2": "search"}, want: "2 tools running..."},
+		{tools: map[string]string{"id-1": "a", "id-2": "b", "id-3": "c"}, want: "3 tools running..."},
+	}
+	for _, tc := range cases {
+		got := activeToolDisplay(tc.tools)
+		if got != tc.want {
+			t.Errorf("activeToolDisplay(%v) = %q; want %q", tc.tools, got, tc.want)
+		}
+	}
+}
+
+// --- streamReply tests ---
+
+func TestStreamReply_TextOnly(t *testing.T) {
+	h := testutil.NewEngineHarness()
+	h.Provider.AddTextResponse("Hello")
+
+	mgr, sess := newTestMgrAndSession(h)
+	bot := &fakeBotSender{}
+
+	if err := mgr.streamReply(context.Background(), bot, sess, 42, "hi"); err != nil {
+		t.Fatalf("streamReply returned error: %v", err)
+	}
+
+	last := bot.lastText()
+	if last != "Hello" {
+		t.Errorf("lastText = %q; want %q", last, "Hello")
+	}
+}
+
+func TestStreamReply_ToolThenText(t *testing.T) {
+	h := testutil.NewEngineHarness()
+	h.AddMockTool("my_tool", "tool output")
+	h.Provider.AddToolCall("id-1", "my_tool", map[string]any{})
+	h.Provider.AddTextResponse("Result")
+
+	mgr, sess := newTestMgrAndSession(h)
+	bot := &fakeBotSender{}
+
+	if err := mgr.streamReply(context.Background(), bot, sess, 42, "run tool"); err != nil {
+		t.Fatalf("streamReply returned error: %v", err)
+	}
+
+	last := bot.lastText()
+	if last != "Result" {
+		t.Errorf("lastText = %q; want %q", last, "Result")
+	}
+}
+
+func TestStreamReply_ToolOnlyNoText(t *testing.T) {
+	h := testutil.NewEngineHarness()
+	h.AddMockTool("my_tool", "tool output")
+	h.Provider.AddToolCall("id-1", "my_tool", map[string]any{})
+	h.Provider.AddTextResponse("") // empty final response
+
+	mgr, sess := newTestMgrAndSession(h)
+	bot := &fakeBotSender{}
+
+	if err := mgr.streamReply(context.Background(), bot, sess, 42, "run tool"); err != nil {
+		t.Fatalf("streamReply returned error: %v", err)
+	}
+
+	last := bot.lastText()
+	if last != "(done)" {
+		t.Errorf("lastText = %q; want %q", last, "(done)")
+	}
+}
+
+func TestStreamReply_NoResponse(t *testing.T) {
+	h := testutil.NewEngineHarness()
+	h.Provider.AddTextResponse("") // no text, no tools
+
+	mgr, sess := newTestMgrAndSession(h)
+	bot := &fakeBotSender{}
+
+	if err := mgr.streamReply(context.Background(), bot, sess, 42, "hi"); err != nil {
+		t.Fatalf("streamReply returned error: %v", err)
+	}
+
+	last := bot.lastText()
+	if last != "(no response)" {
+		t.Errorf("lastText = %q; want %q", last, "(no response)")
+	}
+}
+
+// TestStreamReply_ToolNameShownDuringExec verifies that the tool indicator
+// appears in at least one interim message while a tool is executing.
+// Uses a channel-based synchronization so the test does not rely on timing alone.
+func TestStreamReply_ToolNameShownDuringExec(t *testing.T) {
+	h := testutil.NewEngineHarness()
+
+	toolStarted := make(chan struct{})
+	toolRelease := make(chan struct{})
+
+	slowTool := &testutil.MockTool{
+		SpecData: llm.ToolSpec{
+			Name:        "slow_tool",
+			Description: "slow tool for testing",
+			Schema: map[string]interface{}{
+				"type":       "object",
+				"properties": map[string]interface{}{},
+			},
+		},
+		ExecuteFn: func(ctx context.Context, args json.RawMessage) (llm.ToolOutput, error) {
+			close(toolStarted) // signal: tool execution has begun
+			select {
+			case <-toolRelease:
+			case <-ctx.Done():
+			}
+			return llm.TextOutput("done"), nil
+		},
+	}
+	h.Registry.Register(slowTool)
+
+	h.Provider.AddToolCall("id-1", "slow_tool", map[string]any{})
+	h.Provider.AddTextResponse("ok")
+
+	mgr, sess := newTestMgrAndSession(h)
+	mgr.tickerInterval = 5 * time.Millisecond
+	bot := &fakeBotSender{}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- mgr.streamReply(context.Background(), bot, sess, 42, "go slow")
+	}()
+
+	// Wait for the tool to start executing (guarantees EventToolExecStart is in-flight).
+	select {
+	case <-toolStarted:
+	case <-time.After(5 * time.Second):
+		t.Fatal("tool never started")
+	}
+
+	// Give the ticker several intervals to fire and pick up the activeTool state.
+	time.Sleep(40 * time.Millisecond) // 8 × 5ms ticks
+	close(toolRelease)
+
+	if err := <-done; err != nil {
+		t.Fatalf("streamReply returned error: %v", err)
+	}
+
+	found := false
+	for _, text := range bot.allTexts() {
+		if strings.Contains(text, "🔧 slow_tool...") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected tool indicator in sent texts; got: %v", bot.allTexts())
+	}
+
+	if last := bot.lastText(); last != "ok" {
+		t.Errorf("lastText = %q; want %q", last, "ok")
+	}
+}
+
+// TestStreamReply_ExactChunkBoundary verifies that a response whose length is
+// exactly telegramMaxMessageLen does not produce a bogus "(no response)" or
+// "(done)" fallback in a dangling placeholder message.
+func TestStreamReply_ExactChunkBoundary(t *testing.T) {
+	h := testutil.NewEngineHarness()
+	// Build a response that is exactly telegramMaxMessageLen bytes.
+	exactResponse := strings.Repeat("x", telegramMaxMessageLen)
+	h.Provider.AddTextResponse(exactResponse)
+
+	mgr, sess := newTestMgrAndSession(h)
+	// Use a very short ticker so it fires during streaming and triggers the split path.
+	mgr.tickerInterval = 1 * time.Millisecond
+	bot := &fakeBotSender{}
+
+	if err := mgr.streamReply(context.Background(), bot, sess, 42, "hi"); err != nil {
+		t.Fatalf("streamReply returned error: %v", err)
+	}
+
+	texts := bot.allTexts()
+	// The content must appear verbatim (possibly with cursor appended in interim edits).
+	foundContent := false
+	for _, text := range texts {
+		if strings.HasPrefix(text, exactResponse) || text == exactResponse {
+			foundContent = true
+		}
+	}
+	if !foundContent {
+		t.Errorf("expected the exact response in sent texts; no match found in %d messages", len(texts))
+	}
+
+	// Must NOT end with a bogus fallback message.
+	last := bot.lastText()
+	if last == "(no response)" || last == "(done)" {
+		t.Errorf("lastText = %q — bogus fallback after exact-chunk-size response", last)
+	}
+}
+
+func TestStreamReply_PlaceholderSendFails(t *testing.T) {
+	h := testutil.NewEngineHarness()
+	h.Provider.AddTextResponse("Hello")
+
+	mgr, sess := newTestMgrAndSession(h)
+	bot := &fakeBotSender{sendErr: errors.New("telegram: forbidden")}
+
+	err := mgr.streamReply(context.Background(), bot, sess, 42, "hi")
+	if err == nil {
+		t.Fatal("expected streamReply to return error when placeholder Send fails")
+	}
+	if !strings.Contains(err.Error(), "send placeholder") {
+		t.Errorf("error should mention 'send placeholder'; got: %v", err)
+	}
+}
+
+// --- existing tests (unchanged) ---
 
 func TestTelegramSessionMgrGetOrCreate_DoesNotBlockOtherChatsWhileCreating(t *testing.T) {
 	started := make(chan struct{}, 2)
