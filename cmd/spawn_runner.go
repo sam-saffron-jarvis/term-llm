@@ -177,14 +177,14 @@ func (r *SpawnAgentRunner) runAgentInternal(ctx context.Context, agentName strin
 		if cwd, err := os.Getwd(); err == nil {
 			childSession.CWD = cwd
 		}
-		if err := r.store.Create(ctx, childSession); err != nil {
+		if err := safeStoreOp(func() error { return r.store.Create(ctx, childSession) }); err != nil {
 			r.warn("session Create failed: %v", err)
 		} else {
 			childSessionID = childSession.ID
 
 			// Save initial user prompt as first message
 			userMsg := session.NewMessage(childSessionID, llm.UserText(prompt), -1)
-			if err := r.store.AddMessage(ctx, childSessionID, userMsg); err != nil {
+			if err := safeStoreOp(func() error { return r.store.AddMessage(ctx, childSessionID, userMsg) }); err != nil {
 				r.warn("session AddMessage failed: %v", err)
 			}
 		}
@@ -483,4 +483,15 @@ func (r *SpawnAgentRunner) runAndCollectWithCallback(
 	}
 
 	return output.String(), nil
+}
+
+// safeStoreOp wraps a store operation with panic recovery so that panics in
+// best-effort session tracking never crash the program.
+func safeStoreOp(op func() error) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("panic: %v", r)
+		}
+	}()
+	return op()
 }

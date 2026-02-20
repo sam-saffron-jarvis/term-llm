@@ -1495,3 +1495,180 @@ func TestEngineInterjection_EventEmitted(t *testing.T) {
 		t.Fatal("EventInterjection not found in event stream")
 	}
 }
+
+// panickingTool always panics when executed.
+type panickingTool struct{}
+
+func (t *panickingTool) Spec() ToolSpec {
+	return ToolSpec{
+		Name:        "panic_tool",
+		Description: "Always panics",
+		Schema:      map[string]any{"type": "object"},
+	}
+}
+
+func (t *panickingTool) Execute(ctx context.Context, args json.RawMessage) (ToolOutput, error) {
+	panic("unexpected nil pointer")
+}
+
+func (t *panickingTool) Preview(args json.RawMessage) string {
+	return ""
+}
+
+func TestEnginePanickingToolSingleCall(t *testing.T) {
+	tool := &panickingTool{}
+	registry := NewToolRegistry()
+	registry.Register(tool)
+
+	provider := &fakeProvider{
+		script: func(call int, req Request) []Event {
+			switch call {
+			case 0:
+				return []Event{
+					{Type: EventToolCall, Tool: &ToolCall{ID: "call-1", Name: "panic_tool", Arguments: json.RawMessage(`{}`)}},
+					{Type: EventDone},
+				}
+			default:
+				return []Event{
+					{Type: EventTextDelta, Text: "recovered"},
+					{Type: EventDone},
+				}
+			}
+		},
+	}
+
+	engine := NewEngine(provider, registry)
+	req := Request{
+		Messages:   []Message{UserText("run panicking tool")},
+		Tools:      []ToolSpec{tool.Spec()},
+		ToolChoice: ToolChoice{Mode: ToolChoiceAuto},
+	}
+
+	stream, err := engine.Stream(context.Background(), req)
+	if err != nil {
+		t.Fatalf("stream error: %v", err)
+	}
+	defer stream.Close()
+
+	var text strings.Builder
+	for {
+		event, err := stream.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("recv error: %v", err)
+		}
+		if event.Type == EventTextDelta {
+			text.WriteString(event.Text)
+		}
+	}
+
+	if text.String() != "recovered" {
+		t.Fatalf("expected 'recovered', got %q", text.String())
+	}
+
+	// Verify the provider received the panic error as a tool result
+	if len(provider.calls) < 2 {
+		t.Fatalf("expected at least 2 provider calls, got %d", len(provider.calls))
+	}
+	lastReq := provider.calls[1]
+	for _, msg := range lastReq.Messages {
+		for _, part := range msg.Parts {
+			if part.Type == PartToolResult && part.ToolResult != nil && part.ToolResult.IsError {
+				if !strings.Contains(part.ToolResult.Content, "tool panicked") {
+					t.Fatalf("expected panic error message, got: %s", part.ToolResult.Content)
+				}
+				return
+			}
+		}
+	}
+	t.Fatal("expected a tool error result containing 'tool panicked'")
+}
+
+func TestEnginePanickingToolParallelCalls(t *testing.T) {
+	panicTool := &panickingTool{}
+	countTool := &countingTool{}
+	registry := NewToolRegistry()
+	registry.Register(panicTool)
+	registry.Register(countTool)
+
+	provider := &fakeProvider{
+		script: func(call int, req Request) []Event {
+			switch call {
+			case 0:
+				return []Event{
+					{Type: EventToolCall, Tool: &ToolCall{ID: "call-1", Name: "panic_tool", Arguments: json.RawMessage(`{}`)}},
+					{Type: EventToolCall, Tool: &ToolCall{ID: "call-2", Name: "count_tool", Arguments: json.RawMessage(`{}`)}},
+					{Type: EventDone},
+				}
+			default:
+				return []Event{
+					{Type: EventTextDelta, Text: "both done"},
+					{Type: EventDone},
+				}
+			}
+		},
+	}
+
+	engine := NewEngine(provider, registry)
+	req := Request{
+		Messages:   []Message{UserText("run both tools")},
+		Tools:      []ToolSpec{panicTool.Spec(), countTool.Spec()},
+		ToolChoice: ToolChoice{Mode: ToolChoiceAuto},
+	}
+
+	stream, err := engine.Stream(context.Background(), req)
+	if err != nil {
+		t.Fatalf("stream error: %v", err)
+	}
+	defer stream.Close()
+
+	var text strings.Builder
+	for {
+		event, err := stream.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("recv error: %v", err)
+		}
+		if event.Type == EventTextDelta {
+			text.WriteString(event.Text)
+		}
+	}
+
+	if text.String() != "both done" {
+		t.Fatalf("expected 'both done', got %q", text.String())
+	}
+
+	// The counting tool should still have executed
+	if countTool.calls != 1 {
+		t.Fatalf("expected counting tool to execute once, got %d", countTool.calls)
+	}
+
+	// Verify the provider received both tool results (one error, one success)
+	if len(provider.calls) < 2 {
+		t.Fatalf("expected at least 2 provider calls, got %d", len(provider.calls))
+	}
+	lastReq := provider.calls[1]
+	var panicResult, okResult bool
+	for _, msg := range lastReq.Messages {
+		for _, part := range msg.Parts {
+			if part.Type == PartToolResult && part.ToolResult != nil {
+				if part.ToolResult.IsError && strings.Contains(part.ToolResult.Content, "tool panicked") {
+					panicResult = true
+				}
+				if !part.ToolResult.IsError && part.ToolResult.Content == "ok" {
+					okResult = true
+				}
+			}
+		}
+	}
+	if !panicResult {
+		t.Fatal("expected a tool error result containing 'tool panicked'")
+	}
+	if !okResult {
+		t.Fatal("expected a successful tool result from count_tool")
+	}
+}

@@ -1056,7 +1056,7 @@ func buildAssistantMessageWithReasoningMetadata(text string, toolCalls []ToolCal
 func (e *Engine) executeToolCalls(ctx context.Context, calls []ToolCall, events chan<- Event, debug bool, debugRaw bool) ([]Message, error) {
 	// Fast path: single call, no concurrency overhead
 	if len(calls) == 1 {
-		return e.executeSingleToolCall(ctx, calls[0], events, debug, debugRaw)
+		return e.executeSingleToolCallSafe(ctx, calls[0], events, debug, debugRaw)
 	}
 
 	// Parallel execution for multiple calls (events may arrive out of order)
@@ -1072,6 +1072,15 @@ func (e *Engine) executeToolCalls(ctx context.Context, calls []ToolCall, events 
 		wg.Add(1)
 		go func(idx int, c ToolCall) {
 			defer wg.Done()
+			defer func() {
+				if r := recover(); r != nil {
+					errMsg := fmt.Sprintf("Error: tool panicked: %v", r)
+					if events != nil {
+						events <- Event{Type: EventToolExecEnd, ToolCallID: c.ID, ToolName: c.Name, ToolSuccess: false}
+					}
+					resultChan <- toolResult{index: idx, message: ToolErrorMessage(c.ID, c.Name, errMsg, c.ThoughtSig)}
+				}
+			}()
 			msgs, _ := e.executeSingleToolCall(ctx, c, events, debug, debugRaw)
 			if len(msgs) > 0 {
 				resultChan <- toolResult{index: idx, message: msgs[0]}
@@ -1092,6 +1101,21 @@ func (e *Engine) executeToolCalls(ctx context.Context, calls []ToolCall, events 
 	}
 
 	return results, nil
+}
+
+// executeSingleToolCallSafe wraps executeSingleToolCall with panic recovery.
+func (e *Engine) executeSingleToolCallSafe(ctx context.Context, call ToolCall, events chan<- Event, debug bool, debugRaw bool) (msgs []Message, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			errMsg := fmt.Sprintf("Error: tool panicked: %v", r)
+			if events != nil {
+				events <- Event{Type: EventToolExecEnd, ToolCallID: call.ID, ToolName: call.Name, ToolSuccess: false}
+			}
+			msgs = []Message{ToolErrorMessage(call.ID, call.Name, errMsg, call.ThoughtSig)}
+			err = nil
+		}
+	}()
+	return e.executeSingleToolCall(ctx, call, events, debug, debugRaw)
 }
 
 // executeSingleToolCall executes a single tool call and returns the result message.
