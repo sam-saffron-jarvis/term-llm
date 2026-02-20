@@ -322,7 +322,7 @@ func runLoop(cmd *cobra.Command, args []string) error {
 	// Get tool specs
 	var toolSpecs []llm.ToolSpec
 	if toolMgr != nil || mcpManager != nil {
-		toolSpecs = engine.Tools().AllSpecs()
+		toolSpecs = llm.ToolSpecsForRequest(engine.Tools(), settings.Search)
 	}
 
 	// Force external search setting

@@ -564,6 +564,12 @@ func (m *telegramSessionMgr) streamReply(ctx context.Context, bot *tgbotapi.BotA
 		Search:    m.settings.Search,
 	}
 
+	// Populate tools so the engine enters the agentic tool loop.
+	if specs := llm.ToolSpecsForRequest(sess.runtime.Engine.Tools(), m.settings.Search); len(specs) > 0 {
+		req.Tools = specs
+		req.ToolChoice = llm.ToolChoice{Mode: llm.ToolChoiceAuto}
+	}
+
 	stream, err := sess.runtime.Engine.Stream(ctx, req)
 	if err != nil {
 		if m.store != nil && sess.meta != nil {

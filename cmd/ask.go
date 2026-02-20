@@ -417,21 +417,10 @@ func runAsk(cmd *cobra.Command, args []string) error {
 
 	// Add tools to request if any are registered (local or MCP)
 	if toolMgr != nil || mcpManager != nil {
-		allSpecs := engine.Tools().AllSpecs()
-		// Filter out search tools unless search is enabled
-		// (Engine adds them automatically when req.Search is true)
-		if !settings.Search {
-			var filtered []llm.ToolSpec
-			for _, spec := range allSpecs {
-				if spec.Name != llm.WebSearchToolName && spec.Name != llm.ReadURLToolName {
-					filtered = append(filtered, spec)
-				}
-			}
-			req.Tools = filtered
-		} else {
-			req.Tools = allSpecs
+		if specs := llm.ToolSpecsForRequest(engine.Tools(), settings.Search); len(specs) > 0 {
+			req.Tools = specs
+			req.ToolChoice = llm.ToolChoice{Mode: llm.ToolChoiceAuto}
 		}
-		req.ToolChoice = llm.ToolChoice{Mode: llm.ToolChoiceAuto}
 	}
 
 	// Check if we're in a TTY and can use glamour

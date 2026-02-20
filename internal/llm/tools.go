@@ -79,6 +79,27 @@ func (r *ToolRegistry) AllSpecs() []ToolSpec {
 	return specs
 }
 
+// ToolSpecsForRequest returns the tool specs to include in a request,
+// filtering out search tools when searchEnabled is false (the engine adds
+// them automatically when req.Search is true). Returns nil if no tools are
+// registered.
+func ToolSpecsForRequest(registry *ToolRegistry, searchEnabled bool) []ToolSpec {
+	all := registry.AllSpecs()
+	if len(all) == 0 {
+		return nil
+	}
+	if searchEnabled {
+		return all
+	}
+	var filtered []ToolSpec
+	for _, spec := range all {
+		if spec.Name != WebSearchToolName && spec.Name != ReadURLToolName {
+			filtered = append(filtered, spec)
+		}
+	}
+	return filtered
+}
+
 // SuggestCommandsToolSpec returns the tool spec for command suggestions.
 func SuggestCommandsToolSpec(numSuggestions int) ToolSpec {
 	return ToolSpec{
