@@ -195,6 +195,68 @@ func TestDispatchClaudeEvents_PrioritizesSlightlyDelayedTextOverToolRequest(t *t
 	}
 }
 
+func TestDispatchClaudeEvents_FallsBackToAssistantTextWhenNoDeltas(t *testing.T) {
+	provider := NewClaudeBinProvider("sonnet")
+	events := make(chan Event, 8)
+	lines := make(chan string, 4)
+	toolReqs := make(chan claudeToolRequest, 1)
+
+	lines <- `{"type":"assistant","message":{"content":[{"type":"text","text":"assistant fallback text"}]}}`
+	lines <- `{"type":"result","is_error":false,"result":"ok","usage":{"input_tokens":1,"output_tokens":2,"cache_read_input_tokens":0}}`
+	close(lines)
+
+	_, err := provider.dispatchClaudeEvents(context.Background(), lines, toolReqs, false, events)
+	if err != nil {
+		t.Fatalf("dispatch failed: %v", err)
+	}
+
+	select {
+	case ev := <-events:
+		if ev.Type != EventTextDelta {
+			t.Fatalf("expected EventTextDelta, got %+v", ev)
+		}
+		if ev.Text != "assistant fallback text" {
+			t.Fatalf("unexpected fallback text: %q", ev.Text)
+		}
+	default:
+		t.Fatal("expected fallback text event when no stream deltas are present")
+	}
+}
+
+func TestDispatchClaudeEvents_DoesNotDuplicateAssistantFallbackWhenDeltasPresent(t *testing.T) {
+	provider := NewClaudeBinProvider("sonnet")
+	events := make(chan Event, 8)
+	lines := make(chan string, 4)
+	toolReqs := make(chan claudeToolRequest, 1)
+
+	lines <- `{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"delta text"}}}`
+	lines <- `{"type":"assistant","message":{"content":[{"type":"text","text":"assistant fallback text"}]}}`
+	lines <- `{"type":"result","is_error":false,"result":"ok","usage":{"input_tokens":1,"output_tokens":2,"cache_read_input_tokens":0}}`
+	close(lines)
+
+	_, err := provider.dispatchClaudeEvents(context.Background(), lines, toolReqs, false, events)
+	if err != nil {
+		t.Fatalf("dispatch failed: %v", err)
+	}
+
+	var got []Event
+	for {
+		select {
+		case ev := <-events:
+			got = append(got, ev)
+		default:
+			goto drained
+		}
+	}
+drained:
+	if len(got) != 1 {
+		t.Fatalf("expected exactly 1 text event, got %d: %+v", len(got), got)
+	}
+	if got[0].Type != EventTextDelta || got[0].Text != "delta text" {
+		t.Fatalf("unexpected event: %+v", got[0])
+	}
+}
+
 func TestHandleClaudeToolRequest_ClosedStreamReturnsError(t *testing.T) {
 	provider := NewClaudeBinProvider("sonnet")
 	events := make(chan Event)
@@ -222,12 +284,16 @@ func TestHandleClaudeLine_ContextCancelledDoesNotBlock(t *testing.T) {
 	cancel()
 
 	var usage *Usage
+	sawTextDelta := false
+	assistantFallbackText := ""
 	err := provider.handleClaudeLine(
 		cancelled,
 		`{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"x"}}}`,
 		false,
 		events,
 		&usage,
+		&sawTextDelta,
+		&assistantFallbackText,
 	)
 	if err == nil {
 		t.Fatal("expected cancellation error")

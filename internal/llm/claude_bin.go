@@ -383,8 +383,10 @@ func (p *ClaudeBinProvider) dispatchClaudeEvents(
 	events chan<- Event,
 ) (*Usage, error) {
 	var (
-		lastUsage *Usage
-		linesOpen = true
+		lastUsage             *Usage
+		linesOpen             = true
+		sawTextDelta          bool
+		assistantFallbackText string
 	)
 
 	for linesOpen {
@@ -398,7 +400,7 @@ func (p *ClaudeBinProvider) dispatchClaudeEvents(
 					break
 				}
 				hadLine = true
-				if err := p.handleClaudeLine(ctx, line, debug, events, &lastUsage); err != nil {
+				if err := p.handleClaudeLine(ctx, line, debug, events, &lastUsage, &sawTextDelta, &assistantFallbackText); err != nil {
 					return nil, err
 				}
 			default:
@@ -416,11 +418,11 @@ func (p *ClaudeBinProvider) dispatchClaudeEvents(
 				linesOpen = false
 				continue
 			}
-			if err := p.handleClaudeLine(ctx, line, debug, events, &lastUsage); err != nil {
+			if err := p.handleClaudeLine(ctx, line, debug, events, &lastUsage, &sawTextDelta, &assistantFallbackText); err != nil {
 				return nil, err
 			}
 		case req := <-toolReqCh:
-			if err := p.drainClaudeLinesWithGrace(ctx, lineCh, debug, events, &lastUsage); err != nil {
+			if err := p.drainClaudeLinesWithGrace(ctx, lineCh, debug, events, &lastUsage, &sawTextDelta, &assistantFallbackText); err != nil {
 				return nil, err
 			}
 			p.handleClaudeToolRequest(req, events)
@@ -443,7 +445,15 @@ drained:
 	return lastUsage, nil
 }
 
-func (p *ClaudeBinProvider) handleClaudeLine(ctx context.Context, line string, debug bool, events chan<- Event, lastUsage **Usage) error {
+func (p *ClaudeBinProvider) handleClaudeLine(
+	ctx context.Context,
+	line string,
+	debug bool,
+	events chan<- Event,
+	lastUsage **Usage,
+	sawTextDelta *bool,
+	assistantFallbackText *string,
+) error {
 	var baseMsg struct {
 		Type string `json:"type"`
 	}
@@ -481,12 +491,20 @@ func (p *ClaudeBinProvider) handleClaudeLine(ctx context.Context, line string, d
 				}
 				return fmt.Errorf("failed to emit claude text delta: stream closed")
 			}
+			if sawTextDelta != nil {
+				*sawTextDelta = true
+			}
 		}
 
 	case "assistant":
-		// Tool execution is handled via MCP HTTP path (wrappedExecutor).
-		// The "assistant" message is output BEFORE claude calls MCP,
-		// so we can't use it for tracking. Just ignore it - MCP handles everything.
+		// Buffer assistant text as a fallback for providers/versions that
+		// don't emit stream_event text deltas.
+		var assistantMsg claudeAssistantMessage
+		if err := json.Unmarshal([]byte(line), &assistantMsg); err == nil && assistantFallbackText != nil {
+			if text := extractClaudeAssistantText(assistantMsg); text != "" {
+				*assistantFallbackText = text
+			}
+		}
 
 	case "result":
 		var resultMsg claudeResultMessage
@@ -494,6 +512,15 @@ func (p *ClaudeBinProvider) handleClaudeLine(ctx context.Context, line string, d
 			// Check for API errors (rate limits, auth issues, etc.)
 			if resultMsg.IsError && resultMsg.Result != "" {
 				return fmt.Errorf("claude API error: %s", resultMsg.Result)
+			}
+			if sawTextDelta != nil && assistantFallbackText != nil && !*sawTextDelta && strings.TrimSpace(*assistantFallbackText) != "" {
+				if !safeSendEvent(ctx, events, Event{Type: EventTextDelta, Text: *assistantFallbackText}) {
+					if ctx.Err() != nil {
+						return ctx.Err()
+					}
+					return fmt.Errorf("failed to emit claude assistant fallback text: stream closed")
+				}
+				*sawTextDelta = true
 			}
 			*lastUsage = &Usage{
 				InputTokens:  resultMsg.Usage.InputTokens + resultMsg.Usage.CacheReadInputTokens,
@@ -531,6 +558,8 @@ func (p *ClaudeBinProvider) drainClaudeLinesWithGrace(
 	debug bool,
 	events chan<- Event,
 	lastUsage **Usage,
+	sawTextDelta *bool,
+	assistantFallbackText *string,
 ) error {
 	// First, drain any already-buffered lines.
 	for {
@@ -539,7 +568,7 @@ func (p *ClaudeBinProvider) drainClaudeLinesWithGrace(
 			if !ok {
 				return nil
 			}
-			if err := p.handleClaudeLine(ctx, line, debug, events, lastUsage); err != nil {
+			if err := p.handleClaudeLine(ctx, line, debug, events, lastUsage, sawTextDelta, assistantFallbackText); err != nil {
 				return err
 			}
 		default:
@@ -557,7 +586,7 @@ wait:
 			if !ok {
 				return nil
 			}
-			if err := p.handleClaudeLine(ctx, line, debug, events, lastUsage); err != nil {
+			if err := p.handleClaudeLine(ctx, line, debug, events, lastUsage, sawTextDelta, assistantFallbackText); err != nil {
 				return err
 			}
 			if !timer.Stop() {
@@ -904,6 +933,16 @@ func (p *ClaudeBinProvider) processToolResultContent(result *ToolResult) string 
 		return notice
 	}
 	return strings.TrimSpace(textContent + "\n" + notice)
+}
+
+func extractClaudeAssistantText(msg claudeAssistantMessage) string {
+	var b strings.Builder
+	for _, block := range msg.Message.Content {
+		if block.Type == "text" && block.Text != "" {
+			b.WriteString(block.Text)
+		}
+	}
+	return b.String()
 }
 
 // safeSendEvent attempts to send an event to the channel, returning false if
