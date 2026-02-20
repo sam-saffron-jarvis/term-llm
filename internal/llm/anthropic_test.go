@@ -406,6 +406,43 @@ func TestBuildAnthropicBetaBlocks_AssistantReasoningReplay(t *testing.T) {
 	}
 }
 
+func TestBuildAnthropicMessages_DropsDanglingToolCalls(t *testing.T) {
+	_, out := buildAnthropicMessages([]Message{
+		UserText("Run shell"),
+		{
+			Role: RoleAssistant,
+			Parts: []Part{
+				{Type: PartText, Text: "Working"},
+				{
+					Type: PartToolCall,
+					ToolCall: &ToolCall{
+						ID:        "call-1",
+						Name:      "shell",
+						Arguments: json.RawMessage(`{"command":"sleep 10"}`),
+					},
+				},
+			},
+		},
+		UserText("new request"),
+	})
+
+	if len(out) != 3 {
+		t.Fatalf("expected 3 messages, got %d", len(out))
+	}
+	if len(out[1].Content) != 1 {
+		t.Fatalf("expected assistant message to keep only text content, got %d blocks", len(out[1].Content))
+	}
+	if out[1].Content[0].OfText == nil {
+		t.Fatalf("expected assistant text block after sanitization, got %#v", out[1].Content[0])
+	}
+	if out[1].Content[0].OfText.Text != "Working" {
+		t.Fatalf("expected assistant text to be preserved, got %q", out[1].Content[0].OfText.Text)
+	}
+	if out[1].Content[0].OfToolUse != nil {
+		t.Fatalf("expected dangling tool_use block to be removed, got %#v", out[1].Content[0].OfToolUse)
+	}
+}
+
 func TestHandleAnthropicStartBlockContent_TextBlockEmitsTextDelta(t *testing.T) {
 	events := make(chan Event, 1)
 	acc := newToolCallAccumulator()

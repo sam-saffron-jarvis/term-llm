@@ -278,6 +278,8 @@ func jsonMarshal(v any) (json.RawMessage, error) {
 }
 
 func buildGeminiContents(messages []Message) (string, []*genai.Content) {
+	messages = sanitizeToolHistory(messages)
+
 	var systemParts []string
 	contents := make([]*genai.Content, 0, len(messages))
 

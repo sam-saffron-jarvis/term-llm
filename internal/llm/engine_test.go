@@ -3,6 +3,7 @@ package llm
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -438,6 +439,34 @@ func (t *delayingTool) Execute(ctx context.Context, args json.RawMessage) (ToolO
 }
 
 func (t *delayingTool) Preview(args json.RawMessage) string {
+	return ""
+}
+
+type cancellableDelayTool struct {
+	delay time.Duration
+}
+
+func (t *cancellableDelayTool) Spec() ToolSpec {
+	return ToolSpec{
+		Name:        "cancel_delay_tool",
+		Description: "A tool that waits or exits on cancellation",
+		Schema:      map[string]any{"type": "object"},
+	}
+}
+
+func (t *cancellableDelayTool) Execute(ctx context.Context, args json.RawMessage) (ToolOutput, error) {
+	timer := time.NewTimer(t.delay)
+	defer timer.Stop()
+
+	select {
+	case <-ctx.Done():
+		return ToolOutput{}, ctx.Err()
+	case <-timer.C:
+		return TextOutput("done"), nil
+	}
+}
+
+func (t *cancellableDelayTool) Preview(args json.RawMessage) string {
 	return ""
 }
 
@@ -1308,6 +1337,96 @@ func TestEngineInterjection_TurnCallback(t *testing.T) {
 	}
 	if !foundInterjection {
 		t.Fatal("expected turn callback to receive interjection user message")
+	}
+}
+
+func TestEngineTurnCallbackContextSurvivesCancellation(t *testing.T) {
+	tool := &cancellableDelayTool{delay: 200 * time.Millisecond}
+	registry := NewToolRegistry()
+	registry.Register(tool)
+
+	provider := NewMockProvider("test").
+		AddToolCall("call-1", "cancel_delay_tool", map[string]any{}).
+		AddTextResponse("done")
+
+	engine := NewEngine(provider, registry)
+
+	var mu sync.Mutex
+	var callbackCtxErr error
+	var sawToolResult bool
+	callbackDone := make(chan struct{}, 1)
+
+	engine.SetTurnCompletedCallback(func(ctx context.Context, turnIndex int, messages []Message, metrics TurnMetrics) error {
+		mu.Lock()
+		defer mu.Unlock()
+
+		if callbackCtxErr == nil {
+			callbackCtxErr = ctx.Err()
+		}
+
+		for _, msg := range messages {
+			for _, part := range msg.Parts {
+				if part.Type == PartToolResult && part.ToolResult != nil && part.ToolResult.ID == "call-1" {
+					sawToolResult = true
+					select {
+					case callbackDone <- struct{}{}:
+					default:
+					}
+				}
+			}
+		}
+		return nil
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	req := Request{
+		Messages:   []Message{UserText("run tool")},
+		Tools:      []ToolSpec{tool.Spec()},
+		ToolChoice: ToolChoice{Mode: ToolChoiceAuto},
+	}
+
+	stream, err := engine.Stream(ctx, req)
+	if err != nil {
+		t.Fatalf("stream error: %v", err)
+	}
+	defer stream.Close()
+
+	cancelIssued := false
+	for {
+		event, recvErr := stream.Recv()
+		if recvErr == io.EOF {
+			break
+		}
+		if recvErr != nil {
+			if !errors.Is(recvErr, context.Canceled) {
+				t.Fatalf("recv error: %v", recvErr)
+			}
+			break
+		}
+		if event.Type == EventToolExecStart && !cancelIssued {
+			cancelIssued = true
+			cancel()
+		}
+	}
+
+	if !cancelIssued {
+		t.Fatal("expected tool execution to start before cancellation")
+	}
+
+	select {
+	case <-callbackDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for turn callback with tool result")
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	if !sawToolResult {
+		t.Fatal("expected turn callback to include tool result after cancellation")
+	}
+	if callbackCtxErr != nil {
+		t.Fatalf("expected callback context to be usable after cancellation, got: %v", callbackCtxErr)
 	}
 }
 

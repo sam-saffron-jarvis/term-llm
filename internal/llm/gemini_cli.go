@@ -908,6 +908,8 @@ func (p *GeminiCLIProvider) performSearch(ctx context.Context, query string, deb
 // Returns system instruction text and contents array.
 // Note: Consecutive RoleTool messages are merged into a single content block as required by Gemini API.
 func buildGeminiCLIContents(messages []Message) (string, []map[string]interface{}) {
+	messages = sanitizeToolHistory(messages)
+
 	var systemParts []string
 	contents := make([]map[string]interface{}, 0, len(messages))
 

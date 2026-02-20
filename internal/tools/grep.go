@@ -13,6 +13,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/bmatcuk/doublestar/v4"
 	"github.com/samsaffron/term-llm/internal/llm"
@@ -244,6 +245,9 @@ func (t *GrepTool) Preview(args json.RawMessage) string {
 }
 
 func (t *GrepTool) Execute(ctx context.Context, args json.RawMessage) (llm.ToolOutput, error) {
+	ctx, cancel := context.WithTimeout(ctx, time.Minute)
+	defer cancel()
+
 	var a GrepArgs
 	if err := json.Unmarshal(args, &a); err != nil {
 		return llm.TextOutput(formatToolError(NewToolError(ErrInvalidParams, err.Error()))), nil
@@ -285,13 +289,17 @@ func (t *GrepTool) Execute(ctx context.Context, args json.RawMessage) (llm.ToolO
 	// Try ripgrep first (faster)
 	if ripgrepAvailable() {
 		matches, err := t.executeRipgrep(ctx, a.Pattern, searchPath, a.Include, maxResults)
-		if err == nil {
+		if err != nil {
+			if ctx.Err() != nil {
+				return llm.TextOutput("grep timed out after 1 minute; try a more specific pattern or path"), nil
+			}
+			// Fall through to Go implementation on ripgrep error
+		} else {
 			if len(matches) == 0 {
 				return llm.TextOutput("No matches found."), nil
 			}
 			return llm.TextOutput(formatGrepResults(matches, len(matches) >= maxResults)), nil
 		}
-		// Fall through to Go implementation on ripgrep error
 	}
 
 	// Fallback: Go implementation
@@ -313,6 +321,10 @@ func (t *GrepTool) Execute(ctx context.Context, args json.RawMessage) (llm.ToolO
 	// Search files
 	var matches []GrepMatch
 	for _, file := range files {
+		if ctx.Err() != nil {
+			return llm.TextOutput("grep timed out after 1 minute; try a more specific pattern or path"), nil
+		}
+
 		if len(matches) >= maxResults {
 			break
 		}

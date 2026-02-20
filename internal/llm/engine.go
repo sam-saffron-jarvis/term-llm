@@ -17,6 +17,7 @@ import (
 const (
 	defaultMaxTurns    = 20
 	stopSearchToolHint = "IMPORTANT: Do not call any tools. Use the information already retrieved and answer directly."
+	callbackTimeout    = 5 * time.Second
 )
 
 // getMaxTurns returns the max turns from request, with fallback to default
@@ -225,6 +226,15 @@ func (e *Engine) getResponseCallback() ResponseCompletedCallback {
 	cb := e.onResponseCompleted
 	e.callbackMu.RUnlock()
 	return cb
+}
+
+// callbackContext returns a context for persistence callbacks that should
+// survive stream cancellation long enough to commit data.
+func callbackContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithTimeout(context.WithoutCancel(ctx), callbackTimeout)
 }
 
 // SetCompaction enables context compaction with the given input token limit
@@ -568,7 +578,9 @@ func (s *callbackStream) fireCallback() {
 				ReasoningEncryptedContent: s.reasoningEncrypted,
 			}},
 		}
-		_ = s.callback(s.ctx, 0, []Message{msg}, s.metrics)
+		cbCtx, cancel := callbackContext(s.ctx)
+		defer cancel()
+		_ = s.callback(cbCtx, 0, []Message{msg}, s.metrics)
 	}
 }
 
@@ -836,7 +848,9 @@ func (e *Engine) runLoop(ctx context.Context, req Request, events chan<- Event) 
 						ReasoningEncryptedContent: reasoningEncryptedContent,
 					}},
 				}
-				_ = turnCallback(ctx, attempt, []Message{finalMsg}, turnMetrics)
+				cbCtx, cancel := callbackContext(ctx)
+				_ = turnCallback(cbCtx, attempt, []Message{finalMsg}, turnMetrics)
+				cancel()
 			}
 			events <- Event{Type: EventDone}
 			return nil
@@ -863,7 +877,9 @@ func (e *Engine) runLoop(ctx context.Context, req Request, events chan<- Event) 
 				turnMetrics.ToolCalls = len(syncToolCalls)
 				turnMessages := []Message{assistantMsg}
 				turnMessages = append(turnMessages, syncToolResults...)
-				_ = turnCallback(ctx, attempt, turnMessages, turnMetrics)
+				cbCtx, cancel := callbackContext(ctx)
+				_ = turnCallback(cbCtx, attempt, turnMessages, turnMetrics)
+				cancel()
 			}
 
 			// Check for user interjection (MCP sync path)
@@ -871,7 +887,9 @@ func (e *Engine) runLoop(ctx context.Context, req Request, events chan<- Event) 
 				interjectionMsg := UserText(text)
 				req.Messages = append(req.Messages, interjectionMsg)
 				if turnCallback != nil {
-					_ = turnCallback(ctx, attempt, []Message{interjectionMsg}, TurnMetrics{})
+					cbCtx, cancel := callbackContext(ctx)
+					_ = turnCallback(cbCtx, attempt, []Message{interjectionMsg}, TurnMetrics{})
+					cancel()
 				}
 				if events != nil {
 					events <- Event{Type: EventInterjection, Text: text}
@@ -928,7 +946,9 @@ func (e *Engine) runLoop(ctx context.Context, req Request, events chan<- Event) 
 				}
 				if len(parts) > 0 {
 					finalMsg := Message{Role: RoleAssistant, Parts: parts}
-					_ = turnCallback(ctx, attempt, []Message{finalMsg}, turnMetrics)
+					cbCtx, cancel := callbackContext(ctx)
+					_ = turnCallback(cbCtx, attempt, []Message{finalMsg}, turnMetrics)
+					cancel()
 				}
 			}
 			events <- Event{Type: EventDone}
@@ -952,7 +972,9 @@ func (e *Engine) runLoop(ctx context.Context, req Request, events chan<- Event) 
 		// Call responseCallback BEFORE tool execution to persist assistant message
 		// This ensures the message is saved even if tool execution fails/crashes
 		if responseCallback != nil {
-			_ = responseCallback(ctx, attempt, assistantMsg, turnMetrics)
+			cbCtx, cancel := callbackContext(ctx)
+			_ = responseCallback(cbCtx, attempt, assistantMsg, turnMetrics)
+			cancel()
 		}
 
 		// Execute registered tools
@@ -976,7 +998,9 @@ func (e *Engine) runLoop(ctx context.Context, req Request, events chan<- Event) 
 		// Call turn completed callback with tool results for incremental persistence
 		if turnCallback != nil {
 			turnMetrics.ToolCalls = len(registered)
-			_ = turnCallback(ctx, attempt, toolResults, turnMetrics)
+			cbCtx, cancel := callbackContext(ctx)
+			_ = turnCallback(cbCtx, attempt, toolResults, turnMetrics)
+			cancel()
 		}
 
 		// Check for user interjection queued during this turn.
@@ -986,7 +1010,9 @@ func (e *Engine) runLoop(ctx context.Context, req Request, events chan<- Event) 
 			req.Messages = append(req.Messages, interjectionMsg)
 			// Fire turn callback so the interjection is persisted
 			if turnCallback != nil {
-				_ = turnCallback(ctx, attempt, []Message{interjectionMsg}, TurnMetrics{})
+				cbCtx, cancel := callbackContext(ctx)
+				_ = turnCallback(cbCtx, attempt, []Message{interjectionMsg}, TurnMetrics{})
+				cancel()
 			}
 			// Emit event so TUI can display the interjection inline
 			if events != nil {

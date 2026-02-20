@@ -524,6 +524,8 @@ func (p *AnthropicProvider) streamWithSearch(ctx context.Context, req Request) (
 }
 
 func buildAnthropicMessages(messages []Message) (string, []anthropic.MessageParam) {
+	messages = sanitizeToolHistory(messages)
+
 	var systemParts []string
 	var out []anthropic.MessageParam
 
@@ -553,6 +555,8 @@ func buildAnthropicMessages(messages []Message) (string, []anthropic.MessagePara
 }
 
 func buildAnthropicBetaMessages(messages []Message) (string, []anthropic.BetaMessageParam) {
+	messages = sanitizeToolHistory(messages)
+
 	var systemParts []string
 	var out []anthropic.BetaMessageParam
 

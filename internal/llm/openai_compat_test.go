@@ -88,12 +88,25 @@ func TestBuildCompatMessages_WithReasoningContent(t *testing.T) {
 				},
 			},
 		},
+		{
+			Role: RoleTool,
+			Parts: []Part{
+				{
+					Type: PartToolResult,
+					ToolResult: &ToolResult{
+						ID:      "call-456",
+						Name:    "list_files",
+						Content: "file1\nfile2",
+					},
+				},
+			},
+		},
 	}
 
 	oaiMsgs := buildCompatMessages(messages)
 
-	if len(oaiMsgs) != 2 {
-		t.Fatalf("expected 2 messages, got %d", len(oaiMsgs))
+	if len(oaiMsgs) != 3 {
+		t.Fatalf("expected 3 messages, got %d", len(oaiMsgs))
 	}
 
 	// Check user message
@@ -111,6 +124,10 @@ func TestBuildCompatMessages_WithReasoningContent(t *testing.T) {
 	}
 	if len(assistantMsg.ToolCalls) != 1 {
 		t.Errorf("expected 1 tool call, got %d", len(assistantMsg.ToolCalls))
+	}
+
+	if oaiMsgs[2].Role != "tool" {
+		t.Errorf("expected third message role 'tool', got %q", oaiMsgs[2].Role)
 	}
 }
 
@@ -138,6 +155,17 @@ func TestBuildCompatMessages_NoReasoningContent(t *testing.T) {
 func TestBuildCompatMessages_ToolResultStructuredImageParts(t *testing.T) {
 	messages := []Message{
 		{
+			Role: RoleAssistant,
+			Parts: []Part{{
+				Type: PartToolCall,
+				ToolCall: &ToolCall{
+					ID:        "call-1",
+					Name:      "view_image",
+					Arguments: []byte(`{"path":"wow.png"}`),
+				},
+			}},
+		},
+		{
 			Role: RoleTool,
 			Parts: []Part{{
 				Type: PartToolResult,
@@ -156,23 +184,73 @@ func TestBuildCompatMessages_ToolResultStructuredImageParts(t *testing.T) {
 	}
 
 	oaiMsgs := buildCompatMessages(messages)
-	if len(oaiMsgs) != 2 {
-		t.Fatalf("expected 2 messages (tool + user multimodal), got %d", len(oaiMsgs))
+	if len(oaiMsgs) != 3 {
+		t.Fatalf("expected 3 messages (assistant + tool + user multimodal), got %d", len(oaiMsgs))
 	}
-	if oaiMsgs[0].Role != "tool" || oaiMsgs[0].Content != "Image loadeddone" {
-		t.Fatalf("unexpected tool message: %#v", oaiMsgs[0])
+	if oaiMsgs[0].Role != "assistant" || len(oaiMsgs[0].ToolCalls) != 1 {
+		t.Fatalf("unexpected assistant tool-call message: %#v", oaiMsgs[0])
 	}
-	if oaiMsgs[1].Role != "user" {
-		t.Fatalf("expected second message role user, got %q", oaiMsgs[1].Role)
+	if oaiMsgs[1].Role != "tool" || oaiMsgs[1].Content != "Image loadeddone" {
+		t.Fatalf("unexpected tool message: %#v", oaiMsgs[1])
 	}
-	parts, ok := oaiMsgs[1].Content.([]oaiContentPart)
+	if oaiMsgs[2].Role != "user" {
+		t.Fatalf("expected third message role user, got %q", oaiMsgs[2].Role)
+	}
+	parts, ok := oaiMsgs[2].Content.([]oaiContentPart)
 	if !ok {
-		t.Fatalf("expected user content []oaiContentPart, got %T", oaiMsgs[1].Content)
+		t.Fatalf("expected user content []oaiContentPart, got %T", oaiMsgs[2].Content)
 	}
 	if len(parts) != 3 {
 		t.Fatalf("expected 3 content parts, got %d", len(parts))
 	}
 	if parts[1].Type != "image_url" || parts[1].ImageURL == nil {
 		t.Fatalf("expected second content part image_url, got %#v", parts[1])
+	}
+}
+
+func TestBuildCompatMessages_DropsDanglingToolCalls(t *testing.T) {
+	messages := []Message{
+		{
+			Role: RoleUser,
+			Parts: []Part{
+				{Type: PartText, Text: "Run a tool"},
+			},
+		},
+		{
+			Role: RoleAssistant,
+			Parts: []Part{
+				{Type: PartText, Text: "Working on it"},
+				{
+					Type: PartToolCall,
+					ToolCall: &ToolCall{
+						ID:        "call-1",
+						Name:      "shell",
+						Arguments: []byte(`{"command":"sleep 10"}`),
+					},
+				},
+			},
+		},
+		{
+			Role: RoleUser,
+			Parts: []Part{
+				{Type: PartText, Text: "new request"},
+			},
+		},
+	}
+
+	oaiMsgs := buildCompatMessages(messages)
+	if len(oaiMsgs) != 3 {
+		t.Fatalf("expected 3 messages, got %d", len(oaiMsgs))
+	}
+
+	assistant := oaiMsgs[1]
+	if assistant.Role != "assistant" {
+		t.Fatalf("expected assistant role, got %q", assistant.Role)
+	}
+	if len(assistant.ToolCalls) != 0 {
+		t.Fatalf("expected dangling tool calls to be removed, got %d", len(assistant.ToolCalls))
+	}
+	if assistant.Content != "Working on it" {
+		t.Fatalf("expected assistant text to be preserved, got %v", assistant.Content)
 	}
 }

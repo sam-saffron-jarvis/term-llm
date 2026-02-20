@@ -451,6 +451,8 @@ func (p *OpenAICompatProvider) Stream(ctx context.Context, req Request) (Stream,
 }
 
 func buildCompatMessages(messages []Message) []oaiMessage {
+	messages = sanitizeToolHistory(messages)
+
 	var result []oaiMessage
 	for _, msg := range messages {
 		switch msg.Role {
