@@ -21,7 +21,6 @@ import (
 	"github.com/samsaffron/term-llm/internal/prompt"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/signal"
-	"github.com/samsaffron/term-llm/internal/skills"
 	"github.com/samsaffron/term-llm/internal/tools"
 	"github.com/samsaffron/term-llm/internal/tui/inspector"
 	"github.com/samsaffron/term-llm/internal/ui"
@@ -291,21 +290,7 @@ func runAsk(cmd *cobra.Command, args []string) error {
 
 	}
 
-	// Register activate_skill tool if skills are available (independent of toolMgr)
-	if skillsSetup != nil && skillsSetup.Registry != nil {
-		var skillTool *tools.ActivateSkillTool
-		if toolMgr != nil {
-			skillTool = toolMgr.Registry.RegisterSkillTool(skillsSetup.Registry)
-		} else {
-			skillTool = tools.NewActivateSkillTool(skillsSetup.Registry, nil)
-		}
-		if skillTool != nil {
-			skillTool.SetOnActivated(func(allowedTools []string) {
-				engine.SetAllowedTools(allowedTools)
-			})
-			engine.Tools().Register(skillTool)
-		}
-	}
+	RegisterSkillToolWithEngine(engine, toolMgr, skillsSetup)
 
 	// Initialize MCP servers if any (after session settings are applied)
 	var mcpManager *mcp.Manager
@@ -377,14 +362,7 @@ func runAsk(cmd *cobra.Command, args []string) error {
 	// Use system prompt from resolved settings (already expanded)
 	instructions := settings.SystemPrompt
 
-	// Inject skills metadata if available and not already in AGENTS.md
-	if skillsSetup != nil && skillsSetup.HasSkillsXML() && !skills.CheckAgentsMdForSkills() {
-		if instructions != "" {
-			instructions = instructions + "\n\n" + skillsSetup.XML
-		} else {
-			instructions = skillsSetup.XML
-		}
-	}
+	instructions = InjectSkillsMetadata(instructions, skillsSetup)
 
 	// Build messages in correct order: system -> history -> new user
 	// Providers expect system message first

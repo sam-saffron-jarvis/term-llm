@@ -498,3 +498,37 @@ func SetupSkills(cfg *config.SkillsConfig, skillsFlag string, errWriter io.Write
 	}
 	return setup
 }
+
+// RegisterSkillToolWithEngine registers activate_skill on the engine when skills are available.
+// This is independent of local tool manager setup so skills work in both agent-only and tools modes.
+func RegisterSkillToolWithEngine(engine *llm.Engine, toolMgr *tools.ToolManager, skillsSetup *skills.Setup) {
+	if skillsSetup == nil || skillsSetup.Registry == nil {
+		return
+	}
+
+	var skillTool *tools.ActivateSkillTool
+	if toolMgr != nil {
+		skillTool = toolMgr.Registry.RegisterSkillTool(skillsSetup.Registry)
+	} else {
+		skillTool = tools.NewActivateSkillTool(skillsSetup.Registry, nil)
+	}
+	if skillTool == nil {
+		return
+	}
+
+	skillTool.SetOnActivated(func(allowedTools []string) {
+		engine.SetAllowedTools(allowedTools)
+	})
+	engine.Tools().Register(skillTool)
+}
+
+// InjectSkillsMetadata appends <available_skills> metadata to instructions when available.
+func InjectSkillsMetadata(instructions string, skillsSetup *skills.Setup) string {
+	if skillsSetup == nil || !skillsSetup.HasSkillsXML() || skills.CheckAgentsMdForSkills() {
+		return instructions
+	}
+	if instructions != "" {
+		return instructions + "\n\n" + skillsSetup.XML
+	}
+	return skillsSetup.XML
+}

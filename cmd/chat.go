@@ -12,7 +12,6 @@ import (
 	"github.com/samsaffron/term-llm/internal/mcp"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/signal"
-	"github.com/samsaffron/term-llm/internal/skills"
 	"github.com/samsaffron/term-llm/internal/tools"
 	"github.com/samsaffron/term-llm/internal/tui/chat"
 	"github.com/spf13/cobra"
@@ -279,33 +278,12 @@ func runChat(cmd *cobra.Command, args []string) error {
 	// Initialize skills system
 	skillsSetup := SetupSkills(&cfg.Skills, chatSkills, cmd.ErrOrStderr())
 
-	// Register activate_skill tool if skills are available (independent of toolMgr)
-	if skillsSetup != nil && skillsSetup.Registry != nil {
-		var skillTool *tools.ActivateSkillTool
-		if toolMgr != nil {
-			skillTool = toolMgr.Registry.RegisterSkillTool(skillsSetup.Registry)
-		} else {
-			skillTool = tools.NewActivateSkillTool(skillsSetup.Registry, nil)
-		}
-		if skillTool != nil {
-			skillTool.SetOnActivated(func(allowedTools []string) {
-				engine.SetAllowedTools(allowedTools)
-			})
-			engine.Tools().Register(skillTool)
-		}
-	}
+	RegisterSkillToolWithEngine(engine, toolMgr, skillsSetup)
 
 	// Store resolved instructions in config for chat TUI
 	cfg.Chat.Instructions = settings.SystemPrompt
 
-	// Inject skills metadata if available and not already in AGENTS.md
-	if skillsSetup != nil && skillsSetup.HasSkillsXML() && !skills.CheckAgentsMdForSkills() {
-		if cfg.Chat.Instructions != "" {
-			cfg.Chat.Instructions = cfg.Chat.Instructions + "\n\n" + skillsSetup.XML
-		} else {
-			cfg.Chat.Instructions = skillsSetup.XML
-		}
-	}
+	cfg.Chat.Instructions = InjectSkillsMetadata(cfg.Chat.Instructions, skillsSetup)
 
 	// Determine model name
 	modelName := getModelName(cfg)
