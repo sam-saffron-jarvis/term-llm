@@ -611,6 +611,9 @@ func buildAnthropicBlocks(parts []Part, allowToolUse bool) []anthropic.ContentBl
 						},
 					},
 				})
+				if part.ImagePath != "" {
+					blocks = append(blocks, anthropic.NewTextBlock("[image saved at: "+part.ImagePath+"]"))
+				}
 			}
 		case PartToolCall:
 			if allowToolUse && part.ToolCall != nil {
@@ -648,6 +651,9 @@ func buildAnthropicBetaBlocks(parts []Part, allowToolUse bool) []anthropic.BetaC
 						},
 					},
 				})
+				if part.ImagePath != "" {
+					blocks = append(blocks, anthropic.NewBetaTextBlock("[image saved at: "+part.ImagePath+"]"))
+				}
 			}
 		case PartToolCall:
 			if allowToolUse && part.ToolCall != nil {
