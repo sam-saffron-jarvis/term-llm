@@ -101,6 +101,16 @@ func (m *Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
+	// Bracketed paste and Ctrl+V image attach support for the composer.
+	if !m.streaming && m.maybeAttachImageFromPaste(msg) {
+		return m, nil
+	}
+
+	// When image chips are present, allow keyboard selection/removal with arrows + backspace/delete.
+	if !m.streaming && m.handleImageAttachmentKeys(msg) {
+		return m, nil
+	}
+
 	// Handle dialog first if open
 	if m.dialog.IsOpen() {
 		// Model picker supports typing to filter (like completions)
@@ -574,8 +584,8 @@ func (m *Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m.handleSlashCommand(content)
 		}
 
-		// Send message if not empty
-		if content != "" {
+		// Send message if not empty, or if there are pasted image attachments.
+		if content != "" || len(m.images) > 0 {
 			return m.sendMessage(content)
 		}
 		return m, nil

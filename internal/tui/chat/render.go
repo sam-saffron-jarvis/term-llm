@@ -390,6 +390,23 @@ func (m *Model) renderInputInline() string {
 		b.WriteString(filesInfo)
 	}
 
+	// Show pasted image attachments as selectable chips above the textarea.
+	if len(m.images) > 0 {
+		b.WriteString("\n")
+		muted := lipgloss.NewStyle().Foreground(theme.Muted)
+		selected := lipgloss.NewStyle().Foreground(theme.Primary).Bold(true).Underline(true)
+		var chips []string
+		for i := range m.images {
+			label := fmt.Sprintf("[image %d]", i+1)
+			if i == m.selectedImage {
+				chips = append(chips, selected.Render(label))
+			} else {
+				chips = append(chips, muted.Render(label))
+			}
+		}
+		b.WriteString(strings.Join(chips, " "))
+	}
+
 	// Input prompt
 	b.WriteString("\n")
 	b.WriteString(m.textarea.View())
@@ -508,6 +525,9 @@ func (m *Model) renderStatusLine() string {
 	// File count if any
 	if len(m.files) > 0 {
 		fixedParts = append(fixedParts, fmt.Sprintf("%d file(s)", len(m.files)))
+	}
+	if len(m.images) > 0 {
+		fixedParts = append(fixedParts, fmt.Sprintf("%d image(s)", len(m.images)))
 	}
 
 	// Token usage counter (e.g., ~45K/136K) with optional cached segment

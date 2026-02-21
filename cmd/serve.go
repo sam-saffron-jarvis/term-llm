@@ -19,6 +19,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/samsaffron/term-llm/internal/agents"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/mcp"
@@ -35,6 +36,7 @@ var (
 	servePort                   int
 	serveToken                  string
 	serveAllowNoAuth            bool
+	serveAuthMode               string
 	serveUI                     bool
 	serveCORSOrigins            []string
 	serveSessionTTL             time.Duration
@@ -54,6 +56,7 @@ var (
 	serveAgent                  string
 	serveYolo                   bool
 	serveTelegramCarryoverChars int
+	serveJobsWorkers            int
 	// Platform flags
 	servePlatform string
 	serveSetup    bool
@@ -61,7 +64,7 @@ var (
 
 var serveCmd = &cobra.Command{
 	Use:   "serve",
-	Short: "Run the agent as a server (web, Telegram, or both)",
+	Short: "Run the agent as a server (web, jobs, Telegram, or any combination)",
 	Long: `Run term-llm as a server on one or more platforms simultaneously.
 
 Default platform is "web": an OpenAI-compatible HTTP server.
@@ -72,8 +75,15 @@ Web endpoints:
   GET  /v1/models
   GET  /healthz
 
+Jobs endpoints:
+  POST   /v1/jobs
+  GET    /v1/jobs/:id
+  DELETE /v1/jobs/:id
+  GET    /v1/jobs
+
 Use --ui to also serve a minimal web chat interface.
-Use --platform telegram to run a Telegram bot instead (or alongside web).
+Use --platform jobs for async per-agent queued work.
+Use --platform telegram to run a Telegram bot instead (or alongside web/jobs).
 Use --setup to configure credentials for the selected platforms.`,
 	RunE: runServe,
 }
@@ -85,19 +95,21 @@ func init() {
 	serveCmd.Flags().IntVar(&servePort, "port", 8080, "Bind port")
 	serveCmd.Flags().StringVar(&serveToken, "token", "", "Bearer token for API auth (auto-generated if omitted)")
 	serveCmd.Flags().BoolVar(&serveAllowNoAuth, "allow-no-auth", false, "Disable auth (only allowed on loopback host)")
+	serveCmd.Flags().StringVar(&serveAuthMode, "auth", "bearer", "Auth mode: bearer or none")
 	serveCmd.Flags().BoolVar(&serveUI, "ui", false, "Serve minimal web UI")
 	serveCmd.Flags().StringArrayVar(&serveCORSOrigins, "cors-origin", nil, "Allowed CORS origin (repeatable, or '*' for all)")
 	serveCmd.Flags().DurationVar(&serveSessionTTL, "session-ttl", 30*time.Minute, "Stateful session idle TTL")
 	serveCmd.Flags().IntVar(&serveSessionMax, "session-max", 1000, "Max stateful sessions in memory")
 
-	serveCmd.Flags().StringVar(&servePlatform, "platform", "web", "Comma-separated platforms to serve: web, telegram")
+	serveCmd.Flags().StringVar(&servePlatform, "platform", "web", "Comma-separated platforms to serve: web, jobs, telegram")
 	if err := serveCmd.RegisterFlagCompletionFunc("platform", func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
-		return []string{"web", "telegram", "web,telegram"}, cobra.ShellCompDirectiveNoFileComp
+		return []string{"web", "jobs", "telegram", "web,jobs", "web,telegram", "jobs,telegram", "web,jobs,telegram"}, cobra.ShellCompDirectiveNoFileComp
 	}); err != nil {
 		panic("failed to register platform completion: " + err.Error())
 	}
 	serveCmd.Flags().BoolVar(&serveSetup, "setup", false, "Re-run setup wizard for selected platforms")
 	serveCmd.Flags().IntVar(&serveTelegramCarryoverChars, "telegram-carryover-chars", 4000, "Characters of previous Telegram session context to carry into replacement sessions (0 disables)")
+	serveCmd.Flags().IntVar(&serveJobsWorkers, "jobs-workers", 4, "Number of concurrent job workers for --platform jobs")
 
 	AddProviderFlag(serveCmd, &serveProvider)
 	AddDebugFlag(serveCmd, &serveDebug)
@@ -124,10 +136,17 @@ func runServe(cmd *cobra.Command, args []string) error {
 	if serveTelegramCarryoverChars < 0 {
 		return fmt.Errorf("invalid --telegram-carryover-chars %d (must be >= 0)", serveTelegramCarryoverChars)
 	}
+	if serveJobsWorkers <= 0 {
+		return fmt.Errorf("invalid --jobs-workers %d (must be > 0)", serveJobsWorkers)
+	}
 
-	requireAuth := !serveAllowNoAuth
+	authMode, err := resolveServeAuthMode(cmd.Flags().Changed("auth"), serveAuthMode, cmd.Flags().Changed("allow-no-auth"), serveAllowNoAuth)
+	if err != nil {
+		return err
+	}
+	requireAuth := authMode != "none"
 	if !requireAuth && !isLoopbackHost(serveHost) {
-		return fmt.Errorf("--allow-no-auth is only allowed on loopback hosts (got %q)", serveHost)
+		return fmt.Errorf("--auth none is only allowed on loopback hosts (got %q)", serveHost)
 	}
 
 	token := strings.TrimSpace(serveToken)
@@ -142,14 +161,22 @@ func runServe(cmd *cobra.Command, args []string) error {
 	ctx, stop := signal.NotifyContext()
 	defer stop()
 
+	platformNames := parsePlatforms(servePlatform)
+	hasJobs := platformContains(platformNames, "jobs")
+	hasWeb := platformContains(platformNames, "web")
+	hasTelegram := platformContains(platformNames, "telegram")
+
 	cfg, err := loadConfigWithSetup()
 	if err != nil {
 		return err
 	}
 
-	agent, err := LoadAgent(serveAgent, cfg)
-	if err != nil {
-		return err
+	var agent *agents.Agent
+	if hasWeb || hasTelegram {
+		agent, err = LoadAgent(serveAgent, cfg)
+		if err != nil {
+			return err
+		}
 	}
 
 	agentProvider := ""
@@ -238,8 +265,9 @@ func runServe(cmd *cobra.Command, args []string) error {
 	sessionMgr := newServeSessionManager(serveSessionTTL, serveSessionMax, factory)
 	defer sessionMgr.Close()
 
-	// Parse platform names.
-	platformNames := parsePlatforms(servePlatform)
+	if hasJobs && strings.TrimSpace(serveAgent) != "" {
+		fmt.Fprintln(cmd.ErrOrStderr(), "warning: --agent is ignored for --platform jobs; set agent_name per POST /v1/jobs request")
+	}
 
 	// Build the serve.Settings used by non-web platforms.
 	serveSettings := serve.Settings{
@@ -275,6 +303,8 @@ func runServe(cmd *cobra.Command, args []string) error {
 		switch name {
 		case "web":
 			// Handled by the existing serveServer below.
+		case "jobs":
+			// Handled by the HTTP serveServer below.
 		case "telegram":
 			platforms = append(platforms, serve.NewTelegramPlatform(cfg.Serve.Telegram))
 		default:
@@ -291,10 +321,14 @@ func runServe(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	hasWeb := platformContains(platformNames, "web")
+	hasHTTP := hasWeb || hasJobs
 
 	var s *serveServer
-	if hasWeb {
+	if hasHTTP {
+		var jobsMgr *serveJobsManager
+		if hasJobs {
+			jobsMgr = newServeJobsManager(serveJobsWorkers, newServeJobsExecutor(cfg))
+		}
 		s = &serveServer{
 			cfg: serveServerConfig{
 				host:        serveHost,
@@ -305,6 +339,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 				corsOrigins: append([]string(nil), serveCORSOrigins...),
 			},
 			sessionMgr: sessionMgr,
+			jobsMgr:    jobsMgr,
 			cfgRef:     cfg,
 		}
 
@@ -318,6 +353,9 @@ func runServe(cmd *cobra.Command, args []string) error {
 			fmt.Fprintf(cmd.ErrOrStderr(), "token: %s\n", token)
 		}
 		fmt.Fprintf(cmd.ErrOrStderr(), "ui: %v\n", serveUI)
+		if hasJobs {
+			fmt.Fprintf(cmd.ErrOrStderr(), "jobs workers: %d\n", serveJobsWorkers)
+		}
 		if modelName != "" {
 			fmt.Fprintf(cmd.ErrOrStderr(), "model: %s\n", modelName)
 		}
@@ -403,6 +441,29 @@ func authSummary(required bool) string {
 	return "disabled"
 }
 
+func resolveServeAuthMode(authFlagSet bool, authMode string, allowNoAuthSet bool, allowNoAuth bool) (string, error) {
+	mode := strings.ToLower(strings.TrimSpace(authMode))
+	if mode == "" {
+		mode = "bearer"
+	}
+	if mode != "bearer" && mode != "none" {
+		return "", fmt.Errorf("invalid --auth %q (must be bearer or none)", authMode)
+	}
+
+	if allowNoAuthSet {
+		aliasMode := "bearer"
+		if allowNoAuth {
+			aliasMode = "none"
+		}
+		if authFlagSet && mode != aliasMode {
+			return "", fmt.Errorf("--auth %s conflicts with --allow-no-auth=%v", mode, allowNoAuth)
+		}
+		mode = aliasMode
+	}
+
+	return mode, nil
+}
+
 func isLoopbackHost(host string) bool {
 	h := strings.TrimSpace(strings.ToLower(host))
 	return h == "127.0.0.1" || h == "localhost" || h == "::1"
@@ -428,6 +489,7 @@ type serveServerConfig struct {
 type serveServer struct {
 	cfg            serveServerConfig
 	sessionMgr     *serveSessionManager
+	jobsMgr        *serveJobsManager
 	cfgRef         *config.Config
 	server         *http.Server
 	modelsMu       sync.Mutex
@@ -441,6 +503,10 @@ func (s *serveServer) Start() error {
 	mux.HandleFunc("/v1/models", s.auth(s.cors(s.handleModels)))
 	mux.HandleFunc("/v1/responses", s.auth(s.cors(s.handleResponses)))
 	mux.HandleFunc("/v1/chat/completions", s.auth(s.cors(s.handleChatCompletions)))
+	if s.jobsMgr != nil {
+		mux.HandleFunc("/v1/jobs", s.auth(s.cors(s.handleJobs)))
+		mux.HandleFunc("/v1/jobs/", s.auth(s.cors(s.handleJobByID)))
+	}
 
 	if s.cfg.ui {
 		mux.HandleFunc("/", s.cors(s.handleUI))
@@ -476,6 +542,9 @@ func (s *serveServer) Start() error {
 func (s *serveServer) Stop(ctx context.Context) error {
 	if s.server == nil {
 		return nil
+	}
+	if s.jobsMgr != nil {
+		s.jobsMgr.Close()
 	}
 	s.modelsMu.Lock()
 	if cleaner, ok := s.modelsProvider.(interface{ CleanupMCP() }); ok {
@@ -557,7 +626,7 @@ func (s *serveServer) cors(next http.HandlerFunc) http.HandlerFunc {
 				w.Header().Set("Access-Control-Allow-Origin", origin)
 				w.Header().Set("Vary", "Origin")
 			}
-			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
 			w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, session_id")
 			w.Header().Set("Access-Control-Expose-Headers", "x-session-id")
 		}

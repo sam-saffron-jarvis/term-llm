@@ -174,17 +174,30 @@ close access fp`, tmpTiffPath)
 func readImageLinux() ([]byte, error) {
 	// Try wl-paste first (Wayland)
 	if _, err := exec.LookPath("wl-paste"); err == nil {
-		cmd := exec.Command("wl-paste", "--type", "image/png")
-		var out bytes.Buffer
-		cmd.Stdout = &out
-		if err := cmd.Run(); err == nil && out.Len() > 0 {
-			return out.Bytes(), nil
+		// Discover available clipboard MIME types and request the best image type.
+		// Many applications provide JPEG/WebP only, so hardcoding PNG misses valid images.
+		listCmd := exec.Command("wl-paste", "--list-types")
+		listOut, _ := listCmd.Output()
+		if mime := detectPreferredImageMIME(string(listOut)); mime != "" {
+			cmd := exec.Command("wl-paste", "--type", mime)
+			var out bytes.Buffer
+			cmd.Stdout = &out
+			if err := cmd.Run(); err == nil && out.Len() > 0 {
+				return out.Bytes(), nil
+			}
 		}
 	}
 
 	// Fall back to xclip (X11)
 	if _, err := exec.LookPath("xclip"); err == nil {
-		cmd := exec.Command("xclip", "-selection", "clipboard", "-t", "image/png", "-o")
+		// Query supported targets and pick the best available image MIME type.
+		targetsCmd := exec.Command("xclip", "-selection", "clipboard", "-t", "TARGETS", "-o")
+		targetsOut, _ := targetsCmd.Output()
+		mime := detectPreferredImageMIME(string(targetsOut))
+		if mime == "" {
+			mime = "image/png"
+		}
+		cmd := exec.Command("xclip", "-selection", "clipboard", "-t", mime, "-o")
 		var out bytes.Buffer
 		cmd.Stdout = &out
 		if err := cmd.Run(); err == nil && out.Len() > 0 {
@@ -193,6 +206,52 @@ func readImageLinux() ([]byte, error) {
 	}
 
 	return nil, fmt.Errorf("clipboard does not contain an image (or no clipboard utility found)")
+}
+
+func detectPreferredImageMIME(rawTypes string) string {
+	lines := strings.Split(rawTypes, "\n")
+	available := map[string]bool{}
+	for _, line := range lines {
+		mime := normalizeImageMIME(line)
+		if mime != "" {
+			available[mime] = true
+		}
+	}
+
+	for _, preferred := range []string{"image/png", "image/jpeg", "image/webp", "image/gif"} {
+		if available[preferred] {
+			return preferred
+		}
+	}
+
+	// Fallback to the first available image type in original order.
+	for _, line := range lines {
+		mime := normalizeImageMIME(line)
+		if mime != "" {
+			return mime
+		}
+	}
+	return ""
+}
+
+func normalizeImageMIME(raw string) string {
+	s := strings.ToLower(strings.TrimSpace(raw))
+	if s == "" || !strings.HasPrefix(s, "image/") {
+		return ""
+	}
+	// Common alias in X11 targets lists.
+	if s == "image/jpg" {
+		return "image/jpeg"
+	}
+	// Keep MIME token only; drop any optional parameters.
+	if idx := strings.IndexByte(s, ';'); idx > 0 {
+		s = strings.TrimSpace(s[:idx])
+	}
+	// Reject malformed entries that are not simple MIME tokens.
+	if strings.ContainsAny(s, " \t") || !strings.Contains(s, "/") {
+		return ""
+	}
+	return s
 }
 
 // CopyText copies text to the system clipboard

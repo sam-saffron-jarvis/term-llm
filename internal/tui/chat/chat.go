@@ -88,12 +88,14 @@ type Model struct {
 
 	// Pending message context
 	files               []FileAttachment // Attached files for next message
-	searchEnabled       bool             // Web search toggle
-	forceExternalSearch bool             // Force external search tools even if provider supports native
-	localTools          []string         // Names of enabled local tools (read, write, etc.)
-	toolsStr            string           // Original tools setting (for session persistence)
-	mcpStr              string           // Original MCP setting (for session persistence)
-	pendingInterjection string           // Queued interjection text waiting to be injected
+	images              []ImageAttachment
+	selectedImage       int      // -1 means no image chip selected
+	searchEnabled       bool     // Web search toggle
+	forceExternalSearch bool     // Force external search tools even if provider supports native
+	localTools          []string // Names of enabled local tools (read, write, etc.)
+	toolsStr            string   // Original tools setting (for session persistence)
+	mcpStr              string   // Original MCP setting (for session persistence)
+	pendingInterjection string   // Queued interjection text waiting to be injected
 
 	// MCP (Model Context Protocol)
 	mcpManager *mcp.Manager
@@ -401,6 +403,7 @@ func New(cfg *config.Config, provider llm.Provider, engine *llm.Engine, modelNam
 		autoSendQueue:           autoSendQueue,
 		autoSendExitOnDone:      autoSendExitOnDone,
 		textMode:                textMode,
+		selectedImage:           -1,
 	}
 }
 

@@ -35,6 +35,9 @@ func (m *Model) recordTextareaLayout(inputStartY int) {
 	if len(m.files) > 0 {
 		extraRows++
 	}
+	if len(m.images) > 0 {
+		extraRows++
+	}
 
 	if m.altScreen && m.height > 0 {
 		// In alt-screen mode input is pinned to the bottom.

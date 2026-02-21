@@ -30,12 +30,25 @@ func (m *Model) sendMessage(content string) (tea.Model, tea.Cmd) {
 		fullContent += filesContent.String()
 	}
 
+	imageLabels := m.imageAttachmentLabels()
+	parts := m.imagePartList()
+	if fullContent != "" {
+		parts = append(parts, llm.Part{Type: llm.PartText, Text: fullContent})
+	} else if len(parts) == 0 {
+		parts = []llm.Part{{Type: llm.PartText, Text: fullContent}}
+	}
+
+	displayText := fullContent
+	if strings.TrimSpace(displayText) == "" && len(imageLabels) > 0 {
+		displayText = "[" + strings.Join(imageLabels, ", ") + "]"
+	}
+
 	// Create user message and store it
 	userMsg := &session.Message{
 		SessionID:   m.sess.ID,
 		Role:        llm.RoleUser,
-		Parts:       []llm.Part{{Type: llm.PartText, Text: fullContent}},
-		TextContent: fullContent,
+		Parts:       parts,
+		TextContent: displayText,
 		CreatedAt:   time.Now(),
 		Sequence:    -1, // Auto-allocate sequence
 	}
@@ -101,16 +114,21 @@ func (m *Model) sendMessage(content string) (tea.Model, tea.Cmd) {
 		}
 		userDisplay.WriteString(line)
 	}
-	if len(fileNames) > 0 {
+	var attachmentNames []string
+	attachmentNames = append(attachmentNames, imageLabels...)
+	attachmentNames = append(attachmentNames, fileNames...)
+	if len(attachmentNames) > 0 {
 		userDisplay.WriteString("\n")
 		userDisplay.WriteString(lipgloss.NewStyle().Foreground(theme.Muted).Render(
-			fmt.Sprintf("[with: %s]", strings.Join(fileNames, ", "))))
+			fmt.Sprintf("[with: %s]", strings.Join(attachmentNames, ", "))))
 	}
 	// tea.Println adds newline, no need for extra
 
-	// Clear input and files
+	// Clear input and attachments
 	m.setTextareaValue("")
 	m.files = nil
+	m.images = nil
+	m.selectedImage = -1
 
 	// Start streaming
 	m.streaming = true
