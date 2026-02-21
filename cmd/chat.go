@@ -288,6 +288,11 @@ func runChat(cmd *cobra.Command, args []string) error {
 				engine.SetAllowedTools(allowedTools)
 			})
 			engine.Tools().Register(skillTool)
+			// Append activate_skill to the local tools list so the chat TUI
+			// includes it in req.Tools sent to the LLM. Without this, the tool
+			// is registered in the engine but never advertised to the model when
+			// an explicit tools.enabled list is configured (e.g. in agent.yaml).
+			enabledLocalTools = append(enabledLocalTools, tools.ActivateSkillToolName)
 		}
 	}
 
