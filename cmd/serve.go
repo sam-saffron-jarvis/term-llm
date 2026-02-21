@@ -359,6 +359,11 @@ func newServeEngineWithTools(cfg *config.Config, settings SessionSettings, provi
 		}
 	}
 
+	// Wire skills system (activate_skill tool + system prompt injection).
+	skillsSetup := SetupSkills(&cfg.Skills, "", io.Discard)
+	RegisterSkillToolWithEngine(engine, toolMgr, skillsSetup)
+	settings.SystemPrompt = InjectSkillsMetadata(settings.SystemPrompt, skillsSetup)
+
 	return engine, toolMgr, nil
 }
 
