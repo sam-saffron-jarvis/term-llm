@@ -328,6 +328,9 @@ func buildGeminiContent(role string, parts []Part) *genai.Content {
 							Data:     imageData,
 						},
 					})
+					if part.ImagePath != "" {
+						content.Parts = append(content.Parts, &genai.Part{Text: "[image saved at: " + part.ImagePath + "]"})
+					}
 				}
 			}
 		case PartToolCall:
