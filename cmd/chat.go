@@ -454,6 +454,14 @@ func runChat(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to run chat: %w", err)
 	}
 
+	// Print resume hint after alt-screen has been dismissed.
+	// Re-fetch the session so we get the latest LLMTurns written during streaming.
+	if store != nil && sess != nil && sess.ID != "" {
+		if refreshed, fetchErr := store.Get(context.Background(), sess.ID); fetchErr == nil && refreshed != nil && refreshed.LLMTurns >= 1 {
+			fmt.Fprintf(os.Stdout, "\n💬 Resume: term-llm chat --resume %s\n", session.ShortID(refreshed.ID))
+		}
+	}
+
 	return nil
 }
 
