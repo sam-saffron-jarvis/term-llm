@@ -101,6 +101,27 @@ func (t *countingTool) Preview(args json.RawMessage) string {
 	return ""
 }
 
+type timeoutTool struct {
+	calls int
+}
+
+func (t *timeoutTool) Spec() ToolSpec {
+	return ToolSpec{
+		Name:        "timeout_tool",
+		Description: "Returns a timeout marker output",
+		Schema:      map[string]any{"type": "object"},
+	}
+}
+
+func (t *timeoutTool) Execute(ctx context.Context, args json.RawMessage) (ToolOutput, error) {
+	t.calls++
+	return TextOutput("[Command timed out]\n\nexit_code: 0"), nil
+}
+
+func (t *timeoutTool) Preview(args json.RawMessage) string {
+	return ""
+}
+
 func TestEngineExternalSearchLoopsUntilNoToolCalls(t *testing.T) {
 	tool := &countingSearchTool{}
 	registry := NewToolRegistry()
@@ -239,6 +260,81 @@ func TestEngineDedupesToolCallsByID(t *testing.T) {
 
 	if tool.calls != 1 {
 		t.Fatalf("expected 1 tool execution, got %d", tool.calls)
+	}
+}
+
+func TestEngineToolTimeoutOutputMarksToolEndNonSuccessButContinuesLoop(t *testing.T) {
+	tool := &timeoutTool{}
+	registry := NewToolRegistry()
+	registry.Register(tool)
+
+	provider := &fakeProvider{
+		script: func(call int, req Request) []Event {
+			switch call {
+			case 0:
+				return []Event{
+					{Type: EventToolCall, Tool: &ToolCall{ID: "call-1", Name: "timeout_tool", Arguments: json.RawMessage(`{}`)}},
+					{Type: EventDone},
+				}
+			default:
+				return []Event{
+					{Type: EventTextDelta, Text: "continued after timeout"},
+					{Type: EventDone},
+				}
+			}
+		},
+	}
+
+	engine := NewEngine(provider, registry)
+	req := Request{
+		Messages:   []Message{UserText("run timeout tool")},
+		Tools:      []ToolSpec{tool.Spec()},
+		ToolChoice: ToolChoice{Mode: ToolChoiceAuto},
+	}
+
+	stream, err := engine.Stream(context.Background(), req)
+	if err != nil {
+		t.Fatalf("stream error: %v", err)
+	}
+	defer stream.Close()
+
+	var gotToolEnd bool
+	var toolSuccess bool
+	var text strings.Builder
+	for {
+		event, err := stream.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("recv error: %v", err)
+		}
+		switch event.Type {
+		case EventToolExecEnd:
+			if event.ToolCallID == "call-1" {
+				gotToolEnd = true
+				toolSuccess = event.ToolSuccess
+			}
+		case EventTextDelta:
+			text.WriteString(event.Text)
+		case EventError:
+			if event.Err != nil {
+				t.Fatalf("unexpected event error: %v", event.Err)
+			}
+		}
+	}
+
+	if !gotToolEnd {
+		t.Fatal("expected tool end event for timeout_tool")
+	}
+	if toolSuccess {
+		t.Fatal("expected ToolSuccess=false for timeout output")
+	}
+	if text.String() != "continued after timeout" {
+		t.Fatalf("expected loop to continue and produce final text, got %q", text.String())
+	}
+	if tool.calls != 1 {
+		t.Fatalf("expected tool to run once, got %d", tool.calls)
 	}
 }
 

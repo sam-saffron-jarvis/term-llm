@@ -132,3 +132,19 @@ func TestStreamPlainText_ToolToTextTrimsLeadingTextBlankLines(t *testing.T) {
 		t.Fatalf("expected compact tool->text boundary %q, got %q", boundary, plain)
 	}
 }
+
+func TestStreamPlainText_CompactsExcessiveNewlineRunsAcrossChunks(t *testing.T) {
+	output := captureStreamPlainTextOutput(t, []ui.StreamEvent{
+		ui.TextEvent("Alpha\n\n\n"),
+		ui.TextEvent("\n\nBeta"),
+		ui.DoneEvent(0),
+	})
+
+	plain := stripAnsi(output)
+	if strings.Contains(plain, "\n\n\n") {
+		t.Fatalf("expected no triple-newline runs, got %q", plain)
+	}
+	if !strings.Contains(plain, "Alpha\n\nBeta") {
+		t.Fatalf("expected compact boundary \"Alpha\\\\n\\\\nBeta\", got %q", plain)
+	}
+}

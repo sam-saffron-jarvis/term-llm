@@ -65,6 +65,7 @@ type Model struct {
 	smoothBuffer            *ui.SmoothBuffer
 	smoothTickPending       bool
 	streamRenderTickPending bool
+	newlineCompactor        *ui.StreamingNewlineCompactor
 
 	// External UI state
 	pausedForExternalUI bool // True when paused for ask_user or approval prompts
@@ -760,11 +761,20 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.stats.AddUsage(inputTokens, outputTokens, cachedTokens, writeTokens)
 			}
 		case ui.StreamEventText:
+			text := ev.Text
+			if m.newlineCompactor == nil {
+				m.newlineCompactor = ui.NewStreamingNewlineCompactor(ui.MaxStreamingConsecutiveNewlines)
+			}
+			text = m.newlineCompactor.CompactChunk(text)
+			if text == "" {
+				break
+			}
+
 			// Buffer text for smooth 60fps rendering instead of immediate display
 			if m.smoothBuffer != nil {
-				m.smoothBuffer.Write(ev.Text)
+				m.smoothBuffer.Write(text)
 				if m.streamPerf != nil {
-					m.streamPerf.RecordTextDelta(ev.Text, m.smoothBuffer.Len())
+					m.streamPerf.RecordTextDelta(text, m.smoothBuffer.Len())
 				}
 				// Start smooth tick if not already running
 				if !m.smoothTickPending {
@@ -776,12 +786,12 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			} else {
 				// Fallback: direct display if no smooth buffer
-				m.currentResponse.WriteString(ev.Text)
+				m.currentResponse.WriteString(text)
 				if m.tracker != nil {
-					m.tracker.AddTextSegment(ev.Text, m.width)
+					m.tracker.AddTextSegment(text, m.width)
 				}
 				if m.streamPerf != nil {
-					m.streamPerf.RecordTextDelta(ev.Text, 0)
+					m.streamPerf.RecordTextDelta(text, 0)
 				}
 			}
 
@@ -945,6 +955,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.smoothBuffer != nil {
 				m.smoothBuffer.Reset()
 			}
+			m.newlineCompactor = nil
 			m.smoothTickPending = false
 			// This resets local scheduling state for the next stream.
 			// An already in-flight render tick may still arrive and no-op.

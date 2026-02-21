@@ -7,3 +7,5 @@ tools:
 shell:
   allow: ["git *"]
   auto_run: true
+
+max_turns: 200

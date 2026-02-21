@@ -128,6 +128,7 @@ func (m *Model) sendMessage(content string) (tea.Model, tea.Cmd) {
 	if m.smoothBuffer != nil {
 		m.smoothBuffer.Reset()
 	}
+	m.newlineCompactor = ui.NewStreamingNewlineCompactor(ui.MaxStreamingConsecutiveNewlines)
 	m.smoothTickPending = false
 	m.streamRenderTickPending = false
 

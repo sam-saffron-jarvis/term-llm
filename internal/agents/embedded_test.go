@@ -102,15 +102,15 @@ func TestBuiltinAgentConfigs(t *testing.T) {
 		expectedHasScripts bool
 		expectedSearch     bool
 	}{
-		{"active-review", true, 50, false, false, false, false},
+		{"active-review", true, 200, false, false, false, false},
 		{"agent-builder", true, 200, false, false, false, true},
-		{"artist", true, 50, true, true, false, false},
-		{"changelog", true, 0, true, true, false, false},
-		{"codebase", true, 50, true, true, true, false},
+		{"artist", true, 200, true, true, false, false},
+		{"changelog", true, 200, true, true, false, false},
+		{"codebase", true, 200, true, true, true, false},
 		{"commit-message", true, 200, true, true, true, false},
-		{"developer", true, 250, true, false, false, false},
+		{"developer", true, 200, true, false, false, false},
 		{"editor", true, 200, false, false, false, false},
-		{"file-organizer", true, 100, true, true, false, false},
+		{"file-organizer", true, 200, true, true, false, false},
 		{"researcher", true, 200, false, false, false, false},
 		{"reviewer", true, 200, true, true, true, false},
 		{"shell", true, 200, false, false, false, false},

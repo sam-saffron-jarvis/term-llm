@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -183,9 +184,9 @@ Guidelines:
 				},
 				"timeout": map[string]any{
 					"type":        "integer",
-					"description": "Optional timeout in seconds (default 300, max 600)",
+					"description": "Optional timeout in seconds (default 300, max 3600)",
 					"minimum":     10,
-					"maximum":     600,
+					"maximum":     3600,
 				},
 			},
 			"required":             []string{"agent_name", "prompt"},
@@ -238,7 +239,7 @@ func (t *SpawnAgentTool) Execute(ctx context.Context, args json.RawMessage) (llm
 	}
 
 	// Determine timeout.
-	// The timeout is clamped to [10, 600] seconds to match the tool schema constraints.
+	// The timeout is clamped to [10, 3600] seconds to match the tool schema constraints.
 	// Values <= 0 use the default; values outside the range are clamped to the bounds.
 	timeout := t.config.DefaultTimeout
 	if a.Timeout > 0 {
@@ -248,8 +249,8 @@ func (t *SpawnAgentTool) Execute(ctx context.Context, args json.RawMessage) (llm
 	if timeout < 10 {
 		timeout = 10 // Schema minimum
 	}
-	if timeout > 600 {
-		timeout = 600 // Cap at 10 minutes
+	if timeout > 3600 {
+		timeout = 3600 // Cap at 60 minutes
 	}
 
 	// Acquire semaphore (blocks if at max concurrency)
@@ -287,6 +288,9 @@ func (t *SpawnAgentTool) Execute(ctx context.Context, args json.RawMessage) (llm
 	duration := time.Since(start).Milliseconds()
 
 	if err != nil {
+		if strings.Contains(err.Error(), "agentic loop exceeded max turns") {
+			return llm.TextOutput(t.formatErrorWithDuration(ErrExecutionFailed, fmt.Sprintf("agent '%s' stopped after reaching max turns: %v", a.AgentName, err), duration)), nil
+		}
 		// Check for specific error types - check the error itself first, then context state
 		if errors.Is(err, context.DeadlineExceeded) ||
 			ctx.Err() == context.DeadlineExceeded || childCtx.Err() == context.DeadlineExceeded {

@@ -10,4 +10,4 @@ shell:
   allow: ["file *", "ls *", "identify *"]
   auto_run: true
 
-max_turns: 50
+max_turns: 200

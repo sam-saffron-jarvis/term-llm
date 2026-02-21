@@ -13,7 +13,45 @@ const (
 	// FinalSpacerTrailingNewlines is the minimum trailing newline run to keep
 	// one spacer line before the next prompt after completion.
 	FinalSpacerTrailingNewlines = 2
+	// MaxStreamingConsecutiveNewlines limits runaway vertical whitespace in streamed text.
+	MaxStreamingConsecutiveNewlines = 2
 )
+
+// StreamingNewlineCompactor incrementally compacts excessive newline runs across chunks.
+type StreamingNewlineCompactor struct {
+	maxRun int
+	run    int
+}
+
+// NewStreamingNewlineCompactor creates a stateful compactor for streamed text.
+func NewStreamingNewlineCompactor(maxRun int) *StreamingNewlineCompactor {
+	if maxRun <= 0 {
+		maxRun = MaxStreamingConsecutiveNewlines
+	}
+	return &StreamingNewlineCompactor{maxRun: maxRun}
+}
+
+// CompactChunk returns chunk with newline runs capped to maxRun, preserving cross-chunk state.
+func (c *StreamingNewlineCompactor) CompactChunk(chunk string) string {
+	if c == nil || chunk == "" {
+		return chunk
+	}
+	var b strings.Builder
+	b.Grow(len(chunk))
+	for i := 0; i < len(chunk); i++ {
+		ch := chunk[i]
+		if ch == '\n' {
+			c.run++
+			if c.run <= c.maxRun {
+				b.WriteByte(ch)
+			}
+			continue
+		}
+		c.run = 0
+		b.WriteByte(ch)
+	}
+	return b.String()
+}
 
 // CountTrailingNewlines returns how many '\n' characters appear at the end of s.
 func CountTrailingNewlines(s string) int {

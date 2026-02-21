@@ -161,10 +161,10 @@ func TestSpawnAgentTool_TimeoutEnforcement(t *testing.T) {
 			expectedTimeout: 10,
 		},
 		{
-			name:            "timeout above maximum is clamped to 600",
-			timeout:         1000,
+			name:            "timeout above maximum is clamped to 3600",
+			timeout:         5000,
 			defaultTimeout:  300,
-			expectedTimeout: 600,
+			expectedTimeout: 3600,
 		},
 		{
 			name:            "timeout within range is used as-is",
@@ -187,8 +187,8 @@ func TestSpawnAgentTool_TimeoutEnforcement(t *testing.T) {
 		{
 			name:            "default timeout above maximum is clamped",
 			timeout:         0,
-			defaultTimeout:  1000,
-			expectedTimeout: 600,
+			defaultTimeout:  5000,
+			expectedTimeout: 3600,
 		},
 	}
 
@@ -681,6 +681,36 @@ func TestSpawnAgentTool_RunnerError(t *testing.T) {
 	// Duration is included (may be 0 for very fast operations, which is valid)
 }
 
+func TestSpawnAgentTool_MaxTurnsErrorIsExplicit(t *testing.T) {
+	config := DefaultSpawnConfig()
+	tool := NewSpawnAgentTool(config, 0)
+
+	runner := newMockRunner().SetError(errors.New("agentic loop exceeded max turns (200)"))
+	tool.SetRunner(runner)
+
+	ctx := context.Background()
+	args := makeSpawnArgs("developer", "implement feature", 0)
+
+	result, err := tool.Execute(ctx, args)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	r := parseResult(t, result.Content)
+	if r.Error == "" {
+		t.Fatal("expected error when max turns is exceeded")
+	}
+	if r.Type != string(ErrExecutionFailed) {
+		t.Errorf("expected error type %s, got %s", ErrExecutionFailed, r.Type)
+	}
+	if !contains(r.Error, "reaching max turns") && !contains(r.Error, "max turns") {
+		t.Errorf("expected explicit max turns message, got: %s", r.Error)
+	}
+	if !contains(r.Error, "(200)") {
+		t.Errorf("expected max turns count in message, got: %s", r.Error)
+	}
+}
+
 func TestSpawnAgentTool_SuccessResult(t *testing.T) {
 	config := DefaultSpawnConfig()
 	tool := NewSpawnAgentTool(config, 0)
@@ -807,6 +837,13 @@ func TestSpawnAgentTool_Spec(t *testing.T) {
 	}
 	if _, ok := props["timeout"]; !ok {
 		t.Error("schema should have timeout property")
+	}
+	if timeoutProp, ok := props["timeout"].(map[string]any); ok {
+		if maxVal, ok := timeoutProp["maximum"].(int); !ok || maxVal != 3600 {
+			t.Errorf("timeout.maximum = %v, want 3600", timeoutProp["maximum"])
+		}
+	} else {
+		t.Fatal("timeout property should be an object")
 	}
 
 	required, ok := schema["required"].([]string)

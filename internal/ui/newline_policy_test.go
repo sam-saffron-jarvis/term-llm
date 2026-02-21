@@ -94,3 +94,26 @@ func TestScrollbackPrintlnCommands_FinalSpacerPolicy(t *testing.T) {
 		})
 	}
 }
+
+func TestStreamingNewlineCompactor_CompactsAcrossChunks(t *testing.T) {
+	c := NewStreamingNewlineCompactor(2)
+
+	part1 := c.CompactChunk("hello\n\n\n")
+	part2 := c.CompactChunk("\n\nworld")
+
+	if part1 != "hello\n\n" {
+		t.Fatalf("part1 = %q, want %q", part1, "hello\n\n")
+	}
+	if part2 != "world" {
+		t.Fatalf("part2 = %q, want %q", part2, "world")
+	}
+}
+
+func TestStreamingNewlineCompactor_ResetsRunOnText(t *testing.T) {
+	c := NewStreamingNewlineCompactor(2)
+
+	got := c.CompactChunk("a\n\n\nb\n\n\n")
+	if got != "a\n\nb\n\n" {
+		t.Fatalf("got %q, want %q", got, "a\n\nb\n\n")
+	}
+}

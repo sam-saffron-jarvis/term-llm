@@ -14,4 +14,4 @@ spawn:
   max_depth: 2
   timeout: 600
 
-max_turns: 50
+max_turns: 200

@@ -662,6 +662,7 @@ func streamPlainText(ctx context.Context, events <-chan ui.StreamEvent) error {
 	printedAny := false
 	trailingNewlines := 0
 	afterToolBoundary := false
+	newlineCompactor := ui.NewStreamingNewlineCompactor(ui.MaxStreamingConsecutiveNewlines)
 
 	printTools := func() {
 		if len(pendingTools) == 0 {
@@ -772,6 +773,7 @@ func streamPlainText(ctx context.Context, events <-chan ui.StreamEvent) error {
 					text = strings.TrimLeft(text, "\n")
 					afterToolBoundary = false
 				}
+				text = newlineCompactor.CompactChunk(text)
 				if text != "" {
 					fmt.Print(text)
 					printedAny = true
