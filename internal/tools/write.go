@@ -90,12 +90,16 @@ func (t *WriteFileTool) Execute(ctx context.Context, args json.RawMessage) (llm.
 		return llm.TextOutput(formatToolError(NewToolErrorf(ErrInvalidParams, "cannot resolve path: %v", err))), nil
 	}
 
-	// Check if file exists for diff info
+	// Check if file exists for diff info and preserve permissions
 	existingContent := ""
 	isNew := true
-	if data, err := os.ReadFile(absPath); err == nil {
-		existingContent = string(data)
-		isNew = false
+	var existingMode os.FileMode
+	if info, err := os.Stat(absPath); err == nil {
+		existingMode = info.Mode()
+		if data, err := os.ReadFile(absPath); err == nil {
+			existingContent = string(data)
+			isNew = false
+		}
 	}
 
 	// Create parent directories
@@ -126,6 +130,17 @@ func (t *WriteFileTool) Execute(ctx context.Context, args json.RawMessage) (llm.
 	if err := tf.Close(); err != nil {
 		os.Remove(tempPath)
 		return llm.TextOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "failed to close temp file: %v", err))), nil
+	}
+
+	// Preserve existing file permissions, or use 0644 for new files.
+	// CreateTemp creates files with 0600 which is too restrictive for source files.
+	mode := existingMode
+	if isNew {
+		mode = 0644
+	}
+	if err := os.Chmod(tempPath, mode); err != nil {
+		os.Remove(tempPath)
+		return llm.TextOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "failed to set file permissions: %v", err))), nil
 	}
 
 	if err := os.Rename(tempPath, absPath); err != nil {

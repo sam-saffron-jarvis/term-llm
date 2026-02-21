@@ -101,6 +101,10 @@ func WriteModelCache(provider string, models []string) error {
 		return err
 	}
 
+	if err := os.Chmod(tmpPath, 0644); err != nil {
+		return err
+	}
+
 	if err := os.Rename(tmpPath, path); err != nil {
 		return err
 	}

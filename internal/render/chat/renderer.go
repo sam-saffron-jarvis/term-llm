@@ -330,7 +330,9 @@ func (r *Renderer) renderHistory(state RenderState) string {
 		}
 	}
 
-	return b.String()
+	// Clone so the returned string doesn't share the builder's backing
+	// array, which will be overwritten when the pool reuses this builder.
+	return strings.Clone(b.String())
 }
 
 // getOrRenderBlock gets a rendered block from cache or renders it.

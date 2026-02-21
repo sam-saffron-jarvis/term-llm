@@ -267,7 +267,7 @@ func (p *ChatGPTProvider) Stream(ctx context.Context, req Request) (Stream, erro
 		var lastUsage *Usage
 		scanner := bufio.NewScanner(resp.Body)
 		buf := make([]byte, 0, 64*1024)
-		scanner.Buffer(buf, 1024*1024)
+		scanner.Buffer(buf, 10*1024*1024)
 		for scanner.Scan() {
 			line := scanner.Text()
 			if !strings.HasPrefix(line, "data:") {
@@ -405,15 +405,32 @@ func buildChatGPTInput(messages []Message) (string, []interface{}) {
 
 		case RoleUser:
 			text := collectTextParts(msg.Parts)
+			var imageParts []map[string]interface{}
+			for _, part := range msg.Parts {
+				if part.Type == PartImage && part.ImageData != nil {
+					dataURL := fmt.Sprintf("data:%s;base64,%s", part.ImageData.MediaType, part.ImageData.Base64)
+					imageParts = append(imageParts, map[string]interface{}{
+						"type":      "input_image",
+						"image_url": dataURL,
+					})
+				}
+			}
+			if text == "" && len(imageParts) == 0 {
+				continue
+			}
+			var content []map[string]interface{}
 			if text != "" {
-				input = append(input, map[string]interface{}{
-					"type": "message",
-					"role": "user",
-					"content": []map[string]string{
-						{"type": "input_text", "text": text},
-					},
+				content = append(content, map[string]interface{}{
+					"type": "input_text",
+					"text": text,
 				})
 			}
+			content = append(content, imageParts...)
+			input = append(input, map[string]interface{}{
+				"type":    "message",
+				"role":    "user",
+				"content": content,
+			})
 
 		case RoleAssistant:
 			var textContent strings.Builder

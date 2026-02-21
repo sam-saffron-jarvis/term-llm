@@ -222,7 +222,9 @@ func (s *StreamingBlock) Render(wavePos int, pausedForUI bool, includeImages boo
 		}
 	}
 
-	return b.String()
+	// Clone so the returned string doesn't share the builder's backing
+	// array, which will be overwritten when the pool reuses this builder.
+	return strings.Clone(b.String())
 }
 
 // Flush returns content to print to scrollback and marks it as flushed.
