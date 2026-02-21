@@ -413,6 +413,12 @@ func buildChatGPTInput(messages []Message) (string, []interface{}) {
 						"type":      "input_image",
 						"image_url": dataURL,
 					})
+					if part.ImagePath != "" {
+						imageParts = append(imageParts, map[string]interface{}{
+							"type": "input_text",
+							"text": "[image saved at: " + part.ImagePath + "]",
+						})
+					}
 				}
 			}
 			if text == "" && len(imageParts) == 0 {
