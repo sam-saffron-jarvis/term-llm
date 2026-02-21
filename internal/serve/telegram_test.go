@@ -12,6 +12,7 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 	"github.com/samsaffron/term-llm/internal/llm"
@@ -478,6 +479,47 @@ func TestTelegramSessionMgrResetSessionIfCurrent_RejectsStaleExpectedSession(t *
 	}
 }
 
+func TestTelegramSessionMgrResetSessionIfCurrent_CopiesCarryoverContext(t *testing.T) {
+	mgr := &telegramSessionMgr{
+		sessions: make(map[int64]*telegramSession),
+		settings: Settings{
+			TelegramCarryoverChars: 128,
+			NewSession: func(ctx context.Context) (*SessionRuntime, error) {
+				return &SessionRuntime{
+					ProviderName: "mock",
+					ModelName:    "model",
+				}, nil
+			},
+		},
+	}
+
+	original, err := mgr.getOrCreate(context.Background(), 42)
+	if err != nil {
+		t.Fatalf("getOrCreate failed: %v", err)
+	}
+	original.history = []llm.Message{
+		llm.UserImageMessage("image/jpeg", "dGVzdA==", "photo caption"),
+		llm.AssistantText("reply text"),
+	}
+
+	replacement, replaced, err := mgr.resetSessionIfCurrent(context.Background(), 42, original)
+	if err != nil {
+		t.Fatalf("resetSessionIfCurrent failed: %v", err)
+	}
+	if !replaced {
+		t.Fatalf("expected reset to replace session")
+	}
+	if replacement.carryoverContext == "" {
+		t.Fatal("expected non-empty carryoverContext")
+	}
+	if !strings.Contains(replacement.carryoverContext, "[image uploaded]") {
+		t.Fatalf("expected image placeholder in carryoverContext, got %q", replacement.carryoverContext)
+	}
+	if !strings.Contains(replacement.carryoverContext, "photo caption") {
+		t.Fatalf("expected caption text in carryoverContext, got %q", replacement.carryoverContext)
+	}
+}
+
 // --- interrupt tests ---
 
 func TestHandleMessage_InterruptCancelsActiveStream(t *testing.T) {
@@ -709,6 +751,114 @@ func TestHandleMessage_InterruptPreservesHistory(t *testing.T) {
 
 	if !foundUser {
 		t.Error("expected interrupted user message in history")
+	}
+}
+
+func TestStreamReply_InjectsCarryoverSystemNoteOnce(t *testing.T) {
+	h := testutil.NewEngineHarness()
+	h.Provider.AddTextResponse("first")
+	h.Provider.AddTextResponse("second")
+
+	mgr, sess := newTestMgrAndSession(h)
+	sess.carryoverContext = "old context tail"
+	bot := &fakeBotSender{}
+
+	if err := mgr.streamReply(context.Background(), bot, sess, 42, llm.UserText("turn one")); err != nil {
+		t.Fatalf("first streamReply returned error: %v", err)
+	}
+	if err := mgr.streamReply(context.Background(), bot, sess, 42, llm.UserText("turn two")); err != nil {
+		t.Fatalf("second streamReply returned error: %v", err)
+	}
+
+	if len(h.Provider.Requests) < 2 {
+		t.Fatalf("expected at least 2 provider requests, got %d", len(h.Provider.Requests))
+	}
+
+	firstHasCarry := false
+	for _, msg := range h.Provider.Requests[0].Messages {
+		if msg.Role != llm.RoleSystem {
+			continue
+		}
+		for _, p := range msg.Parts {
+			if p.Type == llm.PartText && strings.Contains(p.Text, "Context from previous session") && strings.Contains(p.Text, "old context tail") {
+				firstHasCarry = true
+			}
+		}
+	}
+	if !firstHasCarry {
+		t.Fatal("expected carryover system note in first request")
+	}
+
+	secondHasCarry := false
+	for _, msg := range h.Provider.Requests[1].Messages {
+		if msg.Role != llm.RoleSystem {
+			continue
+		}
+		for _, p := range msg.Parts {
+			if p.Type == llm.PartText && strings.Contains(p.Text, "Context from previous session") {
+				secondHasCarry = true
+			}
+		}
+	}
+	if secondHasCarry {
+		t.Fatal("did not expect carryover system note in second request")
+	}
+}
+
+func TestStreamReply_PersistsImagePlaceholderInHistory(t *testing.T) {
+	h := testutil.NewEngineHarness()
+	h.Provider.AddTextResponse("ok")
+
+	mgr, sess := newTestMgrAndSession(h)
+	bot := &fakeBotSender{}
+
+	if err := mgr.streamReply(context.Background(), bot, sess, 42, llm.UserImageMessage("image/jpeg", "data", "caption text")); err != nil {
+		t.Fatalf("streamReply returned error: %v", err)
+	}
+
+	if len(sess.history) < 2 {
+		t.Fatalf("expected at least user+assistant in history, got %d", len(sess.history))
+	}
+
+	userMsg := sess.history[0]
+	if userMsg.Role != llm.RoleUser {
+		t.Fatalf("first history message role = %q, want %q", userMsg.Role, llm.RoleUser)
+	}
+	text := collectUserText(userMsg)
+	if !strings.Contains(text, "[image uploaded]") {
+		t.Fatalf("expected image placeholder in persisted user text, got %q", text)
+	}
+	if !strings.Contains(text, "caption text") {
+		t.Fatalf("expected caption in persisted user text, got %q", text)
+	}
+	for _, part := range userMsg.Parts {
+		if part.Type == llm.PartImage {
+			t.Fatalf("persisted history should not keep image binary parts: %+v", userMsg.Parts)
+		}
+	}
+}
+
+func TestBuildHistoryContextTail_RuneSafeAndImagePlaceholder(t *testing.T) {
+	history := []llm.Message{
+		llm.UserText("alpha"),
+		llm.UserImageMessage("image/jpeg", "data", "desc"),
+		llm.AssistantText("🙂🙂🙂"),
+	}
+
+	got := buildHistoryContextTail(history, 10)
+	if got == "" {
+		t.Fatal("expected non-empty tail")
+	}
+	if utf8.RuneCountInString(got) > 10 {
+		t.Fatalf("tail rune count = %d, want <= 10", utf8.RuneCountInString(got))
+	}
+
+	full := buildHistoryContextTail(history, 1000)
+	if !strings.Contains(full, "[image uploaded]") {
+		t.Fatalf("expected image placeholder in full tail, got %q", full)
+	}
+	if !strings.Contains(full, "desc") {
+		t.Fatalf("expected image caption in full tail, got %q", full)
 	}
 }
 

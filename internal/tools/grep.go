@@ -86,9 +86,9 @@ func (t *GrepTool) executeRipgrep(ctx context.Context, pattern, searchPath, incl
 	}
 
 	args := []string{
-		"--json",                                 // JSON output for parsing
-		"--max-count", strconv.Itoa(maxResults),  // Limit per file
-		"--context", strconv.Itoa(contextLines),  // Context lines
+		"--json",                                // JSON output for parsing
+		"--max-count", strconv.Itoa(maxResults), // Limit per file
+		"--context", strconv.Itoa(contextLines), // Context lines
 		"--hidden",        // Search hidden files but...
 		"--glob", "!.git", // ...exclude .git
 	}
@@ -213,7 +213,7 @@ type GrepArgs struct {
 	Include          string `json:"include,omitempty"` // glob filter e.g., "*.go"
 	Exclude          string `json:"exclude,omitempty"` // glob pattern to exclude e.g., "vendor/**"
 	MaxResults       int    `json:"max_results,omitempty"`
-	ContextLines     int    `json:"context_lines,omitempty"`  // lines of context around match (default 3)
+	ContextLines     int    `json:"context_lines,omitempty"`      // lines of context around match (default 3)
 	FilesWithMatches bool   `json:"files_with_matches,omitempty"` // return filenames only
 }
 
@@ -240,28 +240,28 @@ func (t *GrepTool) Spec() llm.ToolSpec {
 					"type":        "string",
 					"description": "File or directory to search in (defaults to current directory)",
 				},
-			"include": map[string]interface{}{
-				"type":        "string",
-				"description": "Glob filter for files, e.g., '*.go' or '*.{js,ts}'",
-			},
-			"exclude": map[string]interface{}{
-				"type":        "string",
-				"description": "Glob pattern for paths to exclude, e.g. 'vendor/**' or '**/*_test.go'",
-			},
-			"context_lines": map[string]interface{}{
-				"type":        "integer",
-				"description": "Lines of context around each match (default: 3)",
-				"default":     3,
-			},
-			"files_with_matches": map[string]interface{}{
-				"type":        "boolean",
-				"description": "Return only filenames containing matches, not the match lines (default: false)",
-			},
-			"max_results": map[string]interface{}{
-				"type":        "integer",
-				"description": "Maximum number of results (default: 100)",
-				"default":     100,
-			},			},
+				"include": map[string]interface{}{
+					"type":        "string",
+					"description": "Glob filter for files, e.g., '*.go' or '*.{js,ts}'",
+				},
+				"exclude": map[string]interface{}{
+					"type":        "string",
+					"description": "Glob pattern for paths to exclude, e.g. 'vendor/**' or '**/*_test.go'",
+				},
+				"context_lines": map[string]interface{}{
+					"type":        "integer",
+					"description": "Lines of context around each match (default: 3)",
+					"default":     3,
+				},
+				"files_with_matches": map[string]interface{}{
+					"type":        "boolean",
+					"description": "Return only filenames containing matches, not the match lines (default: false)",
+				},
+				"max_results": map[string]interface{}{
+					"type":        "integer",
+					"description": "Maximum number of results (default: 100)",
+					"default":     100,
+				}},
 			"required":             []string{"pattern"},
 			"additionalProperties": false,
 		},

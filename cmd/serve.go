@@ -31,28 +31,29 @@ import (
 )
 
 var (
-	serveHost           string
-	servePort           int
-	serveToken          string
-	serveAllowNoAuth    bool
-	serveUI             bool
-	serveCORSOrigins    []string
-	serveSessionTTL     time.Duration
-	serveSessionMax     int
-	serveDebug          bool
-	serveSearch         bool
-	serveProvider       string
-	serveMCP            string
-	serveNativeSearch   bool
-	serveNoNativeSearch bool
-	serveMaxTurns       int
-	serveTools          string
-	serveReadDirs       []string
-	serveWriteDirs      []string
-	serveShellAllow     []string
-	serveSystemMessage  string
-	serveAgent          string
-	serveYolo           bool
+	serveHost                   string
+	servePort                   int
+	serveToken                  string
+	serveAllowNoAuth            bool
+	serveUI                     bool
+	serveCORSOrigins            []string
+	serveSessionTTL             time.Duration
+	serveSessionMax             int
+	serveDebug                  bool
+	serveSearch                 bool
+	serveProvider               string
+	serveMCP                    string
+	serveNativeSearch           bool
+	serveNoNativeSearch         bool
+	serveMaxTurns               int
+	serveTools                  string
+	serveReadDirs               []string
+	serveWriteDirs              []string
+	serveShellAllow             []string
+	serveSystemMessage          string
+	serveAgent                  string
+	serveYolo                   bool
+	serveTelegramCarryoverChars int
 	// Platform flags
 	servePlatform string
 	serveSetup    bool
@@ -96,6 +97,7 @@ func init() {
 		panic("failed to register platform completion: " + err.Error())
 	}
 	serveCmd.Flags().BoolVar(&serveSetup, "setup", false, "Re-run setup wizard for selected platforms")
+	serveCmd.Flags().IntVar(&serveTelegramCarryoverChars, "telegram-carryover-chars", 4000, "Characters of previous Telegram session context to carry into replacement sessions (0 disables)")
 
 	AddProviderFlag(serveCmd, &serveProvider)
 	AddDebugFlag(serveCmd, &serveDebug)
@@ -118,6 +120,9 @@ func runServe(cmd *cobra.Command, args []string) error {
 	}
 	if serveSessionMax <= 0 {
 		return fmt.Errorf("invalid --session-max %d (must be > 0)", serveSessionMax)
+	}
+	if serveTelegramCarryoverChars < 0 {
+		return fmt.Errorf("invalid --telegram-carryover-chars %d (must be >= 0)", serveTelegramCarryoverChars)
 	}
 
 	requireAuth := !serveAllowNoAuth
@@ -238,17 +243,18 @@ func runServe(cmd *cobra.Command, args []string) error {
 
 	// Build the serve.Settings used by non-web platforms.
 	serveSettings := serve.Settings{
-		SystemPrompt:        settings.SystemPrompt,
-		IdleTimeout:         serveSessionTTL,
-		MaxTurns:            settings.MaxTurns,
-		Debug:               serveDebug,
-		DebugRaw:            debugRaw,
-		Search:              settings.Search,
-		ForceExternalSearch: forceExternalSearch,
-		Tools:               settings.Tools,
-		MCP:                 settings.MCP,
-		Agent:               agentName,
-		Store:               store,
+		SystemPrompt:           settings.SystemPrompt,
+		IdleTimeout:            serveSessionTTL,
+		TelegramCarryoverChars: serveTelegramCarryoverChars,
+		MaxTurns:               settings.MaxTurns,
+		Debug:                  serveDebug,
+		DebugRaw:               debugRaw,
+		Search:                 settings.Search,
+		ForceExternalSearch:    forceExternalSearch,
+		Tools:                  settings.Tools,
+		MCP:                    settings.MCP,
+		Agent:                  agentName,
+		Store:                  store,
 		NewSession: func(ctx context.Context) (*serve.SessionRuntime, error) {
 			rt, err := factory(ctx)
 			if err != nil {

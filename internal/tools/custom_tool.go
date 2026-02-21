@@ -148,9 +148,9 @@ func (t *CustomScriptTool) Execute(ctx context.Context, args json.RawMessage) (l
 
 // buildCommand constructs the exec.Cmd for the script according to the calling convention.
 //
-//   ""/"args"   → script --key1 val1 --key2 val2  (named flags, default)
-//   "positional" → script val1 val2 …              (values in schema property order)
-//   "json"      → script  with JSON piped to stdin
+//	""/"args"   → script --key1 val1 --key2 val2  (named flags, default)
+//	"positional" → script val1 val2 …              (values in schema property order)
+//	"json"      → script  with JSON piped to stdin
 func (t *CustomScriptTool) buildCommand(ctx context.Context, scriptPath string, args json.RawMessage) (*exec.Cmd, error) {
 	call := strings.ToLower(strings.TrimSpace(t.def.Call))
 

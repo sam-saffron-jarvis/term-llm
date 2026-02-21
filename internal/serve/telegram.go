@@ -275,11 +275,12 @@ func buildAllowedUsernameSet(names []string) map[string]struct{} {
 
 // telegramSession holds per-chat conversation state.
 type telegramSession struct {
-	mu           sync.Mutex
-	runtime      *SessionRuntime
-	history      []llm.Message
-	meta         *session.Session
-	lastActivity time.Time
+	mu               sync.Mutex
+	runtime          *SessionRuntime
+	history          []llm.Message
+	carryoverContext string // one-time context carried from the previous replaced session
+	meta             *session.Session
+	lastActivity     time.Time
 
 	cancelMu     sync.Mutex         // protects streamCancel and replyDone
 	streamCancel context.CancelFunc // cancels the active stream's context
@@ -364,6 +365,11 @@ func (m *telegramSessionMgr) resetSessionIfCurrent(ctx context.Context, chatID i
 	m.mu.Unlock()
 
 	if current != nil {
+		current.mu.Lock()
+		priorHistory := append([]llm.Message(nil), current.history...)
+		current.mu.Unlock()
+		created.carryoverContext = buildHistoryContextTail(priorHistory, m.settings.TelegramCarryoverChars)
+
 		current.mu.Lock()
 		closeTelegramSession(current)
 		current.mu.Unlock()
@@ -556,14 +562,10 @@ func (m *telegramSessionMgr) handleMessage(ctx context.Context, bot *tgbotapi.Bo
 	}
 	sess.mu.Unlock()
 	if expired {
-		var replaced bool
-		sess, replaced, err = m.resetSessionIfCurrent(ctx, chatID, sess)
+		sess, _, err = m.resetSessionIfCurrent(ctx, chatID, sess)
 		if err != nil {
 			_, _ = bot.Send(tgbotapi.NewMessage(chatID, "Error resetting session: "+err.Error()))
 			return
-		}
-		if replaced {
-			_, _ = bot.Send(tgbotapi.NewMessage(chatID, "(Session reset due to inactivity)"))
 		}
 	}
 
@@ -631,10 +633,14 @@ func (m *telegramSessionMgr) streamReply(ctx context.Context, bot botSender, ses
 	userText := collectUserText(userMsg)
 
 	// Build full message list: system + history + new user turn.
-	messages := make([]llm.Message, 0, len(sess.history)+2)
+	messages := make([]llm.Message, 0, len(sess.history)+3)
 	historyHasSystem := containsSystemMsg(sess.history)
 	if m.settings.SystemPrompt != "" && !historyHasSystem {
 		messages = append(messages, llm.SystemText(m.settings.SystemPrompt))
+	}
+	if sess.carryoverContext != "" {
+		messages = append(messages, llm.SystemText("Context from previous session (tail):\n"+sess.carryoverContext))
+		sess.carryoverContext = ""
 	}
 	messages = append(messages, sess.history...)
 	messages = append(messages, userMsg)
@@ -938,7 +944,7 @@ loop:
 			// Preserve partial history so conversation context isn't lost.
 			newHistory := make([]llm.Message, 0, len(sess.history)+2+len(produced))
 			newHistory = append(newHistory, sess.history...)
-			newHistory = append(newHistory, userMsg)
+			newHistory = append(newHistory, normalizeUserMessageForHistory(userMsg))
 			producedMu.Lock()
 			newHistory = append(newHistory, produced...)
 			producedMu.Unlock()
@@ -1047,7 +1053,7 @@ loop:
 	// Persist history: base + user message + produced (assistant + tool results).
 	newHistory := make([]llm.Message, 0, len(sess.history)+2+len(produced))
 	newHistory = append(newHistory, sess.history...)
-	newHistory = append(newHistory, llm.UserText(userText))
+	newHistory = append(newHistory, normalizeUserMessageForHistory(userMsg))
 	producedMu.Lock()
 	newHistory = append(newHistory, produced...)
 	producedMu.Unlock()
@@ -1093,6 +1099,79 @@ func collectUserText(msg llm.Message) string {
 		}
 	}
 	return strings.Join(parts, "\n")
+}
+
+func normalizeUserMessageForHistory(msg llm.Message) llm.Message {
+	text := extractMessageTextWithPlaceholders(msg)
+	if text == "" {
+		return llm.UserText("")
+	}
+	return llm.UserText(text)
+}
+
+func buildHistoryContextTail(history []llm.Message, maxChars int) string {
+	if maxChars <= 0 || len(history) == 0 {
+		return ""
+	}
+	var lines []string
+	for _, msg := range history {
+		text := strings.TrimSpace(extractMessageTextWithPlaceholders(msg))
+		if text == "" {
+			continue
+		}
+		lines = append(lines, fmt.Sprintf("[%s] %s", msg.Role, text))
+	}
+	if len(lines) == 0 {
+		return ""
+	}
+	return tailRunes(strings.Join(lines, "\n"), maxChars)
+}
+
+func extractMessageTextWithPlaceholders(msg llm.Message) string {
+	var parts []string
+	for _, part := range msg.Parts {
+		switch part.Type {
+		case llm.PartText:
+			if strings.TrimSpace(part.Text) != "" {
+				parts = append(parts, part.Text)
+			}
+		case llm.PartImage:
+			parts = append(parts, "[image uploaded]")
+		case llm.PartToolResult:
+			if part.ToolResult == nil {
+				continue
+			}
+			result := part.ToolResult
+			if strings.TrimSpace(result.Content) != "" {
+				parts = append(parts, result.Content)
+			}
+			for _, p := range result.ContentParts {
+				switch p.Type {
+				case llm.ToolContentPartText:
+					if strings.TrimSpace(p.Text) != "" {
+						parts = append(parts, p.Text)
+					}
+				case llm.ToolContentPartImageData:
+					parts = append(parts, "[image uploaded]")
+				}
+			}
+			for range result.Images {
+				parts = append(parts, "[image uploaded]")
+			}
+		}
+	}
+	return strings.Join(parts, "\n")
+}
+
+func tailRunes(s string, maxRunes int) string {
+	if maxRunes <= 0 || s == "" {
+		return ""
+	}
+	runes := []rune(s)
+	if len(runes) <= maxRunes {
+		return s
+	}
+	return string(runes[len(runes)-maxRunes:])
 }
 
 // activeToolDisplay returns a short human-readable string describing which tools

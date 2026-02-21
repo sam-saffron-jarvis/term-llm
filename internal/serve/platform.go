@@ -21,10 +21,14 @@ type SessionRuntime struct {
 type Settings struct {
 	SystemPrompt string
 	IdleTimeout  time.Duration
-	MaxTurns     int
-	Debug        bool
-	DebugRaw     bool
-	Search       bool
+	// TelegramCarryoverChars controls how many trailing characters from the
+	// previous Telegram session are carried into a replacement session.
+	// 0 disables carry-over.
+	TelegramCarryoverChars int
+	MaxTurns               int
+	Debug                  bool
+	DebugRaw               bool
+	Search                 bool
 	// ForceExternalSearch disables provider-native search and uses external
 	// web_search/read_url tools instead when search is enabled.
 	ForceExternalSearch bool
