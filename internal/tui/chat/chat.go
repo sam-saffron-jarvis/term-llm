@@ -176,6 +176,15 @@ type Model struct {
 
 	// Text mode (no markdown rendering)
 	textMode bool
+
+	// Mouse layout tracking for textarea click-to-cursor support
+	textareaBoundsValid    bool
+	textareaTopY           int
+	textareaBottomY        int
+	textareaLeftX          int
+	textareaRightX         int
+	textareaPromptWidth    int
+	textareaEffectiveWidth int
 }
 
 // streamEventMsg wraps ui.StreamEvent for bubbletea
@@ -529,6 +538,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleKeyMsg(msg)
 
 	case tea.MouseMsg:
+		if m.handleTextareaMouse(msg) {
+			return m, nil
+		}
 		// Handle middle-click paste
 		if msg.Button == tea.MouseButtonMiddle && msg.Action == tea.MouseActionPress {
 			text, err := clipboard.ReadPrimarySelection()

@@ -27,6 +27,7 @@ func (m *Model) View() string {
 	if m.quitting {
 		return ""
 	}
+	m.textareaBoundsValid = false
 
 	// Inspector mode uses alternate screen
 	if m.inspectorMode && m.inspectorModel != nil {
@@ -53,35 +54,52 @@ func (m *Model) View() string {
 
 	// Inline mode: traditional rendering
 	var b strings.Builder
+	renderedLines := 0
 
 	// History (if scrolling)
 	if m.scrollOffset > 0 {
-		b.WriteString(m.renderHistory())
+		history := m.renderHistory()
+		b.WriteString(history)
+		renderedLines += lipgloss.Height(history)
 		b.WriteString("\n")
+		renderedLines++
 	}
 
 	// Streaming response (if active)
 	if m.streaming {
-		b.WriteString(m.renderStreamingInline())
+		streaming := m.renderStreamingInline()
+		b.WriteString(streaming)
+		renderedLines += lipgloss.Height(streaming)
 	}
 
 	// Error display (if error occurred and not streaming)
 	if m.err != nil && !m.streaming {
-		b.WriteString(m.renderError())
+		errOutput := m.renderError()
+		b.WriteString(errOutput)
+		renderedLines += lipgloss.Height(errOutput)
 		b.WriteString("\n\n")
+		renderedLines += 2
 	}
 
 	// Completions popup (if visible)
 	if m.completions.IsVisible() {
-		b.WriteString(m.completions.View())
+		completions := m.completions.View()
+		b.WriteString(completions)
+		renderedLines += lipgloss.Height(completions)
 		b.WriteString("\n")
+		renderedLines++
 	}
 
 	// Dialog (if open)
 	if m.dialog.IsOpen() {
-		b.WriteString(m.dialog.View())
+		dialog := m.dialog.View()
+		b.WriteString(dialog)
+		renderedLines += lipgloss.Height(dialog)
 		b.WriteString("\n")
+		renderedLines++
 	}
+
+	m.recordTextareaLayout(renderedLines)
 
 	// Input prompt
 	b.WriteString(m.renderInputInline())
@@ -92,6 +110,7 @@ func (m *Model) View() string {
 // viewAltScreen renders the full-screen alt screen view with scrollable viewport
 func (m *Model) viewAltScreen() string {
 	var b strings.Builder
+	renderedLines := 0
 
 	// Build scrollable content with caching to avoid re-rendering unchanged content
 
@@ -210,19 +229,29 @@ func (m *Model) viewAltScreen() string {
 
 	// Render viewport (scrollable area)
 	b.WriteString(m.viewCache.lastViewportView)
+	renderedLines += lipgloss.Height(m.viewCache.lastViewportView)
 	b.WriteString("\n")
+	renderedLines++
 
 	// Completions popup (if visible) - overlaid on content
 	if m.completions.IsVisible() {
-		b.WriteString(m.completions.View())
+		completions := m.completions.View()
+		b.WriteString(completions)
+		renderedLines += lipgloss.Height(completions)
 		b.WriteString("\n")
+		renderedLines++
 	}
 
 	// Dialog (if open) - overlaid on content
 	if m.dialog.IsOpen() {
-		b.WriteString(m.dialog.View())
+		dialog := m.dialog.View()
+		b.WriteString(dialog)
+		renderedLines += lipgloss.Height(dialog)
 		b.WriteString("\n")
+		renderedLines++
 	}
+
+	m.recordTextareaLayout(renderedLines)
 
 	// Input area (fixed at bottom)
 	b.WriteString(m.renderInputInline())

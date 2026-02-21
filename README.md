@@ -384,6 +384,8 @@ See [Agents](#agents) for more details on creating and managing agents.
 | `Ctrl+F` | Attach file |
 | `Ctrl+O` | Conversation inspector |
 | `Esc` | Cancel streaming |
+| `Left click` | Move cursor in chat input |
+| `Shift+drag` | Select/copy chat output text in terminal |
 
 ### Chat Slash Commands
 
