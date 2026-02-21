@@ -66,6 +66,12 @@ type SkillToolDef struct {
 
 	// Env is a map of additional environment variables to set when running the script.
 	Env map[string]string `yaml:"env,omitempty"`
+
+	// Call controls how arguments are passed to the script.
+	//   ""       / "args"       — named flags: --key value (default)
+	//   "positional"            — positional args in schema property order
+	//   "json"                  — JSON object on stdin
+	Call string `yaml:"call,omitempty"`
 }
 
 // Skill represents a skill loaded from a SKILL.md file.
