@@ -57,19 +57,47 @@ type rgMatchData struct {
 }
 
 // executeRipgrep runs ripgrep and returns matches.
-func (t *GrepTool) executeRipgrep(ctx context.Context, pattern, searchPath, include string, maxResults int) ([]GrepMatch, error) {
+func (t *GrepTool) executeRipgrep(ctx context.Context, pattern, searchPath, include, exclude string, contextLines, maxResults int, filesWithMatches bool) ([]GrepMatch, error) {
+	// files-with-matches mode: skip JSON parsing entirely, just return filenames
+	if filesWithMatches {
+		args := []string{"--files-with-matches", "--hidden", "--glob", "!.git"}
+		if include != "" {
+			args = append(args, "--glob", include)
+		}
+		if exclude != "" {
+			args = append(args, "--glob", "!"+exclude)
+		}
+		args = append(args, pattern, searchPath)
+		cmd := exec.CommandContext(ctx, "rg", args...)
+		output, err := cmd.Output()
+		if err != nil {
+			if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 {
+				return nil, nil
+			}
+			return nil, err
+		}
+		var matches []GrepMatch
+		for _, f := range strings.Split(strings.TrimSpace(string(output)), "\n") {
+			if f != "" {
+				matches = append(matches, GrepMatch{FilePath: f})
+			}
+		}
+		return matches, nil
+	}
+
 	args := []string{
-		"--json",                                // JSON output for parsing
-		"--max-count", strconv.Itoa(maxResults), // Limit per file
-		"--context", "3", // Context lines
+		"--json",                                 // JSON output for parsing
+		"--max-count", strconv.Itoa(maxResults),  // Limit per file
+		"--context", strconv.Itoa(contextLines),  // Context lines
 		"--hidden",        // Search hidden files but...
 		"--glob", "!.git", // ...exclude .git
 	}
-
 	if include != "" {
 		args = append(args, "--glob", include)
 	}
-
+	if exclude != "" {
+		args = append(args, "--glob", "!"+exclude)
+	}
 	args = append(args, pattern, searchPath)
 
 	cmd := exec.CommandContext(ctx, "rg", args...)
@@ -180,10 +208,13 @@ func buildMatchFromPending(p *pendingMatch) GrepMatch {
 
 // GrepArgs are the arguments for grep.
 type GrepArgs struct {
-	Pattern    string `json:"pattern"`
-	Path       string `json:"path,omitempty"`
-	Include    string `json:"include,omitempty"` // glob filter e.g., "*.go"
-	MaxResults int    `json:"max_results,omitempty"`
+	Pattern          string `json:"pattern"`
+	Path             string `json:"path,omitempty"`
+	Include          string `json:"include,omitempty"` // glob filter e.g., "*.go"
+	Exclude          string `json:"exclude,omitempty"` // glob pattern to exclude e.g., "vendor/**"
+	MaxResults       int    `json:"max_results,omitempty"`
+	ContextLines     int    `json:"context_lines,omitempty"`  // lines of context around match (default 3)
+	FilesWithMatches bool   `json:"files_with_matches,omitempty"` // return filenames only
 }
 
 // GrepMatch represents a single grep match.
@@ -209,16 +240,28 @@ func (t *GrepTool) Spec() llm.ToolSpec {
 					"type":        "string",
 					"description": "File or directory to search in (defaults to current directory)",
 				},
-				"include": map[string]interface{}{
-					"type":        "string",
-					"description": "Glob filter for files, e.g., '*.go' or '*.{js,ts}'",
-				},
-				"max_results": map[string]interface{}{
-					"type":        "integer",
-					"description": "Maximum number of results (default: 100)",
-					"default":     100,
-				},
+			"include": map[string]interface{}{
+				"type":        "string",
+				"description": "Glob filter for files, e.g., '*.go' or '*.{js,ts}'",
 			},
+			"exclude": map[string]interface{}{
+				"type":        "string",
+				"description": "Glob pattern for paths to exclude, e.g. 'vendor/**' or '**/*_test.go'",
+			},
+			"context_lines": map[string]interface{}{
+				"type":        "integer",
+				"description": "Lines of context around each match (default: 3)",
+				"default":     3,
+			},
+			"files_with_matches": map[string]interface{}{
+				"type":        "boolean",
+				"description": "Return only filenames containing matches, not the match lines (default: false)",
+			},
+			"max_results": map[string]interface{}{
+				"type":        "integer",
+				"description": "Maximum number of results (default: 100)",
+				"default":     100,
+			},			},
 			"required":             []string{"pattern"},
 			"additionalProperties": false,
 		},
@@ -240,6 +283,9 @@ func (t *GrepTool) Preview(args json.RawMessage) string {
 	}
 	if a.Include != "" {
 		result += " (" + a.Include + ")"
+	}
+	if a.Exclude != "" {
+		result += " exclude:" + a.Exclude
 	}
 	return result
 }
@@ -272,6 +318,11 @@ func (t *GrepTool) Execute(ctx context.Context, args json.RawMessage) (llm.ToolO
 		maxResults = t.limits.MaxResults
 	}
 
+	contextLines := a.ContextLines
+	if contextLines <= 0 {
+		contextLines = 3
+	}
+
 	// Check permissions via approval manager
 	if t.approval != nil {
 		outcome, err := t.approval.CheckPathApproval(GrepToolName, searchPath, a.Pattern, false)
@@ -288,7 +339,7 @@ func (t *GrepTool) Execute(ctx context.Context, args json.RawMessage) (llm.ToolO
 
 	// Try ripgrep first (faster)
 	if ripgrepAvailable() {
-		matches, err := t.executeRipgrep(ctx, a.Pattern, searchPath, a.Include, maxResults)
+		matches, err := t.executeRipgrep(ctx, a.Pattern, searchPath, a.Include, a.Exclude, contextLines, maxResults, a.FilesWithMatches)
 		if err != nil {
 			if ctx.Err() != nil {
 				return llm.TextOutput("grep timed out after 1 minute; try a more specific pattern or path"), nil
@@ -297,6 +348,9 @@ func (t *GrepTool) Execute(ctx context.Context, args json.RawMessage) (llm.ToolO
 		} else {
 			if len(matches) == 0 {
 				return llm.TextOutput("No matches found."), nil
+			}
+			if a.FilesWithMatches {
+				return llm.TextOutput(formatFilesWithMatches(matches)), nil
 			}
 			return llm.TextOutput(formatGrepResults(matches, len(matches) >= maxResults)), nil
 		}
@@ -310,7 +364,7 @@ func (t *GrepTool) Execute(ctx context.Context, args json.RawMessage) (llm.ToolO
 	}
 
 	// Collect files to search
-	files, err := collectFiles(searchPath, a.Include)
+	files, err := collectFiles(searchPath, a.Include, a.Exclude)
 	if err != nil {
 		return llm.TextOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "failed to collect files: %v", err))), nil
 	}
@@ -329,7 +383,7 @@ func (t *GrepTool) Execute(ctx context.Context, args json.RawMessage) (llm.ToolO
 			break
 		}
 
-		fileMatches, err := searchFile(file, re, maxResults-len(matches))
+		fileMatches, err := searchFile(file, re, maxResults-len(matches), contextLines)
 		if err != nil {
 			continue // Skip files that can't be read
 		}
@@ -340,12 +394,16 @@ func (t *GrepTool) Execute(ctx context.Context, args json.RawMessage) (llm.ToolO
 		return llm.TextOutput("No matches found."), nil
 	}
 
+	if a.FilesWithMatches {
+		return llm.TextOutput(formatFilesWithMatches(matches)), nil
+	}
+
 	// Format results
 	return llm.TextOutput(formatGrepResults(matches, len(matches) >= maxResults)), nil
 }
 
 // collectFiles collects files to search.
-func collectFiles(searchPath, include string) ([]string, error) {
+func collectFiles(searchPath, include, exclude string) ([]string, error) {
 	info, err := os.Stat(searchPath)
 	if err != nil {
 		return nil, err
@@ -363,19 +421,33 @@ func collectFiles(searchPath, include string) ([]string, error) {
 			return nil // Skip errors
 		}
 
+		relPath, _ := filepath.Rel(searchPath, path)
+
 		// Skip hidden directories
 		if d.IsDir() && strings.HasPrefix(d.Name(), ".") {
 			return filepath.SkipDir
 		}
 
 		if d.IsDir() {
+			// Skip excluded directories early
+			if exclude != "" {
+				if matched, _ := doublestar.Match(exclude, relPath); matched {
+					return filepath.SkipDir
+				}
+			}
 			return nil
 		}
 
-		// Apply include filter
+		// Apply include filter against relative path
 		if include != "" {
-			match, err := doublestar.Match(include, d.Name())
-			if err != nil || !match {
+			if matched, _ := doublestar.Match(include, relPath); !matched {
+				return nil
+			}
+		}
+
+		// Apply exclude filter against relative path
+		if exclude != "" {
+			if matched, _ := doublestar.Match(exclude, relPath); matched {
 				return nil
 			}
 		}
@@ -414,7 +486,7 @@ func sortFilesByMtime(files []string) {
 }
 
 // searchFile searches a single file for matches.
-func searchFile(path string, re *regexp.Regexp, maxMatches int) ([]GrepMatch, error) {
+func searchFile(path string, re *regexp.Regexp, maxMatches, contextLines int) ([]GrepMatch, error) {
 	file, err := os.Open(path)
 	if err != nil {
 		return nil, err
@@ -459,7 +531,7 @@ func searchFile(path string, re *regexp.Regexp, maxMatches int) ([]GrepMatch, er
 				FilePath:   path,
 				LineNumber: lineNum + 1, // 1-indexed
 				Match:      line,
-				Context:    buildContext(lines, lineNum, 3),
+				Context:    buildContext(lines, lineNum, contextLines),
 			}
 			matches = append(matches, match)
 
@@ -492,6 +564,19 @@ func buildContext(lines []string, matchIdx, contextLines int) string {
 		sb.WriteString(fmt.Sprintf("%s%d: %s\n", prefix, i+1, lines[i]))
 	}
 
+	return strings.TrimSuffix(sb.String(), "\n")
+}
+
+// formatFilesWithMatches formats a deduplicated list of filenames containing matches.
+func formatFilesWithMatches(matches []GrepMatch) string {
+	var sb strings.Builder
+	seen := make(map[string]bool)
+	for _, m := range matches {
+		if !seen[m.FilePath] {
+			seen[m.FilePath] = true
+			sb.WriteString(m.FilePath + "\n")
+		}
+	}
 	return strings.TrimSuffix(sb.String(), "\n")
 }
 
