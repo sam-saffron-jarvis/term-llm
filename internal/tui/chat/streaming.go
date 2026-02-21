@@ -191,6 +191,22 @@ func (m *Model) startStream(content string) tea.Cmd {
 			}
 		}
 
+		// Add any engine-registered tools not covered by localTools.
+		// activate_skill is registered directly on the engine by RegisterSkillToolWithEngine
+		// but is not part of the agent's tools.enabled list, so it would be silently dropped.
+		for _, spec := range m.engine.Tools().AllSpecs() {
+			found := false
+			for _, existing := range reqTools {
+				if existing.Name == spec.Name {
+					found = true
+					break
+				}
+			}
+			if !found {
+				reqTools = append(reqTools, spec)
+			}
+		}
+
 		req := llm.Request{
 			SessionID:           m.sess.ID,
 			Messages:            messages,
