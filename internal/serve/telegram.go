@@ -34,31 +34,67 @@ type botFileGetter interface {
 	GetFileDirectURL(fileID string) (string, error)
 }
 
-// downloadTelegramPhoto downloads the largest photo from a Telegram photo array,
-// returning the media type and base64-encoded data.
-func downloadTelegramPhoto(fileGetter botFileGetter, photos []tgbotapi.PhotoSize) (mediaType, base64Data string, err error) {
+// downloadTelegramPhoto downloads the largest photo from a Telegram photo array.
+// It returns the media type, base64-encoded data, and a local temp file path.
+// The caller is responsible for removing the temp file when it is no longer needed.
+func downloadTelegramPhoto(fileGetter botFileGetter, photos []tgbotapi.PhotoSize) (mediaType, base64Data, filePath string, err error) {
 	if len(photos) == 0 {
-		return "", "", fmt.Errorf("no photos provided")
+		return "", "", "", fmt.Errorf("no photos provided")
 	}
 	// Pick the largest photo (last in the array).
 	photo := photos[len(photos)-1]
 	directURL, err := fileGetter.GetFileDirectURL(photo.FileID)
 	if err != nil {
-		return "", "", fmt.Errorf("get file URL: %w", err)
+		return "", "", "", fmt.Errorf("get file URL: %w", err)
 	}
 
 	resp, err := http.Get(directURL)
 	if err != nil {
-		return "", "", fmt.Errorf("download photo: %w", err)
+		return "", "", "", fmt.Errorf("download photo: %w", err)
 	}
 	defer resp.Body.Close()
 
 	data, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return "", "", fmt.Errorf("read photo data: %w", err)
+		return "", "", "", fmt.Errorf("read photo data: %w", err)
 	}
 
-	return "image/jpeg", base64.StdEncoding.EncodeToString(data), nil
+	// Detect MIME type from content (Telegram can serve PNG, WebP, etc.)
+	mimeType := http.DetectContentType(data)
+	if mimeType == "application/octet-stream" {
+		mimeType = "image/jpeg" // safe fallback
+	}
+
+	// Write to a temp file so tools (e.g. image_generate) can reference it by path.
+	ext := mimeExtension(mimeType)
+	tmp, err := os.CreateTemp("", "tg-img-*"+ext)
+	if err != nil {
+		return "", "", "", fmt.Errorf("create temp file: %w", err)
+	}
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		os.Remove(tmp.Name())
+		return "", "", "", fmt.Errorf("write temp file: %w", err)
+	}
+	tmp.Close()
+
+	return mimeType, base64.StdEncoding.EncodeToString(data), tmp.Name(), nil
+}
+
+// mimeExtension returns a file extension for a MIME type.
+func mimeExtension(mimeType string) string {
+	switch mimeType {
+	case "image/jpeg":
+		return ".jpg"
+	case "image/png":
+		return ".png"
+	case "image/webp":
+		return ".webp"
+	case "image/gif":
+		return ".gif"
+	default:
+		return ".jpg"
+	}
 }
 
 // TelegramPlatform implements Platform for the Telegram messaging platform.
@@ -483,20 +519,27 @@ func (m *telegramSessionMgr) handleMessage(ctx context.Context, bot *tgbotapi.Bo
 
 	// Build the user message: photo or text.
 	var userMsg llm.Message
+	var tempImagePath string // non-empty when we wrote a temp file for this message
 	if msg.Photo != nil && len(msg.Photo) > 0 {
-		mediaType, base64Data, err := downloadTelegramPhoto(bot, msg.Photo)
+		mediaType, base64Data, imgPath, err := downloadTelegramPhoto(bot, msg.Photo)
 		if err != nil {
 			log.Printf("[telegram] failed to download photo for chat %d: %v", chatID, err)
 			_, _ = bot.Send(tgbotapi.NewMessage(chatID, "Failed to process photo: "+err.Error()))
 			return
 		}
-		userMsg = llm.UserImageMessage(mediaType, base64Data, strings.TrimSpace(msg.Caption))
+		tempImagePath = imgPath
+		userMsg = llm.UserImageMessageWithPath(mediaType, base64Data, imgPath, strings.TrimSpace(msg.Caption))
 	} else {
 		text := strings.TrimSpace(msg.Text)
 		if text == "" {
 			return
 		}
 		userMsg = llm.UserText(text)
+	}
+	// Clean up the temp image file once the reply is fully delivered.
+	// We defer here so it covers all return paths below (error exits, interrupts, etc.).
+	if tempImagePath != "" {
+		defer os.Remove(tempImagePath)
 	}
 
 	sess, err := m.getOrCreate(ctx, chatID)
