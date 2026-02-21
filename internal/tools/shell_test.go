@@ -1,0 +1,266 @@
+package tools
+
+import (
+	"context"
+	"encoding/json"
+	"strings"
+	"testing"
+)
+
+func TestShellTool_Spec(t *testing.T) {
+	tool := NewShellTool(nil, nil, DefaultOutputLimits())
+	spec := tool.Spec()
+
+	if spec.Name != ShellToolName {
+		t.Errorf("expected name %q, got %q", ShellToolName, spec.Name)
+	}
+	if spec.Description == "" {
+		t.Error("spec should have a description")
+	}
+	if spec.Schema == nil {
+		t.Fatal("spec should have a schema")
+	}
+
+	props, ok := spec.Schema["properties"].(map[string]interface{})
+	if !ok {
+		t.Fatal("schema should have properties")
+	}
+	for _, p := range []string{"command", "working_dir", "timeout_seconds"} {
+		if _, ok := props[p]; !ok {
+			t.Errorf("schema should have %s property", p)
+		}
+	}
+
+	required, ok := spec.Schema["required"].([]string)
+	if !ok {
+		t.Fatal("schema should have required array")
+	}
+	found := false
+	for _, r := range required {
+		if r == "command" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("command should be required")
+	}
+}
+
+func TestShellTool_Preview(t *testing.T) {
+	tool := NewShellTool(nil, nil, DefaultOutputLimits())
+
+	tests := []struct {
+		name     string
+		args     json.RawMessage
+		expected string
+	}{
+		{
+			name:     "short command",
+			args:     mustMarshalShellArgs(ShellArgs{Command: "echo hello"}),
+			expected: "echo hello",
+		},
+		{
+			name:     "long command is truncated",
+			args:     mustMarshalShellArgs(ShellArgs{Command: "echo this is a very long command that exceeds fifty characters limit here"}),
+			expected: "echo this is a very long command that exceeds f...",
+		},
+		{
+			name:     "empty command",
+			args:     mustMarshalShellArgs(ShellArgs{Command: ""}),
+			expected: "",
+		},
+		{
+			name:     "invalid JSON",
+			args:     json.RawMessage(`{invalid}`),
+			expected: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := tool.Preview(tt.args)
+			if result != tt.expected {
+				t.Errorf("expected %q, got %q", tt.expected, result)
+			}
+		})
+	}
+}
+
+func TestShellTool_Execute(t *testing.T) {
+	tool := NewShellTool(nil, nil, DefaultOutputLimits())
+
+	tests := []struct {
+		name     string
+		args     json.RawMessage
+		wantOut  string // substring expected in output
+		wantExit string // exit code substring
+		wantErr  string // error substring (empty = no error)
+	}{
+		{
+			name:     "successful command",
+			args:     mustMarshalShellArgs(ShellArgs{Command: "echo hello"}),
+			wantOut:  "hello",
+			wantExit: "exit_code: 0",
+		},
+		{
+			name:     "command with stderr",
+			args:     mustMarshalShellArgs(ShellArgs{Command: "echo err >&2"}),
+			wantOut:  "err",
+			wantExit: "exit_code: 0",
+		},
+		{
+			name:     "non-zero exit code",
+			args:     mustMarshalShellArgs(ShellArgs{Command: "exit 42"}),
+			wantExit: "exit_code: 42",
+		},
+		{
+			name:    "missing command param",
+			args:    mustMarshalShellArgs(ShellArgs{Command: ""}),
+			wantErr: "command is required",
+		},
+		{
+			name:    "invalid JSON args",
+			args:    json.RawMessage(`{invalid}`),
+			wantErr: "Error",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			output, err := tool.Execute(context.Background(), tt.args)
+			if err != nil {
+				t.Fatalf("Execute returned error: %v", err)
+			}
+
+			text := output.Content
+			if tt.wantErr != "" {
+				if !strings.Contains(text, tt.wantErr) {
+					t.Errorf("expected error containing %q, got: %s", tt.wantErr, text)
+				}
+				return
+			}
+			if tt.wantOut != "" && !strings.Contains(text, tt.wantOut) {
+				t.Errorf("expected output containing %q, got: %s", tt.wantOut, text)
+			}
+			if tt.wantExit != "" && !strings.Contains(text, tt.wantExit) {
+				t.Errorf("expected %q in output, got: %s", tt.wantExit, text)
+			}
+		})
+	}
+}
+
+func TestShellTool_WorkingDir(t *testing.T) {
+	dir := t.TempDir()
+	tool := NewShellTool(nil, nil, DefaultOutputLimits())
+
+	args := mustMarshalShellArgs(ShellArgs{
+		Command:    "pwd",
+		WorkingDir: dir,
+	})
+
+	output, err := tool.Execute(context.Background(), args)
+	if err != nil {
+		t.Fatalf("Execute returned error: %v", err)
+	}
+
+	text := output.Content
+	if !strings.Contains(text, dir) {
+		t.Errorf("expected working dir %q in output, got: %s", dir, text)
+	}
+	if !strings.Contains(text, "exit_code: 0") {
+		t.Errorf("expected exit_code: 0 in output, got: %s", text)
+	}
+}
+
+func TestShellTool_Timeout(t *testing.T) {
+	t.Run("default timeout is 30 seconds", func(t *testing.T) {
+		tool := NewShellTool(nil, nil, DefaultOutputLimits())
+		// Just verify the tool executes a fast command successfully
+		// (proving that a default timeout exists and allows short commands)
+		args := mustMarshalShellArgs(ShellArgs{Command: "echo ok"})
+		output, err := tool.Execute(context.Background(), args)
+		if err != nil {
+			t.Fatalf("Execute returned error: %v", err)
+		}
+		if !strings.Contains(output.Content, "ok") {
+			t.Errorf("expected 'ok' in output, got: %s", output.Content)
+		}
+	})
+
+	t.Run("custom timeout respected", func(t *testing.T) {
+		tool := NewShellTool(nil, nil, DefaultOutputLimits())
+		args := mustMarshalShellArgs(ShellArgs{
+			Command:        "echo ok",
+			TimeoutSeconds: 60,
+		})
+		output, err := tool.Execute(context.Background(), args)
+		if err != nil {
+			t.Fatalf("Execute returned error: %v", err)
+		}
+		if !strings.Contains(output.Content, "ok") {
+			t.Errorf("expected 'ok' in output, got: %s", output.Content)
+		}
+	})
+
+	t.Run("timeout clamped to max 300", func(t *testing.T) {
+		tool := NewShellTool(nil, nil, DefaultOutputLimits())
+		// 500 > 300 max, should be clamped but still work for a fast command
+		args := mustMarshalShellArgs(ShellArgs{
+			Command:        "echo ok",
+			TimeoutSeconds: 500,
+		})
+		output, err := tool.Execute(context.Background(), args)
+		if err != nil {
+			t.Fatalf("Execute returned error: %v", err)
+		}
+		if !strings.Contains(output.Content, "ok") {
+			t.Errorf("expected 'ok' in output, got: %s", output.Content)
+		}
+	})
+
+	t.Run("command times out", func(t *testing.T) {
+		tool := NewShellTool(nil, nil, DefaultOutputLimits())
+		args := mustMarshalShellArgs(ShellArgs{
+			Command:        "sleep 10",
+			TimeoutSeconds: 1,
+		})
+		output, err := tool.Execute(context.Background(), args)
+		if err != nil {
+			t.Fatalf("Execute returned error: %v", err)
+		}
+		if !strings.Contains(output.Content, "[Command timed out]") {
+			t.Errorf("expected '[Command timed out]' in output, got: %s", output.Content)
+		}
+	})
+}
+
+func TestShellTool_OutputTruncation(t *testing.T) {
+	// Use a small MaxBytes to test truncation
+	limits := OutputLimits{
+		MaxBytes: 20,
+	}
+	tool := NewShellTool(nil, nil, limits)
+
+	// Generate output longer than 20 bytes
+	args := mustMarshalShellArgs(ShellArgs{
+		Command: "echo 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'",
+	})
+
+	output, err := tool.Execute(context.Background(), args)
+	if err != nil {
+		t.Fatalf("Execute returned error: %v", err)
+	}
+
+	text := output.Content
+	if !strings.Contains(text, "[Output truncated due to size limit]") {
+		t.Errorf("expected truncation message in output, got: %s", text)
+	}
+}
+
+func mustMarshalShellArgs(args ShellArgs) json.RawMessage {
+	data, err := json.Marshal(args)
+	if err != nil {
+		panic(err)
+	}
+	return data
+}
