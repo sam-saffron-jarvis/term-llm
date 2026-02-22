@@ -32,6 +32,7 @@ var (
 	askDebug          bool
 	askSearch         bool
 	askText           bool
+	askPorcelain      bool
 	askProvider       string
 	askFiles          []string
 	askMCP            string
@@ -102,6 +103,7 @@ func init() {
 
 	// Ask-specific flags
 	askCmd.Flags().BoolVarP(&askText, "text", "t", false, "Output plain text instead of rendered markdown")
+	askCmd.Flags().BoolVar(&askPorcelain, "porcelain", false, "Output plain text without tool status lines (implies --text)")
 	AddYoloFlag(askCmd, &askYolo)
 	AddSkillsFlag(askCmd, &askSkills)
 
@@ -419,6 +421,9 @@ func runAsk(cmd *cobra.Command, args []string) error {
 	}
 
 	// Check if we're in a TTY and can use glamour
+	if askPorcelain {
+		askText = true
+	}
 	isTTY := term.IsTerminal(int(os.Stdout.Fd()))
 	useGlamour := !askText && isTTY && !debugRaw
 
@@ -590,7 +595,7 @@ func runAsk(cmd *cobra.Command, args []string) error {
 	if useGlamour {
 		err = streamWithGlamour(ctx, events, teaProgram, store, sess)
 	} else {
-		err = streamPlainText(ctx, events)
+		err = streamPlainText(ctx, events, askPorcelain)
 	}
 	tools.ClearAskUserHooks() // Safe to call even if hooks weren't set
 
@@ -659,7 +664,7 @@ func runAsk(cmd *cobra.Command, args []string) error {
 }
 
 // streamPlainText streams text directly without formatting
-func streamPlainText(ctx context.Context, events <-chan ui.StreamEvent) error {
+func streamPlainText(ctx context.Context, events <-chan ui.StreamEvent, suppressToolStatus bool) error {
 	// Track pending tools with their status
 	type toolEntry struct {
 		callID  string
@@ -675,9 +680,10 @@ func streamPlainText(ctx context.Context, events <-chan ui.StreamEvent) error {
 	trailingNewlines := 0
 	afterToolBoundary := false
 	newlineCompactor := ui.NewStreamingNewlineCompactor(ui.MaxStreamingConsecutiveNewlines)
+	showToolStatus := !suppressToolStatus
 
 	printTools := func() {
-		if len(pendingTools) == 0 {
+		if !showToolStatus || len(pendingTools) == 0 {
 			return
 		}
 		if printedAny {
@@ -711,7 +717,7 @@ func streamPlainText(ctx context.Context, events <-chan ui.StreamEvent) error {
 			return nil
 		case ev, ok := <-events:
 			if !ok {
-				if len(pendingTools) > 0 {
+				if showToolStatus && len(pendingTools) > 0 {
 					printTools()
 				}
 				ensureFinalSpacer()
@@ -735,6 +741,9 @@ func streamPlainText(ctx context.Context, events <-chan ui.StreamEvent) error {
 				continue
 
 			case ui.StreamEventToolEnd:
+				if !showToolStatus {
+					continue
+				}
 				// Skip duplicate tool end events (only dedupe when ToolCallID is not empty)
 				if ev.ToolCallID != "" {
 					if seenToolEnds[ev.ToolCallID] {
@@ -763,6 +772,9 @@ func streamPlainText(ctx context.Context, events <-chan ui.StreamEvent) error {
 				}
 
 			case ui.StreamEventToolStart:
+				if !showToolStatus {
+					continue
+				}
 				// Skip duplicate tool start events (only dedupe when ToolCallID is not empty)
 				if ev.ToolCallID != "" {
 					if seenToolStarts[ev.ToolCallID] {
@@ -804,7 +816,7 @@ func streamPlainText(ctx context.Context, events <-chan ui.StreamEvent) error {
 				}
 
 			case ui.StreamEventDone:
-				if len(pendingTools) > 0 {
+				if showToolStatus && len(pendingTools) > 0 {
 					printTools()
 				}
 				ensureFinalSpacer()
