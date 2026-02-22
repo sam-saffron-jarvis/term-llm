@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
@@ -128,7 +129,7 @@ func (t *ToolTracker) IsIdle(d time.Duration) bool {
 // HandleToolStart adds a pending segment for this tool call.
 // Uses the unique callID to track this specific invocation.
 // Returns true if a new segment was added (caller should start wave animation).
-func (t *ToolTracker) HandleToolStart(callID, toolName, toolInfo string) bool {
+func (t *ToolTracker) HandleToolStart(callID, toolName, toolInfo string, toolArgs json.RawMessage) bool {
 	t.RecordActivity()
 
 	// Check if we already have a segment for this call ID (any status)
@@ -146,6 +147,7 @@ func (t *ToolTracker) HandleToolStart(callID, toolName, toolInfo string) bool {
 		ToolCallID: callID,
 		ToolName:   toolName,
 		ToolInfo:   toolInfo,
+		ToolArgs:   toolArgs,
 		ToolStatus: ToolPending,
 	})
 	t.Version++
@@ -538,7 +540,7 @@ func (t *ToolTracker) FlushStreamingText(threshold int, width int, renderMd func
 	}
 
 	if len(toolsToFlush) > 0 {
-		toolContent := RenderSegments(toolsToFlush, width, -1, nil, true)
+		toolContent := RenderSegments(toolsToFlush, width, -1, nil, true, false)
 		if t.HasFlushed {
 			toolContent = stripLeadingBlankLine(toolContent)
 			prefix := t.FlushLeadingSeparator(toolsToFlush[0].Type)
@@ -830,7 +832,7 @@ func (t *ToolTracker) FlushToScrollback(
 
 	// Render complete segments to flush
 	if len(toFlush) > 0 {
-		content := RenderSegments(toFlush, width, -1, renderMd, true)
+		content := RenderSegments(toFlush, width, -1, renderMd, true, false)
 		if t.HasFlushed {
 			if shouldTrimAllLeadingBlankLines(t.LastFlushedType, toFlush[0].Type) {
 				content = stripAllLeadingBlankLines(content)
@@ -914,7 +916,7 @@ func (t *ToolTracker) FlushAllRemaining(
 		return FlushToScrollbackResult{NewPrintedLines: 0}
 	}
 
-	content := RenderSegments(toFlush, width, -1, renderMd, true)
+	content := RenderSegments(toFlush, width, -1, renderMd, true, false)
 	if t.HasFlushed {
 		if shouldTrimAllLeadingBlankLines(t.LastFlushedType, toFlush[0].Type) {
 			content = stripAllLeadingBlankLines(content)
@@ -982,7 +984,7 @@ func (t *ToolTracker) FlushCompletedNow(
 		return FlushToScrollbackResult{NewPrintedLines: 0}
 	}
 
-	content := RenderSegments(toFlush, width, -1, renderMd, true)
+	content := RenderSegments(toFlush, width, -1, renderMd, true, false)
 	if t.HasFlushed {
 		if shouldTrimAllLeadingBlankLines(t.LastFlushedType, toFlush[0].Type) {
 			content = stripAllLeadingBlankLines(content)
@@ -1065,7 +1067,7 @@ func (t *ToolTracker) FlushBeforeExternalUI(
 		return FlushToScrollbackResult{NewPrintedLines: 0}
 	}
 
-	content := RenderSegments(toFlush, width, -1, renderMd, true)
+	content := RenderSegments(toFlush, width, -1, renderMd, true, false)
 	if t.HasFlushed {
 		if shouldTrimAllLeadingBlankLines(t.LastFlushedType, toFlush[0].Type) {
 			content = stripAllLeadingBlankLines(content)
@@ -1158,7 +1160,7 @@ func (t *ToolTracker) RenderUnflushed(width int, renderMd func(string, int) stri
 		leading = &Segment{Type: t.LastFlushedType}
 	}
 
-	return RenderSegmentsWithLeading(leading, unflushed, width, -1, renderMd, includeImages)
+	return RenderSegmentsWithLeading(leading, unflushed, width, -1, renderMd, includeImages, false)
 }
 
 // LeadingSeparator returns the full spacing before a segment of the given type,

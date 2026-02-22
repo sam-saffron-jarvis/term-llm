@@ -34,9 +34,11 @@ func NewShellTool(approval *ApprovalManager, config *ToolConfig, limits OutputLi
 
 // ShellArgs are the arguments for the shell tool.
 type ShellArgs struct {
-	Command        string `json:"command"`
-	WorkingDir     string `json:"working_dir,omitempty"`
-	TimeoutSeconds int    `json:"timeout_seconds,omitempty"`
+	Command        string            `json:"command"`
+	WorkingDir     string            `json:"working_dir,omitempty"`
+	TimeoutSeconds int               `json:"timeout_seconds,omitempty"`
+	Env            map[string]string `json:"env,omitempty"`
+	Description    string            `json:"description,omitempty"`
 }
 
 // ShellResult contains the result of a shell command.
@@ -62,12 +64,21 @@ func (t *ShellTool) Spec() llm.ToolSpec {
 					"type":        "string",
 					"description": "Working directory (defaults to current directory)",
 				},
-				"timeout_seconds": map[string]interface{}{
-					"type":        "integer",
-					"description": "Command timeout in seconds (default: 30, max: 300)",
-					"default":     30,
-				},
+			"timeout_seconds": map[string]interface{}{
+				"type":        "integer",
+				"description": "Command timeout in seconds (default: 30, max: 300)",
+				"default":     30,
 			},
+			"env": map[string]interface{}{
+				"type":                 "object",
+				"description":          "Environment variables to set for the command",
+				"additionalProperties": map[string]interface{}{"type": "string"},
+			},
+			"description": map[string]interface{}{
+				"type":        "string",
+				"description": "Optional short human-readable label (≤10 words) describing what this command does",
+			},
+		},
 			"required":             []string{"command"},
 			"additionalProperties": false,
 		},
@@ -78,6 +89,9 @@ func (t *ShellTool) Preview(args json.RawMessage) string {
 	var a ShellArgs
 	if err := json.Unmarshal(args, &a); err != nil || a.Command == "" {
 		return ""
+	}
+	if a.Description != "" {
+		return a.Description
 	}
 	cmd := a.Command
 	if len(cmd) > 50 {
@@ -135,6 +149,10 @@ func (t *ShellTool) Execute(ctx context.Context, args json.RawMessage) (llm.Tool
 
 	cmd := exec.CommandContext(execCtx, t.shellPath, "-c", a.Command)
 	cmd.Dir = workDir
+	cmd.Env = os.Environ()
+	for key, value := range a.Env {
+		cmd.Env = append(cmd.Env, fmt.Sprintf("%s=%s", key, value))
+	}
 
 	// Isolate stdin: tools are non-interactive; never share the TUI's raw stdin
 	// with child processes.

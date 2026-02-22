@@ -1,5 +1,6 @@
 package ui
 
+import "encoding/json"
 // StreamEventType identifies the type of stream event
 type StreamEventType int
 
@@ -32,6 +33,7 @@ type StreamEvent struct {
 	ToolCallID  string
 	ToolName    string
 	ToolInfo    string
+	ToolArgs    json.RawMessage
 	ToolSuccess bool
 
 	// Usage/stats (for StreamEventUsage)
@@ -79,12 +81,13 @@ func TextEvent(text string) StreamEvent {
 }
 
 // ToolStartEvent creates a tool execution start event
-func ToolStartEvent(callID, name, info string) StreamEvent {
+func ToolStartEvent(callID, name, info string, args json.RawMessage) StreamEvent {
 	return StreamEvent{
 		Type:       StreamEventToolStart,
 		ToolCallID: callID,
 		ToolName:   name,
 		ToolInfo:   info,
+		ToolArgs:   args,
 	}
 }
 

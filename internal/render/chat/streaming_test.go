@@ -29,7 +29,7 @@ func TestStreamingBlock_ToolTracking(t *testing.T) {
 
 	// Add text, then tool
 	sb.AddText("Thinking...")
-	started := sb.StartTool("call-1", "read_file", "main.go")
+	started := sb.StartTool("call-1", "read_file", "main.go", nil)
 	if !started {
 		t.Error("StartTool should return true for first tool")
 	}

@@ -1,13 +1,16 @@
 package ui
 
 import (
+	"encoding/json"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/tools"
 	"github.com/samsaffron/term-llm/internal/ui/ansisafe"
 )
 
@@ -38,8 +41,9 @@ type Segment struct {
 	Rendered     string     // For text segments: cached rendered markdown
 	ToolCallID   string     // For tool segments: unique ID for this invocation
 	ToolName     string     // For tool segments
-	ToolInfo     string     // For tool segments: additional context
-	ToolStatus   ToolStatus // For tool segments
+	ToolInfo     string          // For tool segments: additional context
+	ToolArgs     json.RawMessage // Raw args JSON, stored for expanded rendering
+	ToolStatus   ToolStatus      // For tool segments
 	Complete     bool       // For text segments: whether streaming is complete
 	ImagePath    string     // For image segments: path to image file
 	DiffPath     string     // For diff segments: file path
@@ -219,7 +223,36 @@ func truncateToolInfo(toolName, info string, width int) string {
 // Tool name is rendered normally, params are rendered in slightly muted gray.
 // For spawn_agent tools with progress, stats are shown instead of wave animation.
 // width is the terminal width used to truncate long lines (0 = no truncation).
-func RenderToolSegment(seg *Segment, wavePos int, width int) string {
+func RenderToolSegment(seg *Segment, wavePos int, width int, expanded bool) string {
+	info := seg.ToolInfo
+	expandedShellInfo := ""
+	if expanded && seg.ToolName == "shell" && len(seg.ToolArgs) > 0 {
+		var args tools.ShellArgs
+		if err := json.Unmarshal(seg.ToolArgs, &args); err == nil && args.Command != "" {
+			var b strings.Builder
+			b.WriteString(args.Command)
+			if len(args.Env) > 0 {
+				keys := make([]string, 0, len(args.Env))
+				for key := range args.Env {
+					keys = append(keys, key)
+				}
+				sort.Strings(keys)
+				for _, key := range keys {
+					b.WriteString("\n  ")
+					b.WriteString(key)
+					b.WriteString("=")
+					b.WriteString(args.Env[key])
+				}
+			}
+			expandedShellInfo = b.String()
+			info = expandedShellInfo
+		}
+	}
+	renderWidth := width
+	if expandedShellInfo != "" {
+		renderWidth = 0
+	}
+
 	switch seg.ToolStatus {
 	case ToolPending:
 		// spawn_agent tools with progress show stats instead of wave animation
@@ -227,11 +260,20 @@ func RenderToolSegment(seg *Segment, wavePos int, width int) string {
 			return PendingCircle() + " " + renderSpawnAgentStats(seg.ToolInfo, seg.SubagentToolCalls, seg.SubagentTotalTokens, seg.SubagentStartTime, seg.SubagentEndTime, seg.SubagentProvider, seg.SubagentModel)
 		}
 		// Wave animation for other pending tools
-		phase := FormatToolPhase(seg.ToolName, seg.ToolInfo)
-		activeText := phase.Active
-		if width > 0 {
+		activeText := ""
+		if expandedShellInfo != "" {
+			if info != "" {
+				activeText = seg.ToolName + " " + info
+			} else {
+				activeText = seg.ToolName
+			}
+		} else {
+			phase := FormatToolPhase(seg.ToolName, info)
+			activeText = phase.Active
+		}
+		if renderWidth > 0 {
 			// Truncate the plain text before wave styling (overhead: circle + space = 2)
-			maxLen := width - 2
+			maxLen := renderWidth - 2
 			if maxLen > 0 {
 				runes := []rune(activeText)
 				if len(runes) > maxLen {
@@ -250,7 +292,7 @@ func RenderToolSegment(seg *Segment, wavePos int, width int) string {
 			return SuccessCircle() + " " + renderSpawnAgentStats(seg.ToolInfo, seg.SubagentToolCalls, seg.SubagentTotalTokens, seg.SubagentStartTime, seg.SubagentEndTime, seg.SubagentProvider, seg.SubagentModel)
 		}
 		// Tool name normal, params slightly muted (with space before info if present)
-		info := truncateToolInfo(seg.ToolName, seg.ToolInfo, width)
+		info = truncateToolInfo(seg.ToolName, info, renderWidth)
 		if info != "" {
 			return SuccessCircle() + " " + seg.ToolName + " " + paramStyle.Render(info)
 		}
@@ -261,7 +303,7 @@ func RenderToolSegment(seg *Segment, wavePos int, width int) string {
 			return ErrorCircle() + " " + renderSpawnAgentStats(seg.ToolInfo, seg.SubagentToolCalls, seg.SubagentTotalTokens, seg.SubagentStartTime, seg.SubagentEndTime, seg.SubagentProvider, seg.SubagentModel)
 		}
 		// Tool name normal, params slightly muted (with space before info if present)
-		info := truncateToolInfo(seg.ToolName, seg.ToolInfo, width)
+		info = truncateToolInfo(seg.ToolName, info, renderWidth)
 		if info != "" {
 			return ErrorCircle() + " " + seg.ToolName + " " + paramStyle.Render(info)
 		}
@@ -273,7 +315,7 @@ func RenderToolSegment(seg *Segment, wavePos int, width int) string {
 // RenderToolCallFromPart renders a historical tool call from an llm.ToolCall.
 // Uses success styling since historical calls have completed.
 // width is the terminal width used to truncate long lines (0 = no truncation).
-func RenderToolCallFromPart(tc *llm.ToolCall, width int) string {
+func RenderToolCallFromPart(tc *llm.ToolCall, width int, expanded bool) string {
 	if tc == nil {
 		return ""
 	}
@@ -483,12 +525,12 @@ func SegmentSeparator(prevType, currType SegmentType) string {
 }
 
 // RenderSegments renders a list of segments with proper spacing.
-func RenderSegments(segments []*Segment, width int, wavePos int, renderMarkdown func(string, int) string, includeImages bool) string {
-	return RenderSegmentsWithLeading(nil, segments, width, wavePos, renderMarkdown, includeImages)
+func RenderSegments(segments []*Segment, width int, wavePos int, renderMarkdown func(string, int) string, includeImages bool, expanded bool) string {
+	return RenderSegmentsWithLeading(nil, segments, width, wavePos, renderMarkdown, includeImages, expanded)
 }
 
 // RenderSegmentsWithLeading renders a list of segments, optionally using a leading segment for initial spacing.
-func RenderSegmentsWithLeading(leading *Segment, segments []*Segment, width int, wavePos int, renderMarkdown func(string, int) string, includeImages bool) string {
+func RenderSegmentsWithLeading(leading *Segment, segments []*Segment, width int, wavePos int, renderMarkdown func(string, int) string, includeImages bool, expanded bool) string {
 	var b strings.Builder
 	lastType := SegmentText
 	hasPrev := false
@@ -533,7 +575,7 @@ func RenderSegmentsWithLeading(leading *Segment, segments []*Segment, width int,
 			}
 
 		case SegmentTool:
-			rendered = RenderToolSegment(seg, wavePos, width)
+			rendered = RenderToolSegment(seg, wavePos, width, expanded)
 			// Render subagent preview lines beneath spawn_agent tools
 			if seg.ToolName == "spawn_agent" && len(seg.SubagentPreview) > 0 {
 				var sb strings.Builder

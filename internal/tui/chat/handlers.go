@@ -463,6 +463,16 @@ func (m *Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
+	// Toggle expanded tool display (Ctrl+E)
+	if key.Matches(msg, m.keyMap.ExpandTools) {
+		m.toolsExpanded = !m.toolsExpanded
+		m.invalidateViewCache()
+		if m.chatRenderer != nil {
+			m.chatRenderer.SetToolsExpanded(m.toolsExpanded)
+		}
+		return m, nil
+	}
+
 	// Handle model picker (Ctrl+L)
 	if key.Matches(msg, m.keyMap.SwitchModel) {
 		m.dialog.ShowModelPicker(m.modelName, GetAvailableProviders(m.config))

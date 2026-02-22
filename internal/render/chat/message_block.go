@@ -199,7 +199,7 @@ func (r *MessageBlockRenderer) renderAssistantMessage(msg *session.Message) stri
 			hasContent = true
 		case llm.PartToolCall:
 			if part.ToolCall != nil {
-				b.WriteString(ui.RenderToolCallFromPart(part.ToolCall, r.width))
+				b.WriteString(ui.RenderToolCallFromPart(part.ToolCall, r.width, false))
 				b.WriteString("\n")
 				hasContent = true
 
