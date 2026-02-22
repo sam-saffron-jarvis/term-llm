@@ -11,8 +11,9 @@ import (
 )
 
 var (
-	memoryFragmentsSince time.Duration
-	memoryFragmentsLimit int
+	memoryFragmentsSince    time.Duration
+	memoryFragmentsLimit    int
+	memoryFragmentsHalfLife float64
 )
 
 var memoryFragmentsCmd = &cobra.Command{
@@ -46,6 +47,8 @@ func init() {
 
 	memoryFragmentsListCmd.Flags().DurationVar(&memoryFragmentsSince, "since", 0, "Only show fragments updated within this duration (e.g. 24h)")
 	memoryFragmentsListCmd.Flags().IntVar(&memoryFragmentsLimit, "limit", 0, "Maximum number of fragments to return (0 = all)")
+	memoryFragmentsGCCmd.Flags().Float64Var(&memoryFragmentsHalfLife, "half-life", 30.0, "Decay half-life in days for GC recalculation")
+	// --dry-run is inherited from the root memory command's persistent flags.
 }
 
 func runMemoryFragmentsList(cmd *cobra.Command, args []string) error {
@@ -147,17 +150,17 @@ func runMemoryFragmentsGC(cmd *cobra.Command, args []string) error {
 	ctx := context.Background()
 	agent := strings.TrimSpace(memoryAgent)
 
-	if _, err := store.RecalcDecayScores(ctx, agent, 30.0); err != nil {
-		return fmt.Errorf("recalculate decay scores: %w", err)
-	}
-
 	if memoryDryRun {
 		count, err := store.CountGCCandidates(ctx, agent)
 		if err != nil {
 			return err
 		}
-		fmt.Printf("gc: would remove %d fragments\n", count)
+		fmt.Printf("gc: would remove %d fragments (based on current decay scores, no recalc in dry-run)\n", count)
 		return nil
+	}
+
+	if _, err := store.RecalcDecayScores(ctx, agent, memoryFragmentsHalfLife); err != nil {
+		return fmt.Errorf("recalculate decay scores: %w", err)
 	}
 
 	removed, err := store.GCFragments(ctx, agent)

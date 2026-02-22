@@ -844,7 +844,7 @@ func (s *Store) BumpAccess(ctx context.Context, fragmentID string) error {
 		UPDATE memory_fragments
 		SET accessed_at = ?,
 		    access_count = access_count + 1,
-		    decay_score = MIN(decay_score + 0.1, 1.0)
+		    decay_score = CASE WHEN decay_score + 0.1 > 1.0 THEN 1.0 ELSE decay_score + 0.1 END
 		WHERE id = ?`, time.Now(), fragmentID)
 	if err != nil {
 		return fmt.Errorf("bump fragment access: %w", err)
@@ -863,14 +863,20 @@ func (s *Store) RecalcDecayScores(ctx context.Context, agent string, halfLifeDay
 		halfLifeDays = 30.0
 	}
 
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, fmt.Errorf("begin decay recalculation transaction: %w", err)
+	}
+	defer tx.Rollback()
+
 	type decayUpdate struct {
 		id    string
 		score float64
 	}
 	updates := []decayUpdate{}
 
-	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, updated_at
+	rows, err := tx.QueryContext(ctx, `
+		SELECT id, updated_at, accessed_at
 		FROM memory_fragments
 		WHERE pinned = 0
 		  AND (? = '' OR agent = ?)`, agent, agent)
@@ -883,16 +889,22 @@ func (s *Store) RecalcDecayScores(ctx context.Context, agent string, halfLifeDay
 	for rows.Next() {
 		var id string
 		var updatedAt time.Time
-		if err := rows.Scan(&id, &updatedAt); err != nil {
+		var accessedAt sql.NullTime
+		if err := rows.Scan(&id, &updatedAt, &accessedAt); err != nil {
 			return 0, fmt.Errorf("scan fragment for decay recalculation: %w", err)
 		}
 
-		ageDays := now.Sub(updatedAt).Hours() / 24.0
+		lastActive := updatedAt
+		if accessedAt.Valid && accessedAt.Time.After(lastActive) {
+			lastActive = accessedAt.Time
+		}
+
+		ageDays := now.Sub(lastActive).Hours() / 24.0
 		if ageDays < 0 {
 			ageDays = 0
 		}
 		decay := math.Pow(0.5, ageDays/halfLifeDays)
-		finalDecay := math.Max(decay, 0.05)
+		finalDecay := math.Max(decay, 0.04)
 		updates = append(updates, decayUpdate{id: id, score: finalDecay})
 	}
 	if err := rows.Err(); err != nil {
@@ -900,14 +912,11 @@ func (s *Store) RecalcDecayScores(ctx context.Context, agent string, halfLifeDay
 	}
 
 	if len(updates) == 0 {
+		if err := tx.Commit(); err != nil {
+			return 0, fmt.Errorf("commit decay recalculation: %w", err)
+		}
 		return 0, nil
 	}
-
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return 0, fmt.Errorf("begin decay recalculation transaction: %w", err)
-	}
-	defer tx.Rollback()
 
 	stmt, err := tx.PrepareContext(ctx, `UPDATE memory_fragments SET decay_score = ? WHERE id = ?`)
 	if err != nil {

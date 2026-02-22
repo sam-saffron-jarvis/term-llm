@@ -368,12 +368,14 @@ func TestStoreRecalcDecayScores(t *testing.T) {
 		CreatedAt: now.Add(-400 * 24 * time.Hour),
 		UpdatedAt: now.Add(-400 * 24 * time.Hour),
 	}
+	recentAccessedAt := now.Add(-1 * 24 * time.Hour)
 	recent := &Fragment{
-		Agent:     "jarvis",
-		Path:      "decay/recent",
-		Content:   "recent",
-		CreatedAt: now.Add(-2 * 24 * time.Hour),
-		UpdatedAt: now.Add(-2 * 24 * time.Hour),
+		Agent:      "jarvis",
+		Path:       "decay/recent",
+		Content:    "recent",
+		CreatedAt:  now.Add(-20 * 24 * time.Hour),
+		UpdatedAt:  now.Add(-20 * 24 * time.Hour),
+		AccessedAt: &recentAccessedAt,
 	}
 	pinned := &Fragment{
 		Agent:      "jarvis",
@@ -413,8 +415,8 @@ func TestStoreRecalcDecayScores(t *testing.T) {
 	if veryOldGot == nil {
 		t.Fatal("GetFragment(very-old) returned nil")
 	}
-	if math.Abs(veryOldGot.DecayScore-0.05) > 1e-9 {
-		t.Fatalf("very-old decay_score = %f, want 0.05 floor", veryOldGot.DecayScore)
+	if math.Abs(veryOldGot.DecayScore-0.04) > 1e-9 {
+		t.Fatalf("very-old decay_score = %f, want 0.04 floor", veryOldGot.DecayScore)
 	}
 
 	recentGot, err := store.GetFragment(ctx, "jarvis", "decay/recent")
@@ -424,8 +426,15 @@ func TestStoreRecalcDecayScores(t *testing.T) {
 	if recentGot == nil {
 		t.Fatal("GetFragment(recent) returned nil")
 	}
-	expectedRecent := math.Pow(0.5, time.Since(recentGot.UpdatedAt).Hours()/24.0/30.0)
-	expectedRecent = math.Max(expectedRecent, 0.05)
+	if recentGot.AccessedAt == nil {
+		t.Fatal("GetFragment(recent) missing accessed_at")
+	}
+	lastActive := recentGot.UpdatedAt
+	if recentGot.AccessedAt != nil && recentGot.AccessedAt.After(lastActive) {
+		lastActive = *recentGot.AccessedAt
+	}
+	expectedRecent := math.Pow(0.5, time.Since(lastActive).Hours()/24.0/30.0)
+	expectedRecent = math.Max(expectedRecent, 0.04)
 	if math.Abs(recentGot.DecayScore-expectedRecent) > 1e-3 {
 		t.Fatalf("recent decay_score = %f, want approximately %f", recentGot.DecayScore, expectedRecent)
 	}
@@ -467,8 +476,8 @@ func TestStoreRecalcDecayScores(t *testing.T) {
 	if otherGot == nil {
 		t.Fatal("GetFragment(other after global recalc) returned nil")
 	}
-	if otherGot.DecayScore < 0.05 || otherGot.DecayScore > 1.0 {
-		t.Fatalf("other-agent decay_score after global recalc = %f, want within [0.05,1.0]", otherGot.DecayScore)
+	if otherGot.DecayScore < 0.04 || otherGot.DecayScore > 1.0 {
+		t.Fatalf("other-agent decay_score after global recalc = %f, want within [0.04,1.0]", otherGot.DecayScore)
 	}
 }
 
@@ -477,10 +486,36 @@ func TestStoreCountGCCandidatesAndGCFragments(t *testing.T) {
 	store := newTestStore(t)
 	defer store.Close()
 
-	stale := &Fragment{Agent: "jarvis", Path: "gc/stale", Content: "gcstalealpha", DecayScore: 0.01}
-	pinned := &Fragment{Agent: "jarvis", Path: "gc/pinned", Content: "gcpinned", DecayScore: 0.01, Pinned: true}
-	keep := &Fragment{Agent: "jarvis", Path: "gc/keep", Content: "gckeep", DecayScore: 0.2}
-	other := &Fragment{Agent: "reviewer", Path: "gc/other", Content: "gcstalebeta", DecayScore: 0.01}
+	now := time.Now().UTC()
+	stale := &Fragment{
+		Agent:     "jarvis",
+		Path:      "gc/stale",
+		Content:   "gcstalealpha",
+		CreatedAt: now.Add(-400 * 24 * time.Hour),
+		UpdatedAt: now.Add(-400 * 24 * time.Hour),
+	}
+	pinned := &Fragment{
+		Agent:     "jarvis",
+		Path:      "gc/pinned",
+		Content:   "gcpinned",
+		CreatedAt: now.Add(-400 * 24 * time.Hour),
+		UpdatedAt: now.Add(-400 * 24 * time.Hour),
+		Pinned:    true,
+	}
+	keep := &Fragment{
+		Agent:     "jarvis",
+		Path:      "gc/keep",
+		Content:   "gckeep",
+		CreatedAt: now.Add(-5 * 24 * time.Hour),
+		UpdatedAt: now.Add(-5 * 24 * time.Hour),
+	}
+	other := &Fragment{
+		Agent:     "reviewer",
+		Path:      "gc/other",
+		Content:   "gcstalebeta",
+		CreatedAt: now.Add(-500 * 24 * time.Hour),
+		UpdatedAt: now.Add(-500 * 24 * time.Hour),
+	}
 
 	for _, frag := range []*Fragment{stale, pinned, keep, other} {
 		if err := store.CreateFragment(ctx, frag); err != nil {
@@ -490,6 +525,10 @@ func TestStoreCountGCCandidatesAndGCFragments(t *testing.T) {
 
 	if err := store.UpsertEmbedding(ctx, stale.ID, "gemini", "gemini-embedding-001", 2, []float64{0.1, 0.2}); err != nil {
 		t.Fatalf("UpsertEmbedding(stale) error = %v", err)
+	}
+
+	if _, err := store.RecalcDecayScores(ctx, "", 30.0); err != nil {
+		t.Fatalf("RecalcDecayScores(all) error = %v", err)
 	}
 
 	countJarvis, err := store.CountGCCandidates(ctx, "jarvis")

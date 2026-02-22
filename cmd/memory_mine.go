@@ -32,6 +32,7 @@ var (
 	memoryMineEmbedProvider    string
 	memoryMinePromote          string
 	memoryMinePromoteEvery     time.Duration
+	memoryMineHalfLifeDays     float64
 )
 
 var memoryMineCmd = &cobra.Command{
@@ -89,6 +90,7 @@ func init() {
 	memoryMineCmd.Flags().StringVar(&memoryMineEmbedProvider, "embed-provider", "", "Override embedding provider used in EMBED phase (optionally provider:model)")
 	memoryMineCmd.Flags().StringVar(&memoryMinePromote, "promote", "auto", "Promotion mode: auto|always|never")
 	memoryMineCmd.Flags().DurationVar(&memoryMinePromoteEvery, "promote-every", 6*time.Hour, "Minimum interval between auto-promote runs")
+	memoryMineCmd.Flags().Float64Var(&memoryMineHalfLifeDays, "half-life", 30.0, "Decay half-life in days for post-mine recalculation")
 	memoryMineCmd.RegisterFlagCompletionFunc("embed-provider", EmbedProviderFlagCompletion)
 }
 
@@ -265,7 +267,7 @@ func runMemoryMine(cmd *cobra.Command, args []string) error {
 
 	if !memoryDryRun {
 		decayAgent := strings.TrimSpace(memoryAgent)
-		updated, err := memStore.RecalcDecayScores(ctx, decayAgent, 30.0)
+		updated, err := memStore.RecalcDecayScores(ctx, decayAgent, memoryMineHalfLifeDays)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "warning: decay recalc failed: %v\n", err)
 		} else if updated > 0 {
@@ -277,7 +279,7 @@ func runMemoryMine(cmd *cobra.Command, args []string) error {
 		if memoryDryRun {
 			fmt.Println("Dry run mode: skipping PROMOTE phase.")
 		} else {
-			for _, promoteAgent := range minePromoteAgents(candidates) {
+			for _, promoteAgent := range minePromoteAgents(memoryAgent, candidates) {
 				shouldPromote := promoteMode == "always"
 				if promoteMode == "auto" {
 					shouldPromote, err = shouldRunAutoPromote(ctx, memStore, promoteAgent, memoryMinePromoteEvery)
@@ -307,9 +309,9 @@ func runMemoryMine(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func minePromoteAgents(candidates []memoryMineCandidate) []string {
-	if strings.TrimSpace(memoryAgent) != "" {
-		return []string{strings.TrimSpace(memoryAgent)}
+func minePromoteAgents(globalAgent string, candidates []memoryMineCandidate) []string {
+	if strings.TrimSpace(globalAgent) != "" {
+		return []string{strings.TrimSpace(globalAgent)}
 	}
 
 	seen := map[string]struct{}{}

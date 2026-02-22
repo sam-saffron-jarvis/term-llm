@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
@@ -305,6 +306,9 @@ func truncatePromotedRecent(content string, maxBytes int) string {
 	trimmed := raw[:maxBytes]
 	if idx := bytes.LastIndexByte(trimmed, '\n'); idx > 0 {
 		trimmed = trimmed[:idx]
+	}
+	for len(trimmed) > 0 && !utf8.Valid(trimmed) {
+		trimmed = trimmed[:len(trimmed)-1]
 	}
 	return string(trimmed)
 }
