@@ -859,7 +859,8 @@ func (m *telegramSessionMgr) streamReply(ctx context.Context, bot botSender, ses
 	needNewMsg := false // true when overflow happened but next placeholder not yet created
 
 	sendEdit := func(msgID int, content string) {
-		edit := tgbotapi.NewEditMessageText(chatID, msgID, content)
+		edit := tgbotapi.NewEditMessageText(chatID, msgID, mdToTelegramHTML(content))
+		edit.ParseMode = tgbotapi.ModeHTML
 		_, _ = bot.Send(edit) // rate-limit errors are silently ignored
 	}
 

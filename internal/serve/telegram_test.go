@@ -154,6 +154,32 @@ func TestStreamReply_TextOnly(t *testing.T) {
 	}
 }
 
+func TestStreamReply_MarkdownRenderedAsHTML(t *testing.T) {
+	h := testutil.NewEngineHarness()
+	h.Provider.AddTextResponse("**bold** and _italic_ and `code`")
+
+	mgr, sess := newTestMgrAndSession(h)
+	bot := &fakeBotSender{}
+
+	if err := mgr.streamReply(context.Background(), bot, sess, 42, llm.UserText("hi")); err != nil {
+		t.Fatalf("streamReply returned error: %v", err)
+	}
+
+	last := bot.lastText()
+	if strings.Contains(last, "**") {
+		t.Errorf("expected markdown to be converted, but got raw asterisks: %q", last)
+	}
+	if !strings.Contains(last, "<b>bold</b>") {
+		t.Errorf("expected <b>bold</b> in output, got: %q", last)
+	}
+	if !strings.Contains(last, "<i>italic</i>") {
+		t.Errorf("expected <i>italic</i> in output, got: %q", last)
+	}
+	if !strings.Contains(last, "<code>code</code>") {
+		t.Errorf("expected <code>code</code> in output, got: %q", last)
+	}
+}
+
 func TestStreamReply_ForwardsForceExternalSearch(t *testing.T) {
 	h := testutil.NewEngineHarness()
 	h.Provider.AddTextResponse("Hello")
