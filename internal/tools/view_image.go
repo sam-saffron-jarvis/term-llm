@@ -10,6 +10,7 @@ import (
 	_ "image/gif" // GIF decode support
 	"image/jpeg"
 	"image/png"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -50,6 +51,13 @@ var supportedImageFormats = map[string]string{
 	".jpeg": "image/jpeg",
 	".gif":  "image/gif",
 	".webp": "image/webp",
+}
+
+var supportedImageMimes = map[string]struct{}{
+	"image/png":  {},
+	"image/jpeg": {},
+	"image/gif":  {},
+	"image/webp": {},
 }
 
 func (t *ViewImageTool) Spec() llm.ToolSpec {
@@ -116,17 +124,27 @@ func (t *ViewImageTool) Execute(ctx context.Context, args json.RawMessage) (llm.
 		return llm.TextOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "cannot stat file: %v", err))), nil
 	}
 
-	// Check format
-	ext := strings.ToLower(filepath.Ext(a.FilePath))
-	mimeType, ok := supportedImageFormats[ext]
-	if !ok {
-		return llm.TextOutput(formatToolError(NewToolErrorf(ErrUnsupportedFormat, "unsupported format: %s (supported: PNG, JPEG, GIF, WebP)", ext))), nil
-	}
-
 	// Read file
 	data, err := os.ReadFile(a.FilePath)
 	if err != nil {
 		return llm.TextOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "failed to read image: %v", err))), nil
+	}
+
+	// Detect format from file content
+	sniffSize := 512
+	if len(data) < sniffSize {
+		sniffSize = len(data)
+	}
+	mimeType := http.DetectContentType(data[:sniffSize])
+	if mimeType == "application/octet-stream" {
+		ext := strings.ToLower(filepath.Ext(a.FilePath))
+		var ok bool
+		mimeType, ok = supportedImageFormats[ext]
+		if !ok {
+			return llm.TextOutput(formatToolError(NewToolErrorf(ErrUnsupportedFormat, "unsupported format: %s (supported: PNG, JPEG, GIF, WebP)", ext))), nil
+		}
+	} else if !isSupportedImageMime(mimeType) {
+		return llm.TextOutput(formatToolError(NewToolErrorf(ErrUnsupportedFormat, "unsupported format: %s (supported: PNG, JPEG, GIF, WebP)", mimeType))), nil
 	}
 
 	// Process image: resize if needed, ensure under size limit
@@ -263,6 +281,11 @@ func resizeImage(src image.Image, width, height int) image.Image {
 	dst := image.NewRGBA(image.Rect(0, 0, width, height))
 	draw.CatmullRom.Scale(dst, dst.Bounds(), src, src.Bounds(), draw.Over, nil)
 	return dst
+}
+
+func isSupportedImageMime(mimeType string) bool {
+	_, ok := supportedImageMimes[mimeType]
+	return ok
 }
 
 func getDetail(detail string) string {
