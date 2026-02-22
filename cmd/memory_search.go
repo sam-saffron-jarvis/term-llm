@@ -169,7 +169,7 @@ func searchMemory(ctx context.Context, store *memorydb.Store, query string) ([]m
 		modelName = strings.TrimSpace(embRes.Model)
 	}
 
-	vectorCandidates, err := store.VectorSearch(ctx, agent, queryVec, memorySearchCandidateLimit)
+	vectorCandidates, err := store.VectorSearch(ctx, agent, providerName, modelName, queryVec, memorySearchCandidateLimit)
 	if err != nil {
 		return nil, err
 	}
@@ -221,10 +221,23 @@ func mergeSearchCandidates(ctx context.Context, store *memorydb.Store, provider,
 		if entry.fragment.Snippet == "" {
 			entry.fragment.Snippet = candidate.Snippet
 		}
-		if len(entry.fragment.Vector) == 0 && provider != "" && model != "" {
-			vec, err := store.GetEmbedding(ctx, candidate.ID, provider, model)
+	}
+
+	if provider != "" && model != "" {
+		missing := make([]string, 0, len(merged))
+		for id, entry := range merged {
+			if len(entry.fragment.Vector) == 0 {
+				missing = append(missing, id)
+			}
+		}
+		if len(missing) > 0 {
+			vectors, err := store.GetEmbeddingsByIDs(ctx, missing, provider, model)
 			if err == nil {
-				entry.fragment.Vector = vec
+				for id, vec := range vectors {
+					if entry := merged[id]; entry != nil && len(entry.fragment.Vector) == 0 && len(vec) > 0 {
+						entry.fragment.Vector = vec
+					}
+				}
 			}
 		}
 	}
@@ -260,6 +273,7 @@ func rerankMMR(candidates []*hybridSearchCandidate) []*hybridSearchCandidate {
 					maxSimilarity = sim
 				}
 			}
+			// MMR only affects ordering; mergedScore drives the final min-score cutoff.
 			mmrScore := memorySearchMMRLambda*candidate.mergedScore - (1.0-memorySearchMMRLambda)*maxSimilarity
 			if mmrScore > bestScore {
 				bestScore = mmrScore
@@ -298,7 +312,7 @@ func normalizeBM25Scores(candidates []memorydb.ScoredFragment) map[string]float6
 	minScore := math.Inf(1)
 	maxScore := math.Inf(-1)
 	for i, candidate := range candidates {
-		relevance := -candidate.Score // lower bm25() is better in SQLite FTS5
+		relevance := candidate.Score
 		transformed[i] = relevance
 		if relevance < minScore {
 			minScore = relevance
@@ -310,7 +324,7 @@ func normalizeBM25Scores(candidates []memorydb.ScoredFragment) map[string]float6
 
 	if maxScore-minScore < 1e-9 {
 		for _, candidate := range candidates {
-			out[candidate.ID] = 1.0
+			out[candidate.ID] = 0.5
 		}
 		return out
 	}
@@ -328,14 +342,13 @@ func normalizeBM25Scores(candidates []memorydb.ScoredFragment) map[string]float6
 }
 
 func normalizeCosineScore(raw float64) float64 {
-	norm := (raw + 1.0) / 2.0
-	if norm < 0 {
+	if raw < 0 {
 		return 0
 	}
-	if norm > 1 {
+	if raw > 1 {
 		return 1
 	}
-	return norm
+	return raw
 }
 
 func limitScoredFragments(in []memorydb.ScoredFragment, limit int) []memorydb.ScoredFragment {

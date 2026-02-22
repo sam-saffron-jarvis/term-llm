@@ -245,8 +245,8 @@ func runMemoryMine(cmd *cobra.Command, args []string) error {
 			if err != nil {
 				return err
 			}
+			fmt.Printf("embedded %d fragments\n", embeddedCount)
 		}
-		fmt.Printf("embedded %d fragments\n", embeddedCount)
 	}
 
 	fmt.Printf("Done. create=%d update=%d skip=%d\n", totalCreated, totalUpdated, totalSkipped)
@@ -639,33 +639,38 @@ func runMemoryEmbedPhase(ctx context.Context, cfg *config.Config, store *memoryd
 	}
 
 	embeddedCount := 0
-	for _, frag := range fragments {
+	const embedBatchSize = 32
+	for i := 0; i < len(fragments); i += embedBatchSize {
+		end := i + embedBatchSize
+		if end > len(fragments) {
+			end = len(fragments)
+		}
+		batch := fragments[i:end]
+		texts := make([]string, len(batch))
+		for j, frag := range batch {
+			texts[j] = frag.Content
+		}
+
 		result, err := embedder.Embed(embedding.EmbedRequest{
-			Texts:    []string{frag.Content},
+			Texts:    texts,
 			Model:    modelName,
 			TaskType: "RETRIEVAL_DOCUMENT",
 		})
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "warning: failed embedding fragment %s: %v\n", frag.ID, err)
+			fmt.Fprintf(os.Stderr, "warning: failed embedding batch starting at %d: %v\n", i, err)
 			continue
 		}
-		if len(result.Embeddings) == 0 || len(result.Embeddings[0].Vector) == 0 {
-			fmt.Fprintf(os.Stderr, "warning: empty embedding for fragment %s\n", frag.ID)
-			continue
+		for j, emb := range result.Embeddings {
+			if len(emb.Vector) == 0 {
+				continue
+			}
+			frag := batch[j]
+			if err := store.UpsertEmbedding(ctx, frag.ID, providerName, modelName, len(emb.Vector), emb.Vector); err != nil {
+				fmt.Fprintf(os.Stderr, "warning: failed to persist embedding for fragment %s: %v\n", frag.ID, err)
+				continue
+			}
+			embeddedCount++
 		}
-
-		vec := result.Embeddings[0].Vector
-		dims := len(vec)
-		if dims == 0 {
-			fmt.Fprintf(os.Stderr, "warning: invalid embedding dimensions for fragment %s\n", frag.ID)
-			continue
-		}
-
-		if err := store.UpsertEmbedding(ctx, frag.ID, providerName, modelName, dims, vec); err != nil {
-			fmt.Fprintf(os.Stderr, "warning: failed to persist embedding for fragment %s: %v\n", frag.ID, err)
-			continue
-		}
-		embeddedCount++
 	}
 
 	return embeddedCount, nil

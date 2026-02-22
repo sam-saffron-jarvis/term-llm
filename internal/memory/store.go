@@ -530,6 +530,7 @@ func (s *Store) SearchBM25(ctx context.Context, query string, limit int, agent s
 	for rows.Next() {
 		var r ScoredFragment
 		var accessedAt sql.NullTime
+		var rawScore float64
 		if err := rows.Scan(
 			&r.ID,
 			&r.Agent,
@@ -543,7 +544,7 @@ func (s *Store) SearchBM25(ctx context.Context, query string, limit int, agent s
 			&r.DecayScore,
 			&r.Pinned,
 			&r.Snippet,
-			&r.Score,
+			&rawScore,
 		); err != nil {
 			return nil, fmt.Errorf("scan search result: %w", err)
 		}
@@ -551,6 +552,8 @@ func (s *Store) SearchBM25(ctx context.Context, query string, limit int, agent s
 			at := accessedAt.Time
 			r.AccessedAt = &at
 		}
+		// SQLite FTS5 bm25() returns negative values (more negative = more relevant).
+		r.Score = -rawScore
 		out = append(out, r)
 	}
 	if err := rows.Err(); err != nil {
@@ -650,6 +653,71 @@ func (s *Store) GetEmbedding(ctx context.Context, fragmentID, provider, model st
 	return vec, nil
 }
 
+func (s *Store) GetEmbeddingsByIDs(ctx context.Context, fragmentIDs []string, provider, model string) (map[string][]float64, error) {
+	provider = strings.TrimSpace(provider)
+	model = strings.TrimSpace(model)
+	if provider == "" || model == "" {
+		return nil, fmt.Errorf("provider and model are required")
+	}
+	if len(fragmentIDs) == 0 {
+		return map[string][]float64{}, nil
+	}
+
+	seen := map[string]struct{}{}
+	ids := make([]string, 0, len(fragmentIDs))
+	for _, id := range fragmentIDs {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		if _, exists := seen[id]; exists {
+			continue
+		}
+		seen[id] = struct{}{}
+		ids = append(ids, id)
+	}
+	if len(ids) == 0 {
+		return map[string][]float64{}, nil
+	}
+
+	placeholders := strings.Repeat("?,", len(ids))
+	placeholders = strings.TrimSuffix(placeholders, ",")
+	query := fmt.Sprintf(`
+		SELECT fragment_id, vector
+		FROM memory_embeddings
+		WHERE provider = ? AND model = ? AND fragment_id IN (%s)`, placeholders)
+
+	args := make([]any, 0, len(ids)+2)
+	args = append(args, provider, model)
+	for _, id := range ids {
+		args = append(args, id)
+	}
+
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("get embeddings by ids: %w", err)
+	}
+	defer rows.Close()
+
+	out := make(map[string][]float64, len(ids))
+	for rows.Next() {
+		var id string
+		var payload []byte
+		if err := rows.Scan(&id, &payload); err != nil {
+			return nil, fmt.Errorf("scan embedding row: %w", err)
+		}
+		var vec []float64
+		if err := json.Unmarshal(payload, &vec); err != nil {
+			return nil, fmt.Errorf("decode embedding vector: %w", err)
+		}
+		out[id] = vec
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // GetFragmentsNeedingEmbedding returns fragments missing an embedding row for provider+model.
 func (s *Store) GetFragmentsNeedingEmbedding(ctx context.Context, agent, provider, model string) ([]Fragment, error) {
 	provider = strings.TrimSpace(provider)
@@ -687,9 +755,14 @@ func (s *Store) GetFragmentsNeedingEmbedding(ctx context.Context, agent, provide
 }
 
 // VectorSearch performs a full cosine similarity scan over embeddings.
-func (s *Store) VectorSearch(ctx context.Context, agent string, queryVec []float64, limit int) ([]ScoredFragment, error) {
+func (s *Store) VectorSearch(ctx context.Context, agent, provider, model string, queryVec []float64, limit int) ([]ScoredFragment, error) {
 	if len(queryVec) == 0 {
 		return nil, fmt.Errorf("query vector cannot be empty")
+	}
+	provider = strings.TrimSpace(provider)
+	model = strings.TrimSpace(model)
+	if provider == "" || model == "" {
+		return nil, fmt.Errorf("provider and model are required")
 	}
 	if limit <= 0 {
 		limit = 24
@@ -701,9 +774,9 @@ func (s *Store) VectorSearch(ctx context.Context, agent string, queryVec []float
 		       e.vector
 		FROM memory_embeddings e
 		JOIN memory_fragments f ON f.id = e.fragment_id
-		WHERE e.dimensions = ?
+		WHERE e.provider = ? AND e.model = ? AND e.dimensions = ?
 		  AND (? = '' OR f.agent = ?)`,
-		len(queryVec), strings.TrimSpace(agent), strings.TrimSpace(agent))
+		provider, model, len(queryVec), strings.TrimSpace(agent), strings.TrimSpace(agent))
 	if err != nil {
 		return nil, fmt.Errorf("vector search query: %w", err)
 	}
@@ -765,12 +838,15 @@ func (s *Store) BumpAccess(ctx context.Context, fragmentID string) error {
 		return fmt.Errorf("fragment_id is required")
 	}
 
-	_, err := s.db.ExecContext(ctx, `
+	res, err := s.db.ExecContext(ctx, `
 		UPDATE memory_fragments
 		SET accessed_at = ?, access_count = access_count + 1
 		WHERE id = ?`, time.Now(), fragmentID)
 	if err != nil {
 		return fmt.Errorf("bump fragment access: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return fmt.Errorf("fragment %s not found", fragmentID)
 	}
 	return nil
 }
