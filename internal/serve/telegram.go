@@ -391,48 +391,67 @@ func (m *telegramSessionMgr) loadPreviousSessionContext(ctx context.Context, cha
 		ctx = context.Background()
 	}
 
+	// Fetch enough recent sessions to walk back through. We skip the current
+	// session being created and accumulate messages across multiple prior
+	// sessions until we have enough to fill TelegramCarryoverChars.
 	sessions, err := m.store.List(ctx, session.ListOptions{
 		Name:  fmt.Sprintf("telegram:%d", chatID),
-		Limit: 2,
+		Limit: 20,
 	})
 	if err != nil {
 		log.Printf("[telegram] load previous session list failed for chat %d: %v", chatID, err)
 		return ""
 	}
 
-	var previous *session.SessionSummary
+	// Collect messages from prior sessions, newest-first, until we have enough
+	// characters. We'll reverse at the end so context reads chronologically.
+	var accumulated []llm.Message
+	accChars := 0
+	target := m.settings.TelegramCarryoverChars
+
 	for i := range sessions {
-		if sessions[i].ID == currentID {
+		s := &sessions[i]
+		if s.ID == currentID || s.MessageCount == 0 {
 			continue
 		}
-		previous = &sessions[i]
-		break
+
+		// Fetch up to telegramPreviousSessionMessageLimit messages from this session.
+		limit := telegramPreviousSessionMessageLimit
+		if s.MessageCount < limit {
+			limit = s.MessageCount
+		}
+		offset := 0
+		if s.MessageCount > limit {
+			offset = s.MessageCount - limit
+		}
+
+		msgs, err := m.store.GetMessages(ctx, s.ID, limit, offset)
+		if err != nil {
+			log.Printf("[telegram] load previous session messages failed for session %s: %v", s.ID, err)
+			continue
+		}
+
+		// Prepend these messages (they're older than what we have so far).
+		sessionMsgs := make([]llm.Message, 0, len(msgs))
+		for _, msg := range msgs {
+			sessionMsgs = append(sessionMsgs, msg.ToLLMMessage())
+		}
+
+		// Estimate chars contributed by this session.
+		sessionText := buildHistoryContextTail(sessionMsgs, target)
+		accChars += len([]rune(sessionText))
+		accumulated = append(sessionMsgs, accumulated...)
+
+		if accChars >= target {
+			break
+		}
 	}
-	if previous == nil || previous.MessageCount == 0 {
+
+	if len(accumulated) == 0 {
 		return ""
 	}
 
-	limit := telegramPreviousSessionMessageLimit
-	if previous.MessageCount < limit {
-		limit = previous.MessageCount
-	}
-	offset := 0
-	if previous.MessageCount > limit {
-		offset = previous.MessageCount - limit
-	}
-
-	messages, err := m.store.GetMessages(ctx, previous.ID, limit, offset)
-	if err != nil {
-		log.Printf("[telegram] load previous session messages failed for chat %d: %v", chatID, err)
-		return ""
-	}
-
-	history := make([]llm.Message, 0, len(messages))
-	for _, msg := range messages {
-		history = append(history, msg.ToLLMMessage())
-	}
-
-	return buildHistoryContextTail(history, m.settings.TelegramCarryoverChars)
+	return buildHistoryContextTail(accumulated, target)
 }
 
 func (m *telegramSessionMgr) newSession(ctx context.Context, chatID int64) (*telegramSession, error) {
