@@ -33,9 +33,16 @@ var memoryFragmentsShowCmd = &cobra.Command{
 	RunE:  runMemoryFragmentsShow,
 }
 
+var memoryFragmentsGCCmd = &cobra.Command{
+	Use:   "gc",
+	Short: "Garbage collect decayed memory fragments",
+	RunE:  runMemoryFragmentsGC,
+}
+
 func init() {
 	memoryFragmentsCmd.AddCommand(memoryFragmentsListCmd)
 	memoryFragmentsCmd.AddCommand(memoryFragmentsShowCmd)
+	memoryFragmentsCmd.AddCommand(memoryFragmentsGCCmd)
 
 	memoryFragmentsListCmd.Flags().DurationVar(&memoryFragmentsSince, "since", 0, "Only show fragments updated within this duration (e.g. 24h)")
 	memoryFragmentsListCmd.Flags().IntVar(&memoryFragmentsLimit, "limit", 0, "Maximum number of fragments to return (0 = all)")
@@ -127,5 +134,36 @@ func runMemoryFragmentsShow(cmd *cobra.Command, args []string) error {
 	if !strings.HasSuffix(frags[0].Content, "\n") {
 		fmt.Println()
 	}
+	return nil
+}
+
+func runMemoryFragmentsGC(cmd *cobra.Command, args []string) error {
+	store, err := openMemoryStore()
+	if err != nil {
+		return err
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+	agent := strings.TrimSpace(memoryAgent)
+
+	if _, err := store.RecalcDecayScores(ctx, agent, 30.0); err != nil {
+		return fmt.Errorf("recalculate decay scores: %w", err)
+	}
+
+	if memoryDryRun {
+		count, err := store.CountGCCandidates(ctx, agent)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("gc: would remove %d fragments\n", count)
+		return nil
+	}
+
+	removed, err := store.GCFragments(ctx, agent)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("gc: removed %d fragments\n", removed)
 	return nil
 }
