@@ -84,4 +84,7 @@ RUN chmod +x /entrypoint.sh
 # Drop your service dirs under docker/sv/ and they'll be available at /etc/sv/
 COPY docker/sv/ /etc/sv/
 
+# Remove retired service definitions
+RUN rm -rf /etc/sv/job-scheduler
+
 ENTRYPOINT ["/entrypoint.sh"]
