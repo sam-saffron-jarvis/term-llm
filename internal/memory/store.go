@@ -30,6 +30,7 @@ type Config struct {
 // Fragment is a durable memory item extracted from sessions.
 type Fragment struct {
 	ID          string
+	RowID       int64
 	Agent       string
 	Path        string
 	Content     string
@@ -62,9 +63,10 @@ type ScoredFragment struct {
 
 // ListOptions configures fragment listing.
 type ListOptions struct {
-	Agent string
-	Since *time.Time
-	Limit int
+	Agent      string
+	Since      *time.Time
+	Limit      int
+	PathFilter string // substring match on path (case-insensitive)
 }
 
 // SearchResult is a BM25 result from FTS.
@@ -451,6 +453,24 @@ func (s *Store) GetFragment(ctx context.Context, agent, path string) (*Fragment,
 	return f, nil
 }
 
+// GetFragmentByRowID fetches a fragment by its SQLite rowid.
+func (s *Store) GetFragmentByRowID(ctx context.Context, rowID int64) (*Fragment, error) {
+	row := s.db.QueryRowContext(ctx, `
+		SELECT id, agent, path, content, source, created_at, updated_at,
+		       accessed_at, access_count, decay_score, pinned
+		FROM memory_fragments
+		WHERE rowid = ?`, rowID)
+
+	f, err := scanFragment(row)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get fragment by rowid: %w", err)
+	}
+	return f, nil
+}
+
 // FindFragmentsByPath fetches fragments for a path across all agents.
 func (s *Store) FindFragmentsByPath(ctx context.Context, path string) ([]Fragment, error) {
 	rows, err := s.db.QueryContext(ctx, `
@@ -479,9 +499,10 @@ func (s *Store) FindFragmentsByPath(ctx context.Context, path string) ([]Fragmen
 }
 
 // ListFragments returns fragments sorted by updated_at descending.
+// RowID is populated on each returned Fragment.
 func (s *Store) ListFragments(ctx context.Context, opts ListOptions) ([]Fragment, error) {
 	query := `
-		SELECT id, agent, path, content, source, created_at, updated_at,
+		SELECT rowid, id, agent, path, content, source, created_at, updated_at,
 		       accessed_at, access_count, decay_score, pinned
 		FROM memory_fragments
 		WHERE 1=1`
@@ -494,6 +515,10 @@ func (s *Store) ListFragments(ctx context.Context, opts ListOptions) ([]Fragment
 	if opts.Since != nil {
 		query += ` AND updated_at >= ?`
 		args = append(args, *opts.Since)
+	}
+	if strings.TrimSpace(opts.PathFilter) != "" {
+		query += ` AND path LIKE ? ESCAPE '\'`
+		args = append(args, "%"+sqliteLikeEscape(strings.TrimSpace(opts.PathFilter))+"%")
 	}
 	query += ` ORDER BY updated_at DESC`
 	if opts.Limit > 0 {
@@ -509,11 +534,28 @@ func (s *Store) ListFragments(ctx context.Context, opts ListOptions) ([]Fragment
 
 	var out []Fragment
 	for rows.Next() {
-		f, err := scanFragment(rows)
-		if err != nil {
+		var f Fragment
+		var accessedAt sql.NullTime
+		if err := rows.Scan(
+			&f.RowID,
+			&f.ID,
+			&f.Agent,
+			&f.Path,
+			&f.Content,
+			&f.Source,
+			&f.CreatedAt,
+			&f.UpdatedAt,
+			&accessedAt,
+			&f.AccessCount,
+			&f.DecayScore,
+			&f.Pinned,
+		); err != nil {
 			return nil, fmt.Errorf("scan fragment: %w", err)
 		}
-		out = append(out, *f)
+		if accessedAt.Valid {
+			f.AccessedAt = &accessedAt.Time
+		}
+		out = append(out, f)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -1518,4 +1560,12 @@ func (s *Store) SearchImages(ctx context.Context, query, agent string, limit int
 		out = append(out, r)
 	}
 	return out, rows.Err()
+}
+
+// sqliteLikeEscape escapes SQLite LIKE special characters (%, _, \) in a literal string.
+func sqliteLikeEscape(s string) string {
+	s = strings.ReplaceAll(s, `\`, `\\`)
+	s = strings.ReplaceAll(s, `%`, `\%`)
+	s = strings.ReplaceAll(s, `_`, `\_`)
+	return s
 }

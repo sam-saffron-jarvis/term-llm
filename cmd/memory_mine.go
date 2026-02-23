@@ -569,7 +569,25 @@ func runExtractionRequest(ctx context.Context, engine *llm.Engine, prompt string
 	return strings.TrimSpace(b.String()), nil
 }
 
+func stripMarkdownFences(s string) string {
+	if !strings.HasPrefix(s, "```") {
+		return s
+	}
+	// Drop opening fence line (e.g. "```json" or "```")
+	idx := strings.Index(s, "\n")
+	if idx < 0 {
+		return s
+	}
+	s = s[idx+1:]
+	// Drop closing fence
+	if i := strings.LastIndex(s, "```"); i >= 0 {
+		s = s[:i]
+	}
+	return strings.TrimSpace(s)
+}
+
 func parseExtractionOperations(raw string) ([]extractionOperation, error) {
+	raw = stripMarkdownFences(raw)
 	dec := json.NewDecoder(strings.NewReader(raw))
 
 	var response extractionResponse

@@ -2,9 +2,11 @@ package cmd
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -13,10 +15,13 @@ import (
 )
 
 var (
-	memoryFragmentsSince    time.Duration
-	memoryFragmentsLimit    int
-	memoryFragmentsHalfLife float64
-	memoryFragmentsSyncDir  string
+	memoryFragmentsSince      time.Duration
+	memoryFragmentsLimit      int
+	memoryFragmentsHalfLife   float64
+	memoryFragmentsSyncDir    string
+	memoryFragmentsShowJSON   bool
+	memoryFragmentsShowNoPath bool
+	memoryFragmentsFilterPath string
 )
 
 var memoryFragmentsCmd = &cobra.Command{
@@ -69,8 +74,11 @@ func init() {
 
 	memoryFragmentsListCmd.Flags().DurationVar(&memoryFragmentsSince, "since", 0, "Only show fragments updated within this duration (e.g. 24h)")
 	memoryFragmentsListCmd.Flags().IntVar(&memoryFragmentsLimit, "limit", 0, "Maximum number of fragments to return (0 = all)")
+	memoryFragmentsListCmd.Flags().StringVar(&memoryFragmentsFilterPath, "filter-path", "", "Filter fragments whose path contains this substring")
 	memoryFragmentsGCCmd.Flags().Float64Var(&memoryFragmentsHalfLife, "half-life", 30.0, "Decay half-life in days for GC recalculation")
 	memoryFragmentsSyncCmd.Flags().StringVar(&memoryFragmentsSyncDir, "dir", "", "Root directory containing .md fragment files (required)")
+	memoryFragmentsShowCmd.Flags().BoolVar(&memoryFragmentsShowJSON, "json", false, "Output fragment as JSON with all metadata")
+	memoryFragmentsShowCmd.Flags().BoolVar(&memoryFragmentsShowNoPath, "no-path", false, "Suppress path header, print content only")
 	// --dry-run is inherited from the root memory command's persistent flags.
 }
 
@@ -82,8 +90,9 @@ func runMemoryFragmentsList(cmd *cobra.Command, args []string) error {
 	defer store.Close()
 
 	opts := memorydb.ListOptions{
-		Agent: strings.TrimSpace(memoryAgent),
-		Limit: memoryFragmentsLimit,
+		Agent:      strings.TrimSpace(memoryAgent),
+		Limit:      memoryFragmentsLimit,
+		PathFilter: memoryFragmentsFilterPath,
 	}
 	if memoryFragmentsSince > 0 {
 		cutoff := time.Now().Add(-memoryFragmentsSince)
@@ -99,19 +108,30 @@ func runMemoryFragmentsList(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
+	pathCol := 4 // minimum width for "PATH" header
+	for _, f := range fragments {
+		if l := len(f.Path); l > pathCol {
+			pathCol = l
+		}
+	}
+	if pathCol > 84 {
+		pathCol = 84
+	}
+	pathCol++ // one extra space of breathing room
+
 	if strings.TrimSpace(memoryAgent) == "" {
-		fmt.Printf("%-14s %-42s %-10s\n", "AGENT", "PATH", "UPDATED")
-		fmt.Println(strings.Repeat("-", 72))
+		fmt.Printf("%-6s %-14s %-*s %-10s\n", "ID", "AGENT", pathCol, "PATH", "UPDATED")
+		fmt.Println(strings.Repeat("-", 6+1+14+1+pathCol+1+10))
 		for _, f := range fragments {
-			fmt.Printf("%-14s %-42s %-10s\n", f.Agent, truncateString(f.Path, 42), formatRelativeTime(f.UpdatedAt))
+			fmt.Printf("%-6d %-14s %-*s %-10s\n", f.RowID, f.Agent, pathCol, truncateString(f.Path, pathCol), formatRelativeTime(f.UpdatedAt))
 		}
 		return nil
 	}
 
-	fmt.Printf("%-42s %-10s\n", "PATH", "UPDATED")
-	fmt.Println(strings.Repeat("-", 56))
+	fmt.Printf("%-6s %-*s %-10s\n", "ID", pathCol, "PATH", "UPDATED")
+	fmt.Println(strings.Repeat("-", 6+1+pathCol+1+10))
 	for _, f := range fragments {
-		fmt.Printf("%-42s %-10s\n", truncateString(f.Path, 42), formatRelativeTime(f.UpdatedAt))
+		fmt.Printf("%-6d %-*s %-10s\n", f.RowID, pathCol, truncateString(f.Path, pathCol), formatRelativeTime(f.UpdatedAt))
 	}
 
 	return nil
@@ -125,39 +145,84 @@ func runMemoryFragmentsShow(cmd *cobra.Command, args []string) error {
 	defer store.Close()
 
 	ctx := context.Background()
-	fragPath := strings.TrimSpace(args[0])
-	if fragPath == "" {
-		return fmt.Errorf("path cannot be empty")
+	arg := strings.TrimSpace(args[0])
+	if arg == "" {
+		return fmt.Errorf("path or id cannot be empty")
 	}
 
-	if strings.TrimSpace(memoryAgent) != "" {
-		frag, err := store.GetFragment(ctx, strings.TrimSpace(memoryAgent), fragPath)
+	var frag *memorydb.Fragment
+
+	// Numeric argument: look up by rowid.
+	if rowID, err := strconv.ParseInt(arg, 10, 64); err == nil {
+		frag, err = store.GetFragmentByRowID(ctx, rowID)
 		if err != nil {
 			return err
 		}
-		if frag == nil {
-			return fmt.Errorf("fragment not found: %s", fragPath)
+	} else if strings.TrimSpace(memoryAgent) != "" {
+		frag, err = store.GetFragment(ctx, strings.TrimSpace(memoryAgent), arg)
+		if err != nil {
+			return err
 		}
-		fmt.Print(frag.Content)
-		if !strings.HasSuffix(frag.Content, "\n") {
-			fmt.Println()
+	} else {
+		frags, err := store.FindFragmentsByPath(ctx, arg)
+		if err != nil {
+			return err
 		}
-		return nil
+		if len(frags) > 1 {
+			return fmt.Errorf("fragment path %q exists for multiple agents; rerun with --agent", arg)
+		}
+		if len(frags) == 1 {
+			frag = &frags[0]
+		}
 	}
 
-	frags, err := store.FindFragmentsByPath(ctx, fragPath)
-	if err != nil {
-		return err
-	}
-	if len(frags) == 0 {
-		return fmt.Errorf("fragment not found: %s", fragPath)
-	}
-	if len(frags) > 1 {
-		return fmt.Errorf("fragment path %q exists for multiple agents; rerun with --agent", fragPath)
+	if frag == nil {
+		return fmt.Errorf("fragment not found: %s", arg)
 	}
 
-	fmt.Print(frags[0].Content)
-	if !strings.HasSuffix(frags[0].Content, "\n") {
+	return printFragment(frag)
+}
+
+func printFragment(frag *memorydb.Fragment) error {
+	if memoryFragmentsShowJSON {
+		type jsonFrag struct {
+			ID          string     `json:"id"`
+			RowID       int64      `json:"row_id"`
+			Agent       string     `json:"agent"`
+			Path        string     `json:"path"`
+			Content     string     `json:"content"`
+			Source      string     `json:"source"`
+			CreatedAt   time.Time  `json:"created_at"`
+			UpdatedAt   time.Time  `json:"updated_at"`
+			AccessedAt  *time.Time `json:"accessed_at,omitempty"`
+			AccessCount int        `json:"access_count"`
+			DecayScore  float64    `json:"decay_score"`
+			Pinned      bool       `json:"pinned"`
+		}
+		out := jsonFrag{
+			ID:          frag.ID,
+			RowID:       frag.RowID,
+			Agent:       frag.Agent,
+			Path:        frag.Path,
+			Content:     frag.Content,
+			Source:      frag.Source,
+			CreatedAt:   frag.CreatedAt,
+			UpdatedAt:   frag.UpdatedAt,
+			AccessedAt:  frag.AccessedAt,
+			AccessCount: frag.AccessCount,
+			DecayScore:  frag.DecayScore,
+			Pinned:      frag.Pinned,
+		}
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		return enc.Encode(out)
+	}
+
+	if !memoryFragmentsShowNoPath {
+		fmt.Println(frag.Path)
+	}
+	fmt.Print(frag.Content)
+	if !strings.HasSuffix(frag.Content, "\n") {
 		fmt.Println()
 	}
 	return nil
