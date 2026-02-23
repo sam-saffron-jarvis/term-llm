@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -71,6 +72,9 @@ func init() {
 	memoryFragmentsCmd.AddCommand(memoryFragmentsShowCmd)
 	memoryFragmentsCmd.AddCommand(memoryFragmentsGCCmd)
 	memoryFragmentsCmd.AddCommand(memoryFragmentsSyncCmd)
+	memoryFragmentsCmd.AddCommand(memoryFragmentsAddCmd)
+	memoryFragmentsCmd.AddCommand(memoryFragmentsUpdateCmd)
+	memoryFragmentsCmd.AddCommand(memoryFragmentsDeleteCmd)
 
 	memoryFragmentsListCmd.Flags().DurationVar(&memoryFragmentsSince, "since", 0, "Only show fragments updated within this duration (e.g. 24h)")
 	memoryFragmentsListCmd.Flags().IntVar(&memoryFragmentsLimit, "limit", 0, "Maximum number of fragments to return (0 = all)")
@@ -79,6 +83,9 @@ func init() {
 	memoryFragmentsSyncCmd.Flags().StringVar(&memoryFragmentsSyncDir, "dir", "", "Root directory containing .md fragment files (required)")
 	memoryFragmentsShowCmd.Flags().BoolVar(&memoryFragmentsShowJSON, "json", false, "Output fragment as JSON with all metadata")
 	memoryFragmentsShowCmd.Flags().BoolVar(&memoryFragmentsShowNoPath, "no-path", false, "Suppress path header, print content only")
+	memoryFragmentsAddCmd.Flags().StringVar(&memoryFragmentsAddContent, "content", "", "Fragment content (defaults to stdin)")
+	memoryFragmentsAddCmd.Flags().StringVar(&memoryFragmentsAddSource, "source", "manual", "Fragment source")
+	memoryFragmentsUpdateCmd.Flags().StringVar(&memoryFragmentsUpdateContent, "content", "", "Fragment content (defaults to stdin)")
 	// --dry-run is inherited from the root memory command's persistent flags.
 }
 
@@ -380,3 +387,131 @@ func runMemoryFragmentsSync(cmd *cobra.Command, args []string) error {
 		action, created, updated, skipped, errors)
 	return nil
 }
+
+// --- add / update / delete ---
+
+var (
+	memoryFragmentsAddContent    string
+	memoryFragmentsAddSource     string
+	memoryFragmentsUpdateContent string
+)
+
+var memoryFragmentsAddCmd = &cobra.Command{
+	Use:   "add <path>",
+	Short: "Add a memory fragment",
+	Args:  cobra.ExactArgs(1),
+	RunE:  runMemoryFragmentsAdd,
+}
+
+var memoryFragmentsUpdateCmd = &cobra.Command{
+	Use:   "update <path>",
+	Short: "Update a memory fragment",
+	Args:  cobra.ExactArgs(1),
+	RunE:  runMemoryFragmentsUpdate,
+}
+
+var memoryFragmentsDeleteCmd = &cobra.Command{
+	Use:   "delete <path>",
+	Short: "Delete a memory fragment",
+	Args:  cobra.ExactArgs(1),
+	RunE:  runMemoryFragmentsDelete,
+}
+
+func runMemoryFragmentsAdd(cmd *cobra.Command, args []string) error {
+	agent := strings.TrimSpace(memoryAgent)
+	if agent == "" {
+		return fmt.Errorf("--agent is required for add/update/delete")
+	}
+	fragPath := strings.TrimSpace(args[0])
+	content, err := readFragmentContent(memoryFragmentsAddContent)
+	if err != nil {
+		return err
+	}
+	source := strings.TrimSpace(memoryFragmentsAddSource)
+	if source == "" {
+		source = "manual"
+	}
+	store, err := openMemoryStore()
+	if err != nil {
+		return err
+	}
+	defer store.Close()
+
+	if err := store.CreateFragment(context.Background(), &memorydb.Fragment{
+		Agent:   agent,
+		Path:    fragPath,
+		Content: content,
+		Source:  source,
+	}); err != nil {
+		if isUniqueConstraintError(err) {
+			return fmt.Errorf("fragment already exists: %s — use 'update' instead", fragPath)
+		}
+		return err
+	}
+	fmt.Printf("created: %s\n", fragPath)
+	return nil
+}
+
+func runMemoryFragmentsUpdate(cmd *cobra.Command, args []string) error {
+	agent := strings.TrimSpace(memoryAgent)
+	if agent == "" {
+		return fmt.Errorf("--agent is required for add/update/delete")
+	}
+	fragPath := strings.TrimSpace(args[0])
+	content, err := readFragmentContent(memoryFragmentsUpdateContent)
+	if err != nil {
+		return err
+	}
+	store, err := openMemoryStore()
+	if err != nil {
+		return err
+	}
+	defer store.Close()
+
+	updated, err := store.UpdateFragment(context.Background(), agent, fragPath, content)
+	if err != nil {
+		return err
+	}
+	if !updated {
+		return fmt.Errorf("fragment not found: %s — use 'add' to create it", fragPath)
+	}
+	fmt.Printf("updated: %s\n", fragPath)
+	return nil
+}
+
+func runMemoryFragmentsDelete(cmd *cobra.Command, args []string) error {
+	agent := strings.TrimSpace(memoryAgent)
+	if agent == "" {
+		return fmt.Errorf("--agent is required for add/update/delete")
+	}
+	fragPath := strings.TrimSpace(args[0])
+	store, err := openMemoryStore()
+	if err != nil {
+		return err
+	}
+	defer store.Close()
+
+	deleted, err := store.DeleteFragment(context.Background(), agent, fragPath)
+	if err != nil {
+		return err
+	}
+	if !deleted {
+		return fmt.Errorf("fragment not found: %s", fragPath)
+	}
+	fmt.Printf("deleted: %s\n", fragPath)
+	return nil
+}
+
+// readFragmentContent returns s if non-empty, otherwise reads all of stdin.
+func readFragmentContent(s string) (string, error) {
+	if s != "" {
+		return s, nil
+	}
+	data, err := io.ReadAll(os.Stdin)
+	if err != nil {
+		return "", fmt.Errorf("reading stdin: %w", err)
+	}
+	return string(data), nil
+}
+
+
