@@ -151,6 +151,11 @@ func (r *jobsV2ProgramRunner) Run(ctx context.Context, job jobsV2Job) (jobsV2Run
 	} else {
 		cmd = exec.CommandContext(ctx, cfg.Command, cfg.Args...)
 	}
+	// When the context is cancelled, Go sends SIGKILL. Without WaitDelay,
+	// cmd.Output() can still block indefinitely waiting for the process to exit
+	// and for all pipe I/O to drain. Set a short WaitDelay so the pipes are
+	// force-closed quickly after the kill signal is sent.
+	cmd.WaitDelay = 5 * time.Second
 	if strings.TrimSpace(cfg.Cwd) != "" {
 		cmd.Dir = cfg.Cwd
 	}
