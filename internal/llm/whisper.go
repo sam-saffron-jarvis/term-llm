@@ -15,6 +15,7 @@ import (
 type TranscribeOptions struct {
 	APIKey   string
 	Language string // optional, e.g. "en"
+	Endpoint string // full URL, e.g. "http://localhost:8080/inference" or "https://api.openai.com/v1/audio/transcriptions"
 }
 
 type whisperResponse struct {
@@ -41,19 +42,28 @@ func TranscribeFile(ctx context.Context, filePath string, opts TranscribeOptions
 		return "", fmt.Errorf("write form file: %w", err)
 	}
 
-	_ = mw.WriteField("model", "whisper-1")
+	if opts.APIKey != "" {
+		_ = mw.WriteField("model", "whisper-1")
+	}
 	_ = mw.WriteField("response_format", "json")
 	if opts.Language != "" {
 		_ = mw.WriteField("language", opts.Language)
 	}
 	mw.Close()
 
+	endpoint := opts.Endpoint
+	if endpoint == "" {
+		endpoint = "https://api.openai.com/v1/audio/transcriptions"
+	}
+
 	req, err := http.NewRequestWithContext(ctx, "POST",
-		"https://api.openai.com/v1/audio/transcriptions", &body)
+		endpoint, &body)
 	if err != nil {
 		return "", fmt.Errorf("build request: %w", err)
 	}
-	req.Header.Set("Authorization", "Bearer "+opts.APIKey)
+	if opts.APIKey != "" {
+		req.Header.Set("Authorization", "Bearer "+opts.APIKey)
+	}
 	req.Header.Set("Content-Type", mw.FormDataContentType())
 
 	resp, err := defaultHTTPClient.Do(req)
