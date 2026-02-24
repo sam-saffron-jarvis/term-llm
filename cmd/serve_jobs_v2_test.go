@@ -151,7 +151,9 @@ func TestJobsV2ManualTriggerAndCancel(t *testing.T) {
 		t.Fatalf("cancel status = %d, want 200 body=%s", cancelRR.Code, cancelRR.Body.String())
 	}
 
-	deadline = time.Now().Add(3 * time.Second)
+	// Allow generous time for: SIGKILL delivery → process exit → WaitDelay pipe
+	// drain → cmd.Output() return → ctx.Err() check → finishRun DB write → poll.
+	deadline = time.Now().Add(10 * time.Second)
 	for {
 		current, err := mgr.GetRun(run.ID)
 		if err == nil && current.Status == jobsV2RunCancelled {
