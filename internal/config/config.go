@@ -96,6 +96,7 @@ type Config struct {
 	Chat            ChatConfig                `mapstructure:"chat"`
 	Edit            EditConfig                `mapstructure:"edit"`
 	Image           ImageConfig               `mapstructure:"image"`
+	Transcription   TranscriptionConfig       `mapstructure:"transcription"`
 	Embed           EmbedConfig               `mapstructure:"embed"`
 	Search          SearchConfig              `mapstructure:"search"`
 	Theme           ThemeConfig               `mapstructure:"theme"`
@@ -295,6 +296,12 @@ type ImageOpenRouterConfig struct {
 // ImageDebugConfig configures the debug image provider (local random images)
 type ImageDebugConfig struct {
 	Delay float64 `mapstructure:"delay"` // delay in seconds before returning (e.g., 1.5)
+}
+
+// TranscriptionConfig configures audio transcription settings.
+type TranscriptionConfig struct {
+	Provider string `mapstructure:"provider"` // named provider from providers map; default "openai"
+	Model    string `mapstructure:"model"`    // optional model override
 }
 
 // EmbedConfig configures text embedding generation
@@ -851,6 +858,7 @@ var KnownKeys = map[string]bool{
 	"chat":             true,
 	"edit":             true,
 	"image":            true,
+	"transcription":    true,
 	"search":           true,
 	"theme":            true,
 	"tools":            true,
@@ -920,6 +928,10 @@ var KnownKeys = map[string]bool{
 	"image.openrouter.model":   true,
 	"image.debug":              true,
 	"image.debug.delay":        true,
+
+	// Transcription
+	"transcription.provider": true,
+	"transcription.model":    true,
 
 	// Embed
 	"embed.provider":        true,

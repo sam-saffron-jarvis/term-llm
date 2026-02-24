@@ -715,22 +715,15 @@ func (m *telegramSessionMgr) handleMessage(ctx context.Context, bot *tgbotapi.Bo
 		}
 		defer os.Remove(voicePath)
 
-		// Resolve OpenAI API key for Whisper
-		openaiCfg := m.cfg.Providers[string(config.ProviderTypeOpenAI)]
-		apiKey := openaiCfg.ResolvedAPIKey
-		if apiKey == "" {
-			apiKey = os.Getenv("OPENAI_API_KEY")
-		}
-		if apiKey == "" {
-			log.Printf("telegram: no OpenAI key for transcription")
-			_, _ = bot.Send(tgbotapi.NewMessage(chatID, "Voice transcription requires an OpenAI API key."))
-			return
-		}
-
-		transcript, err := llm.TranscribeFile(ctx, voicePath, llm.TranscribeOptions{APIKey: apiKey})
+		transcript, err := llm.TranscribeWithConfig(ctx, m.cfg, voicePath, "", "")
 		if err != nil {
 			log.Printf("telegram: transcribe error: %v", err)
-			_, _ = bot.Send(tgbotapi.NewMessage(chatID, "Sorry, couldn't transcribe your voice message."))
+			// Check if it's a config/key issue vs a transient error
+			if strings.Contains(err.Error(), "not configured") || strings.Contains(err.Error(), "no API key") || strings.Contains(err.Error(), "not found in providers") {
+				_, _ = bot.Send(tgbotapi.NewMessage(chatID, "Voice transcription is not configured. Set up a transcription provider in your config."))
+			} else {
+				_, _ = bot.Send(tgbotapi.NewMessage(chatID, "Sorry, couldn't transcribe your voice message."))
+			}
 			return
 		}
 
