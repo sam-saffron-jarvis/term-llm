@@ -176,7 +176,7 @@ Guidelines:
 			"properties": map[string]any{
 				"agent_name": map[string]any{
 					"type":        "string",
-					"description": "Name of the agent to spawn (e.g., 'reviewer', 'researcher')",
+					"description": "Name of the agent to spawn (e.g., 'developer', 'codebase', 'researcher'). Use 'codebase' for local source code questions; 'researcher' for external web research only.",
 				},
 				"prompt": map[string]any{
 					"type":        "string",
