@@ -14,16 +14,16 @@ import (
 
 type TranscribeOptions struct {
 	APIKey   string
-	Language string // optional, e.g. "en"
-	Endpoint string // full URL, e.g. "http://localhost:8080/inference" or "https://api.openai.com/v1/audio/transcriptions"
+	Endpoint string // full URL, e.g. "http://localhost:8080/inference" or "https://api.mistral.ai/v1/audio/transcriptions"
 	Model    string // optional, overrides default model name sent to API
+	Language string // optional, e.g. "en"
 }
 
 type whisperResponse struct {
 	Text string `json:"text"`
 }
 
-// TranscribeFile sends an audio file to the OpenAI Whisper API and returns the transcript.
+// TranscribeFile sends an audio file to a Whisper-compatible API and returns the transcript.
 // Supported formats: flac, mp3, mp4, mpeg, mpga, m4a, ogg, wav, webm.
 func TranscribeFile(ctx context.Context, filePath string, opts TranscribeOptions) (string, error) {
 	f, err := os.Open(filePath)
@@ -43,13 +43,11 @@ func TranscribeFile(ctx context.Context, filePath string, opts TranscribeOptions
 		return "", fmt.Errorf("write form file: %w", err)
 	}
 
-	if opts.APIKey != "" {
-		model := opts.Model
-		if model == "" {
-			model = "whisper-1"
-		}
-		_ = mw.WriteField("model", model)
+	model := opts.Model
+	if model == "" {
+		model = "whisper-1"
 	}
+	_ = mw.WriteField("model", model)
 	_ = mw.WriteField("response_format", "json")
 	if opts.Language != "" {
 		_ = mw.WriteField("language", opts.Language)
@@ -61,8 +59,7 @@ func TranscribeFile(ctx context.Context, filePath string, opts TranscribeOptions
 		endpoint = "https://api.openai.com/v1/audio/transcriptions"
 	}
 
-	req, err := http.NewRequestWithContext(ctx, "POST",
-		endpoint, &body)
+	req, err := http.NewRequestWithContext(ctx, "POST", endpoint, &body)
 	if err != nil {
 		return "", fmt.Errorf("build request: %w", err)
 	}

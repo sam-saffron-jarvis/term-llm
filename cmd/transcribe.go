@@ -84,7 +84,7 @@ func transcribeWhisperCLI(ctx context.Context, cfg *config.Config, filePath, lan
 func init() {
 	transcribeCmd.Flags().StringVar(&transcribeLanguage, "language", "", "Language hint for transcription (e.g. \"en\", \"ja\")")
 	transcribeCmd.Flags().BoolVar(&transcribePorcelain, "porcelain", false, "Output only the transcript text")
-	transcribeCmd.Flags().StringVar(&transcribeProvider, "provider", "openai", `Transcription provider: "openai" (default), "mistral" (Voxtral), "local" (whisper.cpp server), "whisper-cli" (whisper.cpp CLI, on-demand)`)
+	transcribeCmd.Flags().StringVar(&transcribeProvider, "provider", "", `Transcription provider override: "openai", "mistral" (Voxtral), "local" (whisper.cpp server), "whisper-cli". Defaults to transcription.provider in config, or "openai".`)
 
 	rootCmd.AddCommand(transcribeCmd)
 }
@@ -146,62 +146,6 @@ func detectAudioMimeType(filePath string) (string, error) {
 }
 
 func transcribeAudio(ctx context.Context, cfg *config.Config, filePath, language string) (string, error) {
-	provider := strings.TrimSpace(transcribeProvider)
-	baseProvider := strings.SplitN(provider, ":", 2)[0]
-	if baseProvider == "" {
-		baseProvider = string(config.ProviderTypeOpenAI)
-	}
-
-	switch baseProvider {
-	case "local":
-		// whisper.cpp server — OpenAI-compatible but different endpoint, no auth
-		endpoint := "http://localhost:8080/inference"
-		if providerCfg, ok := cfg.Providers["local_whisper"]; ok && providerCfg.BaseURL != "" {
-			endpoint = strings.TrimRight(providerCfg.BaseURL, "/") + "/inference"
-		}
-		return llm.TranscribeFile(ctx, filePath, llm.TranscribeOptions{
-			Language: language,
-			Endpoint: endpoint,
-		})
-
-	case "mistral":
-		mistralCfg := cfg.Providers["mistral"]
-		apiKey := mistralCfg.ResolvedAPIKey
-		if apiKey == "" {
-			apiKey = os.Getenv("MISTRAL_API_KEY")
-		}
-		if apiKey == "" {
-			return "", fmt.Errorf("no Mistral API key configured (providers.mistral.api_key or MISTRAL_API_KEY)")
-		}
-		endpoint := "https://api.mistral.ai/v1/audio/transcriptions"
-		if mistralCfg.BaseURL != "" {
-			endpoint = strings.TrimRight(mistralCfg.BaseURL, "/") + "/audio/transcriptions"
-		}
-		return llm.TranscribeFile(ctx, filePath, llm.TranscribeOptions{
-			APIKey:   apiKey,
-			Model:    "voxtral-mini-latest",
-			Language: language,
-			Endpoint: endpoint,
-		})
-
-	case "whisper-cli":
-		return transcribeWhisperCLI(ctx, cfg, filePath, language)
-
-	case string(config.ProviderTypeOpenAI):
-		openaiCfg := cfg.Providers[string(config.ProviderTypeOpenAI)]
-		apiKey := openaiCfg.ResolvedAPIKey
-		if apiKey == "" {
-			apiKey = os.Getenv("OPENAI_API_KEY")
-		}
-		if apiKey == "" {
-			return "", fmt.Errorf("no OpenAI API key configured (providers.openai.api_key or OPENAI_API_KEY)")
-		}
-		return llm.TranscribeFile(ctx, filePath, llm.TranscribeOptions{
-			APIKey:   apiKey,
-			Language: language,
-		})
-
-	default:
-		return "", fmt.Errorf("unsupported provider %q (supported: openai, mistral, local, whisper-cli)", provider)
-	}
+	providerOverride := strings.TrimSpace(transcribeProvider)
+	return llm.TranscribeWithConfig(ctx, cfg, filePath, language, providerOverride)
 }
