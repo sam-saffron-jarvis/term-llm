@@ -16,6 +16,7 @@ type TranscribeOptions struct {
 	APIKey   string
 	Language string // optional, e.g. "en"
 	Endpoint string // full URL, e.g. "http://localhost:8080/inference" or "https://api.openai.com/v1/audio/transcriptions"
+	Model    string // optional, overrides default model name sent to API
 }
 
 type whisperResponse struct {
@@ -43,7 +44,11 @@ func TranscribeFile(ctx context.Context, filePath string, opts TranscribeOptions
 	}
 
 	if opts.APIKey != "" {
-		_ = mw.WriteField("model", "whisper-1")
+		model := opts.Model
+		if model == "" {
+			model = "whisper-1"
+		}
+		_ = mw.WriteField("model", model)
 	}
 	_ = mw.WriteField("response_format", "json")
 	if opts.Language != "" {

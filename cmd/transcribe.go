@@ -4,7 +4,9 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"github.com/samsaffron/term-llm/internal/config"
@@ -26,10 +28,63 @@ var transcribeCmd = &cobra.Command{
 	RunE:  runTranscribe,
 }
 
+func transcribeWhisperCLI(ctx context.Context, cfg *config.Config, filePath, language string) (string, error) {
+	whisperBin, err := exec.LookPath("whisper")
+	if err != nil {
+		return "", fmt.Errorf("whisper binary not found in PATH (install whisper.cpp)")
+	}
+
+	modelPath := os.Getenv("WHISPER_MODEL")
+	if modelPath == "" {
+		if providerCfg, ok := cfg.Providers["local_whisper"]; ok && providerCfg.Model != "" {
+			modelPath = providerCfg.Model
+		}
+	}
+	if modelPath == "" {
+		home, _ := os.UserHomeDir()
+		candidates := []string{
+			filepath.Join(home, ".local/share/whisper/models/ggml-base.bin"),
+			filepath.Join(home, ".local/share/whisper/models/ggml-small.bin"),
+			"/usr/share/whisper/models/ggml-base.bin",
+			"/usr/local/share/whisper/models/ggml-base.bin",
+		}
+		for _, candidate := range candidates {
+			if _, err := os.Stat(candidate); err == nil {
+				modelPath = candidate
+				break
+			}
+		}
+	}
+	if modelPath == "" {
+		return "", fmt.Errorf("no whisper model found; set WHISPER_MODEL or providers.local_whisper.model in config")
+	}
+
+	args := []string{"-m", modelPath, "-f", filePath, "--print-special", "false", "-np"}
+	if language != "" {
+		args = append(args, "--language", language)
+	}
+
+	cmd := exec.CommandContext(ctx, whisperBin, args...)
+	out, err := cmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("whisper-cli: %w", err)
+	}
+
+	re := regexp.MustCompile(`^\[[\d:.,\s>-]+\]\s*`)
+	var lines []string
+	for _, line := range strings.Split(string(out), "\n") {
+		line = re.ReplaceAllString(strings.TrimSpace(line), "")
+		if line != "" {
+			lines = append(lines, line)
+		}
+	}
+	return strings.Join(lines, " "), nil
+}
+
 func init() {
 	transcribeCmd.Flags().StringVar(&transcribeLanguage, "language", "", "Language hint for transcription (e.g. \"en\", \"ja\")")
 	transcribeCmd.Flags().BoolVar(&transcribePorcelain, "porcelain", false, "Output only the transcript text")
-	transcribeCmd.Flags().StringVar(&transcribeProvider, "provider", "openai", `Transcription provider: "openai" (default) or "local" (whisper.cpp server at localhost:8080)`)
+	transcribeCmd.Flags().StringVar(&transcribeProvider, "provider", "openai", `Transcription provider: "openai" (default), "mistral" (Voxtral), "local" (whisper.cpp server), "whisper-cli" (whisper.cpp CLI, on-demand)`)
 
 	rootCmd.AddCommand(transcribeCmd)
 }
@@ -109,6 +164,29 @@ func transcribeAudio(ctx context.Context, cfg *config.Config, filePath, language
 			Endpoint: endpoint,
 		})
 
+	case "mistral":
+		mistralCfg := cfg.Providers["mistral"]
+		apiKey := mistralCfg.ResolvedAPIKey
+		if apiKey == "" {
+			apiKey = os.Getenv("MISTRAL_API_KEY")
+		}
+		if apiKey == "" {
+			return "", fmt.Errorf("no Mistral API key configured (providers.mistral.api_key or MISTRAL_API_KEY)")
+		}
+		endpoint := "https://api.mistral.ai/v1/audio/transcriptions"
+		if mistralCfg.BaseURL != "" {
+			endpoint = strings.TrimRight(mistralCfg.BaseURL, "/") + "/audio/transcriptions"
+		}
+		return llm.TranscribeFile(ctx, filePath, llm.TranscribeOptions{
+			APIKey:   apiKey,
+			Model:    "voxtral-mini-latest",
+			Language: language,
+			Endpoint: endpoint,
+		})
+
+	case "whisper-cli":
+		return transcribeWhisperCLI(ctx, cfg, filePath, language)
+
 	case string(config.ProviderTypeOpenAI):
 		openaiCfg := cfg.Providers[string(config.ProviderTypeOpenAI)]
 		apiKey := openaiCfg.ResolvedAPIKey
@@ -124,6 +202,6 @@ func transcribeAudio(ctx context.Context, cfg *config.Config, filePath, language
 		})
 
 	default:
-		return "", fmt.Errorf("unsupported provider %q (supported: openai, local)", provider)
+		return "", fmt.Errorf("unsupported provider %q (supported: openai, mistral, local, whisper-cli)", provider)
 	}
 }
