@@ -16,7 +16,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/oauth"
 )
 
-const chatGPTDefaultModel = "gpt-5.2-codex"
+const chatGPTDefaultModel = "gpt-5.3-codex"
 
 // chatGPTResponsesURL is the ChatGPT backend API endpoint for responses
 const chatGPTResponsesURL = "https://chatgpt.com/backend-api/codex/responses"
