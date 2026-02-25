@@ -89,6 +89,16 @@ func NewImageProvider(cfg *config.Config, providerOverride string) (ImageProvide
 		}
 		return NewXAIProvider(apiKey, model), nil
 
+	case "venice":
+		apiKey := cfg.Image.Venice.APIKey
+		if apiKey == "" {
+			return nil, fmt.Errorf("VENICE_API_KEY not configured. Set environment variable or add to image.venice.api_key in config")
+		}
+		if model == "" {
+			model = cfg.Image.Venice.Model
+		}
+		return NewVeniceProvider(apiKey, model, cfg.Image.Venice.Resolution), nil
+
 	case "flux", "bfl":
 		apiKey := cfg.Image.Flux.APIKey
 		if apiKey == "" {
@@ -110,7 +120,7 @@ func NewImageProvider(cfg *config.Config, providerOverride string) (ImageProvide
 		return NewDebugProvider(cfg.Image.Debug.Delay), nil
 
 	default:
-		return nil, fmt.Errorf("unknown image provider: %s (valid: debug, gemini, openai, xai, flux, openrouter)", provider)
+		return nil, fmt.Errorf("unknown image provider: %s (valid: debug, gemini, openai, xai, venice, flux, openrouter)", provider)
 	}
 }
 

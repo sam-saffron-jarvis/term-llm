@@ -552,12 +552,13 @@ term-llm image "landscape" --no-display         # don't show in terminal
 | Gemini (default) | gemini-2.5-flash-image | `GEMINI_API_KEY` | `image.gemini.api_key` |
 | OpenAI | gpt-image-1, gpt-image-1.5, gpt-image-1-mini | `OPENAI_API_KEY` | `image.openai.api_key` |
 | xAI | grok-2-image-1212 | `XAI_API_KEY` | `image.xai.api_key` |
+| Venice | nano-banana-pro | `VENICE_API_KEY` | `image.venice.api_key` |
 | Flux | flux-2-pro, flux-2-max, flux-kontext-pro | `BFL_API_KEY` | `image.flux.api_key` |
 | OpenRouter | various | `OPENROUTER_API_KEY` | `image.openrouter.api_key` |
 
 Image providers use their own credentials, separate from text providers. This allows using different API keys or accounts for text vs image generation.
 
-**Note:** xAI image generation does not support image editing (`-i` flag).
+**Note:** xAI and Venice image generation do not support image editing (`-i` flag).
 
 ## Text Embeddings
 
@@ -1561,7 +1562,7 @@ edit:
   diff_format: auto  # auto, udiff, or replace
 
 image:
-  provider: gemini  # gemini, openai, xai, flux, or openrouter
+  provider: gemini  # gemini, openai, xai, venice, flux, or openrouter
   output_dir: ~/Pictures/term-llm
 
   gemini:
@@ -1575,6 +1576,11 @@ image:
   xai:
     api_key: ${XAI_API_KEY}
     # model: grok-2-image-1212
+
+  venice:
+    api_key: ${VENICE_API_KEY}
+    # model: nano-banana-pro
+    # resolution: 2K
 
   flux:
     api_key: ${BFL_API_KEY}
