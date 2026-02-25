@@ -16,8 +16,9 @@ type ImageResult struct {
 
 // GenerateRequest contains parameters for image generation
 type GenerateRequest struct {
-	Prompt string
-	Debug  bool
+	Prompt   string
+	Debug    bool
+	DebugRaw bool
 }
 
 // InputImage represents a single input image for editing
@@ -31,6 +32,7 @@ type EditRequest struct {
 	Prompt      string
 	InputImages []InputImage // Input images for editing (supports multiple for some providers)
 	Debug       bool
+	DebugRaw    bool
 }
 
 // ImageProvider is the interface for image generation providers
@@ -97,7 +99,8 @@ func NewImageProvider(cfg *config.Config, providerOverride string) (ImageProvide
 		if model == "" {
 			model = cfg.Image.Venice.Model
 		}
-		return NewVeniceProvider(apiKey, model, cfg.Image.Venice.Resolution), nil
+		editModel := cfg.Image.Venice.EditModel
+		return NewVeniceProvider(apiKey, model, editModel, cfg.Image.Venice.Resolution), nil
 
 	case "flux", "bfl":
 		apiKey := cfg.Image.Flux.APIKey

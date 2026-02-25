@@ -54,7 +54,7 @@ Examples:
 
 func init() {
 	imageCmd.Flags().StringArrayVarP(&imageInputs, "input", "i", nil, "Input image(s) to edit (can be specified multiple times)")
-	imageCmd.Flags().StringVarP(&imageProvider, "provider", "p", "", "Override provider (gemini, openai, flux, openrouter)")
+	imageCmd.Flags().StringVarP(&imageProvider, "provider", "p", "", "Override provider (gemini, openai, xai, venice, flux, openrouter)")
 	imageCmd.Flags().StringVarP(&imageOutput, "output", "o", "", "Custom output path")
 	imageCmd.Flags().BoolVar(&imageNoDisplay, "no-display", false, "Skip terminal display")
 	imageCmd.Flags().BoolVar(&imageNoClipboard, "no-clipboard", false, "Skip clipboard copy")
@@ -157,6 +157,7 @@ func runImage(cmd *cobra.Command, args []string) error {
 				Prompt:      prompt,
 				InputImages: inputImages,
 				Debug:       imageDebug,
+				DebugRaw:    debugRaw,
 			})
 		}, "Editing image")
 		if err != nil {
@@ -166,8 +167,9 @@ func runImage(cmd *cobra.Command, args []string) error {
 		// Generate mode
 		result, err = runImageWithSpinner(ctx, provider, func() (*image.ImageResult, error) {
 			return provider.Generate(ctx, image.GenerateRequest{
-				Prompt: prompt,
-				Debug:  imageDebug,
+				Prompt:   prompt,
+				Debug:    imageDebug,
+				DebugRaw: debugRaw,
 			})
 		}, "Generating image")
 		if err != nil {
@@ -312,6 +314,9 @@ func runImageWithSpinner(_ context.Context, provider image.ImageProvider, genera
 	final := finalModel.(imageSpinnerModel)
 	if final.err != nil {
 		return nil, final.err
+	}
+	if final.result == nil {
+		return nil, fmt.Errorf("cancelled")
 	}
 	return final.result, nil
 }

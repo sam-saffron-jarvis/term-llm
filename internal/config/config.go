@@ -288,6 +288,7 @@ type ImageXAIConfig struct {
 type ImageVeniceConfig struct {
 	APIKey     string `mapstructure:"api_key"`
 	Model      string `mapstructure:"model"`
+	EditModel  string `mapstructure:"edit_model"`
 	Resolution string `mapstructure:"resolution"`
 }
 
@@ -939,6 +940,7 @@ var KnownKeys = map[string]bool{
 	"image.venice":             true,
 	"image.venice.api_key":     true,
 	"image.venice.model":       true,
+	"image.venice.edit_model":  true,
 	"image.venice.resolution":  true,
 	"image.flux":               true,
 	"image.flux.api_key":       true,
