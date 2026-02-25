@@ -133,14 +133,18 @@ func (r *SpawnAgentRunner) runAgentInternal(ctx context.Context, agentName strin
 			cfg.DefaultProvider = agent.Provider
 		}
 		if agent.Model != "" {
-			// Set model on the active provider config
+			// Set model on the active provider config.
 			// We must copy the provider config struct and reassign it to the map
 			// to avoid mutating the original (GetActiveProviderConfig returns a
 			// pointer to a copy, but we need to update the map entry).
-			if providerCfg, ok := cfg.Providers[cfg.DefaultProvider]; ok {
-				providerCfg.Model = agent.Model
-				cfg.Providers[cfg.DefaultProvider] = providerCfg
-			}
+			//
+			// If the provider has no explicit entry in cfg.Providers (e.g. "chatgpt"
+			// which uses native OAuth and needs no API key), create a minimal entry so
+			// the model override is not silently dropped. Without this, built-in
+			// providers like chatgpt fall through to their hardcoded default model.
+			providerCfg := cfg.Providers[cfg.DefaultProvider] // zero value if missing
+			providerCfg.Model = agent.Model
+			cfg.Providers[cfg.DefaultProvider] = providerCfg
 		}
 	}
 
