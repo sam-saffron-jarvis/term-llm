@@ -77,6 +77,8 @@ func (d *DialogModel) Type() DialogType {
 func (d *DialogModel) Close() {
 	d.dialogType = DialogNone
 	d.items = nil
+	d.filtered = nil
+	d.query = ""
 	d.cursor = 0
 }
 
@@ -114,9 +116,11 @@ func (d *DialogModel) ShowModelPicker(currentModel string, providers []ProviderI
 // items should have ID=full session ID, Label=display name.
 func (d *DialogModel) ShowSessionList(items []DialogItem, currentSessionID string) {
 	d.dialogType = DialogSessionList
-	d.title = "Load Session"
+	d.title = "Resume Session"
 	d.cursor = 0
+	d.query = ""
 	d.items = nil
+	d.filtered = nil
 
 	for _, item := range items {
 		item.Selected = item.ID == currentSessionID
@@ -125,6 +129,7 @@ func (d *DialogModel) ShowSessionList(items []DialogItem, currentSessionID strin
 			d.cursor = len(d.items) - 1
 		}
 	}
+	d.filtered = d.items
 }
 
 // ShowDirApproval opens the directory approval dialog
@@ -132,7 +137,9 @@ func (d *DialogModel) ShowDirApproval(filePath string, options []string) {
 	d.dialogType = DialogDirApproval
 	d.title = "Directory Access"
 	d.cursor = 0
+	d.query = ""
 	d.items = nil
+	d.filtered = nil
 	d.dirApprovalPath = filePath
 	d.dirApprovalOptions = options
 
@@ -149,6 +156,7 @@ func (d *DialogModel) ShowDirApproval(filePath string, options []string) {
 		ID:    "__deny__",
 		Label: "Deny",
 	})
+	d.filtered = d.items
 }
 
 // ShowMCPPicker opens the MCP server picker dialog

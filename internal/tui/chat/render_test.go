@@ -47,6 +47,7 @@ func TestUpdate_StreamError_BumpsContentVersion(t *testing.T) {
 		&config.Config{DefaultProvider: "mock"},
 		provider,
 		engine,
+		"mock",
 		"mock-model",
 		nil,   // mcpManager
 		20,    // maxTurns
@@ -84,6 +85,7 @@ func TestViewAltScreen_FirstRenderAnchorsToBottom(t *testing.T) {
 		&config.Config{DefaultProvider: "mock"},
 		provider,
 		engine,
+		"mock",
 		"mock-model",
 		nil,   // mcpManager
 		20,    // maxTurns
@@ -136,6 +138,7 @@ func TestStreamEventDiffFlushUsesOrderedCommandComposition(t *testing.T) {
 		&config.Config{DefaultProvider: "mock"},
 		provider,
 		engine,
+		"mock",
 		"mock-model",
 		nil,
 		20,
@@ -221,6 +224,7 @@ func TestRenderStatusLine_ShowsSeededCachedUsageFromSession(t *testing.T) {
 		&config.Config{DefaultProvider: "mock"},
 		provider,
 		engine,
+		"mock",
 		"mock-model",
 		nil,
 		20,

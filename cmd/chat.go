@@ -120,26 +120,68 @@ func init() {
 func runChat(cmd *cobra.Command, args []string) error {
 	// Extract @agent from args if present, and get remaining args as initial text
 	atAgent, filteredArgs := ExtractAgentFromArgs(args)
-	if atAgent != "" && chatAgent == "" {
-		chatAgent = atAgent
+	cliAgent := strings.TrimSpace(chatAgent)
+	if atAgent != "" && cliAgent == "" {
+		cliAgent = atAgent
 	}
 	initialText := strings.Join(filteredArgs, " ")
 
 	ctx, stop := signal.NotifyContext()
 	defer stop()
 
+	resumeRequested := cmd.Flags().Changed("resume")
+	resumeID := strings.TrimSpace(chatResume)
+
+	for {
+		nextResumeID, err := runChatOnce(ctx, cmd, initialText, cliAgent, resumeRequested, resumeID)
+		if err != nil {
+			return err
+		}
+		if nextResumeID == "" {
+			return nil
+		}
+
+		// Relaunch with full session runtime state restored.
+		resumeRequested = true
+		resumeID = nextResumeID
+		initialText = ""
+	}
+}
+
+func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent string, resumeRequested bool, resumeID string) (string, error) {
 	cfg, err := loadConfigWithSetup()
 	if err != nil {
-		return err
+		return "", err
 	}
 
-	// Load agent if specified
-	agent, err := LoadAgent(chatAgent, cfg)
+	// Initialize session store EARLY so resume can override settings before tool/MCP setup
+	store, storeCleanup := InitSessionStore(cfg, cmd.ErrOrStderr())
+	defer storeCleanup()
+
+	var sess *session.Session
+	if resumeRequested {
+		if store == nil {
+			return "", fmt.Errorf("session storage is disabled; cannot resume")
+		}
+		sess, err = resolveChatResumeSession(context.Background(), store, resumeID)
+		if err != nil {
+			return "", err
+		}
+		_ = store.SetCurrent(context.Background(), sess.ID)
+	}
+
+	// Saved session agent wins on resume.
+	effectiveAgent := strings.TrimSpace(cliAgent)
+	if sess != nil {
+		effectiveAgent = strings.TrimSpace(sess.Agent)
+	}
+
+	agent, err := LoadAgent(effectiveAgent, cfg)
 	if err != nil {
-		return err
+		return "", err
 	}
 
-	// Resolve all settings: CLI > agent > config
+	// Resolve all settings: CLI > agent > config (resume overrides applied below).
 	settings, err := ResolveSettings(cfg, agent, CLIFlags{
 		Provider:      chatProvider,
 		Tools:         chatTools,
@@ -153,65 +195,39 @@ func runChat(cmd *cobra.Command, args []string) error {
 		Search:        chatSearch,
 	}, cfg.Chat.Provider, cfg.Chat.Model, cfg.Chat.Instructions, cfg.Chat.MaxTurns, 200)
 	if err != nil {
-		return err
+		return "", err
 	}
 
-	// Initialize session store EARLY so --resume can override settings before tool/MCP setup
-	store, storeCleanup := InitSessionStore(cfg, cmd.ErrOrStderr())
-	defer storeCleanup()
-
-	// Handle --resume flag BEFORE tool/MCP setup so session settings take effect
-	var sess *session.Session
-	if cmd.Flags().Changed("resume") {
-		if store == nil {
-			return fmt.Errorf("session storage is disabled; cannot resume")
-		}
-		resumeID := strings.TrimSpace(chatResume)
-		if resumeID == "" {
-			// Resume most recent session
-			sess, err = store.GetCurrent(context.Background())
-			if err != nil || sess == nil {
-				summaries, listErr := store.List(context.Background(), session.ListOptions{Limit: 1})
-				if listErr == nil && len(summaries) > 0 {
-					sess, _ = store.Get(context.Background(), summaries[0].ID)
-				}
-			}
-			if sess == nil {
-				return fmt.Errorf("no session to resume")
-			}
-		} else {
-			sess, err = store.GetByPrefix(context.Background(), resumeID)
-			if err != nil {
-				return fmt.Errorf("failed to load session: %w", err)
-			}
-			if sess == nil {
-				return fmt.Errorf("session '%s' not found", resumeID)
-			}
-		}
-
-		// Update current session marker so --resume without ID targets this session
-		_ = store.SetCurrent(context.Background(), sess.ID)
-
-		// Apply session settings for flags not explicitly set on CLI
-		// (unconditionally - session may have had search/tools/MCP disabled)
-		if !cmd.Flags().Changed("search") {
-			settings.Search = sess.Search
-		}
-		if !cmd.Flags().Changed("tools") {
-			settings.Tools = sess.Tools
-		}
-		if !cmd.Flags().Changed("mcp") {
-			settings.MCP = sess.MCP
-		}
+	// Saved session settings win on resume.
+	if sess != nil {
+		settings.Search = sess.Search
+		settings.Tools = sess.Tools
+		settings.MCP = sess.MCP
+		settings.SessionID = sess.ID
 	}
 
-	// Apply provider overrides
-	agentProvider, agentModel := "", ""
-	if agent != nil {
-		agentProvider, agentModel = agent.Provider, agent.Model
-	}
-	if err := applyProviderOverridesWithAgent(cfg, cfg.Chat.Provider, cfg.Chat.Model, chatProvider, agentProvider, agentModel); err != nil {
-		return err
+	// Apply provider/model overrides.
+	if sess != nil {
+		resumeProvider := resolveSessionProviderKey(cfg, sess)
+		if resumeProvider == "" {
+			resumeProvider = cfg.DefaultProvider
+			fmt.Fprintf(cmd.ErrOrStderr(), "warning: unable to infer provider for session %s; falling back to %s\n", session.ShortID(sess.ID), resumeProvider)
+		}
+		providerOverride := resumeProvider
+		if model := strings.TrimSpace(sess.Model); model != "" {
+			providerOverride = resumeProvider + ":" + model
+		}
+		if err := applyProviderOverridesWithAgent(cfg, cfg.Chat.Provider, cfg.Chat.Model, providerOverride, "", ""); err != nil {
+			return "", err
+		}
+	} else {
+		agentProvider, agentModel := "", ""
+		if agent != nil {
+			agentProvider, agentModel = agent.Provider, agent.Model
+		}
+		if err := applyProviderOverridesWithAgent(cfg, cfg.Chat.Provider, cfg.Chat.Model, chatProvider, agentProvider, agentModel); err != nil {
+			return "", err
+		}
 	}
 
 	initThemeFromConfig(cfg)
@@ -219,7 +235,7 @@ func runChat(cmd *cobra.Command, args []string) error {
 	// Create LLM provider and engine
 	provider, err := llm.NewProvider(cfg)
 	if err != nil {
-		return err
+		return "", err
 	}
 	engine := newEngine(provider, cfg)
 
@@ -234,10 +250,6 @@ func runChat(cmd *cobra.Command, args []string) error {
 		engine.SetDebugLogger(debugLogger)
 	}
 
-	if sess != nil {
-		settings.SessionID = sess.ID
-	}
-
 	// Initialize tools if enabled (using possibly-updated settings from resume)
 	enabledLocalTools := tools.ParseToolsFlag(settings.Tools)
 	toolMgr, err := settings.SetupToolManager(cfg, engine)
@@ -245,7 +257,7 @@ func runChat(cmd *cobra.Command, args []string) error {
 		if debugLogger != nil {
 			debugLogger.Close()
 		}
-		return err
+		return "", err
 	}
 	if toolMgr != nil {
 		// Enable yolo mode if flag is set
@@ -275,7 +287,7 @@ func runChat(cmd *cobra.Command, args []string) error {
 			if debugLogger != nil {
 				debugLogger.Close()
 			}
-			return err
+			return "", err
 		}
 	}
 
@@ -286,11 +298,24 @@ func runChat(cmd *cobra.Command, args []string) error {
 
 	// Store resolved instructions in config for chat TUI
 	cfg.Chat.Instructions = settings.SystemPrompt
-
 	cfg.Chat.Instructions = InjectSkillsMetadata(cfg.Chat.Instructions, skillsSetup)
 
 	// Determine model name
 	modelName := getModelName(cfg)
+	providerKey := cfg.DefaultProvider
+
+	// Normalize resumed session metadata to canonical provider key + active model.
+	agentName := ""
+	if agent != nil {
+		agentName = agent.Name
+	}
+	if sess != nil {
+		sess.Provider = provider.Name()
+		sess.ProviderKey = providerKey
+		sess.Model = modelName
+		sess.Agent = agentName
+		_ = store.Update(context.Background(), sess)
+	}
 
 	// Create MCP manager
 	mcpManager := mcp.NewManager()
@@ -325,11 +350,7 @@ func runChat(cmd *cobra.Command, args []string) error {
 	useAltScreen := term.IsTerminal(int(os.Stdout.Fd())) && !autoSendMode
 
 	// Create chat model
-	agentName := ""
-	if agent != nil {
-		agentName = agent.Name
-	}
-	model := chat.New(cfg, provider, engine, modelName, mcpManager, settings.MaxTurns, forceExternalSearch, settings.Search, enabledLocalTools, settings.Tools, settings.MCP, showStats, initialText, store, sess, useAltScreen, chatAutoSend, true, chatTextMode, agentName, chatYolo)
+	model := chat.New(cfg, provider, engine, providerKey, modelName, mcpManager, settings.MaxTurns, forceExternalSearch, settings.Search, enabledLocalTools, settings.Tools, settings.MCP, showStats, initialText, store, sess, useAltScreen, chatAutoSend, true, chatTextMode, agentName, chatYolo)
 
 	// Build program options
 	var opts []tea.ProgramOption
@@ -445,7 +466,7 @@ func runChat(cmd *cobra.Command, args []string) error {
 		p.Quit()
 	}()
 
-	_, err = p.Run()
+	finalModel, err := p.Run()
 
 	// Cleanup MCP servers
 	mcpManager.StopAll()
@@ -456,18 +477,119 @@ func runChat(cmd *cobra.Command, args []string) error {
 	}
 
 	if err != nil {
-		return fmt.Errorf("failed to run chat: %w", err)
+		return "", fmt.Errorf("failed to run chat: %w", err)
+	}
+
+	nextResumeID := ""
+	if m, ok := finalModel.(*chat.Model); ok {
+		nextResumeID = m.RequestedResumeSessionID()
 	}
 
 	// Print resume hint after alt-screen has been dismissed.
 	// Re-fetch the session so we get the latest LLMTurns written during streaming.
-	if store != nil && sess != nil && sess.ID != "" {
+	if nextResumeID == "" && store != nil && sess != nil && sess.ID != "" {
 		if refreshed, fetchErr := store.Get(context.Background(), sess.ID); fetchErr == nil && refreshed != nil && refreshed.LLMTurns >= 1 {
 			fmt.Fprintf(os.Stdout, "\n💬 Resume: term-llm chat --resume %s\n", session.ShortID(refreshed.ID))
 		}
 	}
 
-	return nil
+	return nextResumeID, nil
+}
+
+func resolveChatResumeSession(ctx context.Context, store session.Store, resumeID string) (*session.Session, error) {
+	resumeID = strings.TrimSpace(resumeID)
+	if resumeID == "" {
+		sess, err := store.GetCurrent(ctx)
+		if err == nil && sess != nil {
+			return sess, nil
+		}
+		summaries, listErr := store.List(ctx, session.ListOptions{Limit: 1})
+		if listErr != nil {
+			return nil, fmt.Errorf("failed to list sessions: %w", listErr)
+		}
+		if len(summaries) == 0 {
+			return nil, fmt.Errorf("no session to resume")
+		}
+		sess, err = store.Get(ctx, summaries[0].ID)
+		if err != nil {
+			return nil, fmt.Errorf("failed to load session: %w", err)
+		}
+		if sess == nil {
+			return nil, fmt.Errorf("no session to resume")
+		}
+		return sess, nil
+	}
+
+	sess, err := store.GetByPrefix(ctx, resumeID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load session: %w", err)
+	}
+	if sess == nil {
+		return nil, fmt.Errorf("session '%s' not found", resumeID)
+	}
+	return sess, nil
+}
+
+func resolveSessionProviderKey(cfg *config.Config, sess *session.Session) string {
+	if sess == nil {
+		return ""
+	}
+
+	resolveKnownProvider := func(candidate string) string {
+		candidate = strings.TrimSpace(candidate)
+		if candidate == "" {
+			return ""
+		}
+		if candidate == "debug" {
+			return candidate
+		}
+		for key := range cfg.Providers {
+			if strings.EqualFold(candidate, key) {
+				return key
+			}
+		}
+		for _, builtIn := range llm.GetBuiltInProviderNames() {
+			if strings.EqualFold(candidate, builtIn) {
+				return builtIn
+			}
+		}
+		return ""
+	}
+
+	if known := resolveKnownProvider(sess.ProviderKey); known != "" {
+		return known
+	}
+
+	display := strings.TrimSpace(sess.Provider)
+	if display == "" {
+		return ""
+	}
+	lower := strings.ToLower(display)
+
+	// Custom providers include the provider key in Name() prefix: "<key> (<model>)"
+	for key := range cfg.Providers {
+		lowerKey := strings.ToLower(key)
+		if lower == lowerKey || strings.HasPrefix(lower, lowerKey+" (") {
+			return key
+		}
+	}
+	for _, builtIn := range llm.GetBuiltInProviderNames() {
+		lowerBuiltIn := strings.ToLower(builtIn)
+		if lower == lowerBuiltIn || strings.HasPrefix(lower, lowerBuiltIn+" (") {
+			return builtIn
+		}
+	}
+
+	switch {
+	case strings.HasPrefix(lower, "github copilot ("):
+		return "copilot"
+	case strings.HasPrefix(lower, "claude cli ("):
+		return "claude-bin"
+	case strings.HasPrefix(lower, "debug"):
+		return "debug"
+	default:
+		return ""
+	}
 }
 
 // getModelName extracts the model name from config based on provider

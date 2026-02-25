@@ -30,20 +30,21 @@ const (
 
 // Session represents a chat session stored in the database.
 type Session struct {
-	ID         string      `json:"id"`
-	Number     int64       `json:"number,omitempty"` // Sequential session number (1, 2, 3...)
-	Name       string      `json:"name,omitempty"`
-	Summary    string      `json:"summary,omitempty"` // First user message or auto-generated
-	Provider   string      `json:"provider"`
-	Model      string      `json:"model"`
-	Mode       SessionMode `json:"mode,omitempty"`  // Session mode (chat, ask, plan, exec)
-	Agent      string      `json:"agent,omitempty"` // Agent name used for this session
-	CWD        string      `json:"cwd,omitempty"`   // Working directory at session start
-	CreatedAt  time.Time   `json:"created_at"`
-	UpdatedAt  time.Time   `json:"updated_at"`
-	Archived   bool        `json:"archived,omitempty"`
-	ParentID   string      `json:"parent_id,omitempty"`   // For session branching
-	IsSubagent bool        `json:"is_subagent,omitempty"` // True if this is a subagent session
+	ID          string      `json:"id"`
+	Number      int64       `json:"number,omitempty"` // Sequential session number (1, 2, 3...)
+	Name        string      `json:"name,omitempty"`
+	Summary     string      `json:"summary,omitempty"`      // First user message or auto-generated
+	Provider    string      `json:"provider"`               // Provider display label
+	ProviderKey string      `json:"provider_key,omitempty"` // Canonical provider key (e.g. openai, chatgpt, custom alias)
+	Model       string      `json:"model"`
+	Mode        SessionMode `json:"mode,omitempty"`  // Session mode (chat, ask, plan, exec)
+	Agent       string      `json:"agent,omitempty"` // Agent name used for this session
+	CWD         string      `json:"cwd,omitempty"`   // Working directory at session start
+	CreatedAt   time.Time   `json:"created_at"`
+	UpdatedAt   time.Time   `json:"updated_at"`
+	Archived    bool        `json:"archived,omitempty"`
+	ParentID    string      `json:"parent_id,omitempty"`   // For session branching
+	IsSubagent  bool        `json:"is_subagent,omitempty"` // True if this is a subagent session
 
 	// Session settings (restored on resume unless overridden)
 	Search bool   `json:"search,omitempty"` // Web search enabled

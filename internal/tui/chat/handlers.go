@@ -206,7 +206,7 @@ func (m *Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				switch m.dialog.Type() {
 				case DialogSessionList:
 					m.dialog.Close()
-					return m.cmdLoad([]string{selected.ID})
+					return m.cmdResume([]string{selected.ID})
 				case DialogDirApproval:
 					if selected.ID == "__deny__" {
 						m.pendingFilePath = ""

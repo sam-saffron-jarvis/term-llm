@@ -79,11 +79,6 @@ func AllCommands() []Command {
 			Usage:       "/save [name]",
 		},
 		{
-			Name:        "load",
-			Description: "Load a saved session",
-			Usage:       "/load <number|id>",
-		},
-		{
 			Name:        "sessions",
 			Aliases:     []string{"ls"},
 			Description: "List saved sessions",
@@ -309,8 +304,6 @@ func (m *Model) ExecuteCommand(input string) (tea.Model, tea.Cmd) {
 		return m.cmdNew()
 	case "save":
 		return m.cmdSave(args)
-	case "load":
-		return m.cmdLoad(args)
 	case "sessions":
 		return m.cmdSessions()
 	case "export":
@@ -385,16 +378,17 @@ func (m *Model) cmdClear() (tea.Model, tea.Cmd) {
 	// Create a new session to clear the conversation
 	// This preserves the old session in history while starting fresh
 	m.sess = &session.Session{
-		ID:        session.NewID(),
-		Provider:  m.providerName,
-		Model:     m.modelName,
-		Mode:      session.ModeChat,
-		Agent:     m.agentName,
-		CreatedAt: time.Now(),
-		UpdatedAt: time.Now(),
-		Search:    m.searchEnabled,
-		Tools:     m.toolsStr,
-		MCP:       m.mcpStr,
+		ID:          session.NewID(),
+		Provider:    m.providerName,
+		ProviderKey: m.providerKey,
+		Model:       m.modelName,
+		Mode:        session.ModeChat,
+		Agent:       m.agentName,
+		CreatedAt:   time.Now(),
+		UpdatedAt:   time.Now(),
+		Search:      m.searchEnabled,
+		Tools:       m.toolsStr,
+		MCP:         m.mcpStr,
 	}
 	if cwd, err := os.Getwd(); err == nil {
 		m.sess.CWD = cwd
@@ -475,7 +469,11 @@ func (m *Model) cmdModel(args []string) (tea.Model, tea.Cmd) {
 	}
 
 	// Fallback to current provider with exact name
-	return m.switchModel(m.providerName + ":" + modelArg)
+	fallbackProvider := strings.TrimSpace(m.providerKey)
+	if fallbackProvider == "" {
+		fallbackProvider = strings.TrimSpace(m.providerName)
+	}
+	return m.switchModel(fallbackProvider + ":" + modelArg)
 }
 
 // fuzzyMatchModel finds the best matching model for a query
@@ -565,16 +563,17 @@ func (m *Model) cmdNew() (tea.Model, tea.Cmd) {
 
 	// Create new session with current settings
 	m.sess = &session.Session{
-		ID:        session.NewID(),
-		Provider:  m.providerName,
-		Model:     m.modelName,
-		Mode:      session.ModeChat,
-		Agent:     m.agentName,
-		CreatedAt: time.Now(),
-		UpdatedAt: time.Now(),
-		Search:    m.searchEnabled,
-		Tools:     m.toolsStr,
-		MCP:       m.mcpStr,
+		ID:          session.NewID(),
+		Provider:    m.providerName,
+		ProviderKey: m.providerKey,
+		Model:       m.modelName,
+		Mode:        session.ModeChat,
+		Agent:       m.agentName,
+		CreatedAt:   time.Now(),
+		UpdatedAt:   time.Now(),
+		Search:      m.searchEnabled,
+		Tools:       m.toolsStr,
+		MCP:         m.mcpStr,
 	}
 	if cwd, err := os.Getwd(); err == nil {
 		m.sess.CWD = cwd
@@ -673,63 +672,6 @@ func (m *Model) cmdSave(args []string) (tea.Model, tea.Cmd) {
 	return m.showSystemMessage(fmt.Sprintf("Session saved as '%s'.", name))
 }
 
-func (m *Model) cmdLoad(args []string) (tea.Model, tea.Cmd) {
-	if m.store == nil {
-		return m.showSystemMessage("Session storage is disabled.")
-	}
-
-	ctx := context.Background()
-	if len(args) == 0 {
-		// Show session list dialog
-		summaries, err := m.store.List(ctx, session.ListOptions{Limit: 20})
-		if err != nil || len(summaries) == 0 {
-			return m.showSystemMessage("No saved sessions found.\nUse `/save [name]` to save the current session.")
-		}
-		// Convert to DialogItem slice with full IDs
-		var items []DialogItem
-		for _, s := range summaries {
-			label := s.Name
-			if label == "" {
-				label = fmt.Sprintf("#%d", s.Number)
-			}
-			items = append(items, DialogItem{
-				ID:    s.ID, // Full session ID for lookup
-				Label: label,
-			})
-		}
-		currentID := ""
-		if m.sess != nil {
-			currentID = m.sess.ID
-		}
-		m.dialog.ShowSessionList(items, currentID)
-		m.setTextareaValue("")
-		return m, nil
-	}
-
-	// Load by session ID or name
-	sessionID := args[0]
-	sess, err := m.store.Get(ctx, sessionID)
-	if err != nil {
-		return m.showSystemMessage(fmt.Sprintf("Failed to load session: %v", err))
-	}
-	if sess == nil {
-		return m.showSystemMessage(fmt.Sprintf("Session '%s' not found.", sessionID))
-	}
-
-	messages, _ := m.store.GetMessages(ctx, sess.ID, 0, 0)
-	m.sess = sess
-	m.messages = messages
-	m.scrollOffset = 0
-	m.setTextareaValue("")
-	_ = m.store.SetCurrent(ctx, sess.ID)
-
-	name := sess.Name
-	if name == "" {
-		name = fmt.Sprintf("#%d", sess.Number)
-	}
-	return m.showSystemMessage(fmt.Sprintf("Loaded session '%s' (%d messages).", name, len(messages)))
-}
-
 func (m *Model) cmdSessions() (tea.Model, tea.Cmd) {
 	if m.store == nil {
 		return m.showSystemMessage("Session storage is disabled.")
@@ -757,7 +699,7 @@ func (m *Model) cmdSessions() (tea.Model, tea.Cmd) {
 		}
 		b.WriteString(fmt.Sprintf("- `%s` (%s) - %d msgs - %s\n", name, s.Provider, s.MessageCount, summary))
 	}
-	b.WriteString("\nUse `/load <number>` to load a session.")
+	b.WriteString("\nUse `/resume <number|id>` to resume a session.")
 
 	m.setTextareaValue("")
 	return m.showSystemMessage(b.String())
@@ -780,18 +722,11 @@ func (m *Model) cmdResume(args []string) (tea.Model, tea.Cmd) {
 			return m.showSystemMessage(fmt.Sprintf("Session '%s' not found.", args[0]))
 		}
 
-		messages, _ := m.store.GetMessages(ctx, sess.ID, 0, 0)
-		m.sess = sess
-		m.messages = messages
-		m.scrollOffset = 0
-		m.setTextareaValue("")
 		_ = m.store.SetCurrent(ctx, sess.ID)
-
-		name := sess.Name
-		if name == "" {
-			name = fmt.Sprintf("#%d", sess.Number)
-		}
-		return m.showSystemMessage(fmt.Sprintf("Resumed session '%s' (%d messages).", name, len(messages)))
+		m.pendingResumeSessionID = sess.ID
+		m.quitting = true
+		m.setTextareaValue("")
+		return m, tea.Quit
 	}
 
 	// /resume with no args — show the session picker dialog with richer labels
@@ -819,11 +754,12 @@ func (m *Model) cmdResume(args []string) (tea.Model, tea.Cmd) {
 			snippet = snippet[:42] + "..."
 		}
 
+		shortModel := resumeShortenModel(s.Model)
 		var label string
 		if snippet != "" {
-			label = fmt.Sprintf("%s  %s · %dm · %s", name, snippet, s.MessageCount, age)
+			label = fmt.Sprintf("%s  %s · %d msgs · [%s] %s", name, snippet, s.MessageCount, shortModel, age)
 		} else {
-			label = fmt.Sprintf("%s  %dm · %s", name, s.MessageCount, age)
+			label = fmt.Sprintf("%s  %d msgs · [%s] %s", name, s.MessageCount, shortModel, age)
 		}
 
 		items = append(items, DialogItem{
@@ -856,6 +792,32 @@ func resumeFormatAge(t time.Time) string {
 	default:
 		return t.Format("Jan 2")
 	}
+}
+
+// resumeShortenModel returns a compact model name for display in the session picker.
+// It strips the "claude-" prefix and any trailing 8-digit date suffix, then truncates.
+func resumeShortenModel(model string) string {
+	s := strings.TrimPrefix(model, "claude-")
+	// Strip trailing date suffix of the form -YYYYMMDD
+	if len(s) > 9 {
+		suffix := s[len(s)-9:]
+		if suffix[0] == '-' {
+			allDigits := true
+			for _, c := range suffix[1:] {
+				if c < '0' || c > '9' {
+					allDigits = false
+					break
+				}
+			}
+			if allDigits {
+				s = s[:len(s)-9]
+			}
+		}
+	}
+	if len(s) > 12 {
+		s = s[:12]
+	}
+	return s
 }
 
 func (m *Model) cmdExport(args []string) (tea.Model, tea.Cmd) {
@@ -1519,8 +1481,19 @@ func (m *Model) switchModel(providerModel string) (tea.Model, tea.Cmd) {
 	m.provider = provider
 	// Preserve existing tool registry when creating new engine
 	m.engine = llm.NewEngine(provider, m.engine.Tools())
-	m.providerName = providerName
+	m.providerName = provider.Name()
+	m.providerKey = providerName
 	m.modelName = modelName
+
+	// Keep session metadata aligned so future resume restores correct runtime.
+	if m.sess != nil {
+		m.sess.Provider = m.providerName
+		m.sess.ProviderKey = m.providerKey
+		m.sess.Model = modelName
+		if m.store != nil {
+			_ = m.store.Update(context.Background(), m.sess)
+		}
+	}
 
 	return m.showSystemMessage(fmt.Sprintf("Switched to %s:%s", providerName, modelName))
 }

@@ -175,6 +175,7 @@ func newTestChatModel(altScreen bool) *Model {
 		&config.Config{DefaultProvider: "mock"},
 		provider,
 		engine,
+		"mock",
 		"mock-model",
 		nil,
 		20,

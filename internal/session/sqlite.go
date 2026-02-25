@@ -27,6 +27,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     name TEXT,
     summary TEXT,
     provider TEXT NOT NULL,
+    provider_key TEXT,
     model TEXT NOT NULL,
     mode TEXT DEFAULT 'chat',
     agent TEXT,
@@ -151,7 +152,7 @@ func NewSQLiteStore(cfg Config) (*SQLiteStore, error) {
 // - Fresh databases get the full schema from `schema` const and start at this version
 // - Existing databases run migrations to reach this version
 // Increment when adding new migrations.
-const schemaVersion = 7
+const schemaVersion = 8
 
 // migration represents a schema migration.
 type migration struct {
@@ -375,6 +376,18 @@ var migrations = []migration{
 			return nil
 		},
 	},
+	{
+		// Migration 8: Add canonical provider key for reliable resume behavior
+		version:     8,
+		description: "add provider_key column",
+		up: func(db *sql.DB) error {
+			_, err := db.Exec("ALTER TABLE sessions ADD COLUMN provider_key TEXT")
+			if err != nil && !isDuplicateColumnError(err) {
+				return err
+			}
+			return nil
+		},
+	},
 }
 
 // initSchema initializes the database schema and runs any pending migrations.
@@ -527,10 +540,10 @@ func (s *SQLiteStore) Create(ctx context.Context, sess *Session) error {
 		// next session number. This avoids race conditions where two concurrent
 		// Creates could read the same MAX(number).
 		result, err := s.db.ExecContext(ctx, `
-			INSERT INTO sessions (id, number, name, summary, provider, model, mode, agent, cwd, created_at, updated_at, archived, parent_id, search, tools, mcp,
+			INSERT INTO sessions (id, number, name, summary, provider, provider_key, model, mode, agent, cwd, created_at, updated_at, archived, parent_id, search, tools, mcp,
 			                      user_turns, llm_turns, tool_calls, input_tokens, cached_input_tokens, output_tokens, status, tags)
-			VALUES (?, (SELECT COALESCE(MAX(number), 0) + 1 FROM sessions), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			sess.ID, sess.Name, sess.Summary, sess.Provider, sess.Model, string(sess.Mode), nullString(sess.Agent), sess.CWD,
+			VALUES (?, (SELECT COALESCE(MAX(number), 0) + 1 FROM sessions), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			sess.ID, sess.Name, sess.Summary, sess.Provider, nullString(sess.ProviderKey), sess.Model, string(sess.Mode), nullString(sess.Agent), sess.CWD,
 			sess.CreatedAt, sess.UpdatedAt, sess.Archived, nullString(sess.ParentID),
 			sess.Search, nullString(sess.Tools), nullString(sess.MCP),
 			sess.UserTurns, sess.LLMTurns, sess.ToolCalls, sess.InputTokens, sess.CachedInputTokens, sess.OutputTokens,
@@ -561,14 +574,14 @@ func (s *SQLiteStore) Create(ctx context.Context, sess *Session) error {
 // Get retrieves a session by ID.
 func (s *SQLiteStore) Get(ctx context.Context, id string) (*Session, error) {
 	row := s.db.QueryRowContext(ctx, `
-		SELECT id, number, name, summary, provider, model, mode, agent, cwd, created_at, updated_at, archived, parent_id, search, tools, mcp,
+		SELECT id, number, name, summary, provider, provider_key, model, mode, agent, cwd, created_at, updated_at, archived, parent_id, search, tools, mcp,
 		       user_turns, llm_turns, tool_calls, input_tokens, cached_input_tokens, output_tokens, status, tags
 		FROM sessions WHERE id = ?`, id)
 
 	var sess Session
 	var number sql.NullInt64
-	var mode, agent, parentID, tools, mcp, status, tags sql.NullString
-	err := row.Scan(&sess.ID, &number, &sess.Name, &sess.Summary, &sess.Provider, &sess.Model, &mode,
+	var mode, agent, parentID, tools, mcp, status, tags, providerKey sql.NullString
+	err := row.Scan(&sess.ID, &number, &sess.Name, &sess.Summary, &sess.Provider, &providerKey, &sess.Model, &mode,
 		&agent, &sess.CWD, &sess.CreatedAt, &sess.UpdatedAt, &sess.Archived, &parentID,
 		&sess.Search, &tools, &mcp,
 		&sess.UserTurns, &sess.LLMTurns, &sess.ToolCalls, &sess.InputTokens, &sess.CachedInputTokens, &sess.OutputTokens,
@@ -584,6 +597,9 @@ func (s *SQLiteStore) Get(ctx context.Context, id string) (*Session, error) {
 	}
 	if mode.Valid {
 		sess.Mode = SessionMode(mode.String)
+	}
+	if providerKey.Valid {
+		sess.ProviderKey = providerKey.String
 	}
 	if agent.Valid {
 		sess.Agent = agent.String
@@ -609,14 +625,14 @@ func (s *SQLiteStore) Get(ctx context.Context, id string) (*Session, error) {
 // GetByNumber retrieves a session by its sequential number.
 func (s *SQLiteStore) GetByNumber(ctx context.Context, number int64) (*Session, error) {
 	row := s.db.QueryRowContext(ctx, `
-		SELECT id, number, name, summary, provider, model, mode, agent, cwd, created_at, updated_at, archived, parent_id, search, tools, mcp,
+		SELECT id, number, name, summary, provider, provider_key, model, mode, agent, cwd, created_at, updated_at, archived, parent_id, search, tools, mcp,
 		       user_turns, llm_turns, tool_calls, input_tokens, cached_input_tokens, output_tokens, status, tags
 		FROM sessions WHERE number = ?`, number)
 
 	var sess Session
 	var num sql.NullInt64
-	var mode, agent, parentID, tools, mcp, status, tags sql.NullString
-	err := row.Scan(&sess.ID, &num, &sess.Name, &sess.Summary, &sess.Provider, &sess.Model, &mode,
+	var mode, agent, parentID, tools, mcp, status, tags, providerKey sql.NullString
+	err := row.Scan(&sess.ID, &num, &sess.Name, &sess.Summary, &sess.Provider, &providerKey, &sess.Model, &mode,
 		&agent, &sess.CWD, &sess.CreatedAt, &sess.UpdatedAt, &sess.Archived, &parentID,
 		&sess.Search, &tools, &mcp,
 		&sess.UserTurns, &sess.LLMTurns, &sess.ToolCalls, &sess.InputTokens, &sess.CachedInputTokens, &sess.OutputTokens,
@@ -632,6 +648,9 @@ func (s *SQLiteStore) GetByNumber(ctx context.Context, number int64) (*Session, 
 	}
 	if mode.Valid {
 		sess.Mode = SessionMode(mode.String)
+	}
+	if providerKey.Valid {
+		sess.ProviderKey = providerKey.String
 	}
 	if agent.Valid {
 		sess.Agent = agent.String
@@ -697,14 +716,14 @@ func (s *SQLiteStore) GetByPrefix(ctx context.Context, prefix string) (*Session,
 	// Try prefix match using expanded short ID
 	pattern := ExpandShortID(prefix)
 	row := s.db.QueryRowContext(ctx, `
-		SELECT id, number, name, summary, provider, model, mode, agent, cwd, created_at, updated_at, archived, parent_id, search, tools, mcp,
+		SELECT id, number, name, summary, provider, provider_key, model, mode, agent, cwd, created_at, updated_at, archived, parent_id, search, tools, mcp,
 		       user_turns, llm_turns, tool_calls, input_tokens, cached_input_tokens, output_tokens, status, tags
 		FROM sessions WHERE id LIKE ? ORDER BY created_at DESC LIMIT 1`, pattern)
 
 	var prefixSess Session
 	var number sql.NullInt64
-	var mode, agent, parentID, tools, mcp, status, tags sql.NullString
-	err = row.Scan(&prefixSess.ID, &number, &prefixSess.Name, &prefixSess.Summary, &prefixSess.Provider, &prefixSess.Model, &mode,
+	var mode, agent, parentID, tools, mcp, status, tags, providerKey sql.NullString
+	err = row.Scan(&prefixSess.ID, &number, &prefixSess.Name, &prefixSess.Summary, &prefixSess.Provider, &providerKey, &prefixSess.Model, &mode,
 		&agent, &prefixSess.CWD, &prefixSess.CreatedAt, &prefixSess.UpdatedAt, &prefixSess.Archived, &parentID,
 		&prefixSess.Search, &tools, &mcp,
 		&prefixSess.UserTurns, &prefixSess.LLMTurns, &prefixSess.ToolCalls, &prefixSess.InputTokens, &prefixSess.CachedInputTokens, &prefixSess.OutputTokens,
@@ -720,6 +739,9 @@ func (s *SQLiteStore) GetByPrefix(ctx context.Context, prefix string) (*Session,
 	}
 	if mode.Valid {
 		prefixSess.Mode = SessionMode(mode.String)
+	}
+	if providerKey.Valid {
+		prefixSess.ProviderKey = providerKey.String
 	}
 	if agent.Valid {
 		prefixSess.Agent = agent.String
@@ -746,12 +768,12 @@ func (s *SQLiteStore) GetByPrefix(ctx context.Context, prefix string) (*Session,
 func (s *SQLiteStore) Update(ctx context.Context, sess *Session) error {
 	sess.UpdatedAt = time.Now()
 	result, err := s.db.ExecContext(ctx, `
-		UPDATE sessions SET name = ?, summary = ?, provider = ?, model = ?, mode = ?, agent = ?, cwd = ?,
+		UPDATE sessions SET name = ?, summary = ?, provider = ?, provider_key = ?, model = ?, mode = ?, agent = ?, cwd = ?,
 		       updated_at = ?, archived = ?, parent_id = ?, search = ?, tools = ?, mcp = ?,
 		       user_turns = ?, llm_turns = ?, tool_calls = ?, input_tokens = ?, cached_input_tokens = ?, output_tokens = ?,
 		       status = ?, tags = ?
 		WHERE id = ?`,
-		sess.Name, sess.Summary, sess.Provider, sess.Model, string(sess.Mode), nullString(sess.Agent), sess.CWD,
+		sess.Name, sess.Summary, sess.Provider, nullString(sess.ProviderKey), sess.Model, string(sess.Mode), nullString(sess.Agent), sess.CWD,
 		sess.UpdatedAt, sess.Archived, nullString(sess.ParentID),
 		sess.Search, nullString(sess.Tools), nullString(sess.MCP),
 		sess.UserTurns, sess.LLMTurns, sess.ToolCalls, sess.InputTokens, sess.CachedInputTokens, sess.OutputTokens,
