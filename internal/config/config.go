@@ -252,11 +252,12 @@ type EditConfig struct {
 
 // ImageConfig configures image generation settings
 type ImageConfig struct {
-	Provider   string                `mapstructure:"provider"`   // default image provider: gemini, openai, xai, flux, openrouter, debug
+	Provider   string                `mapstructure:"provider"`   // default image provider: gemini, openai, xai, venice, flux, openrouter, debug
 	OutputDir  string                `mapstructure:"output_dir"` // default save directory
 	Gemini     ImageGeminiConfig     `mapstructure:"gemini"`
 	OpenAI     ImageOpenAIConfig     `mapstructure:"openai"`
 	XAI        ImageXAIConfig        `mapstructure:"xai"`
+	Venice     ImageVeniceConfig     `mapstructure:"venice"`
 	Flux       ImageFluxConfig       `mapstructure:"flux"`
 	OpenRouter ImageOpenRouterConfig `mapstructure:"openrouter"`
 	Debug      ImageDebugConfig      `mapstructure:"debug"`
@@ -278,6 +279,13 @@ type ImageOpenAIConfig struct {
 type ImageXAIConfig struct {
 	APIKey string `mapstructure:"api_key"`
 	Model  string `mapstructure:"model"` // grok-2-image or grok-2-image-1212
+}
+
+// ImageVeniceConfig configures Venice AI image generation
+type ImageVeniceConfig struct {
+	APIKey     string `mapstructure:"api_key"`
+	Model      string `mapstructure:"model"`
+	Resolution string `mapstructure:"resolution"`
 }
 
 // ImageFluxConfig configures Flux (Black Forest Labs) image generation
@@ -698,6 +706,12 @@ func resolveImageCredentials(cfg *ImageConfig) {
 		cfg.XAI.APIKey = os.Getenv("XAI_API_KEY")
 	}
 
+	// Venice image credentials
+	cfg.Venice.APIKey = expandEnv(cfg.Venice.APIKey)
+	if cfg.Venice.APIKey == "" {
+		cfg.Venice.APIKey = os.Getenv("VENICE_API_KEY")
+	}
+
 	// Flux (BFL) image credentials
 	cfg.Flux.APIKey = expandEnv(cfg.Flux.APIKey)
 	if cfg.Flux.APIKey == "" {
@@ -912,6 +926,10 @@ var KnownKeys = map[string]bool{
 	"image.xai":                true,
 	"image.xai.api_key":        true,
 	"image.xai.model":          true,
+	"image.venice":             true,
+	"image.venice.api_key":     true,
+	"image.venice.model":       true,
+	"image.venice.resolution":  true,
 	"image.flux":               true,
 	"image.flux.api_key":       true,
 	"image.flux.model":         true,
@@ -1034,6 +1052,8 @@ func GetDefaults() map[string]any {
 		"image.gemini.model":             "gemini-2.5-flash-image",
 		"image.openai.model":             "gpt-image-1",
 		"image.xai.model":                "grok-2-image-1212",
+		"image.venice.model":             "nano-banana-pro",
+		"image.venice.resolution":        "2K",
 		"image.flux.model":               "flux-2-pro",
 		"image.openrouter.model":         "google/gemini-2.5-flash-image",
 		"image.debug.delay":              0.0,
