@@ -888,11 +888,27 @@ func (m *telegramSessionMgr) streamReply(ctx context.Context, bot botSender, ses
 		})
 	}
 
-	// Collect assistant and tool-result messages via the turn callback.
+	// Collect assistant and tool-result messages via callbacks.
+	// ResponseCompletedCallback captures assistant messages (with tool call parts)
+	// before tool execution. TurnCompletedCallback captures tool results after
+	// execution, or the final assistant message when no tools are used.
 	var (
 		producedMu sync.Mutex
 		produced   []llm.Message
 	)
+	sess.runtime.Engine.SetResponseCompletedCallback(func(cbCtx context.Context, _ int, assistantMsg llm.Message, _ llm.TurnMetrics) error {
+		producedMu.Lock()
+		produced = append(produced, assistantMsg)
+		producedMu.Unlock()
+		if m.store != nil && sess.meta != nil {
+			sessionMsg := session.NewMessage(sess.meta.ID, assistantMsg, -1)
+			m.runStoreOp(cbCtx, sess.meta.ID, "AddMessage(response)", func(storeCtx context.Context) error {
+				return m.store.AddMessage(storeCtx, sess.meta.ID, sessionMsg)
+			})
+		}
+		return nil
+	})
+	defer sess.runtime.Engine.SetResponseCompletedCallback(nil)
 	sess.runtime.Engine.SetTurnCompletedCallback(func(cbCtx context.Context, _ int, msgs []llm.Message, metrics llm.TurnMetrics) error {
 		producedMu.Lock()
 		produced = append(produced, msgs...)

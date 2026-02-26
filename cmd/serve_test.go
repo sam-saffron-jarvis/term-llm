@@ -479,6 +479,87 @@ func TestNewServeEngineWithTools_SkipsToolManagerWhenToolsDisabled(t *testing.T)
 	}
 }
 
+// echoTool is a minimal tool for testing the agentic loop in serve.
+type echoTool struct{}
+
+func (e *echoTool) Spec() llm.ToolSpec {
+	return llm.ToolSpec{
+		Name:        "echo",
+		Description: "Echoes input",
+		Schema:      map[string]any{"type": "object"},
+	}
+}
+
+func (e *echoTool) Execute(_ context.Context, _ json.RawMessage) (llm.ToolOutput, error) {
+	return llm.TextOutput("echoed"), nil
+}
+
+func (e *echoTool) Preview(_ json.RawMessage) string { return "" }
+
+func TestServeRuntimeRun_PersistsToolCallMessages(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "sessions.db")
+	store, err := session.NewStore(session.Config{Enabled: true, Path: dbPath})
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	// Script: turn 1 = tool call, turn 2 = final text after tool result
+	provider := llm.NewMockProvider("mock").
+		AddToolCall("call-1", "echo", map[string]any{"input": "hi"}).
+		AddTextResponse("done")
+
+	registry := llm.NewToolRegistry()
+	registry.Register(&echoTool{})
+	engine := llm.NewEngine(provider, registry)
+
+	rt := &serveRuntime{
+		provider:     provider,
+		engine:       engine,
+		store:        store,
+		defaultModel: "mock-model",
+	}
+	rt.Touch()
+
+	req := llm.Request{
+		SessionID: "toolcall-persist-test",
+		MaxTurns:  5,
+		Tools:     []llm.ToolSpec{(&echoTool{}).Spec()},
+	}
+	_, err = rt.Run(context.Background(), true, false, []llm.Message{
+		llm.UserText("call the echo tool"),
+	}, req)
+	if err != nil {
+		t.Fatalf("Run failed: %v", err)
+	}
+
+	// Fetch persisted messages
+	msgs, err := store.GetMessages(context.Background(), "toolcall-persist-test", 0, 0)
+	if err != nil {
+		t.Fatalf("GetMessages failed: %v", err)
+	}
+
+	// Expect: user, assistant(tool_call), tool(result), assistant(text)
+	var hasToolCall bool
+	var hasToolResult bool
+	for _, m := range msgs {
+		for _, p := range m.Parts {
+			if p.Type == llm.PartToolCall && p.ToolCall != nil && p.ToolCall.Name == "echo" {
+				hasToolCall = true
+			}
+			if p.Type == llm.PartToolResult && p.ToolResult != nil && p.ToolResult.ID == "call-1" {
+				hasToolResult = true
+			}
+		}
+	}
+	if !hasToolCall {
+		t.Fatalf("persisted messages missing assistant tool_call part; messages: %d", len(msgs))
+	}
+	if !hasToolResult {
+		t.Fatalf("persisted messages missing tool_result part; messages: %d", len(msgs))
+	}
+}
+
 func TestServeRuntimeRun_PersistsSessionAndMessages(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "sessions.db")
 	store, err := session.NewStore(session.Config{Enabled: true, Path: dbPath})
