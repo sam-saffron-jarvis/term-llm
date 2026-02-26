@@ -6,6 +6,7 @@
   <title>Chat</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='12' fill='%230d1117'/%3E%3Cpath d='M17 14h30v6H24v26h16v-9H30v-6h17v21H17z' fill='%2358a6ff'/%3E%3C/svg%3E">
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.11.1/styles/github-dark.min.css">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.11.1/styles/github.min.css" media="(prefers-color-scheme: light)">
   <style>
     :root {
       --bg: #0d1117;
@@ -18,6 +19,33 @@
       --accent-green: #3fb950;
       --accent-amber: #d29922;
       --danger: #f85149;
+      --backdrop: rgba(1, 4, 9, 0.55);
+      --overlay: rgba(1, 4, 9, 0.72);
+      --error-text: #ffd5d4;
+      --btn-accent-text: #dceeff;
+      --stop-btn-text: #ffd4d2;
+      --spinner-ring: rgba(220, 238, 255, 0.45);
+    }
+
+    @media (prefers-color-scheme: light) {
+      :root {
+        --bg: #ffffff;
+        --surface: #f6f8fa;
+        --surface-2: #eaeef2;
+        --border: #d0d7de;
+        --text: #1f2328;
+        --text-muted: #656d76;
+        --accent: #0969da;
+        --accent-green: #1a7f37;
+        --accent-amber: #9a6700;
+        --danger: #d1242f;
+        --backdrop: rgba(175, 184, 193, 0.5);
+        --overlay: rgba(175, 184, 193, 0.7);
+        --error-text: #82071e;
+        --btn-accent-text: #ffffff;
+        --stop-btn-text: #82071e;
+        --spinner-ring: rgba(255, 255, 255, 0.45);
+      }
     }
 
     * {
@@ -364,7 +392,7 @@
     .message.error .message-body {
       background: color-mix(in srgb, var(--danger) 14%, var(--surface) 86%);
       border-color: color-mix(in srgb, var(--danger) 55%, var(--border) 45%);
-      color: #ffd5d4;
+      color: var(--error-text);
     }
 
     .markdown-body {
@@ -703,7 +731,7 @@
     .stop-btn {
       border: 1px solid color-mix(in srgb, var(--danger) 45%, var(--border) 55%);
       background: color-mix(in srgb, var(--danger) 8%, var(--surface-2) 92%);
-      color: #ffd4d2;
+      color: var(--stop-btn-text);
       border-radius: 10px;
       padding: 0.5rem 0.7rem;
       cursor: pointer;
@@ -720,7 +748,7 @@
       border: 1px solid color-mix(in srgb, var(--accent) 65%, var(--border) 35%);
       border-radius: 999px;
       background: color-mix(in srgb, var(--accent) 32%, var(--surface-2) 68%);
-      color: #dceeff;
+      color: var(--btn-accent-text);
       display: inline-flex;
       align-items: center;
       justify-content: center;
@@ -744,8 +772,8 @@
       width: 16px;
       height: 16px;
       border-radius: 50%;
-      border: 2px solid rgba(220, 238, 255, 0.45);
-      border-top-color: #dceeff;
+      border: 2px solid var(--spinner-ring);
+      border-top-color: var(--btn-accent-text);
       animation: spin 0.8s linear infinite;
       display: none;
     }
@@ -775,7 +803,7 @@
     .sidebar-backdrop {
       position: fixed;
       inset: 0;
-      background: rgba(1, 4, 9, 0.55);
+      background: var(--backdrop);
       opacity: 0;
       pointer-events: none;
       transition: opacity 0.18s ease;
@@ -790,7 +818,7 @@
     .modal-overlay {
       position: fixed;
       inset: 0;
-      background: rgba(1, 4, 9, 0.72);
+      background: var(--overlay);
       z-index: 60;
       display: flex;
       align-items: center;
@@ -863,13 +891,115 @@
     .btn.primary {
       border-color: color-mix(in srgb, var(--accent) 60%, var(--border) 40%);
       background: color-mix(in srgb, var(--accent) 26%, var(--surface-2) 74%);
-      color: #dceeff;
+      color: var(--btn-accent-text);
       font-weight: 600;
     }
 
     .btn:disabled {
       opacity: 0.65;
       cursor: not-allowed;
+    }
+
+    .attachments {
+      display: flex;
+      gap: 0.5rem;
+      padding: 0 0 0.5rem;
+      flex-wrap: wrap;
+      max-width: 900px;
+      margin: 0 auto;
+    }
+
+    .attachment-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.35rem;
+      background: var(--surface-2);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 0.25rem 0.5rem;
+      font-size: 0.82rem;
+      max-width: 200px;
+    }
+
+    .attachment-chip img {
+      width: 32px;
+      height: 32px;
+      object-fit: cover;
+      border-radius: 4px;
+    }
+
+    .attachment-chip .att-name {
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      min-width: 0;
+    }
+
+    .attachment-chip .att-remove {
+      background: none;
+      border: none;
+      color: var(--text-muted);
+      cursor: pointer;
+      padding: 0 0.15rem;
+      font-size: 1rem;
+      line-height: 1;
+      flex-shrink: 0;
+    }
+
+    .attachment-chip .att-remove:hover {
+      color: var(--danger);
+    }
+
+    .attach-btn svg {
+      width: 18px;
+      height: 18px;
+    }
+
+    .drop-overlay {
+      position: absolute;
+      inset: 0;
+      background: color-mix(in srgb, var(--accent) 12%, var(--bg) 88%);
+      border: 2px dashed var(--accent);
+      border-radius: 12px;
+      z-index: 50;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 1.1rem;
+      color: var(--accent);
+      font-weight: 600;
+      pointer-events: none;
+    }
+
+    .drop-overlay.hidden {
+      display: none;
+    }
+
+    .message-attachments {
+      display: flex;
+      gap: 0.5rem;
+      flex-wrap: wrap;
+      margin-bottom: 0.4rem;
+    }
+
+    .message-attachments img {
+      max-width: 200px;
+      max-height: 150px;
+      border-radius: 8px;
+      border: 1px solid var(--border);
+      object-fit: cover;
+    }
+
+    .message-attachments .att-file {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.3rem;
+      background: var(--surface-2);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 0.2rem 0.5rem;
+      font-size: 0.82rem;
+      color: var(--text-muted);
     }
 
     @media (max-width: 767px) {
@@ -979,8 +1109,15 @@
         <div class="messages" id="messages"></div>
       </section>
 
+      <div class="drop-overlay hidden" id="dropOverlay">Drop files to attach</div>
+
       <footer class="composer">
+        <div id="attachmentsStrip" class="attachments" style="display:none;"></div>
         <div class="composer-inner">
+          <button class="icon-btn attach-btn" id="attachBtn" title="Attach file" aria-label="Attach file">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.44 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.19-9.19a4 4 0 015.66 5.66l-9.2 9.19a2 2 0 01-2.83-2.83l8.49-8.48"/></svg>
+          </button>
+          <input type="file" id="fileInput" multiple hidden>
           <textarea id="promptInput" class="prompt" rows="1" placeholder="Message…" aria-label="Message"></textarea>
           <div class="composer-actions">
             <button class="stop-btn" id="stopBtn" type="button">Stop</button>
@@ -990,7 +1127,7 @@
             </button>
           </div>
         </div>
-        <div class="composer-hint">Enter to send · Shift+Enter for newline</div>
+        <div class="composer-hint">Enter to send · Shift+Enter for newline · Paste or drag files to attach</div>
       </footer>
     </main>
   </div>
@@ -1032,7 +1169,8 @@
         streaming: false,
         abortController: null,
         autoScroll: true,
-        authRequired: false
+        authRequired: false,
+        attachments: []
       };
 
       // Ensure cookie is set on load so <img> requests to /images/ can authenticate
@@ -1060,7 +1198,11 @@
         authTokenInput: document.getElementById('authTokenInput'),
         authError: document.getElementById('authError'),
         authConnectBtn: document.getElementById('authConnectBtn'),
-        authCancelBtn: document.getElementById('authCancelBtn')
+        authCancelBtn: document.getElementById('authCancelBtn'),
+        attachBtn: document.getElementById('attachBtn'),
+        fileInput: document.getElementById('fileInput'),
+        attachmentsStrip: document.getElementById('attachmentsStrip'),
+        dropOverlay: document.getElementById('dropOverlay')
       };
 
       // ===== Markdown setup =====
@@ -1178,6 +1320,21 @@
         }
       };
 
+      const sessionIdFromURL = () => {
+        const path = window.location.pathname;
+        const match = path.match(/^\/ui\/(.+)$/);
+        return match ? decodeURIComponent(match[1]) : '';
+      };
+
+      const updateURL = (sessionId) => {
+        if (!sessionId) return;
+        const target = '/ui/' + encodeURIComponent(sessionId);
+        if (window.location.pathname !== target) {
+          history.pushState(null, '', target);
+        }
+        updateDocumentTitle();
+      };
+
       const sanitizeMessage = (msg) => {
         if (!msg || typeof msg !== 'object' || typeof msg.role !== 'string') return null;
         const role = msg.role;
@@ -1191,6 +1348,12 @@
           base.content = String(msg.content || '');
           if (role === 'assistant' && msg.usage && typeof msg.usage === 'object') {
             base.usage = msg.usage;
+          }
+          if (role === 'user' && Array.isArray(msg.attachments) && msg.attachments.length > 0) {
+            base.attachments = msg.attachments.map(a => ({
+              name: String(a.name || 'file'),
+              type: String(a.type || '')
+            }));
           }
           return base;
         }
@@ -1248,6 +1411,23 @@
         }
       };
 
+      // Strip large binary payloads from attachment metadata before serialization.
+      const sessionsForStorage = () => {
+        return state.sessions.map(s => {
+          if (!s.messages || !s.messages.some(m => m.attachments)) return s;
+          return {
+            ...s,
+            messages: s.messages.map(m => {
+              if (!m.attachments) return m;
+              return {
+                ...m,
+                attachments: m.attachments.map(a => ({ name: a.name, type: a.type }))
+              };
+            })
+          };
+        });
+      };
+
       const saveSessions = () => {
         if (state.sessions.length > 100) {
           state.sessions.sort((a, b) => a.created - b.created);
@@ -1256,8 +1436,12 @@
             state.activeSessionId = state.sessions[state.sessions.length - 1]?.id || '';
           }
         }
-        localStorage.setItem(STORAGE_KEYS.sessions, JSON.stringify(state.sessions));
-        localStorage.setItem(STORAGE_KEYS.activeSession, state.activeSessionId || '');
+        try {
+          localStorage.setItem(STORAGE_KEYS.sessions, JSON.stringify(sessionsForStorage()));
+          localStorage.setItem(STORAGE_KEYS.activeSession, state.activeSessionId || '');
+        } catch {
+          // QuotaExceededError or other storage failure — continue without persistence
+        }
       };
 
       const getActiveSession = () => state.sessions.find((s) => s.id === state.activeSessionId) || null;
@@ -1271,7 +1455,10 @@
 
       const ensureActiveSession = () => {
         let active = getActiveSession();
-        if (active) return active;
+        if (active) {
+          updateURL(active.id);
+          return active;
+        }
 
         if (state.sessions.length === 0) {
           active = createSession();
@@ -1282,6 +1469,7 @@
         }
 
         state.activeSessionId = active.id;
+        updateURL(active.id);
         saveSessions();
         return active;
       };
@@ -1372,6 +1560,7 @@
             btn.appendChild(meta);
             btn.addEventListener('click', async () => {
               state.activeSessionId = session.id;
+              updateURL(session.id);
 
               // Lazy-load messages for server-only sessions
               if (session._serverOnly) {
@@ -1497,7 +1686,29 @@
         } else if (message.role === 'error') {
           body.textContent = `Error: ${message.content || 'Unknown error.'}`;
         } else {
-          body.textContent = message.content || '';
+          // User message: show attachments if present
+          if (message.attachments && message.attachments.length > 0) {
+            const attDiv = document.createElement('div');
+            attDiv.className = 'message-attachments';
+            message.attachments.forEach(att => {
+              if (att.type && att.type.startsWith('image/') && att.dataURL) {
+                const img = document.createElement('img');
+                img.src = att.dataURL;
+                img.alt = att.name || 'Attached image';
+                attDiv.appendChild(img);
+              } else {
+                const badge = document.createElement('span');
+                badge.className = 'att-file';
+                badge.textContent = att.name || 'file';
+                attDiv.appendChild(badge);
+              }
+            });
+            body.appendChild(attDiv);
+          }
+          if (message.content) {
+            const textNode = document.createTextNode(message.content);
+            body.appendChild(textNode);
+          }
         }
 
         article.appendChild(body);
@@ -1949,7 +2160,7 @@
           syncTokenCookie(token);
 
           renderModelOptions();
-          setConnectionState('Connected', 'ok');
+          setConnectionState('', '');
           state.authRequired = false;
           closeAuthModal();
         } catch (err) {
@@ -2003,6 +2214,77 @@
         el.style.overflowY = el.scrollHeight > 200 ? 'auto' : 'hidden';
       };
 
+      // ===== File attachment =====
+      const renderAttachments = () => {
+        const strip = elements.attachmentsStrip;
+        strip.innerHTML = '';
+        if (state.attachments.length === 0) {
+          strip.style.display = 'none';
+          return;
+        }
+        strip.style.display = 'flex';
+        state.attachments.forEach((att) => {
+          const chip = document.createElement('div');
+          chip.className = 'attachment-chip';
+
+          if (att.type.startsWith('image/')) {
+            const img = document.createElement('img');
+            img.src = att.dataURL;
+            img.alt = att.name;
+            chip.appendChild(img);
+          }
+
+          const name = document.createElement('span');
+          name.className = 'att-name';
+          name.textContent = att.name;
+          name.title = `${att.name} (${(att.size / 1024).toFixed(1)} KB)`;
+          chip.appendChild(name);
+
+          const remove = document.createElement('button');
+          remove.className = 'att-remove';
+          remove.textContent = '\u00d7';
+          remove.title = 'Remove';
+          remove.addEventListener('click', () => {
+            state.attachments = state.attachments.filter(a => a.id !== att.id);
+            renderAttachments();
+          });
+          chip.appendChild(remove);
+
+          strip.appendChild(chip);
+        });
+      };
+
+      const MAX_ATTACHMENTS = 10;
+      const MAX_FILE_BYTES = 20 * 1024 * 1024; // 20 MB
+
+      const handleFiles = (fileList) => {
+        const files = Array.from(fileList);
+        for (const file of files) {
+          if (state.attachments.length >= MAX_ATTACHMENTS) {
+            alert(`Maximum ${MAX_ATTACHMENTS} attachments allowed.`);
+            return;
+          }
+          if (file.size > MAX_FILE_BYTES) {
+            alert(`${file.name} exceeds the 20 MB file size limit.`);
+            continue;
+          }
+          const reader = new FileReader();
+          reader.onload = () => {
+            if (state.attachments.length >= MAX_ATTACHMENTS) return;
+            const dataURL = reader.result;
+            state.attachments.push({
+              id: generateId('att'),
+              name: file.name,
+              type: file.type || 'application/octet-stream',
+              size: file.size,
+              dataURL
+            });
+            renderAttachments();
+          };
+          reader.readAsDataURL(file);
+        }
+      };
+
       const setStreaming = (streaming) => {
         state.streaming = streaming;
         elements.promptInput.disabled = streaming;
@@ -2043,7 +2325,8 @@
         if (state.streaming) return;
 
         const prompt = elements.promptInput.value.trim();
-        if (!prompt) return;
+        const pendingAttachments = [...state.attachments];
+        if (!prompt && pendingAttachments.length === 0) return;
 
         if (!state.token) {
           openAuthModal('Enter a token before sending a message.', true);
@@ -2084,10 +2367,17 @@
           content: prompt,
           created: Date.now()
         };
+        if (pendingAttachments.length > 0) {
+          userMessage.attachments = pendingAttachments.map(a => ({
+            name: a.name,
+            type: a.type,
+            dataURL: a.dataURL
+          }));
+        }
         session.messages.push(userMessage);
 
         if (!session.title || session.title === 'New chat') {
-          session.title = truncate(prompt, 60);
+          session.title = truncate(prompt || pendingAttachments[0]?.name || 'Image', 60);
         }
 
         const hadEmptyState = elements.messages.querySelector('.empty-state');
@@ -2100,6 +2390,8 @@
         persistAndRefreshShell();
 
         elements.promptInput.value = '';
+        state.attachments = [];
+        renderAttachments();
         autoGrowPrompt();
         scrollToBottom(true);
 
@@ -2107,9 +2399,28 @@
         const controller = new AbortController();
         state.abortController = controller;
 
+        // Build input content: plain string or array with file/image parts
+        let inputContent;
+        if (pendingAttachments.length > 0) {
+          const contentParts = [];
+          for (const att of pendingAttachments) {
+            if (att.type.startsWith('image/')) {
+              contentParts.push({ type: 'input_image', image_url: att.dataURL, filename: att.name });
+            } else {
+              contentParts.push({ type: 'input_file', file_data: att.dataURL, filename: att.name });
+            }
+          }
+          if (prompt) {
+            contentParts.push({ type: 'input_text', text: prompt });
+          }
+          inputContent = contentParts;
+        } else {
+          inputContent = prompt;
+        }
+
         const body = {
           stream: true,
-          input: [{ type: 'message', role: 'user', content: prompt }]
+          input: [{ type: 'message', role: 'user', content: inputContent }]
         };
 
         if (state.selectedModel) {
@@ -2431,6 +2742,27 @@
       // ===== Initialization =====
       const initialize = async () => {
         state.sessions = loadSessions();
+
+        // Check URL for a specific session ID
+        const urlSessionId = sessionIdFromURL();
+        if (urlSessionId) {
+          const found = state.sessions.find(s => s.id === urlSessionId);
+          if (found) {
+            state.activeSessionId = found.id;
+          } else {
+            // Create a server-only stub that will be lazy-loaded
+            const stub = {
+              id: urlSessionId,
+              title: 'Loading…',
+              created: Date.now(),
+              messages: [],
+              _serverOnly: true
+            };
+            state.sessions.unshift(stub);
+            state.activeSessionId = urlSessionId;
+          }
+        }
+
         ensureActiveSession();
 
         renderSidebar();
@@ -2446,10 +2778,27 @@
             setConnectionState('Validating token…');
             state.models = await fetchModels();
             renderModelOptions();
-            setConnectionState('Connected', 'ok');
+            setConnectionState('', '');
 
             // Merge server-side sessions after successful auth
             await mergeServerSessions();
+
+            // Lazy-load messages for URL-targeted server session
+            const active = getActiveSession();
+            if (active && active._serverOnly) {
+              const msgs = await loadServerSessionMessages(active.id);
+              if (msgs !== null) {
+                active.messages = msgs;
+                if (msgs.length > 0) {
+                  const firstUserMsg = msgs.find(m => m.role === 'user');
+                  if (firstUserMsg) active.title = truncate(firstUserMsg.content, 60);
+                }
+                delete active._serverOnly;
+                saveSessions();
+                renderSidebar();
+                renderMessages(true);
+              }
+            }
           } catch (err) {
             const message = err?.message || 'Unable to validate token.';
             setConnectionState(message, 'bad');
@@ -2467,6 +2816,7 @@
         const session = createSession();
         state.sessions.unshift(session);
         state.activeSessionId = session.id;
+        updateURL(session.id);
         persistAndRefreshShell();
         renderMessages(true);
         elements.promptInput.focus();
@@ -2509,6 +2859,61 @@
         }
       });
 
+      // File attachment handlers
+      elements.attachBtn.addEventListener('click', () => {
+        elements.fileInput.click();
+      });
+      elements.fileInput.addEventListener('change', () => {
+        if (elements.fileInput.files.length > 0) {
+          handleFiles(elements.fileInput.files);
+          elements.fileInput.value = '';
+        }
+      });
+
+      // Drag and drop
+      let dragCounter = 0;
+      const mainEl = document.querySelector('.main');
+      mainEl.addEventListener('dragenter', (e) => {
+        e.preventDefault();
+        dragCounter++;
+        elements.dropOverlay.classList.remove('hidden');
+      });
+      mainEl.addEventListener('dragleave', (e) => {
+        e.preventDefault();
+        dragCounter--;
+        if (dragCounter <= 0) {
+          dragCounter = 0;
+          elements.dropOverlay.classList.add('hidden');
+        }
+      });
+      mainEl.addEventListener('dragover', (e) => {
+        e.preventDefault();
+      });
+      mainEl.addEventListener('drop', (e) => {
+        e.preventDefault();
+        dragCounter = 0;
+        elements.dropOverlay.classList.add('hidden');
+        if (e.dataTransfer.files.length > 0) {
+          handleFiles(e.dataTransfer.files);
+        }
+      });
+
+      // Paste support
+      elements.promptInput.addEventListener('paste', (e) => {
+        const files = [];
+        if (e.clipboardData && e.clipboardData.items) {
+          for (const item of e.clipboardData.items) {
+            if (item.kind === 'file') {
+              const file = item.getAsFile();
+              if (file) files.push(file);
+            }
+          }
+        }
+        if (files.length > 0) {
+          handleFiles(files);
+        }
+      });
+
       elements.authConnectBtn.addEventListener('click', connectToken);
       elements.authCancelBtn.addEventListener('click', closeAuthModal);
       elements.authTokenInput.addEventListener('keydown', (event) => {
@@ -2521,6 +2926,25 @@
       window.addEventListener('resize', () => {
         if (!window.matchMedia('(max-width: 767px)').matches) {
           closeSidebar();
+        }
+      });
+
+      window.addEventListener('popstate', async () => {
+        const urlId = sessionIdFromURL();
+        if (!urlId || urlId === state.activeSessionId) return;
+
+        const found = state.sessions.find(s => s.id === urlId);
+        if (found) {
+          state.activeSessionId = found.id;
+          if (found._serverOnly) {
+            const msgs = await loadServerSessionMessages(found.id);
+            if (msgs !== null) {
+              found.messages = msgs;
+              delete found._serverOnly;
+            }
+          }
+          persistAndRefreshShell();
+          renderMessages(true);
         }
       });
 

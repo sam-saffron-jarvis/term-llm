@@ -1814,6 +1814,17 @@ func (rt *serveRuntime) run(ctx context.Context, stateful bool, replaceHistory b
 	req.Messages = messages
 
 	var produced []llm.Message
+	// ResponseCompletedCallback receives the assistant message (with tool call parts)
+	// immediately after streaming, BEFORE tool execution. Without this, tool calls
+	// are missing from persisted sessions because TurnCompletedCallback only receives
+	// tool results.
+	rt.engine.SetResponseCompletedCallback(func(_ context.Context, _ int, assistantMsg llm.Message, _ llm.TurnMetrics) error {
+		produced = append(produced, assistantMsg)
+		return nil
+	})
+	defer rt.engine.SetResponseCompletedCallback(nil)
+	// TurnCompletedCallback receives tool results after execution, or the final
+	// assistant message when no tools are used (ResponseCompletedCallback never fires).
 	rt.engine.SetTurnCompletedCallback(func(_ context.Context, _ int, msgs []llm.Message, _ llm.TurnMetrics) error {
 		produced = append(produced, msgs...)
 		return nil
@@ -2047,16 +2058,19 @@ func parseResponsesInput(input json.RawMessage) ([]llm.Message, bool, error) {
 		switch itemType {
 		case "message":
 			role := strings.ToLower(strings.TrimSpace(jsonString(item["role"])))
-			content := extractItemContent(item["content"])
 			switch role {
 			case "developer", "system":
-				messages = append(messages, llm.SystemText(content))
+				messages = append(messages, llm.SystemText(extractItemContent(item["content"])))
 				replaceHistory = true
 			case "assistant":
-				messages = append(messages, llm.AssistantText(content))
+				messages = append(messages, llm.AssistantText(extractItemContent(item["content"])))
 				replaceHistory = true
 			default:
-				messages = append(messages, llm.UserText(content))
+				msg, err := parseUserMessageContent(item["content"])
+				if err != nil {
+					return nil, false, fmt.Errorf("user message: %w", err)
+				}
+				messages = append(messages, msg)
 				userCount++
 			}
 		case "function_call":
@@ -2204,6 +2218,180 @@ func extractItemContent(content json.RawMessage) string {
 	return extractMessageText(content)
 }
 
+// parseDataURL splits a data URL into its media type and base64 payload.
+// Format: data:image/png;base64,iVBORw0KGgo...
+func parseDataURL(dataURL string) (mediaType, base64Data string) {
+	if !strings.HasPrefix(dataURL, "data:") {
+		return "", ""
+	}
+	rest := dataURL[5:]
+	idx := strings.Index(rest, ";base64,")
+	if idx < 0 {
+		return "", ""
+	}
+	return rest[:idx], rest[idx+8:]
+}
+
+// isLLMImageType returns true for image media types that LLM providers handle natively.
+func isLLMImageType(mediaType string) bool {
+	switch mediaType {
+	case "image/jpeg", "image/png", "image/gif", "image/webp":
+		return true
+	default:
+		return false
+	}
+}
+
+const (
+	maxAttachments     = 10
+	maxAttachmentBytes = 20 << 20 // 20 MB per file (decoded)
+)
+
+// saveUploadedFile decodes base64 data and writes it to the uploads directory,
+// returning the full filesystem path. Uses O_CREATE|O_EXCL for atomic uniqueness.
+func saveUploadedFile(filename, b64Data string) (string, error) {
+	dataDir, err := session.GetDataDir()
+	if err != nil {
+		return "", fmt.Errorf("get data dir: %w", err)
+	}
+	uploadsDir := filepath.Join(dataDir, "uploads")
+	if err := os.MkdirAll(uploadsDir, 0o700); err != nil {
+		return "", fmt.Errorf("create uploads dir: %w", err)
+	}
+
+	raw, err := base64.StdEncoding.DecodeString(b64Data)
+	if err != nil {
+		return "", fmt.Errorf("decode base64: %w", err)
+	}
+	if len(raw) > maxAttachmentBytes {
+		return "", fmt.Errorf("file %q exceeds %d MB limit", filename, maxAttachmentBytes>>20)
+	}
+
+	safeName := filepath.Base(filename)
+	if safeName == "." || safeName == "/" {
+		safeName = "upload"
+	}
+	ext := filepath.Ext(safeName)
+	prefix := strings.TrimSuffix(safeName, ext) + "_"
+
+	f, err := os.CreateTemp(uploadsDir, prefix+"*"+ext)
+	if err != nil {
+		return "", fmt.Errorf("create temp file: %w", err)
+	}
+	dest := f.Name()
+
+	if err := f.Chmod(0o600); err != nil {
+		f.Close()
+		os.Remove(dest)
+		return "", fmt.Errorf("chmod: %w", err)
+	}
+	if _, err := f.Write(raw); err != nil {
+		f.Close()
+		os.Remove(dest)
+		return "", fmt.Errorf("write file: %w", err)
+	}
+	if err := f.Close(); err != nil {
+		os.Remove(dest)
+		return "", fmt.Errorf("close file: %w", err)
+	}
+	return dest, nil
+}
+
+// abbreviatePath replaces the user's home directory prefix with ~ for privacy.
+func abbreviatePath(path string) string {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return path
+	}
+	if strings.HasPrefix(path, home) {
+		return "~" + path[len(home):]
+	}
+	return path
+}
+
+// parseUserMessageContent builds a user llm.Message from a content field
+// that may be a plain string or an array of content parts (input_text, input_image, input_file).
+// Supported image types are sent inline to the LLM; all other files are saved to disk
+// and referenced by path in a text part.
+func parseUserMessageContent(content json.RawMessage) (llm.Message, error) {
+	var parts []map[string]json.RawMessage
+	if err := json.Unmarshal(content, &parts); err == nil && len(parts) > 0 {
+		var llmParts []llm.Part
+		fileCount := 0
+		for _, part := range parts {
+			partType := jsonString(part["type"])
+			switch partType {
+			case "input_text":
+				text := jsonString(part["text"])
+				if text != "" {
+					llmParts = append(llmParts, llm.Part{Type: llm.PartText, Text: text})
+				}
+			case "input_image":
+				imageURL := jsonString(part["image_url"])
+				filename := jsonString(part["filename"])
+				if !strings.HasPrefix(imageURL, "data:") {
+					continue
+				}
+				mt, b64 := parseDataURL(imageURL)
+				if mt == "" || b64 == "" {
+					continue
+				}
+				if isLLMImageType(mt) {
+					llmParts = append(llmParts, llm.Part{
+						Type:      llm.PartImage,
+						ImageData: &llm.ToolImageData{MediaType: mt, Base64: b64},
+					})
+				} else {
+					fileCount++
+					if fileCount > maxAttachments {
+						return llm.Message{}, fmt.Errorf("too many attachments (max %d)", maxAttachments)
+					}
+					if filename == "" {
+						filename = "image"
+					}
+					path, err := saveUploadedFile(filename, b64)
+					if err != nil {
+						return llm.Message{}, fmt.Errorf("save attachment %q: %w", filename, err)
+					}
+					llmParts = append(llmParts, llm.Part{
+						Type: llm.PartText,
+						Text: fmt.Sprintf("[User uploaded file: %s — saved to %s]", filename, abbreviatePath(path)),
+					})
+				}
+			case "input_file":
+				fileData := jsonString(part["file_data"])
+				filename := jsonString(part["filename"])
+				if filename == "" {
+					filename = "upload"
+				}
+				if !strings.HasPrefix(fileData, "data:") {
+					continue
+				}
+				_, b64 := parseDataURL(fileData)
+				if b64 == "" {
+					continue
+				}
+				fileCount++
+				if fileCount > maxAttachments {
+					return llm.Message{}, fmt.Errorf("too many attachments (max %d)", maxAttachments)
+				}
+				path, err := saveUploadedFile(filename, b64)
+				if err != nil {
+					return llm.Message{}, fmt.Errorf("save attachment %q: %w", filename, err)
+				}
+				llmParts = append(llmParts, llm.Part{
+					Type: llm.PartText,
+					Text: fmt.Sprintf("[User uploaded file: %s — saved to %s]", filename, abbreviatePath(path)),
+				})
+			}
+		}
+		if len(llmParts) > 0 {
+			return llm.Message{Role: llm.RoleUser, Parts: llmParts}, nil
+		}
+	}
+	return llm.UserText(extractItemContent(content)), nil
+}
+
 func jsonString(raw json.RawMessage) string {
 	if len(raw) == 0 {
 		return ""
@@ -2232,7 +2420,7 @@ func writeJSON(w http.ResponseWriter, status int, payload any) {
 
 func decodeJSONBody(r *http.Request, dst any) error {
 	defer r.Body.Close()
-	dec := json.NewDecoder(io.LimitReader(r.Body, 10<<20))
+	dec := json.NewDecoder(io.LimitReader(r.Body, 50<<20))
 	if err := dec.Decode(dst); err != nil {
 		return err
 	}

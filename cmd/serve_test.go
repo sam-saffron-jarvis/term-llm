@@ -38,6 +38,208 @@ func TestParseResponsesInput_String(t *testing.T) {
 	}
 }
 
+func TestParseResponsesInput_ImageContent(t *testing.T) {
+	payload := json.RawMessage(`[
+		{"type":"message","role":"user","content":[
+			{"type":"input_image","image_url":"data:image/png;base64,aGVsbG8="},
+			{"type":"input_text","text":"describe this image"}
+		]}
+	]`)
+	msgs, _, err := parseResponsesInput(payload)
+	if err != nil {
+		t.Fatalf("parseResponsesInput failed: %v", err)
+	}
+	if len(msgs) != 1 {
+		t.Fatalf("len(msgs) = %d, want 1", len(msgs))
+	}
+	msg := msgs[0]
+	if msg.Role != llm.RoleUser {
+		t.Fatalf("role = %s, want user", msg.Role)
+	}
+	if len(msg.Parts) != 2 {
+		t.Fatalf("len(parts) = %d, want 2", len(msg.Parts))
+	}
+	if msg.Parts[0].Type != llm.PartImage {
+		t.Fatalf("parts[0].type = %s, want image", msg.Parts[0].Type)
+	}
+	if msg.Parts[0].ImageData == nil {
+		t.Fatalf("parts[0].ImageData = nil")
+	}
+	if msg.Parts[0].ImageData.MediaType != "image/png" {
+		t.Fatalf("media type = %q, want image/png", msg.Parts[0].ImageData.MediaType)
+	}
+	if msg.Parts[0].ImageData.Base64 != "aGVsbG8=" {
+		t.Fatalf("base64 = %q, want aGVsbG8=", msg.Parts[0].ImageData.Base64)
+	}
+	if msg.Parts[1].Type != llm.PartText {
+		t.Fatalf("parts[1].type = %s, want text", msg.Parts[1].Type)
+	}
+	if msg.Parts[1].Text != "describe this image" {
+		t.Fatalf("parts[1].text = %q, want %q", msg.Parts[1].Text, "describe this image")
+	}
+}
+
+func TestParseResponsesInput_FileUploadSavesToDisk(t *testing.T) {
+	dataHome := t.TempDir()
+	t.Setenv("XDG_DATA_HOME", dataHome)
+
+	// base64 of "hello world"
+	b64 := "aGVsbG8gd29ybGQ="
+	payload := json.RawMessage(`[
+		{"type":"message","role":"user","content":[
+			{"type":"input_file","file_data":"data:application/pdf;base64,` + b64 + `","filename":"doc.pdf"},
+			{"type":"input_text","text":"summarize this"}
+		]}
+	]`)
+	msgs, _, err := parseResponsesInput(payload)
+	if err != nil {
+		t.Fatalf("parseResponsesInput failed: %v", err)
+	}
+	if len(msgs) != 1 {
+		t.Fatalf("len(msgs) = %d, want 1", len(msgs))
+	}
+	msg := msgs[0]
+	if len(msg.Parts) != 2 {
+		t.Fatalf("len(parts) = %d, want 2", len(msg.Parts))
+	}
+	if msg.Parts[0].Type != llm.PartText {
+		t.Fatalf("parts[0].type = %s, want text", msg.Parts[0].Type)
+	}
+	if !strings.Contains(msg.Parts[0].Text, "doc.pdf") {
+		t.Fatalf("parts[0].text = %q, should mention doc.pdf", msg.Parts[0].Text)
+	}
+	if msg.Parts[1].Text != "summarize this" {
+		t.Fatalf("parts[1].text = %q, want %q", msg.Parts[1].Text, "summarize this")
+	}
+
+	// Verify file was actually written to disk with correct content
+	uploadsDir := filepath.Join(dataHome, "term-llm", "uploads")
+	entries, err := os.ReadDir(uploadsDir)
+	if err != nil {
+		t.Fatalf("read uploads dir: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("uploads dir has %d files, want 1", len(entries))
+	}
+	got, err := os.ReadFile(filepath.Join(uploadsDir, entries[0].Name()))
+	if err != nil {
+		t.Fatalf("read uploaded file: %v", err)
+	}
+	if string(got) != "hello world" {
+		t.Fatalf("file content = %q, want %q", got, "hello world")
+	}
+	// Verify restrictive permissions
+	info, _ := entries[0].Info()
+	if perm := info.Mode().Perm(); perm&0o077 != 0 {
+		t.Fatalf("file permissions = %o, want no group/other access", perm)
+	}
+	// Verify abbreviatePath works when path is under home dir
+	home, _ := os.UserHomeDir()
+	if home != "" && strings.HasPrefix(msg.Parts[0].Text, home) {
+		t.Fatalf("parts[0].text leaks absolute home path: %q", msg.Parts[0].Text)
+	}
+}
+
+func TestParseResponsesInput_UnsupportedImageSavesToDisk(t *testing.T) {
+	dataHome := t.TempDir()
+	t.Setenv("XDG_DATA_HOME", dataHome)
+
+	// image/svg+xml is not a supported LLM image type
+	b64 := "PHN2Zz48L3N2Zz4=" // base64 of "<svg></svg>"
+	payload := json.RawMessage(`[
+		{"type":"message","role":"user","content":[
+			{"type":"input_image","image_url":"data:image/svg+xml;base64,` + b64 + `","filename":"icon.svg"}
+		]}
+	]`)
+	msgs, _, err := parseResponsesInput(payload)
+	if err != nil {
+		t.Fatalf("parseResponsesInput failed: %v", err)
+	}
+	if len(msgs) != 1 {
+		t.Fatalf("len(msgs) = %d, want 1", len(msgs))
+	}
+	msg := msgs[0]
+	if len(msg.Parts) != 1 {
+		t.Fatalf("len(parts) = %d, want 1", len(msg.Parts))
+	}
+	if msg.Parts[0].Type != llm.PartText {
+		t.Fatalf("parts[0].type = %s, want text (saved to disk)", msg.Parts[0].Type)
+	}
+	if !strings.Contains(msg.Parts[0].Text, "icon.svg") {
+		t.Fatalf("parts[0].text = %q, should mention icon.svg", msg.Parts[0].Text)
+	}
+
+	// Verify file on disk
+	uploadsDir := filepath.Join(dataHome, "term-llm", "uploads")
+	entries, err := os.ReadDir(uploadsDir)
+	if err != nil {
+		t.Fatalf("read uploads dir: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("uploads dir has %d files, want 1", len(entries))
+	}
+	got, err := os.ReadFile(filepath.Join(uploadsDir, entries[0].Name()))
+	if err != nil {
+		t.Fatalf("read uploaded file: %v", err)
+	}
+	if string(got) != "<svg></svg>" {
+		t.Fatalf("file content = %q, want %q", got, "<svg></svg>")
+	}
+}
+
+func TestParseResponsesInput_InvalidBase64ReturnsError(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+
+	payload := json.RawMessage(`[
+		{"type":"message","role":"user","content":[
+			{"type":"input_file","file_data":"data:application/pdf;base64,!!!invalid!!!","filename":"bad.pdf"}
+		]}
+	]`)
+	_, _, err := parseResponsesInput(payload)
+	if err == nil {
+		t.Fatalf("expected error for invalid base64, got nil")
+	}
+	if !strings.Contains(err.Error(), "bad.pdf") {
+		t.Fatalf("error = %q, should mention filename", err.Error())
+	}
+}
+
+func TestAbbreviatePath(t *testing.T) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Skipf("no home dir: %v", err)
+	}
+	got := abbreviatePath(home + "/foo/bar.txt")
+	if got != "~/foo/bar.txt" {
+		t.Fatalf("abbreviatePath(%q) = %q, want %q", home+"/foo/bar.txt", got, "~/foo/bar.txt")
+	}
+	// Paths outside home are returned unchanged
+	got = abbreviatePath("/tmp/other.txt")
+	if got != "/tmp/other.txt" {
+		t.Fatalf("abbreviatePath(%q) = %q, want unchanged", "/tmp/other.txt", got)
+	}
+}
+
+func TestParseDataURL(t *testing.T) {
+	mt, b64 := parseDataURL("data:image/jpeg;base64,/9j/4AAQ")
+	if mt != "image/jpeg" {
+		t.Fatalf("media type = %q, want image/jpeg", mt)
+	}
+	if b64 != "/9j/4AAQ" {
+		t.Fatalf("base64 = %q, want /9j/4AAQ", b64)
+	}
+
+	mt, b64 = parseDataURL("not-a-data-url")
+	if mt != "" || b64 != "" {
+		t.Fatalf("expected empty for invalid data URL, got %q %q", mt, b64)
+	}
+
+	mt, b64 = parseDataURL("data:text/plain;charset=utf-8,hello")
+	if mt != "" || b64 != "" {
+		t.Fatalf("expected empty for non-base64 data URL, got %q %q", mt, b64)
+	}
+}
+
 func TestParseResponsesInput_FunctionCallOutput(t *testing.T) {
 	payload := json.RawMessage(`[
 		{"type":"function_call","call_id":"call_1","name":"read_file","arguments":"{\"path\":\"a.txt\"}"},
