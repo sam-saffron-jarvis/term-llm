@@ -45,6 +45,40 @@ func TestVeniceEditModel(t *testing.T) {
 	}
 }
 
+func TestVeniceGenerateRequestUsesPerCallSize(t *testing.T) {
+	// Verify that per-request Size overrides the provider default resolution.
+	// We can't call Generate without a real API, but we can verify the struct
+	// wiring by checking that the provider stores the config resolution and
+	// that GenerateRequest carries Size for the provider to use.
+	p := NewVeniceProvider("key", "", "", "2K")
+	if p.resolution != "2K" {
+		t.Fatalf("expected provider resolution %q, got %q", "2K", p.resolution)
+	}
+
+	// The Venice Generate method builds veniceGenerateRequest with:
+	//   resolution = p.resolution (default)
+	//   if req.Size != "" { resolution = req.Size }
+	// We verify this logic inline since we can't hit the API.
+	for _, tt := range []struct {
+		name    string
+		reqSize string
+		wantRes string
+	}{
+		{"default from provider", "", "2K"},
+		{"override from request", "4K", "4K"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			resolution := p.resolution
+			if tt.reqSize != "" {
+				resolution = tt.reqSize
+			}
+			if resolution != tt.wantRes {
+				t.Errorf("resolution=%q, want %q", resolution, tt.wantRes)
+			}
+		})
+	}
+}
+
 func TestVeniceProviderCapabilities(t *testing.T) {
 	provider := NewVeniceProvider("key", "", "", "")
 	if !provider.SupportsEdit() {

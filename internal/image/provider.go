@@ -16,9 +16,11 @@ type ImageResult struct {
 
 // GenerateRequest contains parameters for image generation
 type GenerateRequest struct {
-	Prompt   string
-	Debug    bool
-	DebugRaw bool
+	Prompt      string
+	Size        string // Normalized resolution: "1K", "2K", "4K"; providers translate or ignore
+	AspectRatio string // e.g. "1:1", "16:9", "9:16"; providers translate or ignore
+	Debug       bool
+	DebugRaw    bool
 }
 
 // InputImage represents a single input image for editing
@@ -31,6 +33,8 @@ type InputImage struct {
 type EditRequest struct {
 	Prompt      string
 	InputImages []InputImage // Input images for editing (supports multiple for some providers)
+	Size        string       // Normalized resolution: "1K", "2K", "4K"; providers translate or ignore
+	AspectRatio string       // e.g. "1:1", "16:9", "9:16"; providers translate or ignore
 	Debug       bool
 	DebugRaw    bool
 }
@@ -72,7 +76,13 @@ func NewImageProvider(cfg *config.Config, providerOverride string) (ImageProvide
 		if apiKey == "" {
 			return nil, fmt.Errorf("GEMINI_API_KEY not configured. Set environment variable or add to image.gemini.api_key in config")
 		}
-		return NewGeminiProvider(apiKey), nil
+		if model == "" {
+			model = cfg.Image.Gemini.Model
+		}
+		if err := ValidateSize(cfg.Image.Gemini.ImageSize); err != nil {
+			return nil, fmt.Errorf("invalid image.gemini.image_size config: %w", err)
+		}
+		return NewGeminiProvider(apiKey, model, cfg.Image.Gemini.ImageSize), nil
 
 	case "openai":
 		apiKey := cfg.Image.OpenAI.APIKey
@@ -137,4 +147,21 @@ func parseImageProviderModel(s string) (string, string) {
 		model = parts[1]
 	}
 	return provider, model
+}
+
+// ValidSizes are the normalized image size values accepted by the system.
+var ValidSizes = []string{"1K", "2K", "4K"}
+
+// ValidateSize checks that size is a recognized normalized value.
+// Returns nil for empty string (no size requested). Returns an error for invalid values.
+func ValidateSize(size string) error {
+	if size == "" {
+		return nil
+	}
+	for _, v := range ValidSizes {
+		if size == v {
+			return nil
+		}
+	}
+	return fmt.Errorf("invalid size %q (valid: %s)", size, strings.Join(ValidSizes, ", "))
 }

@@ -47,6 +47,7 @@ type ImageGenerateArgs struct {
 	Prompt          string   `json:"prompt"`
 	InputImage      string   `json:"input_image,omitempty"`       // Single path for editing/variation (backward compat)
 	InputImages     []string `json:"input_images,omitempty"`      // Multiple paths for multi-image editing
+	Size            string   `json:"size,omitempty"`              // Resolution: "1K", "2K", "4K"
 	AspectRatio     string   `json:"aspect_ratio,omitempty"`      // e.g., "16:9", "4:3"
 	OutputPath      string   `json:"output_path,omitempty"`       // Save location
 	ShowImage       *bool    `json:"show_image,omitempty"`        // Display via icat (default: true)
@@ -72,6 +73,11 @@ func (t *ImageGenerateTool) Spec() llm.ToolSpec {
 					"type":        "array",
 					"items":       map[string]interface{}{"type": "string"},
 					"description": "Paths to multiple input images for multi-image editing (optional, supported by Gemini and OpenRouter)",
+				},
+				"size": map[string]interface{}{
+					"type":        "string",
+					"enum":        []string{"1K", "2K", "4K"},
+					"description": "Image resolution: 1K (default, ~1024px), 2K (~2048px), 4K (~4096px)",
 				},
 				"aspect_ratio": map[string]interface{}{
 					"type":        "string",
@@ -108,7 +114,7 @@ func (t *ImageGenerateTool) Preview(args json.RawMessage) string {
 	if len(prompt) > 50 {
 		prompt = prompt[:47] + "..."
 	}
-	if a.InputImage != "" {
+	if a.InputImage != "" || len(a.InputImages) > 0 {
 		return fmt.Sprintf("Editing image: %s", prompt)
 	}
 	return fmt.Sprintf("Generating image: %s", prompt)
@@ -122,6 +128,10 @@ func (t *ImageGenerateTool) Execute(ctx context.Context, args json.RawMessage) (
 
 	if a.Prompt == "" {
 		return llm.TextOutput(formatToolError(NewToolError(ErrInvalidParams, "prompt is required"))), nil
+	}
+
+	if err := image.ValidateSize(a.Size); err != nil {
+		return llm.TextOutput(formatToolError(NewToolError(ErrInvalidParams, err.Error()))), nil
 	}
 
 	// Check output path permissions if specified
@@ -206,6 +216,8 @@ func (t *ImageGenerateTool) Execute(ctx context.Context, args json.RawMessage) (
 		result, err = provider.Edit(ctx, image.EditRequest{
 			Prompt:      a.Prompt,
 			InputImages: inputImages,
+			Size:        a.Size,
+			AspectRatio: a.AspectRatio,
 		})
 		if err != nil {
 			return llm.TextOutput(formatToolError(NewToolErrorf(ErrImageGenFailed, "image edit failed: %v", err))), nil
@@ -213,7 +225,9 @@ func (t *ImageGenerateTool) Execute(ctx context.Context, args json.RawMessage) (
 	} else {
 		// Generate new image
 		result, err = provider.Generate(ctx, image.GenerateRequest{
-			Prompt: a.Prompt,
+			Prompt:      a.Prompt,
+			Size:        a.Size,
+			AspectRatio: a.AspectRatio,
 		})
 		if err != nil {
 			return llm.TextOutput(formatToolError(NewToolErrorf(ErrImageGenFailed, "image generation failed: %v", err))), nil

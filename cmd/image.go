@@ -21,6 +21,7 @@ var (
 	imageInputs      []string
 	imageProvider    string
 	imageOutput      string
+	imageSize        string
 	imageNoDisplay   bool
 	imageNoClipboard bool
 	imageNoSave      bool
@@ -56,6 +57,7 @@ func init() {
 	imageCmd.Flags().StringArrayVarP(&imageInputs, "input", "i", nil, "Input image(s) to edit (can be specified multiple times)")
 	imageCmd.Flags().StringVarP(&imageProvider, "provider", "p", "", "Override provider (gemini, openai, xai, venice, flux, openrouter)")
 	imageCmd.Flags().StringVarP(&imageOutput, "output", "o", "", "Custom output path")
+	imageCmd.Flags().StringVarP(&imageSize, "size", "s", "", "Image resolution (must be 1K, 2K, or 4K)")
 	imageCmd.Flags().BoolVar(&imageNoDisplay, "no-display", false, "Skip terminal display")
 	imageCmd.Flags().BoolVar(&imageNoClipboard, "no-clipboard", false, "Skip clipboard copy")
 	imageCmd.Flags().BoolVar(&imageNoSave, "no-save", false, "Don't save to default location (use with -o)")
@@ -93,6 +95,11 @@ func runImage(cmd *cobra.Command, args []string) error {
 
 	// Initialize theme from config
 	initThemeFromConfig(cfg)
+
+	// Validate --size flag
+	if err := image.ValidateSize(imageSize); err != nil {
+		return err
+	}
 
 	// Create image provider
 	provider, err := image.NewImageProvider(cfg, imageProvider)
@@ -156,6 +163,7 @@ func runImage(cmd *cobra.Command, args []string) error {
 			return provider.Edit(ctx, image.EditRequest{
 				Prompt:      prompt,
 				InputImages: inputImages,
+				Size:        imageSize,
 				Debug:       imageDebug,
 				DebugRaw:    debugRaw,
 			})
@@ -168,6 +176,7 @@ func runImage(cmd *cobra.Command, args []string) error {
 		result, err = runImageWithSpinner(ctx, provider, func() (*image.ImageResult, error) {
 			return provider.Generate(ctx, image.GenerateRequest{
 				Prompt:   prompt,
+				Size:     imageSize,
 				Debug:    imageDebug,
 				DebugRaw: debugRaw,
 			})
@@ -193,9 +202,22 @@ func runImage(cmd *cobra.Command, args []string) error {
 		}
 	}
 
+	// Detect whether we have a controlling terminal
+	hasTTY := true
+	if tty, err := os.OpenFile("/dev/tty", os.O_RDWR, 0); err != nil {
+		hasTTY = false
+	} else {
+		tty.Close()
+	}
+
 	if outputPath != "" {
 		fmt.Fprintf(os.Stderr, "Saved to: %s\n", outputPath)
 		recordImageDirect(cfg, prompt, outputPath, result, provider.Name())
+	}
+
+	// Skip display and clipboard when no TTY (e.g. piped/scripted usage)
+	if !hasTTY {
+		return nil
 	}
 
 	// Display via icat

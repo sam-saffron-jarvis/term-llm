@@ -163,7 +163,7 @@ var ProviderModels = map[string][]string{
 
 var ImageProviderModels = map[string][]string{
 	"debug":      {"random"},
-	"gemini":     {"gemini-2.5-flash-image", "gemini-3-pro-image-preview"},
+	"gemini":     {"gemini-2.5-flash-image", "gemini-3-pro-image-preview", "gemini-3.1-flash-image-preview"},
 	"openai":     {"gpt-image-1.5", "gpt-image-1-mini"},
 	"xai":        {"grok-2-image", "grok-2-image-1212"},
 	"venice":     {"nano-banana-pro", "flux-2-pro", "flux-2-max", "gpt-image-1-5", "imagineart-1.5-pro", "recraft-v4", "recraft-v4-pro", "seedream-v4", "seedream-v5-lite", "qwen-image", "venice-sd35", "hidream", "chroma", "z-image-turbo", "lustify-sdxl", "lustify-v7", "wai-Illustrious", "bg-remover", "qwen-edit", "nano-banana-pro-edit", "flux-2-max-edit", "gpt-image-1-5-edit", "seedream-v4-edit", "seedream-v5-lite-edit"},

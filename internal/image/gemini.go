@@ -10,17 +10,31 @@ import (
 	"net/http"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
-const geminiEndpoint = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-image:generateContent"
+const (
+	geminiBaseURL      = "https://generativelanguage.googleapis.com/v1beta/models/"
+	geminiDefaultModel = "gemini-2.5-flash-image"
+	geminiHTTPTimeout  = 3 * time.Minute
+)
+
+var geminiHTTPClient = &http.Client{
+	Timeout: geminiHTTPTimeout,
+}
 
 // GeminiProvider implements ImageProvider using Google's Gemini API
 type GeminiProvider struct {
-	apiKey string
+	apiKey      string
+	model       string
+	defaultSize string
 }
 
-func NewGeminiProvider(apiKey string) *GeminiProvider {
-	return &GeminiProvider{apiKey: apiKey}
+func NewGeminiProvider(apiKey, model, defaultSize string) *GeminiProvider {
+	if model == "" {
+		model = geminiDefaultModel
+	}
+	return &GeminiProvider{apiKey: apiKey, model: model, defaultSize: defaultSize}
 }
 
 func (p *GeminiProvider) Name() string {
@@ -37,7 +51,7 @@ func (p *GeminiProvider) SupportsMultiImage() bool {
 
 func (p *GeminiProvider) Generate(ctx context.Context, req GenerateRequest) (*ImageResult, error) {
 	parts := []geminiPart{{Text: req.Prompt}}
-	return p.doRequest(ctx, parts, req.Debug)
+	return p.doRequest(ctx, parts, req.Size, req.Debug || req.DebugRaw)
 }
 
 func (p *GeminiProvider) Edit(ctx context.Context, req EditRequest) (*ImageResult, error) {
@@ -56,15 +70,26 @@ func (p *GeminiProvider) Edit(ctx context.Context, req EditRequest) (*ImageResul
 
 	// Add the prompt as the final part
 	parts = append(parts, geminiPart{Text: req.Prompt})
-	return p.doRequest(ctx, parts, req.Debug)
+	return p.doRequest(ctx, parts, req.Size, req.Debug || req.DebugRaw)
 }
 
-func (p *GeminiProvider) doRequest(ctx context.Context, parts []geminiPart, debug bool) (*ImageResult, error) {
+func (p *GeminiProvider) doRequest(ctx context.Context, parts []geminiPart, size string, debug bool) (*ImageResult, error) {
+	genCfg := geminiGenerationConfig{
+		ResponseModalities: []string{"TEXT", "IMAGE"},
+	}
+
+	// Request size takes precedence, then config default, then omit (API defaults to 1K)
+	effectiveSize := size
+	if effectiveSize == "" {
+		effectiveSize = p.defaultSize
+	}
+	if effectiveSize != "" {
+		genCfg.ImageConfig = &geminiImageConfig{ImageSize: effectiveSize}
+	}
+
 	reqBody := geminiRequest{
-		Contents: []geminiContent{{Parts: parts}},
-		GenerationConfig: geminiGenerationConfig{
-			ResponseModalities: []string{"TEXT", "IMAGE"},
-		},
+		Contents:         []geminiContent{{Parts: parts}},
+		GenerationConfig: genCfg,
 	}
 
 	jsonBody, err := json.Marshal(reqBody)
@@ -72,7 +97,12 @@ func (p *GeminiProvider) doRequest(ctx context.Context, parts []geminiPart, debu
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
 
-	httpReq, err := http.NewRequestWithContext(ctx, "POST", geminiEndpoint, bytes.NewReader(jsonBody))
+	endpoint := geminiBaseURL + p.model + ":generateContent"
+	if debug {
+		debugRawImageLog(debug, "Gemini Request", "POST %s\n%s", endpoint, truncateBase64InJSON(jsonBody))
+	}
+
+	httpReq, err := http.NewRequestWithContext(ctx, "POST", endpoint, bytes.NewReader(jsonBody))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
@@ -80,8 +110,7 @@ func (p *GeminiProvider) doRequest(ctx context.Context, parts []geminiPart, debu
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("x-goog-api-key", p.apiKey)
 
-	client := &http.Client{}
-	resp, err := client.Do(httpReq)
+	resp, err := geminiHTTPClient.Do(httpReq)
 	if err != nil {
 		return nil, fmt.Errorf("request failed: %w", err)
 	}
@@ -90,6 +119,10 @@ func (p *GeminiProvider) doRequest(ctx context.Context, parts []geminiPart, debu
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read response: %w", err)
+	}
+
+	if debug {
+		debugRawImageLog(debug, "Gemini Response", "status=%d\n%s", resp.StatusCode, truncateBase64InJSON(body))
 	}
 
 	if resp.StatusCode != http.StatusOK {
@@ -146,7 +179,12 @@ type geminiInlineData struct {
 }
 
 type geminiGenerationConfig struct {
-	ResponseModalities []string `json:"responseModalities"`
+	ResponseModalities []string           `json:"responseModalities"`
+	ImageConfig        *geminiImageConfig `json:"imageConfig,omitempty"`
+}
+
+type geminiImageConfig struct {
+	ImageSize string `json:"imageSize,omitempty"`
 }
 
 type geminiResponse struct {
@@ -176,6 +214,45 @@ type geminiError struct {
 	Code    int    `json:"code"`
 	Message string `json:"message"`
 	Status  string `json:"status"`
+}
+
+// truncateBase64InJSON returns a pretty-printed JSON string with long "data" values truncated.
+// This is used for debug logging to avoid dumping huge base64 blobs.
+func truncateBase64InJSON(raw []byte) string {
+	var obj interface{}
+	if err := json.Unmarshal(raw, &obj); err != nil {
+		return truncateDebugBody(raw, 2000)
+	}
+	truncateDataFields(obj)
+	out, err := json.MarshalIndent(obj, "", "  ")
+	if err != nil {
+		return truncateDebugBody(raw, 2000)
+	}
+	return string(out)
+}
+
+// truncateDataFields recursively walks a JSON structure and truncates any long
+// string values (base64 image data, etc.) regardless of field name.
+func truncateDataFields(v interface{}) {
+	const maxLen = 80
+	switch val := v.(type) {
+	case map[string]interface{}:
+		for k, child := range val {
+			if s, ok := child.(string); ok && len(s) > maxLen {
+				val[k] = s[:maxLen] + fmt.Sprintf("...[truncated, %d chars]", len(s))
+			} else {
+				truncateDataFields(child)
+			}
+		}
+	case []interface{}:
+		for i, item := range val {
+			if s, ok := item.(string); ok && len(s) > maxLen {
+				val[i] = s[:maxLen] + fmt.Sprintf("...[truncated, %d chars]", len(s))
+			} else {
+				truncateDataFields(item)
+			}
+		}
+	}
 }
 
 // getMimeType returns MIME type based on file extension

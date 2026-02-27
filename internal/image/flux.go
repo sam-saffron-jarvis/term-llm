@@ -46,9 +46,13 @@ func (p *FluxProvider) SupportsMultiImage() bool {
 }
 
 func (p *FluxProvider) Generate(ctx context.Context, req GenerateRequest) (*ImageResult, error) {
+	ar := req.AspectRatio
+	if ar == "" {
+		ar = "1:1"
+	}
 	genReq := fluxGenerateRequest{
 		Prompt:      req.Prompt,
-		AspectRatio: "1:1",
+		AspectRatio: ar,
 	}
 
 	model := p.model

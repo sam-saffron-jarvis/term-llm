@@ -50,7 +50,7 @@ func (p *OpenAIProvider) Generate(ctx context.Context, req GenerateRequest) (*Im
 	genReq := openaiGenerateRequest{
 		Model:        openaiModel,
 		Prompt:       req.Prompt,
-		Size:         "1024x1024",
+		Size:         openaiSizeFromAspectRatio(req.AspectRatio),
 		Quality:      "auto",
 		OutputFormat: "png",
 		N:            1,
@@ -103,7 +103,7 @@ func (p *OpenAIProvider) Edit(ctx context.Context, req EditRequest) (*ImageResul
 	// Add other fields
 	writer.WriteField("model", openaiModel)
 	writer.WriteField("prompt", req.Prompt)
-	writer.WriteField("size", "1024x1024")
+	writer.WriteField("size", openaiSizeFromAspectRatio(req.AspectRatio))
 	writer.WriteField("quality", "auto")
 	writer.WriteField("output_format", "png")
 	writer.WriteField("n", "1")
@@ -216,4 +216,18 @@ type openaiError struct {
 	Message string `json:"message"`
 	Type    string `json:"type"`
 	Code    string `json:"code"`
+}
+
+// openaiSizeFromAspectRatio maps a normalized aspect ratio to an OpenAI size string.
+// gpt-image-1 only supports three sizes: 1024x1024, 1536x1024 (3:2), 1024x1536 (2:3).
+// Landscape ratios (16:9, 4:3) are approximated to 3:2, portrait (9:16, 3:4) to 2:3.
+func openaiSizeFromAspectRatio(ar string) string {
+	switch ar {
+	case "16:9", "3:2", "4:3":
+		return "1536x1024"
+	case "9:16", "2:3", "3:4":
+		return "1024x1536"
+	default:
+		return "1024x1024"
+	}
 }

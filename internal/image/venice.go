@@ -85,10 +85,15 @@ func (p *VeniceProvider) editModel() string {
 // Generate calls POST /image/generate — text-to-image.
 // Response: JSON { "images": ["<base64>"] }
 func (p *VeniceProvider) Generate(ctx context.Context, req GenerateRequest) (*ImageResult, error) {
+	resolution := p.resolution
+	if req.Size != "" {
+		resolution = req.Size
+	}
+
 	genReq := veniceGenerateRequest{
 		Model:         p.model,
 		Prompt:        req.Prompt,
-		Resolution:    p.resolution,
+		Resolution:    resolution,
 		SafeMode:      false,
 		HideWatermark: true,
 		Steps:         20,
@@ -102,7 +107,9 @@ func (p *VeniceProvider) Generate(ctx context.Context, req GenerateRequest) (*Im
 	}
 
 	debugRaw := req.Debug || req.DebugRaw
-	debugRawImageLog(debugRaw, "Venice Request", "POST %s\n%s", veniceGenerateEndpoint, string(jsonBody))
+	if debugRaw {
+		debugRawImageLog(debugRaw, "Venice Request", "POST %s\n%s", veniceGenerateEndpoint, string(jsonBody))
+	}
 
 	httpReq, err := http.NewRequestWithContext(ctx, "POST", veniceGenerateEndpoint, bytes.NewReader(jsonBody))
 	if err != nil {
@@ -221,8 +228,10 @@ func (p *VeniceProvider) doJSONRequest(httpReq *http.Request, debugRaw bool) (*I
 		return nil, fmt.Errorf("failed to read response: %w", err)
 	}
 
-	debugRawImageLog(debugRaw, "Venice Response", "status=%d content-type=%s body_len=%d\n%s",
-		resp.StatusCode, resp.Header.Get("Content-Type"), len(body), truncateDebugBody(body, 1024))
+	if debugRaw {
+		debugRawImageLog(debugRaw, "Venice Response", "status=%d content-type=%s body_len=%d\n%s",
+			resp.StatusCode, resp.Header.Get("Content-Type"), len(body), truncateBase64InJSON(body))
+	}
 
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("Venice API error (status %d): %s", resp.StatusCode, string(body))
@@ -262,7 +271,9 @@ func (p *VeniceProvider) doRawRequest(httpReq *http.Request, debugRaw bool) (*Im
 		resp.StatusCode, resp.Header.Get("Content-Type"), len(body))
 
 	if resp.StatusCode != http.StatusOK {
-		debugRawImageLog(debugRaw, "Venice Error Body", "%s", truncateDebugBody(body, 1024))
+		if debugRaw {
+			debugRawImageLog(debugRaw, "Venice Error Body", "%s", truncateDebugBody(body, 1024))
+		}
 		return nil, fmt.Errorf("Venice API error (status %d): %s", resp.StatusCode, string(body))
 	}
 

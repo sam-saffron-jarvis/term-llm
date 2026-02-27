@@ -268,8 +268,9 @@ type ImageConfig struct {
 
 // ImageGeminiConfig configures Gemini image generation
 type ImageGeminiConfig struct {
-	APIKey string `mapstructure:"api_key"`
-	Model  string `mapstructure:"model"`
+	APIKey    string `mapstructure:"api_key"`
+	Model     string `mapstructure:"model"`
+	ImageSize string `mapstructure:"image_size"` // Default image size: 1K, 2K, 4K
 }
 
 // ImageOpenAIConfig configures OpenAI image generation
@@ -931,6 +932,7 @@ var KnownKeys = map[string]bool{
 	"image.gemini":             true,
 	"image.gemini.api_key":     true,
 	"image.gemini.model":       true,
+	"image.gemini.image_size":  true,
 	"image.openai":             true,
 	"image.openai.api_key":     true,
 	"image.openai.model":       true,
