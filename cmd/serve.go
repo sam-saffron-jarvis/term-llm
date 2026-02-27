@@ -2313,6 +2313,10 @@ func abbreviatePath(path string) string {
 // that may be a plain string or an array of content parts (input_text, input_image, input_file).
 // Supported image types are sent inline to the LLM; all other files are saved to disk
 // and referenced by path in a text part.
+//
+// All uploaded images are saved to disk unconditionally as originals before any
+// processing. Images exceeding 1 MB are resized/compressed before being sent to
+// the LLM to avoid provider errors.
 func parseUserMessageContent(content json.RawMessage) (llm.Message, error) {
 	var parts []map[string]json.RawMessage
 	if err := json.Unmarshal(content, &parts); err == nil && len(parts) > 0 {
@@ -2337,9 +2341,35 @@ func parseUserMessageContent(content json.RawMessage) (llm.Message, error) {
 					continue
 				}
 				if isLLMImageType(mt) {
+					// Always save the original to disk first.
+					if filename == "" {
+						filename = "image"
+					}
+					if _, err := saveUploadedFile(filename, b64); err != nil {
+						log.Printf("[web] warning: could not save uploaded image %q: %v", filename, err)
+					}
+
+					// Decode raw bytes for possible resize.
+					raw, err := base64.StdEncoding.DecodeString(b64)
+					if err != nil {
+						// Shouldn't happen — b64 was just parsed — but fall back gracefully.
+						log.Printf("[web] warning: base64 re-decode failed for %q: %v", filename, err)
+						llmParts = append(llmParts, llm.Part{
+							Type:      llm.PartImage,
+							ImageData: &llm.ToolImageData{MediaType: mt, Base64: b64},
+						})
+						continue
+					}
+
+					// Resize if over 1 MB before sending to the model.
+					resized, resMT := resizeImageForLLM(raw, mt)
+					sendB64 := b64
+					if len(resized) != len(raw) || resMT != mt {
+						sendB64 = base64.StdEncoding.EncodeToString(resized)
+					}
 					llmParts = append(llmParts, llm.Part{
 						Type:      llm.PartImage,
-						ImageData: &llm.ToolImageData{MediaType: mt, Base64: b64},
+						ImageData: &llm.ToolImageData{MediaType: resMT, Base64: sendB64},
 					})
 				} else {
 					fileCount++
