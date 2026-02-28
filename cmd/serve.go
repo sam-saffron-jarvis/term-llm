@@ -208,7 +208,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 		MaxTurns:      serveMaxTurns,
 		MaxTurnsSet:   cmd.Flags().Changed("max-turns"),
 		Search:        serveSearch,
-		Platform:      strings.Join(platformNames, "+"),
+		Platform:      singlePlatformName(platformNames),
 	}, cfg.Ask.Provider, cfg.Ask.Model, cfg.Ask.Instructions, cfg.Ask.MaxTurns, 20)
 	if err != nil {
 		return err
@@ -444,6 +444,23 @@ func platformContains(platforms []string, name string) bool {
 		}
 	}
 	return false
+}
+
+// singlePlatformName returns the platform name when exactly one non-jobs platform
+// is being served, so the system prompt knows which surface it's on.
+// Returns empty string for multi-platform serves — the system prompt is shared
+// across all surfaces and can't reflect a single one.
+func singlePlatformName(platforms []string) string {
+	var nonJobs []string
+	for _, p := range platforms {
+		if p != "jobs" {
+			nonJobs = append(nonJobs, p)
+		}
+	}
+	if len(nonJobs) == 1 {
+		return nonJobs[0]
+	}
+	return ""
 }
 
 func authSummary(required bool) string {
