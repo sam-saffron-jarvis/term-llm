@@ -9,8 +9,8 @@ import (
 	"log"
 	"math"
 
-	_ "golang.org/x/image/webp"
 	"golang.org/x/image/draw"
+	_ "golang.org/x/image/webp"
 )
 
 const maxLLMImageBytes = 1 << 20 // 1 MB

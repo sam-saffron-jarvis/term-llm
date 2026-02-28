@@ -706,3 +706,56 @@ func TestResponsesToolState_MultipleToolCalls(t *testing.T) {
 		t.Errorf("call 1 mismatch: %+v", calls[1])
 	}
 }
+
+func TestBuildResponsesInput_ConvertsDanglingToolCalls(t *testing.T) {
+	messages := []Message{
+		{
+			Role: RoleUser,
+			Parts: []Part{
+				{Type: PartText, Text: "Run a tool"},
+			},
+		},
+		{
+			Role: RoleAssistant,
+			Parts: []Part{
+				{Type: PartText, Text: "Working on it"},
+				{
+					Type: PartToolCall,
+					ToolCall: &ToolCall{
+						ID:        "call-1",
+						Name:      "shell",
+						Arguments: []byte(`{"command":"sleep 10"}`),
+					},
+				},
+			},
+		},
+		{
+			Role: RoleUser,
+			Parts: []Part{
+				{Type: PartText, Text: "new request"},
+			},
+		},
+	}
+
+	items := BuildResponsesInput(messages)
+
+	// No function_call items should remain
+	for _, item := range items {
+		if item.Type == "function_call" {
+			t.Fatalf("expected no function_call items, found one: %+v", item)
+		}
+	}
+
+	// Marshal to JSON and check assistant text is preserved with interrupted stub
+	raw, err := json.Marshal(items)
+	if err != nil {
+		t.Fatalf("failed to marshal items: %v", err)
+	}
+	s := string(raw)
+	if !strings.Contains(s, "Working on it") {
+		t.Fatalf("expected original assistant text to be preserved, got: %s", s)
+	}
+	if !strings.Contains(s, "[tool call interrupted") {
+		t.Fatalf("expected [tool call interrupted stub, got: %s", s)
+	}
+}

@@ -147,6 +147,7 @@ type responsesSSEEvent struct {
 
 // BuildResponsesInput converts []Message to Open Responses input format
 func BuildResponsesInput(messages []Message) []ResponsesInputItem {
+	messages = sanitizeToolHistory(messages)
 	var inputItems []ResponsesInputItem
 
 	for _, msg := range messages {
