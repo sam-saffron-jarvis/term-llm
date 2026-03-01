@@ -47,6 +47,7 @@ func init() {
 	memoryCmd.RegisterFlagCompletionFunc("agent", memoryAgentCompletion)
 
 	memoryCmd.AddCommand(memoryMineCmd)
+	memoryCmd.AddCommand(memoryUpdateRecentCmd)
 	memoryCmd.AddCommand(memorySearchCmd)
 	memoryCmd.AddCommand(memoryPromoteCmd)
 	memoryCmd.AddCommand(memoryStatusCmd)
