@@ -140,8 +140,14 @@ type jobsV2RunResult struct {
 	Truncated    bool   // true when exit_reason is "max_turns_exceeded"
 }
 
+// progressWriter receives real-time progress updates from a running job.
+// eventType is one of: "tool_start", "tool_end", "phase", "turn_complete", "response_flush".
+// For "response_flush": message is the current accumulated response text, data is nil.
+// For others: message is a human-readable summary, data is structured metadata.
+type progressWriter func(eventType, message string, data any)
+
 type jobsV2Runner interface {
-	Run(ctx context.Context, job jobsV2Job) (jobsV2RunResult, error)
+	Run(ctx context.Context, job jobsV2Job, pw progressWriter) (jobsV2RunResult, error)
 }
 
 type jobsV2ProgramRunner struct{}
@@ -154,7 +160,8 @@ type jobsV2ProgramConfig struct {
 	Shell   bool     `json:"shell,omitempty"`
 }
 
-func (r *jobsV2ProgramRunner) Run(ctx context.Context, job jobsV2Job) (jobsV2RunResult, error) {
+func (r *jobsV2ProgramRunner) Run(ctx context.Context, job jobsV2Job, pw progressWriter) (jobsV2RunResult, error) {
+	_ = pw
 	var cfg jobsV2ProgramConfig
 	if err := json.Unmarshal(job.RunnerConfig, &cfg); err != nil {
 		return jobsV2RunResult{}, fmt.Errorf("invalid program runner config: %w", err)
@@ -211,7 +218,7 @@ type jobsV2LLMConfig struct {
 	Instructions string `json:"instructions"`
 }
 
-func (r *jobsV2LLMRunner) Run(ctx context.Context, job jobsV2Job) (jobsV2RunResult, error) {
+func (r *jobsV2LLMRunner) Run(ctx context.Context, job jobsV2Job, pw progressWriter) (jobsV2RunResult, error) {
 	if r.exec == nil {
 		return jobsV2RunResult{}, fmt.Errorf("llm runner is not configured")
 	}
@@ -237,6 +244,43 @@ func (r *jobsV2LLMRunner) Run(ctx context.Context, job jobsV2Job) (jobsV2RunResu
 				res.InputTokens += ev.Use.InputTokens
 				res.OutputTokens += ev.Use.OutputTokens
 				res.TurnCount++
+				// Flush accumulated response to DB after each turn so callers can see partial output.
+				if pw != nil {
+					pw("response_flush", res.Response, nil)
+					pw("turn_complete", fmt.Sprintf("turn %d complete (%d in, %d out tokens)", res.TurnCount, ev.Use.InputTokens, ev.Use.OutputTokens), map[string]any{
+						"turn":          res.TurnCount,
+						"input_tokens":  ev.Use.InputTokens,
+						"output_tokens": ev.Use.OutputTokens,
+					})
+				}
+			}
+		case llm.EventToolExecStart:
+			if pw != nil {
+				info := ev.ToolInfo
+				if info == "" {
+					info = ev.ToolName
+				}
+				pw("tool_start", fmt.Sprintf("→ %s: %s", ev.ToolName, info), map[string]any{
+					"tool": ev.ToolName,
+					"info": info,
+					"id":   ev.ToolCallID,
+				})
+			}
+		case llm.EventToolExecEnd:
+			if pw != nil {
+				status := "ok"
+				if !ev.ToolSuccess {
+					status = "failed"
+				}
+				pw("tool_end", fmt.Sprintf("← %s (%s)", ev.ToolName, status), map[string]any{
+					"tool":    ev.ToolName,
+					"success": ev.ToolSuccess,
+					"id":      ev.ToolCallID,
+				})
+			}
+		case llm.EventPhase:
+			if pw != nil && ev.Text != "" {
+				pw("phase", ev.Text, map[string]any{"text": ev.Text})
 			}
 		}
 	})
@@ -700,7 +744,17 @@ func (m *jobsV2Manager) executeRun(run jobsV2Run) {
 		m.mu.Unlock()
 	}()
 
-	result, runErr := runner.Run(ctx, job)
+	// Build a progress writer that writes events and flushes partial response to DB.
+	pw := func(eventType, message string, data any) {
+		switch eventType {
+		case "response_flush":
+			// Update response column so GET /v2/runs/{id} shows partial output.
+			_, _ = m.db.Exec(`UPDATE job_runs_v2 SET response = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, message, run.ID)
+		default:
+			_ = m.addRunEvent(run.ID, eventType, message, data)
+		}
+	}
+	result, runErr := runner.Run(ctx, job, pw)
 	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 		_ = m.finishRun(run.ID, jobsV2RunTimedOut, result, context.DeadlineExceeded, run.Attempt)
 		return
@@ -788,7 +842,7 @@ func (m *jobsV2Manager) addRunEvent(runID, eventType, message string, payload an
 	return err
 }
 
-func (m *jobsV2Manager) ListRunEvents(runID string, limit, offset int) ([]jobsV2RunEvent, int, error) {
+func (m *jobsV2Manager) ListRunEvents(runID string, sinceID int64, limit, offset int) ([]jobsV2RunEvent, int, error) {
 	if strings.TrimSpace(runID) == "" {
 		return nil, 0, fmt.Errorf("run_id is required")
 	}
@@ -801,15 +855,31 @@ func (m *jobsV2Manager) ListRunEvents(runID string, limit, offset int) ([]jobsV2
 	if offset < 0 {
 		offset = 0
 	}
+
+	var where string
+	args := make([]any, 0, 4)
+	args = append(args, runID)
+	if sinceID > 0 {
+		where = "WHERE run_id = ? AND id > ?"
+		args = append(args, sinceID)
+	} else {
+		where = "WHERE run_id = ?"
+	}
+
 	var total int
-	if err := m.db.QueryRow(`SELECT COUNT(1) FROM job_run_events_v2 WHERE run_id = ?`, runID).Scan(&total); err != nil {
+	countQuery := fmt.Sprintf(`SELECT COUNT(1) FROM job_run_events_v2 %s`, where)
+	if err := m.db.QueryRow(countQuery, args...).Scan(&total); err != nil {
 		return nil, 0, err
 	}
-	rows, err := m.db.Query(`SELECT id, run_id, event_type, message, data, created_at FROM job_run_events_v2 WHERE run_id = ? ORDER BY created_at ASC, id ASC LIMIT ? OFFSET ?`, runID, limit, offset)
+
+	rowsArgs := append(append([]any{}, args...), limit, offset)
+	query := fmt.Sprintf(`SELECT id, run_id, event_type, message, data, created_at FROM job_run_events_v2 %s ORDER BY created_at ASC, id ASC LIMIT ? OFFSET ?`, where)
+	rows, err := m.db.Query(query, rowsArgs...)
 	if err != nil {
 		return nil, 0, err
 	}
 	defer rows.Close()
+
 	events := make([]jobsV2RunEvent, 0)
 	for rows.Next() {
 		var ev jobsV2RunEvent
@@ -1777,17 +1847,23 @@ func (s *serveServer) handleRunV2ByID(w http.ResponseWriter, r *http.Request) {
 			writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", err.Error())
 			return
 		}
-		items, total, err := s.jobsV2.ListRunEvents(runID, limit, offset)
+		sinceID, err := parseNonNegativeIntQuery(r, "since_id", 0)
+		if err != nil {
+			writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", err.Error())
+			return
+		}
+		items, total, err := s.jobsV2.ListRunEvents(runID, int64(sinceID), limit, offset)
 		if err != nil {
 			writeOpenAIError(w, http.StatusInternalServerError, "internal_error", err.Error())
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{
-			"object": "list",
-			"data":   items,
-			"total":  total,
-			"offset": offset,
-			"limit":  limit,
+			"object":   "list",
+			"data":     items,
+			"total":    total,
+			"offset":   offset,
+			"limit":    limit,
+			"since_id": sinceID,
 		})
 		return
 	}
