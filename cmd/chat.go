@@ -490,6 +490,17 @@ func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent 
 		nextResumeID = m.RequestedResumeSessionID()
 	}
 
+	// Handle /reload: close the store, then re-exec under the (potentially new) binary.
+	if m, ok := finalModel.(*chat.Model); ok && m.WantsReload() {
+		storeCleanup() // flush & close DB before replacing the process
+		sessionID := m.ReloadSessionID()
+		if execErr := execReload(sessionID); execErr != nil {
+			// exec failed (shouldn't happen on Unix) — fall through and exit normally
+			fmt.Fprintf(cmd.ErrOrStderr(), "reload: %v\n", execErr)
+		}
+		return "", nil
+	}
+
 	// Print resume hint after alt-screen has been dismissed.
 	// Re-fetch the session so we get the latest LLMTurns written during streaming.
 	if nextResumeID == "" && store != nil && sess != nil && sess.ID != "" {

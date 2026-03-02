@@ -140,6 +140,11 @@ func AllCommands() []Command {
 			Description: "Browse and resume a previous session",
 			Usage:       "/resume [number|id]",
 		},
+		{
+			Name:        "reload",
+			Description: "Re-exec under the current binary, resuming this session (useful after upgrades)",
+			Usage:       "/reload",
+		},
 	}
 }
 
@@ -324,6 +329,8 @@ func (m *Model) ExecuteCommand(input string) (tea.Model, tea.Cmd) {
 		return m.cmdCompress()
 	case "resume":
 		return m.cmdResume(args)
+	case "reload":
+		return m.cmdReload()
 	default:
 		return m.showSystemMessage(fmt.Sprintf("Command /%s is not yet implemented.", cmd.Name))
 	}
@@ -444,6 +451,22 @@ func (m *Model) cmdClear() (tea.Model, tea.Cmd) {
 func (m *Model) cmdQuit() (tea.Model, tea.Cmd) {
 	m.quitting = true
 	return m, tea.Quit
+}
+
+func (m *Model) cmdReload() (tea.Model, tea.Cmd) {
+	if m.streaming {
+		return m.showSystemMessage("Cannot reload while streaming. Cancel first (Esc).")
+	}
+	m.setTextareaValue("")
+	m.quitting = true
+	m.reloadRequested = true
+	if m.sess != nil {
+		m.reloadSessionID = m.sess.ID
+	}
+	return m, tea.Batch(
+		tea.Println("Reloading..."),
+		tea.Quit,
+	)
 }
 
 func (m *Model) cmdModel(args []string) (tea.Model, tea.Cmd) {

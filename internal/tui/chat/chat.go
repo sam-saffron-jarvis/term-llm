@@ -117,6 +117,11 @@ type Model struct {
 	err      error
 	yolo     bool
 
+	// reloadRequested signals the caller to re-exec the binary (e.g. after an upgrade).
+	// The session ID to resume is stored in reloadSessionID.
+	reloadRequested bool
+	reloadSessionID string
+
 	// Dialog components
 	completions *CompletionsModel
 	dialog      *DialogModel
@@ -429,6 +434,12 @@ func NewWithFastProvider(cfg *config.Config, provider llm.Provider, fastProvider
 		selectedImage:           -1,
 	}
 }
+
+// WantsReload reports whether the user requested a binary reload via /reload.
+func (m *Model) WantsReload() bool { return m.reloadRequested }
+
+// ReloadSessionID returns the session ID to resume after a reload, if any.
+func (m *Model) ReloadSessionID() string { return m.reloadSessionID }
 
 // Init initializes the model
 func (m *Model) Init() tea.Cmd {
