@@ -17,6 +17,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/mcp"
+	memorydb "github.com/samsaffron/term-llm/internal/memory"
 	"github.com/samsaffron/term-llm/internal/serve"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/signal"
@@ -283,6 +284,12 @@ func runServe(cmd *cobra.Command, args []string) error {
 		fmt.Fprintln(cmd.ErrOrStderr(), "warning: --agent is ignored for --platform jobs; set llm runner_config.agent_name per job definition")
 	}
 
+	// Open the memory store for insight expansion (best-effort: non-fatal).
+	var insightsMemStore *memorydb.Store
+	if ms, msErr := openMemoryStore(); msErr == nil {
+		insightsMemStore = ms
+	}
+
 	// Build the serve.Settings used by non-web platforms.
 	serveSettings := serve.Settings{
 		SystemPrompt:           settings.SystemPrompt,
@@ -297,6 +304,9 @@ func runServe(cmd *cobra.Command, args []string) error {
 		MCP:                    settings.MCP,
 		Agent:                  agentName,
 		Store:                  store,
+		InsightsStore:          insightsMemStore,
+		InsightsAgent:          agentName,
+		InsightsMaxTokens:      500,
 		NewSession: func(ctx context.Context) (*serve.SessionRuntime, error) {
 			rt, err := factory(ctx)
 			if err != nil {
@@ -398,6 +408,10 @@ func runServe(cmd *cobra.Command, args []string) error {
 	}
 
 	<-ctx.Done()
+
+	if insightsMemStore != nil {
+		_ = insightsMemStore.Close()
+	}
 
 	if s != nil {
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)

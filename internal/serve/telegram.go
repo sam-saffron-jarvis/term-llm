@@ -920,6 +920,21 @@ func (m *telegramSessionMgr) streamReply(ctx context.Context, bot botSender, ses
 	messages = append(messages, sess.history...)
 	messages = append(messages, userMsg)
 
+	// Insights expansion: on the first turn of a new session, search the insight
+	// bank using the user's message and inject the top results as context. This
+	// primes the model with relevant behavioral patterns before it responds.
+	if len(sess.history) == 0 && m.settings.InsightsStore != nil {
+		maxTok := m.settings.InsightsMaxTokens
+		if maxTok <= 0 {
+			maxTok = 500
+		}
+		if expanded, err := m.settings.InsightsStore.ExpandInsights(
+			ctx, m.settings.InsightsAgent, userText, maxTok,
+		); err == nil && expanded != "" {
+			messages = append(messages, llm.UserText(expanded))
+		}
+	}
+
 	sessionID := ""
 	if sess.meta != nil {
 		sessionID = sess.meta.ID

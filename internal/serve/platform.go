@@ -6,6 +6,7 @@ import (
 
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
+	memorydb "github.com/samsaffron/term-llm/internal/memory"
 	"github.com/samsaffron/term-llm/internal/session"
 )
 
@@ -36,6 +37,12 @@ type Settings struct {
 	MCP                 string
 	Agent               string
 	Store               session.Store
+	// InsightsStore, when non-nil, enables insight expansion on the first user
+	// turn of each session. The top matching insights (up to InsightsMaxTokens)
+	// are injected as context immediately after the first user message.
+	InsightsStore     *memorydb.Store
+	InsightsAgent     string
+	InsightsMaxTokens int // 0 → default 500
 	// NewSession creates a fresh runtime instance for a new conversation.
 	// Called once per platform session (for example, per Telegram chat session).
 	NewSession func(context.Context) (*SessionRuntime, error)

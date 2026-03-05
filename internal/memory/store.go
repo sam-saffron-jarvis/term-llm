@@ -176,6 +176,30 @@ CREATE TABLE IF NOT EXISTS memory_fragment_sources (
 
 CREATE INDEX IF NOT EXISTS idx_fragment_sources_agent_path ON memory_fragment_sources(agent, path);
 CREATE INDEX IF NOT EXISTS idx_fragment_sources_session_id ON memory_fragment_sources(session_id);
+
+CREATE TABLE IF NOT EXISTS memory_insights (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    agent               TEXT NOT NULL,
+    content             TEXT NOT NULL,
+    category            TEXT NOT NULL DEFAULT '',
+    trigger_desc        TEXT NOT NULL DEFAULT '',
+    confidence          REAL NOT NULL DEFAULT 0.5,
+    reinforcement_count INTEGER NOT NULL DEFAULT 1,
+    created_at          DATETIME NOT NULL DEFAULT (datetime('now')),
+    last_reinforced     DATETIME NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_insights_agent ON memory_insights(agent);
+
+CREATE VIRTUAL TABLE IF NOT EXISTS memory_insights_fts USING fts5(
+    agent UNINDEXED,
+    content,
+    category,
+    trigger_desc,
+    content='memory_insights',
+    content_rowid='id',
+    tokenize='unicode61'
+);
 `
 
 // NewStore opens memory.db and initializes schema.
@@ -1790,4 +1814,292 @@ func sqliteLikeEscape(s string) string {
 	s = strings.ReplaceAll(s, `%`, `\%`)
 	s = strings.ReplaceAll(s, `_`, `\_`)
 	return s
+}
+
+// ── Insights ──────────────────────────────────────────────────────────────────
+
+// Insight is a generalized behavioral rule extracted from past sessions.
+// Unlike fragments (which store facts), insights store actionable patterns
+// that change how the agent behaves in future similar situations.
+type Insight struct {
+	ID                 int64
+	Agent              string
+	Content            string
+	Category           string
+	TriggerDesc        string
+	Confidence         float64
+	ReinforcementCount int
+	CreatedAt          time.Time
+	LastReinforced     time.Time
+}
+
+// CreateInsight inserts a new insight and syncs the FTS index.
+func (s *Store) CreateInsight(ctx context.Context, ins *Insight) error {
+	if ins == nil {
+		return fmt.Errorf("insight is nil")
+	}
+	if strings.TrimSpace(ins.Agent) == "" {
+		return fmt.Errorf("agent is required")
+	}
+	if strings.TrimSpace(ins.Content) == "" {
+		return fmt.Errorf("content is required")
+	}
+	now := time.Now()
+	if ins.CreatedAt.IsZero() {
+		ins.CreatedAt = now
+	}
+	if ins.LastReinforced.IsZero() {
+		ins.LastReinforced = ins.CreatedAt
+	}
+	if ins.Confidence == 0 {
+		ins.Confidence = 0.5
+	}
+	if ins.ReinforcementCount == 0 {
+		ins.ReinforcementCount = 1
+	}
+
+	res, err := s.db.ExecContext(ctx, `
+		INSERT INTO memory_insights
+		    (agent, content, category, trigger_desc, confidence, reinforcement_count, created_at, last_reinforced)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		ins.Agent, ins.Content, ins.Category, ins.TriggerDesc,
+		ins.Confidence, ins.ReinforcementCount,
+		ins.CreatedAt.UTC().Format(time.RFC3339),
+		ins.LastReinforced.UTC().Format(time.RFC3339),
+	)
+	if err != nil {
+		return fmt.Errorf("create insight: %w", err)
+	}
+	id, err := res.LastInsertId()
+	if err != nil {
+		return fmt.Errorf("get insight id: %w", err)
+	}
+	ins.ID = id
+
+	// Sync FTS.
+	_, err = s.db.ExecContext(ctx,
+		`INSERT INTO memory_insights_fts(rowid, agent, content, category, trigger_desc)
+		 VALUES (?, ?, ?, ?, ?)`,
+		id, ins.Agent, ins.Content, ins.Category, ins.TriggerDesc)
+	if err != nil {
+		return fmt.Errorf("sync insight fts: %w", err)
+	}
+	return nil
+}
+
+// ListInsights returns insights for an agent, newest first.
+func (s *Store) ListInsights(ctx context.Context, agent string, limit int) ([]*Insight, error) {
+	q := `SELECT id, agent, content, category, trigger_desc, confidence, reinforcement_count,
+	             created_at, last_reinforced
+	      FROM memory_insights`
+	args := []any{}
+	if strings.TrimSpace(agent) != "" {
+		q += ` WHERE agent = ?`
+		args = append(args, agent)
+	}
+	q += ` ORDER BY last_reinforced DESC`
+	if limit > 0 {
+		q += fmt.Sprintf(` LIMIT %d`, limit)
+	}
+
+	rows, err := s.db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("list insights: %w", err)
+	}
+	defer rows.Close()
+
+	var out []*Insight
+	for rows.Next() {
+		ins, err := scanInsight(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, ins)
+	}
+	return out, rows.Err()
+}
+
+// GetInsightByID returns a single insight by its row ID.
+func (s *Store) GetInsightByID(ctx context.Context, id int64) (*Insight, error) {
+	row := s.db.QueryRowContext(ctx, `
+		SELECT id, agent, content, category, trigger_desc, confidence, reinforcement_count,
+		       created_at, last_reinforced
+		FROM memory_insights WHERE id = ?`, id)
+	ins, err := scanInsight(row)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	return ins, err
+}
+
+// UpdateInsight replaces the content of an insight and resets FTS.
+func (s *Store) UpdateInsight(ctx context.Context, id int64, content string) error {
+	content = strings.TrimSpace(content)
+	if content == "" {
+		return fmt.Errorf("content is required")
+	}
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE memory_insights SET content = ?, last_reinforced = ? WHERE id = ?`,
+		content, time.Now().UTC().Format(time.RFC3339), id)
+	if err != nil {
+		return fmt.Errorf("update insight: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return fmt.Errorf("insight not found: %d", id)
+	}
+
+	// Rebuild FTS row.
+	ins, err := s.GetInsightByID(ctx, id)
+	if err != nil || ins == nil {
+		return err
+	}
+	_, _ = s.db.ExecContext(ctx,
+		`INSERT INTO memory_insights_fts(memory_insights_fts, rowid, agent, content, category, trigger_desc)
+		 VALUES ('delete', ?, ?, ?, ?, ?)`,
+		id, ins.Agent, ins.Content, ins.Category, ins.TriggerDesc)
+	_, _ = s.db.ExecContext(ctx,
+		`INSERT INTO memory_insights_fts(rowid, agent, content, category, trigger_desc)
+		 VALUES (?, ?, ?, ?, ?)`,
+		id, ins.Agent, content, ins.Category, ins.TriggerDesc)
+	return nil
+}
+
+// DeleteInsight removes an insight and its FTS entry.
+func (s *Store) DeleteInsight(ctx context.Context, id int64) (bool, error) {
+	ins, err := s.GetInsightByID(ctx, id)
+	if err != nil {
+		return false, err
+	}
+	if ins == nil {
+		return false, nil
+	}
+
+	_, _ = s.db.ExecContext(ctx,
+		`INSERT INTO memory_insights_fts(memory_insights_fts, rowid, agent, content, category, trigger_desc)
+		 VALUES ('delete', ?, ?, ?, ?, ?)`,
+		id, ins.Agent, ins.Content, ins.Category, ins.TriggerDesc)
+
+	res, err := s.db.ExecContext(ctx, `DELETE FROM memory_insights WHERE id = ?`, id)
+	if err != nil {
+		return false, fmt.Errorf("delete insight: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	return n > 0, nil
+}
+
+// ReinforceInsight bumps the reinforcement count and nudges confidence upward
+// using a logarithmic schedule (diminishing returns after the first few observations).
+func (s *Store) ReinforceInsight(ctx context.Context, id int64) error {
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE memory_insights
+		SET reinforcement_count = reinforcement_count + 1,
+		    confidence = MIN(1.0, confidence + (1.0 - confidence) * 0.2),
+		    last_reinforced = ?
+		WHERE id = ?`,
+		time.Now().UTC().Format(time.RFC3339), id)
+	if err != nil {
+		return fmt.Errorf("reinforce insight: %w", err)
+	}
+	return nil
+}
+
+// SearchInsights returns insights matching a BM25 query, sorted by relevance.
+func (s *Store) SearchInsights(ctx context.Context, agent, query string, limit int) ([]*Insight, error) {
+	if strings.TrimSpace(query) == "" {
+		return s.ListInsights(ctx, agent, limit)
+	}
+	if limit <= 0 {
+		limit = 10
+	}
+
+	args := []any{query}
+	agentClause := ""
+	if strings.TrimSpace(agent) != "" {
+		agentClause = `AND i.agent = ?`
+		args = append(args, agent)
+	}
+	args = append(args, limit)
+
+	rows, err := s.db.QueryContext(ctx, fmt.Sprintf(`
+		SELECT i.id, i.agent, i.content, i.category, i.trigger_desc,
+		       i.confidence, i.reinforcement_count, i.created_at, i.last_reinforced
+		FROM memory_insights_fts f
+		JOIN memory_insights i ON i.id = f.rowid
+		WHERE memory_insights_fts MATCH ? %s
+		ORDER BY rank * (1.0 / MAX(i.confidence, 0.1))
+		LIMIT ?`, agentClause), args...)
+	if err != nil {
+		return nil, fmt.Errorf("search insights: %w", err)
+	}
+	defer rows.Close()
+
+	var out []*Insight
+	for rows.Next() {
+		ins, err := scanInsight(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, ins)
+	}
+	return out, rows.Err()
+}
+
+// ExpandInsights searches the insight bank and formats the top results as a
+// compact block suitable for injection into the conversation context.
+// maxTokens is a rough token budget (approximated at 4 chars/token).
+// Returns an empty string when no insights are found or the store has none.
+func (s *Store) ExpandInsights(ctx context.Context, agent, query string, maxTokens int) (string, error) {
+	if maxTokens <= 0 {
+		maxTokens = 500
+	}
+	maxChars := maxTokens * 4
+
+	insights, err := s.SearchInsights(ctx, agent, query, 10)
+	if err != nil {
+		return "", err
+	}
+	if len(insights) == 0 {
+		return "", nil
+	}
+
+	var sb strings.Builder
+	sb.WriteString("<insights>\n")
+	sb.WriteString("Behavioral guidelines from past sessions:\n")
+	used := sb.Len()
+
+	for i, ins := range insights {
+		// Only include insights above a minimum confidence threshold.
+		if ins.Confidence < 0.4 {
+			continue
+		}
+		line := fmt.Sprintf("%d. %s\n", i+1, strings.TrimSpace(ins.Content))
+		if used+len(line) > maxChars {
+			break
+		}
+		sb.WriteString(line)
+		used += len(line)
+	}
+	sb.WriteString("</insights>")
+
+	// If nothing was written beyond the header, return empty.
+	if sb.Len() <= len("<insights>\nBehavioral guidelines from past sessions:\n</insights>") {
+		return "", nil
+	}
+	return sb.String(), nil
+}
+
+func scanInsight(scanner interface{ Scan(dest ...any) error }) (*Insight, error) {
+	var ins Insight
+	var createdAt, lastReinforced string
+	err := scanner.Scan(
+		&ins.ID, &ins.Agent, &ins.Content, &ins.Category, &ins.TriggerDesc,
+		&ins.Confidence, &ins.ReinforcementCount, &createdAt, &lastReinforced,
+	)
+	if err != nil {
+		return nil, err
+	}
+	ins.CreatedAt, _ = parseFlexibleTime(createdAt)
+	ins.LastReinforced, _ = parseFlexibleTime(lastReinforced)
+	return &ins, nil
 }
