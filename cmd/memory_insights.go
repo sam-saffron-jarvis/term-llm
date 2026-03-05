@@ -79,6 +79,13 @@ var memoryInsightsSearchCmd = &cobra.Command{
 	RunE:  runMemoryInsightsSearch,
 }
 
+var memoryInsightsExpandCmd = &cobra.Command{
+	Use:   "expand <query>",
+	Short: "Preview the insight block that would be injected for a given query",
+	Args:  cobra.ExactArgs(1),
+	RunE:  runMemoryInsightsExpand,
+}
+
 func init() {
 	memoryInsightsCmd.AddCommand(memoryInsightsListCmd)
 	memoryInsightsCmd.AddCommand(memoryInsightsAddCmd)
@@ -86,6 +93,7 @@ func init() {
 	memoryInsightsCmd.AddCommand(memoryInsightsDeleteCmd)
 	memoryInsightsCmd.AddCommand(memoryInsightsReinforceCmd)
 	memoryInsightsCmd.AddCommand(memoryInsightsSearchCmd)
+	memoryInsightsCmd.AddCommand(memoryInsightsExpandCmd)
 
 	memoryInsightsListCmd.Flags().IntVar(&insightLimit, "limit", 20, "Maximum insights to show (0 = all)")
 
@@ -97,6 +105,7 @@ func init() {
 	memoryInsightsUpdateCmd.Flags().StringVar(&insightContent, "content", "", "New insight content (required, or pipe via stdin)")
 
 	memoryInsightsSearchCmd.Flags().IntVar(&insightSearchLimit, "limit", 5, "Maximum results")
+	memoryInsightsExpandCmd.Flags().IntVar(&insightSearchLimit, "max-tokens", 500, "Token budget for expansion")
 }
 
 func runMemoryInsightsList(cmd *cobra.Command, args []string) error {
@@ -272,5 +281,32 @@ func runMemoryInsightsSearch(cmd *cobra.Command, args []string) error {
 		fmt.Println(ins.Content)
 		fmt.Println()
 	}
+	return nil
+}
+
+func runMemoryInsightsExpand(cmd *cobra.Command, args []string) error {
+	query := strings.TrimSpace(args[0])
+	agent := strings.TrimSpace(memoryAgent)
+
+	store, err := openMemoryStore()
+	if err != nil {
+		return err
+	}
+	defer store.Close()
+
+	maxTok, _ := cmd.Flags().GetInt("max-tokens")
+	if maxTok <= 0 {
+		maxTok = 500
+	}
+
+	expanded, err := store.ExpandInsights(context.Background(), agent, query, maxTok)
+	if err != nil {
+		return err
+	}
+	if expanded == "" {
+		fmt.Println("(no insights matched — bank may be empty or below confidence threshold)")
+		return nil
+	}
+	fmt.Println(expanded)
 	return nil
 }

@@ -33,6 +33,7 @@ var (
 	memoryMinePromote          string
 	memoryMinePromoteEvery     time.Duration
 	memoryMineHalfLifeDays     float64
+	memoryMineInsights         bool
 )
 
 var memoryMineCmd = &cobra.Command{
@@ -91,6 +92,7 @@ func init() {
 	memoryMineCmd.Flags().StringVar(&memoryMinePromote, "promote", "never", "Promotion mode: auto|always|never")
 	memoryMineCmd.Flags().DurationVar(&memoryMinePromoteEvery, "promote-every", 6*time.Hour, "Minimum interval between auto-promote runs")
 	memoryMineCmd.Flags().Float64Var(&memoryMineHalfLifeDays, "half-life", 30.0, "Decay half-life in days for post-mine recalculation")
+	memoryMineCmd.Flags().BoolVar(&memoryMineInsights, "insights", false, "Also run insight extraction pass after fragment mining")
 	memoryMineCmd.RegisterFlagCompletionFunc("embed-provider", EmbedProviderFlagCompletion)
 }
 
@@ -321,6 +323,17 @@ func runMemoryMine(cmd *cobra.Command, args []string) error {
 	}
 
 	fmt.Printf("Done. create=%d update=%d skip=%d\n", totalCreated, totalUpdated, totalSkipped)
+
+	if memoryMineInsights && !memoryDryRun {
+		fmt.Println("\n--- INSIGHT EXTRACTION ---")
+		insightCount, err := runInsightExtractionPass(ctx, cfg, engine, sessStore, memStore, candidates)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "warning: insight extraction failed: %v\n", err)
+		} else {
+			fmt.Printf("insights: %d created/reinforced\n", insightCount)
+		}
+	}
+
 	return nil
 }
 
@@ -992,4 +1005,217 @@ func readPrefixBytes(content string, maxBytes int) string {
 		return content
 	}
 	return string(b[:maxBytes]) + "..."
+}
+
+// ── Insight extraction pass ───────────────────────────────────────────────────
+
+const insightExtractionSystemPrompt = `You are a behavioral insight extractor.
+
+Output must be valid JSON only (no markdown fences, no prose).
+Return exactly one object with key "insights".
+
+Goal: extract generalized behavioral rules from the conversation transcript.
+Focus on moments where:
+- The user corrects or redirects the assistant
+- The user expresses a preference explicitly or implicitly
+- The assistant failed to anticipate something the user then had to ask for
+- A pattern of interaction is repeated across multiple turns
+
+Do NOT extract:
+- One-off requests with no generalisation
+- Facts about the user's technical setup (those belong in fragment memory)
+- Anything that is already obvious assistant best practice
+- More than 10 insights total
+
+Each insight must have: category (one of: anti-pattern | communication-style | domain-approach | workflow | anticipation), trigger (when it applies), rule (the actionable behavioral change, 1-3 sentences), confidence (0.0-1.0 based on how clearly the evidence supports the pattern).`
+
+type insightExtractionResponse struct {
+	Insights []insightExtractionItem `json:"insights"`
+}
+
+type insightExtractionItem struct {
+	Category   string  `json:"category"`
+	Trigger    string  `json:"trigger"`
+	Rule       string  `json:"rule"`
+	Confidence float64 `json:"confidence"`
+}
+
+// buildInsightTranscript builds a lean transcript for insight extraction.
+// Sam's observation: insight extraction only needs user words + minimal buffer.
+// We include user messages in full (up to 800 chars) and assistant text at 200 chars,
+// stripping all tool output. This keeps the prompt compact while preserving the
+// signal that matters — what the user actually typed.
+func buildInsightTranscript(messages []session.Message) []transcriptMessage {
+	const maxUser = 800
+	const maxAssistant = 200
+	out := make([]transcriptMessage, 0, len(messages))
+	for _, msg := range messages {
+		if msg.Role == llm.RoleTool || msg.Role == llm.RoleSystem {
+			continue
+		}
+		text := strings.TrimSpace(msg.TextContent)
+		if text == "" {
+			continue
+		}
+		limit := maxAssistant
+		if msg.Role == llm.RoleUser {
+			limit = maxUser
+		}
+		if len(text) > limit {
+			text = text[:limit] + "..."
+		}
+		out = append(out, transcriptMessage{Role: string(msg.Role), Text: text})
+	}
+	return out
+}
+
+func buildInsightExtractionPrompt(agent string, messages []session.Message, existing []*memorydb.Insight) string {
+	transcriptJSON, _ := json.MarshalIndent(buildInsightTranscript(messages), "", "  ")
+
+	// Pass a summary of existing insights so the LLM can deduplicate.
+	type existingSummary struct {
+		ID      int64  `json:"id"`
+		Preview string `json:"preview"`
+	}
+	summaries := make([]existingSummary, 0, len(existing))
+	for _, ins := range existing {
+		preview := ins.Content
+		if len(preview) > 120 {
+			preview = preview[:120] + "..."
+		}
+		summaries = append(summaries, existingSummary{ID: ins.ID, Preview: preview})
+	}
+	summariesJSON, _ := json.MarshalIndent(summaries, "", "  ")
+
+	return fmt.Sprintf(`Agent: %s
+
+Existing insights (do not duplicate these patterns):
+%s
+
+Transcript (user messages in full; assistant text abbreviated; tool output omitted):
+%s
+
+Return strict JSON only:
+{
+  "insights": [
+    {"category": "...", "trigger": "...", "rule": "...", "confidence": 0.7},
+    ...
+  ]
+}
+If no new insights are found, return {"insights": []}.`,
+		agent,
+		string(summariesJSON),
+		string(transcriptJSON),
+	)
+}
+
+// runInsightExtractionPass runs an insight extraction pass over mined candidates.
+// For each candidate session, it loads messages, builds a lean transcript, calls
+// the LLM, and writes new insights (or reinforces existing ones via BM25 match).
+func runInsightExtractionPass(
+	ctx context.Context,
+	cfg *config.Config,
+	engine *llm.Engine,
+	sessStore session.Store,
+	memStore *memorydb.Store,
+	candidates []memoryMineCandidate,
+) (int, error) {
+	total := 0
+	for _, candidate := range candidates {
+		messages, _, err := loadMessagesForMining(ctx, sessStore, candidate.Session.ID, 0)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "  [insight] skip %s: load messages: %v\n", candidate.Session.ID, err)
+			continue
+		}
+		if len(messages) < 4 {
+			// Too short to contain meaningful patterns.
+			continue
+		}
+
+		// Load existing insights for deduplication context.
+		existing, err := memStore.ListInsights(ctx, candidate.Agent, 50)
+		if err != nil {
+			existing = nil
+		}
+
+		prompt := buildInsightExtractionPrompt(candidate.Agent, messages, existing)
+		raw, err := runExtractionRequest(ctx, engine, prompt)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "  [insight] skip %s: llm call: %v\n", candidate.Session.ID, err)
+			continue
+		}
+
+		var resp insightExtractionResponse
+		decoder := json.NewDecoder(strings.NewReader(raw))
+		if err := decoder.Decode(&resp); err != nil {
+			fmt.Fprintf(os.Stderr, "  [insight] skip %s: decode: %v\n", candidate.Session.ID, err)
+			continue
+		}
+
+		for _, item := range resp.Insights {
+			rule := strings.TrimSpace(item.Rule)
+			if rule == "" {
+				continue
+			}
+
+			// Merge-or-create: search for a similar existing insight via BM25.
+			// If we get a hit, reinforce rather than duplicate.
+			similar, _ := memStore.SearchInsights(ctx, candidate.Agent, rule, 1)
+			if len(similar) > 0 {
+				// Rough similarity check: if top result shares significant keywords,
+				// treat it as the same insight and reinforce.
+				if isSimilarInsight(rule, similar[0].Content) {
+					_ = memStore.ReinforceInsight(ctx, similar[0].ID)
+					fmt.Printf("  [insight] reinforced id=%d (conf=%.2f)\n", similar[0].ID, similar[0].Confidence+0.1)
+					total++
+					continue
+				}
+			}
+
+			ins := &memorydb.Insight{
+				Agent:       candidate.Agent,
+				Content:     rule,
+				Category:    strings.TrimSpace(item.Category),
+				TriggerDesc: strings.TrimSpace(item.Trigger),
+				Confidence:  item.Confidence,
+			}
+			if ins.Confidence <= 0 {
+				ins.Confidence = 0.5
+			}
+			if err := memStore.CreateInsight(ctx, ins); err != nil {
+				fmt.Fprintf(os.Stderr, "  [insight] create failed: %v\n", err)
+				continue
+			}
+			fmt.Printf("  [insight] created id=%d cat=%s conf=%.2f\n", ins.ID, ins.Category, ins.Confidence)
+			total++
+		}
+	}
+	return total, nil
+}
+
+// isSimilarInsight is a cheap keyword-overlap heuristic: if more than 40% of
+// the words in the candidate rule appear in the existing insight, treat them as
+// the same pattern. This avoids an embedding call while catching obvious dupes.
+func isSimilarInsight(candidate, existing string) bool {
+	words := func(s string) map[string]struct{} {
+		m := map[string]struct{}{}
+		for _, w := range strings.Fields(strings.ToLower(s)) {
+			if len(w) > 3 { // ignore short stop-words
+				m[w] = struct{}{}
+			}
+		}
+		return m
+	}
+	cw := words(candidate)
+	ew := words(existing)
+	if len(cw) == 0 {
+		return false
+	}
+	overlap := 0
+	for w := range cw {
+		if _, ok := ew[w]; ok {
+			overlap++
+		}
+	}
+	return float64(overlap)/float64(len(cw)) > 0.40
 }

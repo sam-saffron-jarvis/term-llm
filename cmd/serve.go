@@ -234,6 +234,13 @@ func runServe(cmd *cobra.Command, args []string) error {
 
 	forceExternalSearch := resolveForceExternalSearch(cfg, serveNativeSearch, serveNoNativeSearch)
 
+	// Open the memory store for insight expansion (best-effort: non-fatal).
+	// Declared here so the factory closure can capture it.
+	var insightsMemStore *memorydb.Store
+	if ms, msErr := openMemoryStore(); msErr == nil {
+		insightsMemStore = ms
+	}
+
 	modelName := activeModel(cfg)
 	factory := func(ctx context.Context) (*serveRuntime, error) {
 		provider, err := llm.NewProvider(cfg)
@@ -269,6 +276,8 @@ func runServe(cmd *cobra.Command, args []string) error {
 			debugRaw:            debugRaw,
 			defaultModel:        modelName,
 			store:               store,
+			insightsStore:       insightsMemStore,
+			insightsMaxTokens:   500,
 			toolsSetting:        settings.Tools,
 			mcpSetting:          settings.MCP,
 			agentName:           agentName,
@@ -282,12 +291,6 @@ func runServe(cmd *cobra.Command, args []string) error {
 
 	if hasJobs && strings.TrimSpace(serveAgent) != "" {
 		fmt.Fprintln(cmd.ErrOrStderr(), "warning: --agent is ignored for --platform jobs; set llm runner_config.agent_name per job definition")
-	}
-
-	// Open the memory store for insight expansion (best-effort: non-fatal).
-	var insightsMemStore *memorydb.Store
-	if ms, msErr := openMemoryStore(); msErr == nil {
-		insightsMemStore = ms
 	}
 
 	// Build the serve.Settings used by non-web platforms.
