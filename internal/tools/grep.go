@@ -588,17 +588,73 @@ func formatFilesWithMatches(matches []GrepMatch) string {
 	return strings.TrimSuffix(sb.String(), "\n")
 }
 
-// formatGrepResults formats grep results for the LLM.
-func formatGrepResults(matches []GrepMatch, truncated bool) string {
-	var sb strings.Builder
+// fileGroup holds the ordered matches for a single file.
+type fileGroup struct {
+	path    string
+	matches []GrepMatch
+}
 
-	for i, m := range matches {
-		if i > 0 {
-			sb.WriteString("\n---\n")
+// groupMatchesByFile groups matches by file path, preserving encounter order.
+func groupMatchesByFile(matches []GrepMatch) []fileGroup {
+	var groups []fileGroup
+	idx := make(map[string]int, len(matches))
+	for _, m := range matches {
+		if i, ok := idx[m.FilePath]; ok {
+			groups[i].matches = append(groups[i].matches, m)
+		} else {
+			idx[m.FilePath] = len(groups)
+			groups = append(groups, fileGroup{path: m.FilePath, matches: []GrepMatch{m}})
 		}
-		sb.WriteString(fmt.Sprintf("%s:%d\n", m.FilePath, m.LineNumber))
-		sb.WriteString(m.Context)
-		sb.WriteString("\n")
+	}
+	return groups
+}
+
+// formatGrepResults formats grep results grouped by file for the LLM.
+//
+// Output shape:
+//
+//	N matches in M files
+//
+//	path/to/file.go (K matches):
+//	  3: context line
+//	> 4: matching line
+//	  5: context line
+//
+//	path/to/other.go (1 match):
+//	...
+func formatGrepResults(matches []GrepMatch, truncated bool) string {
+	if len(matches) == 0 {
+		return ""
+	}
+
+	groups := groupMatchesByFile(matches)
+
+	pluralOf := map[string]string{
+		"match": "matches",
+		"file":  "files",
+	}
+	plural := func(n int, word string) string {
+		if n == 1 {
+			return fmt.Sprintf("%d %s", n, word)
+		}
+		if p, ok := pluralOf[word]; ok {
+			return fmt.Sprintf("%d %s", n, p)
+		}
+		return fmt.Sprintf("%d %ss", n, word)
+	}
+
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("%s in %s\n", plural(len(matches), "match"), plural(len(groups), "file")))
+
+	for _, g := range groups {
+		sb.WriteString(fmt.Sprintf("\n%s (%s):\n", g.path, plural(len(g.matches), "match")))
+		for i, m := range g.matches {
+			if i > 0 {
+				sb.WriteString("\n")
+			}
+			sb.WriteString(m.Context)
+			sb.WriteString("\n")
+		}
 	}
 
 	if truncated {
