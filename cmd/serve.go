@@ -277,7 +277,8 @@ func runServe(cmd *cobra.Command, args []string) error {
 			defaultModel:        modelName,
 			store:               store,
 			insightsStore:       insightsMemStore,
-			insightsMaxTokens:   500,
+			insightsExpansion:   settings.InsightsExpansion,
+			insightsMaxTokens:   settings.InsightsMaxTokens,
 			toolsSetting:        settings.Tools,
 			mcpSetting:          settings.MCP,
 			agentName:           agentName,
@@ -307,9 +308,10 @@ func runServe(cmd *cobra.Command, args []string) error {
 		MCP:                    settings.MCP,
 		Agent:                  agentName,
 		Store:                  store,
+		InsightsExpansion:      settings.InsightsExpansion,
 		InsightsStore:          insightsMemStore,
 		InsightsAgent:          agentName,
-		InsightsMaxTokens:      500,
+		InsightsMaxTokens:      settings.InsightsMaxTokens,
 		NewSession: func(ctx context.Context) (*serve.SessionRuntime, error) {
 			rt, err := factory(ctx)
 			if err != nil {

@@ -923,7 +923,8 @@ func (m *telegramSessionMgr) streamReply(ctx context.Context, bot botSender, ses
 	// Insights expansion: on the first turn of a new session, search the insight
 	// bank using the user's message and inject the top results as context. This
 	// primes the model with relevant behavioral patterns before it responds.
-	if len(sess.history) == 0 && m.settings.InsightsStore != nil {
+	// Requires memory.insights_expansion: true in agent.yaml (default: false).
+	if len(sess.history) == 0 && m.settings.InsightsExpansion && m.settings.InsightsStore != nil {
 		maxTok := m.settings.InsightsMaxTokens
 		if maxTok <= 0 {
 			maxTok = 500

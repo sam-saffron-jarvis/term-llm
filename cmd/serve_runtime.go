@@ -30,6 +30,7 @@ type serveRuntime struct {
 	mcpManager          *mcp.Manager
 	store               session.Store
 	insightsStore       *memorydb.Store
+	insightsExpansion   bool
 	insightsMaxTokens   int
 	systemPrompt        string
 	history             []llm.Message
@@ -384,7 +385,8 @@ func (rt *serveRuntime) run(ctx context.Context, stateful bool, replaceHistory b
 
 	// Insights expansion: on the first turn of a stateful session, inject
 	// relevant behavioral guidelines from the insight bank.
-	if len(baseHistory) == 0 && stateful && rt.insightsStore != nil {
+	// Only fires when memory.insights_expansion: true in agent.yaml (default: false).
+	if len(baseHistory) == 0 && stateful && rt.insightsExpansion && rt.insightsStore != nil {
 		maxTok := rt.insightsMaxTokens
 		if maxTok <= 0 {
 			maxTok = 500

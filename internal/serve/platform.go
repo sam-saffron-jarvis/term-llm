@@ -37,9 +37,10 @@ type Settings struct {
 	MCP                 string
 	Agent               string
 	Store               session.Store
-	// InsightsStore, when non-nil, enables insight expansion on the first user
-	// turn of each session. The top matching insights (up to InsightsMaxTokens)
-	// are injected as context immediately after the first user message.
+	// InsightsExpansion, when true, enables injecting relevant behavioral
+	// insights at the first user turn of each new session. Configurable via
+	// agent.yaml memory.insights_expansion (default false).
+	InsightsExpansion bool
 	InsightsStore     *memorydb.Store
 	InsightsAgent     string
 	InsightsMaxTokens int // 0 → default 500
