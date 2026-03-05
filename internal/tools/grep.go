@@ -29,7 +29,32 @@ const (
 	// in the grouped output.  When a file has more matches than this, a note
 	// is appended so the model knows to narrow its search.
 	maxMatchesPerFileDisplay = 10
+
+	// autoEnrichThreshold is the maximum number of match blocks for which
+	// auto-enrichment is applied.  Above this, the result set is large enough
+	// that adding more context would bloat the response unhelpfully.
+	autoEnrichThreshold = 3
 )
+
+// autoEnrichContextLines returns the number of context lines to use when
+// auto-enriching a small result set.  The goal is to give the model enough
+// surrounding code to understand each match without a follow-up read_file
+// call.
+//
+//   - 1 block  → 30 lines: wide window to capture the full function/method body
+//   - 2–3 blocks → 10 lines: moderate window; adjacent blocks will merge via
+//     the normal block-merge pipeline, producing a clean single view
+//   - >3 blocks → 0 (no enrichment)
+func autoEnrichContextLines(blockCount int) int {
+	switch {
+	case blockCount == 1:
+		return 30
+	case blockCount >= 2 && blockCount <= autoEnrichThreshold:
+		return 10
+	default:
+		return 0
+	}
+}
 
 // GrepTool implements the grep tool.
 type GrepTool struct {
@@ -542,6 +567,16 @@ func (t *GrepTool) Execute(ctx context.Context, args json.RawMessage) (llm.ToolO
 			}
 			if a.FilesWithMatches {
 				return textOutput(formatFilesWithMatches(matches)), nil
+			}
+			// Auto-enrich: when the result set is small and the caller didn't
+			// request explicit context, bump the context window so the model can
+			// understand the match without an extra read_file round-trip.
+			if a.ContextLines <= 0 {
+				if enriched := autoEnrichContextLines(len(matches)); enriched > contextLines {
+					if richer, err2 := t.executeRipgrep(ctx, a.Pattern, searchPath, a.Include, a.Exclude, enriched, maxResults, false); err2 == nil && len(richer) > 0 {
+						matches = richer
+					}
+				}
 			}
 			return textOutput(formatGrepResults(matches, len(matches) >= maxResults)), nil
 		}
