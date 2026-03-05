@@ -122,18 +122,18 @@ func TestFormatGrepResults_Empty(t *testing.T) {
 func TestPendingsToBlocks_MergeAdjacent(t *testing.T) {
 	pending := []pendingMatch{
 		{
-			filePath:  "f.go",
+			filePath:   "f.go",
 			lineNumber: 41,
-			matchLine: "matchA",
-			before:    []contextEntry{{39, "ctx39"}, {40, "ctx40"}},
-			after:     []contextEntry{},
+			matchLine:  "matchA",
+			before:     []contextEntry{{39, "ctx39"}, {40, "ctx40"}},
+			after:      []contextEntry{},
 		},
 		{
-			filePath:  "f.go",
+			filePath:   "f.go",
 			lineNumber: 42,
-			matchLine: "matchB",
-			before:    []contextEntry{},
-			after:     []contextEntry{{43, "ctx43"}, {44, "ctx44"}},
+			matchLine:  "matchB",
+			before:     []contextEntry{},
+			after:      []contextEntry{{43, "ctx43"}, {44, "ctx44"}},
 		},
 	}
 
@@ -174,18 +174,18 @@ func TestPendingsToBlocks_MergeAdjacent(t *testing.T) {
 func TestPendingsToBlocks_NoMergeFarApart(t *testing.T) {
 	pending := []pendingMatch{
 		{
-			filePath:  "f.go",
+			filePath:   "f.go",
 			lineNumber: 41,
-			matchLine: "matchA",
-			before:    []contextEntry{{39, "ctx39"}, {40, "ctx40"}},
-			after:     []contextEntry{{43, "ctx43"}, {44, "ctx44"}},
+			matchLine:  "matchA",
+			before:     []contextEntry{{39, "ctx39"}, {40, "ctx40"}},
+			after:      []contextEntry{{43, "ctx43"}, {44, "ctx44"}},
 		},
 		{
-			filePath:  "f.go",
+			filePath:   "f.go",
 			lineNumber: 339,
-			matchLine: "matchB",
-			before:    []contextEntry{{337, "ctx337"}, {338, "ctx338"}},
-			after:     []contextEntry{{340, "ctx340"}, {341, "ctx341"}},
+			matchLine:  "matchB",
+			before:     []contextEntry{{337, "ctx337"}, {338, "ctx338"}},
+			after:      []contextEntry{{340, "ctx340"}, {341, "ctx341"}},
 		},
 	}
 
@@ -550,5 +550,96 @@ func TestGrepTool_GroupedOutput(t *testing.T) {
 	}
 	if strings.Count(output.Content, betaPath) != 1 {
 		t.Errorf("beta.go should appear once, got:\n%s", output.Content)
+	}
+}
+
+// TestAutoEnrichContextLines checks the block-count → context-lines mapping.
+func TestAutoEnrichContextLines(t *testing.T) {
+	cases := []struct {
+		blocks int
+		want   int
+	}{
+		{0, 0},
+		{1, 30},
+		{2, 10},
+		{3, 10},
+		{4, 0},
+		{100, 0},
+	}
+	for _, c := range cases {
+		got := autoEnrichContextLines(c.blocks)
+		if got != c.want {
+			t.Errorf("autoEnrichContextLines(%d) = %d, want %d", c.blocks, got, c.want)
+		}
+	}
+}
+
+// TestAutoEnrich_SingleMatch verifies that a single-match result is enriched
+// with additional context when the caller does not request explicit context.
+func TestAutoEnrich_SingleMatch(t *testing.T) {
+	if !ripgrepAvailable() {
+		t.Skip("ripgrep not available")
+	}
+
+	dir := t.TempDir()
+
+	// Write a file with padding lines so we can verify context expansion.
+	var content strings.Builder
+	for i := 1; i <= 40; i++ {
+		if i == 20 {
+			content.WriteString("UNIQUE_AUTOENRICH_TOKEN\n")
+		} else {
+			content.WriteString(fmt.Sprintf("padding line %d\n", i))
+		}
+	}
+	if err := os.WriteFile(filepath.Join(dir, "target.go"), []byte(content.String()), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	tool := NewGrepTool(nil, DefaultOutputLimits())
+
+	// With explicit ContextLines=0 (default), auto-enrich should kick in.
+	args, _ := json.Marshal(GrepArgs{
+		Pattern:      "UNIQUE_AUTOENRICH_TOKEN",
+		Path:         dir,
+		ContextLines: 0,
+	})
+	output, err := tool.Execute(context.Background(), args)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Auto-enrich bumps to 30 lines for a single block.
+	// The file has 39 padding lines + 1 match.  With 30 lines of context
+	// the result should contain significantly more than the default 2 lines.
+	// We verify by counting context lines (prefixed with "  ") in the output.
+	contextLineCount := 0
+	for _, line := range strings.Split(output.Content, "\n") {
+		if strings.HasPrefix(line, "  ") && strings.Contains(line, "padding line") {
+			contextLineCount++
+		}
+	}
+	if contextLineCount < 20 {
+		t.Errorf("expected ≥20 context lines with auto-enrich, got %d\noutput:\n%s", contextLineCount, output.Content)
+	}
+
+	// Explicit context override must suppress auto-enrichment.
+	args2, _ := json.Marshal(GrepArgs{
+		Pattern:      "UNIQUE_AUTOENRICH_TOKEN",
+		Path:         dir,
+		ContextLines: 1,
+	})
+	output2, err := tool.Execute(context.Background(), args2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	contextLineCount2 := 0
+	for _, line := range strings.Split(output2.Content, "\n") {
+		if strings.HasPrefix(line, "  ") && strings.Contains(line, "padding line") {
+			contextLineCount2++
+		}
+	}
+	if contextLineCount2 > 2 {
+		t.Errorf("explicit ContextLines=1 should not auto-enrich; got %d context lines\noutput:\n%s", contextLineCount2, output2.Content)
 	}
 }
