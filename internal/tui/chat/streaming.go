@@ -349,8 +349,26 @@ func (m *Model) buildMessages() []llm.Message {
 	}
 
 	// Add conversation history - convert session messages to llm messages
+	userMsgCount := 0
 	for _, msg := range snapshot {
 		messages = append(messages, msg.ToLLMMessage())
+		if msg.Role == llm.RoleUser {
+			userMsgCount++
+		}
+	}
+
+	// Insights expansion: inject on the very first user turn of a new session.
+	if userMsgCount == 1 {
+		userText := ""
+		for _, msg := range snapshot {
+			if msg.Role == llm.RoleUser {
+				userText = msg.TextContent
+				break
+			}
+		}
+		if expanded := m.insightsExpander.Expand(context.Background(), userText); expanded != "" {
+			messages = append(messages, llm.UserText(expanded))
+		}
 	}
 
 	return messages

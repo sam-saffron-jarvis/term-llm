@@ -234,11 +234,15 @@ func runServe(cmd *cobra.Command, args []string) error {
 
 	forceExternalSearch := resolveForceExternalSearch(cfg, serveNativeSearch, serveNoNativeSearch)
 
-	// Open the memory store for insight expansion (best-effort: non-fatal).
-	// Declared here so the factory closure can capture it.
-	var insightsMemStore *memorydb.Store
-	if ms, msErr := openMemoryStore(); msErr == nil {
-		insightsMemStore = ms
+	// Build the insight expander (nil when disabled or store unavailable).
+	// Captured by the factory closure and shared across all runtimes.
+	var insightsExpander *memorydb.InsightsExpander
+	var insightsMemStore *memorydb.Store // kept for deferred Close
+	if settings.InsightsExpansion {
+		if ms, msErr := openMemoryStore(); msErr == nil {
+			insightsMemStore = ms
+			insightsExpander = memorydb.NewInsightsExpander(ms, agentName, settings.InsightsMaxTokens)
+		}
 	}
 
 	modelName := activeModel(cfg)
@@ -276,9 +280,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 			debugRaw:            debugRaw,
 			defaultModel:        modelName,
 			store:               store,
-			insightsStore:       insightsMemStore,
-			insightsExpansion:   settings.InsightsExpansion,
-			insightsMaxTokens:   settings.InsightsMaxTokens,
+			insightsExpander:    insightsExpander,
 			toolsSetting:        settings.Tools,
 			mcpSetting:          settings.MCP,
 			agentName:           agentName,
@@ -308,10 +310,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 		MCP:                    settings.MCP,
 		Agent:                  agentName,
 		Store:                  store,
-		InsightsExpansion:      settings.InsightsExpansion,
-		InsightsStore:          insightsMemStore,
-		InsightsAgent:          agentName,
-		InsightsMaxTokens:      settings.InsightsMaxTokens,
+		InsightsExpander:       insightsExpander,
 		NewSession: func(ctx context.Context) (*serve.SessionRuntime, error) {
 			rt, err := factory(ctx)
 			if err != nil {

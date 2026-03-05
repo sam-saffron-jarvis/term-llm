@@ -29,9 +29,7 @@ type serveRuntime struct {
 	toolMgr             *tools.ToolManager
 	mcpManager          *mcp.Manager
 	store               session.Store
-	insightsStore       *memorydb.Store
-	insightsExpansion   bool
-	insightsMaxTokens   int
+	insightsExpander    *memorydb.InsightsExpander
 	systemPrompt        string
 	history             []llm.Message
 	search              bool
@@ -384,17 +382,10 @@ func (rt *serveRuntime) run(ctx context.Context, stateful bool, replaceHistory b
 	messages = append(messages, inputMessages...)
 
 	// Insights expansion: on the first turn of a stateful session, inject
-	// relevant behavioral guidelines from the insight bank.
-	// Only fires when memory.insights_expansion: true in agent.yaml (default: false).
-	if len(baseHistory) == 0 && stateful && rt.insightsExpansion && rt.insightsStore != nil {
-		maxTok := rt.insightsMaxTokens
-		if maxTok <= 0 {
-			maxTok = 500
-		}
-		userText := lastUserText(inputMessages)
-		if expanded, expErr := rt.insightsStore.ExpandInsights(
-			ctx, rt.agentName, userText, maxTok,
-		); expErr == nil && expanded != "" {
+	// relevant behavioral guidelines. Requires memory.insights_expansion: true
+	// in agent.yaml (default: false).
+	if len(baseHistory) == 0 && stateful {
+		if expanded := rt.insightsExpander.Expand(ctx, lastUserText(inputMessages)); expanded != "" {
 			messages = append(messages, llm.UserText(expanded))
 		}
 	}

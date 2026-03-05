@@ -37,13 +37,11 @@ type Settings struct {
 	MCP                 string
 	Agent               string
 	Store               session.Store
-	// InsightsExpansion, when true, enables injecting relevant behavioral
-	// insights at the first user turn of each new session. Configurable via
-	// agent.yaml memory.insights_expansion (default false).
-	InsightsExpansion bool
-	InsightsStore     *memorydb.Store
-	InsightsAgent     string
-	InsightsMaxTokens int // 0 → default 500
+	// InsightsExpander, when non-nil, injects relevant behavioral insights at
+	// the first user turn of each new session. Nil means disabled (default).
+	// Build with memory.NewInsightsExpander — enabled only when agent.yaml
+	// sets memory.insights_expansion: true.
+	InsightsExpander *memorydb.InsightsExpander
 	// NewSession creates a fresh runtime instance for a new conversation.
 	// Called once per platform session (for example, per Telegram chat session).
 	NewSession func(context.Context) (*SessionRuntime, error)
