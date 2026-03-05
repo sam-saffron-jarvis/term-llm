@@ -1897,7 +1897,7 @@ func (s *Store) ListInsights(ctx context.Context, agent string, limit int) ([]*I
 		q += ` WHERE agent = ?`
 		args = append(args, agent)
 	}
-	q += ` ORDER BY last_reinforced DESC`
+	q += ` ORDER BY confidence DESC, last_reinforced DESC`
 	if limit > 0 {
 		q += fmt.Sprintf(` LIMIT %d`, limit)
 	}
@@ -2035,6 +2035,9 @@ func buildFTSQuery(query string) string {
 	return strings.Join(terms, " OR ")
 }
 
+// SearchInsights finds insights via BM25 full-text search. Used for deduplication
+// during extraction (checking if a newly mined insight already exists), not for
+// injection — ExpandInsights returns all insights sorted by confidence instead.
 func (s *Store) SearchInsights(ctx context.Context, agent, query string, limit int) ([]*Insight, error) {
 	if strings.TrimSpace(query) == "" {
 		return s.ListInsights(ctx, agent, limit)
@@ -2076,17 +2079,21 @@ func (s *Store) SearchInsights(ctx context.Context, agent, query string, limit i
 	return out, rows.Err()
 }
 
-// ExpandInsights searches the insight bank and formats the top results as a
-// compact block suitable for injection into the conversation context.
+// ExpandInsights returns all insights for the agent sorted by confidence,
+// formatted as a compact block ready for injection into conversation context.
 // maxTokens is a rough token budget (approximated at 4 chars/token).
-// Returns an empty string when no insights are found or the store has none.
-func (s *Store) ExpandInsights(ctx context.Context, agent, query string, maxTokens int) (string, error) {
+// Returns an empty string when the bank is empty.
+//
+// No search/filtering is applied: insight banks are small and curated, so
+// returning all of them (within the token cap) is more correct than trying
+// to match them against the user's first message via BM25 or embeddings.
+func (s *Store) ExpandInsights(ctx context.Context, agent, _ string, maxTokens int) (string, error) {
 	if maxTokens <= 0 {
 		maxTokens = 500
 	}
 	maxChars := maxTokens * 4
 
-	insights, err := s.SearchInsights(ctx, agent, query, 10)
+	insights, err := s.ListInsights(ctx, agent, 200)
 	if err != nil {
 		return "", err
 	}
