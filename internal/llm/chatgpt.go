@@ -768,6 +768,8 @@ type chatGPTRateLimitResponse struct {
 }
 
 // RateLimitError represents a rate limit error with retry information.
+const maxAutomaticRateLimitRetryAfter = 15 * time.Minute
+
 type RateLimitError struct {
 	Message       string
 	RetryAfter    time.Duration
@@ -780,14 +782,14 @@ func (e *RateLimitError) Error() string {
 	return e.Message
 }
 
-// IsLongWait returns true if the retry wait is too long for automatic retry.
+// IsLongWait returns true if the suggested retry wait is too long for automatic retry.
 func (e *RateLimitError) IsLongWait() bool {
-	return e.RetryAfter > 2*time.Minute
+	return e.RetryAfter > maxAutomaticRateLimitRetryAfter
 }
 
 // parseChatGPTRateLimitError parses a 429 response and returns a RateLimitError.
-// For short waits, the retry logic can use RetryAfter to wait and retry.
-// For long waits, it gives a clear message about when to try again.
+// For manageable waits, the retry logic can use RetryAfter to wait and retry.
+// For longer waits, it gives a clear message about when to try again.
 func parseChatGPTRateLimitError(body []byte, headers http.Header) error {
 	var resp chatGPTRateLimitResponse
 	if err := json.Unmarshal(body, &resp); err != nil {

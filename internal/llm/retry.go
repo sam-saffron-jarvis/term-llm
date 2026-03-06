@@ -209,14 +209,9 @@ var retryAfterRegex = regexp.MustCompile(`(?i)retry[- ]?after[:\s]+(\d+)`)
 
 // calculateBackoff computes the wait duration for a retry attempt.
 func (r *RetryProvider) calculateBackoff(attempt int, err error) time.Duration {
-	// Check for RateLimitError with explicit RetryAfter
+	// Honor explicit provider-provided retry windows.
 	if rle, ok := err.(*RateLimitError); ok && rle.RetryAfter > 0 {
-		wait := rle.RetryAfter
-		// Cap at max backoff for automatic retries
-		if wait > r.config.MaxBackoff {
-			wait = r.config.MaxBackoff
-		}
-		return wait
+		return rle.RetryAfter
 	}
 
 	// Try to parse Retry-After from error message
