@@ -98,13 +98,68 @@ func TestFormatGrepResults_MultipleFiles(t *testing.T) {
 	}
 }
 
-func TestFormatGrepResults_Truncated(t *testing.T) {
-	matches := []GrepMatch{
-		{FilePath: "x.go", LineNumber: 1, Match: "foo", Context: "> 1: foo"},
+func TestBuildRipgrepArgs_AddsDeterministicAndUsefulFlags(t *testing.T) {
+	a := GrepArgs{
+		Pattern:   "foo\\nbar",
+		Include:   "*.go",
+		Exclude:   "vendor/**",
+		Type:      "go",
+		Multiline: true,
 	}
 
-	result := formatGrepResults(matches, true)
+	args := buildRipgrepArgs(a, "/repo", 2, 100)
+	joined := strings.Join(args, " ")
 
+	for _, want := range []string{
+		"--no-config",
+		"--color=never",
+		"--hidden",
+		"--json",
+		"--max-count 100",
+		"--context 2",
+		"--glob !.git",
+		"--glob *.go",
+		"--glob !vendor/**",
+		"--type go",
+		"--multiline",
+		"--multiline-dotall",
+	} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("expected args to contain %q, got: %s", want, joined)
+		}
+	}
+}
+
+func TestBuildRipgrepArgs_FilesWithMatchesOmitsJSONFlags(t *testing.T) {
+	a := GrepArgs{Pattern: "needle", FilesWithMatches: true}
+	args := buildRipgrepArgs(a, "/repo", 2, 100)
+	joined := strings.Join(args, " ")
+
+	if !strings.Contains(joined, "--files-with-matches") {
+		t.Fatalf("expected files-with-matches flag, got: %s", joined)
+	}
+	for _, unwanted := range []string{"--json", "--max-count", "--context"} {
+		if strings.Contains(joined, unwanted) {
+			t.Fatalf("did not expect %q in args: %s", unwanted, joined)
+		}
+	}
+}
+
+func TestFormatFilesWithMatches_Truncated(t *testing.T) {
+	matches := []GrepMatch{{FilePath: "a.go"}, {FilePath: "a.go"}, {FilePath: "b.go"}}
+	result := formatFilesWithMatches(matches, true)
+
+	if strings.Count(result, "a.go") != 1 || strings.Count(result, "b.go") != 1 {
+		t.Fatalf("expected deduped file list, got:\n%s", result)
+	}
+	if !strings.Contains(result, "[Results truncated at limit]") {
+		t.Fatalf("expected truncation notice, got:\n%s", result)
+	}
+}
+
+func TestFormatGrepResults_Truncated(t *testing.T) {
+	matches := []GrepMatch{{FilePath: "x.go", LineNumber: 1, Match: "foo", Context: "> 1: foo"}}
+	result := formatGrepResults(matches, true)
 	if !strings.Contains(result, "[Results truncated at limit]") {
 		t.Errorf("expected truncation notice, got:\n%s", result)
 	}
@@ -554,6 +609,97 @@ func TestGrepTool_GroupedOutput(t *testing.T) {
 	}
 }
 
+func TestGrepTool_TypeFilter_Integration(t *testing.T) {
+	if !ripgrepAvailable() {
+		t.Skip("ripgrep not available")
+	}
+
+	dir := t.TempDir()
+	token := "TYPE_FILTER_TOKEN"
+	if err := os.WriteFile(filepath.Join(dir, "match.go"), []byte("package x\n// "+token+"\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "match.txt"), []byte(token+"\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	tool := NewGrepTool(nil, DefaultOutputLimits())
+	args, _ := json.Marshal(GrepArgs{Pattern: token, Path: dir, Type: "go", ContextLines: 0})
+	output, err := tool.Execute(context.Background(), args)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !strings.Contains(output.Content, "match.go") {
+		t.Fatalf("expected go file in output:\n%s", output.Content)
+	}
+	if strings.Contains(output.Content, "match.txt") {
+		t.Fatalf("did not expect txt file in output:\n%s", output.Content)
+	}
+}
+
+func TestGrepTool_Multiline_Integration(t *testing.T) {
+	if !ripgrepAvailable() {
+		t.Skip("ripgrep not available")
+	}
+
+	dir := t.TempDir()
+	content := "first line\nSECOND_LINE\nthird line\n"
+	if err := os.WriteFile(filepath.Join(dir, "multi.txt"), []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	tool := NewGrepTool(nil, DefaultOutputLimits())
+
+	withoutArgs, _ := json.Marshal(GrepArgs{Pattern: "first line\\nSECOND_LINE", Path: dir, ContextLines: 0})
+	withoutOutput, err := tool.Execute(context.Background(), withoutArgs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(withoutOutput.Content, "No matches found") {
+		t.Fatalf("expected multiline-disabled search to miss, got:\n%s", withoutOutput.Content)
+	}
+
+	withArgs, _ := json.Marshal(GrepArgs{Pattern: "first line\\nSECOND_LINE", Path: dir, ContextLines: 0, Multiline: true})
+	withOutput, err := tool.Execute(context.Background(), withArgs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(withOutput.Content, "multi.txt") {
+		t.Fatalf("expected multiline-enabled search to hit file, got:\n%s", withOutput.Content)
+	}
+}
+
+func TestGrepTool_RawRipgrepOutputCap_Integration(t *testing.T) {
+	if !ripgrepAvailable() {
+		t.Skip("ripgrep not available")
+	}
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "many.txt")
+	var content strings.Builder
+	for i := 0; i < rgHardMaxOutputLines+500; i++ {
+		content.WriteString("HARD_CAP_TOKEN\n")
+	}
+	if err := os.WriteFile(path, []byte(content.String()), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	tool := NewGrepTool(nil, DefaultOutputLimits())
+	args, _ := json.Marshal(GrepArgs{Pattern: "HARD_CAP_TOKEN", Path: dir, MaxResults: rgHardMaxOutputLines + 500, ContextLines: 0})
+	output, err := tool.Execute(context.Background(), args)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !strings.Contains(output.Content, "[Results truncated at limit]") {
+		t.Fatalf("expected raw ripgrep truncation notice, got:\n%s", output.Content)
+	}
+	if strings.Count(output.Content, "> ") < 1000 {
+		t.Fatalf("expected a large truncated match block, got only %d highlighted lines", strings.Count(output.Content, "> "))
+	}
+}
+
 // TestAutoEnrichContextLines checks the block-count → context-lines mapping.
 func TestAutoEnrichContextLines(t *testing.T) {
 	cases := []struct {
@@ -654,7 +800,7 @@ func TestSortGrepMatchesByMtime(t *testing.T) {
 
 	dir := t.TempDir()
 
-	// Write two files with a deliberate mtime gap so the ordering is stable.
+	// Write two files and then force distinct mtimes so ordering is stable.
 	older := filepath.Join(dir, "older.go")
 	newer := filepath.Join(dir, "newer.go")
 
@@ -662,9 +808,14 @@ func TestSortGrepMatchesByMtime(t *testing.T) {
 	if err := os.WriteFile(older, []byte("package x\n// "+token+"\n"), 0644); err != nil {
 		t.Fatal(err)
 	}
-	// Touch newer after a short sleep to guarantee a different mtime.
-	time.Sleep(20 * time.Millisecond)
 	if err := os.WriteFile(newer, []byte("package x\n// "+token+"\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	base := time.Now()
+	if err := os.Chtimes(older, base.Add(-2*time.Hour), base.Add(-2*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(newer, base, base); err != nil {
 		t.Fatal(err)
 	}
 
