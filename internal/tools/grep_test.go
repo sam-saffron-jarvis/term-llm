@@ -98,7 +98,7 @@ func TestFormatGrepResults_MultipleFiles(t *testing.T) {
 	}
 }
 
-func TestBuildRipgrepArgs_AddsDeterministicAndCursorStyleFlags(t *testing.T) {
+func TestBuildRipgrepArgs_AddsDeterministicAndUsefulFlags(t *testing.T) {
 	a := GrepArgs{
 		Pattern:   "foo\\nbar",
 		Include:   "*.go",
