@@ -184,6 +184,102 @@ func TestBuildChatGPTInput_SkipsUnresolvedToolCalls(t *testing.T) {
 	}
 }
 
+func TestChatGPTProviderModelListExcludesUnsupportedCodexSpark(t *testing.T) {
+	for _, model := range ProviderModels["chatgpt"] {
+		if model == chatGPTUnsupportedModel {
+			t.Fatalf("chatgpt model list should not include unsupported model %q", chatGPTUnsupportedModel)
+		}
+	}
+}
+
+func TestChatGPTProviderNormalizesUnsupportedCodexSpark(t *testing.T) {
+	origClient := chatGPTHTTPClient
+	defer func() {
+		chatGPTHTTPClient = origClient
+	}()
+
+	captured := make(chan map[string]interface{}, 1)
+	errs := make(chan error, 1)
+	sse := strings.Join([]string{
+		`data: {"type":"response.completed","response":{"usage":{"input_tokens":1,"output_tokens":1}}}`,
+		`data: [DONE]`,
+	}, "\n")
+
+	chatGPTHTTPClient = &http.Client{
+		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			defer req.Body.Close()
+
+			body, err := io.ReadAll(req.Body)
+			if err != nil {
+				errs <- err
+				return nil, err
+			}
+
+			var payload map[string]interface{}
+			if err := json.Unmarshal(body, &payload); err != nil {
+				errs <- err
+				return nil, err
+			}
+			captured <- payload
+
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Body:       io.NopCloser(strings.NewReader(sse)),
+				Header:     make(http.Header),
+			}, nil
+		}),
+	}
+
+	provider := NewChatGPTProviderWithCreds(&credentials.ChatGPTCredentials{
+		AccessToken: "test-token",
+		AccountID:   "test-account",
+		ExpiresAt:   time.Now().Add(1 * time.Hour).Unix(),
+	}, chatGPTUnsupportedModel)
+
+	if provider.model != chatGPTDefaultModel {
+		t.Fatalf("provider model = %q, want %q", provider.model, chatGPTDefaultModel)
+	}
+
+	stream, err := provider.Stream(context.Background(), Request{
+		Model:    chatGPTUnsupportedModel,
+		Messages: []Message{UserText("hello")},
+	})
+	if err != nil {
+		t.Fatalf("stream creation failed: %v", err)
+	}
+	defer stream.Close()
+
+	for {
+		event, recvErr := stream.Recv()
+		if recvErr == io.EOF {
+			break
+		}
+		if recvErr != nil {
+			t.Fatalf("stream recv failed: %v", recvErr)
+		}
+		if event.Type == EventDone {
+			break
+		}
+	}
+
+	select {
+	case err := <-errs:
+		t.Fatalf("failed to capture request: %v", err)
+	default:
+	}
+
+	var payload map[string]interface{}
+	select {
+	case payload = <-captured:
+	default:
+		t.Fatal("expected captured request payload")
+	}
+
+	if got, _ := payload["model"].(string); got != chatGPTDefaultModel {
+		t.Fatalf("request model = %q, want %q", got, chatGPTDefaultModel)
+	}
+}
+
 func TestChatGPTStream_ReasoningSummaryByOutputIndex(t *testing.T) {
 	origClient := chatGPTHTTPClient
 	defer func() {

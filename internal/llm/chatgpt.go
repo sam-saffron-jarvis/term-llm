@@ -17,6 +17,7 @@ import (
 )
 
 const chatGPTDefaultModel = "gpt-5.3-codex"
+const chatGPTUnsupportedModel = "gpt-5.3-codex-spark"
 
 // chatGPTResponsesURL is the ChatGPT backend API endpoint for responses
 const chatGPTResponsesURL = "https://chatgpt.com/backend-api/codex/responses"
@@ -43,6 +44,7 @@ func NewChatGPTProvider(model string) (*ChatGPTProvider, error) {
 		model = chatGPTDefaultModel
 	}
 	actualModel, effort := parseModelEffort(model)
+	actualModel = normalizeChatGPTModel(actualModel)
 
 	// Try to load existing credentials
 	creds, err := credentials.GetChatGPTCredentials()
@@ -80,11 +82,22 @@ func NewChatGPTProviderWithCreds(creds *credentials.ChatGPTCredentials, model st
 		model = chatGPTDefaultModel
 	}
 	actualModel, effort := parseModelEffort(model)
+	actualModel = normalizeChatGPTModel(actualModel)
 	return &ChatGPTProvider{
 		creds:  creds,
 		model:  actualModel,
 		effort: effort,
 	}
+}
+
+// normalizeChatGPTModel maps models that the ChatGPT Codex backend rejects for
+// ChatGPT OAuth accounts back to the default supported model.
+func normalizeChatGPTModel(model string) string {
+	model = strings.TrimSpace(model)
+	if model == "" || model == chatGPTUnsupportedModel {
+		return chatGPTDefaultModel
+	}
+	return model
 }
 
 // promptForChatGPTAuth prompts the user to authenticate with ChatGPT
@@ -170,7 +183,7 @@ func (p *ChatGPTProvider) Stream(ctx context.Context, req Request) (Stream, erro
 
 		// Strip effort suffix from req.Model if present
 		reqModel, reqEffort := parseModelEffort(req.Model)
-		model := chooseModel(reqModel, p.model)
+		model := normalizeChatGPTModel(chooseModel(reqModel, p.model))
 		effort := p.effort
 		if effort == "" && reqEffort != "" {
 			effort = reqEffort
@@ -359,19 +372,20 @@ func (p *ChatGPTProvider) Stream(ctx context.Context, req Request) (Stream, erro
 				reasoningAcc.ensure(event.ItemID, event.OutputIndex)
 			case "response.reasoning_summary_text.delta":
 				reasoningAcc.appendSummary(event.ItemID, event.OutputIndex, event.Delta)
-		case "response.completed":
-			if event.Response.Usage.InputTokens > 0 ||
-				event.Response.Usage.OutputTokens > 0 ||
-				event.Response.Usage.InputTokensDetails.CachedTokens > 0 {
-				cached := event.Response.Usage.InputTokensDetails.CachedTokens
-				lastUsage = &Usage{
-					// ChatGPT input_tokens includes cached; subtract to get non-cached portion.
-					// CachedInputTokens + InputTokens = total context size.
-					InputTokens:       event.Response.Usage.InputTokens - cached,
-					OutputTokens:      event.Response.Usage.OutputTokens,
-					CachedInputTokens: cached,
+			case "response.completed":
+				if event.Response.Usage.InputTokens > 0 ||
+					event.Response.Usage.OutputTokens > 0 ||
+					event.Response.Usage.InputTokensDetails.CachedTokens > 0 {
+					cached := event.Response.Usage.InputTokensDetails.CachedTokens
+					lastUsage = &Usage{
+						// ChatGPT input_tokens includes cached; subtract to get non-cached portion.
+						// CachedInputTokens + InputTokens = total context size.
+						InputTokens:       event.Response.Usage.InputTokens - cached,
+						OutputTokens:      event.Response.Usage.OutputTokens,
+						CachedInputTokens: cached,
+					}
 				}
-			}			}
+			}
 		}
 		if err := scanner.Err(); err != nil {
 			return fmt.Errorf("stream read error: %w", err)
