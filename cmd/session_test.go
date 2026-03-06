@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"io"
 	"os"
 	"path/filepath"
@@ -11,6 +12,8 @@ import (
 	"github.com/samsaffron/term-llm/internal/agents"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
+	memorydb "github.com/samsaffron/term-llm/internal/memory"
+	"github.com/samsaffron/term-llm/internal/skills"
 	"github.com/samsaffron/term-llm/internal/tools"
 )
 
@@ -80,6 +83,64 @@ func TestResolveSettings_AgentSystemPromptIncludeUsesAgentDir(t *testing.T) {
 
 	if settings.SystemPrompt != "X from agent dir Y" {
 		t.Fatalf("SystemPrompt = %q, want %q", settings.SystemPrompt, "X from agent dir Y")
+	}
+}
+
+func TestResolveSettings_AppendsInsightsToSystemPrompt(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "memory.db")
+	t.Setenv("TERM_LLM_MEMORY_DB", dbPath)
+	oldMemoryDBPath := memoryDBPath
+	memoryDBPath = defaultMemoryDBPath
+	t.Cleanup(func() { memoryDBPath = oldMemoryDBPath })
+
+	store, err := memorydb.NewStore(memorydb.Config{Path: dbPath})
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	if err := store.CreateInsight(context.Background(), &memorydb.Insight{
+		Agent:          "jarvis",
+		Content:        "Avoid filler.",
+		CompactContent: "Avoid filler.",
+		Category:       "communication-style",
+		Confidence:     0.9,
+	}); err != nil {
+		t.Fatalf("CreateInsight() error = %v", err)
+	}
+
+	agent := &agents.Agent{
+		Name:         "jarvis",
+		SystemPrompt: "Base prompt",
+		Memory: agents.MemoryConfig{
+			InsightsExpansion: true,
+			InsightsMaxTokens: 500,
+		},
+	}
+
+	settings, err := ResolveSettings(&config.Config{}, agent, CLIFlags{}, "", "", "", 0, 20)
+	if err != nil {
+		t.Fatalf("ResolveSettings() error = %v", err)
+	}
+	if !strings.Contains(settings.SystemPrompt, "Base prompt") {
+		t.Fatalf("SystemPrompt missing base prompt: %q", settings.SystemPrompt)
+	}
+	if !strings.Contains(settings.SystemPrompt, "<insights>") {
+		t.Fatalf("SystemPrompt missing insights block: %q", settings.SystemPrompt)
+	}
+	if !strings.Contains(settings.SystemPrompt, "Avoid filler.") {
+		t.Fatalf("SystemPrompt missing insight content: %q", settings.SystemPrompt)
+	}
+}
+
+func TestInjectSkillsMetadata_KeepsInsightsAtTail(t *testing.T) {
+	instructions := "Base prompt\n\n<insights>\nBehavioral guidelines from past sessions:\n1. Avoid filler.\n</insights>"
+	skillsSetup := &skills.Setup{XML: "<available_skills>demo</available_skills>"}
+
+	got := InjectSkillsMetadata(instructions, skillsSetup)
+	want := "Base prompt\n\n<available_skills>demo</available_skills>\n\n<insights>\nBehavioral guidelines from past sessions:\n1. Avoid filler.\n</insights>"
+	if got != want {
+		t.Fatalf("InjectSkillsMetadata() = %q, want %q", got, want)
 	}
 }
 

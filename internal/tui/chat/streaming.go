@@ -332,7 +332,7 @@ func (m *Model) listenForStreamEventsSync() tea.Msg {
 	return streamEventMsg{event: event}
 }
 
-func (m *Model) buildMessages(includeInsights bool) []llm.Message {
+func (m *Model) buildMessages() []llm.Message {
 	m.messagesMu.Lock()
 	snapshot := make([]session.Message, len(m.messages))
 	copy(snapshot, m.messages)
@@ -349,41 +349,19 @@ func (m *Model) buildMessages(includeInsights bool) []llm.Message {
 	}
 
 	// Add conversation history - convert session messages to llm messages
-	userMsgCount := 0
 	for _, msg := range snapshot {
 		messages = append(messages, msg.ToLLMMessage())
-		if msg.Role == llm.RoleUser {
-			userMsgCount++
-		}
-	}
-
-	if includeInsights {
-		// Insights expansion: inject on the very first user turn of a new session.
-		// buildMessages is called once per stream start, so this fires exactly once.
-		// On subsequent turns userMsgCount > 1 and the block is skipped.
-		if userMsgCount == 1 {
-			userText := ""
-			for _, msg := range snapshot {
-				if msg.Role == llm.RoleUser {
-					userText = msg.TextContent
-					break
-				}
-			}
-			if expanded := m.insightsExpander.Expand(context.Background(), userText); expanded != "" {
-				messages = append(messages, llm.UserText(expanded))
-			}
-		}
 	}
 
 	return messages
 }
 
 func (m *Model) buildMessagesForStream() []llm.Message {
-	return m.buildMessages(true)
+	return m.buildMessages()
 }
 
 func (m *Model) buildMessagesForContextEstimate() []llm.Message {
-	return m.buildMessages(false)
+	return m.buildMessages()
 }
 
 func (m *Model) tickEvery() tea.Cmd {

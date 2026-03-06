@@ -17,7 +17,6 @@ import (
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/mcp"
-	memorydb "github.com/samsaffron/term-llm/internal/memory"
 	"github.com/samsaffron/term-llm/internal/serve"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/signal"
@@ -234,17 +233,6 @@ func runServe(cmd *cobra.Command, args []string) error {
 
 	forceExternalSearch := resolveForceExternalSearch(cfg, serveNativeSearch, serveNoNativeSearch)
 
-	// Build the insight expander (nil when disabled or store unavailable).
-	// Captured by the factory closure and shared across all runtimes.
-	var insightsExpander *memorydb.InsightsExpander
-	var insightsMemStore *memorydb.Store // kept for deferred Close
-	if settings.InsightsExpansion {
-		if ms, msErr := openMemoryStore(); msErr == nil {
-			insightsMemStore = ms
-			insightsExpander = memorydb.NewInsightsExpander(ms, agentName, settings.InsightsMaxTokens)
-		}
-	}
-
 	modelName := activeModel(cfg)
 	factory := func(ctx context.Context) (*serveRuntime, error) {
 		provider, err := llm.NewProvider(cfg)
@@ -280,7 +268,6 @@ func runServe(cmd *cobra.Command, args []string) error {
 			debugRaw:            debugRaw,
 			defaultModel:        modelName,
 			store:               store,
-			insightsExpander:    insightsExpander,
 			toolsSetting:        settings.Tools,
 			mcpSetting:          settings.MCP,
 			agentName:           agentName,
@@ -310,7 +297,6 @@ func runServe(cmd *cobra.Command, args []string) error {
 		MCP:                    settings.MCP,
 		Agent:                  agentName,
 		Store:                  store,
-		InsightsExpander:       insightsExpander,
 		NewSession: func(ctx context.Context) (*serve.SessionRuntime, error) {
 			rt, err := factory(ctx)
 			if err != nil {
@@ -412,10 +398,6 @@ func runServe(cmd *cobra.Command, args []string) error {
 	}
 
 	<-ctx.Done()
-
-	if insightsMemStore != nil {
-		_ = insightsMemStore.Close()
-	}
 
 	if s != nil {
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)

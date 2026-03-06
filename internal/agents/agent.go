@@ -172,8 +172,8 @@ type MCPConfig struct {
 
 // MemoryConfig holds memory-related settings for an agent.
 type MemoryConfig struct {
-	// InsightsExpansion enables injecting relevant behavioral insights at the
-	// start of each new session (first user turn). Default false.
+	// InsightsExpansion appends behavioral insights to the resolved system
+	// prompt for sessions started with this agent. Default false.
 	InsightsExpansion bool `yaml:"insights_expansion,omitempty"`
 	// InsightsMaxTokens caps the insight block token budget. Default: 500.
 	InsightsMaxTokens int `yaml:"insights_max_tokens,omitempty"`

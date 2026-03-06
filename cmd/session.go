@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"io"
 	"os"
@@ -12,6 +13,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/agents"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
+	memorydb "github.com/samsaffron/term-llm/internal/memory"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/skills"
 	"github.com/samsaffron/term-llm/internal/tools"
@@ -268,8 +270,48 @@ func ResolveSettings(cfg *config.Config, agent *agents.Agent, cli CLIFlags, conf
 		s.InsightsExpansion = agent.Memory.InsightsExpansion
 		s.InsightsMaxTokens = agent.Memory.InsightsMaxTokens
 	}
+	s.SystemPrompt = injectInsightsMetadata(s.SystemPrompt, s.AgentName, s.InsightsExpansion, s.InsightsMaxTokens)
 
 	return s, nil
+}
+
+func injectInsightsMetadata(instructions, agentName string, enabled bool, maxTokens int) string {
+	if !enabled || strings.TrimSpace(agentName) == "" {
+		return instructions
+	}
+
+	store, err := openMemoryStore()
+	if err != nil {
+		return instructions
+	}
+	defer store.Close()
+
+	expander := memorydb.NewInsightsExpander(store, agentName, maxTokens)
+	insights := strings.TrimSpace(expander.Expand(context.Background(), ""))
+	if insights == "" {
+		return instructions
+	}
+	if strings.TrimSpace(instructions) == "" {
+		return insights
+	}
+	return strings.TrimRight(instructions, "\n") + "\n\n" + insights
+}
+
+func splitTrailingInsightsBlock(instructions string) (head, insights string) {
+	idx := strings.LastIndex(instructions, "<insights>\n")
+	if idx == -1 {
+		return instructions, ""
+	}
+	candidate := instructions[idx:]
+	end := strings.LastIndex(candidate, "</insights>")
+	if end == -1 {
+		return instructions, ""
+	}
+	end += len("</insights>")
+	if strings.TrimSpace(candidate[end:]) != "" {
+		return instructions, ""
+	}
+	return strings.TrimRight(instructions[:idx], "\n"), candidate[:end]
 }
 
 func expandSystemPromptWithIncludes(prompt string, templateCtx agents.TemplateContext, baseDir string) (string, error) {
@@ -581,8 +623,15 @@ func InjectSkillsMetadata(instructions string, skillsSetup *skills.Setup) string
 	if skillsSetup == nil || !skillsSetup.HasSkillsXML() || skills.CheckAgentsMdForSkills() {
 		return instructions
 	}
-	if instructions != "" {
-		return instructions + "\n\n" + skillsSetup.XML
+
+	head, insights := splitTrailingInsightsBlock(instructions)
+	if strings.TrimSpace(head) != "" {
+		head += "\n\n" + skillsSetup.XML
+	} else {
+		head = skillsSetup.XML
 	}
-	return skillsSetup.XML
+	if insights != "" {
+		return head + "\n\n" + insights
+	}
+	return head
 }
