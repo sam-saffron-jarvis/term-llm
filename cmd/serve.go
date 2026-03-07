@@ -572,10 +572,13 @@ func (s *serveServer) Start() error {
 	}
 
 	if s.cfg.ui {
-		mux.HandleFunc("/ui-assets/", s.cors(s.handleUIAsset))
-		mux.HandleFunc("/", s.cors(s.handleUI))
-		mux.HandleFunc("/ui", s.cors(s.handleUI))
 		mux.HandleFunc("/ui/", s.cors(s.handleUI))
+		mux.HandleFunc("/ui", s.cors(func(w http.ResponseWriter, r *http.Request) {
+			http.Redirect(w, r, "/ui/", http.StatusMovedPermanently)
+		}))
+		mux.HandleFunc("/", s.cors(func(w http.ResponseWriter, r *http.Request) {
+			http.Redirect(w, r, "/ui/", http.StatusTemporaryRedirect)
+		}))
 	}
 
 	s.server = &http.Server{

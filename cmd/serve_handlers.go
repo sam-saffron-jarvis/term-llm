@@ -43,6 +43,23 @@ func (s *serveServer) handleUI(w http.ResponseWriter, r *http.Request) {
 		writeOpenAIError(w, http.StatusMethodNotAllowed, "invalid_request_error", "method not allowed")
 		return
 	}
+
+	// Strip /ui/ prefix and check if remainder matches a static asset.
+	assetName := strings.TrimPrefix(r.URL.Path, "/ui/")
+	if assetName != "" && !strings.Contains(assetName, "/") && !strings.Contains(assetName, "..") {
+		if data, err := serveui.StaticAsset(assetName); err == nil {
+			contentType := mime.TypeByExtension(filepath.Ext(assetName))
+			if contentType == "" {
+				contentType = http.DetectContentType(data)
+			}
+			w.Header().Set("Content-Type", contentType)
+			w.Header().Set("Cache-Control", "no-cache")
+			_, _ = w.Write(data)
+			return
+		}
+	}
+
+	// SPA catch-all: serve index.html for all other paths.
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
 	html := serveui.IndexHTML()
@@ -51,38 +68,6 @@ func (s *serveServer) handleUI(w http.ResponseWriter, r *http.Request) {
 		html = bytes.Replace(html, []byte("</head>"), []byte(snippet), 1)
 	}
 	_, _ = w.Write(html)
-}
-
-func (s *serveServer) handleUIAsset(w http.ResponseWriter, r *http.Request) {
-	if !s.cfg.ui {
-		http.NotFound(w, r)
-		return
-	}
-	if r.Method != http.MethodGet && r.Method != http.MethodHead {
-		w.Header().Set("Allow", "GET, HEAD")
-		writeOpenAIError(w, http.StatusMethodNotAllowed, "invalid_request_error", "method not allowed")
-		return
-	}
-
-	assetName := strings.TrimPrefix(r.URL.Path, "/ui-assets/")
-	if assetName == "" || strings.Contains(assetName, "/") || strings.Contains(assetName, "..") {
-		http.NotFound(w, r)
-		return
-	}
-
-	data, err := serveui.StaticAsset(assetName)
-	if err != nil {
-		http.NotFound(w, r)
-		return
-	}
-
-	contentType := mime.TypeByExtension(filepath.Ext(assetName))
-	if contentType == "" {
-		contentType = http.DetectContentType(data)
-	}
-	w.Header().Set("Content-Type", contentType)
-	w.Header().Set("Cache-Control", "no-cache")
-	_, _ = w.Write(data)
 }
 
 func (s *serveServer) handleImage(w http.ResponseWriter, r *http.Request) {

@@ -182,7 +182,7 @@ func TestSingleServeTemplatePlatform(t *testing.T) {
 	}
 }
 
-func TestHandleUIAsset_ReturnsEmbeddedStaticFile(t *testing.T) {
+func TestHandleUI_ReturnsEmbeddedStaticAsset(t *testing.T) {
 	srv := &serveServer{cfg: serveServerConfig{ui: true}}
 
 	tests := []struct {
@@ -191,8 +191,8 @@ func TestHandleUIAsset_ReturnsEmbeddedStaticFile(t *testing.T) {
 		contentType string
 		bodySnippet string
 	}{
-		{name: "css", path: "/ui-assets/app.css", contentType: "text/css", bodySnippet: ".app {"},
-		{name: "js", path: "/ui-assets/app-core.js", contentType: "text/javascript", bodySnippet: "window.TermLLMApp"},
+		{name: "css", path: "/ui/app.css", contentType: "text/css", bodySnippet: ".app {"},
+		{name: "js", path: "/ui/app-core.js", contentType: "text/javascript", bodySnippet: "window.TermLLMApp"},
 	}
 
 	for _, tt := range tests {
@@ -200,7 +200,7 @@ func TestHandleUIAsset_ReturnsEmbeddedStaticFile(t *testing.T) {
 			req := httptest.NewRequest(http.MethodGet, tt.path, nil)
 			rr := httptest.NewRecorder()
 
-			srv.handleUIAsset(rr, req)
+			srv.handleUI(rr, req)
 
 			if rr.Code != http.StatusOK {
 				t.Fatalf("status = %d, want 200", rr.Code)
