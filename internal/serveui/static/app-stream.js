@@ -5,7 +5,7 @@ const app = window.TermLLMApp;
 const {
   STORAGE_KEYS, state, elements, generateId, sanitizeInterruptState, sanitizeMessage, syncTokenCookie, truncate, saveSessions,
   getActiveSession, ensureActiveSession, createSession, findMessageElement, scrollToBottom, setConnectionState,
-  persistAndRefreshShell, updateSessionUsageDisplay, requestHeaders: _unusedRequestHeaders, updateAssistantNode, updateUserNode,
+  persistAndRefreshShell, updateSessionUsageDisplay, refreshRelativeTimes, requestHeaders: _unusedRequestHeaders, updateAssistantNode, updateUserNode,
   updateToolNode, updateToolGroupNode, createMessageNode, createToolGroupNode, renderSidebar, renderMessages
 } = app;
 
@@ -214,6 +214,11 @@ const applyResponseStreamEvent = (session, streamState, event, payload) => {
       setActiveResponseTracking(session, responseId, payload?.sequence_number ?? null);
       saveSessions();
     }
+    const model = payload?.response?.model;
+    if (model) {
+      session.activeModel = model;
+      updateSessionUsageDisplay(session);
+    }
     return { terminal: false };
   }
 
@@ -345,6 +350,9 @@ const applyResponseStreamEvent = (session, streamState, event, payload) => {
 
     const sessionUsage = payload?.response?.session_usage;
     if (sessionUsage) session.sessionUsage = sessionUsage;
+    if (usage) session.lastUsage = usage;
+    const completedModel = payload?.response?.model;
+    if (completedModel) session.activeModel = completedModel;
     updateSessionUsageDisplay(session);
 
     const lastAssistant = [...session.messages].reverse().find((message) => message.role === 'assistant');
@@ -899,17 +907,20 @@ const submitAskUserModal = async (cancelled = false) => {
   }
 };
 
-// ===== Auth modal =====
+// ===== Settings modal =====
 const openAuthModal = (errorText = '', required = !state.token) => {
   state.authRequired = required;
   elements.authError.textContent = errorText;
   elements.authTokenInput.value = state.token || '';
   elements.authCancelBtn.style.display = required ? 'none' : 'inline-flex';
+  elements.modelSelect.value = state.selectedModel;
   elements.authModal.classList.remove('hidden');
 
   setTimeout(() => {
-    elements.authTokenInput.focus();
-    elements.authTokenInput.select();
+    if (required) {
+      elements.authTokenInput.focus();
+      elements.authTokenInput.select();
+    }
   }, 0);
 };
 
@@ -931,19 +942,36 @@ const handleAuthFailure = () => {
 
 const connectToken = async () => {
   const token = elements.authTokenInput.value.trim();
-  if (!token) {
+
+  // Save model selection regardless of token
+  const newModel = elements.modelSelect.value;
+  state.selectedModel = newModel;
+  if (newModel) {
+    localStorage.setItem(STORAGE_KEYS.selectedModel, newModel);
+  } else {
+    localStorage.removeItem(STORAGE_KEYS.selectedModel);
+  }
+
+  if (state.authRequired && !token) {
     elements.authError.textContent = 'Token is required.';
     return;
   }
 
+  const tokenChanged = token !== state.token;
+  if (!tokenChanged) {
+    closeAuthModal();
+    return;
+  }
+
   elements.authConnectBtn.disabled = true;
-  elements.authConnectBtn.textContent = 'Connecting…';
+  elements.authConnectBtn.textContent = 'Saving…';
   elements.authError.textContent = '';
 
   try {
     const models = await fetchModels(token);
     state.token = token;
     state.models = models;
+    state.connected = true;
     localStorage.setItem(STORAGE_KEYS.token, token);
     syncTokenCookie(token);
 
@@ -966,7 +994,7 @@ const connectToken = async () => {
     setConnectionState('Not connected', 'bad');
   } finally {
     elements.authConnectBtn.disabled = false;
-    elements.authConnectBtn.textContent = 'Connect';
+    elements.authConnectBtn.textContent = 'Save';
   }
 };
 
@@ -977,7 +1005,7 @@ const renderModelOptions = () => {
 
   const autoOption = document.createElement('option');
   autoOption.value = '';
-  autoOption.textContent = 'Auto model';
+  autoOption.textContent = 'Auto (server default)';
   elements.modelSelect.appendChild(autoOption);
 
   state.models.forEach((id) => {
@@ -1209,6 +1237,41 @@ const markToolGroupsDone = (session) => {
   });
 };
 
+// Rebuild a full conversation input array from locally-stored session messages.
+// Used to recover when previous_response_id has expired server-side.
+const rebuildInputFromSession = (session, currentInput) => {
+  const input = [];
+  for (const msg of session.messages) {
+    if (msg.role === 'user' && !msg.askUser) {
+      if (msg.attachments && msg.attachments.length > 0) {
+        const parts = [];
+        for (const att of msg.attachments) {
+          if (att.type && att.type.startsWith('image/') && att.dataURL) {
+            parts.push({ type: 'input_image', image_url: att.dataURL, filename: att.name });
+          } else if (att.dataURL) {
+            parts.push({ type: 'input_file', file_data: att.dataURL, filename: att.name });
+          }
+        }
+        if (msg.content) parts.push({ type: 'input_text', text: msg.content });
+        input.push({ type: 'message', role: 'user', content: parts });
+      } else {
+        input.push({ type: 'message', role: 'user', content: msg.content || '' });
+      }
+    } else if (msg.role === 'assistant') {
+      input.push({ type: 'message', role: 'assistant', content: msg.content || '' });
+    }
+    // Skip tool/tool-group/error messages — they're internal
+  }
+  // Replace the last user message input with the current one (which may have
+  // attachments encoded differently), or append if not already present.
+  if (input.length > 0 && input[input.length - 1].role === 'user') {
+    input[input.length - 1].content = currentInput;
+  } else {
+    input.push({ type: 'message', role: 'user', content: currentInput });
+  }
+  return input;
+};
+
 const sendMessage = async (options = {}) => {
   const promptSource = typeof options.prompt === 'string' ? options.prompt : elements.promptInput.value;
   const prompt = String(promptSource || '').trim();
@@ -1218,8 +1281,8 @@ const sendMessage = async (options = {}) => {
 
   if (!prompt && pendingAttachments.length === 0) return;
 
-  if (!state.token) {
-    openAuthModal('Enter a token before sending a message.', true);
+  if (!state.connected) {
+    openAuthModal('Connect before sending a message.', true);
     return;
   }
 
@@ -1346,7 +1409,7 @@ const sendMessage = async (options = {}) => {
   }
 
   try {
-    const response = await fetch('/v1/responses', {
+    let response = await fetch('/v1/responses', {
       method: 'POST',
       headers: {
         ...requestHeaders(session.id),
@@ -1355,6 +1418,28 @@ const sendMessage = async (options = {}) => {
       body: JSON.stringify(body),
       signal: controller.signal
     });
+
+    // Recovery: if previous_response_id expired, rebuild conversation from
+    // local messages and retry without chaining.
+    if (!response.ok && body.previous_response_id) {
+      const errData = await response.json().catch(() => null);
+      const errMsg = errData?.error?.message || '';
+      if (errMsg.includes('not found') && errMsg.includes('previous_response_id')) {
+        delete body.previous_response_id;
+        session.lastResponseId = null;
+        body.input = rebuildInputFromSession(session, inputContent);
+
+        response = await fetch('/v1/responses', {
+          method: 'POST',
+          headers: {
+            ...requestHeaders(session.id),
+            'X-Term-LLM-UI': '1'
+          },
+          body: JSON.stringify(body),
+          signal: controller.signal
+        });
+      }
+    }
 
     if (!response.ok) {
       throw await normalizeError(response);

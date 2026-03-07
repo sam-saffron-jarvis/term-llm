@@ -333,6 +333,7 @@ const initialize = async () => {
   try {
     setConnectionState(state.token ? 'Validating token…' : 'Connecting…');
     state.models = await fetchModels();
+    state.connected = true;
     renderModelOptions();
     setConnectionState('', '');
 
@@ -388,15 +389,6 @@ elements.settingsBtn.addEventListener('click', () => {
 elements.mobileMenuBtn.addEventListener('click', openSidebar);
 elements.sidebarBackdrop.addEventListener('click', closeSidebar);
 elements.sidebarCloseBtn.addEventListener('click', closeSidebar);
-
-elements.modelSelect.addEventListener('change', () => {
-  state.selectedModel = elements.modelSelect.value;
-  if (state.selectedModel) {
-    localStorage.setItem(STORAGE_KEYS.selectedModel, state.selectedModel);
-  } else {
-    localStorage.removeItem(STORAGE_KEYS.selectedModel);
-  }
-});
 
 elements.chatScroll.addEventListener('scroll', () => {
   state.autoScroll = isNearBottom();

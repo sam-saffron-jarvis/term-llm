@@ -25,6 +25,7 @@ const state = {
   abortController: null,
   autoScroll: true,
   authRequired: false,
+  connected: false,
   attachments: [],
   askUser: null
 };
@@ -43,7 +44,6 @@ const elements = {
   sessionGroups: document.getElementById('sessionGroups'),
   activeSessionTitle: document.getElementById('activeSessionTitle'),
   connectionState: document.getElementById('connectionState'),
-  modelSelect: document.getElementById('modelSelect'),
   chatScroll: document.getElementById('chatScroll'),
   messages: document.getElementById('messages'),
   promptInput: document.getElementById('promptInput'),
@@ -65,7 +65,8 @@ const elements = {
   fileInput: document.getElementById('fileInput'),
   attachmentsStrip: document.getElementById('attachmentsStrip'),
   dropOverlay: document.getElementById('dropOverlay'),
-  sessionUsage: document.getElementById('sessionUsage'),
+  headerStats: document.getElementById('headerStats'),
+  modelSelect: document.getElementById('modelSelect'),
   lightbox: document.getElementById('lightbox'),
   lightboxImg: document.getElementById('lightboxImg')
 };
@@ -170,19 +171,51 @@ const formatUsage = (usage) => {
   return `↙ ${inTokens.toLocaleString()} in · ${outTokens.toLocaleString()} out · ${cached.toLocaleString()} cached`;
 };
 
+const fmtTokens = (n) => {
+  if (n < 1000) return String(n);
+  if (n < 1000000) {
+    const k = n / 1000;
+    return k < 10 ? `${k.toFixed(1)}k` : `${Math.round(k)}k`;
+  }
+  const m = n / 1000000;
+  return m < 10 ? `${m.toFixed(1)}M` : `${Math.round(m)}M`;
+};
+
+const escapeHTML = (str) => {
+  const div = document.createElement('div');
+  div.textContent = str;
+  return div.innerHTML;
+};
+
 const updateSessionUsageDisplay = (session) => {
-  const el = elements?.sessionUsage;
+  const el = elements?.headerStats;
   if (!el) return;
-  const usage = session?.sessionUsage;
-  if (!usage) {
-    el.textContent = '';
+  const model = session?.activeModel || '';
+  const lu = session?.lastUsage;
+
+  if (!lu && !model) {
+    el.innerHTML = '';
     return;
   }
-  const inTokens = Number(usage.input_tokens || 0);
-  const outTokens = Number(usage.output_tokens || 0);
-  const total = inTokens + outTokens;
-  el.textContent = `${total.toLocaleString()} tokens`;
-  el.title = `Session total: ${inTokens.toLocaleString()} in, ${outTokens.toLocaleString()} out`;
+
+  const parts = [];
+  if (model) {
+    parts.push(`<span class="stats-model">${escapeHTML(model)}</span>`);
+  }
+
+  if (lu) {
+    const inTok = Number(lu.input_tokens || 0);
+    const outTok = Number(lu.output_tokens || 0);
+    const cached = Number(lu.input_tokens_details?.cached_tokens || 0);
+    const context = inTok + outTok;
+    let s = `${fmtTokens(inTok)} in`;
+    if (cached > 0) s += ` <span class="stats-cached">(${fmtTokens(cached)} cached)</span>`;
+    s += ` → ${fmtTokens(outTok)} out`;
+    parts.push(`<span class="stats-tokens">${s}</span>`);
+    parts.push(`<span class="stats-context">context ${fmtTokens(context)}</span>`);
+  }
+
+  el.innerHTML = parts.join('<span class="stats-sep">·</span>');
 };
 
 const isNearBottom = () => {
@@ -301,7 +334,9 @@ const sanitizeSession = (session) => {
     lastResponseId: typeof session.lastResponseId === 'string' ? session.lastResponseId : null,
     activeResponseId: typeof session.activeResponseId === 'string' ? session.activeResponseId : null,
     lastSequenceNumber: Number.isFinite(Number(session.lastSequenceNumber)) ? Number(session.lastSequenceNumber) : 0,
-    sessionUsage: session.sessionUsage && typeof session.sessionUsage === 'object' ? session.sessionUsage : null
+    sessionUsage: session.sessionUsage && typeof session.sessionUsage === 'object' ? session.sessionUsage : null,
+    lastUsage: session.lastUsage && typeof session.lastUsage === 'object' ? session.lastUsage : null,
+    activeModel: typeof session.activeModel === 'string' ? session.activeModel : ''
   };
   if (session._serverOnly) result._serverOnly = true;
   if (typeof session.messageCount === 'number') result.messageCount = session.messageCount;
@@ -363,7 +398,9 @@ const createSession = () => ({
   lastResponseId: null,
   activeResponseId: null,
   lastSequenceNumber: 0,
-  sessionUsage: null
+  sessionUsage: null,
+  lastUsage: null,
+  activeModel: ''
 });
 
 const ensureActiveSession = () => {

@@ -335,13 +335,58 @@
       gap: 0.5rem;
     }
 
-    .model-select {
+    .header-stats {
+      display: inline-flex;
+      align-items: center;
+      gap: 0;
+      font-size: 0.8rem;
+      color: var(--text-muted);
+      white-space: nowrap;
+    }
+
+    .stats-model {
+      color: var(--text);
+      font-weight: 600;
+    }
+
+    .stats-tokens {
+      font-variant-numeric: tabular-nums;
+    }
+
+    .stats-cached {
+      color: var(--text-muted);
+    }
+
+    .stats-sep {
+      margin: 0 0.45rem;
+      opacity: 0.4;
+    }
+
+    .settings-field {
+      margin-bottom: 0.75rem;
+    }
+
+    .settings-label {
+      display: block;
+      font-size: 0.8rem;
+      font-weight: 600;
+      color: var(--text-muted);
+      margin-bottom: 0.3rem;
+    }
+
+    .settings-select {
+      width: 100%;
       border: 1px solid var(--border);
       background: var(--surface-2);
+      color: var(--text);
       border-radius: 8px;
-      padding: 0.45rem 0.75rem;
-      max-width: 320px;
-      min-width: 160px;
+      padding: 0.6rem 0.75rem;
+      font: inherit;
+    }
+
+    .settings-select:focus {
+      outline: 2px solid var(--border-strong);
+      border-color: var(--border-strong);
     }
 
     .chat-scroll {
@@ -551,8 +596,8 @@
 
     .interrupt-badge.queue {
       color: var(--accent-amber);
-      border-color: rgba(229,162,16,0.3);
-      background: rgba(229,162,16,0.08);
+      border-color: var(--border);
+      background: var(--surface);
     }
 
     .interrupt-badge.error {
@@ -574,16 +619,11 @@
       padding: 0 0.2rem;
     }
 
-    .session-usage {
-      font-size: 0.76rem;
-      color: var(--text-muted);
-      white-space: nowrap;
-    }
 
     .tool-card {
-      border: 1px solid rgba(229,162,16,0.25);
+      border: 1px solid var(--border);
       border-radius: 8px;
-      background: rgba(229,162,16,0.06);
+      background: var(--surface);
       overflow: hidden;
     }
 
@@ -662,9 +702,9 @@
     }
 
     .tool-group-card {
-      border: 1px solid rgba(229,162,16,0.25);
+      border: 1px solid var(--border);
       border-radius: 8px;
-      background: rgba(229,162,16,0.06);
+      background: var(--surface);
       overflow: hidden;
     }
 
@@ -1343,12 +1383,7 @@
         flex-shrink: 0;
       }
 
-      .model-select {
-        max-width: 42vw;
-        min-width: 0;
-      }
-
-      .session-usage {
+      .header-stats {
         display: none;
       }
 
