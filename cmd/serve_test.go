@@ -5,10 +5,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -20,6 +22,142 @@ import (
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/tools"
 )
+
+type stagedStream struct {
+	ctx    context.Context
+	cancel context.CancelFunc
+	events <-chan llm.Event
+}
+
+func (s *stagedStream) Recv() (llm.Event, error) {
+	select {
+	case event, ok := <-s.events:
+		if !ok {
+			return llm.Event{}, io.EOF
+		}
+		return event, nil
+	default:
+	}
+
+	select {
+	case <-s.ctx.Done():
+		return llm.Event{}, s.ctx.Err()
+	case event, ok := <-s.events:
+		if !ok {
+			return llm.Event{}, io.EOF
+		}
+		return event, nil
+	}
+}
+
+func (s *stagedStream) Close() error {
+	s.cancel()
+	return nil
+}
+
+type stagedProvider struct {
+	mu            sync.Mutex
+	requests      []llm.Request
+	firstChunk    string
+	secondChunk   string
+	firstSent     chan struct{}
+	releaseSecond chan struct{}
+	closeFirst    sync.Once
+}
+
+func newStagedProvider(firstChunk, secondChunk string) *stagedProvider {
+	return &stagedProvider{
+		firstChunk:    firstChunk,
+		secondChunk:   secondChunk,
+		firstSent:     make(chan struct{}),
+		releaseSecond: make(chan struct{}),
+	}
+}
+
+func (p *stagedProvider) Name() string {
+	return "staged"
+}
+
+func (p *stagedProvider) Credential() string {
+	return "test"
+}
+
+func (p *stagedProvider) Capabilities() llm.Capabilities {
+	return llm.Capabilities{ToolCalls: true}
+}
+
+func (p *stagedProvider) Stream(ctx context.Context, req llm.Request) (llm.Stream, error) {
+	p.mu.Lock()
+	p.requests = append(p.requests, req)
+	p.mu.Unlock()
+
+	streamCtx, cancel := context.WithCancel(ctx)
+	ch := make(chan llm.Event, 8)
+	go func() {
+		defer close(ch)
+
+		select {
+		case <-streamCtx.Done():
+			return
+		case ch <- llm.Event{Type: llm.EventTextDelta, Text: p.firstChunk}:
+		}
+		p.closeFirst.Do(func() { close(p.firstSent) })
+
+		select {
+		case <-streamCtx.Done():
+			return
+		case <-p.releaseSecond:
+		}
+
+		select {
+		case <-streamCtx.Done():
+			return
+		case ch <- llm.Event{Type: llm.EventTextDelta, Text: p.secondChunk}:
+		}
+
+		select {
+		case <-streamCtx.Done():
+			return
+		case ch <- llm.Event{Type: llm.EventUsage, Use: &llm.Usage{InputTokens: 1, OutputTokens: 2}}:
+		}
+	}()
+
+	return &stagedStream{ctx: streamCtx, cancel: cancel, events: ch}, nil
+}
+
+func newServeHTTPTestServer(srv *serveServer) *httptest.Server {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/responses", srv.handleResponses)
+	mux.HandleFunc("/v1/responses/", srv.handleResponseByID)
+	return httptest.NewServer(mux)
+}
+
+func readSSEEvent(t *testing.T, scanner *bufio.Scanner) (string, string, bool) {
+	t.Helper()
+
+	var eventName string
+	dataLines := make([]string, 0, 1)
+	for scanner.Scan() {
+		line := scanner.Text()
+		if line == "" {
+			return eventName, strings.Join(dataLines, "\n"), true
+		}
+		if strings.HasPrefix(line, "event: ") {
+			eventName = strings.TrimPrefix(line, "event: ")
+			continue
+		}
+		if strings.HasPrefix(line, "data: ") {
+			dataLines = append(dataLines, strings.TrimPrefix(line, "data: "))
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		t.Fatalf("scan SSE: %v", err)
+	}
+	if eventName == "" && len(dataLines) == 0 {
+		return "", "", false
+	}
+	return eventName, strings.Join(dataLines, "\n"), true
+}
 
 func TestSingleServeTemplatePlatform(t *testing.T) {
 	tests := []struct {
@@ -39,6 +177,39 @@ func TestSingleServeTemplatePlatform(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := singleServeTemplatePlatform(tt.platforms); got != tt.want {
 				t.Fatalf("singleServeTemplatePlatform(%v) = %q, want %q", tt.platforms, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestHandleUIAsset_ReturnsEmbeddedStaticFile(t *testing.T) {
+	srv := &serveServer{cfg: serveServerConfig{ui: true}}
+
+	tests := []struct {
+		name        string
+		path        string
+		contentType string
+		bodySnippet string
+	}{
+		{name: "css", path: "/ui-assets/app.css", contentType: "text/css", bodySnippet: ".app {"},
+		{name: "js", path: "/ui-assets/app-core.js", contentType: "text/javascript", bodySnippet: "window.TermLLMApp"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, tt.path, nil)
+			rr := httptest.NewRecorder()
+
+			srv.handleUIAsset(rr, req)
+
+			if rr.Code != http.StatusOK {
+				t.Fatalf("status = %d, want 200", rr.Code)
+			}
+			if got := rr.Header().Get("Content-Type"); !strings.HasPrefix(got, tt.contentType) {
+				t.Fatalf("content-type = %q, want %s", got, tt.contentType)
+			}
+			if !strings.Contains(rr.Body.String(), tt.bodySnippet) {
+				t.Fatalf("expected %q in asset response, got %q", tt.bodySnippet, rr.Body.String())
 			}
 		})
 	}
@@ -1291,14 +1462,18 @@ func TestHandleResponses_UIAskUserResumeSurvivesDisconnect(t *testing.T) {
 		t.Fatalf("state status = %d, want 200", stateRR.Code)
 	}
 	var stateBody struct {
-		ActiveRun      bool                `json:"active_run"`
-		PendingAskUser *serveAskUserPrompt `json:"pending_ask_user"`
+		ActiveRun        bool                `json:"active_run"`
+		ActiveResponseID string              `json:"active_response_id"`
+		PendingAskUser   *serveAskUserPrompt `json:"pending_ask_user"`
 	}
 	if err := json.Unmarshal(stateRR.Body.Bytes(), &stateBody); err != nil {
 		t.Fatalf("decode state: %v", err)
 	}
 	if !stateBody.ActiveRun {
 		t.Fatal("expected active_run=true while ask_user is pending")
+	}
+	if !strings.HasPrefix(stateBody.ActiveResponseID, "resp_") {
+		t.Fatalf("active_response_id = %q, want resp_ prefix", stateBody.ActiveResponseID)
 	}
 	if stateBody.PendingAskUser == nil || stateBody.PendingAskUser.CallID != "call_ask_1" {
 		t.Fatalf("unexpected pending ask_user state: %#v", stateBody.PendingAskUser)
@@ -1852,6 +2027,420 @@ func TestStreamResponses_AskUserRoundTrip(t *testing.T) {
 	}
 	if len(toolResult.Answers) != 1 || toolResult.Answers[0].Selected != "Blue" {
 		t.Fatalf("tool result answers = %#v", toolResult.Answers)
+	}
+}
+
+func TestResponsesStreamCanResumeAfterClientDisconnect(t *testing.T) {
+	provider := newStagedProvider("hello ", "world")
+	factory := func(ctx context.Context) (*serveRuntime, error) {
+		engine := llm.NewEngine(provider, nil)
+		rt := &serveRuntime{
+			provider:     provider,
+			engine:       engine,
+			defaultModel: "mock-model",
+		}
+		rt.Touch()
+		return rt, nil
+	}
+
+	mgr := newServeSessionManager(time.Minute, 100, factory)
+	srv := &serveServer{
+		sessionMgr:   mgr,
+		responseRuns: newServeResponseRunManager(),
+	}
+	mgr.onEvict = func(rt *serveRuntime) {
+		for _, rid := range rt.getResponseIDs() {
+			srv.responseToSession.Delete(rid)
+		}
+	}
+	defer mgr.Close()
+	defer srv.responseRuns.Close()
+
+	ts := newServeHTTPTestServer(srv)
+	defer ts.Close()
+
+	reqCtx, cancelReq := context.WithCancel(context.Background())
+	defer cancelReq()
+
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, ts.URL+"/v1/responses", strings.NewReader(`{"input":"hi","stream":true}`))
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("session_id", "resume-session")
+
+	resp, err := ts.Client().Do(req)
+	if err != nil {
+		t.Fatalf("stream request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	scanner := bufio.NewScanner(resp.Body)
+	var responseID string
+	lastSeq := int64(0)
+	for {
+		eventName, data, ok := readSSEEvent(t, scanner)
+		if !ok {
+			t.Fatal("stream ended before first text delta")
+		}
+		if data == "[DONE]" {
+			t.Fatal("stream completed before disconnect")
+		}
+		var payload map[string]any
+		if err := json.Unmarshal([]byte(data), &payload); err != nil {
+			t.Fatalf("unmarshal SSE payload: %v", err)
+		}
+		if seq, ok := payload["sequence_number"].(float64); ok {
+			lastSeq = int64(seq)
+		}
+		switch eventName {
+		case "response.created":
+			response, _ := payload["response"].(map[string]any)
+			responseID, _ = response["id"].(string)
+		case "response.output_text.delta":
+			if got := payload["delta"]; got != "hello " {
+				t.Fatalf("first delta = %v, want hello ", got)
+			}
+			cancelReq()
+			_ = resp.Body.Close()
+			goto disconnected
+		}
+	}
+
+disconnected:
+	if responseID == "" {
+		t.Fatal("missing response id before disconnect")
+	}
+
+	<-provider.firstSent
+	close(provider.releaseSecond)
+
+	statusResp, err := ts.Client().Get(ts.URL + "/v1/responses/" + responseID)
+	if err != nil {
+		t.Fatalf("get response status failed: %v", err)
+	}
+	defer statusResp.Body.Close()
+	if statusResp.StatusCode != http.StatusOK {
+		t.Fatalf("status code = %d, want 200", statusResp.StatusCode)
+	}
+	var statusPayload map[string]any
+	if err := json.NewDecoder(statusResp.Body).Decode(&statusPayload); err != nil {
+		t.Fatalf("decode response status: %v", err)
+	}
+	if got := statusPayload["status"]; got != "in_progress" && got != "completed" {
+		t.Fatalf("status = %v, want in_progress or completed", got)
+	}
+
+	resumeResp, err := ts.Client().Get(ts.URL + "/v1/responses/" + responseID + "/events?after=" + strconv.FormatInt(lastSeq, 10))
+	if err != nil {
+		t.Fatalf("resume request failed: %v", err)
+	}
+	defer resumeResp.Body.Close()
+	if resumeResp.StatusCode != http.StatusOK {
+		t.Fatalf("resume status = %d, want 200", resumeResp.StatusCode)
+	}
+
+	resumeScanner := bufio.NewScanner(resumeResp.Body)
+	var resumed []string
+	sawCompleted := false
+	for {
+		eventName, data, ok := readSSEEvent(t, resumeScanner)
+		if !ok {
+			break
+		}
+		if data == "[DONE]" {
+			break
+		}
+		var payload map[string]any
+		if err := json.Unmarshal([]byte(data), &payload); err != nil {
+			t.Fatalf("unmarshal resumed SSE payload: %v", err)
+		}
+		switch eventName {
+		case "response.output_text.delta":
+			resumed = append(resumed, fmt.Sprint(payload["delta"]))
+		case "response.completed":
+			sawCompleted = true
+		case "response.failed":
+			t.Fatalf("resume stream failed: %s", data)
+		}
+	}
+
+	if strings.Join(resumed, "") != "world" {
+		t.Fatalf("resumed text = %q, want %q", strings.Join(resumed, ""), "world")
+	}
+	if !sawCompleted {
+		t.Fatal("resume stream missing response.completed")
+	}
+}
+
+func TestResponsesCompletedRunExpiresAfterRetention(t *testing.T) {
+	provider := newStagedProvider("hello ", "world")
+	close(provider.releaseSecond)
+
+	factory := func(ctx context.Context) (*serveRuntime, error) {
+		engine := llm.NewEngine(provider, nil)
+		rt := &serveRuntime{
+			provider:     provider,
+			engine:       engine,
+			defaultModel: "mock-model",
+		}
+		rt.Touch()
+		return rt, nil
+	}
+
+	mgr := newServeSessionManager(time.Minute, 100, factory)
+	srv := &serveServer{
+		sessionMgr:   mgr,
+		responseRuns: newServeResponseRunManagerWithRetention(100 * time.Millisecond),
+	}
+	mgr.onEvict = func(rt *serveRuntime) {
+		for _, rid := range rt.getResponseIDs() {
+			srv.responseToSession.Delete(rid)
+		}
+	}
+	defer mgr.Close()
+	defer srv.responseRuns.Close()
+
+	ts := newServeHTTPTestServer(srv)
+	defer ts.Close()
+
+	req, err := http.NewRequest(http.MethodPost, ts.URL+"/v1/responses", strings.NewReader(`{"input":"hi","stream":true}`))
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("session_id", "retention-session")
+
+	resp, err := ts.Client().Do(req)
+	if err != nil {
+		t.Fatalf("stream request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	scanner := bufio.NewScanner(resp.Body)
+	var responseID string
+	sawCompleted := false
+	for {
+		eventName, data, ok := readSSEEvent(t, scanner)
+		if !ok {
+			break
+		}
+		if data == "[DONE]" {
+			break
+		}
+		var payload map[string]any
+		if err := json.Unmarshal([]byte(data), &payload); err != nil {
+			t.Fatalf("unmarshal SSE payload: %v", err)
+		}
+		switch eventName {
+		case "response.created":
+			response, _ := payload["response"].(map[string]any)
+			responseID, _ = response["id"].(string)
+		case "response.completed":
+			sawCompleted = true
+		}
+	}
+
+	if responseID == "" {
+		t.Fatal("missing response id for completed run")
+	}
+	if !sawCompleted {
+		t.Fatal("stream missing response.completed")
+	}
+
+	statusResp, err := ts.Client().Get(ts.URL + "/v1/responses/" + responseID)
+	if err != nil {
+		t.Fatalf("get completed response failed: %v", err)
+	}
+	statusBody, _ := io.ReadAll(statusResp.Body)
+	statusResp.Body.Close()
+	if statusResp.StatusCode != http.StatusOK {
+		t.Fatalf("status code = %d, want 200 (body=%s)", statusResp.StatusCode, string(statusBody))
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		expireResp, err := ts.Client().Get(ts.URL + "/v1/responses/" + responseID)
+		if err != nil {
+			t.Fatalf("get expired response failed: %v", err)
+		}
+		_, _ = io.Copy(io.Discard, expireResp.Body)
+		expireResp.Body.Close()
+		if expireResp.StatusCode == http.StatusNotFound {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("response %s still present after retention window; status=%d", responseID, expireResp.StatusCode)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+func TestHandleResponseByID_CancelOnlySucceedsOnce(t *testing.T) {
+	_, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	run := newResponseRun("resp_cancel_once", "cancel-session", "", "mock-model", time.Now().Unix(), cancel)
+	mgr := newServeResponseRunManagerWithRetention(time.Minute)
+	if err := mgr.create(run); err != nil {
+		t.Fatalf("create run: %v", err)
+	}
+
+	srv := &serveServer{
+		responseRuns: mgr,
+	}
+
+	firstReq := httptest.NewRequest(http.MethodPost, "/v1/responses/resp_cancel_once/cancel", nil)
+	firstRR := httptest.NewRecorder()
+	srv.handleResponseByID(firstRR, firstReq)
+	if firstRR.Code != http.StatusOK {
+		t.Fatalf("first cancel status = %d, want 200", firstRR.Code)
+	}
+
+	secondReq := httptest.NewRequest(http.MethodPost, "/v1/responses/resp_cancel_once/cancel", nil)
+	secondRR := httptest.NewRecorder()
+	srv.handleResponseByID(secondRR, secondReq)
+	if secondRR.Code != http.StatusConflict {
+		t.Fatalf("second cancel status = %d, want 409", secondRR.Code)
+	}
+}
+
+func TestResponsesCompactedRunRequiresSnapshotRecovery(t *testing.T) {
+	longText := strings.Repeat("abcdefghij", 300)
+	provider := llm.NewMockProvider("mock").AddTextResponse(longText)
+
+	factory := func(ctx context.Context) (*serveRuntime, error) {
+		engine := llm.NewEngine(provider, nil)
+		rt := &serveRuntime{
+			provider:     provider,
+			engine:       engine,
+			defaultModel: "mock-model",
+		}
+		rt.Touch()
+		return rt, nil
+	}
+
+	mgr := newServeSessionManager(time.Minute, 100, factory)
+	srv := &serveServer{
+		sessionMgr:   mgr,
+		responseRuns: newServeResponseRunManager(),
+	}
+	mgr.onEvict = func(rt *serveRuntime) {
+		for _, rid := range rt.getResponseIDs() {
+			srv.responseToSession.Delete(rid)
+		}
+	}
+	defer mgr.Close()
+	defer srv.responseRuns.Close()
+
+	ts := newServeHTTPTestServer(srv)
+	defer ts.Close()
+
+	req, err := http.NewRequest(http.MethodPost, ts.URL+"/v1/responses", strings.NewReader(`{"input":"hi","stream":true}`))
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("session_id", "compaction-session")
+
+	resp, err := ts.Client().Do(req)
+	if err != nil {
+		t.Fatalf("stream request failed: %v", err)
+	}
+
+	scanner := bufio.NewScanner(resp.Body)
+	var responseID string
+	for {
+		eventName, data, ok := readSSEEvent(t, scanner)
+		if !ok {
+			t.Fatal("stream ended before response.created")
+		}
+		if data == "[DONE]" {
+			t.Fatal("stream ended before response.created")
+		}
+		if eventName != "response.created" {
+			continue
+		}
+		var payload map[string]any
+		if err := json.Unmarshal([]byte(data), &payload); err != nil {
+			t.Fatalf("unmarshal response.created payload: %v", err)
+		}
+		response, _ := payload["response"].(map[string]any)
+		responseID, _ = response["id"].(string)
+		break
+	}
+	_ = resp.Body.Close()
+
+	if responseID == "" {
+		t.Fatal("missing response id")
+	}
+
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		statusResp, err := ts.Client().Get(ts.URL + "/v1/responses/" + responseID)
+		if err != nil {
+			t.Fatalf("get response status failed: %v", err)
+		}
+		var statusPayload map[string]any
+		if err := json.NewDecoder(statusResp.Body).Decode(&statusPayload); err != nil {
+			statusResp.Body.Close()
+			t.Fatalf("decode response status: %v", err)
+		}
+		statusResp.Body.Close()
+		if statusPayload["status"] == "completed" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("response %s did not complete in time", responseID)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	replayResp, err := ts.Client().Get(ts.URL + "/v1/responses/" + responseID + "/events?after=0")
+	if err != nil {
+		t.Fatalf("replay request failed: %v", err)
+	}
+	defer replayResp.Body.Close()
+	if replayResp.StatusCode != http.StatusConflict {
+		body, _ := io.ReadAll(replayResp.Body)
+		t.Fatalf("replay status = %d, want 409 (body=%s)", replayResp.StatusCode, string(body))
+	}
+
+	var replayErr map[string]any
+	if err := json.NewDecoder(replayResp.Body).Decode(&replayErr); err != nil {
+		t.Fatalf("decode replay error: %v", err)
+	}
+	if got := replayErr["snapshot_required"]; got != true {
+		t.Fatalf("snapshot_required = %v, want true", got)
+	}
+
+	snapshotResp, err := ts.Client().Get(ts.URL + "/v1/responses/" + responseID)
+	if err != nil {
+		t.Fatalf("snapshot request failed: %v", err)
+	}
+	defer snapshotResp.Body.Close()
+	if snapshotResp.StatusCode != http.StatusOK {
+		t.Fatalf("snapshot status = %d, want 200", snapshotResp.StatusCode)
+	}
+
+	var snapshotPayload map[string]any
+	if err := json.NewDecoder(snapshotResp.Body).Decode(&snapshotPayload); err != nil {
+		t.Fatalf("decode snapshot payload: %v", err)
+	}
+	recovery, _ := snapshotPayload["recovery"].(map[string]any)
+	if recovery == nil {
+		t.Fatal("missing recovery payload")
+	}
+	messages, _ := recovery["messages"].([]any)
+	if len(messages) != 1 {
+		t.Fatalf("recovery message count = %d, want 1", len(messages))
+	}
+	message, _ := messages[0].(map[string]any)
+	if got := message["role"]; got != "assistant" {
+		t.Fatalf("recovery message role = %v, want assistant", got)
+	}
+	if got := message["content"]; got != longText {
+		t.Fatalf("recovery message content length = %d, want %d", len(fmt.Sprint(got)), len(longText))
 	}
 }
 

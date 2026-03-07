@@ -1,0 +1,441 @@
+(() => {
+'use strict';
+
+const app = window.TermLLMApp || (window.TermLLMApp = {});
+
+// ===== Constants & state =====
+const STORAGE_KEYS = {
+  sessions: 'term_llm_sessions',
+  token: 'term_llm_token',
+  activeSession: 'term_llm_active_session',
+  selectedModel: 'term_llm_selected_model'
+};
+
+const state = {
+  token: localStorage.getItem(STORAGE_KEYS.token) || '',
+  sessions: [],
+  activeSessionId: localStorage.getItem(STORAGE_KEYS.activeSession) || '',
+  models: [],
+  selectedModel: localStorage.getItem(STORAGE_KEYS.selectedModel) || '',
+  streaming: false,
+  currentStreamResponseId: '',
+  queuedInterrupts: [],
+  pendingInterruptCommits: [],
+  expectCanceledRun: false,
+  abortController: null,
+  autoScroll: true,
+  authRequired: false,
+  attachments: [],
+  askUser: null
+};
+// Ensure cookie is set on load so <img> requests to /images/ can authenticate
+if (state.token) {
+  document.cookie = `term_llm_token=${encodeURIComponent(state.token)}; path=/images; SameSite=Strict; max-age=31536000`;
+}
+
+const elements = {
+  sidebar: document.getElementById('sidebar'),
+  sidebarBackdrop: document.getElementById('sidebarBackdrop'),
+  sidebarCloseBtn: document.getElementById('sidebarCloseBtn'),
+  mobileMenuBtn: document.getElementById('mobileMenuBtn'),
+  settingsBtn: document.getElementById('settingsBtn'),
+  newChatBtn: document.getElementById('newChatBtn'),
+  sessionGroups: document.getElementById('sessionGroups'),
+  activeSessionTitle: document.getElementById('activeSessionTitle'),
+  connectionState: document.getElementById('connectionState'),
+  modelSelect: document.getElementById('modelSelect'),
+  chatScroll: document.getElementById('chatScroll'),
+  messages: document.getElementById('messages'),
+  promptInput: document.getElementById('promptInput'),
+  sendBtn: document.getElementById('sendBtn'),
+  stopBtn: document.getElementById('stopBtn'),
+  authModal: document.getElementById('authModal'),
+  authTokenInput: document.getElementById('authTokenInput'),
+  authError: document.getElementById('authError'),
+  authConnectBtn: document.getElementById('authConnectBtn'),
+  authCancelBtn: document.getElementById('authCancelBtn'),
+  askUserModal: document.getElementById('askUserModal'),
+  askUserModalTitle: document.getElementById('askUserModalTitle'),
+  askUserModalSubtitle: document.getElementById('askUserModalSubtitle'),
+  askUserModalBody: document.getElementById('askUserModalBody'),
+  askUserError: document.getElementById('askUserError'),
+  askUserCancelBtn: document.getElementById('askUserCancelBtn'),
+  askUserSubmitBtn: document.getElementById('askUserSubmitBtn'),
+  attachBtn: document.getElementById('attachBtn'),
+  fileInput: document.getElementById('fileInput'),
+  attachmentsStrip: document.getElementById('attachmentsStrip'),
+  dropOverlay: document.getElementById('dropOverlay'),
+  sessionUsage: document.getElementById('sessionUsage')
+};
+
+// ===== Markdown setup =====
+marked.use({
+  breaks: true,
+  gfm: true
+});
+
+// ===== Helpers =====
+// crypto.randomUUID() requires a secure context (HTTPS); use getRandomValues fallback for HTTP
+const generateUUID = () => {
+  if (typeof crypto !== 'undefined' && crypto.randomUUID) {
+    return crypto.randomUUID();
+  }
+  // Works on HTTP — getRandomValues is not restricted to secure contexts
+  if (typeof crypto !== 'undefined' && crypto.getRandomValues) {
+    return ([1e7]+-1e3+-4e3+-8e3+-1e11).replace(/[018]/g, c =>
+      (c ^ crypto.getRandomValues(new Uint8Array(1))[0] & 15 >> c / 4).toString(16)
+    );
+  }
+  // Last resort
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => {
+    const r = Math.random() * 16 | 0;
+    return (c === 'x' ? r : (r & 0x3 | 0x8)).toString(16);
+  });
+};
+const generateId = (prefix) => `${prefix}_${generateUUID()}`;
+
+const INTERRUPT_BADGE_META = {
+  evaluating: { className: 'pending', label: 'evaluating…' },
+  interject: { className: 'interject', icon: '✓', label: 'injected' },
+  cancel: { className: 'cancel', icon: '⏹', label: 'cancelled + queued' },
+  queue: { className: 'queue', icon: '⏳', label: 'queued' },
+  error: { className: 'error', icon: '⚠', label: 'failed' }
+};
+
+const sanitizeInterruptState = (value) => {
+  const v = String(value || '').toLowerCase();
+  return Object.prototype.hasOwnProperty.call(INTERRUPT_BADGE_META, v) ? v : '';
+};
+
+const syncTokenCookie = (token) => {
+  if (token) {
+    document.cookie = `term_llm_token=${encodeURIComponent(token)}; path=/images; SameSite=Strict; max-age=31536000`;
+  } else {
+    document.cookie = 'term_llm_token=; path=/images; SameSite=Strict; max-age=0';
+  }
+};
+
+const truncate = (text, max = 60) => {
+  const value = (text || '').trim().replace(/\s+/g, ' ');
+  if (!value) return 'New chat';
+  return value.length > max ? `${value.slice(0, max - 1)}…` : value;
+};
+
+const asTimestamp = (value) => {
+  const n = Number(value);
+  return Number.isFinite(n) && n > 0 ? n : Date.now();
+};
+
+const fullDate = (ms) => new Date(ms).toLocaleString();
+
+const relativeTime = (ms) => {
+  const diff = Date.now() - ms;
+  if (diff < 45_000) return 'just now';
+  if (diff < 3_600_000) return `${Math.max(1, Math.floor(diff / 60_000))}m ago`;
+  if (diff < 86_400_000) return `${Math.max(1, Math.floor(diff / 3_600_000))}h ago`;
+  if (diff < 604_800_000) return `${Math.max(1, Math.floor(diff / 86_400_000))}d ago`;
+  return new Date(ms).toLocaleDateString();
+};
+
+const sessionBucket = (ms) => {
+  const now = new Date();
+  const startToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+  const startYesterday = startToday - 86_400_000;
+  const startWeek = startToday - (6 * 86_400_000);
+
+  if (ms >= startToday) return 'Today';
+  if (ms >= startYesterday) return 'Yesterday';
+  if (ms >= startWeek) return 'This week';
+  return 'Older';
+};
+
+const toolIcon = (name) => {
+  const n = String(name || '').toLowerCase();
+  if (n === 'shell' || n === 'bash') return '💻';
+  if (n === 'read_file') return '📄';
+  if (n === 'write_file' || n === 'edit_file') return '✏️';
+  if (n === 'web_search') return '🔍';
+  if (n === 'read_url') return '🌐';
+  if (n === 'image_generate') return '🎨';
+  if (n === 'spawn_agent') return '🤖';
+  return '🔧';
+};
+
+const formatUsage = (usage) => {
+  const inTokens = Number(usage?.input_tokens || 0);
+  const outTokens = Number(usage?.output_tokens || 0);
+  const cached = Number(usage?.input_tokens_details?.cached_tokens || 0);
+  return `↙ ${inTokens.toLocaleString()} in · ${outTokens.toLocaleString()} out · ${cached.toLocaleString()} cached`;
+};
+
+const updateSessionUsageDisplay = (session) => {
+  const el = elements?.sessionUsage;
+  if (!el) return;
+  const usage = session?.sessionUsage;
+  if (!usage) {
+    el.textContent = '';
+    return;
+  }
+  const inTokens = Number(usage.input_tokens || 0);
+  const outTokens = Number(usage.output_tokens || 0);
+  const total = inTokens + outTokens;
+  el.textContent = `${total.toLocaleString()} tokens`;
+  el.title = `Session total: ${inTokens.toLocaleString()} in, ${outTokens.toLocaleString()} out`;
+};
+
+const isNearBottom = () => {
+  const el = elements.chatScroll;
+  return (el.scrollHeight - (el.scrollTop + el.clientHeight)) < 96;
+};
+
+const scrollToBottom = (force = false) => {
+  if (force || state.autoScroll) {
+    elements.chatScroll.scrollTop = elements.chatScroll.scrollHeight;
+  }
+};
+
+const setConnectionState = (text, mode = '') => {
+  elements.connectionState.textContent = text;
+  elements.connectionState.classList.remove('ok', 'bad');
+  if (mode) {
+    elements.connectionState.classList.add(mode);
+  }
+};
+
+const updateDocumentTitle = () => {
+  const session = getActiveSession();
+  if (session && session.title && session.title !== 'New chat') {
+    document.title = `Chat · ${session.title}`;
+  } else {
+    document.title = 'Chat';
+  }
+};
+
+const UI_PREFIX = (window.TERM_LLM_UI_PREFIX || '/ui');
+
+const sessionIdFromURL = () => {
+  const path = window.location.pathname;
+  const escaped = UI_PREFIX.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const match = path.match(new RegExp('^' + escaped + '/(.+)$'));
+  return match ? decodeURIComponent(match[1]) : '';
+};
+
+const updateURL = (sessionId) => {
+  if (!sessionId) return;
+  const target = UI_PREFIX + '/' + encodeURIComponent(sessionId);
+  if (window.location.pathname !== target) {
+    history.pushState(null, '', target);
+  }
+  updateDocumentTitle();
+};
+
+const sanitizeMessage = (msg) => {
+  if (!msg || typeof msg !== 'object' || typeof msg.role !== 'string') return null;
+  const role = msg.role;
+  const base = {
+    id: typeof msg.id === 'string' ? msg.id : generateId('msg'),
+    role,
+    created: asTimestamp(msg.created)
+  };
+
+  if (role === 'user' || role === 'assistant' || role === 'error') {
+    base.content = String(msg.content || '');
+    if (role === 'assistant' && msg.usage && typeof msg.usage === 'object') {
+      base.usage = msg.usage;
+    }
+    if (role === 'user') {
+      const interruptState = sanitizeInterruptState(msg.interruptState);
+      if (interruptState) {
+        base.interruptState = interruptState;
+      }
+      if (msg.askUser) {
+        base.askUser = true;
+      }
+      if (Array.isArray(msg.attachments) && msg.attachments.length > 0) {
+        base.attachments = msg.attachments.map(a => ({
+          name: String(a.name || 'file'),
+          type: String(a.type || '')
+        }));
+      }
+    }
+    return base;
+  }
+
+  if (role === 'tool') {
+    base.name = String(msg.name || 'tool');
+    base.arguments = String(msg.arguments || '');
+    base.status = msg.status === 'done' ? 'done' : 'running';
+    base.expanded = Boolean(msg.expanded);
+    return base;
+  }
+
+  if (role === 'tool-group') {
+    base.tools = Array.isArray(msg.tools) ? msg.tools.map(t => ({
+      id: String(t.id || ''),
+      name: String(t.name || 'tool'),
+      arguments: String(t.arguments || ''),
+      status: t.status === 'done' ? 'done' : 'running',
+      created: asTimestamp(t.created)
+    })) : [];
+    base.expanded = Boolean(msg.expanded);
+    base.status = msg.status === 'done' ? 'done' : 'running';
+    return base;
+  }
+
+  return null;
+};
+
+const sanitizeSession = (session) => {
+  if (!session || typeof session !== 'object') return null;
+  const messages = Array.isArray(session.messages)
+    ? session.messages.map(sanitizeMessage).filter(Boolean)
+    : [];
+
+  const result = {
+    id: typeof session.id === 'string' ? session.id : `sess_${generateUUID()}`,
+    title: typeof session.title === 'string' && session.title.trim() ? session.title.trim() : 'New chat',
+    created: asTimestamp(session.created),
+    messages,
+    lastResponseId: typeof session.lastResponseId === 'string' ? session.lastResponseId : null,
+    activeResponseId: typeof session.activeResponseId === 'string' ? session.activeResponseId : null,
+    lastSequenceNumber: Number.isFinite(Number(session.lastSequenceNumber)) ? Number(session.lastSequenceNumber) : 0,
+    sessionUsage: session.sessionUsage && typeof session.sessionUsage === 'object' ? session.sessionUsage : null
+  };
+  if (session._serverOnly) result._serverOnly = true;
+  if (typeof session.messageCount === 'number') result.messageCount = session.messageCount;
+  return result;
+};
+
+const loadSessions = () => {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEYS.sessions);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.map(sanitizeSession).filter(Boolean);
+  } catch {
+    return [];
+  }
+};
+
+// Strip large binary payloads from attachment metadata before serialization.
+const sessionsForStorage = () => {
+  return state.sessions.map(s => {
+    if (!s.messages || !s.messages.some(m => m.attachments)) return s;
+    return {
+      ...s,
+      messages: s.messages.map(m => {
+        if (!m.attachments) return m;
+        return {
+          ...m,
+          attachments: m.attachments.map(a => ({ name: a.name, type: a.type }))
+        };
+      })
+    };
+  });
+};
+
+const saveSessions = () => {
+  if (state.sessions.length > 100) {
+    state.sessions.sort((a, b) => a.created - b.created);
+    state.sessions = state.sessions.slice(-100);
+    if (!state.sessions.find((s) => s.id === state.activeSessionId)) {
+      state.activeSessionId = state.sessions[state.sessions.length - 1]?.id || '';
+    }
+  }
+  try {
+    localStorage.setItem(STORAGE_KEYS.sessions, JSON.stringify(sessionsForStorage()));
+    localStorage.setItem(STORAGE_KEYS.activeSession, state.activeSessionId || '');
+  } catch {
+    // QuotaExceededError or other storage failure — continue without persistence
+  }
+};
+
+const getActiveSession = () => state.sessions.find((s) => s.id === state.activeSessionId) || null;
+
+const createSession = () => ({
+  id: `sess_${generateUUID()}`,
+  title: 'New chat',
+  created: Date.now(),
+  messages: [],
+  lastResponseId: null,
+  activeResponseId: null,
+  lastSequenceNumber: 0,
+  sessionUsage: null
+});
+
+const ensureActiveSession = () => {
+  let active = getActiveSession();
+  if (active) {
+    updateURL(active.id);
+    return active;
+  }
+
+  if (state.sessions.length === 0) {
+    active = createSession();
+    state.sessions.unshift(active);
+  } else {
+    const sorted = [...state.sessions].sort((a, b) => b.created - a.created);
+    active = sorted[0];
+  }
+
+  state.activeSessionId = active.id;
+  updateURL(active.id);
+  saveSessions();
+  return active;
+};
+
+const findMessageElement = (id) => elements.messages.querySelector(`[data-message-id="${id}"]`);
+
+const refreshRelativeTimes = () => {
+  document.querySelectorAll('[data-created]').forEach((node) => {
+    const ts = Number(node.getAttribute('data-created'));
+    if (!Number.isFinite(ts)) return;
+    node.textContent = relativeTime(ts);
+    node.title = fullDate(ts);
+  });
+};
+
+const persistAndRefreshShell = () => {
+  saveSessions();
+  app.renderSidebar();
+  app.updateHeader();
+};
+
+Object.assign(app, {
+  STORAGE_KEYS,
+  state,
+  elements,
+  generateUUID,
+  generateId,
+  INTERRUPT_BADGE_META,
+  sanitizeInterruptState,
+  syncTokenCookie,
+  truncate,
+  asTimestamp,
+  fullDate,
+  relativeTime,
+  sessionBucket,
+  toolIcon,
+  formatUsage,
+  updateSessionUsageDisplay,
+  isNearBottom,
+  scrollToBottom,
+  setConnectionState,
+  updateDocumentTitle,
+  UI_PREFIX,
+  sessionIdFromURL,
+  updateURL,
+  sanitizeMessage,
+  sanitizeSession,
+  loadSessions,
+  sessionsForStorage,
+  saveSessions,
+  getActiveSession,
+  createSession,
+  ensureActiveSession,
+  findMessageElement,
+  refreshRelativeTimes,
+  persistAndRefreshShell
+});
+})();

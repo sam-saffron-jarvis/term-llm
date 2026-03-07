@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"mime"
 	"net/http"
 	"net/url"
 	"os"
@@ -21,7 +22,6 @@ import (
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/serveui"
 	"github.com/samsaffron/term-llm/internal/session"
-	"github.com/samsaffron/term-llm/internal/tools"
 )
 
 func (s *serveServer) handleHealth(w http.ResponseWriter, r *http.Request) {
@@ -51,6 +51,38 @@ func (s *serveServer) handleUI(w http.ResponseWriter, r *http.Request) {
 		html = bytes.Replace(html, []byte("</head>"), []byte(snippet), 1)
 	}
 	_, _ = w.Write(html)
+}
+
+func (s *serveServer) handleUIAsset(w http.ResponseWriter, r *http.Request) {
+	if !s.cfg.ui {
+		http.NotFound(w, r)
+		return
+	}
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		w.Header().Set("Allow", "GET, HEAD")
+		writeOpenAIError(w, http.StatusMethodNotAllowed, "invalid_request_error", "method not allowed")
+		return
+	}
+
+	assetName := strings.TrimPrefix(r.URL.Path, "/ui-assets/")
+	if assetName == "" || strings.Contains(assetName, "/") || strings.Contains(assetName, "..") {
+		http.NotFound(w, r)
+		return
+	}
+
+	data, err := serveui.StaticAsset(assetName)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+
+	contentType := mime.TypeByExtension(filepath.Ext(assetName))
+	if contentType == "" {
+		contentType = http.DetectContentType(data)
+	}
+	w.Header().Set("Content-Type", contentType)
+	w.Header().Set("Cache-Control", "no-cache")
+	_, _ = w.Write(data)
 }
 
 func (s *serveServer) handleImage(w http.ResponseWriter, r *http.Request) {
@@ -279,6 +311,13 @@ func (s *serveServer) handleSessionInterrupt(w http.ResponseWriter, r *http.Requ
 	if !ok {
 		writeOpenAIError(w, http.StatusNotFound, "not_found_error", "session not found")
 		return
+	}
+	if s.responseRuns != nil {
+		if runID := s.responseRuns.activeRunID(sessionID); runID != "" {
+			if run, ok := s.responseRuns.get(runID); ok {
+				run.disableCompaction()
+			}
+		}
 	}
 
 	fastProvider, fastErr := llm.NewFastProvider(s.cfgRef, rt.providerKey)
@@ -575,9 +614,9 @@ func (s *serveServer) handleResponses(w http.ResponseWriter, r *http.Request) {
 
 	if req.Stream {
 		if isServeUIRequest(r) && stateful {
-			s.streamUIResponses(w, r, runtime, stateful, replaceHistory, inputMessages, llmReq, sessionID)
+			s.streamUIResponses(w, r, runtime, stateful, replaceHistory, inputMessages, llmReq, sessionID, req.PreviousResponseID)
 		} else {
-			s.streamResponses(ctx, w, runtime, stateful, replaceHistory, inputMessages, llmReq, sessionID)
+			s.streamResponses(ctx, w, runtime, stateful, replaceHistory, inputMessages, llmReq, sessionID, req.PreviousResponseID)
 		}
 		return
 	}
@@ -639,161 +678,10 @@ func sseKeepalive(w http.ResponseWriter, flusher http.Flusher, interval time.Dur
 	}
 }
 
-func (s *serveServer) streamResponses(ctx context.Context, w http.ResponseWriter, runtime *serveRuntime, stateful bool, replaceHistory bool, inputMessages []llm.Message, llmReq llm.Request, sessionID string) {
-	flusher, ok := w.(http.Flusher)
-	if !ok {
-		writeOpenAIError(w, http.StatusInternalServerError, "server_error", "streaming not supported")
-		return
-	}
-
-	setSSEHeaders(w)
-	respID := "resp_" + randomSuffix()
-	model := llmReq.Model
-	if model == "" {
-		model = runtime.defaultModel
-	}
-	created := time.Now().Unix()
-
-	_ = writeSSEEvent(w, "response.created", map[string]any{
-		"response": map[string]any{
-			"id":      respID,
-			"object":  "response",
-			"created": created,
-			"model":   model,
-			"status":  "in_progress",
-		},
+func (s *serveServer) streamResponses(ctx context.Context, w http.ResponseWriter, runtime *serveRuntime, stateful bool, replaceHistory bool, inputMessages []llm.Message, llmReq llm.Request, sessionID string, previousResponseID string) {
+	s.streamResponseRun(ctx, w, runtime, stateful, replaceHistory, inputMessages, llmReq, sessionID, startResponseRunOptions{
+		previousResponseID: previousResponseID,
 	})
-	flusher.Flush()
-
-	pingMu, stopPing := sseKeepalive(w, flusher, 20*time.Second)
-
-	outputIndex := 0
-	toolsSeen := false
-	result, err := runtime.RunWithEvents(ctx, stateful, replaceHistory, inputMessages, llmReq, func(ev llm.Event) error {
-		pingMu.Lock()
-		defer pingMu.Unlock()
-		switch ev.Type {
-		case llm.EventTextDelta:
-			if toolsSeen {
-				if err := writeSSEEvent(w, "response.output_text.new_segment", map[string]any{
-					"output_index": outputIndex,
-				}); err != nil {
-					return err
-				}
-				toolsSeen = false
-			}
-			return writeSSEEvent(w, "response.output_text.delta", map[string]any{
-				"output_index": outputIndex,
-				"delta":        ev.Text,
-			})
-		case llm.EventToolCall:
-			if ev.Tool == nil {
-				return nil
-			}
-			toolsSeen = true
-			item := map[string]any{
-				"id":        "fc_" + ev.Tool.ID,
-				"type":      "function_call",
-				"call_id":   ev.Tool.ID,
-				"name":      ev.Tool.Name,
-				"arguments": string(ev.Tool.Arguments),
-			}
-			if err := writeSSEEvent(w, "response.output_item.added", map[string]any{"output_index": outputIndex, "item": item}); err != nil {
-				return err
-			}
-			if err := writeSSEEvent(w, "response.function_call_arguments.delta", map[string]any{"output_index": outputIndex, "delta": string(ev.Tool.Arguments)}); err != nil {
-				return err
-			}
-			if err := writeSSEEvent(w, "response.output_item.done", map[string]any{"output_index": outputIndex, "item": item}); err != nil {
-				return err
-			}
-			outputIndex++
-		case llm.EventToolExecStart:
-			if ev.ToolName == tools.AskUserToolName {
-				if prompt, err := runtime.prepareAskUserFromToolArgs(ev.ToolCallID, ev.ToolArgs); err == nil {
-					_ = writeSSEEvent(w, "response.ask_user.prompt", prompt)
-				}
-			}
-			_ = writeSSEEvent(w, "response.tool_exec.start", map[string]any{
-				"call_id":        ev.ToolCallID,
-				"tool_name":      ev.ToolName,
-				"tool_info":      ev.ToolInfo,
-				"tool_arguments": string(ev.ToolArgs),
-			})
-		case llm.EventToolExecEnd:
-			if ev.ToolName == tools.AskUserToolName {
-				runtime.clearPendingAskUser(ev.ToolCallID)
-			}
-			payload := map[string]any{
-				"call_id":   ev.ToolCallID,
-				"tool_name": ev.ToolName,
-				"success":   ev.ToolSuccess,
-			}
-			if len(ev.ToolImages) > 0 {
-				imageURLs := make([]string, 0, len(ev.ToolImages))
-				for _, imgPath := range ev.ToolImages {
-					imageURLs = append(imageURLs, "/images/"+filepath.Base(imgPath))
-				}
-				payload["images"] = imageURLs
-			}
-			_ = writeSSEEvent(w, "response.tool_exec.end", payload)
-		case llm.EventHeartbeat:
-			_ = writeSSEEvent(w, "response.heartbeat", map[string]any{
-				"call_id":   ev.ToolCallID,
-				"tool_name": ev.ToolName,
-			})
-		case llm.EventInterjection:
-			_ = writeSSEEvent(w, "response.interjection", map[string]any{
-				"text": ev.Text,
-			})
-		}
-		flusher.Flush()
-		return nil
-	})
-	stopPing() // wait for keepalive goroutine before any final writes
-
-	if err != nil {
-		errType := "invalid_request_error"
-		if errors.Is(err, errServeSessionBusy) {
-			errType = "conflict_error"
-		}
-		_ = writeSSEEvent(w, "response.failed", map[string]any{
-			"error": map[string]any{"message": err.Error(), "type": errType},
-		})
-		_, _ = io.WriteString(w, "data: [DONE]\n\n")
-		flusher.Flush()
-		return
-	}
-
-	s.registerResponseID(runtime, respID, sessionID)
-
-	_ = writeSSEEvent(w, "response.completed", map[string]any{
-		"response": map[string]any{
-			"id":      respID,
-			"object":  "response",
-			"created": created,
-			"model":   model,
-			"status":  "completed",
-			"usage": map[string]any{
-				"input_tokens":  result.Usage.InputTokens,
-				"output_tokens": result.Usage.OutputTokens,
-				"total_tokens":  result.Usage.InputTokens + result.Usage.OutputTokens,
-				"input_tokens_details": map[string]any{
-					"cached_tokens": result.Usage.CachedInputTokens,
-				},
-			},
-			"session_usage": map[string]any{
-				"input_tokens":  result.SessionUsage.InputTokens,
-				"output_tokens": result.SessionUsage.OutputTokens,
-				"total_tokens":  result.SessionUsage.InputTokens + result.SessionUsage.OutputTokens,
-				"input_tokens_details": map[string]any{
-					"cached_tokens": result.SessionUsage.CachedInputTokens,
-				},
-			},
-		},
-	})
-	_, _ = io.WriteString(w, "data: [DONE]\n\n")
-	flusher.Flush()
 }
 
 func (s *serveServer) handleChatCompletions(w http.ResponseWriter, r *http.Request) {

@@ -545,6 +545,8 @@ type serveServer struct {
 	modelsMu          sync.Mutex
 	modelsProvider    llm.Provider
 	responseToSession sync.Map // response_id (string) → session_id (string)
+	responseRunsOnce  sync.Once
+	responseRuns      *responseRunManager
 }
 
 func (s *serveServer) Start() error {
@@ -553,6 +555,7 @@ func (s *serveServer) Start() error {
 	mux.HandleFunc("/healthz", s.handleHealth)
 	mux.HandleFunc("/v1/models", s.auth(s.cors(s.handleModels)))
 	mux.HandleFunc("/v1/responses", s.auth(s.cors(s.handleResponses)))
+	mux.HandleFunc("/v1/responses/", s.auth(s.cors(s.handleResponseByID)))
 	mux.HandleFunc("/v1/chat/completions", s.auth(s.cors(s.handleChatCompletions)))
 	if s.jobsV2 != nil {
 		mux.HandleFunc("/v2/jobs", s.auth(s.cors(s.handleJobsV2)))
@@ -569,6 +572,7 @@ func (s *serveServer) Start() error {
 	}
 
 	if s.cfg.ui {
+		mux.HandleFunc("/ui-assets/", s.cors(s.handleUIAsset))
 		mux.HandleFunc("/", s.cors(s.handleUI))
 		mux.HandleFunc("/ui", s.cors(s.handleUI))
 		mux.HandleFunc("/ui/", s.cors(s.handleUI))
@@ -605,6 +609,9 @@ func (s *serveServer) Stop(ctx context.Context) error {
 	}
 	if s.jobsV2 != nil {
 		_ = s.jobsV2.Close()
+	}
+	if s.responseRuns != nil {
+		s.responseRuns.Close()
 	}
 	s.modelsMu.Lock()
 	if cleaner, ok := s.modelsProvider.(interface{ CleanupMCP() }); ok {

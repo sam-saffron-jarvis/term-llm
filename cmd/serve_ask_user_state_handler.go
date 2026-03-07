@@ -22,6 +22,15 @@ func (s *serveServer) handleSessionState(w http.ResponseWriter, r *http.Request,
 			}
 		}
 	}
+	if s.responseRuns != nil {
+		if activeResponseID := s.responseRuns.activeRunID(sessionID); activeResponseID != "" {
+			// Detached response runs outlive the browser request, so they are the
+			// durable source of truth for reload/reconnect even if runtime polling
+			// has not observed the active run yet.
+			resp["active_run"] = true
+			resp["active_response_id"] = activeResponseID
+		}
+	}
 
 	writeJSON(w, http.StatusOK, resp)
 }
