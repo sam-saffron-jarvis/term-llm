@@ -367,18 +367,23 @@ func (m *Model) renderInputInline() string {
 	separator := lipgloss.NewStyle().Foreground(theme.Muted).Render(strings.Repeat("─", m.width))
 	b.WriteString(separator)
 
-	// Show pending interjection indicator (queued message during streaming)
+	// Show recent interrupt notice above the composer.
+	if m.interruptNotice != "" {
+		noticeStyle := lipgloss.NewStyle().Foreground(theme.Muted).Italic(true)
+		b.WriteString("\n")
+		b.WriteString(noticeStyle.Render("  " + m.interruptNotice))
+	}
+
+	// Show pending interjection indicator while interrupt classification/injection is in flight.
 	if m.pendingInterjection != "" {
 		pendingStyle := lipgloss.NewStyle().Foreground(theme.Muted).Italic(true)
 		pendingText := m.pendingInterjection
-		label := "queued"
+		label := "will incorporate"
 		switch m.pendingInterruptUI {
 		case "deciding":
 			label = "deciding…"
 		case "interject":
 			label = "will incorporate"
-		case "queued":
-			label = "queued"
 		}
 		// Truncate long messages to fit the terminal width
 		maxLen := m.width - 20 // account for prefix/suffix

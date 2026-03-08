@@ -36,12 +36,11 @@ func TestHandleKeyMsg_SessionListEnterResumesSession(t *testing.T) {
 	}
 }
 
-func TestHandleKeyMsg_StreamingCancelInterjectionClearsComposerAndShowsStopping(t *testing.T) {
+func TestHandleKeyMsg_StreamingCancelInterjectionRestoresComposerAndShowsStopping(t *testing.T) {
 	m := newTestChatModel(false)
 	m.streaming = true
 	m.phase = "Running shell sleep"
 	m.pendingInterjection = "old"
-	m.queuedInterjection = "old"
 	m.setTextareaValue("stop sleeping")
 
 	cancelCalls := 0
@@ -54,17 +53,17 @@ func TestHandleKeyMsg_StreamingCancelInterjectionClearsComposerAndShowsStopping(
 	if cancelCalls != 1 {
 		t.Fatalf("expected stream cancel to be called once, got %d", cancelCalls)
 	}
-	if got := m.textarea.Value(); got != "" {
-		t.Fatalf("expected textarea to be cleared after cancel interjection, got %q", got)
+	if got := m.textarea.Value(); got != "stop sleeping" {
+		t.Fatalf("expected textarea draft restored after cancel interjection, got %q", got)
 	}
 	if m.pendingInterjection != "" {
 		t.Fatalf("expected pendingInterjection to be cleared, got %q", m.pendingInterjection)
 	}
-	if m.queuedInterjection != "" {
-		t.Fatalf("expected queuedInterjection to be cleared, got %q", m.queuedInterjection)
-	}
 	if m.phase != "Stopping..." {
 		t.Fatalf("expected stopping phase after cancel interjection, got %q", m.phase)
+	}
+	if got := m.interruptNotice; got == "" {
+		t.Fatal("expected interrupt notice after cancellation")
 	}
 }
 
@@ -133,7 +132,7 @@ func TestHandleInterruptClassified_StreamAlreadyFinishedRestoresDraft(t *testing
 	_, cmd := m.handleInterruptClassified(interruptClassifiedMsg{
 		RequestID: 7,
 		Content:   "keep sleeping",
-		Action:    llm.InterruptQueue,
+		Action:    llm.InterruptInterject,
 	})
 	if cmd != nil {
 		t.Fatal("expected no follow-up command when restoring draft")
@@ -152,37 +151,6 @@ func TestHandleInterruptClassified_StreamAlreadyFinishedRestoresDraft(t *testing
 	}
 	if got := len(m.messages); got != 0 {
 		t.Fatalf("expected restored draft not to auto-send, got %d messages", got)
-	}
-}
-
-func TestStreamDone_QueuedInterjectionRestoresDraftWithoutSending(t *testing.T) {
-	m := newTestChatModel(false)
-	m.streaming = true
-	m.queuedInterjection = "queue this for later"
-	m.pendingInterjection = "queue this for later"
-	m.pendingInterruptUI = "queued"
-
-	_, cmd := m.Update(streamEventMsg{event: ui.DoneEvent(0)})
-	if cmd == nil {
-		t.Fatal("expected command batch from stream completion")
-	}
-	if m.streaming {
-		t.Fatal("expected streaming to stop after done event")
-	}
-	if got := m.textarea.Value(); got != "queue this for later" {
-		t.Fatalf("expected queued interjection restored to composer, got %q", got)
-	}
-	if got := m.queuedInterjection; got != "" {
-		t.Fatalf("expected queued interjection state cleared, got %q", got)
-	}
-	if got := m.pendingInterjection; got != "" {
-		t.Fatalf("expected pending interjection cleared after restore, got %q", got)
-	}
-	if got := m.pendingInterruptUI; got != "" {
-		t.Fatalf("expected pending interrupt UI cleared after restore, got %q", got)
-	}
-	if got := len(m.messages); got != 0 {
-		t.Fatalf("expected queued interjection not to auto-send, got %d messages", got)
 	}
 }
 

@@ -58,7 +58,6 @@ type InterruptAction int
 const (
 	InterruptCancel InterruptAction = iota
 	InterruptInterject
-	InterruptQueue
 )
 
 // InterruptActivity summarizes active stream state for interrupt classification.
@@ -78,7 +77,7 @@ func ClassifyInterruptImmediate(msg string) (InterruptAction, bool) {
 func classifyInterruptHeuristic(msg string) (InterruptAction, bool) {
 	normalized := strings.ToLower(strings.TrimSpace(msg))
 	if normalized == "" {
-		return InterruptQueue, true
+		return InterruptInterject, true
 	}
 
 	overrides := []string{"/stop", "/cancel", "/takeover", "stop", "cancel", "abort", "never mind", "nevermind", "forget it"}
@@ -88,7 +87,7 @@ func classifyInterruptHeuristic(msg string) (InterruptAction, bool) {
 		}
 	}
 
-	return InterruptQueue, false
+	return InterruptInterject, false
 }
 
 // ClassifyInterrupt decides how to handle a new user message while a stream is active.
@@ -98,7 +97,7 @@ func ClassifyInterrupt(ctx context.Context, fastProvider Provider, msg string, a
 		return action
 	}
 	if fastProvider == nil {
-		return InterruptQueue
+		return InterruptInterject
 	}
 
 	toolsRun := "none"
@@ -122,11 +121,10 @@ Agent has produced: %d characters so far.
 User's new message: %q
 
 Classify as one word:
-- cancel: user wants to stop current work
-- interject: user wants to add info/correction, agent should continue and incorporate
-- queue: user is starting a new topic, finish current work first
+- cancel: user wants to stop current work and replace it with this new message
+- interject: user wants to steer or correct the current work; agent should continue and incorporate it at the next legal boundary
 
-Reply with exactly one word.`,
+Reply with exactly one word. If unsure, reply interject.`,
 		agentActivity,
 		strings.TrimSpace(activity.CurrentTask),
 		toolsRun,
@@ -136,17 +134,15 @@ Reply with exactly one word.`,
 
 	decision, err := Classify(ctx, fastProvider, prompt, 3*time.Second)
 	if err != nil {
-		return InterruptQueue
+		return InterruptInterject
 	}
 
 	switch strings.TrimSpace(decision) {
 	case "cancel", "abort", "stop":
 		return InterruptCancel
-	case "interject", "inject":
+	case "interject", "inject", "queue", "wait", "later":
 		return InterruptInterject
-	case "queue", "wait", "later":
-		return InterruptQueue
 	default:
-		return InterruptQueue
+		return InterruptInterject
 	}
 }

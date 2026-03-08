@@ -723,26 +723,36 @@ func (m *jobsV2Manager) executeRun(run jobsV2Run) {
 		return
 	}
 
-	started := time.Now().UTC()
-	_, _ = m.db.Exec(`UPDATE job_runs_v2 SET status = ?, started_at = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, jobsV2RunRunning, started, run.ID)
-	_ = m.addRunEvent(run.ID, "running", "run started", map[string]any{"worker_id": m.workerID})
-
 	timeout := time.Duration(job.TimeoutSeconds) * time.Second
 	if timeout <= 0 {
 		timeout = 5 * time.Minute
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	m.mu.Lock()
-	if !m.closed {
-		m.cancels[run.ID] = cancel
-	}
+	closed := m.closed
+	m.cancels[run.ID] = cancel
 	m.mu.Unlock()
+	if closed {
+		cancel()
+	}
 	defer func() {
 		cancel()
 		m.mu.Lock()
 		delete(m.cancels, run.ID)
 		m.mu.Unlock()
 	}()
+
+	started := time.Now().UTC()
+	res, err := m.db.Exec(`UPDATE job_runs_v2 SET status = ?, started_at = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND status = ?`, jobsV2RunRunning, started, run.ID, jobsV2RunClaimed)
+	if err != nil {
+		_ = m.finishRun(run.ID, jobsV2RunFailed, jobsV2RunResult{}, fmt.Errorf("mark run running: %w", err), run.Attempt)
+		return
+	}
+	affected, _ := res.RowsAffected()
+	if affected == 0 {
+		return
+	}
+	_ = m.addRunEvent(run.ID, "running", "run started", map[string]any{"worker_id": m.workerID})
 
 	// Build a progress writer that writes events and flushes partial response to DB.
 	pw := func(eventType, message string, data any) {

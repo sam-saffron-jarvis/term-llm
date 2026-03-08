@@ -466,7 +466,7 @@ func (m *Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			if m.fastProvider == nil {
-				m.applyInterruptAction(content, llm.InterruptQueue)
+				m.applyInterruptAction(content, llm.InterruptInterject)
 				return m, nil
 			}
 
@@ -680,7 +680,7 @@ func (m *Model) queueInterruptClassification(content string) tea.Cmd {
 	m.activeInterruptSeq = requestID
 	m.pendingInterjection = content
 	m.pendingInterruptUI = "deciding"
-	m.queuedInterjection = ""
+	m.interruptNotice = ""
 	m.setTextareaValue("")
 
 	provider := m.fastProvider
@@ -703,18 +703,15 @@ func (m *Model) applyInterruptAction(content string, action llm.InterruptAction)
 	case llm.InterruptCancel:
 		m.pendingInterjection = ""
 		m.pendingInterruptUI = ""
-		m.queuedInterjection = ""
+		m.interruptNotice = "✕ cancelled current response — draft restored below"
 		m.phase = "Stopping..."
+		m.setTextareaValue(content)
 		if m.streamCancelFunc != nil {
 			m.streamCancelFunc()
 		}
 	case llm.InterruptInterject:
 		m.pendingInterruptUI = "interject"
-		m.queuedInterjection = ""
 		m.engine.Interject(content)
-	default:
-		m.pendingInterruptUI = "queued"
-		m.queuedInterjection = content
 	}
 }
 
@@ -742,10 +739,6 @@ func (m *Model) restorePendingInterjectionDraft() {
 	}
 	if residual := m.engine.DrainInterjection(); residual != "" {
 		m.setTextareaValue(residual)
-		return
-	}
-	if m.queuedInterjection != "" {
-		m.setTextareaValue(m.queuedInterjection)
 		return
 	}
 	if m.pendingInterjection != "" && (m.pendingInterruptUI == "interject" || m.pendingInterruptUI == "deciding") {

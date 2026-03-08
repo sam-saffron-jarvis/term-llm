@@ -34,8 +34,8 @@ func TestClassifyInterruptExplicitCancel(t *testing.T) {
 func TestClassifyInterruptLLM(t *testing.T) {
 	provider := NewMockProvider("mock").AddTextResponse("queue")
 	a := InterruptActivity{CurrentTask: "analyzing", ActiveTool: "shell", ProseLen: 120}
-	if got := ClassifyInterrupt(context.Background(), provider, "new topic", a); got != InterruptQueue {
-		t.Fatalf("ClassifyInterrupt(queue) = %v, want InterruptQueue", got)
+	if got := ClassifyInterrupt(context.Background(), provider, "new topic", a); got != InterruptInterject {
+		t.Fatalf("ClassifyInterrupt(queue) = %v, want InterruptInterject", got)
 	}
 
 	provider = NewMockProvider("mock").AddTextResponse("interject")
@@ -52,7 +52,7 @@ func TestClassifyInterruptLLM(t *testing.T) {
 func TestClassifyInterruptFallbackOnError(t *testing.T) {
 	provider := NewMockProvider("mock").AddError(context.DeadlineExceeded)
 	got := ClassifyInterrupt(context.Background(), provider, "what about y", InterruptActivity{CurrentTask: "task"})
-	if got != InterruptQueue {
-		t.Fatalf("ClassifyInterrupt fallback = %v, want InterruptQueue", got)
+	if got != InterruptInterject {
+		t.Fatalf("ClassifyInterrupt fallback = %v, want InterruptInterject", got)
 	}
 }
