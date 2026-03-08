@@ -14,7 +14,7 @@ import (
 // SaveImage saves image data to the configured output directory
 // Returns the path where the image was saved
 func SaveImage(data []byte, outputDir, prompt string) (string, error) {
-	dir := expandPath(outputDir)
+	dir := ExpandPath(outputDir)
 
 	// Ensure directory exists
 	if err := os.MkdirAll(dir, 0755); err != nil {
@@ -58,8 +58,8 @@ func ReadFromClipboard() ([]byte, error) {
 	return clipboard.ReadImage()
 }
 
-// expandPath expands ~ to home directory
-func expandPath(path string) string {
+// ExpandPath expands ~ to home directory
+func ExpandPath(path string) string {
 	if strings.HasPrefix(path, "~/") {
 		if home, err := os.UserHomeDir(); err == nil {
 			return filepath.Join(home, path[2:])

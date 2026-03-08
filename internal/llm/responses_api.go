@@ -20,11 +20,15 @@ type ResponsesClient struct {
 	HTTPClient         *http.Client      // HTTP client to use
 	LastResponseID     string            // Track for conversation continuity (server state)
 	DisableServerState bool              // Set to true to disable previous_response_id (e.g., for Copilot)
+	// HandleError, if set, is called for non-200 responses before default handling.
+	// Return a non-nil error to short-circuit; return nil to fall through to defaults.
+	HandleError func(statusCode int, body []byte, headers http.Header) error
 }
 
 // ResponsesRequest follows the Open Responses spec
 type ResponsesRequest struct {
 	Model              string               `json:"model"`
+	Instructions       string               `json:"instructions,omitempty"` // System instructions (alternative to developer-role input items)
 	Input              []ResponsesInputItem `json:"input"`
 	Tools              []any                `json:"tools,omitempty"` // Can contain ResponsesTool or ResponsesWebSearchTool
 	ToolChoice         any                  `json:"tool_choice,omitempty"`
@@ -35,6 +39,7 @@ type ResponsesRequest struct {
 	Reasoning          *ResponsesReasoning  `json:"reasoning,omitempty"`
 	Include            []string             `json:"include,omitempty"`
 	PromptCacheKey     string               `json:"prompt_cache_key,omitempty"`
+	Store              *bool                `json:"store,omitempty"`
 	Stream             bool                 `json:"stream"`
 	PreviousResponseID string               `json:"previous_response_id,omitempty"`
 	SessionID          string               `json:"-"`
@@ -145,68 +150,74 @@ type responsesSSEEvent struct {
 	OutputIndex int                  `json:"output_index,omitempty"`
 }
 
+// BuildResponsesInputWithInstructions converts []Message to Open Responses input
+// format, extracting system messages as a separate instructions string instead of
+// including them as developer-role input items. This is used by providers that send
+// system content via the "instructions" request field (e.g., ChatGPT).
+func BuildResponsesInputWithInstructions(messages []Message) (instructions string, input []ResponsesInputItem) {
+	messages = sanitizeToolHistory(messages)
+	var systemParts []string
+	for _, msg := range messages {
+		switch msg.Role {
+		case RoleSystem:
+			if text := collectTextParts(msg.Parts); text != "" {
+				systemParts = append(systemParts, text)
+			}
+		default:
+			input = append(input, buildResponsesInputForRole(msg)...)
+		}
+	}
+	return strings.Join(systemParts, "\n\n"), input
+}
+
 // BuildResponsesInput converts []Message to Open Responses input format
 func BuildResponsesInput(messages []Message) []ResponsesInputItem {
 	messages = sanitizeToolHistory(messages)
 	var inputItems []ResponsesInputItem
-
 	for _, msg := range messages {
-		switch msg.Role {
-		case RoleSystem:
-			// Use developer role for system messages in Responses API
+		if msg.Role == RoleSystem {
 			inputItems = append(inputItems, buildResponsesMessageItems("developer", msg.Parts)...)
-		case RoleUser:
-			inputItems = append(inputItems, buildResponsesMessageItems("user", msg.Parts)...)
-		case RoleAssistant:
-			inputItems = append(inputItems, buildResponsesAssistantItems(msg.Parts)...)
-		case RoleTool:
-			for _, part := range msg.Parts {
-				if part.Type != PartToolResult || part.ToolResult == nil {
-					continue
-				}
-				callID := strings.TrimSpace(part.ToolResult.ID)
-				if callID == "" {
-					continue
-				}
-				textContent := toolResultTextContent(part.ToolResult)
-
-				// Add the function call output
-				inputItems = append(inputItems, ResponsesInputItem{
-					Type:   "function_call_output",
-					CallID: callID,
-					Output: textContent,
-				})
-
-				var richParts []ResponsesContentPart
-				hasImage := false
-				for _, contentPart := range toolResultContentParts(part.ToolResult) {
-					switch contentPart.Type {
-					case ToolContentPartText:
-						if contentPart.Text != "" {
-							richParts = append(richParts, ResponsesContentPart{Type: "input_text", Text: contentPart.Text})
-						}
-					case ToolContentPartImageData:
-						mimeType, base64Data, ok := toolResultImageData(contentPart)
-						if !ok {
-							continue
-						}
-						hasImage = true
-						dataURL := fmt.Sprintf("data:%s;base64,%s", mimeType, base64Data)
-						richParts = append(richParts, ResponsesContentPart{Type: "input_image", ImageURL: dataURL})
-					}
-				}
-				if hasImage && len(richParts) > 0 {
-					inputItems = append(inputItems, ResponsesInputItem{
-						Type:    "message",
-						Role:    "user",
-						Content: richParts,
-					})
-				}
-			}
+		} else {
+			inputItems = append(inputItems, buildResponsesInputForRole(msg)...)
 		}
 	}
-
 	return inputItems
+}
+
+// buildResponsesInputForRole converts a single non-system message to input items.
+func buildResponsesInputForRole(msg Message) []ResponsesInputItem {
+	switch msg.Role {
+	case RoleUser:
+		return buildResponsesMessageItems("user", msg.Parts)
+	case RoleAssistant:
+		return buildResponsesAssistantItems(msg.Parts)
+	case RoleTool:
+		var items []ResponsesInputItem
+		for _, part := range msg.Parts {
+			if part.Type != PartToolResult || part.ToolResult == nil {
+				continue
+			}
+			callID := strings.TrimSpace(part.ToolResult.ID)
+			if callID == "" {
+				continue
+			}
+			items = append(items, ResponsesInputItem{
+				Type:   "function_call_output",
+				CallID: callID,
+				Output: toolResultTextContent(part.ToolResult),
+			})
+			if richParts, hasImage := toolResultResponsesImageParts(part.ToolResult); hasImage {
+				items = append(items, ResponsesInputItem{
+					Type:    "message",
+					Role:    "user",
+					Content: richParts,
+				})
+			}
+		}
+		return items
+	default:
+		return nil
+	}
 }
 
 func buildResponsesMessageItems(role string, parts []Part) []ResponsesInputItem {
@@ -453,6 +464,13 @@ func (c *ResponsesClient) Stream(ctx context.Context, req ResponsesRequest, debu
 				debugInfo.WriteString(string(respBody))
 			}
 			DebugRawSection(debugRaw, "Responses API Error Response", debugInfo.String())
+		}
+
+		// Provider-specific error handling (e.g., ChatGPT rate limits)
+		if c.HandleError != nil {
+			if err := c.HandleError(resp.StatusCode, respBody, resp.Header); err != nil {
+				return nil, err
+			}
 		}
 
 		// Check for previous_response_id not found error

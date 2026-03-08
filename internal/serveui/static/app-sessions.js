@@ -8,7 +8,8 @@ const {
   openAuthModal, closeAuthModal, handleAuthFailure, closeAskUserModal, openAskUserModal, setActiveResponseTracking,
   clearActiveResponseTracking, setStreaming, resumeActiveResponse, renderSidebar, renderMessages, renderModelOptions,
   autoGrowPrompt, fetchModels, addErrorMessage, sendMessage, openSidebar, closeSidebar, closeSidebarIfMobile,
-  connectToken, submitAskUserModal, cancelActiveResponse, handleFiles, isNearBottom
+  connectToken, submitAskUserModal, cancelActiveResponse, handleFiles, isNearBottom,
+  openApprovalModal, closeApprovalModal, submitApprovalModal
 } = app;
 let sessionStatePollTimer = null;
 
@@ -203,6 +204,19 @@ const syncActiveSessionFromServer = async (session, pollOnActive = false) => {
     }
   } else if (state.askUser?.sessionId === session.id) {
     closeAskUserModal();
+  }
+
+  const pendingApproval = runtimeState.pending_approval || null;
+  if (pendingApproval && pendingApproval.approval_id && Array.isArray(pendingApproval.options) && pendingApproval.options.length > 0) {
+    const sameApproval = state.approval
+      && state.approval.sessionId === session.id
+      && state.approval.approvalId === pendingApproval.approval_id;
+    if (!sameApproval) {
+      openApprovalModal(session.id, pendingApproval.approval_id, pendingApproval.path,
+        pendingApproval.is_shell, pendingApproval.title, pendingApproval.options);
+    }
+  } else if (state.approval?.sessionId === session.id) {
+    closeApprovalModal();
   }
 
   const activeResponseId = String(runtimeState.active_response_id || '').trim();
@@ -485,6 +499,14 @@ elements.askUserModal.addEventListener('keydown', (event) => {
   if (event.key === 'Escape' && !event.defaultPrevented) {
     event.preventDefault();
     submitAskUserModal(true);
+  }
+});
+elements.approvalApproveBtn.addEventListener('click', () => submitApprovalModal(false));
+elements.approvalDenyBtn.addEventListener('click', () => submitApprovalModal(true));
+elements.approvalModal.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape' && !event.defaultPrevented) {
+    event.preventDefault();
+    submitApprovalModal(true);
   }
 });
 elements.authTokenInput.addEventListener('keydown', (event) => {

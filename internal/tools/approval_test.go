@@ -134,8 +134,8 @@ func TestApprovalManager_CheckPathApproval_SessionCache(t *testing.T) {
 		t.Fatalf("failed to create test file: %v", err)
 	}
 
-	// Manually add directory to session cache
-	mgr.dirCache.Set(testDir, ProceedAlways)
+	// Manually add directory to session cache (read approval)
+	mgr.dirCache.Set(testDir, ProceedAlways, false)
 
 	// Check should succeed without prompting
 	outcome, err := mgr.CheckPathApproval("read_file", testFile, "", false)
@@ -289,6 +289,74 @@ func TestApprovalManager_CheckPathApproval_ProjectApprovals(t *testing.T) {
 	}
 	if outcome != ProceedAlways {
 		t.Errorf("expected ProceedAlways from project approvals, got %v", outcome)
+	}
+}
+
+func TestApprovalManager_CheckPathApproval_IgnoreProjectApprovals(t *testing.T) {
+	// Simulates serve mode: IgnoreProjectApprovals + PromptUIFunc set
+	tempDir, err := os.MkdirTemp("", "test-repo-*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	tempDir, err = filepath.EvalSymlinks(tempDir)
+	if err != nil {
+		t.Fatalf("failed to resolve symlinks: %v", err)
+	}
+
+	// Initialize git repo
+	cmd := exec.Command("git", "init")
+	cmd.Dir = tempDir
+	if err := cmd.Run(); err != nil {
+		t.Skipf("git init failed, skipping: %v", err)
+	}
+
+	configDir, err := os.MkdirTemp("", "test-config-*")
+	if err != nil {
+		t.Fatalf("failed to create config dir: %v", err)
+	}
+	defer os.RemoveAll(configDir)
+
+	oldXDG := os.Getenv("XDG_CONFIG_HOME")
+	os.Setenv("XDG_CONFIG_HOME", configDir)
+	defer os.Setenv("XDG_CONFIG_HOME", oldXDG)
+
+	perms := NewToolPermissions()
+	mgr := NewApprovalManager(perms)
+	mgr.IgnoreProjectApprovals = true
+
+	// Create test file
+	testFile := filepath.Join(tempDir, "main.go")
+	if err := os.WriteFile(testFile, []byte("package main"), 0644); err != nil {
+		t.Fatalf("failed to create test file: %v", err)
+	}
+
+	// Pre-approve the repo
+	pa, err := LoadProjectApprovals(tempDir)
+	if err != nil {
+		t.Fatalf("failed to load project approvals: %v", err)
+	}
+	if err := pa.ApproveRead(); err != nil {
+		t.Fatalf("failed to approve read: %v", err)
+	}
+
+	// With IgnoreProjectApprovals=true, PromptUIFunc should be called
+	prompted := false
+	mgr.PromptUIFunc = func(path string, isWrite bool, isShell bool) (ApprovalResult, error) {
+		prompted = true
+		return ApprovalResult{Choice: ApprovalChoiceOnce}, nil
+	}
+
+	outcome, err := mgr.CheckPathApproval("read_file", testFile, "", false)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !prompted {
+		t.Error("expected PromptUIFunc to be called when IgnoreProjectApprovals=true")
+	}
+	if outcome != ProceedOnce {
+		t.Errorf("expected ProceedOnce, got %v", outcome)
 	}
 }
 
@@ -479,7 +547,7 @@ func TestApprovalManager_HandleFileApprovalResult(t *testing.T) {
 		{
 			name:    "file",
 			result:  ApprovalResult{Choice: ApprovalChoiceFile},
-			want:    ProceedOnce,
+			want:    ProceedAlways,
 			wantErr: false,
 		},
 		{
@@ -590,9 +658,172 @@ func TestApprovalManager_HandleFileApprovalResult_Directory_AddedToCache(t *test
 		t.Fatalf("handleFileApprovalResult failed: %v", err)
 	}
 
-	// Verify directory was added to session cache
-	if !mgr.dirCache.IsPathInApprovedDir(filepath.Join(tempDir, "subdir", "file.txt")) {
+	// Verify directory was added to session cache (read)
+	if !mgr.dirCache.IsPathInApprovedDir(filepath.Join(tempDir, "subdir", "file.txt"), false) {
 		t.Error("directory should be in approved cache after approval")
+	}
+	// Write should NOT be approved
+	if mgr.dirCache.IsPathInApprovedDir(filepath.Join(tempDir, "subdir", "file.txt"), true) {
+		t.Error("read-only directory approval should not grant write access")
+	}
+}
+
+func TestApprovalManager_HandleFileApprovalResult_File_AddedToCache(t *testing.T) {
+	perms := NewToolPermissions()
+	mgr := NewApprovalManager(perms)
+
+	tempDir, err := os.MkdirTemp("", "test-filecache-*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	filePath := filepath.Join(tempDir, "image.png")
+	if err := os.WriteFile(filePath, []byte("fake"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	result := ApprovalResult{
+		Choice: ApprovalChoiceFile,
+		Path:   filePath,
+	}
+
+	_, err = mgr.handleFileApprovalResult(result, filePath, false, nil)
+	if err != nil {
+		t.Fatalf("handleFileApprovalResult failed: %v", err)
+	}
+
+	// The exact file should now be cached for read
+	if !mgr.dirCache.IsPathInApprovedDir(filePath, false) {
+		t.Error("file should be in approved cache after file-only approval")
+	}
+
+	// A different file in the same directory should NOT be cached
+	otherFile := filepath.Join(tempDir, "other.png")
+	if mgr.dirCache.IsPathInApprovedDir(otherFile, false) {
+		t.Error("other files in same dir should not be approved by file-only approval")
+	}
+
+	// The same file should NOT be approved for write (only approved for read)
+	if mgr.dirCache.IsPathInApprovedDir(filePath, true) {
+		t.Error("read-only file approval should not grant write access")
+	}
+}
+
+func TestApprovalManager_FileApproval_SuppressesReprompt(t *testing.T) {
+	perms := NewToolPermissions()
+	mgr := NewApprovalManager(perms)
+
+	tempDir, err := os.MkdirTemp("", "test-reprompt-*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	filePath := filepath.Join(tempDir, "data.txt")
+	if err := os.WriteFile(filePath, []byte("content"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	promptCount := 0
+	mgr.PromptUIFunc = func(path string, isWrite bool, isShell bool) (ApprovalResult, error) {
+		promptCount++
+		return ApprovalResult{
+			Choice: ApprovalChoiceFile,
+			Path:   path,
+		}, nil
+	}
+
+	// First access — should prompt
+	outcome, err := mgr.CheckPathApproval("read_file", filePath, filePath, false)
+	if err != nil {
+		t.Fatalf("first check failed: %v", err)
+	}
+	if outcome != ProceedAlways {
+		t.Fatalf("expected ProceedAlways, got %v", outcome)
+	}
+	if promptCount != 1 {
+		t.Fatalf("expected 1 prompt, got %d", promptCount)
+	}
+
+	// Second access — should NOT prompt (cached)
+	outcome, err = mgr.CheckPathApproval("read_file", filePath, filePath, false)
+	if err != nil {
+		t.Fatalf("second check failed: %v", err)
+	}
+	if outcome != ProceedAlways {
+		t.Fatalf("expected ProceedAlways on second check, got %v", outcome)
+	}
+	if promptCount != 1 {
+		t.Fatalf("expected still 1 prompt after second check, got %d", promptCount)
+	}
+}
+
+func TestApprovalManager_ReadApprovalDoesNotGrantWrite(t *testing.T) {
+	perms := NewToolPermissions()
+	mgr := NewApprovalManager(perms)
+
+	tempDir, err := os.MkdirTemp("", "test-rw-escalation-*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	filePath := filepath.Join(tempDir, "file.txt")
+	if err := os.WriteFile(filePath, []byte("data"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	promptCount := 0
+	mgr.PromptUIFunc = func(path string, isWrite bool, isShell bool) (ApprovalResult, error) {
+		promptCount++
+		// Always approve the directory for the requested access type
+		return ApprovalResult{
+			Choice: ApprovalChoiceDirectory,
+			Path:   tempDir,
+		}, nil
+	}
+
+	// Approve read access
+	outcome, err := mgr.CheckPathApproval("read_file", filePath, filePath, false)
+	if err != nil {
+		t.Fatalf("read check failed: %v", err)
+	}
+	if outcome != ProceedAlways {
+		t.Fatalf("expected ProceedAlways for read, got %v", outcome)
+	}
+	if promptCount != 1 {
+		t.Fatalf("expected 1 prompt for read, got %d", promptCount)
+	}
+
+	// Write access should still prompt (read approval doesn't grant write)
+	outcome, err = mgr.CheckPathApproval("edit_file", filePath, filePath, true)
+	if err != nil {
+		t.Fatalf("write check failed: %v", err)
+	}
+	if outcome != ProceedAlways {
+		t.Fatalf("expected ProceedAlways for write, got %v", outcome)
+	}
+	if promptCount != 2 {
+		t.Fatalf("expected 2 prompts (read + write), got %d", promptCount)
+	}
+
+	// Second read should NOT prompt (still cached from first approval)
+	outcome, err = mgr.CheckPathApproval("read_file", filePath, filePath, false)
+	if err != nil {
+		t.Fatalf("second read check failed: %v", err)
+	}
+	if promptCount != 2 {
+		t.Fatalf("expected still 2 prompts after cached read, got %d", promptCount)
+	}
+
+	// Second write should NOT prompt (cached from second approval)
+	outcome, err = mgr.CheckPathApproval("edit_file", filePath, filePath, true)
+	if err != nil {
+		t.Fatalf("second write check failed: %v", err)
+	}
+	if promptCount != 2 {
+		t.Fatalf("expected still 2 prompts after cached write, got %d", promptCount)
 	}
 }
 
@@ -627,9 +858,9 @@ func TestApprovalManager_HandleShellApprovalResult_Pattern_AddedToCache(t *testi
 func TestDirCache_IsPathInApprovedDir(t *testing.T) {
 	cache := NewDirCache()
 
-	// Add approved directories
-	cache.Set("/home/user/project", ProceedAlways)
-	cache.Set("/tmp/allowed", ProceedAlways)
+	// Add approved directories (read)
+	cache.Set("/home/user/project", ProceedAlways, false)
+	cache.Set("/tmp/allowed", ProceedAlways, false)
 
 	tests := []struct {
 		path string
@@ -645,11 +876,49 @@ func TestDirCache_IsPathInApprovedDir(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.path, func(t *testing.T) {
-			got := cache.IsPathInApprovedDir(tt.path)
+			got := cache.IsPathInApprovedDir(tt.path, false)
 			if got != tt.want {
-				t.Errorf("IsPathInApprovedDir(%q) = %v, want %v", tt.path, got, tt.want)
+				t.Errorf("IsPathInApprovedDir(%q, false) = %v, want %v", tt.path, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestDirCache_ReadWriteSeparation(t *testing.T) {
+	cache := NewDirCache()
+
+	// Approve read for /home/user/project
+	cache.Set("/home/user/project", ProceedAlways, false)
+
+	// Read should work
+	if !cache.IsPathInApprovedDir("/home/user/project/file.go", false) {
+		t.Error("read should be approved after read approval")
+	}
+	// Write should NOT work
+	if cache.IsPathInApprovedDir("/home/user/project/file.go", true) {
+		t.Error("write should NOT be approved after read-only approval")
+	}
+
+	// Now approve write for /home/user/project
+	cache.Set("/home/user/project", ProceedAlways, true)
+
+	// Both should work
+	if !cache.IsPathInApprovedDir("/home/user/project/file.go", false) {
+		t.Error("read should still be approved")
+	}
+	if !cache.IsPathInApprovedDir("/home/user/project/file.go", true) {
+		t.Error("write should be approved after write approval")
+	}
+
+	// Separate dir with only write approval
+	cache.Set("/tmp/write-only", ProceedAlways, true)
+	// Write approved
+	if !cache.IsPathInApprovedDir("/tmp/write-only/file.txt", true) {
+		t.Error("write should be approved")
+	}
+	// Read should also work (write implies read)
+	if !cache.IsPathInApprovedDir("/tmp/write-only/file.txt", false) {
+		t.Error("read should be approved when write is approved")
 	}
 }
 

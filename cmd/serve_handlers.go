@@ -19,6 +19,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/samsaffron/term-llm/internal/image"
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/serveui"
 	"github.com/samsaffron/term-llm/internal/session"
@@ -83,17 +84,9 @@ func (s *serveServer) handleImage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	outputDir := s.cfgRef.Image.OutputDir
+	outputDir := image.ExpandPath(s.cfgRef.Image.OutputDir)
 	if outputDir == "" {
-		outputDir = "~/Pictures/term-llm"
-	}
-	if strings.HasPrefix(outputDir, "~/") {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			writeOpenAIError(w, http.StatusInternalServerError, "server_error", "cannot resolve home directory")
-			return
-		}
-		outputDir = filepath.Join(home, outputDir[2:])
+		outputDir = image.ExpandPath("~/Pictures/term-llm")
 	}
 
 	filePath := filepath.Join(outputDir, filename)
@@ -115,6 +108,68 @@ func (s *serveServer) handleImage(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "private, max-age=86400")
 	w.Header().Add("Vary", "Authorization, Cookie")
 	http.ServeFile(w, r, absFile)
+}
+
+// ensureImageServeable ensures the given image path is under the serveable
+// image output directory. If the file is already there, the path is returned
+// as-is. Otherwise the file is copied into the output dir so that the
+// /images/ handler can serve it. Returns the serveable path and true on
+// success, or ("", false) if the image could not be made serveable.
+func (s *serveServer) ensureImageServeable(imgPath string) (string, bool) {
+	outputDir := image.ExpandPath(s.cfgRef.Image.OutputDir)
+	if outputDir == "" {
+		outputDir = image.ExpandPath("~/Pictures/term-llm")
+	}
+
+	absDir, err := filepath.Abs(outputDir)
+	if err != nil {
+		log.Printf("[serve] ensureImageServeable: abs(%s): %v", outputDir, err)
+		return "", false
+	}
+	absImg, err := filepath.Abs(imgPath)
+	if err != nil {
+		log.Printf("[serve] ensureImageServeable: abs(%s): %v", imgPath, err)
+		return "", false
+	}
+
+	// Already under the output dir — nothing to do.
+	if strings.HasPrefix(absImg, absDir+string(filepath.Separator)) {
+		return imgPath, true
+	}
+
+	// Copy the file into the output dir with a unique prefix to avoid collisions.
+	if err := os.MkdirAll(absDir, 0755); err != nil {
+		log.Printf("[serve] ensureImageServeable: mkdir %s: %v", absDir, err)
+		return "", false
+	}
+
+	src, err := os.Open(absImg)
+	if err != nil {
+		log.Printf("[serve] ensureImageServeable: open %s: %v", absImg, err)
+		return "", false
+	}
+	defer src.Close()
+
+	destName := fmt.Sprintf("serve-%s-%s", randomSuffix(), filepath.Base(absImg))
+	destPath := filepath.Join(absDir, destName)
+	dst, err := os.Create(destPath)
+	if err != nil {
+		log.Printf("[serve] ensureImageServeable: create %s: %v", destPath, err)
+		return "", false
+	}
+	if _, err := io.Copy(dst, src); err != nil {
+		dst.Close()
+		os.Remove(destPath)
+		log.Printf("[serve] ensureImageServeable: copy to %s: %v", destPath, err)
+		return "", false
+	}
+	if err := dst.Close(); err != nil {
+		os.Remove(destPath)
+		log.Printf("[serve] ensureImageServeable: close %s: %v", destPath, err)
+		return "", false
+	}
+
+	return destPath, true
 }
 
 func (s *serveServer) handleSessions(w http.ResponseWriter, r *http.Request) {
@@ -190,6 +245,20 @@ func (s *serveServer) handleSessionByID(w http.ResponseWriter, r *http.Request) 
 			return
 		}
 		s.handleSessionAskUser(w, r, sessionID)
+		return
+	}
+
+	if suffix == "approval" {
+		if r.Method != http.MethodPost {
+			w.Header().Set("Allow", "POST")
+			writeOpenAIError(w, http.StatusMethodNotAllowed, "invalid_request_error", "method not allowed")
+			return
+		}
+		if err := requireJSONContentType(r); err != nil {
+			writeOpenAIError(w, http.StatusUnsupportedMediaType, "invalid_request_error", err.Error())
+			return
+		}
+		s.handleSessionApproval(w, r, sessionID)
 		return
 	}
 

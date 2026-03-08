@@ -272,6 +272,16 @@ func runServe(cmd *cobra.Command, args []string) error {
 			mcpSetting:          settings.MCP,
 			agentName:           agentName,
 		}
+		if toolMgr != nil {
+			runtime.toolMgr.Registry.SetServeMode(true)
+			if !serveYolo {
+				runtime.toolMgr.ApprovalMgr.IgnoreProjectApprovals = true
+				runtime.toolMgr.ApprovalMgr.DebugApproval = serveDebug
+				runtime.toolMgr.ApprovalMgr.PromptUIFunc = func(path string, isWrite bool, isShell bool) (tools.ApprovalResult, error) {
+					return runtime.awaitApproval(path, isWrite, isShell)
+				}
+			}
+		}
 		runtime.Touch()
 		return runtime, nil
 	}

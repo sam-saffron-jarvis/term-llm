@@ -189,7 +189,7 @@ func (r *responseRun) compactEventsLocked() {
 
 func (r *responseRun) applyRecoveryEventLocked(event string, payload map[string]any) {
 	switch event {
-	case "response.ask_user.prompt", "response.interjection":
+	case "response.ask_user.prompt", "response.approval.prompt", "response.interjection":
 		r.compactionEnabled = false
 	}
 
@@ -806,9 +806,13 @@ func (s *serveServer) appendResponseRunEvent(runtime *serveRuntime, run *respons
 		if len(ev.ToolImages) > 0 {
 			imageURLs := make([]string, 0, len(ev.ToolImages))
 			for _, imgPath := range ev.ToolImages {
-				imageURLs = append(imageURLs, "/images/"+filepath.Base(imgPath))
+				if served, ok := s.ensureImageServeable(imgPath); ok {
+					imageURLs = append(imageURLs, "/images/"+filepath.Base(served))
+				}
 			}
-			payload["images"] = imageURLs
+			if len(imageURLs) > 0 {
+				payload["images"] = imageURLs
+			}
 		}
 		return run.appendEvent("response.tool_exec.end", payload)
 	case llm.EventHeartbeat:
@@ -1003,6 +1007,20 @@ func (s *serveServer) startResponseRun(runtime *serveRuntime, stateful bool, rep
 		if !stateful {
 			defer runtime.Close()
 		}
+
+		// Wire approval event callback so PromptUIFunc can emit SSE events
+		runtime.approvalMu.Lock()
+		runtime.approvalEventFunc = func(event string, data map[string]any) error {
+			return run.appendEvent(event, data)
+		}
+		runtime.approvalCtx = runCtx
+		runtime.approvalMu.Unlock()
+		defer func() {
+			runtime.approvalMu.Lock()
+			runtime.approvalEventFunc = nil
+			runtime.approvalCtx = nil
+			runtime.approvalMu.Unlock()
+		}()
 
 		streamState := &responseRunStreamState{}
 		result, err := runtime.RunWithEvents(runCtx, stateful, replaceHistory, inputMessages, llmReq, func(ev llm.Event) error {

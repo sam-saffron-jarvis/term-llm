@@ -2,6 +2,7 @@ package llm
 
 import (
 	"encoding/base64"
+	"fmt"
 	"strings"
 )
 
@@ -73,4 +74,25 @@ func isSupportedToolResultImageMediaType(mimeType string) bool {
 	default:
 		return false
 	}
+}
+
+// toolResultResponsesImageParts extracts image parts from a tool result
+// and returns Responses API content parts suitable for injection as a
+// synthetic user message. Only image parts are returned — text is already
+// sent in the function_call_output and should not be duplicated.
+// Returns nil if no image data is present.
+func toolResultResponsesImageParts(result *ToolResult) (parts []ResponsesContentPart, hasImage bool) {
+	for _, contentPart := range toolResultContentParts(result) {
+		if contentPart.Type != ToolContentPartImageData {
+			continue
+		}
+		mimeType, base64Data, ok := toolResultImageData(contentPart)
+		if !ok {
+			continue
+		}
+		hasImage = true
+		dataURL := fmt.Sprintf("data:%s;base64,%s", mimeType, base64Data)
+		parts = append(parts, ResponsesContentPart{Type: "input_image", ImageURL: dataURL})
+	}
+	return parts, hasImage
 }

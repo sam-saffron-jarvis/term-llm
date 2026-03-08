@@ -1004,6 +1004,70 @@ func TestHandleImage_ServesFileAndRejectsTraversal(t *testing.T) {
 	}
 }
 
+func TestEnsureImageServeable_CopiesExternalFile(t *testing.T) {
+	outputDir := t.TempDir()
+	externalDir := t.TempDir()
+
+	// Create a file outside the image output directory
+	externalImg := filepath.Join(externalDir, "photo.png")
+	if err := os.WriteFile(externalImg, []byte("external-image-data"), 0644); err != nil {
+		t.Fatalf("write external image: %v", err)
+	}
+
+	// Create a file already inside the output directory
+	internalImg := filepath.Join(outputDir, "generated.png")
+	if err := os.WriteFile(internalImg, []byte("internal-image-data"), 0644); err != nil {
+		t.Fatalf("write internal image: %v", err)
+	}
+
+	srv := &serveServer{cfgRef: &config.Config{}}
+	srv.cfgRef.Image.OutputDir = outputDir
+
+	// External file should be copied
+	result, ok := srv.ensureImageServeable(externalImg)
+	if !ok {
+		t.Fatal("ensureImageServeable should succeed for external image")
+	}
+	if result == externalImg {
+		t.Fatal("external image should have been copied, but path is unchanged")
+	}
+	absResult, _ := filepath.Abs(result)
+	absOutputDir, _ := filepath.Abs(outputDir)
+	if !strings.HasPrefix(absResult, absOutputDir+string(filepath.Separator)) {
+		t.Fatalf("copied image %q should be under output dir %q", absResult, absOutputDir)
+	}
+	// Verify the copied file contains the correct data
+	data, err := os.ReadFile(result)
+	if err != nil {
+		t.Fatalf("read copied image: %v", err)
+	}
+	if string(data) != "external-image-data" {
+		t.Fatalf("copied data = %q, want %q", string(data), "external-image-data")
+	}
+
+	// Internal file should be returned as-is
+	result, ok = srv.ensureImageServeable(internalImg)
+	if !ok {
+		t.Fatal("ensureImageServeable should succeed for internal image")
+	}
+	if result != internalImg {
+		t.Fatalf("internal image should be unchanged, got %q want %q", result, internalImg)
+	}
+
+	// Verify the copied file is actually serveable via handleImage
+	copied, ok := srv.ensureImageServeable(externalImg)
+	if !ok {
+		t.Fatal("ensureImageServeable should succeed for second external copy")
+	}
+	copiedName := filepath.Base(copied)
+	req := httptest.NewRequest(http.MethodGet, "/images/"+copiedName, nil)
+	rr := httptest.NewRecorder()
+	srv.handleImage(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("serve copied image: status = %d, want 200", rr.Code)
+	}
+}
+
 func TestHandleSessions_ListsFromStore(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "sessions.db")
 	store, err := session.NewStore(session.Config{Enabled: true, Path: dbPath})

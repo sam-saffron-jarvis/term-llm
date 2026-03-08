@@ -201,11 +201,13 @@ func TestBuildCompatMessages_ToolResultStructuredImageParts(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected user content []oaiContentPart, got %T", oaiMsgs[2].Content)
 	}
-	if len(parts) != 3 {
-		t.Fatalf("expected 3 content parts, got %d", len(parts))
+	// Synthetic user message should contain ONLY the image part (text is
+	// already in the tool result message and should not be duplicated).
+	if len(parts) != 1 {
+		t.Fatalf("expected 1 image-only content part, got %d: %+v", len(parts), parts)
 	}
-	if parts[1].Type != "image_url" || parts[1].ImageURL == nil {
-		t.Fatalf("expected second content part image_url, got %#v", parts[1])
+	if parts[0].Type != "image_url" || parts[0].ImageURL == nil {
+		t.Fatalf("expected image_url part, got %#v", parts[0])
 	}
 }
 

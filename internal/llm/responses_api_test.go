@@ -189,11 +189,13 @@ func TestBuildResponsesInput_ToolResultStructuredImageParts(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected message content []ResponsesContentPart, got %T", input[2].Content)
 	}
-	if len(parts) != 3 {
-		t.Fatalf("expected 3 multimodal content parts, got %d", len(parts))
+	// Synthetic user message should contain ONLY the image part (text is
+	// already in function_call_output and should not be duplicated).
+	if len(parts) != 1 {
+		t.Fatalf("expected 1 image-only content part, got %d: %+v", len(parts), parts)
 	}
-	if parts[1].Type != "input_image" {
-		t.Fatalf("expected second multimodal part input_image, got %#v", parts[1])
+	if parts[0].Type != "input_image" {
+		t.Fatalf("expected input_image part, got %#v", parts[0])
 	}
 }
 

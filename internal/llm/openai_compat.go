@@ -511,28 +511,24 @@ func buildCompatMessages(messages []Message) []oaiMessage {
 					ToolCallID: part.ToolResult.ID,
 				})
 
-				var richParts []oaiContentPart
-				hasImage := false
+				// Inject a synthetic user message with image parts only.
+				// Text is already in the tool result above — don't duplicate it.
+				var imageParts []oaiContentPart
 				for _, contentPart := range toolResultContentParts(part.ToolResult) {
-					switch contentPart.Type {
-					case ToolContentPartText:
-						if contentPart.Text != "" {
-							richParts = append(richParts, oaiContentPart{Type: "text", Text: contentPart.Text})
-						}
-					case ToolContentPartImageData:
-						mimeType, base64Data, ok := toolResultImageData(contentPart)
-						if !ok {
-							continue
-						}
-						hasImage = true
-						dataURL := fmt.Sprintf("data:%s;base64,%s", mimeType, base64Data)
-						richParts = append(richParts, oaiContentPart{Type: "image_url", ImageURL: &oaiImageURL{URL: dataURL, Detail: "auto"}})
+					if contentPart.Type != ToolContentPartImageData {
+						continue
 					}
+					mimeType, base64Data, ok := toolResultImageData(contentPart)
+					if !ok {
+						continue
+					}
+					dataURL := fmt.Sprintf("data:%s;base64,%s", mimeType, base64Data)
+					imageParts = append(imageParts, oaiContentPart{Type: "image_url", ImageURL: &oaiImageURL{URL: dataURL, Detail: "auto"}})
 				}
-				if hasImage && len(richParts) > 0 {
+				if len(imageParts) > 0 {
 					result = append(result, oaiMessage{
 						Role:    "user",
-						Content: richParts,
+						Content: imageParts,
 					})
 				}
 			}

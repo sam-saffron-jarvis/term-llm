@@ -17,7 +17,7 @@ func TestBuildFileOptions_InGitRepo(t *testing.T) {
 	path := filepath.Join(repoRoot, "src", "main.go")
 
 	// Test read options
-	options := buildFileOptions(path, repoInfo, false)
+	options := BuildFileOptions(path, repoInfo, false)
 
 	// Should have 5 options: repo, directory, file, once, deny
 	if len(options) != 5 {
@@ -69,7 +69,7 @@ func TestBuildFileOptions_InGitRepo_Write(t *testing.T) {
 	path := filepath.Join(repoRoot, "src", "main.go")
 
 	// Test write options
-	options := buildFileOptions(path, repoInfo, true)
+	options := BuildFileOptions(path, repoInfo, true)
 
 	// First option for write should be ApprovalChoiceRepoWrite
 	if options[0].Choice != ApprovalChoiceRepoWrite {
@@ -86,7 +86,7 @@ func TestBuildFileOptions_NotInGitRepo(t *testing.T) {
 	path := "/tmp/somefile.txt"
 
 	// No git repo
-	options := buildFileOptions(path, nil, false)
+	options := BuildFileOptions(path, nil, false)
 
 	// Should have 4 options: directory, file, once, deny (no repo option)
 	if len(options) != 4 {
@@ -114,7 +114,7 @@ func TestBuildShellOptions_InGitRepo(t *testing.T) {
 	}
 	command := "go test ./..."
 
-	options := buildShellOptions(command, repoInfo)
+	options := BuildShellOptions(command, repoInfo)
 
 	// Should have 4 options: pattern, command, once, deny
 	if len(options) != 4 {
@@ -155,7 +155,7 @@ func TestBuildShellOptions_NotInGitRepo(t *testing.T) {
 	command := "go test ./..."
 
 	// No git repo
-	options := buildShellOptions(command, nil)
+	options := BuildShellOptions(command, nil)
 
 	// Should have 3 options: command, once, deny (no pattern option)
 	if len(options) != 3 {
@@ -258,7 +258,7 @@ func TestBuildFileOptions_RelativePaths(t *testing.T) {
 	}
 	path := filepath.Join(srcDir, "main.go")
 
-	options := buildFileOptions(path, repoInfo, false)
+	options := BuildFileOptions(path, repoInfo, false)
 
 	// Directory option should use a path under repo
 	dirOption := options[1]

@@ -14,7 +14,8 @@ import (
 
 // ShowImageTool implements the show_image tool for displaying images to users.
 type ShowImageTool struct {
-	approval *ApprovalManager
+	approval  *ApprovalManager
+	serveMode bool // When true, strip clipboard param from spec
 }
 
 // NewShowImageTool creates a new ShowImageTool.
@@ -41,26 +42,32 @@ var showImageSupportedFormats = map[string]bool{
 }
 
 func (t *ShowImageTool) Spec() llm.ToolSpec {
+	props := map[string]any{
+		"file_path": map[string]any{
+			"type":        "string",
+			"description": "Path to the image file to display",
+		},
+		"prompt": map[string]any{
+			"type":        "string",
+			"description": "Optional question or instruction to guide image analysis (e.g., 'What text is visible?' or 'Describe the colors used')",
+		},
+	}
+	desc := "Display an image to the user via terminal (icat) and optionally copy to clipboard."
+	if t.serveMode {
+		desc = "Display an image to the user."
+	} else {
+		props["copy_to_clipboard"] = map[string]any{
+			"type":        "boolean",
+			"description": "Also copy the image to system clipboard (default: true)",
+			"default":     true,
+		}
+	}
 	return llm.ToolSpec{
 		Name:        ShowImageToolName,
-		Description: "Display an image to the user via terminal (icat) and optionally copy to clipboard.",
+		Description: desc,
 		Schema: map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"file_path": map[string]any{
-					"type":        "string",
-					"description": "Path to the image file to display",
-				},
-				"copy_to_clipboard": map[string]any{
-					"type":        "boolean",
-					"description": "Also copy the image to system clipboard (default: true)",
-					"default":     true,
-				},
-				"prompt": map[string]any{
-					"type":        "string",
-					"description": "Optional question or instruction to guide image analysis (e.g., 'What text is visible?' or 'Describe the colors used')",
-				},
-			},
+			"type":                 "object",
+			"properties":           props,
 			"required":             []string{"file_path"},
 			"additionalProperties": false,
 		},
@@ -114,8 +121,8 @@ func (t *ShowImageTool) Execute(ctx context.Context, args json.RawMessage) (llm.
 		return llm.TextOutput(formatToolError(NewToolErrorf(ErrUnsupportedFormat, "unsupported format: %s (supported: PNG, JPEG, GIF, WebP, BMP)", ext))), nil
 	}
 
-	// Copy to clipboard if requested (default: true)
-	copyClipboard := a.CopyToClipboard == nil || *a.CopyToClipboard
+	// Copy to clipboard if requested (default: true, disabled in serve mode)
+	copyClipboard := !t.serveMode && (a.CopyToClipboard == nil || *a.CopyToClipboard)
 	if copyClipboard {
 		// Read file data for clipboard
 		data, err := os.ReadFile(a.FilePath)

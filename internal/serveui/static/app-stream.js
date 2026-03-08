@@ -303,6 +303,15 @@ const applyResponseStreamEvent = (session, streamState, event, payload) => {
     return { terminal: false };
   }
 
+  if (event === 'response.approval.prompt') {
+    const approvalId = String(payload.approval_id || '').trim();
+    const options = Array.isArray(payload.options) ? payload.options : [];
+    if (approvalId && options.length > 0) {
+      openApprovalModal(session.id, approvalId, payload.path, payload.is_shell, payload.title, options);
+    }
+    return { terminal: false };
+  }
+
   if (event === 'response.tool_exec.end') {
     if (streamState.currentToolGroup) {
       const callId = payload.call_id;
@@ -1024,6 +1033,113 @@ const submitAskUserModal = async (cancelled = false) => {
   }
 };
 
+// ===== Approval modal =====
+const openApprovalModal = (sessionId, approvalId, path, isShell, title, options) => {
+  state.approval = { sessionId, approvalId, path, isShell, title, options, selectedIndex: 0 };
+
+  elements.approvalTitle.textContent = title || 'Access Request';
+  elements.approvalPath.textContent = path || '';
+  elements.approvalError.textContent = '';
+  elements.approvalApproveBtn.disabled = false;
+  elements.approvalDenyBtn.disabled = false;
+  elements.approvalApproveBtn.textContent = 'Approve';
+  elements.approvalDenyBtn.textContent = 'Deny';
+
+  // Build radio options as a vertical list
+  const body = elements.approvalBody;
+  body.innerHTML = '';
+  const group = document.createElement('div');
+  group.className = 'approval-options';
+  options.forEach((opt, i) => {
+    const label = document.createElement('label');
+    label.className = 'approval-option';
+
+    const radio = document.createElement('input');
+    radio.type = 'radio';
+    radio.name = 'approval_choice';
+    radio.value = String(opt.index != null ? opt.index : i);
+    if (i === 0) radio.checked = true;
+    radio.addEventListener('change', () => { state.approval.selectedIndex = Number(radio.value); });
+
+    const copy = document.createElement('div');
+    copy.className = 'approval-option-copy';
+    const titleEl = document.createElement('span');
+    titleEl.className = 'approval-option-title';
+    titleEl.textContent = opt.label || `Option ${i + 1}`;
+    copy.appendChild(titleEl);
+    if (opt.description) {
+      const desc = document.createElement('span');
+      desc.className = 'approval-option-desc';
+      desc.textContent = opt.description;
+      copy.appendChild(desc);
+    }
+
+    label.appendChild(radio);
+    label.appendChild(copy);
+    group.appendChild(label);
+  });
+  body.appendChild(group);
+
+  elements.approvalModal.classList.remove('hidden');
+  setTimeout(() => {
+    const firstRadio = body.querySelector('input[type="radio"]');
+    firstRadio?.focus();
+  }, 0);
+};
+
+const closeApprovalModal = () => {
+  state.approval = null;
+  elements.approvalModal.classList.add('hidden');
+  elements.approvalBody.innerHTML = '';
+  elements.approvalError.textContent = '';
+  elements.approvalApproveBtn.disabled = false;
+  elements.approvalDenyBtn.disabled = false;
+  elements.approvalApproveBtn.textContent = 'Approve';
+  elements.approvalDenyBtn.textContent = 'Deny';
+};
+
+const submitApprovalModal = async (denied = false) => {
+  const prompt = state.approval;
+  if (!prompt) return;
+
+  elements.approvalError.textContent = '';
+  elements.approvalApproveBtn.disabled = true;
+  elements.approvalDenyBtn.disabled = true;
+  elements.approvalApproveBtn.textContent = denied ? 'Approve' : 'Sending…';
+  elements.approvalDenyBtn.textContent = denied ? 'Denying…' : 'Deny';
+
+  // Find the deny option by its choice field rather than assuming position.
+  const denyOpt = prompt.options.find(o => o.choice === 'deny');
+  const denyIndex = denyOpt ? denyOpt.index : prompt.options.length - 1;
+  const choiceIndex = denied ? denyIndex : prompt.selectedIndex;
+  const body = { approval_id: prompt.approvalId, choice: choiceIndex };
+
+  try {
+    const response = await fetch(`/v1/sessions/${encodeURIComponent(prompt.sessionId)}/approval`, {
+      method: 'POST',
+      headers: requestHeaders(prompt.sessionId),
+      body: JSON.stringify(body)
+    });
+    if (!response.ok) {
+      throw await normalizeError(response);
+    }
+    closeApprovalModal();
+    if (!state.abortController) {
+      setStreaming(true);
+      app.scheduleSessionStatePoll(prompt.sessionId, 400);
+    }
+  } catch (err) {
+    elements.approvalError.textContent = err?.message || 'Failed to submit approval.';
+    if (err?.status === 401) {
+      handleAuthFailure();
+    }
+    elements.approvalApproveBtn.disabled = false;
+    elements.approvalDenyBtn.disabled = false;
+    elements.approvalApproveBtn.textContent = 'Approve';
+    elements.approvalDenyBtn.textContent = 'Deny';
+  }
+};
+
 // ===== Settings modal =====
 const openAuthModal = (errorText = '', required = !state.token) => {
   state.authRequired = required;
@@ -1657,6 +1773,9 @@ Object.assign(app, {
   resumeActiveResponse,
   cancelActiveResponse,
   closeAskUserModal,
+  openApprovalModal,
+  closeApprovalModal,
+  submitApprovalModal,
   askUserSummaryFromAnswers,
   collectAskUserAnswers,
   validateSingleQuestion,

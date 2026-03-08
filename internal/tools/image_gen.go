@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -28,6 +29,7 @@ type ImageGenerateTool struct {
 	imageRecorder ImageRecorder
 	agent         string
 	sessionID     string
+	serveMode     bool // When true, strip clipboard/terminal params from spec
 }
 
 // NewImageGenerateTool creates a new ImageGenerateTool.
@@ -55,50 +57,54 @@ type ImageGenerateArgs struct {
 }
 
 func (t *ImageGenerateTool) Spec() llm.ToolSpec {
+	props := map[string]interface{}{
+		"prompt": map[string]interface{}{
+			"type":        "string",
+			"description": "Description of the image to generate",
+		},
+		"input_image": map[string]interface{}{
+			"type":        "string",
+			"description": "Path to input image for editing/variation (optional, for single image)",
+		},
+		"input_images": map[string]interface{}{
+			"type":        "array",
+			"items":       map[string]interface{}{"type": "string"},
+			"description": "Paths to multiple input images for multi-image editing (optional, supported by Gemini and OpenRouter)",
+		},
+		"size": map[string]interface{}{
+			"type":        "string",
+			"enum":        []string{"1K", "2K", "4K"},
+			"description": "Image resolution: 1K (default, ~1024px), 2K (~2048px), 4K (~4096px)",
+		},
+		"aspect_ratio": map[string]interface{}{
+			"type":        "string",
+			"description": "Aspect ratio, e.g., '1:1', '16:9', '4:3' (default: '1:1')",
+			"default":     "1:1",
+		},
+		"output_path": map[string]interface{}{
+			"type":        "string",
+			"description": "Optional: path to save the image. Omit this — images are automatically saved and displayed. Only specify if the user explicitly requests a specific file path.",
+		},
+	}
+	// Terminal-only params: not useful in serve/web/telegram mode
+	if !t.serveMode {
+		props["show_image"] = map[string]interface{}{
+			"type":        "boolean",
+			"description": "Display generated image via terminal (icat) (default: true)",
+			"default":     true,
+		}
+		props["copy_to_clipboard"] = map[string]interface{}{
+			"type":        "boolean",
+			"description": "Copy generated image to system clipboard (default: true)",
+			"default":     true,
+		}
+	}
 	return llm.ToolSpec{
 		Name:        ImageGenerateToolName,
 		Description: "Generate an image from a text prompt. Optionally provide an input image for editing/variation.",
 		Schema: map[string]interface{}{
-			"type": "object",
-			"properties": map[string]interface{}{
-				"prompt": map[string]interface{}{
-					"type":        "string",
-					"description": "Description of the image to generate",
-				},
-				"input_image": map[string]interface{}{
-					"type":        "string",
-					"description": "Path to input image for editing/variation (optional, for single image)",
-				},
-				"input_images": map[string]interface{}{
-					"type":        "array",
-					"items":       map[string]interface{}{"type": "string"},
-					"description": "Paths to multiple input images for multi-image editing (optional, supported by Gemini and OpenRouter)",
-				},
-				"size": map[string]interface{}{
-					"type":        "string",
-					"enum":        []string{"1K", "2K", "4K"},
-					"description": "Image resolution: 1K (default, ~1024px), 2K (~2048px), 4K (~4096px)",
-				},
-				"aspect_ratio": map[string]interface{}{
-					"type":        "string",
-					"description": "Aspect ratio, e.g., '1:1', '16:9', '4:3' (default: '1:1')",
-					"default":     "1:1",
-				},
-				"output_path": map[string]interface{}{
-					"type":        "string",
-					"description": "Optional: path to save the image. Omit this — images are automatically saved and displayed. Only specify if the user explicitly requests a specific file path.",
-				},
-				"show_image": map[string]interface{}{
-					"type":        "boolean",
-					"description": "Display generated image via terminal (icat) (default: true)",
-					"default":     true,
-				},
-				"copy_to_clipboard": map[string]interface{}{
-					"type":        "boolean",
-					"description": "Copy generated image to system clipboard (default: true)",
-					"default":     true,
-				},
-			},
+			"type":                 "object",
+			"properties":           props,
 			"required":             []string{"prompt"},
 			"additionalProperties": false,
 		},
@@ -170,10 +176,37 @@ func (t *ImageGenerateTool) Execute(ctx context.Context, args json.RawMessage) (
 
 	// Check if this is an edit or generation
 	if len(inputPaths) > 0 {
+		// Resolve output dir for auto-approving reads of previously generated images
+		autoApproveDir := t.config.Image.OutputDir
+		if autoApproveDir == "" {
+			autoApproveDir = "~/Pictures/term-llm"
+		}
+		resolvedOutputDir := image.ExpandPath(autoApproveDir)
+
 		// Check read permissions for all input images via approval manager
 		if t.approval != nil {
+			debug := t.approval.DebugApproval
 			for _, inputPath := range inputPaths {
+				// Auto-approve reads from the image output directory.
+				// Use EvalSymlinks to prevent symlink escape: a symlink inside the
+				// output dir could point to an arbitrary file and would pass a naive
+				// Abs+HasPrefix check.
+				resolvedInput, inputErr := filepath.EvalSymlinks(inputPath)
+				resolvedDir, dirErr := filepath.EvalSymlinks(resolvedOutputDir)
+				if inputErr == nil && dirErr == nil && strings.HasPrefix(resolvedInput, resolvedDir+string(filepath.Separator)) {
+					if debug {
+						log.Printf("[image_generate] auto-approved input %q (inside output dir %q)", inputPath, resolvedOutputDir)
+					}
+					continue
+				}
+				if debug && (inputErr != nil || dirErr != nil) {
+					log.Printf("[image_generate] EvalSymlinks: input=%v dir=%v — falling through to approval check", inputErr, dirErr)
+				}
+
 				outcome, err := t.approval.CheckPathApproval(ImageGenerateToolName, inputPath, inputPath, false)
+				if debug {
+					log.Printf("[image_generate] CheckPathApproval input=%q → outcome=%v err=%v", inputPath, outcome, err)
+				}
 				if err != nil {
 					if toolErr, ok := err.(*ToolError); ok {
 						return llm.TextOutput(formatToolError(toolErr)), nil
@@ -289,8 +322,8 @@ func (t *ImageGenerateTool) Execute(ctx context.Context, args json.RawMessage) (
 	// Emit image marker for deferred display (default: true)
 	showImage := a.ShowImage == nil || *a.ShowImage
 
-	// Copy to clipboard if requested (default: true)
-	copyClipboard := a.CopyToClipboard == nil || *a.CopyToClipboard
+	// Copy to clipboard if requested (default: true, disabled in serve mode)
+	copyClipboard := !t.serveMode && (a.CopyToClipboard == nil || *a.CopyToClipboard)
 	if copyClipboard {
 		image.CopyToClipboard(outputPath, result.Data)
 	}

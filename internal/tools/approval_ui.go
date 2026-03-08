@@ -100,7 +100,7 @@ func NewEmbeddedApprovalModel(path string, isWrite bool, width int) *ApprovalMod
 		accentColor = approvalWriteColor
 	}
 
-	options := buildFileOptions(path, repoInfoPtr, isWrite)
+	options := BuildFileOptions(path, repoInfoPtr, isWrite)
 
 	return &ApprovalModel{
 		title:       title,
@@ -124,7 +124,7 @@ func NewEmbeddedShellApprovalModel(command string, width int) *ApprovalModel {
 		repoInfoPtr = &repoInfo
 	}
 
-	options := buildShellOptions(command, repoInfoPtr)
+	options := BuildShellOptions(command, repoInfoPtr)
 
 	return &ApprovalModel{
 		title:       "Shell Command Request",
@@ -152,7 +152,7 @@ func newApprovalModel(path string, repoInfo *GitRepoInfo, isWrite bool) *Approva
 		accentColor = approvalWriteColor
 	}
 
-	options := buildFileOptions(path, repoInfo, isWrite)
+	options := BuildFileOptions(path, repoInfo, isWrite)
 
 	return &ApprovalModel{
 		title:       title,
@@ -173,7 +173,7 @@ func newShellApprovalModel(command string, repoInfo *GitRepoInfo) *ApprovalModel
 		width = w
 	}
 
-	options := buildShellOptions(command, repoInfo)
+	options := BuildShellOptions(command, repoInfo)
 
 	return &ApprovalModel{
 		title:       "Shell Command Request",
@@ -187,8 +187,8 @@ func newShellApprovalModel(command string, repoInfo *GitRepoInfo) *ApprovalModel
 	}
 }
 
-// buildFileOptions creates the options for a file access prompt.
-func buildFileOptions(path string, repoInfo *GitRepoInfo, isWrite bool) []ApprovalOption {
+// BuildFileOptions creates the options for a file access prompt.
+func BuildFileOptions(path string, repoInfo *GitRepoInfo, isWrite bool) []ApprovalOption {
 	var options []ApprovalOption
 	accessType := "read"
 	if isWrite {
@@ -273,8 +273,8 @@ func buildFileOptions(path string, repoInfo *GitRepoInfo, isWrite bool) []Approv
 	return options
 }
 
-// buildShellOptions creates the options for a shell command prompt.
-func buildShellOptions(command string, repoInfo *GitRepoInfo) []ApprovalOption {
+// BuildShellOptions creates the options for a shell command prompt.
+func BuildShellOptions(command string, repoInfo *GitRepoInfo) []ApprovalOption {
 	var options []ApprovalOption
 	pattern := GenerateShellPattern(command)
 

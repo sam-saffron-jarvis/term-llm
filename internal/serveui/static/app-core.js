@@ -27,7 +27,8 @@ const state = {
   authRequired: false,
   connected: false,
   attachments: [],
-  askUser: null
+  askUser: null,
+  approval: null
 };
 // Ensure cookie is set on load so <img> requests to /images/ can authenticate
 if (state.token) {
@@ -67,6 +68,13 @@ const elements = {
   dropOverlay: document.getElementById('dropOverlay'),
   headerStats: document.getElementById('headerStats'),
   modelSelect: document.getElementById('modelSelect'),
+  approvalModal: document.getElementById('approvalModal'),
+  approvalTitle: document.getElementById('approvalTitle'),
+  approvalPath: document.getElementById('approvalPath'),
+  approvalBody: document.getElementById('approvalBody'),
+  approvalError: document.getElementById('approvalError'),
+  approvalDenyBtn: document.getElementById('approvalDenyBtn'),
+  approvalApproveBtn: document.getElementById('approvalApproveBtn'),
   lightbox: document.getElementById('lightbox'),
   lightboxImg: document.getElementById('lightboxImg')
 };

@@ -15,6 +15,10 @@ func (s *serveServer) handleSessionState(w http.ResponseWriter, r *http.Request,
 				resp["pending_ask_users"] = prompts
 				resp["pending_ask_user"] = prompts[0]
 			}
+			if approvals := rt.pendingApprovalPrompts(); len(approvals) > 0 {
+				resp["pending_approvals"] = approvals
+				resp["pending_approval"] = approvals[0]
+			}
 			if !activeRun {
 				if lastErr := rt.consumeLastUIRunError(); lastErr != "" {
 					resp["last_error"] = lastErr

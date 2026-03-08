@@ -183,6 +183,22 @@ func (r *LocalToolRegistry) AddShellPattern(pattern string) error {
 	return r.permissions.AddShellPattern(pattern)
 }
 
+// SetServeMode marks tools as running in serve (web/telegram) mode.
+// This strips terminal-only params like copy_to_clipboard and show_image
+// from tool specs and disables clipboard operations during execution.
+func (r *LocalToolRegistry) SetServeMode(enabled bool) {
+	if t, ok := r.tools[ImageGenerateToolName]; ok {
+		if ig, ok := t.(*ImageGenerateTool); ok {
+			ig.serveMode = enabled
+		}
+	}
+	if t, ok := r.tools[ShowImageToolName]; ok {
+		if si, ok := t.(*ShowImageTool); ok {
+			si.serveMode = enabled
+		}
+	}
+}
+
 // ToolManager provides a high-level interface for tool management in commands.
 type ToolManager struct {
 	Registry    *LocalToolRegistry

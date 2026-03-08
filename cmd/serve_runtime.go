@@ -23,6 +23,7 @@ type serveRuntime struct {
 	interruptMu         sync.Mutex
 	responseMu          sync.Mutex // guards lastResponseID and responseIDs
 	askUserMu           sync.Mutex
+	approvalMu          sync.Mutex
 	uiStateMu           sync.Mutex
 	provider            llm.Provider
 	providerKey         string
@@ -48,6 +49,9 @@ type serveRuntime struct {
 	responseIDs         []string
 	cumulativeUsage     llm.Usage
 	pendingAskUsers     map[string]*servePendingAskUser
+	pendingApprovals    map[string]*servePendingApproval
+	approvalEventFunc   func(event string, data map[string]any) error
+	approvalCtx         context.Context
 	lastUIRunError      string
 }
 
@@ -81,6 +85,7 @@ func (rt *serveRuntime) Close() {
 	}
 	rt.interruptMu.Unlock()
 	rt.clearPendingAskUsers()
+	rt.clearPendingApprovals()
 	if rt.mcpManager != nil {
 		rt.mcpManager.StopAll()
 		rt.mcpManager = nil
