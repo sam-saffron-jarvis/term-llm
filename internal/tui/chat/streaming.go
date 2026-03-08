@@ -16,6 +16,8 @@ import (
 )
 
 func (m *Model) sendMessage(content string) (tea.Model, tea.Cmd) {
+	m.interruptNotice = ""
+
 	// Build the full message content including file attachments
 	fullContent := content
 	var fileNames []string

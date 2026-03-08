@@ -394,7 +394,7 @@ func (s *serveServer) handleSessionInterrupt(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	actionName := "queue"
+	actionName := "interject"
 	switch action {
 	case llm.InterruptCancel:
 		actionName = "cancel"

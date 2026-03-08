@@ -98,11 +98,11 @@ type Model struct {
 	localTools          []string // Names of enabled local tools (read, write, etc.)
 	toolsStr            string   // Original tools setting (for session persistence)
 	mcpStr              string   // Original MCP setting (for session persistence)
-	pendingInterjection string   // Queued interjection text waiting to be injected
-	queuedInterjection  string   // Deferred follow-up to send after the current stream completes
+	pendingInterjection string   // Interrupt text waiting to be injected or cancelled
 	interruptRequestSeq uint64   // Monotonic sequence for async interrupt classification
 	activeInterruptSeq  uint64   // Currently active async interrupt classification request
-	pendingInterruptUI  string   // UI state: "", "deciding", "queued", "interject"
+	pendingInterruptUI  string   // UI state: "", "deciding", "interject"
+	interruptNotice     string   // One-line UI notice for recent interrupt actions
 	// MCP (Model Context Protocol)
 	mcpManager *mcp.Manager
 	maxTurns   int
@@ -1081,17 +1081,6 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 			// Auto-save session
 			cmds = append(cmds, m.saveSessionCmd())
-
-			// Restore any queued follow-up to the composer when the current stream completes.
-			// Do not auto-send it: user-authored text should remain visible and editable.
-			if m.queuedInterjection != "" && m.autoSendQueue == nil {
-				next := m.queuedInterjection
-				m.activeInterruptSeq = 0
-				m.queuedInterjection = ""
-				m.pendingInterjection = ""
-				m.pendingInterruptUI = ""
-				m.setTextareaValue(next)
-			}
 
 			// In auto-send mode, check if there are more messages to send
 			if m.autoSendQueue != nil {

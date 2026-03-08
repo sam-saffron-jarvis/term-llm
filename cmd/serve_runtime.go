@@ -133,7 +133,7 @@ func (rt *serveRuntime) Interrupt(ctx context.Context, msg string, fastProvider 
 	state := rt.activeInterrupt
 	if state == nil {
 		rt.interruptMu.Unlock()
-		return llm.InterruptQueue, fmt.Errorf("session has no active stream")
+		return llm.InterruptInterject, fmt.Errorf("session has no active stream")
 	}
 	cancel := state.cancel
 	activity := llm.InterruptActivity{

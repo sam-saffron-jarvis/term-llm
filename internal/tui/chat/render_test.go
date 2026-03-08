@@ -389,8 +389,21 @@ func TestRenderInputInline_ShowsPendingInterjection(t *testing.T) {
 	if !strings.Contains(stripped, "stop doing that") {
 		t.Fatalf("expected interjection text in output, got %q", stripped)
 	}
-	if !strings.Contains(stripped, "queued") {
-		t.Fatalf("expected (queued) label in output, got %q", stripped)
+	if !strings.Contains(stripped, "will incorporate") {
+		t.Fatalf("expected inject label in output, got %q", stripped)
+	}
+}
+
+func TestRenderInputInline_ShowsInterruptNotice(t *testing.T) {
+	m := newTestChatModel(false)
+	m.interruptNotice = "✕ cancelled current response — draft restored below"
+	m.width = 80
+
+	output := m.renderInputInline()
+	stripped := ui.StripANSI(output)
+
+	if !strings.Contains(stripped, "cancelled current response") {
+		t.Fatalf("expected interrupt notice in output, got %q", stripped)
 	}
 }
 
@@ -405,8 +418,8 @@ func TestRenderInputInline_HidesPendingWhenEmpty(t *testing.T) {
 	if strings.Contains(stripped, "⏳") {
 		t.Fatalf("expected no ⏳ when pendingInterjection is empty, got %q", stripped)
 	}
-	if strings.Contains(stripped, "queued") {
-		t.Fatalf("expected no (queued) when pendingInterjection is empty, got %q", stripped)
+	if strings.Contains(stripped, "will incorporate") {
+		t.Fatalf("expected no inject label when pendingInterjection is empty, got %q", stripped)
 	}
 }
 

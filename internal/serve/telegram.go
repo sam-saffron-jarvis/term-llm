@@ -829,13 +829,6 @@ func (m *telegramSessionMgr) handleMessage(ctx context.Context, bot *tgbotapi.Bo
 					})
 				}
 				return
-			default:
-				_, _ = bot.Send(tgbotapi.NewMessage(chatID, "📬 Got it. I’ll finish this task first, then handle your new request."))
-				select {
-				case <-doneCh:
-				case <-ctx.Done():
-					return
-				}
 			}
 		case <-ctx.Done():
 			return
