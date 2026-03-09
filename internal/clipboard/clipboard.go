@@ -2,6 +2,7 @@ package clipboard
 
 import (
 	"bytes"
+	"encoding/base64"
 	"fmt"
 	"os"
 	"os/exec"
@@ -252,6 +253,44 @@ func normalizeImageMIME(raw string) string {
 		return ""
 	}
 	return s
+}
+
+// OSC52Sequence returns the OSC 52 escape sequence that instructs a terminal
+// emulator to set the system clipboard to text. Uses the ST (ESC \) terminator.
+// If running inside tmux or screen, wraps the sequence in a DCS passthrough
+// so the outer terminal receives it.
+func OSC52Sequence(text string) string {
+	payload := base64.StdEncoding.EncodeToString([]byte(text))
+	osc := "\033]52;c;" + payload + "\033\\"
+
+	if os.Getenv("TMUX") != "" {
+		// tmux DCS passthrough: ESC Ptmux; <escaped-sequence> ESC backslash
+		// Inner ESC chars are doubled for tmux.
+		return "\033Ptmux;" + strings.ReplaceAll(osc, "\033", "\033\033") + "\033\\"
+	}
+	if os.Getenv("STY") != "" {
+		// GNU screen DCS passthrough
+		return "\033P" + osc + "\033\\"
+	}
+	return osc
+}
+
+// CopyTextOSC52 writes an OSC 52 escape sequence directly to /dev/tty,
+// instructing the terminal emulator to set the system clipboard. This works
+// over SSH because the local terminal interprets the sequence. Writing to
+// /dev/tty bypasses any stdout buffering or filtering by bubbletea.
+func CopyTextOSC52(text string) error {
+	seq := OSC52Sequence(text)
+
+	f, err := os.OpenFile("/dev/tty", os.O_WRONLY, 0)
+	if err != nil {
+		return fmt.Errorf("open /dev/tty: %w", err)
+	}
+	defer f.Close()
+	if _, err := f.WriteString(seq); err != nil {
+		return fmt.Errorf("write OSC 52: %w", err)
+	}
+	return nil
 }
 
 // CopyText copies text to the system clipboard

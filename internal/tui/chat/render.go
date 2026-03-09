@@ -217,7 +217,10 @@ func (m *Model) viewAltScreen() string {
 	// Check YOffset after GotoBottom() since it modifies the offset
 	yOffsetChanged := m.viewport.YOffset != m.viewCache.lastYOffset
 	sizeChanged := m.viewport.Width != m.viewCache.lastVPWidth || m.viewport.Height != m.viewCache.lastVPHeight
-	needViewRender := contentChanged || yOffsetChanged || sizeChanged || m.viewCache.lastViewportView == ""
+
+	// Force re-render when selection changes
+	selectionChanged := m.selection != m.viewCache.lastSelection
+	needViewRender := contentChanged || yOffsetChanged || sizeChanged || selectionChanged || m.viewCache.lastViewportView == ""
 	if needViewRender {
 		viewStart := time.Now()
 		m.viewCache.lastViewportView = m.viewport.View()
@@ -227,10 +230,22 @@ func (m *Model) viewAltScreen() string {
 		m.viewCache.lastYOffset = m.viewport.YOffset
 		m.viewCache.lastVPWidth = m.viewport.Width
 		m.viewCache.lastVPHeight = m.viewport.Height
+		m.viewCache.lastSelection = m.selection
+	}
+
+	// Update content lines for selection extraction when content changes
+	if contentChanged {
+		m.contentLines = strings.Split(contentStr, "\n")
+	}
+
+	// Post-process: apply selection highlight
+	viewOutput := m.viewCache.lastViewportView
+	if m.selection.Active {
+		viewOutput = m.applySelectionHighlight(viewOutput)
 	}
 
 	// Render viewport (scrollable area)
-	b.WriteString(m.viewCache.lastViewportView)
+	b.WriteString(viewOutput)
 	renderedLines += lipgloss.Height(m.viewCache.lastViewportView)
 	b.WriteString("\n")
 	renderedLines++
@@ -502,6 +517,29 @@ func (m *Model) setTextareaValue(s string) {
 	m.updateTextareaHeight()
 }
 
+// reflowTextarea wraps long lines in the textarea content so they're visible.
+// Called after paste to insert hard newlines where the textarea would visually wrap.
+func (m *Model) reflowTextarea() {
+	content := m.textarea.Value()
+	if content == "" {
+		return
+	}
+
+	textareaWidth := m.textarea.Width()
+	if textareaWidth <= 0 {
+		textareaWidth = m.width
+	}
+	effectiveWidth := textareaWidth - lipgloss.Width("❯ ")
+	if effectiveWidth < 20 {
+		effectiveWidth = 20
+	}
+
+	wrapped := wordwrap.String(content, effectiveWidth)
+	if wrapped != content {
+		m.textarea.SetValue(wrapped)
+	}
+}
+
 func formatChatElapsed(elapsed time.Duration) string {
 	seconds := int(elapsed / time.Second)
 	if seconds < 0 {
@@ -672,6 +710,21 @@ func (m *Model) renderStatusLine() string {
 	}
 	if streamingPart != "" {
 		parts = append(parts, streamingPart)
+	}
+
+	// Selection hint
+	if m.selection.Active {
+		start, end := m.selection.Normalized()
+		lines := end.Line - start.Line + 1
+		if start.Line == end.Line && start.Col == end.Col {
+			lines = 0
+		}
+		if lines > 0 {
+			parts = append(parts, fmt.Sprintf("%d lines · ctrl+y:copy", lines))
+		}
+	}
+	if m.copyStatus != "" {
+		parts = append(parts, m.copyStatus)
 	}
 
 	return mutedStyle.Render(strings.Join(parts, sep))

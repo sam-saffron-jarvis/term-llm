@@ -174,6 +174,8 @@ type Model struct {
 		cachedCompletedContent string // Rendered completed segments
 		cachedTrackerVersion   uint64 // Tracker version when cache was built
 		lastWavePos            int    // Last wave position for animation
+		// Selection cache for invalidation
+		lastSelection Selection
 	}
 
 	// Cached glamour renderer (avoids expensive recreation during streaming)
@@ -204,6 +206,11 @@ type Model struct {
 	textareaRightX         int
 	textareaPromptWidth    int
 	textareaEffectiveWidth int
+
+	// Text selection state (alt-screen only)
+	selection    Selection
+	contentLines []string // full viewport content split by \n
+	copyStatus   string   // transient status message after copy attempt
 }
 
 // streamEventMsg wraps ui.StreamEvent for bubbletea
@@ -523,6 +530,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
+		m.selection = Selection{}
 		m.width = msg.Width
 		m.height = msg.Height
 		m.viewportRows = m.height - 8
@@ -590,6 +598,10 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleKeyMsg(msg)
 
 	case tea.MouseMsg:
+		// Text selection in alt-screen viewport (before textarea handling)
+		if m.altScreen && m.handleSelectionMouse(msg) {
+			return m, nil
+		}
 		if m.handleTextareaMouse(msg) {
 			return m, nil
 		}

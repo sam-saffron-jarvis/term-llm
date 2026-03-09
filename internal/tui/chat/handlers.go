@@ -332,7 +332,17 @@ func (m *Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, tea.Quit
 	}
 
-	// Handle cancel during streaming
+	// Clear stale copy status on any keypress
+	m.copyStatus = ""
+
+	// Copy selection on Ctrl+Y
+	if key.Matches(msg, m.keyMap.Copy) && m.selection.Active {
+		cmd := m.copySelectionToClipboard()
+		m.selection = Selection{}
+		return m, cmd
+	}
+
+	// Handle cancel during streaming (takes priority over clearing selection)
 	if key.Matches(msg, m.keyMap.Cancel) {
 		if m.streaming && m.streamCancelFunc != nil {
 			// Flush buffered text on cancel
@@ -359,6 +369,11 @@ func (m *Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.pendingInterruptUI = ""
 
 			m.textarea.Focus()
+			return m, nil
+		}
+		// Clear selection if active (before clearing textarea)
+		if m.selection.Active {
+			m.selection = Selection{}
 			return m, nil
 		}
 		// Clear input if not empty
@@ -653,8 +668,17 @@ func (m *Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	// Update textarea for other keys (skip during streaming - no text input needed)
 	if !m.streaming {
+		old := m.textarea.Value()
 		var cmd tea.Cmd
 		m.textarea, cmd = m.textarea.Update(msg)
+		// Clear selection when user starts typing
+		if m.selection.Active && m.textarea.Value() != old {
+			m.selection = Selection{}
+		}
+		// After paste, re-wrap long lines so content is visible in the textarea.
+		if msg.Paste && m.textarea.Value() != old {
+			m.reflowTextarea()
+		}
 		m.updateTextareaHeight()
 		return m, cmd
 	}

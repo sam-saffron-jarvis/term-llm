@@ -16,6 +16,7 @@ import (
 )
 
 func (m *Model) sendMessage(content string) (tea.Model, tea.Cmd) {
+	m.selection = Selection{}
 	m.interruptNotice = ""
 
 	// Build the full message content including file attachments

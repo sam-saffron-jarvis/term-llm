@@ -32,6 +32,7 @@ type KeyMap struct {
 	MCPPicker   key.Binding
 	Inspector   key.Binding
 	ExpandTools key.Binding
+	Copy        key.Binding
 }
 
 // DefaultKeyMap returns the default keybindings
@@ -115,6 +116,10 @@ func DefaultKeyMap() KeyMap {
 		ExpandTools: key.NewBinding(
 			key.WithKeys("ctrl+e"),
 			key.WithHelp("ctrl+e", "expand tools"),
+		),
+		Copy: key.NewBinding(
+			key.WithKeys("ctrl+y"),
+			key.WithHelp("ctrl+y", "copy selection"),
 		),
 	}
 }
