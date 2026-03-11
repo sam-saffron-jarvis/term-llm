@@ -582,6 +582,21 @@
       text-decoration: underline;
     }
 
+    .markdown-body .katex {
+      font-size: 1.02em;
+    }
+
+    .markdown-body .katex-display {
+      margin: 0.85em 0;
+      overflow-x: auto;
+      overflow-y: hidden;
+      padding-bottom: 0.1rem;
+    }
+
+    .markdown-body .katex-display > .katex {
+      white-space: nowrap;
+    }
+
     .message-meta {
       display: inline-flex;
       align-items: center;
