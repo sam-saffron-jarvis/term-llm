@@ -5,7 +5,7 @@ const app = window.TermLLMApp;
 const {
   state, elements, INTERRUPT_BADGE_META, sanitizeInterruptState, relativeTime, fullDate, sessionBucket, toolIcon, formatUsage,
   saveSessions, findMessageElement, scrollToBottom, refreshRelativeTimes, ensureActiveSession, updateDocumentTitle,
-  updateSessionUsageDisplay, updateURL
+  updateSessionUsageDisplay, updateURL, renderMath
 } = app;
 
 const directionForText = (value) => {
@@ -179,6 +179,8 @@ const renderAssistantMarkdown = (target, content) => {
   const html = marked.parse(content || '');
   const clean = DOMPurify.sanitize(html);
   target.innerHTML = clean;
+
+  renderMath(target);
 
   target.querySelectorAll('a').forEach((a) => {
     a.target = '_blank';
