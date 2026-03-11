@@ -15,8 +15,9 @@ import (
 
 // SQLiteStore implements Store using SQLite.
 type SQLiteStore struct {
-	db  *sql.DB
-	cfg Config
+	db               *sql.DB
+	cfg              Config
+	hasCompactionSeq bool // true if sessions table has compaction_seq column
 }
 
 // Schema for the sessions database.
@@ -46,7 +47,8 @@ CREATE TABLE IF NOT EXISTS sessions (
     cached_input_tokens INTEGER DEFAULT 0,
     output_tokens INTEGER DEFAULT 0,
     status TEXT DEFAULT 'active',
-    tags TEXT
+    tags TEXT,
+    compaction_seq INTEGER DEFAULT -1
 );
 
 CREATE TABLE IF NOT EXISTS messages (
@@ -137,6 +139,10 @@ func NewSQLiteStore(cfg Config) (*SQLiteStore, error) {
 
 	store := &SQLiteStore{db: db, cfg: cfg}
 
+	// Probe for compaction_seq column. Read-write mode always has it after
+	// migration, but read-only mode skips migrations and may open an older DB.
+	store.hasCompactionSeq = store.probeCompactionSeq()
+
 	// Run cleanup if configured (read-write mode only).
 	if !cfg.ReadOnly {
 		if err := store.cleanup(); err != nil {
@@ -152,7 +158,7 @@ func NewSQLiteStore(cfg Config) (*SQLiteStore, error) {
 // - Fresh databases get the full schema from `schema` const and start at this version
 // - Existing databases run migrations to reach this version
 // Increment when adding new migrations.
-const schemaVersion = 9
+const schemaVersion = 10
 
 // migration represents a schema migration.
 type migration struct {
@@ -406,6 +412,18 @@ var migrations = []migration{
 			return err
 		},
 	},
+	{
+		// Migration 10: Add compaction_seq to track compaction boundary
+		version:     10,
+		description: "add compaction_seq column",
+		up: func(db *sql.DB) error {
+			_, err := db.Exec("ALTER TABLE sessions ADD COLUMN compaction_seq INTEGER DEFAULT -1")
+			if err != nil && !isDuplicateColumnError(err) {
+				return err
+			}
+			return nil
+		},
+	},
 }
 
 // initSchema initializes the database schema and runs any pending migrations.
@@ -591,104 +609,16 @@ func (s *SQLiteStore) Create(ctx context.Context, sess *Session) error {
 
 // Get retrieves a session by ID.
 func (s *SQLiteStore) Get(ctx context.Context, id string) (*Session, error) {
-	row := s.db.QueryRowContext(ctx, `
-		SELECT id, number, name, summary, provider, provider_key, model, mode, agent, cwd, created_at, updated_at, archived, parent_id, search, tools, mcp,
-		       user_turns, llm_turns, tool_calls, input_tokens, cached_input_tokens, output_tokens, status, tags
-		FROM sessions WHERE id = ?`, id)
-
-	var sess Session
-	var number sql.NullInt64
-	var mode, agent, parentID, tools, mcp, status, tags, providerKey sql.NullString
-	err := row.Scan(&sess.ID, &number, &sess.Name, &sess.Summary, &sess.Provider, &providerKey, &sess.Model, &mode,
-		&agent, &sess.CWD, &sess.CreatedAt, &sess.UpdatedAt, &sess.Archived, &parentID,
-		&sess.Search, &tools, &mcp,
-		&sess.UserTurns, &sess.LLMTurns, &sess.ToolCalls, &sess.InputTokens, &sess.CachedInputTokens, &sess.OutputTokens,
-		&status, &tags)
-	if err == sql.ErrNoRows {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, fmt.Errorf("scan session: %w", err)
-	}
-	if number.Valid {
-		sess.Number = number.Int64
-	}
-	if mode.Valid {
-		sess.Mode = SessionMode(mode.String)
-	}
-	if providerKey.Valid {
-		sess.ProviderKey = providerKey.String
-	}
-	if agent.Valid {
-		sess.Agent = agent.String
-	}
-	if parentID.Valid {
-		sess.ParentID = parentID.String
-	}
-	if tools.Valid {
-		sess.Tools = tools.String
-	}
-	if mcp.Valid {
-		sess.MCP = mcp.String
-	}
-	if status.Valid {
-		sess.Status = SessionStatus(status.String)
-	}
-	if tags.Valid {
-		sess.Tags = tags.String
-	}
-	return &sess, nil
+	row := s.db.QueryRowContext(ctx,
+		"SELECT "+s.sessionSelectCols()+" FROM sessions WHERE id = ?", id)
+	return scanSessionRow(row, s.hasCompactionSeq)
 }
 
 // GetByNumber retrieves a session by its sequential number.
 func (s *SQLiteStore) GetByNumber(ctx context.Context, number int64) (*Session, error) {
-	row := s.db.QueryRowContext(ctx, `
-		SELECT id, number, name, summary, provider, provider_key, model, mode, agent, cwd, created_at, updated_at, archived, parent_id, search, tools, mcp,
-		       user_turns, llm_turns, tool_calls, input_tokens, cached_input_tokens, output_tokens, status, tags
-		FROM sessions WHERE number = ?`, number)
-
-	var sess Session
-	var num sql.NullInt64
-	var mode, agent, parentID, tools, mcp, status, tags, providerKey sql.NullString
-	err := row.Scan(&sess.ID, &num, &sess.Name, &sess.Summary, &sess.Provider, &providerKey, &sess.Model, &mode,
-		&agent, &sess.CWD, &sess.CreatedAt, &sess.UpdatedAt, &sess.Archived, &parentID,
-		&sess.Search, &tools, &mcp,
-		&sess.UserTurns, &sess.LLMTurns, &sess.ToolCalls, &sess.InputTokens, &sess.CachedInputTokens, &sess.OutputTokens,
-		&status, &tags)
-	if err == sql.ErrNoRows {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, fmt.Errorf("scan session: %w", err)
-	}
-	if num.Valid {
-		sess.Number = num.Int64
-	}
-	if mode.Valid {
-		sess.Mode = SessionMode(mode.String)
-	}
-	if providerKey.Valid {
-		sess.ProviderKey = providerKey.String
-	}
-	if agent.Valid {
-		sess.Agent = agent.String
-	}
-	if parentID.Valid {
-		sess.ParentID = parentID.String
-	}
-	if tools.Valid {
-		sess.Tools = tools.String
-	}
-	if mcp.Valid {
-		sess.MCP = mcp.String
-	}
-	if status.Valid {
-		sess.Status = SessionStatus(status.String)
-	}
-	if tags.Valid {
-		sess.Tags = tags.String
-	}
-	return &sess, nil
+	row := s.db.QueryRowContext(ctx,
+		"SELECT "+s.sessionSelectCols()+" FROM sessions WHERE number = ?", number)
+	return scanSessionRow(row, s.hasCompactionSeq)
 }
 
 // GetByPrefix retrieves a session by number (with # prefix), exact ID, or by short ID prefix match.
@@ -733,53 +663,9 @@ func (s *SQLiteStore) GetByPrefix(ctx context.Context, prefix string) (*Session,
 
 	// Try prefix match using expanded short ID
 	pattern := ExpandShortID(prefix)
-	row := s.db.QueryRowContext(ctx, `
-		SELECT id, number, name, summary, provider, provider_key, model, mode, agent, cwd, created_at, updated_at, archived, parent_id, search, tools, mcp,
-		       user_turns, llm_turns, tool_calls, input_tokens, cached_input_tokens, output_tokens, status, tags
-		FROM sessions WHERE id LIKE ? ORDER BY created_at DESC LIMIT 1`, pattern)
-
-	var prefixSess Session
-	var number sql.NullInt64
-	var mode, agent, parentID, tools, mcp, status, tags, providerKey sql.NullString
-	err = row.Scan(&prefixSess.ID, &number, &prefixSess.Name, &prefixSess.Summary, &prefixSess.Provider, &providerKey, &prefixSess.Model, &mode,
-		&agent, &prefixSess.CWD, &prefixSess.CreatedAt, &prefixSess.UpdatedAt, &prefixSess.Archived, &parentID,
-		&prefixSess.Search, &tools, &mcp,
-		&prefixSess.UserTurns, &prefixSess.LLMTurns, &prefixSess.ToolCalls, &prefixSess.InputTokens, &prefixSess.CachedInputTokens, &prefixSess.OutputTokens,
-		&status, &tags)
-	if err == sql.ErrNoRows {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, fmt.Errorf("scan session: %w", err)
-	}
-	if number.Valid {
-		prefixSess.Number = number.Int64
-	}
-	if mode.Valid {
-		prefixSess.Mode = SessionMode(mode.String)
-	}
-	if providerKey.Valid {
-		prefixSess.ProviderKey = providerKey.String
-	}
-	if agent.Valid {
-		prefixSess.Agent = agent.String
-	}
-	if parentID.Valid {
-		prefixSess.ParentID = parentID.String
-	}
-	if tools.Valid {
-		prefixSess.Tools = tools.String
-	}
-	if mcp.Valid {
-		prefixSess.MCP = mcp.String
-	}
-	if status.Valid {
-		prefixSess.Status = SessionStatus(status.String)
-	}
-	if tags.Valid {
-		prefixSess.Tags = tags.String
-	}
-	return &prefixSess, nil
+	row := s.db.QueryRowContext(ctx,
+		"SELECT "+s.sessionSelectCols()+" FROM sessions WHERE id LIKE ? ORDER BY created_at DESC LIMIT 1", pattern)
+	return scanSessionRow(row, s.hasCompactionSeq)
 }
 
 // Update modifies an existing session.
@@ -1098,6 +984,95 @@ func (s *SQLiteStore) ReplaceMessages(ctx context.Context, sessionID string, mes
 	})
 }
 
+// CompactMessages appends compacted messages to the session, preserving old
+// history, and updates compaction_seq so that resume loads only post-compaction
+// messages. Old messages remain in the database for scrollback/history.
+func (s *SQLiteStore) CompactMessages(ctx context.Context, sessionID string, messages []Message) error {
+	return retryOnBusy(ctx, 5, func() error {
+		tx, err := s.db.BeginTx(ctx, nil)
+		if err != nil {
+			return fmt.Errorf("begin transaction: %w", err)
+		}
+		defer tx.Rollback()
+
+		// Find the current max sequence number
+		var maxSeq int
+		err = tx.QueryRowContext(ctx,
+			"SELECT COALESCE(MAX(sequence), -1) FROM messages WHERE session_id = ?",
+			sessionID).Scan(&maxSeq)
+		if err != nil {
+			return fmt.Errorf("get max sequence: %w", err)
+		}
+		startSeq := maxSeq + 1
+
+		// Insert new messages starting after the existing ones
+		for i, msg := range messages {
+			msg.SessionID = sessionID
+			msg.Sequence = startSeq + i
+			if msg.CreatedAt.IsZero() {
+				msg.CreatedAt = time.Now()
+			}
+
+			partsJSON, err := msg.PartsJSON()
+			if err != nil {
+				return fmt.Errorf("serialize parts for message %d: %w", i, err)
+			}
+
+			_, err = tx.ExecContext(ctx, `
+				INSERT INTO messages (session_id, role, parts, text_content, duration_ms, created_at, sequence)
+				VALUES (?, ?, ?, ?, ?, ?, ?)`,
+				sessionID, string(msg.Role), partsJSON, msg.TextContent, msg.DurationMs, msg.CreatedAt, msg.Sequence)
+			if err != nil {
+				return fmt.Errorf("insert message %d: %w", i, err)
+			}
+		}
+
+		// Update compaction_seq and timestamp
+		now := time.Now()
+		if _, err := tx.ExecContext(ctx,
+			"UPDATE sessions SET compaction_seq = ?, updated_at = ? WHERE id = ?",
+			startSeq, now, sessionID); err != nil {
+			return fmt.Errorf("update compaction_seq: %w", err)
+		}
+
+		return tx.Commit()
+	})
+}
+
+// GetMessagesFrom retrieves messages for a session starting from a given
+// sequence number. Used on resume to load only post-compaction messages.
+func (s *SQLiteStore) GetMessagesFrom(ctx context.Context, sessionID string, fromSeq int) ([]Message, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, session_id, role, parts, text_content, duration_ms, created_at, sequence
+		FROM messages
+		WHERE session_id = ? AND sequence >= ?
+		ORDER BY sequence ASC`, sessionID, fromSeq)
+	if err != nil {
+		return nil, fmt.Errorf("query messages from seq %d: %w", fromSeq, err)
+	}
+	defer rows.Close()
+
+	var messages []Message
+	for rows.Next() {
+		var msg Message
+		var partsJSON string
+		var durationMs sql.NullInt64
+		err := rows.Scan(&msg.ID, &msg.SessionID, &msg.Role, &partsJSON,
+			&msg.TextContent, &durationMs, &msg.CreatedAt, &msg.Sequence)
+		if err != nil {
+			return nil, fmt.Errorf("scan message: %w", err)
+		}
+		if durationMs.Valid {
+			msg.DurationMs = durationMs.Int64
+		}
+		if err := msg.SetPartsFromJSON(partsJSON); err != nil {
+			return nil, fmt.Errorf("deserialize parts: %w", err)
+		}
+		messages = append(messages, msg)
+	}
+	return messages, rows.Err()
+}
+
 // GetMessages retrieves messages for a session.
 func (s *SQLiteStore) GetMessages(ctx context.Context, sessionID string, limit, offset int) ([]Message, error) {
 	query := `
@@ -1227,6 +1202,113 @@ func (s *SQLiteStore) ListPushSubscriptions(ctx context.Context) ([]PushSubscrip
 // Close closes the database connection.
 func (s *SQLiteStore) Close() error {
 	return s.db.Close()
+}
+
+// probeCompactionSeq checks whether the sessions table has a compaction_seq
+// column. This is necessary for read-only mode, which skips migrations and
+// may open a database created before compaction_seq was added.
+func (s *SQLiteStore) probeCompactionSeq() bool {
+	rows, err := s.db.Query("PRAGMA table_info(sessions)")
+	if err != nil {
+		return false
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var cid int
+		var name, typ string
+		var notnull int
+		var dfltValue sql.NullString
+		var pk int
+		if err := rows.Scan(&cid, &name, &typ, &notnull, &dfltValue, &pk); err != nil {
+			return false
+		}
+		if name == "compaction_seq" {
+			return true
+		}
+	}
+	return false
+}
+
+// sessionSelectCols returns the SELECT column list for session queries.
+// Excludes compaction_seq when the column doesn't exist (old DB in read-only mode).
+func (s *SQLiteStore) sessionSelectCols() string {
+	base := `id, number, name, summary, provider, provider_key, model, mode, agent, cwd, created_at, updated_at, archived, parent_id, search, tools, mcp,
+		       user_turns, llm_turns, tool_calls, input_tokens, cached_input_tokens, output_tokens, status, tags`
+	if s.hasCompactionSeq {
+		return base + ", compaction_seq"
+	}
+	return base
+}
+
+// scanSessionRow scans a session row into a Session struct. The hasCompactionSeq
+// flag determines whether the compaction_seq column is present in the result set.
+func scanSessionRow(row *sql.Row, hasCompactionSeq bool) (*Session, error) {
+	var sess Session
+	var number sql.NullInt64
+	var name, summary, cwd sql.NullString
+	var mode, agent, parentID, tools, mcp, status, tags, providerKey sql.NullString
+
+	var scanArgs []any
+	scanArgs = append(scanArgs,
+		&sess.ID, &number, &name, &summary, &sess.Provider, &providerKey, &sess.Model, &mode,
+		&agent, &cwd, &sess.CreatedAt, &sess.UpdatedAt, &sess.Archived, &parentID,
+		&sess.Search, &tools, &mcp,
+		&sess.UserTurns, &sess.LLMTurns, &sess.ToolCalls, &sess.InputTokens, &sess.CachedInputTokens, &sess.OutputTokens,
+		&status, &tags,
+	)
+	if hasCompactionSeq {
+		scanArgs = append(scanArgs, &sess.CompactionSeq)
+	}
+
+	err := row.Scan(scanArgs...)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("scan session: %w", err)
+	}
+
+	// Default compaction_seq when column is absent
+	if !hasCompactionSeq {
+		sess.CompactionSeq = -1
+	}
+	if number.Valid {
+		sess.Number = number.Int64
+	}
+	if name.Valid {
+		sess.Name = name.String
+	}
+	if summary.Valid {
+		sess.Summary = summary.String
+	}
+	if cwd.Valid {
+		sess.CWD = cwd.String
+	}
+	if mode.Valid {
+		sess.Mode = SessionMode(mode.String)
+	}
+	if providerKey.Valid {
+		sess.ProviderKey = providerKey.String
+	}
+	if agent.Valid {
+		sess.Agent = agent.String
+	}
+	if parentID.Valid {
+		sess.ParentID = parentID.String
+	}
+	if tools.Valid {
+		sess.Tools = tools.String
+	}
+	if mcp.Valid {
+		sess.MCP = mcp.String
+	}
+	if status.Valid {
+		sess.Status = SessionStatus(status.String)
+	}
+	if tags.Valid {
+		sess.Tags = tags.String
+	}
+	return &sess, nil
 }
 
 // nullString converts an empty string to NULL for database storage.

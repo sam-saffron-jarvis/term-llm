@@ -60,6 +60,7 @@ type Session struct {
 	OutputTokens      int           `json:"output_tokens,omitempty"`       // Total output tokens used
 	Status            SessionStatus `json:"status,omitempty"`              // Session status
 	Tags              string        `json:"tags,omitempty"`                // Comma-separated tags
+	CompactionSeq     int           `json:"compaction_seq,omitempty"`      // Sequence of first post-compaction message (-1 = none)
 }
 
 // Message represents a message in a session.

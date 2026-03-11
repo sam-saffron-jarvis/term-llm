@@ -309,6 +309,7 @@ func (p *OpenAICompatProvider) ListModels(ctx context.Context) ([]ModelInfo, err
 }
 
 func (p *OpenAICompatProvider) Stream(ctx context.Context, req Request) (Stream, error) {
+	req.MaxOutputTokens = ClampOutputTokens(req.MaxOutputTokens, chooseModel(req.Model, p.model))
 	// Build messages and tools synchronously
 	messages := buildCompatMessages(req.Messages)
 	if len(messages) == 0 {

@@ -657,6 +657,14 @@ func (e *Engine) runLoop(ctx context.Context, req Request, events chan<- Event) 
 	inputLimit := e.inputLimit
 	e.callbackMu.RUnlock()
 
+	// Propagate provider-effective input limit into compaction config so
+	// Compact() uses the correct limit instead of canonical model limits.
+	if compactionConfig != nil && inputLimit > 0 {
+		cc := *compactionConfig
+		cc.InputLimit = inputLimit
+		compactionConfig = &cc
+	}
+
 	// Capture system prompt for re-injection after compaction.
 	// Use a local variable to avoid a data race with ResetConversation,
 	// which writes e.systemPrompt="" under callbackMu on the UI goroutine.

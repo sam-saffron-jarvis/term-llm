@@ -85,6 +85,7 @@ func (p *OpenAIProvider) ListModels(ctx context.Context) ([]ModelInfo, error) {
 }
 
 func (p *OpenAIProvider) Stream(ctx context.Context, req Request) (Stream, error) {
+	req.MaxOutputTokens = ClampOutputTokens(req.MaxOutputTokens, chooseModel(req.Model, p.model))
 	// Reuse client to maintain server state across requests
 	if p.responsesClient == nil {
 		p.responsesClient = &ResponsesClient{

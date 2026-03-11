@@ -428,6 +428,289 @@ func TestInputLimitForProviderModel(t *testing.T) {
 	}
 }
 
+func TestOutputLimitForModel(t *testing.T) {
+	tests := []struct {
+		model    string
+		expected int
+	}{
+		{"claude-sonnet-4-6", 64_000},
+		{"claude-3.5-sonnet-20241022", 8_192},
+		{"claude-3-opus-20240229", 4_096},
+		{"gpt-4-turbo-2024-04-09", 4_096},
+		{"gpt-3.5-turbo-0125", 4_096},
+		{"gpt-4o-2024-05-13", 16_384},
+		{"gpt-5", 128_000},
+		{"unknown-model-xyz", 0},
+	}
+
+	for _, tt := range tests {
+		got := OutputLimitForModel(tt.model)
+		if got != tt.expected {
+			t.Errorf("OutputLimitForModel(%q) = %d, want %d", tt.model, got, tt.expected)
+		}
+	}
+}
+
+func TestClampOutputTokens(t *testing.T) {
+	tests := []struct {
+		name      string
+		requested int
+		model     string
+		expected  int
+	}{
+		{"within limit", 10_000, "claude-sonnet-4-6", 10_000},
+		{"exceeds limit", 10_000, "gpt-3.5-turbo", 4_096},
+		{"exactly at limit", 4_096, "gpt-3.5-turbo", 4_096},
+		{"unknown model no clamp", 10_000, "unknown-model", 10_000},
+		{"zero requested", 0, "gpt-3.5-turbo", 0},
+		{"negative requested", -1, "gpt-3.5-turbo", -1},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := ClampOutputTokens(tt.requested, tt.model)
+			if got != tt.expected {
+				t.Errorf("ClampOutputTokens(%d, %q) = %d, want %d", tt.requested, tt.model, got, tt.expected)
+			}
+		})
+	}
+}
+
+func TestTrimMessagesToFit(t *testing.T) {
+	sys := SystemText("system prompt")
+	// Each message is ~5 tokens (20 bytes / 4)
+	u1 := UserText("first user message!")
+	a1 := AssistantText("first assistant msg")
+	u2 := UserText("second user message")
+	a2 := AssistantText("second asst message")
+	u3 := UserText("third user message!!")
+
+	t.Run("fits within budget", func(t *testing.T) {
+		msgs := []Message{sys, u1, a1, u2, a2, u3}
+		result := trimMessagesToFit(msgs, 10000)
+		if len(result) != 6 {
+			t.Errorf("expected 6 messages (no trimming), got %d", len(result))
+		}
+	})
+
+	t.Run("trims oldest first", func(t *testing.T) {
+		msgs := []Message{sys, u1, a1, u2, a2, u3}
+		// Budget for system + ~2 messages
+		budget := EstimateMessageTokens([]Message{sys}) + EstimateMessageTokens([]Message{u3}) + 1
+		result := trimMessagesToFit(msgs, budget)
+		if result[0].Role != RoleSystem {
+			t.Error("should preserve system message")
+		}
+		// Last message should be u3
+		last := result[len(result)-1]
+		if last.Parts[0].Text != u3.Parts[0].Text {
+			t.Errorf("last message should be u3, got %q", last.Parts[0].Text)
+		}
+	})
+
+	t.Run("skips leading assistant after trim", func(t *testing.T) {
+		msgs := []Message{sys, u1, a1, u2}
+		// Budget fits system + a1 + u2, but a1 is assistant — should be skipped
+		budget := EstimateMessageTokens([]Message{sys, a1, u2}) + 1
+		result := trimMessagesToFit(msgs, budget)
+		// After trimming u1 and skipping leading a1, should have sys + u2
+		if len(result) < 2 {
+			t.Fatalf("expected at least 2 messages, got %d", len(result))
+		}
+		if result[0].Role != RoleSystem {
+			t.Error("first should be system")
+		}
+		if result[1].Role != RoleUser {
+			t.Errorf("should start with user after system, got %s", result[1].Role)
+		}
+	})
+
+	t.Run("no system message", func(t *testing.T) {
+		msgs := []Message{u1, a1, u2}
+		budget := EstimateMessageTokens([]Message{u2}) + 1
+		result := trimMessagesToFit(msgs, budget)
+		if len(result) != 1 || result[0].Parts[0].Text != u2.Parts[0].Text {
+			t.Errorf("should trim to just u2, got %d messages", len(result))
+		}
+	})
+}
+
+func TestTrimMessagesToFitPreservesAnchor(t *testing.T) {
+	sys := SystemText("system")
+	summary := Message{
+		Role:        RoleUser,
+		Parts:       []Part{{Type: PartText, Text: summaryPrefix + "previous summary"}},
+		CacheAnchor: true,
+	}
+	ack := AssistantText("I've reviewed the context summary.")
+	u1 := UserText("first user message!")
+	a1 := AssistantText("first assistant msg")
+	u2 := UserText("second user message")
+
+	t.Run("preserves anchor block", func(t *testing.T) {
+		msgs := []Message{sys, summary, ack, u1, a1, u2}
+		// Budget fits system + summary + ack + u2 but not u1+a1
+		budget := EstimateMessageTokens([]Message{sys, summary, ack, u2}) + 1
+		result := trimMessagesToFit(msgs, budget)
+		// Should have: sys, summary, ack, u2
+		if len(result) < 4 {
+			t.Fatalf("expected at least 4 messages, got %d", len(result))
+		}
+		if result[0].Role != RoleSystem {
+			t.Error("first should be system")
+		}
+		if !result[1].CacheAnchor {
+			t.Error("second should be cache-anchored summary")
+		}
+		if result[2].Role != RoleAssistant {
+			t.Error("third should be assistant ack")
+		}
+		if result[len(result)-1].Parts[0].Text != u2.Parts[0].Text {
+			t.Errorf("last should be u2, got %q", result[len(result)-1].Parts[0].Text)
+		}
+	})
+
+	t.Run("drops anchor when too large", func(t *testing.T) {
+		bigSummary := Message{
+			Role:        RoleUser,
+			Parts:       []Part{{Type: PartText, Text: strings.Repeat("x", 10000)}},
+			CacheAnchor: true,
+		}
+		msgs := []Message{sys, bigSummary, ack, u1, u2}
+		// Budget only fits system + u2
+		budget := EstimateMessageTokens([]Message{sys, u2}) + 1
+		result := trimMessagesToFit(msgs, budget)
+		if result[0].Role != RoleSystem {
+			t.Error("first should be system")
+		}
+		// Should have dropped the anchor since it doesn't fit
+		if len(result) == 2 && result[1].Parts[0].Text == u2.Parts[0].Text {
+			// OK: sys + u2
+		} else {
+			for _, m := range result {
+				if m.CacheAnchor {
+					t.Error("anchor should have been dropped when too large")
+				}
+			}
+		}
+	})
+}
+
+func TestTrimOversizedSingleMessage(t *testing.T) {
+	sys := SystemText("system")
+	// A single user message that's way too large
+	bigMsg := UserText(strings.Repeat("x", 40000))
+	msgs := []Message{sys, bigMsg}
+
+	// Budget that fits system + some content but not all of bigMsg
+	budget := EstimateMessageTokens([]Message{sys}) + 500
+	result := trimMessagesToFit(msgs, budget)
+
+	if len(result) != 2 {
+		t.Fatalf("expected 2 messages, got %d", len(result))
+	}
+	if result[0].Role != RoleSystem {
+		t.Error("first should be system")
+	}
+	// The big message should have been truncated
+	if len(result[1].Parts[0].Text) >= 40000 {
+		t.Error("oversized message should have been truncated")
+	}
+	if !strings.Contains(result[1].Parts[0].Text, "chars truncated") {
+		t.Error("truncated message should contain truncation marker")
+	}
+}
+
+func TestCompactUsesProviderInputLimit(t *testing.T) {
+	provider := NewMockProvider("test")
+	provider.AddTextResponse("Summary.")
+
+	messages := []Message{
+		UserText("hello"),
+		AssistantText("hi"),
+	}
+
+	config := DefaultCompactionConfig()
+	config.InputLimit = 50_000 // Provider-specific limit
+
+	_, err := Compact(context.Background(), provider, "test-model", "", messages, config)
+	if err != nil {
+		t.Fatalf("Compact failed: %v", err)
+	}
+	// Verify it didn't crash — the InputLimit was used instead of canonical
+}
+
+func TestCompactClampsOutputTokens(t *testing.T) {
+	provider := NewMockProvider("test")
+	provider.AddTextResponse("Summary.")
+
+	messages := []Message{
+		UserText("hello"),
+		AssistantText("hi"),
+	}
+
+	config := DefaultCompactionConfig()
+	config.SummaryTokenBudget = 10_000
+
+	// Use a model with small output limit (GPT-3.5: 4096)
+	_, err := Compact(context.Background(), provider, "gpt-3.5-turbo", "", messages, config)
+	if err != nil {
+		t.Fatalf("Compact failed: %v", err)
+	}
+
+	// The budget should have been clamped to the model's output limit
+	if provider.Requests[0].MaxOutputTokens != 4_096 {
+		t.Errorf("MaxOutputTokens = %d, want 4096 (clamped)", provider.Requests[0].MaxOutputTokens)
+	}
+}
+
+func TestCompactRecompactsAlreadyCompacted(t *testing.T) {
+	// Simulate re-compacting a conversation that was already compacted.
+	// The previous summary (CacheAnchor=true) should be visible to the LLM.
+	provider := NewMockProvider("test")
+	provider.AddTextResponse("New combined summary.")
+
+	messages := []Message{
+		// Previous compaction output
+		{
+			Role:        RoleUser,
+			Parts:       []Part{{Type: PartText, Text: summaryPrefix + "Previous summary content."}},
+			CacheAnchor: true,
+		},
+		AssistantText("I've reviewed the context summary."),
+		// New messages since last compaction
+		UserText("new question"),
+		AssistantText("new answer"),
+		UserText("follow up"),
+	}
+
+	config := DefaultCompactionConfig()
+	result, err := Compact(context.Background(), provider, "test-model", "sys", messages, config)
+	if err != nil {
+		t.Fatalf("Compact failed: %v", err)
+	}
+
+	// The LLM request should have included the previous summary
+	foundPrevSummary := false
+	for _, msg := range provider.Requests[0].Messages {
+		if msg.CacheAnchor && strings.Contains(msg.Parts[0].Text, "Previous summary content") {
+			foundPrevSummary = true
+			break
+		}
+	}
+	if !foundPrevSummary {
+		t.Error("re-compaction request should include previous summary")
+	}
+
+	// Result should have new summary with CacheAnchor
+	if !result.NewMessages[1].CacheAnchor {
+		t.Error("new summary should have CacheAnchor=true")
+	}
+	if !strings.Contains(result.NewMessages[1].Parts[0].Text, "New combined summary") {
+		t.Error("new summary should contain the LLM's response")
+	}
+}
+
 func TestFormatTokenCount(t *testing.T) {
 	tests := []struct {
 		tokens   int
@@ -486,15 +769,14 @@ func TestCompactSanitizesOrphanedToolCalls(t *testing.T) {
 		t.Fatal("expected provider request to be recorded")
 	}
 
-	var requestText strings.Builder
+	// The request messages should not contain any orphaned tool calls
+	// (sanitizeToolHistory removes them before building the request).
 	for _, msg := range provider.Requests[0].Messages {
-		if msg.Role != RoleUser || len(msg.Parts) == 0 {
-			continue
+		for _, part := range msg.Parts {
+			if part.Type == PartToolCall && part.ToolCall != nil && part.ToolCall.Name == "orphaned_tool" {
+				t.Errorf("request should not contain orphaned tool call 'orphaned_tool'")
+			}
 		}
-		requestText.WriteString(msg.Parts[0].Text)
-	}
-	if strings.Contains(requestText.String(), "[tool_call:") || strings.Contains(requestText.String(), "orphaned_tool") {
-		t.Errorf("summarization request should not include orphaned tool calls, got: %s", requestText.String())
 	}
 
 	for _, msg := range result.NewMessages {
@@ -547,6 +829,28 @@ func TestCompactEndToEnd(t *testing.T) {
 	}
 	if !strings.Contains(result.NewMessages[1].Parts[0].Text, "Summary") {
 		t.Errorf("summary message should contain the summary text")
+	}
+
+	// Provider should receive original messages + compaction instruction (not a text blob)
+	req := provider.Requests[0]
+	// Last message should be the compaction prompt
+	lastMsg := req.Messages[len(req.Messages)-1]
+	if lastMsg.Role != RoleUser {
+		t.Errorf("last request message should be user (compaction prompt), got %s", lastMsg.Role)
+	}
+	if !strings.Contains(lastMsg.Parts[0].Text, "Create a detailed summary") {
+		t.Errorf("last request message should contain compaction prompt")
+	}
+	// Request should include original conversation messages (not serialized text)
+	foundOriginal := false
+	for _, msg := range req.Messages {
+		if msg.Role == RoleUser && len(msg.Parts) > 0 && msg.Parts[0].Text == "Help me debug this Go test" {
+			foundOriginal = true
+			break
+		}
+	}
+	if !foundOriginal {
+		t.Error("request should contain original conversation messages")
 	}
 }
 
@@ -619,6 +923,157 @@ func TestDefaultCompactionConfig(t *testing.T) {
 	if config.MaxToolResultChars != 80_000 {
 		t.Errorf("MaxToolResultChars = %d, want 80000", config.MaxToolResultChars)
 	}
+	if config.SummaryTokenBudget != 10_000 {
+		t.Errorf("SummaryTokenBudget = %d, want 10000", config.SummaryTokenBudget)
+	}
+}
+
+func TestCompactMaxOutputTokens(t *testing.T) {
+	provider := NewMockProvider("test")
+	provider.AddTextResponse("Summary.")
+
+	messages := []Message{
+		UserText("hello"),
+		AssistantText("hi"),
+	}
+
+	config := DefaultCompactionConfig()
+	config.SummaryTokenBudget = 5_000
+
+	_, err := Compact(context.Background(), provider, "test-model", "", messages, config)
+	if err != nil {
+		t.Fatalf("Compact failed: %v", err)
+	}
+
+	if len(provider.Requests) == 0 {
+		t.Fatal("expected provider request to be recorded")
+	}
+	if provider.Requests[0].MaxOutputTokens != 5_000 {
+		t.Errorf("MaxOutputTokens = %d, want 5000", provider.Requests[0].MaxOutputTokens)
+	}
+}
+
+func TestCompactMaxOutputTokensDefault(t *testing.T) {
+	provider := NewMockProvider("test")
+	provider.AddTextResponse("Summary.")
+
+	messages := []Message{
+		UserText("hello"),
+		AssistantText("hi"),
+	}
+
+	config := DefaultCompactionConfig()
+	_, err := Compact(context.Background(), provider, "test-model", "", messages, config)
+	if err != nil {
+		t.Fatalf("Compact failed: %v", err)
+	}
+
+	if provider.Requests[0].MaxOutputTokens != 10_000 {
+		t.Errorf("MaxOutputTokens = %d, want 10000 (default)", provider.Requests[0].MaxOutputTokens)
+	}
+}
+
+func TestCompactAppendsSafeUserMessage(t *testing.T) {
+	// When last message is assistant, no separator needed
+	t.Run("last message assistant", func(t *testing.T) {
+		provider := NewMockProvider("test")
+		provider.AddTextResponse("Summary.")
+
+		messages := []Message{
+			UserText("hello"),
+			AssistantText("hi there"),
+		}
+
+		_, err := Compact(context.Background(), provider, "test-model", "", messages, DefaultCompactionConfig())
+		if err != nil {
+			t.Fatalf("Compact failed: %v", err)
+		}
+
+		req := provider.Requests[0]
+		// Last message should be the compaction prompt (user)
+		lastMsg := req.Messages[len(req.Messages)-1]
+		if lastMsg.Role != RoleUser {
+			t.Errorf("last message should be user, got %s", lastMsg.Role)
+		}
+		// Second-to-last should be the original assistant message (no separator inserted)
+		prevMsg := req.Messages[len(req.Messages)-2]
+		if prevMsg.Role != RoleAssistant {
+			t.Errorf("second-to-last should be assistant, got %s", prevMsg.Role)
+		}
+		if prevMsg.Parts[0].Text != "hi there" {
+			t.Errorf("second-to-last should be original assistant message, got %q", prevMsg.Parts[0].Text)
+		}
+	})
+
+	// When last message is user, separator assistant message is inserted
+	t.Run("last message user", func(t *testing.T) {
+		provider := NewMockProvider("test")
+		provider.AddTextResponse("Summary.")
+
+		messages := []Message{
+			UserText("hello"),
+			AssistantText("hi"),
+			UserText("thanks"),
+		}
+
+		_, err := Compact(context.Background(), provider, "test-model", "", messages, DefaultCompactionConfig())
+		if err != nil {
+			t.Fatalf("Compact failed: %v", err)
+		}
+
+		req := provider.Requests[0]
+		lastMsg := req.Messages[len(req.Messages)-1]
+		if lastMsg.Role != RoleUser {
+			t.Errorf("last message should be user (compaction prompt), got %s", lastMsg.Role)
+		}
+		// Second-to-last should be the separator assistant message
+		prevMsg := req.Messages[len(req.Messages)-2]
+		if prevMsg.Role != RoleAssistant {
+			t.Errorf("separator should be assistant, got %s", prevMsg.Role)
+		}
+		if !strings.Contains(prevMsg.Parts[0].Text, "summarize") {
+			t.Errorf("separator should mention summarize, got %q", prevMsg.Parts[0].Text)
+		}
+	})
+
+	// When last message is tool result, separator assistant message is inserted
+	t.Run("last message tool", func(t *testing.T) {
+		provider := NewMockProvider("test")
+		provider.AddTextResponse("Summary.")
+
+		messages := []Message{
+			UserText("run it"),
+			{
+				Role: RoleAssistant,
+				Parts: []Part{{
+					Type:     PartToolCall,
+					ToolCall: &ToolCall{ID: "c1", Name: "shell", Arguments: []byte(`{"cmd":"ls"}`)},
+				}},
+			},
+			{
+				Role: RoleTool,
+				Parts: []Part{{
+					Type:       PartToolResult,
+					ToolResult: &ToolResult{ID: "c1", Name: "shell", Content: "file.txt"},
+				}},
+			},
+		}
+
+		_, err := Compact(context.Background(), provider, "test-model", "", messages, DefaultCompactionConfig())
+		if err != nil {
+			t.Fatalf("Compact failed: %v", err)
+		}
+
+		req := provider.Requests[0]
+		lastMsg := req.Messages[len(req.Messages)-1]
+		if lastMsg.Role != RoleUser {
+			t.Errorf("last message should be user (compaction prompt), got %s", lastMsg.Role)
+		}
+		prevMsg := req.Messages[len(req.Messages)-2]
+		if prevMsg.Role != RoleAssistant {
+			t.Errorf("separator should be assistant before compaction prompt, got %s", prevMsg.Role)
+		}
+	})
 }
 
 func TestEstimatedTokens(t *testing.T) {

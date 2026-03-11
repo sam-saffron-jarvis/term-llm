@@ -57,12 +57,12 @@ func FormatTokenCount(tokens int) string {
 	return fmt.Sprintf("%dK", k)
 }
 
-type inputLimitEntry struct {
+type limitEntry struct {
 	prefix string
 	tokens int
 }
 
-func lookupPrefix(model string, table []inputLimitEntry) int {
+func lookupPrefix(model string, table []limitEntry) int {
 	best := 0
 	bestLen := 0
 	for _, e := range table {
@@ -86,7 +86,7 @@ func lookupPrefix(model string, table []inputLimitEntry) int {
 // For other providers: context - max_output (or explicit input limit if known).
 //
 // Entries are matched by longest prefix. Unknown models return 0 (compaction disabled).
-var inputLimitTable = []inputLimitEntry{
+var inputLimitTable = []limitEntry{
 	// Anthropic Claude 1M context: 1M ctx - 20K practical output reserve = 980K
 	// Enabled via -1m suffix (sends context-1m-2025-08-07 beta header).
 	// Requires Anthropic usage tier 4 or custom rate limits.
@@ -166,7 +166,7 @@ var inputLimitTable = []inputLimitEntry{
 // providerInputOverrides contains provider-specific effective input limits
 // that differ from the model's canonical limits.
 // Values are context - output (effective input), from models.dev/api.json.
-var providerInputOverrides = map[string][]inputLimitEntry{
+var providerInputOverrides = map[string][]limitEntry{
 	// GitHub Copilot imposes its own limits (from models.dev github-copilot section)
 	"copilot": {
 		{"claude-haiku-4.5", 96_000},  // 128K - 32K
@@ -189,4 +189,99 @@ var providerInputOverrides = map[string][]inputLimitEntry{
 		{"gpt-4o", 48_000},            // 64K - 16K
 		{"grok-code", 64_000},         // 128K - 64K
 	},
+}
+
+// OutputLimitForModel returns the maximum output tokens for a known model.
+// Returns 0 for unknown models.
+func OutputLimitForModel(model string) int {
+	return lookupPrefix(strings.ToLower(model), outputLimitTable)
+}
+
+// ClampOutputTokens returns the requested output token count clamped to the
+// model's maximum output limit. If the model is unknown (limit=0) or the
+// requested value is within bounds, it is returned unchanged. This allows
+// callers like Compact() to always set a budget without worrying about
+// per-model limits — providers call this to silently cap the value.
+func ClampOutputTokens(requested int, model string) int {
+	if requested <= 0 {
+		return requested
+	}
+	limit := OutputLimitForModel(model)
+	if limit > 0 && requested > limit {
+		return limit
+	}
+	return requested
+}
+
+// outputLimitTable contains maximum output token limits per model.
+// Derived from context_window - input_limit (see inputLimitTable comments).
+// Entries are matched by longest prefix. Unknown models return 0 (no clamping).
+var outputLimitTable = []limitEntry{
+	// Anthropic Claude 4.x: theoretical max is 64K-128K but practical is 16K-20K.
+	// Use the actual API max to avoid rejections.
+	{"claude-sonnet-4-6-1m", 64_000},
+	{"claude-sonnet-4-5-1m", 64_000},
+	{"claude-sonnet-4-1m", 64_000},
+	{"claude-opus-4-6-1m", 64_000},
+	{"claude-sonnet-4-6", 64_000},
+	{"claude-opus-4-6", 64_000},
+	{"claude-sonnet-4-5", 64_000},
+	{"claude-opus-4-5", 64_000},
+	{"claude-haiku-4-5", 64_000},
+	{"claude-sonnet-4", 64_000},
+	{"claude-opus-4", 64_000},
+	{"claude-haiku-4", 64_000},
+	// Claude 3.x: smaller max outputs
+	{"claude-3.5-sonnet", 8_192},
+	{"claude-3.5-haiku", 8_192},
+	{"claude-3-opus", 4_096},
+	{"claude-3-sonnet", 4_096},
+	{"claude-3-haiku", 4_096},
+
+	// OpenAI GPT-5 family
+	{"gpt-5.4", 128_000},
+	{"gpt-5.3-codex-spark", 16_000},
+	{"gpt-5.1-chat", 16_000},
+	{"gpt-5.2-chat", 16_000},
+	{"gpt-5", 128_000}, // gpt-5.x default
+
+	// OpenAI GPT-4.1 (32K out)
+	{"gpt-4.1", 32_768},
+
+	// OpenAI GPT-4o (16K out)
+	{"gpt-4o", 16_384},
+
+	// OpenAI GPT-4 Turbo (4K out)
+	{"gpt-4-turbo", 4_096},
+
+	// OpenAI GPT-4 (original)
+	{"gpt-4-32k", 32_768},
+	{"gpt-4", 8_192},
+
+	// OpenAI GPT-3.5 (4K out)
+	{"gpt-3.5-turbo", 4_096},
+
+	// OpenAI o-series
+	{"o1-pro", 100_000},
+	{"o1-mini", 65_536},
+	{"o1", 100_000},
+	{"o3-mini", 100_000},
+	{"o3", 100_000},
+	{"o4-mini", 100_000},
+
+	// Google Gemini
+	{"gemini-3-pro", 65_536},
+	{"gemini-3-flash", 65_536},
+	{"gemini-2.5-pro", 65_536},
+	{"gemini-2.5-flash", 65_536},
+	{"gemini-2.0-flash", 8_192},
+	{"gemini-1.5-pro", 8_192},
+	{"gemini-1.5-flash", 8_192},
+
+	// xAI Grok
+	{"grok-4-1", 32_000},
+	{"grok-4", 64_000},
+	{"grok-3", 8_192},
+	{"grok-code", 16_384},
+	{"grok-2", 8_192},
 }

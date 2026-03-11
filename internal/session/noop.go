@@ -49,7 +49,15 @@ func (s *NoopStore) GetMessages(ctx context.Context, sessionID string, limit, of
 	return nil, nil
 }
 
+func (s *NoopStore) GetMessagesFrom(ctx context.Context, sessionID string, fromSeq int) ([]Message, error) {
+	return nil, nil
+}
+
 func (s *NoopStore) ReplaceMessages(ctx context.Context, sessionID string, messages []Message) error {
+	return nil
+}
+
+func (s *NoopStore) CompactMessages(ctx context.Context, sessionID string, messages []Message) error {
 	return nil
 }
 

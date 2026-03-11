@@ -292,11 +292,12 @@ func (m *Model) startStream(content string) tea.Cmd {
 				newSessionMsgs = append(newSessionMsgs, *session.NewMessage(m.sess.ID, msg, -1))
 			}
 			m.messagesMu.Lock()
-			m.messages = newSessionMsgs
+			m.compactionIdx = len(m.messages)
+			m.messages = append(m.messages, newSessionMsgs...)
 			m.messagesMu.Unlock()
 			m.invalidateHistoryCache()
 			if m.store != nil {
-				return m.store.ReplaceMessages(ctx, m.sess.ID, newSessionMsgs)
+				return m.store.CompactMessages(ctx, m.sess.ID, newSessionMsgs)
 			}
 			return nil
 		})
@@ -342,7 +343,14 @@ func (m *Model) buildMessages() []llm.Message {
 	m.messagesMu.Lock()
 	snapshot := make([]session.Message, len(m.messages))
 	copy(snapshot, m.messages)
+	compIdx := m.compactionIdx
 	m.messagesMu.Unlock()
+
+	// If there's a compaction boundary, only send post-compaction messages to the LLM.
+	// The older messages are kept in m.messages for scrollback display only.
+	if compIdx > 0 && compIdx < len(snapshot) {
+		snapshot = snapshot[compIdx:]
+	}
 
 	var messages []llm.Message
 

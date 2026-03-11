@@ -105,8 +105,9 @@ func sanitizeToolHistory(messages []Message) []Message {
 
 		default:
 			sanitized = append(sanitized, Message{
-				Role:  msg.Role,
-				Parts: cloneParts(msg.Parts),
+				Role:        msg.Role,
+				Parts:       cloneParts(msg.Parts),
+				CacheAnchor: msg.CacheAnchor,
 			})
 		}
 	}

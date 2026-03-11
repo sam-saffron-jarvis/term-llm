@@ -11,12 +11,8 @@ const (
 	defaultThresholdRatio        = 0.90
 	defaultRecentUserTokenBudget = 20_000
 	defaultMaxToolResultChars    = 80_000
+	defaultSummaryTokenBudget    = 10_000
 	approxBytesPerToken          = 4
-
-	// summarizationToolResultChars is the max chars of a tool result included in
-	// the summarization prompt.  Enough to understand what the tool did without
-	// flooding the compaction request with raw file/shell output.
-	summarizationToolResultChars = 500
 )
 
 // CompactionConfig controls when and how context compaction occurs.
@@ -24,6 +20,8 @@ type CompactionConfig struct {
 	ThresholdRatio        float64 // Fraction of context window to trigger (default 0.80)
 	RecentUserTokenBudget int     // Max tokens of recent user messages to keep
 	MaxToolResultChars    int     // Max chars per tool result when recording
+	SummaryTokenBudget    int     // Max output tokens for the compaction summary
+	InputLimit            int     // Provider-effective input token limit (0 = use canonical)
 }
 
 // DefaultCompactionConfig returns a CompactionConfig with sensible defaults.
@@ -32,6 +30,7 @@ func DefaultCompactionConfig() CompactionConfig {
 		ThresholdRatio:        defaultThresholdRatio,
 		RecentUserTokenBudget: defaultRecentUserTokenBudget,
 		MaxToolResultChars:    defaultMaxToolResultChars,
+		SummaryTokenBudget:    defaultSummaryTokenBudget,
 	}
 }
 
@@ -73,27 +72,18 @@ func EstimateMessageTokens(msgs []Message) int {
 	return total
 }
 
-const summarizationPrompt = `You are performing a CONTEXT CHECKPOINT COMPACTION. Create a detailed handoff summary for another instance of yourself that will resume this conversation.
+const compactionPrompt = `Create a detailed summary of our conversation so far. This summary will replace the conversation history, so include everything needed to continue seamlessly.
 
-Before your final summary, wrap your analysis in <analysis> tags. In your analysis:
-1. Chronologically review each message and section of the conversation. For each section identify:
-   - The user's explicit requests and intent
-   - Key decisions made and actions taken
-   - Specific details: file paths, variable names, error messages, API contracts, config values
-   - Errors encountered and how they were resolved
-   - Specific user feedback or corrections
+Your summary must cover:
+1. The user's primary goal and any evolving intent
+2. Key context: file paths, APIs, config values, error messages, environment details
+3. Decisions made and actions taken (chronologically)
+4. Current state: what was just completed and what is in progress
+5. Exact next steps needed
 
-Your summary must include all of the following sections:
-1. Primary Request and Intent
-2. Key Context (file paths, APIs, config values, constraints, environment details)
-3. Actions Taken and Decisions Made
-4. Errors and Fixes
-5. All User Messages (verbatim — critical for understanding the user's exact intent and any changing instructions)
-6. Current Work (precisely what was in-flight immediately before this summary)
-7. Next Step (direct quote from the most recent conversation showing exactly what needs to happen next)
+Be specific and concrete — include exact file paths, function names, error messages, and code snippets when relevant. Omit small talk and pleasantries.
 
-Wrap your final summary in <summary> tags.
-Extract only the contents of the <summary> block as the result — the <analysis> is for your reasoning only.`
+Budget: keep your summary under 2500 words.`
 
 const summaryPrefix = `[Context Compaction]
 A previous conversation was compacted to fit within the context window. Below is a summary of what happened before. Use this context to continue seamlessly.
@@ -103,89 +93,70 @@ Summary:
 
 // Compact generates a summary of the conversation history and returns a
 // compacted message list: [system] + [summary as user] + [recent user messages].
+//
+// Instead of serializing the conversation to text, it appends the compaction
+// instruction to the existing messages — leveraging prompt cache on providers
+// like Anthropic — and enforces a token budget on the output.
 func Compact(ctx context.Context, provider Provider, model, systemPrompt string, messages []Message, config CompactionConfig) (*CompactionResult, error) {
 	if len(messages) == 0 {
 		return nil, fmt.Errorf("no messages to compact")
 	}
 
 	originalCount := len(messages)
-	// Keep the pre-sanitized slice for building the summarization text.
-	// Sanitization converts orphaned tool calls to placeholder text that would
-	// leak tool names into the summary; building from the original and skipping
-	// PartToolCall parts avoids this.  Tool results capture the outcome, so
-	// dropping the call side loses nothing useful for summarization.
-	preSanitize := messages
 	messages = sanitizeToolHistory(messages)
 
-	// Build summarization request with the conversation history
-	var sumReq []Message
-	sumReq = append(sumReq, SystemText(summarizationPrompt))
-
-	// Add a representation of the conversation
-	var convText strings.Builder
-	convText.WriteString("Here is the conversation to summarize:\n\n")
-	for _, msg := range preSanitize {
-		var lineParts []string
-		for _, part := range msg.Parts {
-			if part.Type == PartToolCall {
-				// Skip tool calls — orphaned ones must not appear in the summary,
-				// and matched ones are represented by their tool result below.
-				continue
-			}
-			if part.Text != "" {
-				lineParts = append(lineParts, part.Text)
-			}
-			if part.ToolResult != nil {
-				content := TruncateToolResult(part.ToolResult.Content, summarizationToolResultChars)
-				lineParts = append(lineParts, fmt.Sprintf("[tool_result: %s → %s]", part.ToolResult.Name, content))
-			}
-		}
-		if len(lineParts) == 0 {
-			continue
-		}
-		convText.WriteString(string(msg.Role))
-		convText.WriteString(": ")
-		for _, s := range lineParts {
-			convText.WriteString(s)
-		}
-		convText.WriteString("\n\n")
-	}
-	// Truncate conversation text if it's too large for the summarization request.
-	// Use ~75% of the input limit (if known) to leave room for the summary output
-	// and framing messages. Fall back to 400K chars (~100K tokens) if unknown.
-	convStr := convText.String()
-	maxConvChars := 400_000
-	if inputLimit := InputLimitForModel(model); inputLimit > 0 {
-		maxConvChars = inputLimit * approxBytesPerToken * 3 / 4
-	}
-	convRunes := []rune(convStr)
-	if len(convRunes) > maxConvChars {
-		half := maxConvChars / 2
-		convStr = string(convRunes[:half]) + "\n...[conversation truncated for summarization]...\n" + string(convRunes[len(convRunes)-half:])
-	}
-
-	var userContent strings.Builder
+	// Build request: [system] + sanitized messages + compaction instruction.
+	var reqMessages []Message
 	if systemPrompt != "" {
-		userContent.WriteString("The system prompt for this conversation is:\n")
-		userContent.WriteString(systemPrompt)
-		userContent.WriteString("\n\n")
+		reqMessages = append(reqMessages, SystemText(systemPrompt))
 	}
-	userContent.WriteString(convStr)
-	userContent.WriteString("\n\nNow create the compaction summary.")
-	sumReq = append(sumReq, UserText(userContent.String()))
+	reqMessages = append(reqMessages, messages...)
 
-	// Call provider with no tools (pure text completion)
+	// If messages exceed the input limit, trim from the front (after system)
+	// to fit. This handles reactive compaction where we're already at or past
+	// the context window. Keep ~75% of the input limit for conversation
+	// messages, reserving the rest for the output budget and framing.
+	// Use provider-effective limit if set, else fall back to canonical.
+	inputLimit := config.InputLimit
+	if inputLimit <= 0 {
+		inputLimit = InputLimitForModel(model)
+	}
+	if inputLimit > 0 {
+		maxInputTokens := inputLimit * 3 / 4
+		reqMessages = trimMessagesToFit(reqMessages, maxInputTokens)
+	}
+
+	// Ensure valid role alternation: if the last message is user or tool,
+	// insert a minimal assistant message before the compaction user message.
+	if len(reqMessages) > 0 {
+		lastRole := reqMessages[len(reqMessages)-1].Role
+		if lastRole == RoleUser || lastRole == RoleTool {
+			reqMessages = append(reqMessages, AssistantText("I'll now summarize our conversation."))
+		}
+	}
+	reqMessages = append(reqMessages, UserText(compactionPrompt))
+
+	budget := config.SummaryTokenBudget
+	if budget <= 0 {
+		budget = defaultSummaryTokenBudget
+	}
+	// Centralized output clamping: cap to model's max output limit so providers
+	// with small output limits don't reject the request. Providers also clamp
+	// individually, but doing it here provides belt-and-suspenders safety.
+	budget = ClampOutputTokens(budget, model)
+
+	// Call provider with no tools, enforcing output budget.
 	stream, err := provider.Stream(ctx, Request{
-		Model:    model,
-		Messages: sumReq,
-		// No tools - pure text completion
+		Model:           model,
+		Messages:        reqMessages,
+		MaxOutputTokens: budget,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("compaction stream failed: %w", err)
 	}
 	defer stream.Close()
 
-	// Collect summary text
+	// Collect summary text — entire output is the summary.
 	var summary strings.Builder
 	for {
 		event, err := stream.Recv()
@@ -261,6 +232,101 @@ func extractRecentContext(messages []Message, tokenBudget int) []Message {
 	}
 
 	return tail
+}
+
+// trimMessagesToFit removes messages from the front (after any system message)
+// until the total estimated tokens fit within maxTokens. Preserves the system
+// message, cache-anchored messages (previous compaction summaries), and the
+// most recent messages. Ensures the result starts with a system or user message
+// (not assistant/tool). Falls back to truncating oversized single messages.
+func trimMessagesToFit(messages []Message, maxTokens int) []Message {
+	if EstimateMessageTokens(messages) <= maxTokens {
+		return messages
+	}
+
+	// Separate system prefix from conversation messages.
+	startIdx := 0
+	if len(messages) > 0 && messages[0].Role == RoleSystem {
+		startIdx = 1
+	}
+
+	// Check for cache-anchored block after system (previous compaction summary
+	// and its assistant ack). Preserving this during re-compaction retains
+	// context from earlier compaction rounds.
+	anchorEnd := startIdx
+	if anchorEnd < len(messages) && messages[anchorEnd].CacheAnchor {
+		anchorEnd++
+		// Include the following assistant ack to maintain valid role alternation.
+		if anchorEnd < len(messages) && messages[anchorEnd].Role == RoleAssistant {
+			anchorEnd++
+		}
+	}
+
+	// First try: preserve anchor block if present.
+	if anchorEnd > startIdx {
+		if result := doTrim(messages, anchorEnd, maxTokens); EstimateMessageTokens(result) <= maxTokens {
+			return result
+		}
+	}
+
+	// Fallback: trim from after system, dropping anchor if needed.
+	return doTrim(messages, startIdx, maxTokens)
+}
+
+// doTrim preserves messages[:preserveEnd] and drops from the front of the
+// remainder until the total fits within maxTokens. Ensures the trimmable
+// portion starts with a user message. Truncates oversized single messages.
+func doTrim(messages []Message, preserveEnd, maxTokens int) []Message {
+	prefix := messages[:preserveEnd]
+	conv := messages[preserveEnd:]
+	for len(conv) > 1 && EstimateMessageTokens(prefix)+EstimateMessageTokens(conv) > maxTokens {
+		conv = conv[1:]
+	}
+
+	// If a single message exceeds budget, truncate its text/tool content.
+	if len(conv) == 1 {
+		prefixTokens := EstimateMessageTokens(prefix)
+		if prefixTokens+EstimateMessageTokens(conv) > maxTokens {
+			remaining := maxTokens - prefixTokens
+			if remaining > 0 {
+				maxChars := remaining * approxBytesPerToken
+				conv = []Message{truncateMessageParts(conv[0], maxChars)}
+			}
+		}
+	}
+
+	// Ensure we start with a user message (providers reject leading assistant/tool).
+	for len(conv) > 0 && conv[0].Role != RoleUser {
+		conv = conv[1:]
+	}
+
+	result := make([]Message, 0, preserveEnd+len(conv))
+	result = append(result, prefix...)
+	result = append(result, conv...)
+	return result
+}
+
+// truncateMessageParts truncates text and tool result content in a message
+// to fit within maxChars total. Used when a single oversized message exceeds
+// the compaction input budget.
+func truncateMessageParts(msg Message, maxChars int) Message {
+	result := Message{
+		Role:        msg.Role,
+		CacheAnchor: msg.CacheAnchor,
+		Parts:       make([]Part, len(msg.Parts)),
+	}
+	copy(result.Parts, msg.Parts)
+	for i, part := range result.Parts {
+		if part.Text != "" {
+			result.Parts[i].Text = TruncateToolResult(part.Text, maxChars)
+		}
+		if part.ToolResult != nil && len(part.ToolResult.Content) > maxChars {
+			tr := *part.ToolResult
+			tr.Content = TruncateToolResult(tr.Content, maxChars)
+			result.Parts[i].ToolResult = &tr
+		}
+	}
+	return result
 }
 
 // reconstructHistory builds the compacted message list:

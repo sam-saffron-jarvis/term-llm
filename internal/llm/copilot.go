@@ -198,6 +198,7 @@ func (p *CopilotProvider) ResetConversation() {
 }
 
 func (p *CopilotProvider) Stream(ctx context.Context, req Request) (Stream, error) {
+	req.MaxOutputTokens = ClampOutputTokens(req.MaxOutputTokens, chooseModel(req.Model, p.model))
 	// Check if OAuth token is expired
 	if p.creds.IsExpired() {
 		return nil, fmt.Errorf("Copilot token expired (re-run with --provider copilot to re-authenticate)")

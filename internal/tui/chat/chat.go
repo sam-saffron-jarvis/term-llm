@@ -42,12 +42,13 @@ type Model struct {
 	keyMap   KeyMap
 
 	// Session state
-	store      session.Store     // Session storage backend
-	sess       *session.Session  // Current session
-	messages   []session.Message // In-memory messages for current session
-	messagesMu sync.Mutex        // Protects messages from concurrent compaction callback
-	streaming  bool
-	phase      string // "Thinking", "Searching", "Reading", "Responding"
+	store         session.Store     // Session storage backend
+	sess          *session.Session  // Current session
+	messages      []session.Message // In-memory messages for current session
+	compactionIdx int               // Index into messages where post-compaction history starts (0 = none)
+	messagesMu    sync.Mutex        // Protects messages from concurrent compaction callback
+	streaming     bool
+	phase         string // "Thinking", "Searching", "Reading", "Responding"
 
 	// Streaming state
 	currentResponse  strings.Builder
@@ -355,12 +356,23 @@ func NewWithFastProvider(cfg *config.Config, provider llm.Provider, fastProvider
 		}
 	}
 
-	// Load existing messages if resuming
+	// Load existing messages if resuming.
+	// If the session was compacted, only load post-compaction messages — the
+	// summary + recent context is all the LLM needs, and skipping older messages
+	// avoids a large DB read and memory cost for long-lived sessions.
+	// During a live session, compaction appends to m.messages and sets
+	// compactionIdx so the user can still scroll through older messages.
 	var messages []session.Message
 	if store != nil && sess.ID != "" {
 		ctx := context.Background()
-		if loadedMsgs, err := store.GetMessages(ctx, sess.ID, 0, 0); err == nil {
-			messages = loadedMsgs
+		if sess.CompactionSeq >= 0 {
+			if loadedMsgs, err := store.GetMessagesFrom(ctx, sess.ID, sess.CompactionSeq); err == nil {
+				messages = loadedMsgs
+			}
+		} else {
+			if loadedMsgs, err := store.GetMessages(ctx, sess.ID, 0, 0); err == nil {
+				messages = loadedMsgs
+			}
 		}
 	}
 
@@ -668,12 +680,13 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			newSessionMsgs = append(newSessionMsgs, *session.NewMessage(m.sess.ID, msg, -1))
 		}
 		m.messagesMu.Lock()
-		m.messages = newSessionMsgs
+		m.compactionIdx = len(m.messages)
+		m.messages = append(m.messages, newSessionMsgs...)
 		m.messagesMu.Unlock()
 		m.invalidateHistoryCache()
 
 		if m.store != nil {
-			if err := m.store.ReplaceMessages(context.Background(), m.sess.ID, newSessionMsgs); err != nil {
+			if err := m.store.CompactMessages(context.Background(), m.sess.ID, newSessionMsgs); err != nil {
 				errStyle := lipgloss.NewStyle().Foreground(theme.Error)
 				return m, tea.Println(errStyle.Render(fmt.Sprintf("Compressed but failed to save: %v", err)))
 			}
@@ -682,8 +695,8 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.engine != nil {
 			m.engine.ResetConversation()
 		}
-		successStyle := lipgloss.NewStyle().Foreground(theme.Success)
-		return m, tea.Println(successStyle.Render(fmt.Sprintf("✓ Compacted: %d → %d messages", msg.result.OriginalCount, msg.result.CompactedCount)))
+		muted := lipgloss.NewStyle().Foreground(theme.Muted)
+		return m, tea.Println(muted.Render("session compacted"))
 
 	case ui.WaveTickMsg:
 		if m.tracker != nil {

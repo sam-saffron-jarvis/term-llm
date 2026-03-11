@@ -53,6 +53,7 @@ func (p *XAIProvider) Capabilities() Capabilities {
 }
 
 func (p *XAIProvider) Stream(ctx context.Context, req Request) (Stream, error) {
+	req.MaxOutputTokens = ClampOutputTokens(req.MaxOutputTokens, chooseModel(req.Model, p.model))
 	if req.Search {
 		return p.streamWithSearch(ctx, req)
 	}

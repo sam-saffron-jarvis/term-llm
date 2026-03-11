@@ -219,3 +219,99 @@ INSERT INTO schema_version(version) VALUES (7);
 		t.Fatal("expected provider_key column after migration")
 	}
 }
+
+func TestReadOnlyOldDBWithoutCompactionSeq(t *testing.T) {
+	// Simulate an old database that doesn't have the compaction_seq column.
+	// A read-only store should still be able to read sessions from it.
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "test.db")
+
+	// Create DB with old schema (no compaction_seq)
+	db, err := sql.Open("sqlite", dbPath+"?_pragma=journal_mode(WAL)")
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	_, err = db.Exec(`
+		CREATE TABLE IF NOT EXISTS sessions (
+			id TEXT PRIMARY KEY,
+			number INTEGER,
+			name TEXT,
+			summary TEXT,
+			provider TEXT NOT NULL,
+			provider_key TEXT,
+			model TEXT NOT NULL,
+			mode TEXT DEFAULT 'chat',
+			agent TEXT,
+			cwd TEXT,
+			created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			archived BOOLEAN DEFAULT FALSE,
+			parent_id TEXT REFERENCES sessions(id),
+			search BOOLEAN DEFAULT FALSE,
+			tools TEXT,
+			mcp TEXT,
+			user_turns INTEGER DEFAULT 0,
+			llm_turns INTEGER DEFAULT 0,
+			tool_calls INTEGER DEFAULT 0,
+			input_tokens INTEGER DEFAULT 0,
+			cached_input_tokens INTEGER DEFAULT 0,
+			output_tokens INTEGER DEFAULT 0,
+			status TEXT DEFAULT 'active',
+			tags TEXT
+		);
+		CREATE TABLE IF NOT EXISTS metadata (key TEXT PRIMARY KEY, value TEXT);
+	`)
+	if err != nil {
+		t.Fatalf("create schema: %v", err)
+	}
+
+	// Insert a test session
+	_, err = db.Exec(`
+		INSERT INTO sessions (id, number, name, summary, provider, model, created_at, updated_at)
+		VALUES ('test-id-123', 1, 'test session', 'summary', 'openai', 'gpt-5', datetime('now'), datetime('now'))
+	`)
+	if err != nil {
+		t.Fatalf("insert session: %v", err)
+	}
+	db.Close()
+
+	// Open in read-only mode (skips migrations)
+	store, err := NewSQLiteStore(Config{
+		Path:     dbPath,
+		ReadOnly: true,
+	})
+	if err != nil {
+		t.Fatalf("open read-only store: %v", err)
+	}
+	defer store.Close()
+
+	if store.hasCompactionSeq {
+		t.Error("old DB should not have compaction_seq")
+	}
+
+	ctx := context.Background()
+
+	// Get should work and default CompactionSeq to -1
+	sess, err := store.Get(ctx, "test-id-123")
+	if err != nil {
+		t.Fatalf("Get failed on old DB: %v", err)
+	}
+	if sess == nil {
+		t.Fatal("expected session, got nil")
+	}
+	if sess.CompactionSeq != -1 {
+		t.Errorf("CompactionSeq = %d, want -1 (default for missing column)", sess.CompactionSeq)
+	}
+
+	// GetByNumber should also work
+	sess, err = store.GetByNumber(ctx, 1)
+	if err != nil {
+		t.Fatalf("GetByNumber failed on old DB: %v", err)
+	}
+	if sess == nil {
+		t.Fatal("expected session from GetByNumber, got nil")
+	}
+	if sess.CompactionSeq != -1 {
+		t.Errorf("CompactionSeq = %d, want -1", sess.CompactionSeq)
+	}
+}
