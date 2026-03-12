@@ -322,6 +322,9 @@ func TestCustomBasePath_EndToEnd(t *testing.T) {
 		t.Errorf("/ should inject JSON-escaped TERM_LLM_UI_PREFIX, got:\n%s",
 			body[strings.Index(body, "TERM_LLM")-20:strings.Index(body, "TERM_LLM")+60])
 	}
+	if !strings.Contains(body, `<base href="/chat/">`) {
+		t.Error("/ should inject <base> tag with basePath")
+	}
 
 	// 2. /app.css serves static assets
 	req = httptest.NewRequest(http.MethodGet, "/app.css", nil)
@@ -505,6 +508,9 @@ func TestHandleUI_ReturnsEmbeddedStaticAsset(t *testing.T) {
 		{name: "css", path: "/app.css", contentType: "text/css", bodySnippet: ".app {"},
 		{name: "js", path: "/app-core.js", contentType: "text/javascript", bodySnippet: "window.TermLLMApp"},
 		{name: "manifest", path: "/manifest.webmanifest", contentType: "", bodySnippet: `"display": "standalone"`},
+		{name: "vendor_subdir_js", path: "/vendor/katex/katex.min.js", contentType: "text/javascript", bodySnippet: "katex"},
+		{name: "vendor_subdir_css", path: "/vendor/hljs/github-dark.min.css", contentType: "text/css", bodySnippet: ".hljs"},
+		{name: "vendor_woff2", path: "/vendor/katex/fonts/KaTeX_Main-Regular.woff2", contentType: "font/woff2", bodySnippet: ""},
 	}
 
 	for _, tt := range tests {
@@ -520,10 +526,36 @@ func TestHandleUI_ReturnsEmbeddedStaticAsset(t *testing.T) {
 			if got := rr.Header().Get("Content-Type"); tt.contentType != "" && !strings.HasPrefix(got, tt.contentType) {
 				t.Fatalf("content-type = %q, want %s", got, tt.contentType)
 			}
-			if !strings.Contains(rr.Body.String(), tt.bodySnippet) {
+			if tt.bodySnippet != "" && !strings.Contains(rr.Body.String(), tt.bodySnippet) {
 				t.Fatalf("expected %q in asset response, got %q", tt.bodySnippet, rr.Body.String())
 			}
 		})
+	}
+}
+
+func TestHandleUI_VersionedAssetCaching(t *testing.T) {
+	srv := &serveServer{cfg: serveServerConfig{ui: true, basePath: "/ui"}}
+
+	// Versioned asset gets immutable caching.
+	req := httptest.NewRequest(http.MethodGet, "/vendor/katex/katex.min.js?v=0.16.38", nil)
+	rr := httptest.NewRecorder()
+	srv.handleUI(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rr.Code)
+	}
+	if got := rr.Header().Get("Cache-Control"); !strings.Contains(got, "immutable") {
+		t.Errorf("versioned asset cache-control = %q, want immutable", got)
+	}
+
+	// Unversioned asset gets no-cache.
+	req = httptest.NewRequest(http.MethodGet, "/app.css", nil)
+	rr = httptest.NewRecorder()
+	srv.handleUI(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rr.Code)
+	}
+	if got := rr.Header().Get("Cache-Control"); got != "no-cache" {
+		t.Errorf("unversioned asset cache-control = %q, want no-cache", got)
 	}
 }
 

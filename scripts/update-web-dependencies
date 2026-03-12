@@ -1,77 +1,94 @@
 #!/usr/bin/env bash
 #
-# Checks for newer versions of CDN dependencies used in the web UI
-# and updates index.html if found.
+# Downloads web UI vendor dependencies into internal/serveui/static/vendor/
+# and updates version-busting query strings in index.html.
 #
 set -euo pipefail
 
-HTML="internal/serveui/static/index.html"
+STATIC="internal/serveui/static"
+HTML="$STATIC/index.html"
+VENDOR="$STATIC/vendor"
 
 if [ ! -f "$HTML" ]; then
   echo "Error: $HTML not found. Run from repo root." >&2
   exit 1
 fi
 
-# Library definitions: name, cdnjs library id, current URL pattern to grep
-declare -A LIBS
-LIBS=(
-  [highlight.js]="highlight.js"
-  [marked]="marked"
-  [dompurify]="dompurify"
-)
+# --- Version checks ---
 
-check_latest() {
-  local lib="$1"
-  local api_url="https://api.cdnjs.com/libraries/${lib}?fields=version"
-  local version
-  version=$(curl -sf "$api_url" | grep -o '"version":"[^"]*"' | head -1 | cut -d'"' -f4)
-  echo "$version"
+katex_latest() {
+  curl -sf "https://data.jsdelivr.com/v1/packages/npm/katex" | grep -oP '"latest"\s*:\s*"\K[^"]+' | head -1
 }
 
-echo "Checking latest versions on cdnjs..."
+cdnjs_latest() {
+  local lib="$1"
+  curl -sf "https://api.cdnjs.com/libraries/${lib}?fields=version" | grep -o '"version":"[^"]*"' | head -1 | cut -d'"' -f4
+}
+
+echo "Checking latest versions..."
+KATEX_VER=$(katex_latest)
+HLJS_VER=$(cdnjs_latest "highlight.js")
+MARKED_VER=$(cdnjs_latest "marked")
+PURIFY_VER=$(cdnjs_latest "dompurify")
+
+echo "  katex:        $KATEX_VER"
+echo "  highlight.js: $HLJS_VER"
+echo "  marked:       $MARKED_VER"
+echo "  dompurify:    $PURIFY_VER"
 echo
 
-updated=0
+# --- Download helper ---
 
-# highlight.js
-HLJS_LATEST=$(check_latest "highlight.js")
-HLJS_CURRENT=$(grep -oP 'highlight\.js/\K[0-9]+\.[0-9]+\.[0-9]+' "$HTML" | head -1)
-echo "highlight.js: current=$HLJS_CURRENT latest=$HLJS_LATEST"
-if [ "$HLJS_CURRENT" != "$HLJS_LATEST" ] && [ -n "$HLJS_LATEST" ]; then
-  sed -i "s|highlight\.js/${HLJS_CURRENT}|highlight.js/${HLJS_LATEST}|g" "$HTML"
-  echo "  -> Updated to $HLJS_LATEST"
-  updated=1
-else
-  echo "  -> Up to date"
-fi
+dl() {
+  local url="$1" dest="$2"
+  mkdir -p "$(dirname "$dest")"
+  echo "  $dest"
+  curl -sfL "$url" -o "$dest"
+}
 
-# marked
-MARKED_LATEST=$(check_latest "marked")
-MARKED_CURRENT=$(grep -oP 'marked/\K[0-9]+\.[0-9]+\.[0-9]+' "$HTML" | head -1)
-echo "marked: current=$MARKED_CURRENT latest=$MARKED_LATEST"
-if [ "$MARKED_CURRENT" != "$MARKED_LATEST" ] && [ -n "$MARKED_LATEST" ]; then
-  sed -i "s|marked/${MARKED_CURRENT}|marked/${MARKED_LATEST}|g" "$HTML"
-  echo "  -> Updated to $MARKED_LATEST"
-  updated=1
-else
-  echo "  -> Up to date"
-fi
+# --- KaTeX ---
+echo "Downloading KaTeX $KATEX_VER..."
+KATEX_BASE="https://cdn.jsdelivr.net/npm/katex@${KATEX_VER}/dist"
+dl "$KATEX_BASE/katex.min.css" "$VENDOR/katex/katex.min.css"
+dl "$KATEX_BASE/katex.min.js" "$VENDOR/katex/katex.min.js"
+dl "$KATEX_BASE/contrib/auto-render.min.js" "$VENDOR/katex/auto-render.min.js"
 
-# dompurify
-PURIFY_LATEST=$(check_latest "dompurify")
-PURIFY_CURRENT=$(grep -oP 'dompurify/\K[0-9]+\.[0-9]+\.[0-9]+' "$HTML" | head -1)
-echo "dompurify: current=$PURIFY_CURRENT latest=$PURIFY_LATEST"
-if [ "$PURIFY_CURRENT" != "$PURIFY_LATEST" ] && [ -n "$PURIFY_LATEST" ]; then
-  sed -i "s|dompurify/${PURIFY_CURRENT}|dompurify/${PURIFY_LATEST}|g" "$HTML"
-  echo "  -> Updated to $PURIFY_LATEST"
-  updated=1
-else
-  echo "  -> Up to date"
-fi
+# Download KaTeX woff2 fonts referenced by katex.min.css
+echo "Downloading KaTeX fonts..."
+FONT_DIR="$VENDOR/katex/fonts"
+mkdir -p "$FONT_DIR"
+# Extract font filenames from CSS url(fonts/...)
+font_files=$(grep -oP 'url\(fonts/\K[^)]+\.woff2' "$VENDOR/katex/katex.min.css" | sort -u)
+for f in $font_files; do
+  dl "$KATEX_BASE/fonts/$f" "$FONT_DIR/$f"
+done
+
+# --- Highlight.js ---
+echo "Downloading highlight.js $HLJS_VER..."
+HLJS_BASE="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/${HLJS_VER}"
+dl "$HLJS_BASE/highlight.min.js" "$VENDOR/hljs/highlight.min.js"
+dl "$HLJS_BASE/styles/github-dark.min.css" "$VENDOR/hljs/github-dark.min.css"
+dl "$HLJS_BASE/styles/github.min.css" "$VENDOR/hljs/github.min.css"
+
+# --- Marked ---
+echo "Downloading marked $MARKED_VER..."
+dl "https://cdnjs.cloudflare.com/ajax/libs/marked/${MARKED_VER}/lib/marked.umd.min.js" \
+   "$VENDOR/marked/marked.umd.min.js"
+
+# --- DOMPurify ---
+echo "Downloading DOMPurify $PURIFY_VER..."
+dl "https://cdnjs.cloudflare.com/ajax/libs/dompurify/${PURIFY_VER}/purify.min.js" \
+   "$VENDOR/dompurify/purify.min.js"
+
+# --- Update version query strings in index.html ---
+echo
+echo "Updating $HTML version strings..."
+
+# Replace ?v=OLD with ?v=NEW for each library path prefix
+sed -i -E "s|(vendor/katex/[^?]+\?v=)[0-9.]+|\1${KATEX_VER}|g" "$HTML"
+sed -i -E "s|(vendor/hljs/[^?]+\?v=)[0-9.]+|\1${HLJS_VER}|g" "$HTML"
+sed -i -E "s|(vendor/marked/[^?]+\?v=)[0-9.]+|\1${MARKED_VER}|g" "$HTML"
+sed -i -E "s|(vendor/dompurify/[^?]+\?v=)[0-9.]+|\1${PURIFY_VER}|g" "$HTML"
 
 echo
-if [ "$updated" -eq 1 ]; then
-  echo "Done. Review changes with: git diff $HTML"
-else
-  echo "All dependencies are up to date."
-fi
+echo "Done. Versions: katex=$KATEX_VER hljs=$HLJS_VER marked=$MARKED_VER dompurify=$PURIFY_VER"

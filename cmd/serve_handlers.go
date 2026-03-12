@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	htmlpkg "html"
 	"io"
 	"log"
 	"mime"
@@ -48,14 +49,24 @@ func (s *serveServer) handleUI(w http.ResponseWriter, r *http.Request) {
 
 	// basePath is already stripped by http.StripPrefix; URL.Path is "/" or "/session-id" etc.
 	assetName := strings.TrimPrefix(r.URL.Path, "/")
-	if assetName != "" && !strings.Contains(assetName, "/") && !strings.Contains(assetName, "..") {
+	if assetName != "" && !strings.Contains(assetName, "..") {
 		if data, err := serveui.StaticAsset(assetName); err == nil {
 			contentType := mime.TypeByExtension(filepath.Ext(assetName))
 			if contentType == "" {
-				contentType = http.DetectContentType(data)
+				// mime.TypeByExtension may return empty for .woff2 on some systems.
+				switch filepath.Ext(assetName) {
+				case ".woff2":
+					contentType = "font/woff2"
+				default:
+					contentType = http.DetectContentType(data)
+				}
 			}
 			w.Header().Set("Content-Type", contentType)
-			w.Header().Set("Cache-Control", "no-cache")
+			if strings.Contains(r.URL.RawQuery, "v=") {
+				w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+			} else {
+				w.Header().Set("Cache-Control", "no-cache")
+			}
 			_, _ = w.Write(data)
 			return
 		}
@@ -66,7 +77,13 @@ func (s *serveServer) handleUI(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
 	html := serveui.IndexHTML()
 
-	// Always inject UI prefix so JS can prefix all API calls with it.
+	// Inject <base> so all relative asset URLs (app.css, vendor/*, etc.)
+	// resolve against the base path regardless of the SPA route depth.
+	baseTag := `<base href="` + htmlpkg.EscapeString(s.cfg.basePath) + `/">`
+	html = bytes.Replace(html, []byte(`<meta charset="utf-8">`),
+		[]byte(`<meta charset="utf-8">`+"\n  "+baseTag), 1)
+
+	// Inject UI prefix so JS can prefix all API calls with it.
 	// Also inject VAPID public key for web push if configured.
 	var headSnippet string
 	escaped, _ := json.Marshal(s.cfg.basePath)
