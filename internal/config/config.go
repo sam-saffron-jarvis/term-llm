@@ -370,16 +370,22 @@ type EmbedOllamaConfig struct {
 
 // SearchConfig configures web search providers
 type SearchConfig struct {
-	Provider      string             `mapstructure:"provider"`       // exa, tavily, brave, google, duckduckgo (default)
-	ForceExternal bool               `mapstructure:"force_external"` // force external search for all providers
-	Exa           SearchExaConfig    `mapstructure:"exa"`
-	Tavily        SearchTavilyConfig `mapstructure:"tavily"`
-	Brave         SearchBraveConfig  `mapstructure:"brave"`
-	Google        SearchGoogleConfig `mapstructure:"google"`
+	Provider      string                 `mapstructure:"provider"`       // exa, perplexity, tavily, brave, google, duckduckgo (default)
+	ForceExternal bool                   `mapstructure:"force_external"` // force external search for all providers
+	Exa           SearchExaConfig        `mapstructure:"exa"`
+	Perplexity    SearchPerplexityConfig `mapstructure:"perplexity"`
+	Tavily        SearchTavilyConfig     `mapstructure:"tavily"`
+	Brave         SearchBraveConfig      `mapstructure:"brave"`
+	Google        SearchGoogleConfig     `mapstructure:"google"`
 }
 
 // SearchExaConfig configures Exa search
 type SearchExaConfig struct {
+	APIKey string `mapstructure:"api_key"`
+}
+
+// SearchPerplexityConfig configures Perplexity search
+type SearchPerplexityConfig struct {
 	APIKey string `mapstructure:"api_key"`
 }
 
@@ -792,6 +798,12 @@ func resolveSearchCredentials(cfg *SearchConfig) {
 		cfg.Exa.APIKey = os.Getenv("EXA_API_KEY")
 	}
 
+	// Perplexity credentials
+	cfg.Perplexity.APIKey = expandEnv(cfg.Perplexity.APIKey)
+	if cfg.Perplexity.APIKey == "" {
+		cfg.Perplexity.APIKey = os.Getenv("PERPLEXITY_API_KEY")
+	}
+
 	// Tavily credentials
 	cfg.Tavily.APIKey = expandEnv(cfg.Tavily.APIKey)
 	if cfg.Tavily.APIKey == "" {
@@ -1000,17 +1012,19 @@ var KnownKeys = map[string]bool{
 	"embed.ollama.model":    true,
 
 	// Search
-	"search.provider":       true,
-	"search.force_external": true,
-	"search.exa":            true,
-	"search.exa.api_key":    true,
-	"search.tavily":         true,
-	"search.tavily.api_key": true,
-	"search.brave":          true,
-	"search.brave.api_key":  true,
-	"search.google":         true,
-	"search.google.api_key": true,
-	"search.google.cx":      true,
+	"search.provider":           true,
+	"search.force_external":     true,
+	"search.exa":                true,
+	"search.exa.api_key":        true,
+	"search.perplexity":         true,
+	"search.perplexity.api_key": true,
+	"search.tavily":             true,
+	"search.tavily.api_key":     true,
+	"search.brave":              true,
+	"search.brave.api_key":      true,
+	"search.google":             true,
+	"search.google.api_key":     true,
+	"search.google.cx":          true,
 
 	// Theme
 	"theme.primary":   true,

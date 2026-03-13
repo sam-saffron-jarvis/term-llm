@@ -227,9 +227,10 @@ func printAnnotatedConfig(defaults map[string]any, rawKeys, unknownKeys map[stri
 			name: "search",
 			keys: []string{"provider", "force_external"},
 			nested: map[string][]string{
-				"exa":    {"api_key"},
-				"brave":  {"api_key"},
-				"google": {"api_key", "cx"},
+				"exa":        {"api_key"},
+				"perplexity": {"api_key"},
+				"brave":      {"api_key"},
+				"google":     {"api_key", "cx"},
 			},
 		},
 		{
@@ -1233,6 +1234,7 @@ func configKeyCompletions(toComplete string) []string {
 		"image.openrouter.api_key",
 		// Search API keys
 		"search.exa.api_key",
+		"search.perplexity.api_key",
 		"search.brave.api_key",
 		"search.google.api_key",
 		"search.google.cx",
@@ -1296,7 +1298,7 @@ func configValueCompletions(key, toComplete string) []string {
 		return completions
 
 	case "search.provider":
-		providers := []string{"duckduckgo", "exa", "brave", "google"}
+		providers := []string{"duckduckgo", "exa", "perplexity", "brave", "google"}
 		var completions []string
 		for _, p := range providers {
 			if strings.HasPrefix(p, toComplete) {
