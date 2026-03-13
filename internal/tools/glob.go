@@ -117,9 +117,11 @@ func (t *GlobTool) Execute(ctx context.Context, args json.RawMessage) (llm.ToolO
 		}
 	}
 
-	// Resolve base path to absolute
-	absBasePath, err := filepath.Abs(basePath)
+	absBasePath, err := resolveToolPath(basePath, false)
 	if err != nil {
+		if toolErr, ok := err.(*ToolError); ok {
+			return textOutput(formatToolError(toolErr)), nil
+		}
 		return textOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "cannot resolve path: %v", err))), nil
 	}
 

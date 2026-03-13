@@ -31,8 +31,14 @@ func TranscribeWithConfig(ctx context.Context, cfg *config.Config, filePath, lan
 	case "local":
 		// whisper.cpp HTTP server — OpenAI-compatible endpoint, typically no auth required
 		endpoint := "http://localhost:8080/inference"
-		if providerCfg, ok := cfg.Providers["local_whisper"]; ok && providerCfg.BaseURL != "" {
-			endpoint = strings.TrimRight(providerCfg.BaseURL, "/") + "/inference"
+		if providerCfg, ok := cfg.Providers["local_whisper"]; ok {
+			baseURL := providerCfg.ResolvedURL
+			if baseURL == "" {
+				baseURL = providerCfg.BaseURL
+			}
+			if baseURL != "" {
+				endpoint = strings.TrimRight(baseURL, "/") + "/inference"
+			}
 		}
 		return TranscribeFile(ctx, filePath, TranscribeOptions{
 			Endpoint: endpoint,
@@ -50,8 +56,12 @@ func TranscribeWithConfig(ctx context.Context, cfg *config.Config, filePath, lan
 			return "", fmt.Errorf("transcription provider %q has no API key configured (providers.mistral.api_key or MISTRAL_API_KEY)", providerName)
 		}
 		endpoint := "https://api.mistral.ai/v1/audio/transcriptions"
-		if mistralCfg.BaseURL != "" {
-			endpoint = strings.TrimRight(mistralCfg.BaseURL, "/") + "/audio/transcriptions"
+		baseURL := mistralCfg.ResolvedURL
+		if baseURL == "" {
+			baseURL = mistralCfg.BaseURL
+		}
+		if baseURL != "" {
+			endpoint = strings.TrimRight(baseURL, "/") + "/audio/transcriptions"
 		}
 		model := modelOverride
 		if model == "" {
@@ -68,8 +78,12 @@ func TranscribeWithConfig(ctx context.Context, cfg *config.Config, filePath, lan
 		// Named provider entry takes precedence over env var
 		if p, ok := cfg.Providers[string(config.ProviderTypeOpenAI)]; ok && p.ResolvedAPIKey != "" {
 			endpoint := ""
-			if p.BaseURL != "" {
-				endpoint = strings.TrimRight(p.BaseURL, "/") + "/audio/transcriptions"
+			baseURL := p.ResolvedURL
+			if baseURL == "" {
+				baseURL = p.BaseURL
+			}
+			if baseURL != "" {
+				endpoint = strings.TrimRight(baseURL, "/") + "/audio/transcriptions"
 			}
 			return TranscribeFile(ctx, filePath, TranscribeOptions{
 				APIKey:   p.ResolvedAPIKey,

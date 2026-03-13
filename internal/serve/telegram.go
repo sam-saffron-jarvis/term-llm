@@ -217,7 +217,7 @@ func (p *TelegramPlatform) RunSetup() error {
 	fmt.Println()
 	fmt.Println("2. Whitelist Telegram user ID(s) and/or @username(s):")
 	fmt.Println("   - Send any message to your bot")
-	fmt.Printf("   - Visit https://api.telegram.org/bot%s/getUpdates\n", token)
+	fmt.Println("   - Visit https://api.telegram.org/bot<token>/getUpdates (paste your token locally, do not log it)")
 	fmt.Println("   - Find the numeric 'id' or 'username' under 'from'")
 	fmt.Println("   - Mix numeric IDs and @usernames freely (e.g. 123456, @alice)")
 	fmt.Print("   Allowed users (comma-separated, required): ")

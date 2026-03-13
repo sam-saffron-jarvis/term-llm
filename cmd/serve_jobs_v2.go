@@ -19,6 +19,7 @@ import (
 
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/procutil"
 	"github.com/samsaffron/term-llm/internal/session"
 	_ "modernc.org/sqlite"
 )
@@ -156,6 +157,11 @@ type jobsV2Runner interface {
 
 type jobsV2ProgramRunner struct{}
 
+var (
+	jobsV2ProgramOutputLimit int64         = 64 << 10
+	jobsV2ProgramWaitDelay   time.Duration = time.Second
+)
+
 type jobsV2ProgramConfig struct {
 	Command string   `json:"command"`
 	Args    []string `json:"args,omitempty"`
@@ -176,16 +182,12 @@ func (r *jobsV2ProgramRunner) Run(ctx context.Context, job jobsV2Job, pw progres
 
 	var cmd *exec.Cmd
 	if cfg.Shell {
-		args := append([]string{"-c", cfg.Command}, cfg.Args...)
+		args := append([]string{"-c", cfg.Command, "--"}, cfg.Args...)
 		cmd = exec.CommandContext(ctx, detectShell(), args...)
 	} else {
 		cmd = exec.CommandContext(ctx, cfg.Command, cfg.Args...)
 	}
-	// When the context is cancelled, Go sends SIGKILL. Without WaitDelay,
-	// cmd.Output() can still block indefinitely waiting for the process to exit
-	// and for all pipe I/O to drain. Set a short WaitDelay so the pipes are
-	// force-closed quickly after the kill signal is sent.
-	cmd.WaitDelay = 5 * time.Second
+	cmd.WaitDelay = jobsV2ProgramWaitDelay
 	if strings.TrimSpace(cfg.Cwd) != "" {
 		cmd.Dir = cfg.Cwd
 	}
@@ -193,20 +195,42 @@ func (r *jobsV2ProgramRunner) Run(ctx context.Context, job jobsV2Job, pw progres
 		cmd.Env = append(os.Environ(), cfg.Env...)
 	}
 
-	stdout, err := cmd.Output()
-	stderr := ""
+	cleanup, prepErr := procutil.PrepareCommand(cmd)
+	if prepErr != nil {
+		return jobsV2RunResult{}, fmt.Errorf("program setup failed: %w", prepErr)
+	}
+	defer cleanup()
+
+	stdout := procutil.NewLimitedBuffer(jobsV2ProgramOutputLimit)
+	stderr := procutil.NewLimitedBuffer(jobsV2ProgramOutputLimit)
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
+
+	err := cmd.Run()
 	exitCode := 0
+	result := jobsV2RunResult{
+		Stdout:    stdout.String(),
+		Stderr:    stderr.String(),
+		Truncated: stdout.Truncated() || stderr.Truncated(),
+	}
+
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		return result, context.DeadlineExceeded
+	}
+	if errors.Is(ctx.Err(), context.Canceled) {
+		return result, context.Canceled
+	}
 	if err != nil {
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) {
 			exitCode = exitErr.ExitCode()
-			stderr = string(exitErr.Stderr)
+			result.ExitCode = exitCode
 		} else {
-			return jobsV2RunResult{}, fmt.Errorf("program run failed: %w", err)
+			return result, fmt.Errorf("program run failed: %w", err)
 		}
 	}
 
-	result := jobsV2RunResult{ExitCode: exitCode, Stdout: string(stdout), Stderr: stderr}
+	result.ExitCode = exitCode
 	if exitCode != 0 {
 		return result, fmt.Errorf("program exited with code %d", exitCode)
 	}
@@ -344,25 +368,29 @@ func (r *jobsV2LLMRunner) Run(ctx context.Context, job jobsV2Job, pw progressWri
 }
 
 func classifyRunError(err error, result jobsV2RunResult) (exitReason string, truncated bool) {
+	truncated = result.Truncated
 	if err != nil {
 		if errors.Is(err, context.DeadlineExceeded) {
-			return exitReasonTimeout, false
+			return exitReasonTimeout, truncated
 		}
 		if errors.Is(err, context.Canceled) {
-			return exitReasonCancelled, false
+			return exitReasonCancelled, truncated
 		}
 		if strings.Contains(err.Error(), "max turns") {
 			return exitReasonMaxTurns, true
 		}
-		return exitReasonException, false
+		return exitReasonException, truncated
 	}
 	if strings.TrimSpace(result.ExitReason) != "" {
-		return result.ExitReason, result.ExitReason == exitReasonMaxTurns
+		return result.ExitReason, truncated || result.ExitReason == exitReasonMaxTurns
 	}
-	if strings.TrimSpace(result.Response) == "" {
-		return exitReasonEmpty, false
+	if strings.TrimSpace(result.Response) == "" &&
+		strings.TrimSpace(result.Stdout) == "" &&
+		strings.TrimSpace(result.Stderr) == "" &&
+		strings.TrimSpace(result.Thinking) == "" {
+		return exitReasonEmpty, truncated
 	}
-	return exitReasonNatural, false
+	return exitReasonNatural, truncated
 }
 
 type jobsV2Manager struct {

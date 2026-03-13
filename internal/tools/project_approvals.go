@@ -104,6 +104,14 @@ func (p *ProjectApprovals) Save() error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
+	return p.saveLocked()
+}
+
+func (p *ProjectApprovals) saveLocked() error {
+	if p == nil || p.filePath == "" {
+		return nil
+	}
+
 	p.UpdatedAt = time.Now()
 
 	// Ensure directory exists
@@ -146,9 +154,9 @@ func (p *ProjectApprovals) ApproveRead() error {
 		return nil
 	}
 	p.mu.Lock()
+	defer p.mu.Unlock()
 	p.ReadApproved = true
-	p.mu.Unlock()
-	return p.Save()
+	return p.saveLocked()
 }
 
 // ApproveWrite approves write access for the entire repo.
@@ -157,9 +165,9 @@ func (p *ProjectApprovals) ApproveWrite() error {
 		return nil
 	}
 	p.mu.Lock()
+	defer p.mu.Unlock()
 	p.WriteApproved = true
-	p.mu.Unlock()
-	return p.Save()
+	return p.saveLocked()
 }
 
 // IsPathApproved checks if a specific path is approved.
@@ -183,8 +191,13 @@ func (p *ProjectApprovals) IsPathApproved(path string, isWrite bool) bool {
 		}
 	}
 
+	resolvedPath, err := canonicalApprovalPath(path, isWrite)
+	if err != nil {
+		return false
+	}
+
 	// Check if path is in approved paths list
-	relPath := GetRelativePath(path, p.RepoRoot)
+	relPath := GetRelativePath(resolvedPath, p.RepoRoot)
 	for _, approved := range p.ApprovedPaths {
 		// Check exact match or if path is under approved directory
 		if relPath == approved || strings.HasPrefix(relPath, approved+string(filepath.Separator)) {
@@ -202,20 +215,22 @@ func (p *ProjectApprovals) ApprovePath(path string) error {
 		return nil
 	}
 
-	relPath := GetRelativePath(path, p.RepoRoot)
+	resolvedPath, err := canonicalApprovalPath(path, true)
+	if err != nil {
+		return err
+	}
+	relPath := GetRelativePath(resolvedPath, p.RepoRoot)
 
 	p.mu.Lock()
+	defer p.mu.Unlock()
 	// Check if already approved
 	for _, existing := range p.ApprovedPaths {
 		if existing == relPath {
-			p.mu.Unlock()
 			return nil
 		}
 	}
 	p.ApprovedPaths = append(p.ApprovedPaths, relPath)
-	p.mu.Unlock()
-
-	return p.Save()
+	return p.saveLocked()
 }
 
 // IsShellPatternApproved checks if a command matches any approved shell pattern.
@@ -243,17 +258,15 @@ func (p *ProjectApprovals) ApproveShellPattern(pattern string) error {
 	}
 
 	p.mu.Lock()
+	defer p.mu.Unlock()
 	// Check if already approved
 	for _, existing := range p.ShellPatterns {
 		if existing == pattern {
-			p.mu.Unlock()
 			return nil
 		}
 	}
 	p.ShellPatterns = append(p.ShellPatterns, pattern)
-	p.mu.Unlock()
-
-	return p.Save()
+	return p.saveLocked()
 }
 
 // GenerateShellPattern creates a glob pattern from a command.

@@ -106,8 +106,16 @@ func (t *ShowImageTool) Execute(ctx context.Context, args json.RawMessage) (llm.
 		}
 	}
 
+	resolvedPath, err := resolveToolPath(a.FilePath, false)
+	if err != nil {
+		if toolErr, ok := err.(*ToolError); ok {
+			return llm.TextOutput(formatToolError(toolErr)), nil
+		}
+		return llm.TextOutput(formatToolError(NewToolErrorf(ErrInvalidParams, "cannot resolve path: %v", err))), nil
+	}
+
 	// Check file exists
-	info, err := os.Stat(a.FilePath)
+	info, err := os.Stat(resolvedPath)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return llm.TextOutput(formatToolError(NewToolError(ErrFileNotFound, a.FilePath))), nil
@@ -116,7 +124,7 @@ func (t *ShowImageTool) Execute(ctx context.Context, args json.RawMessage) (llm.
 	}
 
 	// Check format
-	ext := strings.ToLower(filepath.Ext(a.FilePath))
+	ext := strings.ToLower(filepath.Ext(resolvedPath))
 	if !showImageSupportedFormats[ext] {
 		return llm.TextOutput(formatToolError(NewToolErrorf(ErrUnsupportedFormat, "unsupported format: %s (supported: PNG, JPEG, GIF, WebP, BMP)", ext))), nil
 	}
@@ -125,11 +133,11 @@ func (t *ShowImageTool) Execute(ctx context.Context, args json.RawMessage) (llm.
 	copyClipboard := !t.serveMode && (a.CopyToClipboard == nil || *a.CopyToClipboard)
 	if copyClipboard {
 		// Read file data for clipboard
-		data, err := os.ReadFile(a.FilePath)
+		data, err := os.ReadFile(resolvedPath)
 		if err != nil {
 			return llm.TextOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "failed to read image for clipboard: %v", err))), nil
 		}
-		image.CopyToClipboard(a.FilePath, data)
+		image.CopyToClipboard(resolvedPath, data)
 	}
 
 	// Build result

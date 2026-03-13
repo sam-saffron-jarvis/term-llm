@@ -1,10 +1,12 @@
 package config
 
 import (
+	"os"
 	"strings"
 	"testing"
 
 	"github.com/samsaffron/term-llm/internal/credentials"
+	"gopkg.in/yaml.v3"
 )
 
 func TestApplyOverrides(t *testing.T) {
@@ -210,5 +212,59 @@ func TestGetDefaultsEnablesAutoCompact(t *testing.T) {
 	}
 	if !got {
 		t.Fatal("auto_compact should default to true")
+	}
+}
+
+func TestSave_QuotesSpecialYAMLValues(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+
+	cfg := &Config{
+		DefaultProvider: "openai",
+		Exec: ExecConfig{
+			Suggestions: 1,
+		},
+		Image: ImageConfig{
+			Provider: "debug:provider",
+		},
+		Providers: map[string]ProviderConfig{
+			"openai": {
+				Model:    "gpt:5",
+				BaseURL:  "https://example.test/api?x=1&y=2",
+				AppTitle: "term-llm: dev",
+			},
+		},
+	}
+
+	if err := Save(cfg); err != nil {
+		t.Fatalf("Save failed: %v", err)
+	}
+
+	path, err := GetConfigPath()
+	if err != nil {
+		t.Fatalf("GetConfigPath failed: %v", err)
+	}
+	content, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read saved config: %v", err)
+	}
+
+	var parsed map[string]any
+	if err := yaml.Unmarshal(content, &parsed); err != nil {
+		t.Fatalf("saved config should be valid yaml: %v\n%s", err, string(content))
+	}
+
+	providers, ok := parsed["providers"].(map[string]any)
+	if !ok {
+		t.Fatalf("providers missing from saved config: %v", parsed)
+	}
+	openai, ok := providers["openai"].(map[string]any)
+	if !ok {
+		t.Fatalf("openai provider missing from saved config: %v", providers)
+	}
+	if got := openai["model"]; got != "gpt:5" {
+		t.Fatalf("model = %#v, want %q", got, "gpt:5")
+	}
+	if got := openai["app_title"]; got != "term-llm: dev" {
+		t.Fatalf("app_title = %#v, want %q", got, "term-llm: dev")
 	}
 }

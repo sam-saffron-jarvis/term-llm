@@ -102,8 +102,16 @@ func (t *ReadFileTool) Execute(ctx context.Context, args json.RawMessage) (llm.T
 		}
 	}
 
+	resolvedPath, err := resolveToolPath(a.Path, false)
+	if err != nil {
+		if toolErr, ok := err.(*ToolError); ok {
+			return textOutput(formatToolError(toolErr)), nil
+		}
+		return textOutput(formatToolError(NewToolErrorf(ErrInvalidParams, "cannot resolve path: %v", err))), nil
+	}
+
 	// Read file
-	data, err := os.ReadFile(a.Path)
+	data, err := os.ReadFile(resolvedPath)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return textOutput(formatToolError(NewToolError(ErrFileNotFound, a.Path))), nil

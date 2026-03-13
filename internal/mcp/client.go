@@ -11,8 +11,11 @@ import (
 	"sync"
 	"time"
 
+	"github.com/samsaffron/term-llm/internal/procutil"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
+
+var mcpCommandWaitDelay = time.Second
 
 // ToolSpec describes a tool available from an MCP server.
 type ToolSpec struct {
@@ -107,6 +110,8 @@ func (c *Client) Start(ctx context.Context) error {
 // createStdioTransport creates a stdio transport for command-based servers.
 func (c *Client) createStdioTransport(ctx context.Context) mcp.Transport {
 	cmd := exec.CommandContext(ctx, c.config.Command, c.config.Args...)
+	cmd.WaitDelay = mcpCommandWaitDelay
+	procutil.ConfigureCommandProcessGroup(cmd)
 	if len(c.config.Env) > 0 {
 		cmd.Env = os.Environ()
 		for k, v := range c.config.Env {

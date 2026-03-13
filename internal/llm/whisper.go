@@ -1,7 +1,6 @@
 package llm
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -23,6 +22,8 @@ type whisperResponse struct {
 	Text string `json:"text"`
 }
 
+const whisperErrorBodyLimit = 64 << 10
+
 // TranscribeFile sends an audio file to a Whisper-compatible API and returns the transcript.
 // Supported formats: flac, mp3, mp4, mpeg, mpga, m4a, ogg, wav, webm.
 func TranscribeFile(ctx context.Context, filePath string, opts TranscribeOptions) (string, error) {
@@ -32,41 +33,26 @@ func TranscribeFile(ctx context.Context, filePath string, opts TranscribeOptions
 	}
 	defer f.Close()
 
-	var body bytes.Buffer
-	mw := multipart.NewWriter(&body)
-
-	fw, err := mw.CreateFormFile("file", filepath.Base(filePath))
-	if err != nil {
-		return "", fmt.Errorf("create form file: %w", err)
-	}
-	if _, err := io.Copy(fw, f); err != nil {
-		return "", fmt.Errorf("write form file: %w", err)
-	}
-
 	model := opts.Model
 	if model == "" {
 		model = "whisper-1"
 	}
-	_ = mw.WriteField("model", model)
-	_ = mw.WriteField("response_format", "json")
-	if opts.Language != "" {
-		_ = mw.WriteField("language", opts.Language)
-	}
-	mw.Close()
 
 	endpoint := opts.Endpoint
 	if endpoint == "" {
 		endpoint = "https://api.openai.com/v1/audio/transcriptions"
 	}
 
-	req, err := http.NewRequestWithContext(ctx, "POST", endpoint, &body)
+	bodyReader, contentType := newTranscriptionBody(filePath, f, model, opts.Language)
+
+	req, err := http.NewRequestWithContext(ctx, "POST", endpoint, bodyReader)
 	if err != nil {
 		return "", fmt.Errorf("build request: %w", err)
 	}
 	if opts.APIKey != "" {
 		req.Header.Set("Authorization", "Bearer "+opts.APIKey)
 	}
-	req.Header.Set("Content-Type", mw.FormDataContentType())
+	req.Header.Set("Content-Type", contentType)
 
 	resp, err := defaultHTTPClient.Do(req)
 	if err != nil {
@@ -75,8 +61,7 @@ func TranscribeFile(ctx context.Context, filePath string, opts TranscribeOptions
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		b, _ := io.ReadAll(resp.Body)
-		return "", fmt.Errorf("whisper API error %d: %s", resp.StatusCode, string(b))
+		return "", fmt.Errorf("whisper API error %d: %s", resp.StatusCode, readLimitedBody(resp.Body, whisperErrorBodyLimit))
 	}
 
 	var result whisperResponse
@@ -85,4 +70,56 @@ func TranscribeFile(ctx context.Context, filePath string, opts TranscribeOptions
 	}
 
 	return result.Text, nil
+}
+
+func newTranscriptionBody(filePath string, file io.Reader, model, language string) (io.Reader, string) {
+	pr, pw := io.Pipe()
+	mw := multipart.NewWriter(pw)
+
+	go func() {
+		err := writeTranscriptionBody(mw, filePath, file, model, language)
+		_ = pw.CloseWithError(err)
+	}()
+
+	return pr, mw.FormDataContentType()
+}
+
+func writeTranscriptionBody(mw *multipart.Writer, filePath string, file io.Reader, model, language string) (err error) {
+	defer func() {
+		closeErr := mw.Close()
+		if err == nil {
+			err = closeErr
+		}
+	}()
+
+	fw, err := mw.CreateFormFile("file", filepath.Base(filePath))
+	if err != nil {
+		return fmt.Errorf("create form file: %w", err)
+	}
+	if _, err := io.Copy(fw, file); err != nil {
+		return fmt.Errorf("write form file: %w", err)
+	}
+	if err := mw.WriteField("model", model); err != nil {
+		return fmt.Errorf("write model field: %w", err)
+	}
+	if err := mw.WriteField("response_format", "json"); err != nil {
+		return fmt.Errorf("write response format field: %w", err)
+	}
+	if language != "" {
+		if err := mw.WriteField("language", language); err != nil {
+			return fmt.Errorf("write language field: %w", err)
+		}
+	}
+	return nil
+}
+
+func readLimitedBody(r io.Reader, limit int64) string {
+	b, err := io.ReadAll(io.LimitReader(r, limit+1))
+	if err != nil {
+		return fmt.Sprintf("failed to read error body: %v", err)
+	}
+	if int64(len(b)) > limit {
+		return string(b[:limit]) + "...[truncated]"
+	}
+	return string(b)
 }

@@ -134,12 +134,14 @@ func (t *EditFileTool) Execute(ctx context.Context, args json.RawMessage) (llm.T
 
 // executeDirectEdit performs a deterministic string replacement using 5-level matching.
 func (t *EditFileTool) executeDirectEdit(ctx context.Context, a EditFileArgs) (llm.ToolOutput, error) {
-	// Resolve to absolute path so that any two goroutines editing the same
-	// file — regardless of how the path was spelled — compute an identical
-	// lock path and correctly serialize via flock.  Note: filepath.Abs does
-	// not resolve symlinks; different symlink paths will use separate locks.
-	absPath, err := filepath.Abs(a.Path)
+	// Resolve the execution path so concurrent edits of the same underlying
+	// file share one lock path and the final write does not follow a late
+	// symlink change.
+	absPath, err := resolveToolPath(a.Path, true)
 	if err != nil {
+		if toolErr, ok := err.(*ToolError); ok {
+			return llm.TextOutput(formatToolError(toolErr)), nil
+		}
 		return llm.TextOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "failed to resolve path: %v", err))), nil
 	}
 
@@ -203,6 +205,11 @@ func (t *EditFileTool) executeDirectEdit(ctx context.Context, a EditFileArgs) (l
 		tempFile.Close()
 		os.Remove(tempPath)
 		return llm.TextOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "failed to write temp file: %v", err))), nil
+	}
+	if err := tempFile.Sync(); err != nil {
+		tempFile.Close()
+		os.Remove(tempPath)
+		return llm.TextOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "failed to sync temp file: %v", err))), nil
 	}
 	if err := tempFile.Close(); err != nil {
 		os.Remove(tempPath)
@@ -322,10 +329,12 @@ func (t *UnifiedDiffTool) Execute(ctx context.Context, args json.RawMessage) (ll
 	var diffs []llm.DiffData
 
 	for _, fd := range fileDiffs {
-		// Resolve to absolute path so that concurrent goroutines editing the
-		// same file compute an identical lock path (symlinks not resolved).
-		absPath, err := filepath.Abs(fd.Path)
+		absPath, err := resolveToolPath(fd.Path, true)
 		if err != nil {
+			if toolErr, ok := err.(*ToolError); ok {
+				allWarnings = append(allWarnings, fmt.Sprintf("%s: %s", fd.Path, toolErr.Message))
+				continue
+			}
 			allWarnings = append(allWarnings, fmt.Sprintf("%s: failed to resolve path: %v", fd.Path, err))
 			continue
 		}
@@ -387,6 +396,14 @@ func (t *UnifiedDiffTool) Execute(ctx context.Context, args json.RawMessage) (ll
 				syscall.Flock(int(lockFile.Fd()), syscall.LOCK_UN)
 				lockFile.Close()
 				allWarnings = append(allWarnings, fmt.Sprintf("%s: failed to write temp file: %v", fd.Path, err))
+				continue
+			}
+			if err := tempFile.Sync(); err != nil {
+				tempFile.Close()
+				os.Remove(tempPath)
+				syscall.Flock(int(lockFile.Fd()), syscall.LOCK_UN)
+				lockFile.Close()
+				allWarnings = append(allWarnings, fmt.Sprintf("%s: failed to sync temp file: %v", fd.Path, err))
 				continue
 			}
 			tempFile.Close()

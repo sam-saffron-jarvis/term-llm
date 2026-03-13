@@ -160,6 +160,34 @@ func (t *ImageGenerateTool) Execute(ctx context.Context, args json.RawMessage) (
 		return llm.TextOutput(formatToolError(NewToolError(ErrImageGenFailed, "image provider not configured"))), nil
 	}
 
+	outputDir := t.config.Image.OutputDir
+	if outputDir == "" {
+		outputDir = "~/Pictures/term-llm"
+	}
+	resolvedOutputDir, err := resolveToolPath(image.ExpandPath(outputDir), true)
+	if err != nil {
+		if toolErr, ok := err.(*ToolError); ok {
+			return llm.TextOutput(formatToolError(toolErr)), nil
+		}
+		return llm.TextOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "failed to resolve output directory: %v", err))), nil
+	}
+
+	if t.approval != nil {
+		needOutputDirApproval := a.OutputPath == "" || filepath.Clean(filepath.Dir(a.OutputPath)) != filepath.Clean(resolvedOutputDir)
+		if needOutputDirApproval {
+			outcome, err := t.approval.CheckPathApproval(ImageGenerateToolName, resolvedOutputDir, resolvedOutputDir, true)
+			if err != nil {
+				if toolErr, ok := err.(*ToolError); ok {
+					return llm.TextOutput(formatToolError(toolErr)), nil
+				}
+				return llm.TextOutput(formatToolError(NewToolError(ErrPermissionDenied, err.Error()))), nil
+			}
+			if outcome == Cancel {
+				return llm.TextOutput(formatToolError(NewToolErrorf(ErrPermissionDenied, "access denied: %s", resolvedOutputDir))), nil
+			}
+		}
+	}
+
 	// Create image provider
 	provider, err := image.NewImageProvider(t.config, t.providerName)
 	if err != nil {
@@ -177,31 +205,21 @@ func (t *ImageGenerateTool) Execute(ctx context.Context, args json.RawMessage) (
 
 	// Check if this is an edit or generation
 	if len(inputPaths) > 0 {
-		// Resolve output dir for auto-approving reads of previously generated images
-		autoApproveDir := t.config.Image.OutputDir
-		if autoApproveDir == "" {
-			autoApproveDir = "~/Pictures/term-llm"
-		}
-		resolvedOutputDir := image.ExpandPath(autoApproveDir)
-
-		// Check read permissions for all input images via approval manager
+		// Check read permissions for all input images via approval manager.
+		resolvedInputPaths := make([]string, 0, len(inputPaths))
 		if t.approval != nil {
 			debug := t.approval.DebugApproval
 			for _, inputPath := range inputPaths {
-				// Auto-approve reads from the image output directory.
-				// Use EvalSymlinks to prevent symlink escape: a symlink inside the
-				// output dir could point to an arbitrary file and would pass a naive
-				// Abs+HasPrefix check.
-				resolvedInput, inputErr := filepath.EvalSymlinks(inputPath)
-				resolvedDir, dirErr := filepath.EvalSymlinks(resolvedOutputDir)
-				if inputErr == nil && dirErr == nil && strings.HasPrefix(resolvedInput, resolvedDir+string(filepath.Separator)) {
+				resolvedInput, inputErr := resolveToolPath(inputPath, false)
+				if inputErr == nil && strings.HasPrefix(resolvedInput, resolvedOutputDir+string(filepath.Separator)) {
 					if debug {
 						log.Printf("[image_generate] auto-approved input %q (inside output dir %q)", inputPath, resolvedOutputDir)
 					}
+					resolvedInputPaths = append(resolvedInputPaths, resolvedInput)
 					continue
 				}
-				if debug && (inputErr != nil || dirErr != nil) {
-					log.Printf("[image_generate] EvalSymlinks: input=%v dir=%v — falling through to approval check", inputErr, dirErr)
+				if debug && inputErr != nil {
+					log.Printf("[image_generate] resolveToolPath input=%v — falling through to approval check", inputErr)
 				}
 
 				outcome, err := t.approval.CheckPathApproval(ImageGenerateToolName, inputPath, inputPath, false)
@@ -217,8 +235,30 @@ func (t *ImageGenerateTool) Execute(ctx context.Context, args json.RawMessage) (
 				if outcome == Cancel {
 					return llm.TextOutput(formatToolError(NewToolErrorf(ErrPermissionDenied, "access denied: %s", inputPath))), nil
 				}
+
+				resolvedInput, err = resolveToolPath(inputPath, false)
+				if err != nil {
+					if toolErr, ok := err.(*ToolError); ok {
+						return llm.TextOutput(formatToolError(toolErr)), nil
+					}
+					return llm.TextOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "failed to resolve input image: %v", err))), nil
+				}
+				resolvedInputPaths = append(resolvedInputPaths, resolvedInput)
+			}
+		} else {
+			for _, inputPath := range inputPaths {
+				resolvedInput, err := resolveToolPath(inputPath, false)
+				if err != nil {
+					if toolErr, ok := err.(*ToolError); ok {
+						return llm.TextOutput(formatToolError(toolErr)), nil
+					}
+					return llm.TextOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "failed to resolve input image: %v", err))), nil
+				}
+				resolvedInputPaths = append(resolvedInputPaths, resolvedInput)
 			}
 		}
+
+		inputPaths = resolvedInputPaths
 
 		// Check if provider supports editing
 		if !provider.SupportsEdit() {
@@ -270,20 +310,24 @@ func (t *ImageGenerateTool) Execute(ctx context.Context, args json.RawMessage) (
 
 	// Determine output path
 	outputPath := a.OutputPath
-	outputDir := t.config.Image.OutputDir
-	if outputDir == "" {
-		outputDir = "~/Pictures/term-llm"
-	}
 
 	var servedPath string
 
 	if outputPath == "" {
-		outputPath, err = image.SaveImage(result.Data, outputDir, a.Prompt)
+		outputPath, err = image.SaveImage(result.Data, resolvedOutputDir, a.Prompt)
 		if err != nil {
 			return llm.TextOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "failed to save image: %v", err))), nil
 		}
 		servedPath = outputPath
 	} else {
+		outputPath, err = resolveToolPath(outputPath, true)
+		if err != nil {
+			if toolErr, ok := err.(*ToolError); ok {
+				return llm.TextOutput(formatToolError(toolErr)), nil
+			}
+			return llm.TextOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "failed to resolve output path: %v", err))), nil
+		}
+
 		// Write to requested location
 		dir := filepath.Dir(outputPath)
 		if err := os.MkdirAll(dir, 0755); err != nil {
@@ -295,7 +339,7 @@ func (t *ImageGenerateTool) Execute(ctx context.Context, args json.RawMessage) (
 
 		// Also copy into outputDir so the web UI can serve it
 		var saveErr error
-		servedPath, saveErr = image.SaveImage(result.Data, outputDir, a.Prompt)
+		servedPath, saveErr = image.SaveImage(result.Data, resolvedOutputDir, a.Prompt)
 		if saveErr != nil {
 			// Non-fatal: fall back to outputPath (web UI may not work but file is saved)
 			servedPath = outputPath

@@ -89,9 +89,11 @@ func (t *WriteFileTool) Execute(ctx context.Context, args json.RawMessage) (llm.
 		}
 	}
 
-	// Resolve absolute path
-	absPath, err := filepath.Abs(a.Path)
+	absPath, err := resolveToolPath(a.Path, true)
 	if err != nil {
+		if toolErr, ok := err.(*ToolError); ok {
+			return textOutput(formatToolError(toolErr)), nil
+		}
 		return textOutput(formatToolError(NewToolErrorf(ErrInvalidParams, "cannot resolve path: %v", err))), nil
 	}
 

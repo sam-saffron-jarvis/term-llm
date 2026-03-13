@@ -63,6 +63,7 @@ func TestImageGenAutoApprove_SymlinkEscape(t *testing.T) {
 	// approval check and the test will NOT see a denial.
 	perms := NewToolPermissions()
 	mgr := NewApprovalManager(perms)
+	mgr.dirCache.Set(outputDir, ProceedAlways, true)
 
 	var approvalRequested []string
 	mgr.PromptUIFunc = func(path string, isWrite bool, isShell bool) (ApprovalResult, error) {
@@ -90,11 +91,11 @@ func TestImageGenAutoApprove_SymlinkEscape(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Execute returned error: %v", err)
 	}
-	if !strings.Contains(out.Content, "permission_denied") && !strings.Contains(out.Content, "access denied") {
-		t.Errorf("expected permission denied for symlink escape, got: %s", out.Content)
+	if !strings.Contains(out.Content, "SYMLINK_ESCAPE") && !strings.Contains(out.Content, "access denied") {
+		t.Errorf("expected symlink escape denial, got: %s", out.Content)
 	}
-	if len(approvalRequested) == 0 {
-		t.Error("expected approval to be requested for symlink pointing outside output dir, but auto-approve bypassed it")
+	if len(approvalRequested) != 0 {
+		t.Errorf("expected symlink escape to fail before prompting, got prompt(s) for: %v", approvalRequested)
 	}
 
 	// Test 2: A real file inside outputDir should be auto-approved (no prompt).
@@ -114,6 +115,31 @@ func TestImageGenAutoApprove_SymlinkEscape(t *testing.T) {
 	// The debug provider should succeed (it generates a random image)
 	if strings.Contains(out2.Content, "permission_denied") || strings.Contains(out2.Content, "access denied") {
 		t.Errorf("expected success for real file in output dir, got: %s", out2.Content)
+	}
+}
+
+func TestImageGenerateTool_RequiresApprovalForDefaultOutputDir(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfg := &config.Config{
+		Image: config.ImageConfig{
+			Provider:  "debug",
+			OutputDir: filepath.Join(tmpDir, "generated"),
+		},
+	}
+
+	mgr := NewApprovalManager(NewToolPermissions())
+	mgr.PromptUIFunc = func(path string, isWrite bool, isShell bool) (ApprovalResult, error) {
+		return ApprovalResult{Choice: ApprovalChoiceDeny}, nil
+	}
+
+	tool := NewImageGenerateTool(mgr, cfg, "debug", nil, "", "")
+	args, _ := json.Marshal(ImageGenerateArgs{Prompt: "denied"})
+	out, err := tool.Execute(context.Background(), args)
+	if err != nil {
+		t.Fatalf("Execute returned error: %v", err)
+	}
+	if !strings.Contains(strings.ToLower(out.Content), "access denied") {
+		t.Fatalf("expected output-dir permission denial, got: %s", out.Content)
 	}
 }
 
@@ -394,7 +420,7 @@ func TestImageGenAutoApprove_EvalSymlinksFailure(t *testing.T) {
 	}
 
 	// Should NOT succeed - the file doesn't exist and should not be auto-approved
-	if !strings.Contains(out.Content, "FILE_NOT_FOUND") && !strings.Contains(out.Content, "permission_denied") {
+	if !strings.Contains(out.Content, "FILE_NOT_FOUND") && !strings.Contains(out.Content, "PERMISSION_DENIED") {
 		t.Errorf("expected error for non-existent file (not auto-approved), got: %s", out.Content)
 	}
 }

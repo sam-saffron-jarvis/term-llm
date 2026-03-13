@@ -82,12 +82,19 @@ func (r *RetryProvider) Stream(ctx context.Context, req Request) (Stream, error)
 				}
 				lastErr = err
 			} else {
-				// Stream created, forward events (may also fail with retryable error)
-				err = r.forwardEvents(ctx, stream, events)
+				// Stream created, collect events so retryable failures do not leak
+				// partial text/tool state into the final stream.
+				buffered, err := r.collectEvents(ctx, stream)
 				if err == nil {
+					if err := flushEvents(ctx, events, buffered); err != nil {
+						return err
+					}
 					return nil // Success!
 				}
 				if !isRetryable(err) {
+					if flushErr := flushEvents(ctx, events, buffered); flushErr != nil {
+						return flushErr
+					}
 					return err
 				}
 				lastErr = err
@@ -127,37 +134,46 @@ func (r *RetryProvider) Stream(ctx context.Context, req Request) (Stream, error)
 	}), nil
 }
 
-// forwardEvents reads events from the inner stream and forwards them.
-// Returns a retryable error if the stream fails with a transient error.
-func (r *RetryProvider) forwardEvents(ctx context.Context, stream Stream, events chan<- Event) error {
+// collectEvents reads events from the inner stream.
+// Retryable failures return the partial events separately so the caller can
+// discard them before retrying.
+func (r *RetryProvider) collectEvents(ctx context.Context, stream Stream) ([]Event, error) {
 	defer stream.Close()
+	var collected []Event
 
 	for {
 		select {
 		case <-ctx.Done():
-			return ctx.Err()
+			return collected, ctx.Err()
 		default:
 		}
 
 		event, err := stream.Recv()
 		if err == io.EOF {
-			return nil
+			return collected, nil
 		}
 		if err != nil {
-			return err
+			return collected, err
 		}
 
 		// Check for error events from the stream (e.g., 429 during streaming)
 		if event.Type == EventError && event.Err != nil {
-			return event.Err
+			return collected, event.Err
 		}
 
+		collected = append(collected, event)
+	}
+}
+
+func flushEvents(ctx context.Context, events chan<- Event, buffered []Event) error {
+	for _, event := range buffered {
 		select {
 		case events <- event:
 		case <-ctx.Done():
 			return ctx.Err()
 		}
 	}
+	return nil
 }
 
 // isRetryable returns true if the error is a transient error worth retrying.

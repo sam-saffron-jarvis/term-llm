@@ -116,8 +116,16 @@ func (t *ViewImageTool) Execute(ctx context.Context, args json.RawMessage) (llm.
 		}
 	}
 
+	resolvedPath, err := resolveToolPath(a.FilePath, false)
+	if err != nil {
+		if toolErr, ok := err.(*ToolError); ok {
+			return llm.TextOutput(formatToolError(toolErr)), nil
+		}
+		return llm.TextOutput(formatToolError(NewToolErrorf(ErrInvalidParams, "cannot resolve path: %v", err))), nil
+	}
+
 	// Check file exists
-	if _, err := os.Stat(a.FilePath); err != nil {
+	if _, err := os.Stat(resolvedPath); err != nil {
 		if os.IsNotExist(err) {
 			return llm.TextOutput(formatToolError(NewToolError(ErrFileNotFound, a.FilePath))), nil
 		}
@@ -125,7 +133,7 @@ func (t *ViewImageTool) Execute(ctx context.Context, args json.RawMessage) (llm.
 	}
 
 	// Read file
-	data, err := os.ReadFile(a.FilePath)
+	data, err := os.ReadFile(resolvedPath)
 	if err != nil {
 		return llm.TextOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "failed to read image: %v", err))), nil
 	}
@@ -137,7 +145,7 @@ func (t *ViewImageTool) Execute(ctx context.Context, args json.RawMessage) (llm.
 	}
 	mimeType := http.DetectContentType(data[:sniffSize])
 	if mimeType == "application/octet-stream" {
-		ext := strings.ToLower(filepath.Ext(a.FilePath))
+		ext := strings.ToLower(filepath.Ext(resolvedPath))
 		var ok bool
 		mimeType, ok = supportedImageFormats[ext]
 		if !ok {

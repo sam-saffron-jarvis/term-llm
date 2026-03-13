@@ -172,6 +172,79 @@ func TestRunAgentScriptTool_DirectoryTarget(t *testing.T) {
 	}
 }
 
+func TestRunAgentScriptTool_ArgsAreNotShellExpanded(t *testing.T) {
+	agentDir := t.TempDir()
+	writeErr := os.WriteFile(filepath.Join(agentDir, "echo.sh"), []byte("#!/bin/sh\nprintf '%s\\n' \"$1\"\n"), 0755)
+	if writeErr != nil {
+		t.Fatalf("write script: %v", writeErr)
+	}
+
+	cfg := &ToolConfig{AgentDir: agentDir}
+	tool := NewRunAgentScriptTool(cfg, DefaultOutputLimits())
+
+	args, _ := json.Marshal(RunAgentScriptArgs{
+		Script: "echo.sh",
+		Args:   "hello; echo injected",
+	})
+	output, err := tool.Execute(context.Background(), args)
+	if err != nil {
+		t.Fatalf("Execute returned error: %v", err)
+	}
+
+	text := output.Content
+	if !strings.Contains(text, "hello;") {
+		t.Fatalf("expected literal shell metacharacters in output, got: %s", text)
+	}
+	if strings.Contains(text, "injected") {
+		t.Fatalf("unexpected shell expansion in output: %s", text)
+	}
+}
+
+func TestRunAgentScriptTool_ScriptPathWithSpaces(t *testing.T) {
+	parent := t.TempDir()
+	agentDir := filepath.Join(parent, "agent dir")
+	if err := os.MkdirAll(agentDir, 0755); err != nil {
+		t.Fatalf("mkdir agent dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(agentDir, "echo.sh"), []byte("#!/bin/sh\necho spaced\n"), 0755); err != nil {
+		t.Fatalf("write script: %v", err)
+	}
+
+	cfg := &ToolConfig{AgentDir: agentDir}
+	tool := NewRunAgentScriptTool(cfg, DefaultOutputLimits())
+	args, _ := json.Marshal(RunAgentScriptArgs{Script: "echo.sh"})
+
+	output, err := tool.Execute(context.Background(), args)
+	if err != nil {
+		t.Fatalf("Execute returned error: %v", err)
+	}
+	if !strings.Contains(output.Content, "spaced") {
+		t.Fatalf("expected script in spaced path to run, got: %s", output.Content)
+	}
+}
+
+func TestRunAgentScriptTool_TimeoutKillsGrandchildren(t *testing.T) {
+	agentDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(agentDir, "hang.sh"), []byte("#!/bin/sh\nsleep 60 & wait\n"), 0755); err != nil {
+		t.Fatalf("write script: %v", err)
+	}
+
+	cfg := &ToolConfig{AgentDir: agentDir}
+	tool := NewRunAgentScriptTool(cfg, DefaultOutputLimits())
+	args, _ := json.Marshal(RunAgentScriptArgs{
+		Script:         "hang.sh",
+		TimeoutSeconds: 1,
+	})
+
+	output, err := tool.Execute(context.Background(), args)
+	if err != nil {
+		t.Fatalf("Execute returned error: %v", err)
+	}
+	if !output.TimedOut {
+		t.Fatal("expected timeout for grandchild-holding script")
+	}
+}
+
 func TestRunAgentScriptTool_Preview(t *testing.T) {
 	cfg := &ToolConfig{AgentDir: "/tmp/agent"}
 	tool := NewRunAgentScriptTool(cfg, DefaultOutputLimits())

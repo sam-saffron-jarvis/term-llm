@@ -5,6 +5,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	sdkmcp "github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -123,5 +124,28 @@ func TestCreateStdioTransport_EnvOverridesParent(t *testing.T) {
 	}
 	if !found {
 		t.Error("expected overridden env var in subprocess env")
+	}
+}
+
+func TestCreateStdioTransport_ConfiguresProcessGroupCancellation(t *testing.T) {
+	client := &Client{
+		name: "test",
+		config: ServerConfig{
+			Command: "echo",
+			Args:    []string{"hello"},
+		},
+	}
+
+	transport := client.createStdioTransport(context.Background())
+	ct := transport.(*sdkmcp.CommandTransport)
+
+	if ct.Command.Cancel == nil {
+		t.Fatalf("expected subprocess cancel hook to be configured")
+	}
+	if ct.Command.SysProcAttr == nil || !ct.Command.SysProcAttr.Setpgid {
+		t.Fatalf("expected subprocess to run in its own process group")
+	}
+	if ct.Command.WaitDelay != time.Second {
+		t.Fatalf("WaitDelay = %v, want %v", ct.Command.WaitDelay, time.Second)
 	}
 }

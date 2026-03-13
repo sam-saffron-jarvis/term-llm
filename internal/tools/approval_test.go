@@ -28,6 +28,8 @@ func TestMatchPattern(t *testing.T) {
 		{"git *", "git commit -m 'message'", true},
 		{"go test *", "go test ./...", true},
 		{"npm *", "npm install lodash", true},
+		{"git *", "git status ; cat /tmp/secret", false},
+		{"go test *", "go test ./... && rm -rf /", false},
 
 		// Non-matches
 		{"git *", "npm install", false},
@@ -105,6 +107,35 @@ func TestApprovalManager_CheckPathApproval_PreApproved(t *testing.T) {
 
 	// Note: In this implementation, WriteDirs do NOT automatically include read permission.
 	// Read access must be explicitly granted via ReadDirs.
+}
+
+func TestApprovalManager_CheckPathApproval_SymlinkEscapeDeniedBySessionCache(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink test not supported on Windows")
+	}
+
+	approvedDir := t.TempDir()
+	outsideDir := t.TempDir()
+	secret := filepath.Join(outsideDir, "secret.txt")
+	if err := os.WriteFile(secret, []byte("secret"), 0644); err != nil {
+		t.Fatalf("write secret: %v", err)
+	}
+
+	link := filepath.Join(approvedDir, "link.txt")
+	if err := os.Symlink(secret, link); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+
+	mgr := NewApprovalManager(NewToolPermissions())
+	mgr.dirCache.Set(approvedDir, ProceedAlways, false)
+
+	outcome, err := mgr.CheckPathApproval(ReadFileToolName, link, link, false)
+	if err == nil {
+		t.Fatalf("expected symlink escape error, got outcome=%v", outcome)
+	}
+	if toolErr, ok := err.(*ToolError); !ok || toolErr.Type != ErrSymlinkEscape {
+		t.Fatalf("expected symlink escape error, got %T %v", err, err)
+	}
 }
 
 func TestApprovalManager_CheckPathApproval_SessionCache(t *testing.T) {
@@ -658,12 +689,20 @@ func TestApprovalManager_HandleFileApprovalResult_Directory_AddedToCache(t *test
 		t.Fatalf("handleFileApprovalResult failed: %v", err)
 	}
 
+	testFile := filepath.Join(tempDir, "subdir", "file.txt")
+	if err := os.MkdirAll(filepath.Dir(testFile), 0755); err != nil {
+		t.Fatalf("mkdir test file dir: %v", err)
+	}
+	if err := os.WriteFile(testFile, []byte("content"), 0644); err != nil {
+		t.Fatalf("write test file: %v", err)
+	}
+
 	// Verify directory was added to session cache (read)
-	if !mgr.dirCache.IsPathInApprovedDir(filepath.Join(tempDir, "subdir", "file.txt"), false) {
+	if !mgr.dirCache.IsPathInApprovedDir(testFile, false) {
 		t.Error("directory should be in approved cache after approval")
 	}
 	// Write should NOT be approved
-	if mgr.dirCache.IsPathInApprovedDir(filepath.Join(tempDir, "subdir", "file.txt"), true) {
+	if mgr.dirCache.IsPathInApprovedDir(testFile, true) {
 		t.Error("read-only directory approval should not grant write access")
 	}
 }
@@ -858,20 +897,41 @@ func TestApprovalManager_HandleShellApprovalResult_Pattern_AddedToCache(t *testi
 func TestDirCache_IsPathInApprovedDir(t *testing.T) {
 	cache := NewDirCache()
 
+	projectDir := t.TempDir()
+	allowedDir := t.TempDir()
+	projectFile := filepath.Join(projectDir, "src", "main.go")
+	if err := os.MkdirAll(filepath.Dir(projectFile), 0755); err != nil {
+		t.Fatalf("mkdir project dir: %v", err)
+	}
+	if err := os.WriteFile(projectFile, []byte("package main"), 0644); err != nil {
+		t.Fatalf("write project file: %v", err)
+	}
+	allowedFile := filepath.Join(allowedDir, "subdir", "file.txt")
+	if err := os.MkdirAll(filepath.Dir(allowedFile), 0755); err != nil {
+		t.Fatalf("mkdir allowed dir: %v", err)
+	}
+	if err := os.WriteFile(allowedFile, []byte("content"), 0644); err != nil {
+		t.Fatalf("write allowed file: %v", err)
+	}
+	otherFile := filepath.Join(t.TempDir(), "file.go")
+	if err := os.WriteFile(otherFile, []byte("content"), 0644); err != nil {
+		t.Fatalf("write other file: %v", err)
+	}
+
 	// Add approved directories (read)
-	cache.Set("/home/user/project", ProceedAlways, false)
-	cache.Set("/tmp/allowed", ProceedAlways, false)
+	cache.Set(projectDir, ProceedAlways, false)
+	cache.Set(allowedDir, ProceedAlways, false)
 
 	tests := []struct {
 		path string
 		want bool
 	}{
-		{"/home/user/project/src/main.go", true},
-		{"/home/user/project", true},
-		{"/home/user/other/file.go", false},
-		{"/tmp/allowed/subdir/file", true},
-		{"/tmp/other", false},
-		{"/home/user/project-extra/file", false}, // Similar prefix but different dir
+		{projectFile, true},
+		{projectDir, true},
+		{otherFile, false},
+		{allowedFile, true},
+		{filepath.Join(t.TempDir(), "other"), false},
+		{projectDir + "-extra", false},
 	}
 
 	for _, tt := range tests {
@@ -886,38 +946,48 @@ func TestDirCache_IsPathInApprovedDir(t *testing.T) {
 
 func TestDirCache_ReadWriteSeparation(t *testing.T) {
 	cache := NewDirCache()
+	projectDir := t.TempDir()
+	projectFile := filepath.Join(projectDir, "file.go")
+	if err := os.WriteFile(projectFile, []byte("package main"), 0644); err != nil {
+		t.Fatalf("write project file: %v", err)
+	}
+	writeOnlyDir := t.TempDir()
+	writeOnlyFile := filepath.Join(writeOnlyDir, "file.txt")
+	if err := os.WriteFile(writeOnlyFile, []byte("content"), 0644); err != nil {
+		t.Fatalf("write write-only file: %v", err)
+	}
 
-	// Approve read for /home/user/project
-	cache.Set("/home/user/project", ProceedAlways, false)
+	// Approve read for projectDir
+	cache.Set(projectDir, ProceedAlways, false)
 
 	// Read should work
-	if !cache.IsPathInApprovedDir("/home/user/project/file.go", false) {
+	if !cache.IsPathInApprovedDir(projectFile, false) {
 		t.Error("read should be approved after read approval")
 	}
 	// Write should NOT work
-	if cache.IsPathInApprovedDir("/home/user/project/file.go", true) {
+	if cache.IsPathInApprovedDir(projectFile, true) {
 		t.Error("write should NOT be approved after read-only approval")
 	}
 
-	// Now approve write for /home/user/project
-	cache.Set("/home/user/project", ProceedAlways, true)
+	// Now approve write for projectDir
+	cache.Set(projectDir, ProceedAlways, true)
 
 	// Both should work
-	if !cache.IsPathInApprovedDir("/home/user/project/file.go", false) {
+	if !cache.IsPathInApprovedDir(projectFile, false) {
 		t.Error("read should still be approved")
 	}
-	if !cache.IsPathInApprovedDir("/home/user/project/file.go", true) {
+	if !cache.IsPathInApprovedDir(projectFile, true) {
 		t.Error("write should be approved after write approval")
 	}
 
 	// Separate dir with only write approval
-	cache.Set("/tmp/write-only", ProceedAlways, true)
+	cache.Set(writeOnlyDir, ProceedAlways, true)
 	// Write approved
-	if !cache.IsPathInApprovedDir("/tmp/write-only/file.txt", true) {
+	if !cache.IsPathInApprovedDir(writeOnlyFile, true) {
 		t.Error("write should be approved")
 	}
 	// Read should also work (write implies read)
-	if !cache.IsPathInApprovedDir("/tmp/write-only/file.txt", false) {
+	if !cache.IsPathInApprovedDir(writeOnlyFile, false) {
 		t.Error("read should be approved when write is approved")
 	}
 }

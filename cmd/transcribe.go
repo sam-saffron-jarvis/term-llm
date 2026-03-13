@@ -2,15 +2,18 @@ package cmd
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/procutil"
 	"github.com/samsaffron/term-llm/internal/signal"
 	"github.com/spf13/cobra"
 )
@@ -19,6 +22,8 @@ var (
 	transcribeLanguage  string
 	transcribePorcelain bool
 	transcribeProvider  string
+	transcribeCLIOutputLimit int64         = 1 << 20
+	transcribeCLIWaitDelay   time.Duration = time.Second
 )
 
 var transcribeCmd = &cobra.Command{
@@ -65,14 +70,38 @@ func transcribeWhisperCLI(ctx context.Context, cfg *config.Config, filePath, lan
 	}
 
 	cmd := exec.CommandContext(ctx, whisperBin, args...)
-	out, err := cmd.Output()
+	cmd.WaitDelay = transcribeCLIWaitDelay
+	cleanup, prepErr := procutil.PrepareCommand(cmd)
+	if prepErr != nil {
+		return "", fmt.Errorf("whisper-cli setup failed: %w", prepErr)
+	}
+	defer cleanup()
+
+	stdout := procutil.NewLimitedBuffer(transcribeCLIOutputLimit)
+	stderr := procutil.NewLimitedBuffer(transcribeCLIOutputLimit)
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
+
+	err = cmd.Run()
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		return "", fmt.Errorf("whisper-cli: %w", context.DeadlineExceeded)
+	}
+	if errors.Is(ctx.Err(), context.Canceled) {
+		return "", fmt.Errorf("whisper-cli: %w", context.Canceled)
+	}
+	if stdout.Truncated() || stderr.Truncated() {
+		return "", fmt.Errorf("whisper-cli: output exceeded %d bytes", transcribeCLIOutputLimit)
+	}
 	if err != nil {
+		if msg := strings.TrimSpace(stderr.String()); msg != "" {
+			return "", fmt.Errorf("whisper-cli: %s", msg)
+		}
 		return "", fmt.Errorf("whisper-cli: %w", err)
 	}
 
 	re := regexp.MustCompile(`^\[[\d:.,\s>-]+\]\s*`)
 	var lines []string
-	for _, line := range strings.Split(string(out), "\n") {
+	for _, line := range strings.Split(stdout.String(), "\n") {
 		line = re.ReplaceAllString(strings.TrimSpace(line), "")
 		if line != "" {
 			lines = append(lines, line)

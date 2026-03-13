@@ -147,52 +147,6 @@ func (p *ToolPermissions) IsShellCommandAllowed(command string) bool {
 	return false
 }
 
-// CheckSymlinkEscape checks if a path escapes via symlink.
-// Returns an error if the resolved path is outside the allowed directories.
-func (p *ToolPermissions) CheckSymlinkEscape(path string, allowedDirs []string) error {
-	abs, err := filepath.Abs(path)
-	if err != nil {
-		return NewToolErrorf(ErrInvalidParams, "cannot resolve path: %v", err)
-	}
-
-	resolved, err := filepath.EvalSymlinks(abs)
-	if err != nil {
-		if os.IsNotExist(err) {
-			// File doesn't exist, resolve parent
-			resolved, err = resolveParentSymlinks(abs)
-			if err != nil {
-				return err
-			}
-		} else {
-			return NewToolErrorf(ErrInvalidParams, "cannot evaluate symlinks: %v", err)
-		}
-	}
-
-	// Check if resolved path is in allowed dirs
-	inAllowed := false
-	for _, dir := range allowedDirs {
-		absDir, err := filepath.Abs(dir)
-		if err != nil {
-			continue
-		}
-		resolvedDir, _ := filepath.EvalSymlinks(absDir)
-		if resolvedDir == "" {
-			resolvedDir = absDir
-		}
-
-		if strings.HasPrefix(resolved, resolvedDir+string(filepath.Separator)) || resolved == resolvedDir {
-			inAllowed = true
-			break
-		}
-	}
-
-	if !inAllowed && abs != resolved {
-		return NewToolErrorf(ErrSymlinkEscape, "path %s resolves to %s which is outside approved directories", abs, resolved)
-	}
-
-	return nil
-}
-
 // isPathInDirs checks if a resolved path is under any of the given directories.
 func (p *ToolPermissions) isPathInDirs(resolvedPath string, dirs []string) bool {
 	for _, dir := range dirs {

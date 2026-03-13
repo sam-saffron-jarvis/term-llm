@@ -92,6 +92,9 @@ func NewDirCache() *DirCache {
 
 // Set stores a directory approval for the given access type.
 func (c *DirCache) Set(dir string, outcome ConfirmOutcome, isWrite bool) {
+	if resolved, err := canonicalApprovalPath(dir, isWrite); err == nil {
+		dir = resolved
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if isWrite {
@@ -108,16 +111,16 @@ func (c *DirCache) IsPathInApprovedDir(path string, isWrite bool) bool {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 
-	absPath, err := filepath.Abs(path)
+	resolvedPath, err := canonicalApprovalPath(path, isWrite)
 	if err != nil {
 		return false
 	}
 
 	if isWrite {
-		return matchApprovedPath(absPath, c.writeDirs)
+		return matchApprovedPath(resolvedPath, c.writeDirs)
 	}
 	// Read: check both read and write approvals
-	return matchApprovedPath(absPath, c.readDirs) || matchApprovedPath(absPath, c.writeDirs)
+	return matchApprovedPath(resolvedPath, c.readDirs) || matchApprovedPath(resolvedPath, c.writeDirs)
 }
 
 func matchApprovedPath(absPath string, dirs map[string]ConfirmOutcome) bool {
@@ -419,12 +422,19 @@ func (m *ApprovalManager) CheckPathApproval(toolName, path, toolInfo string, isW
 		return ProceedOnce, nil
 	}
 
-	absPath := path
+	absPath, err := canonicalApprovalPath(path, isWrite)
+	if err != nil {
+		if m.DebugApproval {
+			log.Printf("[approval] CheckPathApproval tool=%s path=%q → canonicalize error: %v", toolName, path, err)
+		}
+		return Cancel, err
+	}
+	originalPath := path
 	if resolved, err := filepath.Abs(path); err == nil {
-		absPath = resolved
+		originalPath = resolved
 	}
 
-	outcome, ok, err := m.checkPathApprovalNoPrompt(toolName, path, absPath, isWrite)
+	outcome, ok, err := m.checkPathApprovalNoPrompt(toolName, absPath, absPath, isWrite)
 	if err != nil {
 		if m.DebugApproval {
 			log.Printf("[approval] CheckPathApproval tool=%s path=%q → no-prompt error: %v", toolName, absPath, err)
@@ -437,6 +447,9 @@ func (m *ApprovalManager) CheckPathApproval(toolName, path, toolInfo string, isW
 		}
 		return outcome, nil
 	}
+	if originalPath != absPath {
+		return Cancel, NewToolErrorf(ErrSymlinkEscape, "path %s resolves to %s which is outside approved directories", originalPath, absPath)
+	}
 
 	// 4. Need to prompt user - serialize prompts to avoid UI conflicts
 	// Use shared lock (via PromptLock()) to prevent concurrent prompts across parent/child managers
@@ -445,7 +458,7 @@ func (m *ApprovalManager) CheckPathApproval(toolName, path, toolInfo string, isW
 	defer promptLock.Unlock()
 
 	// Recheck now that we hold the prompt lock to avoid duplicate prompts
-	outcome, ok, err = m.checkPathApprovalNoPrompt(toolName, path, absPath, isWrite)
+	outcome, ok, err = m.checkPathApprovalNoPrompt(toolName, absPath, absPath, isWrite)
 	if err != nil {
 		if m.DebugApproval {
 			log.Printf("[approval] CheckPathApproval tool=%s path=%q → recheck error: %v", toolName, absPath, err)
@@ -457,6 +470,9 @@ func (m *ApprovalManager) CheckPathApproval(toolName, path, toolInfo string, isW
 			log.Printf("[approval] CheckPathApproval tool=%s path=%q → recheck decided: %v", toolName, absPath, outcome)
 		}
 		return outcome, nil
+	}
+	if originalPath != absPath {
+		return Cancel, NewToolErrorf(ErrSymlinkEscape, "path %s resolves to %s which is outside approved directories", originalPath, absPath)
 	}
 
 	projectApprovals := m.getProjectApprovals(absPath)
@@ -496,8 +512,8 @@ func (m *ApprovalManager) CheckPathApproval(toolName, path, toolInfo string, isW
 		return Cancel, NewToolError(ErrPermissionDenied, "path not in allowlist and no TTY for approval")
 	}
 
-	dir := getDirectoryForApproval(path)
-	absDir, err := filepath.Abs(dir)
+	dir := getDirectoryForApproval(absPath)
+	absDir, err := canonicalApprovalPath(dir, isWrite)
 	if err != nil {
 		return Cancel, NewToolError(ErrPermissionDenied, "invalid path")
 	}
@@ -539,7 +555,7 @@ func (m *ApprovalManager) handleFileApprovalResult(result ApprovalResult, path s
 	case ApprovalChoiceFile:
 		// Session-only file approval - cache the exact path so repeated
 		// accesses to the same file don't re-prompt within this session.
-		absFile, err := filepath.Abs(path)
+		absFile, err := canonicalApprovalPath(path, isWrite)
 		if err != nil {
 			absFile = path
 		}
@@ -548,7 +564,7 @@ func (m *ApprovalManager) handleFileApprovalResult(result ApprovalResult, path s
 
 	case ApprovalChoiceDirectory:
 		// Session-only directory approval
-		absDir, err := filepath.Abs(result.Path)
+		absDir, err := canonicalApprovalPath(result.Path, isWrite)
 		if err != nil {
 			absDir = result.Path
 		}
@@ -730,27 +746,68 @@ func (m *ApprovalManager) ApproveShellPattern(pattern string) {
 
 // ApprovePath adds a path/directory approval to the session cache.
 func (m *ApprovalManager) ApprovePath(toolName, path string, outcome ConfirmOutcome) {
+	if resolved, err := canonicalApprovalPath(path, false); err == nil {
+		path = resolved
+	}
 	m.cache.Set(toolName, path, outcome)
 }
 
 // ApproveDirectory adds a directory approval to the session cache.
 func (m *ApprovalManager) ApproveDirectory(toolName, dir string, outcome ConfirmOutcome) {
+	if resolved, err := canonicalApprovalPath(dir, false); err == nil {
+		dir = resolved
+	}
 	m.cache.SetForDirectory(toolName, dir, outcome)
 }
 
 // matchPattern checks if a command matches a glob pattern.
 func matchPattern(pattern, command string) bool {
-	// Simple glob matching for shell patterns
-	// Patterns like "git *" or "npm test"
-	if len(pattern) == 0 {
+	if pattern == "" {
+		return false
+	}
+	if pattern == command {
+		return true
+	}
+	if hasUnsafeShellSyntax(pattern) || hasUnsafeShellSyntax(command) {
 		return false
 	}
 
-	// Handle trailing wildcard
-	if pattern[len(pattern)-1] == '*' {
-		prefix := pattern[:len(pattern)-1]
-		return len(command) >= len(prefix) && command[:len(prefix)] == prefix
+	patternParts, err := splitShellWords(pattern)
+	if err != nil {
+		return false
+	}
+	commandParts, err := splitShellWords(command)
+	if err != nil {
+		return false
 	}
 
-	return pattern == command
+	if len(patternParts) == 0 {
+		return false
+	}
+
+	wildcard := patternParts[len(patternParts)-1] == "*"
+	checkParts := patternParts
+	if wildcard {
+		checkParts = patternParts[:len(patternParts)-1]
+		if len(commandParts) < len(checkParts) {
+			return false
+		}
+	} else if len(patternParts) != len(commandParts) {
+		return false
+	}
+
+	for i, part := range checkParts {
+		if i >= len(commandParts) || !matchShellPattern(part, commandParts[i]) {
+			return false
+		}
+	}
+
+	return wildcard || len(commandParts) == len(checkParts)
+}
+
+func canonicalApprovalPath(path string, isWrite bool) (string, error) {
+	if isWrite {
+		return canonicalizePathForWrite(path)
+	}
+	return canonicalizePath(path)
 }

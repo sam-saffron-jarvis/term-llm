@@ -11,7 +11,6 @@ import (
 	"regexp"
 	"sort"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/agents"
@@ -120,15 +119,24 @@ func (t *CustomScriptTool) Execute(ctx context.Context, args json.RawMessage) (l
 	}
 	cmd.Env = env
 
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
+	cleanup, prepErr := prepareToolCommand(cmd)
+	if prepErr != nil {
+		return llm.TextOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "script setup error: %v", prepErr))), nil
+	}
+	defer cleanup()
+
+	stdout := newLimitedBuffer(t.limits.MaxBytes)
+	stderr := newLimitedBuffer(t.limits.MaxBytes)
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
 
 	execErr := cmd.Run()
 
 	result := ShellResult{
-		Stdout: stdout.String(),
-		Stderr: stderr.String(),
+		Stdout:          stdout.String(),
+		Stderr:          stderr.String(),
+		StdoutTruncated: stdout.Truncated(),
+		StderrTruncated: stderr.Truncated(),
 	}
 
 	if execCtx.Err() == context.DeadlineExceeded {
@@ -164,34 +172,31 @@ func (t *CustomScriptTool) buildCommand(ctx context.Context, scriptPath string, 
 	switch call {
 	case "json":
 		// Pass raw JSON on stdin
-		cmd := exec.CommandContext(ctx, detectShell(), "-c", scriptPath)
+		cmd := exec.CommandContext(ctx, scriptPath)
 		cmd.Stdin = bytes.NewReader(args)
-		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 		return cmd, nil
 
 	case "positional":
 		// Values in schema property order (alphabetical fallback if no order defined)
 		keys := propertyOrder(t.def.Input)
-		cmdArgs := []string{scriptPath}
+		cmdArgs := make([]string, 0, len(keys))
 		for _, k := range keys {
 			if v, ok := argMap[k]; ok {
 				cmdArgs = append(cmdArgs, jsonValueToString(v))
 			}
 		}
-		cmd := exec.CommandContext(ctx, detectShell(), append([]string{"-c"}, shellJoin(cmdArgs)...)...)
+		cmd := exec.CommandContext(ctx, scriptPath, cmdArgs...)
 		cmd.Stdin = strings.NewReader("")
-		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 		return cmd, nil
 
 	default: // "" or "args" — named flags (--key value)
 		keys := sortedKeys(argMap)
-		cmdArgs := []string{scriptPath}
+		cmdArgs := make([]string, 0, len(keys)*2)
 		for _, k := range keys {
 			cmdArgs = append(cmdArgs, "--"+k, jsonValueToString(argMap[k]))
 		}
-		cmd := exec.CommandContext(ctx, detectShell(), append([]string{"-c"}, shellJoin(cmdArgs)...)...)
+		cmd := exec.CommandContext(ctx, scriptPath, cmdArgs...)
 		cmd.Stdin = strings.NewReader("")
-		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 		return cmd, nil
 	}
 }
@@ -231,22 +236,6 @@ func jsonValueToString(v json.RawMessage) string {
 		return s // already a string — strip quotes
 	}
 	return string(v) // number, bool, null — use as-is
-}
-
-// shellJoin builds a shell command string from a slice of args, quoting as needed.
-func shellJoin(args []string) []string {
-	// We pass the whole thing as a single "-c" argument to the shell,
-	// so we need to produce one properly-quoted string.
-	parts := make([]string, len(args))
-	for i, a := range args {
-		parts[i] = shellQuote(a)
-	}
-	return []string{strings.Join(parts, " ")}
-}
-
-// shellQuote wraps a string in single quotes, escaping any single quotes within.
-func shellQuote(s string) string {
-	return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'"
 }
 
 // resolveScript resolves and validates the script path within the agent directory.

@@ -260,6 +260,53 @@ func TestCustomScriptTool_Execute_SymlinkEscape(t *testing.T) {
 	}
 }
 
+func TestCustomScriptTool_Execute_JSONModePathWithSpaces(t *testing.T) {
+	parent := t.TempDir()
+	agentDir := filepath.Join(parent, "agent dir")
+	if err := os.MkdirAll(agentDir, 0755); err != nil {
+		t.Fatalf("mkdir agent dir: %v", err)
+	}
+	writeScript(t, agentDir, "echo-name.sh", `#!/bin/sh
+INPUT=$(cat)
+echo "$INPUT" | grep -o '"name":"[^"]*"'
+`)
+
+	tool := makeCustomTool(t, agentDir, agents.CustomToolDef{
+		Name:        "echo_name",
+		Description: "Echo name",
+		Script:      "echo-name.sh",
+		Call:        "json",
+	})
+
+	out, err := tool.Execute(context.Background(), json.RawMessage(`{"name":"jarvis"}`))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !containsStr(out.Content, "jarvis") {
+		t.Fatalf("expected script under spaced path to run, got %q", out.Content)
+	}
+}
+
+func TestCustomScriptTool_TimeoutKillsGrandchildren(t *testing.T) {
+	dir := t.TempDir()
+	writeScript(t, dir, "hang.sh", "#!/bin/sh\nsleep 60 & wait\n")
+
+	tool := makeCustomTool(t, dir, agents.CustomToolDef{
+		Name:        "hang",
+		Description: "Hang",
+		Script:      "hang.sh",
+	})
+
+	tool.def.TimeoutSeconds = 1
+	out, err := tool.Execute(context.Background(), json.RawMessage("{}"))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !out.TimedOut {
+		t.Fatal("expected timeout for grandchild-holding script")
+	}
+}
+
 func TestRegisterCustomTools_BuiltinCollision(t *testing.T) {
 	r := &LocalToolRegistry{
 		tools: make(map[string]llm.Tool),

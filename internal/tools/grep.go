@@ -671,9 +671,17 @@ func (t *GrepTool) Execute(ctx context.Context, args json.RawMessage) (llm.ToolO
 		}
 	}
 
+	resolvedSearchPath, err := resolveToolPath(searchPath, false)
+	if err != nil {
+		if toolErr, ok := err.(*ToolError); ok {
+			return textOutput(formatToolError(toolErr)), nil
+		}
+		return textOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "cannot resolve path: %v", err))), nil
+	}
+
 	// Try ripgrep first (faster)
 	if ripgrepAvailable() {
-		result, err := t.executeRipgrep(ctx, a, searchPath, contextLines, maxResults)
+		result, err := t.executeRipgrep(ctx, a, resolvedSearchPath, contextLines, maxResults)
 		if err != nil {
 			if ctx.Err() != nil {
 				return textOutput("grep timed out after 1 minute; try a more specific pattern or path"), nil
@@ -692,7 +700,7 @@ func (t *GrepTool) Execute(ctx context.Context, args json.RawMessage) (llm.ToolO
 			// understand the match without an extra read_file round-trip.
 			if a.ContextLines <= 0 {
 				if enriched := autoEnrichContextLines(len(matches)); enriched > contextLines {
-					if richer, err2 := t.executeRipgrep(ctx, a, searchPath, enriched, maxResults); err2 == nil && len(richer.matches) > 0 {
+					if richer, err2 := t.executeRipgrep(ctx, a, resolvedSearchPath, enriched, maxResults); err2 == nil && len(richer.matches) > 0 {
 						matches = richer.matches
 						result.truncated = richer.truncated
 					}
@@ -712,7 +720,7 @@ func (t *GrepTool) Execute(ctx context.Context, args json.RawMessage) (llm.ToolO
 	}
 
 	// Collect files to search
-	files, err := collectFiles(searchPath, a.Include, a.Exclude)
+	files, err := collectFiles(resolvedSearchPath, a.Include, a.Exclude)
 	if err != nil {
 		return textOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "failed to collect files: %v", err))), nil
 	}

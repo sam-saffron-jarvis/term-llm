@@ -1,14 +1,12 @@
 package tools
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/llm"
@@ -76,10 +74,12 @@ type ShellArgs struct {
 
 // ShellResult contains the result of a shell command.
 type ShellResult struct {
-	Stdout   string `json:"stdout"`
-	Stderr   string `json:"stderr"`
-	ExitCode int    `json:"exit_code"`
-	TimedOut bool   `json:"timed_out,omitempty"`
+	Stdout          string `json:"stdout"`
+	Stderr          string `json:"stderr"`
+	ExitCode        int    `json:"exit_code"`
+	TimedOut        bool   `json:"timed_out,omitempty"`
+	StdoutTruncated bool   `json:"stdout_truncated,omitempty"`
+	StderrTruncated bool   `json:"stderr_truncated,omitempty"`
 }
 
 func (t *ShellTool) Spec() llm.ToolSpec {
@@ -209,36 +209,26 @@ func (t *ShellTool) Execute(ctx context.Context, args json.RawMessage) (llm.Tool
 		cmd.Env = append(cmd.Env, fmt.Sprintf("%s=%s", key, value))
 	}
 
-	// Isolate stdin: tools are non-interactive; never share the TUI's raw stdin
-	// with child processes.
-	devNull, openErr := os.OpenFile(os.DevNull, os.O_RDONLY, 0)
-	if openErr == nil {
-		cmd.Stdin = devNull
-		defer devNull.Close()
+	cleanup, prepErr := prepareToolCommand(cmd)
+	if prepErr != nil {
+		return textOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "command setup error: %v", prepErr))), nil
 	}
+	defer cleanup()
 
-	// Put child in its own process group so signals don't cross-contaminate
-	// and exec.CommandContext can kill the whole group on timeout.
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	// Override the default cancel behavior (which only kills the shell PID) to
-	// kill the entire process group. Without this, grandchildren that inherited
-	// the stdout/stderr pipe write-ends keep them open after the shell is killed,
-	// causing cmd.Wait() to block forever even after the timeout fires.
-	cmd.Cancel = func() error {
-		return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
-	}
-
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
+	stdout := newLimitedBuffer(t.limits.MaxBytes)
+	stderr := newLimitedBuffer(t.limits.MaxBytes)
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
 
 	// Run command
 	err := cmd.Run()
 
 	result := ShellResult{
-		Stdout:   stdout.String(),
-		Stderr:   stderr.String(),
-		ExitCode: 0,
+		Stdout:          stdout.String(),
+		Stderr:          stderr.String(),
+		ExitCode:        0,
+		StdoutTruncated: stdout.Truncated(),
+		StderrTruncated: stderr.Truncated(),
 	}
 
 	// Check for timeout
@@ -268,11 +258,11 @@ func formatShellResult(result ShellResult, limits OutputLimits) string {
 	stderr := result.Stderr
 	truncated := false
 
-	if int64(len(stdout)) > limits.MaxBytes {
+	if result.StdoutTruncated || int64(len(stdout)) > limits.MaxBytes {
 		stdout = stdout[:limits.MaxBytes]
 		truncated = true
 	}
-	if int64(len(stderr)) > limits.MaxBytes {
+	if result.StderrTruncated || int64(len(stderr)) > limits.MaxBytes {
 		stderr = stderr[:limits.MaxBytes]
 		truncated = true
 	}

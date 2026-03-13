@@ -3,6 +3,7 @@ package tools
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
@@ -225,12 +226,19 @@ func TestProjectApprovals_IsPathApproved_IndividualPaths(t *testing.T) {
 
 	// Approve a specific directory
 	srcDir := filepath.Join(tempDir, "src")
+	if err := os.MkdirAll(srcDir, 0755); err != nil {
+		t.Fatalf("mkdir src dir: %v", err)
+	}
+	mainFile := filepath.Join(srcDir, "main.go")
+	if err := os.WriteFile(mainFile, []byte("package main"), 0644); err != nil {
+		t.Fatalf("write main.go: %v", err)
+	}
 	if err := pa.ApprovePath(srcDir); err != nil {
 		t.Fatalf("ApprovePath failed: %v", err)
 	}
 
 	// File in approved directory should be approved
-	if !pa.IsPathApproved(filepath.Join(srcDir, "main.go"), false) {
+	if !pa.IsPathApproved(mainFile, false) {
 		t.Error("file in approved directory should be approved")
 	}
 
@@ -244,8 +252,46 @@ func TestProjectApprovals_IsPathApproved_IndividualPaths(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reload failed: %v", err)
 	}
-	if !pa2.IsPathApproved(filepath.Join(srcDir, "main.go"), false) {
+	if !pa2.IsPathApproved(mainFile, false) {
 		t.Error("path approval should persist after reload")
+	}
+}
+
+func TestProjectApprovals_IsPathApproved_RejectsSymlinkEscape(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink test not supported on Windows")
+	}
+
+	repoRoot := t.TempDir()
+	configDir := t.TempDir()
+
+	oldXDG := os.Getenv("XDG_CONFIG_HOME")
+	os.Setenv("XDG_CONFIG_HOME", configDir)
+	defer os.Setenv("XDG_CONFIG_HOME", oldXDG)
+
+	approvedDir := filepath.Join(repoRoot, "approved")
+	outsideDir := t.TempDir()
+	if err := os.MkdirAll(approvedDir, 0755); err != nil {
+		t.Fatalf("mkdir approved: %v", err)
+	}
+	secret := filepath.Join(outsideDir, "secret.txt")
+	if err := os.WriteFile(secret, []byte("secret"), 0644); err != nil {
+		t.Fatalf("write secret: %v", err)
+	}
+	link := filepath.Join(approvedDir, "secret-link.txt")
+	if err := os.Symlink(secret, link); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+
+	pa, err := LoadProjectApprovals(repoRoot)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if err := pa.ApprovePath(approvedDir); err != nil {
+		t.Fatalf("ApprovePath failed: %v", err)
+	}
+	if pa.IsPathApproved(link, false) {
+		t.Fatal("symlink escape should not inherit project path approval")
 	}
 }
 

@@ -1,14 +1,12 @@
 package tools
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/llm"
@@ -157,41 +155,39 @@ func (t *RunAgentScriptTool) Execute(ctx context.Context, args json.RawMessage) 
 		return llm.TextOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "cannot get working directory: %v", err))), nil
 	}
 
-	// Build command
-	shell := detectShell()
-	cmdStr := realScript
-	if a.Args != "" {
-		cmdStr += " " + a.Args
+	var argv []string
+	if strings.TrimSpace(a.Args) != "" {
+		argv, err = splitShellWords(a.Args)
+		if err != nil {
+			return llm.TextOutput(formatToolError(NewToolErrorf(ErrInvalidParams, "invalid args: %v", err))), nil
+		}
 	}
 
 	execCtx, cancel := context.WithTimeout(ctx, time.Duration(timeout)*time.Second)
 	defer cancel()
 
-	cmd := exec.CommandContext(execCtx, shell, "-c", cmdStr)
+	cmd := exec.CommandContext(execCtx, realScript, argv...)
 	cmd.Dir = workDir
 
-	// Isolate stdin: tools are non-interactive; never share the TUI's raw stdin
-	// with child processes.
-	devNull, openErr := os.OpenFile(os.DevNull, os.O_RDONLY, 0)
-	if openErr == nil {
-		cmd.Stdin = devNull
-		defer devNull.Close()
+	cleanup, prepErr := prepareToolCommand(cmd)
+	if prepErr != nil {
+		return llm.TextOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "script setup error: %v", prepErr))), nil
 	}
+	defer cleanup()
 
-	// Put child in its own process group so signals don't cross-contaminate
-	// and exec.CommandContext can kill the whole group on timeout.
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
+	stdout := newLimitedBuffer(t.limits.MaxBytes)
+	stderr := newLimitedBuffer(t.limits.MaxBytes)
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
 
 	execErr := cmd.Run()
 
 	result := ShellResult{
-		Stdout:   stdout.String(),
-		Stderr:   stderr.String(),
-		ExitCode: 0,
+		Stdout:          stdout.String(),
+		Stderr:          stderr.String(),
+		ExitCode:        0,
+		StdoutTruncated: stdout.Truncated(),
+		StderrTruncated: stderr.Truncated(),
 	}
 
 	if execCtx.Err() == context.DeadlineExceeded {

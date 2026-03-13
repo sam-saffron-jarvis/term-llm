@@ -1,11 +1,22 @@
 package config
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/url"
 	"os/exec"
 	"strings"
+	"time"
+
+	"github.com/samsaffron/term-llm/internal/procutil"
+)
+
+var (
+	resolveExecTimeout           = 15 * time.Second
+	resolveExecOutputLimit int64 = 64 << 10
+	resolveExecWaitDelay         = time.Second
 )
 
 // ResolveValue handles magic URL schemes in config values:
@@ -52,15 +63,11 @@ func resolveOnePassword(opURL string) (string, error) {
 		args = append(args, "--account", account)
 	}
 
-	cmd := exec.Command("op", args...)
-	output, err := cmd.Output()
+	output, err := runResolverCommand("op", args...)
 	if err != nil {
-		if exitErr, ok := err.(*exec.ExitError); ok {
-			return "", fmt.Errorf("1password: failed to read %s: %s (is 'op' CLI installed and signed in?)", cleanURL, string(exitErr.Stderr))
-		}
 		return "", fmt.Errorf("1password: failed to read %s: %w (is 'op' CLI installed and signed in?)", cleanURL, err)
 	}
-	return strings.TrimSpace(string(output)), nil
+	return output, nil
 }
 
 // resolveSRV handles srv://_service._proto.domain/path URLs
@@ -97,12 +104,51 @@ func resolveSRV(srvURL string) (string, error) {
 
 // resolveCommand executes a shell command and returns its output
 func resolveCommand(cmd string) (string, error) {
-	output, err := exec.Command("sh", "-c", cmd).Output()
+	output, err := runResolverCommand("sh", "-c", cmd)
 	if err != nil {
-		if exitErr, ok := err.(*exec.ExitError); ok {
-			return "", fmt.Errorf("command failed: %s", string(exitErr.Stderr))
-		}
 		return "", fmt.Errorf("command failed: %w", err)
 	}
-	return strings.TrimSpace(string(output)), nil
+	return output, nil
+}
+
+func runResolverCommand(name string, args ...string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), resolveExecTimeout)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.WaitDelay = resolveExecWaitDelay
+
+	cleanup, prepErr := procutil.PrepareCommand(cmd)
+	if prepErr != nil {
+		return "", fmt.Errorf("command setup failed: %w", prepErr)
+	}
+	defer cleanup()
+
+	stdout := procutil.NewLimitedBuffer(resolveExecOutputLimit)
+	stderr := procutil.NewLimitedBuffer(resolveExecOutputLimit)
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
+
+	err := cmd.Run()
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		return "", fmt.Errorf("timed out after %s", resolveExecTimeout)
+	}
+	if stdout.Truncated() || stderr.Truncated() {
+		return "", fmt.Errorf("output exceeded %d bytes", resolveExecOutputLimit)
+	}
+	if err != nil {
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			msg := strings.TrimSpace(stderr.String())
+			if msg == "" {
+				msg = strings.TrimSpace(stdout.String())
+			}
+			if msg == "" {
+				msg = exitErr.Error()
+			}
+			return "", fmt.Errorf("%s", msg)
+		}
+		return "", err
+	}
+
+	return strings.TrimSpace(stdout.String()), nil
 }

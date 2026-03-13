@@ -8,6 +8,7 @@ import (
 
 	"github.com/samsaffron/term-llm/internal/credentials"
 	"github.com/spf13/viper"
+	"gopkg.in/yaml.v3"
 )
 
 // ProviderType defines the supported provider implementations
@@ -1242,51 +1243,54 @@ func Save(cfg *Config) error {
 		return fmt.Errorf("failed to create config directory: %w", err)
 	}
 
-	// Build providers section
-	var providers strings.Builder
-	providers.WriteString("providers:\n")
-	for name, p := range cfg.Providers {
-		providers.WriteString(fmt.Sprintf("  %s:\n", name))
-		if p.Type != "" {
-			providers.WriteString(fmt.Sprintf("    type: %s\n", p.Type))
-		}
-		if p.Model != "" {
-			providers.WriteString(fmt.Sprintf("    model: %s\n", p.Model))
-		}
-		if p.FastModel != "" {
-			providers.WriteString(fmt.Sprintf("    fast_model: %s\n", p.FastModel))
-		}
-		if p.FastProvider != "" {
-			providers.WriteString(fmt.Sprintf("    fast_provider: %s\n", p.FastProvider))
-		}
-		if p.BaseURL != "" {
-			providers.WriteString(fmt.Sprintf("    base_url: %s\n", p.BaseURL))
-		}
-		if p.AppURL != "" {
-			providers.WriteString(fmt.Sprintf("    app_url: %s\n", p.AppURL))
-		}
-		if p.AppTitle != "" {
-			providers.WriteString(fmt.Sprintf("    app_title: %s\n", p.AppTitle))
-		}
+	type saveProvider struct {
+		Type         ProviderType `yaml:"type,omitempty"`
+		Model        string       `yaml:"model,omitempty"`
+		FastModel    string       `yaml:"fast_model,omitempty"`
+		FastProvider string       `yaml:"fast_provider,omitempty"`
+		BaseURL      string       `yaml:"base_url,omitempty"`
+		AppURL       string       `yaml:"app_url,omitempty"`
+		AppTitle     string       `yaml:"app_title,omitempty"`
+	}
+	type saveExec struct {
+		Suggestions int `yaml:"suggestions"`
+	}
+	type saveImage struct {
+		Provider string `yaml:"provider,omitempty"`
+	}
+	type saveConfig struct {
+		DefaultProvider string                  `yaml:"default_provider,omitempty"`
+		Exec            saveExec                `yaml:"exec"`
+		Image           *saveImage              `yaml:"image,omitempty"`
+		Providers       map[string]saveProvider `yaml:"providers,omitempty"`
 	}
 
-	// Build image section if provider is set
-	var imageSection string
+	saved := saveConfig{
+		DefaultProvider: cfg.DefaultProvider,
+		Exec:            saveExec{Suggestions: cfg.Exec.Suggestions},
+		Providers:       make(map[string]saveProvider, len(cfg.Providers)),
+	}
 	if cfg.Image.Provider != "" {
-		imageSection = fmt.Sprintf(`
-image:
-  provider: %s
-`, cfg.Image.Provider)
+		saved.Image = &saveImage{Provider: cfg.Image.Provider}
+	}
+	for name, p := range cfg.Providers {
+		saved.Providers[name] = saveProvider{
+			Type:         p.Type,
+			Model:        p.Model,
+			FastModel:    p.FastModel,
+			FastProvider: p.FastProvider,
+			BaseURL:      p.BaseURL,
+			AppURL:       p.AppURL,
+			AppTitle:     p.AppTitle,
+		}
 	}
 
-	content := fmt.Sprintf(`default_provider: %s
+	data, err := yaml.Marshal(saved)
+	if err != nil {
+		return fmt.Errorf("failed to marshal config: %w", err)
+	}
 
-exec:
-  suggestions: %d
-%s
-%s`, cfg.DefaultProvider, cfg.Exec.Suggestions, imageSection, providers.String())
-
-	return os.WriteFile(path, []byte(content), 0600)
+	return os.WriteFile(path, data, 0600)
 }
 
 // SetAgentPreference sets a preference for a specific agent.
