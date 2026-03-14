@@ -219,6 +219,7 @@ func printAnnotatedConfig(defaults map[string]any, rawKeys, unknownKeys map[stri
 				"gemini":     {"model", "api_key"},
 				"openai":     {"model", "api_key"},
 				"xai":        {"model", "api_key"},
+				"venice":     {"model", "edit_model", "resolution", "api_key"},
 				"flux":       {"model", "api_key"},
 				"openrouter": {"model", "api_key"},
 			},
@@ -396,7 +397,7 @@ func printProvidersSection(defaults map[string]any, rawKeys map[string]bool, raw
 	providerNames := make(map[string]bool)
 
 	// Default providers
-	defaultProviders := []string{"anthropic", "openai", "xai", "openrouter", "gemini", "zen"}
+	defaultProviders := []string{"anthropic", "openai", "xai", "venice", "openrouter", "gemini", "zen"}
 	for _, p := range defaultProviders {
 		providerNames[p] = true
 	}
@@ -781,6 +782,12 @@ providers:
     app_url: https://github.com/samsaffron/term-llm
     app_title: term-llm
 
+  xai:
+    model: grok-4-1-fast
+
+  venice:
+    model: venice-uncensored
+
   zen:
     model: minimax-m2.1-free
     # api_key optional - free tier access via opencode.ai
@@ -845,7 +852,7 @@ edit:
 
 # Image generation settings
 image:
-  provider: gemini  # gemini, openai, or flux
+  provider: gemini  # gemini, openai, xai, venice, flux, or openrouter
   output_dir: ~/Pictures/term-llm
 
   gemini:
@@ -856,9 +863,23 @@ image:
     model: gpt-image-1
     # api_key: uses OPENAI_API_KEY env var
 
+  xai:
+    model: grok-2-image-1212
+    # api_key: uses XAI_API_KEY env var
+
+  venice:
+    model: nano-banana-pro
+    # edit_model: optional override for image edits
+    resolution: 2K
+    # api_key: uses VENICE_API_KEY env var
+
   flux:
     model: flux-2-pro
     # api_key: uses BFL_API_KEY env var
+
+  openrouter:
+    model: google/gemini-2.5-flash-image
+    # api_key: uses OPENROUTER_API_KEY env var
 `
 }
 

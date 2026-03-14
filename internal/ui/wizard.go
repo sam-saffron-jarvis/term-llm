@@ -53,6 +53,18 @@ func detectAvailableProviders() []providerOption {
 			hint:      "run 'gemini' to login",
 		},
 		{
+			name:      "xAI - XAI_API_KEY",
+			value:     "xai",
+			available: os.Getenv("XAI_API_KEY") != "",
+			hint:      "set XAI_API_KEY",
+		},
+		{
+			name:      "Venice - VENICE_API_KEY",
+			value:     "venice",
+			available: os.Getenv("VENICE_API_KEY") != "",
+			hint:      "set VENICE_API_KEY",
+		},
+		{
 			name:      "OpenRouter - OPENROUTER_API_KEY",
 			value:     "openrouter",
 			available: os.Getenv("OPENROUTER_API_KEY") != "",
@@ -122,6 +134,18 @@ func detectAvailableImageProviders() []imageProviderOption {
 			value:     "flux",
 			available: os.Getenv("BFL_API_KEY") != "",
 			hint:      "set BFL_API_KEY",
+		},
+		{
+			name:      "xAI - XAI_API_KEY",
+			value:     "xai",
+			available: os.Getenv("XAI_API_KEY") != "",
+			hint:      "set XAI_API_KEY",
+		},
+		{
+			name:      "Venice - VENICE_API_KEY",
+			value:     "venice",
+			available: os.Getenv("VENICE_API_KEY") != "",
+			hint:      "set VENICE_API_KEY",
 		},
 		{
 			name:      "OpenRouter - OPENROUTER_API_KEY",
@@ -289,6 +313,12 @@ func RunSetupWizard() (*config.Config, error) {
 			},
 			"codeassist": {
 				Model: "gemini-2.5-pro",
+			},
+			"xai": {
+				Model: "grok-4-1-fast",
+			},
+			"venice": {
+				Model: "venice-uncensored",
 			},
 			"zen": {
 				Model: "minimax-m2.1-free",

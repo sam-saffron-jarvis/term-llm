@@ -28,6 +28,7 @@ Examples:
   term-llm models                       # list models from current provider
   term-llm models --provider anthropic  # list models from Anthropic
   term-llm models --provider openrouter # list models from OpenRouter
+  term-llm models --provider venice     # list models from Venice
   term-llm models --provider ollama     # list models from Ollama
   term-llm models --provider lmstudio   # list models from LM Studio
   term-llm models --json                # output as JSON`,
@@ -36,7 +37,7 @@ Examples:
 
 func init() {
 	rootCmd.AddCommand(modelsCmd)
-	modelsCmd.Flags().StringVarP(&modelsProvider, "provider", "p", "", "Provider to list models from (anthropic, copilot, openrouter, xai, zen, ollama, lmstudio, openai-compat)")
+	modelsCmd.Flags().StringVarP(&modelsProvider, "provider", "p", "", "Provider to list models from (anthropic, copilot, openrouter, venice, xai, zen, ollama, lmstudio, openai-compat)")
 	modelsCmd.Flags().BoolVar(&modelsJSON, "json", false, "Output as JSON")
 	modelsCmd.RegisterFlagCompletionFunc("provider", ProviderFlagCompletion)
 }
@@ -81,15 +82,14 @@ func runModels(cmd *cobra.Command, args []string) error {
 		config.ProviderTypeVenice:       true,
 	}
 
-	// For built-in providers without explicit config, check if they support dynamic listing
-	// or fall back to static model list
+	// For built-in providers without explicit config, continue for providers that
+	// can authenticate via environment/default credentials. Otherwise fall back to
+	// static model lists when available.
 	if !ok {
-		// Copilot can work without config (uses OAuth)
-		if providerType == config.ProviderTypeCopilot {
-			// Continue to dynamic listing below
-		} else if staticModels, hasStatic := llm.ProviderModels[providerName]; hasStatic {
-			return printStaticModels(providerName, staticModels)
-		} else {
+		if !supportedTypes[providerType] {
+			if staticModels, hasStatic := llm.ProviderModels[providerName]; hasStatic {
+				return printStaticModels(providerName, staticModels)
+			}
 			return fmt.Errorf("provider '%s' is not configured", providerName)
 		}
 	}
@@ -100,7 +100,7 @@ func runModels(cmd *cobra.Command, args []string) error {
 			return printStaticModels(providerName, staticModels)
 		}
 		return fmt.Errorf("provider '%s' (type: %s) does not support model listing.\n"+
-			"Model listing is supported for: anthropic, openrouter, xai, zen, copilot, and openai_compatible providers", providerName, providerType)
+			"Model listing is supported for: anthropic, openai, openrouter, xai, venice, zen, copilot, and openai_compatible providers", providerName, providerType)
 	}
 
 	// Create provider to query models
@@ -113,10 +113,14 @@ func runModels(cmd *cobra.Command, args []string) error {
 		}
 		lister = provider
 	case config.ProviderTypeOpenAI:
-		if providerCfg.ResolvedAPIKey == "" {
+		apiKey := providerCfg.ResolvedAPIKey
+		if apiKey == "" {
+			apiKey = os.Getenv("OPENAI_API_KEY")
+		}
+		if apiKey == "" {
 			return fmt.Errorf("openai API key not configured. Set OPENAI_API_KEY or configure api_key")
 		}
-		lister = llm.NewOpenAIProvider(providerCfg.ResolvedAPIKey, providerCfg.Model)
+		lister = llm.NewOpenAIProvider(apiKey, providerCfg.Model)
 	case config.ProviderTypeCopilot:
 		// Copilot uses OAuth - create provider which will prompt for auth if needed
 		model := ""
@@ -129,10 +133,14 @@ func runModels(cmd *cobra.Command, args []string) error {
 		}
 		lister = provider
 	case config.ProviderTypeOpenRouter:
-		if providerCfg.ResolvedAPIKey == "" {
+		apiKey := providerCfg.ResolvedAPIKey
+		if apiKey == "" {
+			apiKey = os.Getenv("OPENROUTER_API_KEY")
+		}
+		if apiKey == "" {
 			return fmt.Errorf("openrouter API key not configured. Set OPENROUTER_API_KEY or configure api_key")
 		}
-		lister = llm.NewOpenRouterProvider(providerCfg.ResolvedAPIKey, "", providerCfg.AppURL, providerCfg.AppTitle)
+		lister = llm.NewOpenRouterProvider(apiKey, "", providerCfg.AppURL, providerCfg.AppTitle)
 	case config.ProviderTypeOpenAICompat:
 		if providerCfg.BaseURL == "" {
 			return fmt.Errorf("provider '%s' requires base_url to be configured", providerName)
