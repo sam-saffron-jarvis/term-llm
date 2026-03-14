@@ -4,22 +4,19 @@
 
 # term-llm
 
-A Swiss Army knife for your terminal—AI-powered commands, answers, and images at your fingertips.
+Terminal-first AI runtime for commands, chat, editing, tools, jobs, agents, and local workflows.
 
 [![Release](https://img.shields.io/github/v/release/samsaffron/term-llm?style=flat-square)](https://github.com/samsaffron/term-llm/releases)
 
 Docs hub: **https://term-llm.com**
 
-## Features
+## Why it exists
 
-- **Command suggestions**: Natural language → executable shell commands
-- **Ask questions**: Get answers with optional web search
-- **Chat mode**: Persistent sessions with tool and MCP support
-- **File editing**: Edit code with AI assistance (supports line ranges)
-- **Image generation**: Create and edit images (Gemini, OpenAI, xAI, Flux)
-- **Text embeddings**: Generate vector embeddings for search, RAG, and similarity
-- **Agents and skills**: Named workflow bundles and portable expertise
-- **Multiple providers**: Anthropic, OpenAI, ChatGPT, GitHub Copilot, xAI, OpenRouter, Gemini, Ollama, LM Studio, and more
+- turn natural language into executable shell commands
+- run persistent chat with tools and MCP servers
+- edit files with model assistance
+- support agents, skills, sessions, jobs, and local automation
+- work with hosted or local models
 
 ```bash
 $ term-llm exec "find all go files modified today"
@@ -30,23 +27,21 @@ $ term-llm exec "find all go files modified today"
   something else...
 ```
 
-## Installation
-
-### One-liner (recommended)
+## Install
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/samsaffron/term-llm/main/install.sh | sh
 ```
 
-### Go install
+Or:
 
 ```bash
 go install github.com/samsaffron/term-llm@latest
 ```
 
-## Quickstart
+## 30-second quickstart
 
-Use the free Zen provider to get a first run without API-key setup:
+No API key needed if you use Zen:
 
 ```bash
 term-llm exec --provider zen "list files"
@@ -61,15 +56,19 @@ export ANTHROPIC_API_KEY=your-key
 # or OPENAI_API_KEY / GEMINI_API_KEY / OPENROUTER_API_KEY / XAI_API_KEY
 ```
 
-## Documentation
+## Read the docs
 
-The detailed docs now live on **https://term-llm.com** and are maintained as Markdown in this repo, built into the site with Hugo.
+The detailed docs live at **https://term-llm.com** and are authored in Markdown in this repo, then built with Hugo.
 
 - [Getting started](https://term-llm.com/getting-started/)
 - [Guides](https://term-llm.com/guides/)
 - [Architecture](https://term-llm.com/architecture/)
 - [Reference](https://term-llm.com/reference/)
+
+Common entry points:
+
 - [Configuration](https://term-llm.com/reference/configuration/)
+- [Usage](https://term-llm.com/guides/usage/)
 - [Agents](https://term-llm.com/guides/agents/)
 - [Skills](https://term-llm.com/guides/skills/)
 - [MCP servers](https://term-llm.com/guides/mcp-servers/)
