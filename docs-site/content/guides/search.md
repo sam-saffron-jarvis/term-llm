@@ -35,7 +35,10 @@ Use this when you want consistency, debugging clarity, or to work around a provi
 
 ```yaml
 search:
-  provider: exa
+  provider: perplexity
+
+  perplexity:
+    api_key: ${PERPLEXITY_API_KEY}
 
   exa:
     api_key: ${EXA_API_KEY}
@@ -54,6 +57,7 @@ Available external providers:
 |---|---|---|
 | DuckDuckGo | none | default, free |
 | Exa | `EXA_API_KEY` | semantic search |
+| Perplexity | `PERPLEXITY_API_KEY` | search API with concise answer-oriented results |
 | Tavily | `TAVILY_API_KEY` | agent-oriented search |
 | Brave | `BRAVE_API_KEY` | independent index |
 | Google | `GOOGLE_SEARCH_API_KEY` + `GOOGLE_SEARCH_CX` | Custom Search |
