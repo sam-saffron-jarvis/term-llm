@@ -1,0 +1,166 @@
+---
+title: "Providers and models"
+weight: 3
+description: "Choose providers, discover models, understand credentials, and use provider-specific model features such as reasoning and native search."
+kicker: "Providers"
+featured: true
+next:
+  label: Sessions
+  url: /reference/sessions/
+---
+## Discover providers and models
+
+```bash
+term-llm providers
+term-llm providers --configured
+term-llm providers anthropic
+
+term-llm models --provider anthropic
+term-llm models --provider openrouter
+term-llm models --provider ollama
+term-llm models --json
+```
+
+Use `providers` when you want to know what is available and how it is configured. Use `models` when you want the concrete model names a provider currently exposes.
+
+## Provider categories
+
+term-llm supports a mix of provider types:
+
+- hosted API providers such as Anthropic, OpenAI, xAI, Gemini, and OpenRouter
+- subscription-backed OAuth providers such as ChatGPT, Copilot, and Gemini CLI
+- local or self-hosted OpenAI-compatible providers such as Ollama, LM Studio, vLLM, or custom endpoints
+
+## Credentials
+
+Most providers use API keys via environment variables. Some use OAuth credentials from companion CLIs or locally stored auth files.
+
+| Provider | Credentials source | Notes |
+|---|---|---|
+| `anthropic` | `ANTHROPIC_API_KEY` or `CLAUDE_CODE_OAUTH_TOKEN` | API key or OAuth token |
+| `openai` | `OPENAI_API_KEY` | Standard OpenAI API key |
+| `chatgpt` | `~/.config/term-llm/chatgpt_creds.json` | ChatGPT Plus/Pro OAuth |
+| `copilot` | `~/.config/term-llm/copilot_creds.json` | GitHub Copilot OAuth |
+| `gemini` | `GEMINI_API_KEY` | Google AI Studio key |
+| `gemini-cli` | `~/.gemini/oauth_creds.json` | gemini-cli OAuth |
+| `xai` | `XAI_API_KEY` | xAI API key |
+| `openrouter` | `OPENROUTER_API_KEY` | OpenRouter API key |
+| `zen` | `ZEN_API_KEY` optional | empty is valid for free tier |
+
+Examples:
+
+```bash
+term-llm ask --provider anthropic "question"
+term-llm ask --provider chatgpt "question"
+term-llm ask --provider copilot "question"
+term-llm ask --provider gemini-cli "question"
+```
+
+## OpenAI-compatible providers
+
+For local or custom backends, use `type: openai_compatible`.
+
+```yaml
+providers:
+  ollama:
+    type: openai_compatible
+    base_url: http://localhost:11434/v1
+    model: llama3.2:latest
+
+  lmstudio:
+    type: openai_compatible
+    base_url: http://localhost:1234/v1
+    model: deepseek-coder-v2
+
+  cerebras:
+    type: openai_compatible
+    base_url: https://api.cerebras.ai/v1
+    model: llama-4-scout-17b
+    api_key: ${CEREBRAS_API_KEY}
+```
+
+Use `base_url` when the standard `/chat/completions` path should be appended automatically. Use `url` when you need to specify the full chat completions endpoint directly.
+
+## Reasoning and model suffixes
+
+### OpenAI reasoning effort
+
+For OpenAI models, append `-low`, `-medium`, `-high`, or `-xhigh` to control reasoning effort.
+
+```bash
+term-llm ask --provider openai:gpt-5.2-xhigh "complex question"
+term-llm exec --provider openai:gpt-5.2-low "quick task"
+```
+
+```yaml
+providers:
+  openai:
+    model: gpt-5.2-high
+```
+
+| Effort | Meaning |
+|---|---|
+| `low` | faster, cheaper, less thorough |
+| `medium` | balanced default |
+| `high` | more thorough reasoning |
+| `xhigh` | maximum reasoning on supported models |
+
+### Anthropic extended thinking
+
+For Anthropic models, append `-thinking`:
+
+```bash
+term-llm ask --provider anthropic:claude-sonnet-4-6-thinking "complex question"
+```
+
+```yaml
+providers:
+  anthropic:
+    model: claude-sonnet-4-6-thinking
+```
+
+## Native search support
+
+Some providers support native web search. Others rely on external search tooling.
+
+Native support is most relevant for:
+
+- Anthropic
+- OpenAI
+- xAI
+- Gemini
+
+You can override behavior with:
+
+```bash
+term-llm ask "latest news" -s --native-search
+term-llm ask "latest news" -s --no-native-search
+```
+
+Or in config:
+
+```yaml
+search:
+  force_external: true
+
+providers:
+  gemini:
+    use_native_search: false
+```
+
+See [Search](/guides/search/) for the full routing model.
+
+## Recommendations by use case
+
+- **fast free experimentation:** `zen`
+- **OpenAI ecosystem / Codex editing:** `openai`
+- **Claude models with OAuth:** `anthropic`
+- **broad model access:** `openrouter`
+- **local inference:** `ollama` or another OpenAI-compatible endpoint
+- **subscription-backed consumer access:** `chatgpt`, `copilot`, or `gemini-cli`
+
+## Related pages
+
+- [Configuration](/reference/configuration/)
+- [Search](/guides/search/)
+- [Providers and setup](/getting-started/providers-and-setup/)
