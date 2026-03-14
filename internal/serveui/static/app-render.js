@@ -177,7 +177,10 @@ const createMetaNode = (created, message = null) => {
 const renderAssistantMarkdown = (target, content) => {
   applyTextDirection(target, content || '');
   const html = marked.parse(content || '');
-  const clean = DOMPurify.sanitize(html);
+  const clean = DOMPurify.sanitize(html, {
+    ADD_TAGS: ['video', 'source'],
+    ADD_ATTR: ['controls', 'playsinline', 'muted', 'loop', 'autoplay', 'poster', 'preload']
+  });
   target.innerHTML = clean;
 
   renderMath(target);

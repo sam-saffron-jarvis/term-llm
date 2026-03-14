@@ -924,7 +924,8 @@
       min-width: 0;
     }
 
-    .markdown-body img {
+    .markdown-body img,
+    .markdown-body video {
       max-width: 100%;
       border-radius: 8px;
       margin: 0.5rem 0;
