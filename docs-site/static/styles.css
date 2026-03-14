@@ -77,9 +77,42 @@ h3 { font-size: 1.26rem; }
 .terminal-bar { display: flex; gap: 0.45rem; padding: 0.9rem 1rem; border-bottom: 1px solid rgba(125,211,252,0.12); background: rgba(4,8,16,0.6); }
 .terminal-bar span { width: 0.72rem; height: 0.72rem; border-radius: 999px; background: rgba(155,169,189,0.28); }
 .terminal-panel pre { margin: 0; padding: 1.3rem 1.25rem 1.4rem; color: var(--soft); font-size: 0.94rem; line-height: 1.75; white-space: pre-wrap; }
-pre, code, .terminal-panel code { font-family: "JetBrains Mono", "SFMono-Regular", Consolas, monospace; }
+pre, code, .terminal-panel code, .install-command code { font-family: "JetBrains Mono", "SFMono-Regular", Consolas, monospace; }
 .section-block, .doc-section { padding: 1.55rem; }
 .section-heading { margin-bottom: 1rem; }
+.install-section { display: grid; gap: 1rem; }
+.install-panel {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 1rem;
+  align-items: center;
+  padding: 1.2rem 1.25rem;
+  border-radius: 22px;
+  background: var(--panel-strong);
+  border: 1px solid rgba(125,211,252,0.14);
+}
+.install-command {
+  margin: 0;
+  padding: 1rem 1.1rem;
+  border-radius: 16px;
+  background: rgba(4,8,16,0.8);
+  border: 1px solid rgba(125,211,252,0.12);
+  overflow-x: auto;
+}
+.install-command code {
+  display: block;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  line-height: 1.7;
+  color: var(--soft);
+}
+.copy-button { white-space: nowrap; }
+.install-note {
+  margin: 0;
+  color: var(--muted);
+  line-height: 1.7;
+}
 .card-grid { display: grid; gap: 1rem; }
 .card-grid-4 { grid-template-columns: repeat(4, minmax(0, 1fr)); }
 .card-grid-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
@@ -112,6 +145,7 @@ pre, code, .terminal-panel code { font-family: "JetBrains Mono", "SFMono-Regular
 .site-footer { margin-top: 0.5rem; padding: 0 1rem; color: var(--muted); font-size: 0.95rem; text-align: center; }
 @media (max-width: 980px) {
   .hero, .card-grid-4, .card-grid-3, .split-layout, .doc-grid, .doc-grid-wide { grid-template-columns: 1fr; }
+  .install-panel { grid-template-columns: 1fr; }
 }
 @media (max-width: 700px) {
   .page-shell { width: min(100% - 1rem, 1160px); }
