@@ -52,6 +52,9 @@ export OPENROUTER_API_KEY=your-key
 
 # For Gemini
 export GEMINI_API_KEY=your-key
+
+# For Perplexity search (used by search.provider: perplexity)
+export PERPLEXITY_API_KEY=your-key
 ```
 
 ### Option 3: Use Anthropic with OAuth (Claude Pro/Max subscription)

@@ -125,8 +125,11 @@ Use this to control whether sessions are persisted, how long they are kept, and 
 
 ```yaml
 search:
-  provider: exa
+  provider: perplexity
   force_external: false
+
+  perplexity:
+    api_key: ${PERPLEXITY_API_KEY}
 
   exa:
     api_key: ${EXA_API_KEY}
