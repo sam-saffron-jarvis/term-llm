@@ -136,5 +136,7 @@ term-llm image "make it purple" -i photo.png    # edit existing image
 # Generate videos (Venice AI)
 term-llm video "a corgi surfing at sunset"
 term-llm video "make Romeo blink" -i romeo.png
+term-llm video "influencer reacts" -i romeo.png -r style1.png -r style2.png
 term-llm video "astronaut on mars" --quote-only
+term-llm video "city at dawn" --json
 ```

@@ -48,18 +48,24 @@ var (
 	ValidResolutions = []string{"480p", "720p", "1080p"}
 )
 
+type ReferenceImage struct {
+	Path string
+	Data []byte
+}
+
 type Request struct {
-	Prompt         string
-	Model          string
-	Duration       string
-	AspectRatio    string
-	Resolution     string
-	Audio          bool
-	NegativePrompt string
-	ImagePath      string
-	ImageData      []byte
-	Debug          bool
-	DebugRaw       bool
+	Prompt          string
+	Model           string
+	Duration        string
+	AspectRatio     string
+	Resolution      string
+	Audio           bool
+	NegativePrompt  string
+	ImagePath       string
+	ImageData       []byte
+	ReferenceImages []ReferenceImage
+	Debug           bool
+	DebugRaw        bool
 }
 
 type Quote struct {
@@ -138,6 +144,13 @@ func (p *VeniceProvider) Queue(ctx context.Context, req Request) (*QueuedJob, er
 	}
 	if len(req.ImageData) > 0 {
 		payload["image_url"] = dataURL(req.ImagePath, req.ImageData)
+	}
+	if len(req.ReferenceImages) > 0 {
+		referenceURLs := make([]string, 0, len(req.ReferenceImages))
+		for _, ref := range req.ReferenceImages {
+			referenceURLs = append(referenceURLs, dataURL(ref.Path, ref.Data))
+		}
+		payload["reference_image_urls"] = referenceURLs
 	}
 
 	var respBody struct {
@@ -280,6 +293,24 @@ func LoadInputImage(path string) ([]byte, error) {
 		return nil, fmt.Errorf("read input image %s: %w", path, err)
 	}
 	return data, nil
+}
+
+func LoadReferenceImages(paths []string) ([]ReferenceImage, error) {
+	if len(paths) == 0 {
+		return nil, nil
+	}
+	if len(paths) > 4 {
+		return nil, fmt.Errorf("too many reference images: got %d, max 4", len(paths))
+	}
+	references := make([]ReferenceImage, 0, len(paths))
+	for _, path := range paths {
+		data, err := LoadInputImage(path)
+		if err != nil {
+			return nil, err
+		}
+		references = append(references, ReferenceImage{Path: path, Data: data})
+	}
+	return references, nil
 }
 
 func SaveVideo(data []byte, outputDir, prompt string) (string, error) {

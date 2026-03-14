@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -15,6 +16,7 @@ import (
 
 var (
 	videoInput        string
+	videoReferences   []string
 	videoProvider     string
 	videoOutput       string
 	videoModel        string
@@ -26,6 +28,7 @@ var (
 	videoDeleteRemote bool
 	videoQuoteOnly    bool
 	videoNoWait       bool
+	videoJSON         bool
 	videoPollInterval time.Duration
 	videoTimeout      time.Duration
 	videoDebug        bool
@@ -42,18 +45,20 @@ By default:
   - Uses image-to-video when --input is provided
   - Quotes the job before queueing it
 
-Examples:
+		Examples:
   term-llm video "a corgi surfing at sunset"
   term-llm video "make Romeo blink and wag his tail" -i romeo.png
   term-llm video "cyberpunk city, slow dolly shot" --model kling-o3-pro-text-to-video
-  term-llm video "cute dog, influencer reacts" -i romeo.png --aspect-ratio 9:16 --duration 10s
-  term-llm video "astronaut on mars" --quote-only`,
+  term-llm video "cute dog, influencer reacts" -i romeo.png -r style1.png -r style2.png --aspect-ratio 9:16 --duration 10s
+  term-llm video "astronaut on mars" --quote-only
+  term-llm video "city at dawn" --json`,
 	Args: cobra.ArbitraryArgs,
 	RunE: runVideo,
 }
 
 func init() {
 	videoCmd.Flags().StringVarP(&videoInput, "input", "i", "", "Input image for image-to-video")
+	videoCmd.Flags().StringArrayVarP(&videoReferences, "reference", "r", nil, "Reference image(s) for character/style consistency (repeatable, up to 4)")
 	videoCmd.Flags().StringVarP(&videoProvider, "provider", "p", "venice", "Video provider override (currently only venice)")
 	videoCmd.Flags().StringVarP(&videoOutput, "output", "o", "", "Custom output path")
 	videoCmd.Flags().StringVar(&videoModel, "model", "", "Venice video model to use")
@@ -65,6 +70,7 @@ func init() {
 	videoCmd.Flags().BoolVar(&videoDeleteRemote, "delete-remote", true, "Delete remote media after successful retrieval")
 	videoCmd.Flags().BoolVar(&videoQuoteOnly, "quote-only", false, "Quote the job and exit without queueing")
 	videoCmd.Flags().BoolVar(&videoNoWait, "no-wait", false, "Queue the job and exit without waiting for completion")
+	videoCmd.Flags().BoolVar(&videoJSON, "json", false, "Output machine-readable JSON")
 	videoCmd.Flags().DurationVar(&videoPollInterval, "poll-interval", video.DefaultPollInterval, "Polling interval while waiting for completion")
 	videoCmd.Flags().DurationVar(&videoTimeout, "timeout", video.DefaultTimeout, "Maximum time to wait for video generation")
 	videoCmd.Flags().BoolVarP(&videoDebug, "debug", "d", false, "Show debug information")
@@ -118,19 +124,25 @@ func runVideo(cmd *cobra.Command, args []string) error {
 		}
 	}
 
+	referenceImages, err := video.LoadReferenceImages(videoReferences)
+	if err != nil {
+		return err
+	}
+
 	model := video.ResolveModel(videoModel, len(inputData) > 0)
 	request := video.Request{
-		Prompt:         prompt,
-		Model:          model,
-		Duration:       videoDuration,
-		AspectRatio:    videoAspectRatio,
-		Resolution:     videoResolution,
-		Audio:          videoAudio,
-		NegativePrompt: videoNegative,
-		ImagePath:      videoInput,
-		ImageData:      inputData,
-		Debug:          videoDebug,
-		DebugRaw:       debugRaw,
+		Prompt:          prompt,
+		Model:           model,
+		Duration:        videoDuration,
+		AspectRatio:     videoAspectRatio,
+		Resolution:      videoResolution,
+		Audio:           videoAudio,
+		NegativePrompt:  videoNegative,
+		ImagePath:       videoInput,
+		ImageData:       inputData,
+		ReferenceImages: referenceImages,
+		Debug:           videoDebug,
+		DebugRaw:        debugRaw,
 	}
 
 	provider := video.NewVeniceProvider(apiKey)
@@ -138,7 +150,23 @@ func runVideo(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("video quote failed: %w", err)
 	}
-	fmt.Fprintf(os.Stderr, "Estimated cost: $%.2f\n", quote.Amount)
+	if videoJSON {
+		if err := printVideoJSON(map[string]any{
+			"stage":            "quoted",
+			"provider":         "venice",
+			"model":            model,
+			"input_image":      videoInput,
+			"reference_images": videoReferences,
+			"duration":         videoDuration,
+			"aspect_ratio":     videoAspectRatio,
+			"resolution":       videoResolution,
+			"quote_usd":        quote.Amount,
+		}); err != nil {
+			return err
+		}
+	} else {
+		fmt.Fprintf(os.Stderr, "Estimated cost: $%.2f\n", quote.Amount)
+	}
 	if videoQuoteOnly {
 		return nil
 	}
@@ -147,7 +175,19 @@ func runVideo(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("video queue failed: %w", err)
 	}
-	fmt.Fprintf(os.Stderr, "Queued video: model=%s queue_id=%s\n", job.Model, job.QueueID)
+	if videoJSON {
+		if err := printVideoJSON(map[string]any{
+			"stage":     "queued",
+			"provider":  "venice",
+			"model":     job.Model,
+			"queue_id":  job.QueueID,
+			"quote_usd": quote.Amount,
+		}); err != nil {
+			return err
+		}
+	} else {
+		fmt.Fprintf(os.Stderr, "Queued video: model=%s queue_id=%s\n", job.Model, job.QueueID)
+	}
 	if videoNoWait {
 		return nil
 	}
@@ -167,12 +207,47 @@ func runVideo(cmd *cobra.Command, args []string) error {
 			if err != nil {
 				return err
 			}
-			fmt.Fprintf(os.Stderr, "Saved to: %s\n", outputPath)
+			if videoJSON {
+				if err := printVideoJSON(map[string]any{
+					"stage":            "completed",
+					"provider":         "venice",
+					"model":            job.Model,
+					"queue_id":         job.QueueID,
+					"output_path":      outputPath,
+					"mime_type":        retrieval.MimeType,
+					"bytes":            len(retrieval.Data),
+					"quote_usd":        quote.Amount,
+					"input_image":      videoInput,
+					"reference_images": videoReferences,
+					"duration":         videoDuration,
+					"aspect_ratio":     videoAspectRatio,
+					"resolution":       videoResolution,
+				}); err != nil {
+					return err
+				}
+			} else {
+				fmt.Fprintf(os.Stderr, "Saved to: %s\n", outputPath)
+			}
 			return nil
 		}
 
 		eta := formatETA(retrieval.AverageExecutionTime, retrieval.ExecutionDuration)
-		fmt.Fprintf(os.Stderr, "Status: %s (%s elapsed%s)\n", retrieval.Status, formatMillis(retrieval.ExecutionDuration), eta)
+		if videoJSON {
+			if err := printVideoJSON(map[string]any{
+				"stage":                  "processing",
+				"provider":               "venice",
+				"model":                  job.Model,
+				"queue_id":               job.QueueID,
+				"status":                 retrieval.Status,
+				"average_execution_time": retrieval.AverageExecutionTime,
+				"execution_duration":     retrieval.ExecutionDuration,
+				"quote_usd":              quote.Amount,
+			}); err != nil {
+				return err
+			}
+		} else {
+			fmt.Fprintf(os.Stderr, "Status: %s (%s elapsed%s)\n", retrieval.Status, formatMillis(retrieval.ExecutionDuration), eta)
+		}
 
 		select {
 		case <-ctx.Done():
@@ -233,4 +308,10 @@ func formatETA(avgMS, elapsedMS int64) string {
 		return ", ETA soon"
 	}
 	return fmt.Sprintf(", ETA %s", (time.Duration(remaining) * time.Millisecond).Round(time.Second))
+}
+
+func printVideoJSON(v any) error {
+	enc := json.NewEncoder(os.Stdout)
+	enc.SetIndent("", "  ")
+	return enc.Encode(v)
 }

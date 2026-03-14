@@ -21,6 +21,7 @@ By default, videos are:
 | Flag | Short | Description |
 |------|-------|-------------|
 | `--input` | `-i` | Input image for image-to-video |
+| `--reference` | `-r` | Reference image(s) for character/style consistency (repeatable, up to 4) |
 | `--output` | `-o` | Custom output path |
 | `--model` | | Venice video model override |
 | `--duration` | | Video duration (`5s`, `10s`) |
@@ -30,6 +31,7 @@ By default, videos are:
 | `--audio` | | Request audio for models that support it |
 | `--quote-only` | | Quote the job and exit |
 | `--no-wait` | | Queue the job and exit without polling |
+| `--json` | | Emit machine-readable JSON events |
 | `--poll-interval` | | Poll interval while waiting |
 | `--timeout` | | Maximum wait time |
 | `--debug` | `-d` | Show debug information |
@@ -43,16 +45,21 @@ term-llm video "a corgi surfing at sunset" --model kling-v3-pro-text-to-video
 
 # Image-to-video
 term-llm video "make Romeo blink and wag his tail" -i romeo.png
-term-llm video "cute dog, influencer reacts" -i romeo.png --aspect-ratio 9:16 --duration 10s
+term-llm video "cute dog, influencer reacts" -i romeo.png -r style1.png -r style2.png --aspect-ratio 9:16 --duration 10s
 
 # Planning and batch workflows
 term-llm video "astronaut on mars" --quote-only
 term-llm video "cyberpunk city" --no-wait
+term-llm video "city at dawn" --json
 ```
 
 ### Credentials
 
 `term-llm video` currently uses Venice AI and reads credentials from `VENICE_API_KEY` or `image.venice.api_key` in your config.
+
+### Model-specific features
+
+Reference images, audio, and aspect ratio support are model-dependent on Venice. The CLI exposes those options, but Venice will return an API error if the chosen model does not support them.
 
 ### Defaults
 

@@ -42,6 +42,13 @@ func TestValidateEnums(t *testing.T) {
 	}
 }
 
+func TestLoadReferenceImagesLimit(t *testing.T) {
+	_, err := LoadReferenceImages([]string{"a", "b", "c", "d", "e"})
+	if err == nil || !strings.Contains(err.Error(), "max 4") {
+		t.Fatalf("expected max 4 error, got %v", err)
+	}
+}
+
 func TestVeniceProviderQuoteQueueRetrieve(t *testing.T) {
 	var queueSawImageURL bool
 	retrieveCalls := 0
@@ -60,6 +67,10 @@ func TestVeniceProviderQuoteQueueRetrieve(t *testing.T) {
 			_ = json.NewDecoder(r.Body).Decode(&body)
 			if imageURL, ok := body["image_url"].(string); ok && strings.HasPrefix(imageURL, "data:image/png;base64,") {
 				queueSawImageURL = true
+			}
+			refs, ok := body["reference_image_urls"].([]any)
+			if !ok || len(refs) != 2 {
+				t.Fatalf("reference_image_urls = %#v, want 2 items", body["reference_image_urls"])
 			}
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(`{"model":"venice-video-model","queue_id":"queue-123"}`))
@@ -103,6 +114,10 @@ func TestVeniceProviderQuoteQueueRetrieve(t *testing.T) {
 		Resolution:  "720p",
 		ImagePath:   "romeo.png",
 		ImageData:   []byte{0x89, 'P', 'N', 'G'},
+		ReferenceImages: []ReferenceImage{
+			{Path: "style1.png", Data: []byte{0x89, 'P', 'N', 'G', 0x01}},
+			{Path: "style2.png", Data: []byte{0x89, 'P', 'N', 'G', 0x02}},
+		},
 	})
 	if err != nil {
 		t.Fatalf("Queue error: %v", err)
