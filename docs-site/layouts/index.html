@@ -1,0 +1,75 @@
+{{ define "main" }}
+  <section class="hero">
+    <div>
+      <p class="eyebrow">Documentation hub</p>
+      <h1>{{ .Title }}</h1>
+      <div class="lede markdown">{{ .Content }}</div>
+      <div class="actions">
+        <a class="button primary" href="/getting-started/quickstart/">Open quickstart path</a>
+        <a class="button" href="/reference/configuration/">Browse configuration reference</a>
+      </div>
+    </div>
+
+    <aside class="hero-panel terminal-panel">
+      <div class="terminal-bar"><span></span><span></span><span></span></div>
+      <pre><code>$ term-llm chat --agent jarvis
+
+> what is term-llm?
+
+A terminal-first AI runtime with:
+- chat, web, and jobs runtimes
+- agents, tools, skills, and memory
+- enough structure to run real workflows
+  instead of demo theatre</code></pre>
+    </aside>
+  </section>
+
+  <section class="section-block">
+    <div class="section-heading">
+      <p class="eyebrow">Choose your path</p>
+      <h2>Start with intent, not file names</h2>
+    </div>
+    <div class="card-grid card-grid-4">
+      {{ range site.Sections.ByWeight }}
+        <a class="card path-card" href="{{ .RelPermalink }}">
+          <p class="card-kicker">{{ with .Params.kicker }}{{ . }}{{ else }}Section{{ end }}</p>
+          <h3>{{ .Title }}</h3>
+          <p>{{ with .Description }}{{ . }}{{ else }}{{ .Summary }}{{ end }}</p>
+        </a>
+      {{ end }}
+    </div>
+  </section>
+
+  <section class="section-block split-layout">
+    <div>
+      <div class="section-heading">
+        <p class="eyebrow">What belongs here</p>
+        <h2>Documentation shape</h2>
+      </div>
+      <div class="list-panel markdown">{{ .Params.belongs | markdownify }}</div>
+    </div>
+    <div>
+      <div class="section-heading">
+        <p class="eyebrow">What does not</p>
+        <h2>Things we are trying not to repeat</h2>
+      </div>
+      <div class="list-panel markdown">{{ .Params.avoids | markdownify }}</div>
+    </div>
+  </section>
+
+  <section class="section-block">
+    <div class="section-heading">
+      <p class="eyebrow">Featured pages</p>
+      <h2>Good starting points</h2>
+    </div>
+    <div class="card-grid card-grid-3">
+      {{ range first 6 (where site.RegularPages "Params.featured" true) }}
+        <a class="card detail-card" href="{{ .RelPermalink }}">
+          <p class="card-kicker">{{ .CurrentSection.Title }}</p>
+          <h3>{{ .Title }}</h3>
+          <p>{{ with .Description }}{{ . }}{{ else }}{{ .Summary }}{{ end }}</p>
+        </a>
+      {{ end }}
+    </div>
+  </section>
+{{ end }}
