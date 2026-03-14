@@ -23,5 +23,29 @@
       </main>
       {{ partial "footer.html" . }}
     </div>
+    <script>
+      document.addEventListener("click", async (event) => {
+        const button = event.target.closest("[data-copy-text]");
+        if (!button) {
+          return;
+        }
+
+        const text = button.getAttribute("data-copy-text") || "";
+        const defaultLabel = button.getAttribute("data-copy-default") || button.textContent;
+        const successLabel = button.getAttribute("data-copy-success") || "Copied";
+        const failureLabel = "Copy failed";
+
+        try {
+          await navigator.clipboard.writeText(text);
+          button.textContent = successLabel;
+        } catch (_error) {
+          button.textContent = failureLabel;
+        }
+
+        window.setTimeout(() => {
+          button.textContent = defaultLabel;
+        }, 1800);
+      });
+    </script>
   </body>
 </html>
