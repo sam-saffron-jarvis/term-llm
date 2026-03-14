@@ -33,6 +33,16 @@ The CLI can override provider or model per command, while config sets the defaul
 
 That statefulness is local and explicit rather than magical. The runtime can be told not to use sessions, or to use a different session database path.
 
+## Memory is long-term context
+
+Memory sits beside sessions rather than replacing them.
+
+- **Sessions** preserve the transcript of a conversation.
+- **Memory fragments** preserve durable facts mined from many conversations.
+- **Insights** preserve behavioral rules that should influence future runs.
+
+That gives term-llm a way to accumulate reusable context without pretending every prior token is still in the prompt. The runtime can search memory when needed, while keeping the live session focused on the current task.
+
 ## Tools and MCP extend the model
 
 Built-in tools handle common filesystem and shell tasks. MCP servers extend that with external capabilities such as browser automation, GitHub, or custom APIs.
