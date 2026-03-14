@@ -130,3 +130,7 @@ MCP servers are stored in `~/.config/term-llm/mcp.json`:
 | http | `url` | Connects to remote HTTP endpoint |
 
 HTTP transport uses [Streamable HTTP](https://modelcontextprotocol.io/specification/2025-03-26/basic/transports) (MCP spec 2025-03-26).
+
+### MCP server mode
+
+`term-llm mcp-server` also exists, but it is an internal and deprecated stdio server path. It remains available for external MCP clients that want stdio transport, but it is not the primary integration path for most users.

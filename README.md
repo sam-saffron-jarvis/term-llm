@@ -79,6 +79,9 @@ Common entry points:
 - [Jobs](https://term-llm.com/guides/job-runner/)
 - [Text embeddings](https://term-llm.com/guides/text-embeddings/)
 - [Usage tracking](https://term-llm.com/reference/usage-tracking/)
+- [Transcription](https://term-llm.com/guides/transcription/)
+- [Plan mode](https://term-llm.com/guides/plan-mode/)
+- [Notifications](https://term-llm.com/guides/notifications/)
 
 ## License
 

@@ -34,6 +34,7 @@ term-llm skills browse                       # Browse available skills
 term-llm skills validate my-skill            # Validate skill syntax
 term-llm skills update                       # Update skills from sources
 term-llm skills path                         # Print skills directory
+term-llm skills add owner/repo               # Add skill source from GitHub
 ```
 
 ### Skill Configuration

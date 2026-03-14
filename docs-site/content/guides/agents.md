@@ -34,6 +34,12 @@ term-llm agents show reviewer                # Show agent configuration
 term-llm agents edit reviewer                # Edit agent configuration
 term-llm agents copy builtin/coder my-coder  # Copy agent to customize
 term-llm agents path                         # Print agents directory
+term-llm agents export reviewer              # Export an agent bundle
+term-llm agents import ./agent-dir           # Import an agent bundle
+term-llm agents gist reviewer                # Publish agent as a gist
+term-llm agents set reviewer provider=openai model=gpt-5.2
+term-llm agents get reviewer
+term-llm agents clear reviewer model
 ```
 
 ### Agent Configuration
