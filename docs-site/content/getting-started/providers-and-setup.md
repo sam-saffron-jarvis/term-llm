@@ -9,7 +9,7 @@ next:
   label: Usage guide
   url: /guides/usage/
 ---
-On first run, term-llm will prompt you to choose a provider (Anthropic, OpenAI, ChatGPT, GitHub Copilot, xAI, OpenRouter, Gemini, Gemini CLI, Zen, Claude Code (claude-bin), Ollama, or LM Studio).
+On first run, term-llm will prompt you to choose a provider (Anthropic, OpenAI, ChatGPT, GitHub Copilot, xAI, Venice, OpenRouter, Gemini, Gemini CLI, Zen, Claude Code (claude-bin), Ollama, or LM Studio).
 
 ### Option 1: Try it free with Zen
 
@@ -43,6 +43,9 @@ export OPENAI_API_KEY=your-key
 
 # For xAI (Grok)
 export XAI_API_KEY=your-key
+
+# For Venice
+export VENICE_API_KEY=your-key
 
 # For OpenRouter
 export OPENROUTER_API_KEY=your-key
@@ -120,7 +123,30 @@ term-llm ask --provider xai:grok-4-1-fast-reasoning "solve this step by step"
 term-llm ask --provider xai:grok-code-fast-1 "review this code"
 ```
 
-### Option 6: Use OpenRouter
+### Option 6: Use Venice
+
+[Venice](https://venice.ai) exposes a wide mix of hosted text models behind an OpenAI-compatible API, including Venice's own uncensored models plus Claude, Gemini, Grok, Qwen, GLM, Kimi, DeepSeek, and more. term-llm also enables Venice native web search when you use `-s` / `--search`.
+
+```yaml
+# In ~/.config/term-llm/config.yaml
+default_provider: venice
+
+providers:
+  venice:
+    model: venice-uncensored  # default model
+    fast_model: llama-3.2-3b  # lightweight control-plane model
+```
+
+Or use the `--provider` flag directly:
+
+```bash
+term-llm ask --provider venice "explain quantum computing"
+term-llm ask --provider venice:grok-4-20-beta -s "latest xAI news"
+term-llm ask --provider venice:qwen3-coder-480b-a35b-instruct "review this code"
+term-llm models --provider venice
+```
+
+### Option 7: Use OpenRouter
 
 [OpenRouter](https://openrouter.ai) provides a unified OpenAI-compatible API across many models. term-llm sends attribution headers by default.
 
@@ -159,7 +185,7 @@ term-llm providers anthropic       # Show details for specific provider
 term-llm providers --json          # JSON output
 ```
 
-### Option 7: Use local LLMs (Ollama, LM Studio)
+### Option 8: Use local LLMs (Ollama, LM Studio)
 
 Run models locally with [Ollama](https://ollama.com) or [LM Studio](https://lmstudio.ai):
 
@@ -201,7 +227,7 @@ providers:
 
 The `models` list enables tab completion for `--provider my-server:<TAB>`. The configured `model` is always included in completions.
 
-### Option 8: Use Claude Code (claude-bin)
+### Option 9: Use Claude Code (claude-bin)
 
 If you have [Claude Code](https://claude.ai/code) installed and logged in, you can use the `claude-bin` provider to run completions via the [Claude Agent SDK](https://docs.anthropic.com/en/docs/claude-code/sdk). This requires no API key - it uses Claude Code's existing authentication.
 
@@ -230,7 +256,7 @@ providers:
 - Model selection: `opus`, `sonnet` (default), `haiku`
 - Works immediately if Claude Code is installed and logged in
 
-### Option 9: Use existing CLI credentials (gemini-cli)
+### Option 10: Use existing CLI credentials (gemini-cli)
 
 If you have [gemini-cli](https://github.com/google-gemini/gemini-cli) installed and logged in, term-llm can use those credentials directly:
 
@@ -252,7 +278,7 @@ OpenAI-compatible providers support two URL options:
 
 Use `url` when your endpoint doesn't follow the standard `/chat/completions` path, or to paste URLs directly from API documentation.
 
-### Option 10: Use GitHub Copilot
+### Option 11: Use GitHub Copilot
 
 If you have [GitHub Copilot](https://github.com/features/copilot) (free, Individual, or Business), you can use the `copilot` provider with OAuth device flow authentication:
 
