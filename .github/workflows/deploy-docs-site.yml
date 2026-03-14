@@ -15,6 +15,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Set up Hugo
+        uses: peaceiris/actions-hugo@v3
+        with:
+          hugo-version: '0.145.0'
+          extended: true
+
+      - name: Build docs site
+        run: hugo --source docs-site --destination docs-site-public
+
       - name: Prepare release directories
         uses: appleboy/ssh-action@v1.2.0
         with:
@@ -26,13 +35,13 @@ jobs:
             rm -rf /root/term-llm-release
             mkdir -p /root/term-llm-release/site /root/term-llm-release/ops/nginx
 
-      - name: Upload static site assets
+      - name: Upload built site
         uses: appleboy/scp-action@v0.1.7
         with:
           host: wasnotwas.com
           username: root
           key: ${{ secrets.DEPLOY_SSH_KEY }}
-          source: "docs-site/*"
+          source: "docs-site-public/*"
           target: "/root/term-llm-release/site"
           strip_components: 1
 

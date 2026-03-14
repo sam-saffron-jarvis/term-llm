@@ -1,0 +1,15 @@
+baseURL = 'https://term-llm.com/'
+languageCode = 'en-us'
+title = 'term-llm docs'
+disableKinds = ['taxonomy', 'term', 'RSS', 'sitemap', 'robotsTXT']
+
+[markup]
+  [markup.goldmark]
+    [markup.goldmark.renderer]
+      unsafe = true
+  [markup.highlight]
+    noClasses = false
+    style = 'github-dark'
+
+[params]
+  description = 'Documentation hub for term-llm: getting started, guides, architecture, and reference.'
