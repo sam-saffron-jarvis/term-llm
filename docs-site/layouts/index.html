@@ -29,7 +29,7 @@ $ term-llm chat @codebase</code></pre>
       <pre class="install-command"><code id="install-command">curl -fsSL https://raw.githubusercontent.com/samsaffron/term-llm/main/install.sh | sh</code></pre>
       <button class="button primary copy-button" type="button" data-copy-text="curl -fsSL https://raw.githubusercontent.com/samsaffron/term-llm/main/install.sh | sh" data-copy-default="Copy install command" data-copy-success="Copied install command">Copy install command</button>
     </div>
-    <p class="install-note">The full command is shown inline, so people do not have to horizontally scroll just to see what they are about to paste.</p>
+    <p class="install-note">The full command is shown inline, so you can see exactly what you are about to paste.</p>
   </section>
 
   <section class="section-block">
@@ -46,12 +46,12 @@ $ term-llm chat @codebase</code></pre>
       <a class="card detail-card" href="/guides/agents/">
         <p class="card-kicker">Ask + agents</p>
         <h3><code>term-llm ask @reviewer</code></h3>
-        <p>Use a built-in agent when the job has a mode. `@reviewer` is read-only and git-aware, so it reviews code without wandering off into edits.</p>
+        <p>Use a built-in agent when the job has a mode. <code>@reviewer</code> is read-only and git-aware, so it reviews code without wandering off into edits.</p>
       </a>
       <a class="card detail-card" href="/guides/agents/">
         <p class="card-kicker">Chat + agents</p>
         <h3><code>term-llm chat @codebase</code></h3>
-        <p>Start a persistent session when you need back-and-forth. `@codebase` is the right tool for tracing behavior and understanding a repository.</p>
+        <p>Start a persistent session when you need back-and-forth. <code>@codebase</code> is the right tool for tracing behavior and understanding a repository.</p>
       </a>
     </div>
   </section>
@@ -59,28 +59,24 @@ $ term-llm chat @codebase</code></pre>
   <section class="section-block split-layout">
     <div>
       <div class="section-heading">
-        <p class="eyebrow">Built-in agents</p>
-        <h2>Use the ones that already exist</h2>
+        <p class="eyebrow">Read the right page</p>
+        <h2>New here</h2>
       </div>
-      <div class="list-panel">
-        <p><code>@reviewer</code>, <code>@codebase</code>, <code>@developer</code>, <code>@researcher</code>, <code>@commit-message</code></p>
-        <p><code>@active-review</code>, <code>@agent-builder</code>, <code>@artist</code>, <code>@changelog</code>, <code>@editor</code>, <code>@file-organizer</code>, <code>@shell</code></p>
-        <p><a href="/guides/agents/">See the built-in agents guide</a></p>
-      </div>
+      <div class="list-panel markdown">{{ .Params.new_here | markdownify }}</div>
     </div>
     <div>
       <div class="section-heading">
-        <p class="eyebrow">What belongs here</p>
-        <h2>Documentation structure</h2>
+        <p class="eyebrow">Common workflows</p>
+        <h2>Already using it</h2>
       </div>
-      <div class="list-panel markdown">{{ .Params.belongs | markdownify }}</div>
+      <div class="list-panel markdown">{{ .Params.common_workflows | markdownify }}</div>
     </div>
   </section>
 
   <section class="section-block">
     <div class="section-heading">
       <p class="eyebrow">Choose your path</p>
-      <h2>Start with the task at hand</h2>
+      <h2>Browse by section</h2>
     </div>
     <div class="card-grid card-grid-4">
       {{ range site.Sections.ByWeight }}
@@ -96,25 +92,17 @@ $ term-llm chat @codebase</code></pre>
   <section class="section-block split-layout">
     <div>
       <div class="section-heading">
-        <p class="eyebrow">What to avoid</p>
-        <h2>Documentation failure modes</h2>
+        <p class="eyebrow">Reference shortcuts</p>
+        <h2>When you need exact details</h2>
       </div>
-      <div class="list-panel markdown">{{ .Params.avoids | markdownify }}</div>
+      <div class="list-panel markdown">{{ .Params.reference_shortcuts | markdownify }}</div>
     </div>
     <div>
       <div class="section-heading">
-        <p class="eyebrow">Featured pages</p>
-        <h2>Recommended starting points</h2>
+        <p class="eyebrow">Understand the internals</p>
+        <h2>When the model matters</h2>
       </div>
-      <div class="card-grid card-grid-3">
-        {{ range first 3 (where site.RegularPages "Params.featured" true) }}
-          <a class="card detail-card" href="{{ .RelPermalink }}">
-            <p class="card-kicker">{{ .CurrentSection.Title }}</p>
-            <h3>{{ .Title }}</h3>
-            <p>{{ with .Description }}{{ . }}{{ else }}{{ .Summary }}{{ end }}</p>
-          </a>
-        {{ end }}
-      </div>
+      <div class="list-panel markdown">{{ .Params.understand_it | markdownify }}</div>
     </div>
   </section>
 
