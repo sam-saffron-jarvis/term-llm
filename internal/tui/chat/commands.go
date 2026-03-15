@@ -79,12 +79,6 @@ func AllCommands() []Command {
 			Usage:       "/save [name]",
 		},
 		{
-			Name:        "sessions",
-			Aliases:     []string{"ls"},
-			Description: "List saved sessions",
-			Usage:       "/sessions",
-		},
-		{
 			Name:        "export",
 			Description: "Export conversation as markdown",
 			Usage:       "/export [path]",
@@ -309,8 +303,6 @@ func (m *Model) ExecuteCommand(input string) (tea.Model, tea.Cmd) {
 		return m.cmdNew()
 	case "save":
 		return m.cmdSave(args)
-	case "sessions":
-		return m.cmdSessions()
 	case "export":
 		return m.cmdExport(args)
 	case "system":
@@ -693,39 +685,6 @@ func (m *Model) cmdSave(args []string) (tea.Model, tea.Cmd) {
 
 	m.setTextareaValue("")
 	return m.showSystemMessage(fmt.Sprintf("Session saved as '%s'.", name))
-}
-
-func (m *Model) cmdSessions() (tea.Model, tea.Cmd) {
-	if m.store == nil {
-		return m.showSystemMessage("Session storage is disabled.")
-	}
-
-	summaries, err := m.store.List(context.Background(), session.ListOptions{Limit: 20})
-	if err != nil {
-		return m.showSystemMessage(fmt.Sprintf("Failed to list sessions: %v", err))
-	}
-
-	if len(summaries) == 0 {
-		return m.showSystemMessage("No saved sessions found.\nUse `/save [name]` to save the current session.")
-	}
-
-	var b strings.Builder
-	b.WriteString("## Recent Sessions\n\n")
-	for _, s := range summaries {
-		name := s.Name
-		if name == "" {
-			name = fmt.Sprintf("#%d", s.Number)
-		}
-		summary := s.Summary
-		if len(summary) > 50 {
-			summary = summary[:47] + "..."
-		}
-		b.WriteString(fmt.Sprintf("- `%s` (%s) - %d msgs - %s\n", name, s.Provider, s.MessageCount, summary))
-	}
-	b.WriteString("\nUse `/resume <number|id>` to resume a session.")
-
-	m.setTextareaValue("")
-	return m.showSystemMessage(b.String())
 }
 
 func (m *Model) cmdResume(args []string) (tea.Model, tea.Cmd) {
