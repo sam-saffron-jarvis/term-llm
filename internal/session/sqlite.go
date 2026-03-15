@@ -17,6 +17,7 @@ import (
 type SQLiteStore struct {
 	db                  *sql.DB
 	cfg                 Config
+	hasGeneratedTitles  bool // true if sessions table has generated title columns
 	hasCompactionSeq    bool // true if sessions table has compaction_seq column
 	hasCacheWriteTokens bool // true if sessions table has cache_write_tokens column
 }
@@ -28,6 +29,11 @@ CREATE TABLE IF NOT EXISTS sessions (
     number INTEGER,
     name TEXT,
     summary TEXT,
+    generated_short_title TEXT,
+    generated_long_title TEXT,
+    title_source TEXT,
+    title_generated_at TIMESTAMP,
+    title_basis_msg_seq INTEGER DEFAULT 0,
     provider TEXT NOT NULL,
     provider_key TEXT,
     model TEXT NOT NULL,
@@ -143,6 +149,7 @@ func NewSQLiteStore(cfg Config) (*SQLiteStore, error) {
 
 	// Probe for optional columns. Read-write mode always has them after
 	// migration, but read-only mode skips migrations and may open an older DB.
+	store.hasGeneratedTitles = store.probeColumn("generated_short_title")
 	store.hasCompactionSeq = store.probeColumn("compaction_seq")
 	store.hasCacheWriteTokens = store.probeColumn("cache_write_tokens")
 
@@ -161,7 +168,7 @@ func NewSQLiteStore(cfg Config) (*SQLiteStore, error) {
 // - Fresh databases get the full schema from `schema` const and start at this version
 // - Existing databases run migrations to reach this version
 // Increment when adding new migrations.
-const schemaVersion = 11
+const schemaVersion = 12
 
 // migration represents a schema migration.
 type migration struct {
@@ -442,6 +449,28 @@ var migrations = []migration{
 			return nil
 		},
 	},
+	{
+		// Migration 12: Add generated session title fields for autotitling experiments.
+		version:     12,
+		description: "add generated title columns",
+		up: func(db *sql.DB) error {
+			alterStatements := []string{
+				"ALTER TABLE sessions ADD COLUMN generated_short_title TEXT",
+				"ALTER TABLE sessions ADD COLUMN generated_long_title TEXT",
+				"ALTER TABLE sessions ADD COLUMN title_source TEXT",
+				"ALTER TABLE sessions ADD COLUMN title_generated_at TIMESTAMP",
+				"ALTER TABLE sessions ADD COLUMN title_basis_msg_seq INTEGER DEFAULT 0",
+			}
+			for _, stmt := range alterStatements {
+				if _, err := db.Exec(stmt); err != nil {
+					if !isDuplicateColumnError(err) {
+						return err
+					}
+				}
+			}
+			return nil
+		},
+	},
 }
 
 // initSchema initializes the database schema and runs any pending migrations.
@@ -594,10 +623,12 @@ func (s *SQLiteStore) Create(ctx context.Context, sess *Session) error {
 		// next session number. This avoids race conditions where two concurrent
 		// Creates could read the same MAX(number).
 		result, err := s.db.ExecContext(ctx, `
-			INSERT INTO sessions (id, number, name, summary, provider, provider_key, model, mode, agent, cwd, created_at, updated_at, archived, parent_id, search, tools, mcp,
+			INSERT INTO sessions (id, number, name, summary, generated_short_title, generated_long_title, title_source, title_generated_at, title_basis_msg_seq,
+			                      provider, provider_key, model, mode, agent, cwd, created_at, updated_at, archived, parent_id, search, tools, mcp,
 			                      user_turns, llm_turns, tool_calls, input_tokens, cached_input_tokens, cache_write_tokens, output_tokens, status, tags)
-			VALUES (?, (SELECT COALESCE(MAX(number), 0) + 1 FROM sessions), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			sess.ID, sess.Name, sess.Summary, sess.Provider, nullString(sess.ProviderKey), sess.Model, string(sess.Mode), nullString(sess.Agent), sess.CWD,
+			VALUES (?, (SELECT COALESCE(MAX(number), 0) + 1 FROM sessions), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			sess.ID, sess.Name, sess.Summary, nullString(sess.GeneratedShortTitle), nullString(sess.GeneratedLongTitle), nullString(string(sess.TitleSource)), nullTime(sess.TitleGeneratedAt), sess.TitleBasisMsgSeq,
+			sess.Provider, nullString(sess.ProviderKey), sess.Model, string(sess.Mode), nullString(sess.Agent), sess.CWD,
 			sess.CreatedAt, sess.UpdatedAt, sess.Archived, nullString(sess.ParentID),
 			sess.Search, nullString(sess.Tools), nullString(sess.MCP),
 			sess.UserTurns, sess.LLMTurns, sess.ToolCalls, sess.InputTokens, sess.CachedInputTokens, sess.CacheWriteTokens, sess.OutputTokens,
@@ -629,14 +660,14 @@ func (s *SQLiteStore) Create(ctx context.Context, sess *Session) error {
 func (s *SQLiteStore) Get(ctx context.Context, id string) (*Session, error) {
 	row := s.db.QueryRowContext(ctx,
 		"SELECT "+s.sessionSelectCols()+" FROM sessions WHERE id = ?", id)
-	return scanSessionRow(row, s.hasCacheWriteTokens, s.hasCompactionSeq)
+	return scanSessionRow(row, s.hasGeneratedTitles, s.hasCacheWriteTokens, s.hasCompactionSeq)
 }
 
 // GetByNumber retrieves a session by its sequential number.
 func (s *SQLiteStore) GetByNumber(ctx context.Context, number int64) (*Session, error) {
 	row := s.db.QueryRowContext(ctx,
 		"SELECT "+s.sessionSelectCols()+" FROM sessions WHERE number = ?", number)
-	return scanSessionRow(row, s.hasCacheWriteTokens, s.hasCompactionSeq)
+	return scanSessionRow(row, s.hasGeneratedTitles, s.hasCacheWriteTokens, s.hasCompactionSeq)
 }
 
 // GetByPrefix retrieves a session by number (with # prefix), exact ID, or by short ID prefix match.
@@ -683,7 +714,7 @@ func (s *SQLiteStore) GetByPrefix(ctx context.Context, prefix string) (*Session,
 	pattern := ExpandShortID(prefix)
 	row := s.db.QueryRowContext(ctx,
 		"SELECT "+s.sessionSelectCols()+" FROM sessions WHERE id LIKE ? ORDER BY created_at DESC LIMIT 1", pattern)
-	return scanSessionRow(row, s.hasCacheWriteTokens, s.hasCompactionSeq)
+	return scanSessionRow(row, s.hasGeneratedTitles, s.hasCacheWriteTokens, s.hasCompactionSeq)
 }
 
 // Update modifies an existing session's metadata fields.
@@ -694,11 +725,13 @@ func (s *SQLiteStore) GetByPrefix(ctx context.Context, prefix string) (*Session,
 func (s *SQLiteStore) Update(ctx context.Context, sess *Session) error {
 	sess.UpdatedAt = time.Now()
 	result, err := s.db.ExecContext(ctx, `
-		UPDATE sessions SET name = ?, summary = ?, provider = ?, provider_key = ?, model = ?, mode = ?, agent = ?, cwd = ?,
+		UPDATE sessions SET name = ?, summary = ?, generated_short_title = ?, generated_long_title = ?, title_source = ?, title_generated_at = ?, title_basis_msg_seq = ?,
+		       provider = ?, provider_key = ?, model = ?, mode = ?, agent = ?, cwd = ?,
 		       updated_at = ?, archived = ?, parent_id = ?, search = ?, tools = ?, mcp = ?,
 		       user_turns = ?, status = ?, tags = ?
 		WHERE id = ?`,
-		sess.Name, sess.Summary, sess.Provider, nullString(sess.ProviderKey), sess.Model, string(sess.Mode), nullString(sess.Agent), sess.CWD,
+		sess.Name, sess.Summary, nullString(sess.GeneratedShortTitle), nullString(sess.GeneratedLongTitle), nullString(string(sess.TitleSource)), nullTime(sess.TitleGeneratedAt), sess.TitleBasisMsgSeq,
+		sess.Provider, nullString(sess.ProviderKey), sess.Model, string(sess.Mode), nullString(sess.Agent), sess.CWD,
 		sess.UpdatedAt, sess.Archived, nullString(sess.ParentID),
 		sess.Search, nullString(sess.Tools), nullString(sess.MCP),
 		sess.UserTurns, string(sess.Status), nullString(sess.Tags), sess.ID)
@@ -773,8 +806,17 @@ func (s *SQLiteStore) List(ctx context.Context, opts ListOptions) ([]SessionSumm
 	if s.hasCacheWriteTokens {
 		cacheWriteCol = "s.cache_write_tokens"
 	}
+	generatedShortCol := "''"
+	generatedLongCol := "''"
+	titleSourceCol := "''"
+	if s.hasGeneratedTitles {
+		generatedShortCol = "s.generated_short_title"
+		generatedLongCol = "s.generated_long_title"
+		titleSourceCol = "s.title_source"
+	}
 	query := `
-		SELECT s.id, s.number, s.name, s.summary, s.provider, s.model, s.mode, s.created_at, s.updated_at,
+		SELECT s.id, s.number, s.name, s.summary, ` + generatedShortCol + `, ` + generatedLongCol + `, ` + titleSourceCol + `,
+		       s.provider, s.model, s.mode, s.created_at, s.updated_at,
 		       (SELECT COUNT(*) FROM messages WHERE session_id = s.id) as message_count,
 		       s.user_turns, s.llm_turns, s.tool_calls, s.input_tokens, s.cached_input_tokens, ` + cacheWriteCol + `, s.output_tokens, s.status, s.tags
 		FROM sessions s
@@ -833,8 +875,8 @@ func (s *SQLiteStore) List(ctx context.Context, opts ListOptions) ([]SessionSumm
 	for rows.Next() {
 		var sum SessionSummary
 		var number sql.NullInt64
-		var mode, status, tags sql.NullString
-		err := rows.Scan(&sum.ID, &number, &sum.Name, &sum.Summary, &sum.Provider, &sum.Model, &mode,
+		var mode, status, tags, generatedShortTitle, generatedLongTitle, titleSource sql.NullString
+		err := rows.Scan(&sum.ID, &number, &sum.Name, &sum.Summary, &generatedShortTitle, &generatedLongTitle, &titleSource, &sum.Provider, &sum.Model, &mode,
 			&sum.CreatedAt, &sum.UpdatedAt, &sum.MessageCount,
 			&sum.UserTurns, &sum.LLMTurns, &sum.ToolCalls, &sum.InputTokens, &sum.CachedInputTokens, &sum.CacheWriteTokens, &sum.OutputTokens,
 			&status, &tags)
@@ -843,6 +885,15 @@ func (s *SQLiteStore) List(ctx context.Context, opts ListOptions) ([]SessionSumm
 		}
 		if number.Valid {
 			sum.Number = number.Int64
+		}
+		if generatedShortTitle.Valid {
+			sum.GeneratedShortTitle = generatedShortTitle.String
+		}
+		if generatedLongTitle.Valid {
+			sum.GeneratedLongTitle = generatedLongTitle.String
+		}
+		if titleSource.Valid {
+			sum.TitleSource = SessionTitleSource(titleSource.String)
 		}
 		if mode.Valid {
 			sum.Mode = SessionMode(mode.String)
@@ -1258,8 +1309,13 @@ func (s *SQLiteStore) probeColumn(colName string) bool {
 // sessionSelectCols returns the SELECT column list for session queries.
 // Excludes compaction_seq when the column doesn't exist (old DB in read-only mode).
 func (s *SQLiteStore) sessionSelectCols() string {
-	base := `id, number, name, summary, provider, provider_key, model, mode, agent, cwd, created_at, updated_at, archived, parent_id, search, tools, mcp,
-		       user_turns, llm_turns, tool_calls, input_tokens, cached_input_tokens`
+	base := `id, number, name, summary`
+	if s.hasGeneratedTitles {
+		base += ", generated_short_title, generated_long_title, title_source, title_generated_at, title_basis_msg_seq"
+	}
+	base += `,
+	       provider, provider_key, model, mode, agent, cwd, created_at, updated_at, archived, parent_id, search, tools, mcp,
+	       user_turns, llm_turns, tool_calls, input_tokens, cached_input_tokens`
 	if s.hasCacheWriteTokens {
 		base += ", cache_write_tokens"
 	}
@@ -1272,15 +1328,21 @@ func (s *SQLiteStore) sessionSelectCols() string {
 
 // scanSessionRow scans a session row into a Session struct. The flags
 // determine which optional columns are present in the result set.
-func scanSessionRow(row *sql.Row, hasCacheWriteTokens, hasCompactionSeq bool) (*Session, error) {
+func scanSessionRow(row *sql.Row, hasGeneratedTitles, hasCacheWriteTokens, hasCompactionSeq bool) (*Session, error) {
 	var sess Session
 	var number sql.NullInt64
 	var name, summary, cwd sql.NullString
+	var generatedShortTitle, generatedLongTitle, titleSource sql.NullString
+	var titleGeneratedAt sql.NullTime
 	var mode, agent, parentID, tools, mcp, status, tags, providerKey sql.NullString
 
 	var scanArgs []any
+	scanArgs = append(scanArgs, &sess.ID, &number, &name, &summary)
+	if hasGeneratedTitles {
+		scanArgs = append(scanArgs, &generatedShortTitle, &generatedLongTitle, &titleSource, &titleGeneratedAt, &sess.TitleBasisMsgSeq)
+	}
 	scanArgs = append(scanArgs,
-		&sess.ID, &number, &name, &summary, &sess.Provider, &providerKey, &sess.Model, &mode,
+		&sess.Provider, &providerKey, &sess.Model, &mode,
 		&agent, &cwd, &sess.CreatedAt, &sess.UpdatedAt, &sess.Archived, &parentID,
 		&sess.Search, &tools, &mcp,
 		&sess.UserTurns, &sess.LLMTurns, &sess.ToolCalls, &sess.InputTokens, &sess.CachedInputTokens,
@@ -1313,6 +1375,20 @@ func scanSessionRow(row *sql.Row, hasCacheWriteTokens, hasCompactionSeq bool) (*
 	}
 	if summary.Valid {
 		sess.Summary = summary.String
+	}
+	if hasGeneratedTitles {
+		if generatedShortTitle.Valid {
+			sess.GeneratedShortTitle = generatedShortTitle.String
+		}
+		if generatedLongTitle.Valid {
+			sess.GeneratedLongTitle = generatedLongTitle.String
+		}
+		if titleSource.Valid {
+			sess.TitleSource = SessionTitleSource(titleSource.String)
+		}
+		if titleGeneratedAt.Valid {
+			sess.TitleGeneratedAt = titleGeneratedAt.Time
+		}
 	}
 	if cwd.Valid {
 		sess.CWD = cwd.String
@@ -1350,6 +1426,13 @@ func nullString(s string) sql.NullString {
 		return sql.NullString{}
 	}
 	return sql.NullString{String: s, Valid: true}
+}
+
+func nullTime(t time.Time) sql.NullTime {
+	if t.IsZero() {
+		return sql.NullTime{}
+	}
+	return sql.NullTime{Time: t, Valid: true}
 }
 
 // isBusyError checks if an error is a SQLite BUSY error
