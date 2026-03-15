@@ -320,6 +320,40 @@ const isStandalone = () => window.matchMedia('(display-mode: standalone)').match
 // Mobile browsers treat programmatic focus as an instruction to pop the keyboard.
 const shouldSuppressPromptAutoFocus = () => window.matchMedia('(hover: none) and (pointer: coarse)').matches;
 
+// Keep the shell pinned to the visual viewport so the composer stays above
+// the on-screen keyboard even after iOS/WebKit viewport scrolling quirks.
+const syncViewportShell = (() => {
+  let rafId = 0;
+
+  const apply = () => {
+    rafId = 0;
+    const vv = window.visualViewport;
+    const height = vv ? Math.round(vv.height) : window.innerHeight;
+    const offsetTop = vv ? Math.max(0, Math.round(vv.offsetTop)) : 0;
+
+    document.documentElement.style.setProperty('--app-height', `${height}px`);
+    document.documentElement.style.setProperty('--app-offset-top', `${offsetTop}px`);
+  };
+
+  return () => {
+    if (rafId) return;
+    rafId = window.requestAnimationFrame(apply);
+  };
+})();
+
+syncViewportShell();
+if (window.visualViewport) {
+  window.visualViewport.addEventListener('resize', syncViewportShell);
+  window.visualViewport.addEventListener('scroll', syncViewportShell);
+}
+window.addEventListener('resize', syncViewportShell);
+window.addEventListener('orientationchange', syncViewportShell);
+window.addEventListener('pageshow', syncViewportShell);
+document.addEventListener('focusin', syncViewportShell);
+document.addEventListener('focusout', () => {
+  window.setTimeout(syncViewportShell, 50);
+});
+
 const syncNotificationPermissionState = () => {
   if (typeof Notification === 'undefined') return;
   if (Notification.permission === 'granted') {
@@ -727,6 +761,7 @@ Object.assign(app, {
   setStartupStatus,
   hideStartupSplash,
   updateDocumentTitle,
+  syncViewportShell,
   UI_PREFIX,
   isStandalone,
   shouldSuppressPromptAutoFocus,

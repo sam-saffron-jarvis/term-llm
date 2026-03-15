@@ -30,6 +30,8 @@
       --safe-right: env(safe-area-inset-right, 0px);
       --safe-bottom: env(safe-area-inset-bottom, 0px);
       --safe-left: env(safe-area-inset-left, 0px);
+      --app-height: 100dvh;
+      --app-offset-top: 0px;
     }
 
     @media (prefers-color-scheme: light) {
@@ -191,14 +193,16 @@
     .app {
       display: grid;
       grid-template-columns: 280px minmax(0, 1fr);
-      min-height: 100vh;
-      min-height: 100dvh;
-      height: 100vh;
-      height: 100dvh;
+      min-height: var(--app-height);
+      height: var(--app-height);
       width: 100%;
       background: transparent;
-      position: relative;
+      position: fixed;
+      top: var(--app-offset-top);
+      left: 0;
+      right: 0;
       z-index: 1;
+      overflow: hidden;
     }
 
     .sidebar {
@@ -1711,8 +1715,8 @@
 
       .app {
         grid-template-columns: 1fr;
-        height: 100dvh;
-        min-height: 100dvh;
+        height: var(--app-height);
+        min-height: var(--app-height);
         overflow: hidden;
       }
 
@@ -1738,7 +1742,7 @@
       }
 
       .main {
-        height: 100dvh;
+        height: var(--app-height);
         min-height: 0;
       }
 
