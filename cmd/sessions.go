@@ -254,9 +254,9 @@ func runSessionsList(cmd *cobra.Command, args []string) error {
 	fmt.Println(strings.Repeat("-", 100))
 
 	for _, s := range summaries {
-		summary := s.Summary
-		if s.Name != "" {
-			summary = s.Name
+		summary := s.PreferredShortTitle()
+		if summary == "" {
+			summary = "(untitled)"
 		}
 		if len(summary) > 25 {
 			summary = summary[:22] + "..."
@@ -378,8 +378,15 @@ func runSessionsShow(cmd *cobra.Command, args []string) error {
 
 	// Text output
 	fmt.Printf("Session: %s\n", sess.ID)
+	fmt.Printf("Title: %s\n", fallbackString(sess.PreferredShortTitle(), "(untitled)"))
 	if sess.Name != "" {
 		fmt.Printf("Name: %s\n", sess.Name)
+	}
+	if sess.GeneratedShortTitle != "" {
+		fmt.Printf("Generated Short Title: %s\n", sess.GeneratedShortTitle)
+	}
+	if sess.GeneratedLongTitle != "" {
+		fmt.Printf("Generated Long Title: %s\n", sess.GeneratedLongTitle)
 	}
 	fmt.Printf("Provider: %s\n", sess.Provider)
 	fmt.Printf("Model: %s\n", sess.Model)
@@ -481,7 +488,7 @@ func runSessionsExport(cmd *cobra.Command, args []string) error {
 	if len(args) > 1 {
 		outputPath = args[1]
 	} else {
-		name := sess.Name
+		name := sess.PreferredShortTitle()
 		if name == "" {
 			name = fmt.Sprintf("session-%d", sess.Number)
 		}
@@ -492,6 +499,7 @@ func runSessionsExport(cmd *cobra.Command, args []string) error {
 	var b strings.Builder
 	b.WriteString("# Chat Export\n\n")
 	b.WriteString(fmt.Sprintf("**Session:** %s\n", sess.ID))
+	b.WriteString(fmt.Sprintf("**Title:** %s\n", fallbackString(sess.PreferredShortTitle(), "(untitled)")))
 	if sess.Name != "" {
 		b.WriteString(fmt.Sprintf("**Name:** %s\n", sess.Name))
 	}
@@ -533,6 +541,13 @@ func formatRelativeTime(t time.Time) string {
 	default:
 		return t.Format("Jan 2")
 	}
+}
+
+func fallbackString(value, fallback string) string {
+	if strings.TrimSpace(value) == "" {
+		return fallback
+	}
+	return value
 }
 
 func runSessionsReset(cmd *cobra.Command, args []string) error {
@@ -609,6 +624,7 @@ func runSessionsName(cmd *cobra.Command, args []string) error {
 	}
 
 	sess.Name = args[1]
+	sess.TitleSource = session.TitleSourceUser
 	if err := store.Update(ctx, sess); err != nil {
 		return fmt.Errorf("failed to update session: %w", err)
 	}

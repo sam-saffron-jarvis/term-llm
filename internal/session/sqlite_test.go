@@ -9,6 +9,82 @@ import (
 	"time"
 )
 
+func TestSessionPreferredTitlePrecedence(t *testing.T) {
+	sess := Session{Summary: "first message summary", GeneratedShortTitle: "Generated short title", GeneratedLongTitle: "Generated long title"}
+	if got := sess.PreferredShortTitle(); got != "Generated short title" {
+		t.Fatalf("PreferredShortTitle() = %q", got)
+	}
+	if got := sess.PreferredLongTitle(); got != "Generated long title" {
+		t.Fatalf("PreferredLongTitle() = %q", got)
+	}
+	sess.Name = "Custom name"
+	if got := sess.PreferredShortTitle(); got != "Custom name" {
+		t.Fatalf("PreferredShortTitle() with name = %q", got)
+	}
+	if got := sess.PreferredLongTitle(); got != "Custom name" {
+		t.Fatalf("PreferredLongTitle() with name = %q", got)
+	}
+}
+
+func TestSQLiteStoreGeneratedTitleRoundTrip(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+
+	store, err := NewSQLiteStore(DefaultConfig())
+	if err != nil {
+		t.Fatalf("failed to create sqlite store: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Second)
+	sess := &Session{
+		ID:                  NewID(),
+		Provider:            "test",
+		Model:               "test-model",
+		Mode:                ModeChat,
+		Summary:             "very long first prompt",
+		GeneratedShortTitle: "Fixing weird docs homepage",
+		GeneratedLongTitle:  "Cleaning docs homepage and removing confusing front-page sections",
+		TitleSource:         TitleSourceGenerated,
+		TitleGeneratedAt:    now,
+		TitleBasisMsgSeq:    7,
+	}
+	if err := store.Create(ctx, sess); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	loaded, err := store.Get(ctx, sess.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if loaded.GeneratedShortTitle != sess.GeneratedShortTitle {
+		t.Fatalf("GeneratedShortTitle = %q", loaded.GeneratedShortTitle)
+	}
+	if loaded.GeneratedLongTitle != sess.GeneratedLongTitle {
+		t.Fatalf("GeneratedLongTitle = %q", loaded.GeneratedLongTitle)
+	}
+	if loaded.TitleSource != TitleSourceGenerated {
+		t.Fatalf("TitleSource = %q", loaded.TitleSource)
+	}
+	if loaded.TitleBasisMsgSeq != 7 {
+		t.Fatalf("TitleBasisMsgSeq = %d", loaded.TitleBasisMsgSeq)
+	}
+	if loaded.TitleGeneratedAt.IsZero() {
+		t.Fatal("TitleGeneratedAt should be set")
+	}
+
+	summaries, err := store.List(ctx, ListOptions{Limit: 5})
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(summaries) != 1 {
+		t.Fatalf("expected 1 summary, got %d", len(summaries))
+	}
+	if summaries[0].PreferredShortTitle() != sess.GeneratedShortTitle {
+		t.Fatalf("PreferredShortTitle() = %q", summaries[0].PreferredShortTitle())
+	}
+}
+
 func TestSQLiteStoreUpdateMetricsIncludesCachedTokens(t *testing.T) {
 	t.Setenv("XDG_DATA_HOME", t.TempDir())
 
