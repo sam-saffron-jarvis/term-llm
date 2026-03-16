@@ -82,19 +82,11 @@ func (r *RetryProvider) Stream(ctx context.Context, req Request) (Stream, error)
 				}
 				lastErr = err
 			} else {
-				// Stream created, collect events so retryable failures do not leak
-				// partial text/tool state into the final stream.
-				buffered, err := r.collectEvents(ctx, stream)
+				err = r.forwardAttempt(ctx, stream, events)
 				if err == nil {
-					if err := flushEvents(ctx, events, buffered); err != nil {
-						return err
-					}
 					return nil // Success!
 				}
 				if !isRetryable(err) {
-					if flushErr := flushEvents(ctx, events, buffered); flushErr != nil {
-						return flushErr
-					}
 					return err
 				}
 				lastErr = err
@@ -134,35 +126,73 @@ func (r *RetryProvider) Stream(ctx context.Context, req Request) (Stream, error)
 	}), nil
 }
 
-// collectEvents reads events from the inner stream.
-// Retryable failures return the partial events separately so the caller can
-// discard them before retrying.
-func (r *RetryProvider) collectEvents(ctx context.Context, stream Stream) ([]Event, error) {
+// forwardAttempt reads a single inner stream attempt.
+//
+// Before any externally-visible side effects, events are buffered so retryable
+// failures can be retried without leaking partial text into the outer stream.
+//
+// Once the provider emits a synchronous tool request (EventToolCall with
+// ToolResponse), buffering must stop immediately: the caller needs to see the
+// event in real time to execute the tool, and after that point the attempt has
+// already escaped so retrying would duplicate visible/side-effecting work.
+func (r *RetryProvider) forwardAttempt(ctx context.Context, stream Stream, events chan<- Event) error {
 	defer stream.Close()
-	var collected []Event
+
+	var buffered []Event
+	live := false
 
 	for {
 		select {
 		case <-ctx.Done():
-			return collected, ctx.Err()
+			return ctx.Err()
 		default:
 		}
 
 		event, err := stream.Recv()
 		if err == io.EOF {
-			return collected, nil
+			if !live {
+				return flushEvents(ctx, events, buffered)
+			}
+			return nil
 		}
 		if err != nil {
-			return collected, err
+			if live {
+				return err
+			}
+			return err
 		}
 
 		// Check for error events from the stream (e.g., 429 during streaming)
 		if event.Type == EventError && event.Err != nil {
-			return collected, event.Err
+			if live {
+				return event.Err
+			}
+			return event.Err
 		}
 
-		collected = append(collected, event)
+		if !live && eventRequiresImmediateForwarding(event) {
+			if err := flushEvents(ctx, events, buffered); err != nil {
+				return err
+			}
+			buffered = nil
+			live = true
+		}
+
+		if live {
+			select {
+			case events <- event:
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+			continue
+		}
+
+		buffered = append(buffered, event)
 	}
+}
+
+func eventRequiresImmediateForwarding(event Event) bool {
+	return event.Type == EventToolCall && event.ToolResponse != nil
 }
 
 func flushEvents(ctx context.Context, events chan<- Event, buffered []Event) error {
