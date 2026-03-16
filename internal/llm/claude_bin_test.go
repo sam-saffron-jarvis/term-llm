@@ -423,6 +423,25 @@ func TestClaudeBinProvider_BuildArgsCanEnableHooks(t *testing.T) {
 	}
 }
 
+func TestClaudeBinProvider_CombinePromptIncludesSystemOnStdin(t *testing.T) {
+	p := NewClaudeBinProvider("sonnet", nil)
+
+	got := p.combinePrompt("You are helpful.\nUse tools when needed.", "User: hi")
+	want := "System: You are helpful.\nUse tools when needed.\n\nUser: hi"
+	if got != want {
+		t.Fatalf("combinePrompt() = %q, want %q", got, want)
+	}
+}
+
+func TestClaudeBinProvider_CombinePromptHandlesEmptyConversation(t *testing.T) {
+	p := NewClaudeBinProvider("sonnet", nil)
+
+	got := p.combinePrompt("You are helpful.", "")
+	if got != "System: You are helpful." {
+		t.Fatalf("combinePrompt() with empty conversation = %q", got)
+	}
+}
+
 func TestClaudeBinProvider_BuildCommandEnv(t *testing.T) {
 	t.Setenv("ANTHROPIC_API_KEY", "should-be-cleared")
 	t.Setenv("CLAUDE_CODE_EFFORT_LEVEL", "medium")
