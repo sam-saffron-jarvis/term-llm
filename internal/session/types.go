@@ -28,12 +28,27 @@ const (
 	ModeExec SessionMode = "exec" // Command suggestion/execution
 )
 
+type SessionTitleSource string
+
+const (
+	TitleSourceNone      SessionTitleSource = ""
+	TitleSourceUser      SessionTitleSource = "user"
+	TitleSourceGenerated SessionTitleSource = "generated"
+)
+
 // Session represents a chat session stored in the database.
 type Session struct {
-	ID          string      `json:"id"`
-	Number      int64       `json:"number,omitempty"` // Sequential session number (1, 2, 3...)
-	Name        string      `json:"name,omitempty"`
-	Summary     string      `json:"summary,omitempty"`      // First user message or auto-generated
+	ID      string `json:"id"`
+	Number  int64  `json:"number,omitempty"` // Sequential session number (1, 2, 3...)
+	Name    string `json:"name,omitempty"`
+	Summary string `json:"summary,omitempty"` // First user message or auto-generated
+
+	GeneratedShortTitle string             `json:"generated_short_title,omitempty"`
+	GeneratedLongTitle  string             `json:"generated_long_title,omitempty"`
+	TitleSource         SessionTitleSource `json:"title_source,omitempty"`
+	TitleGeneratedAt    time.Time          `json:"title_generated_at,omitempty"`
+	TitleBasisMsgSeq    int                `json:"title_basis_msg_seq,omitempty"`
+
 	Provider    string      `json:"provider"`               // Provider display label
 	ProviderKey string      `json:"provider_key,omitempty"` // Canonical provider key (e.g. openai, chatgpt, custom alias)
 	Model       string      `json:"model"`
@@ -80,25 +95,28 @@ type Message struct {
 
 // SessionSummary is a lightweight view of a session for listing.
 type SessionSummary struct {
-	ID                string        `json:"id"`
-	Number            int64         `json:"number,omitempty"` // Sequential session number
-	Name              string        `json:"name,omitempty"`
-	Summary           string        `json:"summary,omitempty"`
-	Provider          string        `json:"provider"`
-	Model             string        `json:"model"`
-	Mode              SessionMode   `json:"mode,omitempty"`
-	MessageCount      int           `json:"message_count"`
-	UserTurns         int           `json:"user_turns,omitempty"`
-	LLMTurns          int           `json:"llm_turns,omitempty"`
-	ToolCalls         int           `json:"tool_calls,omitempty"`
-	InputTokens       int           `json:"input_tokens,omitempty"`
-	CachedInputTokens int           `json:"cached_input_tokens,omitempty"`
-	CacheWriteTokens  int           `json:"cache_write_tokens,omitempty"`
-	OutputTokens      int           `json:"output_tokens,omitempty"`
-	Status            SessionStatus `json:"status,omitempty"`
-	Tags              string        `json:"tags,omitempty"`
-	CreatedAt         time.Time     `json:"created_at"`
-	UpdatedAt         time.Time     `json:"updated_at"`
+	ID                  string             `json:"id"`
+	Number              int64              `json:"number,omitempty"` // Sequential session number
+	Name                string             `json:"name,omitempty"`
+	Summary             string             `json:"summary,omitempty"`
+	GeneratedShortTitle string             `json:"generated_short_title,omitempty"`
+	GeneratedLongTitle  string             `json:"generated_long_title,omitempty"`
+	TitleSource         SessionTitleSource `json:"title_source,omitempty"`
+	Provider            string             `json:"provider"`
+	Model               string             `json:"model"`
+	Mode                SessionMode        `json:"mode,omitempty"`
+	MessageCount        int                `json:"message_count"`
+	UserTurns           int                `json:"user_turns,omitempty"`
+	LLMTurns            int                `json:"llm_turns,omitempty"`
+	ToolCalls           int                `json:"tool_calls,omitempty"`
+	InputTokens         int                `json:"input_tokens,omitempty"`
+	CachedInputTokens   int                `json:"cached_input_tokens,omitempty"`
+	CacheWriteTokens    int                `json:"cache_write_tokens,omitempty"`
+	OutputTokens        int                `json:"output_tokens,omitempty"`
+	Status              SessionStatus      `json:"status,omitempty"`
+	Tags                string             `json:"tags,omitempty"`
+	CreatedAt           time.Time          `json:"created_at"`
+	UpdatedAt           time.Time          `json:"updated_at"`
 }
 
 // ListOptions configures session listing.
@@ -178,6 +196,56 @@ func (m *Message) SetPartsFromJSON(data string) error {
 		return nil
 	}
 	return json.Unmarshal([]byte(data), &m.Parts)
+}
+
+// PreferredShortTitle returns the best short title available for the session.
+func (s Session) PreferredShortTitle() string {
+	if strings.TrimSpace(s.Name) != "" {
+		return strings.TrimSpace(s.Name)
+	}
+	if strings.TrimSpace(s.GeneratedShortTitle) != "" {
+		return strings.TrimSpace(s.GeneratedShortTitle)
+	}
+	return strings.TrimSpace(s.Summary)
+}
+
+// PreferredLongTitle returns the best long descriptive title available for the session.
+func (s Session) PreferredLongTitle() string {
+	if strings.TrimSpace(s.Name) != "" {
+		return strings.TrimSpace(s.Name)
+	}
+	if strings.TrimSpace(s.GeneratedLongTitle) != "" {
+		return strings.TrimSpace(s.GeneratedLongTitle)
+	}
+	if strings.TrimSpace(s.GeneratedShortTitle) != "" {
+		return strings.TrimSpace(s.GeneratedShortTitle)
+	}
+	return strings.TrimSpace(s.Summary)
+}
+
+// PreferredShortTitle returns the best short title available for the summary.
+func (s SessionSummary) PreferredShortTitle() string {
+	if strings.TrimSpace(s.Name) != "" {
+		return strings.TrimSpace(s.Name)
+	}
+	if strings.TrimSpace(s.GeneratedShortTitle) != "" {
+		return strings.TrimSpace(s.GeneratedShortTitle)
+	}
+	return strings.TrimSpace(s.Summary)
+}
+
+// PreferredLongTitle returns the best long descriptive title available for the summary.
+func (s SessionSummary) PreferredLongTitle() string {
+	if strings.TrimSpace(s.Name) != "" {
+		return strings.TrimSpace(s.Name)
+	}
+	if strings.TrimSpace(s.GeneratedLongTitle) != "" {
+		return strings.TrimSpace(s.GeneratedLongTitle)
+	}
+	if strings.TrimSpace(s.GeneratedShortTitle) != "" {
+		return strings.TrimSpace(s.GeneratedShortTitle)
+	}
+	return strings.TrimSpace(s.Summary)
 }
 
 // TruncateSummary returns the first line of content, truncated to 100 chars.

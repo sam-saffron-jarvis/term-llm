@@ -26,7 +26,7 @@ func ExportToMarkdown(sess *Session, messages []Message, opts ExportOptions) str
 	var b strings.Builder
 
 	// Title
-	title := sess.Name
+	title := sess.PreferredShortTitle()
 	if title == "" {
 		title = ShortID(sess.ID)
 	}
