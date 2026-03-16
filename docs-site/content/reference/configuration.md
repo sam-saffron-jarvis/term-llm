@@ -50,6 +50,11 @@ providers:
   xai:
     model: grok-4-1-fast
 
+  claude-bin:
+    model: opus
+    env:
+      IS_SANDBOX: "1"
+
   openrouter:
     model: x-ai/grok-code-fast-1
     app_url: https://github.com/samsaffron/term-llm
@@ -152,6 +157,22 @@ embed:
 ```
 
 Each feature block can hold provider-specific credentials and defaults. The image and embedding providers are independent of the main text provider.
+
+## Provider-specific environment overrides
+
+Providers that shell out to local CLIs can accept extra subprocess environment variables via `providers.<name>.env`.
+
+Example for Claude Code when term-llm itself runs as root inside a trusted container:
+
+```yaml
+providers:
+  claude-bin:
+    model: opus
+    env:
+      IS_SANDBOX: "1"
+```
+
+This is passed only to the Claude subprocess. It does not mutate your parent shell environment.
 
 ## Dynamic secrets and endpoints
 
