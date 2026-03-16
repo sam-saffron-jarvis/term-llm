@@ -4,13 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
 	"testing"
 	"time"
 )
 
 func TestClaudeBinProvider_ImplementsToolExecutorSetter(t *testing.T) {
-	provider := NewClaudeBinProvider("sonnet")
+	provider := NewClaudeBinProvider("sonnet", nil)
 
 	// This type assertion must succeed for tools to work.
 	// The bug was that ClaudeBinProvider.SetToolExecutor used mcphttp.ToolExecutor
@@ -24,7 +25,7 @@ func TestClaudeBinProvider_ImplementsToolExecutorSetter(t *testing.T) {
 func TestRetryProvider_ForwardsToolExecutorSetter(t *testing.T) {
 	// ClaudeBinProvider is wrapped with WrapWithRetry in the factory.
 	// The RetryProvider must forward SetToolExecutor to the inner provider.
-	provider := NewClaudeBinProvider("sonnet")
+	provider := NewClaudeBinProvider("sonnet", nil)
 	wrapped := WrapWithRetry(provider, DefaultRetryConfig())
 
 	// The wrapped provider must also implement ToolExecutorSetter
@@ -34,7 +35,7 @@ func TestRetryProvider_ForwardsToolExecutorSetter(t *testing.T) {
 }
 
 func TestClaudeBinProvider_ImplementsProviderCleaner(t *testing.T) {
-	provider := NewClaudeBinProvider("sonnet")
+	provider := NewClaudeBinProvider("sonnet", nil)
 
 	// ClaudeBinProvider must implement ProviderCleaner for MCP server cleanup
 	if _, ok := interface{}(provider).(ProviderCleaner); !ok {
@@ -45,7 +46,7 @@ func TestClaudeBinProvider_ImplementsProviderCleaner(t *testing.T) {
 func TestRetryProvider_ForwardsProviderCleaner(t *testing.T) {
 	// ClaudeBinProvider is wrapped with WrapWithRetry in the factory.
 	// The RetryProvider must forward CleanupMCP to the inner provider.
-	provider := NewClaudeBinProvider("sonnet")
+	provider := NewClaudeBinProvider("sonnet", nil)
 	wrapped := WrapWithRetry(provider, DefaultRetryConfig())
 
 	// The wrapped provider must also implement ProviderCleaner
@@ -56,7 +57,7 @@ func TestRetryProvider_ForwardsProviderCleaner(t *testing.T) {
 
 func TestClaudeBinProvider_CleanupMCP_Safe(t *testing.T) {
 	// CleanupMCP should be safe to call even without an active MCP server
-	provider := NewClaudeBinProvider("sonnet")
+	provider := NewClaudeBinProvider("sonnet", nil)
 
 	// Should not panic when called without active MCP server
 	provider.CleanupMCP()
@@ -116,7 +117,7 @@ func TestSafeSendEvent_Success(t *testing.T) {
 }
 
 func TestDispatchClaudeEvents_PrioritizesTextOverToolRequest(t *testing.T) {
-	provider := NewClaudeBinProvider("sonnet")
+	provider := NewClaudeBinProvider("sonnet", nil)
 	events := make(chan Event, 8)
 	lines := make(chan string, 4)
 	toolReqs := make(chan claudeToolRequest, 2)
@@ -154,7 +155,7 @@ func TestDispatchClaudeEvents_PrioritizesTextOverToolRequest(t *testing.T) {
 }
 
 func TestDispatchClaudeEvents_PrioritizesSlightlyDelayedTextOverToolRequest(t *testing.T) {
-	provider := NewClaudeBinProvider("sonnet")
+	provider := NewClaudeBinProvider("sonnet", nil)
 	events := make(chan Event, 8)
 	lines := make(chan string, 4)
 	toolReqs := make(chan claudeToolRequest, 2)
@@ -196,7 +197,7 @@ func TestDispatchClaudeEvents_PrioritizesSlightlyDelayedTextOverToolRequest(t *t
 }
 
 func TestDispatchClaudeEvents_FallsBackToAssistantTextWhenNoDeltas(t *testing.T) {
-	provider := NewClaudeBinProvider("sonnet")
+	provider := NewClaudeBinProvider("sonnet", nil)
 	events := make(chan Event, 8)
 	lines := make(chan string, 4)
 	toolReqs := make(chan claudeToolRequest, 1)
@@ -224,7 +225,7 @@ func TestDispatchClaudeEvents_FallsBackToAssistantTextWhenNoDeltas(t *testing.T)
 }
 
 func TestDispatchClaudeEvents_DoesNotDuplicateAssistantFallbackWhenDeltasPresent(t *testing.T) {
-	provider := NewClaudeBinProvider("sonnet")
+	provider := NewClaudeBinProvider("sonnet", nil)
 	events := make(chan Event, 8)
 	lines := make(chan string, 4)
 	toolReqs := make(chan claudeToolRequest, 1)
@@ -258,7 +259,7 @@ drained:
 }
 
 func TestHandleClaudeToolRequest_ClosedStreamReturnsError(t *testing.T) {
-	provider := NewClaudeBinProvider("sonnet")
+	provider := NewClaudeBinProvider("sonnet", nil)
 	events := make(chan Event)
 	close(events)
 
@@ -278,7 +279,7 @@ func TestHandleClaudeToolRequest_ClosedStreamReturnsError(t *testing.T) {
 }
 
 func TestHandleClaudeLine_ContextCancelledDoesNotBlock(t *testing.T) {
-	provider := NewClaudeBinProvider("sonnet")
+	provider := NewClaudeBinProvider("sonnet", nil)
 	events := make(chan Event) // unbuffered/no receiver to simulate blocked sink
 	cancelled, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -304,7 +305,7 @@ func TestHandleClaudeLine_ContextCancelledDoesNotBlock(t *testing.T) {
 }
 
 func TestClaudeBinProvider_ToolExecutorIsWired(t *testing.T) {
-	provider := NewClaudeBinProvider("sonnet")
+	provider := NewClaudeBinProvider("sonnet", nil)
 	registry := NewToolRegistry()
 
 	// Register a test tool
@@ -374,11 +375,46 @@ func TestClaudeBinProvider_NameWithEffort(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.model, func(t *testing.T) {
-			p := NewClaudeBinProvider(tt.model)
+			p := NewClaudeBinProvider(tt.model, nil)
 			if got := p.Name(); got != tt.wantName {
 				t.Errorf("Name() = %q, want %q", got, tt.wantName)
 			}
 		})
+	}
+}
+
+func TestClaudeBinProvider_BuildCommandEnv(t *testing.T) {
+	t.Setenv("ANTHROPIC_API_KEY", "should-be-cleared")
+	t.Setenv("CLAUDE_CODE_EFFORT_LEVEL", "medium")
+	t.Setenv("PATH", os.Getenv("PATH"))
+
+	p := NewClaudeBinProvider("opus-max", map[string]string{
+		"IS_SANDBOX":                 "1",
+		"CLAUDE_CODE_EFFORT_LEVEL":   "max-from-config-should-be-overridden",
+		"ANTHROPIC_API_KEY":          "config-value-should-not-survive",
+		"CUSTOM_TERM_LLM_TEST_VALUE": "ok",
+	})
+
+	env := p.buildCommandEnv("max")
+	joined := strings.Join(env, "\n")
+
+	if strings.Contains(joined, "ANTHROPIC_API_KEY=should-be-cleared") {
+		t.Fatal("expected inherited ANTHROPIC_API_KEY to be removed when preferOAuth is enabled")
+	}
+	if !strings.Contains(joined, "IS_SANDBOX=1") {
+		t.Fatal("expected extra env IS_SANDBOX=1 to be present")
+	}
+	if !strings.Contains(joined, "CUSTOM_TERM_LLM_TEST_VALUE=ok") {
+		t.Fatal("expected custom extra env var to be present")
+	}
+	if strings.Contains(joined, "CLAUDE_CODE_EFFORT_LEVEL=medium") {
+		t.Fatal("expected inherited effort level to be removed")
+	}
+	if strings.Contains(joined, "CLAUDE_CODE_EFFORT_LEVEL=max-from-config-should-be-overridden") {
+		t.Fatal("expected config effort level to be overridden by model effort")
+	}
+	if !strings.Contains(joined, "CLAUDE_CODE_EFFORT_LEVEL=max") {
+		t.Fatal("expected model-derived effort level to be present")
 	}
 }
 

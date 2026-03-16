@@ -33,7 +33,8 @@ type ClaudeBinProvider struct {
 	sessionID    string // For session continuity with --resume
 	messagesSent int    // Track messages already in session to avoid re-sending
 	toolExecutor mcphttp.ToolExecutor
-	preferOAuth  bool // If true, clear ANTHROPIC_API_KEY to force OAuth auth
+	preferOAuth  bool              // If true, clear ANTHROPIC_API_KEY to force OAuth auth
+	extraEnv     map[string]string // Extra subprocess env vars from provider config
 
 	// Persistent MCP server for multi-turn conversations.
 	// The server is kept alive across turns so Claude CLI can maintain
@@ -106,13 +107,20 @@ func parseClaudeEffort(model string) (string, string) {
 }
 
 // NewClaudeBinProvider creates a new provider that uses the claude binary.
-func NewClaudeBinProvider(model string) *ClaudeBinProvider {
+func NewClaudeBinProvider(model string, env map[string]string) *ClaudeBinProvider {
 	actualModel, effort := parseClaudeEffort(model)
-	return &ClaudeBinProvider{
+	provider := &ClaudeBinProvider{
 		model:       actualModel,
 		effort:      effort,
 		preferOAuth: true, // Default to OAuth to avoid API key limits
 	}
+	if len(env) > 0 {
+		provider.extraEnv = make(map[string]string, len(env))
+		for k, v := range env {
+			provider.extraEnv[k] = v
+		}
+	}
+	return provider
 }
 
 // SetPreferOAuth controls whether to prefer OAuth auth over API key.
@@ -120,6 +128,18 @@ func NewClaudeBinProvider(model string) *ClaudeBinProvider {
 // so Claude CLI uses OAuth subscription auth instead.
 func (p *ClaudeBinProvider) SetPreferOAuth(prefer bool) {
 	p.preferOAuth = prefer
+}
+
+// SetEnv configures extra environment variables for the Claude CLI subprocess.
+func (p *ClaudeBinProvider) SetEnv(env map[string]string) {
+	if len(env) == 0 {
+		p.extraEnv = nil
+		return
+	}
+	p.extraEnv = make(map[string]string, len(env))
+	for k, v := range env {
+		p.extraEnv[k] = v
+	}
 }
 
 // SetToolExecutor sets the function used to execute tools.
@@ -219,6 +239,42 @@ func (p *ClaudeBinProvider) Stream(ctx context.Context, req Request) (Stream, er
 	}), nil
 }
 
+func (p *ClaudeBinProvider) buildCommandEnv(effort string) []string {
+	env := os.Environ()
+	filtered := env[:0]
+	for _, e := range env {
+		if p.preferOAuth && strings.HasPrefix(e, "ANTHROPIC_API_KEY=") {
+			continue
+		}
+		if effort != "" && strings.HasPrefix(e, "CLAUDE_CODE_EFFORT_LEVEL=") {
+			continue
+		}
+		if len(p.extraEnv) > 0 {
+			key := e
+			if idx := strings.IndexByte(e, '='); idx >= 0 {
+				key = e[:idx]
+			}
+			if _, ok := p.extraEnv[key]; ok {
+				continue
+			}
+		}
+		filtered = append(filtered, e)
+	}
+	if effort != "" {
+		filtered = append(filtered, "CLAUDE_CODE_EFFORT_LEVEL="+effort)
+	}
+	for k, v := range p.extraEnv {
+		if p.preferOAuth && k == "ANTHROPIC_API_KEY" {
+			continue
+		}
+		if effort != "" && k == "CLAUDE_CODE_EFFORT_LEVEL" {
+			continue
+		}
+		filtered = append(filtered, k+"="+v)
+	}
+	return filtered
+}
+
 // runClaudeCommand executes the claude CLI binary with the given arguments and prompt,
 // parsing its streaming JSON output into events. Returns nil on success.
 func (p *ClaudeBinProvider) runClaudeCommand(
@@ -243,26 +299,7 @@ func (p *ClaudeBinProvider) runClaudeCommand(
 	}
 
 	cmd := exec.CommandContext(ctx, "claude", args...)
-
-	// Set up environment - optionally clear ANTHROPIC_API_KEY to prefer OAuth,
-	// and set CLAUDE_CODE_EFFORT_LEVEL for reasoning effort control.
-	if p.preferOAuth || effort != "" {
-		env := os.Environ()
-		filtered := env[:0]
-		for _, e := range env {
-			if p.preferOAuth && strings.HasPrefix(e, "ANTHROPIC_API_KEY=") {
-				continue
-			}
-			if effort != "" && strings.HasPrefix(e, "CLAUDE_CODE_EFFORT_LEVEL=") {
-				continue
-			}
-			filtered = append(filtered, e)
-		}
-		if effort != "" {
-			filtered = append(filtered, "CLAUDE_CODE_EFFORT_LEVEL="+effort)
-		}
-		cmd.Env = filtered
-	}
+	cmd.Env = p.buildCommandEnv(effort)
 
 	// Set up stdin pipe for the prompt
 	stdin, err := cmd.StdinPipe()

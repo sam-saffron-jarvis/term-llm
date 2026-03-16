@@ -81,7 +81,7 @@ func NewProviderByName(cfg *config.Config, name string, model string) (Provider,
 			return WrapWithRetry(provider, DefaultRetryConfig()), nil
 		case config.ProviderTypeClaudeBin:
 			// claude-bin doesn't need API key, can create directly
-			provider := NewClaudeBinProvider(model)
+			provider := NewClaudeBinProvider(model, nil)
 			return WrapWithRetry(provider, DefaultRetryConfig()), nil
 		case config.ProviderTypeZen:
 			// zen can work without API key (free tier)
@@ -199,7 +199,7 @@ func newProviderInternal(cfg *config.Config) (Provider, error) {
 			return NewAnthropicProvider("", "", "")
 		case config.ProviderTypeClaudeBin:
 			// claude-bin doesn't need API key, can create directly
-			return NewClaudeBinProvider(""), nil
+			return NewClaudeBinProvider("", nil), nil
 		case config.ProviderTypeZen:
 			// zen can work without API key (free tier)
 			return NewZenProvider("", ""), nil
@@ -303,7 +303,7 @@ func createProviderFromConfig(name string, cfg *config.ProviderConfig) (Provider
 		return NewVeniceProvider(apiKey, cfg.Model), nil
 
 	case config.ProviderTypeClaudeBin:
-		return NewClaudeBinProvider(cfg.Model), nil
+		return NewClaudeBinProvider(cfg.Model, cfg.Env), nil
 
 	case config.ProviderTypeOpenAICompat:
 		// Use ResolvedURL if available (from srv:// or $() resolution), otherwise use config values

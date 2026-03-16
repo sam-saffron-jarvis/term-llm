@@ -62,12 +62,13 @@ type ProviderConfig struct {
 	Type ProviderType `mapstructure:"type"`
 
 	// Common fields
-	APIKey       string   `mapstructure:"api_key"`
-	Model        string   `mapstructure:"model"`
-	FastModel    string   `mapstructure:"fast_model"`    // Lightweight model for control-plane tasks
-	FastProvider string   `mapstructure:"fast_provider"` // Optional provider key override for FastModel
-	Models       []string `mapstructure:"models"`        // Available models for autocomplete
-	Credentials  string   `mapstructure:"credentials"`   // "api_key", "codex", "gemini-cli"
+	APIKey       string            `mapstructure:"api_key"`
+	Model        string            `mapstructure:"model"`
+	FastModel    string            `mapstructure:"fast_model"`    // Lightweight model for control-plane tasks
+	FastProvider string            `mapstructure:"fast_provider"` // Optional provider key override for FastModel
+	Models       []string          `mapstructure:"models"`        // Available models for autocomplete
+	Credentials  string            `mapstructure:"credentials"`   // "api_key", "codex", "gemini-cli"
+	Env          map[string]string `mapstructure:"env"`           // Extra subprocess env vars for providers that shell out (e.g. claude-bin)
 
 	// Search behavior - nil means auto (use native if available)
 	UseNativeSearch *bool `mapstructure:"use_native_search"`
@@ -1079,6 +1080,7 @@ var KnownProviderKeys = map[string]bool{
 	"fast_provider":     true,
 	"models":            true,
 	"credentials":       true,
+	"env":               true,
 	"use_native_search": true,
 	"base_url":          true,
 	"url":               true,
@@ -1188,7 +1190,7 @@ func IsKnownKey(keyPath string) bool {
 
 	// Check for providers.* pattern
 	if strings.HasPrefix(keyPath, "providers.") {
-		parts := strings.SplitN(keyPath, ".", 3)
+		parts := strings.Split(keyPath, ".")
 		if len(parts) == 2 {
 			// providers.<name> is always valid
 			return true
@@ -1196,6 +1198,10 @@ func IsKnownKey(keyPath string) bool {
 		if len(parts) == 3 {
 			// providers.<name>.<key> - check if <key> is valid
 			return KnownProviderKeys[parts[2]]
+		}
+		if len(parts) >= 4 && parts[2] == "env" {
+			// providers.<name>.env.<VAR> - arbitrary subprocess env vars
+			return true
 		}
 	}
 
