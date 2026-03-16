@@ -28,6 +28,40 @@ var (
 	sessionsAutotitleMinAge time.Duration
 )
 
+type autotitleSkipStats struct {
+	recent         int
+	customName     int
+	alreadyTitled  int
+	rejected       int
+	generationErrs int
+}
+
+func (s autotitleSkipStats) total() int {
+	return s.recent + s.customName + s.alreadyTitled + s.rejected + s.generationErrs
+}
+
+func (s autotitleSkipStats) print(out interface{ Write([]byte) (int, error) }) {
+	if s.total() == 0 {
+		return
+	}
+	fmt.Fprintln(out, "Skipped summary:")
+	if s.recent > 0 {
+		fmt.Fprintf(out, "  recent (< %s): %d\n", sessionsAutotitleMinAge, s.recent)
+	}
+	if s.customName > 0 {
+		fmt.Fprintf(out, "  custom name present: %d\n", s.customName)
+	}
+	if s.alreadyTitled > 0 {
+		fmt.Fprintf(out, "  already titled: %d\n", s.alreadyTitled)
+	}
+	if s.rejected > 0 {
+		fmt.Fprintf(out, "  generated titles rejected: %d\n", s.rejected)
+	}
+	if s.generationErrs > 0 {
+		fmt.Fprintf(out, "  generation errors: %d\n", s.generationErrs)
+	}
+}
+
 func init() {
 	sessionsAutotitleCmd.Flags().IntVar(&sessionsLimit, "limit", 50, "Maximum number of recent sessions to inspect")
 	sessionsAutotitleCmd.Flags().BoolVar(&sessionsAutotitleDryRun, "dry-run", false, "Preview generated titles without saving")
@@ -62,7 +96,10 @@ func runSessionsAutotitle(cmd *cobra.Command, args []string) error {
 		summary session.SessionSummary
 		sess    *session.Session
 	}
-	var candidates []candidate
+	var (
+		candidates []candidate
+		skips      autotitleSkipStats
+	)
 	for _, summary := range summaries {
 		sess, err := store.Get(ctx, summary.ID)
 		if err != nil {
@@ -73,23 +110,23 @@ func runSessionsAutotitle(cmd *cobra.Command, args []string) error {
 			continue
 		}
 		if sessionsAutotitleMinAge > 0 && time.Since(sess.UpdatedAt) < sessionsAutotitleMinAge {
-			fmt.Fprintf(cmd.OutOrStdout(), "#%d\n  skipped: updated %s ago (min-age %s)\n\n",
-				sess.Number, time.Since(sess.UpdatedAt).Truncate(time.Second), sessionsAutotitleMinAge)
+			skips.recent++
 			continue
 		}
 		if sess.Name != "" && !sessionsAutotitleForce {
-			fmt.Fprintf(cmd.OutOrStdout(), "#%d\n  current: %s\n  skipped: custom name present\n\n", sess.Number, sess.Name)
+			skips.customName++
 			continue
 		}
 		if sess.GeneratedShortTitle != "" && !sessionsAutotitleForce {
-			fmt.Fprintf(cmd.OutOrStdout(), "#%d\n  current: %s\n  skipped: already titled\n\n", sess.Number, sess.PreferredShortTitle())
+			skips.alreadyTitled++
 			continue
 		}
 		candidates = append(candidates, candidate{summary: summary, sess: sess})
 	}
 
 	if len(candidates) == 0 {
-		fmt.Fprintln(cmd.OutOrStdout(), "All sessions already have titles.")
+		fmt.Fprintln(cmd.OutOrStdout(), "No sessions need titles.")
+		skips.print(cmd.OutOrStdout())
 		return nil
 	}
 
@@ -116,11 +153,16 @@ func runSessionsAutotitle(cmd *cobra.Command, args []string) error {
 		if strings.TrimSpace(current) == "" {
 			current = "Untitled"
 		}
-		fmt.Fprintf(cmd.OutOrStdout(), "#%d\n  current: %s\n", sess.Number, current)
 		if err != nil {
-			fmt.Fprintf(cmd.OutOrStdout(), "  skipped: %v\n\n", err)
+			if strings.Contains(err.Error(), "generated titles rejected") {
+				skips.rejected++
+			} else {
+				skips.generationErrs++
+				fmt.Fprintf(cmd.ErrOrStderr(), "#%d generation failed: %v\n", sess.Number, err)
+			}
 			continue
 		}
+		fmt.Fprintf(cmd.OutOrStdout(), "#%d\n  current: %s\n", sess.Number, current)
 		fmt.Fprintf(cmd.OutOrStdout(), "  short:   %s\n  long:    %s\n", cand.ShortTitle, cand.LongTitle)
 
 		if !sessionsAutotitleDryRun {
@@ -141,8 +183,11 @@ func runSessionsAutotitle(cmd *cobra.Command, args []string) error {
 		fmt.Fprintln(cmd.OutOrStdout())
 	}
 
+	skips.print(cmd.OutOrStdout())
 	if !sessionsAutotitleDryRun {
 		fmt.Fprintf(cmd.OutOrStdout(), "Saved titles for %d sessions.\n", generated)
+	} else {
+		fmt.Fprintf(cmd.OutOrStdout(), "Generated titles for %d sessions (dry run).\n", generated)
 	}
 	return nil
 }
