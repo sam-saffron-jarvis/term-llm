@@ -111,6 +111,42 @@ func TestParseModelCombined1mThinking(t *testing.T) {
 	}
 }
 
+func TestNormalizeAnthropicModel(t *testing.T) {
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{"claude-3-5-sonnet-latest", "claude-sonnet-4-6"},
+		{"claude-3-5-sonnet-latest-thinking", "claude-sonnet-4-6-thinking"},
+		{"claude-3-5-sonnet-latest-1m-thinking", "claude-sonnet-4-6-1m-thinking"},
+		{"claude-sonnet-4-6", "claude-sonnet-4-6"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			if got := normalizeAnthropicModel(tt.input); got != tt.want {
+				t.Fatalf("normalizeAnthropicModel(%q) = %q, want %q", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestNewAnthropicProviderNormalizesLegacyModelAlias(t *testing.T) {
+	t.Setenv("ANTHROPIC_API_KEY", "")
+	t.Setenv("CLAUDE_CODE_OAUTH_TOKEN", "")
+
+	provider, err := NewAnthropicProvider("sk-test-key-123", "claude-3-5-sonnet-latest-thinking", "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if provider.model != "claude-sonnet-4-6" {
+		t.Fatalf("model=%q, want %q", provider.model, "claude-sonnet-4-6")
+	}
+	if !provider.useAdaptive {
+		t.Fatal("expected legacy alias with -thinking to normalize to adaptive Claude 4.6 thinking")
+	}
+}
+
 func TestNewAnthropicProviderWithExplicitAPIKey(t *testing.T) {
 	// Clear env to isolate test
 	t.Setenv("ANTHROPIC_API_KEY", "")

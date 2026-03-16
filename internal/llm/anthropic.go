@@ -61,6 +61,29 @@ func isAdaptiveModel(model string) bool {
 	return strings.HasPrefix(model, "claude-sonnet-4-6") || strings.HasPrefix(model, "claude-opus-4-6")
 }
 
+var anthropicLegacyModelAliases = map[string]string{
+	// Anthropic removed this legacy alias, causing 404s for older configs.
+	"claude-3-5-sonnet-latest": "claude-sonnet-4-6",
+}
+
+// normalizeAnthropicModel rewrites retired Anthropic aliases to supported model IDs
+// while preserving term-llm suffixes like -1m and -thinking.
+func normalizeAnthropicModel(model string) string {
+	suffix := ""
+	if strings.HasSuffix(model, "-thinking") {
+		model = strings.TrimSuffix(model, "-thinking")
+		suffix = "-thinking"
+	}
+	if strings.HasSuffix(model, "-1m") {
+		model = strings.TrimSuffix(model, "-1m")
+		suffix = "-1m" + suffix
+	}
+	if replacement, ok := anthropicLegacyModelAliases[model]; ok {
+		model = replacement
+	}
+	return model + suffix
+}
+
 // parseModelThinking extracts -thinking suffix from model name.
 // For 4.6 models, -thinking uses adaptive thinking (budget_tokens is deprecated).
 // For older models, -thinking uses budget_tokens as before.
@@ -117,6 +140,8 @@ func newOAuthClient(token string) anthropic.Client {
 //   - "oauth_env":  use only the CLAUDE_CODE_OAUTH_TOKEN environment variable
 //   - "oauth":      use only saved OAuth token or interactive setup
 func NewAnthropicProvider(apiKey, model, credentialMode string) (*AnthropicProvider, error) {
+	model = normalizeAnthropicModel(model)
+
 	// Strip -thinking first (may leave -1m), then strip -1m.
 	// This means claude-sonnet-4-6-1m-thinking works correctly:
 	//   step 1: strip -thinking -> "claude-sonnet-4-6-1m", adaptive=true
@@ -324,7 +349,9 @@ func (p *AnthropicProvider) Capabilities() Capabilities {
 }
 
 func (p *AnthropicProvider) Stream(ctx context.Context, req Request) (Stream, error) {
-	req.MaxOutputTokens = ClampOutputTokens(req.MaxOutputTokens, chooseModel(req.Model, p.model))
+	model := normalizeAnthropicModel(chooseModel(req.Model, p.model))
+	req.Model = model
+	req.MaxOutputTokens = ClampOutputTokens(req.MaxOutputTokens, model)
 	if req.Search {
 		return p.streamWithSearch(ctx, req)
 	}
