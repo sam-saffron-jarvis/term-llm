@@ -296,9 +296,12 @@ func createProviderFromConfig(name string, cfg *config.ProviderConfig) (Provider
 		return NewXAIProvider(apiKey, cfg.Model), nil
 
 	case config.ProviderTypeVenice:
-		apiKey := cfg.ResolvedAPIKey
+		apiKey := strings.TrimSpace(cfg.ResolvedAPIKey)
 		if apiKey == "" {
-			apiKey = os.Getenv("VENICE_API_KEY")
+			apiKey = strings.TrimSpace(os.Getenv("VENICE_API_KEY"))
+		}
+		if apiKey == "" {
+			return nil, fmt.Errorf("provider %q requires VENICE_API_KEY or explicit config", name)
 		}
 		return NewVeniceProvider(apiKey, cfg.Model), nil
 
