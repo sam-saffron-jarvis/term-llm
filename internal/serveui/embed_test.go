@@ -39,6 +39,28 @@ func TestStaticAssetsSupportEmbeddedVideoPlayback(t *testing.T) {
 	}
 }
 
+func TestStaticAssetsUseStrictMathDelimiters(t *testing.T) {
+	coreJS, err := StaticAsset("app-core.js")
+	if err != nil {
+		t.Fatalf("StaticAsset(app-core.js): %v", err)
+	}
+	coreSrc := string(coreJS)
+	for _, want := range []string{
+		"const MATH_DELIMITERS = [",
+		"{ left: '$$', right: '$$', display: true }",
+		"{ left: '\\\\[', right: '\\\\]', display: true }",
+		"{ left: '\\\\(', right: '\\\\)', display: false }",
+		"delimiters: MATH_DELIMITERS,",
+	} {
+		if !strings.Contains(coreSrc, want) {
+			t.Fatalf("app-core.js missing %q", want)
+		}
+	}
+	if strings.Contains(coreSrc, "{ left: '$', right: '$', display: false }") {
+		t.Fatal("app-core.js still enables single-dollar inline math")
+	}
+}
+
 func TestStaticAssetsSupportSessionStreamDetachOnSwitch(t *testing.T) {
 	sessionsJS, err := StaticAsset("app-sessions.js")
 	if err != nil {

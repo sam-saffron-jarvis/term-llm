@@ -117,15 +117,18 @@ marked.use({
   gfm: true
 });
 
+// Be strict about inline math delimiters. Single-dollar math collides with
+// ordinary currency amounts in LLM output, so require \(...\) for inline math.
+const MATH_DELIMITERS = [
+  { left: '$$', right: '$$', display: true },
+  { left: '\\[', right: '\\]', display: true },
+  { left: '\\(', right: '\\)', display: false }
+];
+
 const renderMath = (target) => {
   if (!target || typeof renderMathInElement !== 'function') return;
   renderMathInElement(target, {
-    delimiters: [
-      { left: '$$', right: '$$', display: true },
-      { left: '\\[', right: '\\]', display: true },
-      { left: '$', right: '$', display: false },
-      { left: '\\(', right: '\\)', display: false }
-    ],
+    delimiters: MATH_DELIMITERS,
     ignoredTags: ['script', 'noscript', 'style', 'textarea', 'pre', 'code', 'option'],
     throwOnError: false
   });
