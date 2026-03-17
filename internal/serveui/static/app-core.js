@@ -111,11 +111,7 @@ const elements = {
   startupStatus: document.getElementById('startupStatus')
 };
 
-// ===== Markdown setup =====
-marked.use({
-  breaks: true,
-  gfm: true
-});
+// marked is configured via markdown-setup.js (loaded before this file).
 
 // Be strict about inline math delimiters. Single-dollar math collides with
 // ordinary currency amounts in LLM output, so require \(...\) for inline math.

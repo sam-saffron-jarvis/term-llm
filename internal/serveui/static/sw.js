@@ -5,6 +5,7 @@ const SHELL_ASSETS = [
   './manifest.webmanifest',
   './icon-512.png',
   './app.css',
+  './markdown-setup.js',
   './app-core.js',
   './app-render.js',
   './app-stream.js',
