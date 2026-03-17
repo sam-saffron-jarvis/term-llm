@@ -92,14 +92,22 @@ func loadClaudeToolLineDrainGrace() time.Duration {
 	return time.Duration(ms) * time.Millisecond
 }
 
-// parseClaudeEffort extracts effort suffix from opus model names only.
+// parseClaudeEffort extracts effort suffix from opus or sonnet model names.
 // "opus-max" -> ("opus", "max"), "opus-low" -> ("opus", "low")
-// "sonnet-max" -> ("sonnet-max", "") — non-opus models are not modified.
+// "sonnet-high" -> ("sonnet", "high"), "sonnet-low" -> ("sonnet", "low")
+// "haiku" -> ("haiku", "") — non-opus/sonnet models are not modified.
+// Note: "max" effort is only supported for opus.
 func parseClaudeEffort(model string) (string, string) {
-	if !strings.HasPrefix(model, "opus") {
+	isOpus := strings.HasPrefix(model, "opus")
+	isSonnet := strings.HasPrefix(model, "sonnet")
+	if !isOpus && !isSonnet {
 		return model, ""
 	}
-	for _, effort := range []string{"medium", "max", "high", "low"} {
+	efforts := []string{"medium", "high", "low"}
+	if isOpus {
+		efforts = append(efforts, "max")
+	}
+	for _, effort := range efforts {
 		suffix := "-" + effort
 		if strings.HasSuffix(model, suffix) {
 			return strings.TrimSuffix(model, suffix), effort

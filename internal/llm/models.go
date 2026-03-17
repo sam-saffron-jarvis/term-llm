@@ -114,6 +114,9 @@ var ProviderModels = map[string][]string{
 		"opus-high",
 		"opus-max",
 		"sonnet",
+		"sonnet-low",
+		"sonnet-medium",
+		"sonnet-high",
 		"haiku",
 	},
 	"xai": {

@@ -345,7 +345,9 @@ func TestParseClaudeEffort(t *testing.T) {
 		{"opus-medium", "opus", "medium"},
 		{"opus-high", "opus", "high"},
 		{"opus", "opus", ""},
-		{"sonnet-max", "sonnet-max", ""}, // non-opus ignored
+		{"sonnet-low", "sonnet", "low"},
+		{"sonnet-medium", "sonnet", "medium"},
+		{"sonnet-high", "sonnet", "high"},
 		{"sonnet", "sonnet", ""},
 		{"haiku", "haiku", ""},
 		{"", "", ""},
@@ -370,6 +372,7 @@ func TestClaudeBinProvider_NameWithEffort(t *testing.T) {
 	}{
 		{"opus-max", "Claude CLI (opus, effort=max)"},
 		{"opus", "Claude CLI (opus)"},
+		{"sonnet-high", "Claude CLI (sonnet, effort=high)"},
 		{"sonnet", "Claude CLI (sonnet)"},
 		{"", "Claude CLI (sonnet)"},
 	}
