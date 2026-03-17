@@ -15,11 +15,13 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version: '1.23'
+          cache: true                   # caches module download + build cache keyed on go.sum
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
           node-version: '22'
+          # no npm install in this repo — node binary caching is handled by the action itself
 
       - name: Check gofmt
         run: |
