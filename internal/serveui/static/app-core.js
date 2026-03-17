@@ -111,25 +111,7 @@ const elements = {
   startupStatus: document.getElementById('startupStatus')
 };
 
-// ===== Markdown setup =====
-marked.use({
-  breaks: true,
-  gfm: true
-});
-
-// Disable single-tilde strikethrough — GFM's del rule matches both ~ and ~~,
-// but single ~ is far too common in LLM output (e.g. ~$100, ~200ms). Keep
-// ~~double-tilde~~ as intentional strikethrough; convert single-tilde del
-// tokens back to raw text so they render literally.
-marked.use({
-  walkTokens(token) {
-    if (token.type === 'del' && !token.raw.startsWith('~~')) {
-      token.type = 'text';
-      token.text = token.raw;
-      delete token.tokens;
-    }
-  }
-});
+// marked is configured via markdown-setup.js (loaded before this file).
 
 // Be strict about inline math delimiters. Single-dollar math collides with
 // ordinary currency amounts in LLM output, so require \(...\) for inline math.

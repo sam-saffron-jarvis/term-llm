@@ -1,6 +1,10 @@
 package serveui
 
 import (
+	"os"
+	"os/exec"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -58,6 +62,28 @@ func TestStaticAssetsUseStrictMathDelimiters(t *testing.T) {
 	}
 	if strings.Contains(coreSrc, "{ left: '$', right: '$', display: false }") {
 		t.Fatal("app-core.js still enables single-dollar inline math")
+	}
+}
+
+func TestMarkdownSetupJS(t *testing.T) {
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("node not found in PATH, skipping JS markdown tests")
+	}
+
+	_, thisFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("could not determine test file path")
+	}
+	script := filepath.Join(filepath.Dir(thisFile), "static", "markdown_test.js")
+	if _, err := os.Stat(script); err != nil {
+		t.Fatalf("markdown_test.js not found at %s: %v", script, err)
+	}
+
+	out, err := exec.Command(node, script).CombinedOutput()
+	t.Log(string(out))
+	if err != nil {
+		t.Fatalf("markdown_test.js failed: %v", err)
 	}
 }
 
