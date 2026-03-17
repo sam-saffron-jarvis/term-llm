@@ -220,8 +220,19 @@ func (p *ClaudeBinProvider) Stream(ctx context.Context, req Request) (Stream, er
 			messagesToSend = req.Messages[p.messagesSent:]
 		}
 
-		// Build the conversation prompt from messages to send
-		userPrompt := p.buildConversationPrompt(messagesToSend)
+		// Build the conversation prompt from messages to send.
+		// Use stream-json format when images are present so the model can vision-analyze them.
+		useStreamJson := hasImages(messagesToSend)
+		buildPrompt := func(msgs []Message) string {
+			if useStreamJson {
+				return p.buildStreamJsonInput(msgs, p.sessionID)
+			}
+			return p.buildConversationPrompt(msgs)
+		}
+		if useStreamJson {
+			args = append(args, "--input-format", "stream-json")
+		}
+		userPrompt := buildPrompt(messagesToSend)
 
 		// Add system prompt if present
 		if systemPrompt != "" {
@@ -237,7 +248,7 @@ func (p *ClaudeBinProvider) Stream(ctx context.Context, req Request) (Stream, er
 			prevLen := len(userPrompt)
 			for _, limit := range retryLimits {
 				truncated := truncateToolResultsAt(messagesToSend, limit)
-				retryPrompt := p.buildConversationPrompt(truncated)
+				retryPrompt := buildPrompt(truncated)
 				if len(retryPrompt) >= prevLen {
 					slog.Warn("prompt too long but truncation did not reduce size, not retrying",
 						"limit", limit)
@@ -1140,6 +1151,170 @@ func truncateToolResultsAt(messages []Message, maxChars int) []Message {
 		}
 	}
 	return out
+}
+
+// hasImages returns true if any message in the list contains image data —
+// either a PartImage in a user message or ToolContentPartImageData in a tool result.
+func hasImages(messages []Message) bool {
+	for _, msg := range messages {
+		switch msg.Role {
+		case RoleUser:
+			for _, part := range msg.Parts {
+				if part.Type == PartImage {
+					return true
+				}
+			}
+		case RoleTool:
+			for _, part := range msg.Parts {
+				if part.Type == PartToolResult && part.ToolResult != nil {
+					if toolResultHasImageData(part.ToolResult) {
+						return true
+					}
+				}
+			}
+		}
+	}
+	return false
+}
+
+// sdkUserMessage is the stream-json input format accepted by --input-format stream-json.
+type sdkUserMessage struct {
+	Type            string            `json:"type"`
+	SessionID       string            `json:"session_id"`
+	ParentToolUseID *string           `json:"parent_tool_use_id"`
+	Message         sdkMessageContent `json:"message"`
+}
+
+type sdkMessageContent struct {
+	Role    string            `json:"role"`
+	Content []sdkContentBlock `json:"content"`
+}
+
+type sdkContentBlock struct {
+	Type   string          `json:"type"`
+	Text   string          `json:"text,omitempty"`
+	Source *sdkImageSource `json:"source,omitempty"`
+}
+
+type sdkImageSource struct {
+	Type      string `json:"type"`
+	MediaType string `json:"media_type"`
+	Data      string `json:"data"`
+}
+
+// buildStreamJsonInput produces newline-delimited stream-json messages for all
+// user messages in msgs. Images from tool results are prepended to the last user
+// message so the model sees them in context.
+func (p *ClaudeBinProvider) buildStreamJsonInput(messages []Message, sessionID string) string {
+	// Collect images from tool results — they are injected into the last user message.
+	var toolImages []sdkContentBlock
+	for _, msg := range messages {
+		if msg.Role != RoleTool {
+			continue
+		}
+		for _, part := range msg.Parts {
+			if part.Type != PartToolResult || part.ToolResult == nil {
+				continue
+			}
+			for _, cp := range toolResultContentParts(part.ToolResult) {
+				mediaType, base64Data, ok := toolResultImageData(cp)
+				if !ok {
+					continue
+				}
+				toolImages = append(toolImages, sdkContentBlock{
+					Type: "image",
+					Source: &sdkImageSource{
+						Type:      "base64",
+						MediaType: mediaType,
+						Data:      base64Data,
+					},
+				})
+			}
+		}
+	}
+
+	// Build content blocks for each user message.
+	var userMsgs []sdkMessageContent
+	for _, msg := range messages {
+		if msg.Role != RoleUser {
+			continue
+		}
+		var blocks []sdkContentBlock
+		for _, part := range msg.Parts {
+			switch part.Type {
+			case PartText:
+				if part.Text != "" {
+					blocks = append(blocks, sdkContentBlock{Type: "text", Text: part.Text})
+				}
+			case PartImage:
+				mediaType, base64Data := "", ""
+				if part.ImageData != nil && part.ImageData.Base64 != "" {
+					mediaType = part.ImageData.MediaType
+					base64Data = part.ImageData.Base64
+				} else if part.ImagePath != "" {
+					data, err := os.ReadFile(part.ImagePath)
+					if err == nil {
+						mediaType = mediaTypeFromPath(part.ImagePath)
+						base64Data = base64.StdEncoding.EncodeToString(data)
+					}
+				}
+				if mediaType != "" && base64Data != "" {
+					blocks = append(blocks, sdkContentBlock{
+						Type: "image",
+						Source: &sdkImageSource{
+							Type:      "base64",
+							MediaType: mediaType,
+							Data:      base64Data,
+						},
+					})
+				}
+			}
+		}
+		if len(blocks) > 0 {
+			userMsgs = append(userMsgs, sdkMessageContent{Role: "user", Content: blocks})
+		}
+	}
+
+	if len(userMsgs) == 0 {
+		return ""
+	}
+
+	// Prepend tool result images to the last user message so the model sees them.
+	if len(toolImages) > 0 {
+		last := &userMsgs[len(userMsgs)-1]
+		last.Content = append(toolImages, last.Content...)
+	}
+
+	// Serialize as newline-delimited JSON.
+	var lines []string
+	for _, content := range userMsgs {
+		msg := sdkUserMessage{
+			Type:      "user",
+			SessionID: sessionID,
+			Message:   content,
+		}
+		data, err := json.Marshal(msg)
+		if err != nil {
+			continue
+		}
+		lines = append(lines, string(data))
+	}
+	return strings.Join(lines, "\n")
+}
+
+// mediaTypeFromPath returns an image MIME type based on the file extension.
+func mediaTypeFromPath(path string) string {
+	lower := strings.ToLower(path)
+	switch {
+	case strings.HasSuffix(lower, ".png"):
+		return "image/png"
+	case strings.HasSuffix(lower, ".gif"):
+		return "image/gif"
+	case strings.HasSuffix(lower, ".webp"):
+		return "image/webp"
+	default:
+		return "image/jpeg"
+	}
 }
 
 // JSON message types from claude CLI output

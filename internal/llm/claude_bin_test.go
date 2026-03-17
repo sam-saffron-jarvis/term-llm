@@ -565,6 +565,179 @@ func TestTruncateToolResults_NoToolResults(t *testing.T) {
 	}
 }
 
+func TestHasImages_UserPartImage(t *testing.T) {
+	msgs := []Message{
+		{Role: RoleUser, Parts: []Part{
+			{Type: PartText, Text: "look at this"},
+			{Type: PartImage, ImageData: &ToolImageData{MediaType: "image/png", Base64: "aGVsbG8="}},
+		}},
+	}
+	if !hasImages(msgs) {
+		t.Fatal("expected hasImages to return true for user PartImage")
+	}
+}
+
+func TestHasImages_ToolResultImage(t *testing.T) {
+	msgs := []Message{
+		{Role: RoleTool, Parts: []Part{
+			{Type: PartToolResult, ToolResult: &ToolResult{
+				ID:   "1",
+				Name: "screenshot",
+				ContentParts: []ToolContentPart{
+					{Type: ToolContentPartText, Text: "here is the image"},
+					{Type: ToolContentPartImageData, ImageData: &ToolImageData{MediaType: "image/png", Base64: "aGVsbG8="}},
+				},
+			}},
+		}},
+		{Role: RoleUser, Parts: []Part{{Type: PartText, Text: "what do you see?"}}},
+	}
+	if !hasImages(msgs) {
+		t.Fatal("expected hasImages to return true for tool result image")
+	}
+}
+
+func TestHasImages_TextOnly(t *testing.T) {
+	msgs := []Message{
+		{Role: RoleUser, Parts: []Part{{Type: PartText, Text: "hello"}}},
+		{Role: RoleAssistant, Parts: []Part{{Type: PartText, Text: "hi"}}},
+		{Role: RoleTool, Parts: []Part{
+			{Type: PartToolResult, ToolResult: &ToolResult{ID: "1", Name: "t", Content: "result"}},
+		}},
+	}
+	if hasImages(msgs) {
+		t.Fatal("expected hasImages to return false for text-only messages")
+	}
+}
+
+func TestBuildStreamJsonInput_UserPastedImage(t *testing.T) {
+	p := NewClaudeBinProvider("sonnet", nil)
+	msgs := []Message{
+		{Role: RoleUser, Parts: []Part{
+			{Type: PartImage, ImageData: &ToolImageData{MediaType: "image/png", Base64: "aGVsbG8="}},
+			{Type: PartText, Text: "describe this"},
+		}},
+	}
+	out := p.buildStreamJsonInput(msgs, "")
+	if out == "" {
+		t.Fatal("expected non-empty stream-json output")
+	}
+
+	var msg sdkUserMessage
+	if err := json.Unmarshal([]byte(out), &msg); err != nil {
+		t.Fatalf("failed to parse stream-json: %v", err)
+	}
+	if msg.Type != "user" {
+		t.Errorf("expected type 'user', got %q", msg.Type)
+	}
+	if msg.Message.Role != "user" {
+		t.Errorf("expected role 'user', got %q", msg.Message.Role)
+	}
+
+	var imageBlock, textBlock *sdkContentBlock
+	for i := range msg.Message.Content {
+		b := &msg.Message.Content[i]
+		switch b.Type {
+		case "image":
+			imageBlock = b
+		case "text":
+			textBlock = b
+		}
+	}
+	if imageBlock == nil {
+		t.Fatal("expected image content block")
+	}
+	if imageBlock.Source == nil || imageBlock.Source.Type != "base64" {
+		t.Errorf("expected base64 image source, got %+v", imageBlock.Source)
+	}
+	if imageBlock.Source.MediaType != "image/png" {
+		t.Errorf("expected media_type 'image/png', got %q", imageBlock.Source.MediaType)
+	}
+	if imageBlock.Source.Data != "aGVsbG8=" {
+		t.Errorf("expected base64 data 'aGVsbG8=', got %q", imageBlock.Source.Data)
+	}
+	if textBlock == nil || textBlock.Text != "describe this" {
+		t.Errorf("expected text block 'describe this', got %v", textBlock)
+	}
+}
+
+func TestBuildStreamJsonInput_ToolResultImagePrependedToLastUser(t *testing.T) {
+	p := NewClaudeBinProvider("sonnet", nil)
+	msgs := []Message{
+		{Role: RoleTool, Parts: []Part{
+			{Type: PartToolResult, ToolResult: &ToolResult{
+				ID:   "1",
+				Name: "screenshot",
+				ContentParts: []ToolContentPart{
+					{Type: ToolContentPartText, Text: "screenshot taken"},
+					{Type: ToolContentPartImageData, ImageData: &ToolImageData{
+						MediaType: "image/png",
+						Base64:    "aGVsbG8=",
+					}},
+				},
+			}},
+		}},
+		{Role: RoleUser, Parts: []Part{{Type: PartText, Text: "what is shown?"}}},
+	}
+	out := p.buildStreamJsonInput(msgs, "sess-abc")
+	if out == "" {
+		t.Fatal("expected non-empty output")
+	}
+
+	var msg sdkUserMessage
+	if err := json.Unmarshal([]byte(out), &msg); err != nil {
+		t.Fatalf("failed to parse: %v", err)
+	}
+	if msg.SessionID != "sess-abc" {
+		t.Errorf("expected session_id 'sess-abc', got %q", msg.SessionID)
+	}
+
+	// Tool image should be first, user text should be last
+	if len(msg.Message.Content) < 2 {
+		t.Fatalf("expected at least 2 content blocks, got %d", len(msg.Message.Content))
+	}
+	first := msg.Message.Content[0]
+	if first.Type != "image" || first.Source == nil || first.Source.Data != "aGVsbG8=" {
+		t.Errorf("expected tool image as first content block, got %+v", first)
+	}
+	last := msg.Message.Content[len(msg.Message.Content)-1]
+	if last.Type != "text" || last.Text != "what is shown?" {
+		t.Errorf("expected user text as last content block, got %+v", last)
+	}
+}
+
+func TestBuildStreamJsonInput_TextOnlyUsesConversationPrompt(t *testing.T) {
+	p := NewClaudeBinProvider("sonnet", nil)
+	msgs := []Message{
+		{Role: RoleUser, Parts: []Part{{Type: PartText, Text: "hello"}}},
+	}
+	// Text-only should NOT trigger stream-json path
+	if hasImages(msgs) {
+		t.Fatal("text-only messages should not trigger hasImages")
+	}
+	// buildConversationPrompt should still work
+	prompt := p.buildConversationPrompt(msgs)
+	if !strings.Contains(prompt, "hello") {
+		t.Errorf("expected 'hello' in prompt, got %q", prompt)
+	}
+}
+
+func TestBuildStreamJsonInput_SessionID(t *testing.T) {
+	p := NewClaudeBinProvider("sonnet", nil)
+	msgs := []Message{
+		{Role: RoleUser, Parts: []Part{
+			{Type: PartImage, ImageData: &ToolImageData{MediaType: "image/jpeg", Base64: "dGVzdA=="}},
+		}},
+	}
+	out := p.buildStreamJsonInput(msgs, "resume-session-123")
+	var msg sdkUserMessage
+	if err := json.Unmarshal([]byte(out), &msg); err != nil {
+		t.Fatalf("failed to parse: %v", err)
+	}
+	if msg.SessionID != "resume-session-123" {
+		t.Errorf("expected session_id 'resume-session-123', got %q", msg.SessionID)
+	}
+}
+
 // testTool is a simple tool implementation for testing.
 type testTool struct {
 	name string

@@ -758,6 +758,11 @@ func TestApprovalManager_FileApproval_SuppressesReprompt(t *testing.T) {
 		t.Fatalf("failed to create temp dir: %v", err)
 	}
 	defer os.RemoveAll(tempDir)
+	// Resolve symlinks (macOS /var -> /private/var)
+	tempDir, err = filepath.EvalSymlinks(tempDir)
+	if err != nil {
+		t.Fatalf("failed to resolve symlinks: %v", err)
+	}
 
 	filePath := filepath.Join(tempDir, "data.txt")
 	if err := os.WriteFile(filePath, []byte("content"), 0644); err != nil {
@@ -807,6 +812,11 @@ func TestApprovalManager_ReadApprovalDoesNotGrantWrite(t *testing.T) {
 		t.Fatalf("failed to create temp dir: %v", err)
 	}
 	defer os.RemoveAll(tempDir)
+	// Resolve symlinks (macOS /var -> /private/var)
+	tempDir, err = filepath.EvalSymlinks(tempDir)
+	if err != nil {
+		t.Fatalf("failed to resolve symlinks: %v", err)
+	}
 
 	filePath := filepath.Join(tempDir, "file.txt")
 	if err := os.WriteFile(filePath, []byte("data"), 0644); err != nil {
