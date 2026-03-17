@@ -1281,6 +1281,8 @@ const openAuthModal = (errorText = '', required = !state.token) => {
   elements.modelSelect.value = state.selectedModel;
   app.refreshNotificationUI();
   elements.authModal.classList.remove('hidden');
+  elements.modelSelect.removeAttribute('tabindex');
+  elements.authTokenInput.removeAttribute('tabindex');
 
   setTimeout(() => {
     if (required) {
@@ -1294,6 +1296,8 @@ const closeAuthModal = () => {
   if (state.authRequired && !state.token) return;
   elements.authModal.classList.add('hidden');
   elements.authError.textContent = '';
+  elements.modelSelect.setAttribute('tabindex', '-1');
+  elements.authTokenInput.setAttribute('tabindex', '-1');
 };
 
 const handleAuthFailure = () => {

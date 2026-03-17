@@ -184,7 +184,7 @@
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.44 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.19-9.19a4 4 0 015.66 5.66l-9.2 9.19a2 2 0 01-2.83-2.83l8.49-8.48"/></svg>
             </button>
             <input type="file" id="fileInput" multiple hidden>
-            <textarea id="promptInput" class="prompt" rows="1" placeholder="Message…" aria-label="Message"></textarea>
+            <textarea id="promptInput" class="prompt" rows="1" placeholder="Message…" aria-label="Message" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false"></textarea>
             <div class="composer-actions">
               <button class="stop-btn" id="stopBtn" type="button">Stop</button>
               <button class="composer-icon-btn voice-btn" id="voiceBtn" type="button" title="Record voice message" aria-label="Record voice message">
@@ -206,13 +206,13 @@
       <h2 id="authModalTitle">Settings</h2>
       <div class="settings-field">
         <label class="settings-label" for="modelSelect">Model</label>
-        <select class="settings-select" id="modelSelect" title="Model selection">
+        <select class="settings-select" id="modelSelect" title="Model selection" tabindex="-1">
           <option value="">Auto (server default)</option>
         </select>
       </div>
       <div class="settings-field">
         <label class="settings-label" for="authTokenInput">Bearer token</label>
-        <input id="authTokenInput" type="password" placeholder="sk-..." autocomplete="off">
+        <input id="authTokenInput" type="password" placeholder="sk-..." autocomplete="off" tabindex="-1">
       </div>
       <div class="settings-field">
         <div class="settings-row">
