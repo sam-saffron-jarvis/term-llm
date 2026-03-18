@@ -380,6 +380,7 @@
       display: inline-flex;
       align-items: center;
       gap: 0.6rem;
+      flex: 1;
       min-width: 0;
     }
 
@@ -395,7 +396,7 @@
       white-space: nowrap;
       overflow: hidden;
       text-overflow: ellipsis;
-      max-width: min(48vw, 520px);
+      min-width: 0;
     }
 
     .connection-state {
@@ -1755,9 +1756,6 @@
         display: inline-flex;
       }
 
-      .header-title {
-        max-width: 38vw;
-      }
 
       .header-right {
         margin-left: auto;
