@@ -293,16 +293,6 @@ func (sr *StreamRenderer) findSafePoint(content string) int {
 		i++
 	}
 
-	// Trim trailing whitespace from safe point for cleaner output
-	for safePoint > 0 && (content[safePoint-1] == ' ' || content[safePoint-1] == '\t') {
-		// Keep at least one space if there's content before it
-		if safePoint > 1 {
-			safePoint--
-		} else {
-			break
-		}
-	}
-
 	return safePoint
 }
 

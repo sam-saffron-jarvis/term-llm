@@ -145,6 +145,12 @@ func safeANSISlice(s string, pos int) string {
 
 // renderPendingMarkdownPreview renders in-progress markdown tail content.
 // Keep this raw so words appear immediately before the block is complete.
+//
+// Spacing contract: the caller (RenderSegmentsWithLeading) is responsible for
+// inserting a "\n" between RenderedUnflushed() output and this preview when
+// needed. RenderedUnflushed() strips trailing newlines from committed blocks
+// (streaming.go), so without the caller's separator the two pieces would run
+// together across block boundaries.
 func renderPendingMarkdownPreview(pending string) string {
 	return pending
 }
@@ -590,7 +596,14 @@ func RenderSegmentsWithLeading(leading *Segment, segments []*Segment, width int,
 				// tables/lists which are withheld until content becomes stable.
 				pending := seg.StreamRenderer.PendingMarkdown()
 				if pending != "" && !seg.StreamRenderer.PendingIsTable() && !seg.StreamRenderer.PendingIsList() {
-					rendered += renderPendingMarkdownPreview(pending)
+					preview := renderPendingMarkdownPreview(pending)
+					// The streaming renderer strips trailing newlines from committed output
+					// to avoid committing to inter-block spacing. Restore a newline separator
+					// so rendered blocks don't run into raw pending preview text.
+					if rendered != "" && preview != "" && !strings.HasSuffix(rendered, "\n") {
+						rendered += "\n"
+					}
+					rendered += preview
 				}
 			} else if seg.Complete && renderMarkdown != nil {
 				rendered = renderMarkdown(text, width)

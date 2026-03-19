@@ -27,12 +27,12 @@ func TestFindSafePoint(t *testing.T) {
 		{
 			name:     "incomplete bold",
 			content:  "hello **wor",
-			expected: 5, // "hello" (trimmed trailing space)
+			expected: 6, // "hello " (preserve trailing space)
 		},
 		{
 			name:     "incomplete bold with more text",
 			content:  "hello **world",
-			expected: 5,
+			expected: 6,
 		},
 		{
 			name:     "complete italic",
@@ -42,7 +42,7 @@ func TestFindSafePoint(t *testing.T) {
 		{
 			name:     "incomplete italic",
 			content:  "hello *wor",
-			expected: 5,
+			expected: 6,
 		},
 		{
 			name:     "complete code",
@@ -52,12 +52,12 @@ func TestFindSafePoint(t *testing.T) {
 		{
 			name:     "incomplete code",
 			content:  "hello `code",
-			expected: 5,
+			expected: 6,
 		},
 		{
 			name:     "incomplete strikethrough",
 			content:  "hello ~~strike",
-			expected: 5,
+			expected: 6,
 		},
 		{
 			name:     "complete strikethrough",
@@ -67,7 +67,7 @@ func TestFindSafePoint(t *testing.T) {
 		{
 			name:     "incomplete link",
 			content:  "hello [link",
-			expected: 5,
+			expected: 6,
 		},
 		{
 			name:     "complete link",
@@ -97,7 +97,7 @@ func TestFindSafePoint(t *testing.T) {
 		{
 			name:     "nested incomplete",
 			content:  "text **bold *italic",
-			expected: 4, // "text"
+			expected: 5, // "text " (preserve trailing space)
 		},
 	}
 
@@ -374,4 +374,124 @@ func TestPartialStateClearing(t *testing.T) {
 	if !strings.Contains(output, "\x1b[2A") {
 		t.Errorf("Expected cursor up sequence for 2 lines, got: %q", output)
 	}
+}
+
+func TestPartialRendering_IncompleteBoldPreservesLeadingSpace(t *testing.T) {
+	// End-to-end test: writing "hello **wor" (incomplete bold) through the
+	// partial rendering path should render "hello " (safe portion with
+	// trailing space preserved) via glamour. If findSafePoint regressed to
+	// trimming the space, the rendered safeContent fed to glamour would be
+	// "hello" instead of "hello ". We structure the input as two distinct
+	// words ("hello world") split by an incomplete bold marker so that
+	// space-trimming would concatenate them: "helloworld" vs "hello world".
+	var buf bytes.Buffer
+
+	sr, err := NewRendererWithOptions(
+		&buf,
+		[]StreamRendererOption{
+			WithPartialRendering(),
+			WithTerminalWidth(80),
+		},
+		glamour.WithAutoStyle(),
+	)
+	if err != nil {
+		t.Fatalf("NewRendererWithOptions failed: %v", err)
+	}
+
+	// "first second" is one phrase; the incomplete bold starts right after
+	// "first ". If findSafePoint trims the trailing space, glamour would
+	// render just "first" — and the next partial render would start with
+	// "second" glued to the previous line. We verify the two words remain
+	// separated by checking the rendered safeMarkdown state directly.
+	_, err = sr.Write([]byte("first second **wor"))
+	if err != nil {
+		t.Fatalf("Write failed: %v", err)
+	}
+
+	// Verify safeMarkdown preserves the space: should be "first second "
+	// (13 chars) not "first second" (12 chars, space trimmed).
+	if sr.partialState.safeMarkdown != "first second " {
+		t.Errorf("safeMarkdown = %q, want %q (trailing space must be preserved)",
+			sr.partialState.safeMarkdown, "first second ")
+	}
+
+	plain := stripAnsiHelper(buf.String())
+
+	// The incomplete bold marker should NOT appear in rendered output.
+	if strings.Contains(plain, "**wor") {
+		t.Errorf("incomplete bold marker '**wor' should not appear in partial render, got %q", plain)
+	}
+	if strings.Contains(plain, "**") {
+		t.Errorf("incomplete bold '**' should not appear in partial render, got %q", plain)
+	}
+}
+
+func TestPartialRendering_CompleteBoldThenIncomplete(t *testing.T) {
+	// End-to-end: "hello **world** more **inc" should render through
+	// "hello **world** more " (safe point preserves trailing space)
+	// while excluding the incomplete "**inc". We verify by checking
+	// the safeMarkdown that was fed to glamour, which must end with
+	// the space before the incomplete marker.
+	var buf bytes.Buffer
+
+	sr, err := NewRendererWithOptions(
+		&buf,
+		[]StreamRendererOption{
+			WithPartialRendering(),
+			WithTerminalWidth(80),
+		},
+		glamour.WithAutoStyle(),
+	)
+	if err != nil {
+		t.Fatalf("NewRendererWithOptions failed: %v", err)
+	}
+
+	_, err = sr.Write([]byte("hello **world** more **inc"))
+	if err != nil {
+		t.Fatalf("Write failed: %v", err)
+	}
+
+	// The safe content must preserve the trailing space before "**inc".
+	wantSafe := "hello **world** more "
+	if sr.partialState.safeMarkdown != wantSafe {
+		t.Errorf("safeMarkdown = %q, want %q (trailing space before incomplete bold must be preserved)",
+			sr.partialState.safeMarkdown, wantSafe)
+	}
+
+	plain := stripAnsiHelper(buf.String())
+
+	if !strings.Contains(plain, "hello") {
+		t.Fatalf("expected 'hello' in partial output, got %q", plain)
+	}
+	if !strings.Contains(plain, "world") {
+		t.Fatalf("expected 'world' in partial output, got %q", plain)
+	}
+	if !strings.Contains(plain, "more") {
+		t.Fatalf("expected 'more' in partial output, got %q", plain)
+	}
+	// The incomplete second bold should be excluded
+	if strings.Contains(plain, "inc") {
+		t.Errorf("incomplete bold '**inc' should not appear in partial render, got %q", plain)
+	}
+}
+
+// stripAnsiHelper removes ANSI escape sequences for test assertions.
+// Note: can't use ui.StripANSI here because ui imports streaming (circular).
+func stripAnsiHelper(s string) string {
+	var b strings.Builder
+	inEscape := false
+	for _, c := range s {
+		if c == '\x1b' {
+			inEscape = true
+			continue
+		}
+		if inEscape {
+			if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') {
+				inEscape = false
+			}
+			continue
+		}
+		b.WriteRune(c)
+	}
+	return b.String()
 }
