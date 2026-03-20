@@ -38,6 +38,7 @@ var (
 	memoryMineTaxonomyMaxTokens int
 	memoryMineToolMaxTurns      int
 	memoryMineMaxOutputTokens   int
+	memoryMineShowStats         bool
 )
 
 var memoryMineCmd = &cobra.Command{
@@ -96,6 +97,7 @@ func init() {
 	memoryMineCmd.Flags().IntVar(&memoryMineTaxonomyMaxTokens, "taxonomy-max-tokens", defaultMemoryMineTaxonomyMaxTokens, "Approximate maximum tokens for the compact fragment taxonomy map")
 	memoryMineCmd.Flags().IntVar(&memoryMineToolMaxTurns, "tool-max-turns", defaultMemoryMineToolMaxTurns, "Maximum tool-assisted turns allowed for one extraction request")
 	memoryMineCmd.Flags().IntVar(&memoryMineMaxOutputTokens, "max-output-tokens", defaultMemoryMineMaxOutputTokens, "Maximum output tokens for one extraction request")
+	memoryMineCmd.Flags().BoolVar(&memoryMineShowStats, "stats", false, "Print prompt, tool, token, and timing stats for each mined batch")
 	memoryMineCmd.RegisterFlagCompletionFunc("embed-provider", EmbedProviderFlagCompletion)
 }
 
@@ -201,6 +203,7 @@ func runMemoryMine(cmd *cobra.Command, args []string) error {
 	}
 
 	var totalCreated, totalUpdated, totalSkipped int
+	var summaryStats memoryMineSummaryStats
 
 	for i, candidate := range candidates {
 		state, err := memStore.GetState(ctx, candidate.Session.ID)
@@ -225,25 +228,32 @@ func runMemoryMine(cmd *cobra.Command, args []string) error {
 		}
 		taxonomyMap := buildTaxonomyMap(existing, memoryMineTaxonomyMaxTokens)
 
-		messages, nextOffset, err := loadMessagesForMining(ctx, sessStore, candidate, startOffset, taxonomyMap)
+		loadResult, err := loadMessagesForMining(ctx, sessStore, candidate, startOffset, taxonomyMap)
 		if err != nil {
 			return fmt.Errorf("load messages for session %s: %w", candidate.Session.ID, err)
 		}
-		if len(messages) == 0 {
+		if len(loadResult.Messages) == 0 {
 			fmt.Printf("[%d/%d] #%d no new messages to mine\n", i+1, len(candidates), candidate.Summary.Number)
 			continue
 		}
 
-		prompt := buildExtractionPrompt(candidate, startOffset, nextOffset, messages, taxonomyMap)
-		raw, err := runExtractionRequest(ctx, engine, memStore, candidate.Agent, prompt)
+		promptParts := buildExtractionPromptParts(candidate, startOffset, loadResult.NextOffset, loadResult.Messages, taxonomyMap)
+		batchStats := newMemoryExtractionStats(candidate, startOffset, loadResult.NextOffset, len(existing), loadResult, promptParts)
+		batchStart := time.Now()
+		raw, err := runExtractionRequest(ctx, engine, memStore, candidate.Agent, promptParts.Prompt, &batchStats)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "warning: skipping session %s batch at offset %d: %v\n", candidate.Session.ID, startOffset, err)
 			continue
 		}
 
 		ops, err := parseExtractionOperations(raw)
+		batchStats.Duration = time.Since(batchStart)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "warning: bad extraction output for session %s at offset %d: %v\nraw: %s\n", candidate.Session.ID, startOffset, err, raw)
+			if memoryMineShowStats {
+				fmt.Printf("[%d/%d] #%d %s\n", i+1, len(candidates), candidate.Summary.Number, batchStats.oneLine())
+				summaryStats.add(batchStats)
+			}
 			continue
 		}
 
@@ -251,17 +261,18 @@ func runMemoryMine(cmd *cobra.Command, args []string) error {
 		if err != nil {
 			return fmt.Errorf("apply operations for session %s: %w", candidate.Session.ID, err)
 		}
+		batchStats.Duration = time.Since(batchStart)
 
 		if !memoryDryRun {
 			for _, p := range affectedPaths {
-				if srcErr := memStore.AddFragmentSource(ctx, candidate.Agent, p, candidate.Session.ID, startOffset, nextOffset); srcErr != nil {
+				if srcErr := memStore.AddFragmentSource(ctx, candidate.Agent, p, candidate.Session.ID, startOffset, loadResult.NextOffset); srcErr != nil {
 					fmt.Fprintf(os.Stderr, "warning: record fragment source %s: %v\n", p, srcErr)
 				}
 			}
 			if err := memStore.UpsertState(ctx, &memorydb.MiningState{
 				SessionID:       candidate.Session.ID,
 				Agent:           candidate.Agent,
-				LastMinedOffset: nextOffset,
+				LastMinedOffset: loadResult.NextOffset,
 				MinedAt:         time.Now(),
 			}); err != nil {
 				return fmt.Errorf("update mining state for session %s: %w", candidate.Session.ID, err)
@@ -273,7 +284,11 @@ func runMemoryMine(cmd *cobra.Command, args []string) error {
 		totalSkipped += skipped
 
 		fmt.Printf("[%d/%d] #%d mined messages [%d,%d): create=%d update=%d skip=%d\n",
-			i+1, len(candidates), candidate.Summary.Number, startOffset, nextOffset, created, updated, skipped)
+			i+1, len(candidates), candidate.Summary.Number, startOffset, loadResult.NextOffset, created, updated, skipped)
+		if memoryMineShowStats {
+			fmt.Printf("[%d/%d] #%d %s\n", i+1, len(candidates), candidate.Summary.Number, batchStats.oneLine())
+			summaryStats.add(batchStats)
+		}
 	}
 
 	if memoryDryRun {
@@ -339,6 +354,9 @@ func runMemoryMine(cmd *cobra.Command, args []string) error {
 	}
 
 	fmt.Printf("Done. create=%d update=%d skip=%d\n", totalCreated, totalUpdated, totalSkipped)
+	if memoryMineShowStats {
+		summaryStats.print()
+	}
 
 	if memoryMineInsights && !memoryDryRun {
 		fmt.Println("\n--- INSIGHT EXTRACTION ---")
@@ -432,10 +450,11 @@ func collectMineCandidates(ctx context.Context, store session.Store, complete []
 	return out, nil
 }
 
-func loadMessagesForMining(ctx context.Context, store session.Store, candidate memoryMineCandidate, offset int, taxonomyMap string) ([]session.Message, int, error) {
+func loadMessagesForMining(ctx context.Context, store session.Store, candidate memoryMineCandidate, offset int, taxonomyMap string) (memoryMineLoadResult, error) {
 	remaining := memoryMineMaxMessages
 	currentOffset := offset
 	all := make([]session.Message, 0, memoryMineBatchSize)
+	result := memoryMineLoadResult{}
 
 	for {
 		limit := memoryMineBatchSize
@@ -445,7 +464,7 @@ func loadMessagesForMining(ctx context.Context, store session.Store, candidate m
 
 		msgs, err := store.GetMessages(ctx, candidate.Session.ID, limit, currentOffset)
 		if err != nil {
-			return nil, currentOffset, err
+			return result, err
 		}
 		if len(msgs) == 0 {
 			break
@@ -455,22 +474,29 @@ func loadMessagesForMining(ctx context.Context, store session.Store, candidate m
 			candidateMessages := append(append([]session.Message(nil), all...), msg)
 			nextOffset := currentOffset + 1
 			if estimateExtractionPromptTokens(candidate, offset, nextOffset, candidateMessages, taxonomyMap) > memoryMinePromptMaxTokens {
+				result.PromptBudgetHit = true
 				if len(all) == 0 {
 					clipped, ok := truncateMessageForPromptBudget(candidate, offset, nextOffset, taxonomyMap, msg)
 					if !ok {
-						return nil, currentOffset, fmt.Errorf("single message at offset %d cannot fit within --prompt-max-tokens=%d", currentOffset, memoryMinePromptMaxTokens)
+						return result, fmt.Errorf("single message at offset %d cannot fit within --prompt-max-tokens=%d", currentOffset, memoryMinePromptMaxTokens)
 					}
 					all = append(all, clipped)
 					currentOffset = nextOffset
+					result.TruncatedMessages++
+					result.SingleMessageClipped = true
 				}
-				return all, currentOffset, nil
+				result.Messages = all
+				result.NextOffset = currentOffset
+				return result, nil
 			}
 			all = candidateMessages
 			currentOffset = nextOffset
 			if remaining > 0 {
 				remaining--
 				if remaining <= 0 {
-					return all, currentOffset, nil
+					result.Messages = all
+					result.NextOffset = currentOffset
+					return result, nil
 				}
 			}
 		}
@@ -480,53 +506,13 @@ func loadMessagesForMining(ctx context.Context, store session.Store, candidate m
 		}
 	}
 
-	return all, currentOffset, nil
+	result.Messages = all
+	result.NextOffset = currentOffset
+	return result, nil
 }
 
 func buildExtractionPrompt(candidate memoryMineCandidate, startOffset, endOffset int, messages []session.Message, taxonomyMap string) string {
-	transcriptJSON, _ := json.MarshalIndent(buildTranscript(messages), "", "  ")
-
-	return fmt.Sprintf(`Session metadata:
-- session_id: %s
-- session_number: %d
-- agent: %s
-- mined_message_range: [%d, %d)
-- transcript_message_count: %d
-
-Existing fragment map (compact, partial by design):
-%s
-
-Transcript (role + text + tool call names only):
-%s
-
-Instructions:
-- Extract only durable facts, decisions, preferences, and technical details worth remembering long-term.
-- Skip ephemeral content like specific transient errors, one-off debugging output, and conversational filler.
-- The fragment map is intentionally compact and may omit exact duplicates or existing content details.
-- Use lookup tools when you need to confirm whether related memory already exists, inspect exact fragment content, or browse likely paths.
-- Prefer update when an existing fragment already captures the fact; use create for genuinely new memory.
-- Return at most 20 operations.
-- Fragment content must stay <= 8192 bytes.
-- Path must be relative and must not contain ../ or be absolute.
-
-Return strict JSON only, exactly in this format:
-{
-  "operations": [
-    {"op": "create", "path": "...", "content": "..."},
-    {"op": "update", "path": "...", "content": "...", "reason": "..."},
-    {"op": "skip", "reason": "..."}
-  ]
-}
-`,
-		candidate.Session.ID,
-		candidate.Summary.Number,
-		candidate.Agent,
-		startOffset,
-		endOffset,
-		len(messages),
-		taxonomyMap,
-		string(transcriptJSON),
-	)
+	return buildExtractionPromptParts(candidate, startOffset, endOffset, messages, taxonomyMap).Prompt
 }
 
 func buildTranscript(messages []session.Message) []transcriptMessage {
@@ -577,13 +563,13 @@ func collectToolCallNames(msg session.Message) []string {
 	return out
 }
 
-func runExtractionRequest(ctx context.Context, engine *llm.Engine, store *memorydb.Store, agent, prompt string) (string, error) {
+func runExtractionRequest(ctx context.Context, engine *llm.Engine, store *memorydb.Store, agent, prompt string, stats *memoryExtractionStats) (string, error) {
 	toolSpecs, cleanup := registerMemoryExtractionTools(engine, store, agent)
 	defer cleanup()
-	return runExtractionRequestWithSystem(ctx, engine, memoryExtractionSystemPrompt, prompt, toolSpecs...)
+	return runExtractionRequestWithSystem(ctx, engine, memoryExtractionSystemPrompt, prompt, stats, toolSpecs...)
 }
 
-func runExtractionRequestWithSystem(ctx context.Context, engine *llm.Engine, systemPrompt, prompt string, tools ...llm.ToolSpec) (string, error) {
+func runExtractionRequestWithSystem(ctx context.Context, engine *llm.Engine, systemPrompt, prompt string, stats *memoryExtractionStats, tools ...llm.ToolSpec) (string, error) {
 	req := llm.Request{
 		Model:           strings.TrimSpace(memoryMineModel),
 		Messages:        []llm.Message{llm.SystemText(systemPrompt), llm.UserText(prompt)},
@@ -617,6 +603,18 @@ func runExtractionRequestWithSystem(ctx context.Context, engine *llm.Engine, sys
 		switch ev.Type {
 		case llm.EventTextDelta:
 			b.WriteString(ev.Text)
+		case llm.EventToolCall:
+			if stats != nil && ev.Tool != nil {
+				stats.noteToolCall(strings.TrimSpace(ev.Tool.Name))
+			}
+		case llm.EventUsage:
+			if stats != nil && ev.Use != nil {
+				stats.ToolTurns++
+				stats.InputTokens += ev.Use.InputTokens
+				stats.CachedInputTokens += ev.Use.CachedInputTokens
+				stats.CacheWriteTokens += ev.Use.CacheWriteTokens
+				stats.OutputTokens += ev.Use.OutputTokens
+			}
 		case llm.EventError:
 			if ev.Err != nil {
 				return "", ev.Err
@@ -1163,11 +1161,12 @@ func runInsightExtractionPass(
 			continue
 		}
 
-		messages, _, err := loadMessagesForMining(ctx, sessStore, candidate, 0, "Memory fragment map:\n- total_fragments: 0")
+		loadResult, err := loadMessagesForMining(ctx, sessStore, candidate, 0, "Memory fragment map:\n- total_fragments: 0")
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "  [insight] skip %s: load messages: %v\n", candidate.Session.ID, err)
 			continue
 		}
+		messages := loadResult.Messages
 		if len(messages) < 4 {
 			// Too short to contain meaningful patterns.
 			continue
@@ -1180,7 +1179,7 @@ func runInsightExtractionPass(
 		}
 
 		prompt := buildInsightExtractionPrompt(candidate.Agent, messages, existing)
-		raw, err := runExtractionRequestWithSystem(ctx, engine, insightExtractionSystemPrompt, prompt)
+		raw, err := runExtractionRequestWithSystem(ctx, engine, insightExtractionSystemPrompt, prompt, nil)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "  [insight] skip %s: llm call: %v\n", candidate.Session.ID, err)
 			continue

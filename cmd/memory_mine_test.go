@@ -179,17 +179,17 @@ func TestLoadMessagesForMining_RespectsPromptBudget(t *testing.T) {
 		Session: sess,
 		Agent:   "jarvis",
 	}
-	messages, nextOffset, err := loadMessagesForMining(ctx, sessStore, candidate, 0, "Memory fragment map:\n- total_fragments: 0")
+	loadResult, err := loadMessagesForMining(ctx, sessStore, candidate, 0, "Memory fragment map:\n- total_fragments: 0")
 	if err != nil {
 		t.Fatalf("loadMessagesForMining: %v", err)
 	}
-	if len(messages) == 0 {
+	if len(loadResult.Messages) == 0 {
 		t.Fatal("expected at least one message")
 	}
-	if nextOffset >= 6 {
-		t.Fatalf("nextOffset = %d, want partial batch due to prompt budget", nextOffset)
+	if loadResult.NextOffset >= 6 {
+		t.Fatalf("nextOffset = %d, want partial batch due to prompt budget", loadResult.NextOffset)
 	}
-	if got := estimateExtractionPromptTokens(candidate, 0, nextOffset, messages, "Memory fragment map:\n- total_fragments: 0"); got > memoryMinePromptMaxTokens {
+	if got := estimateExtractionPromptTokens(candidate, 0, loadResult.NextOffset, loadResult.Messages, "Memory fragment map:\n- total_fragments: 0"); got > memoryMinePromptMaxTokens {
 		t.Fatalf("estimated prompt tokens = %d, want <= %d", got, memoryMinePromptMaxTokens)
 	}
 }
