@@ -17,7 +17,7 @@ import (
 const (
 	defaultMemoryMinePromptMaxTokens   = 12000
 	defaultMemoryMineTaxonomyMaxTokens = 1000
-	defaultMemoryMineToolMaxTurns      = 6
+	defaultMemoryMineToolMaxTurns      = 10
 	defaultMemoryMineMaxOutputTokens   = 2048
 	memoryMineFragmentSearchLimit      = 8
 	memoryMineFragmentListLimit        = 20
@@ -315,25 +315,6 @@ func assistantMessagePriority(text string) int {
 		return 1
 	}
 	return 0
-}
-
-func registerMemoryExtractionTools(engine *llm.Engine, store *memorydb.Store, agent string) ([]llm.ToolSpec, func()) {
-	tools := []llm.Tool{
-		&memorySearchFragmentsTool{store: store, agent: agent},
-		&memoryListFragmentsTool{store: store, agent: agent},
-		&memoryGetFragmentTool{store: store, agent: agent},
-	}
-	specs := make([]llm.ToolSpec, 0, len(tools))
-	for _, tool := range tools {
-		engine.RegisterTool(tool)
-		specs = append(specs, tool.Spec())
-	}
-	cleanup := func() {
-		for _, tool := range tools {
-			engine.UnregisterTool(tool.Spec().Name)
-		}
-	}
-	return specs, cleanup
 }
 
 type memorySearchFragmentsTool struct {
