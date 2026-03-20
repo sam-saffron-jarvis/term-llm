@@ -126,6 +126,7 @@ pre, code, .terminal-panel code, .install-command code { font-family: "JetBrains
 .docs-card li + li { margin-top: 0.55rem; }
 .split-layout, .doc-grid { display: grid; gap: 1rem; grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .doc-grid-wide { grid-template-columns: minmax(0, 1.7fr) minmax(260px, 0.7fr); align-items: start; }
+.hero > *, .split-layout > *, .doc-grid > *, .doc-grid-wide > *, .install-panel > * { min-width: 0; }
 .list-panel, .doc-surface { padding: 1.2rem 1.25rem; }
 .breadcrumbs { display: flex; flex-wrap: wrap; gap: 0.55rem; color: var(--muted); font-size: 0.9rem; }
 .breadcrumbs a { color: var(--muted); text-decoration: none; }
@@ -160,4 +161,8 @@ pre, code, .terminal-panel code, .install-command code { font-family: "JetBrains
   .topbar { flex-direction: column; align-items: flex-start; gap: 0.65rem; }
   .topnav { gap: 0.75rem; }
   .topnav a { font-size: 0.88rem; }
+  .list-panel, .doc-surface { padding: 1rem; }
+  .markdown pre, .install-command { padding: 0.85rem 0.9rem; border-radius: 14px; }
+  .markdown pre, .markdown table { font-size: 0.88rem; }
+  .markdown th, .markdown td { padding: 0.6rem; }
 }
