@@ -266,10 +266,17 @@ body.search-open { overflow: hidden; }
   color: var(--muted);
   line-height: 1.65;
 }
+.search-interface {
+  --pagefind-ui-primary: #72f1b8;
+  --pagefind-ui-text: #e7edf7;
+  --pagefind-ui-background: transparent;
+  --pagefind-ui-border: rgba(125,211,252,0.18);
+  --pagefind-ui-tag: rgba(114,241,184,0.2);
+  --pagefind-ui-font: inherit;
+}
 .search-interface .pagefind-ui__form {
   margin: 0;
 }
-.search-interface .pagefind-ui__search-clear,
 .search-interface .pagefind-ui__button {
   appearance: none;
   border-radius: 12px !important;
@@ -278,14 +285,26 @@ body.search-open { overflow: hidden; }
   color: var(--text) !important;
   box-shadow: none !important;
 }
-.search-interface .pagefind-ui__search-clear:hover,
 .search-interface .pagefind-ui__button:hover {
   border-color: rgba(114,241,184,0.36) !important;
   background: rgba(16,28,48,1) !important;
 }
 .search-interface .pagefind-ui__search-clear {
-  min-width: 2.9rem;
-  padding: 0 0.8rem !important;
+  appearance: none;
+  border-radius: 999px !important;
+  border: 1px solid rgba(125,211,252,0.14) !important;
+  background: transparent !important;
+  color: var(--muted) !important;
+  font-size: 0.82rem !important;
+  padding: 0.2rem 0.7rem !important;
+  min-width: auto;
+  box-shadow: none !important;
+  cursor: pointer;
+}
+.search-interface .pagefind-ui__search-clear:hover {
+  border-color: rgba(114,241,184,0.36) !important;
+  color: var(--text) !important;
+  background: rgba(114,241,184,0.08) !important;
 }
 .search-interface .pagefind-ui__search-input {
   width: 100%;
@@ -306,10 +325,12 @@ body.search-open { overflow: hidden; }
   outline-offset: 2px;
 }
 .search-interface .pagefind-ui__drawer {
-  margin-top: 1rem;
+  margin-top: 1.5rem;
 }
 .search-interface .pagefind-ui__message {
   color: var(--muted);
+  padding-top: 0.25rem;
+  padding-bottom: 0.25rem;
 }
 .search-interface .pagefind-ui__results {
   margin-top: 0.5rem;
@@ -327,8 +348,16 @@ body.search-open { overflow: hidden; }
 .search-interface .pagefind-ui__button {
   color: var(--text);
 }
-.search-interface .pagefind-ui__result-excerpt,
+.search-interface .pagefind-ui__result-excerpt {
+  color: var(--soft);
+}
 .search-interface .pagefind-ui__result-nested {
+  color: var(--soft);
+}
+.search-interface .pagefind-ui__result-nested .pagefind-ui__result-title {
+  color: var(--soft);
+}
+.search-interface .pagefind-ui__result-nested .pagefind-ui__result-link {
   color: var(--soft);
 }
 .search-interface mark {
