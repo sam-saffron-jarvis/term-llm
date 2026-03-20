@@ -14,6 +14,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -57,9 +58,23 @@ func (s *Server) SetDebug(debug bool) {
 	s.debug = debug
 }
 
-// Start starts the HTTP server on a random available port.
+// Start starts the HTTP server on a random available port on localhost.
 // Returns the server URL and auth token for connecting.
 func (s *Server) Start(ctx context.Context, tools []ToolSpec) (url, token string, err error) {
+	return s.startInternal("127.0.0.1", 0, "", tools)
+}
+
+// StartOnAddress starts the HTTP server on a specific host:port.
+// If token is empty, a crypto-random token is generated.
+// Returns the server URL and the auth token used.
+func (s *Server) StartOnAddress(host string, port int, token string, tools []ToolSpec) (url, actualToken string, err error) {
+	return s.startInternal(host, port, token, tools)
+}
+
+// startInternal is the shared implementation for Start and StartOnAddress.
+// When port is 0, a random available port is used.
+// When token is empty, a crypto-random token is generated.
+func (s *Server) startInternal(host string, port int, token string, tools []ToolSpec) (url, actualToken string, err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -71,17 +86,21 @@ func (s *Server) Start(ctx context.Context, tools []ToolSpec) (url, token string
 		return "", "", fmt.Errorf("tool executor is required")
 	}
 
-	// Generate crypto-random auth token
-	tokenBytes := make([]byte, 32)
-	if _, err := rand.Read(tokenBytes); err != nil {
-		return "", "", fmt.Errorf("generate auth token: %w", err)
+	// Use provided token or generate one.
+	if token != "" {
+		s.authToken = token
+	} else {
+		tokenBytes := make([]byte, 32)
+		if _, err := rand.Read(tokenBytes); err != nil {
+			return "", "", fmt.Errorf("generate auth token: %w", err)
+		}
+		s.authToken = base64.URLEncoding.EncodeToString(tokenBytes)
 	}
-	s.authToken = base64.URLEncoding.EncodeToString(tokenBytes)
 
-	// Listen on localhost only with random port
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	addr := net.JoinHostPort(host, strconv.Itoa(port))
+	listener, err := net.Listen("tcp", addr)
 	if err != nil {
-		return "", "", fmt.Errorf("listen: %w", err)
+		return "", "", fmt.Errorf("listen on %s: %w", addr, err)
 	}
 	s.listener = listener
 
@@ -171,10 +190,21 @@ func (s *Server) Start(ctx context.Context, tools []ToolSpec) (url, token string
 		// No immediate error, server is likely running
 	}
 
-	addr := listener.Addr().(*net.TCPAddr)
-	serverURL := fmt.Sprintf("http://127.0.0.1:%d/mcp", addr.Port)
+	// Build the URL using the actual bound port (matters when port=0).
+	boundPort := listener.Addr().(*net.TCPAddr).Port
+	urlHost := displayHost(host)
+	serverURL := "http://" + net.JoinHostPort(urlHost, strconv.Itoa(boundPort)) + "/mcp"
 
 	return serverURL, s.authToken, nil
+}
+
+// displayHost returns a host suitable for a client-facing URL.
+// Wildcard bind addresses (0.0.0.0, ::) are replaced with 127.0.0.1.
+func displayHost(host string) string {
+	if host == "0.0.0.0" || host == "::" || host == "" {
+		return "127.0.0.1"
+	}
+	return host
 }
 
 // authMiddleware validates the Authorization header.

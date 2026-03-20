@@ -156,6 +156,137 @@ func TestServerCannotStartTwice(t *testing.T) {
 	}
 }
 
+func TestStartOnAddress(t *testing.T) {
+	executor := func(ctx context.Context, name string, args json.RawMessage) (string, error) {
+		return "ok", nil
+	}
+	tools := []ToolSpec{
+		{Name: "t", Description: "d", Schema: map[string]interface{}{"type": "object"}},
+	}
+	ctx := context.Background()
+
+	t.Run("provided token is used", func(t *testing.T) {
+		server := NewServer(executor)
+		url, token, err := server.StartOnAddress("127.0.0.1", 0, "my-secret", tools)
+		if err != nil {
+			t.Fatalf("StartOnAddress failed: %v", err)
+		}
+		defer server.Stop(ctx)
+
+		if token != "my-secret" {
+			t.Errorf("expected provided token, got %q", token)
+		}
+		if !strings.HasPrefix(url, "http://127.0.0.1:") || !strings.HasSuffix(url, "/mcp") {
+			t.Errorf("unexpected URL: %s", url)
+		}
+
+		// Verify auth works with the provided token
+		time.Sleep(10 * time.Millisecond)
+		req, _ := http.NewRequest("GET", url, nil)
+		req.Header.Set("Authorization", "Bearer my-secret")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("request failed: %v", err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode == http.StatusUnauthorized {
+			t.Error("provided token should be accepted")
+		}
+	})
+
+	t.Run("empty token generates one", func(t *testing.T) {
+		server := NewServer(executor)
+		_, token, err := server.StartOnAddress("127.0.0.1", 0, "", tools)
+		if err != nil {
+			t.Fatalf("StartOnAddress failed: %v", err)
+		}
+		defer server.Stop(ctx)
+
+		if token == "" {
+			t.Error("auto-generated token should not be empty")
+		}
+	})
+
+	t.Run("wildcard host URL uses localhost", func(t *testing.T) {
+		server := NewServer(executor)
+		url, _, err := server.StartOnAddress("0.0.0.0", 0, "tok", tools)
+		if err != nil {
+			t.Fatalf("StartOnAddress failed: %v", err)
+		}
+		defer server.Stop(ctx)
+
+		if strings.Contains(url, "0.0.0.0") {
+			t.Errorf("URL should not contain wildcard bind address, got %s", url)
+		}
+		if !strings.HasPrefix(url, "http://127.0.0.1:") {
+			t.Errorf("wildcard URL should use 127.0.0.1, got %s", url)
+		}
+	})
+
+	t.Run("IPv6 localhost", func(t *testing.T) {
+		server := NewServer(executor)
+		url, _, err := server.StartOnAddress("::1", 0, "tok", tools)
+		if err != nil {
+			t.Fatalf("StartOnAddress failed: %v", err)
+		}
+		defer server.Stop(ctx)
+
+		// IPv6 addresses in URLs must be bracketed
+		if !strings.HasPrefix(url, "http://[::1]:") {
+			t.Errorf("IPv6 URL should bracket the host, got %s", url)
+		}
+	})
+
+	t.Run("IPv6 wildcard uses localhost", func(t *testing.T) {
+		server := NewServer(executor)
+		url, _, err := server.StartOnAddress("::", 0, "tok", tools)
+		if err != nil {
+			t.Fatalf("StartOnAddress failed: %v", err)
+		}
+		defer server.Stop(ctx)
+
+		if strings.Contains(url, "::") {
+			t.Errorf("URL should not contain :: wildcard, got %s", url)
+		}
+		if !strings.HasPrefix(url, "http://127.0.0.1:") {
+			t.Errorf("IPv6 wildcard URL should use 127.0.0.1, got %s", url)
+		}
+	})
+
+	t.Run("cannot start twice", func(t *testing.T) {
+		server := NewServer(executor)
+		_, _, err := server.StartOnAddress("127.0.0.1", 0, "tok", tools)
+		if err != nil {
+			t.Fatalf("first start failed: %v", err)
+		}
+		defer server.Stop(ctx)
+
+		_, _, err = server.StartOnAddress("127.0.0.1", 0, "tok", tools)
+		if err == nil {
+			t.Error("second start should fail")
+		}
+	})
+}
+
+func TestDisplayHost(t *testing.T) {
+	tests := []struct {
+		input, expected string
+	}{
+		{"127.0.0.1", "127.0.0.1"},
+		{"::1", "::1"},
+		{"10.0.0.5", "10.0.0.5"},
+		{"0.0.0.0", "127.0.0.1"},
+		{"::", "127.0.0.1"},
+		{"", "127.0.0.1"},
+	}
+	for _, tc := range tests {
+		got := displayHost(tc.input)
+		if got != tc.expected {
+			t.Errorf("displayHost(%q) = %q, want %q", tc.input, got, tc.expected)
+		}
+	}
+}
+
 func TestParseMCPToolName(t *testing.T) {
 	tests := []struct {
 		input    string
