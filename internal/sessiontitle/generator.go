@@ -62,7 +62,10 @@ Conversation slice:
 		return Candidate{}, err
 	}
 	if !Acceptable(cand) {
-		return Candidate{}, fmt.Errorf("generated titles rejected")
+		return cand, fmt.Errorf("generated titles rejected: short=%q (%d words) long=%q (%d words) conf=%.2f",
+			cand.ShortTitle, wordCount(cand.ShortTitle),
+			cand.LongTitle, wordCount(cand.LongTitle),
+			cand.Confidence)
 	}
 	return cand, nil
 }
