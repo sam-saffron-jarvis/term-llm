@@ -1,6 +1,9 @@
 package session
 
-import "context"
+import (
+	"context"
+	"time"
+)
 
 // NoopStore is a no-op implementation of Store used when sessions are disabled.
 // It silently discards all writes and returns empty results for reads.
@@ -26,6 +29,10 @@ func (s *NoopStore) GetByPrefix(ctx context.Context, prefix string) (*Session, e
 }
 
 func (s *NoopStore) Update(ctx context.Context, sess *Session) error {
+	return nil
+}
+
+func (s *NoopStore) MarkTitleSkipped(ctx context.Context, id string, t time.Time) error {
 	return nil
 }
 

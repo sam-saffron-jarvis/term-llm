@@ -842,6 +842,20 @@ func (s *SQLiteStore) Update(ctx context.Context, sess *Session) error {
 	return nil
 }
 
+// MarkTitleSkipped sets title_skipped_at on a session without bumping updated_at.
+// This lets the autotitle job skip trivial sessions until real new messages arrive.
+func (s *SQLiteStore) MarkTitleSkipped(ctx context.Context, id string, t time.Time) error {
+	if !s.hasTitleSkippedAt {
+		return nil // column absent on old schema; skip silently
+	}
+	_, err := s.db.ExecContext(ctx,
+		"UPDATE sessions SET title_skipped_at = ? WHERE id = ?", t, id)
+	if err != nil {
+		return fmt.Errorf("mark title skipped: %w", err)
+	}
+	return nil
+}
+
 // UpdateMetrics atomically increments the metrics fields for a session.
 // All token counters use += to avoid clobbering concurrent accumulation.
 func (s *SQLiteStore) UpdateMetrics(ctx context.Context, id string, llmTurns, toolCalls, inputTokens, outputTokens, cachedInputTokens, cacheWriteTokens int) error {
