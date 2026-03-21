@@ -21,6 +21,16 @@ type Config struct {
 	// Defaults to Google's public STUN server if empty.
 	STUNURLs []string
 
+	// TURNURLs is a list of TURN server URLs (e.g. "turn:host:3478?transport=udp").
+	// When set, TURNUsername and TURNCredential must also be provided.
+	TURNURLs []string
+
+	// TURNUsername is the username for TURN authentication.
+	TURNUsername string
+
+	// TURNCredential is the credential (password) for TURN authentication.
+	TURNCredential string
+
 	// PollInterval is how often to poll the signaling server for new offers.
 	// Defaults to 2 seconds.
 	PollInterval time.Duration

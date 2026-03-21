@@ -324,22 +324,32 @@ func (p *peer) handleOffer(ctx context.Context, offer signalingMsg) {
 		return
 	}
 
-	// Parse STUN server URLs.
-	var stunURLs []*stun.URI
+	// Parse STUN and TURN server URLs.
+	var iceURLs []*stun.URI
 	for _, raw := range p.cfg.STUNURLs {
 		u, parseErr := stun.ParseURI(raw)
 		if parseErr != nil {
 			log.Printf("webrtc: parse STUN URL %q: %v", raw, parseErr)
 			continue
 		}
-		stunURLs = append(stunURLs, u)
+		iceURLs = append(iceURLs, u)
+	}
+	for _, raw := range p.cfg.TURNURLs {
+		u, parseErr := stun.ParseURI(raw)
+		if parseErr != nil {
+			log.Printf("webrtc: parse TURN URL %q: %v", raw, parseErr)
+			continue
+		}
+		u.Username = p.cfg.TURNUsername
+		u.Password = p.cfg.TURNCredential
+		iceURLs = append(iceURLs, u)
 	}
 
 	// Create the ICE agent and gather candidates.
 	gatherDone := make(chan struct{})
 	var gatherOnce sync.Once
 	agent, err := ice.NewAgentWithOptions(
-		ice.WithUrls(stunURLs),
+		ice.WithUrls(iceURLs),
 		ice.WithNetworkTypes([]ice.NetworkType{ice.NetworkTypeUDP4, ice.NetworkTypeUDP6}),
 	)
 	if err != nil {

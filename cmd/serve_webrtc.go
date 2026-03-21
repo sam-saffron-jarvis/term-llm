@@ -10,12 +10,15 @@ import (
 )
 
 var (
-	serveWebRTC             bool
-	serveWebRTCSignalingURL string
-	serveWebRTCToken        string
-	serveWebRTCSTUN         []string
-	serveWebRTCMaxConns     int
-	serveWebRTCDiagnostics  bool
+	serveWebRTC               bool
+	serveWebRTCSignalingURL   string
+	serveWebRTCToken          string
+	serveWebRTCSTUN           []string
+	serveWebRTCTURN           []string
+	serveWebRTCTURNUsername   string
+	serveWebRTCTURNCredential string
+	serveWebRTCMaxConns       int
+	serveWebRTCDiagnostics    bool
 )
 
 func init() {
@@ -27,6 +30,12 @@ func init() {
 		"Bearer token for authenticating with the signaling server")
 	serveCmd.Flags().StringArrayVar(&serveWebRTCSTUN, "webrtc-stun",
 		[]string{"stun:stun.l.google.com:19302"}, "STUN server URL(s)")
+	serveCmd.Flags().StringArrayVar(&serveWebRTCTURN, "webrtc-turn", nil,
+		"TURN server URL(s) (e.g. turn:host:3478?transport=udp); requires --webrtc-turn-username and --webrtc-turn-credential")
+	serveCmd.Flags().StringVar(&serveWebRTCTURNUsername, "webrtc-turn-username", "",
+		"Username for TURN authentication")
+	serveCmd.Flags().StringVar(&serveWebRTCTURNCredential, "webrtc-turn-credential", "",
+		"Credential (password) for TURN authentication")
 	serveCmd.Flags().IntVar(&serveWebRTCMaxConns, "webrtc-max-conns", 10,
 		"Maximum concurrent WebRTC connections")
 	serveCmd.Flags().BoolVar(&serveWebRTCDiagnostics, "webrtc-diagnostics", false,
@@ -56,13 +65,16 @@ func runWebRTCPeer(ctx context.Context, s *serveServer) {
 		return
 	}
 	cfg := webrtc.Config{
-		SignalingURL: serveWebRTCSignalingURL,
-		Token:        serveWebRTCToken,
-		BasePath:     s.cfg.basePath,
-		STUNURLs:     append([]string(nil), serveWebRTCSTUN...),
-		PollInterval: 2 * time.Second,
-		IdleTimeout:  30 * time.Minute,
-		MaxConns:     serveWebRTCMaxConns,
+		SignalingURL:   serveWebRTCSignalingURL,
+		Token:          serveWebRTCToken,
+		BasePath:       s.cfg.basePath,
+		STUNURLs:       append([]string(nil), serveWebRTCSTUN...),
+		TURNURLs:       append([]string(nil), serveWebRTCTURN...),
+		TURNUsername:   serveWebRTCTURNUsername,
+		TURNCredential: serveWebRTCTURNCredential,
+		PollInterval:   2 * time.Second,
+		IdleTimeout:    30 * time.Minute,
+		MaxConns:       serveWebRTCMaxConns,
 	}
 	peer, err := webrtc.New(ctx, cfg, s.httpHandler())
 	if err != nil {
