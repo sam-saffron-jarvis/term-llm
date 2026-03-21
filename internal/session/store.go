@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 // Store is the interface for session persistence.
@@ -16,6 +17,7 @@ type Store interface {
 	GetByNumber(ctx context.Context, number int64) (*Session, error)
 	GetByPrefix(ctx context.Context, prefix string) (*Session, error)
 	Update(ctx context.Context, s *Session) error
+	MarkTitleSkipped(ctx context.Context, id string, t time.Time) error
 	Delete(ctx context.Context, id string) error
 
 	// Listing and search

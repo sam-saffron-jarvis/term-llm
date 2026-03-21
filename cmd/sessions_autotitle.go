@@ -171,9 +171,10 @@ func runSessionsAutotitle(cmd *cobra.Command, args []string) error {
 					fmt.Fprintf(cmd.ErrOrStderr(), "#%d rejected: %v\n", sess.Number, err)
 				}
 				// Mark session as trivial so we don't retry until it changes.
+				// Uses MarkTitleSkipped (not Update) to avoid bumping updated_at,
+				// which would cause the skip check to immediately re-qualify the session.
 				if !sessionsAutotitleDryRun {
-					sess.TitleSkippedAt = time.Now().UTC()
-					if uerr := store.Update(ctx, sess); uerr != nil {
+					if uerr := store.MarkTitleSkipped(ctx, sess.ID, time.Now().UTC()); uerr != nil {
 						fmt.Fprintf(cmd.ErrOrStderr(), "#%d skip-mark failed: %v\n", sess.Number, uerr)
 					}
 				}
