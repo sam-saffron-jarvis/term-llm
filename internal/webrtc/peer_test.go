@@ -239,6 +239,38 @@ func TestChunkStreaming(t *testing.T) {
 	}
 }
 
+func TestFlushSendsHeadersWithoutBody(t *testing.T) {
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("x-response-id", "resp-idle")
+		w.(http.Flusher).Flush()
+	})
+	p := newTestPeer("/ui", handler)
+	raw := encodeRequest("req7", "GET", "/ui/v1/responses/resp-idle/events", nil, "")
+	frames := collectFrames(p, raw)
+
+	if len(frames) < 2 {
+		t.Fatalf("expected at least 2 frames (headers + done), got %d: %v", len(frames), frames)
+	}
+	if frames[0].Type != "headers" {
+		t.Fatalf("frame[0] should be headers, got %q", frames[0].Type)
+	}
+	if frames[0].Status != http.StatusOK {
+		t.Fatalf("headers status = %d, want 200", frames[0].Status)
+	}
+	if frames[0].Headers["content-type"] != "text/event-stream" {
+		t.Fatalf("headers content-type = %q, want text/event-stream", frames[0].Headers["content-type"])
+	}
+	if frames[0].Headers["x-response-id"] != "resp-idle" {
+		t.Fatalf("headers x-response-id = %q, want resp-idle", frames[0].Headers["x-response-id"])
+	}
+
+	last := frames[len(frames)-1]
+	if last.Type != "done" || last.Status != http.StatusOK {
+		t.Fatalf("last frame should be done/200, got %v", last)
+	}
+}
+
 func TestFrameEncoding_RoundTrip(t *testing.T) {
 	original := requestFrame{
 		ID:      "test-id",

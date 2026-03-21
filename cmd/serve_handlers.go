@@ -1008,6 +1008,7 @@ func (s *serveServer) streamChatCompletions(ctx context.Context, w http.Response
 	}
 
 	setSSEHeaders(w)
+	flusher.Flush()
 	respID := "chatcmpl_" + sessionOrRandomID(sessionID)
 	model := llmReq.Model
 	if model == "" {

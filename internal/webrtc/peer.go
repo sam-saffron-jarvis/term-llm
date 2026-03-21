@@ -744,6 +744,10 @@ func (w *dcResponseWriter) Write(b []byte) (int, error) {
 
 // Flush implements http.Flusher so SSE handlers can push events incrementally.
 func (w *dcResponseWriter) Flush() {
+	if !w.headersSent {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
 	// Write drains complete lines; nothing to flush here unless the
 	// handler omits a trailing newline. finish() handles that case.
 }

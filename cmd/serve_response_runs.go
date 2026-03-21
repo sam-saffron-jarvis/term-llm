@@ -930,6 +930,7 @@ func (s *serveServer) streamResponseRunEvents(ctx context.Context, w http.Respon
 	}
 
 	setSSEHeaders(w)
+	flusher.Flush()
 	replay := subscription.replay
 	ch := subscription.ch
 
