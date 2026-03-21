@@ -23,9 +23,10 @@ User-set names always win in the UI and are not overwritten unless --force is pr
 }
 
 var (
-	sessionsAutotitleDryRun bool
-	sessionsAutotitleForce  bool
-	sessionsAutotitleMinAge time.Duration
+	sessionsAutotitleDryRun  bool
+	sessionsAutotitleForce   bool
+	sessionsAutotitleMinAge  time.Duration
+	sessionsAutotitleVerbose bool
 )
 
 type autotitleSkipStats struct {
@@ -67,6 +68,7 @@ func init() {
 	sessionsAutotitleCmd.Flags().BoolVar(&sessionsAutotitleDryRun, "dry-run", false, "Preview generated titles without saving")
 	sessionsAutotitleCmd.Flags().BoolVar(&sessionsAutotitleForce, "force", false, "Regenerate even when a custom name already exists")
 	sessionsAutotitleCmd.Flags().DurationVar(&sessionsAutotitleMinAge, "min-age", 3*time.Minute, "Skip sessions updated more recently than this duration")
+	sessionsAutotitleCmd.Flags().BoolVarP(&sessionsAutotitleVerbose, "verbose", "v", false, "Print rejected candidates with rejection reason")
 	sessionsCmd.AddCommand(sessionsAutotitleCmd)
 }
 
@@ -156,6 +158,9 @@ func runSessionsAutotitle(cmd *cobra.Command, args []string) error {
 		if err != nil {
 			if strings.Contains(err.Error(), "generated titles rejected") {
 				skips.rejected++
+				if sessionsAutotitleVerbose {
+					fmt.Fprintf(cmd.ErrOrStderr(), "#%d rejected: %v\n", sess.Number, err)
+				}
 			} else {
 				skips.generationErrs++
 				fmt.Fprintf(cmd.ErrOrStderr(), "#%d generation failed: %v\n", sess.Number, err)
