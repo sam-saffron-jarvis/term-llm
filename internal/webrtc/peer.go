@@ -344,8 +344,8 @@ func (p *peer) handleOffer(ctx context.Context, offer signalingMsg) {
 	logFactory.DefaultLogLevel = pionlog.LogLevelError
 	logFactory.ScopeLevels = map[string]pionlog.LogLevel{
 		"ice":  pionlog.LogLevelInfo,
-		"dtls": pionlog.LogLevelWarn,
-		"sctp": pionlog.LogLevelWarn,
+		"dtls": pionlog.LogLevelTrace,
+		"sctp": pionlog.LogLevelTrace,
 	}
 
 	// Create the ICE agent and gather candidates.
@@ -469,10 +469,10 @@ func (p *peer) handleOffer(ctx context.Context, offer signalingMsg) {
 	log.Printf("webrtc: DTLS handshake complete for session %s", offer.SessionID)
 
 	// Establish SCTP association over DTLS.
-	// Per RFC 8832: DTLS server = SCTP client (initiates handshake by sending INIT).
-	// The browser is the DTLS client and therefore acts as the SCTP server.
-	log.Printf("webrtc: starting SCTP client for session %s", offer.SessionID)
-	sctpAssoc, err := sctp.Client(sctp.Config{
+	// Per RFC 8832: the DTLS client (browser) is the SCTP client (sends INIT).
+	// We are the DTLS server, so we act as the SCTP server (wait for INIT).
+	log.Printf("webrtc: starting SCTP server for session %s", offer.SessionID)
+	sctpAssoc, err := sctp.Server(sctp.Config{
 		NetConn:              &loggedConn{Conn: dtlsConn, sessionID: offer.SessionID},
 		MaxReceiveBufferSize: uint32(maxFrameBytes + 64*1024),
 		LoggerFactory:        logFactory,
@@ -485,9 +485,16 @@ func (p *peer) handleOffer(ctx context.Context, offer signalingMsg) {
 	log.Printf("webrtc: SCTP association established for session %s", offer.SessionID)
 
 	// Accept the WebRTC data channel over SCTP.
-	dc, err := datachannel.Accept(sctpAssoc, &datachannel.Config{})
+	log.Printf("webrtc: waiting for data channel accept for session %s", offer.SessionID)
+	dc, err := datachannel.Accept(sctpAssoc, &datachannel.Config{
+		LoggerFactory: logFactory,
+	})
 	if err != nil {
 		log.Printf("webrtc: accept data channel for session %s: %v", offer.SessionID, err)
+		return
+	}
+	if dc == nil {
+		log.Printf("webrtc: accept data channel returned nil for session %s", offer.SessionID)
 		return
 	}
 	defer dc.Close()
