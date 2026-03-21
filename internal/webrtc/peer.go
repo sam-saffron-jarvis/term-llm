@@ -448,13 +448,15 @@ func (p *peer) handleOffer(ctx context.Context, offer signalingMsg) {
 	log.Printf("webrtc: DTLS handshake complete for session %s", offer.SessionID)
 
 	// Establish SCTP association over DTLS.
-	log.Printf("webrtc: starting SCTP server for session %s", offer.SessionID)
-	sctpAssoc, err := sctp.Server(sctp.Config{
+	// Per RFC 8832: DTLS server = SCTP client (initiates handshake by sending INIT).
+	// The browser is the DTLS client and therefore acts as the SCTP server.
+	log.Printf("webrtc: starting SCTP client for session %s", offer.SessionID)
+	sctpAssoc, err := sctp.Client(sctp.Config{
 		NetConn:              dtlsConn,
 		MaxReceiveBufferSize: uint32(maxFrameBytes + 64*1024),
 	})
 	if err != nil {
-		log.Printf("webrtc: SCTP server for session %s: %v", offer.SessionID, err)
+		log.Printf("webrtc: SCTP client for session %s: %v", offer.SessionID, err)
 		return
 	}
 	defer sctpAssoc.Close()
