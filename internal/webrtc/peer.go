@@ -24,6 +24,7 @@ import (
 	"github.com/pion/dtls/v3/pkg/crypto/selfsign"
 	dtlsnet "github.com/pion/dtls/v3/pkg/net"
 	"github.com/pion/ice/v4"
+	pionlog "github.com/pion/logging"
 	"github.com/pion/sctp"
 	"github.com/pion/sdp/v3"
 	"github.com/pion/stun/v3"
@@ -341,6 +342,8 @@ func (p *peer) handleOffer(ctx context.Context, offer signalingMsg) {
 	agent, err := ice.NewAgentWithOptions(
 		ice.WithUrls(stunURLs),
 		ice.WithNetworkTypes([]ice.NetworkType{ice.NetworkTypeUDP4, ice.NetworkTypeUDP6}),
+		ice.WithLoggerFactory(pionlog.NewDefaultLoggerFactory()),
+		ice.WithDisconnectedTimeout(30*time.Second),
 	)
 	if err != nil {
 		log.Printf("webrtc: create ICE agent: %v", err)
@@ -354,6 +357,13 @@ func (p *peer) handleOffer(ctx context.Context, offer signalingMsg) {
 		}
 	}); err != nil {
 		log.Printf("webrtc: OnCandidate: %v", err)
+		return
+	}
+
+	if err := agent.OnConnectionStateChange(func(state ice.ConnectionState) {
+		log.Printf("webrtc: ICE state=%s for session %s", state, offer.SessionID)
+	}); err != nil {
+		log.Printf("webrtc: OnConnectionStateChange: %v", err)
 		return
 	}
 
@@ -412,14 +422,17 @@ func (p *peer) handleOffer(ctx context.Context, offer signalingMsg) {
 	// Accept the ICE connection (controlled/answerer side).
 	iceCtx, iceCancel := context.WithTimeout(ctx, 30*time.Second)
 	defer iceCancel()
+	log.Printf("webrtc: waiting for ICE accept for session %s", offer.SessionID)
 	iceConn, err := agent.Accept(iceCtx, info.iceUfrag, info.icePwd)
 	if err != nil {
 		log.Printf("webrtc: ICE accept for session %s: %v", offer.SessionID, err)
 		return
 	}
 	defer iceConn.Close()
+	log.Printf("webrtc: ICE accepted for session %s remote=%s", offer.SessionID, iceConn.RemoteAddr())
 
 	// Run DTLS server handshake over the ICE connection.
+	log.Printf("webrtc: starting DTLS handshake for session %s", offer.SessionID)
 	pconn := dtlsnet.PacketConnFromConn(iceConn)
 	dtlsConn, err := dtls.Server(pconn, iceConn.RemoteAddr(), &dtls.Config{
 		Certificates:          []tls.Certificate{cert},
@@ -432,8 +445,10 @@ func (p *peer) handleOffer(ctx context.Context, offer signalingMsg) {
 		return
 	}
 	defer dtlsConn.Close()
+	log.Printf("webrtc: DTLS handshake complete for session %s", offer.SessionID)
 
 	// Establish SCTP association over DTLS.
+	log.Printf("webrtc: starting SCTP server for session %s", offer.SessionID)
 	sctpAssoc, err := sctp.Server(sctp.Config{
 		NetConn:              dtlsConn,
 		MaxReceiveBufferSize: uint32(maxFrameBytes + 64*1024),
@@ -443,6 +458,7 @@ func (p *peer) handleOffer(ctx context.Context, offer signalingMsg) {
 		return
 	}
 	defer sctpAssoc.Close()
+	log.Printf("webrtc: SCTP association established for session %s", offer.SessionID)
 
 	// Accept the WebRTC data channel over SCTP.
 	dc, err := datachannel.Accept(sctpAssoc, &datachannel.Config{})
