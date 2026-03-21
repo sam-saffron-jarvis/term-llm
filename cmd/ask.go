@@ -56,6 +56,8 @@ var (
 	askAgent string
 	// Yolo mode
 	askYolo bool
+	// Fast provider flag
+	askFast bool
 	// Skills flag
 	askSkills string
 	// Session resume flag
@@ -119,6 +121,7 @@ func init() {
 	askCmd.Flags().StringVar(&askContinueWith, "continue-with", "", "Custom continuation prompt for progressive timeout mode")
 	AddYoloFlag(askCmd, &askYolo)
 	AddSkillsFlag(askCmd, &askSkills)
+	askCmd.Flags().BoolVar(&askFast, "fast", false, "Use the configured fast provider/model instead of the default")
 
 	// Session resume flag - NoOptDefVal allows --resume without a value
 	askCmd.Flags().StringVarP(&askResume, "resume", "r", "", "Continue a session (empty for most recent, or session ID)")
@@ -192,9 +195,20 @@ func runAsk(cmd *cobra.Command, args []string) error {
 	initThemeFromConfig(cfg)
 
 	// Create LLM provider
-	provider, err := llm.NewProvider(cfg)
-	if err != nil {
-		return err
+	var provider llm.Provider
+	if askFast {
+		provider, err = llm.NewFastProvider(cfg, cfg.DefaultProvider)
+		if err != nil {
+			return fmt.Errorf("fast provider: %w", err)
+		}
+		if provider == nil {
+			return fmt.Errorf("no fast provider configured for %q", cfg.DefaultProvider)
+		}
+	} else {
+		provider, err = llm.NewProvider(cfg)
+		if err != nil {
+			return err
+		}
 	}
 	engine := newEngine(provider, cfg)
 
