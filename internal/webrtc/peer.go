@@ -344,8 +344,8 @@ func (p *peer) handleOffer(ctx context.Context, offer signalingMsg) {
 	logFactory.DefaultLogLevel = pionlog.LogLevelError
 	logFactory.ScopeLevels = map[string]pionlog.LogLevel{
 		"ice":  pionlog.LogLevelInfo,
-		"dtls": pionlog.LogLevelTrace,
-		"sctp": pionlog.LogLevelTrace,
+		"dtls": pionlog.LogLevelWarn,
+		"sctp": pionlog.LogLevelWarn,
 	}
 
 	// Create the ICE agent and gather candidates.
