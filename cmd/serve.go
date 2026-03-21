@@ -54,6 +54,7 @@ var (
 	serveTelegramCarryoverChars int
 	serveJobsWorkers            int
 	serveSetup                  bool
+	serveSidebarSessions        string
 )
 
 var serveCmd = &cobra.Command{
@@ -116,6 +117,7 @@ func init() {
 	serveCmd.Flags().BoolVar(&serveSetup, "setup", false, "Re-run setup wizard for selected platforms")
 	serveCmd.Flags().IntVar(&serveTelegramCarryoverChars, "telegram-carryover-chars", 4000, "Characters of previous Telegram session context to carry into replacement sessions (0 disables)")
 	serveCmd.Flags().IntVar(&serveJobsWorkers, "jobs-workers", 4, "Number of concurrent job workers for --platform jobs")
+	serveCmd.Flags().StringVar(&serveSidebarSessions, "sidebar-sessions", "all", "Default web sidebar session categories: all or a comma-separated list like chat,web,ask,plan,exec")
 
 	AddProviderFlag(serveCmd, &serveProvider)
 	AddDebugFlag(serveCmd, &serveDebug)
@@ -144,6 +146,10 @@ func runServe(cmd *cobra.Command, args []string) error {
 	}
 	if serveJobsWorkers <= 0 {
 		return fmt.Errorf("invalid --jobs-workers %d (must be > 0)", serveJobsWorkers)
+	}
+	sidebarSessions, err := parseSidebarSessionCategories(serveSidebarSessions, true)
+	if err != nil {
+		return err
 	}
 
 	authMode, err := resolveServeAuthMode(cmd.Flags().Changed("auth"), serveAuthMode, cmd.Flags().Changed("allow-no-auth"), serveAllowNoAuth)
@@ -395,13 +401,14 @@ func runServe(cmd *cobra.Command, args []string) error {
 		serveUI := hasWeb && !serveNoUI
 		s = &serveServer{
 			cfg: serveServerConfig{
-				host:        serveHost,
-				port:        servePort,
-				requireAuth: requireAuth,
-				token:       token,
-				ui:          serveUI,
-				basePath:    serveBasePath,
-				corsOrigins: append([]string(nil), serveCORSOrigins...),
+				host:            serveHost,
+				port:            servePort,
+				requireAuth:     requireAuth,
+				token:           token,
+				ui:              serveUI,
+				basePath:        serveBasePath,
+				sidebarSessions: append([]string(nil), sidebarSessions...),
+				corsOrigins:     append([]string(nil), serveCORSOrigins...),
 			},
 			sessionMgr: sessionMgr,
 			jobsV2:     jobsV2,
@@ -564,6 +571,52 @@ func authSummary(required bool) string {
 	return "disabled"
 }
 
+var validSidebarSessionCategories = map[string]bool{
+	"all":  true,
+	"chat": true,
+	"web":  true,
+	"ask":  true,
+	"plan": true,
+	"exec": true,
+}
+
+func parseSidebarSessionCategories(raw string, defaultAll bool) ([]string, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		if defaultAll {
+			return []string{"all"}, nil
+		}
+		return nil, nil
+	}
+
+	parts := strings.Split(raw, ",")
+	seen := make(map[string]bool, len(parts))
+	categories := make([]string, 0, len(parts))
+	for _, part := range parts {
+		category := strings.ToLower(strings.TrimSpace(part))
+		if category == "" {
+			continue
+		}
+		if !validSidebarSessionCategories[category] {
+			return nil, fmt.Errorf("invalid --sidebar-sessions value %q (valid: all, chat, web, ask, plan, exec)", category)
+		}
+		if category == "all" {
+			return []string{"all"}, nil
+		}
+		if !seen[category] {
+			seen[category] = true
+			categories = append(categories, category)
+		}
+	}
+	if len(categories) == 0 {
+		if defaultAll {
+			return []string{"all"}, nil
+		}
+		return nil, nil
+	}
+	return categories, nil
+}
+
 func resolveServeAuthMode(authFlagSet bool, authMode string, allowNoAuthSet bool, allowNoAuth bool) (string, error) {
 	mode := strings.ToLower(strings.TrimSpace(authMode))
 	if mode == "" {
@@ -601,13 +654,14 @@ func generateServeToken() (string, error) {
 }
 
 type serveServerConfig struct {
-	host        string
-	port        int
-	requireAuth bool
-	token       string
-	ui          bool
-	basePath    string // e.g. "/ui" or "/chat", always without trailing slash
-	corsOrigins []string
+	host            string
+	port            int
+	requireAuth     bool
+	token           string
+	ui              bool
+	basePath        string // e.g. "/ui" or "/chat", always without trailing slash
+	sidebarSessions []string
+	corsOrigins     []string
 }
 
 // uiRoute returns the base-path with trailing slash, e.g. "/ui/" or "/chat/".

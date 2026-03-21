@@ -28,6 +28,14 @@ const (
 	ModeExec SessionMode = "exec" // Command suggestion/execution
 )
 
+type SessionOrigin string
+
+const (
+	OriginTUI      SessionOrigin = "tui"
+	OriginWeb      SessionOrigin = "web"
+	OriginTelegram SessionOrigin = "telegram"
+)
+
 type SessionTitleSource string
 
 const (
@@ -49,17 +57,19 @@ type Session struct {
 	TitleGeneratedAt    time.Time          `json:"title_generated_at,omitempty"`
 	TitleBasisMsgSeq    int                `json:"title_basis_msg_seq,omitempty"`
 
-	Provider    string      `json:"provider"`               // Provider display label
-	ProviderKey string      `json:"provider_key,omitempty"` // Canonical provider key (e.g. openai, chatgpt, custom alias)
-	Model       string      `json:"model"`
-	Mode        SessionMode `json:"mode,omitempty"`  // Session mode (chat, ask, plan, exec)
-	Agent       string      `json:"agent,omitempty"` // Agent name used for this session
-	CWD         string      `json:"cwd,omitempty"`   // Working directory at session start
-	CreatedAt   time.Time   `json:"created_at"`
-	UpdatedAt   time.Time   `json:"updated_at"`
-	Archived    bool        `json:"archived,omitempty"`
-	ParentID    string      `json:"parent_id,omitempty"`   // For session branching
-	IsSubagent  bool        `json:"is_subagent,omitempty"` // True if this is a subagent session
+	Provider    string        `json:"provider"`               // Provider display label
+	ProviderKey string        `json:"provider_key,omitempty"` // Canonical provider key (e.g. openai, chatgpt, custom alias)
+	Model       string        `json:"model"`
+	Mode        SessionMode   `json:"mode,omitempty"`   // Session mode (chat, ask, plan, exec)
+	Origin      SessionOrigin `json:"origin,omitempty"` // Session surface/origin (tui, web, telegram)
+	Agent       string        `json:"agent,omitempty"`  // Agent name used for this session
+	CWD         string        `json:"cwd,omitempty"`    // Working directory at session start
+	CreatedAt   time.Time     `json:"created_at"`
+	UpdatedAt   time.Time     `json:"updated_at"`
+	Archived    bool          `json:"archived,omitempty"`
+	Pinned      bool          `json:"pinned,omitempty"`
+	ParentID    string        `json:"parent_id,omitempty"`   // For session branching
+	IsSubagent  bool          `json:"is_subagent,omitempty"` // True if this is a subagent session
 
 	// Session settings (restored on resume unless overridden)
 	Search bool   `json:"search,omitempty"` // Web search enabled
@@ -105,6 +115,9 @@ type SessionSummary struct {
 	Provider            string             `json:"provider"`
 	Model               string             `json:"model"`
 	Mode                SessionMode        `json:"mode,omitempty"`
+	Origin              SessionOrigin      `json:"origin,omitempty"`
+	Archived            bool               `json:"archived,omitempty"`
+	Pinned              bool               `json:"pinned,omitempty"`
 	MessageCount        int                `json:"message_count"`
 	UserTurns           int                `json:"user_turns,omitempty"`
 	LLMTurns            int                `json:"llm_turns,omitempty"`
@@ -121,15 +134,16 @@ type SessionSummary struct {
 
 // ListOptions configures session listing.
 type ListOptions struct {
-	Name     string        // Filter by name
-	Provider string        // Filter by provider
-	Model    string        // Filter by model
-	Mode     SessionMode   // Filter by mode (chat, ask, plan, exec)
-	Status   SessionStatus // Filter by status
-	Tag      string        // Filter by tag (substring match)
-	Limit    int           // Max results (0 = use default)
-	Offset   int           // Pagination offset
-	Archived bool          // Include archived sessions
+	Name       string        // Filter by name
+	Provider   string        // Filter by provider
+	Model      string        // Filter by model
+	Mode       SessionMode   // Filter by mode (chat, ask, plan, exec)
+	Status     SessionStatus // Filter by status
+	Tag        string        // Filter by tag (substring match)
+	Categories []string      // Sidebar/web categories (all, chat, web, ask, plan, exec)
+	Limit      int           // Max results (0 = use default)
+	Offset     int           // Pagination offset
+	Archived   bool          // Include archived sessions
 }
 
 // SearchResult represents a search match.

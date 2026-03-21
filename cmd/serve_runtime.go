@@ -179,6 +179,7 @@ func (rt *serveRuntime) ensurePersistedSession(ctx context.Context, sessionID st
 		Provider:  providerName,
 		Model:     modelName,
 		Mode:      session.ModeChat,
+		Origin:    session.OriginWeb,
 		Agent:     rt.agentName,
 		CreatedAt: time.Now(),
 		UpdatedAt: time.Now(),

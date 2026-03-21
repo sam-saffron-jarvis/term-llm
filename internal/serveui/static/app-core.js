@@ -8,29 +8,55 @@ app.markdownStreaming = window.TermLLMMarkdownStreaming || null;
 // UI_PREFIX is the base path for all routes (UI + API). Injected by the server
 // into index.html as window.TERM_LLM_UI_PREFIX, defaults to '/ui'.
 const UI_PREFIX = (window.TERM_LLM_UI_PREFIX || '/ui');
+const LEGACY_DRAFT_SESSION_ID = '__draft__';
+
+const parseSidebarSessionCategories = (raw) => {
+  const input = Array.isArray(raw)
+    ? raw
+    : String(raw || 'all').split(',');
+  const seen = new Set();
+  const categories = [];
+  input.forEach((item) => {
+    const value = String(item || '').trim().toLowerCase();
+    if (!value || seen.has(value)) return;
+    seen.add(value);
+    categories.push(value);
+  });
+  return categories.includes('all') || categories.length === 0 ? ['all'] : categories;
+};
 
 const STORAGE_KEYS = {
   sessions: 'term_llm_sessions',
   token: 'term_llm_token',
   activeSession: 'term_llm_active_session',
+  draftSessionActive: 'term_llm_draft_session_active',
   selectedModel: 'term_llm_selected_model',
   sidebarCollapsed: 'term_llm_sidebar_collapsed',
+  showHiddenSessions: 'term_llm_show_hidden_sessions',
   notificationsEnabled: 'term_llm_notifications_enabled',
   lastNotifiedResponseId: 'term_llm_last_notified_response_id'
 };
 
+const initialStoredActiveSessionId = localStorage.getItem(STORAGE_KEYS.activeSession) || '';
+const initialDraftSessionActive = initialStoredActiveSessionId === LEGACY_DRAFT_SESSION_ID
+  || localStorage.getItem(STORAGE_KEYS.draftSessionActive) === '1';
+
 const state = {
   token: localStorage.getItem(STORAGE_KEYS.token) || '',
   sessions: [],
-  activeSessionId: localStorage.getItem(STORAGE_KEYS.activeSession) || '',
+  activeSessionId: initialStoredActiveSessionId === LEGACY_DRAFT_SESSION_ID ? '' : initialStoredActiveSessionId,
+  draftSessionActive: initialDraftSessionActive,
   models: [],
   selectedModel: localStorage.getItem(STORAGE_KEYS.selectedModel) || '',
   sidebarCollapsed: localStorage.getItem(STORAGE_KEYS.sidebarCollapsed) === '1',
+  sidebarSessionCategories: parseSidebarSessionCategories(window.TERM_LLM_SIDEBAR_SESSIONS),
+  showHiddenSessions: localStorage.getItem(STORAGE_KEYS.showHiddenSessions) === '1',
   notificationsEnabled: localStorage.getItem(STORAGE_KEYS.notificationsEnabled) === '1',
   lastNotifiedResponseId: localStorage.getItem(STORAGE_KEYS.lastNotifiedResponseId) || '',
   streaming: false,
   currentStreamResponseId: '',
   currentStreamSessionId: '',
+  renameSessionId: '',
   queuedInterrupts: [],
   pendingInterruptCommits: [],
   expectCanceledRun: false,
@@ -88,8 +114,14 @@ const elements = {
   authError: document.getElementById('authError'),
   authConnectBtn: document.getElementById('authConnectBtn'),
   authCancelBtn: document.getElementById('authCancelBtn'),
+  renameSessionModal: document.getElementById('renameSessionModal'),
+  renameSessionInput: document.getElementById('renameSessionInput'),
+  renameSessionError: document.getElementById('renameSessionError'),
+  renameSessionCancelBtn: document.getElementById('renameSessionCancelBtn'),
+  renameSessionSaveBtn: document.getElementById('renameSessionSaveBtn'),
   notificationStatus: document.getElementById('notificationStatus'),
   notificationBtn: document.getElementById('notificationBtn'),
+  showHiddenSessionsInput: document.getElementById('showHiddenSessionsInput'),
   installHint: document.getElementById('installHint'),
   askUserModal: document.getElementById('askUserModal'),
   askUserModalTitle: document.getElementById('askUserModalTitle'),
@@ -543,8 +575,8 @@ const sessionIdFromURL = () => {
 };
 
 const updateURL = (sessionId) => {
-  if (!sessionId) return;
-  const target = UI_PREFIX + '/' + encodeURIComponent(sessionId);
+  const normalized = String(sessionId || '').trim();
+  const target = normalized ? (UI_PREFIX + '/' + encodeURIComponent(normalized)) : (UI_PREFIX + '/');
   if (window.location.pathname !== target) {
     history.pushState(null, '', target);
   }
@@ -615,8 +647,13 @@ const sanitizeSession = (session) => {
 
   const result = {
     id: typeof session.id === 'string' ? session.id : `sess_${generateUUID()}`,
+    name: typeof session.name === 'string' ? session.name : '',
     title: typeof session.title === 'string' && session.title.trim() ? session.title.trim() : 'New chat',
     longTitle: typeof session.longTitle === 'string' ? session.longTitle : '',
+    mode: typeof session.mode === 'string' && session.mode.trim() ? session.mode.trim() : 'chat',
+    origin: typeof session.origin === 'string' && session.origin.trim() ? session.origin.trim() : 'tui',
+    archived: Boolean(session.archived),
+    pinned: Boolean(session.pinned),
     created: asTimestamp(session.created),
     messages,
     lastResponseId: typeof session.lastResponseId === 'string' ? session.lastResponseId : null,
@@ -631,13 +668,22 @@ const sanitizeSession = (session) => {
   return result;
 };
 
+const isEphemeralEmptySession = (session) => {
+  if (!session || session._serverOnly) return false;
+  const msgCount = Number(session.messageCount || 0);
+  return session.messages.length === 0
+    && msgCount === 0
+    && !session.lastResponseId
+    && !session.activeResponseId;
+};
+
 const loadSessions = () => {
   try {
     const raw = localStorage.getItem(STORAGE_KEYS.sessions);
     if (!raw) return [];
     const parsed = JSON.parse(raw);
     if (!Array.isArray(parsed)) return [];
-    return parsed.map(sanitizeSession).filter(Boolean);
+    return parsed.map(sanitizeSession).filter((session) => session && !isEphemeralEmptySession(session));
   } catch {
     return [];
   }
@@ -662,15 +708,21 @@ const sessionsForStorage = () => {
 
 const saveSessions = () => {
   if (state.sessions.length > 100) {
-    state.sessions.sort((a, b) => a.created - b.created);
+    state.sessions.sort((a, b) => {
+      if (Boolean(a.pinned) !== Boolean(b.pinned)) {
+        return Number(Boolean(a.pinned)) - Number(Boolean(b.pinned));
+      }
+      return a.created - b.created;
+    });
     state.sessions = state.sessions.slice(-100);
-    if (!state.sessions.find((s) => s.id === state.activeSessionId)) {
-      state.activeSessionId = state.sessions[state.sessions.length - 1]?.id || '';
+    if (!state.draftSessionActive && !state.sessions.find((s) => s.id === state.activeSessionId)) {
+      state.activeSessionId = '';
     }
   }
   try {
     localStorage.setItem(STORAGE_KEYS.sessions, JSON.stringify(sessionsForStorage()));
     localStorage.setItem(STORAGE_KEYS.activeSession, state.activeSessionId || '');
+    localStorage.setItem(STORAGE_KEYS.draftSessionActive, state.draftSessionActive ? '1' : '0');
   } catch {
     // QuotaExceededError or other storage failure — continue without persistence
   }
@@ -678,9 +730,41 @@ const saveSessions = () => {
 
 const getActiveSession = () => state.sessions.find((s) => s.id === state.activeSessionId) || null;
 
+const sessionMatchesSidebarFilters = (session) => {
+  if (!session) return false;
+  if (session.archived && !state.showHiddenSessions) return false;
+  const categories = state.sidebarSessionCategories;
+  if (!Array.isArray(categories) || categories.length === 0 || categories.includes('all')) return true;
+
+  const mode = String(session.mode || 'chat').trim().toLowerCase();
+  const origin = String(session.origin || 'tui').trim().toLowerCase() || 'tui';
+  return categories.some((category) => {
+    switch (category) {
+      case 'chat':
+        return mode === 'chat' && origin === 'tui';
+      case 'web':
+        return origin === 'web';
+      case 'ask':
+      case 'plan':
+      case 'exec':
+        return mode === category;
+      default:
+        return false;
+    }
+  });
+};
+
+const visibleSessions = () => state.sessions.filter(sessionMatchesSidebarFilters);
+
 const createSession = () => ({
   id: `sess_${generateUUID()}`,
+  name: '',
   title: 'New chat',
+  longTitle: '',
+  mode: 'chat',
+  origin: 'web',
+  archived: false,
+  pinned: false,
   created: Date.now(),
   messages: [],
   lastResponseId: null,
@@ -692,21 +776,33 @@ const createSession = () => ({
 });
 
 const ensureActiveSession = () => {
+  if (state.draftSessionActive) {
+    return null;
+  }
   let active = getActiveSession();
   if (active) {
+    state.draftSessionActive = false;
     updateURL(active.id);
     return active;
   }
 
-  if (state.sessions.length === 0) {
-    active = createSession();
-    state.sessions.unshift(active);
-  } else {
-    const sorted = [...state.sessions].sort((a, b) => b.created - a.created);
-    active = sorted[0];
+  const sorted = [...visibleSessions()].sort((a, b) => {
+    if (Boolean(a.pinned) !== Boolean(b.pinned)) {
+      return Number(Boolean(b.pinned)) - Number(Boolean(a.pinned));
+    }
+    return b.created - a.created;
+  });
+  if (sorted.length === 0) {
+    state.activeSessionId = '';
+    state.draftSessionActive = true;
+    updateURL('');
+    saveSessions();
+    return null;
   }
 
+  active = sorted[0];
   state.activeSessionId = active.id;
+  state.draftSessionActive = false;
   updateURL(active.id);
   saveSessions();
   return active;
@@ -773,6 +869,7 @@ Object.assign(app, {
   updateDocumentTitle,
   syncViewportShell,
   UI_PREFIX,
+  parseSidebarSessionCategories,
   isStandalone,
   shouldSuppressPromptAutoFocus,
   refreshNotificationUI,
@@ -785,10 +882,13 @@ Object.assign(app, {
   updateURL,
   sanitizeMessage,
   sanitizeSession,
+  isEphemeralEmptySession,
   loadSessions,
   sessionsForStorage,
   saveSessions,
   getActiveSession,
+  sessionMatchesSidebarFilters,
+  visibleSessions,
   createSession,
   ensureActiveSession,
   findMessageElement,

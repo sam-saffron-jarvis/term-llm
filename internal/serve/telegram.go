@@ -567,6 +567,7 @@ func (m *telegramSessionMgr) newSession(ctx context.Context, chatID int64) (*tel
 		Provider:  providerName,
 		Model:     modelName,
 		Mode:      session.ModeChat,
+		Origin:    session.OriginTelegram,
 		Agent:     m.settings.Agent,
 		CreatedAt: time.Now(),
 		UpdatedAt: time.Now(),

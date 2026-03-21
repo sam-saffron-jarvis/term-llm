@@ -3,7 +3,7 @@
 
 const app = window.TermLLMApp;
 const {
-  UI_PREFIX, STORAGE_KEYS, state, elements, generateId, truncate, loadSessions, saveSessions, getActiveSession, createSession, ensureActiveSession,
+  UI_PREFIX, STORAGE_KEYS, state, elements, generateId, truncate, asTimestamp, loadSessions, saveSessions, getActiveSession, createSession, ensureActiveSession,
   sessionIdFromURL, updateURL, scrollToBottom, setConnectionState, setStartupStatus, hideStartupSplash, persistAndRefreshShell, refreshRelativeTimes,
   openAuthModal, closeAuthModal, handleAuthFailure, closeAskUserModal, openAskUserModal, setActiveResponseTracking,
   clearActiveResponseTracking, setStreaming, resumeActiveResponse, renderSidebar, renderMessages, renderModelOptions,
@@ -11,14 +11,48 @@ const {
   connectToken, submitAskUserModal, cancelActiveResponse, handleFiles, isNearBottom,
   openApprovalModal, closeApprovalModal, submitApprovalModal, registerServiceWorker, subscribeToPush, refreshNotificationUI,
   requestNotificationPermission, shouldAutoSubscribeToPush, detachResponseStream, HEARTBEAT_STALE_THRESHOLD, HEARTBEAT_ABORT_REASON,
-  applyDesktopSidebarState, toggleSidebarCollapsed, flushStreamPersistence
+  applyDesktopSidebarState, toggleSidebarCollapsed, flushStreamPersistence, requestHeaders, normalizeError, renderAttachments
 } = app;
 let sessionStatePollTimer = null;
 
 const createAndSwitchToFreshSession = async () => {
-  const session = createSession();
-  state.sessions.unshift(session);
-  await switchToSession(session.id, { sync: false, focusPrompt: true });
+  await switchToDraftSession({ clearComposer: true, focusPrompt: true });
+};
+
+const switchToDraftSession = async (options = {}) => {
+  const previousActiveSessionId = String(state.activeSessionId || '').trim();
+
+  stopSessionStatePoll();
+  closeRenameSessionModal();
+  closeAskUserModal();
+  closeApprovalModal();
+  if (state.currentStreamSessionId) {
+    detachResponseStream();
+  } else if (previousActiveSessionId && state.currentStreamSessionId !== previousActiveSessionId) {
+    setStreaming(false);
+  }
+
+  state.activeSessionId = '';
+  state.draftSessionActive = true;
+  updateURL('');
+
+  if (options.clearComposer) {
+    elements.promptInput.value = '';
+    state.attachments = [];
+    renderAttachments();
+    autoGrowPrompt();
+  }
+
+  persistAndRefreshShell();
+  renderMessages(true);
+
+  if (options.focusPrompt) {
+    elements.promptInput.focus();
+  }
+  if (options.closeSidebar !== false) {
+    closeSidebarIfMobile();
+  }
+  return null;
 };
 
 const switchToSession = async (sessionId, options = {}) => {
@@ -30,6 +64,7 @@ const switchToSession = async (sessionId, options = {}) => {
   if (!session) return null;
 
   stopSessionStatePoll();
+  closeRenameSessionModal();
   if (state.askUser?.sessionId && state.askUser.sessionId !== nextId) {
     closeAskUserModal();
   }
@@ -44,6 +79,7 @@ const switchToSession = async (sessionId, options = {}) => {
   }
 
   state.activeSessionId = nextId;
+  state.draftSessionActive = false;
   updateURL(nextId);
 
   if (session._serverOnly) {
@@ -332,41 +368,236 @@ const syncActiveSessionFromServer = async (session, pollOnActive = false) => {
   return runtimeState;
 };
 
-const mergeServerSessions = async () => {
+const applyServerSessionSummary = (target, serverSession) => {
+  if (!target || !serverSession) return target;
+  target.name = String(serverSession.name || '');
+  target.title = serverSession.short_title || target.title || 'New chat';
+  target.longTitle = serverSession.long_title || '';
+  target.mode = String(serverSession.mode || target.mode || 'chat');
+  target.origin = String(serverSession.origin || target.origin || 'tui');
+  target.archived = Boolean(serverSession.archived);
+  target.pinned = Boolean(serverSession.pinned);
+  target.created = asTimestamp(serverSession.created_at || target.created);
+  target.messageCount = Number(serverSession.message_count || target.messageCount || 0);
+  return target;
+};
+
+const mergeServerSessions = async (options = {}) => {
   try {
-    const headers = {};
-    if (state.token) headers.Authorization = `Bearer ${state.token}`;
-    const resp = await fetch(`${UI_PREFIX}/v1/sessions`, { headers });
+    const categories = Array.isArray(options.categories) ? options.categories : state.sidebarSessionCategories;
+    const includeArchived = typeof options.includeArchived === 'boolean'
+      ? options.includeArchived
+      : state.showHiddenSessions;
+    const params = new URLSearchParams();
+    if (Array.isArray(categories) && categories.length > 0 && !categories.includes('all')) {
+      params.set('categories', categories.join(','));
+    }
+    if (includeArchived) {
+      params.set('include_archived', '1');
+    }
+    const query = params.toString();
+    const resp = await fetch(`${UI_PREFIX}/v1/sessions${query ? `?${query}` : ''}`, {
+      headers: requestHeaders('')
+    });
     if (!resp.ok) return;
     const data = await resp.json();
     if (!Array.isArray(data.sessions)) return;
 
-    const localIds = new Set(state.sessions.map(s => s.id));
-
     for (const serverSession of data.sessions) {
-      if (localIds.has(serverSession.id)) continue;
-      // Also check if session ID appears with the sess_ prefix convention
-      const prefixedId = `sess_${serverSession.id}`;
-      if (localIds.has(prefixedId)) continue;
+      let local = state.sessions.find((item) => item.id === serverSession.id) || null;
+      if (local) {
+        applyServerSessionSummary(local, serverSession);
+        continue;
+      }
 
-      state.sessions.push({
+      local = applyServerSessionSummary({
         id: serverSession.id,
-        title: serverSession.short_title || 'New chat',
-        longTitle: serverSession.long_title || '',
-        created: serverSession.created_at || Date.now(),
+        name: '',
+        title: 'New chat',
+        longTitle: '',
+        mode: 'chat',
+        origin: 'tui',
+        archived: false,
+        pinned: false,
+        created: Date.now(),
         messages: [],
         lastResponseId: null,
         activeResponseId: null,
         lastSequenceNumber: 0,
-        messageCount: serverSession.message_count || 0,
+        messageCount: 0,
         _serverOnly: true
-      });
+      }, serverSession);
+      state.sessions.push(local);
     }
 
-    saveSessions();
-    renderSidebar();
+    persistAndRefreshShell();
   } catch {
     // Gracefully fall back to localStorage-only
+  }
+};
+
+const updateSessionMetadata = async (session, patch) => {
+  const resp = await fetch(`${UI_PREFIX}/v1/sessions/${encodeURIComponent(session.id)}`, {
+    method: 'PATCH',
+    headers: requestHeaders(session.id),
+    body: JSON.stringify(patch)
+  });
+  if (!resp.ok) {
+    throw await normalizeError(resp);
+  }
+  return resp.json().catch(() => ({}));
+};
+
+const openRenameSessionModal = (session) => {
+  if (!session?.id) return false;
+  state.renameSessionId = session.id;
+  elements.renameSessionInput.value = String(session.name || '').trim();
+  elements.renameSessionInput.placeholder = String(session.title || 'Project kickoff notes').trim() || 'Project kickoff notes';
+  elements.renameSessionError.textContent = '';
+  elements.renameSessionSaveBtn.disabled = false;
+  elements.renameSessionCancelBtn.disabled = false;
+  elements.renameSessionSaveBtn.textContent = 'Save';
+  elements.renameSessionModal.classList.remove('hidden');
+  elements.renameSessionInput.removeAttribute('tabindex');
+  window.setTimeout(() => {
+    elements.renameSessionInput.focus();
+    elements.renameSessionInput.select();
+  }, 0);
+  return true;
+};
+
+const closeRenameSessionModal = () => {
+  state.renameSessionId = '';
+  elements.renameSessionModal.classList.add('hidden');
+  elements.renameSessionError.textContent = '';
+  elements.renameSessionInput.value = '';
+  elements.renameSessionInput.placeholder = 'Project kickoff notes';
+  elements.renameSessionInput.setAttribute('tabindex', '-1');
+  elements.renameSessionSaveBtn.disabled = false;
+  elements.renameSessionCancelBtn.disabled = false;
+  elements.renameSessionSaveBtn.textContent = 'Save';
+};
+
+const submitRenameSessionModal = async () => {
+  const sessionId = String(state.renameSessionId || '').trim();
+  if (!sessionId) {
+    closeRenameSessionModal();
+    return false;
+  }
+  const session = state.sessions.find((item) => item.id === sessionId);
+  if (!session) {
+    closeRenameSessionModal();
+    return false;
+  }
+  if (elements.renameSessionSaveBtn.disabled) {
+    return false;
+  }
+
+  const nextName = elements.renameSessionInput.value.trim();
+  elements.renameSessionError.textContent = '';
+  elements.renameSessionSaveBtn.disabled = true;
+  elements.renameSessionCancelBtn.disabled = true;
+  elements.renameSessionSaveBtn.textContent = 'Saving…';
+  try {
+    const payload = await updateSessionMetadata(session, { name: nextName });
+    applyServerSessionSummary(session, payload);
+    session.name = String(payload.name || '').trim();
+    persistAndRefreshShell();
+    closeRenameSessionModal();
+    return true;
+  } catch (err) {
+    if (err?.status === 401) {
+      closeRenameSessionModal();
+      handleAuthFailure();
+      return false;
+    }
+    elements.renameSessionError.textContent = err?.message || 'Failed to rename session.';
+    elements.renameSessionSaveBtn.disabled = false;
+    elements.renameSessionCancelBtn.disabled = false;
+    elements.renameSessionSaveBtn.textContent = 'Save';
+    return false;
+  }
+};
+
+const promptRenameSession = async (session) => openRenameSessionModal(session);
+
+const SESSION_HIDE_ANIMATION_MS = 220;
+
+const animateSessionHide = async (sessionId) => {
+  const id = String(sessionId || '').trim();
+  if (!id) return;
+  if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+
+  const selector = `.session-row[data-session-id="${CSS.escape(id)}"]`;
+  const row = elements.sessionGroups.querySelector(selector);
+  if (!row || row.classList.contains('is-hiding')) return;
+
+  const height = row.getBoundingClientRect().height;
+  if (!height) return;
+
+  row.style.height = `${height}px`;
+  row.style.pointerEvents = 'none';
+  row.getBoundingClientRect();
+
+  await new Promise((resolve) => {
+    let done = false;
+    const finish = () => {
+      if (done) return;
+      done = true;
+      row.style.height = '';
+      row.style.pointerEvents = '';
+      resolve();
+    };
+
+    row.addEventListener('transitionend', (event) => {
+      if (event.target === row && event.propertyName === 'height') {
+        finish();
+      }
+    }, { once: true });
+
+    window.requestAnimationFrame(() => {
+      row.classList.add('is-hiding');
+      row.style.height = '0px';
+    });
+
+    window.setTimeout(finish, SESSION_HIDE_ANIMATION_MS + 80);
+  });
+};
+
+const setSessionArchived = async (session, archived) => {
+  if (!session?.id) return false;
+  try {
+    const payload = await updateSessionMetadata(session, { archived });
+    applyServerSessionSummary(session, payload);
+    if (archived && !state.showHiddenSessions) {
+      await animateSessionHide(session.id);
+    }
+    persistAndRefreshShell();
+    return true;
+  } catch (err) {
+    if (err?.status === 401) {
+      handleAuthFailure();
+      return false;
+    }
+    window.alert(err?.message || 'Failed to update session visibility.');
+    return false;
+  }
+};
+
+const setSessionPinned = async (session, pinned) => {
+  if (!session?.id) return false;
+  try {
+    const payload = await updateSessionMetadata(session, { pinned });
+    applyServerSessionSummary(session, payload);
+    persistAndRefreshShell();
+    return true;
+  } catch (err) {
+    if (err?.status === 401) {
+      handleAuthFailure();
+      return false;
+    }
+    window.alert(err?.message || 'Failed to update session pin.');
+    return false;
   }
 };
 
@@ -381,11 +612,18 @@ const initialize = async () => {
     const found = state.sessions.find(s => s.id === urlSessionId);
     if (found) {
       state.activeSessionId = found.id;
+      state.draftSessionActive = false;
     } else {
       // Create a server-only stub that will be lazy-loaded
       const stub = {
         id: urlSessionId,
+        name: '',
         title: 'Loading…',
+        longTitle: '',
+        mode: 'chat',
+        origin: 'tui',
+        archived: false,
+        pinned: false,
         created: Date.now(),
         messages: [],
         lastResponseId: null,
@@ -395,7 +633,10 @@ const initialize = async () => {
       };
       state.sessions.unshift(stub);
       state.activeSessionId = urlSessionId;
+      state.draftSessionActive = false;
     }
+  } else if (!state.activeSessionId && state.sessions.length === 0) {
+    state.draftSessionActive = true;
   }
 
   ensureActiveSession();
@@ -419,6 +660,10 @@ const initialize = async () => {
 
     // Merge server-side sessions after successful auth
     await mergeServerSessions();
+    if (!state.draftSessionActive && !getActiveSession()) {
+      ensureActiveSession();
+      renderMessages(true);
+    }
 
     // Retry push enrollment now that auth is confirmed. Also recover automatically
     // when the browser permission is already granted but the old localStorage flag
@@ -567,6 +812,10 @@ if (elements.notificationBtn) {
   });
 }
 elements.authCancelBtn.addEventListener('click', closeAuthModal);
+elements.renameSessionCancelBtn.addEventListener('click', closeRenameSessionModal);
+elements.renameSessionSaveBtn.addEventListener('click', () => {
+  void submitRenameSessionModal();
+});
 elements.askUserSubmitBtn.addEventListener('click', () => {
   submitAskUserModal(false);
 });
@@ -593,6 +842,17 @@ elements.authTokenInput.addEventListener('keydown', (event) => {
     connectToken();
   }
 });
+elements.renameSessionModal.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape' && !event.defaultPrevented) {
+    event.preventDefault();
+    closeRenameSessionModal();
+    return;
+  }
+  if (event.key === 'Enter' && !event.shiftKey && !event.defaultPrevented) {
+    event.preventDefault();
+    void submitRenameSessionModal();
+  }
+});
 
 window.addEventListener('resize', () => {
   if (!window.matchMedia('(max-width: 767px)').matches) {
@@ -616,12 +876,35 @@ if (typeof sidebarViewportMedia.addEventListener === 'function') {
 
 window.addEventListener('popstate', async () => {
   const urlId = sessionIdFromURL();
-  if (!urlId || urlId === state.activeSessionId) return;
+  if (!urlId) {
+    await switchToDraftSession({ closeSidebar: false });
+    return;
+  }
+  if (urlId === state.activeSessionId) return;
 
   const found = state.sessions.find(s => s.id === urlId);
   if (found) {
     await switchToSession(found.id, { closeSidebar: false });
+    return;
   }
+  const stub = {
+    id: urlId,
+    name: '',
+    title: 'Loading…',
+    longTitle: '',
+    mode: 'chat',
+    origin: 'tui',
+    archived: false,
+    pinned: false,
+    created: Date.now(),
+    messages: [],
+    lastResponseId: null,
+    activeResponseId: null,
+    lastSequenceNumber: 0,
+    _serverOnly: true
+  };
+  state.sessions.unshift(stub);
+  await switchToSession(stub.id, { closeSidebar: false });
 });
 
 document.addEventListener('visibilitychange', async () => {
@@ -698,7 +981,12 @@ Object.assign(app, {
   stopSessionStatePoll,
   scheduleSessionStatePoll,
   syncActiveSessionFromServer,
+  applyServerSessionSummary,
   mergeServerSessions,
+  promptRenameSession,
+  setSessionArchived,
+  setSessionPinned,
+  switchToDraftSession,
   switchToSession,
   initialize
 });

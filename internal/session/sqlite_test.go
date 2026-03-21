@@ -85,6 +85,98 @@ func TestSQLiteStoreGeneratedTitleRoundTrip(t *testing.T) {
 	}
 }
 
+func TestSQLiteStoreSessionOriginRoundTripAndFiltering(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+
+	store, err := NewSQLiteStore(DefaultConfig())
+	if err != nil {
+		t.Fatalf("failed to create sqlite store: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Second)
+	sessions := []*Session{
+		{
+			ID:        NewID(),
+			Provider:  "test",
+			Model:     "test-model",
+			Mode:      ModeChat,
+			Origin:    OriginTUI,
+			Pinned:    true,
+			Summary:   "tui chat",
+			CreatedAt: now,
+			UpdatedAt: now,
+		},
+		{
+			ID:        NewID(),
+			Provider:  "test",
+			Model:     "test-model",
+			Mode:      ModeChat,
+			Origin:    OriginWeb,
+			Summary:   "web chat",
+			CreatedAt: now.Add(time.Second),
+			UpdatedAt: now.Add(time.Second),
+		},
+		{
+			ID:        NewID(),
+			Provider:  "test",
+			Model:     "test-model",
+			Mode:      ModeAsk,
+			Origin:    OriginTUI,
+			Summary:   "ask session",
+			CreatedAt: now.Add(2 * time.Second),
+			UpdatedAt: now.Add(2 * time.Second),
+		},
+	}
+	for _, sess := range sessions {
+		if err := store.Create(ctx, sess); err != nil {
+			t.Fatalf("Create(%s): %v", sess.Summary, err)
+		}
+	}
+
+	loaded, err := store.Get(ctx, sessions[1].ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if loaded.Origin != OriginWeb {
+		t.Fatalf("Origin = %q, want %q", loaded.Origin, OriginWeb)
+	}
+	if !sessions[0].Pinned {
+		t.Fatal("expected first fixture to be pinned")
+	}
+
+	loadedPinned, err := store.Get(ctx, sessions[0].ID)
+	if err != nil {
+		t.Fatalf("Get pinned: %v", err)
+	}
+	if !loadedPinned.Pinned {
+		t.Fatal("Pinned = false, want true")
+	}
+
+	summaries, err := store.List(ctx, ListOptions{
+		Limit:      10,
+		Categories: []string{"chat", "web"},
+	})
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(summaries) != 2 {
+		t.Fatalf("summary count = %d, want 2", len(summaries))
+	}
+	if summaries[0].ID != sessions[0].ID {
+		t.Fatalf("first summary = %q, want pinned session %q", summaries[0].ID, sessions[0].ID)
+	}
+	if !summaries[0].Pinned {
+		t.Fatal("first summary Pinned = false, want true")
+	}
+	for _, sum := range summaries {
+		if sum.Mode == ModeAsk {
+			t.Fatalf("unexpected ask session in filtered results: %+v", sum)
+		}
+	}
+}
+
 func TestSQLiteStoreUpdateMetricsIncludesCachedTokens(t *testing.T) {
 	t.Setenv("XDG_DATA_HOME", t.TempDir())
 

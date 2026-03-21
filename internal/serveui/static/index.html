@@ -236,10 +236,35 @@
         </div>
         <div class="settings-help" id="installHint">On iPhone, use Share → Add to Home Screen for the best layout and background-friendly notifications.</div>
       </div>
+      <div class="settings-field">
+        <label class="settings-toggle" for="showHiddenSessionsInput">
+          <span>
+            <span class="settings-label settings-label-inline">Show hidden sessions</span>
+            <span class="settings-help">Reveal sessions hidden from the default sidebar so you can rename or unhide them.</span>
+          </span>
+          <input id="showHiddenSessionsInput" type="checkbox" tabindex="-1">
+        </label>
+      </div>
       <div class="modal-error" id="authError"></div>
       <div class="modal-actions">
         <button class="btn" id="authCancelBtn" type="button">Cancel</button>
         <button class="btn primary" id="authConnectBtn" type="button">Save</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal-overlay hidden" id="renameSessionModal" role="dialog" aria-modal="true" aria-labelledby="renameSessionTitle">
+    <div class="modal rename-session-modal">
+      <h2 id="renameSessionTitle">Rename session</h2>
+      <p>Choose the label shown in the sidebar. Leave it blank to fall back to the generated chat title.</p>
+      <div class="settings-field">
+        <label class="settings-label" for="renameSessionInput">Session name</label>
+        <input id="renameSessionInput" type="text" placeholder="Project kickoff notes" autocomplete="off" tabindex="-1">
+      </div>
+      <div class="modal-error" id="renameSessionError"></div>
+      <div class="modal-actions">
+        <button class="btn" id="renameSessionCancelBtn" type="button">Cancel</button>
+        <button class="btn primary" id="renameSessionSaveBtn" type="button">Save</button>
       </div>
     </div>
   </div>

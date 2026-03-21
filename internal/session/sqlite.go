@@ -20,6 +20,8 @@ type SQLiteStore struct {
 	hasGeneratedTitles  bool // true if sessions table has generated title columns
 	hasCompactionSeq    bool // true if sessions table has compaction_seq column
 	hasCacheWriteTokens bool // true if sessions table has cache_write_tokens column
+	hasOrigin           bool // true if sessions table has origin column
+	hasPinned           bool // true if sessions table has pinned column
 }
 
 // Schema for the sessions database.
@@ -38,11 +40,13 @@ CREATE TABLE IF NOT EXISTS sessions (
     provider_key TEXT,
     model TEXT NOT NULL,
     mode TEXT DEFAULT 'chat',
+    origin TEXT DEFAULT 'tui',
     agent TEXT,
     cwd TEXT,
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     archived BOOLEAN DEFAULT FALSE,
+    pinned BOOLEAN DEFAULT FALSE,
     parent_id TEXT REFERENCES sessions(id),
     search BOOLEAN DEFAULT FALSE,
     tools TEXT,
@@ -152,6 +156,8 @@ func NewSQLiteStore(cfg Config) (*SQLiteStore, error) {
 	store.hasGeneratedTitles = store.probeColumn("generated_short_title")
 	store.hasCompactionSeq = store.probeColumn("compaction_seq")
 	store.hasCacheWriteTokens = store.probeColumn("cache_write_tokens")
+	store.hasOrigin = store.probeColumn("origin")
+	store.hasPinned = store.probeColumn("pinned")
 
 	// Run cleanup if configured (read-write mode only).
 	if !cfg.ReadOnly {
@@ -168,7 +174,7 @@ func NewSQLiteStore(cfg Config) (*SQLiteStore, error) {
 // - Fresh databases get the full schema from `schema` const and start at this version
 // - Existing databases run migrations to reach this version
 // Increment when adding new migrations.
-const schemaVersion = 12
+const schemaVersion = 14
 
 // migration represents a schema migration.
 type migration struct {
@@ -471,6 +477,46 @@ var migrations = []migration{
 			return nil
 		},
 	},
+	{
+		// Migration 13: Add session origin column for UI/source filtering.
+		version:     13,
+		description: "add session origin column",
+		up: func(db *sql.DB) error {
+			_, err := db.Exec("ALTER TABLE sessions ADD COLUMN origin TEXT DEFAULT 'tui'")
+			if err != nil && !isDuplicateColumnError(err) {
+				return err
+			}
+			_, err = db.Exec(`UPDATE sessions SET origin = 'tui' WHERE origin IS NULL OR TRIM(origin) = ''`)
+			if err != nil {
+				return fmt.Errorf("backfill session origin: %w", err)
+			}
+			_, err = db.Exec(`CREATE INDEX IF NOT EXISTS idx_sessions_origin ON sessions(origin)`)
+			if err != nil {
+				return fmt.Errorf("create origin index: %w", err)
+			}
+			return nil
+		},
+	},
+	{
+		// Migration 14: Add pinned flag for promoting sessions in sidebars.
+		version:     14,
+		description: "add session pinned column",
+		up: func(db *sql.DB) error {
+			_, err := db.Exec("ALTER TABLE sessions ADD COLUMN pinned BOOLEAN DEFAULT FALSE")
+			if err != nil && !isDuplicateColumnError(err) {
+				return err
+			}
+			_, err = db.Exec(`UPDATE sessions SET pinned = FALSE WHERE pinned IS NULL`)
+			if err != nil {
+				return fmt.Errorf("backfill pinned sessions: %w", err)
+			}
+			_, err = db.Exec(`CREATE INDEX IF NOT EXISTS idx_sessions_pinned ON sessions(pinned)`)
+			if err != nil {
+				return fmt.Errorf("create pinned index: %w", err)
+			}
+			return nil
+		},
+	},
 }
 
 // initSchema initializes the database schema and runs any pending migrations.
@@ -554,6 +600,14 @@ func initSchemaFull(db *sql.DB, versionErr error, currentVersion int) error {
 	if err != nil {
 		return fmt.Errorf("ensure number index: %w", err)
 	}
+	_, err = db.Exec("CREATE INDEX IF NOT EXISTS idx_sessions_origin ON sessions(origin)")
+	if err != nil {
+		return fmt.Errorf("ensure origin index: %w", err)
+	}
+	_, err = db.Exec("CREATE INDEX IF NOT EXISTS idx_sessions_pinned ON sessions(pinned)")
+	if err != nil {
+		return fmt.Errorf("ensure pinned index: %w", err)
+	}
 
 	return nil
 }
@@ -617,6 +671,9 @@ func (s *SQLiteStore) Create(ctx context.Context, sess *Session) error {
 	if sess.Mode == "" {
 		sess.Mode = ModeChat
 	}
+	if sess.Origin == "" {
+		sess.Origin = OriginTUI
+	}
 
 	err := retryOnBusy(ctx, 5, func() error {
 		// Use a single INSERT statement with a subquery to atomically assign the
@@ -624,12 +681,12 @@ func (s *SQLiteStore) Create(ctx context.Context, sess *Session) error {
 		// Creates could read the same MAX(number).
 		result, err := s.db.ExecContext(ctx, `
 			INSERT INTO sessions (id, number, name, summary, generated_short_title, generated_long_title, title_source, title_generated_at, title_basis_msg_seq,
-			                      provider, provider_key, model, mode, agent, cwd, created_at, updated_at, archived, parent_id, search, tools, mcp,
+			                      provider, provider_key, model, mode, origin, agent, cwd, created_at, updated_at, archived, pinned, parent_id, search, tools, mcp,
 			                      user_turns, llm_turns, tool_calls, input_tokens, cached_input_tokens, cache_write_tokens, output_tokens, status, tags)
-			VALUES (?, (SELECT COALESCE(MAX(number), 0) + 1 FROM sessions), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			VALUES (?, (SELECT COALESCE(MAX(number), 0) + 1 FROM sessions), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			sess.ID, sess.Name, sess.Summary, nullString(sess.GeneratedShortTitle), nullString(sess.GeneratedLongTitle), nullString(string(sess.TitleSource)), nullTime(sess.TitleGeneratedAt), sess.TitleBasisMsgSeq,
-			sess.Provider, nullString(sess.ProviderKey), sess.Model, string(sess.Mode), nullString(sess.Agent), sess.CWD,
-			sess.CreatedAt, sess.UpdatedAt, sess.Archived, nullString(sess.ParentID),
+			sess.Provider, nullString(sess.ProviderKey), sess.Model, string(sess.Mode), nullString(string(sess.Origin)), nullString(sess.Agent), sess.CWD,
+			sess.CreatedAt, sess.UpdatedAt, sess.Archived, sess.Pinned, nullString(sess.ParentID),
 			sess.Search, nullString(sess.Tools), nullString(sess.MCP),
 			sess.UserTurns, sess.LLMTurns, sess.ToolCalls, sess.InputTokens, sess.CachedInputTokens, sess.CacheWriteTokens, sess.OutputTokens,
 			string(sess.Status), nullString(sess.Tags))
@@ -724,15 +781,18 @@ func (s *SQLiteStore) GetByPrefix(ctx context.Context, prefix string) (*Session,
 // stale in-memory values from clobbering accumulated totals.
 func (s *SQLiteStore) Update(ctx context.Context, sess *Session) error {
 	sess.UpdatedAt = time.Now()
+	if sess.Origin == "" {
+		sess.Origin = OriginTUI
+	}
 	result, err := s.db.ExecContext(ctx, `
 		UPDATE sessions SET name = ?, summary = ?, generated_short_title = ?, generated_long_title = ?, title_source = ?, title_generated_at = ?, title_basis_msg_seq = ?,
-		       provider = ?, provider_key = ?, model = ?, mode = ?, agent = ?, cwd = ?,
-		       updated_at = ?, archived = ?, parent_id = ?, search = ?, tools = ?, mcp = ?,
+		       provider = ?, provider_key = ?, model = ?, mode = ?, origin = ?, agent = ?, cwd = ?,
+		       updated_at = ?, archived = ?, pinned = ?, parent_id = ?, search = ?, tools = ?, mcp = ?,
 		       user_turns = ?, status = ?, tags = ?
 		WHERE id = ?`,
 		sess.Name, sess.Summary, nullString(sess.GeneratedShortTitle), nullString(sess.GeneratedLongTitle), nullString(string(sess.TitleSource)), nullTime(sess.TitleGeneratedAt), sess.TitleBasisMsgSeq,
-		sess.Provider, nullString(sess.ProviderKey), sess.Model, string(sess.Mode), nullString(sess.Agent), sess.CWD,
-		sess.UpdatedAt, sess.Archived, nullString(sess.ParentID),
+		sess.Provider, nullString(sess.ProviderKey), sess.Model, string(sess.Mode), nullString(string(sess.Origin)), nullString(sess.Agent), sess.CWD,
+		sess.UpdatedAt, sess.Archived, sess.Pinned, nullString(sess.ParentID),
 		sess.Search, nullString(sess.Tools), nullString(sess.MCP),
 		sess.UserTurns, string(sess.Status), nullString(sess.Tags), sess.ID)
 	if err != nil {
@@ -806,6 +866,14 @@ func (s *SQLiteStore) List(ctx context.Context, opts ListOptions) ([]SessionSumm
 	if s.hasCacheWriteTokens {
 		cacheWriteCol = "s.cache_write_tokens"
 	}
+	originCol := "'tui'"
+	if s.hasOrigin {
+		originCol = "COALESCE(NULLIF(TRIM(s.origin), ''), 'tui')"
+	}
+	pinnedCol := "FALSE"
+	if s.hasPinned {
+		pinnedCol = "COALESCE(s.pinned, FALSE)"
+	}
 	generatedShortCol := "''"
 	generatedLongCol := "''"
 	titleSourceCol := "''"
@@ -816,7 +884,7 @@ func (s *SQLiteStore) List(ctx context.Context, opts ListOptions) ([]SessionSumm
 	}
 	query := `
 		SELECT s.id, s.number, s.name, s.summary, ` + generatedShortCol + `, ` + generatedLongCol + `, ` + titleSourceCol + `,
-		       s.provider, s.model, s.mode, s.created_at, s.updated_at,
+		       s.provider, s.model, s.mode, ` + originCol + `, s.archived, ` + pinnedCol + `, s.created_at, s.updated_at,
 		       (SELECT COUNT(*) FROM messages WHERE session_id = s.id) as message_count,
 		       s.user_turns, s.llm_turns, s.tool_calls, s.input_tokens, s.cached_input_tokens, ` + cacheWriteCol + `, s.output_tokens, s.status, s.tags
 		FROM sessions s
@@ -848,11 +916,50 @@ func (s *SQLiteStore) List(ctx context.Context, opts ListOptions) ([]SessionSumm
 		query += " AND (',' || s.tags || ',' LIKE '%,' || ? || ',%')"
 		args = append(args, opts.Tag)
 	}
+	if len(opts.Categories) > 0 {
+		clauses := make([]string, 0, len(opts.Categories))
+		sawSpecificCategory := false
+		for _, raw := range opts.Categories {
+			category := strings.ToLower(strings.TrimSpace(raw))
+			switch category {
+			case "", "all":
+				clauses = nil
+			case "chat":
+				sawSpecificCategory = true
+				if s.hasOrigin {
+					clauses = append(clauses, "(s.mode = 'chat' AND COALESCE(NULLIF(TRIM(s.origin), ''), 'tui') = 'tui')")
+				} else {
+					clauses = append(clauses, "(s.mode = 'chat')")
+				}
+			case "web":
+				sawSpecificCategory = true
+				if s.hasOrigin {
+					clauses = append(clauses, "(COALESCE(NULLIF(TRIM(s.origin), ''), 'tui') = 'web')")
+				}
+			case "ask", "plan", "exec":
+				sawSpecificCategory = true
+				clauses = append(clauses, "(s.mode = ?)")
+				args = append(args, category)
+			}
+			if clauses == nil {
+				break
+			}
+		}
+		if len(clauses) > 0 {
+			query += " AND (" + strings.Join(clauses, " OR ") + ")"
+		} else if sawSpecificCategory {
+			query += " AND 1 = 0"
+		}
+	}
 	if !opts.Archived {
 		query += " AND s.archived = FALSE"
 	}
 
-	query += " ORDER BY s.updated_at DESC"
+	if s.hasPinned {
+		query += " ORDER BY COALESCE(s.pinned, FALSE) DESC, s.updated_at DESC"
+	} else {
+		query += " ORDER BY s.updated_at DESC"
+	}
 
 	limit := opts.Limit
 	if limit == 0 {
@@ -875,9 +982,9 @@ func (s *SQLiteStore) List(ctx context.Context, opts ListOptions) ([]SessionSumm
 	for rows.Next() {
 		var sum SessionSummary
 		var number sql.NullInt64
-		var mode, status, tags, generatedShortTitle, generatedLongTitle, titleSource sql.NullString
+		var mode, status, tags, generatedShortTitle, generatedLongTitle, titleSource, origin sql.NullString
 		err := rows.Scan(&sum.ID, &number, &sum.Name, &sum.Summary, &generatedShortTitle, &generatedLongTitle, &titleSource, &sum.Provider, &sum.Model, &mode,
-			&sum.CreatedAt, &sum.UpdatedAt, &sum.MessageCount,
+			&origin, &sum.Archived, &sum.Pinned, &sum.CreatedAt, &sum.UpdatedAt, &sum.MessageCount,
 			&sum.UserTurns, &sum.LLMTurns, &sum.ToolCalls, &sum.InputTokens, &sum.CachedInputTokens, &sum.CacheWriteTokens, &sum.OutputTokens,
 			&status, &tags)
 		if err != nil {
@@ -897,6 +1004,11 @@ func (s *SQLiteStore) List(ctx context.Context, opts ListOptions) ([]SessionSumm
 		}
 		if mode.Valid {
 			sum.Mode = SessionMode(mode.String)
+		}
+		if origin.Valid {
+			sum.Origin = SessionOrigin(origin.String)
+		} else {
+			sum.Origin = OriginTUI
 		}
 		if status.Valid {
 			sum.Status = SessionStatus(status.String)
@@ -1314,7 +1426,18 @@ func (s *SQLiteStore) sessionSelectCols() string {
 		base += ", generated_short_title, generated_long_title, title_source, title_generated_at, title_basis_msg_seq"
 	}
 	base += `,
-	       provider, provider_key, model, mode, agent, cwd, created_at, updated_at, archived, parent_id, search, tools, mcp,
+	       provider, provider_key, model, mode`
+	if s.hasOrigin {
+		base += ", origin"
+	} else {
+		base += ", 'tui' AS origin"
+	}
+	if s.hasPinned {
+		base += ", pinned"
+	} else {
+		base += ", FALSE AS pinned"
+	}
+	base += `, agent, cwd, created_at, updated_at, archived, parent_id, search, tools, mcp,
 	       user_turns, llm_turns, tool_calls, input_tokens, cached_input_tokens`
 	if s.hasCacheWriteTokens {
 		base += ", cache_write_tokens"
@@ -1334,7 +1457,7 @@ func scanSessionRow(row *sql.Row, hasGeneratedTitles, hasCacheWriteTokens, hasCo
 	var name, summary, cwd sql.NullString
 	var generatedShortTitle, generatedLongTitle, titleSource sql.NullString
 	var titleGeneratedAt sql.NullTime
-	var mode, agent, parentID, tools, mcp, status, tags, providerKey sql.NullString
+	var mode, origin, agent, parentID, tools, mcp, status, tags, providerKey sql.NullString
 
 	var scanArgs []any
 	scanArgs = append(scanArgs, &sess.ID, &number, &name, &summary)
@@ -1342,7 +1465,7 @@ func scanSessionRow(row *sql.Row, hasGeneratedTitles, hasCacheWriteTokens, hasCo
 		scanArgs = append(scanArgs, &generatedShortTitle, &generatedLongTitle, &titleSource, &titleGeneratedAt, &sess.TitleBasisMsgSeq)
 	}
 	scanArgs = append(scanArgs,
-		&sess.Provider, &providerKey, &sess.Model, &mode,
+		&sess.Provider, &providerKey, &sess.Model, &mode, &origin, &sess.Pinned,
 		&agent, &cwd, &sess.CreatedAt, &sess.UpdatedAt, &sess.Archived, &parentID,
 		&sess.Search, &tools, &mcp,
 		&sess.UserTurns, &sess.LLMTurns, &sess.ToolCalls, &sess.InputTokens, &sess.CachedInputTokens,
@@ -1395,6 +1518,11 @@ func scanSessionRow(row *sql.Row, hasGeneratedTitles, hasCacheWriteTokens, hasCo
 	}
 	if mode.Valid {
 		sess.Mode = SessionMode(mode.String)
+	}
+	if origin.Valid {
+		sess.Origin = SessionOrigin(origin.String)
+	} else {
+		sess.Origin = OriginTUI
 	}
 	if providerKey.Valid {
 		sess.ProviderKey = providerKey.String

@@ -4,7 +4,7 @@
 const app = window.TermLLMApp;
 const {
   UI_PREFIX, STORAGE_KEYS, state, elements, generateId, sanitizeInterruptState, sanitizeMessage, syncTokenCookie, truncate, saveSessions,
-  getActiveSession, ensureActiveSession, createSession, findMessageElement, scrollToBottom, setConnectionState,
+  getActiveSession, createSession, findMessageElement, scrollToBottom, setConnectionState, updateURL,
   persistAndRefreshShell, updateSessionUsageDisplay, refreshRelativeTimes, requestHeaders: _unusedRequestHeaders, updateAssistantNode, updateUserNode,
   updateToolNode, updateToolGroupNode, createMessageNode, createToolGroupNode, renderSidebar, renderMessages, maybeNotifyResponseComplete,
   enqueueAssistantStreamUpdate, finalizeAssistantStreamRender,
@@ -1322,10 +1322,14 @@ const openAuthModal = (errorText = '', required = !state.token) => {
   elements.authTokenInput.value = state.token || '';
   elements.authCancelBtn.style.display = required ? 'none' : 'inline-flex';
   elements.modelSelect.value = state.selectedModel;
+  if (elements.showHiddenSessionsInput) {
+    elements.showHiddenSessionsInput.checked = state.showHiddenSessions;
+  }
   app.refreshNotificationUI();
   elements.authModal.classList.remove('hidden');
   elements.modelSelect.removeAttribute('tabindex');
   elements.authTokenInput.removeAttribute('tabindex');
+  elements.showHiddenSessionsInput?.removeAttribute('tabindex');
 
   setTimeout(() => {
     if (required) {
@@ -1341,6 +1345,7 @@ const closeAuthModal = () => {
   elements.authError.textContent = '';
   elements.modelSelect.setAttribute('tabindex', '-1');
   elements.authTokenInput.setAttribute('tabindex', '-1');
+  elements.showHiddenSessionsInput?.setAttribute('tabindex', '-1');
 };
 
 const handleAuthFailure = () => {
@@ -1355,6 +1360,7 @@ const handleAuthFailure = () => {
 
 const connectToken = async () => {
   const token = elements.authTokenInput.value.trim();
+  const nextShowHiddenSessions = Boolean(elements.showHiddenSessionsInput?.checked);
 
   // Save model selection regardless of token
   const newModel = elements.modelSelect.value;
@@ -1364,6 +1370,9 @@ const connectToken = async () => {
   } else {
     localStorage.removeItem(STORAGE_KEYS.selectedModel);
   }
+  const showHiddenChanged = nextShowHiddenSessions !== state.showHiddenSessions;
+  state.showHiddenSessions = nextShowHiddenSessions;
+  localStorage.setItem(STORAGE_KEYS.showHiddenSessions, state.showHiddenSessions ? '1' : '0');
 
   if (state.authRequired && !token) {
     elements.authError.textContent = 'Token is required.';
@@ -1372,6 +1381,13 @@ const connectToken = async () => {
 
   const tokenChanged = token !== state.token;
   if (!tokenChanged) {
+    if (showHiddenChanged && state.connected) {
+      void app.mergeServerSessions({ includeArchived: state.showHiddenSessions }).then(() => {
+        renderSidebar();
+      });
+    } else {
+      renderSidebar();
+    }
     closeAuthModal();
     return;
   }
@@ -1392,6 +1408,11 @@ const connectToken = async () => {
     setConnectionState('', '');
     state.authRequired = false;
     closeAuthModal();
+    if (showHiddenChanged) {
+      void app.mergeServerSessions({ includeArchived: state.showHiddenSessions }).then(() => {
+        renderSidebar();
+      });
+    }
 
     // Retry push enrollment now that we have a valid token. Also recover if the
     // browser permission was already granted but the old client-side flag was missing.
@@ -2013,7 +2034,7 @@ const sendMessage = async (options = {}) => {
     return;
   }
 
-  const session = ensureActiveSession();
+  let session = getActiveSession();
   if (state.streaming) {
     if (pendingAttachments.length > 0) {
       alert('Attachments are not supported while a run is active.');
@@ -2054,6 +2075,14 @@ const sendMessage = async (options = {}) => {
       scrollToBottom(true);
     }
     return;
+  }
+
+  if (!session) {
+    session = createSession();
+    state.sessions.unshift(session);
+    state.activeSessionId = session.id;
+    state.draftSessionActive = false;
+    updateURL(session.id);
   }
 
   const reuseMessageId = typeof options.reuseMessageId === 'string' ? options.reuseMessageId : '';

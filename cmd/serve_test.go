@@ -16,6 +16,7 @@ import (
 	"net/textproto"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -218,6 +219,40 @@ func TestResolvePlatforms(t *testing.T) {
 	}
 }
 
+func TestParseSidebarSessionCategories(t *testing.T) {
+	tests := []struct {
+		name       string
+		raw        string
+		defaultAll bool
+		want       []string
+		wantErr    string
+	}{
+		{name: "default all", raw: "", defaultAll: true, want: []string{"all"}},
+		{name: "empty allowed", raw: "", defaultAll: false, want: nil},
+		{name: "dedup", raw: "chat, web, chat", defaultAll: true, want: []string{"chat", "web"}},
+		{name: "all wins", raw: "chat,all,web", defaultAll: true, want: []string{"all"}},
+		{name: "invalid", raw: "chat,nope", defaultAll: true, wantErr: "invalid --sidebar-sessions value"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := parseSidebarSessionCategories(tt.raw, tt.defaultAll)
+			if tt.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("err = %v, want substring %q", err, tt.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected err: %v", err)
+			}
+			if strings.Join(got, ",") != strings.Join(tt.want, ",") {
+				t.Fatalf("got %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestPlatformContains(t *testing.T) {
 	tests := []struct {
 		name      string
@@ -305,8 +340,9 @@ func TestCustomBasePath_EndToEnd(t *testing.T) {
 	// a static asset, and "/images/" is the images route.
 	srv := &serveServer{
 		cfg: serveServerConfig{
-			ui:       true,
-			basePath: "/chat",
+			ui:              true,
+			basePath:        "/chat",
+			sidebarSessions: []string{"chat", "web"},
 		},
 	}
 
@@ -325,6 +361,9 @@ func TestCustomBasePath_EndToEnd(t *testing.T) {
 	}
 	if !strings.Contains(body, `<base href="/chat/">`) {
 		t.Error("/ should inject <base> tag with basePath")
+	}
+	if !strings.Contains(body, `TERM_LLM_SIDEBAR_SESSIONS=["chat","web"]`) {
+		t.Error("/ should inject TERM_LLM_SIDEBAR_SESSIONS")
 	}
 
 	// 2. /app.css serves static assets
@@ -1524,6 +1563,175 @@ func TestHandleSessions_ListsFromStore(t *testing.T) {
 	}
 	if body.Sessions[0].ShortTitle != "hello world" {
 		t.Fatalf("short_title = %q, want %q", body.Sessions[0].ShortTitle, "hello world")
+	}
+}
+
+func TestHandleSessions_FiltersByCategoriesAndArchived(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "sessions.db")
+	store, err := session.NewStore(session.Config{Enabled: true, Path: dbPath})
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+	now := time.Now()
+	sessions := []*session.Session{
+		{
+			ID:        "sess-tui",
+			Provider:  "mock",
+			Model:     "mock-model",
+			Mode:      session.ModeChat,
+			Origin:    session.OriginTUI,
+			Pinned:    true,
+			Summary:   "tui chat",
+			CreatedAt: now,
+			UpdatedAt: now,
+			Status:    session.StatusActive,
+		},
+		{
+			ID:        "sess-web",
+			Provider:  "mock",
+			Model:     "mock-model",
+			Mode:      session.ModeChat,
+			Origin:    session.OriginWeb,
+			Summary:   "web chat",
+			CreatedAt: now.Add(time.Second),
+			UpdatedAt: now.Add(time.Second),
+			Status:    session.StatusActive,
+		},
+		{
+			ID:        "sess-ask",
+			Provider:  "mock",
+			Model:     "mock-model",
+			Mode:      session.ModeAsk,
+			Origin:    session.OriginTUI,
+			Summary:   "ask run",
+			CreatedAt: now.Add(2 * time.Second),
+			UpdatedAt: now.Add(2 * time.Second),
+			Status:    session.StatusActive,
+		},
+		{
+			ID:        "sess-hidden",
+			Provider:  "mock",
+			Model:     "mock-model",
+			Mode:      session.ModeChat,
+			Origin:    session.OriginWeb,
+			Summary:   "hidden web chat",
+			CreatedAt: now.Add(3 * time.Second),
+			UpdatedAt: now.Add(3 * time.Second),
+			Status:    session.StatusActive,
+			Archived:  true,
+		},
+	}
+	for _, sess := range sessions {
+		if err := store.Create(ctx, sess); err != nil {
+			t.Fatalf("Create(%s): %v", sess.ID, err)
+		}
+	}
+
+	srv := &serveServer{store: store}
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/sessions?categories=chat,web", nil)
+	rr := httptest.NewRecorder()
+	srv.handleSessions(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rr.Code)
+	}
+
+	var body struct {
+		Sessions []struct {
+			ID       string                `json:"id"`
+			Mode     session.SessionMode   `json:"mode"`
+			Origin   session.SessionOrigin `json:"origin"`
+			Archived bool                  `json:"archived"`
+			Pinned   bool                  `json:"pinned"`
+		} `json:"sessions"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(body.Sessions) != 2 {
+		t.Fatalf("session count = %d, want 2", len(body.Sessions))
+	}
+	if body.Sessions[0].ID != "sess-tui" || !body.Sessions[0].Pinned {
+		t.Fatalf("first session = %+v, want pinned sess-tui first", body.Sessions[0])
+	}
+	gotIDs := []string{body.Sessions[0].ID, body.Sessions[1].ID}
+	sort.Strings(gotIDs)
+	if strings.Join(gotIDs, ",") != "sess-tui,sess-web" {
+		t.Fatalf("ids = %v, want [sess-tui sess-web]", gotIDs)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/v1/sessions?categories=web&include_archived=1", nil)
+	rr = httptest.NewRecorder()
+	srv.handleSessions(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("include_archived status = %d, want 200", rr.Code)
+	}
+	body = struct {
+		Sessions []struct {
+			ID       string                `json:"id"`
+			Mode     session.SessionMode   `json:"mode"`
+			Origin   session.SessionOrigin `json:"origin"`
+			Archived bool                  `json:"archived"`
+			Pinned   bool                  `json:"pinned"`
+		} `json:"sessions"`
+	}{}
+	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode include_archived: %v", err)
+	}
+	if len(body.Sessions) != 2 {
+		t.Fatalf("include_archived session count = %d, want 2", len(body.Sessions))
+	}
+}
+
+func TestHandleSessionByID_PatchRenameAndArchive(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "sessions.db")
+	store, err := session.NewStore(session.Config{Enabled: true, Path: dbPath})
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+	sess := &session.Session{
+		ID:        "sess-rename",
+		Provider:  "mock",
+		Model:     "mock-model",
+		Mode:      session.ModeChat,
+		Origin:    session.OriginWeb,
+		Summary:   "hello world",
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+		Status:    session.StatusActive,
+	}
+	if err := store.Create(ctx, sess); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	srv := &serveServer{store: store}
+	body := strings.NewReader(`{"name":"Renamed session","archived":true,"pinned":true}`)
+	req := httptest.NewRequest(http.MethodPatch, "/v1/sessions/sess-rename", body)
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	srv.handleSessionByID(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 body=%s", rr.Code, rr.Body.String())
+	}
+
+	updated, err := store.Get(ctx, "sess-rename")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if updated.Name != "Renamed session" {
+		t.Fatalf("Name = %q, want %q", updated.Name, "Renamed session")
+	}
+	if !updated.Archived {
+		t.Fatal("Archived = false, want true")
+	}
+	if !updated.Pinned {
+		t.Fatal("Pinned = false, want true")
 	}
 }
 

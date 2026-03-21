@@ -5,7 +5,7 @@ const app = window.TermLLMApp;
 const {
   STORAGE_KEYS, state, elements, INTERRUPT_BADGE_META, sanitizeInterruptState, relativeTime, fullDate, sessionBucket, toolIcon, formatUsage,
   saveSessions, findMessageElement, scrollToBottom, refreshRelativeTimes, ensureActiveSession, updateDocumentTitle,
-  updateSessionUsageDisplay, renderMath
+  updateSessionUsageDisplay, renderMath, visibleSessions
 } = app;
 
 const isMobileViewport = () => window.matchMedia('(max-width: 767px)').matches;
@@ -88,23 +88,66 @@ const toggleSidebarCollapsed = () => {
 
 const updateHeader = () => {
   const session = ensureActiveSession();
-  elements.activeSessionTitle.textContent = session.title || 'Chat';
+  elements.activeSessionTitle.textContent = session?.title || 'Chat';
   updateDocumentTitle();
   updateSessionUsageDisplay(session);
   applyDesktopSidebarState();
 };
 
+const closeAllSessionMenus = () => {
+  elements.sessionGroups.querySelectorAll('.session-row.menu-open').forEach((row) => {
+    row.classList.remove('menu-open');
+  });
+};
+
+const SESSION_MENU_ICONS = {
+  pin: '<svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M4.146.146A.5.5 0 0 1 4.5 0h7a.5.5 0 0 1 .5.5c0 .68-.342 1.174-.646 1.479-.126.125-.25.224-.354.298v4.431l.078.048c.203.127.476.314.751.555C12.36 7.775 13 8.527 13 9.5a.5.5 0 0 1-.5.5h-4v4.5c0 .276-.224 1.5-.5 1.5s-.5-1.224-.5-1.5V10h-4a.5.5 0 0 1-.5-.5c0-.973.64-1.725 1.17-2.189A6 6 0 0 1 5 6.708V2.277a3 3 0 0 1-.354-.298C4.342 1.674 4 1.179 4 .5a.5.5 0 0 1 .146-.354"/></svg>',
+  unpin: '<svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><g transform="rotate(38 8 8)"><path d="M4.146.146A.5.5 0 0 1 4.5 0h7a.5.5 0 0 1 .5.5c0 .68-.342 1.174-.646 1.479-.126.125-.25.224-.354.298v4.431l.078.048c.203.127.476.314.751.555C12.36 7.775 13 8.527 13 9.5a.5.5 0 0 1-.5.5h-4v4.5c0 .276-.224 1.5-.5 1.5s-.5-1.224-.5-1.5V10h-4a.5.5 0 0 1-.5-.5c0-.973.64-1.725 1.17-2.189A6 6 0 0 1 5 6.708V2.277a3 3 0 0 1-.354-.298C4.342 1.674 4 1.179 4 .5a.5.5 0 0 1 .146-.354"/></g></svg>',
+  rename: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 1 1 3 3L7 19l-4 1 1-4 12.5-12.5Z"/></svg>',
+  hide: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M17.94 17.94A10.94 10.94 0 0 1 12 20C7 20 2.73 16.89 1 12c.92-2.6 2.63-4.77 4.83-6.2"/><path d="M9.88 9.88a3 3 0 1 0 4.24 4.24"/><path d="M10.73 5.08A11.02 11.02 0 0 1 12 5c5 0 9.27 3.11 11 7a11.05 11.05 0 0 1-2.16 3.19"/><path d="M1 1l22 22"/></svg>',
+  unhide: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7S1 12 1 12Z"/><circle cx="12" cy="12" r="3"/></svg>'
+};
+
+const createSessionMenuButton = (label, iconName, onClick) => {
+  const button = document.createElement('button');
+  button.type = 'button';
+
+  const icon = document.createElement('span');
+  icon.className = 'session-menu-icon';
+  icon.innerHTML = SESSION_MENU_ICONS[iconName] || '';
+
+  const text = document.createElement('span');
+  text.className = 'session-menu-label';
+  text.textContent = label;
+
+  button.appendChild(icon);
+  button.appendChild(text);
+  button.addEventListener('click', onClick);
+  return button;
+};
+
+document.addEventListener('click', (event) => {
+  if (!event.target.closest('.session-row-menu')) {
+    closeAllSessionMenus();
+  }
+});
+
 const renderSidebar = () => {
   const grouped = {
+    Pinned: [],
     Today: [],
     Yesterday: [],
     'This week': [],
     Older: []
   };
 
-  const sorted = [...state.sessions].sort((a, b) => b.created - a.created);
+  const sorted = [...visibleSessions()].sort((a, b) => b.created - a.created);
   sorted.forEach((session) => {
-    grouped[sessionBucket(session.created)].push(session);
+    if (session.pinned) {
+      grouped.Pinned.push(session);
+    } else {
+      grouped[sessionBucket(session.created)].push(session);
+    }
   });
 
   elements.sessionGroups.innerHTML = '';
@@ -120,6 +163,10 @@ const renderSidebar = () => {
     groupEl.appendChild(heading);
 
     sessions.forEach((session) => {
+      const row = document.createElement('div');
+      row.className = 'session-row';
+      row.dataset.sessionId = session.id;
+
       const btn = document.createElement('button');
       btn.className = 'session-btn';
       if (session.id === state.activeSessionId) {
@@ -136,7 +183,12 @@ const renderSidebar = () => {
       const meta = document.createElement('div');
       meta.className = 'session-meta';
       const msgCount = session.messages.length || session.messageCount || 0;
-      meta.textContent = `${msgCount} message${msgCount === 1 ? '' : 's'} · ${relativeTime(session.created)}`;
+      const metaParts = [`${msgCount} message${msgCount === 1 ? '' : 's'}`];
+      if (session.archived) {
+        metaParts.push('hidden');
+      }
+      metaParts.push(relativeTime(session.created));
+      meta.textContent = metaParts.join(' · ');
       meta.title = fullDate(session.created);
 
       btn.appendChild(title);
@@ -145,7 +197,56 @@ const renderSidebar = () => {
         await app.switchToSession(session.id);
       });
 
-      groupEl.appendChild(btn);
+      const menuWrap = document.createElement('div');
+      menuWrap.className = 'session-row-menu';
+
+      const actionBtn = document.createElement('button');
+      actionBtn.className = 'session-menu-trigger';
+      actionBtn.type = 'button';
+      actionBtn.textContent = '⋯';
+      actionBtn.title = 'Session actions';
+      actionBtn.setAttribute('aria-label', 'Session actions');
+      actionBtn.addEventListener('click', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        const willOpen = !row.classList.contains('menu-open');
+        closeAllSessionMenus();
+        row.classList.toggle('menu-open', willOpen);
+      });
+
+      const menu = document.createElement('div');
+      menu.className = 'session-menu';
+
+      const renameBtn = createSessionMenuButton('Rename', 'rename', async (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        closeAllSessionMenus();
+        await app.promptRenameSession(session);
+      });
+
+      const pinBtn = createSessionMenuButton(session.pinned ? 'Unpin' : 'Pin', session.pinned ? 'unpin' : 'pin', async (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        closeAllSessionMenus();
+        await app.setSessionPinned(session, !session.pinned);
+      });
+
+      const archiveBtn = createSessionMenuButton(session.archived ? 'Unhide' : 'Hide', session.archived ? 'unhide' : 'hide', async (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        closeAllSessionMenus();
+        await app.setSessionArchived(session, !session.archived);
+      });
+
+      menu.appendChild(renameBtn);
+      menu.appendChild(pinBtn);
+      menu.appendChild(archiveBtn);
+      menuWrap.appendChild(actionBtn);
+      menuWrap.appendChild(menu);
+
+      row.appendChild(btn);
+      row.appendChild(menuWrap);
+      groupEl.appendChild(row);
     });
 
     elements.sessionGroups.appendChild(groupEl);
@@ -882,7 +983,7 @@ const renderMessages = (forceScroll = false) => {
   resetAssistantStreamRenders();
   elements.messages.innerHTML = '';
 
-  if (!session.messages.length) {
+  if (!session || !session.messages.length) {
     const empty = document.createElement('div');
     empty.className = 'empty-state';
     empty.textContent = 'How can I help you today?';

@@ -108,6 +108,12 @@ func (s *serveServer) renderIndexHTML() []byte {
 	var headSnippet string
 	escaped, _ := json.Marshal(s.cfg.basePath)
 	headSnippet += `<script>window.TERM_LLM_UI_PREFIX=` + string(escaped) + `;</script>`
+	sidebarSessions := s.cfg.sidebarSessions
+	if len(sidebarSessions) == 0 {
+		sidebarSessions = []string{"all"}
+	}
+	sidebarEscaped, _ := json.Marshal(sidebarSessions)
+	headSnippet += `<script>window.TERM_LLM_SIDEBAR_SESSIONS=` + string(sidebarEscaped) + `;</script>`
 	if s.cfgRef != nil {
 		if vapidKey := s.cfgRef.Serve.WebPush.VAPIDPublicKey; vapidKey != "" {
 			vapidEscaped, _ := json.Marshal(vapidKey)
@@ -228,26 +234,48 @@ func (s *serveServer) handleSessions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	sessions, err := s.store.List(r.Context(), session.ListOptions{Limit: 100})
+	categories, err := parseSidebarSessionCategories(r.URL.Query().Get("categories"), false)
+	if err != nil {
+		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", err.Error())
+		return
+	}
+	includeArchived := strings.EqualFold(strings.TrimSpace(r.URL.Query().Get("include_archived")), "1") ||
+		strings.EqualFold(strings.TrimSpace(r.URL.Query().Get("include_archived")), "true")
+
+	sessions, err := s.store.List(r.Context(), session.ListOptions{
+		Limit:      100,
+		Archived:   includeArchived,
+		Categories: categories,
+	})
 	if err != nil {
 		writeOpenAIError(w, http.StatusInternalServerError, "server_error", "failed to list sessions")
 		return
 	}
 
 	type sessionEntry struct {
-		ID         string `json:"id"`
-		ShortTitle string `json:"short_title"`
-		LongTitle  string `json:"long_title"`
-		CreatedAt  int64  `json:"created_at"`
-		MsgCount   int    `json:"message_count"`
+		ID         string                `json:"id"`
+		Name       string                `json:"name,omitempty"`
+		ShortTitle string                `json:"short_title"`
+		LongTitle  string                `json:"long_title"`
+		Mode       session.SessionMode   `json:"mode,omitempty"`
+		Origin     session.SessionOrigin `json:"origin,omitempty"`
+		Archived   bool                  `json:"archived"`
+		Pinned     bool                  `json:"pinned"`
+		CreatedAt  int64                 `json:"created_at"`
+		MsgCount   int                   `json:"message_count"`
 	}
 
 	result := make([]sessionEntry, 0, len(sessions))
 	for _, sess := range sessions {
 		result = append(result, sessionEntry{
+			Name:       sess.Name,
 			ID:         sess.ID,
 			ShortTitle: sess.PreferredShortTitle(),
 			LongTitle:  sess.PreferredLongTitle(),
+			Mode:       sess.Mode,
+			Origin:     sess.Origin,
+			Archived:   sess.Archived,
+			Pinned:     sess.Pinned,
 			CreatedAt:  sess.CreatedAt.UnixMilli(),
 			MsgCount:   sess.MessageCount,
 		})
@@ -269,6 +297,15 @@ func (s *serveServer) handleSessionByID(w http.ResponseWriter, r *http.Request) 
 	suffix := ""
 	if len(parts) > 1 {
 		suffix = parts[1]
+	}
+
+	if suffix == "" && r.Method == http.MethodPatch {
+		if err := requireJSONContentType(r); err != nil {
+			writeOpenAIError(w, http.StatusUnsupportedMediaType, "invalid_request_error", err.Error())
+			return
+		}
+		s.handleSessionMetadataPatch(w, r, sessionID)
+		return
 	}
 
 	if suffix == "interrupt" {
@@ -458,6 +495,72 @@ func (s *serveServer) handleSessionInterrupt(w http.ResponseWriter, r *http.Requ
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"action": actionName,
+	})
+}
+
+func (s *serveServer) handleSessionMetadataPatch(w http.ResponseWriter, r *http.Request, sessionID string) {
+	if s.store == nil {
+		writeOpenAIError(w, http.StatusNotFound, "not_found_error", "session history is unavailable")
+		return
+	}
+
+	var req struct {
+		Name     *string `json:"name"`
+		Archived *bool   `json:"archived"`
+		Pinned   *bool   `json:"pinned"`
+	}
+	if err := decodeJSONBody(r, &req); err != nil {
+		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", err.Error())
+		return
+	}
+
+	sess, err := s.store.Get(r.Context(), sessionID)
+	if err != nil {
+		writeOpenAIError(w, http.StatusInternalServerError, "server_error", "failed to load session")
+		return
+	}
+	if sess == nil {
+		writeOpenAIError(w, http.StatusNotFound, "not_found_error", "session not found")
+		return
+	}
+
+	if req.Name != nil {
+		sess.Name = strings.TrimSpace(*req.Name)
+	}
+	if req.Archived != nil {
+		sess.Archived = *req.Archived
+	}
+	if req.Pinned != nil {
+		sess.Pinned = *req.Pinned
+	}
+	if err := s.store.Update(r.Context(), sess); err != nil {
+		writeOpenAIError(w, http.StatusInternalServerError, "server_error", "failed to update session")
+		return
+	}
+
+	if s.sessionMgr != nil {
+		if rt, ok := s.sessionMgr.Get(sessionID); ok {
+			rt.mu.Lock()
+			if rt.sessionMeta != nil {
+				rt.sessionMeta.Name = sess.Name
+				rt.sessionMeta.Archived = sess.Archived
+				rt.sessionMeta.Pinned = sess.Pinned
+				rt.sessionMeta.Origin = sess.Origin
+			}
+			rt.mu.Unlock()
+		}
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"id":          sess.ID,
+		"name":        sess.Name,
+		"short_title": sess.PreferredShortTitle(),
+		"long_title":  sess.PreferredLongTitle(),
+		"mode":        sess.Mode,
+		"origin":      sess.Origin,
+		"archived":    sess.Archived,
+		"pinned":      sess.Pinned,
+		"created_at":  sess.CreatedAt.UnixMilli(),
 	})
 }
 
