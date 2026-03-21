@@ -505,9 +505,10 @@
           if (!resolved) {
             resolveOnce(new Response(stream, { status: 200 }));
           }
-          responseBytes += (line ? line.length : 0) + 1; // +1 for the \n
+          const chunk = typeof line === 'string' ? line : '';
+          responseBytes += chunk.length + 1; // +1 for the \n
           if (streamController) {
-            streamController.enqueue(encoder.encode(line + '\n'));
+            streamController.enqueue(encoder.encode(chunk + '\n'));
           }
         },
         onDone(status) {

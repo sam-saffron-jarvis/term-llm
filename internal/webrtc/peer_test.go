@@ -296,3 +296,18 @@ func TestFrameEncoding_RoundTrip(t *testing.T) {
 		t.Errorf("body decode mismatch: %q", string(bodyBytes))
 	}
 }
+
+func TestResponseFrameEncoding_PreservesBlankChunkData(t *testing.T) {
+	frame := responseFrame{
+		ID:   "chunk-id",
+		Type: "chunk",
+		Data: "",
+	}
+	data, err := json.Marshal(frame)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), `"data":""`) {
+		t.Fatalf("blank chunk data omitted from JSON: %s", string(data))
+	}
+}

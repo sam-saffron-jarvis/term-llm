@@ -54,7 +54,7 @@ type responseFrame struct {
 	ID      string            `json:"id"`
 	Type    string            `json:"type"`              // "headers", "chunk", or "done"
 	Headers map[string]string `json:"headers,omitempty"` // only for "headers"
-	Data    string            `json:"data,omitempty"`    // SSE line; only for "chunk"
+	Data    string            `json:"data"`              // SSE line; only for "chunk"; blank lines must survive JSON encoding
 	Status  int               `json:"status,omitempty"`  // HTTP status; for "headers" and "done"
 }
 
