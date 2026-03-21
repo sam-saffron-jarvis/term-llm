@@ -295,7 +295,9 @@
           resolveOnce(new Response(stream, { status, headers: new Headers(headers) }));
         },
         onChunk(line) {
-          resolveOnce(new Response(stream, { status: 200 }));
+          if (!resolved) {
+            resolveOnce(new Response(stream, { status: 200 }));
+          }
           responseBytes += (line ? line.length : 0) + 1; // +1 for the \n
           if (streamController) {
             streamController.enqueue(encoder.encode(line + '\n'));
@@ -305,7 +307,9 @@
           const latency = (performance.now() - reqStart) | 0;
           diag('← ' + status + ' ' + method + ' ' + path +
             ' (' + responseBytes + 'b, ' + latency + 'ms)');
-          resolveOnce(new Response(stream, { status }));
+          if (!resolved) {
+            resolveOnce(new Response(stream, { status }));
+          }
           if (streamController) streamController.close();
           pendingRequests.delete(reqId);
         },
