@@ -11,6 +11,7 @@ const SHELL_ASSETS = [
   './app-render.js',
   './app-stream.js',
   './app-sessions.js',
+  './app-webrtc.js',
   './vendor/katex/katex.min.css?v=0.16.38',
   './vendor/katex/katex.min.js?v=0.16.38',
   './vendor/katex/auto-render.min.js?v=0.16.38',

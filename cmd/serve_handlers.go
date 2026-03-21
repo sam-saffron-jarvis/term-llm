@@ -114,6 +114,7 @@ func (s *serveServer) renderIndexHTML() []byte {
 			headSnippet += `<script>window.TERM_LLM_VAPID_PUBLIC_KEY=` + string(vapidEscaped) + `;</script>`
 		}
 	}
+	headSnippet += s.webrtcHeadSnippet
 	return serveui.RenderIndexHTML(s.cfg.basePath, headSnippet)
 }
 

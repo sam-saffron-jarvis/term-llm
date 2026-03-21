@@ -79,6 +79,7 @@ func RenderIndexHTML(basePath, headSnippet string) []byte {
 		{`src="app-render.js"`, `src="` + versioned("app-render.js") + `"`},
 		{`src="app-stream.js"`, `src="` + versioned("app-stream.js") + `"`},
 		{`src="app-sessions.js"`, `src="` + versioned("app-sessions.js") + `"`},
+		{`src="app-webrtc.js"`, `src="` + versioned("app-webrtc.js") + `"`},
 	}
 	for _, replacement := range replacements {
 		html = bytes.ReplaceAll(html, []byte(replacement.old), []byte(replacement.new))
@@ -118,6 +119,7 @@ func RenderServiceWorker() []byte {
 		{"'./app-render.js'", "'./" + versioned("app-render.js") + "'"},
 		{"'./app-stream.js'", "'./" + versioned("app-stream.js") + "'"},
 		{"'./app-sessions.js'", "'./" + versioned("app-sessions.js") + "'"},
+		{"'./app-webrtc.js'", "'./" + versioned("app-webrtc.js") + "'"},
 	}
 	for _, replacement := range replacements {
 		data = bytes.ReplaceAll(data, []byte(replacement.old), []byte(replacement.new))

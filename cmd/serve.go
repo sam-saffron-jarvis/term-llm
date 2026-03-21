@@ -414,6 +414,11 @@ func runServe(cmd *cobra.Command, args []string) error {
 			}
 		}
 
+		if hasWeb {
+			s.webrtcHeadSnippet = webrtcHTMLSnippet()
+			runWebRTCPeer(ctx, s)
+		}
+
 		if err := s.Start(); err != nil {
 			return err
 		}
@@ -641,6 +646,7 @@ type serveServer struct {
 	responseToSession sync.Map // response_id (string) → session_id (string)
 	responseRunsOnce  sync.Once
 	responseRuns      *responseRunManager
+	webrtcHeadSnippet string // injected into index.html <head>; empty when WebRTC disabled
 }
 
 func (s *serveServer) Start() error {

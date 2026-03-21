@@ -5,8 +5,8 @@ description: "Run term-llm as a web server, use the browser UI, and call the HTT
 kicker: "Web runtime"
 featured: true
 next:
-  label: Search
-  url: /guides/search/
+  label: WebRTC direct routing
+  url: /guides/webrtc-direct-routing/
 ---
 ## Start the web runtime
 
@@ -104,6 +104,7 @@ Relevant options include:
 - `--base-path`
 - `--no-ui`
 - `--cors-origin`
+- `--webrtc`, `--webrtc-signaling-url`, `--webrtc-token` (see [WebRTC direct routing](/guides/webrtc-direct-routing/))
 
 ## Health checks
 
@@ -127,6 +128,7 @@ Use the web runtime when you want:
 
 ## Related pages
 
+- [WebRTC direct routing](/guides/webrtc-direct-routing/)
 - [Jobs](/guides/job-runner/)
 - [Telegram Bot](/guides/telegram-bot/)
 - [Configuration](/reference/configuration/)

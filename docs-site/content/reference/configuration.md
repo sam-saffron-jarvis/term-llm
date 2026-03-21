@@ -208,6 +208,21 @@ providers:
 
 These values are resolved lazily when term-llm actually needs them.
 
+## WebRTC direct routing config
+
+```yaml
+serve:
+  webrtc:
+    enabled: true
+    signaling_url: https://signal.example.com/webrtc
+    token: your-signaling-token
+    stun_urls:
+      - stun:stun.l.google.com:19302
+    max_conns: 10
+```
+
+These values match the `--webrtc-*` CLI flags. See the [WebRTC direct routing](/guides/webrtc-direct-routing/) guide for full details.
+
 ## Diagnostics
 
 ```yaml
