@@ -94,18 +94,20 @@ type Model struct {
 	// Pending message context
 	files                   []FileAttachment // Attached files for next message
 	images                  []ImageAttachment
-	selectedImage           int      // -1 means no image chip selected
-	searchEnabled           bool     // Web search toggle
-	forceExternalSearch     bool     // Force external search tools even if provider supports native
-	disableExternalWebFetch bool     // Disable external read_url injection even when provider lacks native fetch
-	localTools              []string // Names of enabled local tools (read, write, etc.)
-	toolsStr                string   // Original tools setting (for session persistence)
-	mcpStr                  string   // Original MCP setting (for session persistence)
-	pendingInterjection     string   // Interrupt text waiting to be injected or cancelled
-	interruptRequestSeq     uint64   // Monotonic sequence for async interrupt classification
-	activeInterruptSeq      uint64   // Currently active async interrupt classification request
-	pendingInterruptUI      string   // UI state: "", "deciding", "interject"
-	interruptNotice         string   // One-line UI notice for recent interrupt actions
+	selectedImage           int            // -1 means no image chip selected
+	pasteChunks             map[int]string // Collapsed paste placeholders → actual content
+	pasteSeq                int            // Incrementing ID for paste placeholders
+	searchEnabled           bool           // Web search toggle
+	forceExternalSearch     bool           // Force external search tools even if provider supports native
+	disableExternalWebFetch bool           // Disable external read_url injection even when provider lacks native fetch
+	localTools              []string       // Names of enabled local tools (read, write, etc.)
+	toolsStr                string         // Original tools setting (for session persistence)
+	mcpStr                  string         // Original MCP setting (for session persistence)
+	pendingInterjection     string         // Interrupt text waiting to be injected or cancelled
+	interruptRequestSeq     uint64         // Monotonic sequence for async interrupt classification
+	activeInterruptSeq      uint64         // Currently active async interrupt classification request
+	pendingInterruptUI      string         // UI state: "", "deciding", "interject"
+	interruptNotice         string         // One-line UI notice for recent interrupt actions
 	// MCP (Model Context Protocol)
 	mcpManager *mcp.Manager
 	maxTurns   int

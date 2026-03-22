@@ -405,6 +405,7 @@ func (m *Model) cmdClear() (tea.Model, tea.Cmd) {
 	m.scrollOffset = 0
 	m.setTextareaValue("")
 	m.clearFiles()
+	m.pasteChunks = nil
 
 	// Reset engine state (compaction tracking, provider conversation IDs)
 	if m.engine != nil {
@@ -605,6 +606,7 @@ func (m *Model) cmdNew() (tea.Model, tea.Cmd) {
 	m.scrollOffset = 0
 	m.setTextareaValue("")
 	m.clearFiles()
+	m.pasteChunks = nil
 
 	// Reset engine state (compaction tracking, provider conversation IDs)
 	if m.engine != nil {

@@ -2,6 +2,7 @@ package chat
 
 import (
 	"context"
+	"fmt"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/key"
@@ -12,6 +13,10 @@ import (
 	"github.com/samsaffron/term-llm/internal/tui/inspector"
 	sessionsui "github.com/samsaffron/term-llm/internal/tui/sessions"
 )
+
+// pasteCollapseThreshold is the minimum length (in characters) of a paste
+// before it collapses into a placeholder instead of inline text.
+const pasteCollapseThreshold = 100
 
 // updateResumeBrowserMode handles updates while the embedded resume browser is active.
 func (m *Model) updateResumeBrowserMode(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -418,6 +423,7 @@ func (m *Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// Clear input if not empty
 		if m.textarea.Value() != "" {
 			m.setTextareaValue("")
+			m.pasteChunks = nil
 		}
 		return m, nil
 	}
@@ -661,6 +667,9 @@ func (m *Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m.handleSlashCommand(content)
 		}
 
+		// Expand inline paste placeholders back to real content before sending.
+		content = m.expandPastePlaceholders(content)
+
 		// Send message if not empty, or if there are pasted image attachments.
 		if content != "" || len(m.images) > 0 {
 			return m.sendMessage(content)
@@ -707,6 +716,27 @@ func (m *Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	// Update textarea for other keys (skip during streaming - no text input needed)
 	if !m.streaming {
+		// Intercept large pastes: replace content with an inline placeholder
+		// so the textarea stays compact. The placeholder is inserted at the
+		// cursor position and expanded back on send.
+		if msg.Paste {
+			text := string(msg.Runes)
+			if len(text) > pasteCollapseThreshold {
+				m.pasteSeq++
+				id := m.pasteSeq
+				if m.pasteChunks == nil {
+					m.pasteChunks = make(map[int]string)
+				}
+				m.pasteChunks[id] = text
+				placeholder := pastePlaceholder(id, text)
+				msg = tea.KeyMsg{
+					Type:  tea.KeyRunes,
+					Runes: []rune(placeholder),
+					Paste: true,
+				}
+			}
+		}
+
 		old := m.textarea.Value()
 		var cmd tea.Cmd
 		m.textarea, cmd = m.textarea.Update(msg)
@@ -722,6 +752,29 @@ func (m *Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, cmd
 	}
 	return m, nil
+}
+
+// pastePlaceholder returns the inline placeholder text for a collapsed paste.
+func pastePlaceholder(id int, text string) string {
+	lines := strings.Count(text, "\n") + 1
+	if lines > 1 {
+		return fmt.Sprintf("[Pasted text #%d +%d lines]", id, lines)
+	}
+	return fmt.Sprintf("[Pasted text #%d +%d chars]", id, len(text))
+}
+
+// expandPastePlaceholders replaces all inline paste placeholders with their
+// actual content. Clears the pasteChunks map after expansion.
+func (m *Model) expandPastePlaceholders(content string) string {
+	if len(m.pasteChunks) == 0 {
+		return content
+	}
+	for id, text := range m.pasteChunks {
+		placeholder := pastePlaceholder(id, text)
+		content = strings.ReplaceAll(content, placeholder, text)
+	}
+	m.pasteChunks = nil
+	return content
 }
 
 func (m *Model) currentInterruptActivity() llm.InterruptActivity {
