@@ -59,10 +59,11 @@ type Agent struct {
 	// Files are loaded from the agent directory and appended after system.md
 	Include []string `yaml:"include,omitempty"`
 
-	// ProjectInstructions controls auto-loading of AGENTS.md, CLAUDE.md, etc.
+	// AgentsMd controls loading of AGENTS.md hierarchy into the system prompt.
 	// Values: "auto" (default), "true", "false"
-	// "auto" includes project instructions if the agent has coding tools (write_file, edit_file, shell)
-	ProjectInstructions string `yaml:"project_instructions,omitempty"`
+	// "auto" loads project instructions if the agent has coding tools (write_file, edit_file, shell)
+	// "true" always loads, "false" never loads
+	AgentsMd string `yaml:"agents_md,omitempty"`
 
 	// Memory settings
 	Memory MemoryConfig `yaml:"memory,omitempty"`
@@ -391,12 +392,12 @@ func (a *Agent) Validate() error {
 		}
 	}
 
-	// Validate project_instructions field
-	switch a.ProjectInstructions {
+	// Validate agents_md field
+	switch a.AgentsMd {
 	case "", "auto", "true", "false":
 		// Valid values
 	default:
-		return fmt.Errorf("invalid project_instructions: %q (valid: auto, true, false)", a.ProjectInstructions)
+		return fmt.Errorf("invalid agents_md: %q (valid: auto, true, false)", a.AgentsMd)
 	}
 
 	return nil
@@ -405,7 +406,7 @@ func (a *Agent) Validate() error {
 // ShouldLoadProjectInstructions returns true if this agent should load project instruction files.
 // Uses "auto" logic by default: include if agent has coding tools (write_file, edit_file, shell).
 func (a *Agent) ShouldLoadProjectInstructions() bool {
-	switch a.ProjectInstructions {
+	switch a.AgentsMd {
 	case "true":
 		return true
 	case "false":

@@ -113,7 +113,7 @@ func runPlan(cmd *cobra.Command, args []string) error {
 
 	// Create tool registry with investigation tools for the planner
 	// The planner can glob, grep, read files, run shell commands to explore,
-	// and spawn sub-agents (codebase, researcher) for deeper investigation
+	// and spawn sub-agents (codebase, web-researcher) for deeper investigation
 	toolConfig := &tools.ToolConfig{
 		Enabled: []string{
 			tools.AskUserToolName,
@@ -134,10 +134,10 @@ func runPlan(cmd *cobra.Command, args []string) error {
 
 	// Configure spawn_agent: read-only agents only, conservative limits
 	toolConfig.Spawn = tools.SpawnConfig{
-		MaxParallel:    2,                                  // Conservative for plan mode
-		MaxDepth:       1,                                  // Sub-agents don't spawn further sub-agents
-		DefaultTimeout: 120,                                // 2 min per sub-agent task
-		AllowedAgents:  []string{"codebase", "researcher"}, // Read-only agents only
+		MaxParallel:    2,                                      // Conservative for plan mode
+		MaxDepth:       1,                                      // Sub-agents don't spawn further sub-agents
+		DefaultTimeout: 120,                                    // 2 min per sub-agent task
+		AllowedAgents:  []string{"codebase", "web-researcher"}, // Read-only agents only
 	}
 
 	perms, err := toolConfig.BuildPermissions()

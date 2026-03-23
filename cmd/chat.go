@@ -61,7 +61,7 @@ Examples:
 Agent examples (use @agent shortcut or --agent flag):
   term-llm chat @reviewer                 # code review session
   term-llm chat @editor                   # code editing session
-  term-llm chat @researcher               # research session
+  term-llm chat @web-researcher             # research session
   term-llm chat @agent-builder            # create custom agents
   term-llm chat --agent commit            # alternative syntax
 

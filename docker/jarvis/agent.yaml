@@ -11,4 +11,4 @@ shell:
 max_turns: 200
 search: true
 
-project_instructions: "false"
+agents_md: "false"

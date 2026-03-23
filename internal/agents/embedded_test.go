@@ -74,7 +74,7 @@ func TestIsBuiltinAgent(t *testing.T) {
 		{"developer", true},
 		{"editor", true},
 		{"file-organizer", true},
-		{"researcher", true},
+		{"web-researcher", true},
 		{"reviewer", true},
 		{"shell", true},
 		{"nonexistent", false},
@@ -111,7 +111,7 @@ func TestBuiltinAgentConfigs(t *testing.T) {
 		{"developer", true, 200, true, false, false, true},
 		{"editor", true, 200, false, false, false, true},
 		{"file-organizer", true, 200, true, true, false, false},
-		{"researcher", true, 200, false, false, false, true},
+		{"web-researcher", true, 200, false, false, false, true},
 		{"reviewer", true, 200, true, true, true, false},
 		{"shell", true, 200, false, false, false, true},
 	}
@@ -170,7 +170,7 @@ func TestGetBuiltinAgentNames(t *testing.T) {
 		"developer":      true,
 		"editor":         true,
 		"file-organizer": true,
-		"researcher":     true,
+		"web-researcher": true,
 		"reviewer":       true,
 		"shell":          true,
 	}

@@ -1,6 +1,9 @@
 package agents
 
 import (
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -185,4 +188,126 @@ func TestItoa(t *testing.T) {
 			t.Errorf("itoa(%d) = %q, want %q", tt.input, result, tt.expected)
 		}
 	}
+}
+
+func TestFindFallbackInstructions(t *testing.T) {
+	// Create a temp directory structure: root/sub
+	root := t.TempDir()
+	sub := filepath.Join(root, "sub")
+	os.MkdirAll(sub, 0o755)
+
+	t.Run("no files found", func(t *testing.T) {
+		result := findFallbackInstructions(sub, root)
+		if result != "" {
+			t.Errorf("expected empty, got %q", result)
+		}
+	})
+
+	t.Run("CLAUDE.md in root", func(t *testing.T) {
+		os.WriteFile(filepath.Join(root, "CLAUDE.md"), []byte("claude instructions"), 0o644)
+		defer os.Remove(filepath.Join(root, "CLAUDE.md"))
+
+		result := findFallbackInstructions(sub, root)
+		if result != "claude instructions" {
+			t.Errorf("expected 'claude instructions', got %q", result)
+		}
+	})
+
+	t.Run("CLAUDE.md in cwd takes precedence over root", func(t *testing.T) {
+		os.WriteFile(filepath.Join(root, "CLAUDE.md"), []byte("root claude"), 0o644)
+		os.WriteFile(filepath.Join(sub, "CLAUDE.md"), []byte("sub claude"), 0o644)
+		defer os.Remove(filepath.Join(root, "CLAUDE.md"))
+		defer os.Remove(filepath.Join(sub, "CLAUDE.md"))
+
+		result := findFallbackInstructions(sub, root)
+		if result != "sub claude" {
+			t.Errorf("expected 'sub claude', got %q", result)
+		}
+	})
+}
+
+func TestLoadProjectInstructions_Hierarchy(t *testing.T) {
+	// Create a temp repo with a real git init
+	root := t.TempDir()
+	sub := filepath.Join(root, "sub")
+	os.MkdirAll(sub, 0o755)
+
+	// Initialize a real git repo so findGitRoot works
+	cmd := exec.Command("git", "init", root)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git init failed: %v\n%s", err, out)
+	}
+
+	// Save and restore cwd
+	origCwd, _ := os.Getwd()
+	defer os.Chdir(origCwd)
+
+	t.Run("hierarchical AGENTS.md from root to cwd", func(t *testing.T) {
+		os.WriteFile(filepath.Join(root, "AGENTS.md"), []byte("root agents"), 0o644)
+		os.WriteFile(filepath.Join(sub, "AGENTS.md"), []byte("sub agents"), 0o644)
+		os.Chdir(sub)
+
+		result := loadProjectInstructions()
+		if !strings.Contains(result, "root agents") {
+			t.Errorf("expected root AGENTS.md content, got %q", result)
+		}
+		if !strings.Contains(result, "sub agents") {
+			t.Errorf("expected sub AGENTS.md content, got %q", result)
+		}
+		// root should come before sub
+		rootIdx := strings.Index(result, "root agents")
+		subIdx := strings.Index(result, "sub agents")
+		if rootIdx > subIdx {
+			t.Error("root AGENTS.md should come before sub AGENTS.md")
+		}
+
+		os.Remove(filepath.Join(root, "AGENTS.md"))
+		os.Remove(filepath.Join(sub, "AGENTS.md"))
+	})
+
+	t.Run("AGENTS.override.md takes precedence at same level", func(t *testing.T) {
+		os.WriteFile(filepath.Join(root, "AGENTS.md"), []byte("root agents"), 0o644)
+		os.WriteFile(filepath.Join(root, "AGENTS.override.md"), []byte("root override"), 0o644)
+		os.Chdir(root)
+
+		result := loadProjectInstructions()
+		if !strings.Contains(result, "root override") {
+			t.Errorf("expected override content, got %q", result)
+		}
+		if strings.Contains(result, "root agents") {
+			t.Errorf("AGENTS.md should be skipped when override exists, got %q", result)
+		}
+
+		os.Remove(filepath.Join(root, "AGENTS.md"))
+		os.Remove(filepath.Join(root, "AGENTS.override.md"))
+	})
+
+	t.Run("fallback to CLAUDE.md when no AGENTS.md", func(t *testing.T) {
+		os.WriteFile(filepath.Join(root, "CLAUDE.md"), []byte("claude instructions"), 0o644)
+		os.Chdir(root)
+
+		result := loadProjectInstructions()
+		if !strings.Contains(result, "claude instructions") {
+			t.Errorf("expected CLAUDE.md fallback, got %q", result)
+		}
+
+		os.Remove(filepath.Join(root, "CLAUDE.md"))
+	})
+
+	t.Run("AGENTS.md wins over CLAUDE.md", func(t *testing.T) {
+		os.WriteFile(filepath.Join(root, "AGENTS.md"), []byte("agents instructions"), 0o644)
+		os.WriteFile(filepath.Join(root, "CLAUDE.md"), []byte("claude instructions"), 0o644)
+		os.Chdir(root)
+
+		result := loadProjectInstructions()
+		if !strings.Contains(result, "agents instructions") {
+			t.Errorf("expected AGENTS.md content, got %q", result)
+		}
+		if strings.Contains(result, "claude instructions") {
+			t.Errorf("CLAUDE.md should not be loaded when AGENTS.md exists, got %q", result)
+		}
+
+		os.Remove(filepath.Join(root, "AGENTS.md"))
+		os.Remove(filepath.Join(root, "CLAUDE.md"))
+	})
 }

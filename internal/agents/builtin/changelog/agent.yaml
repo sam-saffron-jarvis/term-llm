@@ -1,5 +1,6 @@
 name: changelog
 description: "Generate human-readable reports on interesting activity in a git repo"
+agents_md: "true"
 
 tools:
   enabled: [read_file, grep, shell]

@@ -9,6 +9,8 @@ import (
 	"runtime"
 	"strings"
 	"time"
+
+	"github.com/samsaffron/term-llm/internal/config"
 )
 
 // TemplateContext holds values for template variable expansion.
@@ -101,9 +103,9 @@ func newTemplateContext(computeGitDiffStat, computeAgents bool) TemplateContext 
 		ctx.GitDiffStat = getGitDiffStat()
 	}
 
-	// Only discover agent instructions if needed (reads files from disk)
+	// Only load project instructions if needed (reads files from disk)
 	if computeAgents {
-		ctx.Agents = discoverAgentInstructions()
+		ctx.Agents = loadProjectInstructions()
 	}
 
 	return ctx
@@ -259,10 +261,9 @@ func itoa(n int) string {
 	return string(digits)
 }
 
-// agentInstructionFiles lists files to search for in priority order.
-// Returns content from the first file found.
-var agentInstructionFiles = []string{
-	"AGENTS.md",                       // Emerging standard (Linux Foundation)
+// fallbackInstructionFiles is the list of fallback files to search when no AGENTS.md
+// is found in the project hierarchy.
+var fallbackInstructionFiles = []string{
 	"CLAUDE.md",                       // Claude Code specific
 	".github/copilot-instructions.md", // GitHub Copilot
 	".cursor/rules",                   // Cursor
@@ -270,60 +271,106 @@ var agentInstructionFiles = []string{
 	".github/CONTRIBUTING.md",         // GitHub-style location
 }
 
-// DiscoverProjectInstructions searches for project agent instruction files.
-// First checks the current directory, then walks up to the git root (if any).
-// Returns the content of the first file found, with a header indicating the source.
-// Returns empty string if no files are found.
-// Exported for use by cmd packages when project_instructions is enabled.
+// DiscoverProjectInstructions loads project instructions using a unified algorithm:
+//
+//  1. User-level: ~/.config/term-llm/AGENTS.md
+//  2. Project-level: hierarchical AGENTS.md from repo root → cwd
+//     At each directory level, AGENTS.override.md takes precedence over AGENTS.md.
+//  3. Fallback (only if step 2 found nothing): CLAUDE.md, copilot-instructions.md, etc.
+//
+// All found parts are joined with "\n\n---\n\n".
+// Returns empty string if nothing is found.
 func DiscoverProjectInstructions() string {
-	return discoverAgentInstructions()
+	return loadProjectInstructions()
 }
 
-// discoverAgentInstructions searches for project agent instruction files.
-// First checks the current directory, then walks up to the git root (if any).
-// Returns the content of the first file found, with a header indicating the source.
-// Returns empty string if no files are found.
-func discoverAgentInstructions() string {
-	cwd, err := os.Getwd()
-	if err != nil {
-		return ""
+// loadProjectInstructions implements the unified project instructions loading.
+func loadProjectInstructions() string {
+	var parts []string
+
+	// 1. User-level AGENTS.md (~/.config/term-llm/AGENTS.md)
+	if configDir, err := config.GetConfigDir(); err == nil {
+		userAgentsPath := filepath.Join(configDir, "AGENTS.md")
+		if content, err := os.ReadFile(userAgentsPath); err == nil && len(content) > 0 {
+			parts = append(parts, string(content))
+		}
 	}
 
-	// Build list of directories to search: cwd first, then walk up to git root
-	dirsToSearch := []string{cwd}
+	cwd, err := os.Getwd()
+	if err != nil {
+		return strings.Join(parts, "\n\n---\n\n")
+	}
 
-	// Find git root if we're in a repo
-	gitRoot := findGitRoot(cwd)
-	if gitRoot != "" && gitRoot != cwd {
-		// Walk up from cwd to git root, adding each directory
+	// 2. Project-level: hierarchical AGENTS.md from repo root → cwd
+	repoRoot := findGitRoot(cwd)
+	if repoRoot == "" {
+		repoRoot = cwd
+	}
+
+	var projectParts []string
+
+	// Build directory list from repo root → cwd (root first)
+	dirs := []string{repoRoot}
+	rel, _ := filepath.Rel(repoRoot, cwd)
+	if rel != "." && rel != "" {
+		current := repoRoot
+		for _, segment := range strings.Split(rel, string(filepath.Separator)) {
+			current = filepath.Join(current, segment)
+			dirs = append(dirs, current)
+		}
+	}
+
+	for _, dir := range dirs {
+		// AGENTS.override.md takes precedence at each level
+		if content, err := os.ReadFile(filepath.Join(dir, "AGENTS.override.md")); err == nil && len(content) > 0 {
+			projectParts = append(projectParts, string(content))
+			continue
+		}
+		if content, err := os.ReadFile(filepath.Join(dir, "AGENTS.md")); err == nil && len(content) > 0 {
+			projectParts = append(projectParts, string(content))
+		}
+	}
+
+	if len(projectParts) > 0 {
+		parts = append(parts, projectParts...)
+	} else {
+		// 3. Fallback: search cwd → root for first match
+		fallback := findFallbackInstructions(cwd, repoRoot)
+		if fallback != "" {
+			parts = append(parts, fallback)
+		}
+	}
+
+	if len(parts) == 0 {
+		return ""
+	}
+	return strings.Join(parts, "\n\n---\n\n")
+}
+
+// findFallbackInstructions searches from cwd up to repoRoot for the first
+// matching fallback instruction file (CLAUDE.md, copilot-instructions.md, etc.).
+func findFallbackInstructions(cwd, repoRoot string) string {
+	// Build list: cwd first, then walk up to repo root
+	dirsToSearch := []string{cwd}
+	if repoRoot != cwd {
 		dir := filepath.Dir(cwd)
-		for dir != gitRoot && strings.HasPrefix(dir, gitRoot) {
+		for dir != repoRoot && strings.HasPrefix(dir, repoRoot) {
 			dirsToSearch = append(dirsToSearch, dir)
 			dir = filepath.Dir(dir)
 		}
-		// Add git root last
-		dirsToSearch = append(dirsToSearch, gitRoot)
+		dirsToSearch = append(dirsToSearch, repoRoot)
 	}
 
-	// Search each directory for instruction files
 	for _, dir := range dirsToSearch {
-		for _, filename := range agentInstructionFiles {
+		for _, filename := range fallbackInstructionFiles {
 			path := filepath.Join(dir, filename)
 			content, err := os.ReadFile(path)
 			if err == nil && len(content) > 0 {
-				// Return with a header indicating the source
-				relPath := filename
-				if dir != cwd {
-					if rel, err := filepath.Rel(cwd, path); err == nil {
-						relPath = rel
-					}
-				}
-				return "# Project Instructions (from " + relPath + ")\n\n" + string(content)
+				return string(content)
 			}
 		}
 	}
-
-	return "" // No agent instruction files found
+	return ""
 }
 
 // findGitRoot returns the git repository root for the given path, or empty string if not in a repo.

@@ -317,13 +317,13 @@ func TestSpawnAgentTool_AllowedAgentsWhitelist(t *testing.T) {
 		},
 		{
 			name:          "agent in whitelist is allowed",
-			allowedAgents: []string{"reviewer", "researcher", "test-agent"},
-			agentName:     "researcher",
+			allowedAgents: []string{"reviewer", "web-researcher", "test-agent"},
+			agentName:     "web-researcher",
 			expectError:   false,
 		},
 		{
 			name:          "agent not in whitelist is rejected",
-			allowedAgents: []string{"reviewer", "researcher"},
+			allowedAgents: []string{"reviewer", "web-researcher"},
 			agentName:     "hacker",
 			expectError:   true,
 		},
@@ -489,8 +489,8 @@ func TestSpawnAgentTool_Preview(t *testing.T) {
 		},
 		{
 			name:     "long prompt is truncated",
-			args:     makeSpawnArgs("researcher", "this is a very long prompt that should be truncated because it exceeds fifty characters", 0),
-			expected: "@researcher: this is a very long prompt that should be trunc...",
+			args:     makeSpawnArgs("web-researcher", "this is a very long prompt that should be truncated because it exceeds fifty characters", 0),
+			expected: "@web-researcher: this is a very long prompt that should be trunc...",
 		},
 		{
 			name:     "empty agent_name returns empty",

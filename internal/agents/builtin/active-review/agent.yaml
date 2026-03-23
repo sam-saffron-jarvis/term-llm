@@ -1,5 +1,6 @@
 name: active-review
 description: "Review code and implement fixes using sub-agents"
+agents_md: "true"
 
 default_prompt: "Review uncommitted changes and fix any issues found"
 

@@ -66,14 +66,12 @@ mcp:
 - `{{git_branch}}`, `{{git_repo}}`, `{{git_diff_stat}}`
 - `{{files}}`, `{{file_count}}` (from -f flags)
 - `{{os}}`, `{{platform}}`, `{{resource_dir}}`
-- `{{agents}}` - Auto-discovers project instructions (AGENTS.md, CLAUDE.md, etc.)
+- `{{agents}}` - Loads project instructions (hierarchical AGENTS.md + fallbacks)
 
-**The `{{agents}}` variable** searches in priority order and returns the first found:
-1. AGENTS.md (emerging standard)
-2. CLAUDE.md (Claude-specific)
-3. .github/copilot-instructions.md
-4. .cursor/rules
-5. CONTRIBUTING.md
+**The `{{agents}}` variable** loads project instructions using:
+1. User-level: `~/.config/term-llm/AGENTS.md` (always included if present)
+2. Project-level: AGENTS.md hierarchy from repo root → cwd (at each level, AGENTS.override.md takes precedence over AGENTS.md)
+3. Fallback (only if no AGENTS.md found): CLAUDE.md, .github/copilot-instructions.md, .cursor/rules, CONTRIBUTING.md
 
 **Bundled scripts** - Agents can bundle shell scripts in their directory:
 - Add `run_agent_script` to `tools.enabled` to let the agent call its own scripts by filename: `run_agent_script(script: "deploy.sh", args: "prod")`

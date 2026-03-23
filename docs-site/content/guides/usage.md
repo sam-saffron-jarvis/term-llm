@@ -28,7 +28,7 @@ Use the `@agent` prefix syntax to use a specific agent:
 ```bash
 term-llm ask @reviewer "review this code"     # use reviewer agent
 term-llm chat @codebase                        # explore a repository
-term-llm loop @researcher --done-file ...     # use researcher agent in loop
+term-llm loop @web-researcher --done-file ...  # use web-researcher agent in loop
 term-llm ask @shell "find the 3 biggest files"
 ```
 

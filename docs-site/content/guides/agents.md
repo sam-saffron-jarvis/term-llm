@@ -11,7 +11,7 @@ next:
 ---
 Agents are named workflow bundles. An agent can carry its own system prompt, provider and model preferences, tool permissions, MCP servers, shell allowlists, and turn limits.
 
-That means you can stop restating the same intent over and over. Use `@reviewer` when you want review behavior, `@codebase` when you want repository exploration, `@researcher` when you want web-backed investigation, and so on.
+That means you can stop restating the same intent over and over. Use `@reviewer` when you want review behavior, `@codebase` when you want repository exploration, `@web-researcher` when you want web-backed investigation, and so on.
 
 ## Using agents
 
@@ -20,7 +20,7 @@ Use the `@agent` prefix syntax or `--agent` flag:
 ```bash
 term-llm ask @reviewer "review this code" -f main.go
 term-llm chat @codebase
-term-llm ask --agent researcher "Find info about Go 1.24"
+term-llm ask --agent web-researcher "Find info about Go 1.24"
 ```
 
 ## Built-in agents
@@ -44,7 +44,7 @@ term-llm ships with these built-in agents:
 | `developer` | Implements code changes, fixes, and features. |
 | `editor` | Focused file editing without shell access. |
 | `file-organizer` | Renames and organizes files into sensible names and folders. |
-| `researcher` | Information gathering with web search. |
+| `web-researcher` | Information gathering with web search. |
 | `reviewer` | Read-only code review with git-aware inspection tools. |
 | `shell` | General shell command helper. |
 
@@ -53,7 +53,7 @@ A few good starting points:
 - `@reviewer` for code review without letting the model edit files
 - `@codebase` for architecture questions and tracing behavior across a repo
 - `@developer` when you want implementation work done
-- `@researcher` when the answer depends on current web information
+- `@web-researcher` when the answer depends on current web information
 - `@commit-message` when you want a clean commit message without fuss
 
 ## Managing agents
@@ -107,7 +107,7 @@ mcp:
   - name: github
 ```
 
-Built-in agents that currently default to `search: true`: `agent-builder`, `researcher`, `developer`, `editor`, `shell`.
+Built-in agents that currently default to `search: true`: `agent-builder`, `web-researcher`, `developer`, `editor`, `shell`.
 
 ## System prompt file includes
 

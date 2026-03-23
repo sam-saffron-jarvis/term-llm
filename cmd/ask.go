@@ -85,7 +85,7 @@ Agent examples (use @agent shortcut or --agent flag):
   term-llm ask @commit-message              (uses default prompt)
   term-llm ask @commit-message "focus on the bug fix"
   term-llm ask @editor "Add error handling" -f utils.go
-  term-llm ask --agent researcher "Find info about Go 1.22"
+  term-llm ask --agent web-researcher "Find info about Go 1.22"
 
 Line range syntax for files:
   main.go       - Include entire file

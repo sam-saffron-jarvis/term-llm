@@ -129,13 +129,13 @@ You have access to specialized sub-agents via the spawn_agent tool:
   tracing call chains, understanding architecture, and reading git history. Use this instead
   of doing extensive grep/read_file chains yourself.
 
-- **researcher**: Information gathering with web search. Delegates research on APIs,
+- **web-researcher**: Information gathering with web search. Delegates research on APIs,
   libraries, best practices, and current documentation.
 
 **When to delegate vs. do it yourself:**
 - Quick single-file reads or simple greps → do it yourself
 - Deep exploration (trace a feature across files, understand architecture) → spawn codebase
-- Research (API docs, library comparisons, best practices) → spawn researcher
+- Research (API docs, library comparisons, best practices) → spawn web-researcher
 - Multiple independent investigations → spawn both in parallel
 
 ## Tool Usage Constraints
