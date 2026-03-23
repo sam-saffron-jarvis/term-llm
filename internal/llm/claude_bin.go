@@ -172,14 +172,7 @@ func (p *ClaudeBinProvider) SetToolExecutor(executor func(ctx context.Context, n
 	// paths in the response text so Claude CLI can read them natively as vision inputs.
 	p.toolExecutor = func(ctx context.Context, name string, args json.RawMessage) (string, error) {
 		output, err := executor(ctx, name, args)
-		if err != nil {
-			return output.Content, err
-		}
-		result := &ToolResult{
-			Content:      output.Content,
-			ContentParts: output.ContentParts,
-		}
-		return p.processToolResultContent(result), nil
+		return p.formatToolOutputForClaude(output), err
 	}
 }
 
@@ -226,6 +219,10 @@ func (p *ClaudeBinProvider) Stream(ctx context.Context, req Request) (Stream, er
 		// Build the conversation prompt from messages to send.
 		// Use stream-json format when images are present so the model can vision-analyze them.
 		useStreamJson := hasImages(messagesToSend)
+		if useStreamJson && strings.TrimSpace(p.buildStreamJsonInput(messagesToSend, p.sessionID)) == "" {
+			slog.Warn("claude-bin stream-json input was empty despite image detection; falling back to text prompt")
+			useStreamJson = false
+		}
 		// buildPrompt produces the full stdin payload for a set of messages.
 		// For text mode it prepends the system prompt so retries keep it too.
 		// For stream-json mode the system prompt goes on argv instead.
@@ -855,7 +852,7 @@ func (p *ClaudeBinProvider) createHTTPMCPConfig(ctx context.Context, tools []Too
 		// Wait for engine to execute and return result
 		select {
 		case response := <-responseChan:
-			return response.Result.Content, response.Err
+			return p.formatToolOutputForClaude(response.Result), response.Err
 		case <-ctx.Done():
 			return "", ctx.Err()
 		}
@@ -1201,7 +1198,7 @@ func hasImages(messages []Message) bool {
 type sdkUserMessage struct {
 	Type            string            `json:"type"`
 	SessionID       string            `json:"session_id"`
-	ParentToolUseID *string           `json:"parent_tool_use_id"`
+	ParentToolUseID *string           `json:"parent_tool_use_id,omitempty"`
 	Message         sdkMessageContent `json:"message"`
 }
 
@@ -1222,107 +1219,134 @@ type sdkImageSource struct {
 	Data      string `json:"data"`
 }
 
-// buildStreamJsonInput produces newline-delimited stream-json messages for all
-// user messages in msgs. Images from tool results are prepended to the last user
-// message so the model sees them in context.
+// buildStreamJsonInput produces newline-delimited stream-json messages in
+// message order. User messages are emitted as normal. Tool result images are
+// replayed as synthetic follow-up user messages tied to the originating tool
+// call via parent_tool_use_id so Claude can vision-analyze them on resume.
 func (p *ClaudeBinProvider) buildStreamJsonInput(messages []Message, sessionID string) string {
-	// Collect images from tool results — they are injected into the last user message.
-	var toolImages []sdkContentBlock
-	for _, msg := range messages {
-		if msg.Role != RoleTool {
-			continue
-		}
-		for _, part := range msg.Parts {
-			if part.Type != PartToolResult || part.ToolResult == nil {
-				continue
-			}
-			for _, cp := range toolResultContentParts(part.ToolResult) {
-				mediaType, base64Data, ok := toolResultImageData(cp)
-				if !ok {
-					continue
-				}
-				toolImages = append(toolImages, sdkContentBlock{
-					Type: "image",
-					Source: &sdkImageSource{
-						Type:      "base64",
-						MediaType: mediaType,
-						Data:      base64Data,
-					},
-				})
-			}
-		}
-	}
-
-	// Build content blocks for each user message.
-	var userMsgs []sdkMessageContent
-	for _, msg := range messages {
-		if msg.Role != RoleUser {
-			continue
-		}
-		var blocks []sdkContentBlock
-		for _, part := range msg.Parts {
-			switch part.Type {
-			case PartText:
-				if part.Text != "" {
-					blocks = append(blocks, sdkContentBlock{Type: "text", Text: part.Text})
-				}
-			case PartImage:
-				mediaType, base64Data := "", ""
-				if part.ImageData != nil && part.ImageData.Base64 != "" {
-					mediaType = part.ImageData.MediaType
-					base64Data = part.ImageData.Base64
-				} else if part.ImagePath != "" {
-					data, err := os.ReadFile(part.ImagePath)
-					if err == nil {
-						mediaType = mediaTypeFromPath(part.ImagePath)
-						base64Data = base64.StdEncoding.EncodeToString(data)
-					}
-				}
-				if mediaType != "" && base64Data != "" {
-					blocks = append(blocks, sdkContentBlock{
-						Type: "image",
-						Source: &sdkImageSource{
-							Type:      "base64",
-							MediaType: mediaType,
-							Data:      base64Data,
-						},
-					})
-					if part.ImagePath != "" {
-						blocks = append(blocks, sdkContentBlock{Type: "text", Text: "[image saved at: " + part.ImagePath + "]"})
-					}
-				}
-			}
-		}
-		if len(blocks) > 0 {
-			userMsgs = append(userMsgs, sdkMessageContent{Role: "user", Content: blocks})
-		}
-	}
-
-	if len(userMsgs) == 0 {
-		return ""
-	}
-
-	// Prepend tool result images to the last user message so the model sees them.
-	if len(toolImages) > 0 {
-		last := &userMsgs[len(userMsgs)-1]
-		last.Content = append(toolImages, last.Content...)
-	}
-
-	// Serialize as newline-delimited JSON.
 	var lines []string
-	for _, content := range userMsgs {
+	appendUserMessage := func(content []sdkContentBlock, parentToolUseID *string) {
+		if len(content) == 0 {
+			return
+		}
 		msg := sdkUserMessage{
-			Type:      "user",
-			SessionID: sessionID,
-			Message:   content,
+			Type:            "user",
+			SessionID:       sessionID,
+			ParentToolUseID: parentToolUseID,
+			Message: sdkMessageContent{
+				Role:    "user",
+				Content: content,
+			},
 		}
 		data, err := json.Marshal(msg)
 		if err != nil {
-			continue
+			return
 		}
 		lines = append(lines, string(data))
 	}
+
+	for _, msg := range messages {
+		switch msg.Role {
+		case RoleUser:
+			appendUserMessage(buildSDKUserContentBlocks(msg.Parts), nil)
+		case RoleTool:
+			for _, part := range msg.Parts {
+				if part.Type != PartToolResult || part.ToolResult == nil {
+					continue
+				}
+				blocks := buildSDKToolResultImageBlocks(part.ToolResult)
+				if len(blocks) == 0 {
+					continue
+				}
+				var parentToolUseID *string
+				if id := strings.TrimSpace(part.ToolResult.ID); id != "" {
+					parentToolUseID = &id
+				}
+				appendUserMessage(blocks, parentToolUseID)
+			}
+		}
+	}
+
 	return strings.Join(lines, "\n")
+}
+
+func (p *ClaudeBinProvider) formatToolOutputForClaude(output ToolOutput) string {
+	return p.processToolResultContent(&ToolResult{
+		Content:      output.Content,
+		ContentParts: output.ContentParts,
+	})
+}
+
+func buildSDKUserContentBlocks(parts []Part) []sdkContentBlock {
+	blocks := make([]sdkContentBlock, 0, len(parts))
+	for _, part := range parts {
+		switch part.Type {
+		case PartText:
+			if part.Text != "" {
+				blocks = append(blocks, sdkContentBlock{Type: "text", Text: part.Text})
+			}
+		case PartImage:
+			imageBlock, imagePath, ok := buildSDKImageBlock(part.ImagePath, part.ImageData)
+			if !ok {
+				continue
+			}
+			blocks = append(blocks, imageBlock)
+			if imagePath != "" {
+				blocks = append(blocks, sdkContentBlock{Type: "text", Text: "[image saved at: " + imagePath + "]"})
+			}
+		}
+	}
+	return blocks
+}
+
+func buildSDKToolResultImageBlocks(result *ToolResult) []sdkContentBlock {
+	if result == nil {
+		return nil
+	}
+
+	var blocks []sdkContentBlock
+	for _, part := range toolResultContentParts(result) {
+		mediaType, base64Data, ok := toolResultImageData(part)
+		if !ok {
+			continue
+		}
+		blocks = append(blocks, sdkContentBlock{
+			Type: "image",
+			Source: &sdkImageSource{
+				Type:      "base64",
+				MediaType: mediaType,
+				Data:      base64Data,
+			},
+		})
+	}
+	return blocks
+}
+
+func buildSDKImageBlock(imagePath string, imageData *ToolImageData) (sdkContentBlock, string, bool) {
+	mediaType, base64Data := "", ""
+	switch {
+	case imageData != nil && imageData.Base64 != "":
+		mediaType = imageData.MediaType
+		base64Data = imageData.Base64
+	case imagePath != "":
+		data, err := os.ReadFile(imagePath)
+		if err != nil {
+			return sdkContentBlock{}, "", false
+		}
+		mediaType = mediaTypeFromPath(imagePath)
+		base64Data = base64.StdEncoding.EncodeToString(data)
+	}
+	if mediaType == "" || base64Data == "" {
+		return sdkContentBlock{}, "", false
+	}
+	return sdkContentBlock{
+		Type: "image",
+		Source: &sdkImageSource{
+			Type:      "base64",
+			MediaType: mediaType,
+			Data:      base64Data,
+		},
+	}, imagePath, true
 }
 
 // mediaTypeFromPath returns an image MIME type based on the file extension.

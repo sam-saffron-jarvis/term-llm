@@ -713,15 +713,62 @@ func TestBuildStreamJsonInput_UserPastedImage(t *testing.T) {
 	}
 }
 
-func TestBuildStreamJsonInput_ToolResultImagePrependedToLastUser(t *testing.T) {
+func TestBuildStreamJsonInput_ToolResultImageWithoutUserMessageEmitsSyntheticTurn(t *testing.T) {
+	p := NewClaudeBinProvider("sonnet", nil)
+	msgs := []Message{
+		{Role: RoleAssistant, Parts: []Part{{Type: PartText, Text: "let me inspect that image"}}},
+		{Role: RoleTool, Parts: []Part{
+			{Type: PartToolResult, ToolResult: &ToolResult{
+				ID:   "tool-123",
+				Name: "view_image",
+				ContentParts: []ToolContentPart{
+					{Type: ToolContentPartText, Text: "Image loaded"},
+					{Type: ToolContentPartImageData, ImageData: &ToolImageData{
+						MediaType: "image/png",
+						Base64:    "aGVsbG8=",
+					}},
+				},
+			}},
+		}},
+	}
+	out := p.buildStreamJsonInput(msgs, "sess-abc")
+	if out == "" {
+		t.Fatal("expected non-empty output")
+	}
+
+	parsed := parseSDKUserMessages(t, out)
+	if len(parsed) != 1 {
+		t.Fatalf("expected 1 synthetic user message, got %d", len(parsed))
+	}
+
+	msg := parsed[0]
+	if msg.SessionID != "sess-abc" {
+		t.Errorf("expected session_id 'sess-abc', got %q", msg.SessionID)
+	}
+	if msg.ParentToolUseID == nil || *msg.ParentToolUseID != "tool-123" {
+		t.Fatalf("expected parent_tool_use_id 'tool-123', got %+v", msg.ParentToolUseID)
+	}
+	if msg.Message.Role != "user" {
+		t.Fatalf("expected synthetic message role 'user', got %q", msg.Message.Role)
+	}
+	if len(msg.Message.Content) != 1 {
+		t.Fatalf("expected synthetic message to contain only the image block, got %+v", msg.Message.Content)
+	}
+	block := msg.Message.Content[0]
+	if block.Type != "image" || block.Source == nil || block.Source.Data != "aGVsbG8=" {
+		t.Fatalf("expected synthetic image block, got %+v", block)
+	}
+}
+
+func TestBuildStreamJsonInput_ToolResultImageBeforeRealUserPreservesOrder(t *testing.T) {
 	p := NewClaudeBinProvider("sonnet", nil)
 	msgs := []Message{
 		{Role: RoleTool, Parts: []Part{
 			{Type: PartToolResult, ToolResult: &ToolResult{
-				ID:   "1",
-				Name: "screenshot",
+				ID:   "tool-456",
+				Name: "view_image",
 				ContentParts: []ToolContentPart{
-					{Type: ToolContentPartText, Text: "screenshot taken"},
+					{Type: ToolContentPartText, Text: "Image loaded"},
 					{Type: ToolContentPartImageData, ImageData: &ToolImageData{
 						MediaType: "image/png",
 						Base64:    "aGVsbG8=",
@@ -736,25 +783,25 @@ func TestBuildStreamJsonInput_ToolResultImagePrependedToLastUser(t *testing.T) {
 		t.Fatal("expected non-empty output")
 	}
 
-	var msg sdkUserMessage
-	if err := json.Unmarshal([]byte(out), &msg); err != nil {
-		t.Fatalf("failed to parse: %v", err)
-	}
-	if msg.SessionID != "sess-abc" {
-		t.Errorf("expected session_id 'sess-abc', got %q", msg.SessionID)
+	parsed := parseSDKUserMessages(t, out)
+	if len(parsed) != 2 {
+		t.Fatalf("expected 2 stream-json user messages, got %d", len(parsed))
 	}
 
-	// Tool image should be first, user text should be last
-	if len(msg.Message.Content) < 2 {
-		t.Fatalf("expected at least 2 content blocks, got %d", len(msg.Message.Content))
+	first := parsed[0]
+	if first.ParentToolUseID == nil || *first.ParentToolUseID != "tool-456" {
+		t.Fatalf("expected first message parent_tool_use_id 'tool-456', got %+v", first.ParentToolUseID)
 	}
-	first := msg.Message.Content[0]
-	if first.Type != "image" || first.Source == nil || first.Source.Data != "aGVsbG8=" {
-		t.Errorf("expected tool image as first content block, got %+v", first)
+	if len(first.Message.Content) != 1 || first.Message.Content[0].Type != "image" {
+		t.Fatalf("expected first message to contain only the synthetic tool image, got %+v", first.Message.Content)
 	}
-	last := msg.Message.Content[len(msg.Message.Content)-1]
-	if last.Type != "text" || last.Text != "what is shown?" {
-		t.Errorf("expected user text as last content block, got %+v", last)
+
+	second := parsed[1]
+	if second.ParentToolUseID != nil {
+		t.Fatalf("expected real user message to have no parent_tool_use_id, got %+v", second.ParentToolUseID)
+	}
+	if len(second.Message.Content) != 1 || second.Message.Content[0].Type != "text" || second.Message.Content[0].Text != "what is shown?" {
+		t.Fatalf("expected real user text message second, got %+v", second.Message.Content)
 	}
 }
 
@@ -789,6 +836,53 @@ func TestBuildStreamJsonInput_SessionID(t *testing.T) {
 	if msg.SessionID != "resume-session-123" {
 		t.Errorf("expected session_id 'resume-session-123', got %q", msg.SessionID)
 	}
+}
+
+func TestFormatToolOutputForClaude_UsesStructuredImageParts(t *testing.T) {
+	p := NewClaudeBinProvider("sonnet", nil)
+
+	formatted := p.formatToolOutputForClaude(ToolOutput{
+		Content: "Image loaded",
+		ContentParts: []ToolContentPart{
+			{Type: ToolContentPartText, Text: "Image loaded"},
+			{Type: ToolContentPartImageData, ImageData: &ToolImageData{
+				MediaType: "image/png",
+				Base64:    "aGVsbG8=",
+			}},
+		},
+	})
+
+	lines := strings.Split(strings.TrimSpace(formatted), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("expected formatted output to include text and image path, got %q", formatted)
+	}
+	if lines[0] != "Image loaded" {
+		t.Fatalf("expected first line to keep text output, got %q", lines[0])
+	}
+	if lines[1] == "" {
+		t.Fatal("expected second line to contain image path")
+	}
+	if _, err := os.Stat(lines[1]); err != nil {
+		t.Fatalf("expected materialized image path %q to exist: %v", lines[1], err)
+	}
+}
+
+func parseSDKUserMessages(t *testing.T, input string) []sdkUserMessage {
+	t.Helper()
+
+	lines := strings.Split(strings.TrimSpace(input), "\n")
+	msgs := make([]sdkUserMessage, 0, len(lines))
+	for _, line := range lines {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		var msg sdkUserMessage
+		if err := json.Unmarshal([]byte(line), &msg); err != nil {
+			t.Fatalf("failed to parse stream-json line %q: %v", line, err)
+		}
+		msgs = append(msgs, msg)
+	}
+	return msgs
 }
 
 // testTool is a simple tool implementation for testing.
