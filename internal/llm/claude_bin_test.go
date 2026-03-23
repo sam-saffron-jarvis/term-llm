@@ -224,6 +224,61 @@ func TestDispatchClaudeEvents_FallsBackToAssistantTextWhenNoDeltas(t *testing.T)
 	}
 }
 
+func TestDispatchClaudeEvents_FallsBackToResultTextWhenNoAssistantOrDeltas(t *testing.T) {
+	provider := NewClaudeBinProvider("sonnet", nil)
+	events := make(chan Event, 8)
+	lines := make(chan string, 2)
+	toolReqs := make(chan claudeToolRequest, 1)
+
+	lines <- `{"type":"result","subtype":"success","is_error":false,"result":"result fallback text","usage":{"input_tokens":1,"output_tokens":3,"cache_read_input_tokens":0}}`
+	close(lines)
+
+	_, err := provider.dispatchClaudeEvents(context.Background(), lines, toolReqs, false, events)
+	if err != nil {
+		t.Fatalf("dispatch failed: %v", err)
+	}
+
+	select {
+	case ev := <-events:
+		if ev.Type != EventTextDelta {
+			t.Fatalf("expected EventTextDelta, got %+v", ev)
+		}
+		if ev.Text != "result fallback text" {
+			t.Fatalf("unexpected result fallback text: %q", ev.Text)
+		}
+	default:
+		t.Fatal("expected result fallback text event when no assistant or deltas are present")
+	}
+}
+
+func TestDispatchClaudeEvents_EmitsStreamlinedText(t *testing.T) {
+	provider := NewClaudeBinProvider("sonnet", nil)
+	events := make(chan Event, 8)
+	lines := make(chan string, 2)
+	toolReqs := make(chan claudeToolRequest, 1)
+
+	lines <- `{"type":"streamlined_text","text":"streamlined assistant text"}`
+	lines <- `{"type":"result","subtype":"success","is_error":false,"result":"ignored final result","usage":{"input_tokens":1,"output_tokens":3,"cache_read_input_tokens":0}}`
+	close(lines)
+
+	_, err := provider.dispatchClaudeEvents(context.Background(), lines, toolReqs, false, events)
+	if err != nil {
+		t.Fatalf("dispatch failed: %v", err)
+	}
+
+	select {
+	case ev := <-events:
+		if ev.Type != EventTextDelta {
+			t.Fatalf("expected EventTextDelta, got %+v", ev)
+		}
+		if ev.Text != "streamlined assistant text" {
+			t.Fatalf("unexpected streamlined text: %q", ev.Text)
+		}
+	default:
+		t.Fatal("expected streamlined text event")
+	}
+}
+
 func TestDispatchClaudeEvents_DoesNotDuplicateAssistantFallbackWhenDeltasPresent(t *testing.T) {
 	provider := NewClaudeBinProvider("sonnet", nil)
 	events := make(chan Event, 8)
@@ -404,7 +459,7 @@ func TestClaudeBinProvider_BuildArgsDangerousPermissionsRespectsEuid(t *testing.
 	origGetEuid := getEuid
 	defer func() { getEuid = origGetEuid }()
 
-	t.Run("non-root includes flag", func(t *testing.T) {
+	t.Run("non-root includes dangerous skip flag", func(t *testing.T) {
 		getEuid = func() int { return 1000 }
 		p := NewClaudeBinProvider("sonnet", nil)
 		args, _ := p.buildArgs(context.Background(), Request{}, nil)
@@ -412,15 +467,34 @@ func TestClaudeBinProvider_BuildArgsDangerousPermissionsRespectsEuid(t *testing.
 		if !strings.Contains(joined, "--dangerously-skip-permissions") {
 			t.Fatal("expected --dangerously-skip-permissions for non-root")
 		}
+		if strings.Contains(joined, "--permission-mode\nbypassPermissions") {
+			t.Fatal("did not expect bypassPermissions permission mode for non-root")
+		}
 	})
 
-	t.Run("root omits flag", func(t *testing.T) {
+	t.Run("root sandbox uses bypass permission mode", func(t *testing.T) {
+		getEuid = func() int { return 0 }
+		p := NewClaudeBinProvider("sonnet", map[string]string{"IS_SANDBOX": "1"})
+		args, _ := p.buildArgs(context.Background(), Request{}, nil)
+		joined := strings.Join(args, "\n")
+		if strings.Contains(joined, "--dangerously-skip-permissions") {
+			t.Fatal("expected claude-bin args to omit --dangerously-skip-permissions when running as root")
+		}
+		if !strings.Contains(joined, "--permission-mode\nbypassPermissions") {
+			t.Fatal("expected root sandbox runs to request bypassPermissions mode")
+		}
+	})
+
+	t.Run("root outside sandbox omits bypass flags", func(t *testing.T) {
 		getEuid = func() int { return 0 }
 		p := NewClaudeBinProvider("sonnet", nil)
 		args, _ := p.buildArgs(context.Background(), Request{}, nil)
 		joined := strings.Join(args, "\n")
 		if strings.Contains(joined, "--dangerously-skip-permissions") {
 			t.Fatal("expected claude-bin args to omit --dangerously-skip-permissions when running as root")
+		}
+		if strings.Contains(joined, "--permission-mode\nbypassPermissions") {
+			t.Fatal("did not expect bypassPermissions mode outside sandbox")
 		}
 	})
 }
