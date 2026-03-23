@@ -134,6 +134,7 @@ func (m *Model) sendMessage(content string) (tea.Model, tea.Cmd) {
 	m.files = nil
 	m.images = nil
 	m.selectedImage = -1
+	m.pasteChunks = nil
 
 	// Start streaming
 	m.streaming = true

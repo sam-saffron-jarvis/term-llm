@@ -2,6 +2,8 @@ package chat
 
 import (
 	"context"
+	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -304,5 +306,117 @@ func TestHandleKeyMsg_StreamingEscCancelsActiveStream(t *testing.T) {
 	}
 	if m.streaming {
 		t.Fatal("expected esc to end streaming mode immediately")
+	}
+}
+
+func TestPasteCollapse_LargePasteBecomesInlinePlaceholder(t *testing.T) {
+	m := newTestChatModel(false)
+
+	// 100+ chars to trigger collapse
+	pasteText := strings.Repeat("abcdefghij", 11) // 110 chars
+
+	_, _ = m.handleKeyMsg(tea.KeyMsg{
+		Type:  tea.KeyRunes,
+		Runes: []rune(pasteText),
+		Paste: true,
+	})
+
+	// Placeholder should be in the textarea, not the literal paste
+	got := m.textarea.Value()
+	if got == pasteText {
+		t.Fatal("expected paste to be collapsed, but literal text appeared in textarea")
+	}
+	if !strings.Contains(got, "[Pasted text #1") {
+		t.Fatalf("expected inline placeholder in textarea, got %q", got)
+	}
+
+	// Actual content stored in pasteChunks map
+	if len(m.pasteChunks) != 1 {
+		t.Fatalf("expected 1 paste chunk, got %d", len(m.pasteChunks))
+	}
+	if m.pasteChunks[1] != pasteText {
+		t.Fatal("paste chunk content mismatch")
+	}
+}
+
+func TestPasteCollapse_SmallPasteGoesToTextarea(t *testing.T) {
+	m := newTestChatModel(false)
+
+	// Under 100 chars — should pass through
+	pasteText := "short paste that is under the hundred char threshold"
+
+	_, _ = m.handleKeyMsg(tea.KeyMsg{
+		Type:  tea.KeyRunes,
+		Runes: []rune(pasteText),
+		Paste: true,
+	})
+
+	if len(m.pasteChunks) != 0 {
+		t.Fatalf("expected no collapsed paste for short text, got %d", len(m.pasteChunks))
+	}
+	if got := m.textarea.Value(); got != pasteText {
+		t.Fatalf("expected literal paste in textarea, got %q", got)
+	}
+}
+
+func TestPasteCollapse_MultiplePastesGetUniquePlaceholders(t *testing.T) {
+	m := newTestChatModel(false)
+
+	longPaste := strings.Repeat("x", 101)
+	for i := 0; i < 3; i++ {
+		_, _ = m.handleKeyMsg(tea.KeyMsg{
+			Type:  tea.KeyRunes,
+			Runes: []rune(longPaste),
+			Paste: true,
+		})
+	}
+
+	if len(m.pasteChunks) != 3 {
+		t.Fatalf("expected 3 paste chunks, got %d", len(m.pasteChunks))
+	}
+
+	got := m.textarea.Value()
+	for i := 1; i <= 3; i++ {
+		placeholder := fmt.Sprintf("[Pasted text #%d", i)
+		if !strings.Contains(got, placeholder) {
+			t.Fatalf("expected %q in textarea, got %q", placeholder, got)
+		}
+	}
+}
+
+func TestPasteCollapse_ExpandPlaceholdersOnSend(t *testing.T) {
+	m := newTestChatModel(false)
+	content := strings.Repeat("y", 110)
+	m.pasteChunks = map[int]string{
+		1: content,
+	}
+
+	input := fmt.Sprintf("fix this: [Pasted text #1 +%d chars]", len(content))
+	expanded := m.expandPastePlaceholders(input)
+
+	expected := "fix this: " + content
+	if expanded != expected {
+		t.Fatalf("expected %q, got %q", expected, expanded)
+	}
+	if len(m.pasteChunks) != 0 {
+		t.Fatal("expected pasteChunks cleared after expansion")
+	}
+}
+
+func TestPasteCollapse_MultilinePlaceholderShowsLines(t *testing.T) {
+	m := newTestChatModel(false)
+
+	// Multi-line paste over 100 chars
+	pasteText := "line one is here with some extra text to pad\nline two also has plenty of content in it\nline three as well with more words\nline four rounds it out nicely"
+
+	_, _ = m.handleKeyMsg(tea.KeyMsg{
+		Type:  tea.KeyRunes,
+		Runes: []rune(pasteText),
+		Paste: true,
+	})
+
+	got := m.textarea.Value()
+	if !strings.Contains(got, "+4 lines]") {
+		t.Fatalf("expected '+4 lines' in placeholder, got %q", got)
 	}
 }

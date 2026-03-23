@@ -603,7 +603,6 @@ func (m *Model) renderStatusLine() string {
 	if len(m.images) > 0 {
 		fixedParts = append(fixedParts, fmt.Sprintf("%d image(s)", len(m.images)))
 	}
-
 	// Token usage counter (e.g., ~45K/136K) with optional cached segment
 	usagePart := ""
 	if m.engine != nil && m.engine.InputLimit() > 0 {
