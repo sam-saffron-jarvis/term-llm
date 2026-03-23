@@ -41,6 +41,31 @@ func TestMatchPattern(t *testing.T) {
 		{"*", "anything", true},
 		{"a*", "abc", true},
 		{"a*", "bcd", false},
+
+		// Commands with && where ALL sub-commands match the pattern
+		{"bundle *", "bundle exec stree check a.rb && bundle exec stree write b.rb", true},
+		{"go test *", "go test ./pkg1 && go test ./pkg2", true},
+		{"bundle *", "bundle exec rake db:migrate && bundle exec rake db:seed", true},
+
+		// Commands with && where some sub-commands DON'T match
+		{"bundle *", "bundle exec stree check a.rb && rm -rf /", false},
+		{"bundle *", "npm install && bundle exec rake", false},
+
+		// Commands with | (pipe) — all sub-commands must match
+		{"git *", "git log --oneline | head -20", false}, // "head" doesn't match "git *"
+		{"git *", "git log | git diff", true},            // both match "git *"
+
+		// $ in single quotes is not unsafe — normal match works
+		{"bundle *", "bundle exec ruby -e '$stdout.puts 1'", true},
+
+		// Non-wildcard patterns don't decompose (exact match only)
+		{"git status", "git status && echo done", false},
+
+		// Quoted && inside arguments is NOT a shell operator
+		{"ruby *", "ruby -e 'true && false'", true},
+
+		// Mixed: quoted && plus real &&
+		{"echo *", "echo 'a && b' && echo c", true},
 	}
 
 	for _, tt := range tests {
@@ -1100,5 +1125,89 @@ func TestShellApprovalCache(t *testing.T) {
 	}
 	if !hasGit || !hasNpm {
 		t.Error("expected both patterns to be present")
+	}
+}
+
+func TestSplitShellCommands(t *testing.T) {
+	tests := []struct {
+		input string
+		want  []string
+	}{
+		{"cmd1 && cmd2", []string{"cmd1", "cmd2"}},
+		{"cmd1 || cmd2", []string{"cmd1", "cmd2"}},
+		{"cmd1 ; cmd2", []string{"cmd1", "cmd2"}},
+		{"cmd1 | cmd2", []string{"cmd1", "cmd2"}},
+		{"cmd1 && cmd2 && cmd3", []string{"cmd1", "cmd2", "cmd3"}},
+		{"simple command", []string{"simple command"}},
+		{"", nil},
+		{"  ", nil},
+
+		// Quoted && is NOT a shell operator
+		{"cmd1 'has && inside' && cmd2", []string{"cmd1 'has && inside'", "cmd2"}},
+		{`cmd1 "has && inside" && cmd2`, []string{`cmd1 "has && inside"`, "cmd2"}},
+		{`ruby -c "true && false"`, []string{`ruby -c "true && false"`}},
+		{`ruby -c "true && false" && echo done`, []string{`ruby -c "true && false"`, "echo done"}},
+
+		// Escaped characters
+		{`cmd1 \&\& cmd2`, []string{`cmd1 \&\& cmd2`}}, // escaped &&, not an operator
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			got := splitShellCommands(tt.input)
+			if len(got) != len(tt.want) {
+				t.Fatalf("splitShellCommands(%q) = %v (len %d), want %v (len %d)",
+					tt.input, got, len(got), tt.want, len(tt.want))
+			}
+			for i, w := range tt.want {
+				if got[i] != w {
+					t.Errorf("splitShellCommands(%q)[%d] = %q, want %q", tt.input, i, got[i], w)
+				}
+			}
+		})
+	}
+}
+
+func TestApprovalManager_ShellPatternCacheWorksWithUnsafeSyntax(t *testing.T) {
+	perms := NewToolPermissions()
+	mgr := NewApprovalManager(perms)
+
+	// Simulate user approving "bundle *" pattern
+	mgr.shellCache.AddPattern("bundle *")
+
+	// All these commands should be auto-approved from the session cache
+	approved := []string{
+		"bundle exec stree check lib/foo.rb",
+		"bundle exec stree write lib/bar.rb",
+		"bundle exec stree check lib/a.rb && bundle exec stree check lib/b.rb",
+		"bundle exec ruby -e '$stdout.puts 1'",
+		"bundle exec rake db:migrate && bundle exec rake db:seed",
+	}
+
+	for _, cmd := range approved {
+		outcome, err := mgr.CheckShellApproval(cmd, "")
+		if err != nil {
+			t.Errorf("CheckShellApproval(%q) error: %v", cmd, err)
+		}
+		if outcome != ProceedAlways {
+			t.Errorf("CheckShellApproval(%q) = %v, want ProceedAlways (session cache hit)", cmd, outcome)
+		}
+	}
+
+	// These should NOT be auto-approved because not all sub-commands match
+	mgr.PromptUIFunc = func(path string, isWrite bool, isShell bool, workDir string) (ApprovalResult, error) {
+		return ApprovalResult{Choice: ApprovalChoiceDeny}, nil
+	}
+
+	notApproved := []string{
+		"bundle exec stree check a.rb && rm -rf /",
+		"npm install && bundle exec rake",
+	}
+
+	for _, cmd := range notApproved {
+		outcome, _ := mgr.CheckShellApproval(cmd, "")
+		if outcome == ProceedAlways {
+			t.Errorf("CheckShellApproval(%q) should NOT be auto-approved from 'bundle *' pattern", cmd)
+		}
 	}
 }

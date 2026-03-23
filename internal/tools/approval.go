@@ -773,7 +773,31 @@ func (m *ApprovalManager) ApproveDirectory(toolName, dir string, outcome Confirm
 }
 
 // matchPattern checks if a command matches a glob pattern.
+// For commands containing shell operators (&&, ||, ;, |), it decomposes the
+// command into sub-commands and checks each independently — all must match.
 func matchPattern(pattern, command string) bool {
+	if matchPatternSingle(pattern, command) {
+		return true
+	}
+	// If the command has unsafe shell syntax (&&, |, etc.), try decomposing
+	// into sub-commands and checking each one. The pattern must be safe.
+	if hasUnsafeShellSyntax(command) && !hasUnsafeShellSyntax(pattern) {
+		subs := splitShellCommands(command)
+		if len(subs) > 1 {
+			for _, sub := range subs {
+				if !matchPatternSingle(pattern, sub) {
+					return false
+				}
+			}
+			return true
+		}
+	}
+	return false
+}
+
+// matchPatternSingle checks if a single command (no shell operators) matches
+// a glob pattern. Does not attempt decomposition.
+func matchPatternSingle(pattern, command string) bool {
 	if pattern == "" {
 		return false
 	}
@@ -815,6 +839,81 @@ func matchPattern(pattern, command string) bool {
 	}
 
 	return wildcard || len(commandParts) == len(checkParts)
+}
+
+// splitShellCommands splits a shell command string on unquoted operators
+// (&&, ||, ;, |) into individual sub-command strings. Tracks quoting state
+// (single quotes, double quotes, backslash escapes) to avoid splitting inside
+// quoted arguments.
+func splitShellCommands(input string) []string {
+	var commands []string
+	var current strings.Builder
+	inSingle := false
+	inDouble := false
+	escaped := false
+	runes := []rune(input)
+
+	for i := 0; i < len(runes); i++ {
+		r := runes[i]
+		switch {
+		case escaped:
+			current.WriteRune(r)
+			escaped = false
+		case inSingle:
+			current.WriteRune(r)
+			if r == '\'' {
+				inSingle = false
+			}
+		case inDouble:
+			current.WriteRune(r)
+			switch r {
+			case '"':
+				inDouble = false
+			case '\\':
+				escaped = true
+			}
+		default:
+			switch {
+			case r == '\'':
+				inSingle = true
+				current.WriteRune(r)
+			case r == '"':
+				inDouble = true
+				current.WriteRune(r)
+			case r == '\\':
+				escaped = true
+				current.WriteRune(r)
+			case r == ';':
+				if s := strings.TrimSpace(current.String()); s != "" {
+					commands = append(commands, s)
+				}
+				current.Reset()
+			case r == '&' && i+1 < len(runes) && runes[i+1] == '&':
+				if s := strings.TrimSpace(current.String()); s != "" {
+					commands = append(commands, s)
+				}
+				current.Reset()
+				i++ // skip second &
+			case r == '|' && i+1 < len(runes) && runes[i+1] == '|':
+				if s := strings.TrimSpace(current.String()); s != "" {
+					commands = append(commands, s)
+				}
+				current.Reset()
+				i++ // skip second |
+			case r == '|':
+				if s := strings.TrimSpace(current.String()); s != "" {
+					commands = append(commands, s)
+				}
+				current.Reset()
+			default:
+				current.WriteRune(r)
+			}
+		}
+	}
+	if s := strings.TrimSpace(current.String()); s != "" {
+		commands = append(commands, s)
+	}
+	return commands
 }
 
 func canonicalApprovalPath(path string, isWrite bool) (string, error) {
