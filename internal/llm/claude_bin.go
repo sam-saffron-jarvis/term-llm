@@ -21,6 +21,9 @@ import (
 // mcpCallCounter generates unique IDs for MCP tool calls
 var mcpCallCounter atomic.Int64
 
+// getEuid returns the effective user ID. Overridable in tests.
+var getEuid = os.Geteuid
+
 // ClaudeBinProvider implements Provider using the claude CLI binary.
 // This provider shells out to the claude command for inference,
 // using Claude Code's existing authentication.
@@ -223,21 +226,22 @@ func (p *ClaudeBinProvider) Stream(ctx context.Context, req Request) (Stream, er
 		// Build the conversation prompt from messages to send.
 		// Use stream-json format when images are present so the model can vision-analyze them.
 		useStreamJson := hasImages(messagesToSend)
+		// buildPrompt produces the full stdin payload for a set of messages.
+		// For text mode it prepends the system prompt so retries keep it too.
+		// For stream-json mode the system prompt goes on argv instead.
 		buildPrompt := func(msgs []Message) string {
 			if useStreamJson {
 				return p.buildStreamJsonInput(msgs, p.sessionID)
 			}
-			return p.buildConversationPrompt(msgs)
+			return p.combinePrompt(systemPrompt, p.buildConversationPrompt(msgs))
 		}
 		if useStreamJson {
 			args = append(args, "--input-format", "stream-json")
+			if systemPrompt != "" {
+				args = append(args, "--system-prompt", systemPrompt)
+			}
 		}
 		userPrompt := buildPrompt(messagesToSend)
-
-		// Add system prompt if present
-		if systemPrompt != "" {
-			args = append(args, "--system-prompt", systemPrompt)
-		}
 
 		debug := req.Debug || req.DebugRaw
 
@@ -688,9 +692,11 @@ func (p *ClaudeBinProvider) buildArgs(ctx context.Context, req Request, events c
 		"--output-format", "stream-json",
 		"--include-partial-messages", // Stream text as it arrives
 		"--verbose",
-		"--strict-mcp-config",            // Ignore Claude's configured MCPs
-		"--dangerously-skip-permissions", // Allow MCP tool execution
-		"--setting-sources", "user",      // Skip project CLAUDE.md files (term-llm provides its own context)
+		"--strict-mcp-config",       // Ignore Claude's configured MCPs
+		"--setting-sources", "user", // Skip project CLAUDE.md files (term-llm provides its own context)
+	}
+	if getEuid() != 0 {
+		args = append(args, "--dangerously-skip-permissions") // Claude rejects this flag when running as root
 	}
 	if !p.enableHooks {
 		args = append(args, "--settings", `{"disableAllHooks":true}`)
@@ -988,6 +994,20 @@ func (p *ClaudeBinProvider) buildConversationPrompt(messages []Message) string {
 	}
 
 	return strings.TrimSpace(strings.Join(conversationParts, "\n\n"))
+}
+
+func (p *ClaudeBinProvider) combinePrompt(systemPrompt, conversationPrompt string) string {
+	systemPrompt = strings.TrimSpace(systemPrompt)
+	conversationPrompt = strings.TrimSpace(conversationPrompt)
+
+	switch {
+	case systemPrompt == "":
+		return conversationPrompt
+	case conversationPrompt == "":
+		return "System: " + systemPrompt
+	default:
+		return fmt.Sprintf("System: %s\n\n%s", systemPrompt, conversationPrompt)
+	}
 }
 
 // mapModelToClaudeArg converts a model name to claude CLI argument.

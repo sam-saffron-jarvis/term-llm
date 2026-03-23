@@ -14,6 +14,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/samsaffron/term-llm/internal/config"
 )
 
 const (
@@ -94,7 +96,7 @@ type VeniceProvider struct {
 
 func NewVeniceProvider(apiKey string) *VeniceProvider {
 	return &VeniceProvider{
-		apiKey:  apiKey,
+		apiKey:  config.NormalizeVeniceAPIKey(apiKey),
 		baseURL: veniceBaseURL,
 		client:  &http.Client{},
 	}

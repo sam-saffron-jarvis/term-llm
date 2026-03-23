@@ -7,15 +7,21 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/samsaffron/term-llm/internal/config"
 )
 
 func TestTranscribeWithConfig_UsesResolvedURLForBuiltins(t *testing.T) {
 	origClient := defaultHTTPClient
+	origProbe := probeAudioDuration
 	defer func() {
 		defaultHTTPClient = origClient
+		probeAudioDuration = origProbe
 	}()
+	probeAudioDuration = func(context.Context, string) (time.Duration, error) {
+		return time.Minute, nil
+	}
 
 	audioFile, err := os.CreateTemp(t.TempDir(), "audio-*.wav")
 	if err != nil {
@@ -102,5 +108,54 @@ func TestTranscribeWithConfig_UsesResolvedURLForBuiltins(t *testing.T) {
 				t.Fatalf("request URL = %q, want %q", capturedURL, tt.wantURL)
 			}
 		})
+	}
+}
+
+func TestTranscribeWithConfig_TruncatesImplausiblyLongTranscript(t *testing.T) {
+	origClient := defaultHTTPClient
+	origProbe := probeAudioDuration
+	defer func() {
+		defaultHTTPClient = origClient
+		probeAudioDuration = origProbe
+	}()
+	probeAudioDuration = func(context.Context, string) (time.Duration, error) {
+		return time.Minute, nil
+	}
+
+	audioFile, err := os.CreateTemp(t.TempDir(), "audio-*.wav")
+	if err != nil {
+		t.Fatalf("CreateTemp failed: %v", err)
+	}
+	if _, err := audioFile.WriteString("not really audio"); err != nil {
+		t.Fatalf("write temp audio: %v", err)
+	}
+	if err := audioFile.Close(); err != nil {
+		t.Fatalf("close temp audio: %v", err)
+	}
+
+	// 351 words for 1 minute of audio exceeds 350 WPM cap
+	longTranscript := strings.TrimSpace(strings.Repeat("word ", 351))
+	defaultHTTPClient = &http.Client{
+		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Type": []string{"application/json"}},
+				Body:       io.NopCloser(strings.NewReader(`{"text":"` + longTranscript + `"}`)),
+			}, nil
+		}),
+	}
+
+	result, err := TranscribeWithConfig(context.Background(), &config.Config{
+		Providers: map[string]config.ProviderConfig{
+			"openai": {ResolvedAPIKey: "test-key"},
+		},
+	}, audioFile.Name(), "", "openai")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// Should be truncated to 350 words (ceil(1 minute * 350 WPM))
+	wordCount := len(strings.Fields(result))
+	if wordCount != 350 {
+		t.Fatalf("word count = %d, want 350 (truncated from 351)", wordCount)
 	}
 }

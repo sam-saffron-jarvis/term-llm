@@ -16,6 +16,14 @@ import (
 // "whisper-cli" (whisper.cpp CLI binary). The whisper-cli case is delegated back to cmd via
 // the transcribeWhisperCLI function — callers that don't support it (e.g. Telegram) will get
 // an unsupported-provider error, which is intentional.
+func transcribeAndTruncate(ctx context.Context, filePath string, opts TranscribeOptions) (string, error) {
+	transcript, err := TranscribeFile(ctx, filePath, opts)
+	if err != nil {
+		return "", err
+	}
+	return TruncateTranscriptIfImplausible(ctx, filePath, transcript), nil
+}
+
 func TranscribeWithConfig(ctx context.Context, cfg *config.Config, filePath, language, providerOverride string) (string, error) {
 	providerName := providerOverride
 	if providerName == "" {
@@ -40,7 +48,7 @@ func TranscribeWithConfig(ctx context.Context, cfg *config.Config, filePath, lan
 				endpoint = strings.TrimRight(baseURL, "/") + "/inference"
 			}
 		}
-		return TranscribeFile(ctx, filePath, TranscribeOptions{
+		return transcribeAndTruncate(ctx, filePath, TranscribeOptions{
 			Endpoint: endpoint,
 			Model:    modelOverride,
 			Language: language,
@@ -67,7 +75,7 @@ func TranscribeWithConfig(ctx context.Context, cfg *config.Config, filePath, lan
 		if model == "" {
 			model = "voxtral-mini-latest"
 		}
-		return TranscribeFile(ctx, filePath, TranscribeOptions{
+		return transcribeAndTruncate(ctx, filePath, TranscribeOptions{
 			APIKey:   apiKey,
 			Endpoint: endpoint,
 			Model:    model,
@@ -85,7 +93,7 @@ func TranscribeWithConfig(ctx context.Context, cfg *config.Config, filePath, lan
 			if baseURL != "" {
 				endpoint = strings.TrimRight(baseURL, "/") + "/audio/transcriptions"
 			}
-			return TranscribeFile(ctx, filePath, TranscribeOptions{
+			return transcribeAndTruncate(ctx, filePath, TranscribeOptions{
 				APIKey:   p.ResolvedAPIKey,
 				Endpoint: endpoint,
 				Model:    modelOverride,
@@ -97,7 +105,7 @@ func TranscribeWithConfig(ctx context.Context, cfg *config.Config, filePath, lan
 		if apiKey == "" {
 			return "", fmt.Errorf("transcription is not configured — set providers.openai.api_key or configure a transcription provider in config")
 		}
-		return TranscribeFile(ctx, filePath, TranscribeOptions{
+		return transcribeAndTruncate(ctx, filePath, TranscribeOptions{
 			APIKey:   apiKey,
 			Model:    modelOverride,
 			Language: language,
@@ -117,7 +125,7 @@ func TranscribeWithConfig(ctx context.Context, cfg *config.Config, filePath, lan
 			} else if p.BaseURL != "" {
 				endpoint = strings.TrimRight(p.BaseURL, "/") + "/audio/transcriptions"
 			}
-			return TranscribeFile(ctx, filePath, TranscribeOptions{
+			return transcribeAndTruncate(ctx, filePath, TranscribeOptions{
 				APIKey:   apiKey,
 				Endpoint: endpoint,
 				Model:    modelOverride,

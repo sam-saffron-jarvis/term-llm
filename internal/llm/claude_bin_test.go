@@ -400,6 +400,31 @@ func TestClaudeBinProvider_BuildArgsDisablesHooksByDefault(t *testing.T) {
 	}
 }
 
+func TestClaudeBinProvider_BuildArgsDangerousPermissionsRespectsEuid(t *testing.T) {
+	origGetEuid := getEuid
+	defer func() { getEuid = origGetEuid }()
+
+	t.Run("non-root includes flag", func(t *testing.T) {
+		getEuid = func() int { return 1000 }
+		p := NewClaudeBinProvider("sonnet", nil)
+		args, _ := p.buildArgs(context.Background(), Request{}, nil)
+		joined := strings.Join(args, "\n")
+		if !strings.Contains(joined, "--dangerously-skip-permissions") {
+			t.Fatal("expected --dangerously-skip-permissions for non-root")
+		}
+	})
+
+	t.Run("root omits flag", func(t *testing.T) {
+		getEuid = func() int { return 0 }
+		p := NewClaudeBinProvider("sonnet", nil)
+		args, _ := p.buildArgs(context.Background(), Request{}, nil)
+		joined := strings.Join(args, "\n")
+		if strings.Contains(joined, "--dangerously-skip-permissions") {
+			t.Fatal("expected claude-bin args to omit --dangerously-skip-permissions when running as root")
+		}
+	})
+}
+
 func TestClaudeBinProvider_BuildArgsCanEnableHooks(t *testing.T) {
 	p := NewClaudeBinProvider("sonnet", nil)
 	p.SetEnableHooks(true)
@@ -409,6 +434,34 @@ func TestClaudeBinProvider_BuildArgsCanEnableHooks(t *testing.T) {
 
 	if strings.Contains(joined, `{"disableAllHooks":true}`) {
 		t.Fatal("expected disableAllHooks setting to be omitted when hooks are enabled")
+	}
+}
+
+func TestClaudeBinProvider_CombinePromptIncludesSystemOnStdin(t *testing.T) {
+	p := NewClaudeBinProvider("sonnet", nil)
+
+	got := p.combinePrompt("You are helpful.\nUse tools when needed.", "User: hi")
+	want := "System: You are helpful.\nUse tools when needed.\n\nUser: hi"
+	if got != want {
+		t.Fatalf("combinePrompt() = %q, want %q", got, want)
+	}
+}
+
+func TestClaudeBinProvider_CombinePromptHandlesEmptyConversation(t *testing.T) {
+	p := NewClaudeBinProvider("sonnet", nil)
+
+	got := p.combinePrompt("You are helpful.", "")
+	if got != "System: You are helpful." {
+		t.Fatalf("combinePrompt() with empty conversation = %q", got)
+	}
+}
+
+func TestClaudeBinProvider_CombinePromptHandlesEmptySystem(t *testing.T) {
+	p := NewClaudeBinProvider("sonnet", nil)
+
+	got := p.combinePrompt("", "User: hello")
+	if got != "User: hello" {
+		t.Fatalf("combinePrompt() with empty system = %q", got)
 	}
 }
 

@@ -9,6 +9,8 @@ import (
 	"os"
 	"strconv"
 	"strings"
+
+	"github.com/samsaffron/term-llm/internal/config"
 )
 
 const veniceBaseURL = "https://api.venice.ai/api/v1"
@@ -18,6 +20,7 @@ type VeniceProvider struct {
 }
 
 func NewVeniceProvider(apiKey, model string) *VeniceProvider {
+	apiKey = config.NormalizeVeniceAPIKey(apiKey)
 	if model == "" {
 		model = "venice-uncensored"
 	}

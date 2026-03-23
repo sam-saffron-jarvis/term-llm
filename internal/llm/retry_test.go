@@ -3,6 +3,7 @@ package llm
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"testing"
 	"time"
@@ -64,6 +65,85 @@ func (p *syncToolProvider) Stream(ctx context.Context, req Request) (Stream, err
 			return ctx.Err()
 		}
 	}), nil
+}
+
+func TestIsRetryable_500InternalServerError(t *testing.T) {
+	cases := []struct {
+		msg       string
+		retryable bool
+	}{
+		{"anthropic streaming error: POST \"https://api.anthropic.com/v1/messages\": 500 Internal Server Error", true},
+		{"500 internal server error", true},
+		{"got 500 from upstream", true},
+		{"internal server error occurred", true},
+		{"400 Bad Request", false},
+		{"401 Unauthorized", false},
+	}
+	for _, tc := range cases {
+		got := isRetryable(errors.New(tc.msg))
+		if got != tc.retryable {
+			t.Errorf("isRetryable(%q) = %v, want %v", tc.msg, got, tc.retryable)
+		}
+	}
+}
+
+// toolThenErrorProvider emits a synchronous tool call then a retryable error.
+// The retry loop must NOT retry after the tool call has been committed.
+type toolThenErrorProvider struct {
+	attempts int
+}
+
+func (p *toolThenErrorProvider) Name() string       { return "tool-then-error" }
+func (p *toolThenErrorProvider) Credential() string { return "mock" }
+func (p *toolThenErrorProvider) Capabilities() Capabilities {
+	return Capabilities{}
+}
+
+func (p *toolThenErrorProvider) Stream(ctx context.Context, req Request) (Stream, error) {
+	p.attempts++
+	return newEventStream(ctx, func(ctx context.Context, ch chan<- Event) error {
+		// Emit a synchronous tool call (has ToolResponse channel)
+		response := make(chan ToolExecutionResponse, 1)
+		ch <- Event{
+			Type:         EventToolCall,
+			ToolResponse: response,
+			ToolName:     "test_tool",
+		}
+		// Simulate tool execution completing
+		response <- ToolExecutionResponse{Result: ToolOutput{Content: "tool result"}}
+		// Then a retryable error occurs
+		ch <- Event{Type: EventError, Err: errors.New("502 bad gateway")}
+		return nil
+	}), nil
+}
+
+func TestRetryProvider_DoesNotRetryAfterCommittedToolCall(t *testing.T) {
+	inner := &toolThenErrorProvider{}
+	provider := WrapWithRetry(inner, RetryConfig{
+		MaxAttempts: 3,
+		BaseBackoff: time.Millisecond,
+		MaxBackoff:  10 * time.Millisecond,
+	})
+
+	stream, err := provider.Stream(context.Background(), Request{})
+	if err != nil {
+		t.Fatalf("Stream returned error: %v", err)
+	}
+	defer stream.Close()
+
+	for {
+		_, err := stream.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			break // error is expected — the committed error propagates
+		}
+	}
+
+	if inner.attempts != 1 {
+		t.Fatalf("inner.attempts = %d, want 1 (should not retry after committed tool call)", inner.attempts)
+	}
 }
 
 func TestRetryProvider_DropsPartialTextFromRetriedAttempt(t *testing.T) {

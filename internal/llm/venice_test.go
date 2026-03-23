@@ -5,8 +5,57 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
+
+	"github.com/samsaffron/term-llm/internal/config"
 )
+
+func TestNewVeniceProviderTrimsAPIKey(t *testing.T) {
+	provider := NewVeniceProvider("  test-key\n", "")
+	if provider.apiKey != "test-key" {
+		t.Fatalf("apiKey = %q, want %q", provider.apiKey, "test-key")
+	}
+}
+
+func TestNewVeniceProviderStripsBearerPrefix(t *testing.T) {
+	provider := NewVeniceProvider("  Bearer test-key\n", "")
+	if provider.apiKey != "test-key" {
+		t.Fatalf("apiKey = %q, want %q", provider.apiKey, "test-key")
+	}
+}
+
+func TestCreateProviderFromConfig_VeniceRequiresAPIKey(t *testing.T) {
+	t.Setenv("VENICE_API_KEY", "")
+
+	_, err := createProviderFromConfig("venice", &config.ProviderConfig{Model: "venice-uncensored"})
+	if err == nil {
+		t.Fatal("expected missing Venice API key to return an error")
+	}
+	if !strings.Contains(err.Error(), "VENICE_API_KEY") {
+		t.Fatalf("expected VENICE_API_KEY guidance, got %v", err)
+	}
+}
+
+func TestCreateProviderFromConfig_VeniceTrimsConfiguredAPIKey(t *testing.T) {
+	t.Setenv("VENICE_API_KEY", "")
+
+	provider, err := createProviderFromConfig("venice", &config.ProviderConfig{
+		ResolvedAPIKey: "  test-key\n",
+		Model:          "venice-uncensored",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	venice, ok := provider.(*VeniceProvider)
+	if !ok {
+		t.Fatalf("provider type = %T, want *VeniceProvider", provider)
+	}
+	if venice.apiKey != "test-key" {
+		t.Fatalf("apiKey = %q, want %q", venice.apiKey, "test-key")
+	}
+}
 
 func TestVeniceProviderCapabilities(t *testing.T) {
 	provider := NewVeniceProvider("key", "")

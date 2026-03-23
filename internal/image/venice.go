@@ -15,6 +15,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/samsaffron/term-llm/internal/config"
 )
 
 const (
@@ -43,6 +45,7 @@ type VeniceProvider struct {
 }
 
 func NewVeniceProvider(apiKey, model, editModel, resolution string) *VeniceProvider {
+	apiKey = config.NormalizeVeniceAPIKey(apiKey)
 	if model == "" {
 		model = veniceDefaultModel
 	}

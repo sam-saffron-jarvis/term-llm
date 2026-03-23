@@ -24,6 +24,7 @@ var (
 	transcribeProvider       string
 	transcribeCLIOutputLimit int64         = 1 << 20
 	transcribeCLIWaitDelay   time.Duration = time.Second
+	transcribeTruncator                    = llm.TruncateTranscriptIfImplausible
 )
 
 var transcribeCmd = &cobra.Command{
@@ -107,7 +108,8 @@ func transcribeWhisperCLI(ctx context.Context, cfg *config.Config, filePath, lan
 			lines = append(lines, line)
 		}
 	}
-	return strings.Join(lines, " "), nil
+	transcript := strings.Join(lines, " ")
+	return transcribeTruncator(ctx, filePath, transcript), nil
 }
 
 func init() {

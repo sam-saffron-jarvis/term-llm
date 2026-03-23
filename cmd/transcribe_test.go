@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -9,6 +10,7 @@ import (
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/config"
+	"github.com/samsaffron/term-llm/internal/llm"
 )
 
 func writeWhisperScript(t *testing.T, body string) string {
@@ -40,6 +42,38 @@ func TestTranscribeWhisperCLI_RejectsOversizedOutput(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "output exceeded") {
 		t.Fatalf("error = %q, want contains %q", err.Error(), "output exceeded")
+	}
+}
+
+func TestTranscribeWhisperCLI_TruncatesImplausiblyLongTranscript(t *testing.T) {
+	// Generate a 400-word output (exceeds 350 WPM for 1 minute)
+	words := strings.TrimSpace(strings.Repeat("alpha ", 400))
+	scriptDir := writeWhisperScript(t, fmt.Sprintf(`echo "%s"`, words))
+
+	origTruncator := transcribeTruncator
+	defer func() {
+		transcribeTruncator = origTruncator
+	}()
+	// Inject a truncator that uses a 1-minute duration bound
+	transcribeTruncator = func(_ context.Context, _ string, transcript string) string {
+		return llm.TruncateTranscriptForDuration(time.Minute, transcript)
+	}
+
+	t.Setenv("PATH", scriptDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("WHISPER_MODEL", "/tmp/fake-model.bin")
+
+	audioPath := filepath.Join(t.TempDir(), "sample.wav")
+	if err := os.WriteFile(audioPath, []byte("fake-audio"), 0644); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+
+	result, err := transcribeWhisperCLI(context.Background(), &config.Config{}, audioPath, "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	wordCount := len(strings.Fields(result))
+	if wordCount != 350 {
+		t.Fatalf("word count = %d, want 350 (truncated from 400)", wordCount)
 	}
 }
 

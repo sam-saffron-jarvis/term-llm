@@ -938,6 +938,16 @@ func expandEnv(s string) string {
 	return s
 }
 
+// NormalizeVeniceAPIKey trims whitespace and strips an accidental "Bearer "
+// prefix from a Venice API key. Shared across llm, image, and video packages.
+func NormalizeVeniceAPIKey(apiKey string) string {
+	apiKey = strings.TrimSpace(apiKey)
+	if strings.HasPrefix(strings.ToLower(apiKey), "bearer ") {
+		apiKey = strings.TrimSpace(apiKey[len("Bearer "):])
+	}
+	return apiKey
+}
+
 // GetConfigDir returns the XDG config directory for term-llm.
 // Uses $XDG_CONFIG_HOME if set, otherwise ~/.config
 func GetConfigDir() (string, error) {

@@ -126,6 +126,15 @@ func (r *RetryProvider) Stream(ctx context.Context, req Request) (Stream, error)
 	}), nil
 }
 
+// committedError wraps an error that occurred after events were already
+// forwarded to the outer stream (e.g. after a synchronous tool call was
+// executed). Retrying at this point would duplicate side effects, so the
+// retry loop must treat this as non-retryable.
+type committedError struct{ err error }
+
+func (e *committedError) Error() string { return e.err.Error() }
+func (e *committedError) Unwrap() error { return e.err }
+
 // forwardAttempt reads a single inner stream attempt.
 //
 // Before any externally-visible side effects, events are buffered so retryable
@@ -135,6 +144,8 @@ func (r *RetryProvider) Stream(ctx context.Context, req Request) (Stream, error)
 // ToolResponse), buffering must stop immediately: the caller needs to see the
 // event in real time to execute the tool, and after that point the attempt has
 // already escaped so retrying would duplicate visible/side-effecting work.
+// Any error after that point is wrapped in committedError so the retry loop
+// will not retry.
 func (r *RetryProvider) forwardAttempt(ctx context.Context, stream Stream, events chan<- Event) error {
 	defer stream.Close()
 
@@ -157,7 +168,7 @@ func (r *RetryProvider) forwardAttempt(ctx context.Context, stream Stream, event
 		}
 		if err != nil {
 			if live {
-				return err
+				return &committedError{err}
 			}
 			return err
 		}
@@ -165,7 +176,7 @@ func (r *RetryProvider) forwardAttempt(ctx context.Context, stream Stream, event
 		// Check for error events from the stream (e.g., 429 during streaming)
 		if event.Type == EventError && event.Err != nil {
 			if live {
-				return event.Err
+				return &committedError{event.Err}
 			}
 			return event.Err
 		}
@@ -212,6 +223,12 @@ func isRetryable(err error) bool {
 		return false
 	}
 
+	// Never retry if events were already committed to the outer stream.
+	var ce *committedError
+	if errors.As(err, &ce) {
+		return false
+	}
+
 	// Never retry if the context itself has been cancelled or deadline exceeded.
 	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
 		return false
@@ -229,6 +246,8 @@ func isRetryable(err error) bool {
 		strings.Contains(errStr, "rate limit") ||
 		strings.Contains(errStr, "too many requests") ||
 		strings.Contains(errStr, "high concurrency") ||
+		strings.Contains(errStr, "500") ||
+		strings.Contains(errStr, "internal server error") ||
 		strings.Contains(errStr, "502") ||
 		strings.Contains(errStr, "bad gateway") ||
 		strings.Contains(errStr, "503") ||
