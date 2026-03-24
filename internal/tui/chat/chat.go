@@ -1100,6 +1100,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.bumpContentVersion()
 				} else {
 					// In inline mode, print remaining content to scrollback
+					m.tracker.ForceCompletePendingTools()
 					result := m.tracker.FlushAllRemaining(m.width, 0, m.renderMd)
 					cmds = append(cmds, ui.ScrollbackPrintlnCommands(result.ToPrint, true)...)
 				}
