@@ -571,6 +571,23 @@ func (p *ClaudeBinProvider) handleClaudeLine(
 			}
 		}
 
+	case "streamlined_text":
+		var streamlinedMsg claudeStreamlinedTextMessage
+		if err := json.Unmarshal([]byte(line), &streamlinedMsg); err != nil {
+			return nil
+		}
+		if streamlinedMsg.Text != "" {
+			if !safeSendEvent(ctx, events, Event{Type: EventTextDelta, Text: streamlinedMsg.Text}) {
+				if ctx.Err() != nil {
+					return ctx.Err()
+				}
+				return fmt.Errorf("failed to emit claude streamlined text: stream closed")
+			}
+			if sawTextDelta != nil {
+				*sawTextDelta = true
+			}
+		}
+
 	case "assistant":
 		// Buffer assistant text as a fallback for providers/versions that
 		// don't emit stream_event text deltas.
@@ -588,12 +605,20 @@ func (p *ClaudeBinProvider) handleClaudeLine(
 			if resultMsg.IsError && resultMsg.Result != "" {
 				return fmt.Errorf("claude API error: %s", resultMsg.Result)
 			}
-			if sawTextDelta != nil && assistantFallbackText != nil && !*sawTextDelta && strings.TrimSpace(*assistantFallbackText) != "" {
-				if !safeSendEvent(ctx, events, Event{Type: EventTextDelta, Text: *assistantFallbackText}) {
+
+			fallbackText := ""
+			if assistantFallbackText != nil {
+				fallbackText = strings.TrimSpace(*assistantFallbackText)
+			}
+			if fallbackText == "" {
+				fallbackText = strings.TrimSpace(resultMsg.Result)
+			}
+			if sawTextDelta != nil && !*sawTextDelta && fallbackText != "" {
+				if !safeSendEvent(ctx, events, Event{Type: EventTextDelta, Text: fallbackText}) {
 					if ctx.Err() != nil {
 						return ctx.Err()
 					}
-					return fmt.Errorf("failed to emit claude assistant fallback text: stream closed")
+					return fmt.Errorf("failed to emit claude result fallback text: stream closed")
 				}
 				*sawTextDelta = true
 			}
@@ -683,6 +708,16 @@ wait:
 // The events channel is passed to the MCP server for routing tool execution events.
 // The MCP server is kept alive across turns - call CleanupMCP() when the conversation ends.
 // Returns the args and the effective reasoning effort (if any).
+func (p *ClaudeBinProvider) claudeSandboxEnabled() bool {
+	if v, ok := p.extraEnv["IS_SANDBOX"]; ok {
+		return strings.TrimSpace(v) == "1"
+	}
+	if v, ok := p.extraEnv["CLAUDE_CODE_BUBBLEWRAP"]; ok {
+		return strings.TrimSpace(v) == "1"
+	}
+	return strings.TrimSpace(os.Getenv("IS_SANDBOX")) == "1" || strings.TrimSpace(os.Getenv("CLAUDE_CODE_BUBBLEWRAP")) == "1"
+}
+
 func (p *ClaudeBinProvider) buildArgs(ctx context.Context, req Request, events chan<- Event) ([]string, string) {
 	args := []string{
 		"--print",
@@ -693,7 +728,9 @@ func (p *ClaudeBinProvider) buildArgs(ctx context.Context, req Request, events c
 		"--setting-sources", "user", // Skip project CLAUDE.md files (term-llm provides its own context)
 	}
 	if getEuid() != 0 {
-		args = append(args, "--dangerously-skip-permissions") // Claude rejects this flag when running as root
+		args = append(args, "--dangerously-skip-permissions")
+	} else if p.claudeSandboxEnabled() {
+		args = append(args, "--permission-mode", "bypassPermissions")
 	}
 	if !p.enableHooks {
 		args = append(args, "--settings", `{"disableAllHooks":true}`)
@@ -1386,6 +1423,12 @@ type claudeContentBlock struct {
 	ID    string          `json:"id,omitempty"`
 	Name  string          `json:"name,omitempty"`
 	Input json.RawMessage `json:"input,omitempty"`
+}
+
+type claudeStreamlinedTextMessage struct {
+	Type      string `json:"type"`
+	Text      string `json:"text"`
+	SessionID string `json:"session_id"`
 }
 
 type claudeResultMessage struct {
