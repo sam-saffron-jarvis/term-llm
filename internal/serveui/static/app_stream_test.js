@@ -111,6 +111,14 @@ function createHarness(options = {}) {
       style: {},
       appendChild() {},
     },
+    providerSelect: {
+      value: '',
+      innerHTML: '',
+      appendChild() {},
+      addEventListener() {},
+      removeAttribute() {},
+      setAttribute() {},
+    },
     voiceBtn: null,
     voiceStatus: null,
     askUserModal: makeNode(),
@@ -139,6 +147,8 @@ function createHarness(options = {}) {
     askUser: null,
     approval: null,
     selectedModel: '',
+    selectedProvider: '',
+    providers: [],
     lastEventTime: 0,
     expectCanceledRun: false,
   };

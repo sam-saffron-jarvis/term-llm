@@ -637,6 +637,39 @@ func (s *serveServer) cors(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
+func (s *serveServer) handleProviders(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", "GET")
+		writeOpenAIError(w, http.StatusMethodNotAllowed, "invalid_request_error", "method not allowed")
+		return
+	}
+
+	providers := buildProviderList(s.cfgRef)
+	items := make([]map[string]any, 0, len(providers))
+	for _, p := range providers {
+		if !p.Configured && !p.IsBuiltin {
+			continue
+		}
+		models := p.Models
+		if models == nil {
+			models = []string{}
+		}
+		items = append(items, map[string]any{
+			"name":       p.Name,
+			"type":       p.Type,
+			"models":     models,
+			"configured": p.Configured,
+			"is_builtin": p.IsBuiltin,
+			"is_default": p.Name == s.cfgRef.DefaultProvider,
+		})
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"object": "list",
+		"data":   items,
+	})
+}
+
 func (s *serveServer) handleModels(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		w.Header().Set("Allow", "GET")
@@ -644,7 +677,8 @@ func (s *serveServer) handleModels(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	provider, err := s.getModelsProvider()
+	queryProvider := strings.TrimSpace(r.URL.Query().Get("provider"))
+	provider, effectiveName, err := s.getModelsProvider(queryProvider)
 	if err != nil {
 		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", err.Error())
 		return
@@ -663,13 +697,18 @@ func (s *serveServer) handleModels(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if len(models) == 0 {
-		providerName := s.cfgRef.DefaultProvider
-		if providerCfg := s.cfgRef.GetActiveProviderConfig(); providerCfg != nil {
-			if providerCfg.Model != "" {
-				models = append(models, llm.ModelInfo{ID: providerCfg.Model})
+		if pc, ok := s.cfgRef.Providers[effectiveName]; ok {
+			if pc.Model != "" {
+				models = append(models, llm.ModelInfo{ID: pc.Model})
+			}
+		} else if queryProvider == "" {
+			if providerCfg := s.cfgRef.GetActiveProviderConfig(); providerCfg != nil {
+				if providerCfg.Model != "" {
+					models = append(models, llm.ModelInfo{ID: providerCfg.Model})
+				}
 			}
 		}
-		if curated, ok := llm.ProviderModels[providerName]; ok {
+		if curated, ok := llm.ProviderModels[effectiveName]; ok {
 			for _, id := range curated {
 				models = append(models, llm.ModelInfo{ID: id})
 			}
@@ -707,19 +746,35 @@ func (s *serveServer) handleModels(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func (s *serveServer) getModelsProvider() (llm.Provider, error) {
+func (s *serveServer) getModelsProvider(name string) (llm.Provider, string, error) {
 	s.modelsMu.Lock()
 	defer s.modelsMu.Unlock()
 
-	if s.modelsProvider != nil {
-		return s.modelsProvider, nil
+	if s.modelsProviders == nil {
+		s.modelsProviders = make(map[string]llm.Provider)
 	}
-	provider, err := llm.NewProvider(s.cfgRef)
+
+	cacheKey := name
+	if cacheKey == "" {
+		cacheKey = s.cfgRef.DefaultProvider
+	}
+
+	if p, ok := s.modelsProviders[cacheKey]; ok {
+		return p, cacheKey, nil
+	}
+
+	var provider llm.Provider
+	var err error
+	if name == "" || name == s.cfgRef.DefaultProvider {
+		provider, err = llm.NewProvider(s.cfgRef)
+	} else {
+		provider, err = llm.NewProviderByName(s.cfgRef, name, "")
+	}
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
-	s.modelsProvider = provider
-	return provider, nil
+	s.modelsProviders[cacheKey] = provider
+	return provider, cacheKey, nil
 }
 
 func (s *serveServer) handleResponses(w http.ResponseWriter, r *http.Request) {
@@ -778,7 +833,15 @@ func (s *serveServer) handleResponses(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("x-session-id", sessionID)
 		replaceHistory = true
 	}
-	runtime, stateful, err := s.runtimeForRequest(ctx, sessionID)
+	// Use requested provider for new sessions only.
+	reqProvider := strings.TrimSpace(req.Provider)
+	var runtime *serveRuntime
+	var stateful bool
+	if req.PreviousResponseID != "" || reqProvider == "" || reqProvider == s.cfgRef.DefaultProvider {
+		runtime, stateful, err = s.runtimeForRequest(ctx, sessionID)
+	} else {
+		runtime, stateful, err = s.runtimeForProviderRequest(ctx, sessionID, reqProvider)
+	}
 	if err != nil {
 		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", err.Error())
 		return
@@ -1188,6 +1251,28 @@ func (s *serveServer) runtimeForRequest(ctx context.Context, sessionID string) (
 	}
 	// Stateful sessions should outlive a single HTTP request context.
 	rt, err := s.sessionMgr.GetOrCreate(context.Background(), sessionID)
+	if err != nil {
+		return nil, false, err
+	}
+	return rt, true, nil
+}
+
+// runtimeForProviderRequest creates a runtime using a specific (non-default) provider.
+func (s *serveServer) runtimeForProviderRequest(ctx context.Context, sessionID string, providerName string) (*serveRuntime, bool, error) {
+	if s.runtimeFactory == nil {
+		return s.runtimeForRequest(ctx, sessionID)
+	}
+	if sessionID == "" {
+		rt, err := s.runtimeFactory(ctx, providerName, "")
+		if err != nil {
+			return nil, false, err
+		}
+		return rt, false, nil
+	}
+	// Use GetOrCreateWith to get proper in-flight deduplication.
+	rt, err := s.sessionMgr.GetOrCreateWith(context.Background(), sessionID, func(ctx context.Context) (*serveRuntime, error) {
+		return s.runtimeFactory(ctx, providerName, "")
+	})
 	if err != nil {
 		return nil, false, err
 	}

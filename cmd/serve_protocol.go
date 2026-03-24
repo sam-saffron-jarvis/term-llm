@@ -52,6 +52,7 @@ func writeSSEEvent(w io.Writer, event string, payload any) error {
 
 type responsesCreateRequest struct {
 	Model              string            `json:"model"`
+	Provider           string            `json:"provider"`
 	Input              json.RawMessage   `json:"input"`
 	Tools              []json.RawMessage `json:"tools,omitempty"`
 	ToolChoice         json.RawMessage   `json:"tool_choice,omitempty"`

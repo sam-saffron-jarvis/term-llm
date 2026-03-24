@@ -3957,3 +3957,196 @@ func TestPushSubscribe_EndToEnd(t *testing.T) {
 		t.Fatal("mock push server never received a request")
 	}
 }
+
+func TestHandleProviders_ReturnsList(t *testing.T) {
+	cfg := &config.Config{
+		DefaultProvider: "anthropic",
+		Providers: map[string]config.ProviderConfig{
+			"anthropic": {Model: "claude-sonnet-4-6"},
+			"openai":    {Model: "gpt-5"},
+		},
+	}
+	srv := &serveServer{cfgRef: cfg}
+	req := httptest.NewRequest(http.MethodGet, "/v1/providers", nil)
+	rr := httptest.NewRecorder()
+	srv.handleProviders(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rr.Code)
+	}
+	var result struct {
+		Object string           `json:"object"`
+		Data   []map[string]any `json:"data"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &result); err != nil {
+		t.Fatalf("json decode: %v", err)
+	}
+	if result.Object != "list" {
+		t.Fatalf("object = %q, want list", result.Object)
+	}
+	if len(result.Data) == 0 {
+		t.Fatal("expected at least one provider")
+	}
+	// Check that the default provider is marked
+	found := false
+	for _, p := range result.Data {
+		if p["name"] == "anthropic" {
+			if p["is_default"] != true {
+				t.Errorf("anthropic should be marked as default")
+			}
+			found = true
+		}
+	}
+	if !found {
+		t.Error("expected anthropic in provider list")
+	}
+}
+
+func TestHandleProviders_MethodNotAllowed(t *testing.T) {
+	srv := &serveServer{cfgRef: &config.Config{}}
+	req := httptest.NewRequest(http.MethodPost, "/v1/providers", nil)
+	rr := httptest.NewRecorder()
+	srv.handleProviders(rr, req)
+	if rr.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("status = %d, want 405", rr.Code)
+	}
+}
+
+func TestHandleModels_WithProviderParam(t *testing.T) {
+	cfg := &config.Config{
+		DefaultProvider: "anthropic",
+		Providers: map[string]config.ProviderConfig{
+			"anthropic": {Model: "claude-sonnet-4-6"},
+		},
+	}
+	srv := &serveServer{cfgRef: cfg}
+
+	// Without provider param — uses default
+	req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+	rr := httptest.NewRecorder()
+	srv.handleModels(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", rr.Code, rr.Body.String())
+	}
+	var result struct {
+		Data []map[string]any `json:"data"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &result); err != nil {
+		t.Fatalf("json decode: %v", err)
+	}
+	if len(result.Data) == 0 {
+		t.Fatal("expected at least one model for default provider")
+	}
+
+	// With unknown provider param — returns error
+	req = httptest.NewRequest(http.MethodGet, "/v1/models?provider=nonexistent", nil)
+	rr = httptest.NewRecorder()
+	srv.handleModels(rr, req)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 for unknown provider", rr.Code)
+	}
+}
+
+func TestHandleResponses_WithProviderField(t *testing.T) {
+	provider := llm.NewMockProvider("mock").AddTextResponse("ok")
+	factory := func(ctx context.Context) (*serveRuntime, error) {
+		engine := llm.NewEngine(provider, nil)
+		rt := &serveRuntime{
+			provider:     provider,
+			providerKey:  "mock",
+			engine:       engine,
+			defaultModel: "mock-model",
+		}
+		rt.Touch()
+		return rt, nil
+	}
+	manager := newServeSessionManager(time.Minute, 10, factory)
+	defer manager.Close()
+
+	srv := &serveServer{
+		cfgRef:     &config.Config{DefaultProvider: "mock"},
+		sessionMgr: manager,
+		runtimeFactory: func(ctx context.Context, providerName string, model string) (*serveRuntime, error) {
+			engine := llm.NewEngine(provider, nil)
+			rt := &serveRuntime{
+				provider:     provider,
+				providerKey:  providerName,
+				engine:       engine,
+				defaultModel: "mock-model",
+			}
+			rt.Touch()
+			return rt, nil
+		},
+	}
+
+	// Request with non-default provider creates session with that provider
+	body := `{"input":"hello","provider":"other"}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+
+	srv.handleResponses(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestSessionManager_GetOrCreateWithDeduplication(t *testing.T) {
+	var calls int32
+	manager := newServeSessionManager(time.Minute, 10, func(ctx context.Context) (*serveRuntime, error) {
+		return &serveRuntime{providerKey: "default"}, nil
+	})
+	defer manager.Close()
+
+	const workers = 12
+	results := make(chan *serveRuntime, workers)
+	errs := make(chan error, workers)
+
+	customFactory := func(ctx context.Context) (*serveRuntime, error) {
+		atomic.AddInt32(&calls, 1)
+		time.Sleep(25 * time.Millisecond)
+		rt := &serveRuntime{providerKey: "custom"}
+		rt.Touch()
+		return rt, nil
+	}
+
+	var wg sync.WaitGroup
+	wg.Add(workers)
+	for i := 0; i < workers; i++ {
+		go func() {
+			defer wg.Done()
+			rt, err := manager.GetOrCreateWith(context.Background(), "same-id", customFactory)
+			if err != nil {
+				errs <- err
+				return
+			}
+			results <- rt
+		}()
+	}
+	wg.Wait()
+	close(results)
+	close(errs)
+
+	for err := range errs {
+		t.Fatalf("GetOrCreateWith error: %v", err)
+	}
+
+	var first *serveRuntime
+	for rt := range results {
+		if first == nil {
+			first = rt
+			continue
+		}
+		if rt != first {
+			t.Fatalf("expected all calls to return same runtime pointer")
+		}
+	}
+
+	if got := atomic.LoadInt32(&calls); got != 1 {
+		t.Fatalf("factory calls = %d, want 1", got)
+	}
+	if first.providerKey != "custom" {
+		t.Fatalf("providerKey = %q, want custom", first.providerKey)
+	}
+}

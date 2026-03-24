@@ -6,8 +6,8 @@ const {
   UI_PREFIX, STORAGE_KEYS, state, elements, generateId, truncate, asTimestamp, loadSessions, saveSessions, getActiveSession, createSession, ensureActiveSession,
   sessionIdFromURL, updateURL, scrollToBottom, setConnectionState, setStartupStatus, hideStartupSplash, persistAndRefreshShell, refreshRelativeTimes,
   openAuthModal, closeAuthModal, handleAuthFailure, closeAskUserModal, openAskUserModal, setActiveResponseTracking,
-  clearActiveResponseTracking, setStreaming, resumeActiveResponse, renderSidebar, renderMessages, renderModelOptions,
-  autoGrowPrompt, updateVoiceUI, toggleVoiceRecording, fetchModels, addErrorMessage, sendMessage, openSidebar, closeSidebar, closeSidebarIfMobile,
+  clearActiveResponseTracking, setStreaming, resumeActiveResponse, renderSidebar, renderMessages, renderProviderOptions, renderModelOptions, normalizeSelectedProvider,
+  autoGrowPrompt, updateVoiceUI, toggleVoiceRecording, fetchProviders, fetchModels, addErrorMessage, sendMessage, openSidebar, closeSidebar, closeSidebarIfMobile,
   connectToken, submitAskUserModal, cancelActiveResponse, handleFiles, isNearBottom,
   openApprovalModal, closeApprovalModal, submitApprovalModal, registerServiceWorker, subscribeToPush, refreshNotificationUI,
   requestNotificationPermission, shouldAutoSubscribeToPush, detachResponseStream, HEARTBEAT_STALE_THRESHOLD, HEARTBEAT_ABORT_REASON,
@@ -643,6 +643,7 @@ const initialize = async () => {
 
   renderSidebar();
   renderMessages(true);
+  renderProviderOptions();
   renderModelOptions();
   autoGrowPrompt();
   updateVoiceUI();
@@ -652,7 +653,13 @@ const initialize = async () => {
   try {
     setStartupStatus(state.token ? 'Checking your token…' : 'Connecting…');
     setConnectionState(state.token ? 'Validating token…' : 'Connecting…');
-    state.models = await fetchModels();
+
+    // Fetch providers first so we can validate the stored selection.
+    state.providers = await fetchProviders();
+    normalizeSelectedProvider();
+    renderProviderOptions();
+
+    state.models = await fetchModels('', state.selectedProvider);
     state.connected = true;
     renderModelOptions();
     setConnectionState('', '');

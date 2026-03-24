@@ -106,7 +106,9 @@ func init() {
 	serveCmd.Flags().StringVar(&serveHost, "host", "127.0.0.1", "Bind host")
 	serveCmd.Flags().IntVar(&servePort, "port", 8080, "Bind port")
 	serveCmd.Flags().StringVar(&serveToken, "token", "", "Bearer token for API auth (auto-generated if omitted)")
-	serveCmd.Flags().BoolVar(&serveAllowNoAuth, "allow-no-auth", false, "Disable auth (only allowed on loopback host)")
+	serveCmd.Flags().BoolVar(&serveAllowNoAuth, "no-auth", false, "Disable auth (only allowed on loopback host)")
+	serveCmd.Flags().BoolVar(&serveAllowNoAuth, "allow-no-auth", false, "Disable auth (alias for --no-auth)")
+	_ = serveCmd.Flags().MarkHidden("allow-no-auth")
 	serveCmd.Flags().StringVar(&serveAuthMode, "auth", "bearer", "Auth mode: bearer or none")
 	serveCmd.Flags().BoolVar(&serveNoUI, "no-ui", false, "Disable web UI (enabled by default when web platform is active)")
 	serveCmd.Flags().StringVar(&serveBasePath, "base-path", "/ui", "URL prefix the UI uses for session URLs (e.g. /chat)")
@@ -152,7 +154,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	authMode, err := resolveServeAuthMode(cmd.Flags().Changed("auth"), serveAuthMode, cmd.Flags().Changed("allow-no-auth"), serveAllowNoAuth)
+	authMode, err := resolveServeAuthMode(cmd.Flags().Changed("auth"), serveAuthMode, cmd.Flags().Changed("no-auth") || cmd.Flags().Changed("allow-no-auth"), serveAllowNoAuth)
 	if err != nil {
 		return err
 	}
@@ -272,11 +274,32 @@ func runServe(cmd *cobra.Command, args []string) error {
 	forceExternalSearch := resolveForceExternalSearch(cfg, serveNativeSearch, serveNoNativeSearch)
 
 	modelName := activeModel(cfg)
-	factory := func(ctx context.Context) (*serveRuntime, error) {
-		provider, err := llm.NewProvider(cfg)
+	runtimeFactory := func(ctx context.Context, providerName string, providerModel string) (*serveRuntime, error) {
+		var provider llm.Provider
+		var err error
+		provKey := cfg.DefaultProvider
+		rtModelName := modelName
+
+		if providerName != "" && providerName != cfg.DefaultProvider {
+			provider, err = llm.NewProviderByName(cfg, providerName, providerModel)
+			provKey = providerName
+			if providerModel != "" {
+				rtModelName = providerModel
+			} else {
+				// Use provider's configured model or first curated model
+				if pc, ok := cfg.Providers[providerName]; ok && pc.Model != "" {
+					rtModelName = pc.Model
+				} else if models, ok := llm.ProviderModels[providerName]; ok && len(models) > 0 {
+					rtModelName = models[0]
+				}
+			}
+		} else {
+			provider, err = llm.NewProvider(cfg)
+		}
 		if err != nil {
 			return nil, err
 		}
+
 		engine, toolMgr, err := newServeEngineWithTools(cfg, settings, provider, serveYolo, WireSpawnAgentRunner, skillsSetup)
 		if err != nil {
 			return nil, err
@@ -284,7 +307,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 
 		var mcpManager *mcp.Manager
 		if settings.MCP != "" {
-			mcpOpts := &MCPOptions{Provider: provider, Model: modelName, YoloMode: serveYolo}
+			mcpOpts := &MCPOptions{Provider: provider, Model: rtModelName, YoloMode: serveYolo}
 			mgr, err := enableMCPServersWithFeedback(ctx, settings.MCP, engine, io.Discard, mcpOpts)
 			if err != nil {
 				return nil, err
@@ -294,7 +317,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 
 		runtime := &serveRuntime{
 			provider:            provider,
-			providerKey:         cfg.DefaultProvider,
+			providerKey:         provKey,
 			engine:              engine,
 			toolMgr:             toolMgr,
 			mcpManager:          mcpManager,
@@ -304,7 +327,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 			maxTurns:            settings.MaxTurns,
 			debug:               serveDebug,
 			debugRaw:            debugRaw,
-			defaultModel:        modelName,
+			defaultModel:        rtModelName,
 			store:               store,
 			toolsSetting:        settings.Tools,
 			mcpSetting:          settings.MCP,
@@ -328,6 +351,9 @@ func runServe(cmd *cobra.Command, args []string) error {
 		return runtime, nil
 	}
 
+	factory := func(ctx context.Context) (*serveRuntime, error) {
+		return runtimeFactory(ctx, "", "")
+	}
 	sessionMgr := newServeSessionManager(serveSessionTTL, serveSessionMax, factory)
 	defer sessionMgr.Close()
 
@@ -410,10 +436,11 @@ func runServe(cmd *cobra.Command, args []string) error {
 				sidebarSessions: append([]string(nil), sidebarSessions...),
 				corsOrigins:     append([]string(nil), serveCORSOrigins...),
 			},
-			sessionMgr: sessionMgr,
-			jobsV2:     jobsV2,
-			cfgRef:     cfg,
-			store:      store,
+			sessionMgr:     sessionMgr,
+			jobsV2:         jobsV2,
+			cfgRef:         cfg,
+			store:          store,
+			runtimeFactory: runtimeFactory,
 		}
 		sessionMgr.onEvict = func(rt *serveRuntime) {
 			for _, rid := range rt.getResponseIDs() {
@@ -632,7 +659,7 @@ func resolveServeAuthMode(authFlagSet bool, authMode string, allowNoAuthSet bool
 			aliasMode = "none"
 		}
 		if authFlagSet && mode != aliasMode {
-			return "", fmt.Errorf("--auth %s conflicts with --allow-no-auth=%v", mode, allowNoAuth)
+			return "", fmt.Errorf("--auth %s conflicts with --no-auth=%v", mode, allowNoAuth)
 		}
 		mode = aliasMode
 	}
@@ -696,11 +723,12 @@ type serveServer struct {
 	store             session.Store
 	server            *http.Server
 	modelsMu          sync.Mutex
-	modelsProvider    llm.Provider
-	responseToSession sync.Map // response_id (string) → session_id (string)
+	modelsProviders   map[string]llm.Provider // keyed by provider name
+	responseToSession sync.Map                // response_id (string) → session_id (string)
 	responseRunsOnce  sync.Once
 	responseRuns      *responseRunManager
 	webrtcHeadSnippet string // injected into index.html <head>; empty when WebRTC disabled
+	runtimeFactory    func(ctx context.Context, providerName string, model string) (*serveRuntime, error)
 }
 
 func (s *serveServer) Start() error {
@@ -736,6 +764,7 @@ func (s *serveServer) httpHandler() http.Handler {
 	inner := http.NewServeMux()
 
 	inner.HandleFunc("/healthz", s.handleHealth)
+	inner.HandleFunc("/v1/providers", s.auth(s.cors(s.handleProviders)))
 	inner.HandleFunc("/v1/models", s.auth(s.cors(s.handleModels)))
 	inner.HandleFunc("/v1/responses", s.auth(s.cors(s.handleResponses)))
 	inner.HandleFunc("/v1/responses/", s.auth(s.cors(s.handleResponseByID)))
@@ -794,10 +823,12 @@ func (s *serveServer) Stop(ctx context.Context) error {
 		s.responseRuns.Close()
 	}
 	s.modelsMu.Lock()
-	if cleaner, ok := s.modelsProvider.(interface{ CleanupMCP() }); ok {
-		cleaner.CleanupMCP()
+	for _, p := range s.modelsProviders {
+		if cleaner, ok := p.(interface{ CleanupMCP() }); ok {
+			cleaner.CleanupMCP()
+		}
 	}
-	s.modelsProvider = nil
+	s.modelsProviders = nil
 	s.modelsMu.Unlock()
 	return s.server.Shutdown(ctx)
 }

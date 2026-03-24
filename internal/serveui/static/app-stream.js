@@ -49,12 +49,29 @@ const normalizeError = async (response) => {
   return { status: response.status, message };
 };
 
-const fetchModels = async (tokenOverride = '') => {
+const fetchProviders = async (tokenOverride = '') => {
   const headers = {};
   const token = tokenOverride || state.token;
   if (token) headers.Authorization = `Bearer ${token}`;
 
-  const response = await fetch(`${UI_PREFIX}/v1/models`, { headers });
+  const response = await fetch(`${UI_PREFIX}/v1/providers`, { headers });
+  if (!response.ok) {
+    throw await normalizeError(response);
+  }
+
+  const data = await response.json().catch(() => ({ data: [] }));
+  return Array.isArray(data.data) ? data.data : [];
+};
+
+const fetchModels = async (tokenOverride = '', provider = '') => {
+  const headers = {};
+  const token = tokenOverride || state.token;
+  if (token) headers.Authorization = `Bearer ${token}`;
+
+  let url = `${UI_PREFIX}/v1/models`;
+  if (provider) url += `?provider=${encodeURIComponent(provider)}`;
+
+  const response = await fetch(url, { headers });
   if (!response.ok) {
     throw await normalizeError(response);
   }
@@ -1339,12 +1356,14 @@ const openAuthModal = (errorText = '', required = !state.token) => {
   elements.authError.textContent = errorText;
   elements.authTokenInput.value = state.token || '';
   elements.authCancelBtn.style.display = required ? 'none' : 'inline-flex';
+  elements.providerSelect.value = state.selectedProvider;
   elements.modelSelect.value = state.selectedModel;
   if (elements.showHiddenSessionsInput) {
     elements.showHiddenSessionsInput.checked = state.showHiddenSessions;
   }
   app.refreshNotificationUI();
   elements.authModal.classList.remove('hidden');
+  elements.providerSelect.removeAttribute('tabindex');
   elements.modelSelect.removeAttribute('tabindex');
   elements.authTokenInput.removeAttribute('tabindex');
   elements.showHiddenSessionsInput?.removeAttribute('tabindex');
@@ -1361,6 +1380,7 @@ const closeAuthModal = () => {
   if (state.authRequired && !state.token) return;
   elements.authModal.classList.add('hidden');
   elements.authError.textContent = '';
+  elements.providerSelect.setAttribute('tabindex', '-1');
   elements.modelSelect.setAttribute('tabindex', '-1');
   elements.authTokenInput.setAttribute('tabindex', '-1');
   elements.showHiddenSessionsInput?.setAttribute('tabindex', '-1');
@@ -1380,7 +1400,14 @@ const connectToken = async () => {
   const token = elements.authTokenInput.value.trim();
   const nextShowHiddenSessions = Boolean(elements.showHiddenSessionsInput?.checked);
 
-  // Save model selection regardless of token
+  // Save provider and model selection regardless of token
+  const newProvider = elements.providerSelect.value;
+  state.selectedProvider = newProvider;
+  if (newProvider) {
+    localStorage.setItem(STORAGE_KEYS.selectedProvider, newProvider);
+  } else {
+    localStorage.removeItem(STORAGE_KEYS.selectedProvider);
+  }
   const newModel = elements.modelSelect.value;
   state.selectedModel = newModel;
   if (newModel) {
@@ -1415,13 +1442,16 @@ const connectToken = async () => {
   elements.authError.textContent = '';
 
   try {
-    const models = await fetchModels(token);
+    state.providers = await fetchProviders(token);
+    normalizeSelectedProvider();
+    const models = await fetchModels(token, state.selectedProvider);
     state.token = token;
     state.models = models;
     state.connected = true;
     localStorage.setItem(STORAGE_KEYS.token, token);
     syncTokenCookie(token);
 
+    renderProviderOptions();
     renderModelOptions();
     setConnectionState('', '');
     state.authRequired = false;
@@ -1456,6 +1486,58 @@ const connectToken = async () => {
     elements.authConnectBtn.textContent = 'Save';
   }
 };
+
+// ===== Provider picker =====
+
+// Clear stale selectedProvider if it no longer exists in the fetched provider list.
+const normalizeSelectedProvider = () => {
+  if (!state.selectedProvider) return;
+  const exists = state.providers.some((p) => p.name === state.selectedProvider);
+  if (!exists) {
+    state.selectedProvider = '';
+    localStorage.removeItem(STORAGE_KEYS.selectedProvider);
+  }
+};
+
+const renderProviderOptions = () => {
+  const previous = state.selectedProvider;
+  elements.providerSelect.innerHTML = '';
+
+  const autoOption = document.createElement('option');
+  autoOption.value = '';
+  autoOption.textContent = 'Auto (server default)';
+  elements.providerSelect.appendChild(autoOption);
+
+  state.providers.filter((p) => p.configured || p.is_default).forEach((p) => {
+    const option = document.createElement('option');
+    option.value = p.name;
+    option.textContent = p.name + (p.is_default ? ' (default)' : '');
+    elements.providerSelect.appendChild(option);
+  });
+
+  elements.providerSelect.value = previous;
+};
+
+elements.providerSelect.addEventListener('change', async () => {
+  const provider = elements.providerSelect.value;
+  state.selectedProvider = provider;
+  if (provider) {
+    localStorage.setItem(STORAGE_KEYS.selectedProvider, provider);
+  } else {
+    localStorage.removeItem(STORAGE_KEYS.selectedProvider);
+  }
+  // Reset model selection when provider changes
+  state.selectedModel = '';
+  localStorage.removeItem(STORAGE_KEYS.selectedModel);
+  try {
+    state.models = await fetchModels('', provider);
+  } catch {
+    // Fall back to curated models from provider metadata
+    const providerInfo = state.providers.find((p) => p.name === provider);
+    state.models = providerInfo?.models?.length ? providerInfo.models : [];
+  }
+  renderModelOptions();
+});
 
 // ===== Model picker =====
 const renderModelOptions = () => {
@@ -2194,6 +2276,9 @@ const sendMessage = async (options = {}) => {
   if (state.selectedModel) {
     body.model = state.selectedModel;
   }
+  if (state.selectedProvider) {
+    body.provider = state.selectedProvider;
+  }
 
   try {
     let response = await fetch(`${UI_PREFIX}/v1/responses`, {
@@ -2322,6 +2407,7 @@ const sendMessage = async (options = {}) => {
 Object.assign(app, {
   requestHeaders,
   normalizeError,
+  fetchProviders,
   fetchModels,
   parseSSEStream,
   sleep,
@@ -2355,6 +2441,8 @@ Object.assign(app, {
   closeAuthModal,
   handleAuthFailure,
   connectToken,
+  normalizeSelectedProvider,
+  renderProviderOptions,
   renderModelOptions,
   autoGrowPrompt,
   updateVoiceUI,
