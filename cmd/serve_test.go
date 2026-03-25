@@ -4019,7 +4019,13 @@ func TestHandleModels_WithProviderParam(t *testing.T) {
 			"anthropic": {Model: "claude-sonnet-4-6"},
 		},
 	}
-	srv := &serveServer{cfgRef: cfg}
+	// Pre-seed the cache so getModelsProvider doesn't try to construct a real
+	// Anthropic provider (which requires auth not present in CI).
+	mock := llm.NewMockProvider("anthropic")
+	srv := &serveServer{
+		cfgRef:          cfg,
+		modelsProviders: map[string]llm.Provider{"anthropic": mock},
+	}
 
 	// Without provider param — uses default
 	req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
