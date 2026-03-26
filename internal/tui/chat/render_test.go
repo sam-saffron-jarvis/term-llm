@@ -218,6 +218,53 @@ func TestViewAltScreen_ViewportHeightAccountsForMultilineFooter(t *testing.T) {
 	}
 }
 
+func TestViewAltScreen_HeightOnlyResizePreservesLastMessage(t *testing.T) {
+	m := newTestChatModel(true)
+	sessionID := m.sess.ID
+
+	m.messages = []session.Message{
+		{
+			ID:          1,
+			SessionID:   sessionID,
+			Role:        llm.RoleUser,
+			TextContent: "hello",
+			Parts:       []llm.Part{{Type: llm.PartText, Text: "hello"}},
+			CreatedAt:   time.Now(),
+			Sequence:    0,
+		},
+		{
+			ID:          2,
+			SessionID:   sessionID,
+			Role:        llm.RoleAssistant,
+			TextContent: "world",
+			Parts:       []llm.Part{{Type: llm.PartText, Text: "world"}},
+			CreatedAt:   time.Now(),
+			Sequence:    1,
+		},
+	}
+
+	// Simulate completed stream state: completedStream is showing the last turn.
+	m.viewCache.completedStream = "rendered world content"
+	m.invalidateHistoryCache()
+
+	// First render — history cache is built with the skip (last turn excluded),
+	// but completedStream supplies it. Content should include "world".
+	first := ui.StripANSI(m.View())
+	if !strings.Contains(first, "world") {
+		t.Fatalf("expected first render to contain 'world', got %q", first)
+	}
+
+	// Simulate height-only resize (width stays the same).
+	_, _ = m.Update(tea.WindowSizeMsg{Width: m.width, Height: m.height - 5})
+
+	// After resize, completedStream is cleared. The history cache must be
+	// invalidated so renderHistory() re-includes the last assistant turn.
+	second := ui.StripANSI(m.View())
+	if !strings.Contains(second, "world") {
+		t.Fatalf("expected 'world' to remain visible after height-only resize, got %q", second)
+	}
+}
+
 func TestRenderStatusLine_FitsViewportWidth(t *testing.T) {
 	m := newTestChatModel(false)
 	m.width = 24

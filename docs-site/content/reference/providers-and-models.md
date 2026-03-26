@@ -27,7 +27,7 @@ Use `providers` when you want to know what is available and how it is configured
 
 term-llm supports a mix of provider types:
 
-- hosted API providers such as Anthropic, OpenAI, xAI, Gemini, and OpenRouter
+- hosted API providers such as Anthropic, AWS Bedrock, OpenAI, xAI, Gemini, and OpenRouter
 - subscription-backed OAuth providers such as ChatGPT, Copilot, and Gemini CLI
 - local or self-hosted OpenAI-compatible providers such as Ollama, LM Studio, vLLM, or custom endpoints
 
@@ -38,6 +38,7 @@ Most providers use API keys via environment variables. Some use OAuth credential
 | Provider | Credentials source | Notes |
 |---|---|---|
 | `anthropic` | `ANTHROPIC_API_KEY` or `CLAUDE_CODE_OAUTH_TOKEN` | API key or OAuth token |
+| `bedrock` | AWS credential chain or explicit `access_key_id` / `secret_access_key` | Anthropic Claude via AWS Bedrock |
 | `openai` | `OPENAI_API_KEY` | Standard OpenAI API key |
 | `chatgpt` | `~/.config/term-llm/chatgpt_creds.json` | ChatGPT Plus/Pro OAuth |
 | `copilot` | `~/.config/term-llm/copilot_creds.json` | GitHub Copilot OAuth |
@@ -157,6 +158,48 @@ providers:
     model: claude-sonnet-4-6-thinking
 ```
 
+### AWS Bedrock
+
+The `bedrock` provider routes Anthropic Claude models through AWS Bedrock. It supports the same model suffixes (`-thinking`, `-1m`) and has full feature parity with the direct `anthropic` provider.
+
+**Authentication** uses the standard AWS credential chain (`AWS_ACCESS_KEY_ID` env var, `~/.aws/credentials`, instance profiles), or explicit credentials in config:
+
+```yaml
+providers:
+  bedrock:
+    region: us-west-2
+    access_key_id: $(op-cache read "op://Private/AWS Bedrock/AWS_ACCESS_KEY_ID")
+    secret_access_key: $(op-cache read "op://Private/AWS Bedrock/AWS_SECRET_ACCESS_KEY")
+    model: claude-sonnet-4-6-thinking
+```
+
+**Model resolution** uses a 3-tier system. Friendly model names like `claude-sonnet-4-6` are automatically translated to Bedrock cross-region IDs. Use `model_map` to override with application inference profile ARNs or specific Bedrock IDs:
+
+```yaml
+providers:
+  bedrock:
+    region: us-west-2
+    model: claude-sonnet-4-6-thinking
+    model_map:
+      claude-sonnet-4-6: arn:aws:bedrock:us-west-2:123456789:application-inference-profile/abc123
+      claude-opus-4-6: us.anthropic.claude-opus-4-6-v1
+```
+
+Suffixes are stripped before lookup, so `claude-sonnet-4-6-1m-thinking` strips to `claude-sonnet-4-6`, resolves through `model_map`, then re-applies thinking and 1M context.
+
+The geographic prefix (`us.`, `eu.`, `ap.`) is derived from the configured region automatically — `eu-west-1` produces `eu.anthropic.*` IDs, `ap-southeast-1` produces `ap.anthropic.*`, etc. This ensures data residency matches your region without manual override.
+
+Raw Bedrock model IDs (`us.anthropic.claude-sonnet-4-6`, `anthropic.claude-sonnet-4-6`) and full ARNs are passed through without translation.
+
+| Config field | Description |
+|---|---|
+| `region` | AWS region. Falls back to `AWS_REGION` env var, then `us-east-1`. |
+| `profile` | AWS profile name from `~/.aws/credentials`. |
+| `access_key_id` | Explicit AWS access key. Supports `$()`, `op://`, `${ENV}`. |
+| `secret_access_key` | Explicit AWS secret key. Same resolution support. |
+| `session_token` | Optional session token for temporary credentials. |
+| `model_map` | Map of friendly names to Bedrock model IDs or ARNs. |
+
 ## Native search support
 
 Some providers support native web search. Others rely on external search tooling.
@@ -164,6 +207,7 @@ Some providers support native web search. Others rely on external search tooling
 Native support is most relevant for:
 
 - Anthropic
+- Bedrock
 - OpenAI
 - xAI
 - Gemini
@@ -193,6 +237,7 @@ See [Search](/guides/search/) for the full routing model.
 - **fast free experimentation:** `zen`
 - **OpenAI ecosystem / Codex editing:** `openai`
 - **Claude models with OAuth:** `anthropic`
+- **Claude models via AWS billing:** `bedrock`
 - **broad model access:** `openrouter`
 - **local inference:** `ollama` or another OpenAI-compatible endpoint
 - **subscription-backed consumer access:** `chatgpt`, `copilot`, or `gemini-cli`

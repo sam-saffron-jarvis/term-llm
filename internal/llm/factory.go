@@ -87,6 +87,12 @@ func NewProviderByName(cfg *config.Config, name string, model string) (Provider,
 			// zen can work without API key (free tier)
 			provider := NewZenProvider("", model)
 			return WrapWithRetry(provider, DefaultRetryConfig()), nil
+		case config.ProviderTypeBedrock:
+			provider, err := NewBedrockProvider(model, "", "", "", "", "", nil)
+			if err != nil {
+				return nil, fmt.Errorf("provider bedrock: %w", err)
+			}
+			return WrapWithRetry(provider, DefaultRetryConfig()), nil
 		case config.ProviderTypeXAI:
 			// xai can use XAI_API_KEY env var
 			apiKey := os.Getenv("XAI_API_KEY")
@@ -203,6 +209,9 @@ func newProviderInternal(cfg *config.Config) (Provider, error) {
 		case config.ProviderTypeZen:
 			// zen can work without API key (free tier)
 			return NewZenProvider("", ""), nil
+		case config.ProviderTypeBedrock:
+			// bedrock uses AWS credential chain (env vars, ~/.aws/credentials, instance roles)
+			return NewBedrockProvider("", "", "", "", "", "", nil)
 		case config.ProviderTypeXAI:
 			// xai can use XAI_API_KEY env var
 			apiKey := os.Getenv("XAI_API_KEY")
@@ -304,6 +313,9 @@ func createProviderFromConfig(name string, cfg *config.ProviderConfig) (Provider
 			return nil, fmt.Errorf("provider %q requires VENICE_API_KEY or explicit config", name)
 		}
 		return NewVeniceProvider(apiKey, cfg.Model), nil
+
+	case config.ProviderTypeBedrock:
+		return NewBedrockProvider(cfg.Model, cfg.Region, cfg.Profile, cfg.AccessKey, cfg.SecretKey, cfg.SessionToken, cfg.ModelMap)
 
 	case config.ProviderTypeClaudeBin:
 		provider := NewClaudeBinProvider(cfg.Model, cfg.Env)

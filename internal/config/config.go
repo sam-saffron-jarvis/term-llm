@@ -27,6 +27,7 @@ const (
 	ProviderTypeOpenAICompat ProviderType = "openai_compatible"
 	ProviderTypeXAI          ProviderType = "xai"
 	ProviderTypeVenice       ProviderType = "venice"
+	ProviderTypeBedrock      ProviderType = "bedrock"
 )
 
 // builtInProviderTypes maps known provider names to their types
@@ -42,6 +43,7 @@ var builtInProviderTypes = map[string]ProviderType{
 	"claude-bin": ProviderTypeClaudeBin,
 	"xai":        ProviderTypeXAI,
 	"venice":     ProviderTypeVenice,
+	"bedrock":    ProviderTypeBedrock,
 }
 
 // InferProviderType returns the provider type for a given provider name
@@ -86,6 +88,14 @@ type ProviderConfig struct {
 	// OpenRouter specific
 	AppURL   string `mapstructure:"app_url"`
 	AppTitle string `mapstructure:"app_title"`
+
+	// AWS Bedrock specific
+	Region       string            `mapstructure:"region"`            // AWS region (defaults to AWS_REGION env var)
+	Profile      string            `mapstructure:"profile"`           // AWS profile from ~/.aws/credentials
+	AccessKey    string            `mapstructure:"access_key_id"`     // Explicit AWS access key ID
+	SecretKey    string            `mapstructure:"secret_access_key"` // Explicit AWS secret access key
+	SessionToken string            `mapstructure:"session_token"`     // Optional AWS session token (temporary creds)
+	ModelMap     map[string]string `mapstructure:"model_map"`         // Friendly name -> Bedrock model ID/ARN
 
 	// Runtime fields (populated after credential resolution)
 	ResolvedAPIKey string                              `mapstructure:"-"`
@@ -588,6 +598,13 @@ func resolveProviderCredentials(name string, cfg *ProviderConfig) error {
 		return nil
 	}
 
+	// Check if AWS Bedrock credential fields need lazy resolution
+	if (cfg.AccessKey != "" && needsLazyResolve(cfg.AccessKey)) ||
+		(cfg.SecretKey != "" && needsLazyResolve(cfg.SecretKey)) ||
+		(cfg.SessionToken != "" && needsLazyResolve(cfg.SessionToken)) {
+		cfg.needsLazyResolution = true
+	}
+
 	// Provider-specific credential resolution (non-lazy)
 	switch providerType {
 	case ProviderTypeAnthropic:
@@ -639,6 +656,19 @@ func resolveProviderCredentials(name string, cfg *ProviderConfig) error {
 		if cfg.ResolvedAPIKey == "" {
 			cfg.ResolvedAPIKey = os.Getenv("VENICE_API_KEY")
 		}
+
+	case ProviderTypeBedrock:
+		// Expand env vars in non-lazy credential fields (skip $() which is resolved later)
+		if !needsLazyResolve(cfg.AccessKey) {
+			cfg.AccessKey = expandEnv(cfg.AccessKey)
+		}
+		if !needsLazyResolve(cfg.SecretKey) {
+			cfg.SecretKey = expandEnv(cfg.SecretKey)
+		}
+		if !needsLazyResolve(cfg.SessionToken) {
+			cfg.SessionToken = expandEnv(cfg.SessionToken)
+		}
+		cfg.Region = expandEnv(cfg.Region)
 
 	case ProviderTypeOpenAICompat:
 		cfg.ResolvedAPIKey = expandEnv(cfg.APIKey)
@@ -693,6 +723,26 @@ func (cfg *ProviderConfig) ResolveForInference() error {
 		cfg.ResolvedAPIKey, err = ResolveValue(cfg.APIKey)
 		if err != nil {
 			return fmt.Errorf("api_key: %w", err)
+		}
+	}
+
+	// Resolve AWS Bedrock credential fields
+	if needsLazyResolve(cfg.AccessKey) {
+		cfg.AccessKey, err = ResolveValue(cfg.AccessKey)
+		if err != nil {
+			return fmt.Errorf("access_key_id: %w", err)
+		}
+	}
+	if needsLazyResolve(cfg.SecretKey) {
+		cfg.SecretKey, err = ResolveValue(cfg.SecretKey)
+		if err != nil {
+			return fmt.Errorf("secret_access_key: %w", err)
+		}
+	}
+	if needsLazyResolve(cfg.SessionToken) {
+		cfg.SessionToken, err = ResolveValue(cfg.SessionToken)
+		if err != nil {
+			return fmt.Errorf("session_token: %w", err)
 		}
 	}
 

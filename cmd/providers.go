@@ -22,7 +22,7 @@ var (
 type ProviderInfo struct {
 	Name               string   `json:"name"`
 	Type               string   `json:"type"`
-	Credential         string   `json:"credential"`        // "api_key", "oauth", "none"
+	Credential         string   `json:"credential"`        // "api_key", "oauth", "aws", "none"
 	EnvVar             string   `json:"env_var,omitempty"` // Environment variable for API key
 	RequiresKey        bool     `json:"requires_key"`      // Whether API key is required
 	SupportsListModels bool     `json:"supports_list_models"`
@@ -45,6 +45,13 @@ var builtinProviderMeta = map[string]struct {
 		requiresKey:        true,
 		supportsListModels: true,
 		description:        "Anthropic API (Claude models)",
+	},
+	"bedrock": {
+		credential:         "aws",
+		envVar:             "AWS_ACCESS_KEY_ID",
+		requiresKey:        false,
+		supportsListModels: false,
+		description:        "AWS Bedrock (Anthropic Claude models via AWS credentials)",
 	},
 	"openai": {
 		credential:         "api_key",

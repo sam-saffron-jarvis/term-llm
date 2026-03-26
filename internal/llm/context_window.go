@@ -215,6 +215,35 @@ var inputLimitTable = []limitEntry{
 	{"claude-3-sonnet", 196_000},   // 200K - 4K
 	{"claude-3-haiku", 196_000},    // 200K - 4K
 
+	// AWS Bedrock: same limits as direct Anthropic. Bedrock model IDs use
+	// geographic prefixes (us./eu./ap.) followed by anthropic.<model>.
+	// Prefix matching covers all regions and ARN passthrough users can
+	// set context_window in config.
+	{"us.anthropic.claude-sonnet-4-6", 180_000},
+	{"us.anthropic.claude-opus-4-6", 180_000},
+	{"us.anthropic.claude-haiku-4-5", 180_000},
+	{"us.anthropic.claude-sonnet-4-5", 180_000},
+	{"us.anthropic.claude-opus-4-5", 180_000},
+	{"us.anthropic.claude-sonnet-4", 180_000},
+	{"eu.anthropic.claude-sonnet-4-6", 180_000},
+	{"eu.anthropic.claude-opus-4-6", 180_000},
+	{"eu.anthropic.claude-haiku-4-5", 180_000},
+	{"eu.anthropic.claude-sonnet-4-5", 180_000},
+	{"eu.anthropic.claude-opus-4-5", 180_000},
+	{"eu.anthropic.claude-sonnet-4", 180_000},
+	{"ap.anthropic.claude-sonnet-4-6", 180_000},
+	{"ap.anthropic.claude-opus-4-6", 180_000},
+	{"ap.anthropic.claude-haiku-4-5", 180_000},
+	{"ap.anthropic.claude-sonnet-4-5", 180_000},
+	{"ap.anthropic.claude-opus-4-5", 180_000},
+	{"ap.anthropic.claude-sonnet-4", 180_000},
+	{"anthropic.claude-sonnet-4-6", 180_000},
+	{"anthropic.claude-opus-4-6", 180_000},
+	{"anthropic.claude-haiku-4-5", 180_000},
+	{"anthropic.claude-sonnet-4-5", 180_000},
+	{"anthropic.claude-opus-4-5", 180_000},
+	{"anthropic.claude-sonnet-4", 180_000},
+
 	// OpenAI GPT-5 family
 	{"gpt-5.4-mini", 272_000},        // 400K ctx - 128K out
 	{"gpt-5.4-nano", 272_000},        // 400K ctx - 128K out
@@ -346,6 +375,32 @@ var outputLimitTable = []limitEntry{
 	{"claude-3-opus", 4_096},
 	{"claude-3-sonnet", 4_096},
 	{"claude-3-haiku", 4_096},
+
+	// AWS Bedrock (same as direct Anthropic, all geo prefixes)
+	{"us.anthropic.claude-sonnet-4-6", 64_000},
+	{"us.anthropic.claude-opus-4-6", 64_000},
+	{"us.anthropic.claude-haiku-4-5", 64_000},
+	{"us.anthropic.claude-sonnet-4-5", 64_000},
+	{"us.anthropic.claude-opus-4-5", 64_000},
+	{"us.anthropic.claude-sonnet-4", 64_000},
+	{"eu.anthropic.claude-sonnet-4-6", 64_000},
+	{"eu.anthropic.claude-opus-4-6", 64_000},
+	{"eu.anthropic.claude-haiku-4-5", 64_000},
+	{"eu.anthropic.claude-sonnet-4-5", 64_000},
+	{"eu.anthropic.claude-opus-4-5", 64_000},
+	{"eu.anthropic.claude-sonnet-4", 64_000},
+	{"ap.anthropic.claude-sonnet-4-6", 64_000},
+	{"ap.anthropic.claude-opus-4-6", 64_000},
+	{"ap.anthropic.claude-haiku-4-5", 64_000},
+	{"ap.anthropic.claude-sonnet-4-5", 64_000},
+	{"ap.anthropic.claude-opus-4-5", 64_000},
+	{"ap.anthropic.claude-sonnet-4", 64_000},
+	{"anthropic.claude-sonnet-4-6", 64_000},
+	{"anthropic.claude-opus-4-6", 64_000},
+	{"anthropic.claude-haiku-4-5", 64_000},
+	{"anthropic.claude-sonnet-4-5", 64_000},
+	{"anthropic.claude-opus-4-5", 64_000},
+	{"anthropic.claude-sonnet-4", 64_000},
 
 	// OpenAI GPT-5 family
 	{"gpt-5.4-mini", 128_000},

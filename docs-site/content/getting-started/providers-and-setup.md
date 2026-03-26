@@ -9,7 +9,7 @@ next:
   label: Usage guide
   url: /guides/usage/
 ---
-On first run, term-llm will prompt you to choose a provider (Anthropic, OpenAI, ChatGPT, GitHub Copilot, xAI, Venice, OpenRouter, Gemini, Gemini CLI, Zen, Claude Code (claude-bin), Ollama, or LM Studio).
+On first run, term-llm will prompt you to choose a provider (Anthropic, AWS Bedrock, OpenAI, ChatGPT, GitHub Copilot, xAI, Venice, OpenRouter, Gemini, Gemini CLI, Zen, Claude Code (claude-bin), Ollama, or LM Studio).
 
 ### Option 1: Try it free with Zen
 
@@ -188,7 +188,88 @@ term-llm providers anthropic       # Show details for specific provider
 term-llm providers --json          # JSON output
 ```
 
-### Option 8: Use local LLMs (Ollama, LM Studio)
+### Option 8: Use AWS Bedrock
+
+[AWS Bedrock](https://aws.amazon.com/bedrock/) provides access to Anthropic Claude models through your AWS account. This is useful for organizations that route AI usage through AWS billing, need VPC/PrivateLink access, or use application inference profiles for rate/cost management.
+
+```bash
+term-llm ask --provider bedrock "explain this code"
+term-llm ask --provider bedrock:claude-opus-4-6-thinking "complex question"
+```
+
+**Authentication** uses the standard AWS credential chain. Configure credentials via any method the AWS SDK supports:
+
+```bash
+# Environment variables
+export AWS_ACCESS_KEY_ID=AKIA...
+export AWS_SECRET_ACCESS_KEY=...
+export AWS_REGION=us-west-2
+```
+
+Or configure fully in `~/.config/term-llm/config.yaml`:
+
+```yaml
+default_provider: bedrock
+
+providers:
+  bedrock:
+    region: us-west-2
+    model: claude-sonnet-4-6-thinking
+```
+
+**Explicit credentials** (with 1Password, vaults, or `$()` command resolution):
+
+```yaml
+providers:
+  bedrock:
+    region: us-west-2
+    access_key_id: $(op-cache read "op://Private/AWS Bedrock/AWS_ACCESS_KEY_ID")
+    secret_access_key: $(op-cache read "op://Private/AWS Bedrock/AWS_SECRET_ACCESS_KEY")
+    model: claude-sonnet-4-6-thinking
+```
+
+**Application inference profiles** — use `model_map` to alias friendly model names to Bedrock ARNs or model IDs. The `-thinking` and `-1m` suffixes work with mapped names:
+
+```yaml
+providers:
+  bedrock:
+    region: us-west-2
+    access_key_id: $(op-cache read "op://Private/AWS Bedrock/AWS_ACCESS_KEY_ID")
+    secret_access_key: $(op-cache read "op://Private/AWS Bedrock/AWS_SECRET_ACCESS_KEY")
+    model: claude-sonnet-4-6-thinking
+    model_map:
+      claude-sonnet-4-6: arn:aws:bedrock:us-west-2:123456789:application-inference-profile/abc123
+      claude-opus-4-6: arn:aws:bedrock:us-west-2:123456789:application-inference-profile/def456
+      claude-haiku-4-5: arn:aws:bedrock:us-west-2:123456789:application-inference-profile/ghi789
+```
+
+With this config, `--provider bedrock:claude-opus-4-6-1m-thinking` strips the suffixes, resolves `claude-opus-4-6` through `model_map` to the ARN, and enables adaptive thinking + 1M context.
+
+**Available models** (same as direct Anthropic — translated to Bedrock IDs automatically):
+
+| Model | Suffixes | Description |
+|-------|----------|-------------|
+| `claude-sonnet-4-6` | `-thinking`, `-1m` | Latest Sonnet |
+| `claude-opus-4-6` | `-thinking`, `-1m` | Latest Opus |
+| `claude-haiku-4-5` | `-thinking` | Fast, lightweight |
+
+The geographic prefix (`us.`, `eu.`, `ap.`) is derived from your configured region — `eu-west-1` produces `eu.anthropic.*` IDs, etc. This ensures data residency matches your region.
+
+You can also pass raw Bedrock model IDs directly (e.g., `us.anthropic.claude-sonnet-4-6` or full ARNs) — these bypass the translation layer.
+
+**Features:** full parity with the direct Anthropic provider — streaming, tool use, extended thinking, 1M context, images, prompt caching, web search/fetch all work through Bedrock.
+
+| Config field | Description |
+|---|---|
+| `region` | AWS region. Falls back to `AWS_REGION` / `AWS_DEFAULT_REGION` env vars, then `us-east-1`. |
+| `profile` | AWS profile name from `~/.aws/credentials`. |
+| `access_key_id` | Explicit AWS access key. Supports `$()`, `op://`, `${ENV}` resolution. |
+| `secret_access_key` | Explicit AWS secret key. Same resolution support. |
+| `session_token` | Optional session token for temporary/assumed-role credentials. |
+| `model_map` | Map of friendly names to Bedrock model IDs or ARNs. |
+| `model` | Default model (friendly name, Bedrock ID, or ARN). |
+
+### Option 9: Use local LLMs (Ollama, LM Studio)
 
 Run models locally with [Ollama](https://ollama.com) or [LM Studio](https://lmstudio.ai):
 
@@ -255,7 +336,7 @@ providers:
 
 See [Providers and models](/reference/providers-and-models/#configuration-reference) for the full list of OpenAI-compatible provider options.
 
-### Option 9: Use Claude Code (claude-bin)
+### Option 10: Use Claude Code (claude-bin)
 
 If you have [Claude Code](https://claude.ai/code) installed and logged in, you can use the `claude-bin` provider to run completions via the [Claude Agent SDK](https://docs.anthropic.com/en/docs/claude-code/sdk). This requires no API key - it uses Claude Code's existing authentication.
 
@@ -293,7 +374,7 @@ providers:
 - `providers.<name>.env` values support the same deferred resolution as other config values, including `file://...#json.path`, `op://...`, and `$()`
 - Works immediately if Claude Code is installed and logged in
 
-### Option 10: Use existing CLI credentials (gemini-cli)
+### Option 11: Use existing CLI credentials (gemini-cli)
 
 If you have [gemini-cli](https://github.com/google-gemini/gemini-cli) installed and logged in, term-llm can use those credentials directly:
 
@@ -315,7 +396,7 @@ OpenAI-compatible providers support two URL options:
 
 Use `url` when your endpoint doesn't follow the standard `/chat/completions` path, or to paste URLs directly from API documentation.
 
-### Option 11: Use GitHub Copilot
+### Option 12: Use GitHub Copilot
 
 If you have [GitHub Copilot](https://github.com/features/copilot) (free, Individual, or Business), you can use the `copilot` provider with OAuth device flow authentication:
 

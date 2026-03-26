@@ -541,8 +541,15 @@ func (m *Model) applyWindowSize(msg tea.WindowSizeMsg) {
 	}
 
 	// Invalidate completed stream cache since it's width-dependent (Issue 1).
-	m.viewCache.completedStream = ""
-	m.bumpContentVersion()
+	// Also invalidate history cache because renderHistory() skips the last turn
+	// when completedStream is non-empty — clearing it without rebuilding history
+	// would leave a stale cache that excludes the last assistant message.
+	if m.viewCache.completedStream != "" {
+		m.viewCache.completedStream = ""
+		m.invalidateHistoryCache()
+	} else {
+		m.bumpContentVersion()
+	}
 
 	// Resize viewport for alt screen mode.
 	m.viewport.Width = m.width

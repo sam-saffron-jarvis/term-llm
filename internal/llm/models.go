@@ -141,6 +141,19 @@ var ProviderModels = map[string][]string{
 		// Grok 2
 		"grok-2",
 	},
+	"bedrock": {
+		// AWS Bedrock: same friendly names as anthropic (translated to Bedrock IDs internally)
+		"claude-sonnet-4-6",
+		"claude-sonnet-4-6-thinking",
+		"claude-sonnet-4-6-1m",
+		"claude-sonnet-4-6-1m-thinking",
+		"claude-opus-4-6",
+		"claude-opus-4-6-thinking",
+		"claude-opus-4-6-1m",
+		"claude-opus-4-6-1m-thinking",
+		"claude-haiku-4-5",
+		"claude-haiku-4-5-thinking",
+	},
 	"venice": {
 		"venice-uncensored",
 		"olafangensan-glm-4.7-flash-heretic",
@@ -190,6 +203,7 @@ var ProviderFastModels = map[string]string{
 	"gemini-cli": "gemini-2.5-flash-lite",
 	"xai":        "grok-3-mini-fast",
 	"zen":        "glm-4.7-free",
+	"bedrock":    "claude-haiku-4-5",
 	"venice":     "llama-3.2-3b",
 	"openrouter": "anthropic/claude-haiku-4-5",
 	"claude-bin": "haiku",
@@ -234,7 +248,7 @@ func ExpandWithEffortVariants(models []string) []string {
 
 // GetBuiltInProviderNames returns the built-in provider type names
 func GetBuiltInProviderNames() []string {
-	return []string{"anthropic", "openai", "chatgpt", "copilot", "openrouter", "gemini", "gemini-cli", "zen", "claude-bin", "xai", "venice"}
+	return []string{"anthropic", "bedrock", "openai", "chatgpt", "copilot", "openrouter", "gemini", "gemini-cli", "zen", "claude-bin", "xai", "venice"}
 }
 
 // GetProviderNames returns valid provider names from config plus built-in types.
