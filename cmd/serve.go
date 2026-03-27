@@ -32,7 +32,6 @@ var (
 	serveToken                  string
 	serveAllowNoAuth            bool
 	serveAuthMode               string
-	serveNoUI                   bool
 	serveBasePath               string
 	serveCORSOrigins            []string
 	serveSessionTTL             time.Duration
@@ -54,20 +53,28 @@ var (
 	serveTelegramCarryoverChars int
 	serveJobsWorkers            int
 	serveSetup                  bool
+	serveVerbose                bool
 	serveSidebarSessions        string
+	serveToolMap                []string
 )
 
 var serveCmd = &cobra.Command{
 	Use:   "serve <platform> [platform...]",
-	Short: "Run the agent as a server (web, jobs, Telegram, or any combination)",
+	Short: "Run the agent as a server (web, api, jobs, Telegram, or any combination)",
 	Long: `Run term-llm as a server on one or more platforms simultaneously.
+
+Available platforms:
+  web        HTTP server with chat UI
+  api        HTTP server with API endpoints only (no UI)
+  jobs       HTTP server with async job runner
+  telegram   Telegram bot
 
 Platforms are specified as positional arguments. If none are given, the
 serve.platforms list from config.yaml is used.
 
 Examples:
   term-llm serve web             # web server with UI enabled
-  term-llm serve web --no-ui     # web API only (no chat UI)
+  term-llm serve api             # API only (no chat UI)
   term-llm serve telegram        # Telegram bot only
   term-llm serve telegram web    # both platforms
   term-llm serve web --base-path /chat
@@ -75,6 +82,7 @@ Examples:
 All HTTP routes are mounted under --base-path (default /ui):
   POST {base}/v1/responses
   POST {base}/v1/chat/completions
+  POST {base}/v1/messages
   POST {base}/v1/transcribe
   GET  {base}/v1/models
   GET  {base}/healthz
@@ -96,7 +104,7 @@ Jobs endpoints (also under base-path):
   POST   {base}/v2/runs/:id/cancel
 
 Use --setup to configure credentials for the selected platforms.`,
-	ValidArgs: []string{"web", "jobs", "telegram"},
+	ValidArgs: []string{"web", "api", "jobs", "telegram"},
 	RunE:      runServe,
 }
 
@@ -110,7 +118,6 @@ func init() {
 	serveCmd.Flags().BoolVar(&serveAllowNoAuth, "allow-no-auth", false, "Disable auth (alias for --no-auth)")
 	_ = serveCmd.Flags().MarkHidden("allow-no-auth")
 	serveCmd.Flags().StringVar(&serveAuthMode, "auth", "bearer", "Auth mode: bearer or none")
-	serveCmd.Flags().BoolVar(&serveNoUI, "no-ui", false, "Disable web UI (enabled by default when web platform is active)")
 	serveCmd.Flags().StringVar(&serveBasePath, "base-path", "/ui", "URL prefix the UI uses for session URLs (e.g. /chat)")
 	serveCmd.Flags().StringArrayVar(&serveCORSOrigins, "cors-origin", nil, "Allowed CORS origin (repeatable, or '*' for all)")
 	serveCmd.Flags().DurationVar(&serveSessionTTL, "session-ttl", 30*time.Minute, "Stateful session idle TTL")
@@ -120,6 +127,8 @@ func init() {
 	serveCmd.Flags().IntVar(&serveTelegramCarryoverChars, "telegram-carryover-chars", 4000, "Characters of previous Telegram session context to carry into replacement sessions (0 disables)")
 	serveCmd.Flags().IntVar(&serveJobsWorkers, "jobs-workers", 4, "Number of concurrent job workers for --platform jobs")
 	serveCmd.Flags().StringVar(&serveSidebarSessions, "sidebar-sessions", "all", "Default web sidebar session categories: all or a comma-separated list like chat,web,ask,plan,exec")
+	serveCmd.Flags().BoolVar(&serveVerbose, "verbose", false, "Log API request/response summaries to stderr")
+	serveCmd.Flags().StringArrayVar(&serveToolMap, "tool-map", nil, "Map client tool name to server tool (repeatable, format ClientName:ServerName)")
 
 	AddProviderFlag(serveCmd, &serveProvider)
 	AddDebugFlag(serveCmd, &serveDebug)
@@ -186,6 +195,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 	}
 	hasJobs := platformContains(platformNames, "jobs")
 	hasWeb := platformContains(platformNames, "web")
+	hasAPI := platformContains(platformNames, "api")
 	hasTelegram := platformContains(platformNames, "telegram")
 
 	// Auto-generate VAPID keys for web push if not already configured.
@@ -216,7 +226,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 	}
 
 	var agent *agents.Agent
-	if hasWeb || hasTelegram {
+	if hasWeb || hasAPI || hasTelegram {
 		agent, err = LoadAgent(serveAgent, cfg)
 		if err != nil {
 			return err
@@ -273,6 +283,19 @@ func runServe(cmd *cobra.Command, args []string) error {
 
 	forceExternalSearch := resolveForceExternalSearch(cfg, serveNativeSearch, serveNoNativeSearch)
 
+	// Parse --tool-map entries ("ClientName:ServerName")
+	var toolMap map[string]string
+	for _, entry := range serveToolMap {
+		parts := strings.SplitN(entry, ":", 2)
+		if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+			return fmt.Errorf("invalid --tool-map %q (expected ClientName:ServerName)", entry)
+		}
+		if toolMap == nil {
+			toolMap = make(map[string]string)
+		}
+		toolMap[parts[0]] = parts[1]
+	}
+
 	modelName := activeModel(cfg)
 	runtimeFactory := func(ctx context.Context, providerName string, providerModel string) (*serveRuntime, error) {
 		var provider llm.Provider
@@ -315,6 +338,18 @@ func runServe(cmd *cobra.Command, args []string) error {
 			mcpManager = mgr
 		}
 
+		// Validate --tool-map targets exist as registered server tools.
+		// This runs after MCP registration so mapped MCP tools are visible.
+		for clientName, serverName := range toolMap {
+			if _, ok := engine.Tools().Get(serverName); !ok {
+				names := make([]string, 0)
+				for _, spec := range engine.Tools().AllSpecs() {
+					names = append(names, spec.Name)
+				}
+				return nil, fmt.Errorf("--tool-map %s:%s: server tool %q not found (registered tools: %v)", clientName, serverName, serverName, names)
+			}
+		}
+
 		runtime := &serveRuntime{
 			provider:            provider,
 			providerKey:         provKey,
@@ -325,6 +360,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 			search:              settings.Search,
 			forceExternalSearch: forceExternalSearch,
 			maxTurns:            settings.MaxTurns,
+			toolMap:             toolMap,
 			debug:               serveDebug,
 			debugRaw:            debugRaw,
 			defaultModel:        rtModelName,
@@ -395,6 +431,8 @@ func runServe(cmd *cobra.Command, args []string) error {
 		switch name {
 		case "web":
 			// Handled by the existing serveServer below.
+		case "api":
+			// Handled by the HTTP serveServer below (no UI).
 		case "jobs":
 			// Handled by the HTTP serveServer below.
 		case "telegram":
@@ -413,7 +451,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	hasHTTP := hasWeb || hasJobs
+	hasHTTP := hasWeb || hasAPI || hasJobs
 
 	var s *serveServer
 	if hasHTTP {
@@ -424,7 +462,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 				return fmt.Errorf("initialize jobs v2 manager: %w", err)
 			}
 		}
-		serveUI := hasWeb && !serveNoUI
+		serveUI := hasWeb
 		s = &serveServer{
 			cfg: serveServerConfig{
 				host:            serveHost,
@@ -432,6 +470,8 @@ func runServe(cmd *cobra.Command, args []string) error {
 				requireAuth:     requireAuth,
 				token:           token,
 				ui:              serveUI,
+				api:             hasAPI,
+				verbose:         serveVerbose,
 				basePath:        serveBasePath,
 				sidebarSessions: append([]string(nil), sidebarSessions...),
 				corsOrigins:     append([]string(nil), serveCORSOrigins...),
@@ -525,7 +565,7 @@ func newServeEngineWithTools(cfg *config.Config, settings SessionSettings, provi
 	return engine, toolMgr, nil
 }
 
-var knownPlatforms = map[string]bool{"web": true, "jobs": true, "telegram": true}
+var knownPlatforms = map[string]bool{"web": true, "api": true, "jobs": true, "telegram": true}
 
 // resolvePlatforms returns the list of platforms to serve. Positional args
 // take precedence; if none are given, configPlatforms (from config.yaml
@@ -549,7 +589,7 @@ func resolvePlatforms(args []string, configPlatforms []string) ([]string, error)
 			continue
 		}
 		if !knownPlatforms[p] {
-			return nil, fmt.Errorf("unknown platform %q (valid: web, jobs, telegram)", p)
+			return nil, fmt.Errorf("unknown platform %q (valid: web, api, jobs, telegram)", p)
 		}
 		if !seen[p] {
 			seen[p] = true
@@ -578,7 +618,7 @@ func singleServeTemplatePlatform(platforms []string) string {
 	unique := make(map[string]struct{})
 	for _, p := range platforms {
 		switch p {
-		case "web", "telegram", "jobs":
+		case "web", "api", "telegram", "jobs":
 			unique[p] = struct{}{}
 		}
 	}
@@ -685,6 +725,8 @@ type serveServerConfig struct {
 	requireAuth     bool
 	token           string
 	ui              bool
+	api             bool
+	verbose         bool
 	basePath        string // e.g. "/ui" or "/chat", always without trailing slash
 	sidebarSessions []string
 	corsOrigins     []string
@@ -768,6 +810,7 @@ func (s *serveServer) httpHandler() http.Handler {
 	inner.HandleFunc("/v1/responses", s.auth(s.cors(s.handleResponses)))
 	inner.HandleFunc("/v1/responses/", s.auth(s.cors(s.handleResponseByID)))
 	inner.HandleFunc("/v1/chat/completions", s.auth(s.cors(s.handleChatCompletions)))
+	inner.HandleFunc("/v1/messages", s.auth(s.cors(s.handleAnthropicMessages)))
 	inner.HandleFunc("/v1/transcribe", s.auth(s.cors(s.handleTranscribe)))
 	if s.jobsV2 != nil {
 		inner.HandleFunc("/v2/jobs", s.auth(s.cors(s.handleJobsV2)))
@@ -791,7 +834,7 @@ func (s *serveServer) httpHandler() http.Handler {
 	// Jobs-only serve instances have no UI surface, so mount at root and keep
 	// the canonical /v2/* API paths. The shared base-path wrapper is still used
 	// for web/UI surfaces where the browser and API must live under one prefix.
-	if s.jobsV2 != nil && !s.cfg.ui {
+	if s.jobsV2 != nil && !s.cfg.ui && !s.cfg.api {
 		return inner
 	}
 

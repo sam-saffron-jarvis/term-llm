@@ -765,6 +765,10 @@ func (s *serveServer) appendResponseRunEvent(runtime *serveRuntime, run *respons
 		if ev.Tool == nil {
 			return nil
 		}
+		// Suppress tool calls for server-executed tools
+		if runtime.isServerExecutedTool(ev.Tool.Name) {
+			return nil
+		}
 		state.toolsSeen = true
 		item := map[string]any{
 			"id":        "fc_" + ev.Tool.ID,

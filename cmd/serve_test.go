@@ -4156,3 +4156,501 @@ func TestSessionManager_GetOrCreateWithDeduplication(t *testing.T) {
 		t.Fatalf("providerKey = %q, want custom", first.providerKey)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Anthropic Messages API tests
+// ---------------------------------------------------------------------------
+
+func TestParseAnthropicMessages_SimpleText(t *testing.T) {
+	msgs, err := parseAnthropicMessages([]anthropicMessage{
+		{Role: "user", Content: json.RawMessage(`"Hello"`)},
+	})
+	if err != nil {
+		t.Fatalf("parseAnthropicMessages: %v", err)
+	}
+	if len(msgs) != 1 {
+		t.Fatalf("len = %d, want 1", len(msgs))
+	}
+	if msgs[0].Role != llm.RoleUser {
+		t.Fatalf("role = %s, want user", msgs[0].Role)
+	}
+	if msgs[0].Parts[0].Text != "Hello" {
+		t.Fatalf("text = %q, want Hello", msgs[0].Parts[0].Text)
+	}
+}
+
+func TestParseAnthropicMessages_ContentBlocks(t *testing.T) {
+	msgs, err := parseAnthropicMessages([]anthropicMessage{
+		{Role: "user", Content: json.RawMessage(`[{"type":"text","text":"Hi"},{"type":"text","text":" there"}]`)},
+	})
+	if err != nil {
+		t.Fatalf("parseAnthropicMessages: %v", err)
+	}
+	if len(msgs) != 1 {
+		t.Fatalf("len = %d, want 1", len(msgs))
+	}
+	if len(msgs[0].Parts) != 2 {
+		t.Fatalf("parts = %d, want 2", len(msgs[0].Parts))
+	}
+	if msgs[0].Parts[0].Text != "Hi" || msgs[0].Parts[1].Text != " there" {
+		t.Fatalf("unexpected text parts")
+	}
+}
+
+func TestParseAnthropicMessages_ToolUseRoundTrip(t *testing.T) {
+	msgs, err := parseAnthropicMessages([]anthropicMessage{
+		{Role: "assistant", Content: json.RawMessage(`[{"type":"tool_use","id":"call_1","name":"read_file","input":{"path":"a.txt"}}]`)},
+		{Role: "user", Content: json.RawMessage(`[{"type":"tool_result","tool_use_id":"call_1","content":"file contents"}]`)},
+	})
+	if err != nil {
+		t.Fatalf("parseAnthropicMessages: %v", err)
+	}
+	if len(msgs) != 2 {
+		t.Fatalf("len = %d, want 2", len(msgs))
+	}
+	if msgs[0].Role != llm.RoleAssistant {
+		t.Fatalf("first role = %s, want assistant", msgs[0].Role)
+	}
+	if msgs[0].Parts[0].ToolCall == nil || msgs[0].Parts[0].ToolCall.Name != "read_file" {
+		t.Fatalf("missing tool call")
+	}
+	if msgs[1].Parts[0].ToolResult == nil || msgs[1].Parts[0].ToolResult.ID != "call_1" {
+		t.Fatalf("missing tool result")
+	}
+	if msgs[1].Parts[0].ToolResult.Content != "file contents" {
+		t.Fatalf("tool result content = %q", msgs[1].Parts[0].ToolResult.Content)
+	}
+}
+
+func TestParseAnthropicSystem(t *testing.T) {
+	// String form
+	if got := parseAnthropicSystem(json.RawMessage(`"Be helpful"`)); got != "Be helpful" {
+		t.Fatalf("string system = %q", got)
+	}
+	// Array form
+	if got := parseAnthropicSystem(json.RawMessage(`[{"type":"text","text":"System prompt"}]`)); got != "System prompt" {
+		t.Fatalf("array system = %q", got)
+	}
+	// Empty
+	if got := parseAnthropicSystem(nil); got != "" {
+		t.Fatalf("nil system = %q", got)
+	}
+}
+
+func TestParseAnthropicToolChoice(t *testing.T) {
+	if got := parseAnthropicToolChoice(json.RawMessage(`{"type":"auto"}`)); got.Mode != llm.ToolChoiceAuto {
+		t.Fatalf("auto mode = %s", got.Mode)
+	}
+	if got := parseAnthropicToolChoice(json.RawMessage(`{"type":"any"}`)); got.Mode != llm.ToolChoiceRequired {
+		t.Fatalf("any mode = %s", got.Mode)
+	}
+	if got := parseAnthropicToolChoice(json.RawMessage(`{"type":"tool","name":"shell"}`)); got.Mode != llm.ToolChoiceName || got.Name != "shell" {
+		t.Fatalf("tool mode = %#v", got)
+	}
+	if got := parseAnthropicToolChoice(nil); got.Mode != llm.ToolChoiceAuto {
+		t.Fatalf("nil mode = %s", got.Mode)
+	}
+}
+
+func TestHandleAnthropicMessages_NonStreaming(t *testing.T) {
+	srv := newTestServeServer("Hello from Anthropic!")
+	body := `{"model":"test","max_tokens":1024,"messages":[{"role":"user","content":"Hi"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	srv.handleAnthropicMessages(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", rr.Code, rr.Body.String())
+	}
+	var result map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &result); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if result["type"] != "message" {
+		t.Fatalf("type = %v, want message", result["type"])
+	}
+	if result["role"] != "assistant" {
+		t.Fatalf("role = %v, want assistant", result["role"])
+	}
+	content, ok := result["content"].([]any)
+	if !ok || len(content) == 0 {
+		t.Fatalf("content empty or wrong type")
+	}
+	block := content[0].(map[string]any)
+	if block["type"] != "text" || block["text"] != "Hello from Anthropic!" {
+		t.Fatalf("content block = %v", block)
+	}
+	if result["stop_reason"] != "end_turn" {
+		t.Fatalf("stop_reason = %v", result["stop_reason"])
+	}
+}
+
+func TestHandleAnthropicMessages_StreamText(t *testing.T) {
+	srv := newTestServeServer("streamed text")
+	body := `{"model":"test","max_tokens":1024,"stream":true,"messages":[{"role":"user","content":"Hi"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	srv.handleAnthropicMessages(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rr.Code)
+	}
+
+	output := rr.Body.String()
+
+	// Verify required SSE events are present
+	for _, want := range []string{
+		"event: message_start",
+		"event: content_block_start",
+		"event: content_block_delta",
+		"event: content_block_stop",
+		"event: message_delta",
+		"event: message_stop",
+	} {
+		if !strings.Contains(output, want) {
+			t.Errorf("missing %q in SSE output", want)
+		}
+	}
+
+	// Verify text_delta contains our text (mock chunks into ~10 char pieces)
+	if !strings.Contains(output, "streamed") {
+		t.Errorf("missing 'streamed' in output")
+	}
+	if !strings.Contains(output, "text") {
+		t.Errorf("missing 'text' in output")
+	}
+
+	// Verify stop_reason is end_turn (no tool calls)
+	if !strings.Contains(output, `"stop_reason":"end_turn"`) {
+		t.Errorf("missing end_turn stop_reason")
+	}
+}
+
+func TestHandleAnthropicMessages_Auth_XApiKey(t *testing.T) {
+	srv := newTestServeServer("ok")
+	srv.cfg.requireAuth = true
+	srv.cfg.token = "secret-token"
+
+	body := `{"model":"test","max_tokens":1024,"messages":[{"role":"user","content":"Hi"}]}`
+
+	// No auth → 401
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	srv.auth(srv.handleAnthropicMessages)(rr, req)
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("no auth: status = %d, want 401", rr.Code)
+	}
+
+	// x-api-key → 200
+	req = httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("x-api-key", "secret-token")
+	rr = httptest.NewRecorder()
+	srv.auth(srv.handleAnthropicMessages)(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("x-api-key: status = %d, want 200; body: %s", rr.Code, rr.Body.String())
+	}
+
+	// Bearer token also still works
+	req = httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer secret-token")
+	rr = httptest.NewRecorder()
+	srv.auth(srv.handleAnthropicMessages)(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("bearer: status = %d, want 200; body: %s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestHandleAnthropicMessages_MethodNotAllowed(t *testing.T) {
+	srv := newTestServeServer("ok")
+	req := httptest.NewRequest(http.MethodGet, "/v1/messages", nil)
+	rr := httptest.NewRecorder()
+	srv.handleAnthropicMessages(rr, req)
+	if rr.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("status = %d, want 405", rr.Code)
+	}
+}
+
+// newTestServeServerWithToolMap creates a test serve server with a registered
+// "echo" tool and the given toolMap for testing --tool-map behavior.
+func newTestServeServerWithToolMap(toolMap map[string]string, responses ...string) *serveServer {
+	factory := func(ctx context.Context) (*serveRuntime, error) {
+		provider := llm.NewMockProvider("mock")
+		for _, r := range responses {
+			provider.AddTextResponse(r)
+		}
+		registry := llm.NewToolRegistry()
+		registry.Register(&echoTool{})
+		engine := llm.NewEngine(provider, registry)
+		rt := &serveRuntime{
+			provider:     provider,
+			engine:       engine,
+			defaultModel: "mock-model",
+			toolMap:      toolMap,
+		}
+		rt.Touch()
+		return rt, nil
+	}
+	mgr := newServeSessionManager(time.Minute, 100, factory)
+	srv := &serveServer{sessionMgr: mgr}
+	mgr.onEvict = func(rt *serveRuntime) {
+		for _, rid := range rt.getResponseIDs() {
+			srv.responseToSession.Delete(rid)
+		}
+	}
+	return srv
+}
+
+func TestSelectTools_ResolvesToolMapNames(t *testing.T) {
+	provider := llm.NewMockProvider("mock")
+	registry := llm.NewToolRegistry()
+	registry.Register(&echoTool{}) // registers as "echo"
+	engine := llm.NewEngine(provider, registry)
+
+	rt := &serveRuntime{
+		provider: provider,
+		engine:   engine,
+		toolMap:  map[string]string{"MyEcho": "echo"},
+	}
+
+	// Requesting the client name "MyEcho" should resolve to server tool "echo"
+	tools := rt.selectTools(map[string]bool{"MyEcho": true})
+	if len(tools) != 1 {
+		t.Fatalf("expected 1 tool, got %d", len(tools))
+	}
+	if tools[0].Name != "echo" {
+		t.Fatalf("expected tool name 'echo', got %q", tools[0].Name)
+	}
+
+	// Requesting by server name directly should also work
+	tools = rt.selectTools(map[string]bool{"echo": true})
+	if len(tools) != 1 {
+		t.Fatalf("expected 1 tool when using server name, got %d", len(tools))
+	}
+
+	// Requesting an unknown name should return nothing
+	tools = rt.selectTools(map[string]bool{"nonexistent": true})
+	if len(tools) != 0 {
+		t.Fatalf("expected 0 tools for unknown name, got %d", len(tools))
+	}
+
+	// No filter returns all
+	tools = rt.selectTools(nil)
+	if len(tools) != 1 {
+		t.Fatalf("expected 1 tool for nil filter, got %d", len(tools))
+	}
+}
+
+func TestToolMap_ChatCompletions(t *testing.T) {
+	srv := newTestServeServerWithToolMap(
+		map[string]string{"MyEcho": "echo"},
+		"mapped tool works",
+	)
+
+	body := `{
+		"model": "test",
+		"messages": [{"role": "user", "content": "Hi"}],
+		"tools": [{"type": "function", "function": {"name": "MyEcho"}}]
+	}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	srv.handleChatCompletions(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", rr.Code, rr.Body.String())
+	}
+
+	var result map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &result); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	choices, ok := result["choices"].([]any)
+	if !ok || len(choices) == 0 {
+		t.Fatalf("expected choices in response")
+	}
+	msg := choices[0].(map[string]any)["message"].(map[string]any)
+	if msg["content"] != "mapped tool works" {
+		t.Fatalf("unexpected content: %v", msg["content"])
+	}
+}
+
+func TestToolMap_Responses(t *testing.T) {
+	srv := newTestServeServerWithToolMap(
+		map[string]string{"MyEcho": "echo"},
+		"mapped response works",
+	)
+
+	body := `{
+		"model": "test",
+		"input": "Hi",
+		"tools": [{"type": "function", "name": "MyEcho"}]
+	}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	srv.handleResponses(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", rr.Code, rr.Body.String())
+	}
+
+	var result map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &result); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	output, ok := result["output"].([]any)
+	if !ok || len(output) == 0 {
+		t.Fatalf("expected output in response")
+	}
+	msg := output[0].(map[string]any)
+	content := msg["content"].([]any)[0].(map[string]any)
+	if content["text"] != "mapped response works" {
+		t.Fatalf("unexpected text: %v", content["text"])
+	}
+}
+
+func TestResolvePlatforms_API(t *testing.T) {
+	got, err := resolvePlatforms([]string{"api"}, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got) != 1 || got[0] != "api" {
+		t.Fatalf("got %v, want [api]", got)
+	}
+}
+
+func TestSingleServeTemplatePlatform_API(t *testing.T) {
+	if got := singleServeTemplatePlatform([]string{"api"}); got != "api" {
+		t.Fatalf("got %q, want %q", got, "api")
+	}
+}
+
+func TestServeHTTPHandler_MountsAPIOnlyUnderBasePath(t *testing.T) {
+	srv := &serveServer{
+		cfg:        serveServerConfig{basePath: "/ui", api: true},
+		sessionMgr: newServeSessionManager(time.Minute, 10, nil),
+	}
+	handler := srv.httpHandler()
+	ts := httptest.NewServer(handler)
+	defer ts.Close()
+
+	// API routes should be reachable under basePath
+	resp, err := http.Get(ts.URL + "/ui/healthz")
+	if err != nil {
+		t.Fatalf("healthz request failed: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("healthz status = %d, want 200", resp.StatusCode)
+	}
+
+	// Root should not redirect (no UI)
+	resp, err = http.Get(ts.URL + "/")
+	if err != nil {
+		t.Fatalf("root request failed: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode == http.StatusTemporaryRedirect {
+		t.Fatalf("api-only should not redirect root to basePath")
+	}
+}
+
+func TestNonStreamingChat_FiltersServerExecutedToolCalls(t *testing.T) {
+	// Script: model calls the echo tool, then returns "done"
+	provider := llm.NewMockProvider("mock").
+		AddToolCall("call-1", "echo", map[string]any{"input": "hi"}).
+		AddTextResponse("done")
+
+	registry := llm.NewToolRegistry()
+	registry.Register(&echoTool{})
+	engine := llm.NewEngine(provider, registry)
+
+	factory := func(ctx context.Context) (*serveRuntime, error) {
+		rt := &serveRuntime{
+			provider:     provider,
+			engine:       engine,
+			defaultModel: "mock-model",
+		}
+		rt.Touch()
+		return rt, nil
+	}
+	mgr := newServeSessionManager(time.Minute, 100, factory)
+	srv := &serveServer{sessionMgr: mgr}
+
+	body := `{"model":"test","messages":[{"role":"user","content":"call echo"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	srv.handleChatCompletions(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d; body: %s", rr.Code, rr.Body.String())
+	}
+
+	var result map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &result); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	choices := result["choices"].([]any)
+	msg := choices[0].(map[string]any)["message"].(map[string]any)
+	// "echo" is a server-executed tool — it should be filtered from the response
+	if msg["tool_calls"] != nil {
+		t.Fatalf("server-executed tool calls should be filtered; got tool_calls: %v", msg["tool_calls"])
+	}
+	if msg["content"] != "done" {
+		t.Fatalf("expected final text 'done', got %v", msg["content"])
+	}
+}
+
+func TestNonStreamingResponses_FiltersServerExecutedToolCalls(t *testing.T) {
+	provider := llm.NewMockProvider("mock").
+		AddToolCall("call-1", "echo", map[string]any{"input": "hi"}).
+		AddTextResponse("done")
+
+	registry := llm.NewToolRegistry()
+	registry.Register(&echoTool{})
+	engine := llm.NewEngine(provider, registry)
+
+	factory := func(ctx context.Context) (*serveRuntime, error) {
+		rt := &serveRuntime{
+			provider:     provider,
+			engine:       engine,
+			defaultModel: "mock-model",
+		}
+		rt.Touch()
+		return rt, nil
+	}
+	mgr := newServeSessionManager(time.Minute, 100, factory)
+	srv := &serveServer{sessionMgr: mgr}
+
+	body := `{"model":"test","input":"call echo"}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	srv.handleResponses(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d; body: %s", rr.Code, rr.Body.String())
+	}
+
+	var result map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &result); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	output := result["output"].([]any)
+	// Should have only the text message, no function_call items
+	for _, item := range output {
+		m := item.(map[string]any)
+		if m["type"] == "function_call" {
+			t.Fatalf("server-executed tool calls should be filtered; got function_call in output")
+		}
+	}
+	if len(output) != 1 {
+		t.Fatalf("expected 1 output item (text), got %d", len(output))
+	}
+}

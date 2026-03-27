@@ -17,11 +17,11 @@ term-llm serve web
 Useful variants:
 
 ```bash
-term-llm serve web --no-ui
+term-llm serve api                 # API only (no chat UI)
 term-llm serve web --base-path /chat
 term-llm serve web --host 127.0.0.1 --port 8080
 term-llm serve web jobs
-term-llm serve web jobs telegram   # all three platforms at once
+term-llm serve web jobs telegram   # all platforms at once
 ```
 
 ## First-time setup
@@ -53,6 +53,7 @@ With the default base path of `/ui`, the web runtime exposes:
 
 - `POST /ui/v1/responses`
 - `POST /ui/v1/chat/completions`
+- `POST /ui/v1/messages` (Anthropic Messages API)
 - `POST /ui/v1/transcribe`
 - `GET /ui/v1/models`
 - `GET /ui/healthz`
@@ -102,7 +103,6 @@ Relevant options include:
 - `--mcp`
 - `--tools`, `--read-dir`, `--write-dir`, `--shell-allow`
 - `--base-path`
-- `--no-ui`
 - `--cors-origin`
 - `--webrtc`, `--webrtc-signaling-url`, `--webrtc-token` (see [WebRTC direct routing](/guides/webrtc-direct-routing/))
 
@@ -116,6 +116,36 @@ curl http://127.0.0.1:8080/ui/v1/models
 ```
 
 If you change `--base-path`, those URLs change with it.
+
+## API-only mode
+
+Use the `api` platform when you only need the HTTP API without the browser UI:
+
+```bash
+term-llm serve api -p anthropic
+```
+
+This is useful for headless deployments or when using term-llm as a backend
+for tools like Claude Code that speak the Anthropic Messages API.
+
+Authentication accepts both `Authorization: Bearer <token>` and `x-api-key: <token>` headers.
+
+### Tool mapping
+
+When the API client sends tool definitions with different names than the server's
+registered tools, use `--tool-map` to redirect them. For example, Claude Code
+sends `WebSearch` and `WebFetch`, but term-llm registers `web_search` and `read_url`:
+
+```bash
+term-llm serve api -p my_provider --search \
+  --tool-map "WebSearch:web_search" \
+  --tool-map "WebFetch:read_url"
+```
+
+The server intercepts calls to the client tool name and executes the mapped
+server tool instead. The client tool definition is sent to the backend LLM
+while the server tool is hidden. If a `--tool-map` target doesn't match a
+registered server tool, startup fails with the list of available tools.
 
 ## When to use web mode
 

@@ -666,10 +666,14 @@ func (s *compatToolState) Calls() []ToolCall {
 		if state == nil {
 			continue
 		}
+		args := json.RawMessage(state.args.String())
+		if !json.Valid(args) {
+			args = json.RawMessage("{}")
+		}
 		calls = append(calls, ToolCall{
 			ID:        state.id,
 			Name:      state.name,
-			Arguments: json.RawMessage(state.args.String()),
+			Arguments: args,
 		})
 	}
 	return calls

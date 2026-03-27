@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/subtle"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -24,6 +23,12 @@ import (
 	"github.com/samsaffron/term-llm/internal/serveui"
 	"github.com/samsaffron/term-llm/internal/session"
 )
+
+func (s *serveServer) verboseLog(format string, args ...any) {
+	if s.cfg.verbose {
+		log.Printf("[verbose] "+format, args...)
+	}
+}
 
 func (s *serveServer) handleHealth(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
@@ -579,7 +584,13 @@ func (s *serveServer) auth(next http.HandlerFunc) http.HandlerFunc {
 		auth := r.Header.Get("Authorization")
 		if strings.HasPrefix(auth, prefix) {
 			gotToken = strings.TrimSpace(strings.TrimPrefix(auth, prefix))
-		} else if r.Method == http.MethodGet {
+		}
+		if gotToken == "" {
+			if xKey := strings.TrimSpace(r.Header.Get("x-api-key")); xKey != "" {
+				gotToken = xKey
+			}
+		}
+		if gotToken == "" && r.Method == http.MethodGet {
 			// Cookie fallback only on safe GET requests (e.g. <img src> fetches
 			// that cannot set Authorization headers).
 			if cookie, err := r.Cookie("term_llm_token"); err == nil && cookie.Value != "" {
@@ -624,7 +635,7 @@ func (s *serveServer) cors(next http.HandlerFunc) http.HandlerFunc {
 				w.Header().Add("Vary", "Origin")
 			}
 			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS")
-			w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, session_id, X-Term-LLM-UI")
+			w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, session_id, X-Term-LLM-UI, X-API-Key, anthropic-version")
 			w.Header().Set("Access-Control-Expose-Headers", "x-session-id")
 		}
 
@@ -777,156 +788,6 @@ func (s *serveServer) getModelsProvider(name string) (llm.Provider, string, erro
 	return provider, cacheKey, nil
 }
 
-func (s *serveServer) handleResponses(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		w.Header().Set("Allow", "POST")
-		writeOpenAIError(w, http.StatusMethodNotAllowed, "invalid_request_error", "method not allowed")
-		return
-	}
-	if err := requireJSONContentType(r); err != nil {
-		writeOpenAIError(w, http.StatusUnsupportedMediaType, "invalid_request_error", err.Error())
-		return
-	}
-	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Minute)
-	defer cancel()
-
-	var req responsesCreateRequest
-	if err := decodeJSONBody(r, &req); err != nil {
-		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", err.Error())
-		return
-	}
-
-	inputMessages, replaceHistory, err := parseResponsesInput(req.Input)
-	if err != nil {
-		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", err.Error())
-		return
-	}
-	if len(inputMessages) == 0 {
-		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "input is required")
-		return
-	}
-
-	// Resolve session: previous_response_id for chaining, otherwise fresh.
-	// session_id header provides the ID for persistence but does NOT reuse
-	// an existing conversation without explicit chaining.
-	sessionID := ""
-	if req.PreviousResponseID != "" {
-		sid, ok := s.responseToSession.Load(req.PreviousResponseID)
-		if !ok {
-			writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error",
-				fmt.Sprintf("previous_response_id %q not found (session may have expired)", req.PreviousResponseID))
-			return
-		}
-		sidStr, isStr := sid.(string)
-		if !isStr || sidStr == "" {
-			writeOpenAIError(w, http.StatusInternalServerError, "server_error", "corrupted session mapping")
-			return
-		}
-		sessionID = sidStr
-	}
-	if sessionID == "" {
-		// No chaining — unconditionally fresh conversation.
-		sessionID = strings.TrimSpace(r.Header.Get("session_id"))
-		if sessionID == "" {
-			sessionID = session.NewID()
-		}
-		w.Header().Set("x-session-id", sessionID)
-		replaceHistory = true
-	}
-	// Use requested provider for new sessions only.
-	reqProvider := strings.TrimSpace(req.Provider)
-	var runtime *serveRuntime
-	var stateful bool
-	if req.PreviousResponseID != "" || reqProvider == "" || reqProvider == s.cfgRef.DefaultProvider {
-		runtime, stateful, err = s.runtimeForRequest(ctx, sessionID)
-	} else {
-		runtime, stateful, err = s.runtimeForProviderRequest(ctx, sessionID, reqProvider)
-	}
-	if err != nil {
-		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", err.Error())
-		return
-	}
-
-	// Enforce chaining from the latest response only. Stale response IDs that
-	// map to a valid session but don't match the runtime's last response would
-	// produce incorrect branching (the context wouldn't match what the client
-	// expects from that response).
-	if req.PreviousResponseID != "" {
-		lastRespID := runtime.getLastResponseID()
-		if lastRespID != "" && req.PreviousResponseID != lastRespID {
-			writeOpenAIError(w, http.StatusConflict, "conflict_error",
-				fmt.Sprintf("previous_response_id %q is stale; latest is %q", req.PreviousResponseID, lastRespID))
-			if !stateful {
-				runtime.Close()
-			}
-			return
-		}
-	}
-	if !stateful {
-		defer runtime.Close()
-	}
-
-	searchFromTools, requestedTools := parseRequestedTools(req.Tools)
-	search := runtime.search || searchFromTools
-	toolChoice := parseToolChoice(req.ToolChoice)
-	parallel := true
-	if req.ParallelToolCalls != nil {
-		parallel = *req.ParallelToolCalls
-	}
-
-	llmReq := llm.Request{
-		SessionID:           sessionID,
-		Model:               strings.TrimSpace(req.Model),
-		Tools:               runtime.selectTools(requestedTools),
-		ToolChoice:          toolChoice,
-		ParallelToolCalls:   parallel,
-		Search:              search,
-		ForceExternalSearch: runtime.forceExternalSearch,
-		MaxTurns:            runtime.maxTurns,
-		Debug:               runtime.debug,
-		DebugRaw:            runtime.debugRaw,
-	}
-
-	if req.MaxOutputTokens > 0 {
-		llmReq.MaxOutputTokens = req.MaxOutputTokens
-	}
-	if req.Temperature != nil {
-		llmReq.Temperature = *req.Temperature
-	}
-	if req.TopP != nil {
-		llmReq.TopP = *req.TopP
-	}
-
-	if req.Stream {
-		if isServeUIRequest(r) && stateful {
-			s.streamUIResponses(w, r, runtime, stateful, replaceHistory, inputMessages, llmReq, sessionID, req.PreviousResponseID)
-		} else {
-			s.streamResponses(ctx, w, runtime, stateful, replaceHistory, inputMessages, llmReq, sessionID, req.PreviousResponseID)
-		}
-		return
-	}
-
-	result, err := runtime.Run(ctx, stateful, replaceHistory, inputMessages, llmReq)
-	if err != nil {
-		if errors.Is(err, errServeSessionBusy) {
-			writeOpenAIError(w, http.StatusConflict, "conflict_error", err.Error())
-			return
-		}
-		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", err.Error())
-		return
-	}
-
-	model := llmReq.Model
-	if model == "" {
-		model = runtime.defaultModel
-	}
-
-	respID := "resp_" + randomSuffix()
-	s.registerResponseID(runtime, respID, sessionID)
-
-	writeJSON(w, http.StatusOK, responsesFinalResponse(result, model, respID))
-}
-
 // sseKeepalive starts a background goroutine that writes an SSE comment ping
 // to w every interval while streaming is active. This prevents intermediate
 // proxies (e.g. nginx with a short send_timeout) from closing the connection
@@ -961,273 +822,6 @@ func sseKeepalive(w http.ResponseWriter, flusher http.Flusher, interval time.Dur
 		close(done)
 		wg.Wait()
 	}
-}
-
-func (s *serveServer) streamResponses(ctx context.Context, w http.ResponseWriter, runtime *serveRuntime, stateful bool, replaceHistory bool, inputMessages []llm.Message, llmReq llm.Request, sessionID string, previousResponseID string) {
-	s.streamResponseRun(ctx, w, runtime, stateful, replaceHistory, inputMessages, llmReq, sessionID, startResponseRunOptions{
-		previousResponseID: previousResponseID,
-	})
-}
-
-func (s *serveServer) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		w.Header().Set("Allow", "POST")
-		writeOpenAIError(w, http.StatusMethodNotAllowed, "invalid_request_error", "method not allowed")
-		return
-	}
-	if err := requireJSONContentType(r); err != nil {
-		writeOpenAIError(w, http.StatusUnsupportedMediaType, "invalid_request_error", err.Error())
-		return
-	}
-	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Minute)
-	defer cancel()
-
-	var req chatCompletionsRequest
-	if err := decodeJSONBody(r, &req); err != nil {
-		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", err.Error())
-		return
-	}
-	if len(req.Messages) == 0 {
-		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "messages is required")
-		return
-	}
-
-	messages, replaceHistory, err := parseChatMessages(req.Messages)
-	if err != nil {
-		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", err.Error())
-		return
-	}
-
-	sessionID := resolveRequestSessionID(r)
-	if sessionID == "" {
-		sessionID = ensureSessionID(w)
-	}
-	runtime, stateful, err := s.runtimeForRequest(ctx, sessionID)
-	if err != nil {
-		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", err.Error())
-		return
-	}
-	if !stateful {
-		defer runtime.Close()
-	}
-
-	search := runtime.search
-	requestedTools := parseChatRequestedToolNames(req.Tools)
-	toolChoice := parseToolChoice(req.ToolChoice)
-	parallel := true
-	if req.ParallelToolCalls != nil {
-		parallel = *req.ParallelToolCalls
-	}
-
-	llmReq := llm.Request{
-		SessionID:           sessionID,
-		Model:               strings.TrimSpace(req.Model),
-		Tools:               runtime.selectTools(requestedTools),
-		ToolChoice:          toolChoice,
-		ParallelToolCalls:   parallel,
-		Search:              search,
-		ForceExternalSearch: runtime.forceExternalSearch,
-		MaxTurns:            runtime.maxTurns,
-		Debug:               runtime.debug,
-		DebugRaw:            runtime.debugRaw,
-	}
-	if req.MaxTokens > 0 {
-		llmReq.MaxOutputTokens = req.MaxTokens
-	}
-	if req.Temperature != nil {
-		llmReq.Temperature = *req.Temperature
-	}
-	if req.TopP != nil {
-		llmReq.TopP = *req.TopP
-	}
-
-	if req.Stream {
-		s.streamChatCompletions(ctx, w, runtime, stateful, replaceHistory, messages, llmReq, req.StreamOptions, sessionID)
-		return
-	}
-
-	result, err := runtime.Run(ctx, stateful, replaceHistory, messages, llmReq)
-	if err != nil {
-		if errors.Is(err, errServeSessionBusy) {
-			writeOpenAIError(w, http.StatusConflict, "conflict_error", err.Error())
-			return
-		}
-		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", err.Error())
-		return
-	}
-
-	model := llmReq.Model
-	if model == "" {
-		model = runtime.defaultModel
-	}
-	writeJSON(w, http.StatusOK, chatCompletionFinalResponse(result, model))
-}
-
-func (s *serveServer) streamChatCompletions(ctx context.Context, w http.ResponseWriter, runtime *serveRuntime, stateful bool, replaceHistory bool, inputMessages []llm.Message, llmReq llm.Request, streamOpts *chatStreamOptions, sessionID string) {
-	flusher, ok := w.(http.Flusher)
-	if !ok {
-		writeOpenAIError(w, http.StatusInternalServerError, "server_error", "streaming not supported")
-		return
-	}
-
-	setSSEHeaders(w)
-	flusher.Flush()
-	respID := "chatcmpl_" + sessionOrRandomID(sessionID)
-	model := llmReq.Model
-	if model == "" {
-		model = runtime.defaultModel
-	}
-	created := time.Now().Unix()
-
-	pingMu, stopPing := sseKeepalive(w, flusher, 20*time.Second)
-
-	first := true
-	toolCallSeen := false
-	result, err := runtime.RunWithEvents(ctx, stateful, replaceHistory, inputMessages, llmReq, func(ev llm.Event) error {
-		pingMu.Lock()
-		defer pingMu.Unlock()
-		var writeErr error
-		switch ev.Type {
-		case llm.EventTextDelta:
-			delta := map[string]any{"content": ev.Text}
-			if first {
-				delta["role"] = "assistant"
-				first = false
-			}
-			writeErr = writeChatStreamChunk(w, map[string]any{
-				"id":      respID,
-				"object":  "chat.completion.chunk",
-				"created": created,
-				"model":   model,
-				"choices": []map[string]any{{"index": 0, "delta": delta}},
-			})
-		case llm.EventToolCall:
-			if ev.Tool == nil {
-				return nil
-			}
-			toolCallSeen = true
-			if first {
-				if err := writeChatStreamChunk(w, map[string]any{
-					"id":      respID,
-					"object":  "chat.completion.chunk",
-					"created": created,
-					"model":   model,
-					"choices": []map[string]any{{"index": 0, "delta": map[string]any{"role": "assistant"}}},
-				}); err != nil {
-					return err
-				}
-				flusher.Flush()
-				first = false
-			}
-			writeErr = writeChatStreamChunk(w, map[string]any{
-				"id":      respID,
-				"object":  "chat.completion.chunk",
-				"created": created,
-				"model":   model,
-				"choices": []map[string]any{{
-					"index": 0,
-					"delta": map[string]any{
-						"tool_calls": []map[string]any{{
-							"index": 0,
-							"id":    ev.Tool.ID,
-							"type":  "function",
-							"function": map[string]any{
-								"name":      ev.Tool.Name,
-								"arguments": string(ev.Tool.Arguments),
-							},
-						}},
-					},
-				}},
-			})
-		case llm.EventHeartbeat:
-			writeErr = writeChatStreamChunk(w, map[string]any{
-				"id":      respID,
-				"object":  "chat.completion.chunk",
-				"created": created,
-				"model":   model,
-				"choices": []map[string]any{{"index": 0, "delta": map[string]any{}}},
-				"heartbeat": map[string]any{
-					"call_id":   ev.ToolCallID,
-					"tool_name": ev.ToolName,
-				},
-			})
-		case llm.EventInterjection:
-			writeErr = writeChatStreamChunk(w, map[string]any{
-				"id":      respID,
-				"object":  "chat.completion.chunk",
-				"created": created,
-				"model":   model,
-				"choices": []map[string]any{{
-					"index": 0,
-					"delta": map[string]any{"interjection": ev.Text},
-				}},
-			})
-		}
-		if writeErr != nil {
-			return writeErr
-		}
-		flusher.Flush()
-		return nil
-	})
-	stopPing() // wait for keepalive goroutine before any final writes
-
-	if err != nil {
-		if errors.Is(err, errServeSessionBusy) {
-			_ = writeChatStreamChunk(w, map[string]any{
-				"id":      respID,
-				"object":  "chat.completion.chunk",
-				"created": created,
-				"model":   model,
-				"choices": []map[string]any{{"index": 0, "finish_reason": "error", "delta": map[string]any{}}},
-				"error":   map[string]any{"message": err.Error(), "type": "conflict_error"},
-			})
-			_, _ = io.WriteString(w, "data: [DONE]\n\n")
-			flusher.Flush()
-			return
-		}
-		_ = writeChatStreamChunk(w, map[string]any{
-			"id":      respID,
-			"object":  "chat.completion.chunk",
-			"created": created,
-			"model":   model,
-			"choices": []map[string]any{{"index": 0, "finish_reason": "error", "delta": map[string]any{}}},
-		})
-		_, _ = io.WriteString(w, "data: [DONE]\n\n")
-		flusher.Flush()
-		return
-	}
-
-	finishReason := "stop"
-	if toolCallSeen {
-		finishReason = "tool_calls"
-	}
-	_ = writeChatStreamChunk(w, map[string]any{
-		"id":      respID,
-		"object":  "chat.completion.chunk",
-		"created": created,
-		"model":   model,
-		"choices": []map[string]any{{"index": 0, "delta": map[string]any{}, "finish_reason": finishReason}},
-	})
-	if streamOpts != nil && streamOpts.IncludeUsage {
-		_ = writeChatStreamChunk(w, map[string]any{
-			"id":      respID,
-			"object":  "chat.completion.chunk",
-			"created": created,
-			"model":   model,
-			"choices": []map[string]any{},
-			"usage": map[string]any{
-				"prompt_tokens":     result.Usage.InputTokens,
-				"completion_tokens": result.Usage.OutputTokens,
-				"total_tokens":      result.Usage.InputTokens + result.Usage.CachedInputTokens + result.Usage.CacheWriteTokens + result.Usage.OutputTokens,
-				"prompt_tokens_details": map[string]any{
-					"cached_tokens":      result.Usage.CachedInputTokens,
-					"cache_write_tokens": result.Usage.CacheWriteTokens,
-				},
-			},
-		})
-	}
-	_, _ = io.WriteString(w, "data: [DONE]\n\n")
-	flusher.Flush()
 }
 
 // registerResponseID stores a response ID on the runtime and server-wide map,
@@ -1344,3 +938,7 @@ func (s *serveServer) handlePushSubscribe(w http.ResponseWriter, r *http.Request
 		writeOpenAIError(w, http.StatusMethodNotAllowed, "invalid_request_error", "method not allowed")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// POST /v1/messages — Anthropic Messages API
+// ---------------------------------------------------------------------------

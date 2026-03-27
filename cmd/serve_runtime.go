@@ -40,6 +40,7 @@ type serveRuntime struct {
 	sessionMeta         *session.Session
 	forceExternalSearch bool
 	maxTurns            int
+	toolMap             map[string]string
 	debug               bool
 	debugRaw            bool
 	defaultModel        string
@@ -288,9 +289,22 @@ func (rt *serveRuntime) selectTools(requested map[string]bool) []llm.ToolSpec {
 	if len(requested) == 0 {
 		return all
 	}
+	// Resolve client tool names through toolMap so that a request for
+	// "WebSearch" with toolMap["WebSearch"]="web_search" matches the
+	// server tool "web_search".
+	resolved := make(map[string]bool, len(requested))
+	for name := range requested {
+		if rt.toolMap != nil {
+			if mapped, ok := rt.toolMap[name]; ok {
+				resolved[mapped] = true
+				continue
+			}
+		}
+		resolved[name] = true
+	}
 	out := make([]llm.ToolSpec, 0, len(all))
 	for _, spec := range all {
-		if requested[spec.Name] {
+		if resolved[spec.Name] {
 			out = append(out, spec)
 		}
 	}
@@ -519,6 +533,21 @@ func containsSystemMessage(messages []llm.Message) bool {
 		}
 	}
 	return false
+}
+
+// isServerExecutedTool returns true if a tool call will be executed by the
+// server's engine (registered tool or mapped via toolMap). Such calls should
+// not be forwarded to API clients as tool_use blocks because the server
+// handles them internally.
+func (rt *serveRuntime) isServerExecutedTool(name string) bool {
+	lookupName := name
+	if rt.toolMap != nil {
+		if mapped, ok := rt.toolMap[name]; ok {
+			lookupName = mapped
+		}
+	}
+	_, ok := rt.engine.Tools().Get(lookupName)
+	return ok
 }
 
 func lastUserText(messages []llm.Message) string {

@@ -723,7 +723,7 @@ func (e *Engine) runLoop(ctx context.Context, req Request, events chan<- Event) 
 			}
 		}
 		// Prepare turn
-		if attempt == maxTurns-1 {
+		if attempt == maxTurns-1 && attempt > 0 {
 			req.Messages = append(req.Messages, SystemText(stopSearchToolHint))
 			if req.LastTurnToolChoice != nil {
 				req.ToolChoice = *req.LastTurnToolChoice
@@ -986,10 +986,19 @@ func (e *Engine) runLoop(ctx context.Context, req Request, events chan<- Event) 
 		toolCalls = ensureToolCallIDs(toolCalls)
 		toolCalls = dedupeToolCalls(toolCalls)
 
-		// Split into registered (to execute) and unregistered (to passthrough)
+		// Split into registered (to execute) and unregistered (to passthrough).
+		// ToolMap allows client tool names to be redirected to server tools
+		// (e.g. "WebSearch" → "search"). The call keeps its original name
+		// so the client sees the name it expects in the response.
 		var registered, unregistered []ToolCall
 		for _, call := range toolCalls {
-			if _, ok := e.tools.Get(call.Name); ok {
+			lookupName := call.Name
+			if req.ToolMap != nil {
+				if mapped, ok := req.ToolMap[call.Name]; ok {
+					lookupName = mapped
+				}
+			}
+			if _, ok := e.tools.Get(lookupName); ok {
 				registered = append(registered, call)
 			} else {
 				unregistered = append(unregistered, call)
@@ -1054,6 +1063,22 @@ func (e *Engine) runLoop(ctx context.Context, req Request, events chan<- Event) 
 			cancel()
 		}
 
+		// ToolMap: swap client tool names to mapped server names for execution.
+		// We save original names keyed by call ID so we can restore them on
+		// the registered slice and the tool-result messages afterwards.
+		var origNameByID map[string]string
+		if req.ToolMap != nil {
+			for i := range registered {
+				if mapped, ok := req.ToolMap[registered[i].Name]; ok {
+					if origNameByID == nil {
+						origNameByID = make(map[string]string)
+					}
+					origNameByID[registered[i].ID] = registered[i].Name
+					registered[i].Name = mapped
+				}
+			}
+		}
+
 		// Execute registered tools
 		for _, call := range registered {
 			DebugToolCall(req.Debug, call)
@@ -1074,6 +1099,25 @@ func (e *Engine) runLoop(ctx context.Context, req Request, events chan<- Event) 
 			if e.tools.IsFinishingTool(call.Name) {
 				finishingToolExecuted = true
 				break
+			}
+		}
+
+		// Restore original (client-facing) names so conversation history
+		// references the names the client expects.
+		if origNameByID != nil {
+			for i := range registered {
+				if orig, ok := origNameByID[registered[i].ID]; ok {
+					registered[i].Name = orig
+				}
+			}
+			for i := range toolResults {
+				for j := range toolResults[i].Parts {
+					if toolResults[i].Parts[j].ToolResult != nil {
+						if orig, ok := origNameByID[toolResults[i].Parts[j].ToolResult.ID]; ok {
+							toolResults[i].Parts[j].ToolResult.Name = orig
+						}
+					}
+				}
 			}
 		}
 
