@@ -344,6 +344,7 @@ type ImageDebugConfig struct {
 type TranscriptionConfig struct {
 	Provider string `mapstructure:"provider"` // named provider from providers map; default "openai"
 	Model    string `mapstructure:"model"`    // optional model override
+	SaveDir  string `mapstructure:"save_dir"` // if set, persist each uploaded audio file here
 }
 
 // EmbedConfig configures text embedding generation
@@ -1139,6 +1140,7 @@ var KnownKeys = map[string]bool{
 	// Transcription
 	"transcription.provider": true,
 	"transcription.model":    true,
+	"transcription.save_dir": true,
 
 	// Embed
 	"embed.provider":        true,
