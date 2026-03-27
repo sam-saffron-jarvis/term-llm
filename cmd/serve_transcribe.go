@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/samsaffron/term-llm/internal/llm"
 )
@@ -103,6 +104,20 @@ func (s *serveServer) handleTranscribe(w http.ResponseWriter, r *http.Request) {
 	if written == 0 {
 		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "audio file is empty")
 		return
+	}
+
+	if saveDir := s.cfgRef.Transcription.SaveDir; saveDir != "" {
+		if mkErr := os.MkdirAll(saveDir, 0755); mkErr == nil {
+			ts := time.Now().Format("20060102-150405")
+			savePath := filepath.Join(saveDir, ts+"-"+filename)
+			if src, openErr := os.Open(tempPath); openErr == nil {
+				if dst, createErr := os.Create(savePath); createErr == nil {
+					_, _ = io.Copy(dst, src)
+					dst.Close()
+				}
+				src.Close()
+			}
+		}
 	}
 
 	transcript, err := llm.TranscribeWithConfig(r.Context(), s.cfgRef, tempPath, strings.TrimSpace(r.FormValue("language")), "")
