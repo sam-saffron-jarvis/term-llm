@@ -107,14 +107,15 @@ func (s *serveServer) handleChatCompletions(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	// Filter out server-executed tool calls from the result
-	filtered := make([]llm.ToolCall, 0, len(result.ToolCalls))
-	for _, call := range result.ToolCalls {
-		if !runtime.isServerExecutedTool(call.Name) {
-			filtered = append(filtered, call)
+	if s.cfg.suppressServerTools {
+		filtered := make([]llm.ToolCall, 0, len(result.ToolCalls))
+		for _, call := range result.ToolCalls {
+			if !runtime.isServerExecutedTool(call.Name) {
+				filtered = append(filtered, call)
+			}
 		}
+		result.ToolCalls = filtered
 	}
-	result.ToolCalls = filtered
 
 	model := llmReq.Model
 	if model == "" {
@@ -166,8 +167,7 @@ func (s *serveServer) streamChatCompletions(ctx context.Context, w http.Response
 			if ev.Tool == nil {
 				return nil
 			}
-			// Suppress tool calls for server-executed tools
-			if runtime.isServerExecutedTool(ev.Tool.Name) {
+			if s.cfg.suppressServerTools && runtime.isServerExecutedTool(ev.Tool.Name) {
 				return nil
 			}
 			toolCallSeen = true

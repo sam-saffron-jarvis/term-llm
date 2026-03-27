@@ -765,8 +765,8 @@ func (s *serveServer) appendResponseRunEvent(runtime *serveRuntime, run *respons
 		if ev.Tool == nil {
 			return nil
 		}
-		// Suppress tool calls for server-executed tools
-		if runtime.isServerExecutedTool(ev.Tool.Name) {
+		// Suppress tool calls for server-executed tools in API mode
+		if s.cfg.suppressServerTools && runtime.isServerExecutedTool(ev.Tool.Name) {
 			return nil
 		}
 		state.toolsSeen = true
