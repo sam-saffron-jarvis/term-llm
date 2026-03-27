@@ -54,6 +54,7 @@ var (
 	serveJobsWorkers            int
 	serveSetup                  bool
 	serveVerbose                bool
+	serveFilterServerTools      bool
 	serveSidebarSessions        string
 	serveToolMap                []string
 )
@@ -129,6 +130,7 @@ func init() {
 	serveCmd.Flags().StringVar(&serveSidebarSessions, "sidebar-sessions", "all", "Default web sidebar session categories: all or a comma-separated list like chat,web,ask,plan,exec")
 	serveCmd.Flags().BoolVar(&serveVerbose, "verbose", false, "Log API request/response summaries to stderr")
 	serveCmd.Flags().StringArrayVar(&serveToolMap, "tool-map", nil, "Map client tool name to server tool (repeatable, format ClientName:ServerName)")
+	serveCmd.Flags().BoolVar(&serveFilterServerTools, "suppress-server-tool-calls", false, "Hide server-executed tool calls from API responses (use when proxying to external clients)")
 
 	AddProviderFlag(serveCmd, &serveProvider)
 	AddDebugFlag(serveCmd, &serveDebug)
@@ -465,16 +467,17 @@ func runServe(cmd *cobra.Command, args []string) error {
 		serveUI := hasWeb
 		s = &serveServer{
 			cfg: serveServerConfig{
-				host:            serveHost,
-				port:            servePort,
-				requireAuth:     requireAuth,
-				token:           token,
-				ui:              serveUI,
-				api:             hasAPI,
-				verbose:         serveVerbose,
-				basePath:        serveBasePath,
-				sidebarSessions: append([]string(nil), sidebarSessions...),
-				corsOrigins:     append([]string(nil), serveCORSOrigins...),
+				host:                serveHost,
+				port:                servePort,
+				requireAuth:         requireAuth,
+				token:               token,
+				ui:                  serveUI,
+				api:                 hasAPI,
+				suppressServerTools: serveFilterServerTools,
+				verbose:             serveVerbose,
+				basePath:            serveBasePath,
+				sidebarSessions:     append([]string(nil), sidebarSessions...),
+				corsOrigins:         append([]string(nil), serveCORSOrigins...),
 			},
 			sessionMgr:     sessionMgr,
 			jobsV2:         jobsV2,
@@ -720,16 +723,17 @@ func generateServeToken() (string, error) {
 }
 
 type serveServerConfig struct {
-	host            string
-	port            int
-	requireAuth     bool
-	token           string
-	ui              bool
-	api             bool
-	verbose         bool
-	basePath        string // e.g. "/ui" or "/chat", always without trailing slash
-	sidebarSessions []string
-	corsOrigins     []string
+	host                string
+	port                int
+	requireAuth         bool
+	token               string
+	ui                  bool
+	api                 bool
+	suppressServerTools bool
+	verbose             bool
+	basePath            string // e.g. "/ui" or "/chat", always without trailing slash
+	sidebarSessions     []string
+	corsOrigins         []string
 }
 
 // uiRoute returns the base-path with trailing slash, e.g. "/ui/" or "/chat/".

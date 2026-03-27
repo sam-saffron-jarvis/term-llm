@@ -4560,8 +4560,10 @@ func TestServeHTTPHandler_MountsAPIOnlyUnderBasePath(t *testing.T) {
 	}
 }
 
-func TestNonStreamingChat_FiltersServerExecutedToolCalls(t *testing.T) {
-	// Script: model calls the echo tool, then returns "done"
+func TestNonStreamingChat_ShowsServerExecutedToolCalls(t *testing.T) {
+	// Script: model calls the echo tool (server-executed), then returns "done".
+	// The chat completions endpoint is used by the web UI, which needs to see
+	// tool calls so it can display them. They must NOT be filtered here.
 	provider := llm.NewMockProvider("mock").
 		AddToolCall("call-1", "echo", map[string]any{"input": "hi"}).
 		AddTextResponse("done")
@@ -4598,9 +4600,10 @@ func TestNonStreamingChat_FiltersServerExecutedToolCalls(t *testing.T) {
 	}
 	choices := result["choices"].([]any)
 	msg := choices[0].(map[string]any)["message"].(map[string]any)
-	// "echo" is a server-executed tool — it should be filtered from the response
-	if msg["tool_calls"] != nil {
-		t.Fatalf("server-executed tool calls should be filtered; got tool_calls: %v", msg["tool_calls"])
+	// "echo" is server-executed but the chat completions handler must pass tool
+	// calls through so the web UI can display them.
+	if msg["tool_calls"] == nil {
+		t.Fatalf("expected tool_calls to be visible in chat completions response, got nil")
 	}
 	if msg["content"] != "done" {
 		t.Fatalf("expected final text 'done', got %v", msg["content"])
@@ -4626,7 +4629,7 @@ func TestNonStreamingResponses_FiltersServerExecutedToolCalls(t *testing.T) {
 		return rt, nil
 	}
 	mgr := newServeSessionManager(time.Minute, 100, factory)
-	srv := &serveServer{sessionMgr: mgr}
+	srv := &serveServer{sessionMgr: mgr, cfg: serveServerConfig{suppressServerTools: true}}
 
 	body := `{"model":"test","input":"call echo"}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(body))

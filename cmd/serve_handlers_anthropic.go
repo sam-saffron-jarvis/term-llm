@@ -146,14 +146,15 @@ func (s *serveServer) handleAnthropicMessages(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	// Filter out server-executed tool calls from the result
-	filtered := make([]llm.ToolCall, 0, len(result.ToolCalls))
-	for _, call := range result.ToolCalls {
-		if !runtime.isServerExecutedTool(call.Name) {
-			filtered = append(filtered, call)
+	if s.cfg.suppressServerTools {
+		filtered := make([]llm.ToolCall, 0, len(result.ToolCalls))
+		for _, call := range result.ToolCalls {
+			if !runtime.isServerExecutedTool(call.Name) {
+				filtered = append(filtered, call)
+			}
 		}
+		result.ToolCalls = filtered
 	}
-	result.ToolCalls = filtered
 
 	model := llmReq.Model
 	if model == "" {
@@ -251,7 +252,7 @@ func (s *serveServer) streamAnthropicMessages(ctx context.Context, w http.Respon
 			// Suppress tool_use blocks for server-executed tools —
 			// the engine handles these internally and the client
 			// should only see the final text result.
-			if runtime.isServerExecutedTool(ev.Tool.Name) {
+			if s.cfg.suppressServerTools && runtime.isServerExecutedTool(ev.Tool.Name) {
 				return nil
 			}
 			toolSeen = true
