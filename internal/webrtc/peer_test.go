@@ -32,6 +32,16 @@ func collectFrames(p *peer, rawFrame []byte) []responseFrame {
 	return frames
 }
 
+func collectChunkData(frames []responseFrame) string {
+	var b strings.Builder
+	for _, f := range frames {
+		if f.Type == "chunk" {
+			b.WriteString(f.Data)
+		}
+	}
+	return b.String()
+}
+
 func encodeRequest(id, method, path string, headers map[string]string, body string) []byte {
 	f := requestFrame{ID: id, Method: method, Path: path, Headers: headers}
 	if body != "" {
@@ -211,7 +221,7 @@ func TestChunkStreaming(t *testing.T) {
 	raw := encodeRequest("req6", "GET", "/ui/v1/responses", nil, "")
 	frames := collectFrames(p, raw)
 
-	// Expect: 1 headers frame, 6 chunk frames, 1 done frame.
+	// Expect: 1 headers frame, chunk frames, 1 done frame.
 	if len(frames) < 3 {
 		t.Fatalf("too few frames: %v", frames)
 	}
@@ -222,20 +232,43 @@ func TestChunkStreaming(t *testing.T) {
 		t.Errorf("headers frame missing x-response-id: %v", frames[0].Headers)
 	}
 
-	var chunks []responseFrame
-	for _, f := range frames {
-		if f.Type == "chunk" {
-			chunks = append(chunks, f)
-		}
-	}
-	// At minimum we expect 6 SSE lines as chunks.
-	if len(chunks) < 6 {
-		t.Errorf("expected at least 6 chunks, got %d", len(chunks))
+	got := collectChunkData(frames)
+	want := "event: ping\ndata: {}\n\nevent: ping\ndata: {}\n\n"
+	if got != want {
+		t.Fatalf("chunk data mismatch\ngot:  %q\nwant: %q", got, want)
 	}
 
 	last := frames[len(frames)-1]
 	if last.Type != "done" || last.Status != http.StatusOK {
 		t.Errorf("last frame should be done/200, got %v", last)
+	}
+}
+
+func TestChunkWriter_SplitsLargePayloadInto16KFrames(t *testing.T) {
+	large := strings.Repeat("🙂", maxChunkDataBytes) + "tail"
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(large))
+	})
+	p := newTestPeer("/ui", handler)
+	raw := encodeRequest("req-large", "GET", "/ui/v1/models", nil, "")
+	frames := collectFrames(p, raw)
+
+	var chunkCount int
+	for _, f := range frames {
+		if f.Type != "chunk" {
+			continue
+		}
+		chunkCount++
+		if len([]byte(f.Data)) > maxChunkDataBytes {
+			t.Fatalf("chunk size = %d, want <= %d", len([]byte(f.Data)), maxChunkDataBytes)
+		}
+	}
+	if chunkCount < 2 {
+		t.Fatalf("expected payload to split across multiple chunk frames, got %d", chunkCount)
+	}
+	if got := collectChunkData(frames); got != large {
+		t.Fatalf("reconstructed payload mismatch: got %d bytes want %d", len(got), len(large))
 	}
 }
 

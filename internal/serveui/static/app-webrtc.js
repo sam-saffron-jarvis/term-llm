@@ -504,15 +504,15 @@
           markGotResponse();
           resolveOnce(new Response(nullBodyStatus(status) ? null : stream, { status, headers: new Headers(headers) }));
         },
-        onChunk(line) {
+        onChunk(fragment) {
           markGotResponse();
           if (!resolved) {
             resolveOnce(new Response(stream, { status: 200 })); // 200 is never null-body
           }
-          const chunk = typeof line === 'string' ? line : '';
-          responseBytes += chunk.length + 1; // +1 for the \n
+          const chunk = typeof fragment === 'string' ? fragment : '';
+          responseBytes += chunk.length;
           if (streamController) {
-            streamController.enqueue(encoder.encode(chunk + '\n'));
+            streamController.enqueue(encoder.encode(chunk));
           }
         },
         onDone(status) {
