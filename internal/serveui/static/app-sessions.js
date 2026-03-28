@@ -441,6 +441,36 @@ const applyServerSessionSummary = (target, serverSession) => {
   return target;
 };
 
+const findMatchingServerSessionStub = (serverSession) => {
+  if (!serverSession) return null;
+
+  const exact = state.sessions.find((item) => item.id === serverSession.id) || null;
+  if (exact) return exact;
+
+  const num = Number(serverSession.number || 0);
+  if (num <= 0) return null;
+
+  return state.sessions.find((item) => item._serverOnly
+    && Number(item.number || 0) === num
+    && String(item.id || '').startsWith('pending_')) || null;
+};
+
+const reconcileServerSessionIdentity = (session, serverSession) => {
+  if (!session || !serverSession) return session;
+
+  const nextId = String(serverSession.id || '').trim();
+  const previousId = String(session.id || '').trim();
+  if (!nextId || nextId === previousId) return session;
+
+  session.id = nextId;
+  if (state.activeSessionId === previousId) state.activeSessionId = nextId;
+  if (state.renameSessionId === previousId) state.renameSessionId = nextId;
+  if (state.currentStreamSessionId === previousId) state.currentStreamSessionId = nextId;
+  if (state.askUser?.sessionId === previousId) state.askUser.sessionId = nextId;
+  if (state.approval?.sessionId === previousId) state.approval.sessionId = nextId;
+  return session;
+};
+
 const mergeServerSessions = async (options = {}) => {
   try {
     const categories = Array.isArray(options.categories) ? options.categories : state.sidebarSessionCategories;
@@ -463,8 +493,9 @@ const mergeServerSessions = async (options = {}) => {
     if (!Array.isArray(data.sessions)) return;
 
     for (const serverSession of data.sessions) {
-      let local = state.sessions.find((item) => item.id === serverSession.id) || null;
+      let local = findMatchingServerSessionStub(serverSession);
       if (local) {
+        reconcileServerSessionIdentity(local, serverSession);
         applyServerSessionSummary(local, serverSession);
         continue;
       }
