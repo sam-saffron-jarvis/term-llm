@@ -451,8 +451,7 @@ const findMatchingServerSessionStub = (serverSession) => {
   if (num <= 0) return null;
 
   return state.sessions.find((item) => item._serverOnly
-    && Number(item.number || 0) === num
-    && String(item.id || '').startsWith('pending_')) || null;
+    && Number(item.number || 0) === num) || null;
 };
 
 const reconcileServerSessionIdentity = (session, serverSession) => {
@@ -708,7 +707,7 @@ const initialize = async () => {
       // Create a server-only stub that will be lazy-loaded
       const num = /^\d+$/.test(urlSlug) ? Number(urlSlug) : 0;
       const stub = {
-        id: num > 0 ? `pending_${urlSlug}` : urlSlug,
+        id: urlSlug,
         number: num,
         name: '',
         title: 'Loading…',
@@ -989,7 +988,7 @@ window.addEventListener('popstate', async () => {
   }
   const num = /^\d+$/.test(urlSlug) ? Number(urlSlug) : 0;
   const stub = {
-    id: num > 0 ? `pending_${urlSlug}` : urlSlug,
+    id: urlSlug,
     number: num,
     name: '',
     title: 'Loading…',

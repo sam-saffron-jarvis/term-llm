@@ -161,8 +161,17 @@ async function testNumericDeepLinkResolvesRealSessionId() {
       if (url === '/ui/v1/sessions/sess_real/state') {
         return new Response(JSON.stringify({}), { status: 200, headers: { 'Content-Type': 'application/json' } });
       }
-      if (url === '/ui/v1/sessions/pending_1291/messages' || url === '/ui/v1/sessions/pending_1291/state') {
-        return new Response('not found', { status: 404 });
+      if (url === '/ui/v1/sessions/1291/messages') {
+        return new Response(JSON.stringify({
+          messages: [{
+            role: 'user',
+            created_at: 1710000000000,
+            parts: [{ type: 'text', text: 'hello from server' }],
+          }]
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      if (url === '/ui/v1/sessions/1291/state') {
+        return new Response(JSON.stringify({}), { status: 200, headers: { 'Content-Type': 'application/json' } });
       }
       return new Response(JSON.stringify([]), { status: 200, headers: { 'Content-Type': 'application/json' } });
     },
@@ -242,7 +251,7 @@ async function testNumericDeepLinkResolvesRealSessionId() {
     return;
   }
   if (fetchCalls.includes('/ui/v1/sessions/pending_1291/messages')) {
-    fail(name, 'should not request messages for pending stub id', JSON.stringify(fetchCalls));
+    fail(name, 'should not use pending_ prefix in session id', JSON.stringify(fetchCalls));
     return;
   }
   pass(name);
