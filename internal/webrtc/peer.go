@@ -18,6 +18,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	"github.com/pion/datachannel"
 	dtls "github.com/pion/dtls/v3"
@@ -54,9 +55,11 @@ type responseFrame struct {
 	ID      string            `json:"id"`
 	Type    string            `json:"type"`              // "headers", "chunk", or "done"
 	Headers map[string]string `json:"headers,omitempty"` // only for "headers"
-	Data    string            `json:"data"`              // SSE line; only for "chunk"; blank lines must survive JSON encoding
+	Data    string            `json:"data"`              // response body fragment; may be one of several frames for a single HTTP write
 	Status  int               `json:"status,omitempty"`  // HTTP status; for "headers" and "done"
 }
+
+const maxChunkDataBytes = 16 * 1024
 
 // peer is the home-side WebRTC peer.
 type peer struct {
@@ -684,6 +687,34 @@ func sendDoneFrame(send func(string) error, id string, status int) {
 	_ = send(string(data))
 }
 
+func sendChunkFrames(send func(string) error, id string, data string) {
+	if data == "" {
+		f := responseFrame{ID: id, Type: "chunk", Data: ""}
+		enc, _ := json.Marshal(f)
+		_ = send(string(enc))
+		return
+	}
+
+	for len(data) > 0 {
+		n := maxChunkDataBytes
+		if len(data) < n {
+			n = len(data)
+		} else {
+			for n > 0 && !utf8.ValidString(data[:n]) {
+				n--
+			}
+			if n == 0 {
+				// Defensive fallback: impossible for valid UTF-8 input, but avoid infinite loops.
+				n = len([]byte(string([]rune(data)[0])))
+			}
+		}
+		f := responseFrame{ID: id, Type: "chunk", Data: data[:n]}
+		enc, _ := json.Marshal(f)
+		_ = send(string(enc))
+		data = data[n:]
+	}
+}
+
 // dcResponseWriter implements http.ResponseWriter and http.Flusher.
 // It streams the response body as data-channel frames.
 type dcResponseWriter struct {
@@ -733,11 +764,9 @@ func (w *dcResponseWriter) Write(b []byte) (int, error) {
 		if idx < 0 {
 			break
 		}
-		line := string(data[:idx])
+		fragment := string(data[:idx+1])
 		w.buf.Next(idx + 1)
-		f := responseFrame{ID: w.id, Type: "chunk", Data: line}
-		enc, _ := json.Marshal(f)
-		_ = w.send(string(enc))
+		sendChunkFrames(w.send, w.id, fragment)
 	}
 	return len(b), nil
 }
@@ -755,10 +784,8 @@ func (w *dcResponseWriter) Flush() {
 // finish flushes any remaining buffered data and is called after ServeHTTP returns.
 func (w *dcResponseWriter) finish() {
 	if w.buf.Len() > 0 {
-		f := responseFrame{ID: w.id, Type: "chunk", Data: w.buf.String()}
+		sendChunkFrames(w.send, w.id, w.buf.String())
 		w.buf.Reset()
-		enc, _ := json.Marshal(f)
-		_ = w.send(string(enc))
 	}
 	status := w.status
 	if status == 0 {
