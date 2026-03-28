@@ -34,6 +34,7 @@
   'use strict';
 
   if (!window.__WEBRTC_ENABLED__) return;
+  if (new URLSearchParams(window.location.search).has('no_webrtc')) return;
 
   const SIGNALING_URL = window.__WEBRTC_SIGNALING_URL__ || '';
   const UI_PREFIX = window.TERM_LLM_UI_PREFIX || '/ui';
