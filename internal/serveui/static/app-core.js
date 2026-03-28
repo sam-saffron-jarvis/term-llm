@@ -668,6 +668,7 @@ const sanitizeSession = (session) => {
     activeModel: typeof session.activeModel === 'string' ? session.activeModel : ''
   };
   if (session._serverOnly) result._serverOnly = true;
+  if (typeof session.number === 'number' && session.number > 0) result.number = session.number;
   if (typeof session.messageCount === 'number') result.messageCount = session.messageCount;
   return result;
 };
