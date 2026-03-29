@@ -763,6 +763,47 @@ func TestBuildResponsesInput_ConvertsDanglingToolCalls(t *testing.T) {
 	}
 }
 
+func TestFilterToNewInput_ToolFollowUpReturnsOnlyNewToolOutputs(t *testing.T) {
+	input := []ResponsesInputItem{
+		{Type: "message", Role: "developer", Content: "Be concise"},
+		{Type: "message", Role: "user", Content: "old question"},
+		{Type: "message", Role: "assistant", Content: "I'll check"},
+		{Type: "function_call", CallID: "call_1", Name: "shell", Arguments: `{"command":"pwd"}`},
+		{Type: "function_call_output", CallID: "call_1", Output: "/root/source/term-llm"},
+	}
+
+	got := filterToNewInput(input)
+
+	if len(got) != 1 {
+		t.Fatalf("expected only trailing tool output, got %d items: %+v", len(got), got)
+	}
+	if got[0].Type != "function_call_output" || got[0].CallID != "call_1" {
+		t.Fatalf("expected trailing function_call_output for call_1, got %+v", got[0])
+	}
+}
+
+func TestFilterToNewInput_ToolFollowUpPreservesTrailingOutputsAndUserMessages(t *testing.T) {
+	input := []ResponsesInputItem{
+		{Type: "message", Role: "developer", Content: "Be concise"},
+		{Type: "message", Role: "user", Content: "describe this image"},
+		{Type: "function_call", CallID: "call_img", Name: "view_image", Arguments: `{"path":"img.png"}`},
+		{Type: "function_call_output", CallID: "call_img", Output: "loaded"},
+		{Type: "message", Role: "user", Content: []ResponsesContentPart{{Type: "input_image", ImageURL: "data:image/png;base64,abc"}}},
+	}
+
+	got := filterToNewInput(input)
+
+	if len(got) != 2 {
+		t.Fatalf("expected trailing tool output and synthetic user message, got %d items: %+v", len(got), got)
+	}
+	if got[0].Type != "function_call_output" || got[0].CallID != "call_img" {
+		t.Fatalf("expected first item function_call_output for call_img, got %+v", got[0])
+	}
+	if got[1].Type != "message" || got[1].Role != "user" {
+		t.Fatalf("expected second item trailing user message, got %+v", got[1])
+	}
+}
+
 func TestResponsesClientStream_Retries404WithFullHistory(t *testing.T) {
 	type capturedRequest struct {
 		PreviousResponseID string               `json:"previous_response_id"`
