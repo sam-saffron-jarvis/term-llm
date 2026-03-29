@@ -881,6 +881,13 @@ func (s *serveServer) runtimeForProviderRequest(ctx context.Context, sessionID s
 	if err != nil {
 		return nil, false, err
 	}
+	existingProvider := strings.TrimSpace(rt.providerKey)
+	if existingProvider == "" && rt.provider != nil {
+		existingProvider = strings.TrimSpace(rt.provider.Name())
+	}
+	if existingProvider != "" && existingProvider != providerName {
+		return nil, false, fmt.Errorf("session %q already uses provider %q (requested %q)", sessionID, existingProvider, providerName)
+	}
 	return rt, true, nil
 }
 

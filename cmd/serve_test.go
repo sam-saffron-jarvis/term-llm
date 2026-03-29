@@ -4109,6 +4109,60 @@ func TestHandleResponses_WithProviderField(t *testing.T) {
 	}
 }
 
+func TestHandleResponses_WithProviderFieldRejectsDifferentProviderForExistingSession(t *testing.T) {
+	newRuntime := func(providerKey string) *serveRuntime {
+		provider := llm.NewMockProvider(providerKey).AddTextResponse("ok")
+		engine := llm.NewEngine(provider, nil)
+		rt := &serveRuntime{
+			provider:     provider,
+			providerKey:  providerKey,
+			engine:       engine,
+			defaultModel: "mock-model",
+		}
+		rt.Touch()
+		return rt
+	}
+
+	manager := newServeSessionManager(time.Minute, 10, func(ctx context.Context) (*serveRuntime, error) {
+		return newRuntime("mock"), nil
+	})
+	defer manager.Close()
+
+	srv := &serveServer{
+		cfgRef:     &config.Config{DefaultProvider: "mock"},
+		sessionMgr: manager,
+		runtimeFactory: func(ctx context.Context, providerName string, model string) (*serveRuntime, error) {
+			if providerName == "" {
+				providerName = "mock"
+			}
+			return newRuntime(providerName), nil
+		},
+	}
+
+	const sessionID = "sess-provider-mismatch"
+
+	firstReq := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{"input":"hello"}`))
+	firstReq.Header.Set("Content-Type", "application/json")
+	firstReq.Header.Set("session_id", sessionID)
+	firstRR := httptest.NewRecorder()
+	srv.handleResponses(firstRR, firstReq)
+	if firstRR.Code != http.StatusOK {
+		t.Fatalf("first status = %d, want 200; body: %s", firstRR.Code, firstRR.Body.String())
+	}
+
+	secondReq := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{"input":"hello again","provider":"other"}`))
+	secondReq.Header.Set("Content-Type", "application/json")
+	secondReq.Header.Set("session_id", sessionID)
+	secondRR := httptest.NewRecorder()
+	srv.handleResponses(secondRR, secondReq)
+	if secondRR.Code != http.StatusBadRequest {
+		t.Fatalf("second status = %d, want 400; body: %s", secondRR.Code, secondRR.Body.String())
+	}
+	if !strings.Contains(secondRR.Body.String(), `already uses provider`) {
+		t.Fatalf("expected provider mismatch error, got body: %s", secondRR.Body.String())
+	}
+}
+
 func TestSessionManager_GetOrCreateWithDeduplication(t *testing.T) {
 	var calls int32
 	manager := newServeSessionManager(time.Minute, 10, func(ctx context.Context) (*serveRuntime, error) {
