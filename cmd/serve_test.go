@@ -10,6 +10,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"image"
+	"image/color"
+	"image/png"
 	"io"
 	"mime/multipart"
 	"net/http"
@@ -1561,21 +1564,37 @@ func TestHandleImage_ServesFileAndRejectsTraversal(t *testing.T) {
 	}
 }
 
+func writeServeTestPNG(t *testing.T, path string) {
+	t.Helper()
+
+	img := image.NewRGBA(image.Rect(0, 0, 2, 2))
+	img.Set(0, 0, color.RGBA{R: 255, A: 255})
+	img.Set(1, 0, color.RGBA{G: 255, A: 255})
+	img.Set(0, 1, color.RGBA{B: 255, A: 255})
+	img.Set(1, 1, color.RGBA{R: 255, G: 255, B: 255, A: 255})
+
+	f, err := os.Create(path)
+	if err != nil {
+		t.Fatalf("create test png: %v", err)
+	}
+	defer f.Close()
+
+	if err := png.Encode(f, img); err != nil {
+		t.Fatalf("encode test png: %v", err)
+	}
+}
+
 func TestEnsureImageServeable_CopiesExternalFile(t *testing.T) {
 	outputDir := t.TempDir()
 	externalDir := t.TempDir()
 
 	// Create a file outside the image output directory
 	externalImg := filepath.Join(externalDir, "photo.png")
-	if err := os.WriteFile(externalImg, []byte("external-image-data"), 0644); err != nil {
-		t.Fatalf("write external image: %v", err)
-	}
+	writeServeTestPNG(t, externalImg)
 
 	// Create a file already inside the output directory
 	internalImg := filepath.Join(outputDir, "generated.png")
-	if err := os.WriteFile(internalImg, []byte("internal-image-data"), 0644); err != nil {
-		t.Fatalf("write internal image: %v", err)
-	}
+	writeServeTestPNG(t, internalImg)
 
 	srv := &serveServer{cfg: serveServerConfig{basePath: "/ui"}, cfgRef: &config.Config{}}
 	srv.cfgRef.Image.OutputDir = outputDir
@@ -1598,8 +1617,12 @@ func TestEnsureImageServeable_CopiesExternalFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read copied image: %v", err)
 	}
-	if string(data) != "external-image-data" {
-		t.Fatalf("copied data = %q, want %q", string(data), "external-image-data")
+	original, err := os.ReadFile(externalImg)
+	if err != nil {
+		t.Fatalf("read original image: %v", err)
+	}
+	if !bytes.Equal(data, original) {
+		t.Fatal("copied image data does not match original")
 	}
 
 	// Internal file should be returned as-is
@@ -1622,6 +1645,30 @@ func TestEnsureImageServeable_CopiesExternalFile(t *testing.T) {
 	srv.handleImage(rr, req)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("serve copied image: status = %d, want 200", rr.Code)
+	}
+}
+
+func TestEnsureImageServeable_RejectsNonImageFile(t *testing.T) {
+	outputDir := t.TempDir()
+	externalFile := filepath.Join(t.TempDir(), "secrets.txt")
+	if err := os.WriteFile(externalFile, []byte("top-secret"), 0644); err != nil {
+		t.Fatalf("write external file: %v", err)
+	}
+
+	srv := &serveServer{cfg: serveServerConfig{basePath: "/ui"}, cfgRef: &config.Config{}}
+	srv.cfgRef.Image.OutputDir = outputDir
+
+	result, ok := srv.ensureImageServeable(externalFile)
+	if ok {
+		t.Fatalf("ensureImageServeable should reject non-image file, got %q", result)
+	}
+
+	entries, err := os.ReadDir(outputDir)
+	if err != nil {
+		t.Fatalf("read output dir: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("expected no files copied into output dir, found %d", len(entries))
 	}
 }
 

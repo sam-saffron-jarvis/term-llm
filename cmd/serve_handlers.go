@@ -191,6 +191,10 @@ func (s *serveServer) ensureImageServeable(imgPath string) (string, bool) {
 		log.Printf("[serve] ensureImageServeable: abs(%s): %v", imgPath, err)
 		return "", false
 	}
+	if err := validateServeableImageFile(absImg); err != nil {
+		log.Printf("[serve] ensureImageServeable: reject %s: %v", absImg, err)
+		return "", false
+	}
 
 	// Already under the output dir — nothing to do.
 	if strings.HasPrefix(absImg, absDir+string(filepath.Separator)) {
@@ -230,6 +234,30 @@ func (s *serveServer) ensureImageServeable(imgPath string) (string, bool) {
 	}
 
 	return destPath, true
+}
+
+func validateServeableImageFile(path string) error {
+	f, err := os.Open(path)
+	if err != nil {
+		return fmt.Errorf("open %s: %w", path, err)
+	}
+	defer f.Close()
+
+	var buf [512]byte
+	n, err := f.Read(buf[:])
+	if err != nil && err != io.EOF {
+		return fmt.Errorf("read %s: %w", path, err)
+	}
+	if n == 0 {
+		return fmt.Errorf("%s is empty", path)
+	}
+
+	contentType := http.DetectContentType(buf[:n])
+	if !strings.HasPrefix(contentType, "image/") {
+		return fmt.Errorf("unsupported content type %q", contentType)
+	}
+
+	return nil
 }
 
 func (s *serveServer) handleSessions(w http.ResponseWriter, r *http.Request) {
