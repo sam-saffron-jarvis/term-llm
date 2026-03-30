@@ -66,7 +66,9 @@ type Request struct {
 	ReasoningEffort         string
 	MaxOutputTokens         int
 	Temperature             float32
+	TemperatureSet          bool // If true, Temperature was explicitly provided, including zero
 	TopP                    float32
+	TopPSet                 bool              // If true, TopP was explicitly provided, including zero
 	MaxTurns                int               // Max agentic turns for tool execution (0 = use default)
 	ToolMap                 map[string]string // Maps client tool names to server tool names (e.g. "WebSearch" → "search")
 	Debug                   bool

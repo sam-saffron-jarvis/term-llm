@@ -136,9 +136,11 @@ func (s *serveServer) handleResponses(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Temperature != nil {
 		llmReq.Temperature = *req.Temperature
+		llmReq.TemperatureSet = true
 	}
 	if req.TopP != nil {
 		llmReq.TopP = *req.TopP
+		llmReq.TopPSet = true
 	}
 
 	if req.Stream {

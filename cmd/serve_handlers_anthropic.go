@@ -125,9 +125,11 @@ func (s *serveServer) handleAnthropicMessages(w http.ResponseWriter, r *http.Req
 	}
 	if req.Temperature != nil {
 		llmReq.Temperature = *req.Temperature
+		llmReq.TemperatureSet = true
 	}
 	if req.TopP != nil {
 		llmReq.TopP = *req.TopP
+		llmReq.TopPSet = true
 	}
 
 	if req.Stream {

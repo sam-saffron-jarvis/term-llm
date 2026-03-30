@@ -126,11 +126,11 @@ func (p *OpenAIProvider) Stream(ctx context.Context, req Request) (Stream, error
 	if len(tools) > 0 {
 		responsesReq.ParallelToolCalls = boolPtr(req.ParallelToolCalls)
 	}
-	if req.Temperature > 0 {
+	if req.TemperatureSet || req.Temperature != 0 {
 		v := float64(req.Temperature)
 		responsesReq.Temperature = &v
 	}
-	if req.TopP > 0 {
+	if req.TopPSet || req.TopP != 0 {
 		v := float64(req.TopP)
 		responsesReq.TopP = &v
 	}
