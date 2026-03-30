@@ -165,8 +165,28 @@ func (p *VeniceProvider) Stream(ctx context.Context, req Request) (Stream, error
 	}), nil
 }
 
+// normalizeVeniceModel rewrites legacy Venice model names to their current API IDs.
+// Venice renamed minimax models from minimax-{N} to minimax-m{N} (e.g. minimax-27 → minimax-m27).
+func normalizeVeniceModel(model string) string {
+	const prefix = "minimax-"
+	if !strings.HasPrefix(model, prefix) {
+		return model
+	}
+	rest := model[len(prefix):]
+	if len(rest) == 0 || rest[0] == 'm' {
+		return model
+	}
+	for _, c := range rest {
+		if c < '0' || c > '9' {
+			return model
+		}
+	}
+	return prefix + "m" + rest
+}
+
 func buildVeniceModelAndParams(model string, search bool) (string, map[string]interface{}) {
 	baseModel, suffixParams := parseVeniceModelSuffix(model)
+	baseModel = normalizeVeniceModel(baseModel)
 	params := make(map[string]interface{}, len(suffixParams)+1)
 	for k, v := range suffixParams {
 		params[k] = v

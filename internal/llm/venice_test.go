@@ -74,6 +74,26 @@ func TestVeniceProviderCapabilities(t *testing.T) {
 	}
 }
 
+func TestNormalizeVeniceModel(t *testing.T) {
+	cases := []struct {
+		in, want string
+	}{
+		{"minimax-27", "minimax-m27"},
+		{"minimax-21", "minimax-m21"},
+		{"minimax-25", "minimax-m25"},
+		{"minimax-m27", "minimax-m27"},             // already correct
+		{"minimax-m2.1-free", "minimax-m2.1-free"}, // non-digit suffix, untouched
+		{"venice-uncensored", "venice-uncensored"},
+		{"grok-4-20-beta", "grok-4-20-beta"},
+	}
+	for _, c := range cases {
+		got := normalizeVeniceModel(c.in)
+		if got != c.want {
+			t.Errorf("normalizeVeniceModel(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
 func TestParseVeniceModelSuffix(t *testing.T) {
 	base, params := parseVeniceModelSuffix("grok-4-20-beta:enable_x_search=true&enable_web_citations=true")
 	if base != "grok-4-20-beta" {
