@@ -972,14 +972,23 @@ func (p *ClaudeBinProvider) extractSystemPrompt(messages []Message) string {
 // This can be called with a subset of messages when resuming a session.
 func (p *ClaudeBinProvider) buildConversationPrompt(messages []Message) string {
 	var conversationParts []string
+	var pendingDev string
 
 	for _, msg := range messages {
 		switch msg.Role {
 		case RoleSystem:
 			// System messages handled separately by extractSystemPrompt
 			continue
+		case RoleDeveloper:
+			// Claude CLI has no native developer role. Buffer the text and prepend
+			// it into the next user turn wrapped in <developer> tags.
+			pendingDev = collectTextParts(msg.Parts)
 		case RoleUser:
 			var userParts []string
+			if pendingDev != "" {
+				userParts = append(userParts, fmt.Sprintf("<developer>\n%s\n</developer>", pendingDev))
+				pendingDev = ""
+			}
 			for _, part := range msg.Parts {
 				switch part.Type {
 				case PartText:
@@ -1282,10 +1291,22 @@ func (p *ClaudeBinProvider) buildStreamJsonInput(messages []Message, sessionID s
 		lines = append(lines, string(data))
 	}
 
+	var pendingDev string
 	for _, msg := range messages {
 		switch msg.Role {
+		case RoleDeveloper:
+			pendingDev = collectTextParts(msg.Parts)
 		case RoleUser:
-			appendUserMessage(buildSDKUserContentBlocks(msg.Parts), nil)
+			blocks := buildSDKUserContentBlocks(msg.Parts)
+			if pendingDev != "" {
+				devBlock := sdkContentBlock{
+					Type: "text",
+					Text: fmt.Sprintf("<developer>\n%s\n</developer>\n\n", pendingDev),
+				}
+				blocks = append([]sdkContentBlock{devBlock}, blocks...)
+				pendingDev = ""
+			}
+			appendUserMessage(blocks, nil)
 		case RoleTool:
 			for _, part := range msg.Parts {
 				if part.Type != PartToolResult || part.ToolResult == nil {
