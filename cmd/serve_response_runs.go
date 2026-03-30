@@ -839,8 +839,14 @@ func (s *serveServer) appendResponseRunEvent(runtime *serveRuntime, run *respons
 		if len(ev.ToolImages) > 0 {
 			imageURLs := make([]string, 0, len(ev.ToolImages))
 			for _, imgPath := range ev.ToolImages {
-				if served, ok := s.ensureImageServeable(imgPath); ok {
-					imageURLs = append(imageURLs, s.cfg.imagesRoute()+filepath.Base(served))
+				if s.cfg.filesDir != "" {
+					if served, ok := s.ensureFileServeable(imgPath); ok {
+						imageURLs = append(imageURLs, s.cfg.filesRoute()+filepath.Base(served))
+					}
+				} else {
+					if served, ok := s.ensureImageServeable(imgPath); ok {
+						imageURLs = append(imageURLs, s.cfg.imagesRoute()+filepath.Base(served))
+					}
 				}
 			}
 			if len(imageURLs) > 0 {

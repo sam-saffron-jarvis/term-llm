@@ -169,6 +169,102 @@ func (s *serveServer) handleImage(w http.ResponseWriter, r *http.Request) {
 	http.ServeFile(w, r, absFile)
 }
 
+// handleFile serves arbitrary files from the configured files-dir.
+func (s *serveServer) handleFile(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		w.Header().Set("Allow", "GET, HEAD")
+		writeOpenAIError(w, http.StatusMethodNotAllowed, "invalid_request_error", "method not allowed")
+		return
+	}
+	filename := strings.TrimPrefix(r.URL.Path, "/files/")
+	if filename == "" || strings.Contains(filename, "/") || strings.Contains(filename, "..") {
+		http.NotFound(w, r)
+		return
+	}
+	filesDir := s.cfg.filesDir
+	if filesDir == "" {
+		http.NotFound(w, r)
+		return
+	}
+	absDir, err := filepath.EvalSymlinks(filesDir)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	filePath := filepath.Join(absDir, filename)
+	absFile, err := filepath.EvalSymlinks(filePath)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	if !strings.HasPrefix(absFile, absDir+string(filepath.Separator)) {
+		http.NotFound(w, r)
+		return
+	}
+	w.Header().Set("Cache-Control", "private, max-age=86400")
+	w.Header().Add("Vary", "Authorization, Cookie")
+	http.ServeFile(w, r, absFile)
+}
+
+// ensureFileServeable copies the given file into the configured files-dir
+// so that the files handler can serve it. Returns the serveable path and true
+// on success, or ("", false) if the file could not be made serveable.
+func (s *serveServer) ensureFileServeable(filePath string) (string, bool) {
+	filesDir := s.cfg.filesDir
+	if filesDir == "" {
+		return "", false
+	}
+
+	absDir, err := filepath.Abs(filesDir)
+	if err != nil {
+		log.Printf("[serve] ensureFileServeable: abs(%s): %v", filesDir, err)
+		return "", false
+	}
+	absFile, err := filepath.Abs(filePath)
+	if err != nil {
+		log.Printf("[serve] ensureFileServeable: abs(%s): %v", filePath, err)
+		return "", false
+	}
+
+	// Already under the files dir — nothing to do.
+	if strings.HasPrefix(absFile, absDir+string(filepath.Separator)) {
+		return filePath, true
+	}
+
+	if err := os.MkdirAll(absDir, 0755); err != nil {
+		log.Printf("[serve] ensureFileServeable: mkdir %s: %v", absDir, err)
+		return "", false
+	}
+
+	src, err := os.Open(absFile)
+	if err != nil {
+		log.Printf("[serve] ensureFileServeable: open %s: %v", absFile, err)
+		return "", false
+	}
+	defer src.Close()
+
+	destName := fmt.Sprintf("serve-%s-%s", randomSuffix(), filepath.Base(absFile))
+	destPath := filepath.Join(absDir, destName)
+	dst, err := os.Create(destPath)
+	if err != nil {
+		log.Printf("[serve] ensureFileServeable: create %s: %v", destPath, err)
+		return "", false
+	}
+	if _, err := io.Copy(dst, src); err != nil {
+		dst.Close()
+		os.Remove(destPath)
+		log.Printf("[serve] ensureFileServeable: copy to %s: %v", destPath, err)
+		return "", false
+	}
+	if err := dst.Close(); err != nil {
+		os.Remove(destPath)
+		log.Printf("[serve] ensureFileServeable: close %s: %v", destPath, err)
+		return "", false
+	}
+
+	return destPath, true
+}
+
 // ensureImageServeable ensures the given image path is under the serveable
 // image output directory. If the file is already there, the path is returned
 // as-is. Otherwise the file is copied into the output dir so that the

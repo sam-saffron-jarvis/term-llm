@@ -134,6 +134,7 @@ type Config struct {
 type ServeConfig struct {
 	Platforms []string            `mapstructure:"platforms" yaml:"platforms,omitempty"`
 	BasePath  string              `mapstructure:"base_path" yaml:"base_path,omitempty"`
+	FilesDir  string              `mapstructure:"files_dir" yaml:"files_dir,omitempty"`
 	Telegram  TelegramServeConfig `mapstructure:"telegram" yaml:"telegram,omitempty"`
 	WebPush   WebPushConfig       `mapstructure:"web_push" yaml:"web_push,omitempty"`
 }
