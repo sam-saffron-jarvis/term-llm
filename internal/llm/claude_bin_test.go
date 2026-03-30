@@ -972,3 +972,69 @@ func (t *testTool) Preview(args json.RawMessage) string { return "" }
 func (t *testTool) Execute(ctx context.Context, args json.RawMessage) (ToolOutput, error) {
 	return t.exec(ctx, args)
 }
+
+func TestBuildConversationPrompt_DeveloperRole(t *testing.T) {
+	p := NewClaudeBinProvider("sonnet", nil)
+	msgs := []Message{
+		{Role: RoleDeveloper, Parts: []Part{{Type: PartText, Text: "You have access to /root/Files/"}}},
+		{Role: RoleUser, Parts: []Part{{Type: PartText, Text: "list the files"}}},
+	}
+	out := p.buildConversationPrompt(msgs)
+
+	// Developer text must be wrapped in <developer> tags and prepended to the user turn.
+	expected := "User: <developer>\nYou have access to /root/Files/\n</developer>\nlist the files"
+	if out != expected {
+		t.Errorf("unexpected output:\ngot:  %q\nwant: %q", out, expected)
+	}
+}
+
+func TestBuildConversationPrompt_DeveloperRoleWithoutFollowingUser(t *testing.T) {
+	p := NewClaudeBinProvider("sonnet", nil)
+	msgs := []Message{
+		{Role: RoleUser, Parts: []Part{{Type: PartText, Text: "hello"}}},
+		{Role: RoleDeveloper, Parts: []Part{{Type: PartText, Text: "trailing dev message"}}},
+	}
+	out := p.buildConversationPrompt(msgs)
+
+	// The developer message has no following user turn, so it should be silently dropped
+	// (same as anthropic.go behavior — pendingDev is lost at end of loop).
+	if strings.Contains(out, "trailing dev message") {
+		t.Errorf("trailing developer message without following user turn should be dropped, got: %q", out)
+	}
+}
+
+func TestBuildStreamJsonInput_DeveloperRole(t *testing.T) {
+	p := NewClaudeBinProvider("sonnet", nil)
+	msgs := []Message{
+		{Role: RoleDeveloper, Parts: []Part{{Type: PartText, Text: "You have access to /root/Files/"}}},
+		{Role: RoleUser, Parts: []Part{{Type: PartText, Text: "list the files"}}},
+	}
+	out := p.buildStreamJsonInput(msgs, "sess-dev")
+	if out == "" {
+		t.Fatal("expected non-empty stream-json output")
+	}
+
+	var msg sdkUserMessage
+	if err := json.Unmarshal([]byte(out), &msg); err != nil {
+		t.Fatalf("failed to parse stream-json: %v", err)
+	}
+	if msg.Message.Role != "user" {
+		t.Errorf("expected role 'user', got %q", msg.Message.Role)
+	}
+
+	// First block should be the developer-wrapped text, second the user text.
+	if len(msg.Message.Content) < 2 {
+		t.Fatalf("expected at least 2 content blocks, got %d", len(msg.Message.Content))
+	}
+	devBlock := msg.Message.Content[0]
+	if devBlock.Type != "text" {
+		t.Errorf("expected first block type 'text', got %q", devBlock.Type)
+	}
+	if !strings.Contains(devBlock.Text, "<developer>") || !strings.Contains(devBlock.Text, "/root/Files/") {
+		t.Errorf("expected developer-wrapped text, got %q", devBlock.Text)
+	}
+	userBlock := msg.Message.Content[1]
+	if userBlock.Text != "list the files" {
+		t.Errorf("expected user text 'list the files', got %q", userBlock.Text)
+	}
+}
