@@ -74,6 +74,32 @@ func TestVeniceProviderCapabilities(t *testing.T) {
 	}
 }
 
+func TestVeniceProviderListModelsUsesProviderScopedLimits(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/models" {
+			t.Fatalf("unexpected path %q", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"id":"grok-code-fast-1","object":"model","created":1,"owned_by":"venice.ai"},{"id":"minimax-m27","object":"model","created":1,"owned_by":"venice.ai"}]}`))
+	}))
+	defer ts.Close()
+
+	provider := &VeniceProvider{OpenAICompatProvider: NewOpenAICompatProvider(ts.URL, "test-key", "venice-uncensored", "Venice")}
+	models, err := provider.ListModels(context.Background())
+	if err != nil {
+		t.Fatalf("ListModels() error = %v", err)
+	}
+	if len(models) != 2 {
+		t.Fatalf("ListModels() returned %d models, want 2", len(models))
+	}
+	if models[0].InputLimit != 256_000 {
+		t.Fatalf("grok-code-fast-1 InputLimit = %d, want 256000", models[0].InputLimit)
+	}
+	if models[1].InputLimit != 198_000 {
+		t.Fatalf("minimax-m27 InputLimit = %d, want 198000", models[1].InputLimit)
+	}
+}
+
 func TestParseVeniceModelSuffix(t *testing.T) {
 	base, params := parseVeniceModelSuffix("grok-4-20-beta:enable_x_search=true&enable_web_citations=true")
 	if base != "grok-4-20-beta" {
