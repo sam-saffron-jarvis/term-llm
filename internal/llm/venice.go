@@ -36,6 +36,17 @@ func (p *VeniceProvider) Capabilities() Capabilities {
 	}
 }
 
+func (p *VeniceProvider) ListModels(ctx context.Context) ([]ModelInfo, error) {
+	models, err := p.OpenAICompatProvider.ListModels(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for i := range models {
+		models[i].InputLimit = InputLimitForProviderModel("venice", models[i].ID)
+	}
+	return models, nil
+}
+
 func (p *VeniceProvider) Stream(ctx context.Context, req Request) (Stream, error) {
 	req.MaxOutputTokens = ClampOutputTokens(req.MaxOutputTokens, chooseModel(req.Model, p.model))
 	messages := buildCompatMessages(req.Messages)

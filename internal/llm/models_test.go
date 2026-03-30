@@ -66,28 +66,7 @@ func TestAllListedModelsHaveContextLimits(t *testing.T) {
 	// Models where upstream limits are unknown or not applicable
 	exemptions := map[string]bool{
 		// Venice models with unknown upstream limits
-		"venice-uncensored":                  true,
-		"olafangensan-glm-4.7-flash-heretic": true,
-		"zai-org-glm-4.7-flash":              true,
-		"zai-org-glm-5":                      true,
-		"zai-org-glm-4.7":                    true,
-		"qwen3-4b":                           true,
-		"mistral-small-3-2-24b-instruct":     true,
-		"qwen3-235b-a22b-thinking-2507":      true,
-		"qwen3-235b-a22b-instruct-2507":      true,
-		"qwen3-next-80b":                     true,
-		"qwen3-coder-480b-a35b-instruct":     true,
-		"qwen3-5-9b":                         true,
-		"qwen3-5-35b-a3b":                    true,
-		"hermes-3-llama-3.1-405b":            true,
-		"google-gemma-3-27b-it":              true,
-		"openai-gpt-oss-120b":                true,
-		"llama-3.2-3b":                       true,
-		"llama-3.3-70b":                      true,
-		"minimax-m21":                        true,
-		"minimax-m25":                        true,
-		"minimax-m27":                        true,
-		"qwen3-vl-235b-a22b":                 true,
+		"qwen3-4b": true,
 		// Zen models with unknown limits
 		"big-pickle":                 true,
 		"glm-4.7-free":               true,
@@ -122,20 +101,47 @@ func TestVeniceProxyModelsHaveLimits(t *testing.T) {
 		model     string
 		wantInput int
 	}{
-		{"claude-opus-4-6", 180_000},
-		{"claude-sonnet-4-6", 180_000},
-		{"claude-opus-45", 180_000},
-		{"claude-sonnet-45", 180_000},
+		{"venice-uncensored", 32_000},
+		{"olafangensan-glm-4.7-flash-heretic", 200_000},
+		{"zai-org-glm-4.7-flash", 128_000},
+		{"zai-org-glm-5", 198_000},
+		{"zai-org-glm-4.7", 198_000},
+		{"mistral-small-3-2-24b-instruct", 256_000},
+		{"qwen3-235b-a22b-thinking-2507", 128_000},
+		{"qwen3-235b-a22b-instruct-2507", 128_000},
+		{"qwen3-next-80b", 256_000},
+		{"qwen3-coder-480b-a35b-instruct", 256_000},
+		{"qwen3-5-9b", 256_000},
+		{"qwen3-5-35b-a3b", 256_000},
+		{"hermes-3-llama-3.1-405b", 128_000},
+		{"google-gemma-3-27b-it", 198_000},
+		{"grok-41-fast", 1_000_000},
+		{"grok-4-20-beta", 2_000_000},
+		{"grok-4-20-multi-agent-beta", 2_000_000},
 		{"gemini-3-pro-preview", 936_000},
-		{"gemini-3-1-pro-preview", 936_000},
-		{"gemini-3-flash-preview", 983_000},
-		{"grok-41-fast", 1_970_000},
-		{"grok-4-20-beta", 192_000},
-		{"openai-gpt-54", 922_000},
-		{"openai-gpt-54-mini", 272_000},
-		{"openai-gpt-52", 272_000},
-		{"deepseek-v3.2", 128_000},
-		{"grok-code-fast-1", 246_000},
+		{"gemini-3-1-pro-preview", 1_000_000},
+		{"gemini-3-flash-preview", 256_000},
+		{"claude-opus-4-6", 1_000_000},
+		{"claude-opus-45", 180_000},
+		{"claude-sonnet-4-6", 1_000_000},
+		{"claude-sonnet-45", 180_000},
+		{"openai-gpt-oss-120b", 128_000},
+		{"openai-gpt-52", 256_000},
+		{"openai-gpt-52-codex", 256_000},
+		{"openai-gpt-53-codex", 400_000},
+		{"openai-gpt-54", 1_000_000},
+		{"openai-gpt-54-mini", 400_000},
+		{"openai-gpt-54-pro", 1_000_000},
+		{"kimi-k2-thinking", 256_000},
+		{"kimi-k2-5", 256_000},
+		{"deepseek-v3.2", 160_000},
+		{"llama-3.2-3b", 128_000},
+		{"llama-3.3-70b", 128_000},
+		{"minimax-m21", 198_000},
+		{"minimax-m25", 198_000},
+		{"minimax-m27", 198_000},
+		{"grok-code-fast-1", 256_000},
+		{"qwen3-vl-235b-a22b", 256_000},
 	}
 	for _, tt := range tests {
 		got := InputLimitForProviderModel("venice", tt.model)
@@ -150,19 +156,55 @@ func TestVeniceProxyModelsHaveOutputLimits(t *testing.T) {
 		model      string
 		wantOutput int
 	}{
-		{"claude-opus-4-6", 64_000},
-		{"claude-sonnet-4-6", 64_000},
+		{"venice-uncensored", 8_192},
+		{"olafangensan-glm-4.7-flash-heretic", 24_000},
+		{"zai-org-glm-4.7-flash", 16_384},
+		{"zai-org-glm-5", 32_000},
+		{"zai-org-glm-4.7", 16_384},
+		{"mistral-small-3-2-24b-instruct", 16_384},
+		{"qwen3-235b-a22b-thinking-2507", 16_384},
+		{"qwen3-235b-a22b-instruct-2507", 16_384},
+		{"qwen3-next-80b", 16_384},
+		{"qwen3-coder-480b-a35b-instruct", 65_536},
+		{"qwen3-5-9b", 65_536},
+		{"qwen3-5-35b-a3b", 65_536},
+		{"hermes-3-llama-3.1-405b", 16_384},
+		{"google-gemma-3-27b-it", 16_384},
+		{"grok-41-fast", 30_000},
+		{"grok-4-20-beta", 128_000},
+		{"grok-4-20-multi-agent-beta", 128_000},
 		{"gemini-3-pro-preview", 65_536},
-		{"grok-41-fast", 32_000},
-		{"grok-4-20-beta", 64_000},
-		{"openai-gpt-54", 128_000},
+		{"gemini-3-1-pro-preview", 32_768},
+		{"gemini-3-flash-preview", 65_536},
+		{"claude-opus-4-6", 128_000},
+		{"claude-opus-45", 64_000},
+		{"claude-sonnet-4-6", 64_000},
+		{"claude-sonnet-45", 64_000},
+		{"openai-gpt-oss-120b", 16_384},
+		{"openai-gpt-52", 65_536},
+		{"openai-gpt-52-codex", 65_536},
+		{"openai-gpt-53-codex", 128_000},
+		{"openai-gpt-54", 131_072},
 		{"openai-gpt-54-mini", 128_000},
-		{"grok-code-fast-1", 16_384},
+		{"openai-gpt-54-pro", 128_000},
+		{"kimi-k2-thinking", 65_536},
+		{"kimi-k2-5", 65_536},
+		{"deepseek-v3.2", 32_768},
+		{"llama-3.2-3b", 4_096},
+		{"llama-3.3-70b", 4_096},
+		{"minimax-m21", 32_768},
+		{"minimax-m25", 32_768},
+		{"minimax-m27", 32_768},
+		{"grok-code-fast-1", 10_000},
+		{"qwen3-vl-235b-a22b", 16_384},
 	}
 	for _, tt := range tests {
-		got := OutputLimitForModel(tt.model)
-		if got != tt.wantOutput {
-			t.Errorf("OutputLimitForModel(%q) = %d, want %d", tt.model, got, tt.wantOutput)
+		entry, ok := findProviderModelEntry("venice", tt.model)
+		if !ok {
+			t.Fatalf("venice model %q missing from ProviderModels", tt.model)
+		}
+		if entry.OutputLimit != tt.wantOutput {
+			t.Errorf("ProviderModels[venice][%q].OutputLimit = %d, want %d", tt.model, entry.OutputLimit, tt.wantOutput)
 		}
 	}
 }
@@ -174,13 +216,13 @@ func TestProviderAliasResolvesLimits(t *testing.T) {
 
 	// Limits should resolve via "venice" explicit limits
 	got := InputLimitForProviderModel("acme", "openai-gpt-54")
-	if got != 922_000 {
-		t.Errorf("InputLimitForProviderModel(acme, openai-gpt-54) = %d, want 922000", got)
+	if got != 1_000_000 {
+		t.Errorf("InputLimitForProviderModel(acme, openai-gpt-54) = %d, want 1000000", got)
 	}
 
 	got = InputLimitForProviderModel("acme", "grok-41-fast")
-	if got != 1_970_000 {
-		t.Errorf("InputLimitForProviderModel(acme, grok-41-fast) = %d, want 1970000", got)
+	if got != 1_000_000 {
+		t.Errorf("InputLimitForProviderModel(acme, grok-41-fast) = %d, want 1000000", got)
 	}
 
 	// Model discovery should also resolve via alias
@@ -259,4 +301,13 @@ func containsModelID(items []string, want string) bool {
 		}
 	}
 	return false
+}
+
+func findProviderModelEntry(provider, model string) (ModelEntry, bool) {
+	for _, entry := range ProviderModels[provider] {
+		if entry.ID == model {
+			return entry, true
+		}
+	}
+	return ModelEntry{}, false
 }
