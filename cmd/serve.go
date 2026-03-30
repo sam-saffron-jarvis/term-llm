@@ -57,6 +57,7 @@ var (
 	serveFilterServerTools      bool
 	serveSidebarSessions        string
 	serveToolMap                []string
+	serveFilesDir               string
 )
 
 var serveCmd = &cobra.Command{
@@ -131,6 +132,7 @@ func init() {
 	serveCmd.Flags().BoolVar(&serveVerbose, "verbose", false, "Log API request/response summaries to stderr")
 	serveCmd.Flags().StringArrayVar(&serveToolMap, "tool-map", nil, "Map client tool name to server tool (repeatable, format ClientName:ServerName)")
 	serveCmd.Flags().BoolVar(&serveFilterServerTools, "suppress-server-tool-calls", false, "Hide server-executed tool calls from API responses (use when proxying to external clients)")
+	serveCmd.Flags().StringVar(&serveFilesDir, "files-dir", "", "Directory for serving arbitrary files (videos, PDFs, etc) at {base}/files/")
 
 	AddProviderFlag(serveCmd, &serveProvider)
 	AddDebugFlag(serveCmd, &serveDebug)
@@ -483,6 +485,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 				basePath:            serveBasePath,
 				sidebarSessions:     append([]string(nil), sidebarSessions...),
 				corsOrigins:         append([]string(nil), serveCORSOrigins...),
+				filesDir:            resolveFilesDir(serveFilesDir, cfg),
 			},
 			sessionMgr:     sessionMgr,
 			jobsV2:         jobsV2,
@@ -739,6 +742,7 @@ type serveServerConfig struct {
 	basePath            string // e.g. "/ui" or "/chat", always without trailing slash
 	sidebarSessions     []string
 	corsOrigins         []string
+	filesDir            string // opt-in directory for serving arbitrary files (videos, PDFs, etc)
 }
 
 // uiRoute returns the base-path with trailing slash, e.g. "/ui/" or "/chat/".
@@ -746,6 +750,17 @@ func (c serveServerConfig) uiRoute() string { return c.basePath + "/" }
 
 // imagesRoute returns the images sub-route, e.g. "/ui/images/" or "/chat/images/".
 func (c serveServerConfig) imagesRoute() string { return c.basePath + "/images/" }
+
+// filesRoute returns the files sub-route, e.g. "/ui/files/" or "/chat/files/".
+func (c serveServerConfig) filesRoute() string { return c.basePath + "/files/" }
+
+// resolveFilesDir returns the files-dir from the flag if set, otherwise from config.
+func resolveFilesDir(flagVal string, cfg *config.Config) string {
+	if flagVal != "" {
+		return flagVal
+	}
+	return cfg.Serve.FilesDir
+}
 
 // normalizeBasePath validates and normalizes a base-path value.
 // It ensures a leading slash, strips trailing slashes, and rejects
@@ -829,6 +844,9 @@ func (s *serveServer) httpHandler() http.Handler {
 	}
 
 	inner.HandleFunc("/images/", s.auth(s.cors(s.handleImage)))
+	if s.cfg.filesDir != "" {
+		inner.HandleFunc("/files/", s.auth(s.cors(s.handleFile)))
+	}
 	inner.HandleFunc("/v1/sessions/status", s.auth(s.cors(s.handleSessionsStatus)))
 	inner.HandleFunc("/v1/sessions/", s.auth(s.cors(s.handleSessionByID)))
 	inner.HandleFunc("/v1/push/subscribe", s.auth(s.cors(s.handlePushSubscribe)))

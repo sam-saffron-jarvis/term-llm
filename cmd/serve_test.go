@@ -320,10 +320,11 @@ func TestServeServerConfig_RouteHelpers(t *testing.T) {
 		basePath   string
 		wantUI     string
 		wantImages string
+		wantFiles  string
 	}{
-		{"/ui", "/ui/", "/ui/images/"},
-		{"/chat", "/chat/", "/chat/images/"},
-		{"/app/v2", "/app/v2/", "/app/v2/images/"},
+		{"/ui", "/ui/", "/ui/images/", "/ui/files/"},
+		{"/chat", "/chat/", "/chat/images/", "/chat/files/"},
+		{"/app/v2", "/app/v2/", "/app/v2/images/", "/app/v2/files/"},
 	}
 	for _, tt := range tests {
 		cfg := serveServerConfig{basePath: tt.basePath}
@@ -332,6 +333,9 @@ func TestServeServerConfig_RouteHelpers(t *testing.T) {
 		}
 		if got := cfg.imagesRoute(); got != tt.wantImages {
 			t.Errorf("basePath=%q imagesRoute()=%q, want %q", tt.basePath, got, tt.wantImages)
+		}
+		if got := cfg.filesRoute(); got != tt.wantFiles {
+			t.Errorf("basePath=%q filesRoute()=%q, want %q", tt.basePath, got, tt.wantFiles)
 		}
 	}
 }
@@ -1694,6 +1698,108 @@ func TestEnsureImageServeable_CopiesExternalFile(t *testing.T) {
 	srv.handleImage(rr, req)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("serve copied image: status = %d, want 200", rr.Code)
+	}
+}
+
+func TestHandleFile_ServesFileAndRejectsTraversal(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "video.mp4"), []byte("fake-video"), 0644); err != nil {
+		t.Fatalf("write test file: %v", err)
+	}
+
+	srv := &serveServer{cfg: serveServerConfig{basePath: "/ui", filesDir: dir}}
+
+	// Valid file
+	req := httptest.NewRequest(http.MethodGet, "/files/video.mp4", nil)
+	rr := httptest.NewRecorder()
+	srv.handleFile(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("valid file: status = %d, want 200", rr.Code)
+	}
+	if got := rr.Body.String(); got != "fake-video" {
+		t.Fatalf("body = %q, want %q", got, "fake-video")
+	}
+	if cc := rr.Header().Get("Cache-Control"); !strings.Contains(cc, "private") {
+		t.Fatalf("Cache-Control = %q, want 'private'", cc)
+	}
+
+	// Path traversal
+	req = httptest.NewRequest(http.MethodGet, "/files/..%2Fetc%2Fpasswd", nil)
+	rr = httptest.NewRecorder()
+	srv.handleFile(rr, req)
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("traversal: status = %d, want 404", rr.Code)
+	}
+
+	// Empty filename
+	req = httptest.NewRequest(http.MethodGet, "/files/", nil)
+	rr = httptest.NewRecorder()
+	srv.handleFile(rr, req)
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("empty: status = %d, want 404", rr.Code)
+	}
+
+	// No files-dir configured → 404
+	srv2 := &serveServer{cfg: serveServerConfig{basePath: "/ui"}}
+	req = httptest.NewRequest(http.MethodGet, "/files/video.mp4", nil)
+	rr = httptest.NewRecorder()
+	srv2.handleFile(rr, req)
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("no files-dir: status = %d, want 404", rr.Code)
+	}
+}
+
+func TestEnsureFileServeable_CopiesExternalFile(t *testing.T) {
+	filesDir := t.TempDir()
+	externalDir := t.TempDir()
+
+	externalFile := filepath.Join(externalDir, "report.pdf")
+	if err := os.WriteFile(externalFile, []byte("pdf-data"), 0644); err != nil {
+		t.Fatalf("write external file: %v", err)
+	}
+
+	internalFile := filepath.Join(filesDir, "existing.mp4")
+	if err := os.WriteFile(internalFile, []byte("video-data"), 0644); err != nil {
+		t.Fatalf("write internal file: %v", err)
+	}
+
+	srv := &serveServer{cfg: serveServerConfig{basePath: "/ui", filesDir: filesDir}}
+
+	// External file should be copied
+	result, ok := srv.ensureFileServeable(externalFile)
+	if !ok {
+		t.Fatal("ensureFileServeable should succeed for external file")
+	}
+	if result == externalFile {
+		t.Fatal("external file should have been copied, but path is unchanged")
+	}
+	absResult, _ := filepath.Abs(result)
+	absFilesDir, _ := filepath.Abs(filesDir)
+	if !strings.HasPrefix(absResult, absFilesDir+string(filepath.Separator)) {
+		t.Fatalf("copied file %q should be under files dir %q", absResult, absFilesDir)
+	}
+	data, err := os.ReadFile(result)
+	if err != nil {
+		t.Fatalf("read copied file: %v", err)
+	}
+	if string(data) != "pdf-data" {
+		t.Fatalf("copied data = %q, want %q", string(data), "pdf-data")
+	}
+
+	// Internal file should be returned as-is
+	result, ok = srv.ensureFileServeable(internalFile)
+	if !ok {
+		t.Fatal("ensureFileServeable should succeed for internal file")
+	}
+	if result != internalFile {
+		t.Fatalf("internal file should be unchanged, got %q want %q", result, internalFile)
+	}
+
+	// No files-dir → fails
+	srv2 := &serveServer{cfg: serveServerConfig{basePath: "/ui"}}
+	_, ok = srv2.ensureFileServeable(externalFile)
+	if ok {
+		t.Fatal("ensureFileServeable should fail when filesDir is empty")
 	}
 }
 
