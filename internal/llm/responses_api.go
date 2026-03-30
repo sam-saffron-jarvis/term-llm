@@ -417,7 +417,7 @@ func (c *ResponsesClient) Stream(ctx context.Context, req ResponsesRequest, debu
 	// Use server state: send previous_response_id if we have one (unless disabled)
 	if !c.DisableServerState && c.LastResponseID != "" {
 		req.PreviousResponseID = c.LastResponseID
-		// When continuing a conversation, only send the new user message
+		// When continuing a conversation, only send the new input items for this turn.
 		req.Input = filterToNewInput(req.Input)
 	}
 
@@ -742,10 +742,31 @@ func (c *ResponsesClient) ResetConversation() {
 	c.LastResponseID = ""
 }
 
-// filterToNewInput returns only the latest user input when continuing a conversation
+// filterToNewInput returns only the new input items for a server-state continuation.
 func filterToNewInput(input []ResponsesInputItem) []ResponsesInputItem {
-	// Find the last user message and any following items (including any tool results/calls)
-	// This is needed because when we have server state, we only send new messages
+	// Tool follow-up turns append function_call_output items (and sometimes
+	// synthetic/user messages such as image parts) with no new user message.
+	// When present at the end of the input, send only that trailing suffix.
+	start := len(input)
+	sawToolOutput := false
+	for start > 0 {
+		item := input[start-1]
+		if item.Type == "function_call_output" {
+			sawToolOutput = true
+			start--
+			continue
+		}
+		if item.Type == "message" && item.Role == "user" {
+			start--
+			continue
+		}
+		break
+	}
+	if sawToolOutput {
+		return input[start:]
+	}
+
+	// Otherwise fall back to the latest user message and any following items.
 	for i := len(input) - 1; i >= 0; i-- {
 		if input[i].Role == "user" {
 			return input[i:]
