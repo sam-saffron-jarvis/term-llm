@@ -112,6 +112,58 @@ func TestParseModelCombined1mThinking(t *testing.T) {
 	}
 }
 
+func TestBuildAnthropicToolChoiceHonorsParallelSetting(t *testing.T) {
+	tests := []struct {
+		name     string
+		choice   ToolChoice
+		parallel bool
+	}{
+		{name: "auto serial", choice: ToolChoice{Mode: ToolChoiceAuto}, parallel: false},
+		{name: "required serial", choice: ToolChoice{Mode: ToolChoiceRequired}, parallel: false},
+		{name: "named serial", choice: ToolChoice{Mode: ToolChoiceName, Name: "shell"}, parallel: false},
+		{name: "auto parallel", choice: ToolChoice{Mode: ToolChoiceAuto}, parallel: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := buildAnthropicToolChoice(tt.choice, tt.parallel)
+			disable := got.GetDisableParallelToolUse()
+			if disable == nil {
+				t.Fatal("expected disable_parallel_tool_use to be set")
+			}
+			if *disable != !tt.parallel {
+				t.Fatalf("disable_parallel_tool_use = %v, want %v", *disable, !tt.parallel)
+			}
+		})
+	}
+}
+
+func TestBuildAnthropicBetaToolChoiceHonorsParallelSetting(t *testing.T) {
+	tests := []struct {
+		name     string
+		choice   ToolChoice
+		parallel bool
+	}{
+		{name: "auto serial", choice: ToolChoice{Mode: ToolChoiceAuto}, parallel: false},
+		{name: "required serial", choice: ToolChoice{Mode: ToolChoiceRequired}, parallel: false},
+		{name: "named serial", choice: ToolChoice{Mode: ToolChoiceName, Name: "shell"}, parallel: false},
+		{name: "auto parallel", choice: ToolChoice{Mode: ToolChoiceAuto}, parallel: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := buildAnthropicBetaToolChoice(tt.choice, tt.parallel)
+			disable := got.GetDisableParallelToolUse()
+			if disable == nil {
+				t.Fatal("expected disable_parallel_tool_use to be set")
+			}
+			if *disable != !tt.parallel {
+				t.Fatalf("disable_parallel_tool_use = %v, want %v", *disable, !tt.parallel)
+			}
+		})
+	}
+}
+
 func TestNewAnthropicProviderWithExplicitAPIKey(t *testing.T) {
 	// Clear env to isolate test
 	t.Setenv("ANTHROPIC_API_KEY", "")

@@ -230,27 +230,30 @@ func anthropicToolsToSpecs(tools []anthropicToolDef) []llm.ToolSpec {
 	return specs
 }
 
-// parseAnthropicToolChoice parses Anthropic-format tool_choice into llm.ToolChoice.
-func parseAnthropicToolChoice(raw json.RawMessage) llm.ToolChoice {
+// parseAnthropicToolChoice parses Anthropic-format tool_choice into llm.ToolChoice
+// and returns whether parallel tool use should remain enabled.
+func parseAnthropicToolChoice(raw json.RawMessage) (llm.ToolChoice, bool) {
 	if len(raw) == 0 {
-		return llm.ToolChoice{Mode: llm.ToolChoiceAuto}
+		return llm.ToolChoice{Mode: llm.ToolChoiceAuto}, true
 	}
 	var obj struct {
-		Type string `json:"type"`
-		Name string `json:"name"`
+		Type                   string `json:"type"`
+		Name                   string `json:"name"`
+		DisableParallelToolUse bool   `json:"disable_parallel_tool_use,omitempty"`
 	}
 	if err := json.Unmarshal(raw, &obj); err != nil {
-		return llm.ToolChoice{Mode: llm.ToolChoiceAuto}
+		return llm.ToolChoice{Mode: llm.ToolChoiceAuto}, true
 	}
+	parallel := !obj.DisableParallelToolUse
 	switch obj.Type {
 	case "any":
-		return llm.ToolChoice{Mode: llm.ToolChoiceRequired}
+		return llm.ToolChoice{Mode: llm.ToolChoiceRequired}, parallel
 	case "tool":
-		return llm.ToolChoice{Mode: llm.ToolChoiceName, Name: obj.Name}
+		return llm.ToolChoice{Mode: llm.ToolChoiceName, Name: obj.Name}, parallel
 	case "none":
-		return llm.ToolChoice{Mode: llm.ToolChoiceNone}
+		return llm.ToolChoice{Mode: llm.ToolChoiceNone}, parallel
 	default:
-		return llm.ToolChoice{Mode: llm.ToolChoiceAuto}
+		return llm.ToolChoice{Mode: llm.ToolChoiceAuto}, parallel
 	}
 }
 

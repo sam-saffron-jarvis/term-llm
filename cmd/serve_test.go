@@ -4864,17 +4864,51 @@ func TestParseAnthropicSystem(t *testing.T) {
 }
 
 func TestParseAnthropicToolChoice(t *testing.T) {
-	if got := parseAnthropicToolChoice(json.RawMessage(`{"type":"auto"}`)); got.Mode != llm.ToolChoiceAuto {
-		t.Fatalf("auto mode = %s", got.Mode)
+	if got, parallel := parseAnthropicToolChoice(json.RawMessage(`{"type":"auto"}`)); got.Mode != llm.ToolChoiceAuto || !parallel {
+		t.Fatalf("auto = %#v parallel=%v", got, parallel)
 	}
-	if got := parseAnthropicToolChoice(json.RawMessage(`{"type":"any"}`)); got.Mode != llm.ToolChoiceRequired {
-		t.Fatalf("any mode = %s", got.Mode)
+	if got, parallel := parseAnthropicToolChoice(json.RawMessage(`{"type":"any"}`)); got.Mode != llm.ToolChoiceRequired || !parallel {
+		t.Fatalf("any = %#v parallel=%v", got, parallel)
 	}
-	if got := parseAnthropicToolChoice(json.RawMessage(`{"type":"tool","name":"shell"}`)); got.Mode != llm.ToolChoiceName || got.Name != "shell" {
-		t.Fatalf("tool mode = %#v", got)
+	if got, parallel := parseAnthropicToolChoice(json.RawMessage(`{"type":"tool","name":"shell"}`)); got.Mode != llm.ToolChoiceName || got.Name != "shell" || !parallel {
+		t.Fatalf("tool = %#v parallel=%v", got, parallel)
 	}
-	if got := parseAnthropicToolChoice(nil); got.Mode != llm.ToolChoiceAuto {
-		t.Fatalf("nil mode = %s", got.Mode)
+	if got, parallel := parseAnthropicToolChoice(json.RawMessage(`{"type":"tool","name":"shell","disable_parallel_tool_use":true}`)); got.Mode != llm.ToolChoiceName || got.Name != "shell" || parallel {
+		t.Fatalf("serial tool = %#v parallel=%v", got, parallel)
+	}
+	if got, parallel := parseAnthropicToolChoice(nil); got.Mode != llm.ToolChoiceAuto || !parallel {
+		t.Fatalf("nil = %#v parallel=%v", got, parallel)
+	}
+}
+
+func TestHandleAnthropicMessages_DisableParallelToolUse(t *testing.T) {
+	srv := newTestServeServer("Hello from Anthropic!")
+	defer srv.sessionMgr.Close()
+
+	const sessionID = "anthropic-disable-parallel"
+	body := `{"model":"test","max_tokens":1024,"tool_choice":{"type":"any","disable_parallel_tool_use":true},"messages":[{"role":"user","content":"Hi"}],"tools":[{"name":"shell","input_schema":{"type":"object"}}]}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("session_id", sessionID)
+	rr := httptest.NewRecorder()
+	srv.handleAnthropicMessages(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", rr.Code, rr.Body.String())
+	}
+	rt, ok := srv.sessionMgr.Get(sessionID)
+	if !ok || rt == nil {
+		t.Fatalf("session %q not found", sessionID)
+	}
+	provider, ok := rt.provider.(*llm.MockProvider)
+	if !ok {
+		t.Fatalf("provider = %T, want *llm.MockProvider", rt.provider)
+	}
+	if len(provider.Requests) != 1 {
+		t.Fatalf("provider requests = %d, want 1", len(provider.Requests))
+	}
+	if provider.Requests[0].ParallelToolCalls {
+		t.Fatal("expected parallel tool calls to be disabled")
 	}
 }
 

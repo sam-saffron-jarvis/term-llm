@@ -70,7 +70,7 @@ func (s *serveServer) handleAnthropicMessages(w http.ResponseWriter, r *http.Req
 	}
 
 	search := runtime.search
-	toolChoice := parseAnthropicToolChoice(req.ToolChoice)
+	toolChoice, parallelToolCalls := parseAnthropicToolChoice(req.ToolChoice)
 
 	// Merge server tools (engine can execute) with client tools (passthrough).
 	// Server tools win on name collision so the engine executes its own version.
@@ -113,7 +113,7 @@ func (s *serveServer) handleAnthropicMessages(w http.ResponseWriter, r *http.Req
 		SessionID:           sessionID,
 		Tools:               tools,
 		ToolChoice:          toolChoice,
-		ParallelToolCalls:   true,
+		ParallelToolCalls:   parallelToolCalls,
 		Search:              search,
 		ForceExternalSearch: runtime.forceExternalSearch,
 		ToolMap:             runtime.toolMap,

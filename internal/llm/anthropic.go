@@ -1017,9 +1017,9 @@ func buildAnthropicToolChoice(choice ToolChoice, parallel bool) anthropic.ToolCh
 		none := anthropic.NewToolChoiceNoneParam()
 		return anthropic.ToolChoiceUnionParam{OfNone: &none}
 	case ToolChoiceRequired:
-		return anthropic.ToolChoiceUnionParam{OfAny: &anthropic.ToolChoiceAnyParam{}}
+		return anthropic.ToolChoiceUnionParam{OfAny: &anthropic.ToolChoiceAnyParam{DisableParallelToolUse: anthropic.Bool(disableParallel)}}
 	case ToolChoiceName:
-		return anthropic.ToolChoiceParamOfTool(choice.Name)
+		return anthropic.ToolChoiceUnionParam{OfTool: &anthropic.ToolChoiceToolParam{Name: choice.Name, DisableParallelToolUse: anthropic.Bool(disableParallel)}}
 	default:
 		return anthropic.ToolChoiceUnionParam{OfAuto: &anthropic.ToolChoiceAutoParam{DisableParallelToolUse: anthropic.Bool(disableParallel)}}
 	}
@@ -1032,9 +1032,9 @@ func buildAnthropicBetaToolChoice(choice ToolChoice, parallel bool) anthropic.Be
 		none := anthropic.NewBetaToolChoiceNoneParam()
 		return anthropic.BetaToolChoiceUnionParam{OfNone: &none}
 	case ToolChoiceRequired:
-		return anthropic.BetaToolChoiceUnionParam{OfAny: &anthropic.BetaToolChoiceAnyParam{}}
+		return anthropic.BetaToolChoiceUnionParam{OfAny: &anthropic.BetaToolChoiceAnyParam{DisableParallelToolUse: anthropic.Bool(disableParallel)}}
 	case ToolChoiceName:
-		return anthropic.BetaToolChoiceParamOfTool(choice.Name)
+		return anthropic.BetaToolChoiceUnionParam{OfTool: &anthropic.BetaToolChoiceToolParam{Name: choice.Name, DisableParallelToolUse: anthropic.Bool(disableParallel)}}
 	default:
 		return anthropic.BetaToolChoiceUnionParam{OfAuto: &anthropic.BetaToolChoiceAutoParam{DisableParallelToolUse: anthropic.Bool(disableParallel)}}
 	}
