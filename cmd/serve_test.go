@@ -17,6 +17,7 @@ import (
 	"net/textproto"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strconv"
 	"strings"
@@ -1376,7 +1377,7 @@ func TestNewServeEngineWithTools_ConfiguresToolManagerAndSpawnWiring(t *testing.
 		return nil
 	}
 
-	engine, toolMgr, err := newServeEngineWithTools(cfg, settings, provider, true, wireSpawn, nil)
+	engine, toolMgr, err := newServeEngineWithTools(cfg, settings, provider, cfg.DefaultProvider, activeModel(cfg), true, wireSpawn, nil)
 	if err != nil {
 		t.Fatalf("newServeEngineWithTools failed: %v", err)
 	}
@@ -1411,7 +1412,7 @@ func TestNewServeEngineWithTools_SkipsToolManagerWhenToolsDisabled(t *testing.T)
 		return nil
 	}
 
-	engine, toolMgr, err := newServeEngineWithTools(cfg, settings, provider, false, wireSpawn, nil)
+	engine, toolMgr, err := newServeEngineWithTools(cfg, settings, provider, cfg.DefaultProvider, activeModel(cfg), false, wireSpawn, nil)
 	if err != nil {
 		t.Fatalf("newServeEngineWithTools failed: %v", err)
 	}
@@ -1423,6 +1424,31 @@ func TestNewServeEngineWithTools_SkipsToolManagerWhenToolsDisabled(t *testing.T)
 	}
 	if wireCalls != 0 {
 		t.Fatalf("wireCalls = %d, want 0", wireCalls)
+	}
+}
+
+func TestNewServeEngineWithTools_ConfiguresContextManagement(t *testing.T) {
+	cfg := &config.Config{
+		DefaultProvider: "openai",
+		Providers: map[string]config.ProviderConfig{
+			"openai": {Model: "gpt-4o-mini"},
+		},
+		AutoCompact: true,
+	}
+	provider := llm.NewMockProvider("mock")
+
+	engine, toolMgr, err := newServeEngineWithTools(cfg, SessionSettings{}, provider, cfg.DefaultProvider, activeModel(cfg), false, nil, nil)
+	if err != nil {
+		t.Fatalf("newServeEngineWithTools failed: %v", err)
+	}
+	if toolMgr != nil {
+		t.Fatalf("toolMgr != nil, want nil")
+	}
+	if got := engine.InputLimit(); got <= 0 {
+		t.Fatalf("engine.InputLimit() = %d, want > 0", got)
+	}
+	if compaction := reflect.ValueOf(engine).Elem().FieldByName("compactionConfig"); !compaction.IsValid() || compaction.IsNil() {
+		t.Fatalf("expected auto-compaction to be configured")
 	}
 }
 

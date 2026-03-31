@@ -329,7 +329,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 			return nil, err
 		}
 
-		engine, toolMgr, err := newServeEngineWithTools(cfg, settings, provider, serveYolo, WireSpawnAgentRunner, skillsSetup)
+		engine, toolMgr, err := newServeEngineWithTools(cfg, settings, provider, provKey, rtModelName, serveYolo, WireSpawnAgentRunner, skillsSetup)
 		if err != nil {
 			return nil, err
 		}
@@ -547,12 +547,15 @@ func runServe(cmd *cobra.Command, args []string) error {
 }
 
 // newServeEngineWithTools creates a new engine with tools wired up for serving.
+// It also enables context-window tracking and optional auto-compaction using the
+// effective provider/model for the runtime.
 // skillsSetup must be pre-initialized by the caller (e.g. via SetupSkills); this
 // function registers the activate_skill tool on the engine but does NOT inject
 // <available_skills> metadata into the system prompt — the caller must do that
 // before constructing serveRuntime/serveSettings so the mutation is not lost.
-func newServeEngineWithTools(cfg *config.Config, settings SessionSettings, provider llm.Provider, yoloMode bool, wireSpawn func(*config.Config, *tools.ToolManager, bool) error, skillsSetup *skills.Setup) (*llm.Engine, *tools.ToolManager, error) {
+func newServeEngineWithTools(cfg *config.Config, settings SessionSettings, provider llm.Provider, providerName, modelName string, yoloMode bool, wireSpawn func(*config.Config, *tools.ToolManager, bool) error, skillsSetup *skills.Setup) (*llm.Engine, *tools.ToolManager, error) {
 	engine := newEngine(provider, cfg)
+	engine.ConfigureContextManagement(provider, providerName, modelName, cfg.AutoCompact)
 
 	toolMgr, err := settings.SetupToolManager(cfg, engine)
 	if err != nil {
