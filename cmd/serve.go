@@ -106,8 +106,8 @@ Jobs endpoints (also under base-path):
   POST   {base}/v2/runs/:id/cancel
 
 Use --setup to configure credentials for the selected platforms.`,
-	ValidArgs: []string{"web", "api", "jobs", "telegram"},
-	RunE:      runServe,
+	ValidArgsFunction: servePlatformCompletion,
+	RunE:              runServe,
 }
 
 func init() {
@@ -144,6 +144,29 @@ func init() {
 	AddSystemMessageFlag(serveCmd, &serveSystemMessage)
 	AddAgentFlag(serveCmd, &serveAgent)
 	AddYoloFlag(serveCmd, &serveYolo)
+}
+
+func servePlatformCompletion(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+	platforms := []string{
+		"web\tHTTP server with chat UI",
+		"api\tHTTP server with API endpoints only (no UI)",
+		"jobs\tAsync job runner with HTTP management API",
+		"telegram\tTelegram bot",
+	}
+
+	// Filter out already-selected platforms
+	selected := make(map[string]bool, len(args))
+	for _, a := range args {
+		selected[a] = true
+	}
+	var completions []string
+	for _, p := range platforms {
+		name := strings.SplitN(p, "\t", 2)[0]
+		if !selected[name] && strings.HasPrefix(name, toComplete) {
+			completions = append(completions, p)
+		}
+	}
+	return completions, cobra.ShellCompDirectiveNoFileComp
 }
 
 func runServe(cmd *cobra.Command, args []string) error {
