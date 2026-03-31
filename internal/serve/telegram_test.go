@@ -1285,7 +1285,7 @@ func (f *fakeFileGetter) GetFileDirectURL(fileID string) (string, error) {
 
 func TestDownloadTelegramPhoto_PicksLargest(t *testing.T) {
 	// Start a test HTTP server serving an image
-	ts := newTestImageServer(t, []byte("fake-jpeg-data"))
+	ts := newTestImageServer(t, []byte{0xff, 0xd8, 0xff, 0xdb, 0x00, 0x43, 0x00, 0x08})
 	defer ts.Close()
 
 	fg := &fakeFileGetter{fileURL: ts.URL}
@@ -1317,6 +1317,73 @@ func TestDownloadTelegramPhoto_EmptyPhotos(t *testing.T) {
 	_, _, _, err := downloadTelegramPhoto(fg, nil)
 	if err == nil {
 		t.Fatal("expected error for empty photos")
+	}
+}
+
+func TestDownloadTelegramPhoto_HTTPError(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "bad gateway", http.StatusBadGateway)
+	}))
+	defer ts.Close()
+
+	fg := &fakeFileGetter{fileURL: ts.URL}
+	photos := []tgbotapi.PhotoSize{{FileID: "photo-1"}}
+
+	_, _, _, err := downloadTelegramPhoto(fg, photos)
+	if err == nil {
+		t.Fatal("expected error for non-200 response")
+	}
+	if !strings.Contains(err.Error(), "unexpected status 502") {
+		t.Fatalf("expected status error, got %v", err)
+	}
+}
+
+func TestDownloadTelegramPhoto_NonImageContent(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = w.Write([]byte("<html><body>proxy error</body></html>"))
+	}))
+	defer ts.Close()
+
+	fg := &fakeFileGetter{fileURL: ts.URL}
+	photos := []tgbotapi.PhotoSize{{FileID: "photo-1"}}
+
+	_, _, _, err := downloadTelegramPhoto(fg, photos)
+	if err == nil {
+		t.Fatal("expected error for non-image response")
+	}
+	if !strings.Contains(err.Error(), "unexpected content type") {
+		t.Fatalf("expected content type error, got %v", err)
+	}
+}
+
+func TestDownloadTelegramPhoto_TooLarge(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "image/jpeg")
+		chunk := []byte(strings.Repeat("a", 32*1024))
+		remaining := telegramMaxPhotoDownloadBytes + 1
+		for remaining > 0 {
+			n := len(chunk)
+			if int64(n) > remaining {
+				n = int(remaining)
+			}
+			if _, err := w.Write(chunk[:n]); err != nil {
+				return
+			}
+			remaining -= int64(n)
+		}
+	}))
+	defer ts.Close()
+
+	fg := &fakeFileGetter{fileURL: ts.URL}
+	photos := []tgbotapi.PhotoSize{{FileID: "photo-1"}}
+
+	_, _, _, err := downloadTelegramPhoto(fg, photos)
+	if err == nil {
+		t.Fatal("expected error for oversized photo download")
+	}
+	if !strings.Contains(err.Error(), "photo file too large") {
+		t.Fatalf("expected too large error, got %v", err)
 	}
 }
 

@@ -29,6 +29,7 @@ const telegramMaxMessageLen = 4000 // Telegram limit is 4096; leave margin
 const minEditInterval = 3 * time.Second
 const streamEventTimeout = 10 * time.Minute
 const telegramMaxConcurrentHandlers = 8
+const telegramMaxPhotoDownloadBytes int64 = 25 << 20
 const telegramMaxVoiceDownloadBytes int64 = 25 << 20
 
 // botSender is the subset of tgbotapi.BotAPI used by streamReply and
@@ -52,6 +53,9 @@ func downloadTelegramPhoto(fileGetter botFileGetter, photos []tgbotapi.PhotoSize
 	}
 	// Pick the largest photo (last in the array).
 	photo := photos[len(photos)-1]
+	if photo.FileSize > 0 && int64(photo.FileSize) > telegramMaxPhotoDownloadBytes {
+		return "", "", "", fmt.Errorf("photo file too large: %d bytes (max %d)", photo.FileSize, telegramMaxPhotoDownloadBytes)
+	}
 	directURL, err := fileGetter.GetFileDirectURL(photo.FileID)
 	if err != nil {
 		return "", "", "", fmt.Errorf("get file URL: %w", err)
@@ -63,15 +67,29 @@ func downloadTelegramPhoto(fileGetter botFileGetter, photos []tgbotapi.PhotoSize
 	}
 	defer resp.Body.Close()
 
-	data, err := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<10))
+		return "", "", "", fmt.Errorf("download photo: unexpected status %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+	if resp.ContentLength > telegramMaxPhotoDownloadBytes {
+		return "", "", "", fmt.Errorf("photo file too large: %d bytes (max %d)", resp.ContentLength, telegramMaxPhotoDownloadBytes)
+	}
+
+	data, err := io.ReadAll(io.LimitReader(resp.Body, telegramMaxPhotoDownloadBytes+1))
 	if err != nil {
 		return "", "", "", fmt.Errorf("read photo data: %w", err)
+	}
+	if int64(len(data)) > telegramMaxPhotoDownloadBytes {
+		return "", "", "", fmt.Errorf("photo file too large: exceeds %d bytes", telegramMaxPhotoDownloadBytes)
 	}
 
 	// Detect MIME type from content (Telegram can serve PNG, WebP, etc.)
 	mimeType := http.DetectContentType(data)
 	if mimeType == "application/octet-stream" {
 		mimeType = "image/jpeg" // safe fallback
+	}
+	if !strings.HasPrefix(mimeType, "image/") {
+		return "", "", "", fmt.Errorf("download photo: unexpected content type %q", mimeType)
 	}
 
 	// Write to a temp file so tools (e.g. image_generate) can reference it by path.
