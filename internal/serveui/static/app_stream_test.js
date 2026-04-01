@@ -161,6 +161,7 @@ function createHarness(options = {}) {
     STORAGE_KEYS: {},
     state,
     elements,
+    __busyTransitions: [],
     generateId(prefix) {
       idCounter += 1;
       return `${prefix}_${idCounter}`;
@@ -209,6 +210,32 @@ function createHarness(options = {}) {
     shouldSuppressPromptAutoFocus() { return false; },
     syncActiveSessionFromServer: async () => {},
     scheduleSessionStatePoll() {},
+    setSessionOptimisticBusy(sessionOrId, busy) {
+      const id = typeof sessionOrId === 'string'
+        ? sessionOrId
+        : String(sessionOrId?.id || '');
+      const session = state.sessions.find((item) => item.id === id) || null;
+      if (session) {
+        session.__optimisticBusy = Boolean(busy);
+      }
+      app.__busyTransitions.push({ id, busy: Boolean(busy) });
+    },
+    setSessionServerActiveRun(sessionOrId, activeRun) {
+      const id = typeof sessionOrId === 'string'
+        ? sessionOrId
+        : String(sessionOrId?.id || '');
+      const session = state.sessions.find((item) => item.id === id) || null;
+      if (session) {
+        session.__serverActiveRun = Boolean(activeRun);
+      }
+    },
+    sessionHasInProgressState(sessionOrId) {
+      const id = typeof sessionOrId === 'string'
+        ? sessionOrId
+        : String(sessionOrId?.id || '');
+      const session = state.sessions.find((item) => item.id === id) || null;
+      return Boolean(session?.__optimisticBusy || session?.__serverActiveRun);
+    },
   };
 
   const windowObj = {
@@ -517,10 +544,47 @@ async function testNewChatDuringStreamingClearsStreamingState() {
   pass(name);
 }
 
+async function testSendMessageMarksSessionBusyImmediately() {
+  const name = 'sendMessage marks the session busy before polling catches up';
+  const harness = createHarness();
+  const { app, elements, state, cleanup } = harness;
+  elements.promptInput.value = 'hello';
+
+  const sendPromise = app.sendMessage().catch(() => {});
+  const session = state.sessions[0];
+
+  if (!session) {
+    fail(name, 'sendMessage should create a session before the first await');
+    await cleanup();
+    await sendPromise;
+    return;
+  }
+
+  if (!app.sessionHasInProgressState(session)) {
+    fail(name, 'session should be marked busy immediately after send');
+    await cleanup();
+    await sendPromise;
+    return;
+  }
+
+  const sawBusyTransition = app.__busyTransitions.some((entry) => entry.id === session.id && entry.busy === true);
+  if (!sawBusyTransition) {
+    fail(name, 'expected sendMessage to explicitly mark the session busy', JSON.stringify(app.__busyTransitions));
+    await cleanup();
+    await sendPromise;
+    return;
+  }
+
+  await sendPromise;
+  await cleanup();
+  pass(name);
+}
+
 (async () => {
   await testSendMessageHandsOffToEventsStream();
   await testSendMessageIgnoresPostBodyAfterHandoff();
   await testNewChatDuringStreamingClearsStreamingState();
+  await testSendMessageMarksSessionBusyImmediately();
 
   if (failures > 0) {
     console.error(`\n${failures} test(s) failed`);

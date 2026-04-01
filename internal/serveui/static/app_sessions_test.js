@@ -604,11 +604,67 @@ async function testSwitchToSessionClearsStaleActiveResponseWithoutToken() {
   pass(name);
 }
 
+async function testSessionProgressStatePrefersLocalAndServerSignals() {
+  const name = 'session progress state combines optimistic local state with server truth';
+  const { app } = await createSessionsHarness();
+
+  const session = {
+    id: 'sess_progress',
+    title: 'Busy session',
+    origin: 'web',
+    created: 1710000000000,
+    messages: [],
+    activeResponseId: null,
+  };
+  app.state.sessions = [session];
+  app.state.activeSessionId = session.id;
+  app.state.draftSessionActive = false;
+
+  if (app.sessionHasInProgressState(session)) {
+    fail(name, 'fresh session should start idle');
+    return;
+  }
+
+  app.setSessionOptimisticBusy(session, true);
+  if (!app.sessionHasInProgressState(session)) {
+    fail(name, 'optimistic busy state should mark the session in progress immediately');
+    return;
+  }
+
+  app.setSessionOptimisticBusy(session, false);
+  if (app.sessionHasInProgressState(session)) {
+    fail(name, 'clearing optimistic busy should restore idle state when no other signal exists');
+    return;
+  }
+
+  app.setSessionServerActiveRun(session, true);
+  if (!app.sessionHasInProgressState(session)) {
+    fail(name, 'server active_run should mark the session in progress');
+    return;
+  }
+
+  app.setSessionOptimisticBusy(session, true);
+  app.setSessionServerActiveRun(session, false);
+  if (!app.sessionHasInProgressState(session)) {
+    fail(name, 'local busy state should keep the session in progress until cleared');
+    return;
+  }
+
+  app.setSessionOptimisticBusy(session, false);
+  if (app.sessionHasInProgressState(session)) {
+    fail(name, 'session should be idle after both local and server busy signals clear');
+    return;
+  }
+
+  pass(name);
+}
+
 (async () => {
   await testNumericDeepLinkResolvesRealSessionId();
   await testDeveloperMessagesAreHidden();
   await testSwitchToSessionSyncsWithoutTokenAndResumes();
   await testSwitchToSessionClearsStaleActiveResponseWithoutToken();
+  await testSessionProgressStatePrefersLocalAndServerSignals();
   if (failures > 0) process.exit(1);
   process.exit(0);
 })();

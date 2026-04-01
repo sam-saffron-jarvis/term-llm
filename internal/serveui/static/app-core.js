@@ -45,6 +45,7 @@ const initialDraftSessionActive = initialStoredActiveSessionId === LEGACY_DRAFT_
 const state = {
   token: localStorage.getItem(STORAGE_KEYS.token) || '',
   sessions: [],
+  sessionProgressById: {},
   activeSessionId: initialStoredActiveSessionId === LEGACY_DRAFT_SESSION_ID ? '' : initialStoredActiveSessionId,
   draftSessionActive: initialDraftSessionActive,
   providers: [],
@@ -228,6 +229,108 @@ const asTimestamp = (value) => {
 };
 
 const fullDate = (ms) => new Date(ms).toLocaleString();
+
+const sessionRefId = (sessionOrId) => {
+  if (typeof sessionOrId === 'string') return sessionOrId.trim();
+  if (sessionOrId && typeof sessionOrId === 'object') {
+    return String(sessionOrId.id || '').trim();
+  }
+  return '';
+};
+
+const sessionProgressEntry = (sessionOrId) => {
+  const id = sessionRefId(sessionOrId);
+  if (!id) return null;
+  return state.sessionProgressById[id] || null;
+};
+
+const ensureSessionProgressEntry = (sessionOrId) => {
+  const id = sessionRefId(sessionOrId);
+  if (!id) return null;
+  if (!state.sessionProgressById[id]) {
+    state.sessionProgressById[id] = {
+      optimisticBusy: false,
+      serverActiveRun: false
+    };
+  }
+  return state.sessionProgressById[id];
+};
+
+const pruneSessionProgressEntry = (sessionOrId) => {
+  const id = sessionRefId(sessionOrId);
+  if (!id) return;
+  const entry = state.sessionProgressById[id];
+  if (!entry) return;
+  if (!entry.optimisticBusy && !entry.serverActiveRun) {
+    delete state.sessionProgressById[id];
+  }
+};
+
+const setSessionOptimisticBusy = (sessionOrId, busy) => {
+  const id = sessionRefId(sessionOrId);
+  if (!id) return false;
+  const entry = ensureSessionProgressEntry(id);
+  entry.optimisticBusy = Boolean(busy);
+  pruneSessionProgressEntry(id);
+  return sessionHasInProgressState(sessionOrId);
+};
+
+const setSessionServerActiveRun = (sessionOrId, activeRun) => {
+  const id = sessionRefId(sessionOrId);
+  if (!id) return false;
+  const entry = ensureSessionProgressEntry(id);
+  entry.serverActiveRun = Boolean(activeRun);
+  pruneSessionProgressEntry(id);
+  return sessionHasInProgressState(sessionOrId);
+};
+
+const moveSessionProgressState = (previousSessionOrId, nextSessionOrId) => {
+  const previousId = sessionRefId(previousSessionOrId);
+  const nextId = sessionRefId(nextSessionOrId);
+  if (!previousId || !nextId || previousId === nextId) return;
+
+  const previous = state.sessionProgressById[previousId];
+  if (!previous) return;
+
+  const next = state.sessionProgressById[nextId];
+  if (next) {
+    next.optimisticBusy = Boolean(next.optimisticBusy || previous.optimisticBusy);
+    next.serverActiveRun = Boolean(next.serverActiveRun || previous.serverActiveRun);
+  } else {
+    state.sessionProgressById[nextId] = { ...previous };
+  }
+  delete state.sessionProgressById[previousId];
+  pruneSessionProgressEntry(nextId);
+};
+
+const sessionHasInProgressState = (sessionOrId) => {
+  const id = sessionRefId(sessionOrId);
+  if (!id) return false;
+
+  const session = (sessionOrId && typeof sessionOrId === 'object')
+    ? sessionOrId
+    : state.sessions.find((item) => item.id === id) || null;
+  const entry = sessionProgressEntry(id);
+  const hasActiveResponse = Boolean(String(session?.activeResponseId || '').trim());
+  const ownsLiveStream = state.currentStreamSessionId === id
+    && Boolean(state.abortController || state.currentStreamResponseId || state.streaming);
+  const isVisibleStreamingSession = state.activeSessionId === id && state.streaming;
+
+  return Boolean(
+    entry?.optimisticBusy
+    || entry?.serverActiveRun
+    || hasActiveResponse
+    || ownsLiveStream
+    || isVisibleStreamingSession
+  );
+};
+
+const hasAnySessionInProgressState = () => {
+  if (state.sessions.some((session) => sessionHasInProgressState(session))) {
+    return true;
+  }
+  return Object.keys(state.sessionProgressById).some((id) => sessionHasInProgressState(id));
+};
 
 const relativeTime = (ms) => {
   const diff = Date.now() - ms;
@@ -889,6 +992,13 @@ Object.assign(app, {
   truncate,
   asTimestamp,
   fullDate,
+  sessionRefId,
+  sessionProgressEntry,
+  setSessionOptimisticBusy,
+  setSessionServerActiveRun,
+  moveSessionProgressState,
+  sessionHasInProgressState,
+  hasAnySessionInProgressState,
   relativeTime,
   sessionBucket,
   toolIcon,

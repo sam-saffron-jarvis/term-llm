@@ -8,7 +8,7 @@ const {
   persistAndRefreshShell, updateSessionUsageDisplay, refreshRelativeTimes, requestHeaders: _unusedRequestHeaders, updateAssistantNode, updateUserNode,
   updateToolNode, updateToolGroupNode, createMessageNode, createToolGroupNode, renderSidebar, renderMessages, maybeNotifyResponseComplete,
   enqueueAssistantStreamUpdate, finalizeAssistantStreamRender,
-  subscribeToPush, shouldAutoSubscribeToPush, applyTextDirection, shouldSuppressPromptAutoFocus
+  subscribeToPush, shouldAutoSubscribeToPush, applyTextDirection, shouldSuppressPromptAutoFocus, setSessionOptimisticBusy, setSessionServerActiveRun
 } = app;
 
 // ===== Network helpers =====
@@ -354,6 +354,7 @@ const applyResponseStreamEvent = (session, streamState, event, payload) => {
 
   if (event === 'response.created') {
     const responseId = String(payload?.response?.id || '').trim();
+    setSessionOptimisticBusy(session, true);
     if (responseId) {
       setActiveResponseTracking(session, responseId, payload?.sequence_number ?? null);
       saveSessions();
@@ -502,6 +503,8 @@ const applyResponseStreamEvent = (session, streamState, event, payload) => {
       session.lastResponseId = responseId;
     }
     clearActiveResponseTracking(session, responseId);
+    setSessionOptimisticBusy(session, false);
+    setSessionServerActiveRun(session, false);
 
     const sessionUsage = payload?.response?.session_usage;
     if (sessionUsage) session.sessionUsage = sessionUsage;
@@ -517,6 +520,8 @@ const applyResponseStreamEvent = (session, streamState, event, payload) => {
     }
     flushStreamPersistence();
     saveSessions();
+    renderSidebar();
+    app.refreshSidebarStatusPoll?.();
     void maybeNotifyResponseComplete(session, lastAssistant, responseId);
     scrollToBottom();
     return { terminal: true };
@@ -540,11 +545,15 @@ const applyResponseStreamEvent = (session, streamState, event, payload) => {
     streamState.closeToolGroup();
     markToolGroupsDone(session);
     clearActiveResponseTracking(session, session.activeResponseId || state.currentStreamResponseId);
+    setSessionOptimisticBusy(session, false);
+    setSessionServerActiveRun(session, false);
 
     const lastAssistant = [...session.messages].reverse().find((message) => message.role === 'assistant');
     if (lastAssistant) finalizeAssistantStreamRender(lastAssistant);
     flushStreamPersistence();
     saveSessions();
+    renderSidebar();
+    app.refreshSidebarStatusPoll?.();
     scrollToBottom(true);
     return { terminal: true };
   }
@@ -635,13 +644,20 @@ const applyResponseRecoverySnapshot = (session, payload) => {
       session.lastResponseId = responseId;
     }
     clearActiveResponseTracking(session, responseId);
+    setSessionOptimisticBusy(session, false);
+    setSessionServerActiveRun(session, false);
   } else if (payload.status === 'failed') {
     clearActiveResponseTracking(session, responseId);
+    setSessionOptimisticBusy(session, false);
+    setSessionServerActiveRun(session, false);
   } else if (responseId) {
     setActiveResponseTracking(session, responseId, session.lastSequenceNumber);
+    setSessionOptimisticBusy(session, true);
   }
 
   saveSessions();
+  renderSidebar();
+  app.refreshSidebarStatusPoll?.();
   if (session.id === state.activeSessionId) {
     renderMessages(true);
   } else {
@@ -1225,7 +1241,10 @@ const submitAskUserModal = async (cancelled = false) => {
     }
     closeAskUserModal();
     if (!state.abortController) {
+      setSessionOptimisticBusy(prompt.sessionId, true);
       setStreaming(true);
+      persistAndRefreshShell();
+      app.refreshSidebarStatusPoll?.();
       app.scheduleSessionStatePoll(prompt.sessionId, 400);
     }
   } catch (err) {
@@ -1341,7 +1360,10 @@ const submitApprovalModal = async (denied = false) => {
     }
     closeApprovalModal();
     if (!state.abortController) {
+      setSessionOptimisticBusy(prompt.sessionId, true);
       setStreaming(true);
+      persistAndRefreshShell();
+      app.refreshSidebarStatusPoll?.();
       app.scheduleSessionStatePoll(prompt.sessionId, 400);
     }
   } catch (err) {
@@ -2243,6 +2265,7 @@ const sendMessage = async (options = {}) => {
     updateUserNode(userMessage);
   }
 
+  setSessionOptimisticBusy(session, true);
   persistAndRefreshShell();
 
   elements.promptInput.value = '';
@@ -2258,6 +2281,7 @@ const sendMessage = async (options = {}) => {
   const sendGeneration = state.streamGeneration;
   attachResponseStream(session, '', controller);
   setStreaming(true);
+  app.refreshSidebarStatusPoll?.();
   const streamState = createResponseStreamState(session);
 
   // Build input content: plain string or array with file/image parts
@@ -2399,6 +2423,8 @@ const sendMessage = async (options = {}) => {
       return;
     }
 
+    setSessionOptimisticBusy(session, false);
+    app.refreshSidebarStatusPoll?.();
     const message = err?.message || 'Network error. Please try again.';
     addErrorMessage(message, session);
     if (err?.status === 401) {
@@ -2423,6 +2449,10 @@ const sendMessage = async (options = {}) => {
       closeAskUserModal();
     }
 
+    if (!stillActive) {
+      setSessionOptimisticBusy(session, false);
+      app.refreshSidebarStatusPoll?.();
+    }
     setStreaming(stillActive);
     refreshRelativeTimes();
     if (stillActive) {

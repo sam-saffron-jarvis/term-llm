@@ -12,7 +12,8 @@ const {
   openApprovalModal, closeApprovalModal, submitApprovalModal, registerServiceWorker, subscribeToPush, refreshNotificationUI,
   requestNotificationPermission, shouldAutoSubscribeToPush, detachResponseStream, HEARTBEAT_STALE_THRESHOLD, HEARTBEAT_ABORT_REASON,
   applyDesktopSidebarState, toggleSidebarCollapsed, flushStreamPersistence, requestHeaders, normalizeError, renderAttachments,
-  updateSidebarStatus
+  updateSidebarStatus, sessionHasInProgressState, hasAnySessionInProgressState, setSessionServerActiveRun, setSessionOptimisticBusy,
+  moveSessionProgressState
 } = app;
 let sessionStatePollTimer = null;
 
@@ -28,6 +29,11 @@ const stopSidebarStatusPoll = () => {
     clearTimeout(sidebarStatusTimer);
     sidebarStatusTimer = null;
   }
+};
+
+const scheduleSidebarStatusPoll = (delay) => {
+  stopSidebarStatusPoll();
+  sidebarStatusTimer = setTimeout(pollSidebarStatus, delay);
 };
 
 const pollSidebarStatus = async () => {
@@ -55,7 +61,6 @@ const pollSidebarStatus = async () => {
       if (etag) sidebarStatusEtag = etag;
       const data = await resp.json();
       if (Array.isArray(data.sessions)) {
-        sidebarHasActive = data.sessions.some(s => s.active_run);
         updateSidebarStatus(data.sessions);
       }
     }
@@ -63,14 +68,26 @@ const pollSidebarStatus = async () => {
     // Network error — just retry on next interval
   }
 
+  sidebarHasActive = hasAnySessionInProgressState();
   const delay = sidebarHasActive ? SIDEBAR_POLL_ACTIVE : SIDEBAR_POLL_IDLE;
-  sidebarStatusTimer = setTimeout(pollSidebarStatus, delay);
+  scheduleSidebarStatusPoll(delay);
 };
 
 const startSidebarStatusPoll = () => {
   stopSidebarStatusPoll();
   sidebarStatusEtag = null;
   pollSidebarStatus();
+};
+
+const refreshSidebarStatusPoll = (forceNow = false) => {
+  if (document.visibilityState === 'hidden') return;
+  if (forceNow) {
+    startSidebarStatusPoll();
+    return;
+  }
+  sidebarHasActive = hasAnySessionInProgressState();
+  const delay = sidebarHasActive ? SIDEBAR_POLL_ACTIVE : SIDEBAR_POLL_IDLE;
+  scheduleSidebarStatusPoll(delay);
 };
 
 const createAndSwitchToFreshSession = async () => {
@@ -338,6 +355,8 @@ const scheduleSessionStatePoll = (sessionId, delay = 1200) => {
 const syncActiveSessionFromServer = async (session, pollOnActive = false) => {
   if (!session) return null;
 
+  const busyBefore = sessionHasInProgressState(session);
+
   const runtimeState = await loadServerSessionState(session.id);
   if (!runtimeState) return null;
 
@@ -383,7 +402,16 @@ const syncActiveSessionFromServer = async (session, pollOnActive = false) => {
   }
 
   const activeRun = Boolean(runtimeState.active_run);
+  setSessionServerActiveRun(session, activeRun || Boolean(activeResponseId));
+  const updateBusySidebar = () => {
+    if (sessionHasInProgressState(session) !== busyBefore) {
+      renderSidebar();
+    }
+    refreshSidebarStatusPoll();
+  };
+
   if (activeResponseId) {
+    updateBusySidebar();
     if (session.id === state.activeSessionId && !state.abortController) {
       setStreaming(true);
       void resumeActiveResponse(session, { responseId: activeResponseId });
@@ -396,6 +424,7 @@ const syncActiveSessionFromServer = async (session, pollOnActive = false) => {
   }
 
   if (activeRun && !state.abortController) {
+    updateBusySidebar();
     setStreaming(true);
     if (pollOnActive) {
       scheduleSessionStatePoll(session.id);
@@ -409,6 +438,9 @@ const syncActiveSessionFromServer = async (session, pollOnActive = false) => {
       clearActiveResponseTracking(session, session.activeResponseId || state.currentStreamResponseId);
       saveSessions();
     }
+    setSessionOptimisticBusy(session, false);
+    setSessionServerActiveRun(session, false);
+    updateBusySidebar();
     const serverMessages = await loadServerSessionMessages(session.id);
     if (serverMessages !== null) {
       mergeServerMessagesWithLocalState(session, serverMessages);
@@ -475,6 +507,7 @@ const reconcileServerSessionIdentity = (session, serverSession) => {
   if (state.currentStreamSessionId === previousId) state.currentStreamSessionId = nextId;
   if (state.askUser?.sessionId === previousId) state.askUser.sessionId = nextId;
   if (state.approval?.sessionId === previousId) state.approval.sessionId = nextId;
+  moveSessionProgressState(previousId, nextId);
   return session;
 };
 
@@ -1096,6 +1129,7 @@ Object.assign(app, {
   mergeServerSessions,
   startSidebarStatusPoll,
   stopSidebarStatusPoll,
+  refreshSidebarStatusPoll,
   promptRenameSession,
   setSessionArchived,
   setSessionPinned,

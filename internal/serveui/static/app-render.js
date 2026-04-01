@@ -5,7 +5,7 @@ const app = window.TermLLMApp;
 const {
   STORAGE_KEYS, state, elements, INTERRUPT_BADGE_META, sanitizeInterruptState, relativeTime, fullDate, sessionBucket, toolIcon, formatUsage,
   saveSessions, findMessageElement, scrollToBottom, refreshRelativeTimes, ensureActiveSession, updateDocumentTitle,
-  updateSessionUsageDisplay, renderMath, visibleSessions
+  updateSessionUsageDisplay, renderMath, visibleSessions, sessionHasInProgressState, setSessionServerActiveRun
 } = app;
 
 const isMobileViewport = () => window.matchMedia('(max-width: 767px)').matches;
@@ -166,6 +166,7 @@ const renderSidebar = () => {
       const row = document.createElement('div');
       row.className = 'session-row';
       row.dataset.sessionId = session.id;
+      row.classList.toggle('is-active', sessionHasInProgressState(session));
 
       const btn = document.createElement('button');
       btn.className = 'session-btn';
@@ -1003,11 +1004,19 @@ const updateSidebarStatus = (statusSessions) => {
   if (!Array.isArray(statusSessions)) return false;
   let changed = false;
   for (const entry of statusSessions) {
+    const local = state.sessions.find((session) => session.id === entry.id) || null;
+    const busyTarget = local || entry.id;
+    const wasActive = sessionHasInProgressState(busyTarget);
+    setSessionServerActiveRun(busyTarget, Boolean(entry.active_run));
+    const nextActive = sessionHasInProgressState(busyTarget);
+
     const row = elements.sessionGroups.querySelector(`.session-row[data-session-id="${CSS.escape(entry.id)}"]`);
+    if (row) {
+      row.classList.toggle('is-active', nextActive);
+    }
+    if (wasActive !== nextActive) changed = true;
+
     if (!row) continue;
-    const wasActive = row.classList.contains('is-active');
-    row.classList.toggle('is-active', Boolean(entry.active_run));
-    if (wasActive !== Boolean(entry.active_run)) changed = true;
 
     const titleEl = row.querySelector('.session-title');
     if (titleEl && entry.short_title && titleEl.textContent !== entry.short_title) {
@@ -1019,7 +1028,6 @@ const updateSidebarStatus = (statusSessions) => {
     const metaEl = row.querySelector('.session-meta');
     if (metaEl && entry.message_count != null) {
       const count = entry.message_count;
-      const local = state.sessions.find(s => s.id === entry.id);
       if (local) {
         if (entry.short_title) local.title = entry.short_title;
         if (entry.long_title) local.longTitle = entry.long_title;
