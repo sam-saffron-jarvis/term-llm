@@ -313,6 +313,33 @@ drained:
 	}
 }
 
+func TestDispatchClaudeEvents_SeparatesCachedInputTokensInUsage(t *testing.T) {
+	provider := NewClaudeBinProvider("sonnet", nil)
+	events := make(chan Event, 8)
+	lines := make(chan string, 2)
+	toolReqs := make(chan claudeToolRequest, 1)
+
+	lines <- `{"type":"result","is_error":false,"result":"ok","usage":{"input_tokens":11,"output_tokens":7,"cache_read_input_tokens":5}}`
+	close(lines)
+
+	usage, _, err := provider.dispatchClaudeEvents(context.Background(), lines, toolReqs, false, events)
+	if err != nil {
+		t.Fatalf("dispatch failed: %v", err)
+	}
+	if usage == nil {
+		t.Fatal("expected usage")
+	}
+	if usage.InputTokens != 11 {
+		t.Fatalf("expected non-cached input tokens 11, got %d", usage.InputTokens)
+	}
+	if usage.CachedInputTokens != 5 {
+		t.Fatalf("expected cached input tokens 5, got %d", usage.CachedInputTokens)
+	}
+	if usage.OutputTokens != 7 {
+		t.Fatalf("expected output tokens 7, got %d", usage.OutputTokens)
+	}
+}
+
 func TestHandleClaudeToolRequest_ClosedStreamReturnsError(t *testing.T) {
 	provider := NewClaudeBinProvider("sonnet", nil)
 	events := make(chan Event)

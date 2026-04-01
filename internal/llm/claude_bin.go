@@ -629,8 +629,9 @@ func (p *ClaudeBinProvider) handleClaudeLine(
 				*sawTextDelta = true
 			}
 			*lastUsage = &Usage{
-				InputTokens:  resultMsg.Usage.InputTokens + resultMsg.Usage.CacheReadInputTokens,
-				OutputTokens: resultMsg.Usage.OutputTokens,
+				InputTokens:       resultMsg.Usage.InputTokens,
+				OutputTokens:      resultMsg.Usage.OutputTokens,
+				CachedInputTokens: resultMsg.Usage.CacheReadInputTokens,
 			}
 		}
 	}
