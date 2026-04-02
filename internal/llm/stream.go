@@ -17,7 +17,13 @@ func newEventStream(ctx context.Context, run func(context.Context, chan<- Event)
 	go func() {
 		defer close(ch)
 		if err := run(streamCtx, ch); err != nil {
-			ch <- Event{Type: EventError, Err: err}
+			// If the consumer has stopped draining and the buffer is full, drop the
+			// terminal error rather than block forever and leak the producer goroutine.
+			select {
+			case ch <- Event{Type: EventError, Err: err}:
+			case <-streamCtx.Done():
+			default:
+			}
 		}
 	}()
 	return &channelStream{ctx: streamCtx, cancel: cancel, events: ch}
