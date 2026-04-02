@@ -969,7 +969,11 @@ func (s *serveServer) streamResponseRunEvents(ctx context.Context, w http.Respon
 	ch := subscription.ch
 
 	pingMu, stopPing := sseKeepalive(w, flusher, 20*time.Second)
-	defer stopPing()
+	var stopPingOnce sync.Once
+	stopKeepalive := func() {
+		stopPingOnce.Do(stopPing)
+	}
+	defer stopKeepalive()
 	if ch != nil {
 		defer run.unsubscribe(ch)
 	}
@@ -984,6 +988,12 @@ func (s *serveServer) streamResponseRunEvents(ctx context.Context, w http.Respon
 		return nil
 	}
 
+	writeDone := func() {
+		stopKeepalive()
+		_, _ = io.WriteString(w, "data: [DONE]\n\n")
+		flusher.Flush()
+	}
+
 	for _, ev := range replay {
 		if err := writeEvent(ev); err != nil {
 			return
@@ -991,8 +1001,7 @@ func (s *serveServer) streamResponseRunEvents(ctx context.Context, w http.Respon
 	}
 
 	if ch == nil {
-		_, _ = io.WriteString(w, "data: [DONE]\n\n")
-		flusher.Flush()
+		writeDone()
 		return
 	}
 
@@ -1004,8 +1013,7 @@ func (s *serveServer) streamResponseRunEvents(ctx context.Context, w http.Respon
 			return
 		case ev, ok := <-ch:
 			if !ok {
-				_, _ = io.WriteString(w, "data: [DONE]\n\n")
-				flusher.Flush()
+				writeDone()
 				return
 			}
 			if err := writeEvent(ev); err != nil {
