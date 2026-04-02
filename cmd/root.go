@@ -47,6 +47,7 @@ Examples:
   term-llm config                       # view configuration
   term-llm config completion zsh        # shell completions`,
 	CompletionOptions: cobra.CompletionOptions{DisableDefaultCmd: true},
+	SilenceUsage:      true,
 	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
 		return startProfiling()
 	},

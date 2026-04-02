@@ -120,7 +120,6 @@ Examples:
 	Args:              cobra.ExactArgs(1),
 	RunE:              runAgentsExportGist,
 	ValidArgsFunction: exportableAgentCompletion,
-	SilenceUsage:      true,
 }
 
 var agentsImportGistCmd = &cobra.Command{
@@ -134,9 +133,8 @@ required for private gists.
 Examples:
   term-llm agents import gist https://gist.github.com/user/abc123
   term-llm agents import gist abc123 --local`,
-	Args:         cobra.ExactArgs(1),
-	RunE:         runAgentsImportGist,
-	SilenceUsage: true,
+	Args: cobra.ExactArgs(1),
+	RunE: runAgentsImportGist,
 }
 
 var agentsPrefSetCmd = &cobra.Command{
