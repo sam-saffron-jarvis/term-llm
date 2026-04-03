@@ -591,9 +591,11 @@ func buildCompatMessages(messages []Message) []oaiMessage {
 		}
 	}
 	// Trailing developer message with no following user turn.
+	// Preserve instruction semantics by emitting it as a system message
+	// rather than rewriting it as a user prompt.
 	if pendingDev != "" {
 		result = append(result, oaiMessage{
-			Role:    "user",
+			Role:    "system",
 			Content: fmt.Sprintf("<developer>\n%s\n</developer>", pendingDev),
 		})
 	}

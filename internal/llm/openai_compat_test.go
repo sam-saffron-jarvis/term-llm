@@ -673,18 +673,18 @@ func TestBuildCompatMessages_TrailingDeveloperMessage(t *testing.T) {
 	oaiMsgs := buildCompatMessages(messages)
 
 	if len(oaiMsgs) != 3 {
-		t.Fatalf("expected 3 messages (user, assistant, synthetic user), got %d", len(oaiMsgs))
+		t.Fatalf("expected 3 messages (user, assistant, trailing system), got %d", len(oaiMsgs))
 	}
 	trailing := oaiMsgs[2]
-	if trailing.Role != "user" {
-		t.Errorf("expected trailing message role 'user', got %q", trailing.Role)
+	if trailing.Role != "system" {
+		t.Errorf("expected trailing message role 'system', got %q", trailing.Role)
 	}
 	content, ok := trailing.Content.(string)
 	if !ok {
 		t.Fatalf("expected trailing content to be string, got %T", trailing.Content)
 	}
 	if !strings.Contains(content, "<developer>") || !strings.Contains(content, "Be concise from now on.") {
-		t.Errorf("expected developer text in trailing user message, got %q", content)
+		t.Errorf("expected developer text in trailing system message, got %q", content)
 	}
 }
 
