@@ -14,7 +14,7 @@ func TestParseProviderModel(t *testing.T) {
 			"openai":     {Model: "gpt-5.2"},
 			"gemini":     {Model: "gemini-3-flash-preview"},
 			"openrouter": {Model: "x-ai/grok-code-fast-1"},
-			"zen":        {Model: "glm-4.7-free"},
+			"zen":        {Model: "minimax-m2.5-free"},
 			"cerebras": {
 				Type:    config.ProviderTypeOpenAICompat,
 				BaseURL: "https://api.cerebras.ai/v1",

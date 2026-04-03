@@ -67,12 +67,7 @@ func TestAllListedModelsHaveContextLimits(t *testing.T) {
 	exemptions := map[string]bool{
 		// Venice models with unknown upstream limits
 		"qwen3-4b": true,
-		// Zen models with unknown limits
-		"big-pickle":                 true,
-		"glm-4.7-free":               true,
-		"trinity-large-preview-free": true,
-		"kimi-k2.5-free":             true,
-		"minimax-m2.1-free":          true,
+		// Zen models — all have explicit limits now
 		// claude-bin aliases (resolved internally, limits don't apply)
 		"opus": true, "opus-low": true, "opus-medium": true, "opus-high": true, "opus-max": true,
 		"sonnet": true, "sonnet-low": true, "sonnet-medium": true, "sonnet-high": true,

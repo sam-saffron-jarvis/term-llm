@@ -418,6 +418,10 @@ var providerInputOverrides = map[string][]limitEntry{
 		{"gpt-4o", 48_000},            // 64K - 16K
 		{"grok-code", 64_000},         // 128K - 64K
 	},
+	// Zen free tier imposes lower limits than canonical models
+	"zen": {
+		{"gpt-5-nano", 96_000}, // 128K context on Zen (not 400K like direct OpenAI)
+	},
 }
 
 // OutputLimitForModel returns the maximum output tokens for a known model.

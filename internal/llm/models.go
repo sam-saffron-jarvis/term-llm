@@ -116,12 +116,12 @@ var ProviderModels = map[string][]ModelEntry{
 		{ID: "gemini-2.5-flash-lite", InputLimit: 983_000, OutputLimit: 65_536},
 	},
 	"zen": {
-		{ID: "big-pickle"},
-		{ID: "glm-4.7-free"},
-		{ID: "trinity-large-preview-free"},
-		{ID: "kimi-k2.5-free"},
-		{ID: "minimax-m2.1-free"},
-		{ID: "gpt-5-nano", InputLimit: 272_000, OutputLimit: 128_000},
+		{ID: "minimax-m2.5-free", InputLimit: 168_000, OutputLimit: 32_000},
+		{ID: "big-pickle", InputLimit: 168_000, OutputLimit: 32_000},
+		{ID: "gpt-5-nano", InputLimit: 96_000, OutputLimit: 32_000},
+		{ID: "nemotron-3-super-free", InputLimit: 96_000, OutputLimit: 32_000},
+		{ID: "trinity-large-preview-free", InputLimit: 96_000, OutputLimit: 32_000},
+		{ID: "qwen3.6-plus-free", InputLimit: 900_000, OutputLimit: 100_000},
 	},
 	"claude-bin": {
 		// Aliases resolved internally by claude-bin provider
@@ -255,7 +255,7 @@ var ProviderFastModels = map[string]string{
 	"gemini":     "gemini-2.5-flash-lite",
 	"gemini-cli": "gemini-2.5-flash-lite",
 	"xai":        "grok-3-mini-fast",
-	"zen":        "glm-4.7-free",
+	"zen":        "minimax-m2.5-free",
 	"bedrock":    "claude-haiku-4-5",
 	"venice":     "llama-3.2-3b",
 	"openrouter": "anthropic/claude-haiku-4-5",
