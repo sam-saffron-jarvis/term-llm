@@ -827,6 +827,76 @@ func TestEngineParallelToolExecution(t *testing.T) {
 	t.Logf("Parallel execution: peak concurrent=%d, elapsed=%v", tool.concurrentAt, elapsed)
 }
 
+func TestEngineSequentialToolExecutionWhenParallelToolCallsDisabled(t *testing.T) {
+	tool := &delayingTool{delay: 100 * time.Millisecond}
+	registry := NewToolRegistry()
+	registry.Register(tool)
+
+	provider := &fakeProvider{
+		script: func(call int, req Request) []Event {
+			switch call {
+			case 0:
+				return []Event{
+					{Type: EventToolCall, Tool: &ToolCall{ID: "call-1", Name: "delay_tool", Arguments: json.RawMessage(`{}`)}},
+					{Type: EventToolCall, Tool: &ToolCall{ID: "call-2", Name: "delay_tool", Arguments: json.RawMessage(`{}`)}},
+					{Type: EventToolCall, Tool: &ToolCall{ID: "call-3", Name: "delay_tool", Arguments: json.RawMessage(`{}`)}},
+					{Type: EventDone},
+				}
+			default:
+				return []Event{
+					{Type: EventTextDelta, Text: "done"},
+					{Type: EventDone},
+				}
+			}
+		},
+	}
+
+	engine := NewEngine(provider, registry)
+	req := Request{
+		Messages:          []Message{UserText("run tools")},
+		Tools:             []ToolSpec{tool.Spec()},
+		ParallelToolCalls: false,
+		ToolChoice:        ToolChoice{Mode: ToolChoiceAuto},
+	}
+
+	start := time.Now()
+	stream, err := engine.Stream(context.Background(), req)
+	if err != nil {
+		t.Fatalf("stream error: %v", err)
+	}
+	defer stream.Close()
+
+	for {
+		event, err := stream.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("recv error: %v", err)
+		}
+		if event.Type == EventError && event.Err != nil {
+			t.Fatalf("event error: %v", event.Err)
+		}
+	}
+	elapsed := time.Since(start)
+
+	if tool.calls != 3 {
+		t.Fatalf("expected 3 tool calls, got %d", tool.calls)
+	}
+	if tool.concurrentAt != 1 {
+		t.Fatalf("expected sequential execution, peak concurrent=%d", tool.concurrentAt)
+	}
+	for i := 1; i < len(tool.startTimes); i++ {
+		if tool.startTimes[i].Before(tool.endTimes[i-1]) {
+			t.Fatalf("tool call %d started before previous call ended", i+1)
+		}
+	}
+	minExpected := 250 * time.Millisecond
+	if elapsed < minExpected {
+		t.Fatalf("sequential execution completed too quickly: %v (min expected: %v)", elapsed, minExpected)
+	}
+}
+
 // namedTool is a simple tool with a configurable name for testing
 type namedTool struct {
 	name string
