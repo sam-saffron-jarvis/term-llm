@@ -62,6 +62,11 @@ const pollSidebarStatus = async () => {
       const data = await resp.json();
       if (Array.isArray(data.sessions)) {
         updateSidebarStatus(data.sessions);
+        // Discover sessions created in other tabs/devices
+        const hasUnknown = data.sessions.some(
+          (entry) => !state.sessions.find((s) => s.id === entry.id)
+        );
+        if (hasUnknown) mergeServerSessions();
       }
     }
   } catch (_e) {
@@ -570,7 +575,7 @@ const mergeServerSessions = async (options = {}) => {
 
     persistAndRefreshShell();
   } catch {
-    // Gracefully fall back to localStorage-only
+    // Gracefully fall back to in-memory-only
   }
 };
 

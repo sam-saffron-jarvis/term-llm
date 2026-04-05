@@ -26,7 +26,6 @@ const parseSidebarSessionCategories = (raw) => {
 };
 
 const STORAGE_KEYS = {
-  sessions: 'term_llm_sessions',
   token: 'term_llm_token',
   activeSession: 'term_llm_active_session',
   draftSessionActive: 'term_llm_draft_session_active',
@@ -787,44 +786,29 @@ const isEphemeralEmptySession = (session) => {
 };
 
 const loadSessions = () => {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEYS.sessions);
-    if (!raw) return [];
-    const parsed = JSON.parse(raw);
-    if (!Array.isArray(parsed)) return [];
-    return parsed.map(sanitizeSession).filter((session) => session && !isEphemeralEmptySession(session));
-  } catch {
-    return [];
-  }
+  // Sessions are no longer persisted to localStorage — always start empty
+  // and let mergeServerSessions() populate from the server.
+  // Clean up legacy key from older versions.
+  try { localStorage.removeItem('term_llm_sessions'); } catch { /* ignore */ }
+  return [];
 };
 
-// Prepare sessions for localStorage.  Only the 20 most-recent sessions
-// keep their full message arrays; older ones are stored as metadata-only
-// stubs that will be lazy-loaded from the server on next switch.
-const MAX_CACHED_MESSAGE_SESSIONS = 20;
+// Evict messages from in-memory sessions beyond the 10 most-recently-created
+// to cap RAM usage.  Evicted sessions become lazy-load stubs.
+const MAX_CACHED_MESSAGE_SESSIONS = 10;
 
-const sessionsForStorage = () => {
+const evictStaleSessionMessages = () => {
   const sorted = [...state.sessions]
     .filter(s => s.messages && s.messages.length > 0 && !s._serverOnly)
     .sort((a, b) => b.created - a.created);
   const keep = new Set(sorted.slice(0, MAX_CACHED_MESSAGE_SESSIONS).map(s => s.id));
 
-  return state.sessions.map(s => {
+  for (const s of state.sessions) {
     if (!keep.has(s.id) && s.messages && s.messages.length > 0) {
-      return { ...s, messages: [], _serverOnly: true };
+      s.messages = [];
+      s._serverOnly = true;
     }
-    if (!s.messages || !s.messages.some(m => m.attachments)) return s;
-    return {
-      ...s,
-      messages: s.messages.map(m => {
-        if (!m.attachments) return m;
-        return {
-          ...m,
-          attachments: m.attachments.map(a => ({ name: a.name, type: a.type }))
-        };
-      })
-    };
-  });
+  }
 };
 
 const saveSessions = () => {
@@ -840,12 +824,12 @@ const saveSessions = () => {
       state.activeSessionId = '';
     }
   }
+  evictStaleSessionMessages();
   try {
-    localStorage.setItem(STORAGE_KEYS.sessions, JSON.stringify(sessionsForStorage()));
     localStorage.setItem(STORAGE_KEYS.activeSession, state.activeSessionId || '');
     localStorage.setItem(STORAGE_KEYS.draftSessionActive, state.draftSessionActive ? '1' : '0');
   } catch {
-    // QuotaExceededError or other storage failure — continue without persistence
+    // storage failure — continue without persistence
   }
 };
 
@@ -1030,7 +1014,7 @@ Object.assign(app, {
   sanitizeSession,
   isEphemeralEmptySession,
   loadSessions,
-  sessionsForStorage,
+  evictStaleSessionMessages,
   saveSessions,
   getActiveSession,
   sessionMatchesSidebarFilters,
