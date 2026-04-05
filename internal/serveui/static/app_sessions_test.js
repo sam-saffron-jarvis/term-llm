@@ -405,7 +405,6 @@ async function testSwitchToSessionSyncsWithoutTokenAndResumes() {
 
   const { app } = await createSessionsHarness({
     initialStorage: {
-      term_llm_sessions: JSON.stringify(initialSessions),
       term_llm_active_session: 'sess_other',
     },
     fetchImpl: async (url) => {
@@ -511,7 +510,6 @@ async function testSwitchToSessionClearsStaleActiveResponseWithoutToken() {
 
   const { app } = await createSessionsHarness({
     initialStorage: {
-      term_llm_sessions: JSON.stringify(initialSessions),
       term_llm_active_session: 'sess_other',
     },
     fetchImpl: async (url) => {
