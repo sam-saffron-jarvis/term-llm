@@ -6,27 +6,31 @@ import (
 )
 
 type channelStream struct {
-	ctx    context.Context
-	cancel context.CancelFunc
-	events <-chan Event
+	ctx         context.Context
+	cancel      context.CancelFunc
+	events      <-chan Event
+	terminalErr <-chan error
 }
 
 func newEventStream(ctx context.Context, run func(context.Context, chan<- Event) error) Stream {
 	streamCtx, cancel := context.WithCancel(ctx)
 	ch := make(chan Event, 16)
+	terminalErr := make(chan error, 1)
 	go func() {
-		defer close(ch)
 		if err := run(streamCtx, ch); err != nil {
-			// If the consumer has stopped draining and the buffer is full, drop the
-			// terminal error rather than block forever and leak the producer goroutine.
+			// If the consumer has stopped draining and the buffer is full, preserve the
+			// terminal error for Recv() rather than dropping it and reporting clean EOF.
 			select {
 			case ch <- Event{Type: EventError, Err: err}:
 			case <-streamCtx.Done():
 			default:
+				terminalErr <- err
 			}
 		}
+		close(terminalErr)
+		close(ch)
 	}()
-	return &channelStream{ctx: streamCtx, cancel: cancel, events: ch}
+	return &channelStream{ctx: streamCtx, cancel: cancel, events: ch, terminalErr: terminalErr}
 }
 
 func (s *channelStream) Recv() (Event, error) {
@@ -35,6 +39,9 @@ func (s *channelStream) Recv() (Event, error) {
 	select {
 	case event, ok := <-s.events:
 		if !ok {
+			if err, ok := <-s.terminalErr; ok {
+				return Event{Type: EventError, Err: err}, nil
+			}
 			return Event{}, io.EOF
 		}
 		return event, nil
@@ -46,6 +53,9 @@ func (s *channelStream) Recv() (Event, error) {
 		return Event{}, s.ctx.Err()
 	case event, ok := <-s.events:
 		if !ok {
+			if err, ok := <-s.terminalErr; ok {
+				return Event{Type: EventError, Err: err}, nil
+			}
 			return Event{}, io.EOF
 		}
 		return event, nil
