@@ -1984,6 +1984,18 @@ const requeueUncommittedInterrupts = (session) => {
   state.pendingInterruptCommits = remaining;
 };
 
+const drainInterruptQueueIfIdle = (session) => {
+  if (!session || session.id !== state.activeSessionId) return;
+  if (state.streaming || state.abortController) return;
+  requeueUncommittedInterrupts(session);
+  if (state.queuedInterrupts.length > 0) {
+    const queued = state.queuedInterrupts.shift();
+    elements.promptInput.value = queued.prompt;
+    autoGrowPrompt();
+    void sendMessage({ prompt: queued.prompt, attachments: [], reuseMessageId: queued.messageId });
+  }
+};
+
 const setInterruptMessageState = (session, messageId, interruptState) => {
   if (!messageId) return;
   const normalized = sanitizeInterruptState(interruptState);
@@ -2459,18 +2471,7 @@ const sendMessage = async (options = {}) => {
       return;
     }
 
-    requeueUncommittedInterrupts(session);
-
-    if (state.queuedInterrupts.length > 0) {
-      const queued = state.queuedInterrupts.shift();
-      elements.promptInput.value = queued.prompt;
-      autoGrowPrompt();
-      await sendMessage({
-        prompt: queued.prompt,
-        attachments: [],
-        reuseMessageId: queued.messageId
-      });
-    }
+    drainInterruptQueueIfIdle(session);
   }
 };
 
@@ -2529,6 +2530,7 @@ Object.assign(app, {
   resolvePendingInterruptCommit,
   discardPendingInterruptCommit,
   requeueUncommittedInterrupts,
+  drainInterruptQueueIfIdle,
   setInterruptMessageState,
   createPendingInterruptMessage,
   interruptActiveRun,

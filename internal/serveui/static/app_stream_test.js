@@ -580,11 +580,86 @@ async function testSendMessageMarksSessionBusyImmediately() {
   pass(name);
 }
 
+async function testDrainInterruptQueueAfterResumeCompletes() {
+  const name = 'drainInterruptQueueIfIdle sends queued message after resumeActiveResponse finishes';
+  const responseId = 'resp_resume';
+  const harness = createHarness({
+    responseId,
+    eventsBody: [
+      'id: 1\n',
+      'event: response.created\n',
+      `data: {"response":{"id":"${responseId}","model":"test-model","status":"in_progress"},"sequence_number":1}\n\n`,
+      'id: 2\n',
+      'event: response.completed\n',
+      `data: {"response":{"id":"${responseId}","model":"test-model","status":"completed"},"sequence_number":2}\n\n`,
+      'data: [DONE]\n\n',
+    ].join(''),
+  });
+
+  const { app, state, fetchCalls, cleanup } = harness;
+
+  // Set up a session with an active response (simulating a resumed stream).
+  const session = {
+    id: 'session_resume',
+    title: 'Resume test',
+    messages: [],
+    lastResponseId: null,
+    activeResponseId: responseId,
+    lastSequenceNumber: 0,
+    number: 1,
+  };
+  state.sessions.push(session);
+  state.activeSessionId = session.id;
+
+  // Queue an interrupt that should be drained after the resume completes.
+  state.queuedInterrupts.push({ prompt: 'follow-up question', messageId: 'msg_queued' });
+
+  // Run resumeActiveResponse — the events stream will complete immediately.
+  await app.resumeActiveResponse(session, { responseId });
+
+  // At this point streaming should be false and activeResponseId cleared.
+  if (state.streaming) {
+    fail(name, 'state.streaming should be false after resume completes');
+    await cleanup();
+    return;
+  }
+  if (session.activeResponseId) {
+    fail(name, 'session.activeResponseId should be cleared after response.completed');
+    await cleanup();
+    return;
+  }
+
+  // Simulate what the .then() callback does in app-sessions.js.
+  app.drainInterruptQueueIfIdle(session);
+
+  // The queued interrupt should have been shifted off.
+  if (state.queuedInterrupts.length !== 0) {
+    fail(name, `expected queuedInterrupts to be empty, got ${state.queuedInterrupts.length}`);
+    await cleanup();
+    return;
+  }
+
+  // sendMessage should have been called — look for a POST to /ui/v1/responses.
+  const postCalls = fetchCalls.filter(c => c.url === '/ui/v1/responses' && c.method === 'POST');
+  if (postCalls.length < 1) {
+    fail(name, 'expected sendMessage to POST /ui/v1/responses for the queued interrupt', JSON.stringify(fetchCalls));
+    await cleanup();
+    return;
+  }
+
+  // Clean up the second sendMessage's stream.
+  app.detachResponseStream();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  await cleanup();
+  pass(name);
+}
+
 (async () => {
   await testSendMessageHandsOffToEventsStream();
   await testSendMessageIgnoresPostBodyAfterHandoff();
   await testNewChatDuringStreamingClearsStreamingState();
   await testSendMessageMarksSessionBusyImmediately();
+  await testDrainInterruptQueueAfterResumeCompletes();
 
   if (failures > 0) {
     console.error(`\n${failures} test(s) failed`);

@@ -13,9 +13,15 @@ const {
   requestNotificationPermission, shouldAutoSubscribeToPush, detachResponseStream, HEARTBEAT_STALE_THRESHOLD, HEARTBEAT_ABORT_REASON,
   applyDesktopSidebarState, toggleSidebarCollapsed, flushStreamPersistence, requestHeaders, normalizeError, renderAttachments,
   updateSidebarStatus, sessionHasInProgressState, hasAnySessionInProgressState, setSessionServerActiveRun, setSessionOptimisticBusy,
-  moveSessionProgressState, requeueUncommittedInterrupts
+  moveSessionProgressState, requeueUncommittedInterrupts, drainInterruptQueueIfIdle
 } = app;
 let sessionStatePollTimer = null;
+
+const resumeAndDrain = (session, options) => {
+  void resumeActiveResponse(session, options).finally(() => {
+    drainInterruptQueueIfIdle(session);
+  });
+};
 
 // ===== Sidebar status polling =====
 const SIDEBAR_POLL_ACTIVE = 2000;
@@ -419,7 +425,7 @@ const syncActiveSessionFromServer = async (session, pollOnActive = false) => {
     updateBusySidebar();
     if (session.id === state.activeSessionId && !state.abortController) {
       setStreaming(true);
-      void resumeActiveResponse(session, { responseId: activeResponseId });
+      resumeAndDrain(session, { responseId: activeResponseId });
       return runtimeState;
     }
     if (pollOnActive) {
@@ -463,13 +469,7 @@ const syncActiveSessionFromServer = async (session, pollOnActive = false) => {
     }
     setConnectionState('', '');
     setStreaming(false);
-    requeueUncommittedInterrupts(session);
-    if (session.id === state.activeSessionId && state.queuedInterrupts.length > 0) {
-      const queued = state.queuedInterrupts.shift();
-      elements.promptInput.value = queued.prompt;
-      autoGrowPrompt();
-      void sendMessage({ prompt: queued.prompt, attachments: [], reuseMessageId: queued.messageId });
-    }
+    drainInterruptQueueIfIdle(session);
   }
 
   return runtimeState;
@@ -1073,7 +1073,7 @@ document.addEventListener('visibilitychange', async () => {
 
   if (session.activeResponseId && !state.abortController) {
     setStreaming(true);
-    void resumeActiveResponse(session, { responseId: session.activeResponseId });
+    resumeAndDrain(session, { responseId: session.activeResponseId });
     return;
   }
   if (state.abortController && state.lastEventTime > 0 && Date.now() - state.lastEventTime > HEARTBEAT_STALE_THRESHOLD) {
@@ -1101,7 +1101,7 @@ window.addEventListener('online', async () => {
   } else if (session.activeResponseId && !state.abortController) {
     setConnectionState('Network restored, reconnecting\u2026');
     setStreaming(true);
-    void resumeActiveResponse(session, { responseId: session.activeResponseId });
+    resumeAndDrain(session, { responseId: session.activeResponseId });
   } else if (!state.streaming) {
     await syncActiveSessionFromServer(session, true);
   }
@@ -1119,7 +1119,7 @@ window.addEventListener('pageshow', (event) => {
   if (!session) return;
   if (session.activeResponseId) {
     setStreaming(true);
-    void resumeActiveResponse(session, { responseId: session.activeResponseId });
+    resumeAndDrain(session, { responseId: session.activeResponseId });
   } else {
     void syncActiveSessionFromServer(session, true);
   }

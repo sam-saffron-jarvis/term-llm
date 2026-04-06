@@ -137,6 +137,7 @@ function defaultAppStubs(app, overrides = {}) {
     shouldAutoSubscribeToPush() { return false; },
     detachResponseStream() {},
     requeueUncommittedInterrupts() {},
+    drainInterruptQueueIfIdle() {},
     HEARTBEAT_STALE_THRESHOLD: 45000,
     HEARTBEAT_ABORT_REASON: 'heartbeat stale',
     applyDesktopSidebarState() {},
@@ -655,6 +656,16 @@ async function testIdleSessionSyncRescuesPendingInterruptCommit() {
         sendCalls.push(payload);
         return Promise.resolve();
       },
+      drainInterruptQueueIfIdle(session) {
+        if (!session || session.id !== appRef.state.activeSessionId) return;
+        if (appRef.state.streaming || appRef.state.abortController) return;
+        appRef.requeueUncommittedInterrupts(session);
+        if (appRef.state.queuedInterrupts.length > 0) {
+          const queued = appRef.state.queuedInterrupts.shift();
+          appRef.elements.promptInput.value = queued.prompt;
+          void appRef.sendMessage({ prompt: queued.prompt, attachments: [], reuseMessageId: queued.messageId });
+        }
+      },
     }
   });
   appRef = app;
@@ -760,6 +771,105 @@ async function testSessionProgressStatePrefersLocalAndServerSignals() {
   pass(name);
 }
 
+async function testResumeAndDrainFiringViaSync() {
+  const name = 'syncActiveSessionFromServer drains queued interrupts after resume completes';
+  const sendCalls = [];
+  let appRef = null;
+
+  const { app } = await createSessionsHarness({
+    fetchImpl: async (url) => {
+      if (url === '/ui/v1/sessions') {
+        return new Response(JSON.stringify({ sessions: [] }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' }
+        });
+      }
+      if (url === '/ui/v1/sessions/sess_drain/state') {
+        return new Response(JSON.stringify({
+          active_run: true,
+          active_response_id: 'resp_drain_456',
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      if (url === '/ui/v1/sessions/status') {
+        return new Response(JSON.stringify({ sessions: [] }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' }
+        });
+      }
+      return new Response(JSON.stringify([]), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' }
+      });
+    },
+    appOverrides: {
+      async resumeActiveResponse() {
+        // Simulate the response completing: clear streaming + activeResponseId.
+        appRef.state.streaming = false;
+        appRef.state.abortController = null;
+        const session = appRef.state.sessions.find(s => s.id === appRef.state.activeSessionId);
+        if (session) session.activeResponseId = null;
+        return true;
+      },
+      drainInterruptQueueIfIdle(session) {
+        if (!session || session.id !== appRef.state.activeSessionId) return;
+        if (appRef.state.streaming || appRef.state.abortController) return;
+        appRef.requeueUncommittedInterrupts(session);
+        if (appRef.state.queuedInterrupts.length > 0) {
+          const queued = appRef.state.queuedInterrupts.shift();
+          appRef.elements.promptInput.value = queued.prompt;
+          void appRef.sendMessage({ prompt: queued.prompt, attachments: [], reuseMessageId: queued.messageId });
+        }
+      },
+      sendMessage(payload) {
+        sendCalls.push(payload);
+        return Promise.resolve();
+      },
+    }
+  });
+  appRef = app;
+
+  const session = {
+    id: 'sess_drain',
+    title: 'Drain test',
+    origin: 'web',
+    created: 1710000000000,
+    messages: [],
+    activeResponseId: null,
+    lastSequenceNumber: 0,
+  };
+  app.state.sessions = [session];
+  app.state.activeSessionId = session.id;
+  app.state.draftSessionActive = false;
+
+  // Queue an interrupt before the sync triggers resume.
+  app.state.queuedInterrupts = [{ prompt: 'queued after resume', messageId: 'msg_drain_1' }];
+
+  // syncActiveSessionFromServer will see active_response_id → call resumeAndDrain.
+  // resumeAndDrain fires void resumeActiveResponse(...).finally(drainInterruptQueueIfIdle).
+  // syncActiveSessionFromServer returns before .finally() fires, so we must yield.
+  await app.syncActiveSessionFromServer(session, false);
+
+  // Yield to let the .finally() microtask execute.
+  await new Promise(resolve => setTimeout(resolve, 0));
+
+  if (sendCalls.length !== 1) {
+    fail(name, `expected 1 sendMessage call from drained interrupt, got ${sendCalls.length}`, JSON.stringify(sendCalls));
+    return;
+  }
+
+  if (sendCalls[0].prompt !== 'queued after resume' || sendCalls[0].reuseMessageId !== 'msg_drain_1') {
+    fail(name, 'drained interrupt payload mismatch', JSON.stringify(sendCalls[0]));
+    return;
+  }
+
+  if (app.state.queuedInterrupts.length !== 0) {
+    fail(name, 'expected queuedInterrupts to be empty after drain', JSON.stringify(app.state.queuedInterrupts));
+    return;
+  }
+
+  pass(name);
+}
+
 (async () => {
   await testNumericDeepLinkResolvesRealSessionId();
   await testDeveloperMessagesAreHidden();
@@ -767,6 +877,8 @@ async function testSessionProgressStatePrefersLocalAndServerSignals() {
   await testSwitchToSessionClearsStaleActiveResponseWithoutToken();
   await testIdleSessionSyncRescuesPendingInterruptCommit();
   await testSessionProgressStatePrefersLocalAndServerSignals();
+  await testResumeAndDrainFiringViaSync();
+
   if (failures > 0) process.exit(1);
   process.exit(0);
 })();
