@@ -794,10 +794,14 @@ func (s *serveServer) appendResponseRunEvent(runtime *serveRuntime, run *respons
 			return nil
 		}
 		state.toolsSeen = true
+		toolCallID := strings.TrimSpace(ev.ToolCallID)
+		if toolCallID == "" {
+			toolCallID = strings.TrimSpace(ev.Tool.ID)
+		}
 		item := map[string]any{
-			"id":        "fc_" + ev.Tool.ID,
+			"id":        "fc_" + toolCallID,
 			"type":      "function_call",
-			"call_id":   ev.Tool.ID,
+			"call_id":   toolCallID,
 			"name":      ev.Tool.Name,
 			"arguments": string(ev.Tool.Arguments),
 		}

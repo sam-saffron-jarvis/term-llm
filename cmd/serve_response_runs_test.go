@@ -1,10 +1,67 @@
 package cmd
 
 import (
+	"encoding/json"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/samsaffron/term-llm/internal/llm"
 )
+
+func TestAppendResponseRunEventUsesToolCallIDForFunctionCallItems(t *testing.T) {
+	run := newResponseRun("resp_toolcall", "sess_test", "", "mock", time.Now().Unix(), func() {})
+	state := &responseRunStreamState{}
+
+	err := (&serveServer{}).appendResponseRunEvent(&serveRuntime{}, run, state, llm.Event{
+		Type:       llm.EventToolCall,
+		ToolCallID: "call_123",
+		Tool: &llm.ToolCall{
+			Name:      "fetch_url",
+			Arguments: json.RawMessage(`{"url":"https://example.com"}`),
+		},
+	})
+	if err != nil {
+		t.Fatalf("appendResponseRunEvent failed: %v", err)
+	}
+
+	if len(run.events) < 1 {
+		t.Fatal("expected stored events")
+	}
+	if run.events[0].Event != "response.output_item.added" {
+		t.Fatalf("expected first event to be response.output_item.added, got %s", run.events[0].Event)
+	}
+
+	var payload struct {
+		Item struct {
+			ID        string `json:"id"`
+			CallID    string `json:"call_id"`
+			Name      string `json:"name"`
+			Arguments string `json:"arguments"`
+		} `json:"item"`
+	}
+	if err := json.Unmarshal(run.events[0].Data, &payload); err != nil {
+		t.Fatalf("unmarshal stored event payload: %v", err)
+	}
+	if payload.Item.ID != "fc_call_123" {
+		t.Fatalf("expected item id fc_call_123, got %q", payload.Item.ID)
+	}
+	if payload.Item.CallID != "call_123" {
+		t.Fatalf("expected call_id call_123, got %q", payload.Item.CallID)
+	}
+
+	run.mu.Lock()
+	defer run.mu.Unlock()
+	if len(run.recoveryMessages) != 1 {
+		t.Fatalf("expected 1 recovery message, got %d", len(run.recoveryMessages))
+	}
+	if len(run.recoveryMessages[0].Tools) != 1 {
+		t.Fatalf("expected 1 recovery tool, got %d", len(run.recoveryMessages[0].Tools))
+	}
+	if run.recoveryMessages[0].Tools[0].ID != "call_123" {
+		t.Fatalf("expected recovery tool ID call_123, got %q", run.recoveryMessages[0].Tools[0].ID)
+	}
+}
 
 func TestResponseRunSubscriberSurvivesUpToBufferLimit(t *testing.T) {
 	run := newResponseRun("resp_test1", "sess_test", "", "mock", time.Now().Unix(), func() {})
