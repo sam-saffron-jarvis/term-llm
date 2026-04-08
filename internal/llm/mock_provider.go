@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sync"
 	"time"
+	"unicode/utf8"
 )
 
 // MockTurn represents a single response turn from the mock provider.
@@ -181,7 +182,8 @@ func (m *MockProvider) Stream(ctx context.Context, req Request) (Stream, error) 
 }
 
 // chunkText splits text into chunks of approximately the given size.
-// It tries to break at word boundaries when possible.
+// It tries to break at word boundaries when possible and always splits
+// on valid rune boundaries so that every chunk is valid UTF-8.
 func chunkText(text string, chunkSize int) []string {
 	if len(text) == 0 {
 		return nil
@@ -197,9 +199,15 @@ func chunkText(text string, chunkSize int) []string {
 			break
 		}
 
-		// Find a good break point (space) near the chunk size
+		// Start at the byte-level chunk boundary, then back up to a
+		// valid rune start so we never split a multi-byte codepoint.
 		breakPoint := chunkSize
-		for i := chunkSize; i > chunkSize/2; i-- {
+		for breakPoint > 0 && !utf8.RuneStart(text[breakPoint]) {
+			breakPoint--
+		}
+
+		// Try to find a space to break at within the second half.
+		for i := breakPoint; i > chunkSize/2; i-- {
 			if text[i] == ' ' {
 				breakPoint = i + 1 // include the space in current chunk
 				break

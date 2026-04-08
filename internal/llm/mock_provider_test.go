@@ -7,6 +7,7 @@ import (
 	"io"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
 func TestMockProvider_BasicInfo(t *testing.T) {
@@ -396,5 +397,26 @@ func TestChunkText(t *testing.T) {
 		if reassembled != tt.text {
 			t.Errorf("reassembled text = %q, want %q", reassembled, tt.text)
 		}
+	}
+}
+
+func TestChunkText_MultiByteUTF8(t *testing.T) {
+	// "世" is 3 bytes; with chunkSize=10 the old byte-based logic
+	// would split at byte 10, landing inside the 4th character.
+	text := "世界世界世界" // 6 × 3 = 18 bytes
+	chunks := chunkText(text, 10)
+
+	var reassembled string
+	for _, c := range chunks {
+		if !utf8.ValidString(c) {
+			t.Errorf("chunk is invalid UTF-8: %q", c)
+		}
+		reassembled += c
+	}
+	if reassembled != text {
+		t.Errorf("reassembled = %q, want %q", reassembled, text)
+	}
+	if len(chunks) < 2 {
+		t.Errorf("expected at least 2 chunks for 18-byte text with chunkSize=10, got %d", len(chunks))
 	}
 }
