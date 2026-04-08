@@ -2268,3 +2268,83 @@ func TestEnginePanickingToolParallelCalls(t *testing.T) {
 		t.Fatal("expected a successful tool result from count_tool")
 	}
 }
+
+func TestEngineNormalizesToolCallID(t *testing.T) {
+	// When a provider sets ToolCallID on the event but leaves Tool.ID empty,
+	// the engine should copy ToolCallID into Tool.ID so downstream consumers
+	// (serve handlers, API responses) get the correct ID.
+	tool := &countingTool{}
+	registry := NewToolRegistry()
+	registry.Register(tool)
+
+	provider := &fakeProvider{
+		script: func(call int, req Request) []Event {
+			switch call {
+			case 0:
+				return []Event{
+					// Simulate a provider that sets ToolCallID but not Tool.ID
+					{Type: EventToolCall, ToolCallID: "call-1", Tool: &ToolCall{Name: "count_tool", Arguments: json.RawMessage(`{}`)}},
+					// Also test the synthetic fallback: both ToolCallID and Tool.ID empty
+					{Type: EventToolCall, Tool: &ToolCall{Name: "count_tool", Arguments: json.RawMessage(`{}`)}},
+					{Type: EventDone},
+				}
+			default:
+				return []Event{
+					{Type: EventTextDelta, Text: "done"},
+					{Type: EventDone},
+				}
+			}
+		},
+	}
+
+	engine := NewEngine(provider, registry)
+	req := Request{
+		Messages: []Message{UserText("test")},
+		Tools:    []ToolSpec{tool.Spec()},
+	}
+
+	stream, err := engine.Stream(context.Background(), req)
+	if err != nil {
+		t.Fatalf("stream error: %v", err)
+	}
+	defer stream.Close()
+
+	var toolCallEvents []Event
+	for {
+		event, err := stream.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("recv error: %v", err)
+		}
+		if event.Type == EventToolCall && event.Tool != nil {
+			toolCallEvents = append(toolCallEvents, event)
+		}
+	}
+
+	if len(toolCallEvents) < 2 {
+		t.Fatalf("expected at least 2 EventToolCall events, got %d", len(toolCallEvents))
+	}
+
+	// First tool call: ToolCallID was "call-1", Tool.ID should be normalized to "call-1"
+	ev0 := toolCallEvents[0]
+	if ev0.ToolCallID != "call-1" {
+		t.Errorf("event[0].ToolCallID = %q, want %q", ev0.ToolCallID, "call-1")
+	}
+	if ev0.Tool.ID != "call-1" {
+		t.Errorf("event[0].Tool.ID = %q, want %q", ev0.Tool.ID, "call-1")
+	}
+
+	// Second tool call: both were empty, should get a synthetic ID
+	ev1 := toolCallEvents[1]
+	if ev1.ToolCallID == "" {
+		t.Error("event[1].ToolCallID should not be empty (should be synthetic)")
+	}
+	if ev1.Tool.ID == "" {
+		t.Error("event[1].Tool.ID should not be empty (should be synthetic)")
+	}
+	if ev1.ToolCallID != ev1.Tool.ID {
+		t.Errorf("event[1].ToolCallID (%q) != event[1].Tool.ID (%q)", ev1.ToolCallID, ev1.Tool.ID)
+	}
+}

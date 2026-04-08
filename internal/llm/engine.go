@@ -840,6 +840,10 @@ func (e *Engine) runLoop(ctx context.Context, req Request, events chan<- Event) 
 			if event.Type == EventToolCall && event.Tool != nil {
 				// Check if this is a synchronous tool execution request (from claude_bin MCP)
 				if event.ToolResponse != nil {
+					// Normalize Tool.ID from ToolCallID if the provider didn't set it.
+					if event.Tool.ID == "" && event.ToolCallID != "" {
+						event.Tool.ID = event.ToolCallID
+					}
 					// Forward the EventToolCall so consumers can see tool calls (e.g., exec.go needs
 					// to see suggest_commands calls to parse suggestions from the arguments).
 					// Create a copy without ToolResponse to avoid confusion.
@@ -867,19 +871,23 @@ func (e *Engine) runLoop(ctx context.Context, req Request, events chan<- Event) 
 					}
 					continue
 				}
-				// Normal async collection for other providers
-				toolCalls = append(toolCalls, *event.Tool)
-
-				// Forward to TUI so it can track interleaving order.
-				// Prefer event.ToolCallID (some providers set this), fall back to Tool.ID,
-				// and generate a stable ID if both are empty to avoid dedupe collisions.
+				// Normal async collection for other providers.
+				// Resolve a canonical tool call ID: prefer event.ToolCallID, fall back
+				// to Tool.ID, and generate a stable synthetic ID if both are empty.
 				toolCallID := event.ToolCallID
-				if toolCallID == "" && event.Tool != nil {
+				if toolCallID == "" {
 					toolCallID = event.Tool.ID
 				}
 				if toolCallID == "" {
-					toolCallID = fmt.Sprintf("stream-toolcall-%d", len(toolCalls))
+					toolCallID = fmt.Sprintf("stream-toolcall-%d", len(toolCalls)+1)
 				}
+				// Normalize: ensure Tool.ID is always populated so downstream
+				// consumers (serve handlers, API responses) get the correct ID.
+				if event.Tool.ID == "" {
+					event.Tool.ID = toolCallID
+				}
+				toolCalls = append(toolCalls, *event.Tool)
+
 				info := e.getToolPreview(*event.Tool)
 				events <- Event{
 					Type:       EventToolCall,

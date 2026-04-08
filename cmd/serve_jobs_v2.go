@@ -306,11 +306,7 @@ func (r *jobsV2LLMRunner) Run(ctx context.Context, job jobsV2Job, pw progressWri
 			}
 		case llm.EventToolCall:
 			if ev.Tool != nil && cfg.Progressive && isProgressToolName(ev.Tool.Name) {
-				callID := strings.TrimSpace(ev.ToolCallID)
-				if callID == "" {
-					callID = strings.TrimSpace(ev.Tool.ID)
-				}
-				progressTracker.observeToolCall(callID, strings.TrimSpace(ev.Tool.Name), ev.Tool.Arguments)
+				progressTracker.observeToolCall(strings.TrimSpace(ev.Tool.ID), strings.TrimSpace(ev.Tool.Name), ev.Tool.Arguments)
 			}
 		case llm.EventUsage:
 			if ev.Use != nil {
