@@ -21,8 +21,8 @@ func TestUnifiedDiffLineNumbers(t *testing.T) {
 			name:       "replacement with fewer lines",
 			oldContent: "line1\nold2\nold3\nold4\nline5\n",
 			newContent: "line1\nnew2\nline5\n",
-			// Context line1 (1), delete old2-old4 (virtual 2,3,4), add new2 (2), context line5 (3)
-			wantLines: []string{"1 ", "2-", "3-", "4-", "2+", "3 "},
+			// Context line1 (1), paired delete+add old2/new2 (2-,2+), remaining deletes (3-,4-), context line5 (3)
+			wantLines: []string{"1 ", "2-", "2+", "3-", "4-", "3 "},
 		},
 		{
 			name:       "replacement with more lines",
@@ -45,11 +45,18 @@ func TestUnifiedDiffLineNumbers(t *testing.T) {
 			// Context line1 (1), add new_line (2), context line2 (3)
 			wantLines: []string{"1 ", "2+", "3 "},
 		},
+		{
+			name:       "whitespace only change collapses to tilde",
+			oldContent: "line1\n    indented\nline3\n",
+			newContent: "line1\n        indented\nline3\n",
+			// Context line1 (1), whitespace-only ~ (2), context line3 (3)
+			wantLines: []string{"1 ", "2~", "3 "},
+		},
 	}
 
 	// Regex to extract line numbers from ANSI-colored output
-	// Matches patterns like "  1  " (context), "  2- " (deletion), "  3+ " (addition)
-	lineNumRe := regexp.MustCompile(`(\d+)([-+ ]) `)
+	// Matches patterns like "  1  " (context), "  2- " (deletion), "  3+ " (addition), "  2~ " (whitespace-only)
+	lineNumRe := regexp.MustCompile(`(\d+)([-+~ ]) `)
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -283,6 +290,50 @@ func TestRenderDiffSegmentWordDiff(t *testing.T) {
 	}
 	if !strings.Contains(result, strongGreenBgPattern) {
 		t.Errorf("expected strong green background (40;90;40) for changed word, not found in output")
+	}
+}
+
+func TestIsWhitespaceOnlyChange(t *testing.T) {
+	tests := []struct {
+		old, new string
+		want     bool
+	}{
+		{"  foo", "    foo", true},
+		{"\tfoo", "    foo", true},
+		{"foo", "foo", true},
+		{"foo", "bar", false},
+		{"  foo bar", "foo bar", true},
+		{"  foo", "  bar", false},
+	}
+	for _, tt := range tests {
+		got := isWhitespaceOnlyChange(tt.old, tt.new)
+		if got != tt.want {
+			t.Errorf("isWhitespaceOnlyChange(%q, %q) = %v, want %v", tt.old, tt.new, got, tt.want)
+		}
+	}
+}
+
+func TestRenderDiffSegmentWhitespaceCollapse(t *testing.T) {
+	// Whitespace-only changes should produce a single ~ line with the ws background
+	oldContent := "    indented"
+	newContent := "        indented"
+
+	result := RenderDiffSegment("test.go", oldContent, newContent, 120, 1)
+
+	// Should contain the whitespace-only background color (35;35;50)
+	wsBgPattern := "48;2;35;35;50"
+	if !strings.Contains(result, wsBgPattern) {
+		t.Errorf("expected whitespace-only background (35;35;50), not found in output:\n%s", result)
+	}
+
+	// Should NOT contain the normal red/green removal/addition backgrounds
+	redBg := "48;2;60;30;30"
+	greenBg := "48;2;30;60;30"
+	if strings.Contains(result, redBg) {
+		t.Errorf("should not contain red removal background for whitespace-only change")
+	}
+	if strings.Contains(result, greenBg) {
+		t.Errorf("should not contain green addition background for whitespace-only change")
 	}
 }
 

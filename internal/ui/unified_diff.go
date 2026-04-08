@@ -56,8 +56,28 @@ func printUnifiedDiffInternal(filePath, oldContent, newContent string, _ bool) {
 
 	// Track current line numbers
 	var oldLineNum, newLineNum int
-	var deletionOffset int // Tracks position within a deletion block
 	hunkCount := 0
+
+	// Buffer for removal lines (to pair with additions)
+	type removal struct {
+		content string
+		lineNum int
+	}
+	var remBuf []removal
+
+	// Flush buffered removals as plain red lines
+	flushRemovals := func() {
+		for _, rem := range remBuf {
+			highlighted := rem.content
+			if highlighter != nil {
+				highlighted = highlighter.HighlightLineWithBg(rem.content, diffRemoveBg)
+			} else {
+				highlighted = fmt.Sprintf("\x1b[48;2;%d;%d;%dm%s\x1b[0m", diffRemoveBg[0], diffRemoveBg[1], diffRemoveBg[2], rem.content)
+			}
+			fmt.Printf("\x1b[38;2;160;80;80m%*d- \x1b[0m%s\n", lineNumWidth, rem.lineNum, highlighted)
+		}
+		remBuf = nil
+	}
 
 	// Regex to parse hunk header: @@ -start,count +start,count @@
 	hunkRe := regexp.MustCompile(`^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@`)
@@ -84,6 +104,7 @@ func printUnifiedDiffInternal(filePath, oldContent, newContent string, _ bool) {
 
 		switch prefix {
 		case '@':
+			flushRemovals()
 			// Parse hunk header to get starting line numbers
 			if matches := hunkRe.FindStringSubmatch(line); matches != nil {
 				oldLineNum, _ = strconv.Atoi(matches[1])
@@ -96,32 +117,57 @@ func printUnifiedDiffInternal(filePath, oldContent, newContent string, _ bool) {
 			hunkCount++
 
 		case '-':
-			// Removed line - red background, show virtual new file position
-			highlighted := content
-			if highlighter != nil {
-				highlighted = highlighter.HighlightLineWithBg(content, diffRemoveBg)
-			} else {
-				highlighted = fmt.Sprintf("\x1b[48;2;%d;%d;%dm%s\x1b[0m", diffRemoveBg[0], diffRemoveBg[1], diffRemoveBg[2], content)
-			}
-			fmt.Printf("\x1b[38;2;160;80;80m%*d- \x1b[0m%s\n", lineNumWidth, newLineNum+deletionOffset, highlighted)
+			// Buffer removal for pairing with additions
+			remBuf = append(remBuf, removal{content: content, lineNum: oldLineNum})
 			oldLineNum++
-			deletionOffset++
 
 		case '+':
-			// Added line - green background with new line number
-			deletionOffset = 0 // Reset deletion offset when we see additions
-			highlighted := content
-			if highlighter != nil {
-				highlighted = highlighter.HighlightLineWithBg(content, diffAddBg)
+			if len(remBuf) > 0 {
+				rem := remBuf[0]
+				remBuf = remBuf[1:]
+
+				if isWhitespaceOnlyChange(rem.content, content) {
+					// Whitespace-only: single ~ line
+					highlighted := content
+					if highlighter != nil {
+						highlighted = highlighter.HighlightLineWithBg(content, diffWsBg)
+					} else {
+						highlighted = fmt.Sprintf("\x1b[48;2;%d;%d;%dm%s\x1b[0m", diffWsBg[0], diffWsBg[1], diffWsBg[2], content)
+					}
+					fmt.Printf("\x1b[38;2;100;100;140m%*d~ \x1b[0m%s\n", lineNumWidth, newLineNum, highlighted)
+				} else {
+					// Different content: render removal then addition
+					highlighted := rem.content
+					if highlighter != nil {
+						highlighted = highlighter.HighlightLineWithBg(rem.content, diffRemoveBg)
+					} else {
+						highlighted = fmt.Sprintf("\x1b[48;2;%d;%d;%dm%s\x1b[0m", diffRemoveBg[0], diffRemoveBg[1], diffRemoveBg[2], rem.content)
+					}
+					fmt.Printf("\x1b[38;2;160;80;80m%*d- \x1b[0m%s\n", lineNumWidth, rem.lineNum, highlighted)
+
+					highlighted = content
+					if highlighter != nil {
+						highlighted = highlighter.HighlightLineWithBg(content, diffAddBg)
+					} else {
+						highlighted = fmt.Sprintf("\x1b[48;2;%d;%d;%dm%s\x1b[0m", diffAddBg[0], diffAddBg[1], diffAddBg[2], content)
+					}
+					fmt.Printf("\x1b[38;2;80;160;80m%*d+ \x1b[0m%s\n", lineNumWidth, newLineNum, highlighted)
+				}
 			} else {
-				highlighted = fmt.Sprintf("\x1b[48;2;%d;%d;%dm%s\x1b[0m", diffAddBg[0], diffAddBg[1], diffAddBg[2], content)
+				// Pure addition
+				highlighted := content
+				if highlighter != nil {
+					highlighted = highlighter.HighlightLineWithBg(content, diffAddBg)
+				} else {
+					highlighted = fmt.Sprintf("\x1b[48;2;%d;%d;%dm%s\x1b[0m", diffAddBg[0], diffAddBg[1], diffAddBg[2], content)
+				}
+				fmt.Printf("\x1b[38;2;80;160;80m%*d+ \x1b[0m%s\n", lineNumWidth, newLineNum, highlighted)
 			}
-			fmt.Printf("\x1b[38;2;80;160;80m%*d+ \x1b[0m%s\n", lineNumWidth, newLineNum, highlighted)
 			newLineNum++
 
 		case ' ':
+			flushRemovals()
 			// Context line - no background, show line number in grey
-			deletionOffset = 0 // Reset deletion offset when we see context
 			highlighted := content
 			if highlighter != nil {
 				highlighted = highlighter.HighlightLine(content)
@@ -135,6 +181,9 @@ func printUnifiedDiffInternal(filePath, oldContent, newContent string, _ bool) {
 			fmt.Println(line)
 		}
 	}
+
+	// Flush any remaining buffered removals
+	flushRemovals()
 }
 
 // HasDiff returns true if old and new content are different
@@ -533,6 +582,11 @@ func buildSegments(words []string, lcs []string) []diffSegment {
 	return segments
 }
 
+// isWhitespaceOnlyChange returns true if two lines differ only in whitespace.
+func isWhitespaceOnlyChange(oldLine, newLine string) bool {
+	return strings.TrimSpace(oldLine) == strings.TrimSpace(newLine)
+}
+
 // shouldUseWordDiff determines if word-level diff should be used for a line pair.
 // Returns true if lines are similar enough (>50% words in common).
 func shouldUseWordDiff(oldLine, newLine string) bool {
@@ -925,8 +979,15 @@ func RenderDiffSegment(filePath, oldContent, newContent string, width int, start
 				rem := removalBuffer[0]
 				removalBuffer = removalBuffer[1:]
 
-				// Check if word-diff should be used
-				if shouldUseWordDiff(rem.content, content) {
+				if isWhitespaceOnlyChange(rem.content, content) {
+					// Whitespace-only change: collapse to single ~ line
+					highlighted := content
+					if highlighter != nil {
+						highlighted = highlighter.HighlightLine(content)
+					}
+					b.WriteString(wrapDiffLine(lineNumWidth, newLineNum, '~', "\x1b[38;2;100;100;140m", highlighted, contentWidth, diffWsBg[:]))
+					renderedLines++
+				} else if shouldUseWordDiff(rem.content, content) {
 					oldSegs, newSegs := wordDiff(rem.content, content)
 					renderRemovalWithWordDiff(rem.content, rem.lineNum, oldSegs)
 					renderAdditionWithWordDiff(content, newLineNum, newSegs)
