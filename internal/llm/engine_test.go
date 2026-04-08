@@ -30,6 +30,46 @@ func (s *sliceStream) Close() error {
 	return nil
 }
 
+type concurrentCloseStream struct {
+	mu          sync.Mutex
+	calls       int
+	recvBlocked chan struct{}
+	releaseEOF  chan struct{}
+	closeOnce   sync.Once
+}
+
+func newConcurrentCloseStream() *concurrentCloseStream {
+	return &concurrentCloseStream{
+		recvBlocked: make(chan struct{}),
+		releaseEOF:  make(chan struct{}),
+	}
+}
+
+func (s *concurrentCloseStream) Recv() (Event, error) {
+	s.mu.Lock()
+	s.calls++
+	call := s.calls
+	s.mu.Unlock()
+
+	switch call {
+	case 1:
+		return Event{Type: EventTextDelta, Text: "hello"}, nil
+	case 2:
+		close(s.recvBlocked)
+		<-s.releaseEOF
+		return Event{}, io.EOF
+	default:
+		return Event{}, io.EOF
+	}
+}
+
+func (s *concurrentCloseStream) Close() error {
+	s.closeOnce.Do(func() {
+		close(s.releaseEOF)
+	})
+	return nil
+}
+
 type fakeProvider struct {
 	script          func(call int, req Request) []Event
 	calls           []Request
@@ -1807,6 +1847,67 @@ func TestEngineInterjection_DrainOnNoPending(t *testing.T) {
 	_ = engine.DrainInterjection()
 	if text := engine.DrainInterjection(); text != "" {
 		t.Fatalf("expected empty string after drain, got %q", text)
+	}
+}
+
+func TestCallbackStream_CloseWhileDrainingFiresCallbackOnce(t *testing.T) {
+	inner := newConcurrentCloseStream()
+
+	var (
+		mu       sync.Mutex
+		calls    int
+		messages []Message
+	)
+
+	stream := wrapCallbackStream(context.Background(), inner, func(ctx context.Context, turnIndex int, got []Message, metrics TurnMetrics) error {
+		mu.Lock()
+		defer mu.Unlock()
+		calls++
+		messages = append([]Message(nil), got...)
+		return nil
+	})
+
+	event, err := stream.Recv()
+	if err != nil {
+		t.Fatalf("first recv error: %v", err)
+	}
+	if event.Type != EventTextDelta || event.Text != "hello" {
+		t.Fatalf("first recv = %#v, want hello text delta", event)
+	}
+
+	recvDone := make(chan error, 1)
+	go func() {
+		_, err := stream.Recv()
+		recvDone <- err
+	}()
+
+	select {
+	case <-inner.recvBlocked:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for recv to block")
+	}
+
+	if err := stream.Close(); err != nil {
+		t.Fatalf("close error: %v", err)
+	}
+
+	select {
+	case err := <-recvDone:
+		if err != io.EOF {
+			t.Fatalf("second recv error = %v, want EOF", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for second recv to finish")
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	if calls != 1 {
+		t.Fatalf("callback calls = %d, want 1", calls)
+	}
+	if len(messages) != 1 || len(messages[0].Parts) != 1 || messages[0].Parts[0].Text != "hello" {
+		t.Fatalf("callback messages = %#v, want single assistant hello message", messages)
 	}
 }
 
