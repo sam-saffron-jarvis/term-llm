@@ -1043,22 +1043,15 @@ func (s *serveServer) runtimeForFreshProviderRequest(ctx context.Context, sessio
 		}
 		return rt, false, nil
 	}
-	if existing, ok := s.sessionMgr.Get(sessionID); ok {
-		existingProvider := runtimeProviderKey(existing)
-		if existingProvider != "" && providerName != "" && existingProvider != providerName {
-			evicted, err := s.sessionMgr.DeleteIfIdle(sessionID)
-			if err != nil {
-				return nil, false, err
-			}
-			if evicted != nil {
-				s.unregisterResponseIDs(evicted)
-				evicted.Close()
-			}
-		}
-	}
-	rt, err := s.sessionMgr.GetOrCreateWith(ctx, sessionID, func(ctx context.Context) (*serveRuntime, error) {
-		return s.runtimeFactory(ctx, providerName, "")
-	})
+	rt, err := s.sessionMgr.ReplaceIdleWith(ctx, sessionID,
+		func(existing *serveRuntime) bool {
+			ep := runtimeProviderKey(existing)
+			return ep != "" && providerName != "" && ep != providerName
+		},
+		func(ctx context.Context) (*serveRuntime, error) {
+			return s.runtimeFactory(ctx, providerName, "")
+		},
+	)
 	if err != nil {
 		return nil, false, err
 	}

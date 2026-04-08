@@ -3505,6 +3505,101 @@ func TestHandleResponses_FreshProviderRequestCanReuseSessionID(t *testing.T) {
 	}
 }
 
+func TestFreshProviderRequest_ConcurrentReplace(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "sessions.db")
+	store, err := session.NewStore(session.Config{Enabled: true, Path: dbPath})
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer store.Close()
+
+	newRuntime := func(providerName string) *serveRuntime {
+		provider := llm.NewMockProvider(providerName).AddTextResponse(providerName + " reply")
+		engine := llm.NewEngine(provider, nil)
+		rt := &serveRuntime{
+			provider:     provider,
+			providerKey:  providerName,
+			engine:       engine,
+			defaultModel: providerName + "-model",
+			store:        store,
+		}
+		rt.Touch()
+		return rt
+	}
+
+	manager := newServeSessionManager(time.Minute, 100, func(ctx context.Context) (*serveRuntime, error) {
+		return newRuntime("default"), nil
+	})
+	defer manager.Close()
+	manager.onEvict = func(rt *serveRuntime) {}
+
+	srv := &serveServer{
+		cfgRef:     &config.Config{DefaultProvider: "default"},
+		sessionMgr: manager,
+		store:      store,
+		runtimeFactory: func(ctx context.Context, providerName string, model string) (*serveRuntime, error) {
+			return newRuntime(providerName), nil
+		},
+	}
+
+	// Seed a session with the "default" provider.
+	_, err = manager.GetOrCreate(context.Background(), "race-session")
+	if err != nil {
+		t.Fatalf("seed session: %v", err)
+	}
+
+	// Launch concurrent replacement requests with different providers.
+	const goroutines = 10
+	var wg sync.WaitGroup
+	errs := make([]error, goroutines)
+	providers := make([]string, goroutines)
+
+	for i := 0; i < goroutines; i++ {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			provName := fmt.Sprintf("provider-%d", idx%2)
+			rt, _, rerr := srv.runtimeForFreshProviderRequest(context.Background(), "race-session", provName)
+			errs[idx] = rerr
+			if rt != nil {
+				providers[idx] = runtimeProviderKey(rt)
+			}
+		}(i)
+	}
+	wg.Wait()
+
+	// Verify: all goroutines either succeeded, got errServeSessionBusy,
+	// or got the belt-and-suspenders provider mismatch error (expected when
+	// a concurrent goroutine wins the in-flight race with a different provider).
+	var successProvider string
+	for i, err := range errs {
+		if err != nil {
+			if errors.Is(err, errServeSessionBusy) {
+				continue
+			}
+			if strings.Contains(err.Error(), "already uses provider") {
+				continue
+			}
+			t.Fatalf("goroutine %d: unexpected error: %v", i, err)
+		}
+		if successProvider == "" {
+			successProvider = providers[i]
+		}
+	}
+	if successProvider == "" {
+		t.Fatal("all goroutines failed; expected at least one success")
+	}
+
+	// The session should have a consistent provider now.
+	rt, ok := manager.Get("race-session")
+	if !ok {
+		t.Fatal("session missing after concurrent replace")
+	}
+	if got := runtimeProviderKey(rt); got != successProvider {
+		t.Fatalf("session provider = %q, want %q", got, successProvider)
+	}
+}
+
 func TestHandleResponses_NoPreviousResponseIDStartsFresh(t *testing.T) {
 	// Each runtime gets 2 responses so it can handle being reused
 	srv := newTestServeServer("reply1", "reply2")

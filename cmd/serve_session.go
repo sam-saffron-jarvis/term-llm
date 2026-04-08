@@ -272,22 +272,114 @@ func (m *serveSessionManager) GetOrCreateWith(ctx context.Context, id string, cr
 	return inflight.rt, nil
 }
 
-// DeleteIfIdle removes a session runtime only when it is not active.
-func (m *serveSessionManager) DeleteIfIdle(id string) (*serveRuntime, error) {
+// ReplaceIdleWith atomically replaces a session when shouldReplace returns true.
+// If the existing session does not need replacing, it is returned directly.
+// This avoids the TOCTOU race between deleting and re-creating a session.
+func (m *serveSessionManager) ReplaceIdleWith(ctx context.Context, id string, shouldReplace func(*serveRuntime) bool, create func(context.Context) (*serveRuntime, error)) (*serveRuntime, error) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
-	if inflight, ok := m.creating[id]; ok && inflight != nil {
-		return nil, errServeSessionBusy
+	if m.closed {
+		m.mu.Unlock()
+		return nil, fmt.Errorf("session manager closed")
 	}
-	rt, ok := m.sessions[id]
-	if !ok {
-		return nil, nil
+
+	var replaced *serveRuntime
+
+	if rt, ok := m.sessions[id]; ok {
+		if !shouldReplace(rt) {
+			rt.Touch()
+			m.mu.Unlock()
+			return rt, nil
+		}
+		if rt.hasActiveRun() {
+			m.mu.Unlock()
+			return nil, errServeSessionBusy
+		}
+		delete(m.sessions, id)
+		replaced = rt
 	}
-	if rt.hasActiveRun() {
-		return nil, errServeSessionBusy
+
+	if inflight, ok := m.creating[id]; ok {
+		m.mu.Unlock()
+		// Clean up the replaced session outside the lock.
+		if replaced != nil {
+			if m.onEvict != nil {
+				m.onEvict(replaced)
+			}
+			replaced.Close()
+		}
+		select {
+		case <-inflight.done:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+		if inflight.err != nil {
+			return nil, inflight.err
+		}
+		if inflight.rt == nil {
+			return nil, fmt.Errorf("failed to initialize session runtime")
+		}
+		inflight.rt.Touch()
+		return inflight.rt, nil
 	}
-	delete(m.sessions, id)
-	return rt, nil
+
+	inflight := &sessionCreateInFlight{done: make(chan struct{})}
+	m.creating[id] = inflight
+	m.mu.Unlock()
+
+	// Clean up the replaced session outside the lock.
+	if replaced != nil {
+		if m.onEvict != nil {
+			m.onEvict(replaced)
+		}
+		replaced.Close()
+	}
+
+	rt, err := create(ctx)
+	m.mu.Lock()
+	delete(m.creating, id)
+
+	var duplicate *serveRuntime
+	var evicted *serveRuntime
+	switch {
+	case err != nil:
+		inflight.err = err
+	case m.closed:
+		inflight.err = fmt.Errorf("session manager closed")
+	default:
+		if existing, ok := m.sessions[id]; ok {
+			existing.Touch()
+			inflight.rt = existing
+			duplicate = rt
+		} else {
+			rt.Touch()
+			evicted = m.evictOldestIdleLocked()
+			m.sessions[id] = rt
+			inflight.rt = rt
+		}
+	}
+	close(inflight.done)
+	m.mu.Unlock()
+
+	if duplicate != nil {
+		duplicate.Close()
+	}
+	if evicted != nil {
+		if m.onEvict != nil {
+			m.onEvict(evicted)
+		}
+		evicted.Close()
+	}
+	if inflight.err != nil {
+		if rt != nil && inflight.rt == nil {
+			rt.Close()
+		}
+		return nil, inflight.err
+	}
+	if inflight.rt == nil {
+		return nil, fmt.Errorf("failed to initialize session runtime")
+	}
+	inflight.rt.Touch()
+	return inflight.rt, nil
 }
 
 // ActiveSessionIDs returns the set of session IDs that currently have an
