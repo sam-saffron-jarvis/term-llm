@@ -101,6 +101,31 @@ func (t *countingTool) Preview(args json.RawMessage) string {
 	return ""
 }
 
+type signalTool struct {
+	started chan struct{}
+}
+
+func (t *signalTool) Spec() ToolSpec {
+	return ToolSpec{
+		Name:        "signal_tool",
+		Description: "Signals when execution starts",
+		Schema:      map[string]any{"type": "object"},
+	}
+}
+
+func (t *signalTool) Execute(ctx context.Context, args json.RawMessage) (ToolOutput, error) {
+	select {
+	case <-t.started:
+	default:
+		close(t.started)
+	}
+	return TextOutput("ok"), nil
+}
+
+func (t *signalTool) Preview(args json.RawMessage) string {
+	return ""
+}
+
 type timeoutTool struct {
 	calls int
 }
@@ -1120,6 +1145,106 @@ func TestEngineEmitsToolCallAndExecStartForEachTool(t *testing.T) {
 		if _, ok := toolExecStartEvents[id]; !ok {
 			t.Errorf("EventToolCall ID %q has no matching EventToolExecStart", id)
 		}
+	}
+}
+
+func TestRunLoopDoesNotDeadlockOnBlockedToolExecStartWhenCancelled(t *testing.T) {
+	tool := &countingTool{}
+	registry := NewToolRegistry()
+	registry.Register(tool)
+
+	provider := &fakeProvider{
+		script: func(call int, req Request) []Event {
+			return []Event{
+				{Type: EventToolCall, Tool: &ToolCall{ID: "call-1", Name: "count_tool", Arguments: json.RawMessage(`{}`)}},
+				{Type: EventDone},
+			}
+		},
+	}
+
+	engine := NewEngine(provider, registry)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	events := make(chan Event, 1)
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- engine.runLoop(ctx, Request{
+			Messages: []Message{UserText("test")},
+			Tools:    []ToolSpec{tool.Spec()},
+		}, events)
+	}()
+
+	deadline := time.After(5 * time.Second)
+	for len(events) == 0 {
+		select {
+		case <-deadline:
+			t.Fatal("timed out waiting for tool call event")
+		default:
+			time.Sleep(time.Millisecond)
+		}
+	}
+
+	cancel()
+
+	select {
+	case err := <-errCh:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("expected context cancellation, got %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("runLoop remained blocked after cancellation")
+	}
+
+	if tool.calls != 0 {
+		t.Fatalf("expected tool not to execute once cancellation unblocked the start event, got %d calls", tool.calls)
+	}
+}
+
+func TestExecuteSingleToolCallDoesNotDeadlockOnBlockedToolExecEndWhenCancelled(t *testing.T) {
+	tool := &signalTool{started: make(chan struct{})}
+	registry := NewToolRegistry()
+	registry.Register(tool)
+
+	engine := NewEngine(&fakeProvider{}, registry)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	events := make(chan Event, 1)
+	events <- Event{Type: EventToolCall, ToolCallID: "buffer-full"}
+
+	type result struct {
+		msgs []Message
+		err  error
+	}
+	resultCh := make(chan result, 1)
+	go func() {
+		msgs, err := engine.executeSingleToolCall(ctx, ToolCall{
+			ID:        "call-1",
+			Name:      "signal_tool",
+			Arguments: json.RawMessage(`{}`),
+		}, events, false, false)
+		resultCh <- result{msgs: msgs, err: err}
+	}()
+
+	select {
+	case <-tool.started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("tool never started")
+	}
+
+	cancel()
+
+	select {
+	case res := <-resultCh:
+		if res.err != nil {
+			t.Fatalf("expected nil error, got %v", res.err)
+		}
+		if len(res.msgs) != 1 {
+			t.Fatalf("expected 1 tool result message, got %d", len(res.msgs))
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("executeSingleToolCall remained blocked after cancellation")
 	}
 }
 

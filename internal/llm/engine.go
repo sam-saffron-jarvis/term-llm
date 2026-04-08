@@ -1086,7 +1086,11 @@ func (e *Engine) runLoop(ctx context.Context, req Request, events chan<- Event) 
 			info := e.getToolPreview(call)
 
 			if events != nil {
-				events <- Event{Type: EventToolExecStart, ToolCallID: call.ID, ToolName: call.Name, ToolInfo: info, ToolArgs: call.Arguments}
+				if !safeSendEvent(ctx, events, Event{Type: EventToolExecStart, ToolCallID: call.ID, ToolName: call.Name, ToolInfo: info, ToolArgs: call.Arguments}) {
+					if err := ctx.Err(); err != nil {
+						return err
+					}
+				}
 			}
 		}
 
@@ -1218,7 +1222,7 @@ func (e *Engine) executeToolCalls(ctx context.Context, calls []ToolCall, events 
 				if r := recover(); r != nil {
 					errMsg := fmt.Sprintf("Error: tool panicked: %v", r)
 					if events != nil {
-						events <- Event{Type: EventToolExecEnd, ToolCallID: c.ID, ToolName: c.Name, ToolSuccess: false}
+						_ = safeSendEvent(ctx, events, Event{Type: EventToolExecEnd, ToolCallID: c.ID, ToolName: c.Name, ToolSuccess: false})
 					}
 					resultChan <- toolResult{index: idx, message: ToolErrorMessage(c.ID, c.Name, errMsg, c.ThoughtSig)}
 				}
@@ -1253,7 +1257,7 @@ func (e *Engine) executeSingleToolCallSafe(ctx context.Context, call ToolCall, e
 		if r := recover(); r != nil {
 			errMsg := fmt.Sprintf("Error: tool panicked: %v", r)
 			if events != nil {
-				events <- Event{Type: EventToolExecEnd, ToolCallID: call.ID, ToolName: call.Name, ToolSuccess: false}
+				_ = safeSendEvent(ctx, events, Event{Type: EventToolExecEnd, ToolCallID: call.ID, ToolName: call.Name, ToolSuccess: false})
 			}
 			msgs = []Message{ToolErrorMessage(call.ID, call.Name, errMsg, call.ThoughtSig)}
 			err = nil
@@ -1269,7 +1273,7 @@ func (e *Engine) executeSingleToolCall(ctx context.Context, call ToolCall, event
 		errMsg := fmt.Sprintf("Error: tool not registered: %s", call.Name)
 		DebugToolResult(debug, call.ID, call.Name, errMsg)
 		if events != nil {
-			events <- Event{Type: EventToolExecEnd, ToolCallID: call.ID, ToolName: call.Name, ToolInfo: e.getToolPreview(call), ToolSuccess: false}
+			_ = safeSendEvent(ctx, events, Event{Type: EventToolExecEnd, ToolCallID: call.ID, ToolName: call.Name, ToolInfo: e.getToolPreview(call), ToolSuccess: false})
 		}
 		return []Message{ToolErrorMessage(call.ID, call.Name, errMsg, call.ThoughtSig)}, nil
 	}
@@ -1279,7 +1283,7 @@ func (e *Engine) executeSingleToolCall(ctx context.Context, call ToolCall, event
 		errMsg := fmt.Sprintf("Error: tool '%s' is not in the active skill's allowed-tools list", call.Name)
 		DebugToolResult(debug, call.ID, call.Name, errMsg)
 		if events != nil {
-			events <- Event{Type: EventToolExecEnd, ToolCallID: call.ID, ToolName: call.Name, ToolInfo: e.getToolPreview(call), ToolSuccess: false}
+			_ = safeSendEvent(ctx, events, Event{Type: EventToolExecEnd, ToolCallID: call.ID, ToolName: call.Name, ToolInfo: e.getToolPreview(call), ToolSuccess: false})
 		}
 		return []Message{ToolErrorMessage(call.ID, call.Name, errMsg, call.ThoughtSig)}, nil
 	}
@@ -1321,7 +1325,7 @@ func (e *Engine) executeSingleToolCall(ctx context.Context, call ToolCall, event
 		errMsg := fmt.Sprintf("Error: %v", err)
 		DebugToolResult(debug, call.ID, call.Name, errMsg)
 		if events != nil {
-			events <- Event{Type: EventToolExecEnd, ToolCallID: call.ID, ToolName: call.Name, ToolInfo: info, ToolSuccess: false}
+			_ = safeSendEvent(ctx, events, Event{Type: EventToolExecEnd, ToolCallID: call.ID, ToolName: call.Name, ToolInfo: info, ToolSuccess: false})
 		}
 		return []Message{ToolErrorMessage(call.ID, call.Name, errMsg, call.ThoughtSig)}, nil
 	}
@@ -1329,7 +1333,7 @@ func (e *Engine) executeSingleToolCall(ctx context.Context, call ToolCall, event
 	DebugToolResult(debug, call.ID, call.Name, output.Content)
 	DebugRawToolResult(debugRaw, call.ID, call.Name, output.Content)
 	if events != nil {
-		events <- Event{
+		_ = safeSendEvent(ctx, events, Event{
 			Type:        EventToolExecEnd,
 			ToolCallID:  call.ID,
 			ToolName:    call.Name,
@@ -1338,7 +1342,7 @@ func (e *Engine) executeSingleToolCall(ctx context.Context, call ToolCall, event
 			ToolOutput:  output.Content,
 			ToolDiffs:   output.Diffs,
 			ToolImages:  output.Images,
-		}
+		})
 	}
 	return []Message{ToolResultMessageFromOutput(call.ID, call.Name, output, call.ThoughtSig)}, nil
 }
