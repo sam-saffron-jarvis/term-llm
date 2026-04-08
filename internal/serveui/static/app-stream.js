@@ -173,6 +173,11 @@ const startHeartbeatMonitor = () => {
       stopHeartbeatMonitor();
       return;
     }
+    // While an ask_user or approval modal is open the server is intentionally
+    // silent — it is blocked waiting for user input.  A stale-heartbeat abort
+    // here would needlessly reconnect the SSE stream and replay the prompt
+    // event, resetting any partial answer the user has typed.
+    if (state.askUser || state.approval) return;
     if (Date.now() - state.lastEventTime > HEARTBEAT_STALE_THRESHOLD) {
       if (state.abortController) {
         state.abortController._heartbeatAbort = true;
@@ -445,7 +450,12 @@ const applyResponseStreamEvent = (session, streamState, event, payload) => {
     const callId = String(payload.call_id || '').trim();
     const questions = Array.isArray(payload.questions) ? payload.questions : [];
     if (callId && questions.length > 0) {
-      openAskUserModal(session.id, callId, questions);
+      const samePrompt = state.askUser
+        && state.askUser.sessionId === session.id
+        && state.askUser.callId === callId;
+      if (!samePrompt) {
+        openAskUserModal(session.id, callId, questions);
+      }
     }
     return { terminal: false };
   }
