@@ -4937,6 +4937,53 @@ func TestServeSessionManager_Get_MissingSession(t *testing.T) {
 	}
 }
 
+func TestServeSessionManager_ReplaceIdleWithFailedCreatePreservesSession(t *testing.T) {
+	mgr := newServeSessionManager(time.Minute, 10, nil)
+	defer mgr.Close()
+
+	original := &serveRuntime{providerKey: "default"}
+	original.Touch()
+
+	mgr.mu.Lock()
+	mgr.sessions["sess-1"] = original
+	mgr.mu.Unlock()
+
+	var evictions atomic.Int32
+	mgr.onEvict = func(rt *serveRuntime) {
+		evictions.Add(1)
+	}
+
+	wantErr := errors.New("provider init failed")
+	replaced, err := mgr.ReplaceIdleWith(context.Background(), "sess-1",
+		func(existing *serveRuntime) bool {
+			return true
+		},
+		func(ctx context.Context) (*serveRuntime, error) {
+			return nil, wantErr
+		},
+	)
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("ReplaceIdleWith error = %v, want %v", err, wantErr)
+	}
+	if replaced != nil {
+		t.Fatalf("ReplaceIdleWith returned runtime %v, want nil", replaced)
+	}
+
+	got, ok := mgr.Get("sess-1")
+	if !ok {
+		t.Fatal("expected original session to remain after failed replacement")
+	}
+	if got != original {
+		t.Fatal("expected failed replacement to preserve original runtime")
+	}
+	if got.providerKey != "default" {
+		t.Fatalf("providerKey = %q, want default", got.providerKey)
+	}
+	if got := evictions.Load(); got != 0 {
+		t.Fatalf("evictions = %d, want 0", got)
+	}
+}
+
 func TestServeSessionManager_GetOrCreate_RespectsContextCancel(t *testing.T) {
 	// Factory blocks until told to proceed.
 	proceed := make(chan struct{})

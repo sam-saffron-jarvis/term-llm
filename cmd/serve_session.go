@@ -294,19 +294,11 @@ func (m *serveSessionManager) ReplaceIdleWith(ctx context.Context, id string, sh
 			m.mu.Unlock()
 			return nil, errServeSessionBusy
 		}
-		delete(m.sessions, id)
 		replaced = rt
 	}
 
 	if inflight, ok := m.creating[id]; ok {
 		m.mu.Unlock()
-		// Clean up the replaced session outside the lock.
-		if replaced != nil {
-			if m.onEvict != nil {
-				m.onEvict(replaced)
-			}
-			replaced.Close()
-		}
 		select {
 		case <-inflight.done:
 		case <-ctx.Done():
@@ -322,17 +314,13 @@ func (m *serveSessionManager) ReplaceIdleWith(ctx context.Context, id string, sh
 		return inflight.rt, nil
 	}
 
+	if replaced != nil {
+		delete(m.sessions, id)
+	}
+
 	inflight := &sessionCreateInFlight{done: make(chan struct{})}
 	m.creating[id] = inflight
 	m.mu.Unlock()
-
-	// Clean up the replaced session outside the lock.
-	if replaced != nil {
-		if m.onEvict != nil {
-			m.onEvict(replaced)
-		}
-		replaced.Close()
-	}
 
 	rt, err := create(ctx)
 	m.mu.Lock()
@@ -340,26 +328,49 @@ func (m *serveSessionManager) ReplaceIdleWith(ctx context.Context, id string, sh
 
 	var duplicate *serveRuntime
 	var evicted *serveRuntime
+	var cleanupReplaced *serveRuntime
 	switch {
 	case err != nil:
 		inflight.err = err
+		if replaced != nil {
+			if m.closed {
+				cleanupReplaced = replaced
+			} else if existing, ok := m.sessions[id]; ok {
+				if existing != replaced {
+					cleanupReplaced = replaced
+				}
+			} else {
+				m.sessions[id] = replaced
+			}
+		}
 	case m.closed:
 		inflight.err = fmt.Errorf("session manager closed")
+		cleanupReplaced = replaced
 	default:
 		if existing, ok := m.sessions[id]; ok {
 			existing.Touch()
 			inflight.rt = existing
 			duplicate = rt
+			if replaced != nil && existing != replaced {
+				cleanupReplaced = replaced
+			}
 		} else {
 			rt.Touch()
 			evicted = m.evictOldestIdleLocked()
 			m.sessions[id] = rt
 			inflight.rt = rt
+			cleanupReplaced = replaced
 		}
 	}
 	close(inflight.done)
 	m.mu.Unlock()
 
+	if cleanupReplaced != nil {
+		if m.onEvict != nil {
+			m.onEvict(cleanupReplaced)
+		}
+		cleanupReplaced.Close()
+	}
 	if duplicate != nil {
 		duplicate.Close()
 	}
