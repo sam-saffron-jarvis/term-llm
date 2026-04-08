@@ -133,6 +133,10 @@ func (p *VeniceProvider) Stream(ctx context.Context, req Request) (Stream, error
 
 			var chatResp oaiChatResponse
 			if err := json.Unmarshal([]byte(data), &chatResp); err != nil {
+				if lastEventType == "error" {
+					return fmt.Errorf("%s API error: %s", p.name, strings.TrimSpace(data))
+				}
+				lastEventType = ""
 				continue
 			}
 			if lastEventType == "error" || chatResp.Error != nil {

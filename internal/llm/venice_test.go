@@ -192,6 +192,45 @@ func TestVeniceProviderSearchUsesVeniceParametersAndBaseModel(t *testing.T) {
 	}
 }
 
+func TestVeniceProviderPlainTextErrorEventSurfacesError(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("event: error\ndata: Service temporarily unavailable.\n\n"))
+	}))
+	defer ts.Close()
+
+	provider := &VeniceProvider{OpenAICompatProvider: NewOpenAICompatProvider(ts.URL, "test-key", "venice-uncensored", "Venice")}
+	stream, err := provider.Stream(context.Background(), Request{
+		Messages: []Message{UserText("hello")},
+	})
+	if err != nil {
+		t.Fatalf("Stream() error = %v", err)
+	}
+	defer stream.Close()
+
+	var recvErr error
+	for {
+		ev, err := stream.Recv()
+		if err != nil {
+			recvErr = err
+			break
+		}
+		if ev.Type == EventError {
+			recvErr = ev.Err
+			break
+		}
+		if ev.Type == EventDone {
+			break
+		}
+	}
+	if recvErr == nil {
+		t.Fatal("expected error from plain-text error event, got none")
+	}
+	if !strings.Contains(recvErr.Error(), "Service temporarily unavailable") {
+		t.Fatalf("expected 'Service temporarily unavailable' in error, got: %v", recvErr)
+	}
+}
+
 func TestVeniceProviderExplicitXSearchUsesVeniceParameters(t *testing.T) {
 	var got struct {
 		Model            string                 `json:"model"`
