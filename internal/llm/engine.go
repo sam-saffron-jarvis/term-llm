@@ -561,6 +561,7 @@ func wrapCallbackStream(ctx context.Context, inner Stream, cb TurnCompletedCallb
 type callbackStream struct {
 	inner              Stream
 	ctx                context.Context
+	mu                 sync.Mutex
 	text               *strings.Builder
 	reasoning          *strings.Builder
 	reasoningItemID    string
@@ -582,6 +583,9 @@ func (s *callbackStream) Recv() (Event, error) {
 		s.fireCallback()
 		return event, err
 	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
 	// Accumulate text and usage
 	if event.Type == EventTextDelta && event.Text != "" {
@@ -610,9 +614,17 @@ func (s *callbackStream) Recv() (Event, error) {
 
 // fireCallback invokes the callback once if there's accumulated content.
 func (s *callbackStream) fireCallback() {
+	var (
+		cb      TurnCompletedCallback
+		msg     Message
+		metrics TurnMetrics
+	)
+
+	s.mu.Lock()
 	if s.callback != nil && !s.done && (s.text.Len() > 0 || s.reasoning.Len() > 0 || s.reasoningItemID != "" || s.reasoningEncrypted != "") {
 		s.done = true
-		msg := Message{
+		cb = s.callback
+		msg = Message{
 			Role: RoleAssistant,
 			Parts: []Part{{
 				Type:                      PartText,
@@ -622,9 +634,14 @@ func (s *callbackStream) fireCallback() {
 				ReasoningEncryptedContent: s.reasoningEncrypted,
 			}},
 		}
+		metrics = s.metrics
+	}
+	s.mu.Unlock()
+
+	if cb != nil {
 		cbCtx, cancel := callbackContext(s.ctx)
 		defer cancel()
-		_ = s.callback(cbCtx, 0, []Message{msg}, s.metrics)
+		_ = cb(cbCtx, 0, []Message{msg}, metrics)
 	}
 }
 
