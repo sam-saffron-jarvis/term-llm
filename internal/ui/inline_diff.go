@@ -172,6 +172,9 @@ var (
 	// Stronger backgrounds for word-level changes within a line
 	diffAddBgStrong    = [3]int{40, 90, 40} // brighter green for changed words
 	diffRemoveBgStrong = [3]int{90, 40, 40} // brighter red for changed words
+
+	// Subtle background for whitespace-only changes (collapsed to single line)
+	diffWsBg = [3]int{35, 35, 50} // subtle blue-grey tint
 )
 
 // PrintCompactDiff prints a compact diff with 2 lines of context and line numbers
