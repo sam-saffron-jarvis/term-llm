@@ -3571,7 +3571,7 @@ func TestFreshProviderRequest_ConcurrentReplace(t *testing.T) {
 	// Verify: all goroutines either succeeded, got errServeSessionBusy,
 	// or got the belt-and-suspenders provider mismatch error (expected when
 	// a concurrent goroutine wins the in-flight race with a different provider).
-	var successProvider string
+	anySuccess := false
 	for i, err := range errs {
 		if err != nil {
 			if errors.Is(err, errServeSessionBusy) {
@@ -3582,21 +3582,21 @@ func TestFreshProviderRequest_ConcurrentReplace(t *testing.T) {
 			}
 			t.Fatalf("goroutine %d: unexpected error: %v", i, err)
 		}
-		if successProvider == "" {
-			successProvider = providers[i]
-		}
+		anySuccess = true
 	}
-	if successProvider == "" {
+	if !anySuccess {
 		t.Fatal("all goroutines failed; expected at least one success")
 	}
 
-	// The session should have a consistent provider now.
+	// The session should have a consistent provider after the race.
+	// We can't predict which provider won (sequential replacements are valid),
+	// but it must be one of the two requested providers.
 	rt, ok := manager.Get("race-session")
 	if !ok {
 		t.Fatal("session missing after concurrent replace")
 	}
-	if got := runtimeProviderKey(rt); got != successProvider {
-		t.Fatalf("session provider = %q, want %q", got, successProvider)
+	if got := runtimeProviderKey(rt); got != "provider-0" && got != "provider-1" {
+		t.Fatalf("session provider = %q, want provider-0 or provider-1", got)
 	}
 }
 

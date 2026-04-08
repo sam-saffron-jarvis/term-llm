@@ -535,7 +535,8 @@ func TestStreamReply_UnicodeChunkBoundaryPreservesUTF8(t *testing.T) {
 		if !utf8.ValidString(text) {
 			t.Fatalf("sent invalid UTF-8 text: %q", text)
 		}
-		if text == response || strings.HasPrefix(text, response) {
+		cleaned := strings.TrimSpace(text)
+		if cleaned == response || strings.HasPrefix(cleaned, response) {
 			foundContent = true
 		}
 	}

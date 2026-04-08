@@ -1360,7 +1360,7 @@ loop:
 				rendered = buildHeartbeatSegment(prose, toolDisplay, phase, spin, elapsed)
 			}
 
-			if utf8.RuneCountInString(prose) >= telegramMaxMessageLen || utf8.RuneCountInString(rendered) >= telegramMaxMessageLen {
+			if utf8.RuneCountInString(prose) > telegramMaxMessageLen {
 				// Keep chunk splitting based on prose, not status line rendering.
 				splitAtRunes := telegramMaxMessageLen
 				proseRunes := utf8.RuneCountInString(prose)
