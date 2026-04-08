@@ -1023,7 +1023,7 @@ func (s *serveServer) streamResponseRunEvents(ctx context.Context, w http.Respon
 	}
 }
 
-func (s *serveServer) startResponseRun(runtime *serveRuntime, stateful bool, replaceHistory bool, inputMessages []llm.Message, llmReq llm.Request, sessionID string, options startResponseRunOptions) (*responseRun, error) {
+func (s *serveServer) startResponseRun(ctx context.Context, runtime *serveRuntime, stateful bool, replaceHistory bool, inputMessages []llm.Message, llmReq llm.Request, sessionID string, options startResponseRunOptions) (*responseRun, error) {
 	mgr := s.ensureResponseRuns()
 
 	respID := "resp_" + randomSuffix()
@@ -1033,7 +1033,10 @@ func (s *serveServer) startResponseRun(runtime *serveRuntime, stateful bool, rep
 	}
 	created := time.Now().Unix()
 
-	runCtx, cancel := context.WithTimeout(context.Background(), defaultResponseRunTimeout)
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	runCtx, cancel := context.WithTimeout(ctx, defaultResponseRunTimeout)
 	run := newResponseRun(respID, sessionID, options.previousResponseID, model, created, cancel)
 	if err := mgr.create(run); err != nil {
 		cancel()

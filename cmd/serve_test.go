@@ -2975,7 +2975,7 @@ func waitForServeCondition(t *testing.T, timeout time.Duration, fn func() bool, 
 	t.Fatalf("timed out waiting for %s", description)
 }
 
-func TestHandleResponses_UIAskUserResumeSurvivesDisconnect(t *testing.T) {
+func TestHandleResponses_UIAskUserCancellationClearsPendingPromptOnDisconnect(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "sessions.db")
 	store, err := session.NewStore(session.Config{Enabled: true, Path: dbPath})
 	if err != nil {
@@ -3080,11 +3080,35 @@ func TestHandleResponses_UIAskUserResumeSurvivesDisconnect(t *testing.T) {
 	select {
 	case <-doneCh:
 	case <-time.After(time.Second):
-		t.Fatal("timed out waiting for streaming request to detach")
+		t.Fatal("timed out waiting for streaming request cancellation")
 	}
 
-	if !rt.hasActiveRun() {
-		t.Fatal("expected runtime to remain active after client disconnect")
+	if rt.hasActiveRun() {
+		t.Fatal("expected runtime to stop after client disconnect")
+	}
+	if prompts := rt.pendingAskUserPrompts(); len(prompts) != 0 {
+		t.Fatalf("pending ask_user prompts = %d, want 0", len(prompts))
+	}
+
+	stateReq = httptest.NewRequest(http.MethodGet, "/v1/sessions/resume-session/state", nil)
+	stateRR = httptest.NewRecorder()
+	srv.handleSessionByID(stateRR, stateReq)
+	if stateRR.Code != http.StatusOK {
+		t.Fatalf("post-cancel state status = %d, want 200", stateRR.Code)
+	}
+	stateBody = struct {
+		ActiveRun        bool                `json:"active_run"`
+		ActiveResponseID string              `json:"active_response_id"`
+		PendingAskUser   *serveAskUserPrompt `json:"pending_ask_user"`
+	}{}
+	if err := json.Unmarshal(stateRR.Body.Bytes(), &stateBody); err != nil {
+		t.Fatalf("decode post-cancel state: %v", err)
+	}
+	if stateBody.ActiveRun {
+		t.Fatal("expected active_run=false after cancellation")
+	}
+	if stateBody.PendingAskUser != nil {
+		t.Fatalf("unexpected pending ask_user after cancellation: %#v", stateBody.PendingAskUser)
 	}
 
 	submitBody := `{"call_id":"call_ask_1","answers":[{"question_index":0,"header":"Theme","selected":"Dark","is_custom":false}]}`
@@ -3092,25 +3116,9 @@ func TestHandleResponses_UIAskUserResumeSurvivesDisconnect(t *testing.T) {
 	submitReq.Header.Set("Content-Type", "application/json")
 	submitRR := httptest.NewRecorder()
 	srv.handleSessionByID(submitRR, submitReq)
-	if submitRR.Code != http.StatusOK {
-		t.Fatalf("submit status = %d, body=%s", submitRR.Code, submitRR.Body.String())
+	if submitRR.Code != http.StatusConflict {
+		t.Fatalf("submit status = %d, want 409 body=%s", submitRR.Code, submitRR.Body.String())
 	}
-
-	waitForServeCondition(t, time.Second, func() bool {
-		if rt.hasActiveRun() {
-			return false
-		}
-		msgs, err := store.GetMessages(context.Background(), "resume-session", 0, 0)
-		if err != nil {
-			return false
-		}
-		for _, msg := range msgs {
-			if msg.Role == llm.RoleAssistant && strings.Contains(msg.TextContent, "All set.") {
-				return true
-			}
-		}
-		return false
-	}, "completed resumed ask_user run")
 }
 
 func TestHandleSessionState_ConsumesDeferredUIRunError(t *testing.T) {
@@ -4047,7 +4055,7 @@ func TestStreamResponses_AskUserRoundTrip(t *testing.T) {
 	}
 }
 
-func TestResponsesStreamCanResumeAfterClientDisconnect(t *testing.T) {
+func TestResponsesStreamCancelsRunWhenClientRequestCanceled(t *testing.T) {
 	provider := newStagedProvider("hello ", "world")
 	factory := func(ctx context.Context) (*serveRuntime, error) {
 		engine := llm.NewEngine(provider, nil)
@@ -4084,7 +4092,7 @@ func TestResponsesStreamCanResumeAfterClientDisconnect(t *testing.T) {
 		t.Fatalf("new request: %v", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("session_id", "resume-session")
+	req.Header.Set("session_id", "cancel-session")
 
 	resp, err := ts.Client().Do(req)
 	if err != nil {
@@ -4101,7 +4109,7 @@ func TestResponsesStreamCanResumeAfterClientDisconnect(t *testing.T) {
 			t.Fatal("stream ended before first text delta")
 		}
 		if data == "[DONE]" {
-			t.Fatal("stream completed before disconnect")
+			t.Fatal("stream completed before cancellation")
 		}
 		var payload map[string]any
 		if err := json.Unmarshal([]byte(data), &payload); err != nil {
@@ -4126,42 +4134,47 @@ func TestResponsesStreamCanResumeAfterClientDisconnect(t *testing.T) {
 
 disconnected:
 	if responseID == "" {
-		t.Fatal("missing response id before disconnect")
+		t.Fatal("missing response id before cancellation")
 	}
 
-	<-provider.firstSent
-	close(provider.releaseSecond)
+	waitForServeCondition(t, time.Second, func() bool {
+		run, ok := srv.responseRuns.get(responseID)
+		if !ok {
+			return false
+		}
+		snapshot := run.snapshot()
+		status, _ := snapshot["status"].(string)
+		return status == "failed"
+	}, "streaming response run cancellation after client disconnect")
 
-	statusResp, err := ts.Client().Get(ts.URL + "/v1/responses/" + responseID)
+	run, ok := srv.responseRuns.get(responseID)
+	if !ok {
+		t.Fatalf("missing response run %q after cancellation", responseID)
+	}
+	snapshot := run.snapshot()
+	if got := snapshot["status"]; got != "failed" {
+		t.Fatalf("status = %v, want failed", got)
+	}
+	errPayload, _ := snapshot["error"].(map[string]any)
+	if !strings.Contains(fmt.Sprint(errPayload["message"]), context.Canceled.Error()) {
+		t.Fatalf("error message = %v, want to contain %q", errPayload["message"], context.Canceled.Error())
+	}
+
+	replayResp, err := ts.Client().Get(ts.URL + "/v1/responses/" + responseID + "/events?after=" + strconv.FormatInt(lastSeq, 10))
 	if err != nil {
-		t.Fatalf("get response status failed: %v", err)
+		t.Fatalf("replay request failed: %v", err)
 	}
-	defer statusResp.Body.Close()
-	if statusResp.StatusCode != http.StatusOK {
-		t.Fatalf("status code = %d, want 200", statusResp.StatusCode)
-	}
-	var statusPayload map[string]any
-	if err := json.NewDecoder(statusResp.Body).Decode(&statusPayload); err != nil {
-		t.Fatalf("decode response status: %v", err)
-	}
-	if got := statusPayload["status"]; got != "in_progress" && got != "completed" {
-		t.Fatalf("status = %v, want in_progress or completed", got)
+	defer replayResp.Body.Close()
+	if replayResp.StatusCode != http.StatusOK {
+		t.Fatalf("replay status = %d, want 200", replayResp.StatusCode)
 	}
 
-	resumeResp, err := ts.Client().Get(ts.URL + "/v1/responses/" + responseID + "/events?after=" + strconv.FormatInt(lastSeq, 10))
-	if err != nil {
-		t.Fatalf("resume request failed: %v", err)
-	}
-	defer resumeResp.Body.Close()
-	if resumeResp.StatusCode != http.StatusOK {
-		t.Fatalf("resume status = %d, want 200", resumeResp.StatusCode)
-	}
-
-	resumeScanner := bufio.NewScanner(resumeResp.Body)
-	var resumed []string
+	replayScanner := bufio.NewScanner(replayResp.Body)
+	seenWorld := false
 	sawCompleted := false
+	sawFailed := false
 	for {
-		eventName, data, ok := readSSEEvent(t, resumeScanner)
+		eventName, data, ok := readSSEEvent(t, replayScanner)
 		if !ok {
 			break
 		}
@@ -4170,26 +4183,30 @@ disconnected:
 		}
 		var payload map[string]any
 		if err := json.Unmarshal([]byte(data), &payload); err != nil {
-			t.Fatalf("unmarshal resumed SSE payload: %v", err)
+			t.Fatalf("unmarshal replay SSE payload: %v", err)
 		}
 		switch eventName {
 		case "response.output_text.delta":
-			resumed = append(resumed, fmt.Sprint(payload["delta"]))
+			if fmt.Sprint(payload["delta"]) == "world" {
+				seenWorld = true
+			}
 		case "response.completed":
 			sawCompleted = true
 		case "response.failed":
-			t.Fatalf("resume stream failed: %s", data)
+			sawFailed = true
 		}
 	}
 
-	if strings.Join(resumed, "") != "world" {
-		t.Fatalf("resumed text = %q, want %q", strings.Join(resumed, ""), "world")
+	if seenWorld {
+		t.Fatal("replay stream unexpectedly included text generated after cancellation")
 	}
-	if !sawCompleted {
-		t.Fatal("resume stream missing response.completed")
+	if sawCompleted {
+		t.Fatal("replay stream unexpectedly completed after cancellation")
+	}
+	if !sawFailed {
+		t.Fatal("replay stream missing response.failed after cancellation")
 	}
 }
-
 func TestResponsesCompletedRunExpiresAfterRetention(t *testing.T) {
 	provider := newStagedProvider("hello ", "world")
 	close(provider.releaseSecond)
@@ -4343,7 +4360,7 @@ func TestHandleResponseByID_CancelStopsActiveToolRun(t *testing.T) {
 		responseRuns: newServeResponseRunManager(),
 	}
 
-	run, err := srv.startResponseRun(rt, true, false, []llm.Message{
+	run, err := srv.startResponseRun(context.Background(), rt, true, false, []llm.Message{
 		llm.UserText("sleep for a while"),
 	}, llm.Request{
 		SessionID:  "sess_cancel_tool",
@@ -4432,7 +4449,7 @@ func TestHandleResponseByID_CancelStopsShellToolRun(t *testing.T) {
 		responseRuns: newServeResponseRunManager(),
 	}
 
-	run, err := srv.startResponseRun(rt, true, false, []llm.Message{
+	run, err := srv.startResponseRun(context.Background(), rt, true, false, []llm.Message{
 		llm.UserText("sleep for a while"),
 	}, llm.Request{
 		SessionID:  "sess_cancel_shell_tool",
@@ -4543,53 +4560,37 @@ func TestResponsesCompactedRunRequiresSnapshotRecovery(t *testing.T) {
 	if err != nil {
 		t.Fatalf("stream request failed: %v", err)
 	}
+	defer resp.Body.Close()
 
 	scanner := bufio.NewScanner(resp.Body)
 	var responseID string
+	sawCompleted := false
 	for {
 		eventName, data, ok := readSSEEvent(t, scanner)
 		if !ok {
-			t.Fatal("stream ended before response.created")
+			t.Fatal("stream ended before completion")
 		}
 		if data == "[DONE]" {
-			t.Fatal("stream ended before response.created")
+			break
 		}
-		if eventName != "response.created" {
-			continue
+		if eventName == "response.created" {
+			var payload map[string]any
+			if err := json.Unmarshal([]byte(data), &payload); err != nil {
+				t.Fatalf("unmarshal response.created payload: %v", err)
+			}
+			response, _ := payload["response"].(map[string]any)
+			responseID, _ = response["id"].(string)
 		}
-		var payload map[string]any
-		if err := json.Unmarshal([]byte(data), &payload); err != nil {
-			t.Fatalf("unmarshal response.created payload: %v", err)
+		if eventName == "response.completed" {
+			sawCompleted = true
 		}
-		response, _ := payload["response"].(map[string]any)
-		responseID, _ = response["id"].(string)
-		break
 	}
-	_ = resp.Body.Close()
 
 	if responseID == "" {
 		t.Fatal("missing response id")
 	}
-
-	deadline := time.Now().Add(5 * time.Second)
-	for {
-		statusResp, err := ts.Client().Get(ts.URL + "/v1/responses/" + responseID)
-		if err != nil {
-			t.Fatalf("get response status failed: %v", err)
-		}
-		var statusPayload map[string]any
-		if err := json.NewDecoder(statusResp.Body).Decode(&statusPayload); err != nil {
-			statusResp.Body.Close()
-			t.Fatalf("decode response status: %v", err)
-		}
-		statusResp.Body.Close()
-		if statusPayload["status"] == "completed" {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("response %s did not complete in time", responseID)
-		}
-		time.Sleep(20 * time.Millisecond)
+	if !sawCompleted {
+		t.Fatal("stream missing response.completed")
 	}
 
 	replayResp, err := ts.Client().Get(ts.URL + "/v1/responses/" + responseID + "/events?after=0")
@@ -4876,7 +4877,7 @@ func TestStartResponseRun_StatelessCleanupRemovesResponseIDMapping(t *testing.T)
 	srv := &serveServer{responseRuns: newServeResponseRunManager()}
 	defer srv.responseRuns.Close()
 
-	run, err := srv.startResponseRun(rt, false, true, []llm.Message{
+	run, err := srv.startResponseRun(context.Background(), rt, false, true, []llm.Message{
 		llm.UserText("hi"),
 	}, llm.Request{Model: "mock-model"}, "", startResponseRunOptions{})
 	if err != nil {
