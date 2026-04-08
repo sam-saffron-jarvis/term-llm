@@ -194,6 +194,19 @@ func (t *ShellTool) Execute(ctx context.Context, args json.RawMessage) (llm.Tool
 		}
 	}
 
+	// Validate working directory exists and is a directory
+	if info, err := os.Stat(workDir); err != nil {
+		if os.IsNotExist(err) {
+			return textOutput(formatToolError(NewToolErrorf(ErrExecutionFailed,
+				"working directory %q does not exist", workDir))), nil
+		}
+		return textOutput(formatToolError(NewToolErrorf(ErrExecutionFailed,
+			"working directory %q is not accessible: %v", workDir, err))), nil
+	} else if !info.IsDir() {
+		return textOutput(formatToolError(NewToolErrorf(ErrExecutionFailed,
+			"working directory %q is not a directory", workDir))), nil
+	}
+
 	// Create command with context timeout
 	execCtx, cancel := context.WithTimeout(ctx, time.Duration(timeout)*time.Second)
 	defer cancel()

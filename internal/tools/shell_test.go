@@ -131,6 +131,11 @@ func TestShellTool_Execute(t *testing.T) {
 			args:    json.RawMessage(`{invalid}`),
 			wantErr: "Error",
 		},
+		{
+			name:    "nonexistent working dir",
+			args:    mustMarshalShellArgs(ShellArgs{Command: "echo hi", WorkingDir: "/nonexistent/path/that/does/not/exist"}),
+			wantErr: "working directory",
+		},
 	}
 
 	for _, tt := range tests {
@@ -227,6 +232,29 @@ func TestShellTool_WorkingDir(t *testing.T) {
 	}
 	if !strings.Contains(text, "exit_code: 0") {
 		t.Errorf("expected exit_code: 0 in output, got: %s", text)
+	}
+}
+
+func TestShellTool_WorkingDirIsFile(t *testing.T) {
+	tool := NewShellTool(nil, nil, DefaultOutputLimits())
+
+	f, err := os.CreateTemp(t.TempDir(), "notadir")
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.Close()
+
+	args := mustMarshalShellArgs(ShellArgs{
+		Command:    "echo hi",
+		WorkingDir: f.Name(),
+	})
+
+	output, execErr := tool.Execute(context.Background(), args)
+	if execErr != nil {
+		t.Fatalf("Execute returned error: %v", execErr)
+	}
+	if !strings.Contains(output.Content, "not a directory") {
+		t.Errorf("expected 'not a directory' error, got: %s", output.Content)
 	}
 }
 
