@@ -94,6 +94,39 @@ VOLINIT
   echo "init: volume init.sh written"
 fi
 
+# Seed skills from /seed/skills/ → term-llm skills directory
+SEED_SKILLS="/seed/skills"
+SKILLS_DIR="/root/.config/term-llm/skills"
+
+if [ -d "$SEED_SKILLS" ]; then
+  mkdir -p "$SKILLS_DIR"
+  for skill_dir in "$SEED_SKILLS"/*/; do
+    skill_name="$(basename "$skill_dir")"
+    target="$SKILLS_DIR/$skill_name"
+    if [ ! -d "$target" ]; then
+      cp -r "$skill_dir" "$target"
+      echo "init: seeded skill $skill_name"
+    fi
+  done
+fi
+
+# Seed agent scripts from /seed/scripts/ → agent scripts directory
+SEED_SCRIPTS="/seed/scripts"
+
+if [ -d "$SEED_SCRIPTS" ]; then
+  mkdir -p "$AGENT_SCRIPTS"
+  for script in "$SEED_SCRIPTS"/*; do
+    [ -f "$script" ] || continue
+    script_name="$(basename "$script")"
+    target="$AGENT_SCRIPTS/$script_name"
+    if [ ! -f "$target" ]; then
+      cp "$script" "$target"
+      chmod +x "$target"
+      echo "init: seeded script $script_name"
+    fi
+  done
+fi
+
 mkdir -p "$(dirname "$SENTINEL")"
 touch "$SENTINEL"
 echo "init: services seeded"

@@ -48,6 +48,14 @@ sed "s/{{AGENT_NAME}}/$AGENT_NAME/g" "$TEMPLATE_DIR/agent.yaml" > "$OUTPUT_DIR/a
 sed "s/{{AGENT_NAME}}/$AGENT_NAME/g" "$TEMPLATE_DIR/system.md" > "$OUTPUT_DIR/agents/$AGENT_NAME/system.md"
 cp "$TEMPLATE_DIR/soul.md" "$OUTPUT_DIR/agents/$AGENT_NAME/soul.md"
 
+# Copy skills templates (interpolate {{AGENT_NAME}} in SKILL.md files)
+cp -r "$TEMPLATE_DIR/skills" "$OUTPUT_DIR/skills"
+find "$OUTPUT_DIR/skills" -name '*.md' -exec sed -i "s/{{AGENT_NAME}}/$AGENT_NAME/g" {} +
+
+# Copy agent scripts (these use $AGENT_NAME env var at runtime, no interpolation needed)
+cp -r "$TEMPLATE_DIR/scripts" "$OUTPUT_DIR/scripts"
+chmod +x "$OUTPUT_DIR/scripts"/*.sh
+
 # .env with repo path and generated token
 sed -e "s/{{AGENT_NAME}}/$AGENT_NAME/g" \
     -e "s/{{WEB_TOKEN}}/$WEB_TOKEN/" \
@@ -63,12 +71,19 @@ cat <<EOF
   $AGENT_NAME/
   ├── docker-compose.yml
   ├── .env                ← add API keys, token pre-generated
-  ├── init.sh             ← boot hook (installs runit services)
+  ├── init.sh             ← boot hook (installs services, skills, scripts)
   ├── agents/
   │   └── $AGENT_NAME/
   │       ├── agent.yaml
   │       ├── soul.md      ← voice, values, personality
   │       └── system.md    ← operational context
+  ├── skills/
+  │   ├── memory/SKILL.md  ← memory search, fragments, auto-jobs
+  │   └── self/SKILL.md    ← self-modification + update tool
+  ├── scripts/
+  │   ├── patch-system.sh  ← safe system.md updater
+  │   ├── patch-agent.sh   ← safe agent.yaml updater
+  │   └── update.sh        ← pull, build, install term-llm
   └── services/
       ├── webui/run           ← web UI on port 8081
       ├── jobs/run            ← job scheduler
