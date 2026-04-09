@@ -59,7 +59,7 @@ type Model struct {
 	webSearchUsed    bool
 	retryStatus      string
 	streamCancelFunc context.CancelFunc
-	streamDone       chan struct{} // closed when the engine goroutine exits
+	streamDone       chan struct{}       // closed when the engine goroutine exits
 	tracker          *ui.ToolTracker     // Tool and segment tracking (shared component)
 	subagentTracker  *ui.SubagentTracker // Subagent progress tracking
 
