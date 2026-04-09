@@ -1,7 +1,0 @@
-#!/bin/bash
-docker exec -it \
-  -e TERM="${TERM:-xterm-256color}" \
-  -e COLORTERM="${COLORTERM:-truecolor}" \
-  -e TMUX="${TMUX:-}" \
-  -e STY="${STY:-}" \
-  jarvis term-llm chat @jarvis --yolo

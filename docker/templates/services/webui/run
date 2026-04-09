@@ -1,0 +1,11 @@
+#!/bin/sh
+exec /usr/local/bin/term-llm serve web \
+  --agent "${AGENT_NAME:-agent}" \
+  --base-path "${WEB_BASE_PATH:-/chat}" \
+  --host 0.0.0.0 \
+  --port 8081 \
+  --auth bearer \
+  --token "${WEB_TOKEN:?Set WEB_TOKEN in .env}" \
+  --yolo \
+  --files-dir /root/Files \
+  2>&1
