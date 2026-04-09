@@ -330,6 +330,99 @@ func TestFrameEncoding_RoundTrip(t *testing.T) {
 	}
 }
 
+func TestDispatchRequest_CancelPostStopsSSEStream(t *testing.T) {
+	// Simulate a response run: the SSE endpoint streams until cancelled,
+	// and the cancel endpoint triggers the cancellation.
+	cancelCh := make(chan struct{})
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/responses/resp-123/events", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("event: response.in_progress\ndata: {}\n\n"))
+		// Block until cancel signal.
+		select {
+		case <-cancelCh:
+		case <-r.Context().Done():
+		}
+		_, _ = w.Write([]byte("event: response.cancelled\ndata: {}\n\n"))
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	})
+	mux.HandleFunc("/v1/responses/resp-123/cancel", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		close(cancelCh)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("{}\n"))
+	})
+
+	// The outer handler must strip the base path, matching the real serve.go setup.
+	handler := http.StripPrefix("/ui", mux)
+	p := newTestPeer("/ui", handler)
+
+	// Start the SSE stream in a goroutine since it blocks until cancel.
+	var sseFrames []responseFrame
+	sseDone := make(chan struct{})
+	go func() {
+		defer close(sseDone)
+		raw := encodeRequest("sse-1", "GET", "/ui/v1/responses/resp-123/events", nil, "")
+		sseFrames = collectFrames(p, raw)
+	}()
+
+	// Give the SSE handler time to start streaming.
+	// Then dispatch the cancel POST.
+	// Use a brief sleep since we need the SSE goroutine to be blocked in the handler.
+	for i := 0; i < 50; i++ {
+		select {
+		case <-sseDone:
+			// SSE finished early (shouldn't happen before cancel).
+			t.Fatal("SSE stream ended before cancel was sent")
+		default:
+		}
+		// Check if the SSE handler has started (cancelCh not closed yet means it's waiting).
+		select {
+		case <-cancelCh:
+			t.Fatal("cancelCh closed before cancel POST")
+		default:
+		}
+		if i > 5 {
+			break
+		}
+		// Small yield to let the SSE goroutine start.
+		func() {
+			ch := make(chan struct{})
+			go func() { close(ch) }()
+			<-ch
+		}()
+	}
+
+	cancelRaw := encodeRequest("cancel-1", "POST", "/ui/v1/responses/resp-123/cancel", nil, "")
+	cancelFrames := collectFrames(p, cancelRaw)
+
+	// Verify cancel POST returned 200.
+	cancelLast := cancelFrames[len(cancelFrames)-1]
+	if cancelLast.Type != "done" || cancelLast.Status != http.StatusOK {
+		t.Fatalf("cancel POST: expected done/200, got type=%q status=%d", cancelLast.Type, cancelLast.Status)
+	}
+
+	// Wait for SSE stream to finish (it should now that cancel was sent).
+	<-sseDone
+
+	// Verify the SSE stream received terminal events.
+	sseData := collectChunkData(sseFrames)
+	if !strings.Contains(sseData, "response.cancelled") {
+		t.Errorf("SSE stream missing response.cancelled event, got: %q", sseData)
+	}
+	if !strings.Contains(sseData, "[DONE]") {
+		t.Errorf("SSE stream missing [DONE], got: %q", sseData)
+	}
+	sseLast := sseFrames[len(sseFrames)-1]
+	if sseLast.Type != "done" || sseLast.Status != http.StatusOK {
+		t.Errorf("SSE stream: expected done/200, got type=%q status=%d", sseLast.Type, sseLast.Status)
+	}
+}
+
 func TestResponseFrameEncoding_PreservesBlankChunkData(t *testing.T) {
 	frame := responseFrame{
 		ID:   "chunk-id",

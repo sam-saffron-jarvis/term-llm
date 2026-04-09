@@ -841,6 +841,7 @@ const resumeActiveResponseInner = async (session, responseId, options) => {
 const cancelActiveResponse = async (session) => {
   const responseId = String(session?.activeResponseId || state.currentStreamResponseId || '').trim();
   if (!responseId) {
+    console.warn('[cancel] no responseId available, aborting local controller only');
     if (state.abortController) {
       state.abortController.abort();
     }
@@ -851,12 +852,19 @@ const cancelActiveResponse = async (session) => {
   }
 
   state.expectCanceledRun = true;
-  const response = await fetch(`${UI_PREFIX}/v1/responses/${encodeURIComponent(responseId)}/cancel`, {
-    method: 'POST',
-    headers: requestHeaders(session?.id || '')
-  });
+  let response;
+  try {
+    response = await fetch(`${UI_PREFIX}/v1/responses/${encodeURIComponent(responseId)}/cancel`, {
+      method: 'POST',
+      headers: requestHeaders(session?.id || '')
+    });
+  } catch (err) {
+    console.warn('[cancel] fetch failed for response', responseId, err);
+    throw err;
+  }
   if (!response.ok) {
     if (response.status === 404 || response.status === 409) {
+      console.warn('[cancel] server returned', response.status, 'for response', responseId);
       if (session?.id) {
         await refreshSessionFromServerTruth(session, true);
       }
@@ -865,7 +873,8 @@ const cancelActiveResponse = async (session) => {
     throw await normalizeError(response);
   }
 
-  if (!state.abortController && session?.id) {
+  console.log('[cancel] server accepted cancel for response', responseId);
+  if (session?.id) {
     app.scheduleSessionStatePoll(session.id, 250);
   }
 };
