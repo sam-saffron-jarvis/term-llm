@@ -11,6 +11,7 @@ on:
 
 jobs:
   deploy:
+    if: github.repository == 'samsaffron/term-llm'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
