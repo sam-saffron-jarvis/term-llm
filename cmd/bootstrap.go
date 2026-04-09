@@ -74,7 +74,13 @@ func registerModelLimits(cfg *config.Config) {
 
 func loadConfigWithSetup() (*config.Config, error) {
 	if config.NeedsSetup() {
-		cfg, err := ui.RunSetupWizard()
+		var cfg *config.Config
+		var err error
+		if ui.HasTTY() {
+			cfg, err = ui.RunSetupWizard()
+		} else {
+			cfg, err = ui.RunHeadlessSetup()
+		}
 		if err != nil {
 			return nil, fmt.Errorf("setup cancelled: %w", err)
 		}

@@ -162,6 +162,75 @@ func detectAvailableImageProviders() []imageProviderOption {
 	}
 }
 
+// HasTTY returns true if /dev/tty can be opened (interactive terminal available).
+func HasTTY() bool {
+	f, err := getTTY()
+	if err != nil {
+		return false
+	}
+	f.Close()
+	return true
+}
+
+// RunHeadlessSetup auto-configures term-llm when no TTY is available (e.g. Docker).
+// It picks the first provider with credentials set in the environment and saves a config.
+func RunHeadlessSetup() (*config.Config, error) {
+	providers := detectAvailableProviders()
+
+	// Pick the first available provider (they're ordered by preference)
+	var provider string
+	for _, p := range providers {
+		if p.available && p.value != "zen" { // prefer a real provider over zen
+			provider = p.value
+			break
+		}
+	}
+	if provider == "" {
+		// Fall back to zen (always available)
+		provider = "zen"
+	}
+
+	// Pick image provider if available
+	var imageProvider string
+	for _, p := range detectAvailableImageProviders() {
+		if p.available && p.value != "" {
+			imageProvider = p.value
+			break
+		}
+	}
+
+	cfg := &config.Config{
+		DefaultProvider: provider,
+		Providers: map[string]config.ProviderConfig{
+			"anthropic":  {Model: "claude-sonnet-4-6"},
+			"openai":     {Model: "gpt-5.2"},
+			"claude-bin": {Model: "sonnet"},
+			"openrouter": {Model: "x-ai/grok-code-fast-1", AppURL: "https://github.com/samsaffron/term-llm", AppTitle: "term-llm"},
+			"gemini":     {Model: "gemini-3-flash-preview"},
+			"codeassist": {Model: "gemini-2.5-pro"},
+			"xai":        {Model: "grok-4-1-fast"},
+			"venice":     {Model: "venice-uncensored"},
+			"zen":        {Model: "minimax-m2.1-free"},
+		},
+		Exec: config.ExecConfig{
+			Suggestions: 3,
+		},
+		Image: config.ImageConfig{
+			Provider: imageProvider,
+		},
+	}
+
+	if err := config.Save(cfg); err != nil {
+		return nil, fmt.Errorf("failed to save config: %w", err)
+	}
+
+	path, _ := config.GetConfigPath()
+	fmt.Fprintf(os.Stderr, "No TTY available — auto-configured with provider %q\n", provider)
+	fmt.Fprintf(os.Stderr, "Config saved to %s\n", path)
+
+	return config.Load()
+}
+
 // RunSetupWizard runs the first-time setup wizard and returns the config
 func RunSetupWizard() (*config.Config, error) {
 	// Use /dev/tty for output to bypass redirections
