@@ -652,3 +652,63 @@ func TestJobsV2ScheduleOneRespectsMaxConcurrentRuns(t *testing.T) {
 		t.Fatalf("active runs = %d, want 2", active)
 	}
 }
+
+func TestJobsV2ClaimNextRunSkipsFutureScheduledQueuedRuns(t *testing.T) {
+	mgr, err := newJobsV2Manager(":memory:", 0, nil)
+	if err != nil {
+		t.Fatalf("newJobsV2Manager failed: %v", err)
+	}
+	defer func() { _ = mgr.Close() }()
+
+	job, err := mgr.CreateJob(jobsV2Job{
+		Name:           "claim-next-run",
+		Enabled:        true,
+		RunnerType:     jobsV2RunnerProgram,
+		RunnerConfig:   json.RawMessage(`{"command":"echo","args":["x"]}`),
+		TriggerType:    jobsV2TriggerManual,
+		TriggerConfig:  json.RawMessage(`{}`),
+		TimeoutSeconds: 30,
+	})
+	if err != nil {
+		t.Fatalf("CreateJob failed: %v", err)
+	}
+
+	now := time.Now().UTC()
+	_, err = mgr.db.Exec(`INSERT INTO job_runs_v2 (id, job_id, attempt, trigger, scheduled_for, status, created_at, updated_at) VALUES (?, ?, 1, 'retry', ?, ?, ?, ?)`,
+		"run_future", job.ID, now.Add(5*time.Minute), jobsV2RunQueued, now, now)
+	if err != nil {
+		t.Fatalf("insert future queued run: %v", err)
+	}
+	_, err = mgr.db.Exec(`INSERT INTO job_runs_v2 (id, job_id, attempt, trigger, scheduled_for, status, created_at, updated_at) VALUES (?, ?, 1, 'manual', ?, ?, ?, ?)`,
+		"run_ready", job.ID, now.Add(-time.Second), jobsV2RunQueued, now, now)
+	if err != nil {
+		t.Fatalf("insert ready queued run: %v", err)
+	}
+
+	run, ok, err := mgr.claimNextRun()
+	if err != nil {
+		t.Fatalf("claimNextRun failed: %v", err)
+	}
+	if !ok {
+		t.Fatal("claimNextRun returned no run")
+	}
+	if run.ID != "run_ready" {
+		t.Fatalf("claimed run = %q, want run_ready", run.ID)
+	}
+
+	futureRun, err := mgr.GetRun("run_future")
+	if err != nil {
+		t.Fatalf("GetRun failed: %v", err)
+	}
+	if futureRun.Status != jobsV2RunQueued {
+		t.Fatalf("future run status = %s, want %s", futureRun.Status, jobsV2RunQueued)
+	}
+
+	_, ok, err = mgr.claimNextRun()
+	if err != nil {
+		t.Fatalf("second claimNextRun failed: %v", err)
+	}
+	if ok {
+		t.Fatal("claimNextRun should not claim future-scheduled queued runs")
+	}
+}
