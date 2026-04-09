@@ -1,23 +1,33 @@
 #!/bin/bash
 set -e
 
-AGENT_DIR="/root/.config/term-llm/agents/jarvis"
+AGENT_NAME="${AGENT_NAME:-agent}"
+AGENT_DIR="/root/.config/term-llm/agents/$AGENT_NAME"
+SEED_DIR="/seed/agents/$AGENT_NAME"
 
-# Bootstrap agent files on first run
-if [ ! -f "$AGENT_DIR/agent.yaml" ]; then
+# Bootstrap agent files on first run from seed volume mount
+if [ ! -f "$AGENT_DIR/agent.yaml" ] && [ -d "$SEED_DIR" ]; then
   mkdir -p "$AGENT_DIR"
-  cp /bootstrap/agent.yaml "$AGENT_DIR/agent.yaml"
-  cp /bootstrap/system.md "$AGENT_DIR/system.md"
-  echo "Jarvis: bootstrapped agent files"
+  cp -r "$SEED_DIR"/. "$AGENT_DIR"/
+  echo "$AGENT_NAME: bootstrapped from seed"
+elif [ ! -f "$AGENT_DIR/agent.yaml" ]; then
+  echo "Warning: no agent config and no seed found."
+  echo "  expected: $AGENT_DIR/agent.yaml"
+  echo "  seed:     $SEED_DIR/"
+  echo "Run docker/init.sh to create a project with starter files."
 fi
 
+# Seed init hook (from user's project directory, bind-mounted)
+if [ -f /seed/init.sh ]; then
+  bash /seed/init.sh
+fi
+
+# Volume init hook (for manual one-time setup after deploy)
 if [ -f /root/.config/term-llm/init.sh ]; then
   bash /root/.config/term-llm/init.sh
 fi
 
-# If no command given, boot runit as PID 1.
-# Services are managed via /etc/runit/runsvdir — symlink /etc/sv/<name> there to enable.
-# The volume at /root persists service configs and state across restarts.
+# No command → boot runit as PID 1
 if [ "$#" -eq 0 ]; then
   mkdir -p /etc/runit/runsvdir
   exec runsvdir /etc/runit/runsvdir

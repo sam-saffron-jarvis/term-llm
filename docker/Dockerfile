@@ -97,8 +97,6 @@ RUN echo 'eval "$(mise activate bash)"' >> /etc/bash.bashrc && \
 
 COPY --from=builder /build/term-llm /usr/local/bin/term-llm
 
-COPY docker/jarvis/agent.yaml /bootstrap/agent.yaml
-COPY docker/jarvis/system.md /bootstrap/system.md
 COPY docker/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
