@@ -2448,6 +2448,13 @@ const sendMessage = async (options = {}) => {
       return;
     }
 
+    // Clear our own controller so syncActiveSessionFromServer can act on
+    // server state freely (its !state.abortController guard would block
+    // cleanup otherwise).  If sync triggers a new resume, it will set a
+    // fresh controller — the check below detects that case.
+    if (state.abortController === controller) {
+      state.abortController = null;
+    }
     await app.syncActiveSessionFromServer(session, true);
     if (session.activeResponseId || state.abortController) {
       persistAndRefreshShell();
