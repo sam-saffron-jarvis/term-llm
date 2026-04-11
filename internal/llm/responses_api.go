@@ -593,7 +593,15 @@ func (c *ResponsesClient) Stream(ctx context.Context, req ResponsesRequest, debu
 		reasoningState := newResponsesReasoningState()
 		var lastUsage *Usage
 		var lastEventType string
-		var sawTextDelta bool // Track if any text deltas were emitted
+		sawTextDelta := false // Track if any text deltas were emitted
+		emit := func(event Event) error {
+			select {
+			case events <- event:
+				return nil
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		}
 
 		for {
 			line, eof, err := readSSELine(reader)
@@ -634,7 +642,9 @@ func (c *ResponsesClient) Stream(ctx context.Context, req ResponsesRequest, debu
 				}
 				if err := json.Unmarshal([]byte(data), &deltaEvent); err == nil && deltaEvent.Delta != "" {
 					sawTextDelta = true
-					events <- Event{Type: EventTextDelta, Text: deltaEvent.Delta}
+					if err := emit(Event{Type: EventTextDelta, Text: deltaEvent.Delta}); err != nil {
+						return err
+					}
 				}
 
 			case "response.output_item.added":
@@ -672,11 +682,13 @@ func (c *ResponsesClient) Stream(ctx context.Context, req ResponsesRequest, debu
 					} else if doneEvent.Item.Type == "reasoning" {
 						reasoningState.Finish(doneEvent.OutputIndex, doneEvent.Item.ID, doneEvent.Item.EncryptedContent, doneEvent.Item.Summary)
 						if part := reasoningState.Part(doneEvent.OutputIndex); part != nil {
-							events <- Event{
+							if err := emit(Event{
 								Type:                      EventReasoningDelta,
 								Text:                      part.ReasoningContent,
 								ReasoningItemID:           part.ReasoningItemID,
 								ReasoningEncryptedContent: part.ReasoningEncryptedContent,
+							}); err != nil {
+								return err
 							}
 						}
 					} else if doneEvent.Item.Type == "message" {
@@ -685,9 +697,13 @@ func (c *ResponsesClient) Stream(ctx context.Context, req ResponsesRequest, debu
 						// Always emit refusals since those may not be streamed.
 						for _, content := range doneEvent.Item.Content {
 							if content.Type == "output_text" && content.Text != "" && !sawTextDelta {
-								events <- Event{Type: EventTextDelta, Text: content.Text}
+								if err := emit(Event{Type: EventTextDelta, Text: content.Text}); err != nil {
+									return err
+								}
 							} else if content.Type == "refusal" && content.Refusal != "" {
-								events <- Event{Type: EventTextDelta, Text: content.Refusal}
+								if err := emit(Event{Type: EventTextDelta, Text: content.Refusal}); err != nil {
+									return err
+								}
 							}
 						}
 					}
@@ -752,12 +768,18 @@ func (c *ResponsesClient) Stream(ctx context.Context, req ResponsesRequest, debu
 
 		// Emit completed tool calls
 		for _, call := range toolState.Calls() {
-			events <- Event{Type: EventToolCall, Tool: &call}
+			if err := emit(Event{Type: EventToolCall, Tool: &call}); err != nil {
+				return err
+			}
 		}
 		if lastUsage != nil {
-			events <- Event{Type: EventUsage, Use: lastUsage}
+			if err := emit(Event{Type: EventUsage, Use: lastUsage}); err != nil {
+				return err
+			}
 		}
-		events <- Event{Type: EventDone}
+		if err := emit(Event{Type: EventDone}); err != nil {
+			return err
+		}
 		return nil
 	}), nil
 }
