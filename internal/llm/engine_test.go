@@ -103,6 +103,50 @@ func (p *fakeProvider) Stream(ctx context.Context, req Request) (Stream, error) 
 	return &sliceStream{events: events}, nil
 }
 
+type streamProvider struct {
+	stream          Stream
+	capabilities    Capabilities
+	hasCapabilities bool
+}
+
+func (p *streamProvider) Name() string {
+	return "fake"
+}
+
+func (p *streamProvider) Credential() string {
+	return "test"
+}
+
+func (p *streamProvider) Capabilities() Capabilities {
+	if p.hasCapabilities {
+		return p.capabilities
+	}
+	return Capabilities{ToolCalls: true}
+}
+
+func (p *streamProvider) Stream(ctx context.Context, req Request) (Stream, error) {
+	return p.stream, nil
+}
+
+type signalRecvStream struct {
+	recvCalled chan struct{}
+	event      Event
+	sent       bool
+}
+
+func (s *signalRecvStream) Recv() (Event, error) {
+	if s.sent {
+		return Event{}, io.EOF
+	}
+	s.sent = true
+	close(s.recvCalled)
+	return s.event, nil
+}
+
+func (s *signalRecvStream) Close() error {
+	return nil
+}
+
 type countingSearchTool struct {
 	calls int
 }
@@ -1185,6 +1229,49 @@ func TestEngineEmitsToolCallAndExecStartForEachTool(t *testing.T) {
 		if _, ok := toolExecStartEvents[id]; !ok {
 			t.Errorf("EventToolCall ID %q has no matching EventToolExecStart", id)
 		}
+	}
+}
+
+func TestRunLoopDoesNotDeadlockOnBlockedToolCallForwardingWhenCancelled(t *testing.T) {
+	stream := &signalRecvStream{
+		recvCalled: make(chan struct{}),
+		event: Event{
+			Type: EventToolCall,
+			Tool: &ToolCall{
+				Name:      "count_tool",
+				Arguments: json.RawMessage(`{"input":"test"}`),
+			},
+		},
+	}
+	engine := NewEngine(&streamProvider{stream: stream}, NewToolRegistry())
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	events := make(chan Event, 1)
+	events <- Event{Type: EventPhase, Text: "buffer-full"}
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- engine.runLoop(ctx, Request{
+			Messages: []Message{UserText("test")},
+		}, events)
+	}()
+
+	select {
+	case <-stream.recvCalled:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for tool call event")
+	}
+
+	cancel()
+
+	select {
+	case err := <-errCh:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("expected context cancellation, got %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("runLoop remained blocked after cancellation")
 	}
 }
 
