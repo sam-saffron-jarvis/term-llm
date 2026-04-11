@@ -463,6 +463,19 @@ func (rt *serveRuntime) getResponseIDs() []string {
 	return append([]string(nil), rt.responseIDs...)
 }
 
+// snapshotHistory returns a copy of the current history when the runtime is idle.
+// If a run is already in progress, it returns nil so callers can fall back to
+// persisted session history or report busy via the normal run path.
+func (rt *serveRuntime) snapshotHistory() []llm.Message {
+	if rt == nil || !rt.mu.TryLock() {
+		return nil
+	}
+	defer rt.mu.Unlock()
+	history := make([]llm.Message, len(rt.history))
+	copy(history, rt.history)
+	return history
+}
+
 type serveRunResult struct {
 	Text         strings.Builder
 	ToolCalls    []llm.ToolCall

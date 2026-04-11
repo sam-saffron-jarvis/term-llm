@@ -3520,6 +3520,146 @@ func TestHandleResponses_PreviousResponseIDChainsSession(t *testing.T) {
 	}
 }
 
+func TestHandleResponses_PreviousResponseIDFunctionCallOutputUsesPriorToolName(t *testing.T) {
+	provider := llm.NewMockProvider("mock").
+		AddToolCall("call_1", "read_file", map[string]any{"path": "a.txt"}).
+		AddTextResponse("done")
+
+	manager := newServeSessionManager(time.Minute, 100, func(ctx context.Context) (*serveRuntime, error) {
+		engine := llm.NewEngine(provider, nil)
+		rt := &serveRuntime{
+			provider:     provider,
+			engine:       engine,
+			defaultModel: "mock-model",
+		}
+		rt.Touch()
+		return rt, nil
+	})
+	defer manager.Close()
+
+	srv := &serveServer{sessionMgr: manager}
+	manager.onEvict = func(rt *serveRuntime) {
+		for _, rid := range rt.getResponseIDs() {
+			srv.responseToSession.Delete(rid)
+		}
+	}
+
+	code, resp1 := doResponsesWithHeader(t, srv, `{"input":"hi","tools":[{"type":"function","name":"read_file","parameters":{"type":"object","properties":{"path":{"type":"string"}}}}]}`, "tool-chain")
+	if code != http.StatusOK {
+		t.Fatalf("first request status = %d, want 200", code)
+	}
+	respID1, _ := resp1["id"].(string)
+	if respID1 == "" {
+		t.Fatal("first response missing id")
+	}
+
+	body2 := `{"input":[{"type":"function_call_output","call_id":"call_1","output":"content"}],"previous_response_id":"` + respID1 + `"}`
+	code, _ = doResponses(t, srv, body2)
+	if code != http.StatusOK {
+		t.Fatalf("second request status = %d, want 200", code)
+	}
+	if len(provider.Requests) != 2 {
+		t.Fatalf("provider request count = %d, want 2", len(provider.Requests))
+	}
+
+	var toolResultName string
+	for _, msg := range provider.Requests[1].Messages {
+		for _, part := range msg.Parts {
+			if part.Type != llm.PartToolResult || part.ToolResult == nil || part.ToolResult.ID != "call_1" {
+				continue
+			}
+			toolResultName = part.ToolResult.Name
+		}
+	}
+	if toolResultName != "read_file" {
+		t.Fatalf("tool result name = %q, want %q", toolResultName, "read_file")
+	}
+}
+
+func TestHandleResponses_PreviousResponseIDFunctionCallOutputUsesPersistedToolNameAfterRuntimeRecreation(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "sessions.db")
+	store, err := session.NewStore(session.Config{Enabled: true, Path: dbPath})
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer store.Close()
+
+	var created atomic.Int32
+	providers := map[int32]*llm.MockProvider{}
+
+	manager := newServeSessionManager(time.Minute, 100, func(ctx context.Context) (*serveRuntime, error) {
+		createNum := created.Add(1)
+		provider := llm.NewMockProvider("mock")
+		if createNum == 1 {
+			provider.AddToolCall("call_1", "read_file", map[string]any{"path": "a.txt"})
+		} else {
+			provider.AddTextResponse("done")
+		}
+		providers[createNum] = provider
+		engine := llm.NewEngine(provider, nil)
+		rt := &serveRuntime{
+			provider:     provider,
+			providerKey:  "mock",
+			engine:       engine,
+			defaultModel: "mock-model",
+			store:        store,
+		}
+		rt.Touch()
+		return rt, nil
+	})
+	defer manager.Close()
+
+	srv := &serveServer{sessionMgr: manager, store: store}
+	manager.onEvict = func(rt *serveRuntime) {
+		for _, rid := range rt.getResponseIDs() {
+			srv.responseToSession.Delete(rid)
+		}
+	}
+
+	code, resp1 := doResponsesWithHeader(t, srv, `{"input":"hi","tools":[{"type":"function","name":"read_file","parameters":{"type":"object","properties":{"path":{"type":"string"}}}}]}`, "tool-chain-store")
+	if code != http.StatusOK {
+		t.Fatalf("first request status = %d, want 200", code)
+	}
+	respID1, _ := resp1["id"].(string)
+	if respID1 == "" {
+		t.Fatal("first response missing id")
+	}
+
+	manager.mu.Lock()
+	evicted := manager.sessions["tool-chain-store"]
+	delete(manager.sessions, "tool-chain-store")
+	manager.mu.Unlock()
+	if evicted != nil {
+		evicted.Close()
+	}
+
+	body2 := `{"input":[{"type":"function_call_output","call_id":"call_1","output":"content"}],"previous_response_id":"` + respID1 + `"}`
+	code, _ = doResponses(t, srv, body2)
+	if code != http.StatusOK {
+		t.Fatalf("second request status = %d, want 200", code)
+	}
+	provider := providers[2]
+	if provider == nil {
+		t.Fatal("expected recreated runtime provider")
+	}
+	if len(provider.Requests) != 1 {
+		t.Fatalf("recreated provider request count = %d, want 1", len(provider.Requests))
+	}
+
+	var toolResultName string
+	for _, msg := range provider.Requests[0].Messages {
+		for _, part := range msg.Parts {
+			if part.Type != llm.PartToolResult || part.ToolResult == nil || part.ToolResult.ID != "call_1" {
+				continue
+			}
+			toolResultName = part.ToolResult.Name
+		}
+	}
+	if toolResultName != "read_file" {
+		t.Fatalf("persisted tool result name = %q, want %q", toolResultName, "read_file")
+	}
+}
+
 func TestHandleResponses_PreviousResponseIDRestoresPersistedProviderAfterRuntimeRecreation(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "sessions.db")
 	store, err := session.NewStore(session.Config{Enabled: true, Path: dbPath})
