@@ -1197,9 +1197,5 @@ func (t *ToolTracker) FlushLeadingSeparator(nextType SegmentType) string {
 	if !t.HasFlushed {
 		return ""
 	}
-	sep := SegmentSeparator(t.LastFlushedType, nextType)
-	if len(sep) > 0 && sep[0] == '\n' {
-		return sep[1:]
-	}
-	return sep
+	return FlushSegmentSeparator(t.LastFlushedType, nextType)
 }

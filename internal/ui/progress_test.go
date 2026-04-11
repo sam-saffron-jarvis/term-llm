@@ -6,7 +6,7 @@ import (
 	"time"
 )
 
-func TestStreamingIndicator_NoLeadingNewlineAfterFlush_WhenRenderingActiveTool(t *testing.T) {
+func TestStreamingIndicator_AddsBlankLineAfterFlushedText_WhenRenderingActiveTool(t *testing.T) {
 	styles := DefaultStyles()
 
 	out := StreamingIndicator{
@@ -26,8 +26,11 @@ func TestStreamingIndicator_NoLeadingNewlineAfterFlush_WhenRenderingActiveTool(t
 	}.Render(styles)
 
 	plain := StripANSI(out)
-	if strings.HasPrefix(plain, "\n") {
-		t.Fatalf("active tool indicator should not start with a newline after flush; got %q", plain)
+	if !strings.HasPrefix(plain, "\n") {
+		t.Fatalf("active tool indicator should start with one compensating newline after flushed text; got %q", plain)
+	}
+	if strings.HasPrefix(plain, "\n\n") {
+		t.Fatalf("active tool indicator should start with exactly one newline after flushed text; got %q", plain)
 	}
 	if !strings.Contains(plain, "web_search") {
 		t.Fatalf("expected active tool text in indicator, got %q", plain)

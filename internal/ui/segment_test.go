@@ -186,7 +186,7 @@ func TestExtractAgentName(t *testing.T) {
 	}
 }
 
-func TestSegmentSeparator_CompactEverywhere(t *testing.T) {
+func TestSegmentSeparator_BlankLinesAroundToolRows(t *testing.T) {
 	cases := []struct {
 		name string
 		prev SegmentType
@@ -194,7 +194,7 @@ func TestSegmentSeparator_CompactEverywhere(t *testing.T) {
 		want string
 	}{
 		{name: "text to text", prev: SegmentText, curr: SegmentText, want: ""},
-		{name: "text to tool", prev: SegmentText, curr: SegmentTool, want: "\n"},
+		{name: "text to tool", prev: SegmentText, curr: SegmentTool, want: "\n\n"},
 		{name: "text to ask_user", prev: SegmentText, curr: SegmentAskUserResult, want: "\n"},
 		{name: "text to image", prev: SegmentText, curr: SegmentImage, want: "\n"},
 		{name: "text to diff", prev: SegmentText, curr: SegmentDiff, want: "\n"},

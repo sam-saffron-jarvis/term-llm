@@ -41,6 +41,23 @@ func TestStreamingBlock_ToolTracking(t *testing.T) {
 		t.Error("Should have pending tools after StartTool")
 	}
 
+	output := sb.Render(0, false, false)
+	textIdx := strings.Index(output, "Thinking...")
+	if textIdx == -1 {
+		t.Fatalf("expected text in render output, got %q", output)
+	}
+	toolIdx := strings.Index(output, "read_file")
+	if toolIdx == -1 {
+		t.Fatalf("expected pending tool in render output, got %q", output)
+	}
+	if textIdx >= toolIdx {
+		t.Fatalf("expected text before tool, text=%d tool=%d output=%q", textIdx, toolIdx, output)
+	}
+	between := output[textIdx+len("Thinking...") : toolIdx]
+	if got := strings.Count(between, "\n"); got != 2 {
+		t.Fatalf("expected exactly 2 newlines between text and pending tool, got %d; between=%q output=%q", got, between, output)
+	}
+
 	// End the tool
 	sb.EndTool("call-1", true)
 

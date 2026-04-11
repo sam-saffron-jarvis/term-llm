@@ -17,6 +17,21 @@ const (
 	MaxStreamingConsecutiveNewlines = 2
 )
 
+// SegmentBoundaryTrailingNewlines returns the target trailing newline run for
+// a boundary between two rendered segment types.
+func SegmentBoundaryTrailingNewlines(prevType, currType SegmentType) int {
+	switch {
+	case prevType == SegmentText && currType == SegmentText:
+		return 0
+	case (prevType == SegmentText && currType == SegmentTool) ||
+		(prevType == SegmentTool && currType == SegmentText):
+		// Keep one empty line between assistant prose and tool rows.
+		return FinalSpacerTrailingNewlines
+	default:
+		return SectionBreakTrailingNewlines
+	}
+}
+
 // StreamingNewlineCompactor incrementally compacts excessive newline runs across chunks.
 type StreamingNewlineCompactor struct {
 	maxRun int

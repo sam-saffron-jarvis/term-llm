@@ -178,6 +178,55 @@ func TestFlushCompletedNow_ToolToTextAcrossPrintBoundaries_UsesBlankLine(t *test
 	}
 }
 
+func TestFlushCompletedNow_TextToToolAcrossPrintBoundaries_UsesBlankLine(t *testing.T) {
+	// Regression test: text and a later completed tool may flush in separate
+	// tea.Printf calls. The combined output should still have exactly one blank
+	// line between prose and tool rows.
+	mockRender := func(s string, w int) string {
+		return strings.TrimSpace(s)
+	}
+
+	tracker := NewToolTracker()
+	tracker.AddTextSegment("Latest Claude update.", 80)
+	tracker.CompleteTextSegments(func(s string) string {
+		return mockRender(s, 80)
+	})
+
+	textFlush := tracker.FlushCompletedNow(80, mockRender)
+	if textFlush.ToPrint == "" {
+		t.Fatal("expected text flush output")
+	}
+
+	tracker.HandleToolStart("t1", "web_search", "query", nil)
+	tracker.HandleToolEnd("t1", true)
+
+	toolFlush := tracker.FlushCompletedNow(80, mockRender)
+	if toolFlush.ToPrint == "" {
+		t.Fatal("expected tool flush output")
+	}
+
+	// Simulate tea.Printf trailing newlines between flush calls.
+	output := textFlush.ToPrint + "\n" + toolFlush.ToPrint + "\n"
+	stripped := stripAnsiForTest(output)
+
+	textIdx := strings.Index(stripped, "Latest Claude update.")
+	if textIdx == -1 {
+		t.Fatalf("expected text in output, got: %q", stripped)
+	}
+	toolIdx := strings.Index(stripped, "web_search")
+	if toolIdx == -1 {
+		t.Fatalf("expected tool name in output, got: %q", stripped)
+	}
+	if textIdx >= toolIdx {
+		t.Fatalf("expected text before tool, text=%d tool=%d output=%q", textIdx, toolIdx, stripped)
+	}
+
+	between := stripped[textIdx+len("Latest Claude update.") : toolIdx]
+	if newlines := strings.Count(between, "\n"); newlines != 2 {
+		t.Fatalf("expected exactly 2 newlines between text and tool (blank line), got %d\nbetween: %q\nfull: %q", newlines, between, stripped)
+	}
+}
+
 func TestFlushStreamingText_ToolToTextCompactsLeadingBlankLinesInRenderedText(t *testing.T) {
 	// Regression test: even when rendered text starts with blank lines,
 	// tool->text boundaries should remain a single blank line.

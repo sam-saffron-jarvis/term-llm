@@ -605,3 +605,30 @@ func TestViewAutoSend_OmitsAgentPrefixWhenUnset(t *testing.T) {
 		t.Fatalf("expected provider name in auto-send output, got %q", out)
 	}
 }
+
+func TestRenderStreamingInline_TextToPendingToolUsesBlankLine(t *testing.T) {
+	m := newTestChatModel(false)
+	m.width = 80
+	m.tracker.AddTextSegment("Let me check that file.", m.width)
+	m.tracker.MarkCurrentTextComplete(func(s string) string { return s })
+	m.tracker.HandleToolStart("call-1", "read_file", "(test.go)", nil)
+
+	plain := ui.StripANSI(m.renderStreamingInline())
+	toolLabel := "read_file(test.go)"
+	textIdx := strings.Index(plain, "Let me check that file.")
+	if textIdx == -1 {
+		t.Fatalf("expected text in output, got %q", plain)
+	}
+	toolIdx := strings.Index(plain, toolLabel)
+	if toolIdx == -1 {
+		t.Fatalf("expected pending tool label %q in output, got %q", toolLabel, plain)
+	}
+	if textIdx >= toolIdx {
+		t.Fatalf("expected text before tool, text=%d tool=%d output=%q", textIdx, toolIdx, plain)
+	}
+
+	between := plain[textIdx+len("Let me check that file.") : toolIdx]
+	if got := strings.Count(between, "\n"); got != 2 {
+		t.Fatalf("expected exactly 2 newlines between text and pending tool, got %d; between=%q output=%q", got, between, plain)
+	}
+}

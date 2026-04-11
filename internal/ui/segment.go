@@ -548,19 +548,18 @@ func renderAskUserResult(text string) string {
 
 // SegmentSeparator returns the vertical spacing (newlines) required between two segments.
 func SegmentSeparator(prevType, currType SegmentType) string {
-	// No extra spacing between consecutive text segments
-	// (each segment already ends with \n from rendering)
-	if prevType == SegmentText && currType == SegmentText {
-		return ""
-	}
+	return strings.Repeat("\n", SegmentBoundaryTrailingNewlines(prevType, currType))
+}
 
-	// Keep one blank line between a tool row and following prose content.
-	if prevType == SegmentTool && currType == SegmentText {
-		return "\n\n"
+// FlushSegmentSeparator returns the spacing before a segment when the previous
+// content was printed by a separate tea.Printf/tea.Println call, which already
+// contributed one trailing newline.
+func FlushSegmentSeparator(prevType, currType SegmentType) string {
+	sep := SegmentSeparator(prevType, currType)
+	if len(sep) > 0 && sep[0] == '\n' {
+		return sep[1:]
 	}
-
-	// Keep all other boundaries compact and consistent.
-	return "\n"
+	return sep
 }
 
 // RenderSegments renders a list of segments with proper spacing.

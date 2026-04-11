@@ -455,17 +455,25 @@ func (m *Model) renderStreamingInline() string {
 
 	// Show the indicator with current phase, unless paused for external UI
 	if !m.pausedForExternalUI {
-		hasContent := b.Len() > 0
-		if hasContent {
-			b.WriteString("\n")
-		}
-
 		wavePos := 0
 		var active []*ui.Segment
 		if m.tracker != nil {
 			wavePos = m.tracker.WavePos
 			active = m.tracker.ActiveSegments()
 		}
+
+		hasContent := b.Len() > 0
+		if hasContent {
+			if len(active) > 0 && m.tracker != nil {
+				completed := m.tracker.CompletedSegments()
+				if len(completed) > 0 {
+					b.WriteString(ui.SegmentSeparator(completed[len(completed)-1].Type, active[0].Type))
+				}
+			} else {
+				b.WriteString("\n")
+			}
+		}
+
 		indicator := ui.StreamingIndicator{
 			Spinner:         m.spinner.View(),
 			Phase:           m.phase,

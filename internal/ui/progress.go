@@ -61,14 +61,6 @@ type StreamingIndicator struct {
 	LastFlushedType SegmentType
 }
 
-func flushBoundarySeparator(prevType, currType SegmentType) string {
-	sep := SegmentSeparator(prevType, currType)
-	if len(sep) > 0 && sep[0] == '\n' {
-		return sep[1:]
-	}
-	return sep
-}
-
 // Render returns the formatted streaming indicator string
 func (s StreamingIndicator) Render(styles *Styles) string {
 	var b strings.Builder
@@ -76,18 +68,13 @@ func (s StreamingIndicator) Render(styles *Styles) string {
 	// Render active tools if any
 	if len(s.Segments) > 0 {
 		if s.HasFlushed {
-			b.WriteString(flushBoundarySeparator(s.LastFlushedType, s.Segments[0].Type))
+			b.WriteString(FlushSegmentSeparator(s.LastFlushedType, s.Segments[0].Type))
 		}
 		b.WriteString(RenderSegments(s.Segments, s.Width, s.WavePos, s.RenderMarkdown, false, false))
 		// When tools are active, we don't show the spinner/phase line
 		// as the wave animation provides the progress feedback.
 	} else if !s.HideProgress {
-		// No active tools, show leading spacing for the standard spinner and phase if needed
-		if s.HasFlushed {
-			// Spinner/Phase line is treated as a tool/status line for spacing
-			b.WriteString(flushBoundarySeparator(s.LastFlushedType, SegmentTool))
-		}
-
+		// Keep the idle spinner/status line compact after flushed content.
 		b.WriteString(s.Spinner)
 		b.WriteString(" ")
 		b.WriteString(s.Phase)

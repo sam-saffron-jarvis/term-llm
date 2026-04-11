@@ -809,6 +809,7 @@ func streamPlainText(ctx context.Context, events <-chan ui.StreamEvent, suppress
 	printedAny := false
 	trailingNewlines := 0
 	afterToolBoundary := false
+	lastPrintedType := ui.SegmentText
 	newlineCompactor := ui.NewStreamingNewlineCompactor(ui.MaxStreamingConsecutiveNewlines)
 	showToolStatus := !suppressToolStatus
 
@@ -817,7 +818,8 @@ func streamPlainText(ctx context.Context, events <-chan ui.StreamEvent, suppress
 			return
 		}
 		if printedAny {
-			fmt.Print(ui.NewlinePadding(trailingNewlines, ui.SectionBreakTrailingNewlines))
+			targetTrailing := ui.SegmentBoundaryTrailingNewlines(lastPrintedType, ui.SegmentTool)
+			fmt.Print(ui.NewlinePadding(trailingNewlines, targetTrailing))
 		}
 		for _, t := range pendingTools {
 			phase := ui.FormatToolPhase(t.name, t.info)
@@ -831,6 +833,7 @@ func streamPlainText(ctx context.Context, events <-chan ui.StreamEvent, suppress
 		printedAny = true
 		trailingNewlines = ui.SectionBreakTrailingNewlines
 		afterToolBoundary = true
+		lastPrintedType = ui.SegmentTool
 	}
 
 	ensureFinalSpacer := func() {
@@ -932,6 +935,7 @@ func streamPlainText(ctx context.Context, events <-chan ui.StreamEvent, suppress
 					fmt.Print(text)
 					printedAny = true
 					trailingNewlines = ui.CountTrailingNewlines(text)
+					lastPrintedType = ui.SegmentText
 				}
 
 			case ui.StreamEventImage:
@@ -942,6 +946,7 @@ func streamPlainText(ctx context.Context, events <-chan ui.StreamEvent, suppress
 						fmt.Print("\r\n") // CR+LF to reset cursor position after image
 						printedAny = true
 						trailingNewlines = 1
+						lastPrintedType = ui.SegmentImage
 					}
 				}
 
@@ -1850,7 +1855,14 @@ func (m askStreamModel) View() string {
 	if !m.done && !m.pausedForExternalUI && (len(active) > 0 || m.tracker.IsIdle(time.Second)) {
 		hasContent := b.Len() > 0
 		if hasContent {
-			b.WriteString("\n")
+			if len(active) > 0 {
+				completed := m.tracker.CompletedSegments()
+				if len(completed) > 0 {
+					b.WriteString(ui.SegmentSeparator(completed[len(completed)-1].Type, active[0].Type))
+				}
+			} else {
+				b.WriteString("\n")
+			}
 		}
 		phase := m.phase
 		if phase == "" {

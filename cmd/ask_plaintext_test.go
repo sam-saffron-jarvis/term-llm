@@ -75,7 +75,7 @@ func TestStreamPlainText_DoesNotInsertExtraBlankLineBeforeToolWhenTextAlreadyHas
 	}
 }
 
-func TestStreamPlainText_TextToToolUsesSingleNewlineWhenTextHasNoTrailingNewline(t *testing.T) {
+func TestStreamPlainText_TextToToolUsesBlankLineWhenTextHasNoTrailingNewline(t *testing.T) {
 	output := captureStreamPlainTextOutput(t, []ui.StreamEvent{
 		ui.TextEvent("Now let me write the test."),
 		ui.ToolStartEvent("call-1", "shell", "(echo hi)", nil),
@@ -84,9 +84,39 @@ func TestStreamPlainText_TextToToolUsesSingleNewlineWhenTextHasNoTrailingNewline
 	}, false)
 
 	plain := stripAnsi(output)
-	boundary := "test.\n● shell(echo hi)"
+	boundary := "test.\n\n● shell(echo hi)"
 	if !strings.Contains(plain, boundary) {
-		t.Fatalf("expected single newline text->tool boundary %q, got %q", boundary, plain)
+		t.Fatalf("expected blank-line text->tool boundary %q, got %q", boundary, plain)
+	}
+}
+
+func TestStreamPlainText_ToolToToolRemainsCompactAcrossBlocks(t *testing.T) {
+	output := captureStreamPlainTextOutput(t, []ui.StreamEvent{
+		ui.ToolStartEvent("call-1", "shell", "(echo hi)", nil),
+		ui.ToolEndEvent("call-1", "shell", "(echo hi)", true),
+		ui.ToolStartEvent("call-2", "grep", "(foo)", nil),
+		ui.ToolEndEvent("call-2", "grep", "(foo)", true),
+		ui.DoneEvent(0),
+	}, false)
+
+	plain := stripAnsi(output)
+	firstLabel := "shell(echo hi)"
+	secondLabel := "grep(foo)"
+	firstIdx := strings.Index(plain, firstLabel)
+	if firstIdx == -1 {
+		t.Fatalf("expected first tool label %q in output, got %q", firstLabel, plain)
+	}
+	secondIdx := strings.Index(plain, secondLabel)
+	if secondIdx == -1 {
+		t.Fatalf("expected second tool label %q in output, got %q", secondLabel, plain)
+	}
+	if firstIdx >= secondIdx {
+		t.Fatalf("expected first tool before second tool, first=%d second=%d output=%q", firstIdx, secondIdx, plain)
+	}
+
+	between := plain[firstIdx+len(firstLabel) : secondIdx]
+	if got := strings.Count(between, "\n"); got != 1 {
+		t.Fatalf("expected exactly 1 newline between tool blocks, got %d; between=%q output=%q", got, between, plain)
 	}
 }
 

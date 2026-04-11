@@ -281,3 +281,41 @@ func TestMultipleSegments(t *testing.T) {
 		t.Errorf("should show second text segment, got:\n%s", plain)
 	}
 }
+
+func TestView_TextToPendingToolUsesBlankLine(t *testing.T) {
+	model := newAskStreamModel()
+	model.tracker.Segments = []ui.Segment{
+		{
+			Type:     ui.SegmentText,
+			Text:     "Let me check that file.",
+			Complete: true,
+			Rendered: "Let me check that file.",
+		},
+		{
+			Type:       ui.SegmentTool,
+			ToolName:   "read_file",
+			ToolInfo:   "(test.go)",
+			ToolStatus: ui.ToolPending,
+		},
+	}
+	model.tracker.LastActivity = time.Now()
+
+	plain := testutil.StripANSI(model.View())
+	toolLabel := "read_file(test.go)"
+	textIdx := strings.Index(plain, "Let me check that file.")
+	if textIdx == -1 {
+		t.Fatalf("expected text in output, got %q", plain)
+	}
+	toolIdx := strings.Index(plain, toolLabel)
+	if toolIdx == -1 {
+		t.Fatalf("expected pending tool label %q in output, got %q", toolLabel, plain)
+	}
+	if textIdx >= toolIdx {
+		t.Fatalf("expected text before tool, text=%d tool=%d output=%q", textIdx, toolIdx, plain)
+	}
+
+	between := plain[textIdx+len("Let me check that file.") : toolIdx]
+	if got := strings.Count(between, "\n"); got != 2 {
+		t.Fatalf("expected exactly 2 newlines between text and pending tool, got %d; between=%q output=%q", got, between, plain)
+	}
+}
