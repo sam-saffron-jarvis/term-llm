@@ -491,6 +491,57 @@ func TestResponsesClientStream_SendsSessionHeaderAndPromptCacheKey(t *testing.T)
 	}
 }
 
+func TestResponsesClientStream_CloseReturnsPromptlyWhenConsumerStopsDraining(t *testing.T) {
+	var sse strings.Builder
+	for i := 0; i < 32; i++ {
+		fmt.Fprintf(&sse, "event: response.output_text.delta\ndata: {\"delta\":\"chunk-%02d\"}\n\n", i)
+	}
+
+	httpClient := &http.Client{
+		Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Status:     "200 OK",
+				Header: http.Header{
+					"Content-Type": []string{"text/event-stream"},
+				},
+				Body: io.NopCloser(strings.NewReader(sse.String())),
+			}, nil
+		}),
+	}
+
+	client := &ResponsesClient{
+		BaseURL:       "https://example.test/v1/responses",
+		GetAuthHeader: func() string { return "Bearer test-token" },
+		HTTPClient:    httpClient,
+	}
+
+	stream, err := client.Stream(context.Background(), ResponsesRequest{
+		Model: "gpt-5.2",
+		Input: []ResponsesInputItem{
+			{Type: "message", Role: "user", Content: "hello"},
+		},
+		Stream: true,
+	}, false)
+	if err != nil {
+		t.Fatalf("stream request failed: %v", err)
+	}
+
+	closed := make(chan error, 1)
+	go func() {
+		closed <- stream.Close()
+	}()
+
+	select {
+	case err := <-closed:
+		if err != nil {
+			t.Fatalf("stream.Close() failed: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("stream.Close() timed out after consumer stopped draining")
+	}
+}
+
 func TestOpenAIProviderStream_UsesSessionIDForResponsesCaching(t *testing.T) {
 	type capturedRequest struct {
 		SessionID      string
