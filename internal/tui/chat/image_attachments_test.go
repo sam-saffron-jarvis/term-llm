@@ -17,7 +17,8 @@ func TestIsImagePasteAttempt(t *testing.T) {
 		msg  tea.KeyMsg
 		want bool
 	}{
-		{name: "bracketed paste", msg: tea.KeyMsg{Type: tea.KeyRunes, Paste: true}, want: true},
+		{name: "bracketed paste empty", msg: tea.KeyMsg{Type: tea.KeyRunes, Paste: true}, want: true},
+		{name: "bracketed paste with text", msg: tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("hello"), Paste: true}, want: false},
 		{name: "ctrl v", msg: tea.KeyMsg{Type: tea.KeyCtrlV}, want: true},
 		{name: "ctrl shift v string", msg: tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("v"), Alt: true}, want: false},
 		{name: "plain rune", msg: tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("x")}, want: false},
@@ -49,7 +50,7 @@ func TestHandleKeyMsg_PastedImageAttachesToComposer(t *testing.T) {
 	defer func() { readClipboardImage = orig }()
 
 	m.setTextareaValue("before")
-	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("ignored"), Paste: true})
+	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlV})
 
 	if len(m.images) != 1 {
 		t.Fatalf("expected 1 attached image, got %d", len(m.images))

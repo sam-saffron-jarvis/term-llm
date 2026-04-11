@@ -49,6 +49,12 @@ func (m *Model) maybeAttachImageFromPaste(msg tea.KeyMsg) bool {
 }
 
 func isImagePasteAttempt(msg tea.KeyMsg) bool {
+	// Bracketed paste with actual text content means the terminal already
+	// resolved the clipboard/selection to text — don't probe CLIPBOARD for
+	// an image (which may differ from the PRIMARY selection the user intended).
+	if msg.Paste && len(msg.Runes) > 0 {
+		return false
+	}
 	if msg.Paste || msg.Type == tea.KeyCtrlV {
 		return true
 	}
