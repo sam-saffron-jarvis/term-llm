@@ -1241,6 +1241,55 @@ func TestRunLoopDoesNotDeadlockOnBlockedToolExecStartWhenCancelled(t *testing.T)
 	}
 }
 
+func TestRunLoopDoesNotDeadlockOnBlockedDoneWhenCancelled(t *testing.T) {
+	tool := &countingTool{}
+	registry := NewToolRegistry()
+	registry.Register(tool)
+
+	provider := &fakeProvider{
+		script: func(call int, req Request) []Event {
+			return []Event{
+				{Type: EventTextDelta, Text: "done"},
+				{Type: EventDone},
+			}
+		},
+	}
+
+	engine := NewEngine(provider, registry)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	events := make(chan Event, 1)
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- engine.runLoop(ctx, Request{
+			Messages: []Message{UserText("test")},
+			Tools:    []ToolSpec{tool.Spec()},
+		}, events)
+	}()
+
+	deadline := time.After(5 * time.Second)
+	for len(events) == 0 {
+		select {
+		case <-deadline:
+			t.Fatal("timed out waiting for text event")
+		default:
+			time.Sleep(time.Millisecond)
+		}
+	}
+
+	cancel()
+
+	select {
+	case err := <-errCh:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("expected context cancellation, got %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("runLoop remained blocked after cancellation")
+	}
+}
+
 func TestExecuteSingleToolCallDoesNotDeadlockOnBlockedToolExecEndWhenCancelled(t *testing.T) {
 	tool := &signalTool{started: make(chan struct{})}
 	registry := NewToolRegistry()

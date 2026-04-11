@@ -661,6 +661,21 @@ func hasToolNamed(tools []ToolSpec, name string) bool {
 	return false
 }
 
+// sendRunLoopEvent forwards runLoop events without blocking forever if the
+// consumer has stopped draining during cancellation or disconnect handling.
+func sendRunLoopEvent(ctx context.Context, events chan<- Event, event Event) error {
+	if events == nil {
+		return nil
+	}
+	if safeSendEvent(ctx, events, event) {
+		return nil
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return nil
+}
+
 func (e *Engine) runLoop(ctx context.Context, req Request, events chan<- Event) error {
 	maxTurns := getMaxTurns(req)
 	originalToolChoice := req.ToolChoice
@@ -713,7 +728,9 @@ func (e *Engine) runLoop(ctx context.Context, req Request, events chan<- Event) 
 		if compactionConfig != nil && attempt > 0 {
 			threshold := int(float64(inputLimit) * compactionConfig.ThresholdRatio)
 			if e.estimatedTokens(req.Messages) >= threshold {
-				events <- Event{Type: EventPhase, Text: "Compacting context..."}
+				if err := sendRunLoopEvent(ctx, events, Event{Type: EventPhase, Text: "Compacting context..."}); err != nil {
+					return err
+				}
 				result, err := Compact(ctx, e.provider, req.Model, systemPrompt, nonSystemMessages(req.Messages), *compactionConfig)
 				if err == nil {
 					req.Messages = result.NewMessages
@@ -737,7 +754,9 @@ func (e *Engine) runLoop(ctx context.Context, req Request, events chan<- Event) 
 			if est >= threshold {
 				e.contextNoticeEmitted.Store(true)
 				pct := int(100 * float64(est) / float64(inputLimit))
-				events <- Event{Type: EventPhase, Text: fmt.Sprintf(WarningPhasePrefix+"context is %d%% full. Add auto_compact: true to your config to enable automatic compaction.", pct)}
+				if err := sendRunLoopEvent(ctx, events, Event{Type: EventPhase, Text: fmt.Sprintf(WarningPhasePrefix+"context is %d%% full. Add auto_compact: true to your config to enable automatic compaction.", pct)}); err != nil {
+					return err
+				}
 			}
 		}
 		// Prepare turn
@@ -767,7 +786,9 @@ func (e *Engine) runLoop(ctx context.Context, req Request, events chan<- Event) 
 			// Reactive compaction: if this is a context overflow error, try compacting and retrying (once)
 			if compactionConfig != nil && isContextOverflowError(err) && !reactiveCompactionDone {
 				reactiveCompactionDone = true
-				events <- Event{Type: EventPhase, Text: "Compacting context..."}
+				if err := sendRunLoopEvent(ctx, events, Event{Type: EventPhase, Text: "Compacting context..."}); err != nil {
+					return err
+				}
 				result, compactErr := Compact(ctx, e.provider, req.Model, systemPrompt, nonSystemMessages(req.Messages), *compactionConfig)
 				if compactErr == nil {
 					req.Messages = result.NewMessages
@@ -787,7 +808,9 @@ func (e *Engine) runLoop(ctx context.Context, req Request, events chan<- Event) 
 			// Warn when compaction is disabled and we hit context overflow
 			if compactionConfig == nil && inputLimit > 0 && !e.contextNoticeEmitted.Load() && isContextOverflowError(err) {
 				e.contextNoticeEmitted.Store(true)
-				events <- Event{Type: EventPhase, Text: WarningPhasePrefix + "context overflow. Add auto_compact: true to your config to enable automatic compaction."}
+				if err := sendRunLoopEvent(ctx, events, Event{Type: EventPhase, Text: WarningPhasePrefix + "context overflow. Add auto_compact: true to your config to enable automatic compaction."}); err != nil {
+					return err
+				}
 			}
 			return err
 		}
@@ -870,7 +893,10 @@ func (e *Engine) runLoop(ctx context.Context, req Request, events chan<- Event) 
 						ToolName:   event.ToolName,
 						Tool:       event.Tool,
 					}
-					events <- forwardEvent
+					if err := sendRunLoopEvent(ctx, events, forwardEvent); err != nil {
+						stream.Close()
+						return err
+					}
 
 					// Handle synchronous execution: emit events to TUI and send result back
 					call, result, execErr := e.handleSyncToolExecution(ctx, event, events, req.Debug, req.DebugRaw)
@@ -906,19 +932,25 @@ func (e *Engine) runLoop(ctx context.Context, req Request, events chan<- Event) 
 				toolCalls = append(toolCalls, *event.Tool)
 
 				info := e.getToolPreview(*event.Tool)
-				events <- Event{
+				if err := sendRunLoopEvent(ctx, events, Event{
 					Type:       EventToolCall,
 					ToolCallID: toolCallID,
 					ToolName:   event.Tool.Name,
 					Tool:       event.Tool,
 					ToolInfo:   info,
+				}); err != nil {
+					stream.Close()
+					return err
 				}
 				continue
 			}
 			if event.Type == EventDone {
 				continue
 			}
-			events <- event
+			if err := sendRunLoopEvent(ctx, events, event); err != nil {
+				stream.Close()
+				return err
+			}
 		}
 		stream.Close()
 
@@ -955,7 +987,9 @@ func (e *Engine) runLoop(ctx context.Context, req Request, events chan<- Event) 
 				_ = turnCallback(cbCtx, attempt, []Message{finalMsg}, turnMetrics)
 				cancel()
 			}
-			events <- Event{Type: EventDone}
+			if err := sendRunLoopEvent(ctx, events, Event{Type: EventDone}); err != nil {
+				return err
+			}
 			return nil
 		}
 
@@ -994,14 +1028,16 @@ func (e *Engine) runLoop(ctx context.Context, req Request, events chan<- Event) 
 					_ = turnCallback(cbCtx, attempt, []Message{interjectionMsg}, TurnMetrics{})
 					cancel()
 				}
-				if events != nil {
-					events <- Event{Type: EventInterjection, Text: text}
+				if err := sendRunLoopEvent(ctx, events, Event{Type: EventInterjection, Text: text}); err != nil {
+					return err
 				}
 			}
 
 			// If a finishing tool was executed, we're done (agent completed its task)
 			if finishingToolExecuted {
-				events <- Event{Type: EventDone}
+				if err := sendRunLoopEvent(ctx, events, Event{Type: EventDone}); err != nil {
+					return err
+				}
 				return nil
 			}
 
@@ -1063,7 +1099,9 @@ func (e *Engine) runLoop(ctx context.Context, req Request, events chan<- Event) 
 					cancel()
 				}
 			}
-			events <- Event{Type: EventDone}
+			if err := sendRunLoopEvent(ctx, events, Event{Type: EventDone}); err != nil {
+				return err
+			}
 			return nil
 		}
 
@@ -1170,7 +1208,9 @@ func (e *Engine) runLoop(ctx context.Context, req Request, events chan<- Event) 
 		}
 
 		if finishingToolExecuted {
-			events <- Event{Type: EventDone}
+			if err := sendRunLoopEvent(ctx, events, Event{Type: EventDone}); err != nil {
+				return err
+			}
 			return nil
 		}
 
@@ -1186,8 +1226,8 @@ func (e *Engine) runLoop(ctx context.Context, req Request, events chan<- Event) 
 				cancel()
 			}
 			// Emit event so TUI can display the interjection inline
-			if events != nil {
-				events <- Event{Type: EventInterjection, Text: text}
+			if err := sendRunLoopEvent(ctx, events, Event{Type: EventInterjection, Text: text}); err != nil {
+				return err
 			}
 		}
 	}
