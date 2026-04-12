@@ -172,8 +172,9 @@ func runAsk(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	// Handle default prompt for agents invoked without a message
-	if question == "" {
+	// Handle default prompt for agents invoked without a message.
+	// Allow empty question when stdin is piped (content comes from stdin).
+	if question == "" && !input.HasStdin() {
 		if agent == nil {
 			return fmt.Errorf("question required (or use @agent with a default prompt)")
 		}
