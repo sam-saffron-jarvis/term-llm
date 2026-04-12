@@ -247,6 +247,10 @@ func (p *AnthropicProvider) streamStandard(ctx context.Context, req Request) (St
 			fmt.Fprintln(os.Stderr, "======================================")
 		}
 
+		emit := func(event Event) error {
+			return emitAnthropicEvent(ctx, events, event)
+		}
+
 		var lastUsage *Usage
 		var streamOpts []option.RequestOption
 		if p.use1m {
@@ -264,18 +268,28 @@ func (p *AnthropicProvider) streamStandard(ctx context.Context, req Request) (St
 					}
 				case anthropic.TextDelta:
 					if delta.Text != "" {
-						events <- Event{Type: EventTextDelta, Text: delta.Text}
+						if err := emit(Event{Type: EventTextDelta, Text: delta.Text}); err != nil {
+							return err
+						}
 					}
 				case anthropic.ThinkingDelta:
-					emitReasoningDelta(events, delta.Thinking, "")
+					if err := emitReasoningDelta(ctx, events, delta.Thinking, ""); err != nil {
+						return err
+					}
 				case anthropic.SignatureDelta:
-					emitReasoningDelta(events, "", delta.Signature)
+					if err := emitReasoningDelta(ctx, events, "", delta.Signature); err != nil {
+						return err
+					}
 				}
 			case anthropic.ContentBlockStartEvent:
-				handleAnthropicStartBlockContent(variant.ContentBlock.AsAny(), variant.Index, accumulator, events)
+				if err := handleAnthropicStartBlockContent(ctx, variant.ContentBlock.AsAny(), variant.Index, accumulator, events); err != nil {
+					return err
+				}
 			case anthropic.ContentBlockStopEvent:
 				if toolCall, ok := accumulator.Finish(variant.Index); ok {
-					events <- Event{Type: EventToolCall, Tool: &toolCall}
+					if err := emit(Event{Type: EventToolCall, Tool: &toolCall}); err != nil {
+						return err
+					}
 				}
 			case anthropic.MessageStartEvent:
 				lastUsage = &Usage{
@@ -305,9 +319,13 @@ func (p *AnthropicProvider) streamStandard(ctx context.Context, req Request) (St
 			return fmt.Errorf("anthropic streaming error: %w", err)
 		}
 		if lastUsage != nil {
-			events <- Event{Type: EventUsage, Use: lastUsage}
+			if err := emit(Event{Type: EventUsage, Use: lastUsage}); err != nil {
+				return err
+			}
 		}
-		events <- Event{Type: EventDone}
+		if err := emit(Event{Type: EventDone}); err != nil {
+			return err
+		}
 		return nil
 	}), nil
 }
@@ -385,6 +403,10 @@ func (p *AnthropicProvider) streamWithSearch(ctx context.Context, req Request) (
 			fmt.Fprintln(os.Stderr, "================================================")
 		}
 
+		emit := func(event Event) error {
+			return emitAnthropicEvent(ctx, events, event)
+		}
+
 		// Track current server tool use block (web_search, etc.)
 		currentServerTool := ""
 		currentServerToolIndex := int64(-1)
@@ -404,16 +426,24 @@ func (p *AnthropicProvider) streamWithSearch(ctx context.Context, req Request) (
 					if delta.Text != "" {
 						// If we were in a server tool, emit tool end event
 						if currentServerTool != "" {
-							events <- Event{Type: EventToolExecEnd, ToolName: currentServerTool, ToolSuccess: true}
+							if err := emit(Event{Type: EventToolExecEnd, ToolName: currentServerTool, ToolSuccess: true}); err != nil {
+								return err
+							}
 							currentServerTool = ""
 							currentServerToolIndex = -1
 						}
-						events <- Event{Type: EventTextDelta, Text: delta.Text}
+						if err := emit(Event{Type: EventTextDelta, Text: delta.Text}); err != nil {
+							return err
+						}
 					}
 				case anthropic.BetaThinkingDelta:
-					emitReasoningDelta(events, delta.Thinking, "")
+					if err := emitReasoningDelta(ctx, events, delta.Thinking, ""); err != nil {
+						return err
+					}
 				case anthropic.BetaSignatureDelta:
-					emitReasoningDelta(events, "", delta.Signature)
+					if err := emitReasoningDelta(ctx, events, "", delta.Signature); err != nil {
+						return err
+					}
 				}
 			case anthropic.BetaRawContentBlockStartEvent:
 				blockType := variant.ContentBlock.Type
@@ -423,18 +453,26 @@ func (p *AnthropicProvider) streamWithSearch(ctx context.Context, req Request) (
 					toolName := string(serverTool.Name)
 					currentServerTool = toolName
 					currentServerToolIndex = variant.Index
-					events <- Event{Type: EventToolExecStart, ToolName: toolName}
+					if err := emit(Event{Type: EventToolExecStart, ToolName: toolName}); err != nil {
+						return err
+					}
 				} else {
-					handleAnthropicBetaStartBlockContent(variant.ContentBlock.AsAny(), variant.Index, accumulator, events)
+					if err := handleAnthropicBetaStartBlockContent(ctx, variant.ContentBlock.AsAny(), variant.Index, accumulator, events); err != nil {
+						return err
+					}
 				}
 			case anthropic.BetaRawContentBlockStopEvent:
 				if currentServerTool != "" && variant.Index == currentServerToolIndex {
-					events <- Event{Type: EventToolExecEnd, ToolName: currentServerTool, ToolSuccess: true}
+					if err := emit(Event{Type: EventToolExecEnd, ToolName: currentServerTool, ToolSuccess: true}); err != nil {
+						return err
+					}
 					currentServerTool = ""
 					currentServerToolIndex = -1
 				}
 				if toolCall, ok := accumulator.Finish(variant.Index); ok {
-					events <- Event{Type: EventToolCall, Tool: &toolCall}
+					if err := emit(Event{Type: EventToolCall, Tool: &toolCall}); err != nil {
+						return err
+					}
 				}
 			case anthropic.BetaRawMessageStartEvent:
 				lastUsage = &Usage{
@@ -464,12 +502,18 @@ func (p *AnthropicProvider) streamWithSearch(ctx context.Context, req Request) (
 			return fmt.Errorf("anthropic streaming error: %w", err)
 		}
 		if currentServerTool != "" {
-			events <- Event{Type: EventToolExecEnd, ToolName: currentServerTool, ToolSuccess: true}
+			if err := emit(Event{Type: EventToolExecEnd, ToolName: currentServerTool, ToolSuccess: true}); err != nil {
+				return err
+			}
 		}
 		if lastUsage != nil {
-			events <- Event{Type: EventUsage, Use: lastUsage}
+			if err := emit(Event{Type: EventUsage, Use: lastUsage}); err != nil {
+				return err
+			}
 		}
-		events <- Event{Type: EventDone}
+		if err := emit(Event{Type: EventDone}); err != nil {
+			return err
+		}
 		return nil
 	}), nil
 }
@@ -916,14 +960,27 @@ func buildAnthropicBetaToolChoice(choice ToolChoice, parallel bool) anthropic.Be
 	}
 }
 
-func handleAnthropicStartBlockContent(block any, index int64, accumulator *toolCallAccumulator, events chan<- Event) {
+func emitAnthropicEvent(ctx context.Context, events chan<- Event, event Event) error {
+	select {
+	case events <- event:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func handleAnthropicStartBlockContent(ctx context.Context, block any, index int64, accumulator *toolCallAccumulator, events chan<- Event) error {
 	switch variant := block.(type) {
 	case anthropic.TextBlock:
 		if variant.Text != "" {
-			events <- Event{Type: EventTextDelta, Text: variant.Text}
+			if err := emitAnthropicEvent(ctx, events, Event{Type: EventTextDelta, Text: variant.Text}); err != nil {
+				return err
+			}
 		}
 	case anthropic.ThinkingBlock:
-		emitReasoningDelta(events, variant.Thinking, variant.Signature)
+		if err := emitReasoningDelta(ctx, events, variant.Thinking, variant.Signature); err != nil {
+			return err
+		}
 	case anthropic.ToolUseBlock:
 		accumulator.Start(index, ToolCall{
 			ID:        variant.ID,
@@ -931,16 +988,21 @@ func handleAnthropicStartBlockContent(block any, index int64, accumulator *toolC
 			Arguments: toolInputToRaw(variant.Input),
 		})
 	}
+	return nil
 }
 
-func handleAnthropicBetaStartBlockContent(block any, index int64, accumulator *toolCallAccumulator, events chan<- Event) {
+func handleAnthropicBetaStartBlockContent(ctx context.Context, block any, index int64, accumulator *toolCallAccumulator, events chan<- Event) error {
 	switch variant := block.(type) {
 	case anthropic.BetaTextBlock:
 		if variant.Text != "" {
-			events <- Event{Type: EventTextDelta, Text: variant.Text}
+			if err := emitAnthropicEvent(ctx, events, Event{Type: EventTextDelta, Text: variant.Text}); err != nil {
+				return err
+			}
 		}
 	case anthropic.BetaThinkingBlock:
-		emitReasoningDelta(events, variant.Thinking, variant.Signature)
+		if err := emitReasoningDelta(ctx, events, variant.Thinking, variant.Signature); err != nil {
+			return err
+		}
 	case anthropic.BetaToolUseBlock:
 		accumulator.Start(index, ToolCall{
 			ID:        variant.ID,
@@ -948,6 +1010,7 @@ func handleAnthropicBetaStartBlockContent(block any, index int64, accumulator *t
 			Arguments: toolInputToRaw(variant.Input),
 		})
 	}
+	return nil
 }
 
 func anthropicToolCall(block anthropic.ContentBlockStartEventContentBlockUnion) (ToolCall, bool) {
@@ -964,15 +1027,15 @@ func anthropicBetaToolCall(block anthropic.BetaRawContentBlockStartEventContentB
 	return ToolCall{}, false
 }
 
-func emitReasoningDelta(events chan<- Event, text, encrypted string) {
+func emitReasoningDelta(ctx context.Context, events chan<- Event, text, encrypted string) error {
 	if text == "" && encrypted == "" {
-		return
+		return nil
 	}
-	events <- Event{
+	return emitAnthropicEvent(ctx, events, Event{
 		Type:                      EventReasoningDelta,
 		Text:                      text,
 		ReasoningEncryptedContent: encrypted,
-	}
+	})
 }
 
 func toolInputToRaw(input any) json.RawMessage {
