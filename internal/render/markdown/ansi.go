@@ -263,7 +263,7 @@ func (r *ANSI) renderBlock(node gast.Node, source []byte, width int, styles ansi
 	case *extast.Table:
 		return r.renderTable(n, source, width, styles)
 	case *gast.ThematicBreak:
-		return styles.rule.Render("--------"), nil
+		return styles.rule.Render(strings.Repeat("─", max(width, 1))), nil
 	case *extast.DefinitionList:
 		return r.renderBlockChildren(n, source, width, styles, "\n")
 	case *extast.DefinitionTerm:
