@@ -100,6 +100,10 @@ func (p *GeminiProvider) newClient(ctx context.Context) (*genai.Client, error) {
 
 func (p *GeminiProvider) Stream(ctx context.Context, req Request) (Stream, error) {
 	return newEventStream(ctx, func(ctx context.Context, events chan<- Event) error {
+		emit := func(event Event) error {
+			return emitGeminiEvent(ctx, events, event)
+		}
+
 		client, err := p.newClient(ctx)
 		if err != nil {
 			return fmt.Errorf("failed to create gemini client: %w", err)
@@ -165,7 +169,9 @@ func (p *GeminiProvider) Stream(ctx context.Context, req Request) (Stream, error
 					}
 					// Emit text parts (skip thought parts which are internal)
 					if part.Text != "" && !part.Thought {
-						events <- Event{Type: EventTextDelta, Text: part.Text}
+						if err := emit(Event{Type: EventTextDelta, Text: part.Text}); err != nil {
+							return err
+						}
 					}
 					if part.FunctionCall != nil {
 						argsJSON, _ := jsonMarshal(part.FunctionCall.Args)
@@ -174,17 +180,23 @@ func (p *GeminiProvider) Stream(ctx context.Context, req Request) (Stream, error
 						if thoughtSig == nil {
 							thoughtSig = lastThoughtSig
 						}
-						events <- Event{Type: EventToolCall, Tool: &ToolCall{
+						if err := emit(Event{Type: EventToolCall, Tool: &ToolCall{
 							ID:         part.FunctionCall.ID,
 							Name:       part.FunctionCall.Name,
 							Arguments:  argsJSON,
 							ThoughtSig: thoughtSig,
-						}}
+						}}); err != nil {
+							return err
+						}
 					}
 				}
 			}
-			emitGeminiUsage(events, resp)
-			events <- Event{Type: EventDone}
+			if err := emitGeminiUsage(ctx, events, resp); err != nil {
+				return err
+			}
+			if err := emit(Event{Type: EventDone}); err != nil {
+				return err
+			}
 			return nil
 		}
 
@@ -196,7 +208,9 @@ func (p *GeminiProvider) Stream(ctx context.Context, req Request) (Stream, error
 			}
 			lastResp = resp
 			if text := resp.Text(); text != "" {
-				events <- Event{Type: EventTextDelta, Text: text}
+				if err := emit(Event{Type: EventTextDelta, Text: text}); err != nil {
+					return err
+				}
 			}
 			if req.Search {
 				for _, cand := range resp.Candidates {
@@ -219,27 +233,45 @@ func (p *GeminiProvider) Stream(ctx context.Context, req Request) (Stream, error
 		}
 
 		if len(sources) > 0 {
-			events <- Event{Type: EventTextDelta, Text: "\n\n**Sources:**\n"}
+			if err := emit(Event{Type: EventTextDelta, Text: "\n\n**Sources:**\n"}); err != nil {
+				return err
+			}
 			for _, source := range sources {
-				events <- Event{Type: EventTextDelta, Text: "- " + source + "\n"}
+				if err := emit(Event{Type: EventTextDelta, Text: "- " + source + "\n"}); err != nil {
+					return err
+				}
 			}
 		}
-		emitGeminiUsage(events, lastResp)
-		events <- Event{Type: EventDone}
+		if err := emitGeminiUsage(ctx, events, lastResp); err != nil {
+			return err
+		}
+		if err := emit(Event{Type: EventDone}); err != nil {
+			return err
+		}
 		return nil
 	}), nil
 }
 
-func emitGeminiUsage(events chan<- Event, resp *genai.GenerateContentResponse) {
+func emitGeminiEvent(ctx context.Context, events chan<- Event, event Event) error {
+	select {
+	case events <- event:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func emitGeminiUsage(ctx context.Context, events chan<- Event, resp *genai.GenerateContentResponse) error {
 	if resp == nil || resp.UsageMetadata == nil {
-		return
+		return nil
 	}
 	if resp.UsageMetadata.TotalTokenCount > 0 {
-		events <- Event{Type: EventUsage, Use: &Usage{
+		return emitGeminiEvent(ctx, events, Event{Type: EventUsage, Use: &Usage{
 			InputTokens:  int(resp.UsageMetadata.PromptTokenCount),
 			OutputTokens: int(resp.UsageMetadata.CandidatesTokenCount),
-		}}
+		}})
 	}
+	return nil
 }
 
 func buildGeminiTools(specs []ToolSpec) []*genai.Tool {

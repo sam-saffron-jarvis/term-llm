@@ -1,6 +1,10 @@
 package llm
 
-import "testing"
+import (
+	"context"
+	"testing"
+	"time"
+)
 
 func TestBuildGeminiContents_DropsDanglingToolCalls(t *testing.T) {
 	_, contents := buildGeminiContents([]Message{
@@ -42,5 +46,28 @@ func TestBuildGeminiContents_DropsDanglingToolCalls(t *testing.T) {
 	}
 	if !sawText {
 		t.Fatalf("expected assistant text to be preserved, got %#v", assistant.Parts)
+	}
+}
+
+func TestEmitGeminiEvent_ReturnsOnContextCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	events := make(chan Event, 1)
+	events <- Event{Type: EventTextDelta, Text: "buffer full"}
+	cancel()
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- emitGeminiEvent(ctx, events, Event{Type: EventDone})
+	}()
+
+	select {
+	case err := <-errCh:
+		if err != context.Canceled {
+			t.Fatalf("emitGeminiEvent() error = %v, want %v", err, context.Canceled)
+		}
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("emitGeminiEvent() blocked after context cancellation")
 	}
 }
