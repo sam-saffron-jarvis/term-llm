@@ -66,6 +66,27 @@ func TestRenderString_GoldenVisibleOutput(t *testing.T) {
 	}
 }
 
+func TestRenderString_LeadingTabProducesIndentedCodeBlock(t *testing.T) {
+	got, err := RenderString("\tcode", Config{
+		Palette:           testPalette,
+		Width:             80,
+		WrapOffset:        1,
+		NormalizeTabs:     true,
+		NormalizeNewlines: true,
+		TrimSpace:         true,
+	})
+	if err != nil {
+		t.Fatalf("RenderString error: %v", err)
+	}
+
+	if !strings.Contains(got, codeBgEsc) {
+		t.Fatalf("expected leading-tab input to render as an indented code block, got: %q", got)
+	}
+	if normalizeVisibleOutput(got) != "code" {
+		t.Fatalf("unexpected visible output: %q", normalizeVisibleOutput(got))
+	}
+}
+
 func TestRenderString_ZeroWidthDoesNotError(t *testing.T) {
 	_, err := RenderString("# title", Config{
 		Palette:           testPalette,

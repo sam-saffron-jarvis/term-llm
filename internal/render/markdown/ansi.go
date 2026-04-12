@@ -78,9 +78,7 @@ var markdownParser = goldmark.New(
 func (r *ANSI) Render(source []byte) ([]byte, error) {
 	content := string(source)
 	if r.config.NormalizeTabs {
-		// Deliberately 2 spaces, not the CommonMark-spec 4.
-		// Keeps terminal output compact while remaining readable.
-		content = strings.ReplaceAll(content, "\t", "  ")
+		content = expandTabs(content, 4)
 	}
 	if strings.TrimSpace(content) == "" {
 		return []byte(""), nil
@@ -121,6 +119,36 @@ func RenderString(content string, config Config) (string, error) {
 		return "", err
 	}
 	return string(rendered), nil
+}
+
+func expandTabs(text string, tabWidth int) string {
+	if tabWidth < 1 || !strings.Contains(text, "\t") {
+		return text
+	}
+
+	var b strings.Builder
+	column := 0
+	for _, r := range text {
+		switch r {
+		case '\t':
+			spaces := tabWidth - (column % tabWidth)
+			if spaces == 0 {
+				spaces = tabWidth
+			}
+			b.WriteString(strings.Repeat(" ", spaces))
+			column += spaces
+		case '\n':
+			b.WriteRune(r)
+			column = 0
+		case '\r':
+			b.WriteRune(r)
+			column = 0
+		default:
+			b.WriteRune(r)
+			column += xansi.StringWidth(string(r))
+		}
+	}
+	return b.String()
 }
 
 type ansiStyle struct {
