@@ -89,6 +89,34 @@ func TestRenderString_HeadingPreservesInlineFormatting(t *testing.T) {
 	}
 }
 
+func TestRenderString_ThematicBreakUsesRenderWidth(t *testing.T) {
+	for _, tc := range []struct {
+		width    int
+		wrap     int
+		expected int
+	}{
+		{width: 20, wrap: 1, expected: 19},
+		{width: 40, wrap: 2, expected: 38},
+	} {
+		got, err := RenderString("---", Config{
+			Palette:           testPalette,
+			Width:             tc.width,
+			WrapOffset:        tc.wrap,
+			NormalizeTabs:     true,
+			NormalizeNewlines: true,
+			TrimSpace:         true,
+		})
+		if err != nil {
+			t.Fatalf("RenderString error: %v", err)
+		}
+
+		visible := normalizeVisibleOutput(got)
+		if visible != strings.Repeat("─", tc.expected) {
+			t.Fatalf("unexpected rule width for width=%d wrap=%d\nwant: %q\ngot:  %q", tc.width, tc.wrap, strings.Repeat("─", tc.expected), visible)
+		}
+	}
+}
+
 func TestRenderString_ZeroWidthDoesNotError(t *testing.T) {
 	_, err := RenderString("# title", Config{
 		Palette:           testPalette,
