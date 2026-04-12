@@ -195,6 +195,91 @@ func TestRenderTable_WrapsInsteadOfTruncating(t *testing.T) {
 	}
 }
 
+func TestRenderTable_InsertsSeparatorsBetweenAllRows(t *testing.T) {
+	got, err := RenderString("| Name | Role |\n|------|------|\n| Alpha | Admin |\n| Beta | User |", Config{
+		Palette:           testPalette,
+		Width:             40,
+		WrapOffset:        1,
+		NormalizeTabs:     true,
+		NormalizeNewlines: true,
+		TrimSpace:         true,
+	})
+	if err != nil {
+		t.Fatalf("RenderString error: %v", err)
+	}
+
+	visible := normalizeVisibleOutput(got)
+	if !strings.Contains(visible, "┌") || !strings.Contains(visible, "┐") || !strings.Contains(visible, "└") || !strings.Contains(visible, "┘") {
+		t.Fatalf("expected an outlined table\nvisible:\n%s", visible)
+	}
+	if strings.Count(visible, "┼") != 2 {
+		t.Fatalf("expected a separator between each rendered row\nvisible:\n%s", visible)
+	}
+	if !strings.Contains(visible, "│ Alpha │ Admin │") || !strings.Contains(visible, "│ Beta  │ User  │") {
+		t.Fatalf("expected boxed body rows in output\nvisible:\n%s", visible)
+	}
+	assertLinesWithinWidth(t, visible, 39)
+}
+
+func TestRenderTable_FallsBackToRecordsWhenCramped(t *testing.T) {
+	got, err := RenderString("| Name | Description |\n|------|-------------|\n| Alpha | Programmatic access to all platform features |\n| Beta | Short note |", Config{
+		Palette:           testPalette,
+		Width:             16,
+		WrapOffset:        1,
+		NormalizeTabs:     true,
+		NormalizeNewlines: true,
+		TrimSpace:         true,
+	})
+	if err != nil {
+		t.Fatalf("RenderString error: %v", err)
+	}
+
+	visible := normalizeVisibleOutput(got)
+	if strings.Contains(visible, "│") || strings.Contains(visible, "┼") {
+		t.Fatalf("expected cramped tables to fall back to record layout\nvisible:\n%s", visible)
+	}
+	for _, want := range []string{"Name:", "Description:", "Alpha", "Programmatic", "features", "Beta", "Short note"} {
+		if !strings.Contains(visible, want) {
+			t.Fatalf("record layout missing %q\nvisible:\n%s", want, visible)
+		}
+	}
+	if !strings.Contains(visible, "───────────────") {
+		t.Fatalf("expected a divider line between records\nvisible:\n%s", visible)
+	}
+	assertLinesWithinWidth(t, visible, 15)
+}
+
+func TestRenderTable_StylesHeadersAndBorders(t *testing.T) {
+	got, err := RenderString("| Name | Role |\n|------|------|\n| Alpha | Admin |", Config{
+		Palette:           testPalette,
+		Width:             40,
+		WrapOffset:        1,
+		NormalizeTabs:     true,
+		NormalizeNewlines: true,
+		TrimSpace:         true,
+	})
+	if err != nil {
+		t.Fatalf("RenderString error: %v", err)
+	}
+
+	styles := newANSIStyles(testPalette)
+	if styles.tableHeader.prefix == "" || !strings.Contains(got, styles.tableHeader.prefix) {
+		t.Fatalf("expected styled table header in output: %q", got)
+	}
+	if !strings.Contains(got, styles.tableBorder.Render("│")) {
+		t.Fatalf("expected styled table outline in output: %q", got)
+	}
+	if !strings.Contains(got, styles.tableBorder.Render("┌───────┬───────┐")) {
+		t.Fatalf("expected styled top border in output: %q", got)
+	}
+	if !strings.Contains(got, styles.tableBorder.Render("├───────┼───────┤")) {
+		t.Fatalf("expected styled middle separator in output: %q", got)
+	}
+	if !strings.Contains(got, styles.tableBorder.Render("└───────┴───────┘")) {
+		t.Fatalf("expected styled bottom border in output: %q", got)
+	}
+}
+
 func TestRenderCodeBlock_HasBackground(t *testing.T) {
 	got, err := RenderString("```\nhello\nworld\n```", Config{
 		Palette:           testPalette,

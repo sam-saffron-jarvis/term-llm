@@ -147,6 +147,7 @@ type ansiStyles struct {
 	rule          ansiStyle
 	definition    ansiStyle
 	tableHeader   ansiStyle
+	tableBorder   ansiStyle
 }
 
 func newANSIStyle(color string, attrs ...string) ansiStyle {
@@ -197,7 +198,8 @@ func newANSIStyles(p Palette) ansiStyles {
 		image:         newANSIStyle(p.Muted),
 		rule:          newANSIStyle(p.Muted),
 		definition:    newANSIStyle(p.Secondary),
-		tableHeader:   newANSIStyle(p.Text, "1"),
+		tableHeader:   newANSIStyle(p.Secondary, "1"),
+		tableBorder:   newANSIStyle(p.Muted, "2"),
 	}
 }
 
@@ -319,28 +321,29 @@ func (r *ANSI) renderList(list *gast.List, source []byte, width int, styles ansi
 }
 
 func (r *ANSI) renderTable(table *extast.Table, source []byte, width int, styles ansiStyles) (string, error) {
-	var rows [][]string
+	var header []string
+	var bodyRows [][]string
 	var aligns []extast.Alignment
 	for child := table.FirstChild(); child != nil; child = child.NextSibling() {
 		switch row := child.(type) {
 		case *extast.TableHeader:
-			rows = append(rows, r.collectTableRow(row, source, styles, true))
+			header = r.collectTableRow(row, source, styles, true)
 			if len(row.Alignments) > 0 {
 				aligns = row.Alignments
 			}
 		case *extast.TableRow:
-			rows = append(rows, r.collectTableRow(row, source, styles, false))
+			bodyRows = append(bodyRows, r.collectTableRow(row, source, styles, false))
 			if len(aligns) == 0 && len(row.Alignments) > 0 {
 				aligns = row.Alignments
 			}
 		}
 	}
-	if len(rows) == 0 {
+	if len(header) == 0 && len(bodyRows) == 0 {
 		return "", nil
 	}
 
-	colCount := 0
-	for _, row := range rows {
+	colCount := len(header)
+	for _, row := range bodyRows {
 		if len(row) > colCount {
 			colCount = len(row)
 		}
@@ -349,22 +352,50 @@ func (r *ANSI) renderTable(table *extast.Table, source []byte, width int, styles
 		return "", nil
 	}
 
-	widths := make([]int, colCount)
-	for _, row := range rows {
+	naturalWidths := make([]int, colCount)
+	measureRow := func(row []string) {
 		for i, cell := range row {
 			cellWidth := visibleWidth(cell)
-			if cellWidth > widths[i] {
-				widths[i] = cellWidth
+			if cellWidth > naturalWidths[i] {
+				naturalWidths[i] = cellWidth
 			}
 		}
 	}
-	fitColumnWidths(widths, width, colCount)
+	measureRow(header)
+	for _, row := range bodyRows {
+		measureRow(row)
+	}
+
+	gridWidth := max(width-4, 1)
+	widths := append([]int(nil), naturalWidths...)
+	fitColumnWidths(widths, gridWidth, colCount)
+
+	if len(bodyRows) > 0 && shouldRenderTableAsRecords(naturalWidths, widths) {
+		return r.renderTableRecords(header, bodyRows, width, styles), nil
+	}
+	return r.renderTableGrid(header, bodyRows, aligns, widths, styles), nil
+}
+
+func (r *ANSI) renderTableGrid(header []string, bodyRows [][]string, aligns []extast.Alignment, widths []int, styles ansiStyles) string {
+	rows := make([][]string, 0, len(bodyRows)+1)
+	if len(header) > 0 {
+		rows = append(rows, header)
+	}
+	rows = append(rows, bodyRows...)
+	if len(rows) == 0 {
+		return ""
+	}
+
+	topBorder := renderTableRule(widths, "┌", "┬", "┐", styles)
+	middleBorder := renderTableRule(widths, "├", "┼", "┤", styles)
+	bottomBorder := renderTableRule(widths, "└", "┴", "┘", styles)
 
 	var lines []string
+	lines = append(lines, topBorder)
 	for rowIndex, row := range rows {
-		wrappedCells := make([][]string, colCount)
+		wrappedCells := make([][]string, len(widths))
 		maxCellLines := 1
-		for i := 0; i < colCount; i++ {
+		for i := range widths {
 			cell := ""
 			if i < len(row) {
 				cell = row[i]
@@ -377,29 +408,122 @@ func (r *ANSI) renderTable(table *extast.Table, source []byte, width int, styles
 		}
 
 		for lineIdx := 0; lineIdx < maxCellLines; lineIdx++ {
-			cells := make([]string, colCount)
-			for i := 0; i < colCount; i++ {
+			var line strings.Builder
+			line.WriteString(styles.tableBorder.Render("│"))
+			line.WriteString(" ")
+			for i := range widths {
 				cellText := ""
 				if lineIdx < len(wrappedCells[i]) {
 					cellText = wrappedCells[i][lineIdx]
 				}
-				cells[i] = padCell(cellText, widths[i], alignmentAt(aligns, i))
+				line.WriteString(padCell(cellText, widths[i], alignmentAt(aligns, i)))
+				line.WriteString(" ")
+				line.WriteString(styles.tableBorder.Render("│"))
+				if i < len(widths)-1 {
+					line.WriteString(" ")
+				}
 			}
-			lines = append(lines, strings.Join(cells, " │ "))
+			lines = append(lines, line.String())
 		}
 
-		if rowIndex == 0 && len(rows) > 1 {
-			sep := make([]string, colCount)
-			for i, w := range widths {
-				if w < 1 {
-					w = 1
-				}
-				sep[i] = strings.Repeat("─", w)
-			}
-			lines = append(lines, strings.Join(sep, "─┼─"))
+		if rowIndex < len(rows)-1 {
+			lines = append(lines, middleBorder)
 		}
 	}
-	return strings.Join(lines, "\n"), nil
+	lines = append(lines, bottomBorder)
+	return strings.Join(lines, "\n")
+}
+
+func (r *ANSI) renderTableRecords(header []string, bodyRows [][]string, width int, styles ansiStyles) string {
+	if width < 1 {
+		width = 1
+	}
+
+	labels := make([]string, len(header))
+	copy(labels, header)
+	for _, row := range bodyRows {
+		if len(row) > len(labels) {
+			extra := make([]string, len(row)-len(labels))
+			labels = append(labels, extra...)
+		}
+	}
+	for i := range labels {
+		if strings.TrimSpace(stripANSI(labels[i])) == "" {
+			labels[i] = styles.tableHeader.Render(fmt.Sprintf("Column %d", i+1))
+		}
+	}
+
+	recordDivider := styles.tableBorder.Render(strings.Repeat("─", width))
+	var blocks []string
+	for _, row := range bodyRows {
+		var blockLines []string
+		for i := range labels {
+			label := labels[i]
+			value := ""
+			if i < len(row) {
+				value = row[i]
+			}
+			blockLines = append(blockLines, renderTableRecordField(label, value, width)...)
+		}
+		blocks = append(blocks, strings.Join(blockLines, "\n"))
+	}
+	return strings.Join(blocks, "\n"+recordDivider+"\n")
+}
+
+func renderTableRecordField(label, value string, width int) []string {
+	const minInlineValueWidth = 8
+
+	if width < 1 {
+		width = 1
+	}
+
+	prefix := label + ": "
+	prefixWidth := visibleWidth(prefix)
+	if prefixWidth < width && width-prefixWidth >= minInlineValueWidth {
+		valueLines := wrapCellLines(value, width-prefixWidth)
+		lines := make([]string, 0, len(valueLines))
+		for i, line := range valueLines {
+			if i == 0 {
+				lines = append(lines, prefix+line)
+				continue
+			}
+			lines = append(lines, strings.Repeat(" ", prefixWidth)+line)
+		}
+		return lines
+	}
+
+	lines := wrapCellLines(label+":", width)
+	valueWidth := max(width-2, 1)
+	for _, line := range wrapCellLines(value, valueWidth) {
+		lines = append(lines, "  "+line)
+	}
+	return lines
+}
+
+func renderTableRule(widths []int, left, middle, right string, styles ansiStyles) string {
+	parts := make([]string, len(widths))
+	for i, w := range widths {
+		if w < 1 {
+			w = 1
+		}
+		parts[i] = strings.Repeat("─", w+2)
+	}
+	return styles.tableBorder.Render(left + strings.Join(parts, middle) + right)
+}
+
+func shouldRenderTableAsRecords(naturalWidths, fittedWidths []int) bool {
+	const minReadableColumnWidth = 8
+
+	for i := range fittedWidths {
+		natural := 1
+		if i < len(naturalWidths) && naturalWidths[i] > 0 {
+			natural = naturalWidths[i]
+		}
+		if fittedWidths[i] < minReadableColumnWidth && fittedWidths[i] < natural {
+			return true
+		}
+	}
+	return false
 }
 
 func (r *ANSI) collectTableRow(node gast.Node, source []byte, styles ansiStyles, header bool) []string {
