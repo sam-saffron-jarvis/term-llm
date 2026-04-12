@@ -423,6 +423,9 @@ func (r *ANSI) collectTableRow(node gast.Node, source []byte, styles ansiStyles,
 	return row
 }
 
+// codeBgEsc is a dim grey background used to visually distinguish code blocks.
+const codeBgEsc = "\x1b[48;5;236m"
+
 func (r *ANSI) renderCodeBlock(code, language string, width int, styles ansiStyles) string {
 	code = strings.TrimRight(code, "\n")
 	if code == "" {
@@ -430,15 +433,33 @@ func (r *ANSI) renderCodeBlock(code, language string, width int, styles ansiStyl
 	}
 	lines := strings.Split(code, "\n")
 	highlighter := getCodeHighlighter(language)
-	for i, line := range lines {
+	var result []string
+	for _, line := range lines {
+		var styled string
 		if highlighter != nil {
-			lines[i] = highlighter.highlightLine(line)
+			styled = highlighter.highlightLine(line)
 		} else {
-			lines[i] = styles.text.Render(line)
+			styled = styles.text.Render(line)
 		}
-		lines[i] = wrapANSI(lines[i], width)
+		wrapped := wrapANSI(styled, width)
+		for _, sub := range strings.Split(wrapped, "\n") {
+			result = append(result, codeLineBg(sub, width))
+		}
 	}
-	return strings.Join(lines, "\n")
+	return strings.Join(result, "\n")
+}
+
+// codeLineBg wraps a single rendered code line with a background colour,
+// re-applying it after every SGR reset so that syntax-highlight tokens
+// don't punch holes in the background. The line is right-padded to width
+// so the background fills the full block.
+func codeLineBg(line string, width int) string {
+	inner := strings.ReplaceAll(line, "\x1b[0m", "\x1b[0m"+codeBgEsc)
+	pad := width - visibleWidth(line)
+	if pad < 0 {
+		pad = 0
+	}
+	return codeBgEsc + inner + strings.Repeat(" ", pad) + "\x1b[0m"
 }
 
 func (r *ANSI) renderInlineChildren(parent gast.Node, source []byte, styles ansiStyles) (string, error) {

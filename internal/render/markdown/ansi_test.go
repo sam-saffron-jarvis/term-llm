@@ -195,6 +195,32 @@ func TestRenderTable_WrapsInsteadOfTruncating(t *testing.T) {
 	}
 }
 
+func TestRenderCodeBlock_HasBackground(t *testing.T) {
+	got, err := RenderString("```\nhello\nworld\n```", Config{
+		Palette:           testPalette,
+		Width:             40,
+		WrapOffset:        1,
+		NormalizeTabs:     true,
+		NormalizeNewlines: true,
+		TrimSpace:         true,
+	})
+	if err != nil {
+		t.Fatalf("RenderString error: %v", err)
+	}
+	if !strings.Contains(got, codeBgEsc) {
+		t.Fatalf("code block output should contain background escape %q", codeBgEsc)
+	}
+	// Every line should start with the background escape and end with a reset.
+	for i, line := range strings.Split(got, "\n") {
+		if !strings.HasPrefix(line, codeBgEsc) {
+			t.Errorf("line %d missing bg prefix: %q", i, line)
+		}
+		if !strings.HasSuffix(line, "\x1b[0m") {
+			t.Errorf("line %d missing reset suffix: %q", i, line)
+		}
+	}
+}
+
 func TestFitColumnWidths_PreservesMinimum(t *testing.T) {
 	widths := []int{20, 30, 25}
 	fitColumnWidths(widths, 30, 3)
