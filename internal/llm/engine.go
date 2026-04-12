@@ -925,9 +925,17 @@ func (e *Engine) runLoop(ctx context.Context, req Request, events chan<- Event) 
 				if event.Tool.ID == "" {
 					event.Tool.ID = toolCallID
 				}
+
+				info := event.ToolInfo
+				if info == "" {
+					info = event.Tool.ToolInfo
+				}
+				if info == "" {
+					info = e.getToolPreview(*event.Tool)
+				}
+				event.Tool.ToolInfo = info
 				toolCalls = append(toolCalls, *event.Tool)
 
-				info := e.getToolPreview(*event.Tool)
 				if err := sendEvent(Event{
 					Type:       EventToolCall,
 					ToolCallID: toolCallID,
@@ -993,7 +1001,7 @@ func (e *Engine) runLoop(ctx context.Context, req Request, events chan<- Event) 
 			// This is needed so claude-bin gets proper context when resuming
 			assistantMsg := buildAssistantMessageWithReasoningMetadata(
 				textBuilder.String(),
-				syncToolCalls,
+				e.withToolPreview(syncToolCalls),
 				reasoningBuilder.String(),
 				reasoningItemID,
 				reasoningEncryptedContent,
@@ -1074,6 +1082,7 @@ func (e *Engine) runLoop(ctx context.Context, req Request, events chan<- Event) 
 			// Note: responseCallback is NOT called here because no tool execution follows.
 			// responseCallback is only for persisting assistant messages before tool execution.
 			if turnCallback != nil {
+				unregisteredWithInfo := e.withToolPreview(unregistered)
 				var parts []Part
 				if textBuilder.Len() > 0 || reasoningBuilder.Len() > 0 || reasoningItemID != "" || reasoningEncryptedContent != "" {
 					parts = append(parts, Part{
@@ -1084,8 +1093,8 @@ func (e *Engine) runLoop(ctx context.Context, req Request, events chan<- Event) 
 						ReasoningEncryptedContent: reasoningEncryptedContent,
 					})
 				}
-				for i := range unregistered {
-					call := unregistered[i]
+				for i := range unregisteredWithInfo {
+					call := unregisteredWithInfo[i]
 					parts = append(parts, Part{Type: PartToolCall, ToolCall: &call})
 				}
 				if len(parts) > 0 {
@@ -1109,7 +1118,7 @@ func (e *Engine) runLoop(ctx context.Context, req Request, events chan<- Event) 
 		// (built before tool execution so we can save it incrementally)
 		assistantMsg := buildAssistantMessageWithReasoningMetadata(
 			textBuilder.String(),
-			registered,
+			e.withToolPreview(registered),
 			reasoningBuilder.String(),
 			reasoningItemID,
 			reasoningEncryptedContent,
@@ -1503,7 +1512,20 @@ func (e *Engine) handleSyncToolExecution(ctx context.Context, event Event, event
 	// Ensure call has the proper ID (may have been generated)
 	returnCall := *call
 	returnCall.ID = callID
+	returnCall.ToolInfo = info
 	return returnCall, result, err
+}
+
+func (e *Engine) withToolPreview(calls []ToolCall) []ToolCall {
+	if len(calls) == 0 {
+		return nil
+	}
+	withPreview := make([]ToolCall, len(calls))
+	for i := range calls {
+		withPreview[i] = calls[i]
+		withPreview[i].ToolInfo = e.getToolPreview(withPreview[i])
+	}
+	return withPreview
 }
 
 func ensureToolCallIDs(calls []ToolCall) []ToolCall {
@@ -1538,6 +1560,9 @@ func dedupeToolCalls(calls []ToolCall) []ToolCall {
 
 // getToolPreview returns a preview string for a tool call.
 func (e *Engine) getToolPreview(call ToolCall) string {
+	if call.ToolInfo != "" {
+		return call.ToolInfo
+	}
 	if tool, ok := e.tools.Get(call.Name); ok {
 		if preview := tool.Preview(call.Arguments); preview != "" {
 			if !strings.HasPrefix(preview, "(") {

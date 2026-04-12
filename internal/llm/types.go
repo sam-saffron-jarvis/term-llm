@@ -152,6 +152,7 @@ type ToolCall struct {
 	ID         string
 	Name       string
 	Arguments  json.RawMessage
+	ToolInfo   string `json:",omitempty"` // Persisted display text for TUI/history (already formatted, e.g. "(main.go)")
 	ThoughtSig []byte // Gemini 3 thought signature (must be passed back in result)
 }
 

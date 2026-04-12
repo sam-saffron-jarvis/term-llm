@@ -1144,6 +1144,89 @@ func TestBuildAssistantMessage_ReasoningOnlyCreatesTextPart(t *testing.T) {
 	}
 }
 
+func TestEnginePersistsToolInfoInAssistantMessage(t *testing.T) {
+	tool := &imageTool{}
+	registry := NewToolRegistry()
+	registry.Register(tool)
+
+	provider := &fakeProvider{
+		script: func(call int, req Request) []Event {
+			switch call {
+			case 0:
+				return []Event{
+					{Type: EventToolCall, Tool: &ToolCall{ID: "img-1", Name: "image_tool", Arguments: json.RawMessage(`{}`)}},
+					{Type: EventDone},
+				}
+			default:
+				return []Event{
+					{Type: EventTextDelta, Text: "done"},
+					{Type: EventDone},
+				}
+			}
+		},
+	}
+
+	engine := NewEngine(provider, registry)
+
+	var persisted Message
+	engine.SetResponseCompletedCallback(func(ctx context.Context, turnIndex int, assistantMsg Message, metrics TurnMetrics) error {
+		persisted = assistantMsg
+		return nil
+	})
+
+	req := Request{
+		Messages: []Message{UserText("generate image")},
+		Tools:    []ToolSpec{tool.Spec()},
+	}
+
+	stream, err := engine.Stream(context.Background(), req)
+	if err != nil {
+		t.Fatalf("stream error: %v", err)
+	}
+	defer stream.Close()
+
+	for {
+		_, err := stream.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("recv error: %v", err)
+		}
+	}
+
+	if len(persisted.Parts) != 1 {
+		t.Fatalf("expected persisted assistant message to contain 1 part, got %d", len(persisted.Parts))
+	}
+	if persisted.Parts[0].Type != PartToolCall || persisted.Parts[0].ToolCall == nil {
+		t.Fatalf("expected persisted assistant message to contain a tool call part, got %+v", persisted.Parts[0])
+	}
+	if got := persisted.Parts[0].ToolCall.ToolInfo; got != "(test.png)" {
+		t.Fatalf("persisted tool info = %q, want %q", got, "(test.png)")
+	}
+
+	if len(provider.calls) < 2 {
+		t.Fatalf("provider calls = %d, want at least 2", len(provider.calls))
+	}
+	found := false
+	for _, msg := range provider.calls[1].Messages {
+		if msg.Role != RoleAssistant {
+			continue
+		}
+		for _, part := range msg.Parts {
+			if part.Type == PartToolCall && part.ToolCall != nil && part.ToolCall.ID == "img-1" {
+				found = true
+				if got := part.ToolCall.ToolInfo; got != "(test.png)" {
+					t.Fatalf("tool info in next request = %q, want %q", got, "(test.png)")
+				}
+			}
+		}
+	}
+	if !found {
+		t.Fatal("expected assistant tool call with persisted tool info in next request")
+	}
+}
+
 func TestEngineEmitsToolCallAndExecStartForEachTool(t *testing.T) {
 	// This test verifies that the engine emits both EventToolCall (during streaming)
 	// and EventToolExecStart (at execution time) for each tool, with matching IDs.

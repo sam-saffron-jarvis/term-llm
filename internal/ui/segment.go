@@ -358,7 +358,11 @@ func RenderToolCallFromPart(tc *llm.ToolCall, width int, expanded bool) string {
 		}
 	}
 
-	info := truncateToolInfo(tc.Name, llm.ExtractToolInfo(*tc), width)
+	info := tc.ToolInfo
+	if info == "" {
+		info = llm.ExtractToolInfo(*tc)
+	}
+	info = truncateToolInfo(tc.Name, info, width)
 	if info != "" {
 		return SuccessCircle() + " " + tc.Name + " " + paramStyle.Render(info)
 	}

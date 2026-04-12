@@ -2,6 +2,7 @@ package markdown
 
 import (
 	"fmt"
+	"html"
 	"regexp"
 	"strconv"
 	"strings"
@@ -77,6 +78,8 @@ var markdownParser = goldmark.New(
 func (r *ANSI) Render(source []byte) ([]byte, error) {
 	content := string(source)
 	if r.config.NormalizeTabs {
+		// Deliberately 2 spaces, not the CommonMark-spec 4.
+		// Keeps terminal output compact while remaining readable.
 		content = strings.ReplaceAll(content, "\t", "  ")
 	}
 	if strings.TrimSpace(content) == "" {
@@ -216,7 +219,7 @@ func (r *ANSI) renderBlockChildren(parent gast.Node, source []byte, width int, s
 func (r *ANSI) renderBlock(node gast.Node, source []byte, width int, styles ansiStyles) (string, error) {
 	switch n := node.(type) {
 	case *gast.Heading:
-		text := strings.TrimSpace(r.plainInlineChildren(n, source))
+		text := strings.TrimSpace(r.plainInlineChildren(n, source, true))
 		label := strings.Repeat("#", max(n.Level, 1))
 		if text != "" {
 			label += " " + text
@@ -262,7 +265,7 @@ func (r *ANSI) renderBlock(node gast.Node, source []byte, width int, styles ansi
 	case *extast.DefinitionList:
 		return r.renderBlockChildren(n, source, width, styles, "\n")
 	case *extast.DefinitionTerm:
-		text := strings.TrimSpace(r.plainInlineChildren(n, source))
+		text := strings.TrimSpace(r.plainInlineChildren(n, source, true))
 		if text == "" {
 			return "", nil
 		}
@@ -408,7 +411,7 @@ func (r *ANSI) collectTableRow(node gast.Node, source []byte, styles ansiStyles,
 		}
 		text, err := r.renderInlineChildren(cell, source, styles)
 		if err != nil {
-			text = r.plainInlineChildren(cell, source)
+			text = r.plainInlineChildren(cell, source, true)
 		}
 		text = strings.ReplaceAll(text, "\n", " ")
 		text = strings.TrimSpace(text)
@@ -453,7 +456,7 @@ func (r *ANSI) renderInlineChildren(parent gast.Node, source []byte, styles ansi
 func (r *ANSI) renderInline(node gast.Node, source []byte, styles ansiStyles) (string, error) {
 	switch n := node.(type) {
 	case *gast.Text:
-		text := string(n.Value(source))
+		text := decodeInlineText(string(n.Value(source)))
 		rendered := styles.text.Render(text)
 		if n.HardLineBreak() {
 			rendered += "\n"
@@ -483,7 +486,7 @@ func (r *ANSI) renderInline(node gast.Node, source []byte, styles ansiStyles) (s
 		}
 		return styles.strikethrough.Render(inner), nil
 	case *gast.CodeSpan:
-		return styles.code.Render(r.plainInlineChildren(n, source)), nil
+		return styles.code.Render(r.plainInlineChildren(n, source, false)), nil
 	case *gast.Link:
 		label, err := r.renderInlineChildren(n, source, styles)
 		if err != nil {
@@ -501,7 +504,7 @@ func (r *ANSI) renderInline(node gast.Node, source []byte, styles ansiStyles) (s
 	case *gast.AutoLink:
 		return styles.link.Render(string(n.URL(source))), nil
 	case *gast.Image:
-		alt := strings.TrimSpace(r.plainInlineChildren(n, source))
+		alt := strings.TrimSpace(r.plainInlineChildren(n, source, true))
 		if alt == "" {
 			alt = "Image"
 		}
@@ -526,18 +529,21 @@ func (r *ANSI) renderInline(node gast.Node, source []byte, styles ansiStyles) (s
 	}
 }
 
-func (r *ANSI) plainInlineChildren(parent gast.Node, source []byte) string {
+func (r *ANSI) plainInlineChildren(parent gast.Node, source []byte, decode bool) string {
 	var b strings.Builder
 	for child := parent.FirstChild(); child != nil; child = child.NextSibling() {
-		b.WriteString(r.plainInline(child, source))
+		b.WriteString(r.plainInline(child, source, decode))
 	}
 	return b.String()
 }
 
-func (r *ANSI) plainInline(node gast.Node, source []byte) string {
+func (r *ANSI) plainInline(node gast.Node, source []byte, decode bool) string {
 	switch n := node.(type) {
 	case *gast.Text:
 		text := string(n.Value(source))
+		if decode {
+			text = decodeInlineText(text)
+		}
 		if n.HardLineBreak() {
 			return text + "\n"
 		}
@@ -548,9 +554,9 @@ func (r *ANSI) plainInline(node gast.Node, source []byte) string {
 	case *gast.String:
 		return string(n.Value)
 	case *gast.CodeSpan:
-		return r.plainInlineChildren(n, source)
+		return r.plainInlineChildren(n, source, false)
 	case *gast.Link:
-		label := strings.TrimSpace(r.plainInlineChildren(n, source))
+		label := strings.TrimSpace(r.plainInlineChildren(n, source, decode))
 		url := string(n.Destination)
 		if label == "" {
 			return url
@@ -562,7 +568,7 @@ func (r *ANSI) plainInline(node gast.Node, source []byte) string {
 	case *gast.AutoLink:
 		return string(n.URL(source))
 	case *gast.Image:
-		alt := strings.TrimSpace(r.plainInlineChildren(n, source))
+		alt := strings.TrimSpace(r.plainInlineChildren(n, source, decode))
 		if alt == "" {
 			alt = "Image"
 		}
@@ -578,7 +584,7 @@ func (r *ANSI) plainInline(node gast.Node, source []byte) string {
 		return "[ ] "
 	default:
 		if node.FirstChild() != nil {
-			return r.plainInlineChildren(node, source)
+			return r.plainInlineChildren(node, source, decode)
 		}
 		if text := bytesOrEmpty(node.Text(source)); len(text) > 0 {
 			return string(text)
@@ -807,6 +813,17 @@ var multiNewlineRe = regexp.MustCompile(`\n{3,}`)
 
 func normalizeNewlines(s string) string {
 	return multiNewlineRe.ReplaceAllString(s, "\n\n")
+}
+
+// backslashEscapeRe matches a backslash followed by an ASCII punctuation character.
+var backslashEscapeRe = regexp.MustCompile(`\\([!"#$%&'()*+,\-./:;<=>?@\[\\\]^_{|}~` + "`])")
+
+// decodeInlineText processes raw goldmark source text for terminal display:
+// 1. Strips CommonMark backslash escapes (\* → *)
+// 2. Decodes HTML entities (&amp; → &, &ouml; → ö)
+func decodeInlineText(s string) string {
+	s = backslashEscapeRe.ReplaceAllString(s, "$1")
+	return html.UnescapeString(s)
 }
 
 type codeHighlighter struct {

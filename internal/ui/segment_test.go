@@ -1,6 +1,12 @@
 package ui
 
-import "testing"
+import (
+	"encoding/json"
+	"strings"
+	"testing"
+
+	"github.com/samsaffron/term-llm/internal/llm"
+)
 
 func TestSafeANSISlice(t *testing.T) {
 	tests := []struct {
@@ -183,6 +189,25 @@ func TestExtractAgentName(t *testing.T) {
 				t.Errorf("extractAgentName(%q) = %q, want %q", tt.toolInfo, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestRenderToolCallFromPart_FallsBackToExtractedArgsWhenToolInfoMissing(t *testing.T) {
+	call := &llm.ToolCall{
+		ID:        "call-1",
+		Name:      "edit_file",
+		Arguments: json.RawMessage(`{"path":"main.go","old_text":"before","new_text":"after"}`),
+	}
+
+	rendered := StripANSI(RenderToolCallFromPart(call, 0, false))
+	if !strings.Contains(rendered, "edit_file") {
+		t.Fatalf("expected tool name in rendered output, got %q", rendered)
+	}
+	if !strings.Contains(rendered, "new_text:after") {
+		t.Fatalf("expected fallback raw arg summary when ToolInfo is missing, got %q", rendered)
+	}
+	if !strings.Contains(rendered, "path:main.go") {
+		t.Fatalf("expected fallback raw arg path in rendered output, got %q", rendered)
 	}
 }
 

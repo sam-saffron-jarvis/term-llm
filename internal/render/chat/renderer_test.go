@@ -376,7 +376,8 @@ func TestMessageBlockRenderer_DiffsOnHydration(t *testing.T) {
 					ToolCall: &llm.ToolCall{
 						ID:        toolCallID,
 						Name:      "edit_file",
-						Arguments: []byte(`{"file_path":"test.go","old_string":"x = 1","new_string":"x = 2"}`),
+						Arguments: []byte(`{"path":"test.go","old_text":"x = 1","new_text":"x = 2"}`),
+						ToolInfo:  "(test.go)",
 					},
 				},
 			},
@@ -404,15 +405,20 @@ func TestMessageBlockRenderer_DiffsOnHydration(t *testing.T) {
 	rb := NewMessageBlockRendererWithContext(80, simpleMarkdownRenderer, messages, 0, false)
 	block := rb.Render(&messages[0])
 
+	plain := ui.StripANSI(block.Rendered)
+
 	// The rendered output should contain the diff
 	// The diff renderer outputs the file path and +/- lines
-	if !strings.Contains(block.Rendered, "test.go") {
-		t.Errorf("Expected rendered block to contain file path 'test.go', got:\n%s", block.Rendered)
+	if !strings.Contains(plain, "test.go") {
+		t.Errorf("Expected rendered block to contain file path 'test.go', got:\n%s", plain)
 	}
 
-	// Should contain the edit_file tool indication
-	if !strings.Contains(block.Rendered, "edit_file") {
-		t.Errorf("Expected rendered block to contain tool name 'edit_file', got:\n%s", block.Rendered)
+	// Historical rendering should use persisted tool info instead of raw args.
+	if !strings.Contains(plain, "edit_file (test.go)") {
+		t.Errorf("Expected rendered block to contain compact tool summary 'edit_file (test.go)', got:\n%s", plain)
+	}
+	if strings.Contains(plain, "old_text") || strings.Contains(plain, "new_text") {
+		t.Errorf("Expected rendered block to avoid verbose raw args when ToolInfo is persisted, got:\n%s", plain)
 	}
 }
 
