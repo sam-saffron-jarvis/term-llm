@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/option"
@@ -580,9 +581,11 @@ func TestHandleAnthropicStartBlockContent_TextBlockEmitsTextDelta(t *testing.T) 
 	events := make(chan Event, 1)
 	acc := newToolCallAccumulator()
 
-	handleAnthropicStartBlockContent(anthropic.TextBlock{
+	if err := handleAnthropicStartBlockContent(context.Background(), anthropic.TextBlock{
 		Text: "hello from start block",
-	}, 0, acc, events)
+	}, 0, acc, events); err != nil {
+		t.Fatalf("handleAnthropicStartBlockContent error: %v", err)
+	}
 
 	select {
 	case ev := <-events:
@@ -601,11 +604,13 @@ func TestHandleAnthropicStartBlockContent_ToolUseStartsAccumulator(t *testing.T)
 	events := make(chan Event, 1)
 	acc := newToolCallAccumulator()
 
-	handleAnthropicStartBlockContent(anthropic.ToolUseBlock{
+	if err := handleAnthropicStartBlockContent(context.Background(), anthropic.ToolUseBlock{
 		ID:    "call-1",
 		Name:  "read_file",
 		Input: json.RawMessage(`{"path":"README.md"}`),
-	}, 1, acc, events)
+	}, 1, acc, events); err != nil {
+		t.Fatalf("handleAnthropicStartBlockContent error: %v", err)
+	}
 
 	if _, ok := acc.Finish(1); !ok {
 		t.Fatal("expected tool call to be started in accumulator")
@@ -621,9 +626,11 @@ func TestHandleAnthropicBetaStartBlockContent_TextBlockEmitsTextDelta(t *testing
 	events := make(chan Event, 1)
 	acc := newToolCallAccumulator()
 
-	handleAnthropicBetaStartBlockContent(anthropic.BetaTextBlock{
+	if err := handleAnthropicBetaStartBlockContent(context.Background(), anthropic.BetaTextBlock{
 		Text: "hello from beta start block",
-	}, 0, acc, events)
+	}, 0, acc, events); err != nil {
+		t.Fatalf("handleAnthropicBetaStartBlockContent error: %v", err)
+	}
 
 	select {
 	case ev := <-events:
@@ -641,7 +648,9 @@ func TestHandleAnthropicBetaStartBlockContent_TextBlockEmitsTextDelta(t *testing
 func TestEmitReasoningDelta_ProducesReasoningEvent(t *testing.T) {
 	events := make(chan Event, 1)
 
-	emitReasoningDelta(events, "thinking chunk", "sig-123")
+	if err := emitReasoningDelta(context.Background(), events, "thinking chunk", "sig-123"); err != nil {
+		t.Fatalf("emitReasoningDelta error: %v", err)
+	}
 
 	select {
 	case ev := <-events:
@@ -1052,5 +1061,50 @@ data: {"type":"message_stop"}
 				t.Errorf("text content = %q, want %q", textContent, tt.wantText)
 			}
 		})
+	}
+}
+
+func TestAnthropicStreamCloseDoesNotDeadlockWhenConsumerStopsDraining(t *testing.T) {
+	var sse strings.Builder
+	sse.WriteString("event: message_start\n")
+	sse.WriteString("data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_test\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[],\"model\":\"claude-sonnet-4-6\",\"usage\":{\"input_tokens\":10,\"output_tokens\":0}}}\n\n")
+	sse.WriteString("event: content_block_start\n")
+	sse.WriteString("data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n")
+	for i := 0; i < 64; i++ {
+		sse.WriteString("event: content_block_delta\n")
+		sse.WriteString(fmt.Sprintf("data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"chunk-%02d\"}}\n\n", i))
+	}
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, sse.String())
+	}))
+	defer ts.Close()
+
+	client := anthropic.NewClient(option.WithAPIKey("test-key"), option.WithBaseURL(ts.URL))
+	provider := &AnthropicProvider{
+		client: &client,
+	}
+
+	stream, err := provider.Stream(context.Background(), Request{
+		Messages: []Message{{Role: RoleUser, Parts: []Part{{Type: PartText, Text: "hi"}}}},
+	})
+	if err != nil {
+		t.Fatalf("Stream() error: %v", err)
+	}
+
+	// Read just one event, then stop draining.
+	stream.Recv()
+
+	// Close must return promptly even though the buffer is full.
+	done := make(chan struct{})
+	go func() {
+		stream.Close()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("stream.Close() blocked for >2s — probable deadlock")
 	}
 }
