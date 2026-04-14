@@ -130,6 +130,15 @@ func (p *XAIProvider) streamStandard(ctx context.Context, req Request) (Stream, 
 		tagStripper := newXAITagStripper()
 		var lastUsage *Usage
 		var lastEventType string
+		emit := func(event Event) error {
+			if safeSendEvent(ctx, events, event) {
+				return nil
+			}
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			return nil
+		}
 
 		for scanner.Scan() {
 			line := scanner.Text()
@@ -172,7 +181,9 @@ func (p *XAIProvider) streamStandard(ctx context.Context, req Request) (Stream, 
 					if content, ok := choice.Delta.Content.(string); ok && content != "" {
 						// Use buffered tag stripper to handle tags split across chunks
 						if stripped := tagStripper.Add(content); stripped != "" {
-							events <- Event{Type: EventTextDelta, Text: stripped}
+							if err := emit(Event{Type: EventTextDelta, Text: stripped}); err != nil {
+								return err
+							}
 						}
 					}
 					if len(choice.Delta.ToolCalls) > 0 {
@@ -182,7 +193,9 @@ func (p *XAIProvider) streamStandard(ctx context.Context, req Request) (Stream, 
 				if choice.Message != nil {
 					if content, ok := choice.Message.Content.(string); ok && content != "" {
 						if stripped := tagStripper.Add(content); stripped != "" {
-							events <- Event{Type: EventTextDelta, Text: stripped}
+							if err := emit(Event{Type: EventTextDelta, Text: stripped}); err != nil {
+								return err
+							}
 						}
 					}
 				}
@@ -193,7 +206,9 @@ func (p *XAIProvider) streamStandard(ctx context.Context, req Request) (Stream, 
 
 		// Flush any remaining buffered content
 		if remaining := tagStripper.Flush(); remaining != "" {
-			events <- Event{Type: EventTextDelta, Text: remaining}
+			if err := emit(Event{Type: EventTextDelta, Text: remaining}); err != nil {
+				return err
+			}
 		}
 
 		if err := scanner.Err(); err != nil {
@@ -201,12 +216,18 @@ func (p *XAIProvider) streamStandard(ctx context.Context, req Request) (Stream, 
 		}
 
 		for _, call := range toolState.Calls() {
-			events <- Event{Type: EventToolCall, Tool: &call}
+			if err := emit(Event{Type: EventToolCall, Tool: &call}); err != nil {
+				return err
+			}
 		}
 		if lastUsage != nil {
-			events <- Event{Type: EventUsage, Use: lastUsage}
+			if err := emit(Event{Type: EventUsage, Use: lastUsage}); err != nil {
+				return err
+			}
 		}
-		events <- Event{Type: EventDone}
+		if err := emit(Event{Type: EventDone}); err != nil {
+			return err
+		}
 		return nil
 	}), nil
 }
@@ -260,6 +281,15 @@ func (p *XAIProvider) streamWithSearch(ctx context.Context, req Request) (Stream
 
 		var lastUsage *Usage
 		var searchStarted bool
+		emit := func(event Event) error {
+			if safeSendEvent(ctx, events, event) {
+				return nil
+			}
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			return nil
+		}
 
 		for scanner.Scan() {
 			line := scanner.Text()
@@ -282,19 +312,25 @@ func (p *XAIProvider) streamWithSearch(ctx context.Context, req Request) (Stream
 				if event.Item != nil && (event.Item.Type == "web_search_call" || event.Item.Type == "x_search_call") {
 					if !searchStarted {
 						searchStarted = true
-						events <- Event{Type: EventToolExecStart, ToolName: event.Item.Type}
+						if err := emit(Event{Type: EventToolExecStart, ToolName: event.Item.Type}); err != nil {
+							return err
+						}
 					}
 				}
 
 			case "response.output_item.done":
 				// Search tool completed
 				if event.Item != nil && (event.Item.Type == "web_search_call" || event.Item.Type == "x_search_call") {
-					events <- Event{Type: EventToolExecEnd, ToolName: event.Item.Type}
+					if err := emit(Event{Type: EventToolExecEnd, ToolName: event.Item.Type}); err != nil {
+						return err
+					}
 				}
 
 			case "response.output_text.delta":
 				if event.Delta != "" {
-					events <- Event{Type: EventTextDelta, Text: event.Delta}
+					if err := emit(Event{Type: EventTextDelta, Text: event.Delta}); err != nil {
+						return err
+					}
 				}
 
 			case "response.completed":
@@ -315,9 +351,13 @@ func (p *XAIProvider) streamWithSearch(ctx context.Context, req Request) (Stream
 		}
 
 		if lastUsage != nil {
-			events <- Event{Type: EventUsage, Use: lastUsage}
+			if err := emit(Event{Type: EventUsage, Use: lastUsage}); err != nil {
+				return err
+			}
 		}
-		events <- Event{Type: EventDone}
+		if err := emit(Event{Type: EventDone}); err != nil {
+			return err
+		}
 		return nil
 	}), nil
 }
