@@ -544,6 +544,7 @@ func (rt *serveRuntime) run(ctx context.Context, stateful bool, replaceHistory b
 	copy(baseHistory, rt.history)
 	if replaceHistory {
 		baseHistory = nil
+		rt.history = nil
 		rt.engine.ResetConversation()
 		rt.cumulativeUsage = llm.Usage{}
 		rt.lastInjectedPlatform = ""
