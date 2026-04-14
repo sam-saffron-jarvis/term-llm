@@ -342,9 +342,9 @@ func (rt *serveRuntime) ensurePersistedSession(ctx context.Context, sessionID st
 	return true
 }
 
-func (rt *serveRuntime) persistSnapshot(ctx context.Context, sessionID string, snapshot []llm.Message) {
+func (rt *serveRuntime) persistSnapshot(ctx context.Context, sessionID string, snapshot []llm.Message) bool {
 	if rt.store == nil || sessionID == "" {
-		return
+		return false
 	}
 	// Use a cancel-proof context so snapshot persistence succeeds even when the
 	// run context is cancelled (e.g. ^C or client disconnect), while preserving
@@ -362,7 +362,7 @@ func (rt *serveRuntime) persistSnapshot(ctx context.Context, sessionID string, s
 	}
 	if err := rt.store.ReplaceMessages(dbCtx, sessionID, messages); err != nil {
 		log.Printf("[serve] session ReplaceMessages failed for %s: %v", sessionID, err)
-		return
+		return false
 	}
 	if rt.sessionMeta != nil && rt.sessionMeta.Summary == "" {
 		for _, msg := range snapshot {
@@ -384,6 +384,7 @@ func (rt *serveRuntime) persistSnapshot(ctx context.Context, sessionID string, s
 	if statusErr := rt.store.UpdateStatus(dbCtx, sessionID, session.StatusActive); statusErr != nil {
 		log.Printf("[serve] session UpdateStatus(active) failed for %s: %v", sessionID, statusErr)
 	}
+	return true
 }
 
 // appendMessages incrementally adds new messages to the DB using AddMessage.
@@ -608,8 +609,8 @@ func (rt *serveRuntime) run(ctx context.Context, stateful bool, replaceHistory b
 	// updateStateAndAppend updates in-memory history and incrementally appends
 	// only the NEW produced messages to the DB. Each append is a small atomic
 	// SQLite INSERT that survives kill -9, so at most one turn can be lost.
-	// On the first callback, it also eagerly persists baseHistory + inputMessages
-	// so that both DB and in-memory state stay in sync.
+	// On the first callback, it eagerly persists baseHistory + inputMessages and
+	// only starts incremental appends after that snapshot succeeds.
 	initialPersisted := false
 	updateStateAndAppend := func(persistCtx context.Context) {
 		if stateful {
@@ -626,10 +627,9 @@ func (rt *serveRuntime) run(ctx context.Context, stateful bool, replaceHistory b
 				initialSnapshot := make([]llm.Message, 0, len(baseHistory)+len(inputMessages))
 				initialSnapshot = append(initialSnapshot, baseHistory...)
 				initialSnapshot = append(initialSnapshot, inputMessages...)
-				rt.persistSnapshot(persistCtx, req.SessionID, initialSnapshot)
-				initialPersisted = true
+				initialPersisted = rt.persistSnapshot(persistCtx, req.SessionID, initialSnapshot)
 			}
-			if lastAppendedIdx < len(produced) {
+			if initialPersisted && lastAppendedIdx < len(produced) {
 				written := rt.appendMessages(persistCtx, req.SessionID, produced[lastAppendedIdx:])
 				lastAppendedIdx += written
 			}
