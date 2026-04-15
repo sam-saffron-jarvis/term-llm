@@ -2059,6 +2059,62 @@ func TestServeRuntimeRun_ImmediateErrorDoesNotDesyncState(t *testing.T) {
 	}
 }
 
+func TestServeRuntimeRun_ReplaceHistoryClearsInMemoryHistoryOnEarlyFailure(t *testing.T) {
+	provider := llm.NewMockProvider("mock").
+		AddTextResponse("old reply").
+		AddError(errors.New("fresh-start boom")).
+		AddTextResponse("recovered")
+	engine := llm.NewEngine(provider, nil)
+
+	rt := &serveRuntime{
+		provider:     provider,
+		engine:       engine,
+		defaultModel: "mock-model",
+	}
+	rt.Touch()
+
+	req := llm.Request{SessionID: "replace-history-early-failure", MaxTurns: 1}
+
+	_, err := rt.Run(context.Background(), true, false, []llm.Message{
+		llm.UserText("old context"),
+	}, req)
+	if err != nil {
+		t.Fatalf("first Run failed: %v", err)
+	}
+	if len(rt.history) == 0 {
+		t.Fatal("expected first Run to populate history")
+	}
+
+	_, err = rt.Run(context.Background(), true, true, []llm.Message{
+		llm.UserText("fresh start"),
+	}, req)
+	if err == nil || !strings.Contains(err.Error(), "fresh-start boom") {
+		t.Fatalf("replaceHistory Run error = %v, want fresh-start boom", err)
+	}
+	if len(rt.history) != 0 {
+		t.Fatalf("history len after failed replaceHistory run = %d, want 0", len(rt.history))
+	}
+
+	_, err = rt.Run(context.Background(), true, false, []llm.Message{
+		llm.UserText("after failure"),
+	}, req)
+	if err != nil {
+		t.Fatalf("third Run failed: %v", err)
+	}
+	if len(provider.Requests) != 3 {
+		t.Fatalf("request count = %d, want 3", len(provider.Requests))
+	}
+	if len(provider.Requests[2].Messages) != 1 {
+		t.Fatalf("third request message count = %d, want 1", len(provider.Requests[2].Messages))
+	}
+	if provider.Requests[2].Messages[0].Role != llm.RoleUser {
+		t.Fatalf("third request role = %s, want user", provider.Requests[2].Messages[0].Role)
+	}
+	if got := provider.Requests[2].Messages[0].Parts[0].Text; got != "after failure" {
+		t.Fatalf("third request text = %q, want %q", got, "after failure")
+	}
+}
+
 func TestServeRuntimeRun_ReinjectsPlatformDeveloperMessageAfterFailedFirstRun(t *testing.T) {
 	provider := llm.NewMockProvider("mock").
 		AddError(errors.New("boom")).
