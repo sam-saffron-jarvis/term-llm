@@ -120,6 +120,20 @@ func (r *responseRun) complete(payload map[string]any, usage llm.Usage, sessionU
 	return r.appendEventLocked("response.completed", payload, true)
 }
 
+func (r *responseRun) finishCancelled(payload map[string]any) (bool, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if !r.cancelRequested {
+		return false, nil
+	}
+	r.status = "cancelled"
+	r.errorType = ""
+	r.errorMessage = ""
+	r.cancel = nil
+	r.cancelRequested = false
+	return true, r.appendEventLocked("response.cancelled", payload, true)
+}
+
 func (r *responseRun) fail(payload map[string]any, errType, errMessage string) (bool, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -320,6 +334,8 @@ func (r *responseRun) applyRecoveryEventLocked(event string, payload map[string]
 				return
 			}
 		}
+	case "response.cancelled":
+		r.closeToolGroupLocked()
 	case "response.failed":
 		r.closeToolGroupLocked()
 		errPayload := mapValue(payload["error"])
@@ -1099,6 +1115,26 @@ func (s *serveServer) startResponseRun(runtime *serveRuntime, stateful bool, rep
 			return s.appendResponseRunEvent(runtime, run, streamState, ev)
 		})
 		if err != nil {
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				cancelled, cancelErr := run.finishCancelled(map[string]any{
+					"response": map[string]any{
+						"id":      respID,
+						"object":  "response",
+						"created": created,
+						"model":   model,
+						"status":  "cancelled",
+					},
+				})
+				if cancelled {
+					if options.uiSession {
+						runtime.clearLastUIRunError()
+					}
+					if cancelErr != nil {
+						log.Printf("response run %s failed to append cancellation event: %v", respID, cancelErr)
+					}
+					return
+				}
+			}
 			errType := "invalid_request_error"
 			if errors.Is(err, errServeSessionBusy) {
 				errType = "conflict_error"

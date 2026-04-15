@@ -4967,8 +4967,36 @@ func TestHandleResponseByID_CancelStopsActiveToolRun(t *testing.T) {
 	}
 
 	snapshot := run.snapshot()
-	if status, _ := snapshot["status"].(string); status == "in_progress" {
-		t.Fatalf("run status remained in_progress after cancel: %#v", snapshot)
+	if status, _ := snapshot["status"].(string); status != "cancelled" {
+		t.Fatalf("run status = %q, want cancelled: %#v", status, snapshot)
+	}
+	if _, ok := snapshot["error"]; ok {
+		t.Fatalf("cancelled run should not include error payload: %#v", snapshot)
+	}
+
+	subscription := run.subscribe(0)
+	if subscription.ch != nil {
+		t.Fatal("terminal cancelled run should replay without live subscription channel")
+	}
+	var sawCancelled bool
+	for _, event := range subscription.replay {
+		if event.Event == "response.failed" {
+			t.Fatalf("cancelled run replay unexpectedly contained response.failed: %+v", event)
+		}
+		if event.Event == "response.cancelled" {
+			sawCancelled = true
+			var payload map[string]any
+			if err := json.Unmarshal(event.Data, &payload); err != nil {
+				t.Fatalf("unmarshal response.cancelled payload: %v", err)
+			}
+			response, _ := payload["response"].(map[string]any)
+			if got := response["status"]; got != "cancelled" {
+				t.Fatalf("response.cancelled status = %v, want cancelled", got)
+			}
+		}
+	}
+	if !sawCancelled {
+		t.Fatal("cancelled run replay missing response.cancelled terminal event")
 	}
 }
 
