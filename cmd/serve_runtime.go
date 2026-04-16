@@ -594,18 +594,27 @@ func (rt *serveRuntime) run(ctx context.Context, stateful bool, replaceHistory b
 	rt.configureContextManagementForRequest(req)
 
 	var produced []llm.Message
-	var lastAppendedIdx int // tracks how many produced messages have been incrementally persisted
+	var producedMu sync.Mutex
+	snapshotProduced := func() []llm.Message {
+		producedMu.Lock()
+		defer producedMu.Unlock()
+		return append([]llm.Message(nil), produced...)
+	}
 	persistPlatformInjection := func() {
 		if injectedPlatform != "" && (stateful || persisted) {
 			rt.lastInjectedPlatform = injectedPlatform
 		}
 	}
-
-	persistProducedSnapshot := func(persistCtx context.Context) {
-		snapshot := make([]llm.Message, 0, len(baseHistory)+len(inputMessages)+len(produced))
+	buildProducedSnapshot := func(producedSnapshot []llm.Message) []llm.Message {
+		snapshot := make([]llm.Message, 0, len(baseHistory)+len(inputMessages)+len(producedSnapshot))
 		snapshot = append(snapshot, baseHistory...)
 		snapshot = append(snapshot, inputMessages...)
-		snapshot = append(snapshot, produced...)
+		snapshot = append(snapshot, producedSnapshot...)
+		return snapshot
+	}
+
+	persistProducedSnapshot := func(persistCtx context.Context) {
+		snapshot := buildProducedSnapshot(snapshotProduced())
 		if stateful {
 			rt.history = snapshot
 		}
@@ -615,20 +624,18 @@ func (rt *serveRuntime) run(ctx context.Context, stateful bool, replaceHistory b
 		persistPlatformInjection()
 	}
 
-	// updateStateAndAppend updates in-memory history and incrementally appends
-	// only the NEW produced messages to the DB. Each append is a small atomic
-	// SQLite INSERT that survives kill -9, so at most one turn can be lost.
-	// On the first callback, it eagerly persists baseHistory + inputMessages and
-	// only starts incremental appends after that snapshot succeeds.
+	// appendAndPersistProduced appends callback-produced messages and
+	// incrementally persists only the newly appended tail. The callback state is
+	// protected separately because callbacks run from the engine/event-stream
+	// goroutine while rt.mu remains held by the request goroutine for the entire
+	// run.
+	var lastAppendedIdx int // tracks how many produced messages have been incrementally persisted
 	initialPersisted := false
-	updateStateAndAppend := func(persistCtx context.Context) {
-		if stateful {
-			snapshot := make([]llm.Message, 0, len(baseHistory)+len(inputMessages)+len(produced))
-			snapshot = append(snapshot, baseHistory...)
-			snapshot = append(snapshot, inputMessages...)
-			snapshot = append(snapshot, produced...)
-			rt.history = snapshot
-		}
+	appendAndPersistProduced := func(persistCtx context.Context, msgs []llm.Message) {
+		producedMu.Lock()
+		defer producedMu.Unlock()
+
+		produced = append(produced, msgs...)
 		if persisted {
 			// On the first callback, persist the full base snapshot so
 			// incremental AddMessage calls have the correct starting state.
@@ -643,7 +650,6 @@ func (rt *serveRuntime) run(ctx context.Context, stateful bool, replaceHistory b
 				lastAppendedIdx += written
 			}
 		}
-		persistPlatformInjection()
 	}
 
 	// ResponseCompletedCallback receives the assistant message (with tool call parts)
@@ -651,16 +657,14 @@ func (rt *serveRuntime) run(ctx context.Context, stateful bool, replaceHistory b
 	// are missing from persisted sessions because TurnCompletedCallback only receives
 	// tool results.
 	rt.engine.SetResponseCompletedCallback(func(cbCtx context.Context, _ int, assistantMsg llm.Message, _ llm.TurnMetrics) error {
-		produced = append(produced, assistantMsg)
-		updateStateAndAppend(cbCtx)
+		appendAndPersistProduced(cbCtx, []llm.Message{assistantMsg})
 		return nil
 	})
 	defer rt.engine.SetResponseCompletedCallback(nil)
 	// TurnCompletedCallback receives tool results after execution, or the final
 	// assistant message when no tools are used (ResponseCompletedCallback never fires).
 	rt.engine.SetTurnCompletedCallback(func(cbCtx context.Context, _ int, msgs []llm.Message, _ llm.TurnMetrics) error {
-		produced = append(produced, msgs...)
-		updateStateAndAppend(cbCtx)
+		appendAndPersistProduced(cbCtx, msgs)
 		return nil
 	})
 	defer rt.engine.SetTurnCompletedCallback(nil)
@@ -670,7 +674,7 @@ func (rt *serveRuntime) run(ctx context.Context, stateful bool, replaceHistory b
 	// does its own full replace.
 	var runErr error
 	defer func() {
-		if runErr != nil && len(produced) > 0 && persisted {
+		if runErr != nil && len(snapshotProduced()) > 0 && persisted {
 			deferCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 			defer cancel()
 			persistProducedSnapshot(deferCtx)
@@ -738,7 +742,9 @@ func (rt *serveRuntime) run(ctx context.Context, stateful bool, replaceHistory b
 	}
 
 	if text := rt.engine.DrainInterjection(); text != "" {
+		producedMu.Lock()
 		produced = append(produced, llm.UserText(text))
+		producedMu.Unlock()
 	}
 
 	// Accumulate cumulative session-level usage
@@ -748,11 +754,9 @@ func (rt *serveRuntime) run(ctx context.Context, stateful bool, replaceHistory b
 	rt.cumulativeUsage.CacheWriteTokens += result.Usage.CacheWriteTokens
 	result.SessionUsage = rt.cumulativeUsage
 
-	newHistory := make([]llm.Message, 0, len(baseHistory)+len(inputMessages)+len(produced)+1)
-	newHistory = append(newHistory, baseHistory...)
-	newHistory = append(newHistory, inputMessages...)
-	newHistory = append(newHistory, produced...)
-	if len(produced) == 0 && result.Text.Len() > 0 {
+	producedSnapshot := snapshotProduced()
+	newHistory := buildProducedSnapshot(producedSnapshot)
+	if len(producedSnapshot) == 0 && result.Text.Len() > 0 {
 		newHistory = append(newHistory, llm.AssistantText(result.Text.String()))
 	}
 	if stateful {
