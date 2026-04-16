@@ -1131,7 +1131,7 @@ func (m *jobsV2Manager) CreateJob(req jobsV2Job) (jobsV2Job, error) {
 		req.MisfirePolicy = "skip"
 	}
 
-	cfg, err := parseTriggerConfig(req.TriggerType, req.TriggerConfig)
+	cfg, err := parseTriggerConfig(req.TriggerType, req.TriggerConfig, req.ScheduleTimezone)
 	if err != nil {
 		return jobsV2Job{}, err
 	}
@@ -1249,7 +1249,7 @@ func (m *jobsV2Manager) UpdateJob(id string, req jobsV2Job) (jobsV2Job, error) {
 	}
 	current.Enabled = req.Enabled
 
-	cfg, err := parseTriggerConfig(current.TriggerType, current.TriggerConfig)
+	cfg, err := parseTriggerConfig(current.TriggerType, current.TriggerConfig, current.ScheduleTimezone)
 	if err != nil {
 		return jobsV2Job{}, err
 	}
@@ -1549,7 +1549,7 @@ func scanRunV2(scanner interface{ Scan(dest ...any) error }) (jobsV2Run, error) 
 	return run, nil
 }
 
-func parseTriggerConfig(tt jobsV2TriggerType, raw json.RawMessage) (jobsV2TriggerConfig, error) {
+func parseTriggerConfig(tt jobsV2TriggerType, raw json.RawMessage, scheduleTZ string) (jobsV2TriggerConfig, error) {
 	cfg := jobsV2TriggerConfig{}
 	if len(raw) > 0 {
 		if err := json.Unmarshal(raw, &cfg); err != nil {
@@ -1571,7 +1571,8 @@ func parseTriggerConfig(tt jobsV2TriggerType, raw json.RawMessage) (jobsV2Trigge
 		if strings.TrimSpace(cfg.Expression) == "" {
 			return cfg, fmt.Errorf("trigger_config.expression is required for cron trigger")
 		}
-		if strings.TrimSpace(cfg.Timezone) == "" {
+		cfg.Timezone = effectiveCronTimezone(cfg.Timezone, scheduleTZ)
+		if cfg.Timezone == "" {
 			return cfg, fmt.Errorf("trigger_config.timezone is required for cron trigger")
 		}
 		if _, err := time.LoadLocation(cfg.Timezone); err != nil {
@@ -1599,7 +1600,7 @@ func initialNextRun(tt jobsV2TriggerType, cfg jobsV2TriggerConfig, scheduleTZ st
 		u := t.UTC()
 		return &u
 	case jobsV2TriggerCron:
-		next, err := nextCronTime(cfg.Expression, cfg.Timezone, now)
+		next, err := nextCronTime(cfg.Expression, effectiveCronTimezone(cfg.Timezone, scheduleTZ), now)
 		if err != nil {
 			return nil
 		}
@@ -1611,7 +1612,7 @@ func initialNextRun(tt jobsV2TriggerType, cfg jobsV2TriggerConfig, scheduleTZ st
 }
 
 func computeNextRunAt(job jobsV2Job, now time.Time) (*time.Time, error) {
-	cfg, err := parseTriggerConfig(job.TriggerType, job.TriggerConfig)
+	cfg, err := parseTriggerConfig(job.TriggerType, job.TriggerConfig, job.ScheduleTimezone)
 	if err != nil {
 		return nil, err
 	}
@@ -1758,6 +1759,13 @@ func nullableString(v string) any {
 		return nil
 	}
 	return v
+}
+
+func effectiveCronTimezone(cfgTZ, scheduleTZ string) string {
+	if tz := normalizeTZ(scheduleTZ); tz != "" {
+		return tz
+	}
+	return normalizeTZ(cfgTZ)
 }
 
 func stringOrEmptyRaw(raw json.RawMessage, fallback string) string {

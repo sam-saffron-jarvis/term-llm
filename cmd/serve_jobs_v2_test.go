@@ -254,6 +254,46 @@ func TestJobsV2CronValidation(t *testing.T) {
 	}
 }
 
+func TestParseTriggerConfigCronUsesScheduleTimezone(t *testing.T) {
+	cfg, err := parseTriggerConfig(jobsV2TriggerCron, json.RawMessage(`{
+		"expression":"0 0 * * *",
+		"timezone":"UTC"
+	}`), "America/Los_Angeles")
+	if err != nil {
+		t.Fatalf("parseTriggerConfig failed: %v", err)
+	}
+	if cfg.Timezone != "America/Los_Angeles" {
+		t.Fatalf("timezone = %q, want %q", cfg.Timezone, "America/Los_Angeles")
+	}
+}
+
+func TestJobsV2CronCreateUsesScheduleTimezoneField(t *testing.T) {
+	mgr, err := newJobsV2Manager(":memory:", 0, nil)
+	if err != nil {
+		t.Fatalf("newJobsV2Manager failed: %v", err)
+	}
+	defer func() { _ = mgr.Close() }()
+
+	job, err := mgr.CreateJob(jobsV2Job{
+		Name:             "cron-with-schedule-timezone",
+		Enabled:          true,
+		RunnerType:       jobsV2RunnerProgram,
+		RunnerConfig:     json.RawMessage(`{"command":"echo","args":["x"]}`),
+		TriggerType:      jobsV2TriggerCron,
+		TriggerConfig:    json.RawMessage(`{"expression":"0 0 * * *"}`),
+		ScheduleTimezone: "America/Los_Angeles",
+	})
+	if err != nil {
+		t.Fatalf("CreateJob cron with schedule_timezone failed: %v", err)
+	}
+	if job.ScheduleTimezone != "America/Los_Angeles" {
+		t.Fatalf("schedule_timezone = %q, want %q", job.ScheduleTimezone, "America/Los_Angeles")
+	}
+	if job.NextRunAt == nil {
+		t.Fatalf("next_run_at = nil, want scheduled time")
+	}
+}
+
 func TestJobsV2RunEventsEndpoint(t *testing.T) {
 	mgr, err := newJobsV2Manager(":memory:", 1, nil)
 	if err != nil {
