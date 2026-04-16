@@ -109,6 +109,28 @@ func TestMarkdownStreamingJS(t *testing.T) {
 	}
 }
 
+func TestDecorationJS(t *testing.T) {
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("node not found in PATH, skipping JS decoration tests")
+	}
+
+	_, thisFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("could not determine test file path")
+	}
+	script := filepath.Join(filepath.Dir(thisFile), "static", "decoration_test.js")
+	if _, err := os.Stat(script); err != nil {
+		t.Fatalf("decoration_test.js not found at %s: %v", script, err)
+	}
+
+	out, err := exec.Command(node, script).CombinedOutput()
+	t.Log(string(out))
+	if err != nil {
+		t.Fatalf("decoration_test.js failed: %v", err)
+	}
+}
+
 func TestAppStreamJS(t *testing.T) {
 	node, err := exec.LookPath("node")
 	if err != nil {

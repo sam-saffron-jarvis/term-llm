@@ -379,6 +379,7 @@ const decorateAssistantFragment = (target, options = {}) => {
     a.target = '_blank';
     a.rel = 'noopener noreferrer';
   });
+  window.TermLLMDecoration.decorateLightbox(target, options, (...args) => app.openLightbox(...args));
   if (!streaming) {
     renderMath(target);
     target.querySelectorAll('pre code').forEach((code) => {

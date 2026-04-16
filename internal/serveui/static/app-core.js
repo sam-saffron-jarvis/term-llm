@@ -152,6 +152,11 @@ const elements = {
   approvalApproveBtn: document.getElementById('approvalApproveBtn'),
   lightbox: document.getElementById('lightbox'),
   lightboxImg: document.getElementById('lightboxImg'),
+  lightboxVideo: document.getElementById('lightboxVideo'),
+  lightboxBackdrop: document.getElementById('lightboxBackdrop'),
+  lightboxCopy: document.getElementById('lightboxCopy'),
+  lightboxExpand: document.getElementById('lightboxExpand'),
+  lightboxClose: document.getElementById('lightboxClose'),
   startupSplash: document.getElementById('startupSplash'),
   startupStatus: document.getElementById('startupStatus')
 };
@@ -946,19 +951,80 @@ const persistAndRefreshShell = () => {
   app.updateHeader();
 };
 
-const openLightbox = (src) => {
-  elements.lightboxImg.src = src;
-  elements.lightbox.classList.remove('hidden');
+let lightboxSrc = '';
+let lightboxPrevFocus = null;
+
+const EXPAND_ICON = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 3 21 3 21 9"/><polyline points="9 21 3 21 3 15"/><line x1="21" y1="3" x2="14" y2="10"/><line x1="3" y1="21" x2="10" y2="14"/></svg>';
+const COLLAPSE_ICON = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 14 10 14 10 20"/><polyline points="20 10 14 10 14 4"/><line x1="14" y1="10" x2="21" y2="3"/><line x1="3" y1="21" x2="10" y2="14"/></svg>';
+const COPY_ICON = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>';
+const CHECK_ICON = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>';
+
+const resetCopyButton = () => {
+  elements.lightboxCopy.classList.remove('copied');
+  elements.lightboxCopy.innerHTML = COPY_ICON;
+};
+
+const openLightbox = (src, type = 'image') => {
+  lightboxPrevFocus = document.activeElement;
+  lightboxSrc = src;
+  if (type === 'video') {
+    elements.lightboxImg.style.display = 'none';
+    elements.lightboxVideo.style.display = '';
+    elements.lightboxVideo.src = src;
+    elements.lightboxVideo.play().catch(() => {});
+  } else {
+    elements.lightboxVideo.style.display = 'none';
+    elements.lightboxImg.style.display = '';
+    elements.lightboxImg.src = src;
+  }
+  elements.lightbox.classList.remove('lightbox-maximized');
+  elements.lightboxExpand.innerHTML = EXPAND_ICON;
+  elements.lightboxExpand.title = 'Expand';
+  elements.lightboxExpand.setAttribute('aria-label', 'Expand');
+  resetCopyButton();
+  elements.lightboxCopy.style.display = src.startsWith('data:') ? 'none' : '';
+  elements.lightbox.classList.add('active');
+  document.body.style.overflow = 'hidden';
+  elements.lightboxClose.focus();
 };
 
 const closeLightbox = () => {
-  elements.lightbox.classList.add('hidden');
+  elements.lightbox.classList.remove('active', 'lightbox-maximized');
   elements.lightboxImg.src = '';
+  elements.lightboxImg.style.display = '';
+  elements.lightboxVideo.pause();
+  elements.lightboxVideo.src = '';
+  elements.lightboxVideo.style.display = 'none';
+  document.body.style.overflow = '';
+  resetCopyButton();
+  lightboxSrc = '';
+  if (lightboxPrevFocus && typeof lightboxPrevFocus.focus === 'function') {
+    lightboxPrevFocus.focus();
+    lightboxPrevFocus = null;
+  }
 };
 
-elements.lightbox.addEventListener('click', closeLightbox);
+elements.lightboxBackdrop.addEventListener('click', closeLightbox);
+elements.lightboxClose.addEventListener('click', closeLightbox);
+
+elements.lightboxCopy.addEventListener('click', () => {
+  if (!navigator.clipboard || !navigator.clipboard.writeText) return;
+  navigator.clipboard.writeText(lightboxSrc).then(() => {
+    elements.lightboxCopy.classList.add('copied');
+    elements.lightboxCopy.innerHTML = CHECK_ICON;
+    setTimeout(resetCopyButton, 1500);
+  }).catch(() => {});
+});
+
+elements.lightboxExpand.addEventListener('click', () => {
+  const maximized = elements.lightbox.classList.toggle('lightbox-maximized');
+  elements.lightboxExpand.innerHTML = maximized ? COLLAPSE_ICON : EXPAND_ICON;
+  elements.lightboxExpand.title = maximized ? 'Collapse' : 'Expand';
+  elements.lightboxExpand.setAttribute('aria-label', maximized ? 'Collapse' : 'Expand');
+});
+
 document.addEventListener('keydown', (e) => {
-  if (e.key === 'Escape' && !elements.lightbox.classList.contains('hidden')) {
+  if (e.key === 'Escape' && elements.lightbox.classList.contains('active')) {
     closeLightbox();
   }
 });
