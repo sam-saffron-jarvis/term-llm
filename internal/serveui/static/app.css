@@ -2031,8 +2031,8 @@
 
     .lightbox-toolbar {
       position: absolute;
-      top: 0.75rem;
-      right: 0.75rem;
+      top: calc(var(--safe-top) + 0.75rem);
+      right: calc(var(--safe-right) + 0.75rem);
       z-index: 2;
       display: flex;
       gap: 0.25rem;
