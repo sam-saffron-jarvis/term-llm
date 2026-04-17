@@ -8,7 +8,6 @@ import (
 	"io"
 	"log"
 	"net/http"
-	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -869,11 +868,11 @@ func (s *serveServer) appendResponseRunEvent(runtime *serveRuntime, run *respons
 			for _, imgPath := range ev.ToolImages {
 				if s.cfg.filesDir != "" {
 					if served, ok := s.ensureFileServeable(imgPath); ok {
-						imageURLs = append(imageURLs, s.cfg.filesRoute()+filepath.Base(served))
+						imageURLs = append(imageURLs, serveRoutePath(s.cfg.filesRoute(), s.cfg.filesDir, served))
 					}
 				} else {
 					if served, ok := s.ensureImageServeable(imgPath); ok {
-						imageURLs = append(imageURLs, s.cfg.imagesRoute()+filepath.Base(served))
+						imageURLs = append(imageURLs, serveRoutePath(s.cfg.imagesRoute(), s.imageOutputDir(), served))
 					}
 				}
 			}
