@@ -16,6 +16,7 @@ func TestResolveBedrockModelID(t *testing.T) {
 		want    string
 	}{
 		// Built-in translations with US region
+		{"opus 4.7 us", "claude-opus-4-7", nil, "us-west-2", "us.anthropic.claude-opus-4-7-v1"},
 		{"opus 4.6 us", "claude-opus-4-6", nil, "us-west-2", "us.anthropic.claude-opus-4-6-v1"},
 		{"sonnet 4.6 us", "claude-sonnet-4-6", nil, "us-east-1", "us.anthropic.claude-sonnet-4-6"},
 		{"haiku 4.5 us", "claude-haiku-4-5", nil, "us-west-2", "us.anthropic.claude-haiku-4-5-20251001-v1:0"},

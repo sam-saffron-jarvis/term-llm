@@ -69,7 +69,7 @@ func TestAllListedModelsHaveContextLimits(t *testing.T) {
 		"qwen3-4b": true,
 		// Zen models — all have explicit limits now
 		// claude-bin aliases (resolved internally, limits don't apply)
-		"opus": true, "opus-low": true, "opus-medium": true, "opus-high": true, "opus-max": true,
+		"opus": true, "opus-low": true, "opus-medium": true, "opus-high": true, "opus-xhigh": true, "opus-max": true,
 		"sonnet": true, "sonnet-low": true, "sonnet-medium": true, "sonnet-high": true,
 		"haiku": true,
 		// OpenRouter (slash in name, resolved via API cache)

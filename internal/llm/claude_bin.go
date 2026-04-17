@@ -95,11 +95,16 @@ func loadClaudeToolLineDrainGrace() time.Duration {
 	return time.Duration(ms) * time.Millisecond
 }
 
+// claudeEffortLevels lists the reasoning-effort suffixes recognised on
+// opus/sonnet model names (e.g. "opus-max", "sonnet-high"). "max" and
+// "xhigh" are accepted only on opus; see parseClaudeEffort.
+var claudeEffortLevels = []string{"low", "medium", "high", "xhigh", "max"}
+
 // parseClaudeEffort extracts effort suffix from opus or sonnet model names.
 // "opus-max" -> ("opus", "max"), "opus-low" -> ("opus", "low")
 // "sonnet-high" -> ("sonnet", "high"), "sonnet-low" -> ("sonnet", "low")
 // "haiku" -> ("haiku", "") — non-opus/sonnet models are not modified.
-// Note: "max" effort is only supported for opus.
+// Note: "max" and "xhigh" efforts are only supported for opus.
 func parseClaudeEffort(model string) (string, string) {
 	isOpus := strings.HasPrefix(model, "opus")
 	isSonnet := strings.HasPrefix(model, "sonnet")
@@ -108,7 +113,7 @@ func parseClaudeEffort(model string) (string, string) {
 	}
 	efforts := []string{"medium", "high", "low"}
 	if isOpus {
-		efforts = append(efforts, "max")
+		efforts = append(efforts, "max", "xhigh")
 	}
 	for _, effort := range efforts {
 		suffix := "-" + effort
@@ -117,6 +122,23 @@ func parseClaudeEffort(model string) (string, string) {
 		}
 	}
 	return model, ""
+}
+
+// ValidateClaudeBinModel rejects model strings that are bare effort levels
+// (e.g. "claude-bin:max"). Without this check the effort would be silently
+// treated as the model name and CLAUDE_CODE_EFFORT_LEVEL would never be set.
+func ValidateClaudeBinModel(model string) error {
+	for _, effort := range claudeEffortLevels {
+		if model == effort {
+			return fmt.Errorf(
+				"claude-bin model %q is an effort level, not a model; "+
+					"did you mean \"claude-bin:opus-%s\"? "+
+					"(max/xhigh require opus; low/medium/high also work with sonnet)",
+				model, model,
+			)
+		}
+	}
+	return nil
 }
 
 // NewClaudeBinProvider creates a new provider that uses the claude binary.
@@ -330,6 +352,8 @@ func (p *ClaudeBinProvider) runClaudeCommand(
 		fmt.Fprintf(os.Stderr, "Prompt length: %d bytes (via stdin)\n", len(userPrompt))
 		if effort != "" {
 			fmt.Fprintf(os.Stderr, "CLAUDE_CODE_EFFORT_LEVEL=%s\n", effort)
+		} else {
+			fmt.Fprintln(os.Stderr, "CLAUDE_CODE_EFFORT_LEVEL=(unset)")
 		}
 		fmt.Fprintln(os.Stderr, "=================================")
 	}

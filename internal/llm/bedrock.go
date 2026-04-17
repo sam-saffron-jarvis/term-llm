@@ -27,6 +27,7 @@ type BedrockProvider struct {
 // configured region at provider creation time.
 var bedrockBaseModelMap = map[string]string{
 	// Current generation
+	"claude-opus-4-7":   "anthropic.claude-opus-4-7-v1",
 	"claude-opus-4-6":   "anthropic.claude-opus-4-6-v1",
 	"claude-sonnet-4-6": "anthropic.claude-sonnet-4-6",
 	"claude-haiku-4-5":  "anthropic.claude-haiku-4-5-20251001-v1:0",

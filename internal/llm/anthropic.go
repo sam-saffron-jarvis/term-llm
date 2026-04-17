@@ -51,9 +51,11 @@ type AnthropicProvider struct {
 	credential     string // "api_key" or "env"
 }
 
-// isAdaptiveModel returns true for Claude 4.6 models that support adaptive thinking.
+// isAdaptiveModel returns true for Claude 4.6+ models that support adaptive thinking.
 func isAdaptiveModel(model string) bool {
-	return strings.HasPrefix(model, "claude-sonnet-4-6") || strings.HasPrefix(model, "claude-opus-4-6")
+	return strings.HasPrefix(model, "claude-sonnet-4-6") ||
+		strings.HasPrefix(model, "claude-opus-4-6") ||
+		strings.HasPrefix(model, "claude-opus-4-7")
 }
 
 // parseModelThinking extracts -thinking suffix from model name.
@@ -75,7 +77,7 @@ func parseModelThinking(model string) (string, int64, bool) {
 }
 
 // the1mBetaHeader is the beta header that enables the 1M token context window.
-// Available for claude-sonnet-4-6, claude-sonnet-4-5, claude-sonnet-4, claude-opus-4-6.
+// Available for claude-sonnet-4-6, claude-sonnet-4-5, claude-sonnet-4, claude-opus-4-6, claude-opus-4-7.
 // Requires Anthropic usage tier 4 or custom rate limits.
 const the1mBetaHeader = "context-1m-2025-08-07"
 

@@ -22,6 +22,11 @@ type ModelEntry struct {
 // When adding a model, always include InputLimit/OutputLimit if known.
 var ProviderModels = map[string][]ModelEntry{
 	"anthropic": {
+		// Claude 4.7 Opus (-thinking uses adaptive thinking)
+		{ID: "claude-opus-4-7", InputLimit: 180_000, OutputLimit: 64_000},
+		{ID: "claude-opus-4-7-thinking", InputLimit: 180_000, OutputLimit: 64_000},
+		{ID: "claude-opus-4-7-1m", InputLimit: 980_000, OutputLimit: 64_000},
+		{ID: "claude-opus-4-7-1m-thinking", InputLimit: 980_000, OutputLimit: 64_000},
 		// Claude 4.6 (-thinking uses adaptive thinking for 4.6 models)
 		{ID: "claude-sonnet-4-6", InputLimit: 180_000, OutputLimit: 64_000},
 		{ID: "claude-sonnet-4-6-thinking", InputLimit: 180_000, OutputLimit: 64_000},
@@ -129,6 +134,7 @@ var ProviderModels = map[string][]ModelEntry{
 		{ID: "opus-low"},
 		{ID: "opus-medium"},
 		{ID: "opus-high"},
+		{ID: "opus-xhigh"},
 		{ID: "opus-max"},
 		{ID: "sonnet"},
 		{ID: "sonnet-low"},
@@ -157,6 +163,10 @@ var ProviderModels = map[string][]ModelEntry{
 	},
 	"bedrock": {
 		// AWS Bedrock: same friendly names as anthropic (translated to Bedrock IDs internally)
+		{ID: "claude-opus-4-7", InputLimit: 180_000, OutputLimit: 64_000},
+		{ID: "claude-opus-4-7-thinking", InputLimit: 180_000, OutputLimit: 64_000},
+		{ID: "claude-opus-4-7-1m", InputLimit: 980_000, OutputLimit: 64_000},
+		{ID: "claude-opus-4-7-1m-thinking", InputLimit: 980_000, OutputLimit: 64_000},
 		{ID: "claude-sonnet-4-6", InputLimit: 180_000, OutputLimit: 64_000},
 		{ID: "claude-sonnet-4-6-thinking", InputLimit: 180_000, OutputLimit: 64_000},
 		{ID: "claude-sonnet-4-6-1m", InputLimit: 980_000, OutputLimit: 64_000},

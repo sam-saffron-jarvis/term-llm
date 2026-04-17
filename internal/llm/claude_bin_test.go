@@ -423,6 +423,7 @@ func TestParseClaudeEffort(t *testing.T) {
 		wantEffort string
 	}{
 		{"opus-max", "opus", "max"},
+		{"opus-xhigh", "opus", "xhigh"},
 		{"opus-low", "opus", "low"},
 		{"opus-medium", "opus", "medium"},
 		{"opus-high", "opus", "high"},
@@ -430,6 +431,7 @@ func TestParseClaudeEffort(t *testing.T) {
 		{"sonnet-low", "sonnet", "low"},
 		{"sonnet-medium", "sonnet", "medium"},
 		{"sonnet-high", "sonnet", "high"},
+		{"sonnet-xhigh", "sonnet-xhigh", ""}, // xhigh is opus-only
 		{"sonnet", "sonnet", ""},
 		{"haiku", "haiku", ""},
 		{"", "", ""},
@@ -442,6 +444,50 @@ func TestParseClaudeEffort(t *testing.T) {
 			}
 			if effort != tt.wantEffort {
 				t.Errorf("parseClaudeEffort(%q) effort = %q, want %q", tt.input, effort, tt.wantEffort)
+			}
+		})
+	}
+}
+
+func TestValidateClaudeBinModel(t *testing.T) {
+	tests := []struct {
+		model   string
+		wantErr bool
+		errSub  string
+	}{
+		{"", false, ""},
+		{"opus", false, ""},
+		{"opus-max", false, ""},
+		{"opus-xhigh", false, ""},
+		{"opus-high", false, ""},
+		{"opus-medium", false, ""},
+		{"opus-low", false, ""},
+		{"sonnet", false, ""},
+		{"sonnet-high", false, ""},
+		{"sonnet-medium", false, ""},
+		{"sonnet-low", false, ""},
+		{"haiku", false, ""},
+		// bare effort names — should error with a suggestion pointing at opus-<effort>.
+		{"max", true, "claude-bin:opus-max"},
+		{"xhigh", true, "claude-bin:opus-xhigh"},
+		{"high", true, "claude-bin:opus-high"},
+		{"medium", true, "claude-bin:opus-medium"},
+		{"low", true, "claude-bin:opus-low"},
+		// unknown model — passes through; we don't enforce an allowlist here.
+		{"banana", false, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.model, func(t *testing.T) {
+			err := ValidateClaudeBinModel(tt.model)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("ValidateClaudeBinModel(%q) = nil, want error containing %q", tt.model, tt.errSub)
+				}
+				if tt.errSub != "" && !strings.Contains(err.Error(), tt.errSub) {
+					t.Errorf("ValidateClaudeBinModel(%q) error = %q, want substring %q", tt.model, err.Error(), tt.errSub)
+				}
+			} else if err != nil {
+				t.Errorf("ValidateClaudeBinModel(%q) = %v, want nil", tt.model, err)
 			}
 		})
 	}

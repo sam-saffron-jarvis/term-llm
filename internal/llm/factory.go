@@ -81,6 +81,9 @@ func NewProviderByName(cfg *config.Config, name string, model string) (Provider,
 			return WrapWithRetry(provider, DefaultRetryConfig()), nil
 		case config.ProviderTypeClaudeBin:
 			// claude-bin doesn't need API key, can create directly
+			if err := ValidateClaudeBinModel(model); err != nil {
+				return nil, err
+			}
 			provider := NewClaudeBinProvider(model, nil)
 			return WrapWithRetry(provider, DefaultRetryConfig()), nil
 		case config.ProviderTypeZen:
@@ -318,6 +321,9 @@ func createProviderFromConfig(name string, cfg *config.ProviderConfig) (Provider
 		return NewBedrockProvider(cfg.Model, cfg.Region, cfg.Profile, cfg.AccessKey, cfg.SecretKey, cfg.SessionToken, cfg.ModelMap)
 
 	case config.ProviderTypeClaudeBin:
+		if err := ValidateClaudeBinModel(cfg.Model); err != nil {
+			return nil, err
+		}
 		provider := NewClaudeBinProvider(cfg.Model, cfg.Env)
 		provider.SetEnableHooks(cfg.EnableHooks)
 		return provider, nil

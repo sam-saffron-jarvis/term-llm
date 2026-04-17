@@ -22,19 +22,22 @@ func TestParseModelThinking(t *testing.T) {
 		wantBudget   int64
 		wantAdaptive bool
 	}{
-		// 4.6 models: -thinking triggers adaptive (no budget)
+		// 4.6+ models: -thinking triggers adaptive (no budget)
 		{"claude-sonnet-4-6-thinking", "claude-sonnet-4-6", 0, true},
 		{"claude-opus-4-6-thinking", "claude-opus-4-6", 0, true},
+		{"claude-opus-4-7-thinking", "claude-opus-4-7", 0, true},
 		// Older models: -thinking triggers budget_tokens
 		{"claude-haiku-4-5-thinking", "claude-haiku-4-5", 10000, false},
 		// No suffix: no thinking
 		{"claude-sonnet-4-6", "claude-sonnet-4-6", 0, false},
 		{"claude-opus-4-6", "claude-opus-4-6", 0, false},
+		{"claude-opus-4-7", "claude-opus-4-7", 0, false},
 		{"claude-haiku-4-5", "claude-haiku-4-5", 0, false},
 		// -1m-thinking: -thinking is stripped first, leaving -1m suffix intact
 		// isAdaptiveModel sees "claude-sonnet-4-6-1m" which HasPrefix "claude-sonnet-4-6" -> adaptive
 		{"claude-sonnet-4-6-1m-thinking", "claude-sonnet-4-6-1m", 0, true},
 		{"claude-opus-4-6-1m-thinking", "claude-opus-4-6-1m", 0, true},
+		{"claude-opus-4-7-1m-thinking", "claude-opus-4-7-1m", 0, true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.input, func(t *testing.T) {
@@ -60,6 +63,7 @@ func TestParseModel1m(t *testing.T) {
 	}{
 		{"claude-sonnet-4-6-1m", "claude-sonnet-4-6", true},
 		{"claude-opus-4-6-1m", "claude-opus-4-6", true},
+		{"claude-opus-4-7-1m", "claude-opus-4-7", true},
 		{"claude-sonnet-4-5-1m", "claude-sonnet-4-5", true},
 		{"claude-sonnet-4-1m", "claude-sonnet-4", true},
 		// No -1m suffix: passthrough
