@@ -2356,6 +2356,12 @@ func TestHandleImage_ServesFileAndRejectsTraversal(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "cat.png"), []byte("fake-png"), 0644); err != nil {
 		t.Fatalf("write test image: %v", err)
 	}
+	if err := os.MkdirAll(filepath.Join(dir, "benchmarks", "go"), 0755); err != nil {
+		t.Fatalf("mkdir nested image dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "benchmarks", "go", "board.png"), []byte("nested-png"), 0644); err != nil {
+		t.Fatalf("write nested image: %v", err)
+	}
 
 	srv := &serveServer{cfg: serveServerConfig{basePath: "/ui"}, cfgRef: &config.Config{}}
 	srv.cfgRef.Image.OutputDir = dir
@@ -2376,6 +2382,17 @@ func TestHandleImage_ServesFileAndRejectsTraversal(t *testing.T) {
 	}
 	if vary := rr.Header().Get("Vary"); vary == "" {
 		t.Fatalf("missing Vary header")
+	}
+
+	// Nested file
+	req = httptest.NewRequest(http.MethodGet, "/images/benchmarks/go/board.png", nil)
+	rr = httptest.NewRecorder()
+	srv.handleImage(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("nested file: status = %d, want 200", rr.Code)
+	}
+	if got := rr.Body.String(); got != "nested-png" {
+		t.Fatalf("nested body = %q, want %q", got, "nested-png")
 	}
 
 	// Path traversal with ..
@@ -2472,6 +2489,12 @@ func TestHandleFile_ServesFileAndRejectsTraversal(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "video.mp4"), []byte("fake-video"), 0644); err != nil {
 		t.Fatalf("write test file: %v", err)
 	}
+	if err := os.MkdirAll(filepath.Join(dir, "qwen36-go-benchmark"), 0755); err != nil {
+		t.Fatalf("mkdir nested file dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "qwen36-go-benchmark", "board.html"), []byte("<html>nested-board</html>"), 0644); err != nil {
+		t.Fatalf("write nested file: %v", err)
+	}
 
 	srv := &serveServer{cfg: serveServerConfig{basePath: "/ui", filesDir: dir}}
 
@@ -2487,6 +2510,17 @@ func TestHandleFile_ServesFileAndRejectsTraversal(t *testing.T) {
 	}
 	if cc := rr.Header().Get("Cache-Control"); !strings.Contains(cc, "private") {
 		t.Fatalf("Cache-Control = %q, want 'private'", cc)
+	}
+
+	// Nested file
+	req = httptest.NewRequest(http.MethodGet, "/files/qwen36-go-benchmark/board.html", nil)
+	rr = httptest.NewRecorder()
+	srv.handleFile(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("nested file: status = %d, want 200", rr.Code)
+	}
+	if got := rr.Body.String(); got != "<html>nested-board</html>" {
+		t.Fatalf("nested body = %q, want %q", got, "<html>nested-board</html>")
 	}
 
 	// Path traversal
@@ -2512,6 +2546,23 @@ func TestHandleFile_ServesFileAndRejectsTraversal(t *testing.T) {
 	srv2.handleFile(rr, req)
 	if rr.Code != http.StatusNotFound {
 		t.Fatalf("no files-dir: status = %d, want 404", rr.Code)
+	}
+}
+
+func TestServeRoutePath_PreservesNestedRelativePaths(t *testing.T) {
+	baseDir := t.TempDir()
+	servedPath := filepath.Join(baseDir, "qwen36-go-benchmark", "board.html")
+	if err := os.MkdirAll(filepath.Dir(servedPath), 0755); err != nil {
+		t.Fatalf("mkdir served path dir: %v", err)
+	}
+	if err := os.WriteFile(servedPath, []byte("ok"), 0644); err != nil {
+		t.Fatalf("write served path file: %v", err)
+	}
+
+	got := serveRoutePath("/chat/files/", baseDir, servedPath)
+	want := "/chat/files/qwen36-go-benchmark/board.html"
+	if got != want {
+		t.Fatalf("serveRoutePath() = %q, want %q", got, want)
 	}
 }
 

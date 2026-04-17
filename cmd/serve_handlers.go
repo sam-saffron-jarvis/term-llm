@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -129,6 +130,74 @@ func (s *serveServer) renderIndexHTML() []byte {
 	return serveui.RenderIndexHTML(s.cfg.basePath, headSnippet)
 }
 
+func (s *serveServer) imageOutputDir() string {
+	if s != nil && s.cfgRef != nil {
+		if outputDir := image.ExpandPath(s.cfgRef.Image.OutputDir); outputDir != "" {
+			return outputDir
+		}
+	}
+	return image.ExpandPath("~/Pictures/term-llm")
+}
+
+func resolveServeRequestPath(baseDir, requestPath, routePrefix string) (string, error) {
+	requested := strings.TrimPrefix(requestPath, routePrefix)
+	requested = strings.TrimPrefix(requested, "/")
+	if requested == "" {
+		return "", fmt.Errorf("empty path")
+	}
+	for _, segment := range strings.Split(requested, "/") {
+		if segment == "" || segment == "." || segment == ".." {
+			return "", fmt.Errorf("invalid path segment")
+		}
+	}
+
+	cleaned := path.Clean("/" + requested)
+	cleaned = strings.TrimPrefix(cleaned, "/")
+	if cleaned == "" || cleaned == "." {
+		return "", fmt.Errorf("empty path")
+	}
+
+	absDir, err := filepath.EvalSymlinks(baseDir)
+	if err != nil {
+		return "", fmt.Errorf("eval base dir: %w", err)
+	}
+
+	filePath := filepath.Join(absDir, filepath.FromSlash(cleaned))
+	absFile, err := filepath.EvalSymlinks(filePath)
+	if err != nil {
+		return "", fmt.Errorf("eval file: %w", err)
+	}
+	if absFile != absDir && !strings.HasPrefix(absFile, absDir+string(filepath.Separator)) {
+		return "", fmt.Errorf("path escapes base dir")
+	}
+
+	return absFile, nil
+}
+
+func serveRoutePath(baseRoute, baseDir, servedPath string) string {
+	absDir, err := filepath.EvalSymlinks(baseDir)
+	if err != nil {
+		absDir, err = filepath.Abs(baseDir)
+		if err != nil {
+			return baseRoute + filepath.Base(servedPath)
+		}
+	}
+	absServed, err := filepath.EvalSymlinks(servedPath)
+	if err != nil {
+		absServed, err = filepath.Abs(servedPath)
+		if err != nil {
+			return baseRoute + filepath.Base(servedPath)
+		}
+	}
+
+	relPath, err := filepath.Rel(absDir, absServed)
+	if err != nil || relPath == "." || relPath == ".." || strings.HasPrefix(relPath, ".."+string(filepath.Separator)) {
+		return baseRoute + filepath.Base(servedPath)
+	}
+
+	return baseRoute + filepath.ToSlash(relPath)
+}
+
 func (s *serveServer) handleImage(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
 		w.Header().Set("Allow", "GET, HEAD")
@@ -136,30 +205,10 @@ func (s *serveServer) handleImage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// basePath is already stripped by http.StripPrefix; URL.Path is "/images/filename".
-	filename := strings.TrimPrefix(r.URL.Path, "/images/")
-	if filename == "" || strings.Contains(filename, "/") || strings.Contains(filename, "..") {
-		http.NotFound(w, r)
-		return
-	}
+	outputDir := s.imageOutputDir()
 
-	outputDir := image.ExpandPath(s.cfgRef.Image.OutputDir)
-	if outputDir == "" {
-		outputDir = image.ExpandPath("~/Pictures/term-llm")
-	}
-
-	filePath := filepath.Join(outputDir, filename)
-	absDir, err := filepath.EvalSymlinks(outputDir)
+	absFile, err := resolveServeRequestPath(outputDir, r.URL.Path, "/images/")
 	if err != nil {
-		http.NotFound(w, r)
-		return
-	}
-	absFile, err := filepath.EvalSymlinks(filePath)
-	if err != nil {
-		http.NotFound(w, r)
-		return
-	}
-	if !strings.HasPrefix(absFile, absDir+string(filepath.Separator)) {
 		http.NotFound(w, r)
 		return
 	}
@@ -176,28 +225,14 @@ func (s *serveServer) handleFile(w http.ResponseWriter, r *http.Request) {
 		writeOpenAIError(w, http.StatusMethodNotAllowed, "invalid_request_error", "method not allowed")
 		return
 	}
-	filename := strings.TrimPrefix(r.URL.Path, "/files/")
-	if filename == "" || strings.Contains(filename, "/") || strings.Contains(filename, "..") {
-		http.NotFound(w, r)
-		return
-	}
 	filesDir := s.cfg.filesDir
 	if filesDir == "" {
 		http.NotFound(w, r)
 		return
 	}
-	absDir, err := filepath.EvalSymlinks(filesDir)
+
+	absFile, err := resolveServeRequestPath(filesDir, r.URL.Path, "/files/")
 	if err != nil {
-		http.NotFound(w, r)
-		return
-	}
-	filePath := filepath.Join(absDir, filename)
-	absFile, err := filepath.EvalSymlinks(filePath)
-	if err != nil {
-		http.NotFound(w, r)
-		return
-	}
-	if !strings.HasPrefix(absFile, absDir+string(filepath.Separator)) {
 		http.NotFound(w, r)
 		return
 	}
@@ -272,10 +307,7 @@ func (s *serveServer) ensureFileServeable(filePath string) (string, bool) {
 // serveable path and true on success, or ("", false) if the image could not
 // be made serveable.
 func (s *serveServer) ensureImageServeable(imgPath string) (string, bool) {
-	outputDir := image.ExpandPath(s.cfgRef.Image.OutputDir)
-	if outputDir == "" {
-		outputDir = image.ExpandPath("~/Pictures/term-llm")
-	}
+	outputDir := s.imageOutputDir()
 
 	absDir, err := filepath.Abs(outputDir)
 	if err != nil {
