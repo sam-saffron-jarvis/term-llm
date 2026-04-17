@@ -416,7 +416,25 @@ func (p *OpenAICompatProvider) Stream(ctx context.Context, req Request) (Stream,
 	if resp.StatusCode != 200 {
 		body, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
-		return nil, fmt.Errorf("%s API error (status %d): %s", p.name, resp.StatusCode, string(body))
+		errBody := string(body)
+		// Some Ollama models don't support tool calls. Retry without tools so
+		// the model can still produce a plain-text response.
+		if resp.StatusCode == 400 && strings.Contains(errBody, "does not support tools") && len(tools) > 0 {
+			chatReq.Tools = nil
+			chatReq.ToolChoice = nil
+			chatReq.ParallelToolCalls = nil
+			resp, err = p.makeChatRequest(ctx, chatReq)
+			if err != nil {
+				return nil, fmt.Errorf("%s API request failed: %w", p.name, err)
+			}
+			if resp.StatusCode != 200 {
+				body, _ := io.ReadAll(resp.Body)
+				resp.Body.Close()
+				return nil, fmt.Errorf("%s API error (status %d): %s", p.name, resp.StatusCode, string(body))
+			}
+		} else {
+			return nil, fmt.Errorf("%s API error (status %d): %s", p.name, resp.StatusCode, errBody)
+		}
 	}
 
 	// Only create async stream for successful HTTP responses
