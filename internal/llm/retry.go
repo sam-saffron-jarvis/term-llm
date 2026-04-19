@@ -287,6 +287,11 @@ func isRetryable(err error) bool {
 
 	errStr := strings.ToLower(err.Error())
 
+	// Permanent Ollama errors that look like 500s but will never succeed on retry.
+	if strings.Contains(errStr, "unknown renderer") {
+		return false
+	}
+
 	// HTTP status codes and rate limit messages
 	if strings.Contains(errStr, "429") ||
 		strings.Contains(errStr, "rate limit") ||
