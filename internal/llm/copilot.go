@@ -15,6 +15,7 @@ import (
 
 	"github.com/samsaffron/term-llm/internal/credentials"
 	"github.com/samsaffron/term-llm/internal/oauth"
+	"github.com/samsaffron/term-llm/internal/signal"
 	"golang.org/x/term"
 )
 
@@ -135,7 +136,11 @@ func promptForCopilotAuth() (*credentials.CopilotCredentials, error) {
 		return nil, err
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	// Wire Ctrl-C through to the OAuth wait so the user can cancel
+	// while we're polling for the device-code grant.
+	sigCtx, stopSig := signal.NotifyContext()
+	defer stopSig()
+	ctx, cancel := context.WithTimeout(sigCtx, 5*time.Minute)
 	defer cancel()
 
 	oauthCreds, err := oauth.AuthenticateCopilot(ctx)
