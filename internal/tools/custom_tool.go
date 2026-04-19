@@ -85,9 +85,6 @@ func (t *CustomScriptTool) Execute(ctx context.Context, args json.RawMessage) (l
 	if t.def.TimeoutSeconds > 0 {
 		timeout = t.def.TimeoutSeconds
 	}
-	if timeout > 300 {
-		timeout = 300
-	}
 
 	// Working directory: same as the term-llm process cwd
 	workDir, err := os.Getwd()
