@@ -1282,14 +1282,13 @@ func (s *serveServer) runtimeForFreshProviderRequest(ctx context.Context, sessio
 }
 
 // syncPersistedSessionRuntime pins the provider, model, and reasoning_effort
-// on the session row for the first message of a web session. Fields already
-// set on the row are never overwritten; once saved on first message, these
-// values are locked for the remainder of the session. Later requests must use
-// the locked values — cross-provider or cross-model swaps mid-session corrupt
-// saved state (tool call shapes, response chaining, reasoning trace), and
-// handover is a future feature. If the row does not yet exist, it is created
-// here so the client-supplied model and effort are persisted (rather than the
-// runtime defaults that rt would otherwise use when Run creates the row).
+// on the session row for the first message of a web conversation. Fresh
+// conversations on a reused session ID must overwrite any stale provider/model/
+// reasoning metadata from the prior conversation so later requests reload the
+// active runtime's settings rather than resurrecting old state after resets,
+// evictions, or restarts. If the row does not yet exist, it is created here so
+// the client-supplied model and effort are persisted (rather than the runtime
+// defaults that rt would otherwise use when Run creates the row).
 func (s *serveServer) syncPersistedSessionRuntime(ctx context.Context, sessionID string, rt *serveRuntime, clientModel, reasoningEffort string) {
 	if s.store == nil || sessionID == "" || rt == nil {
 		return
@@ -1352,23 +1351,26 @@ func (s *serveServer) syncPersistedSessionRuntime(ctx context.Context, sessionID
 	}
 
 	changed := false
-	if providerName != "" && strings.TrimSpace(sess.Provider) == "" {
+	if providerName != "" && strings.TrimSpace(sess.Provider) != providerName {
 		sess.Provider = providerName
 		changed = true
 	}
-	if providerKey != "" && strings.TrimSpace(sess.ProviderKey) == "" {
+	if strings.TrimSpace(sess.ProviderKey) != providerKey {
 		sess.ProviderKey = providerKey
 		changed = true
 	}
-	if modelName != "" && strings.TrimSpace(sess.Model) == "" {
+	if modelName != "" && strings.TrimSpace(sess.Model) != modelName {
 		sess.Model = modelName
 		changed = true
 	}
-	if effort != "" && strings.TrimSpace(sess.ReasoningEffort) == "" {
+	if strings.TrimSpace(sess.ReasoningEffort) != effort {
 		sess.ReasoningEffort = effort
 		changed = true
 	}
 	if !changed {
+		rt.mu.Lock()
+		rt.sessionMeta = sess
+		rt.mu.Unlock()
 		return
 	}
 	if err := s.store.Update(ctx, sess); err != nil {

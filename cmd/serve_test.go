@@ -3960,6 +3960,67 @@ func TestHandleSessionState_FallsBackToDBWhenRuntimeNotLoaded(t *testing.T) {
 	}
 }
 
+func TestSyncPersistedSessionRuntime_OverwritesStaleFreshConversationState(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "sessions.db")
+	store, err := session.NewStore(session.Config{Enabled: true, Path: dbPath})
+	if err != nil {
+		t.Fatalf("store: %v", err)
+	}
+	defer store.Close()
+
+	stale := &session.Session{
+		ID:              "sess-reset",
+		Provider:        "anthropic",
+		ProviderKey:     "anthropic",
+		Model:           "claude-3-5-sonnet",
+		ReasoningEffort: "high",
+		Mode:            session.ModeChat,
+		Origin:          session.OriginWeb,
+	}
+	if err := store.Create(context.Background(), stale); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+
+	rt := &serveRuntime{
+		provider:     llm.NewMockProvider("openai"),
+		providerKey:  "openai",
+		defaultModel: "gpt-5",
+	}
+	srv := &serveServer{store: store}
+
+	srv.syncPersistedSessionRuntime(context.Background(), stale.ID, rt, "gpt-5-mini", "")
+
+	updated, err := store.Get(context.Background(), stale.ID)
+	if err != nil {
+		t.Fatalf("get session: %v", err)
+	}
+	if updated == nil {
+		t.Fatal("expected updated session")
+	}
+	if updated.Provider != "openai" {
+		t.Fatalf("provider = %q, want %q", updated.Provider, "openai")
+	}
+	if updated.ProviderKey != "openai" {
+		t.Fatalf("provider_key = %q, want %q", updated.ProviderKey, "openai")
+	}
+	if updated.Model != "gpt-5-mini" {
+		t.Fatalf("model = %q, want %q", updated.Model, "gpt-5-mini")
+	}
+	if updated.ReasoningEffort != "" {
+		t.Fatalf("reasoning_effort = %q, want empty", updated.ReasoningEffort)
+	}
+
+	rt.mu.Lock()
+	meta := rt.sessionMeta
+	rt.mu.Unlock()
+	if meta == nil {
+		t.Fatal("expected runtime session metadata to be updated")
+	}
+	if meta.Provider != "openai" || meta.ProviderKey != "openai" || meta.Model != "gpt-5-mini" || meta.ReasoningEffort != "" {
+		t.Fatalf("runtime session metadata = %+v", meta)
+	}
+}
+
 func TestHandleSessionState_DoesNotBlockWhileRunHoldsRuntimeMutex(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "sessions.db")
 	store, err := session.NewStore(session.Config{Enabled: true, Path: dbPath})
