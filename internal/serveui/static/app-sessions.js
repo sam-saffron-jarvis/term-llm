@@ -904,7 +904,11 @@ if (elements.voiceBtn) {
   });
 }
 elements.stopBtn.addEventListener('click', async () => {
+  if (elements.stopBtn.disabled) return;
   const session = getActiveSession();
+  const originalLabel = elements.stopBtn.textContent;
+  elements.stopBtn.disabled = true;
+  elements.stopBtn.textContent = 'Stopping\u2026';
   try {
     await cancelActiveResponse(session);
   } catch (err) {
@@ -915,6 +919,9 @@ elements.stopBtn.addEventListener('click', async () => {
     if (state.abortController) {
       state.abortController.abort();
     }
+  } finally {
+    elements.stopBtn.disabled = false;
+    elements.stopBtn.textContent = originalLabel || 'Stop';
   }
 });
 
