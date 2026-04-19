@@ -1157,7 +1157,8 @@ func (s *serveServer) startResponseRun(runtime *serveRuntime, stateful bool, rep
 			if failErr != nil {
 				log.Printf("response run %s failed to append terminal event: %v", respID, failErr)
 			}
-			if failErr != nil && options.uiSession {
+			if failErr != nil && options.uiSession &&
+				!errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
 				runtime.setLastUIRunError(err.Error())
 			}
 			return
