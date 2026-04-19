@@ -2810,11 +2810,12 @@ func TestHandleSessions_ListsFromStore(t *testing.T) {
 
 	var body struct {
 		Sessions []struct {
-			ID         string `json:"id"`
-			ShortTitle string `json:"short_title"`
-			LongTitle  string `json:"long_title"`
-			CreatedAt  int64  `json:"created_at"`
-			MsgCount   int    `json:"message_count"`
+			ID            string `json:"id"`
+			ShortTitle    string `json:"short_title"`
+			LongTitle     string `json:"long_title"`
+			CreatedAt     int64  `json:"created_at"`
+			LastMessageAt int64  `json:"last_message_at"`
+			MsgCount      int    `json:"message_count"`
 		} `json:"sessions"`
 	}
 	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
@@ -2828,6 +2829,12 @@ func TestHandleSessions_ListsFromStore(t *testing.T) {
 	}
 	if body.Sessions[0].ShortTitle != "hello world" {
 		t.Fatalf("short_title = %q, want %q", body.Sessions[0].ShortTitle, "hello world")
+	}
+	if body.Sessions[0].LastMessageAt == 0 {
+		t.Fatalf("last_message_at = 0, want non-zero (falling back to created_at)")
+	}
+	if body.Sessions[0].LastMessageAt != body.Sessions[0].CreatedAt {
+		t.Fatalf("last_message_at = %d, want %d (fallback to created_at when no messages)", body.Sessions[0].LastMessageAt, body.Sessions[0].CreatedAt)
 	}
 }
 

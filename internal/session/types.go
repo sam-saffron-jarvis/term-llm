@@ -135,20 +135,22 @@ type SessionSummary struct {
 	Tags                string             `json:"tags,omitempty"`
 	CreatedAt           time.Time          `json:"created_at"`
 	UpdatedAt           time.Time          `json:"updated_at"`
+	LastMessageAt       time.Time          `json:"last_message_at,omitempty"`
 }
 
 // ListOptions configures session listing.
 type ListOptions struct {
-	Name       string        // Filter by name
-	Provider   string        // Filter by provider
-	Model      string        // Filter by model
-	Mode       SessionMode   // Filter by mode (chat, ask, plan, exec)
-	Status     SessionStatus // Filter by status
-	Tag        string        // Filter by tag (substring match)
-	Categories []string      // Sidebar/web categories (all, chat, web, ask, plan, exec)
-	Limit      int           // Max results (0 = use default)
-	Offset     int           // Pagination offset
-	Archived   bool          // Include archived sessions
+	Name           string        // Filter by name
+	Provider       string        // Filter by provider
+	Model          string        // Filter by model
+	Mode           SessionMode   // Filter by mode (chat, ask, plan, exec)
+	Status         SessionStatus // Filter by status
+	Tag            string        // Filter by tag (substring match)
+	Categories     []string      // Sidebar/web categories (all, chat, web, ask, plan, exec)
+	Limit          int           // Max results (0 = use default)
+	Offset         int           // Pagination offset
+	Archived       bool          // Include archived sessions
+	SortByActivity bool          // Sort by last_message_at (web sidebar); defaults to last_user_message_at
 }
 
 // SearchResult represents a search match.

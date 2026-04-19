@@ -995,6 +995,125 @@ async function testTerminalSyncRequeuesPendingInterjectionAsFollowUp() {
   pass(name);
 }
 
+async function testApplyServerSessionSummaryMapsLastMessageAt() {
+  const name = 'applyServerSessionSummary maps last_message_at into lastMessageAt';
+  const { app } = await createSessionsHarness();
+
+  const target = {
+    id: 'sess1',
+    title: 'existing',
+    created: 1000,
+    messages: [],
+  };
+  app.applyServerSessionSummary(target, {
+    id: 'sess1',
+    short_title: 'Updated',
+    created_at: 1000,
+    last_message_at: 5000,
+    message_count: 3,
+  });
+
+  if (target.lastMessageAt !== 5000) {
+    fail(name, `expected lastMessageAt=5000, got ${target.lastMessageAt}`);
+    return;
+  }
+
+  const noBumpTarget = { id: 'sess2', created: 2000, lastMessageAt: 4000, messages: [] };
+  app.applyServerSessionSummary(noBumpTarget, { id: 'sess2', created_at: 2000 });
+  if (noBumpTarget.lastMessageAt !== 4000) {
+    fail(name, `existing lastMessageAt should be preserved when server omits field, got ${noBumpTarget.lastMessageAt}`);
+    return;
+  }
+
+  const freshTarget = { id: 'sess3', created: 3000, messages: [] };
+  app.applyServerSessionSummary(freshTarget, { id: 'sess3', created_at: 3000 });
+  if (freshTarget.lastMessageAt !== 3000) {
+    fail(name, `lastMessageAt should fall back to created when absent on both sides, got ${freshTarget.lastMessageAt}`);
+    return;
+  }
+
+  pass(name);
+}
+
+async function testMergeServerMessagesBumpsLastMessageAt() {
+  const name = 'mergeServerMessagesWithLocalState advances lastMessageAt to newest visible message';
+  const { app } = await createSessionsHarness();
+
+  const session = {
+    id: 'sess1',
+    title: 'Existing',
+    created: 1000,
+    lastMessageAt: 2000,
+    messages: [],
+  };
+  const serverShaped = [
+    { role: 'user', created: 3000 },
+    { role: 'assistant', created: 5000 },
+    { role: 'tool-group', created: 9000 },
+  ];
+  app.mergeServerMessagesWithLocalState(session, serverShaped);
+  if (session.lastMessageAt !== 5000) {
+    fail(name, `expected lastMessageAt to advance to newest visible (5000), got ${session.lastMessageAt}`);
+    return;
+  }
+
+  const stale = {
+    id: 'sess2',
+    created: 1000,
+    lastMessageAt: 9999,
+    messages: [],
+  };
+  app.mergeServerMessagesWithLocalState(stale, [{ role: 'user', created: 3000 }]);
+  if (stale.lastMessageAt !== 9999) {
+    fail(name, `existing newer lastMessageAt must not be regressed, got ${stale.lastMessageAt}`);
+    return;
+  }
+
+  pass(name);
+}
+
+async function testSanitizeSessionPreservesLastMessageAt() {
+  const name = 'sanitizeSession reads lastMessageAt from stored and server-shaped payloads';
+  const { app } = await createSessionsHarness();
+
+  const stored = app.sanitizeSession({
+    id: 'sess1',
+    title: 'Stored',
+    created: 1000,
+    lastMessageAt: 7500,
+    messages: [],
+  });
+  if (stored.lastMessageAt !== 7500) {
+    fail(name, `expected lastMessageAt=7500 from camelCase, got ${stored.lastMessageAt}`);
+    return;
+  }
+
+  const serverShaped = app.sanitizeSession({
+    id: 'sess2',
+    title: 'ServerShape',
+    created: 2000,
+    last_message_at: 9000,
+    messages: [],
+  });
+  if (serverShaped.lastMessageAt !== 9000) {
+    fail(name, `expected lastMessageAt=9000 from snake_case fallback, got ${serverShaped.lastMessageAt}`);
+    return;
+  }
+
+  const fallback = app.sanitizeSession({
+    id: 'sess3',
+    title: 'Fallback',
+    created: 4000,
+    messages: [],
+  });
+  if (fallback.lastMessageAt !== 4000) {
+    fail(name, `expected lastMessageAt to fall back to created=4000, got ${fallback.lastMessageAt}`);
+    return;
+  }
+
+  pass(name);
+}
+
 (async () => {
   await testNumericDeepLinkResolvesRealSessionId();
   await testDeveloperMessagesAreHidden();
@@ -1004,6 +1123,9 @@ async function testTerminalSyncRequeuesPendingInterjectionAsFollowUp() {
   await testSessionProgressStatePrefersLocalAndServerSignals();
   await testResumeAndDrainFiringViaSync();
   await testTerminalSyncRequeuesPendingInterjectionAsFollowUp();
+  await testApplyServerSessionSummaryMapsLastMessageAt();
+  await testMergeServerMessagesBumpsLastMessageAt();
+  await testSanitizeSessionPreservesLastMessageAt();
 
   if (failures > 0) process.exit(1);
   process.exit(0);

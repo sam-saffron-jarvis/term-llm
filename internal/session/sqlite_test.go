@@ -60,6 +60,183 @@ func TestSQLiteStorePersistsDeveloperMessages(t *testing.T) {
 	}
 }
 
+func TestSQLiteStoreAddMessageBumpsLastMessageAt(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+
+	store, err := NewSQLiteStore(DefaultConfig())
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+	sess := &Session{ID: NewID(), Provider: "test", Model: "test-model", Mode: ModeChat}
+	if err := store.Create(ctx, sess); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	userTime := time.Now().UTC().Add(-5 * time.Minute).Truncate(time.Second)
+	userMsg := NewMessage(sess.ID, llm.Message{Role: llm.RoleUser, Parts: []llm.Part{{Type: llm.PartText, Text: "hi"}}}, -1)
+	userMsg.CreatedAt = userTime
+	if err := store.AddMessage(ctx, sess.ID, userMsg); err != nil {
+		t.Fatalf("AddMessage user: %v", err)
+	}
+
+	summaries, err := store.List(ctx, ListOptions{Limit: 5})
+	if err != nil {
+		t.Fatalf("List after user msg: %v", err)
+	}
+	if len(summaries) != 1 {
+		t.Fatalf("expected 1 summary, got %d", len(summaries))
+	}
+	if !summaries[0].LastMessageAt.Equal(userTime) {
+		t.Fatalf("LastMessageAt after user msg = %v, want %v", summaries[0].LastMessageAt, userTime)
+	}
+
+	assistantTime := userTime.Add(10 * time.Second)
+	assistantMsg := NewMessage(sess.ID, llm.Message{Role: llm.RoleAssistant, Parts: []llm.Part{{Type: llm.PartText, Text: "hello"}}}, -1)
+	assistantMsg.CreatedAt = assistantTime
+	if err := store.AddMessage(ctx, sess.ID, assistantMsg); err != nil {
+		t.Fatalf("AddMessage assistant: %v", err)
+	}
+
+	summaries, err = store.List(ctx, ListOptions{Limit: 5})
+	if err != nil {
+		t.Fatalf("List after assistant msg: %v", err)
+	}
+	if !summaries[0].LastMessageAt.Equal(assistantTime) {
+		t.Fatalf("LastMessageAt after assistant msg = %v, want %v", summaries[0].LastMessageAt, assistantTime)
+	}
+
+	// Tool/developer/system messages must not bump last_message_at so it
+	// stays aligned with message_count (which filters to user/assistant).
+	nonVisibleTime := assistantTime.Add(1 * time.Hour)
+	toolMsg := NewMessage(sess.ID, llm.Message{Role: llm.RoleTool, Parts: []llm.Part{{Type: llm.PartText, Text: "ignored"}}}, -1)
+	toolMsg.CreatedAt = nonVisibleTime
+	if err := store.AddMessage(ctx, sess.ID, toolMsg); err != nil {
+		t.Fatalf("AddMessage tool: %v", err)
+	}
+	devMsg := NewMessage(sess.ID, llm.Message{Role: llm.RoleDeveloper, Parts: []llm.Part{{Type: llm.PartText, Text: "ignored"}}}, -1)
+	devMsg.CreatedAt = nonVisibleTime.Add(1 * time.Second)
+	if err := store.AddMessage(ctx, sess.ID, devMsg); err != nil {
+		t.Fatalf("AddMessage developer: %v", err)
+	}
+	systemMsg := NewMessage(sess.ID, llm.Message{Role: llm.RoleSystem, Parts: []llm.Part{{Type: llm.PartText, Text: "ignored"}}}, -1)
+	systemMsg.CreatedAt = nonVisibleTime.Add(2 * time.Second)
+	if err := store.AddMessage(ctx, sess.ID, systemMsg); err != nil {
+		t.Fatalf("AddMessage system: %v", err)
+	}
+
+	summaries, err = store.List(ctx, ListOptions{Limit: 5})
+	if err != nil {
+		t.Fatalf("List after non-visible msgs: %v", err)
+	}
+	if !summaries[0].LastMessageAt.Equal(assistantTime) {
+		t.Fatalf("LastMessageAt should not move for non-visible roles: got %v, want %v", summaries[0].LastMessageAt, assistantTime)
+	}
+}
+
+func TestSQLiteStoreMigration20BackfillsLastMessageAt(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "sessions.db")
+
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open seed database: %v", err)
+	}
+	_, err = db.Exec(`
+		CREATE TABLE sessions (
+			id TEXT PRIMARY KEY,
+			number INTEGER,
+			name TEXT,
+			summary TEXT,
+			generated_short_title TEXT,
+			generated_long_title TEXT,
+			title_source TEXT,
+			title_generated_at TIMESTAMP,
+			title_basis_msg_seq INTEGER DEFAULT 0,
+			title_skipped_at TIMESTAMP,
+			provider TEXT NOT NULL,
+			provider_key TEXT,
+			model TEXT NOT NULL,
+			mode TEXT DEFAULT 'chat',
+			origin TEXT DEFAULT 'tui',
+			agent TEXT,
+			cwd TEXT,
+			created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			archived BOOLEAN DEFAULT FALSE,
+			pinned BOOLEAN DEFAULT FALSE,
+			parent_id TEXT REFERENCES sessions(id),
+			search BOOLEAN DEFAULT FALSE,
+			tools TEXT,
+			mcp TEXT,
+			user_turns INTEGER DEFAULT 0,
+			llm_turns INTEGER DEFAULT 0,
+			tool_calls INTEGER DEFAULT 0,
+			input_tokens INTEGER DEFAULT 0,
+			cached_input_tokens INTEGER DEFAULT 0,
+			cache_write_tokens INTEGER DEFAULT 0,
+			output_tokens INTEGER DEFAULT 0,
+			last_total_tokens INTEGER DEFAULT 0,
+			last_message_count INTEGER DEFAULT 0,
+			status TEXT DEFAULT 'active',
+			tags TEXT,
+			compaction_seq INTEGER DEFAULT -1,
+			last_user_message_at TIMESTAMP,
+			reasoning_effort TEXT
+		);
+		CREATE TABLE messages (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+			role TEXT NOT NULL CHECK (role IN ('user', 'assistant', 'system', 'tool', 'developer')),
+			parts TEXT NOT NULL,
+			text_content TEXT,
+			duration_ms INTEGER,
+			created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			sequence INTEGER NOT NULL
+		);
+		CREATE TABLE schema_version (version INTEGER NOT NULL);
+		INSERT INTO schema_version(version) VALUES (19);
+		INSERT INTO sessions (id, name, summary, provider, model, created_at, updated_at)
+			VALUES ('sess1', '', '', 'test', 'test-model', '2024-01-01 00:00:00', '2024-01-01 00:00:00');
+		INSERT INTO messages (session_id, role, parts, text_content, created_at, sequence)
+			VALUES ('sess1', 'user', '[]', 'hi', '2024-01-01 00:00:00', 0);
+		INSERT INTO messages (session_id, role, parts, text_content, created_at, sequence)
+			VALUES ('sess1', 'assistant', '[]', 'hello', '2024-01-02 00:00:00', 1);
+		INSERT INTO messages (session_id, role, parts, text_content, created_at, sequence)
+			VALUES ('sess1', 'tool', '[]', 'tool result', '2024-01-03 00:00:00', 2);
+		INSERT INTO messages (session_id, role, parts, text_content, created_at, sequence)
+			VALUES ('sess1', 'developer', '[]', 'dev note', '2024-01-04 00:00:00', 3);
+	`)
+	if err != nil {
+		t.Fatalf("seed schema: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close seed database: %v", err)
+	}
+
+	store, err := NewSQLiteStore(Config{Enabled: true, Path: dbPath})
+	if err != nil {
+		t.Fatalf("open migrated store: %v", err)
+	}
+	defer store.Close()
+
+	summaries, err := store.List(context.Background(), ListOptions{Limit: 5})
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(summaries) != 1 {
+		t.Fatalf("expected 1 summary, got %d", len(summaries))
+	}
+	wantYear := 2024
+	if summaries[0].LastMessageAt.Year() != wantYear {
+		t.Fatalf("LastMessageAt = %v, want year %d", summaries[0].LastMessageAt, wantYear)
+	}
+	if summaries[0].LastMessageAt.Day() != 2 {
+		t.Fatalf("LastMessageAt day = %d, want 2 (assistant message)", summaries[0].LastMessageAt.Day())
+	}
+}
+
 func TestSQLiteStoreMigratesMessagesTableToAllowDeveloperRole(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "sessions.db")
 
@@ -104,7 +281,8 @@ func TestSQLiteStoreMigratesMessagesTableToAllowDeveloperRole(t *testing.T) {
 			status TEXT DEFAULT 'active',
 			tags TEXT,
 			compaction_seq INTEGER DEFAULT -1,
-			last_user_message_at TIMESTAMP
+			last_user_message_at TIMESTAMP,
+			last_message_at TIMESTAMP
 		);
 		CREATE UNIQUE INDEX idx_sessions_number ON sessions(number);
 		CREATE INDEX idx_sessions_updated_at ON sessions(updated_at DESC);
@@ -112,6 +290,7 @@ func TestSQLiteStoreMigratesMessagesTableToAllowDeveloperRole(t *testing.T) {
 		CREATE INDEX idx_sessions_origin ON sessions(origin);
 		CREATE INDEX idx_sessions_pinned ON sessions(pinned);
 		CREATE INDEX idx_sessions_last_user_msg ON sessions(last_user_message_at DESC);
+		CREATE INDEX idx_sessions_last_message ON sessions(last_message_at DESC);
 		CREATE TABLE messages (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,

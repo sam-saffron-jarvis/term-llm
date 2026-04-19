@@ -345,6 +345,21 @@ const mergeServerMessagesWithLocalState = (session, serverMessages) => {
       session.title = truncate(firstUserMsg.content, 60);
     }
   }
+
+  // Derive lastMessageAt from the newest visible (user/assistant) message so the
+  // sidebar's relative time and ordering stay current even if the /v1/sessions/status
+  // poll hasn't fired yet after a stale-run reconciliation.
+  let newestVisible = 0;
+  for (const message of merged) {
+    if (message.role !== 'user' && message.role !== 'assistant') continue;
+    const created = Number(message.created);
+    if (Number.isFinite(created) && created > newestVisible) {
+      newestVisible = created;
+    }
+  }
+  if (newestVisible > 0 && newestVisible > (Number(session.lastMessageAt) || 0)) {
+    session.lastMessageAt = newestVisible;
+  }
 };
 
 const stopSessionStatePoll = () => {
@@ -522,6 +537,12 @@ const applyServerSessionSummary = (target, serverSession) => {
   target.archived = Boolean(serverSession.archived);
   target.pinned = Boolean(serverSession.pinned);
   target.created = asTimestamp(serverSession.created_at || target.created);
+  const serverLastMessageAt = Number(serverSession.last_message_at);
+  if (Number.isFinite(serverLastMessageAt) && serverLastMessageAt > 0) {
+    target.lastMessageAt = serverLastMessageAt;
+  } else if (!target.lastMessageAt) {
+    target.lastMessageAt = target.created;
+  }
   target.messageCount = Number(serverSession.message_count || target.messageCount || 0);
   target.number = Number(serverSession.number || target.number || 0);
   if (serverSession.provider) {
@@ -600,6 +621,7 @@ const mergeServerSessions = async (options = {}) => {
         archived: false,
         pinned: false,
         created: Date.now(),
+        lastMessageAt: Date.now(),
         messages: [],
         lastResponseId: null,
         activeResponseId: null,

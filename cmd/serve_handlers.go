@@ -503,9 +503,10 @@ func (s *serveServer) handleSessions(w http.ResponseWriter, r *http.Request) {
 		strings.EqualFold(strings.TrimSpace(r.URL.Query().Get("include_archived")), "true")
 
 	sessions, err := s.store.List(r.Context(), session.ListOptions{
-		Limit:      100,
-		Archived:   includeArchived,
-		Categories: categories,
+		Limit:          100,
+		Archived:       includeArchived,
+		Categories:     categories,
+		SortByActivity: true,
 	})
 	if err != nil {
 		writeOpenAIError(w, http.StatusInternalServerError, "server_error", "failed to list sessions")
@@ -513,18 +514,19 @@ func (s *serveServer) handleSessions(w http.ResponseWriter, r *http.Request) {
 	}
 
 	type sessionEntry struct {
-		ID         string                `json:"id"`
-		Number     int64                 `json:"number,omitempty"`
-		Name       string                `json:"name,omitempty"`
-		ShortTitle string                `json:"short_title"`
-		LongTitle  string                `json:"long_title"`
-		Mode       session.SessionMode   `json:"mode,omitempty"`
-		Origin     session.SessionOrigin `json:"origin,omitempty"`
-		Provider   string                `json:"provider,omitempty"`
-		Archived   bool                  `json:"archived"`
-		Pinned     bool                  `json:"pinned"`
-		CreatedAt  int64                 `json:"created_at"`
-		MsgCount   int                   `json:"message_count"`
+		ID            string                `json:"id"`
+		Number        int64                 `json:"number,omitempty"`
+		Name          string                `json:"name,omitempty"`
+		ShortTitle    string                `json:"short_title"`
+		LongTitle     string                `json:"long_title"`
+		Mode          session.SessionMode   `json:"mode,omitempty"`
+		Origin        session.SessionOrigin `json:"origin,omitempty"`
+		Provider      string                `json:"provider,omitempty"`
+		Archived      bool                  `json:"archived"`
+		Pinned        bool                  `json:"pinned"`
+		CreatedAt     int64                 `json:"created_at"`
+		LastMessageAt int64                 `json:"last_message_at"`
+		MsgCount      int                   `json:"message_count"`
 	}
 
 	result := make([]sessionEntry, 0, len(sessions))
@@ -536,19 +538,24 @@ func (s *serveServer) handleSessions(w http.ResponseWriter, r *http.Request) {
 				Provider: sess.Provider,
 			})
 		}
+		lastMessageAt := sess.LastMessageAt
+		if lastMessageAt.IsZero() {
+			lastMessageAt = sess.CreatedAt
+		}
 		result = append(result, sessionEntry{
-			Name:       sess.Name,
-			ID:         sess.ID,
-			Number:     sess.Number,
-			ShortTitle: sess.PreferredShortTitle(),
-			LongTitle:  sess.PreferredLongTitle(),
-			Mode:       sess.Mode,
-			Origin:     sess.Origin,
-			Provider:   provider,
-			Archived:   sess.Archived,
-			Pinned:     sess.Pinned,
-			CreatedAt:  sess.CreatedAt.UnixMilli(),
-			MsgCount:   sess.MessageCount,
+			Name:          sess.Name,
+			ID:            sess.ID,
+			Number:        sess.Number,
+			ShortTitle:    sess.PreferredShortTitle(),
+			LongTitle:     sess.PreferredLongTitle(),
+			Mode:          sess.Mode,
+			Origin:        sess.Origin,
+			Provider:      provider,
+			Archived:      sess.Archived,
+			Pinned:        sess.Pinned,
+			CreatedAt:     sess.CreatedAt.UnixMilli(),
+			LastMessageAt: lastMessageAt.UnixMilli(),
+			MsgCount:      sess.MessageCount,
 		})
 	}
 

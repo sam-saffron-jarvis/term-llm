@@ -24,6 +24,7 @@ type SQLiteStore struct {
 	hasPinned            bool // true if sessions table has pinned column
 	hasTitleSkippedAt    bool // true if sessions table has title_skipped_at column
 	hasLastUserMessageAt bool // true if sessions table has last_user_message_at column
+	hasLastMessageAt     bool // true if sessions table has last_message_at column
 	hasLastTotalTokens   bool // true if sessions table has last_total_tokens column
 	hasLastMessageCount  bool // true if sessions table has last_message_count column
 	hasReasoningEffort   bool // true if sessions table has reasoning_effort column
@@ -52,6 +53,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     cwd TEXT,
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    last_message_at TIMESTAMP,
     archived BOOLEAN DEFAULT FALSE,
     pinned BOOLEAN DEFAULT FALSE,
     parent_id TEXT REFERENCES sessions(id),
@@ -181,6 +183,7 @@ func NewSQLiteStore(cfg Config) (*SQLiteStore, error) {
 	store.hasPinned = store.probeColumn("pinned")
 	store.hasTitleSkippedAt = store.probeColumn("title_skipped_at")
 	store.hasLastUserMessageAt = store.probeColumn("last_user_message_at")
+	store.hasLastMessageAt = store.probeColumn("last_message_at")
 	store.hasLastTotalTokens = store.probeColumn("last_total_tokens")
 	store.hasLastMessageCount = store.probeColumn("last_message_count")
 	store.hasReasoningEffort = store.probeColumn("reasoning_effort")
@@ -200,7 +203,7 @@ func NewSQLiteStore(cfg Config) (*SQLiteStore, error) {
 // - Fresh databases get the full schema from `schema` const and start at this version
 // - Existing databases run migrations to reach this version
 // Increment when adding new migrations.
-const schemaVersion = 19
+const schemaVersion = 20
 
 // migration represents a schema migration.
 type migration struct {
@@ -631,6 +634,41 @@ var migrations = []migration{
 				if !isDuplicateColumnError(err) {
 					return err
 				}
+			}
+			return nil
+		},
+	},
+	{
+		// Migration 20: Add last_message_at for sorting the web sidebar by visible
+		// conversation activity (user or assistant messages only). Distinct from
+		// last_user_message_at (migration 16) which ignores assistant output, and
+		// from updated_at which bumps on background work like autotitle. Tool,
+		// developer, and system rows are excluded so the column stays aligned
+		// with message_count (see List() which filters to user/assistant).
+		version:     20,
+		description: "add last_message_at column for visible-message activity sort",
+		up: func(db *sql.DB) error {
+			_, err := db.Exec("ALTER TABLE sessions ADD COLUMN last_message_at TIMESTAMP")
+			if err != nil && !isDuplicateColumnError(err) {
+				return err
+			}
+			_, err = db.Exec(`
+				UPDATE sessions SET last_message_at = (
+					SELECT MAX(m.created_at) FROM messages m
+					WHERE m.session_id = sessions.id
+					  AND m.role IN ('user', 'assistant')
+				)
+				WHERE EXISTS (
+					SELECT 1 FROM messages m
+					WHERE m.session_id = sessions.id
+					  AND m.role IN ('user', 'assistant')
+				)`)
+			if err != nil {
+				return fmt.Errorf("backfill last_message_at: %w", err)
+			}
+			_, err = db.Exec(`CREATE INDEX IF NOT EXISTS idx_sessions_last_message ON sessions(last_message_at DESC)`)
+			if err != nil {
+				return fmt.Errorf("create last_message_at index: %w", err)
 			}
 			return nil
 		},
@@ -1126,9 +1164,13 @@ func (s *SQLiteStore) List(ctx context.Context, opts ListOptions) ([]SessionSumm
 		generatedLongCol = "s.generated_long_title"
 		titleSourceCol = "s.title_source"
 	}
+	lastMessageAtCol := "NULL"
+	if s.hasLastMessageAt {
+		lastMessageAtCol = "s.last_message_at"
+	}
 	query := `
 		SELECT s.id, s.number, s.name, s.summary, ` + generatedShortCol + `, ` + generatedLongCol + `, ` + titleSourceCol + `,
-		       s.provider, COALESCE(s.provider_key, ''), s.model, s.mode, ` + originCol + `, s.archived, ` + pinnedCol + `, s.created_at, s.updated_at,
+		       s.provider, COALESCE(s.provider_key, ''), s.model, s.mode, ` + originCol + `, s.archived, ` + pinnedCol + `, s.created_at, s.updated_at, ` + lastMessageAtCol + `,
 		       (SELECT COUNT(*) FROM messages WHERE session_id = s.id AND role IN ('user', 'assistant')) as message_count,
 		       s.user_turns, s.llm_turns, s.tool_calls, s.input_tokens, s.cached_input_tokens, ` + cacheWriteCol + `, s.output_tokens, s.status, s.tags
 		FROM sessions s
@@ -1202,8 +1244,13 @@ func (s *SQLiteStore) List(ctx context.Context, opts ListOptions) ([]SessionSumm
 	// Sort by last user message time (when the user last interacted), falling back
 	// to created_at for sessions with no user messages yet. This prevents background
 	// activity (autotitle, mining, status changes) from reordering the sidebar.
+	// Web sidebar callers set SortByActivity to use last_message_at instead so
+	// assistant-only turns also surface (keeps the top-N window aligned with the
+	// client-side "any-message" ordering).
 	sortCol := "s.updated_at"
-	if s.hasLastUserMessageAt {
+	if opts.SortByActivity && s.hasLastMessageAt {
+		sortCol = "COALESCE(s.last_message_at, s.last_user_message_at, s.created_at)"
+	} else if s.hasLastUserMessageAt {
 		sortCol = "COALESCE(s.last_user_message_at, s.created_at)"
 	}
 	if s.hasPinned {
@@ -1234,12 +1281,16 @@ func (s *SQLiteStore) List(ctx context.Context, opts ListOptions) ([]SessionSumm
 		var sum SessionSummary
 		var number sql.NullInt64
 		var mode, status, tags, generatedShortTitle, generatedLongTitle, titleSource, origin sql.NullString
+		var lastMessageAt sql.NullTime
 		err := rows.Scan(&sum.ID, &number, &sum.Name, &sum.Summary, &generatedShortTitle, &generatedLongTitle, &titleSource, &sum.Provider, &sum.ProviderKey, &sum.Model, &mode,
-			&origin, &sum.Archived, &sum.Pinned, &sum.CreatedAt, &sum.UpdatedAt, &sum.MessageCount,
+			&origin, &sum.Archived, &sum.Pinned, &sum.CreatedAt, &sum.UpdatedAt, &lastMessageAt, &sum.MessageCount,
 			&sum.UserTurns, &sum.LLMTurns, &sum.ToolCalls, &sum.InputTokens, &sum.CachedInputTokens, &sum.CacheWriteTokens, &sum.OutputTokens,
 			&status, &tags)
 		if err != nil {
 			return nil, fmt.Errorf("scan session summary: %w", err)
+		}
+		if lastMessageAt.Valid {
+			sum.LastMessageAt = lastMessageAt.Time
 		}
 		if number.Valid {
 			sum.Number = number.Int64
@@ -1362,9 +1413,19 @@ func (s *SQLiteStore) AddMessage(ctx context.Context, sessionID string, msg *Mes
 		id, _ := result.LastInsertId()
 		msg.ID = id
 
-		// Update session's updated_at
-		_, err = tx.ExecContext(ctx, "UPDATE sessions SET updated_at = ? WHERE id = ?",
-			time.Now(), sessionID)
+		// Update session's updated_at. Also bump last_message_at for visible
+		// conversation messages (user/assistant) so the web sidebar sort stays
+		// aligned with message_count. Tool/developer/system rows are excluded
+		// so they don't jostle order without a visible change.
+		bumpLastMessageAt := s.hasLastMessageAt && (msg.Role == "user" || msg.Role == "assistant")
+		if bumpLastMessageAt {
+			_, err = tx.ExecContext(ctx,
+				"UPDATE sessions SET updated_at = ?, last_message_at = ? WHERE id = ?",
+				time.Now(), msg.CreatedAt, sessionID)
+		} else {
+			_, err = tx.ExecContext(ctx, "UPDATE sessions SET updated_at = ? WHERE id = ?",
+				time.Now(), sessionID)
+		}
 		if err != nil {
 			return fmt.Errorf("update session timestamp: %w", err)
 		}

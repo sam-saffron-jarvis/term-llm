@@ -141,12 +141,16 @@ const renderSidebar = () => {
     Older: []
   };
 
-  const sorted = [...visibleSessions()].sort((a, b) => b.created - a.created);
+  const sorted = [...visibleSessions()].sort((a, b) => {
+    const aAt = a.lastMessageAt || a.created;
+    const bAt = b.lastMessageAt || b.created;
+    return bAt - aAt;
+  });
   sorted.forEach((session) => {
     if (session.pinned) {
       grouped.Pinned.push(session);
     } else {
-      grouped[sessionBucket(session.created)].push(session);
+      grouped[sessionBucket(session.lastMessageAt || session.created)].push(session);
     }
   });
 
@@ -188,9 +192,10 @@ const renderSidebar = () => {
       if (session.archived) {
         metaParts.push('hidden');
       }
-      metaParts.push(relativeTime(session.created));
+      const activityAt = session.lastMessageAt || session.created;
+      metaParts.push(relativeTime(activityAt));
       meta.textContent = metaParts.join(' · ');
-      meta.title = fullDate(session.created);
+      meta.title = fullDate(activityAt);
 
       btn.appendChild(title);
       btn.appendChild(meta);
@@ -1064,12 +1069,24 @@ const renderMessages = (forceScroll = false) => {
 const updateSidebarStatus = (statusSessions) => {
   if (!Array.isArray(statusSessions)) return false;
   let changed = false;
+  let orderChanged = false;
   for (const entry of statusSessions) {
     const local = state.sessions.find((session) => session.id === entry.id) || null;
     const busyTarget = local || entry.id;
     const wasActive = sessionHasInProgressState(busyTarget);
     setSessionServerActiveRun(busyTarget, Boolean(entry.active_run));
     const nextActive = sessionHasInProgressState(busyTarget);
+
+    if (local) {
+      const nextLastMessageAt = Number(entry.last_message_at);
+      if (Number.isFinite(nextLastMessageAt) && nextLastMessageAt > 0) {
+        const prev = Number(local.lastMessageAt) || 0;
+        if (nextLastMessageAt > prev) {
+          local.lastMessageAt = nextLastMessageAt;
+          orderChanged = true;
+        }
+      }
+    }
 
     const row = elements.sessionGroups.querySelector(`.session-row[data-session-id="${CSS.escape(entry.id)}"]`);
     if (row) {
@@ -1096,9 +1113,14 @@ const updateSidebarStatus = (statusSessions) => {
       }
       const parts = [`${count} message${count === 1 ? '' : 's'}`];
       if (local?.archived) parts.push('hidden');
-      parts.push(relativeTime(local?.created || Date.now()));
+      const activityAt = local?.lastMessageAt || local?.created || Date.now();
+      parts.push(relativeTime(activityAt));
       metaEl.textContent = parts.join(' · ');
     }
+  }
+  if (orderChanged) {
+    renderSidebar();
+    return true;
   }
   return changed;
 };

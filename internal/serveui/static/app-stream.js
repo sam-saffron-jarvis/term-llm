@@ -548,6 +548,7 @@ const applyResponseStreamEvent = (session, streamState, event, payload) => {
       if (usage) lastAssistant.usage = usage;
       finalizeAssistantStreamRender(lastAssistant);
     }
+    session.lastMessageAt = Date.now();
     flushStreamPersistence();
     saveSessions();
     renderSidebar();
@@ -2801,6 +2802,7 @@ const sendMessage = async (options = {}) => {
     userMessage.content = prompt;
     delete userMessage.interruptState;
   }
+  session.lastMessageAt = Date.now();
 
   if (pendingAttachments.length > 0) {
     userMessage.attachments = pendingAttachments.map(a => ({

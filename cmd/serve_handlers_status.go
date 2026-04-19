@@ -30,9 +30,10 @@ func (s *serveServer) handleSessionsStatus(w http.ResponseWriter, r *http.Reques
 		strings.EqualFold(strings.TrimSpace(r.URL.Query().Get("include_archived")), "true")
 
 	sessions, err := s.store.List(r.Context(), session.ListOptions{
-		Limit:      100,
-		Archived:   includeArchived,
-		Categories: categories,
+		Limit:          100,
+		Archived:       includeArchived,
+		Categories:     categories,
+		SortByActivity: true,
 	})
 	if err != nil {
 		writeOpenAIError(w, http.StatusInternalServerError, "server_error", "failed to list sessions")
@@ -43,21 +44,27 @@ func (s *serveServer) handleSessionsStatus(w http.ResponseWriter, r *http.Reques
 	activeIDs := s.activeSessionIDs()
 
 	type statusEntry struct {
-		ID         string `json:"id"`
-		ShortTitle string `json:"short_title"`
-		LongTitle  string `json:"long_title"`
-		ActiveRun  bool   `json:"active_run,omitempty"`
-		MsgCount   int    `json:"message_count"`
+		ID            string `json:"id"`
+		ShortTitle    string `json:"short_title"`
+		LongTitle     string `json:"long_title"`
+		ActiveRun     bool   `json:"active_run,omitempty"`
+		MsgCount      int    `json:"message_count"`
+		LastMessageAt int64  `json:"last_message_at"`
 	}
 
 	result := make([]statusEntry, 0, len(sessions))
 	for _, sess := range sessions {
+		lastMessageAt := sess.LastMessageAt
+		if lastMessageAt.IsZero() {
+			lastMessageAt = sess.CreatedAt
+		}
 		result = append(result, statusEntry{
-			ID:         sess.ID,
-			ShortTitle: sess.PreferredShortTitle(),
-			LongTitle:  sess.PreferredLongTitle(),
-			ActiveRun:  activeIDs[sess.ID],
-			MsgCount:   sess.MessageCount,
+			ID:            sess.ID,
+			ShortTitle:    sess.PreferredShortTitle(),
+			LongTitle:     sess.PreferredLongTitle(),
+			ActiveRun:     activeIDs[sess.ID],
+			MsgCount:      sess.MessageCount,
+			LastMessageAt: lastMessageAt.UnixMilli(),
 		})
 	}
 
