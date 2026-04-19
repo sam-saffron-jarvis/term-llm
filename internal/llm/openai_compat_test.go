@@ -1233,3 +1233,64 @@ func TestOpenAICompatProviderStreamSendsReasoningEffort(t *testing.T) {
 		})
 	}
 }
+
+func TestOpenAICompatProviderStreamRetriesWithoutToolsWhenUnsupported(t *testing.T) {
+	var requestCount int
+	var secondReqTools []json.RawMessage
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestCount++
+		var body struct {
+			Tools []json.RawMessage `json:"tools"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+
+		if requestCount == 1 {
+			// First request: reject with Ollama's "does not support tools" error
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"error":{"message":"registry.ollama.ai/library/qwen36-q4:latest does not support tools","type":"invalid_request_error","param":null,"code":null}}`))
+			return
+		}
+
+		// Second request: record tools and return a plain text response
+		secondReqTools = body.Tools
+		w.Header().Set("Content-Type", "text/event-stream")
+		chunk := oaiChatResponse{Choices: []oaiChoice{{Delta: &oaiMessage{Content: "hello"}}}}
+		data, _ := json.Marshal(chunk)
+		_, _ = w.Write([]byte("data: "))
+		_, _ = w.Write(data)
+		_, _ = w.Write([]byte("\n\ndata: [DONE]\n\n"))
+	}))
+	defer ts.Close()
+
+	provider := NewOpenAICompatProvider(ts.URL, "", "qwen36-q4:latest", "Ollama")
+	stream, err := provider.Stream(context.Background(), Request{
+		Messages: []Message{UserText("hi")},
+		Tools: []ToolSpec{{
+			Name:        "read_file",
+			Description: "read a file",
+			Schema:      map[string]interface{}{"type": "object", "properties": map[string]interface{}{}},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("Stream() error = %v", err)
+	}
+	defer stream.Close()
+
+	for {
+		ev, err := stream.Recv()
+		if err != nil {
+			t.Fatalf("Recv() error = %v", err)
+		}
+		if ev.Type == EventDone {
+			break
+		}
+	}
+
+	if requestCount != 2 {
+		t.Errorf("expected 2 requests (initial + retry), got %d", requestCount)
+	}
+	if len(secondReqTools) != 0 {
+		t.Errorf("expected retry request to have no tools, got %d", len(secondReqTools))
+	}
+}
