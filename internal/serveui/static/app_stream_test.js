@@ -75,6 +75,9 @@ function createHarness(options = {}) {
   const responseId = options.responseId || 'resp_test';
   const postBody = String(options.postBody || '');
   const eventsKeepOpen = Boolean(options.eventsKeepOpen);
+  const cancelDelayMs = Math.max(0, Number(options.cancelDelayMs || 0));
+  let cancelRequested = false;
+  let cancelResolve = null;
   const eventsBody = String(options.eventsBody || [
     'id: 1\n',
     'event: response.created\n',
@@ -199,6 +202,7 @@ function createHarness(options = {}) {
     expectCanceledRun: false,
   };
 
+  const connectionStates = [];
   const app = {
     UI_PREFIX: '/ui',
     STORAGE_KEYS: {
@@ -236,7 +240,7 @@ function createHarness(options = {}) {
     },
     findMessageElement() { return null; },
     scrollToBottom() {},
-    setConnectionState() {},
+    setConnectionState: (text) => { connectionStates.push(String(text || '')); },
     sessionSlug(s) { return s ? s.id : ''; },
     updateURL() {},
     persistAndRefreshShell() {},
@@ -355,6 +359,19 @@ function createHarness(options = {}) {
         headers: { 'x-response-id': responseId },
       });
     }
+    if (url === `/ui/v1/responses/${responseId}/cancel`) {
+      cancelRequested = true;
+      if (cancelDelayMs > 0) {
+        await new Promise((resolve) => {
+          cancelResolve = resolve;
+          setTimeout(resolve, cancelDelayMs);
+        });
+      }
+      return new Response('{}', {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
     if (url.startsWith(`/ui/v1/responses/${responseId}/events?after=`)) {
       getEventsStarted = true;
       const signal = options.signal || null;
@@ -392,6 +409,15 @@ function createHarness(options = {}) {
     localStorage,
     getEventsStarted: () => getEventsStarted,
     postStreamCanceled: () => postStreamCanceled,
+    connectionStates,
+    getCancelRequested: () => cancelRequested,
+    releaseCancel: () => {
+      if (cancelResolve) {
+        const r = cancelResolve;
+        cancelResolve = null;
+        r();
+      }
+    },
     closeEventsStream: () => {
       if (eventsStreamController) {
         try { eventsStreamController.close(); } catch (_err) { /* ignore */ }
@@ -774,6 +800,54 @@ async function testConnectTokenPreservesSelectedModelAndProviderFromState() {
   pass(name);
 }
 
+async function testCancelActiveResponseTearsDownLocallyBeforeServerPost() {
+  const name = 'cancelActiveResponse aborts local stream and shows Cancelling pill before /cancel POST returns';
+  const harness = createHarness({ cancelDelayMs: 60000 });
+  const { app, state, connectionStates, getCancelRequested, releaseCancel, cleanup } = harness;
+
+  const controller = new AbortController();
+  state.abortController = controller;
+  state.currentStreamResponseId = 'resp_test';
+  const session = { id: 'session_1', activeResponseId: 'resp_test' };
+  state.sessions = [session];
+  state.activeSessionId = session.id;
+  app.scheduleSessionStatePoll = () => {};
+  app.syncActiveSessionFromServer = async () => {};
+  app.refreshSessionFromServerTruth = async () => {};
+
+  const cancelPromise = app.cancelActiveResponse(session);
+
+  if (!controller.signal.aborted) {
+    fail(name, 'abortController was not aborted synchronously');
+    releaseCancel();
+    await cancelPromise.catch(() => {});
+    await cleanup();
+    return;
+  }
+
+  if (!connectionStates.includes('Cancelling\u2026')) {
+    fail(name, 'expected "Cancelling\u2026" connection state after click', JSON.stringify(connectionStates));
+    releaseCancel();
+    await cancelPromise.catch(() => {});
+    await cleanup();
+    return;
+  }
+
+  const postStarted = await waitFor(() => getCancelRequested(), 75);
+  if (!postStarted) {
+    fail(name, 'cancel POST was never issued');
+    releaseCancel();
+    await cancelPromise.catch(() => {});
+    await cleanup();
+    return;
+  }
+
+  releaseCancel();
+  await cancelPromise;
+  await cleanup();
+  pass(name);
+}
+
 (async () => {
   await testSendMessageHandsOffToEventsStream();
   await testSendMessageIgnoresPostBodyAfterHandoff();
@@ -781,6 +855,7 @@ async function testConnectTokenPreservesSelectedModelAndProviderFromState() {
   await testSendMessageMarksSessionBusyImmediately();
   await testDrainInterruptQueueAfterResumeCompletes();
   await testConnectTokenPreservesSelectedModelAndProviderFromState();
+  await testCancelActiveResponseTearsDownLocallyBeforeServerPost();
 
   if (failures > 0) {
     console.error(`\n${failures} test(s) failed`);
