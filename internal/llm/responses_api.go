@@ -834,16 +834,28 @@ func filterToNewInput(input []ResponsesInputItem) []ResponsesInputItem {
 		break
 	}
 	if sawToolOutput {
-		return input[start:]
+		return filterContinuationInputFrom(input, start)
 	}
 
 	// Otherwise fall back to the latest user message and any following items.
 	for i := len(input) - 1; i >= 0; i-- {
 		if input[i].Role == "user" {
-			return input[i:]
+			return filterContinuationInputFrom(input, i)
 		}
 	}
 	return input
+}
+
+func filterContinuationInputFrom(input []ResponsesInputItem, start int) []ResponsesInputItem {
+	for start > 0 {
+		item := input[start-1]
+		if item.Type == "message" && item.Role == "developer" {
+			start--
+			continue
+		}
+		break
+	}
+	return input[start:]
 }
 
 // responsesToolState tracks streaming tool calls from the Responses API

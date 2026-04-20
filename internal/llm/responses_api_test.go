@@ -814,6 +814,50 @@ func TestBuildResponsesInput_ConvertsDanglingToolCalls(t *testing.T) {
 	}
 }
 
+func TestFilterToNewInput_PreservesDeveloperItemsBeforeLatestUser(t *testing.T) {
+	input := []ResponsesInputItem{
+		{Type: "message", Role: "developer", Content: "Be concise"},
+		{Type: "message", Role: "user", Content: "old question"},
+		{Type: "message", Role: "assistant", Content: "I'll check"},
+		{Type: "message", Role: "developer", Content: "Use bullet points"},
+		{Type: "message", Role: "user", Content: "new question"},
+	}
+
+	got := filterToNewInput(input)
+
+	if len(got) != 2 {
+		t.Fatalf("expected developer message and latest user message, got %d items: %+v", len(got), got)
+	}
+	if got[0].Type != "message" || got[0].Role != "developer" {
+		t.Fatalf("expected first item developer message, got %+v", got[0])
+	}
+	if got[1].Type != "message" || got[1].Role != "user" || got[1].Content != "new question" {
+		t.Fatalf("expected second item latest user message, got %+v", got[1])
+	}
+}
+
+func TestFilterToNewInput_PreservesDeveloperItemsBeforeToolFollowUp(t *testing.T) {
+	input := []ResponsesInputItem{
+		{Type: "message", Role: "developer", Content: "Be concise"},
+		{Type: "message", Role: "user", Content: "old question"},
+		{Type: "message", Role: "assistant", Content: "I'll check"},
+		{Type: "message", Role: "developer", Content: "Summarize the result"},
+		{Type: "function_call_output", CallID: "call_1", Output: "/root/source/term-llm"},
+	}
+
+	got := filterToNewInput(input)
+
+	if len(got) != 2 {
+		t.Fatalf("expected developer message and trailing tool output, got %d items: %+v", len(got), got)
+	}
+	if got[0].Type != "message" || got[0].Role != "developer" {
+		t.Fatalf("expected first item developer message, got %+v", got[0])
+	}
+	if got[1].Type != "function_call_output" || got[1].CallID != "call_1" {
+		t.Fatalf("expected second item trailing function_call_output for call_1, got %+v", got[1])
+	}
+}
+
 func TestFilterToNewInput_ToolFollowUpReturnsOnlyNewToolOutputs(t *testing.T) {
 	input := []ResponsesInputItem{
 		{Type: "message", Role: "developer", Content: "Be concise"},
