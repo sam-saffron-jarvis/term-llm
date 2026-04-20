@@ -306,6 +306,8 @@ func (s *serveServer) streamChatCompletions(ctx context.Context, w http.Response
 		"choices": []map[string]any{{"index": 0, "delta": map[string]any{}, "finish_reason": finishReason}},
 	})
 	if streamOpts != nil && streamOpts.IncludeUsage {
+		promptTokens := result.Usage.InputTokens + result.Usage.CachedInputTokens
+		totalTokens := promptTokens + result.Usage.OutputTokens
 		_ = writeChatStreamChunk(w, map[string]any{
 			"id":      respID,
 			"object":  "chat.completion.chunk",
@@ -313,9 +315,9 @@ func (s *serveServer) streamChatCompletions(ctx context.Context, w http.Response
 			"model":   model,
 			"choices": []map[string]any{},
 			"usage": map[string]any{
-				"prompt_tokens":     result.Usage.InputTokens,
+				"prompt_tokens":     promptTokens,
 				"completion_tokens": result.Usage.OutputTokens,
-				"total_tokens":      result.Usage.InputTokens + result.Usage.CachedInputTokens + result.Usage.CacheWriteTokens + result.Usage.OutputTokens,
+				"total_tokens":      totalTokens,
 				"prompt_tokens_details": map[string]any{
 					"cached_tokens":      result.Usage.CachedInputTokens,
 					"cache_write_tokens": result.Usage.CacheWriteTokens,

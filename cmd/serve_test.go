@@ -7679,6 +7679,119 @@ func TestNonStreamingChat_ShowsServerExecutedToolCalls(t *testing.T) {
 	}
 }
 
+func TestChatCompletionFinalResponse_UsageIncludesCachedPromptTokens(t *testing.T) {
+	var result serveRunResult
+	result.Text.WriteString("done")
+	result.Usage = llm.Usage{
+		InputTokens:       100,
+		CachedInputTokens: 20,
+		CacheWriteTokens:  5,
+		OutputTokens:      7,
+	}
+
+	response := chatCompletionFinalResponse(result, "test-model")
+	usage := response["usage"].(map[string]any)
+
+	if got := usage["prompt_tokens"]; got != 120 {
+		t.Fatalf("prompt_tokens = %v, want 120", got)
+	}
+	if got := usage["completion_tokens"]; got != 7 {
+		t.Fatalf("completion_tokens = %v, want 7", got)
+	}
+	if got := usage["total_tokens"]; got != 127 {
+		t.Fatalf("total_tokens = %v, want 127", got)
+	}
+
+	details := usage["prompt_tokens_details"].(map[string]any)
+	if got := details["cached_tokens"]; got != 20 {
+		t.Fatalf("cached_tokens = %v, want 20", got)
+	}
+	if got := details["cache_write_tokens"]; got != 5 {
+		t.Fatalf("cache_write_tokens = %v, want 5", got)
+	}
+}
+
+func TestStreamingChatIncludeUsage_UsageIncludesCachedPromptTokens(t *testing.T) {
+	provider := llm.NewMockProvider("mock").AddTurn(llm.MockTurn{
+		Text: "done",
+		Usage: llm.Usage{
+			InputTokens:       100,
+			CachedInputTokens: 20,
+			CacheWriteTokens:  5,
+			OutputTokens:      7,
+		},
+	})
+	engine := llm.NewEngine(provider, nil)
+
+	factory := func(ctx context.Context) (*serveRuntime, error) {
+		rt := &serveRuntime{
+			provider:     provider,
+			engine:       engine,
+			defaultModel: "mock-model",
+		}
+		rt.Touch()
+		return rt, nil
+	}
+	mgr := newServeSessionManager(time.Minute, 100, factory)
+	srv := &serveServer{sessionMgr: mgr}
+
+	body := `{
+		"model": "test",
+		"stream": true,
+		"stream_options": {"include_usage": true},
+		"messages": [{"role": "user", "content": "Hi"}]
+	}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	srv.handleChatCompletions(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d; body: %s", rr.Code, rr.Body.String())
+	}
+
+	scanner := bufio.NewScanner(bytes.NewReader(rr.Body.Bytes()))
+	for {
+		_, data, ok := readSSEEvent(t, scanner)
+		if !ok {
+			t.Fatal("stream ended before usage chunk")
+		}
+		if data == "[DONE]" {
+			break
+		}
+
+		var payload map[string]any
+		if err := json.Unmarshal([]byte(data), &payload); err != nil {
+			t.Fatalf("unmarshal stream chunk: %v", err)
+		}
+
+		usageVal, ok := payload["usage"]
+		if !ok {
+			continue
+		}
+		usage := usageVal.(map[string]any)
+		if got := usage["prompt_tokens"].(float64); got != 120 {
+			t.Fatalf("prompt_tokens = %v, want 120", got)
+		}
+		if got := usage["completion_tokens"].(float64); got != 7 {
+			t.Fatalf("completion_tokens = %v, want 7", got)
+		}
+		if got := usage["total_tokens"].(float64); got != 127 {
+			t.Fatalf("total_tokens = %v, want 127", got)
+		}
+		details := usage["prompt_tokens_details"].(map[string]any)
+		if got := details["cached_tokens"].(float64); got != 20 {
+			t.Fatalf("cached_tokens = %v, want 20", got)
+		}
+		if got := details["cache_write_tokens"].(float64); got != 5 {
+			t.Fatalf("cache_write_tokens = %v, want 5", got)
+		}
+		return
+	}
+
+	t.Fatal("did not find usage chunk in stream")
+}
+
 func TestNonStreamingResponses_FiltersServerExecutedToolCalls(t *testing.T) {
 	provider := llm.NewMockProvider("mock").
 		AddToolCall("call-1", "echo", map[string]any{"input": "hi"}).
