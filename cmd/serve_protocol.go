@@ -195,8 +195,11 @@ func parseUserMessageContent(content json.RawMessage) (llm.Message, error) {
 			case "input_image", "image_url":
 				imageURL := jsonImageURL(part["image_url"])
 				filename := jsonString(part["filename"])
-				if !strings.HasPrefix(imageURL, "data:") {
+				if imageURL == "" {
 					continue
+				}
+				if !strings.HasPrefix(imageURL, "data:") {
+					return llm.Message{}, fmt.Errorf("remote image URLs are not supported; provide image_url as a data URL")
 				}
 				mt, b64 := parseDataURL(imageURL)
 				if mt == "" || b64 == "" {

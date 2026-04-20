@@ -37,6 +37,21 @@ func TestParseUserMessageContent_RejectsTooManyInlineImages(t *testing.T) {
 	}
 }
 
+func TestParseUserMessageContent_RejectsRemoteImageURL(t *testing.T) {
+	content := json.RawMessage(`[
+		{"type":"image_url","image_url":{"url":"https://example.com/cat.png"}},
+		{"type":"text","text":"describe this"}
+	]`)
+
+	_, err := parseUserMessageContent(content)
+	if err == nil {
+		t.Fatal("parseUserMessageContent() error = nil, want remote image URL error")
+	}
+	if !strings.Contains(err.Error(), "remote image URLs are not supported") {
+		t.Fatalf("parseUserMessageContent() error = %v, want remote image URL error", err)
+	}
+}
+
 func marshalInlineImageParts(t *testing.T, count int) json.RawMessage {
 	t.Helper()
 
