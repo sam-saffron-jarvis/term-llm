@@ -384,18 +384,14 @@ func (m *ApprovalManager) checkShellApprovalNoPrompt(command, workDir string) (C
 	}
 
 	// Check session-approved patterns
-	for _, pattern := range m.shellCache.GetPatterns() {
-		if matchPattern(pattern, command) {
-			return ProceedAlways, true
-		}
+	if matchAnyShellPattern(m.shellCache.GetPatterns(), command) {
+		return ProceedAlways, true
 	}
 
 	// Check parent's session-approved patterns (inherited approvals)
 	if m.parent != nil {
-		for _, pattern := range m.parent.shellCache.GetPatterns() {
-			if matchPattern(pattern, command) {
-				return ProceedAlways, true
-			}
+		if matchAnyShellPattern(m.parent.shellCache.GetPatterns(), command) {
+			return ProceedAlways, true
 		}
 	}
 
@@ -790,6 +786,59 @@ func isSafePipeTarget(command string) bool {
 		return false
 	}
 	return safePipeTargets[filepath.Base(words[0])]
+}
+
+// matchAnyShellPattern returns true if the command is covered by the set of
+// patterns. A command is covered if any single pattern matches the whole
+// command, or — for compound commands — every segment (sequential and piped)
+// is covered by some pattern. Pipe targets (i.e. pipe parts after the first)
+// may additionally be a safe pipe built-in like grep/head/jq.
+//
+// Examples (with `gh *`, `echo *`, `python *` approved):
+//
+//	gh pr view 1 && echo hi && gh pr diff 1      → approved
+//	gh pr diff 1 | python summarize.py           → approved
+//	gh pr view 1 && rm -rf /tmp                  → denied
+func matchAnyShellPattern(patterns []string, command string) bool {
+	for _, pattern := range patterns {
+		if matchPattern(pattern, command) {
+			return true
+		}
+	}
+	if !hasUnsafeShellSyntax(command) {
+		return false
+	}
+	seqParts := splitSequentialCommands(command)
+	if len(seqParts) == 0 {
+		return false
+	}
+	for _, seqPart := range seqParts {
+		pipeParts := splitPipeCommands(seqPart)
+		if len(pipeParts) == 0 {
+			return false
+		}
+		for i, pipePart := range pipeParts {
+			if matchAnyPatternSingle(patterns, pipePart) {
+				continue
+			}
+			if i > 0 && isSafePipeTarget(pipePart) {
+				continue
+			}
+			return false
+		}
+	}
+	return true
+}
+
+// matchAnyPatternSingle returns true if any pattern matches the single
+// command (no shell operators) via matchPatternSingle.
+func matchAnyPatternSingle(patterns []string, command string) bool {
+	for _, pattern := range patterns {
+		if matchPatternSingle(pattern, command) {
+			return true
+		}
+	}
+	return false
 }
 
 // matchPattern checks if a command matches a glob pattern.

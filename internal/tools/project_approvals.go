@@ -233,7 +233,9 @@ func (p *ProjectApprovals) ApprovePath(path string) error {
 	return p.saveLocked()
 }
 
-// IsShellPatternApproved checks if a command matches any approved shell pattern.
+// IsShellPatternApproved checks if a command matches any approved shell
+// pattern. For compound commands, acceptance requires every segment to be
+// covered by some approved pattern — see matchAnyShellPattern for details.
 func (p *ProjectApprovals) IsShellPatternApproved(command string) bool {
 	if p == nil {
 		return false
@@ -242,13 +244,7 @@ func (p *ProjectApprovals) IsShellPatternApproved(command string) bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	for _, pattern := range p.ShellPatterns {
-		if matchPattern(pattern, command) {
-			return true
-		}
-	}
-
-	return false
+	return matchAnyShellPattern(p.ShellPatterns, command)
 }
 
 // ApproveShellPattern adds a shell command pattern to the approved list.

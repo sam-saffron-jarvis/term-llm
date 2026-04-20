@@ -95,6 +95,46 @@ func TestMatchPattern(t *testing.T) {
 	}
 }
 
+func TestMatchAnyShellPattern(t *testing.T) {
+	patterns := []string{"gh *", "echo *", "python *"}
+
+	tests := []struct {
+		command string
+		want    bool
+	}{
+		// Single-pattern whole-command match still works.
+		{"gh pr view 1", true},
+		{"rm -rf /tmp", false},
+
+		// Sequential compound covered by multiple patterns.
+		{`gh pr view 1 && echo hi && gh pr diff 1`, true},
+		{`gh pr view 1 || echo done`, true},
+		{`gh pr view 1; echo hi`, true},
+
+		// Pure pipeline covered by two different patterns.
+		{`gh pr diff 1 | python summarize.py`, true},
+
+		// Mixed sequential + pipeline across multiple patterns.
+		{`gh pr view 1 | python parse.py && echo ok`, true},
+
+		// Pipe target that is not in the pattern set but is a safe built-in.
+		{`gh pr view 1 | jq .title`, true},
+
+		// A single uncovered segment rejects the whole command.
+		{`gh pr view 1 && rm -rf /tmp`, false},
+		{`gh pr view 1 | sh`, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.command, func(t *testing.T) {
+			got := matchAnyShellPattern(patterns, tt.command)
+			if got != tt.want {
+				t.Errorf("matchAnyShellPattern(%v, %q) = %v, want %v", patterns, tt.command, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestApprovalManager_CheckPathApproval_PreApproved(t *testing.T) {
 	// Create temp directory structure
 	tempDir, err := os.MkdirTemp("", "test-approval-*")
@@ -474,6 +514,24 @@ func TestApprovalManager_CheckShellApproval_SessionCache(t *testing.T) {
 	}
 	if outcome != ProceedAlways {
 		t.Errorf("expected ProceedAlways from session cache, got %v", outcome)
+	}
+}
+
+// Multiple patterns in the session cache should be combinable across segments
+// of a compound command without re-prompting.
+func TestApprovalManager_CheckShellApproval_SessionCacheCompound(t *testing.T) {
+	perms := NewToolPermissions()
+	mgr := NewApprovalManager(perms)
+
+	mgr.shellCache.AddPattern("gh *")
+	mgr.shellCache.AddPattern("echo *")
+
+	outcome, err := mgr.CheckShellApproval(`gh pr view 1 && echo "---" && gh pr diff 1`, "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if outcome != ProceedAlways {
+		t.Errorf("compound command covered by session patterns should be ProceedAlways, got %v", outcome)
 	}
 }
 

@@ -175,32 +175,6 @@ func TestBuildShellOptions_NotInGitRepo(t *testing.T) {
 	}
 }
 
-func TestTruncateCmdDisplay(t *testing.T) {
-	tests := []struct {
-		cmd    string
-		maxLen int
-		want   string
-	}{
-		{"short", 10, "short"},
-		{"exactly10c", 10, "exactly10c"},
-		{"this is a very long command", 10, "this is..."},
-		{"", 10, ""},
-		{"abc", 3, "abc"},
-		// Note: when maxLen=3 and cmd="abcd", the function returns "..."
-		// because len("abcd")=4 > maxLen=3, so it truncates to cmd[:0] + "..." = "..."
-		// This is expected behavior for the edge case
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.cmd, func(t *testing.T) {
-			got := truncateCmdDisplay(tt.cmd, tt.maxLen)
-			if got != tt.want {
-				t.Errorf("truncateCmdDisplay(%q, %d) = %q, want %q", tt.cmd, tt.maxLen, got, tt.want)
-			}
-		})
-	}
-}
-
 func TestApprovalModel_Keyboard(t *testing.T) {
 	// Create a model and test keyboard navigation
 	repoInfo := &GitRepoInfo{

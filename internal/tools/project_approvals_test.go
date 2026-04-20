@@ -347,6 +347,40 @@ func TestProjectApprovals_ShellPatterns(t *testing.T) {
 	}
 }
 
+// Compound commands should be approved when every segment is covered by some
+// approved pattern, even if no single pattern matches the entire command.
+func TestProjectApprovals_CompoundShellPatterns(t *testing.T) {
+	tempDir := t.TempDir()
+	configDir := filepath.Join(tempDir, "config")
+
+	oldXDG := os.Getenv("XDG_CONFIG_HOME")
+	os.Setenv("XDG_CONFIG_HOME", configDir)
+	defer os.Setenv("XDG_CONFIG_HOME", oldXDG)
+
+	pa, err := LoadProjectApprovals(tempDir)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if err := pa.ApproveShellPattern("gh *"); err != nil {
+		t.Fatalf("ApproveShellPattern gh failed: %v", err)
+	}
+	if err := pa.ApproveShellPattern("echo *"); err != nil {
+		t.Fatalf("ApproveShellPattern echo failed: %v", err)
+	}
+
+	cmd := `gh pr view 1 --json title && echo "---DIFF---" && gh pr diff 1`
+	if !pa.IsShellPatternApproved(cmd) {
+		t.Errorf("compound command covered by approved patterns should be approved: %q", cmd)
+	}
+
+	// A segment that is not covered should still cause rejection.
+	unsafe := `gh pr view 1 && rm -rf /tmp/foo`
+	if pa.IsShellPatternApproved(unsafe) {
+		t.Errorf("compound command with uncovered segment must NOT be approved: %q", unsafe)
+	}
+}
+
 func TestProjectApprovals_NilSafe(t *testing.T) {
 	var pa *ProjectApprovals
 

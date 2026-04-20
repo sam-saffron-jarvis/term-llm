@@ -299,7 +299,7 @@ func BuildShellOptions(command string, repoInfo *GitRepoInfo) []ApprovalOption {
 	// Option: Allow this specific command (session only)
 	options = append(options, ApprovalOption{
 		Label:       "Allow this specific command",
-		Description: fmt.Sprintf("Approve \"%s\" (session only)", truncateCmdDisplay(command, 40)),
+		Description: "Approve exact command above (session only)",
 		Choice:      ApprovalChoiceCommand,
 		Pattern:     command,
 		SaveToRepo:  false,
@@ -322,14 +322,6 @@ func BuildShellOptions(command string, repoInfo *GitRepoInfo) []ApprovalOption {
 	})
 
 	return options
-}
-
-// truncateCmdDisplay truncates a command for display with a custom max length.
-func truncateCmdDisplay(cmd string, maxLen int) string {
-	if len(cmd) <= maxLen {
-		return cmd
-	}
-	return cmd[:maxLen-3] + "..."
 }
 
 func (m *ApprovalModel) Init() tea.Cmd {
