@@ -272,6 +272,9 @@ func chatCompletionFinalResponse(result serveRunResult, model string) map[string
 		message["tool_calls"] = toolCalls
 	}
 
+	promptTokens := result.Usage.InputTokens + result.Usage.CachedInputTokens
+	totalTokens := promptTokens + result.Usage.OutputTokens
+
 	return map[string]any{
 		"id":      "chatcmpl_" + randomSuffix(),
 		"object":  "chat.completion",
@@ -283,9 +286,9 @@ func chatCompletionFinalResponse(result serveRunResult, model string) map[string
 			"finish_reason": finishReason,
 		}},
 		"usage": map[string]any{
-			"prompt_tokens":     result.Usage.InputTokens,
+			"prompt_tokens":     promptTokens,
 			"completion_tokens": result.Usage.OutputTokens,
-			"total_tokens":      result.Usage.InputTokens + result.Usage.CachedInputTokens + result.Usage.CacheWriteTokens + result.Usage.OutputTokens,
+			"total_tokens":      totalTokens,
 			"prompt_tokens_details": map[string]any{
 				"cached_tokens":      result.Usage.CachedInputTokens,
 				"cache_write_tokens": result.Usage.CacheWriteTokens,
