@@ -8,6 +8,7 @@ import (
 	"io"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -172,7 +173,7 @@ func (s *signalRecvStream) Close() error {
 }
 
 type countingSearchTool struct {
-	calls int
+	calls atomic.Int64
 }
 
 func (t *countingSearchTool) Spec() ToolSpec {
@@ -180,8 +181,8 @@ func (t *countingSearchTool) Spec() ToolSpec {
 }
 
 func (t *countingSearchTool) Execute(ctx context.Context, args json.RawMessage) (ToolOutput, error) {
-	t.calls++
-	return TextOutput(fmt.Sprintf("result %d", t.calls)), nil
+	n := t.calls.Add(1)
+	return TextOutput(fmt.Sprintf("result %d", n)), nil
 }
 
 func (t *countingSearchTool) Preview(args json.RawMessage) string {
@@ -189,7 +190,7 @@ func (t *countingSearchTool) Preview(args json.RawMessage) string {
 }
 
 type countingTool struct {
-	calls int
+	calls atomic.Int64
 }
 
 func (t *countingTool) Spec() ToolSpec {
@@ -201,7 +202,7 @@ func (t *countingTool) Spec() ToolSpec {
 }
 
 func (t *countingTool) Execute(ctx context.Context, args json.RawMessage) (ToolOutput, error) {
-	t.calls++
+	t.calls.Add(1)
 	return TextOutput("ok"), nil
 }
 
@@ -235,7 +236,7 @@ func (t *signalTool) Preview(args json.RawMessage) string {
 }
 
 type timeoutTool struct {
-	calls int
+	calls atomic.Int64
 }
 
 func (t *timeoutTool) Spec() ToolSpec {
@@ -247,7 +248,7 @@ func (t *timeoutTool) Spec() ToolSpec {
 }
 
 func (t *timeoutTool) Execute(ctx context.Context, args json.RawMessage) (ToolOutput, error) {
-	t.calls++
+	t.calls.Add(1)
 	return ToolOutput{Content: "[Command timed out]\n\nexit_code: 0", TimedOut: true}, nil
 }
 
@@ -326,8 +327,8 @@ func TestEngineExternalSearchLoopsUntilNoToolCalls(t *testing.T) {
 	if text.String() != "final answer" {
 		t.Fatalf("unexpected text: %q", text.String())
 	}
-	if tool.calls != 2 {
-		t.Fatalf("expected 2 tool calls, got %d", tool.calls)
+	if tool.calls.Load() != 2 {
+		t.Fatalf("expected 2 tool calls, got %d", tool.calls.Load())
 	}
 	if len(provider.calls) != 3 {
 		t.Fatalf("expected 3 provider calls, got %d", len(provider.calls))
@@ -391,8 +392,8 @@ func TestEngineDedupesToolCallsByID(t *testing.T) {
 		}
 	}
 
-	if tool.calls != 1 {
-		t.Fatalf("expected 1 tool execution, got %d", tool.calls)
+	if tool.calls.Load() != 1 {
+		t.Fatalf("expected 1 tool execution, got %d", tool.calls.Load())
 	}
 }
 
@@ -466,8 +467,8 @@ func TestEngineToolTimeoutOutputMarksToolEndNonSuccessButContinuesLoop(t *testin
 	if text.String() != "continued after timeout" {
 		t.Fatalf("expected loop to continue and produce final text, got %q", text.String())
 	}
-	if tool.calls != 1 {
-		t.Fatalf("expected tool to run once, got %d", tool.calls)
+	if tool.calls.Load() != 1 {
+		t.Fatalf("expected tool to run once, got %d", tool.calls.Load())
 	}
 }
 
@@ -1574,8 +1575,8 @@ func TestRunLoopDoesNotDeadlockOnBlockedToolExecStartWhenCancelled(t *testing.T)
 		t.Fatal("runLoop remained blocked after cancellation")
 	}
 
-	if tool.calls != 0 {
-		t.Fatalf("expected tool not to execute once cancellation unblocked the start event, got %d calls", tool.calls)
+	if tool.calls.Load() != 0 {
+		t.Fatalf("expected tool not to execute once cancellation unblocked the start event, got %d calls", tool.calls.Load())
 	}
 }
 
@@ -2710,8 +2711,8 @@ func TestEnginePanickingToolParallelCalls(t *testing.T) {
 	}
 
 	// The counting tool should still have executed
-	if countTool.calls != 1 {
-		t.Fatalf("expected counting tool to execute once, got %d", countTool.calls)
+	if countTool.calls.Load() != 1 {
+		t.Fatalf("expected counting tool to execute once, got %d", countTool.calls.Load())
 	}
 
 	// Verify the provider received both tool results (one error, one success)
