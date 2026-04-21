@@ -59,7 +59,7 @@ func (p *servePendingAskUser) snapshot() serveAskUserPrompt {
 	}
 }
 
-func (rt *serveRuntime) prepareAskUser(callID string, questions []tools.AskUserQuestion) *servePendingAskUser {
+func (rt *serveRuntime) prepareAskUser(callID string, questions []tools.AskUserQuestion) (*servePendingAskUser, serveAskUserPrompt) {
 	rt.askUserMu.Lock()
 	defer rt.askUserMu.Unlock()
 	if rt.pendingAskUsers == nil {
@@ -75,7 +75,7 @@ func (rt *serveRuntime) prepareAskUser(callID string, questions []tools.AskUserQ
 		rt.pendingAskUsers[callID] = pending
 	}
 	pending.Questions = cloneAskUserQuestions(questions)
-	return pending
+	return pending, pending.snapshot()
 }
 
 func (rt *serveRuntime) prepareAskUserFromToolArgs(callID string, raw json.RawMessage) (serveAskUserPrompt, error) {
@@ -89,7 +89,8 @@ func (rt *serveRuntime) prepareAskUserFromToolArgs(callID string, raw json.RawMe
 	if len(args.Questions) == 0 {
 		return serveAskUserPrompt{}, fmt.Errorf("ask_user requires at least one question")
 	}
-	return rt.prepareAskUser(callID, args.Questions).snapshot(), nil
+	_, snap := rt.prepareAskUser(callID, args.Questions)
+	return snap, nil
 }
 
 func (rt *serveRuntime) awaitAskUser(ctx context.Context, questions []tools.AskUserQuestion) ([]tools.AskUserAnswer, error) {
@@ -97,7 +98,7 @@ func (rt *serveRuntime) awaitAskUser(ctx context.Context, questions []tools.AskU
 	if callID == "" {
 		return nil, fmt.Errorf("ask_user missing tool call id")
 	}
-	pending := rt.prepareAskUser(callID, questions)
+	pending, _ := rt.prepareAskUser(callID, questions)
 	defer rt.removePendingAskUser(callID, pending)
 
 	select {
