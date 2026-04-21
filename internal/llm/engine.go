@@ -194,15 +194,20 @@ func (e *Engine) Tools() *ToolRegistry {
 
 // ResetConversation clears all conversation-specific state from the engine.
 // Called on /clear or /new to start a fresh conversation. This resets
-// compaction tracking, context notices, and provider-side conversation state
-// (e.g., OpenAI Responses API previous_response_id).
+// compaction tracking, queued interjections, queued dynamic tools, context notices,
+// and provider-side conversation state (e.g., OpenAI Responses API previous_response_id).
 func (e *Engine) ResetConversation() {
 	e.callbackMu.Lock()
 	e.lastTotalTokens = 0
 	e.lastMessageCount = 0
 	e.systemPrompt = ""
+	e.interjection = nil
 	e.contextNoticeEmitted.Store(false)
 	e.callbackMu.Unlock()
+
+	e.pendingToolsMu.Lock()
+	e.pendingToolSpecs = nil
+	e.pendingToolsMu.Unlock()
 
 	// Reset provider-side conversation state if supported
 	type conversationResetter interface {

@@ -1772,6 +1772,8 @@ func TestEngineResetConversation(t *testing.T) {
 	e.systemPrompt = "You are a helpful assistant."
 	e.contextNoticeEmitted.Store(true)
 	e.callbackMu.Unlock()
+	e.Interject("stale interjection")
+	e.AddDynamicTool(&countingTool{})
 
 	// Reset conversation
 	e.ResetConversation()
@@ -1791,6 +1793,13 @@ func TestEngineResetConversation(t *testing.T) {
 		t.Error("expected contextNoticeEmitted=false")
 	}
 	e.callbackMu.RUnlock()
+
+	if text := e.DrainInterjection(); text != "" {
+		t.Errorf("expected no pending interjection after reset, got %q", text)
+	}
+	if pending := e.drainPendingToolSpecs(); len(pending) != 0 {
+		t.Errorf("expected no pending dynamic tools after reset, got %d", len(pending))
+	}
 }
 
 func TestEngineResetConversationCallsProvider(t *testing.T) {
