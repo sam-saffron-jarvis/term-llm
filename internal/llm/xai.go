@@ -122,22 +122,32 @@ func (p *XAIProvider) streamStandard(ctx context.Context, req Request) (Stream, 
 	return newEventStream(ctx, func(ctx context.Context, send eventSender) error {
 		defer resp.Body.Close()
 
-		scanner := bufio.NewScanner(resp.Body)
-		buf := make([]byte, 0, 64*1024)
-		scanner.Buffer(buf, 1024*1024)
+		reader := bufio.NewReader(resp.Body)
 
 		toolState := newCompatToolState()
 		tagStripper := newXAITagStripper()
 		var lastUsage *Usage
 		var lastEventType string
 
-		for scanner.Scan() {
-			line := scanner.Text()
+		for {
+			line, eof, err := readSSELine(reader)
+			if err != nil {
+				return fmt.Errorf("xAI streaming error: %w", err)
+			}
+			if eof && line == "" {
+				break
+			}
 			if strings.HasPrefix(line, "event: ") {
 				lastEventType = strings.TrimPrefix(line, "event: ")
+				if eof {
+					break
+				}
 				continue
 			}
 			if !strings.HasPrefix(line, "data: ") {
+				if eof {
+					break
+				}
 				continue
 			}
 			data := strings.TrimPrefix(line, "data: ")
@@ -147,6 +157,9 @@ func (p *XAIProvider) streamStandard(ctx context.Context, req Request) (Stream, 
 
 			var chatResp oaiChatResponse
 			if err := json.Unmarshal([]byte(data), &chatResp); err != nil {
+				if eof {
+					break
+				}
 				continue
 			}
 
@@ -193,6 +206,9 @@ func (p *XAIProvider) streamStandard(ctx context.Context, req Request) (Stream, 
 			}
 
 			lastEventType = ""
+			if eof {
+				break
+			}
 		}
 
 		// Flush any remaining buffered content
@@ -200,10 +216,6 @@ func (p *XAIProvider) streamStandard(ctx context.Context, req Request) (Stream, 
 			if err := send.Send(Event{Type: EventTextDelta, Text: remaining}); err != nil {
 				return err
 			}
-		}
-
-		if err := scanner.Err(); err != nil {
-			return fmt.Errorf("xAI streaming error: %w", err)
 		}
 
 		for _, call := range toolState.Calls() {
@@ -263,16 +275,23 @@ func (p *XAIProvider) streamWithSearch(ctx context.Context, req Request) (Stream
 	return newEventStream(ctx, func(ctx context.Context, send eventSender) error {
 		defer resp.Body.Close()
 
-		scanner := bufio.NewScanner(resp.Body)
-		buf := make([]byte, 0, 64*1024)
-		scanner.Buffer(buf, 1024*1024)
+		reader := bufio.NewReader(resp.Body)
 
 		var lastUsage *Usage
 		var searchStarted bool
 
-		for scanner.Scan() {
-			line := scanner.Text()
+		for {
+			line, eof, err := readSSELine(reader)
+			if err != nil {
+				return fmt.Errorf("xAI Responses streaming error: %w", err)
+			}
+			if eof && line == "" {
+				break
+			}
 			if !strings.HasPrefix(line, "data: ") {
+				if eof {
+					break
+				}
 				continue
 			}
 			data := strings.TrimPrefix(line, "data: ")
@@ -282,6 +301,9 @@ func (p *XAIProvider) streamWithSearch(ctx context.Context, req Request) (Stream
 
 			var event xaiResponsesEvent
 			if err := json.Unmarshal([]byte(data), &event); err != nil {
+				if eof {
+					break
+				}
 				continue
 			}
 
@@ -323,10 +345,9 @@ func (p *XAIProvider) streamWithSearch(ctx context.Context, req Request) (Stream
 			case "error":
 				return fmt.Errorf("xAI Responses API error: %s", event.Error)
 			}
-		}
-
-		if err := scanner.Err(); err != nil {
-			return fmt.Errorf("xAI Responses streaming error: %w", err)
+			if eof {
+				break
+			}
 		}
 
 		if lastUsage != nil {
