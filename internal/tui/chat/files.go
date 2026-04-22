@@ -249,7 +249,7 @@ func (m *Model) attachFile(path string) (tea.Model, tea.Cmd) {
 	}
 
 	m.files = append(m.files, *attachment)
-	return m.showSystemMessage(fmt.Sprintf("Attached: %s (%s)", attachment.Name, FormatFileSize(attachment.Size)))
+	return m.showFooterSuccess(fmt.Sprintf("Attached %s (%s).", attachment.Name, FormatFileSize(attachment.Size)))
 }
 
 // attachFiles attaches multiple files from a glob pattern
@@ -300,11 +300,11 @@ func (m *Model) attachFiles(pattern string) (tea.Model, tea.Cmd) {
 	}
 
 	if len(attached) == 0 {
-		return m.showSystemMessage("No new files attached (all may already be attached or unreadable).")
+		return m.showFooterMuted("No new files attached.")
 	}
 
 	if len(attached) == 1 {
-		return m.showSystemMessage(fmt.Sprintf("Attached: %s (%s)", attached[0], FormatFileSize(totalSize)))
+		return m.showFooterSuccess(fmt.Sprintf("Attached %s (%s).", attached[0], FormatFileSize(totalSize)))
 	}
 	return m.showSystemMessage(fmt.Sprintf("Attached %d files (%s):\n- %s",
 		len(attached), FormatFileSize(totalSize), strings.Join(attached, "\n- ")))

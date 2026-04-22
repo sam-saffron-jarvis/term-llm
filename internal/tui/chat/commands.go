@@ -13,7 +13,6 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
-	"charm.land/lipgloss/v2"
 	"github.com/sahilm/fuzzy"
 	"github.com/samsaffron/term-llm/internal/agents"
 	"github.com/samsaffron/term-llm/internal/config"
@@ -344,18 +343,70 @@ func (m *Model) ExecuteCommand(input string) (tea.Model, tea.Cmd) {
 
 // Command implementations
 
+const transientFooterMessageDuration = 3 * time.Second
+
+var footerMessageSanitizer = strings.NewReplacer(
+	"**", "",
+	"__", "",
+	"`", "",
+)
+
+func sanitizeFooterMessage(content string) string {
+	return strings.TrimSpace(footerMessageSanitizer.Replace(content))
+}
+
+func (m *Model) clearFooterMessage() {
+	m.footerMessage = ""
+	m.footerMessageTone = ""
+}
+
 func (m *Model) showSystemMessage(content string) (tea.Model, tea.Cmd) {
-	// In inline mode, print directly to scrollback rather than adding to session
 	m.setTextareaValue("")
 
 	// If a tool-initiated handover is pending but we're showing an error,
 	// signal the tool so it doesn't hang forever.
 	m.cancelHandoverTool()
 
-	// Render the message content with markdown
-	rendered := m.renderMarkdown(content)
+	trimmed := strings.TrimSpace(content)
+	if trimmed != "" && !strings.Contains(trimmed, "\n") {
+		return m.showFooterMessage(trimmed)
+	}
 
+	m.clearFooterMessage()
+
+	// Fall back to scrollback for rich / multiline output.
+	rendered := m.renderMarkdown(content)
 	return m, tea.Println(rendered + "\n")
+}
+
+func (m *Model) showFooterMessage(content string) (tea.Model, tea.Cmd) {
+	return m.showFooterMessageWithTone(content, "")
+}
+
+func (m *Model) showFooterMuted(content string) (tea.Model, tea.Cmd) {
+	return m.showFooterMessageWithTone(content, "muted")
+}
+
+func (m *Model) showFooterSuccess(content string) (tea.Model, tea.Cmd) {
+	return m.showFooterMessageWithTone(content, "success")
+}
+
+func (m *Model) showFooterError(content string) (tea.Model, tea.Cmd) {
+	return m.showFooterMessageWithTone(content, "error")
+}
+
+func (m *Model) showFooterMessageWithTone(content string, tone string) (tea.Model, tea.Cmd) {
+	m.footerMessage = sanitizeFooterMessage(content)
+	m.footerMessageTone = tone
+	if m.footerMessage == "" {
+		m.footerMessageTone = ""
+		return m, nil
+	}
+	m.footerMessageSeq++
+	seq := m.footerMessageSeq
+	return m, tea.Tick(transientFooterMessageDuration, func(time.Time) tea.Msg {
+		return footerMessageClearMsg{Seq: seq}
+	})
 }
 
 // cancelHandoverTool signals false on the tool-initiated handover channel
@@ -465,7 +516,7 @@ func (m *Model) cmdClear() (tea.Model, tea.Cmd) {
 	m.viewCache.lastSetContentAt = time.Time{}
 	m.bumpContentVersion()
 
-	return m, tea.Println("Conversation cleared (new session started).")
+	return m.showFooterSuccess("Started a new session.")
 }
 
 func (m *Model) cmdQuit() (tea.Model, tea.Cmd) {
@@ -495,10 +546,7 @@ func (m *Model) cmdReload() (tea.Model, tea.Cmd) {
 	if m.sess != nil {
 		m.reloadSessionID = m.sess.ID
 	}
-	return m, tea.Batch(
-		tea.Println("Reloading..."),
-		tea.Quit,
-	)
+	return m, tea.Quit
 }
 
 func (m *Model) cmdModel(args []string) (tea.Model, tea.Cmd) {
@@ -751,7 +799,7 @@ func (m *Model) cmdSearch() (tea.Model, tea.Cmd) {
 	if m.searchEnabled {
 		status = "enabled"
 	}
-	return m.showSystemMessage(fmt.Sprintf("Web search %s.", status))
+	return m.showFooterMuted(fmt.Sprintf("Web search %s.", status))
 }
 
 func (m *Model) cmdNew() (tea.Model, tea.Cmd) {
@@ -822,7 +870,7 @@ func (m *Model) cmdNew() (tea.Model, tea.Cmd) {
 	m.viewCache.lastSetContentAt = time.Time{}
 	m.bumpContentVersion()
 
-	return m.showSystemMessage("Started new session.")
+	return m.showFooterSuccess("Started a new session.")
 }
 
 func (m *Model) cmdSave(args []string) (tea.Model, tea.Cmd) {
@@ -868,7 +916,7 @@ func (m *Model) cmdSave(args []string) (tea.Model, tea.Cmd) {
 	}
 
 	m.setTextareaValue("")
-	return m.showSystemMessage(fmt.Sprintf("Session saved as '%s'.", name))
+	return m.showFooterSuccess(fmt.Sprintf("Saved session as '%s'.", name))
 }
 
 func (m *Model) cmdResume(args []string) (tea.Model, tea.Cmd) {
@@ -1004,7 +1052,7 @@ func (m *Model) cmdExport(args []string) (tea.Model, tea.Cmd) {
 	}
 
 	m.setTextareaValue("")
-	return m.showSystemMessage(fmt.Sprintf("Exported %d messages to `%s`", len(m.messages), outputPath))
+	return m.showFooterSuccess(fmt.Sprintf("Exported %d messages to %s.", len(m.messages), outputPath))
 }
 
 func (m *Model) cmdSystem(args []string) (tea.Model, tea.Cmd) {
@@ -1048,7 +1096,7 @@ func (m *Model) cmdFile(args []string) (tea.Model, tea.Cmd) {
 		if count == 0 {
 			return m.showSystemMessage("No files were attached.")
 		}
-		return m.showSystemMessage(fmt.Sprintf("Cleared %d attached file(s).", count))
+		return m.showFooterSuccess(fmt.Sprintf("Cleared %d attached file(s).", count))
 	}
 
 	// Join all args in case path has spaces
@@ -1094,7 +1142,7 @@ func (m *Model) cmdDirs(args []string) (tea.Model, tea.Cmd) {
 			return m.showSystemMessage(fmt.Sprintf("Failed to add directory: %v", err))
 		}
 		m.setTextareaValue("")
-		return m.showSystemMessage(fmt.Sprintf("Approved directory: `%s`", path))
+		return m.showFooterSuccess(fmt.Sprintf("Approved directory: %s", path))
 
 	case "remove", "rm", "delete":
 		if len(subArgs) == 0 {
@@ -1105,7 +1153,7 @@ func (m *Model) cmdDirs(args []string) (tea.Model, tea.Cmd) {
 			return m.showSystemMessage(fmt.Sprintf("Failed to remove directory: %v", err))
 		}
 		m.setTextareaValue("")
-		return m.showSystemMessage(fmt.Sprintf("Removed directory from approved list: `%s`", path))
+		return m.showFooterSuccess(fmt.Sprintf("Removed approved directory: %s", path))
 
 	default:
 		return m.showSystemMessage(fmt.Sprintf("Unknown subcommand: %s\n\nUsage:\n- `/dirs` - List approved directories\n- `/dirs add <path>` - Approve a directory\n- `/dirs remove <path>` - Revoke approval", subCmd))
@@ -1244,7 +1292,7 @@ func (m *Model) mcpStartServer(query string) (tea.Model, tea.Cmd) {
 		return m.showSystemMessage(fmt.Sprintf("Failed to start %s: %v", name, err))
 	}
 	m.setTextareaValue("")
-	return m.showSystemMessage(fmt.Sprintf("Starting **%s**... tools will be available shortly.", name))
+	return m.showFooterMuted(fmt.Sprintf("Starting %s… tools will be available shortly.", name))
 }
 
 // mcpStopServer stops a server by name (with fuzzy matching)
@@ -1263,7 +1311,7 @@ func (m *Model) mcpStopServer(query string) (tea.Model, tea.Cmd) {
 		return m.showSystemMessage(fmt.Sprintf("Failed to stop %s: %v", name, err))
 	}
 	m.setTextareaValue("")
-	return m.showSystemMessage(fmt.Sprintf("Stopped **%s**", name))
+	return m.showFooterSuccess(fmt.Sprintf("Stopped %s.", name))
 }
 
 func (m *Model) mcpShowStatus() (tea.Model, tea.Cmd) {
@@ -1563,16 +1611,12 @@ func (m *Model) cmdCompress() (tea.Model, tea.Cmd) {
 	model := m.modelName
 	provider := m.provider
 
+	m.clearFooterMessage()
 	m.streaming = true
 	m.phase = "Compacting"
 	m.streamStartTime = time.Now()
 
-	theme := m.styles.Theme()
-	muted := lipgloss.NewStyle().Foreground(theme.Muted)
-	statusLine := muted.Render(fmt.Sprintf("⠋ Compacting %d messages...", len(llmMessages)))
-
 	return m, tea.Batch(
-		tea.Println(statusLine),
 		func() tea.Msg {
 			ctx, cancel := context.WithCancel(context.Background())
 			m.streamCancelFunc = cancel
@@ -1620,8 +1664,9 @@ func (m *Model) switchModel(providerModel string) (tea.Model, tea.Cmd) {
 
 	// Record model usage for MRU ordering in the picker
 	m.recordCurrentModelUse()
+	m.setTextareaValue("")
 
-	return m.showSystemMessage(fmt.Sprintf("Switched to %s:%s", providerName, modelName))
+	return m, nil
 }
 
 // cmdHandover handles /handover @agent [provider:model]
@@ -1816,16 +1861,12 @@ func (m *Model) cmdHandover(args []string) (tea.Model, tea.Cmd) {
 	model := m.modelName
 	provider := m.provider
 
+	m.clearFooterMessage()
 	m.streaming = true
 	m.phase = "Handover"
 	m.streamStartTime = time.Now()
 
-	theme := m.styles.Theme()
-	muted := lipgloss.NewStyle().Foreground(theme.Muted)
-	statusLine := muted.Render(fmt.Sprintf("⠋ Generating handover to @%s...", agentName))
-
 	return m, tea.Batch(
-		tea.Println(statusLine),
 		func() tea.Msg {
 			ctx, cancel := context.WithCancel(context.Background())
 			m.streamCancelFunc = cancel
@@ -1956,16 +1997,12 @@ func buildScriptBackedHandover(ctx context.Context, approvalMgr *tools.ApprovalM
 func (m *Model) startHandoverScriptHandover(scriptAgent *agents.Agent, sourceAgent string, targetAgent *agents.Agent, providerStr string, confirmed bool, instructions string) (tea.Model, tea.Cmd) {
 	ctx, cancel := context.WithCancel(m.rootContext())
 	m.streamCancelFunc = cancel
+	m.clearFooterMessage()
 	m.streaming = true
 	m.phase = "Handover"
 	m.streamStartTime = time.Now()
 
-	theme := m.styles.Theme()
-	muted := lipgloss.NewStyle().Foreground(theme.Muted)
-	statusLine := muted.Render(fmt.Sprintf("⠋ Generating handover to @%s...", targetAgent.Name))
-
 	return m, tea.Batch(
-		tea.Println(statusLine),
 		handoverScriptCmd(ctx, m.handoverApprovalMgr, scriptAgent, sourceAgent, targetAgent, providerStr, confirmed, instructions),
 		m.spinner.Tick,
 		m.tickEvery(),
@@ -2106,9 +2143,6 @@ func (m *Model) executeHandover() (tea.Model, tea.Cmd) {
 	pending := m.pendingHandover
 	m.pendingHandover = nil
 
-	theme := m.styles.Theme()
-	errStyle := lipgloss.NewStyle().Foreground(theme.Error)
-
 	// Step 1: Resolve target agent before any mutations
 	targetAgent, resolveErr := m.agentResolver(pending.agentName, m.config)
 	if resolveErr != nil || targetAgent == nil {
@@ -2117,13 +2151,13 @@ func (m *Model) executeHandover() (tea.Model, tea.Cmd) {
 		if resolveErr != nil {
 			msg = resolveErr.Error()
 		}
-		return m, tea.Println(errStyle.Render(fmt.Sprintf("Handover failed to resolve target agent: %s", msg)))
+		return m.showFooterError(fmt.Sprintf("Handover failed to resolve target agent: %s", msg))
 	}
 
 	result := applyHandoverInstructions(pending.result, pending.instructions)
 	if result == nil {
 		m.cancelHandoverTool()
-		return m, tea.Println(errStyle.Render("Handover failed: no result returned."))
+		return m.showFooterError("Handover failed: no result returned.")
 	}
 
 	// Step 2: Persist handover messages
@@ -2134,7 +2168,7 @@ func (m *Model) executeHandover() (tea.Model, tea.Cmd) {
 
 	if err := m.store.CompactMessages(context.Background(), m.sess.ID, newSessionMsgs); err != nil {
 		m.cancelHandoverTool()
-		return m, tea.Println(errStyle.Render(fmt.Sprintf("Handover failed to persist: %v", err)))
+		return m.showFooterError(fmt.Sprintf("Handover failed to persist: %v", err))
 	}
 
 	// Step 3: Update session metadata with target agent's runtime settings.
@@ -2171,7 +2205,7 @@ func (m *Model) executeHandover() (tea.Model, tea.Cmd) {
 
 	if err := m.store.Update(context.Background(), m.sess); err != nil {
 		m.cancelHandoverTool()
-		return m, tea.Println(errStyle.Render(fmt.Sprintf("Handover failed to persist session metadata: %v", err)))
+		return m.showFooterError(fmt.Sprintf("Handover failed to persist session metadata: %v", err))
 	}
 
 	// Step 4: Update in-memory state only after both writes succeed

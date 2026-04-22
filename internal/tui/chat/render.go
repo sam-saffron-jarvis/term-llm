@@ -679,6 +679,31 @@ func (m *Model) renderStatusLine() string {
 	theme := m.styles.Theme()
 	mutedStyle := lipgloss.NewStyle().Foreground(theme.Muted)
 	successStyle := lipgloss.NewStyle().Foreground(theme.Success)
+	errorStyle := lipgloss.NewStyle().Foreground(theme.Error)
+
+	if m.footerMessage != "" {
+		style := mutedStyle
+		switch m.footerMessageTone {
+		case "muted":
+			style = mutedStyle
+		case "success":
+			style = successStyle
+		case "error":
+			style = errorStyle
+		default:
+			lower := strings.ToLower(strings.TrimSpace(m.footerMessage))
+			if strings.HasPrefix(lower, "failed") ||
+				strings.HasPrefix(lower, "cannot") ||
+				strings.HasPrefix(lower, "invalid") ||
+				strings.HasPrefix(lower, "unknown") ||
+				strings.HasPrefix(lower, "no ") ||
+				strings.HasPrefix(lower, "not enough") ||
+				strings.HasPrefix(lower, "file access denied") {
+				style = errorStyle
+			}
+		}
+		return m.wrapFooterLine(style.Render(m.footerMessage))
+	}
 
 	const sep = " · "
 

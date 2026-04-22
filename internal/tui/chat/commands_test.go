@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"charm.land/bubbles/v2/textarea"
+	tea "charm.land/bubbletea/v2"
 	"github.com/samsaffron/term-llm/internal/agents"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
@@ -392,6 +393,323 @@ func TestSendMessage_RecordsCurrentModelUse(t *testing.T) {
 	}
 }
 
+func TestCmdReload_QuitsWithoutPrintingStatus(t *testing.T) {
+	m := newCmdTestModel(&mockStore{})
+	m.sess = &session.Session{ID: "sess-reload-1"}
+
+	result, cmd := m.cmdReload()
+	rm := result.(*Model)
+
+	if !rm.quitting {
+		t.Fatal("expected /reload to request quit")
+	}
+	if !rm.WantsReload() {
+		t.Fatal("expected /reload to mark reload requested")
+	}
+	if got := rm.ReloadSessionID(); got != "sess-reload-1" {
+		t.Fatalf("ReloadSessionID() = %q, want %q", got, "sess-reload-1")
+	}
+	if cmd == nil {
+		t.Fatal("expected quit command")
+	}
+	if _, isBatch := cmd().(tea.BatchMsg); isBatch {
+		t.Fatal("expected /reload to quit without printing a status line")
+	}
+}
+
+func TestCmdCompress_StartDoesNotPrintStatusLine(t *testing.T) {
+	m := newTestChatModel(false)
+	m.messages = []session.Message{
+		{
+			SessionID:   m.sess.ID,
+			Role:        llm.RoleUser,
+			Parts:       []llm.Part{{Type: llm.PartText, Text: "hello"}},
+			TextContent: "hello",
+			CreatedAt:   time.Now(),
+		},
+		{
+			SessionID:   m.sess.ID,
+			Role:        llm.RoleAssistant,
+			Parts:       []llm.Part{{Type: llm.PartText, Text: "hi"}},
+			TextContent: "hi",
+			CreatedAt:   time.Now(),
+		},
+	}
+
+	result, cmd := m.cmdCompress()
+	rm := result.(*Model)
+
+	if !rm.streaming {
+		t.Fatal("expected compaction to enter streaming mode")
+	}
+	if got := rm.phase; got != "Compacting" {
+		t.Fatalf("phase = %q, want %q", got, "Compacting")
+	}
+	if cmd == nil {
+		t.Fatal("expected compaction start command")
+	}
+	batch, ok := cmd().(tea.BatchMsg)
+	if !ok {
+		t.Fatalf("expected compaction to return a batch command, got %T", cmd())
+	}
+	if len(batch) != 3 {
+		t.Fatalf("expected compaction start batch to avoid print command, got %d entries", len(batch))
+	}
+}
+
+func TestUpdate_CompactDone_CancelUsesMutedFooterMessage(t *testing.T) {
+	m := newTestChatModel(false)
+	m.streaming = true
+
+	result, cmd := m.Update(compactDoneMsg{err: context.Canceled})
+	rm := result.(*Model)
+
+	if got := rm.footerMessage; got != "Compaction cancelled." {
+		t.Fatalf("expected compact cancel footer message, got %q", got)
+	}
+	if got := rm.footerMessageTone; got != "muted" {
+		t.Fatalf("expected compact cancel footer tone muted, got %q", got)
+	}
+	if cmd == nil {
+		t.Fatal("expected compact cancel footer clear command")
+	}
+}
+
+func TestUpdate_CompactDone_SuccessUsesFooterMessage(t *testing.T) {
+	m := newTestChatModel(false)
+	m.streaming = true
+
+	result, cmd := m.Update(compactDoneMsg{result: &llm.CompactionResult{NewMessages: []llm.Message{llm.UserText("summary")}}})
+	rm := result.(*Model)
+
+	if got := rm.footerMessage; got != "Conversation compacted." {
+		t.Fatalf("expected compact success footer message, got %q", got)
+	}
+	if cmd == nil {
+		t.Fatal("expected compact success footer clear command")
+	}
+}
+
+func TestCmdHandover_StartDoesNotPrintStatusLine(t *testing.T) {
+	m := newTestChatModel(false)
+	m.store = &mockStore{}
+	m.sess = &session.Session{ID: "sess-handover-start", CreatedAt: time.Now()}
+	m.messages = []session.Message{
+		{
+			SessionID:   m.sess.ID,
+			Role:        llm.RoleUser,
+			Parts:       []llm.Part{{Type: llm.PartText, Text: "please continue"}},
+			TextContent: "please continue",
+			CreatedAt:   time.Now(),
+		},
+		{
+			SessionID:   m.sess.ID,
+			Role:        llm.RoleAssistant,
+			Parts:       []llm.Part{{Type: llm.PartText, Text: "Working on it."}},
+			TextContent: "Working on it.",
+			CreatedAt:   time.Now(),
+		},
+	}
+	m.agentResolver = func(name string, cfg *config.Config) (*agents.Agent, error) {
+		return &agents.Agent{Name: name, SystemPrompt: "You are target."}, nil
+	}
+
+	result, cmd := m.cmdHandover([]string{"@target"})
+	rm := result.(*Model)
+
+	if !rm.streaming {
+		t.Fatal("expected handover generation to enter streaming mode")
+	}
+	if got := rm.phase; got != "Handover" {
+		t.Fatalf("phase = %q, want %q", got, "Handover")
+	}
+	if cmd == nil {
+		t.Fatal("expected handover start command")
+	}
+	batch, ok := cmd().(tea.BatchMsg)
+	if !ok {
+		t.Fatalf("expected handover to return a batch command, got %T", cmd())
+	}
+	if len(batch) != 3 {
+		t.Fatalf("expected handover start batch to avoid print command, got %d entries", len(batch))
+	}
+}
+
+func TestStartHandoverScriptHandover_DoesNotPrintStatusLine(t *testing.T) {
+	m := newTestChatModel(false)
+	targetAgent := &agents.Agent{Name: "target", SystemPrompt: "You are target.", HandoverScript: "./handover.sh"}
+
+	result, cmd := m.startHandoverScriptHandover(targetAgent, "source", targetAgent, "", false, "")
+	rm := result.(*Model)
+
+	if !rm.streaming {
+		t.Fatal("expected script-backed handover to enter streaming mode")
+	}
+	if got := rm.phase; got != "Handover" {
+		t.Fatalf("phase = %q, want %q", got, "Handover")
+	}
+	if cmd == nil {
+		t.Fatal("expected script-backed handover command")
+	}
+	batch, ok := cmd().(tea.BatchMsg)
+	if !ok {
+		t.Fatalf("expected script-backed handover to return a batch command, got %T", cmd())
+	}
+	if len(batch) != 3 {
+		t.Fatalf("expected script-backed handover batch to avoid print command, got %d entries", len(batch))
+	}
+}
+
+func TestUpdate_HandoverDone_CancelUsesMutedFooterMessage(t *testing.T) {
+	m := newTestChatModel(false)
+	m.streaming = true
+
+	result, cmd := m.Update(handoverDoneMsg{err: context.Canceled, agentName: "target"})
+	rm := result.(*Model)
+
+	if got := rm.footerMessage; got != "Handover cancelled." {
+		t.Fatalf("expected handover cancel footer message, got %q", got)
+	}
+	if got := rm.footerMessageTone; got != "muted" {
+		t.Fatalf("expected handover cancel footer tone muted, got %q", got)
+	}
+	if cmd == nil {
+		t.Fatal("expected handover cancel footer clear command")
+	}
+}
+
+func TestUpdate_HandoverDone_ErrorUsesFooterMessage(t *testing.T) {
+	m := newTestChatModel(false)
+	m.streaming = true
+
+	result, cmd := m.Update(handoverDoneMsg{err: errors.New("boom"), agentName: "target"})
+	rm := result.(*Model)
+
+	if got := rm.footerMessage; got != "Handover failed: boom" {
+		t.Fatalf("expected handover error footer message, got %q", got)
+	}
+	if cmd == nil {
+		t.Fatal("expected handover error footer clear command")
+	}
+}
+
+func TestExecuteHandover_ResolveErrorUsesFooterMessage(t *testing.T) {
+	m := newCmdTestModel(&mockStore{})
+	m.config = &config.Config{}
+	m.pendingHandover = &handoverDoneMsg{agentName: "target"}
+	m.agentResolver = func(name string, cfg *config.Config) (*agents.Agent, error) {
+		return nil, errors.New("missing target")
+	}
+
+	result, cmd := m.executeHandover()
+	rm := result.(*Model)
+
+	if got := rm.footerMessage; got != "Handover failed to resolve target agent: missing target" {
+		t.Fatalf("expected executeHandover resolve error in footer, got %q", got)
+	}
+	if cmd == nil {
+		t.Fatal("expected executeHandover error footer clear command")
+	}
+}
+
+func TestExecuteHandover_PersistErrorUsesFooterMessage(t *testing.T) {
+	store := &mockStore{compactErr: errors.New("disk full")}
+	m := newCmdTestModel(store)
+	m.config = &config.Config{}
+	m.sess = &session.Session{ID: "sess-handover-persist"}
+	targetAgent := &agents.Agent{Name: "target", SystemPrompt: "You are target."}
+	m.pendingHandover = &handoverDoneMsg{
+		agentName: "target",
+		result:    llm.HandoverFromFile("handover doc", targetAgent.SystemPrompt, "source", targetAgent.Name),
+	}
+	m.agentResolver = func(name string, cfg *config.Config) (*agents.Agent, error) {
+		return targetAgent, nil
+	}
+
+	result, cmd := m.executeHandover()
+	rm := result.(*Model)
+
+	if got := rm.footerMessage; got != "Handover failed to persist: disk full" {
+		t.Fatalf("expected executeHandover persist error in footer, got %q", got)
+	}
+	if got := rm.footerMessageTone; got != "error" {
+		t.Fatalf("expected executeHandover persist error tone error, got %q", got)
+	}
+	if cmd == nil {
+		t.Fatal("expected executeHandover persist error footer clear command")
+	}
+}
+
+func TestShowSystemMessage_SingleLineUsesTransientFooter(t *testing.T) {
+	m := newCmdTestModel(&mockStore{})
+	m.setTextareaValue("/search")
+
+	result, cmd := m.showSystemMessage("Web search enabled.")
+	rm := result.(*Model)
+
+	if got := rm.footerMessage; got != "Web search enabled." {
+		t.Fatalf("expected footer message %q, got %q", "Web search enabled.", got)
+	}
+	if got := rm.textarea.Value(); got != "" {
+		t.Fatalf("expected showSystemMessage to clear the composer, got %q", got)
+	}
+	if cmd == nil {
+		t.Fatal("expected transient footer clear command")
+	}
+
+	updated, _ := rm.Update(footerMessageClearMsg{Seq: rm.footerMessageSeq})
+	cleared := updated.(*Model)
+	if cleared.footerMessage != "" {
+		t.Fatalf("expected footer message to clear after timer, got %q", cleared.footerMessage)
+	}
+}
+
+func TestShowSystemMessage_SingleLineStripsSimpleMarkdownForFooter(t *testing.T) {
+	m := newCmdTestModel(&mockStore{})
+
+	result, _ := m.showSystemMessage("Approved directory: `/tmp/demo`")
+	rm := result.(*Model)
+
+	if got := rm.footerMessage; got != "Approved directory: /tmp/demo" {
+		t.Fatalf("expected footer markdown to be stripped, got %q", got)
+	}
+}
+
+func TestShowSystemMessage_MultilineFallsBackToScrollback(t *testing.T) {
+	m := newCmdTestModel(&mockStore{})
+
+	result, cmd := m.showSystemMessage("## Help\n\nUse `/help` for commands.")
+	rm := result.(*Model)
+
+	if got := rm.footerMessage; got != "" {
+		t.Fatalf("expected multiline system message to avoid footer, got %q", got)
+	}
+	if cmd == nil {
+		t.Fatal("expected multiline system message to return a print command")
+	}
+}
+
+func TestShowSystemMessage_NewFooterMessageReplacesOlderTimer(t *testing.T) {
+	m := newCmdTestModel(&mockStore{})
+
+	result, _ := m.showSystemMessage("First message")
+	rm := result.(*Model)
+	firstSeq := rm.footerMessageSeq
+
+	result, _ = rm.showSystemMessage("Second message")
+	rm = result.(*Model)
+	secondSeq := rm.footerMessageSeq
+	if secondSeq <= firstSeq {
+		t.Fatalf("expected footer message sequence to advance, got first=%d second=%d", firstSeq, secondSeq)
+	}
+
+	updated, _ := rm.Update(footerMessageClearMsg{Seq: firstSeq})
+	stillVisible := updated.(*Model)
+	if got := stillVisible.footerMessage; got != "Second message" {
+		t.Fatalf("expected stale timer to preserve latest footer message, got %q", got)
+	}
+}
+
 func TestSwitchModel_UpdatesSessionMetadata(t *testing.T) {
 	store := &mockStore{}
 	m := newCmdTestModel(store)
@@ -404,8 +722,9 @@ func TestSwitchModel_UpdatesSessionMetadata(t *testing.T) {
 	m.providerName = "OpenAI (old-model)"
 	m.modelName = "old-model"
 	m.engine = llm.NewEngine(llm.NewMockProvider("old"), nil)
+	m.setTextareaValue("/model debug:fast")
 
-	result, _ := m.switchModel("debug:fast")
+	result, cmd := m.switchModel("debug:fast")
 	rm := result.(*Model)
 
 	if rm.sess.Provider != "debug:fast" {
@@ -416,6 +735,12 @@ func TestSwitchModel_UpdatesSessionMetadata(t *testing.T) {
 	}
 	if store.updated == nil {
 		t.Fatal("expected switchModel to persist session changes")
+	}
+	if got := rm.textarea.Value(); got != "" {
+		t.Fatalf("expected switchModel to clear the composer, got %q", got)
+	}
+	if cmd != nil {
+		t.Fatal("expected switchModel success to rely on footer update without printing a system message")
 	}
 }
 

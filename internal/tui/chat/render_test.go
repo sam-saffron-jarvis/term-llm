@@ -526,6 +526,19 @@ func TestUpdate_SessionLoadedMsg_ReseedsStatsAndContextTracking(t *testing.T) {
 	}
 }
 
+func TestRenderStatusLine_ShowsTransientFooterMessage(t *testing.T) {
+	m := newTestChatModel(false)
+	m.footerMessage = "Web search enabled."
+
+	line := ui.StripANSI(m.renderStatusLine())
+	if !strings.Contains(line, "Web search enabled.") {
+		t.Fatalf("expected transient footer message in status line, got %q", line)
+	}
+	if strings.Contains(line, "mock-model") {
+		t.Fatalf("expected transient footer message to temporarily replace normal status line, got %q", line)
+	}
+}
+
 func TestRenderStatusLine_ShowsCachedUsageWhenPresent(t *testing.T) {
 	m := newTestChatModel(false)
 	m.stats.CachedInputTokens = 500_000

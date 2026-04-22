@@ -184,6 +184,7 @@ func (m *Model) ensureContextMessages() {
 func (m *Model) sendMessage(content string) (tea.Model, tea.Cmd) {
 	m.selection = Selection{}
 	m.interruptNotice = ""
+	m.clearFooterMessage()
 	m.recordCurrentModelUse()
 
 	// Build the full message content including file attachments

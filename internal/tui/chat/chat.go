@@ -238,9 +238,12 @@ type Model struct {
 	textareaEffectiveWidth int
 
 	// Text selection state (alt-screen only)
-	selection    Selection
-	contentLines []string // full viewport content split by \n
-	copyStatus   string   // transient status message after copy attempt
+	selection         Selection
+	contentLines      []string // full viewport content split by \n
+	copyStatus        string   // transient status message after copy attempt
+	footerMessage     string   // transient footer message for short system notices
+	footerMessageTone string   // "", "muted", "success", or "error"
+	footerMessageSeq  uint64   // monotonically increasing footer message timer token
 }
 
 // streamEventMsg wraps ui.StreamEvent for bubbletea
@@ -255,8 +258,11 @@ type (
 		sess     *session.Session
 		messages []session.Message
 	}
-	tickMsg                time.Time
-	streamRenderTickMsg    struct{}
+	tickMsg               time.Time
+	streamRenderTickMsg   struct{}
+	footerMessageClearMsg struct {
+		Seq uint64
+	}
 	interruptClassifiedMsg struct {
 		RequestID uint64
 		Content   string
@@ -862,6 +868,11 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// This tick exists to ensure View() runs again after the throttle window, so
 		// pending content can pass shouldThrottleSetContent().
 
+	case footerMessageClearMsg:
+		if msg.Seq == m.footerMessageSeq {
+			m.clearFooterMessage()
+		}
+
 	case interruptClassifiedMsg:
 		return m.handleInterruptClassified(msg)
 
@@ -872,18 +883,14 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.streamCancelFunc()
 			m.streamCancelFunc = nil
 		}
-		theme := m.styles.Theme()
 		if msg.err != nil {
 			if errors.Is(msg.err, context.Canceled) || errors.Is(msg.err, context.DeadlineExceeded) {
-				muted := lipgloss.NewStyle().Foreground(theme.Muted)
-				return m, tea.Println(muted.Render("Compact cancelled."))
+				return m.showFooterMuted("Compaction cancelled.")
 			}
-			errStyle := lipgloss.NewStyle().Foreground(theme.Error)
-			return m, tea.Println(errStyle.Render(fmt.Sprintf("Compression failed: %v", msg.err)))
+			return m.showFooterError(fmt.Sprintf("Compaction failed: %v", msg.err))
 		}
 		if msg.result == nil {
-			errStyle := lipgloss.NewStyle().Foreground(theme.Error)
-			return m, tea.Println(errStyle.Render("Compression failed: no result returned."))
+			return m.showFooterError("Compaction failed: no result returned.")
 		}
 		var newSessionMsgs []session.Message
 		for _, msg := range msg.result.NewMessages {
@@ -894,19 +901,16 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.messages = append(m.messages, newSessionMsgs...)
 		m.messagesMu.Unlock()
 		m.invalidateHistoryCache()
-
 		if m.store != nil {
 			if err := m.store.CompactMessages(context.Background(), m.sess.ID, newSessionMsgs); err != nil {
-				errStyle := lipgloss.NewStyle().Foreground(theme.Error)
-				return m, tea.Println(errStyle.Render(fmt.Sprintf("Compressed but failed to save: %v", err)))
+				return m.showFooterError(fmt.Sprintf("Compaction finished, but saving failed: %v", err))
 			}
 		}
 
 		if m.engine != nil {
 			m.engine.ResetConversation()
 		}
-		muted := lipgloss.NewStyle().Foreground(theme.Muted)
-		return m, tea.Println(muted.Render("session compacted"))
+		return m.showFooterSuccess("Conversation compacted.")
 
 	case handoverDoneMsg:
 		m.streaming = false
@@ -917,26 +921,22 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.streamCancelFunc()
 			m.streamCancelFunc = nil
 		}
-		theme := m.styles.Theme()
 		if msg.err != nil {
 			m.cancelHandoverTool()
 			if msg.confirmed {
 				m.pendingHandover = nil
 			}
 			if errors.Is(msg.err, context.Canceled) || errors.Is(msg.err, context.DeadlineExceeded) {
-				muted := lipgloss.NewStyle().Foreground(theme.Muted)
-				return m, tea.Println(muted.Render("Handover cancelled."))
+				return m.showFooterMuted("Handover cancelled.")
 			}
-			errStyle := lipgloss.NewStyle().Foreground(theme.Error)
-			return m, tea.Println(errStyle.Render(fmt.Sprintf("Handover failed: %v", msg.err)))
+			return m.showFooterError(fmt.Sprintf("Handover failed: %v", msg.err))
 		}
 		if msg.result == nil {
 			m.cancelHandoverTool()
 			if msg.confirmed {
 				m.pendingHandover = nil
 			}
-			errStyle := lipgloss.NewStyle().Foreground(theme.Error)
-			return m, tea.Println(errStyle.Render("Handover failed: no result returned."))
+			return m.showFooterError("Handover failed: no result returned.")
 		}
 		if msg.confirmed {
 			if m.pendingHandover == nil {
@@ -980,8 +980,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if err != nil {
 				m.cancelHandoverTool()
 				m.pendingHandover = nil
-				errStyle := lipgloss.NewStyle().Foreground(m.styles.Theme().Error)
-				return m, tea.Println(errStyle.Render(fmt.Sprintf("Handover failed to resolve target agent: %v", err)))
+				return m.showFooterError(fmt.Sprintf("Handover failed to resolve target agent: %v", err))
 			}
 			if targetAgent != nil && strings.TrimSpace(targetAgent.HandoverScript) != "" {
 				sourceAgent := handoverSourceAgent(m.pendingHandover, m.agentName)
