@@ -249,6 +249,7 @@ type ToolExecutionResponse struct {
 type Event struct {
 	Type                      EventType
 	Text                      string
+	InterjectionID            string // For EventInterjection: stable ID for matching queued interjections in the UI
 	ReasoningItemID           string // For EventReasoningDelta: reasoning item ID
 	ReasoningEncryptedContent string // For EventReasoningDelta: encrypted reasoning content
 	Tool                      *ToolCall

@@ -171,7 +171,7 @@ func (a *StreamAdapter) ProcessStream(ctx context.Context, stream llm.Stream) {
 
 		case llm.EventInterjection:
 			if event.Text != "" {
-				a.events <- InterjectionEvent(event.Text)
+				a.events <- InterjectionEvent(event.Text, event.InterjectionID)
 			}
 		}
 	}

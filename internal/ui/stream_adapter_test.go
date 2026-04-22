@@ -100,6 +100,33 @@ func TestStreamAdapterDedupesToolCallAndExecStart(t *testing.T) {
 	}
 }
 
+func TestStreamAdapter_PropagatesInterjectionID(t *testing.T) {
+	stream := &testStream{
+		events: []llm.Event{{
+			Type:           llm.EventInterjection,
+			Text:           "keep sleeping",
+			InterjectionID: "adapter-interject-1",
+		}},
+	}
+
+	adapter := NewStreamAdapter(10)
+	go adapter.ProcessStream(context.Background(), stream)
+
+	ev, ok := <-adapter.Events()
+	if !ok {
+		t.Fatal("expected interjection event")
+	}
+	if ev.Type != StreamEventInterjection {
+		t.Fatalf("event type = %v, want %v", ev.Type, StreamEventInterjection)
+	}
+	if ev.Text != "keep sleeping" {
+		t.Fatalf("event text = %q, want %q", ev.Text, "keep sleeping")
+	}
+	if ev.InterjectionID != "adapter-interject-1" {
+		t.Fatalf("event interjection ID = %q, want %q", ev.InterjectionID, "adapter-interject-1")
+	}
+}
+
 func TestParseDiffMarkers(t *testing.T) {
 	// Helper to create a valid __DIFF__: marker
 	makeDiffMarker := func(file, old, new string, line int) string {

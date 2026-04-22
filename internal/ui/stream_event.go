@@ -27,6 +27,9 @@ type StreamEvent struct {
 	// Text content (for StreamEventText)
 	Text string
 
+	// Interjection metadata (for StreamEventInterjection)
+	InterjectionID string
+
 	// Tool events (for StreamEventToolStart, StreamEventToolEnd)
 	ToolCallID  string
 	ToolName    string
@@ -159,10 +162,11 @@ func DiffEvent(path, old, new string, line int) StreamEvent {
 	}
 }
 
-// InterjectionEvent creates an interjection event (user message injected mid-stream)
-func InterjectionEvent(text string) StreamEvent {
+// InterjectionEvent creates an interjection event (user message injected mid-stream).
+func InterjectionEvent(text, interjectionID string) StreamEvent {
 	return StreamEvent{
-		Type: StreamEventInterjection,
-		Text: text,
+		Type:           StreamEventInterjection,
+		Text:           text,
+		InterjectionID: interjectionID,
 	}
 }

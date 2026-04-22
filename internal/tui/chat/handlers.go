@@ -403,9 +403,7 @@ func (m *Model) handleKeyMsg(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 
 			// Drain any pending interjection (discard since we're quitting)
 			_ = m.engine.DrainInterjection()
-			m.activeInterruptSeq = 0
-			m.pendingInterjection = "" // Clear visual indicator
-			m.pendingInterruptUI = ""
+			m.clearPendingInterjectionState()
 
 			return m, nil
 		}
@@ -449,9 +447,7 @@ func (m *Model) handleKeyMsg(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			if residual := m.engine.DrainInterjection(); residual != "" {
 				m.setTextareaValue(residual)
 			}
-			m.activeInterruptSeq = 0
-			m.pendingInterjection = "" // Clear visual indicator
-			m.pendingInterruptUI = ""
+			m.clearPendingInterjectionState()
 
 			m.textarea.Focus()
 			return m, nil
@@ -567,16 +563,17 @@ func (m *Model) handleKeyMsg(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 
+			interjectionID := m.nextPendingInterjectionID()
 			if action, ok := llm.ClassifyInterruptImmediate(content); ok {
-				m.applyInterruptAction(content, action)
+				m.applyInterruptAction(interjectionID, content, action)
 				return m, nil
 			}
 			if m.fastProvider == nil {
-				m.applyInterruptAction(content, llm.InterruptInterject)
+				m.applyInterruptAction(interjectionID, content, llm.InterruptInterject)
 				return m, nil
 			}
 
-			return m, m.queueInterruptClassification(content)
+			return m, m.queueInterruptClassification(interjectionID, content)
 		}
 		// Allow textarea to receive input
 		var cmd tea.Cmd
@@ -903,14 +900,35 @@ func (m *Model) currentInterruptActivity() llm.InterruptActivity {
 	return activity
 }
 
-func (m *Model) queueInterruptClassification(content string) tea.Cmd {
+func (m *Model) nextPendingInterjectionID() string {
+	m.interjectionSeq++
+	return fmt.Sprintf("tui-interject-%d", m.interjectionSeq)
+}
+
+func (m *Model) setPendingInterjection(interjectionID, content, uiState string) {
+	m.pendingInterjectionID = interjectionID
+	m.pendingInterjection = content
+	m.pendingInterruptUI = uiState
+}
+
+func (m *Model) clearPendingInterjection() {
+	m.pendingInterjectionID = ""
+	m.pendingInterjection = ""
+	m.pendingInterruptUI = ""
+}
+
+func (m *Model) clearPendingInterjectionState() {
+	m.activeInterruptSeq = 0
+	m.clearPendingInterjection()
+}
+
+func (m *Model) queueInterruptClassification(interjectionID, content string) tea.Cmd {
 	m.interruptRequestSeq++
 	requestID := m.interruptRequestSeq
 	activity := m.currentInterruptActivity()
 
 	m.activeInterruptSeq = requestID
-	m.pendingInterjection = content
-	m.pendingInterruptUI = "deciding"
+	m.setPendingInterjection(interjectionID, content, "deciding")
 	m.interruptNotice = ""
 	m.setTextareaValue("")
 
@@ -918,22 +936,21 @@ func (m *Model) queueInterruptClassification(content string) tea.Cmd {
 	return func() tea.Msg {
 		action := llm.ClassifyInterrupt(context.Background(), provider, content, activity)
 		return interruptClassifiedMsg{
-			RequestID: requestID,
-			Content:   content,
-			Action:    action,
+			RequestID:      requestID,
+			InterjectionID: interjectionID,
+			Content:        content,
+			Action:         action,
 		}
 	}
 }
 
-func (m *Model) applyInterruptAction(content string, action llm.InterruptAction) {
+func (m *Model) applyInterruptAction(interjectionID, content string, action llm.InterruptAction) {
 	m.activeInterruptSeq = 0
-	m.pendingInterjection = content
 	m.setTextareaValue("")
 
 	switch action {
 	case llm.InterruptCancel:
-		m.pendingInterjection = ""
-		m.pendingInterruptUI = ""
+		m.clearPendingInterjection()
 		m.interruptNotice = "✕ cancelled current response — draft restored below"
 		m.phase = "Stopping..."
 		m.setTextareaValue(content)
@@ -941,8 +958,8 @@ func (m *Model) applyInterruptAction(content string, action llm.InterruptAction)
 			m.streamCancelFunc()
 		}
 	case llm.InterruptInterject:
-		m.pendingInterruptUI = "interject"
-		m.engine.Interject(content)
+		m.setPendingInterjection(interjectionID, content, "interject")
+		m.engine.InterjectWithID(interjectionID, content)
 	}
 }
 
@@ -951,16 +968,14 @@ func (m *Model) handleInterruptClassified(msg interruptClassifiedMsg) (tea.Model
 		return m, nil
 	}
 	if !m.streaming {
-		m.activeInterruptSeq = 0
-		m.pendingInterjection = ""
-		m.pendingInterruptUI = ""
+		m.clearPendingInterjectionState()
 		if strings.TrimSpace(m.textarea.Value()) == "" {
 			m.setTextareaValue(msg.Content)
 		}
 		return m, nil
 	}
 
-	m.applyInterruptAction(msg.Content, msg.Action)
+	m.applyInterruptAction(msg.InterjectionID, msg.Content, msg.Action)
 	return m, nil
 }
 

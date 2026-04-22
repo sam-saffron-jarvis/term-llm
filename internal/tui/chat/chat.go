@@ -124,6 +124,8 @@ type Model struct {
 	toolsStr                string         // Original tools setting (for session persistence)
 	mcpStr                  string         // Original MCP setting (for session persistence)
 	pendingInterjection     string         // Interrupt text waiting to be injected or cancelled
+	pendingInterjectionID   string         // Stable ID for the currently displayed pending interjection
+	interjectionSeq         uint64         // Monotonic sequence for locally generated interjection IDs
 	interruptRequestSeq     uint64         // Monotonic sequence for async interrupt classification
 	activeInterruptSeq      uint64         // Currently active async interrupt classification request
 	pendingInterruptUI      string         // UI state: "", "deciding", "interject"
@@ -264,9 +266,10 @@ type (
 		Seq uint64
 	}
 	interruptClassifiedMsg struct {
-		RequestID uint64
-		Content   string
-		Action    llm.InterruptAction
+		RequestID      uint64
+		InterjectionID string
+		Content        string
+		Action         llm.InterruptAction
 	}
 	compactStartedMsg struct{}
 	compactDoneMsg    struct {
@@ -1118,9 +1121,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// If the engine queue is already empty but we never rendered the
 				// interjection inline, fall back to the visible pending draft.
 				m.restorePendingInterjectionDraft()
-				m.activeInterruptSeq = 0
-				m.pendingInterjection = "" // Clear pending indicator
-				m.pendingInterruptUI = ""
+				m.clearPendingInterjectionState()
 
 				return m, nil
 			}
@@ -1283,9 +1284,16 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		case ui.StreamEventInterjection:
 			// User interjected a message mid-stream (injected between tool turns).
-			m.activeInterruptSeq = 0
-			m.pendingInterjection = "" // Interjection was injected, clear pending indicator
-			m.pendingInterruptUI = ""
+			matchedPending := false
+			switch {
+			case ev.InterjectionID != "" && ev.InterjectionID == m.pendingInterjectionID:
+				matchedPending = true
+			case ev.InterjectionID == "" && m.pendingInterjectionID == "" && strings.TrimSpace(ev.Text) == strings.TrimSpace(m.pendingInterjection):
+				matchedPending = true
+			}
+			if matchedPending {
+				m.clearPendingInterjectionState()
+			}
 			// Flush smooth buffer so any pending text appears before the interjection.
 			if m.smoothBuffer != nil {
 				remaining := m.smoothBuffer.FlushAll()
@@ -1461,8 +1469,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// interjection, restore that draft rather than letting it vanish.
 			m.restorePendingInterjectionDraft()
 			if m.activeInterruptSeq == 0 {
-				m.pendingInterjection = "" // Clear pending indicator
-				m.pendingInterruptUI = ""
+				m.clearPendingInterjection()
 			}
 		}
 

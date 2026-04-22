@@ -2049,6 +2049,60 @@ func TestEngineInterjection_Basic(t *testing.T) {
 	}
 }
 
+func TestEngineInterjection_WithIDEmitsMatchingEvent(t *testing.T) {
+	tool := &delayingTool{delay: 50 * time.Millisecond}
+	registry := NewToolRegistry()
+	registry.Register(tool)
+
+	provider := &fakeProvider{
+		script: func(call int, req Request) []Event {
+			switch call {
+			case 0:
+				return []Event{
+					{Type: EventToolCall, Tool: &ToolCall{ID: "call-1", Name: "delay_tool", Arguments: json.RawMessage(`{}`)}},
+					{Type: EventDone},
+				}
+			default:
+				return []Event{{Type: EventDone}}
+			}
+		},
+	}
+
+	engine := NewEngine(provider, registry)
+	stream, err := engine.Stream(context.Background(), Request{
+		Messages:   []Message{UserText("do something")},
+		Tools:      []ToolSpec{tool.Spec()},
+		ToolChoice: ToolChoice{Mode: ToolChoiceAuto},
+	})
+	if err != nil {
+		t.Fatalf("stream error: %v", err)
+	}
+	defer stream.Close()
+
+	engine.InterjectWithID("custom-interject", "stop doing that")
+
+	for {
+		event, err := stream.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("recv error: %v", err)
+		}
+		if event.Type == EventInterjection {
+			if event.InterjectionID != "custom-interject" {
+				t.Fatalf("interjection id = %q, want %q", event.InterjectionID, "custom-interject")
+			}
+			if event.Text != "stop doing that" {
+				t.Fatalf("interjection text = %q, want %q", event.Text, "stop doing that")
+			}
+			return
+		}
+	}
+
+	t.Fatal("expected EventInterjection to be emitted")
+}
+
 // TestEngineInterjection_NoToolCalls verifies that an interjection stays in the
 // channel when the LLM returns no tool calls (text-only response).
 func TestEngineInterjection_NoToolCalls(t *testing.T) {

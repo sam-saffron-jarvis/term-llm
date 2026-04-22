@@ -243,6 +243,82 @@ func TestHandleInterruptClassified_StreamAlreadyFinishedRestoresDraft(t *testing
 	}
 }
 
+func TestStreamEventInterjection_DoesNotDiscardNewerPendingClassification(t *testing.T) {
+	m := newTestChatModel(false)
+	m.streaming = true
+	m.phase = "Thinking"
+	m.fastProvider = llm.NewMockProvider("fast").AddTextResponse("interject")
+
+	firstID := m.nextPendingInterjectionID()
+	m.applyInterruptAction(firstID, "first note", llm.InterruptInterject)
+	secondID := m.nextPendingInterjectionID()
+	cmd := m.queueInterruptClassification(secondID, "second note")
+	if cmd == nil {
+		t.Fatal("expected async interrupt classification command")
+	}
+	requestID := m.activeInterruptSeq
+	if requestID == 0 {
+		t.Fatal("expected active interrupt request id")
+	}
+
+	_, _ = m.Update(streamEventMsg{event: ui.InterjectionEvent("first note", firstID)})
+
+	if got := m.pendingInterjection; got != "second note" {
+		t.Fatalf("pendingInterjection after first event = %q, want %q", got, "second note")
+	}
+	if got := m.pendingInterjectionID; got != secondID {
+		t.Fatalf("pendingInterjectionID after first event = %q, want %q", got, secondID)
+	}
+	if got := m.pendingInterruptUI; got != "deciding" {
+		t.Fatalf("pendingInterruptUI after first event = %q, want deciding", got)
+	}
+	if got := m.activeInterruptSeq; got != requestID {
+		t.Fatalf("activeInterruptSeq after first event = %d, want %d", got, requestID)
+	}
+
+	msg := cmd()
+	classified, ok := msg.(interruptClassifiedMsg)
+	if !ok {
+		t.Fatalf("expected interruptClassifiedMsg, got %T", msg)
+	}
+	if classified.InterjectionID != secondID {
+		t.Fatalf("classified interjection id = %q, want %q", classified.InterjectionID, secondID)
+	}
+	_, _ = m.handleInterruptClassified(classified)
+
+	if got := m.pendingInterruptUI; got != "interject" {
+		t.Fatalf("pendingInterruptUI after classification = %q, want interject", got)
+	}
+	if got := m.engine.DrainInterjection(); got != "second note" {
+		t.Fatalf("expected second interjection to remain queued, got %q", got)
+	}
+}
+
+func TestStreamEventInterjection_MatchesByIDNotText(t *testing.T) {
+	m := newTestChatModel(false)
+	m.streaming = true
+
+	firstID := m.nextPendingInterjectionID()
+	m.applyInterruptAction(firstID, "same text", llm.InterruptInterject)
+	secondID := m.nextPendingInterjectionID()
+	m.applyInterruptAction(secondID, "same text", llm.InterruptInterject)
+
+	_, _ = m.Update(streamEventMsg{event: ui.InterjectionEvent("same text", firstID)})
+
+	if got := m.pendingInterjectionID; got != secondID {
+		t.Fatalf("pendingInterjectionID after stale event = %q, want %q", got, secondID)
+	}
+	if got := m.pendingInterjection; got != "same text" {
+		t.Fatalf("pendingInterjection after stale event = %q, want same text", got)
+	}
+	if got := m.pendingInterruptUI; got != "interject" {
+		t.Fatalf("pendingInterruptUI after stale event = %q, want interject", got)
+	}
+	if got := m.engine.DrainInterjection(); got != "same text" {
+		t.Fatalf("expected latest same-text interjection to remain queued, got %q", got)
+	}
+}
+
 func TestStreamDone_PendingInterjectRestoresDraftWithoutEngineResidual(t *testing.T) {
 	m := newTestChatModel(false)
 	m.streaming = true

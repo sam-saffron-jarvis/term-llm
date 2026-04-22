@@ -102,7 +102,7 @@ type Engine struct {
 
 	// Interjection support: user can send a message while the agent is streaming.
 	// The message is injected after the current turn's tool results, before the next LLM turn.
-	interjection chan string // Buffered channel (size 1) for mid-stream user interjections
+	interjection chan queuedInterjection // Buffered channel (size 1) for mid-stream user interjections
 
 	// pendingToolSpecs holds tool specs registered mid-loop (e.g. via skill activation)
 	// that should be injected into req.Tools at the start of the next loop iteration.
@@ -129,6 +129,17 @@ type ProviderCleaner interface {
 // termination as a safety net for consumers that drop streams without Close().
 type ProviderTurnCleaner interface {
 	CleanupTurn()
+}
+
+type queuedInterjection struct {
+	ID   string
+	Text string
+}
+
+var engineInterjectionID atomic.Uint64
+
+func nextEngineInterjectionID() string {
+	return fmt.Sprintf("interject_%d", engineInterjectionID.Add(1))
 }
 
 func NewEngine(provider Provider, tools *ToolRegistry) *Engine {
@@ -437,20 +448,31 @@ func (e *Engine) SetMaxToolOutputChars(n int) {
 // pending, the new one replaces it (only the latest interjection is kept).
 // Safe to call from any goroutine (e.g., the TUI thread).
 func (e *Engine) Interject(text string) {
+	e.InterjectWithID("", text)
+}
+
+// InterjectWithID behaves like Interject but preserves a caller-supplied stable
+// identifier. This lets higher layers match the eventual EventInterjection back
+// to the pending UI row they rendered while classification was in-flight.
+func (e *Engine) InterjectWithID(id, text string) {
 	e.callbackMu.Lock()
 	defer e.callbackMu.Unlock()
 
 	if e.interjection == nil {
-		e.interjection = make(chan string, 1)
+		e.interjection = make(chan queuedInterjection, 1)
 	}
 	ch := e.interjection
+	if strings.TrimSpace(id) == "" {
+		id = nextEngineInterjectionID()
+	}
+	entry := queuedInterjection{ID: id, Text: text}
 
 	// Drain-then-send: replace any pending interjection with the new one.
 	select {
 	case <-ch:
 	default:
 	}
-	ch <- text
+	ch <- entry
 }
 
 // DrainInterjection returns the pending interjection text, or "" if none.
@@ -458,7 +480,7 @@ func (e *Engine) Interject(text string) {
 // when the stream completes without tool calls (the "between turns" injection
 // point was never reached). The recovered text can be placed back in the textarea.
 func (e *Engine) DrainInterjection() string {
-	return e.drainInterjection()
+	return e.drainInterjection().Text
 }
 
 // PeekInterjection returns the currently pending interjection text without
@@ -472,35 +494,35 @@ func (e *Engine) PeekInterjection() string {
 	}
 	ch := e.interjection
 	select {
-	case text := <-ch:
+	case entry := <-ch:
 		// Put it back. We hold the write lock, so no concurrent Interject
 		// can fill the (size-1) buffer between the receive and re-send.
-		ch <- text
-		return text
+		ch <- entry
+		return entry.Text
 	default:
 		return ""
 	}
 }
 
-// drainInterjection returns the pending interjection text, or "" if none.
+// drainInterjection returns the pending interjection entry, or a zero value if none.
 // Non-blocking. Called within runLoop between turns.
 //
 // Takes the exclusive lock (matching Interject and PeekInterjection) so a
 // concurrent PeekInterjection cannot temporarily empty the channel between
-// our channel-read and the peek's put-back, which would cause us to return ""
-// when text was actually pending.
-func (e *Engine) drainInterjection() string {
+// our channel-read and the peek's put-back, which would cause us to return an
+// empty entry when an interjection was actually pending.
+func (e *Engine) drainInterjection() queuedInterjection {
 	e.callbackMu.Lock()
 	defer e.callbackMu.Unlock()
 
 	if e.interjection == nil {
-		return ""
+		return queuedInterjection{}
 	}
 	select {
-	case text := <-e.interjection:
-		return text
+	case entry := <-e.interjection:
+		return entry
 	default:
-		return ""
+		return queuedInterjection{}
 	}
 }
 
@@ -1205,15 +1227,15 @@ func (e *Engine) runLoop(ctx context.Context, req Request, send eventSender) err
 			}
 
 			// Check for user interjection (MCP sync path)
-			if text := e.drainInterjection(); text != "" {
-				interjectionMsg := UserText(text)
+			if interjection := e.drainInterjection(); interjection.Text != "" {
+				interjectionMsg := UserText(interjection.Text)
 				req.Messages = append(req.Messages, interjectionMsg)
 				if turnCallback != nil {
 					cbCtx, cancel := callbackContext(ctx)
 					_ = turnCallback(cbCtx, attempt, []Message{interjectionMsg}, TurnMetrics{})
 					cancel()
 				}
-				if err := send.Send(Event{Type: EventInterjection, Text: text}); err != nil {
+				if err := send.Send(Event{Type: EventInterjection, Text: interjection.Text, InterjectionID: interjection.ID}); err != nil {
 					return err
 				}
 			}
@@ -1398,8 +1420,8 @@ func (e *Engine) runLoop(ctx context.Context, req Request, send eventSender) err
 
 		// Check for user interjection queued during this turn.
 		// If present, inject it as a user message so the LLM sees it on the next turn.
-		if text := e.drainInterjection(); text != "" {
-			interjectionMsg := UserText(text)
+		if interjection := e.drainInterjection(); interjection.Text != "" {
+			interjectionMsg := UserText(interjection.Text)
 			req.Messages = append(req.Messages, interjectionMsg)
 			// Fire turn callback so the interjection is persisted
 			if turnCallback != nil {
@@ -1408,7 +1430,7 @@ func (e *Engine) runLoop(ctx context.Context, req Request, send eventSender) err
 				cancel()
 			}
 			// Emit event so TUI can display the interjection inline
-			if err := send.Send(Event{Type: EventInterjection, Text: text}); err != nil {
+			if err := send.Send(Event{Type: EventInterjection, Text: interjection.Text, InterjectionID: interjection.ID}); err != nil {
 				return err
 			}
 		}

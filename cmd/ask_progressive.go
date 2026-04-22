@@ -121,7 +121,7 @@ func (b *askProgressiveBridge) HandleEvent(event llm.Event) error {
 		b.events <- ui.RetryEvent(event.RetryAttempt, event.RetryMaxAttempts, event.RetryWaitSecs)
 	case llm.EventInterjection:
 		if event.Text != "" {
-			b.events <- ui.InterjectionEvent(event.Text)
+			b.events <- ui.InterjectionEvent(event.Text, event.InterjectionID)
 		}
 	}
 	return nil
