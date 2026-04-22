@@ -1361,7 +1361,7 @@ func (e *Engine) runLoop(ctx context.Context, req Request, send eventSender) err
 			}
 		}
 
-		toolResults, err := e.executeToolCalls(ctx, registered, send, req.Debug, req.DebugRaw)
+		toolResults, err := e.executeToolCalls(ctx, registered, req.ParallelToolCalls, send, req.Debug, req.DebugRaw)
 		if err != nil {
 			return err
 		}
@@ -1468,10 +1468,26 @@ func buildAssistantMessageWithReasoningMetadata(text string, toolCalls []ToolCal
 // are emitted from concurrent goroutines. While the channel is thread-safe, events
 // may arrive in non-deterministic order. Consumers should use ToolCallID to correlate
 // start/end events rather than relying on ordering.
-func (e *Engine) executeToolCalls(ctx context.Context, calls []ToolCall, send eventSender, debug bool, debugRaw bool) ([]Message, error) {
+func (e *Engine) executeToolCalls(ctx context.Context, calls []ToolCall, parallel bool, send eventSender, debug bool, debugRaw bool) ([]Message, error) {
 	// Fast path: single call, no concurrency overhead
 	if len(calls) == 1 {
 		return e.executeSingleToolCallSafe(ctx, calls[0], send, debug, debugRaw)
+	}
+
+	if !parallel {
+		results := make([]Message, 0, len(calls))
+		for _, call := range calls {
+			msgs, err := e.executeSingleToolCallSafe(ctx, call, send, debug, debugRaw)
+			if err != nil {
+				return nil, err
+			}
+			msg := ToolErrorMessage(call.ID, call.Name, "tool returned no result", call.ThoughtSig)
+			if len(msgs) > 0 {
+				msg = msgs[0]
+			}
+			results = append(results, msg)
+		}
+		return results, nil
 	}
 
 	// Parallel execution for multiple calls (events may arrive out of order)

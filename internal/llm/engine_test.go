@@ -210,6 +210,40 @@ func (t *countingTool) Preview(args json.RawMessage) string {
 	return ""
 }
 
+type overlapDetectTool struct {
+	active    atomic.Int64
+	maxActive atomic.Int64
+}
+
+func (t *overlapDetectTool) Spec() ToolSpec {
+	return ToolSpec{
+		Name:        "overlap_tool",
+		Description: "Detects overlapping executions",
+		Schema:      map[string]any{"type": "object"},
+	}
+}
+
+func (t *overlapDetectTool) Execute(ctx context.Context, args json.RawMessage) (ToolOutput, error) {
+	active := t.active.Add(1)
+	for {
+		maxActive := t.maxActive.Load()
+		if active <= maxActive {
+			break
+		}
+		if t.maxActive.CompareAndSwap(maxActive, active) {
+			break
+		}
+	}
+	defer t.active.Add(-1)
+
+	time.Sleep(50 * time.Millisecond)
+	return TextOutput("ok"), nil
+}
+
+func (t *overlapDetectTool) Preview(args json.RawMessage) string {
+	return ""
+}
+
 type signalTool struct {
 	started chan struct{}
 }
@@ -394,6 +428,61 @@ func TestEngineDedupesToolCallsByID(t *testing.T) {
 
 	if tool.calls.Load() != 1 {
 		t.Fatalf("expected 1 tool execution, got %d", tool.calls.Load())
+	}
+}
+
+func TestEngineExecutesServerToolsSequentiallyWhenParallelToolCallsDisabled(t *testing.T) {
+	tool := &overlapDetectTool{}
+	registry := NewToolRegistry()
+	registry.Register(tool)
+
+	provider := &fakeProvider{
+		script: func(call int, req Request) []Event {
+			switch call {
+			case 0:
+				return []Event{
+					{Type: EventToolCall, Tool: &ToolCall{ID: "call-1", Name: "overlap_tool", Arguments: json.RawMessage(`{}`)}},
+					{Type: EventToolCall, Tool: &ToolCall{ID: "call-2", Name: "overlap_tool", Arguments: json.RawMessage(`{}`)}},
+					{Type: EventDone},
+				}
+			default:
+				return []Event{
+					{Type: EventTextDelta, Text: "done"},
+					{Type: EventDone},
+				}
+			}
+		},
+	}
+
+	engine := NewEngine(provider, registry)
+	req := Request{
+		Messages:          []Message{UserText("run tools")},
+		Tools:             []ToolSpec{tool.Spec()},
+		ToolChoice:        ToolChoice{Mode: ToolChoiceAuto},
+		ParallelToolCalls: false,
+	}
+
+	stream, err := engine.Stream(context.Background(), req)
+	if err != nil {
+		t.Fatalf("stream error: %v", err)
+	}
+	defer stream.Close()
+
+	for {
+		event, err := stream.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("recv error: %v", err)
+		}
+		if event.Type == EventError && event.Err != nil {
+			t.Fatalf("event error: %v", event.Err)
+		}
+	}
+
+	if tool.maxActive.Load() != 1 {
+		t.Fatalf("expected server-executed tools to run sequentially when parallel_tool_calls=false, got max concurrency %d", tool.maxActive.Load())
 	}
 }
 
