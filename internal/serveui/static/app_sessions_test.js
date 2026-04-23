@@ -492,6 +492,121 @@ async function testSwitchToSessionSyncsWithoutTokenAndResumes() {
   pass(name);
 }
 
+async function testSwitchToSessionRecoversChangedActiveResponseFromSnapshot() {
+  const name = 'sidebar session switch requests snapshot recovery when runtime reports a different active response';
+  const resumeCalls = [];
+  const initialSessions = [
+    {
+      id: 'sess_other',
+      title: 'Other session',
+      origin: 'web',
+      created: 1710000000000,
+      messages: [],
+    },
+    {
+      id: 'sess_resume',
+      title: 'Resume me',
+      origin: 'tui',
+      created: 1710000001000,
+      messages: [
+        { id: 'msg_user', role: 'user', content: 'check status', created: 1710000001000 },
+        {
+          id: 'msg_tool_group',
+          role: 'tool-group',
+          created: 1710000002000,
+          status: 'done',
+          expanded: false,
+          tools: [
+            { id: 'call_1', name: 'read_file', arguments: '{"path":"README.md"}', status: 'done', created: 1710000002000 },
+          ],
+        },
+      ],
+      activeResponseId: null,
+      lastSequenceNumber: 0,
+    },
+  ];
+
+  const { app } = await createSessionsHarness({
+    initialStorage: {
+      term_llm_active_session: 'sess_other',
+    },
+    fetchImpl: async (url) => {
+      if (url === '/ui/v1/sessions') {
+        return new Response(JSON.stringify({
+          sessions: [
+            {
+              id: 'sess_other',
+              short_title: 'Other session',
+              long_title: 'Other session',
+              mode: 'chat',
+              origin: 'web',
+              archived: false,
+              pinned: false,
+              created_at: 1710000000000,
+              message_count: 0,
+            },
+            {
+              id: 'sess_resume',
+              short_title: 'Resume me',
+              long_title: 'Resume me',
+              mode: 'chat',
+              origin: 'tui',
+              archived: false,
+              pinned: false,
+              created_at: 1710000001000,
+              message_count: 2,
+            },
+          ]
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      if (url === '/ui/v1/sessions/sess_other/state') {
+        return new Response(JSON.stringify({ active_run: false }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      if (url === '/ui/v1/sessions/sess_other/messages') {
+        return new Response(JSON.stringify({ messages: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      if (url === '/ui/v1/sessions/sess_resume/state') {
+        return new Response(JSON.stringify({
+          active_run: true,
+          active_response_id: 'resp_resume_123',
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      if (url === '/ui/v1/sessions/status') {
+        return new Response(JSON.stringify({ sessions: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      return new Response(JSON.stringify({ messages: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    },
+    appOverrides: {
+      async resumeActiveResponse(session, options = {}) {
+        resumeCalls.push({
+          sessionId: session.id,
+          responseId: options.responseId || '',
+          recoverFromSnapshot: Boolean(options.recoverFromSnapshot),
+        });
+        return true;
+      },
+    }
+  });
+
+  app.state.sessions = initialSessions.map((session) => ({ ...session }));
+  app.state.activeSessionId = 'sess_other';
+  app.state.draftSessionActive = false;
+  resumeCalls.length = 0;
+
+  await app.switchToSession('sess_resume');
+
+  if (resumeCalls.length !== 1) {
+    fail(name, 'expected session switch to trigger exactly one resume', JSON.stringify(resumeCalls));
+    return;
+  }
+  if (!resumeCalls[0].recoverFromSnapshot) {
+    fail(name, 'expected resumeActiveResponse to request snapshot recovery', JSON.stringify(resumeCalls[0]));
+    return;
+  }
+
+  pass(name);
+}
+
 async function testSwitchToSessionClearsStaleActiveResponseWithoutToken() {
   const name = 'sidebar session switch clears stale active response without token';
   const fetchCalls = [];
@@ -1118,6 +1233,7 @@ async function testSanitizeSessionPreservesLastMessageAt() {
   await testNumericDeepLinkResolvesRealSessionId();
   await testDeveloperMessagesAreHidden();
   await testSwitchToSessionSyncsWithoutTokenAndResumes();
+  await testSwitchToSessionRecoversChangedActiveResponseFromSnapshot();
   await testSwitchToSessionClearsStaleActiveResponseWithoutToken();
   await testIdleSessionSyncRescuesPendingInterruptCommit();
   await testSessionProgressStatePrefersLocalAndServerSignals();

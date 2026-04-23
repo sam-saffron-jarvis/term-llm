@@ -24,6 +24,36 @@ const resumeAndDrain = (session, options) => {
   });
 };
 
+const shouldRecoverActiveResponseFromSnapshot = (session, responseId, responseChanged = false) => {
+  if (!session || !String(responseId || '').trim()) return false;
+  if (responseChanged) return true;
+
+  const currentSeq = Number(session.lastSequenceNumber || 0);
+  // Once we have replayed at least one event for this response, resume from
+  // that sequence number rather than re-fetching the full snapshot. This relies
+  // on the invariant that local message state up to lastSequenceNumber already
+  // reflects the replayed event stream.
+  if (currentSeq > 0) return false;
+
+  let lastUserIndex = -1;
+  for (let i = session.messages.length - 1; i >= 0; i -= 1) {
+    if (session.messages[i]?.role === 'user') {
+      lastUserIndex = i;
+      break;
+    }
+  }
+  if (lastUserIndex < 0) return false;
+
+  for (let i = lastUserIndex + 1; i < session.messages.length; i += 1) {
+    const role = session.messages[i]?.role;
+    if (role === 'assistant' || role === 'tool' || role === 'tool-group' || role === 'error') {
+      return true;
+    }
+  }
+
+  return false;
+};
+
 // ===== Sidebar status polling =====
 const SIDEBAR_POLL_ACTIVE = 2000;
 const SIDEBAR_POLL_IDLE = 30000;
@@ -457,12 +487,6 @@ const syncActiveSessionFromServer = async (session, pollOnActive = false) => {
   }
 
   const activeResponseId = String(runtimeState.active_response_id || '').trim();
-  if (activeResponseId) {
-    const responseChanged = session.activeResponseId !== activeResponseId;
-    setActiveResponseTracking(session, activeResponseId, responseChanged ? 0 : session.lastSequenceNumber);
-    saveSessions();
-  }
-
   const activeRun = Boolean(runtimeState.active_run);
   setSessionServerActiveRun(session, activeRun || Boolean(activeResponseId));
   const updateBusySidebar = () => {
@@ -473,10 +497,15 @@ const syncActiveSessionFromServer = async (session, pollOnActive = false) => {
   };
 
   if (activeResponseId) {
+    const responseChanged = session.activeResponseId !== activeResponseId;
+    const recoverFromSnapshot = shouldRecoverActiveResponseFromSnapshot(session, activeResponseId, responseChanged);
+    setActiveResponseTracking(session, activeResponseId, responseChanged ? 0 : session.lastSequenceNumber);
+    saveSessions();
+
     updateBusySidebar();
     if (session.id === state.activeSessionId && !state.abortController) {
       setStreaming(true);
-      resumeAndDrain(session, { responseId: activeResponseId });
+      resumeAndDrain(session, { responseId: activeResponseId, recoverFromSnapshot });
       return runtimeState;
     }
     if (pollOnActive) {
@@ -1139,7 +1168,10 @@ document.addEventListener('visibilitychange', async () => {
 
   if (session.activeResponseId && !state.abortController) {
     setStreaming(true);
-    resumeAndDrain(session, { responseId: session.activeResponseId });
+    resumeAndDrain(session, {
+      responseId: session.activeResponseId,
+      recoverFromSnapshot: shouldRecoverActiveResponseFromSnapshot(session, session.activeResponseId)
+    });
     return;
   }
   if (state.abortController && state.lastEventTime > 0 && Date.now() - state.lastEventTime > HEARTBEAT_STALE_THRESHOLD) {
@@ -1167,7 +1199,10 @@ window.addEventListener('online', async () => {
   } else if (session.activeResponseId && !state.abortController) {
     setConnectionState('Network restored, reconnecting\u2026');
     setStreaming(true);
-    resumeAndDrain(session, { responseId: session.activeResponseId });
+    resumeAndDrain(session, {
+      responseId: session.activeResponseId,
+      recoverFromSnapshot: shouldRecoverActiveResponseFromSnapshot(session, session.activeResponseId)
+    });
   } else if (!state.streaming) {
     await syncActiveSessionFromServer(session, true);
   }
@@ -1185,7 +1220,10 @@ window.addEventListener('pageshow', (event) => {
   if (!session) return;
   if (session.activeResponseId) {
     setStreaming(true);
-    resumeAndDrain(session, { responseId: session.activeResponseId });
+    resumeAndDrain(session, {
+      responseId: session.activeResponseId,
+      recoverFromSnapshot: shouldRecoverActiveResponseFromSnapshot(session, session.activeResponseId)
+    });
   } else {
     void syncActiveSessionFromServer(session, true);
   }

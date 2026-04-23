@@ -635,31 +635,39 @@ const fetchResponseSnapshot = async (session, responseId) => {
   return response.json().catch(() => ({}));
 };
 
+const recoverResponseStateFromSnapshot = async (session, responseId) => {
+  const snapshot = await fetchResponseSnapshot(session, responseId);
+  applyResponseRecoverySnapshot(session, snapshot);
+  return snapshot;
+};
+
 const applyResponseRecoverySnapshot = (session, payload) => {
   if (!session || !payload || typeof payload !== 'object') return false;
 
   const recovery = payload.recovery;
-  if (!recovery || typeof recovery !== 'object') return false;
+  const hasRecovery = recovery && typeof recovery === 'object';
 
-  const rawMessages = Array.isArray(recovery.messages) ? recovery.messages : [];
-  const recoveredMessages = rawMessages
-    .map((message) => sanitizeMessage(message))
-    .filter(Boolean);
+  if (hasRecovery) {
+    const rawMessages = Array.isArray(recovery.messages) ? recovery.messages : [];
+    const recoveredMessages = rawMessages
+      .map((message) => sanitizeMessage(message))
+      .filter(Boolean);
 
-  let anchorIndex = -1;
-  for (let i = session.messages.length - 1; i >= 0; i -= 1) {
-    if (session.messages[i]?.role === 'user') {
-      anchorIndex = i;
-      break;
+    let anchorIndex = -1;
+    for (let i = session.messages.length - 1; i >= 0; i -= 1) {
+      if (session.messages[i]?.role === 'user') {
+        anchorIndex = i;
+        break;
+      }
     }
+
+    const preserved = anchorIndex >= 0
+      ? session.messages.slice(0, anchorIndex + 1)
+      : [];
+    session.messages = preserved.concat(recoveredMessages);
   }
 
-  const preserved = anchorIndex >= 0
-    ? session.messages.slice(0, anchorIndex + 1)
-    : [];
-  session.messages = preserved.concat(recoveredMessages);
-
-  const nextSeq = Number(payload.last_sequence_number ?? recovery.sequence_number ?? session.lastSequenceNumber ?? 0);
+  const nextSeq = Number(payload.last_sequence_number ?? recovery?.sequence_number ?? session.lastSequenceNumber ?? 0);
   if (Number.isFinite(nextSeq) && nextSeq >= 0) {
     session.lastSequenceNumber = nextSeq;
   }
@@ -679,7 +687,7 @@ const applyResponseRecoverySnapshot = (session, payload) => {
     setSessionOptimisticBusy(session, false);
     setSessionServerActiveRun(session, false);
     requeuePendingInterjections(session);
-  } else if (payload.status === 'failed') {
+  } else if (payload.status === 'failed' || payload.status === 'cancelled') {
     clearActiveResponseTracking(session, responseId);
     setSessionOptimisticBusy(session, false);
     setSessionServerActiveRun(session, false);
@@ -697,7 +705,7 @@ const applyResponseRecoverySnapshot = (session, payload) => {
   } else {
     persistAndRefreshShell();
   }
-  return true;
+  return hasRecovery || Boolean(String(payload.status || '').trim());
 };
 
 const resumeActiveResponse = async (session, options = {}) => {
@@ -730,7 +738,32 @@ const resumeActiveResponseInner = async (session, responseId, options) => {
     attachResponseStream(session, responseId, null);
   }
 
-  let streamState = options.streamState || createResponseStreamState(session);
+  let recoveredFromSnapshot = false;
+  if (options.recoverFromSnapshot) {
+    try {
+      const snapshot = await recoverResponseStateFromSnapshot(session, responseId);
+      recoveredFromSnapshot = true;
+      if (session.activeResponseId !== responseId) {
+        setStreaming(Boolean(state.currentStreamResponseId));
+        return true;
+      }
+      if (snapshot?.status !== 'in_progress') {
+        setStreaming(Boolean(state.currentStreamResponseId));
+        return true;
+      }
+    } catch (err) {
+      if (err?.status === 401) {
+        handleAuthFailure();
+        return false;
+      }
+      // If the snapshot is briefly unavailable, fall back to the existing
+      // event replay path rather than failing the reconnect outright.
+    }
+  }
+
+  let streamState = recoveredFromSnapshot
+    ? createResponseStreamState(session)
+    : (options.streamState || createResponseStreamState(session));
   let consecutiveHttpFailures = 0;
 
   for (let attempt = 0; ; attempt += 1) {
@@ -818,8 +851,7 @@ const resumeActiveResponseInner = async (session, responseId, options) => {
       }
       if (err?.status === 409) {
         try {
-          const snapshot = await fetchResponseSnapshot(session, responseId);
-          applyResponseRecoverySnapshot(session, snapshot);
+          const snapshot = await recoverResponseStateFromSnapshot(session, responseId);
           streamState = createResponseStreamState(session);
           if (snapshot?.status !== 'in_progress') {
             setStreaming(Boolean(state.currentStreamResponseId));

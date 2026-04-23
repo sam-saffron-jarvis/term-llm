@@ -76,6 +76,20 @@ function createHarness(options = {}) {
   const postBody = String(options.postBody || '');
   const eventsKeepOpen = Boolean(options.eventsKeepOpen);
   const cancelDelayMs = Math.max(0, Number(options.cancelDelayMs || 0));
+  const snapshotStatus = Number.isFinite(Number(options.snapshotStatus)) ? Number(options.snapshotStatus) : 200;
+  const snapshotPayload = options.snapshotPayload || {
+    id: responseId,
+    status: 'in_progress',
+    last_sequence_number: 0,
+    recovery: {
+      sequence_number: 0,
+      messages: []
+    }
+  };
+  const eventsStatus = Number.isFinite(Number(options.eventsStatus)) ? Number(options.eventsStatus) : 200;
+  const eventsErrorPayload = options.eventsErrorPayload || {
+    error: { message: `events failed (${eventsStatus})` }
+  };
   let cancelRequested = false;
   let cancelResolve = null;
   const eventsBody = String(options.eventsBody || [
@@ -410,6 +424,12 @@ function createHarness(options = {}) {
         headers: { 'x-response-id': responseId },
       });
     }
+    if (url === `/ui/v1/responses/${responseId}`) {
+      return new Response(JSON.stringify(snapshotPayload), {
+        status: snapshotStatus,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
     if (url === `/ui/v1/responses/${responseId}/cancel`) {
       cancelRequested = true;
       if (cancelDelayMs > 0) {
@@ -426,6 +446,12 @@ function createHarness(options = {}) {
     if (url.startsWith(`/ui/v1/responses/${responseId}/events?after=`)) {
       getEventsStarted = true;
       const signal = options.signal || null;
+      if (eventsStatus !== 200) {
+        return new Response(JSON.stringify(eventsErrorPayload), {
+          status: eventsStatus,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
       return new Response(new ReadableStream({
         start(controller) {
           eventsStreamController = controller;
@@ -784,6 +810,215 @@ async function testDrainInterruptQueueAfterResumeCompletes() {
   // Clean up the second sendMessage's stream.
   app.detachResponseStream();
   await new Promise((resolve) => setTimeout(resolve, 0));
+  await cleanup();
+  pass(name);
+}
+
+async function testResumeActiveResponseRecoversFromSnapshotBeforeReplaying() {
+  const name = 'resumeActiveResponse recovers from snapshot before replaying tool events';
+  const responseId = 'resp_recover';
+  const harness = createHarness({
+    responseId,
+    snapshotPayload: {
+      id: responseId,
+      status: 'in_progress',
+      last_sequence_number: 4,
+      recovery: {
+        sequence_number: 4,
+        messages: [
+          {
+            id: `${responseId}_tool_group_1`,
+            role: 'tool-group',
+            created: 1001,
+            status: 'running',
+            tools: [
+              { id: 'call_1', name: 'read_file', arguments: '{"path":"a.txt"}', status: 'done', created: 1001 },
+              { id: 'call_2', name: 'grep', arguments: '{"pattern":"needle"}', status: 'running', created: 1002 },
+            ],
+          },
+        ],
+      },
+    },
+    eventsBody: [
+      'id: 5\n',
+      'event: response.output_item.added\n',
+      'data: {"item":{"type":"function_call","call_id":"call_3","name":"glob","arguments":"{\\"pattern\\":\\"**/*.go\\"}"},"sequence_number":5}\n\n',
+      'id: 6\n',
+      'event: response.output_item.done\n',
+      'data: {"item":{"type":"function_call","call_id":"call_3","name":"glob","arguments":"{\\"pattern\\":\\"**/*.go\\"}"},"sequence_number":6}\n\n',
+      'id: 7\n',
+      'event: response.tool_exec.end\n',
+      'data: {"call_id":"call_3","sequence_number":7}\n\n',
+      'id: 8\n',
+      'event: response.completed\n',
+      `data: {"response":{"id":"${responseId}","model":"test-model","status":"completed"},"sequence_number":8}\n\n`,
+      'data: [DONE]\n\n',
+    ].join(''),
+  });
+
+  const { app, state, fetchCalls, cleanup } = harness;
+
+  const session = {
+    id: 'session_recover',
+    title: 'Recover test',
+    messages: [
+      { id: 'msg_user_local', role: 'user', content: 'find files', created: 1000 },
+      {
+        id: 'msg_tool_group_local',
+        role: 'tool-group',
+        created: 1001,
+        status: 'done',
+        expanded: false,
+        tools: [
+          { id: 'call_1', name: 'read_file', arguments: '{"path":"a.txt"}', status: 'done', created: 1001 },
+          { id: 'call_2', name: 'grep', arguments: '{"pattern":"needle"}', status: 'done', created: 1002 },
+        ],
+      },
+    ],
+    lastResponseId: null,
+    activeResponseId: responseId,
+    lastSequenceNumber: 0,
+    number: 1,
+  };
+  state.sessions.push(session);
+  state.activeSessionId = session.id;
+
+  await app.resumeActiveResponse(session, { responseId, recoverFromSnapshot: true });
+
+  const snapshotCall = fetchCalls.find((call) => call.url === `/ui/v1/responses/${responseId}`);
+  if (!snapshotCall) {
+    fail(name, 'expected resumeActiveResponse to fetch the response snapshot first', JSON.stringify(fetchCalls));
+    await cleanup();
+    return;
+  }
+
+  const eventsCall = fetchCalls.find((call) => call.url.startsWith(`/ui/v1/responses/${responseId}/events?after=`));
+  if (!eventsCall || !eventsCall.url.endsWith('after=4')) {
+    fail(name, 'expected replay subscription to start after the recovered sequence number', eventsCall ? eventsCall.url : JSON.stringify(fetchCalls));
+    await cleanup();
+    return;
+  }
+
+  const toolGroups = session.messages.filter((message) => message.role === 'tool-group');
+  if (toolGroups.length !== 1) {
+    fail(name, `expected exactly 1 tool group after recovery, got ${toolGroups.length}`, JSON.stringify(toolGroups));
+    await cleanup();
+    return;
+  }
+  if (toolGroups[0].tools.length !== 3) {
+    fail(name, `expected recovered tool group to contain 3 tools, got ${toolGroups[0].tools.length}`, JSON.stringify(toolGroups[0]));
+    await cleanup();
+    return;
+  }
+
+  await cleanup();
+  pass(name);
+}
+
+async function testResumeActiveResponseFallsBackToReplayWhenSnapshotUnavailable() {
+  const name = 'resumeActiveResponse falls back to event replay when snapshot fetch fails';
+  const responseId = 'resp_snapshot_fallback';
+  const harness = createHarness({
+    responseId,
+    snapshotStatus: 500,
+    eventsBody: [
+      'id: 1\n',
+      'event: response.created\n',
+      `data: {"response":{"id":"${responseId}","model":"test-model","status":"in_progress"},"sequence_number":1}\n\n`,
+      'id: 2\n',
+      'event: response.completed\n',
+      `data: {"response":{"id":"${responseId}","model":"test-model","status":"completed"},"sequence_number":2}\n\n`,
+      'data: [DONE]\n\n',
+    ].join(''),
+  });
+
+  const { app, state, fetchCalls, cleanup } = harness;
+
+  const session = {
+    id: 'session_snapshot_fallback',
+    title: 'Snapshot fallback',
+    messages: [],
+    lastResponseId: null,
+    activeResponseId: responseId,
+    lastSequenceNumber: 0,
+    number: 1,
+  };
+  state.sessions.push(session);
+  state.activeSessionId = session.id;
+
+  await app.resumeActiveResponse(session, { responseId, recoverFromSnapshot: true });
+
+  const snapshotCall = fetchCalls.find((call) => call.url === `/ui/v1/responses/${responseId}`);
+  if (!snapshotCall) {
+    fail(name, 'expected snapshot fetch attempt before falling back', JSON.stringify(fetchCalls));
+    await cleanup();
+    return;
+  }
+
+  const eventsCall = fetchCalls.find((call) => call.url.startsWith(`/ui/v1/responses/${responseId}/events?after=`));
+  if (!eventsCall || !eventsCall.url.endsWith('after=0')) {
+    fail(name, 'expected event replay fallback to resume from the existing sequence number', eventsCall ? eventsCall.url : JSON.stringify(fetchCalls));
+    await cleanup();
+    return;
+  }
+
+  if (session.activeResponseId) {
+    fail(name, 'session.activeResponseId should clear after fallback replay completes', JSON.stringify(session));
+    await cleanup();
+    return;
+  }
+
+  await cleanup();
+  pass(name);
+}
+
+async function testResumeActiveResponseClearsTerminalTrackingWhen409SnapshotHasNoRecovery() {
+  const name = 'resumeActiveResponse clears tracking when 409 snapshot is terminal without recovery';
+  const responseId = 'resp_terminal_snapshot';
+  const harness = createHarness({
+    responseId,
+    eventsStatus: 409,
+    snapshotPayload: {
+      id: responseId,
+      status: 'completed',
+      last_sequence_number: 5,
+    },
+  });
+
+  const { app, state, fetchCalls, cleanup } = harness;
+
+  const session = {
+    id: 'session_terminal_snapshot',
+    title: 'Terminal snapshot',
+    messages: [],
+    lastResponseId: null,
+    activeResponseId: responseId,
+    lastSequenceNumber: 0,
+    number: 1,
+  };
+  state.sessions.push(session);
+  state.activeSessionId = session.id;
+
+  await app.resumeActiveResponse(session, { responseId });
+
+  const snapshotCall = fetchCalls.find((call) => call.url === `/ui/v1/responses/${responseId}`);
+  if (!snapshotCall) {
+    fail(name, 'expected 409 recovery path to fetch response snapshot', JSON.stringify(fetchCalls));
+    await cleanup();
+    return;
+  }
+
+  if (session.activeResponseId) {
+    fail(name, 'session.activeResponseId should be cleared by terminal snapshot recovery', JSON.stringify(session));
+    await cleanup();
+    return;
+  }
+  if (session.lastResponseId !== responseId) {
+    fail(name, `session.lastResponseId = ${JSON.stringify(session.lastResponseId)}, want ${JSON.stringify(responseId)}`);
+    await cleanup();
+    return;
+  }
+
   await cleanup();
   pass(name);
 }
@@ -1159,6 +1394,9 @@ async function testRunCompletesWithoutInterjectionQueuesOrphan() {
   await testNewChatDuringStreamingClearsStreamingState();
   await testSendMessageMarksSessionBusyImmediately();
   await testDrainInterruptQueueAfterResumeCompletes();
+  await testResumeActiveResponseRecoversFromSnapshotBeforeReplaying();
+  await testResumeActiveResponseFallsBackToReplayWhenSnapshotUnavailable();
+  await testResumeActiveResponseClearsTerminalTrackingWhen409SnapshotHasNoRecovery();
   await testConnectTokenPreservesSelectedModelAndProviderFromState();
   await testCancelActiveResponseTearsDownLocallyBeforeServerPost();
   await testInterjectionClosesToolGroupAndInsertsUserMessageAtTail();
