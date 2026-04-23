@@ -2795,6 +2795,83 @@ func TestEnginePanickingToolParallelCalls(t *testing.T) {
 	}
 }
 
+func TestEnginePanickingToolSyncCall(t *testing.T) {
+	tool := &panickingTool{}
+	registry := NewToolRegistry()
+	registry.Register(tool)
+
+	provider := &fakeProvider{
+		script: func(call int, req Request) []Event {
+			switch call {
+			case 0:
+				responseCh := make(chan ToolExecutionResponse, 1)
+				return []Event{
+					{
+						Type:         EventToolCall,
+						ToolCallID:   "call-1",
+						ToolName:     "panic_tool",
+						Tool:         &ToolCall{ID: "call-1", Name: "panic_tool", Arguments: json.RawMessage(`{}`)},
+						ToolResponse: responseCh,
+					},
+					{Type: EventDone},
+				}
+			default:
+				return []Event{
+					{Type: EventTextDelta, Text: "recovered"},
+					{Type: EventDone},
+				}
+			}
+		},
+	}
+
+	engine := NewEngine(provider, registry)
+	req := Request{
+		Messages:   []Message{UserText("run panicking tool")},
+		Tools:      []ToolSpec{tool.Spec()},
+		ToolChoice: ToolChoice{Mode: ToolChoiceAuto},
+	}
+
+	stream, err := engine.Stream(context.Background(), req)
+	if err != nil {
+		t.Fatalf("stream error: %v", err)
+	}
+	defer stream.Close()
+
+	var text strings.Builder
+	for {
+		event, err := stream.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("recv error: %v", err)
+		}
+		if event.Type == EventTextDelta {
+			text.WriteString(event.Text)
+		}
+	}
+
+	if text.String() != "recovered" {
+		t.Fatalf("expected 'recovered', got %q", text.String())
+	}
+
+	if len(provider.calls) < 2 {
+		t.Fatalf("expected at least 2 provider calls, got %d", len(provider.calls))
+	}
+	lastReq := provider.calls[1]
+	for _, msg := range lastReq.Messages {
+		for _, part := range msg.Parts {
+			if part.Type == PartToolResult && part.ToolResult != nil && part.ToolResult.IsError {
+				if !strings.Contains(part.ToolResult.Content, "tool panicked") {
+					t.Fatalf("expected panic error message, got: %s", part.ToolResult.Content)
+				}
+				return
+			}
+		}
+	}
+	t.Fatal("expected a tool error result containing 'tool panicked'")
+}
+
 func TestEngineNormalizesToolCallID(t *testing.T) {
 	// When a provider sets ToolCallID on the event but leaves Tool.ID empty,
 	// the engine should copy ToolCallID into Tool.ID so downstream consumers
