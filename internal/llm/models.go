@@ -54,6 +54,7 @@ var ProviderModels = map[string][]ModelEntry{
 	},
 	"chatgpt": {
 		// Uses ChatGPT backend API with native OAuth
+		{ID: "gpt-5.5", InputLimit: 922_000, OutputLimit: 128_000},
 		{ID: "gpt-5.4", InputLimit: 922_000, OutputLimit: 128_000},
 		{ID: "gpt-5.4-mini", InputLimit: 272_000, OutputLimit: 128_000},
 		{ID: "gpt-5.3-codex", InputLimit: 272_000, OutputLimit: 128_000},
