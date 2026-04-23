@@ -363,4 +363,34 @@ func TestReadURLToolExecuteFollowsAllowedRedirectsBeforeJinaFetch(t *testing.T) 
 	}
 }
 
+func TestResolveReadURLTargetPinsValidatedIPsDuringRedirectCheck(t *testing.T) {
+	origLookup := readURLLookupIP
+	readURLLookupIP = func(ctx context.Context, host string) ([]net.IP, error) {
+		if host != "example.com" {
+			t.Fatalf("unexpected host lookup %q", host)
+		}
+		return []net.IP{net.ParseIP("93.184.216.34")}, nil
+	}
+	defer func() { readURLLookupIP = origLookup }()
+
+	origDial := readURLDialContext
+	dialedAddrs := []string{}
+	readURLDialContext = func(ctx context.Context, network, address string) (net.Conn, error) {
+		dialedAddrs = append(dialedAddrs, address)
+		return nil, errors.New("dial blocked for test")
+	}
+	defer func() { readURLDialContext = origDial }()
+
+	_, err := resolveReadURLTarget(context.Background(), &http.Client{Transport: &http.Transport{}}, "https://example.com/article")
+	if err == nil || !strings.Contains(err.Error(), "check url redirects") {
+		t.Fatalf("expected redirect check error, got %v", err)
+	}
+	if got, want := len(dialedAddrs), 1; got != want {
+		t.Fatalf("expected %d dial attempt, got %d (%v)", want, got, dialedAddrs)
+	}
+	if got, want := dialedAddrs[0], "93.184.216.34:443"; got != want {
+		t.Fatalf("expected pinned dial address %q, got %q", want, got)
+	}
+}
+
 var _ io.ReadCloser = (*failAfterNReadCloser)(nil)
