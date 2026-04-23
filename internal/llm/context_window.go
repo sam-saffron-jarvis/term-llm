@@ -220,6 +220,16 @@ func InputLimitForProviderModel(providerName, model string) int {
 			return v
 		}
 	}
+	if base, ok := trimKnownEffortSuffix(model); ok {
+		if v, ok := explicitProviderInput[configKey(providerType, base)]; ok {
+			return v
+		}
+		if providerType != providerName {
+			if v, ok := explicitProviderInput[configKey(providerName, base)]; ok {
+				return v
+			}
+		}
+	}
 
 	// 2. Provider-specific overrides (e.g., Copilot)
 	if table, ok := providerInputOverrides[providerType]; ok {

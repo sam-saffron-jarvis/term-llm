@@ -322,6 +322,7 @@ var ProviderFastModels = map[string]string{
 	"venice":     "llama-3.2-3b",
 	"openrouter": "anthropic/claude-haiku-4-5",
 	"claude-bin": "haiku",
+	"ollama":     ollamaChatDefaultModel,
 }
 
 var ImageProviderModels = map[string][]string{
@@ -373,12 +374,18 @@ func ExpandWithEffortVariants(models []string) []string {
 
 // hasEffortSuffix reports whether model already ends with a known effort suffix.
 func hasEffortSuffix(model string) bool {
-	for _, suffix := range defaultEffortVariants {
+	_, ok := trimKnownEffortSuffix(model)
+	return ok
+}
+
+// trimKnownEffortSuffix removes a trailing reasoning-effort suffix from model.
+func trimKnownEffortSuffix(model string) (string, bool) {
+	for _, suffix := range knownEffortSuffixes {
 		if strings.HasSuffix(model, "-"+suffix) {
-			return true
+			return strings.TrimSuffix(model, "-"+suffix), true
 		}
 	}
-	return false
+	return model, false
 }
 
 // knownEffortSuffixes is the union of reasoning-effort suffixes recognised
