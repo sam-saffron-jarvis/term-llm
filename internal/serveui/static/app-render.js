@@ -644,6 +644,7 @@ const enqueueAssistantStreamUpdate = (message) => {
   streamState.latestContent = String(message.content || '');
   streamState.dirty = true;
   syncAssistantUsageNode(node, message);
+  syncTurnActionPanels();
   scheduleAssistantStreamRender(streamState);
 };
 
@@ -652,9 +653,11 @@ const finalizeAssistantStreamRender = (message) => {
   if (!node) {
     node = createMessageNode(message);
     elements.messages.appendChild(node);
+    syncTurnActionPanels();
     return;
   }
   renderAssistantNodeFully(node, message);
+  syncTurnActionPanels();
 };
 
 const createToolCard = (message) => {
@@ -777,9 +780,11 @@ const updateAssistantNode = (message) => {
   if (!node) {
     node = createMessageNode(message);
     elements.messages.appendChild(node);
+    syncTurnActionPanels();
     return;
   }
   renderAssistantNodeFully(node, message);
+  syncTurnActionPanels();
 };
 
 const updateUserNode = (message) => {
@@ -996,6 +1001,227 @@ const createToolEntryNode = (tool) => {
   return wrapper;
 };
 
+const TURN_COPY_ICON = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>';
+const TURN_COPIED_ICON = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="20 6 9 17 4 12"/></svg>';
+const TURN_COPY_RESET_MS = 1500;
+
+const isNormalUserBoundary = (message) => (
+  message?.role === 'user' && !message.askUser
+);
+
+const getAssistantTurns = (session) => {
+  const messages = Array.isArray(session?.messages) ? session.messages : [];
+  const turns = [];
+  let items = [];
+
+  const flush = () => {
+    if (items.length === 0) return;
+    const assistantsWithContent = items.filter((message) => (
+      message?.role === 'assistant' && String(message.content || '').trim()
+    ));
+    if (assistantsWithContent.length > 0) {
+      const lastAssistant = assistantsWithContent[assistantsWithContent.length - 1];
+      if (lastAssistant?.id) {
+        turns.push({
+          items: [...items],
+          messages: [...items],
+          lastAssistantId: lastAssistant.id,
+          assistantMessageIds: items
+            .filter((message) => message?.role === 'assistant' && message.id)
+            .map((message) => message.id)
+        });
+      }
+    }
+    items = [];
+  };
+
+  messages.forEach((message) => {
+    if (isNormalUserBoundary(message)) {
+      flush();
+      return;
+    }
+    if (message?.role === 'assistant' || message?.role === 'tool-group' || message?.role === 'tool') {
+      items.push(message);
+    }
+  });
+  flush();
+
+  return turns;
+};
+
+const normalizeClipboardValue = (value) => {
+  if (value == null) return '';
+  const text = typeof value === 'string' ? value : JSON.stringify(value);
+  return String(text || '').replace(/\s+/g, ' ').trim();
+};
+
+const truncateClipboardLine = (value, max = 220) => {
+  const text = String(value || '');
+  if (text.length <= max) return text;
+  return text.slice(0, Math.max(0, max - 1)).trimEnd() + '…';
+};
+
+const formatToolClipboardLines = (tool) => {
+  const name = String(tool?.name || 'tool').trim() || 'tool';
+  const status = String(tool?.status || 'pending').trim() || 'pending';
+  const lines = [`- ${name} [${status}]`];
+  let entries = formatToolArgs(tool || {});
+
+  if ((!entries || entries.length === 0) && tool?.arguments) {
+    entries = [['arguments', tool.arguments]];
+  }
+
+  if (entries && entries.length > 0) {
+    const details = entries.slice(0, 2)
+      .map(([key, value]) => {
+        const normalized = normalizeClipboardValue(value);
+        return normalized ? `${key}: ${normalized}` : `${key}:`;
+      })
+      .filter(Boolean)
+      .join(' · ');
+    if (details) {
+      lines.push(`  ${truncateClipboardLine(details)}`);
+    }
+  }
+
+  return lines.slice(0, 2);
+};
+
+const appendClipboardBlock = (parts, text) => {
+  const value = String(text || '').trim();
+  if (!value) return;
+  if (parts.length > 0 && parts[parts.length - 1] !== '') {
+    parts.push('');
+  }
+  parts.push(value);
+};
+
+const buildTurnClipboardText = (turn) => {
+  const items = Array.isArray(turn?.items) ? turn.items : Array.isArray(turn?.messages) ? turn.messages : [];
+  const parts = [];
+  let inToolsSection = false;
+
+  items.forEach((message) => {
+    if (message?.role === 'assistant') {
+      appendClipboardBlock(parts, message.content || '');
+      inToolsSection = false;
+      return;
+    }
+
+    if (message?.role === 'tool-group') {
+      const tools = Array.isArray(message.tools) ? message.tools : [];
+      if (tools.length === 0) return;
+      if (!inToolsSection) {
+        if (parts.length > 0 && parts[parts.length - 1] !== '') parts.push('');
+        parts.push('Tools:');
+        inToolsSection = true;
+      }
+      tools.forEach((tool) => {
+        formatToolClipboardLines(tool).forEach((line) => parts.push(line));
+      });
+      return;
+    }
+
+    if (message?.role === 'tool') {
+      if (!inToolsSection) {
+        if (parts.length > 0 && parts[parts.length - 1] !== '') parts.push('');
+        parts.push('Tools:');
+        inToolsSection = true;
+      }
+      formatToolClipboardLines(message).forEach((line) => parts.push(line));
+    }
+  });
+
+  return parts.join('\n').replace(/\n{3,}/g, '\n\n').trim();
+};
+
+const getClipboardWriter = () => {
+  const clipboard = typeof navigator === 'undefined' ? null : navigator.clipboard;
+  return clipboard && typeof clipboard.writeText === 'function' ? clipboard : null;
+};
+
+const createTurnActionPanel = (turn) => {
+  const panel = document.createElement('div');
+  panel.className = 'turn-action-panel';
+  panel.dataset.turnAssistantId = turn.lastAssistantId || '';
+
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.className = 'turn-action-btn turn-copy-btn';
+  button.title = 'Copy turn';
+  button.setAttribute('aria-label', 'Copy turn');
+  button.dataset.turnAssistantId = turn.lastAssistantId || '';
+  button.innerHTML = TURN_COPY_ICON;
+
+  if (!getClipboardWriter()) {
+    button.disabled = true;
+    button.title = 'Clipboard unavailable';
+  }
+
+  button.addEventListener('click', async (event) => {
+    event.preventDefault();
+    const clipboard = getClipboardWriter();
+    if (!clipboard) return;
+
+    const assistantId = button.dataset.turnAssistantId || '';
+    const currentTurn = getAssistantTurns(ensureActiveSession())
+      .find((candidate) => candidate.lastAssistantId === assistantId);
+    const text = buildTurnClipboardText(currentTurn);
+    if (!text) return;
+
+    button.disabled = true;
+    try {
+      await clipboard.writeText(text);
+      window.clearTimeout(button._turnCopyResetTimer);
+      button.classList.add('copied');
+      button.innerHTML = TURN_COPIED_ICON;
+      button.title = 'Copied';
+      button.setAttribute('aria-label', 'Copied');
+      button._turnCopyResetTimer = window.setTimeout(() => {
+        button.classList.remove('copied');
+        button.innerHTML = TURN_COPY_ICON;
+        button.title = 'Copy turn';
+        button.setAttribute('aria-label', 'Copy turn');
+        button.disabled = !getClipboardWriter();
+      }, TURN_COPY_RESET_MS);
+    } catch (_err) {
+      button.title = 'Copy failed';
+      window.setTimeout(() => {
+        button.title = 'Copy turn';
+      }, TURN_COPY_RESET_MS);
+    } finally {
+      if (!button.classList.contains('copied')) {
+        button.disabled = !getClipboardWriter();
+      } else {
+        button.disabled = false;
+      }
+    }
+  });
+
+  panel.appendChild(button);
+  return panel;
+};
+
+const syncTurnActionPanels = () => {
+  const root = elements.messages;
+  if (!root) return;
+
+  root.querySelectorAll('.turn-action-panel').forEach((panel) => panel.remove());
+
+  getAssistantTurns(ensureActiveSession()).forEach((turn) => {
+    if (!turn.lastAssistantId) return;
+    const node = findMessageElement(turn.lastAssistantId);
+    if (!node || !node.classList?.contains('assistant')) return;
+    const panel = createTurnActionPanel(turn);
+    const meta = node.querySelector('.message-meta');
+    if (meta) {
+      node.insertBefore(panel, meta);
+    } else {
+      node.appendChild(panel);
+    }
+  });
+};
+
 const updateToolGroupNode = (message) => {
   let node = findMessageElement(message.id);
   if (!node) {
@@ -1061,6 +1287,7 @@ const renderMessages = (forceScroll = false) => {
     });
   }
 
+  syncTurnActionPanels();
   refreshRelativeTimes();
   scrollToBottom(forceScroll);
   updateHeader();
@@ -1150,6 +1377,11 @@ Object.assign(app, {
   toolGroupSummaryText,
   createToolGroupNode,
   formatToolArgs,
+  getAssistantTurns,
+  formatToolClipboardLines,
+  buildTurnClipboardText,
+  createTurnActionPanel,
+  syncTurnActionPanels,
   buildArgsNode,
   createToolEntryNode,
   updateToolGroupNode,

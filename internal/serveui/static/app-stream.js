@@ -7,7 +7,7 @@ const {
   getActiveSession, createSession, scrollToBottom, setConnectionState, sessionSlug, updateURL,
   persistAndRefreshShell, updateSessionUsageDisplay, refreshRelativeTimes, requestHeaders: _unusedRequestHeaders, updateAssistantNode, updateUserNode,
   updateToolNode, updateToolGroupNode, createMessageNode, createToolGroupNode, renderSidebar, renderMessages, maybeNotifyResponseComplete,
-  enqueueAssistantStreamUpdate, finalizeAssistantStreamRender,
+  enqueueAssistantStreamUpdate, finalizeAssistantStreamRender, syncTurnActionPanels,
   subscribeToPush, shouldAutoSubscribeToPush, applyTextDirection, shouldSuppressPromptAutoFocus, setSessionOptimisticBusy, setSessionServerActiveRun
 } = app;
 
@@ -515,6 +515,7 @@ const applyResponseStreamEvent = (session, streamState, event, payload) => {
       };
       session.messages.push(message);
       elements.messages.appendChild(createMessageNode(message));
+      syncTurnActionPanels();
       resolvePendingInterruptCommit(session.id, interjectionText);
       saveSessions();
       scrollToBottom(true);
@@ -2506,6 +2507,7 @@ const addInlineInterruptMessage = (session, prompt, messageId, interruptState) =
   const emptyState = elements.messages.querySelector('.empty-state');
   if (emptyState) emptyState.remove();
   elements.messages.appendChild(createMessageNode(message));
+  syncTurnActionPanels();
   return message;
 };
 
@@ -2883,6 +2885,7 @@ const sendMessage = async (options = {}) => {
   } else {
     updateUserNode(userMessage);
   }
+  syncTurnActionPanels();
 
   setSessionOptimisticBusy(session, true);
   persistAndRefreshShell();

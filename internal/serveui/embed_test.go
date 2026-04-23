@@ -131,6 +131,28 @@ func TestDecorationJS(t *testing.T) {
 	}
 }
 
+func TestAppRenderJS(t *testing.T) {
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("node not found in PATH, skipping JS app-render tests")
+	}
+
+	_, thisFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("could not determine test file path")
+	}
+	script := filepath.Join(filepath.Dir(thisFile), "static", "app_render_test.js")
+	if _, err := os.Stat(script); err != nil {
+		t.Fatalf("app_render_test.js not found at %s: %v", script, err)
+	}
+
+	out, err := exec.Command(node, script).CombinedOutput()
+	t.Log(string(out))
+	if err != nil {
+		t.Fatalf("app_render_test.js failed: %v", err)
+	}
+}
+
 func TestAppStreamJS(t *testing.T) {
 	node, err := exec.LookPath("node")
 	if err != nil {
@@ -223,6 +245,50 @@ func TestStaticAssetsSupportCodeBlockUX(t *testing.T) {
 		".code-copy-btn",
 		".code-copy-btn.copied",
 		".markdown-body pre:hover .code-copy-btn",
+	} {
+		if !strings.Contains(cssSrc, want) {
+			t.Fatalf("app.css missing %q", want)
+		}
+	}
+}
+
+func TestStaticAssetsSupportTurnCopyActionPanel(t *testing.T) {
+	renderJS, err := StaticAsset("app-render.js")
+	if err != nil {
+		t.Fatalf("StaticAsset(app-render.js): %v", err)
+	}
+	renderSrc := string(renderJS)
+	for _, want := range []string{
+		"const getAssistantTurns = (session) => {",
+		"const buildTurnClipboardText = (turn) => {",
+		"button.className = 'turn-action-btn turn-copy-btn'",
+		"navigator.clipboard",
+		"clipboard.writeText(text)",
+		"syncTurnActionPanels",
+	} {
+		if !strings.Contains(renderSrc, want) {
+			t.Fatalf("app-render.js missing %q", want)
+		}
+	}
+
+	streamJS, err := StaticAsset("app-stream.js")
+	if err != nil {
+		t.Fatalf("StaticAsset(app-stream.js): %v", err)
+	}
+	if !strings.Contains(string(streamJS), "syncTurnActionPanels") {
+		t.Fatal("app-stream.js missing syncTurnActionPanels integration")
+	}
+
+	css, err := StaticAsset("app.css")
+	if err != nil {
+		t.Fatalf("StaticAsset(app.css): %v", err)
+	}
+	cssSrc := string(css)
+	for _, want := range []string{
+		".turn-action-panel",
+		".turn-action-btn",
+		".turn-action-btn.copied",
+		"@keyframes copy-success-pop",
 	} {
 		if !strings.Contains(cssSrc, want) {
 			t.Fatalf("app.css missing %q", want)

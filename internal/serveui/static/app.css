@@ -1113,6 +1113,93 @@
       opacity: 1;
     }
 
+    .turn-action-panel {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.25rem;
+      align-self: flex-start;
+      padding: 0 0.2rem;
+      margin-top: -0.1rem;
+    }
+
+    .turn-action-btn {
+      width: 30px;
+      height: 30px;
+      border: 1px solid transparent;
+      border-radius: 8px;
+      background: transparent;
+      color: var(--text-muted);
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      position: relative;
+      padding: 0;
+      transition: background 0.16s ease, color 0.16s ease, transform 0.16s ease;
+    }
+
+    .turn-action-btn:hover,
+    .turn-action-btn:focus-visible {
+      background: var(--surface-2);
+      color: var(--text);
+      outline: none;
+    }
+
+    .turn-action-btn:focus-visible {
+      border-color: var(--border-strong);
+    }
+
+    .turn-action-btn:disabled {
+      color: var(--text-muted);
+      cursor: default;
+      opacity: 0.45;
+    }
+
+    .turn-action-btn.copied {
+      color: var(--accent-green);
+      background: rgba(52,211,153,0.08);
+    }
+
+    .turn-action-btn.copied::after {
+      content: '';
+      position: absolute;
+      inset: 3px;
+      border-radius: 999px;
+      border: 1px solid currentColor;
+      pointer-events: none;
+      opacity: 0;
+    }
+
+    @media (prefers-reduced-motion: no-preference) {
+      .turn-action-btn.copied {
+        animation: copy-success-pop 420ms cubic-bezier(.2,.8,.2,1);
+      }
+
+      .turn-action-btn.copied::after {
+        animation: copy-success-ring 520ms cubic-bezier(.2,.8,.2,1);
+      }
+    }
+
+    @keyframes copy-success-pop {
+      0% { transform: scale(1); }
+      45% { transform: scale(1.14); }
+      100% { transform: scale(1); }
+    }
+
+    @keyframes copy-success-ring {
+      0% { opacity: 0.35; transform: scale(0.72); }
+      100% { opacity: 0; transform: scale(1.55); }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      .turn-action-btn,
+      .turn-action-btn.copied,
+      .turn-action-btn.copied::after {
+        animation: none;
+        transition: none;
+      }
+    }
+
     .markdown-body :not(pre) > code {
       font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
       background: var(--surface-2);

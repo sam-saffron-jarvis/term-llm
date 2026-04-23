@@ -319,6 +319,7 @@ function createHarness(options = {}) {
     maybeNotifyResponseComplete: async () => {},
     enqueueAssistantStreamUpdate() {},
     finalizeAssistantStreamRender() {},
+    syncTurnActionPanels() {},
     subscribeToPush() {},
     shouldAutoSubscribeToPush() { return false; },
     applyTextDirection() {},
