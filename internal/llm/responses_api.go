@@ -690,13 +690,23 @@ func (c *ResponsesClient) Stream(ctx context.Context, req ResponsesRequest, debu
 				DebugRawSection(debugRaw, "Responses API SSE Line (event="+lastEventType+")", data)
 			}
 
+			unmarshalEvent := func(dst any) error {
+				if err := json.Unmarshal([]byte(data), dst); err != nil {
+					return fmt.Errorf("Responses API SSE decode failed for %s: %w", lastEventType, err)
+				}
+				return nil
+			}
+
 			// Handle different SSE event types based on event name
 			switch lastEventType {
 			case "response.output_text.delta":
 				var deltaEvent struct {
 					Delta string `json:"delta"`
 				}
-				if err := json.Unmarshal([]byte(data), &deltaEvent); err == nil && deltaEvent.Delta != "" {
+				if err := unmarshalEvent(&deltaEvent); err != nil {
+					return err
+				}
+				if deltaEvent.Delta != "" {
 					sawTextDelta = true
 					if err := send.Send(Event{Type: EventTextDelta, Text: deltaEvent.Delta}); err != nil {
 						return err
@@ -708,13 +718,14 @@ func (c *ResponsesClient) Stream(ctx context.Context, req ResponsesRequest, debu
 					Item        responsesOutputItem `json:"item"`
 					OutputIndex int                 `json:"output_index"`
 				}
-				if err := json.Unmarshal([]byte(data), &itemEvent); err == nil {
-					if itemEvent.Item.Type == "function_call" {
-						// Use output_index as tracking key (stable across events), Item.CallID as the actual call ID
-						toolState.StartCall(itemEvent.OutputIndex, itemEvent.Item.CallID, itemEvent.Item.Name)
-					} else if itemEvent.Item.Type == "reasoning" {
-						reasoningState.Start(itemEvent.OutputIndex, itemEvent.Item.ID, itemEvent.Item.EncryptedContent, itemEvent.Item.Summary)
-					}
+				if err := unmarshalEvent(&itemEvent); err != nil {
+					return err
+				}
+				if itemEvent.Item.Type == "function_call" {
+					// Use output_index as tracking key (stable across events), Item.CallID as the actual call ID
+					toolState.StartCall(itemEvent.OutputIndex, itemEvent.Item.CallID, itemEvent.Item.Name)
+				} else if itemEvent.Item.Type == "reasoning" {
+					reasoningState.Start(itemEvent.OutputIndex, itemEvent.Item.ID, itemEvent.Item.EncryptedContent, itemEvent.Item.Summary)
 				}
 
 			case "response.function_call_arguments.delta":
@@ -722,60 +733,62 @@ func (c *ResponsesClient) Stream(ctx context.Context, req ResponsesRequest, debu
 					OutputIndex int    `json:"output_index"`
 					Delta       string `json:"delta"`
 				}
-				if err := json.Unmarshal([]byte(data), &argEvent); err == nil {
-					toolState.AppendArguments(argEvent.OutputIndex, argEvent.Delta)
+				if err := unmarshalEvent(&argEvent); err != nil {
+					return err
 				}
+				toolState.AppendArguments(argEvent.OutputIndex, argEvent.Delta)
 
 			case "response.output_item.done":
 				var doneEvent struct {
 					Item        responsesOutputItem `json:"item"`
 					OutputIndex int                 `json:"output_index"`
 				}
-				if err := json.Unmarshal([]byte(data), &doneEvent); err == nil {
-					if doneEvent.Item.Type == "function_call" {
-						// Complete the tool call with final arguments using output_index
-						toolState.FinishCall(doneEvent.OutputIndex, doneEvent.Item.CallID, doneEvent.Item.Name, doneEvent.Item.Arguments)
-					} else if doneEvent.Item.Type == "reasoning" {
-						reasoningState.Finish(doneEvent.OutputIndex, doneEvent.Item.ID, doneEvent.Item.EncryptedContent, doneEvent.Item.Summary)
-						if part := reasoningState.Part(doneEvent.OutputIndex); part != nil {
-							if err := send.Send(Event{
-								Type:                      EventReasoningDelta,
-								Text:                      part.ReasoningContent,
-								ReasoningItemID:           part.ReasoningItemID,
-								ReasoningEncryptedContent: part.ReasoningEncryptedContent,
-							}); err != nil {
+				if err := unmarshalEvent(&doneEvent); err != nil {
+					return err
+				}
+				if doneEvent.Item.Type == "function_call" {
+					// Complete the tool call with final arguments using output_index
+					toolState.FinishCall(doneEvent.OutputIndex, doneEvent.Item.CallID, doneEvent.Item.Name, doneEvent.Item.Arguments)
+				} else if doneEvent.Item.Type == "reasoning" {
+					reasoningState.Finish(doneEvent.OutputIndex, doneEvent.Item.ID, doneEvent.Item.EncryptedContent, doneEvent.Item.Summary)
+					if part := reasoningState.Part(doneEvent.OutputIndex); part != nil {
+						if err := send.Send(Event{
+							Type:                      EventReasoningDelta,
+							Text:                      part.ReasoningContent,
+							ReasoningItemID:           part.ReasoningItemID,
+							ReasoningEncryptedContent: part.ReasoningEncryptedContent,
+						}); err != nil {
+							return err
+						}
+					}
+				} else if doneEvent.Item.Type == "message" {
+					// Text content is normally streamed via response.output_text.delta events.
+					// Fall back to emitting here if no deltas were seen (provider inconsistency).
+					// Always emit refusals since those may not be streamed.
+					for _, content := range doneEvent.Item.Content {
+						if content.Type == "output_text" && content.Text != "" && !sawTextDelta {
+							if err := send.Send(Event{Type: EventTextDelta, Text: content.Text}); err != nil {
+								return err
+							}
+						} else if content.Type == "refusal" && content.Refusal != "" {
+							if err := send.Send(Event{Type: EventTextDelta, Text: content.Refusal}); err != nil {
 								return err
 							}
 						}
-					} else if doneEvent.Item.Type == "message" {
-						// Text content is normally streamed via response.output_text.delta events.
-						// Fall back to emitting here if no deltas were seen (provider inconsistency).
-						// Always emit refusals since those may not be streamed.
-						for _, content := range doneEvent.Item.Content {
-							if content.Type == "output_text" && content.Text != "" && !sawTextDelta {
-								if err := send.Send(Event{Type: EventTextDelta, Text: content.Text}); err != nil {
-									return err
-								}
-							} else if content.Type == "refusal" && content.Refusal != "" {
-								if err := send.Send(Event{Type: EventTextDelta, Text: content.Refusal}); err != nil {
-									return err
-								}
-							}
+					}
+				} else if doneEvent.Item.Type == "image_generation_call" {
+					if doneEvent.Item.Result != "" {
+						decoded, err := base64.StdEncoding.DecodeString(doneEvent.Item.Result)
+						if err != nil {
+							return fmt.Errorf("decode image_generation_call result: %w", err)
 						}
-					} else if doneEvent.Item.Type == "image_generation_call" {
-						if doneEvent.Item.Result != "" {
-							decoded, err := base64.StdEncoding.DecodeString(doneEvent.Item.Result)
-							if err != nil {
-								return fmt.Errorf("decode image_generation_call result: %w", err)
-							}
-							if err := send.Send(Event{
-								Type:          EventImageGenerated,
-								ImageData:     decoded,
-								ImageMimeType: "image/png",
-								RevisedPrompt: doneEvent.Item.RevisedPrompt,
-							}); err != nil {
-								return err
-							}
+						if err := send.Send(Event{
+							Type:          EventImageGenerated,
+							ImageData:     decoded,
+							ImageMimeType: "image/png",
+							RevisedPrompt: doneEvent.Item.RevisedPrompt,
+						}); err != nil {
+							return err
 						}
 					}
 				}
@@ -784,18 +797,20 @@ func (c *ResponsesClient) Stream(ctx context.Context, req ResponsesRequest, debu
 				var partEvent struct {
 					OutputIndex int `json:"output_index"`
 				}
-				if err := json.Unmarshal([]byte(data), &partEvent); err == nil {
-					reasoningState.Ensure(partEvent.OutputIndex)
+				if err := unmarshalEvent(&partEvent); err != nil {
+					return err
 				}
+				reasoningState.Ensure(partEvent.OutputIndex)
 
 			case "response.reasoning_summary_text.delta":
 				var summaryDeltaEvent struct {
 					OutputIndex int    `json:"output_index"`
 					Delta       string `json:"delta"`
 				}
-				if err := json.Unmarshal([]byte(data), &summaryDeltaEvent); err == nil {
-					reasoningState.AppendSummary(summaryDeltaEvent.OutputIndex, summaryDeltaEvent.Delta)
+				if err := unmarshalEvent(&summaryDeltaEvent); err != nil {
+					return err
 				}
+				reasoningState.AppendSummary(summaryDeltaEvent.OutputIndex, summaryDeltaEvent.Delta)
 
 			case "response.completed":
 				var completedEvent struct {
@@ -804,20 +819,21 @@ func (c *ResponsesClient) Stream(ctx context.Context, req ResponsesRequest, debu
 						Usage *responsesUsage `json:"usage,omitempty"`
 					} `json:"response"`
 				}
-				if err := json.Unmarshal([]byte(data), &completedEvent); err == nil {
-					// Store response ID for conversation continuity (unless disabled)
-					if !client.DisableServerState && completedEvent.Response.ID != "" {
-						client.setLastResponseIDIfGeneration(responseStateGeneration, completedEvent.Response.ID)
-					}
-					if completedEvent.Response.Usage != nil {
-						cached := completedEvent.Response.Usage.InputTokensDetails.CachedTokens
-						lastUsage = &Usage{
-							// OpenAI Responses API input_tokens includes cached; subtract to normalise.
-							// CachedInputTokens + InputTokens = total context size.
-							InputTokens:       completedEvent.Response.Usage.InputTokens - cached,
-							OutputTokens:      completedEvent.Response.Usage.OutputTokens,
-							CachedInputTokens: cached,
-						}
+				if err := unmarshalEvent(&completedEvent); err != nil {
+					return err
+				}
+				// Store response ID for conversation continuity (unless disabled)
+				if !client.DisableServerState && completedEvent.Response.ID != "" {
+					client.setLastResponseIDIfGeneration(responseStateGeneration, completedEvent.Response.ID)
+				}
+				if completedEvent.Response.Usage != nil {
+					cached := completedEvent.Response.Usage.InputTokensDetails.CachedTokens
+					lastUsage = &Usage{
+						// OpenAI Responses API input_tokens includes cached; subtract to normalise.
+						// CachedInputTokens + InputTokens = total context size.
+						InputTokens:       completedEvent.Response.Usage.InputTokens - cached,
+						OutputTokens:      completedEvent.Response.Usage.OutputTokens,
+						CachedInputTokens: cached,
 					}
 				}
 
@@ -825,7 +841,10 @@ func (c *ResponsesClient) Stream(ctx context.Context, req ResponsesRequest, debu
 				var errorEvent struct {
 					Error *responsesError `json:"error"`
 				}
-				if err := json.Unmarshal([]byte(data), &errorEvent); err == nil && errorEvent.Error != nil {
+				if err := unmarshalEvent(&errorEvent); err != nil {
+					return err
+				}
+				if errorEvent.Error != nil {
 					return fmt.Errorf("Responses API error: %s", errorEvent.Error.Message)
 				}
 				return fmt.Errorf("Responses API error: unknown error")
@@ -835,6 +854,12 @@ func (c *ResponsesClient) Stream(ctx context.Context, req ResponsesRequest, debu
 			if eof {
 				break
 			}
+		}
+
+		// Refuse to synthesize tool calls from partial state if the stream ended before
+		// all tool call items were completed.
+		if toolState.HasIncompleteCalls() {
+			return fmt.Errorf("Responses API stream ended with incomplete tool calls")
 		}
 
 		// Emit completed tool calls
@@ -952,6 +977,16 @@ func (s *responsesToolState) FinishCall(outputIndex int, callID, name, finalArgs
 		state.name = name
 	}
 	state.finished = true
+}
+
+func (s *responsesToolState) HasIncompleteCalls() bool {
+	for _, outputIndex := range s.order {
+		state := s.calls[outputIndex]
+		if state != nil && !state.finished {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *responsesToolState) Calls() []ToolCall {
