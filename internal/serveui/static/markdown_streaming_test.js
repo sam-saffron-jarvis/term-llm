@@ -41,10 +41,10 @@ function expectFalse(name, actual) {
 }
 
 expectTrue(
-  'createStreamingState starts with only tail streaming state',
+  'createStreamingState starts with stable and tail streaming containers unset',
   (() => {
     const state = streaming.createStreamingState();
-    return state && state.stableContainer === undefined && state.committedLength === undefined && state.tailContainer === null;
+    return state && state.stableContainer === null && state.stableLength === 0 && state.stableSource === '' && state.tailContainer === null;
   })()
 );
 
@@ -97,6 +97,71 @@ expectFalse(
 expectFalse(
   'canStreamPlainTextTail rejects fenced code blocks',
   streaming.canStreamPlainTextTail('```js\nconsole.log(1);\n```')
+);
+expectFalse(
+  'canStreamPlainTextTail rejects math delimiters',
+  streaming.canStreamPlainTextTail('Value: \\(x + y\\)')
+);
+
+expectEqual(
+  'findStableMarkdownBoundary finds blank-line paragraph break',
+  streaming.findStableMarkdownBoundary('First paragraph.\n\nSecond paragraph still streaming', 10),
+  'First paragraph.\n\n'.length
+);
+expectEqual(
+  'findStableMarkdownBoundary keeps configured tail length',
+  streaming.findStableMarkdownBoundary('First paragraph.\n\nshort', 100),
+  0
+);
+expectEqual(
+  'findStableMarkdownBoundary avoids unclosed code fence',
+  streaming.findStableMarkdownBoundary('```js\nconst value = 1;\n\nmore code still in fence', 5),
+  0
+);
+expectEqual(
+  'findStableMarkdownBoundary avoids unbalanced bold marker',
+  streaming.findStableMarkdownBoundary('This starts **bold\n\nrest of response', 5),
+  0
+);
+expectEqual(
+  'findStableMarkdownBoundary avoids unbalanced italic marker',
+  streaming.findStableMarkdownBoundary('This starts *italic\n\nrest of response', 5),
+  0
+);
+expectEqual(
+  'findStableMarkdownBoundary avoids unbalanced underscore marker',
+  streaming.findStableMarkdownBoundary('This starts _italic\n\nrest of response', 5),
+  0
+);
+expectEqual(
+  'findStableMarkdownBoundary avoids unbalanced strikethrough marker',
+  streaming.findStableMarkdownBoundary('This starts ~~strike\n\nrest of response', 5),
+  0
+);
+expectEqual(
+  'findStableMarkdownBoundary avoids unclosed inline code marker',
+  streaming.findStableMarkdownBoundary('This starts `code\n\nrest of response', 5),
+  0
+);
+expectEqual(
+  'findStableMarkdownBoundary avoids unbalanced inline math',
+  streaming.findStableMarkdownBoundary('Value: \\(x + y\n\nrest of response', 5),
+  0
+);
+expectEqual(
+  'findStableMarkdownBoundary avoids unbalanced display math',
+  streaming.findStableMarkdownBoundary('Value:\n$$\nx + y\n\nrest of response', 5),
+  0
+);
+expectEqual(
+  'findStableMarkdownBoundary is conservative for lists',
+  streaming.findStableMarkdownBoundary('- one\n- two\n\nrest of response', 5),
+  0
+);
+expectEqual(
+  'findStableMarkdownBoundary is conservative for tables',
+  streaming.findStableMarkdownBoundary('| a | b |\n| - | - |\n\nrest of response', 5),
+  0
 );
 
 if (failures > 0) {

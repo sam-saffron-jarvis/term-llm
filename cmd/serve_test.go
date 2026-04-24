@@ -3,6 +3,7 @@ package cmd
 import (
 	"bufio"
 	"bytes"
+	"compress/gzip"
 	"context"
 	"crypto/ecdh"
 	"crypto/rand"
@@ -620,6 +621,105 @@ func TestHandleUI_VersionedAssetCaching(t *testing.T) {
 	}
 }
 
+func TestHandleUI_StaticAssetCompressionAndConditionalCaching(t *testing.T) {
+	srv := &serveServer{cfg: serveServerConfig{ui: true, basePath: "/ui"}}
+	version := serveui.AssetVersion()
+	wantBody, err := serveui.StaticAsset("app.css")
+	if err != nil {
+		t.Fatalf("StaticAsset(app.css): %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/app.css?v="+version, nil)
+	req.Header.Set("Accept-Encoding", "gzip")
+	rr := httptest.NewRecorder()
+	srv.handleUI(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("gzip status = %d, want 200", rr.Code)
+	}
+	if got := rr.Header().Get("Content-Encoding"); got != "gzip" {
+		t.Fatalf("content-encoding = %q, want gzip", got)
+	}
+	if got := rr.Header().Get("Vary"); !strings.Contains(got, "Accept-Encoding") {
+		t.Fatalf("vary = %q, want Accept-Encoding", got)
+	}
+	etag := rr.Header().Get("ETag")
+	if etag == "" {
+		t.Fatalf("expected ETag on static asset")
+	}
+	zr, err := gzip.NewReader(bytes.NewReader(rr.Body.Bytes()))
+	if err != nil {
+		t.Fatalf("gzip.NewReader: %v", err)
+	}
+	gotBody, err := io.ReadAll(zr)
+	if err != nil {
+		t.Fatalf("ReadAll gzip: %v", err)
+	}
+	if err := zr.Close(); err != nil {
+		t.Fatalf("Close gzip: %v", err)
+	}
+	if !bytes.Equal(gotBody, wantBody) {
+		t.Fatalf("decompressed body mismatch")
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/app.css?v="+version, nil)
+	rr = httptest.NewRecorder()
+	srv.handleUI(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("plain status = %d, want 200", rr.Code)
+	}
+	if got := rr.Header().Get("Content-Encoding"); got != "" {
+		t.Fatalf("plain content-encoding = %q, want empty", got)
+	}
+	if !bytes.Equal(rr.Body.Bytes(), wantBody) {
+		t.Fatalf("plain body mismatch")
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/app.css?v="+version, nil)
+	req.Header.Set("If-None-Match", etag)
+	rr = httptest.NewRecorder()
+	srv.handleUI(rr, req)
+	if rr.Code != http.StatusNotModified {
+		t.Fatalf("conditional status = %d, want 304", rr.Code)
+	}
+	if rr.Body.Len() != 0 {
+		t.Fatalf("conditional response body length = %d, want 0", rr.Body.Len())
+	}
+
+	req = httptest.NewRequest(http.MethodHead, "/app.css?v="+version, nil)
+	rr = httptest.NewRecorder()
+	srv.handleUI(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("HEAD status = %d, want 200", rr.Code)
+	}
+	if rr.Header().Get("ETag") == "" {
+		t.Fatalf("expected ETag on HEAD response")
+	}
+	if rr.Body.Len() != 0 {
+		t.Fatalf("HEAD body length = %d, want 0", rr.Body.Len())
+	}
+}
+
+func TestHandleUI_ServiceWorkerCompressionKeepsNoCache(t *testing.T) {
+	srv := &serveServer{cfg: serveServerConfig{ui: true, basePath: "/ui"}}
+
+	req := httptest.NewRequest(http.MethodGet, "/sw.js", nil)
+	req.Header.Set("Accept-Encoding", "gzip")
+	rr := httptest.NewRecorder()
+	srv.handleUI(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rr.Code)
+	}
+	if got := rr.Header().Get("Cache-Control"); got != "no-cache" {
+		t.Fatalf("cache-control = %q, want no-cache", got)
+	}
+	if got := rr.Header().Get("Content-Encoding"); got != "gzip" {
+		t.Fatalf("content-encoding = %q, want gzip", got)
+	}
+	if rr.Header().Get("ETag") == "" {
+		t.Fatalf("expected ETag on service worker")
+	}
+}
+
 func TestHandleUI_IndexVersionsShellAssets(t *testing.T) {
 	srv := &serveServer{cfg: serveServerConfig{ui: true, basePath: "/ui"}}
 	version := serveui.AssetVersion()
@@ -649,6 +749,15 @@ func TestHandleUI_IndexVersionsShellAssets(t *testing.T) {
 	if strings.Index(body, `.startup-splash {`) > strings.Index(body, `href="app.css?v=`+version+`"`) {
 		t.Fatalf("expected inline startup styles before app.css link")
 	}
+	for _, snippet := range []string{
+		`src="vendor/katex/katex.min.js?v=0.16.38"`,
+		`src="vendor/hljs/highlight.min.js?v=11.11.1"`,
+		`href="vendor/katex/katex.min.css?v=0.16.38"`,
+	} {
+		if strings.Contains(body, snippet) {
+			t.Fatalf("did not expect eager optional markdown asset %q in index", snippet)
+		}
+	}
 }
 
 func TestHandleUI_ServiceWorkerVersionsShellCache(t *testing.T) {
@@ -674,6 +783,15 @@ func TestHandleUI_ServiceWorkerVersionsShellCache(t *testing.T) {
 	} {
 		if !strings.Contains(body, snippet) {
 			t.Fatalf("expected %q in body", snippet)
+		}
+	}
+	for _, snippet := range []string{
+		`'./vendor/katex/katex.min.js?v=0.16.38'`,
+		`'./vendor/hljs/highlight.min.js?v=11.11.1'`,
+		`'./vendor/hljs/github-dark.min.css?v=11.11.1'`,
+	} {
+		if strings.Contains(body, snippet) {
+			t.Fatalf("did not expect lazy optional asset %q in shell precache", snippet)
 		}
 	}
 }

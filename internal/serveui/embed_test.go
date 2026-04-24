@@ -406,6 +406,15 @@ func TestStaticAssetsSupportIncrementalMarkdownStreaming(t *testing.T) {
 			t.Fatalf("index.html missing %q", want)
 		}
 	}
+	for _, forbidden := range []string{
+		`src="vendor/katex/katex.min.js?v=0.16.38"`,
+		`src="vendor/hljs/highlight.min.js?v=11.11.1"`,
+		`href="vendor/katex/katex.min.css?v=0.16.38"`,
+	} {
+		if strings.Contains(indexSrc, forbidden) {
+			t.Fatalf("index.html should lazy-load optional markdown asset %q", forbidden)
+		}
+	}
 
 	streamingJS, err := StaticAsset("markdown-streaming.js")
 	if err != nil {
@@ -415,6 +424,7 @@ func TestStaticAssetsSupportIncrementalMarkdownStreaming(t *testing.T) {
 	for _, want := range []string{
 		"function nextStreamingRenderDelay(",
 		"function areMathDelimitersBalanced(",
+		"function findStableMarkdownBoundary(",
 		"function canStreamPlainTextTail(",
 	} {
 		if !strings.Contains(streamingSrc, want) {
@@ -431,6 +441,7 @@ func TestStaticAssetsSupportIncrementalMarkdownStreaming(t *testing.T) {
 		"const enqueueAssistantStreamUpdate = (message) => {",
 		"const finalizeAssistantStreamRender = (message) => {",
 		"const renderAssistantTailPlainText = (streamState, tail) => {",
+		"markdown-stream-stable",
 	} {
 		if !strings.Contains(renderSrc, want) {
 			t.Fatalf("app-render.js missing %q", want)

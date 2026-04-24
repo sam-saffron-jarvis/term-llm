@@ -13,13 +13,7 @@ const SHELL_ASSETS = [
   './app-stream.js',
   './app-sessions.js',
   './app-webrtc.js',
-  './vendor/katex/katex.min.css?v=0.16.38',
-  './vendor/katex/katex.min.js?v=0.16.38',
-  './vendor/katex/auto-render.min.js?v=0.16.38',
   './vendor/marked/marked.umd.min.js?v=16.3.0',
-  './vendor/hljs/github-dark.min.css?v=11.11.1',
-  './vendor/hljs/github.min.css?v=11.11.1',
-  './vendor/hljs/highlight.min.js?v=11.11.1',
   './vendor/dompurify/purify.min.js?v=3.2.7'
 ];
 

@@ -1,8 +1,12 @@
 package cmd
 
 import (
+	"bytes"
+	"compress/gzip"
 	"context"
+	"crypto/sha256"
 	"crypto/subtle"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -40,6 +44,114 @@ func (s *serveServer) handleHealth(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"status": "ok"})
 }
 
+func uiAssetETag(data []byte) string {
+	sum := sha256.Sum256(data)
+	return `"` + hex.EncodeToString(sum[:]) + `"`
+}
+
+func uiETagMatches(headerValue, etag string) bool {
+	if headerValue == "" || etag == "" {
+		return false
+	}
+	for _, part := range strings.Split(headerValue, ",") {
+		candidate := strings.TrimSpace(part)
+		if candidate == "*" || candidate == etag || candidate == "W/"+etag {
+			return true
+		}
+	}
+	return false
+}
+
+func uiAcceptsGzip(headerValue string) bool {
+	for _, part := range strings.Split(headerValue, ",") {
+		pieces := strings.Split(part, ";")
+		if strings.TrimSpace(strings.ToLower(pieces[0])) != "gzip" {
+			continue
+		}
+		accepted := true
+		for _, param := range pieces[1:] {
+			param = strings.TrimSpace(strings.ToLower(param))
+			if strings.HasPrefix(param, "q=") {
+				q, err := strconv.ParseFloat(strings.TrimSpace(strings.TrimPrefix(param, "q=")), 64)
+				if err == nil && q <= 0 {
+					accepted = false
+				}
+			}
+		}
+		return accepted
+	}
+	return false
+}
+
+func uiCompressibleContentType(contentType string) bool {
+	mediaType := strings.ToLower(strings.TrimSpace(strings.Split(contentType, ";")[0]))
+	if strings.HasPrefix(mediaType, "text/") {
+		return true
+	}
+	switch mediaType {
+	case "application/javascript", "application/json", "application/manifest+json", "application/x-javascript", "image/svg+xml":
+		return true
+	default:
+		return strings.HasSuffix(mediaType, "+json") || strings.HasSuffix(mediaType, "+xml")
+	}
+}
+
+func uiAddVary(header http.Header, value string) {
+	for _, existing := range strings.Split(header.Get("Vary"), ",") {
+		if strings.EqualFold(strings.TrimSpace(existing), value) {
+			return
+		}
+	}
+	if current := header.Get("Vary"); current != "" {
+		header.Set("Vary", current+", "+value)
+		return
+	}
+	header.Set("Vary", value)
+}
+
+func serveEmbeddedUIBytes(w http.ResponseWriter, r *http.Request, data []byte, contentType, cacheControl string, conditional bool) {
+	header := w.Header()
+	if contentType != "" {
+		header.Set("Content-Type", contentType)
+	}
+	if cacheControl != "" {
+		header.Set("Cache-Control", cacheControl)
+	}
+
+	compressible := uiCompressibleContentType(contentType)
+	if compressible {
+		uiAddVary(header, "Accept-Encoding")
+	}
+
+	if conditional {
+		etag := uiAssetETag(data)
+		header.Set("ETag", etag)
+		if uiETagMatches(r.Header.Get("If-None-Match"), etag) {
+			w.WriteHeader(http.StatusNotModified)
+			return
+		}
+	}
+
+	body := data
+	if compressible {
+		if uiAcceptsGzip(r.Header.Get("Accept-Encoding")) {
+			var compressed bytes.Buffer
+			gz := gzip.NewWriter(&compressed)
+			_, _ = gz.Write(data)
+			_ = gz.Close()
+			body = compressed.Bytes()
+			header.Set("Content-Encoding", "gzip")
+		}
+	}
+	header.Set("Content-Length", strconv.Itoa(len(body)))
+
+	if r.Method == http.MethodHead {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+	_, _ = w.Write(body)
+}
+
 func (s *serveServer) handleUI(w http.ResponseWriter, r *http.Request) {
 	if !s.cfg.ui {
 		http.NotFound(w, r)
@@ -54,29 +166,23 @@ func (s *serveServer) handleUI(w http.ResponseWriter, r *http.Request) {
 	// basePath is already stripped by http.StripPrefix; URL.Path is "/" or "/session-id" etc.
 	assetName := strings.TrimPrefix(r.URL.Path, "/")
 	if assetName == "index.html" {
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		cacheControl := "no-cache, no-store, must-revalidate"
 		if strings.Contains(r.URL.RawQuery, "v=") {
-			w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
-		} else {
-			w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+			cacheControl = "public, max-age=31536000, immutable"
 		}
-		_, _ = w.Write(s.renderIndexHTML())
+		serveEmbeddedUIBytes(w, r, s.renderIndexHTML(), "text/html; charset=utf-8", cacheControl, false)
 		return
 	}
 	if assetName == "manifest.webmanifest" {
-		w.Header().Set("Content-Type", "application/manifest+json")
+		cacheControl := "no-cache"
 		if strings.Contains(r.URL.RawQuery, "v=") {
-			w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
-		} else {
-			w.Header().Set("Cache-Control", "no-cache")
+			cacheControl = "public, max-age=31536000, immutable"
 		}
-		_, _ = w.Write(serveui.RenderManifest())
+		serveEmbeddedUIBytes(w, r, serveui.RenderManifest(), "application/manifest+json", cacheControl, true)
 		return
 	}
 	if assetName == "sw.js" {
-		w.Header().Set("Content-Type", "text/javascript")
-		w.Header().Set("Cache-Control", "no-cache")
-		_, _ = w.Write(serveui.RenderServiceWorker())
+		serveEmbeddedUIBytes(w, r, serveui.RenderServiceWorker(), "text/javascript", "no-cache", true)
 		return
 	}
 	if assetName != "" && !strings.Contains(assetName, "..") {
@@ -91,21 +197,17 @@ func (s *serveServer) handleUI(w http.ResponseWriter, r *http.Request) {
 					contentType = http.DetectContentType(data)
 				}
 			}
-			w.Header().Set("Content-Type", contentType)
+			cacheControl := "no-cache"
 			if strings.Contains(r.URL.RawQuery, "v=") {
-				w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
-			} else {
-				w.Header().Set("Cache-Control", "no-cache")
+				cacheControl = "public, max-age=31536000, immutable"
 			}
-			_, _ = w.Write(data)
+			serveEmbeddedUIBytes(w, r, data, contentType, cacheControl, true)
 			return
 		}
 	}
 
 	// SPA catch-all: serve index.html for all other paths.
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
-	_, _ = w.Write(s.renderIndexHTML())
+	serveEmbeddedUIBytes(w, r, s.renderIndexHTML(), "text/html; charset=utf-8", "no-cache, no-store, must-revalidate", false)
 }
 
 func (s *serveServer) renderIndexHTML() []byte {

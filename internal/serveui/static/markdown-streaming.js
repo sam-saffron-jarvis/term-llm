@@ -20,7 +20,10 @@
     return {
       messageId: '',
       body: null,
+      stableContainer: null,
       tailContainer: null,
+      stableSource: '',
+      stableLength: 0,
       latestContent: '',
       lastTailContent: '',
       lastTailSource: '',
@@ -42,7 +45,7 @@
       if (i > lineStart) {
         const line = text.slice(lineStart, i);
         const trimmed = line.replace(/^[ \t]+/, '');
-        if (trimmed.startsWith('```')) count += 1;
+        if (trimmed.startsWith('```') || trimmed.startsWith('~~~')) count += 1;
       }
       lineStart = i + 1;
     }
@@ -233,13 +236,63 @@
     return false;
   }
 
+  function containsMathDelimiterSyntax(text) {
+    const value = String(text || '');
+    return value.includes('\\(') || value.includes('\\[') || value.includes('$$');
+  }
+
   function canStreamPlainTextTail(text) {
     const value = String(text || '');
     if (!value) return true;
     if (isInCodeBlockFast(value, value.length)) return false;
     if (containsMarkdownBlockSyntax(value)) return false;
     if (containsMarkdownInlineSyntax(value)) return false;
+    if (containsMathDelimiterSyntax(value)) return false;
+    if (!areInlineMarkersBalanced(value)) return false;
+    if (!areMathDelimitersBalanced(value)) return false;
     return true;
+  }
+
+  function containsListOrTableSyntax(text) {
+    const value = String(text || '');
+    return /^\s{0,3}(?:[-+*]\s|\d+[.)]\s)/m.test(value)
+      || /^\s*\|.*\|\s*$/m.test(value)
+      || /^\s*[-:| ]+\|[-:| ]*$/m.test(value);
+  }
+
+  function lastBlankLineBoundaryBefore(text, maxIndex) {
+    const value = String(text || '');
+    const limit = Math.max(0, Math.min(value.length, Number(maxIndex) || 0));
+    const blankLine = /\r?\n[ \t]*\r?\n/g;
+    let best = 0;
+    let match;
+
+    while ((match = blankLine.exec(value)) !== null) {
+      const boundary = match.index + match[0].length;
+      if (boundary > limit) break;
+      best = boundary;
+    }
+
+    return best;
+  }
+
+  function findStableMarkdownBoundary(text, minTailLength) {
+    const value = String(text || '');
+    const tailLength = Math.max(0, Number(minTailLength) || 0);
+    const latestBoundary = value.length - tailLength;
+    if (latestBoundary <= 0) return 0;
+
+    const boundary = lastBlankLineBoundaryBefore(value, latestBoundary);
+    if (boundary <= 0) return 0;
+
+    const stableCandidate = value.slice(0, boundary);
+    if (!stableCandidate.trim()) return 0;
+    if (isInCodeBlockFast(value, boundary)) return 0;
+    if (!areInlineMarkersBalanced(stableCandidate)) return 0;
+    if (!areMathDelimitersBalanced(stableCandidate)) return 0;
+    if (containsListOrTableSyntax(stableCandidate)) return 0;
+
+    return boundary;
   }
 
   return {
@@ -249,6 +302,7 @@
     isInCodeBlockFast,
     areInlineMarkersBalanced,
     areMathDelimitersBalanced,
+    findStableMarkdownBoundary,
     canStreamPlainTextTail
   };
 });

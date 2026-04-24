@@ -376,6 +376,110 @@ const deferEmbeddedVideos = (target) => {
 
 const assistantStreamStates = new Map();
 
+const OPTIONAL_MARKDOWN_ASSETS = {
+  katexCSS: 'vendor/katex/katex.min.css?v=0.16.38',
+  katexJS: 'vendor/katex/katex.min.js?v=0.16.38',
+  katexAutoRenderJS: 'vendor/katex/auto-render.min.js?v=0.16.38',
+  hljsDarkCSS: 'vendor/hljs/github-dark.min.css?v=11.11.1',
+  hljsLightCSS: 'vendor/hljs/github.min.css?v=11.11.1',
+  hljsJS: 'vendor/hljs/highlight.min.js?v=11.11.1'
+};
+
+const optionalAssetLoads = new Map();
+
+const optionalAssetParent = () => document.head || document.documentElement || document.body;
+
+const ensureStylesheetLoaded = (href, options = {}) => {
+  if (!href) return Promise.resolve(false);
+  const key = `style:${href}:${options.media || ''}`;
+  if (optionalAssetLoads.has(key)) return optionalAssetLoads.get(key);
+
+  const promise = new Promise((resolve) => {
+    const link = document.createElement('link');
+    link.rel = 'stylesheet';
+    link.href = href;
+    if (options.media) link.media = options.media;
+    link.dataset.termLlmOptionalAsset = 'true';
+    link.onload = () => resolve(true);
+    link.onerror = () => resolve(false);
+    optionalAssetParent().appendChild(link);
+  });
+  optionalAssetLoads.set(key, promise);
+  return promise;
+};
+
+const ensureScriptLoaded = (src, isReady = null) => {
+  if (!src) return Promise.resolve(false);
+  if (typeof isReady === 'function' && isReady()) return Promise.resolve(true);
+  const key = `script:${src}`;
+  if (optionalAssetLoads.has(key)) return optionalAssetLoads.get(key);
+
+  const promise = new Promise((resolve) => {
+    const script = document.createElement('script');
+    script.src = src;
+    script.async = true;
+    script.dataset.termLlmOptionalAsset = 'true';
+    script.onload = () => resolve(true);
+    script.onerror = () => resolve(false);
+    optionalAssetParent().appendChild(script);
+  });
+  optionalAssetLoads.set(key, promise);
+  return promise;
+};
+
+const ensureKatexLoaded = () => {
+  ensureStylesheetLoaded(OPTIONAL_MARKDOWN_ASSETS.katexCSS);
+  return ensureScriptLoaded(OPTIONAL_MARKDOWN_ASSETS.katexJS, () => Boolean(window.katex))
+    .then((loaded) => (loaded ? ensureScriptLoaded(
+      OPTIONAL_MARKDOWN_ASSETS.katexAutoRenderJS,
+      () => typeof window.renderMathInElement === 'function'
+    ) : false))
+    .then(() => typeof window.renderMathInElement === 'function');
+};
+
+const ensureHighlightLoaded = () => {
+  ensureStylesheetLoaded(OPTIONAL_MARKDOWN_ASSETS.hljsDarkCSS);
+  ensureStylesheetLoaded(OPTIONAL_MARKDOWN_ASSETS.hljsLightCSS, { media: '(prefers-color-scheme: light)' });
+  return ensureScriptLoaded(OPTIONAL_MARKDOWN_ASSETS.hljsJS, () => Boolean(window.hljs))
+    .then(() => Boolean(window.hljs));
+};
+
+const sourceContainsMathDelimiters = (content) => {
+  const text = String(content || '');
+  return text.includes('\\(') || text.includes('\\[') || text.includes('$$');
+};
+
+const isAttachedToDocument = (target) => {
+  if (!target || !document.body || typeof document.body.contains !== 'function') return true;
+  return document.body.contains(target);
+};
+
+const highlightCodeBlocks = (target) => {
+  const highlighter = window.hljs;
+  if (!target || !highlighter || typeof highlighter.highlightElement !== 'function') return;
+  target.querySelectorAll('pre code').forEach((code) => {
+    if (code.dataset.termLlmHighlighted === 'true' || code.dataset.highlighted === 'yes') return;
+    if (/\blanguage-\w+/.test(code.className)) {
+      highlighter.highlightElement(code);
+      code.dataset.termLlmHighlighted = 'true';
+    }
+  });
+};
+
+const enhanceMathAsync = (target) => {
+  ensureKatexLoaded().then((loaded) => {
+    if (!loaded || !isAttachedToDocument(target)) return;
+    renderMath(target);
+  }).catch(() => {});
+};
+
+const enhanceHighlightAsync = (target) => {
+  ensureHighlightLoaded().then((loaded) => {
+    if (!loaded || !isAttachedToDocument(target)) return;
+    highlightCodeBlocks(target);
+  }).catch(() => {});
+};
+
 const decorateAssistantFragment = (target, options = {}) => {
   if (!target) return;
   const streaming = Boolean(options.streaming);
@@ -386,12 +490,12 @@ const decorateAssistantFragment = (target, options = {}) => {
   });
   window.TermLLMDecoration.decorateLightbox(target, options, (...args) => app.openLightbox(...args));
   if (!streaming) {
-    renderMath(target);
-    target.querySelectorAll('pre code').forEach((code) => {
-      if (/\blanguage-\w+/.test(code.className)) {
-        hljs.highlightElement(code);
-      }
-    });
+    if (sourceContainsMathDelimiters(options.source || target.textContent || '')) {
+      enhanceMathAsync(target);
+    }
+    if (target.querySelectorAll('pre code').length > 0) {
+      enhanceHighlightAsync(target);
+    }
   }
   target.querySelectorAll('pre').forEach((pre) => {
     if (streaming) {
@@ -432,7 +536,7 @@ const renderAssistantMarkdown = (target, content, options = {}) => {
     ADD_ATTR: ['controls', 'playsinline', 'muted', 'loop', 'autoplay', 'poster', 'preload']
   });
   target.innerHTML = clean;
-  decorateAssistantFragment(target, options);
+  decorateAssistantFragment(target, { ...options, source: content || '' });
 };
 
 const disposeAssistantStreamState = (messageId) => {
@@ -467,12 +571,17 @@ const syncAssistantUsageNode = (node, message) => {
   }
 };
 
+const STREAM_STABLE_MIN_TAIL_LENGTH = 256;
+
 const createAssistantStreamContainers = (body) => {
   body.innerHTML = '';
+  const stableContainer = document.createElement('div');
+  stableContainer.className = 'markdown-stream-stable';
   const tailContainer = document.createElement('div');
   tailContainer.className = 'markdown-stream-tail';
+  body.appendChild(stableContainer);
   body.appendChild(tailContainer);
-  return { tailContainer };
+  return { stableContainer, tailContainer };
 };
 
 const getOrCreateAssistantStreamState = (message, body) => {
@@ -486,9 +595,13 @@ const getOrCreateAssistantStreamState = (message, body) => {
     : {
       messageId: '',
       body: null,
+      stableContainer: null,
       tailContainer: null,
+      stableSource: '',
+      stableLength: 0,
       latestContent: '',
       lastTailContent: '',
+      lastTailSource: '',
       dirty: false,
       rendering: false,
       rafId: 0,
@@ -498,6 +611,7 @@ const getOrCreateAssistantStreamState = (message, body) => {
   const containers = createAssistantStreamContainers(body);
   streamState.messageId = message.id;
   streamState.body = body;
+  streamState.stableContainer = containers.stableContainer;
   streamState.tailContainer = containers.tailContainer;
   assistantStreamStates.set(message.id, streamState);
   return streamState;
@@ -529,6 +643,53 @@ const clearAssistantTailRender = (streamState) => {
   streamState.tailContainer.innerHTML = '';
   streamState.tailTextNode = null;
   streamState.lastTailSource = '';
+};
+
+const resetAssistantStableRender = (streamState) => {
+  if (!streamState) return;
+  if (streamState.stableContainer) {
+    streamState.stableContainer.innerHTML = '';
+  }
+  streamState.stableSource = '';
+  streamState.stableLength = 0;
+  streamState.lastTailContent = '';
+  streamState.lastTailSource = '';
+  streamState.tailTextNode = null;
+};
+
+const appendAssistantStableMarkdown = (streamState, source) => {
+  if (!streamState?.stableContainer || !source) return;
+  const piece = document.createElement('div');
+  piece.className = 'markdown-stream-piece';
+  renderAssistantMarkdown(piece, source, { streaming: true });
+  streamState.stableContainer.appendChild(piece);
+  streamState.stableSource = `${streamState.stableSource || ''}${source}`;
+  streamState.stableLength = streamState.stableSource.length;
+};
+
+const promoteAssistantStableMarkdown = (streamState, content) => {
+  if (!streamState?.stableContainer || !app.markdownStreaming || typeof app.markdownStreaming.findStableMarkdownBoundary !== 'function') {
+    return false;
+  }
+
+  const stableSource = streamState.stableSource || '';
+  if (stableSource && !content.startsWith(stableSource)) {
+    resetAssistantStableRender(streamState);
+    clearAssistantTailRender(streamState);
+  }
+
+  const start = Math.max(0, Number(streamState.stableLength) || 0);
+  if (start > content.length) {
+    resetAssistantStableRender(streamState);
+    clearAssistantTailRender(streamState);
+  }
+
+  const uncommitted = content.slice(streamState.stableLength || 0);
+  const boundary = app.markdownStreaming.findStableMarkdownBoundary(uncommitted, STREAM_STABLE_MIN_TAIL_LENGTH);
+  if (!boundary || boundary <= 0) return false;
+
+  appendAssistantStableMarkdown(streamState, uncommitted.slice(0, boundary));
+  return true;
 };
 
 const renderAssistantTailPlainText = (streamState, tail) => {
@@ -581,22 +742,34 @@ const performAssistantStreamRender = (streamState) => {
   try {
     applyTextDirection(streamState.body, content);
 
-    if (content !== streamState.lastTailContent) {
-      if (content) {
-        const renderPlainTail = Boolean(
-          app.markdownStreaming
-          && typeof app.markdownStreaming.canStreamPlainTextTail === 'function'
-          && app.markdownStreaming.canStreamPlainTextTail(content)
-        );
-        if (renderPlainTail) {
+    if (content) {
+      const renderPlainTail = Boolean(
+        app.markdownStreaming
+        && typeof app.markdownStreaming.canStreamPlainTextTail === 'function'
+        && app.markdownStreaming.canStreamPlainTextTail(content)
+      );
+
+      if (renderPlainTail && !(streamState.stableLength > 0)) {
+        if (content !== streamState.lastTailContent) {
           renderAssistantTailPlainText(streamState, content);
-        } else {
-          renderAssistantTailMarkdown(streamState, content);
+          streamState.lastTailContent = content;
         }
       } else {
-        clearAssistantTailRender(streamState);
+        const promoted = promoteAssistantStableMarkdown(streamState, content);
+        const tail = content.slice(streamState.stableLength || 0);
+        if (promoted || tail !== streamState.lastTailContent) {
+          if (tail) {
+            renderAssistantTailMarkdown(streamState, tail);
+          } else {
+            clearAssistantTailRender(streamState);
+          }
+          streamState.lastTailContent = tail;
+        }
       }
-      streamState.lastTailContent = content;
+    } else {
+      resetAssistantStableRender(streamState);
+      clearAssistantTailRender(streamState);
+      streamState.lastTailContent = '';
     }
 
     streamState.lastRenderAt = Date.now();
@@ -1366,6 +1539,10 @@ Object.assign(app, {
   applyTextDirection,
   createInterruptBadgeNode,
   createMetaNode,
+  ensureScriptLoaded,
+  ensureStylesheetLoaded,
+  ensureKatexLoaded,
+  ensureHighlightLoaded,
   renderAssistantMarkdown,
   enqueueAssistantStreamUpdate,
   finalizeAssistantStreamRender,

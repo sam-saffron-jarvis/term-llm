@@ -6,6 +6,7 @@ const path = require('path');
 const vm = require('vm');
 
 const source = fs.readFileSync(path.join(__dirname, 'app-render.js'), 'utf8');
+const markdownStreaming = require(path.join(__dirname, 'markdown-streaming.js'));
 let failures = 0;
 
 function fail(name, message, details) {
@@ -79,10 +80,32 @@ class Element {
     this.style = {};
     this.listeners = new Map();
     this.textContent = '';
-    this.innerHTML = '';
+    this._innerHTML = '';
     this.disabled = false;
     this.title = '';
     this.type = '';
+  }
+
+  get innerHTML() {
+    return this._innerHTML || '';
+  }
+
+  set innerHTML(value) {
+    this._innerHTML = String(value || '');
+    this.children.forEach((child) => { child.parentNode = null; });
+    this.children = [];
+
+    const html = this._innerHTML;
+    const codeMatch = html.match(/<pre><code(?: class="([^"]*)")?>([\s\S]*?)<\/code><\/pre>/i);
+    if (codeMatch) {
+      const pre = new Element('pre');
+      const code = new Element('code');
+      if (codeMatch[1]) code.className = codeMatch[1];
+      code.textContent = codeMatch[2];
+      pre.textContent = codeMatch[2];
+      pre.appendChild(code);
+      this.appendChild(pre);
+    }
   }
 
   appendChild(child) {
@@ -158,10 +181,27 @@ class Element {
   }
 
   querySelectorAll(selector) {
+    const selectorText = String(selector || '').trim();
+    if (selectorText.includes(' ')) {
+      const parts = selectorText.split(/\s+/);
+      const leaf = parts[parts.length - 1];
+      return this.querySelectorAll(leaf).filter((node) => {
+        let ancestor = node.parentNode;
+        for (let i = parts.length - 2; i >= 0; i -= 1) {
+          while (ancestor && !ancestor.matches(parts[i])) {
+            ancestor = ancestor.parentNode;
+          }
+          if (!ancestor) return false;
+          ancestor = ancestor.parentNode;
+        }
+        return true;
+      });
+    }
+
     const results = [];
     const walk = (node) => {
       node.children.forEach((child) => {
-        if (child.matches(selector)) results.push(child);
+        if (child.matches(selectorText)) results.push(child);
         walk(child);
       });
     };
@@ -176,6 +216,7 @@ class Element {
 
 function createDocument() {
   const document = {
+    head: new Element('head'),
     body: new Element('body'),
     createElement(tagName) { return new Element(tagName); },
     createTextNode(text) {
@@ -246,6 +287,7 @@ function createHarness() {
     updateDocumentTitle() {},
     updateSessionUsageDisplay() {},
     renderMath() {},
+    markdownStreaming,
     visibleSessions() { return []; },
     sessionHasInProgressState() { return false; },
     setSessionServerActiveRun() {},
@@ -265,8 +307,8 @@ function createHarness() {
       const timer = timers.find((item) => item.id === id);
       if (timer) timer.cleared = true;
     },
-    requestAnimationFrame(callback) { return setTimeout(callback, 0); },
-    cancelAnimationFrame(id) { clearTimeout(id); },
+    requestAnimationFrame(callback) { return this.setTimeout(callback, 0); },
+    cancelAnimationFrame(id) { this.clearTimeout(id); },
     addEventListener() {},
   };
 
@@ -276,12 +318,19 @@ function createHarness() {
     console,
     localStorage: { getItem() { return null; }, setItem() {} },
     navigator: { clipboard: { async writeText(text) { copied.push(text); } } },
-    marked: { parse(text) { return String(text || ''); } },
+    marked: { parse(text) {
+      const value = String(text || '');
+      const code = value.match(/^```([A-Za-z0-9_-]+)?\n([\s\S]*?)\n```\s*$/);
+      if (code) {
+        const lang = code[1] ? ` class="language-${code[1]}"` : '';
+        return `<pre><code${lang}>${code[2]}</code></pre>`;
+      }
+      return value;
+    } },
     DOMPurify: { sanitize(html) { return String(html || ''); } },
-    hljs: { highlightElement() {} },
     CSS: { escape(value) { return String(value); } },
-    setTimeout,
-    clearTimeout,
+    setTimeout: windowObj.setTimeout.bind(windowObj),
+    clearTimeout: windowObj.clearTimeout.bind(windowObj),
   };
   context.globalThis = context;
   windowObj.document = document;
@@ -303,6 +352,32 @@ function messageNode(id, role) {
   node.appendChild(body);
   node.appendChild(meta);
   return node;
+}
+
+function headAssets(document, tagName) {
+  return document.head.children.filter((child) => child.tagName === tagName.toUpperCase());
+}
+
+function runNextTimer(timers) {
+  const timer = timers.find((item) => !item.cleared);
+  assert(timer, 'expected a pending timer');
+  timer.cleared = true;
+  timer.callback();
+  return timer;
+}
+
+function runAllPendingTimers(timers, limit = 10) {
+  let count = 0;
+  while (timers.some((item) => !item.cleared)) {
+    assert(count < limit, 'too many pending timers');
+    runNextTimer(timers);
+    count += 1;
+  }
+}
+
+async function flushMicrotasks() {
+  await Promise.resolve();
+  await Promise.resolve();
 }
 
 async function run(name, fn) {
@@ -421,6 +496,104 @@ async function run(name, fn) {
     assert(reset, 'reset timer scheduled');
     reset.callback();
     assert(!button.classList.contains('copied'), 'copied class resets');
+  });
+
+  await run('renders markdown without eager optional libraries for plain markdown', () => {
+    const { app, document } = createHarness();
+    const target = new Element('div');
+    document.body.appendChild(target);
+
+    app.renderAssistantMarkdown(target, 'Plain **markdown** without math or code.');
+
+    assert(target.innerHTML.includes('Plain **markdown**'), 'plain markdown rendered');
+    assertEqual(headAssets(document, 'script').length, 0, 'no optional scripts loaded');
+    assertEqual(headAssets(document, 'link').length, 0, 'no optional styles loaded');
+  });
+
+  await run('math markdown triggers lazy KaTeX loader', async () => {
+    const { app, document } = createHarness();
+    const target = new Element('div');
+    document.body.appendChild(target);
+
+    app.renderAssistantMarkdown(target, 'Value: \\(x + y\\)');
+
+    const initialScripts = headAssets(document, 'script').map((node) => node.src);
+    const initialStyles = headAssets(document, 'link').map((node) => node.href);
+    assert(initialScripts.includes('vendor/katex/katex.min.js?v=0.16.38'), 'KaTeX script requested');
+    assert(initialStyles.includes('vendor/katex/katex.min.css?v=0.16.38'), 'KaTeX stylesheet requested');
+    assert(!initialScripts.includes('vendor/hljs/highlight.min.js?v=11.11.1'), 'highlight.js not requested for math');
+
+    const katexScript = headAssets(document, 'script').find((node) => node.src === 'vendor/katex/katex.min.js?v=0.16.38');
+    katexScript.onload();
+    await flushMicrotasks();
+    const scriptsAfterKatex = headAssets(document, 'script').map((node) => node.src);
+    assert(scriptsAfterKatex.includes('vendor/katex/auto-render.min.js?v=0.16.38'), 'KaTeX auto-render script requested after core load');
+  });
+
+  await run('code blocks trigger lazy highlight.js loader', () => {
+    const { app, document } = createHarness();
+    const target = new Element('div');
+    document.body.appendChild(target);
+
+    app.renderAssistantMarkdown(target, '```js\nconsole.log(1);\n```');
+
+    const scripts = headAssets(document, 'script').map((node) => node.src);
+    const styles = headAssets(document, 'link').map((node) => `${node.href}|${node.media || ''}`);
+    assert(scripts.includes('vendor/hljs/highlight.min.js?v=11.11.1'), 'highlight.js script requested');
+    assert(styles.includes('vendor/hljs/github-dark.min.css?v=11.11.1|'), 'dark highlight stylesheet requested');
+    assert(styles.includes('vendor/hljs/github.min.css?v=11.11.1|(prefers-color-scheme: light)'), 'light highlight stylesheet requested');
+  });
+
+  await run('streaming markdown preserves stable container across tail updates', () => {
+    const { app, session, messages, timers } = createHarness();
+    const message = {
+      id: 'stream1',
+      role: 'assistant',
+      content: `First paragraph with **bold**.\n\n${'tail '.repeat(80)}`,
+      created: Date.now(),
+    };
+    session.messages = [message];
+
+    app.enqueueAssistantStreamUpdate(message);
+    runAllPendingTimers(timers);
+
+    const node = messages.children[0];
+    const body = node.querySelector('.message-body');
+    const stable = body.querySelector('.markdown-stream-stable');
+    const tail = body.querySelector('.markdown-stream-tail');
+    assert(stable, 'stable container created');
+    assert(tail, 'tail container created');
+    assertEqual(stable.children.length, 1, 'one stable piece promoted');
+    const stablePiece = stable.children[0];
+
+    message.content += 'more tail content with **markdown**';
+    app.enqueueAssistantStreamUpdate(message);
+    runAllPendingTimers(timers);
+
+    assertEqual(stable.children[0], stablePiece, 'stable DOM piece should be preserved');
+    assert(tail.innerHTML.includes('more tail content'), 'tail rerendered with appended content');
+  });
+
+  await run('finalizing streaming markdown replaces streaming containers with full render', () => {
+    const { app, session, messages, timers } = createHarness();
+    const message = {
+      id: 'stream-final',
+      role: 'assistant',
+      content: `First paragraph with **bold**.\n\n${'tail '.repeat(80)}`,
+      created: Date.now(),
+    };
+    session.messages = [message];
+
+    app.enqueueAssistantStreamUpdate(message);
+    runAllPendingTimers(timers);
+    let body = messages.children[0].querySelector('.message-body');
+    assert(body.querySelector('.markdown-stream-tail'), 'tail exists before final render');
+
+    app.finalizeAssistantStreamRender(message);
+    body = messages.children[0].querySelector('.message-body');
+    assert(!body.querySelector('.markdown-stream-tail'), 'tail removed after final render');
+    assert(!body.querySelector('.markdown-stream-stable'), 'stable container removed after final render');
+    assert(body.innerHTML.includes('First paragraph'), 'full markdown render remains');
   });
 
   if (failures > 0) {
