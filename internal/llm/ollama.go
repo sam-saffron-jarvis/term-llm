@@ -14,7 +14,7 @@ import (
 
 const (
 	ollamaChatDefaultModel   = "qwen2.5-coder:7b"
-	ollamaChatDefaultBaseURL = "http://localhost:11434"
+	ollamaChatDefaultBaseURL = "http://127.0.0.1:11434"
 )
 
 // OllamaOptions holds Ollama-native generation knobs that have no equivalent
@@ -38,7 +38,7 @@ type OllamaProvider struct {
 }
 
 // NewOllamaChatProvider creates a native Ollama chat provider.
-// baseURL defaults to the OLLAMA_HOST env var, then http://localhost:11434.
+// baseURL defaults to the OLLAMA_HOST env var, then http://127.0.0.1:11434.
 // model defaults to qwen2.5-coder:7b.
 func NewOllamaChatProvider(baseURL, model string, opts OllamaOptions) *OllamaProvider {
 	if baseURL == "" {

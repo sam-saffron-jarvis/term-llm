@@ -418,6 +418,9 @@ func (p *CopilotProvider) streamChatCompletions(ctx context.Context, req Request
 			return fmt.Errorf("Copilot streaming error: %w", err)
 		}
 
+		if err := toolState.Validate(); err != nil {
+			return err
+		}
 		for _, call := range toolState.Calls() {
 			if err := send.Send(Event{Type: EventToolCall, Tool: &call}); err != nil {
 				return err

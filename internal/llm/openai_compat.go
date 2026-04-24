@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -331,7 +332,7 @@ func (p *OpenAICompatProvider) ListModels(ctx context.Context) ([]ModelInfo, err
 func readSSELine(reader *bufio.Reader) (line string, eof bool, err error) {
 	line, err = reader.ReadString('\n')
 	if err != nil {
-		if err == io.EOF || err == io.ErrUnexpectedEOF {
+		if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
 			return strings.TrimRight(line, "\r\n"), true, nil
 		}
 		return "", false, err
@@ -458,16 +459,19 @@ func (p *OpenAICompatProvider) Stream(ctx context.Context, req Request) (Stream,
 				continue
 			}
 			data := strings.TrimPrefix(line, "data: ")
+			if strings.TrimSpace(data) == "" {
+				if eof {
+					break
+				}
+				continue
+			}
 			if data == "[DONE]" {
 				break
 			}
 
 			var chatResp oaiChatResponse
 			if err := json.Unmarshal([]byte(data), &chatResp); err != nil {
-				if eof {
-					break
-				}
-				continue
+				return fmt.Errorf("%s streaming error: invalid JSON chunk: %w", p.name, err)
 			}
 
 			if lastEventType == "error" || chatResp.Error != nil {
@@ -515,6 +519,9 @@ func (p *OpenAICompatProvider) Stream(ctx context.Context, req Request) (Stream,
 			}
 		}
 
+		if err := toolState.Validate(); err != nil {
+			return err
+		}
 		for _, call := range toolState.Calls() {
 			if err := send.Send(Event{Type: EventToolCall, Tool: &call}); err != nil {
 				return err
@@ -773,6 +780,29 @@ func (s *compatToolState) Add(calls []oaiToolCall) {
 	}
 }
 
+func (s *compatToolState) Validate() error {
+	if len(s.order) == 0 {
+		return nil
+	}
+	for _, idx := range s.order {
+		state := s.byIndex[idx]
+		if state == nil {
+			continue
+		}
+		if strings.TrimSpace(state.id) == "" {
+			return fmt.Errorf("OpenAI-compatible stream missing tool call id for tool call %d", idx)
+		}
+		if strings.TrimSpace(state.name) == "" {
+			return fmt.Errorf("OpenAI-compatible stream missing tool name for tool call %d", idx)
+		}
+		args := strings.TrimSpace(state.args.String())
+		if args != "" && !json.Valid([]byte(args)) {
+			return fmt.Errorf("OpenAI-compatible stream invalid arguments for tool call %d", idx)
+		}
+	}
+	return nil
+}
+
 func (s *compatToolState) Calls() []ToolCall {
 	if len(s.order) == 0 {
 		return nil
@@ -787,9 +817,10 @@ func (s *compatToolState) Calls() []ToolCall {
 		if state == nil {
 			continue
 		}
-		args := json.RawMessage(state.args.String())
-		if !json.Valid(args) {
-			args = json.RawMessage("{}")
+		argsString := strings.TrimSpace(state.args.String())
+		args := json.RawMessage("{}")
+		if argsString != "" {
+			args = json.RawMessage(argsString)
 		}
 		calls = append(calls, ToolCall{
 			ID:        state.id,

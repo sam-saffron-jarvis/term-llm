@@ -186,6 +186,9 @@ func (p *VeniceProvider) Stream(ctx context.Context, req Request) (Stream, error
 		if err := scanner.Err(); err != nil {
 			return fmt.Errorf("%s streaming error: %w", p.name, err)
 		}
+		if err := toolState.Validate(); err != nil {
+			return err
+		}
 		for _, call := range toolState.Calls() {
 			if err := send.Send(Event{Type: EventToolCall, Tool: &call}); err != nil {
 				return err
