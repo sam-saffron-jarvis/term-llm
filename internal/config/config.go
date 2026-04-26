@@ -1317,7 +1317,7 @@ func GetDefaults() map[string]any {
 		"sessions.path":                   "",
 		"agents.use_builtin":              true,
 		"agents.search_paths":             []string{},
-		"skills.enabled":                  false,
+		"skills.enabled":                  true,
 		"skills.auto_invoke":              true,
 		"skills.metadata_budget_tokens":   8000,
 		"skills.max_visible_skills":       50,
@@ -1325,7 +1325,7 @@ func GetDefaults() map[string]any {
 		"skills.include_ecosystem_paths":  true,
 		"skills.always_enabled":           []string{},
 		"skills.never_auto":               []string{},
-		"agents_md.enabled":               false,
+		"agents_md.enabled":               true,
 		"auto_compact":                    true,
 	}
 }

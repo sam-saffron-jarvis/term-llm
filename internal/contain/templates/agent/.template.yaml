@@ -1,0 +1,64 @@
+version: 1
+name: agent
+description: "Managed term-llm agent runtime workspace"
+prompts:
+  - id: web_port
+    label: "Web UI port"
+    type: string
+    default: "8081"
+  - id: web_token
+    label: "Web UI bearer token"
+    type: secret
+    default:
+      generate: hex
+      bytes: 24
+  - id: provider
+    label: "LLM provider"
+    type: select
+    default: chatgpt
+    options:
+      - chatgpt
+      - claude-bin
+      - openrouter
+      - zen
+      - anthropic
+      - openai
+      - venice
+      - gemini
+      - skip
+  - id: openrouter_api_key
+    label: "OpenRouter API key"
+    type: secret
+    when:
+      equals:
+        provider: openrouter
+  - id: zen_api_key
+    label: "Zen API key"
+    type: secret
+    when:
+      equals:
+        provider: zen
+  - id: anthropic_api_key
+    label: "Anthropic API key"
+    type: secret
+    when:
+      equals:
+        provider: anthropic
+  - id: openai_api_key
+    label: "OpenAI API key"
+    type: secret
+    when:
+      equals:
+        provider: openai
+  - id: venice_api_key
+    label: "Venice API key"
+    type: secret
+    when:
+      equals:
+        provider: venice
+  - id: gemini_api_key
+    label: "Gemini API key"
+    type: secret
+    when:
+      equals:
+        provider: gemini

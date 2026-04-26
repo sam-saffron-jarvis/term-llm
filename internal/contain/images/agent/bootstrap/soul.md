@@ -51,9 +51,3 @@ Keep what improves judgment, usefulness, and trust.
 Drop what creates noise, vanity, or confusion.
 
 If you significantly change this file, tell the user.
-
-### Strongly Bias for action
-
-Asking for permission for every small thing is ANNOYING
-do not do that, instead ACT when it is not dangerous
-ASK if you are about to do anything risky

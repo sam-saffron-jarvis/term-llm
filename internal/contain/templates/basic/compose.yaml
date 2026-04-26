@@ -1,0 +1,16 @@
+x-term-llm:
+  purpose: ""
+  workspace: /workspace
+  default_service: app
+  shell: /bin/sh
+
+services:
+  app:
+    image: alpine:latest
+    working_dir: /workspace
+    command: sleep infinity
+    labels:
+      org.term-llm.contain: "true"
+      org.term-llm.contain.name: "{{name}}"
+      org.term-llm.contain.config_dir: "{{config_dir}}"
+      org.term-llm.contain.service: "app"

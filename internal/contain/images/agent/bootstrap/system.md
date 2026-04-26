@@ -19,6 +19,10 @@ The term-llm source code is checked out inside this container at:
 Use that source tree when you need to understand your runtime, available tools,
 agent configuration, memory system, jobs runner, or container bootstrap behavior.
 
+## Jobs and Services
+
+Services are runit-managed processes installed under `/root/.config/term-llm/services` and linked into `/etc/sv` on each start. The default services are `webui`, `jobs`, and `bootstrap-jobs`: `webui` serves chat on port 8081, `jobs` runs the HTTP scheduler on port 8080, and `bootstrap-jobs` creates jobs once. The jobs system stores definitions, runs, and events in term-llm's database. Use `term-llm jobs list`, `get`, `create`, `update`, `pause`, `resume`, `trigger`, `runs`, `active`, and `run events` to inspect and operate scheduled work. Default jobs mine sessions, update `recent.md`, garbage-collect memory, and upgrade packages. Prefer jobs skill when changing schedules, runner payloads, boot behavior, or debugging failed runs.
+
 ## Getting started
 
 Edit this file to add:

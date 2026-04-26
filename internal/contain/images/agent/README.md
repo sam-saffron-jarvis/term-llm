@@ -1,0 +1,40 @@
+Managed term-llm agent runtime image asset.
+
+This directory is written by `term-llm contain image sync`.
+Fork it if you want custom image behavior.
+
+The default Dockerfile installs `term-llm` with the official release installer:
+
+    curl -fsSL https://raw.githubusercontent.com/samsaffron/term-llm/main/install.sh | sh
+
+By default it installs the latest release. To pin a specific release tag during
+build, set `TERM_LLM_VERSION` in the workspace `.env`.
+
+On first boot, if `TERM_LLM_CHATGPT_OAUTH_JSON_B64` is present in the
+container environment, the entrypoint decodes it once into
+`/root/.config/term-llm/chatgpt_oauth.json` with mode `0600`. This lets the
+agent template bootstrap ChatGPT OAuth credentials without baking them into the
+image.
+
+This directory is a complete Docker build context. It contains:
+
+    Dockerfile
+    entrypoint.sh
+    bootstrap/bootstrap.yaml
+    bootstrap/system.md
+    bootstrap/soul.md
+    bootstrap/services/
+    bootstrap/skills/
+    bootstrap/scripts/
+
+The image bakes those bootstrap files into `/opt/term-llm/bootstrap`.
+`bootstrap.yaml` is rendered to the live agent's `agent.yaml` on first boot.
+
+If a container mounts a static `/seed` directory containing `bootstrap.yaml`, that
+seed directory replaces the image bootstrap source for first boot only. There is
+no `/seed/agents/<name>` convention in the managed image.
+
+On first boot, bootstrap files are rendered/copied into the persistent `/root`
+volume. A default `/root/.config/term-llm/init.sh` is written if one does not
+already exist. Future boots ignore `/seed` and image bootstrap files, then run
+that persistent init script.

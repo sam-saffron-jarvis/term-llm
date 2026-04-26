@@ -441,6 +441,28 @@ async function run(name, fn) {
     assert(!lines[1].includes('extra:'), 'detail should not include excess keys');
   });
 
+  await run('image generation tool summaries prioritize prompt and hide blanks', () => {
+    const { app } = createHarness();
+    const entries = app.formatToolArgs({
+      name: 'image_generate',
+      status: 'done',
+      arguments: JSON.stringify({
+        aspect_ratio: '1:1',
+        input_image: '',
+        input_images: [],
+        output_path: '',
+        prompt: 'a luminous fox under the moon',
+      }),
+    });
+
+    assertEqual(entries[0][0], 'prompt', 'prompt should be first even when JSON order puts it later');
+    assertEqual(entries[0][1], 'a luminous fox under the moon', 'prompt value');
+    assert(entries.some(([key, value]) => key === 'aspect_ratio' && value === '1:1'), 'non-blank aspect ratio should remain');
+    assert(!entries.some(([key]) => key === 'input_image'), 'blank input_image should be hidden');
+    assert(!entries.some(([key]) => key === 'input_images'), 'empty input_images should be hidden');
+    assert(!entries.some(([key]) => key === 'output_path'), 'blank output_path should be hidden');
+  });
+
   await run('askUser messages do not split assistant turns', () => {
     const { app, session } = createHarness();
     session.messages = [

@@ -98,6 +98,63 @@ type jobsV2Job struct {
 	UpdatedAt         time.Time         `json:"updated_at"`
 }
 
+type jobsV2JobRequest struct {
+	Name              string            `json:"name"`
+	Enabled           *bool             `json:"enabled,omitempty"`
+	RunnerType        jobsV2RunnerType  `json:"runner_type"`
+	RunnerConfig      json.RawMessage   `json:"runner_config"`
+	TriggerType       jobsV2TriggerType `json:"trigger_type"`
+	TriggerConfig     json.RawMessage   `json:"trigger_config"`
+	ScheduleTimezone  string            `json:"schedule_timezone,omitempty"`
+	ConcurrencyPolicy string            `json:"concurrency_policy,omitempty"`
+	MaxConcurrentRuns int               `json:"max_concurrent_runs,omitempty"`
+	RetryPolicy       json.RawMessage   `json:"retry_policy,omitempty"`
+	TimeoutSeconds    int               `json:"timeout_seconds,omitempty"`
+	MisfirePolicy     string            `json:"misfire_policy,omitempty"`
+	Labels            json.RawMessage   `json:"labels,omitempty"`
+}
+
+func (req jobsV2JobRequest) toJob(defaultEnabled bool) jobsV2Job {
+	enabled := defaultEnabled
+	if req.Enabled != nil {
+		enabled = *req.Enabled
+	}
+	return jobsV2Job{
+		Name:              req.Name,
+		Enabled:           enabled,
+		RunnerType:        req.RunnerType,
+		RunnerConfig:      req.RunnerConfig,
+		TriggerType:       req.TriggerType,
+		TriggerConfig:     req.TriggerConfig,
+		ScheduleTimezone:  req.ScheduleTimezone,
+		ConcurrencyPolicy: req.ConcurrencyPolicy,
+		MaxConcurrentRuns: req.MaxConcurrentRuns,
+		RetryPolicy:       req.RetryPolicy,
+		TimeoutSeconds:    req.TimeoutSeconds,
+		MisfirePolicy:     req.MisfirePolicy,
+		Labels:            req.Labels,
+	}
+}
+
+func jobsV2JobToRequest(req jobsV2Job) jobsV2JobRequest {
+	enabled := req.Enabled
+	return jobsV2JobRequest{
+		Name:              req.Name,
+		Enabled:           &enabled,
+		RunnerType:        req.RunnerType,
+		RunnerConfig:      req.RunnerConfig,
+		TriggerType:       req.TriggerType,
+		TriggerConfig:     req.TriggerConfig,
+		ScheduleTimezone:  req.ScheduleTimezone,
+		ConcurrencyPolicy: req.ConcurrencyPolicy,
+		MaxConcurrentRuns: req.MaxConcurrentRuns,
+		RetryPolicy:       req.RetryPolicy,
+		TimeoutSeconds:    req.TimeoutSeconds,
+		MisfirePolicy:     req.MisfirePolicy,
+		Labels:            req.Labels,
+	}
+}
+
 type jobsV2Run struct {
 	ID           string          `json:"id"`
 	JobID        string          `json:"job_id"`
@@ -1207,6 +1264,10 @@ func (m *jobsV2Manager) ListJobs(limit, offset int) ([]jobsV2Job, int, error) {
 }
 
 func (m *jobsV2Manager) UpdateJob(id string, req jobsV2Job) (jobsV2Job, error) {
+	return m.UpdateJobPatch(id, jobsV2JobToRequest(req))
+}
+
+func (m *jobsV2Manager) UpdateJobPatch(id string, req jobsV2JobRequest) (jobsV2Job, error) {
 	current, err := m.GetJob(id)
 	if err != nil {
 		return jobsV2Job{}, err
@@ -1247,7 +1308,9 @@ func (m *jobsV2Manager) UpdateJob(id string, req jobsV2Job) (jobsV2Job, error) {
 	if len(req.Labels) > 0 {
 		current.Labels = req.Labels
 	}
-	current.Enabled = req.Enabled
+	if req.Enabled != nil {
+		current.Enabled = *req.Enabled
+	}
 
 	cfg, err := parseTriggerConfig(current.TriggerType, current.TriggerConfig, current.ScheduleTimezone)
 	if err != nil {
@@ -1874,12 +1937,12 @@ func (s *serveServer) handleJobV2ByID(w http.ResponseWriter, r *http.Request) {
 			writeOpenAIError(w, http.StatusUnsupportedMediaType, "invalid_request_error", err.Error())
 			return
 		}
-		var req jobsV2Job
+		var req jobsV2JobRequest
 		if err := decodeJSONBody(r, &req); err != nil {
 			writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", err.Error())
 			return
 		}
-		job, err := s.jobsV2.UpdateJob(jobID, req)
+		job, err := s.jobsV2.UpdateJobPatch(jobID, req)
 		if err != nil {
 			writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", err.Error())
 			return
@@ -1903,14 +1966,15 @@ func (s *serveServer) handleCreateJobV2(w http.ResponseWriter, r *http.Request) 
 		writeOpenAIError(w, http.StatusUnsupportedMediaType, "invalid_request_error", err.Error())
 		return
 	}
-	var req jobsV2Job
+	var req jobsV2JobRequest
 	if err := decodeJSONBody(r, &req); err != nil {
 		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", err.Error())
 		return
 	}
-	if s.cfgRef != nil && req.RunnerType == jobsV2RunnerLLM {
+	jobReq := req.toJob(true)
+	if s.cfgRef != nil && jobReq.RunnerType == jobsV2RunnerLLM {
 		var llmCfg jobsV2LLMConfig
-		_ = json.Unmarshal(req.RunnerConfig, &llmCfg)
+		_ = json.Unmarshal(jobReq.RunnerConfig, &llmCfg)
 		if strings.TrimSpace(llmCfg.AgentName) != "" {
 			if _, err := LoadAgent(llmCfg.AgentName, s.cfgRef); err != nil {
 				writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", err.Error())
@@ -1918,7 +1982,7 @@ func (s *serveServer) handleCreateJobV2(w http.ResponseWriter, r *http.Request) 
 			}
 		}
 	}
-	job, err := s.jobsV2.CreateJob(req)
+	job, err := s.jobsV2.CreateJob(jobReq)
 	if err != nil {
 		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", err.Error())
 		return

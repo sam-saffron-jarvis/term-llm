@@ -1066,6 +1066,14 @@ const createToolGroupNode = (message) => {
   return wrapper;
 };
 
+const isBlankToolArgValue = (value) => {
+  if (value == null) return true;
+  if (typeof value === 'string') return value.trim() === '';
+  if (Array.isArray(value)) return value.length === 0;
+  if (typeof value === 'object') return Object.keys(value).length === 0;
+  return false;
+};
+
 const formatToolArgs = (tool) => {
   if (!tool.arguments) return null;
   let args;
@@ -1103,16 +1111,20 @@ const formatToolArgs = (tool) => {
     'search': ['query'],
     'grep': ['pattern', 'path'],
     'glob': ['pattern', 'path'],
+    'image_generate': ['prompt', 'aspect_ratio', 'size', 'input_image', 'input_images', 'output_path'],
   };
 
+  const allEntries = Object.entries(args).filter(([, value]) => !isBlankToolArgValue(value));
   const pick = priorityKeys[name];
   let entries;
   if (pick) {
-    entries = pick.filter(k => args[k] != null).map(k => [k, args[k]]);
-    // If no priority keys matched, fall back to all keys
-    if (entries.length === 0) entries = Object.entries(args);
+    entries = pick
+      .filter(k => Object.prototype.hasOwnProperty.call(args, k) && !isBlankToolArgValue(args[k]))
+      .map(k => [k, args[k]]);
+    // If no priority keys matched, fall back to all non-blank keys
+    if (entries.length === 0) entries = allEntries;
   } else {
-    entries = Object.entries(args);
+    entries = allEntries;
   }
 
   return entries.slice(0, 4); // Cap at 4 args to keep it compact

@@ -1645,6 +1645,8 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return m.renderMarkdown(text)
 				})
 			}
+			// Scroll to bottom so the prompt is visible even if the user had scrolled up.
+			m.scrollToBottom = true
 			return m, nil
 		}
 		// Non-alt screen mode: shouldn't happen, but fall back to immediate deny
@@ -1663,6 +1665,8 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return m.renderMarkdown(text)
 				})
 			}
+			// Scroll to bottom so the prompt is visible even if the user had scrolled up.
+			m.scrollToBottom = true
 			return m, nil
 		}
 		// Non-alt screen mode: shouldn't happen, but fall back to cancelled

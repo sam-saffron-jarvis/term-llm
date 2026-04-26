@@ -16,7 +16,7 @@ const (
 
 // CompactionConfig controls when and how context compaction occurs.
 type CompactionConfig struct {
-	ThresholdRatio     float64 // Fraction of context window to trigger (default 0.80)
+	ThresholdRatio     float64 // Fraction of context window to trigger (default 0.90)
 	MaxToolResultChars int     // Max chars per tool result when recording
 	SummaryTokenBudget int     // Max output tokens for the compaction summary
 	InputLimit         int     // Provider-effective input token limit (0 = use canonical)

@@ -7,7 +7,6 @@ set -- serve web \
   --auth bearer \
   --token "${WEB_TOKEN:?Set WEB_TOKEN in .env}" \
   --yolo \
-  --sidebar-sessions chat,web \
   --files-dir /root/Files
 
 if [ -n "${TERM_LLM_PROVIDER:-}" ] && [ "${TERM_LLM_PROVIDER}" != "skip" ]; then

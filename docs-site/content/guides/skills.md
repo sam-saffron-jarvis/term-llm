@@ -59,20 +59,20 @@ When helping with Git:
 
 ### Configuration
 
-Skills are disabled by default. Enable them in `~/.config/term-llm/config.yaml`:
+Skills are enabled by default. To disable them globally, set `enabled: false` in `~/.config/term-llm/config.yaml`:
 
 ```yaml
 skills:
-  enabled: true
+  enabled: false
 ```
 
-The `--skills` flag on any command implicitly enables the system for that invocation, so `term-llm ask --skills git "..."` works without touching config. Agents can also enable skills via their `skills` field — all built-in agents set `skills: "all"`, so skills are active whenever you use a built-in agent. For auto-invocation outside of an agent (where the model decides to activate skills on its own), you need `enabled: true` in config.
+The `--skills` flag on any command implicitly enables the system for that invocation, so `term-llm ask --skills git "..."` works even when skills are disabled in config. Agents can also enable skills via their `skills` field — all built-in agents set `skills: "all"`, so skills are active whenever you use a built-in agent.
 
 Full configuration reference:
 
 ```yaml
 skills:
-  enabled: false                  # Master switch (default: off)
+  enabled: true                   # Master switch (default: on)
   auto_invoke: true               # Let the model call activate_skill on its own
   metadata_budget_tokens: 8000    # Max tokens for skill metadata in system prompt
   max_visible_skills: 50           # Max skills shown in system prompt (0 = search only)
@@ -84,7 +84,7 @@ skills:
 
 | Key | Default | Description |
 |-----|---------|-------------|
-| `enabled` | `false` | Master switch. Must be `true` for auto-invocation to work. |
+| `enabled` | `true` | Master switch. Must be `true` for auto-invocation to work. |
 | `auto_invoke` | `true` | When enabled, the model can call `activate_skill` without being asked. |
 | `metadata_budget_tokens` | `8000` | Token budget for the `<available_skills>` block injected into the system prompt. |
 | `max_visible_skills` | `50` | Maximum number of skills shown in the system prompt. When more skills exist, `search_skills` is registered automatically. Set to `0` for pure search mode. |

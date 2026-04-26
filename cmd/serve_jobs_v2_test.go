@@ -171,6 +171,146 @@ func TestJobsV2ManualTriggerAndCancel(t *testing.T) {
 	}
 }
 
+func TestJobsV2CreateDefaultsEnabledWhenOmitted(t *testing.T) {
+	mgr, err := newJobsV2Manager(":memory:", 0, nil)
+	if err != nil {
+		t.Fatalf("newJobsV2Manager failed: %v", err)
+	}
+	defer func() { _ = mgr.Close() }()
+
+	srv := &serveServer{jobsV2: mgr}
+	body := `{
+		"name":"default-enabled",
+		"runner_type":"program",
+		"runner_config":{"command":"echo","args":["hello"]},
+		"trigger_type":"manual",
+		"trigger_config":{}
+	}`
+
+	req := httptest.NewRequest(http.MethodPost, "/v2/jobs", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	srv.handleJobsV2(rr, req)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("create status = %d, want 201 body=%s", rr.Code, rr.Body.String())
+	}
+	var job jobsV2Job
+	if err := json.Unmarshal(rr.Body.Bytes(), &job); err != nil {
+		t.Fatalf("decode job: %v", err)
+	}
+	if !job.Enabled {
+		t.Fatalf("created job should default enabled=true when enabled is omitted")
+	}
+}
+
+func TestJobsV2CreateRespectsExplicitDisabled(t *testing.T) {
+	mgr, err := newJobsV2Manager(":memory:", 0, nil)
+	if err != nil {
+		t.Fatalf("newJobsV2Manager failed: %v", err)
+	}
+	defer func() { _ = mgr.Close() }()
+
+	srv := &serveServer{jobsV2: mgr}
+	body := `{
+		"name":"explicit-disabled",
+		"enabled":false,
+		"runner_type":"program",
+		"runner_config":{"command":"echo","args":["hello"]},
+		"trigger_type":"manual",
+		"trigger_config":{}
+	}`
+
+	req := httptest.NewRequest(http.MethodPost, "/v2/jobs", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	srv.handleJobsV2(rr, req)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("create status = %d, want 201 body=%s", rr.Code, rr.Body.String())
+	}
+	var job jobsV2Job
+	if err := json.Unmarshal(rr.Body.Bytes(), &job); err != nil {
+		t.Fatalf("decode job: %v", err)
+	}
+	if job.Enabled {
+		t.Fatalf("created job should respect explicit enabled=false")
+	}
+}
+
+func TestJobsV2PatchPreservesEnabledWhenOmitted(t *testing.T) {
+	mgr, err := newJobsV2Manager(":memory:", 0, nil)
+	if err != nil {
+		t.Fatalf("newJobsV2Manager failed: %v", err)
+	}
+	defer func() { _ = mgr.Close() }()
+
+	srv := &serveServer{jobsV2: mgr}
+	created, err := mgr.CreateJob(jobsV2Job{
+		Name:          "patch-enabled",
+		Enabled:       true,
+		RunnerType:    jobsV2RunnerProgram,
+		RunnerConfig:  json.RawMessage(`{"command":"echo","args":["x"]}`),
+		TriggerType:   jobsV2TriggerManual,
+		TriggerConfig: json.RawMessage(`{}`),
+	})
+	if err != nil {
+		t.Fatalf("CreateJob failed: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPatch, "/v2/jobs/"+created.ID, strings.NewReader(`{"name":"renamed"}`))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	srv.handleJobV2ByID(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("patch status = %d, want 200 body=%s", rr.Code, rr.Body.String())
+	}
+	var job jobsV2Job
+	if err := json.Unmarshal(rr.Body.Bytes(), &job); err != nil {
+		t.Fatalf("decode job: %v", err)
+	}
+	if !job.Enabled {
+		t.Fatalf("patch without enabled should preserve enabled=true")
+	}
+	if job.Name != "renamed" {
+		t.Fatalf("name = %q, want renamed", job.Name)
+	}
+}
+
+func TestJobsV2PatchRespectsExplicitDisabled(t *testing.T) {
+	mgr, err := newJobsV2Manager(":memory:", 0, nil)
+	if err != nil {
+		t.Fatalf("newJobsV2Manager failed: %v", err)
+	}
+	defer func() { _ = mgr.Close() }()
+
+	srv := &serveServer{jobsV2: mgr}
+	created, err := mgr.CreateJob(jobsV2Job{
+		Name:          "patch-disable",
+		Enabled:       true,
+		RunnerType:    jobsV2RunnerProgram,
+		RunnerConfig:  json.RawMessage(`{"command":"echo","args":["x"]}`),
+		TriggerType:   jobsV2TriggerManual,
+		TriggerConfig: json.RawMessage(`{}`),
+	})
+	if err != nil {
+		t.Fatalf("CreateJob failed: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPatch, "/v2/jobs/"+created.ID, strings.NewReader(`{"enabled":false}`))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	srv.handleJobV2ByID(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("patch status = %d, want 200 body=%s", rr.Code, rr.Body.String())
+	}
+	var job jobsV2Job
+	if err := json.Unmarshal(rr.Body.Bytes(), &job); err != nil {
+		t.Fatalf("decode job: %v", err)
+	}
+	if job.Enabled {
+		t.Fatalf("patch should respect explicit enabled=false")
+	}
+}
+
 func TestJobsV2RecoverRunsCancelsCancelRequestedRuns(t *testing.T) {
 	mgr, err := newJobsV2Manager(":memory:", 0, nil)
 	if err != nil {

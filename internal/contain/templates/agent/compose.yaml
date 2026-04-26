@@ -1,0 +1,32 @@
+x-term-llm:
+  purpose: "{{name}} agent workspace"
+  workspace: /root
+  default_service: app
+  shell: /bin/bash
+  preferred_cli: term-llm
+  agent: "{{name}}"
+
+services:
+  app:
+    build:
+      context: "{{agent_image_dir}}"
+      dockerfile: Dockerfile
+      args:
+        TERM_LLM_VERSION: "${TERM_LLM_VERSION:-latest}"
+    image: term-llm-agent:{{name}}-{{agent_image_hash}}
+    env_file: .env
+    environment:
+      AGENT_NAME: "{{name}}"
+    ports:
+      - "${WEB_PORT:-8081}:8081"
+    volumes:
+      - {{name}}-state:/root
+    labels:
+      org.term-llm.contain: "true"
+      org.term-llm.contain.name: "{{name}}"
+      org.term-llm.contain.config_dir: "{{config_dir}}"
+      org.term-llm.contain.service: "app"
+      org.term-llm.contain.agent: "{{name}}"
+
+volumes:
+  {{name}}-state:
