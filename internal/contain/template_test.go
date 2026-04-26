@@ -1,6 +1,7 @@
 package contain
 
 import (
+	"bytes"
 	"encoding/base64"
 	"os"
 	"path/filepath"
@@ -191,6 +192,138 @@ func TestCreateWorkspaceDoesNotOverwriteAndUnknownPlaceholderErrors(t *testing.T
 	}
 	if _, err := CreateWorkspace("bad", CreateOptions{Template: tmpl, CWD: t.TempDir()}); err == nil || !strings.Contains(err.Error(), "unknown template placeholder") {
 		t.Fatalf("unknown placeholder error = %v", err)
+	}
+}
+
+func TestExtractClaudeOAuthToken(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{
+			name: "sk-ant-oat in line",
+			in:   "Generated long-lived OAuth token:\nsk-ant-oat01-abcdefghijklmnopqrstuvwxyz0123456789\n",
+			want: "sk-ant-oat01-abcdefghijklmnopqrstuvwxyz0123456789",
+		},
+		{
+			name: "fallback to last token-like line",
+			in:   "header line\n\nABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789\n",
+			want: "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789",
+		},
+		{
+			name: "no token",
+			in:   "browser opened\nwaiting...\n",
+			want: "",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := extractClaudeOAuthToken(tc.in)
+			if got != tc.want {
+				t.Fatalf("extractClaudeOAuthToken = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestAddClaudeCodeOAuthTemplateValueNoInputSkips(t *testing.T) {
+	values := map[string]string{"provider": "claude-bin"}
+	var stdout bytes.Buffer
+	if err := addClaudeCodeOAuthTemplateValue(values, CreateOptions{NoInput: true, Stdout: &stdout}); err != nil {
+		t.Fatal(err)
+	}
+	if got := values["claude_code_oauth_token"]; got != "" {
+		t.Fatalf("token = %q, want empty when no-input", got)
+	}
+	if !strings.Contains(stdout.String(), "skipping `claude setup-token`") {
+		t.Fatalf("stdout = %q", stdout.String())
+	}
+}
+
+func TestAddClaudeCodeOAuthTemplateValuePreservesProvided(t *testing.T) {
+	values := map[string]string{"provider": "claude-bin", "claude_code_oauth_token": "sk-ant-oat01-prefilled"}
+	if err := addClaudeCodeOAuthTemplateValue(values, CreateOptions{NoInput: true}); err != nil {
+		t.Fatal(err)
+	}
+	if got := values["claude_code_oauth_token"]; got != "sk-ant-oat01-prefilled" {
+		t.Fatalf("preset token clobbered: %q", got)
+	}
+}
+
+func TestAddClaudeCodeOAuthTemplateValueNonClaudeProviderEmpty(t *testing.T) {
+	values := map[string]string{"provider": "chatgpt"}
+	if err := addClaudeCodeOAuthTemplateValue(values, CreateOptions{NoInput: true}); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := values["claude_code_oauth_token"]; !ok {
+		t.Fatal("expected empty token placeholder so .env render does not fail")
+	}
+	if got := values["claude_code_oauth_token"]; got != "" {
+		t.Fatalf("token = %q, want empty for non-claude-bin provider", got)
+	}
+}
+
+func TestCreateWorkspaceClaudeBinNoInputRendersEmptyToken(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	imageDockerfile, err := AgentImageDockerfilePath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(imageDockerfile), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(imageDockerfile, []byte("FROM scratch\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	dir, err := CreateWorkspace("claudebox", CreateOptions{Template: "agent", CWD: t.TempDir(), NoInput: true, Values: map[string]string{
+		"provider": "claude-bin",
+		"web_port": "9091",
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	envData, err := os.ReadFile(filepath.Join(dir, ".env"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(envData), "TERM_LLM_PROVIDER=claude-bin") {
+		t.Fatalf(".env did not select claude-bin provider:\n%s", envData)
+	}
+	if !strings.Contains(string(envData), "TERM_LLM_CLAUDE_CODE_OAUTH_TOKEN=") {
+		t.Fatalf(".env missing CLAUDE_CODE_OAUTH_TOKEN line:\n%s", envData)
+	}
+	if strings.Contains(string(envData), "{{") {
+		t.Fatalf(".env still contains placeholders:\n%s", envData)
+	}
+}
+
+func TestCreateWorkspaceClaudeBinUsesProvidedToken(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	imageDockerfile, err := AgentImageDockerfilePath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(imageDockerfile), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(imageDockerfile, []byte("FROM scratch\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	dir, err := CreateWorkspace("claudeprovided", CreateOptions{Template: "agent", CWD: t.TempDir(), NoInput: true, Values: map[string]string{
+		"provider":                "claude-bin",
+		"web_port":                "9092",
+		"claude_code_oauth_token": "sk-ant-oat01-test-token-value",
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	envData, err := os.ReadFile(filepath.Join(dir, ".env"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(envData), "TERM_LLM_CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-test-token-value") {
+		t.Fatalf(".env did not include provided token:\n%s", envData)
 	}
 }
 

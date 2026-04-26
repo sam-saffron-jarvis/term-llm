@@ -25,7 +25,7 @@ func TestSyncImageWritesAgentAsset(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := string(data)
-	for _, want := range []string{managedImageMarker, "FROM archlinux:latest", "curl -fsSL https://raw.githubusercontent.com/samsaffron/term-llm/main/install.sh", "TERM_LLM_INSTALL_DIR=/usr/local/bin sh", "git clone https://github.com/samsaffron/term-llm.git /root/source/term-llm", "COPY bootstrap/ /opt/term-llm/bootstrap/", "COPY entrypoint.sh /entrypoint.sh", "ENTRYPOINT [\"/entrypoint.sh\"]"} {
+	for _, want := range []string{managedImageMarker, "FROM archlinux:latest", "curl -fsSL https://raw.githubusercontent.com/samsaffron/term-llm/main/install.sh", "TERM_LLM_INSTALL_DIR=/usr/local/bin sh", "git clone https://github.com/samsaffron/term-llm.git /root/source/term-llm", "COPY bootstrap/ /opt/term-llm/bootstrap/", "COPY entrypoint.sh /entrypoint.sh", "ENTRYPOINT [\"/entrypoint.sh\"]", "https://claude.ai/install.sh", "/usr/local/bin/claude --version"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("Dockerfile missing %q", want)
 		}
@@ -49,6 +49,13 @@ func TestSyncImageWritesAgentAsset(t *testing.T) {
 		}
 		if rel == "entrypoint.sh" && !strings.Contains(string(data), "chatgpt:gpt-5.4-mini") {
 			t.Fatalf("entrypoint missing ChatGPT image provider bootstrap")
+		}
+		if rel == "entrypoint.sh" {
+			for _, want := range []string{"TERM_LLM_CLAUDE_CODE_OAUTH_TOKEN", `provider" = "claude-bin"`, "providers:", "CLAUDE_CODE_OAUTH_TOKEN:"} {
+				if !strings.Contains(string(data), want) {
+					t.Fatalf("entrypoint missing claude-bin token bootstrap %q", want)
+				}
+			}
 		}
 		if rel == "bootstrap/bootstrap.yaml" && (!strings.Contains(string(data), "image_generate") || !strings.Contains(string(data), "show_image") || !strings.Contains(string(data), "view_image")) {
 			t.Fatalf("agent bootstrap missing image generation/viewing tools")

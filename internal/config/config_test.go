@@ -93,6 +93,68 @@ providers:
 	}
 }
 
+func TestSetServeTelegramConfig_PreservesProviderEnvKeyCase(t *testing.T) {
+	// Regression: viper.WriteConfig() lowercases YAML keys, which corrupts
+	// providers.<n>.env.<KEY> during unrelated saves like telegram setup.
+	// writeConfigPreservingEnvCase must restore the original casing.
+	viper.Reset()
+	defer viper.Reset()
+
+	configHome := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", configHome)
+
+	configDir := filepath.Join(configHome, "term-llm")
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
+		t.Fatalf("mkdir config dir: %v", err)
+	}
+
+	configPath := filepath.Join(configDir, "config.yaml")
+	configYAML := `default_provider: claude-bin
+providers:
+  claude-bin:
+    model: sonnet
+    env:
+      CLAUDE_CODE_OAUTH_TOKEN: sk-ant-oat01-original
+      IS_SANDBOX: "1"
+`
+	if err := os.WriteFile(configPath, []byte(configYAML), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	if err := SetServeTelegramConfig(TelegramServeConfig{Token: "telegram-token"}); err != nil {
+		t.Fatalf("SetServeTelegramConfig: %v", err)
+	}
+
+	written, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read config: %v", err)
+	}
+	got := string(written)
+	for _, want := range []string{"CLAUDE_CODE_OAUTH_TOKEN: sk-ant-oat01-original", "IS_SANDBOX:", "telegram-token"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("config missing %q after telegram save:\n%s", want, got)
+		}
+	}
+	for _, unwanted := range []string{"claude_code_oauth_token", "is_sandbox"} {
+		if strings.Contains(got, unwanted) {
+			t.Fatalf("config still contains lowercased env key %q:\n%s", unwanted, got)
+		}
+	}
+
+	// Verify the round-trip Load also returns the uppercase keys.
+	viper.Reset()
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load after save: %v", err)
+	}
+	if got := cfg.Providers["claude-bin"].Env["CLAUDE_CODE_OAUTH_TOKEN"]; got != "sk-ant-oat01-original" {
+		t.Fatalf("loaded CLAUDE_CODE_OAUTH_TOKEN = %q", got)
+	}
+	if got := cfg.Providers["claude-bin"].Env["IS_SANDBOX"]; got != "1" {
+		t.Fatalf("loaded IS_SANDBOX = %q", got)
+	}
+}
+
 func TestResolveProviderCredentials_ExpandsEnvMap(t *testing.T) {
 	t.Setenv("CLAUDE_TEST_FLAG", "1")
 	cfg := &ProviderConfig{

@@ -101,6 +101,15 @@ RUN if [ "${TERM_LLM_VERSION}" = "latest" ]; then \
         TERM_LLM_INSTALL_DIR=/usr/local/bin sh -s -- --version "${TERM_LLM_VERSION}"; \
     fi
 
+# Install Claude Code CLI so the claude-bin provider works inside the container.
+# The official installer drops the binary in /root/.local/bin; we symlink to
+# /usr/local/bin so runit-managed services and non-login shells find it.
+RUN curl -fsSL https://claude.ai/install.sh | bash && \
+    if [ ! -e /usr/local/bin/claude ] && [ -e /root/.local/bin/claude ]; then \
+      ln -sf /root/.local/bin/claude /usr/local/bin/claude; \
+    fi && \
+    /usr/local/bin/claude --version
+
 # Keep the term-llm source tree available for self-discovery and local hacking.
 # The running agent is built on top of term-llm; exposing the source at the
 # conventional ~/source/term-llm path makes that relationship easy to inspect.

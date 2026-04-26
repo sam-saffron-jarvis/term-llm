@@ -1,17 +1,30 @@
 package contain
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/base64"
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
 
 	"github.com/samsaffron/term-llm/internal/config"
+	"golang.org/x/term"
 )
+
+// claudeOAuthTokenPattern matches Claude Code long-lived OAuth tokens
+// (e.g. sk-ant-oat01-...). Used to extract a token from the captured
+// stdout of `claude setup-token`.
+var claudeOAuthTokenPattern = regexp.MustCompile(`sk-ant-[A-Za-z0-9_\-]{20,}`)
+
+// claudeSetupTokenRunner is overridable in tests; it runs `claude setup-token`
+// with the given stdin and tees stdout/stderr through w. The captured stdout
+// is returned for token parsing.
+var claudeSetupTokenRunner = defaultClaudeSetupTokenRunner
 
 const defaultWorkspacePath = "/workspace"
 
@@ -133,7 +146,7 @@ func CreateWorkspace(name string, opts CreateOptions) (string, error) {
 		return "", err
 	}
 	if tmpl.Builtin && tmpl.Name == "agent" {
-		if err := addAgentTemplateValues(promptValues); err != nil {
+		if err := addAgentTemplateValues(promptValues, opts); err != nil {
 			return "", err
 		}
 	}
@@ -192,10 +205,20 @@ func CreateWorkspace(name string, opts CreateOptions) (string, error) {
 	return targetDir, nil
 }
 
-func addAgentTemplateValues(values map[string]string) error {
+func addAgentTemplateValues(values map[string]string, opts CreateOptions) error {
 	if values == nil {
 		return nil
 	}
+	if err := addChatGPTOAuthTemplateValue(values); err != nil {
+		return err
+	}
+	if err := addClaudeCodeOAuthTemplateValue(values, opts); err != nil {
+		return err
+	}
+	return nil
+}
+
+func addChatGPTOAuthTemplateValue(values map[string]string) error {
 	if _, ok := values["chatgpt_oauth_json_b64"]; ok {
 		return nil
 	}
@@ -216,6 +239,143 @@ func addAgentTemplateValues(values map[string]string) error {
 	}
 	values["chatgpt_oauth_json_b64"] = base64.StdEncoding.EncodeToString(data)
 	return nil
+}
+
+func addClaudeCodeOAuthTemplateValue(values map[string]string, opts CreateOptions) error {
+	if _, ok := values["claude_code_oauth_token"]; ok {
+		return nil
+	}
+	values["claude_code_oauth_token"] = ""
+	if values["provider"] != "claude-bin" {
+		return nil
+	}
+	token, err := mintClaudeCodeOAuthToken(opts)
+	if err != nil {
+		return err
+	}
+	values["claude_code_oauth_token"] = token
+	return nil
+}
+
+func mintClaudeCodeOAuthToken(opts CreateOptions) (string, error) {
+	stdout := opts.Stdout
+	if stdout == nil {
+		stdout = os.Stdout
+	}
+	if opts.NoInput {
+		fmt.Fprintln(stdout, "claude-bin: --no-input set; skipping `claude setup-token`. Set --set claude_code_oauth_token=... or edit .env later.")
+		return "", nil
+	}
+	if !isInteractiveReader(opts.Stdin) {
+		fmt.Fprintln(stdout, "claude-bin: non-interactive stdin; skipping `claude setup-token`. Edit .env or pass --set claude_code_oauth_token=...")
+		return "", nil
+	}
+	if _, err := exec.LookPath("claude"); err != nil {
+		fmt.Fprintln(stdout, "claude-bin: `claude` CLI not found on host; install Claude Code (https://claude.ai/code) to mint a token, or paste one below.")
+		return promptClaudeOAuthTokenPaste(opts)
+	}
+	if !confirmRunClaudeSetupToken(opts) {
+		return promptClaudeOAuthTokenPaste(opts)
+	}
+	fmt.Fprintln(stdout, "claude-bin: running `claude setup-token` (a browser may open for authentication)...")
+	out, err := claudeSetupTokenRunner(opts)
+	if err != nil {
+		fmt.Fprintf(stdout, "claude-bin: `claude setup-token` failed: %v\n", err)
+		return promptClaudeOAuthTokenPaste(opts)
+	}
+	token := extractClaudeOAuthToken(out)
+	if token == "" {
+		fmt.Fprintln(stdout, "claude-bin: could not extract token from `claude setup-token` output; paste it below.")
+		return promptClaudeOAuthTokenPaste(opts)
+	}
+	return token, nil
+}
+
+func defaultClaudeSetupTokenRunner(opts CreateOptions) (string, error) {
+	stdout := opts.Stdout
+	if stdout == nil {
+		stdout = os.Stdout
+	}
+	stdin := opts.Stdin
+	if stdin == nil {
+		stdin = os.Stdin
+	}
+	cmd := exec.Command("claude", "setup-token")
+	cmd.Stdin = stdin
+	cmd.Stderr = os.Stderr
+	var buf bytes.Buffer
+	cmd.Stdout = io.MultiWriter(stdout, &buf)
+	if err := cmd.Run(); err != nil {
+		return buf.String(), err
+	}
+	return buf.String(), nil
+}
+
+func confirmRunClaudeSetupToken(opts CreateOptions) bool {
+	stdin := opts.Stdin
+	if stdin == nil {
+		stdin = os.Stdin
+	}
+	stdout := opts.Stdout
+	if stdout == nil {
+		stdout = os.Stdout
+	}
+	if !isInteractiveReader(stdin) {
+		return false
+	}
+	fmt.Fprint(stdout, "Run `claude setup-token` now to mint a long-lived OAuth token? [Y/n]: ")
+	line, err := bufio.NewReader(stdin).ReadString('\n')
+	if err != nil && strings.TrimSpace(line) == "" {
+		return false
+	}
+	answer := strings.ToLower(strings.TrimSpace(line))
+	return answer == "" || answer == "y" || answer == "yes"
+}
+
+func extractClaudeOAuthToken(out string) string {
+	if m := claudeOAuthTokenPattern.FindString(out); m != "" {
+		return m
+	}
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		line := strings.TrimSpace(lines[i])
+		if line == "" {
+			continue
+		}
+		if !strings.ContainsAny(line, " \t") && len(line) >= 32 {
+			return line
+		}
+		break
+	}
+	return ""
+}
+
+func promptClaudeOAuthTokenPaste(opts CreateOptions) (string, error) {
+	stdin := opts.Stdin
+	if stdin == nil {
+		stdin = os.Stdin
+	}
+	stdout := opts.Stdout
+	if stdout == nil {
+		stdout = os.Stdout
+	}
+	if !isInteractiveReader(stdin) {
+		return "", nil
+	}
+	fmt.Fprint(stdout, "Paste your Claude Code OAuth token (leave empty to skip): ")
+	if f, ok := stdin.(*os.File); ok && term.IsTerminal(int(f.Fd())) {
+		raw, err := term.ReadPassword(int(f.Fd()))
+		fmt.Fprintln(stdout)
+		if err != nil {
+			return "", err
+		}
+		return strings.TrimSpace(string(raw)), nil
+	}
+	line, err := bufio.NewReader(stdin).ReadString('\n')
+	if err != nil && strings.TrimSpace(line) == "" {
+		return "", nil
+	}
+	return strings.TrimSpace(line), nil
 }
 
 func writeNewFile(path string, data []byte, mode os.FileMode) error {

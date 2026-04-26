@@ -1,9 +1,11 @@
 package config
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/samsaffron/term-llm/internal/credentials"
@@ -494,6 +496,118 @@ func Load() (*Config, error) {
 	resolveSearchCredentials(&cfg.Search)
 
 	return &cfg, nil
+}
+
+// writeConfigPreservingEnvCase calls v.WriteConfig() but preserves the case
+// of keys under providers.<name>.env. Viper unconditionally lowercases YAML
+// keys (see github.com/spf13/viper#411), which silently breaks env vars like
+// CLAUDE_CODE_OAUTH_TOKEN even when the caller is only touching unrelated
+// settings (telegram tokens, agent prefs, ...). This helper snapshots env
+// subsections from the raw file before the write and rewrites them after,
+// so unrelated saves no longer corrupt env casing.
+func writeConfigPreservingEnvCase(v *viper.Viper) error {
+	configFile := v.ConfigFileUsed()
+	envSnapshot, _ := snapshotProviderEnvSections(configFile)
+	if err := v.WriteConfig(); err != nil {
+		return err
+	}
+	if len(envSnapshot) == 0 {
+		return nil
+	}
+	return rewriteProviderEnvSections(configFile, envSnapshot)
+}
+
+func snapshotProviderEnvSections(path string) (map[string]map[string]string, error) {
+	if path == "" {
+		return nil, nil
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	var raw struct {
+		Providers map[string]struct {
+			Env map[string]string `yaml:"env"`
+		} `yaml:"providers"`
+	}
+	if err := yaml.Unmarshal(data, &raw); err != nil {
+		return nil, err
+	}
+	out := map[string]map[string]string{}
+	for name, p := range raw.Providers {
+		if len(p.Env) > 0 {
+			out[name] = p.Env
+		}
+	}
+	return out, nil
+}
+
+func rewriteProviderEnvSections(path string, snapshot map[string]map[string]string) error {
+	if path == "" || len(snapshot) == 0 {
+		return nil
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	var root yaml.Node
+	if err := yaml.Unmarshal(data, &root); err != nil {
+		return err
+	}
+	if root.Kind != yaml.DocumentNode || len(root.Content) == 0 {
+		return nil
+	}
+	rootMap := root.Content[0]
+	if rootMap.Kind != yaml.MappingNode {
+		return nil
+	}
+	providersNode := findOrCreateChildMapping(rootMap, "providers")
+	for name, env := range snapshot {
+		providerNode := findOrCreateChildMapping(providersNode, name)
+		envNode := findOrCreateChildMapping(providerNode, "env")
+		envNode.Content = nil
+		keys := make([]string, 0, len(env))
+		for k := range env {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			envNode.Content = append(envNode.Content,
+				&yaml.Node{Kind: yaml.ScalarNode, Value: k},
+				&yaml.Node{Kind: yaml.ScalarNode, Value: env[k]},
+			)
+		}
+	}
+	var buf bytes.Buffer
+	enc := yaml.NewEncoder(&buf)
+	enc.SetIndent(2)
+	if err := enc.Encode(&root); err != nil {
+		return err
+	}
+	enc.Close()
+	return os.WriteFile(path, buf.Bytes(), 0600)
+}
+
+func findOrCreateChildMapping(parent *yaml.Node, key string) *yaml.Node {
+	if parent == nil || parent.Kind != yaml.MappingNode {
+		return nil
+	}
+	for i := 0; i+1 < len(parent.Content); i += 2 {
+		if parent.Content[i].Value == key {
+			child := parent.Content[i+1]
+			if child.Kind != yaml.MappingNode {
+				child.Kind = yaml.MappingNode
+				child.Tag = ""
+				child.Value = ""
+				child.Content = nil
+			}
+			return child
+		}
+	}
+	keyNode := &yaml.Node{Kind: yaml.ScalarNode, Value: key}
+	mapping := &yaml.Node{Kind: yaml.MappingNode}
+	parent.Content = append(parent.Content, keyNode, mapping)
+	return mapping
 }
 
 func overlayProviderEnvFromRawConfig(cfg *Config) error {
@@ -1545,7 +1659,7 @@ func SetAgentPreference(agentName, key, value string) ([]string, error) {
 		keysSet = append(keysSet, key)
 	}
 
-	return keysSet, v.WriteConfig()
+	return keysSet, writeConfigPreservingEnvCase(v)
 }
 
 // GetAgentPreference returns the preferences for a specific agent.
@@ -1599,7 +1713,7 @@ func ClearAgentPreferences(agentName string) error {
 		v.Set("agents.preferences", prefs)
 	}
 
-	return v.WriteConfig()
+	return writeConfigPreservingEnvCase(v)
 }
 
 // SetServeTelegramConfig saves Telegram bot configuration using viper.
@@ -1629,7 +1743,7 @@ func SetServeTelegramConfig(c TelegramServeConfig) error {
 		v.Set("serve.telegram.interrupt_timeout", c.InterruptTimeout)
 	}
 
-	return v.WriteConfig()
+	return writeConfigPreservingEnvCase(v)
 }
 
 // SetServeWebPushConfig saves Web Push VAPID configuration using viper.
@@ -1654,5 +1768,5 @@ func SetServeWebPushConfig(c WebPushConfig) error {
 		v.Set("serve.web_push.subject", c.Subject)
 	}
 
-	return v.WriteConfig()
+	return writeConfigPreservingEnvCase(v)
 }
