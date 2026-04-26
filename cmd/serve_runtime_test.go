@@ -559,6 +559,48 @@ type serveRuntimeSnapshotErrProvider struct {
 	err error
 }
 
+type serveRuntimeDisconnectDuringStreamStream struct {
+	index int
+}
+
+func (s *serveRuntimeDisconnectDuringStreamStream) Recv() (llm.Event, error) {
+	switch s.index {
+	case 0:
+		s.index++
+		return llm.Event{Type: llm.EventTextDelta, Text: "partial text"}, nil
+	case 1:
+		s.index++
+		time.Sleep(50 * time.Millisecond)
+		return llm.Event{Type: llm.EventTextDelta, Text: " ignored"}, nil
+	case 2:
+		s.index++
+		time.Sleep(50 * time.Millisecond)
+		return llm.Event{}, io.EOF
+	default:
+		return llm.Event{}, io.EOF
+	}
+}
+
+func (s *serveRuntimeDisconnectDuringStreamStream) Close() error {
+	return nil
+}
+
+type serveRuntimeDisconnectDuringStreamProvider struct{}
+
+func (p *serveRuntimeDisconnectDuringStreamProvider) Name() string {
+	return "serve-runtime-disconnect-during-stream"
+}
+
+func (p *serveRuntimeDisconnectDuringStreamProvider) Credential() string { return "test" }
+
+func (p *serveRuntimeDisconnectDuringStreamProvider) Capabilities() llm.Capabilities {
+	return llm.Capabilities{ToolCalls: true}
+}
+
+func (p *serveRuntimeDisconnectDuringStreamProvider) Stream(ctx context.Context, req llm.Request) (llm.Stream, error) {
+	return &serveRuntimeDisconnectDuringStreamStream{}, nil
+}
+
 func (p *serveRuntimeSnapshotErrProvider) Name() string { return "serve-runtime-snap-err" }
 
 func (p *serveRuntimeSnapshotErrProvider) Credential() string { return "test" }
@@ -646,5 +688,69 @@ func TestServeRuntimeSnapshotPersistsAssistantOnMidTurnError(t *testing.T) {
 	}
 	if gotToolCallID != "call-mid-err" {
 		t.Fatalf("assistant tool call ID = %q, want %q", gotToolCallID, "call-mid-err")
+	}
+}
+
+func TestServeRuntimePersistsPartialAssistantTextOnErrorBeforeCallbacks(t *testing.T) {
+	store := newServeRuntimeTestStore()
+	disconnectErr := errors.New("client disconnected")
+	provider := &serveRuntimeDisconnectDuringStreamProvider{}
+	tool := &serveRuntimeTestTool{}
+	registry := llm.NewToolRegistry()
+	registry.Register(tool)
+	engine := llm.NewEngine(provider, registry)
+
+	rt := &serveRuntime{
+		provider:     provider,
+		providerKey:  provider.Name(),
+		engine:       engine,
+		store:        store,
+		defaultModel: "test-model",
+	}
+
+	textDeltas := 0
+	_, err := rt.RunWithEvents(context.Background(), true, false, []llm.Message{serveRuntimeTextMessage(llm.RoleUser, "hello")}, llm.Request{
+		SessionID:  "sess-partial-err",
+		Tools:      []llm.ToolSpec{tool.Spec()},
+		ToolChoice: llm.ToolChoice{Mode: llm.ToolChoiceAuto},
+		MaxTurns:   4,
+	}, func(ev llm.Event) error {
+		if ev.Type != llm.EventTextDelta {
+			return nil
+		}
+		textDeltas++
+		if textDeltas == 2 {
+			return disconnectErr
+		}
+		return nil
+	})
+	if !errors.Is(err, disconnectErr) {
+		t.Fatalf("RunWithEvents() error = %v, want %v", err, disconnectErr)
+	}
+	if store.addMessageCalls != 0 {
+		t.Fatalf("addMessageCalls = %d, want 0 when no callbacks fire", store.addMessageCalls)
+	}
+	if store.updateMessageCalls != 0 {
+		t.Fatalf("updateMessageCalls = %d, want 0 when no callbacks fire", store.updateMessageCalls)
+	}
+
+	msgs, err := store.GetMessages(context.Background(), "sess-partial-err", 0, 0)
+	if err != nil {
+		t.Fatalf("GetMessages() error = %v", err)
+	}
+	if len(msgs) != 2 {
+		t.Fatalf("stored message count = %d, want 2", len(msgs))
+	}
+	if msgs[0].Role != llm.RoleUser || msgs[0].TextContent != "hello" {
+		t.Fatalf("message[0] = %+v, want user hello", msgs[0])
+	}
+	if msgs[1].Role != llm.RoleAssistant || msgs[1].TextContent != "partial text" {
+		t.Fatalf("message[1] = %+v, want partial assistant text", msgs[1])
+	}
+	if len(rt.history) != 2 {
+		t.Fatalf("runtime history length = %d, want 2", len(rt.history))
+	}
+	if rt.history[1].Role != llm.RoleAssistant || len(rt.history[1].Parts) != 1 || rt.history[1].Parts[0].Type != llm.PartText || rt.history[1].Parts[0].Text != "partial text" {
+		t.Fatalf("runtime history[1] = %+v, want partial assistant text", rt.history[1])
 	}
 }
