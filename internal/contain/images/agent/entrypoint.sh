@@ -96,6 +96,9 @@ write_default_config_once() {
     fi
     if [ "$provider" = "chatgpt" ]; then
       cat <<'CONFIG_YAML'
+providers:
+  chatgpt:
+    model: gpt-5.5-medium
 image:
   provider: "chatgpt:gpt-5.4-mini"
 CONFIG_YAML

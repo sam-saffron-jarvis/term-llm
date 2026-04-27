@@ -308,6 +308,50 @@ func TestGetDefaultsEnablesAutoCompact(t *testing.T) {
 	}
 }
 
+func TestGetDefaultsIncludeChatGPTProviderModel(t *testing.T) {
+	defaults := GetDefaults()
+
+	got, ok := defaults["providers.chatgpt.model"].(string)
+	if !ok {
+		t.Fatalf("providers.chatgpt.model default has unexpected type %T", defaults["providers.chatgpt.model"])
+	}
+	if got != "gpt-5.5-medium" {
+		t.Fatalf("providers.chatgpt.model = %q, want %q", got, "gpt-5.5-medium")
+	}
+	if !IsKnownKey("providers.chatgpt.model") {
+		t.Fatal("providers.chatgpt.model should be a known key")
+	}
+}
+
+func TestLoadBlankChatGPTProviderUsesDefaultModel(t *testing.T) {
+	viper.Reset()
+	defer viper.Reset()
+
+	configHome := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", configHome)
+
+	configDir := filepath.Join(configHome, "term-llm")
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
+		t.Fatalf("mkdir config dir: %v", err)
+	}
+
+	configYAML := `default_provider: chatgpt
+providers:
+  chatgpt: {}
+`
+	if err := os.WriteFile(filepath.Join(configDir, "config.yaml"), []byte(configYAML), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got := cfg.Providers["chatgpt"].Model; got != "gpt-5.5-medium" {
+		t.Fatalf("providers.chatgpt.model = %q, want %q", got, "gpt-5.5-medium")
+	}
+}
+
 func TestGetDefaultsIncludeChatGPTImageModel(t *testing.T) {
 	defaults := GetDefaults()
 

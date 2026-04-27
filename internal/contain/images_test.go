@@ -53,6 +53,9 @@ func TestSyncImageWritesAgentAsset(t *testing.T) {
 		if rel == "entrypoint.sh" && !strings.Contains(string(data), "chatgpt:gpt-5.4-mini") {
 			t.Fatalf("entrypoint missing ChatGPT image provider bootstrap")
 		}
+		if rel == "entrypoint.sh" && !strings.Contains(string(data), "model: gpt-5.5-medium") {
+			t.Fatalf("entrypoint missing ChatGPT LLM model bootstrap")
+		}
 		if rel == "entrypoint.sh" {
 			for _, want := range []string{"default_provider", "model: opus-xhigh", "skills:"} {
 				if !strings.Contains(string(data), want) {

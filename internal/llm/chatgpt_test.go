@@ -39,6 +39,21 @@ func TestChatGPTHTTPClient_DoesNotUseClientTimeout(t *testing.T) {
 	}
 }
 
+func TestNewChatGPTProviderWithCredsDefaultsToGPT55Medium(t *testing.T) {
+	provider := NewChatGPTProviderWithCreds(&credentials.ChatGPTCredentials{
+		AccessToken: "test-token",
+		AccountID:   "test-account",
+		ExpiresAt:   time.Now().Add(1 * time.Hour).Unix(),
+	}, "")
+
+	if provider.model != "gpt-5.5" {
+		t.Fatalf("model = %q, want %q", provider.model, "gpt-5.5")
+	}
+	if provider.effort != "medium" {
+		t.Fatalf("effort = %q, want %q", provider.effort, "medium")
+	}
+}
+
 func TestChatGPTStream_ReasoningSummaryByOutputIndex(t *testing.T) {
 	origClient := chatGPTHTTPClient
 	defer func() {

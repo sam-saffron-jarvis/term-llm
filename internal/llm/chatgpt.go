@@ -16,7 +16,7 @@ import (
 	"golang.org/x/term"
 )
 
-const chatGPTDefaultModel = "gpt-5.3-codex"
+const chatGPTDefaultModel = "gpt-5.5-medium"
 
 // chatGPTResponsesURL is the ChatGPT backend API endpoint for responses
 const chatGPTResponsesURL = "https://chatgpt.com/backend-api/codex/responses"
