@@ -149,6 +149,15 @@ func TestHorizontalMouseWheelDoesNotShiftAltScreenViewport(t *testing.T) {
 	}
 }
 
+func TestChatDisableMouseEnvDisablesMouseReporting(t *testing.T) {
+	t.Setenv(chatDisableMouseEnv, "1")
+	m := newTestChatModel(true)
+
+	if got := m.View().MouseMode; got != tea.MouseModeNone {
+		t.Fatalf("MouseMode = %v, want MouseModeNone", got)
+	}
+}
+
 func TestMiddleClickPasteWorksWhileStreaming(t *testing.T) {
 	m := newTestChatModel(true)
 	m.streaming = true

@@ -11,7 +11,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-//go:embed builtin/*/*.yaml builtin/*/*.md
+//go:embed all:builtin
 var builtinFS embed.FS
 
 // builtinAgentNames lists all built-in agent names.
@@ -22,6 +22,7 @@ var builtinAgentNames = []string{
 	"changelog",
 	"codebase",
 	"commit-message",
+	"contain",
 	"developer",
 	"editor",
 	"file-organizer",
@@ -123,7 +124,10 @@ func GetBuiltinResourceDir() (string, error) {
 }
 
 // ExtractBuiltinResources extracts additional resource files for a builtin agent to the cache directory.
-// This extracts all .md files except system.md (which is loaded into the agent struct).
+// It walks the agent's builtin directory tree (preserving subdirectory layout) and copies
+// .md, .yaml, and .env files (including dot-prefixed files like .template.yaml).
+// agent.yaml and system.md at the root are skipped because they are loaded into
+// the Agent struct.
 func ExtractBuiltinResources(name string) (string, error) {
 	if !IsBuiltinAgent(name) {
 		return "", fmt.Errorf("not a builtin agent: %s", name)
@@ -139,35 +143,51 @@ func ExtractBuiltinResources(name string) (string, error) {
 		return "", fmt.Errorf("create resource dir: %w", err)
 	}
 
-	// Read all files in the agent's builtin directory
-	entries, err := fs.ReadDir(builtinFS, fmt.Sprintf("builtin/%s", name))
-	if err != nil {
-		return "", fmt.Errorf("read builtin dir: %w", err)
-	}
-
-	for _, entry := range entries {
-		if entry.IsDir() {
-			continue
-		}
-		filename := entry.Name()
-		// Skip agent.yaml and system.md (these are handled separately)
-		if filename == "agent.yaml" || filename == "system.md" {
-			continue
-		}
-		// Only extract .md files
-		if !strings.HasSuffix(filename, ".md") {
-			continue
-		}
-
-		content, err := builtinFS.ReadFile(fmt.Sprintf("builtin/%s/%s", name, filename))
+	root := fmt.Sprintf("builtin/%s", name)
+	walkErr := fs.WalkDir(builtinFS, root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
-			continue
+			return err
 		}
-
-		destPath := filepath.Join(agentDir, filename)
-		if err := os.WriteFile(destPath, content, 0644); err != nil {
-			return "", fmt.Errorf("write %s: %w", filename, err)
+		if path == root {
+			return nil
 		}
+		rel, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		rel = filepath.ToSlash(rel)
+		if d.IsDir() {
+			return os.MkdirAll(filepath.Join(agentDir, filepath.FromSlash(rel)), 0755)
+		}
+		if rel == "agent.yaml" || rel == "system.md" {
+			return nil
+		}
+		base := filepath.Base(rel)
+		if !strings.HasSuffix(base, ".md") && !strings.HasSuffix(base, ".yaml") && base != ".env" {
+			return nil
+		}
+		content, readErr := builtinFS.ReadFile(path)
+		if readErr != nil {
+			return fmt.Errorf("read builtin resource %s: %w", path, readErr)
+		}
+		destPath := filepath.Join(agentDir, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(destPath), 0755); err != nil {
+			return fmt.Errorf("create %s: %w", filepath.Dir(destPath), err)
+		}
+		mode := os.FileMode(0o644)
+		if base == ".env" {
+			mode = 0o600
+		}
+		if err := os.WriteFile(destPath, content, mode); err != nil {
+			return fmt.Errorf("write %s: %w", rel, err)
+		}
+		if err := os.Chmod(destPath, mode); err != nil {
+			return fmt.Errorf("chmod %s: %w", rel, err)
+		}
+		return nil
+	})
+	if walkErr != nil {
+		return "", walkErr
 	}
 
 	return agentDir, nil

@@ -20,6 +20,7 @@ services:
     labels:
       org.term-llm.contain: "true"
       org.term-llm.contain.name: app
+      org.term-llm.contain.user: appuser
   worker:
     image: alpine
     labels:
@@ -43,6 +44,9 @@ services:
 	}
 	if got := info.Services["web"].BuildContext; got != "/tmp/managed-agent" {
 		t.Fatalf("build context = %q", got)
+	}
+	if got := info.DefaultUser("web"); got != "appuser" {
+		t.Fatalf("default user = %q", got)
 	}
 	if got := info.Services["worker"].Labels["org.term-llm.contain.service"]; got != "worker" {
 		t.Fatalf("list label = %q", got)

@@ -46,6 +46,36 @@ func TestCreateWorkspaceBuiltinBasic(t *testing.T) {
 	}
 }
 
+func TestCreateWorkspaceRendersEnvFilesWithPrivatePermissions(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	templateDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(templateDir, "compose.yaml"), []byte("services:\n  app:\n    image: alpine\n    env_file: .env\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(templateDir, ".env"), []byte("SECRET={{secret}}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	dir, err := CreateWorkspace("envbox", CreateOptions{Template: templateDir, CWD: t.TempDir(), Values: map[string]string{"secret": "topsecret"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	envPath := filepath.Join(dir, ".env")
+	data, err := os.ReadFile(envPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "SECRET=topsecret\n" {
+		t.Fatalf(".env = %q", data)
+	}
+	info, err := os.Stat(envPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf(".env mode = %v, want 0600", info.Mode().Perm())
+	}
+}
+
 func TestCreateWorkspaceBuiltinAgent(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	configDir, err := config.GetConfigDir()

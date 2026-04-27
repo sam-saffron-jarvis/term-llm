@@ -1,0 +1,26 @@
+x-term-llm:
+  purpose: "{{name}} code-server dev environment"
+  workspace: /home/coder/project
+  default_service: code
+  shell: /bin/bash
+
+services:
+  code:
+    image: "codercom/code-server:{{code_server_image_tag}}"
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      PASSWORD: ${CODE_PASSWORD}
+    ports:
+      - "127.0.0.1:${CODE_PORT:-8443}:8080"
+    volumes:
+      - "{{project_dir}}:/home/coder/project"
+      - {{name}}-config:/home/coder/.config
+    labels:
+      org.term-llm.contain: "true"
+      org.term-llm.contain.name: "{{name}}"
+      org.term-llm.contain.config_dir: "{{config_dir}}"
+      org.term-llm.contain.service: "code"
+
+volumes:
+  {{name}}-config:

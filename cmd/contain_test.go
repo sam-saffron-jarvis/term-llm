@@ -224,6 +224,43 @@ func TestContainTemplateFlagCompletion(t *testing.T) {
 	}
 }
 
+func TestContainShellUserFlag(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	clearContainShellUserFlagForTest(t)
+	if _, err := contain.CreateWorkspace("userbox", contain.CreateOptions{Template: "basic", CWD: t.TempDir()}); err != nil {
+		t.Fatal(err)
+	}
+
+	oldRunner := containRunner
+	r := &containFakeRunner{}
+	containRunner = r
+	t.Cleanup(func() { containRunner = oldRunner })
+
+	_, stderr, err := executeRootForContainTest(t, "contain", "shell", "--user", "appuser", "userbox")
+	if err != nil {
+		t.Fatalf("contain shell --user error = %v stderr=%s", err, stderr)
+	}
+	if len(r.calls) != 1 {
+		t.Fatalf("runner calls = %#v", r.calls)
+	}
+	call := r.calls[0]
+	if !strings.Contains(call, " exec --user appuser ") || !strings.Contains(call, " app /bin/sh") {
+		t.Fatalf("runner call missing --user before service: %#v", r.calls)
+	}
+}
+
+func clearContainShellUserFlagForTest(t *testing.T) {
+	t.Helper()
+	reset := func() {
+		containShellUser = ""
+		if err := containShellCmd.Flags().Set("user", ""); err != nil {
+			t.Fatal(err)
+		}
+	}
+	reset()
+	t.Cleanup(reset)
+}
+
 func TestContainTemplatesCommand(t *testing.T) {
 	stdout, stderr, err := executeRootForContainTest(t, "contain", "templates")
 	if err != nil {

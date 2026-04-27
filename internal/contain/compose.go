@@ -25,6 +25,8 @@ type Hints struct {
 	Agent          string
 }
 
+const containUserLabel = "org.term-llm.contain.user"
+
 type ServiceInfo struct {
 	Name         string
 	Labels       map[string]string
@@ -43,6 +45,14 @@ func (i ComposeInfo) Shell() string {
 		return i.Hints.Shell
 	}
 	return "/bin/sh"
+}
+
+func (i ComposeInfo) DefaultUser(service string) string {
+	serviceInfo, ok := i.Services[service]
+	if !ok {
+		return ""
+	}
+	return strings.TrimSpace(serviceInfo.Labels[containUserLabel])
 }
 
 // ReadComposeInfo lightly parses the Compose file for term-llm hints, service

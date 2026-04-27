@@ -117,7 +117,7 @@ func (m *Model) newView(content string) tea.View {
 	if m.altScreen {
 		v.AltScreen = true
 	}
-	if m.autoSendQueue == nil {
+	if m.autoSendQueue == nil && m.mouseMode {
 		v.MouseMode = tea.MouseModeCellMotion
 	}
 	return v

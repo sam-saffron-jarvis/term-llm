@@ -11,11 +11,12 @@ import (
 )
 
 type fakeRunner struct {
-	name   string
-	args   []string
-	dir    string
-	runs   [][]string
-	output []byte
+	name    string
+	args    []string
+	dir     string
+	runs    [][]string
+	output  []byte
+	outputs [][]byte
 }
 
 func (f *fakeRunner) Run(ctx context.Context, name string, args []string, opts RunOptions) error {
@@ -29,6 +30,11 @@ func (f *fakeRunner) Run(ctx context.Context, name string, args []string, opts R
 func (f *fakeRunner) Output(ctx context.Context, name string, args []string, opts RunOptions) ([]byte, error) {
 	f.name = name
 	f.args = append([]string(nil), args...)
+	if len(f.outputs) > 0 {
+		out := f.outputs[0]
+		f.outputs = f.outputs[1:]
+		return out, nil
+	}
 	return f.output, nil
 }
 
@@ -82,6 +88,9 @@ services:
 			return Exec(context.Background(), r, "box", []string{"echo", "hi"}, nil, io.Discard, io.Discard)
 		}, append(append([]string{}, base...), "exec", "web", "echo", "hi")},
 		{"shell", func(r *fakeRunner) error { return Shell(context.Background(), r, "box", nil, io.Discard, io.Discard) }, append(append([]string{}, base...), "exec", "web", "/bin/bash")},
+		{"shell-user", func(r *fakeRunner) error {
+			return ShellWithOptions(context.Background(), r, "box", ShellOptions{User: "appuser"}, nil, io.Discard, io.Discard)
+		}, append(append([]string{}, base...), "exec", "--user", "appuser", "web", "/bin/bash")},
 		{"exec-no-command", func(r *fakeRunner) error {
 			return Exec(context.Background(), r, "box", nil, nil, io.Discard, io.Discard)
 		}, append(append([]string{}, base...), "exec", "web", "/bin/bash")},
@@ -102,6 +111,40 @@ services:
 				t.Fatalf("dir = %q, want %q", r.dir, dir)
 			}
 		})
+	}
+}
+
+func TestShellUsesServiceDefaultUserLabel(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	clearConsoleEnvForContainTest(t)
+	dir := writeComposeForDockerTest(t, "labelbox", `x-term-llm:
+  default_service: web
+  shell: /bin/bash
+services:
+  web:
+    image: alpine
+    labels:
+      org.term-llm.contain.user: appuser
+`)
+	compose := filepath.Join(dir, "compose.yaml")
+	base := []string{"compose", "-f", compose, "--project-directory", dir, "-p", "term-llm-contain-labelbox"}
+
+	r := &fakeRunner{}
+	if err := Shell(context.Background(), r, "labelbox", nil, io.Discard, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	want := append(append([]string{}, base...), "exec", "--user", "appuser", "web", "/bin/bash")
+	if !reflect.DeepEqual(r.args, want) {
+		t.Fatalf("args = %#v\nwant %#v", r.args, want)
+	}
+
+	r = &fakeRunner{}
+	if err := ShellWithOptions(context.Background(), r, "labelbox", ShellOptions{User: "root"}, nil, io.Discard, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	want = append(append([]string{}, base...), "exec", "--user", "root", "web", "/bin/bash")
+	if !reflect.DeepEqual(r.args, want) {
+		t.Fatalf("override args = %#v\nwant %#v", r.args, want)
 	}
 }
 
@@ -137,6 +180,42 @@ services:
 	want = append(append([]string{}, base...), "/bin/zsh")
 	if !reflect.DeepEqual(r.args, want) {
 		t.Fatalf("shell args = %#v\nwant %#v", r.args, want)
+	}
+}
+
+func TestPrimarySelectionProxyOptIn(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	clearConsoleEnvForContainTest(t)
+	dir := writeComposeForDockerTest(t, "box", `x-term-llm:
+  default_service: web
+  shell: /bin/bash
+services:
+  web:
+    image: alpine
+`)
+	compose := filepath.Join(dir, "compose.yaml")
+	base := []string{"compose", "-f", compose, "--project-directory", dir, "-p", "term-llm-contain-box"}
+
+	r := &fakeRunner{outputs: [][]byte{[]byte("container123\n"), []byte("127.0.0.1\n")}}
+	if err := Exec(context.Background(), r, "box", []string{"true"}, nil, io.Discard, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	want := append(append([]string{}, base...), "exec", "web", "true")
+	if !reflect.DeepEqual(r.args, want) {
+		t.Fatalf("args without opt-in = %#v\nwant %#v", r.args, want)
+	}
+
+	t.Setenv(containPrimarySelectionProxyEnableEnv, "1")
+	r = &fakeRunner{outputs: [][]byte{[]byte("container123\n"), []byte("127.0.0.1\n")}}
+	if err := Exec(context.Background(), r, "box", []string{"true"}, nil, io.Discard, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	args := strings.Join(r.args, "\x00")
+	if !strings.Contains(args, containPrimarySelectionURLEnv+"=http://127.0.0.1:") {
+		t.Fatalf("proxy URL env not injected when opted in: %#v", r.args)
+	}
+	if strings.Contains(args, "TERM_LLM_PRIMARY_SELECTION_TOKEN") {
+		t.Fatalf("unexpected separate proxy token env in args: %#v", r.args)
 	}
 }
 

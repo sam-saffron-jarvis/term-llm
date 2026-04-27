@@ -193,6 +193,7 @@ type Model struct {
 
 	// Alt screen mode (full-screen rendering)
 	altScreen               bool
+	mouseMode               bool
 	viewport                viewport.Model // Scrollable viewport for alt screen mode
 	scrollToBottom          bool           // Flag to scroll to bottom after response completes
 	streamRenderMinInterval time.Duration
@@ -303,6 +304,7 @@ type (
 const (
 	chatRenderThrottleEnv  = "TERM_LLM_CHAT_RENDER_THROTTLE_MS"
 	chatSpinnerIntervalEnv = "TERM_LLM_CHAT_SPINNER_MS"
+	chatDisableMouseEnv    = "TERM_LLM_DISABLE_MOUSE"
 )
 
 var readPrimarySelection = clipboard.ReadPrimarySelection
@@ -530,6 +532,7 @@ func NewWithFastProvider(cfg *config.Config, provider llm.Provider, fastProvider
 		stats:                    stats,
 		streamPerf:               newStreamPerfTelemetryFromEnv(),
 		altScreen:                altScreen,
+		mouseMode:                chatMouseModeFromEnv(),
 		viewport:                 vp,
 		streamRenderMinInterval:  chatRenderMinIntervalFromEnv(),
 		chatRenderer:             chatRenderer,
@@ -798,6 +801,10 @@ func (m *Model) WaitStreamDone() {
 // SetHandoverAutoSend sets a message to auto-send on Init (for handover restart).
 func (m *Model) SetHandoverAutoSend(text string) {
 	m.handoverAutoSend = strings.TrimSpace(text)
+}
+
+func chatMouseModeFromEnv() bool {
+	return !ui.ParseBoolDefault(os.Getenv(chatDisableMouseEnv), false)
 }
 
 func chatRenderMinIntervalFromEnv() time.Duration {

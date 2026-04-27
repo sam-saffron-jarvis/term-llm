@@ -21,6 +21,7 @@ var containNewTemplate string
 var containNewSet []string
 var containNewNoInput bool
 var containImageSyncForce bool
+var containShellUser string
 
 var containCmd = &cobra.Command{
 	Use:   "contain",
@@ -151,6 +152,7 @@ var containLsCmd = &cobra.Command{
 var containExecCmd = &cobra.Command{
 	Use:                "exec <name> [cmd...]",
 	Short:              "Run a command in a contain workspace service",
+	Long:               "Run a command in a contain workspace service. Host PRIMARY selection proxying is disabled by default; set TERM_LLM_ENABLE_PRIMARY_SELECTION_PROXY=1 to opt in for trusted interactive commands.",
 	DisableFlagParsing: true,
 	Args:               requireContainNameArgAllowCommand,
 	ValidArgsFunction:  containWorkspaceNameCompletion,
@@ -164,12 +166,24 @@ var containExecCmd = &cobra.Command{
 }
 
 var containShellCmd = &cobra.Command{
-	Use:               "shell <name>",
-	Short:             "Open the configured shell in a contain workspace service",
+	Use:   "shell <name>",
+	Short: "Open the configured shell in a contain workspace service",
+	Long: `Open the configured shell in a contain workspace service. Use --user/-u to
+run the shell as a specific container username or UID. If --user is omitted,
+term-llm uses the service label org.term-llm.contain.user when present.
+
+By default, host clipboard/PRIMARY selection access is not bridged into the
+container. To opt in to middle-click PRIMARY selection proxying for trusted
+interactive sessions, set TERM_LLM_ENABLE_PRIMARY_SELECTION_PROXY=1 before
+running this command.`,
 	Args:              requireContainNameArg,
 	ValidArgsFunction: containWorkspaceNameCompletion,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		return contain.Shell(cmd.Context(), containRunner, args[0], cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr())
+		user, err := cmd.Flags().GetString("user")
+		if err != nil {
+			return err
+		}
+		return contain.ShellWithOptions(cmd.Context(), containRunner, args[0], contain.ShellOptions{User: user}, cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr())
 	},
 }
 
@@ -380,6 +394,7 @@ func init() {
 	}
 	containNewCmd.Flags().StringArrayVar(&containNewSet, "set", nil, "Set template prompt value (key=value); may be specified multiple times")
 	containNewCmd.Flags().BoolVar(&containNewNoInput, "no-input", false, "Do not prompt; use defaults and --set values only")
+	containShellCmd.Flags().StringVarP(&containShellUser, "user", "u", "", "Username or UID to use for the shell inside the container")
 	containImageSyncCmd.Flags().BoolVar(&containImageSyncForce, "force", false, "Overwrite non-managed existing image files")
 	rootCmd.AddCommand(containCmd)
 	containCmd.AddCommand(containNewCmd)

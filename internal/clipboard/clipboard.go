@@ -4,10 +4,13 @@ import (
 	"bytes"
 	"encoding/base64"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"os/exec"
 	"runtime"
 	"strings"
+	"time"
 )
 
 // ReadText reads text content from the system clipboard
@@ -56,9 +59,16 @@ func readTextLinux() (string, error) {
 	return "", fmt.Errorf("no clipboard utility found (install wl-paste or xclip)")
 }
 
+const primarySelectionProxyEnv = "TERM_LLM_PRIMARY_SELECTION_URL"
+
 // ReadPrimarySelection reads from the PRIMARY selection (middle-click buffer on Linux).
 // On macOS, falls back to the regular clipboard since there's no primary selection.
 func ReadPrimarySelection() (string, error) {
+	if proxyURL := strings.TrimSpace(os.Getenv(primarySelectionProxyEnv)); proxyURL != "" {
+		if text, err := readPrimarySelectionProxy(proxyURL); err == nil {
+			return text, nil
+		}
+	}
 	switch runtime.GOOS {
 	case "darwin":
 		return readTextMacOS() // macOS has no primary selection concept
@@ -67,6 +77,23 @@ func ReadPrimarySelection() (string, error) {
 	default:
 		return "", fmt.Errorf("primary selection not supported on %s", runtime.GOOS)
 	}
+}
+
+func readPrimarySelectionProxy(proxyURL string) (string, error) {
+	client := &http.Client{Timeout: 2 * time.Second}
+	resp, err := client.Get(proxyURL)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("primary selection proxy returned %s", resp.Status)
+	}
+	data, err := io.ReadAll(io.LimitReader(resp.Body, 16*1024*1024))
+	if err != nil {
+		return "", err
+	}
+	return string(data), nil
 }
 
 func readPrimaryLinux() (string, error) {

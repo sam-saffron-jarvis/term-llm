@@ -1,0 +1,27 @@
+x-term-llm:
+  purpose: "{{name}} postgres dev database"
+  workspace: /var/lib/postgresql
+  default_service: db
+  shell: /bin/bash
+
+services:
+  db:
+    image: "postgres:{{pg_image_tag}}"
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      POSTGRES_PASSWORD: ${PG_PASSWORD}
+      POSTGRES_DB: "{{pg_db}}"
+      POSTGRES_USER: "{{pg_user}}"
+    ports:
+      - "127.0.0.1:${PG_PORT:-5432}:5432"
+    volumes:
+      - {{name}}-data:/var/lib/postgresql/data
+    labels:
+      org.term-llm.contain: "true"
+      org.term-llm.contain.name: "{{name}}"
+      org.term-llm.contain.config_dir: "{{config_dir}}"
+      org.term-llm.contain.service: "db"
+
+volumes:
+  {{name}}-data:

@@ -1,0 +1,23 @@
+x-term-llm:
+  purpose: "{{name}} redis dev cache"
+  workspace: /data
+  default_service: cache
+  shell: /bin/sh
+
+services:
+  cache:
+    image: "redis:{{redis_image_tag}}"
+    restart: unless-stopped
+    command: ["redis-server", "--save", "60", "1", "--loglevel", "warning"]
+    ports:
+      - "127.0.0.1:${REDIS_PORT:-6379}:6379"
+    volumes:
+      - {{name}}-data:/data
+    labels:
+      org.term-llm.contain: "true"
+      org.term-llm.contain.name: "{{name}}"
+      org.term-llm.contain.config_dir: "{{config_dir}}"
+      org.term-llm.contain.service: "cache"
+
+volumes:
+  {{name}}-data:

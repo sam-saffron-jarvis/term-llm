@@ -1,0 +1,17 @@
+version: 1
+name: code-server
+description: "VS Code in the browser with a project bind-mount, bound to loopback"
+prompts:
+  - id: code_server_image_tag
+    label: "code-server image tag"
+    default: "latest"
+  - id: project_dir
+    label: "Absolute path to project directory to mount"
+    required: true
+  - id: code_password
+    label: "Web UI password"
+    type: secret
+    default:
+      generate: hex
+      bytes: 16
+    required: true

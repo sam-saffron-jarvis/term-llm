@@ -1,0 +1,7 @@
+version: 1
+name: redis
+description: "Redis dev cache with named volume and env-var port override"
+prompts:
+  - id: redis_image_tag
+    label: "Redis image tag"
+    default: "7-alpine"

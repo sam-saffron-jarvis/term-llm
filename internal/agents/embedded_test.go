@@ -1,6 +1,9 @@
 package agents
 
 import (
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -71,6 +74,7 @@ func TestIsBuiltinAgent(t *testing.T) {
 		{"changelog", true},
 		{"codebase", true},
 		{"commit-message", true},
+		{"contain", true},
 		{"developer", true},
 		{"editor", true},
 		{"file-organizer", true},
@@ -109,6 +113,7 @@ func TestBuiltinAgentConfigs(t *testing.T) {
 		{"changelog", true, 200, true, true, false, false},
 		{"codebase", true, 200, true, true, true, false},
 		{"commit-message", true, 200, true, true, true, false},
+		{"contain", true, 100, true, true, false, true},
 		{"developer", true, 200, true, false, false, true},
 		{"editor", true, 200, false, false, false, true},
 		{"file-organizer", true, 200, true, true, false, false},
@@ -155,6 +160,105 @@ func TestBuiltinAgentConfigs(t *testing.T) {
 	}
 }
 
+func TestExtractBuiltinResourcesContainRecipes(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("XDG_CACHE_HOME", tmp)
+
+	dir, err := ExtractBuiltinResources("contain")
+	if err != nil {
+		t.Fatalf("ExtractBuiltinResources: %v", err)
+	}
+
+	for _, rel := range []string{
+		"recipes/postgres/compose.yaml",
+		"recipes/postgres/.template.yaml",
+		"recipes/postgres/.env",
+		"recipes/postgres/README.md",
+		"recipes/redis/compose.yaml",
+		"recipes/ollama/compose.yaml",
+		"recipes/code-server/compose.yaml",
+		"recipes/code-server/.env",
+	} {
+		if _, err := os.Stat(filepath.Join(dir, rel)); err != nil {
+			t.Errorf("expected %s extracted: %v", rel, err)
+		}
+	}
+	for _, rel := range []string{"recipes/postgres/.env", "recipes/code-server/.env"} {
+		info, err := os.Stat(filepath.Join(dir, rel))
+		if err != nil {
+			t.Errorf("expected %s extracted: %v", rel, err)
+			continue
+		}
+		if info.Mode().Perm() != 0o600 {
+			t.Errorf("%s mode = %v, want 0600", rel, info.Mode().Perm())
+		}
+	}
+
+	// agent.yaml and system.md must NOT be copied as resources.
+	for _, rel := range []string{"agent.yaml", "system.md"} {
+		if _, err := os.Stat(filepath.Join(dir, rel)); err == nil {
+			t.Errorf("did not expect %s in resource dir", rel)
+		}
+	}
+}
+
+func TestContainBuiltinRecipesUseSafeDefaults(t *testing.T) {
+	tests := []struct {
+		recipe       string
+		wantPortLine string
+	}{
+		{"postgres", `"127.0.0.1:${PG_PORT:-5432}:5432"`},
+		{"redis", `"127.0.0.1:${REDIS_PORT:-6379}:6379"`},
+		{"ollama", `"127.0.0.1:${OLLAMA_PORT:-11434}:11434"`},
+		{"code-server", `"127.0.0.1:${CODE_PORT:-8443}:8080"`},
+	}
+	for _, tc := range tests {
+		t.Run(tc.recipe, func(t *testing.T) {
+			data, err := builtinFS.ReadFile("builtin/contain/recipes/" + tc.recipe + "/compose.yaml")
+			if err != nil {
+				t.Fatal(err)
+			}
+			text := string(data)
+			if !strings.Contains(text, tc.wantPortLine) {
+				t.Fatalf("compose.yaml missing loopback port binding %s:\n%s", tc.wantPortLine, text)
+			}
+		})
+	}
+}
+
+func TestContainBuiltinRecipeSecretsStayOutOfCompose(t *testing.T) {
+	tests := []struct {
+		recipe      string
+		secretID    string
+		envFileLine string
+	}{
+		{"code-server", "code_password", "CODE_PASSWORD={{code_password}}"},
+		{"postgres", "pg_password", "PG_PASSWORD={{pg_password}}"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.recipe, func(t *testing.T) {
+			compose, err := builtinFS.ReadFile("builtin/contain/recipes/" + tc.recipe + "/compose.yaml")
+			if err != nil {
+				t.Fatal(err)
+			}
+			composeText := string(compose)
+			if strings.Contains(composeText, "{{"+tc.secretID+"}}") {
+				t.Fatalf("compose.yaml renders secret placeholder %s directly:\n%s", tc.secretID, composeText)
+			}
+			if !strings.Contains(composeText, "env_file: .env") {
+				t.Fatalf("compose.yaml missing env_file: .env:\n%s", composeText)
+			}
+			envData, err := builtinFS.ReadFile("builtin/contain/recipes/" + tc.recipe + "/.env")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.TrimSpace(string(envData)) != tc.envFileLine {
+				t.Fatalf(".env = %q, want %q", strings.TrimSpace(string(envData)), tc.envFileLine)
+			}
+		})
+	}
+}
+
 func TestGetBuiltinAgentNames(t *testing.T) {
 	names := GetBuiltinAgentNames()
 
@@ -165,6 +269,7 @@ func TestGetBuiltinAgentNames(t *testing.T) {
 		"changelog":      true,
 		"codebase":       true,
 		"commit-message": true,
+		"contain":        true,
 		"developer":      true,
 		"editor":         true,
 		"file-organizer": true,

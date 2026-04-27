@@ -41,6 +41,7 @@ term-llm ships with these built-in agents:
 | `changelog` | Writes human-readable summaries of interesting git activity. |
 | `codebase` | Reads repositories, traces call paths, and answers source-code questions. |
 | `commit-message` | Writes commit messages from staged or unstaged changes. |
+| `contain` | Authors and runs Docker Compose workspaces under `~/.config/term-llm/containers`. |
 | `developer` | Implements code changes, fixes, and features. |
 | `editor` | Focused file editing without shell access. |
 | `file-organizer` | Renames and organizes files into sensible names and folders. |
@@ -107,7 +108,7 @@ mcp:
   - name: github
 ```
 
-Built-in agents that currently default to `search: true`: `agent-builder`, `web-researcher`, `developer`, `editor`, `shell`.
+Built-in agents that currently default to `search: true`: `agent-builder`, `web-researcher`, `developer`, `editor`, `shell`, `contain`.
 
 ## Platform developer messages
 

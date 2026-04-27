@@ -1,0 +1,20 @@
+version: 1
+name: postgres
+description: "Postgres dev database with named volume and env-var port override"
+prompts:
+  - id: pg_image_tag
+    label: "Postgres image tag"
+    default: "16"
+  - id: pg_db
+    label: "Database name"
+    default: "app"
+  - id: pg_user
+    label: "Database user"
+    default: "postgres"
+  - id: pg_password
+    label: "Database password"
+    type: secret
+    default:
+      generate: hex
+      bytes: 16
+    required: true

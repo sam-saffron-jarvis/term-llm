@@ -2,12 +2,19 @@ package contain
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"io"
+	"net"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
+
+	"github.com/samsaffron/term-llm/internal/clipboard"
 )
 
 type Runner interface {
@@ -30,6 +37,11 @@ var consoleEnvNames = []string{
 	"FORCE_COLOR",
 	"NO_COLOR",
 }
+
+const (
+	containPrimarySelectionProxyEnableEnv = "TERM_LLM_ENABLE_PRIMARY_SELECTION_PROXY"
+	containPrimarySelectionURLEnv         = "TERM_LLM_PRIMARY_SELECTION_URL"
+)
 
 type OSRunner struct{}
 
@@ -133,6 +145,10 @@ func Rebuild(ctx context.Context, runner Runner, name string, stdout, stderr io.
 	return runner.Run(ctx, "docker", upArgs, RunOptions{Stdout: stdout, Stderr: stderr, Dir: dir})
 }
 
+type ShellOptions struct {
+	User string
+}
+
 func Exec(ctx context.Context, runner Runner, name string, cmdArgs []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	if len(cmdArgs) == 0 {
 		return Shell(ctx, runner, name, stdin, stdout, stderr)
@@ -145,14 +161,22 @@ func Exec(ctx context.Context, runner Runner, name string, cmdArgs []string, std
 	if err != nil {
 		return err
 	}
+	service := info.DefaultService()
+	proxyEnv, cleanup := startPrimarySelectionProxy(ctx, runner, args, service, dir)
+	defer cleanup()
 	args = append(args, "exec")
 	args = appendConsoleEnvExecArgs(args)
-	args = append(args, info.DefaultService())
+	args = append(args, proxyEnv...)
+	args = append(args, service)
 	args = append(args, cmdArgs...)
 	return runner.Run(ctx, "docker", args, RunOptions{Stdin: stdin, Stdout: stdout, Stderr: stderr, Dir: dir})
 }
 
 func Shell(ctx context.Context, runner Runner, name string, stdin io.Reader, stdout, stderr io.Writer) error {
+	return ShellWithOptions(ctx, runner, name, ShellOptions{}, stdin, stdout, stderr)
+}
+
+func ShellWithOptions(ctx context.Context, runner Runner, name string, opts ShellOptions, stdin io.Reader, stdout, stderr io.Writer) error {
 	info, dir, err := composeInfoForCommand(name)
 	if err != nil {
 		return err
@@ -161,9 +185,20 @@ func Shell(ctx context.Context, runner Runner, name string, stdin io.Reader, std
 	if err != nil {
 		return err
 	}
+	service := info.DefaultService()
+	proxyEnv, cleanup := startPrimarySelectionProxy(ctx, runner, args, service, dir)
+	defer cleanup()
 	args = append(args, "exec")
+	user := strings.TrimSpace(opts.User)
+	if user == "" {
+		user = info.DefaultUser(service)
+	}
+	if user != "" {
+		args = append(args, "--user", user)
+	}
 	args = appendConsoleEnvExecArgs(args)
-	args = append(args, info.DefaultService(), info.Shell())
+	args = append(args, proxyEnv...)
+	args = append(args, service, info.Shell())
 	return runner.Run(ctx, "docker", args, RunOptions{Stdin: stdin, Stdout: stdout, Stderr: stderr, Dir: dir})
 }
 
@@ -176,6 +211,93 @@ func appendConsoleEnvExecArgs(args []string) []string {
 		args = append(args, "-e", name+"="+value)
 	}
 	return args
+}
+
+func startPrimarySelectionProxy(ctx context.Context, runner Runner, composeArgs []string, service, dir string) ([]string, func()) {
+	if !primarySelectionProxyEnabled() {
+		return nil, func() {}
+	}
+	gateway, ok := containerGateway(ctx, runner, composeArgs, service, dir)
+	if !ok {
+		return nil, func() {}
+	}
+	listener, err := net.Listen("tcp", net.JoinHostPort(gateway, "0"))
+	if err != nil {
+		return nil, func() {}
+	}
+	token, err := randomHexToken(16)
+	if err != nil {
+		_ = listener.Close()
+		return nil, func() {}
+	}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/primary", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("token") != token && r.Header.Get("X-Term-LLM-Token") != token {
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
+		text, err := clipboard.ReadPrimarySelection()
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadGateway)
+			return
+		}
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		_, _ = io.WriteString(w, text)
+	})
+	server := &http.Server{Handler: mux, ReadHeaderTimeout: 2 * time.Second}
+	go func() { _ = server.Serve(listener) }()
+
+	addr := listener.Addr().(*net.TCPAddr)
+	url := fmt.Sprintf("http://%s/primary?token=%s", net.JoinHostPort(addr.IP.String(), fmt.Sprint(addr.Port)), token)
+	cleanup := func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		_ = server.Shutdown(shutdownCtx)
+	}
+	return []string{
+		"-e", containPrimarySelectionURLEnv + "=" + url,
+	}, cleanup
+}
+
+func primarySelectionProxyEnabled() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(containPrimarySelectionProxyEnableEnv))) {
+	case "1", "true", "yes", "on", "y":
+		return true
+	default:
+		return false
+	}
+}
+
+func containerGateway(ctx context.Context, runner Runner, composeArgs []string, service, dir string) (string, bool) {
+	psArgs := append(append([]string{}, composeArgs...), "ps", "-q", service)
+	containerIDBytes, err := runner.Output(ctx, "docker", psArgs, RunOptions{Dir: dir})
+	if err != nil {
+		return "", false
+	}
+	containerID := strings.Fields(string(containerIDBytes))
+	if len(containerID) == 0 {
+		return "", false
+	}
+	inspectArgs := []string{"inspect", "-f", "{{range .NetworkSettings.Networks}}{{println .Gateway}}{{end}}", containerID[0]}
+	gatewayBytes, err := runner.Output(ctx, "docker", inspectArgs, RunOptions{Dir: dir})
+	if err != nil {
+		return "", false
+	}
+	for _, field := range strings.Fields(string(gatewayBytes)) {
+		if ip := net.ParseIP(field); ip != nil {
+			return ip.String(), true
+		}
+	}
+	return "", false
+}
+
+func randomHexToken(n int) (string, error) {
+	buf := make([]byte, n)
+	if _, err := rand.Read(buf); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(buf), nil
 }
 
 func DockerPS(ctx context.Context, runner Runner, stderr io.Writer) ([]byte, error) {
