@@ -198,7 +198,7 @@ func TestDispatchClaudeEvents_PrioritizesTextOverToolRequest(t *testing.T) {
 	toolReqs <- req
 	close(lines)
 
-	_, _, err := provider.dispatchClaudeEvents(context.Background(), lines, toolReqs, false, eventSender{ctx: context.Background(), ch: events})
+	_, _, _, err := provider.dispatchClaudeEvents(context.Background(), lines, toolReqs, false, eventSender{ctx: context.Background(), ch: events})
 	if err != nil {
 		t.Fatalf("dispatch failed: %v", err)
 	}
@@ -240,7 +240,7 @@ func TestDispatchClaudeEvents_PrioritizesSlightlyDelayedTextOverToolRequest(t *t
 		close(lines)
 	}()
 
-	_, _, err := provider.dispatchClaudeEvents(context.Background(), lines, toolReqs, false, eventSender{ctx: context.Background(), ch: events})
+	_, _, _, err := provider.dispatchClaudeEvents(context.Background(), lines, toolReqs, false, eventSender{ctx: context.Background(), ch: events})
 	if err != nil {
 		t.Fatalf("dispatch failed: %v", err)
 	}
@@ -270,7 +270,7 @@ func TestDispatchClaudeEvents_FallsBackToAssistantTextWhenNoDeltas(t *testing.T)
 	lines <- `{"type":"result","is_error":false,"result":"ok","usage":{"input_tokens":1,"output_tokens":2,"cache_read_input_tokens":0}}`
 	close(lines)
 
-	_, _, err := provider.dispatchClaudeEvents(context.Background(), lines, toolReqs, false, eventSender{ctx: context.Background(), ch: events})
+	_, _, _, err := provider.dispatchClaudeEvents(context.Background(), lines, toolReqs, false, eventSender{ctx: context.Background(), ch: events})
 	if err != nil {
 		t.Fatalf("dispatch failed: %v", err)
 	}
@@ -297,7 +297,7 @@ func TestDispatchClaudeEvents_FallsBackToResultTextWhenNoAssistantOrDeltas(t *te
 	lines <- `{"type":"result","subtype":"success","is_error":false,"result":"result fallback text","usage":{"input_tokens":1,"output_tokens":3,"cache_read_input_tokens":0}}`
 	close(lines)
 
-	_, _, err := provider.dispatchClaudeEvents(context.Background(), lines, toolReqs, false, eventSender{ctx: context.Background(), ch: events})
+	_, _, _, err := provider.dispatchClaudeEvents(context.Background(), lines, toolReqs, false, eventSender{ctx: context.Background(), ch: events})
 	if err != nil {
 		t.Fatalf("dispatch failed: %v", err)
 	}
@@ -315,6 +315,54 @@ func TestDispatchClaudeEvents_FallsBackToResultTextWhenNoAssistantOrDeltas(t *te
 	}
 }
 
+func TestDispatchClaudeEvents_SurfacesPermissionDenialResult(t *testing.T) {
+	provider := NewClaudeBinProvider("sonnet", nil)
+	events := make(chan Event, 8)
+	lines := make(chan string, 2)
+	toolReqs := make(chan claudeToolRequest, 1)
+
+	lines <- `{"type":"result","subtype":"success","is_error":true,"result":"Permission denied to use mcp__term_llm__shell","permission_denials":[{"tool_name":"mcp__term_llm__shell"}],"usage":{"input_tokens":1,"output_tokens":3,"cache_read_input_tokens":0}}`
+	close(lines)
+
+	_, _, handled, err := provider.dispatchClaudeEvents(context.Background(), lines, toolReqs, false, eventSender{ctx: context.Background(), ch: events})
+	if err != nil {
+		t.Fatalf("dispatch failed: %v", err)
+	}
+	if !handled {
+		t.Fatal("expected permission denial result to be marked handled")
+	}
+
+	select {
+	case ev := <-events:
+		if ev.Type != EventTextDelta {
+			t.Fatalf("expected EventTextDelta, got %+v", ev)
+		}
+		if ev.Text != "Permission denied to use mcp__term_llm__shell" {
+			t.Fatalf("unexpected permission denial text: %q", ev.Text)
+		}
+	default:
+		t.Fatal("expected permission denial result text event")
+	}
+}
+
+func TestDispatchClaudeEvents_LeavesAuthResultAsError(t *testing.T) {
+	provider := NewClaudeBinProvider("sonnet", nil)
+	events := make(chan Event, 8)
+	lines := make(chan string, 2)
+	toolReqs := make(chan claudeToolRequest, 1)
+
+	lines <- `{"type":"result","subtype":"success","is_error":true,"result":"Not logged in · Please run /login","permission_denials":[],"usage":{"input_tokens":0,"output_tokens":0,"cache_read_input_tokens":0}}`
+	close(lines)
+
+	_, _, handled, err := provider.dispatchClaudeEvents(context.Background(), lines, toolReqs, false, eventSender{ctx: context.Background(), ch: events})
+	if err == nil {
+		t.Fatal("expected auth result to remain an error")
+	}
+	if handled {
+		t.Fatal("did not expect auth error to be marked handled")
+	}
+}
+
 func TestDispatchClaudeEvents_EmitsStreamlinedText(t *testing.T) {
 	provider := NewClaudeBinProvider("sonnet", nil)
 	events := make(chan Event, 8)
@@ -325,7 +373,7 @@ func TestDispatchClaudeEvents_EmitsStreamlinedText(t *testing.T) {
 	lines <- `{"type":"result","subtype":"success","is_error":false,"result":"ignored final result","usage":{"input_tokens":1,"output_tokens":3,"cache_read_input_tokens":0}}`
 	close(lines)
 
-	_, _, err := provider.dispatchClaudeEvents(context.Background(), lines, toolReqs, false, eventSender{ctx: context.Background(), ch: events})
+	_, _, _, err := provider.dispatchClaudeEvents(context.Background(), lines, toolReqs, false, eventSender{ctx: context.Background(), ch: events})
 	if err != nil {
 		t.Fatalf("dispatch failed: %v", err)
 	}
@@ -354,7 +402,7 @@ func TestDispatchClaudeEvents_DoesNotDuplicateAssistantFallbackWhenDeltasPresent
 	lines <- `{"type":"result","is_error":false,"result":"ok","usage":{"input_tokens":1,"output_tokens":2,"cache_read_input_tokens":0}}`
 	close(lines)
 
-	_, _, err := provider.dispatchClaudeEvents(context.Background(), lines, toolReqs, false, eventSender{ctx: context.Background(), ch: events})
+	_, _, _, err := provider.dispatchClaudeEvents(context.Background(), lines, toolReqs, false, eventSender{ctx: context.Background(), ch: events})
 	if err != nil {
 		t.Fatalf("dispatch failed: %v", err)
 	}
@@ -386,7 +434,7 @@ func TestDispatchClaudeEvents_SeparatesCachedInputTokensInUsage(t *testing.T) {
 	lines <- `{"type":"result","is_error":false,"result":"ok","usage":{"input_tokens":11,"output_tokens":7,"cache_read_input_tokens":5}}`
 	close(lines)
 
-	usage, _, err := provider.dispatchClaudeEvents(context.Background(), lines, toolReqs, false, eventSender{ctx: context.Background(), ch: events})
+	usage, _, _, err := provider.dispatchClaudeEvents(context.Background(), lines, toolReqs, false, eventSender{ctx: context.Background(), ch: events})
 	if err != nil {
 		t.Fatalf("dispatch failed: %v", err)
 	}
@@ -441,6 +489,7 @@ func TestHandleClaudeLine_ContextCancelledDoesNotBlock(t *testing.T) {
 		&usage,
 		&sawTextDelta,
 		&assistantFallbackText,
+		nil,
 	)
 	if err == nil {
 		t.Fatal("expected cancellation error")
@@ -590,6 +639,15 @@ func TestClaudeBinProvider_BuildArgsDisablesHooksByDefault(t *testing.T) {
 	if !strings.Contains(joined, `{"disableAllHooks":true}`) {
 		t.Fatal("expected claude-bin args to disable hooks by default")
 	}
+	for i, arg := range args {
+		if arg == "--setting-sources" {
+			if i+1 >= len(args) || args[i+1] != "" {
+				t.Fatalf("--setting-sources = %q, want empty", args[i+1])
+			}
+			return
+		}
+	}
+	t.Fatal("expected claude-bin args to include --setting-sources")
 }
 
 func TestClaudeBinProvider_BuildArgsDangerousPermissionsRespectsEuid(t *testing.T) {
@@ -609,20 +667,7 @@ func TestClaudeBinProvider_BuildArgsDangerousPermissionsRespectsEuid(t *testing.
 		}
 	})
 
-	t.Run("root sandbox uses bypass permission mode", func(t *testing.T) {
-		getEuid = func() int { return 0 }
-		p := NewClaudeBinProvider("sonnet", map[string]string{"IS_SANDBOX": "1"})
-		args, _ := p.buildArgs(context.Background(), Request{}, eventSender{})
-		joined := strings.Join(args, "\n")
-		if strings.Contains(joined, "--dangerously-skip-permissions") {
-			t.Fatal("expected claude-bin args to omit --dangerously-skip-permissions when running as root")
-		}
-		if !strings.Contains(joined, "--permission-mode\nbypassPermissions") {
-			t.Fatal("expected root sandbox runs to request bypassPermissions mode")
-		}
-	})
-
-	t.Run("root outside sandbox omits bypass flags", func(t *testing.T) {
+	t.Run("root uses bypass permission mode", func(t *testing.T) {
 		getEuid = func() int { return 0 }
 		p := NewClaudeBinProvider("sonnet", nil)
 		args, _ := p.buildArgs(context.Background(), Request{}, eventSender{})
@@ -630,8 +675,8 @@ func TestClaudeBinProvider_BuildArgsDangerousPermissionsRespectsEuid(t *testing.
 		if strings.Contains(joined, "--dangerously-skip-permissions") {
 			t.Fatal("expected claude-bin args to omit --dangerously-skip-permissions when running as root")
 		}
-		if strings.Contains(joined, "--permission-mode\nbypassPermissions") {
-			t.Fatal("did not expect bypassPermissions mode outside sandbox")
+		if !strings.Contains(joined, "--permission-mode\nbypassPermissions") {
+			t.Fatal("expected root runs to request bypassPermissions mode")
 		}
 	})
 }
@@ -761,6 +806,10 @@ func TestClaudeBinProvider_ResetConversationClearsResumeState(t *testing.T) {
 }
 
 func TestClaudeBinProvider_BuildCommandEnv(t *testing.T) {
+	origGetEuid := getEuid
+	defer func() { getEuid = origGetEuid }()
+	getEuid = func() int { return 1000 }
+
 	t.Setenv("ANTHROPIC_API_KEY", "should-be-cleared")
 	t.Setenv("CLAUDE_CODE_EFFORT_LEVEL", "medium")
 	t.Setenv("PATH", os.Getenv("PATH"))
@@ -792,6 +841,47 @@ func TestClaudeBinProvider_BuildCommandEnv(t *testing.T) {
 	}
 	if !strings.Contains(joined, "CLAUDE_CODE_EFFORT_LEVEL=max") {
 		t.Fatal("expected model-derived effort level to be present")
+	}
+}
+
+func TestClaudeBinProvider_BuildCommandEnvRootForcesSandboxMarker(t *testing.T) {
+	origGetEuid := getEuid
+	defer func() { getEuid = origGetEuid }()
+	getEuid = func() int { return 0 }
+
+	t.Setenv("IS_SANDBOX", "0")
+	t.Setenv("PATH", os.Getenv("PATH"))
+
+	p := NewClaudeBinProvider("sonnet", map[string]string{"IS_SANDBOX": "0"})
+	env := p.buildCommandEnv("")
+	joined := strings.Join(env, "\n")
+
+	if strings.Contains(joined, "IS_SANDBOX=0") {
+		t.Fatal("expected stale IS_SANDBOX=0 values to be removed for root bypass")
+	}
+	if !strings.Contains(joined, "IS_SANDBOX=1") {
+		t.Fatal("expected IS_SANDBOX=1 to be forced for root bypass")
+	}
+}
+
+func TestClaudeBinProvider_BuildCommandEnvRootPreservesBubblewrapMarker(t *testing.T) {
+	origGetEuid := getEuid
+	defer func() { getEuid = origGetEuid }()
+	getEuid = func() int { return 0 }
+
+	t.Setenv("IS_SANDBOX", "0")
+	t.Setenv("CLAUDE_CODE_BUBBLEWRAP", "1")
+	t.Setenv("PATH", os.Getenv("PATH"))
+
+	p := NewClaudeBinProvider("sonnet", nil)
+	env := p.buildCommandEnv("")
+	joined := strings.Join(env, "\n")
+
+	if strings.Contains(joined, "IS_SANDBOX=1") {
+		t.Fatal("did not expect forced IS_SANDBOX=1 when CLAUDE_CODE_BUBBLEWRAP is already set")
+	}
+	if !strings.Contains(joined, "CLAUDE_CODE_BUBBLEWRAP=1") {
+		t.Fatal("expected inherited CLAUDE_CODE_BUBBLEWRAP=1 to be preserved")
 	}
 }
 
