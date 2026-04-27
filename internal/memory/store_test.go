@@ -2,6 +2,7 @@ package memory
 
 import (
 	"context"
+	"fmt"
 	"math"
 	"path/filepath"
 	"strings"
@@ -185,6 +186,48 @@ func TestFragmentSourcesCRUD(t *testing.T) {
 	}
 	if len(sources) != 0 {
 		t.Fatalf("GetFragmentSources(after rowid delete) len = %d, want 0", len(sources))
+	}
+}
+
+func TestStoreListFragmentPaths(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore(t)
+	defer store.Close()
+
+	now := time.Now().UTC().Truncate(time.Second)
+	fragments := []Fragment{
+		{Agent: "jarvis", Path: "projects/term_llm/old.md", Content: "old", CreatedAt: now.Add(1 * time.Second)},
+		{Agent: "jarvis", Path: "projects/term_llm/new.md", Content: "new", CreatedAt: now.Add(2 * time.Second)},
+		{Agent: "jarvis", Path: "projects/termXllm/nope.md", Content: "underscore wildcard must not match", CreatedAt: now.Add(3 * time.Second)},
+		{Agent: "jarvis", Path: "notes/elsewhere.md", Content: "elsewhere", CreatedAt: now.Add(4 * time.Second)},
+		{Agent: "other", Path: "projects/term_llm/other.md", Content: "other agent", CreatedAt: now.Add(5 * time.Second)},
+	}
+	for i := range fragments {
+		if err := store.CreateFragment(ctx, &fragments[i]); err != nil {
+			t.Fatalf("CreateFragment(%s) error = %v", fragments[i].Path, err)
+		}
+	}
+
+	paths, err := store.ListFragmentPaths(ctx, "jarvis", "projects/term_llm/", 10)
+	if err != nil {
+		t.Fatalf("ListFragmentPaths() error = %v", err)
+	}
+	want := []string{"projects/term_llm/new.md", "projects/term_llm/old.md"}
+	if len(paths) != len(want) {
+		t.Fatalf("ListFragmentPaths() len = %d, want %d: %#v", len(paths), len(want), paths)
+	}
+	for i := range want {
+		if paths[i] != want[i] {
+			t.Fatalf("ListFragmentPaths()[%d] = %q, want %q (all paths %#v)", i, paths[i], want[i], paths)
+		}
+	}
+
+	paths, err = store.ListFragmentPaths(ctx, "jarvis", "projects/term_llm/", 1)
+	if err != nil {
+		t.Fatalf("ListFragmentPaths(limit) error = %v", err)
+	}
+	if len(paths) != 1 || paths[0] != "projects/term_llm/new.md" {
+		t.Fatalf("ListFragmentPaths(limit) = %#v, want newest matching path only", paths)
 	}
 }
 
@@ -996,7 +1039,100 @@ func TestParseFlexibleTime(t *testing.T) {
 	}
 }
 
-func newTestStore(t *testing.T) *Store {
+func BenchmarkListFragmentPathsForMiningTool(b *testing.B) {
+	ctx := context.Background()
+	store := newTestStore(b)
+	defer store.Close()
+	seedListFragmentPathBenchmark(b, store, 3000)
+
+	const (
+		agent  = "jarvis"
+		prefix = "projects/term-llm/"
+		limit  = 20
+	)
+
+	b.Run("old-list-fragments-filter", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			fragments, err := store.ListFragments(ctx, ListOptions{Agent: agent})
+			if err != nil {
+				b.Fatalf("ListFragments() error = %v", err)
+			}
+			paths := make([]string, 0, limit)
+			for _, frag := range fragments {
+				if !strings.HasPrefix(frag.Path, prefix) {
+					continue
+				}
+				paths = append(paths, frag.Path)
+				if len(paths) >= limit {
+					break
+				}
+			}
+			if len(paths) != limit {
+				b.Fatalf("old path count = %d, want %d", len(paths), limit)
+			}
+		}
+	})
+
+	b.Run("new-list-fragment-paths", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			paths, err := store.ListFragmentPaths(ctx, agent, prefix, limit)
+			if err != nil {
+				b.Fatalf("ListFragmentPaths() error = %v", err)
+			}
+			if len(paths) != limit {
+				b.Fatalf("new path count = %d, want %d", len(paths), limit)
+			}
+		}
+	})
+}
+
+func seedListFragmentPathBenchmark(b *testing.B, store *Store, count int) {
+	b.Helper()
+
+	tx, err := store.db.Begin()
+	if err != nil {
+		b.Fatalf("begin seed transaction: %v", err)
+	}
+	defer tx.Rollback()
+
+	stmt, err := tx.Prepare(`
+		INSERT INTO memory_fragments (id, agent, path, content, source, created_at, updated_at, decay_score)
+		VALUES (?, ?, ?, ?, ?, ?, ?, 1.0)`)
+	if err != nil {
+		b.Fatalf("prepare seed insert: %v", err)
+	}
+	defer stmt.Close()
+
+	content := strings.Repeat("x", 2048)
+	now := time.Now().UTC().Add(-time.Duration(count) * time.Second)
+	for i := 0; i < count; i++ {
+		prefix := "notes/misc"
+		if i%10 == 0 {
+			prefix = "projects/term-llm"
+		}
+		createdAt := now.Add(time.Duration(i) * time.Second)
+		_, err := stmt.Exec(
+			fmt.Sprintf("frag-%04d", i),
+			"jarvis",
+			fmt.Sprintf("%s/%04d.md", prefix, i),
+			content,
+			DefaultSourceMine,
+			createdAt,
+			createdAt,
+		)
+		if err != nil {
+			b.Fatalf("seed insert %d: %v", i, err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		b.Fatalf("commit seed transaction: %v", err)
+	}
+}
+
+func newTestStore(t testing.TB) *Store {
 	t.Helper()
 	dbPath := filepath.Join(t.TempDir(), "memory.db")
 	store, err := NewStore(Config{Path: dbPath})

@@ -106,6 +106,7 @@ CREATE TABLE IF NOT EXISTS memory_fragments (
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_fragments_agent_path ON memory_fragments(agent, path);
+CREATE INDEX IF NOT EXISTS idx_fragments_agent_created_at ON memory_fragments(agent, created_at DESC);
 
 CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5(
     id UNINDEXED,
@@ -731,6 +732,59 @@ func (s *Store) ListFragments(ctx context.Context, opts ListOptions) ([]Fragment
 		return nil, err
 	}
 	return out, nil
+}
+
+// ListFragmentPaths returns only fragment paths for lightweight listings.
+// Results preserve ListFragments' newest-first ordering, but avoid reading large
+// content bodies when callers only need path names (for example, mining tools).
+func (s *Store) ListFragmentPaths(ctx context.Context, agent, prefix string, limit int) ([]string, error) {
+	agent = strings.TrimSpace(agent)
+	prefix = strings.TrimSpace(prefix)
+
+	query := `
+		SELECT path
+		FROM memory_fragments
+		WHERE 1=1`
+	args := []any{}
+	if agent != "" {
+		query += ` AND agent = ?`
+		args = append(args, agent)
+	}
+	if prefix != "" {
+		query += ` AND path >= ?`
+		args = append(args, prefix)
+		if end := sqlitePrefixRangeEnd(prefix); end != "" {
+			query += ` AND path < ?`
+			args = append(args, end)
+		}
+	}
+	query += ` ORDER BY created_at DESC`
+	if limit > 0 {
+		query += ` LIMIT ?`
+		args = append(args, limit)
+	}
+
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("list fragment paths: %w", err)
+	}
+	defer rows.Close()
+
+	paths := []string{}
+	if limit > 0 {
+		paths = make([]string, 0, limit)
+	}
+	for rows.Next() {
+		var p string
+		if err := rows.Scan(&p); err != nil {
+			return nil, fmt.Errorf("scan fragment path: %w", err)
+		}
+		paths = append(paths, p)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return paths, nil
 }
 
 // ListAgents returns distinct agent names that have stored fragments.
@@ -1856,6 +1910,23 @@ func (s *Store) SearchImages(ctx context.Context, query, agent string, limit int
 		out = append(out, r)
 	}
 	return out, rows.Err()
+}
+
+// sqlitePrefixRangeEnd returns the exclusive upper bound for a bytewise SQLite
+// range scan over strings with the provided prefix. Empty means there is no
+// representable upper bound.
+func sqlitePrefixRangeEnd(prefix string) string {
+	if prefix == "" {
+		return ""
+	}
+	b := []byte(prefix)
+	for i := len(b) - 1; i >= 0; i-- {
+		if b[i] != 0xff {
+			b[i]++
+			return string(b[:i+1])
+		}
+	}
+	return ""
 }
 
 // sqliteLikeEscape escapes SQLite LIKE special characters (%, _, \) in a literal string.
