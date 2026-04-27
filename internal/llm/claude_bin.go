@@ -103,6 +103,40 @@ type ClaudeCommandError struct {
 	StderrTail     string
 }
 
+type UserFacingProviderError struct {
+	Summary string
+	Detail  string
+	Cause   error
+}
+
+func (e *UserFacingProviderError) Error() string {
+	if e == nil {
+		return "provider error"
+	}
+	if e.Detail != "" {
+		return e.Summary + ": " + e.Detail
+	}
+	return e.Summary
+}
+
+func (e *UserFacingProviderError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.Cause
+}
+
+func (e *UserFacingProviderError) DebugFields() map[string]any {
+	if e == nil || e.Cause == nil {
+		return nil
+	}
+	fieldsErr, ok := e.Cause.(interface{ DebugFields() map[string]any })
+	if !ok {
+		return nil
+	}
+	return fieldsErr.DebugFields()
+}
+
 func (e *ClaudeCommandError) Error() string {
 	if e == nil {
 		return "claude command failed"
@@ -409,20 +443,27 @@ func (p *ClaudeBinProvider) Stream(ctx context.Context, req Request) (Stream, er
 }
 
 func (p *ClaudeBinProvider) buildCommandEnv(effort string) []string {
+	runningAsRoot := getEuid() == 0
 	env := os.Environ()
 	filtered := env[:0]
 	for _, e := range env {
-		if p.preferOAuth && strings.HasPrefix(e, "ANTHROPIC_API_KEY=") {
+		key := e
+		if idx := strings.IndexByte(e, '='); idx >= 0 {
+			key = e[:idx]
+		}
+		if p.preferOAuth && key == "ANTHROPIC_API_KEY" {
 			continue
 		}
-		if effort != "" && strings.HasPrefix(e, "CLAUDE_CODE_EFFORT_LEVEL=") {
+		if effort != "" && key == "CLAUDE_CODE_EFFORT_LEVEL" {
+			continue
+		}
+		// Claude Code refuses bypassPermissions as root unless it sees an
+		// explicit sandbox marker. term-llm owns tool execution, so force the
+		// inert IS_SANDBOX marker below rather than inheriting a stale value.
+		if runningAsRoot && key == "IS_SANDBOX" {
 			continue
 		}
 		if len(p.extraEnv) > 0 {
-			key := e
-			if idx := strings.IndexByte(e, '='); idx >= 0 {
-				key = e[:idx]
-			}
 			if _, ok := p.extraEnv[key]; ok {
 				continue
 			}
@@ -439,9 +480,26 @@ func (p *ClaudeBinProvider) buildCommandEnv(effort string) []string {
 		if effort != "" && k == "CLAUDE_CODE_EFFORT_LEVEL" {
 			continue
 		}
+		if runningAsRoot && k == "IS_SANDBOX" {
+			continue
+		}
 		filtered = append(filtered, k+"="+v)
 	}
+	if runningAsRoot && !envHasTruthy(filtered, "CLAUDE_CODE_BUBBLEWRAP") {
+		filtered = append(filtered, "IS_SANDBOX=1")
+	}
 	return filtered
+}
+
+func envHasTruthy(env []string, key string) bool {
+	prefix := key + "="
+	for _, e := range env {
+		if strings.HasPrefix(e, prefix) {
+			v := strings.ToLower(strings.TrimSpace(strings.TrimPrefix(e, prefix)))
+			return v != "" && v != "0" && v != "false"
+		}
+	}
+	return false
 }
 
 func (p *ClaudeBinProvider) newClaudeCommandError(cmdErr error, exitCode int, args []string, effort, userPrompt string, toolsExecuted bool, stdoutTail, stderrTail []string) *ClaudeCommandError {
@@ -467,6 +525,65 @@ func (p *ClaudeBinProvider) newClaudeCommandError(cmdErr error, exitCode int, ar
 		StdoutTail:     strings.Join(normalizeClaudeTail(stdoutTail), "\n"),
 		StderrTail:     strings.Join(normalizeClaudeTail(stderrTail), "\n"),
 	}
+}
+
+func (p *ClaudeBinProvider) userFacingClaudeCommandError(err *ClaudeCommandError) error {
+	if err == nil {
+		return nil
+	}
+	detail := firstUsefulClaudeDiagnosticLine(err.StderrTail)
+	if detail == "" {
+		detail = firstUsefulClaudeDiagnosticLine(err.StdoutTail)
+	}
+	if detail == "" && err.Err != nil {
+		detail = err.Err.Error()
+	}
+
+	combined := strings.ToLower(strings.TrimSpace(err.StderrTail + "\n" + err.StdoutTail))
+	summary := fmt.Sprintf("Claude Code exited before completing the turn (exit %d)", err.ExitCode)
+	switch {
+	case strings.Contains(combined, "cannot be used with root/sudo privileges"):
+		summary = "Claude Code refused permission bypass while running as root"
+		if detail == "" {
+			detail = "term-llm should set IS_SANDBOX=1 for root claude-bin runs"
+		}
+	case strings.Contains(combined, "not logged in") || strings.Contains(combined, "please run /login"):
+		summary = "Claude Code is not logged in"
+	case strings.Contains(combined, "bypasspermissions") &&
+		(strings.Contains(combined, "policy") || strings.Contains(combined, "managed") || strings.Contains(combined, "disabled")):
+		summary = "Claude Code managed policy blocked permission bypass"
+	case strings.Contains(combined, "permission") &&
+		(strings.Contains(combined, "denied") || strings.Contains(combined, "requires approval") || strings.Contains(combined, "refused")):
+		summary = "Claude Code denied a tool call before term-llm could execute it"
+	}
+
+	return &UserFacingProviderError{
+		Summary: summary,
+		Detail:  detail,
+		Cause:   err,
+	}
+}
+
+func firstUsefulClaudeDiagnosticLine(text string) string {
+	for _, line := range strings.Split(text, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "{") {
+			continue
+		}
+		return truncateOneLine(line, 240)
+	}
+	return ""
+}
+
+func truncateOneLine(text string, maxRunes int) string {
+	if maxRunes <= 0 {
+		return ""
+	}
+	runes := []rune(text)
+	if len(runes) <= maxRunes {
+		return text
+	}
+	return string(runes[:maxRunes]) + "…"
 }
 
 func (p *ClaudeBinProvider) commandEnvDebugFields(effort string) (map[string]string, []string) {
@@ -690,7 +807,7 @@ func (p *ClaudeBinProvider) runClaudeCommand(
 		scanErrCh <- scanner.Err()
 	}()
 
-	lastUsage, toolsExecuted, err := p.dispatchClaudeEvents(ctx, lineCh, bridge.toolReqCh, debug, send)
+	lastUsage, toolsExecuted, handledTerminalResult, err := p.dispatchClaudeEvents(ctx, lineCh, bridge.toolReqCh, debug, send)
 	if err != nil {
 		// Kill the process if dispatch failed (e.g., context cancelled)
 		// to avoid orphan processes.
@@ -729,7 +846,8 @@ func (p *ClaudeBinProvider) runClaudeCommand(
 		// Any other non-zero exit (crashes, OOMs, auth failures, etc.) must
 		// still surface — don't swallow those just because tools ran.
 		expectedToolExit := toolsExecuted && exitCode == 1
-		if !expectedToolExit {
+		expectedHandledTerminalResult := handledTerminalResult && exitCode == 1
+		if !expectedToolExit && !expectedHandledTerminalResult {
 			claudeErr := p.newClaudeCommandError(cmdErr, exitCode, args, effort, userPrompt, toolsExecuted, stdoutSnapshot, stderrSnapshot)
 			slog.Error("claude command failed",
 				"exit_code", exitCode,
@@ -741,7 +859,7 @@ func (p *ClaudeBinProvider) runClaudeCommand(
 				"stderr_tail", claudeErr.StderrTail,
 				"stdout_tail", claudeErr.StdoutTail,
 			)
-			return claudeErr
+			return p.userFacingClaudeCommandError(claudeErr)
 		}
 	}
 
@@ -759,13 +877,14 @@ func (p *ClaudeBinProvider) dispatchClaudeEvents(
 	toolReqCh <-chan claudeToolRequest,
 	debug bool,
 	send eventSender,
-) (*Usage, bool, error) {
+) (*Usage, bool, bool, error) {
 	var (
 		lastUsage             *Usage
 		linesOpen             = true
 		sawTextDelta          bool
 		assistantFallbackText string
 		toolsExecuted         bool
+		handledTerminalResult bool
 	)
 
 	for linesOpen {
@@ -779,8 +898,8 @@ func (p *ClaudeBinProvider) dispatchClaudeEvents(
 					break
 				}
 				hadLine = true
-				if err := p.handleClaudeLine(ctx, line, debug, send, &lastUsage, &sawTextDelta, &assistantFallbackText); err != nil {
-					return nil, false, err
+				if err := p.handleClaudeLine(ctx, line, debug, send, &lastUsage, &sawTextDelta, &assistantFallbackText, &handledTerminalResult); err != nil {
+					return nil, false, false, err
 				}
 			default:
 				goto drainDone
@@ -797,17 +916,17 @@ func (p *ClaudeBinProvider) dispatchClaudeEvents(
 				linesOpen = false
 				continue
 			}
-			if err := p.handleClaudeLine(ctx, line, debug, send, &lastUsage, &sawTextDelta, &assistantFallbackText); err != nil {
-				return nil, false, err
+			if err := p.handleClaudeLine(ctx, line, debug, send, &lastUsage, &sawTextDelta, &assistantFallbackText, &handledTerminalResult); err != nil {
+				return nil, false, false, err
 			}
 		case req := <-toolReqCh:
-			if err := p.drainClaudeLinesWithGrace(ctx, lineCh, debug, send, &lastUsage, &sawTextDelta, &assistantFallbackText); err != nil {
-				return nil, false, err
+			if err := p.drainClaudeLinesWithGrace(ctx, lineCh, debug, send, &lastUsage, &sawTextDelta, &assistantFallbackText, &handledTerminalResult); err != nil {
+				return nil, false, false, err
 			}
 			toolsExecuted = true
 			p.handleClaudeToolRequest(req, send)
 		case <-ctx.Done():
-			return nil, false, ctx.Err()
+			return nil, false, false, ctx.Err()
 		}
 	}
 
@@ -823,7 +942,7 @@ func (p *ClaudeBinProvider) dispatchClaudeEvents(
 	}
 drained:
 
-	return lastUsage, toolsExecuted, nil
+	return lastUsage, toolsExecuted, handledTerminalResult, nil
 }
 
 func (p *ClaudeBinProvider) handleClaudeLine(
@@ -834,6 +953,7 @@ func (p *ClaudeBinProvider) handleClaudeLine(
 	lastUsage **Usage,
 	sawTextDelta *bool,
 	assistantFallbackText *string,
+	handledTerminalResult *bool,
 ) error {
 	var baseMsg struct {
 		Type string `json:"type"`
@@ -901,17 +1021,28 @@ func (p *ClaudeBinProvider) handleClaudeLine(
 	case "result":
 		var resultMsg claudeResultMessage
 		if err := json.Unmarshal([]byte(line), &resultMsg); err == nil {
-			// Check for API errors (rate limits, auth issues, etc.)
-			if resultMsg.IsError && resultMsg.Result != "" {
+			permissionDenied := resultMsg.hasPermissionDenial()
+			// Check for API errors (rate limits, auth issues, etc.). Claude Code
+			// reports permission denials as terminal result errors too; surface
+			// those as model-visible text so the conversation can fail gracefully.
+			if resultMsg.IsError && resultMsg.Result != "" && !permissionDenied {
 				return fmt.Errorf("claude API error: %s", resultMsg.Result)
 			}
 
 			fallbackText := ""
-			if assistantFallbackText != nil {
+			if permissionDenied {
+				fallbackText = resultMsg.permissionDenialText()
+			} else if assistantFallbackText != nil {
 				fallbackText = strings.TrimSpace(*assistantFallbackText)
 			}
 			if fallbackText == "" {
 				fallbackText = strings.TrimSpace(resultMsg.Result)
+			}
+			if permissionDenied && fallbackText == "" {
+				fallbackText = "Claude Code denied a tool call before term-llm could execute it."
+			}
+			if permissionDenied && handledTerminalResult != nil {
+				*handledTerminalResult = true
 			}
 			if sawTextDelta != nil && !*sawTextDelta && fallbackText != "" {
 				if err := send.Send(Event{Type: EventTextDelta, Text: fallbackText}); err != nil {
@@ -954,6 +1085,7 @@ func (p *ClaudeBinProvider) drainClaudeLinesWithGrace(
 	lastUsage **Usage,
 	sawTextDelta *bool,
 	assistantFallbackText *string,
+	handledTerminalResult *bool,
 ) error {
 	// First, drain any already-buffered lines.
 	for {
@@ -962,7 +1094,7 @@ func (p *ClaudeBinProvider) drainClaudeLinesWithGrace(
 			if !ok {
 				return nil
 			}
-			if err := p.handleClaudeLine(ctx, line, debug, send, lastUsage, sawTextDelta, assistantFallbackText); err != nil {
+			if err := p.handleClaudeLine(ctx, line, debug, send, lastUsage, sawTextDelta, assistantFallbackText, handledTerminalResult); err != nil {
 				return err
 			}
 		default:
@@ -980,7 +1112,7 @@ wait:
 			if !ok {
 				return nil
 			}
-			if err := p.handleClaudeLine(ctx, line, debug, send, lastUsage, sawTextDelta, assistantFallbackText); err != nil {
+			if err := p.handleClaudeLine(ctx, line, debug, send, lastUsage, sawTextDelta, assistantFallbackText, handledTerminalResult); err != nil {
 				return err
 			}
 			if !timer.Stop() {
@@ -1002,28 +1134,24 @@ wait:
 // The events channel is passed to the MCP server for routing tool execution events.
 // The MCP server is kept alive across turns - call CleanupMCP() when the conversation ends.
 // Returns the args and the effective reasoning effort (if any).
-func (p *ClaudeBinProvider) claudeSandboxEnabled() bool {
-	if v, ok := p.extraEnv["IS_SANDBOX"]; ok {
-		return strings.TrimSpace(v) == "1"
-	}
-	if v, ok := p.extraEnv["CLAUDE_CODE_BUBBLEWRAP"]; ok {
-		return strings.TrimSpace(v) == "1"
-	}
-	return strings.TrimSpace(os.Getenv("IS_SANDBOX")) == "1" || strings.TrimSpace(os.Getenv("CLAUDE_CODE_BUBBLEWRAP")) == "1"
-}
-
 func (p *ClaudeBinProvider) buildArgs(ctx context.Context, req Request, send eventSender) ([]string, string) {
 	args := []string{
 		"--print",
 		"--output-format", "stream-json",
 		"--include-partial-messages", // Stream text as it arrives
 		"--verbose",
-		"--strict-mcp-config",       // Ignore Claude's configured MCPs
-		"--setting-sources", "user", // Skip project CLAUDE.md files (term-llm provides its own context)
+		"--strict-mcp-config", // Ignore Claude's configured MCPs
+		// Ignore user/project/local settings so Claude Code cannot apply its own
+		// permission rules or hooks. flagSettings (--settings below) and managed
+		// policy settings are still loaded by Claude Code.
+		"--setting-sources", "",
 	}
 	if getEuid() != 0 {
 		args = append(args, "--dangerously-skip-permissions")
-	} else if p.claudeSandboxEnabled() {
+	} else {
+		// Claude Code rejects --dangerously-skip-permissions when running as root.
+		// Use the equivalent permission mode explicitly so claude-bin remains
+		// non-interactive in rootful containers too.
 		args = append(args, "--permission-mode", "bypassPermissions")
 	}
 	if !p.enableHooks {
@@ -1776,15 +1904,67 @@ type claudeStreamlinedTextMessage struct {
 }
 
 type claudeResultMessage struct {
-	Type    string `json:"type"`
-	IsError bool   `json:"is_error"`
-	Result  string `json:"result"`
-	Usage   struct {
+	Type              string            `json:"type"`
+	IsError           bool              `json:"is_error"`
+	Result            string            `json:"result"`
+	PermissionDenials []json.RawMessage `json:"permission_denials"`
+	Usage             struct {
 		InputTokens          int `json:"input_tokens"`
 		OutputTokens         int `json:"output_tokens"`
 		CacheReadInputTokens int `json:"cache_read_input_tokens"`
 	} `json:"usage"`
 	TotalCostUSD float64 `json:"total_cost_usd"`
+}
+
+func (m claudeResultMessage) hasPermissionDenial() bool {
+	if len(m.PermissionDenials) > 0 {
+		return true
+	}
+	text := strings.ToLower(strings.TrimSpace(m.Result))
+	return strings.Contains(text, "permission") &&
+		(strings.Contains(text, "denied") || strings.Contains(text, "requires approval"))
+}
+
+func (m claudeResultMessage) permissionDenialText() string {
+	tools := m.permissionDenialTools()
+	if len(tools) == 0 {
+		result := strings.TrimSpace(m.Result)
+		if result != "" {
+			return result
+		}
+		return "Claude Code denied a tool call before term-llm could execute it."
+	}
+
+	quoted := make([]string, 0, len(tools))
+	for _, tool := range tools {
+		quoted = append(quoted, "`"+tool+"`")
+	}
+	return fmt.Sprintf("Claude Code denied %s before term-llm could execute it.\nterm-llm did not execute the tool call.", strings.Join(quoted, ", "))
+}
+
+func (m claudeResultMessage) permissionDenialTools() []string {
+	seen := make(map[string]struct{}, len(m.PermissionDenials))
+	var tools []string
+	for _, raw := range m.PermissionDenials {
+		var denial map[string]any
+		if err := json.Unmarshal(raw, &denial); err != nil {
+			continue
+		}
+		for _, key := range []string{"tool_name", "toolName", "name", "tool"} {
+			tool, ok := denial[key].(string)
+			tool = strings.TrimSpace(tool)
+			if !ok || tool == "" {
+				continue
+			}
+			if _, exists := seen[tool]; exists {
+				continue
+			}
+			seen[tool] = struct{}{}
+			tools = append(tools, tool)
+			break
+		}
+	}
+	return tools
 }
 
 type claudeStreamEvent struct {
