@@ -888,11 +888,8 @@ func (m *Model) handlePasteMsg(msg tea.PasteMsg) (tea.Model, tea.Cmd) {
 	if m.dialog.IsOpen() {
 		return m.handleDialogPasteMsg(msg)
 	}
-	if m.streaming {
-		return m, nil
-	}
 	if msg.Content == "" {
-		if m.maybeAttachImageFromClipboard() {
+		if !m.streaming && m.maybeAttachImageFromClipboard() {
 			return m, nil
 		}
 		return m, nil
@@ -915,12 +912,12 @@ func (m *Model) handlePasteMsg(msg tea.PasteMsg) (tea.Model, tea.Cmd) {
 	}
 	if newVal := m.textarea.Value(); newVal != old {
 		m.reflowTextarea()
-		if strings.HasPrefix(newVal, "/") {
+		if !m.streaming && strings.HasPrefix(newVal, "/") {
 			if !m.completions.IsVisible() {
 				m.completions.Show()
 			}
 			m.updateCompletions()
-		} else if m.completions.IsVisible() {
+		} else if !m.streaming && m.completions.IsVisible() {
 			m.completions.Hide()
 		}
 	}

@@ -129,6 +129,7 @@ func (m *Model) viewAltScreen() string {
 	renderedLines := 0
 	footer := m.buildFooterLayout()
 	m.syncAltScreenViewportHeight(footer.height)
+	m.resetViewportHorizontalOffset()
 
 	// Build scrollable content with caching to avoid re-rendering unchanged content
 
@@ -250,11 +251,12 @@ func (m *Model) viewAltScreen() string {
 	// Cache viewport.View() output - only regenerate if content, scroll position, or size changed
 	// Check YOffset after GotoBottom() since it modifies the offset
 	yOffsetChanged := m.viewport.YOffset() != m.viewCache.lastYOffset
+	xOffsetChanged := m.viewport.XOffset() != m.viewCache.lastXOffset
 	sizeChanged := m.viewport.Width() != m.viewCache.lastVPWidth || m.viewport.Height() != m.viewCache.lastVPHeight
 
 	// Force re-render when selection changes
 	selectionChanged := m.selection != m.viewCache.lastSelection
-	needViewRender := contentChanged || yOffsetChanged || sizeChanged || selectionChanged || m.viewCache.lastViewportView == ""
+	needViewRender := contentChanged || yOffsetChanged || xOffsetChanged || sizeChanged || selectionChanged || m.viewCache.lastViewportView == ""
 	if needViewRender {
 		viewStart := time.Now()
 		m.viewCache.lastViewportView = m.viewport.View()
@@ -262,6 +264,7 @@ func (m *Model) viewAltScreen() string {
 			m.streamPerf.RecordDuration(durationMetricViewportView, time.Since(viewStart))
 		}
 		m.viewCache.lastYOffset = m.viewport.YOffset()
+		m.viewCache.lastXOffset = m.viewport.XOffset()
 		m.viewCache.lastVPWidth = m.viewport.Width()
 		m.viewCache.lastVPHeight = m.viewport.Height()
 		m.viewCache.lastSelection = m.selection

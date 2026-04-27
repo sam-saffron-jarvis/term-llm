@@ -119,3 +119,51 @@ func TestMouseWheelScrollStillWorksInAltScreen(t *testing.T) {
 		t.Fatal("expected viewport to scroll on mouse wheel down")
 	}
 }
+
+func TestHorizontalMouseWheelDoesNotShiftAltScreenViewport(t *testing.T) {
+	m := newTestChatModel(true)
+	m.viewport.SetContent(strings.Repeat("x", 200))
+	m.viewport.SetXOffset(12)
+	if m.viewport.XOffset() == 0 {
+		t.Fatal("precondition: expected horizontal offset to be set")
+	}
+
+	_, _ = m.Update(tea.MouseWheelMsg{
+		X:      0,
+		Y:      0,
+		Button: tea.MouseWheelRight,
+	})
+	if got := m.viewport.XOffset(); got != 0 {
+		t.Fatalf("horizontal wheel left x-offset = %d, want 0", got)
+	}
+
+	m.viewport.SetXOffset(12)
+	_, _ = m.Update(tea.MouseWheelMsg{
+		X:      0,
+		Y:      0,
+		Button: tea.MouseWheelUp,
+		Mod:    tea.ModShift,
+	})
+	if got := m.viewport.XOffset(); got != 0 {
+		t.Fatalf("shift-wheel x-offset = %d, want 0", got)
+	}
+}
+
+func TestMiddleClickPasteWorksWhileStreaming(t *testing.T) {
+	m := newTestChatModel(true)
+	m.streaming = true
+
+	orig := readPrimarySelection
+	readPrimarySelection = func() (string, error) { return "interject from primary", nil }
+	t.Cleanup(func() { readPrimarySelection = orig })
+
+	_, _ = m.Update(tea.MouseClickMsg{
+		X:      0,
+		Y:      0,
+		Button: tea.MouseMiddle,
+	})
+
+	if got := m.textarea.Value(); got != "interject from primary" {
+		t.Fatalf("textarea value = %q, want pasted primary selection", got)
+	}
+}

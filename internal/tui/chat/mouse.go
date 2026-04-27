@@ -42,6 +42,22 @@ func (m *Model) applyFooterLayout(startY int, layout footerLayout) {
 	m.textareaBoundsValid = true
 }
 
+func isHorizontalViewportScroll(msg tea.MouseMsg) bool {
+	wheel, ok := msg.(tea.MouseWheelMsg)
+	if !ok {
+		return false
+	}
+	mouse := wheel.Mouse()
+	switch mouse.Button {
+	case tea.MouseWheelLeft, tea.MouseWheelRight:
+		return true
+	case tea.MouseWheelUp, tea.MouseWheelDown:
+		return mouse.Mod&tea.ModShift != 0
+	default:
+		return false
+	}
+}
+
 func (m *Model) handleTextareaMouse(msg tea.MouseMsg) bool {
 	if !m.textareaBoundsValid {
 		return false

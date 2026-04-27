@@ -208,6 +208,7 @@ type Model struct {
 		lastYOffset         int    // Viewport Y offset when view was cached
 		lastVPWidth         int    // Viewport width when view was cached
 		lastVPHeight        int    // Viewport height when view was cached
+		lastXOffset         int    // Viewport horizontal offset when view was cached
 		lastSetContentAt    time.Time
 		historySignature    uint64 // Content fingerprint for cached history
 		// completedStream holds rendered streaming content (diffs, tools) that should
@@ -303,6 +304,8 @@ const (
 	chatRenderThrottleEnv  = "TERM_LLM_CHAT_RENDER_THROTTLE_MS"
 	chatSpinnerIntervalEnv = "TERM_LLM_CHAT_SPINNER_MS"
 )
+
+var readPrimarySelection = clipboard.ReadPrimarySelection
 
 // FlushBeforeAskUserMsg signals the TUI to flush content to scrollback
 // before releasing the terminal for ask_user prompts.
@@ -468,6 +471,10 @@ func NewWithFastProvider(cfg *config.Config, provider llm.Provider, fastProvider
 	vpHeight := ui.RemainingLines(height, 4)
 	vp := viewport.New(viewport.WithWidth(width), viewport.WithHeight(vpHeight))
 	vp.Style = lipgloss.NewStyle()
+	// Chat history never intentionally scrolls horizontally. Keep the viewport's
+	// hidden x-offset pinned at zero so stray shift-wheel/trackpad horizontal
+	// events can't clip every rendered line until reload.
+	vp.SetHorizontalStep(0)
 
 	// Create chat renderer for virtualized history rendering
 	chatRenderer := render.NewRenderer(width, vpHeight)
@@ -636,6 +643,8 @@ func (m *Model) applyWindowSize(msg tea.WindowSizeMsg) {
 
 	// Resize viewport for alt screen mode.
 	m.viewport.SetWidth(m.width)
+	m.viewport.SetHorizontalStep(0)
+	m.resetViewportHorizontalOffset()
 
 	// Propagate size to embedded dialogs if active.
 	if m.approvalModel != nil {
@@ -656,11 +665,19 @@ func (m *Model) applyWindowSize(msg tea.WindowSizeMsg) {
 func (m *Model) syncAltScreenViewportHeight(footerHeight int) {
 	vpHeight := ui.RemainingLines(m.height, footerHeight)
 	m.viewport.SetWidth(m.width)
+	m.viewport.SetHorizontalStep(0)
+	m.resetViewportHorizontalOffset()
 	m.viewport.SetHeight(vpHeight)
 	m.viewportRows = vpHeight
 	m.viewport.SetYOffset(m.viewport.YOffset())
 	if m.chatRenderer != nil {
 		m.chatRenderer.SetSize(m.width, vpHeight)
+	}
+}
+
+func (m *Model) resetViewportHorizontalOffset() {
+	if m.viewport.XOffset() != 0 {
+		m.viewport.SetXOffset(0)
 	}
 }
 
@@ -862,16 +879,23 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Handle middle-click paste: read primary selection and route through
 		// the PasteMsg path so collapse logic applies.
 		if click, ok := msg.(tea.MouseClickMsg); ok && click.Button == tea.MouseMiddle {
-			text, err := clipboard.ReadPrimarySelection()
+			text, err := readPrimarySelection()
 			if err == nil && text != "" {
 				return m.handlePasteMsg(tea.PasteMsg{Content: text})
 			}
 			return m, nil
 		}
-		// Forward mouse events to viewport in alt-screen mode for scroll wheel support
+		// Forward mouse events to viewport in alt-screen mode for scroll wheel support.
+		// Do not let horizontal wheel/shift-wheel gestures modify the viewport's
+		// hidden x-offset; chat history is always rendered at column zero.
 		if m.altScreen {
+			if isHorizontalViewportScroll(msg) {
+				m.resetViewportHorizontalOffset()
+				return m, nil
+			}
 			var cmd tea.Cmd
 			m.viewport, cmd = m.viewport.Update(msg)
+			m.resetViewportHorizontalOffset()
 			return m, cmd
 		}
 		return m, nil
