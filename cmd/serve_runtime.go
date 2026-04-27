@@ -769,14 +769,20 @@ func (rt *serveRuntime) run(ctx context.Context, stateful bool, replaceHistory b
 	defer rt.engine.SetTurnCompletedCallback(nil)
 
 	// Safety net: on error exits, persist a full snapshot so the final DB
-	// state is consistent. Skipped on success since the happy path already
-	// does its own full replace.
+	// state is consistent. If streamed text was shown before any callback fired,
+	// synthesize an assistant message from result.Text so the partial reply is
+	// not dropped. Skipped on success since the happy path already does its own
+	// full replace.
+	result := serveRunResult{}
 	var runErr error
 	defer func() {
 		if runErr == nil || !persisted {
 			return
 		}
 		producedMu.Lock()
+		if len(produced) == 0 && result.Text.Len() > 0 {
+			produced = append(produced, llm.AssistantText(result.Text.String()))
+		}
 		hasProduced := len(produced) > 0
 		producedMu.Unlock()
 		if !hasProduced {
@@ -797,7 +803,6 @@ func (rt *serveRuntime) run(ctx context.Context, stateful bool, replaceHistory b
 	}
 	defer stream.Close()
 
-	result := serveRunResult{}
 	for {
 		ev, recvErr := stream.Recv()
 		if recvErr == io.EOF {
