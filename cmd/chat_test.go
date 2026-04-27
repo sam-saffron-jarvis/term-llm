@@ -104,6 +104,83 @@ func TestBuildChatProgramInput_InteractiveUsesTTYInput(t *testing.T) {
 	}
 }
 
+func TestGetModelName(t *testing.T) {
+	cases := []struct {
+		name string
+		cfg  *config.Config
+		want string
+	}{
+		{
+			name: "provider has explicit model",
+			cfg: &config.Config{
+				DefaultProvider: "claude-bin",
+				Providers: map[string]config.ProviderConfig{
+					"claude-bin": {Model: "opus-max"},
+				},
+			},
+			want: "opus-max",
+		},
+		{
+			name: "provider config present but model empty",
+			cfg: &config.Config{
+				DefaultProvider: "claude-bin",
+				Providers: map[string]config.ProviderConfig{
+					"claude-bin": {Model: ""},
+				},
+			},
+			want: "",
+		},
+		{
+			name: "default provider missing from providers map",
+			cfg: &config.Config{
+				DefaultProvider: "claude-bin",
+				Providers: map[string]config.ProviderConfig{
+					"claude-bin1": {Model: "opus-max"},
+				},
+			},
+			want: "",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := getModelName(tc.cfg)
+			if got == "unknown" {
+				t.Fatalf("getModelName must never return literal \"unknown\"")
+			}
+			if got != tc.want {
+				t.Fatalf("getModelName() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestExtractModelFromProviderName(t *testing.T) {
+	cases := []struct {
+		in   string
+		want string
+	}{
+		{"Claude CLI (sonnet)", "sonnet"},
+		{"Claude CLI (sonnet, effort=high)", "sonnet"},
+		{"OpenAI (gpt-5)", "gpt-5"},
+		{"OpenAI (gpt-5, effort=high)", "gpt-5"},
+		{"Anthropic (claude-sonnet-4, thinking=8k)", "claude-sonnet-4"},
+		{"Bedrock (claude-sonnet-4, adaptive, us-west-2)", "claude-sonnet-4"},
+		{"Gemini (gemini-2.5-pro, thinking=high)", "gemini-2.5-pro"},
+		{"xAI (grok-4-1-fast)", "grok-4-1-fast"},
+		{"debug", "debug"},
+		{"debug:slow", "debug:slow"},
+		{"", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.in, func(t *testing.T) {
+			if got := extractModelFromProviderName(tc.in); got != tc.want {
+				t.Fatalf("extractModelFromProviderName(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestBuildChatProgramInput_InteractivePropagatesTTYError(t *testing.T) {
 	origOpenTTY := chatOpenTTY
 	defer func() {

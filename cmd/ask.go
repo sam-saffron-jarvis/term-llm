@@ -401,9 +401,12 @@ func runAsk(cmd *cobra.Command, args []string) error {
 		if sessionID == "" {
 			sessionID = session.NewID()
 		}
-		modelName := "unknown"
+		modelName := ""
 		if providerCfg := cfg.GetActiveProviderConfig(); providerCfg != nil {
 			modelName = providerCfg.Model
+		}
+		if modelName == "" {
+			modelName = extractModelFromProviderName(provider.Name())
 		}
 		agentName := ""
 		if agent != nil {

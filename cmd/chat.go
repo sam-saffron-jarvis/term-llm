@@ -393,6 +393,9 @@ func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent 
 
 	// Determine model name
 	modelName := getModelName(cfg)
+	if modelName == "" {
+		modelName = extractModelFromProviderName(provider.Name())
+	}
 	providerKey := cfg.DefaultProvider
 
 	// Normalize resumed session metadata to canonical provider key + active model.
@@ -736,10 +739,28 @@ func resolveSessionProviderKey(cfg *config.Config, sess *session.Session) string
 	}
 }
 
-// getModelName extracts the model name from config based on provider
+// getModelName returns the configured model; "" means caller should fall back to extractModelFromProviderName(provider.Name()).
 func getModelName(cfg *config.Config) string {
 	if providerCfg := cfg.GetActiveProviderConfig(); providerCfg != nil {
 		return providerCfg.Model
 	}
-	return "unknown"
+	return ""
+}
+
+// extractModelFromProviderName parses "<Provider> (<model>[, ...])" Name() strings shared by all providers.
+func extractModelFromProviderName(name string) string {
+	open := strings.Index(name, "(")
+	if open < 0 {
+		return name
+	}
+	rest := name[open+1:]
+	close := strings.Index(rest, ")")
+	if close < 0 {
+		return name
+	}
+	inner := rest[:close]
+	if comma := strings.Index(inner, ","); comma >= 0 {
+		inner = inner[:comma]
+	}
+	return strings.TrimSpace(inner)
 }
