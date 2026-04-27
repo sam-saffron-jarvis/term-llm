@@ -243,7 +243,15 @@ func NewStore(cfg Config) (*Store, error) {
 	return &Store{db: db}, nil
 }
 
+const memorySchemaVersion = 1
+
 func initSchema(db *sql.DB) error {
+	if current, err := isSchemaCurrent(db); err != nil {
+		return err
+	} else if current {
+		return nil
+	}
+
 	if _, err := db.Exec(schema); err != nil {
 		return fmt.Errorf("initialize memory schema: %w", err)
 	}
@@ -264,7 +272,19 @@ func initSchema(db *sql.DB) error {
 		return fmt.Errorf("initialize memory fts: %w", err)
 	}
 
+	if _, err := db.Exec(fmt.Sprintf("PRAGMA user_version = %d", memorySchemaVersion)); err != nil {
+		return fmt.Errorf("set memory schema version: %w", err)
+	}
+
 	return nil
+}
+
+func isSchemaCurrent(db *sql.DB) (bool, error) {
+	var version int
+	if err := db.QueryRow("PRAGMA user_version").Scan(&version); err != nil {
+		return false, fmt.Errorf("get memory schema version: %w", err)
+	}
+	return version >= memorySchemaVersion, nil
 }
 
 func ensureFTSInitialized(db *sql.DB) error {

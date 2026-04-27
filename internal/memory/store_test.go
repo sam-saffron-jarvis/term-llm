@@ -521,6 +521,38 @@ func TestStoreMiningState(t *testing.T) {
 	}
 }
 
+func TestStoreSchemaVersionRecorded(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "memory.db")
+	store, err := NewStore(Config{Path: dbPath})
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	var version int
+	if err := store.db.QueryRow("PRAGMA user_version").Scan(&version); err != nil {
+		store.Close()
+		t.Fatalf("PRAGMA user_version: %v", err)
+	}
+	if version != memorySchemaVersion {
+		store.Close()
+		t.Fatalf("user_version = %d, want %d", version, memorySchemaVersion)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+
+	store, err = NewStore(Config{Path: dbPath})
+	if err != nil {
+		t.Fatalf("reopen NewStore() error = %v", err)
+	}
+	defer store.Close()
+	if err := store.db.QueryRow("PRAGMA user_version").Scan(&version); err != nil {
+		t.Fatalf("PRAGMA user_version after reopen: %v", err)
+	}
+	if version != memorySchemaVersion {
+		t.Fatalf("user_version after reopen = %d, want %d", version, memorySchemaVersion)
+	}
+}
+
 func TestStoreMetaGetSet(t *testing.T) {
 	ctx := context.Background()
 	store := newTestStore(t)
@@ -1004,6 +1036,29 @@ func newTestStore(t *testing.T) *Store {
 		t.Fatalf("NewStore() error = %v", err)
 	}
 	return store
+}
+
+func BenchmarkNewStoreExistingDB(b *testing.B) {
+	dbPath := filepath.Join(b.TempDir(), "memory.db")
+	store, err := NewStore(Config{Path: dbPath})
+	if err != nil {
+		b.Fatalf("seed NewStore() error = %v", err)
+	}
+	if err := store.Close(); err != nil {
+		b.Fatalf("seed Close() error = %v", err)
+	}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		store, err := NewStore(Config{Path: dbPath})
+		if err != nil {
+			b.Fatalf("NewStore() error = %v", err)
+		}
+		if err := store.Close(); err != nil {
+			b.Fatalf("Close() error = %v", err)
+		}
+	}
 }
 
 // ── Insight tests ─────────────────────────────────────────────────────────────
