@@ -1050,6 +1050,36 @@ func TestEngineParallelToolExecution(t *testing.T) {
 	t.Logf("Parallel execution: peak concurrent=%d, elapsed=%v", tool.concurrentAt, elapsed)
 }
 
+func TestExecuteToolCallsParallelReturnsOnContextCancel(t *testing.T) {
+	tool := &delayingTool{delay: 300 * time.Millisecond}
+	registry := NewToolRegistry()
+	registry.Register(tool)
+	engine := NewEngine(&fakeProvider{}, registry)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	cancelTimer := time.AfterFunc(25*time.Millisecond, cancel)
+	defer cancelTimer.Stop()
+
+	calls := []ToolCall{
+		{ID: "call-1", Name: "delay_tool", Arguments: json.RawMessage(`{}`)},
+		{ID: "call-2", Name: "delay_tool", Arguments: json.RawMessage(`{}`)},
+		{ID: "call-3", Name: "delay_tool", Arguments: json.RawMessage(`{}`)},
+	}
+
+	start := time.Now()
+	_, err := engine.executeToolCalls(ctx, calls, true, eventSender{}, false, false)
+	elapsed := time.Since(start)
+	t.Logf("parallel tool execution returned after cancellation in %v", elapsed)
+
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("executeToolCalls error = %v, want context.Canceled", err)
+	}
+	if elapsed >= 200*time.Millisecond {
+		t.Fatalf("executeToolCalls returned after %v; want prompt return on cancellation", elapsed)
+	}
+}
+
 // namedTool is a simple tool with a configurable name for testing
 type namedTool struct {
 	name string
