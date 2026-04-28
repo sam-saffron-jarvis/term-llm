@@ -16,9 +16,10 @@ import (
 )
 
 const (
-	defaultMaxTurns    = 20
-	stopSearchToolHint = "IMPORTANT: Do not call any tools. Use the information already retrieved and answer directly."
-	callbackTimeout    = 5 * time.Second
+	defaultMaxTurns       = 20
+	stopSearchToolHint    = "IMPORTANT: Do not call any tools. Use the information already retrieved and answer directly."
+	callbackTimeout       = 5 * time.Second
+	toolHeartbeatInterval = 10 * time.Second
 )
 
 // getMaxTurns returns the max turns from request, with fallback to default
@@ -1601,6 +1602,39 @@ func (e *Engine) executeSingleToolCallSafe(ctx context.Context, call ToolCall, s
 	return e.executeSingleToolCall(ctx, call, send, debug, debugRaw)
 }
 
+// startToolHeartbeat emits heartbeat events only if a tool is still running
+// after toolHeartbeatInterval. Most tools complete quickly, so using AfterFunc
+// avoids starting a goroutine and ticker on every tool invocation.
+func startToolHeartbeat(ctx context.Context, callID, toolName string, send eventSender) func() {
+	if send.ch == nil {
+		return func() {}
+	}
+
+	var stopped atomic.Bool
+	heartbeat := Event{Type: EventHeartbeat, ToolCallID: callID, ToolName: toolName}
+
+	timer := time.AfterFunc(toolHeartbeatInterval, func() {
+		ticker := time.NewTicker(toolHeartbeatInterval)
+		defer ticker.Stop()
+		for {
+			if stopped.Load() {
+				return
+			}
+			send.TrySend(heartbeat)
+			select {
+			case <-ticker.C:
+			case <-ctx.Done():
+				return
+			}
+		}
+	})
+
+	return func() {
+		stopped.Store(true)
+		timer.Stop()
+	}
+}
+
 // executeSingleToolCall executes a single tool call and returns the result message.
 func (e *Engine) executeSingleToolCall(ctx context.Context, call ToolCall, send eventSender, debug bool, debugRaw bool) ([]Message, error) {
 	tool, ok := e.tools.Get(call.Name)
@@ -1622,22 +1656,8 @@ func (e *Engine) executeSingleToolCall(ctx context.Context, call ToolCall, send 
 	// Add call ID to context for spawn_agent event bubbling
 	toolCtx := ContextWithCallID(ctx, call.ID)
 
-	heartbeatDone := make(chan struct{})
-	go func() {
-		ticker := time.NewTicker(10 * time.Second)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ticker.C:
-				send.TrySend(Event{Type: EventHeartbeat, ToolCallID: call.ID, ToolName: call.Name})
-			case <-heartbeatDone:
-				return
-			case <-ctx.Done():
-				return
-			}
-		}
-	}()
-	defer close(heartbeatDone)
+	stopHeartbeat := startToolHeartbeat(ctx, call.ID, call.Name, send)
+	defer stopHeartbeat()
 
 	output, err := tool.Execute(toolCtx, call.Arguments)
 	info := e.getToolPreview(call)
