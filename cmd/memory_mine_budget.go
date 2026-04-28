@@ -430,19 +430,9 @@ func (t *memoryListFragmentsTool) Execute(ctx context.Context, args json.RawMess
 		limit = memoryMineFragmentListLimit
 	}
 
-	fragments, err := t.store.ListFragments(ctx, memorydb.ListOptions{Agent: t.agent})
+	paths, err := t.store.ListFragmentPaths(ctx, t.agent, prefix, limit)
 	if err != nil {
 		return llm.ToolOutput{}, err
-	}
-	paths := make([]string, 0, limit)
-	for _, frag := range fragments {
-		if prefix != "" && !strings.HasPrefix(frag.Path, prefix) {
-			continue
-		}
-		paths = append(paths, frag.Path)
-		if len(paths) >= limit {
-			break
-		}
 	}
 	response := map[string]any{
 		"agent":  t.agent,
