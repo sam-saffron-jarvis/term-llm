@@ -1327,7 +1327,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case ui.StreamEventDiff:
 			// Add diff segment for inline display
 			if m.tracker != nil && ev.DiffPath != "" {
-				m.tracker.AddDiffSegment(ev.DiffPath, ev.DiffOld, ev.DiffNew, ev.DiffLine)
+				m.tracker.AddDiffSegmentWithOperation(ev.DiffPath, ev.DiffOld, ev.DiffNew, ev.DiffLine, ev.DiffOperation)
 				// Flush to scrollback so diff appears
 				if m.scrollOffset == 0 {
 					if cmd := m.maybeFlushToScrollback(); cmd != nil {

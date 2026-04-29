@@ -1155,10 +1155,11 @@ type askRetryMsg struct {
 type askPhaseMsg string
 type askImageMsg string // Image path to display
 type askDiffMsg struct {
-	Path string
-	Old  string
-	New  string
-	Line int
+	Path      string
+	Old       string
+	New       string
+	Line      int
+	Operation string
 }
 type askBoundaryFlushedMsg struct {
 	CallID string
@@ -1491,7 +1492,7 @@ func (m askStreamModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case ui.StreamEventImage:
 			innerMsg = askImageMsg(ev.ImagePath)
 		case ui.StreamEventDiff:
-			innerMsg = askDiffMsg{Path: ev.DiffPath, Old: ev.DiffOld, New: ev.DiffNew, Line: ev.DiffLine}
+			innerMsg = askDiffMsg{Path: ev.DiffPath, Old: ev.DiffOld, New: ev.DiffNew, Line: ev.DiffLine, Operation: ev.DiffOperation}
 		case ui.StreamEventDone:
 			innerMsg = askDoneMsg{}
 		case ui.StreamEventError:
@@ -1658,7 +1659,7 @@ func (m askStreamModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case askDiffMsg:
 		// Add diff segment for inline display
-		m.tracker.AddDiffSegment(msg.Path, msg.Old, msg.New, msg.Line)
+		m.tracker.AddDiffSegmentWithOperation(msg.Path, msg.Old, msg.New, msg.Line, msg.Operation)
 		// Flush to scrollback so diff appears
 		if cmd := m.maybeFlushToScrollback(); cmd != nil {
 			return m, cmd

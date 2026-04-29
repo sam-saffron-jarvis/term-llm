@@ -616,6 +616,46 @@ func TestMessageBlockRenderer_BackwardCompatNilDisplay(t *testing.T) {
 	}
 }
 
+func TestMessagePartsSignatureIncludesDiffOperation(t *testing.T) {
+	base := session.Message{
+		Role: llm.RoleTool,
+		Parts: []llm.Part{{
+			Type: llm.PartToolResult,
+			ToolResult: &llm.ToolResult{
+				ID:      "call-1",
+				Name:    "write_file",
+				Content: "Created file.",
+				Diffs: []llm.DiffData{{
+					File: "demo.rb",
+					Old:  "",
+					New:  "puts \"hello\"\n",
+					Line: 1,
+				}},
+			},
+		}},
+	}
+	withOperation := base
+	withOperation.Parts = []llm.Part{{
+		Type: llm.PartToolResult,
+		ToolResult: &llm.ToolResult{
+			ID:      "call-1",
+			Name:    "write_file",
+			Content: "Created file.",
+			Diffs: []llm.DiffData{{
+				File:      "demo.rb",
+				Old:       "",
+				New:       "puts \"hello\"\n",
+				Line:      1,
+				Operation: llm.DiffOperationCreate,
+			}},
+		},
+	}}
+
+	if messagePartsSignature(&base) == messagePartsSignature(&withOperation) {
+		t.Fatal("expected signatures to differ when only diff operation differs")
+	}
+}
+
 func TestMessageBlockRenderer_ToolOnlyAssistantMessage_IsCompact(t *testing.T) {
 	msg := session.Message{
 		ID:   1,

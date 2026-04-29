@@ -57,11 +57,12 @@ type RenderEvent struct {
 	ToolSuccess bool
 
 	// For streaming image/diff events
-	ImagePath string
-	DiffPath  string
-	DiffOld   string
-	DiffNew   string
-	DiffLine  int
+	ImagePath     string
+	DiffPath      string
+	DiffOld       string
+	DiffNew       string
+	DiffLine      int
+	DiffOperation string
 
 	// For ask user results
 	AskUserSummary string
@@ -155,14 +156,20 @@ func NewStreamImageEvent(path string) RenderEvent {
 	}
 }
 
-// NewStreamDiffEvent creates an event for when a diff is generated
+// NewStreamDiffEvent creates an event for when a diff is generated.
 func NewStreamDiffEvent(path, old, new string, line int) RenderEvent {
+	return NewStreamDiffEventWithOperation(path, old, new, line, "")
+}
+
+// NewStreamDiffEventWithOperation creates a diff event with an operation hint.
+func NewStreamDiffEventWithOperation(path, old, new string, line int, operation string) RenderEvent {
 	return RenderEvent{
-		Type:     RenderEventStreamDiff,
-		DiffPath: path,
-		DiffOld:  old,
-		DiffNew:  new,
-		DiffLine: line,
+		Type:          RenderEventStreamDiff,
+		DiffPath:      path,
+		DiffOld:       old,
+		DiffNew:       new,
+		DiffLine:      line,
+		DiffOperation: operation,
 	}
 }
 
@@ -210,7 +217,7 @@ func FromStreamEvent(ev ui.StreamEvent) RenderEvent {
 	case ui.StreamEventImage:
 		return NewStreamImageEvent(ev.ImagePath)
 	case ui.StreamEventDiff:
-		return NewStreamDiffEvent(ev.DiffPath, ev.DiffOld, ev.DiffNew, ev.DiffLine)
+		return NewStreamDiffEventWithOperation(ev.DiffPath, ev.DiffOld, ev.DiffNew, ev.DiffLine, ev.DiffOperation)
 	case ui.StreamEventDone:
 		return NewStreamEndEvent()
 	case ui.StreamEventError:

@@ -156,12 +156,18 @@ type ToolCall struct {
 	ThoughtSig []byte // Gemini 3 thought signature (must be passed back in result)
 }
 
-// DiffData represents structured diff information from edit tools.
+// Diff operation identifiers for structured diff rendering.
+const (
+	DiffOperationCreate = "create"
+)
+
+// DiffData represents structured diff information from edit/write tools.
 type DiffData struct {
-	File string `json:"f"`
-	Old  string `json:"o"`
-	New  string `json:"n"`
-	Line int    `json:"l"` // 1-indexed starting line number
+	File      string `json:"f"`
+	Old       string `json:"o"`
+	New       string `json:"n"`
+	Line      int    `json:"l"`            // 1-indexed starting line number
+	Operation string `json:"op,omitempty"` // Optional operation hint, e.g. "create" for new files
 }
 
 // ToolContentPartType identifies a structured tool result content item.

@@ -159,6 +159,13 @@ func (t *WriteFileTool) Execute(ctx context.Context, args json.RawMessage) (llm.
 	output := llm.ToolOutput{}
 	if isNew {
 		output.Content = fmt.Sprintf("Created new file: %s (%d lines).", absPath, countLines(a.Content))
+
+		// Populate structured diff data (skip if content is too large)
+		if len(a.Content) < diff.MaxDiffSize {
+			output.Diffs = []llm.DiffData{
+				{File: absPath, Old: "", New: a.Content, Line: 1, Operation: llm.DiffOperationCreate},
+			}
+		}
 	} else {
 		oldLines := countLines(existingContent)
 		newLines := countLines(a.Content)

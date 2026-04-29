@@ -7,6 +7,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/samsaffron/term-llm/internal/llm"
 	diff "github.com/shogoki/gotextdiff"
 )
 
@@ -805,11 +806,23 @@ type bufferedRemoval struct {
 	lineNum int
 }
 
+func diffSegmentHeader(operation string) string {
+	if strings.EqualFold(operation, llm.DiffOperationCreate) {
+		return "Create:"
+	}
+	return "Edit:"
+}
+
 // RenderDiffSegment renders a unified diff as a string for inline display.
 // Returns empty string if no changes or on error.
 // The width parameter is used for wrapping long lines.
 // The startLine parameter is the 1-indexed line number where the edit starts (0 = use diff header).
 func RenderDiffSegment(filePath, oldContent, newContent string, width int, startLine int) string {
+	return RenderDiffSegmentWithOperation(filePath, oldContent, newContent, width, startLine, "")
+}
+
+// RenderDiffSegmentWithOperation renders a unified diff with an optional operation-specific header.
+func RenderDiffSegmentWithOperation(filePath, oldContent, newContent string, width int, startLine int, operation string) string {
 	if oldContent == newContent {
 		return ""
 	}
@@ -818,7 +831,7 @@ func RenderDiffSegment(filePath, oldContent, newContent string, width int, start
 	var b strings.Builder
 
 	// Print header
-	b.WriteString(fmt.Sprintf("%s %s\n", styles.Bold.Render("Edit:"), filePath))
+	b.WriteString(fmt.Sprintf("%s %s\n", styles.Bold.Render(diffSegmentHeader(operation)), filePath))
 
 	// Generate unified diff using gotextdiff
 	diffBytes := diff.Diff(filePath, []byte(oldContent), filePath, []byte(newContent))

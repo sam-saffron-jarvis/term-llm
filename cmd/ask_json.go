@@ -213,12 +213,16 @@ func emitStreamEvent(e *jsonEmitter, ev ui.StreamEvent) error {
 		return e.emit("image", map[string]any{"path": ev.ImagePath})
 
 	case ui.StreamEventDiff:
-		return e.emit("diff", map[string]any{
+		payload := map[string]any{
 			"path": ev.DiffPath,
 			"old":  ev.DiffOld,
 			"new":  ev.DiffNew,
 			"line": ev.DiffLine,
-		})
+		}
+		if ev.DiffOperation != "" {
+			payload["operation"] = ev.DiffOperation
+		}
+		return e.emit("diff", payload)
 
 	case ui.StreamEventError:
 		msg := ""

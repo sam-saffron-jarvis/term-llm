@@ -36,23 +36,24 @@ const (
 
 // Segment represents a discrete unit in the response stream (text or tool)
 type Segment struct {
-	Type         SegmentType
-	Text         string          // For text segments: markdown content (finalized on completion)
-	Rendered     string          // For text segments: cached rendered markdown
-	ToolCallID   string          // For tool segments: unique ID for this invocation
-	ToolName     string          // For tool segments
-	ToolInfo     string          // For tool segments: additional context
-	ToolArgs     json.RawMessage // Raw args JSON, stored for expanded rendering
-	ToolStatus   ToolStatus      // For tool segments
-	Complete     bool            // For text segments: whether streaming is complete
-	ImagePath    string          // For image segments: path to image file
-	DiffPath     string          // For diff segments: file path
-	DiffOld      string          // For diff segments: old content
-	DiffNew      string          // For diff segments: new content
-	DiffLine     int             // For diff segments: 1-indexed starting line (0 = unknown)
-	DiffRendered string          // For diff segments: cached rendered output
-	DiffWidth    int             // For diff segments: width when rendered (for cache invalidation)
-	Flushed      bool            // True if this segment has been printed to scrollback
+	Type          SegmentType
+	Text          string          // For text segments: markdown content (finalized on completion)
+	Rendered      string          // For text segments: cached rendered markdown
+	ToolCallID    string          // For tool segments: unique ID for this invocation
+	ToolName      string          // For tool segments
+	ToolInfo      string          // For tool segments: additional context
+	ToolArgs      json.RawMessage // Raw args JSON, stored for expanded rendering
+	ToolStatus    ToolStatus      // For tool segments
+	Complete      bool            // For text segments: whether streaming is complete
+	ImagePath     string          // For image segments: path to image file
+	DiffPath      string          // For diff segments: file path
+	DiffOld       string          // For diff segments: old content
+	DiffNew       string          // For diff segments: new content
+	DiffLine      int             // For diff segments: 1-indexed starting line (0 = unknown)
+	DiffOperation string          // For diff segments: optional operation hint, e.g. "create"
+	DiffRendered  string          // For diff segments: cached rendered output
+	DiffWidth     int             // For diff segments: width when rendered (for cache invalidation)
+	Flushed       bool            // True if this segment has been printed to scrollback
 
 	// Streaming text accumulation (O(1) append instead of O(n) string concat)
 	TextBuilder *strings.Builder // Used during streaming; nil when Complete
@@ -83,17 +84,18 @@ type Segment struct {
 	SubagentPreview     []string       // Preview lines (active tools + last few text lines)
 	SubagentStartTime   time.Time      // Start time for elapsed time display
 	SubagentEndTime     time.Time      // When subagent completed (zero if still running)
-	SubagentDiffs       []SubagentDiff // Diffs from subagent's edit_file calls
+	SubagentDiffs       []SubagentDiff // Diffs from subagent's edit_file/write_file calls
 }
 
-// SubagentDiff holds diff info from a subagent's edit_file call
+// SubagentDiff holds diff info from a subagent's edit_file/write_file call
 type SubagentDiff struct {
-	Path     string
-	Old      string
-	New      string
-	Line     int    // 1-indexed starting line (0 = unknown)
-	Rendered string // Cached rendered output
-	Width    int    // Width when rendered (for cache invalidation)
+	Path      string
+	Old       string
+	New       string
+	Line      int    // 1-indexed starting line (0 = unknown)
+	Operation string // Optional operation hint, e.g. "create"
+	Rendered  string // Cached rendered output
+	Width     int    // Width when rendered (for cache invalidation)
 }
 
 // GetText returns the current text content of a segment.
@@ -618,7 +620,7 @@ func RenderSegmentsWithLeading(leading *Segment, segments []*Segment, width int,
 					sb.WriteString("\n")
 					if diff.Rendered != "" && diff.Width == width {
 						sb.WriteString(diff.Rendered)
-					} else if d := RenderDiffSegment(diff.Path, diff.Old, diff.New, width, diff.Line); d != "" {
+					} else if d := RenderDiffSegmentWithOperation(diff.Path, diff.Old, diff.New, width, diff.Line, diff.Operation); d != "" {
 						diff.Rendered = d
 						diff.Width = width
 						sb.WriteString(d)
@@ -637,7 +639,7 @@ func RenderSegmentsWithLeading(leading *Segment, segments []*Segment, width int,
 		case SegmentDiff:
 			if seg.DiffRendered != "" && seg.DiffWidth == width {
 				rendered = seg.DiffRendered
-			} else if r := RenderDiffSegment(seg.DiffPath, seg.DiffOld, seg.DiffNew, width, seg.DiffLine); r != "" {
+			} else if r := RenderDiffSegmentWithOperation(seg.DiffPath, seg.DiffOld, seg.DiffNew, width, seg.DiffLine, seg.DiffOperation); r != "" {
 				seg.DiffRendered = r
 				seg.DiffWidth = width
 				rendered = r
@@ -682,7 +684,7 @@ func RenderImagesAndDiffs(segments []*Segment, width int) string {
 			if seg.DiffRendered != "" && seg.DiffWidth == width {
 				b.WriteString(seg.DiffRendered)
 				first = false
-			} else if rendered := RenderDiffSegment(seg.DiffPath, seg.DiffOld, seg.DiffNew, width, seg.DiffLine); rendered != "" {
+			} else if rendered := RenderDiffSegmentWithOperation(seg.DiffPath, seg.DiffOld, seg.DiffNew, width, seg.DiffLine, seg.DiffOperation); rendered != "" {
 				seg.DiffRendered = rendered
 				seg.DiffWidth = width
 				b.WriteString(rendered)

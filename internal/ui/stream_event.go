@@ -60,10 +60,11 @@ type StreamEvent struct {
 	ImagePath string
 
 	// Diff (for StreamEventDiff)
-	DiffPath string
-	DiffOld  string
-	DiffNew  string
-	DiffLine int // 1-indexed starting line number (0 = unknown)
+	DiffPath      string
+	DiffOld       string
+	DiffNew       string
+	DiffLine      int    // 1-indexed starting line number (0 = unknown)
+	DiffOperation string // Optional operation hint, e.g. "create" for new files
 
 }
 
@@ -151,14 +152,20 @@ func ImageEvent(path string) StreamEvent {
 	}
 }
 
-// DiffEvent creates a diff event from edit tool
+// DiffEvent creates a diff event from edit/write tools
 func DiffEvent(path, old, new string, line int) StreamEvent {
+	return DiffEventWithOperation(path, old, new, line, "")
+}
+
+// DiffEventWithOperation creates a diff event with an operation hint.
+func DiffEventWithOperation(path, old, new string, line int, operation string) StreamEvent {
 	return StreamEvent{
-		Type:     StreamEventDiff,
-		DiffPath: path,
-		DiffOld:  old,
-		DiffNew:  new,
-		DiffLine: line,
+		Type:          StreamEventDiff,
+		DiffPath:      path,
+		DiffOld:       old,
+		DiffNew:       new,
+		DiffLine:      line,
+		DiffOperation: operation,
 	}
 }
 

@@ -8,7 +8,11 @@ import (
 	"strings"
 	"testing"
 	"unicode/utf8"
+
+	"github.com/samsaffron/term-llm/internal/llm"
 )
+
+var ansiRegexp = regexp.MustCompile(`\x1b\[[0-9;]*m`)
 
 func TestUnifiedDiffLineNumbers(t *testing.T) {
 	tests := []struct {
@@ -269,6 +273,27 @@ func TestShouldUseWordDiff(t *testing.T) {
 					tt.oldLine, tt.newLine, got, tt.expect)
 			}
 		})
+	}
+}
+
+func TestRenderDiffSegmentCreateHeader(t *testing.T) {
+	result := RenderDiffSegmentWithOperation("demo.rb", "", "puts \"hello\"\n", 120, 1, llm.DiffOperationCreate)
+
+	plain := ansiRegexp.ReplaceAllString(result, "")
+	if !strings.Contains(plain, "Create: demo.rb") {
+		t.Fatalf("expected create header, got:\n%s", plain)
+	}
+	if strings.Contains(plain, "Edit: demo.rb") {
+		t.Fatalf("did not expect edit header for create operation, got:\n%s", plain)
+	}
+}
+
+func TestRenderDiffSegmentDefaultHeader(t *testing.T) {
+	result := RenderDiffSegment("demo.rb", "old\n", "new\n", 120, 1)
+
+	plain := ansiRegexp.ReplaceAllString(result, "")
+	if !strings.Contains(plain, "Edit: demo.rb") {
+		t.Fatalf("expected edit header, got:\n%s", plain)
 	}
 }
 

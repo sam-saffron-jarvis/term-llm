@@ -106,7 +106,7 @@ func (b *askProgressiveBridge) HandleEvent(event llm.Event) error {
 			b.events <- ui.ImageEvent(imagePath)
 		}
 		for _, d := range event.ToolDiffs {
-			b.events <- ui.DiffEvent(d.File, d.Old, d.New, d.Line)
+			b.events <- ui.DiffEventWithOperation(d.File, d.Old, d.New, d.Line, d.Operation)
 		}
 	case llm.EventUsage:
 		if event.Use != nil {

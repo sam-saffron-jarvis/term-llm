@@ -151,7 +151,7 @@ func (a *StreamAdapter) ProcessStream(ctx context.Context, stream llm.Stream) {
 			}
 			// Emit diff events from structured data
 			for _, d := range event.ToolDiffs {
-				a.events <- DiffEvent(d.File, d.Old, d.New, d.Line)
+				a.events <- DiffEventWithOperation(d.File, d.Old, d.New, d.Line, d.Operation)
 			}
 
 		case llm.EventRetry:

@@ -100,6 +100,42 @@ func TestStreamAdapterDedupesToolCallAndExecStart(t *testing.T) {
 	}
 }
 
+func TestStreamAdapterEmitsDiffOperation(t *testing.T) {
+	stream := &testStream{
+		events: []llm.Event{{
+			Type:        llm.EventToolExecEnd,
+			ToolCallID:  "call-create",
+			ToolName:    "write_file",
+			ToolSuccess: true,
+			ToolDiffs: []llm.DiffData{{
+				File:      "demo.rb",
+				Old:       "",
+				New:       "puts \"hello\"\n",
+				Line:      1,
+				Operation: llm.DiffOperationCreate,
+			}},
+		}},
+	}
+
+	adapter := NewStreamAdapter(10)
+	go adapter.ProcessStream(context.Background(), stream)
+
+	var diffEvent *StreamEvent
+	for ev := range adapter.Events() {
+		if ev.Type == StreamEventDiff {
+			copy := ev
+			diffEvent = &copy
+		}
+	}
+
+	if diffEvent == nil {
+		t.Fatal("expected diff event")
+	}
+	if diffEvent.DiffOperation != llm.DiffOperationCreate {
+		t.Fatalf("diff operation = %q, want %q", diffEvent.DiffOperation, llm.DiffOperationCreate)
+	}
+}
+
 func TestStreamAdapter_PropagatesInterjectionID(t *testing.T) {
 	stream := &testStream{
 		events: []llm.Event{{

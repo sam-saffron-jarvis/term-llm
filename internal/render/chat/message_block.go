@@ -277,7 +277,7 @@ func (r *MessageBlockRenderer) renderAssistantMessage(msg *session.Message) stri
 						}
 
 						for _, diff := range diffs {
-							rendered := ui.RenderDiffSegment(diff.File, diff.Old, diff.New, r.width, diff.Line)
+							rendered := ui.RenderDiffSegmentWithOperation(diff.File, diff.Old, diff.New, r.width, diff.Line, diff.Operation)
 							if rendered != "" {
 								b.WriteString(rendered)
 								b.WriteString("\n")

@@ -225,7 +225,7 @@ func (r *Renderer) HandleEvent(event RenderEvent) tea.Cmd {
 
 	case RenderEventStreamDiff:
 		if r.streaming != nil {
-			r.streaming.AddDiff(event.DiffPath, event.DiffOld, event.DiffNew, event.DiffLine)
+			r.streaming.AddDiffWithOperation(event.DiffPath, event.DiffOld, event.DiffNew, event.DiffLine, event.DiffOperation)
 		}
 		return nil
 
@@ -489,6 +489,7 @@ func messagePartsSignature(msg *session.Message) uint64 {
 				writeStringHash(h, diff.Old)
 				writeStringHash(h, diff.New)
 				writeStringHash(h, strconv.Itoa(diff.Line))
+				writeStringHash(h, diff.Operation)
 			}
 			for _, image := range part.ToolResult.Images {
 				writeStringHash(h, image)

@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/ui"
 )
 
@@ -448,6 +449,28 @@ func TestStreamJSON_ImageAndDiffAndPhaseEvents(t *testing.T) {
 	}
 	if diff["path"] != "foo.go" || diff["old"] != "old" || diff["new"] != "new" || diff["line"].(float64) != 42 {
 		t.Errorf("diff event = %v", diff)
+	}
+}
+
+func TestStreamJSON_DiffEventWithOperation(t *testing.T) {
+	out := captureStreamJSONOutput(t, []ui.StreamEvent{
+		ui.DiffEventWithOperation("demo.rb", "", "puts \"hello\"\n", 1, llm.DiffOperationCreate),
+		ui.DoneEvent(0),
+	}, defaultTestSessionInfo())
+
+	events := parseJSONL(t, out)
+	var diff map[string]any
+	for _, ev := range events {
+		if ev["type"] == "diff" {
+			diff = ev
+			break
+		}
+	}
+	if diff == nil {
+		t.Fatal("missing diff event")
+	}
+	if diff["operation"] != llm.DiffOperationCreate {
+		t.Errorf("diff operation = %v, want %q", diff["operation"], llm.DiffOperationCreate)
 	}
 }
 

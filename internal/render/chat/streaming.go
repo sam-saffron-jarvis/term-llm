@@ -106,8 +106,13 @@ func (s *StreamingBlock) AddImage(path string) {
 
 // AddDiff adds a diff segment.
 func (s *StreamingBlock) AddDiff(path, old, new string, line int) {
+	s.AddDiffWithOperation(path, old, new, line, "")
+}
+
+// AddDiffWithOperation adds a diff segment with an operation hint.
+func (s *StreamingBlock) AddDiffWithOperation(path, old, new string, line int, operation string) {
 	if s.tracker != nil {
-		s.tracker.AddDiffSegment(path, old, new, line)
+		s.tracker.AddDiffSegmentWithOperation(path, old, new, line, operation)
 	}
 }
 

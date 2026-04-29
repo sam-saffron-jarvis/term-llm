@@ -47,7 +47,7 @@ func HandleSubagentProgress(tracker *ToolTracker, subagentTracker *SubagentTrack
 			tracker.AddImageSegment(imagePath)
 		}
 		for _, d := range event.Diffs {
-			addDiffToSpawnAgentSegment(tracker, callID, d.File, d.Old, d.New, d.Line)
+			addDiffToSpawnAgentSegment(tracker, callID, d.File, d.Old, d.New, d.Line, d.Operation)
 		}
 	case tools.SubagentEventPhase:
 		subagentTracker.HandlePhase(callID, event.Phase)
@@ -154,7 +154,7 @@ func BuildSubagentPreview(p *SubagentProgress, maxLines int) []string {
 }
 
 // addDiffToSpawnAgentSegment adds a diff to the spawn_agent segment for display after the preview.
-func addDiffToSpawnAgentSegment(tracker *ToolTracker, callID string, path, old, new string, line int) {
+func addDiffToSpawnAgentSegment(tracker *ToolTracker, callID string, path, old, new string, line int, operation string) {
 	if tracker == nil || path == "" {
 		return
 	}
@@ -162,15 +162,16 @@ func addDiffToSpawnAgentSegment(tracker *ToolTracker, callID string, path, old, 
 		if tracker.Segments[i].ToolCallID == callID && tracker.Segments[i].ToolName == "spawn_agent" {
 			// Deduplicate: check if this file is already in SubagentDiffs
 			for _, d := range tracker.Segments[i].SubagentDiffs {
-				if d.Path == path && d.Old == old && d.New == new && d.Line == line {
+				if d.Path == path && d.Old == old && d.New == new && d.Line == line && d.Operation == operation {
 					return
 				}
 			}
 			tracker.Segments[i].SubagentDiffs = append(tracker.Segments[i].SubagentDiffs, SubagentDiff{
-				Path: path,
-				Old:  old,
-				New:  new,
-				Line: line,
+				Path:      path,
+				Old:       old,
+				New:       new,
+				Line:      line,
+				Operation: operation,
 			})
 			break
 		}
