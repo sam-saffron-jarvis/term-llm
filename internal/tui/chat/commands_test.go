@@ -94,6 +94,7 @@ func TestAllCommandsRemovesLoadAndKeepsResume(t *testing.T) {
 type mockStore struct {
 	session.NoopStore
 	sessions        map[string]*session.Session
+	getErr          error
 	messages        map[string][]session.Message
 	summaries       []session.SessionSummary
 	msgErr          error
@@ -120,6 +121,9 @@ type statusUpdate struct {
 }
 
 func (s *mockStore) Get(_ context.Context, id string) (*session.Session, error) {
+	if s.getErr != nil {
+		return nil, s.getErr
+	}
 	if sess, ok := s.sessions[id]; ok {
 		return sess, nil
 	}
@@ -138,6 +142,19 @@ func (s *mockStore) GetMessages(_ context.Context, sessionID string, _, _ int) (
 		return nil, s.msgErr
 	}
 	return s.messages[sessionID], nil
+}
+
+func (s *mockStore) GetMessagesFrom(_ context.Context, sessionID string, fromSeq int) ([]session.Message, error) {
+	if s.msgErr != nil {
+		return nil, s.msgErr
+	}
+	var filtered []session.Message
+	for _, msg := range s.messages[sessionID] {
+		if msg.Sequence >= fromSeq {
+			filtered = append(filtered, msg)
+		}
+	}
+	return filtered, nil
 }
 
 func (s *mockStore) List(_ context.Context, _ session.ListOptions) ([]session.SessionSummary, error) {
@@ -168,13 +185,17 @@ func (s *mockStore) Create(_ context.Context, sess *session.Session) error {
 	return nil
 }
 
+func (s *mockStore) ensureMessages() {
+	if s.messages == nil {
+		s.messages = make(map[string][]session.Message)
+	}
+}
+
 func (s *mockStore) AddMessage(_ context.Context, sessionID string, msg *session.Message) error {
 	if s.addErr != nil {
 		return s.addErr
 	}
-	if s.messages == nil {
-		s.messages = make(map[string][]session.Message)
-	}
+	s.ensureMessages()
 	msg.SessionID = sessionID
 	if msg.Sequence < 0 {
 		msg.Sequence = len(s.messages[sessionID])
@@ -217,8 +238,18 @@ func (s *mockStore) CompactMessages(_ context.Context, sessionID string, message
 	if s.compactErr != nil {
 		return s.compactErr
 	}
+	s.ensureMessages()
+	startSeq := len(s.messages[sessionID])
+	for i := range messages {
+		messages[i].SessionID = sessionID
+		messages[i].Sequence = startSeq + i
+	}
+	if sess := s.sessions[sessionID]; sess != nil {
+		sess.CompactionSeq = startSeq
+	}
 	s.compactSession = sessionID
 	s.compacted = append([]session.Message(nil), messages...)
+	s.messages[sessionID] = append(s.messages[sessionID], messages...)
 	return nil
 }
 
@@ -1310,4 +1341,85 @@ func waitForProcessExit(t *testing.T, pid int) {
 	}
 
 	t.Fatalf("timed out waiting for process %d to exit", pid)
+}
+
+func TestStreamDoneReloadRespectsCompactionSeq(t *testing.T) {
+	sessionID := "sess-compacted-reload"
+	store := &mockStore{
+		sessions: map[string]*session.Session{
+			sessionID: {ID: sessionID, CompactionSeq: 2},
+		},
+		messages: map[string][]session.Message{
+			sessionID: {
+				*session.NewMessage(sessionID, llm.UserText("old user"), 0),
+				*session.NewMessage(sessionID, llm.AssistantText("old assistant"), 1),
+				*session.NewMessage(sessionID, llm.SystemText("post compact system"), 2),
+				*session.NewMessage(sessionID, llm.UserText("post compact summary"), 3),
+			},
+		},
+	}
+	m := newTestChatModel(false)
+	m.store = store
+	m.sess = store.sessions[sessionID]
+	m.streaming = true
+	m.messages = append([]session.Message(nil), store.messages[sessionID]...)
+	m.compactionIdx = 2
+
+	result, _ := m.Update(streamEventMsg{event: ui.DoneEvent(42)})
+	rm := result.(*Model)
+
+	if len(rm.messages) != 4 {
+		t.Fatalf("expected full scrollback after reload, got %d", len(rm.messages))
+	}
+	if rm.messages[0].Sequence != 0 || rm.messages[3].Sequence != 3 {
+		t.Fatalf("unexpected reloaded scrollback sequences: got first=%d last=%d want 0,3", rm.messages[0].Sequence, rm.messages[3].Sequence)
+	}
+	if rm.compactionIdx != 2 {
+		t.Fatalf("compactionIdx after scrollback reload = %d, want 2", rm.compactionIdx)
+	}
+	built := rm.buildMessagesForStream()
+	if len(built) != 2 {
+		t.Fatalf("expected next request to include 2 compacted messages, got %d", len(built))
+	}
+}
+
+func TestStreamDoneRefreshFailureDoesNotReloadFullCompactedHistory(t *testing.T) {
+	sessionID := "sess-compacted-refresh-fail"
+	store := &mockStore{
+		getErr: errors.New("db temporarily unavailable"),
+		sessions: map[string]*session.Session{
+			sessionID: {ID: sessionID, CompactionSeq: -1},
+		},
+		messages: map[string][]session.Message{
+			sessionID: {
+				*session.NewMessage(sessionID, llm.UserText("old user"), 0),
+				*session.NewMessage(sessionID, llm.AssistantText("old assistant"), 1),
+				*session.NewMessage(sessionID, llm.SystemText("post compact system"), 2),
+				*session.NewMessage(sessionID, llm.UserText("post compact summary"), 3),
+			},
+		},
+	}
+	m := newTestChatModel(false)
+	m.store = store
+	m.sess = store.sessions[sessionID]
+	m.streaming = true
+	m.messages = append([]session.Message(nil), store.messages[sessionID]...)
+	m.compactionIdx = 2
+
+	result, _ := m.Update(streamEventMsg{event: ui.DoneEvent(42)})
+	rm := result.(*Model)
+
+	if len(rm.messages) != 4 {
+		t.Fatalf("expected in-memory history to be preserved on refresh failure, got %d", len(rm.messages))
+	}
+	if rm.compactionIdx != 2 {
+		t.Fatalf("compactionIdx after refresh failure = %d, want 2", rm.compactionIdx)
+	}
+	built := rm.buildMessagesForStream()
+	if len(built) != 2 {
+		t.Fatalf("expected next request to keep using compacted in-memory window, got %d messages", len(built))
+	}
+	if got := rm.footerMessage; !strings.Contains(got, "Session refresh failed after compaction") {
+		t.Fatalf("expected refresh failure footer, got %q", got)
+	}
 }

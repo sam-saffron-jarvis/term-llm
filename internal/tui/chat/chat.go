@@ -46,7 +46,7 @@ type Model struct {
 	store         session.Store     // Session storage backend
 	sess          *session.Session  // Current session
 	messages      []session.Message // In-memory messages for current session
-	compactionIdx int               // Index into messages where post-compaction history starts (0 = none)
+	compactionIdx int               // Prefix length to skip for LLM context; 0 means no prefix is skipped.
 	messagesMu    sync.Mutex        // Protects messages from concurrent compaction callback
 	streaming     bool
 	phase         string // "Thinking", "Searching", "Reading", "Responding"
@@ -354,6 +354,49 @@ type HandoverRequestMsg struct {
 	DoneCh chan<- bool
 }
 
+func loadSessionMessagesForContext(ctx context.Context, store session.Store, sess *session.Session) ([]session.Message, error) {
+	if sess == nil {
+		return nil, nil
+	}
+	if sess.CompactionSeq >= 0 {
+		return store.GetMessagesFrom(ctx, sess.ID, sess.CompactionSeq)
+	}
+	return store.GetMessages(ctx, sess.ID, 0, 0)
+}
+
+func loadSessionMessagesForScrollback(ctx context.Context, store session.Store, sess *session.Session) ([]session.Message, int, error) {
+	if sess == nil {
+		return nil, 0, nil
+	}
+	messages, err := store.GetMessages(ctx, sess.ID, 0, 0)
+	if err != nil {
+		return nil, 0, err
+	}
+	if sess.CompactionSeq < 0 {
+		return messages, 0, nil
+	}
+	for i, msg := range messages {
+		if msg.Sequence >= sess.CompactionSeq {
+			return messages, i, nil
+		}
+	}
+	return messages, len(messages), nil
+}
+
+func (m *Model) refreshSessionFromStore(ctx context.Context) error {
+	if m.store == nil || m.sess == nil {
+		return nil
+	}
+	refreshed, err := m.store.Get(ctx, m.sess.ID)
+	if err != nil {
+		return err
+	}
+	if refreshed != nil {
+		m.sess = refreshed
+	}
+	return nil
+}
+
 // New creates a new chat model.
 // fast-provider aware callers should use NewWithFastProvider.
 func New(cfg *config.Config, provider llm.Provider, engine *llm.Engine, providerKey string, modelName string, mcpManager *mcp.Manager, maxTurns int, forceExternalSearch bool, disableExternalWebFetch bool, searchEnabled bool, localTools []string, toolsStr string, mcpStr string, showStats bool, initialText string, store session.Store, sess *session.Session, altScreen bool, autoSendQueue []string, autoSendExitOnDone bool, textMode bool, agentName string, platformDeveloperMessage string, yolo bool) *Model {
@@ -434,19 +477,10 @@ func NewWithFastProvider(cfg *config.Config, provider llm.Provider, fastProvider
 	// If the session was compacted, only load post-compaction messages — the
 	// summary + recent context is all the LLM needs, and skipping older messages
 	// avoids a large DB read and memory cost for long-lived sessions.
-	// During a live session, compaction appends to m.messages and sets
-	// compactionIdx so the user can still scroll through older messages.
 	var messages []session.Message
 	if store != nil && sess.ID != "" {
-		ctx := context.Background()
-		if sess.CompactionSeq >= 0 {
-			if loadedMsgs, err := store.GetMessagesFrom(ctx, sess.ID, sess.CompactionSeq); err == nil {
-				messages = loadedMsgs
-			}
-		} else {
-			if loadedMsgs, err := store.GetMessages(ctx, sess.ID, 0, 0); err == nil {
-				messages = loadedMsgs
-			}
+		if loadedMsgs, err := loadSessionMessagesForContext(context.Background(), store, sess); err == nil {
+			messages = loadedMsgs
 		}
 	}
 
@@ -957,6 +991,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if err := m.store.CompactMessages(context.Background(), m.sess.ID, newSessionMsgs); err != nil {
 				return m.showFooterError(fmt.Sprintf("Compaction finished, but saving failed: %v", err))
 			}
+			if err := m.refreshSessionFromStore(context.Background()); err != nil {
+				return m.showFooterError(fmt.Sprintf("Conversation compacted, but session refresh failed: %v", err))
+			}
 		}
 		m.messagesMu.Lock()
 		m.compactionIdx = len(m.messages)
@@ -1434,14 +1471,25 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				cmds = append(cmds, ui.ScrollbackPrintlnCommands("", true)...)
 			}
 
-			// Sync in-memory messages with persisted state
+			// Sync in-memory messages with persisted state.
+			// Keep full scrollback loaded for live sessions, but recompute the
+			// compacted-window prefix so the next LLM request skips old history.
 			if m.store != nil {
-				// Reload from store to ensure consistency (callback saved messages incrementally)
-				if loadedMsgs, err := m.store.GetMessages(context.Background(), m.sess.ID, 0, 0); err == nil {
+				ctx := context.Background()
+				if err := m.refreshSessionFromStore(ctx); err != nil {
+					_, cmd := m.showFooterError(fmt.Sprintf("Session refresh failed after compaction: %v", err))
+					cmds = append(cmds, cmd)
+				} else if loadedMsgs, compactionIdx, err := loadSessionMessagesForScrollback(ctx, m.store, m.sess); err != nil {
+					_, cmd := m.showFooterError(fmt.Sprintf("Session message reload failed after compaction: %v", err))
+					cmds = append(cmds, cmd)
+				} else {
+					m.messagesMu.Lock()
 					m.messages = loadedMsgs
+					m.compactionIdx = compactionIdx
+					m.messagesMu.Unlock()
 					m.invalidateHistoryCache()
 				}
-				_ = m.store.UpdateStatus(context.Background(), m.sess.ID, session.StatusComplete)
+				_ = m.store.UpdateStatus(ctx, m.sess.ID, session.StatusComplete)
 			} else {
 				// No store - append locally for in-memory only sessions
 				responseContent := m.currentResponse.String()
