@@ -7,24 +7,195 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// CommonFlags holds pointers to flag variables shared across commands.
-// Each command creates its own instance with its own variables.
-type CommonFlags struct {
-	Provider       *string
-	Debug          *bool
-	MCP            *string
-	Tools          *string
-	ReadDirs       *[]string
-	WriteDirs      *[]string
-	ShellAllow     *[]string
-	SystemMessage  *string
-	Search         *bool
-	NativeSearch   *bool
-	NoNativeSearch *bool
-	NoWebFetch     *bool
-	MaxTurns       *int
-	Files          *[]string
-	Agent          *string
+type flagKind int
+
+const (
+	flagKindBool flagKind = iota
+	flagKindString
+	flagKindStringArray
+)
+
+// CommonFlagSet identifies reusable groups of flags shared by LLM commands.
+type CommonFlagSet uint64
+
+const (
+	CommonProvider CommonFlagSet = 1 << iota
+	CommonDebug
+	CommonSearch
+	CommonNativeSearch
+	CommonNoWebFetch
+	CommonMCP
+	CommonTools
+	CommonSystemMessage
+	CommonYolo
+	CommonSkills
+	// Tier 2 / non-position-0 flags. These can use the common registration
+	// helper without becoming eligible for pre-command normalization.
+	CommonMaxTurns
+	CommonMaxOutputTokens
+	CommonAgent
+	CommonFiles
+)
+
+const (
+	CommonCoreFlags   = CommonProvider | CommonDebug | CommonMCP | CommonTools | CommonSystemMessage | CommonYolo
+	CommonSearchFlags = CommonSearch | CommonNativeSearch | CommonNoWebFetch
+)
+
+// CommonFlagBindings holds destinations and options for AddCommonFlags.
+type CommonFlagBindings struct {
+	Provider         *string
+	Debug            *bool
+	Search           *bool
+	NativeSearch     *bool
+	NoNativeSearch   *bool
+	NoWebFetch       *bool
+	MCP              *string
+	Tools            *string
+	ReadDirs         *[]string
+	WriteDirs        *[]string
+	ShellAllow       *[]string
+	SystemMessage    *string
+	Yolo             *bool
+	Skills           *string
+	MaxTurns         *int
+	MaxTurnsDefault  int
+	MaxOutputTokens  *int
+	Agent            *string
+	Files            *[]string
+	FilesDescription string
+}
+
+// CommonFlags is kept as a backwards-compatible alias for common flag bindings.
+type CommonFlags = CommonFlagBindings
+
+type commonFlagMeta struct {
+	Name       string
+	Shorthand  string
+	Kind       flagKind
+	PreCommand bool
+	Bit        CommonFlagSet
+}
+
+// PreCommand marks the intentionally limited Tier 1 flags accepted before a
+// root command. Tier 2/context/control flags such as --file, --agent,
+// --max-turns, --resume, --text, --json, and --fast remain command-local.
+var commonFlagMetas = []commonFlagMeta{
+	{Name: "provider", Shorthand: "p", Kind: flagKindString, PreCommand: true, Bit: CommonProvider},
+	{Name: "debug", Shorthand: "d", Kind: flagKindBool, PreCommand: true, Bit: CommonDebug},
+	{Name: "search", Shorthand: "s", Kind: flagKindBool, PreCommand: true, Bit: CommonSearch},
+	{Name: "native-search", Kind: flagKindBool, PreCommand: true, Bit: CommonNativeSearch},
+	{Name: "no-native-search", Kind: flagKindBool, PreCommand: true, Bit: CommonNativeSearch},
+	{Name: "no-web-fetch", Kind: flagKindBool, PreCommand: true, Bit: CommonNoWebFetch},
+	{Name: "mcp", Kind: flagKindString, PreCommand: true, Bit: CommonMCP},
+	{Name: "tools", Kind: flagKindString, PreCommand: true, Bit: CommonTools},
+	{Name: "read-dir", Kind: flagKindStringArray, PreCommand: true, Bit: CommonTools},
+	{Name: "write-dir", Kind: flagKindStringArray, PreCommand: true, Bit: CommonTools},
+	{Name: "shell-allow", Kind: flagKindStringArray, PreCommand: true, Bit: CommonTools},
+	{Name: "system-message", Shorthand: "m", Kind: flagKindString, PreCommand: true, Bit: CommonSystemMessage},
+	{Name: "yolo", Kind: flagKindBool, PreCommand: true, Bit: CommonYolo},
+	{Name: "skills", Kind: flagKindString, PreCommand: true, Bit: CommonSkills},
+	{Name: "max-turns", Kind: flagKindString, Bit: CommonMaxTurns},
+	{Name: "max-output-tokens", Kind: flagKindString, Bit: CommonMaxOutputTokens},
+	{Name: "agent", Shorthand: "a", Kind: flagKindString, Bit: CommonAgent},
+	{Name: "file", Shorthand: "f", Kind: flagKindStringArray, Bit: CommonFiles},
+}
+
+var commandCommonFlagSets = map[string]CommonFlagSet{}
+
+func (s CommonFlagSet) has(bit CommonFlagSet) bool {
+	return s&bit != 0
+}
+
+// AddCommonFlags adds a set of reusable flags to cmd and records the command's
+// flag capabilities for pre-command flag normalization.
+func AddCommonFlags(cmd *cobra.Command, set CommonFlagSet, b CommonFlagBindings) {
+	commandCommonFlagSets[cmd.Name()] |= set
+
+	if set.has(CommonProvider) {
+		requireStringFlagBinding("provider", b.Provider)
+		AddProviderFlag(cmd, b.Provider)
+	}
+	if set.has(CommonDebug) {
+		requireBoolFlagBinding("debug", b.Debug)
+		AddDebugFlag(cmd, b.Debug)
+	}
+	if set.has(CommonSearch) {
+		requireBoolFlagBinding("search", b.Search)
+		AddSearchFlag(cmd, b.Search)
+	}
+	if set.has(CommonNativeSearch) {
+		requireBoolFlagBinding("native-search", b.NativeSearch)
+		requireBoolFlagBinding("no-native-search", b.NoNativeSearch)
+		AddNativeSearchFlags(cmd, b.NativeSearch, b.NoNativeSearch)
+	}
+	if set.has(CommonNoWebFetch) {
+		requireBoolFlagBinding("no-web-fetch", b.NoWebFetch)
+		AddNoWebFetchFlag(cmd, b.NoWebFetch)
+	}
+	if set.has(CommonMCP) {
+		requireStringFlagBinding("mcp", b.MCP)
+		AddMCPFlag(cmd, b.MCP)
+	}
+	if set.has(CommonMaxTurns) {
+		requireIntFlagBinding("max-turns", b.MaxTurns)
+		AddMaxTurnsFlag(cmd, b.MaxTurns, b.MaxTurnsDefault)
+	}
+	if set.has(CommonMaxOutputTokens) {
+		requireIntFlagBinding("max-output-tokens", b.MaxOutputTokens)
+		AddMaxOutputTokensFlag(cmd, b.MaxOutputTokens)
+	}
+	if set.has(CommonTools) {
+		requireStringFlagBinding("tools", b.Tools)
+		requireStringSliceFlagBinding("read-dir", b.ReadDirs)
+		requireStringSliceFlagBinding("write-dir", b.WriteDirs)
+		requireStringSliceFlagBinding("shell-allow", b.ShellAllow)
+		AddToolFlags(cmd, b.Tools, b.ReadDirs, b.WriteDirs, b.ShellAllow)
+	}
+	if set.has(CommonSystemMessage) {
+		requireStringFlagBinding("system-message", b.SystemMessage)
+		AddSystemMessageFlag(cmd, b.SystemMessage)
+	}
+	if set.has(CommonFiles) {
+		requireStringSliceFlagBinding("file", b.Files)
+		AddFileFlag(cmd, b.Files, b.FilesDescription)
+	}
+	if set.has(CommonAgent) {
+		requireStringFlagBinding("agent", b.Agent)
+		AddAgentFlag(cmd, b.Agent)
+	}
+	if set.has(CommonYolo) {
+		requireBoolFlagBinding("yolo", b.Yolo)
+		AddYoloFlag(cmd, b.Yolo)
+	}
+	if set.has(CommonSkills) {
+		requireStringFlagBinding("skills", b.Skills)
+		AddSkillsFlag(cmd, b.Skills)
+	}
+}
+
+func requireStringFlagBinding(name string, ptr *string) {
+	if ptr == nil {
+		panic("missing string flag binding for " + name)
+	}
+}
+
+func requireBoolFlagBinding(name string, ptr *bool) {
+	if ptr == nil {
+		panic("missing bool flag binding for " + name)
+	}
+}
+
+func requireIntFlagBinding(name string, ptr *int) {
+	if ptr == nil {
+		panic("missing int flag binding for " + name)
+	}
+}
+
+func requireStringSliceFlagBinding(name string, ptr *[]string) {
+	if ptr == nil {
+		panic("missing string slice flag binding for " + name)
+	}
 }
 
 // AddProviderFlag adds the --provider/-p flag with completion
@@ -80,6 +251,9 @@ func AddToolFlags(cmd *cobra.Command, tools *string, readDirs, writeDirs, shellA
 	cmd.Flags().StringArrayVar(readDirs, "read-dir", nil, "Directories for read_file/grep/glob/view_image tools (repeatable)")
 	cmd.Flags().StringArrayVar(writeDirs, "write-dir", nil, "Directories for write_file/edit_file tools (repeatable)")
 	cmd.Flags().StringArrayVar(shellAllow, "shell-allow", nil, "Shell command patterns to allow (repeatable, glob syntax)")
+	if err := cmd.RegisterFlagCompletionFunc("tools", ToolsFlagCompletion); err != nil {
+		panic("failed to register tools completion: " + err.Error())
+	}
 }
 
 // AddSystemMessageFlag adds the --system-message/-m flag

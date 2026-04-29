@@ -93,19 +93,27 @@ Slash commands:
 }
 
 func init() {
-	// Common flags shared across commands
-	AddProviderFlag(chatCmd, &chatProvider)
-	AddDebugFlag(chatCmd, &chatDebug)
-	AddSearchFlag(chatCmd, &chatSearch)
-	AddNativeSearchFlags(chatCmd, &chatNativeSearch, &chatNoNativeSearch)
-	AddNoWebFetchFlag(chatCmd, &chatNoWebFetch)
-	AddMCPFlag(chatCmd, &chatMCP)
-	AddMaxTurnsFlag(chatCmd, &chatMaxTurns, 200) // chat has higher default
-	AddToolFlags(chatCmd, &chatTools, &chatReadDirs, &chatWriteDirs, &chatShellAllow)
-	AddSystemMessageFlag(chatCmd, &chatSystemMessage)
-	AddAgentFlag(chatCmd, &chatAgent)
-	AddSkillsFlag(chatCmd, &chatSkills)
-	AddYoloFlag(chatCmd, &chatYolo)
+	AddCommonFlags(chatCmd,
+		CommonCoreFlags|CommonSearchFlags|CommonMaxTurns|CommonAgent|CommonSkills,
+		CommonFlagBindings{
+			Provider:        &chatProvider,
+			Debug:           &chatDebug,
+			Search:          &chatSearch,
+			NativeSearch:    &chatNativeSearch,
+			NoNativeSearch:  &chatNoNativeSearch,
+			NoWebFetch:      &chatNoWebFetch,
+			MCP:             &chatMCP,
+			MaxTurns:        &chatMaxTurns,
+			MaxTurnsDefault: 200,
+			Tools:           &chatTools,
+			ReadDirs:        &chatReadDirs,
+			WriteDirs:       &chatWriteDirs,
+			ShellAllow:      &chatShellAllow,
+			SystemMessage:   &chatSystemMessage,
+			Agent:           &chatAgent,
+			Skills:          &chatSkills,
+			Yolo:            &chatYolo,
+		})
 
 	// Auto-send flag for benchmarking (repeatable for multiple messages)
 	chatCmd.Flags().StringArrayVar(&chatAutoSend, "auto-send", nil, "Queue message(s) to send automatically and exit after all responses (repeatable)")
@@ -117,10 +125,6 @@ func init() {
 	chatCmd.Flags().StringVarP(&chatResume, "resume", "r", "", "Resume session (empty for most recent, or session ID)")
 	chatCmd.Flags().Lookup("resume").NoOptDefVal = " " // space means "flag was passed without value"
 
-	// Additional completions
-	if err := chatCmd.RegisterFlagCompletionFunc("tools", ToolsFlagCompletion); err != nil {
-		panic(fmt.Sprintf("failed to register tools completion: %v", err))
-	}
 	rootCmd.AddCommand(chatCmd)
 }
 

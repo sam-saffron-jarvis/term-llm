@@ -77,23 +77,25 @@ func init() {
 	editCmd.Flags().BoolVar(&editDryRun, "dry-run", false, "Show what would change without applying")
 	editCmd.Flags().StringVar(&editDiffFormat, "diff-format", "", "Force diff format: 'udiff' or 'replace' (default: auto)")
 
-	// Common flags shared across commands
-	AddProviderFlag(editCmd, &editProvider)
-	AddDebugFlag(editCmd, &editDebug)
-	AddMCPFlag(editCmd, &editMCP)
-	AddToolFlags(editCmd, &editTools, &editReadDirs, &editWriteDirs, &editShellAllow)
-	AddSystemMessageFlag(editCmd, &editSystemMessage)
-	AddYoloFlag(editCmd, &editYolo)
-	AddSkillsFlag(editCmd, &editSkills)
+	AddCommonFlags(editCmd,
+		CommonCoreFlags|CommonSkills,
+		CommonFlagBindings{
+			Provider:      &editProvider,
+			Debug:         &editDebug,
+			MCP:           &editMCP,
+			Tools:         &editTools,
+			ReadDirs:      &editReadDirs,
+			WriteDirs:     &editWriteDirs,
+			ShellAllow:    &editShellAllow,
+			SystemMessage: &editSystemMessage,
+			Yolo:          &editYolo,
+			Skills:        &editSkills,
+		})
 
 	if err := editCmd.MarkFlagRequired("file"); err != nil {
 		panic(fmt.Sprintf("failed to mark file flag required: %v", err))
 	}
 
-	// Additional completions
-	if err := editCmd.RegisterFlagCompletionFunc("tools", ToolsFlagCompletion); err != nil {
-		panic(fmt.Sprintf("failed to register tools completion: %v", err))
-	}
 	rootCmd.AddCommand(editCmd)
 }
 

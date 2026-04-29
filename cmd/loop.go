@@ -87,19 +87,27 @@ Examples:
 }
 
 func init() {
-	// Common flags shared across commands
-	AddProviderFlag(loopCmd, &loopProvider)
-	AddDebugFlag(loopCmd, &loopDebug)
-	AddSearchFlag(loopCmd, &loopSearch)
-	AddNativeSearchFlags(loopCmd, &loopNativeSearch, &loopNoNativeSearch)
-	AddNoWebFetchFlag(loopCmd, &loopNoWebFetch)
-	AddMCPFlag(loopCmd, &loopMCP)
-	AddMaxTurnsFlag(loopCmd, &loopMaxTurns, 100) // Higher default for loop
-	AddMaxOutputTokensFlag(loopCmd, &loopMaxOutputTokens)
-	AddToolFlags(loopCmd, &loopTools, &loopReadDirs, &loopWriteDirs, &loopShellAllow)
-	AddSystemMessageFlag(loopCmd, &loopSystemMessage)
-	AddAgentFlag(loopCmd, &loopAgent)
-	AddYoloFlag(loopCmd, &loopYolo)
+	AddCommonFlags(loopCmd,
+		CommonCoreFlags|CommonSearchFlags|CommonMaxTurns|CommonMaxOutputTokens|CommonAgent,
+		CommonFlagBindings{
+			Provider:        &loopProvider,
+			Debug:           &loopDebug,
+			Search:          &loopSearch,
+			NativeSearch:    &loopNativeSearch,
+			NoNativeSearch:  &loopNoNativeSearch,
+			NoWebFetch:      &loopNoWebFetch,
+			MCP:             &loopMCP,
+			MaxTurns:        &loopMaxTurns,
+			MaxTurnsDefault: 100,
+			MaxOutputTokens: &loopMaxOutputTokens,
+			Tools:           &loopTools,
+			ReadDirs:        &loopReadDirs,
+			WriteDirs:       &loopWriteDirs,
+			ShellAllow:      &loopShellAllow,
+			SystemMessage:   &loopSystemMessage,
+			Agent:           &loopAgent,
+			Yolo:            &loopYolo,
+		})
 
 	// Loop-specific flags
 	loopCmd.Flags().StringVar(&loopDone, "done", "", "Command that signals completion when it returns 0")
@@ -107,10 +115,6 @@ func init() {
 	loopCmd.Flags().IntVar(&loopMax, "max", 0, "Maximum number of iterations (0 = unlimited)")
 	loopCmd.Flags().IntVar(&loopHistory, "history", 0, "Number of iteration summaries to inject into prompt")
 
-	// Additional completions
-	if err := loopCmd.RegisterFlagCompletionFunc("tools", ToolsFlagCompletion); err != nil {
-		panic(fmt.Sprintf("failed to register tools completion: %v", err))
-	}
 	rootCmd.AddCommand(loopCmd)
 }
 

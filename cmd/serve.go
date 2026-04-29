@@ -134,16 +134,25 @@ func init() {
 	serveCmd.Flags().BoolVar(&serveFilterServerTools, "suppress-server-tool-calls", false, "Hide server-executed tool calls from API responses (use when proxying to external clients)")
 	serveCmd.Flags().StringVar(&serveFilesDir, "files-dir", "", "Directory for serving arbitrary files (videos, PDFs, etc) at {base}/files/")
 
-	AddProviderFlag(serveCmd, &serveProvider)
-	AddDebugFlag(serveCmd, &serveDebug)
-	AddSearchFlag(serveCmd, &serveSearch)
-	AddNativeSearchFlags(serveCmd, &serveNativeSearch, &serveNoNativeSearch)
-	AddMCPFlag(serveCmd, &serveMCP)
-	AddMaxTurnsFlag(serveCmd, &serveMaxTurns, 200)
-	AddToolFlags(serveCmd, &serveTools, &serveReadDirs, &serveWriteDirs, &serveShellAllow)
-	AddSystemMessageFlag(serveCmd, &serveSystemMessage)
-	AddAgentFlag(serveCmd, &serveAgent)
-	AddYoloFlag(serveCmd, &serveYolo)
+	AddCommonFlags(serveCmd,
+		CommonCoreFlags|CommonSearch|CommonNativeSearch|CommonMaxTurns|CommonAgent,
+		CommonFlagBindings{
+			Provider:        &serveProvider,
+			Debug:           &serveDebug,
+			Search:          &serveSearch,
+			NativeSearch:    &serveNativeSearch,
+			NoNativeSearch:  &serveNoNativeSearch,
+			MCP:             &serveMCP,
+			MaxTurns:        &serveMaxTurns,
+			MaxTurnsDefault: 200,
+			Tools:           &serveTools,
+			ReadDirs:        &serveReadDirs,
+			WriteDirs:       &serveWriteDirs,
+			ShellAllow:      &serveShellAllow,
+			SystemMessage:   &serveSystemMessage,
+			Agent:           &serveAgent,
+			Yolo:            &serveYolo,
+		})
 }
 
 func servePlatformCompletion(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {

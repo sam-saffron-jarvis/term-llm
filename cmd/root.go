@@ -170,12 +170,20 @@ func stopProfiling() error {
 }
 
 func Execute() {
-	if err := rootCmd.Execute(); err != nil {
+	if err := executeWithArgs(os.Args[1:]); err != nil {
 		if exitErr, ok := err.(exitcode.ExitError); ok {
 			os.Exit(exitErr.Code)
 		}
 		os.Exit(1)
 	}
+}
+
+func executeWithArgs(args []string) error {
+	if handlePreCommandCompletion(args) {
+		return nil
+	}
+	rootCmd.SetArgs(normalizeShellCompletionArgs(args))
+	return rootCmd.Execute()
 }
 
 func detectShell() string {

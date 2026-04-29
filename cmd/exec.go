@@ -73,29 +73,34 @@ Examples:
 }
 
 func init() {
-	// Common flags shared across commands
-	AddProviderFlag(execCmd, &execProvider)
-	AddDebugFlag(execCmd, &execDebug)
-	AddSearchFlag(execCmd, &execSearch)
-	AddNativeSearchFlags(execCmd, &execNativeSearch, &execNoNativeSearch)
-	AddNoWebFetchFlag(execCmd, &execNoWebFetch)
-	AddMCPFlag(execCmd, &execMCP)
-	AddMaxTurnsFlag(execCmd, &execMaxTurns, 20)
-	AddToolFlags(execCmd, &execTools, &execReadDirs, &execWriteDirs, &execShellAllow)
-	AddSystemMessageFlag(execCmd, &execSystemMessage)
-	AddFileFlag(execCmd, &execFiles, "File(s) to include as context (supports globs, 'clipboard')")
+	AddCommonFlags(execCmd,
+		CommonCoreFlags|CommonSearchFlags|CommonMaxTurns|CommonFiles|CommonSkills,
+		CommonFlagBindings{
+			Provider:         &execProvider,
+			Debug:            &execDebug,
+			Search:           &execSearch,
+			NativeSearch:     &execNativeSearch,
+			NoNativeSearch:   &execNoNativeSearch,
+			NoWebFetch:       &execNoWebFetch,
+			MCP:              &execMCP,
+			MaxTurns:         &execMaxTurns,
+			MaxTurnsDefault:  20,
+			Tools:            &execTools,
+			ReadDirs:         &execReadDirs,
+			WriteDirs:        &execWriteDirs,
+			ShellAllow:       &execShellAllow,
+			SystemMessage:    &execSystemMessage,
+			Files:            &execFiles,
+			FilesDescription: "File(s) to include as context (supports globs, 'clipboard')",
+			Yolo:             &execYolo,
+			Skills:           &execSkills,
+		})
 
 	// Exec-specific flags
 	execCmd.Flags().BoolVar(&execPrintOnly, "print-only", false, "Print command instead of executing")
 	execCmd.Flags().BoolVarP(&execAutoPick, "auto-pick", "a", false, "Auto-execute the best suggestion without prompting")
 	execCmd.Flags().IntVarP(&execMaxOpts, "max", "n", 0, "Maximum number of options to show (0 = no limit)")
-	AddYoloFlag(execCmd, &execYolo)
-	AddSkillsFlag(execCmd, &execSkills)
 
-	// Additional completions
-	if err := execCmd.RegisterFlagCompletionFunc("tools", ToolsFlagCompletion); err != nil {
-		panic(fmt.Sprintf("failed to register tools completion: %v", err))
-	}
 	rootCmd.AddCommand(execCmd)
 }
 

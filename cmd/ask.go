@@ -102,19 +102,30 @@ Line range syntax for files:
 }
 
 func init() {
-	// Common flags shared across commands
-	AddProviderFlag(askCmd, &askProvider)
-	AddDebugFlag(askCmd, &askDebug)
-	AddSearchFlag(askCmd, &askSearch)
-	AddNativeSearchFlags(askCmd, &askNativeSearch, &askNoNativeSearch)
-	AddNoWebFetchFlag(askCmd, &askNoWebFetch)
-	AddMCPFlag(askCmd, &askMCP)
-	AddMaxTurnsFlag(askCmd, &askMaxTurns, 20)
-	AddMaxOutputTokensFlag(askCmd, &askMaxOutputTokens)
-	AddToolFlags(askCmd, &askTools, &askReadDirs, &askWriteDirs, &askShellAllow)
-	AddSystemMessageFlag(askCmd, &askSystemMessage)
-	AddFileFlag(askCmd, &askFiles, "File(s) to include as context (supports globs, line ranges like file.go:10-20, 'clipboard')")
-	AddAgentFlag(askCmd, &askAgent)
+	AddCommonFlags(askCmd,
+		CommonCoreFlags|CommonSearchFlags|CommonMaxTurns|CommonMaxOutputTokens|CommonFiles|CommonAgent|CommonSkills,
+		CommonFlagBindings{
+			Provider:         &askProvider,
+			Debug:            &askDebug,
+			Search:           &askSearch,
+			NativeSearch:     &askNativeSearch,
+			NoNativeSearch:   &askNoNativeSearch,
+			NoWebFetch:       &askNoWebFetch,
+			MCP:              &askMCP,
+			MaxTurns:         &askMaxTurns,
+			MaxTurnsDefault:  20,
+			MaxOutputTokens:  &askMaxOutputTokens,
+			Tools:            &askTools,
+			ReadDirs:         &askReadDirs,
+			WriteDirs:        &askWriteDirs,
+			ShellAllow:       &askShellAllow,
+			SystemMessage:    &askSystemMessage,
+			Files:            &askFiles,
+			FilesDescription: "File(s) to include as context (supports globs, line ranges like file.go:10-20, 'clipboard')",
+			Agent:            &askAgent,
+			Yolo:             &askYolo,
+			Skills:           &askSkills,
+		})
 
 	// Ask-specific flags
 	askCmd.Flags().BoolVarP(&askText, "text", "t", false, "Output plain text instead of rendered markdown")
@@ -124,18 +135,12 @@ func init() {
 	askCmd.Flags().DurationVar(&askTimeout, "timeout", 0, "Set a hard deadline for the run (used by progressive execution for finalization budget)")
 	askCmd.Flags().StringVar(&askStopWhen, "stop-when", "", "Progressive stop condition: done or timeout (defaults to done in progressive mode)")
 	askCmd.Flags().StringVar(&askContinueWith, "continue-with", "", "Custom continuation prompt for progressive timeout mode")
-	AddYoloFlag(askCmd, &askYolo)
-	AddSkillsFlag(askCmd, &askSkills)
 	askCmd.Flags().BoolVar(&askFast, "fast", false, "Use the configured fast provider/model instead of the default")
 
 	// Session resume flag - NoOptDefVal allows --resume without a value
 	askCmd.Flags().StringVarP(&askResume, "resume", "r", "", "Continue a session (empty for most recent, or session ID)")
 	askCmd.Flags().Lookup("resume").NoOptDefVal = " " // space means "flag was passed without value"
 
-	// Additional completions
-	if err := askCmd.RegisterFlagCompletionFunc("tools", ToolsFlagCompletion); err != nil {
-		panic(fmt.Sprintf("failed to register agent completion: %v", err))
-	}
 	rootCmd.AddCommand(askCmd)
 }
 
