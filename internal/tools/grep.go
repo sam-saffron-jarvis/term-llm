@@ -77,15 +77,17 @@ func autoEnrichContextLines(blockCount int) int {
 
 // GrepTool implements the grep tool.
 type GrepTool struct {
-	approval *ApprovalManager
-	limits   OutputLimits
+	approval        *ApprovalManager
+	limits          OutputLimits
+	rgCaptureLimits ripgrepCaptureLimits
 }
 
 // NewGrepTool creates a new GrepTool.
 func NewGrepTool(approval *ApprovalManager, limits OutputLimits) *GrepTool {
 	return &GrepTool{
-		approval: approval,
-		limits:   limits,
+		approval:        approval,
+		limits:          limits,
+		rgCaptureLimits: defaultRipgrepCaptureLimits(),
 	}
 }
 
@@ -152,7 +154,30 @@ func buildRipgrepArgs(a GrepArgs, searchPath string, contextLines, maxResults in
 	return args
 }
 
-func runRipgrep(ctx context.Context, args []string) ([]byte, bool, error) {
+type ripgrepCaptureLimits struct {
+	maxOutputLines   int
+	maxBufferedBytes int
+}
+
+func defaultRipgrepCaptureLimits() ripgrepCaptureLimits {
+	return ripgrepCaptureLimits{
+		maxOutputLines:   rgHardMaxOutputLines,
+		maxBufferedBytes: rgMaxBufferedBytes,
+	}
+}
+
+func (l ripgrepCaptureLimits) normalize() ripgrepCaptureLimits {
+	if l.maxOutputLines <= 0 {
+		l.maxOutputLines = rgHardMaxOutputLines
+	}
+	if l.maxBufferedBytes <= 0 {
+		l.maxBufferedBytes = rgMaxBufferedBytes
+	}
+	return l
+}
+
+func runRipgrep(ctx context.Context, args []string, limits ripgrepCaptureLimits) ([]byte, bool, error) {
+	limits = limits.normalize()
 	cmd := exec.CommandContext(ctx, "rg", args...)
 
 	stdout, err := cmd.StdoutPipe()
@@ -182,7 +207,7 @@ func runRipgrep(ctx context.Context, args []string) ([]byte, bool, error) {
 		line, readErr := reader.ReadBytes('\n')
 		if len(line) > 0 {
 			lineCount++
-			if lineCount > rgHardMaxOutputLines || out.Len()+len(line) > rgMaxBufferedBytes {
+			if lineCount > limits.maxOutputLines || out.Len()+len(line) > limits.maxBufferedBytes {
 				truncated = true
 				_ = cmd.Process.Kill()
 				break
@@ -227,7 +252,7 @@ func runRipgrep(ctx context.Context, args []string) ([]byte, bool, error) {
 // executeRipgrep runs ripgrep and returns matches.
 func (t *GrepTool) executeRipgrep(ctx context.Context, a GrepArgs, searchPath string, contextLines, maxResults int) (ripgrepResult, error) {
 	args := buildRipgrepArgs(a, searchPath, contextLines, maxResults)
-	output, truncated, err := runRipgrep(ctx, args)
+	output, truncated, err := runRipgrep(ctx, args, t.rgCaptureLimits)
 	if err != nil {
 		return ripgrepResult{}, err
 	}

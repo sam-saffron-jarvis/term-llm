@@ -675,18 +675,24 @@ func TestGrepTool_RawRipgrepOutputCap_Integration(t *testing.T) {
 		t.Skip("ripgrep not available")
 	}
 
+	const testRawLineCap = 128
+
 	dir := t.TempDir()
 	path := filepath.Join(dir, "many.txt")
 	var content strings.Builder
-	for i := 0; i < rgHardMaxOutputLines+500; i++ {
+	for i := 0; i < testRawLineCap+50; i++ {
 		content.WriteString("HARD_CAP_TOKEN\n")
 	}
 	if err := os.WriteFile(path, []byte(content.String()), 0644); err != nil {
 		t.Fatal(err)
 	}
 
+	// Exercise the same Execute path as production, but inject a small raw-output
+	// cap so this fixture proves truncation without forcing rg to emit 10k JSON
+	// records on every test run.
 	tool := NewGrepTool(nil, DefaultOutputLimits())
-	args, _ := json.Marshal(GrepArgs{Pattern: "HARD_CAP_TOKEN", Path: dir, MaxResults: rgHardMaxOutputLines + 500, ContextLines: 0})
+	tool.rgCaptureLimits.maxOutputLines = testRawLineCap
+	args, _ := json.Marshal(GrepArgs{Pattern: "HARD_CAP_TOKEN", Path: dir, MaxResults: testRawLineCap + 50, ContextLines: 0})
 	output, err := tool.Execute(context.Background(), args)
 	if err != nil {
 		t.Fatal(err)
@@ -695,8 +701,9 @@ func TestGrepTool_RawRipgrepOutputCap_Integration(t *testing.T) {
 	if !strings.Contains(output.Content, "[Results truncated at limit]") {
 		t.Fatalf("expected raw ripgrep truncation notice, got:\n%s", output.Content)
 	}
-	if strings.Count(output.Content, "> ") < 1000 {
-		t.Fatalf("expected a large truncated match block, got only %d highlighted lines", strings.Count(output.Content, "> "))
+	highlightedLines := strings.Count(output.Content, "> ")
+	if highlightedLines < testRawLineCap/2 {
+		t.Fatalf("expected a large truncated match block, got only %d highlighted lines", highlightedLines)
 	}
 }
 
