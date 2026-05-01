@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/muesli/reflow/wordwrap"
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/session"
@@ -116,25 +117,34 @@ func (r *MessageBlockRenderer) renderUserMessage(msg *session.Message) string {
 	}
 	wrappedContent := wordwrap.String(displayContent, wrapWidth)
 
-	// Render with prompt on first line, indent continuation lines
+	// Render with prompt on first line, indent continuation lines.
+	// Each row is padded while the background style is active so the user
+	// message block has a clean rectangular background across the terminal.
 	lines := strings.Split(wrappedContent, "\n")
 	for i, line := range lines {
 		if i == 0 {
-			b.WriteString(promptStyle.Render("❯ "))
+			b.WriteString(renderUserMessageLine("❯ ", promptStyle, line, userMsgStyle, r.width))
 		} else {
-			b.WriteString(userMsgStyle.Render("  ")) // 2-space indent for continuation
+			b.WriteString(renderUserMessageLine("  ", userMsgStyle, line, userMsgStyle, r.width))
 		}
-		b.WriteString(userMsgStyle.Render(line))
 		b.WriteString("\n")
 	}
 	if attachmentMeta != "" {
-		b.WriteString(userMsgStyle.Render("  "))
-		b.WriteString(userMetaStyle.Render(attachmentMeta))
+		b.WriteString(renderUserMessageLine("  ", userMsgStyle, attachmentMeta, userMetaStyle, r.width))
 		b.WriteString("\n")
 	}
 	b.WriteString("\n") // Extra blank line after user messages
 
 	return b.String()
+}
+
+func renderUserMessageLine(prefix string, prefixStyle lipgloss.Style, content string, contentStyle lipgloss.Style, width int) string {
+	pad := width - ansi.StringWidth(prefix) - ansi.StringWidth(content)
+	if pad < 0 {
+		pad = 0
+	}
+
+	return prefixStyle.Render(prefix) + contentStyle.Render(content+strings.Repeat(" ", pad))
 }
 
 func (r *MessageBlockRenderer) userDisplayParts(msg *session.Message) (string, string) {
