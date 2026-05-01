@@ -677,6 +677,12 @@ func formatChatElapsed(elapsed time.Duration) string {
 	return fmt.Sprintf("%ds", seconds)
 }
 
+type statusSegment struct {
+	text      string
+	priority  int
+	essential bool
+}
+
 // renderStatusLine renders a tiny status line showing model and options
 func (m *Model) renderStatusLine() string {
 	theme := m.styles.Theme()
@@ -708,179 +714,138 @@ func (m *Model) renderStatusLine() string {
 		return m.wrapFooterLine(style.Render(m.footerMessage))
 	}
 
-	const sep = " · "
+	width := m.width
+	if width <= 0 {
+		width = 80
+	}
 
-	// Build fixed parts first (these are always shown as-is)
-	var fixedParts []string
+	const sepText = " · "
+	sep := mutedStyle.Render(sepText)
 
-	// Agent name first if set.
+	usageLong, usageShort := m.statusLineUsageParts()
+
+	baseSegments := make([]statusSegment, 0, 10)
 	if m.agentName != "" {
-		fixedParts = append(fixedParts, m.agentName)
+		baseSegments = append(baseSegments, statusSegment{text: mutedStyle.Render(m.agentName), essential: true})
 	}
-
-	// Model label (after agent, to keep agent identity prominent).
 	model := shortenModelName(m.modelName)
+	if model == "" && m.providerName != "" {
+		model = m.providerName
+	}
 	if model != "" {
-		fixedParts = append(fixedParts, model)
-	} else if m.providerName != "" {
-		fixedParts = append(fixedParts, m.providerName)
+		baseSegments = append(baseSegments, statusSegment{text: mutedStyle.Render(model), essential: true})
 	}
-
 	if m.yolo {
-		fixedParts = append(fixedParts, mutedStyle.Render("yolo"))
+		baseSegments = append(baseSegments, statusSegment{text: mutedStyle.Render("yolo"), priority: 40})
 	}
-
-	// Web search status
 	if m.searchEnabled {
-		fixedParts = append(fixedParts, successStyle.Render("web:on"))
+		baseSegments = append(baseSegments, statusSegment{text: successStyle.Render("web:on"), priority: 30})
 	}
-
-	// File count if any
 	if len(m.files) > 0 {
-		fixedParts = append(fixedParts, fmt.Sprintf("%d file(s)", len(m.files)))
+		baseSegments = append(baseSegments, statusSegment{text: mutedStyle.Render(fmt.Sprintf("%d file(s)", len(m.files))), priority: 55})
 	}
 	if len(m.images) > 0 {
-		fixedParts = append(fixedParts, fmt.Sprintf("%d image(s)", len(m.images)))
+		baseSegments = append(baseSegments, statusSegment{text: mutedStyle.Render(fmt.Sprintf("%d image(s)", len(m.images))), priority: 55})
 	}
-	// Token usage counter (e.g., ~45K/136K) with optional cached segment
-	usagePart := ""
-	if m.engine != nil && m.engine.InputLimit() > 0 {
-		contextTokens := 0
-		if !m.streaming {
-			// Once a turn is complete, provider-reported usage is authoritative for
-			// current context occupancy. Avoid adding heuristic deltas from persisted
-			// message-shape differences; those can inflate the idle status line until
-			// reload. During streaming, use EstimateTokens so tool-result deltas still
-			// move live before the next provider usage event arrives.
-			contextTokens = m.engine.LastTotalTokens()
-		}
-		if contextTokens <= 0 {
-			contextTokens = m.engine.EstimateTokens(m.buildMessagesForContextEstimate())
-		}
-		limit := m.engine.InputLimit()
-		if contextTokens > 0 && limit > 0 {
-			usagePart = fmt.Sprintf("~%s/%s",
-				llm.FormatTokenCount(contextTokens), llm.FormatTokenCount(limit))
-		}
+	if usageLong != "" {
+		baseSegments = append(baseSegments, statusSegment{text: mutedStyle.Render(usageLong), priority: 50, essential: true})
+	}
+	baseVariants := statusSegmentVariants(baseSegments)
+
+	toolsFull, toolsShort := m.statusLineToolsParts(successStyle)
+	mcpFull, mcpShort := m.statusLineMCPParts(successStyle, mutedStyle)
+
+	rightVariants := m.statusLineStreamingVariants(mutedStyle)
+	if len(rightVariants) == 0 {
+		rightVariants = []string{""}
 	}
 
-	cachedInputTokens := 0
-	if m.stats != nil && m.stats.CachedInputTokens > 0 {
-		cachedInputTokens = m.stats.CachedInputTokens
-	}
-	if cachedInputTokens > 0 {
-		cachedLabel := llm.FormatTokenCount(cachedInputTokens)
-		if cachedLabel != "" {
-			cachePart := fmt.Sprintf("%s cached", cachedLabel)
-			shortCachePart := fmt.Sprintf("cache:%s", cachedLabel)
-			useShortCacheLabel := m.width > 0 && m.width < 40
-			if usagePart != "" {
-				if useShortCacheLabel {
-					usagePart = fmt.Sprintf("%s (%s)", usagePart, shortCachePart)
-				} else {
-					usagePart = fmt.Sprintf("%s (%s)", usagePart, cachePart)
+	var candidates [][]statusSegment
+	addCandidate := func(base []statusSegment, usage string, includeTools bool, toolsText string, includeMCP bool, mcpText string) {
+		segments := make([]statusSegment, 0, len(base)+2)
+		for _, segment := range base {
+			if usageLong != "" && ui.StripANSI(segment.text) == usageLong {
+				if usage == "" {
+					continue
 				}
-			} else {
-				if useShortCacheLabel {
-					usagePart = shortCachePart
-				} else {
-					usagePart = cachePart
+				segment.text = mutedStyle.Render(usage)
+			}
+			segments = append(segments, segment)
+		}
+		if includeTools && toolsText != "" {
+			segments = append(segments, statusSegment{text: toolsText, priority: 20})
+		}
+		if includeMCP && mcpText != "" {
+			priority := 10
+			if strings.Contains(ui.StripANSI(mcpText), "mcp:off") {
+				priority = 5
+			}
+			segments = append(segments, statusSegment{text: mcpText, priority: priority})
+		}
+		candidates = append(candidates, segments)
+	}
+
+	toolOptions := []string{""}
+	if toolsFull != "" {
+		toolOptions = []string{toolsFull}
+		if toolsShort != "" && ui.StripANSI(toolsShort) != ui.StripANSI(toolsFull) {
+			toolOptions = append(toolOptions, toolsShort)
+		}
+		toolOptions = append(toolOptions, "")
+	}
+	mcpOptions := []string{""}
+	if mcpFull != "" {
+		mcpOptions = []string{mcpFull}
+		if mcpShort != "" && ui.StripANSI(mcpShort) != ui.StripANSI(mcpFull) {
+			mcpOptions = append(mcpOptions, mcpShort)
+		}
+		mcpOptions = append(mcpOptions, "")
+	}
+	usageOptions := []string{usageLong}
+	if usageShort != "" && usageShort != usageLong {
+		usageOptions = append(usageOptions, usageShort)
+	}
+	if usageLong != "" {
+		usageOptions = append(usageOptions, "")
+	}
+
+	for _, usage := range usageOptions {
+		if usage == "" {
+			continue
+		}
+		for _, base := range baseVariants {
+			for _, toolsText := range toolOptions {
+				for _, mcpText := range mcpOptions {
+					addCandidate(base, usage, toolsText != "", toolsText, mcpText != "", mcpText)
 				}
 			}
 		}
 	}
-	if usagePart != "" {
-		fixedParts = append(fixedParts, usagePart)
+	if usageLong != "" {
+		candidates = append(candidates, []statusSegment{{text: mutedStyle.Render(usageLong), priority: 50}})
 	}
-
-	// During streaming, add progress info
-	var streamingPart string
-	if m.streaming {
-		elapsed := time.Since(m.streamStartTime)
-		progressParts := []string{m.spinner.View() + " " + m.phase}
-		if m.currentTokens > 0 {
-			progressParts = append(progressParts, fmt.Sprintf("%d tok", m.currentTokens))
-		}
-		progressParts = append(progressParts, formatChatElapsed(elapsed))
-		streamingPart = strings.Join(progressParts, " ")
+	if usageShort != "" && usageShort != usageLong {
+		candidates = append(candidates, []statusSegment{{text: mutedStyle.Render(usageShort), priority: 50}})
 	}
-
-	// Calculate used width from fixed parts
-	// Use lipgloss.Width which properly strips ANSI escape sequences
-	fixedWidth := 0
-	for i, p := range fixedParts {
-		fixedWidth += lipgloss.Width(p)
-		if i > 0 {
-			fixedWidth += len(sep)
+	if usageLong != "" {
+		for _, base := range baseVariants {
+			for _, toolsText := range toolOptions {
+				for _, mcpText := range mcpOptions {
+					addCandidate(base, "", toolsText != "", toolsText, mcpText != "", mcpText)
+				}
+			}
 		}
 	}
-	if streamingPart != "" {
-		fixedWidth += len(sep) + lipgloss.Width(streamingPart)
-	}
-
-	// Calculate available width for tools and mcp
-	availableWidth := m.width - fixedWidth
-
-	// Build tools string - show count when 4+ tools, full names only for small sets
-	var toolsPart string
-	if len(m.localTools) > 0 {
-		if len(m.localTools) == len(tools.AllToolNames()) {
-			toolsPart = successStyle.Render("tools:all")
-		} else if len(m.localTools) >= 4 {
-			toolsPart = successStyle.Render(fmt.Sprintf("tools:%d", len(m.localTools)))
-		} else {
-			fullTools := "tools:" + strings.Join(m.localTools, ",")
-			shortTools := fmt.Sprintf("tools:%d", len(m.localTools))
-			// Account for separator
-			needed := len(sep) + len(fullTools)
-			if needed <= availableWidth {
-				toolsPart = successStyle.Render(fullTools)
-			} else {
-				toolsPart = successStyle.Render(shortTools)
+	if usageLong == "" {
+		for _, base := range baseVariants {
+			for _, toolsText := range toolOptions {
+				for _, mcpText := range mcpOptions {
+					addCandidate(base, "", toolsText != "", toolsText, mcpText != "", mcpText)
+				}
 			}
 		}
 	}
 
-	// Build mcp string - use full names if they fit, otherwise abbreviate
-	var mcpPart string
-	if m.mcpManager != nil {
-		available := m.mcpManager.AvailableServers()
-		if len(available) > 0 {
-			enabled := m.mcpManager.EnabledServers()
-			if len(enabled) > 0 {
-				fullMcp := "mcp:" + strings.Join(enabled, ",")
-				shortMcp := fmt.Sprintf("mcp:%d", len(enabled))
-				// Account for separator and tools part
-				usedByTools := 0
-				if toolsPart != "" {
-					usedByTools = len(sep) + lipgloss.Width(toolsPart)
-				}
-				needed := len(sep) + len(fullMcp)
-				if needed <= availableWidth-usedByTools {
-					mcpPart = successStyle.Render(fullMcp)
-				} else {
-					mcpPart = successStyle.Render(shortMcp)
-				}
-			} else {
-				mcpPart = mutedStyle.Render("mcp:off")
-			}
-		}
-	}
-
-	// Combine all parts
-	var parts []string
-	parts = append(parts, fixedParts...)
-	if toolsPart != "" {
-		parts = append(parts, toolsPart)
-	}
-	if mcpPart != "" {
-		parts = append(parts, mcpPart)
-	}
-	if streamingPart != "" {
-		parts = append(parts, streamingPart)
-	}
-
-	// Selection hint
 	if m.selection.Active {
 		start, end := m.selection.Normalized()
 		lines := end.Line - start.Line + 1
@@ -888,14 +853,215 @@ func (m *Model) renderStatusLine() string {
 			lines = 0
 		}
 		if lines > 0 {
-			parts = append(parts, fmt.Sprintf("%d lines · ctrl+y:copy", lines))
+			hint := mutedStyle.Render(fmt.Sprintf("%d lines · ctrl+y:copy", lines))
+			for i := range candidates {
+				candidates[i] = append(candidates[i], statusSegment{text: hint, priority: 60})
+			}
 		}
 	}
 	if m.copyStatus != "" {
-		parts = append(parts, m.copyStatus)
+		copyStatus := mutedStyle.Render(m.copyStatus)
+		for i := range candidates {
+			candidates[i] = append(candidates[i], statusSegment{text: copyStatus, priority: 60})
+		}
 	}
 
-	return m.wrapFooterLine(mutedStyle.Render(strings.Join(parts, sep)))
+	for _, right := range rightVariants {
+		for _, candidate := range candidates {
+			line, ok := composeStatusLine(candidate, sep, right, width)
+			if ok {
+				return line
+			}
+		}
+	}
+
+	right := rightVariants[len(rightVariants)-1]
+	if lipgloss.Width(right) >= width {
+		return ansi.Cut(right, 0, width)
+	}
+	left := joinStatusSegments(dropStatusSegments(candidates[len(candidates)-1], width-lipgloss.Width(right)-1, sep), sep)
+	line, ok := composeStatusLineText(left, right, width)
+	if ok {
+		return line
+	}
+	return ansi.Cut(line, 0, width)
+}
+
+func (m *Model) statusLineUsageParts() (string, string) {
+	usageBase := ""
+	if m.engine != nil && m.engine.InputLimit() > 0 {
+		contextTokens := 0
+		if !m.streaming {
+			contextTokens = m.engine.LastTotalTokens()
+		}
+		if contextTokens <= 0 {
+			contextTokens = m.engine.EstimateTokens(m.buildMessagesForContextEstimate())
+		}
+		limit := m.engine.InputLimit()
+		if contextTokens > 0 && limit > 0 {
+			usageBase = fmt.Sprintf("~%s/%s", llm.FormatTokenCount(contextTokens), llm.FormatTokenCount(limit))
+		}
+	}
+
+	cachedInputTokens := 0
+	if m.stats != nil && m.stats.CachedInputTokens > 0 {
+		cachedInputTokens = m.stats.CachedInputTokens
+	}
+	if cachedInputTokens <= 0 {
+		return usageBase, usageBase
+	}
+	cachedLabel := llm.FormatTokenCount(cachedInputTokens)
+	if cachedLabel == "" {
+		return usageBase, usageBase
+	}
+	longCache := fmt.Sprintf("%s cached", cachedLabel)
+	shortCache := fmt.Sprintf("%s C", cachedLabel)
+	if usageBase != "" {
+		return fmt.Sprintf("%s (%s)", usageBase, longCache), fmt.Sprintf("%s (%s)", usageBase, shortCache)
+	}
+	return longCache, shortCache
+}
+
+func (m *Model) statusLineToolsParts(successStyle lipgloss.Style) (string, string) {
+	if len(m.localTools) == 0 {
+		return "", ""
+	}
+	shortText := fmt.Sprintf("tools:%d", len(m.localTools))
+	if len(m.localTools) == len(tools.AllToolNames()) {
+		shortText = "tools:all"
+	}
+	short := successStyle.Render(shortText)
+	if len(m.localTools) >= 4 || shortText == "tools:all" {
+		return short, short
+	}
+	full := successStyle.Render("tools:" + strings.Join(m.localTools, ","))
+	return full, short
+}
+
+func (m *Model) statusLineMCPParts(successStyle, mutedStyle lipgloss.Style) (string, string) {
+	if m.mcpManager == nil {
+		return "", ""
+	}
+	available := m.mcpManager.AvailableServers()
+	if len(available) == 0 {
+		return "", ""
+	}
+	enabled := m.mcpManager.EnabledServers()
+	if len(enabled) == 0 {
+		off := mutedStyle.Render("mcp:off")
+		return off, off
+	}
+	full := successStyle.Render("mcp:" + strings.Join(enabled, ","))
+	short := successStyle.Render(fmt.Sprintf("mcp:%d", len(enabled)))
+	return full, short
+}
+
+func (m *Model) statusLineStreamingVariants(mutedStyle lipgloss.Style) []string {
+	if !m.streaming {
+		return nil
+	}
+	elapsed := formatChatElapsed(time.Since(m.streamStartTime))
+	spinnerPhase := strings.TrimSpace(m.spinner.View() + " " + m.phase)
+	var variants []string
+	if m.currentTokens > 0 {
+		variants = append(variants, mutedStyle.Render(strings.Join([]string{spinnerPhase, fmt.Sprintf("%d tok", m.currentTokens), elapsed}, " ")))
+	}
+	variants = append(variants,
+		mutedStyle.Render(strings.Join([]string{spinnerPhase, elapsed}, " ")),
+		mutedStyle.Render(strings.Join([]string{m.phase, elapsed}, " ")),
+		mutedStyle.Render(m.phase),
+	)
+	return variants
+}
+
+func statusSegmentVariants(segments []statusSegment) [][]statusSegment {
+	variants := [][]statusSegment{append([]statusSegment(nil), segments...)}
+	compact := append([]statusSegment(nil), segments...)
+	for {
+		dropIdx := -1
+		lowestPriority := int(^uint(0) >> 1)
+		for i, segment := range compact {
+			if segment.essential {
+				continue
+			}
+			if segment.priority < lowestPriority {
+				lowestPriority = segment.priority
+				dropIdx = i
+			}
+		}
+		if dropIdx == -1 {
+			break
+		}
+		compact = append(compact[:dropIdx], compact[dropIdx+1:]...)
+		variants = append(variants, append([]statusSegment(nil), compact...))
+	}
+	return variants
+}
+
+func joinStatusSegments(segments []statusSegment, sep string) string {
+	parts := make([]string, 0, len(segments))
+	for _, segment := range segments {
+		if segment.text != "" {
+			parts = append(parts, segment.text)
+		}
+	}
+	return strings.Join(parts, sep)
+}
+
+func composeStatusLine(segments []statusSegment, sep, right string, width int) (string, bool) {
+	left := joinStatusSegments(segments, sep)
+	return composeStatusLineText(left, right, width)
+}
+
+func composeStatusLineText(left, right string, width int) (string, bool) {
+	leftWidth := lipgloss.Width(left)
+	rightWidth := lipgloss.Width(right)
+	if right == "" {
+		if leftWidth <= width {
+			return left, true
+		}
+		return "", false
+	}
+	if rightWidth > width {
+		return "", false
+	}
+	if left == "" {
+		return strings.Repeat(" ", width-rightWidth) + right, true
+	}
+	spaces := width - leftWidth - rightWidth
+	if spaces < 1 {
+		return "", false
+	}
+	return left + strings.Repeat(" ", spaces) + right, true
+}
+
+func dropStatusSegments(segments []statusSegment, maxWidth int, sep string) []statusSegment {
+	if maxWidth <= 0 {
+		return nil
+	}
+	kept := append([]statusSegment(nil), segments...)
+	for lipgloss.Width(joinStatusSegments(kept, sep)) > maxWidth {
+		dropIdx := -1
+		lowestPriority := int(^uint(0) >> 1)
+		for i, segment := range kept {
+			if segment.essential {
+				continue
+			}
+			if segment.priority < lowestPriority {
+				lowestPriority = segment.priority
+				dropIdx = i
+			}
+		}
+		if dropIdx == -1 {
+			break
+		}
+		kept = append(kept[:dropIdx], kept[dropIdx+1:]...)
+	}
+	if lipgloss.Width(joinStatusSegments(kept, sep)) > maxWidth {
+		left := joinStatusSegments(kept, sep)
+		return []statusSegment{{text: ansi.Cut(left, 0, maxWidth), essential: true}}
+	}
+	return kept
 }
 
 // mcpFindServerMatch finds the best matching server name for tab completion

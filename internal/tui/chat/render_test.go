@@ -435,10 +435,96 @@ func TestRenderStatusLine_FitsViewportWidth(t *testing.T) {
 	m.stats.CachedInputTokens = 500_000
 
 	rendered := ui.StripANSI(m.renderStatusLine())
-	for _, line := range strings.Split(rendered, "\n") {
-		if lipgloss.Width(line) > m.width {
-			t.Fatalf("status line width = %d, want <= %d; line=%q", lipgloss.Width(line), m.width, line)
+	if strings.Contains(rendered, "\n") {
+		t.Fatalf("expected status line to stay on one line, got %q", rendered)
+	}
+	if lipgloss.Width(rendered) > m.width {
+		t.Fatalf("status line width = %d, want <= %d; line=%q", lipgloss.Width(rendered), m.width, rendered)
+	}
+}
+
+func TestRenderStatusLine_RightAlignsStreamingPhase(t *testing.T) {
+	width := 64
+	started := time.Now().Add(-42 * time.Second)
+
+	minimal := newTestChatModel(false)
+	minimal.width = width
+	minimal.streaming = true
+	minimal.phase = "Thinking"
+	minimal.streamStartTime = started
+
+	busy := newTestChatModel(false)
+	busy.width = width
+	busy.agentName = "developer"
+	busy.modelName = "gpt-5.5-medium"
+	busy.yolo = true
+	busy.searchEnabled = true
+	busy.localTools = []string{"read_file", "write_file", "shell", "grep", "edit_file", "web_search", "read_url", "glob"}
+	busy.stats.CachedInputTokens = 1_700_000
+	busy.streaming = true
+	busy.phase = "Thinking"
+	busy.streamStartTime = started
+
+	minimalLine := ui.StripANSI(minimal.renderStatusLine())
+	busyLine := ui.StripANSI(busy.renderStatusLine())
+	minimalIdx := strings.Index(minimalLine, "Thinking")
+	busyIdx := strings.Index(busyLine, "Thinking")
+	if minimalIdx < 0 || busyIdx < 0 {
+		t.Fatalf("expected both status lines to contain Thinking, got %q and %q", minimalLine, busyLine)
+	}
+	minimalCol := lipgloss.Width(minimalLine[:minimalIdx])
+	busyCol := lipgloss.Width(busyLine[:busyIdx])
+	if minimalCol != busyCol {
+		t.Fatalf("expected Thinking to be right-aligned at same column, got %d in %q and %d in %q", minimalCol, minimalLine, busyCol, busyLine)
+	}
+	if lipgloss.Width(minimalLine) != width || lipgloss.Width(busyLine) != width {
+		t.Fatalf("expected streaming lines to fill width %d, got widths %d (%q) and %d (%q)", width, lipgloss.Width(minimalLine), minimalLine, lipgloss.Width(busyLine), busyLine)
+	}
+}
+
+func TestRenderStatusLine_NarrowDropsNonEssentialParts(t *testing.T) {
+	m := newTestChatModel(false)
+	m.width = 48
+	m.agentName = "developer"
+	m.modelName = "gpt-5.5-medium"
+	m.yolo = true
+	m.searchEnabled = true
+	m.localTools = []string{"read_file", "write_file", "shell", "grep", "edit_file", "web_search", "read_url", "glob"}
+	m.streaming = true
+	m.phase = "Responding"
+	m.currentTokens = 2500
+	m.streamStartTime = time.Now().Add(-7 * time.Second)
+	m.stats.CachedInputTokens = 1_700_000
+
+	line := ui.StripANSI(m.renderStatusLine())
+	if strings.Contains(line, "\n") || lipgloss.Width(line) > m.width {
+		t.Fatalf("expected one narrow status line within width %d, got width %d: %q", m.width, lipgloss.Width(line), line)
+	}
+	for _, omitted := range []string{"tools:", "web:on", "mcp:off"} {
+		if strings.Contains(line, omitted) {
+			t.Fatalf("expected narrow status line to omit %q, got %q", omitted, line)
 		}
+	}
+	if !strings.Contains(line, "Responding") {
+		t.Fatalf("expected narrow status line to retain streaming phase, got %q", line)
+	}
+}
+
+func TestRenderStatusLine_CachedAbbreviatesToCWhenNeeded(t *testing.T) {
+	m := newTestChatModel(false)
+	m.width = 24
+	m.modelName = "gpt-5.5-medium"
+	m.streaming = true
+	m.phase = "Thinking"
+	m.streamStartTime = time.Now().Add(-3 * time.Second)
+	m.stats.CachedInputTokens = 500_000
+
+	line := ui.StripANSI(m.renderStatusLine())
+	if !strings.Contains(line, "500K C") {
+		t.Fatalf("expected cached usage to abbreviate to C when narrow, got %q", line)
+	}
+	if strings.Contains(line, "cached") || strings.Contains(line, "cache:") {
+		t.Fatalf("expected narrow cached usage not to use old labels, got %q", line)
 	}
 }
 
@@ -770,7 +856,7 @@ func TestRenderStatusLine_WithCachedUsageNarrowWidthStillRenders(t *testing.T) {
 	if strings.TrimSpace(line) == "" {
 		t.Fatalf("expected non-empty status line for narrow width")
 	}
-	if !strings.Contains(line, "cached") && !strings.Contains(line, "cache:") {
+	if !strings.Contains(line, "cached") && !strings.Contains(line, "cache:") && !strings.Contains(line, " C") {
 		t.Fatalf("expected cached usage segment in narrow-width status line, got %q", line)
 	}
 }
