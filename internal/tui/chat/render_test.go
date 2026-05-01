@@ -2,6 +2,7 @@ package chat
 
 import (
 	"errors"
+	"reflect"
 	"regexp"
 	"strconv"
 	"strings"
@@ -40,6 +41,34 @@ func TestRenderMarkdown_NarrowWidth_DoesNotFallbackToRaw(t *testing.T) {
 
 	if strings.TrimSpace(got) == strings.TrimSpace(input) {
 		t.Fatalf("expected narrow-width markdown rendering, got raw fallback: %q", got)
+	}
+}
+
+func TestTryAppendAltScreenStreamingContent_AppendsTailLines(t *testing.T) {
+	m := &Model{}
+	m.viewCache.lastContentHistoryPlusStream = true
+	m.viewCache.lastContentStr = "history\nassistant"
+	m.viewCache.lastStreamingContent = "assistant"
+
+	got, ok := m.tryAppendAltScreenStreamingContent("assistant more\nnext")
+	if !ok {
+		t.Fatal("expected append-only streaming update to be reused incrementally")
+	}
+
+	want := []string{"history", "assistant more", "next"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("unexpected content lines\nwant: %#v\n got: %#v", want, got)
+	}
+}
+
+func TestTryAppendAltScreenStreamingContent_FallsBackOnRewrite(t *testing.T) {
+	m := &Model{}
+	m.viewCache.lastContentHistoryPlusStream = true
+	m.viewCache.lastContentStr = "history\nassistant"
+	m.viewCache.lastStreamingContent = "assistant"
+
+	if _, ok := m.tryAppendAltScreenStreamingContent("rewritten assistant"); ok {
+		t.Fatal("expected rewrite to force full viewport rebuild")
 	}
 }
 

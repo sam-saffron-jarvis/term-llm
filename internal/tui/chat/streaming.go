@@ -360,8 +360,12 @@ func (m *Model) sendMessage(content string) (tea.Model, tea.Cmd) {
 	m.currentResponse.Reset()
 	m.err = nil // Clear any previous error
 	m.webSearchUsed = false
-	m.viewCache.completedStream = "" // Clear previous response's diffs/tools
+	m.viewCache.completedStream = ""      // Clear previous response's diffs/tools
+	m.viewCache.lastStreamingContent = "" // Streaming tail is width/turn dependent
+	m.viewCache.lastContentHistoryPlusStream = false
 	m.viewCache.lastSetContentAt = time.Time{}
+	m.viewCache.lastContentStr = ""
+	m.contentLines = nil
 	m.bumpContentVersion()
 	if m.smoothBuffer != nil {
 		m.smoothBuffer.Reset()
@@ -657,8 +661,12 @@ func (m *Model) invalidateViewCache() {
 	m.viewCache.cachedCompletedContent = ""
 	m.viewCache.cachedTrackerVersion = 0
 	m.viewCache.lastTrackerVersion = 0
+	m.viewCache.lastStreamingContent = ""
+	m.viewCache.lastContentHistoryPlusStream = false
 	m.viewCache.lastWavePos = 0
 	m.viewCache.lastSetContentAt = time.Time{}
+	m.viewCache.lastContentStr = ""
+	m.contentLines = nil
 	if m.chatRenderer != nil {
 		m.chatRenderer.InvalidateCache()
 	}
@@ -667,6 +675,10 @@ func (m *Model) invalidateViewCache() {
 
 func (m *Model) invalidateHistoryCache() {
 	m.viewCache.historyValid = false
+	m.viewCache.lastStreamingContent = ""
+	m.viewCache.lastContentHistoryPlusStream = false
+	m.viewCache.lastContentStr = ""
+	m.contentLines = nil
 	if m.chatRenderer != nil {
 		m.chatRenderer.InvalidateCache()
 	}
