@@ -883,9 +883,20 @@ const initialize = async () => {
   refreshNotificationUI();
   void registerServiceWorker().then(() => refreshNotificationUI());
 
+  let startupFinished = false;
+  const finishStartup = () => {
+    if (startupFinished) return;
+    startupFinished = true;
+    hideStartupSplash();
+  };
+
   try {
     setStartupStatus(state.token ? 'Checking your token…' : 'Connecting…');
     setConnectionState(state.token ? 'Validating token…' : 'Connecting…');
+
+    // Session sync can happen in parallel with provider/model bootstrap and should
+    // not hold the splash screen open once the shell itself is ready.
+    const sessionsMergePromise = mergeServerSessions();
 
     // Fetch providers first so we can validate the stored selection.
     state.providers = await fetchProviders();
@@ -896,37 +907,40 @@ const initialize = async () => {
     state.connected = true;
     renderModelOptions();
     setConnectionState('', '');
-    setStartupStatus('Syncing sessions…');
+    finishStartup();
 
-    // Merge server-side sessions after successful auth
-    await mergeServerSessions();
-    startSidebarStatusPoll();
-    if (!state.draftSessionActive && !getActiveSession()) {
-      ensureActiveSession();
-      renderMessages(true);
-    }
-
-    // Retry push enrollment now that auth is confirmed. Also recover automatically
-    // when the browser permission is already granted but the old localStorage flag
-    // was never set (for example after earlier installs or app updates).
-    if (shouldAutoSubscribeToPush()) {
-      subscribeToPush();
-    }
-
-    // Lazy-load messages for URL-targeted server session
-    const active = getActiveSession();
-    if (active && active._serverOnly) {
-      const msgs = await loadServerSessionMessages(active.id);
-      if (msgs !== null) {
-        mergeServerMessagesWithLocalState(active, msgs);
-        saveSessions();
-        renderSidebar();
+    void (async () => {
+      setStartupStatus('Syncing sessions…');
+      await sessionsMergePromise;
+      startSidebarStatusPoll();
+      if (!state.draftSessionActive && !getActiveSession()) {
+        ensureActiveSession();
         renderMessages(true);
       }
-    }
-    if (active) {
-      await syncActiveSessionFromServer(active, true);
-    }
+
+      // Retry push enrollment now that auth is confirmed. Also recover automatically
+      // when the browser permission is already granted but the old localStorage flag
+      // was never set (for example after earlier installs or app updates).
+      if (shouldAutoSubscribeToPush()) {
+        subscribeToPush();
+      }
+
+      // Lazy-load messages for URL-targeted server session without blocking the
+      // initial shell from becoming interactive.
+      const active = getActiveSession();
+      if (active && active._serverOnly) {
+        const msgs = await loadServerSessionMessages(active.id);
+        if (msgs !== null) {
+          mergeServerMessagesWithLocalState(active, msgs);
+          saveSessions();
+          renderSidebar();
+          renderMessages(true);
+        }
+      }
+      if (active) {
+        await syncActiveSessionFromServer(active, true);
+      }
+    })();
   } catch (err) {
     const message = err?.message || 'Unable to validate token.';
     setStartupStatus(message);
@@ -935,7 +949,7 @@ const initialize = async () => {
       handleAuthFailure();
     }
   } finally {
-    hideStartupSplash();
+    finishStartup();
   }
 };
 

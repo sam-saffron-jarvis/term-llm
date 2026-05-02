@@ -295,6 +295,7 @@ async function testNumericDeepLinkResolvesRealSessionId() {
       return new Response(JSON.stringify([]), { status: 200, headers: { 'Content-Type': 'application/json' } });
     }
   });
+  await new Promise((resolve) => setTimeout(resolve, 0));
 
   if (app.state.activeSessionId !== 'sess_real') {
     fail(name, 'active session id should be reconciled to real server id', `got ${app.state.activeSessionId}`);
@@ -359,6 +360,7 @@ async function testDeveloperMessagesAreHidden() {
       return new Response(JSON.stringify([]), { status: 200, headers: { 'Content-Type': 'application/json' } });
     }
   });
+  await new Promise((resolve) => setTimeout(resolve, 0));
 
   const session = app.state.sessions.find(s => s.id === 'sess_dev');
   if (!session) {
@@ -1229,6 +1231,123 @@ async function testSanitizeSessionPreservesLastMessageAt() {
   pass(name);
 }
 
+async function testInitializeHidesSplashBeforeDeepLinkHydrationCompletes() {
+  const name = 'initialize hides splash before deep-link hydration completes';
+  let releaseMessages;
+  let splashHidden = 0;
+  let messagesRequested = false;
+  let stateRequested = false;
+
+  const harnessPromise = createSessionsHarness({
+    pathname: '/ui/1291',
+    fetchImpl: async (url) => {
+      if (url === '/ui/v1/providers') {
+        return new Response(JSON.stringify({ data: [{ name: 'openai' }] }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' }
+        });
+      }
+      if (url === '/ui/v1/models') {
+        return new Response(JSON.stringify({ data: [{ id: 'gpt-5' }] }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' }
+        });
+      }
+      if (url === '/ui/v1/sessions') {
+        return new Response(JSON.stringify({
+          sessions: [{
+            id: 'sess_real',
+            number: 1291,
+            short_title: 'Real session',
+            long_title: 'Real session',
+            mode: 'chat',
+            origin: 'tui',
+            archived: false,
+            pinned: false,
+            created_at: 1710000000000,
+            message_count: 1,
+          }]
+        }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' }
+        });
+      }
+      if (url === '/ui/v1/sessions/sess_real/messages') {
+        messagesRequested = true;
+        return new Promise((resolve) => {
+          releaseMessages = () => resolve(new Response(JSON.stringify({
+            messages: [{
+              role: 'user',
+              created_at: 1710000000000,
+              parts: [{ type: 'text', text: 'hello from server' }],
+            }]
+          }), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' }
+          }));
+        });
+      }
+      if (url === '/ui/v1/sessions/sess_real/state') {
+        stateRequested = true;
+        return new Response(JSON.stringify({ active_run: true }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' }
+        });
+      }
+      if (url === '/ui/v1/sessions/status') {
+        return new Response(JSON.stringify({ sessions: [] }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' }
+        });
+      }
+      return new Response(JSON.stringify([]), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' }
+      });
+    },
+    appOverrides: {
+      hideStartupSplash() {
+        splashHidden += 1;
+      },
+    }
+  });
+
+  const raced = await Promise.race([
+    harnessPromise.then(() => ({ timedOut: false })),
+    new Promise((resolve) => setTimeout(() => resolve({ timedOut: true }), 100))
+  ]);
+
+  if (raced.timedOut) {
+    if (releaseMessages) releaseMessages();
+    fail(name, 'initialize should not wait for deep-link message hydration before resolving');
+    return;
+  }
+
+  if (splashHidden === 0) {
+    if (releaseMessages) releaseMessages();
+    fail(name, 'expected startup splash to hide before deep-link hydration finished');
+    return;
+  }
+
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  if (!messagesRequested) {
+    fail(name, 'expected deep-link message hydration request to start in background');
+    return;
+  }
+
+  releaseMessages();
+  await harnessPromise;
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  if (!stateRequested) {
+    fail(name, 'expected active session state sync after deep-link hydration');
+    return;
+  }
+
+  pass(name);
+}
+
 (async () => {
   await testNumericDeepLinkResolvesRealSessionId();
   await testDeveloperMessagesAreHidden();
@@ -1242,6 +1361,7 @@ async function testSanitizeSessionPreservesLastMessageAt() {
   await testApplyServerSessionSummaryMapsLastMessageAt();
   await testMergeServerMessagesBumpsLastMessageAt();
   await testSanitizeSessionPreservesLastMessageAt();
+  await testInitializeHidesSplashBeforeDeepLinkHydrationCompletes();
 
   if (failures > 0) process.exit(1);
   process.exit(0);
