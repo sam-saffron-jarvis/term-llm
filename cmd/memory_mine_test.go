@@ -41,6 +41,79 @@ func TestValidateFragmentPath(t *testing.T) {
 	}
 }
 
+func TestCollectInsightCandidatesAppliesLimitAfterSkippingMinedSessions(t *testing.T) {
+	ctx := context.Background()
+	sessStore, err := session.NewStore(session.Config{Enabled: true, Path: filepath.Join(t.TempDir(), "sessions.db")})
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer sessStore.Close()
+
+	memStore, err := memorydb.NewStore(memorydb.Config{Path: filepath.Join(t.TempDir(), "memory.db")})
+	if err != nil {
+		t.Fatalf("NewStore(memory): %v", err)
+	}
+	defer memStore.Close()
+
+	oldLimit := memoryMineLimit
+	oldAgent := memoryAgent
+	oldSince := memoryMineSince
+	oldIncludeSubagents := memoryMineIncludeSubagents
+	memoryMineLimit = 2
+	memoryAgent = "jarvis"
+	memoryMineSince = 0
+	memoryMineIncludeSubagents = false
+	t.Cleanup(func() {
+		memoryMineLimit = oldLimit
+		memoryAgent = oldAgent
+		memoryMineSince = oldSince
+		memoryMineIncludeSubagents = oldIncludeSubagents
+	})
+
+	var complete []session.SessionSummary
+	for i := 1; i <= 5; i++ {
+		sess := &session.Session{
+			ID:        session.NewID(),
+			Provider:  "test",
+			Model:     "test-model",
+			Agent:     "jarvis",
+			Status:    session.StatusComplete,
+			CreatedAt: time.Now().Add(-time.Duration(i) * time.Minute),
+			UpdatedAt: time.Now().Add(-time.Duration(i) * time.Minute),
+		}
+		if err := sessStore.Create(ctx, sess); err != nil {
+			t.Fatalf("Create(%d): %v", i, err)
+		}
+		messageCount := 4
+		if i == 3 {
+			messageCount = 2
+		}
+		complete = append(complete, session.SessionSummary{
+			ID:           sess.ID,
+			Number:       sess.Number,
+			MessageCount: messageCount,
+			UpdatedAt:    sess.UpdatedAt,
+		})
+
+		if i <= 2 {
+			if err := memStore.MarkInsightMined(ctx, sess.ID, "jarvis"); err != nil {
+				t.Fatalf("MarkInsightMined(%d): %v", i, err)
+			}
+		}
+	}
+
+	got, err := collectInsightCandidates(ctx, sessStore, memStore, complete, "")
+	if err != nil {
+		t.Fatalf("collectInsightCandidates: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("len(got) = %d, want 2", len(got))
+	}
+	if got[0].Session.ID != complete[3].ID || got[1].Session.ID != complete[4].ID {
+		t.Fatalf("selected sessions = [%s %s], want [%s %s]", got[0].Session.ID, got[1].Session.ID, complete[3].ID, complete[4].ID)
+	}
+}
+
 func TestMemoryExtractionCollectorAndTools(t *testing.T) {
 	ctx := context.Background()
 	dbPath := filepath.Join(t.TempDir(), "memory.db")

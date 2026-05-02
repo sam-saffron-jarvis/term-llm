@@ -341,11 +341,19 @@ func runMemoryMine(cmd *cobra.Command, args []string) error {
 
 	if memoryMineInsights && !memoryDryRun {
 		fmt.Println("\n--- INSIGHT EXTRACTION ---")
-		insightCount, err := runInsightExtractionPass(ctx, cfg, engine, sessStore, memStore, candidates)
+		insightCandidates, err := collectInsightCandidates(ctx, sessStore, memStore, complete, currentID)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "warning: insight extraction failed: %v\n", err)
+			fmt.Fprintf(os.Stderr, "warning: collect insight candidates failed: %v\n", err)
 		} else {
-			fmt.Printf("insights: %d created/reinforced\n", insightCount)
+			if len(insightCandidates) > 0 {
+				fmt.Printf("Insight extraction: %d unprocessed session(s) selected\n", len(insightCandidates))
+			}
+			insightCount, err := runInsightExtractionPass(ctx, cfg, engine, sessStore, memStore, insightCandidates)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "warning: insight extraction failed: %v\n", err)
+			} else {
+				fmt.Printf("insights: %d created/reinforced\n", insightCount)
+			}
 		}
 		// After extraction, apply decay and prune stale insights.
 		decayAgent := strings.TrimSpace(memoryAgent)
@@ -424,45 +432,18 @@ func minePromoteAgents(globalAgent string, candidates []memoryMineCandidate) []s
 }
 
 func collectMineCandidates(ctx context.Context, store session.Store, complete []session.SessionSummary, currentID string) ([]memoryMineCandidate, error) {
-	cutoff := time.Time{}
-	if memoryMineSince > 0 {
-		cutoff = time.Now().Add(-memoryMineSince)
-	}
-
 	out := make([]memoryMineCandidate, 0, len(complete))
-	agentFilter := strings.TrimSpace(memoryAgent)
 
 	for _, summary := range complete {
-		if !cutoff.IsZero() && summary.UpdatedAt.Before(cutoff) {
-			continue
-		}
-
-		sess, err := store.Get(ctx, summary.ID)
+		candidate, ok, err := buildMemoryMineCandidate(ctx, store, summary, currentID)
 		if err != nil {
-			return nil, fmt.Errorf("get session %s: %w", summary.ID, err)
+			return nil, err
 		}
-		if sess == nil {
+		if !ok {
 			continue
 		}
 
-		if currentID != "" && sess.ID == currentID {
-			continue
-		}
-		if !memoryMineIncludeSubagents && sess.IsSubagent {
-			continue
-		}
-		if hasMemoryMiningTag(sess.Tags) {
-			continue
-		}
-		if agentFilter != "" && strings.TrimSpace(sess.Agent) != agentFilter {
-			continue
-		}
-
-		out = append(out, memoryMineCandidate{
-			Summary: summary,
-			Session: sess,
-			Agent:   resolveMemoryAgent(sess.Agent),
-		})
+		out = append(out, candidate)
 
 		if memoryMineLimit > 0 && len(out) >= memoryMineLimit {
 			break
@@ -470,6 +451,78 @@ func collectMineCandidates(ctx context.Context, store session.Store, complete []
 	}
 
 	return out, nil
+}
+
+func collectInsightCandidates(ctx context.Context, store session.Store, memStore *memorydb.Store, complete []session.SessionSummary, currentID string) ([]memoryMineCandidate, error) {
+	out := make([]memoryMineCandidate, 0, len(complete))
+
+	for _, summary := range complete {
+		if summary.MessageCount > 0 && summary.MessageCount < 4 {
+			continue
+		}
+
+		candidate, ok, err := buildMemoryMineCandidate(ctx, store, summary, currentID)
+		if err != nil {
+			return nil, err
+		}
+		if !ok {
+			continue
+		}
+
+		minedAt, err := memStore.InsightMinedAt(ctx, candidate.Session.ID)
+		if err != nil {
+			return nil, fmt.Errorf("get insight mining state for session %s: %w", candidate.Session.ID, err)
+		}
+		if !minedAt.IsZero() {
+			continue
+		}
+
+		out = append(out, candidate)
+
+		if memoryMineLimit > 0 && len(out) >= memoryMineLimit {
+			break
+		}
+	}
+
+	return out, nil
+}
+
+func buildMemoryMineCandidate(ctx context.Context, store session.Store, summary session.SessionSummary, currentID string) (memoryMineCandidate, bool, error) {
+	cutoff := time.Time{}
+	if memoryMineSince > 0 {
+		cutoff = time.Now().Add(-memoryMineSince)
+	}
+
+	if !cutoff.IsZero() && summary.UpdatedAt.Before(cutoff) {
+		return memoryMineCandidate{}, false, nil
+	}
+
+	sess, err := store.Get(ctx, summary.ID)
+	if err != nil {
+		return memoryMineCandidate{}, false, fmt.Errorf("get session %s: %w", summary.ID, err)
+	}
+	if sess == nil {
+		return memoryMineCandidate{}, false, nil
+	}
+
+	if currentID != "" && sess.ID == currentID {
+		return memoryMineCandidate{}, false, nil
+	}
+	if !memoryMineIncludeSubagents && sess.IsSubagent {
+		return memoryMineCandidate{}, false, nil
+	}
+	if hasMemoryMiningTag(sess.Tags) {
+		return memoryMineCandidate{}, false, nil
+	}
+	if agentFilter := strings.TrimSpace(memoryAgent); agentFilter != "" && strings.TrimSpace(sess.Agent) != agentFilter {
+		return memoryMineCandidate{}, false, nil
+	}
+
+	return memoryMineCandidate{
+		Summary: summary,
+		Session: sess,
+		Agent:   resolveMemoryAgent(sess.Agent),
+	}, true, nil
 }
 
 func loadMessagesForMining(ctx context.Context, store session.Store, candidate memoryMineCandidate, offset int, taxonomyMap string) (memoryMineLoadResult, error) {
@@ -1081,7 +1134,11 @@ func runInsightExtractionPass(
 		}
 		messages := loadResult.Messages
 		if len(messages) < 4 {
-			// Too short to contain meaningful patterns.
+			// Too short to contain meaningful patterns. Mark it processed so tiny
+			// sessions do not permanently occupy the insight candidate limit.
+			if err := memStore.MarkInsightMined(ctx, candidate.Session.ID, candidate.Agent); err != nil {
+				fmt.Fprintf(os.Stderr, "  [insight] warning: mark short session mined failed for %s: %v\n", candidate.Session.ID, err)
+			}
 			continue
 		}
 
