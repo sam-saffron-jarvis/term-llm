@@ -1179,11 +1179,11 @@ func TestInsightCRUD(t *testing.T) {
 	}
 
 	// Update content + compact together.
-	if err := store.UpdateInsight(ctx, ins.ID, "Never mention NZBGeek or SABnzbd in public posts.", "No internal tool names in public posts."); err != nil {
+	if err := store.UpdateInsight(ctx, ins.ID, "Never mention private service names in public posts.", "No internal tool names in public posts."); err != nil {
 		t.Fatalf("UpdateInsight: %v", err)
 	}
 	got2, _ := store.GetInsightByID(ctx, ins.ID)
-	if got2.Content != "Never mention NZBGeek or SABnzbd in public posts." {
+	if got2.Content != "Never mention private service names in public posts." {
 		t.Errorf("after update, content = %q", got2.Content)
 	}
 	if got2.CompactContent != "No internal tool names in public posts." {
@@ -1377,6 +1377,26 @@ func TestInsightExpand(t *testing.T) {
 		t.Fatalf("CreateInsight no compact: %v", err)
 	}
 
+	// High-confidence operational/factual insights should remain searchable in
+	// the bank but not burn always-on system prompt budget.
+	for _, tc := range []struct {
+		category string
+		content  string
+	}{
+		{"user-profile", "The user prefers concise weekly summaries."},
+		{"infrastructure", "A private service runs on an internal host."},
+		{"mining", "Mine at message fidelity, not session fidelity."},
+	} {
+		if err := store.CreateInsight(ctx, &Insight{
+			Agent:      "jarvis",
+			Content:    tc.content,
+			Category:   tc.category,
+			Confidence: 0.99,
+		}); err != nil {
+			t.Fatalf("CreateInsight excluded %s: %v", tc.category, err)
+		}
+	}
+
 	out, err := store.ExpandInsights(ctx, "jarvis", "any", 500)
 	if err != nil {
 		t.Fatalf("ExpandInsights: %v", err)
@@ -1397,6 +1417,13 @@ func TestInsightExpand(t *testing.T) {
 	// Insight without compact should show full content.
 	if !strings.Contains(out, "Always confirm before overwriting existing files.") {
 		t.Errorf("full content fallback not working: %q", out)
+	}
+
+	// Non-injectable categories should not appear even with higher confidence.
+	for _, forbidden := range []string{"prefers concise weekly", "private service runs", "Mine at message fidelity"} {
+		if strings.Contains(out, forbidden) {
+			t.Errorf("non-injectable insight leaked into expansion: %q", out)
+		}
 	}
 
 	// Empty bank for a different agent should return empty.
