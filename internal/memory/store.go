@@ -2259,6 +2259,9 @@ func (s *Store) ExpandInsights(ctx context.Context, agent, _ string, maxTokens i
 		if ins.Confidence < 0.4 {
 			continue
 		}
+		if !injectableInsightCategory(ins.Category) {
+			continue
+		}
 		n++
 		text := strings.TrimSpace(ins.CompactContent)
 		if text == "" {
@@ -2277,6 +2280,15 @@ func (s *Store) ExpandInsights(ctx context.Context, agent, _ string, maxTokens i
 		return "", nil
 	}
 	return sb.String(), nil
+}
+
+func injectableInsightCategory(category string) bool {
+	switch strings.TrimSpace(category) {
+	case "mining", "user-profile", "infrastructure":
+		return false
+	default:
+		return true
+	}
 }
 
 func scanInsight(scanner interface{ Scan(dest ...any) error }) (*Insight, error) {
