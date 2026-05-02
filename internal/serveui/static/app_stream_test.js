@@ -73,7 +73,21 @@ function createHarness(options = {}) {
   let eventsStreamController = null;
   const fetchCalls = [];
   const responseId = options.responseId || 'resp_test';
-  const postBody = String(options.postBody || '');
+  const postKeepOpen = Boolean(options.postKeepOpen);
+  const postBody = Object.prototype.hasOwnProperty.call(options, 'postBody')
+    ? String(options.postBody || '')
+    : [
+      'id: 1\n',
+      'event: response.created\n',
+      `data: {"response":{"id":"${responseId}","model":"test-model","status":"in_progress"},"sequence_number":1}\n\n`,
+      'id: 2\n',
+      'event: response.output_text.delta\n',
+      'data: {"delta":"hello","sequence_number":2}\n\n',
+      'id: 3\n',
+      'event: response.completed\n',
+      `data: {"response":{"id":"${responseId}","model":"test-model","status":"completed"},"sequence_number":3}\n\n`,
+      'data: [DONE]\n\n',
+    ].join('');
   const eventsKeepOpen = Boolean(options.eventsKeepOpen);
   const cancelDelayMs = Math.max(0, Number(options.cancelDelayMs || 0));
   const snapshotStatus = Number.isFinite(Number(options.snapshotStatus)) ? Number(options.snapshotStatus) : 200;
@@ -410,11 +424,19 @@ function createHarness(options = {}) {
       body: typeof options.body === 'string' ? options.body : null,
     });
     if (url === '/ui/v1/responses') {
+      const signal = options.signal || null;
       return new Response(new ReadableStream({
         start(controller) {
           postStreamController = controller;
           if (postBody) {
             controller.enqueue(encoder.encode(postBody));
+          }
+          if (!postKeepOpen) {
+            controller.close();
+          } else if (signal) {
+            signal.addEventListener('abort', () => {
+              try { controller.error(new DOMException('The operation was aborted.', 'AbortError')); } catch (_e) { /* ignore */ }
+            });
           }
         },
         cancel() {
@@ -530,26 +552,16 @@ async function waitFor(predicate, timeoutMs) {
   return false;
 }
 
-async function testSendMessageHandsOffToEventsStream() {
-  const name = 'sendMessage hands off to /events after x-response-id even if POST body stalls';
+async function testSendMessageConsumesPostStreamWhenAvailable() {
+  const name = 'sendMessage consumes the original POST SSE stream when it is available';
   const harness = createHarness();
-  const { app, elements, fetchCalls, getEventsStarted, cleanup } = harness;
+  const { app, elements, fetchCalls, postStreamCanceled, cleanup } = harness;
   elements.promptInput.value = 'hello';
 
   let sendErr = null;
-  const sendPromise = app.sendMessage().catch((err) => {
+  await app.sendMessage().catch((err) => {
     sendErr = err;
   });
-
-  const handedOff = await waitFor(() => getEventsStarted(), 75);
-  if (!handedOff) {
-    fail(name, 'client never opened the resumable /events stream', JSON.stringify(fetchCalls));
-    await cleanup();
-    await sendPromise;
-    return;
-  }
-
-  await sendPromise;
   await cleanup();
 
   if (sendErr) {
@@ -557,26 +569,49 @@ async function testSendMessageHandsOffToEventsStream() {
     return;
   }
 
+  const eventCalls = fetchCalls.filter((call) => call.url.includes('/events?after='));
+  if (eventCalls.length !== 0) {
+    fail(name, 'client should not open /events when the POST stream already completed', JSON.stringify(fetchCalls));
+    return;
+  }
+
+  if (postStreamCanceled()) {
+    fail(name, 'POST body stream should not be canceled during a normal send');
+    return;
+  }
+
   const session = harness.state.sessions[0];
   const assistant = session && session.messages.find((message) => message.role === 'assistant');
   if (!assistant || assistant.content !== 'hello') {
-    fail(name, 'assistant content did not complete via /events handoff', assistant ? assistant.content : 'missing');
+    fail(name, 'assistant content did not complete from the POST stream', assistant ? assistant.content : 'missing');
     return;
   }
 
   pass(name);
 }
 
-async function testSendMessageIgnoresPostBodyAfterHandoff() {
-  const name = 'sendMessage ignores queued POST-body SSE once it hands off to /events';
+async function testSendMessageResumesFromEventsAfterPostStreamDrops() {
+  const name = 'sendMessage resumes from /events only after the POST stream ends before completion';
   const harness = createHarness({
     postBody: [
-      'id: 900\n',
+      'id: 1\n',
+      'event: response.created\n',
+      'data: {"response":{"id":"resp_test","model":"test-model","status":"in_progress"},"sequence_number":1}\n\n',
+      'id: 2\n',
       'event: response.output_text.delta\n',
-      'data: {"delta":"stale","sequence_number":900}\n\n',
+      'data: {"delta":"hello","sequence_number":2}\n\n',
+    ].join(''),
+    eventsBody: [
+      'id: 3\n',
+      'event: response.output_text.delta\n',
+      'data: {"delta":" world","sequence_number":3}\n\n',
+      'id: 4\n',
+      'event: response.completed\n',
+      'data: {"response":{"id":"resp_test","model":"test-model","status":"completed"},"sequence_number":4}\n\n',
+      'data: [DONE]\n\n',
     ].join(''),
   });
-  const { app, elements, cleanup, getEventsStarted, postStreamCanceled } = harness;
+  const { app, elements, cleanup, fetchCalls, getEventsStarted, postStreamCanceled } = harness;
   elements.promptInput.value = 'hello';
 
   let sendErr = null;
@@ -586,7 +621,7 @@ async function testSendMessageIgnoresPostBodyAfterHandoff() {
 
   const handedOff = await waitFor(() => getEventsStarted(), 75);
   if (!handedOff) {
-    fail(name, 'client never switched to the resumable /events stream');
+    fail(name, 'client never reopened the resumable /events stream after the POST stream ended', JSON.stringify(fetchCalls));
     await cleanup();
     await sendPromise;
     return;
@@ -600,15 +635,21 @@ async function testSendMessageIgnoresPostBodyAfterHandoff() {
     return;
   }
 
-  if (!postStreamCanceled()) {
-    fail(name, 'POST body stream was not canceled during handoff');
+  const resumeCall = fetchCalls.find((call) => call.url === '/ui/v1/responses/resp_test/events?after=2');
+  if (!resumeCall) {
+    fail(name, 'expected reconnect to resume after the last POST event instead of replaying from sequence 0', JSON.stringify(fetchCalls));
+    return;
+  }
+
+  if (postStreamCanceled()) {
+    fail(name, 'POST body stream should not be canceled when falling back after an early close');
     return;
   }
 
   const session = harness.state.sessions[0];
   const assistant = session && session.messages.find((message) => message.role === 'assistant');
-  if (!assistant || assistant.content !== 'hello') {
-    fail(name, 'assistant content was polluted by POST-body data', assistant ? assistant.content : 'missing');
+  if (!assistant || assistant.content !== 'hello world') {
+    fail(name, 'assistant content did not resume correctly after the POST stream ended early', assistant ? assistant.content : 'missing');
     return;
   }
 
@@ -621,6 +662,7 @@ async function testNewChatDuringStreamingClearsStreamingState() {
   const responseId = 'resp_long';
   const h = createHarness({
     responseId,
+    postBody: '',
     eventsKeepOpen: true,
     eventsBody: [
       'id: 1\n',
@@ -1497,8 +1539,8 @@ async function testArgumentDeltaWithoutOutputIndexUsesLastRunningTool() {
 }
 
 (async () => {
-  await testSendMessageHandsOffToEventsStream();
-  await testSendMessageIgnoresPostBodyAfterHandoff();
+  await testSendMessageConsumesPostStreamWhenAvailable();
+  await testSendMessageResumesFromEventsAfterPostStreamDrops();
   await testNewChatDuringStreamingClearsStreamingState();
   await testSendMessageMarksSessionBusyImmediately();
   await testDrainInterruptQueueAfterResumeCompletes();

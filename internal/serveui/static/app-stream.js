@@ -129,16 +129,6 @@ const parseSSEStream = async (stream, onEvent) => {
   }
 };
 
-const cancelResponseBody = async (response) => {
-  if (!response?.body || typeof response.body.cancel !== 'function') return;
-  try {
-    await response.body.cancel();
-  } catch {
-    // Ignore body cancellation failures; the resumable /events stream is the
-    // authoritative source once we know the response ID.
-  }
-};
-
 const sleep = (ms) => new Promise((resolve) => window.setTimeout(resolve, ms));
 
 const setActiveResponseTracking = (session, responseId, sequenceNumber = null) => {
@@ -844,7 +834,10 @@ const resumeActiveResponseInner = async (session, responseId, options) => {
       if (!response.ok) {
         throw await normalizeError(response);
       }
-      if (!response.body) {
+      // Prefer the original POST SSE stream for first-token latency and only
+    // fall back to the resumable /events endpoint if that transport cannot
+    // carry the run to completion.
+    if (!response.body) {
         throw { status: 0, message: 'No response body from server.' };
       }
 
@@ -3029,21 +3022,19 @@ const sendMessage = async (options = {}) => {
 
     if (headerResponseId) {
       setActiveResponseTracking(session, headerResponseId, 0);
+      attachResponseStream(session, headerResponseId, controller);
       saveSessions();
+    }
 
-      // The POST stream is only used to create the run and surface the
-      // response ID. After that, use the resumable events endpoint so a
-      // stalled transport does not strand the UI until reload.
-      await cancelResponseBody(response);
-      await resumeActiveResponse(session, { streamState, responseId: headerResponseId });
-    } else {
-      if (!response.body) {
+    if (!response.body) {
+      if (!session.activeResponseId) {
         throw { status: 0, message: 'No response body from server.' };
       }
-
+      await resumeActiveResponse(session, { streamState, responseId: headerResponseId || session.activeResponseId });
+    } else {
       const terminal = await consumeResponseStream(response.body, session, streamState);
       if (!terminal && session.activeResponseId) {
-        await resumeActiveResponse(session, { streamState });
+        await resumeActiveResponse(session, { streamState, responseId: headerResponseId || session.activeResponseId });
       }
     }
 
