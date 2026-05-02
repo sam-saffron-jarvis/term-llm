@@ -348,11 +348,14 @@ func runMemoryMine(cmd *cobra.Command, args []string) error {
 			if len(insightCandidates) > 0 {
 				fmt.Printf("Insight extraction: %d unprocessed session(s) selected\n", len(insightCandidates))
 			}
-			insightCount, err := runInsightExtractionPass(ctx, cfg, engine, sessStore, memStore, insightCandidates)
+			insightCount, insightStats, err := runInsightExtractionPass(ctx, cfg, engine, sessStore, memStore, insightCandidates)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "warning: insight extraction failed: %v\n", err)
 			} else {
 				fmt.Printf("insights: %d created/reinforced\n", insightCount)
+				if memoryMineShowStats {
+					insightStats.print()
+				}
 			}
 		}
 		// After extraction, apply decay and prune stale insights.
@@ -647,7 +650,7 @@ func runExtractionRequest(ctx context.Context, engine *llm.Engine, store *memory
 	return collector.result(finalText), nil
 }
 
-func runExtractionRequestWithSystem(ctx context.Context, engine *llm.Engine, systemPrompt, prompt string, stats *memoryExtractionStats, tools ...llm.ToolSpec) (string, error) {
+func runExtractionRequestWithSystem(ctx context.Context, engine *llm.Engine, systemPrompt, prompt string, stats extractionRequestStats, tools ...llm.ToolSpec) (string, error) {
 	req := llm.Request{
 		Model:           strings.TrimSpace(memoryMineModel),
 		Messages:        []llm.Message{llm.SystemText(systemPrompt), llm.UserText(prompt)},
@@ -686,12 +689,8 @@ func runExtractionRequestWithSystem(ctx context.Context, engine *llm.Engine, sys
 				stats.noteToolCall(strings.TrimSpace(ev.Tool.Name))
 			}
 		case llm.EventUsage:
-			if stats != nil && ev.Use != nil {
-				stats.ToolTurns++
-				stats.InputTokens += ev.Use.InputTokens
-				stats.CachedInputTokens += ev.Use.CachedInputTokens
-				stats.CacheWriteTokens += ev.Use.CacheWriteTokens
-				stats.OutputTokens += ev.Use.OutputTokens
+			if stats != nil {
+				stats.noteUsage(ev.Use)
 			}
 		case llm.EventError:
 			if ev.Err != nil {
@@ -1209,7 +1208,11 @@ func trimTextToTokenBudget(text string, budget int) string {
 }
 
 func buildInsightExtractionPrompt(agent string, messages []session.Message, existing []*memorydb.Insight) string {
-	transcriptJSON, _ := json.MarshalIndent(buildInsightTranscript(messages), "", "  ")
+	return buildInsightExtractionPromptFromTranscript(agent, buildInsightTranscript(messages), existing)
+}
+
+func buildInsightExtractionPromptFromTranscript(agent string, transcript []transcriptMessage, existing []*memorydb.Insight) string {
+	transcriptJSON, _ := json.MarshalIndent(transcript, "", "  ")
 
 	// Pass a summary of existing insights so the LLM can deduplicate.
 	type existingSummary struct {
@@ -1231,7 +1234,7 @@ func buildInsightExtractionPrompt(agent string, messages []session.Message, exis
 Existing insights (do not duplicate these patterns):
 %s
 
-Transcript (user messages in full; assistant text abbreviated; tool output omitted):
+Transcript (user messages in full; assistant text abbreviated; tool output summarized):
 %s
 
 Return strict JSON only:
@@ -1258,8 +1261,9 @@ func runInsightExtractionPass(
 	sessStore session.Store,
 	memStore *memorydb.Store,
 	candidates []memoryMineCandidate,
-) (int, error) {
+) (int, insightExtractionSummaryStats, error) {
 	total := 0
+	var summary insightExtractionSummaryStats
 	for _, candidate := range candidates {
 		// Skip sessions already processed for insights — avoids redundant LLM
 		// calls and duplicate extraction. MarkInsightMined is called on success.
@@ -1288,10 +1292,18 @@ func runInsightExtractionPass(
 			existing = nil
 		}
 
-		prompt := buildInsightExtractionPrompt(candidate.Agent, messages, existing)
-		raw, err := runExtractionRequestWithSystem(ctx, engine, insightExtractionSystemPrompt, prompt, nil)
+		transcript := buildInsightTranscript(messages)
+		prompt := buildInsightExtractionPromptFromTranscript(candidate.Agent, transcript, existing)
+		stats := newInsightExtractionStats(candidate, messages, transcript, len(existing), prompt)
+		start := time.Now()
+		raw, err := runExtractionRequestWithSystem(ctx, engine, insightExtractionSystemPrompt, prompt, &stats)
+		stats.Duration = time.Since(start)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "  [insight] skip %s: llm call: %v\n", candidate.Session.ID, err)
+			if memoryMineShowStats {
+				fmt.Printf("  [insight] #%d %s\n", candidate.Summary.Number, stats.oneLine())
+				summary.add(stats)
+			}
 			continue
 		}
 		raw = stripMarkdownFences(raw)
@@ -1300,9 +1312,14 @@ func runInsightExtractionPass(
 		decoder := json.NewDecoder(strings.NewReader(raw))
 		if err := decoder.Decode(&resp); err != nil {
 			fmt.Fprintf(os.Stderr, "  [insight] skip %s: decode: %v\n", candidate.Session.ID, err)
+			if memoryMineShowStats {
+				fmt.Printf("  [insight] #%d %s\n", candidate.Summary.Number, stats.oneLine())
+				summary.add(stats)
+			}
 			continue
 		}
 
+		sessionInsights := 0
 		for _, item := range resp.Insights {
 			rule := strings.TrimSpace(item.Rule)
 			if rule == "" {
@@ -1319,6 +1336,7 @@ func runInsightExtractionPass(
 					_ = memStore.ReinforceInsight(ctx, similar[0].ID)
 					fmt.Printf("  [insight] reinforced id=%d (conf=%.2f)\n", similar[0].ID, similar[0].Confidence+0.1)
 					total++
+					sessionInsights++
 					continue
 				}
 			}
@@ -1340,6 +1358,13 @@ func runInsightExtractionPass(
 			}
 			fmt.Printf("  [insight] created id=%d cat=%s conf=%.2f\n", ins.ID, ins.Category, ins.Confidence)
 			total++
+			sessionInsights++
+		}
+
+		stats.CreatedOrReinforced = sessionInsights
+		if memoryMineShowStats {
+			fmt.Printf("  [insight] #%d %s\n", candidate.Summary.Number, stats.oneLine())
+			summary.add(stats)
 		}
 
 		// Mark this session as insight-mined so future runs skip it.
@@ -1347,7 +1372,7 @@ func runInsightExtractionPass(
 			fmt.Fprintf(os.Stderr, "  [insight] warning: mark mined failed for %s: %v\n", candidate.Session.ID, err)
 		}
 	}
-	return total, nil
+	return total, summary, nil
 }
 
 // isSimilarInsight uses Jaccard similarity on keywords (words >3 chars) to

@@ -72,6 +72,26 @@ func TestBuildInsightTranscriptWeightsUserTextOverAssistantAndSummarizesTools(t 
 	if nonUserTokens > userTokens {
 		t.Fatalf("non-user tokens = %d, user tokens = %d; context must not dominate\n%+v", nonUserTokens, userTokens, got)
 	}
+
+	stats := summarizeInsightTranscriptStats(messages, got)
+	if stats.UserTokens != userTokens {
+		t.Fatalf("stats.UserTokens = %d, want %d", stats.UserTokens, userTokens)
+	}
+	if stats.NonUserTokens != nonUserTokens {
+		t.Fatalf("stats.NonUserTokens = %d, want %d", stats.NonUserTokens, nonUserTokens)
+	}
+	if stats.ToolTokens == 0 {
+		t.Fatalf("expected stats to count retained tool summaries: %+v", stats)
+	}
+	if stats.RawAssistantTokens <= stats.AssistantTokens {
+		t.Fatalf("expected raw assistant tokens to show pruning: %+v", stats)
+	}
+	if stats.RawToolTokens < stats.ToolTokens || stats.RawToolTokens == 0 {
+		t.Fatalf("expected raw tool summary tokens to cover retained tool summaries: %+v", stats)
+	}
+	if stats.NonUserTokens > stats.UserTokens {
+		t.Fatalf("stats reported budget violation: %+v", stats)
+	}
 }
 
 func TestValidateFragmentPath(t *testing.T) {
