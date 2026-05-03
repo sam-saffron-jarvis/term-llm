@@ -131,6 +131,7 @@ type Config struct {
 	Edit            EditConfig                `mapstructure:"edit"`
 	Image           ImageConfig               `mapstructure:"image"`
 	Audio           AudioConfig               `mapstructure:"audio"`
+	Music           MusicConfig               `mapstructure:"music"`
 	Transcription   TranscriptionConfig       `mapstructure:"transcription"`
 	Embed           EmbedConfig               `mapstructure:"embed"`
 	Search          SearchConfig              `mapstructure:"search"`
@@ -394,6 +395,28 @@ type AudioElevenLabsConfig struct {
 	Format string `mapstructure:"format"`
 }
 
+// MusicConfig configures music and sound-effect generation settings.
+type MusicConfig struct {
+	Provider   string                `mapstructure:"provider"`   // default music provider: venice or elevenlabs
+	OutputDir  string                `mapstructure:"output_dir"` // default save directory
+	Venice     MusicVeniceConfig     `mapstructure:"venice"`
+	ElevenLabs MusicElevenLabsConfig `mapstructure:"elevenlabs"`
+}
+
+// MusicVeniceConfig configures Venice music/audio generation.
+type MusicVeniceConfig struct {
+	APIKey string `mapstructure:"api_key"`
+	Model  string `mapstructure:"model"`
+	Format string `mapstructure:"format"`
+}
+
+// MusicElevenLabsConfig configures ElevenLabs music generation.
+type MusicElevenLabsConfig struct {
+	APIKey string `mapstructure:"api_key"`
+	Model  string `mapstructure:"model"`
+	Format string `mapstructure:"format"`
+}
+
 // TranscriptionConfig configures audio transcription settings.
 type TranscriptionConfig struct {
 	Provider string `mapstructure:"provider"` // named provider from providers map; default "openai"
@@ -527,6 +550,7 @@ func Load() (*Config, error) {
 
 	resolveImageCredentials(&cfg.Image)
 	resolveAudioCredentials(&cfg.Audio)
+	resolveMusicCredentials(&cfg.Music)
 	resolveEmbedCredentials(&cfg.Embed)
 	resolveSearchCredentials(&cfg.Search)
 
@@ -1063,6 +1087,21 @@ func resolveAudioCredentials(cfg *AudioConfig) {
 	cfg.Gemini.APIKey = expandEnv(cfg.Gemini.APIKey)
 	if cfg.Gemini.APIKey == "" {
 		cfg.Gemini.APIKey = os.Getenv("GEMINI_API_KEY")
+	}
+	cfg.ElevenLabs.APIKey = expandEnv(cfg.ElevenLabs.APIKey)
+	if cfg.ElevenLabs.APIKey == "" {
+		cfg.ElevenLabs.APIKey = os.Getenv("ELEVENLABS_API_KEY")
+	}
+	if cfg.ElevenLabs.APIKey == "" {
+		cfg.ElevenLabs.APIKey = os.Getenv("XI_API_KEY")
+	}
+}
+
+// resolveMusicCredentials resolves API credentials for music providers.
+func resolveMusicCredentials(cfg *MusicConfig) {
+	cfg.Venice.APIKey = expandEnv(cfg.Venice.APIKey)
+	if cfg.Venice.APIKey == "" {
+		cfg.Venice.APIKey = os.Getenv("VENICE_API_KEY")
 	}
 	cfg.ElevenLabs.APIKey = expandEnv(cfg.ElevenLabs.APIKey)
 	if cfg.ElevenLabs.APIKey == "" {
