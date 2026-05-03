@@ -53,15 +53,22 @@ func ParseSkillMDContent(content string, loadBody bool) (*Skill, error) {
 }
 
 func parseSkillFrontmatter(frontmatter, body string, loadBody bool) (*Skill, error) {
-	// Parse frontmatter into known fields
+	// Parse frontmatter once into a YAML node. Decoding the already-parsed node
+	// into typed fields avoids reparsing the same bytes just to collect extras.
+	var root yaml.Node
+	if err := yaml.Unmarshal([]byte(frontmatter), &root); err != nil {
+		return nil, fmt.Errorf("parse frontmatter: %w", err)
+	}
+	frontmatterNode := yamlDocumentRoot(&root)
+
+	// Decode frontmatter into known fields
 	var fm frontmatterData
-	if err := yaml.Unmarshal([]byte(frontmatter), &fm); err != nil {
+	if err := frontmatterNode.Decode(&fm); err != nil {
 		return nil, fmt.Errorf("parse frontmatter: %w", err)
 	}
 
-	// Parse again into a generic map to capture unknown fields
-	var rawMap map[string]any
-	if err := yaml.Unmarshal([]byte(frontmatter), &rawMap); err != nil {
+	extras, err := extractExtrasFromNode(frontmatterNode)
+	if err != nil {
 		return nil, fmt.Errorf("parse frontmatter extras: %w", err)
 	}
 
@@ -72,7 +79,7 @@ func parseSkillFrontmatter(frontmatter, body string, loadBody bool) (*Skill, err
 		License:       fm.License,
 		Compatibility: fm.Compatibility,
 		Metadata:      fm.Metadata,
-		Extras:        extractExtras(rawMap),
+		Extras:        extras,
 		loaded:        loadBody,
 		Tools:         fm.Tools,
 	}
@@ -86,6 +93,13 @@ func parseSkillFrontmatter(frontmatter, body string, loadBody bool) (*Skill, err
 	}
 
 	return skill, nil
+}
+
+func yamlDocumentRoot(node *yaml.Node) *yaml.Node {
+	if node != nil && node.Kind == yaml.DocumentNode && len(node.Content) > 0 {
+		return node.Content[0]
+	}
+	return node
 }
 
 // splitFrontmatter extracts YAML frontmatter and Markdown body.
@@ -223,29 +237,44 @@ func parseAllowedTools(v any) []string {
 	}
 }
 
-// extractExtras returns frontmatter keys that are not standard fields.
-func extractExtras(raw map[string]any) map[string]any {
-	standardKeys := map[string]bool{
-		"name":          true,
-		"description":   true,
-		"license":       true,
-		"compatibility": true,
-		"allowed-tools": true,
-		"metadata":      true,
-		"tools":         true,
+var standardFrontmatterKeys = map[string]bool{
+	"name":          true,
+	"description":   true,
+	"license":       true,
+	"compatibility": true,
+	"allowed-tools": true,
+	"metadata":      true,
+	"tools":         true,
+}
+
+// extractExtrasFromNode returns frontmatter keys that are not standard fields.
+func extractExtrasFromNode(node *yaml.Node) (map[string]any, error) {
+	node = yamlDocumentRoot(node)
+	if node == nil || node.Kind != yaml.MappingNode {
+		return nil, nil
 	}
 
-	extras := make(map[string]any)
-	for k, v := range raw {
-		if !standardKeys[k] {
-			extras[k] = v
+	var extras map[string]any
+	for i := 0; i+1 < len(node.Content); i += 2 {
+		keyNode := node.Content[i]
+		if keyNode.Kind != yaml.ScalarNode {
+			continue
 		}
-	}
+		key := keyNode.Value
+		if standardFrontmatterKeys[key] {
+			continue
+		}
 
-	if len(extras) == 0 {
-		return nil
+		var value any
+		if err := node.Content[i+1].Decode(&value); err != nil {
+			return nil, err
+		}
+		if extras == nil {
+			extras = make(map[string]any)
+		}
+		extras[key] = value
 	}
-	return extras
+	return extras, nil
 }
 
 // LoadFromDir loads a skill from a directory containing SKILL.md.
