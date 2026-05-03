@@ -313,6 +313,70 @@ func TestResponsesClientWebSocketConnectFailureFallsBackToHTTP(t *testing.T) {
 	}
 }
 
+func TestResponsesClientTransientWebSocketSetupFailureDoesNotDisableFutureAttempts(t *testing.T) {
+	var wsAttempts atomic.Int32
+	var httpCalls atomic.Int32
+	upgrader := websocket.Upgrader{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.EqualFold(r.Header.Get("Upgrade"), "websocket") {
+			if wsAttempts.Add(1) == 1 {
+				http.Error(w, "temporary websocket failure", http.StatusBadGateway)
+				return
+			}
+			conn, err := upgrader.Upgrade(w, r, nil)
+			if err != nil {
+				t.Errorf("upgrade: %v", err)
+				return
+			}
+			defer conn.Close()
+			if _, _, err := conn.ReadMessage(); err != nil {
+				t.Errorf("read request: %v", err)
+				return
+			}
+			_ = conn.WriteJSON(map[string]any{"type": "response.completed", "response": map[string]any{"id": "resp_ws"}})
+			return
+		}
+
+		httpCalls.Add(1)
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("event: response.completed\n"))
+		_, _ = w.Write([]byte("data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_http\"}}\n\n"))
+	}))
+	defer server.Close()
+
+	client := &ResponsesClient{BaseURL: server.URL, UseWebSocket: true}
+	for i, content := range []string{"first", "second"} {
+		stream, err := client.Stream(context.Background(), ResponsesRequest{
+			Model:  "gpt-test",
+			Input:  []ResponsesInputItem{{Type: "message", Role: "user", Content: content}},
+			Stream: true,
+		}, false)
+		if err != nil {
+			t.Fatalf("Stream %d: %v", i, err)
+		}
+		for {
+			event, err := stream.Recv()
+			if err != nil {
+				t.Fatalf("Recv %d: %v", i, err)
+			}
+			if event.Type == EventDone {
+				break
+			}
+			if event.Type == EventError {
+				t.Fatalf("stream error %d: %v", i, event.Err)
+			}
+		}
+		_ = stream.Close()
+	}
+
+	if wsAttempts.Load() != 2 {
+		t.Fatalf("websocket attempts = %d, want 2", wsAttempts.Load())
+	}
+	if httpCalls.Load() != 1 {
+		t.Fatalf("HTTP fallback calls = %d, want 1", httpCalls.Load())
+	}
+}
+
 func TestResponsesClientHTTPFallbackWithWebSocketOnlyServerStateSendsFullInput(t *testing.T) {
 	var httpReq map[string]any
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

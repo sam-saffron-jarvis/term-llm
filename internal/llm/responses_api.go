@@ -40,7 +40,6 @@ type ResponsesClient struct {
 	WebSocketConnectTimeout time.Duration
 	WebSocketWriteTimeout   time.Duration
 	WebSocketIdleTimeout    time.Duration
-	websocketDisabled       bool
 	wsMu                    sync.Mutex
 	wsConn                  *websocket.Conn
 	wsLastRequest           *ResponsesRequest
@@ -551,12 +550,13 @@ func (c *ResponsesClient) Stream(ctx context.Context, req ResponsesRequest, debu
 		httpPayload.Input = filterToNewInput(httpPayload.Input)
 	}
 
-	if c.UseWebSocket && !c.websocketDisabled {
+	if c.UseWebSocket {
 		stream, err := c.streamWebSocketPrepared(ctx, wsReq, fullInput, debugRaw, responseStateGeneration)
 		if err == nil {
 			return stream, nil
 		}
-		c.websocketDisabled = true
+		// Fall back to HTTP/SSE for this turn, but keep WebSocket enabled so the
+		// next turn can retry the faster transport after transient setup failures.
 		c.closeWebSocket()
 		if debugRaw {
 			DebugRawSection(debugRaw, "Responses WebSocket Fallback", err.Error())
@@ -812,7 +812,6 @@ func (c *ResponsesClient) ResetConversation() {
 	defer c.responseStateMu.Unlock()
 	c.responseStateGeneration++
 	c.LastResponseID = ""
-	c.websocketDisabled = false
 	c.wsLastRequest = nil
 	c.wsLastResponseItems = nil
 }
