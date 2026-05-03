@@ -276,11 +276,11 @@ func createProviderFromConfig(name string, cfg *config.ProviderConfig) (Provider
 		return NewAnthropicProvider(cfg.ResolvedAPIKey, cfg.Model, cfg.Credentials)
 
 	case config.ProviderTypeOpenAI:
-		return NewOpenAIProvider(cfg.ResolvedAPIKey, cfg.Model), nil
+		return NewOpenAIProviderWithOptions(cfg.ResolvedAPIKey, cfg.Model, OpenAIProviderOptions{UseWebSocket: cfg.UseWebSocket}), nil
 
 	case config.ProviderTypeChatGPT:
 		// ChatGPT uses native OAuth with interactive authentication
-		return NewChatGPTProvider(cfg.Model)
+		return NewChatGPTProviderWithOptions(cfg.Model, ChatGPTProviderOptions{UseWebSocket: cfg.UseWebSocket})
 
 	case config.ProviderTypeCopilot:
 		// Copilot uses GitHub device code OAuth with interactive authentication

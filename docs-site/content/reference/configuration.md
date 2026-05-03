@@ -46,6 +46,9 @@ providers:
   openai:
     model: gpt-5.2
     credentials: codex
+    # WebSocket transport is enabled by default for built-in OpenAI.
+    # Set false to force HTTP/SSE.
+    use_websocket: true
 
   xai:
     model: grok-4-1-fast
@@ -218,6 +221,22 @@ providers:
 - `${VAR}` / `$VAR` → environment variable expansion
 
 This is passed only to the provider subprocess. It does not mutate your parent shell environment.
+
+## Provider WebSocket transport
+
+Built-in `openai` and `chatgpt` text providers use the Responses WebSocket transport by default for lower-latency agent/tool loops. The WebSocket path keeps a persistent connection and, when safe, continues turns with `previous_response_id` plus only the new user/tool input. If the WebSocket connect/write step fails, term-llm falls back to HTTP/SSE; if a WebSocket continuation is rejected because the prior response state is unavailable, it retries that turn once with full state.
+
+Disable it per provider if you need to force HTTP/SSE:
+
+```yaml
+providers:
+  openai:
+    use_websocket: false
+  chatgpt:
+    use_websocket: false
+```
+
+OpenAI-compatible providers (`type: openai_compatible`, including local/self-hosted endpoints and OpenRouter-style compatible APIs) do **not** enable WebSockets by default. They continue to use HTTP/SSE unless explicitly supported and wired by that provider.
 
 ## Dynamic secrets and endpoints
 

@@ -16,7 +16,12 @@ type OpenAIProvider struct {
 	apiKey          string
 	model           string
 	effort          string           // reasoning effort: "low", "medium", "high", "xhigh", or ""
+	useWebSocket    bool             // Responses-over-WebSocket transport (default for built-in OpenAI configs)
 	responsesClient *ResponsesClient // Shared client for Responses API with server state
+}
+
+type OpenAIProviderOptions struct {
+	UseWebSocket bool
 }
 
 // ParseModelEffort extracts effort suffix from model name.
@@ -36,13 +41,18 @@ func ParseModelEffort(model string) (string, string) {
 }
 
 func NewOpenAIProvider(apiKey, model string) *OpenAIProvider {
+	return NewOpenAIProviderWithOptions(apiKey, model, OpenAIProviderOptions{})
+}
+
+func NewOpenAIProviderWithOptions(apiKey, model string, opts OpenAIProviderOptions) *OpenAIProvider {
 	actualModel, effort := ParseModelEffort(model)
 	client := openai.NewClient(option.WithAPIKey(apiKey))
 	return &OpenAIProvider{
-		client: &client,
-		apiKey: apiKey,
-		model:  actualModel,
-		effort: effort,
+		client:       &client,
+		apiKey:       apiKey,
+		model:        actualModel,
+		effort:       effort,
+		useWebSocket: opts.UseWebSocket,
 	}
 }
 
@@ -92,6 +102,7 @@ func (p *OpenAIProvider) Stream(ctx context.Context, req Request) (Stream, error
 			BaseURL:       "https://api.openai.com/v1/responses",
 			GetAuthHeader: func() string { return "Bearer " + p.apiKey },
 			HTTPClient:    defaultHTTPClient,
+			UseWebSocket:  p.useWebSocket,
 		}
 	}
 

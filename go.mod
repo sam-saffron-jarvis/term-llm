@@ -18,6 +18,7 @@ require (
 	github.com/creack/pty v1.1.24
 	github.com/go-telegram-bot-api/telegram-bot-api/v5 v5.5.1
 	github.com/gobwas/glob v0.2.3
+	github.com/gorilla/websocket v1.5.3
 	github.com/mattn/go-runewidth v0.0.23
 	github.com/modelcontextprotocol/go-sdk v1.5.0
 	github.com/muesli/cancelreader v0.2.2
@@ -33,6 +34,7 @@ require (
 	github.com/sahilm/fuzzy v0.1.1
 	github.com/shogoki/gotextdiff v1.22.0
 	github.com/spf13/cobra v1.10.2
+	github.com/spf13/pflag v1.0.10
 	github.com/spf13/viper v1.21.0
 	github.com/yuin/goldmark v1.8.2
 	golang.org/x/image v0.39.0
@@ -88,7 +90,6 @@ require (
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/googleapis/enterprise-certificate-proxy v0.3.11 // indirect
 	github.com/googleapis/gax-go/v2 v2.16.0 // indirect
-	github.com/gorilla/websocket v1.5.3 // indirect
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
 	github.com/lucasb-eyer/go-colorful v1.4.0 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect
@@ -106,7 +107,6 @@ require (
 	github.com/segmentio/encoding v0.5.4 // indirect
 	github.com/spf13/afero v1.15.0 // indirect
 	github.com/spf13/cast v1.10.0 // indirect
-	github.com/spf13/pflag v1.0.10 // indirect
 	github.com/subosito/gotenv v1.6.0 // indirect
 	github.com/tidwall/gjson v1.18.0 // indirect
 	github.com/tidwall/match v1.2.0 // indirect

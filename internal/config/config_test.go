@@ -46,6 +46,77 @@ func TestApplyOverrides(t *testing.T) {
 	}
 }
 
+func TestLoad_ProviderUseWebSocket(t *testing.T) {
+	viper.Reset()
+	defer viper.Reset()
+
+	configHome := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", configHome)
+	configDir := filepath.Join(configHome, "term-llm")
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
+		t.Fatalf("mkdir config dir: %v", err)
+	}
+
+	configYAML := `default_provider: openai
+providers:
+  openai:
+    model: gpt-5.2
+    use_websocket: true
+  chatgpt:
+    model: gpt-5.5-medium
+`
+	if err := os.WriteFile(filepath.Join(configDir, "config.yaml"), []byte(configYAML), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !cfg.Providers["openai"].UseWebSocket {
+		t.Fatal("openai use_websocket = false, want true")
+	}
+	if !cfg.Providers["chatgpt"].UseWebSocket {
+		t.Fatal("chatgpt use_websocket = false, want default true")
+	}
+}
+
+func TestLoad_ProviderUseWebSocketExplicitFalseOverridesDefault(t *testing.T) {
+	viper.Reset()
+	defer viper.Reset()
+
+	configHome := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", configHome)
+	configDir := filepath.Join(configHome, "term-llm")
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
+		t.Fatalf("mkdir config dir: %v", err)
+	}
+
+	configYAML := `default_provider: openai
+providers:
+  openai:
+    model: gpt-5.2
+    use_websocket: false
+  chatgpt:
+    model: gpt-5.5-medium
+    use_websocket: false
+`
+	if err := os.WriteFile(filepath.Join(configDir, "config.yaml"), []byte(configYAML), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Providers["openai"].UseWebSocket {
+		t.Fatal("openai use_websocket = true, want explicit false")
+	}
+	if cfg.Providers["chatgpt"].UseWebSocket {
+		t.Fatal("chatgpt use_websocket = true, want explicit false")
+	}
+}
+
 func TestLoad_PreservesProviderEnvKeyCase(t *testing.T) {
 	viper.Reset()
 	defer viper.Reset()
@@ -305,6 +376,22 @@ func TestGetDefaultsEnablesAutoCompact(t *testing.T) {
 	}
 	if !got {
 		t.Fatal("auto_compact should default to true")
+	}
+}
+
+func TestGetDefaultsEnableWebSocketForOpenAIAndChatGPTOnly(t *testing.T) {
+	defaults := GetDefaults()
+	for _, key := range []string{"providers.openai.use_websocket", "providers.chatgpt.use_websocket"} {
+		got, ok := defaults[key].(bool)
+		if !ok || !got {
+			t.Fatalf("%s default = %#v, want true", key, defaults[key])
+		}
+	}
+	if _, ok := defaults["providers.openai_compatible.use_websocket"]; ok {
+		t.Fatal("openai_compatible websocket default should not be set")
+	}
+	if _, ok := defaults["providers.openrouter.use_websocket"]; ok {
+		t.Fatal("openrouter websocket default should not be set")
 	}
 }
 

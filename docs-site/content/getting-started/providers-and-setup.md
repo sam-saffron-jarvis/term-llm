@@ -76,6 +76,8 @@ default_provider: chatgpt
 providers:
   chatgpt:
     model: gpt-5.2-codex
+    # Enabled by default for ChatGPT text requests; set false to force HTTP/SSE.
+    use_websocket: true
 ```
 
 ### Option 4: Use xAI (Grok)
@@ -295,6 +297,8 @@ providers:
 ```
 
 The `models` list enables tab completion for `--provider my-server:<TAB>`. The configured `model` is always included in completions.
+
+Built-in `openai` and `chatgpt` text providers use Responses WebSockets by default for faster tool-heavy conversations. `openai_compatible` providers do not: local/self-hosted compatible APIs stay on HTTP/SSE by default.
 
 If your server rejects `stream_options` (causing errors on connect), disable it:
 

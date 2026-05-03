@@ -4,13 +4,15 @@ import (
 	"bufio"
 	"bytes"
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"strings"
 	"sync"
+	"time"
+
+	"github.com/gorilla/websocket"
 )
 
 const maxResponsesAPIErrorBodyBytes = 64 * 1024
@@ -26,6 +28,23 @@ type ResponsesClient struct {
 	HTTPClient         *http.Client      // HTTP client to use
 	LastResponseID     string            // Track for conversation continuity (server state)
 	DisableServerState bool              // Set to true to disable previous_response_id (e.g., for Copilot)
+
+	// Optional Responses-over-WebSocket transport. Disabled by default.
+	UseWebSocket bool
+	// WebSocketServerState enables previous_response_id only for the WebSocket
+	// transport while keeping HTTP/SSE full-history. This is used for ChatGPT,
+	// whose WebSocket backend supports connection-local continuation but whose
+	// HTTP endpoint may reject previous_response_id.
+	WebSocketServerState    bool
+	WebSocketURL            string
+	WebSocketConnectTimeout time.Duration
+	WebSocketWriteTimeout   time.Duration
+	WebSocketIdleTimeout    time.Duration
+	websocketDisabled       bool
+	wsMu                    sync.Mutex
+	wsConn                  *websocket.Conn
+	wsLastRequest           *ResponsesRequest
+	wsLastResponseItems     []ResponsesInputItem
 	// HandleError, if set, is called for non-200 responses before default handling.
 	// Return a non-nil error to short-circuit; return nil to fall through to defaults.
 	HandleError func(statusCode int, body []byte, headers http.Header) error
@@ -55,6 +74,7 @@ type ResponsesRequest struct {
 	Include            []string             `json:"include,omitempty"`
 	PromptCacheKey     string               `json:"prompt_cache_key,omitempty"`
 	Store              *bool                `json:"store,omitempty"`
+	Generate           *bool                `json:"generate,omitempty"` // WebSocket warmup support; omitted for normal HTTP/WS requests
 	Stream             bool                 `json:"stream"`
 	PreviousResponseID string               `json:"previous_response_id,omitempty"`
 	SessionID          string               `json:"-"`
@@ -163,7 +183,24 @@ type responsesUsage struct {
 
 type responsesError struct {
 	Type    string `json:"type"`
+	Code    string `json:"code,omitempty"`
+	Param   string `json:"param,omitempty"`
 	Message string `json:"message"`
+}
+
+type responsesAPIEventError struct {
+	Status   int
+	APIError *responsesError
+}
+
+func (e *responsesAPIEventError) Error() string {
+	if e == nil || e.APIError == nil {
+		return "Responses API error: unknown error"
+	}
+	if e.APIError.Code != "" {
+		return fmt.Sprintf("Responses API error (%s): %s", e.APIError.Code, e.APIError.Message)
+	}
+	return fmt.Sprintf("Responses API error: %s", e.APIError.Message)
 }
 
 // SSE event types from the streaming response
@@ -485,13 +522,19 @@ func cloneResponsesClientFreshConversation(c *ResponsesClient) *ResponsesClient 
 	}
 
 	return &ResponsesClient{
-		BaseURL:            c.BaseURL,
-		GetAuthHeader:      c.GetAuthHeader,
-		ExtraHeaders:       extraHeaders,
-		HTTPClient:         c.HTTPClient,
-		DisableServerState: c.DisableServerState,
-		HandleError:        c.HandleError,
-		OnAuthRetry:        c.OnAuthRetry,
+		BaseURL:                 c.BaseURL,
+		GetAuthHeader:           c.GetAuthHeader,
+		ExtraHeaders:            extraHeaders,
+		HTTPClient:              c.HTTPClient,
+		DisableServerState:      c.DisableServerState,
+		UseWebSocket:            c.UseWebSocket,
+		WebSocketServerState:    c.WebSocketServerState,
+		WebSocketURL:            c.WebSocketURL,
+		WebSocketConnectTimeout: c.WebSocketConnectTimeout,
+		WebSocketWriteTimeout:   c.WebSocketWriteTimeout,
+		WebSocketIdleTimeout:    c.WebSocketIdleTimeout,
+		HandleError:             c.HandleError,
+		OnAuthRetry:             c.OnAuthRetry,
 	}
 }
 
@@ -500,14 +543,27 @@ func (c *ResponsesClient) Stream(ctx context.Context, req ResponsesRequest, debu
 	fullInput := req.Input
 	lastResponseID, responseStateGeneration := c.responseState()
 
-	// Use server state: send previous_response_id if we have one (unless disabled)
+	wsReq := req
+
+	httpPayload := req
 	if !c.DisableServerState && lastResponseID != "" {
-		req.PreviousResponseID = lastResponseID
-		// When continuing a conversation, only send the new input items for this turn.
-		req.Input = filterToNewInput(req.Input)
+		httpPayload.PreviousResponseID = lastResponseID
+		httpPayload.Input = filterToNewInput(httpPayload.Input)
 	}
 
-	body, err := json.Marshal(req)
+	if c.UseWebSocket && !c.websocketDisabled {
+		stream, err := c.streamWebSocketPrepared(ctx, wsReq, fullInput, debugRaw, responseStateGeneration)
+		if err == nil {
+			return stream, nil
+		}
+		c.websocketDisabled = true
+		c.closeWebSocket()
+		if debugRaw {
+			DebugRawSection(debugRaw, "Responses WebSocket Fallback", err.Error())
+		}
+	}
+
+	body, err := json.Marshal(httpPayload)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
@@ -529,8 +585,8 @@ func (c *ResponsesClient) Stream(ctx context.Context, req ResponsesRequest, debu
 	if c.GetAuthHeader != nil {
 		httpReq.Header.Set("Authorization", c.GetAuthHeader())
 	}
-	if req.SessionID != "" {
-		httpReq.Header.Set("session_id", req.SessionID)
+	if httpPayload.SessionID != "" {
+		httpReq.Header.Set("session_id", httpPayload.SessionID)
 	}
 	for key, value := range c.ExtraHeaders {
 		httpReq.Header.Set(key, value)
@@ -580,10 +636,11 @@ func (c *ResponsesClient) Stream(ctx context.Context, req ResponsesRequest, debu
 		if resp.StatusCode == http.StatusNotFound && lastResponseID != "" {
 			// Clear state and retry with full history
 			c.clearLastResponseIDIfGeneration(responseStateGeneration)
-			req.PreviousResponseID = ""
-			req.Input = fullInput
+			retryPayload := httpPayload
+			retryPayload.PreviousResponseID = ""
+			retryPayload.Input = fullInput
 			// Re-marshal without previous_response_id
-			body, err = json.Marshal(req)
+			body, err = json.Marshal(retryPayload)
 			if err != nil {
 				return nil, fmt.Errorf("failed to marshal retry request: %w", err)
 			}
@@ -596,8 +653,8 @@ func (c *ResponsesClient) Stream(ctx context.Context, req ResponsesRequest, debu
 			if c.GetAuthHeader != nil {
 				httpReq.Header.Set("Authorization", c.GetAuthHeader())
 			}
-			if req.SessionID != "" {
-				httpReq.Header.Set("session_id", req.SessionID)
+			if retryPayload.SessionID != "" {
+				httpReq.Header.Set("session_id", retryPayload.SessionID)
 			}
 			for key, value := range c.ExtraHeaders {
 				httpReq.Header.Set(key, value)
@@ -625,8 +682,8 @@ func (c *ResponsesClient) Stream(ctx context.Context, req ResponsesRequest, debu
 				if c.GetAuthHeader != nil {
 					httpReq.Header.Set("Authorization", c.GetAuthHeader())
 				}
-				if req.SessionID != "" {
-					httpReq.Header.Set("session_id", req.SessionID)
+				if httpPayload.SessionID != "" {
+					httpReq.Header.Set("session_id", httpPayload.SessionID)
 				}
 				for key, value := range c.ExtraHeaders {
 					httpReq.Header.Set(key, value)
@@ -656,13 +713,9 @@ func (c *ResponsesClient) Stream(ctx context.Context, req ResponsesRequest, debu
 
 		reader := bufio.NewReader(resp.Body)
 
-		// Tool call state for accumulating streaming function calls
-		toolState := newResponsesToolState()
-		reasoningState := newResponsesReasoningState()
-		var lastUsage *Usage
 		var lastEventType string
 		var eventData []string
-		sawTextDelta := false // Track if any text deltas were emitted
+		handler := newResponsesStreamEventHandler(client, responseStateGeneration, debugRaw, "Responses API SSE", !client.DisableServerState)
 
 		flushEvent := func() (bool, error) {
 			if len(eventData) == 0 {
@@ -672,191 +725,10 @@ func (c *ResponsesClient) Stream(ctx context.Context, req ResponsesRequest, debu
 
 			data := strings.Join(eventData, "\n")
 			eventType := lastEventType
-			if eventType == "" {
-				var sseEvent responsesSSEEvent
-				if err := json.Unmarshal([]byte(data), &sseEvent); err == nil && sseEvent.Type != "" {
-					eventType = sseEvent.Type
-				}
-			}
 			eventData = nil
 			lastEventType = ""
 
-			if data == "[DONE]" {
-				return true, nil
-			}
-
-			eventLabel := eventType
-			if eventLabel == "" {
-				eventLabel = "unknown"
-			}
-			if debugRaw {
-				DebugRawSection(debugRaw, "Responses API SSE Event (event="+eventLabel+")", data)
-			}
-
-			unmarshalEvent := func(dst any) error {
-				if err := json.Unmarshal([]byte(data), dst); err != nil {
-					return fmt.Errorf("decode Responses API %s event: %w", eventLabel, err)
-				}
-				return nil
-			}
-
-			// Handle different SSE event types based on event name
-			switch eventType {
-			case "response.output_text.delta":
-				var deltaEvent struct {
-					Delta string `json:"delta"`
-				}
-				if err := unmarshalEvent(&deltaEvent); err != nil {
-					return false, err
-				}
-				if deltaEvent.Delta != "" {
-					sawTextDelta = true
-					if err := send.Send(Event{Type: EventTextDelta, Text: deltaEvent.Delta}); err != nil {
-						return false, err
-					}
-				}
-
-			case "response.output_item.added":
-				var itemEvent struct {
-					Item        responsesOutputItem `json:"item"`
-					OutputIndex int                 `json:"output_index"`
-				}
-				if err := unmarshalEvent(&itemEvent); err != nil {
-					return false, err
-				}
-				if itemEvent.Item.Type == "function_call" {
-					// Use output_index as tracking key (stable across events), Item.CallID as the actual call ID
-					toolState.StartCall(itemEvent.OutputIndex, itemEvent.Item.CallID, itemEvent.Item.Name)
-				} else if itemEvent.Item.Type == "reasoning" {
-					reasoningState.Start(itemEvent.OutputIndex, itemEvent.Item.ID, itemEvent.Item.EncryptedContent, itemEvent.Item.Summary)
-				}
-
-			case "response.function_call_arguments.delta":
-				var argEvent struct {
-					OutputIndex int    `json:"output_index"`
-					Delta       string `json:"delta"`
-				}
-				if err := unmarshalEvent(&argEvent); err != nil {
-					return false, err
-				}
-				toolState.AppendArguments(argEvent.OutputIndex, argEvent.Delta)
-
-			case "response.output_item.done":
-				var doneEvent struct {
-					Item        responsesOutputItem `json:"item"`
-					OutputIndex int                 `json:"output_index"`
-				}
-				if err := unmarshalEvent(&doneEvent); err != nil {
-					return false, err
-				}
-				if doneEvent.Item.Type == "function_call" {
-					// Complete the tool call with final arguments using output_index
-					toolState.FinishCall(doneEvent.OutputIndex, doneEvent.Item.CallID, doneEvent.Item.Name, doneEvent.Item.Arguments)
-				} else if doneEvent.Item.Type == "reasoning" {
-					reasoningState.Finish(doneEvent.OutputIndex, doneEvent.Item.ID, doneEvent.Item.EncryptedContent, doneEvent.Item.Summary)
-					if part := reasoningState.Part(doneEvent.OutputIndex); part != nil {
-						if err := send.Send(Event{
-							Type:                      EventReasoningDelta,
-							Text:                      part.ReasoningContent,
-							ReasoningItemID:           part.ReasoningItemID,
-							ReasoningEncryptedContent: part.ReasoningEncryptedContent,
-						}); err != nil {
-							return false, err
-						}
-					}
-				} else if doneEvent.Item.Type == "message" {
-					// Text content is normally streamed via response.output_text.delta events.
-					// Fall back to emitting here if no deltas were seen (provider inconsistency).
-					// Always emit refusals since those may not be streamed.
-					for _, content := range doneEvent.Item.Content {
-						if content.Type == "output_text" && content.Text != "" && !sawTextDelta {
-							if err := send.Send(Event{Type: EventTextDelta, Text: content.Text}); err != nil {
-								return false, err
-							}
-						} else if content.Type == "refusal" && content.Refusal != "" {
-							if err := send.Send(Event{Type: EventTextDelta, Text: content.Refusal}); err != nil {
-								return false, err
-							}
-						}
-					}
-				} else if doneEvent.Item.Type == "image_generation_call" {
-					if doneEvent.Item.Result != "" {
-						decoded, err := base64.StdEncoding.DecodeString(doneEvent.Item.Result)
-						if err != nil {
-							return false, fmt.Errorf("decode image_generation_call result: %w", err)
-						}
-						if err := send.Send(Event{
-							Type:          EventImageGenerated,
-							ImageData:     decoded,
-							ImageMimeType: "image/png",
-							RevisedPrompt: doneEvent.Item.RevisedPrompt,
-						}); err != nil {
-							return false, err
-						}
-					}
-				}
-
-			case "response.reasoning_summary_part.added":
-				var partEvent struct {
-					OutputIndex int `json:"output_index"`
-				}
-				if err := unmarshalEvent(&partEvent); err != nil {
-					return false, err
-				}
-				reasoningState.Ensure(partEvent.OutputIndex)
-
-			case "response.reasoning_summary_text.delta":
-				var summaryDeltaEvent struct {
-					OutputIndex int    `json:"output_index"`
-					Delta       string `json:"delta"`
-				}
-				if err := unmarshalEvent(&summaryDeltaEvent); err != nil {
-					return false, err
-				}
-				reasoningState.AppendSummary(summaryDeltaEvent.OutputIndex, summaryDeltaEvent.Delta)
-
-			case "response.completed":
-				var completedEvent struct {
-					Response struct {
-						ID    string          `json:"id"`
-						Usage *responsesUsage `json:"usage,omitempty"`
-					} `json:"response"`
-				}
-				if err := unmarshalEvent(&completedEvent); err != nil {
-					return false, err
-				}
-				// Store response ID for conversation continuity (unless disabled)
-				if !client.DisableServerState && completedEvent.Response.ID != "" {
-					client.setLastResponseIDIfGeneration(responseStateGeneration, completedEvent.Response.ID)
-				}
-				if completedEvent.Response.Usage != nil {
-					cached := completedEvent.Response.Usage.InputTokensDetails.CachedTokens
-					lastUsage = &Usage{
-						// OpenAI Responses API input_tokens includes cached; subtract to normalise.
-						// CachedInputTokens + InputTokens = total context size.
-						InputTokens:            completedEvent.Response.Usage.InputTokens - cached,
-						OutputTokens:           completedEvent.Response.Usage.OutputTokens,
-						CachedInputTokens:      cached,
-						ProviderRawInputTokens: completedEvent.Response.Usage.InputTokens,
-						ProviderTotalTokens:    completedEvent.Response.Usage.TotalTokens,
-						ReasoningTokens:        completedEvent.Response.Usage.OutputTokensDetails.ReasoningTokens,
-					}
-				}
-
-			case "response.failed", "error":
-				var errorEvent struct {
-					Error *responsesError `json:"error"`
-				}
-				if err := unmarshalEvent(&errorEvent); err != nil {
-					return false, err
-				}
-				if errorEvent.Error != nil {
-					return false, fmt.Errorf("Responses API error: %s", errorEvent.Error.Message)
-				}
-				return false, fmt.Errorf("Responses API error: unknown error")
-			}
-
-			return false, nil
+			return handler.HandleJSONEvent([]byte(data), eventType, send)
 		}
 
 		for {
@@ -929,33 +801,24 @@ func (c *ResponsesClient) Stream(ctx context.Context, req ResponsesRequest, debu
 			}
 		}
 
-		// Emit completed tool calls
-		if err := toolState.Validate(); err != nil {
-			return err
-		}
-		for _, call := range toolState.Calls() {
-			if err := send.Send(Event{Type: EventToolCall, Tool: &call}); err != nil {
-				return err
-			}
-		}
-		if lastUsage != nil {
-			if err := send.Send(Event{Type: EventUsage, Use: lastUsage}); err != nil {
-				return err
-			}
-		}
-		if err := send.Send(Event{Type: EventDone}); err != nil {
-			return err
-		}
-		return nil
+		return handler.Finish(send)
 	}), nil
 }
 
 // ResetConversation clears server state (called on /clear or new conversation)
 func (c *ResponsesClient) ResetConversation() {
+	c.closeWebSocket()
 	c.responseStateMu.Lock()
 	defer c.responseStateMu.Unlock()
 	c.responseStateGeneration++
 	c.LastResponseID = ""
+	c.websocketDisabled = false
+	c.wsLastRequest = nil
+	c.wsLastResponseItems = nil
+}
+
+func (c *ResponsesClient) websocketServerStateEnabled() bool {
+	return c.WebSocketServerState || !c.DisableServerState
 }
 
 // filterToNewInput returns only the new input items for a server-state continuation.
@@ -967,15 +830,19 @@ func filterToNewInput(input []ResponsesInputItem) []ResponsesInputItem {
 	sawToolOutput := false
 	for start > 0 {
 		item := input[start-1]
+		if item.Type == "message" && item.Role == "user" && !sawToolOutput {
+			// A trailing user message may be the next user turn or rich/image
+			// content appended after a tool result.
+			start--
+			continue
+		}
 		if item.Type == "function_call_output" {
 			sawToolOutput = true
 			start--
 			continue
 		}
-		if item.Type == "message" && item.Role == "user" {
-			start--
-			continue
-		}
+		// If we have already seen a trailing tool output, a user message before
+		// it is part of the prior prompt, not new incremental input.
 		break
 	}
 	if sawToolOutput {

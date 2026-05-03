@@ -57,6 +57,22 @@ term-llm ask --provider copilot "question"
 term-llm ask --provider gemini-cli "question"
 ```
 
+## WebSocket defaults
+
+The built-in `openai` and `chatgpt` text providers use the Responses WebSocket transport by default. This improves latency in agentic/tool-heavy runs by reusing one connection and continuing compatible turns with `previous_response_id` plus only new input. If setup fails before streaming starts, term-llm falls back to HTTP/SSE; if a WebSocket continuation rejects the previous response ID, it retries once with full input.
+
+To force HTTP/SSE for either built-in provider:
+
+```yaml
+providers:
+  openai:
+    use_websocket: false
+  chatgpt:
+    use_websocket: false
+```
+
+OpenAI-compatible providers remain HTTP/SSE by default. WebSocket defaults are not applied to `type: openai_compatible` entries.
+
 ## OpenAI-compatible providers
 
 For local or custom backends, use `type: openai_compatible`.
@@ -97,6 +113,7 @@ Use `base_url` when the standard `/chat/completions` path should be appended aut
 | `context_window` | int | Override context window size in tokens. Use this for self-hosted models not in the built-in token limit tables. |
 | `max_output_tokens` | int | Override maximum output tokens. Same use case as `context_window`. |
 | `no_stream_options` | bool | When `true`, don't send `stream_options` in the request. Use this for servers that reject the field. Default `false` — most OpenAI-compatible servers (vLLM, Ollama, LM Studio) support it and need it to report token usage. |
+| `use_websocket` | bool | Reserved for providers with native Responses WebSocket support. Defaults to `true` only for built-in `openai` and `chatgpt`; OpenAI-compatible providers default to HTTP/SSE. |
 
 ### Full example
 

@@ -32,12 +32,23 @@ type ChatGPTProvider struct {
 	creds           *credentials.ChatGPTCredentials
 	model           string
 	effort          string // reasoning effort: "low", "medium", "high", "xhigh", or ""
+	useWebSocket    bool
 	responsesClient *ResponsesClient
+}
+
+type ChatGPTProviderOptions struct {
+	UseWebSocket bool
 }
 
 // NewChatGPTProvider creates a new ChatGPT provider.
 // If credentials are not available or expired, it will prompt the user to authenticate.
 func NewChatGPTProvider(model string) (*ChatGPTProvider, error) {
+	return NewChatGPTProviderWithOptions(model, ChatGPTProviderOptions{})
+}
+
+// NewChatGPTProviderWithOptions creates a new ChatGPT provider with optional transport settings.
+// If credentials are not available or expired, it will prompt the user to authenticate.
+func NewChatGPTProviderWithOptions(model string, opts ChatGPTProviderOptions) (*ChatGPTProvider, error) {
 	if model == "" {
 		model = chatGPTDefaultModel
 	}
@@ -66,23 +77,29 @@ func NewChatGPTProvider(model string) (*ChatGPTProvider, error) {
 	}
 
 	return &ChatGPTProvider{
-		creds:  creds,
-		model:  actualModel,
-		effort: effort,
+		creds:        creds,
+		model:        actualModel,
+		effort:       effort,
+		useWebSocket: opts.UseWebSocket,
 	}, nil
 }
 
 // NewChatGPTProviderWithCreds creates a ChatGPT provider with pre-loaded credentials.
 // This is used by the factory when credentials are already resolved.
 func NewChatGPTProviderWithCreds(creds *credentials.ChatGPTCredentials, model string) *ChatGPTProvider {
+	return NewChatGPTProviderWithCredsAndOptions(creds, model, ChatGPTProviderOptions{})
+}
+
+func NewChatGPTProviderWithCredsAndOptions(creds *credentials.ChatGPTCredentials, model string, opts ChatGPTProviderOptions) *ChatGPTProvider {
 	if model == "" {
 		model = chatGPTDefaultModel
 	}
 	actualModel, effort := ParseModelEffort(model)
 	return &ChatGPTProvider{
-		creds:  creds,
-		model:  actualModel,
-		effort: effort,
+		creds:        creds,
+		model:        actualModel,
+		effort:       effort,
+		useWebSocket: opts.UseWebSocket,
 	}
 }
 
@@ -187,6 +204,14 @@ func (p *ChatGPTProvider) Stream(ctx context.Context, req Request) (Stream, erro
 	// Reuse client across requests
 	if p.responsesClient == nil {
 		p.responsesClient = NewChatGPTResponsesClient(p.creds)
+		p.responsesClient.UseWebSocket = p.useWebSocket
+		if p.useWebSocket {
+			// ChatGPT's HTTP Responses path historically sends full history because
+			// previous_response_id hydration is not supported there. WebSocket mode keeps
+			// the previous response in connection-local memory, so enable server-state
+			// continuation for the WebSocket transport only.
+			p.responsesClient.WebSocketServerState = true
+		}
 	}
 
 	// Effort precedence: req.ReasoningEffort wins over model suffix, which wins over provider-level effort.
