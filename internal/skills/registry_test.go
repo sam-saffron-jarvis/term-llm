@@ -108,6 +108,57 @@ description: "Testing Get method"
 	}
 }
 
+func TestRegistryGetByMismatchedFrontmatterName(t *testing.T) {
+	tmpDir := t.TempDir()
+	skillsDir := filepath.Join(tmpDir, "skills")
+	skillDir := filepath.Join(skillsDir, "directory-name")
+	if err := os.MkdirAll(skillDir, 0755); err != nil {
+		t.Fatalf("failed to create skill dir: %v", err)
+	}
+
+	content := `---
+name: frontmatter-name
+description: "Directory and frontmatter names differ"
+---
+
+# Loaded by canonical frontmatter name
+`
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte(content), 0644); err != nil {
+		t.Fatalf("failed to write SKILL.md: %v", err)
+	}
+
+	registry, err := NewRegistry(RegistryConfig{
+		IncludeProjectSkills:  false,
+		IncludeEcosystemPaths: false,
+	})
+	if err != nil {
+		t.Fatalf("failed to create registry: %v", err)
+	}
+	registry.searchPaths = []searchPath{{
+		path:   skillsDir,
+		source: SourceCodex,
+	}}
+
+	listed, err := registry.List()
+	if err != nil {
+		t.Fatalf("failed to list skills: %v", err)
+	}
+	if len(listed) != 1 || listed[0].Name != "frontmatter-name" {
+		t.Fatalf("expected listed frontmatter-name skill, got %#v", listed)
+	}
+
+	skill, err := registry.Get("frontmatter-name")
+	if err != nil {
+		t.Fatalf("failed to get skill by frontmatter name: %v", err)
+	}
+	if skill.SourcePath != skillDir {
+		t.Errorf("expected source path %q, got %q", skillDir, skill.SourcePath)
+	}
+	if !skill.IsLoaded() || skill.Body == "" {
+		t.Error("expected full skill body to be loaded")
+	}
+}
+
 func TestRegistryGetNotFound(t *testing.T) {
 	registry, err := NewRegistry(RegistryConfig{
 		IncludeProjectSkills:  false,

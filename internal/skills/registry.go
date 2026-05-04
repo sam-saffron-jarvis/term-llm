@@ -45,7 +45,7 @@ type RegistryConfig struct {
 
 	// Ecosystem integration
 	IncludeProjectSkills  bool // Discover from project-local paths
-	IncludeEcosystemPaths bool // Include ~/.codex/skills, ~/.claude/skills, ~/.gemini/skills, .skills/
+	IncludeEcosystemPaths bool // Include ~/.agents/skills, ~/.codex/skills, ~/.claude/skills, ~/.gemini/skills, .skills/
 
 	// Skill lists
 	AlwaysEnabled []string // Always include in metadata
@@ -162,7 +162,13 @@ func (r *Registry) addProjectPathsAtLevel(dir string) {
 		source: SourceClaude,
 	})
 
-	// Codex
+	// Codex / open agent skills (current convention)
+	r.searchPaths = append(r.searchPaths, searchPath{
+		path:   filepath.Join(dir, ".agents", "skills"),
+		source: SourceCodex,
+	})
+
+	// Codex (legacy convention)
 	r.searchPaths = append(r.searchPaths, searchPath{
 		path:   filepath.Join(dir, ".codex", "skills"),
 		source: SourceCodex,
@@ -212,7 +218,13 @@ func (r *Registry) addUserPaths(home, configDir string) {
 		source: SourceClaude,
 	})
 
-	// Codex user skills
+	// Codex / open agent skills user skills (current convention)
+	r.searchPaths = append(r.searchPaths, searchPath{
+		path:   filepath.Join(home, ".agents", "skills"),
+		source: SourceCodex,
+	})
+
+	// Codex user skills (legacy convention)
 	codexHome := os.Getenv("CODEX_HOME")
 	if codexHome == "" {
 		codexHome = filepath.Join(home, ".codex")
@@ -251,11 +263,35 @@ func (r *Registry) Get(name string) (*Skill, error) {
 		return skill, nil
 	}
 
-	// Search filesystem paths
+	// The common case is a directory named after the skill.
 	for _, sp := range r.searchPaths {
 		skillDir := filepath.Join(sp.path, name)
 		if IsSkillDir(skillDir) {
 			skill, err := LoadFromDir(skillDir, sp.source, true)
+			if err != nil {
+				return nil, fmt.Errorf("load skill %s: %w", name, err)
+			}
+			if err := skill.Validate(); err != nil {
+				return nil, fmt.Errorf("invalid skill %s: %w", name, err)
+			}
+			r.cache[name] = skill
+			return skill, nil
+		}
+	}
+
+	// Some ecosystem skills have a frontmatter name that differs from their
+	// directory. Fall back to scanning metadata and resolve by canonical skill
+	// name so those skills can still be activated by the name shown in prompts.
+	for _, sp := range r.searchPaths {
+		found, err := r.scanDir(sp.path, sp.source)
+		if err != nil {
+			continue
+		}
+		for _, meta := range found {
+			if meta.Name != name {
+				continue
+			}
+			skill, err := LoadFromDir(meta.SourcePath, meta.Source, true)
 			if err != nil {
 				return nil, fmt.Errorf("load skill %s: %w", name, err)
 			}

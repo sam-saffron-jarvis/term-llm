@@ -268,17 +268,18 @@ func LoadFromDir(dir string, source SkillSource, loadBody bool) (*Skill, error) 
 		return nil, err
 	}
 
-	// Set source info
+	// Populate source info.
 	skill.Source = source
 	skill.SourcePath = dir
 
-	// Validate that name matches directory (if name is set)
-	dirName := filepath.Base(dir)
+	// Derive a name from the directory when older/draft skills omit one.
+	// The Agent Skills spec recommends/validates that name matches the parent
+	// directory, but some ecosystem repositories contain otherwise usable skills
+	// whose frontmatter name differs from the folder name. Discovery should be
+	// interoperable and non-noisy, so keep an explicit frontmatter name as the
+	// canonical name instead of rejecting the skill during discovery.
 	if skill.Name == "" {
-		// Derive name from directory if not set
-		skill.Name = dirName
-	} else if skill.Name != dirName {
-		return nil, fmt.Errorf("skill name %q must match directory name %q", skill.Name, dirName)
+		skill.Name = filepath.Base(dir)
 	}
 
 	// Discover resources if loading full content

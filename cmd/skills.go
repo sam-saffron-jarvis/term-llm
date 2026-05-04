@@ -37,8 +37,9 @@ They provide specialized capabilities and domain knowledge for completing tasks.
 
 Skills can be discovered from multiple ecosystems:
 - term-llm: ~/.config/term-llm/skills/, .skills/
+- Open Agent Skills / Codex: ~/.agents/skills/, .agents/skills/
 - Claude Code: ~/.claude/skills/, .claude/skills/
-- Codex: ~/.codex/skills/, .codex/skills/
+- Codex legacy: ~/.codex/skills/, .codex/skills/
 - Gemini CLI: ~/.gemini/skills/, .gemini/skills/
 - Cursor IDE: ~/.cursor/skills/, .cursor/skills/
 
@@ -582,7 +583,7 @@ func runSkillsPath(cmd *cobra.Command, args []string) error {
 	} else {
 		fmt.Printf("    .skills/: %s (not created)\n", localDir)
 	}
-	fmt.Println("    .claude/skills/, .codex/skills/, .gemini/skills/, .cursor/skills/")
+	fmt.Println("    .agents/skills/, .claude/skills/, .codex/skills/, .gemini/skills/, .cursor/skills/")
 	fmt.Println()
 
 	// User-global paths
@@ -592,7 +593,7 @@ func runSkillsPath(cmd *cobra.Command, args []string) error {
 	} else {
 		fmt.Printf("    term-llm: %s (not created)\n", userDir)
 	}
-	fmt.Println("    ~/.skills/, ~/.claude/skills/, ~/.codex/skills/, ~/.gemini/skills/, ~/.cursor/skills/")
+	fmt.Println("    ~/.skills/, ~/.agents/skills/, ~/.claude/skills/, ~/.codex/skills/, ~/.gemini/skills/, ~/.cursor/skills/")
 
 	return nil
 }

@@ -1565,7 +1565,7 @@ func (m *Model) cmdSkills() (tea.Model, tea.Cmd) {
 	b.WriteString("**How to use skills:**\n")
 	b.WriteString("- Ask the AI to use a specific skill: \"use the code-review skill\"\n")
 	b.WriteString("- The AI can also activate skills automatically when relevant\n")
-	b.WriteString("- Skills are loaded from: `~/.config/term-llm/skills/`, `.skills/`, and project directories\n\n")
+	b.WriteString("- Skills are loaded from: `~/.config/term-llm/skills/`, `.skills/`, `.agents/skills/`, and ecosystem/project directories\n\n")
 
 	b.WriteString("**Manage skills with CLI:**\n")
 	b.WriteString("- `term-llm skills list` - List available skills\n")

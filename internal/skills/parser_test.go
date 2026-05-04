@@ -451,7 +451,7 @@ description: "A test skill"
 	}
 }
 
-func TestLoadFromDir_NameMismatch(t *testing.T) {
+func TestLoadFromDir_NameMismatchPreservesFrontmatterName(t *testing.T) {
 	tmpDir := t.TempDir()
 	skillDir := filepath.Join(tmpDir, "actual-name")
 
@@ -459,7 +459,9 @@ func TestLoadFromDir_NameMismatch(t *testing.T) {
 		t.Fatalf("failed to create temp dir: %v", err)
 	}
 
-	// Create SKILL.md with mismatched name
+	// Validate that explicit frontmatter is allowed to differ from the directory.
+	// This is not ideal per the Agent Skills spec, but keeping it loadable makes
+	// discovery interoperable with ecosystem repositories that contain such skills.
 	content := `---
 name: different-name
 description: "Name doesn't match directory"
@@ -469,12 +471,12 @@ description: "Name doesn't match directory"
 		t.Fatalf("failed to write SKILL.md: %v", err)
 	}
 
-	_, err := LoadFromDir(skillDir, SourceLocal, false)
-	if err == nil {
-		t.Error("expected error for name mismatch")
+	skill, err := LoadFromDir(skillDir, SourceLocal, false)
+	if err != nil {
+		t.Fatalf("unexpected error for name mismatch: %v", err)
 	}
-	if !contains(err.Error(), "must match directory") {
-		t.Errorf("expected 'must match directory' error, got: %v", err)
+	if skill.Name != "different-name" {
+		t.Errorf("expected frontmatter name to be preserved, got %q", skill.Name)
 	}
 }
 

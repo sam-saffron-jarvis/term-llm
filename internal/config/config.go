@@ -211,7 +211,7 @@ type SkillsConfig struct {
 	MaxVisibleSkills     int  `mapstructure:"max_visible_skills"`     // Max skills shown in system prompt
 
 	IncludeProjectSkills  bool `mapstructure:"include_project_skills"`  // Discover from project-local paths
-	IncludeEcosystemPaths bool `mapstructure:"include_ecosystem_paths"` // Include ~/.codex/skills, ~/.claude/skills, ~/.gemini/skills, .skills/
+	IncludeEcosystemPaths bool `mapstructure:"include_ecosystem_paths"` // Include ~/.agents/skills, ~/.codex/skills, ~/.claude/skills, ~/.gemini/skills, etc.
 
 	AlwaysEnabled []string `mapstructure:"always_enabled"` // Always include in metadata
 	NeverAuto     []string `mapstructure:"never_auto"`     // Must be explicit activation
