@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
 	"mime"
 	"net/http"
 	"os"
@@ -108,9 +107,28 @@ const (
 	maxAttachmentBytes = 20 << 20 // 20 MB per file (decoded)
 )
 
+func decodeUploadedFile(filename, b64Data string) ([]byte, error) {
+	raw, err := base64.StdEncoding.DecodeString(b64Data)
+	if err != nil {
+		return nil, fmt.Errorf("decode base64: %w", err)
+	}
+	if len(raw) > maxAttachmentBytes {
+		return nil, fmt.Errorf("file %q exceeds %d MB limit", filename, maxAttachmentBytes>>20)
+	}
+	return raw, nil
+}
+
 // saveUploadedFile decodes base64 data and writes it to the uploads directory,
 // returning the full filesystem path. Uses O_CREATE|O_EXCL for atomic uniqueness.
 func saveUploadedFile(filename, b64Data string) (string, error) {
+	raw, err := decodeUploadedFile(filename, b64Data)
+	if err != nil {
+		return "", err
+	}
+	return saveUploadedBytes(filename, raw)
+}
+
+func saveUploadedBytes(filename string, raw []byte) (string, error) {
 	dataDir, err := session.GetDataDir()
 	if err != nil {
 		return "", fmt.Errorf("get data dir: %w", err)
@@ -120,10 +138,6 @@ func saveUploadedFile(filename, b64Data string) (string, error) {
 		return "", fmt.Errorf("create uploads dir: %w", err)
 	}
 
-	raw, err := base64.StdEncoding.DecodeString(b64Data)
-	if err != nil {
-		return "", fmt.Errorf("decode base64: %w", err)
-	}
 	if len(raw) > maxAttachmentBytes {
 		return "", fmt.Errorf("file %q exceeds %d MB limit", filename, maxAttachmentBytes>>20)
 	}
@@ -173,12 +187,11 @@ func abbreviatePath(path string) string {
 // parseUserMessageContent builds a user llm.Message from a content field
 // that may be a plain string or an array of content parts (input_text, input_image, input_file).
 // Chat Completions-style text/image_url parts are also accepted.
-// Supported image types are sent inline to the LLM; all other files are saved to disk
+// Supported image types are kept inline for the LLM; all other files are saved to disk
 // and referenced by path in a text part.
 //
-// All uploaded images are saved to disk unconditionally as originals before any
-// processing. Images exceeding 1 MB are resized/compressed before being sent to
-// the LLM to avoid provider errors.
+// Images exceeding 1 MB are resized/compressed before being sent to the LLM to avoid
+// provider errors.
 func parseUserMessageContent(content json.RawMessage) (llm.Message, error) {
 	var parts []map[string]json.RawMessage
 	if err := json.Unmarshal(content, &parts); err == nil && len(parts) > 0 {
@@ -207,27 +220,13 @@ func parseUserMessageContent(content json.RawMessage) (llm.Message, error) {
 					if fileCount > maxAttachments {
 						return llm.Message{}, fmt.Errorf("too many attachments (max %d)", maxAttachments)
 					}
-					// Always save the original to disk first.
 					if filename == "" {
 						filename = "image"
 					}
-					path, err := saveUploadedFile(filename, b64)
-					if err != nil {
-						return llm.Message{}, fmt.Errorf("save attachment %q: %w", filename, err)
-					}
-					savedPath := path
 
-					// Decode raw bytes for possible resize.
-					raw, err := base64.StdEncoding.DecodeString(b64)
+					raw, err := decodeUploadedFile(filename, b64)
 					if err != nil {
-						// Shouldn't happen — b64 was just parsed — but fall back gracefully.
-						log.Printf("[web] warning: base64 re-decode failed for %q: %v", filename, err)
-						llmParts = append(llmParts, llm.Part{
-							Type:      llm.PartImage,
-							ImageData: &llm.ToolImageData{MediaType: mt, Base64: b64},
-							ImagePath: savedPath,
-						})
-						continue
+						return llm.Message{}, fmt.Errorf("decode attachment %q: %w", filename, err)
 					}
 
 					// Resize if over 1 MB before sending to the model.
@@ -239,7 +238,6 @@ func parseUserMessageContent(content json.RawMessage) (llm.Message, error) {
 					llmParts = append(llmParts, llm.Part{
 						Type:      llm.PartImage,
 						ImageData: &llm.ToolImageData{MediaType: resMT, Base64: sendB64},
-						ImagePath: savedPath,
 					})
 				} else {
 					fileCount++

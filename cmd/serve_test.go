@@ -926,11 +926,12 @@ func TestParseResponsesInput_ImageContent(t *testing.T) {
 	if msg.Parts[0].ImageData.Base64 != "aGVsbG8=" {
 		t.Fatalf("base64 = %q, want aGVsbG8=", msg.Parts[0].ImageData.Base64)
 	}
-	if msg.Parts[0].ImagePath == "" {
-		t.Fatal("parts[0].ImagePath = empty, want saved upload path")
+	if msg.Parts[0].ImagePath != "" {
+		t.Fatalf("parts[0].ImagePath = %q, want empty for inline upload", msg.Parts[0].ImagePath)
 	}
-	if _, err := os.Stat(msg.Parts[0].ImagePath); err != nil {
-		t.Fatalf("saved upload missing at %q: %v", msg.Parts[0].ImagePath, err)
+	uploadsDir := filepath.Join(dataHome, "term-llm", "uploads")
+	if _, err := os.Stat(uploadsDir); !os.IsNotExist(err) {
+		t.Fatalf("uploads dir stat err = %v, want not exist for inline image upload", err)
 	}
 	if msg.Parts[1].Type != llm.PartText {
 		t.Fatalf("parts[1].type = %s, want text", msg.Parts[1].Type)
