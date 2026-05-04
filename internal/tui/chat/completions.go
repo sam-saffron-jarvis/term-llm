@@ -60,6 +60,10 @@ func (c *CompletionsModel) IsVisible() bool {
 func (c *CompletionsModel) SetQuery(query string) {
 	c.query = query
 	c.filtered = FilterCommands(query)
+	if len(c.filtered) == 0 {
+		c.Hide()
+		return
+	}
 	if c.cursor >= len(c.filtered) {
 		c.cursor = max(0, len(c.filtered)-1)
 	}
@@ -67,9 +71,13 @@ func (c *CompletionsModel) SetQuery(query string) {
 
 // SetItems sets custom completion items (for dynamic completions like server names)
 func (c *CompletionsModel) SetItems(items []Command) {
+	if len(items) == 0 {
+		c.Hide()
+		return
+	}
 	c.filtered = items
 	c.cursor = 0
-	if !c.visible && len(items) > 0 {
+	if !c.visible {
 		c.visible = true
 	}
 }

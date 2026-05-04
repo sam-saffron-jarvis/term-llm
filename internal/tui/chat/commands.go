@@ -240,6 +240,32 @@ func FilterCommands(query string) []Command {
 	return result
 }
 
+// isSlashCommandLike reports whether input begins with a known slash command
+// (including aliases and unambiguous/ambiguous command prefixes). Chat prompts
+// often start with absolute paths like /tmp/foo; those should be submitted to
+// the model rather than treated as unknown commands.
+func isSlashCommandLike(input string) bool {
+	parts := strings.Fields(input)
+	if len(parts) == 0 || !strings.HasPrefix(parts[0], "/") {
+		return false
+	}
+	cmdName := strings.ToLower(strings.TrimPrefix(parts[0], "/"))
+	if cmdName == "" {
+		return true
+	}
+	for _, c := range AllCommands() {
+		if c.Name == cmdName || strings.HasPrefix(c.Name, cmdName) {
+			return true
+		}
+		for _, alias := range c.Aliases {
+			if alias == cmdName {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // ExecuteCommand handles slash command execution
 func (m *Model) ExecuteCommand(input string) (tea.Model, tea.Cmd) {
 	parts := strings.Fields(input)

@@ -761,8 +761,10 @@ func (m *Model) handleKeyMsg(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 
-		// Check for slash commands
-		if strings.HasPrefix(content, "/") {
+		// Check for slash commands. If the leading token isn't a known command or
+		// command prefix, treat the text as a normal chat message so pasted absolute
+		// paths like /tmp/foo do not trap the composer behind command handling.
+		if strings.HasPrefix(content, "/") && isSlashCommandLike(content) {
 			return m.handleSlashCommand(content)
 		}
 

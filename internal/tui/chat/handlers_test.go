@@ -15,6 +15,38 @@ import (
 	"github.com/samsaffron/term-llm/internal/ui"
 )
 
+func TestHandlePasteMsg_SlashPathDoesNotLeaveCompletionsVisible(t *testing.T) {
+	m := newTestChatModel(false)
+
+	_, _ = m.Update(tea.PasteMsg{Content: "/tmp/not-a-chat-command"})
+
+	if got := m.textarea.Value(); got != "/tmp/not-a-chat-command" {
+		t.Fatalf("textarea value = %q, want pasted path", got)
+	}
+	if m.completions.IsVisible() {
+		t.Fatal("pasting a non-command absolute path should not leave completions visible")
+	}
+}
+
+func TestHandleKeyMsg_SlashPathSubmitsAsChatMessage(t *testing.T) {
+	m := newTestChatModel(false)
+	const pastedPath = "/tmp/not-a-chat-command"
+
+	_, _ = m.Update(tea.PasteMsg{Content: pastedPath})
+	_, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+
+	if len(m.messages) == 0 {
+		t.Fatal("expected pasted slash path to submit as a chat message")
+	}
+	last := m.messages[len(m.messages)-1]
+	if last.Role != llm.RoleUser {
+		t.Fatalf("last message role = %q, want user", last.Role)
+	}
+	if last.TextContent != pastedPath {
+		t.Fatalf("last message text = %q, want %q", last.TextContent, pastedPath)
+	}
+}
+
 func TestHandleKeyMsg_ShiftTabTogglesYoloDuringStreaming(t *testing.T) {
 	m := newTestChatModel(false)
 	approvalMgr := tools.NewApprovalManager(tools.NewToolPermissions())
