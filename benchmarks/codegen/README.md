@@ -54,6 +54,9 @@ Current suite:
 | `go_json_format` | Go | stdlib/API correctness and error handling |
 | `go_concurrent_counter` | Go | concurrency correctness under `-race` |
 | `go_dedupe_perf` | Go | correctness plus `go test -bench -benchmem` output |
+| `go_web_chat_1000` | Go | in-memory HTTP chat handler with 1000 concurrent users under `-race` |
+
+The web chat task is intentionally heavier than the toy tasks. It drives one generated `http.Handler` with 1000 concurrent `POST /rooms/{room}/messages` requests through `httptest`, verifies per-room sequence ordering and message retention, then fetches the room. If you run it on a slow box, raise `-score-timeout` rather than weakening the concurrency signal.
 
 This is deliberately repo-local and boring to run. Add Ruby/Rails, SQL/Postgres, Python, and TypeScript suites the same way: prompt, isolated workspace, deterministic scorer.
 

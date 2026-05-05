@@ -14,6 +14,7 @@ func allTasks() []Task {
 		jsonFormatTask{},
 		concurrentCounterTask{},
 		allocationTask{},
+		webChat1000Task{},
 	}
 }
 
