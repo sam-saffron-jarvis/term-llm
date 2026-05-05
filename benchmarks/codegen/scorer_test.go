@@ -169,3 +169,108 @@ export function newChatServer() {
 		t.Fatalf("expected pass with runtime metric, detail=%s stdout=%s stderr=%s", result.Details, result.Stdout, result.Stderr)
 	}
 }
+
+func TestRubyWebChat1000TaskReferenceImplementationPasses(t *testing.T) {
+	code := `
+require 'json'
+require 'thread'
+
+def new_chat_server
+  mutex = Mutex.new
+  rooms = Hash.new { |h, k| h[k] = [] }
+  lambda do |method, path, body|
+    parts = path.split('/').reject(&:empty?)
+    return [404, '{}'] unless parts.length == 3 && parts[0] == 'rooms' && parts[2] == 'messages' && !parts[1].empty?
+    room = parts[1]
+    case method
+    when 'POST'
+      data = JSON.parse(body)
+      return [400, '{}'] unless data['user'].is_a?(String) && data['text'].is_a?(String) && data['user'] != '' && data['text'] != ''
+      msg = nil
+      mutex.synchronize do
+        msg = {'seq' => rooms[room].length + 1, 'user' => data['user'], 'text' => data['text']}
+        rooms[room] << msg
+      end
+      [201, JSON.generate(msg)]
+    when 'GET'
+      messages = mutex.synchronize { rooms[room].map(&:dup) }
+      [200, JSON.generate(messages)]
+    else
+      [405, '{}']
+    end
+  end
+end
+`
+	result := rubyWebChat1000Task{}.Score(code, 60*time.Second)
+	if !result.Pass || result.Score != 1 || result.Metrics.RuntimeMS <= 0 || result.Metrics.WarmupMS <= 0 || result.Metrics.MemoryKB <= 0 {
+		t.Fatalf("expected pass with runtime/warmup/memory, detail=%s stdout=%s stderr=%s", result.Details, result.Stdout, result.Stderr)
+	}
+}
+
+func TestPythonWebChat1000TaskReferenceImplementationPasses(t *testing.T) {
+	code := `
+import json
+import threading
+
+class ChatServer:
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.rooms = {}
+    def __call__(self, method, path, body):
+        parts = [p for p in path.split('/') if p]
+        if len(parts) != 3 or parts[0] != 'rooms' or parts[2] != 'messages' or not parts[1]:
+            return 404, '{}'
+        room = parts[1]
+        if method == 'POST':
+            try:
+                data = json.loads(body)
+            except Exception:
+                return 400, '{}'
+            if not isinstance(data.get('user'), str) or not data['user'] or not isinstance(data.get('text'), str) or not data['text']:
+                return 400, '{}'
+            with self.lock:
+                messages = self.rooms.setdefault(room, [])
+                msg = {'seq': len(messages) + 1, 'user': data['user'], 'text': data['text']}
+                messages.append(msg)
+            return 201, json.dumps(msg)
+        if method == 'GET':
+            with self.lock:
+                messages = list(self.rooms.get(room, []))
+            return 200, json.dumps(messages)
+        return 405, '{}'
+
+def new_chat_server():
+    return ChatServer()
+`
+	result := pythonWebChat1000Task{}.Score(code, 60*time.Second)
+	if !result.Pass || result.Score != 1 || result.Metrics.RuntimeMS <= 0 || result.Metrics.WarmupMS <= 0 || result.Metrics.MemoryKB <= 0 {
+		t.Fatalf("expected pass with runtime/warmup/memory, detail=%s stdout=%s stderr=%s", result.Details, result.Stdout, result.Stderr)
+	}
+}
+
+func TestAssemblySumPositiveTaskReferenceImplementationPasses(t *testing.T) {
+	code := `
+.text
+.globl sum_positive
+.type sum_positive, @function
+sum_positive:
+    xor %rax, %rax
+    test %rsi, %rsi
+    jle .done
+.loop:
+    mov (%rdi), %rdx
+    test %rdx, %rdx
+    jle .skip
+    add %rdx, %rax
+.skip:
+    add $8, %rdi
+    dec %rsi
+    jne .loop
+.done:
+    ret
+`
+	result := assemblySumPositiveTask{}.Score(code, 60*time.Second)
+	if !result.Pass || result.Score != 1 || result.Metrics.RuntimeMS <= 0 || result.Metrics.WarmupMS <= 0 || result.Metrics.MemoryKB <= 0 {
+		t.Fatalf("expected pass with runtime/warmup/memory, detail=%s stdout=%s stderr=%s", result.Details, result.Stdout, result.Stderr)
+	}
+}

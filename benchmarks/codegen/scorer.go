@@ -13,9 +13,11 @@ import (
 	"time"
 )
 
-var fencedBlockRe = regexp.MustCompile("(?s)```(?:go|golang|javascript|js|node)?\\s*\\n(.*?)\\n```")
+var fencedBlockRe = regexp.MustCompile("(?s)```(?:go|golang|javascript|js|node|ruby|rb|python|py|asm|assembly|x86_64-assembly|s)?\\s*\\n(.*?)\\n```")
 var goBenchRe = regexp.MustCompile(`BenchmarkGenerated\S*\s+\d+\s+([0-9.]+)\s+ns/op(?:\s+([0-9.]+)\s+B/op)?(?:\s+([0-9.]+)\s+allocs/op)?`)
-var nodeBenchRe = regexp.MustCompile(`BENCH_RUNTIME_MS=([0-9.]+)`)
+var runtimeBenchRe = regexp.MustCompile(`BENCH_RUNTIME_MS=([0-9.]+)`)
+var warmupBenchRe = regexp.MustCompile(`BENCH_WARMUP_MS=([0-9.]+)`)
+var memoryBenchRe = regexp.MustCompile(`BENCH_MEMORY_KB=([0-9.]+)`)
 
 func extractCode(response string) (string, error) {
 	response = strings.TrimSpace(response)
@@ -27,7 +29,7 @@ func extractCode(response string) (string, error) {
 		return strings.TrimSpace(matches[1]), nil
 	}
 	// Accept raw code as a convenience for providers that obey "no prose" literally.
-	if strings.Contains(response, "func ") || strings.Contains(response, "type ") || strings.Contains(response, "export function") || strings.Contains(response, "module.exports") {
+	if strings.Contains(response, "func ") || strings.Contains(response, "type ") || strings.Contains(response, "export function") || strings.Contains(response, "module.exports") || strings.Contains(response, "def ") || strings.Contains(response, "class ") || strings.Contains(response, ".globl") || strings.Contains(response, ".global") {
 		return response, nil
 	}
 	return "", fmt.Errorf("no code block found")
@@ -67,7 +69,7 @@ func scoreGo(response string, timeout time.Duration, race bool, testBody string,
 		return ScoreResult{Pass: false, Score: 0, Details: err.Error(), GeneratedCode: code}
 	}
 
-	args := []string{"test", ".", "-run", "TestGenerated", "-bench", "BenchmarkGenerated", "-benchmem", "-count", "1"}
+	args := []string{"test", "-v", ".", "-run", "TestGenerated", "-bench", "BenchmarkGenerated", "-benchmem", "-count", "1"}
 	if race {
 		args = append([]string{"test", "-race"}, args[1:]...)
 	}
@@ -88,6 +90,16 @@ func scoreGo(response string, timeout time.Duration, race bool, testBody string,
 		return ScoreResult{Pass: false, Score: 0, Details: "tests failed", Stdout: out, Stderr: errOut, GeneratedCode: code}
 	}
 	metrics := parseGoBench(out)
+	markers := parseRuntimeBench(out)
+	if markers.RuntimeMS > 0 {
+		metrics.RuntimeMS = markers.RuntimeMS
+	}
+	if markers.WarmupMS > 0 {
+		metrics.WarmupMS = markers.WarmupMS
+	}
+	if markers.MemoryKB > 0 {
+		metrics.MemoryKB = markers.MemoryKB
+	}
 	return ScoreResult{Pass: true, Score: 1, Details: perfSummary(out), Stdout: out, Stderr: errOut, GeneratedCode: code, Metrics: metrics}
 }
 
@@ -123,7 +135,99 @@ func scoreNode(response string, timeout time.Duration, testSource string) ScoreR
 	if err != nil {
 		return ScoreResult{Pass: false, Score: 0, Details: "tests failed", Stdout: out, Stderr: errOut, GeneratedCode: code}
 	}
-	metrics := parseNodeBench(out)
+	metrics := parseRuntimeBench(out)
+	detail := "ok"
+	if metrics.RuntimeMS > 0 {
+		detail = fmt.Sprintf("runtime %.2f ms", metrics.RuntimeMS)
+	}
+	return ScoreResult{Pass: true, Score: 1, Details: detail, Stdout: out, Stderr: errOut, GeneratedCode: code, Metrics: metrics}
+}
+
+func scoreRuby(response string, timeout time.Duration, testSource string) ScoreResult {
+	code, err := extractCode(response)
+	if err != nil {
+		return ScoreResult{Pass: false, Score: 0, Details: err.Error(), GeneratedCode: response}
+	}
+	dir, err := os.MkdirTemp("", "term-llm-codegen-bench-ruby-*")
+	if err != nil {
+		return ScoreResult{Pass: false, Score: 0, Details: err.Error(), GeneratedCode: code}
+	}
+	defer os.RemoveAll(dir)
+	if err := os.WriteFile(filepath.Join(dir, "solution.rb"), []byte(code), 0o644); err != nil {
+		return ScoreResult{Pass: false, Score: 0, Details: err.Error(), GeneratedCode: code}
+	}
+	if err := os.WriteFile(filepath.Join(dir, "solution_test.rb"), []byte(testSource), 0o644); err != nil {
+		return ScoreResult{Pass: false, Score: 0, Details: err.Error(), GeneratedCode: code}
+	}
+	return runScriptScore(timeout, dir, code, "ruby", "solution_test.rb")
+}
+
+func scorePython(response string, timeout time.Duration, testSource string) ScoreResult {
+	code, err := extractCode(response)
+	if err != nil {
+		return ScoreResult{Pass: false, Score: 0, Details: err.Error(), GeneratedCode: response}
+	}
+	dir, err := os.MkdirTemp("", "term-llm-codegen-bench-python-*")
+	if err != nil {
+		return ScoreResult{Pass: false, Score: 0, Details: err.Error(), GeneratedCode: code}
+	}
+	defer os.RemoveAll(dir)
+	if err := os.WriteFile(filepath.Join(dir, "solution.py"), []byte(code), 0o644); err != nil {
+		return ScoreResult{Pass: false, Score: 0, Details: err.Error(), GeneratedCode: code}
+	}
+	if err := os.WriteFile(filepath.Join(dir, "solution_test.py"), []byte(testSource), 0o644); err != nil {
+		return ScoreResult{Pass: false, Score: 0, Details: err.Error(), GeneratedCode: code}
+	}
+	return runScriptScore(timeout, dir, code, "python3", "solution_test.py")
+}
+
+func scoreAssembly(response string, timeout time.Duration, testSource string) ScoreResult {
+	code, err := extractCode(response)
+	if err != nil {
+		return ScoreResult{Pass: false, Score: 0, Details: err.Error(), GeneratedCode: response}
+	}
+	dir, err := os.MkdirTemp("", "term-llm-codegen-bench-asm-*")
+	if err != nil {
+		return ScoreResult{Pass: false, Score: 0, Details: err.Error(), GeneratedCode: code}
+	}
+	defer os.RemoveAll(dir)
+	if err := os.WriteFile(filepath.Join(dir, "solution.s"), []byte(code), 0o644); err != nil {
+		return ScoreResult{Pass: false, Score: 0, Details: err.Error(), GeneratedCode: code}
+	}
+	if err := os.WriteFile(filepath.Join(dir, "test.c"), []byte(testSource), 0o644); err != nil {
+		return ScoreResult{Pass: false, Score: 0, Details: err.Error(), GeneratedCode: code}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "bash", "-lc", "gcc -O2 -Wall -Wextra -no-pie solution.s test.c -o test && ./test")
+	cmd.Dir = dir
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	err = cmd.Run()
+	return scriptResult(ctx, err, stdout.String(), stderr.String(), code)
+}
+
+func runScriptScore(timeout time.Duration, dir, code, name string, args ...string) ScoreResult {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.Dir = dir
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	err := cmd.Run()
+	return scriptResult(ctx, err, stdout.String(), stderr.String(), code)
+}
+
+func scriptResult(ctx context.Context, err error, out, errOut, code string) ScoreResult {
+	if ctx.Err() == context.DeadlineExceeded {
+		return ScoreResult{Pass: false, Score: 0, Details: "scoring timed out", Stdout: out, Stderr: errOut, GeneratedCode: code}
+	}
+	if err != nil {
+		return ScoreResult{Pass: false, Score: 0, Details: "tests failed", Stdout: out, Stderr: errOut, GeneratedCode: code}
+	}
+	metrics := parseRuntimeBench(out)
 	detail := "ok"
 	if metrics.RuntimeMS > 0 {
 		detail = fmt.Sprintf("runtime %.2f ms", metrics.RuntimeMS)
@@ -179,11 +283,16 @@ func parseGoBench(out string) ScoreMetrics {
 	return metrics
 }
 
-func parseNodeBench(out string) ScoreMetrics {
-	match := nodeBenchRe.FindStringSubmatch(out)
-	if len(match) == 0 {
-		return ScoreMetrics{}
+func parseRuntimeBench(out string) ScoreMetrics {
+	metrics := ScoreMetrics{}
+	if match := runtimeBenchRe.FindStringSubmatch(out); len(match) > 0 {
+		metrics.RuntimeMS, _ = strconv.ParseFloat(match[1], 64)
 	}
-	ms, _ := strconv.ParseFloat(match[1], 64)
-	return ScoreMetrics{RuntimeMS: ms}
+	if match := warmupBenchRe.FindStringSubmatch(out); len(match) > 0 {
+		metrics.WarmupMS, _ = strconv.ParseFloat(match[1], 64)
+	}
+	if match := memoryBenchRe.FindStringSubmatch(out); len(match) > 0 {
+		metrics.MemoryKB, _ = strconv.ParseFloat(match[1], 64)
+	}
+	return metrics
 }

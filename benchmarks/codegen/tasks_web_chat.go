@@ -41,20 +41,28 @@ type chatMessage struct {
 
 func TestGenerated(t *testing.T) {
 	h := NewChatServer()
-	exerciseGoChatHandler(t, h, 1000)
+	warmStart := time.Now()
+	exerciseGoChatHandler(t, h, "warmup", 100)
+	fmt.Printf("BENCH_WARMUP_MS=%.3f\n", float64(time.Since(warmStart).Microseconds())/1000.0)
+	started := time.Now()
+	exerciseGoChatHandler(t, h, "lobby", 1000)
+	fmt.Printf("BENCH_RUNTIME_MS=%.3f\n", float64(time.Since(started).Microseconds())/1000.0)
+	var mem runtime.MemStats
+	runtime.ReadMemStats(&mem)
+	fmt.Printf("BENCH_MEMORY_KB=%.0f\n", float64(mem.Alloc)/1024.0)
 }
 
 func BenchmarkGenerated(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		h := NewChatServer()
-		exerciseGoChatHandler(b, h, 1000)
+		exerciseGoChatHandler(b, h, "lobby", 1000)
 	}
 }
 
-func exerciseGoChatHandler(tb testing.TB, h http.Handler, users int) {
+func exerciseGoChatHandler(tb testing.TB, h http.Handler, room string, users int) {
 	tb.Helper()
 	// Basic validation first: bad JSON and empty fields should not be accepted.
-	badReq := httptest.NewRequest(http.MethodPost, "/rooms/lobby/messages", strings.NewReader(`+"`"+`{"user":"","text":"hello"}`+"`"+`))
+	badReq := httptest.NewRequest(http.MethodPost, "/rooms/"+room+"/messages", strings.NewReader(`+"`"+`{"user":"","text":"hello"}`+"`"+`))
 	badReq.Header.Set("Content-Type", "application/json")
 	badRec := httptest.NewRecorder()
 	h.ServeHTTP(badRec, badReq)
@@ -68,8 +76,8 @@ func exerciseGoChatHandler(tb testing.TB, h http.Handler, users int) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			body := fmt.Sprintf(`+"`"+`{"user":"user-%d","text":"hello-%d"}`+"`"+`, i, i)
-			req := httptest.NewRequest(http.MethodPost, "/rooms/lobby/messages", strings.NewReader(body))
+			body := fmt.Sprintf("{\"user\":\"user-%d\",\"text\":\"hello-%d\"}", i, i)
+			req := httptest.NewRequest(http.MethodPost, "/rooms/"+room+"/messages", strings.NewReader(body))
 			req.Header.Set("Content-Type", "application/json")
 			rec := httptest.NewRecorder()
 			h.ServeHTTP(rec, req)
@@ -89,7 +97,7 @@ func exerciseGoChatHandler(tb testing.TB, h http.Handler, users int) {
 	}
 	wg.Wait()
 
-	req := httptest.NewRequest(http.MethodGet, "/rooms/lobby/messages", nil)
+	req := httptest.NewRequest(http.MethodGet, "/rooms/"+room+"/messages", nil)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
@@ -129,5 +137,5 @@ func exerciseGoChatHandler(tb testing.TB, h http.Handler, users int) {
 		tb.Fatalf("empty room = status %d body %q, want 200 []", rec.Code, rec.Body.String())
 	}
 }
-`, "encoding/json", "fmt", "net/http", "net/http/httptest", "strings", "sync")
+`, "encoding/json", "fmt", "net/http", "net/http/httptest", "runtime", "strings", "sync", "time")
 }

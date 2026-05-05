@@ -56,13 +56,13 @@ async function postJSON(base, path, body) {
   });
 }
 
-async function exerciseChat(base, users) {
-  const bad = await postJSON(base, '/rooms/lobby/messages', { user: '', text: 'hello' });
+async function exerciseChat(base, room, users) {
+  const bad = await postJSON(base, '/rooms/' + room + '/messages', { user: '', text: 'hello' });
   assert.ok(bad.status >= 400 && bad.status <= 499, `+"`"+`empty user status ${bad.status}, want 4xx`+"`"+`);
 
   const started = performance.now();
   const responses = await Promise.all(Array.from({ length: users }, async (_, i) => {
-    const res = await postJSON(base, '/rooms/lobby/messages', { user: `+"`"+`user-${i}`+"`"+`, text: `+"`"+`hello-${i}`+"`"+` });
+    const res = await postJSON(base, '/rooms/' + room + '/messages', { user: `+"`"+`user-${i}`+"`"+`, text: `+"`"+`hello-${i}`+"`"+` });
     const text = await res.text();
     assert.equal(res.status, 201, `+"`"+`POST ${i} status ${res.status} body=${text}`+"`"+`);
     const msg = JSON.parse(text);
@@ -73,7 +73,7 @@ async function exerciseChat(base, users) {
   }));
   assert.equal(responses.length, users);
 
-  const get = await fetch(base + '/rooms/lobby/messages');
+  const get = await fetch(base + '/rooms/' + room + '/messages');
   assert.equal(get.status, 200);
   const messages = await get.json();
   assert.equal(messages.length, users);
@@ -99,8 +99,11 @@ async function exerciseChat(base, users) {
 test('generated Node chat server handles 1000 concurrent posters', async () => {
   const { server, base } = await startServer();
   try {
-    const runtime = await exerciseChat(base, 1000);
-    console.log(`+"`"+`BENCH_RUNTIME_MS=${runtime.toFixed(3)}`+"`"+`);
+    const warmup = await exerciseChat(base, 'warmup', 100);
+    console.log('BENCH_WARMUP_MS=' + warmup.toFixed(3));
+    const runtime = await exerciseChat(base, 'lobby', 1000);
+    console.log('BENCH_RUNTIME_MS=' + runtime.toFixed(3));
+    console.log('BENCH_MEMORY_KB=' + (process.memoryUsage().rss / 1024).toFixed(0));
   } finally {
     await new Promise((resolve) => server.close(resolve));
   }

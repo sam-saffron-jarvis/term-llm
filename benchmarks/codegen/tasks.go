@@ -16,6 +16,9 @@ func allTasks() []Task {
 		allocationTask{},
 		webChat1000Task{},
 		nodeWebChat1000Task{},
+		rubyWebChat1000Task{},
+		pythonWebChat1000Task{},
+		assemblySumPositiveTask{},
 	}
 }
 

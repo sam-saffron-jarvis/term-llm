@@ -55,12 +55,17 @@ Current suite:
 | `go_json_format` | Go | stdlib/API correctness and error handling |
 | `go_concurrent_counter` | Go | concurrency correctness under `-race` |
 | `go_dedupe_perf` | Go | correctness plus `go test -bench -benchmem` output |
-| `go_web_chat_1000` | Go | in-memory HTTP chat handler with 1000 concurrent users under `-race`, plus `benchmem` runtime/allocation metrics |
-| `node_web_chat_1000` | JavaScript/Node | equivalent 1000-concurrent-user HTTP chat server using only Node stdlib |
+| `go_web_chat_1000` | Go | in-memory HTTP chat handler with 1000 concurrent users under `-race`, plus post-warmup runtime/allocation/memory metrics |
+| `node_web_chat_1000` | JavaScript/Node | equivalent 1000-concurrent-user HTTP chat server using only Node stdlib, with warmup and RSS memory |
+| `ruby_web_chat_1000` | Ruby | equivalent 1000-thread in-memory chat callable using only Ruby stdlib, with warmup and RSS memory |
+| `python_web_chat_1000` | Python | equivalent 1000-thread in-memory chat callable using only Python stdlib, with warmup and max RSS memory |
+| `asm_sum_positive_perf` | x86-64 assembly | System V ABI assembly correctness plus warmed perf loop and max RSS memory |
 
-The web chat tasks are intentionally heavier than the toy tasks. Go drives one generated `http.Handler` with 1000 concurrent `POST /rooms/{room}/messages` requests through `httptest`, verifies per-room sequence ordering and message retention, then fetches the room under `go test -race`. Node starts a generated stdlib HTTP listener on localhost and drives the same API with 1000 concurrent `fetch()` calls. If you run them on a slow box, raise `-score-timeout` rather than weakening the concurrency signal.
+The web chat tasks are intentionally heavier than the toy tasks. Go drives one generated `http.Handler` with warmup traffic, then 1000 concurrent `POST /rooms/{room}/messages` requests through `httptest`, verifies per-room sequence ordering and message retention, then fetches the room under `go test -race`. Node starts a generated stdlib HTTP listener on localhost and drives the same API with warmup traffic plus 1000 concurrent `fetch()` calls. Ruby and Python use the same semantic contract through an in-memory callable so we can hammer 1000 threads without turning the benchmark into a framework shootout. The scorers record post-warmup runtime and memory where the runtime exposes it. If you run them on a slow box, raise `-score-timeout` rather than weakening the concurrency signal.
 
-This is deliberately repo-local and boring to run. Add Ruby/Rails, SQL/Postgres, Python, and TypeScript suites the same way: prompt, isolated workspace, deterministic scorer.
+Assembly is deliberately not pretending to be a web stack. It tests whether the model can emit linkable x86-64 System V ABI code that survives a C harness, then records warmed loop runtime and process RSS. Different beast, same dashboard: quality, cost, speed, memory.
+
+This is deliberately repo-local and boring to run. Add Ruby/Rails, SQL/Postgres, and TypeScript suites the same way: prompt, isolated workspace, deterministic scorer.
 
 ## Results
 
@@ -79,7 +84,8 @@ The dashboard visualizes the three numbers that matter together:
 
 - **quality**: pass/fail and scalar score
 - **cost to generate**: estimated USD from token usage/pricing
-- **performance**: generated runtime metrics when available, otherwise scorer duration as a fallback
+- **performance**: post-warmup generated runtime metrics when available, otherwise scorer duration as a fallback
+- **memory**: RSS/max-RSS or benchmark allocation metrics where available
 
 The SVG is easy to paste into reports; the HTML adds summary cards and the sortable-by-eyeball result table. Bigger bubbles cost more, higher bubbles are faster, green bubbles passed, red bubbles failed. Yes, this is intentionally judgemental.
 

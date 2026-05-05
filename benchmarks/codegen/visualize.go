@@ -47,8 +47,10 @@ func renderDashboardHTML(report RunReport, svg string) string {
 			pass = "✓"
 		}
 		perf := displayRuntime(t)
-		fmt.Fprintf(&rows, `<tr><td>%s</td><td>%s</td><td class="pass">%s</td><td>%.2f</td><td>$%.4f</td><td>%s</td><td>%dms</td><td>%dms</td><td>%s</td></tr>`+"\n",
-			html.EscapeString(t.Task), html.EscapeString(t.Language), pass, t.Score, t.EstimatedCost, html.EscapeString(perf), t.LLMDurationMS, t.ScoreDurationMS, html.EscapeString(firstNonEmpty(t.Details, t.Error)))
+		warmup := displayWarmup(t)
+		memory := displayMemory(t)
+		fmt.Fprintf(&rows, `<tr><td>%s</td><td>%s</td><td class="pass">%s</td><td>%.2f</td><td>$%.4f</td><td>%s</td><td>%s</td><td>%s</td><td>%dms</td><td>%dms</td><td>%s</td></tr>`+"\n",
+			html.EscapeString(t.Task), html.EscapeString(t.Language), pass, t.Score, t.EstimatedCost, html.EscapeString(perf), html.EscapeString(warmup), html.EscapeString(memory), t.LLMDurationMS, t.ScoreDurationMS, html.EscapeString(firstNonEmpty(t.Details, t.Error)))
 	}
 	return fmt.Sprintf(`<!doctype html>
 <html>
@@ -85,9 +87,9 @@ func renderDashboardHTML(report RunReport, svg string) string {
     <div class="card"><div class="label">Wall time</div><div class="value">%s</div></div>
   </section>
   <section class="viz">%s</section>
-  <div class="note">Bubble chart: x = generation cost, y = measured runtime speed when available, otherwise scoring speed. Green passes. Red fails. Bigger bubbles cost more. The chart intentionally punishes expensive slow failures because so should we.</div>
+  <div class="note">Bubble chart: x = generation cost, y = post-warmup measured runtime speed when available, otherwise scoring speed. Green passes. Red fails. Bigger bubbles cost more. The chart intentionally punishes expensive slow failures because so should we.</div>
   <table>
-    <thead><tr><th>Task</th><th>Lang</th><th>Pass</th><th>Score</th><th>Cost</th><th>Runtime</th><th>LLM</th><th>Score time</th><th>Detail</th></tr></thead>
+    <thead><tr><th>Task</th><th>Lang</th><th>Pass</th><th>Score</th><th>Cost</th><th>Runtime</th><th>Warmup</th><th>Memory</th><th>LLM</th><th>Score time</th><th>Detail</th></tr></thead>
     <tbody>%s</tbody>
   </table>
 </main>
@@ -220,6 +222,26 @@ func displayRuntime(t TaskResult) string {
 	return "n/a"
 }
 
+func displayWarmup(t TaskResult) string {
+	if t.Metrics.WarmupMS > 0 {
+		return fmt.Sprintf("%.2fms", t.Metrics.WarmupMS)
+	}
+	return "n/a"
+}
+
+func displayMemory(t TaskResult) string {
+	if t.Metrics.MemoryKB > 0 {
+		if t.Metrics.MemoryKB >= 1024 {
+			return fmt.Sprintf("%.1fMB", t.Metrics.MemoryKB/1024)
+		}
+		return fmt.Sprintf("%.0fKB", t.Metrics.MemoryKB)
+	}
+	if t.Metrics.BytesPerOp > 0 {
+		return fmt.Sprintf("%.1fKB/op", t.Metrics.BytesPerOp/1024)
+	}
+	return "n/a"
+}
+
 func perfForChart(t TaskResult) float64 {
 	if t.Metrics.RuntimeMS > 0 {
 		return t.Metrics.RuntimeMS
@@ -236,6 +258,9 @@ func perfForChart(t TaskResult) float64 {
 func shortTaskName(name string) string {
 	name = strings.TrimPrefix(name, "go_")
 	name = strings.TrimPrefix(name, "node_")
+	name = strings.TrimPrefix(name, "ruby_")
+	name = strings.TrimPrefix(name, "python_")
+	name = strings.TrimPrefix(name, "asm_")
 	name = strings.ReplaceAll(name, "_", " ")
 	if len(name) > 24 {
 		return name[:21] + "…"

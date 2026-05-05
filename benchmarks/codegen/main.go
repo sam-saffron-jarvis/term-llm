@@ -29,6 +29,8 @@ type Task interface {
 
 type ScoreMetrics struct {
 	RuntimeMS   float64 `json:"runtime_ms,omitempty"`
+	WarmupMS    float64 `json:"warmup_ms,omitempty"`
+	MemoryKB    float64 `json:"memory_kb,omitempty"`
 	NSPerOp     float64 `json:"ns_per_op,omitempty"`
 	BytesPerOp  float64 `json:"bytes_per_op,omitempty"`
 	AllocsPerOp float64 `json:"allocs_per_op,omitempty"`
@@ -389,7 +391,7 @@ func printReport(w io.Writer, report RunReport) {
 	}
 	fmt.Fprintf(w, "Provider: %s (%s)   Tasks: %d   Concurrency: %d\n", report.Provider, model, report.Total, report.Concurrency)
 	fmt.Fprintln(w, "────────────────────────────────────────────────────────────────────────────")
-	fmt.Fprintf(w, "%-24s %-10s %-6s %-7s %-10s %-11s %-8s %s\n", "Task", "Lang", "Pass", "Score", "Cost", "Runtime", "LLM", "Detail")
+	fmt.Fprintf(w, "%-24s %-10s %-6s %-7s %-10s %-11s %-10s %-10s %-8s %s\n", "Task", "Lang", "Pass", "Score", "Cost", "Runtime", "Warmup", "Memory", "LLM", "Detail")
 	for _, t := range report.Tasks {
 		pass := "✗"
 		if t.Pass {
@@ -399,7 +401,7 @@ func printReport(w io.Writer, report RunReport) {
 		if t.Error != "" {
 			detail = t.Error
 		}
-		fmt.Fprintf(w, "%-24s %-10s %-6s %-7.2f $%-9.4f %-11s %-8s %s\n", t.Task, t.Language, pass, t.Score, t.EstimatedCost, displayRuntime(t), time.Duration(t.LLMDurationMS)*time.Millisecond, detail)
+		fmt.Fprintf(w, "%-24s %-10s %-6s %-7.2f $%-9.4f %-11s %-10s %-10s %-8s %s\n", t.Task, t.Language, pass, t.Score, t.EstimatedCost, displayRuntime(t), displayWarmup(t), displayMemory(t), time.Duration(t.LLMDurationMS)*time.Millisecond, detail)
 	}
 	fmt.Fprintln(w, "────────────────────────────────────────────────────────────────────────────")
 	fmt.Fprintf(w, "Pass rate: %d/%d (%.0f%%)   Mean score: %.2f   Cost: $%.4f   Cost/pass: $%.4f   Total: %s\n", report.Passes, report.Total, report.PassRate*100, report.MeanScore, report.EstimatedCostUSD, report.EstimatedCostPerPass, time.Duration(report.TotalDurationMS)*time.Millisecond)
