@@ -5,6 +5,8 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -58,6 +60,29 @@ func TestParseUserMessageContent_RejectsOversizedInlineImage(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), fmt.Sprintf("exceeds %d MB limit", maxAttachmentBytes>>20)) {
 		t.Fatalf("parseUserMessageContent() error = %v, want size limit error", err)
+	}
+}
+
+func TestParseUserMessageContent_InlineImagesDoNotHitUploadsDir(t *testing.T) {
+	dataHome := t.TempDir()
+	t.Setenv("XDG_DATA_HOME", dataHome)
+
+	content := marshalInlineImageParts(t, 1)
+
+	msg, err := parseUserMessageContent(content)
+	if err != nil {
+		t.Fatalf("parseUserMessageContent() error = %v", err)
+	}
+	if len(msg.Parts) != 1 {
+		t.Fatalf("len(msg.Parts) = %d, want 1", len(msg.Parts))
+	}
+	if msg.Parts[0].ImagePath != "" {
+		t.Fatalf("msg.Parts[0].ImagePath = %q, want empty", msg.Parts[0].ImagePath)
+	}
+
+	uploadsDir := filepath.Join(dataHome, "term-llm", "uploads")
+	if _, err := os.Stat(uploadsDir); !os.IsNotExist(err) {
+		t.Fatalf("uploads dir stat err = %v, want not exist", err)
 	}
 }
 
