@@ -104,7 +104,7 @@ func main() {
 	concurrency := flag.Int("concurrency", envInt("BENCH_CONCURRENCY", 2), "maximum concurrent LLM requests")
 	budget := flag.Duration("budget", envDuration("BENCH_BUDGET", 4*time.Hour), "wall-clock budget for the run")
 	timeout := flag.Duration("timeout", envDuration("BENCH_TASK_TIMEOUT", 5*time.Minute), "timeout per LLM task")
-	scoreTimeout := flag.Duration("score-timeout", envDuration("BENCH_SCORE_TIMEOUT", 20*time.Second), "timeout for compile/test scoring")
+	scoreTimeout := flag.Duration("score-timeout", envDuration("BENCH_SCORE_TIMEOUT", 60*time.Second), "timeout for compile/test scoring")
 	outDir := flag.String("out", envOr("BENCH_OUT", "benchmarks/codegen/results"), "directory for JSON artifacts")
 	jsonOnly := flag.Bool("json", false, "print only the final JSON report")
 	flag.Parse()

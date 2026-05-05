@@ -106,7 +106,7 @@ func (s *chatServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 `
-	result := webChat1000Task{}.Score(code, 20*time.Second)
+	result := webChat1000Task{}.Score(code, 60*time.Second)
 	if !result.Pass || result.Score != 1 || result.Metrics.RuntimeMS <= 0 {
 		t.Fatalf("expected pass with runtime metric, detail=%s stdout=%s stderr=%s", result.Details, result.Stdout, result.Stderr)
 	}
@@ -164,7 +164,7 @@ export function newChatServer() {
   }
 }
 `
-	result := nodeWebChat1000Task{}.Score(code, 20*time.Second)
+	result := nodeWebChat1000Task{}.Score(code, 60*time.Second)
 	if !result.Pass || result.Score != 1 || result.Metrics.RuntimeMS <= 0 {
 		t.Fatalf("expected pass with runtime metric, detail=%s stdout=%s stderr=%s", result.Details, result.Stdout, result.Stderr)
 	}

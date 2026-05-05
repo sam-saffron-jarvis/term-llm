@@ -101,7 +101,7 @@ Every important flag has an env var so the same command is easy to run from jobs
 | `-concurrency` | `BENCH_CONCURRENCY` | `2` |
 | `-budget` | `BENCH_BUDGET` | `4h` |
 | `-timeout` | `BENCH_TASK_TIMEOUT` | `5m` |
-| `-score-timeout` | `BENCH_SCORE_TIMEOUT` | `20s` |
+| `-score-timeout` | `BENCH_SCORE_TIMEOUT` | `60s` |
 | `-out` | `BENCH_OUT` | `benchmarks/codegen/results` |
 
 ## Running via term-llm jobs
