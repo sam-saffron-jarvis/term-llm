@@ -41,17 +41,27 @@ type chatMessage struct {
 
 func TestGenerated(t *testing.T) {
 	h := NewChatServer()
+	exerciseGoChatHandler(t, h, 1000)
+}
 
+func BenchmarkGenerated(b *testing.B) {
+	for i := 0; i < b.N; i++ {
+		h := NewChatServer()
+		exerciseGoChatHandler(b, h, 1000)
+	}
+}
+
+func exerciseGoChatHandler(tb testing.TB, h http.Handler, users int) {
+	tb.Helper()
 	// Basic validation first: bad JSON and empty fields should not be accepted.
 	badReq := httptest.NewRequest(http.MethodPost, "/rooms/lobby/messages", strings.NewReader(`+"`"+`{"user":"","text":"hello"}`+"`"+`))
 	badReq.Header.Set("Content-Type", "application/json")
 	badRec := httptest.NewRecorder()
 	h.ServeHTTP(badRec, badReq)
 	if badRec.Code < 400 || badRec.Code > 499 {
-		t.Fatalf("empty user status = %d, want 4xx", badRec.Code)
+		tb.Fatalf("empty user status = %d, want 4xx", badRec.Code)
 	}
 
-	const users = 1000
 	var wg sync.WaitGroup
 	for i := 0; i < users; i++ {
 		i := i
@@ -64,16 +74,16 @@ func TestGenerated(t *testing.T) {
 			rec := httptest.NewRecorder()
 			h.ServeHTTP(rec, req)
 			if rec.Code != http.StatusCreated {
-				t.Errorf("POST status = %d body=%s", rec.Code, rec.Body.String())
+				tb.Errorf("POST status = %d body=%s", rec.Code, rec.Body.String())
 				return
 			}
 			var msg chatMessage
 			if err := json.NewDecoder(rec.Body).Decode(&msg); err != nil {
-				t.Errorf("decode POST response: %v", err)
+				tb.Errorf("decode POST response: %v", err)
 				return
 			}
 			if msg.Seq < 1 || msg.Seq > users || msg.User != fmt.Sprintf("user-%d", i) || msg.Text != fmt.Sprintf("hello-%d", i) {
-				t.Errorf("bad stored message: %#v", msg)
+				tb.Errorf("bad stored message: %#v", msg)
 			}
 		}()
 	}
@@ -83,32 +93,32 @@ func TestGenerated(t *testing.T) {
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
-		t.Fatalf("GET status = %d body=%s", rec.Code, rec.Body.String())
+		tb.Fatalf("GET status = %d body=%s", rec.Code, rec.Body.String())
 	}
 	var messages []chatMessage
 	if err := json.NewDecoder(rec.Body).Decode(&messages); err != nil {
-		t.Fatalf("decode GET response: %v", err)
+		tb.Fatalf("decode GET response: %v", err)
 	}
 	if len(messages) != users {
-		t.Fatalf("message count = %d, want %d", len(messages), users)
+		tb.Fatalf("message count = %d, want %d", len(messages), users)
 	}
 	seenSeq := make(map[int]bool, users)
 	seenUsers := make(map[string]bool, users)
 	lastSeq := 0
 	for _, msg := range messages {
 		if msg.Seq <= lastSeq {
-			t.Fatalf("messages not in seq order around seq %d after %d", msg.Seq, lastSeq)
+			tb.Fatalf("messages not in seq order around seq %d after %d", msg.Seq, lastSeq)
 		}
 		lastSeq = msg.Seq
 		if msg.Seq < 1 || msg.Seq > users || seenSeq[msg.Seq] {
-			t.Fatalf("bad or duplicate seq: %d", msg.Seq)
+			tb.Fatalf("bad or duplicate seq: %d", msg.Seq)
 		}
 		seenSeq[msg.Seq] = true
 		seenUsers[msg.User] = true
 	}
 	for i := 0; i < users; i++ {
 		if !seenUsers[fmt.Sprintf("user-%d", i)] {
-			t.Fatalf("missing user-%d", i)
+		tb.Fatalf("missing user-%d", i)
 		}
 	}
 
@@ -116,7 +126,7 @@ func TestGenerated(t *testing.T) {
 	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK || strings.TrimSpace(rec.Body.String()) != "[]" {
-		t.Fatalf("empty room = status %d body %q, want 200 []", rec.Code, rec.Body.String())
+		tb.Fatalf("empty room = status %d body %q, want 200 []", rec.Code, rec.Body.String())
 	}
 }
 `, "encoding/json", "fmt", "net/http", "net/http/httptest", "strings", "sync")

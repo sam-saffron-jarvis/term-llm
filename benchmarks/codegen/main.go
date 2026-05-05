@@ -27,31 +27,42 @@ type Task interface {
 	Score(response string, timeout time.Duration) ScoreResult
 }
 
+type ScoreMetrics struct {
+	RuntimeMS   float64 `json:"runtime_ms,omitempty"`
+	NSPerOp     float64 `json:"ns_per_op,omitempty"`
+	BytesPerOp  float64 `json:"bytes_per_op,omitempty"`
+	AllocsPerOp float64 `json:"allocs_per_op,omitempty"`
+}
+
 type ScoreResult struct {
-	Pass          bool    `json:"pass"`
-	Score         float64 `json:"score"`
-	Details       string  `json:"details,omitempty"`
-	Stdout        string  `json:"stdout,omitempty"`
-	Stderr        string  `json:"stderr,omitempty"`
-	GeneratedCode string  `json:"generated_code,omitempty"`
+	Pass          bool         `json:"pass"`
+	Score         float64      `json:"score"`
+	Details       string       `json:"details,omitempty"`
+	Stdout        string       `json:"stdout,omitempty"`
+	Stderr        string       `json:"stderr,omitempty"`
+	GeneratedCode string       `json:"generated_code,omitempty"`
+	Metrics       ScoreMetrics `json:"metrics,omitempty"`
 }
 
 type TaskResult struct {
-	Task          string     `json:"task"`
-	Language      string     `json:"language"`
-	Difficulty    string     `json:"difficulty"`
-	Provider      string     `json:"provider"`
-	Model         string     `json:"model,omitempty"`
-	Pass          bool       `json:"pass"`
-	Score         float64    `json:"score"`
-	Details       string     `json:"details,omitempty"`
-	DurationMS    int64      `json:"duration_ms"`
-	Usage         TokenUsage `json:"usage"`
-	EstimatedCost float64    `json:"estimated_cost_usd,omitempty"`
-	Stdout        string     `json:"stdout,omitempty"`
-	Stderr        string     `json:"stderr,omitempty"`
-	GeneratedCode string     `json:"generated_code,omitempty"`
-	Error         string     `json:"error,omitempty"`
+	Task            string       `json:"task"`
+	Language        string       `json:"language"`
+	Difficulty      string       `json:"difficulty"`
+	Provider        string       `json:"provider"`
+	Model           string       `json:"model,omitempty"`
+	Pass            bool         `json:"pass"`
+	Score           float64      `json:"score"`
+	Details         string       `json:"details,omitempty"`
+	DurationMS      int64        `json:"duration_ms"`
+	LLMDurationMS   int64        `json:"llm_duration_ms"`
+	ScoreDurationMS int64        `json:"score_duration_ms"`
+	Usage           TokenUsage   `json:"usage"`
+	EstimatedCost   float64      `json:"estimated_cost_usd,omitempty"`
+	Metrics         ScoreMetrics `json:"metrics,omitempty"`
+	Stdout          string       `json:"stdout,omitempty"`
+	Stderr          string       `json:"stderr,omitempty"`
+	GeneratedCode   string       `json:"generated_code,omitempty"`
+	Error           string       `json:"error,omitempty"`
 }
 
 type TokenUsage struct {
@@ -205,9 +216,10 @@ func runTask(parent context.Context, provider llm.Provider, providerName, model 
 	defer cancel()
 
 	res := TaskResult{Task: task.Name(), Language: task.Language(), Difficulty: task.Difficulty(), Provider: providerName, Model: model}
-	askPrompt := buildPrompt(task)
-	answer, err := ask(ctx, provider, model, askPrompt, pricing)
-	res.DurationMS = time.Since(started).Milliseconds()
+	taskPrompt := buildPrompt(task)
+	answer, err := ask(ctx, provider, model, taskPrompt, pricing)
+	res.LLMDurationMS = time.Since(started).Milliseconds()
+	res.DurationMS = res.LLMDurationMS
 	if err != nil {
 		res.Error = err.Error()
 		res.Details = "llm request failed"
@@ -216,13 +228,17 @@ func runTask(parent context.Context, provider llm.Provider, providerName, model 
 	res.Usage = answer.Usage
 	res.EstimatedCost = answer.Cost
 
+	scoreStarted := time.Now()
 	score := task.Score(answer.Text, scoreTimeout)
+	res.ScoreDurationMS = time.Since(scoreStarted).Milliseconds()
+	res.DurationMS = time.Since(started).Milliseconds()
 	res.Pass = score.Pass
 	res.Score = score.Score
 	res.Details = score.Details
 	res.Stdout = trimForJSON(score.Stdout)
 	res.Stderr = trimForJSON(score.Stderr)
 	res.GeneratedCode = trimForJSON(score.GeneratedCode)
+	res.Metrics = score.Metrics
 	return res
 }
 
@@ -269,11 +285,12 @@ func ask(ctx context.Context, provider llm.Provider, model, prompt string, prici
 			}
 		}
 	}
-	cost := estimateCost(model, use, pricing)
+	cost := estimateCost(provider.Name(), model, use, pricing)
 	return askResult{Text: b.String(), Usage: use, Cost: cost}, nil
 }
 
-func estimateCost(model string, use TokenUsage, pricing *usage.PricingFetcher) float64 {
+func estimateCost(providerName, model string, use TokenUsage, pricing *usage.PricingFetcher) float64 {
+	model = pricingModelAlias(providerName, model)
 	if strings.TrimSpace(model) == "" {
 		return 0
 	}
@@ -283,6 +300,22 @@ func estimateCost(model string, use TokenUsage, pricing *usage.PricingFetcher) f
 		return 0
 	}
 	return cost
+}
+
+func pricingModelAlias(providerName, model string) string {
+	if providerName != "claude-bin" {
+		return model
+	}
+	switch strings.ToLower(strings.TrimSpace(model)) {
+	case "sonnet", "claude-sonnet", "claude-code-sonnet":
+		return "claude-sonnet-4-6"
+	case "opus", "claude-opus", "claude-code-opus":
+		return "claude-opus-4-5"
+	case "haiku", "claude-haiku", "claude-code-haiku":
+		return "claude-3-5-haiku-20241022"
+	default:
+		return model
+	}
 }
 
 func buildPrompt(task Task) string {
@@ -343,7 +376,10 @@ func writeArtifacts(outDir string, report RunReport) error {
 	}
 	defer f.Close()
 	_, err = f.Write(append(line, '\n'))
-	return err
+	if err != nil {
+		return err
+	}
+	return writeVisualizations(outDir, report)
 }
 
 func printReport(w io.Writer, report RunReport) {
@@ -353,7 +389,7 @@ func printReport(w io.Writer, report RunReport) {
 	}
 	fmt.Fprintf(w, "Provider: %s (%s)   Tasks: %d   Concurrency: %d\n", report.Provider, model, report.Total, report.Concurrency)
 	fmt.Fprintln(w, "────────────────────────────────────────────────────────────────────────────")
-	fmt.Fprintf(w, "%-24s %-8s %-6s %-9s %-10s %s\n", "Task", "Lang", "Pass", "Score", "Cost", "Detail")
+	fmt.Fprintf(w, "%-24s %-10s %-6s %-7s %-10s %-11s %-8s %s\n", "Task", "Lang", "Pass", "Score", "Cost", "Runtime", "LLM", "Detail")
 	for _, t := range report.Tasks {
 		pass := "✗"
 		if t.Pass {
@@ -363,7 +399,7 @@ func printReport(w io.Writer, report RunReport) {
 		if t.Error != "" {
 			detail = t.Error
 		}
-		fmt.Fprintf(w, "%-24s %-8s %-6s %-9.2f $%-9.4f %s\n", t.Task, t.Language, pass, t.Score, t.EstimatedCost, detail)
+		fmt.Fprintf(w, "%-24s %-10s %-6s %-7.2f $%-9.4f %-11s %-8s %s\n", t.Task, t.Language, pass, t.Score, t.EstimatedCost, displayRuntime(t), time.Duration(t.LLMDurationMS)*time.Millisecond, detail)
 	}
 	fmt.Fprintln(w, "────────────────────────────────────────────────────────────────────────────")
 	fmt.Fprintf(w, "Pass rate: %d/%d (%.0f%%)   Mean score: %.2f   Cost: $%.4f   Cost/pass: $%.4f   Total: %s\n", report.Passes, report.Total, report.PassRate*100, report.MeanScore, report.EstimatedCostUSD, report.EstimatedCostPerPass, time.Duration(report.TotalDurationMS)*time.Millisecond)

@@ -16,6 +16,16 @@ func TestExtractCodeFencedGoBlock(t *testing.T) {
 	}
 }
 
+func TestExtractCodeFencedJSBlock(t *testing.T) {
+	code, err := extractCode("```javascript\nexport function newChatServer() {}\n```")
+	if err != nil {
+		t.Fatalf("extractCode failed: %v", err)
+	}
+	if !strings.Contains(code, "newChatServer") {
+		t.Fatalf("unexpected code: %q", code)
+	}
+}
+
 func TestScoreGoFunctionPasses(t *testing.T) {
 	result := scoreGoFunction(`package main
 
@@ -97,7 +107,65 @@ func (s *chatServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 `
 	result := webChat1000Task{}.Score(code, 20*time.Second)
-	if !result.Pass || result.Score != 1 {
-		t.Fatalf("expected pass, detail=%s stdout=%s stderr=%s", result.Details, result.Stdout, result.Stderr)
+	if !result.Pass || result.Score != 1 || result.Metrics.RuntimeMS <= 0 {
+		t.Fatalf("expected pass with runtime metric, detail=%s stdout=%s stderr=%s", result.Details, result.Stdout, result.Stderr)
+	}
+}
+
+func TestNodeWebChat1000TaskReferenceImplementationPasses(t *testing.T) {
+	code := `
+import { URL } from 'node:url';
+
+const rooms = new Map();
+
+function readBody(req) {
+  return new Promise((resolve, reject) => {
+    let data = '';
+    req.setEncoding('utf8');
+    req.on('data', chunk => { data += chunk; });
+    req.on('end', () => resolve(data));
+    req.on('error', reject);
+  });
+}
+
+function send(res, status, value) {
+  res.writeHead(status, { 'content-type': 'application/json' });
+  res.end(JSON.stringify(value));
+}
+
+export function newChatServer() {
+  return async function handler(req, res) {
+    const url = new URL(req.url, 'http://localhost');
+    const parts = url.pathname.split('/').filter(Boolean);
+    if (parts.length !== 3 || parts[0] !== 'rooms' || parts[2] !== 'messages' || !parts[1]) {
+      res.writeHead(404).end();
+      return;
+    }
+    const room = parts[1];
+    if (req.method === 'POST') {
+      let body;
+      try { body = JSON.parse(await readBody(req)); } catch { res.writeHead(400).end(); return; }
+      if (!body || typeof body.user !== 'string' || body.user === '' || typeof body.text !== 'string' || body.text === '') {
+        res.writeHead(400).end();
+        return;
+      }
+      const messages = rooms.get(room) || [];
+      const msg = { seq: messages.length + 1, user: body.user, text: body.text };
+      messages.push(msg);
+      rooms.set(room, messages);
+      send(res, 201, msg);
+      return;
+    }
+    if (req.method === 'GET') {
+      send(res, 200, rooms.get(room) || []);
+      return;
+    }
+    res.writeHead(405).end();
+  }
+}
+`
+	result := nodeWebChat1000Task{}.Score(code, 20*time.Second)
+	if !result.Pass || result.Score != 1 || result.Metrics.RuntimeMS <= 0 {
+		t.Fatalf("expected pass with runtime metric, detail=%s stdout=%s stderr=%s", result.Details, result.Stdout, result.Stderr)
 	}
 }

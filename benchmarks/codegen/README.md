@@ -37,6 +37,7 @@ Each task produces a JSON record with:
 - compile/test pass/fail
 - scalar score (`0.0` or `1.0` for the first suite)
 - benchmark output where a task has a perf component
+- parsed runtime/allocation metrics when the scorer can extract them
 - input/output/cache/reasoning token counts when the provider reports them
 - estimated USD cost using term-llm's LiteLLM pricing cache when the model can be matched
 - generated code, stdout, stderr, and failure detail for postmortems
@@ -54,9 +55,10 @@ Current suite:
 | `go_json_format` | Go | stdlib/API correctness and error handling |
 | `go_concurrent_counter` | Go | concurrency correctness under `-race` |
 | `go_dedupe_perf` | Go | correctness plus `go test -bench -benchmem` output |
-| `go_web_chat_1000` | Go | in-memory HTTP chat handler with 1000 concurrent users under `-race` |
+| `go_web_chat_1000` | Go | in-memory HTTP chat handler with 1000 concurrent users under `-race`, plus `benchmem` runtime/allocation metrics |
+| `node_web_chat_1000` | JavaScript/Node | equivalent 1000-concurrent-user HTTP chat server using only Node stdlib |
 
-The web chat task is intentionally heavier than the toy tasks. It drives one generated `http.Handler` with 1000 concurrent `POST /rooms/{room}/messages` requests through `httptest`, verifies per-room sequence ordering and message retention, then fetches the room. If you run it on a slow box, raise `-score-timeout` rather than weakening the concurrency signal.
+The web chat tasks are intentionally heavier than the toy tasks. Go drives one generated `http.Handler` with 1000 concurrent `POST /rooms/{room}/messages` requests through `httptest`, verifies per-room sequence ordering and message retention, then fetches the room under `go test -race`. Node starts a generated stdlib HTTP listener on localhost and drives the same API with 1000 concurrent `fetch()` calls. If you run them on a slow box, raise `-score-timeout` rather than weakening the concurrency signal.
 
 This is deliberately repo-local and boring to run. Add Ruby/Rails, SQL/Postgres, Python, and TypeScript suites the same way: prompt, isolated workspace, deterministic scorer.
 
@@ -66,8 +68,20 @@ Artifacts are written to `benchmarks/codegen/results/` by default:
 
 ```text
 benchmarks/codegen/results/YYYYMMDDTHHMMSSZ_provider-model.json
+benchmarks/codegen/results/YYYYMMDDTHHMMSSZ_provider-model_dashboard.html
+benchmarks/codegen/results/YYYYMMDDTHHMMSSZ_provider-model_dashboard.svg
+benchmarks/codegen/results/latest_dashboard.html
+benchmarks/codegen/results/latest_dashboard.svg
 benchmarks/codegen/results/history.jsonl
 ```
+
+The dashboard visualizes the three numbers that matter together:
+
+- **quality**: pass/fail and scalar score
+- **cost to generate**: estimated USD from token usage/pricing
+- **performance**: generated runtime metrics when available, otherwise scorer duration as a fallback
+
+The SVG is easy to paste into reports; the HTML adds summary cards and the sortable-by-eyeball result table. Bigger bubbles cost more, higher bubbles are faster, green bubbles passed, red bubbles failed. Yes, this is intentionally judgemental.
 
 Use a throwaway output directory for experiments:
 
