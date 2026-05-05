@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -68,7 +69,7 @@ func TestReadFileToolStartLineBeyondEOF(t *testing.T) {
 	}
 }
 
-func TestReadFileToolTruncatesWithTotalLines(t *testing.T) {
+func TestReadFileToolTruncatesWithoutScanningToEOF(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "sample.txt")
 	if err := os.WriteFile(path, []byte("one\ntwo\nthree\nfour"), 0o644); err != nil {
 		t.Fatal(err)
@@ -83,7 +84,7 @@ func TestReadFileToolTruncatesWithTotalLines(t *testing.T) {
 		t.Fatalf("Execute returned error: %v", err)
 	}
 
-	want := "1: one\n2: two\n\n[Output truncated. Total lines: 4. Use start_line/end_line for pagination.]"
+	want := "1: one\n2: two\n\n[Output truncated. Use start_line/end_line for pagination.]"
 	if out.Content != want {
 		t.Fatalf("unexpected output:\nwant %q\n got %q", want, out.Content)
 	}
@@ -130,6 +131,59 @@ func TestStreamLineNumberedRangeMatchesLegacyFormatting(t *testing.T) {
 	}
 }
 
+func TestStreamLineNumberedRangeStopsReadingAfterTruncation(t *testing.T) {
+	var content strings.Builder
+	for i := 0; i < 10_000; i++ {
+		fmt.Fprintf(&content, "line %05d payload\n", i)
+	}
+
+	reader := &countingChunkReader{
+		data:      content.String(),
+		maxChunk:  32,
+		bytesRead: 0,
+	}
+
+	limits := DefaultOutputLimits()
+	limits.MaxLines = 2
+
+	got, err := streamLineNumberedRange(context.Background(), bufio.NewReader(reader), 1, 0, limits)
+	if err != nil {
+		t.Fatalf("streamLineNumberedRange() error = %v", err)
+	}
+	if !strings.Contains(got, "[Output truncated. Use start_line/end_line for pagination.]") {
+		t.Fatalf("expected truncation notice, got %q", got)
+	}
+	if reader.bytesRead >= len(reader.data) {
+		t.Fatalf("expected early stop before EOF, read %d of %d bytes", reader.bytesRead, len(reader.data))
+	}
+}
+
+type countingChunkReader struct {
+	data      string
+	offset    int
+	maxChunk  int
+	bytesRead int
+}
+
+func (r *countingChunkReader) Read(p []byte) (int, error) {
+	if r.offset >= len(r.data) {
+		return 0, io.EOF
+	}
+
+	n := r.maxChunk
+	if n <= 0 || n > len(p) {
+		n = len(p)
+	}
+	remaining := len(r.data) - r.offset
+	if n > remaining {
+		n = remaining
+	}
+	copy(p, r.data[r.offset:r.offset+n])
+	r.offset += n
+	r.bytesRead += n
+	return n, nil
+}
+
 func legacyReadFileFormatting(content string, startLine, endLine int, limits OutputLimits) (string, error) {
 	lines := strings.Split(content, "\n")
 	totalLines := len(lines)
@@ -173,7 +227,7 @@ func legacyReadFileFormatting(content string, startLine, endLine int, limits Out
 	}
 
 	if truncated {
-		output += fmt.Sprintf("\n\n[Output truncated. Total lines: %d. Use start_line/end_line for pagination.]", totalLines)
+		output += "\n\n[Output truncated. Use start_line/end_line for pagination.]"
 	}
 
 	return output, nil
