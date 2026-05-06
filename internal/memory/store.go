@@ -128,6 +128,8 @@ CREATE TABLE IF NOT EXISTS memory_embeddings (
     PRIMARY KEY (fragment_id, provider, model)
 );
 
+CREATE INDEX IF NOT EXISTS idx_memory_embeddings_provider_model_dimensions ON memory_embeddings(provider, model, dimensions);
+
 CREATE TABLE IF NOT EXISTS memory_mining_state (
     session_id         TEXT PRIMARY KEY,
     agent              TEXT NOT NULL,
@@ -1065,7 +1067,16 @@ func (s *Store) GetFragmentsNeedingEmbedding(ctx context.Context, agent, provide
 	return out, nil
 }
 
-// VectorSearch performs a full cosine similarity scan over embeddings.
+const vectorSearchSQL = `
+		SELECT f.id, f.agent, f.path, f.content, f.source, f.created_at, f.updated_at,
+		       f.accessed_at, f.access_count, f.decay_score, f.pinned,
+		       e.vector
+		FROM memory_embeddings e
+		JOIN memory_fragments f ON f.id = e.fragment_id
+		WHERE e.provider = ? AND e.model = ? AND e.dimensions = ?
+		  AND (? = '' OR f.agent = ?)`
+
+// VectorSearch performs a cosine similarity scan over embeddings matching provider, model, and dimensions.
 func (s *Store) VectorSearch(ctx context.Context, agent, provider, model string, queryVec []float64, limit int) ([]ScoredFragment, error) {
 	if len(queryVec) == 0 {
 		return nil, fmt.Errorf("query vector cannot be empty")
@@ -1079,14 +1090,7 @@ func (s *Store) VectorSearch(ctx context.Context, agent, provider, model string,
 		limit = 24
 	}
 
-	rows, err := s.db.QueryContext(ctx, `
-		SELECT f.id, f.agent, f.path, f.content, f.source, f.created_at, f.updated_at,
-		       f.accessed_at, f.access_count, f.decay_score, f.pinned,
-		       e.vector
-		FROM memory_embeddings e
-		JOIN memory_fragments f ON f.id = e.fragment_id
-		WHERE e.provider = ? AND e.model = ? AND e.dimensions = ?
-		  AND (? = '' OR f.agent = ?)`,
+	rows, err := s.db.QueryContext(ctx, vectorSearchSQL,
 		provider, model, len(queryVec), strings.TrimSpace(agent), strings.TrimSpace(agent))
 	if err != nil {
 		return nil, fmt.Errorf("vector search query: %w", err)
