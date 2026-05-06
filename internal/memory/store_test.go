@@ -524,6 +524,42 @@ func TestStoreVectorSearchAndBumpAccess(t *testing.T) {
 	}
 }
 
+func TestStoreVectorSearchBreaksTiesByUpdatedAt(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore(t)
+	defer store.Close()
+
+	olderTime := time.Now().Add(-time.Hour).UTC().Truncate(time.Second)
+	newerTime := olderTime.Add(30 * time.Minute)
+	older := &Fragment{Agent: "jarvis", Path: "older", Content: "Older tie", CreatedAt: olderTime, UpdatedAt: olderTime}
+	newer := &Fragment{Agent: "jarvis", Path: "newer", Content: "Newer tie", CreatedAt: newerTime, UpdatedAt: newerTime}
+	for _, f := range []*Fragment{older, newer} {
+		if err := store.CreateFragment(ctx, f); err != nil {
+			t.Fatalf("CreateFragment(%s) error = %v", f.Path, err)
+		}
+		if err := store.UpsertEmbedding(ctx, f.ID, "gemini", "gemini-embedding-001", 2, []float64{1, 0}); err != nil {
+			t.Fatalf("UpsertEmbedding(%s) error = %v", f.Path, err)
+		}
+	}
+
+	results, err := store.VectorSearch(ctx, "jarvis", "gemini", "gemini-embedding-001", []float64{1, 0}, 1)
+	if err != nil {
+		t.Fatalf("VectorSearch() error = %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("VectorSearch() len = %d, want 1", len(results))
+	}
+	if results[0].ID != newer.ID {
+		t.Fatalf("VectorSearch() top ID = %s, want newer %s", results[0].ID, newer.ID)
+	}
+	if results[0].Content != newer.Content {
+		t.Fatalf("VectorSearch() content = %q, want %q", results[0].Content, newer.Content)
+	}
+	if len(results[0].Vector) != 2 {
+		t.Fatalf("VectorSearch() vector len = %d, want 2", len(results[0].Vector))
+	}
+}
+
 func TestStoreMiningState(t *testing.T) {
 	ctx := context.Background()
 	store := newTestStore(t)

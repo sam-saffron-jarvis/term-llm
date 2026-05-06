@@ -10,7 +10,6 @@ import (
 	"math"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 	"time"
 
@@ -127,6 +126,9 @@ CREATE TABLE IF NOT EXISTS memory_embeddings (
     embedded_at DATETIME NOT NULL,
     PRIMARY KEY (fragment_id, provider, model)
 );
+
+CREATE INDEX IF NOT EXISTS idx_embeddings_provider_model_dimensions
+    ON memory_embeddings(provider, model, dimensions, fragment_id);
 
 CREATE TABLE IF NOT EXISTS memory_mining_state (
     session_id         TEXT PRIMARY KEY,
@@ -1065,13 +1067,15 @@ func (s *Store) GetFragmentsNeedingEmbedding(ctx context.Context, agent, provide
 	return out, nil
 }
 
-// VectorSearch performs a full cosine similarity scan over embeddings.
+// VectorSearch streams matching embeddings, keeps only the top-k scores in memory,
+// and fetches full fragment rows only for the winners.
 func (s *Store) VectorSearch(ctx context.Context, agent, provider, model string, queryVec []float64, limit int) ([]ScoredFragment, error) {
 	if len(queryVec) == 0 {
 		return nil, fmt.Errorf("query vector cannot be empty")
 	}
 	provider = strings.TrimSpace(provider)
 	model = strings.TrimSpace(model)
+	agent = strings.TrimSpace(agent)
 	if provider == "" || model == "" {
 		return nil, fmt.Errorf("provider and model are required")
 	}
@@ -1079,67 +1083,155 @@ func (s *Store) VectorSearch(ctx context.Context, agent, provider, model string,
 		limit = 24
 	}
 
-	rows, err := s.db.QueryContext(ctx, `
-		SELECT f.id, f.agent, f.path, f.content, f.source, f.created_at, f.updated_at,
-		       f.accessed_at, f.access_count, f.decay_score, f.pinned,
-		       e.vector
+	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return nil, fmt.Errorf("begin vector search transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	rows, err := tx.QueryContext(ctx, `
+		SELECT e.fragment_id, f.updated_at, e.vector
 		FROM memory_embeddings e
 		JOIN memory_fragments f ON f.id = e.fragment_id
 		WHERE e.provider = ? AND e.model = ? AND e.dimensions = ?
 		  AND (? = '' OR f.agent = ?)`,
-		provider, model, len(queryVec), strings.TrimSpace(agent), strings.TrimSpace(agent))
+		provider, model, len(queryVec), agent, agent)
 	if err != nil {
 		return nil, fmt.Errorf("vector search query: %w", err)
 	}
-	defer rows.Close()
 
-	matches := make([]ScoredFragment, 0, limit)
+	topHits := make([]vectorSearchHit, 0, limit)
 	for rows.Next() {
-		var r ScoredFragment
-		var accessedAt sql.NullTime
+		var hit vectorSearchHit
 		var payload []byte
-		if err := rows.Scan(
-			&r.ID,
-			&r.Agent,
-			&r.Path,
-			&r.Content,
-			&r.Source,
-			&r.CreatedAt,
-			&r.UpdatedAt,
-			&accessedAt,
-			&r.AccessCount,
-			&r.DecayScore,
-			&r.Pinned,
-			&payload,
-		); err != nil {
+		if err := rows.Scan(&hit.ID, &hit.UpdatedAt, &payload); err != nil {
+			_ = rows.Close()
 			return nil, fmt.Errorf("scan vector search row: %w", err)
 		}
-		if accessedAt.Valid {
-			at := accessedAt.Time
-			r.AccessedAt = &at
+		if err := json.Unmarshal(payload, &hit.Vector); err != nil {
+			_ = rows.Close()
+			return nil, fmt.Errorf("decode stored vector for fragment %s: %w", hit.ID, err)
 		}
+		hit.Score = embedding.CosineSimilarity(queryVec, hit.Vector)
+		topHits = insertVectorSearchHit(topHits, hit, limit)
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return nil, err
+	}
+	if err := rows.Close(); err != nil {
+		return nil, fmt.Errorf("close vector search rows: %w", err)
+	}
+	if len(topHits) == 0 {
+		if err := tx.Commit(); err != nil {
+			return nil, fmt.Errorf("commit vector search transaction: %w", err)
+		}
+		return []ScoredFragment{}, nil
+	}
 
-		if err := json.Unmarshal(payload, &r.Vector); err != nil {
-			return nil, fmt.Errorf("decode stored vector for fragment %s: %w", r.ID, err)
+	matches, err := fetchVectorSearchFragments(ctx, tx, topHits)
+	if err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("commit vector search transaction: %w", err)
+	}
+	return matches, nil
+}
+
+type vectorSearchHit struct {
+	ID        string
+	UpdatedAt time.Time
+	Score     float64
+	Vector    []float64
+}
+
+func insertVectorSearchHit(hits []vectorSearchHit, hit vectorSearchHit, limit int) []vectorSearchHit {
+	if limit <= 0 {
+		return hits
+	}
+
+	insertAt := len(hits)
+	for i := range hits {
+		if vectorSearchHitBetter(hit, hits[i]) {
+			insertAt = i
+			break
 		}
-		r.Score = embedding.CosineSimilarity(queryVec, r.Vector)
-		matches = append(matches, r)
+	}
+	if len(hits) == limit && insertAt == len(hits) {
+		return hits
+	}
+
+	hits = append(hits, vectorSearchHit{})
+	copy(hits[insertAt+1:], hits[insertAt:])
+	hits[insertAt] = hit
+	if len(hits) > limit {
+		hits = hits[:limit]
+	}
+	return hits
+}
+
+func vectorSearchHitBetter(a, b vectorSearchHit) bool {
+	if a.Score == b.Score {
+		return a.UpdatedAt.After(b.UpdatedAt)
+	}
+	return a.Score > b.Score
+}
+
+func fetchVectorSearchFragments(ctx context.Context, tx *sql.Tx, hits []vectorSearchHit) ([]ScoredFragment, error) {
+	placeholders := strings.Repeat("?,", len(hits))
+	placeholders = strings.TrimSuffix(placeholders, ",")
+
+	args := make([]any, 0, len(hits))
+	for _, hit := range hits {
+		args = append(args, hit.ID)
+	}
+
+	rows, err := tx.QueryContext(ctx, fmt.Sprintf(`
+		SELECT id, agent, path, content, source, created_at, updated_at,
+		       accessed_at, access_count, decay_score, pinned
+		FROM memory_fragments
+		WHERE id IN (%s)`, placeholders), args...)
+	if err != nil {
+		return nil, fmt.Errorf("fetch vector search fragments: %w", err)
+	}
+	defer rows.Close()
+
+	fragments := make(map[string]*Fragment, len(hits))
+	for rows.Next() {
+		frag, err := scanFragment(rows)
+		if err != nil {
+			return nil, fmt.Errorf("scan vector search fragment: %w", err)
+		}
+		fragments[frag.ID] = frag
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
 
-	sort.Slice(matches, func(i, j int) bool {
-		if matches[i].Score == matches[j].Score {
-			return matches[i].UpdatedAt.After(matches[j].UpdatedAt)
+	out := make([]ScoredFragment, 0, len(hits))
+	for _, hit := range hits {
+		frag := fragments[hit.ID]
+		if frag == nil {
+			continue
 		}
-		return matches[i].Score > matches[j].Score
-	})
-
-	if len(matches) > limit {
-		matches = matches[:limit]
+		out = append(out, ScoredFragment{
+			ID:          frag.ID,
+			Agent:       frag.Agent,
+			Path:        frag.Path,
+			Content:     frag.Content,
+			Source:      frag.Source,
+			CreatedAt:   frag.CreatedAt,
+			UpdatedAt:   frag.UpdatedAt,
+			AccessedAt:  frag.AccessedAt,
+			AccessCount: frag.AccessCount,
+			DecayScore:  frag.DecayScore,
+			Pinned:      frag.Pinned,
+			Score:       hit.Score,
+			Vector:      hit.Vector,
+		})
 	}
-	return matches, nil
+	return out, nil
 }
 
 // BumpAccess marks a fragment as recently accessed, increments access_count,
