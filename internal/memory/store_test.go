@@ -524,6 +524,56 @@ func TestStoreVectorSearchAndBumpAccess(t *testing.T) {
 	}
 }
 
+func TestStoreVectorSearchUsesProviderModelDimensionsIndex(t *testing.T) {
+	store := newTestStore(t)
+	defer store.Close()
+
+	rows, err := store.db.Query("EXPLAIN QUERY PLAN "+vectorSearchSQL,
+		"gemini", "gemini-embedding-001", 4, "jarvis", "jarvis")
+	if err != nil {
+		t.Fatalf("EXPLAIN QUERY PLAN error = %v", err)
+	}
+	defer rows.Close()
+
+	var details []string
+	for rows.Next() {
+		var id, parent, notUsed int
+		var detail string
+		if err := rows.Scan(&id, &parent, &notUsed, &detail); err != nil {
+			t.Fatalf("scan query plan row: %v", err)
+		}
+		details = append(details, detail)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("query plan rows error = %v", err)
+	}
+
+	plan := strings.Join(details, "\n")
+	if !strings.Contains(plan, "idx_memory_embeddings_provider_model_dimensions") {
+		t.Fatalf("VectorSearch query plan does not use provider/model/dimensions index:\n%s", plan)
+	}
+}
+
+func BenchmarkStoreVectorSearchProviderModelFilter(b *testing.B) {
+	ctx := context.Background()
+	store := newTestStore(b)
+	defer store.Close()
+	seedVectorSearchBenchmark(b, store, 50000, 250)
+
+	queryVec := []float64{1, 0, 0, 0}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		results, err := store.VectorSearch(ctx, "jarvis", "gemini", "gemini-embedding-001", queryVec, 10)
+		if err != nil {
+			b.Fatalf("VectorSearch() error = %v", err)
+		}
+		if len(results) != 10 {
+			b.Fatalf("VectorSearch() len = %d, want 10", len(results))
+		}
+	}
+}
+
 func TestStoreMiningState(t *testing.T) {
 	ctx := context.Background()
 	store := newTestStore(t)
@@ -1086,6 +1136,61 @@ func BenchmarkListFragmentPathsForMiningTool(b *testing.B) {
 			}
 		}
 	})
+}
+
+func seedVectorSearchBenchmark(b *testing.B, store *Store, total, matching int) {
+	b.Helper()
+	if matching <= 0 || matching > total {
+		b.Fatalf("invalid matching count %d for total %d", matching, total)
+	}
+
+	tx, err := store.db.Begin()
+	if err != nil {
+		b.Fatalf("begin seed transaction: %v", err)
+	}
+	defer tx.Rollback()
+
+	fragStmt, err := tx.Prepare(`
+		INSERT INTO memory_fragments (id, agent, path, content, source, created_at, updated_at, decay_score)
+		VALUES (?, ?, ?, ?, ?, ?, ?, 1.0)`)
+	if err != nil {
+		b.Fatalf("prepare fragment seed insert: %v", err)
+	}
+	defer fragStmt.Close()
+
+	embStmt, err := tx.Prepare(`
+		INSERT INTO memory_embeddings (fragment_id, provider, model, dimensions, vector, embedded_at)
+		VALUES (?, ?, ?, ?, ?, ?)`)
+	if err != nil {
+		b.Fatalf("prepare embedding seed insert: %v", err)
+	}
+	defer embStmt.Close()
+
+	now := time.Now().UTC()
+	matchingVector := []byte(`[1,0,0,0]`)
+	otherVector := []byte(`[0,1,0,0]`)
+	for i := 0; i < total; i++ {
+		id := fmt.Sprintf("vector-frag-%05d", i)
+		if _, err := fragStmt.Exec(id, "jarvis", fmt.Sprintf("vectors/%05d.md", i), "benchmark content", DefaultSourceMine, now, now); err != nil {
+			b.Fatalf("seed fragment %d: %v", i, err)
+		}
+
+		provider := "openai"
+		model := "text-embedding-3-large"
+		vector := otherVector
+		if i < matching {
+			provider = "gemini"
+			model = "gemini-embedding-001"
+			vector = matchingVector
+		}
+		if _, err := embStmt.Exec(id, provider, model, 4, vector, now); err != nil {
+			b.Fatalf("seed embedding %d: %v", i, err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		b.Fatalf("commit seed transaction: %v", err)
+	}
 }
 
 func seedListFragmentPathBenchmark(b *testing.B, store *Store, count int) {
