@@ -1,6 +1,8 @@
 package cmd
 
 import (
+	"bytes"
+	"compress/gzip"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -81,7 +83,19 @@ func (s *serveServer) handleSessionsStatus(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
+	h := w.Header()
+	h.Set("Content-Type", "application/json")
+	if len(body) > 512 && uiAcceptsGzip(r.Header.Get("Accept-Encoding")) {
+		h.Set("Vary", "Accept-Encoding")
+		var buf bytes.Buffer
+		gz, _ := gzip.NewWriterLevel(&buf, gzip.BestSpeed)
+		_, _ = gz.Write(body)
+		_ = gz.Close()
+		h.Set("Content-Encoding", "gzip")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(buf.Bytes())
+		return
+	}
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(body)
 }
