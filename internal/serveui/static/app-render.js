@@ -617,7 +617,7 @@ const getOrCreateAssistantStreamState = (message, body) => {
 };
 
 const scheduleAssistantStreamRender = (streamState) => {
-  if (!streamState) return;
+  if (!streamState || streamState.rendering || streamState.rafId || streamState.timerId) return;
   const renderDelay = app.markdownStreaming && typeof app.markdownStreaming.nextStreamingRenderDelay === 'function'
     ? app.markdownStreaming.nextStreamingRenderDelay(streamState.latestContent.length)
     : 33;
@@ -627,8 +627,6 @@ const scheduleAssistantStreamRender = (streamState) => {
     if (streamState.rafId) return;
     streamState.rafId = window.requestAnimationFrame(() => performAssistantStreamRender(streamState));
   };
-
-  if (streamState.rendering || streamState.rafId || streamState.timerId) return;
   if (elapsed >= renderDelay) {
     enqueueFrame();
     return;
