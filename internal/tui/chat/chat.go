@@ -1629,11 +1629,15 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		// Continue listening for more events unless we're done or got an error.
-		// Keep stream ingestion driven by provider output; smooth rendering is
-		// already coalesced behind m.smoothBuffer and m.smoothTickPending.
+		// When smooth rendering is already pending for a text chunk, defer the
+		// next blocking stream read until after that frame so chatty providers
+		// don't force a full Bubble Tea update/view cycle per token.
 		if ev.Type != ui.StreamEventDone && ev.Type != ui.StreamEventError {
-			m.deferredStreamRead = false
-			cmds = append(cmds, m.listenForStreamEvents())
+			if ev.Type == ui.StreamEventText && m.smoothTickPending {
+				m.deferredStreamRead = true
+			} else {
+				cmds = append(cmds, m.listenForStreamEvents())
+			}
 		}
 		if m.streamPerf != nil {
 			m.streamPerf.RecordDuration(durationMetricStreamEvent, time.Since(streamEventStart))
