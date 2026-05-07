@@ -618,23 +618,21 @@ const getOrCreateAssistantStreamState = (message, body) => {
 };
 
 const scheduleAssistantStreamRender = (streamState) => {
-  if (!streamState) return;
+  if (!streamState || streamState.rendering || streamState.rafId || streamState.timerId) return;
   const renderDelay = app.markdownStreaming && typeof app.markdownStreaming.nextStreamingRenderDelay === 'function'
     ? app.markdownStreaming.nextStreamingRenderDelay(streamState.latestContent.length)
     : 33;
   const elapsed = Date.now() - streamState.lastRenderAt;
-  const enqueueFrame = () => {
-    streamState.timerId = 0;
-    if (streamState.rafId) return;
-    streamState.rafId = window.requestAnimationFrame(() => performAssistantStreamRender(streamState));
-  };
-
-  if (streamState.rendering || streamState.rafId || streamState.timerId) return;
   if (elapsed >= renderDelay) {
-    enqueueFrame();
+    streamState.rafId = window.requestAnimationFrame(() => performAssistantStreamRender(streamState));
     return;
   }
-  streamState.timerId = window.setTimeout(enqueueFrame, renderDelay - elapsed);
+  streamState.timerId = window.setTimeout(() => {
+    streamState.timerId = 0;
+    if (!streamState.rafId) {
+      streamState.rafId = window.requestAnimationFrame(() => performAssistantStreamRender(streamState));
+    }
+  }, renderDelay - elapsed);
 };
 
 const clearAssistantTailRender = (streamState) => {
