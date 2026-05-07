@@ -855,7 +855,18 @@ func (s *serveServer) handleSessionByID(w http.ResponseWriter, r *http.Request) 
 		result = append(result, entry)
 	}
 
-	writeJSON(w, http.StatusOK, map[string]any{"messages": result})
+	body, _ := json.Marshal(map[string]any{"messages": result})
+	hash := sha256.Sum256(body)
+	etag := `"` + hex.EncodeToString(hash[:8]) + `"`
+	w.Header().Set("ETag", etag)
+	w.Header().Set("Cache-Control", "no-cache")
+	if r.Header.Get("If-None-Match") == etag {
+		w.WriteHeader(http.StatusNotModified)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(body)
 }
 
 func (s *serveServer) handleSessionInterrupt(w http.ResponseWriter, r *http.Request, sessionID string) {
