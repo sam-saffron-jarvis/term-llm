@@ -663,7 +663,7 @@ func (s *serveServer) handleSessions(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
-	writeJSON(w, http.StatusOK, map[string]any{"sessions": result})
+	writeJSONConditional(w, r, http.StatusOK, map[string]any{"sessions": result})
 }
 
 func (s *serveServer) handleSessionByID(w http.ResponseWriter, r *http.Request) {
