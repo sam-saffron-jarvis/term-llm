@@ -1172,7 +1172,35 @@ func (s *serveServer) streamResponseRunEvents(ctx context.Context, w http.Respon
 				writeDone()
 				return
 			}
-			if err := writeEvent(ev); err != nil {
+			// Drain any immediately available events and write them as a
+			// batch under a single lock+Flush to cut syscall overhead at
+			// high token rates (~100 events/sec during streaming).
+			pingMu.Lock()
+			closed := false
+			writeErr := writeStoredResponseEvent(w, ev)
+		drainLoop:
+			for writeErr == nil {
+				select {
+				case next, nextOK := <-ch:
+					if !nextOK {
+						closed = true
+						break drainLoop
+					}
+					writeErr = writeStoredResponseEvent(w, next)
+				default:
+					break drainLoop
+				}
+			}
+			flusher.Flush()
+			pingMu.Unlock()
+			if writeErr != nil {
+				return
+			}
+			if closed {
+				if run.subscriberWasDropped(subscriberID) {
+					return
+				}
+				writeDone()
 				return
 			}
 		}
