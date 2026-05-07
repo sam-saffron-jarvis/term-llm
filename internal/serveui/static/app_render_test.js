@@ -710,6 +710,21 @@ async function run(name, fn) {
     assert(body.innerHTML.includes('First paragraph'), 'full markdown render remains');
   });
 
+  await run('updateSidebarStatus finds local session by id using Map lookup', () => {
+    const s1 = { id: 'aaa', title: 'A', created: 1000, messages: [], pinned: false, archived: false, messageCount: 0, lastMessageAt: 1000 };
+    const s2 = { id: 'bbb', title: 'B', created: 2000, messages: [], pinned: false, archived: false, messageCount: 0, lastMessageAt: 2000 };
+    const s3 = { id: 'ccc', title: 'C', created: 3000, messages: [], pinned: false, archived: false, messageCount: 0, lastMessageAt: 3000 };
+    const { app } = createHarness({ visibleSessions: () => [s1, s2, s3] });
+    app.state.sessions = [s1, s2, s3];
+
+    const result = app.updateSidebarStatus([{ id: 'bbb', last_message_at: 9999, active_run: false }]);
+
+    assert(result === true, 'returns true when order changed');
+    assertEqual(s2.lastMessageAt, 9999, 'lastMessageAt updated on the matched session');
+    assertEqual(s1.lastMessageAt, 1000, 'first session unchanged');
+    assertEqual(s3.lastMessageAt, 3000, 'third session unchanged');
+  });
+
   if (failures > 0) {
     process.exit(1);
   }

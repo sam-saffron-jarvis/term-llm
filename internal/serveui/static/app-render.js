@@ -1595,8 +1595,9 @@ const updateSidebarStatus = (statusSessions) => {
   if (!Array.isArray(statusSessions)) return false;
   let changed = false;
   let orderChanged = false;
+  const localSessionMap = new Map(state.sessions.map((s) => [s.id, s]));
   for (const entry of statusSessions) {
-    const local = state.sessions.find((session) => session.id === entry.id) || null;
+    const local = localSessionMap.get(entry.id) || null;
     const busyTarget = local || entry.id;
     const wasActive = sessionHasInProgressState(busyTarget);
     setSessionServerActiveRun(busyTarget, Boolean(entry.active_run));
