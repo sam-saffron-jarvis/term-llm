@@ -159,8 +159,8 @@ func parseRequestedFunctionTool(generic map[string]json.RawMessage) (llm.ToolSpe
 	}
 	if rawStrict := generic["strict"]; len(rawStrict) > 0 {
 		var strict bool
-		if err := json.Unmarshal(rawStrict, &strict); err == nil && !strict {
-			spec.NoStrict = true
+		if err := json.Unmarshal(rawStrict, &strict); err == nil {
+			spec.Strict = strict
 		}
 	}
 
@@ -181,8 +181,8 @@ func parseRequestedFunctionTool(generic map[string]json.RawMessage) (llm.ToolSpe
 			if spec.Schema == nil {
 				spec.Schema = fn.Parameters
 			}
-			if fn.Strict != nil && !*fn.Strict {
-				spec.NoStrict = true
+			if fn.Strict != nil {
+				spec.Strict = *fn.Strict
 			}
 		}
 	}

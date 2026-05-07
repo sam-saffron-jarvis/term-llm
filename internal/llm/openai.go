@@ -198,6 +198,18 @@ func normalizeSchemaForOpenAIStrict(schema map[string]interface{}) map[string]in
 	return normalizeFreeFormMapProperties(normalizeSchemaForOpenAI(schema))
 }
 
+func defaultResponsesParametersSchema(schema map[string]interface{}) map[string]interface{} {
+	if len(schema) > 0 {
+		return schema
+	}
+	return map[string]interface{}{
+		"type":                 "object",
+		"properties":           map[string]interface{}{},
+		"required":             []string{},
+		"additionalProperties": false,
+	}
+}
+
 // normalizeFreeFormMapProperties converts any free-form map schema (one whose
 // additionalProperties is a schema object, not a bool) into an array of
 // {key, value} pair objects. OpenAI strict mode requires additionalProperties:
@@ -260,7 +272,7 @@ func convertFreeFormMapToArray(orig map[string]interface{}, valueSchema map[stri
 	}
 	// Copy metadata not rewritten by the conversion (e.g. title, default, examples).
 	skip := map[string]bool{
-		"type": true, "properties": true, "required": true, "additionalProperties": true,
+		"type": true, "properties": true, "required": true, "additionalProperties": true, "propertyNames": true,
 	}
 	for k, v := range orig {
 		if !skip[k] {
@@ -307,30 +319,154 @@ func deepCopySlice(s []interface{}) []interface{} {
 	return result
 }
 
+func normalizedJSONSchemaTypeNames(value interface{}) ([]string, bool) {
+	if value == nil {
+		return nil, false
+	}
+	seen := map[string]bool{}
+	var names []string
+	add := func(s string) {
+		if !isSupportedJSONSchemaType(s) || seen[s] {
+			return
+		}
+		seen[s] = true
+		names = append(names, s)
+	}
+	switch v := value.(type) {
+	case string:
+		add(v)
+	case []string:
+		for _, item := range v {
+			add(item)
+		}
+	case []interface{}:
+		for _, item := range v {
+			if s, ok := item.(string); ok {
+				add(s)
+			}
+		}
+	default:
+		return nil, true
+	}
+	return names, true
+}
+
+func isSupportedJSONSchemaType(s string) bool {
+	switch s {
+	case "string", "number", "boolean", "integer", "object", "array", "null":
+		return true
+	default:
+		return false
+	}
+}
+
+func inferJSONSchemaType(schema map[string]interface{}) string {
+	if _, ok := schema["anyOf"]; ok {
+		return ""
+	}
+	if _, ok := schema["oneOf"]; ok {
+		return ""
+	}
+	if _, ok := schema["allOf"]; ok {
+		return ""
+	}
+	if schema["properties"] != nil || schema["required"] != nil || schema["additionalProperties"] != nil {
+		return "object"
+	}
+	if schema["items"] != nil || schema["prefixItems"] != nil {
+		return "array"
+	}
+	if schema["enum"] != nil || schema["format"] != nil {
+		return "string"
+	}
+	for _, key := range []string{"minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum", "multipleOf"} {
+		if schema[key] != nil {
+			return "number"
+		}
+	}
+	return "string"
+}
+
+func normalizeSchemaTypeUnion(schema map[string]interface{}, typeNames []string) map[string]interface{} {
+	anyOf := make([]interface{}, 0, len(typeNames))
+	enumValue, hasEnum := schema["enum"]
+	for _, typeName := range typeNames {
+		branch := map[string]interface{}{"type": typeName}
+		copyTypeSpecificSchemaKeywords(branch, schema, typeName)
+		if hasEnum && typeName != "null" {
+			branch["enum"] = enumValue
+		}
+		anyOf = append(anyOf, normalizeSchemaRecursive(branch))
+	}
+
+	for _, key := range []string{
+		"type", "enum", "items", "prefixItems", "properties", "required", "additionalProperties",
+		"minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum", "multipleOf",
+	} {
+		delete(schema, key)
+	}
+	schema["anyOf"] = anyOf
+	return schema
+}
+
+func copyTypeSpecificSchemaKeywords(dst, src map[string]interface{}, typeName string) {
+	switch typeName {
+	case "object":
+		for _, key := range []string{"properties", "required", "additionalProperties"} {
+			if val, ok := src[key]; ok {
+				dst[key] = deepCopySchemaValue(val)
+			}
+		}
+	case "array":
+		for _, key := range []string{"items", "prefixItems"} {
+			if val, ok := src[key]; ok {
+				dst[key] = deepCopySchemaValue(val)
+			}
+		}
+	case "number", "integer":
+		for _, key := range []string{"minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum", "multipleOf"} {
+			if val, ok := src[key]; ok {
+				dst[key] = val
+			}
+		}
+	}
+}
+
+func deepCopySchemaValue(v interface{}) interface{} {
+	switch val := v.(type) {
+	case map[string]interface{}:
+		return deepCopyMap(val)
+	case []interface{}:
+		return deepCopySlice(val)
+	default:
+		return val
+	}
+}
+
 // normalizeSchemaRecursive applies OpenAI normalization recursively
 func normalizeSchemaRecursive(schema map[string]interface{}) map[string]interface{} {
-	// Handle union types expressed as []string (e.g. []string{"string", "null"}).
-	// OpenAI strict mode requires anyOf instead of array type values.
-	if typeSlice, ok := schema["type"].([]string); ok {
-		anyOf := make([]interface{}, 0, len(typeSlice))
-		enum, hasEnum := schema["enum"]
-		delete(schema, "enum")
-		delete(schema, "type")
-		for _, t := range typeSlice {
-			branch := map[string]interface{}{"type": t}
-			if hasEnum && t != "null" {
-				branch["enum"] = enum
-			}
-			anyOf = append(anyOf, branch)
+	// MCP servers often provide broad JSON Schema. OpenAI's strict tool schema
+	// subset is narrower: `type` must be a single primitive string, and nullable
+	// or multi-type schemas must be represented with anyOf. JSON-decoded MCP
+	// schemas also arrive as []interface{}, not []string, so normalize both.
+	if typeNames, hadType := normalizedJSONSchemaTypeNames(schema["type"]); hadType {
+		if len(typeNames) == 0 {
+			delete(schema, "type")
+		} else if len(typeNames) == 1 {
+			schema["type"] = typeNames[0]
+		} else {
+			return normalizeSchemaTypeUnion(schema, typeNames)
 		}
-		schema["anyOf"] = anyOf
-		// Recurse into the newly created anyOf branches.
-		for i, item := range anyOf {
-			if m, ok := item.(map[string]interface{}); ok {
-				anyOf[i] = normalizeSchemaRecursive(m)
-			}
+	}
+
+	// Infer a missing or unusable type from common schema keywords. This mirrors
+	// Codex's behavior for real-world MCP schemas such as Playwright, where some
+	// properties can have an invalid/empty `type` but still include `items`,
+	// `properties`, `additionalProperties`, `enum`, or numeric bounds.
+	if _, hasType := schema["type"]; !hasType {
+		if inferred := inferJSONSchemaType(schema); inferred != "" {
+			schema["type"] = inferred
 		}
-		return schema
 	}
 
 	// Remove unsupported format values (OpenAI only supports a limited set)
@@ -347,10 +483,15 @@ func normalizeSchemaRecursive(schema map[string]interface{}) map[string]interfac
 
 	// Handle properties
 	if props, ok := schema["properties"].(map[string]interface{}); ok && len(props) > 0 {
-		// Recursively normalize each property
+		// Recursively normalize each property. Boolean schemas are valid JSON Schema
+		// but not valid OpenAI tool parameter schemas, so coerce them to a broad
+		// string schema like Codex does for accept-all boolean schema forms.
 		for key, val := range props {
-			if propSchema, ok := val.(map[string]interface{}); ok {
+			switch propSchema := val.(type) {
+			case map[string]interface{}:
 				props[key] = normalizeSchemaRecursive(propSchema)
+			case bool:
+				props[key] = map[string]interface{}{"type": "string"}
 			}
 		}
 
@@ -365,6 +506,8 @@ func normalizeSchemaRecursive(schema map[string]interface{}) map[string]interfac
 	// Handle array items
 	if items, ok := schema["items"].(map[string]interface{}); ok {
 		schema["items"] = normalizeSchemaRecursive(items)
+	} else if _, ok := schema["items"].(bool); ok {
+		schema["items"] = map[string]interface{}{"type": "string"}
 	}
 
 	// Handle anyOf, oneOf, allOf
@@ -377,6 +520,15 @@ func normalizeSchemaRecursive(schema map[string]interface{}) map[string]interfac
 			}
 		}
 	}
+
+	// Handle additionalProperties schema form (free-form maps).
+	if additionalProperties, ok := schema["additionalProperties"].(map[string]interface{}); ok {
+		schema["additionalProperties"] = normalizeSchemaRecursive(additionalProperties)
+	}
+
+	// Drop unsupported object-shape keywords that commonly appear in MCP schemas
+	// but are rejected by OpenAI's tool-parameter schema subset.
+	delete(schema, "propertyNames")
 
 	// OpenAI requires additionalProperties to be false for objects.
 	// Exception: if additionalProperties is already a schema map (e.g. {"type":"string"}),

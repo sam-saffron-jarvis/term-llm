@@ -879,9 +879,93 @@ func TestNormalizeSchemaForOpenAI_RegularObjectGetsAdditionalPropertiesFalse(t *
 	}
 }
 
+func TestNormalizeSchemaForOpenAI_MCPTypeArrayBecomesAnyOf(t *testing.T) {
+	schema := map[string]interface{}{
+		"type": "object",
+		"properties": map[string]interface{}{
+			"data": map[string]interface{}{
+				"type":        []interface{}{"array", "null"},
+				"description": "Dropped data payload",
+				"items":       map[string]interface{}{},
+			},
+		},
+	}
+
+	result := normalizeSchemaForOpenAI(schema)
+	props := result["properties"].(map[string]interface{})
+	dataSchema := props["data"].(map[string]interface{})
+
+	if _, ok := dataSchema["type"]; ok {
+		t.Fatalf("expected data.type to be removed in favor of anyOf, got %#v", dataSchema["type"])
+	}
+	anyOf, ok := dataSchema["anyOf"].([]interface{})
+	if !ok || len(anyOf) != 2 {
+		t.Fatalf("expected data.anyOf with 2 branches, got %#v", dataSchema["anyOf"])
+	}
+	arrayBranch, ok := anyOf[0].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected first anyOf branch to be object, got %T", anyOf[0])
+	}
+	if arrayBranch["type"] != "array" {
+		t.Fatalf("expected first branch type array, got %v", arrayBranch["type"])
+	}
+	items, ok := arrayBranch["items"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected array branch to preserve and normalize items, got %#v", arrayBranch["items"])
+	}
+	if items["type"] != "string" {
+		t.Fatalf("expected empty items schema to be normalized to string, got %#v", items["type"])
+	}
+	nullBranch, ok := anyOf[1].(map[string]interface{})
+	if !ok || nullBranch["type"] != "null" {
+		t.Fatalf("expected second anyOf branch to be null, got %#v", anyOf[1])
+	}
+}
+
+func TestNormalizeSchemaForOpenAI_InfersInvalidMCPPropertyType(t *testing.T) {
+	schema := map[string]interface{}{
+		"type": "object",
+		"properties": map[string]interface{}{
+			"data": map[string]interface{}{
+				"type": []interface{}{},
+				"items": map[string]interface{}{
+					"type": "string",
+				},
+			},
+			"fallback": map[string]interface{}{
+				"type": map[string]interface{}{"not": "a valid type"},
+			},
+		},
+	}
+
+	result := normalizeSchemaForOpenAI(schema)
+	props := result["properties"].(map[string]interface{})
+	dataSchema := props["data"].(map[string]interface{})
+	if dataSchema["type"] != "array" {
+		t.Fatalf("expected data type to be inferred as array, got %#v", dataSchema["type"])
+	}
+	fallbackSchema := props["fallback"].(map[string]interface{})
+	if fallbackSchema["type"] != "string" {
+		t.Fatalf("expected uninformative invalid type to fall back to string, got %#v", fallbackSchema["type"])
+	}
+}
+
+func TestBuildResponsesTools_DefaultsEmptyParametersToObject(t *testing.T) {
+	tools := BuildResponsesTools([]ToolSpec{{Name: "empty", Schema: map[string]interface{}{}}})
+	tool := tools[0].(ResponsesTool)
+	if tool.Parameters["type"] != "object" {
+		t.Fatalf("expected empty tool schema to default to object parameters, got %#v", tool.Parameters)
+	}
+	props, ok := tool.Parameters["properties"].(map[string]interface{})
+	if !ok || len(props) != 0 {
+		t.Fatalf("expected empty properties map, got %#v", tool.Parameters["properties"])
+	}
+}
+
 func TestBuildResponsesTools_NormalizesFreeFormMapProperty(t *testing.T) {
 	specs := []ToolSpec{{
-		Name: "shell",
+		Name:   "shell",
+		Strict: true,
 		Schema: map[string]interface{}{
 			"type": "object",
 			"properties": map[string]interface{}{

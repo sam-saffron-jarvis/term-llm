@@ -287,13 +287,7 @@ func (m *Model) handleKeyMsg(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 					} else {
 						m.mcpManager.Enable(context.Background(), name)
 					}
-					// Refresh the picker to show updated state (stays open!)
-					// Preserve query and cursor position
-					query := m.dialog.Query()
-					cursor := m.dialog.Cursor()
-					m.dialog.ShowMCPPicker(m.mcpManager)
-					m.dialog.SetQuery(query)
-					m.dialog.SetCursor(cursor)
+					m.refreshMCPPickerIfOpen()
 				}
 				return m, nil
 			case key.Matches(msg, key.NewBinding(key.WithKeys("esc", "ctrl+c"))):

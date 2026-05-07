@@ -128,10 +128,11 @@ type ToolSpec struct {
 	Name        string
 	Description string
 	Schema      map[string]interface{}
-	// NoStrict disables OpenAI strict mode for this tool. Use when the schema
-	// contains free-form objects (additionalProperties: true) or union types
-	// that are incompatible with OpenAI's strict structured-output requirements.
-	NoStrict bool
+	// Strict opts this tool into OpenAI strict function-parameter schemas.
+	// Default is false to match Codex/OpenAI flagship behavior for broad MCP
+	// schemas. When enabled, all object properties are required and free-form maps
+	// are converted to strict-compatible key/value arrays.
+	Strict bool
 }
 
 // ToolChoiceMode controls tool selection behavior.

@@ -341,16 +341,43 @@ func TestBuildResponsesTools(t *testing.T) {
 	if tool.Description != "Get the current weather" {
 		t.Errorf("expected description 'Get the current weather', got %q", tool.Description)
 	}
-	if !tool.Strict {
-		t.Error("expected Strict to be true")
+	if tool.Strict {
+		t.Error("expected Strict to default to false")
 	}
 
-	// Check that schema normalization added required and additionalProperties
+	// Default lowering should remain provider-neutral/non-strict: do not force
+	// optional fields into required or add OpenAI strict-only constraints.
+	if _, ok := tool.Parameters["required"]; ok {
+		t.Error("did not expect 'required' field to be forced by default")
+	}
+	if _, ok := tool.Parameters["additionalProperties"]; ok {
+		t.Error("did not expect 'additionalProperties' to be forced by default")
+	}
+}
+
+func TestBuildResponsesToolsStrictOptIn(t *testing.T) {
+	specs := []ToolSpec{
+		{
+			Name:   "get_weather",
+			Strict: true,
+			Schema: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"location": map[string]interface{}{"type": "string"},
+				},
+			},
+		},
+	}
+	tools := BuildResponsesTools(specs)
+	tool := tools[0].(ResponsesTool)
+	if !tool.Strict {
+		t.Error("expected Strict to be true when opted in")
+	}
 	if _, ok := tool.Parameters["required"]; !ok {
-		t.Error("expected 'required' field to be added by normalization")
+		t.Error("expected 'required' field to be added by strict normalization")
 	}
 	if tool.Parameters["additionalProperties"] != false {
-		t.Error("expected 'additionalProperties' to be false")
+		t.Error("expected 'additionalProperties' to be false in strict mode")
 	}
 }
 

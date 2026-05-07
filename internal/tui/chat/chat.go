@@ -141,8 +141,9 @@ type Model struct {
 	pendingInterruptUI      string         // UI state: "", "deciding", "interject"
 	interruptNotice         string         // One-line UI notice for recent interrupt actions
 	// MCP (Model Context Protocol)
-	mcpManager *mcp.Manager
-	maxTurns   int
+	mcpManager    *mcp.Manager
+	mcpStatusChan chan mcp.StatusUpdate
+	maxTurns      int
 
 	// Directory approval
 	approvedDirs    *ApprovedDirs
@@ -303,6 +304,7 @@ type (
 	handoverConfirmMsg    struct{}
 	handoverCancelMsg     struct{}
 	handoverRenameDoneMsg struct{ err error }
+	mcpStatusUpdateMsg    struct{ update mcp.StatusUpdate }
 )
 
 const (
@@ -528,6 +530,12 @@ func NewWithFastProvider(cfg *config.Config, provider llm.Provider, fastProvider
 		stats.SeedTotals(sess.InputTokens, sess.OutputTokens, sess.CachedInputTokens, sess.CacheWriteTokens, sess.ToolCalls, sess.LLMTurns)
 	}
 
+	var mcpStatusChan chan mcp.StatusUpdate
+	if mcpManager != nil {
+		mcpStatusChan = make(chan mcp.StatusUpdate, 32)
+		mcpManager.SetStatusChannel(mcpStatusChan)
+	}
+
 	model := &Model{
 		width:                    width,
 		height:                   height,
@@ -559,6 +567,7 @@ func NewWithFastProvider(cfg *config.Config, provider llm.Provider, fastProvider
 		dialog:                   dialog,
 		approvedDirs:             approvedDirs,
 		mcpManager:               mcpManager,
+		mcpStatusChan:            mcpStatusChan,
 		maxTurns:                 maxTurns,
 		forceExternalSearch:      forceExternalSearch,
 		disableExternalWebFetch:  disableExternalWebFetch,
@@ -581,6 +590,17 @@ func NewWithFastProvider(cfg *config.Config, provider llm.Provider, fastProvider
 	}
 	model.configureContextManagementForSession()
 	return model
+}
+
+func (m *Model) refreshMCPPickerIfOpen() {
+	if m == nil || m.dialog == nil || m.mcpManager == nil || m.dialog.Type() != DialogMCPPicker {
+		return
+	}
+	query := m.dialog.Query()
+	cursor := m.dialog.Cursor()
+	m.dialog.ShowMCPPicker(m.mcpManager)
+	m.dialog.SetQuery(query)
+	m.dialog.SetCursor(cursor)
 }
 
 func (m *Model) seedStatsFromSession() {
@@ -784,6 +804,11 @@ func (m *Model) Init() tea.Cmd {
 	// Update textarea height for any initial text
 	m.updateTextareaHeight()
 
+	baseCmds := []tea.Cmd{textarea.Blink, m.spinner.Tick}
+	if cmd := m.listenForMCPStatusUpdates(); cmd != nil {
+		baseCmds = append(baseCmds, cmd)
+	}
+
 	// Set markdown renderer for chat renderer
 	if m.chatRenderer != nil {
 		m.chatRenderer.SetMarkdownRenderer(m.renderMd)
@@ -795,11 +820,9 @@ func (m *Model) Init() tea.Cmd {
 		m.textarea.SetValue(m.handoverAutoSend)
 		m.handoverAutoSend = ""
 		m.updateTextareaHeight()
-		return tea.Batch(
-			textarea.Blink,
-			m.spinner.Tick,
-			func() tea.Msg { return autoSendMsg{} },
-		)
+		cmds := append([]tea.Cmd{}, baseCmds...)
+		cmds = append(cmds, func() tea.Msg { return autoSendMsg{} })
+		return tea.Batch(cmds...)
 	}
 
 	// In auto-send mode, pop first message from queue and send it
@@ -808,17 +831,25 @@ func (m *Model) Init() tea.Cmd {
 		m.textarea.SetValue(m.autoSendQueue[0])
 		m.autoSendQueue = m.autoSendQueue[1:]
 		m.updateTextareaHeight()
-		return tea.Batch(
-			textarea.Blink,
-			m.spinner.Tick,
-			func() tea.Msg { return autoSendMsg{} },
-		)
+		cmds := append([]tea.Cmd{}, baseCmds...)
+		cmds = append(cmds, func() tea.Msg { return autoSendMsg{} })
+		return tea.Batch(cmds...)
 	}
 
-	return tea.Batch(
-		textarea.Blink,
-		m.spinner.Tick,
-	)
+	return tea.Batch(baseCmds...)
+}
+
+func (m *Model) listenForMCPStatusUpdates() tea.Cmd {
+	if m == nil || m.mcpStatusChan == nil {
+		return nil
+	}
+	return func() tea.Msg {
+		update, ok := <-m.mcpStatusChan
+		if !ok {
+			return nil
+		}
+		return mcpStatusUpdateMsg{update: update}
+	}
 }
 
 // RequestedResumeSessionID returns a pending session ID to relaunch, if any.
@@ -976,6 +1007,10 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.Seq == m.footerMessageSeq {
 			m.clearFooterMessage()
 		}
+
+	case mcpStatusUpdateMsg:
+		m.refreshMCPPickerIfOpen()
+		cmds = append(cmds, m.listenForMCPStatusUpdates())
 
 	case interruptClassifiedMsg:
 		return m.handleInterruptClassified(msg)
