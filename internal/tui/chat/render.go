@@ -921,7 +921,7 @@ func (m *Model) statusLineUsageParts() (string, string) {
 			contextTokens = m.engine.LastTotalTokens()
 		}
 		if contextTokens <= 0 {
-			contextTokens = m.engine.EstimateTokens(m.buildMessagesForContextEstimate())
+			contextTokens = m.estimateContextTokensCached()
 		}
 		limit := m.engine.InputLimit()
 		if contextTokens > 0 && limit > 0 {

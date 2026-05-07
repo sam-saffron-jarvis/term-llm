@@ -73,6 +73,11 @@ type Model struct {
 	// messages are produced. Written from engine callbacks; protected by
 	// contextEstimateMu.
 	contextEstimateMu                sync.Mutex
+	contextEstimateVersion           uint64
+	contextEstimateCachedVersion     uint64
+	contextEstimateCachedTokens      int
+	contextEstimateCachedStreaming   bool
+	contextEstimateCachedValid       bool
 	streamingContextMessages         []llm.Message
 	streamingContextPendingAssistant bool
 

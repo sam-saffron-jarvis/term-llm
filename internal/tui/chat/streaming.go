@@ -26,10 +26,25 @@ func copyLLMMessages(messages []llm.Message) []llm.Message {
 	return copied
 }
 
+func (m *Model) invalidateContextEstimateCacheLocked() {
+	m.contextEstimateVersion++
+	m.contextEstimateCachedVersion = 0
+	m.contextEstimateCachedTokens = 0
+	m.contextEstimateCachedStreaming = false
+	m.contextEstimateCachedValid = false
+}
+
+func (m *Model) invalidateContextEstimateCache() {
+	m.contextEstimateMu.Lock()
+	m.invalidateContextEstimateCacheLocked()
+	m.contextEstimateMu.Unlock()
+}
+
 func (m *Model) setStreamingContextMessages(messages []llm.Message) {
 	m.contextEstimateMu.Lock()
 	m.streamingContextMessages = copyLLMMessages(messages)
 	m.streamingContextPendingAssistant = false
+	m.invalidateContextEstimateCacheLocked()
 	m.contextEstimateMu.Unlock()
 }
 
@@ -37,6 +52,7 @@ func (m *Model) clearStreamingContextMessages() {
 	m.contextEstimateMu.Lock()
 	m.streamingContextMessages = nil
 	m.streamingContextPendingAssistant = false
+	m.invalidateContextEstimateCacheLocked()
 	m.contextEstimateMu.Unlock()
 }
 
@@ -45,10 +61,12 @@ func (m *Model) updateStreamingContextAssistant(assistantMsg llm.Message) {
 	defer m.contextEstimateMu.Unlock()
 	if m.streamingContextPendingAssistant && len(m.streamingContextMessages) > 0 {
 		m.streamingContextMessages[len(m.streamingContextMessages)-1] = assistantMsg
+		m.invalidateContextEstimateCacheLocked()
 		return
 	}
 	m.streamingContextMessages = append(m.streamingContextMessages, assistantMsg)
 	m.streamingContextPendingAssistant = true
+	m.invalidateContextEstimateCacheLocked()
 }
 
 func (m *Model) appendStreamingContextTurnMessages(turnMessages []llm.Message) {
@@ -68,6 +86,7 @@ func (m *Model) appendStreamingContextTurnMessages(turnMessages []llm.Message) {
 		m.streamingContextMessages = append(m.streamingContextMessages, turnMessages[appendStart:]...)
 	}
 	m.streamingContextPendingAssistant = false
+	m.invalidateContextEstimateCacheLocked()
 }
 
 // clearStreamCallbacks detaches every engine callback wired in startStream
@@ -579,6 +598,55 @@ func (m *Model) buildMessagesForContextEstimate() []llm.Message {
 	return m.buildMessages()
 }
 
+func (m *Model) estimateContextTokensCached() int {
+	if m == nil || m.engine == nil {
+		return 0
+	}
+
+	m.contextEstimateMu.Lock()
+	version := m.contextEstimateVersion
+	if m.streaming && len(m.streamingContextMessages) > 0 {
+		if m.contextEstimateCachedValid && m.contextEstimateCachedVersion == version && m.contextEstimateCachedStreaming {
+			tokens := m.contextEstimateCachedTokens
+			m.contextEstimateMu.Unlock()
+			return tokens
+		}
+		messages := copyLLMMessages(m.streamingContextMessages)
+		m.contextEstimateMu.Unlock()
+
+		tokens := m.engine.EstimateTokens(messages)
+
+		m.contextEstimateMu.Lock()
+		if m.contextEstimateVersion == version && m.streaming && len(m.streamingContextMessages) > 0 {
+			m.contextEstimateCachedVersion = version
+			m.contextEstimateCachedTokens = tokens
+			m.contextEstimateCachedStreaming = true
+			m.contextEstimateCachedValid = true
+		}
+		m.contextEstimateMu.Unlock()
+		return tokens
+	}
+	if m.contextEstimateCachedValid && m.contextEstimateCachedVersion == version && !m.contextEstimateCachedStreaming {
+		tokens := m.contextEstimateCachedTokens
+		m.contextEstimateMu.Unlock()
+		return tokens
+	}
+	m.contextEstimateMu.Unlock()
+
+	messages := m.buildMessages()
+	tokens := m.engine.EstimateTokens(messages)
+
+	m.contextEstimateMu.Lock()
+	if m.contextEstimateVersion == version && !m.streaming {
+		m.contextEstimateCachedVersion = version
+		m.contextEstimateCachedTokens = tokens
+		m.contextEstimateCachedStreaming = false
+		m.contextEstimateCachedValid = true
+	}
+	m.contextEstimateMu.Unlock()
+	return tokens
+}
+
 func (m *Model) tickEvery() tea.Cmd {
 	return tea.Tick(1*time.Second, func(t time.Time) tea.Msg {
 		return tickMsg(t)
@@ -661,6 +729,7 @@ func (m *Model) invalidateViewCache() {
 	m.viewCache.lastWavePos = 0
 	m.viewCache.lastSetContentAt = time.Time{}
 	m.resetAltScreenStreamingAppendCache()
+	m.invalidateContextEstimateCache()
 	if m.chatRenderer != nil {
 		m.chatRenderer.InvalidateCache()
 	}
@@ -670,6 +739,7 @@ func (m *Model) invalidateViewCache() {
 func (m *Model) invalidateHistoryCache() {
 	m.viewCache.historyValid = false
 	m.resetAltScreenStreamingAppendCache()
+	m.invalidateContextEstimateCache()
 	if m.chatRenderer != nil {
 		m.chatRenderer.InvalidateCache()
 	}
