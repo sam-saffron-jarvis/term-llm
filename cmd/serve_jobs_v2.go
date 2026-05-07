@@ -593,8 +593,10 @@ func newJobsV2Manager(dbPath string, workers int, llmExec serveJobsExecutor) (*j
 	if err != nil {
 		return nil, fmt.Errorf("open jobs db: %w", err)
 	}
-	// Required for :memory: databases: keep a single connection so schema/data persist.
-	db.SetMaxOpenConns(1)
+	if dbPath == ":memory:" {
+		// Required for :memory: databases: keep a single connection so schema/data persist.
+		db.SetMaxOpenConns(1)
+	}
 	if err := execJobsV2Schema(db); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("init jobs schema: %w", err)

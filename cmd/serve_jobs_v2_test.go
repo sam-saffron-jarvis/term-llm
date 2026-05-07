@@ -6,12 +6,26 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/llm"
 )
+
+func TestNewJobsV2ManagerDoesNotForceSingleConnectionForFileBackedDB(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "jobs_v2.db")
+	mgr, err := newJobsV2Manager(dbPath, 0, nil)
+	if err != nil {
+		t.Fatalf("newJobsV2Manager failed: %v", err)
+	}
+	defer func() { _ = mgr.Close() }()
+
+	if got := mgr.db.Stats().MaxOpenConnections; got != 0 {
+		t.Fatalf("MaxOpenConnections = %d, want 0 for file-backed DB", got)
+	}
+}
 
 func TestJobsV2OnceProgramRunLifecycle(t *testing.T) {
 	mgr, err := newJobsV2Manager(":memory:", 1, nil)
