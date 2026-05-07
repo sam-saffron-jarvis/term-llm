@@ -606,7 +606,9 @@ const getOrCreateAssistantStreamState = (message, body) => {
       rendering: false,
       rafId: 0,
       timerId: 0,
-      lastRenderAt: 0
+      lastRenderAt: 0,
+      plainTextScanSource: '',
+      plainTextEligible: true
     };
   const containers = createAssistantStreamContainers(body);
   streamState.messageId = message.id;
@@ -745,8 +747,8 @@ const performAssistantStreamRender = (streamState) => {
     if (content) {
       const renderPlainTail = Boolean(
         app.markdownStreaming
-        && typeof app.markdownStreaming.canStreamPlainTextTail === 'function'
-        && app.markdownStreaming.canStreamPlainTextTail(content)
+        && typeof app.markdownStreaming.canStreamPlainTextTailIncremental === 'function'
+        && app.markdownStreaming.canStreamPlainTextTailIncremental(streamState, content)
       );
 
       if (renderPlainTail && !(streamState.stableLength > 0)) {
