@@ -962,6 +962,10 @@ func (s *serveServer) Start() error {
 		Handler: s.httpHandler(),
 	}
 
+	if s.cfg.ui {
+		s.prewarmUIAssetCache()
+	}
+
 	errCh := make(chan error, 1)
 	go func() {
 		err := s.server.ListenAndServe()

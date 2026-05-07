@@ -268,6 +268,32 @@ func (s *serveServer) buildIndexHTML() []byte {
 	return serveui.RenderIndexHTML(s.cfg.basePath, headSnippet)
 }
 
+// prewarmUIAssetCache pre-compresses the service-worker shell assets in a
+// background goroutine so the first real browser request finds gzip bytes
+// already cached rather than paying the compression cost inline.
+func (s *serveServer) prewarmUIAssetCache() {
+	go func() {
+		// Rendered assets: build + cache in one shot.
+		_ = s.renderIndexHTML()
+		uiGetOrBuildEntry(serveui.RenderServiceWorker(), true)
+		uiGetOrBuildEntry(serveui.RenderManifest(), true)
+
+		// Static shell assets (SW precache list minus the PNG icon).
+		for _, name := range []string{
+			"app.css",
+			"app-core.js", "app-render.js", "app-stream.js",
+			"app-sessions.js", "app-webrtc.js",
+			"markdown-setup.js", "markdown-streaming.js", "decoration.js",
+			"vendor/marked/marked.umd.min.js",
+			"vendor/dompurify/purify.min.js",
+		} {
+			if data, err := serveui.StaticAsset(name); err == nil {
+				uiGetOrBuildEntry(data, true)
+			}
+		}
+	}()
+}
+
 func (s *serveServer) imageOutputDir() string {
 	if s != nil && s.cfgRef != nil {
 		if outputDir := image.ExpandPath(s.cfgRef.Image.OutputDir); outputDir != "" {
