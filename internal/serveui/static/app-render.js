@@ -706,8 +706,9 @@ const renderAssistantTailPlainText = (streamState, tail) => {
     streamState.lastTailSource = '';
   }
 
-  if (tail.startsWith(streamState.lastTailSource || '')) {
-    textNode.textContent += tail.slice(streamState.lastTailSource.length);
+  const prevLen = (streamState.lastTailSource || '').length;
+  if (prevLen > 0 && tail.length > prevLen) {
+    textNode.textContent += tail.slice(prevLen);
   } else {
     textNode.textContent = tail;
   }
