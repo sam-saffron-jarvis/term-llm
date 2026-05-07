@@ -101,9 +101,8 @@ const pollSidebarStatus = async () => {
       if (Array.isArray(data.sessions)) {
         updateSidebarStatus(data.sessions);
         // Discover sessions created in other tabs/devices
-        const hasUnknown = data.sessions.some(
-          (entry) => !state.sessions.find((s) => s.id === entry.id)
-        );
+        const localIds = new Set(state.sessions.map((s) => s.id));
+        const hasUnknown = data.sessions.some((entry) => !localIds.has(entry.id));
         if (hasUnknown) mergeServerSessions();
       }
     }
