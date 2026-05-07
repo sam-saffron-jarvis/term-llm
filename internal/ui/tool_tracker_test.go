@@ -5,6 +5,33 @@ import (
 	"testing"
 )
 
+func TestToolExpandHintShownOnFirstToolOnly(t *testing.T) {
+	tracker := NewToolTracker()
+	tracker.HandleToolStart("call-1", "read_file", "(a.go)", nil)
+	tracker.HandleToolStart("call-2", "grep", "(needle)", nil)
+
+	if len(tracker.Segments) != 2 {
+		t.Fatalf("expected 2 tool segments, got %d", len(tracker.Segments))
+	}
+	if !tracker.Segments[0].ToolExpandHint {
+		t.Fatal("expected first tool segment to carry expand hint")
+	}
+	if tracker.Segments[1].ToolExpandHint {
+		t.Fatal("expected second tool segment not to carry expand hint")
+	}
+
+	segments := []*Segment{&tracker.Segments[0], &tracker.Segments[1]}
+	plain := StripANSI(RenderSegments(segments, 80, -1, nil, false, false))
+	if count := strings.Count(plain, "(CTRL+e to expand)"); count != 1 {
+		t.Fatalf("expected one expand hint, got %d in %q", count, plain)
+	}
+
+	expandedPlain := StripANSI(RenderSegments(segments, 80, -1, nil, false, true))
+	if strings.Contains(expandedPlain, "(CTRL+e to expand)") {
+		t.Fatalf("expected expand hint hidden when tools are expanded, got %q", expandedPlain)
+	}
+}
+
 func TestAddExternalUIResult(t *testing.T) {
 	tracker := NewToolTracker()
 

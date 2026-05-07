@@ -586,6 +586,7 @@ func (m *Model) renderStreamingInline() string {
 			WavePos:         wavePos,
 			Width:           m.width,
 			RenderMarkdown:  m.renderMd,
+			ToolsExpanded:   m.toolsExpanded,
 			HasFlushed:      !hasContent && m.tracker != nil && m.tracker.HasFlushed,
 			LastFlushedType: m.tracker.LastFlushedType,
 		}

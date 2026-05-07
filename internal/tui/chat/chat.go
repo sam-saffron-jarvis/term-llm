@@ -243,6 +243,8 @@ type Model struct {
 	textMode bool
 	// Expanded tool display (full commands/env)
 	toolsExpanded bool
+	// Whether the Ctrl+E discovery hint has been shown in this chat session.
+	toolExpandHintShown bool
 
 	// Mouse layout tracking for textarea click-to-cursor support
 	textareaBoundsValid    bool
@@ -724,6 +726,8 @@ func (m *Model) resetViewportHorizontalOffset() {
 func (m *Model) resetTracker() {
 	m.tracker = ui.NewToolTracker()
 	m.tracker.TextMode = m.textMode
+	m.tracker.SetExpanded(m.toolsExpanded)
+	m.tracker.SetExpandHintShown(m.toolExpandHintShown)
 	m.viewCache.cachedCompletedContent = ""
 	m.viewCache.cachedTrackerVersion = 0
 	m.viewCache.lastTrackerVersion = 0
@@ -1228,6 +1232,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		case ui.StreamEventToolStart:
 			m.stats.ToolStart()
+			if m.tracker != nil {
+				m.tracker.SetExpandHintShown(m.toolExpandHintShown)
+			}
 
 			// Flush smooth buffer before tool starts (user wants to see tool output right away)
 			if m.smoothBuffer != nil {
@@ -1247,6 +1254,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return m.renderMarkdown(text)
 				})
 				if m.tracker.HandleToolStart(ev.ToolCallID, ev.ToolName, ev.ToolInfo, ev.ToolArgs) {
+					m.toolExpandHintShown = m.tracker.ExpandHintShown()
 					// New segment added, start wave animation (but not for ask_user which has its own UI)
 					if ev.ToolName != tools.AskUserToolName {
 						cmds = append(cmds, m.tracker.StartWave())

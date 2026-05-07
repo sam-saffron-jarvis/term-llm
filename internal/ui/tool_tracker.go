@@ -94,13 +94,14 @@ func isBlankOrANSI(s string) bool {
 // ToolTracker manages tool segment state and wave animation.
 // Designed to be embedded in larger models (ask, chat) for consistent tool tracking.
 type ToolTracker struct {
-	Segments     []Segment
-	WavePos      int
-	WavePaused   bool
-	LastActivity time.Time
-	Version      uint64 // Incremented when content changes (segments added/modified)
-	TextMode     bool   // When true, skip markdown rendering (plain text output)
-	expanded     bool
+	Segments        []Segment
+	WavePos         int
+	WavePaused      bool
+	LastActivity    time.Time
+	Version         uint64 // Incremented when content changes (segments added/modified)
+	TextMode        bool   // When true, skip markdown rendering (plain text output)
+	expanded        bool
+	expandHintShown bool
 
 	// Flush state for consistent spacing
 	LastFlushedType SegmentType
@@ -118,6 +119,19 @@ func NewToolTracker() *ToolTracker {
 // SetExpanded controls whether tool segments render in expanded mode.
 func (t *ToolTracker) SetExpanded(v bool) {
 	t.expanded = v
+}
+
+// SetExpandHintShown controls whether the one-time Ctrl+E discovery hint has
+// already been consumed by this tracker. Chat TUI keeps this session-scoped and
+// reapplies it when a fresh per-turn tracker is created.
+func (t *ToolTracker) SetExpandHintShown(v bool) {
+	t.expandHintShown = v
+}
+
+// ExpandHintShown reports whether this tracker has consumed the one-time Ctrl+E
+// discovery hint.
+func (t *ToolTracker) ExpandHintShown() bool {
+	return t.expandHintShown
 }
 
 // RecordActivity records the current time as the last activity.
@@ -148,13 +162,18 @@ func (t *ToolTracker) HandleToolStart(callID, toolName, toolInfo string, toolArg
 	}
 
 	// Add new pending segment
+	showExpandHint := !t.expandHintShown
+	if showExpandHint {
+		t.expandHintShown = true
+	}
 	t.Segments = append(t.Segments, Segment{
-		Type:       SegmentTool,
-		ToolCallID: callID,
-		ToolName:   toolName,
-		ToolInfo:   toolInfo,
-		ToolArgs:   toolArgs,
-		ToolStatus: ToolPending,
+		Type:           SegmentTool,
+		ToolCallID:     callID,
+		ToolName:       toolName,
+		ToolInfo:       toolInfo,
+		ToolArgs:       toolArgs,
+		ToolStatus:     ToolPending,
+		ToolExpandHint: showExpandHint,
 	})
 	t.Version++
 	return true

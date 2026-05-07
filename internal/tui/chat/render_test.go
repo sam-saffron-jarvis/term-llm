@@ -1,6 +1,7 @@
 package chat
 
 import (
+	"encoding/json"
 	"errors"
 	"regexp"
 	"slices"
@@ -1051,6 +1052,48 @@ func TestViewAutoSend_OmitsAgentPrefixWhenUnset(t *testing.T) {
 	}
 	if !strings.Contains(out, "anthropic") {
 		t.Fatalf("expected provider name in auto-send output, got %q", out)
+	}
+}
+
+func TestRenderStreamingInline_ExpandHintShownOncePerSession(t *testing.T) {
+	m := newTestChatModel(false)
+	m.width = 80
+	m.streaming = true
+
+	_, _ = m.Update(streamEventMsg{event: ui.ToolStartEvent("call-1", "read_file", "(a.go)", nil)})
+	first := ui.StripANSI(m.renderStreamingInline())
+	if count := strings.Count(first, "(CTRL+e to expand)"); count != 1 {
+		t.Fatalf("expected first tool of session to show one hint, got %d in %q", count, first)
+	}
+	m.tracker.HandleToolEnd("call-1", true)
+	m.resetTracker()
+
+	_, _ = m.Update(streamEventMsg{event: ui.ToolStartEvent("call-2", "read_file", "(b.go)", nil)})
+	second := ui.StripANSI(m.renderStreamingInline())
+	if strings.Contains(second, "(CTRL+e to expand)") {
+		t.Fatalf("expected later turn not to show expand hint, got %q", second)
+	}
+}
+
+func TestRenderStreamingInline_ExpandedPendingShellTool(t *testing.T) {
+	m := newTestChatModel(false)
+	m.width = 80
+	m.streaming = true
+	m.toolsExpanded = true
+	m.tracker.SetExpanded(true)
+
+	args, err := json.Marshal(tools.ShellArgs{Command: "git status --short", Description: "Check repo status"})
+	if err != nil {
+		t.Fatalf("marshal shell args: %v", err)
+	}
+	m.tracker.HandleToolStart("call-1", "shell", "Check repo status", args)
+
+	plain := ui.StripANSI(m.renderStreamingInline())
+	if !strings.Contains(plain, "git status --short") {
+		t.Fatalf("expected in-progress shell tool to render expanded command, got %q", plain)
+	}
+	if strings.Contains(plain, "(CTRL+e to expand)") {
+		t.Fatalf("expected expand hint hidden while expanded, got %q", plain)
 	}
 }
 

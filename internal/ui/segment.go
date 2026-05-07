@@ -39,24 +39,25 @@ const (
 
 // Segment represents a discrete unit in the response stream (text or tool)
 type Segment struct {
-	Type          SegmentType
-	Text          string          // For text segments: markdown content (finalized on completion)
-	Rendered      string          // For text segments: cached rendered markdown
-	ToolCallID    string          // For tool segments: unique ID for this invocation
-	ToolName      string          // For tool segments
-	ToolInfo      string          // For tool segments: additional context
-	ToolArgs      json.RawMessage // Raw args JSON, stored for expanded rendering
-	ToolStatus    ToolStatus      // For tool segments
-	Complete      bool            // For text segments: whether streaming is complete
-	ImagePath     string          // For image segments: path to image file
-	DiffPath      string          // For diff segments: file path
-	DiffOld       string          // For diff segments: old content
-	DiffNew       string          // For diff segments: new content
-	DiffLine      int             // For diff segments: 1-indexed starting line (0 = unknown)
-	DiffOperation string          // For diff segments: optional operation hint, e.g. "create"
-	DiffRendered  string          // For diff segments: cached rendered output
-	DiffWidth     int             // For diff segments: width when rendered (for cache invalidation)
-	Flushed       bool            // True if this segment has been printed to scrollback
+	Type           SegmentType
+	Text           string          // For text segments: markdown content (finalized on completion)
+	Rendered       string          // For text segments: cached rendered markdown
+	ToolCallID     string          // For tool segments: unique ID for this invocation
+	ToolName       string          // For tool segments
+	ToolInfo       string          // For tool segments: additional context
+	ToolArgs       json.RawMessage // Raw args JSON, stored for expanded rendering
+	ToolStatus     ToolStatus      // For tool segments
+	ToolExpandHint bool            // Show one-time "CTRL+e to expand" discovery hint
+	Complete       bool            // For text segments: whether streaming is complete
+	ImagePath      string          // For image segments: path to image file
+	DiffPath       string          // For diff segments: file path
+	DiffOld        string          // For diff segments: old content
+	DiffNew        string          // For diff segments: new content
+	DiffLine       int             // For diff segments: 1-indexed starting line (0 = unknown)
+	DiffOperation  string          // For diff segments: optional operation hint, e.g. "create"
+	DiffRendered   string          // For diff segments: cached rendered output
+	DiffWidth      int             // For diff segments: width when rendered (for cache invalidation)
+	Flushed        bool            // True if this segment has been printed to scrollback
 
 	// Streaming text accumulation (O(1) append instead of O(n) string concat)
 	TextBuilder *strings.Builder // Used during streaming; nil when Complete
@@ -194,6 +195,15 @@ func RenderWaveText(text string, wavePos int) string {
 // Muted style for tool params (lighter than wave dim)
 var paramStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("250"))
 
+var toolExpandHintStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
+
+func appendToolExpandHint(rendered string, seg *Segment, expanded bool) string {
+	if rendered == "" || seg == nil || !seg.ToolExpandHint || expanded {
+		return rendered
+	}
+	return rendered + " " + toolExpandHintStyle.Render("(CTRL+e to expand)")
+}
+
 // truncateToolInfo truncates raw tool info text so the full rendered line
 // (circle + space + toolName + space + info) fits within width.
 // Truncation is done on the raw text before styling to avoid breaking ANSI codes.
@@ -278,7 +288,7 @@ func RenderToolSegment(seg *Segment, wavePos int, width int, expanded bool) stri
 	case ToolPending:
 		// spawn_agent tools with progress show stats instead of wave animation
 		if seg.ToolName == "spawn_agent" && seg.SubagentHasProgress {
-			return PendingCircle() + " " + renderSpawnAgentStats(seg.ToolInfo, seg.SubagentToolCalls, seg.SubagentTotalTokens, seg.SubagentStartTime, seg.SubagentEndTime, seg.SubagentProvider, seg.SubagentModel)
+			return appendToolExpandHint(PendingCircle()+" "+renderSpawnAgentStats(seg.ToolInfo, seg.SubagentToolCalls, seg.SubagentTotalTokens, seg.SubagentStartTime, seg.SubagentEndTime, seg.SubagentProvider, seg.SubagentModel), seg, expanded)
 		}
 		// Wave animation for other pending tools
 		activeText := ""
@@ -306,29 +316,29 @@ func RenderToolSegment(seg *Segment, wavePos int, width int, expanded bool) stri
 				}
 			}
 		}
-		return PendingCircle() + " " + RenderWaveText(activeText, wavePos)
+		return appendToolExpandHint(PendingCircle()+" "+RenderWaveText(activeText, wavePos), seg, expanded)
 	case ToolSuccess:
 		// spawn_agent shows final stats on success
 		if seg.ToolName == "spawn_agent" && seg.SubagentHasProgress {
-			return SuccessCircle() + " " + renderSpawnAgentStats(seg.ToolInfo, seg.SubagentToolCalls, seg.SubagentTotalTokens, seg.SubagentStartTime, seg.SubagentEndTime, seg.SubagentProvider, seg.SubagentModel)
+			return appendToolExpandHint(SuccessCircle()+" "+renderSpawnAgentStats(seg.ToolInfo, seg.SubagentToolCalls, seg.SubagentTotalTokens, seg.SubagentStartTime, seg.SubagentEndTime, seg.SubagentProvider, seg.SubagentModel), seg, expanded)
 		}
 		// Tool name normal, params slightly muted (with space before info if present)
 		info = truncateToolInfo(seg.ToolName, info, renderWidth)
 		if info != "" {
-			return SuccessCircle() + " " + seg.ToolName + " " + paramStyle.Render(info)
+			return appendToolExpandHint(SuccessCircle()+" "+seg.ToolName+" "+paramStyle.Render(info), seg, expanded)
 		}
-		return SuccessCircle() + " " + seg.ToolName
+		return appendToolExpandHint(SuccessCircle()+" "+seg.ToolName, seg, expanded)
 	case ToolError:
 		// spawn_agent shows stats even on error
 		if seg.ToolName == "spawn_agent" && seg.SubagentHasProgress {
-			return ErrorCircle() + " " + renderSpawnAgentStats(seg.ToolInfo, seg.SubagentToolCalls, seg.SubagentTotalTokens, seg.SubagentStartTime, seg.SubagentEndTime, seg.SubagentProvider, seg.SubagentModel)
+			return appendToolExpandHint(ErrorCircle()+" "+renderSpawnAgentStats(seg.ToolInfo, seg.SubagentToolCalls, seg.SubagentTotalTokens, seg.SubagentStartTime, seg.SubagentEndTime, seg.SubagentProvider, seg.SubagentModel), seg, expanded)
 		}
 		// Tool name normal, params slightly muted (with space before info if present)
 		info = truncateToolInfo(seg.ToolName, info, renderWidth)
 		if info != "" {
-			return ErrorCircle() + " " + seg.ToolName + " " + paramStyle.Render(info)
+			return appendToolExpandHint(ErrorCircle()+" "+seg.ToolName+" "+paramStyle.Render(info), seg, expanded)
 		}
-		return ErrorCircle() + " " + seg.ToolName
+		return appendToolExpandHint(ErrorCircle()+" "+seg.ToolName, seg, expanded)
 	}
 	return ""
 }
