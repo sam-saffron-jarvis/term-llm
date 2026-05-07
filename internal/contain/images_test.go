@@ -109,6 +109,9 @@ func TestSyncImageWritesAgentAsset(t *testing.T) {
 		if rel == "bootstrap/services/webui/run" && !strings.Contains(string(data), "--files-dir /home/agent/Files") {
 			t.Fatalf("webui should serve files from agent home")
 		}
+		if rel == "bootstrap/services/webui/run" && !strings.Contains(string(data), "--enable-widgets") {
+			t.Fatalf("webui should enable widgets")
+		}
 		if rel == "bootstrap/services/bootstrap-jobs/run" && (!strings.Contains(string(data), "exec sudo -Hu agent") || !strings.Contains(string(data), `\"command\": \"sudo\"`) || !strings.Contains(string(data), `\"system-upgrade\"`) || !strings.Contains(string(data), `"pacman"`) || !strings.Contains(string(data), `"dnf"`)) {
 			t.Fatalf("bootstrap jobs should run as agent and use sudo for package upgrades")
 		}

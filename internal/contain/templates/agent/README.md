@@ -59,6 +59,12 @@ Stop without deleting state:
 term-llm contain stop {{name}}
 ```
 
+## Widgets
+
+The Web UI starts with term-llm widgets enabled. Add widget apps under
+`/home/agent/.config/term-llm/widgets/` inside the container and open them from
+`/chat/widgets/` (or your configured `WEB_BASE_PATH` plus `/widgets/`).
+
 ## Bootstrap model
 
 On first boot, the image renders/copies its built-in bootstrap files into the

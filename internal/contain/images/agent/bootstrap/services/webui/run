@@ -16,7 +16,8 @@ set -- serve web \
   --auth bearer \
   --token "${WEB_TOKEN:?Set WEB_TOKEN in .env}" \
   --yolo \
-  --files-dir /home/agent/Files
+  --files-dir /home/agent/Files \
+  --enable-widgets
 
 if [ -n "${TERM_LLM_PROVIDER:-}" ] && [ "${TERM_LLM_PROVIDER}" != "skip" ]; then
   set -- "$@" --provider "${TERM_LLM_PROVIDER}"
