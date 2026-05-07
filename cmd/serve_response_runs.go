@@ -8,6 +8,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -109,6 +110,67 @@ func (r *responseRun) appendEvent(event string, payload map[string]any) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.appendEventLocked(event, payload, false)
+}
+
+func (r *responseRun) appendTextDeltaEvent(outputIndex int, delta string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.appendTextDeltaEventLocked(outputIndex, delta)
+}
+
+// appendTextDeltaEventLocked is a fast path for response.output_text.delta that avoids
+// allocating a map[string]any and re-parsing it for recovery; called ~100x/sec during streaming.
+func (r *responseRun) appendTextDeltaEventLocked(outputIndex int, delta string) error {
+	r.lastSequenceNumber++
+
+	deltaJSON, err := json.Marshal(delta)
+	if err != nil {
+		return err
+	}
+	data := make([]byte, 0, 64+len(deltaJSON))
+	data = append(data, `{"output_index":`...)
+	data = strconv.AppendInt(data, int64(outputIndex), 10)
+	data = append(data, `,"delta":`...)
+	data = append(data, deltaJSON...)
+	data = append(data, `,"sequence_number":`...)
+	data = strconv.AppendInt(data, r.lastSequenceNumber, 10)
+	data = append(data, '}')
+
+	if delta != "" {
+		r.closeToolGroupLocked()
+		idx := r.ensureAssistantMessageLocked()
+		r.recoveryMessages[idx].Content += delta
+	}
+
+	stored := responseRunEvent{
+		Sequence: r.lastSequenceNumber,
+		Event:    "response.output_text.delta",
+		Data:     data,
+	}
+	r.events = append(r.events, stored)
+	r.compactEventsLocked()
+
+	for id, ch := range r.subscribers {
+		select {
+		case ch <- stored:
+			fill := len(ch)
+			threshold := cap(ch) * 3 / 4
+			if fill > threshold && !r.subscriberWarned[id] {
+				log.Printf("response run %s subscriber %d buffer at %d/%d", r.id, id, fill, cap(ch))
+				r.subscriberWarned[id] = true
+			} else if fill <= threshold/2 && r.subscriberWarned[id] {
+				r.subscriberWarned[id] = false
+			}
+		default:
+			log.Printf("response run %s subscriber fell behind at sequence %d; closing stream", r.id, stored.Sequence)
+			r.subscriberDropped[id] = true
+			close(ch)
+			delete(r.subscribers, id)
+			delete(r.subscriberWarned, id)
+		}
+	}
+
+	return nil
 }
 
 func (r *responseRun) complete(payload map[string]any, usage llm.Usage, sessionUsage llm.Usage) error {
@@ -808,13 +870,7 @@ func cloneJSONValue(value any) any {
 }
 
 func writeStoredResponseEvent(w io.Writer, ev responseRunEvent) error {
-	if _, err := fmt.Fprintf(w, "id: %d\n", ev.Sequence); err != nil {
-		return err
-	}
-	if _, err := fmt.Fprintf(w, "event: %s\n", ev.Event); err != nil {
-		return err
-	}
-	_, err := fmt.Fprintf(w, "data: %s\n\n", ev.Data)
+	_, err := fmt.Fprintf(w, "id: %d\nevent: %s\ndata: %s\n\n", ev.Sequence, ev.Event, ev.Data)
 	return err
 }
 
@@ -834,10 +890,7 @@ func (s *serveServer) appendResponseRunEvent(runtime *serveRuntime, run *respons
 			}
 			state.toolsSeen = false
 		}
-		return run.appendEvent("response.output_text.delta", map[string]any{
-			"output_index": state.outputIndex,
-			"delta":        ev.Text,
-		})
+		return run.appendTextDeltaEvent(state.outputIndex, ev.Text)
 	case llm.EventToolCall:
 		if ev.Tool == nil {
 			return nil
