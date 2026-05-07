@@ -44,9 +44,41 @@ func (s *serveServer) handleHealth(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"status": "ok"})
 }
 
-func uiAssetETag(data []byte) string {
+// uiAssetCacheEntry holds the precomputed ETag and gzip-compressed form of an
+// embedded UI asset. Both are derived from the raw content and never change
+// for the lifetime of the process, so computing them once and caching avoids
+// per-request sha256 + gzip work.
+type uiAssetCacheEntry struct {
+	etag       string
+	compressed []byte // gzip-compressed; nil when content type is not compressible
+}
+
+// uiAssetCache maps [16]byte (leading bytes of sha256(raw content)) to
+// *uiAssetCacheEntry. Using an array key keeps comparisons cheap and
+// allocation-free.
+var uiAssetCache sync.Map // [16]byte → *uiAssetCacheEntry
+
+// uiGetOrBuildEntry returns the cached entry for data, building and storing it
+// on the first call for each unique content.
+func uiGetOrBuildEntry(data []byte, compressible bool) *uiAssetCacheEntry {
 	sum := sha256.Sum256(data)
-	return `"` + hex.EncodeToString(sum[:]) + `"`
+	var key [16]byte
+	copy(key[:], sum[:16])
+	if v, ok := uiAssetCache.Load(key); ok {
+		return v.(*uiAssetCacheEntry)
+	}
+	e := &uiAssetCacheEntry{
+		etag: `"` + hex.EncodeToString(sum[:]) + `"`,
+	}
+	if compressible {
+		var buf bytes.Buffer
+		gz := gzip.NewWriter(&buf)
+		_, _ = gz.Write(data)
+		_ = gz.Close()
+		e.compressed = buf.Bytes()
+	}
+	actual, _ := uiAssetCache.LoadOrStore(key, e)
+	return actual.(*uiAssetCacheEntry)
 }
 
 func uiETagMatches(headerValue, etag string) bool {
@@ -123,25 +155,20 @@ func serveEmbeddedUIBytes(w http.ResponseWriter, r *http.Request, data []byte, c
 		uiAddVary(header, "Accept-Encoding")
 	}
 
+	entry := uiGetOrBuildEntry(data, compressible)
+
 	if conditional {
-		etag := uiAssetETag(data)
-		header.Set("ETag", etag)
-		if uiETagMatches(r.Header.Get("If-None-Match"), etag) {
+		header.Set("ETag", entry.etag)
+		if uiETagMatches(r.Header.Get("If-None-Match"), entry.etag) {
 			w.WriteHeader(http.StatusNotModified)
 			return
 		}
 	}
 
 	body := data
-	if compressible {
-		if uiAcceptsGzip(r.Header.Get("Accept-Encoding")) {
-			var compressed bytes.Buffer
-			gz := gzip.NewWriter(&compressed)
-			_, _ = gz.Write(data)
-			_ = gz.Close()
-			body = compressed.Bytes()
-			header.Set("Content-Encoding", "gzip")
-		}
+	if compressible && entry.compressed != nil && uiAcceptsGzip(r.Header.Get("Accept-Encoding")) {
+		body = entry.compressed
+		header.Set("Content-Encoding", "gzip")
 	}
 	header.Set("Content-Length", strconv.Itoa(len(body)))
 
@@ -211,6 +238,13 @@ func (s *serveServer) handleUI(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *serveServer) renderIndexHTML() []byte {
+	s.indexHTMLOnce.Do(func() {
+		s.cachedIndexHTML = s.buildIndexHTML()
+	})
+	return s.cachedIndexHTML
+}
+
+func (s *serveServer) buildIndexHTML() []byte {
 	// Inject UI prefix so JS can prefix all API calls with it.
 	// Also inject VAPID public key for web push if configured.
 	var headSnippet string
@@ -232,6 +266,32 @@ func (s *serveServer) renderIndexHTML() []byte {
 	}
 	headSnippet += s.webrtcHeadSnippet
 	return serveui.RenderIndexHTML(s.cfg.basePath, headSnippet)
+}
+
+// prewarmUIAssetCache pre-compresses the service-worker shell assets in a
+// background goroutine so the first real browser request finds gzip bytes
+// already cached rather than paying the compression cost inline.
+func (s *serveServer) prewarmUIAssetCache() {
+	go func() {
+		// Rendered assets: build + cache in one shot.
+		_ = s.renderIndexHTML()
+		uiGetOrBuildEntry(serveui.RenderServiceWorker(), true)
+		uiGetOrBuildEntry(serveui.RenderManifest(), true)
+
+		// Static shell assets (SW precache list minus the PNG icon).
+		for _, name := range []string{
+			"app.css",
+			"app-core.js", "app-render.js", "app-stream.js",
+			"app-sessions.js", "app-webrtc.js",
+			"markdown-setup.js", "markdown-streaming.js", "decoration.js",
+			"vendor/marked/marked.umd.min.js",
+			"vendor/dompurify/purify.min.js",
+		} {
+			if data, err := serveui.StaticAsset(name); err == nil {
+				uiGetOrBuildEntry(data, true)
+			}
+		}
+	}()
 }
 
 func (s *serveServer) imageOutputDir() string {

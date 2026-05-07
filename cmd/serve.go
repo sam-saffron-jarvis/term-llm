@@ -950,6 +950,8 @@ type serveServer struct {
 	webrtcHeadSnippet string // injected into index.html <head>; empty when WebRTC disabled
 	runtimeFactory    func(ctx context.Context, providerName string, model string) (*serveRuntime, error)
 	widgetsMgr        *widgets.Manager
+	indexHTMLOnce     sync.Once
+	cachedIndexHTML   []byte
 }
 
 func (s *serveServer) Start() error {
@@ -958,6 +960,10 @@ func (s *serveServer) Start() error {
 	s.server = &http.Server{
 		Addr:    fmt.Sprintf("%s:%d", s.cfg.host, s.cfg.port),
 		Handler: s.httpHandler(),
+	}
+
+	if s.cfg.ui {
+		s.prewarmUIAssetCache()
 	}
 
 	errCh := make(chan error, 1)
