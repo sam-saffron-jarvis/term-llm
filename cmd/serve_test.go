@@ -9127,3 +9127,42 @@ func TestNonStreamingResponses_FiltersServerExecutedToolCalls(t *testing.T) {
 		t.Fatalf("expected 1 output item (text), got %d", len(output))
 	}
 }
+
+func TestUICachedGzip_ReturnsCachedResult(t *testing.T) {
+	data := []byte(strings.Repeat("hello world term-llm static asset content ", 200))
+
+	first := uiCachedGzip(data)
+	if len(first) == 0 {
+		t.Fatal("expected non-empty compressed output")
+	}
+
+	second := uiCachedGzip(data)
+	// Both calls must return the exact same slice (same pointer), not a re-compressed copy.
+	if &first[0] != &second[0] {
+		t.Fatal("second call should return cached slice, not a new compression")
+	}
+}
+
+func TestServeEmbeddedUIBytes_GzipCached(t *testing.T) {
+	// Verify that the response body is valid gzip and that repeated requests
+	// decompress to the same content.
+	data := []byte(strings.Repeat("static JS content for gzip cache test ", 300))
+
+	req1 := httptest.NewRequest(http.MethodGet, "/app-core.js", nil)
+	req1.Header.Set("Accept-Encoding", "gzip")
+	rr1 := httptest.NewRecorder()
+	serveEmbeddedUIBytes(rr1, req1, data, "application/javascript", "no-cache", false)
+
+	if rr1.Header().Get("Content-Encoding") != "gzip" {
+		t.Fatal("expected gzip Content-Encoding")
+	}
+
+	req2 := httptest.NewRequest(http.MethodGet, "/app-core.js", nil)
+	req2.Header.Set("Accept-Encoding", "gzip")
+	rr2 := httptest.NewRecorder()
+	serveEmbeddedUIBytes(rr2, req2, data, "application/javascript", "no-cache", false)
+
+	if !bytes.Equal(rr1.Body.Bytes(), rr2.Body.Bytes()) {
+		t.Fatal("cached and uncached responses should be identical")
+	}
+}

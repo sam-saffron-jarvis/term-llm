@@ -49,6 +49,25 @@ func uiAssetETag(data []byte) string {
 	return `"` + hex.EncodeToString(sum[:]) + `"`
 }
 
+// uiGzipCache stores gzip-compressed versions of static embedded assets,
+// keyed by SHA-256 of the raw bytes. Embedded assets are constant for the
+// lifetime of the process so the cache never needs eviction.
+var uiGzipCache sync.Map // [32]byte → []byte
+
+func uiCachedGzip(data []byte) []byte {
+	key := sha256.Sum256(data)
+	if cached, ok := uiGzipCache.Load(key); ok {
+		return cached.([]byte)
+	}
+	var buf bytes.Buffer
+	gz, _ := gzip.NewWriterLevel(&buf, gzip.BestCompression)
+	_, _ = gz.Write(data)
+	_ = gz.Close()
+	result := buf.Bytes()
+	uiGzipCache.Store(key, result)
+	return result
+}
+
 func uiETagMatches(headerValue, etag string) bool {
 	if headerValue == "" || etag == "" {
 		return false
@@ -135,11 +154,7 @@ func serveEmbeddedUIBytes(w http.ResponseWriter, r *http.Request, data []byte, c
 	body := data
 	if compressible {
 		if uiAcceptsGzip(r.Header.Get("Accept-Encoding")) {
-			var compressed bytes.Buffer
-			gz := gzip.NewWriter(&compressed)
-			_, _ = gz.Write(data)
-			_ = gz.Close()
-			body = compressed.Bytes()
+			body = uiCachedGzip(data)
 			header.Set("Content-Encoding", "gzip")
 		}
 	}
