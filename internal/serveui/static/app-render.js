@@ -615,6 +615,7 @@ const getOrCreateAssistantStreamState = (message, body) => {
   streamState.tailContainer = containers.tailContainer;
   streamState._canPlainCached = null;
   streamState._canPlainCachedAt = 0;
+  streamState._stableCheckedAt = 0;
   assistantStreamStates.set(message.id, streamState);
   return streamState;
 };
@@ -659,6 +660,7 @@ const resetAssistantStableRender = (streamState) => {
   streamState.tailTextNode = null;
   streamState._canPlainCached = null;
   streamState._canPlainCachedAt = 0;
+  streamState._stableCheckedAt = 0;
 };
 
 const appendAssistantStableMarkdown = (streamState, source) => {
@@ -762,6 +764,17 @@ const cachedCanStreamPlainText = (streamState, content, ms) => {
   return result;
 };
 
+const maybePromoteAssistantStableMarkdown = (streamState, content) => {
+  const prevAt = streamState._stableCheckedAt || 0;
+  if (prevAt > 0 && content.length > prevAt && !content.slice(prevAt).includes('\n')) {
+    streamState._stableCheckedAt = content.length;
+    return false;
+  }
+  const result = promoteAssistantStableMarkdown(streamState, content);
+  streamState._stableCheckedAt = content.length;
+  return result;
+};
+
 const performAssistantStreamRender = (streamState) => {
   if (!streamState || !streamState.body) return;
   streamState.rafId = 0;
@@ -802,7 +815,7 @@ const performAssistantStreamRender = (streamState) => {
           streamState.lastTailContent = content;
         }
       } else {
-        const promoted = promoteAssistantStableMarkdown(streamState, content);
+        const promoted = maybePromoteAssistantStableMarkdown(streamState, content);
         const tail = content.slice(streamState.stableLength || 0);
         if (promoted || tail !== streamState.lastTailContent) {
           if (tail) {
