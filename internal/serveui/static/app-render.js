@@ -1556,13 +1556,14 @@ const updateToolGroupNode = (message) => {
           status.className = `tool-entry-status${tool.status === 'done' ? ' done' : ''}`;
           status.textContent = tool.status === 'done' ? '✓' : '…';
         }
-        // Update or add arguments display
         const existingArgs = entry.querySelector('.tool-entry-args');
-        const newArgs = buildArgsNode(tool);
-        if (existingArgs && newArgs) {
-          existingArgs.replaceWith(newArgs);
-        } else if (!existingArgs && newArgs) {
-          entry.appendChild(newArgs);
+        if (!(tool.status === 'done' && existingArgs)) {
+          const newArgs = buildArgsNode(tool);
+          if (existingArgs && newArgs) {
+            existingArgs.replaceWith(newArgs);
+          } else if (!existingArgs && newArgs) {
+            entry.appendChild(newArgs);
+          }
         }
       }
     });
