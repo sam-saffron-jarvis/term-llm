@@ -54,6 +54,80 @@ func TestStatusLineContextEstimateUsesInProgressStreamingSnapshot(t *testing.T) 
 	}
 }
 
+func TestEstimateContextTokensCached_InvalidatesOnStreamingSnapshotChanges(t *testing.T) {
+	m := newTestChatModel(false)
+	m.engine.SetContextTracking(200_000)
+	m.streaming = true
+	m.setStreamingContextMessages([]llm.Message{llm.UserText("hello")})
+
+	baseline := m.estimateContextTokensCached()
+	if baseline <= 0 {
+		t.Fatalf("baseline cached estimate = %d, want > 0", baseline)
+	}
+	if !m.contextEstimateCachedValid {
+		t.Fatal("expected streaming estimate to populate cache")
+	}
+	version := m.contextEstimateVersion
+
+	m.updateStreamingContextAssistant(llm.AssistantText(strings.Repeat("expanding snapshot ", 1500)))
+	if m.contextEstimateCachedValid {
+		t.Fatal("expected streaming snapshot update to invalidate cached estimate")
+	}
+	if m.contextEstimateVersion <= version {
+		t.Fatalf("context estimate version = %d, want > %d after streaming snapshot update", m.contextEstimateVersion, version)
+	}
+
+	updated := m.estimateContextTokensCached()
+	if updated <= baseline {
+		t.Fatalf("updated cached estimate = %d, want > baseline %d", updated, baseline)
+	}
+	if !m.contextEstimateCachedValid {
+		t.Fatal("expected updated streaming estimate to repopulate cache")
+	}
+}
+
+func TestEstimateContextTokensCached_InvalidatesOnHistoryChanges(t *testing.T) {
+	m := newTestChatModel(false)
+	m.engine.SetContextTracking(200_000)
+	m.messages = []session.Message{{
+		Role:        llm.RoleUser,
+		TextContent: "hello",
+		Parts:       []llm.Part{{Type: llm.PartText, Text: "hello"}},
+	}}
+	m.invalidateHistoryCache()
+
+	baseline := m.estimateContextTokensCached()
+	if baseline <= 0 {
+		t.Fatalf("baseline cached estimate = %d, want > 0", baseline)
+	}
+	if !m.contextEstimateCachedValid {
+		t.Fatal("expected idle estimate to populate cache")
+	}
+	version := m.contextEstimateVersion
+
+	bigger := strings.Repeat("history growth ", 1200)
+	m.messages = append(m.messages, session.Message{
+		Role:        llm.RoleAssistant,
+		TextContent: bigger,
+		Parts:       []llm.Part{{Type: llm.PartText, Text: bigger}},
+	})
+	m.invalidateHistoryCache()
+	if m.contextEstimateCachedValid {
+		t.Fatal("expected history invalidation to clear cached estimate")
+	}
+	if m.contextEstimateVersion <= version {
+		t.Fatalf("context estimate version = %d, want > %d after history change", m.contextEstimateVersion, version)
+	}
+
+	updated := m.estimateContextTokensCached()
+	if updated <= baseline {
+		t.Fatalf("updated cached estimate = %d, want > baseline %d", updated, baseline)
+	}
+	if !m.contextEstimateCachedValid {
+		t.Fatal("expected updated idle estimate to repopulate cache")
+	}
+}
+
 func TestStreamingContextCallbacksUpdateEstimateSnapshotWithoutMutatingMessages(t *testing.T) {
 	m := newTestChatModel(false)
 	m.messages = []session.Message{{Role: llm.RoleUser, Parts: []llm.Part{{Type: llm.PartText, Text: "base"}}, TextContent: "base"}}
