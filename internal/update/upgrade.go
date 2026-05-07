@@ -113,8 +113,26 @@ func RunUpgrade(ctx context.Context, currentVersion, targetVersion string, stdou
 		_ = SaveState(state)
 	}
 
-	fmt.Fprintf(stdout, "term-llm upgraded to %s at %s\n", targetTag, exePath)
+	fmt.Fprint(stdout, upgradeSuccessMessage(currentVersion, targetTag, exePath))
 	return nil
+}
+
+func upgradeSuccessMessage(currentVersion, targetVersion, exePath string) string {
+	return fmt.Sprintf("term-llm upgraded %s -> %s at %s\n", versionDisplayTag(currentVersion), versionDisplayTag(targetVersion), exePath)
+}
+
+func versionDisplayTag(version string) string {
+	version = strings.TrimSpace(version)
+	if version == "" {
+		return "unknown"
+	}
+	if strings.HasPrefix(version, "v") || version == "dev" {
+		return version
+	}
+	if NormalizeVersion(version) != "" {
+		return "v" + version
+	}
+	return version
 }
 
 func downloadFile(ctx context.Context, url string, dest string) error {
