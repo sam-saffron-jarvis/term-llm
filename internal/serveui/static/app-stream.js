@@ -94,18 +94,19 @@ const parseSSEStream = async (stream, onEvent) => {
     if (!block.trim()) return true;
 
     let eventName = '';
-    const dataLines = [];
+    let data = '';
     const lines = block.split('\n');
 
     for (const line of lines) {
       if (line.startsWith('event:')) {
         eventName = line.slice(6).trim();
       } else if (line.startsWith('data:')) {
-        dataLines.push(line.slice(5).trimStart());
+        const chunk = line.slice(5).trimStart();
+        data = data ? data + '\n' + chunk : chunk;
       }
     }
 
-    return onEvent(eventName, dataLines.join('\n'));
+    return onEvent(eventName, data);
   };
 
   while (true) {
