@@ -996,10 +996,10 @@ const loadSessions = () => {
 const MAX_CACHED_MESSAGE_SESSIONS = 10;
 
 const evictStaleSessionMessages = () => {
-  const sorted = [...state.sessions]
-    .filter(s => s.messages && s.messages.length > 0 && !s._serverOnly)
-    .sort((a, b) => b.created - a.created);
-  const keep = new Set(sorted.slice(0, MAX_CACHED_MESSAGE_SESSIONS).map(s => s.id));
+  const withMessages = state.sessions.filter(s => s.messages && s.messages.length > 0 && !s._serverOnly);
+  if (withMessages.length <= MAX_CACHED_MESSAGE_SESSIONS) return;
+  withMessages.sort((a, b) => b.created - a.created);
+  const keep = new Set(withMessages.slice(0, MAX_CACHED_MESSAGE_SESSIONS).map(s => s.id));
 
   for (const s of state.sessions) {
     if (!keep.has(s.id) && s.messages && s.messages.length > 0) {
