@@ -710,6 +710,24 @@ async function run(name, fn) {
     assert(body.innerHTML.includes('First paragraph'), 'full markdown render remains');
   });
 
+  await run('enqueueAssistantStreamUpdate reuses cached node on subsequent calls', () => {
+    const { app, session, messages } = createHarness();
+    const message = { id: 'cached-node', role: 'assistant', content: 'hello', created: Date.now() };
+    session.messages = [message];
+
+    app.enqueueAssistantStreamUpdate(message);
+    assertEqual(messages.children.length, 1, 'node created on first call');
+
+    // Remove node from DOM: old code would re-query (find null) and create a new node;
+    // new code uses existingState.node directly and adds nothing.
+    messages.children[0].remove();
+    assertEqual(messages.children.length, 0, 'node removed from messages');
+
+    message.content = 'hello world';
+    app.enqueueAssistantStreamUpdate(message);
+    assertEqual(messages.children.length, 0, 'fast path does not re-query or create a new node');
+  });
+
   if (failures > 0) {
     process.exit(1);
   }

@@ -803,6 +803,16 @@ const enqueueAssistantStreamUpdate = (message) => {
     return;
   }
 
+  const existingState = assistantStreamStates.get(message.id);
+  if (existingState) {
+    existingState.latestContent = String(message.content || '');
+    existingState.dirty = true;
+    syncAssistantUsageNode(existingState.node, message);
+    syncTurnActionPanelForAssistant(message.id);
+    scheduleAssistantStreamRender(existingState);
+    return;
+  }
+
   let node = findMessageElement(message.id);
   if (!node) {
     node = createMessageNode({ ...message, content: '' });
@@ -814,6 +824,7 @@ const enqueueAssistantStreamUpdate = (message) => {
 
   body.classList.add('markdown-body');
   const streamState = getOrCreateAssistantStreamState(message, body);
+  streamState.node = node;
   streamState.latestContent = String(message.content || '');
   streamState.dirty = true;
   syncAssistantUsageNode(node, message);
