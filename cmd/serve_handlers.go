@@ -1083,7 +1083,7 @@ func (s *serveServer) handleProviders(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
-	writeJSON(w, http.StatusOK, map[string]any{
+	writeJSONConditional(w, r, http.StatusOK, map[string]any{
 		"object": "list",
 		"data":   items,
 	})
@@ -1194,7 +1194,7 @@ func (s *serveServer) handleModels(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
-	writeJSON(w, http.StatusOK, map[string]any{
+	writeJSONConditional(w, r, http.StatusOK, map[string]any{
 		"object": "list",
 		"data":   items,
 	})
