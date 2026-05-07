@@ -861,6 +861,10 @@ const hydrateActiveSessionAfterStartup = async () => {
   const active = getActiveSession();
   if (!active) return;
 
+  // Start state sync immediately so the server round-trip overlaps with the
+  // messages fetch instead of serialising after it.
+  const statePromise = syncActiveSessionFromServer(active, true);
+
   if (active._serverOnly) {
     const msgs = await loadServerSessionMessages(active.id);
     if (msgs !== null) {
@@ -871,7 +875,7 @@ const hydrateActiveSessionAfterStartup = async () => {
     }
   }
 
-  await syncActiveSessionFromServer(active, true);
+  await statePromise;
 };
 
 const initialize = async () => {
