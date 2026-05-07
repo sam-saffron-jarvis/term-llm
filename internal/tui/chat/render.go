@@ -917,7 +917,9 @@ func (m *Model) statusLineUsageParts() (string, string) {
 	usageBase := ""
 	if m.engine != nil && m.engine.InputLimit() > 0 {
 		contextTokens := 0
-		if !m.streaming {
+		if m.streaming {
+			contextTokens = m.streamingContextEstimate()
+		} else {
 			contextTokens = m.engine.LastTotalTokens()
 		}
 		if contextTokens <= 0 {

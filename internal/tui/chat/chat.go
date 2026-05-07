@@ -75,6 +75,7 @@ type Model struct {
 	contextEstimateMu                sync.Mutex
 	streamingContextMessages         []llm.Message
 	streamingContextPendingAssistant bool
+	streamingContextTokenEstimate    int
 
 	// Streaming channels
 	streamChan <-chan ui.StreamEvent

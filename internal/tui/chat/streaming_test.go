@@ -46,11 +46,33 @@ func TestStatusLineContextEstimateUsesInProgressStreamingSnapshot(t *testing.T) 
 	if inProgress <= baseline {
 		t.Fatalf("in-progress estimate = %d, want > baseline %d", inProgress, baseline)
 	}
+	if got := m.streamingContextEstimate(); got != inProgress {
+		t.Fatalf("cached streaming estimate = %d, want %d", got, inProgress)
+	}
 
 	status := ui.StripANSI(m.renderStatusLine())
 	wantUsage := "~" + llm.FormatTokenCount(inProgress) + "/" + llm.FormatTokenCount(m.engine.InputLimit())
 	if !strings.Contains(status, wantUsage) {
 		t.Fatalf("status line %q does not contain updated usage %q", status, wantUsage)
+	}
+}
+
+func TestStatusLineUsageParts_StreamingUsesCachedEstimate(t *testing.T) {
+	m := newTestChatModel(false)
+	m.providerName = "openai"
+	m.modelName = "gpt-5"
+	m.engine.ConfigureContextManagement(m.provider, m.providerName, m.modelName, false)
+	m.streaming = true
+	m.setStreamingContextMessages([]llm.Message{llm.UserText("hello")})
+
+	m.contextEstimateMu.Lock()
+	m.streamingContextTokenEstimate = 25_000
+	m.contextEstimateMu.Unlock()
+
+	usageLong, usageShort := m.statusLineUsageParts()
+	want := "~" + llm.FormatTokenCount(25_000) + "/" + llm.FormatTokenCount(m.engine.InputLimit())
+	if usageLong != want || usageShort != want {
+		t.Fatalf("usage parts = %q / %q, want %q", usageLong, usageShort, want)
 	}
 }
 
@@ -60,9 +82,15 @@ func TestStreamingContextCallbacksUpdateEstimateSnapshotWithoutMutatingMessages(
 	baseMessages := []llm.Message{llm.UserText("base")}
 	m.streaming = true
 	m.setStreamingContextMessages(baseMessages)
+	baseEstimate := m.streamingContextEstimate()
 
 	m.updateStreamingContextAssistant(llm.AssistantText("I'll inspect that."))
 	m.updateStreamingContextAssistant(llm.AssistantText("I'll inspect that now."))
+	assistantEstimate := m.streamingContextEstimate()
+	if assistantEstimate <= baseEstimate {
+		t.Fatalf("assistant estimate = %d, want > base estimate %d", assistantEstimate, baseEstimate)
+	}
+
 	m.appendStreamingContextTurnMessages([]llm.Message{
 		llm.AssistantText("I'll inspect that now."),
 		llm.ToolResultMessage("call-1", "read_file", "file contents", nil),
@@ -74,6 +102,10 @@ func TestStreamingContextCallbacksUpdateEstimateSnapshotWithoutMutatingMessages(
 	}
 	if got[1].Role != llm.RoleAssistant || got[2].Role != llm.RoleTool {
 		t.Fatalf("context estimate roles = %v, %v; want assistant, tool", got[1].Role, got[2].Role)
+	}
+	toolEstimate := m.streamingContextEstimate()
+	if toolEstimate <= assistantEstimate {
+		t.Fatalf("tool estimate = %d, want > assistant estimate %d", toolEstimate, assistantEstimate)
 	}
 	if len(m.messages) != 1 {
 		t.Fatalf("m.messages was mutated; len = %d, want 1", len(m.messages))

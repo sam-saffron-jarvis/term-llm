@@ -26,10 +26,25 @@ func copyLLMMessages(messages []llm.Message) []llm.Message {
 	return copied
 }
 
+func (m *Model) refreshStreamingContextEstimateLocked() {
+	if m.engine == nil || len(m.streamingContextMessages) == 0 {
+		m.streamingContextTokenEstimate = 0
+		return
+	}
+	m.streamingContextTokenEstimate = m.engine.EstimateTokens(m.streamingContextMessages)
+}
+
+func (m *Model) streamingContextEstimate() int {
+	m.contextEstimateMu.Lock()
+	defer m.contextEstimateMu.Unlock()
+	return m.streamingContextTokenEstimate
+}
+
 func (m *Model) setStreamingContextMessages(messages []llm.Message) {
 	m.contextEstimateMu.Lock()
 	m.streamingContextMessages = copyLLMMessages(messages)
 	m.streamingContextPendingAssistant = false
+	m.refreshStreamingContextEstimateLocked()
 	m.contextEstimateMu.Unlock()
 }
 
@@ -37,6 +52,7 @@ func (m *Model) clearStreamingContextMessages() {
 	m.contextEstimateMu.Lock()
 	m.streamingContextMessages = nil
 	m.streamingContextPendingAssistant = false
+	m.streamingContextTokenEstimate = 0
 	m.contextEstimateMu.Unlock()
 }
 
@@ -45,10 +61,12 @@ func (m *Model) updateStreamingContextAssistant(assistantMsg llm.Message) {
 	defer m.contextEstimateMu.Unlock()
 	if m.streamingContextPendingAssistant && len(m.streamingContextMessages) > 0 {
 		m.streamingContextMessages[len(m.streamingContextMessages)-1] = assistantMsg
+		m.refreshStreamingContextEstimateLocked()
 		return
 	}
 	m.streamingContextMessages = append(m.streamingContextMessages, assistantMsg)
 	m.streamingContextPendingAssistant = true
+	m.refreshStreamingContextEstimateLocked()
 }
 
 func (m *Model) appendStreamingContextTurnMessages(turnMessages []llm.Message) {
@@ -68,6 +86,7 @@ func (m *Model) appendStreamingContextTurnMessages(turnMessages []llm.Message) {
 		m.streamingContextMessages = append(m.streamingContextMessages, turnMessages[appendStart:]...)
 	}
 	m.streamingContextPendingAssistant = false
+	m.refreshStreamingContextEstimateLocked()
 }
 
 // clearStreamCallbacks detaches every engine callback wired in startStream
