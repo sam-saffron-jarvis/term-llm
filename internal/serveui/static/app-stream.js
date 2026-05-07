@@ -116,7 +116,8 @@ const parseSSEStream = async (stream, onEvent) => {
     const { value, done } = await reader.read();
     if (done) break;
 
-    buffer += decoder.decode(value, { stream: true }).replace(/\r/g, '');
+    const decoded = decoder.decode(value, { stream: true });
+    buffer += decoded.includes('\r') ? decoded.replace(/\r/g, '') : decoded;
     state.lastEventTime = Date.now();
 
     let idx;
