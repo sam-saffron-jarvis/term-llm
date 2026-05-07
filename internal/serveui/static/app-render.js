@@ -12,11 +12,15 @@ const isMobileViewport = () => window.matchMedia('(max-width: 767px)').matches;
 
 const directionForText = (value) => {
   const text = String(value || '');
-  const strongChars = text.match(/[A-Za-z\u00C0-\u02AF\u0370-\u03FF\u0400-\u052F\u0590-\u08FF]/g);
-  if (!strongChars || strongChars.length === 0) return 'auto';
-  for (const ch of strongChars) {
-    if (/[\u0590-\u08FF]/.test(ch)) return 'rtl';
-    if (/[A-Za-z\u00C0-\u02AF\u0370-\u03FF\u0400-\u052F]/.test(ch)) return 'ltr';
+  for (let i = 0; i < text.length; i++) {
+    const c = text.charCodeAt(i);
+    if (c >= 0x0590 && c <= 0x08FF) return 'rtl';
+    if (
+      (c >= 0x41 && c <= 0x5A) ||
+      (c >= 0x61 && c <= 0x7A) ||
+      (c >= 0xC0 && c <= 0x02AF) ||
+      (c >= 0x0370 && c <= 0x052F)
+    ) return 'ltr';
   }
   return 'auto';
 };
