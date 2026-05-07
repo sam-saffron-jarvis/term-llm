@@ -859,6 +859,15 @@ const enqueueAssistantStreamUpdate = (message) => {
     return;
   }
 
+  // Fast path: state exists — skip all DOM queries on every delta after the first.
+  const existingState = assistantStreamStates.get(message.id);
+  if (existingState) {
+    existingState.latestContent = String(message.content || '');
+    existingState.dirty = true;
+    scheduleAssistantStreamRender(existingState);
+    return;
+  }
+
   let node = findMessageElement(message.id);
   if (!node) {
     node = createMessageNode({ ...message, content: '' });
@@ -869,12 +878,11 @@ const enqueueAssistantStreamUpdate = (message) => {
   if (!body) return;
 
   body.classList.add('markdown-body');
-  const isNewStream = !assistantStreamStates.has(message.id);
   const streamState = getOrCreateAssistantStreamState(message, body);
   streamState.latestContent = String(message.content || '');
   streamState.dirty = true;
   syncAssistantUsageNode(node, message);
-  if (isNewStream) syncTurnActionPanelForAssistant(message.id);
+  syncTurnActionPanelForAssistant(message.id);
   scheduleAssistantStreamRender(streamState);
 };
 
