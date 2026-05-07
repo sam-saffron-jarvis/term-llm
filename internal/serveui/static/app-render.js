@@ -154,7 +154,7 @@ const renderSidebar = () => {
     }
   });
 
-  elements.sessionGroups.innerHTML = '';
+  const sidebarFrag = document.createDocumentFragment();
 
   Object.entries(grouped).forEach(([label, sessions]) => {
     if (!sessions.length) return;
@@ -255,8 +255,11 @@ const renderSidebar = () => {
       groupEl.appendChild(row);
     });
 
-    elements.sessionGroups.appendChild(groupEl);
+    sidebarFrag.appendChild(groupEl);
   });
+
+  elements.sessionGroups.innerHTML = '';
+  elements.sessionGroups.appendChild(sidebarFrag);
 };
 
 // ===== Message rendering =====
@@ -1574,16 +1577,18 @@ const renderMessages = (forceScroll = false) => {
   resetAssistantStreamRenders();
   elements.messages.innerHTML = '';
 
+  const msgFrag = document.createDocumentFragment();
   if (!session || !session.messages.length) {
     const empty = document.createElement('div');
     empty.className = 'empty-state';
     empty.textContent = 'How can I help you today?';
-    elements.messages.appendChild(empty);
+    msgFrag.appendChild(empty);
   } else {
     session.messages.forEach((message) => {
-      elements.messages.appendChild(createMessageNode(message));
+      msgFrag.appendChild(createMessageNode(message));
     });
   }
+  elements.messages.appendChild(msgFrag);
 
   syncTurnActionPanels();
   refreshRelativeTimes();
