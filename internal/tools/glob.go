@@ -3,7 +3,9 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -41,6 +43,8 @@ type FileEntry struct {
 }
 
 const maxGlobResults = 200
+
+var errGlobResultLimit = errors.New("glob result limit reached")
 
 func (t *GlobTool) Spec() llm.ToolSpec {
 	return llm.ToolSpec{
@@ -125,41 +129,29 @@ func (t *GlobTool) Execute(ctx context.Context, args json.RawMessage) (llm.ToolO
 		return textOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "cannot resolve path: %v", err))), nil
 	}
 
-	// Find matching files by walking the directory
+	// Let doublestar drive the traversal from the pattern instead of walking the
+	// whole tree and matching every path. This keeps exact and prefix-heavy globs
+	// (for example "go.mod" or "cmd/*.go") proportional to the matched subtree.
 	var entries []FileEntry
-	pattern := a.Pattern
+	truncated := false
+	pattern := filepath.ToSlash(a.Pattern)
+	if err := validateGlobPattern(pattern); err != nil {
+		return textOutput(formatToolError(NewToolErrorf(ErrInvalidParams, "invalid pattern: %v", err))), nil
+	}
+	fsys := globContextFS{ctx: ctx, root: absBasePath, fsys: os.DirFS(absBasePath)}
 
-	err = filepath.WalkDir(absBasePath, func(path string, d os.DirEntry, err error) error {
-		if ctx.Err() != nil {
-			return ctx.Err()
-		}
-		if err != nil {
-			return nil // Skip errors
-		}
-
-		// Skip hidden directories
-		if d.IsDir() && strings.HasPrefix(d.Name(), ".") {
-			return filepath.SkipDir
+	err = doublestar.GlobWalk(fsys, pattern, func(matchPath string, d fs.DirEntry) error {
+		if err := ctx.Err(); err != nil {
+			return err
 		}
 
-		// Skip hidden files
-		if strings.HasPrefix(d.Name(), ".") {
-			return nil
-		}
-
-		// Get relative path for matching
-		relPath, err := filepath.Rel(absBasePath, path)
-		if err != nil {
-			return nil
-		}
-
-		// Check if pattern matches
-		matched, err := doublestar.Match(pattern, relPath)
-		if err != nil {
-			return nil
-		}
-
-		if !matched {
+		// Preserve the historical tool behaviour of ignoring hidden files and
+		// directories even when the pattern names them explicitly. WithNoHidden
+		// handles wildcard traversal; this callback handles exact dot-paths.
+		if hasHiddenPathSegment(matchPath) {
+			if d.IsDir() {
+				return doublestar.SkipDir
+			}
 			return nil
 		}
 
@@ -168,20 +160,28 @@ func (t *GlobTool) Execute(ctx context.Context, args json.RawMessage) (llm.ToolO
 			return nil
 		}
 
+		fullPath := absBasePath
+		if matchPath != "." {
+			fullPath = filepath.Join(absBasePath, filepath.FromSlash(matchPath))
+		}
 		entries = append(entries, FileEntry{
-			FilePath:  path,
+			FilePath:  fullPath,
 			IsDir:     d.IsDir(),
 			SizeBytes: info.Size(),
 			ModTime:   info.ModTime(),
 		})
 
 		if len(entries) >= maxGlobResults {
-			return filepath.SkipAll
+			truncated = true
+			return errGlobResultLimit
 		}
 
 		return nil
-	})
+	}, doublestar.WithNoHidden(), doublestar.WithNoFollow(), doublestar.WithFailOnIOErrors())
 
+	if errors.Is(err, errGlobResultLimit) {
+		err = nil
+	}
 	if err != nil {
 		return textOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "walk error: %v", err))), nil
 	}
@@ -195,7 +195,152 @@ func (t *GlobTool) Execute(ctx context.Context, args json.RawMessage) (llm.ToolO
 		return textOutput("No files matched the pattern."), nil
 	}
 
-	return textOutput(formatGlobResults(entries, len(entries) >= maxGlobResults)), nil
+	return textOutput(formatGlobResults(entries, truncated)), nil
+}
+
+func validateGlobPattern(pattern string) error {
+	if pattern == "." {
+		return nil
+	}
+	if strings.Contains(pattern, "..") {
+		return fmt.Errorf("must not contain .. path traversal")
+	}
+	if !fs.ValidPath(pattern) {
+		return fmt.Errorf("must be a relative pattern without . or .. path segments")
+	}
+	return nil
+}
+
+type globContextFS struct {
+	ctx  context.Context
+	root string
+	fsys fs.FS
+}
+
+func (f globContextFS) Open(name string) (fs.File, error) {
+	if _, err := f.lstatPath(name, false); err != nil {
+		return nil, err
+	}
+	file, err := f.fsys.Open(name)
+	if err != nil {
+		if ctxErr := f.ctx.Err(); ctxErr != nil {
+			return nil, ctxErr
+		}
+		return nil, fs.ErrNotExist
+	}
+	return globContextFile{ctx: f.ctx, File: file}, nil
+}
+
+func (f globContextFS) Stat(name string) (fs.FileInfo, error) {
+	return f.lstatPath(name, true)
+}
+
+func (f globContextFS) ReadDir(name string) ([]fs.DirEntry, error) {
+	info, err := f.lstatPath(name, false)
+	if err != nil {
+		return nil, err
+	}
+	if !info.IsDir() {
+		return nil, fs.ErrNotExist
+	}
+
+	var (
+		entries []fs.DirEntry
+		readErr error
+	)
+	if readDirFS, ok := f.fsys.(fs.ReadDirFS); ok {
+		entries, readErr = readDirFS.ReadDir(name)
+	} else {
+		entries, readErr = fs.ReadDir(f.fsys, name)
+	}
+	if readErr != nil {
+		if ctxErr := f.ctx.Err(); ctxErr != nil {
+			return nil, ctxErr
+		}
+		return nil, nil
+	}
+	return entries, nil
+}
+
+func (f globContextFS) lstatPath(name string, allowLeafSymlink bool) (fs.FileInfo, error) {
+	if err := f.ctx.Err(); err != nil {
+		return nil, err
+	}
+	if name != "" && name != "." && !fs.ValidPath(name) {
+		return nil, fs.ErrNotExist
+	}
+
+	current := f.root
+	parts := []string{"."}
+	if name != "" && name != "." {
+		parts = strings.Split(filepath.ToSlash(name), "/")
+	}
+
+	var info fs.FileInfo
+	for i, part := range parts {
+		if part == "" || part == "." {
+			current = f.root
+		} else if part == ".." {
+			return nil, fs.ErrNotExist
+		} else {
+			current = filepath.Join(current, filepath.FromSlash(part))
+		}
+
+		var err error
+		info, err = os.Lstat(current)
+		if err != nil {
+			if ctxErr := f.ctx.Err(); ctxErr != nil {
+				return nil, ctxErr
+			}
+			if errors.Is(err, fs.ErrNotExist) {
+				return nil, err
+			}
+			return nil, fs.ErrNotExist
+		}
+		if info.Mode()&os.ModeSymlink != 0 && !(allowLeafSymlink && i == len(parts)-1) {
+			return nil, fs.ErrNotExist
+		}
+	}
+	return info, nil
+}
+
+type globContextFile struct {
+	ctx context.Context
+	fs.File
+}
+
+func (f globContextFile) Read(p []byte) (int, error) {
+	if err := f.ctx.Err(); err != nil {
+		return 0, err
+	}
+	return f.File.Read(p)
+}
+
+func (f globContextFile) Stat() (fs.FileInfo, error) {
+	if err := f.ctx.Err(); err != nil {
+		return nil, err
+	}
+	return f.File.Stat()
+}
+
+func (f globContextFile) ReadDir(n int) ([]fs.DirEntry, error) {
+	if err := f.ctx.Err(); err != nil {
+		return nil, err
+	}
+	readDirFile, ok := f.File.(fs.ReadDirFile)
+	if !ok {
+		return nil, &fs.PathError{Op: "readdir", Err: errors.ErrUnsupported}
+	}
+	return readDirFile.ReadDir(n)
+}
+
+func hasHiddenPathSegment(path string) bool {
+	for _, part := range strings.Split(filepath.ToSlash(path), "/") {
+		if part != "" && part != "." && strings.HasPrefix(part, ".") {
+			return true
+		}
+	}
+	return false
 }
 
 // formatGlobResults formats glob results for the LLM.
