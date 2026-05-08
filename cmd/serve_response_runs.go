@@ -1138,24 +1138,23 @@ func (s *serveServer) streamResponseRunEvents(ctx context.Context, w http.Respon
 		defer run.unsubscribe(ch)
 	}
 
-	writeEvent := func(ev responseRunEvent) error {
-		pingMu.Lock()
-		defer pingMu.Unlock()
-		if err := writeStoredResponseEvent(w, ev); err != nil {
-			return err
-		}
-		flusher.Flush()
-		return nil
-	}
-
 	writeDone := func() {
 		stopKeepalive()
 		_, _ = io.WriteString(w, "data: [DONE]\n\n")
 		flusher.Flush()
 	}
 
-	for _, ev := range replay {
-		if err := writeEvent(ev); err != nil {
+	if len(replay) > 0 {
+		pingMu.Lock()
+		var replayErr error
+		for _, ev := range replay {
+			if replayErr = writeStoredResponseEvent(w, ev); replayErr != nil {
+				break
+			}
+		}
+		flusher.Flush()
+		pingMu.Unlock()
+		if replayErr != nil {
 			return
 		}
 	}
@@ -1179,7 +1178,35 @@ func (s *serveServer) streamResponseRunEvents(ctx context.Context, w http.Respon
 				writeDone()
 				return
 			}
-			if err := writeEvent(ev); err != nil {
+			// Drain any immediately available events and write them as a
+			// batch under a single lock+Flush to cut syscall overhead at
+			// high token rates (~100 events/sec during streaming).
+			pingMu.Lock()
+			closed := false
+			writeErr := writeStoredResponseEvent(w, ev)
+		drainLoop:
+			for writeErr == nil {
+				select {
+				case next, nextOK := <-ch:
+					if !nextOK {
+						closed = true
+						break drainLoop
+					}
+					writeErr = writeStoredResponseEvent(w, next)
+				default:
+					break drainLoop
+				}
+			}
+			flusher.Flush()
+			pingMu.Unlock()
+			if writeErr != nil {
+				return
+			}
+			if closed {
+				if run.subscriberWasDropped(subscriberID) {
+					return
+				}
+				writeDone()
 				return
 			}
 		}
