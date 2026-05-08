@@ -938,12 +938,27 @@ const initialize = async () => {
 
     const sessionsPromise = mergeServerSessions();
 
-    // Fetch providers first so we can validate the stored selection.
+    // Start a speculative models fetch immediately using the provider stored in
+    // localStorage. For returning users this runs in parallel with fetchProviders,
+    // saving one serial round trip. If normalizeSelectedProvider changes the
+    // selection we discard the speculative result and re-fetch.
+    const speculativeProvider = state.selectedProvider;
+    const speculativeModelsPromise = speculativeProvider
+      ? fetchModels('', speculativeProvider)
+      : null;
+
+    // Fetch providers to validate and normalize the stored selection.
     state.providers = await fetchProviders();
     normalizeSelectedProvider();
     renderProviderOptions();
 
-    const modelsPromise = fetchModels('', state.selectedProvider);
+    let modelsPromise;
+    if (speculativeModelsPromise !== null && state.selectedProvider === speculativeProvider) {
+      modelsPromise = speculativeModelsPromise;
+    } else {
+      if (speculativeModelsPromise !== null) speculativeModelsPromise.catch(() => {});
+      modelsPromise = fetchModels('', state.selectedProvider);
+    }
     setStartupStatus('Syncing sessions…');
 
     [state.models] = await Promise.all([modelsPromise, sessionsPromise]);
