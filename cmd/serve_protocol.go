@@ -2,7 +2,9 @@ package cmd
 
 import (
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -333,6 +335,11 @@ func writeJSON(w http.ResponseWriter, status int, payload any) {
 // Modified when the client's If-None-Match header already holds the current
 // ETag. Cache-Control: no-cache tells browsers to always revalidate, so they
 // issue a conditional GET rather than skipping the request entirely.
+func jsonPayloadETag(body []byte) string {
+	sum := sha256.Sum256(body)
+	return `"` + hex.EncodeToString(sum[:]) + `"`
+}
+
 func writeJSONConditional(w http.ResponseWriter, r *http.Request, status int, payload any) {
 	body, err := json.Marshal(payload)
 	if err != nil {
@@ -342,7 +349,7 @@ func writeJSONConditional(w http.ResponseWriter, r *http.Request, status int, pa
 	h := w.Header()
 	h.Set("Content-Type", "application/json")
 	h.Set("Cache-Control", "no-cache")
-	etag := uiAssetETag(body)
+	etag := jsonPayloadETag(body)
 	h.Set("ETag", etag)
 	if uiETagMatches(r.Header.Get("If-None-Match"), etag) {
 		w.WriteHeader(http.StatusNotModified)
