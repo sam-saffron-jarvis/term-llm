@@ -1118,7 +1118,7 @@ const ensureActiveSession = () => {
     return active;
   }
 
-  const sorted = [...visibleSessions()].sort((a, b) => {
+  const sorted = visibleSessions().sort((a, b) => {
     if (Boolean(a.pinned) !== Boolean(b.pinned)) {
       return Number(Boolean(b.pinned)) - Number(Boolean(a.pinned));
     }

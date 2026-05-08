@@ -144,7 +144,7 @@ const renderSidebar = () => {
     Older: []
   };
 
-  const sorted = [...visibleSessions()].sort((a, b) => {
+  const sorted = visibleSessions().sort((a, b) => {
     const aAt = a.lastMessageAt || a.created;
     const bAt = b.lastMessageAt || b.created;
     return bAt - aAt;
