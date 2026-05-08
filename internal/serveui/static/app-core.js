@@ -996,10 +996,10 @@ const loadSessions = () => {
 const MAX_CACHED_MESSAGE_SESSIONS = 10;
 
 const evictStaleSessionMessages = () => {
-  const sorted = [...state.sessions]
-    .filter(s => s.messages && s.messages.length > 0 && !s._serverOnly)
-    .sort((a, b) => b.created - a.created);
-  const keep = new Set(sorted.slice(0, MAX_CACHED_MESSAGE_SESSIONS).map(s => s.id));
+  const withMessages = state.sessions.filter(s => s.messages && s.messages.length > 0 && !s._serverOnly);
+  if (withMessages.length <= MAX_CACHED_MESSAGE_SESSIONS) return;
+  withMessages.sort((a, b) => b.created - a.created);
+  const keep = new Set(withMessages.slice(0, MAX_CACHED_MESSAGE_SESSIONS).map(s => s.id));
 
   for (const s of state.sessions) {
     if (!keep.has(s.id) && s.messages && s.messages.length > 0) {
@@ -1008,6 +1008,9 @@ const evictStaleSessionMessages = () => {
     }
   }
 };
+
+let _savedActiveSessionId = /** @type {string|null} */ (null);
+let _savedDraftActive = /** @type {string|null} */ (null);
 
 const saveSessions = () => {
   if (state.sessions.length > 100) {
@@ -1023,9 +1026,18 @@ const saveSessions = () => {
     }
   }
   evictStaleSessionMessages();
+  const nextActiveId = state.activeSessionId || '';
+  const nextDraftActive = state.draftSessionActive ? '1' : '0';
+  if (nextActiveId === _savedActiveSessionId && nextDraftActive === _savedDraftActive) return;
   try {
-    localStorage.setItem(STORAGE_KEYS.activeSession, state.activeSessionId || '');
-    localStorage.setItem(STORAGE_KEYS.draftSessionActive, state.draftSessionActive ? '1' : '0');
+    if (nextActiveId !== _savedActiveSessionId) {
+      localStorage.setItem(STORAGE_KEYS.activeSession, nextActiveId);
+      _savedActiveSessionId = nextActiveId;
+    }
+    if (nextDraftActive !== _savedDraftActive) {
+      localStorage.setItem(STORAGE_KEYS.draftSessionActive, nextDraftActive);
+      _savedDraftActive = nextDraftActive;
+    }
   } catch {
     // storage failure — continue without persistence
   }
