@@ -329,6 +329,29 @@ func writeJSON(w http.ResponseWriter, status int, payload any) {
 	_ = json.NewEncoder(w).Encode(payload)
 }
 
+// writeJSONConditional marshals payload, sets an ETag, and returns 304 Not
+// Modified when the client's If-None-Match header already holds the current
+// ETag. Cache-Control: no-cache tells browsers to always revalidate, so they
+// issue a conditional GET rather than skipping the request entirely.
+func writeJSONConditional(w http.ResponseWriter, r *http.Request, status int, payload any) {
+	body, err := json.Marshal(payload)
+	if err != nil {
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	h := w.Header()
+	h.Set("Content-Type", "application/json")
+	h.Set("Cache-Control", "no-cache")
+	etag := uiAssetETag(body)
+	h.Set("ETag", etag)
+	if uiETagMatches(r.Header.Get("If-None-Match"), etag) {
+		w.WriteHeader(http.StatusNotModified)
+		return
+	}
+	w.WriteHeader(status)
+	_, _ = w.Write(body)
+}
+
 func decodeJSONBody(r *http.Request, dst any) error {
 	defer r.Body.Close()
 	dec := json.NewDecoder(io.LimitReader(r.Body, 50<<20))

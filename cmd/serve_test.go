@@ -9175,3 +9175,166 @@ func TestNonStreamingResponses_FiltersServerExecutedToolCalls(t *testing.T) {
 		t.Fatalf("expected 1 output item (text), got %d", len(output))
 	}
 }
+
+func TestWriteJSONConditional_SetsETagAndCacheControl(t *testing.T) {
+	payload := map[string]any{"models": []string{"gpt-4", "gpt-3.5-turbo"}}
+	req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+	rr := httptest.NewRecorder()
+	writeJSONConditional(rr, req, http.StatusOK, payload)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rr.Code)
+	}
+	if ct := rr.Header().Get("Content-Type"); ct != "application/json" {
+		t.Fatalf("Content-Type = %q, want application/json", ct)
+	}
+	if cc := rr.Header().Get("Cache-Control"); cc != "no-cache" {
+		t.Fatalf("Cache-Control = %q, want no-cache", cc)
+	}
+	if etag := rr.Header().Get("ETag"); etag == "" {
+		t.Fatal("ETag header missing")
+	}
+}
+
+func TestWriteJSONConditional_Returns304OnMatch(t *testing.T) {
+	payload := map[string]any{"models": []string{"gpt-4"}}
+
+	// First request: get the ETag.
+	req1 := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+	rr1 := httptest.NewRecorder()
+	writeJSONConditional(rr1, req1, http.StatusOK, payload)
+	etag := rr1.Header().Get("ETag")
+	if etag == "" {
+		t.Fatal("first response has no ETag")
+	}
+
+	// Second request: send If-None-Match.
+	req2 := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+	req2.Header.Set("If-None-Match", etag)
+	rr2 := httptest.NewRecorder()
+	writeJSONConditional(rr2, req2, http.StatusOK, payload)
+
+	if rr2.Code != http.StatusNotModified {
+		t.Fatalf("status = %d, want 304", rr2.Code)
+	}
+	if rr2.Body.Len() != 0 {
+		t.Fatalf("body should be empty on 304, got %d bytes", rr2.Body.Len())
+	}
+}
+
+func TestWriteJSONConditional_Returns200OnMismatch(t *testing.T) {
+	payload := map[string]any{"models": []string{"gpt-4"}}
+	req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+	req.Header.Set("If-None-Match", `"stale-etag-value"`)
+	rr := httptest.NewRecorder()
+	writeJSONConditional(rr, req, http.StatusOK, payload)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rr.Code)
+	}
+	if rr.Body.Len() == 0 {
+		t.Fatal("body should be non-empty on cache miss")
+	}
+}
+
+func TestHandleModels_ETagConditional(t *testing.T) {
+	mock := llm.NewMockProvider("anthropic")
+	srv := &serveServer{
+		cfgRef: &config.Config{
+			DefaultProvider: "anthropic",
+			Providers:       map[string]config.ProviderConfig{"anthropic": {Model: "claude-sonnet-4-6"}},
+		},
+		modelsProviders: map[string]llm.Provider{"anthropic": mock},
+	}
+
+	req1 := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+	rr1 := httptest.NewRecorder()
+	srv.handleModels(rr1, req1)
+	if rr1.Code != http.StatusOK {
+		t.Fatalf("first request status = %d, want 200; body: %s", rr1.Code, rr1.Body.String())
+	}
+	etag := rr1.Header().Get("ETag")
+	if etag == "" {
+		t.Fatal("handleModels: no ETag on first response")
+	}
+	if cc := rr1.Header().Get("Cache-Control"); cc != "no-cache" {
+		t.Fatalf("Cache-Control = %q, want no-cache", cc)
+	}
+
+	req2 := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+	req2.Header.Set("If-None-Match", etag)
+	rr2 := httptest.NewRecorder()
+	srv.handleModels(rr2, req2)
+	if rr2.Code != http.StatusNotModified {
+		t.Fatalf("second request (same etag) status = %d, want 304", rr2.Code)
+	}
+}
+
+func TestHandleProviders_ETagConditional(t *testing.T) {
+	srv := &serveServer{
+		cfgRef: &config.Config{},
+	}
+
+	req1 := httptest.NewRequest(http.MethodGet, "/v1/providers", nil)
+	rr1 := httptest.NewRecorder()
+	srv.handleProviders(rr1, req1)
+	if rr1.Code != http.StatusOK {
+		t.Fatalf("first request status = %d, want 200", rr1.Code)
+	}
+	etag := rr1.Header().Get("ETag")
+	if etag == "" {
+		t.Fatal("handleProviders: no ETag on first response")
+	}
+
+	req2 := httptest.NewRequest(http.MethodGet, "/v1/providers", nil)
+	req2.Header.Set("If-None-Match", etag)
+	rr2 := httptest.NewRecorder()
+	srv.handleProviders(rr2, req2)
+	if rr2.Code != http.StatusNotModified {
+		t.Fatalf("second request (same etag) status = %d, want 304", rr2.Code)
+	}
+}
+
+func TestHandleSessions_ETagConditional(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "sessions.db")
+	store, err := session.NewStore(session.Config{Enabled: true, Path: dbPath})
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer store.Close()
+	ctx := context.Background()
+	for i := 0; i < 3; i++ {
+		sess := &session.Session{
+			ID:        fmt.Sprintf("s-%d", i),
+			CreatedAt: time.Now(),
+			UpdatedAt: time.Now(),
+		}
+		if err := store.Create(ctx, sess); err != nil {
+			t.Fatalf("create session %d: %v", i, err)
+		}
+	}
+
+	srv := &serveServer{store: store, cfgRef: &config.Config{}}
+
+	req1 := httptest.NewRequest(http.MethodGet, "/v1/sessions", nil)
+	rr1 := httptest.NewRecorder()
+	srv.handleSessions(rr1, req1)
+	if rr1.Code != http.StatusOK {
+		t.Fatalf("first request status = %d, want 200; body: %s", rr1.Code, rr1.Body.String())
+	}
+	etag := rr1.Header().Get("ETag")
+	if etag == "" {
+		t.Fatal("handleSessions: no ETag on first response")
+	}
+	if cc := rr1.Header().Get("Cache-Control"); cc != "no-cache" {
+		t.Fatalf("Cache-Control = %q, want no-cache", cc)
+	}
+
+	req2 := httptest.NewRequest(http.MethodGet, "/v1/sessions", nil)
+	req2.Header.Set("If-None-Match", etag)
+	rr2 := httptest.NewRecorder()
+	srv.handleSessions(rr2, req2)
+	if rr2.Code != http.StatusNotModified {
+		t.Fatalf("second request (same etag) status = %d, want 304", rr2.Code)
+	}
+}

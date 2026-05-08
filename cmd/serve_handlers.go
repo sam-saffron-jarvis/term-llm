@@ -723,7 +723,7 @@ func (s *serveServer) handleSessions(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
-	writeJSON(w, http.StatusOK, map[string]any{"sessions": result})
+	writeJSONConditional(w, r, http.StatusOK, map[string]any{"sessions": result})
 }
 
 func (s *serveServer) handleSessionByID(w http.ResponseWriter, r *http.Request) {
@@ -1143,7 +1143,7 @@ func (s *serveServer) handleProviders(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
-	writeJSON(w, http.StatusOK, map[string]any{
+	writeJSONConditional(w, r, http.StatusOK, map[string]any{
 		"object": "list",
 		"data":   items,
 	})
@@ -1254,7 +1254,7 @@ func (s *serveServer) handleModels(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
-	writeJSON(w, http.StatusOK, map[string]any{
+	writeJSONConditional(w, r, http.StatusOK, map[string]any{
 		"object": "list",
 		"data":   items,
 	})
