@@ -214,7 +214,7 @@ const switchToSession = async (sessionId, options = {}) => {
 
   if (session._serverOnly) {
     const msgs = await loadServerSessionMessages(session.id);
-    if (msgs !== null) {
+    if (Array.isArray(msgs)) {
       mergeServerMessagesWithLocalState(session, msgs);
     }
   }
@@ -342,12 +342,19 @@ const convertServerMessages = (serverMessages) => {
   return result;
 };
 
+const sessionMessagesEtag = new Map();
+
 const loadServerSessionMessages = async (sessionId) => {
   try {
     const headers = {};
     if (state.token) headers.Authorization = `Bearer ${state.token}`;
+    const etag = sessionMessagesEtag.get(sessionId);
+    if (etag) headers['If-None-Match'] = etag;
     const resp = await fetch(`${UI_PREFIX}/v1/sessions/${encodeURIComponent(sessionId)}/messages`, { headers });
+    if (resp.status === 304) return false;
     if (!resp.ok) return null;
+    const newEtag = resp.headers.get('ETag');
+    if (newEtag) sessionMessagesEtag.set(sessionId, newEtag);
     const data = await resp.json();
     if (!Array.isArray(data.messages)) return null;
     return convertServerMessages(data.messages);
@@ -557,7 +564,7 @@ const syncActiveSessionFromServer = async (session, pollOnActive = false) => {
     setSessionServerActiveRun(session, false);
     updateBusySidebar();
     const serverMessages = await loadServerSessionMessages(session.id);
-    if (serverMessages !== null) {
+    if (Array.isArray(serverMessages)) {
       mergeServerMessagesWithLocalState(session, serverMessages);
       persistAndRefreshShell();
       if (session.id === state.activeSessionId) {
@@ -863,7 +870,7 @@ const hydrateActiveSessionAfterStartup = async () => {
 
   if (active._serverOnly) {
     const msgs = await loadServerSessionMessages(active.id);
-    if (msgs !== null) {
+    if (Array.isArray(msgs)) {
       mergeServerMessagesWithLocalState(active, msgs);
       saveSessions();
       renderSidebar();
