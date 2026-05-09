@@ -77,6 +77,24 @@
     console.log('[webrtc] +' + elapsed + 'ms ' + msg);
   }
 
+  function termApp() {
+    return window.TermLLMApp || null;
+  }
+
+  function setAppConnectionState(text, mode) {
+    const app = termApp();
+    if (app && typeof app.setConnectionState === 'function') {
+      app.setConnectionState(text, mode);
+    }
+  }
+
+  function maybeReloadForUIVersion(response) {
+    const app = termApp();
+    if (app && typeof app.maybeReloadForUIVersion === 'function') {
+      app.maybeReloadForUIVersion(response);
+    }
+  }
+
   // ---------------------------------------------------------------------------
   // Initialisation
   // ---------------------------------------------------------------------------
@@ -205,9 +223,7 @@
 
       diag('data channel open — fetch patched');
 
-      if (typeof setConnectionState === 'function') {
-        setConnectionState('\u26A1 direct', 'ok');
-      }
+      setAppConnectionState('\u26A1 direct', 'ok');
     } catch (_e) {
       diag('init error: ' + (_e && _e.message ? _e.message : String(_e)));
       // Silent fallback — HTTPS continues to work for all requests.
@@ -291,9 +307,7 @@
     dataChannel = null;
     diag('data channel closed — restoring original fetch');
     window.fetch = originalFetch;
-    if (typeof setConnectionState === 'function') {
-      setConnectionState('Connected', 'ok');
-    }
+    setAppConnectionState('Connected', 'ok');
     drainPendingToHTTPS('channel closed');
   }
 
@@ -312,9 +326,7 @@
     dataChannel = null;
     window.fetch = originalFetch;
 
-    if (typeof setConnectionState === 'function') {
-      setConnectionState('Connected', 'ok');
-    }
+    setAppConnectionState('Connected', 'ok');
 
     // Rescue any other in-flight requests stuck on the dead channel.
     drainPendingToHTTPS('renegotiation');
@@ -503,9 +515,7 @@
         onHeaders(headers, status) {
           markGotResponse();
           const response = new Response(nullBodyStatus(status) ? null : stream, { status, headers: new Headers(headers) });
-          if (typeof app?.maybeReloadForUIVersion === 'function') {
-            app.maybeReloadForUIVersion(response);
-          }
+          maybeReloadForUIVersion(response);
           resolveOnce(response);
         },
         onChunk(fragment) {

@@ -1922,6 +1922,107 @@ async function testArgumentDeltaWithoutOutputIndexUsesLastRunningTool() {
   pass(name);
 }
 
+async function testArgumentDeltasContinueUntilOutputItemDone() {
+  const name = 'function_call_arguments.delta continues until output_item.done finalizes args';
+  const harness = createHarness();
+  const { app, state, cleanup } = harness;
+
+  const session = {
+    id: 'session_arg_finalized',
+    title: 'arg finalized',
+    messages: [],
+    lastResponseId: null,
+    activeResponseId: 'resp_arg_finalized',
+    lastSequenceNumber: 0,
+    number: 1,
+  };
+  state.sessions.push(session);
+  state.activeSessionId = session.id;
+
+  const streamState = app.createResponseStreamState(session);
+  app.applyResponseStreamEvent(session, streamState, 'response.output_item.added', {
+    output_index: 0,
+    item: { type: 'function_call', call_id: 'call_json', name: 'write_file' },
+  });
+  app.applyResponseStreamEvent(session, streamState, 'response.function_call_arguments.delta', {
+    output_index: 0,
+    delta: '{"path":"a.txt"}',
+  });
+  app.applyResponseStreamEvent(session, streamState, 'response.function_call_arguments.delta', {
+    output_index: 0,
+    delta: ',"content":"still append even after valid partial JSON"}',
+  });
+
+  const group = session.messages.find((message) => message.role === 'tool-group');
+  const tool = group && group.tools && group.tools[0];
+  if (!tool || !String(tool.arguments || '').includes('still append')) {
+    fail(name, 'delta after a valid JSON prefix should still append before finalization', JSON.stringify(tool));
+    await cleanup();
+    return;
+  }
+
+  app.applyResponseStreamEvent(session, streamState, 'response.output_item.done', {
+    item: { type: 'function_call', call_id: 'call_json', name: 'write_file', arguments: '{"path":"final.txt"}' },
+  });
+  if (!tool.argumentsFinalized) {
+    fail(name, 'output_item.done should mark arguments finalized', JSON.stringify(tool));
+    await cleanup();
+    return;
+  }
+
+  app.applyResponseStreamEvent(session, streamState, 'response.function_call_arguments.delta', {
+    output_index: 0,
+    delta: 'stale replay delta',
+  });
+  if (tool.arguments !== '{"path":"final.txt"}') {
+    fail(name, 'delta after finalization should be ignored', JSON.stringify(tool));
+    await cleanup();
+    return;
+  }
+
+  await cleanup();
+  pass(name);
+}
+
+async function testSeededToolArgumentsIgnoreReplayDeltas() {
+  const name = 'function_call_arguments.delta ignores replay deltas for seeded complete args';
+  const harness = createHarness();
+  const { app, state, cleanup } = harness;
+
+  const session = {
+    id: 'session_seeded_args',
+    title: 'seeded args',
+    messages: [],
+    lastResponseId: null,
+    activeResponseId: 'resp_seeded_args',
+    lastSequenceNumber: 0,
+    number: 1,
+  };
+  state.sessions.push(session);
+  state.activeSessionId = session.id;
+
+  const streamState = app.createResponseStreamState(session);
+  app.applyResponseStreamEvent(session, streamState, 'response.output_item.added', {
+    output_index: 0,
+    item: { type: 'function_call', call_id: 'call_seeded', name: 'grep', arguments: '{"pattern":"needle"}' },
+  });
+  app.applyResponseStreamEvent(session, streamState, 'response.function_call_arguments.delta', {
+    output_index: 0,
+    delta: '{"pattern":"needle"}',
+  });
+
+  const group = session.messages.find((message) => message.role === 'tool-group');
+  const tool = group && group.tools && group.tools[0];
+  if (!tool || tool.arguments !== '{"pattern":"needle"}' || !tool.argumentsFinalized) {
+    fail(name, 'seeded complete arguments should be retained and marked finalized', JSON.stringify(tool));
+    await cleanup();
+    return;
+  }
+
+  await cleanup();
+  pass(name);
+}
+
 async function testSendMessageLazilyMaterializesAttachmentDataURLs() {
   const name = 'sendMessage lazily materializes attachment data URLs only when sending';
   let readCount = 0;
@@ -2358,6 +2459,8 @@ function testRestoreLatestDraftMessageDoesNotCrossSessionBoundary() {
   await testResumeActiveResponseRecoversFromSnapshotBeforeReplaying();
   await testFunctionCallArgumentDeltasFillToolPrompt();
   await testArgumentDeltaWithoutOutputIndexUsesLastRunningTool();
+  await testArgumentDeltasContinueUntilOutputItemDone();
+  await testSeededToolArgumentsIgnoreReplayDeltas();
   await testResumeActiveResponseFallsBackToReplayWhenSnapshotUnavailable();
   await testResumeActiveResponseClearsTerminalTrackingWhen409SnapshotHasNoRecovery();
   await testSendMessageIncludesModelSwapForChangedTarget();

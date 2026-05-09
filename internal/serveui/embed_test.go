@@ -219,6 +219,25 @@ func TestChipPickerJS(t *testing.T) {
 	}
 }
 
+func TestAppWebRTCDoesNotReferenceLexicalApp(t *testing.T) {
+	webrtcJS, err := StaticAsset("app-webrtc.js")
+	if err != nil {
+		t.Fatalf("StaticAsset(app-webrtc.js): %v", err)
+	}
+	src := string(webrtcJS)
+	for _, bad := range []string{
+		"app?.",
+		"typeof setConnectionState",
+	} {
+		if strings.Contains(src, bad) {
+			t.Fatalf("app-webrtc.js contains unsafe global reference %q", bad)
+		}
+	}
+	if !strings.Contains(src, "window.TermLLMApp") {
+		t.Fatalf("app-webrtc.js should access app exports through window.TermLLMApp")
+	}
+}
+
 func TestStaticAssetsSupportCodeBlockUX(t *testing.T) {
 	renderJS, err := StaticAsset("app-render.js")
 	if err != nil {
@@ -538,6 +557,38 @@ func TestRenderServiceWorkerWebRTCOption(t *testing.T) {
 	}
 	if strings.Contains(enabled, "term-llm:webrtc-shell-asset") {
 		t.Fatal("enabled WebRTC option should remove the WebRTC shell asset placeholder")
+	}
+}
+
+func TestRenderedStaticAssetsAreCached(t *testing.T) {
+	manifest1 := RenderManifest()
+	manifest2 := RenderManifest()
+	if len(manifest1) == 0 || len(manifest2) == 0 {
+		t.Fatal("RenderManifest returned empty output")
+	}
+	if &manifest1[0] != &manifest2[0] {
+		t.Fatal("RenderManifest should return cached output")
+	}
+
+	sw1 := RenderServiceWorker(RenderOptions{})
+	sw2 := RenderServiceWorker(RenderOptions{})
+	if len(sw1) == 0 || len(sw2) == 0 {
+		t.Fatal("RenderServiceWorker returned empty output")
+	}
+	if &sw1[0] != &sw2[0] {
+		t.Fatal("RenderServiceWorker should return cached output for the same options")
+	}
+
+	webrtc1 := RenderServiceWorker(RenderOptions{WebRTC: true})
+	webrtc2 := RenderServiceWorker(RenderOptions{WebRTC: true})
+	if len(webrtc1) == 0 || len(webrtc2) == 0 {
+		t.Fatal("RenderServiceWorker with WebRTC returned empty output")
+	}
+	if &webrtc1[0] != &webrtc2[0] {
+		t.Fatal("RenderServiceWorker should cache WebRTC output separately")
+	}
+	if &sw1[0] == &webrtc1[0] {
+		t.Fatal("RenderServiceWorker should keep WebRTC and non-WebRTC outputs separate")
 	}
 }
 

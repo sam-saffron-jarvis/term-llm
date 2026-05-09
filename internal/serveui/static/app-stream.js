@@ -578,7 +578,11 @@ const applyResponseStreamEvent = (session, streamState, event, payload) => {
         arguments: String(item.arguments || ''),
         status: 'running',
         created: Date.now(),
-        outputIndex: payload.output_index
+        outputIndex: payload.output_index,
+        // Providers usually stream arguments via deltas after an empty added
+        // event. If a replay/snapshot seeds arguments here, treat them as
+        // complete so repeated deltas cannot duplicate them.
+        argumentsFinalized: Boolean(String(item.arguments || '').trim())
       };
 
       if (!streamState.currentToolGroup) {
@@ -616,19 +620,9 @@ const applyResponseStreamEvent = (session, streamState, event, payload) => {
         const entry = exactEntry
           || tools.findLast((tool) => tool.status !== 'done')
           || tools[tools.length - 1];
-        if (entry) {
-          const current = String(entry.arguments || '');
-          let currentIsCompleteJSON = false;
-          if (current) {
-            try {
-              JSON.parse(current);
-              currentIsCompleteJSON = true;
-            } catch {}
-          }
-          if (!currentIsCompleteJSON) {
-            entry.arguments = current + delta;
-            scheduleStreamPersistence();
-          }
+        if (entry && !entry.argumentsFinalized) {
+          entry.arguments = String(entry.arguments || '') + delta;
+          scheduleStreamPersistence();
         }
       }
     }
@@ -644,6 +638,7 @@ const applyResponseStreamEvent = (session, streamState, event, payload) => {
         : streamState.currentToolGroup.tools.find((tool) => tool.name === String(item.name || '') && tool.status === 'running');
       if (entry) {
         entry.arguments = String(item.arguments || entry.arguments || '');
+        entry.argumentsFinalized = true;
       }
       updateVisibleToolGroupNode(session, streamState.currentToolGroup);
       scheduleStreamPersistence();

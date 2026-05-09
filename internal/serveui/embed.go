@@ -19,6 +19,12 @@ var staticFiles embed.FS
 var (
 	assetVersionOnce sync.Once
 	assetVersion     string
+
+	renderManifestOnce sync.Once
+	renderManifest     []byte
+
+	renderServiceWorkerOnce [2]sync.Once
+	renderServiceWorker     [2][]byte
 )
 
 // AssetVersion returns a stable hash of the embedded UI assets.
@@ -109,18 +115,34 @@ func RenderIndexHTML(basePath, headSnippet string, opts RenderOptions) []byte {
 	return html
 }
 
-// RenderManifest returns the manifest with versioned icon URLs.
+// RenderManifest returns the manifest with versioned icon URLs. The returned
+// slice is cached and must be treated as read-only.
 func RenderManifest() []byte {
-	data, err := StaticAsset("manifest.webmanifest")
-	if err != nil {
-		return nil
-	}
-	return bytes.ReplaceAll(data, []byte(`"./icon-512.png"`), []byte(`"./`+versioned("icon-512.png")+`"`))
+	renderManifestOnce.Do(func() {
+		data, err := StaticAsset("manifest.webmanifest")
+		if err != nil {
+			return
+		}
+		renderManifest = bytes.ReplaceAll(data, []byte(`"./icon-512.png"`), []byte(`"./`+versioned("icon-512.png")+`"`))
+	})
+	return renderManifest
 }
 
 // RenderServiceWorker returns the service worker with a versioned cache key,
-// shell asset URLs, and optional feature assets.
+// shell asset URLs, and optional feature assets. The returned slice is cached
+// per option set and must be treated as read-only.
 func RenderServiceWorker(opts RenderOptions) []byte {
+	cacheIndex := 0
+	if opts.WebRTC {
+		cacheIndex = 1
+	}
+	renderServiceWorkerOnce[cacheIndex].Do(func() {
+		renderServiceWorker[cacheIndex] = renderServiceWorkerBytes(opts)
+	})
+	return renderServiceWorker[cacheIndex]
+}
+
+func renderServiceWorkerBytes(opts RenderOptions) []byte {
 	data, err := StaticAsset("sw.js")
 	if err != nil {
 		return nil

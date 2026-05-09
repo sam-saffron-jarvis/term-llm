@@ -191,6 +191,9 @@ class Element {
     if (selector.startsWith('[data-message-id="') && selector.endsWith('"]')) {
       return this.dataset.messageId === selector.slice(18, -2);
     }
+    if (selector.startsWith('[data-tool-id="') && selector.endsWith('"]')) {
+      return this.dataset.toolId === selector.slice(15, -2);
+    }
     return this.tagName.toLowerCase() === selector.toLowerCase();
   }
 
@@ -625,6 +628,41 @@ async function run(name, fn) {
 
     assertEqual(messages.children[0].querySelector('.turn-action-panel'), firstTurnPanel, 'earlier turn panel still preserved on later stream ticks');
     assertEqual(messages.children[2].querySelector('.turn-action-panel'), streamedPanel, 'streaming assistant panel is reused across ticks');
+  });
+
+  await run('done finalized tool args are not rebuilt on later group updates', () => {
+    const { app, messages } = createHarness();
+    const tool = {
+      id: 'tool_done',
+      name: 'grep',
+      status: 'done',
+      arguments: '{"pattern":"needle"}',
+      argumentsFinalized: true,
+    };
+    const group = {
+      id: 'group_done',
+      role: 'tool-group',
+      status: 'done',
+      tools: [tool],
+    };
+    messages.appendChild(app.createToolGroupNode(group));
+
+    const entry = messages.querySelector('[data-tool-id="tool_done"]');
+    const argsBefore = entry && entry.querySelector('.tool-entry-args');
+    assert(argsBefore, 'initial args node rendered');
+
+    app.updateToolGroupNode(group);
+
+    const argsAfter = entry.querySelector('.tool-entry-args');
+    assertEqual(argsAfter, argsBefore, 'finalized done args node is reused');
+
+    tool.arguments = '{"pattern":"changed"}';
+    tool.argumentsFinalized = false;
+    app.updateToolGroupNode(group);
+
+    const argsRebuilt = entry.querySelector('.tool-entry-args');
+    assert(argsRebuilt, 'args node still present after rebuild');
+    assert(argsRebuilt !== argsBefore, 'non-finalized done args can still be rebuilt');
   });
 
   await run('renders markdown without eager optional libraries for plain markdown', () => {

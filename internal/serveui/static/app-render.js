@@ -717,7 +717,8 @@ const getOrCreateAssistantStreamState = (message, body) => {
       timerId: 0,
       lastRenderAt: 0,
       plainTextScanSource: '',
-      plainTextEligible: true
+      plainTextEligible: true,
+      turnPanelSynced: false
     };
   const containers = createAssistantStreamContainers(body);
   streamState.messageId = message.id;
@@ -727,6 +728,7 @@ const getOrCreateAssistantStreamState = (message, body) => {
   streamState._canPlainCached = null;
   streamState._canPlainCachedAt = 0;
   streamState._stableCheckedAt = 0;
+  streamState.turnPanelSynced = false;
   assistantStreamStates.set(message.id, streamState);
   return streamState;
 };
@@ -966,6 +968,14 @@ const renderAssistantNodeFully = (node, message) => {
   syncAssistantUsageNode(node, message);
 };
 
+const maybeSyncStreamingTurnActionPanel = (streamState, message) => {
+  if (!streamState || streamState.turnPanelSynced) return;
+  syncTurnActionPanelForAssistant(message.id);
+  if (String(message.content || '').trim()) {
+    streamState.turnPanelSynced = true;
+  }
+};
+
 const enqueueAssistantStreamUpdate = (message) => {
   if (!app.markdownStreaming) {
     updateAssistantNode(message);
@@ -983,7 +993,7 @@ const enqueueAssistantStreamUpdate = (message) => {
     existingState.latestContent = String(message.content || '');
     existingState.dirty = true;
     if (existingState.node) syncAssistantUsageNode(existingState.node, message);
-    syncTurnActionPanelForAssistant(message.id);
+    maybeSyncStreamingTurnActionPanel(existingState, message);
     scheduleAssistantStreamRender(existingState);
     return;
   }
@@ -1003,7 +1013,7 @@ const enqueueAssistantStreamUpdate = (message) => {
   streamState.latestContent = String(message.content || '');
   streamState.dirty = true;
   if (message.usage) syncAssistantUsageNode(node, message);
-  syncTurnActionPanelForAssistant(message.id);
+  maybeSyncStreamingTurnActionPanel(streamState, message);
   scheduleAssistantStreamRender(streamState);
 };
 
@@ -1742,13 +1752,18 @@ const updateToolGroupNode = (message) => {
           status.className = `tool-entry-status${tool.status === 'done' ? ' done' : ''}`;
           status.textContent = tool.status === 'done' ? '✓' : '…';
         }
-        // Update or add arguments display
+        // Update or add arguments display. Once the response stream has
+        // finalized a completed tool's arguments, they are immutable; keep the
+        // existing DOM node instead of reparsing JSON and rebuilding it on
+        // every later group update.
         const existingArgs = entry.querySelector('.tool-entry-args');
-        const newArgs = buildArgsNode(tool);
-        if (existingArgs && newArgs) {
-          existingArgs.replaceWith(newArgs);
-        } else if (!existingArgs && newArgs) {
-          entry.appendChild(newArgs);
+        if (!(tool.status === 'done' && tool.argumentsFinalized && existingArgs)) {
+          const newArgs = buildArgsNode(tool);
+          if (existingArgs && newArgs) {
+            existingArgs.replaceWith(newArgs);
+          } else if (!existingArgs && newArgs) {
+            entry.appendChild(newArgs);
+          }
         }
       }
     });
