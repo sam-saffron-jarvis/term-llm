@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"crypto/subtle"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -655,6 +656,126 @@ func serveUploadsDir() string {
 	return filepath.Join(dataDir, "uploads")
 }
 
+const sessionMessagesPageSize = 200
+
+func parseSessionMessagesLimit(raw string) int {
+	limit, err := strconv.Atoi(strings.TrimSpace(raw))
+	if err != nil || limit <= 0 {
+		return sessionMessagesPageSize
+	}
+	if limit > sessionMessagesPageSize {
+		return sessionMessagesPageSize
+	}
+	return limit
+}
+
+func parseSessionMessagesOffset(raw string) int {
+	offset, err := strconv.Atoi(strings.TrimSpace(raw))
+	if err != nil || offset < 0 {
+		return 0
+	}
+	return offset
+}
+
+func imageExtensionForMediaType(contentType string) string {
+	mediaType, _, err := mime.ParseMediaType(contentType)
+	if err != nil {
+		mediaType = strings.TrimSpace(strings.ToLower(contentType))
+	}
+	exts, err := mime.ExtensionsByType(mediaType)
+	if err == nil {
+		for _, ext := range exts {
+			if ext != "" {
+				return ext
+			}
+		}
+	}
+	switch mediaType {
+	case "image/jpeg":
+		return ".jpg"
+	case "image/png":
+		return ".png"
+	case "image/gif":
+		return ".gif"
+	case "image/webp":
+		return ".webp"
+	case "image/svg+xml":
+		return ".svg"
+	default:
+		return ".img"
+	}
+}
+
+func (s *serveServer) materializeInlineSessionImage(mediaType, base64Data string) (string, bool) {
+	outputDir := s.imageOutputDir()
+	absDir, err := canonicalizeServeDirForWrite(outputDir)
+	if err != nil {
+		log.Printf("[serve] materializeInlineSessionImage: resolve dir %s: %v", outputDir, err)
+		return "", false
+	}
+	if err := os.MkdirAll(absDir, 0755); err != nil {
+		log.Printf("[serve] materializeInlineSessionImage: mkdir %s: %v", absDir, err)
+		return "", false
+	}
+
+	mediaType = strings.TrimSpace(mediaType)
+	base64Data = strings.TrimSpace(base64Data)
+	hash := sha256.New()
+	_, _ = io.WriteString(hash, mediaType)
+	_, _ = io.WriteString(hash, "\n")
+	_, _ = io.WriteString(hash, base64Data)
+	sum := hash.Sum(nil)
+	destName := "history-" + hex.EncodeToString(sum[:16]) + imageExtensionForMediaType(mediaType)
+	destPath := filepath.Join(absDir, destName)
+	if info, err := os.Stat(destPath); err == nil && !info.IsDir() {
+		return destPath, true
+	}
+
+	tmpPath := destPath + ".tmp-" + randomSuffix()
+	dst, err := os.Create(tmpPath)
+	if err != nil {
+		log.Printf("[serve] materializeInlineSessionImage: create %s: %v", tmpPath, err)
+		return "", false
+	}
+	dec := base64.NewDecoder(base64.StdEncoding, strings.NewReader(base64Data))
+	if _, err := io.Copy(dst, dec); err != nil {
+		dst.Close()
+		os.Remove(tmpPath)
+		log.Printf("[serve] materializeInlineSessionImage: decode %s: %v", destPath, err)
+		return "", false
+	}
+	if err := dst.Close(); err != nil {
+		os.Remove(tmpPath)
+		log.Printf("[serve] materializeInlineSessionImage: close %s: %v", tmpPath, err)
+		return "", false
+	}
+	if err := os.Rename(tmpPath, destPath); err != nil {
+		if _, statErr := os.Stat(destPath); statErr == nil {
+			os.Remove(tmpPath)
+			return destPath, true
+		}
+		os.Remove(tmpPath)
+		log.Printf("[serve] materializeInlineSessionImage: rename %s -> %s: %v", tmpPath, destPath, err)
+		return "", false
+	}
+	return destPath, true
+}
+
+func (s *serveServer) sessionMessageImageURL(part llm.Part) string {
+	if part.ImagePath != "" {
+		if served, ok := s.ensureImageServeable(part.ImagePath); ok {
+			return serveRoutePath(s.cfg.imagesRoute(), s.imageOutputDir(), served)
+		}
+	}
+	if part.ImageData == nil || strings.TrimSpace(part.ImageData.Base64) == "" {
+		return ""
+	}
+	if served, ok := s.materializeInlineSessionImage(part.ImageData.MediaType, part.ImageData.Base64); ok {
+		return serveRoutePath(s.cfg.imagesRoute(), s.imageOutputDir(), served)
+	}
+	return ""
+}
+
 func (s *serveServer) handleSessions(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		w.Header().Set("Allow", "GET")
@@ -830,13 +951,18 @@ func (s *serveServer) handleSessionByID(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
-	offset, _ := strconv.Atoi(r.URL.Query().Get("offset"))
-	msgs, err := s.store.GetMessages(r.Context(), sessionID, limit, offset)
+	limit := parseSessionMessagesLimit(r.URL.Query().Get("limit"))
+	offset := parseSessionMessagesOffset(r.URL.Query().Get("offset"))
+	msgs, err := s.store.GetMessages(r.Context(), sessionID, limit+1, offset)
 	if err != nil {
 		writeOpenAIError(w, http.StatusInternalServerError, "server_error", "failed to get messages")
 		return
 	}
+	hasMore := len(msgs) > limit
+	if hasMore {
+		msgs = msgs[:limit]
+	}
+	nextOffset := offset + len(msgs)
 
 	type partEntry struct {
 		Type       string `json:"type"`
@@ -852,6 +978,12 @@ func (s *serveServer) handleSessionByID(w http.ResponseWriter, r *http.Request) 
 		Role      string      `json:"role"`
 		Parts     []partEntry `json:"parts"`
 		CreatedAt int64       `json:"created_at"`
+	}
+
+	type messagesResponse struct {
+		Messages   []messageEntry `json:"messages"`
+		HasMore    bool           `json:"has_more"`
+		NextOffset int            `json:"next_offset,omitempty"`
 	}
 
 	result := make([]messageEntry, 0, len(msgs))
@@ -890,11 +1022,15 @@ func (s *serveServer) handleSessionByID(w http.ResponseWriter, r *http.Request) 
 					})
 				}
 			case llm.PartImage:
-				if p.ImageData != nil && p.ImageData.Base64 != "" {
+				if imageURL := s.sessionMessageImageURL(p); imageURL != "" {
+					mimeType := ""
+					if p.ImageData != nil {
+						mimeType = p.ImageData.MediaType
+					}
 					entry.Parts = append(entry.Parts, partEntry{
 						Type:     "image",
-						ImageURL: "data:" + p.ImageData.MediaType + ";base64," + p.ImageData.Base64,
-						MimeType: p.ImageData.MediaType,
+						ImageURL: imageURL,
+						MimeType: mimeType,
 					})
 				}
 			case llm.PartToolCall:
@@ -919,18 +1055,31 @@ func (s *serveServer) handleSessionByID(w http.ResponseWriter, r *http.Request) 
 		result = append(result, entry)
 	}
 
-	body, _ := json.Marshal(map[string]any{"messages": result})
-	hash := sha256.Sum256(body)
-	etag := `"` + hex.EncodeToString(hash[:8]) + `"`
-	w.Header().Set("ETag", etag)
+	resp := messagesResponse{Messages: result, HasMore: hasMore}
+	if hasMore {
+		resp.NextOffset = nextOffset
+	}
+	body, err := json.Marshal(resp)
+	if err != nil {
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	etagHash := sha256.New()
+	if meta, metaErr := s.store.Get(r.Context(), sessionID); metaErr == nil && meta != nil {
+		_, _ = io.WriteString(etagHash, strconv.FormatInt(meta.UpdatedAt.UnixMilli(), 10))
+		_, _ = io.WriteString(etagHash, "\n")
+	}
+	_, _ = etagHash.Write(body)
+	etag := `"` + hex.EncodeToString(etagHash.Sum(nil)) + `"`
 	w.Header().Set("Cache-Control", "no-cache")
-	if r.Header.Get("If-None-Match") == etag {
+	w.Header().Set("ETag", etag)
+	if uiETagMatches(r.Header.Get("If-None-Match"), etag) {
+		w.Header().Set("Content-Type", "application/json")
+		uiAddVary(w.Header(), "Accept-Encoding")
 		w.WriteHeader(http.StatusNotModified)
 		return
 	}
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write(body)
+	writeJSONGzipBody(w, r, http.StatusOK, body)
 }
 
 func (s *serveServer) handleSessionInterrupt(w http.ResponseWriter, r *http.Request, sessionID string) {

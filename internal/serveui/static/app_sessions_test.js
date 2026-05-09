@@ -433,6 +433,79 @@ async function testDeveloperMessagesAreHidden() {
   pass(name);
 }
 
+async function testSessionHistoryPaginationLoadsAdditionalPages() {
+  const name = 'session history pagination loads additional pages';
+  const fetchCalls = [];
+  const { app } = await createSessionsHarness({
+    pathname: '/ui/77',
+    fetchImpl: async (url) => {
+      fetchCalls.push(url);
+      if (url === '/ui/v1/sessions') {
+        return new Response(JSON.stringify({
+          sessions: [{
+            id: 'sess_page',
+            number: 77,
+            short_title: 'Paged session',
+            long_title: 'Paged session',
+            mode: 'chat',
+            origin: 'web',
+            archived: false,
+            pinned: false,
+            created_at: 1710000000000,
+            message_count: 201,
+          }]
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      if (url === '/ui/v1/sessions/sess_page/messages') {
+        return new Response(JSON.stringify({
+          messages: [{
+            role: 'user',
+            created_at: 1710000000000,
+            parts: [{ type: 'text', text: 'first page' }],
+          }],
+          has_more: true,
+          next_offset: 200,
+        }), { status: 200, headers: { 'Content-Type': 'application/json', ETag: '"sess-page-v1"' } });
+      }
+      if (url === '/ui/v1/sessions/sess_page/messages?limit=200&offset=200') {
+        return new Response(JSON.stringify({
+          messages: [{
+            role: 'assistant',
+            created_at: 1710000001000,
+            parts: [{ type: 'text', text: 'second page' }],
+          }],
+          has_more: false,
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      if (url === '/ui/v1/sessions/sess_page/state') {
+        return new Response(JSON.stringify({}), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      return new Response(JSON.stringify([]), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }
+  });
+
+  if (!fetchCalls.includes('/ui/v1/sessions/sess_page/messages?limit=200&offset=200')) {
+    fail(name, 'expected follow-up paginated fetch', JSON.stringify(fetchCalls));
+    return;
+  }
+
+  const session = app.state.sessions.find((item) => item.id === 'sess_page');
+  if (!session) {
+    fail(name, 'session not found after paginated load');
+    return;
+  }
+  if (session.messages.length !== 2) {
+    fail(name, `expected 2 merged messages, got ${session.messages.length}`);
+    return;
+  }
+  if (session.messages[0].content !== 'first page' || session.messages[1].content !== 'second page') {
+    fail(name, 'expected both pages to merge in order', JSON.stringify(session.messages));
+    return;
+  }
+
+  pass(name);
+}
+
 async function testSwitchToSessionSyncsWithoutTokenAndResumes() {
   const name = 'sidebar session switch syncs with server and resumes without token';
   const fetchCalls = [];
@@ -1280,6 +1353,7 @@ async function testSanitizeSessionPreservesLastMessageAt() {
   await testSwitchingSessionsStagesCurrentComposerBeforeRestore();
   await testNumericDeepLinkResolvesRealSessionId();
   await testDeveloperMessagesAreHidden();
+  await testSessionHistoryPaginationLoadsAdditionalPages();
   await testSwitchToSessionSyncsWithoutTokenAndResumes();
   await testSwitchToSessionRecoversChangedActiveResponseFromSnapshot();
   await testSwitchToSessionClearsStaleActiveResponseWithoutToken();

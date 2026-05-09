@@ -3711,6 +3711,103 @@ func TestHandleSessionMessages_ReturnsStructuredParts(t *testing.T) {
 	}
 }
 
+func TestHandleSessionMessages_DefaultPagination(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "sessions.db")
+	store, err := session.NewStore(session.Config{Enabled: true, Path: dbPath})
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+	sess := &session.Session{
+		ID:        "sess-page",
+		Provider:  "mock",
+		Model:     "mock-model",
+		Mode:      session.ModeChat,
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+		Status:    session.StatusActive,
+	}
+	if err := store.Create(ctx, sess); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	for i := 0; i < sessionMessagesPageSize+5; i++ {
+		msg := session.NewMessage("sess-page", llm.UserText(fmt.Sprintf("msg-%03d", i)), -1)
+		if err := store.AddMessage(ctx, "sess-page", msg); err != nil {
+			t.Fatalf("AddMessage(%d): %v", i, err)
+		}
+	}
+
+	srv := &serveServer{store: store}
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/sessions/sess-page/messages", nil)
+	rr := httptest.NewRecorder()
+	srv.handleSessionByID(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rr.Code)
+	}
+
+	var body struct {
+		Messages []struct {
+			Parts []struct {
+				Text string `json:"text"`
+			} `json:"parts"`
+		} `json:"messages"`
+		HasMore    bool `json:"has_more"`
+		NextOffset int  `json:"next_offset"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(body.Messages) != sessionMessagesPageSize {
+		t.Fatalf("message count = %d, want %d", len(body.Messages), sessionMessagesPageSize)
+	}
+	if !body.HasMore {
+		t.Fatal("expected has_more=true for truncated history page")
+	}
+	if body.NextOffset != sessionMessagesPageSize {
+		t.Fatalf("next_offset = %d, want %d", body.NextOffset, sessionMessagesPageSize)
+	}
+	if got := body.Messages[0].Parts[0].Text; got != "msg-000" {
+		t.Fatalf("first message text = %q, want msg-000", got)
+	}
+	if got := body.Messages[len(body.Messages)-1].Parts[0].Text; got != fmt.Sprintf("msg-%03d", sessionMessagesPageSize-1) {
+		t.Fatalf("last message text = %q, want %q", got, fmt.Sprintf("msg-%03d", sessionMessagesPageSize-1))
+	}
+
+	req = httptest.NewRequest(http.MethodGet, fmt.Sprintf("/v1/sessions/sess-page/messages?limit=%d&offset=%d", sessionMessagesPageSize, sessionMessagesPageSize), nil)
+	rr = httptest.NewRecorder()
+	srv.handleSessionByID(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("page 2 status = %d, want 200", rr.Code)
+	}
+	body = struct {
+		Messages []struct {
+			Parts []struct {
+				Text string `json:"text"`
+			} `json:"parts"`
+		} `json:"messages"`
+		HasMore    bool `json:"has_more"`
+		NextOffset int  `json:"next_offset"`
+	}{}
+	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode page 2: %v", err)
+	}
+	if len(body.Messages) != 5 {
+		t.Fatalf("page 2 message count = %d, want 5", len(body.Messages))
+	}
+	if body.HasMore {
+		t.Fatal("expected has_more=false on final page")
+	}
+	if body.NextOffset != 0 {
+		t.Fatalf("final next_offset = %d, want 0", body.NextOffset)
+	}
+	if got := body.Messages[0].Parts[0].Text; got != fmt.Sprintf("msg-%03d", sessionMessagesPageSize) {
+		t.Fatalf("page 2 first message text = %q, want %q", got, fmt.Sprintf("msg-%03d", sessionMessagesPageSize))
+	}
+}
+
 func TestHandleSessionMessages_IncludesImageParts(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "sessions.db")
 	store, err := session.NewStore(session.Config{Enabled: true, Path: dbPath})
@@ -3739,7 +3836,9 @@ func TestHandleSessionMessages_IncludesImageParts(t *testing.T) {
 		t.Fatalf("AddMessage: %v", err)
 	}
 
-	srv := &serveServer{store: store}
+	outputDir := t.TempDir()
+	srv := &serveServer{store: store, cfgRef: &config.Config{}}
+	srv.cfgRef.Image.OutputDir = outputDir
 
 	req := httptest.NewRequest(http.MethodGet, "/v1/sessions/sess-image/messages", nil)
 	rr := httptest.NewRecorder()
@@ -3776,14 +3875,24 @@ func TestHandleSessionMessages_IncludesImageParts(t *testing.T) {
 	if m.Parts[0].Type != "image" {
 		t.Fatalf("part[0].type = %q, want image", m.Parts[0].Type)
 	}
-	if m.Parts[0].ImageURL != "data:image/png;base64,aGVsbG8=" {
-		t.Fatalf("part[0].image_url = %q, want data URL", m.Parts[0].ImageURL)
+	if !strings.HasPrefix(m.Parts[0].ImageURL, "/images/history-") {
+		t.Fatalf("part[0].image_url = %q, want /images/history-*", m.Parts[0].ImageURL)
 	}
 	if m.Parts[0].MimeType != "image/png" {
 		t.Fatalf("part[0].mime_type = %q, want image/png", m.Parts[0].MimeType)
 	}
 	if m.Parts[1].Type != "text" || m.Parts[1].Text != "describe this" {
 		t.Fatalf("part[1] = %+v, want trailing text part", m.Parts[1])
+	}
+
+	imgReq := httptest.NewRequest(http.MethodGet, m.Parts[0].ImageURL, nil)
+	imgRR := httptest.NewRecorder()
+	srv.handleImage(imgRR, imgReq)
+	if imgRR.Code != http.StatusOK {
+		t.Fatalf("image status = %d, want 200", imgRR.Code)
+	}
+	if got := imgRR.Body.String(); got != "hello" {
+		t.Fatalf("image body = %q, want %q", got, "hello")
 	}
 }
 

@@ -342,21 +342,54 @@ const convertServerMessages = (serverMessages) => {
 };
 
 const sessionMessagesEtag = new Map();
+const SESSION_MESSAGES_PAGE_SIZE = 200;
+
+const fetchServerSessionMessagesPage = async (sessionId, { limit = 0, offset = 0, etag = '' } = {}) => {
+  const headers = {};
+  if (state.token) headers.Authorization = `Bearer ${state.token}`;
+  if (etag) headers['If-None-Match'] = etag;
+
+  const params = new URLSearchParams();
+  if (limit > 0) params.set('limit', String(limit));
+  if (offset > 0) params.set('offset', String(offset));
+  const query = params.toString();
+
+  const resp = await fetch(`${UI_PREFIX}/v1/sessions/${encodeURIComponent(sessionId)}/messages${query ? `?${query}` : ''}`, { headers });
+  if (resp.status === 304) return false;
+  if (!resp.ok) return null;
+
+  const data = await resp.json().catch(() => null);
+  if (!data || !Array.isArray(data.messages)) return null;
+  return {
+    data,
+    etag: resp.headers.get('ETag') || ''
+  };
+};
 
 const loadServerSessionMessages = async (sessionId) => {
   try {
-    const headers = {};
-    if (state.token) headers.Authorization = `Bearer ${state.token}`;
-    const etag = sessionMessagesEtag.get(sessionId);
-    if (etag) headers['If-None-Match'] = etag;
-    const resp = await fetch(`${UI_PREFIX}/v1/sessions/${encodeURIComponent(sessionId)}/messages`, { headers });
-    if (resp.status === 304) return false;
-    if (!resp.ok) return null;
-    const newEtag = resp.headers.get('ETag');
-    if (newEtag) sessionMessagesEtag.set(sessionId, newEtag);
-    const data = await resp.json();
-    if (!Array.isArray(data.messages)) return null;
-    return convertServerMessages(data.messages);
+    const first = await fetchServerSessionMessagesPage(sessionId, { etag: sessionMessagesEtag.get(sessionId) || '' });
+    if (first === false) return false;
+    if (!first) return null;
+
+    if (first.etag) sessionMessagesEtag.set(sessionId, first.etag);
+
+    const allMessages = first.data.messages.slice();
+    let hasMore = first.data.has_more === true;
+    let nextOffset = Number(first.data.next_offset);
+    const seenOffsets = new Set();
+
+    while (hasMore) {
+      if (!Number.isFinite(nextOffset) || nextOffset < 0 || seenOffsets.has(nextOffset)) return null;
+      seenOffsets.add(nextOffset);
+      const page = await fetchServerSessionMessagesPage(sessionId, { limit: SESSION_MESSAGES_PAGE_SIZE, offset: nextOffset });
+      if (!page) return null;
+      allMessages.push(...page.data.messages);
+      hasMore = page.data.has_more === true;
+      nextOffset = Number(page.data.next_offset);
+    }
+
+    return convertServerMessages(allMessages);
   } catch {
     return null;
   }
