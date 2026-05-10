@@ -30,11 +30,96 @@ func FilterConversationMessages(messages []Message) []Message {
 // sanitizeToolHistory removes dangling tool calls and orphan tool results.
 // It preserves non-tool content while enforcing call/result pair integrity.
 func sanitizeToolHistory(messages []Message) []Message {
-	messages = FilterConversationMessages(messages)
 	if len(messages) == 0 {
 		return nil
 	}
 
+	filtered := messages
+	for _, msg := range messages {
+		if msg.Role != RoleEvent {
+			continue
+		}
+		filtered = FilterConversationMessages(messages)
+		break
+	}
+	if len(filtered) == 0 {
+		return nil
+	}
+
+	if toolHistoryAlreadyValid(filtered) {
+		return filtered[:len(filtered):len(filtered)]
+	}
+
+	return sanitizeToolHistorySlow(filtered)
+}
+
+func toolHistoryAlreadyValid(messages []Message) bool {
+	var pendingCalls map[string]int
+
+	for _, msg := range messages {
+		switch msg.Role {
+		case RoleAssistant:
+			for _, part := range msg.Parts {
+				if !isSanitizablePart(part) {
+					return false
+				}
+				if part.Type != PartToolCall {
+					continue
+				}
+
+				callID := strings.TrimSpace(part.ToolCall.ID)
+				if callID == "" {
+					return false
+				}
+				if pendingCalls == nil {
+					pendingCalls = make(map[string]int)
+				}
+				pendingCalls[callID]++
+			}
+
+		case RoleTool:
+			for _, part := range msg.Parts {
+				if !isSanitizablePart(part) {
+					return false
+				}
+				if part.Type != PartToolResult {
+					continue
+				}
+
+				resultID := strings.TrimSpace(part.ToolResult.ID)
+				if resultID == "" || pendingCalls[resultID] == 0 {
+					return false
+				}
+				pendingCalls[resultID]--
+				if pendingCalls[resultID] == 0 {
+					delete(pendingCalls, resultID)
+				}
+			}
+
+		default:
+			for _, part := range msg.Parts {
+				if !isSanitizablePart(part) {
+					return false
+				}
+			}
+		}
+	}
+
+	return len(pendingCalls) == 0
+}
+
+func isSanitizablePart(part Part) bool {
+	switch part.Type {
+	case PartToolCall:
+		return part.ToolCall != nil
+	case PartToolResult:
+		return part.ToolResult != nil
+	default:
+		return true
+	}
+}
+
+func sanitizeToolHistorySlow(messages []Message) []Message {
 	sanitized := make([]Message, 0, len(messages))
 	pendingCalls := make(map[string][]toolCallRef)
 	matchedCalls := make(map[int]map[int]bool)

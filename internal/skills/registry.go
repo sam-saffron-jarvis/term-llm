@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -21,6 +22,13 @@ type Registry struct {
 
 	// Shadow counts for visibility
 	shadowCounts map[string]int
+
+	// Cache of the last metadata-only List result. The fingerprint is built from
+	// search paths plus SKILL.md/skill.md file mtimes/sizes, so repeated
+	// prompt/search metadata generation avoids reparsing YAML while still noticing
+	// ordinary skill add/remove/edit changes.
+	listCache            []*Skill
+	listCacheFingerprint string
 
 	// Pre-built sets for O(1) lookup
 	neverAutoSet     map[string]bool
@@ -287,16 +295,27 @@ func (r *Registry) HasAnySkill() (bool, error) {
 // Get retrieves a skill by name, loading full content.
 func (r *Registry) Get(name string) (*Skill, error) {
 	if skill, ok := r.cache[name]; ok {
-		// If we have metadata only, load full content
+		// If we have metadata only, load full content. If that cached path went
+		// stale, discard it and fall through to normal search-path resolution.
 		if !skill.IsLoaded() {
 			fullSkill, err := LoadFromDir(skill.SourcePath, skill.Source, true)
-			if err != nil {
-				return nil, err
+			if err == nil {
+				if err := fullSkill.Validate(); err != nil {
+					delete(r.cache, name)
+				} else {
+					r.cache[name] = fullSkill
+					return fullSkill, nil
+				}
+			} else {
+				delete(r.cache, name)
 			}
-			r.cache[name] = fullSkill
-			return fullSkill, nil
+		} else {
+			if !IsSkillDir(skill.SourcePath) {
+				delete(r.cache, name)
+			} else {
+				return skill, nil
+			}
 		}
-		return skill, nil
 	}
 
 	// The common case is a directory named after the skill.
@@ -345,6 +364,11 @@ func (r *Registry) Get(name string) (*Skill, error) {
 // List returns all available skills (metadata only).
 // Each skill appears only once, with first-found taking precedence.
 func (r *Registry) List() ([]*Skill, error) {
+	fingerprint := r.searchPathsFingerprint()
+	if r.listCache != nil && fingerprint == r.listCacheFingerprint {
+		return cloneSkillSlice(r.listCache), nil
+	}
+
 	seen := make(map[string]bool)
 	r.shadowCounts = make(map[string]int)
 	var skills []*Skill
@@ -362,6 +386,9 @@ func (r *Registry) List() ([]*Skill, error) {
 			} else {
 				seen[skill.Name] = true
 				skills = append(skills, skill)
+				if cached, ok := r.cache[skill.Name]; !ok || !cached.IsLoaded() {
+					r.cache[skill.Name] = skill
+				}
 			}
 		}
 	}
@@ -371,7 +398,10 @@ func (r *Registry) List() ([]*Skill, error) {
 		return skills[i].Name < skills[j].Name
 	})
 
-	return skills, nil
+	r.listCacheFingerprint = fingerprint
+	r.listCache = cloneSkillSlice(skills)
+
+	return cloneSkillSlice(skills), nil
 }
 
 // ListAll returns all skills from all paths without shadowing.
@@ -425,8 +455,141 @@ func (r *Registry) ShadowCount(name string) int {
 func (r *Registry) Reload() error {
 	r.cache = make(map[string]*Skill)
 	r.shadowCounts = make(map[string]int)
+	r.listCache = nil
+	r.listCacheFingerprint = ""
 	r.searchPaths = nil
 	return r.buildSearchPaths()
+}
+
+func cloneSkillSlice(in []*Skill) []*Skill {
+	out := make([]*Skill, len(in))
+	for i, skill := range in {
+		out[i] = cloneSkill(skill)
+	}
+	return out
+}
+
+func cloneSkill(skill *Skill) *Skill {
+	if skill == nil {
+		return nil
+	}
+	clone := *skill
+	clone.AllowedTools = append([]string(nil), skill.AllowedTools...)
+	clone.References = append([]string(nil), skill.References...)
+	clone.Scripts = append([]string(nil), skill.Scripts...)
+	clone.Assets = append([]string(nil), skill.Assets...)
+	clone.Metadata = cloneStringMap(skill.Metadata)
+	clone.Extras = cloneAnyMap(skill.Extras)
+	clone.Tools = cloneSkillToolDefs(skill.Tools)
+	return &clone
+}
+
+func cloneStringMap(in map[string]string) map[string]string {
+	if in == nil {
+		return nil
+	}
+	out := make(map[string]string, len(in))
+	for k, v := range in {
+		out[k] = v
+	}
+	return out
+}
+
+func cloneAnyMap(in map[string]any) map[string]any {
+	if in == nil {
+		return nil
+	}
+	out := make(map[string]any, len(in))
+	for k, v := range in {
+		out[k] = cloneAny(v)
+	}
+	return out
+}
+
+func cloneAny(in any) any {
+	switch v := in.(type) {
+	case map[string]any:
+		return cloneAnyMap(v)
+	case map[any]any:
+		out := make(map[any]any, len(v))
+		for k, item := range v {
+			out[k] = cloneAny(item)
+		}
+		return out
+	case []any:
+		out := make([]any, len(v))
+		for i, item := range v {
+			out[i] = cloneAny(item)
+		}
+		return out
+	case []string:
+		return append([]string(nil), v...)
+	case []map[string]any:
+		out := make([]map[string]any, len(v))
+		for i, item := range v {
+			out[i] = cloneAnyMap(item)
+		}
+		return out
+	default:
+		return v
+	}
+}
+
+func cloneSkillToolDefs(in []SkillToolDef) []SkillToolDef {
+	if in == nil {
+		return nil
+	}
+	out := make([]SkillToolDef, len(in))
+	for i, tool := range in {
+		out[i] = tool
+		out[i].Input = cloneAnyMap(tool.Input)
+		out[i].Env = cloneStringMap(tool.Env)
+	}
+	return out
+}
+
+func (r *Registry) searchPathsFingerprint() string {
+	var sb strings.Builder
+	for _, sp := range r.searchPaths {
+		sb.WriteString(sp.path)
+		sb.WriteByte('\x00')
+		sb.WriteString(sp.source.SourceName())
+		sb.WriteByte('\n')
+
+		entries, err := os.ReadDir(sp.path)
+		if err != nil {
+			sb.WriteString("!missing\n")
+			continue
+		}
+		for _, entry := range entries {
+			if !entry.IsDir() {
+				continue
+			}
+			fileName, info, ok := skillFileInfo(filepath.Join(sp.path, entry.Name()))
+			if !ok {
+				continue
+			}
+			sb.WriteString(entry.Name())
+			sb.WriteByte('\x00')
+			sb.WriteString(fileName)
+			sb.WriteByte('\x00')
+			sb.WriteString(strconv.FormatInt(info.ModTime().UnixNano(), 10))
+			sb.WriteByte('\x00')
+			sb.WriteString(strconv.FormatInt(info.Size(), 10))
+			sb.WriteByte('\n')
+		}
+	}
+	return sb.String()
+}
+
+func skillFileInfo(dir string) (string, os.FileInfo, bool) {
+	for _, fileName := range []string{"SKILL.md", "skill.md"} {
+		info, err := os.Stat(filepath.Join(dir, fileName))
+		if err == nil && !info.IsDir() {
+			return fileName, info, true
+		}
+	}
+	return "", nil, false
 }
 
 // scanDir scans a directory for skill subdirectories.

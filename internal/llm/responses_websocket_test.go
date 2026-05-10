@@ -61,6 +61,27 @@ func TestResponsesWebSocketRequestOmitsTransportFields(t *testing.T) {
 	}
 }
 
+func TestResponsesWebSocketPrepareClearsStalePreviousResponseID(t *testing.T) {
+	client := &ResponsesClient{LastResponseID: ""}
+	fullInput := []ResponsesInputItem{
+		{Type: "message", Role: "user", Content: "old"},
+		{Type: "message", Role: "user", Content: "new"},
+	}
+
+	prepared := client.prepareWebSocketContinuationLocked(ResponsesRequest{
+		Model:              "gpt-test",
+		PreviousResponseID: "resp_stale",
+		Input:              []ResponsesInputItem{{Type: "message", Role: "user", Content: "new"}},
+	}, func() []ResponsesInputItem { return fullInput })
+
+	if prepared.PreviousResponseID != "" {
+		t.Fatalf("PreviousResponseID = %q, want empty", prepared.PreviousResponseID)
+	}
+	if len(prepared.Input) != len(fullInput) || prepared.Input[0].Content != "old" || prepared.Input[1].Content != "new" {
+		t.Fatalf("Input = %#v, want full input %#v", prepared.Input, fullInput)
+	}
+}
+
 func TestResponsesClientStreamWebSocket(t *testing.T) {
 	var handshakeCount atomic.Int32
 	var gotReq map[string]any

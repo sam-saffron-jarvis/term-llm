@@ -1210,6 +1210,61 @@ func TestFilterToNewInput_ToolFollowUpPreservesTrailingOutputsAndUserMessages(t 
 	}
 }
 
+func TestBuildResponsesContinuationInput_ReturnsLatestUserTurn(t *testing.T) {
+	messages := []Message{
+		SystemText("Be concise"),
+		UserText("old question"),
+		AssistantText("old answer"),
+		UserText("new question"),
+	}
+
+	got := BuildResponsesContinuationInput(messages)
+
+	if len(got) != 1 {
+		t.Fatalf("expected only latest user item, got %d items: %+v", len(got), got)
+	}
+	if got[0].Type != "message" || got[0].Role != "user" || got[0].Content != "new question" {
+		t.Fatalf("unexpected continuation input: %+v", got[0])
+	}
+}
+
+func TestBuildResponsesContinuationInput_PreservesTrailingToolResults(t *testing.T) {
+	messages := []Message{
+		SystemText("Be concise"),
+		UserText("describe this image"),
+		{
+			Role: RoleAssistant,
+			Parts: []Part{{
+				Type: PartToolCall,
+				ToolCall: &ToolCall{
+					ID:        "call_img",
+					Name:      "view_image",
+					Arguments: []byte(`{"path":"img.png"}`),
+				},
+			}},
+		},
+		ToolResultMessageFromOutput("call_img", "view_image", ToolOutput{
+			Content: "loaded",
+			ContentParts: []ToolContentPart{{
+				Type:      ToolContentPartImageData,
+				ImageData: &ToolImageData{MediaType: "image/png", Base64: "aGVsbG8="},
+			}},
+		}, nil),
+	}
+
+	got := BuildResponsesContinuationInput(messages)
+
+	if len(got) != 2 {
+		t.Fatalf("expected trailing tool output and synthetic user message, got %d items: %+v", len(got), got)
+	}
+	if got[0].Type != "function_call_output" || got[0].CallID != "call_img" {
+		t.Fatalf("expected first item function_call_output for call_img, got %+v", got[0])
+	}
+	if got[1].Type != "message" || got[1].Role != "user" {
+		t.Fatalf("expected second item trailing user message, got %+v", got[1])
+	}
+}
+
 func TestResponsesClientStream_Retries404WithFullHistory(t *testing.T) {
 	type capturedRequest struct {
 		PreviousResponseID string               `json:"previous_response_id"`
@@ -1302,6 +1357,58 @@ func TestResponsesClientStream_Retries404WithFullHistory(t *testing.T) {
 	}
 	if client.LastResponseID != "" {
 		t.Fatalf("expected client LastResponseID to be cleared after 404 retry, got %q", client.LastResponseID)
+	}
+}
+
+func TestResponsesClientStream_DoesNotRetry404WithoutPreviousResponseID(t *testing.T) {
+	callCount := 0
+	httpClient := &http.Client{
+		Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			callCount++
+			defer r.Body.Close()
+			var payload struct {
+				PreviousResponseID string `json:"previous_response_id"`
+			}
+			body, err := io.ReadAll(r.Body)
+			if err != nil {
+				return nil, fmt.Errorf("failed to read request body: %w", err)
+			}
+			if err := json.Unmarshal(body, &payload); err != nil {
+				return nil, fmt.Errorf("failed to decode request body: %w", err)
+			}
+			if payload.PreviousResponseID != "" {
+				t.Fatalf("request unexpectedly included previous_response_id %q", payload.PreviousResponseID)
+			}
+			return &http.Response{
+				StatusCode: http.StatusNotFound,
+				Status:     "404 Not Found",
+				Header:     http.Header{"Content-Type": []string{"application/json"}},
+				Body:       io.NopCloser(strings.NewReader(`{"error":"not found"}`)),
+			}, nil
+		}),
+	}
+
+	client := &ResponsesClient{
+		BaseURL:            "https://example.test/v1/responses",
+		GetAuthHeader:      func() string { return "Bearer test-token" },
+		HTTPClient:         httpClient,
+		LastResponseID:     "resp_prev",
+		DisableServerState: true,
+	}
+
+	_, err := client.Stream(context.Background(), ResponsesRequest{
+		Model:  "gpt-5.2",
+		Input:  []ResponsesInputItem{{Type: "message", Role: "user", Content: "hello"}},
+		Stream: true,
+	}, false)
+	if err == nil {
+		t.Fatal("expected 404 error")
+	}
+	if callCount != 1 {
+		t.Fatalf("expected 1 HTTP call without previous_response_id retry, got %d", callCount)
+	}
+	if client.LastResponseID != "resp_prev" {
+		t.Fatalf("expected unrelated 404 to leave LastResponseID alone, got %q", client.LastResponseID)
 	}
 }
 
