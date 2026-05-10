@@ -595,13 +595,14 @@
     }
 
     .connection-state {
-      color: var(--text-muted);
+      color: var(--danger);
       font-size: 0.78rem;
+      font-weight: 650;
       white-space: nowrap;
     }
 
-    .connection-state.ok {
-      color: var(--accent-green);
+    .connection-state[hidden] {
+      display: none;
     }
 
     .connection-state.bad {

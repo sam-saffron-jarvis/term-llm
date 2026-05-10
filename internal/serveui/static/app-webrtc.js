@@ -81,13 +81,6 @@
     return window.TermLLMApp || null;
   }
 
-  function setAppConnectionState(text, mode) {
-    const app = termApp();
-    if (app && typeof app.setConnectionState === 'function') {
-      app.setConnectionState(text, mode);
-    }
-  }
-
   function maybeReloadForUIVersion(response) {
     const app = termApp();
     if (app && typeof app.maybeReloadForUIVersion === 'function') {
@@ -222,8 +215,6 @@
       window.fetch = patchedFetch;
 
       diag('data channel open — fetch patched');
-
-      setAppConnectionState('\u26A1 direct', 'ok');
     } catch (_e) {
       diag('init error: ' + (_e && _e.message ? _e.message : String(_e)));
       // Silent fallback — HTTPS continues to work for all requests.
@@ -307,7 +298,6 @@
     dataChannel = null;
     diag('data channel closed — restoring original fetch');
     window.fetch = originalFetch;
-    setAppConnectionState('Connected', 'ok');
     drainPendingToHTTPS('channel closed');
   }
 
@@ -325,8 +315,6 @@
     }
     dataChannel = null;
     window.fetch = originalFetch;
-
-    setAppConnectionState('Connected', 'ok');
 
     // Rescue any other in-flight requests stuck on the dead channel.
     drainPendingToHTTPS('renegotiation');

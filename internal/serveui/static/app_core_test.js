@@ -63,7 +63,7 @@ function makeNode() {
   };
 }
 
-function loadAppCoreWith({ nodeOverrides = {}, docQSTracker = () => [] } = {}) {
+function loadAppCoreWith({ nodeOverrides = {}, docQSTracker = () => [], navigatorOverrides = {} } = {}) {
   const nodes = new Map(Object.entries(nodeOverrides));
   const document = {
     body: makeNode(),
@@ -93,11 +93,22 @@ function loadAppCoreWith({ nodeOverrides = {}, docQSTracker = () => [] } = {}) {
     },
   };
 
+  const navigatorObj = {
+    mediaDevices: null,
+    serviceWorker: {
+      register: async () => ({ scope: '/chat/' }),
+      ready: Promise.resolve({ showNotification: async () => {} }),
+    },
+    clipboard: { writeText: async () => {} },
+    standalone: false,
+    ...navigatorOverrides,
+  };
+
   const windowObj = {
     TermLLMApp: {},
     TERM_LLM_UI_PREFIX: '/chat',
     TERM_LLM_SIDEBAR_SESSIONS: 'all',
-    navigator: { standalone: false },
+    navigator: navigatorObj,
     visualViewport: null,
     innerHeight: 1000,
     addEventListener() {},
@@ -119,15 +130,7 @@ function loadAppCoreWith({ nodeOverrides = {}, docQSTracker = () => [] } = {}) {
     window: windowObj,
     document,
     localStorage,
-    navigator: {
-      mediaDevices: null,
-      serviceWorker: {
-        register: async () => ({ scope: '/chat/' }),
-        ready: Promise.resolve({ showNotification: async () => {} }),
-      },
-      clipboard: { writeText: async () => {} },
-      standalone: false,
-    },
+    navigator: navigatorObj,
     Notification: undefined,
     history: windowObj.history,
     location: windowObj.location,
@@ -223,6 +226,82 @@ const app = loadAppCore();
   }
   if (!timeNode.textContent) {
     fail(name, 'time node textContent was not updated');
+    return;
+  }
+  pass(name);
+})();
+
+(function testConnectionStateStaysHiddenForNonWarnings() {
+  const name = 'setConnectionState hides non-warning statuses';
+  const classes = new Set(['bad']);
+  const connectionNode = Object.assign(makeNode(), {
+    hidden: true,
+    classList: {
+      add(...names) { names.forEach((n) => classes.add(n)); },
+      remove(...names) { names.forEach((n) => classes.delete(n)); },
+      toggle(name, force) {
+        if (force === undefined ? !classes.has(name) : force) classes.add(name);
+        else classes.delete(name);
+        return classes.has(name);
+      },
+      contains(name) { return classes.has(name); },
+    },
+  });
+  const testApp = loadAppCoreWith({
+    nodeOverrides: { connectionState: connectionNode },
+    navigatorOverrides: { onLine: true },
+  });
+
+  testApp.setConnectionState('⚡ direct', 'ok');
+
+  if (!connectionNode.hidden) {
+    fail(name, 'direct/ok status should stay hidden');
+    return;
+  }
+  if (connectionNode.textContent !== '') {
+    fail(name, `got visible text ${JSON.stringify(connectionNode.textContent)}`);
+    return;
+  }
+  if (classes.has('ok')) {
+    fail(name, 'ok class should not be retained');
+    return;
+  }
+  pass(name);
+})();
+
+(function testConnectionStateShowsOfflineWarning() {
+  const name = 'setConnectionState shows offline warning';
+  const classes = new Set();
+  const connectionNode = Object.assign(makeNode(), {
+    hidden: true,
+    classList: {
+      add(...names) { names.forEach((n) => classes.add(n)); },
+      remove(...names) { names.forEach((n) => classes.delete(n)); },
+      toggle(name, force) {
+        if (force === undefined ? !classes.has(name) : force) classes.add(name);
+        else classes.delete(name);
+        return classes.has(name);
+      },
+      contains(name) { return classes.has(name); },
+    },
+  });
+  const testApp = loadAppCoreWith({
+    nodeOverrides: { connectionState: connectionNode },
+    navigatorOverrides: { onLine: false },
+  });
+
+  testApp.setConnectionState('', '');
+
+  if (connectionNode.hidden) {
+    fail(name, 'offline warning should be visible');
+    return;
+  }
+  if (connectionNode.textContent !== 'Network offline') {
+    fail(name, `got ${JSON.stringify(connectionNode.textContent)}`);
+    return;
+  }
+  if (!classes.has('bad')) {
+    fail(name, 'offline warning should have bad class');
     return;
   }
   pass(name);

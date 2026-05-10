@@ -618,12 +618,33 @@ const scrollToBottom = (force = false) => {
   }
 };
 
+function hideConnectionState() {
+  const el = elements.connectionState;
+  if (!el) return;
+  el.textContent = '';
+  el.classList.remove('ok', 'bad');
+  el.hidden = true;
+}
+
 const setConnectionState = (text, mode = '') => {
-  elements.connectionState.textContent = text;
-  elements.connectionState.classList.remove('ok', 'bad');
-  if (mode) {
-    elements.connectionState.classList.add(mode);
+  const el = elements.connectionState;
+  if (!el) return;
+
+  // Keep the header quiet during normal operation. The connection state is
+  // intentionally reserved for actionable warnings, so success/progress
+  // updates (including WebRTC "direct" status) do not compete with the
+  // session title and model chips.
+  const offline = typeof navigator !== 'undefined' && navigator.onLine === false;
+  const warningText = offline ? 'Network offline' : (mode === 'bad' ? String(text || '').trim() : '');
+  if (!warningText) {
+    hideConnectionState();
+    return;
   }
+
+  el.textContent = warningText;
+  el.classList.remove('ok');
+  el.classList.add('bad');
+  el.hidden = false;
 };
 
 const setStartupStatus = (text) => {

@@ -1286,6 +1286,7 @@ window.addEventListener('pagehide', () => {
 });
 
 window.addEventListener('online', async () => {
+  setConnectionState('', '');
   const session = getActiveSession();
   if (!session) return;
   if (session.activeResponseId && state.abortController) {
@@ -1306,9 +1307,7 @@ window.addEventListener('online', async () => {
 });
 
 window.addEventListener('offline', () => {
-  if (state.streaming || state.abortController) {
-    setConnectionState('Network offline', 'bad');
-  }
+  setConnectionState('Network offline', 'bad');
 });
 
 window.addEventListener('pageshow', (event) => {
