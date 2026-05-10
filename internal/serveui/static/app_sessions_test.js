@@ -433,6 +433,131 @@ async function testDeveloperMessagesAreHidden() {
   pass(name);
 }
 
+async function testSessionHistoryPaginationLoadsAdditionalPages() {
+  const name = 'session history pagination loads additional pages';
+  const fetchCalls = [];
+  const { app } = await createSessionsHarness({
+    pathname: '/ui/77',
+    fetchImpl: async (url) => {
+      fetchCalls.push(url);
+      if (url === '/ui/v1/sessions') {
+        return new Response(JSON.stringify({
+          sessions: [{
+            id: 'sess_page',
+            number: 77,
+            short_title: 'Paged session',
+            long_title: 'Paged session',
+            mode: 'chat',
+            origin: 'web',
+            archived: false,
+            pinned: false,
+            created_at: 1710000000000,
+            message_count: 201,
+          }]
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      if (url === '/ui/v1/sessions/sess_page/messages') {
+        return new Response(JSON.stringify({
+          messages: [{
+            role: 'user',
+            created_at: 1710000000000,
+            parts: [{ type: 'text', text: 'first page' }],
+          }],
+          has_more: true,
+          next_offset: 200,
+        }), { status: 200, headers: { 'Content-Type': 'application/json', ETag: '"sess-page-v1"' } });
+      }
+      if (url === '/ui/v1/sessions/sess_page/messages?limit=200&offset=200') {
+        return new Response(JSON.stringify({
+          messages: [{
+            role: 'assistant',
+            created_at: 1710000001000,
+            parts: [{ type: 'text', text: 'second page' }],
+          }],
+          has_more: false,
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      if (url === '/ui/v1/sessions/sess_page/state') {
+        return new Response(JSON.stringify({}), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      return new Response(JSON.stringify([]), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }
+  });
+
+  if (!fetchCalls.includes('/ui/v1/sessions/sess_page/messages?limit=200&offset=200')) {
+    fail(name, 'expected follow-up paginated fetch', JSON.stringify(fetchCalls));
+    return;
+  }
+
+  const session = app.state.sessions.find((item) => item.id === 'sess_page');
+  if (!session) {
+    fail(name, 'session not found after paginated load');
+    return;
+  }
+  if (session.messages.length !== 2) {
+    fail(name, `expected 2 merged messages, got ${session.messages.length}`);
+    return;
+  }
+  if (session.messages[0].content !== 'first page' || session.messages[1].content !== 'second page') {
+    fail(name, 'expected both pages to merge in order', JSON.stringify(session.messages));
+    return;
+  }
+
+  pass(name);
+}
+
+async function testSessionHistoryPaginationFailureClearsEtagForRetry() {
+  const name = 'session history pagination failure clears etag for retry';
+  const fetchCalls = [];
+  let firstPageCalls = 0;
+  let secondPageCalls = 0;
+  const { app } = await createSessionsHarness({
+    fetchImpl: async (url, opts = {}) => {
+      fetchCalls.push({ url, ifNoneMatch: opts.headers && opts.headers['If-None-Match'] });
+      if (url === '/ui/v1/sessions') {
+        return new Response(JSON.stringify({ sessions: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      if (url === '/ui/v1/sessions/sess_retry/messages') {
+        firstPageCalls += 1;
+        return new Response(JSON.stringify({
+          messages: [{ role: 'user', created_at: 1710000000000, parts: [{ type: 'text', text: `page one ${firstPageCalls}` }] }],
+          has_more: true,
+          next_offset: 200,
+        }), { status: 200, headers: { 'Content-Type': 'application/json', ETag: '"retry-v1"' } });
+      }
+      if (url === '/ui/v1/sessions/sess_retry/messages?limit=200&offset=200') {
+        secondPageCalls += 1;
+        if (secondPageCalls === 1) {
+          return new Response('temporary failure', { status: 500 });
+        }
+        return new Response(JSON.stringify({
+          messages: [{ role: 'assistant', created_at: 1710000001000, parts: [{ type: 'text', text: 'page two' }] }],
+          has_more: false,
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      return new Response(JSON.stringify({}), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }
+  });
+
+  const failed = await app.loadServerSessionMessages('sess_retry');
+  if (failed !== null) {
+    fail(name, 'expected first paginated load to fail');
+    return;
+  }
+  const loaded = await app.loadServerSessionMessages('sess_retry');
+  if (!Array.isArray(loaded) || loaded.length !== 2 || loaded[1].content !== 'page two') {
+    fail(name, 'expected retry to reload first page and fetch missing second page', JSON.stringify(loaded));
+    return;
+  }
+  const conditionalFirstPageFetches = fetchCalls.filter((call) => call.url === '/ui/v1/sessions/sess_retry/messages' && call.ifNoneMatch);
+  if (conditionalFirstPageFetches.length !== 0) {
+    fail(name, 'expected no conditional first-page request after partial pagination failure', JSON.stringify(fetchCalls));
+    return;
+  }
+
+  pass(name);
+}
+
 async function testSwitchToSessionSyncsWithoutTokenAndResumes() {
   const name = 'sidebar session switch syncs with server and resumes without token';
   const fetchCalls = [];
@@ -648,6 +773,106 @@ async function testSwitchToSessionRecoversChangedActiveResponseFromSnapshot() {
   }
   if (!resumeCalls[0].recoverFromSnapshot) {
     fail(name, 'expected resumeActiveResponse to request snapshot recovery', JSON.stringify(resumeCalls[0]));
+    return;
+  }
+
+  pass(name);
+}
+
+async function testSwitchToLazyLoadedSessionFetchesMessagesOnce() {
+  const name = 'sidebar session switch fetches lazy-loaded session messages once';
+  const fetchCalls = [];
+  const { app } = await createSessionsHarness({
+    fetchImpl: async (url) => {
+      fetchCalls.push(url);
+      if (url === '/ui/v1/sessions') {
+        return new Response(JSON.stringify({ sessions: [] }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' }
+        });
+      }
+      if (url === '/ui/v1/sessions/sess_lazy/state') {
+        return new Response(JSON.stringify({ active_run: false }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' }
+        });
+      }
+      if (url === '/ui/v1/sessions/sess_lazy/messages') {
+        return new Response(JSON.stringify({
+          messages: [
+            {
+              role: 'user',
+              created_at: 1710000002000,
+              parts: [{ type: 'text', text: 'lazy hello' }],
+            },
+            {
+              role: 'assistant',
+              created_at: 1710000003000,
+              parts: [{ type: 'text', text: 'loaded once' }],
+            },
+          ]
+        }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' }
+        });
+      }
+      if (url === '/ui/v1/sessions/status') {
+        return new Response(JSON.stringify({ sessions: [] }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' }
+        });
+      }
+      return new Response(JSON.stringify({ messages: [] }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' }
+      });
+    },
+  });
+
+  app.state.sessions = [
+    {
+      id: 'sess_other',
+      title: 'Other session',
+      origin: 'web',
+      created: 1710000000000,
+      messages: [],
+    },
+    {
+      id: 'sess_lazy',
+      title: 'Lazy session',
+      origin: 'tui',
+      created: 1710000001000,
+      messages: [],
+      _serverOnly: true,
+    },
+  ];
+  app.state.activeSessionId = 'sess_other';
+  app.state.draftSessionActive = false;
+  fetchCalls.length = 0;
+
+  await app.switchToSession('sess_lazy');
+
+  const messageFetches = fetchCalls.filter((url) => url === '/ui/v1/sessions/sess_lazy/messages');
+  if (messageFetches.length !== 1) {
+    fail(name, 'expected exactly one lazy session messages fetch during switch', JSON.stringify(fetchCalls));
+    return;
+  }
+  if (!fetchCalls.includes('/ui/v1/sessions/sess_lazy/state')) {
+    fail(name, 'expected lazy session switch to still sync runtime state', JSON.stringify(fetchCalls));
+    return;
+  }
+
+  const session = app.state.sessions.find((item) => item.id === 'sess_lazy');
+  if (!session) {
+    fail(name, 'lazy session missing after switch');
+    return;
+  }
+  if (session._serverOnly) {
+    fail(name, 'expected lazy session to be hydrated after message preload');
+    return;
+  }
+  if (session.messages.length !== 2 || session.messages[1].content !== 'loaded once') {
+    fail(name, 'expected preloaded lazy session messages to be preserved', JSON.stringify(session.messages));
     return;
   }
 
@@ -1280,8 +1505,11 @@ async function testSanitizeSessionPreservesLastMessageAt() {
   await testSwitchingSessionsStagesCurrentComposerBeforeRestore();
   await testNumericDeepLinkResolvesRealSessionId();
   await testDeveloperMessagesAreHidden();
+  await testSessionHistoryPaginationLoadsAdditionalPages();
+  await testSessionHistoryPaginationFailureClearsEtagForRetry();
   await testSwitchToSessionSyncsWithoutTokenAndResumes();
   await testSwitchToSessionRecoversChangedActiveResponseFromSnapshot();
+  await testSwitchToLazyLoadedSessionFetchesMessagesOnce();
   await testSwitchToSessionClearsStaleActiveResponseWithoutToken();
   await testIdleSessionSyncRescuesPendingInterruptCommit();
   await testSessionProgressStatePrefersLocalAndServerSignals();

@@ -78,6 +78,33 @@ type stagedProvider struct {
 	closeFirst    sync.Once
 }
 
+type countingListModelsProvider struct {
+	name   string
+	models []llm.ModelInfo
+	calls  int32
+}
+
+func (p *countingListModelsProvider) Name() string { return p.name }
+
+func (p *countingListModelsProvider) Credential() string { return "mock" }
+
+func (p *countingListModelsProvider) Capabilities() llm.Capabilities { return llm.Capabilities{} }
+
+func (p *countingListModelsProvider) Stream(ctx context.Context, req llm.Request) (llm.Stream, error) {
+	return nil, errors.New("not used in test")
+}
+
+func (p *countingListModelsProvider) ListModels(ctx context.Context) ([]llm.ModelInfo, error) {
+	atomic.AddInt32(&p.calls, 1)
+	out := make([]llm.ModelInfo, len(p.models))
+	copy(out, p.models)
+	return out, nil
+}
+
+func (p *countingListModelsProvider) CallCount() int {
+	return int(atomic.LoadInt32(&p.calls))
+}
+
 func newStagedProvider(firstChunk, secondChunk string) *stagedProvider {
 	return &stagedProvider{
 		firstChunk:    firstChunk,
@@ -2963,6 +2990,29 @@ func TestEnsureImageServeable_RejectsExternalFile(t *testing.T) {
 	}
 }
 
+func TestMaterializeInlineSessionImageIsBoundedAndPrivate(t *testing.T) {
+	outputDir := t.TempDir()
+	srv := &serveServer{cfgRef: &config.Config{}}
+	srv.cfgRef.Image.OutputDir = outputDir
+
+	path, ok := srv.materializeInlineSessionImage("image/png", base64.StdEncoding.EncodeToString([]byte("png")))
+	if !ok {
+		t.Fatal("materializeInlineSessionImage returned false for small image")
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat materialized image: %v", err)
+	}
+	if got := info.Mode().Perm(); got != 0600 {
+		t.Fatalf("permissions = %v, want 0600", got)
+	}
+
+	tooLarge := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{'x'}, maxMaterializedSessionImageBytes+1))
+	if _, ok := srv.materializeInlineSessionImage("image/png", tooLarge); ok {
+		t.Fatal("materializeInlineSessionImage should reject oversized inline images")
+	}
+}
+
 func TestEnsureImageServeable_CopiesFromWriteDir(t *testing.T) {
 	outputDir := t.TempDir()
 	writeDir := t.TempDir()
@@ -2975,6 +3025,18 @@ func TestEnsureImageServeable_CopiesFromWriteDir(t *testing.T) {
 	externalImg := filepath.Join(externalDir, "secret.png")
 	if err := os.WriteFile(externalImg, []byte("secret-png"), 0644); err != nil {
 		t.Fatalf("write external image: %v", err)
+	}
+	largeImg := filepath.Join(writeDir, "huge.png")
+	largeFile, err := os.Create(largeImg)
+	if err != nil {
+		t.Fatalf("create large image: %v", err)
+	}
+	if err := largeFile.Truncate(maxMaterializedSessionImageBytes + 1); err != nil {
+		largeFile.Close()
+		t.Fatalf("truncate large image: %v", err)
+	}
+	if err := largeFile.Close(); err != nil {
+		t.Fatalf("close large image: %v", err)
 	}
 
 	srv := &serveServer{
@@ -3005,6 +3067,14 @@ func TestEnsureImageServeable_CopiesFromWriteDir(t *testing.T) {
 		t.Fatalf("copied image %q should be under output dir %q", absResult, absOutputDir)
 	}
 
+	resultAgain, ok := srv.ensureImageServeable(writeDirImg)
+	if !ok {
+		t.Fatal("second ensureImageServeable should accept images from configured writeDirs")
+	}
+	if resultAgain != result {
+		t.Fatalf("second ensureImageServeable result = %q, want stable %q", resultAgain, result)
+	}
+
 	// The new copy should round-trip through handleImage.
 	req := httptest.NewRequest(http.MethodGet, "/images/"+filepath.Base(result), nil)
 	rr := httptest.NewRecorder()
@@ -3014,6 +3084,10 @@ func TestEnsureImageServeable_CopiesFromWriteDir(t *testing.T) {
 	}
 	if got := rr.Body.String(); got != "tool-png" {
 		t.Fatalf("body = %q, want %q", got, "tool-png")
+	}
+
+	if _, ok := srv.ensureImageServeable(largeImg); ok {
+		t.Fatal("oversized images from approved dirs must be rejected")
 	}
 
 	if _, ok := srv.ensureImageServeable(externalImg); ok {
@@ -3763,6 +3837,103 @@ func TestHandleSessionMessages_ReturnsStructuredParts(t *testing.T) {
 	}
 }
 
+func TestHandleSessionMessages_DefaultPagination(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "sessions.db")
+	store, err := session.NewStore(session.Config{Enabled: true, Path: dbPath})
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+	sess := &session.Session{
+		ID:        "sess-page",
+		Provider:  "mock",
+		Model:     "mock-model",
+		Mode:      session.ModeChat,
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+		Status:    session.StatusActive,
+	}
+	if err := store.Create(ctx, sess); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	for i := 0; i < sessionMessagesPageSize+5; i++ {
+		msg := session.NewMessage("sess-page", llm.UserText(fmt.Sprintf("msg-%03d", i)), -1)
+		if err := store.AddMessage(ctx, "sess-page", msg); err != nil {
+			t.Fatalf("AddMessage(%d): %v", i, err)
+		}
+	}
+
+	srv := &serveServer{store: store}
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/sessions/sess-page/messages", nil)
+	rr := httptest.NewRecorder()
+	srv.handleSessionByID(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rr.Code)
+	}
+
+	var body struct {
+		Messages []struct {
+			Parts []struct {
+				Text string `json:"text"`
+			} `json:"parts"`
+		} `json:"messages"`
+		HasMore    bool `json:"has_more"`
+		NextOffset int  `json:"next_offset"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(body.Messages) != sessionMessagesPageSize {
+		t.Fatalf("message count = %d, want %d", len(body.Messages), sessionMessagesPageSize)
+	}
+	if !body.HasMore {
+		t.Fatal("expected has_more=true for truncated history page")
+	}
+	if body.NextOffset != sessionMessagesPageSize {
+		t.Fatalf("next_offset = %d, want %d", body.NextOffset, sessionMessagesPageSize)
+	}
+	if got := body.Messages[0].Parts[0].Text; got != "msg-000" {
+		t.Fatalf("first message text = %q, want msg-000", got)
+	}
+	if got := body.Messages[len(body.Messages)-1].Parts[0].Text; got != fmt.Sprintf("msg-%03d", sessionMessagesPageSize-1) {
+		t.Fatalf("last message text = %q, want %q", got, fmt.Sprintf("msg-%03d", sessionMessagesPageSize-1))
+	}
+
+	req = httptest.NewRequest(http.MethodGet, fmt.Sprintf("/v1/sessions/sess-page/messages?limit=%d&offset=%d", sessionMessagesPageSize, sessionMessagesPageSize), nil)
+	rr = httptest.NewRecorder()
+	srv.handleSessionByID(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("page 2 status = %d, want 200", rr.Code)
+	}
+	body = struct {
+		Messages []struct {
+			Parts []struct {
+				Text string `json:"text"`
+			} `json:"parts"`
+		} `json:"messages"`
+		HasMore    bool `json:"has_more"`
+		NextOffset int  `json:"next_offset"`
+	}{}
+	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode page 2: %v", err)
+	}
+	if len(body.Messages) != 5 {
+		t.Fatalf("page 2 message count = %d, want 5", len(body.Messages))
+	}
+	if body.HasMore {
+		t.Fatal("expected has_more=false on final page")
+	}
+	if body.NextOffset != 0 {
+		t.Fatalf("final next_offset = %d, want 0", body.NextOffset)
+	}
+	if got := body.Messages[0].Parts[0].Text; got != fmt.Sprintf("msg-%03d", sessionMessagesPageSize) {
+		t.Fatalf("page 2 first message text = %q, want %q", got, fmt.Sprintf("msg-%03d", sessionMessagesPageSize))
+	}
+}
+
 func TestHandleSessionMessages_IncludesImageParts(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "sessions.db")
 	store, err := session.NewStore(session.Config{Enabled: true, Path: dbPath})
@@ -3791,7 +3962,9 @@ func TestHandleSessionMessages_IncludesImageParts(t *testing.T) {
 		t.Fatalf("AddMessage: %v", err)
 	}
 
-	srv := &serveServer{store: store}
+	outputDir := t.TempDir()
+	srv := &serveServer{store: store, cfgRef: &config.Config{}}
+	srv.cfgRef.Image.OutputDir = outputDir
 
 	req := httptest.NewRequest(http.MethodGet, "/v1/sessions/sess-image/messages", nil)
 	rr := httptest.NewRecorder()
@@ -3828,14 +4001,24 @@ func TestHandleSessionMessages_IncludesImageParts(t *testing.T) {
 	if m.Parts[0].Type != "image" {
 		t.Fatalf("part[0].type = %q, want image", m.Parts[0].Type)
 	}
-	if m.Parts[0].ImageURL != "data:image/png;base64,aGVsbG8=" {
-		t.Fatalf("part[0].image_url = %q, want data URL", m.Parts[0].ImageURL)
+	if !strings.HasPrefix(m.Parts[0].ImageURL, "/images/history-") {
+		t.Fatalf("part[0].image_url = %q, want /images/history-*", m.Parts[0].ImageURL)
 	}
 	if m.Parts[0].MimeType != "image/png" {
 		t.Fatalf("part[0].mime_type = %q, want image/png", m.Parts[0].MimeType)
 	}
 	if m.Parts[1].Type != "text" || m.Parts[1].Text != "describe this" {
 		t.Fatalf("part[1] = %+v, want trailing text part", m.Parts[1])
+	}
+
+	imgReq := httptest.NewRequest(http.MethodGet, m.Parts[0].ImageURL, nil)
+	imgRR := httptest.NewRecorder()
+	srv.handleImage(imgRR, imgReq)
+	if imgRR.Code != http.StatusOK {
+		t.Fatalf("image status = %d, want 200", imgRR.Code)
+	}
+	if got := imgRR.Body.String(); got != "hello" {
+		t.Fatalf("image body = %q, want %q", got, "hello")
 	}
 }
 
@@ -8312,6 +8495,87 @@ func TestHandleModels_WithProviderParam(t *testing.T) {
 	srv.handleModels(rr, req)
 	if rr.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400 for unknown provider", rr.Code)
+	}
+}
+
+func TestHandleModels_PrefersUpstreamListOverLocalFallback(t *testing.T) {
+	provider := &countingListModelsProvider{
+		name:   "acme",
+		models: []llm.ModelInfo{{ID: "from-upstream"}},
+	}
+	srv := &serveServer{
+		cfgRef: &config.Config{
+			DefaultProvider: "acme",
+			Providers: map[string]config.ProviderConfig{
+				"acme": {
+					Type:    config.ProviderTypeOpenAICompat,
+					BaseURL: "http://example.invalid/v1",
+					Model:   "acme-pro",
+					Models:  []string{"acme-fast", "acme-pro"},
+				},
+			},
+		},
+		modelsProviders: map[string]llm.Provider{"acme": provider},
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+	rr := httptest.NewRecorder()
+	srv.handleModels(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", rr.Code, rr.Body.String())
+	}
+	if calls := provider.CallCount(); calls != 1 {
+		t.Fatalf("ListModels call count = %d, want 1", calls)
+	}
+
+	var result struct {
+		Data []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &result); err != nil {
+		t.Fatalf("json decode: %v", err)
+	}
+	got := make([]string, 0, len(result.Data))
+	for _, item := range result.Data {
+		got = append(got, item.ID)
+	}
+	if !reflect.DeepEqual(got, []string{"from-upstream"}) {
+		t.Fatalf("model ids = %v, want [from-upstream]", got)
+	}
+}
+
+func TestHandleModels_CachesUpstreamListResults(t *testing.T) {
+	provider := &countingListModelsProvider{
+		name: "custom",
+		models: []llm.ModelInfo{
+			{ID: "custom-a"},
+			{ID: "custom-b"},
+		},
+	}
+	srv := &serveServer{
+		cfgRef: &config.Config{
+			DefaultProvider: "custom",
+			Providers: map[string]config.ProviderConfig{
+				"custom": {
+					Type:    config.ProviderTypeOpenAICompat,
+					BaseURL: "http://example.invalid/v1",
+				},
+			},
+		},
+		modelsProviders: map[string]llm.Provider{"custom": provider},
+	}
+
+	for i := 0; i < 2; i++ {
+		req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+		rr := httptest.NewRecorder()
+		srv.handleModels(rr, req)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("request %d status = %d, want 200; body: %s", i+1, rr.Code, rr.Body.String())
+		}
+	}
+	if calls := provider.CallCount(); calls != 1 {
+		t.Fatalf("ListModels call count = %d, want 1", calls)
 	}
 }
 

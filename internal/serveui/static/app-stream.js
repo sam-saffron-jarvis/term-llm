@@ -622,6 +622,7 @@ const applyResponseStreamEvent = (session, streamState, event, payload) => {
           || tools[tools.length - 1];
         if (entry && !entry.argumentsFinalized) {
           entry.arguments = String(entry.arguments || '') + delta;
+          updateVisibleToolGroupNode(session, streamState.currentToolGroup);
           scheduleStreamPersistence();
         }
       }

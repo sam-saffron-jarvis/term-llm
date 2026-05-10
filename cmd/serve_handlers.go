@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"crypto/subtle"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -622,23 +623,60 @@ func (s *serveServer) ensureImageServeable(imgPath string) (string, bool) {
 		return "", false
 	}
 	defer src.Close()
-
-	destName := fmt.Sprintf("serve-%s-%s", randomSuffix(), filepath.Base(absImg))
-	destPath := filepath.Join(absDir, destName)
-	dst, err := os.Create(destPath)
-	if err != nil {
-		log.Printf("[serve] ensureImageServeable: create %s: %v", destPath, err)
+	if info, err := src.Stat(); err != nil {
+		log.Printf("[serve] ensureImageServeable: stat %s: %v", absImg, err)
+		return "", false
+	} else if info.IsDir() {
+		log.Printf("[serve] ensureImageServeable: rejecting directory %s", absImg)
+		return "", false
+	} else if info.Size() > maxMaterializedSessionImageBytes {
+		log.Printf("[serve] ensureImageServeable: refusing image larger than %d bytes: %s", maxMaterializedSessionImageBytes, absImg)
 		return "", false
 	}
-	if _, err := io.Copy(dst, src); err != nil {
+
+	// Use a deterministic content-derived name so repeated history fetches
+	// don't mint fresh image URLs or leak duplicate copies into the output dir.
+	tmpPath := filepath.Join(absDir, fmt.Sprintf("serve-%s-%s.tmp", randomSuffix(), filepath.Base(absImg)))
+	dst, err := os.OpenFile(tmpPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+	if err != nil {
+		log.Printf("[serve] ensureImageServeable: create %s: %v", tmpPath, err)
+		return "", false
+	}
+	hash := sha256.New()
+	limited := &io.LimitedReader{R: src, N: maxMaterializedSessionImageBytes + 1}
+	written, err := io.Copy(io.MultiWriter(dst, hash), limited)
+	if err != nil {
 		dst.Close()
-		os.Remove(destPath)
-		log.Printf("[serve] ensureImageServeable: copy to %s: %v", destPath, err)
+		os.Remove(tmpPath)
+		log.Printf("[serve] ensureImageServeable: copy to %s: %v", tmpPath, err)
+		return "", false
+	}
+	if written > maxMaterializedSessionImageBytes {
+		dst.Close()
+		os.Remove(tmpPath)
+		log.Printf("[serve] ensureImageServeable: refusing image larger than %d bytes: %s", maxMaterializedSessionImageBytes, absImg)
 		return "", false
 	}
 	if err := dst.Close(); err != nil {
-		os.Remove(destPath)
-		log.Printf("[serve] ensureImageServeable: close %s: %v", destPath, err)
+		os.Remove(tmpPath)
+		log.Printf("[serve] ensureImageServeable: close %s: %v", tmpPath, err)
+		return "", false
+	}
+
+	sum := hash.Sum(nil)
+	destName := fmt.Sprintf("serve-%s-%s", hex.EncodeToString(sum[:16]), filepath.Base(absImg))
+	destPath := filepath.Join(absDir, destName)
+	if info, err := os.Stat(destPath); err == nil && !info.IsDir() {
+		os.Remove(tmpPath)
+		return destPath, true
+	}
+	if err := os.Rename(tmpPath, destPath); err != nil {
+		if _, statErr := os.Stat(destPath); statErr == nil {
+			os.Remove(tmpPath)
+			return destPath, true
+		}
+		os.Remove(tmpPath)
+		log.Printf("[serve] ensureImageServeable: rename %s -> %s: %v", tmpPath, destPath, err)
 		return "", false
 	}
 
@@ -653,6 +691,141 @@ func serveUploadsDir() string {
 		return ""
 	}
 	return filepath.Join(dataDir, "uploads")
+}
+
+const (
+	sessionMessagesPageSize          = 200
+	maxMaterializedSessionImageBytes = 25 << 20
+)
+
+func parseSessionMessagesLimit(raw string) int {
+	limit, err := strconv.Atoi(strings.TrimSpace(raw))
+	if err != nil || limit <= 0 {
+		return sessionMessagesPageSize
+	}
+	if limit > sessionMessagesPageSize {
+		return sessionMessagesPageSize
+	}
+	return limit
+}
+
+func parseSessionMessagesOffset(raw string) int {
+	offset, err := strconv.Atoi(strings.TrimSpace(raw))
+	if err != nil || offset < 0 {
+		return 0
+	}
+	return offset
+}
+
+func imageExtensionForMediaType(contentType string) string {
+	mediaType, _, err := mime.ParseMediaType(contentType)
+	if err != nil {
+		mediaType = strings.TrimSpace(strings.ToLower(contentType))
+	}
+	exts, err := mime.ExtensionsByType(mediaType)
+	if err == nil {
+		for _, ext := range exts {
+			if ext != "" {
+				return ext
+			}
+		}
+	}
+	switch mediaType {
+	case "image/jpeg":
+		return ".jpg"
+	case "image/png":
+		return ".png"
+	case "image/gif":
+		return ".gif"
+	case "image/webp":
+		return ".webp"
+	case "image/svg+xml":
+		return ".svg"
+	default:
+		return ".img"
+	}
+}
+
+func (s *serveServer) materializeInlineSessionImage(mediaType, base64Data string) (string, bool) {
+	outputDir := s.imageOutputDir()
+	absDir, err := canonicalizeServeDirForWrite(outputDir)
+	if err != nil {
+		log.Printf("[serve] materializeInlineSessionImage: resolve dir %s: %v", outputDir, err)
+		return "", false
+	}
+	if err := os.MkdirAll(absDir, 0755); err != nil {
+		log.Printf("[serve] materializeInlineSessionImage: mkdir %s: %v", absDir, err)
+		return "", false
+	}
+
+	mediaType = strings.TrimSpace(mediaType)
+	base64Data = strings.TrimSpace(base64Data)
+	if base64.StdEncoding.DecodedLen(len(base64Data)) > maxMaterializedSessionImageBytes+2 {
+		log.Printf("[serve] materializeInlineSessionImage: refusing inline image larger than %d bytes", maxMaterializedSessionImageBytes)
+		return "", false
+	}
+	hash := sha256.New()
+	_, _ = io.WriteString(hash, mediaType)
+	_, _ = io.WriteString(hash, "\n")
+	_, _ = io.WriteString(hash, base64Data)
+	sum := hash.Sum(nil)
+	destName := "history-" + hex.EncodeToString(sum[:16]) + imageExtensionForMediaType(mediaType)
+	destPath := filepath.Join(absDir, destName)
+	if info, err := os.Stat(destPath); err == nil && !info.IsDir() {
+		return destPath, true
+	}
+
+	tmpPath := destPath + ".tmp-" + randomSuffix()
+	dst, err := os.OpenFile(tmpPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+	if err != nil {
+		log.Printf("[serve] materializeInlineSessionImage: create %s: %v", tmpPath, err)
+		return "", false
+	}
+	dec := base64.NewDecoder(base64.StdEncoding, strings.NewReader(base64Data))
+	limited := &io.LimitedReader{R: dec, N: maxMaterializedSessionImageBytes + 1}
+	written, err := io.Copy(dst, limited)
+	if err != nil {
+		dst.Close()
+		os.Remove(tmpPath)
+		log.Printf("[serve] materializeInlineSessionImage: decode %s: %v", destPath, err)
+		return "", false
+	}
+	if written > maxMaterializedSessionImageBytes {
+		dst.Close()
+		os.Remove(tmpPath)
+		log.Printf("[serve] materializeInlineSessionImage: refusing inline image larger than %d bytes", maxMaterializedSessionImageBytes)
+		return "", false
+	}
+	if err := dst.Close(); err != nil {
+		os.Remove(tmpPath)
+		log.Printf("[serve] materializeInlineSessionImage: close %s: %v", tmpPath, err)
+		return "", false
+	}
+	if err := os.Rename(tmpPath, destPath); err != nil {
+		if _, statErr := os.Stat(destPath); statErr == nil {
+			os.Remove(tmpPath)
+			return destPath, true
+		}
+		os.Remove(tmpPath)
+		log.Printf("[serve] materializeInlineSessionImage: rename %s -> %s: %v", tmpPath, destPath, err)
+		return "", false
+	}
+	return destPath, true
+}
+
+func (s *serveServer) sessionMessageImageURL(part llm.Part) string {
+	if part.ImagePath != "" {
+		if served, ok := s.ensureImageServeable(part.ImagePath); ok {
+			return serveRoutePath(s.cfg.imagesRoute(), s.imageOutputDir(), served)
+		}
+	}
+	if part.ImageData == nil || strings.TrimSpace(part.ImageData.Base64) == "" {
+		return ""
+	}
+	if served, ok := s.materializeInlineSessionImage(part.ImageData.MediaType, part.ImageData.Base64); ok {
+		return serveRoutePath(s.cfg.imagesRoute(), s.imageOutputDir(), served)
+	}
+	return ""
 }
 
 func (s *serveServer) handleSessions(w http.ResponseWriter, r *http.Request) {
@@ -830,13 +1003,18 @@ func (s *serveServer) handleSessionByID(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
-	offset, _ := strconv.Atoi(r.URL.Query().Get("offset"))
-	msgs, err := s.store.GetMessages(r.Context(), sessionID, limit, offset)
+	limit := parseSessionMessagesLimit(r.URL.Query().Get("limit"))
+	offset := parseSessionMessagesOffset(r.URL.Query().Get("offset"))
+	msgs, err := s.store.GetMessages(r.Context(), sessionID, limit+1, offset)
 	if err != nil {
 		writeOpenAIError(w, http.StatusInternalServerError, "server_error", "failed to get messages")
 		return
 	}
+	hasMore := len(msgs) > limit
+	if hasMore {
+		msgs = msgs[:limit]
+	}
+	nextOffset := offset + len(msgs)
 
 	type partEntry struct {
 		Type       string `json:"type"`
@@ -852,6 +1030,12 @@ func (s *serveServer) handleSessionByID(w http.ResponseWriter, r *http.Request) 
 		Role      string      `json:"role"`
 		Parts     []partEntry `json:"parts"`
 		CreatedAt int64       `json:"created_at"`
+	}
+
+	type messagesResponse struct {
+		Messages   []messageEntry `json:"messages"`
+		HasMore    bool           `json:"has_more"`
+		NextOffset int            `json:"next_offset,omitempty"`
 	}
 
 	result := make([]messageEntry, 0, len(msgs))
@@ -890,11 +1074,15 @@ func (s *serveServer) handleSessionByID(w http.ResponseWriter, r *http.Request) 
 					})
 				}
 			case llm.PartImage:
-				if p.ImageData != nil && p.ImageData.Base64 != "" {
+				if imageURL := s.sessionMessageImageURL(p); imageURL != "" {
+					mimeType := ""
+					if p.ImageData != nil {
+						mimeType = p.ImageData.MediaType
+					}
 					entry.Parts = append(entry.Parts, partEntry{
 						Type:     "image",
-						ImageURL: "data:" + p.ImageData.MediaType + ";base64," + p.ImageData.Base64,
-						MimeType: p.ImageData.MediaType,
+						ImageURL: imageURL,
+						MimeType: mimeType,
 					})
 				}
 			case llm.PartToolCall:
@@ -919,18 +1107,31 @@ func (s *serveServer) handleSessionByID(w http.ResponseWriter, r *http.Request) 
 		result = append(result, entry)
 	}
 
-	body, _ := json.Marshal(map[string]any{"messages": result})
-	hash := sha256.Sum256(body)
-	etag := `"` + hex.EncodeToString(hash[:8]) + `"`
-	w.Header().Set("ETag", etag)
+	resp := messagesResponse{Messages: result, HasMore: hasMore}
+	if hasMore {
+		resp.NextOffset = nextOffset
+	}
+	body, err := json.Marshal(resp)
+	if err != nil {
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	etagHash := sha256.New()
+	if meta, metaErr := s.store.Get(r.Context(), sessionID); metaErr == nil && meta != nil {
+		_, _ = io.WriteString(etagHash, strconv.FormatInt(meta.UpdatedAt.UnixMilli(), 10))
+		_, _ = io.WriteString(etagHash, "\n")
+	}
+	_, _ = etagHash.Write(body)
+	etag := `"` + hex.EncodeToString(etagHash.Sum(nil)) + `"`
 	w.Header().Set("Cache-Control", "no-cache")
-	if r.Header.Get("If-None-Match") == etag {
+	w.Header().Set("ETag", etag)
+	if uiETagMatches(r.Header.Get("If-None-Match"), etag) {
+		w.Header().Set("Content-Type", "application/json")
+		uiAddVary(w.Header(), "Accept-Encoding")
 		w.WriteHeader(http.StatusNotModified)
 		return
 	}
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write(body)
+	writeJSONGzipBody(w, r, http.StatusOK, body)
 }
 
 func (s *serveServer) handleSessionInterrupt(w http.ResponseWriter, r *http.Request, sessionID string) {
@@ -1164,6 +1365,13 @@ func (s *serveServer) handleProviders(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+const serveModelsCacheTTL = 15 * time.Minute
+
+type serveModelsCacheEntry struct {
+	models    []llm.ModelInfo
+	expiresAt time.Time
+}
+
 func (s *serveServer) handleModels(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		w.Header().Set("Allow", "GET")
@@ -1178,13 +1386,12 @@ func (s *serveServer) handleModels(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
-	defer cancel()
-
 	models := make([]llm.ModelInfo, 0)
-	// Openrouter ships hundreds of models — going to the upstream API on every
-	// popover open would block the UI and cost tokens. The warm cache (6h TTL,
-	// background refresh on stale) gives us snappy opens after the first hit.
+	// OpenRouter ships hundreds of models and maintains a provider-side warm
+	// cache; use it first when available. For other providers, preserve the
+	// OpenAI-compatible /v1/models behavior: prefer a fresh/cache upstream
+	// ListModels result, and use local curated/configured lists only as a
+	// fallback when upstream listing is unavailable or fails.
 	pc, hasCfg := s.cfgRef.Providers[effectiveName]
 	isOpenRouter := effectiveName == "openrouter" || (hasCfg && string(pc.Type) == "openrouter")
 	if isOpenRouter {
@@ -1197,35 +1404,25 @@ func (s *serveServer) handleModels(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if len(models) == 0 {
+		models = s.getCachedModelsForProvider(effectiveName)
+	}
+	if len(models) == 0 {
+		ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+		defer cancel()
 		if lister, ok := provider.(interface {
 			ListModels(context.Context) ([]llm.ModelInfo, error)
 		}); ok {
 			listed, err := lister.ListModels(ctx)
 			if err == nil {
+				s.setCachedModelsForProvider(effectiveName, listed)
 				models = listed
 			} else if !errors.Is(err, llm.ErrListModelsUnsupported) {
 				s.verboseLog("ListModels(%q) failed: %v", effectiveName, err)
 			}
 		}
 	}
-
 	if len(models) == 0 {
-		if pc, ok := s.cfgRef.Providers[effectiveName]; ok {
-			if pc.Model != "" {
-				models = append(models, llm.ModelInfo{ID: pc.Model})
-			}
-		} else if queryProvider == "" {
-			if providerCfg := s.cfgRef.GetActiveProviderConfig(); providerCfg != nil {
-				if providerCfg.Model != "" {
-					models = append(models, llm.ModelInfo{ID: providerCfg.Model})
-				}
-			}
-		}
-		if curated := llm.ResolveProviderModelIDs(effectiveName); len(curated) > 0 {
-			for _, id := range curated {
-				models = append(models, llm.ModelInfo{ID: id})
-			}
-		}
+		models = s.getLocalModelsForProvider(effectiveName, queryProvider)
 	}
 
 	ids := make([]string, 0, len(models))
@@ -1255,7 +1452,10 @@ func (s *serveServer) handleModels(w http.ResponseWriter, r *http.Request) {
 
 	items := make([]map[string]any, 0, len(ids))
 	for _, id := range ids {
-		m := byID[id]
+		m, ok := byID[id]
+		if !ok {
+			continue
+		}
 		items = append(items, map[string]any{
 			"id":      m.ID,
 			"object":  "model",
@@ -1273,6 +1473,74 @@ func (s *serveServer) handleModels(w http.ResponseWriter, r *http.Request) {
 		"object": "list",
 		"data":   items,
 	})
+}
+
+func appendModelIDs(dst []llm.ModelInfo, ids []string) []llm.ModelInfo {
+	for _, id := range ids {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		dst = append(dst, llm.ModelInfo{ID: id})
+	}
+	return dst
+}
+
+func cloneModelInfos(models []llm.ModelInfo) []llm.ModelInfo {
+	if len(models) == 0 {
+		return nil
+	}
+	cloned := make([]llm.ModelInfo, len(models))
+	copy(cloned, models)
+	return cloned
+}
+
+func (s *serveServer) getLocalModelsForProvider(effectiveName, queryProvider string) []llm.ModelInfo {
+	models := make([]llm.ModelInfo, 0)
+	if pc, ok := s.cfgRef.Providers[effectiveName]; ok {
+		models = appendModelIDs(models, pc.Models)
+		if id := strings.TrimSpace(pc.Model); id != "" {
+			models = append(models, llm.ModelInfo{ID: id})
+		}
+	} else if queryProvider == "" {
+		if providerCfg := s.cfgRef.GetActiveProviderConfig(); providerCfg != nil {
+			models = appendModelIDs(models, providerCfg.Models)
+			if id := strings.TrimSpace(providerCfg.Model); id != "" {
+				models = append(models, llm.ModelInfo{ID: id})
+			}
+		}
+	}
+	return appendModelIDs(models, llm.ResolveProviderModelIDs(effectiveName))
+}
+
+func (s *serveServer) getCachedModelsForProvider(name string) []llm.ModelInfo {
+	s.modelsMu.Lock()
+	defer s.modelsMu.Unlock()
+
+	if entry, ok := s.modelsCache[name]; ok {
+		if time.Now().Before(entry.expiresAt) {
+			return cloneModelInfos(entry.models)
+		}
+		delete(s.modelsCache, name)
+	}
+	return nil
+}
+
+func (s *serveServer) setCachedModelsForProvider(name string, models []llm.ModelInfo) {
+	if len(models) == 0 {
+		return
+	}
+
+	s.modelsMu.Lock()
+	defer s.modelsMu.Unlock()
+
+	if s.modelsCache == nil {
+		s.modelsCache = make(map[string]serveModelsCacheEntry)
+	}
+	s.modelsCache[name] = serveModelsCacheEntry{
+		models:    cloneModelInfos(models),
+		expiresAt: time.Now().Add(serveModelsCacheTTL),
+	}
 }
 
 func (s *serveServer) getModelsProvider(name string) (llm.Provider, string, error) {
