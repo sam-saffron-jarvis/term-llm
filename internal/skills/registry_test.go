@@ -1,6 +1,7 @@
 package skills
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -156,6 +157,124 @@ description: "Directory and frontmatter names differ"
 	}
 	if !skill.IsLoaded() || skill.Body == "" {
 		t.Error("expected full skill body to be loaded")
+	}
+}
+
+func TestRegistryGetFallsBackWhenCachedListMetadataPathStale(t *testing.T) {
+	tmpDir := t.TempDir()
+	highDir := filepath.Join(tmpDir, "high")
+	lowDir := filepath.Join(tmpDir, "low")
+	for _, base := range []string{highDir, lowDir} {
+		skillDir := filepath.Join(base, "same-skill")
+		if err := os.MkdirAll(skillDir, 0o755); err != nil {
+			t.Fatalf("mkdir skill dir: %v", err)
+		}
+	}
+
+	highContent := `---
+name: same-skill
+description: "High priority version"
+---
+
+# High
+`
+	lowContent := `---
+name: same-skill
+description: "Low priority version"
+---
+
+# Low
+`
+	if err := os.WriteFile(filepath.Join(highDir, "same-skill", "SKILL.md"), []byte(highContent), 0o644); err != nil {
+		t.Fatalf("write high skill: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(lowDir, "same-skill", "SKILL.md"), []byte(lowContent), 0o644); err != nil {
+		t.Fatalf("write low skill: %v", err)
+	}
+
+	registry, err := NewRegistry(RegistryConfig{
+		IncludeProjectSkills:  false,
+		IncludeEcosystemPaths: false,
+	})
+	if err != nil {
+		t.Fatalf("NewRegistry: %v", err)
+	}
+	registry.searchPaths = []searchPath{
+		{path: highDir, source: SourceUser},
+		{path: lowDir, source: SourceCodex},
+	}
+
+	listed, err := registry.List()
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(listed) != 1 || listed[0].Description != "High priority version" {
+		t.Fatalf("List = %#v, want high-priority skill", listed)
+	}
+
+	if err := os.RemoveAll(filepath.Join(highDir, "same-skill")); err != nil {
+		t.Fatalf("remove high skill: %v", err)
+	}
+
+	skill, err := registry.Get("same-skill")
+	if err != nil {
+		t.Fatalf("Get after cached path removal: %v", err)
+	}
+	if skill.Description != "Low priority version" {
+		t.Fatalf("Get description = %q, want low priority fallback", skill.Description)
+	}
+	if skill.SourcePath != filepath.Join(lowDir, "same-skill") {
+		t.Fatalf("SourcePath = %q, want low-priority path", skill.SourcePath)
+	}
+}
+
+func TestRegistryListReturnsDefensiveCopies(t *testing.T) {
+	tmpDir := t.TempDir()
+	skillsDir := filepath.Join(tmpDir, "skills")
+	skillDir := filepath.Join(skillsDir, "copy-test")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatalf("mkdir skill dir: %v", err)
+	}
+	content := `---
+name: copy-test
+description: "Original description"
+metadata:
+  owner: alice
+---
+`
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte(content), 0o644); err != nil {
+		t.Fatalf("write skill: %v", err)
+	}
+
+	registry, err := NewRegistry(RegistryConfig{
+		IncludeProjectSkills:  false,
+		IncludeEcosystemPaths: false,
+	})
+	if err != nil {
+		t.Fatalf("NewRegistry: %v", err)
+	}
+	registry.searchPaths = []searchPath{{path: skillsDir, source: SourceUser}}
+
+	first, err := registry.List()
+	if err != nil {
+		t.Fatalf("first List: %v", err)
+	}
+	first[0].Name = "mutated"
+	first[0].Description = "Mutated description"
+	first[0].Metadata["owner"] = "mallory"
+
+	second, err := registry.List()
+	if err != nil {
+		t.Fatalf("second List: %v", err)
+	}
+	if second[0].Name != "copy-test" {
+		t.Fatalf("cached Name = %q, want original", second[0].Name)
+	}
+	if second[0].Description != "Original description" {
+		t.Fatalf("cached Description = %q, want original", second[0].Description)
+	}
+	if second[0].Metadata["owner"] != "alice" {
+		t.Fatalf("cached metadata owner = %q, want alice", second[0].Metadata["owner"])
 	}
 }
 
@@ -353,7 +472,7 @@ description: "New skill"
 		t.Fatalf("failed to write new SKILL.md: %v", err)
 	}
 
-	// List will scan the directory again (List doesn't cache)
+	// List notices the search path changed and refreshes its metadata cache.
 	// So we expect 2 skills now
 	skills, _ = registry.List()
 	if len(skills) != 2 {
@@ -494,5 +613,58 @@ func TestDefaultRegistryConfig(t *testing.T) {
 
 	if !cfg.IncludeEcosystemPaths {
 		t.Error("expected IncludeEcosystemPaths to be true")
+	}
+}
+
+func BenchmarkRegistryListRepeated(b *testing.B) {
+	const skillCount = 200
+
+	tmpDir := b.TempDir()
+	skillsDir := filepath.Join(tmpDir, "skills")
+	for i := 0; i < skillCount; i++ {
+		name := fmt.Sprintf("bench-skill-%03d", i)
+		skillDir := filepath.Join(skillsDir, name)
+		if err := os.MkdirAll(skillDir, 0o755); err != nil {
+			b.Fatalf("mkdir skill dir: %v", err)
+		}
+		content := fmt.Sprintf(`---
+name: %s
+description: "Benchmark skill %03d for repeated registry listing"
+---
+
+# %s
+
+Instructions.
+`, name, i, name)
+		if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte(content), 0o644); err != nil {
+			b.Fatalf("write SKILL.md: %v", err)
+		}
+	}
+
+	registry, err := NewRegistry(RegistryConfig{
+		IncludeProjectSkills:  false,
+		IncludeEcosystemPaths: false,
+	})
+	if err != nil {
+		b.Fatalf("NewRegistry: %v", err)
+	}
+	registry.searchPaths = []searchPath{{path: skillsDir, source: SourceUser}}
+
+	if skills, err := registry.List(); err != nil {
+		b.Fatalf("warm List: %v", err)
+	} else if len(skills) != skillCount {
+		b.Fatalf("warm List returned %d skills, want %d", len(skills), skillCount)
+	}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		skills, err := registry.List()
+		if err != nil {
+			b.Fatalf("List: %v", err)
+		}
+		if len(skills) != skillCount {
+			b.Fatalf("List returned %d skills, want %d", len(skills), skillCount)
+		}
 	}
 }
