@@ -225,7 +225,8 @@ func (s *serveServer) handleResponses(w http.ResponseWriter, r *http.Request) {
 	searchFromTools, requestedTools, passthroughTools := parseRequestedTools(req.Tools)
 	search := runtime.search || searchFromTools
 	toolChoice := parseToolChoice(req.ToolChoice)
-	tools := appendResponsePassthroughTools(runtime.selectTools(requestedTools), passthroughTools, runtime.toolMap)
+	serverTools := responseServerTools(runtime, requestedTools, req.IncludeServerTools)
+	tools := appendResponsePassthroughTools(serverTools, passthroughTools, runtime.toolMap)
 	if len(tools) == 0 {
 		toolChoice = llm.ToolChoice{}
 	}
@@ -384,6 +385,13 @@ func (s *serveServer) populateResponsesToolResultNames(ctx context.Context, sess
 			}
 		}
 	}
+}
+
+func responseServerTools(runtime *serveRuntime, requested map[string]bool, includeServerTools bool) []llm.ToolSpec {
+	if includeServerTools {
+		return runtime.selectTools(nil)
+	}
+	return runtime.selectTools(requested)
 }
 
 func appendResponsePassthroughTools(serverTools []llm.ToolSpec, passthroughTools []llm.ToolSpec, toolMap map[string]string) []llm.ToolSpec {

@@ -18,6 +18,7 @@ type responsesCreateRequest struct {
 	Provider           string                     `json:"provider"`
 	Input              json.RawMessage            `json:"input"`
 	Tools              []json.RawMessage          `json:"tools,omitempty"`
+	IncludeServerTools bool                       `json:"include_server_tools,omitempty"`
 	ToolChoice         json.RawMessage            `json:"tool_choice,omitempty"`
 	ParallelToolCalls  *bool                      `json:"parallel_tool_calls,omitempty"`
 	MaxOutputTokens    int                        `json:"max_output_tokens,omitempty"`
