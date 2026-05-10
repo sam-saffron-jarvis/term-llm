@@ -2170,6 +2170,58 @@ func (e *echoTool) Execute(_ context.Context, _ json.RawMessage) (llm.ToolOutput
 
 func (e *echoTool) Preview(_ json.RawMessage) string { return "" }
 
+type secondEchoTool struct{}
+
+func (e *secondEchoTool) Spec() llm.ToolSpec {
+	return llm.ToolSpec{
+		Name:        "second_echo",
+		Description: "Echoes input a second way",
+		Schema:      map[string]any{"type": "object"},
+	}
+}
+
+func (e *secondEchoTool) Execute(_ context.Context, _ json.RawMessage) (llm.ToolOutput, error) {
+	return llm.TextOutput("second echoed"), nil
+}
+
+func (e *secondEchoTool) Preview(_ json.RawMessage) string { return "" }
+
+func TestResponseServerTools_IncludeServerToolsKeepsAllRegisteredTools(t *testing.T) {
+	registry := llm.NewToolRegistry()
+	registry.Register(&echoTool{})
+	registry.Register(&secondEchoTool{})
+	provider := llm.NewMockProvider("mock")
+	rt := &serveRuntime{engine: llm.NewEngine(provider, registry)}
+
+	requested := map[string]bool{"client_music_tool": true}
+	filtered := responseServerTools(rt, requested, false)
+	if len(filtered) != 0 {
+		t.Fatalf("filtered server tools = %d, want 0 for client-only requested tools", len(filtered))
+	}
+
+	included := responseServerTools(rt, requested, true)
+	got := map[string]bool{}
+	for _, spec := range included {
+		got[spec.Name] = true
+	}
+	if !got["echo"] || !got["second_echo"] {
+		t.Fatalf("included server tools = %v, want echo and second_echo", got)
+	}
+}
+
+func TestAppendResponsePassthroughTools_AddsClientToolsWithoutDuplicatingServerTools(t *testing.T) {
+	serverTools := []llm.ToolSpec{{Name: "echo"}}
+	passthrough := []llm.ToolSpec{{Name: "echo"}, {Name: "client_music_tool"}}
+
+	tools := appendResponsePassthroughTools(serverTools, passthrough, nil)
+	if len(tools) != 2 {
+		t.Fatalf("tool count = %d, want 2", len(tools))
+	}
+	if tools[0].Name != "echo" || tools[1].Name != "client_music_tool" {
+		t.Fatalf("tools = %#v, want echo plus client_music_tool", tools)
+	}
+}
+
 func TestServeRuntimeRun_PersistsToolCallMessages(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "sessions.db")
 	store, err := session.NewStore(session.Config{Enabled: true, Path: dbPath})
