@@ -801,6 +801,7 @@ const submitRenameSessionModal = async () => {
   elements.renameSessionSaveBtn.textContent = 'Saving…';
   try {
     const payload = await updateSessionMetadata(session, { name: nextName });
+    reconcileServerSessionIdentity(session, payload);
     applyServerSessionSummary(session, payload);
     session.name = String(payload.name || '').trim();
     persistAndRefreshShell();
@@ -868,10 +869,17 @@ const animateSessionHide = async (sessionId) => {
 const setSessionArchived = async (session, archived) => {
   if (!session?.id) return false;
   try {
+    const wasActive = session.id === state.activeSessionId;
+    const previousId = session.id;
     const payload = await updateSessionMetadata(session, { archived });
+    reconcileServerSessionIdentity(session, payload);
     applyServerSessionSummary(session, payload);
     if (archived && !state.showHiddenSessions) {
-      await animateSessionHide(session.id);
+      await animateSessionHide(previousId);
+      if (session.id !== previousId) await animateSessionHide(session.id);
+      if (wasActive || session.id === state.activeSessionId) {
+        await switchToDraftSession({ closeSidebar: false });
+      }
     }
     persistAndRefreshShell();
     return true;
@@ -889,6 +897,7 @@ const setSessionPinned = async (session, pinned) => {
   if (!session?.id) return false;
   try {
     const payload = await updateSessionMetadata(session, { pinned });
+    reconcileServerSessionIdentity(session, payload);
     applyServerSessionSummary(session, payload);
     persistAndRefreshShell();
     return true;
