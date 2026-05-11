@@ -2686,19 +2686,45 @@ const readFileAsDataURL = (file, signal) => new Promise((resolve, reject) => {
 });
 
 const materializeAttachmentDataURL = async (att, signal) => {
-  if (att?.dataURL) return { dataURL: att.dataURL, previewURLToRevoke: '' };
-  const previousPreviewURL = String(att?.previewURL || '');
+  const name = String(att?.name || 'attachment');
+  const type = String(att?.type || '');
+  if (att?.dataURL) return { name, type, dataURL: att.dataURL };
   const dataURL = await readFileAsDataURL(att?.file, signal);
   if (!dataURL) {
-    throw new Error(`Failed to read ${att?.name || 'attachment'}.`);
+    throw new Error(`Failed to read ${name}.`);
   }
-  att.dataURL = dataURL;
-  att.previewURL = dataURL;
-  delete att.file;
-  return {
-    dataURL,
-    previewURLToRevoke: previousPreviewURL && previousPreviewURL !== dataURL ? previousPreviewURL : ''
+  return { name, type, dataURL };
+};
+
+const buildAttachmentInputParts = async (attachments, signal) => {
+  const materialized = await Promise.all((attachments || []).map(att => materializeAttachmentDataURL(att, signal)));
+  return materialized.map(att => (
+    att.type.startsWith('image/')
+      ? { type: 'input_image', image_url: att.dataURL, filename: att.name }
+      : { type: 'input_file', file_data: att.dataURL, filename: att.name }
+  ));
+};
+
+const cloneAttachmentForMessage = (att) => {
+  const cloned = {
+    id: String(att?.id || generateId('att')),
+    name: String(att?.name || 'file'),
+    type: String(att?.type || 'application/octet-stream')
   };
+  if (Number.isFinite(Number(att?.size))) {
+    cloned.size = Number(att.size);
+  }
+  const previewURL = String(att?.previewURL || '');
+  if (previewURL) {
+    cloned.previewURL = previewURL;
+  }
+  if (att?.file) {
+    cloned.file = att.file;
+  }
+  if (att?.dataURL) {
+    cloned.dataURL = att.dataURL;
+  }
+  return cloned;
 };
 
 const renderAttachments = () => {
@@ -3102,19 +3128,12 @@ const markToolGroupsDone = (session) => {
 
 // Rebuild a full conversation input array from locally-stored session messages.
 // Used to recover when previous_response_id has expired server-side.
-const rebuildInputFromSession = (session, currentInput) => {
+const rebuildInputFromSession = async (session, currentInput, signal) => {
   const input = [];
   for (const msg of session.messages) {
     if (msg.role === 'user' && !msg.askUser) {
       if (msg.attachments && msg.attachments.length > 0) {
-        const parts = [];
-        for (const att of msg.attachments) {
-          if (att.type && att.type.startsWith('image/') && att.dataURL) {
-            parts.push({ type: 'input_image', image_url: att.dataURL, filename: att.name });
-          } else if (att.dataURL) {
-            parts.push({ type: 'input_file', file_data: att.dataURL, filename: att.name });
-          }
-        }
+        const parts = await buildAttachmentInputParts(msg.attachments, signal);
         if (msg.content) parts.push({ type: 'input_text', text: msg.content });
         input.push({ type: 'message', role: 'user', content: parts });
       } else {
@@ -3200,23 +3219,15 @@ const sendMessage = async (options = {}) => {
   }
 
   const controller = new AbortController();
-  let previewURLsToRevoke = [];
+  let requestAttachmentParts = [];
   if (pendingAttachments.length > 0) {
     try {
-      for (const att of pendingAttachments) {
-        const materialized = await materializeAttachmentDataURL(att, controller.signal);
-        if (materialized.previewURLToRevoke) {
-          previewURLsToRevoke.push(materialized.previewURLToRevoke);
-        }
-      }
-      if (!Array.isArray(options.attachments)) {
-        renderAttachments();
-      }
+      requestAttachmentParts = await buildAttachmentInputParts(pendingAttachments, controller.signal);
     } catch (err) {
-      previewURLsToRevoke.forEach(revokeObjectURLString);
-      previewURLsToRevoke = [];
-      if (!Array.isArray(options.attachments)) {
-        renderAttachments();
+      try {
+        controller.abort();
+      } catch {
+        // Ignore abort failures while tearing down attachment reads.
       }
       const message = err?.message || 'Failed to read attachment.';
       alert(message);
@@ -3254,7 +3265,7 @@ const sendMessage = async (options = {}) => {
   session.lastMessageAt = Date.now();
 
   if (pendingAttachments.length > 0) {
-    userMessage.attachments = pendingAttachments.slice();
+    userMessage.attachments = pendingAttachments.map(cloneAttachmentForMessage);
   } else {
     delete userMessage.attachments;
   }
@@ -3270,10 +3281,6 @@ const sendMessage = async (options = {}) => {
     elements.messages.appendChild(createMessageNode(userMessage));
   } else {
     updateUserNode(userMessage);
-  }
-  if (previewURLsToRevoke.length > 0) {
-    previewURLsToRevoke.forEach(revokeObjectURLString);
-    previewURLsToRevoke = [];
   }
   syncTurnActionPanels();
 
@@ -3298,15 +3305,8 @@ const sendMessage = async (options = {}) => {
   try {
     // Build input content: plain string or array with file/image parts
     let inputContent;
-    if (pendingAttachments.length > 0) {
-      const contentParts = [];
-      for (const att of pendingAttachments) {
-        if (att.type.startsWith('image/')) {
-          contentParts.push({ type: 'input_image', image_url: att.dataURL, filename: att.name });
-        } else {
-          contentParts.push({ type: 'input_file', file_data: att.dataURL, filename: att.name });
-        }
-      }
+    if (requestAttachmentParts.length > 0) {
+      const contentParts = requestAttachmentParts.slice();
       if (prompt) {
         contentParts.push({ type: 'input_text', text: prompt });
       }
@@ -3323,7 +3323,7 @@ const sendMessage = async (options = {}) => {
     if (session.lastResponseId) {
       body.previous_response_id = session.lastResponseId;
     } else if (session.messages.length > 1) {
-      body.input = rebuildInputFromSession(session, inputContent);
+      body.input = await rebuildInputFromSession(session, inputContent, controller.signal);
     }
 
     const normalizeEffortForCompare = (value) => {
@@ -3383,7 +3383,7 @@ const sendMessage = async (options = {}) => {
       if (errMsg.includes('not found') && errMsg.includes('previous_response_id')) {
         delete body.previous_response_id;
         session.lastResponseId = null;
-        body.input = rebuildInputFromSession(session, inputContent);
+        body.input = await rebuildInputFromSession(session, inputContent, controller.signal);
 
         response = await fetch(`${UI_PREFIX}/v1/responses`, {
           method: 'POST',
