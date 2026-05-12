@@ -59,6 +59,7 @@ type StreamRenderer struct {
 
 	// All markdown received so far (for re-rendering)
 	allMarkdown bytes.Buffer
+	hasTabs     bool // True once input contains a tab, enabling tab normalization only when needed
 
 	// How many bytes of rendered output we've already written
 	renderedLen int
@@ -139,12 +140,19 @@ func NewRendererWithOptions(
 // This preserves legacy terminal rendering behaviour for code blocks.
 func (sr *StreamRenderer) normalizedMarkdown() []byte {
 	content := sr.allMarkdown.Bytes()
+	if !sr.hasTabs {
+		return content
+	}
 	return bytes.ReplaceAll(content, []byte("\t"), []byte("  "))
 }
 
 // Write accepts markdown chunks and renders complete blocks immediately.
 // It implements io.Writer.
 func (sr *StreamRenderer) Write(p []byte) (n int, err error) {
+	if !sr.hasTabs && bytes.IndexByte(p, '\t') >= 0 {
+		sr.hasTabs = true
+	}
+
 	// Add incoming bytes to line buffer
 	sr.lineBuf.Write(p)
 

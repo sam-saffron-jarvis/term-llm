@@ -1899,6 +1899,57 @@ func TestExecuteSingleToolCallDoesNotDeadlockOnBlockedToolExecEndWhenCancelled(t
 	}
 }
 
+func TestExecuteToolCallsParallelDoesNotBlockOnFullToolExecEndBuffer(t *testing.T) {
+	tool := &countingTool{}
+	registry := NewToolRegistry()
+	registry.Register(tool)
+
+	engine := NewEngine(&fakeProvider{}, registry)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	events := make(chan Event, 1)
+	events <- Event{Type: EventHeartbeat, ToolCallID: "buffer-full"}
+
+	calls := []ToolCall{
+		{ID: "call-1", Name: "count_tool", Arguments: json.RawMessage(`{}`)},
+		{ID: "call-2", Name: "count_tool", Arguments: json.RawMessage(`{}`)},
+		{ID: "call-3", Name: "count_tool", Arguments: json.RawMessage(`{}`)},
+	}
+
+	type result struct {
+		msgs []Message
+		err  error
+	}
+	resultCh := make(chan result, 1)
+	go func() {
+		msgs, err := engine.executeToolCalls(ctx, calls, true, eventSender{ctx: ctx, ch: events}, false, false)
+		resultCh <- result{msgs: msgs, err: err}
+	}()
+
+	select {
+	case res := <-resultCh:
+		if res.err != nil {
+			t.Fatalf("expected nil error, got %v", res.err)
+		}
+		if len(res.msgs) != len(calls) {
+			t.Fatalf("expected %d tool result messages, got %d", len(calls), len(res.msgs))
+		}
+	case <-time.After(5 * time.Second):
+		cancel()
+		select {
+		case <-resultCh:
+		case <-time.After(5 * time.Second):
+			t.Fatal("parallel tool execution remained blocked after cancellation")
+		}
+		t.Fatal("parallel tool execution blocked on a full tool-exec-end event buffer")
+	}
+
+	if tool.calls.Load() != int64(len(calls)) {
+		t.Fatalf("expected %d tool executions, got %d", len(calls), tool.calls.Load())
+	}
+}
+
 // imageTool returns structured ToolOutput with Images and Diffs.
 type imageTool struct{}
 

@@ -117,6 +117,23 @@ func TestRenderString_ThematicBreakUsesRenderWidth(t *testing.T) {
 	}
 }
 
+func TestRenderString_DecodesEscapesAndEntities(t *testing.T) {
+	got, err := RenderString(`Use \* literal &amp; entity`, Config{
+		Palette:           testPalette,
+		Width:             80,
+		WrapOffset:        1,
+		NormalizeTabs:     true,
+		NormalizeNewlines: true,
+		TrimSpace:         true,
+	})
+	if err != nil {
+		t.Fatalf("RenderString failed: %v", err)
+	}
+	if visible := normalizeVisibleOutput(got); visible != "Use * literal & entity" {
+		t.Fatalf("visible output = %q, want %q", visible, "Use * literal & entity")
+	}
+}
+
 func TestRenderString_BlockquotePreservesNestedStructure(t *testing.T) {
 	got, err := RenderString("> outer\n>\n> > inner1\n> >\n> > inner2\n>\n> tail", Config{
 		Palette:           testPalette,
