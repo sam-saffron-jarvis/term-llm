@@ -1,6 +1,7 @@
 package markdown
 
 import (
+	"bytes"
 	"fmt"
 	"html"
 	"regexp"
@@ -22,6 +23,8 @@ import (
 )
 
 // Renderer renders complete markdown content for a terminal target.
+// Implementations must treat source as read-only and must not retain it after
+// Render returns; streaming callers may pass slices backed by reusable buffers.
 type Renderer interface {
 	Render(source []byte) ([]byte, error)
 	Resize(width int)
@@ -77,19 +80,19 @@ var markdownParser = goldmark.New(
 
 // Render renders markdown to ANSI bytes.
 func (r *ANSI) Render(source []byte) ([]byte, error) {
-	content := string(source)
-	if r.config.NormalizeTabs {
+	renderSource := source
+	if r.config.NormalizeTabs && bytes.IndexByte(renderSource, '\t') >= 0 {
 		// Deliberately 2 spaces, not the CommonMark-spec 4.
 		// Keeps terminal output compact while remaining readable.
-		content = strings.ReplaceAll(content, "\t", "  ")
+		renderSource = bytes.ReplaceAll(renderSource, []byte("\t"), []byte("  "))
 	}
-	if strings.TrimSpace(content) == "" {
+	if len(bytes.TrimSpace(renderSource)) == 0 {
 		return []byte(""), nil
 	}
 
-	doc := markdownParser.Parser().Parse(gtext.NewReader([]byte(content)))
+	doc := markdownParser.Parser().Parse(gtext.NewReader(renderSource))
 	styles := newANSIStyles(r.config.Palette)
-	rendered, err := r.renderBlockChildren(doc, []byte(content), r.wrapWidth(), styles, "\n\n")
+	rendered, err := r.renderBlockChildren(doc, renderSource, r.wrapWidth(), styles, "\n\n")
 	if err != nil {
 		return nil, err
 	}
@@ -989,7 +992,25 @@ func bytesOrEmpty(v []byte) []byte {
 var multiNewlineRe = regexp.MustCompile(`\n{3,}`)
 
 func normalizeNewlines(s string) string {
+	if !hasThreeConsecutiveNewlines(s) {
+		return s
+	}
 	return multiNewlineRe.ReplaceAllString(s, "\n\n")
+}
+
+func hasThreeConsecutiveNewlines(s string) bool {
+	run := 0
+	for i := 0; i < len(s); i++ {
+		if s[i] != '\n' {
+			run = 0
+			continue
+		}
+		run++
+		if run >= 3 {
+			return true
+		}
+	}
+	return false
 }
 
 // backslashEscapeRe matches a backslash followed by an ASCII punctuation character.
@@ -999,8 +1020,16 @@ var backslashEscapeRe = regexp.MustCompile(`\\([!"#$%&'()*+,\-./:;<=>?@\[\\\]^_{
 // 1. Strips CommonMark backslash escapes (\* → *)
 // 2. Decodes HTML entities (&amp; → &, &ouml; → ö)
 func decodeInlineText(s string) string {
-	s = backslashEscapeRe.ReplaceAllString(s, "$1")
-	return html.UnescapeString(s)
+	if strings.IndexAny(s, "\\&") < 0 {
+		return s
+	}
+	if strings.IndexByte(s, '\\') >= 0 {
+		s = backslashEscapeRe.ReplaceAllString(s, "$1")
+	}
+	if strings.IndexByte(s, '&') >= 0 {
+		s = html.UnescapeString(s)
+	}
+	return s
 }
 
 type codeHighlighter struct {
