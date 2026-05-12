@@ -608,6 +608,7 @@ func (rt *serveRuntime) run(ctx context.Context, stateful bool, replaceHistory b
 	var produced []llm.Message
 	var producedMu sync.Mutex
 	var lastAppendedIdx int // tracks how many produced messages have been incrementally persisted
+	assistantSnapshotDirty := false
 
 	// Persist-as-we-go: snapshot callback fires per streamed tool call. The
 	// pending row lives at produced[pendingAssistantIdx] and is upserted in
@@ -687,6 +688,7 @@ func (rt *serveRuntime) run(ctx context.Context, stateful bool, replaceHistory b
 		} else {
 			produced[pendingAssistantIdx] = assistantMsg
 		}
+		assistantSnapshotDirty = true
 		if stateful {
 			rt.history = buildSnapshotLocked()
 		}
@@ -714,6 +716,7 @@ func (rt *serveRuntime) run(ctx context.Context, stateful bool, replaceHistory b
 			sessionMsg.ID = pendingAssistantMsgID
 			err := rt.store.UpdateMessage(dbCtx, req.SessionID, sessionMsg)
 			if err == nil {
+				assistantSnapshotDirty = false
 				persistPlatformInjectionLocked()
 				return
 			}
@@ -732,6 +735,7 @@ func (rt *serveRuntime) run(ctx context.Context, stateful bool, replaceHistory b
 			return
 		}
 		pendingAssistantMsgID = sessionMsg.ID
+		assistantSnapshotDirty = false
 		// Reserve produced[pendingAssistantIdx] so plain append-path writes
 		// skip it on subsequent callbacks.
 		if pendingAssistantIdx+1 > lastAppendedIdx {
@@ -782,8 +786,8 @@ func (rt *serveRuntime) run(ctx context.Context, stateful bool, replaceHistory b
 	// Safety net: on error exits, persist a full snapshot so the final DB
 	// state is consistent. If streamed text was shown before any callback fired,
 	// synthesize an assistant message from result.Text so the partial reply is
-	// not dropped. Skipped on success since the happy path already does its own
-	// full replace.
+	// not dropped. Successful runs stay on the incremental path unless a
+	// fallback snapshot is still needed to reconcile missed writes.
 	result := serveRunResult{}
 	var runErr error
 	defer func() {
@@ -877,19 +881,22 @@ func (rt *serveRuntime) run(ctx context.Context, stateful bool, replaceHistory b
 	result.SessionUsage = rt.cumulativeUsage
 
 	var newHistory []llm.Message
+	var needFinalSnapshot bool
 	producedMu.Lock()
 	newHistory = buildSnapshotLocked()
-	if len(produced) == 0 && result.Text.Len() > 0 {
+	synthesizedAssistant := len(produced) == 0 && result.Text.Len() > 0
+	if synthesizedAssistant {
 		newHistory = append(newHistory, llm.AssistantText(result.Text.String()))
 	}
 	if stateful {
 		rt.history = newHistory
 	}
-	if persisted {
-		rt.persistSnapshot(ctx, req.SessionID, newHistory)
-	}
+	needFinalSnapshot = persisted && (!initialPersisted || lastAppendedIdx < len(produced) || assistantSnapshotDirty || synthesizedAssistant)
 	persistPlatformInjectionLocked()
 	producedMu.Unlock()
+	if needFinalSnapshot {
+		rt.persistSnapshot(ctx, req.SessionID, newHistory)
+	}
 
 	return result, nil
 }

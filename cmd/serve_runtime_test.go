@@ -443,7 +443,6 @@ func TestServeRuntimeCloseCancelsActiveRun(t *testing.T) {
 func TestServeRuntimeRetriesInitialSnapshotBeforeAppending(t *testing.T) {
 	store := newServeRuntimeTestStore()
 	store.replaceFailures[1] = errors.New("initial snapshot failed")
-	store.replaceFailures[3] = errors.New("final snapshot failed")
 
 	provider := &serveRuntimeTestProvider{}
 	tool := &serveRuntimeTestTool{}
@@ -480,8 +479,8 @@ func TestServeRuntimeRetriesInitialSnapshotBeforeAppending(t *testing.T) {
 		t.Fatalf("result text = %q, want %q", got, "done")
 	}
 
-	if store.replaceCalls != 3 {
-		t.Fatalf("ReplaceMessages call count = %d, want 3", store.replaceCalls)
+	if store.replaceCalls != 2 {
+		t.Fatalf("ReplaceMessages call count = %d, want 2", store.replaceCalls)
 	}
 
 	msgs, err := store.GetMessages(context.Background(), "sess-1", 0, 0)
@@ -506,6 +505,59 @@ func TestServeRuntimeRetriesInitialSnapshotBeforeAppending(t *testing.T) {
 	}
 	if msgs[4].Role != llm.RoleTool || len(msgs[4].Parts) != 1 || msgs[4].Parts[0].Type != llm.PartToolResult {
 		t.Fatalf("message[4] = %+v, want tool result message", msgs[4])
+	}
+	if msgs[5].Role != llm.RoleAssistant || msgs[5].TextContent != "done" {
+		t.Fatalf("message[5] = %+v, want final assistant message", msgs[5])
+	}
+}
+
+func TestServeRuntimeSuccessfulRunSkipsFinalSnapshotRewrite(t *testing.T) {
+	store := newServeRuntimeTestStore()
+	provider := &serveRuntimeTestProvider{}
+	tool := &serveRuntimeTestTool{}
+	registry := llm.NewToolRegistry()
+	registry.Register(tool)
+	engine := llm.NewEngine(provider, registry)
+
+	rt := &serveRuntime{
+		provider:     provider,
+		providerKey:  provider.Name(),
+		engine:       engine,
+		store:        store,
+		defaultModel: "test-model",
+		history: []llm.Message{
+			serveRuntimeTextMessage(llm.RoleUser, "previous user"),
+			serveRuntimeTextMessage(llm.RoleAssistant, "previous assistant"),
+		},
+	}
+
+	result, err := rt.Run(context.Background(), true, false, []llm.Message{serveRuntimeTextMessage(llm.RoleUser, "current user")}, llm.Request{
+		SessionID:   "sess-no-rewrite",
+		Tools:       []llm.ToolSpec{tool.Spec()},
+		ToolChoice:  llm.ToolChoice{Mode: llm.ToolChoiceAuto},
+		MaxTurns:    4,
+		Search:      false,
+		Debug:       false,
+		DebugRaw:    false,
+		Temperature: 0,
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if got := result.Text.String(); got != "done" {
+		t.Fatalf("result text = %q, want %q", got, "done")
+	}
+
+	if store.replaceCalls != 1 {
+		t.Fatalf("ReplaceMessages call count = %d, want 1 initial snapshot only", store.replaceCalls)
+	}
+
+	msgs, err := store.GetMessages(context.Background(), "sess-no-rewrite", 0, 0)
+	if err != nil {
+		t.Fatalf("GetMessages() error = %v", err)
+	}
+	if len(msgs) != 6 {
+		t.Fatalf("stored message count = %d, want 6", len(msgs))
 	}
 	if msgs[5].Role != llm.RoleAssistant || msgs[5].TextContent != "done" {
 		t.Fatalf("message[5] = %+v, want final assistant message", msgs[5])
