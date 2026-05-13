@@ -691,7 +691,7 @@ func buildCompatMessages(messages []Message) []oaiMessage {
 				for _, part := range msg.Parts {
 					if part.Type == PartImage && part.ImageData != nil {
 						dataURL := fmt.Sprintf("data:%s;base64,%s", part.ImageData.MediaType, part.ImageData.Base64)
-						imageParts = append(imageParts, oaiContentPart{Type: "image_url", ImageURL: &oaiImageURL{URL: dataURL, Detail: "auto"}})
+						imageParts = append(imageParts, oaiContentPart{Type: "image_url", ImageURL: &oaiImageURL{URL: dataURL, Detail: imageDetailWithDefault(part.ImageData.Detail, "auto")}})
 						if part.ImagePath != "" {
 							imageParts = append(imageParts, oaiContentPart{Type: "text", Text: "[image saved at: " + part.ImagePath + "]"})
 						}
@@ -738,7 +738,7 @@ func buildCompatMessages(messages []Message) []oaiMessage {
 						continue
 					}
 					dataURL := fmt.Sprintf("data:%s;base64,%s", mimeType, base64Data)
-					imageParts = append(imageParts, oaiContentPart{Type: "image_url", ImageURL: &oaiImageURL{URL: dataURL, Detail: "auto"}})
+					imageParts = append(imageParts, oaiContentPart{Type: "image_url", ImageURL: &oaiImageURL{URL: dataURL, Detail: imageDetailWithDefault(contentPart.ImageData.Detail, "auto")}})
 				}
 				if len(imageParts) > 0 {
 					result = append(result, oaiMessage{

@@ -76,6 +76,22 @@ func isSupportedToolResultImageMediaType(mimeType string) bool {
 	}
 }
 
+func imageDetail(detail string) string {
+	switch strings.TrimSpace(strings.ToLower(detail)) {
+	case "low", "high", "auto":
+		return strings.TrimSpace(strings.ToLower(detail))
+	default:
+		return ""
+	}
+}
+
+func imageDetailWithDefault(detail, defaultValue string) string {
+	if normalized := imageDetail(detail); normalized != "" {
+		return normalized
+	}
+	return defaultValue
+}
+
 // toolResultResponsesImageParts extracts image parts from a tool result
 // and returns Responses API content parts suitable for injection as a
 // synthetic user message. Only image parts are returned — text is already
@@ -92,7 +108,7 @@ func toolResultResponsesImageParts(result *ToolResult) (parts []ResponsesContent
 		}
 		hasImage = true
 		dataURL := fmt.Sprintf("data:%s;base64,%s", mimeType, base64Data)
-		parts = append(parts, ResponsesContentPart{Type: "input_image", ImageURL: dataURL})
+		parts = append(parts, ResponsesContentPart{Type: "input_image", ImageURL: dataURL, Detail: imageDetail(contentPart.ImageData.Detail)})
 	}
 	return parts, hasImage
 }

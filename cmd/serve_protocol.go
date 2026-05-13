@@ -136,15 +136,6 @@ func decodedBase64Len(b64Data string) (int, error) {
 	return decodedLen, nil
 }
 
-func validateBase64Data(b64Data string) error {
-	decoder := base64.NewDecoder(base64.StdEncoding, strings.NewReader(b64Data))
-	var buf [4096]byte
-	if _, err := io.CopyBuffer(io.Discard, decoder, buf[:]); err != nil {
-		return fmt.Errorf("decode base64: %w", err)
-	}
-	return nil
-}
-
 func decodeUploadedFile(filename, b64Data string) ([]byte, error) {
 	b64Data = stripBase64Newlines(b64Data)
 	decodedLen, err := decodedBase64Len(b64Data)
@@ -231,11 +222,13 @@ func abbreviatePath(path string) string {
 // parseUserMessageContent builds a user llm.Message from a content field
 // that may be a plain string or an array of content parts (input_text, input_image, input_file).
 // Chat Completions-style text/image_url parts are also accepted.
-// Supported image types are kept inline for the LLM; all other files are saved to disk
+// Supported image types are sent inline to the LLM and also saved to disk
+// so tools can reopen the original upload later. Other files are saved to disk
 // and referenced by path in a text part.
 //
-// Images exceeding 1 MB are resized/compressed before being sent to the LLM to avoid
-// provider errors.
+// Images exceeding 1 MB are resized/compressed only for the inline LLM payload
+// to avoid provider errors; the saved ImagePath always points at the original
+// uploaded bytes.
 func parseUserMessageContent(content json.RawMessage) (llm.Message, error) {
 	var parts []map[string]json.RawMessage
 	if err := json.Unmarshal(content, &parts); err == nil && len(parts) > 0 {
@@ -269,38 +262,31 @@ func parseUserMessageContent(content json.RawMessage) (llm.Message, error) {
 					}
 
 					b64 = stripBase64Newlines(b64)
-					decodedLen, err := decodedBase64Len(b64)
-					if err != nil {
-						return llm.Message{}, fmt.Errorf("decode attachment %q: %w", filename, err)
-					}
-					if decodedLen > maxAttachmentBytes {
-						return llm.Message{}, fmt.Errorf("file %q exceeds %d MB limit", filename, maxAttachmentBytes>>20)
-					}
-					if decodedLen <= maxLLMImageBytes {
-						if err := validateBase64Data(b64); err != nil {
-							return llm.Message{}, fmt.Errorf("decode attachment %q: %w", filename, err)
-						}
-						llmParts = append(llmParts, llm.Part{
-							Type:      llm.PartImage,
-							ImageData: &llm.ToolImageData{MediaType: mt, Base64: b64},
-						})
-						continue
-					}
-
 					raw, err := decodeUploadedFile(filename, b64)
 					if err != nil {
 						return llm.Message{}, fmt.Errorf("decode attachment %q: %w", filename, err)
 					}
-
-					// Resize if over 1 MB before sending to the model.
-					resized, resMT := resizeImageForLLM(raw, mt)
-					sendB64 := b64
-					if len(resized) != len(raw) || resMT != mt {
-						sendB64 = base64.StdEncoding.EncodeToString(resized)
+					path, err := saveUploadedBytes(filename, raw)
+					if err != nil {
+						return llm.Message{}, fmt.Errorf("save attachment %q: %w", filename, err)
 					}
+
+					sendB64 := b64
+					sendMT := mt
+					if len(raw) > maxLLMImageBytes {
+						// Resize only the inline payload sent to the model. Keep ImagePath
+						// pointing at the original upload so tools can inspect high-res data.
+						resized, resMT := resizeImageForLLM(raw, mt)
+						if len(resized) != len(raw) || resMT != mt {
+							sendB64 = base64.StdEncoding.EncodeToString(resized)
+							sendMT = resMT
+						}
+					}
+
 					llmParts = append(llmParts, llm.Part{
 						Type:      llm.PartImage,
-						ImageData: &llm.ToolImageData{MediaType: resMT, Base64: sendB64},
+						ImageData: &llm.ToolImageData{MediaType: sendMT, Base64: sendB64},
+						ImagePath: path,
 					})
 				} else {
 					fileCount++
