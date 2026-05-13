@@ -408,7 +408,12 @@ const loadServerSessionState = async (sessionId) => {
     const headers = {};
     if (state.token) headers.Authorization = `Bearer ${state.token}`;
     const resp = await fetch(`${UI_PREFIX}/v1/sessions/${encodeURIComponent(sessionId)}/state`, { headers });
-    if (!resp.ok) return null;
+    if (!resp.ok) {
+      if (resp.status === 404) {
+        return { active_run: false, active_response_id: '' };
+      }
+      return null;
+    }
     const data = await resp.json().catch(() => null);
     if (!data || typeof data !== 'object') return null;
     return data;

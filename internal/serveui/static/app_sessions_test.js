@@ -996,6 +996,80 @@ async function testSwitchToSessionClearsStaleActiveResponseWithoutToken() {
   pass(name);
 }
 
+async function testSessionState404ClearsStaleActiveResponse() {
+  const name = 'session state 404 is treated as inactive and clears stale active response';
+  const fetchCalls = [];
+  const { app } = await createSessionsHarness({
+    fetchImpl: async (url) => {
+      fetchCalls.push(url);
+      if (url === '/ui/v1/sessions') {
+        return new Response(JSON.stringify({ sessions: [] }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' }
+        });
+      }
+      if (url === '/ui/v1/sessions/sess_state_404/state') {
+        return new Response(JSON.stringify({ error: { message: 'runtime not found' } }), {
+          status: 404,
+          headers: { 'Content-Type': 'application/json' }
+        });
+      }
+      if (url === '/ui/v1/sessions/sess_state_404/messages') {
+        return new Response(JSON.stringify({ messages: [] }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' }
+        });
+      }
+      if (url === '/ui/v1/sessions/status') {
+        return new Response(JSON.stringify({ sessions: [] }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' }
+        });
+      }
+      return new Response(JSON.stringify([]), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' }
+      });
+    }
+  });
+
+  const session = {
+    id: 'sess_state_404',
+    title: 'State 404',
+    origin: 'web',
+    created: 1710000000000,
+    messages: [],
+    activeResponseId: 'resp_stale_state_404',
+    lastSequenceNumber: 42,
+  };
+  app.state.sessions = [session];
+  app.state.activeSessionId = session.id;
+  app.state.currentStreamSessionId = session.id;
+  app.state.currentStreamResponseId = session.activeResponseId;
+  app.state.streaming = true;
+
+  const runtimeState = await app.syncActiveSessionFromServer(session, false);
+
+  if (!runtimeState || runtimeState.active_run !== false) {
+    fail(name, 'expected state 404 to produce inactive runtime state', JSON.stringify(runtimeState));
+    return;
+  }
+  if (!fetchCalls.includes('/ui/v1/sessions/sess_state_404/messages')) {
+    fail(name, 'expected inactive 404 sync to continue through message refresh', JSON.stringify(fetchCalls));
+    return;
+  }
+  if (session.activeResponseId !== null || session.lastSequenceNumber !== 0) {
+    fail(name, 'expected stale active response tracking to be cleared', `activeResponseId=${session.activeResponseId}, lastSequenceNumber=${session.lastSequenceNumber}`);
+    return;
+  }
+  if (app.state.streaming || app.state.currentStreamResponseId) {
+    fail(name, 'expected global streaming state to be cleared', JSON.stringify({ streaming: app.state.streaming, currentStreamResponseId: app.state.currentStreamResponseId }));
+    return;
+  }
+
+  pass(name);
+}
+
 async function testIdleSessionSyncRescuesPendingInterruptCommit() {
   const name = 'idle session sync rescues pending interrupt commits';
   const sendCalls = [];
@@ -1511,6 +1585,7 @@ async function testSanitizeSessionPreservesLastMessageAt() {
   await testSwitchToSessionRecoversChangedActiveResponseFromSnapshot();
   await testSwitchToLazyLoadedSessionFetchesMessagesOnce();
   await testSwitchToSessionClearsStaleActiveResponseWithoutToken();
+  await testSessionState404ClearsStaleActiveResponse();
   await testIdleSessionSyncRescuesPendingInterruptCommit();
   await testSessionProgressStatePrefersLocalAndServerSignals();
   await testResumeAndDrainFiringViaSync();

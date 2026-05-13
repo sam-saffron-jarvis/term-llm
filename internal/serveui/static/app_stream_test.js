@@ -103,6 +103,9 @@ function createHarness(options = {}) {
   };
   const postStatus = Number.isFinite(Number(options.postStatus)) ? Number(options.postStatus) : 200;
   const postErrorPayload = options.postErrorPayload || { error: { message: `post failed (${postStatus})` } };
+  const interruptStatus = Number.isFinite(Number(options.interruptStatus)) ? Number(options.interruptStatus) : 200;
+  const interruptPayload = options.interruptPayload || { action: 'queue' };
+  const interruptErrorPayload = options.interruptErrorPayload || { error: { message: `interrupt failed (${interruptStatus})` } };
   const eventsStatus = Number.isFinite(Number(options.eventsStatus)) ? Number(options.eventsStatus) : 200;
   const eventsErrorPayload = options.eventsErrorPayload || {
     error: { message: `events failed (${eventsStatus})` }
@@ -441,6 +444,18 @@ function createHarness(options = {}) {
       method: options.method || 'GET',
       body: typeof options.body === 'string' ? options.body : null,
     });
+    if (url.includes('/ui/v1/sessions/') && url.endsWith('/interrupt')) {
+      if (interruptStatus !== 200) {
+        return new Response(JSON.stringify(interruptErrorPayload), {
+          status: interruptStatus,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      return new Response(JSON.stringify(interruptPayload), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
     if (url === '/ui/v1/responses') {
       if (postStatus !== 200) {
         return new Response(JSON.stringify(postErrorPayload), {
@@ -2495,6 +2510,75 @@ async function testNonImageAttachmentsDoNotCreatePreviewObjectURLs() {
   pass(name);
 }
 
+async function testStaleInterrupt404RefreshesAndSendsMessage() {
+  const name = 'interrupt 404 for stale active response refreshes state and sends message';
+  const harness = createHarness({
+    interruptStatus: 404,
+    interruptErrorPayload: { error: { message: 'session runtime not found' } },
+  });
+  const { app, elements, state, fetchCalls, cleanup } = harness;
+  const session = {
+    id: 'session_stale_interrupt',
+    title: 'Stale interrupt',
+    messages: [],
+    lastResponseId: null,
+    activeResponseId: 'resp_stale',
+    lastSequenceNumber: 0,
+    number: 1,
+  };
+  state.sessions.push(session);
+  state.activeSessionId = session.id;
+  state.streaming = true;
+  state.currentStreamSessionId = session.id;
+  state.currentStreamResponseId = 'resp_stale';
+  elements.promptInput.value = 'send after restart';
+
+  let syncCalls = 0;
+  app.syncActiveSessionFromServer = async () => {
+    syncCalls += 1;
+    app.clearActiveResponseTracking(session, session.activeResponseId || state.currentStreamResponseId);
+    app.setSessionOptimisticBusy(session, false);
+    app.setSessionServerActiveRun(session, false);
+    app.setStreaming(false);
+    return { active_run: false, active_response_id: '' };
+  };
+
+  await app.sendMessage();
+  await cleanup();
+
+  if (syncCalls !== 1) {
+    fail(name, `expected one server-truth refresh, got ${syncCalls}`);
+    return;
+  }
+  if (session.activeResponseId || state.streaming || state.currentStreamResponseId) {
+    fail(name, 'stale active response tracking should be cleared', JSON.stringify({ session, streaming: state.streaming, current: state.currentStreamResponseId }));
+    return;
+  }
+
+  const interruptCalls = fetchCalls.filter((call) => call.url === `/ui/v1/sessions/${session.id}/interrupt` && call.method === 'POST');
+  if (interruptCalls.length !== 1) {
+    fail(name, 'expected initial send to attempt interrupt once', JSON.stringify(fetchCalls));
+    return;
+  }
+  const postCalls = fetchCalls.filter((call) => call.url === '/ui/v1/responses' && call.method === 'POST');
+  if (postCalls.length !== 1) {
+    fail(name, 'expected recovery to POST /ui/v1/responses once', JSON.stringify(fetchCalls));
+    return;
+  }
+  const body = JSON.parse(postCalls[0].body || '{}');
+  const content = body.input?.[0]?.content;
+  if (content !== 'send after restart') {
+    fail(name, 'recovered POST did not preserve prompt', postCalls[0].body);
+    return;
+  }
+  if (elements.promptInput.value !== '') {
+    fail(name, 'composer should be clear after recovered send succeeds', elements.promptInput.value);
+    return;
+  }
+
+  pass(name);
+}
+
 async function testFailedSendKeepsSessionDraftAndRestagesComposer() {
   const name = 'failed send keeps a session-bound draft and restores the composer';
   const harness = createHarness({ postStatus: 503, postErrorPayload: { error: { message: 'server unavailable' } } });
@@ -2610,6 +2694,7 @@ function testRestoreLatestDraftMessageDoesNotCrossSessionBoundary() {
   await testSendMessageKeepsComposerWhenAttachmentMaterializationFails();
   await testRebuildInputFromSessionReMaterializesStoredAttachments();
   await testRebuildInputFromSessionSkipsUnavailableStoredAttachments();
+  await testStaleInterrupt404RefreshesAndSendsMessage();
   await testFailedSendKeepsSessionDraftAndRestagesComposer();
   await testSuccessfulSendRemovesOnlyMatchingDraft();
   testRestoreDraftMessageForSessionIsSessionBound();

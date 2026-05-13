@@ -3081,7 +3081,7 @@ const refreshSessionFromServerTruth = async (session, pollOnActive = false) => {
   return app.syncActiveSessionFromServer(session, pollOnActive);
 };
 
-const recoverInterruptConflict = async (session, prompt, messageId) => {
+const recoverInterruptFailure = async (session, prompt, messageId) => {
   const runtimeState = await refreshSessionFromServerTruth(session, true);
   if (!runtimeState) {
     return false;
@@ -3096,6 +3096,8 @@ const recoverInterruptConflict = async (session, prompt, messageId) => {
     return true;
   }
 
+  // syncActiveSessionFromServer is expected to clear stale local busy state
+  // before retrying the prompt as a fresh response.
   discardPendingInterruptCommit(messageId);
   removePendingInterjectionById(messageId);
   await sendMessage({
@@ -3104,6 +3106,8 @@ const recoverInterruptConflict = async (session, prompt, messageId) => {
   });
   return true;
 };
+
+const recoverInterruptConflict = recoverInterruptFailure;
 
 const addErrorMessage = (text, session) => {
   const message = {
@@ -3194,9 +3198,12 @@ const sendMessage = async (options = {}) => {
       await interruptActiveRun(session, prompt, pendingMessageId);
       removeDraftMessage(draftId);
     } catch (err) {
-      if (err?.status === 409) {
+      // Interrupt can fail after backend restart or stale runtime state. For any
+      // non-auth HTTP failure, resync server truth before deciding whether to
+      // queue locally, retry as a fresh message, or surface the original error.
+      if (err?.status && err.status !== 401) {
         try {
-          const recovered = await recoverInterruptConflict(session, prompt, pendingMessageId);
+          const recovered = await recoverInterruptFailure(session, prompt, pendingMessageId);
           if (recovered) {
             removeDraftMessage(draftId);
             return;
@@ -3593,6 +3600,7 @@ Object.assign(app, {
   refreshPendingInterjectionBanner,
   requeuePendingInterjections,
   interruptActiveRun,
+  recoverInterruptFailure,
   recoverInterruptConflict,
   addErrorMessage,
   markToolGroupsDone,
