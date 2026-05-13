@@ -1252,6 +1252,7 @@ func TestHandoverScriptCmd_UsesAgentSourcePathAndPersistsResult(t *testing.T) {
 	}
 	mgr := tools.NewApprovalManager(tools.NewToolPermissions())
 	mgr.SetYoloMode(true)
+	m.yolo = true
 	m.SetHandoverApprovalManager(mgr)
 	m.pendingHandover = &handoverDoneMsg{
 		result:    llm.HandoverFromFile("placeholder", targetAgent.SystemPrompt, "source", targetAgent.Name),
@@ -1279,6 +1280,9 @@ func TestHandoverScriptCmd_UsesAgentSourcePathAndPersistsResult(t *testing.T) {
 	}
 	if got := rm.RequestedHandoverAutoSend(); got != "review changes" {
 		t.Fatalf("RequestedHandoverAutoSend() = %q, want %q", got, "review changes")
+	}
+	if !rm.YoloModeActive() {
+		t.Fatal("expected yolo mode to remain active after confirmed handover")
 	}
 	if len(store.created) != 1 {
 		t.Fatalf("expected one fresh handover session to be created, got %d", len(store.created))

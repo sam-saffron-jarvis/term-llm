@@ -619,6 +619,10 @@ func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent 
 	if m, ok := finalModel.(*chat.Model); ok {
 		nextResumeID = m.RequestedResumeSessionID()
 		nextHandoverAutoSend = m.RequestedHandoverAutoSend()
+		// Preserve interactive yolo toggles across handover/relaunch. The next
+		// runChatOnce iteration reads chatYolo while constructing approvals,
+		// sub-agent runners, MCP sampling, and the replacement chat model.
+		chatYolo = m.YoloModeActive()
 	}
 
 	// Handle /reload: close the store, then re-exec under the (potentially new) binary.

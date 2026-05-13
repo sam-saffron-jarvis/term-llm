@@ -867,6 +867,12 @@ func (m *Model) RequestedHandoverAutoSend() string {
 	return strings.TrimSpace(m.pendingHandoverAutoSend)
 }
 
+// YoloModeActive returns the current effective yolo state, including approval
+// managers that may have been toggled during the session.
+func (m *Model) YoloModeActive() bool {
+	return m.isYoloModeActive()
+}
+
 // WaitStreamDone blocks until the engine streaming goroutine has exited.
 // It is safe to call when no stream was started (no-op).
 func (m *Model) WaitStreamDone() {
