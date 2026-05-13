@@ -1018,6 +1018,7 @@ func (s *serveServer) httpHandler() http.Handler {
 		s.registerWidgetRoutes(inner)
 	}
 	inner.HandleFunc("/v1/sessions/status", s.auth(s.cors(s.handleSessionsStatus)))
+	inner.HandleFunc("/v1/sessions/search", s.auth(s.cors(s.handleSessionsSearch)))
 	inner.HandleFunc("/v1/sessions/", s.auth(s.cors(s.handleSessionByID)))
 	inner.HandleFunc("/v1/push/subscribe", s.auth(s.cors(s.handlePushSubscribe)))
 

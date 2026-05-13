@@ -24,6 +24,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/image"
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/serveui"
@@ -886,6 +887,22 @@ func (s *serveServer) sessionMessageImageURL(part llm.Part) string {
 	return ""
 }
 
+func sessionSummaryProviderKey(cfg *config.Config, sess session.SessionSummary) string {
+	provider := strings.TrimSpace(sess.ProviderKey)
+	if provider == "" {
+		provider = resolveSessionProviderKey(cfg, &session.Session{Provider: sess.Provider})
+	}
+	return provider
+}
+
+func sessionSummaryLastMessageAt(sess session.SessionSummary) time.Time {
+	lastMessageAt := sess.LastMessageAt
+	if lastMessageAt.IsZero() {
+		lastMessageAt = sess.CreatedAt
+	}
+	return lastMessageAt
+}
+
 func (s *serveServer) handleSessions(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		w.Header().Set("Allow", "GET")
@@ -930,17 +947,8 @@ func (s *serveServer) handleSessions(w http.ResponseWriter, r *http.Request) {
 
 	result := make([]sessionEntry, 0, len(sessions))
 	for _, sess := range sessions {
-		provider := strings.TrimSpace(sess.ProviderKey)
-		if provider == "" {
-			// Resolve display label to canonical key for legacy rows.
-			provider = resolveSessionProviderKey(s.cfgRef, &session.Session{
-				Provider: sess.Provider,
-			})
-		}
-		lastMessageAt := sess.LastMessageAt
-		if lastMessageAt.IsZero() {
-			lastMessageAt = sess.CreatedAt
-		}
+		provider := sessionSummaryProviderKey(s.cfgRef, sess)
+		lastMessageAt := sessionSummaryLastMessageAt(sess)
 		result = append(result, sessionEntry{
 			Name:          sess.Name,
 			ID:            sess.ID,
@@ -956,6 +964,137 @@ func (s *serveServer) handleSessions(w http.ResponseWriter, r *http.Request) {
 			LastMessageAt: lastMessageAt.UnixMilli(),
 			MsgCount:      sess.MessageCount,
 		})
+	}
+
+	writeJSONConditional(w, r, http.StatusOK, map[string]any{"sessions": result})
+}
+
+func ftsQueryFromUser(query string) string {
+	fields := strings.FieldsFunc(query, func(r rune) bool {
+		return !(r == '_' || r == '-' || r >= '0' && r <= '9' || r >= 'A' && r <= 'Z' || r >= 'a' && r <= 'z' || r >= 0x80)
+	})
+	terms := make([]string, 0, len(fields))
+	seen := make(map[string]bool, len(fields))
+	for _, field := range fields {
+		term := strings.Trim(field, `"`)
+		if len([]rune(term)) < 2 {
+			continue
+		}
+		key := strings.ToLower(term)
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		terms = append(terms, `"`+strings.ReplaceAll(term, `"`, `""`)+`"`)
+	}
+	return strings.Join(terms, " ")
+}
+
+func (s *serveServer) handleSessionsSearch(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", "GET")
+		writeOpenAIError(w, http.StatusMethodNotAllowed, "invalid_request_error", "method not allowed")
+		return
+	}
+	if s.store == nil {
+		writeJSONConditional(w, r, http.StatusOK, map[string]any{"sessions": []any{}})
+		return
+	}
+
+	categories, err := parseSidebarSessionCategories(r.URL.Query().Get("categories"), false)
+	if err != nil {
+		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", err.Error())
+		return
+	}
+	includeArchived := strings.EqualFold(strings.TrimSpace(r.URL.Query().Get("include_archived")), "1") ||
+		strings.EqualFold(strings.TrimSpace(r.URL.Query().Get("include_archived")), "true")
+	query := strings.TrimSpace(r.URL.Query().Get("q"))
+	if query == "" {
+		query = strings.TrimSpace(r.URL.Query().Get("query"))
+	}
+	ftsQuery := ftsQueryFromUser(query)
+	if ftsQuery == "" {
+		writeJSONConditional(w, r, http.StatusOK, map[string]any{"sessions": []any{}})
+		return
+	}
+	limit := 20
+	if rawLimit := strings.TrimSpace(r.URL.Query().Get("limit")); rawLimit != "" {
+		if parsed, err := strconv.Atoi(rawLimit); err == nil && parsed > 0 {
+			limit = min(parsed, 50)
+		}
+	}
+
+	summaries, err := s.store.List(r.Context(), session.ListOptions{
+		Limit:          2000,
+		Archived:       includeArchived,
+		Categories:     categories,
+		SortByActivity: true,
+	})
+	if err != nil {
+		writeOpenAIError(w, http.StatusInternalServerError, "server_error", "failed to list sessions")
+		return
+	}
+	allowed := make(map[string]session.SessionSummary, len(summaries))
+	for _, summary := range summaries {
+		allowed[summary.ID] = summary
+	}
+
+	matches, err := s.store.Search(r.Context(), ftsQuery, limit*4)
+	if err != nil {
+		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "invalid search query")
+		return
+	}
+
+	type sessionSearchEntry struct {
+		ID            string                `json:"id"`
+		Number        int64                 `json:"number,omitempty"`
+		Name          string                `json:"name,omitempty"`
+		ShortTitle    string                `json:"short_title"`
+		LongTitle     string                `json:"long_title"`
+		Mode          session.SessionMode   `json:"mode,omitempty"`
+		Origin        session.SessionOrigin `json:"origin,omitempty"`
+		Provider      string                `json:"provider,omitempty"`
+		Archived      bool                  `json:"archived"`
+		Pinned        bool                  `json:"pinned"`
+		CreatedAt     int64                 `json:"created_at"`
+		LastMessageAt int64                 `json:"last_message_at"`
+		MsgCount      int                   `json:"message_count"`
+		Snippet       string                `json:"snippet,omitempty"`
+		MessageID     int64                 `json:"message_id,omitempty"`
+	}
+
+	result := make([]sessionSearchEntry, 0, min(limit, len(matches)))
+	seen := make(map[string]bool, len(matches))
+	for _, match := range matches {
+		if seen[match.SessionID] {
+			continue
+		}
+		summary, ok := allowed[match.SessionID]
+		if !ok {
+			continue
+		}
+		seen[match.SessionID] = true
+		lastMessageAt := sessionSummaryLastMessageAt(summary)
+		result = append(result, sessionSearchEntry{
+			ID:            summary.ID,
+			Number:        summary.Number,
+			Name:          summary.Name,
+			ShortTitle:    summary.PreferredShortTitle(),
+			LongTitle:     summary.PreferredLongTitle(),
+			Mode:          summary.Mode,
+			Origin:        summary.Origin,
+			Provider:      sessionSummaryProviderKey(s.cfgRef, summary),
+			Archived:      summary.Archived,
+			Pinned:        summary.Pinned,
+			CreatedAt:     summary.CreatedAt.UnixMilli(),
+			LastMessageAt: lastMessageAt.UnixMilli(),
+			MsgCount:      summary.MessageCount,
+			Snippet:       match.Snippet,
+			MessageID:     match.MessageID,
+		})
+		if len(result) >= limit {
+			break
+		}
 	}
 
 	writeJSONConditional(w, r, http.StatusOK, map[string]any{"sessions": result})

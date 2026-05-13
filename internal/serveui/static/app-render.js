@@ -5,7 +5,7 @@ const app = window.TermLLMApp;
 const {
   STORAGE_KEYS, state, elements, INTERRUPT_BADGE_META, sanitizeInterruptState, relativeTime, fullDate, sessionBucket, toolIcon, formatUsage,
   saveSessions, findMessageElement, scrollToBottom, refreshRelativeTimes, ensureActiveSession, updateDocumentTitle,
-  updateSessionUsageDisplay, renderMath, visibleSessions, sessionHasInProgressState, setSessionServerActiveRun, UI_PREFIX
+  updateSessionUsageDisplay, renderMath, visibleSessions, sessionHasInProgressState, setSessionServerActiveRun
 } = app;
 
 const isMobileViewport = () => window.matchMedia('(max-width: 767px)').matches;
@@ -145,7 +145,7 @@ let sidebarRenderKey = '';
 const computeSidebarKey = (sorted) =>
   sorted.map((s) =>
     [
-      s.id, s.title, s.longTitle || '',
+      s.id, s.title, s.longTitle || '', s.searchSnippet || '',
       s.pinned ? 1 : 0, s.archived ? 1 : 0,
       s.messageCount || s.messages.length || 0,
       s.lastMessageAt || s.created,
@@ -167,70 +167,6 @@ const getOrCreateGroupSection = (label) => {
 
 const resolveSidebarSession = (sessionId) => state.sessions.find((s) => s.id === sessionId) || null;
 
-const WIDGET_SIDEBAR_LIMIT = 5;
-
-const widgetTitle = (widget) => String(widget?.title || widget?.mount || widget?.id || 'Widget');
-const widgetMount = (widget) => String(widget?.mount || widget?.id || '').replace(/^\/+|\/+$/g, '');
-
-const renderWidgetSidebar = () => {
-  if (!elements.widgetsSection || !elements.widgetsList) return;
-
-  const widgets = Array.isArray(state.widgets) ? state.widgets.filter((widget) => widgetMount(widget)) : [];
-  const shouldShow = state.showWidgetsSidebar !== false && state.widgetsLoaded && widgets.length > 0;
-  elements.widgetsSection.classList.toggle('hidden', !shouldShow);
-  if (!shouldShow) {
-    elements.widgetsList.replaceChildren();
-    if (elements.widgetsMoreBtn) elements.widgetsMoreBtn.classList.add('hidden');
-    return;
-  }
-
-  elements.widgetsSection.classList.toggle('is-collapsed', Boolean(state.widgetsCollapsed));
-  elements.widgetsToggleBtn?.setAttribute('aria-expanded', state.widgetsCollapsed ? 'false' : 'true');
-  if (elements.widgetsCount) elements.widgetsCount.textContent = String(widgets.length);
-
-  const visibleWidgets = state.widgetsShowAll ? widgets : widgets.slice(0, WIDGET_SIDEBAR_LIMIT);
-  const rows = visibleWidgets.map((widget) => {
-    const mount = widgetMount(widget);
-    const link = document.createElement('a');
-    link.className = 'widget-link';
-    link.href = `${UI_PREFIX}/widgets/${encodeURIComponent(mount)}/`;
-    link.title = widget.description || widgetTitle(widget);
-
-    const titleRow = document.createElement('div');
-    titleRow.className = 'widget-title-row';
-
-    const title = document.createElement('span');
-    title.className = 'widget-title';
-    title.textContent = widgetTitle(widget);
-
-    const stateBadge = document.createElement('span');
-    const status = String(widget.state || 'stopped');
-    const statusClass = status.toLowerCase().replace(/[^a-z0-9_-]/g, '');
-    stateBadge.className = `widget-state ${statusClass}`;
-    stateBadge.textContent = status;
-
-    titleRow.appendChild(title);
-    titleRow.appendChild(stateBadge);
-    link.appendChild(titleRow);
-
-    const meta = document.createElement('div');
-    meta.className = 'widget-meta';
-    meta.textContent = widget.description || mount;
-    link.appendChild(meta);
-
-    return link;
-  });
-  elements.widgetsList.replaceChildren(...rows);
-
-  if (elements.widgetsMoreBtn) {
-    const remaining = widgets.length - WIDGET_SIDEBAR_LIMIT;
-    const hasMore = remaining > 0;
-    elements.widgetsMoreBtn.classList.toggle('hidden', !hasMore);
-    elements.widgetsMoreBtn.textContent = state.widgetsShowAll ? 'Show fewer widgets' : `More widgets (${remaining})`;
-    elements.widgetsMoreBtn.setAttribute('aria-expanded', state.widgetsShowAll ? 'true' : 'false');
-  }
-};
-
 const buildCachedSessionRow = (session) => {
   const sessionId = session.id;
   const row = document.createElement('div');
@@ -249,13 +185,18 @@ const buildCachedSessionRow = (session) => {
 
   const metaEl = document.createElement('div');
   metaEl.className = 'session-meta';
-  const msgCount = session.messageCount || session.messages.filter(m => m.role !== 'tool-group').length || 0;
-  const metaParts = [`${msgCount} message${msgCount === 1 ? '' : 's'}`];
-  if (session.archived) metaParts.push('hidden');
-  const activityAt = session.lastMessageAt || session.created;
-  metaParts.push(relativeTime(activityAt));
-  metaEl.textContent = metaParts.join(' · ');
-  metaEl.title = fullDate(activityAt);
+  if (session.searchSnippet) {
+    metaEl.textContent = session.searchSnippet;
+    metaEl.title = session.searchSnippet;
+  } else {
+    const msgCount = session.messageCount || session.messages.filter(m => m.role !== 'tool-group').length || 0;
+    const metaParts = [`${msgCount} message${msgCount === 1 ? '' : 's'}`];
+    if (session.archived) metaParts.push('hidden');
+    const activityAt = session.lastMessageAt || session.created;
+    metaParts.push(relativeTime(activityAt));
+    metaEl.textContent = metaParts.join(' · ');
+    metaEl.title = fullDate(activityAt);
+  }
 
   btn.appendChild(titleEl);
   btn.appendChild(metaEl);
@@ -350,15 +291,23 @@ const updateCachedSessionRow = (session, cached) => {
   const newLongTitle = session.longTitle || '';
   if (titleEl.title !== newLongTitle) titleEl.title = newLongTitle;
 
-  const msgCount = session.messageCount || session.messages.filter(m => m.role !== 'tool-group').length || 0;
-  const metaParts = [`${msgCount} message${msgCount === 1 ? '' : 's'}`];
-  if (session.archived) metaParts.push('hidden');
-  const activityAt = session.lastMessageAt || session.created;
-  metaParts.push(relativeTime(activityAt));
-  const newMeta = metaParts.join(' · ');
+  let newMeta;
+  let newMetaTitle;
+  if (session.searchSnippet) {
+    newMeta = session.searchSnippet;
+    newMetaTitle = session.searchSnippet;
+  } else {
+    const msgCount = session.messageCount || session.messages.filter(m => m.role !== 'tool-group').length || 0;
+    const metaParts = [`${msgCount} message${msgCount === 1 ? '' : 's'}`];
+    if (session.archived) metaParts.push('hidden');
+    const activityAt = session.lastMessageAt || session.created;
+    metaParts.push(relativeTime(activityAt));
+    newMeta = metaParts.join(' · ');
+    newMetaTitle = fullDate(activityAt);
+  }
   if (metaEl.textContent !== newMeta) {
     metaEl.textContent = newMeta;
-    metaEl.title = fullDate(activityAt);
+    metaEl.title = newMetaTitle;
   }
 
   if (session.pinned !== cached.prevPinned) {
@@ -383,7 +332,11 @@ const renderSidebar = () => {
     Older: []
   };
 
-  const sorted = visibleSessions().sort((a, b) => {
+  const query = String(state.sidebarSearchQuery || '').trim().toLowerCase();
+  const sourceSessions = query && Array.isArray(state.sidebarSearchResults)
+    ? state.sidebarSearchResults
+    : visibleSessions();
+  const sorted = sourceSessions.slice().sort((a, b) => {
     const aAt = a.lastMessageAt || a.created;
     const bAt = b.lastMessageAt || b.created;
     return bAt - aAt;
@@ -396,7 +349,7 @@ const renderSidebar = () => {
     }
   });
 
-  const key = computeSidebarKey(sorted);
+  const key = `${query}|${computeSidebarKey(sorted)}`;
   if (key === sidebarRenderKey) return;
   sidebarRenderKey = key;
 
@@ -1968,7 +1921,6 @@ Object.assign(app, {
   toggleSidebarCollapsed,
   updateHeader,
   renderSidebar,
-  renderWidgetSidebar,
   updateSidebarStatus,
   directionForText,
   applyTextDirection,

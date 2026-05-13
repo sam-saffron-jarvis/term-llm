@@ -3552,6 +3552,70 @@ func TestHandleSessions_ListsFromStore(t *testing.T) {
 	}
 }
 
+func TestHandleSessionsSearch_UsesFTSAndReturnsSessionSummaries(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "sessions.db")
+	store, err := session.NewStore(session.Config{Enabled: true, Path: dbPath})
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+	sess := &session.Session{
+		ID:                  "search-session-1",
+		Provider:            "mock",
+		Model:               "mock-model",
+		Mode:                session.ModeChat,
+		GeneratedShortTitle: "Linux Mount Configuration",
+		GeneratedLongTitle:  "Linux Mount Configuration Details",
+		CreatedAt:           time.Now(),
+		UpdatedAt:           time.Now(),
+		Status:              session.StatusActive,
+	}
+	if err := store.Create(ctx, sess); err != nil {
+		t.Fatalf("Create session: %v", err)
+	}
+	if err := store.AddMessage(ctx, sess.ID, &session.Message{
+		Role:        llm.RoleUser,
+		TextContent: "How do I configure linux mount entries in fstab with UUIDs?",
+		Parts:       []llm.Part{{Type: llm.PartText, Text: "How do I configure linux mount entries in fstab with UUIDs?"}},
+		CreatedAt:   time.Now(),
+	}); err != nil {
+		t.Fatalf("AddMessage: %v", err)
+	}
+
+	srv := &serveServer{store: store}
+	req := httptest.NewRequest(http.MethodGet, "/v1/sessions/search?q=linux%20mount", nil)
+	rr := httptest.NewRecorder()
+	srv.handleSessionsSearch(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200, body: %s", rr.Code, rr.Body.String())
+	}
+
+	var body struct {
+		Sessions []struct {
+			ID         string `json:"id"`
+			ShortTitle string `json:"short_title"`
+			Snippet    string `json:"snippet"`
+		} `json:"sessions"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(body.Sessions) != 1 {
+		t.Fatalf("session count = %d, want 1; body: %s", len(body.Sessions), rr.Body.String())
+	}
+	if body.Sessions[0].ID != sess.ID {
+		t.Fatalf("id = %q, want %q", body.Sessions[0].ID, sess.ID)
+	}
+	if body.Sessions[0].ShortTitle != "Linux Mount Configuration" {
+		t.Fatalf("short_title = %q", body.Sessions[0].ShortTitle)
+	}
+	if !strings.Contains(body.Sessions[0].Snippet, "linux") && !strings.Contains(body.Sessions[0].Snippet, "Linux") {
+		t.Fatalf("snippet = %q, want matched text", body.Sessions[0].Snippet)
+	}
+}
+
 func TestHandleSessions_GzipCompressed(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "sessions.db")
 	store, err := session.NewStore(session.Config{Enabled: true, Path: dbPath})

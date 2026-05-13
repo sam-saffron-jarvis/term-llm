@@ -88,6 +88,7 @@ func RenderIndexHTML(basePath, headSnippet string, opts RenderOptions) []byte {
 		{`href="app-core.js"`, `href="` + versioned("app-core.js") + `"`},
 		{`href="app-render.js"`, `href="` + versioned("app-render.js") + `"`},
 		{`href="app-stream.js"`, `href="` + versioned("app-stream.js") + `"`},
+		{`href="app-sidebar.js"`, `href="` + versioned("app-sidebar.js") + `"`},
 		{`href="app-sessions.js"`, `href="` + versioned("app-sessions.js") + `"`},
 		{`src="markdown-setup.js"`, `src="` + versioned("markdown-setup.js") + `"`},
 		{`src="markdown-streaming.js"`, `src="` + versioned("markdown-streaming.js") + `"`},
@@ -95,6 +96,7 @@ func RenderIndexHTML(basePath, headSnippet string, opts RenderOptions) []byte {
 		{`src="app-core.js"`, `src="` + versioned("app-core.js") + `"`},
 		{`src="app-render.js"`, `src="` + versioned("app-render.js") + `"`},
 		{`src="app-stream.js"`, `src="` + versioned("app-stream.js") + `"`},
+		{`src="app-sidebar.js"`, `src="` + versioned("app-sidebar.js") + `"`},
 		{`src="app-sessions.js"`, `src="` + versioned("app-sessions.js") + `"`},
 	}
 	for _, replacement := range replacements {
@@ -158,6 +160,7 @@ func renderServiceWorkerBytes(opts RenderOptions) []byte {
 		{"'./app-core.js'", "'./" + versioned("app-core.js") + "'"},
 		{"'./app-render.js'", "'./" + versioned("app-render.js") + "'"},
 		{"'./app-stream.js'", "'./" + versioned("app-stream.js") + "'"},
+		{"'./app-sidebar.js'", "'./" + versioned("app-sidebar.js") + "'"},
 		{"'./app-sessions.js'", "'./" + versioned("app-sessions.js") + "'"},
 	}
 	for _, replacement := range replacements {
