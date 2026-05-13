@@ -5,6 +5,9 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"image"
+	"image/color"
+	"image/jpeg"
 	"os"
 	"path/filepath"
 	"strings"
@@ -110,7 +113,7 @@ func TestDecodeUploadedFile_RejectsOversizedPayloadBeforeDecode(t *testing.T) {
 	}
 }
 
-func TestParseUserMessageContent_InlineImagesDoNotHitUploadsDir(t *testing.T) {
+func TestParseUserMessageContent_InlineImagesAreSavedToUploadsDir(t *testing.T) {
 	dataHome := t.TempDir()
 	t.Setenv("XDG_DATA_HOME", dataHome)
 
@@ -123,14 +126,89 @@ func TestParseUserMessageContent_InlineImagesDoNotHitUploadsDir(t *testing.T) {
 	if len(msg.Parts) != 1 {
 		t.Fatalf("len(msg.Parts) = %d, want 1", len(msg.Parts))
 	}
-	if msg.Parts[0].ImagePath != "" {
-		t.Fatalf("msg.Parts[0].ImagePath = %q, want empty", msg.Parts[0].ImagePath)
+	if msg.Parts[0].ImagePath == "" {
+		t.Fatal("msg.Parts[0].ImagePath is empty, want saved upload path")
 	}
 
 	uploadsDir := filepath.Join(dataHome, "term-llm", "uploads")
-	if _, err := os.Stat(uploadsDir); !os.IsNotExist(err) {
-		t.Fatalf("uploads dir stat err = %v, want not exist", err)
+	entries, err := os.ReadDir(uploadsDir)
+	if err != nil {
+		t.Fatalf("read uploads dir: %v", err)
 	}
+	if len(entries) != 1 {
+		t.Fatalf("uploads dir has %d files, want 1", len(entries))
+	}
+}
+
+func TestParseUserMessageContent_LargeImageSavesOriginalButSendsResizedInline(t *testing.T) {
+	dataHome := t.TempDir()
+	t.Setenv("XDG_DATA_HOME", dataHome)
+
+	raw := makeLargeJPEG(t)
+	if len(raw) <= maxLLMImageBytes {
+		t.Fatalf("test JPEG is %d bytes, want > %d", len(raw), maxLLMImageBytes)
+	}
+	content, err := json.Marshal([]map[string]any{{
+		"type":      "input_image",
+		"image_url": "data:image/jpeg;base64," + base64.StdEncoding.EncodeToString(raw),
+		"filename":  "page.jpg",
+	}})
+	if err != nil {
+		t.Fatalf("json.Marshal() error = %v", err)
+	}
+
+	msg, err := parseUserMessageContent(content)
+	if err != nil {
+		t.Fatalf("parseUserMessageContent() error = %v", err)
+	}
+	if len(msg.Parts) != 1 {
+		t.Fatalf("len(msg.Parts) = %d, want 1", len(msg.Parts))
+	}
+	part := msg.Parts[0]
+	if part.ImagePath == "" {
+		t.Fatal("ImagePath is empty, want saved original upload path")
+	}
+	saved, err := os.ReadFile(part.ImagePath)
+	if err != nil {
+		t.Fatalf("read saved original: %v", err)
+	}
+	if !bytes.Equal(saved, raw) {
+		t.Fatalf("saved image differs from original upload")
+	}
+	if part.ImageData == nil || part.ImageData.Base64 == "" {
+		t.Fatalf("ImageData missing")
+	}
+	inline, err := base64.StdEncoding.DecodeString(part.ImageData.Base64)
+	if err != nil {
+		t.Fatalf("decode inline image: %v", err)
+	}
+	if len(inline) >= len(raw) {
+		t.Fatalf("inline image is %d bytes, want resized smaller than original %d", len(inline), len(raw))
+	}
+	if part.ImageData.MediaType != "image/jpeg" {
+		t.Fatalf("inline media type = %q, want image/jpeg", part.ImageData.MediaType)
+	}
+}
+
+func makeLargeJPEG(t *testing.T) []byte {
+	t.Helper()
+
+	img := image.NewRGBA(image.Rect(0, 0, 1800, 1800))
+	for y := 0; y < 1800; y++ {
+		for x := 0; x < 1800; x++ {
+			img.SetRGBA(x, y, color.RGBA{
+				R: uint8((x*17 + y*31) & 0xff),
+				G: uint8((x*47 + y*13) & 0xff),
+				B: uint8((x*7 + y*19) & 0xff),
+				A: 0xff,
+			})
+		}
+	}
+	var buf bytes.Buffer
+	if err := jpeg.Encode(&buf, img, &jpeg.Options{Quality: 95}); err != nil {
+		t.Fatalf("jpeg.Encode() error = %v", err)
+	}
+	return buf.Bytes()
 }
 
 func marshalInlineImageParts(t *testing.T, count int) json.RawMessage {

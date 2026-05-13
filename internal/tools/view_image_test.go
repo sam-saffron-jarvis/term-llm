@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -42,7 +43,7 @@ func TestViewImageToolExecute_ReturnsStructuredImageData(t *testing.T) {
 	writeTestPNG(t, filePath)
 
 	tool := NewViewImageTool(nil)
-	args, err := json.Marshal(ViewImageArgs{FilePath: filePath})
+	args, err := json.Marshal(ViewImageArgs{FilePath: filePath, Detail: "high"})
 	if err != nil {
 		t.Fatalf("marshal args: %v", err)
 	}
@@ -77,8 +78,46 @@ func TestViewImageToolExecute_ReturnsStructuredImageData(t *testing.T) {
 	if imagePart.ImageData.MediaType != "image/png" {
 		t.Fatalf("expected media type image/png, got %q", imagePart.ImageData.MediaType)
 	}
+	if imagePart.ImageData.Detail != "high" {
+		t.Fatalf("expected detail high, got %q", imagePart.ImageData.Detail)
+	}
 	if _, err := base64.StdEncoding.DecodeString(imagePart.ImageData.Base64); err != nil {
 		t.Fatalf("image_data base64 should be valid: %v", err)
+	}
+}
+
+func TestViewImageToolExecute_CropsRegionAndScales(t *testing.T) {
+	tmpDir := t.TempDir()
+	filePath := filepath.Join(tmpDir, "sample.png")
+	writeTestPNG(t, filePath)
+
+	tool := NewViewImageTool(nil)
+	args, err := json.Marshal(ViewImageArgs{FilePath: filePath, Region: "left_half", Scale: 2})
+	if err != nil {
+		t.Fatalf("marshal args: %v", err)
+	}
+
+	out, err := tool.Execute(context.Background(), args)
+	if err != nil {
+		t.Fatalf("Execute returned error: %v", err)
+	}
+	if !strings.Contains(out.Content, "region left_half") || !strings.Contains(out.Content, "scaled 2x") {
+		t.Fatalf("expected transform summary in content, got %q", out.Content)
+	}
+	if len(out.ContentParts) < 2 || out.ContentParts[1].ImageData == nil {
+		t.Fatalf("expected image content part in output")
+	}
+	decoded, err := base64.StdEncoding.DecodeString(out.ContentParts[1].ImageData.Base64)
+	if err != nil {
+		t.Fatalf("decode image_data: %v", err)
+	}
+	img, _, err := image.Decode(bytes.NewReader(decoded))
+	if err != nil {
+		t.Fatalf("decode output image: %v", err)
+	}
+	bounds := img.Bounds()
+	if bounds.Dx() != 2 || bounds.Dy() != 4 {
+		t.Fatalf("decoded bounds = %dx%d, want 2x4", bounds.Dx(), bounds.Dy())
 	}
 }
 
