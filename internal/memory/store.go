@@ -10,7 +10,6 @@ import (
 	"math"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 	"time"
 
@@ -1068,8 +1067,8 @@ func (s *Store) GetFragmentsNeedingEmbedding(ctx context.Context, agent, provide
 }
 
 const vectorSearchSQL = `
-		SELECT f.id, f.agent, f.path, f.content, f.source, f.created_at, f.updated_at,
-		       f.accessed_at, f.access_count, f.decay_score, f.pinned,
+		SELECT e.fragment_id,
+		       f.updated_at,
 		       e.vector
 		FROM memory_embeddings e
 		JOIN memory_fragments f ON f.id = e.fragment_id
@@ -1077,6 +1076,7 @@ const vectorSearchSQL = `
 		  AND (? = '' OR f.agent = ?)`
 
 // VectorSearch performs a cosine similarity scan over embeddings matching provider, model, and dimensions.
+// It keeps only the current top-k matches in memory and fetches full fragment payloads only for finalists.
 func (s *Store) VectorSearch(ctx context.Context, agent, provider, model string, queryVec []float64, limit int) ([]ScoredFragment, error) {
 	if len(queryVec) == 0 {
 		return nil, fmt.Errorf("query vector cannot be empty")
@@ -1097,53 +1097,145 @@ func (s *Store) VectorSearch(ctx context.Context, agent, provider, model string,
 	}
 	defer rows.Close()
 
-	matches := make([]ScoredFragment, 0, limit)
+	topMatches := make([]vectorSearchMatch, 0, limit)
 	for rows.Next() {
-		var r ScoredFragment
-		var accessedAt sql.NullTime
+		var match vectorSearchMatch
 		var payload []byte
-		if err := rows.Scan(
-			&r.ID,
-			&r.Agent,
-			&r.Path,
-			&r.Content,
-			&r.Source,
-			&r.CreatedAt,
-			&r.UpdatedAt,
-			&accessedAt,
-			&r.AccessCount,
-			&r.DecayScore,
-			&r.Pinned,
-			&payload,
-		); err != nil {
+		if err := rows.Scan(&match.ID, &match.UpdatedAt, &payload); err != nil {
 			return nil, fmt.Errorf("scan vector search row: %w", err)
 		}
-		if accessedAt.Valid {
-			at := accessedAt.Time
-			r.AccessedAt = &at
+		if err := json.Unmarshal(payload, &match.Vector); err != nil {
+			return nil, fmt.Errorf("decode stored vector for fragment %s: %w", match.ID, err)
 		}
-
-		if err := json.Unmarshal(payload, &r.Vector); err != nil {
-			return nil, fmt.Errorf("decode stored vector for fragment %s: %w", r.ID, err)
-		}
-		r.Score = embedding.CosineSimilarity(queryVec, r.Vector)
-		matches = append(matches, r)
+		match.Score = embedding.CosineSimilarity(queryVec, match.Vector)
+		topMatches = insertVectorSearchMatch(topMatches, match, limit)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
+	if len(topMatches) == 0 {
+		return nil, nil
+	}
 
-	sort.Slice(matches, func(i, j int) bool {
-		if matches[i].Score == matches[j].Score {
-			return matches[i].UpdatedAt.After(matches[j].UpdatedAt)
+	ids := make([]string, 0, len(topMatches))
+	for _, match := range topMatches {
+		ids = append(ids, match.ID)
+	}
+
+	fragments, err := s.getFragmentsByIDs(ctx, ids)
+	if err != nil {
+		return nil, fmt.Errorf("load vector search fragments: %w", err)
+	}
+
+	results := make([]ScoredFragment, 0, len(topMatches))
+	for _, match := range topMatches {
+		frag := fragments[match.ID]
+		if frag == nil {
+			return nil, fmt.Errorf("fragment %s disappeared during vector search", match.ID)
 		}
-		return matches[i].Score > matches[j].Score
-	})
+		results = append(results, ScoredFragment{
+			ID:          frag.ID,
+			Agent:       frag.Agent,
+			Path:        frag.Path,
+			Content:     frag.Content,
+			Source:      frag.Source,
+			CreatedAt:   frag.CreatedAt,
+			UpdatedAt:   frag.UpdatedAt,
+			AccessedAt:  frag.AccessedAt,
+			AccessCount: frag.AccessCount,
+			DecayScore:  frag.DecayScore,
+			Pinned:      frag.Pinned,
+			Score:       match.Score,
+			Vector:      match.Vector,
+		})
+	}
+	return results, nil
+}
 
+type vectorSearchMatch struct {
+	ID        string
+	UpdatedAt time.Time
+	Score     float64
+	Vector    []float64
+}
+
+func insertVectorSearchMatch(matches []vectorSearchMatch, candidate vectorSearchMatch, limit int) []vectorSearchMatch {
+	if limit <= 0 {
+		return matches
+	}
+	if len(matches) == limit && !betterVectorSearchMatch(candidate, matches[len(matches)-1]) {
+		return matches
+	}
+
+	insertAt := len(matches)
+	for i := range matches {
+		if betterVectorSearchMatch(candidate, matches[i]) {
+			insertAt = i
+			break
+		}
+	}
+
+	if insertAt == len(matches) {
+		if len(matches) < limit {
+			return append(matches, candidate)
+		}
+		return matches
+	}
+
+	if len(matches) < limit {
+		matches = append(matches, vectorSearchMatch{})
+	}
+	copy(matches[insertAt+1:], matches[insertAt:])
+	matches[insertAt] = candidate
 	if len(matches) > limit {
 		matches = matches[:limit]
 	}
-	return matches, nil
+	return matches
+}
+
+func betterVectorSearchMatch(a, b vectorSearchMatch) bool {
+	if a.Score == b.Score {
+		return a.UpdatedAt.After(b.UpdatedAt)
+	}
+	return a.Score > b.Score
+}
+
+func (s *Store) getFragmentsByIDs(ctx context.Context, ids []string) (map[string]*Fragment, error) {
+	if len(ids) == 0 {
+		return map[string]*Fragment{}, nil
+	}
+
+	placeholders := strings.Repeat("?,", len(ids))
+	placeholders = strings.TrimSuffix(placeholders, ",")
+	query := fmt.Sprintf(`
+		SELECT id, agent, path, content, source, created_at, updated_at,
+		       accessed_at, access_count, decay_score, pinned
+		FROM memory_fragments
+		WHERE id IN (%s)`, placeholders)
+
+	args := make([]any, 0, len(ids))
+	for _, id := range ids {
+		args = append(args, id)
+	}
+
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("query fragments by ids: %w", err)
+	}
+	defer rows.Close()
+
+	fragments := make(map[string]*Fragment, len(ids))
+	for rows.Next() {
+		frag, err := scanFragment(rows)
+		if err != nil {
+			return nil, fmt.Errorf("scan fragment by id: %w", err)
+		}
+		fragments[frag.ID] = frag
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return fragments, nil
 }
 
 // BumpAccess marks a fragment as recently accessed, increments access_count,
