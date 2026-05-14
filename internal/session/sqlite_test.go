@@ -978,3 +978,117 @@ func TestReadOnlyOldDBWithoutCompactionSeq(t *testing.T) {
 		t.Errorf("CompactionSeq = %d, want -1", sess.CompactionSeq)
 	}
 }
+
+func TestSQLiteStoreCompactMessagesIncrementsCompactionCount(t *testing.T) {
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "sessions.db")
+	store, err := NewSQLiteStore(Config{Enabled: true, Path: dbPath})
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	defer store.Close()
+
+	sess := &Session{ID: NewID(), Provider: "test", Model: "test-model", Mode: ModeChat}
+	if err := store.Create(ctx, sess); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := store.AddMessage(ctx, sess.ID, &Message{Role: llm.RoleUser, TextContent: "hello"}); err != nil {
+		t.Fatalf("AddMessage: %v", err)
+	}
+
+	if err := store.CompactMessages(ctx, sess.ID, []Message{{Role: llm.RoleAssistant, TextContent: "summary one"}}); err != nil {
+		t.Fatalf("CompactMessages #1: %v", err)
+	}
+	got, err := store.Get(ctx, sess.ID)
+	if err != nil {
+		t.Fatalf("Get after #1: %v", err)
+	}
+	if got.CompactionCount != 1 || got.CompactionSeq != 1 {
+		t.Fatalf("after #1 count/seq = %d/%d, want 1/1", got.CompactionCount, got.CompactionSeq)
+	}
+
+	if err := store.CompactMessages(ctx, sess.ID, []Message{{Role: llm.RoleAssistant, TextContent: "summary two"}}); err != nil {
+		t.Fatalf("CompactMessages #2: %v", err)
+	}
+	got, err = store.Get(ctx, sess.ID)
+	if err != nil {
+		t.Fatalf("Get after #2: %v", err)
+	}
+	if got.CompactionCount != 2 || got.CompactionSeq != 2 {
+		t.Fatalf("after #2 count/seq = %d/%d, want 2/2", got.CompactionCount, got.CompactionSeq)
+	}
+}
+
+func TestSQLiteStoreMigratesCompactionCountColumn(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "old.db")
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	_, err = db.Exec(`
+		CREATE TABLE sessions (
+			id TEXT PRIMARY KEY,
+			number INTEGER,
+			name TEXT,
+			summary TEXT,
+			provider TEXT NOT NULL,
+			provider_key TEXT,
+			model TEXT NOT NULL,
+			mode TEXT DEFAULT 'chat',
+			agent TEXT,
+			cwd TEXT,
+			created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			archived BOOLEAN DEFAULT FALSE,
+			parent_id TEXT,
+			search BOOLEAN DEFAULT FALSE,
+			tools TEXT,
+			mcp TEXT,
+			user_turns INTEGER DEFAULT 0,
+			llm_turns INTEGER DEFAULT 0,
+			tool_calls INTEGER DEFAULT 0,
+			input_tokens INTEGER DEFAULT 0,
+			cached_input_tokens INTEGER DEFAULT 0,
+			cache_write_tokens INTEGER DEFAULT 0,
+			output_tokens INTEGER DEFAULT 0,
+			last_total_tokens INTEGER DEFAULT 0,
+			last_message_count INTEGER DEFAULT 0,
+			status TEXT DEFAULT 'active',
+			tags TEXT,
+			compaction_seq INTEGER DEFAULT -1
+		);
+		CREATE TABLE messages (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			session_id TEXT NOT NULL,
+			role TEXT NOT NULL,
+			parts TEXT NOT NULL,
+			text_content TEXT,
+			duration_ms INTEGER,
+			created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			sequence INTEGER NOT NULL
+		);
+		CREATE TABLE metadata (key TEXT PRIMARY KEY, value TEXT);
+		PRAGMA user_version = 22;
+	`)
+	if err != nil {
+		db.Close()
+		t.Fatalf("create old schema: %v", err)
+	}
+	db.Close()
+
+	store, err := NewSQLiteStore(Config{Enabled: true, Path: dbPath})
+	if err != nil {
+		t.Fatalf("NewSQLiteStore migrate: %v", err)
+	}
+	defer store.Close()
+	if !store.hasCompactionCount {
+		t.Fatal("expected migrated store to detect compaction_count")
+	}
+	var count int
+	if err := store.db.QueryRow("SELECT COUNT(*) FROM pragma_table_info('sessions') WHERE name = 'compaction_count'").Scan(&count); err != nil {
+		t.Fatalf("query table info: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("compaction_count column count = %d, want 1", count)
+	}
+}

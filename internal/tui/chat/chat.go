@@ -965,6 +965,14 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handlePasteMsg(msg)
 
 	case tea.MouseMsg:
+		// Open dialogs are modal: route mouse wheel events to scrollable content
+		// dialogs before text selection, textarea clicks, or viewport scrolling.
+		if m.dialog.IsOpen() && m.dialog.Type() == DialogContent {
+			if _, ok := msg.(tea.MouseWheelMsg); ok {
+				m.dialog.Update(msg)
+				return m, nil
+			}
+		}
 		// Text selection in alt-screen viewport (before textarea handling)
 		if m.altScreen && m.handleSelectionMouse(msg) {
 			return m, nil

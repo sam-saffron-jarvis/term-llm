@@ -80,6 +80,7 @@ Keyboard shortcuts:
 
 Slash commands:
   /help        - Show help
+  /stats       - Show usage, cost, and context breakdown
   /clear       - Clear conversation
   /model       - Show current model
   /search      - Toggle web search

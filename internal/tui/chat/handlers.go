@@ -237,6 +237,10 @@ func (m *Model) handleKeyMsg(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 
 	// Handle dialog first if open
 	if m.dialog.IsOpen() {
+		if m.dialog.Type() == DialogContent {
+			m.dialog.Update(msg)
+			return m, nil
+		}
 		// Model picker supports typing to filter (like completions)
 		if m.dialog.Type() == DialogModelPicker {
 			switch {

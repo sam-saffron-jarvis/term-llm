@@ -120,6 +120,32 @@ func TestMouseWheelScrollStillWorksInAltScreen(t *testing.T) {
 	}
 }
 
+func TestMouseWheelScrollsContentDialogInsteadOfViewport(t *testing.T) {
+	m := newTestChatModel(true)
+	var lines []string
+	for i := 0; i < 200; i++ {
+		lines = append(lines, "line")
+	}
+	m.viewport.SetContent(strings.Join(lines, "\n"))
+	m.viewport.GotoTop()
+	m.dialog.ShowContent("Help", strings.Join(lines, "\n"))
+
+	_, _ = m.Update(tea.MouseWheelMsg{Button: tea.MouseWheelDown})
+
+	if m.dialog.contentScroll == 0 {
+		t.Fatal("expected modal content to scroll on mouse wheel down")
+	}
+	if got := m.viewport.YOffset(); got != 0 {
+		t.Fatalf("underlying viewport scrolled while modal was open: %d", got)
+	}
+
+	m.dialog.Close()
+	_, _ = m.Update(tea.MouseWheelMsg{Button: tea.MouseWheelDown})
+	if m.viewport.YOffset() == 0 {
+		t.Fatal("expected viewport to scroll after modal closes")
+	}
+}
+
 func TestHorizontalMouseWheelDoesNotShiftAltScreenViewport(t *testing.T) {
 	m := newTestChatModel(true)
 	m.viewport.SetContent(strings.Repeat("x", 200))

@@ -1,6 +1,7 @@
 package chat
 
 import (
+	"fmt"
 	"slices"
 	"strings"
 
@@ -22,6 +23,7 @@ const (
 	DialogSessionList
 	DialogDirApproval
 	DialogMCPPicker
+	DialogContent
 )
 
 // DialogModel handles modal dialogs
@@ -39,6 +41,11 @@ type DialogModel struct {
 	// Directory approval specific
 	dirApprovalPath    string
 	dirApprovalOptions []string
+
+	// Static content modal specific
+	contentLines  []string
+	contentScroll int
+	contentFooter string
 }
 
 // DialogItem represents an item in a dialog list
@@ -52,6 +59,9 @@ type DialogItem struct {
 
 // NewDialogModel creates a new dialog model
 func NewDialogModel(styles *ui.Styles) *DialogModel {
+	if styles == nil {
+		styles = ui.DefaultStyles()
+	}
 	return &DialogModel{
 		dialogType: DialogNone,
 		styles:     styles,
@@ -81,6 +91,9 @@ func (d *DialogModel) Close() {
 	d.filtered = nil
 	d.query = ""
 	d.cursor = 0
+	d.contentLines = nil
+	d.contentScroll = 0
+	d.contentFooter = ""
 }
 
 // ShowModelPicker opens the model picker dialog.
@@ -219,7 +232,29 @@ func (d *DialogModel) ShowMCPPicker(mcpManager *mcp.Manager) {
 	d.filtered = d.items
 }
 
-// GetDirApprovalPath returns the path that triggered the approval request
+// ShowContent opens a scrollable static content modal.
+func (d *DialogModel) ShowContent(title, content string) {
+	d.dialogType = DialogContent
+	d.title = title
+	d.items = nil
+	d.filtered = nil
+	d.query = ""
+	d.cursor = 0
+	d.contentScroll = 0
+	d.contentFooter = "↑/↓ scroll · pgup/pgdn page · esc close"
+	content = strings.TrimRight(content, "\n")
+	if content == "" {
+		d.contentLines = []string{""}
+	} else {
+		d.contentLines = strings.Split(content, "\n")
+	}
+}
+
+// Content returns the raw content currently displayed by a content dialog.
+func (d *DialogModel) Content() string {
+	return strings.Join(d.contentLines, "\n")
+}
+
 func (d *DialogModel) GetDirApprovalPath() string {
 	return d.dirApprovalPath
 }
@@ -303,7 +338,41 @@ func (d *DialogModel) Update(msg tea.Msg) (*DialogModel, tea.Cmd) {
 	}
 
 	switch msg := msg.(type) {
+	case tea.MouseWheelMsg:
+		if d.dialogType == DialogContent {
+			mouse := msg.Mouse()
+			switch mouse.Button {
+			case tea.MouseWheelUp:
+				d.scrollContentBy(-3)
+			case tea.MouseWheelDown:
+				d.scrollContentBy(3)
+			case tea.MouseWheelLeft, tea.MouseWheelRight:
+				// Content dialogs do not scroll horizontally; consume the event so
+				// an open modal does not move the underlying viewport.
+			}
+			return d, nil
+		}
 	case tea.KeyPressMsg:
+		if d.dialogType == DialogContent {
+			visible := d.contentVisibleLines()
+			switch {
+			case key.Matches(msg, key.NewBinding(key.WithKeys("up", "k"))):
+				d.scrollContentBy(-1)
+			case key.Matches(msg, key.NewBinding(key.WithKeys("down", "j"))):
+				d.scrollContentBy(1)
+			case key.Matches(msg, key.NewBinding(key.WithKeys("pgup"))):
+				d.scrollContentBy(-visible)
+			case key.Matches(msg, key.NewBinding(key.WithKeys("pgdown"))):
+				d.scrollContentBy(visible)
+			case key.Matches(msg, key.NewBinding(key.WithKeys("home"))):
+				d.contentScroll = 0
+			case key.Matches(msg, key.NewBinding(key.WithKeys("end"))):
+				d.contentScroll = d.maxContentScroll()
+			case key.Matches(msg, key.NewBinding(key.WithKeys("esc", "q", "ctrl+c"))):
+				d.Close()
+			}
+			return d, nil
+		}
 		switch {
 		case key.Matches(msg, key.NewBinding(key.WithKeys("up", "k"))):
 			if d.cursor > 0 {
@@ -335,6 +404,11 @@ func (d *DialogModel) View() string {
 	// Use MCP-specific view for MCP picker
 	if d.dialogType == DialogMCPPicker {
 		return d.viewMCPPicker()
+	}
+
+	// Use content renderer for static modals.
+	if d.dialogType == DialogContent {
+		return d.viewContentDialog()
 	}
 
 	// Original style for other dialogs (dir approval, session list)
@@ -405,7 +479,74 @@ func (d *DialogModel) viewModelPicker() string {
 	return borderStyle.Render(b.String())
 }
 
-// viewStandardDialog renders the standard dialog style
+func (d *DialogModel) maxContentScroll() int {
+	return max(0, len(d.contentLines)-d.contentVisibleLines())
+}
+
+func (d *DialogModel) scrollContentBy(delta int) {
+	d.contentScroll = min(d.maxContentScroll(), max(0, d.contentScroll+delta))
+}
+
+func (d *DialogModel) contentVisibleLines() int {
+	h := d.height - 8
+	if h <= 0 || h > 28 {
+		h = 28
+	}
+	if h < 6 {
+		h = 6
+	}
+	return h
+}
+
+// viewContentDialog renders a centered-style static content modal.
+func (d *DialogModel) viewContentDialog() string {
+	theme := d.styles.Theme()
+	width := d.width - 4
+	if width <= 0 || width > 100 {
+		width = 100
+	}
+	if width < 40 {
+		width = 40
+	}
+	bodyWidth := width - 4
+	visible := d.contentVisibleLines()
+	maxScroll := max(0, len(d.contentLines)-visible)
+	if d.contentScroll > maxScroll {
+		d.contentScroll = maxScroll
+	}
+	end := min(len(d.contentLines), d.contentScroll+visible)
+	lines := d.contentLines[d.contentScroll:end]
+
+	titleStyle := lipgloss.NewStyle().Bold(true).Foreground(theme.Primary)
+	mutedStyle := lipgloss.NewStyle().Foreground(theme.Muted)
+	bodyStyle := lipgloss.NewStyle().Width(bodyWidth)
+	borderStyle := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(theme.Border).
+		Padding(1, 2).
+		Width(width)
+
+	var b strings.Builder
+	b.WriteString(titleStyle.Render(d.title))
+	b.WriteString("\n\n")
+	for i, line := range lines {
+		b.WriteString(bodyStyle.Render(line))
+		if i < len(lines)-1 {
+			b.WriteString("\n")
+		}
+	}
+	for i := len(lines); i < visible; i++ {
+		b.WriteString("\n")
+	}
+	b.WriteString("\n\n")
+	footer := d.contentFooter
+	if maxScroll > 0 {
+		footer = fmt.Sprintf("%s · %d/%d", footer, d.contentScroll+1, maxScroll+1)
+	}
+	b.WriteString(mutedStyle.Render(footer))
+	return borderStyle.Render(b.String())
+}
+
 func (d *DialogModel) viewStandardDialog() string {
 	theme := d.styles.Theme()
 

@@ -91,6 +91,7 @@ type Session struct {
 	Status            SessionStatus `json:"status,omitempty"`              // Session status
 	Tags              string        `json:"tags,omitempty"`                // Comma-separated tags
 	CompactionSeq     int           `json:"compaction_seq,omitempty"`      // Sequence of first post-compaction message (-1 = none)
+	CompactionCount   int           `json:"compaction_count,omitempty"`    // Number of times this session has been compacted
 }
 
 // Message represents a message in a session.

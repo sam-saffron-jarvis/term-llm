@@ -49,6 +49,12 @@ func AllCommands() []Command {
 			Usage:       "/help",
 		},
 		{
+			Name:        "stats",
+			Aliases:     []string{"st"},
+			Description: "Show current chat usage, cost, and context breakdown",
+			Usage:       "/stats",
+		},
+		{
 			Name:        "clear",
 			Aliases:     []string{"c"},
 			Description: "Clear conversation history",
@@ -328,6 +334,8 @@ func (m *Model) ExecuteCommand(input string) (tea.Model, tea.Cmd) {
 	switch cmd.Name {
 	case "help":
 		return m.cmdHelp()
+	case "stats":
+		return m.cmdStats()
 	case "clear":
 		return m.cmdClear()
 	case "quit":
@@ -445,32 +453,37 @@ func (m *Model) cancelHandoverTool() {
 }
 
 func (m *Model) cmdHelp() (tea.Model, tea.Cmd) {
+	m.setTextareaValue("")
 	var b strings.Builder
-	b.WriteString("## Available Commands\n\n")
-
+	b.WriteString("Slash commands\n")
 	for _, cmd := range AllCommands() {
-		b.WriteString(fmt.Sprintf("**%s**", cmd.Usage))
+		usage := cmd.Usage
 		if len(cmd.Aliases) > 0 {
-			b.WriteString(fmt.Sprintf(" (aliases: %s)", strings.Join(cmd.Aliases, ", ")))
+			usage += " (" + strings.Join(cmd.Aliases, ", ") + ")"
 		}
-		b.WriteString("\n")
-		b.WriteString(fmt.Sprintf("  %s\n\n", cmd.Description))
+		b.WriteString(fmt.Sprintf("  %-28s %s\n", usage, cmd.Description))
 	}
 
-	b.WriteString("## Keyboard Shortcuts\n\n")
-	b.WriteString("- `Enter` - Send message\n")
-	b.WriteString("- `Ctrl+J` or `Alt+Enter` - Insert newline\n")
-	b.WriteString("- `Ctrl+C` - Quit\n")
-	b.WriteString("- `Ctrl+K` - Clear conversation\n")
-	b.WriteString("- `Ctrl+S` - Toggle web search\n")
-	b.WriteString("- `Shift+Tab` - Toggle yolo mode\n")
-	b.WriteString("- `Ctrl+T` - MCP servers (tools)\n")
-	b.WriteString("- `Ctrl+P` - Command palette\n")
-	b.WriteString("- `Ctrl+L` - Switch model\n")
-	b.WriteString("- `Ctrl+N` - New session\n")
-	b.WriteString("- `Esc` - Cancel streaming\n")
+	b.WriteString("\nKeys\n")
+	keys := [][2]string{
+		{"Enter", "Send message"},
+		{"Ctrl+J / Alt+Enter", "Insert newline"},
+		{"Ctrl+C", "Quit"},
+		{"Ctrl+K", "Clear conversation"},
+		{"Ctrl+S", "Toggle web search"},
+		{"Shift+Tab", "Toggle yolo mode"},
+		{"Ctrl+T", "MCP servers (tools)"},
+		{"Ctrl+P", "Command palette"},
+		{"Ctrl+L", "Switch model"},
+		{"Ctrl+N", "New session"},
+		{"Esc", "Cancel streaming / close modal"},
+	}
+	for _, row := range keys {
+		b.WriteString(fmt.Sprintf("  %-20s %s\n", row[0], row[1]))
+	}
 
-	return m.showSystemMessage(b.String())
+	m.dialog.ShowContent("Help", b.String())
+	return m, nil
 }
 
 func (m *Model) cmdClear() (tea.Model, tea.Cmd) {

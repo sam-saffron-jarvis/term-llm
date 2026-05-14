@@ -1,8 +1,77 @@
 package chat
 
 import (
+	"strings"
 	"testing"
+
+	tea "charm.land/bubbletea/v2"
 )
+
+func TestShowContentInitializesContentDialog(t *testing.T) {
+	d := NewDialogModel(nil)
+	d.ShowContent("Stats", "line one\nline two")
+	if !d.IsOpen() || d.Type() != DialogContent {
+		t.Fatalf("expected content dialog open, got open=%v type=%v", d.IsOpen(), d.Type())
+	}
+	if d.Content() != "line one\nline two" {
+		t.Fatalf("content = %q", d.Content())
+	}
+	if d.contentScroll != 0 {
+		t.Fatalf("initial scroll = %d, want 0", d.contentScroll)
+	}
+}
+
+func TestDialogCloseResetsContentState(t *testing.T) {
+	d := NewDialogModel(nil)
+	d.ShowContent("Help", "body")
+	d.contentScroll = 2
+	d.Close()
+	if d.IsOpen() || len(d.contentLines) != 0 || d.contentScroll != 0 {
+		t.Fatalf("Close did not reset content state: open=%v lines=%d scroll=%d", d.IsOpen(), len(d.contentLines), d.contentScroll)
+	}
+}
+
+func TestContentDialogScrollKeys(t *testing.T) {
+	d := NewDialogModel(nil)
+	d.SetSize(80, 12)
+	d.ShowContent("Long", strings.Join([]string{"1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12"}, "\n"))
+	d.Update(tea.KeyPressMsg{Code: tea.KeyDown})
+	if d.contentScroll != 1 {
+		t.Fatalf("down scroll = %d, want 1", d.contentScroll)
+	}
+	d.Update(tea.KeyPressMsg{Code: tea.KeyPgDown})
+	if d.contentScroll <= 1 {
+		t.Fatalf("pgdown did not advance scroll: %d", d.contentScroll)
+	}
+	d.Update(tea.KeyPressMsg{Code: tea.KeyHome})
+	if d.contentScroll != 0 {
+		t.Fatalf("home scroll = %d, want 0", d.contentScroll)
+	}
+}
+
+func TestContentDialogMouseWheelScrolls(t *testing.T) {
+	d := NewDialogModel(nil)
+	d.SetSize(80, 12)
+	d.ShowContent("Long", strings.Join([]string{"1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12"}, "\n"))
+	d.Update(tea.MouseWheelMsg{Button: tea.MouseWheelDown})
+	if d.contentScroll == 0 {
+		t.Fatal("expected mouse wheel down to scroll content dialog")
+	}
+	d.Update(tea.MouseWheelMsg{Button: tea.MouseWheelUp})
+	if d.contentScroll != 0 {
+		t.Fatalf("mouse wheel up scroll = %d, want 0", d.contentScroll)
+	}
+}
+
+func TestContentDialogViewIncludesTitleAndFooter(t *testing.T) {
+	d := NewDialogModel(nil)
+	d.SetSize(80, 20)
+	d.ShowContent("Help", "body")
+	view := d.View()
+	if !strings.Contains(view, "Help") || !strings.Contains(view, "body") || !strings.Contains(view, "esc close") {
+		t.Fatalf("content dialog view missing title/body/footer:\n%s", view)
+	}
+}
 
 func TestShowSessionListInitializesFilteredAndSelection(t *testing.T) {
 	d := NewDialogModel(nil)

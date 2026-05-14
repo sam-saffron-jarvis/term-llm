@@ -68,6 +68,32 @@ func TestFilterCommandsMatchesCompact(t *testing.T) {
 	}
 }
 
+func TestAllCommandsIncludesStats(t *testing.T) {
+	for _, cmd := range AllCommands() {
+		if cmd.Name == "stats" {
+			if cmd.Usage != "/stats" {
+				t.Fatalf("stats usage = %q, want /stats", cmd.Usage)
+			}
+			return
+		}
+	}
+	t.Fatal("AllCommands() should include 'stats' command")
+}
+
+func TestFilterCommandsMatchesStats(t *testing.T) {
+	for _, query := range []string{"stats", "stat", "st"} {
+		t.Run(query, func(t *testing.T) {
+			results := FilterCommands(query)
+			for _, cmd := range results {
+				if cmd.Name == "stats" {
+					return
+				}
+			}
+			t.Fatalf("FilterCommands(%q) did not include stats", query)
+		})
+	}
+}
+
 func TestAllCommandsRemovesLoadAndKeepsResume(t *testing.T) {
 	commands := AllCommands()
 
@@ -246,6 +272,7 @@ func (s *mockStore) CompactMessages(_ context.Context, sessionID string, message
 	}
 	if sess := s.sessions[sessionID]; sess != nil {
 		sess.CompactionSeq = startSeq
+		sess.CompactionCount++
 	}
 	s.compactSession = sessionID
 	s.compacted = append([]session.Message(nil), messages...)
@@ -253,7 +280,90 @@ func (s *mockStore) CompactMessages(_ context.Context, sessionID string, message
 	return nil
 }
 
-// newCmdTestModel creates a minimal Model suitable for testing command functions.
+func TestCmdHelpOpensModal(t *testing.T) {
+	m := newCmdTestModel(&mockStore{})
+	result, cmd := m.cmdHelp()
+	if cmd != nil {
+		t.Fatalf("cmdHelp returned unexpected command")
+	}
+	rm := result.(*Model)
+	if !rm.dialog.IsOpen() || rm.dialog.Type() != DialogContent {
+		t.Fatalf("help should open content dialog, got open=%v type=%v", rm.dialog.IsOpen(), rm.dialog.Type())
+	}
+	if !strings.Contains(rm.dialog.Content(), "Slash commands") || !strings.Contains(rm.dialog.Content(), "/stats") {
+		t.Fatalf("help content missing expected commands: %q", rm.dialog.Content())
+	}
+}
+
+func TestCmdStatsOpensModalWithTotalsAndCompactions(t *testing.T) {
+	oldEstimator := statsCostEstimator
+	statsCostEstimator = func(model string, stats *ui.SessionStats) (float64, error) { return 0.0123, nil }
+	defer func() { statsCostEstimator = oldEstimator }()
+
+	m := newCmdTestModel(&mockStore{})
+	m.providerKey = "openai"
+	m.providerName = "openai"
+	m.modelName = "gpt-4o"
+	m.sess = &session.Session{ID: "s1", UserTurns: 2, LLMTurns: 3, CompactionCount: 3, CompactionSeq: 25}
+	m.stats = ui.NewSessionStats()
+	m.stats.SeedTotals(1000, 500, 100, 50, 4, 3)
+	m.messages = []session.Message{
+		{Role: llm.RoleUser, TextContent: "hello"},
+		{Role: llm.RoleAssistant, TextContent: "hi"},
+	}
+
+	result, cmd := m.cmdStats()
+	if cmd != nil {
+		t.Fatalf("cmdStats returned unexpected command")
+	}
+	rm := result.(*Model)
+	if !rm.dialog.IsOpen() || rm.dialog.Type() != DialogContent {
+		t.Fatalf("stats should open content dialog, got open=%v type=%v", rm.dialog.IsOpen(), rm.dialog.Type())
+	}
+	content := rm.dialog.Content()
+	for _, want := range []string{"Context Usage", "Current state vs entire history", "Current context", "Entire history", "Input tokens", "Cache write tokens", "Total tokens", "Tool calls", "Compactions:        3", "Last boundary:"} {
+		if !strings.Contains(content, want) {
+			t.Fatalf("stats content missing %q:\n%s", want, content)
+		}
+	}
+	if content := rm.dialog.Content(); strings.Contains(content, "billed-ish") || strings.Contains(content, "build-ish") {
+		t.Fatalf("stats content should not use vague billed/build-ish label:\n%s", content)
+	}
+}
+
+func TestStatsSeedsCacheWriteTokensFromSession(t *testing.T) {
+	oldEstimator := statsCostEstimator
+	statsCostEstimator = func(model string, stats *ui.SessionStats) (float64, error) { return 0, fmt.Errorf("not tested") }
+	defer func() { statsCostEstimator = oldEstimator }()
+
+	m := newCmdTestModel(&mockStore{})
+	m.sess = &session.Session{ID: "s1", InputTokens: 100, CachedInputTokens: 20, CacheWriteTokens: 30, OutputTokens: 40}
+	m.seedStatsFromSession()
+	result, _ := m.cmdStats()
+	content := result.(*Model).dialog.Content()
+	if !strings.Contains(content, "Cache write tokens:") || !strings.Contains(content, "30") {
+		t.Fatalf("stats did not include cache write tokens restored from session DB metrics:\n%s", content)
+	}
+}
+
+func TestStatsPricingModelStripsProviderAndEffort(t *testing.T) {
+	m := newCmdTestModel(&mockStore{})
+	m.modelName = "chatgpt:gpt-5.5-medium"
+	if got := m.statsPricingModel(); got != "gpt-5.5" {
+		t.Fatalf("statsPricingModel() = %q, want gpt-5.5", got)
+	}
+}
+
+func TestCmdStatsHandlesNoUsage(t *testing.T) {
+	m := newCmdTestModel(&mockStore{})
+	m.sess = &session.Session{ID: "s1"}
+	result, _ := m.cmdStats()
+	content := result.(*Model).dialog.Content()
+	if !strings.Contains(content, "No token usage recorded yet") {
+		t.Fatalf("stats no-usage content missing empty state:\n%s", content)
+	}
+}
+
 func newCmdTestModel(store session.Store) *Model {
 	styles := ui.DefaultStyles()
 	ta := textarea.New()

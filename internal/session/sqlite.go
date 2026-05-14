@@ -19,6 +19,7 @@ type SQLiteStore struct {
 	cfg                  Config
 	hasGeneratedTitles   bool // true if sessions table has generated title columns
 	hasCompactionSeq     bool // true if sessions table has compaction_seq column
+	hasCompactionCount   bool // true if sessions table has compaction_count column
 	hasCacheWriteTokens  bool // true if sessions table has cache_write_tokens column
 	hasOrigin            bool // true if sessions table has origin column
 	hasPinned            bool // true if sessions table has pinned column
@@ -71,7 +72,8 @@ CREATE TABLE IF NOT EXISTS sessions (
     last_message_count INTEGER DEFAULT 0,
     status TEXT DEFAULT 'active',
     tags TEXT,
-    compaction_seq INTEGER DEFAULT -1
+    compaction_seq INTEGER DEFAULT -1,
+    compaction_count INTEGER DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS messages (
@@ -200,7 +202,7 @@ func NewSQLiteStore(cfg Config) (*SQLiteStore, error) {
 // - Fresh databases get the full schema from `schema` const and start at this version
 // - Existing databases run migrations to reach this version
 // Increment when adding new migrations.
-const schemaVersion = 22
+const schemaVersion = 23
 
 // migration represents a schema migration.
 type migration struct {
@@ -697,6 +699,18 @@ var migrations = []migration{
 			return rebuildMessagesTableForCurrentRoles(db)
 		},
 	},
+	{
+		// Migration 23: Track the total number of compactions per session.
+		version:     23,
+		description: "add compaction_count column",
+		up: func(db *sql.DB) error {
+			_, err := db.Exec("ALTER TABLE sessions ADD COLUMN compaction_count INTEGER DEFAULT 0")
+			if err != nil && !isDuplicateColumnError(err) {
+				return err
+			}
+			return nil
+		},
+	},
 }
 
 func rebuildMessagesTableForCurrentRoles(db *sql.DB) error {
@@ -953,14 +967,14 @@ func (s *SQLiteStore) Create(ctx context.Context, sess *Session) error {
 func (s *SQLiteStore) Get(ctx context.Context, id string) (*Session, error) {
 	row := s.db.QueryRowContext(ctx,
 		"SELECT "+s.sessionSelectCols()+" FROM sessions WHERE id = ?", id)
-	return scanSessionRow(row, s.hasGeneratedTitles, s.hasCacheWriteTokens, s.hasCompactionSeq, s.hasTitleSkippedAt, s.hasLastTotalTokens, s.hasLastMessageCount)
+	return scanSessionRow(row, s.hasGeneratedTitles, s.hasCacheWriteTokens, s.hasCompactionSeq, s.hasCompactionCount, s.hasTitleSkippedAt, s.hasLastTotalTokens, s.hasLastMessageCount)
 }
 
 // GetByNumber retrieves a session by its sequential number.
 func (s *SQLiteStore) GetByNumber(ctx context.Context, number int64) (*Session, error) {
 	row := s.db.QueryRowContext(ctx,
 		"SELECT "+s.sessionSelectCols()+" FROM sessions WHERE number = ?", number)
-	return scanSessionRow(row, s.hasGeneratedTitles, s.hasCacheWriteTokens, s.hasCompactionSeq, s.hasTitleSkippedAt, s.hasLastTotalTokens, s.hasLastMessageCount)
+	return scanSessionRow(row, s.hasGeneratedTitles, s.hasCacheWriteTokens, s.hasCompactionSeq, s.hasCompactionCount, s.hasTitleSkippedAt, s.hasLastTotalTokens, s.hasLastMessageCount)
 }
 
 // GetByPrefix retrieves a session by number (with # prefix), exact ID, or by short ID prefix match.
@@ -1007,7 +1021,7 @@ func (s *SQLiteStore) GetByPrefix(ctx context.Context, prefix string) (*Session,
 	pattern := ExpandShortID(prefix)
 	row := s.db.QueryRowContext(ctx,
 		"SELECT "+s.sessionSelectCols()+" FROM sessions WHERE id LIKE ? ORDER BY created_at DESC LIMIT 1", pattern)
-	return scanSessionRow(row, s.hasGeneratedTitles, s.hasCacheWriteTokens, s.hasCompactionSeq, s.hasTitleSkippedAt, s.hasLastTotalTokens, s.hasLastMessageCount)
+	return scanSessionRow(row, s.hasGeneratedTitles, s.hasCacheWriteTokens, s.hasCompactionSeq, s.hasCompactionCount, s.hasTitleSkippedAt, s.hasLastTotalTokens, s.hasLastMessageCount)
 }
 
 // Update modifies an existing session's metadata fields.
@@ -1610,9 +1624,16 @@ func (s *SQLiteStore) CompactMessages(ctx context.Context, sessionID string, mes
 			}
 		}
 
-		// Update compaction_seq and timestamp
+		// Update compaction boundary/count and timestamp. Older read-only schemas
+		// cannot reach this write path because migrations run before opening.
 		now := time.Now()
-		if _, err := tx.ExecContext(ctx,
+		if s.hasCompactionCount {
+			if _, err := tx.ExecContext(ctx,
+				"UPDATE sessions SET compaction_seq = ?, compaction_count = COALESCE(compaction_count, 0) + 1, updated_at = ? WHERE id = ?",
+				startSeq, now, sessionID); err != nil {
+				return fmt.Errorf("update compaction metrics: %w", err)
+			}
+		} else if _, err := tx.ExecContext(ctx,
 			"UPDATE sessions SET compaction_seq = ?, updated_at = ? WHERE id = ?",
 			startSeq, now, sessionID); err != nil {
 			return fmt.Errorf("update compaction_seq: %w", err)
@@ -1792,6 +1813,7 @@ func (s *SQLiteStore) Close() error {
 func (s *SQLiteStore) setCurrentSessionColumns() {
 	s.hasGeneratedTitles = true
 	s.hasCompactionSeq = true
+	s.hasCompactionCount = true
 	s.hasCacheWriteTokens = true
 	s.hasOrigin = true
 	s.hasPinned = true
@@ -1828,6 +1850,8 @@ func (s *SQLiteStore) probeSessionColumns() {
 			s.hasGeneratedTitles = true
 		case "compaction_seq":
 			s.hasCompactionSeq = true
+		case "compaction_count":
+			s.hasCompactionCount = true
 		case "cache_write_tokens":
 			s.hasCacheWriteTokens = true
 		case "origin":
@@ -1896,12 +1920,15 @@ func (s *SQLiteStore) sessionSelectCols() string {
 	if s.hasCompactionSeq {
 		base += ", compaction_seq"
 	}
+	if s.hasCompactionCount {
+		base += ", compaction_count"
+	}
 	return base
 }
 
 // scanSessionRow scans a session row into a Session struct. The flags
 // determine which optional columns are present in the result set.
-func scanSessionRow(row *sql.Row, hasGeneratedTitles, hasCacheWriteTokens, hasCompactionSeq, hasTitleSkippedAt, hasLastTotalTokens, hasLastMessageCount bool) (*Session, error) {
+func scanSessionRow(row *sql.Row, hasGeneratedTitles, hasCacheWriteTokens, hasCompactionSeq, hasCompactionCount, hasTitleSkippedAt, hasLastTotalTokens, hasLastMessageCount bool) (*Session, error) {
 	var sess Session
 	var number sql.NullInt64
 	var name, summary, cwd sql.NullString
@@ -1936,6 +1963,9 @@ func scanSessionRow(row *sql.Row, hasGeneratedTitles, hasCacheWriteTokens, hasCo
 	scanArgs = append(scanArgs, &status, &tags)
 	if hasCompactionSeq {
 		scanArgs = append(scanArgs, &sess.CompactionSeq)
+	}
+	if hasCompactionCount {
+		scanArgs = append(scanArgs, &sess.CompactionCount)
 	}
 
 	err := row.Scan(scanArgs...)

@@ -358,6 +358,37 @@ func (m *Model) overlayAltScreenPanels(base string, footer footerLayout) string 
 		bottomY = 0
 	}
 
+	placePanel := func(panel string, x, y int) {
+		if panel == "" {
+			return
+		}
+		panelLines := strings.Split(panel, "\n")
+		if y < 0 {
+			y = 0
+		}
+		for i, panelLine := range panelLines {
+			row := y + i
+			if row < 0 || row >= len(lines) {
+				continue
+			}
+			overlayWidth := lipgloss.Width(panelLine)
+			if overlayWidth <= 0 {
+				continue
+			}
+			if x < 0 {
+				x = 0
+			}
+			if x >= screenWidth {
+				continue
+			}
+			overlay := ansi.Cut(panelLine, 0, screenWidth-x)
+			left := ansi.Cut(lines[row], 0, x)
+			rightStart := x + min(overlayWidth, screenWidth-x)
+			remainder := ansi.Cut(lines[row], rightStart, screenWidth)
+			lines[row] = left + overlay + remainder
+		}
+	}
+
 	stackPanel := func(panel string) {
 		if panel == "" {
 			return
@@ -389,7 +420,15 @@ func (m *Model) overlayAltScreenPanels(base string, footer footerLayout) string 
 	// Preserve the existing visual order above the footer:
 	// completions above dialog above footer.
 	if m.dialog.IsOpen() {
-		stackPanel(m.dialog.View())
+		panel := m.dialog.View()
+		if m.dialog.Type() == DialogContent {
+			panelLines := strings.Split(panel, "\n")
+			x := (screenWidth - lipgloss.Width(panel)) / 2
+			y := (targetHeight - len(panelLines)) / 2
+			placePanel(panel, x, y)
+		} else {
+			stackPanel(panel)
+		}
 	}
 	if m.completions.IsVisible() {
 		stackPanel(m.completions.View())
