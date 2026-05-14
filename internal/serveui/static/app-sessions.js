@@ -310,11 +310,63 @@ const convertServerMessages = (serverMessages) => {
   const result = [];
   let currentGroup = null;
 
+  const normalizeImages = (images) => (
+    Array.isArray(images)
+      ? images.map((url) => String(url || '').trim()).filter(Boolean)
+      : []
+  );
+
+  const appendUniqueImages = (tool, images) => {
+    if (!tool || images.length === 0) return;
+    const existing = Array.isArray(tool.images) ? tool.images : [];
+    images.forEach((url) => {
+      if (url && !existing.includes(url)) existing.push(url);
+    });
+    if (existing.length > 0) tool.images = existing;
+  };
+
   const flushGroup = () => {
     if (currentGroup) {
       result.push(currentGroup);
       currentGroup = null;
     }
+  };
+
+  const ensureToolGroup = (created) => {
+    if (!currentGroup) {
+      currentGroup = {
+        id: generateId('msg'),
+        role: 'tool-group',
+        tools: [],
+        expanded: false,
+        status: 'done',
+        created
+      };
+    }
+    return currentGroup;
+  };
+
+  const attachToolResultImages = (part, created) => {
+    const images = normalizeImages(part.images);
+    if (images.length === 0) return;
+    const group = ensureToolGroup(created);
+    const callId = part.tool_call_id || '';
+    let tool = callId ? group.tools.find((entry) => entry.id === callId) : null;
+    if (!tool && part.tool_name) {
+      tool = group.tools.find((entry) => entry.name === part.tool_name);
+    }
+    if (!tool) {
+      tool = {
+        id: callId || generateId('tool'),
+        name: part.tool_name || 'tool',
+        arguments: '',
+        status: 'done',
+        created
+      };
+      group.tools.push(tool);
+    }
+    tool.status = 'done';
+    appendUniqueImages(tool, images);
   };
 
   for (const msg of serverMessages) {
@@ -373,27 +425,27 @@ const convertServerMessages = (serverMessages) => {
           created
         });
       } else if (part.type === 'tool_call') {
-        const toolEntry = {
-          id: part.tool_call_id || generateId('tool'),
-          name: part.tool_name || 'tool',
-          arguments: part.tool_arguments || '',
-          status: 'done',
-          created
-        };
-        if (!currentGroup) {
-          currentGroup = {
-            id: generateId('msg'),
-            role: 'tool-group',
-            tools: [toolEntry],
-            expanded: false,
+        const group = ensureToolGroup(created);
+        const toolId = part.tool_call_id || generateId('tool');
+        let toolEntry = group.tools.find((entry) => entry.id === toolId);
+        if (!toolEntry) {
+          toolEntry = {
+            id: toolId,
+            name: part.tool_name || 'tool',
+            arguments: part.tool_arguments || '',
             status: 'done',
             created
           };
+          group.tools.push(toolEntry);
         } else {
-          currentGroup.tools.push(toolEntry);
+          toolEntry.name = part.tool_name || toolEntry.name || 'tool';
+          toolEntry.arguments = part.tool_arguments || toolEntry.arguments || '';
+          toolEntry.status = 'done';
         }
+        appendUniqueImages(toolEntry, normalizeImages(part.images));
+      } else if (part.type === 'tool_result') {
+        attachToolResultImages(part, created);
       }
-      // tool_result parts are context for the LLM, skip in UI
     }
 
     // If message had no recognized parts, emit text content if present

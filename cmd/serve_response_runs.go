@@ -30,6 +30,7 @@ type responseRunRecoveryTool struct {
 	Arguments string
 	Status    string
 	Created   int64
+	Images    []string
 }
 
 type responseRunRecoveryMessage struct {
@@ -379,12 +380,14 @@ func (r *responseRun) applyRecoveryEventLocked(event string, payload map[string]
 			}
 		}
 	case "response.tool_exec.end":
+		images := stringSliceValue(payload["images"])
 		if r.currentToolGroup >= 0 && r.currentToolGroup < len(r.recoveryMessages) {
 			group := &r.recoveryMessages[r.currentToolGroup]
 			callID := stringValue(payload["call_id"])
 			for i := range group.Tools {
 				if callID == "" || group.Tools[i].ID == callID {
 					group.Tools[i].Status = "done"
+					group.Tools[i].Images = appendUniqueStrings(group.Tools[i].Images, images...)
 					if callID != "" {
 						break
 					}
@@ -400,14 +403,6 @@ func (r *responseRun) applyRecoveryEventLocked(event string, payload map[string]
 			if allDone {
 				group.Status = "done"
 			}
-		}
-		images := stringSliceValue(payload["images"])
-		if len(images) == 0 {
-			return
-		}
-		idx := r.ensureAssistantMessageLocked()
-		for _, url := range images {
-			r.recoveryMessages[idx].Content = append(r.recoveryMessages[idx].Content, fmt.Sprintf("\n\n![Generated Image](%s)\n", url)...)
 		}
 	case "response.completed":
 		r.closeToolGroupLocked()
@@ -594,6 +589,11 @@ func (r *responseRun) recoveryPayloadLocked() map[string]any {
 				}
 				if tool.Arguments != "" {
 					toolEntry["arguments"] = tool.Arguments
+				}
+				if len(tool.Images) > 0 {
+					images := make([]string, len(tool.Images))
+					copy(images, tool.Images)
+					toolEntry["images"] = images
 				}
 				toolsPayload = append(toolsPayload, toolEntry)
 			}
@@ -899,6 +899,25 @@ func stringSliceValue(v any) []string {
 	}
 }
 
+func appendUniqueStrings(dst []string, values ...string) []string {
+	for _, value := range values {
+		if value == "" {
+			continue
+		}
+		seen := false
+		for _, existing := range dst {
+			if existing == value {
+				seen = true
+				break
+			}
+		}
+		if !seen {
+			dst = append(dst, value)
+		}
+	}
+	return dst
+}
+
 func cloneJSONMap(src map[string]any) map[string]any {
 	if len(src) == 0 {
 		return nil
@@ -941,6 +960,25 @@ func writeStoredResponseEvent(w io.Writer, ev responseRunEvent) error {
 type responseRunStreamState struct {
 	outputIndex int
 	toolsSeen   bool
+}
+
+func (s *serveServer) toolImageURLs(imagePaths []string) []string {
+	if len(imagePaths) == 0 {
+		return nil
+	}
+	imageURLs := make([]string, 0, len(imagePaths))
+	for _, imgPath := range imagePaths {
+		if s.cfg.filesDir != "" {
+			if served, ok := s.ensureFileServeable(imgPath); ok {
+				imageURLs = append(imageURLs, serveRoutePath(s.cfg.filesRoute(), s.cfg.filesDir, served))
+			}
+			continue
+		}
+		if served, ok := s.ensureImageServeable(imgPath); ok {
+			imageURLs = append(imageURLs, serveRoutePath(s.cfg.imagesRoute(), s.imageOutputDir(), served))
+		}
+	}
+	return imageURLs
 }
 
 func (s *serveServer) appendResponseRunEvent(runtime *serveRuntime, run *responseRun, state *responseRunStreamState, ev llm.Event) error {
@@ -1019,19 +1057,7 @@ func (s *serveServer) appendResponseRunEvent(runtime *serveRuntime, run *respons
 			"success":   ev.ToolSuccess,
 		}
 		if len(ev.ToolImages) > 0 {
-			imageURLs := make([]string, 0, len(ev.ToolImages))
-			for _, imgPath := range ev.ToolImages {
-				if s.cfg.filesDir != "" {
-					if served, ok := s.ensureFileServeable(imgPath); ok {
-						imageURLs = append(imageURLs, serveRoutePath(s.cfg.filesRoute(), s.cfg.filesDir, served))
-					}
-				} else {
-					if served, ok := s.ensureImageServeable(imgPath); ok {
-						imageURLs = append(imageURLs, serveRoutePath(s.cfg.imagesRoute(), s.imageOutputDir(), served))
-					}
-				}
-			}
-			if len(imageURLs) > 0 {
+			if imageURLs := s.toolImageURLs(ev.ToolImages); len(imageURLs) > 0 {
 				payload["images"] = imageURLs
 			}
 		}

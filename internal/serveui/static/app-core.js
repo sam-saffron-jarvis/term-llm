@@ -957,17 +957,26 @@ const sanitizeMessage = (msg) => {
     base.arguments = String(msg.arguments || '');
     base.status = msg.status === 'done' ? 'done' : 'running';
     base.expanded = Boolean(msg.expanded);
+    if (Array.isArray(msg.images) && msg.images.length > 0) {
+      base.images = msg.images.map((url) => String(url || '').trim()).filter(Boolean);
+    }
     return base;
   }
 
   if (role === 'tool-group') {
-    base.tools = Array.isArray(msg.tools) ? msg.tools.map(t => ({
-      id: String(t.id || ''),
-      name: String(t.name || 'tool'),
-      arguments: String(t.arguments || ''),
-      status: t.status === 'done' ? 'done' : 'running',
-      created: asTimestamp(t.created)
-    })) : [];
+    base.tools = Array.isArray(msg.tools) ? msg.tools.map(t => {
+      const tool = {
+        id: String(t.id || ''),
+        name: String(t.name || 'tool'),
+        arguments: String(t.arguments || ''),
+        status: t.status === 'done' ? 'done' : 'running',
+        created: asTimestamp(t.created)
+      };
+      if (Array.isArray(t.images) && t.images.length > 0) {
+        tool.images = t.images.map((url) => String(url || '').trim()).filter(Boolean);
+      }
+      return tool;
+    }) : [];
     base.expanded = Boolean(msg.expanded);
     base.status = msg.status === 'done' ? 'done' : 'running';
     return base;

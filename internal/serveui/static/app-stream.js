@@ -683,12 +683,21 @@ const applyResponseStreamEvent = (session, streamState, event, payload) => {
         updateVisibleToolGroupNode(session, streamState.currentToolGroup);
       }
     }
-    if (payload.images && payload.images.length > 0) {
-      const msg = streamState.ensureAssistantMessage();
-      payload.images.forEach((url) => {
-        msg.content += `\n\n![Generated Image](${url})\n`;
-      });
-      enqueueVisibleAssistantStreamUpdate(session, msg);
+    if (payload.images && payload.images.length > 0 && streamState.currentToolGroup) {
+      const callId = payload.call_id;
+      const entry = callId
+        ? streamState.currentToolGroup.tools.find((tool) => tool.id === callId)
+        : streamState.currentToolGroup.tools.findLast((tool) => tool.status === 'done')
+          || streamState.currentToolGroup.tools[streamState.currentToolGroup.tools.length - 1];
+      if (entry) {
+        const existing = Array.isArray(entry.images) ? entry.images : [];
+        payload.images.forEach((url) => {
+          const normalized = String(url || '').trim();
+          if (normalized && !existing.includes(normalized)) existing.push(normalized);
+        });
+        if (existing.length > 0) entry.images = existing;
+        updateVisibleToolGroupNode(session, streamState.currentToolGroup);
+      }
     }
     saveSessions();
     scheduleVisibleStreamScroll(session);

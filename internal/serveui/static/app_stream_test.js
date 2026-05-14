@@ -2074,6 +2074,62 @@ async function testSeededToolArgumentsIgnoreReplayDeltas() {
   pass(name);
 }
 
+async function testToolExecImagesAttachToToolArtifactNotAssistantMarkdown() {
+  const name = 'tool_exec.end images attach to tool artifact instead of assistant markdown';
+  const harness = createHarness();
+  const { app, state, cleanup } = harness;
+
+  const session = {
+    id: 'session_tool_image_artifact',
+    title: 'image artifact',
+    messages: [],
+    lastResponseId: null,
+    activeResponseId: 'resp_tool_image_artifact',
+    lastSequenceNumber: 0,
+    number: 1,
+  };
+  state.sessions.push(session);
+  state.activeSessionId = session.id;
+
+  const streamState = app.createResponseStreamState(session);
+  app.applyResponseStreamEvent(session, streamState, 'response.output_item.added', {
+    output_index: 0,
+    item: { type: 'function_call', call_id: 'call_img', name: 'image_generate' },
+  });
+  app.applyResponseStreamEvent(session, streamState, 'response.function_call_arguments.delta', {
+    output_index: 0,
+    delta: '{"prompt":"paint a cat"}',
+  });
+  app.applyResponseStreamEvent(session, streamState, 'response.output_item.done', {
+    output_index: 0,
+    item: { type: 'function_call', call_id: 'call_img', name: 'image_generate', arguments: '{"prompt":"paint a cat"}' },
+  });
+  app.applyResponseStreamEvent(session, streamState, 'response.tool_exec.end', {
+    call_id: 'call_img',
+    tool_name: 'image_generate',
+    success: true,
+    images: ['/ui/images/generated.png'],
+  });
+
+  const group = session.messages.find((message) => message.role === 'tool-group');
+  const tool = group && group.tools && group.tools[0];
+  if (!tool || !Array.isArray(tool.images) || tool.images[0] !== '/ui/images/generated.png') {
+    fail(name, 'tool image URL was not stored on tool artifact', JSON.stringify(group));
+    await cleanup();
+    return;
+  }
+
+  const assistant = session.messages.find((message) => message.role === 'assistant');
+  if (assistant && String(assistant.content || '').includes('Generated Image')) {
+    fail(name, 'image URL should not be injected as assistant markdown', JSON.stringify(assistant));
+    await cleanup();
+    return;
+  }
+
+  await cleanup();
+  pass(name);
+}
+
 async function testSendMessageLazilyMaterializesAttachmentDataURLs() {
   const name = 'sendMessage lazily materializes attachment data URLs only when sending';
   let readCount = 0;
@@ -2581,6 +2637,7 @@ function testRestoreLatestDraftMessageDoesNotCrossSessionBoundary() {
   await testArgumentDeltaWithoutOutputIndexUsesLastRunningTool();
   await testArgumentDeltasContinueUntilOutputItemDone();
   await testSeededToolArgumentsIgnoreReplayDeltas();
+  await testToolExecImagesAttachToToolArtifactNotAssistantMarkdown();
   await testResumeActiveResponseFallsBackToReplayWhenSnapshotUnavailable();
   await testResumeActiveResponseClearsTerminalTrackingWhen409SnapshotHasNoRecovery();
   await testSendMessageIncludesModelSwapForChangedTarget();

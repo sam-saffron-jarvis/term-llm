@@ -1672,6 +1672,30 @@
       min-width: 0;
     }
 
+    .tool-artifacts {
+      display: flex;
+      gap: 0.5rem;
+      flex-wrap: wrap;
+      padding: 0.7rem 0.75rem 0.7rem 2rem;
+      border-top: 1px solid var(--border);
+      background: var(--surface);
+    }
+
+    .tool-artifacts img {
+      max-width: min(360px, 100%);
+      max-height: 270px;
+      border-radius: 8px;
+      border: 1px solid var(--border);
+      object-fit: cover;
+      cursor: pointer;
+      transition: opacity 0.15s ease;
+      background: var(--surface-2);
+    }
+
+    .tool-artifacts img:hover {
+      opacity: 0.85;
+    }
+
     .markdown-body img,
     .markdown-body video {
       max-width: 100%;

@@ -607,6 +607,22 @@ func appendEllipsis(line string, width int) string {
 
 const subagentPromptPrefix = "  │ "
 
+// RenderImageArtifact renders an image for terminal output and always includes a
+// textual path caption. Some terminals advertise an image protocol but render the
+// escape/placeholder area as blank (for example through multiplexers); the
+// caption keeps generated-image artifacts visible and actionable in those cases.
+func RenderImageArtifact(path string) string {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return ""
+	}
+	caption := paramStyle.Render(fmt.Sprintf("[Generated image: %s]", path))
+	if r := RenderInlineImage(path); r != "" {
+		return caption + "\r\n" + r
+	}
+	return caption
+}
+
 // RenderSegments renders a list of segments to a string.
 func RenderSegments(segments []*Segment, width int, wavePos int, renderMarkdown func(string, int) string, includeImages bool, expanded bool) string {
 	return RenderSegmentsWithLeading(nil, segments, width, wavePos, renderMarkdown, includeImages, expanded)
@@ -690,7 +706,7 @@ func RenderSegmentsWithLeading(leading *Segment, segments []*Segment, width int,
 			rendered = renderAskUserResult(seg.Text)
 		case SegmentImage:
 			if includeImages {
-				if r := RenderInlineImage(seg.ImagePath); r != "" {
+				if r := RenderImageArtifact(seg.ImagePath); r != "" {
 					rendered = r + "\r\n"
 				}
 			}
@@ -730,7 +746,7 @@ func RenderImagesAndDiffs(segments []*Segment, width int) string {
 			if !first {
 				b.WriteString("\n")
 			}
-			if rendered := RenderInlineImage(seg.ImagePath); rendered != "" {
+			if rendered := RenderImageArtifact(seg.ImagePath); rendered != "" {
 				b.WriteString(rendered)
 				b.WriteString("\r\n")
 				first = false

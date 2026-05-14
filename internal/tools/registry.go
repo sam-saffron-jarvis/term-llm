@@ -188,8 +188,9 @@ func (r *LocalToolRegistry) AddShellPattern(pattern string) error {
 // SetServeMode marks tools as running in serve (web/telegram) mode.
 // This strips terminal-only params like copy_to_clipboard and show_image
 // from tool specs and disables clipboard operations during execution.
-// imageBaseURL is the URL prefix for serving generated images (e.g.
-// "/ui/images/"); pass "" when the platform doesn't serve images over HTTP.
+// imageBaseURL is retained for compatibility with older callers; generated
+// images are now reported through ToolOutput.Images and served by the
+// response-stream/session layers.
 func (r *LocalToolRegistry) SetServeMode(enabled bool, imageBaseURL string) {
 	if t, ok := r.tools[ImageGenerateToolName]; ok {
 		if ig, ok := t.(*ImageGenerateTool); ok {

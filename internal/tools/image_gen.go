@@ -29,8 +29,8 @@ type ImageGenerateTool struct {
 	imageRecorder     ImageRecorder
 	agent             string
 	sessionID         string
-	serveMode         bool   // When true, strip clipboard/terminal params from spec
-	serveImageBaseURL string // URL prefix for images in serve mode (e.g. "/ui/images/")
+	serveMode         bool   // When true, strip terminal-only params from spec/execution
+	serveImageBaseURL string // Deprecated compatibility knob; stream/session layers serve output.Images
 }
 
 // NewImageGenerateTool creates a new ImageGenerateTool.
@@ -364,8 +364,10 @@ func (t *ImageGenerateTool) Execute(ctx context.Context, args json.RawMessage) (
 		_ = t.imageRecorder.RecordImage(ctx, rec)
 	}
 
-	// Emit image marker for deferred display (default: true)
-	showImage := a.ShowImage == nil || *a.ShowImage
+	// Emit image marker for deferred display. In serve mode the web/telegram
+	// client owns image rendering and show_image is intentionally hidden from the
+	// tool schema, so ignore stale/legacy show_image:false arguments there.
+	showImage := t.serveMode || a.ShowImage == nil || *a.ShowImage
 
 	// Copy to clipboard if requested (default: true, disabled in serve mode)
 	copyClipboard := !t.serveMode && (a.CopyToClipboard == nil || *a.CopyToClipboard)
@@ -373,16 +375,24 @@ func (t *ImageGenerateTool) Execute(ctx context.Context, args json.RawMessage) (
 		image.CopyToClipboard(outputPath, result.Data)
 	}
 
-	// Build result
+	// Build result. Keep model-facing text semantic: the UI receives
+	// output.Images out-of-band and owns rendering the image artifact. Avoid
+	// returning a public web image URL here, otherwise models tend to embed the
+	// same image again in markdown after the client already displayed it.
 	var sb strings.Builder
-	if t.serveImageBaseURL != "" {
-		sb.WriteString(fmt.Sprintf("Generated image URL: %s\n", t.serveImageBaseURL+filepath.Base(servedPath)))
-		if a.OutputPath != "" {
-			sb.WriteString(fmt.Sprintf("Saved to: %s\n", outputPath))
-		}
+	if t.serveMode {
+		sb.WriteString("Generated image successfully.\n")
+		sb.WriteString("The image has already been displayed to the user by the client UI.\n")
 	} else {
 		sb.WriteString(fmt.Sprintf("Generated image saved to: %s\n", outputPath))
 	}
+	if servedPath != "" {
+		sb.WriteString(fmt.Sprintf("For follow-up edits, use this path as input_image: %s\n", servedPath))
+	}
+	if a.OutputPath != "" && outputPath != servedPath {
+		sb.WriteString(fmt.Sprintf("Requested save path: %s\n", outputPath))
+	}
+	sb.WriteString("Do not embed or repeat the image path in markdown unless the user explicitly asks for the file location.\n")
 	sb.WriteString(fmt.Sprintf("Prompt: %s\n", a.Prompt))
 	sb.WriteString(fmt.Sprintf("Format: %s\n", result.MimeType))
 	sb.WriteString(fmt.Sprintf("Size: %d bytes\n", len(result.Data)))

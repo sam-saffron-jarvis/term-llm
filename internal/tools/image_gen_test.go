@@ -143,7 +143,7 @@ func TestImageGenerateTool_RequiresApprovalForDefaultOutputDir(t *testing.T) {
 	}
 }
 
-func TestImageGenerateTool_ServeModeIncludesWebURL(t *testing.T) {
+func TestImageGenerateTool_ServeModeReturnsArtifactInstructions(t *testing.T) {
 	tmpDir := t.TempDir()
 	tmpDir, err := filepath.EvalSymlinks(tmpDir)
 	if err != nil {
@@ -166,12 +166,46 @@ func TestImageGenerateTool_ServeModeIncludesWebURL(t *testing.T) {
 		t.Fatalf("Execute error: %v", err)
 	}
 
-	// Web platform: URL path only, no disk path.
-	if !strings.Contains(out.Content, "Generated image URL: /ui/images/") {
-		t.Errorf("expected image URL in content, got:\n%s", out.Content)
+	// Web platform: model-facing text should describe the already-rendered
+	// artifact and keep a local path for follow-up edits, not invite markdown
+	// re-embedding with a web URL.
+	if strings.Contains(out.Content, "Generated image URL:") || strings.Contains(out.Content, "/ui/images/") {
+		t.Errorf("unexpected web image URL in model-facing content, got:\n%s", out.Content)
 	}
-	if strings.Contains(out.Content, tmpDir) {
-		t.Errorf("expected no disk path in web serve mode, got:\n%s", out.Content)
+	if !strings.Contains(out.Content, "already been displayed") {
+		t.Errorf("expected displayed-to-user instruction, got:\n%s", out.Content)
+	}
+	if !strings.Contains(out.Content, "use this path as input_image: "+tmpDir) {
+		t.Errorf("expected local input_image path for follow-up edits, got:\n%s", out.Content)
+	}
+	if !strings.Contains(out.Content, "Do not embed or repeat") {
+		t.Errorf("expected no-reembed instruction, got:\n%s", out.Content)
+	}
+}
+
+func TestImageGenerateTool_ServeModeIgnoresShowImageFalse(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfg := &config.Config{
+		Image: config.ImageConfig{
+			Provider:  "debug",
+			OutputDir: tmpDir,
+		},
+	}
+	tool := NewImageGenerateTool(nil, cfg, "debug", nil, "", "")
+	tool.serveMode = true
+
+	showImage := false
+	args, _ := json.Marshal(ImageGenerateArgs{Prompt: "a cat", ShowImage: &showImage})
+	out, err := tool.Execute(context.Background(), args)
+	if err != nil {
+		t.Fatalf("Execute error: %v", err)
+	}
+
+	if len(out.Images) != 1 || out.Images[0] == "" {
+		t.Fatalf("serve mode should always emit an image artifact, got %#v", out.Images)
+	}
+	if !strings.Contains(out.Content, "already been displayed") {
+		t.Errorf("expected serve-mode displayed-to-user instruction, got:\n%s", out.Content)
 	}
 }
 
@@ -200,12 +234,17 @@ func TestImageGenerateTool_ServeModeExplicitOutputPath(t *testing.T) {
 		t.Fatalf("Execute error: %v", err)
 	}
 
-	// Should have both the web URL and the explicit save path.
-	if !strings.Contains(out.Content, "Generated image URL: /ui/images/") {
-		t.Errorf("expected image URL in content, got:\n%s", out.Content)
+	// Should have no web URL in model-facing content. The explicit save path is
+	// still reported, while a generated copy under the output directory is exposed
+	// as the preferred input_image path for follow-up edits.
+	if strings.Contains(out.Content, "Generated image URL:") || strings.Contains(out.Content, "/ui/images/") {
+		t.Errorf("unexpected web image URL in content, got:\n%s", out.Content)
 	}
-	if !strings.Contains(out.Content, "Saved to: "+explicitPath) {
+	if !strings.Contains(out.Content, "Requested save path: "+explicitPath) {
 		t.Errorf("expected explicit output path in content, got:\n%s", out.Content)
+	}
+	if !strings.Contains(out.Content, "use this path as input_image: "+tmpDir) {
+		t.Errorf("expected generated image path for follow-up edits, got:\n%s", out.Content)
 	}
 }
 
@@ -232,12 +271,12 @@ func TestImageGenerateTool_TelegramServeModeNoWebURL(t *testing.T) {
 		t.Fatalf("Execute error: %v", err)
 	}
 
-	// Telegram: disk path present, no URL.
-	if !strings.Contains(out.Content, "Generated image saved to:") {
-		t.Errorf("expected 'saved to' with disk path in content, got:\n%s", out.Content)
-	}
+	// Telegram: no web URL, but the model still gets a local path for follow-up edits.
 	if strings.Contains(out.Content, "Generated image URL:") {
 		t.Errorf("unexpected image URL in telegram serve mode, got:\n%s", out.Content)
+	}
+	if !strings.Contains(out.Content, "use this path as input_image: "+tmpDir) {
+		t.Errorf("expected local input_image path in content, got:\n%s", out.Content)
 	}
 }
 

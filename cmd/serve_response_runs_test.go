@@ -158,6 +158,52 @@ func TestResponseRunCompactionKeepsReplayWindowInOrder(t *testing.T) {
 	}
 }
 
+func TestResponseRunRecoveryStoresToolImagesAsArtifacts(t *testing.T) {
+	run := newResponseRun("resp_images", "sess_test", "", "mock", time.Now().Unix(), func() {})
+
+	if err := run.appendEvent("response.output_item.added", map[string]any{
+		"item": map[string]any{
+			"type":      "function_call",
+			"call_id":   "call_img",
+			"name":      "image_generate",
+			"arguments": `{"prompt":"cat"}`,
+		},
+	}); err != nil {
+		t.Fatalf("append tool call: %v", err)
+	}
+	if err := run.appendEvent("response.tool_exec.end", map[string]any{
+		"call_id":   "call_img",
+		"tool_name": "image_generate",
+		"success":   true,
+		"images":    []string{"/ui/images/generated.png"},
+	}); err != nil {
+		t.Fatalf("append tool end: %v", err)
+	}
+
+	recovery := run.recoveryPayloadLocked()
+	messages, ok := recovery["messages"].([]map[string]any)
+	if !ok {
+		t.Fatalf("recovery messages type = %T", recovery["messages"])
+	}
+	if len(messages) != 1 {
+		t.Fatalf("recovery message count = %d, want only tool-group", len(messages))
+	}
+	if messages[0]["role"] != "tool-group" {
+		t.Fatalf("recovery role = %v, want tool-group", messages[0]["role"])
+	}
+	tools, ok := messages[0]["tools"].([]map[string]any)
+	if !ok || len(tools) != 1 {
+		t.Fatalf("recovery tools = %#v, want one tool", messages[0]["tools"])
+	}
+	images, ok := tools[0]["images"].([]string)
+	if !ok || len(images) != 1 || images[0] != "/ui/images/generated.png" {
+		t.Fatalf("tool images = %#v", tools[0]["images"])
+	}
+	if _, hasContent := messages[0]["content"]; hasContent {
+		t.Fatalf("tool artifact should not be injected as assistant markdown: %#v", messages[0]["content"])
+	}
+}
+
 func TestResponseRunConcurrentAppendsPreserveOrder(t *testing.T) {
 	const totalEvents = 200
 	const numWriters = 4

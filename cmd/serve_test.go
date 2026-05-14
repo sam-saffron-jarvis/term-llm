@@ -4583,6 +4583,93 @@ func TestHandleSessionMessages_OmitsToolResults(t *testing.T) {
 	}
 }
 
+func TestHandleSessionMessages_IncludesToolResultImages(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "sessions.db")
+	store, err := session.NewStore(session.Config{Enabled: true, Path: dbPath})
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+	sess := &session.Session{
+		ID: "sess-tool-image", Provider: "mock", Model: "mock-model",
+		Mode: session.ModeChat, CreatedAt: time.Now(), UpdatedAt: time.Now(), Status: session.StatusActive,
+	}
+	if err := store.Create(ctx, sess); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	imgDir := t.TempDir()
+	imgPath := filepath.Join(imgDir, "generated.png")
+	if err := os.WriteFile(imgPath, []byte("image-data"), 0644); err != nil {
+		t.Fatalf("write image: %v", err)
+	}
+
+	assistant := session.NewMessage("sess-tool-image", llm.Message{
+		Role: llm.RoleAssistant,
+		Parts: []llm.Part{{
+			Type: llm.PartToolCall,
+			ToolCall: &llm.ToolCall{
+				ID:        "call-img",
+				Name:      "image_generate",
+				Arguments: json.RawMessage(`{"prompt":"a cat"}`),
+			},
+		}},
+	}, -1)
+	if err := store.AddMessage(ctx, "sess-tool-image", assistant); err != nil {
+		t.Fatalf("AddMessage assistant: %v", err)
+	}
+	toolResult := session.NewMessage("sess-tool-image", llm.ToolResultMessageFromOutput("call-img", "image_generate", llm.ToolOutput{
+		Content: "Generated image successfully.",
+		Images:  []string{imgPath},
+	}, nil), -1)
+	if err := store.AddMessage(ctx, "sess-tool-image", toolResult); err != nil {
+		t.Fatalf("AddMessage tool result: %v", err)
+	}
+
+	srv := &serveServer{store: store, cfgRef: &config.Config{}}
+	srv.cfgRef.Image.OutputDir = imgDir
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/sessions/sess-tool-image/messages", nil)
+	rr := httptest.NewRecorder()
+	srv.handleSessionByID(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rr.Code)
+	}
+
+	var body struct {
+		Messages []struct {
+			Role  string `json:"role"`
+			Parts []struct {
+				Type       string   `json:"type"`
+				ToolName   string   `json:"tool_name"`
+				ToolCallID string   `json:"tool_call_id"`
+				Images     []string `json:"images"`
+			} `json:"parts"`
+		} `json:"messages"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(body.Messages) != 2 {
+		t.Fatalf("message count = %d, want 2", len(body.Messages))
+	}
+	if got := body.Messages[1].Role; got != "tool" {
+		t.Fatalf("tool result role = %q, want tool", got)
+	}
+	if len(body.Messages[1].Parts) != 1 {
+		t.Fatalf("tool result parts count = %d, want 1", len(body.Messages[1].Parts))
+	}
+	part := body.Messages[1].Parts[0]
+	if part.Type != "tool_result" || part.ToolName != "image_generate" || part.ToolCallID != "call-img" {
+		t.Fatalf("tool result part = %+v, want image_generate tool_result", part)
+	}
+	if len(part.Images) != 1 || !strings.HasPrefix(part.Images[0], "/images/") {
+		t.Fatalf("tool result images = %v, want /images/*", part.Images)
+	}
+}
+
 func TestHandleSessionMessages_OmitsSystemAndDeveloperMessages(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "sessions.db")
 	store, err := session.NewStore(session.Config{Enabled: true, Path: dbPath})

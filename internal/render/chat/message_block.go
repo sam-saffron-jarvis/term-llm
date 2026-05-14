@@ -275,10 +275,15 @@ func (r *MessageBlockRenderer) renderAssistantMessage(msg *session.Message) stri
 				b.WriteString("\n")
 				hasContent = true
 
+				result := r.findToolResult(part.ToolCall.ID)
+				if result != nil && len(result.Images) > 0 {
+					b.WriteString(r.renderToolImages(result.Images))
+				}
+
 				// Render diffs for supported tool calls by looking up the tool result
 				switch part.ToolCall.Name {
 				case "edit_file", "unified_diff", "spawn_agent", "write_file":
-					if result := r.findToolResult(part.ToolCall.ID); result != nil {
+					if result != nil {
 						// Prefer structured Diffs (new sessions)
 						diffs := result.Diffs
 						if len(diffs) == 0 {
@@ -324,6 +329,20 @@ func (r *MessageBlockRenderer) renderAssistantMessage(msg *session.Message) stri
 	// Keep tool-only assistant blocks compact: they already include line breaks.
 	// Text parts append paragraph spacing above.
 
+	return b.String()
+}
+
+func (r *MessageBlockRenderer) renderToolImages(images []string) string {
+	var b strings.Builder
+	for _, imagePath := range images {
+		if rendered := ui.RenderImageArtifact(imagePath); rendered != "" {
+			b.WriteString(rendered)
+			if !strings.HasSuffix(rendered, "\n") {
+				b.WriteString("\n")
+			}
+			b.WriteString("\n")
+		}
+	}
 	return b.String()
 }
 

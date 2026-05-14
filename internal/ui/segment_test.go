@@ -2,6 +2,7 @@ package ui
 
 import (
 	"encoding/json"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -208,6 +209,46 @@ func TestRenderToolCallFromPart_FallsBackToExtractedArgsWhenToolInfoMissing(t *t
 	}
 	if !strings.Contains(rendered, "path:main.go") {
 		t.Fatalf("expected fallback raw arg path in rendered output, got %q", rendered)
+	}
+}
+
+func TestRenderSegmentsImageFallbackWhenInlineUnsupported(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "generated-cat.png")
+	seg := &Segment{Type: SegmentImage, ImagePath: path, Complete: true}
+
+	rendered := StripANSI(RenderSegments([]*Segment{seg}, 80, -1, nil, true, false))
+	if !strings.Contains(rendered, "[Generated image: "+path+"]") {
+		t.Fatalf("expected image fallback placeholder, got %q", rendered)
+	}
+
+	withoutImages := StripANSI(RenderSegments([]*Segment{seg}, 80, -1, nil, false, false))
+	if strings.Contains(withoutImages, "Generated image") {
+		t.Fatalf("includeImages=false should suppress image artifacts, got %q", withoutImages)
+	}
+}
+
+func TestFlushToScrollbackImageFallbackIsVisible(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "generated-cat.png")
+	tracker := NewToolTracker()
+	tracker.AddImageSegment(path)
+
+	result := tracker.FlushToScrollback(80, 0, 100, nil)
+	plain := StripANSI(result.ToPrint)
+	if !strings.Contains(plain, "[Generated image: "+path+"]") {
+		t.Fatalf("expected visible image fallback in scrollback flush, got %q", plain)
+	}
+	if !tracker.Segments[0].Flushed {
+		t.Fatal("expected image segment to be marked flushed")
+	}
+}
+
+func TestRenderImagesAndDiffsImageFallback(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "generated-cat.png")
+	seg := &Segment{Type: SegmentImage, ImagePath: path, Complete: true}
+
+	rendered := StripANSI(RenderImagesAndDiffs([]*Segment{seg}, 80))
+	if !strings.Contains(rendered, "[Generated image: "+path+"]") {
+		t.Fatalf("expected image fallback placeholder, got %q", rendered)
 	}
 }
 

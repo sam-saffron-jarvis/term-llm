@@ -1096,6 +1096,8 @@ const createToolCard = (message) => {
   });
 
   card.appendChild(toggle);
+  const artifacts = createToolArtifactsNode(message);
+  if (artifacts) card.appendChild(artifacts);
   card.appendChild(details);
 
   wrapper.appendChild(card);
@@ -1239,6 +1241,7 @@ const updateToolNode = (message) => {
   if (args) {
     args.textContent = message.arguments || '(waiting for arguments…)';
   }
+  syncToolArtifactsNode(node.querySelector('.tool-card'), message);
 };
 
 const toolGroupSummaryText = (message) => {
@@ -1248,6 +1251,72 @@ const toolGroupSummaryText = (message) => {
     return `${total} tool call${total === 1 ? '' : 's'} completed`;
   }
   return `Running ${total} tool${total === 1 ? '' : 's'}… (${done}/${total} done)`;
+};
+
+const toolImageArtifacts = (message) => {
+  const artifacts = [];
+  const seen = new Set();
+  const append = (url, toolName) => {
+    const src = String(url || '').trim();
+    if (!src || seen.has(src)) return;
+    seen.add(src);
+    artifacts.push({ src, toolName: String(toolName || 'tool') });
+  };
+
+  if (Array.isArray(message?.images)) {
+    message.images.forEach((url) => append(url, message?.name));
+  }
+
+  const tools = Array.isArray(message?.tools) ? message.tools : [];
+  tools.forEach((tool) => {
+    const images = Array.isArray(tool?.images) ? tool.images : [];
+    images.forEach((url) => append(url, tool?.name));
+  });
+  return artifacts;
+};
+
+const createToolArtifactsNode = (message) => {
+  const artifacts = toolImageArtifacts(message);
+  if (artifacts.length === 0) return null;
+
+  const wrapper = document.createElement('div');
+  wrapper.className = 'tool-artifacts';
+
+  artifacts.forEach((artifact, index) => {
+    const img = document.createElement('img');
+    img.src = artifact.src;
+    img.alt = artifact.toolName === 'image_generate'
+      ? 'Generated image'
+      : `${artifact.toolName} image artifact`;
+    img.loading = 'lazy';
+    img.addEventListener('click', () => app.openLightbox(artifact.src));
+    img.dataset.artifactIndex = String(index);
+    wrapper.appendChild(img);
+  });
+
+  return wrapper;
+};
+
+const syncToolArtifactsNode = (card, message) => {
+  if (!card) return;
+  const existing = card.querySelector('.tool-artifacts');
+  const next = createToolArtifactsNode(message);
+  if (existing && next) {
+    existing.replaceWith(next);
+    return;
+  }
+  if (existing && !next) {
+    existing.remove();
+    return;
+  }
+  if (!existing && next) {
+    const details = card.querySelector('.tool-group-details') || card.querySelector('.tool-details');
+    if (details) {
+      card.insertBefore(next, details);
+    } else {
+      card.appendChild(next);
+    }
+  }
 };
 
 const createToolGroupNode = (message) => {
@@ -1299,6 +1368,8 @@ const createToolGroupNode = (message) => {
   });
 
   card.appendChild(toggle);
+  const groupArtifacts = createToolArtifactsNode(message);
+  if (groupArtifacts) card.appendChild(groupArtifacts);
   card.appendChild(details);
   wrapper.appendChild(card);
   wrapper.appendChild(createMetaNode(message.created));
@@ -1755,6 +1826,9 @@ const updateToolGroupNode = (message) => {
     }
   }
 
+  const card = node.querySelector('.tool-group-card');
+  syncToolArtifactsNode(card, message);
+
   const details = node.querySelector('.tool-group-details');
   if (details) {
     // Update existing entries or add new ones
@@ -1942,6 +2016,7 @@ Object.assign(app, {
   updateToolNode,
   toolGroupSummaryText,
   createToolGroupNode,
+  createToolArtifactsNode,
   formatToolArgs,
   getAssistantTurns,
   formatToolClipboardLines,

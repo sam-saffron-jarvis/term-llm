@@ -489,6 +489,60 @@ async function testDeveloperMessagesAreHidden() {
   pass(name);
 }
 
+async function testConvertServerMessagesAttachesToolResultImages() {
+  const name = 'server tool_result image parts attach to tool group artifacts';
+  const { app } = await createSessionsHarness();
+
+  const converted = app.convertServerMessages([
+    {
+      role: 'user',
+      created_at: 1000,
+      parts: [{ type: 'text', text: 'make an image' }],
+    },
+    {
+      role: 'assistant',
+      created_at: 2000,
+      parts: [{
+        type: 'tool_call',
+        tool_name: 'image_generate',
+        tool_call_id: 'call_img',
+        tool_arguments: '{"prompt":"cat"}',
+      }],
+    },
+    {
+      role: 'tool',
+      created_at: 3000,
+      parts: [{
+        type: 'tool_result',
+        tool_name: 'image_generate',
+        tool_call_id: 'call_img',
+        images: ['/ui/images/generated.png'],
+      }],
+    },
+    {
+      role: 'assistant',
+      created_at: 4000,
+      parts: [{ type: 'text', text: 'Done.' }],
+    },
+  ]);
+
+  const group = converted.find((message) => message.role === 'tool-group');
+  const tool = group && group.tools && group.tools[0];
+  if (!tool || !Array.isArray(tool.images) || tool.images[0] !== '/ui/images/generated.png') {
+    fail(name, 'converted tool group missing image artifact', JSON.stringify(converted));
+    return;
+  }
+  const assistantMarkdown = converted.find((message) => (
+    message.role === 'assistant' && String(message.content || '').includes('Generated Image')
+  ));
+  if (assistantMarkdown) {
+    fail(name, 'tool result image should not become assistant markdown', JSON.stringify(assistantMarkdown));
+    return;
+  }
+
+  pass(name);
+}
+
 async function testSessionHistoryPaginationLoadsAdditionalPages() {
   const name = 'session history pagination loads additional pages';
   const fetchCalls = [];
@@ -1636,6 +1690,7 @@ async function testSanitizeSessionPreservesLastMessageAt() {
   await testSwitchToSessionSyncsSelectedRuntime();
   await testNumericDeepLinkResolvesRealSessionId();
   await testDeveloperMessagesAreHidden();
+  await testConvertServerMessagesAttachesToolResultImages();
   await testSessionHistoryPaginationLoadsAdditionalPages();
   await testSessionHistoryPaginationFailureClearsEtagForRetry();
   await testSwitchToSessionSyncsWithoutTokenAndResumes();

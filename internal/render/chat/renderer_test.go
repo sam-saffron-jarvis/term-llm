@@ -496,7 +496,50 @@ func TestMessageBlockRenderer_NoDiffsWithoutContext(t *testing.T) {
 	// (The diff content is in the next message which we don't have access to)
 }
 
-// TestMessageBlockRenderer_NonEditFileToolNoDiff tests that non-edit_file tools don't try to render diffs.
+func TestMessageBlockRenderer_ToolImagesOnHydration(t *testing.T) {
+	toolCallID := "call-image"
+	messages := []session.Message{
+		{
+			ID:   1,
+			Role: llm.RoleAssistant,
+			Parts: []llm.Part{{
+				Type: llm.PartToolCall,
+				ToolCall: &llm.ToolCall{
+					ID:        toolCallID,
+					Name:      "image_generate",
+					Arguments: []byte(`{"prompt":"cat"}`),
+				},
+			}},
+			CreatedAt: time.Now(),
+		},
+		{
+			ID:   2,
+			Role: llm.RoleTool,
+			Parts: []llm.Part{{
+				Type: llm.PartToolResult,
+				ToolResult: &llm.ToolResult{
+					ID:      toolCallID,
+					Name:    "image_generate",
+					Content: "Generated image successfully.",
+					Images:  []string{"/tmp/generated-cat.png"},
+				},
+			}},
+			CreatedAt: time.Now(),
+		},
+	}
+
+	rb := NewMessageBlockRendererWithContext(80, simpleMarkdownRenderer, messages, 0, false)
+	block := rb.Render(&messages[0])
+	plain := ui.StripANSI(block.Rendered)
+
+	if !strings.Contains(plain, "image_generate") {
+		t.Fatalf("expected rendered block to contain image_generate tool call, got:\n%s", plain)
+	}
+	if !strings.Contains(plain, "Generated image: /tmp/generated-cat.png") {
+		t.Fatalf("expected generated image artifact placeholder in hydrated render, got:\n%s", plain)
+	}
+}
+
 func TestMessageBlockRenderer_NonEditFileToolNoDiff(t *testing.T) {
 	// Helper to create a __DIFF__: marker (even though shell shouldn't produce diffs)
 	makeDiffMarker := func(file, old, new string, line int) string {

@@ -536,6 +536,30 @@ async function run(name, fn) {
     assert(!entries.some(([, value]) => String(value).includes('/root/.local/share')), 'internal upload path should not be shown');
   });
 
+  await run('tool image artifacts render on tool group without assistant markdown', () => {
+    const { app } = createHarness();
+    const group = {
+      id: 'group_img',
+      role: 'tool-group',
+      status: 'done',
+      tools: [{
+        id: 'call_img',
+        name: 'image_generate',
+        status: 'done',
+        arguments: '{"prompt":"paint a cat"}',
+        images: ['/ui/images/generated.png'],
+      }],
+    };
+
+    const node = app.createToolGroupNode(group);
+    const artifacts = node.querySelector('.tool-artifacts');
+    assert(artifacts, 'artifact strip should render');
+    const img = artifacts.querySelector('img');
+    assert(img, 'artifact image should render');
+    assertEqual(img.src, '/ui/images/generated.png', 'artifact image src');
+    assertEqual(node.querySelectorAll('.markdown-body').length, 0, 'tool artifact should not create assistant markdown');
+  });
+
   await run('askUser messages do not split assistant turns', () => {
     const { app, session } = createHarness();
     session.messages = [

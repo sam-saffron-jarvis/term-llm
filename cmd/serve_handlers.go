@@ -1214,13 +1214,14 @@ func (s *serveServer) handleSessionByID(w http.ResponseWriter, r *http.Request) 
 	nextOffset := offset + len(msgs)
 
 	type partEntry struct {
-		Type       string `json:"type"`
-		Text       string `json:"text,omitempty"`
-		ToolName   string `json:"tool_name,omitempty"`
-		ToolArgs   string `json:"tool_arguments,omitempty"`
-		ToolCallID string `json:"tool_call_id,omitempty"`
-		ImageURL   string `json:"image_url,omitempty"`
-		MimeType   string `json:"mime_type,omitempty"`
+		Type       string   `json:"type"`
+		Text       string   `json:"text,omitempty"`
+		ToolName   string   `json:"tool_name,omitempty"`
+		ToolArgs   string   `json:"tool_arguments,omitempty"`
+		ToolCallID string   `json:"tool_call_id,omitempty"`
+		ImageURL   string   `json:"image_url,omitempty"`
+		Images     []string `json:"images,omitempty"`
+		MimeType   string   `json:"mime_type,omitempty"`
 	}
 
 	type messageEntry struct {
@@ -1298,7 +1299,16 @@ func (s *serveServer) handleSessionByID(w http.ResponseWriter, r *http.Request) 
 					entry.Parts = append(entry.Parts, pe)
 				}
 			case llm.PartToolResult:
-				// Omitted: UI ignores tool_result parts and they bloat payloads.
+				if p.ToolResult != nil && len(p.ToolResult.Images) > 0 {
+					if imageURLs := s.toolImageURLs(p.ToolResult.Images); len(imageURLs) > 0 {
+						entry.Parts = append(entry.Parts, partEntry{
+							Type:       "tool_result",
+							ToolName:   p.ToolResult.Name,
+							ToolCallID: p.ToolResult.ID,
+							Images:     imageURLs,
+						})
+					}
+				}
 			}
 		}
 		if len(entry.Parts) == 0 {
