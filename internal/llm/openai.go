@@ -16,7 +16,7 @@ type OpenAIProvider struct {
 	apiKey          string
 	model           string
 	effort          string           // reasoning effort: "low", "medium", "high", "xhigh", or ""
-	useWebSocket    bool             // Responses-over-WebSocket transport (default for built-in OpenAI configs)
+	useWebSocket    bool             // Responses-over-WebSocket transport (opt-in)
 	responsesClient *ResponsesClient // Shared client for Responses API with server state
 }
 

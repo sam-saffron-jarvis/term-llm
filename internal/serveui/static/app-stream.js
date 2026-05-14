@@ -211,7 +211,6 @@ const restoreDraftMessageForSession = (sessionId = state.activeSessionId, option
   }
   elements.promptInput.value = draft.prompt;
   autoGrowPrompt();
-  setConnectionState('Restored unsent draft message.', 'bad');
   return true;
 };
 

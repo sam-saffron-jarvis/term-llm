@@ -76,8 +76,8 @@ providers:
 	if !cfg.Providers["openai"].UseWebSocket {
 		t.Fatal("openai use_websocket = false, want true")
 	}
-	if !cfg.Providers["chatgpt"].UseWebSocket {
-		t.Fatal("chatgpt use_websocket = false, want default true")
+	if cfg.Providers["chatgpt"].UseWebSocket {
+		t.Fatal("chatgpt use_websocket = true, want default false")
 	}
 }
 
@@ -420,12 +420,12 @@ func TestGetDefaultsEnablesAutoCompact(t *testing.T) {
 	}
 }
 
-func TestGetDefaultsEnableWebSocketForOpenAIAndChatGPTOnly(t *testing.T) {
+func TestGetDefaultsDisableWebSocketForOpenAIAndChatGPT(t *testing.T) {
 	defaults := GetDefaults()
 	for _, key := range []string{"providers.openai.use_websocket", "providers.chatgpt.use_websocket"} {
 		got, ok := defaults[key].(bool)
-		if !ok || !got {
-			t.Fatalf("%s default = %#v, want true", key, defaults[key])
+		if !ok || got {
+			t.Fatalf("%s default = %#v, want false", key, defaults[key])
 		}
 	}
 	if _, ok := defaults["providers.openai_compatible.use_websocket"]; ok {

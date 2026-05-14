@@ -55,6 +55,22 @@ func (s *errAfterEventsStream) Close() error {
 	return nil
 }
 
+func drainStream(t *testing.T, stream Stream) {
+	t.Helper()
+	for {
+		event, err := stream.Recv()
+		if err == io.EOF {
+			return
+		}
+		if err != nil {
+			t.Fatalf("Recv() error: %v", err)
+		}
+		if event.Type == EventError && event.Err != nil {
+			t.Fatalf("stream error event: %v", event.Err)
+		}
+	}
+}
+
 type concurrentCloseStream struct {
 	mu          sync.Mutex
 	calls       int
@@ -2151,6 +2167,222 @@ func TestEngineResetConversationSkipsNonResettableProvider(t *testing.T) {
 
 	// Should not panic
 	e.ResetConversation()
+}
+
+func TestRunLoopCompactsOnFirstTurnWithExistingHistory(t *testing.T) {
+	RegisterConfigLimits([]ConfigModelLimit{{Provider: "fake", Model: "compact-first", InputLimit: 100}})
+	defer RegisterConfigLimits(nil)
+
+	provider := &fakeProvider{script: func(call int, req Request) []Event {
+		last := ""
+		if len(req.Messages) > 0 {
+			last = collectTextParts(req.Messages[len(req.Messages)-1].Parts)
+		}
+		if strings.Contains(last, compactionPrompt) {
+			return []Event{{Type: EventTextDelta, Text: "summary of the oversized conversation"}}
+		}
+		return []Event{{Type: EventTextDelta, Text: "ok"}, {Type: EventUsage, Use: &Usage{InputTokens: 10, OutputTokens: 1}}}
+	}}
+	e := NewEngine(provider, nil)
+	e.ConfigureContextManagement(provider, "fake", "compact-first", true)
+
+	stream, err := e.Stream(context.Background(), Request{
+		Model: "compact-first",
+		Messages: []Message{
+			SystemText("system"),
+			UserText(strings.Repeat("user history ", 120)),
+			AssistantText("previous answer"),
+			UserText("follow up"),
+		},
+		Tools: []ToolSpec{{Name: "dummy", Schema: map[string]any{"type": "object"}}},
+	})
+	if err != nil {
+		t.Fatalf("Stream() error = %v", err)
+	}
+	defer stream.Close()
+	drainStream(t, stream)
+
+	if len(provider.calls) != 2 {
+		t.Fatalf("provider calls = %d, want compaction + retried request", len(provider.calls))
+	}
+	if got := collectTextParts(provider.calls[0].Messages[len(provider.calls[0].Messages)-1].Parts); !strings.Contains(got, compactionPrompt) {
+		t.Fatalf("first call was not compaction prompt: %.80q", got)
+	}
+	if got := collectTextParts(provider.calls[1].Messages[1].Parts); !strings.Contains(got, summaryPrefix) || !strings.Contains(got, "summary of the oversized conversation") {
+		t.Fatalf("retried request did not use compacted summary: %.120q", got)
+	}
+}
+
+func TestRunLoopSoftThresholdRushesToCleanEndBeforeCompacting(t *testing.T) {
+	RegisterConfigLimits([]ConfigModelLimit{{Provider: "fake", Model: "compact-rush", InputLimit: 100}})
+	defer RegisterConfigLimits(nil)
+
+	provider := &fakeProvider{
+		hasCapabilities: true,
+		capabilities:    Capabilities{ToolCalls: true, SupportsToolChoice: true},
+		script: func(call int, req Request) []Event {
+			last := ""
+			if len(req.Messages) > 0 {
+				last = collectTextParts(req.Messages[len(req.Messages)-1].Parts)
+			}
+			if strings.Contains(last, compactionPrompt) {
+				return []Event{{Type: EventTextDelta, Text: "clean end summary"}}
+			}
+			return []Event{{Type: EventTextDelta, Text: "clean final answer"}, {Type: EventUsage, Use: &Usage{InputTokens: 84, OutputTokens: 2}}}
+		},
+	}
+	e := NewEngine(provider, nil)
+	e.ConfigureContextManagement(provider, "fake", "compact-rush", true)
+
+	stream, err := e.Stream(context.Background(), Request{
+		Model: "compact-rush",
+		Messages: []Message{
+			SystemText("system"),
+			UserText(strings.Repeat("soft threshold history ", 13)),
+			AssistantText("previous answer"),
+			UserText("continue"),
+		},
+		Tools: []ToolSpec{{Name: "dummy", Schema: map[string]any{"type": "object"}}},
+	})
+	if err != nil {
+		t.Fatalf("Stream() error = %v", err)
+	}
+	defer stream.Close()
+	drainStream(t, stream)
+
+	if len(provider.calls) != 2 {
+		for i, call := range provider.calls {
+			last := ""
+			if len(call.Messages) > 0 {
+				last = collectTextParts(call.Messages[len(call.Messages)-1].Parts)
+			}
+			t.Logf("call %d messages=%d tool_choice=%s last=%q", i, len(call.Messages), call.ToolChoice.Mode, last)
+		}
+		t.Fatalf("provider calls = %d, want rushed final call + compaction", len(provider.calls))
+	}
+	first := provider.calls[0]
+	if got := collectTextParts(first.Messages[len(first.Messages)-1].Parts); !strings.Contains(got, contextRushFinishPrompt) {
+		t.Fatalf("first call missing rush finish prompt: %.120q", got)
+	}
+	if first.ToolChoice.Mode != ToolChoiceNone {
+		t.Fatalf("first ToolChoice = %q, want none", first.ToolChoice.Mode)
+	}
+	if got := collectTextParts(provider.calls[1].Messages[len(provider.calls[1].Messages)-1].Parts); !strings.Contains(got, compactionPrompt) {
+		t.Fatalf("second call was not compaction prompt: %.80q", got)
+	}
+}
+
+func TestRunLoopPostLLMCompactsBeforeReplyingToToolCall(t *testing.T) {
+	RegisterConfigLimits([]ConfigModelLimit{{Provider: "fake", Model: "compact-after-llm", InputLimit: 100}})
+	defer RegisterConfigLimits(nil)
+
+	registry := NewToolRegistry()
+	registry.Register(&namedTestTool{name: "dummy"})
+
+	provider := &fakeProvider{script: func(call int, req Request) []Event {
+		last := ""
+		if len(req.Messages) > 0 {
+			last = collectTextParts(req.Messages[len(req.Messages)-1].Parts)
+		}
+		if strings.Contains(last, compactionPrompt) {
+			return []Event{{Type: EventTextDelta, Text: "summary before loose tool call"}}
+		}
+		if call == 0 {
+			return []Event{
+				{Type: EventToolCall, Tool: &ToolCall{ID: "call_dummy", Name: "dummy", Arguments: json.RawMessage(`{}`)}},
+				{Type: EventUsage, Use: &Usage{InputTokens: 94, OutputTokens: 1}},
+			}
+		}
+		return []Event{{Type: EventTextDelta, Text: "final"}, {Type: EventUsage, Use: &Usage{InputTokens: 20, OutputTokens: 1}}}
+	}}
+	e := NewEngine(provider, registry)
+	e.ConfigureContextManagement(provider, "fake", "compact-after-llm", true)
+
+	stream, err := e.Stream(context.Background(), Request{
+		Model: "compact-after-llm",
+		Messages: []Message{
+			SystemText("system"),
+			UserText("old user history that should be summarized"),
+			AssistantText("old answer"),
+			UserText("use the tool"),
+		},
+		Tools: registry.AllSpecs(),
+	})
+	if err != nil {
+		t.Fatalf("Stream() error = %v", err)
+	}
+	defer stream.Close()
+	drainStream(t, stream)
+
+	if len(provider.calls) != 3 {
+		t.Fatalf("provider calls = %d, want initial + compaction + tool-result reply", len(provider.calls))
+	}
+	if got := collectTextParts(provider.calls[1].Messages[len(provider.calls[1].Messages)-1].Parts); !strings.Contains(got, compactionPrompt) {
+		t.Fatalf("second call was not compaction prompt: %.80q", got)
+	}
+	finalReq := provider.calls[2]
+	if len(finalReq.Messages) < 5 {
+		t.Fatalf("final request has %d messages, want compacted summary + replayed tool call/result", len(finalReq.Messages))
+	}
+	if got := collectTextParts(finalReq.Messages[1].Parts); !strings.Contains(got, "summary before loose tool call") {
+		t.Fatalf("final request missing compacted summary: %.120q", got)
+	}
+	if strings.Contains(collectTextParts(finalReq.Messages[1].Parts), "old user history") {
+		t.Fatalf("final compacted summary unexpectedly contains raw old history: %.120q", collectTextParts(finalReq.Messages[1].Parts))
+	}
+	if finalReq.Messages[len(finalReq.Messages)-2].Role != RoleAssistant || finalReq.Messages[len(finalReq.Messages)-1].Role != RoleTool {
+		t.Fatalf("final request tail roles = %s/%s, want assistant/tool", finalReq.Messages[len(finalReq.Messages)-2].Role, finalReq.Messages[len(finalReq.Messages)-1].Role)
+	}
+	if len(finalReq.Messages[len(finalReq.Messages)-2].Parts) == 0 || finalReq.Messages[len(finalReq.Messages)-2].Parts[0].ToolCall == nil {
+		t.Fatalf("assistant tool call was not replayed after compaction: %+v", finalReq.Messages[len(finalReq.Messages)-2])
+	}
+}
+
+func TestRunLoopReactiveCompactsOnContextOverflowEvent(t *testing.T) {
+	RegisterConfigLimits([]ConfigModelLimit{{Provider: "fake", Model: "compact-reactive", InputLimit: 1000}})
+	defer RegisterConfigLimits(nil)
+
+	provider := &fakeProvider{script: func(call int, req Request) []Event {
+		last := ""
+		if len(req.Messages) > 0 {
+			last = collectTextParts(req.Messages[len(req.Messages)-1].Parts)
+		}
+		if strings.Contains(last, compactionPrompt) {
+			return []Event{{Type: EventTextDelta, Text: "reactive summary"}}
+		}
+		if call == 0 {
+			return []Event{{Type: EventError, Err: errors.New("Responses API error (context_length_exceeded): input exceeds the context window")}}
+		}
+		return []Event{{Type: EventTextDelta, Text: "ok after compaction"}, {Type: EventUsage, Use: &Usage{InputTokens: 10, OutputTokens: 1}}}
+	}}
+	e := NewEngine(provider, nil)
+	e.ConfigureContextManagement(provider, "fake", "compact-reactive", true)
+
+	stream, err := e.Stream(context.Background(), Request{
+		Model: "compact-reactive",
+		Messages: []Message{
+			SystemText("system"),
+			UserText("small history"),
+			AssistantText("previous answer"),
+			UserText("follow up"),
+		},
+		Tools: []ToolSpec{{Name: "dummy", Schema: map[string]any{"type": "object"}}},
+	})
+	if err != nil {
+		t.Fatalf("Stream() error = %v", err)
+	}
+	defer stream.Close()
+	drainStream(t, stream)
+
+	if len(provider.calls) != 3 {
+		t.Fatalf("provider calls = %d, want initial + compaction + retry", len(provider.calls))
+	}
+	if got := collectTextParts(provider.calls[1].Messages[len(provider.calls[1].Messages)-1].Parts); !strings.Contains(got, compactionPrompt) {
+		t.Fatalf("second call was not compaction prompt: %.80q", got)
+	}
+	if got := collectTextParts(provider.calls[2].Messages[1].Parts); !strings.Contains(got, "reactive summary") {
+		t.Fatalf("retry did not use reactive summary: %.120q", got)
+	}
 }
 
 func TestConfigureContextManagementClearsUnknownLimit(t *testing.T) {

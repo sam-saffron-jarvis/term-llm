@@ -19,6 +19,7 @@ const (
 	defaultMaxTurns             = 50
 	defaultMaxParallelToolCalls = 20
 	stopSearchToolHint          = "IMPORTANT: Do not call any tools. Use the information already retrieved and answer directly."
+	contextRushFinishPrompt     = "Context budget is getting tight. Please stop opening new tool work and finish the current turn now with a concise answer or a short handoff of exactly what remains. Do not call tools unless absolutely necessary."
 	callbackTimeout             = 5 * time.Second
 	toolHeartbeatInterval       = 10 * time.Second
 )
@@ -853,6 +854,43 @@ func (e *Engine) runLoop(ctx context.Context, req Request, send eventSender) err
 	}
 
 	var reactiveCompactionDone bool // prevents infinite retry if compacted context still overflows
+	var rushFinishInjected bool
+	softThresholdRatio := defaultSoftThresholdRatio
+	hardThresholdRatio := defaultHardThresholdRatio
+	if compactionConfig != nil {
+		if compactionConfig.SoftThresholdRatio > 0 {
+			softThresholdRatio = compactionConfig.SoftThresholdRatio
+		} else if compactionConfig.ThresholdRatio > 0 {
+			softThresholdRatio = compactionConfig.ThresholdRatio
+		}
+		if compactionConfig.HardThresholdRatio > 0 {
+			hardThresholdRatio = compactionConfig.HardThresholdRatio
+		} else if compactionConfig.ThresholdRatio > 0 {
+			hardThresholdRatio = compactionConfig.ThresholdRatio
+		}
+	}
+	contextThresholdState := func(messages []Message) (estimate, soft, hard int) {
+		if compactionConfig == nil || inputLimit <= 0 {
+			return 0, 0, 0
+		}
+		return e.estimatedTokens(messages), int(float64(inputLimit) * softThresholdRatio), int(float64(inputLimit) * hardThresholdRatio)
+	}
+	softCompactionThresholdReached := func(messages []Message) bool {
+		est, soft, _ := contextThresholdState(messages)
+		return soft > 0 && est >= soft
+	}
+	hardCompactionThresholdReached := func(messages []Message) bool {
+		est, _, hard := contextThresholdState(messages)
+		return hard > 0 && est >= hard
+	}
+	canCompactBeforeTurn := func(messages []Message) bool {
+		// Do not compact a brand-new one-shot request. Once there is prior
+		// conversation history (anything before the latest user/tool turn), the
+		// first provider turn of a resumed/continued stream must be eligible too;
+		// otherwise a large user follow-up can overflow before attempt > 0.
+		nonSystem := nonSystemMessages(messages)
+		return len(nonSystem) > 1
+	}
 	applyCompaction := func(result *CompactionResult) bool {
 		if cb := e.getCompactionCallback(); cb != nil {
 			if cbErr := cb(ctx, result); cbErr != nil {
@@ -868,6 +906,47 @@ func (e *Engine) runLoop(ctx context.Context, req Request, send eventSender) err
 		e.callbackMu.Unlock()
 		return true
 	}
+	maybeCompactAfterLLMCall := func(pending []Message) bool {
+		if compactionConfig == nil || !canCompactBeforeTurn(req.Messages) {
+			return false
+		}
+		candidate := append(append([]Message(nil), req.Messages...), pending...)
+		pendingHasToolCall := false
+		for _, msg := range pending {
+			for _, part := range msg.Parts {
+				if part.ToolCall != nil {
+					pendingHasToolCall = true
+					break
+				}
+			}
+			if pendingHasToolCall {
+				break
+			}
+		}
+		// Prefer compacting at clean end-of-turn boundaries (soft threshold). If
+		// the LLM just returned tool calls, hold off until the hard threshold so we
+		// don't unnecessarily compact while a tool call is loose. At the hard
+		// threshold we must compact now, then replay the tool call/result into the
+		// new compacted conversation.
+		shouldCompact := softCompactionThresholdReached(candidate)
+		if pendingHasToolCall {
+			shouldCompact = hardCompactionThresholdReached(candidate)
+		}
+		if !shouldCompact {
+			return false
+		}
+		if err := send.Send(Event{Type: EventPhase, Text: "Compacting context..."}); err != nil {
+			slog.Warn("send compaction phase failed", "error", err)
+			return false
+		}
+		result, err := Compact(ctx, e.provider, req.Model, systemPrompt, nonSystemMessages(req.Messages), *compactionConfig)
+		if err != nil {
+			slog.Warn("post-response compaction failed", "error", err)
+			return false
+		}
+		return applyCompaction(result)
+	}
+turnLoop:
 	for attempt := 0; attempt < maxTurns; attempt++ {
 		// Inject any tool specs registered mid-loop (e.g. via skill activation)
 		if pending := e.drainPendingToolSpecs(); len(pending) > 0 {
@@ -878,10 +957,13 @@ func (e *Engine) runLoop(ctx context.Context, req Request, send eventSender) err
 			}
 		}
 
-		// Pre-turn compaction check (skip first turn — no history to compact yet)
-		if compactionConfig != nil && attempt > 0 {
-			threshold := int(float64(inputLimit) * compactionConfig.ThresholdRatio)
-			if e.estimatedTokens(req.Messages) >= threshold {
+		// Pre-turn compaction check. This must also run on attempt 0 when the
+		// request already contains prior conversation history (for example after a
+		// user sends a new message in a long chat or after resuming a session). The
+		// old attempt>0 guard skipped exactly that case and allowed oversized first
+		// turns to hit the provider before auto-compaction had a chance to run.
+		if compactionConfig != nil && canCompactBeforeTurn(req.Messages) {
+			if hardCompactionThresholdReached(req.Messages) {
 				if err := send.Send(Event{Type: EventPhase, Text: "Compacting context..."}); err != nil {
 					return err
 				}
@@ -890,6 +972,14 @@ func (e *Engine) runLoop(ctx context.Context, req Request, send eventSender) err
 					applyCompaction(result)
 				}
 				// On error: continue with full context (best effort)
+			} else if !rushFinishInjected && softCompactionThresholdReached(req.Messages) {
+				rushFinishInjected = true
+				req.Messages = append(req.Messages, UserText(contextRushFinishPrompt))
+				if e.provider.Capabilities().SupportsToolChoice {
+					req.ToolChoice = ToolChoice{Mode: ToolChoiceNone}
+				} else {
+					req.Tools = nil
+				}
 			}
 		}
 		// Warning when compaction is disabled but tracking detects high usage
@@ -1059,11 +1149,33 @@ func (e *Engine) runLoop(ctx context.Context, req Request, send eventSender) err
 			}
 			if err != nil {
 				stream.Close()
+				if compactionConfig != nil && isContextOverflowError(err) && !reactiveCompactionDone && textBuilder.Len() == 0 && reasoningBuilder.Len() == 0 && len(toolCalls) == 0 && len(syncToolCalls) == 0 {
+					reactiveCompactionDone = true
+					if sendErr := send.Send(Event{Type: EventPhase, Text: "Compacting context..."}); sendErr != nil {
+						return sendErr
+					}
+					result, compactErr := Compact(ctx, e.provider, req.Model, systemPrompt, nonSystemMessages(req.Messages), *compactionConfig)
+					if compactErr == nil && applyCompaction(result) {
+						attempt-- // Retry this turn
+						continue turnLoop
+					}
+				}
 				persistPartialAssistant()
 				return err
 			}
 			if event.Type == EventError && event.Err != nil {
 				stream.Close()
+				if compactionConfig != nil && isContextOverflowError(event.Err) && !reactiveCompactionDone && textBuilder.Len() == 0 && reasoningBuilder.Len() == 0 && len(toolCalls) == 0 && len(syncToolCalls) == 0 {
+					reactiveCompactionDone = true
+					if sendErr := send.Send(Event{Type: EventPhase, Text: "Compacting context..."}); sendErr != nil {
+						return sendErr
+					}
+					result, compactErr := Compact(ctx, e.provider, req.Model, systemPrompt, nonSystemMessages(req.Messages), *compactionConfig)
+					if compactErr == nil && applyCompaction(result) {
+						attempt-- // Retry this turn
+						continue turnLoop
+					}
+				}
 				persistPartialAssistant()
 				return event.Err
 			}
@@ -1226,7 +1338,7 @@ func (e *Engine) runLoop(ctx context.Context, req Request, send eventSender) err
 
 		if len(toolCalls) == 0 && !syncToolsExecuted {
 			// No tools called - check if we should restore original tool choice and retry once
-			if originalToolChoice.Mode == ToolChoiceName && !restoredToolChoice {
+			if originalToolChoice.Mode == ToolChoiceName && !restoredToolChoice && !rushFinishInjected {
 				req.ToolChoice = originalToolChoice
 				restoredToolChoice = true
 				continue
@@ -1234,7 +1346,7 @@ func (e *Engine) runLoop(ctx context.Context, req Request, send eventSender) err
 			// Call turnCallback with final text-only response (no tools)
 			// Note: responseCallback is NOT called here because no tool execution follows.
 			// responseCallback is only for persisting assistant messages before tool execution.
-			if turnCallback != nil && (textBuilder.Len() > 0 || reasoningBuilder.Len() > 0 || reasoningItemID != "" || reasoningEncryptedContent != "") {
+			if textBuilder.Len() > 0 || reasoningBuilder.Len() > 0 || reasoningItemID != "" || reasoningEncryptedContent != "" {
 				finalMsg := Message{
 					Role: RoleAssistant,
 					Parts: []Part{{
@@ -1245,9 +1357,12 @@ func (e *Engine) runLoop(ctx context.Context, req Request, send eventSender) err
 						ReasoningEncryptedContent: reasoningEncryptedContent,
 					}},
 				}
-				cbCtx, cancel := callbackContext(ctx)
-				_ = turnCallback(cbCtx, attempt, []Message{finalMsg}, turnMetrics)
-				cancel()
+				maybeCompactAfterLLMCall([]Message{finalMsg})
+				if turnCallback != nil {
+					cbCtx, cancel := callbackContext(ctx)
+					_ = turnCallback(cbCtx, attempt, []Message{finalMsg}, turnMetrics)
+					cancel()
+				}
 			}
 			if err := send.Send(Event{Type: EventDone}); err != nil {
 				return err
@@ -1266,6 +1381,7 @@ func (e *Engine) runLoop(ctx context.Context, req Request, send eventSender) err
 				reasoningItemID,
 				reasoningEncryptedContent,
 			)
+			maybeCompactAfterLLMCall(append([]Message{assistantMsg}, syncToolResults...))
 			req.Messages = append(req.Messages, assistantMsg)
 			req.Messages = append(req.Messages, syncToolResults...)
 
@@ -1339,24 +1455,25 @@ func (e *Engine) runLoop(ctx context.Context, req Request, send eventSender) err
 			// Call turnCallback with text + unregistered tool calls
 			// Note: responseCallback is NOT called here because no tool execution follows.
 			// responseCallback is only for persisting assistant messages before tool execution.
-			if turnCallback != nil {
-				unregisteredWithInfo := e.withToolPreview(unregistered)
-				var parts []Part
-				if textBuilder.Len() > 0 || reasoningBuilder.Len() > 0 || reasoningItemID != "" || reasoningEncryptedContent != "" {
-					parts = append(parts, Part{
-						Type:                      PartText,
-						Text:                      textBuilder.String(),
-						ReasoningContent:          reasoningBuilder.String(),
-						ReasoningItemID:           reasoningItemID,
-						ReasoningEncryptedContent: reasoningEncryptedContent,
-					})
-				}
-				for i := range unregisteredWithInfo {
-					call := unregisteredWithInfo[i]
-					parts = append(parts, Part{Type: PartToolCall, ToolCall: &call})
-				}
-				if len(parts) > 0 {
-					finalMsg := Message{Role: RoleAssistant, Parts: parts}
+			unregisteredWithInfo := e.withToolPreview(unregistered)
+			var parts []Part
+			if textBuilder.Len() > 0 || reasoningBuilder.Len() > 0 || reasoningItemID != "" || reasoningEncryptedContent != "" {
+				parts = append(parts, Part{
+					Type:                      PartText,
+					Text:                      textBuilder.String(),
+					ReasoningContent:          reasoningBuilder.String(),
+					ReasoningItemID:           reasoningItemID,
+					ReasoningEncryptedContent: reasoningEncryptedContent,
+				})
+			}
+			for i := range unregisteredWithInfo {
+				call := unregisteredWithInfo[i]
+				parts = append(parts, Part{Type: PartToolCall, ToolCall: &call})
+			}
+			if len(parts) > 0 {
+				finalMsg := Message{Role: RoleAssistant, Parts: parts}
+				maybeCompactAfterLLMCall([]Message{finalMsg})
+				if turnCallback != nil {
 					cbCtx, cancel := callbackContext(ctx)
 					_ = turnCallback(cbCtx, attempt, []Message{finalMsg}, turnMetrics)
 					cancel()
@@ -1381,6 +1498,8 @@ func (e *Engine) runLoop(ctx context.Context, req Request, send eventSender) err
 			reasoningItemID,
 			reasoningEncryptedContent,
 		)
+
+		maybeCompactAfterLLMCall([]Message{assistantMsg})
 
 		// Call responseCallback BEFORE tool execution to persist assistant message
 		// This ensures the message is saved even if tool execution fails/crashes

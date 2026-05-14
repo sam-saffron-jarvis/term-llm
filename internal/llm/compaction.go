@@ -9,6 +9,8 @@ import (
 
 const (
 	defaultThresholdRatio     = 0.90
+	defaultSoftThresholdRatio = 0.80
+	defaultHardThresholdRatio = 0.95
 	defaultMaxToolResultChars = 80_000
 	defaultSummaryTokenBudget = 10_000
 	approxBytesPerToken       = 4
@@ -16,7 +18,9 @@ const (
 
 // CompactionConfig controls when and how context compaction occurs.
 type CompactionConfig struct {
-	ThresholdRatio     float64 // Fraction of context window to trigger (default 0.90)
+	ThresholdRatio     float64 // Legacy/default fraction of context window to trigger compaction (default 0.90)
+	SoftThresholdRatio float64 // Fraction where we try to finish the current turn cleanly (default 0.80)
+	HardThresholdRatio float64 // Fraction where we must compact before the next tool/LLM continuation (default 0.95)
 	MaxToolResultChars int     // Max chars per tool result when recording
 	SummaryTokenBudget int     // Max output tokens for the compaction summary
 	InputLimit         int     // Provider-effective input token limit (0 = use canonical)
@@ -26,6 +30,8 @@ type CompactionConfig struct {
 func DefaultCompactionConfig() CompactionConfig {
 	return CompactionConfig{
 		ThresholdRatio:     defaultThresholdRatio,
+		SoftThresholdRatio: defaultSoftThresholdRatio,
+		HardThresholdRatio: defaultHardThresholdRatio,
 		MaxToolResultChars: defaultMaxToolResultChars,
 		SummaryTokenBudget: defaultSummaryTokenBudget,
 	}
