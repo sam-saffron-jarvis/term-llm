@@ -663,15 +663,21 @@ func TestRenderStatusLine_ShowsCompactModelLabel(t *testing.T) {
 	}
 }
 
-func TestRenderStatusLine_UsesWholeSecondElapsedWhileStreaming(t *testing.T) {
+func TestRenderStatusLine_UsesReadableElapsedWhileStreaming(t *testing.T) {
 	m := newTestChatModel(false)
 	m.streaming = true
 	m.phase = "Thinking"
-	m.streamStartTime = time.Now().Add(-1500 * time.Millisecond)
+	m.streamStartTime = time.Now().Add(-8732 * time.Second)
 
 	line := ui.StripANSI(m.renderStatusLine())
 	if regexp.MustCompile(`\d+\.\d+s`).MatchString(line) {
 		t.Fatalf("expected elapsed time without sub-second precision, got %q", line)
+	}
+	if strings.Contains(line, "8732s") || strings.Contains(line, "8732.0s") {
+		t.Fatalf("expected elapsed time not to use raw seconds, got %q", line)
+	}
+	if !strings.Contains(line, "Thinking 2h25m32s") {
+		t.Fatalf("expected readable elapsed time in status line, got %q", line)
 	}
 }
 

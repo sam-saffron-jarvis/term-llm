@@ -735,11 +735,7 @@ func (m *Model) reflowTextarea() {
 }
 
 func formatChatElapsed(elapsed time.Duration) string {
-	seconds := int(elapsed / time.Second)
-	if seconds < 0 {
-		seconds = 0
-	}
-	return fmt.Sprintf("%ds", seconds)
+	return ui.FormatElapsedDuration(elapsed)
 }
 
 type statusSegment struct {

@@ -79,7 +79,6 @@ func (s StreamingIndicator) Render(styles *Styles) string {
 		b.WriteString(s.Spinner)
 		b.WriteString(" ")
 		b.WriteString(s.Phase)
-		b.WriteString("...")
 	}
 
 	// Show tokens and time during spinner phase only (not during tool execution)
@@ -88,7 +87,7 @@ func (s StreamingIndicator) Render(styles *Styles) string {
 		if s.Tokens > 0 {
 			b.WriteString(fmt.Sprintf("%s tokens | ", FormatTokenCount(s.Tokens)))
 		}
-		b.WriteString(fmt.Sprintf("%.1fs", s.Elapsed.Seconds()))
+		b.WriteString(FormatElapsedDuration(s.Elapsed))
 	}
 
 	if s.Status != "" {
@@ -104,4 +103,34 @@ func (s StreamingIndicator) Render(styles *Styles) string {
 	}
 
 	return b.String()
+}
+
+// FormatElapsedDuration formats an elapsed duration for compact progress displays.
+func FormatElapsedDuration(d time.Duration) string {
+	if d <= 0 {
+		return "0s"
+	}
+
+	totalSeconds := int64(d.Round(time.Second) / time.Second)
+	if totalSeconds <= 0 {
+		return "0s"
+	}
+
+	seconds := totalSeconds % 60
+	totalMinutes := totalSeconds / 60
+	minutes := totalMinutes % 60
+	totalHours := totalMinutes / 60
+	hours := totalHours % 24
+	days := totalHours / 24
+
+	if days > 0 {
+		return fmt.Sprintf("%dd%02dh%02dm%02ds", days, hours, minutes, seconds)
+	}
+	if totalHours > 0 {
+		return fmt.Sprintf("%dh%02dm%02ds", totalHours, minutes, seconds)
+	}
+	if totalMinutes > 0 {
+		return fmt.Sprintf("%dm%02ds", totalMinutes, seconds)
+	}
+	return fmt.Sprintf("%ds", seconds)
 }
