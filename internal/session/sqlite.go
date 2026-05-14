@@ -3,6 +3,7 @@ package session
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -81,6 +82,7 @@ CREATE TABLE IF NOT EXISTS messages (
     parts TEXT NOT NULL,
     text_content TEXT,
     duration_ms INTEGER,
+    turn_index INTEGER DEFAULT 0,
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     sequence INTEGER NOT NULL
 );
@@ -126,6 +128,7 @@ CREATE TABLE messages (
     parts TEXT NOT NULL,
     text_content TEXT,
     duration_ms INTEGER,
+    turn_index INTEGER DEFAULT 0,
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     sequence INTEGER NOT NULL
 )`
@@ -200,7 +203,7 @@ func NewSQLiteStore(cfg Config) (*SQLiteStore, error) {
 // - Fresh databases get the full schema from `schema` const and start at this version
 // - Existing databases run migrations to reach this version
 // Increment when adding new migrations.
-const schemaVersion = 22
+const schemaVersion = 23
 
 // migration represents a schema migration.
 type migration struct {
@@ -697,6 +700,18 @@ var migrations = []migration{
 			return rebuildMessagesTableForCurrentRoles(db)
 		},
 	},
+	{
+		// Migration 23: Add turn_index for debugging and per-turn stats.
+		version:     23,
+		description: "add message turn_index column",
+		up: func(db *sql.DB) error {
+			_, err := db.Exec("ALTER TABLE messages ADD COLUMN turn_index INTEGER DEFAULT 0")
+			if err != nil && !isDuplicateColumnError(err) {
+				return err
+			}
+			return nil
+		},
+	},
 }
 
 func rebuildMessagesTableForCurrentRoles(db *sql.DB) error {
@@ -710,8 +725,8 @@ func rebuildMessagesTableForCurrentRoles(db *sql.DB) error {
 		`DROP TABLE IF EXISTS messages_fts`,
 		`ALTER TABLE messages RENAME TO messages_old`,
 		messagesTableSchema,
-		`INSERT INTO messages (id, session_id, role, parts, text_content, duration_ms, created_at, sequence)
-		 SELECT id, session_id, role, parts, text_content, duration_ms, created_at, sequence
+		`INSERT INTO messages (id, session_id, role, parts, text_content, duration_ms, turn_index, created_at, sequence)
+		 SELECT id, session_id, role, parts, text_content, duration_ms, 0, created_at, sequence
 		 FROM messages_old`,
 		`DROP TABLE messages_old`,
 		`CREATE INDEX IF NOT EXISTS idx_messages_session_id ON messages(session_id, sequence)`,
@@ -1428,9 +1443,9 @@ func (s *SQLiteStore) AddMessage(ctx context.Context, sessionID string, msg *Mes
 		}
 
 		result, err := tx.ExecContext(ctx, `
-			INSERT INTO messages (session_id, role, parts, text_content, duration_ms, created_at, sequence)
-			VALUES (?, ?, ?, ?, ?, ?, ?)`,
-			sessionID, string(msg.Role), partsJSON, msg.TextContent, msg.DurationMs, msg.CreatedAt, msg.Sequence)
+			INSERT INTO messages (session_id, role, parts, text_content, duration_ms, turn_index, created_at, sequence)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+			sessionID, string(msg.Role), partsJSON, msg.TextContent, msg.DurationMs, msg.TurnIndex, msg.CreatedAt, msg.Sequence)
 		if err != nil {
 			return fmt.Errorf("insert message: %w", err)
 		}
@@ -1490,9 +1505,9 @@ func (s *SQLiteStore) UpdateMessage(ctx context.Context, sessionID string, msg *
 
 		result, err := tx.ExecContext(ctx, `
 			UPDATE messages
-			SET role = ?, parts = ?, text_content = ?, duration_ms = ?
+			SET role = ?, parts = ?, text_content = ?, duration_ms = ?, turn_index = ?
 			WHERE id = ? AND session_id = ?`,
-			string(msg.Role), partsJSON, msg.TextContent, msg.DurationMs, msg.ID, sessionID)
+			string(msg.Role), partsJSON, msg.TextContent, msg.DurationMs, msg.TurnIndex, msg.ID, sessionID)
 		if err != nil {
 			return fmt.Errorf("update message: %w", err)
 		}
@@ -1549,9 +1564,9 @@ func (s *SQLiteStore) ReplaceMessages(ctx context.Context, sessionID string, mes
 			}
 
 			_, err = tx.ExecContext(ctx, `
-				INSERT INTO messages (session_id, role, parts, text_content, duration_ms, created_at, sequence)
-				VALUES (?, ?, ?, ?, ?, ?, ?)`,
-				sessionID, string(msg.Role), partsJSON, msg.TextContent, msg.DurationMs, msg.CreatedAt, msg.Sequence)
+				INSERT INTO messages (session_id, role, parts, text_content, duration_ms, turn_index, created_at, sequence)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+				sessionID, string(msg.Role), partsJSON, msg.TextContent, msg.DurationMs, msg.TurnIndex, msg.CreatedAt, msg.Sequence)
 			if err != nil {
 				return fmt.Errorf("insert message %d: %w", i, err)
 			}
@@ -1602,9 +1617,9 @@ func (s *SQLiteStore) CompactMessages(ctx context.Context, sessionID string, mes
 			}
 
 			_, err = tx.ExecContext(ctx, `
-				INSERT INTO messages (session_id, role, parts, text_content, duration_ms, created_at, sequence)
-				VALUES (?, ?, ?, ?, ?, ?, ?)`,
-				sessionID, string(msg.Role), partsJSON, msg.TextContent, msg.DurationMs, msg.CreatedAt, msg.Sequence)
+				INSERT INTO messages (session_id, role, parts, text_content, duration_ms, turn_index, created_at, sequence)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+				sessionID, string(msg.Role), partsJSON, msg.TextContent, msg.DurationMs, msg.TurnIndex, msg.CreatedAt, msg.Sequence)
 			if err != nil {
 				return fmt.Errorf("insert message %d: %w", i, err)
 			}
@@ -1626,7 +1641,7 @@ func (s *SQLiteStore) CompactMessages(ctx context.Context, sessionID string, mes
 // sequence number. Used on resume to load only post-compaction messages.
 func (s *SQLiteStore) GetMessagesFrom(ctx context.Context, sessionID string, fromSeq int) ([]Message, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, session_id, role, parts, text_content, duration_ms, created_at, sequence
+		SELECT id, session_id, role, parts, text_content, duration_ms, turn_index, created_at, sequence
 		FROM messages
 		WHERE session_id = ? AND sequence >= ?
 		ORDER BY sequence ASC`, sessionID, fromSeq)
@@ -1641,7 +1656,7 @@ func (s *SQLiteStore) GetMessagesFrom(ctx context.Context, sessionID string, fro
 		var partsJSON string
 		var durationMs sql.NullInt64
 		err := rows.Scan(&msg.ID, &msg.SessionID, &msg.Role, &partsJSON,
-			&msg.TextContent, &durationMs, &msg.CreatedAt, &msg.Sequence)
+			&msg.TextContent, &durationMs, &msg.TurnIndex, &msg.CreatedAt, &msg.Sequence)
 		if err != nil {
 			return nil, fmt.Errorf("scan message: %w", err)
 		}
@@ -1656,10 +1671,36 @@ func (s *SQLiteStore) GetMessagesFrom(ctx context.Context, sessionID string, fro
 	return messages, rows.Err()
 }
 
+// GetMessageByID retrieves a single message by its global message id.
+func (s *SQLiteStore) GetMessageByID(ctx context.Context, msgID int64) (*Message, error) {
+	row := s.db.QueryRowContext(ctx, `
+		SELECT id, session_id, role, parts, text_content, duration_ms, turn_index, created_at, sequence
+		FROM messages
+		WHERE id = ?`, msgID)
+	var msg Message
+	var partsJSON string
+	var durationMs sql.NullInt64
+	err := row.Scan(&msg.ID, &msg.SessionID, &msg.Role, &partsJSON,
+		&msg.TextContent, &durationMs, &msg.TurnIndex, &msg.CreatedAt, &msg.Sequence)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("scan message: %w", err)
+	}
+	if durationMs.Valid {
+		msg.DurationMs = durationMs.Int64
+	}
+	if err := msg.SetPartsFromJSON(partsJSON); err != nil {
+		return nil, fmt.Errorf("deserialize parts: %w", err)
+	}
+	return &msg, nil
+}
+
 // GetMessages retrieves messages for a session.
 func (s *SQLiteStore) GetMessages(ctx context.Context, sessionID string, limit, offset int) ([]Message, error) {
 	query := `
-		SELECT id, session_id, role, parts, text_content, duration_ms, created_at, sequence
+		SELECT id, session_id, role, parts, text_content, duration_ms, turn_index, created_at, sequence
 		FROM messages
 		WHERE session_id = ?
 		ORDER BY sequence ASC`
@@ -1689,7 +1730,7 @@ func (s *SQLiteStore) GetMessages(ctx context.Context, sessionID string, limit, 
 		var partsJSON string
 		var durationMs sql.NullInt64
 		err := rows.Scan(&msg.ID, &msg.SessionID, &msg.Role, &partsJSON,
-			&msg.TextContent, &durationMs, &msg.CreatedAt, &msg.Sequence)
+			&msg.TextContent, &durationMs, &msg.TurnIndex, &msg.CreatedAt, &msg.Sequence)
 		if err != nil {
 			return nil, fmt.Errorf("scan message: %w", err)
 		}

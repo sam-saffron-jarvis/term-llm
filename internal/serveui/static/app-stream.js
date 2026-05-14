@@ -3310,13 +3310,13 @@ const sendMessage = async (options = {}) => {
 
     const body = {
       stream: true,
-      message: inputContent
+      input: [{ type: 'message', role: 'user', content: inputContent }]
     };
 
-    // First-party UI sessions use the explicit append endpoint: the browser sends
-    // one new user message to the server-owned session. Do not send
-    // previous_response_id and do not replay browser-local history; that turns
-    // the UI into an unreliable shadow database.
+    const previousResponseId = String(session.lastResponseId || '').trim();
+    if (previousResponseId && session.messages.length > 1) {
+      body.previous_response_id = previousResponseId;
+    }
 
     const normalizeEffortForCompare = (value) => {
       const normalized = String(value || '').trim();
@@ -3357,7 +3357,7 @@ const sendMessage = async (options = {}) => {
       }
     }
 
-    let response = await fetch(`${UI_PREFIX}/v1/sessions/${encodeURIComponent(session.id)}/messages`, {
+    let response = await fetch(`${UI_PREFIX}/v1/responses`, {
       method: 'POST',
       headers: requestHeaders(session.id),
       body: JSON.stringify(body),
