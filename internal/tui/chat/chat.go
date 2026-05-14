@@ -771,6 +771,22 @@ func (m *Model) resetTracker() {
 	m.viewCache.lastWavePos = 0
 }
 
+func (m *Model) preserveStreamingContentOnError() {
+	if !m.altScreen || m.tracker == nil {
+		return
+	}
+	m.tracker.CompleteTextSegments(func(text string) string {
+		return m.renderMarkdown(text)
+	})
+	m.tracker.ForceFailPendingTools()
+	completed := m.tracker.CompletedSegments()
+	if len(completed) == 0 {
+		return
+	}
+	m.resetAltScreenStreamingAppendCache()
+	m.viewCache.completedStream = ui.RenderSegmentsWithImageRenderer(completed, m.width, -1, m.renderMd, true, m.toolsExpanded, m.imageArtifactRenderer())
+}
+
 // SetAgentResolver configures the function used to resolve agent names
 // during /handover. The function should match cmd.LoadAgent's signature.
 func (m *Model) SetAgentResolver(resolver func(name string, cfg *config.Config) (*agents.Agent, error)) {
@@ -1274,10 +1290,13 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// This resets local scheduling state for the next stream.
 				// An already in-flight render tick may still arrive and no-op.
 				m.streamRenderTickPending = false
+				m.preserveStreamingContentOnError()
 				m.streaming = false
 				m.err = ev.Err
 				// Error line is part of alt-screen viewport content; force refresh.
 				if m.altScreen {
+					m.viewCache.historyValid = false
+					m.resetAltScreenStreamingAppendCache()
 					m.bumpContentVersion()
 				}
 
@@ -1441,7 +1460,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 
 		case ui.StreamEventRetry:
-			m.retryStatus = fmt.Sprintf("Rate limited (%d/%d), waiting %.0fs...",
+			m.retryStatus = fmt.Sprintf("Retrying stream (%d/%d), waiting %.1fs...",
 				ev.RetryAttempt, ev.RetryMax, ev.RetryWait)
 
 		case ui.StreamEventImage:

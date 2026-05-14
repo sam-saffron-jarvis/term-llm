@@ -20,6 +20,13 @@ const maxResponsesAPIErrorBodyBytes = 64 * 1024
 
 var truncatedResponsesAPIErrorBodySuffix = []byte("\n... response body truncated")
 
+const (
+	responsesWebSocketMaxAttempts = 3
+	responsesWebSocketMaxBackoff  = 2 * time.Second
+)
+
+var responsesWebSocketBaseBackoff = 250 * time.Millisecond
+
 // ResponsesClient makes raw HTTP calls to Open Responses-compliant endpoints.
 // See https://www.openresponses.org/specification
 type ResponsesClient struct {
@@ -627,32 +634,73 @@ func (c *ResponsesClient) Stream(ctx context.Context, req ResponsesRequest, debu
 	}
 
 	if c.UseWebSocket && !c.websocketDisabled {
-		stream, err := c.streamWebSocketPrepared(ctx, wsReq, buildFullInput, debugRaw, responseStateGeneration)
-		if err == nil {
-			return &responsesWebSocketFallbackStream{
-				current: stream,
-				fallbacks: []func() (Stream, error){
-					func() (Stream, error) {
+		buildWebSocketFallbacks := func(nextAttempt int) []responsesWebSocketFallback {
+			fallbacks := make([]responsesWebSocketFallback, 0, responsesWebSocketMaxAttempts-nextAttempt+2)
+			for attempt := nextAttempt; attempt <= responsesWebSocketMaxAttempts; attempt++ {
+				attempt := attempt
+				wait := responsesWebSocketBackoff(attempt - 1)
+				fallbacks = append(fallbacks, responsesWebSocketFallback{
+					retry: &Event{
+						Type:             EventRetry,
+						RetryAttempt:     attempt,
+						RetryMaxAttempts: responsesWebSocketMaxAttempts,
+						RetryWaitSecs:    wait.Seconds(),
+					},
+					open: func() (Stream, error) {
+						c.closeWebSocket()
 						if debugRaw {
-							DebugRawSection(debugRaw, "Responses WebSocket Retry", "stream failed before emitting events")
+							DebugRawSection(debugRaw, "Responses WebSocket Retry", fmt.Sprintf("stream failed before emitting events; retrying WebSocket attempt %d/%d after %s", attempt, responsesWebSocketMaxAttempts, wait))
+						}
+						if err := sleepWithContext(ctx, wait); err != nil {
+							return nil, err
 						}
 						return c.streamWebSocketPrepared(ctx, wsReq, buildFullInput, debugRaw, responseStateGeneration)
 					},
-					func() (Stream, error) {
-						c.websocketDisabled = true
-						c.closeWebSocket()
-						if debugRaw {
-							DebugRawSection(debugRaw, "Responses WebSocket Fallback", "stream failed before emitting events")
-						}
-						return c.streamHTTPPrepared(ctx, httpPayload, buildFullInput, responseStateGeneration, debugRaw)
-					},
+				})
+			}
+			fallbacks = append(fallbacks, responsesWebSocketFallback{
+				open: func() (Stream, error) {
+					c.websocketDisabled = true
+					c.closeWebSocket()
+					if debugRaw {
+						DebugRawSection(debugRaw, "Responses WebSocket Fallback", "stream failed before emitting events")
+					}
+					return c.streamHTTPPrepared(ctx, httpPayload, buildFullInput, responseStateGeneration, debugRaw)
 				},
+			})
+			return fallbacks
+		}
+
+		stream, err := c.streamWebSocketPrepared(ctx, wsReq, buildFullInput, debugRaw, responseStateGeneration)
+		if err == nil {
+			return &responsesWebSocketFallbackStream{
+				current:   stream,
+				fallbacks: buildWebSocketFallbacks(2),
 			}, nil
+		}
+		lastErr := err
+		for attempt := 2; attempt <= responsesWebSocketMaxAttempts; attempt++ {
+			wait := responsesWebSocketBackoff(attempt - 1)
+			c.closeWebSocket()
+			if debugRaw {
+				DebugRawSection(debugRaw, "Responses WebSocket Retry", fmt.Sprintf("initial stream setup failed: %v; retrying WebSocket attempt %d/%d after %s", lastErr, attempt, responsesWebSocketMaxAttempts, wait))
+			}
+			if err := sleepWithContext(ctx, wait); err != nil {
+				return nil, err
+			}
+			stream, err = c.streamWebSocketPrepared(ctx, wsReq, buildFullInput, debugRaw, responseStateGeneration)
+			if err == nil {
+				return &responsesWebSocketFallbackStream{
+					current:   stream,
+					fallbacks: buildWebSocketFallbacks(attempt + 1),
+				}, nil
+			}
+			lastErr = err
 		}
 		c.websocketDisabled = true
 		c.closeWebSocket()
 		if debugRaw {
-			DebugRawSection(debugRaw, "Responses WebSocket Fallback", err.Error())
+			DebugRawSection(debugRaw, "Responses WebSocket Fallback", lastErr.Error())
 		}
 	}
 
@@ -906,22 +954,82 @@ func (c *ResponsesClient) streamHTTPPrepared(ctx context.Context, httpPayload Re
 	}), nil
 }
 
+type NonRecoverableStreamError struct {
+	Err error
+}
+
+func (e *NonRecoverableStreamError) Error() string {
+	if e == nil || e.Err == nil {
+		return "Responses WebSocket disconnected after partial output; automatic retry is unsafe without rewinding. Partial response preserved."
+	}
+	return fmt.Sprintf("Responses WebSocket disconnected after partial output; automatic retry is unsafe without rewinding. Partial response preserved. Original error: %v", e.Err)
+}
+
+func (e *NonRecoverableStreamError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.Err
+}
+
+type responsesWebSocketFallback struct {
+	retry *Event
+	open  func() (Stream, error)
+}
+
 type responsesWebSocketFallbackStream struct {
-	current   Stream
-	fallbacks []func() (Stream, error)
-	emitted   bool
+	current         Stream
+	fallbacks       []responsesWebSocketFallback
+	emitted         bool
+	pendingFallback *responsesWebSocketFallback
+}
+
+func responsesWebSocketBackoff(retryAttempt int) time.Duration {
+	if retryAttempt < 1 {
+		retryAttempt = 1
+	}
+	backoff := responsesWebSocketBaseBackoff << (retryAttempt - 1)
+	if backoff > responsesWebSocketMaxBackoff {
+		return responsesWebSocketMaxBackoff
+	}
+	return backoff
+}
+
+func sleepWithContext(ctx context.Context, d time.Duration) error {
+	if d <= 0 {
+		return ctx.Err()
+	}
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }
 
 func (s *responsesWebSocketFallbackStream) Recv() (Event, error) {
+	if s.pendingFallback != nil {
+		return s.openPendingFallback()
+	}
 	event, err := s.current.Recv()
 	if err != nil {
-		if err == io.EOF || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || s.emitted || len(s.fallbacks) == 0 {
+		if err == io.EOF || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || len(s.fallbacks) == 0 {
 			return event, err
+		}
+		if s.emitted {
+			return event, &NonRecoverableStreamError{Err: err}
 		}
 		return s.switchToNextFallback(err)
 	}
-	if event.Type == EventError && !s.emitted && len(s.fallbacks) > 0 {
-		return s.switchToNextFallback(event.Err)
+	if event.Type == EventError {
+		if !s.emitted && len(s.fallbacks) > 0 {
+			return s.switchToNextFallback(event.Err)
+		}
+		if s.emitted && event.Err != nil {
+			event.Err = &NonRecoverableStreamError{Err: event.Err}
+		}
 	}
 	if event.Type != EventHeartbeat && event.Type != EventRetry {
 		s.emitted = true
@@ -929,15 +1037,36 @@ func (s *responsesWebSocketFallbackStream) Recv() (Event, error) {
 	return event, nil
 }
 
+func (s *responsesWebSocketFallbackStream) openPendingFallback() (Event, error) {
+	fb := s.pendingFallback
+	s.pendingFallback = nil
+	stream, err := fb.open()
+	if err != nil {
+		return s.switchToNextFallback(err)
+	}
+	s.current = stream
+	return s.Recv()
+}
+
 func (s *responsesWebSocketFallbackStream) switchToNextFallback(previousErr error) (Event, error) {
 	_ = s.current.Close()
 	lastErr := previousErr
+	if errors.Is(lastErr, context.Canceled) || errors.Is(lastErr, context.DeadlineExceeded) {
+		return Event{}, lastErr
+	}
 	for len(s.fallbacks) > 0 {
-		next := s.fallbacks[0]
+		fb := s.fallbacks[0]
 		s.fallbacks = s.fallbacks[1:]
-		stream, err := next()
+		if fb.retry != nil {
+			s.pendingFallback = &fb
+			return *fb.retry, nil
+		}
+		stream, err := fb.open()
 		if err != nil {
 			lastErr = err
+			if errors.Is(lastErr, context.Canceled) || errors.Is(lastErr, context.DeadlineExceeded) {
+				return Event{}, lastErr
+			}
 			continue
 		}
 		s.current = stream

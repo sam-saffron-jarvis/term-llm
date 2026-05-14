@@ -136,6 +136,93 @@ func TestUpdate_StreamError_BumpsContentVersion(t *testing.T) {
 	}
 }
 
+func TestUpdate_StreamError_PreservesAltScreenStreamingContent(t *testing.T) {
+	m := newTestChatModel(true)
+	m.width = 80
+	m.height = 20
+	m.syncAltScreenViewportHeight(m.buildFooterLayout().height)
+	m.streaming = true
+	m.tracker.AddTextSegment("partial streamed answer", m.width)
+	before := m.viewCache.contentVersion
+
+	_, _ = m.Update(streamEventMsg{event: ui.ErrorEvent(errors.New("boom"))})
+
+	if m.streaming {
+		t.Fatal("streaming should be false after stream error")
+	}
+	if m.err == nil {
+		t.Fatal("expected m.err after stream error")
+	}
+	if !strings.Contains(ui.StripANSI(m.viewCache.completedStream), "partial streamed answer") {
+		t.Fatalf("completedStream should preserve partial content, got %q", m.viewCache.completedStream)
+	}
+	view := ui.StripANSI(m.View().Content)
+	if !strings.Contains(view, "partial streamed answer") {
+		t.Fatalf("rendered view should contain partial content, got %q", view)
+	}
+	if !strings.Contains(view, "boom") {
+		t.Fatalf("rendered view should contain error, got %q", view)
+	}
+	if m.viewCache.contentVersion <= before {
+		t.Fatalf("contentVersion must advance on stream error (before=%d after=%d)", before, m.viewCache.contentVersion)
+	}
+}
+
+func TestUpdate_StreamError_MarksPendingToolsFailed(t *testing.T) {
+	m := newTestChatModel(true)
+	m.width = 80
+	m.height = 20
+	m.syncAltScreenViewportHeight(m.buildFooterLayout().height)
+	m.streaming = true
+	m.tracker.HandleToolStart("call-1", "read_file", "test.go", nil)
+
+	_, _ = m.Update(streamEventMsg{event: ui.ErrorEvent(errors.New("boom"))})
+
+	if len(m.tracker.Segments) != 1 {
+		t.Fatalf("segments = %d, want 1", len(m.tracker.Segments))
+	}
+	if m.tracker.Segments[0].ToolStatus != ui.ToolError {
+		t.Fatalf("pending tool status = %v, want ToolError", m.tracker.Segments[0].ToolStatus)
+	}
+	view := ui.StripANSI(m.View().Content)
+	if !strings.Contains(view, "read_file") || !strings.Contains(view, "boom") {
+		t.Fatalf("rendered view should contain failed tool and error, got %q", view)
+	}
+}
+
+func TestUpdate_StreamErrorBeforeAssistantOutputKeepsUserVisible(t *testing.T) {
+	m := newTestChatModel(true)
+	m.width = 80
+	m.height = 20
+	m.syncAltScreenViewportHeight(m.buildFooterLayout().height)
+	m.streaming = true
+	m.messages = []session.Message{*session.NewMessage(m.sess.ID, llm.UserText("hello from user"), 0)}
+	m.viewCache.historyValid = true
+
+	_, _ = m.Update(streamEventMsg{event: ui.ErrorEvent(errors.New("boom"))})
+
+	view := ui.StripANSI(m.View().Content)
+	if !strings.Contains(view, "hello from user") {
+		t.Fatalf("rendered view should keep user message visible, got %q", view)
+	}
+	if !strings.Contains(view, "boom") {
+		t.Fatalf("rendered view should contain error, got %q", view)
+	}
+}
+
+func TestUpdate_StreamRetryStatusIsGeneric(t *testing.T) {
+	m := newTestChatModel(true)
+
+	_, _ = m.Update(streamEventMsg{event: ui.RetryEvent(1, 2, 0.5)})
+
+	if !strings.Contains(m.retryStatus, "Retrying stream") {
+		t.Fatalf("retry status should be generic, got %q", m.retryStatus)
+	}
+	if strings.Contains(m.retryStatus, "Rate limited") {
+		t.Fatalf("retry status should not be rate-limit-specific, got %q", m.retryStatus)
+	}
+}
+
 func TestViewAltScreen_FirstRenderAnchorsToBottom(t *testing.T) {
 	provider := llm.NewMockProvider("mock")
 	engine := llm.NewEngine(provider, nil)

@@ -922,10 +922,21 @@ func (t *ToolTracker) FlushToScrollback(
 // Call this before FlushAllRemaining when streaming is done to ensure
 // no tools are left in pending state (which would be skipped during flush).
 func (t *ToolTracker) ForceCompletePendingTools() {
+	t.forceSetPendingTools(ToolSuccess)
+}
+
+// ForceFailPendingTools marks any pending tools as failed.
+// Use this when a stream terminates with an error so in-progress tools remain
+// visible without being misrepresented as successful.
+func (t *ToolTracker) ForceFailPendingTools() {
+	t.forceSetPendingTools(ToolError)
+}
+
+func (t *ToolTracker) forceSetPendingTools(status ToolStatus) {
 	for i := range t.Segments {
 		seg := &t.Segments[i]
 		if seg.Type == SegmentTool && seg.ToolStatus == ToolPending {
-			seg.ToolStatus = ToolSuccess
+			seg.ToolStatus = status
 		}
 	}
 }

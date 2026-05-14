@@ -3,6 +3,7 @@ package llm
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -290,6 +291,10 @@ func TestResponsesClientWebSocketFunctionCall(t *testing.T) {
 }
 
 func TestResponsesClientWebSocketConnectFailureFallsBackToHTTP(t *testing.T) {
+	oldBackoff := responsesWebSocketBaseBackoff
+	responsesWebSocketBaseBackoff = 0
+	defer func() { responsesWebSocketBaseBackoff = oldBackoff }()
+
 	var wsAttempts atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.EqualFold(r.Header.Get("Upgrade"), "websocket") {
@@ -324,8 +329,8 @@ func TestResponsesClientWebSocketConnectFailureFallsBackToHTTP(t *testing.T) {
 			if text != "fallback" {
 				t.Fatalf("text = %q, want fallback", text)
 			}
-			if wsAttempts.Load() != 1 {
-				t.Fatalf("websocket attempts = %d, want 1", wsAttempts.Load())
+			if wsAttempts.Load() != 3 {
+				t.Fatalf("websocket attempts = %d, want 3", wsAttempts.Load())
 			}
 			return
 		case EventError:
@@ -335,6 +340,10 @@ func TestResponsesClientWebSocketConnectFailureFallsBackToHTTP(t *testing.T) {
 }
 
 func TestResponsesClientWebSocketReadFailureBeforeEventsRetriesWebSocketThenFallsBackToHTTP(t *testing.T) {
+	oldBackoff := responsesWebSocketBaseBackoff
+	responsesWebSocketBaseBackoff = 0
+	defer func() { responsesWebSocketBaseBackoff = oldBackoff }()
+
 	var wsAttempts atomic.Int32
 	var httpAttempts atomic.Int32
 	upgrader := websocket.Upgrader{}
@@ -366,20 +375,26 @@ func TestResponsesClientWebSocketReadFailureBeforeEventsRetriesWebSocketThenFall
 	defer stream.Close()
 
 	var text string
+	var retries int
 	for {
 		event, err := stream.Recv()
 		if err != nil {
 			t.Fatalf("Recv: %v", err)
 		}
 		switch event.Type {
+		case EventRetry:
+			retries++
 		case EventTextDelta:
 			text += event.Text
 		case EventDone:
 			if text != "fallback after read" {
 				t.Fatalf("text = %q, want fallback after read", text)
 			}
-			if wsAttempts.Load() != 2 || httpAttempts.Load() != 1 {
-				t.Fatalf("attempts ws=%d http=%d, want 2/1", wsAttempts.Load(), httpAttempts.Load())
+			if wsAttempts.Load() != 3 || httpAttempts.Load() != 1 {
+				t.Fatalf("attempts ws=%d http=%d, want 3/1", wsAttempts.Load(), httpAttempts.Load())
+			}
+			if retries != responsesWebSocketMaxAttempts-1 {
+				t.Fatalf("retry events = %d, want %d", retries, responsesWebSocketMaxAttempts-1)
 			}
 			return
 		case EventError:
@@ -389,6 +404,10 @@ func TestResponsesClientWebSocketReadFailureBeforeEventsRetriesWebSocketThenFall
 }
 
 func TestResponsesClientWebSocketReadFailureBeforeEventsRetryCanRecover(t *testing.T) {
+	oldBackoff := responsesWebSocketBaseBackoff
+	responsesWebSocketBaseBackoff = 0
+	defer func() { responsesWebSocketBaseBackoff = oldBackoff }()
+
 	var wsAttempts atomic.Int32
 	var httpAttempts atomic.Int32
 	upgrader := websocket.Upgrader{}
@@ -401,7 +420,7 @@ func TestResponsesClientWebSocketReadFailureBeforeEventsRetryCanRecover(t *testi
 				return
 			}
 			defer conn.Close()
-			if attempt == 1 {
+			if attempt <= 2 {
 				return
 			}
 			_, _, _ = conn.ReadMessage()
@@ -422,25 +441,138 @@ func TestResponsesClientWebSocketReadFailureBeforeEventsRetryCanRecover(t *testi
 	defer stream.Close()
 
 	var text string
+	var retries int
 	for {
 		event, err := stream.Recv()
 		if err != nil {
 			t.Fatalf("Recv: %v", err)
 		}
 		switch event.Type {
+		case EventRetry:
+			retries++
 		case EventTextDelta:
 			text += event.Text
 		case EventDone:
 			if text != "websocket retry" {
 				t.Fatalf("text = %q, want websocket retry", text)
 			}
-			if wsAttempts.Load() != 2 || httpAttempts.Load() != 0 {
-				t.Fatalf("attempts ws=%d http=%d, want 2/0", wsAttempts.Load(), httpAttempts.Load())
+			if wsAttempts.Load() != 3 || httpAttempts.Load() != 0 {
+				t.Fatalf("attempts ws=%d http=%d, want 3/0", wsAttempts.Load(), httpAttempts.Load())
+			}
+			if retries != 2 {
+				t.Fatalf("retry events = %d, want 2", retries)
 			}
 			return
 		case EventError:
 			t.Fatalf("stream error: %v", event.Err)
 		}
+	}
+}
+
+func TestResponsesClientWebSocketReadFailureAfterEventsIsNonRecoverable(t *testing.T) {
+	oldBackoff := responsesWebSocketBaseBackoff
+	responsesWebSocketBaseBackoff = 0
+	defer func() { responsesWebSocketBaseBackoff = oldBackoff }()
+
+	var wsAttempts atomic.Int32
+	var httpAttempts atomic.Int32
+	upgrader := websocket.Upgrader{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.EqualFold(r.Header.Get("Upgrade"), "websocket") {
+			wsAttempts.Add(1)
+			conn, err := upgrader.Upgrade(w, r, nil)
+			if err != nil {
+				t.Errorf("upgrade: %v", err)
+				return
+			}
+			defer conn.Close()
+			_, _, _ = conn.ReadMessage()
+			_ = conn.WriteJSON(map[string]any{"type": "response.output_text.delta", "delta": "partial"})
+			return
+		}
+		httpAttempts.Add(1)
+		t.Fatal("HTTP fallback should not be used after visible WebSocket output")
+	}))
+	defer server.Close()
+
+	client := &ResponsesClient{BaseURL: server.URL, UseWebSocket: true}
+	stream, err := client.Stream(context.Background(), ResponsesRequest{Model: "gpt-test", Input: []ResponsesInputItem{{Type: "message", Role: "user", Content: "hi"}}, Stream: true}, false)
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	defer stream.Close()
+
+	event, err := stream.Recv()
+	if err != nil {
+		t.Fatalf("first Recv: %v", err)
+	}
+	if event.Type != EventTextDelta || event.Text != "partial" {
+		t.Fatalf("first event = %#v, want partial text", event)
+	}
+
+	event, err = stream.Recv()
+	if err != nil {
+		t.Fatalf("second Recv returned transport error instead of EventError: %v", err)
+	}
+	if event.Type != EventError || event.Err == nil {
+		t.Fatalf("second event = %#v, want error event", event)
+	}
+	var nonRecoverable *NonRecoverableStreamError
+	if !errors.As(event.Err, &nonRecoverable) {
+		t.Fatalf("error type = %T, want NonRecoverableStreamError: %v", event.Err, event.Err)
+	}
+	if !strings.Contains(event.Err.Error(), "Partial response preserved") || !strings.Contains(event.Err.Error(), "automatic retry is unsafe") {
+		t.Fatalf("non-recoverable message not actionable: %v", event.Err)
+	}
+	if wsAttempts.Load() != 1 || httpAttempts.Load() != 0 {
+		t.Fatalf("attempts ws=%d http=%d, want 1/0", wsAttempts.Load(), httpAttempts.Load())
+	}
+}
+
+func TestResponsesClientWebSocketBackoffHonorsContextCancellation(t *testing.T) {
+	oldBackoff := responsesWebSocketBaseBackoff
+	responsesWebSocketBaseBackoff = time.Hour
+	defer func() { responsesWebSocketBaseBackoff = oldBackoff }()
+
+	var wsAttempts atomic.Int32
+	upgrader := websocket.Upgrader{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.EqualFold(r.Header.Get("Upgrade"), "websocket") {
+			wsAttempts.Add(1)
+			conn, err := upgrader.Upgrade(w, r, nil)
+			if err != nil {
+				t.Errorf("upgrade: %v", err)
+				return
+			}
+			_ = conn.Close()
+			return
+		}
+		t.Fatal("HTTP fallback should not be reached when context is canceled during WebSocket backoff")
+	}))
+	defer server.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	client := &ResponsesClient{BaseURL: server.URL, UseWebSocket: true}
+	stream, err := client.Stream(ctx, ResponsesRequest{Model: "gpt-test", Input: []ResponsesInputItem{{Type: "message", Role: "user", Content: "hi"}}, Stream: true}, false)
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	defer stream.Close()
+
+	event, err := stream.Recv()
+	if err != nil {
+		t.Fatalf("first Recv: %v", err)
+	}
+	if event.Type != EventRetry {
+		t.Fatalf("first event = %#v, want retry", event)
+	}
+	cancel()
+	_, err = stream.Recv()
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Recv after cancel = %v, want context canceled", err)
+	}
+	if wsAttempts.Load() != 1 {
+		t.Fatalf("websocket attempts = %d, want 1", wsAttempts.Load())
 	}
 }
 
