@@ -28,7 +28,9 @@ func NewTextSegmentRenderer(width int) (*TextSegmentRenderer, error) {
 		Width:   width,
 	})
 
-	sr, err := streaming.NewRenderer(&output, renderer)
+	sr, err := streaming.NewRendererWithOptions(&output, renderer, []streaming.StreamRendererOption{
+		streaming.WithPartialRendering(),
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -84,6 +86,21 @@ func (r *TextSegmentRenderer) Rendered() string {
 // RenderedAll returns the full rendered output including already-flushed content.
 func (r *TextSegmentRenderer) RenderedAll() string {
 	return r.output.String()
+}
+
+// RenderedView returns the current view of the segment, including a safe preview
+// of any in-progress block when available, while still excluding content that
+// was already flushed to scrollback.
+func (r *TextSegmentRenderer) RenderedView() string {
+	if r.sr != nil && !r.sr.PendingIsTable() && !r.sr.PendingIsList() {
+		if preview, _, err := r.sr.PreviewRendered(); err == nil && preview != "" {
+			if r.flushedRenderedPos >= len(preview) {
+				return ""
+			}
+			return safeANSISlice(preview, r.flushedRenderedPos)
+		}
+	}
+	return r.RenderedUnflushed()
 }
 
 // RenderedUnflushed returns only the portion of rendered output that hasn't

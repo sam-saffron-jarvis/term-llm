@@ -1,6 +1,7 @@
 package streaming
 
 import (
+	"bytes"
 	"strings"
 )
 
@@ -23,6 +24,50 @@ func (sr *StreamRenderer) currentBlockContent() string {
 		content.WriteString(sr.lineBuf.String())
 	}
 	return content.String()
+}
+
+// PreviewRendered returns a full rendered snapshot including any safe preview of
+// the current incomplete block. It does not mutate the renderer's output state.
+// The boolean reports whether the returned snapshot includes preview content from
+// the current incomplete block.
+func (sr *StreamRenderer) PreviewRendered() (string, bool, error) {
+	content := sr.currentBlockContent()
+	if content == "" {
+		return string(sr.lastRendered), false, nil
+	}
+
+	safePoint := sr.findSafePoint(content)
+	if safePoint <= 0 {
+		return string(sr.lastRendered), false, nil
+	}
+
+	rendered, err := sr.renderPreviewDocument(content[:safePoint])
+	if err != nil {
+		return "", false, err
+	}
+
+	return string(rendered), true, nil
+}
+
+func (sr *StreamRenderer) renderPreviewDocument(safeContent string) ([]byte, error) {
+	var markdown bytes.Buffer
+	markdown.Grow(sr.allMarkdown.Len() + len(safeContent))
+	markdown.Write(sr.allMarkdown.Bytes())
+	markdown.WriteString(safeContent)
+
+	input := markdown.Bytes()
+	if sr.hasTabs {
+		input = bytes.ReplaceAll(input, []byte("\t"), []byte("  "))
+	}
+
+	rendered, err := sr.renderer.Render(input)
+	if err != nil {
+		return nil, err
+	}
+
+	rendered = normalizeNewlines(rendered)
+	rendered = bytes.TrimRight(rendered, "\n")
+	return rendered, nil
 }
 
 // renderPartialBlock renders safe content from an incomplete block.

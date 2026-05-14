@@ -527,6 +527,35 @@ func TestMarkCurrentTextComplete_SyncsRendererFlushedOffsetBeforeBoundaryFlush(t
 	}
 }
 
+func TestStreamingViewShowsInProgressParagraphWithoutNewline(t *testing.T) {
+	tracker := NewToolTracker()
+	tracker.AddTextSegment("Streaming text is visible immediately", 80)
+
+	segments := tracker.CompletedSegments()
+	content := StripANSI(RenderSegments(segments, 80, -1, nil, false, false))
+	if !strings.Contains(content, "Streaming text is visible immediately") {
+		t.Fatalf("expected in-progress paragraph text in view, got %q", content)
+	}
+}
+
+func TestStreamingViewPreservesSpacingBeforePendingParagraph(t *testing.T) {
+	tracker := NewToolTracker()
+	tracker.AddTextSegment("# Heading\n\n", 80)
+	tracker.AddTextSegment("Next paragraph is still streaming", 80)
+
+	segments := tracker.CompletedSegments()
+	content := StripANSI(RenderSegments(segments, 80, -1, nil, false, false))
+	if !strings.Contains(content, "Heading") {
+		t.Fatalf("expected heading in view, got %q", content)
+	}
+	if !strings.Contains(content, "Next paragraph is still streaming") {
+		t.Fatalf("expected pending paragraph in view, got %q", content)
+	}
+	if strings.Contains(content, "HeadingNext paragraph") {
+		t.Fatalf("expected rendered spacing between committed and pending blocks, got %q", content)
+	}
+}
+
 // TestDebugStreamingSimulation simulates streaming where text accumulates
 // in a single segment. With the streaming renderer, complete blocks are
 // rendered immediately as they arrive.
