@@ -73,7 +73,9 @@ Shells open as the non-root `agent` user in `/home/agent`. Use explicit password
 
 ## What gets bootstrapped
 
-The Compose service builds the managed agent image and mounts one persistent Docker volume at `/home/agent`. On first boot, the image copies bootstrap files from `/opt/term-llm/bootstrap` into that volume:
+The Compose service builds the managed agent image and mounts one persistent Docker volume at `/home/agent`. On first boot, the image copies bootstrap files from `/opt/term-llm/bootstrap` into that volume. The image also seeds the term-llm source checkout at `/home/agent/source/term-llm`, with documentation under `/home/agent/source/term-llm/docs-site/content`.
+
+Use `/home/agent/source/<project>` for source checkouts and code projects you want to persist. Use `/home/agent/Files` for downloadable files served by the Web UI. Avoid putting durable work in `/tmp`, `/root`, or other image-only paths.
 
 ```text
 /home/agent/.config/term-llm/
@@ -92,6 +94,8 @@ The Compose service builds the managed agent image and mounts one persistent Doc
 │   ├── memory/SKILL.md
 │   ├── self/SKILL.md
 │   └── widgets/SKILL.md
+├── source/
+│   └── term-llm/        # runtime source and docs-site/content documentation
 └── init.sh
 ```
 

@@ -16,8 +16,28 @@ The term-llm source code is checked out inside this container at:
 # also available as: ~/source/term-llm
 ```
 
+Documentation lives in that source tree at:
+
+```bash
+/home/agent/source/term-llm/docs-site/content
+```
+
 Use that source tree when you need to understand your runtime, available tools,
-agent configuration, memory system, jobs runner, or container bootstrap behavior.
+agent configuration, memory system, jobs runner, widgets, or container bootstrap
+behavior.
+
+## Workspace conventions
+
+Use persistent paths under `/home/agent` for user work. Put source checkouts and
+code projects under:
+
+```bash
+/home/agent/source/<project>
+```
+
+Do not put durable work in `/tmp`, `/root`, or image-only paths; those may vanish
+on rebuilds or are outside the normal non-root agent workspace. Use
+`/home/agent/Files` for files meant to be downloaded through the Web UI.
 
 ## REMOVE AFTER ONBOARDING
 

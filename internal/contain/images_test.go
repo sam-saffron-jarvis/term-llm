@@ -119,8 +119,8 @@ func TestSyncImageWritesAgentAsset(t *testing.T) {
 			t.Fatalf("bootstrap jobs should run as agent and use sudo for package upgrades")
 		}
 		if rel == "bootstrap/system.md" {
-			if !strings.Contains(string(data), "~/source/term-llm") {
-				t.Fatalf("system prompt missing term-llm source path")
+			if !strings.Contains(string(data), "~/source/term-llm") || !strings.Contains(string(data), "/home/agent/source/<project>") || !strings.Contains(string(data), "/home/agent/source/term-llm/docs-site/content") {
+				t.Fatalf("system prompt missing source workspace/docs paths")
 			}
 			for _, want := range []string{"## REMOVE AFTER ONBOARDING", "Learn what the user prefers to be called", "persistent memory", "## /REMOVE AFTER ONBOARDING"} {
 				if !strings.Contains(string(data), want) {
