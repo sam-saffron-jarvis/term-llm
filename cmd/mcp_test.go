@@ -4,8 +4,81 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/samsaffron/term-llm/internal/mcp"
+	"github.com/spf13/cobra"
 )
 
+func TestMCPRunArgCompletionDoesNotStartServerOnCacheMiss(t *testing.T) {
+	configHome := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", configHome)
+
+	marker := filepath.Join(configHome, "server-started")
+	script := filepath.Join(configHome, "start-server.sh")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\necho started > \"$1\"\n"), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := &mcp.Config{Servers: map[string]mcp.ServerConfig{
+		"demo": {
+			Command: script,
+			Args:    []string{marker},
+		},
+	}}
+	if err := cfg.Save(); err != nil {
+		t.Fatal(err)
+	}
+
+	completions, directive := MCPRunArgCompletion(nil, []string{"demo"}, "")
+	if len(completions) != 0 {
+		t.Fatalf("expected no completions on cache miss, got %v", completions)
+	}
+	if directive != cobra.ShellCompDirectiveNoFileComp {
+		t.Fatalf("directive = %v, want %v", directive, cobra.ShellCompDirectiveNoFileComp)
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		if err != nil {
+			t.Fatalf("stat marker: %v", err)
+		}
+		t.Fatalf("expected completion not to start server, but marker %q was created", marker)
+	}
+}
+
+func TestMCPRunArgCompletionUsesCachedTools(t *testing.T) {
+	configHome := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", configHome)
+	if err := os.MkdirAll(filepath.Join(configHome, "term-llm"), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	mcp.CacheTools("demo", []mcp.ToolSpec{
+		{
+			Name: "fetch",
+			Schema: map[string]any{
+				"properties": map[string]any{
+					"path":    map[string]any{"type": "string"},
+					"pattern": map[string]any{"type": "string"},
+				},
+			},
+		},
+		{Name: "format", Schema: map[string]any{}},
+	})
+
+	completions, directive := MCPRunArgCompletion(nil, []string{"demo", "fetch"}, "p")
+	want := []string{"path=", "pattern="}
+	if len(completions) != len(want) {
+		t.Fatalf("len(completions) = %d, want %d (%v)", len(completions), len(want), completions)
+	}
+	for i := range want {
+		if completions[i] != want[i] {
+			t.Fatalf("completions[%d] = %q, want %q (all=%v)", i, completions[i], want[i], completions)
+		}
+	}
+	wantDirective := cobra.ShellCompDirectiveNoFileComp | cobra.ShellCompDirectiveNoSpace
+	if directive != wantDirective {
+		t.Fatalf("directive = %v, want %v", directive, wantDirective)
+	}
+}
 func TestParseValue(t *testing.T) {
 	tests := []struct {
 		input string

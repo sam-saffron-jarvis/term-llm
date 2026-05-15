@@ -1,10 +1,8 @@
 package cmd
 
 import (
-	"context"
 	"sort"
 	"strings"
-	"time"
 
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
@@ -61,7 +59,8 @@ func MCPServerArgCompletion(cmd *cobra.Command, args []string, toComplete string
 
 // MCPRunArgCompletion provides completions for "mcp run <server> <tool> [key=val] ...".
 // Completes server names for the first arg, tool names and key= params for subsequent args.
-// Tool/param data comes from a local cache populated by "mcp info" and "mcp run".
+// Tool/param data comes only from the local cache populated by "mcp info" and "mcp run".
+// Shell completion must stay fast and must not cold-start external MCP servers.
 func MCPRunArgCompletion(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 	noFile := cobra.ShellCompDirectiveNoFileComp
 
@@ -73,11 +72,7 @@ func MCPRunArgCompletion(cmd *cobra.Command, args []string, toComplete string) (
 	serverName := args[0]
 	tools := mcp.LoadCachedTools(serverName)
 	if tools == nil {
-		// No cache — start the server to populate it
-		tools = mcpFetchAndCacheTools(serverName)
-		if tools == nil {
-			return nil, noFile
-		}
+		return nil, noFile
 	}
 
 	// Figure out the "current tool" by scanning args after the server name.
@@ -125,28 +120,6 @@ func MCPRunArgCompletion(cmd *cobra.Command, args []string, toComplete string) (
 
 	sort.Strings(completions)
 	return completions, noFile | cobra.ShellCompDirectiveNoSpace
-}
-
-// mcpFetchAndCacheTools starts an MCP server, fetches its tools, caches them, and returns them.
-func mcpFetchAndCacheTools(serverName string) []mcp.ToolSpec {
-	cfg, err := mcp.LoadConfig()
-	if err != nil || cfg == nil {
-		return nil
-	}
-	serverCfg, ok := cfg.Servers[serverName]
-	if !ok {
-		return nil
-	}
-	client := mcp.NewClient(serverName, serverCfg)
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	if err := client.Start(ctx); err != nil {
-		return nil
-	}
-	defer client.Stop()
-	tools := client.Tools()
-	mcp.CacheTools(serverName, tools)
-	return tools
 }
 
 // MCPFlagCompletion provides completions for --mcp flag with comma-separated support.
