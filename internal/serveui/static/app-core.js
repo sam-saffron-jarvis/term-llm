@@ -100,9 +100,23 @@ const state = {
   restorePromptFocus: false,
   lastEventTime: 0
 };
-// Ensure cookie is set on load so <img> requests to basePath/images/ can authenticate
+const tokenCookiePath = UI_PREFIX;
+const legacyTokenCookiePath = `${UI_PREFIX}/images`;
+const writeTokenCookie = (value, path, maxAge) => {
+  document.cookie = `term_llm_token=${value}; path=${path}; SameSite=Strict; max-age=${maxAge}`;
+};
+const clearLegacyTokenCookie = () => {
+  // Older builds scoped this cookie to /images. Clear that path when syncing so
+  // browsers do not send a stale, more-specific cookie before the current token.
+  writeTokenCookie('', legacyTokenCookiePath, 0);
+};
+
+// Ensure cookie is set on load so browser-initiated requests under basePath
+// (e.g. <img> and widget iframe/asset fetches) can authenticate. The widget
+// proxy strips Cookie before forwarding to widget apps.
 if (state.token) {
-  document.cookie = `term_llm_token=${encodeURIComponent(state.token)}; path=${UI_PREFIX}/images; SameSite=Strict; max-age=31536000`;
+  clearLegacyTokenCookie();
+  writeTokenCookie(encodeURIComponent(state.token), tokenCookiePath, 31536000);
 }
 
 let uiVersionReloading = false;
@@ -292,10 +306,11 @@ const sanitizeInterruptState = (value) => {
 };
 
 const syncTokenCookie = (token) => {
+  clearLegacyTokenCookie();
   if (token) {
-    document.cookie = `term_llm_token=${encodeURIComponent(token)}; path=${UI_PREFIX}/images; SameSite=Strict; max-age=31536000`;
+    writeTokenCookie(encodeURIComponent(token), tokenCookiePath, 31536000);
   } else {
-    document.cookie = `term_llm_token=; path=${UI_PREFIX}/images; SameSite=Strict; max-age=0`;
+    writeTokenCookie('', tokenCookiePath, 0);
   }
 };
 

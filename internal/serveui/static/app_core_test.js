@@ -63,12 +63,14 @@ function makeNode() {
   };
 }
 
-function loadAppCoreWith({ nodeOverrides = {}, docQSTracker = () => [], navigatorOverrides = {} } = {}) {
+function loadAppCoreWith({ nodeOverrides = {}, docQSTracker = () => [], navigatorOverrides = {}, initialStorage = {} } = {}) {
   const nodes = new Map(Object.entries(nodeOverrides));
+  const cookieWrites = [];
   const document = {
     body: makeNode(),
     documentElement: makeNode(),
-    cookie: '',
+    get cookie() { return cookieWrites[cookieWrites.length - 1] || ''; },
+    set cookie(value) { cookieWrites.push(String(value)); },
     getElementById(id) {
       if (!nodes.has(id)) nodes.set(id, makeNode());
       return nodes.get(id);
@@ -80,7 +82,7 @@ function loadAppCoreWith({ nodeOverrides = {}, docQSTracker = () => [], navigato
     removeEventListener() {},
   };
 
-  const storage = new Map();
+  const storage = new Map(Object.entries(initialStorage).map(([key, value]) => [String(key), String(value)]));
   const localStorage = {
     getItem(key) {
       return storage.has(key) ? storage.get(key) : null;
@@ -147,6 +149,7 @@ function loadAppCoreWith({ nodeOverrides = {}, docQSTracker = () => [], navigato
   context.globalThis = context;
 
   vm.runInNewContext(source, context, { filename: 'app-core.js' });
+  context.window.TermLLMApp.__testCookieWrites = cookieWrites;
   return context.window.TermLLMApp;
 }
 
@@ -155,6 +158,51 @@ function loadAppCore() {
 }
 
 const app = loadAppCore();
+
+(function testTokenCookieScopedToBasePathForWidgetsAndImages() {
+  const name = 'syncTokenCookie scopes auth cookie to UI base path';
+  const testApp = loadAppCore();
+
+  testApp.syncTokenCookie('sec ret/val=');
+
+  const writes = testApp.__testCookieWrites;
+  const finalWrite = writes[writes.length - 1] || '';
+  if (!finalWrite.includes('term_llm_token=sec%20ret%2Fval%3D; path=/chat;')) {
+    fail(name, `got final cookie write ${JSON.stringify(finalWrite)}`);
+    return;
+  }
+  if (finalWrite.includes('/images')) {
+    fail(name, `cookie should not be scoped only to images: ${JSON.stringify(finalWrite)}`);
+    return;
+  }
+  pass(name);
+})();
+
+(function testTokenCookieClearsLegacyImagesPath() {
+  const name = 'syncTokenCookie clears legacy images-scoped cookie';
+  const testApp = loadAppCore();
+
+  testApp.syncTokenCookie('secret');
+
+  const writes = testApp.__testCookieWrites;
+  if (!writes.some((write) => write === 'term_llm_token=; path=/chat/images; SameSite=Strict; max-age=0')) {
+    fail(name, `missing legacy clear write in ${JSON.stringify(writes)}`);
+    return;
+  }
+  pass(name);
+})();
+
+(function testInitialTokenCookieUsesBasePath() {
+  const name = 'initial token cookie uses UI base path';
+  const testApp = loadAppCoreWith({ initialStorage: { term_llm_token: 'initial-token' } });
+  const writes = testApp.__testCookieWrites;
+  const finalWrite = writes[writes.length - 1] || '';
+  if (finalWrite !== 'term_llm_token=initial-token; path=/chat; SameSite=Strict; max-age=31536000') {
+    fail(name, `got ${JSON.stringify(finalWrite)}`);
+    return;
+  }
+  pass(name);
+})();
 
 (function testStripsDuplicateEffortSuffix() {
   const name = 'splitHeaderModelEffort strips matching suffix';
