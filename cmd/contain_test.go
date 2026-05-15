@@ -98,6 +98,9 @@ func TestContainNewDefaultTemplateIsAgent(t *testing.T) {
 	if !strings.Contains(stdout, "Web UI: http://localhost:8282/chat") || !strings.Contains(stdout, "Web UI bearer token:") {
 		t.Fatalf("stdout missing default agent web UI info/token: %q", stdout)
 	}
+	if !strings.Contains(stdout, "Default skills: jobs, memory, self") {
+		t.Fatalf("stdout missing default skills enumeration: %q", stdout)
+	}
 	composePath, err := contain.ComposePath("defaultagent")
 	if err != nil {
 		t.Fatal(err)

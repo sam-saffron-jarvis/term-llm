@@ -59,6 +59,15 @@ Stop without deleting state:
 term-llm contain stop {{name}}
 ```
 
+## Default skills
+
+The managed agent image seeds these term-llm skills into
+`/home/agent/.config/term-llm/skills/` on first boot:
+
+- `jobs` — inspect and manage scheduled/background jobs
+- `memory` — search and update persistent agent memory
+- `self` — safely modify the agent's own prompt and configuration
+
 ## Widgets
 
 The Web UI starts with term-llm widgets enabled. Add widget apps under

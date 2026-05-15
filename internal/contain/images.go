@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"embed"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -111,6 +112,32 @@ func BuiltinImageNames() []string {
 	names := append([]string(nil), builtinImageNames...)
 	sort.Strings(names)
 	return names
+}
+
+// AgentImageBootstrapSkillNames returns the term-llm skill names bundled into
+// the managed agent image bootstrap. These are copied into
+// ~/.config/term-llm/skills/ on first boot of an agent contain workspace.
+func AgentImageBootstrapSkillNames() ([]string, error) {
+	base := filepath.ToSlash(filepath.Join("images", "agent", "bootstrap", "skills"))
+	entries, err := embeddedImages.ReadDir(base)
+	if err != nil {
+		return nil, fmt.Errorf("read embedded agent bootstrap skills: %w", err)
+	}
+	var names []string
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		if _, err := embeddedImages.ReadFile(filepath.ToSlash(filepath.Join(base, entry.Name(), "SKILL.md"))); err != nil {
+			if errors.Is(err, fs.ErrNotExist) {
+				continue
+			}
+			return nil, err
+		}
+		names = append(names, entry.Name())
+	}
+	sort.Strings(names)
+	return names, nil
 }
 
 // SyncImage writes a managed embedded image asset into the user's config dir.

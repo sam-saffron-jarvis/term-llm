@@ -227,6 +227,9 @@ var containImageSyncCmd = &cobra.Command{
 			return err
 		}
 		fmt.Fprintf(cmd.OutOrStdout(), "Synced contain image %q to %s\n", result.Name, result.Dir)
+		if skills, err := contain.AgentImageBootstrapSkillNames(); err == nil && len(skills) > 0 {
+			fmt.Fprintf(cmd.OutOrStdout(), "Default skills: %s\n", strings.Join(skills, ", "))
+		}
 		for _, file := range result.Files {
 			fmt.Fprintf(cmd.OutOrStdout(), "  %s\n", file)
 		}
@@ -346,6 +349,9 @@ func printContainNextSteps(cmd *cobra.Command, name string, started bool) {
 	}
 	if hasContainExecRecipe(name, "agent") {
 		fmt.Fprintf(cmd.OutOrStdout(), "  Chat with agent: term-llm contain exec %s agent\n", name)
+		if skills, err := contain.AgentImageBootstrapSkillNames(); err == nil && len(skills) > 0 {
+			fmt.Fprintf(cmd.OutOrStdout(), "  Default skills: %s\n", strings.Join(skills, ", "))
+		}
 	}
 	fmt.Fprintf(cmd.OutOrStdout(), "  Open shell: term-llm contain shell %s\n", name)
 	fmt.Fprintf(cmd.OutOrStdout(), "  Run command/recipe: term-llm contain exec %s <cmd-or-recipe> [args...]\n", name)

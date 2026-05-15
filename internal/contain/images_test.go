@@ -7,6 +7,18 @@ import (
 	"testing"
 )
 
+func TestAgentImageBootstrapSkillNames(t *testing.T) {
+	names, err := AgentImageBootstrapSkillNames()
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := strings.Join(names, ",")
+	want := "jobs,memory,self"
+	if got != want {
+		t.Fatalf("AgentImageBootstrapSkillNames() = %q, want %q", got, want)
+	}
+}
+
 func TestSyncImageWritesAgentAsset(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	result, err := SyncImage("agent", false)
