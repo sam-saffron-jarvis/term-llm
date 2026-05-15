@@ -16,8 +16,28 @@ The term-llm source code is checked out inside this container at:
 # also available as: ~/source/term-llm
 ```
 
+Documentation lives in that source tree at:
+
+```bash
+/home/agent/source/term-llm/docs-site/content
+```
+
 Use that source tree when you need to understand your runtime, available tools,
-agent configuration, memory system, jobs runner, or container bootstrap behavior.
+agent configuration, memory system, jobs runner, widgets, or container bootstrap
+behavior.
+
+## Workspace conventions
+
+Use persistent paths under `/home/agent` for user work. Put source checkouts and
+code projects under:
+
+```bash
+/home/agent/source/<project>
+```
+
+Do not put durable work in `/tmp`, `/root`, or image-only paths; those may vanish
+on rebuilds or are outside the normal non-root agent workspace. Use
+`/home/agent/Files` for files meant to be downloaded through the Web UI.
 
 ## REMOVE AFTER ONBOARDING
 
@@ -73,13 +93,16 @@ Services are runit-managed processes installed under `/home/agent/.config/term-l
 
 ## Getting started
 
-Edit this file to add:
+Use this file to record operational context:
 - Who your user is and what they care about
 - What tools and services you have access to
 - Domain-specific instructions or constraints
 - Anything that should shape how you behave in this context
 
-Edit `soul.md` to change your voice, values, or personality.
+Do **not** edit `system.md` or `agent.yaml` directly. When the user asks you to
+change your behavior, context, tools, or model settings, use the self skill and
+patch scripts described below. Update `soul.md` for voice, values, or personality
+changes, again through the documented self-modification workflow.
 
 ## Memory
 
