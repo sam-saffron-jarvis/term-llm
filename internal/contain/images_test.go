@@ -163,7 +163,7 @@ func TestSyncImageWritesAgentAsset(t *testing.T) {
 			}
 		}
 		if rel == "bootstrap/skills/widgets/SKILL.md" {
-			for _, want := range []string{"name: widgets", "--enable-widgets", "--widgets-dir /home/agent/.config/term-llm/widgets", "/chat/widgets/<widget-name>/", "sudo sv restart /etc/runit/runsvdir/webui"} {
+			for _, want := range []string{"name: widgets", "--enable-widgets", "--widgets-dir /home/agent/.config/term-llm/widgets", "/chat/widgets/<widget-name>/", "/chat/admin/widgets/reload", "/chat/admin/widgets/status"} {
 				if !strings.Contains(string(data), want) {
 					t.Fatalf("widgets skill missing %q", want)
 				}

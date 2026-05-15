@@ -58,13 +58,23 @@ rg "widget.yaml|enable-widgets|widgets-dir" /home/agent/source/term-llm
 ```
 
 2. Add or edit files under the widgets directory.
-3. Restart the Web UI service if the manager does not pick up the change:
+3. Reload the widget registry; do not restart the whole Web UI just to pick up a new widget:
 
 ```bash
-sudo sv restart /etc/runit/runsvdir/webui
+curl -fsS -X POST \
+  -H "Authorization: Bearer ${WEB_TOKEN}" \
+  http://127.0.0.1:8081/chat/admin/widgets/reload
 ```
 
-4. Smoke the route:
+4. Inspect widget status and load errors:
+
+```bash
+curl -fsS \
+  -H "Authorization: Bearer ${WEB_TOKEN}" \
+  http://127.0.0.1:8081/chat/admin/widgets/status
+```
+
+5. Smoke the route:
 
 ```bash
 curl -i http://127.0.0.1:8081/chat/widgets/<widget-name>/
@@ -77,4 +87,5 @@ For authenticated browser access use the Web UI token from the workspace `.env`.
 - Keep widget state and source in the persistent `/home/agent/.config/term-llm/widgets` directory unless the user asks for a project-local mount.
 - Prefer small, inspectable apps over framework sprawl.
 - Do not expose secrets through static assets or client-side JavaScript.
-- After changing widgets or service flags, restart `webui` and smoke test the widget route.
+- After adding, removing, or changing widget manifests, use `/chat/admin/widgets/reload`; do not restart `webui` just to rescan widgets.
+- Restart `webui` only for service flag changes, binary upgrades, or if the admin reload endpoint itself is unavailable.

@@ -187,7 +187,7 @@ They are served under:
 /chat/widgets/<widget-name>/
 ```
 
-The bundled `widgets` skill documents the operational workflow: inspect widget support, create manifests, restart `webui` if needed, and smoke-test routes.
+The bundled `widgets` skill documents the operational workflow: inspect widget support, create manifests, reload the widget registry through `/chat/admin/widgets/reload`, and smoke-test routes. You do not need to restart the Web UI just to add or update a widget; restart it only for service flag changes, binary upgrades, or if the admin reload endpoint is unavailable.
 
 ## Updating
 
