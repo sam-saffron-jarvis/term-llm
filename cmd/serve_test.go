@@ -3203,13 +3203,24 @@ func TestServeAuthMiddleware_CookieFallback(t *testing.T) {
 		t.Fatalf("bearer: status = %d, want 204", rr.Code)
 	}
 
-	// Cookie on POST → rejected (cookie fallback is GET-only)
+	// Cookie on POST to API → rejected (cookie fallback is not enabled for mutating API routes)
 	req = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
 	req.AddCookie(&http.Cookie{Name: "term_llm_token", Value: "secret"})
 	rr = httptest.NewRecorder()
 	h(rr, req)
 	if rr.Code != http.StatusUnauthorized {
-		t.Fatalf("cookie on POST: status = %d, want 401", rr.Code)
+		t.Fatalf("cookie on API POST: status = %d, want 401", rr.Code)
+	}
+
+	// Cookie on widget mutating requests → allowed so iframe/widget fetches work.
+	for _, method := range []string{http.MethodPost, http.MethodPatch, http.MethodDelete} {
+		req = httptest.NewRequest(method, "/widgets/demo/state", nil)
+		req.AddCookie(&http.Cookie{Name: "term_llm_token", Value: "secret"})
+		rr = httptest.NewRecorder()
+		h(rr, req)
+		if rr.Code != http.StatusNoContent {
+			t.Fatalf("cookie on widget %s: status = %d, want 204", method, rr.Code)
+		}
 	}
 
 	// URL-encoded cookie → decoded and accepted

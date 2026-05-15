@@ -1477,9 +1477,11 @@ func (s *serveServer) auth(next http.HandlerFunc) http.HandlerFunc {
 				gotToken = xKey
 			}
 		}
-		if gotToken == "" && r.Method == http.MethodGet {
-			// Cookie fallback only on safe GET requests (e.g. <img src> fetches
-			// that cannot set Authorization headers).
+		if gotToken == "" && cookieAuthAllowed(r) {
+			// Cookie fallback is needed for browser-initiated requests that cannot set
+			// Authorization headers. Keep it GET-only for normal API/UI routes, but
+			// allow all widget methods: widget iframe fetches include same-site cookies,
+			// and the widget proxy strips Cookie before forwarding to the app.
 			if cookie, err := r.Cookie("term_llm_token"); err == nil && cookie.Value != "" {
 				if decoded, decErr := url.QueryUnescape(cookie.Value); decErr == nil {
 					gotToken = decoded
@@ -1495,6 +1497,14 @@ func (s *serveServer) auth(next http.HandlerFunc) http.HandlerFunc {
 		}
 		next(w, r)
 	}
+}
+
+func cookieAuthAllowed(r *http.Request) bool {
+	if r.Method == http.MethodGet {
+		return true
+	}
+	path := r.URL.Path
+	return path == "/widgets" || strings.HasPrefix(path, "/widgets/")
 }
 
 func (s *serveServer) cors(next http.HandlerFunc) http.HandlerFunc {
