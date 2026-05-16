@@ -969,27 +969,6 @@ func (s *serveServer) handleSessions(w http.ResponseWriter, r *http.Request) {
 	writeJSONConditional(w, r, http.StatusOK, map[string]any{"sessions": result})
 }
 
-func ftsQueryFromUser(query string) string {
-	fields := strings.FieldsFunc(query, func(r rune) bool {
-		return !(r == '_' || r == '-' || r >= '0' && r <= '9' || r >= 'A' && r <= 'Z' || r >= 'a' && r <= 'z' || r >= 0x80)
-	})
-	terms := make([]string, 0, len(fields))
-	seen := make(map[string]bool, len(fields))
-	for _, field := range fields {
-		term := strings.Trim(field, `"`)
-		if len([]rune(term)) < 2 {
-			continue
-		}
-		key := strings.ToLower(term)
-		if seen[key] {
-			continue
-		}
-		seen[key] = true
-		terms = append(terms, `"`+strings.ReplaceAll(term, `"`, `""`)+`"`)
-	}
-	return strings.Join(terms, " ")
-}
-
 func (s *serveServer) handleSessionsSearch(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		w.Header().Set("Allow", "GET")
@@ -1012,8 +991,7 @@ func (s *serveServer) handleSessionsSearch(w http.ResponseWriter, r *http.Reques
 	if query == "" {
 		query = strings.TrimSpace(r.URL.Query().Get("query"))
 	}
-	ftsQuery := ftsQueryFromUser(query)
-	if ftsQuery == "" {
+	if query == "" {
 		writeJSONConditional(w, r, http.StatusOK, map[string]any{"sessions": []any{}})
 		return
 	}
@@ -1039,7 +1017,7 @@ func (s *serveServer) handleSessionsSearch(w http.ResponseWriter, r *http.Reques
 		allowed[summary.ID] = summary
 	}
 
-	matches, err := s.store.Search(r.Context(), ftsQuery, limit*4)
+	matches, err := s.store.Search(r.Context(), query, limit*4)
 	if err != nil {
 		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "invalid search query")
 		return

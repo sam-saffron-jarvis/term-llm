@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/samsaffron/term-llm/internal/sqlitefts"
 	_ "modernc.org/sqlite"
 )
 
@@ -1384,6 +1385,11 @@ func (s *SQLiteStore) Search(ctx context.Context, query string, limit int) ([]Se
 		limit = 20
 	}
 
+	ftsQuery := sqlitefts.LiteralQuery(query)
+	if ftsQuery == "" {
+		return []SearchResult{}, nil
+	}
+
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT m.session_id, s.number, m.id, s.name, s.summary, snippet(messages_fts, 0, '**', '**', '...', 32),
 		       s.provider, s.model, m.created_at
@@ -1392,7 +1398,7 @@ func (s *SQLiteStore) Search(ctx context.Context, query string, limit int) ([]Se
 		JOIN sessions s ON s.id = m.session_id
 		WHERE messages_fts MATCH ?
 		ORDER BY rank
-		LIMIT ?`, query, limit)
+		LIMIT ?`, ftsQuery, limit)
 	if err != nil {
 		return nil, fmt.Errorf("search messages: %w", err)
 	}
