@@ -1863,6 +1863,103 @@ const updateToolGroupNode = (message) => {
 
 let _lastRenderedSessionId = null;
 let _lastRenderedMessageIds = [];
+let _lastRenderedMessageKeys = new Map();
+
+const currentRenderedMessageIds = () => Array.from(elements.messages.querySelectorAll('.message'))
+  .map((node) => node.dataset?.messageId || '')
+  .filter(Boolean);
+
+const renderedDomMatchesCache = () => {
+  const ids = currentRenderedMessageIds();
+  if (ids.length !== _lastRenderedMessageIds.length) return false;
+  return ids.every((id, index) => id === _lastRenderedMessageIds[index]);
+};
+
+const messageRenderKey = (message) => {
+  switch (message.role) {
+    case 'assistant':
+      return JSON.stringify({
+        role: message.role,
+        content: message.content || '',
+        created: message.created || 0,
+        usage: message.usage || null
+      });
+    case 'user':
+      return JSON.stringify({
+        role: message.role,
+        content: message.content || '',
+        created: message.created || 0,
+        interruptState: sanitizeInterruptState(message.interruptState),
+        attachments: Array.isArray(message.attachments)
+          ? message.attachments.map((attachment) => ({
+            name: attachment?.name || '',
+            type: attachment?.type || '',
+            previewURL: attachment?.previewURL || '',
+            dataURL: attachment?.dataURL || ''
+          }))
+          : []
+      });
+    case 'tool':
+      return JSON.stringify({
+        role: message.role,
+        name: message.name || '',
+        status: message.status || '',
+        arguments: message.arguments || '',
+        expanded: Boolean(message.expanded),
+        created: message.created || 0,
+        images: Array.isArray(message.images) ? message.images : []
+      });
+    case 'tool-group':
+      return JSON.stringify({
+        role: message.role,
+        status: message.status || '',
+        expanded: Boolean(message.expanded),
+        created: message.created || 0,
+        images: Array.isArray(message.images) ? message.images : [],
+        tools: Array.isArray(message.tools)
+          ? message.tools.map((tool) => ({
+            id: tool?.id || '',
+            name: tool?.name || '',
+            status: tool?.status || '',
+            arguments: tool?.arguments || '',
+            argumentsFinalized: Boolean(tool?.argumentsFinalized),
+            images: Array.isArray(tool?.images) ? tool.images : []
+          }))
+          : []
+      });
+    default:
+      return JSON.stringify({
+        role: message.role,
+        content: message.content || '',
+        created: message.created || 0
+      });
+  }
+};
+
+const messageNodeMatchesRole = (node, message) => {
+  if (!node || !message?.role) return false;
+  return node.classList?.contains(message.role);
+};
+
+const updateMessageNode = (message) => {
+  switch (message.role) {
+    case 'assistant':
+      updateAssistantNode(message);
+      break;
+    case 'tool':
+      updateToolNode(message);
+      break;
+    case 'tool-group':
+      updateToolGroupNode(message);
+      break;
+    case 'model-swap':
+      updateModelSwapNode(message);
+      break;
+    default:
+      updateUserNode(message);
+      break;
+  }
+};
 
 const renderMessages = (forceScroll = false) => {
   const session = ensureActiveSession();
@@ -1879,6 +1976,7 @@ const renderMessages = (forceScroll = false) => {
     elements.messages.appendChild(empty);
     _lastRenderedSessionId = sessionId;
     _lastRenderedMessageIds = [];
+    _lastRenderedMessageKeys = new Map();
     syncTurnActionPanels();
     refreshRelativeTimes();
     scrollToBottom(forceScroll);
@@ -1887,7 +1985,7 @@ const renderMessages = (forceScroll = false) => {
   }
 
   // Fast path: same session, messages only appended at the end
-  if (sessionId === _lastRenderedSessionId && messages.length >= _lastRenderedMessageIds.length) {
+  if (sessionId === _lastRenderedSessionId && messages.length > _lastRenderedMessageIds.length && renderedDomMatchesCache()) {
     let canAppend = true;
     for (let i = 0; i < _lastRenderedMessageIds.length; i++) {
       if (_lastRenderedMessageIds[i] !== messages[i].id) {
@@ -1901,6 +1999,7 @@ const renderMessages = (forceScroll = false) => {
       for (let i = _lastRenderedMessageIds.length; i < messages.length; i++) {
         elements.messages.appendChild(createMessageNode(messages[i]));
         _lastRenderedMessageIds.push(messages[i].id);
+        _lastRenderedMessageKeys.set(messages[i].id, messageRenderKey(messages[i]));
       }
       syncTurnActionPanels();
       refreshRelativeTimes();
@@ -1910,6 +2009,55 @@ const renderMessages = (forceScroll = false) => {
     }
   }
 
+  if (sessionId === _lastRenderedSessionId) {
+    const emptyState = elements.messages.querySelector('.empty-state');
+    if (emptyState) emptyState.remove();
+
+    const existingNodes = new Map(
+      Array.from(elements.messages.querySelectorAll('.message'))
+        .filter((node) => node.dataset?.messageId)
+        .map((node) => [node.dataset.messageId, node])
+    );
+    const nextMessageIds = [];
+    const nextMessageKeys = new Map();
+
+    messages.forEach((message, index) => {
+      const renderKey = messageRenderKey(message);
+      nextMessageIds.push(message.id);
+      nextMessageKeys.set(message.id, renderKey);
+
+      let node = existingNodes.get(message.id) || null;
+      if (!node) {
+        node = createMessageNode(message);
+      } else if (!messageNodeMatchesRole(node, message)) {
+        const replacement = createMessageNode(message);
+        node.replaceWith(replacement);
+        node = replacement;
+      } else if (_lastRenderedMessageKeys.get(message.id) !== renderKey) {
+        updateMessageNode(message);
+        node = findMessageElement(message.id) || node;
+      }
+
+      const currentChild = elements.messages.children[index] || null;
+      if (currentChild !== node) {
+        elements.messages.insertBefore(node, currentChild);
+      }
+
+      existingNodes.delete(message.id);
+    });
+
+    existingNodes.forEach((node) => node.remove());
+    _lastRenderedSessionId = sessionId;
+    _lastRenderedMessageIds = nextMessageIds;
+    _lastRenderedMessageKeys = nextMessageKeys;
+
+    syncTurnActionPanels();
+    refreshRelativeTimes();
+    scrollToBottom(forceScroll);
+    updateHeader();
+    return;
+  }
+
   // Full rebuild
   elements.messages.innerHTML = '';
   messages.forEach((message) => {
@@ -1917,6 +2065,7 @@ const renderMessages = (forceScroll = false) => {
   });
   _lastRenderedSessionId = sessionId;
   _lastRenderedMessageIds = messages.map((m) => m.id);
+  _lastRenderedMessageKeys = new Map(messages.map((message) => [message.id, messageRenderKey(message)]));
 
   syncTurnActionPanels();
   refreshRelativeTimes();
