@@ -40,6 +40,7 @@ var ProviderModels = map[string][]ModelEntry{
 		{ID: "claude-haiku-4-5-thinking", InputLimit: 180_000, OutputLimit: 64_000},
 	},
 	"openai": {
+		{ID: "gpt-5.5", InputLimit: 922_000, OutputLimit: 128_000},
 		{ID: "gpt-5.4", InputLimit: 922_000, OutputLimit: 128_000},
 		{ID: "gpt-5.4-mini", InputLimit: 272_000, OutputLimit: 128_000},
 		{ID: "gpt-5.4-nano", InputLimit: 272_000, OutputLimit: 128_000},
