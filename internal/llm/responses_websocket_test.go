@@ -14,6 +14,17 @@ import (
 	"github.com/gorilla/websocket"
 )
 
+type marshalCountingJSONLikeValue struct {
+	Calls *atomic.Int32 `json:"-"`
+}
+
+func (v marshalCountingJSONLikeValue) MarshalJSON() ([]byte, error) {
+	if v.Calls != nil {
+		v.Calls.Add(1)
+	}
+	return []byte(`{"type":"function","name":"tool","parameters":{"type":"object"}}`), nil
+}
+
 func TestResponsesWebSocketURL(t *testing.T) {
 	tests := []struct {
 		in   string
@@ -147,6 +158,49 @@ func TestResponsesWebSocketPrepareClearsStalePreviousResponseID(t *testing.T) {
 	}
 	if len(prepared.Input) != len(fullInput) || prepared.Input[0].Content != "old" || prepared.Input[1].Content != "new" {
 		t.Fatalf("Input = %#v, want full input %#v", prepared.Input, fullInput)
+	}
+}
+
+func TestResponsesRequestNonInputEqual_JSONLikeTools(t *testing.T) {
+	previous := ResponsesRequest{
+		Model: "gpt-test",
+		Tools: []any{ResponsesTool{
+			Type: "function",
+			Name: "tool",
+			Parameters: map[string]any{
+				"type":     "object",
+				"required": []string{"b", "a"},
+			},
+		}},
+		ToolChoice: map[string]any{"name": "tool", "type": "function"},
+	}
+	current := ResponsesRequest{
+		Model: "gpt-test",
+		Tools: []any{map[string]any{
+			"name": "tool",
+			"type": "function",
+			"parameters": map[string]any{
+				"required": []any{"a", "b"},
+				"type":     "object",
+			},
+		}},
+		ToolChoice: BuildResponsesToolChoice(ToolChoice{Mode: ToolChoiceName, Name: "tool"}),
+	}
+
+	if !responsesRequestNonInputEqual(previous, current) {
+		t.Fatalf("expected requests to compare equal: previous=%#v current=%#v", previous, current)
+	}
+}
+
+func TestJSONLikeEqualForCompareDoesNotMarshal(t *testing.T) {
+	var calls atomic.Int32
+	value := marshalCountingJSONLikeValue{Calls: &calls}
+
+	if !jsonLikeEqualForCompare(value, value) {
+		t.Fatal("expected identical values to compare equal")
+	}
+	if calls.Load() != 0 {
+		t.Fatalf("expected comparison without MarshalJSON, got %d calls", calls.Load())
 	}
 }
 
