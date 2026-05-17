@@ -8,6 +8,8 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+
+	"github.com/charmbracelet/x/ansi"
 )
 
 func TestSelectProtocolByModeAndEnvironment(t *testing.T) {
@@ -18,15 +20,21 @@ func TestSelectProtocolByModeAndEnvironment(t *testing.T) {
 		want Protocol
 	}{
 		{
-			name: "kitty viewport",
+			name: "kitty viewport auto uses stable ansi adapter",
 			req:  Request{Mode: ModeViewport, Protocol: ProtocolAuto},
 			env:  Environment{KittyWindowID: "1", Term: "xterm-kitty"},
-			want: ProtocolKitty,
+			want: ProtocolANSI,
 		},
 		{
-			name: "ghostty viewport",
+			name: "ghostty viewport auto uses stable ansi adapter",
 			req:  Request{Mode: ModeViewport, Protocol: ProtocolAuto},
 			env:  Environment{TermProgram: "Ghostty"},
+			want: ProtocolANSI,
+		},
+		{
+			name: "forced kitty viewport remains available",
+			req:  Request{Mode: ModeViewport, Protocol: ProtocolAuto},
+			env:  Environment{KittyWindowID: "1", ForcedProtocol: "kitty"},
 			want: ProtocolKitty,
 		},
 		{
@@ -82,7 +90,7 @@ func TestRenderKittyViewportSplitsUploadAndDisplay(t *testing.T) {
 	result, err := RenderWithEnvironment(Request{
 		Path:         path,
 		Mode:         ModeViewport,
-		Protocol:     ProtocolAuto,
+		Protocol:     ProtocolKitty,
 		MaxCols:      3,
 		MaxRows:      2,
 		CellWidthPx:  10,
@@ -100,8 +108,8 @@ func TestRenderKittyViewportSplitsUploadAndDisplay(t *testing.T) {
 	if result.Display == "" {
 		t.Fatal("expected non-empty viewport-safe display")
 	}
-	if result.Full != result.Upload+result.Display {
-		t.Fatal("Full should be Upload+Display")
+	if result.Full != result.Upload+result.Place+result.Display {
+		t.Fatal("Full should be Upload+Place+Display")
 	}
 	if result.WidthCells != 3 || result.HeightCells != 2 {
 		t.Fatalf("cells = %dx%d, want 3x2", result.WidthCells, result.HeightCells)
@@ -112,8 +120,8 @@ func TestRenderKittyViewportSplitsUploadAndDisplay(t *testing.T) {
 	if !strings.Contains(result.Upload, "a=T,t=d,f=100") {
 		t.Fatalf("upload should transmit PNG data separately: %q", result.Upload)
 	}
-	if !strings.Contains(result.Upload, "a=p,U=1") {
-		t.Fatalf("upload should create Unicode-placeholder placement: %q", result.Upload)
+	if !strings.Contains(result.Place, "a=p,U=1") {
+		t.Fatalf("place should create Unicode-placeholder placement: %q", result.Place)
 	}
 	if strings.Contains(result.Upload, "a=T,U=1") {
 		t.Fatalf("upload should not use transmit-and-display placeholders: %q", result.Upload)
@@ -136,6 +144,88 @@ func TestRenderKittyViewportSplitsUploadAndDisplay(t *testing.T) {
 		if !strings.HasSuffix(line, "\x1b[39m") {
 			t.Fatalf("display line %d does not reset foreground color: %q", i, line)
 		}
+	}
+}
+
+func TestRenderKittyViewportDoesNotReuseCachedPlacementState(t *testing.T) {
+	ClearCache()
+	atomic.StoreUint32(&imageIDCounter, 0)
+	path := writeTestPNG(t, image.Rect(0, 0, 20, 20), func(x, y int) color.Color {
+		return color.NRGBA{R: uint8(10 + x), G: uint8(20 + y), B: 200, A: 255}
+	})
+	req := Request{Path: path, Mode: ModeViewport, Protocol: ProtocolKitty, MaxCols: 2, MaxRows: 2, CellWidthPx: 10, CellHeightPx: 10}
+	first, err := RenderWithEnvironment(req, Environment{})
+	if err != nil {
+		t.Fatalf("first render: %v", err)
+	}
+	second, err := RenderWithEnvironment(req, Environment{})
+	if err != nil {
+		t.Fatalf("second render: %v", err)
+	}
+	if first.CacheKey == second.CacheKey || first.Upload == second.Upload || first.Display == second.Display {
+		t.Fatalf("Kitty viewport renders should generate fresh placement state; first=%q second=%q", first.CacheKey, second.CacheKey)
+	}
+}
+
+func TestRenderKittyOneShotUsesDirectPlacement(t *testing.T) {
+	ClearCache()
+	path := writeTestPNG(t, image.Rect(0, 0, 20, 20), func(x, y int) color.Color {
+		return color.NRGBA{R: uint8(10 + x), G: uint8(20 + y), B: 200, A: 255}
+	})
+
+	result, err := RenderWithEnvironment(Request{
+		Path:         path,
+		Mode:         ModeOneShot,
+		Protocol:     ProtocolKitty,
+		MaxCols:      2,
+		MaxRows:      2,
+		CellWidthPx:  10,
+		CellHeightPx: 10,
+	}, Environment{})
+	if err != nil {
+		t.Fatalf("RenderWithEnvironment() error = %v", err)
+	}
+	if result.Protocol != ProtocolKitty || result.Full == "" {
+		t.Fatalf("expected Kitty one-shot output, got protocol=%s full=%q", result.Protocol, result.Full)
+	}
+	if result.Upload != "" {
+		t.Fatalf("one-shot Kitty should keep all bytes in Full/Display, got Upload=%q", result.Upload)
+	}
+	if strings.Contains(result.Full, "\U0010eeee") || strings.Contains(result.Full, "a=p,U=1") {
+		t.Fatalf("one-shot Kitty should not use Unicode placeholders: %q", result.Full)
+	}
+}
+
+func TestKittyPlaceholderGridWidthStableThroughAnsiCut(t *testing.T) {
+	display := kittyPlaceholderGrid(0x010203, 8, 3)
+	lines := strings.Split(display, "\n")
+	if len(lines) != 3 {
+		t.Fatalf("line count = %d, want 3", len(lines))
+	}
+	for row, line := range lines {
+		if got := ansi.StringWidth(line); got != 8 {
+			t.Fatalf("line %d width = %d, want 8 in %q", row, got, line)
+		}
+		for start := 0; start < 8; start++ {
+			cut := ansi.Cut(line, start, 8)
+			if got, want := ansi.StringWidth(cut), 8-start; got != want {
+				t.Fatalf("line %d cut %d width = %d, want %d in %q", row, start, got, want, cut)
+			}
+			if strings.Contains(cut, "\u0305\u0305\u0305") {
+				t.Fatalf("cut appears to have orphaned combining marks: %q", cut)
+			}
+		}
+	}
+}
+
+func TestSelectAutoKittyInsideTmuxFallsBackUnlessForced(t *testing.T) {
+	auto := Select(Request{Mode: ModeViewport, Protocol: ProtocolAuto}, Environment{Term: "xterm-kitty", KittyWindowID: "1", Tmux: "/tmp/tmux"})
+	if auto.Protocol != ProtocolANSI {
+		t.Fatalf("auto protocol inside tmux = %s, want ansi fallback", auto.Protocol)
+	}
+	forced := Select(Request{Mode: ModeViewport, Protocol: ProtocolAuto}, Environment{Term: "xterm-kitty", KittyWindowID: "1", Tmux: "/tmp/tmux", ForcedProtocol: "kitty"})
+	if forced.Protocol != ProtocolKitty {
+		t.Fatalf("forced protocol inside tmux = %s, want kitty", forced.Protocol)
 	}
 }
 

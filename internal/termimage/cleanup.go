@@ -1,5 +1,7 @@
 package termimage
 
+import "fmt"
+
 // KittyDeleteVisibleSequence returns a Kitty graphics command that deletes all
 // image placements currently visible on the terminal screen and asks the
 // terminal to free associated image data where possible. It is useful when
@@ -7,6 +9,28 @@ package termimage
 // the restored main screen.
 func KittyDeleteVisibleSequence() string {
 	return "\x1b_Ga=d,d=A,q=2\x1b\\"
+}
+
+// KittyDeleteImageSequence returns Kitty graphics commands that delete the
+// specific image ids owned by this process. Prefer this to global cleanup when
+// the ids are known, so unrelated Kitty graphics are not disturbed.
+func KittyDeleteImageSequence(imageIDs ...uint32) string {
+	if len(imageIDs) == 0 {
+		return ""
+	}
+	out := ""
+	seen := make(map[uint32]struct{}, len(imageIDs))
+	for _, id := range imageIDs {
+		if id == 0 {
+			continue
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		out += fmt.Sprintf("\x1b_Ga=d,i=%d,q=2\x1b\\", id)
+	}
+	return out
 }
 
 // CleanupSequence returns terminal image cleanup bytes appropriate for env.

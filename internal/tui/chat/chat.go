@@ -23,6 +23,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/mcp"
 	render "github.com/samsaffron/term-llm/internal/render/chat"
 	"github.com/samsaffron/term-llm/internal/session"
+	"github.com/samsaffron/term-llm/internal/termimage"
 	"github.com/samsaffron/term-llm/internal/tools"
 	"github.com/samsaffron/term-llm/internal/tui/inspector"
 	sessionsui "github.com/samsaffron/term-llm/internal/tui/sessions"
@@ -276,9 +277,19 @@ type Model struct {
 	// pendingImageUploads contains raw terminal image upload bytes that must be
 	// emitted with tea.Raw, not embedded in View content (Bubble Tea parses View
 	// content into cells and drops non-styling control sequences).
-	pendingImageUploads       []string
-	uploadedImageKeys         map[string]struct{}
-	imageUploadFlushScheduled bool
+	pendingImageUploads         []string
+	pendingImageUploadKeys      map[string]struct{}
+	pendingImagePlaceKeys       map[string]struct{}
+	uploadedImageKeys           map[string]struct{}
+	placedImageKeys             map[string]struct{}
+	visibleImageKeys            map[string]struct{}
+	ownedKittyImageIDs          map[uint32]struct{}
+	imageGeneration             uint64
+	imageUploadFlushScheduled   bool
+	imageCleanupQueued          bool
+	imagePlaceholdersSuppressed bool
+	viewportImageArtifacts      map[string]viewportImageArtifact
+	viewportImageBlocks         []viewportImageBlock
 
 	// Text selection state (alt-screen only)
 	selection         Selection
@@ -652,6 +663,12 @@ func NewWithFastProvider(cfg *config.Config, provider llm.Provider, fastProvider
 		autoSendExitOnDone:       autoSendExitOnDone,
 		textMode:                 textMode,
 		uploadedImageKeys:        make(map[string]struct{}),
+		placedImageKeys:          make(map[string]struct{}),
+		pendingImageUploadKeys:   make(map[string]struct{}),
+		pendingImagePlaceKeys:    make(map[string]struct{}),
+		visibleImageKeys:         make(map[string]struct{}),
+		ownedKittyImageIDs:       make(map[uint32]struct{}),
+		viewportImageArtifacts:   make(map[string]viewportImageArtifact),
 		selectedImage:            -1,
 	}
 	model.configureImageRenderer()
@@ -726,6 +743,11 @@ func (m *Model) WantsReload() bool { return m.reloadRequested }
 func (m *Model) ReloadSessionID() string { return m.reloadSessionID }
 
 func (m *Model) applyWindowSize(msg tea.WindowSizeMsg) {
+	oldWidth := m.width
+	oldViewportHeight := 0
+	if m.altScreen {
+		oldViewportHeight = m.viewport.Height()
+	}
 	m.selection = Selection{}
 	m.width = msg.Width
 	m.height = msg.Height
@@ -786,6 +808,32 @@ func (m *Model) applyWindowSize(msg tea.WindowSizeMsg) {
 	// Update chat renderer size (invalidates cache).
 	if m.altScreen {
 		m.syncAltScreenViewportHeight(m.buildFooterLayout().height)
+		viewportHeightChanged := oldViewportHeight > 0 && oldViewportHeight != m.viewport.Height()
+		widthChanged := oldWidth > 0 && oldWidth != m.width
+		if widthChanged || viewportHeightChanged {
+			m.imageGeneration++
+			termimage.ClearCache()
+			termimage.Debugf(termimage.DefaultEnvironment(), "chat resize width %d->%d viewport_h %d->%d model_h=%d generation=%d: invalidate image viewport render", oldWidth, m.width, oldViewportHeight, m.viewport.Height(), m.height, m.imageGeneration)
+			if m.chatRenderer != nil {
+				m.chatRenderer.InvalidateCache()
+			}
+			m.viewCache.lastSetContentAt = time.Time{}
+			m.viewCache.lastViewportView = ""
+			m.viewCache.cachedTrackerVersion = 0
+			// Drop old-generation raw operations before queuing cleanup. Otherwise a
+			// resize that lands between View() and the upload flush can transmit stale
+			// image bytes after the cleanup for the new layout.
+			m.pendingImageUploads = nil
+			m.pendingImageUploadKeys = make(map[string]struct{})
+			m.pendingImagePlaceKeys = make(map[string]struct{})
+			m.imageCleanupQueued = false
+			m.imagePlaceholdersSuppressed = true
+			m.queueImageCleanup()
+			m.viewportImageArtifacts = make(map[string]viewportImageArtifact)
+			m.viewportImageBlocks = nil
+			m.ownedKittyImageIDs = make(map[uint32]struct{})
+			m.resetUploadedImageKeys()
+		}
 	} else if m.chatRenderer != nil {
 		m.chatRenderer.SetSize(m.width, m.height)
 	}
@@ -1152,6 +1200,11 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case imageUploadFlushMsg:
 		if cmd := m.drainPendingImageUploadCmd(); cmd != nil {
+			return m, cmd
+		}
+
+	case imageCleanupFlushedMsg:
+		if cmd := m.finishImageCleanupFlush(); cmd != nil {
 			return m, cmd
 		}
 		return m, nil

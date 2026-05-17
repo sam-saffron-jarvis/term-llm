@@ -7,8 +7,9 @@ import (
 )
 
 const (
-	envImageProtocol = "TERM_LLM_IMAGE_PROTOCOL"
-	envImageDebug    = "TERM_LLM_IMAGE_DEBUG"
+	envImageProtocol  = "TERM_LLM_IMAGE_PROTOCOL"
+	envImageDebug     = "TERM_LLM_IMAGE_DEBUG"
+	envImageDebugFile = "TERM_LLM_IMAGE_DEBUG_FILE"
 )
 
 // DefaultEnvironment returns terminal-image relevant environment variables.
@@ -23,6 +24,7 @@ func DefaultEnvironment() Environment {
 		Screen:         os.Getenv("STY"),
 		ForcedProtocol: os.Getenv(envImageProtocol),
 		Debug:          truthyEnv(os.Getenv(envImageDebug)),
+		DebugFile:      os.Getenv(envImageDebugFile),
 	}
 }
 
@@ -80,14 +82,17 @@ func Select(req Request, env Environment) Strategy {
 	}
 
 	caps := detectCapabilities(env)
+	if caps.tmux && caps.kitty {
+		caps.kitty = false
+	}
 	if mode == ModeViewport {
-		if caps.kitty {
-			return Strategy{Protocol: ProtocolKitty, Name: "kitty-placeholder"}
-		}
-		// iTerm inline images and sixel are not line-clipping safe inside redrawable
-		// Bubble Tea viewports. Prefer the text renderer unless Kitty placeholders
-		// are available.
-		return Strategy{Protocol: ProtocolANSI, Name: "ansi-viewport-fallback"}
+		// Yazi-style adapter selection: choose the most reliable adapter for the
+		// rendering surface, not just the richest protocol advertised by the terminal.
+		// Bubble Tea owns and diffs viewport text, while Kitty Unicode placeholders are
+		// composited by the terminal from that text. Resizes/scrolling can desync those
+		// two renderers, so keep Kitty placeholders as an explicit opt-in for chat TUI
+		// viewports and use ANSI text by default.
+		return Strategy{Protocol: ProtocolANSI, Name: "ansi-viewport-stable"}
 	}
 
 	if caps.kitty {
@@ -126,6 +131,7 @@ type capabilities struct {
 	kitty bool
 	iterm bool
 	sixel bool
+	tmux  bool
 }
 
 func detectCapabilities(env Environment) capabilities {
@@ -134,6 +140,7 @@ func detectCapabilities(env Environment) capabilities {
 	lcTerminal := strings.ToLower(env.LCTerminal)
 
 	var caps capabilities
+	caps.tmux = strings.TrimSpace(env.Tmux) != ""
 	if strings.TrimSpace(env.KittyWindowID) != "" || strings.Contains(term, "kitty") || termProgram == "kitty" || termProgram == "ghostty" || strings.Contains(termProgram, "ghostty") {
 		caps.kitty = true
 	}
@@ -146,9 +153,21 @@ func detectCapabilities(env Environment) capabilities {
 	return caps
 }
 
+func Debugf(env Environment, format string, args ...any) {
+	debugf(env, format, args...)
+}
+
 func debugf(env Environment, format string, args ...any) {
 	if !env.Debug {
 		return
 	}
-	fmt.Fprintf(os.Stderr, "[term-llm image] "+format+"\n", args...)
+	line := fmt.Sprintf("[term-llm image] "+format+"\n", args...)
+	if path := strings.TrimSpace(env.DebugFile); path != "" {
+		if f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644); err == nil {
+			_, _ = f.WriteString(line)
+			_ = f.Close()
+			return
+		}
+	}
+	fmt.Fprint(os.Stderr, line)
 }

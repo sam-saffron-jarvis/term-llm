@@ -52,6 +52,7 @@ func Render(req Request) (Result, error) {
 func RenderWithEnvironment(req Request, env Environment) (Result, error) {
 	req = normalizeRequest(req)
 	strategy := Select(req, env)
+	debugf(env, "select mode=%s requested=%s forced=%q term=%q term_program=%q tmux=%t -> strategy=%s protocol=%s", req.Mode, req.Protocol, env.ForcedProtocol, env.Term, env.TermProgram, strings.TrimSpace(env.Tmux) != "", strategy.Name, strategy.Protocol)
 	if strategy.Protocol == ProtocolNone {
 		return Result{Protocol: ProtocolNone, TextFallback: req.Path, Warnings: strategy.Warnings}, nil
 	}
@@ -63,8 +64,11 @@ func RenderWithEnvironment(req Request, env Environment) (Result, error) {
 
 	cellW, cellH := resolveCellSize(req)
 	baseKey := buildCacheKey(req, strategy.Protocol, info.ModTime().UnixNano(), info.Size(), cellW, cellH)
-	if cached, ok := getCached(baseKey); ok {
-		return cached, nil
+	cacheable := isCacheableResult(req, strategy.Protocol)
+	if cacheable {
+		if cached, ok := getCached(baseKey); ok {
+			return cached, nil
+		}
 	}
 
 	img, err := loadImage(req.Path)
@@ -93,8 +97,10 @@ func RenderWithEnvironment(req Request, env Environment) (Result, error) {
 	if result.CacheKey == "" {
 		result.CacheKey = baseKey
 	}
-	debugf(env, "path=%s mode=%s strategy=%s protocol=%s cells=%dx%d upload=%d display=%d", req.Path, req.Mode, strategy.Name, result.Protocol, result.WidthCells, result.HeightCells, len(result.Upload), len(result.Display))
-	putCached(baseKey, result)
+	debugf(env, "path=%s mode=%s strategy=%s protocol=%s cells=%dx%d upload=%d display=%d cacheable=%t", req.Path, req.Mode, strategy.Name, result.Protocol, result.WidthCells, result.HeightCells, len(result.Upload), len(result.Display), cacheable)
+	if cacheable {
+		putCached(baseKey, result)
+	}
 	return result, nil
 }
 
@@ -115,6 +121,15 @@ func normalizeRequest(req Request) Request {
 		req.MaxRows = 1
 	}
 	return req
+}
+
+func isCacheableResult(req Request, protocol Protocol) bool {
+	// Kitty viewport results contain terminal-session state: image ids, virtual
+	// placement commands, and placeholder grids. Reusing them across Bubble Tea
+	// rebuilds/resizes/scroll cycles can bind fresh viewport text to stale terminal
+	// compositor state. Cache pixel/text renderers, but regenerate Kitty viewport
+	// placements each time.
+	return !(protocol == ProtocolKitty && normalizeMode(req.Mode) == ModeViewport)
 }
 
 func getCached(key string) (Result, bool) {

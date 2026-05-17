@@ -47,6 +47,9 @@ var rowColDiacritics = []rune{
 func renderKitty(img stdimage.Image, req Request, cellW, cellH int, cacheKey string) (Result, error) {
 	cols, rows := fitCells(img, req, cellW, cellH)
 	img = scaledForCells(img, cols, rows, cellW, cellH)
+	if normalizeMode(req.Mode) != ModeViewport {
+		return renderKittyDirect(img, cols, rows, cacheKey)
+	}
 	imageID := nextImageID()
 
 	b64Data, err := encodePNGBase64(img)
@@ -58,6 +61,11 @@ func renderKitty(img stdimage.Image, req Request, cellW, cellH int, cacheKey str
 	// Delete any prior image with this ID, transmit PNG bytes, then create a
 	// virtual placement bound to Unicode placeholders. The placeholder grid itself
 	// is returned separately and is the only image content that enters a viewport.
+	// We intentionally do not use placement IDs/underline-color encoding here:
+	// term-llm allocates a fresh image id for every render, so there is only one
+	// virtual placement per image id. Avoiding underline color keeps the placeholder
+	// text closer to the official minimal examples and avoids host/terminal quirks
+	// around preserving SGR 58 through redrawable viewports.
 	fmt.Fprintf(&upload, "\x1b_Ga=d,i=%d,q=2\x1b\\", imageID)
 
 	const chunkSize = 4096
@@ -75,17 +83,88 @@ func renderKitty(img stdimage.Image, req Request, cellW, cellH int, cacheKey str
 			fmt.Fprintf(&upload, "\x1b_Gm=%d;%s\x1b\\", more, chunk)
 		}
 	}
-	fmt.Fprintf(&upload, "\x1b_Ga=p,U=1,i=%d,c=%d,r=%d,q=2\x1b\\", imageID, cols, rows)
-
+	place := KittyPlaceSequence(imageID, cols, rows)
 	display := kittyPlaceholderGrid(imageID, cols, rows)
 	uploadStr := upload.String()
 	return Result{
 		Protocol:    ProtocolKitty,
 		Upload:      uploadStr,
+		Place:       place,
 		Display:     display,
-		Full:        uploadStr + display,
+		Full:        uploadStr + place + display,
 		WidthCells:  cols,
 		HeightCells: rows,
+		ImageID:     imageID,
+		PlacementID: 0,
+		CacheKey:    fmt.Sprintf("%s|kitty-id=%d", cacheKey, imageID),
+	}, nil
+}
+
+// KittyPlaceSequence creates or updates a virtual Unicode-placeholder placement
+// for an already-transmitted Kitty image id.
+func KittyPlaceSequence(imageID uint32, cols, rows int) string {
+	return fmt.Sprintf("\x1b_Ga=p,U=1,i=%d,c=%d,r=%d,q=2\x1b\\", imageID, cols, rows)
+}
+
+// KittyPlaceholderGrid returns the Unicode placeholder grid for imageID.
+func KittyPlaceholderGrid(imageID uint32, cols, rows int) string {
+	return kittyPlaceholderGrid(imageID, cols, rows)
+}
+
+// KittyPlacementForPath calculates viewport cell dimensions for path and returns
+// a placement-only Kitty result for an already-transmitted image id. It decodes
+// image metadata but does not re-encode or retransmit PNG bytes.
+func KittyPlacementForPath(req Request, imageID uint32) (Result, error) {
+	req = normalizeRequest(req)
+	cellW, cellH := resolveCellSize(req)
+	img, err := loadImage(req.Path)
+	if err != nil {
+		return Result{Protocol: ProtocolKitty, TextFallback: req.Path}, fmt.Errorf("load image: %w", err)
+	}
+	cols, rows := fitCells(img, req, cellW, cellH)
+	place := KittyPlaceSequence(imageID, cols, rows)
+	display := kittyPlaceholderGrid(imageID, cols, rows)
+	return Result{Protocol: ProtocolKitty, Place: place, Display: display, Full: place + display, WidthCells: cols, HeightCells: rows, ImageID: imageID, TextFallback: req.Path}, nil
+}
+
+func renderKittyDirect(img stdimage.Image, cols, rows int, cacheKey string) (Result, error) {
+	imageID := nextImageID()
+	b64Data, err := encodePNGBase64(img)
+	if err != nil {
+		return Result{}, fmt.Errorf("encode PNG: %w", err)
+	}
+
+	var out bytes.Buffer
+	// One-shot Kitty rendering is used for normal scrollback/CLI output, not for
+	// Bubble Tea viewports. Do not use Unicode placeholders here: a direct visible
+	// placement avoids the double-rendering behavior seen when placeholder grids are
+	// printed in ordinary terminal output.
+	fmt.Fprintf(&out, "\x1b_Ga=d,i=%d,q=2\x1b\\", imageID)
+	const chunkSize = 4096
+	for i := 0; i < len(b64Data); i += chunkSize {
+		end := i + chunkSize
+		more := 1
+		if end >= len(b64Data) {
+			end = len(b64Data)
+			more = 0
+		}
+		chunk := b64Data[i:end]
+		if i == 0 {
+			fmt.Fprintf(&out, "\x1b_Ga=T,t=d,f=100,i=%d,c=%d,r=%d,q=2,m=%d;%s\x1b\\", imageID, cols, rows, more, chunk)
+		} else {
+			fmt.Fprintf(&out, "\x1b_Gm=%d;%s\x1b\\", more, chunk)
+		}
+	}
+
+	s := out.String()
+	return Result{
+		Protocol:    ProtocolKitty,
+		Display:     s,
+		Full:        s,
+		WidthCells:  cols,
+		HeightCells: rows,
+		ImageID:     imageID,
+		PlacementID: 0,
 		CacheKey:    fmt.Sprintf("%s|kitty-id=%d", cacheKey, imageID),
 	}, nil
 }

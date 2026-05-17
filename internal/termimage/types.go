@@ -65,14 +65,22 @@ type Result struct {
 	// Upload contains terminal control bytes that must be emitted directly to the
 	// terminal, outside any line-wrapping/slicing viewport content.
 	Upload string
+	// Place contains terminal control bytes that create/update the visible image
+	// placement after Upload has completed. It is separate for redrawable viewport
+	// integrations that need to gate placeholders until both transmit and
+	// placement commands have been flushed.
+	Place string
 	// Display is safe for the requested output surface. For Kitty viewport mode it
 	// is only the Unicode placeholder grid. For ANSI it is ordinary ANSI text.
 	Display string
-	// Full is a one-shot convenience string equal to Upload + Display.
+	// Full is a one-shot convenience string equal to Upload + Place + Display.
 	Full string
 
 	WidthCells  int
 	HeightCells int
+
+	ImageID     uint32
+	PlacementID uint32
 
 	TextFallback string
 	CacheKey     string
@@ -92,6 +100,7 @@ type Environment struct {
 
 	ForcedProtocol string
 	Debug          bool
+	DebugFile      string
 }
 
 // Strategy is the selected rendering adventure for a request/environment pair.

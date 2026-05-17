@@ -233,6 +233,18 @@ func (m *Model) viewAltScreen() string {
 			}
 		}
 
+		if usedIncrementalAppend {
+			joined := strings.Join(contentLines, "\n")
+			var blocks []viewportImageBlock
+			joined, blocks = m.extractViewportImageBlocks(joined)
+			m.viewportImageBlocks = blocks
+			contentLines = splitViewportContentLines(joined)
+		} else {
+			var blocks []viewportImageBlock
+			contentStr, blocks = m.extractViewportImageBlocks(contentStr)
+			m.viewportImageBlocks = blocks
+		}
+
 		// Check if user is at bottom BEFORE setting content (which changes maxYOffset)
 		wasAtBottom := m.viewport.AtBottom()
 		firstRender := m.viewCache.lastViewportView == ""
@@ -286,7 +298,21 @@ func (m *Model) viewAltScreen() string {
 			m.viewCache.lastContentHistoryPlusStream = true
 			m.viewCache.lastStreamingContent = streamingContent
 		} else {
-			m.viewCache.lastViewportView = m.viewport.View()
+			if len(m.viewportImageBlocks) > 0 {
+				lines := contentLines
+				if len(lines) == 0 {
+					if contentStr != "" {
+						lines = splitViewportContentLines(contentStr)
+					} else if len(m.contentLines) > 0 {
+						lines = m.contentLines
+					} else {
+						lines = splitViewportContentLines(m.viewCache.lastContentStr)
+					}
+				}
+				m.viewCache.lastViewportView = m.renderAltScreenViewportLinesWithImages(lines)
+			} else {
+				m.viewCache.lastViewportView = m.viewport.View()
+			}
 		}
 		if m.streamPerf != nil {
 			m.streamPerf.RecordDuration(durationMetricViewportView, time.Since(viewStart))
@@ -1481,6 +1507,7 @@ func (m *Model) renderAltScreenViewportLines(lines []string) string {
 	}
 
 	visible := slices.Clone(lines[yOffset:bottom])
+	m.overlayVisibleViewportImages(visible, yOffset)
 	if xOffset := m.viewport.XOffset(); xOffset > 0 && contentWidth > 0 {
 		for i := range visible {
 			visible[i] = ansi.Cut(visible[i], xOffset, xOffset+contentWidth)
@@ -1494,6 +1521,64 @@ func (m *Model) renderAltScreenViewportLines(lines []string) string {
 	return m.viewport.Style.
 		UnsetWidth().UnsetHeight().
 		Render(rendered)
+}
+
+func (m *Model) renderAltScreenViewportLinesWithImages(lines []string) string {
+	return m.renderAltScreenViewportLines(lines)
+}
+
+func (m *Model) overlayVisibleViewportImages(visible []string, yOffset int) {
+	if m == nil || len(visible) == 0 || len(m.viewportImageBlocks) == 0 || m.imagePlaceholdersSuppressed {
+		return
+	}
+	viewportBottom := yOffset + len(visible)
+	for _, block := range m.viewportImageBlocks {
+		art, ok := m.viewportImageArtifacts[block.Key]
+		if !ok || len(art.Rows) == 0 {
+			continue
+		}
+		blockBottom := block.StartLine + block.HeightCells
+		if blockBottom <= yOffset || block.StartLine >= viewportBottom {
+			continue
+		}
+		uploadKey := m.viewportImageUploadKey(block.Key)
+		if art.Upload != "" {
+			if m.uploadedImageKeys == nil {
+				m.uploadedImageKeys = make(map[string]struct{})
+			}
+			if _, uploaded := m.uploadedImageKeys[uploadKey]; !uploaded {
+				m.queueImageUpload(uploadKey, art.Upload)
+				// Keep the reserved blank rows from the backing viewport content.
+				// Placeholders are injected only after the upload has been flushed.
+				continue
+			}
+		}
+		placeKey := uploadKey + ":place"
+		if art.Place != "" {
+			if m.placedImageKeys == nil {
+				m.placedImageKeys = make(map[string]struct{})
+			}
+			if _, placed := m.placedImageKeys[placeKey]; !placed {
+				m.queueImagePlacement(placeKey, art.Place)
+				// The virtual placement must be acknowledged by our flush bookkeeping
+				// before placeholders enter the viewport, so resize/redraw ordering cannot
+				// bind a new image to stale placeholder cells.
+				continue
+			}
+		}
+		firstRow := max(0, yOffset-block.StartLine)
+		lastRow := min(block.HeightCells, viewportBottom-block.StartLine)
+		if lastRow > len(art.Rows) {
+			lastRow = len(art.Rows)
+		}
+		for imageRow := firstRow; imageRow < lastRow; imageRow++ {
+			screenRow := block.StartLine + imageRow - yOffset
+			if screenRow < 0 || screenRow >= len(visible) {
+				continue
+			}
+			visible[screenRow] = art.Rows[imageRow]
+		}
+	}
 }
 
 // tryAppendAltScreenStreamingContent reuses the previously rendered viewport
