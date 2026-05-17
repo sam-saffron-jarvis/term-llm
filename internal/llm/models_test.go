@@ -2,7 +2,16 @@ package llm
 
 import "testing"
 
-func TestProviderModelsIncludeGPT54MiniAndNano(t *testing.T) {
+func TestProviderModelsIncludeLatestOpenAIModels(t *testing.T) {
+	if !containsModelID(ProviderModelIDs("openai"), "gpt-5.5") {
+		t.Fatalf("openai models missing gpt-5.5")
+	}
+	if got := InputLimitForProviderModel("openai", "gpt-5.5"); got != 922_000 {
+		t.Fatalf("openai gpt-5.5 input limit = %d, want %d", got, 922_000)
+	}
+	if got := OutputLimitForModel("gpt-5.5"); got != 128_000 {
+		t.Fatalf("gpt-5.5 output limit = %d, want %d", got, 128_000)
+	}
 	if !containsModelID(ProviderModelIDs("openai"), "gpt-5.4-mini") {
 		t.Fatalf("openai models missing gpt-5.4-mini")
 	}

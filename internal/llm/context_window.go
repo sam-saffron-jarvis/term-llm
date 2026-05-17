@@ -367,6 +367,7 @@ var inputLimitTable = []limitEntry{
 	{"anthropic.claude-sonnet-4", 180_000},
 
 	// OpenAI GPT-5 family
+	{"gpt-5.5", 922_000},             // 1,050,000 ctx - 128,000 out
 	{"gpt-5.4-mini", 272_000},        // 400K ctx - 128K out
 	{"gpt-5.4-nano", 272_000},        // 400K ctx - 128K out
 	{"gpt-5.4", 922_000},             // 1,050,000 ctx - 128,000 out
@@ -542,6 +543,7 @@ var outputLimitTable = []limitEntry{
 	{"anthropic.claude-sonnet-4", 64_000},
 
 	// OpenAI GPT-5 family
+	{"gpt-5.5", 128_000},
 	{"gpt-5.4-mini", 128_000},
 	{"gpt-5.4-nano", 128_000},
 	{"gpt-5.4", 128_000},
