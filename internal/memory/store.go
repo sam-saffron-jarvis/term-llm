@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/embedding"
+	"github.com/samsaffron/term-llm/internal/sqlitefts"
 	_ "modernc.org/sqlite"
 )
 
@@ -815,6 +816,11 @@ func (s *Store) SearchBM25(ctx context.Context, query string, limit int, agent s
 		limit = 6
 	}
 
+	ftsQuery := sqlitefts.LiteralQuery(query)
+	if ftsQuery == "" {
+		return []ScoredFragment{}, nil
+	}
+
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT mf.id,
 		       mf.agent,
@@ -834,7 +840,7 @@ func (s *Store) SearchBM25(ctx context.Context, query string, limit int, agent s
 		WHERE memory_fts MATCH ?
 		  AND (? = '' OR mf.agent = ?)
 		ORDER BY bm25(memory_fts)
-		LIMIT ?`, query, agent, agent, limit)
+		LIMIT ?`, ftsQuery, agent, agent, limit)
 	if err != nil {
 		return nil, fmt.Errorf("search fragments: %w", err)
 	}
@@ -2010,6 +2016,11 @@ func (s *Store) SearchImages(ctx context.Context, query, agent string, limit int
 		limit = 10
 	}
 
+	ftsQuery := sqlitefts.LiteralQuery(query)
+	if ftsQuery == "" {
+		return []ImageRecord{}, nil
+	}
+
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT g.id, g.agent, g.session_id, g.prompt, g.output_path, g.mime_type,
 		       g.provider, g.width, g.height, g.file_size, g.created_at
@@ -2019,7 +2030,7 @@ func (s *Store) SearchImages(ctx context.Context, query, agent string, limit int
 		  AND (? = '' OR g.agent = ?)
 		ORDER BY rank
 		LIMIT ?`,
-		query, agent, agent, limit,
+		ftsQuery, agent, agent, limit,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("search images: %w", err)
@@ -2275,37 +2286,6 @@ func (s *Store) ReinforceInsight(ctx context.Context, id int64) error {
 	return nil
 }
 
-// SearchInsights returns insights matching a BM25 query, sorted by relevance.
-// buildFTSQuery converts a free-text query to an FTS5 OR expression so that
-// any word match scores a hit (BM25 ranking then surfaces the best results).
-// Words shorter than 3 characters and duplicates are dropped.
-func buildFTSQuery(query string) string {
-	seen := map[string]struct{}{}
-	var terms []string
-	for _, w := range strings.Fields(strings.ToLower(query)) {
-		// Strip non-alphanumeric so we don't pass FTS5 syntax characters.
-		var clean []rune
-		for _, r := range w {
-			if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
-				clean = append(clean, r)
-			}
-		}
-		s := string(clean)
-		if len(s) < 3 {
-			continue
-		}
-		if _, dup := seen[s]; dup {
-			continue
-		}
-		seen[s] = struct{}{}
-		terms = append(terms, s+"*") // prefix match for basic stemming
-	}
-	if len(terms) == 0 {
-		return ""
-	}
-	return strings.Join(terms, " OR ")
-}
-
 // SearchInsights finds insights via BM25 full-text search. Used for deduplication
 // during extraction (checking if a newly mined insight already exists), not for
 // injection — ExpandInsights returns all insights sorted by confidence instead.
@@ -2317,7 +2297,10 @@ func (s *Store) SearchInsights(ctx context.Context, agent, query string, limit i
 		limit = 10
 	}
 
-	ftsQuery := buildFTSQuery(query)
+	ftsQuery := sqlitefts.PrefixORQuery(query, 3)
+	if ftsQuery == "" {
+		return s.ListInsights(ctx, agent, limit)
+	}
 	args := []any{ftsQuery}
 	agentClause := ""
 	if strings.TrimSpace(agent) != "" {

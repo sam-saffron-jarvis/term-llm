@@ -66,6 +66,34 @@ func TestSQLiteStoreReplaceMessagesPreservesTurnIndex(t *testing.T) {
 	}
 }
 
+func TestSQLiteStoreSearchEscapesUserQueryForFTS(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+
+	store, err := NewSQLiteStore(DefaultConfig())
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+	sess := &Session{ID: NewID(), Provider: "test", Model: "test-model", Mode: ModeChat}
+	if err := store.Create(ctx, sess); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	msg := NewMessage(sess.ID, llm.Message{Role: llm.RoleUser, Parts: []llm.Part{{Type: llm.PartText, Text: "term-llm memory search"}}}, 0)
+	if err := store.AddMessage(ctx, sess.ID, msg); err != nil {
+		t.Fatalf("AddMessage: %v", err)
+	}
+
+	results, err := store.Search(ctx, "term-llm", 10)
+	if err != nil {
+		t.Fatalf("Search(term-llm) error = %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("Search(term-llm) len = %d, want 1", len(results))
+	}
+}
+
 func TestSQLiteStorePersistsDeveloperMessages(t *testing.T) {
 	t.Setenv("XDG_DATA_HOME", t.TempDir())
 

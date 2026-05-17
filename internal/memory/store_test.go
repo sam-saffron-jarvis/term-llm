@@ -61,6 +61,37 @@ func TestStoreFragmentCRUDAndSearch(t *testing.T) {
 	}
 }
 
+func TestSearchFragmentsEscapesUserQueryForFTS(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore(t)
+	defer store.Close()
+
+	if err := store.CreateFragment(ctx, &Fragment{
+		Agent:   "jarvis",
+		Path:    "projects/term-llm/memory.md",
+		Content: "term-llm memory search should tolerate punctuation in user queries",
+		Source:  DefaultSourceMine,
+	}); err != nil {
+		t.Fatalf("CreateFragment() error = %v", err)
+	}
+
+	results, err := store.SearchFragments(ctx, "term-llm", 10, "jarvis")
+	if err != nil {
+		t.Fatalf("SearchFragments(term-llm) error = %v", err)
+	}
+	if len(results) == 0 {
+		t.Fatal("SearchFragments(term-llm) returned no rows")
+	}
+
+	results, err = store.SearchFragments(ctx, `"term-llm" + memory:`, 10, "jarvis")
+	if err != nil {
+		t.Fatalf("SearchFragments(punctuated query) error = %v", err)
+	}
+	if len(results) == 0 {
+		t.Fatal("SearchFragments(punctuated query) returned no rows")
+	}
+}
+
 func TestFragmentSourcesCRUD(t *testing.T) {
 	ctx := context.Background()
 	store := newTestStore(t)
@@ -746,6 +777,13 @@ func TestSearchImages(t *testing.T) {
 	}
 	if results[0].Prompt != records[0].Prompt {
 		t.Fatalf("SearchImages() prompt = %q, want %q", results[0].Prompt, records[0].Prompt)
+	}
+	results, err = store.SearchImages(ctx, "space-png", "jarvis", 10)
+	if err != nil {
+		t.Fatalf("SearchImages(hyphenated query) error = %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("SearchImages(hyphenated query) len = %d, want 1", len(results))
 	}
 }
 
