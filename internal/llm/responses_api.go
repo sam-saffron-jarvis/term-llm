@@ -52,7 +52,6 @@ type ResponsesClient struct {
 	wsMu                    sync.Mutex
 	wsConn                  *websocket.Conn
 	wsLastRequest           *ResponsesRequest
-	wsLastResponseItems     []ResponsesInputItem
 	// HandleError, if set, is called for non-200 responses before default handling.
 	// Return a non-nil error to short-circuit; return nil to fall through to defaults.
 	HandleError func(statusCode int, body []byte, headers http.Header) error
@@ -660,7 +659,7 @@ func (c *ResponsesClient) Stream(ctx context.Context, req ResponsesRequest, debu
 						if err := sleepWithContext(ctx, wait); err != nil {
 							return nil, err
 						}
-						return c.streamWebSocketPrepared(ctx, wsReq, buildFullInput, debugRaw, responseStateGeneration)
+						return c.streamWebSocketPrepared(ctx, wsReq, buildContinuationInput, buildFullInput, debugRaw, responseStateGeneration)
 					},
 				})
 			}
@@ -677,7 +676,7 @@ func (c *ResponsesClient) Stream(ctx context.Context, req ResponsesRequest, debu
 			return fallbacks
 		}
 
-		stream, err := c.streamWebSocketPrepared(ctx, wsReq, buildFullInput, debugRaw, responseStateGeneration)
+		stream, err := c.streamWebSocketPrepared(ctx, wsReq, buildContinuationInput, buildFullInput, debugRaw, responseStateGeneration)
 		if err == nil {
 			return &responsesWebSocketFallbackStream{
 				current:   stream,
@@ -694,7 +693,7 @@ func (c *ResponsesClient) Stream(ctx context.Context, req ResponsesRequest, debu
 			if err := sleepWithContext(ctx, wait); err != nil {
 				return nil, err
 			}
-			stream, err = c.streamWebSocketPrepared(ctx, wsReq, buildFullInput, debugRaw, responseStateGeneration)
+			stream, err = c.streamWebSocketPrepared(ctx, wsReq, buildContinuationInput, buildFullInput, debugRaw, responseStateGeneration)
 			if err == nil {
 				return &responsesWebSocketFallbackStream{
 					current:   stream,
@@ -1102,7 +1101,6 @@ func (c *ResponsesClient) ResetConversation() {
 	c.LastResponseID = ""
 	c.websocketDisabled = false
 	c.wsLastRequest = nil
-	c.wsLastResponseItems = nil
 }
 
 func (c *ResponsesClient) websocketServerStateEnabled() bool {
