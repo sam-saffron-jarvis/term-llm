@@ -394,6 +394,7 @@ func TestCustomBasePath_EndToEnd(t *testing.T) {
 			ui:              true,
 			basePath:        "/chat",
 			sidebarSessions: []string{"chat", "web"},
+			agentName:       "jarvis",
 		},
 	}
 
@@ -415,6 +416,9 @@ func TestCustomBasePath_EndToEnd(t *testing.T) {
 	}
 	if !strings.Contains(body, `TERM_LLM_SIDEBAR_SESSIONS=["chat","web"]`) {
 		t.Error("/ should inject TERM_LLM_SIDEBAR_SESSIONS")
+	}
+	if !strings.Contains(body, `TERM_LLM_AGENT_NAME="jarvis"`) {
+		t.Error("/ should inject TERM_LLM_AGENT_NAME")
 	}
 	if !strings.Contains(body, `TERM_LLM_UI_VERSION=`) {
 		t.Error("/ should inject TERM_LLM_UI_VERSION")

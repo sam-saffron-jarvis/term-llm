@@ -260,6 +260,8 @@ func (s *serveServer) buildIndexHTML() []byte {
 	}
 	sidebarEscaped, _ := json.Marshal(sidebarSessions)
 	headSnippet += `<script>window.TERM_LLM_SIDEBAR_SESSIONS=` + string(sidebarEscaped) + `;</script>`
+	agentEscaped, _ := json.Marshal(s.cfg.agentName)
+	headSnippet += `<script>window.TERM_LLM_AGENT_NAME=` + string(agentEscaped) + `;</script>`
 	if s.cfgRef != nil {
 		if vapidKey := s.cfgRef.Serve.WebPush.VAPIDPublicKey; vapidKey != "" {
 			vapidEscaped, _ := json.Marshal(vapidKey)
