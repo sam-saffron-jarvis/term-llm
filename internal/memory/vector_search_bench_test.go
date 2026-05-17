@@ -2,7 +2,6 @@ package memory
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"math"
 	"strings"
@@ -65,6 +64,9 @@ func TestStoreVectorSearchLargeLimitFetchesFragmentsInBatches(t *testing.T) {
 	}
 	if want := fmt.Sprintf("large-limit-%03d", count-1); results[0].ID != want {
 		t.Fatalf("top result = %s, want newest tied result %s", results[0].ID, want)
+	}
+	if len(results[0].Vector) != 2 || results[0].Vector[0] != 1 || results[0].Vector[1] != 0 {
+		t.Fatalf("top legacy JSON vector = %#v, want [1 0]", results[0].Vector)
 	}
 }
 
@@ -130,10 +132,7 @@ func seedLargeVectorSearchBenchmark(b *testing.B, ctx context.Context, store *St
 			b.Fatalf("insert fragment %d: %v", i, err)
 		}
 
-		payload, err := json.Marshal(largeBenchmarkVector(i, dimensions))
-		if err != nil {
-			b.Fatalf("marshal vector %d: %v", i, err)
-		}
+		payload := encodeEmbeddingVector(largeBenchmarkVector(i, dimensions))
 		if _, err := embStmt.ExecContext(ctx, id, dimensions, payload, updatedAt); err != nil {
 			b.Fatalf("insert embedding %d: %v", i, err)
 		}

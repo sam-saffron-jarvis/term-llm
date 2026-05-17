@@ -276,6 +276,16 @@ func TestStoreEmbeddingMethods(t *testing.T) {
 	if err := store.UpsertEmbedding(ctx, frag.ID, "gemini", "gemini-embedding-001", len(vec), vec); err != nil {
 		t.Fatalf("UpsertEmbedding() error = %v", err)
 	}
+	var rawPayload []byte
+	if err := store.db.QueryRowContext(ctx, `
+		SELECT vector FROM memory_embeddings
+		WHERE fragment_id = ? AND provider = ? AND model = ?`,
+		frag.ID, "gemini", "gemini-embedding-001").Scan(&rawPayload); err != nil {
+		t.Fatalf("query raw embedding payload: %v", err)
+	}
+	if !hasEmbeddingVectorBinaryMagic(rawPayload) {
+		t.Fatalf("embedding payload prefix = %q, want binary vector magic", rawPayload[:min(len(rawPayload), len(embeddingVectorBinaryMagic))])
+	}
 
 	got, err := store.GetEmbedding(ctx, frag.ID, "gemini", "gemini-embedding-001")
 	if err != nil {
@@ -313,6 +323,37 @@ func TestStoreEmbeddingMethods(t *testing.T) {
 	}
 	if got != nil {
 		t.Fatalf("expected stale embedding to be cleared on update, got %v", got)
+	}
+}
+
+func TestStoreGetEmbeddingSupportsLegacyJSONVectors(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore(t)
+	defer store.Close()
+
+	frag := &Fragment{Agent: "jarvis", Path: "legacy/json-vector", Content: "legacy vector"}
+	if err := store.CreateFragment(ctx, frag); err != nil {
+		t.Fatalf("CreateFragment() error = %v", err)
+	}
+
+	if _, err := store.db.ExecContext(ctx, `
+		INSERT INTO memory_embeddings(fragment_id, provider, model, dimensions, vector, embedded_at)
+		VALUES (?, 'legacy', 'json', 2, ?, ?)`, frag.ID, []byte(`[0.25,0.75]`), time.Now()); err != nil {
+		t.Fatalf("insert legacy JSON embedding: %v", err)
+	}
+
+	got, err := store.GetEmbedding(ctx, frag.ID, "legacy", "json")
+	if err != nil {
+		t.Fatalf("GetEmbedding() error = %v", err)
+	}
+	want := []float64{0.25, 0.75}
+	if len(got) != len(want) {
+		t.Fatalf("embedding length = %d, want %d", len(got), len(want))
+	}
+	for i := range want {
+		if math.Abs(got[i]-want[i]) > 1e-9 {
+			t.Fatalf("embedding[%d] = %f, want %f", i, got[i], want[i])
+		}
 	}
 }
 
@@ -405,25 +446,34 @@ func TestStoreGetEmbeddingsByIDs(t *testing.T) {
 
 	vec1 := []float64{0.4, 0.5}
 	vec2 := []float64{0.6, 0.7}
+	vec3 := []float64{0.8, 0.9}
 	if err := store.UpsertEmbedding(ctx, f1.ID, "gemini", "gemini-embedding-001", len(vec1), vec1); err != nil {
 		t.Fatalf("UpsertEmbedding(f1) error = %v", err)
 	}
 	if err := store.UpsertEmbedding(ctx, f2.ID, "gemini", "gemini-embedding-001", len(vec2), vec2); err != nil {
 		t.Fatalf("UpsertEmbedding(f2) error = %v", err)
 	}
+	if _, err := store.db.ExecContext(ctx, `
+		INSERT INTO memory_embeddings(fragment_id, provider, model, dimensions, vector, embedded_at)
+		VALUES (?, 'gemini', 'gemini-embedding-001', 2, ?, ?)`, f3.ID, []byte(`[0.8,0.9]`), time.Now()); err != nil {
+		t.Fatalf("insert legacy JSON embedding: %v", err)
+	}
 
 	got, err := store.GetEmbeddingsByIDs(ctx, []string{f1.ID, f2.ID, f3.ID, f2.ID}, "gemini", "gemini-embedding-001")
 	if err != nil {
 		t.Fatalf("GetEmbeddingsByIDs() error = %v", err)
 	}
-	if len(got) != 2 {
-		t.Fatalf("GetEmbeddingsByIDs() len = %d, want 2", len(got))
+	if len(got) != 3 {
+		t.Fatalf("GetEmbeddingsByIDs() len = %d, want 3", len(got))
 	}
 	if vec, ok := got[f1.ID]; !ok || len(vec) != len(vec1) {
 		t.Fatalf("GetEmbeddingsByIDs() missing f1 or wrong length: %#v", got)
 	}
 	if vec, ok := got[f2.ID]; !ok || len(vec) != len(vec2) {
 		t.Fatalf("GetEmbeddingsByIDs() missing f2 or wrong length: %#v", got)
+	}
+	if vec, ok := got[f3.ID]; !ok || len(vec) != len(vec3) {
+		t.Fatalf("GetEmbeddingsByIDs() missing f3 legacy JSON vector or wrong length: %#v", got)
 	}
 	for i := range vec1 {
 		if math.Abs(got[f1.ID][i]-vec1[i]) > 1e-9 {
@@ -433,6 +483,11 @@ func TestStoreGetEmbeddingsByIDs(t *testing.T) {
 	for i := range vec2 {
 		if math.Abs(got[f2.ID][i]-vec2[i]) > 1e-9 {
 			t.Fatalf("f2 embedding[%d] = %f, want %f", i, got[f2.ID][i], vec2[i])
+		}
+	}
+	for i := range vec3 {
+		if math.Abs(got[f3.ID][i]-vec3[i]) > 1e-9 {
+			t.Fatalf("f3 legacy embedding[%d] = %f, want %f", i, got[f3.ID][i], vec3[i])
 		}
 	}
 }
@@ -511,6 +566,9 @@ func TestStoreVectorSearchAndBumpAccess(t *testing.T) {
 	}
 	if results[0].ID != f1.ID {
 		t.Fatalf("VectorSearch() top ID = %s, want %s", results[0].ID, f1.ID)
+	}
+	if len(results[0].Vector) != 2 || math.Abs(results[0].Vector[0]-1) > 1e-9 || math.Abs(results[0].Vector[1]) > 1e-9 {
+		t.Fatalf("VectorSearch() top vector = %#v, want [1 0]", results[0].Vector)
 	}
 	if results[0].Score < results[1].Score {
 		t.Fatalf("scores out of order: %f < %f", results[0].Score, results[1].Score)
@@ -1205,8 +1263,8 @@ func seedVectorSearchBenchmark(b *testing.B, store *Store, total, matching int) 
 	defer embStmt.Close()
 
 	now := time.Now().UTC()
-	matchingVector := []byte(`[1,0,0,0]`)
-	otherVector := []byte(`[0,1,0,0]`)
+	matchingVector := encodeEmbeddingVector([]float64{1, 0, 0, 0})
+	otherVector := encodeEmbeddingVector([]float64{0, 1, 0, 0})
 	for i := 0; i < total; i++ {
 		id := fmt.Sprintf("vector-frag-%05d", i)
 		if _, err := fragStmt.Exec(id, "jarvis", fmt.Sprintf("vectors/%05d.md", i), "benchmark content", DefaultSourceMine, now, now); err != nil {
