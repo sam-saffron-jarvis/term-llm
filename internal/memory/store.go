@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/rand"
 	"database/sql"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -901,6 +902,114 @@ func (s *Store) SearchFragments(ctx context.Context, query string, limit int, ag
 	return out, nil
 }
 
+const embeddingVectorBinaryMagic = "tllmf64\x01"
+
+func hasEmbeddingVectorBinaryMagic(payload []byte) bool {
+	if len(payload) < len(embeddingVectorBinaryMagic) {
+		return false
+	}
+	for i := 0; i < len(embeddingVectorBinaryMagic); i++ {
+		if payload[i] != embeddingVectorBinaryMagic[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func encodeEmbeddingVector(vec []float64) []byte {
+	headerLen := len(embeddingVectorBinaryMagic) + 4
+	payload := make([]byte, headerLen+len(vec)*8)
+	copy(payload, embeddingVectorBinaryMagic)
+	binary.LittleEndian.PutUint32(payload[len(embeddingVectorBinaryMagic):headerLen], uint32(len(vec)))
+
+	offset := headerLen
+	for _, v := range vec {
+		binary.LittleEndian.PutUint64(payload[offset:offset+8], math.Float64bits(v))
+		offset += 8
+	}
+	return payload
+}
+
+func decodeEmbeddingVector(payload []byte) ([]float64, error) {
+	if hasEmbeddingVectorBinaryMagic(payload) {
+		return decodeBinaryEmbeddingVector(payload)
+	}
+
+	var vec []float64
+	if err := json.Unmarshal(payload, &vec); err != nil {
+		return nil, err
+	}
+	return vec, nil
+}
+
+func decodeBinaryEmbeddingVector(payload []byte) ([]float64, error) {
+	dims, offset, err := parseBinaryEmbeddingVectorHeader(payload)
+	if err != nil {
+		return nil, err
+	}
+
+	vec := make([]float64, dims)
+	for i := range vec {
+		vec[i] = math.Float64frombits(binary.LittleEndian.Uint64(payload[offset : offset+8]))
+		offset += 8
+	}
+	return vec, nil
+}
+
+func parseBinaryEmbeddingVectorHeader(payload []byte) (dims, offset int, err error) {
+	headerLen := len(embeddingVectorBinaryMagic) + 4
+	if len(payload) < headerLen {
+		return 0, 0, fmt.Errorf("truncated binary embedding vector header")
+	}
+	encodedDims := binary.LittleEndian.Uint32(payload[len(embeddingVectorBinaryMagic):headerLen])
+	if encodedDims > uint32((len(payload)-headerLen)/8) {
+		return 0, 0, fmt.Errorf("binary embedding vector declares %d dimensions but payload has %d value bytes", encodedDims, len(payload)-headerLen)
+	}
+	dims = int(encodedDims)
+	wantLen := headerLen + dims*8
+	if len(payload) != wantLen {
+		return 0, 0, fmt.Errorf("binary embedding vector length = %d, want %d for %d dimensions", len(payload), wantLen, dims)
+	}
+	return dims, headerLen, nil
+}
+
+func cosineSimilarityPayload(queryVec []float64, payload []byte) (float64, error) {
+	if hasEmbeddingVectorBinaryMagic(payload) {
+		return cosineSimilarityBinaryPayload(queryVec, payload)
+	}
+
+	vec, err := decodeEmbeddingVector(payload)
+	if err != nil {
+		return 0, err
+	}
+	return embedding.CosineSimilarity(queryVec, vec), nil
+}
+
+func cosineSimilarityBinaryPayload(queryVec []float64, payload []byte) (float64, error) {
+	dims, offset, err := parseBinaryEmbeddingVectorHeader(payload)
+	if err != nil {
+		return 0, err
+	}
+	if dims != len(queryVec) || dims == 0 {
+		return 0, nil
+	}
+
+	var dotProduct, normA, normB float64
+	for _, a := range queryVec {
+		b := math.Float64frombits(binary.LittleEndian.Uint64(payload[offset : offset+8]))
+		offset += 8
+		dotProduct += a * b
+		normA += a * a
+		normB += b * b
+	}
+
+	denom := math.Sqrt(normA) * math.Sqrt(normB)
+	if denom == 0 {
+		return 0, nil
+	}
+	return dotProduct / denom, nil
+}
+
 // UpsertEmbedding inserts or updates an embedding vector for a fragment.
 func (s *Store) UpsertEmbedding(ctx context.Context, fragmentID, provider, model string, dims int, vec []float64) error {
 	fragmentID = strings.TrimSpace(fragmentID)
@@ -925,12 +1034,9 @@ func (s *Store) UpsertEmbedding(ctx context.Context, fragmentID, provider, model
 		return fmt.Errorf("vector dimensions mismatch: got %d values, dims=%d", len(vec), dims)
 	}
 
-	payload, err := json.Marshal(vec)
-	if err != nil {
-		return fmt.Errorf("encode embedding vector: %w", err)
-	}
+	payload := encodeEmbeddingVector(vec)
 
-	_, err = s.db.ExecContext(ctx, `
+	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO memory_embeddings(fragment_id, provider, model, dimensions, vector, embedded_at)
 		VALUES(?, ?, ?, ?, ?, ?)
 		ON CONFLICT(fragment_id, provider, model) DO UPDATE SET
@@ -966,8 +1072,8 @@ func (s *Store) GetEmbedding(ctx context.Context, fragmentID, provider, model st
 		return nil, fmt.Errorf("get embedding: %w", err)
 	}
 
-	var vec []float64
-	if err := json.Unmarshal(payload, &vec); err != nil {
+	vec, err := decodeEmbeddingVector(payload)
+	if err != nil {
 		return nil, fmt.Errorf("decode embedding vector: %w", err)
 	}
 	return vec, nil
@@ -1022,12 +1128,12 @@ func (s *Store) GetEmbeddingsByIDs(ctx context.Context, fragmentIDs []string, pr
 	out := make(map[string][]float64, len(ids))
 	for rows.Next() {
 		var id string
-		var payload []byte
+		var payload sql.RawBytes
 		if err := rows.Scan(&id, &payload); err != nil {
 			return nil, fmt.Errorf("scan embedding row: %w", err)
 		}
-		var vec []float64
-		if err := json.Unmarshal(payload, &vec); err != nil {
+		vec, err := decodeEmbeddingVector(payload)
+		if err != nil {
 			return nil, fmt.Errorf("decode embedding vector: %w", err)
 		}
 		out[id] = vec
@@ -1137,22 +1243,31 @@ func (s *Store) VectorSearch(ctx context.Context, agent, provider, model string,
 	top := make(vectorSearchCandidateHeap, 0, limit)
 	for rows.Next() {
 		var c vectorSearchCandidate
-		var payload []byte
+		var payload sql.RawBytes
 		if err := rows.Scan(&c.id, &c.updatedAt, &payload); err != nil {
 			return nil, fmt.Errorf("scan vector search row: %w", err)
 		}
 
-		if err := json.Unmarshal(payload, &c.vector); err != nil {
-			return nil, fmt.Errorf("decode stored vector for fragment %s: %w", c.id, err)
+		score, err := cosineSimilarityPayload(queryVec, payload)
+		if err != nil {
+			return nil, fmt.Errorf("score stored vector for fragment %s: %w", c.id, err)
 		}
-		c.score = embedding.CosineSimilarity(queryVec, c.vector)
+		c.score = score
 
 		if top.Len() < limit {
+			c.vector, err = decodeEmbeddingVector(payload)
+			if err != nil {
+				return nil, fmt.Errorf("decode stored vector for fragment %s: %w", c.id, err)
+			}
 			heap.Push(&top, c)
 			continue
 		}
 
 		if vectorSearchCandidateBetter(c, top[0]) {
+			c.vector, err = decodeEmbeddingVector(payload)
+			if err != nil {
+				return nil, fmt.Errorf("decode stored vector for fragment %s: %w", c.id, err)
+			}
 			top[0] = c
 			heap.Fix(&top, 0)
 		}
