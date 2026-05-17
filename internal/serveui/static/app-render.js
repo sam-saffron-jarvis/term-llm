@@ -596,7 +596,61 @@ const enhanceMathAsync = (target) => {
   ensureKatexLoaded().then((loaded) => {
     if (!loaded || !isAttachedToDocument(target)) return;
     renderMath(target);
+    decorateMathCopyControls(target);
   }).catch(() => {});
+};
+
+const extractRenderedMathText = (mathNode) => {
+  const annotation = mathNode?.querySelector?.('annotation');
+  const text = String(annotation?.textContent || '').trim();
+  if (text) return text;
+  return String(mathNode?.textContent || '').trim();
+};
+
+const decorateMathCopyControls = (target) => {
+  if (!target || typeof target.querySelectorAll !== 'function') return;
+  target.querySelectorAll('.katex-display').forEach((display) => {
+    if (display.querySelector('.math-copy-btn')) return;
+    const mathNode = display.querySelector('.katex');
+    const text = extractRenderedMathText(mathNode || display);
+    if (!text) return;
+
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'math-copy-btn';
+    btn.title = 'Copy math as text';
+    btn.setAttribute('aria-label', 'Copy math as text');
+    btn.textContent = 'Copy TeX';
+    btn.addEventListener('click', async (event) => {
+      event.preventDefault();
+      event.stopPropagation?.();
+      const clipboard = getClipboardWriter();
+      if (!clipboard) return;
+      btn.disabled = true;
+      try {
+        await clipboard.writeText(text);
+        window.clearTimeout(btn._mathCopyResetTimer);
+        btn.classList.add('copied');
+        btn.textContent = 'Copied';
+        btn._mathCopyResetTimer = window.setTimeout(() => {
+          btn.classList.remove('copied');
+          btn.textContent = 'Copy TeX';
+          btn.disabled = !getClipboardWriter();
+        }, TURN_COPY_RESET_MS);
+      } catch (_err) {
+        btn.textContent = 'Failed';
+        window.setTimeout(() => {
+          btn.textContent = 'Copy TeX';
+          btn.disabled = !getClipboardWriter();
+        }, TURN_COPY_RESET_MS);
+      } finally {
+        if (!btn.classList.contains('copied')) btn.disabled = !getClipboardWriter();
+        else btn.disabled = false;
+      }
+    });
+    if (!getClipboardWriter()) btn.disabled = true;
+    display.appendChild(btn);
+  });
 };
 
 const enhanceHighlightAsync = (target) => {
@@ -2153,6 +2207,8 @@ Object.assign(app, {
   ensureStylesheetLoaded,
   ensureKatexLoaded,
   ensureHighlightLoaded,
+  extractRenderedMathText,
+  decorateMathCopyControls,
   renderAssistantMarkdown,
   enqueueAssistantStreamUpdate,
   finalizeAssistantStreamRender,

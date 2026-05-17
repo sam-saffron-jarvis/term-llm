@@ -79,6 +79,30 @@ const cases = [
     contains: ['<code class="language-sql">'],
     absent: [],
   },
+  {
+    name: 'inline escaped math delimiters survive markdown parsing',
+    input: 'Planck length is \\(\\ell_P = \\sqrt{\\hbar G / c^3}\\).',
+    contains: ['\\(\\ell_P = \\sqrt{\\hbar G / c^3}\\)'],
+    absent: ['(\\ell_P = \\sqrt{\\hbar G / c^3})'],
+  },
+  {
+    name: 'display escaped math delimiters survive markdown parsing',
+    input: '\\[\\ell_P = \\sqrt{\\hbar G / c^3}\\]',
+    contains: ['\\[\\ell_P = \\sqrt{\\hbar G / c^3}\\]'],
+    absent: ['[\\ell_P = \\sqrt{\\hbar G / c^3}]'],
+  },
+  {
+    name: 'math delimiter preservation escapes html before katex pass',
+    input: '\\(<img src=x onerror=alert(1)>\\)',
+    contains: ['\\(&lt;img src=x onerror=alert(1)&gt;\\)'],
+    absent: ['<img src=x onerror=alert(1)>'],
+  },
+  {
+    name: 'single dollar math stays ordinary prose',
+    input: 'Cost is $100 and formula is $x + 1$.',
+    contains: ['Cost is $100 and formula is $x + 1$.'],
+    absent: ['katex'],
+  },
 ];
 
 for (const tc of cases) {
