@@ -550,6 +550,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 				verbose:             serveVerbose,
 				basePath:            serveBasePath,
 				sidebarSessions:     append([]string(nil), sidebarSessions...),
+				agentName:           agentName,
 				corsOrigins:         append([]string(nil), serveCORSOrigins...),
 				filesDir:            resolveFilesDir(serveFilesDir, cfg),
 				writeDirs:           resolveServeWriteDirs(serveWriteDirs, cfg),
@@ -818,6 +819,7 @@ type serveServerConfig struct {
 	verbose             bool
 	basePath            string // e.g. "/ui" or "/chat", always without trailing slash
 	sidebarSessions     []string
+	agentName           string
 	corsOrigins         []string
 	filesDir            string   // opt-in directory for serving arbitrary files (videos, PDFs, etc)
 	writeDirs           []string // tool write-dirs (CLI + config); tool-reported files inside these are trusted sources for ensureFileServeable

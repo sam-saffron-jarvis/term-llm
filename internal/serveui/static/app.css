@@ -351,16 +351,15 @@
       font-weight: 600;
       line-height: 1.25;
       transition: background 0.15s ease, border-color 0.15s ease;
-    }
-
-    .widgets-sidebar-btn {
       display: flex;
       align-items: center;
       gap: 0.55rem;
     }
 
     .sidebar-action-icon {
-      flex: 0 0 auto;
+      flex: 0 0 17px;
+      width: 17px;
+      height: 17px;
       color: currentColor;
     }
 

@@ -172,6 +172,7 @@ const elements = {
   sidebarRailSettingsBtn: document.getElementById('sidebarRailSettingsBtn'),
   mobileMenuBtn: document.getElementById('mobileMenuBtn'),
   settingsBtn: document.getElementById('settingsBtn'),
+  sidebarBrandText: document.getElementById('sidebarBrandText'),
   newChatBtn: document.getElementById('newChatBtn'),
   widgetsOpenBtn: document.getElementById('widgetsOpenBtn'),
   widgetsModal: document.getElementById('widgetsModal'),
@@ -252,6 +253,23 @@ const elements = {
   startupSplash: document.getElementById('startupSplash'),
   startupStatus: document.getElementById('startupStatus')
 };
+
+const displayAgentName = (name) => {
+  const cleaned = String(name || '').trim();
+  if (!cleaned) return 'Chat';
+  return cleaned
+    .split(/[-_\s]+/)
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(' ');
+};
+
+const applySidebarBrand = () => {
+  if (!elements.sidebarBrandText) return;
+  elements.sidebarBrandText.textContent = displayAgentName(window.TERM_LLM_AGENT_NAME);
+};
+
+applySidebarBrand();
 
 // marked is configured via markdown-setup.js (loaded before this file).
 
@@ -1311,6 +1329,8 @@ Object.assign(app, {
   state,
   elements,
   markdownStreaming: app.markdownStreaming,
+  displayAgentName,
+  applySidebarBrand,
   generateUUID,
   generateId,
   INTERRUPT_BADGE_META,

@@ -63,7 +63,7 @@ function makeNode() {
   };
 }
 
-function loadAppCoreWith({ nodeOverrides = {}, docQSTracker = () => [], navigatorOverrides = {}, initialStorage = {} } = {}) {
+function loadAppCoreWith({ nodeOverrides = {}, docQSTracker = () => [], navigatorOverrides = {}, initialStorage = {}, agentName = '' } = {}) {
   const nodes = new Map(Object.entries(nodeOverrides));
   const cookieWrites = [];
   const document = {
@@ -110,6 +110,7 @@ function loadAppCoreWith({ nodeOverrides = {}, docQSTracker = () => [], navigato
     TermLLMApp: {},
     TERM_LLM_UI_PREFIX: '/chat',
     TERM_LLM_SIDEBAR_SESSIONS: 'all',
+    TERM_LLM_AGENT_NAME: agentName,
     navigator: navigatorObj,
     visualViewport: null,
     innerHeight: 1000,
@@ -199,6 +200,37 @@ const app = loadAppCore();
   const finalWrite = writes[writes.length - 1] || '';
   if (finalWrite !== 'term_llm_token=initial-token; path=/chat; SameSite=Strict; max-age=31536000') {
     fail(name, `got ${JSON.stringify(finalWrite)}`);
+    return;
+  }
+  pass(name);
+})();
+
+(function testSidebarBrandUsesAgentName() {
+  const name = 'sidebar brand uses injected agent name';
+  const brandNode = makeNode();
+  const testApp = loadAppCoreWith({
+    agentName: 'jarvis',
+    nodeOverrides: { sidebarBrandText: brandNode },
+  });
+
+  if (brandNode.textContent !== 'Jarvis') {
+    fail(name, `got ${JSON.stringify(brandNode.textContent)}`);
+    return;
+  }
+  if (testApp.displayAgentName('web-researcher') !== 'Web Researcher') {
+    fail(name, `hyphenated agent label was ${JSON.stringify(testApp.displayAgentName('web-researcher'))}`);
+    return;
+  }
+  pass(name);
+})();
+
+(function testSidebarBrandFallsBackToChat() {
+  const name = 'sidebar brand falls back to Chat without an agent';
+  const brandNode = makeNode();
+  loadAppCoreWith({ nodeOverrides: { sidebarBrandText: brandNode } });
+
+  if (brandNode.textContent !== 'Chat') {
+    fail(name, `got ${JSON.stringify(brandNode.textContent)}`);
     return;
   }
   pass(name);
