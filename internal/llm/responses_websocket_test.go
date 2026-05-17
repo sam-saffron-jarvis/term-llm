@@ -140,13 +140,49 @@ func TestResponsesWebSocketPrepareClearsStalePreviousResponseID(t *testing.T) {
 		Model:              "gpt-test",
 		PreviousResponseID: "resp_stale",
 		Input:              []ResponsesInputItem{{Type: "message", Role: "user", Content: "new"}},
-	}, func() []ResponsesInputItem { return fullInput })
+	}, func() []ResponsesInputItem {
+		return []ResponsesInputItem{{Type: "message", Role: "user", Content: "new"}}
+	}, func() []ResponsesInputItem {
+		return fullInput
+	})
 
 	if prepared.PreviousResponseID != "" {
 		t.Fatalf("PreviousResponseID = %q, want empty", prepared.PreviousResponseID)
 	}
 	if len(prepared.Input) != len(fullInput) || prepared.Input[0].Content != "old" || prepared.Input[1].Content != "new" {
 		t.Fatalf("Input = %#v, want full input %#v", prepared.Input, fullInput)
+	}
+}
+
+func TestResponsesWebSocketPrepareUsesContinuationWithoutFullInputRebuild(t *testing.T) {
+	client := &ResponsesClient{
+		LastResponseID: "resp_prev",
+		wsLastRequest: &ResponsesRequest{
+			Model: "gpt-test",
+			Input: []ResponsesInputItem{{Type: "message", Role: "user", Content: "old"}},
+		},
+	}
+	fullInputCalls := 0
+
+	prepared := client.prepareWebSocketContinuationLocked(ResponsesRequest{Model: "gpt-test"}, func() []ResponsesInputItem {
+		return []ResponsesInputItem{{Type: "message", Role: "user", Content: "new"}}
+	}, func() []ResponsesInputItem {
+		fullInputCalls++
+		return []ResponsesInputItem{
+			{Type: "message", Role: "user", Content: "old"},
+			{Type: "message", Role: "assistant", Content: "done"},
+			{Type: "message", Role: "user", Content: "new"},
+		}
+	})
+
+	if fullInputCalls != 0 {
+		t.Fatalf("buildFullInput calls = %d, want 0", fullInputCalls)
+	}
+	if prepared.PreviousResponseID != "resp_prev" {
+		t.Fatalf("PreviousResponseID = %q, want resp_prev", prepared.PreviousResponseID)
+	}
+	if len(prepared.Input) != 1 || prepared.Input[0].Content != "new" {
+		t.Fatalf("Input = %#v, want only continuation input", prepared.Input)
 	}
 }
 
@@ -802,6 +838,67 @@ func TestResponsesClientWebSocketPreviousResponseRejectedRetriesFullState(t *tes
 	input, ok := secondRequest["input"].([]any)
 	if !ok || len(input) != 2 {
 		t.Fatalf("full-state retry input = %#v, want both input items", secondRequest["input"])
+	}
+}
+
+func TestResponsesClientWebSocketUsesPreviousResponseIDWithoutLocalBaseline(t *testing.T) {
+	var gotReq map[string]any
+	upgrader := websocket.Upgrader{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Errorf("upgrade: %v", err)
+			return
+		}
+		defer conn.Close()
+
+		_, msg, err := conn.ReadMessage()
+		if err != nil {
+			t.Errorf("read request: %v", err)
+			return
+		}
+		if err := json.Unmarshal(msg, &gotReq); err != nil {
+			t.Errorf("decode request: %v", err)
+			return
+		}
+		_ = conn.WriteJSON(map[string]any{"type": "response.completed", "response": map[string]any{"id": "resp_next"}})
+	}))
+	defer server.Close()
+
+	client := &ResponsesClient{
+		BaseURL:        server.URL,
+		UseWebSocket:   true,
+		LastResponseID: "resp_prev",
+	}
+	stream, err := client.Stream(context.Background(), ResponsesRequest{
+		Model: "gpt-test",
+		Input: []ResponsesInputItem{
+			{Type: "message", Role: "assistant", Content: "old"},
+			{Type: "message", Role: "user", Content: "new"},
+		},
+		Stream: true,
+	}, false)
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	defer stream.Close()
+
+	for {
+		event, err := stream.Recv()
+		if err != nil {
+			t.Fatalf("Recv: %v", err)
+		}
+		if event.Type == EventDone {
+			break
+		}
+	}
+
+	if gotReq["previous_response_id"] != "resp_prev" {
+		t.Fatalf("previous_response_id = %#v, want resp_prev", gotReq["previous_response_id"])
+	}
+	input, ok := gotReq["input"].([]any)
+	if !ok || len(input) != 1 || !strings.Contains(toJSON(input[0]), "new") {
+		t.Fatalf("input = %#v, want only continuation input", gotReq["input"])
 	}
 }
 

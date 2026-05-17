@@ -102,9 +102,9 @@ func (c *ResponsesClient) writeResponsesWebSocketRequestLocked(conn *websocket.C
 	return nil
 }
 
-func (c *ResponsesClient) streamWebSocketPrepared(ctx context.Context, req ResponsesRequest, buildFullInput func() []ResponsesInputItem, debugRaw bool, responseStateGeneration uint64) (Stream, error) {
+func (c *ResponsesClient) streamWebSocketPrepared(ctx context.Context, req ResponsesRequest, buildContinuationInput func() []ResponsesInputItem, buildFullInput func() []ResponsesInputItem, debugRaw bool, responseStateGeneration uint64) (Stream, error) {
 	c.wsMu.Lock()
-	wireReq := c.prepareWebSocketContinuationLocked(req, buildFullInput)
+	wireReq := c.prepareWebSocketContinuationLocked(req, buildContinuationInput, buildFullInput)
 
 	conn, reused, err := c.ensureWebSocket(ctx, wireReq)
 	if err != nil {
@@ -179,7 +179,6 @@ func (c *ResponsesClient) streamWebSocketPrepared(ctx context.Context, req Respo
 					retriedFullState = true
 					c.clearLastResponseIDIfGeneration(responseStateGeneration)
 					c.wsLastRequest = nil
-					c.wsLastResponseItems = nil
 					wireReq.PreviousResponseID = ""
 					wireReq.Input = buildFullInput()
 					handler = newResponsesStreamEventHandler(c, responseStateGeneration, debugRaw, "Responses WebSocket", c.websocketServerStateEnabled())
@@ -207,7 +206,6 @@ func (c *ResponsesClient) streamWebSocketPrepared(ctx context.Context, req Respo
 		fullReq.Input = append([]ResponsesInputItem(nil), buildFullInput()...)
 		fullReq.PreviousResponseID = ""
 		c.wsLastRequest = &fullReq
-		c.wsLastResponseItems = handler.OutputItems()
 		return nil
 	}), nil
 }
@@ -225,7 +223,7 @@ func isPreviousResponseIDRejected(err error) bool {
 	return strings.Contains(msg, "previous_response_id") && (strings.Contains(msg, "unsupported") || strings.Contains(msg, "not found"))
 }
 
-func (c *ResponsesClient) prepareWebSocketContinuationLocked(req ResponsesRequest, buildFullInput func() []ResponsesInputItem) ResponsesRequest {
+func (c *ResponsesClient) prepareWebSocketContinuationLocked(req ResponsesRequest, buildContinuationInput func() []ResponsesInputItem, buildFullInput func() []ResponsesInputItem) ResponsesRequest {
 	if !c.websocketServerStateEnabled() || c.LastResponseID == "" {
 		req.PreviousResponseID = ""
 		req.Input = buildFullInput()
@@ -236,10 +234,23 @@ func (c *ResponsesClient) prepareWebSocketContinuationLocked(req ResponsesReques
 		req.PreviousResponseID = c.LastResponseID
 	}
 
-	if c.wsLastRequest == nil {
+	useFullInput := func() ResponsesRequest {
 		req.PreviousResponseID = ""
 		req.Input = buildFullInput()
 		return req
+	}
+
+	if c.wsLastRequest == nil {
+		if req.Input != nil {
+			return req
+		}
+		// Reuse the already-incremental continuation when available so a resumed
+		// previous_response_id chain does not rebuild the full transcript locally.
+		if continuation := buildContinuationInput(); len(continuation) > 0 {
+			req.Input = continuation
+			return req
+		}
+		return useFullInput()
 	}
 
 	prevComparable := responsesRequestNonInputComparable(*c.wsLastRequest)
@@ -247,38 +258,21 @@ func (c *ResponsesClient) prepareWebSocketContinuationLocked(req ResponsesReques
 	if !reflect.DeepEqual(prevComparable, currentComparable) {
 		// Tool schemas, model parameters, or other non-input fields changed. Start a
 		// fresh chain instead of risking previous_response_id with incompatible state.
-		req.PreviousResponseID = ""
-		req.Input = buildFullInput()
-		return req
+		return useFullInput()
 	}
 
 	if req.Input != nil {
 		return req
 	}
 
-	fullInput := buildFullInput()
-
-	baseline := append([]ResponsesInputItem{}, c.wsLastRequest.Input...)
-	baseline = append(baseline, c.wsLastResponseItems...)
-	if responsesInputHasPrefix(fullInput, baseline) {
-		req.PreviousResponseID = c.LastResponseID
-		req.Input = append([]ResponsesInputItem(nil), fullInput[len(baseline):]...)
+	// The caller already knows how to build an incremental continuation; prefer
+	// that over rebuilding and rescanning the full transcript on every follow-up.
+	if continuation := buildContinuationInput(); len(continuation) > 0 {
+		req.Input = continuation
 		return req
 	}
 
-	// Fall back to the historical suffix filter for providers that do not echo
-	// response output in exactly the same shape as our local transcript, but only
-	// when the suffix is non-empty and obviously a new user/tool continuation.
-	filtered := filterToNewInput(fullInput)
-	if len(filtered) > 0 && len(filtered) < len(fullInput) {
-		req.PreviousResponseID = c.LastResponseID
-		req.Input = filtered
-		return req
-	}
-
-	req.PreviousResponseID = ""
-	req.Input = fullInput
-	return req
+	return useFullInput()
 }
 
 func responsesRequestNonInputComparable(req ResponsesRequest) any {
@@ -351,18 +345,6 @@ func normalizeDecodedJSONForCompare(v any) any {
 func allStrings(values []any) bool {
 	for _, value := range values {
 		if _, ok := value.(string); !ok {
-			return false
-		}
-	}
-	return true
-}
-
-func responsesInputHasPrefix(input, prefix []ResponsesInputItem) bool {
-	if len(prefix) > len(input) {
-		return false
-	}
-	for i := range prefix {
-		if !reflect.DeepEqual(input[i], prefix[i]) {
 			return false
 		}
 	}
@@ -477,5 +459,4 @@ func (c *ResponsesClient) discardWebSocketLocked() {
 	_ = c.wsConn.Close()
 	c.wsConn = nil
 	c.wsLastRequest = nil
-	c.wsLastResponseItems = nil
 }
