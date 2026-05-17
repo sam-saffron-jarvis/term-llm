@@ -624,6 +624,33 @@ async function run(name, fn) {
     assert(!button.classList.contains('copied'), 'copied class resets');
   });
 
+  await run('math copy controls copy rendered TeX source as text', async () => {
+    const { app, document, copied, timers } = createHarness();
+    const root = document.createElement('div');
+    const display = document.createElement('span');
+    display.className = 'katex-display';
+    const katex = document.createElement('span');
+    katex.className = 'katex';
+    const annotation = document.createElement('annotation');
+    annotation.textContent = '\\ell_P = \\sqrt{\\hbar G / c^3}';
+    katex.appendChild(annotation);
+    display.appendChild(katex);
+    root.appendChild(display);
+
+    app.decorateMathCopyControls(root);
+    app.decorateMathCopyControls(root);
+
+    const buttons = display.querySelectorAll('.math-copy-btn');
+    assertEqual(buttons.length, 1, 'decorator is idempotent');
+    await buttons[0].dispatchEvent({ type: 'click', preventDefault() {}, stopPropagation() {} });
+
+    assertEqual(copied.length, 1, 'clipboard writes');
+    assertEqual(copied[0], '\\ell_P = \\sqrt{\\hbar G / c^3}', 'copies TeX source');
+    assert(buttons[0].classList.contains('copied'), 'button gets copied state');
+    const reset = timers.find((timer) => timer.ms === 1500 && !timer.cleared);
+    assert(reset, 'reset timer scheduled');
+  });
+
   await run('stream updates only resync the affected turn action panel', () => {
     const { app, session, messages } = createHarness();
     const streamingMessage = {

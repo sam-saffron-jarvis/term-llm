@@ -10,9 +10,48 @@
     factory(marked); // eslint-disable-line no-undef
   }
 })(function setupMarkdown(marked) {
+  const escapeHtml = (value) => String(value || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+
   marked.use({
     breaks: true,
     gfm: true
+  });
+
+  // KaTeX auto-render runs after markdown has produced sanitized HTML. Marked
+  // treats backslashes before punctuation as markdown escapes, which would turn
+  // explicit math delimiters like \(...\) and \[...\] into plain parentheses
+  // or brackets before KaTeX ever sees them. Preserve those spans as text here;
+  // KaTeX will render them in the later decoration pass. Single-dollar inline
+  // math intentionally remains disabled to avoid mangling currency in LLM prose.
+  marked.use({
+    extensions: [{
+      name: 'math-delimiter-span',
+      level: 'inline',
+      start(src) {
+        const inline = src.indexOf('\\(');
+        const display = src.indexOf('\\[');
+        if (inline === -1) return display;
+        if (display === -1) return inline;
+        return Math.min(inline, display);
+      },
+      tokenizer(src) {
+        const match = /^(\\\((?:.|\n)*?\\\)|\\\[(?:.|\n)*?\\\])/.exec(src);
+        if (!match) return false;
+        return {
+          type: 'math-delimiter-span',
+          raw: match[0],
+          text: match[0]
+        };
+      },
+      renderer(token) {
+        return escapeHtml(token.raw);
+      }
+    }]
   });
 
   // Disable single-tilde strikethrough. GFM's del rule matches both ~text~

@@ -1406,10 +1406,51 @@
       overflow-x: auto;
       overflow-y: hidden;
       padding-bottom: 0.1rem;
+      position: relative;
     }
 
     .markdown-body .katex-display > .katex {
       white-space: nowrap;
+    }
+
+    .math-copy-btn {
+      position: sticky;
+      right: 0;
+      float: right;
+      margin-left: 0.5rem;
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      background: color-mix(in srgb, var(--surface) 92%, transparent);
+      color: var(--text-muted);
+      font-size: 0.68rem;
+      line-height: 1;
+      padding: 0.28rem 0.45rem;
+      cursor: pointer;
+      opacity: 0;
+      transition: opacity 0.15s ease, background 0.15s ease, color 0.15s ease;
+      z-index: 1;
+    }
+
+    .markdown-body .katex-display:hover .math-copy-btn,
+    .math-copy-btn:focus-visible,
+    .math-copy-btn.copied {
+      opacity: 1;
+    }
+
+    .math-copy-btn:hover,
+    .math-copy-btn:focus-visible {
+      background: var(--surface-2);
+      color: var(--text);
+      outline: none;
+    }
+
+    .math-copy-btn:disabled {
+      cursor: default;
+      opacity: 0.45;
+    }
+
+    .math-copy-btn.copied {
+      color: var(--accent-green);
     }
 
     .message-meta {
