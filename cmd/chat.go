@@ -423,16 +423,9 @@ func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent 
 			approvalMgr.SetYoloMode(true)
 		}
 
-		// Register output tool if agent configures one
-		if agent != nil && agent.OutputTool.IsConfigured() {
-			agentCfg := agent.OutputTool
-			param := agentCfg.Param
-			if param == "" {
-				param = "content"
-			}
-			toolMgr.Registry.RegisterOutputTool(agentCfg.Name, param, agentCfg.Description)
-			toolMgr.SetupEngine(engine)
-		}
+		// output_tool defines a single-shot return channel for ask. Chat has no
+		// single final output contract, so do not register it as an interactive
+		// finishing tool.
 
 		// PromptUIFunc will be set up below after tea.Program is created
 
@@ -523,6 +516,9 @@ func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent 
 		chatPlatformMessage = agent.PlatformMessages.For("chat")
 	}
 	model := chat.NewWithFastProvider(cfg, provider, fastProvider, engine, providerKey, modelName, mcpManager, settings.MaxTurns, forceExternalSearch, chatNoWebFetch, settings.Search, enabledLocalTools, settings.Tools, settings.MCP, false, initialText, store, sess, useAltScreen, chatAutoSend, autoSendMode, chatTextMode, agentName, chatPlatformMessage, chatYolo)
+	if agent != nil && agent.OutputTool.IsConfigured() {
+		model.SetFooterWarning("agent output_tool is ignored in chat; use ask for tool-captured output")
+	}
 	model.SetRootContext(ctx)
 
 	// Wire handover auto-send if pending from previous iteration

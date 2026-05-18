@@ -341,18 +341,6 @@ func runAsk(cmd *cobra.Command, args []string) error {
 			toolMgr.ApprovalMgr.SetYoloMode(true)
 		}
 
-		// Register output tool if agent configures one
-		if agent != nil && agent.OutputTool.IsConfigured() {
-			agentCfg := agent.OutputTool
-			param := agentCfg.Param
-			if param == "" {
-				param = "content" // default
-			}
-			outputTool = toolMgr.Registry.RegisterOutputTool(agentCfg.Name, param, agentCfg.Description)
-			// Re-register tools with engine after output tool was added
-			toolMgr.SetupEngine(engine)
-		}
-
 		// PromptFunc is set in streamWithRenderer to use bubbletea UI
 
 		// Wire spawn_agent runner if enabled (with session tracking)
@@ -363,6 +351,22 @@ func runAsk(cmd *cobra.Command, args []string) error {
 			return wireErr
 		}
 
+	}
+
+	if agent != nil && agent.OutputTool.IsConfigured() {
+		agentCfg := agent.OutputTool
+		param := agentCfg.Param
+		if param == "" {
+			param = "content" // default
+		}
+		if toolMgr != nil {
+			outputTool = toolMgr.Registry.RegisterOutputTool(agentCfg.Name, param, agentCfg.Description)
+			// Re-register tools with engine after output tool was added.
+			toolMgr.SetupEngine(engine)
+		} else {
+			outputTool = tools.NewSetOutputTool(agentCfg.Name, param, agentCfg.Description)
+			engine.RegisterTool(outputTool)
+		}
 	}
 
 	RegisterSkillToolWithEngine(engine, toolMgr, skillsSetup)
@@ -478,8 +482,8 @@ func runAsk(cmd *cobra.Command, args []string) error {
 		DebugRaw:                debugRaw,
 	}
 
-	// Add tools to request if any are registered (local or MCP)
-	if toolMgr != nil || mcpManager != nil {
+	// Add tools to request if any are registered (local, MCP, or output tool)
+	if toolMgr != nil || mcpManager != nil || outputTool != nil {
 		if specs := llm.ToolSpecsForRequest(engine.Tools(), settings.Search); len(specs) > 0 {
 			req.Tools = specs
 			req.ToolChoice = llm.ToolChoice{Mode: llm.ToolChoiceAuto}
@@ -510,9 +514,10 @@ func runAsk(cmd *cobra.Command, args []string) error {
 		adapter.Stats().SeedTotals(sess.InputTokens, sess.OutputTokens, sess.CachedInputTokens, sess.CacheWriteTokens, sess.ToolCalls, sess.LLMTurns)
 	}
 
-	// Set up text collection for output capture (commit_editmsg, on_complete, or session save)
+	// Set up text collection for output capture (output_tool finalization,
+	// commit_editmsg, on_complete, or session save).
 	var collector *textCollector
-	needsCollector := (agent != nil && (agent.Output == "commit_editmsg" || agent.OnComplete != "")) || (store != nil && sess != nil)
+	needsCollector := outputTool != nil || (agent != nil && (agent.Output == "commit_editmsg" || agent.OnComplete != "")) || (store != nil && sess != nil)
 	wrapStreamEvents := func(events <-chan ui.StreamEvent) <-chan ui.StreamEvent {
 		if !needsCollector || events == nil {
 			return events
@@ -744,6 +749,23 @@ func runAsk(cmd *cobra.Command, args []string) error {
 		}
 
 		progressiveResult = progressiveRun.Result
+		if progressiveRun.Err != nil {
+			if store != nil && sess != nil {
+				_ = store.UpdateStatus(context.Background(), sess.ID, session.StatusError)
+			}
+			return fmt.Errorf("progressive run failed: %w", progressiveRun.Err)
+		}
+		if outputTool != nil {
+			if err := ensureOutputToolCaptured(ctx, provider, engine.Tools(), req, outputTool, progressiveOutputText(progressiveResult)); err != nil {
+				if store != nil && sess != nil {
+					_ = store.UpdateStatus(context.Background(), sess.ID, session.StatusError)
+				}
+				if askJSON {
+					_ = emitFatalError(jsonEmit, stats, err)
+				}
+				return err
+			}
+		}
 		progressiveStatus := session.StatusComplete
 		switch progressiveResult.ExitReason {
 		case exitReasonTimeout, exitReasonCancelled:
@@ -771,10 +793,6 @@ func runAsk(cmd *cobra.Command, args []string) error {
 			if err := json.NewEncoder(cmd.OutOrStdout()).Encode(progressiveResult); err != nil {
 				return fmt.Errorf("encode progressive result: %w", err)
 			}
-		}
-
-		if progressiveRun.Err != nil {
-			return fmt.Errorf("progressive run failed: %w", progressiveRun.Err)
 		}
 	} else {
 		streamEvents = wrapStreamEvents(streamEvents)
@@ -839,25 +857,44 @@ func runAsk(cmd *cobra.Command, args []string) error {
 			}
 			return fmt.Errorf("streaming failed: %w", streamErr)
 		}
-
-		// Update session status to complete
-		if store != nil && sess != nil {
-			_ = store.UpdateStatus(ctx, sess.ID, session.StatusComplete)
-			_ = store.SetCurrent(ctx, sess.ID)
-		}
+		// Session completion is marked after output_tool finalization below.
 	}
 
 	if collector != nil {
 		collector.Wait()
 	}
 
+	if outputTool != nil {
+		var assistantText string
+		if collector != nil {
+			assistantText = collector.Text()
+		} else if askProgressive {
+			assistantText = progressiveOutputText(progressiveResult)
+		}
+		if err := ensureOutputToolCaptured(ctx, provider, engine.Tools(), req, outputTool, assistantText); err != nil {
+			if store != nil && sess != nil {
+				_ = store.UpdateStatus(ctx, sess.ID, session.StatusError)
+			}
+			return err
+		}
+	}
+
+	// Update session status to complete after required output-tool finalization.
+	if store != nil && sess != nil {
+		_ = store.UpdateStatus(ctx, sess.ID, session.StatusComplete)
+		_ = store.SetCurrent(ctx, sess.ID)
+	}
+
 	// Run on_complete handler if configured
 	if agent != nil && agent.OnComplete != "" {
 		var output string
-		if outputTool != nil && outputTool.Value() != "" {
-			output = outputTool.Value() // Tool output (preferred)
+		if outputTool != nil {
+			output = outputTool.Value() // Tool output is the required return channel.
+			if !outputTool.Captured() {
+				return fmt.Errorf("output tool %q did not produce a value", outputTool.Name())
+			}
 		} else if collector != nil {
-			output = collector.Text() // Fallback to text
+			output = collector.Text() // Fallback to text when no output tool is configured.
 		} else if askProgressive {
 			output = progressiveOutputText(progressiveResult)
 		}
@@ -891,6 +928,120 @@ func runAsk(cmd *cobra.Command, args []string) error {
 	}
 
 	return nil
+}
+
+func ensureOutputToolCaptured(ctx context.Context, provider llm.Provider, registry *llm.ToolRegistry, baseReq llm.Request, outputTool *tools.SetOutputTool, assistantText string) error {
+	if outputTool == nil || outputTool.Captured() {
+		return nil
+	}
+	if err := runOutputToolFinalization(ctx, provider, registry, baseReq, outputTool, assistantText); err != nil {
+		return err
+	}
+	if !outputTool.Captured() {
+		return fmt.Errorf("output tool %q was not called", outputTool.Name())
+	}
+	return nil
+}
+
+func runOutputToolFinalization(ctx context.Context, provider llm.Provider, registry *llm.ToolRegistry, baseReq llm.Request, outputTool *tools.SetOutputTool, assistantText string) error {
+	if outputTool == nil || outputTool.Captured() {
+		return nil
+	}
+	if registry == nil {
+		registry = llm.NewToolRegistry()
+		registry.Register(outputTool)
+	}
+
+	toolName := outputTool.Name()
+	messages := append([]llm.Message{}, baseReq.Messages...)
+	if strings.TrimSpace(assistantText) != "" {
+		messages = append(messages, llm.AssistantText(assistantText))
+	}
+	messages = append(messages, llm.UserText(fmt.Sprintf(
+		"The task is DONE. Do not continue investigating. Do not inspect files. Do not call research, shell, read, edit, search, or any other work tool. Your previous answer is complete, but you failed to return it through the configured output tool %q. You MUST now make exactly one tool call: call %s with the final answer. Do not write prose before or after the tool call.",
+		toolName,
+		toolName,
+	)))
+
+	finalEngine := llm.NewEngine(provider, registry)
+	finalTools := ensureOutputToolSpec(baseReq.Tools, outputTool.Spec())
+	finalReq := llm.Request{
+		Model:             baseReq.Model,
+		SessionID:         baseReq.SessionID,
+		Messages:          messages,
+		Tools:             finalTools,
+		ToolChoice:        llm.ToolChoice{Mode: llm.ToolChoiceAuto},
+		ParallelToolCalls: false,
+		MaxTurns:          2,
+		MaxOutputTokens:   baseReq.MaxOutputTokens,
+		Debug:             baseReq.Debug,
+		DebugRaw:          baseReq.DebugRaw,
+	}
+	if provider.Capabilities().SupportsToolChoice {
+		finalReq.ToolChoice = llm.ToolChoice{Mode: llm.ToolChoiceName, Name: toolName}
+	}
+
+	stream, err := finalEngine.Stream(ctx, finalReq)
+	if err != nil {
+		if outputTool.Captured() && isOutputToolFinalizationMiss(err) {
+			return nil
+		}
+		if !outputTool.Captured() && isOutputToolFinalizationMiss(err) {
+			return fmt.Errorf("output tool %q was not called", toolName)
+		}
+		return fmt.Errorf("output tool finalization failed: %w", err)
+	}
+	defer stream.Close()
+	for {
+		event, err := stream.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			if outputTool.Captured() && isOutputToolFinalizationMiss(err) {
+				break
+			}
+			if !outputTool.Captured() && isOutputToolFinalizationMiss(err) {
+				return fmt.Errorf("output tool %q was not called", toolName)
+			}
+			return fmt.Errorf("output tool finalization failed: %w", err)
+		}
+		if event.Type == llm.EventError && event.Err != nil {
+			if outputTool.Captured() && isOutputToolFinalizationMiss(event.Err) {
+				break
+			}
+			if !outputTool.Captured() && isOutputToolFinalizationMiss(event.Err) {
+				return fmt.Errorf("output tool %q was not called", toolName)
+			}
+			return fmt.Errorf("output tool finalization failed: %w", event.Err)
+		}
+	}
+
+	if !outputTool.Captured() {
+		return fmt.Errorf("output tool %q was not called", toolName)
+	}
+	return nil
+}
+
+func isOutputToolFinalizationMiss(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "agentic loop ended unexpectedly") || strings.Contains(msg, "agentic loop exceeded max turns") || strings.Contains(msg, "no more turns configured")
+}
+
+func ensureOutputToolSpec(specs []llm.ToolSpec, outputSpec llm.ToolSpec) []llm.ToolSpec {
+	if outputSpec.Name == "" {
+		return append([]llm.ToolSpec(nil), specs...)
+	}
+	out := append([]llm.ToolSpec(nil), specs...)
+	for _, spec := range out {
+		if spec.Name == outputSpec.Name {
+			return out
+		}
+	}
+	return append(out, outputSpec)
 }
 
 // streamPlainText streams text directly without formatting

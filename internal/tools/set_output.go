@@ -16,6 +16,7 @@ type SetOutputTool struct {
 	paramName   string // Parameter name to capture (e.g., "message")
 	description string // Tool description
 	value       string // Captured value
+	captured    bool   // Whether the configured parameter was captured
 }
 
 // NewSetOutputTool creates a tool with custom name/description.
@@ -52,6 +53,7 @@ func (t *SetOutputTool) Execute(ctx context.Context, args json.RawMessage) (llm.
 	}
 	if v, ok := params[t.paramName].(string); ok {
 		t.value = v
+		t.captured = true
 	}
 	return llm.TextOutput("Output captured."), nil
 }
@@ -63,6 +65,11 @@ func (t *SetOutputTool) Preview(args json.RawMessage) string {
 // Value returns the captured output value.
 func (t *SetOutputTool) Value() string {
 	return t.value
+}
+
+// Captured returns true once the configured output parameter has been captured.
+func (t *SetOutputTool) Captured() bool {
+	return t.captured
 }
 
 // Name returns the configured tool name.

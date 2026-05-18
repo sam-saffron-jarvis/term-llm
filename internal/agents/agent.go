@@ -78,9 +78,9 @@ type Agent struct {
 	// Valid: "" (stdout), "commit_editmsg" (.git/COMMIT_EDITMSG)
 	Output string `yaml:"output,omitempty"`
 
-	// OutputTool configures a tool for capturing structured output.
-	// When set, a tool with the configured name is dynamically created
-	// and added to the agent's enabled tools.
+	// OutputTool configures a tool for capturing ask output.
+	// When set for ask, a tool with the configured name is dynamically created
+	// and acts as the required final return channel for the agent.
 	OutputTool OutputToolConfig `yaml:"output_tool,omitempty"`
 
 	// OnComplete is a shell command to run with captured output piped to stdin.

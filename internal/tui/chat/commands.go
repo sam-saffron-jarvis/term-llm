@@ -436,6 +436,18 @@ func (m *Model) showFooterWarning(content string) (tea.Model, tea.Cmd) {
 	return m.showFooterMessageWithTone(content, "warning")
 }
 
+// SetFooterWarning sets a warning notice in the chat footer. It is intended for
+// startup/configuration notices emitted before the Bubble Tea program is running.
+func (m *Model) SetFooterWarning(content string) {
+	m.footerMessage = sanitizeFooterMessage(content)
+	if m.footerMessage == "" {
+		m.footerMessageTone = ""
+		return
+	}
+	m.footerMessageTone = "warning"
+	m.footerMessageSeq++
+}
+
 func (m *Model) showFooterError(content string) (tea.Model, tea.Cmd) {
 	return m.showFooterMessageWithTone(content, "error")
 }

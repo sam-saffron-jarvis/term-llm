@@ -110,6 +110,29 @@ mcp:
 
 Built-in agents that currently default to `search: true`: `agent-builder`, `web-researcher`, `developer`, `editor`, `shell`, `contain`.
 
+## Structured ask output
+
+Use `output_tool` when an agent must return a machine-consumable artifact to `term-llm ask` instead of relying on freeform prose. In `ask`, a configured output tool is the agent's final return channel: successful completion requires the model to call that tool and provide the configured parameter. If the model naturally finishes without calling it, `ask` runs a constrained finalization pass that preserves the original tool context, forces the output tool when the provider supports named tool choice, and otherwise strongly instructs the model that the task is done and it must call the output tool. If the tool still is not called, `ask` fails nonzero and does not run `on_complete`.
+
+```yaml
+name: scanner
+
+tools:
+  enabled: [read_file, grep, glob]
+
+output_tool:
+  name: submit_result
+  param: result_json
+  description: "Submit the final scanner result as JSON"
+
+on_complete: |
+  jq -e . > result.json
+```
+
+`on_complete` receives the captured output-tool value on stdin. When `output_tool` is configured, `ask` never falls back to passing assistant prose to `on_complete`; validate formats such as JSON in your handler if you need schema guarantees.
+
+`output_tool` is ignored in `term-llm chat`. Chat is an open-ended conversation with no single final return value; use `ask` for tool-captured output.
+
 ## Platform developer messages
 
 When term-llm serves an agent on different platforms (web UI, Telegram, CLI chat, background jobs), each platform may need different behavioral guidance. The `platform_messages` block in `agent.yaml` lets you inject a developer-role message at the start of every new session, keyed by platform.
