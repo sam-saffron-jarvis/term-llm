@@ -155,45 +155,44 @@ func decodeUploadedFile(filename, b64Data string) ([]byte, error) {
 
 // saveUploadedFile decodes base64 data and writes it to the uploads directory,
 // returning the full filesystem path. Uses O_CREATE|O_EXCL for atomic uniqueness.
+// The decode is streamed straight to disk so callers do not need an extra full
+// in-memory raw copy just to persist an upload.
 func saveUploadedFile(filename, b64Data string) (string, error) {
-	raw, err := decodeUploadedFile(filename, b64Data)
+	b64Data = stripBase64Newlines(b64Data)
+	decodedLen, err := decodedBase64Len(b64Data)
 	if err != nil {
 		return "", err
 	}
-	return saveUploadedBytes(filename, raw)
+	if decodedLen > maxAttachmentBytes {
+		return "", fmt.Errorf("file %q exceeds %d MB limit", filename, maxAttachmentBytes>>20)
+	}
+
+	f, dest, err := createUploadedFile(filename)
+	if err != nil {
+		return "", err
+	}
+
+	dec := base64.NewDecoder(base64.StdEncoding, strings.NewReader(b64Data))
+	if _, err := io.Copy(f, dec); err != nil {
+		f.Close()
+		os.Remove(dest)
+		return "", fmt.Errorf("decode base64: %w", err)
+	}
+	if err := f.Close(); err != nil {
+		os.Remove(dest)
+		return "", fmt.Errorf("close file: %w", err)
+	}
+	return dest, nil
 }
 
 func saveUploadedBytes(filename string, raw []byte) (string, error) {
-	dataDir, err := session.GetDataDir()
-	if err != nil {
-		return "", fmt.Errorf("get data dir: %w", err)
-	}
-	uploadsDir := filepath.Join(dataDir, "uploads")
-	if err := os.MkdirAll(uploadsDir, 0o700); err != nil {
-		return "", fmt.Errorf("create uploads dir: %w", err)
-	}
-
 	if len(raw) > maxAttachmentBytes {
 		return "", fmt.Errorf("file %q exceeds %d MB limit", filename, maxAttachmentBytes>>20)
 	}
 
-	safeName := filepath.Base(filename)
-	if safeName == "." || safeName == "/" {
-		safeName = "upload"
-	}
-	ext := filepath.Ext(safeName)
-	prefix := strings.TrimSuffix(safeName, ext) + "_"
-
-	f, err := os.CreateTemp(uploadsDir, prefix+"*"+ext)
+	f, dest, err := createUploadedFile(filename)
 	if err != nil {
-		return "", fmt.Errorf("create temp file: %w", err)
-	}
-	dest := f.Name()
-
-	if err := f.Chmod(0o600); err != nil {
-		f.Close()
-		os.Remove(dest)
-		return "", fmt.Errorf("chmod: %w", err)
+		return "", err
 	}
 	if _, err := f.Write(raw); err != nil {
 		f.Close()
@@ -205,6 +204,36 @@ func saveUploadedBytes(filename string, raw []byte) (string, error) {
 		return "", fmt.Errorf("close file: %w", err)
 	}
 	return dest, nil
+}
+
+func createUploadedFile(filename string) (*os.File, string, error) {
+	dataDir, err := session.GetDataDir()
+	if err != nil {
+		return nil, "", fmt.Errorf("get data dir: %w", err)
+	}
+	uploadsDir := filepath.Join(dataDir, "uploads")
+	if err := os.MkdirAll(uploadsDir, 0o700); err != nil {
+		return nil, "", fmt.Errorf("create uploads dir: %w", err)
+	}
+
+	safeName := filepath.Base(filename)
+	if safeName == "." || safeName == "/" {
+		safeName = "upload"
+	}
+	ext := filepath.Ext(safeName)
+	prefix := strings.TrimSuffix(safeName, ext) + "_"
+
+	f, err := os.CreateTemp(uploadsDir, prefix+"*"+ext)
+	if err != nil {
+		return nil, "", fmt.Errorf("create temp file: %w", err)
+	}
+	dest := f.Name()
+	if err := f.Chmod(0o600); err != nil {
+		f.Close()
+		os.Remove(dest)
+		return nil, "", fmt.Errorf("chmod: %w", err)
+	}
+	return f, dest, nil
 }
 
 // abbreviatePath replaces the user's home directory prefix with ~ for privacy.
@@ -262,20 +291,27 @@ func parseUserMessageContent(content json.RawMessage) (llm.Message, error) {
 					}
 
 					b64 = stripBase64Newlines(b64)
-					raw, err := decodeUploadedFile(filename, b64)
+					decodedLen, err := decodedBase64Len(b64)
 					if err != nil {
 						return llm.Message{}, fmt.Errorf("decode attachment %q: %w", filename, err)
 					}
-					path, err := saveUploadedBytes(filename, raw)
+					if decodedLen > maxAttachmentBytes {
+						return llm.Message{}, fmt.Errorf("decode attachment %q: exceeds %d MB limit", filename, maxAttachmentBytes>>20)
+					}
+					path, err := saveUploadedFile(filename, b64)
 					if err != nil {
 						return llm.Message{}, fmt.Errorf("save attachment %q: %w", filename, err)
 					}
 
 					sendB64 := b64
 					sendMT := mt
-					if len(raw) > maxLLMImageBytes {
+					if decodedLen > maxLLMImageBytes {
 						// Resize only the inline payload sent to the model. Keep ImagePath
 						// pointing at the original upload so tools can inspect high-res data.
+						raw, err := os.ReadFile(path)
+						if err != nil {
+							return llm.Message{}, fmt.Errorf("read attachment %q: %w", filename, err)
+						}
 						resized, resMT := resizeImageForLLM(raw, mt)
 						if len(resized) != len(raw) || resMT != mt {
 							sendB64 = base64.StdEncoding.EncodeToString(resized)

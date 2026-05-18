@@ -98,6 +98,41 @@ func TestDecodeUploadedFile_AllowsWrappedBase64(t *testing.T) {
 	}
 }
 
+func TestSaveUploadedFile_AllowsWrappedBase64(t *testing.T) {
+	dataHome := t.TempDir()
+	t.Setenv("XDG_DATA_HOME", dataHome)
+
+	path, err := saveUploadedFile("hello.txt", "aGVs\r\nbG8=")
+	if err != nil {
+		t.Fatalf("saveUploadedFile() error = %v", err)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("os.ReadFile() error = %v", err)
+	}
+	if string(got) != "hello" {
+		t.Fatalf("saved bytes = %q, want hello", got)
+	}
+}
+
+func TestSaveUploadedFile_RejectsOversizedPayloadBeforeDecode(t *testing.T) {
+	dataHome := t.TempDir()
+	t.Setenv("XDG_DATA_HOME", dataHome)
+
+	b64 := strings.Repeat("A", base64.StdEncoding.EncodedLen(maxAttachmentBytes+1)-1) + "!"
+
+	_, err := saveUploadedFile("too-large.bin", b64)
+	if err == nil {
+		t.Fatal("saveUploadedFile() error = nil, want size limit error")
+	}
+	if !strings.Contains(err.Error(), fmt.Sprintf("exceeds %d MB limit", maxAttachmentBytes>>20)) {
+		t.Fatalf("saveUploadedFile() error = %v, want size limit error", err)
+	}
+	if strings.Contains(err.Error(), "decode base64") {
+		t.Fatalf("saveUploadedFile() error = %v, want size check before base64 decode", err)
+	}
+}
+
 func TestDecodeUploadedFile_RejectsOversizedPayloadBeforeDecode(t *testing.T) {
 	b64 := strings.Repeat("A", base64.StdEncoding.EncodedLen(maxAttachmentBytes+1)-1) + "!"
 
