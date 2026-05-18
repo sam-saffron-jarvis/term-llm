@@ -448,10 +448,11 @@ const scheduleVisibleStreamScroll = (session) => {
 };
 
 const createResponseStreamState = (session) => {
-  let currentToolGroup = session.messages.findLast((message) => (
-    message.role === 'tool-group' && message.status === 'running'
-  )) || null;
-  let currentAssistantMessage = null;
+	let currentToolGroup = session.messages.findLast((message) => (
+		message.role === 'tool-group' && message.status === 'running'
+	)) || null;
+	let currentAssistantMessage = null;
+	let currentPhaseMessage = null;
 
   if (!currentToolGroup) {
     const lastMessage = session.messages[session.messages.length - 1];
@@ -496,6 +497,12 @@ const createResponseStreamState = (session) => {
     },
     set currentAssistantMessage(value) {
       currentAssistantMessage = value;
+    },
+    get currentPhaseMessage() {
+      return currentPhaseMessage;
+    },
+    set currentPhaseMessage(value) {
+      currentPhaseMessage = value;
     }
   };
 };
@@ -577,6 +584,35 @@ const applyResponseStreamEvent = (session, streamState, event, payload) => {
         marker.content = message;
         marker.stage = payload?.stage || marker.stage || '';
         updateVisibleModelSwapNode(session, marker);
+      }
+      scheduleStreamPersistence();
+      scrollVisibleStreamToBottom(session);
+    }
+    return { terminal: false };
+  }
+
+  if (event === 'response.phase') {
+    const text = String(payload?.text || '').trim();
+    if (text) {
+      if (streamState.currentAssistantMessage?.content) {
+        finalizeVisibleAssistantStreamRender(session, streamState.currentAssistantMessage);
+      }
+      streamState.currentAssistantMessage = null;
+      let marker = streamState.currentPhaseMessage || null;
+      if (!marker) {
+        marker = {
+          id: generateId('phase'),
+          role: 'phase',
+          content: text,
+          created: Date.now(),
+          transient: true
+        };
+        streamState.currentPhaseMessage = marker;
+        session.messages.push(marker);
+        appendStreamMessageNode(session, marker);
+      } else {
+        marker.content = text;
+        if (isSessionVisible(session)) updateUserNode(marker);
       }
       scheduleStreamPersistence();
       scrollVisibleStreamToBottom(session);

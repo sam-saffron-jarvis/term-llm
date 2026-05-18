@@ -2226,8 +2226,8 @@ func TestRunLoopCompactsOnFirstTurnWithExistingHistory(t *testing.T) {
 	}
 }
 
-func TestRunLoopSoftThresholdRushesToCleanEndBeforeCompacting(t *testing.T) {
-	RegisterConfigLimits([]ConfigModelLimit{{Provider: "fake", Model: "compact-rush", InputLimit: 100}})
+func TestRunLoopSoftThresholdCheckpointsCompactsAndContinues(t *testing.T) {
+	RegisterConfigLimits([]ConfigModelLimit{{Provider: "fake", Model: "compact-rush", InputLimit: 200}})
 	defer RegisterConfigLimits(nil)
 
 	provider := &fakeProvider{
@@ -2239,9 +2239,12 @@ func TestRunLoopSoftThresholdRushesToCleanEndBeforeCompacting(t *testing.T) {
 				last = collectTextParts(req.Messages[len(req.Messages)-1].Parts)
 			}
 			if strings.Contains(last, compactionPrompt) {
-				return []Event{{Type: EventTextDelta, Text: "clean end summary"}}
+				return []Event{{Type: EventTextDelta, Text: "pending task: continue investigation"}}
 			}
-			return []Event{{Type: EventTextDelta, Text: "clean final answer"}, {Type: EventUsage, Use: &Usage{InputTokens: 84, OutputTokens: 2}}}
+			if call == 0 {
+				return []Event{{Type: EventTextDelta, Text: "checkpoint: still investigating"}, {Type: EventUsage, Use: &Usage{InputTokens: 84, OutputTokens: 2}}}
+			}
+			return []Event{{Type: EventTextDelta, Text: "continued final answer"}, {Type: EventUsage, Use: &Usage{InputTokens: 20, OutputTokens: 2}}}
 		},
 	}
 	e := NewEngine(provider, nil)
@@ -2251,11 +2254,13 @@ func TestRunLoopSoftThresholdRushesToCleanEndBeforeCompacting(t *testing.T) {
 		Model: "compact-rush",
 		Messages: []Message{
 			SystemText("system"),
-			UserText(strings.Repeat("soft threshold history ", 13)),
+			UserText(strings.Repeat("soft threshold history ", 30)),
 			AssistantText("previous answer"),
 			UserText("continue"),
 		},
-		Tools: []ToolSpec{{Name: "dummy", Schema: map[string]any{"type": "object"}}},
+		Tools:      []ToolSpec{{Name: "dummy", Schema: map[string]any{"type": "object"}}},
+		ToolChoice: ToolChoice{Mode: ToolChoiceName, Name: "dummy"},
+		MaxTurns:   1,
 	})
 	if err != nil {
 		t.Fatalf("Stream() error = %v", err)
@@ -2263,25 +2268,38 @@ func TestRunLoopSoftThresholdRushesToCleanEndBeforeCompacting(t *testing.T) {
 	defer stream.Close()
 	drainStream(t, stream)
 
-	if len(provider.calls) != 2 {
+	if len(provider.calls) != 3 {
 		for i, call := range provider.calls {
 			last := ""
 			if len(call.Messages) > 0 {
 				last = collectTextParts(call.Messages[len(call.Messages)-1].Parts)
 			}
-			t.Logf("call %d messages=%d tool_choice=%s last=%q", i, len(call.Messages), call.ToolChoice.Mode, last)
+			t.Logf("call %d messages=%d tool_choice=%s tools=%d last=%q", i, len(call.Messages), call.ToolChoice.Mode, len(call.Tools), last)
 		}
-		t.Fatalf("provider calls = %d, want rushed final call + compaction", len(provider.calls))
+		t.Fatalf("provider calls = %d, want checkpoint + compaction + continued request", len(provider.calls))
 	}
 	first := provider.calls[0]
-	if got := collectTextParts(first.Messages[len(first.Messages)-1].Parts); !strings.Contains(got, contextRushFinishPrompt) {
-		t.Fatalf("first call missing rush finish prompt: %.120q", got)
+	if got := collectTextParts(first.Messages[len(first.Messages)-1].Parts); !strings.Contains(got, contextCheckpointPrompt) {
+		t.Fatalf("first call missing checkpoint prompt: %.120q", got)
 	}
 	if first.ToolChoice.Mode != ToolChoiceNone {
 		t.Fatalf("first ToolChoice = %q, want none", first.ToolChoice.Mode)
 	}
 	if got := collectTextParts(provider.calls[1].Messages[len(provider.calls[1].Messages)-1].Parts); !strings.Contains(got, compactionPrompt) {
 		t.Fatalf("second call was not compaction prompt: %.80q", got)
+	}
+	third := provider.calls[2]
+	if got := collectTextParts(third.Messages[1].Parts); !strings.Contains(got, summaryPrefix) || !strings.Contains(got, "pending task: continue investigation") {
+		t.Fatalf("continued request did not use compacted summary: %.120q", got)
+	}
+	if got := collectTextParts(third.Messages[len(third.Messages)-1].Parts); !strings.Contains(got, contextContinuationPrompt) {
+		t.Fatalf("continued request missing continuation prompt: %.120q", got)
+	}
+	if len(third.Tools) != 1 {
+		t.Fatalf("continued request tools = %d, want restored tools", len(third.Tools))
+	}
+	if third.ToolChoice.Mode != ToolChoiceName || third.ToolChoice.Name != "dummy" {
+		t.Fatalf("continued request ToolChoice = %#v, want named dummy", third.ToolChoice)
 	}
 }
 

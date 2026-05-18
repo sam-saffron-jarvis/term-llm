@@ -32,6 +32,33 @@ func TestEncodeTextDeltaPayloadMatchesJSONMarshalForInvalidUTF8(t *testing.T) {
 	}
 }
 
+func TestAppendResponseRunEventEmitsPhase(t *testing.T) {
+	run := newResponseRun("resp_phase", "sess_test", "", "mock", time.Now().Unix(), func() {})
+	server := &serveServer{}
+	state := &responseRunStreamState{}
+
+	if err := server.appendResponseRunEvent(nil, run, state, llm.Event{Type: llm.EventPhase, Text: "Compacting context..."}); err != nil {
+		t.Fatalf("appendResponseRunEvent() error = %v", err)
+	}
+
+	run.mu.Lock()
+	defer run.mu.Unlock()
+	if len(run.events) != 1 {
+		t.Fatalf("events = %d, want 1", len(run.events))
+	}
+	ev := run.events[0]
+	if ev.Event != "response.phase" {
+		t.Fatalf("event name = %q, want response.phase", ev.Event)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(ev.Data, &payload); err != nil {
+		t.Fatalf("payload unmarshal: %v", err)
+	}
+	if payload["text"] != "Compacting context..." {
+		t.Fatalf("payload text = %#v", payload["text"])
+	}
+}
+
 func TestResponseRunSubscriberSurvivesUpToBufferLimit(t *testing.T) {
 	run := newResponseRun("resp_test1", "sess_test", "", "mock", time.Now().Unix(), func() {})
 

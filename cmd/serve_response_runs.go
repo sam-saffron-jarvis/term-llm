@@ -1072,6 +1072,13 @@ func (s *serveServer) appendResponseRunEvent(runtime *serveRuntime, run *respons
 			"call_id":   ev.ToolCallID,
 			"tool_name": ev.ToolName,
 		})
+	case llm.EventPhase:
+		if ev.Text == "" {
+			return nil
+		}
+		return run.appendEvent("response.phase", map[string]any{
+			"text": ev.Text,
+		})
 	case llm.EventInterjection:
 		return run.appendEvent("response.interjection", map[string]any{
 			"text": ev.Text,

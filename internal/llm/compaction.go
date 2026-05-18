@@ -9,7 +9,7 @@ import (
 
 const (
 	defaultThresholdRatio     = 0.90
-	defaultSoftThresholdRatio = 0.80
+	defaultSoftThresholdRatio = 0.90
 	defaultHardThresholdRatio = 0.95
 	defaultMaxToolResultChars = 80_000
 	defaultSummaryTokenBudget = 10_000
@@ -19,7 +19,7 @@ const (
 // CompactionConfig controls when and how context compaction occurs.
 type CompactionConfig struct {
 	ThresholdRatio     float64 // Legacy/default fraction of context window to trigger compaction (default 0.90)
-	SoftThresholdRatio float64 // Fraction where we try to finish the current turn cleanly (default 0.80)
+	SoftThresholdRatio float64 // Fraction where we try to checkpoint and compact cleanly (default 0.90)
 	HardThresholdRatio float64 // Fraction where we must compact before the next tool/LLM continuation (default 0.95)
 	MaxToolResultChars int     // Max chars per tool result when recording
 	SummaryTokenBudget int     // Max output tokens for the compaction summary
@@ -90,6 +90,13 @@ Your summary must cover:
 3. Decisions made and actions taken (chronologically)
 4. Current state: what was just completed and what is in progress
 5. Exact next steps needed
+6. A "Continuation directive" section with:
+   - current objective
+   - current phase
+   - exact next action
+   - tools/files likely needed
+   - whether to continue automatically or wait for the user
+   - blockers or questions, if any
 
 Be specific and concrete — include exact file paths, function names, error messages, and code snippets when relevant. Omit small talk and pleasantries.
 

@@ -21,7 +21,8 @@ const (
 	defaultMaxParallelToolCalls        = 20
 	defaultUncommittedStreamMaxRetries = 5
 	stopSearchToolHint                 = "IMPORTANT: Do not call any tools. Use the information already retrieved and answer directly."
-	contextRushFinishPrompt            = "Context budget is getting tight. Please stop opening new tool work and finish the current turn now with a concise answer or a short handoff of exactly what remains. Do not call tools unless absolutely necessary."
+	contextCheckpointPrompt            = "Context budget is getting tight. Produce a concise checkpoint of the current progress and the exact next action. Do not claim the task is complete unless it is complete. Do not call tools."
+	contextContinuationPrompt          = "Continue the task from the compacted context. Follow the pending next step; do not ask the user unless blocked."
 	callbackTimeout                    = 5 * time.Second
 	toolHeartbeatInterval              = 10 * time.Second
 )
@@ -1003,6 +1004,7 @@ func (e *Engine) runSimpleScratchpad(ctx context.Context, req Request, send even
 func (e *Engine) runLoop(ctx context.Context, req Request, send eventSender) error {
 	maxTurns := getMaxTurns(req)
 	originalToolChoice := req.ToolChoice
+	originalTools := append([]ToolSpec(nil), req.Tools...)
 	restoredToolChoice := false
 
 	// Snapshot callbacks and compaction config at start — protects against
@@ -1045,7 +1047,8 @@ func (e *Engine) runLoop(ctx context.Context, req Request, send eventSender) err
 	var recoveryPriorErr error
 	var uncommittedStreamRetries int // retries for failed provider attempts whose assistant output never crossed a commit boundary
 	var uncommittedPriorErr error
-	var rushFinishInjected bool
+	var softCheckpointInjected bool
+	var softCheckpointInProgress bool
 	softThresholdRatio := defaultSoftThresholdRatio
 	hardThresholdRatio := defaultHardThresholdRatio
 	if compactionConfig != nil {
@@ -1168,9 +1171,10 @@ turnLoop:
 					applyCompaction(result)
 				}
 				// On error: continue with full context (best effort)
-			} else if !rushFinishInjected && softCompactionThresholdReached(req.Messages) {
-				rushFinishInjected = true
-				req.Messages = append(req.Messages, UserText(contextRushFinishPrompt))
+			} else if !softCheckpointInjected && len(req.Tools) > 0 && softCompactionThresholdReached(req.Messages) {
+				softCheckpointInjected = true
+				softCheckpointInProgress = true
+				req.Messages = append(req.Messages, UserText(contextCheckpointPrompt))
 				if e.provider.Capabilities().SupportsToolChoice {
 					req.ToolChoice = ToolChoice{Mode: ToolChoiceNone}
 				} else {
@@ -1796,7 +1800,7 @@ turnLoop:
 				return uncommittedPriorErr
 			}
 			// No tools called - check if we should restore original tool choice and retry once
-			if originalToolChoice.Mode == ToolChoiceName && !restoredToolChoice && !rushFinishInjected {
+			if originalToolChoice.Mode == ToolChoiceName && !restoredToolChoice && !softCheckpointInjected {
 				req.ToolChoice = originalToolChoice
 				restoredToolChoice = true
 				continue
@@ -1814,6 +1818,22 @@ turnLoop:
 						ReasoningItemID:           reasoningItemID,
 						ReasoningEncryptedContent: reasoningEncryptedContent,
 					}},
+				}
+				if softCheckpointInProgress {
+					softCheckpointInProgress = false
+					if err := send.Send(Event{Type: EventPhase, Text: "Compacting context..."}); err != nil {
+						return err
+					}
+					compactionMessages := append(append([]Message(nil), req.Messages...), finalMsg)
+					result, err := Compact(ctx, e.provider, req.Model, systemPrompt, nonSystemMessages(compactionMessages), *compactionConfig)
+					if err == nil && applyCompaction(result) {
+						req.Messages = append(req.Messages, UserText(contextContinuationPrompt))
+						req.Tools = append([]ToolSpec(nil), originalTools...)
+						req.ToolChoice = originalToolChoice
+						attempt-- // checkpoint/compaction is internal work; do not consume a normal agent turn
+						continue
+					}
+					// On compaction failure, fall through and complete this turn rather than looping.
 				}
 				maybeCompactAfterLLMCall([]Message{finalMsg})
 				if turnCallback != nil {

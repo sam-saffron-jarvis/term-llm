@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -263,6 +264,27 @@ func (s *serveRuntimeTestStore) ReplaceMessages(ctx context.Context, sessionID s
 }
 
 func (s *serveRuntimeTestStore) CompactMessages(ctx context.Context, sessionID string, messages []session.Message) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	start := len(s.messages[sessionID])
+	out := append([]session.Message(nil), s.messages[sessionID]...)
+	for i, msg := range messages {
+		copyMsg := msg
+		if copyMsg.ID == 0 {
+			s.nextID++
+			copyMsg.ID = s.nextID
+		}
+		copyMsg.SessionID = sessionID
+		copyMsg.Sequence = start + i
+		out = append(out, copyMsg)
+	}
+	s.messages[sessionID] = out
+	if sess, ok := s.sessions[sessionID]; ok {
+		sess.CompactionSeq = start
+		sess.CompactionCount++
+		sess.LastTotalTokens = 0
+		sess.LastMessageCount = 0
+	}
 	return nil
 }
 
@@ -340,6 +362,31 @@ func serveRuntimeTextMessage(role llm.Role, text string) llm.Message {
 			Text: text,
 		}},
 	}
+}
+
+type serveRuntimeCompactionProvider struct {
+	calls []llm.Request
+}
+
+func (p *serveRuntimeCompactionProvider) Name() string       { return "serve-runtime-compact" }
+func (p *serveRuntimeCompactionProvider) Credential() string { return "test" }
+func (p *serveRuntimeCompactionProvider) Capabilities() llm.Capabilities {
+	return llm.Capabilities{ToolCalls: true}
+}
+func (p *serveRuntimeCompactionProvider) ResetConversation() {}
+
+func (p *serveRuntimeCompactionProvider) Stream(ctx context.Context, req llm.Request) (llm.Stream, error) {
+	p.calls = append(p.calls, req)
+	last := ""
+	if len(req.Messages) > 0 {
+		for _, part := range req.Messages[len(req.Messages)-1].Parts {
+			last += part.Text
+		}
+	}
+	if strings.Contains(last, "Create a detailed summary of our conversation") {
+		return &serveRuntimeTestStream{events: []llm.Event{{Type: llm.EventTextDelta, Text: "summary after runtime compaction"}}}, nil
+	}
+	return &serveRuntimeTestStream{events: []llm.Event{{Type: llm.EventTextDelta, Text: "final after compaction"}}}, nil
 }
 
 type serveRuntimeBlockingStream struct {
@@ -637,6 +684,91 @@ func TestServeRuntimeFinalSnapshotReconcilesEarlierAssistantUpdateFailure(t *tes
 	}
 	if msgs[5].Role != llm.RoleAssistant || msgs[5].TextContent != "done" {
 		t.Fatalf("message[5] = %+v, want final assistant message", msgs[5])
+	}
+}
+
+func TestServeRuntimeCompactionCallbackUpdatesActiveContext(t *testing.T) {
+	llm.RegisterConfigLimits([]llm.ConfigModelLimit{{Provider: "serve-runtime-compact", Model: "compact-runtime", InputLimit: 100}})
+	defer llm.RegisterConfigLimits(nil)
+
+	store := newServeRuntimeTestStore()
+	sess := &session.Session{ID: "sess-runtime-compact", Status: session.StatusActive, CompactionSeq: -1}
+	if err := store.Create(context.Background(), sess); err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	provider := &serveRuntimeCompactionProvider{}
+	engine := llm.NewEngine(provider, nil)
+	rt := &serveRuntime{
+		provider:     provider,
+		providerKey:  provider.Name(),
+		engine:       engine,
+		store:        store,
+		sessionMeta:  sess,
+		autoCompact:  true,
+		defaultModel: "compact-runtime",
+		systemPrompt: "system prompt",
+		history: []llm.Message{
+			serveRuntimeTextMessage(llm.RoleUser, strings.Repeat("stale pre-compaction history ", 60)),
+			serveRuntimeTextMessage(llm.RoleAssistant, "old answer"),
+		},
+	}
+
+	rt.configureContextManagementForRequest(llm.Request{Model: "compact-runtime"})
+	if got := engine.InputLimit(); got != 100 {
+		t.Fatalf("configured input limit = %d, want 100", got)
+	}
+
+	engine.SetContextEstimateBaseline(91, 4)
+
+	_, err := rt.Run(context.Background(), true, false, []llm.Message{serveRuntimeTextMessage(llm.RoleUser, "continue task")}, llm.Request{
+		SessionID: "sess-runtime-compact",
+		Model:     "compact-runtime",
+		Tools:     []llm.ToolSpec{{Name: "dummy", Schema: map[string]any{"type": "object"}}},
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if len(provider.calls) < 3 {
+		t.Fatalf("provider calls = %d, want checkpoint + compaction + continuation", len(provider.calls))
+	}
+	firstLast := ""
+	for _, part := range provider.calls[0].Messages[len(provider.calls[0].Messages)-1].Parts {
+		firstLast += part.Text
+	}
+	if !strings.Contains(firstLast, "Context budget is getting tight") {
+		t.Fatalf("first call did not request a soft checkpoint: %q", firstLast)
+	}
+	compactedHistoryText := ""
+	for _, msg := range rt.history {
+		for _, part := range msg.Parts {
+			compactedHistoryText += part.Text + "\n"
+		}
+	}
+	if !strings.Contains(compactedHistoryText, "Context Compaction") {
+		t.Fatalf("runtime history was not replaced with compacted context: %#v", rt.history)
+	}
+
+	refreshed, err := store.Get(context.Background(), "sess-runtime-compact")
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	active, err := session.LoadActiveMessages(context.Background(), store, refreshed)
+	if err != nil {
+		t.Fatalf("LoadActiveMessages() error = %v", err)
+	}
+	if len(active) == 0 {
+		t.Fatal("active messages empty after compaction")
+	}
+	activeText := ""
+	for _, msg := range active {
+		activeText += msg.TextContent + "\n"
+	}
+	if !strings.Contains(activeText, "summary after runtime compaction") {
+		t.Fatalf("active context missing compacted summary: %q", activeText)
+	}
+	if strings.Contains(activeText, "stale pre-compaction history") {
+		t.Fatalf("active context resurrected stale pre-compaction history: %q", activeText)
 	}
 }
 
