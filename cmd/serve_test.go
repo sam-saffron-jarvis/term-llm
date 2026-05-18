@@ -1089,11 +1089,14 @@ func TestParseResponsesInput_ImageContent(t *testing.T) {
 	if msg.Parts[0].ImageData.MediaType != "image/png" {
 		t.Fatalf("media type = %q, want image/png", msg.Parts[0].ImageData.MediaType)
 	}
-	if msg.Parts[0].ImageData.Base64 != "aGVsbG8=" {
-		t.Fatalf("base64 = %q, want aGVsbG8=", msg.Parts[0].ImageData.Base64)
+	if msg.Parts[0].ImageData.Base64 != "" {
+		t.Fatalf("base64 = %q, want empty inline payload placeholder", msg.Parts[0].ImageData.Base64)
 	}
 	if msg.Parts[0].ImagePath == "" {
 		t.Fatalf("parts[0].ImagePath is empty, want saved upload path")
+	}
+	if msg.Parts[0].InlineImagePath == "" {
+		t.Fatalf("parts[0].InlineImagePath is empty, want saved inline payload path")
 	}
 	uploadsDir := filepath.Join(dataHome, "term-llm", "uploads")
 	entries, err := os.ReadDir(uploadsDir)
@@ -1102,6 +1105,9 @@ func TestParseResponsesInput_ImageContent(t *testing.T) {
 	}
 	if len(entries) != 1 {
 		t.Fatalf("uploads dir has %d files, want 1", len(entries))
+	}
+	if msg.Parts[0].InlineImagePath != msg.Parts[0].ImagePath {
+		t.Fatalf("InlineImagePath = %q, want same as ImagePath for small upload %q", msg.Parts[0].InlineImagePath, msg.Parts[0].ImagePath)
 	}
 	got, err := os.ReadFile(msg.Parts[0].ImagePath)
 	if err != nil {
@@ -1471,8 +1477,11 @@ func TestParseChatMessages_UserImageContent(t *testing.T) {
 	if msgs[0].Parts[0].Type != llm.PartImage {
 		t.Fatalf("parts[0].type = %s, want image", msgs[0].Parts[0].Type)
 	}
-	if msgs[0].Parts[0].ImageData == nil || msgs[0].Parts[0].ImageData.MediaType != "image/png" || msgs[0].Parts[0].ImageData.Base64 != "aGVsbG8=" {
-		t.Fatalf("parts[0].image = %#v, want png data URL", msgs[0].Parts[0].ImageData)
+	if msgs[0].Parts[0].ImageData == nil || msgs[0].Parts[0].ImageData.MediaType != "image/png" || msgs[0].Parts[0].ImageData.Base64 != "" {
+		t.Fatalf("parts[0].image = %#v, want png inline payload placeholder", msgs[0].Parts[0].ImageData)
+	}
+	if msgs[0].Parts[0].InlineImagePath == "" {
+		t.Fatalf("parts[0].InlineImagePath is empty, want saved inline payload path")
 	}
 	if msgs[0].Parts[1].Type != llm.PartText || msgs[0].Parts[1].Text != "describe this" {
 		t.Fatalf("parts[1] = %+v, want trailing text", msgs[0].Parts[1])
@@ -1510,8 +1519,11 @@ func TestParseChatMessages_AssistantImageContent(t *testing.T) {
 	if msgs[0].Parts[1].Type != llm.PartImage {
 		t.Fatalf("parts[1].type = %s, want image", msgs[0].Parts[1].Type)
 	}
-	if msgs[0].Parts[1].ImageData == nil || msgs[0].Parts[1].ImageData.MediaType != "image/png" || msgs[0].Parts[1].ImageData.Base64 != "aGVsbG8=" {
-		t.Fatalf("parts[1].image = %#v, want png data URL", msgs[0].Parts[1].ImageData)
+	if msgs[0].Parts[1].ImageData == nil || msgs[0].Parts[1].ImageData.MediaType != "image/png" || msgs[0].Parts[1].ImageData.Base64 != "" {
+		t.Fatalf("parts[1].image = %#v, want png inline payload placeholder", msgs[0].Parts[1].ImageData)
+	}
+	if msgs[0].Parts[1].InlineImagePath == "" {
+		t.Fatalf("parts[1].InlineImagePath is empty, want saved inline payload path")
 	}
 }
 

@@ -1452,9 +1452,10 @@ func (p *ClaudeBinProvider) buildConversationPrompt(messages []Message) string {
 						userParts = append(userParts, part.Text)
 					}
 				case PartImage:
-					// Prefer an existing filesystem path; otherwise materialise the
-					// base64 data into a temp file so Claude CLI can read the image.
-					path := part.ImagePath
+					// Prefer an existing filesystem path that already contains the exact
+					// bytes we want to send; otherwise materialise base64 data into a temp
+					// file so Claude CLI can read the image.
+					path := inlineImagePath(part)
 					if path == "" && part.ImageData != nil && part.ImageData.Base64 != "" {
 						path = p.imageDataToTempFile(part.ImageData.MediaType, part.ImageData.Base64)
 					}
@@ -1804,7 +1805,7 @@ func buildSDKUserContentBlocks(parts []Part) []sdkContentBlock {
 				blocks = append(blocks, sdkContentBlock{Type: "text", Text: part.Text})
 			}
 		case PartImage:
-			imageBlock, imagePath, ok := buildSDKImageBlock(part.ImagePath, part.ImageData)
+			imageBlock, imagePath, ok := buildSDKImageBlock(part)
 			if !ok {
 				continue
 			}
@@ -1840,21 +1841,9 @@ func buildSDKToolResultImageBlocks(result *ToolResult) []sdkContentBlock {
 	return blocks
 }
 
-func buildSDKImageBlock(imagePath string, imageData *ToolImageData) (sdkContentBlock, string, bool) {
-	mediaType, base64Data := "", ""
-	switch {
-	case imageData != nil && imageData.Base64 != "":
-		mediaType = imageData.MediaType
-		base64Data = imageData.Base64
-	case imagePath != "":
-		data, err := os.ReadFile(imagePath)
-		if err != nil {
-			return sdkContentBlock{}, "", false
-		}
-		mediaType = mediaTypeFromPath(imagePath)
-		base64Data = base64.StdEncoding.EncodeToString(data)
-	}
-	if mediaType == "" || base64Data == "" {
+func buildSDKImageBlock(part Part) (sdkContentBlock, string, bool) {
+	mediaType, base64Data, ok := requestImageData(part)
+	if !ok {
 		return sdkContentBlock{}, "", false
 	}
 	return sdkContentBlock{
@@ -1864,7 +1853,7 @@ func buildSDKImageBlock(imagePath string, imageData *ToolImageData) (sdkContentB
 			MediaType: mediaType,
 			Data:      base64Data,
 		},
-	}, imagePath, true
+	}, part.ImagePath, true
 }
 
 // mediaTypeFromPath returns an image MIME type based on the file extension.

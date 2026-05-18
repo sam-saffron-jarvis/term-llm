@@ -704,12 +704,21 @@ func buildCompatMessages(messages []Message) []oaiMessage {
 			if msg.Role == RoleUser {
 				var imageParts []oaiContentPart
 				for _, part := range msg.Parts {
-					if part.Type == PartImage && part.ImageData != nil {
-						dataURL := fmt.Sprintf("data:%s;base64,%s", part.ImageData.MediaType, part.ImageData.Base64)
-						imageParts = append(imageParts, oaiContentPart{Type: "image_url", ImageURL: &oaiImageURL{URL: dataURL, Detail: imageDetailWithDefault(part.ImageData.Detail, "auto")}})
-						if part.ImagePath != "" {
-							imageParts = append(imageParts, oaiContentPart{Type: "text", Text: "[image saved at: " + part.ImagePath + "]"})
-						}
+					if part.Type != PartImage {
+						continue
+					}
+					mediaType, base64Data, ok := requestImageData(part)
+					if !ok {
+						continue
+					}
+					detail := "auto"
+					if part.ImageData != nil {
+						detail = imageDetailWithDefault(part.ImageData.Detail, "auto")
+					}
+					dataURL := fmt.Sprintf("data:%s;base64,%s", mediaType, base64Data)
+					imageParts = append(imageParts, oaiContentPart{Type: "image_url", ImageURL: &oaiImageURL{URL: dataURL, Detail: detail}})
+					if part.ImagePath != "" {
+						imageParts = append(imageParts, oaiContentPart{Type: "text", Text: "[image saved at: " + part.ImagePath + "]"})
 					}
 				}
 				if len(imageParts) > 0 {

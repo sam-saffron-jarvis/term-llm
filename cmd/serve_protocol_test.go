@@ -129,6 +129,9 @@ func TestParseUserMessageContent_InlineImagesAreSavedToUploadsDir(t *testing.T) 
 	if msg.Parts[0].ImagePath == "" {
 		t.Fatal("msg.Parts[0].ImagePath is empty, want saved upload path")
 	}
+	if msg.Parts[0].InlineImagePath == "" {
+		t.Fatal("msg.Parts[0].InlineImagePath is empty, want inline upload path")
+	}
 
 	uploadsDir := filepath.Join(dataHome, "term-llm", "uploads")
 	entries, err := os.ReadDir(uploadsDir)
@@ -137,6 +140,9 @@ func TestParseUserMessageContent_InlineImagesAreSavedToUploadsDir(t *testing.T) 
 	}
 	if len(entries) != 1 {
 		t.Fatalf("uploads dir has %d files, want 1", len(entries))
+	}
+	if msg.Parts[0].InlineImagePath != msg.Parts[0].ImagePath {
+		t.Fatalf("InlineImagePath = %q, want same as ImagePath for small upload %q", msg.Parts[0].InlineImagePath, msg.Parts[0].ImagePath)
 	}
 }
 
@@ -175,18 +181,27 @@ func TestParseUserMessageContent_LargeImageSavesOriginalButSendsResizedInline(t 
 	if !bytes.Equal(saved, raw) {
 		t.Fatalf("saved image differs from original upload")
 	}
-	if part.ImageData == nil || part.ImageData.Base64 == "" {
+	if part.ImageData == nil {
 		t.Fatalf("ImageData missing")
 	}
-	inline, err := base64.StdEncoding.DecodeString(part.ImageData.Base64)
-	if err != nil {
-		t.Fatalf("decode inline image: %v", err)
-	}
-	if len(inline) >= len(raw) {
-		t.Fatalf("inline image is %d bytes, want resized smaller than original %d", len(inline), len(raw))
+	if part.ImageData.Base64 != "" {
+		t.Fatalf("ImageData.Base64 = %q, want empty so inline payload is loaded lazily", part.ImageData.Base64)
 	}
 	if part.ImageData.MediaType != "image/jpeg" {
 		t.Fatalf("inline media type = %q, want image/jpeg", part.ImageData.MediaType)
+	}
+	if part.InlineImagePath == "" {
+		t.Fatal("InlineImagePath is empty, want saved inline payload path")
+	}
+	if part.InlineImagePath == part.ImagePath {
+		t.Fatalf("InlineImagePath = %q, want separate resized payload path from original %q", part.InlineImagePath, part.ImagePath)
+	}
+	inline, err := os.ReadFile(part.InlineImagePath)
+	if err != nil {
+		t.Fatalf("read inline image: %v", err)
+	}
+	if len(inline) >= len(raw) {
+		t.Fatalf("inline image is %d bytes, want resized smaller than original %d", len(inline), len(raw))
 	}
 }
 

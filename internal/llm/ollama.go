@@ -176,8 +176,12 @@ func buildOllamaMessages(messages []Message) []ollamaChatMsg {
 			}
 			var images []string
 			for _, part := range msg.Parts {
-				if part.Type == PartImage && part.ImageData != nil {
-					images = append(images, part.ImageData.Base64)
+				if part.Type != PartImage {
+					continue
+				}
+				_, base64Data, ok := requestImageData(part)
+				if ok {
+					images = append(images, base64Data)
 				}
 			}
 			if text == "" && len(images) == 0 {

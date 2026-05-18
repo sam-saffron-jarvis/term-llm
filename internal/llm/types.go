@@ -119,8 +119,9 @@ type Part struct {
 	ReasoningContent          string         // Reasoning summary text (or thinking content for OpenRouter)
 	ReasoningItemID           string         // Responses API reasoning item ID for replay
 	ReasoningEncryptedContent string         // Responses API encrypted reasoning content for replay
-	ImageData                 *ToolImageData // User-supplied image (base64-encoded)
-	ImagePath                 string         // Local filesystem path to the image (when available, e.g. Telegram uploads)
+	ImageData                 *ToolImageData // User-supplied image metadata/base64 payload
+	ImagePath                 string         // Local filesystem path to the original image upload (when available)
+	InlineImagePath           string         // Optional filesystem path for bytes that should be encoded and sent to the LLM
 	ToolCall                  *ToolCall
 	ToolResult                *ToolResult
 }

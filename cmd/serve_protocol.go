@@ -222,13 +222,14 @@ func abbreviatePath(path string) string {
 // parseUserMessageContent builds a user llm.Message from a content field
 // that may be a plain string or an array of content parts (input_text, input_image, input_file).
 // Chat Completions-style text/image_url parts are also accepted.
-// Supported image types are sent inline to the LLM and also saved to disk
-// so tools can reopen the original upload later. Other files are saved to disk
-// and referenced by path in a text part.
+// Supported image types are staged for the LLM and also saved to disk so tools
+// can reopen the original upload later. Other files are saved to disk and
+// referenced by path in a text part.
 //
 // Images exceeding 1 MB are resized/compressed only for the inline LLM payload
 // to avoid provider errors; the saved ImagePath always points at the original
-// uploaded bytes.
+// uploaded bytes, while InlineImagePath points at the bytes that providers
+// should encode and send on demand.
 func parseUserMessageContent(content json.RawMessage) (llm.Message, error) {
 	var parts []map[string]json.RawMessage
 	if err := json.Unmarshal(content, &parts); err == nil && len(parts) > 0 {
@@ -271,22 +272,26 @@ func parseUserMessageContent(content json.RawMessage) (llm.Message, error) {
 						return llm.Message{}, fmt.Errorf("save attachment %q: %w", filename, err)
 					}
 
-					sendB64 := b64
+					inlinePath := path
 					sendMT := mt
 					if len(raw) > maxLLMImageBytes {
 						// Resize only the inline payload sent to the model. Keep ImagePath
 						// pointing at the original upload so tools can inspect high-res data.
 						resized, resMT := resizeImageForLLM(raw, mt)
 						if len(resized) != len(raw) || resMT != mt {
-							sendB64 = base64.StdEncoding.EncodeToString(resized)
+							inlinePath, err = saveUploadedBytes(filename, resized)
+							if err != nil {
+								return llm.Message{}, fmt.Errorf("save inline attachment %q: %w", filename, err)
+							}
 							sendMT = resMT
 						}
 					}
 
 					llmParts = append(llmParts, llm.Part{
-						Type:      llm.PartImage,
-						ImageData: &llm.ToolImageData{MediaType: sendMT, Base64: sendB64},
-						ImagePath: path,
+						Type:            llm.PartImage,
+						ImageData:       &llm.ToolImageData{MediaType: sendMT},
+						ImagePath:       path,
+						InlineImagePath: inlinePath,
 					})
 				} else {
 					fileCount++
