@@ -38,6 +38,70 @@ func TestReadSSEEvent_AllowsEventAndDataLinesWithoutSpace(t *testing.T) {
 	}
 }
 
+func TestReadSSEEventBytes_AllowsEventAndDataLinesWithoutSpace(t *testing.T) {
+	reader := bufio.NewReader(strings.NewReader("event:error\ndata:{\"error\":{\"message\":\"boom\"}}\n\n"))
+
+	eventType, data, eof, err := readSSEEventBytes(reader)
+	if err != nil {
+		t.Fatalf("readSSEEventBytes: %v", err)
+	}
+	if eof {
+		t.Fatal("expected event separator, not EOF")
+	}
+	if eventType != "error" {
+		t.Fatalf("expected event type %q, got %q", "error", eventType)
+	}
+	if string(data) != "{\"error\":{\"message\":\"boom\"}}" {
+		t.Fatalf("expected data %q, got %q", "{\"error\":{\"message\":\"boom\"}}", string(data))
+	}
+}
+
+func TestReadSSEEventBytes_JoinsMultipleDataLines(t *testing.T) {
+	reader := bufio.NewReader(strings.NewReader("data: first\ndata: second\n\n"))
+
+	_, data, eof, err := readSSEEventBytes(reader)
+	if err != nil {
+		t.Fatalf("readSSEEventBytes: %v", err)
+	}
+	if eof {
+		t.Fatal("expected event separator, not EOF")
+	}
+	if string(data) != "first\nsecond" {
+		t.Fatalf("expected joined data %q, got %q", "first\nsecond", string(data))
+	}
+}
+
+func TestSSEEventReaderReadEventBytes_KeepsDataStableAfterSeparatorRefill(t *testing.T) {
+	// The first line is exactly 16 bytes including the newline, matching the
+	// bufio.Reader size below. An implementation that returned ReadSlice-backed
+	// data directly would have that data invalidated when reading the blank
+	// separator refills the buffer with the next event.
+	raw := strings.NewReader("data: 123456789\n\ndata: second\n\n")
+	reader := newSSEEventReader(bufio.NewReaderSize(raw, 16))
+
+	_, data, eof, err := reader.readEventBytes()
+	if err != nil {
+		t.Fatalf("readEventBytes first: %v", err)
+	}
+	if eof {
+		t.Fatal("expected first event separator, not EOF")
+	}
+	if string(data) != "123456789" {
+		t.Fatalf("expected first data %q, got %q", "123456789", string(data))
+	}
+
+	_, data, eof, err = reader.readEventBytes()
+	if err != nil {
+		t.Fatalf("readEventBytes second: %v", err)
+	}
+	if eof {
+		t.Fatal("expected second event separator, not EOF")
+	}
+	if string(data) != "second" {
+		t.Fatalf("expected second data %q, got %q", "second", string(data))
+	}
+}
+
 func TestReadSSEEvent_StripsOnlyOptionalSingleSpaceAfterColon(t *testing.T) {
 	reader := bufio.NewReader(strings.NewReader("data:  leading-space\n\n"))
 

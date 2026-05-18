@@ -437,14 +437,40 @@ func readSSEEvent(reader *bufio.Reader) (eventType, data string, eof bool, err e
 	}
 }
 
+type sseEventReader struct {
+	reader *bufio.Reader
+	data   []byte
+}
+
+func newSSEEventReader(reader *bufio.Reader) *sseEventReader {
+	return &sseEventReader{reader: reader}
+}
+
 func readSSEEventBytes(reader *bufio.Reader) (eventType string, data []byte, eof bool, err error) {
+	return newSSEEventReader(reader).readEventBytes()
+}
+
+// readEventBytes returns data backed by the sseEventReader's reusable buffer.
+// Callers must consume it before the next readEventBytes call.
+func (r *sseEventReader) readEventBytes() (eventType string, data []byte, eof bool, err error) {
+	r.data = r.data[:0]
+	dataLines := 0
+
+	appendData := func(value []byte) {
+		if dataLines > 0 {
+			r.data = append(r.data, '\n')
+		}
+		r.data = append(r.data, value...)
+		dataLines++
+	}
+
 	for {
-		line, lineEOF, err := readSSELineBytes(reader)
+		line, lineEOF, err := readSSELineBytes(r.reader)
 		if err != nil {
 			return "", nil, false, err
 		}
 		if len(line) == 0 {
-			return eventType, data, lineEOF, nil
+			return eventType, r.data, lineEOF, nil
 		}
 		if i := bytes.IndexByte(line, ':'); i >= 0 {
 			field, value := line[:i], line[i+1:]
@@ -455,14 +481,11 @@ func readSSEEventBytes(reader *bufio.Reader) (eventType string, data []byte, eof
 			case bytes.Equal(field, sseEventField):
 				eventType = string(value)
 			case bytes.Equal(field, sseDataField):
-				if len(data) > 0 {
-					data = append(data, '\n')
-				}
-				data = append(data, value...)
+				appendData(value)
 			}
 		}
 		if lineEOF {
-			return eventType, data, true, nil
+			return eventType, r.data, true, nil
 		}
 	}
 }
@@ -556,7 +579,7 @@ func (p *OpenAICompatProvider) Stream(ctx context.Context, req Request) (Stream,
 	return newEventStream(ctx, func(ctx context.Context, send eventSender) error {
 		defer resp.Body.Close()
 
-		reader := bufio.NewReader(resp.Body)
+		reader := newSSEEventReader(bufio.NewReader(resp.Body))
 
 		toolState := newCompatToolState()
 		var lastUsage *Usage
@@ -565,7 +588,7 @@ func (p *OpenAICompatProvider) Stream(ctx context.Context, req Request) (Stream,
 		sawToolCallsFinish := false
 
 		for {
-			eventType, data, eof, err := readSSEEventBytes(reader)
+			eventType, data, eof, err := reader.readEventBytes()
 			if err != nil {
 				return fmt.Errorf("%s streaming error: %w", p.name, err)
 			}
