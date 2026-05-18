@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -30,6 +31,14 @@ func (v marshalCountingJSONLikeValue) MarshalJSON() ([]byte, error) {
 		v.Calls.Add(1)
 	}
 	return []byte(`{"type":"function","name":"tool","parameters":{"type":"object"}}`), nil
+}
+
+type dynamicMarshalJSONLikeValue struct {
+	Version int `json:"-"`
+}
+
+func (v dynamicMarshalJSONLikeValue) MarshalJSON() ([]byte, error) {
+	return []byte(fmt.Sprintf(`{"type":"function","name":"tool","version":%d}`, v.Version)), nil
 }
 
 func TestResponsesWebSocketURL(t *testing.T) {
@@ -235,15 +244,21 @@ func TestResponsesRequestNonInputEqual_JSONLikeTools(t *testing.T) {
 	}
 }
 
-func TestJSONLikeEqualForCompareDoesNotMarshal(t *testing.T) {
+func TestJSONLikeEqualForCompareUsesMarshalJSONForCustomMarshalers(t *testing.T) {
 	var calls atomic.Int32
 	value := marshalCountingJSONLikeValue{Calls: &calls}
 
 	if !jsonLikeEqualForCompare(value, value) {
-		t.Fatal("expected identical values to compare equal")
+		t.Fatal("expected identical marshaled values to compare equal")
 	}
-	if calls.Load() != 0 {
-		t.Fatalf("expected comparison without MarshalJSON, got %d calls", calls.Load())
+	if calls.Load() == 0 {
+		t.Fatal("expected comparison to honor MarshalJSON for custom marshalers")
+	}
+	if jsonLikeEqualForCompare(dynamicMarshalJSONLikeValue{Version: 1}, dynamicMarshalJSONLikeValue{Version: 2}) {
+		t.Fatal("expected custom marshalers with different wire JSON to compare unequal")
+	}
+	if !jsonLikeEqualForCompare(dynamicMarshalJSONLikeValue{Version: 1}, map[string]any{"type": "function", "name": "tool", "version": float64(1)}) {
+		t.Fatal("expected custom marshaler to compare against equivalent wire JSON")
 	}
 }
 
@@ -891,6 +906,76 @@ func TestResponsesClientWebSocketPreviousResponseRejectedRetriesFullState(t *tes
 	input, ok := secondRequest["input"].([]any)
 	if !ok || len(input) != 2 {
 		t.Fatalf("full-state retry input = %#v, want both input items", secondRequest["input"])
+	}
+}
+
+func TestResponsesClientWebSocketReconnectsWhenSessionIDChanges(t *testing.T) {
+	var handshakeCount atomic.Int32
+	var sessionIDs []string
+	var requests []map[string]any
+	upgrader := websocket.Upgrader{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sessionIDs = append(sessionIDs, r.Header.Get("session_id"))
+		handshake := handshakeCount.Add(1)
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Errorf("upgrade: %v", err)
+			return
+		}
+		defer conn.Close()
+		_, msg, err := conn.ReadMessage()
+		if err != nil {
+			t.Errorf("read request: %v", err)
+			return
+		}
+		var req map[string]any
+		if err := json.Unmarshal(msg, &req); err != nil {
+			t.Errorf("decode request: %v", err)
+			return
+		}
+		requests = append(requests, req)
+		_ = conn.WriteJSON(map[string]any{"type": "response.completed", "response": map[string]any{"id": fmt.Sprintf("resp_%d", handshake)}})
+	}))
+	defer server.Close()
+
+	client := &ResponsesClient{BaseURL: server.URL, UseWebSocket: true, WebSocketServerState: true, DisableServerState: true}
+	for _, sessionID := range []string{"sess-one", "sess-two"} {
+		stream, err := client.Stream(context.Background(), ResponsesRequest{
+			Model:     "gpt-test",
+			SessionID: sessionID,
+			Input:     []ResponsesInputItem{{Type: "message", Role: "user", Content: sessionID}},
+			Stream:    true,
+		}, false)
+		if err != nil {
+			t.Fatalf("Stream %s: %v", sessionID, err)
+		}
+		for {
+			event, err := stream.Recv()
+			if err != nil {
+				t.Fatalf("Recv %s: %v", sessionID, err)
+			}
+			if event.Type == EventDone {
+				break
+			}
+		}
+		_ = stream.Close()
+	}
+
+	if handshakeCount.Load() != 2 {
+		t.Fatalf("handshakes = %d, want 2", handshakeCount.Load())
+	}
+	if len(sessionIDs) != 2 || sessionIDs[0] != "sess-one" || sessionIDs[1] != "sess-two" {
+		t.Fatalf("session headers = %#v, want [sess-one sess-two]", sessionIDs)
+	}
+	if len(requests) != 2 {
+		t.Fatalf("requests = %d, want 2", len(requests))
+	}
+	if _, ok := requests[1]["previous_response_id"]; ok {
+		t.Fatalf("second session request reused stale previous_response_id: %#v", requests[1])
+	}
+	input, ok := requests[1]["input"].([]any)
+	if !ok || len(input) != 1 || !strings.Contains(toJSON(input[0]), "sess-two") {
+		t.Fatalf("second session input = %#v, want full input for sess-two", requests[1]["input"])
 	}
 }
 

@@ -240,6 +240,15 @@ func (e *Engine) Tools() *ToolRegistry {
 	return e.tools
 }
 
+func resetProviderConversation(provider Provider) {
+	type conversationResetter interface {
+		ResetConversation()
+	}
+	if r, ok := provider.(conversationResetter); ok {
+		r.ResetConversation()
+	}
+}
+
 // ResetConversation clears all conversation-specific state from the engine.
 // Called on /clear or /new to start a fresh conversation. This resets
 // compaction tracking, context notices, and provider-side conversation state
@@ -254,12 +263,7 @@ func (e *Engine) ResetConversation() {
 	e.callbackMu.Unlock()
 
 	// Reset provider-side conversation state if supported
-	type conversationResetter interface {
-		ResetConversation()
-	}
-	if r, ok := e.provider.(conversationResetter); ok {
-		r.ResetConversation()
-	}
+	resetProviderConversation(e.provider)
 }
 
 // SetDebugLogger sets the debug logger for this engine.
@@ -1085,6 +1089,11 @@ func (e *Engine) runLoop(ctx context.Context, req Request, send eventSender) err
 				return false
 			}
 		}
+		// The compacted transcript replaces the conversation context. Clear any
+		// provider-side server state (for example Responses previous_response_id) so
+		// the next request sends the compacted summary instead of continuing from a
+		// stale pre-compaction server transcript.
+		resetProviderConversation(e.provider)
 		req.Messages = result.NewMessages
 		e.callbackMu.Lock()
 		e.lastTotalTokens = 0

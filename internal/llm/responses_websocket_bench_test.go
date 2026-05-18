@@ -4,7 +4,7 @@ import "testing"
 
 func BenchmarkResponsesWebSocketTextDeltaDispatch(b *testing.B) {
 	data := []byte(`{"type":"response.output_text.delta","delta":"hello world"}`)
-	handler := newResponsesStreamEventHandler(&ResponsesClient{}, 0, false, "bench", false)
+	handler := newResponsesStreamEventHandler(&ResponsesClient{}, 0, false, "bench", false, "")
 	send := eventSender{}
 
 	b.ReportAllocs()

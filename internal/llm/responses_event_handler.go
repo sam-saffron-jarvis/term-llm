@@ -19,16 +19,18 @@ type responsesStreamEventHandler struct {
 	outputItems             []ResponsesInputItem
 	sawTextDelta            bool
 	allowResponseState      bool
+	stateSessionID          string
 	emitted                 bool
 }
 
-func newResponsesStreamEventHandler(client *ResponsesClient, responseStateGeneration uint64, debugRaw bool, debugPrefix string, allowResponseState bool) *responsesStreamEventHandler {
+func newResponsesStreamEventHandler(client *ResponsesClient, responseStateGeneration uint64, debugRaw bool, debugPrefix string, allowResponseState bool, stateSessionID string) *responsesStreamEventHandler {
 	return &responsesStreamEventHandler{
 		client:                  client,
 		responseStateGeneration: responseStateGeneration,
 		debugRaw:                debugRaw,
 		debugPrefix:             debugPrefix,
 		allowResponseState:      allowResponseState,
+		stateSessionID:          stateSessionID,
 		toolState:               newResponsesToolState(),
 		reasoningState:          newResponsesReasoningState(),
 	}
@@ -292,7 +294,7 @@ func (h *responsesStreamEventHandler) HandleJSONEvent(data []byte, eventType str
 			return false, err
 		}
 		if h.allowResponseState && completedEvent.Response.ID != "" {
-			h.client.setLastResponseIDIfGeneration(h.responseStateGeneration, completedEvent.Response.ID)
+			h.client.setLastResponseIDIfGeneration(h.responseStateGeneration, completedEvent.Response.ID, h.stateSessionID)
 		}
 		if completedEvent.Response.Usage != nil {
 			cached := completedEvent.Response.Usage.InputTokensDetails.CachedTokens

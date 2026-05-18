@@ -116,6 +116,7 @@ type fakeProvider struct {
 	calls           []Request
 	capabilities    Capabilities
 	hasCapabilities bool
+	resetCalls      int
 }
 
 func (p *fakeProvider) Name() string {
@@ -142,6 +143,10 @@ func (p *fakeProvider) Stream(ctx context.Context, req Request) (Stream, error) 
 	call := len(p.calls) - 1
 	events := p.script(call, req)
 	return &sliceStream{events: events}, nil
+}
+
+func (p *fakeProvider) ResetConversation() {
+	p.resetCalls++
 }
 
 type streamProvider struct {
@@ -2215,6 +2220,9 @@ func TestRunLoopCompactsOnFirstTurnWithExistingHistory(t *testing.T) {
 	}
 	if got := collectTextParts(provider.calls[1].Messages[1].Parts); !strings.Contains(got, summaryPrefix) || !strings.Contains(got, "summary of the oversized conversation") {
 		t.Fatalf("retried request did not use compacted summary: %.120q", got)
+	}
+	if provider.resetCalls != 1 {
+		t.Fatalf("provider ResetConversation calls after compaction = %d, want 1", provider.resetCalls)
 	}
 }
 

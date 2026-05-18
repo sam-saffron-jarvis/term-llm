@@ -82,16 +82,36 @@ func TestOpenAIParametersFromToolSchema_CachesLoweredParametersBySchemaIdentityA
 
 	firstStrict := openAIParametersFromToolSchema(schema, true)
 	secondStrict := openAIParametersFromToolSchema(schema, true)
-	if reflect.ValueOf(firstStrict).Pointer() != reflect.ValueOf(secondStrict).Pointer() {
-		t.Fatalf("strict cache miss: first=%#v second=%#v", firstStrict, secondStrict)
+	if !reflect.DeepEqual(firstStrict, secondStrict) {
+		t.Fatalf("strict cache returned different content: first=%#v second=%#v", firstStrict, secondStrict)
+	}
+	if reflect.ValueOf(firstStrict).Pointer() == reflect.ValueOf(secondStrict).Pointer() {
+		t.Fatalf("strict cache returned shared mutable map: first=%#v second=%#v", firstStrict, secondStrict)
+	}
+
+	firstStrict["x-mutated"] = true
+	if props, ok := firstStrict["properties"].(map[string]interface{}); ok {
+		props["name"] = map[string]interface{}{"type": "number"}
+	}
+	thirdStrict := openAIParametersFromToolSchema(schema, true)
+	if _, ok := thirdStrict["x-mutated"]; ok {
+		t.Fatalf("mutation of returned parameters leaked into cache: %#v", thirdStrict)
+	}
+	props, ok := thirdStrict["properties"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("thirdStrict properties = %#v, want map", thirdStrict["properties"])
+	}
+	name, ok := props["name"].(map[string]interface{})
+	if !ok || name["type"] != "string" {
+		t.Fatalf("nested mutation of returned parameters leaked into cache: %#v", thirdStrict)
 	}
 
 	firstNonStrict := openAIParametersFromToolSchema(schema, false)
 	secondNonStrict := openAIParametersFromToolSchema(schema, false)
-	if reflect.ValueOf(firstNonStrict).Pointer() != reflect.ValueOf(secondNonStrict).Pointer() {
-		t.Fatalf("non-strict cache miss: first=%#v second=%#v", firstNonStrict, secondNonStrict)
+	if !reflect.DeepEqual(firstNonStrict, secondNonStrict) {
+		t.Fatalf("non-strict cache returned different content: first=%#v second=%#v", firstNonStrict, secondNonStrict)
 	}
-	if reflect.ValueOf(firstStrict).Pointer() == reflect.ValueOf(firstNonStrict).Pointer() {
+	if reflect.DeepEqual(thirdStrict, firstNonStrict) {
 		t.Fatalf("strict and non-strict schemas should be cached separately")
 	}
 }

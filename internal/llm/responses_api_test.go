@@ -521,6 +521,55 @@ func TestResponsesClientStream_SendsSessionHeaderAndPromptCacheKey(t *testing.T)
 	}
 }
 
+func TestResponsesClientStreamClearsPreviousResponseIDForDifferentSession(t *testing.T) {
+	captured := make(chan map[string]any, 1)
+	httpClient := &http.Client{
+		Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			defer r.Body.Close()
+			var payload map[string]any
+			body, _ := io.ReadAll(r.Body)
+			_ = json.Unmarshal(body, &payload)
+			captured <- payload
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Status:     "200 OK",
+				Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+				Body: io.NopCloser(strings.NewReader(
+					"data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_new\"}}\n\n",
+				)),
+			}, nil
+		}),
+	}
+	client := &ResponsesClient{
+		BaseURL:                "https://example.test/v1/responses",
+		HTTPClient:             httpClient,
+		LastResponseID:         "resp_old",
+		responseStateSessionID: "session-old",
+	}
+
+	stream, err := client.Stream(context.Background(), ResponsesRequest{
+		Model:              "gpt-test",
+		SessionID:          "session-new",
+		PreviousResponseID: "resp_old",
+		Input:              []ResponsesInputItem{{Type: "message", Role: "user", Content: "new session"}},
+		Stream:             true,
+	}, false)
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	defer stream.Close()
+	drainStreamToDone(t, stream)
+
+	select {
+	case payload := <-captured:
+		if _, ok := payload["previous_response_id"]; ok {
+			t.Fatalf("sent stale previous_response_id for different session: %#v", payload)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for request capture")
+	}
+}
+
 func TestResponsesClientStream_CloseReturnsPromptlyWhenConsumerStopsDraining(t *testing.T) {
 	var sse strings.Builder
 	for i := 0; i < 32; i++ {

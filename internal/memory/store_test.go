@@ -613,6 +613,42 @@ func TestStoreVectorSearchAndBumpAccess(t *testing.T) {
 	}
 }
 
+func TestStoreVectorSearchMixedBinaryAndLegacyJSON(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore(t)
+	defer store.Close()
+
+	binary := &Fragment{Agent: "jarvis", Path: "binary", Content: "Binary vector"}
+	legacy := &Fragment{Agent: "jarvis", Path: "legacy", Content: "Legacy vector"}
+	for _, f := range []*Fragment{binary, legacy} {
+		if err := store.CreateFragment(ctx, f); err != nil {
+			t.Fatalf("CreateFragment(%s) error = %v", f.Path, err)
+		}
+	}
+	if err := store.UpsertEmbedding(ctx, binary.ID, "gemini", "gemini-embedding-001", 2, []float64{1, 0}); err != nil {
+		t.Fatalf("UpsertEmbedding(binary) error = %v", err)
+	}
+	if _, err := store.db.ExecContext(ctx, `
+		INSERT INTO memory_embeddings(fragment_id, provider, model, dimensions, vector, embedded_at)
+		VALUES (?, 'gemini', 'gemini-embedding-001', 2, ?, ?)`, legacy.ID, []byte(`[0,1]`), time.Now()); err != nil {
+		t.Fatalf("insert legacy JSON embedding: %v", err)
+	}
+
+	results, err := store.VectorSearch(ctx, "jarvis", "gemini", "gemini-embedding-001", []float64{0, 1}, 2)
+	if err != nil {
+		t.Fatalf("VectorSearch() error = %v", err)
+	}
+	if len(results) != 2 {
+		t.Fatalf("VectorSearch() len = %d, want 2", len(results))
+	}
+	if results[0].ID != legacy.ID {
+		t.Fatalf("VectorSearch() top ID = %s, want legacy ID %s", results[0].ID, legacy.ID)
+	}
+	if len(results[0].Vector) != 2 || math.Abs(results[0].Vector[0]) > 1e-9 || math.Abs(results[0].Vector[1]-1) > 1e-9 {
+		t.Fatalf("legacy top vector = %#v, want [0 1]", results[0].Vector)
+	}
+}
+
 func TestStoreVectorSearchUsesProviderModelDimensionsIndex(t *testing.T) {
 	store := newTestStore(t)
 	defer store.Close()

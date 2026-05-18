@@ -102,5 +102,39 @@ func openAIParametersFromToolSchema(schema map[string]interface{}, strict bool) 
 		}
 		entry.params = parsed.ToOpenAIParameters(strict)
 	})
-	return entry.params
+	return deepCopyOpenAIParameters(entry.params)
+}
+
+func deepCopyOpenAIParameters(params map[string]interface{}) map[string]interface{} {
+	if params == nil {
+		return nil
+	}
+	out := make(map[string]interface{}, len(params))
+	for key, value := range params {
+		out[key] = deepCopyOpenAIParameterValue(value)
+	}
+	return out
+}
+
+func deepCopyOpenAIParameterValue(value interface{}) interface{} {
+	switch v := value.(type) {
+	case map[string]interface{}:
+		return deepCopyOpenAIParameters(v)
+	case []interface{}:
+		out := make([]interface{}, len(v))
+		for i, item := range v {
+			out[i] = deepCopyOpenAIParameterValue(item)
+		}
+		return out
+	case []string:
+		return append([]string(nil), v...)
+	case map[string]string:
+		out := make(map[string]string, len(v))
+		for key, item := range v {
+			out[key] = item
+		}
+		return out
+	default:
+		return v
+	}
 }

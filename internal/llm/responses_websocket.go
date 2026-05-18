@@ -135,7 +135,7 @@ func (c *ResponsesClient) streamWebSocketPrepared(ctx context.Context, req Respo
 		}()
 		defer stopWatchingContext()
 
-		handler := newResponsesStreamEventHandler(c, responseStateGeneration, debugRaw, "Responses WebSocket", c.websocketServerStateEnabled())
+		handler := newResponsesStreamEventHandler(c, responseStateGeneration, debugRaw, "Responses WebSocket", c.websocketServerStateEnabled(), wireReq.SessionID)
 		retriedFullState := false
 		idleTimeout := c.WebSocketIdleTimeout
 		if idleTimeout == 0 {
@@ -173,7 +173,7 @@ func (c *ResponsesClient) streamWebSocketPrepared(ctx context.Context, req Respo
 				if wsErr, ok := err.(*responsesAPIEventError); ok && wsErr.APIError != nil {
 					switch wsErr.APIError.Code {
 					case "previous_response_not_found":
-						c.clearLastResponseIDIfGeneration(responseStateGeneration)
+						c.clearLastResponseIDIfGeneration(responseStateGeneration, wireReq.SessionID, wireReq.PreviousResponseID)
 					case "websocket_connection_limit_reached":
 						// The documented 60-minute connection limit is recovered by
 						// dropping the socket; the next Stream call reconnects lazily.
@@ -181,11 +181,11 @@ func (c *ResponsesClient) streamWebSocketPrepared(ctx context.Context, req Respo
 				}
 				if !retriedFullState && !handler.Emitted() && wireReq.PreviousResponseID != "" && isPreviousResponseIDRejected(err) {
 					retriedFullState = true
-					c.clearLastResponseIDIfGeneration(responseStateGeneration)
+					c.clearLastResponseIDIfGeneration(responseStateGeneration, wireReq.SessionID, wireReq.PreviousResponseID)
 					c.wsLastRequest = nil
 					wireReq.PreviousResponseID = ""
 					wireReq.Input = buildFullInput()
-					handler = newResponsesStreamEventHandler(c, responseStateGeneration, debugRaw, "Responses WebSocket", c.websocketServerStateEnabled())
+					handler = newResponsesStreamEventHandler(c, responseStateGeneration, debugRaw, "Responses WebSocket", c.websocketServerStateEnabled(), wireReq.SessionID)
 					if debugRaw {
 						DebugRawSection(debugRaw, "Responses WebSocket Full-State Retry", err.Error())
 					}
@@ -235,14 +235,18 @@ func isPreviousResponseIDRejected(err error) bool {
 }
 
 func (c *ResponsesClient) prepareWebSocketContinuationLocked(req ResponsesRequest, buildContinuationInput func() []ResponsesInputItem, buildFullInput func() []ResponsesInputItem) ResponsesRequest {
-	if !c.websocketServerStateEnabled() || c.LastResponseID == "" {
+	lastResponseID, _, responseStateSessionID := c.responseState()
+	if responseStateSessionID != req.SessionID {
+		lastResponseID = ""
+	}
+	if !c.websocketServerStateEnabled() || lastResponseID == "" {
 		req.PreviousResponseID = ""
 		req.Input = buildFullInput()
 		return req
 	}
 
 	if req.PreviousResponseID == "" {
-		req.PreviousResponseID = c.LastResponseID
+		req.PreviousResponseID = lastResponseID
 	}
 
 	useFullInput := func() ResponsesRequest {
@@ -305,10 +309,16 @@ func jsonLikeEqualForCompare(a, b any) bool {
 }
 
 func jsonLikeValueEqualForCompare(a, b reflect.Value) bool {
+	originalA := a
+	originalB := b
 	a = indirectJSONLikeValueForCompare(a)
 	b = indirectJSONLikeValueForCompare(b)
 	if !a.IsValid() || !b.IsValid() {
 		return !a.IsValid() && !b.IsValid()
+	}
+
+	if jsonLikeMarshalerForCompare(originalA) || jsonLikeMarshalerForCompare(originalB) || jsonLikeMarshalerForCompare(a) || jsonLikeMarshalerForCompare(b) {
+		return jsonLikeMarshaledEqualForCompare(originalA, originalB)
 	}
 
 	if av, ok := jsonNumberValueForCompare(a); ok {
@@ -344,6 +354,37 @@ func indirectJSONLikeValueForCompare(v reflect.Value) reflect.Value {
 		v = v.Elem()
 	}
 	return v
+}
+
+func jsonLikeMarshalerForCompare(v reflect.Value) bool {
+	if !v.IsValid() || !v.CanInterface() {
+		return false
+	}
+	_, ok := v.Interface().(json.Marshaler)
+	return ok
+}
+
+func jsonLikeMarshaledEqualForCompare(a, b reflect.Value) bool {
+	if !a.IsValid() || !b.IsValid() || !a.CanInterface() || !b.CanInterface() {
+		return false
+	}
+	aRaw, err := json.Marshal(a.Interface())
+	if err != nil {
+		return false
+	}
+	bRaw, err := json.Marshal(b.Interface())
+	if err != nil {
+		return false
+	}
+	var aDecoded any
+	if err := json.Unmarshal(aRaw, &aDecoded); err != nil {
+		return false
+	}
+	var bDecoded any
+	if err := json.Unmarshal(bRaw, &bDecoded); err != nil {
+		return false
+	}
+	return jsonLikeValueEqualForCompare(reflect.ValueOf(aDecoded), reflect.ValueOf(bDecoded))
 }
 
 func jsonNumberValueForCompare(v reflect.Value) (float64, bool) {
@@ -532,7 +573,13 @@ func jsonStringValueForCompare(v reflect.Value) (string, bool) {
 
 func (c *ResponsesClient) ensureWebSocket(ctx context.Context, req ResponsesRequest) (*websocket.Conn, bool, error) {
 	if c.wsConn != nil {
-		return c.wsConn, true, nil
+		if c.wsConnSessionID == req.SessionID {
+			return c.wsConn, true, nil
+		}
+		// SessionID is sent as a WebSocket handshake header for providers that bind
+		// session state to the connection (notably ChatGPT). Reconnect rather than
+		// reusing a socket authenticated for a different session.
+		c.discardWebSocketLocked()
 	}
 	wsURL := c.WebSocketURL
 	if wsURL == "" {
@@ -586,6 +633,7 @@ func (c *ResponsesClient) ensureWebSocket(ctx context.Context, req ResponsesRequ
 					conn, retryResp, retryErr := dialOnce(retryCtx, headerWithFreshAuth(header, c))
 					if retryErr == nil {
 						c.wsConn = conn
+						c.wsConnSessionID = req.SessionID
 						return conn, false, nil
 					}
 					if retryResp != nil {
@@ -603,6 +651,7 @@ func (c *ResponsesClient) ensureWebSocket(ctx context.Context, req ResponsesRequ
 		return nil, false, fmt.Errorf("connect Responses WebSocket: %w", err)
 	}
 	c.wsConn = conn
+	c.wsConnSessionID = req.SessionID
 	return conn, false, nil
 }
 
@@ -637,5 +686,6 @@ func (c *ResponsesClient) discardWebSocketLocked() {
 	_ = c.wsConn.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""))
 	_ = c.wsConn.Close()
 	c.wsConn = nil
+	c.wsConnSessionID = ""
 	c.wsLastRequest = nil
 }

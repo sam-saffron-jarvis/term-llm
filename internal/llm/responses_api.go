@@ -51,6 +51,7 @@ type ResponsesClient struct {
 	websocketDisabled       bool
 	wsMu                    sync.Mutex
 	wsConn                  *websocket.Conn
+	wsConnSessionID         string
 	wsLastRequest           *ResponsesRequest
 	// HandleError, if set, is called for non-200 responses before default handling.
 	// Return a non-nil error to short-circuit; return nil to fall through to defaults.
@@ -64,6 +65,7 @@ type ResponsesClient struct {
 
 	responseStateMu         sync.Mutex
 	responseStateGeneration uint64
+	responseStateSessionID  string
 }
 
 // ResponsesRequest follows the Open Responses spec
@@ -530,28 +532,36 @@ func readResponsesAPIErrorBody(resp *http.Response) []byte {
 	return truncated
 }
 
-func (c *ResponsesClient) responseState() (lastResponseID string, generation uint64) {
+func (c *ResponsesClient) responseState() (lastResponseID string, generation uint64, sessionID string) {
 	c.responseStateMu.Lock()
 	defer c.responseStateMu.Unlock()
-	return c.LastResponseID, c.responseStateGeneration
+	return c.LastResponseID, c.responseStateGeneration, c.responseStateSessionID
 }
 
-func (c *ResponsesClient) clearLastResponseIDIfGeneration(generation uint64) {
+func (c *ResponsesClient) clearLastResponseIDIfGeneration(generation uint64, sessionID, responseID string) {
 	c.responseStateMu.Lock()
 	defer c.responseStateMu.Unlock()
 	if c.responseStateGeneration != generation {
 		return
 	}
+	if c.responseStateSessionID != sessionID {
+		return
+	}
+	if responseID != "" && c.LastResponseID != responseID {
+		return
+	}
 	c.LastResponseID = ""
+	c.responseStateSessionID = ""
 }
 
-func (c *ResponsesClient) setLastResponseIDIfGeneration(generation uint64, responseID string) {
+func (c *ResponsesClient) setLastResponseIDIfGeneration(generation uint64, responseID, sessionID string) {
 	c.responseStateMu.Lock()
 	defer c.responseStateMu.Unlock()
 	if c.responseStateGeneration != generation {
 		return
 	}
 	c.LastResponseID = responseID
+	c.responseStateSessionID = sessionID
 }
 
 func cloneResponsesClientFreshConversation(c *ResponsesClient) *ResponsesClient {
@@ -616,7 +626,10 @@ func (c *ResponsesClient) Stream(ctx context.Context, req ResponsesRequest, debu
 		return continuationInput
 	}
 
-	lastResponseID, responseStateGeneration := c.responseState()
+	lastResponseID, responseStateGeneration, responseStateSessionID := c.responseState()
+	if lastResponseID != "" && responseStateSessionID != req.SessionID {
+		lastResponseID = ""
+	}
 
 	wsReq := req
 	httpPayload := req
@@ -634,7 +647,9 @@ func (c *ResponsesClient) Stream(ctx context.Context, req ResponsesRequest, debu
 			httpPayload.Input = buildFullInput()
 		}
 	} else {
+		wsReq.PreviousResponseID = ""
 		wsReq.Input = buildFullInput()
+		httpPayload.PreviousResponseID = ""
 		httpPayload.Input = fullInput
 	}
 
@@ -785,7 +800,7 @@ func (c *ResponsesClient) streamHTTPPrepared(ctx context.Context, httpPayload Re
 		// Check for previous_response_id not found error.
 		if resp.StatusCode == http.StatusNotFound && httpPayload.PreviousResponseID != "" {
 			// Clear state and retry with full history
-			c.clearLastResponseIDIfGeneration(responseStateGeneration)
+			c.clearLastResponseIDIfGeneration(responseStateGeneration, httpPayload.SessionID, httpPayload.PreviousResponseID)
 			retryPayload := httpPayload
 			retryPayload.PreviousResponseID = ""
 			retryPayload.Input = buildFullInput()
@@ -865,7 +880,7 @@ func (c *ResponsesClient) streamHTTPPrepared(ctx context.Context, httpPayload Re
 
 		var lastEventType string
 		var eventData []byte
-		handler := newResponsesStreamEventHandler(client, responseStateGeneration, debugRaw, "Responses API SSE", !client.DisableServerState)
+		handler := newResponsesStreamEventHandler(client, responseStateGeneration, debugRaw, "Responses API SSE", !client.DisableServerState, httpPayload.SessionID)
 		sawTerminal := false
 
 		flushEvent := func() (bool, error) {
@@ -1099,6 +1114,7 @@ func (c *ResponsesClient) ResetConversation() {
 	defer c.responseStateMu.Unlock()
 	c.responseStateGeneration++
 	c.LastResponseID = ""
+	c.responseStateSessionID = ""
 	c.websocketDisabled = false
 	c.wsLastRequest = nil
 }
