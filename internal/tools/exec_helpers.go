@@ -28,6 +28,11 @@ type limitedBuffer struct {
 	total int64
 }
 
+type descendantLeakProbe struct {
+	reader *os.File
+	writer *os.File
+}
+
 func newLimitedBuffer(limit int64) *limitedBuffer {
 	if limit < 0 {
 		limit = 0
@@ -69,6 +74,14 @@ func prepareToolCommand(cmd *exec.Cmd) (func(), error) {
 
 	configureCommandProcessGroup(cmd)
 	nonce := tagCommandWithNonce(cmd)
+	var leakProbe *descendantLeakProbe
+	if nonce != "" {
+		var err error
+		leakProbe, err = newDescendantLeakProbe(cmd)
+		if err != nil {
+			return nil, fmt.Errorf("create descendant leak probe: %w", err)
+		}
+	}
 
 	cleanup := func() {
 		// Tools must leave the world clean: after the command returns (success,
@@ -79,12 +92,15 @@ func prepareToolCommand(cmd *exec.Cmd) (func(), error) {
 		if cmd.Process != nil {
 			_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
 		}
-		// Second pass: walk /proc for any process still alive that inherited
-		// the nonce env var. This catches descendants that escaped the pgroup
-		// via setsid, double-fork daemonisation, or explicit setpgid. We retry
-		// a few times because a process may be mid-exec when we scan.
-		if nonce != "" {
+		// Second pass: only fall back to the expensive /proc nonce sweep when an
+		// inherited probe fd shows that some descendant is still alive after the
+		// pgroup kill. Fast commands that leave no surviving children can skip the
+		// system-wide scan entirely.
+		if nonce != "" && requiresTaggedSweep(leakProbe) {
 			killTaggedDescendants(nonce)
+		}
+		if leakProbe != nil {
+			leakProbe.close()
 		}
 		if stdinCloser != nil {
 			stdinCloser()
@@ -110,6 +126,68 @@ func tagCommandWithNonce(cmd *exec.Cmd) string {
 		cmd.Env = append(cmd.Env, entry)
 	}
 	return nonce
+}
+
+func newDescendantLeakProbe(cmd *exec.Cmd) (*descendantLeakProbe, error) {
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		return nil, err
+	}
+	cmd.ExtraFiles = append(cmd.ExtraFiles, writer)
+	return &descendantLeakProbe{reader: reader, writer: writer}, nil
+}
+
+func (p *descendantLeakProbe) close() {
+	if p == nil {
+		return
+	}
+	if p.writer != nil {
+		_ = p.writer.Close()
+		p.writer = nil
+	}
+	if p.reader != nil {
+		_ = p.reader.Close()
+		p.reader = nil
+	}
+}
+
+// requiresTaggedSweep reports whether descendants still appear to be alive
+// after the process-group kill. It uses an inherited extra file descriptor as a
+// cheap liveness probe: if the read end hits EOF after closing the parent's
+// writer, no descendant kept the fd open and we can skip the /proc sweep.
+func requiresTaggedSweep(probe *descendantLeakProbe) bool {
+	if probe == nil || probe.reader == nil {
+		return true
+	}
+	if probe.writer != nil {
+		_ = probe.writer.Close()
+		probe.writer = nil
+	}
+
+	fd := int(probe.reader.Fd())
+	if err := syscall.SetNonblock(fd, true); err != nil {
+		return true
+	}
+
+	var buf [1]byte
+	for attempt := 0; attempt < 3; attempt++ {
+		n, err := syscall.Read(fd, buf[:])
+		switch {
+		case err == nil && n == 0:
+			return false
+		case err == syscall.EINTR:
+			attempt--
+			continue
+		case err == syscall.EAGAIN || err == syscall.EWOULDBLOCK:
+			if attempt == 2 {
+				return true
+			}
+			time.Sleep(5 * time.Millisecond)
+		default:
+			return true
+		}
+	}
+	return true
 }
 
 // killTaggedDescendants SIGKILLs every process whose environment contains the
