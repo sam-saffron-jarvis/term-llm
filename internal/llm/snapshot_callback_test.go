@@ -184,15 +184,12 @@ func TestSnapshotFiresCumulativelyPerToolCall(t *testing.T) {
 	}
 }
 
-// TestSnapshotFiresBeforeSendFailure verifies that snapshot is fired before
-// send.Send is attempted. This tests the root cause of PR #426: when the
-// consumer cancels the context, send.Send fails, but the snapshot callback has
-// already persisted the partial assistant state.
-//
-// We trigger this by using a slow snapshot callback that cancels the parent
-// context from within itself — guaranteeing that by the time send.Send runs,
-// the context is already done.
-func TestSnapshotFiresBeforeSendFailure(t *testing.T) {
+// TestSnapshotSurvivesCancellationAfterToolCall verifies that a queued snapshot
+// still persists assistant state when the consumer cancels immediately after the
+// tool-call event is emitted. The callback now runs asynchronously, so the
+// invariant is durability across cancellation, not synchronous completion before
+// send.Send returns.
+func TestSnapshotSurvivesCancellationAfterToolCall(t *testing.T) {
 	tool := &countingTool{}
 	registry := NewToolRegistry()
 	registry.Register(tool)
@@ -213,12 +210,6 @@ func TestSnapshotFiresBeforeSendFailure(t *testing.T) {
 	defer cancel()
 
 	rec := &snapshotRecorder{}
-	// Cancel context from within the snapshot callback so that the subsequent
-	// send.Send for the same EventToolCall races with cancellation. Even under
-	// worst-case ordering, the snapshot must have already been recorded.
-	rec.onInvoke = func() {
-		cancel()
-	}
 	engine.SetAssistantSnapshotCallback(rec.callback())
 
 	stream, err := engine.Stream(ctx, Request{
@@ -228,16 +219,20 @@ func TestSnapshotFiresBeforeSendFailure(t *testing.T) {
 	if err != nil {
 		t.Fatalf("stream error: %v", err)
 	}
-	// Drain until EOF or error — stream will terminate because ctx was cancelled.
+
 	for {
-		if _, err := stream.Recv(); err != nil {
+		event, err := stream.Recv()
+		if err != nil {
 			break
+		}
+		if event.Type == EventToolCall {
+			cancel()
 		}
 	}
 	stream.Close()
 
-	if rec.count() != 1 {
-		t.Fatalf("snapshot calls = %d, want 1 (fired before send.Send)", rec.count())
+	if rec.count() < 1 {
+		t.Fatalf("snapshot calls = %d, want >= 1 after cancellation", rec.count())
 	}
 	msg := rec.at(0)
 	callIDs := extractCallIDs(msg)

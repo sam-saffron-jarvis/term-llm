@@ -3238,6 +3238,241 @@ func TestEngineTurnCallbackContextSurvivesCancellation(t *testing.T) {
 	}
 }
 
+func TestEngineSnapshotCallbackDoesNotBlockToolCallEmission(t *testing.T) {
+	tool := &countingTool{}
+	registry := NewToolRegistry()
+	registry.Register(tool)
+
+	provider := &fakeProvider{
+		script: func(call int, req Request) []Event {
+			switch call {
+			case 0:
+				return []Event{{Type: EventToolCall, Tool: &ToolCall{ID: "call-1", Name: "count_tool", Arguments: json.RawMessage(`{}`)}}, {Type: EventDone}}
+			default:
+				return []Event{{Type: EventTextDelta, Text: "done"}, {Type: EventDone}}
+			}
+		},
+	}
+
+	engine := NewEngine(provider, registry)
+	snapshotStarted := make(chan struct{}, 1)
+	releaseSnapshot := make(chan struct{})
+	engine.SetAssistantSnapshotCallback(func(ctx context.Context, turnIndex int, assistantMsg Message) error {
+		select {
+		case snapshotStarted <- struct{}{}:
+		default:
+		}
+		<-releaseSnapshot
+		return nil
+	})
+
+	stream, err := engine.Stream(context.Background(), Request{
+		Messages: []Message{UserText("test")},
+		Tools:    []ToolSpec{tool.Spec()},
+	})
+	if err != nil {
+		t.Fatalf("stream error: %v", err)
+	}
+	defer stream.Close()
+
+	toolCallSeen := make(chan struct{}, 1)
+	drainDone := make(chan error, 1)
+	go func() {
+		for {
+			event, err := stream.Recv()
+			if err == io.EOF {
+				drainDone <- nil
+				return
+			}
+			if err != nil {
+				drainDone <- err
+				return
+			}
+			if event.Type == EventToolCall {
+				select {
+				case toolCallSeen <- struct{}{}:
+				default:
+				}
+			}
+		}
+	}()
+
+	select {
+	case <-snapshotStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for snapshot callback to start")
+	}
+
+	select {
+	case <-toolCallSeen:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("tool call emission blocked on snapshot callback")
+	}
+
+	close(releaseSnapshot)
+	if err := <-drainDone; err != nil {
+		t.Fatalf("drain error: %v", err)
+	}
+}
+
+func TestEngineResponseCallbackDoesNotBlockToolExecution(t *testing.T) {
+	tool := &countingTool{}
+	registry := NewToolRegistry()
+	registry.Register(tool)
+
+	provider := &fakeProvider{
+		script: func(call int, req Request) []Event {
+			switch call {
+			case 0:
+				return []Event{{Type: EventToolCall, Tool: &ToolCall{ID: "call-1", Name: "count_tool", Arguments: json.RawMessage(`{}`)}}, {Type: EventDone}}
+			default:
+				return []Event{{Type: EventTextDelta, Text: "done"}, {Type: EventDone}}
+			}
+		},
+	}
+
+	engine := NewEngine(provider, registry)
+	responseStarted := make(chan struct{}, 1)
+	releaseResponse := make(chan struct{})
+	engine.SetResponseCompletedCallback(func(ctx context.Context, turnIndex int, assistantMsg Message, metrics TurnMetrics) error {
+		select {
+		case responseStarted <- struct{}{}:
+		default:
+		}
+		<-releaseResponse
+		return nil
+	})
+
+	stream, err := engine.Stream(context.Background(), Request{
+		Messages: []Message{UserText("test")},
+		Tools:    []ToolSpec{tool.Spec()},
+	})
+	if err != nil {
+		t.Fatalf("stream error: %v", err)
+	}
+	defer stream.Close()
+
+	execStartSeen := make(chan struct{}, 1)
+	drainDone := make(chan error, 1)
+	go func() {
+		for {
+			event, err := stream.Recv()
+			if err == io.EOF {
+				drainDone <- nil
+				return
+			}
+			if err != nil {
+				drainDone <- err
+				return
+			}
+			if event.Type == EventToolExecStart {
+				select {
+				case execStartSeen <- struct{}{}:
+				default:
+				}
+			}
+		}
+	}()
+
+	select {
+	case <-responseStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for response callback to start")
+	}
+
+	select {
+	case <-execStartSeen:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("tool execution blocked on response callback")
+	}
+
+	close(releaseResponse)
+	if err := <-drainDone; err != nil {
+		t.Fatalf("drain error: %v", err)
+	}
+}
+
+func TestEngineTurnCallbackDoesNotBlockNextTurn(t *testing.T) {
+	tool := &countingTool{}
+	registry := NewToolRegistry()
+	registry.Register(tool)
+
+	secondTurnStarted := make(chan struct{})
+	provider := &fakeProvider{
+		script: func(call int, req Request) []Event {
+			switch call {
+			case 0:
+				return []Event{{Type: EventToolCall, Tool: &ToolCall{ID: "call-1", Name: "count_tool", Arguments: json.RawMessage(`{}`)}}, {Type: EventDone}}
+			case 1:
+				close(secondTurnStarted)
+				return []Event{{Type: EventTextDelta, Text: "done"}, {Type: EventDone}}
+			default:
+				return nil
+			}
+		},
+	}
+
+	engine := NewEngine(provider, registry)
+	turnStarted := make(chan struct{}, 1)
+	releaseTurn := make(chan struct{})
+	engine.SetTurnCompletedCallback(func(ctx context.Context, turnIndex int, messages []Message, metrics TurnMetrics) error {
+		for _, msg := range messages {
+			for _, part := range msg.Parts {
+				if part.Type == PartToolResult && part.ToolResult != nil && part.ToolResult.ID == "call-1" {
+					select {
+					case turnStarted <- struct{}{}:
+					default:
+					}
+					<-releaseTurn
+					return nil
+				}
+			}
+		}
+		return nil
+	})
+
+	stream, err := engine.Stream(context.Background(), Request{
+		Messages: []Message{UserText("test")},
+		Tools:    []ToolSpec{tool.Spec()},
+	})
+	if err != nil {
+		t.Fatalf("stream error: %v", err)
+	}
+	defer stream.Close()
+
+	drainDone := make(chan error, 1)
+	go func() {
+		for {
+			_, err := stream.Recv()
+			if err == io.EOF {
+				drainDone <- nil
+				return
+			}
+			if err != nil {
+				drainDone <- err
+				return
+			}
+		}
+	}()
+
+	select {
+	case <-turnStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for turn callback to start")
+	}
+
+	select {
+	case <-secondTurnStarted:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("next turn blocked on turn callback")
+	}
+
+	close(releaseTurn)
+	if err := <-drainDone; err != nil {
+		t.Fatalf("drain error: %v", err)
+	}
+}
+
 // TestEngineInterjection_EventEmitted verifies that EventInterjection events
 // are properly emitted through the stream with the correct text.
 func TestEngineInterjection_EventEmitted(t *testing.T) {
