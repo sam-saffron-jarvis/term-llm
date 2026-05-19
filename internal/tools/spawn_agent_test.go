@@ -628,6 +628,79 @@ func TestSpawnAgentTool_SemaphoreLimiting(t *testing.T) {
 	}
 }
 
+func TestSpawnAgentTool_WaitForSlotCountsTowardDuration(t *testing.T) {
+	config := SpawnConfig{
+		MaxParallel:    1,
+		MaxDepth:       5,
+		DefaultTimeout: 300,
+	}
+	tool := NewSpawnAgentTool(config, 0)
+
+	runner := newMockRunner().SetDelay(20 * time.Millisecond)
+	tool.SetRunner(runner)
+
+	tool.semaphore <- struct{}{}
+	go func() {
+		time.Sleep(60 * time.Millisecond)
+		<-tool.semaphore
+	}()
+
+	result, err := tool.Execute(context.Background(), makeSpawnArgs("agent", "task", 30))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	r := parseResult(t, result.Content)
+	if r.Error != "" {
+		t.Fatalf("unexpected tool error: %s", r.Error)
+	}
+	if r.Duration < 50 {
+		t.Fatalf("duration = %dms, want wait time to be included", r.Duration)
+	}
+}
+
+func TestSpawnAgentTool_TimesOutWhileWaitingForSlot(t *testing.T) {
+	config := SpawnConfig{
+		MaxParallel:    1,
+		MaxDepth:       5,
+		DefaultTimeout: 300,
+	}
+	tool := NewSpawnAgentTool(config, 0)
+
+	runner := newMockRunner()
+	tool.SetRunner(runner)
+
+	tool.semaphore <- struct{}{}
+	defer func() { <-tool.semaphore }()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
+	defer cancel()
+
+	start := time.Now()
+	result, err := tool.Execute(ctx, makeSpawnArgs("agent", "task", 10))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	elapsed := time.Since(start)
+
+	r := parseResult(t, result.Content)
+	if r.Error == "" {
+		t.Fatal("expected timeout while waiting for agent slot")
+	}
+	if r.Type != string(ErrTimeout) {
+		t.Fatalf("expected error type %s, got %s", ErrTimeout, r.Type)
+	}
+	if !contains(r.Error, "waiting for agent slot") {
+		t.Fatalf("expected wait-for-slot error message, got %q", r.Error)
+	}
+	if elapsed >= 11*time.Second {
+		t.Fatalf("Execute took %v, want timeout before parent context deadline", elapsed)
+	}
+	if runner.GetCallCount() != 0 {
+		t.Fatalf("runner should not be called while waiting for a slot, got %d calls", runner.GetCallCount())
+	}
+}
+
 func TestSpawnAgentTool_RunnerNotConfigured(t *testing.T) {
 	config := DefaultSpawnConfig()
 	tool := NewSpawnAgentTool(config, 0)

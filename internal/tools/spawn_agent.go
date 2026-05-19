@@ -253,24 +253,29 @@ func (t *SpawnAgentTool) Execute(ctx context.Context, args json.RawMessage) (llm
 		timeout = 3600 // Cap at 60 minutes
 	}
 
+	start := time.Now()
+
+	// Create child context with timeout before waiting on the semaphore so queued
+	// sub-agents spend their timeout budget both waiting for a slot and doing work.
+	childCtx, cancel := context.WithTimeout(ctx, time.Duration(timeout)*time.Second)
+	defer cancel()
+
 	// Acquire semaphore (blocks if at max concurrency)
 	select {
 	case t.semaphore <- struct{}{}:
 		defer func() { <-t.semaphore }()
-	case <-ctx.Done():
-		// Distinguish between deadline exceeded (timeout) and manual cancellation
-		if ctx.Err() == context.DeadlineExceeded {
-			return llm.TextOutput(t.formatError(ErrTimeout, "context deadline exceeded while waiting for agent slot")), nil
+	case <-childCtx.Done():
+		duration := time.Since(start).Milliseconds()
+		if ctx.Err() == context.Canceled {
+			return llm.TextOutput(t.formatErrorWithDuration(ErrExecutionFailed, "context cancelled while waiting for agent slot", duration)), nil
 		}
-		return llm.TextOutput(t.formatError(ErrExecutionFailed, "context cancelled while waiting for agent slot")), nil
+		if ctx.Err() == context.DeadlineExceeded {
+			return llm.TextOutput(t.formatErrorWithDuration(ErrTimeout, "context deadline exceeded while waiting for agent slot", duration)), nil
+		}
+		return llm.TextOutput(t.formatErrorWithDuration(ErrTimeout, fmt.Sprintf("agent '%s' timed out after %d seconds while waiting for agent slot", a.AgentName, timeout), duration)), nil
 	}
 
-	// Create child context with timeout
-	childCtx, cancel := context.WithTimeout(ctx, time.Duration(timeout)*time.Second)
-	defer cancel()
-
 	// Run the sub-agent (with callback if available)
-	start := time.Now()
 	var runResult SpawnAgentRunResult
 	var err error
 
