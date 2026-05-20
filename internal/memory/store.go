@@ -132,6 +132,7 @@ CREATE TABLE IF NOT EXISTS memory_embeddings (
 );
 
 CREATE INDEX IF NOT EXISTS idx_memory_embeddings_provider_model_dimensions ON memory_embeddings(provider, model, dimensions);
+CREATE INDEX IF NOT EXISTS idx_memory_embeddings_provider_model_dimensions_embedded_at ON memory_embeddings(provider, model, dimensions, embedded_at DESC);
 
 CREATE TABLE IF NOT EXISTS memory_mining_state (
     session_id         TEXT PRIMARY KEY,
@@ -1180,6 +1181,11 @@ func (s *Store) GetFragmentsNeedingEmbedding(ctx context.Context, agent, provide
 	return out, nil
 }
 
+const (
+	vectorSearchRecentMultiplier = 256
+	vectorSearchRecentMinScan    = 2048
+)
+
 const vectorSearchSQL = `
 		SELECT e.fragment_id,
 		       f.updated_at,
@@ -1187,7 +1193,9 @@ const vectorSearchSQL = `
 		FROM memory_embeddings e
 		JOIN memory_fragments f ON f.id = e.fragment_id
 		WHERE e.provider = ? AND e.model = ? AND e.dimensions = ?
-		  AND (? = '' OR f.agent = ?)`
+		  AND (? = '' OR f.agent = ?)
+		ORDER BY e.embedded_at DESC
+		LIMIT ?`
 
 type vectorSearchCandidate struct {
 	id        string
@@ -1214,6 +1222,17 @@ func (h *vectorSearchCandidateHeap) Pop() any {
 	return item
 }
 
+func vectorSearchScanLimit(limit int) int {
+	scanLimit := limit * vectorSearchRecentMultiplier
+	if scanLimit < vectorSearchRecentMinScan {
+		scanLimit = vectorSearchRecentMinScan
+	}
+	if scanLimit < limit {
+		scanLimit = limit
+	}
+	return scanLimit
+}
+
 // VectorSearch performs a cosine similarity scan over embeddings matching provider, model, and dimensions.
 func (s *Store) VectorSearch(ctx context.Context, agent, provider, model string, queryVec []float64, limit int) ([]ScoredFragment, error) {
 	if len(queryVec) == 0 {
@@ -1228,18 +1247,20 @@ func (s *Store) VectorSearch(ctx context.Context, agent, provider, model string,
 		limit = 24
 	}
 
+	agent = strings.TrimSpace(agent)
+	scanLimit := vectorSearchScanLimit(limit)
+
 	rows, err := s.db.QueryContext(ctx, vectorSearchSQL,
-		provider, model, len(queryVec), strings.TrimSpace(agent), strings.TrimSpace(agent))
+		provider, model, len(queryVec), agent, agent, scanLimit)
 	if err != nil {
 		return nil, fmt.Errorf("vector search query: %w", err)
 	}
 	defer rows.Close()
 
-	// Keep only the best candidates while scanning. The previous implementation
-	// selected every fragment column (including large content bodies), retained a
-	// ScoredFragment for every embedding, sorted the full slice, and then sliced
-	// to limit. Memory search normally asks for the top 24 candidates, so fetch
-	// heavyweight fragment rows only for those winners after scoring.
+	// Keep only the best candidates while scanning. VectorSearch is used for
+	// interactive memory retrieval, so bound the SQL scan to a generous recent
+	// window instead of rescoring every embedding blob for the model on every
+	// query. Fetch heavyweight fragment rows only for the winners after scoring.
 	top := make(vectorSearchCandidateHeap, 0, limit)
 	for rows.Next() {
 		var c vectorSearchCandidate

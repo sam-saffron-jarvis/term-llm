@@ -649,12 +649,12 @@ func TestStoreVectorSearchMixedBinaryAndLegacyJSON(t *testing.T) {
 	}
 }
 
-func TestStoreVectorSearchUsesProviderModelDimensionsIndex(t *testing.T) {
+func TestStoreVectorSearchUsesRecentEmbeddingIndex(t *testing.T) {
 	store := newTestStore(t)
 	defer store.Close()
 
 	rows, err := store.db.Query("EXPLAIN QUERY PLAN "+vectorSearchSQL,
-		"gemini", "gemini-embedding-001", 4, "jarvis", "jarvis")
+		"gemini", "gemini-embedding-001", 4, "jarvis", "jarvis", vectorSearchScanLimit(24))
 	if err != nil {
 		t.Fatalf("EXPLAIN QUERY PLAN error = %v", err)
 	}
@@ -674,8 +674,11 @@ func TestStoreVectorSearchUsesProviderModelDimensionsIndex(t *testing.T) {
 	}
 
 	plan := strings.Join(details, "\n")
-	if !strings.Contains(plan, "idx_memory_embeddings_provider_model_dimensions") {
-		t.Fatalf("VectorSearch query plan does not use provider/model/dimensions index:\n%s", plan)
+	if !strings.Contains(plan, "idx_memory_embeddings_provider_model_dimensions_embedded_at") {
+		t.Fatalf("VectorSearch query plan does not use recent embedding index:\n%s", plan)
+	}
+	if strings.Contains(plan, "USE TEMP B-TREE FOR ORDER BY") {
+		t.Fatalf("VectorSearch query plan fell back to temp sort:\n%s", plan)
 	}
 }
 
