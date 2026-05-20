@@ -483,6 +483,27 @@ func TestFitColumnWidths_FairShare(t *testing.T) {
 	}
 }
 
+func TestANSIVisibleTextHelpersIgnoreSGRAndWhitespace(t *testing.T) {
+	styledBlank := "\x1b[38;2;1;2;3m \t\n\x1b[0m"
+	if hasVisibleNonSpace(styledBlank) {
+		t.Fatalf("styled whitespace should not count as visible content")
+	}
+
+	styledText := "\x1b[38;5;10m hello \x1b[0m"
+	if !hasVisibleNonSpace(styledText) {
+		t.Fatalf("styled text should count as visible content")
+	}
+	if !ansiTrimmedEqual(styledText, "hello") {
+		t.Fatalf("styled trimmed text should equal plain target")
+	}
+	if ansiTrimmedEqual(styledText, "hell") {
+		t.Fatalf("styled trimmed text must not equal a shorter target")
+	}
+	if ansiTrimmedEqual(styledText, "hello ") {
+		t.Fatalf("styled trimmed text must preserve exact target whitespace semantics")
+	}
+}
+
 func readGolden(t *testing.T, name string) string {
 	t.Helper()
 	path := filepath.Join("testdata", name)
