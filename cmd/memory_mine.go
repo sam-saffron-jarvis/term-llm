@@ -620,6 +620,9 @@ func buildMemoryMineCandidate(ctx context.Context, store session.Store, summary 
 func loadMessagesForMining(ctx context.Context, store session.Store, candidate memoryMineCandidate, offset int, taxonomyMap string) (memoryMineLoadResult, error) {
 	remaining := memoryMineMaxMessages
 	currentOffset := offset
+	// Session message sequences are dense and zero-based, so the persisted mined
+	// offset is also a valid starting seek position.
+	currentSeq := offset
 	all := make([]session.Message, 0, memoryMineBatchSize)
 	result := memoryMineLoadResult{}
 
@@ -629,7 +632,7 @@ func loadMessagesForMining(ctx context.Context, store session.Store, candidate m
 			limit = remaining
 		}
 
-		msgs, err := store.GetMessages(ctx, candidate.Session.ID, limit, currentOffset)
+		msgs, err := store.GetMessagesFrom(ctx, candidate.Session.ID, currentSeq, limit)
 		if err != nil {
 			return result, err
 		}
@@ -649,6 +652,7 @@ func loadMessagesForMining(ctx context.Context, store session.Store, candidate m
 			}
 			all = fit.Messages
 			currentOffset = nextOffset
+			currentSeq = msg.Sequence + 1
 			result.TruncatedMessages = fit.TruncatedMessages
 			result.AssistantMessagesCut = fit.AssistantMessagesCut
 			result.UserMessagesCut = fit.UserMessagesCut

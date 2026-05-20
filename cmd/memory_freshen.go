@@ -125,7 +125,7 @@ func runMemoryUpdateRecent(cmd *cobra.Command, args []string) error {
 			return err
 		}
 
-		messages, err := sessStore.GetMessages(ctx, sess.ID, 0, startOffset)
+		messages, err := sessStore.GetMessagesFrom(ctx, sess.ID, startOffset, 0)
 		if err != nil {
 			return fmt.Errorf("get messages for session %s: %w", sess.ID, err)
 		}

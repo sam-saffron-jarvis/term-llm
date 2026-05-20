@@ -25,7 +25,7 @@ func LoadActiveMessages(ctx context.Context, store Store, sess *Session) ([]Mess
 		return nil, nil
 	}
 	if HasCompactionBoundary(sess) {
-		messages, err := store.GetMessagesFrom(ctx, sess.ID, sess.CompactionSeq)
+		messages, err := store.GetMessagesFrom(ctx, sess.ID, sess.CompactionSeq, 0)
 		if err != nil || len(messages) > 0 {
 			return messages, err
 		}
