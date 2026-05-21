@@ -3,6 +3,7 @@ package session
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -25,6 +26,51 @@ func TestSessionPreferredTitlePrecedence(t *testing.T) {
 	}
 	if got := sess.PreferredLongTitle(); got != "Custom name" {
 		t.Fatalf("PreferredLongTitle() with name = %q", got)
+	}
+}
+
+func TestSQLiteStoreGetMessagesFromHonorsLimit(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+
+	store, err := NewSQLiteStore(DefaultConfig())
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+	sess := &Session{ID: NewID(), Provider: "test", Model: "test-model", Mode: ModeChat}
+	if err := store.Create(ctx, sess); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	for i := 0; i < 5; i++ {
+		msg := NewMessage(sess.ID, llm.UserText(fmt.Sprintf("msg-%d", i)), i)
+		if err := store.AddMessage(ctx, sess.ID, msg); err != nil {
+			t.Fatalf("AddMessage(%d): %v", i, err)
+		}
+	}
+
+	got, err := store.GetMessagesFrom(ctx, sess.ID, 2, 2)
+	if err != nil {
+		t.Fatalf("GetMessagesFrom limited: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("limited len = %d, want 2", len(got))
+	}
+	if got[0].Sequence != 2 || got[1].Sequence != 3 {
+		t.Fatalf("limited sequences = [%d %d], want [2 3]", got[0].Sequence, got[1].Sequence)
+	}
+
+	got, err = store.GetMessagesFrom(ctx, sess.ID, 2, 0)
+	if err != nil {
+		t.Fatalf("GetMessagesFrom unlimited: %v", err)
+	}
+	if len(got) != 3 {
+		t.Fatalf("unlimited len = %d, want 3", len(got))
+	}
+	if got[2].Sequence != 4 {
+		t.Fatalf("last sequence = %d, want 4", got[2].Sequence)
 	}
 }
 

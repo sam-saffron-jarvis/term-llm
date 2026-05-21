@@ -21,6 +21,47 @@ type fakeMemoryAgentFragmentStore struct {
 	getByKey  map[string]map[string]memorydb.Fragment
 }
 
+type trackingMemoryMineStore struct {
+	session.NoopStore
+	messages             map[string][]session.Message
+	getMessagesCalls     int
+	getMessagesFromCalls []struct {
+		fromSeq int
+		limit   int
+	}
+}
+
+func (s *trackingMemoryMineStore) GetMessages(_ context.Context, sessionID string, limit, offset int) ([]session.Message, error) {
+	s.getMessagesCalls++
+	msgs := s.messages[sessionID]
+	if offset >= len(msgs) {
+		return nil, nil
+	}
+	out := append([]session.Message(nil), msgs[offset:]...)
+	if limit > 0 && len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
+}
+
+func (s *trackingMemoryMineStore) GetMessagesFrom(_ context.Context, sessionID string, fromSeq, limit int) ([]session.Message, error) {
+	s.getMessagesFromCalls = append(s.getMessagesFromCalls, struct {
+		fromSeq int
+		limit   int
+	}{fromSeq: fromSeq, limit: limit})
+	msgs := s.messages[sessionID]
+	filtered := make([]session.Message, 0, len(msgs))
+	for _, msg := range msgs {
+		if msg.Sequence >= fromSeq {
+			filtered = append(filtered, msg)
+		}
+	}
+	if limit > 0 && len(filtered) > limit {
+		filtered = filtered[:limit]
+	}
+	return filtered, nil
+}
+
 func (s *fakeMemoryAgentFragmentStore) ListFragments(ctx context.Context, opts memorydb.ListOptions) ([]memorydb.Fragment, error) {
 	s.listCalls++
 	fragments := s.listByKey[strings.TrimSpace(opts.Agent)]
@@ -407,6 +448,152 @@ func TestLoadMessagesForMining_RespectsPromptBudget(t *testing.T) {
 	}
 	if got := estimateExtractionPromptTokens(candidate, 0, loadResult.NextOffset, loadResult.Messages, "Memory fragment map:\n- total_fragments: 0"); got > memoryMinePromptMaxTokens {
 		t.Fatalf("estimated prompt tokens = %d, want <= %d", got, memoryMinePromptMaxTokens)
+	}
+}
+
+func TestLoadMessagesForMining_UsesSequencePagination(t *testing.T) {
+	ctx := context.Background()
+
+	oldPromptMax := memoryMinePromptMaxTokens
+	oldBatchSize := memoryMineBatchSize
+	oldMaxMessages := memoryMineMaxMessages
+	memoryMinePromptMaxTokens = 1 << 30
+	memoryMineBatchSize = 2
+	memoryMineMaxMessages = 0
+	t.Cleanup(func() {
+		memoryMinePromptMaxTokens = oldPromptMax
+		memoryMineBatchSize = oldBatchSize
+		memoryMineMaxMessages = oldMaxMessages
+	})
+
+	candidate := memoryMineCandidate{
+		Summary: session.SessionSummary{Number: 1},
+		Session: &session.Session{ID: "sess-1"},
+		Agent:   "jarvis",
+	}
+	store := &trackingMemoryMineStore{
+		messages: map[string][]session.Message{
+			"sess-1": {
+				{SessionID: "sess-1", Role: llm.RoleUser, TextContent: "msg-0", Sequence: 0},
+				{SessionID: "sess-1", Role: llm.RoleUser, TextContent: "msg-1", Sequence: 1},
+				{SessionID: "sess-1", Role: llm.RoleUser, TextContent: "msg-2", Sequence: 2},
+				{SessionID: "sess-1", Role: llm.RoleUser, TextContent: "msg-3", Sequence: 3},
+			},
+		},
+	}
+
+	loadResult, err := loadMessagesForMining(ctx, store, candidate, 1, "Memory fragment map:\n- total_fragments: 0")
+	if err != nil {
+		t.Fatalf("loadMessagesForMining: %v", err)
+	}
+	if store.getMessagesCalls != 0 {
+		t.Fatalf("GetMessages calls = %d, want 0", store.getMessagesCalls)
+	}
+	if len(store.getMessagesFromCalls) != 2 {
+		t.Fatalf("GetMessagesFrom calls = %d, want 2", len(store.getMessagesFromCalls))
+	}
+	if store.getMessagesFromCalls[0].fromSeq != 1 || store.getMessagesFromCalls[0].limit != 2 {
+		t.Fatalf("first GetMessagesFrom call = %+v, want fromSeq=1 limit=2", store.getMessagesFromCalls[0])
+	}
+	if store.getMessagesFromCalls[1].fromSeq != 3 || store.getMessagesFromCalls[1].limit != 2 {
+		t.Fatalf("second GetMessagesFrom call = %+v, want fromSeq=3 limit=2", store.getMessagesFromCalls[1])
+	}
+	if loadResult.NextOffset != 4 {
+		t.Fatalf("NextOffset = %d, want 4", loadResult.NextOffset)
+	}
+	if len(loadResult.Messages) != 3 {
+		t.Fatalf("len(Messages) = %d, want 3", len(loadResult.Messages))
+	}
+	for i, wantSeq := range []int{1, 2, 3} {
+		if loadResult.Messages[i].Sequence != wantSeq {
+			t.Fatalf("Messages[%d].Sequence = %d, want %d", i, loadResult.Messages[i].Sequence, wantSeq)
+		}
+	}
+}
+
+func TestLoadMessagesForMiningPersistsNextSequenceWithGaps(t *testing.T) {
+	ctx := context.Background()
+	oldPromptMax := memoryMinePromptMaxTokens
+	oldBatchSize := memoryMineBatchSize
+	oldMaxMessages := memoryMineMaxMessages
+	memoryMinePromptMaxTokens = 1 << 30
+	memoryMineBatchSize = 2
+	memoryMineMaxMessages = 0
+	t.Cleanup(func() {
+		memoryMinePromptMaxTokens = oldPromptMax
+		memoryMineBatchSize = oldBatchSize
+		memoryMineMaxMessages = oldMaxMessages
+	})
+
+	candidate := memoryMineCandidate{
+		Summary: session.SessionSummary{Number: 1},
+		Session: &session.Session{ID: "sess-gap"},
+		Agent:   "jarvis",
+	}
+	store := &trackingMemoryMineStore{
+		messages: map[string][]session.Message{
+			"sess-gap": {
+				{SessionID: "sess-gap", Role: llm.RoleUser, TextContent: "msg-10", Sequence: 10},
+				{SessionID: "sess-gap", Role: llm.RoleUser, TextContent: "msg-20", Sequence: 20},
+			},
+		},
+	}
+
+	loadResult, err := loadMessagesForMining(ctx, store, candidate, 10, "Memory fragment map:\n- total_fragments: 0")
+	if err != nil {
+		t.Fatalf("loadMessagesForMining: %v", err)
+	}
+	if loadResult.NextOffset != 21 {
+		t.Fatalf("NextOffset = %d, want next sequence 21", loadResult.NextOffset)
+	}
+	if len(store.getMessagesFromCalls) != 2 {
+		t.Fatalf("GetMessagesFrom calls = %d, want 2", len(store.getMessagesFromCalls))
+	}
+	if store.getMessagesFromCalls[1].fromSeq != 21 {
+		t.Fatalf("second GetMessagesFrom fromSeq = %d, want 21", store.getMessagesFromCalls[1].fromSeq)
+	}
+}
+
+func TestLoadMessagesForMiningIgnoresMessageCountWhenUsingSequenceCursor(t *testing.T) {
+	ctx := context.Background()
+	oldPromptMax := memoryMinePromptMaxTokens
+	oldBatchSize := memoryMineBatchSize
+	oldMaxMessages := memoryMineMaxMessages
+	memoryMinePromptMaxTokens = 1 << 30
+	memoryMineBatchSize = 10
+	memoryMineMaxMessages = 0
+	t.Cleanup(func() {
+		memoryMinePromptMaxTokens = oldPromptMax
+		memoryMineBatchSize = oldBatchSize
+		memoryMineMaxMessages = oldMaxMessages
+	})
+
+	candidate := memoryMineCandidate{
+		Summary: session.SessionSummary{Number: 1, MessageCount: 3},
+		Session: &session.Session{ID: "sess-sparse"},
+		Agent:   "jarvis",
+	}
+	store := &trackingMemoryMineStore{
+		messages: map[string][]session.Message{
+			"sess-sparse": {
+				{SessionID: "sess-sparse", Role: llm.RoleUser, TextContent: "old", Sequence: 10},
+				{SessionID: "sess-sparse", Role: llm.RoleUser, TextContent: "new", Sequence: 21},
+			},
+		},
+	}
+
+	loadResult, err := loadMessagesForMining(ctx, store, candidate, 21, "Memory fragment map:\n- total_fragments: 0")
+	if err != nil {
+		t.Fatalf("loadMessagesForMining: %v", err)
+	}
+	if len(loadResult.Messages) != 1 {
+		t.Fatalf("len(Messages) = %d, want 1", len(loadResult.Messages))
+	}
+	if got := loadResult.Messages[0].TextContent; got != "new" {
+		t.Fatalf("loaded message text = %q, want new", got)
+	}
+	if loadResult.NextOffset != 22 {
+		t.Fatalf("NextOffset = %d, want 22", loadResult.NextOffset)
 	}
 }
 

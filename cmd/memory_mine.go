@@ -296,12 +296,6 @@ func runMemoryMine(cmd *cobra.Command, args []string) error {
 			startOffset = state.LastMinedOffset
 		}
 
-		if startOffset >= candidate.Summary.MessageCount {
-			fmt.Printf("[%d/%d] #%d already mined (offset %d >= %d)\n",
-				i+1, len(candidates), candidate.Summary.Number, startOffset, candidate.Summary.MessageCount)
-			continue
-		}
-
 		existing, taxonomyMap, err := fragmentCache.get(ctx, memStore, candidate.Agent)
 		if err != nil {
 			return fmt.Errorf("list existing fragments for agent %s: %w", candidate.Agent, err)
@@ -619,7 +613,7 @@ func buildMemoryMineCandidate(ctx context.Context, store session.Store, summary 
 
 func loadMessagesForMining(ctx context.Context, store session.Store, candidate memoryMineCandidate, offset int, taxonomyMap string) (memoryMineLoadResult, error) {
 	remaining := memoryMineMaxMessages
-	currentOffset := offset
+	currentSeq := offset
 	all := make([]session.Message, 0, memoryMineBatchSize)
 	result := memoryMineLoadResult{}
 
@@ -629,7 +623,7 @@ func loadMessagesForMining(ctx context.Context, store session.Store, candidate m
 			limit = remaining
 		}
 
-		msgs, err := store.GetMessages(ctx, candidate.Session.ID, limit, currentOffset)
+		msgs, err := store.GetMessagesFrom(ctx, candidate.Session.ID, currentSeq, limit)
 		if err != nil {
 			return result, err
 		}
@@ -639,16 +633,16 @@ func loadMessagesForMining(ctx context.Context, store session.Store, candidate m
 
 		for _, msg := range msgs {
 			candidateMessages := append(cloneMessages(all), msg)
-			nextOffset := currentOffset + 1
-			fit, ok := fitMessagesForPromptBudget(candidate, offset, nextOffset, candidateMessages, taxonomyMap)
+			nextSeq := msg.Sequence + 1
+			fit, ok := fitMessagesForPromptBudget(candidate, offset, nextSeq, candidateMessages, taxonomyMap)
 			if !ok {
 				result.PromptBudgetHit = true
 				result.Messages = all
-				result.NextOffset = currentOffset
+				result.NextOffset = currentSeq
 				return result, nil
 			}
 			all = fit.Messages
-			currentOffset = nextOffset
+			currentSeq = nextSeq
 			result.TruncatedMessages = fit.TruncatedMessages
 			result.AssistantMessagesCut = fit.AssistantMessagesCut
 			result.UserMessagesCut = fit.UserMessagesCut
@@ -660,7 +654,7 @@ func loadMessagesForMining(ctx context.Context, store session.Store, candidate m
 				remaining--
 				if remaining <= 0 {
 					result.Messages = all
-					result.NextOffset = currentOffset
+					result.NextOffset = currentSeq
 					return result, nil
 				}
 			}
@@ -672,7 +666,7 @@ func loadMessagesForMining(ctx context.Context, store session.Store, candidate m
 	}
 
 	result.Messages = all
-	result.NextOffset = currentOffset
+	result.NextOffset = currentSeq
 	return result, nil
 }
 

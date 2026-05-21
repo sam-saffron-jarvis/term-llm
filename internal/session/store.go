@@ -41,7 +41,9 @@ type Store interface {
 	// message during streaming. Returns ErrNotFound if the row does not exist.
 	UpdateMessage(ctx context.Context, sessionID string, msg *Message) error
 	GetMessages(ctx context.Context, sessionID string, limit, offset int) ([]Message, error)
-	GetMessagesFrom(ctx context.Context, sessionID string, fromSeq int) ([]Message, error)
+	// GetMessagesFrom returns rows at/after fromSeq in sequence order. When limit
+	// <= 0, all remaining rows are returned.
+	GetMessagesFrom(ctx context.Context, sessionID string, fromSeq, limit int) ([]Message, error)
 	// GetMessageByID retrieves a single message by its global message id.
 	GetMessageByID(ctx context.Context, msgID int64) (*Message, error)
 	ReplaceMessages(ctx context.Context, sessionID string, messages []Message) error

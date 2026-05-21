@@ -217,16 +217,22 @@ func (s *serveRuntimeTestStore) GetMessages(ctx context.Context, sessionID strin
 	return out, nil
 }
 
-func (s *serveRuntimeTestStore) GetMessagesFrom(ctx context.Context, sessionID string, fromSeq int) ([]session.Message, error) {
+func (s *serveRuntimeTestStore) GetMessagesFrom(ctx context.Context, sessionID string, fromSeq, limit int) ([]session.Message, error) {
 	msgs, err := s.GetMessages(ctx, sessionID, 0, 0)
 	if err != nil {
 		return nil, err
 	}
-	if fromSeq <= 0 || fromSeq >= len(msgs) {
-		return msgs, nil
+	var filtered []session.Message
+	for _, msg := range msgs {
+		if msg.Sequence >= fromSeq {
+			filtered = append(filtered, msg)
+		}
 	}
-	out := make([]session.Message, len(msgs[fromSeq:]))
-	copy(out, msgs[fromSeq:])
+	if limit > 0 && len(filtered) > limit {
+		filtered = filtered[:limit]
+	}
+	out := make([]session.Message, len(filtered))
+	copy(out, filtered)
 	return out, nil
 }
 

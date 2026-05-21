@@ -1784,13 +1784,22 @@ func (s *SQLiteStore) CompactMessages(ctx context.Context, sessionID string, mes
 }
 
 // GetMessagesFrom retrieves messages for a session starting from a given
-// sequence number. Used on resume to load only post-compaction messages.
-func (s *SQLiteStore) GetMessagesFrom(ctx context.Context, sessionID string, fromSeq int) ([]Message, error) {
-	rows, err := s.db.QueryContext(ctx, `
+// sequence number. Used on resume and for keyset-style pagination when walking
+// long transcripts.
+// When limit <= 0, all rows at/after fromSeq are returned.
+func (s *SQLiteStore) GetMessagesFrom(ctx context.Context, sessionID string, fromSeq, limit int) ([]Message, error) {
+	query := `
 		SELECT id, session_id, role, parts, text_content, duration_ms, turn_index, created_at, sequence
 		FROM messages
 		WHERE session_id = ? AND sequence >= ?
-		ORDER BY sequence ASC`, sessionID, fromSeq)
+		ORDER BY sequence ASC`
+	args := []any{sessionID, fromSeq}
+	if limit > 0 {
+		query += " LIMIT ?"
+		args = append(args, limit)
+	}
+
+	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("query messages from seq %d: %w", fromSeq, err)
 	}

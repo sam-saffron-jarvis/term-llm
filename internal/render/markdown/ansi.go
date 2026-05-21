@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/alecthomas/chroma/v2"
 	"github.com/alecthomas/chroma/v2/lexers"
@@ -230,7 +232,7 @@ func (r *ANSI) renderBlock(node gast.Node, source []byte, width int, styles ansi
 			return "", err
 		}
 		label := styles.heading.Render(strings.Repeat("#", max(n.Level, 1)))
-		if strings.TrimSpace(stripANSI(inline)) == "" {
+		if !hasVisibleNonSpace(inline) {
 			return wrapANSI(label, width), nil
 		}
 		return wrapANSI(label+" "+inline, width), nil
@@ -239,7 +241,7 @@ func (r *ANSI) renderBlock(node gast.Node, source []byte, width int, styles ansi
 		if err != nil {
 			return "", err
 		}
-		if strings.TrimSpace(stripANSI(inline)) == "" {
+		if !hasVisibleNonSpace(inline) {
 			return styles.text.Render(" "), nil
 		}
 		return wrapANSI(inline, width), nil
@@ -248,7 +250,7 @@ func (r *ANSI) renderBlock(node gast.Node, source []byte, width int, styles ansi
 		if err != nil {
 			return "", err
 		}
-		if strings.TrimSpace(stripANSI(inline)) == "" {
+		if !hasVisibleNonSpace(inline) {
 			return styles.text.Render(" "), nil
 		}
 		return wrapANSI(inline, width), nil
@@ -257,7 +259,7 @@ func (r *ANSI) renderBlock(node gast.Node, source []byte, width int, styles ansi
 		if err != nil {
 			return "", err
 		}
-		if strings.TrimSpace(stripANSI(inner)) == "" {
+		if !hasVisibleNonSpace(inner) {
 			return styles.blockquote.Render(">"), nil
 		}
 		return prefixLinesWithStyle(inner, "> ", "> ", styles.blockquote), nil
@@ -461,7 +463,7 @@ func (r *ANSI) renderTableRecords(header []string, bodyRows [][]string, width in
 		}
 	}
 	for i := range labels {
-		if strings.TrimSpace(stripANSI(labels[i])) == "" {
+		if !hasVisibleNonSpace(labels[i]) {
 			labels[i] = styles.tableHeader.Render(fmt.Sprintf("Column %d", i+1))
 		}
 	}
@@ -655,7 +657,7 @@ func (r *ANSI) renderInline(node gast.Node, source []byte, styles ansiStyles) (s
 		if label == "" {
 			return styles.link.Render(url), nil
 		}
-		if strings.TrimSpace(stripANSI(label)) == url {
+		if ansiTrimmedEqual(label, url) {
 			return styles.link.Render(url), nil
 		}
 		return label + " " + styles.link.Render(url), nil
@@ -979,6 +981,79 @@ var ansiEscapeRe = regexp.MustCompile(`\x1b\[[0-9;]*m`)
 
 func stripANSI(text string) string {
 	return ansiEscapeRe.ReplaceAllString(text, "")
+}
+
+func hasVisibleNonSpace(text string) bool {
+	for i := 0; i < len(text); {
+		if next, ok := consumeSGR(text, i); ok {
+			i = next
+			continue
+		}
+		r, size := utf8.DecodeRuneInString(text[i:])
+		if !unicode.IsSpace(r) {
+			return true
+		}
+		i += size
+	}
+	return false
+}
+
+func ansiTrimmedEqual(text, target string) bool {
+	if strings.TrimSpace(target) != target {
+		return false
+	}
+
+	i := 0
+	for i < len(text) {
+		if next, ok := consumeSGR(text, i); ok {
+			i = next
+			continue
+		}
+		r, size := utf8.DecodeRuneInString(text[i:])
+		if !unicode.IsSpace(r) {
+			break
+		}
+		i += size
+	}
+
+	targetPos := 0
+	for i < len(text) {
+		if next, ok := consumeSGR(text, i); ok {
+			i = next
+			continue
+		}
+		r, size := utf8.DecodeRuneInString(text[i:])
+		if targetPos >= len(target) {
+			if !unicode.IsSpace(r) {
+				return false
+			}
+			i += size
+			continue
+		}
+		if !strings.HasPrefix(target[targetPos:], text[i:i+size]) {
+			return false
+		}
+		targetPos += size
+		i += size
+	}
+	return targetPos == len(target)
+}
+
+func consumeSGR(text string, start int) (int, bool) {
+	if start+2 >= len(text) || text[start] != '\x1b' || text[start+1] != '[' {
+		return start, false
+	}
+	for i := start + 2; i < len(text); i++ {
+		switch text[i] {
+		case 'm':
+			return i + 1, true
+		case '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', ';':
+			continue
+		default:
+			return start, false
+		}
+	}
+	return start, false
 }
 
 func bytesOrEmpty(v []byte) []byte {

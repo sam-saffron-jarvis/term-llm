@@ -170,7 +170,7 @@ func (s *mockStore) GetMessages(_ context.Context, sessionID string, _, _ int) (
 	return s.messages[sessionID], nil
 }
 
-func (s *mockStore) GetMessagesFrom(_ context.Context, sessionID string, fromSeq int) ([]session.Message, error) {
+func (s *mockStore) GetMessagesFrom(_ context.Context, sessionID string, fromSeq, limit int) ([]session.Message, error) {
 	if s.msgErr != nil {
 		return nil, s.msgErr
 	}
@@ -179,6 +179,9 @@ func (s *mockStore) GetMessagesFrom(_ context.Context, sessionID string, fromSeq
 		if msg.Sequence >= fromSeq {
 			filtered = append(filtered, msg)
 		}
+	}
+	if limit > 0 && len(filtered) > limit {
+		filtered = filtered[:limit]
 	}
 	return filtered, nil
 }

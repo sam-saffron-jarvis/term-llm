@@ -2,6 +2,7 @@ package memory
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"math"
 	"path/filepath"
@@ -654,6 +655,8 @@ func TestStoreVectorSearchUsesProviderModelDimensionsIndex(t *testing.T) {
 	defer store.Close()
 
 	rows, err := store.db.Query("EXPLAIN QUERY PLAN "+vectorSearchSQL,
+		1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+		0.0,
 		"gemini", "gemini-embedding-001", 4, "jarvis", "jarvis")
 	if err != nil {
 		t.Fatalf("EXPLAIN QUERY PLAN error = %v", err)
@@ -674,8 +677,90 @@ func TestStoreVectorSearchUsesProviderModelDimensionsIndex(t *testing.T) {
 	}
 
 	plan := strings.Join(details, "\n")
-	if !strings.Contains(plan, "idx_memory_embeddings_provider_model_dimensions") {
-		t.Fatalf("VectorSearch query plan does not use provider/model/dimensions index:\n%s", plan)
+	if !strings.Contains(plan, "idx_memory_embeddings_vector_search_cover") {
+		t.Fatalf("VectorSearch query plan does not use vector search covering index:\n%s", plan)
+	}
+}
+
+func TestStoreInitMigratesLegacyEmbeddingTableBeforeVectorIndex(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "memory.db")
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open legacy db: %v", err)
+	}
+	_, err = db.Exec(`
+		CREATE TABLE memory_embeddings (
+			fragment_id TEXT NOT NULL,
+			provider TEXT NOT NULL,
+			model TEXT NOT NULL,
+			dimensions INTEGER NOT NULL,
+			vector BLOB NOT NULL,
+			embedded_at DATETIME NOT NULL,
+			PRIMARY KEY (fragment_id, provider, model)
+		)`)
+	if closeErr := db.Close(); closeErr != nil {
+		t.Fatalf("close legacy db: %v", closeErr)
+	}
+	if err != nil {
+		t.Fatalf("create legacy embedding table: %v", err)
+	}
+
+	store, err := NewStore(Config{Path: dbPath})
+	if err != nil {
+		t.Fatalf("NewStore() with legacy embedding table error = %v", err)
+	}
+	defer store.Close()
+
+	rows, err := store.db.Query(`PRAGMA index_info(idx_memory_embeddings_vector_search_cover)`)
+	if err != nil {
+		t.Fatalf("query vector search index info: %v", err)
+	}
+	defer rows.Close()
+	if !rows.Next() {
+		t.Fatal("idx_memory_embeddings_vector_search_cover was not created")
+	}
+}
+
+func TestStoreVectorSearchNormalizesUpperBoundForNonUnitQuery(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore(t)
+	defer store.Close()
+
+	target := &Fragment{Agent: "jarvis", Path: "target", Content: "target"}
+	if err := store.CreateFragment(ctx, target); err != nil {
+		t.Fatalf("CreateFragment(target) error = %v", err)
+	}
+	if err := store.UpsertEmbedding(ctx, target.ID, "gemini", "gemini-embedding-001", 10, []float64{0, 0, 0, 0, 0, 0, 0, 0, 1, 0}); err != nil {
+		t.Fatalf("UpsertEmbedding(target) error = %v", err)
+	}
+
+	for i := 0; i < vectorSearchExactBatchSize; i++ {
+		frag := &Fragment{Agent: "jarvis", Path: fmt.Sprintf("distractor-%03d", i), Content: "distractor"}
+		if err := store.CreateFragment(ctx, frag); err != nil {
+			t.Fatalf("CreateFragment(distractor %d) error = %v", i, err)
+		}
+		vec := []float64{0, 0, 0, 0, 0, 0, 0, 0, 0, 1}
+		if i == 0 {
+			vec = []float64{0, 0, 0, 0, 0, 0, 0, 0, 1, math.Sqrt(3)}
+		}
+		if err := store.UpsertEmbedding(ctx, frag.ID, "gemini", "gemini-embedding-001", 10, vec); err != nil {
+			t.Fatalf("UpsertEmbedding(distractor %d) error = %v", i, err)
+		}
+	}
+
+	if _, err := store.db.ExecContext(ctx, `UPDATE memory_fragments SET updated_at = ? WHERE id = ?`, time.Now().Add(-time.Hour), target.ID); err != nil {
+		t.Fatalf("age target fragment: %v", err)
+	}
+
+	results, err := store.VectorSearch(ctx, "jarvis", "gemini", "gemini-embedding-001", []float64{0, 0, 0, 0, 0, 0, 0, 0, 0.1, 0}, 1)
+	if err != nil {
+		t.Fatalf("VectorSearch() error = %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("VectorSearch() len = %d, want 1", len(results))
+	}
+	if results[0].ID != target.ID {
+		t.Fatalf("VectorSearch() top ID = %s, want target ID %s", results[0].ID, target.ID)
 	}
 }
 
