@@ -7,10 +7,21 @@ import (
 
 // partialState tracks the state of partial block rendering for re-rendering.
 type partialState struct {
-	safeMarkdown string // Markdown content up to incomplete syntax
-	safeRendered string // Rendered output currently displayed
-	lineCount    int    // Terminal lines occupied by partial output
-	outputLen    int    // Bytes already written (for flowing mode)
+	safeMarkdown     string // Markdown content up to incomplete syntax
+	safeRendered     string // Rendered output currently displayed
+	lineCount        int    // Terminal lines occupied by partial output
+	outputLen        int    // Bytes already written (for flowing mode)
+	flowingPrefix    []byte // Stable rendered prefix before the flowing partial block
+	flowingPrefixSet bool   // Whether flowingPrefix was derived for the active partial block
+}
+
+func (ps partialState) isZero() bool {
+	return ps.safeMarkdown == "" &&
+		ps.safeRendered == "" &&
+		ps.lineCount == 0 &&
+		ps.outputLen == 0 &&
+		len(ps.flowingPrefix) == 0 &&
+		!ps.flowingPrefixSet
 }
 
 // currentBlockContent returns the current incomplete block content
@@ -71,7 +82,7 @@ func (sr *StreamRenderer) renderPartialBlock() error {
 		}
 		sr.partialState.lineCount = sr.termCtrl.CountLines(rendered)
 	} else {
-		snapshot, err := sr.renderPartialSnapshot(safeContent)
+		snapshot, err := sr.renderPartialSnapshot(safeContent, rendered)
 		if err != nil {
 			return err
 		}
@@ -87,7 +98,18 @@ func (sr *StreamRenderer) renderPartialBlock() error {
 	return nil
 }
 
-func (sr *StreamRenderer) renderPartialSnapshot(safeContent string) ([]byte, error) {
+func (sr *StreamRenderer) renderPartialSnapshot(safeContent, renderedPartial string) ([]byte, error) {
+	if sr.partialState.flowingPrefixSet {
+		// After the first flowing preview for a block we know the exact rendered
+		// prefix before the partial content, so later token updates only need to
+		// re-render the active block instead of reparsing all committed markdown.
+		prefixLen := len(sr.partialState.flowingPrefix)
+		snapshot := make([]byte, prefixLen+len(renderedPartial))
+		copy(snapshot, sr.partialState.flowingPrefix)
+		copy(snapshot[prefixLen:], renderedPartial)
+		return snapshot, nil
+	}
+
 	markdown := append([]byte(nil), sr.normalizedMarkdown()...)
 	if sr.hasTabs {
 		markdown = append(markdown, bytes.ReplaceAll([]byte(safeContent), []byte("\t"), []byte("  "))...)
@@ -107,7 +129,22 @@ func (sr *StreamRenderer) renderPartialSnapshot(safeContent string) ([]byte, err
 		stableLen--
 	}
 
-	return rendered[:stableLen], nil
+	snapshot := rendered[:stableLen]
+	sr.cacheFlowingPartialPrefix(snapshot, renderedPartial)
+	return snapshot, nil
+}
+
+func (sr *StreamRenderer) cacheFlowingPartialPrefix(snapshot []byte, renderedPartial string) {
+	renderedPartialBytes := []byte(renderedPartial)
+	if !bytes.HasSuffix(snapshot, renderedPartialBytes) {
+		sr.partialState.flowingPrefix = nil
+		sr.partialState.flowingPrefixSet = false
+		return
+	}
+
+	prefixLen := len(snapshot) - len(renderedPartialBytes)
+	sr.partialState.flowingPrefix = append(sr.partialState.flowingPrefix[:0], snapshot[:prefixLen]...)
+	sr.partialState.flowingPrefixSet = true
 }
 
 // renderPartial renders safe content with appropriate context.
@@ -377,7 +414,7 @@ func (sr *StreamRenderer) clearPartialState() error {
 }
 
 func (sr *StreamRenderer) suppressPartialPreview() error {
-	if sr.partialState == (partialState{}) && bytes.Equal(sr.lastRendered, sr.lastCommittedRendered) {
+	if sr.partialState.isZero() && bytes.Equal(sr.lastRendered, sr.lastCommittedRendered) {
 		return nil
 	}
 

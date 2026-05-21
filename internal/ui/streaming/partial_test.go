@@ -279,6 +279,69 @@ func TestNewRendererWithOptionsFlowingMode(t *testing.T) {
 	}
 }
 
+type countingRenderer struct {
+	inputs [][]byte
+}
+
+func (r *countingRenderer) Render(source []byte) ([]byte, error) {
+	r.inputs = append(r.inputs, append([]byte(nil), source...))
+	return append([]byte(nil), source...), nil
+}
+
+func (r *countingRenderer) Resize(width int) {}
+
+func TestPartialRenderingFlowingModeCachesCommittedPrefixPerBlock(t *testing.T) {
+	var buf bytes.Buffer
+	renderer := &countingRenderer{}
+
+	sr, err := NewRendererWithOptions(
+		&buf,
+		renderer,
+		[]StreamRendererOption{
+			WithPartialRendering(),
+		},
+	)
+	if err != nil {
+		t.Fatalf("NewRendererWithOptions failed: %v", err)
+	}
+
+	if _, err := sr.Write([]byte("Intro\n\n")); err != nil {
+		t.Fatalf("failed to write committed block: %v", err)
+	}
+
+	renderer.inputs = nil
+
+	if _, err := sr.Write([]byte("Hello")); err != nil {
+		t.Fatalf("failed to write first partial chunk: %v", err)
+	}
+
+	if len(renderer.inputs) != 2 {
+		t.Fatalf("first partial update render count = %d, want 2", len(renderer.inputs))
+	}
+	if got := string(renderer.inputs[0]); got != "Hello" {
+		t.Fatalf("first partial block render input = %q, want %q", got, "Hello")
+	}
+	if got := string(renderer.inputs[1]); got != "Intro\n\nHello" {
+		t.Fatalf("first flowing snapshot render input = %q, want %q", got, "Intro\n\nHello")
+	}
+
+	renderer.inputs = nil
+
+	if _, err := sr.Write([]byte(" world")); err != nil {
+		t.Fatalf("failed to write second partial chunk: %v", err)
+	}
+
+	if len(renderer.inputs) != 1 {
+		t.Fatalf("second partial update render count = %d, want 1", len(renderer.inputs))
+	}
+	if got := string(renderer.inputs[0]); got != "Hello world" {
+		t.Fatalf("second partial block render input = %q, want %q", got, "Hello world")
+	}
+	if got := buf.String(); got != "Intro\n\nHello world" {
+		t.Fatalf("flowing output = %q, want %q", got, "Intro\n\nHello world")
+	}
+}
+
 func TestPartialRenderingBackwardsCompatibility(t *testing.T) {
 	// Test that the basic NewRenderer still works without partial rendering
 	var buf bytes.Buffer
