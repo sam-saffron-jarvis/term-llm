@@ -8,6 +8,7 @@ import (
 
 	"charm.land/huh/v2"
 	"github.com/samsaffron/term-llm/internal/config"
+	"github.com/samsaffron/term-llm/internal/credentials"
 )
 
 // providerOption represents a provider choice in the setup wizard
@@ -21,6 +22,12 @@ type providerOption struct {
 // detectAvailableProviders checks which providers have credentials configured
 func detectAvailableProviders() []providerOption {
 	options := []providerOption{
+		{
+			name:      "ChatGPT (Codex) - ChatGPT OAuth",
+			value:     "chatgpt",
+			available: credentials.ChatGPTCredentialsExist(),
+			hint:      "run 'term-llm ask --provider chatgpt \"test\"' to login",
+		},
 		{
 			name:      "Anthropic - API key",
 			value:     "anthropic",
@@ -106,6 +113,24 @@ func isGeminiOAuthAvailable() bool {
 	credPath := filepath.Join(home, ".gemini", "oauth_creds.json")
 	_, err = os.Stat(credPath)
 	return err == nil
+}
+
+func validateProviderSelection(providers []providerOption, provider string) (*providerOption, error) {
+	for i := range providers {
+		if providers[i].value != provider {
+			continue
+		}
+		selected := &providers[i]
+		if !selected.available && !canBootstrapProviderInteractively(selected.value) {
+			return selected, fmt.Errorf("provider %s is not configured\n\n%s", selected.name, selected.hint)
+		}
+		return selected, nil
+	}
+	return nil, nil
+}
+
+func canBootstrapProviderInteractively(provider string) bool {
+	return provider == "chatgpt"
 }
 
 // imageProviderOption represents an image provider choice in the setup wizard
@@ -204,6 +229,7 @@ func RunHeadlessSetup() (*config.Config, error) {
 	cfg := &config.Config{
 		DefaultProvider: provider,
 		Providers: map[string]config.ProviderConfig{
+			"chatgpt":    {Model: "gpt-5.5-medium"},
 			"anthropic":  {Model: "claude-sonnet-4-6"},
 			"openai":     {Model: "gpt-5.4"},
 			"claude-bin": {Model: "sonnet"},
@@ -248,7 +274,8 @@ func RunSetupWizard() (*config.Config, error) {
 	// Detect available providers
 	providers := detectAvailableProviders()
 
-	// Build LLM provider options - available first, then unavailable
+	// Build LLM provider options - keep ChatGPT (Codex) first so it is easy to find,
+	// then show the rest as available first, then unavailable.
 	var llmOptions []huh.Option[string]
 	var availableOptions []huh.Option[string]
 	var unavailableOptions []huh.Option[string]
@@ -257,10 +284,19 @@ func RunSetupWizard() (*config.Config, error) {
 		label := p.name
 		if p.available {
 			label = p.name + " ✓"
-			availableOptions = append(availableOptions, huh.NewOption(label, p.value))
 		} else {
 			label = p.name + " (not set)"
-			unavailableOptions = append(unavailableOptions, huh.NewOption(label, p.value))
+		}
+
+		option := huh.NewOption(label, p.value)
+		if p.value == "chatgpt" {
+			llmOptions = append(llmOptions, option)
+			continue
+		}
+		if p.available {
+			availableOptions = append(availableOptions, option)
+		} else {
+			unavailableOptions = append(unavailableOptions, option)
 		}
 	}
 	llmOptions = append(llmOptions, availableOptions...)
@@ -313,16 +349,11 @@ func RunSetupWizard() (*config.Config, error) {
 		return nil, err
 	}
 
-	// Validate LLM provider
-	var selectedProvider *providerOption
-	for i := range providers {
-		if providers[i].value == provider {
-			selectedProvider = &providers[i]
-			break
-		}
-	}
-	if selectedProvider != nil && !selectedProvider.available {
-		return nil, fmt.Errorf("provider %s is not configured\n\n%s", selectedProvider.name, selectedProvider.hint)
+	// Validate LLM provider. ChatGPT can bootstrap OAuth interactively after setup,
+	// so do not reject it just because credentials are not stored yet.
+	selectedProvider, err := validateProviderSelection(providers, provider)
+	if err != nil {
+		return nil, err
 	}
 
 	// Show selection before next step
@@ -366,6 +397,9 @@ func RunSetupWizard() (*config.Config, error) {
 	cfg := &config.Config{
 		DefaultProvider: provider,
 		Providers: map[string]config.ProviderConfig{
+			"chatgpt": {
+				Model: "gpt-5.5-medium",
+			},
 			"anthropic": {
 				Model: "claude-sonnet-4-6",
 			},
@@ -396,7 +430,7 @@ func RunSetupWizard() (*config.Config, error) {
 				Model: "gpt-oss-120b",
 			},
 			"zen": {
-				Model: "minimax-m2.1-free",
+				Model: "minimax-m2.5-free",
 			},
 		},
 		Exec: config.ExecConfig{

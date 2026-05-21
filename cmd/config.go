@@ -791,7 +791,7 @@ providers:
     fast_model: Meta-Llama-3.3-70B-Instruct
 
   zen:
-    model: minimax-m2.1-free
+    model: minimax-m2.5-free
     # api_key optional - free tier access via opencode.ai
 
   # Local LLM providers (require explicit type)
