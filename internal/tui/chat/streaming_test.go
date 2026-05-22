@@ -285,3 +285,38 @@ func TestInterjectionDuringToolTurnDoesNotDoublePersist(t *testing.T) {
 		t.Fatalf("persisted user text = %q, want %q", userTexts[0], "reconsider this")
 	}
 }
+
+func TestStartStreamRecoversFromStreamClosePanic(t *testing.T) {
+	provider := panicCloseProvider{}
+	m := newTestChatModel(false)
+	m.provider = provider
+	m.engine = llm.NewEngine(provider, nil)
+	m.providerName = provider.Name()
+	m.modelName = "panic-close-model"
+	m.sess = &session.Session{ID: "stream-close-panic-test"}
+
+	msg := m.startStream("hello")()
+	if ev, ok := msg.(streamEventMsg); !ok || ev.event.Type != ui.StreamEventError {
+		t.Fatalf("startStream returned %#v, want error stream event", msg)
+	}
+
+	m.WaitStreamDone()
+}
+
+type panicCloseProvider struct{}
+
+func (p panicCloseProvider) Name() string { return "panic-close" }
+
+func (p panicCloseProvider) Credential() string { return "test" }
+
+func (p panicCloseProvider) Capabilities() llm.Capabilities { return llm.Capabilities{} }
+
+func (p panicCloseProvider) Stream(ctx context.Context, req llm.Request) (llm.Stream, error) {
+	return panicCloseStream{}, nil
+}
+
+type panicCloseStream struct{}
+
+func (s panicCloseStream) Recv() (llm.Event, error) { return llm.Event{}, io.EOF }
+
+func (s panicCloseStream) Close() error { panic("close exploded") }

@@ -96,6 +96,21 @@ func newEventStreamWithCancelHook(ctx context.Context, cancelHook func(), run fu
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
+		defer func() {
+			if r := recover(); r != nil && streamCtx.Err() == nil {
+				err := fmt.Errorf("stream panic: %v", r)
+				// Preserve the panic as a stream error for the consumer when possible.
+				// Never let a provider/cleanup panic escape this goroutine: an
+				// unrecovered panic in any goroutine terminates the whole TUI process.
+				select {
+				case ch <- Event{Type: EventError, Err: err}:
+				default:
+					terminalErr <- err
+				}
+			}
+			close(terminalErr)
+			close(ch)
+		}()
 		sender := eventSender{ctx: streamCtx, ch: ch}
 		if err := run(streamCtx, sender); err != nil && streamCtx.Err() == nil {
 			// If the consumer has stopped draining and the buffer is full, preserve the
@@ -106,8 +121,6 @@ func newEventStreamWithCancelHook(ctx context.Context, cancelHook func(), run fu
 				terminalErr <- err
 			}
 		}
-		close(terminalErr)
-		close(ch)
 	}()
 	return &channelStream{ctx: streamCtx, cancel: cancel, cancelHook: cancelHook, events: ch, terminalErr: terminalErr, done: done}
 }

@@ -2676,8 +2676,8 @@ func (s *cleanupStream) Recv() (Event, error) {
 	// Trigger cleanup on terminal conditions (EOF or EventDone)
 	// This ensures cleanup runs even if consumer doesn't call Close()
 	if err == io.EOF || (err == nil && event.Type == EventDone) {
-		if s.cleanup != nil {
-			s.closeOnce.Do(s.cleanup)
+		if cleanupErr := s.cleanupOnce(); cleanupErr != nil {
+			return Event{}, cleanupErr
 		}
 	}
 	return event, err
@@ -2685,8 +2685,23 @@ func (s *cleanupStream) Recv() (Event, error) {
 
 func (s *cleanupStream) Close() error {
 	err := s.inner.Close()
-	if s.cleanup != nil {
-		s.closeOnce.Do(s.cleanup)
+	if cleanupErr := s.cleanupOnce(); err == nil {
+		err = cleanupErr
 	}
+	return err
+}
+
+func (s *cleanupStream) cleanupOnce() (err error) {
+	if s.cleanup == nil {
+		return nil
+	}
+	s.closeOnce.Do(func() {
+		defer func() {
+			if r := recover(); r != nil {
+				err = fmt.Errorf("stream cleanup panic: %v", r)
+			}
+		}()
+		s.cleanup()
+	})
 	return err
 }
