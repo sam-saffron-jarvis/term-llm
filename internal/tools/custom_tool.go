@@ -292,6 +292,9 @@ func (t *CustomScriptTool) resolveScript() (string, error) {
 // It validates that custom tool names don't collide with built-in tool names.
 // A startup warning (not an error) is emitted if a script file doesn't exist yet.
 func (r *LocalToolRegistry) RegisterCustomTools(defs []agents.CustomToolDef, agentDir string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
 	for _, def := range defs {
 		// Validate name format (belt-and-suspenders; agent.Validate() also checks this)
 		if !validCustomToolNameRE.MatchString(def.Name) {

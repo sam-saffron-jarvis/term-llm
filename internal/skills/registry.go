@@ -7,10 +7,13 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 )
 
 // Registry manages skill discovery and resolution.
 type Registry struct {
+	mu sync.RWMutex
+
 	// Configuration
 	config RegistryConfig
 
@@ -259,6 +262,9 @@ func (r *Registry) addUserPaths(home, configDir string) {
 // This avoids a full catalog scan during startup when callers only need to know
 // whether the skills system should be enabled at all.
 func (r *Registry) HasAnySkill() (bool, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
 	for _, sp := range r.searchPaths {
 		entries, err := os.ReadDir(sp.path)
 		if err != nil {
@@ -295,6 +301,9 @@ func (r *Registry) HasAnySkill() (bool, error) {
 
 // Get retrieves a skill by name, loading full content.
 func (r *Registry) Get(name string) (*Skill, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
 	if skill, ok := r.cache[name]; ok {
 		// If we have metadata only, load full content. If that cached path went
 		// stale, discard it and fall through to normal search-path resolution.
@@ -371,6 +380,9 @@ func (r *Registry) Get(name string) (*Skill, error) {
 // List returns all available skills (metadata only).
 // Each skill appears only once, with first-found taking precedence.
 func (r *Registry) List() ([]*Skill, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
 	if r.listCache != nil {
 		fingerprint := r.searchPathsFingerprint()
 		if fingerprint == r.listCacheFingerprint {
@@ -422,6 +434,9 @@ func (r *Registry) List() ([]*Skill, error) {
 // ListAll returns all skills from all paths without shadowing.
 // Use this when you want to see every installed copy of a skill.
 func (r *Registry) ListAll() ([]*Skill, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
 	var allSkills []*Skill
 
 	// Scan filesystem paths
@@ -463,11 +478,17 @@ func (r *Registry) ListBySource(source SkillSource) ([]*Skill, error) {
 
 // ShadowCount returns how many skills were shadowed by this name.
 func (r *Registry) ShadowCount(name string) int {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
 	return r.shadowCounts[name]
 }
 
 // Reload clears the cache and rediscovers skills.
 func (r *Registry) Reload() error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
 	r.cache = make(map[string]*Skill)
 	r.shadowCounts = make(map[string]int)
 	r.listCache = nil

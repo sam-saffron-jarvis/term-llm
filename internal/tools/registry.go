@@ -3,6 +3,7 @@ package tools
 import (
 	"fmt"
 	"os"
+	"sync"
 
 	"github.com/samsaffron/term-llm/internal/agents"
 	"github.com/samsaffron/term-llm/internal/config"
@@ -12,6 +13,8 @@ import (
 
 // LocalToolRegistry manages local tools and their registration with the engine.
 type LocalToolRegistry struct {
+	mu sync.RWMutex
+
 	config      *ToolConfig
 	permissions *ToolPermissions
 	approval    *ApprovalManager
@@ -59,6 +62,9 @@ func NewLocalToolRegistry(toolConfig *ToolConfig, appConfig *config.Config, appr
 
 // SetImageRecorder wires an image recorder for image generation tracking.
 func (r *LocalToolRegistry) SetImageRecorder(recorder ImageRecorder, agent, sessionID string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
 	r.memoryStore = recorder
 	r.agent = agent
 	r.sessionID = sessionID
@@ -122,6 +128,9 @@ func (r *LocalToolRegistry) registerTool(specName string) error {
 
 // RegisterWithEngine registers all enabled tools with the LLM engine.
 func (r *LocalToolRegistry) RegisterWithEngine(engine *llm.Engine) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
 	for _, tool := range r.tools {
 		engine.Tools().Register(tool)
 	}
@@ -129,6 +138,9 @@ func (r *LocalToolRegistry) RegisterWithEngine(engine *llm.Engine) {
 
 // GetSpecs returns tool specs for all enabled tools.
 func (r *LocalToolRegistry) GetSpecs() []llm.ToolSpec {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
 	specs := make([]llm.ToolSpec, 0, len(r.tools))
 	for _, tool := range r.tools {
 		specs = append(specs, tool.Spec())
@@ -138,6 +150,9 @@ func (r *LocalToolRegistry) GetSpecs() []llm.ToolSpec {
 
 // Get returns a tool by spec name.
 func (r *LocalToolRegistry) Get(specName string) (llm.Tool, bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
 	tool, ok := r.tools[specName]
 	return tool, ok
 }
@@ -154,6 +169,9 @@ func (r *LocalToolRegistry) Permissions() *ToolPermissions {
 
 // SetLimits updates the output limits.
 func (r *LocalToolRegistry) SetLimits(limits OutputLimits) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
 	r.limits = limits
 	// Re-register tools that use limits
 	for _, specName := range r.config.Enabled {
@@ -192,6 +210,9 @@ func (r *LocalToolRegistry) AddShellPattern(pattern string) error {
 // images are now reported through ToolOutput.Images and served by the
 // response-stream/session layers.
 func (r *LocalToolRegistry) SetServeMode(enabled bool, imageBaseURL string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
 	if t, ok := r.tools[ImageGenerateToolName]; ok {
 		if ig, ok := t.(*ImageGenerateTool); ok {
 			ig.serveMode = enabled
@@ -264,6 +285,9 @@ func (r *LocalToolRegistry) GetSpawnAgentTool() *SpawnAgentTool {
 // RegisterOutputTool creates and registers a SetOutputTool with the given configuration.
 // Returns the tool so the caller can retrieve the captured value later.
 func (r *LocalToolRegistry) RegisterOutputTool(name, param, desc string) *SetOutputTool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
 	tool := NewSetOutputTool(name, param, desc)
 	r.tools[name] = tool
 	return tool
@@ -271,6 +295,9 @@ func (r *LocalToolRegistry) RegisterOutputTool(name, param, desc string) *SetOut
 
 // GetOutputTool returns the output tool by name if it exists and is a SetOutputTool.
 func (r *LocalToolRegistry) GetOutputTool(name string) *SetOutputTool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
 	tool, ok := r.tools[name]
 	if !ok {
 		return nil
@@ -284,6 +311,9 @@ func (r *LocalToolRegistry) GetOutputTool(name string) *SetOutputTool {
 // RegisterSkillTool registers the activate_skill tool with the given registry.
 // This must be called after the skills registry is created.
 func (r *LocalToolRegistry) RegisterSkillTool(skillRegistry *skills.Registry) *ActivateSkillTool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
 	tool := NewActivateSkillTool(skillRegistry, r.approval)
 	r.tools[ActivateSkillToolName] = tool
 	return tool
@@ -328,6 +358,9 @@ func (r *LocalToolRegistry) RegisterSkillTools(defs []skills.SkillToolDef, skill
 
 // GetSkillTool returns the activate_skill tool if registered.
 func (r *LocalToolRegistry) GetSkillTool() *ActivateSkillTool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
 	tool, ok := r.tools[ActivateSkillToolName]
 	if !ok {
 		return nil

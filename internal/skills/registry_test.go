@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 )
 
@@ -837,4 +838,53 @@ func newBenchmarkRegistry(b *testing.B, skillsDir string) *Registry {
 	}
 	registry.searchPaths = []searchPath{{path: skillsDir, source: SourceUser}}
 	return registry
+}
+
+func TestRegistryConcurrentGetListAndReload(t *testing.T) {
+	tmpDir := t.TempDir()
+	skillsDir := filepath.Join(tmpDir, "skills")
+	for _, name := range []string{"alpha", "beta", "gamma"} {
+		dir := filepath.Join(skillsDir, name)
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			t.Fatal(err)
+		}
+		content := fmt.Sprintf("---\nname: %s\ndescription: %s skill\n---\n\n# %s\n", name, name, name)
+		if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte(content), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	registry, err := NewRegistry(RegistryConfig{IncludeProjectSkills: false, IncludeEcosystemPaths: false})
+	if err != nil {
+		t.Fatal(err)
+	}
+	registry.searchPaths = []searchPath{{path: skillsDir, source: SourceUser}}
+
+	var wg sync.WaitGroup
+	for i := 0; i < 12; i++ {
+		wg.Add(1)
+		go func(worker int) {
+			defer wg.Done()
+			for j := 0; j < 50; j++ {
+				if _, err := registry.Get([]string{"alpha", "beta", "gamma"}[(worker+j)%3]); err != nil {
+					t.Errorf("Get failed: %v", err)
+					return
+				}
+			}
+		}(i)
+	}
+	for i := 0; i < 6; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < 50; j++ {
+				if _, err := registry.List(); err != nil {
+					t.Errorf("List failed: %v", err)
+					return
+				}
+				_ = registry.ShadowCount("alpha")
+			}
+		}()
+	}
+	wg.Wait()
 }
