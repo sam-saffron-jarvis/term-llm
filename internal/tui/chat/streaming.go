@@ -429,7 +429,7 @@ func (m *Model) sendMessage(content string) (tea.Model, tea.Cmd) {
 
 func (m *Model) startStream(content string) tea.Cmd {
 	return func() tea.Msg {
-		ctx, cancel := context.WithCancel(context.Background())
+		ctx, cancel := context.WithCancel(m.rootContext())
 		m.streamCancelFunc = cancel
 
 		// Mark session as active when starting a new stream
