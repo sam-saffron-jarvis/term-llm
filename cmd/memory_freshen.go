@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -164,10 +163,6 @@ func runMemoryUpdateRecent(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	existingRecent, err := loadRecentContent(recentPath)
-	if err != nil {
-		return err
-	}
 
 	fragmentsText, err := loadRecentFragmentsText(ctx, store, agentName, memoryUpdateRecentFragmentChars)
 	if err != nil {
@@ -180,16 +175,27 @@ func runMemoryUpdateRecent(cmd *cobra.Command, args []string) error {
 	}
 	engine := newEngine(provider, cfg)
 
-	updatedRecent, err := runMemoryUpdateRecentRequest(ctx, engine, reqModel, inputBuilder.String(), existingRecent, fragmentsText, memoryUpdateRecentTargetTokens, targetChars)
-	if err != nil {
-		return err
-	}
-	updatedRecent, err = fitUpdatedRecentWithinBudget(ctx, engine, reqModel, updatedRecent, memoryUpdateRecentTargetTokens, targetChars, highWaterChars)
-	if err != nil {
-		return err
+	buildUpdatedRecent := func(existingRecent string) (string, error) {
+		updatedRecent, err := runMemoryUpdateRecentRequest(ctx, engine, reqModel, inputBuilder.String(), existingRecent, fragmentsText, memoryUpdateRecentTargetTokens, targetChars)
+		if err != nil {
+			return "", err
+		}
+		updatedRecent, err = fitUpdatedRecentWithinBudget(ctx, engine, reqModel, updatedRecent, memoryUpdateRecentTargetTokens, targetChars, highWaterChars)
+		if err != nil {
+			return "", err
+		}
+		return updatedRecent, nil
 	}
 
 	if memoryDryRun {
+		existingRecent, err := loadRecentContent(recentPath)
+		if err != nil {
+			return err
+		}
+		updatedRecent, err := buildUpdatedRecent(existingRecent)
+		if err != nil {
+			return err
+		}
 		fmt.Print(updatedRecent)
 		if !strings.HasSuffix(updatedRecent, "\n") {
 			fmt.Println()
@@ -197,27 +203,39 @@ func runMemoryUpdateRecent(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
-	if err := os.MkdirAll(filepath.Dir(recentPath), 0755); err != nil {
-		return fmt.Errorf("create memory directory: %w", err)
-	}
-	if err := os.WriteFile(recentPath, []byte(updatedRecent), 0644); err != nil {
-		return fmt.Errorf("write recent.md: %w", err)
-	}
-
-	sessionIDs := make([]string, 0, len(trackedOffsets))
-	for sessionID := range trackedOffsets {
-		sessionIDs = append(sessionIDs, sessionID)
-	}
-	sort.Strings(sessionIDs)
-	for _, sessionID := range sessionIDs {
-		if err := store.SetMeta(ctx, updateRecentOffsetMetaKey(sessionID), strconv.Itoa(trackedOffsets[sessionID])); err != nil {
-			return fmt.Errorf("persist update-recent offset for session %s: %w", sessionID, err)
+	if err := withLockedRecentFile(recentPath, func() error {
+		existingRecent, err := loadRecentContent(recentPath)
+		if err != nil {
+			return err
 		}
-	}
 
-	now := time.Now().UTC()
-	if err := store.SetMeta(ctx, memoryUpdateRecentMetaKey(agentName), now.Format(time.RFC3339)); err != nil {
-		return fmt.Errorf("update last update-recent timestamp: %w", err)
+		updatedRecent, err := buildUpdatedRecent(existingRecent)
+		if err != nil {
+			return err
+		}
+		if err := writeRecentFileAtomically(recentPath, updatedRecent); err != nil {
+			return fmt.Errorf("write recent.md: %w", err)
+		}
+
+		sessionIDs := make([]string, 0, len(trackedOffsets))
+		for sessionID := range trackedOffsets {
+			sessionIDs = append(sessionIDs, sessionID)
+		}
+		sort.Strings(sessionIDs)
+		for _, sessionID := range sessionIDs {
+			if err := store.SetMeta(ctx, updateRecentOffsetMetaKey(sessionID), strconv.Itoa(trackedOffsets[sessionID])); err != nil {
+				return fmt.Errorf("persist update-recent offset for session %s: %w", sessionID, err)
+			}
+		}
+
+		now := time.Now().UTC()
+		if err := store.SetMeta(ctx, memoryUpdateRecentMetaKey(agentName), now.Format(time.RFC3339)); err != nil {
+			return fmt.Errorf("update last update-recent timestamp: %w", err)
+		}
+
+		return nil
+	}); err != nil {
+		return err
 	}
 
 	return nil
