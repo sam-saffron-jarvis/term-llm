@@ -119,6 +119,57 @@ func TestOpenAICompatStream_AllowsLargeSSEDataLines(t *testing.T) {
 	}
 }
 
+func TestOpenAICompatStream_EmitsReasoningContentDeltas(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w,
+			"data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"think 1\"}}]}\n\n"+
+				"data: {\"choices\":[{\"delta\":{\"reasoning_content\":\" think 2\"}}]}\n\n"+
+				"data: [DONE]\n\n",
+		)
+	}))
+	defer server.Close()
+
+	provider := NewOpenAICompatProvider(server.URL, "", "test-model", "Test")
+	stream, err := provider.Stream(context.Background(), Request{
+		Messages: []Message{{
+			Role:  RoleUser,
+			Parts: []Part{{Type: PartText, Text: "hello"}},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("stream: %v", err)
+	}
+	defer stream.Close()
+
+	var gotReasoning string
+	var sawDone bool
+	for {
+		event, err := stream.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("recv: %v", err)
+		}
+		switch event.Type {
+		case EventReasoningDelta:
+			gotReasoning += event.Text
+		case EventDone:
+			sawDone = true
+		case EventError:
+			t.Fatalf("unexpected stream error: %v", event.Err)
+		}
+	}
+
+	if gotReasoning != "think 1 think 2" {
+		t.Fatalf("expected reasoning_content deltas to be emitted, got %q", gotReasoning)
+	}
+	if !sawDone {
+		t.Fatal("expected EventDone")
+	}
+}
+
 func TestOpenAICompatStream_HandlesMultiLineSSEPayload(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")

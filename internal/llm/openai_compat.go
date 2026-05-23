@@ -620,10 +620,16 @@ func (p *OpenAICompatProvider) Stream(ctx context.Context, req Request) (Stream,
 							return err
 						}
 					}
-					// Capture reasoning from thinking models (OpenRouter streaming uses "reasoning" field)
-					if choice.Delta.Reasoning != "" {
-						reasoningBuilder.WriteString(choice.Delta.Reasoning)
-						if err := send.Send(Event{Type: EventReasoningDelta, Text: choice.Delta.Reasoning}); err != nil {
+					// Capture reasoning from thinking models. Different OpenAI-compatible
+					// backends use either "reasoning" (OpenRouter) or
+					// "reasoning_content" (DeepSeek) in streaming deltas.
+					reasoningDelta := choice.Delta.Reasoning
+					if reasoningDelta == "" {
+						reasoningDelta = choice.Delta.ReasoningContent
+					}
+					if reasoningDelta != "" {
+						reasoningBuilder.WriteString(reasoningDelta)
+						if err := send.Send(Event{Type: EventReasoningDelta, Text: reasoningDelta}); err != nil {
 							return err
 						}
 					}

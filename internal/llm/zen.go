@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"sort"
+	"strings"
 	"time"
 )
 
@@ -25,9 +26,27 @@ type ZenProvider struct {
 // Zen provides free access to models like GLM 4.7 via opencode.ai.
 // API key is optional: empty for free tier, or set ZEN_API_KEY for paid models.
 func NewZenProvider(apiKey, model string) *ZenProvider {
+	model = normalizeZenModel(model)
 	return &ZenProvider{
 		OpenAICompatProvider: NewOpenAICompatProvider(zenBaseURL, apiKey, model, zenDisplayName),
 	}
+}
+
+func normalizeZenModel(model string) string {
+	trimmed := strings.TrimSpace(model)
+	switch strings.ToLower(trimmed) {
+	case "bigpickle", "big_pickle", "big pickle":
+		return "big-pickle"
+	default:
+		return trimmed
+	}
+}
+
+// Stream normalizes Zen-specific model aliases before delegating to the
+// OpenAI-compatible implementation.
+func (p *ZenProvider) Stream(ctx context.Context, req Request) (Stream, error) {
+	req.Model = normalizeZenModel(req.Model)
+	return p.OpenAICompatProvider.Stream(ctx, req)
 }
 
 // modelsDevResponse represents the models.dev API response structure.
