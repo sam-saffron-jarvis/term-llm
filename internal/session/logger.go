@@ -86,6 +86,33 @@ func (s *LoggingStore) GetMessageByID(ctx context.Context, msgID int64) (*Messag
 	return msg, err
 }
 
+// GetLatestVisibleMessageID returns the latest persisted user/assistant message id for a session.
+func (s *LoggingStore) GetLatestVisibleMessageID(ctx context.Context, sessionID string) (int64, error) {
+	getter, ok := s.Store.(interface {
+		GetLatestVisibleMessageID(context.Context, string) (int64, error)
+	})
+	if ok {
+		msgID, err := getter.GetLatestVisibleMessageID(ctx, sessionID)
+		if err != nil {
+			s.logOnce("GetLatestVisibleMessageID", err)
+		}
+		return msgID, err
+	}
+
+	msgs, err := s.Store.GetMessages(ctx, sessionID, 0, 0)
+	if err != nil {
+		s.logOnce("GetLatestVisibleMessageID", err)
+		return 0, err
+	}
+	for i := len(msgs) - 1; i >= 0; i-- {
+		role := string(msgs[i].Role)
+		if role == "user" || role == "assistant" {
+			return msgs[i].ID, nil
+		}
+	}
+	return 0, nil
+}
+
 // UpdateMetrics wraps Store.UpdateMetrics with error logging.
 func (s *LoggingStore) UpdateMetrics(ctx context.Context, id string, llmTurns, toolCalls, inputTokens, outputTokens, cachedInputTokens, cacheWriteTokens int) error {
 	err := s.Store.UpdateMetrics(ctx, id, llmTurns, toolCalls, inputTokens, outputTokens, cachedInputTokens, cacheWriteTokens)

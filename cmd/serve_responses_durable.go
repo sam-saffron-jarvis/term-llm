@@ -13,6 +13,10 @@ import (
 
 const durableResponseMessagePrefix = "resp_msg_"
 
+type latestVisibleMessageIDStore interface {
+	GetLatestVisibleMessageID(ctx context.Context, sessionID string) (int64, error)
+}
+
 func durableResponseIDForMessageID(id int64) string {
 	if id <= 0 {
 		return ""
@@ -43,6 +47,24 @@ func latestVisibleMessage(messages []session.Message) (session.Message, bool) {
 		}
 	}
 	return session.Message{}, false
+}
+
+func latestVisibleMessageID(ctx context.Context, store session.Store, sessionID string) (int64, error) {
+	if store == nil || sessionID == "" {
+		return 0, nil
+	}
+	if getter, ok := store.(latestVisibleMessageIDStore); ok {
+		return getter.GetLatestVisibleMessageID(ctx, sessionID)
+	}
+	msgs, err := store.GetMessages(ctx, sessionID, 0, 0)
+	if err != nil {
+		return 0, err
+	}
+	msg, ok := latestVisibleMessage(msgs)
+	if !ok {
+		return 0, nil
+	}
+	return msg.ID, nil
 }
 
 func latestDurableResponseID(messages []session.Message) string {
@@ -83,16 +105,12 @@ func (s *serveServer) resolveDurablePreviousResponseID(ctx context.Context, prev
 	if headerSessionID != "" && headerSessionID != msg.SessionID {
 		return durablePreviousResponseResolution{}, http.StatusConflict, fmt.Sprintf("session_id %q conflicts with previous_response_id session %q", headerSessionID, msg.SessionID)
 	}
-	msgs, err := s.store.GetMessages(ctx, msg.SessionID, 0, 0)
+	latestMsgID, err := latestVisibleMessageID(ctx, s.store, msg.SessionID)
 	if err != nil {
 		return durablePreviousResponseResolution{}, http.StatusBadRequest, fmt.Sprintf("previous_response_id %q not found", previousResponseID)
 	}
-	latest, ok := latestVisibleMessage(msgs)
-	if !ok || latest.ID != msg.ID {
-		latestID := ""
-		if ok {
-			latestID = durableResponseIDForMessageID(latest.ID)
-		}
+	if latestMsgID == 0 || latestMsgID != msg.ID {
+		latestID := durableResponseIDForMessageID(latestMsgID)
 		if latestID == "" {
 			latestID = "unknown"
 		}
@@ -123,9 +141,9 @@ func (s *serveServer) latestDurableResponseIDForSession(ctx context.Context, ses
 	if s == nil || s.store == nil || sessionID == "" {
 		return ""
 	}
-	msgs, err := s.store.GetMessages(ctx, sessionID, 0, 0)
+	msgID, err := latestVisibleMessageID(ctx, s.store, sessionID)
 	if err != nil {
 		return ""
 	}
-	return latestDurableResponseID(msgs)
+	return durableResponseIDForMessageID(msgID)
 }

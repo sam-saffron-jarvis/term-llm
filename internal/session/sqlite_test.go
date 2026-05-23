@@ -74,6 +74,43 @@ func TestSQLiteStoreGetMessagesFromHonorsLimit(t *testing.T) {
 	}
 }
 
+func TestSQLiteStoreGetLatestVisibleMessageIDSkipsInvisibleTail(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+
+	store, err := NewSQLiteStore(DefaultConfig())
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+	sess := &Session{ID: NewID(), Provider: "test", Model: "test-model", Mode: ModeChat}
+	if err := store.Create(ctx, sess); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	user := NewMessage(sess.ID, llm.UserText("hello"), 0)
+	if err := store.AddMessage(ctx, sess.ID, user); err != nil {
+		t.Fatalf("AddMessage(user): %v", err)
+	}
+	assistant := NewMessage(sess.ID, llm.AssistantText("hi"), 1)
+	if err := store.AddMessage(ctx, sess.ID, assistant); err != nil {
+		t.Fatalf("AddMessage(assistant): %v", err)
+	}
+	tool := NewMessage(sess.ID, llm.Message{Role: llm.RoleTool, Parts: []llm.Part{{Type: llm.PartText, Text: "invisible tail"}}}, 2)
+	if err := store.AddMessage(ctx, sess.ID, tool); err != nil {
+		t.Fatalf("AddMessage(tool): %v", err)
+	}
+
+	got, err := store.GetLatestVisibleMessageID(ctx, sess.ID)
+	if err != nil {
+		t.Fatalf("GetLatestVisibleMessageID: %v", err)
+	}
+	if got != assistant.ID {
+		t.Fatalf("latest visible message id = %d, want %d", got, assistant.ID)
+	}
+}
+
 func TestSQLiteStoreReplaceMessagesPreservesUnchangedPrefix(t *testing.T) {
 	t.Setenv("XDG_DATA_HOME", t.TempDir())
 
