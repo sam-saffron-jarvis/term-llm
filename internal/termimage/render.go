@@ -14,6 +14,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/BourgeoisBear/rasterm"
 	"golang.org/x/image/draw"
@@ -124,12 +125,11 @@ func normalizeRequest(req Request) Request {
 }
 
 func isCacheableResult(req Request, protocol Protocol) bool {
-	// Kitty viewport results contain terminal-session state: image ids, virtual
-	// placement commands, and placeholder grids. Reusing them across Bubble Tea
-	// rebuilds/resizes/scroll cycles can bind fresh viewport text to stale terminal
-	// compositor state. Cache pixel/text renderers, but regenerate Kitty viewport
-	// placements each time.
-	return !(protocol == ProtocolKitty && normalizeMode(req.Mode) == ModeViewport)
+	// Kitty results contain terminal-session state: image ids, placement commands,
+	// and sometimes Unicode placeholder grids. Reusing them across redraws or CLI
+	// invocations can bind new output to stale terminal compositor state. Cache
+	// pixel/text renderers, but regenerate Kitty terminal state every time.
+	return protocol != ProtocolKitty
 }
 
 func getCached(key string) (Result, bool) {
@@ -183,8 +183,18 @@ func resolveCellSize(req Request) (int, int) {
 }
 
 func nextImageID() uint32 {
-	id := atomic.AddUint32(&imageIDCounter, 1)
-	return (id % 16777215) + 1
+	// Kitty Unicode placeholders encode the image id into a 24-bit RGB color, so
+	// keep the id in 1..0xFFFFFF. Seed from wall-clock milliseconds so separate
+	// short-lived CLI processes do not all start at the same ids, and mix in an
+	// atomic counter so multiple renders within the same millisecond remain unique.
+	const maxKittyImageID = 0xFFFFFF
+	ms := uint32(time.Now().UnixMilli() % maxKittyImageID)
+	seq := atomic.AddUint32(&imageIDCounter, 1)
+	id := (ms + seq) % maxKittyImageID
+	if id == 0 {
+		return maxKittyImageID
+	}
+	return id
 }
 
 func loadImage(path string) (stdimage.Image, error) {

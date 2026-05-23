@@ -106,7 +106,7 @@ func renderKitty(img stdimage.Image, req Request, cellW, cellH int, cacheKey str
 		}
 		chunk := b64Data[i:end]
 		if i == 0 {
-			fmt.Fprintf(&upload, "\x1b_Ga=T,t=d,f=100,i=%d,q=2,m=%d;%s\x1b\\", imageID, more, chunk)
+			fmt.Fprintf(&upload, "\x1b_Ga=t,t=d,f=100,i=%d,q=2,m=%d;%s\x1b\\", imageID, more, chunk)
 		} else {
 			fmt.Fprintf(&upload, "\x1b_Gm=%d;%s\x1b\\", more, chunk)
 		}

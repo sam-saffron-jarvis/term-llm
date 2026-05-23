@@ -1,6 +1,7 @@
 package image
 
 import (
+	"bytes"
 	"image"
 	"image/color"
 	"image/png"
@@ -23,17 +24,38 @@ func TestTerminalImageWrapperUsesTermimageKittyImplementation(t *testing.T) {
 	if result.Full == "" {
 		t.Fatal("expected Kitty terminal image output")
 	}
-	if result.Upload == "" || !strings.Contains(result.Upload, "a=t") {
-		t.Fatalf("direct terminal wrapper should expose reusable Kitty upload bytes, got upload %q", result.Upload)
+	if result.Upload == "" || !strings.Contains(result.Upload, "a=t,t=d") {
+		t.Fatalf("console Kitty wrapper should transmit upload bytes without direct display, got upload %q", result.Upload)
 	}
 	if !strings.Contains(result.Full, "\x1b_G") {
 		t.Fatalf("expected delegated Kitty graphics command, got %q", result.Full)
 	}
-	if strings.Contains(result.Full, "a=T,U=1") || strings.Contains(result.Full, "a=p,U=1") || strings.Contains(result.Full, "\U0010eeee") {
-		t.Fatalf("standard image display should use direct Kitty rendering, not Unicode placeholders: %q", result.Full)
+	if !strings.Contains(result.Full, "a=p,U=1") || !strings.Contains(result.Full, "\U0010eeee") {
+		t.Fatalf("console image display should use Kitty Unicode placeholders for scrollback stability: %q", result.Full)
 	}
-	if result.Placeholder != result.Full {
-		t.Fatalf("direct terminal wrapper should expose full output as placeholder/display")
+	if result.Placeholder == "" || !strings.Contains(result.Placeholder, "\U0010eeee") {
+		t.Fatalf("placeholder/display should contain Kitty placeholder cells: %q", result.Placeholder)
+	}
+}
+
+func TestTerminalImageWriterAdvancesOneLineAfterKittyPlaceholders(t *testing.T) {
+	t.Setenv("TERM_LLM_IMAGE_PROTOCOL", "kitty")
+	termimage.ClearCache()
+
+	path := writeTerminalTestPNG(t)
+	var buf bytes.Buffer
+	if err := RenderImageToWriter(&buf, path); err != nil {
+		t.Fatalf("RenderImageToWriter() error = %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "a=p,U=1") || !strings.Contains(out, "\U0010eeee") {
+		t.Fatalf("expected Kitty Unicode placeholder rendering, got %q", out)
+	}
+	if !strings.HasSuffix(out, "\r\n") {
+		t.Fatalf("writer should finish on next line after placeholder grid, got %q", out)
+	}
+	if strings.Count(out, "\r\n") != 1 {
+		t.Fatalf("placeholder grid consumes image rows; writer should add one CRLF, got %q", out)
 	}
 }
 
@@ -54,8 +76,8 @@ func TestDetectCapabilityUsesTermimageTmuxPolicy(t *testing.T) {
 
 func writeTerminalTestPNG(t *testing.T) string {
 	t.Helper()
-	img := image.NewNRGBA(image.Rect(0, 0, 20, 20))
-	for y := 0; y < 20; y++ {
+	img := image.NewNRGBA(image.Rect(0, 0, 20, 40))
+	for y := 0; y < 40; y++ {
 		for x := 0; x < 20; x++ {
 			img.Set(x, y, color.NRGBA{R: uint8(10 + x), G: uint8(20 + y), B: 180, A: 255})
 		}

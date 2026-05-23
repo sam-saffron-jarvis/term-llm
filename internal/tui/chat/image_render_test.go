@@ -129,7 +129,7 @@ func TestAltScreenImageUploadCmdUsesPostFrameComposition(t *testing.T) {
 func TestAltScreenKittyPartialImageCanInjectAndUpload(t *testing.T) {
 	m := newTestChatModel(true)
 	m.viewportImageArtifacts = map[string]viewportImageArtifact{
-		"t": {Key: "t", Upload: "\x1b_Ga=T;data\x1b\\", Rows: []string{"row0\U0010eeee", "row1\U0010eeee"}, WidthCells: 4, HeightCells: 2},
+		"t": {Key: "t", Upload: "\x1b_Ga=t;data\x1b\\", Rows: []string{"row0\U0010eeee", "row1\U0010eeee"}, WidthCells: 4, HeightCells: 2},
 	}
 	m.viewportImageBlocks = []viewportImageBlock{{Key: "t", StartLine: 0, WidthCells: 4, HeightCells: 2}}
 	visible := []string{"    "}
@@ -137,8 +137,8 @@ func TestAltScreenKittyPartialImageCanInjectAndUpload(t *testing.T) {
 	if strings.Contains(strings.Join(visible, "\n"), "\U0010eeee") {
 		t.Fatalf("partial Kitty image should not inject placeholders before upload flush: %q", visible)
 	}
-	if upload := strings.Join(m.pendingImageUploads, ""); !strings.Contains(upload, "a=T") {
-		t.Fatalf("partial visible Kitty image should upload, got %q", upload)
+	if upload := strings.Join(m.pendingImageUploads, ""); !strings.Contains(upload, "a=t") {
+		t.Fatalf("partial visible Kitty image should upload without direct display, got %q", upload)
 	}
 	m.uploadedImageKeys[m.viewportImageUploadKey("t")] = struct{}{}
 	m.placedImageKeys[m.viewportImageUploadKey("t")+":place"] = struct{}{}

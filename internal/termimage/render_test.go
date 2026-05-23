@@ -117,8 +117,11 @@ func TestRenderKittyViewportSplitsUploadAndDisplay(t *testing.T) {
 	if !strings.Contains(result.Upload, "\x1b_G") {
 		t.Fatalf("upload should contain Kitty APC commands: %q", result.Upload)
 	}
-	if !strings.Contains(result.Upload, "a=T,t=d,f=100") {
-		t.Fatalf("upload should transmit PNG data separately: %q", result.Upload)
+	if !strings.Contains(result.Upload, "a=t,t=d,f=100") {
+		t.Fatalf("upload should transmit PNG data without direct display: %q", result.Upload)
+	}
+	if strings.Contains(result.Upload, "a=T") {
+		t.Fatalf("upload must not transmit-and-display before placeholder placement: %q", result.Upload)
 	}
 	if !strings.Contains(result.Place, "a=p,U=1") {
 		t.Fatalf("place should create Unicode-placeholder placement: %q", result.Place)
@@ -196,6 +199,40 @@ func TestRenderKittyOneShotUsesDirectPlacement(t *testing.T) {
 	}
 	if strings.Contains(result.Full, "\U0010eeee") || strings.Contains(result.Full, "U=1") {
 		t.Fatalf("one-shot Kitty should not use Unicode placeholders: %q", result.Full)
+	}
+}
+
+func TestRenderKittyDoesNotReuseCachedOneShotState(t *testing.T) {
+	ClearCache()
+	path := writeTestPNG(t, image.Rect(0, 0, 20, 20), func(x, y int) color.Color {
+		return color.NRGBA{R: uint8(10 + x), G: uint8(20 + y), B: 200, A: 255}
+	})
+	req := Request{Path: path, Mode: ModeOneShot, Protocol: ProtocolKitty, MaxCols: 2, MaxRows: 2, CellWidthPx: 10, CellHeightPx: 10}
+	first, err := RenderWithEnvironment(req, Environment{})
+	if err != nil {
+		t.Fatalf("first render: %v", err)
+	}
+	second, err := RenderWithEnvironment(req, Environment{})
+	if err != nil {
+		t.Fatalf("second render: %v", err)
+	}
+	if first.ImageID == 0 || second.ImageID == 0 {
+		t.Fatalf("expected non-zero Kitty image ids, got %d and %d", first.ImageID, second.ImageID)
+	}
+	if first.ImageID == second.ImageID || first.CacheKey == second.CacheKey || first.Full == second.Full {
+		t.Fatalf("Kitty one-shot renders should generate fresh terminal state; first id=%d key=%q second id=%d key=%q", first.ImageID, first.CacheKey, second.ImageID, second.CacheKey)
+	}
+}
+
+func TestKittyImageIDUsesTimeAndCounter(t *testing.T) {
+	atomic.StoreUint32(&imageIDCounter, 0)
+	first := nextImageID()
+	second := nextImageID()
+	if first == 0 || first > 0xFFFFFF || second == 0 || second > 0xFFFFFF {
+		t.Fatalf("ids out of Kitty RGB placeholder range: %d, %d", first, second)
+	}
+	if first == second {
+		t.Fatalf("consecutive ids should differ, got %d", first)
 	}
 }
 

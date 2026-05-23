@@ -32,19 +32,14 @@ func SaveImage(data []byte, outputDir, prompt string) (string, error) {
 	return path, nil
 }
 
-// DisplayImage displays the image in terminal using rasterm
+// DisplayImage displays the image in terminal using the shared termimage renderer.
 // Returns nil if terminal doesn't support images (graceful degradation)
 func DisplayImage(imagePath string) error {
 	cap := DetectCapability()
 	if cap == CapNone {
 		return nil // graceful degradation
 	}
-	if err := RenderImageToWriter(os.Stdout, imagePath); err != nil {
-		return err
-	}
-	// Print CR+LF to reset cursor position after image
-	fmt.Fprint(os.Stdout, "\r\n")
-	return nil
+	return RenderImageToWriter(os.Stdout, imagePath)
 }
 
 // CopyToClipboard copies image to clipboard (platform-aware)

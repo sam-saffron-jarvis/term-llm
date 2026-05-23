@@ -3,6 +3,7 @@ package image
 import (
 	"fmt"
 	"io"
+	"strings"
 
 	"github.com/samsaffron/term-llm/internal/termimage"
 )
@@ -94,15 +95,62 @@ func RenderImageToWriter(w io.Writer, path string) error {
 	if capabilityFromProtocol(result.Protocol) == CapNone || result.Full == "" {
 		return nil
 	}
-	_, err = io.WriteString(w, result.Full)
+	if _, err := io.WriteString(w, result.Full); err != nil {
+		return err
+	}
+	_, err = io.WriteString(w, terminalImageCursorAdvance(result))
 	return err
 }
 
+func terminalImageCursorAdvance(result termimage.Result) string {
+	switch result.Protocol {
+	case termimage.ProtocolKitty:
+		if kittyUsesUnicodePlaceholders(result) {
+			// The placeholder grid is real terminal text and already consumed the
+			// image rows. Move from the end of the final placeholder row to the next
+			// prompt line only.
+			return "\r\n"
+		}
+		// Kitty direct placements are emitted with C=1 so they do not move the
+		// terminal cursor. Reserve the same vertical space explicitly.
+		rows := result.HeightCells
+		if rows < 1 {
+			rows = 1
+		}
+		return strings.Repeat("\r\n", rows)
+	case termimage.ProtocolITerm, termimage.ProtocolSixel:
+		return "\r\n"
+	default:
+		return ""
+	}
+}
+
+func kittyUsesUnicodePlaceholders(result termimage.Result) bool {
+	return result.Protocol == termimage.ProtocolKitty && strings.Contains(result.Place, "U=1")
+}
+
 func renderViaTermimage(path string) (termimage.Result, error) {
-	result, err := termimage.Render(termimage.Request{
-		Path:               path,
+	strategy := termimage.Select(termimage.Request{
 		Mode:               termimage.ModeOneShot,
 		Protocol:           termimage.ProtocolAuto,
+		AllowEscapeUploads: true,
+	}, termimage.DefaultEnvironment())
+
+	mode := termimage.ModeOneShot
+	protocol := termimage.ProtocolAuto
+	if strategy.Protocol == termimage.ProtocolKitty {
+		// For normal console output, use Kitty Unicode placeholders just like the
+		// chat TUI viewport path. They are real grid cells, so old images survive
+		// later scrollback/redraws. Direct placements can be invalidated when later
+		// terminal output scrolls or clears screen cells around them.
+		mode = termimage.ModeViewport
+		protocol = termimage.ProtocolKitty
+	}
+
+	result, err := termimage.Render(termimage.Request{
+		Path:               path,
+		Mode:               mode,
+		Protocol:           protocol,
 		MaxCols:            termimage.DefaultMaxCols,
 		MaxRows:            termimage.DefaultMaxRows,
 		AllowEscapeUploads: true,

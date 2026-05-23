@@ -312,6 +312,30 @@ func (m imageSpinnerModel) View() tea.View {
 	return tea.NewView(s)
 }
 
+func imageSpinnerEnvironment(environ []string) []string {
+	filtered := make([]string, 0, len(environ)+2)
+	for _, entry := range environ {
+		name, _, ok := strings.Cut(entry, "=")
+		if !ok {
+			continue
+		}
+		switch name {
+		case "TERM", "TERM_PROGRAM", "WT_SESSION":
+			continue
+		default:
+			filtered = append(filtered, entry)
+		}
+	}
+	// Bubble Tea v2 probes Kitty/Ghostty/etc. for synchronized output (modes
+	// 2026/2027) as soon as the renderer starts. The image command's spinner is
+	// short-lived, so fast providers can exit before those terminal replies are
+	// consumed; the user's shell then echoes stray "^[?2026;...$y" bytes. Force a
+	// conservative environment for this tiny spinner only. The actual image
+	// renderer still uses the real process environment for Kitty/iTerm/Sixel.
+	filtered = append(filtered, "TERM=xterm-256color", "TERM_PROGRAM=Apple_Terminal")
+	return filtered
+}
+
 func runImageWithSpinner(_ context.Context, provider image.ImageProvider, generate func() (*image.ImageResult, error), message string) (*image.ImageResult, error) {
 	s := spinner.New()
 	s.Spinner = spinner.Dot
@@ -334,7 +358,12 @@ func runImageWithSpinner(_ context.Context, provider image.ImageProvider, genera
 	}
 	defer tty.Close()
 
-	p := tea.NewProgram(m, tea.WithInput(tty), tea.WithOutput(os.Stderr), tea.WithoutSignalHandler())
+	p := tea.NewProgram(m,
+		tea.WithInput(tty),
+		tea.WithOutput(os.Stderr),
+		tea.WithEnvironment(imageSpinnerEnvironment(os.Environ())),
+		tea.WithoutSignalHandler(),
+	)
 	finalModel, err := p.Run()
 	if err != nil {
 		return nil, err
