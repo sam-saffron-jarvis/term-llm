@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sort"
 	"sync"
+	"time"
 
 	"github.com/samsaffron/term-llm/internal/llm"
 )
@@ -19,6 +20,8 @@ const (
 	StatusReady    ServerStatus = "ready"
 	StatusFailed   ServerStatus = "failed"
 )
+
+var mcpStartupTimeout = 30 * time.Second
 
 // ServerState holds the state of a managed MCP server.
 type ServerState struct {
@@ -35,11 +38,18 @@ type StatusUpdate struct {
 	Error  error
 }
 
+type serverStartup struct {
+	client        *Client
+	startupCancel context.CancelFunc
+	processCancel context.CancelFunc
+}
+
 // Manager handles MCP server lifecycle and provides tools to LLM.
 type Manager struct {
 	config   *Config
 	clients  map[string]*Client
 	statuses map[string]*ServerState
+	startups map[string]*serverStartup
 	mu       sync.RWMutex
 
 	// Channel for status updates (optional, for UI notifications)
@@ -54,6 +64,7 @@ func NewManager() *Manager {
 	return &Manager{
 		clients:  make(map[string]*Client),
 		statuses: make(map[string]*ServerState),
+		startups: make(map[string]*serverStartup),
 	}
 }
 
@@ -192,7 +203,13 @@ func (m *Manager) Enable(ctx context.Context, name string) error {
 		m.samplingHandler.SetServerConfig(name, serverCfg)
 	}
 
+	timeout := mcpStartupTimeout
+	startupCtx, startupCancel := context.WithTimeout(ctx, timeout)
+	processCtx, processCancel := context.WithCancel(context.Background())
+	startup := &serverStartup{client: client, startupCancel: startupCancel, processCancel: processCancel}
+
 	m.clients[name] = client
+	m.startups[name] = startup
 	m.statuses[name] = &ServerState{
 		Name:   name,
 		Status: StatusStarting,
@@ -204,25 +221,49 @@ func (m *Manager) Enable(ctx context.Context, name string) error {
 
 	// Start in background
 	go func() {
-		err := client.Start(ctx)
+		cancelProcessOnStartupDone := context.AfterFunc(startupCtx, processCancel)
+
+		err := client.start(startupCtx, processCtx)
+		// Stop the startup expiry hook before cleanup-canceling startupCtx so a
+		// successfully ready stdio server keeps its long-lived process context.
+		startupExpired := !cancelProcessOnStartupDone()
+		startupCancel()
+		if startupExpired {
+			processCancel()
+			if err == nil {
+				err = startupCtx.Err()
+				if err == nil {
+					err = context.Canceled
+				}
+			}
+		}
+		if err != nil {
+			processCancel()
+		}
 
 		m.mu.Lock()
+		if currentStartup, ok := m.startups[name]; ok && currentStartup == startup {
+			delete(m.startups, name)
+		}
 		state, ok := m.statuses[name]
-		if !ok {
+		if !ok || state.Client != client {
 			m.mu.Unlock()
+			processCancel()
 			client.Stop()
 			return
 		}
+
+		status := StatusReady
 		if err != nil {
-			state.Status = StatusFailed
+			status = StatusFailed
 			state.Error = err
 		} else {
-			state.Status = StatusReady
 			state.Error = nil
 		}
+		state.Status = status
 		m.mu.Unlock()
 
-		m.sendStatus(name, state.Status, err)
+		m.sendStatus(name, status, err)
 	}()
 
 	return nil
@@ -231,6 +272,11 @@ func (m *Manager) Enable(ctx context.Context, name string) error {
 // Disable stops an MCP server.
 func (m *Manager) Disable(name string) error {
 	m.mu.Lock()
+	if startup, ok := m.startups[name]; ok {
+		delete(m.startups, name)
+		startup.startupCancel()
+		startup.processCancel()
+	}
 	client, ok := m.clients[name]
 	if !ok {
 		m.mu.Unlock()
@@ -264,8 +310,13 @@ func (m *Manager) StopAll() {
 	for _, c := range m.clients {
 		clients = append(clients, c)
 	}
+	for _, startup := range m.startups {
+		startup.startupCancel()
+		startup.processCancel()
+	}
 	m.clients = make(map[string]*Client)
 	m.statuses = make(map[string]*ServerState)
+	m.startups = make(map[string]*serverStartup)
 	m.mu.Unlock()
 
 	for _, c := range clients {

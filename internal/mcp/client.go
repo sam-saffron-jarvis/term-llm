@@ -58,6 +58,10 @@ func (c *Client) Name() string {
 
 // Start connects to the MCP server and initializes the session.
 func (c *Client) Start(ctx context.Context) error {
+	return c.start(ctx, ctx)
+}
+
+func (c *Client) start(ctx, processCtx context.Context) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -87,7 +91,7 @@ func (c *Client) Start(ctx context.Context) error {
 	if c.config.TransportType() == "http" {
 		transport = c.createHTTPTransport()
 	} else {
-		transport = c.createStdioTransport(ctx)
+		transport = c.createStdioTransport(processCtx)
 	}
 
 	session, err := c.client.Connect(ctx, transport, nil)

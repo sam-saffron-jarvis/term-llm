@@ -1297,7 +1297,7 @@ func (s *serveServer) handleSessionByID(w http.ResponseWriter, r *http.Request) 
 		result = append(result, entry)
 	}
 
-	resp := messagesResponse{LastResponseID: latestDurableResponseID(msgs), Messages: result, HasMore: hasMore}
+	resp := messagesResponse{LastResponseID: s.latestDurableResponseIDForSession(r.Context(), sessionID), Messages: result, HasMore: hasMore}
 	if hasMore {
 		resp.NextOffset = nextOffset
 	}

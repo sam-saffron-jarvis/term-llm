@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/sqlitefts"
 	_ "modernc.org/sqlite"
 )
@@ -1947,6 +1948,24 @@ func (s *SQLiteStore) GetMessageByID(ctx context.Context, msgID int64) (*Message
 		return nil, fmt.Errorf("deserialize parts: %w", err)
 	}
 	return &msg, nil
+}
+
+// GetLatestVisibleMessageID retrieves the latest persisted user/assistant message id for a session.
+func (s *SQLiteStore) GetLatestVisibleMessageID(ctx context.Context, sessionID string) (int64, error) {
+	var msgID int64
+	err := s.db.QueryRowContext(ctx, `
+		SELECT id
+		FROM messages
+		WHERE session_id = ? AND role IN (?, ?)
+		ORDER BY sequence DESC, id DESC
+		LIMIT 1`, sessionID, string(llm.RoleUser), string(llm.RoleAssistant)).Scan(&msgID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, fmt.Errorf("query latest visible message id: %w", err)
+	}
+	return msgID, nil
 }
 
 // GetMessages retrieves messages for a session.

@@ -4437,11 +4437,13 @@ func TestHandleSessionMessages_DefaultPagination(t *testing.T) {
 	if err := store.Create(ctx, sess); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
+	var latestVisibleID int64
 	for i := 0; i < sessionMessagesPageSize+5; i++ {
 		msg := session.NewMessage("sess-page", llm.UserText(fmt.Sprintf("msg-%03d", i)), -1)
 		if err := store.AddMessage(ctx, "sess-page", msg); err != nil {
 			t.Fatalf("AddMessage(%d): %v", i, err)
 		}
+		latestVisibleID = msg.ID
 	}
 
 	srv := &serveServer{store: store}
@@ -4454,7 +4456,8 @@ func TestHandleSessionMessages_DefaultPagination(t *testing.T) {
 	}
 
 	var body struct {
-		Messages []struct {
+		LastResponseID string `json:"lastResponseId"`
+		Messages       []struct {
 			Parts []struct {
 				Text string `json:"text"`
 			} `json:"parts"`
@@ -4467,6 +4470,9 @@ func TestHandleSessionMessages_DefaultPagination(t *testing.T) {
 	}
 	if len(body.Messages) != sessionMessagesPageSize {
 		t.Fatalf("message count = %d, want %d", len(body.Messages), sessionMessagesPageSize)
+	}
+	if got := body.LastResponseID; got != durableResponseIDForMessageID(latestVisibleID) {
+		t.Fatalf("first page lastResponseId = %q, want %q", got, durableResponseIDForMessageID(latestVisibleID))
 	}
 	if !body.HasMore {
 		t.Fatal("expected has_more=true for truncated history page")
@@ -4488,7 +4494,8 @@ func TestHandleSessionMessages_DefaultPagination(t *testing.T) {
 		t.Fatalf("page 2 status = %d, want 200", rr.Code)
 	}
 	body = struct {
-		Messages []struct {
+		LastResponseID string `json:"lastResponseId"`
+		Messages       []struct {
 			Parts []struct {
 				Text string `json:"text"`
 			} `json:"parts"`
@@ -4501,6 +4508,9 @@ func TestHandleSessionMessages_DefaultPagination(t *testing.T) {
 	}
 	if len(body.Messages) != 5 {
 		t.Fatalf("page 2 message count = %d, want 5", len(body.Messages))
+	}
+	if got := body.LastResponseID; got != durableResponseIDForMessageID(latestVisibleID) {
+		t.Fatalf("page 2 lastResponseId = %q, want %q", got, durableResponseIDForMessageID(latestVisibleID))
 	}
 	if body.HasMore {
 		t.Fatal("expected has_more=false on final page")
