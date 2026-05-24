@@ -10,6 +10,26 @@ import (
 	"github.com/samsaffron/term-llm/internal/tools"
 )
 
+func TestEnsureOutputToolCapturedCoaxesModelWithoutAssistantText(t *testing.T) {
+	provider := llm.NewMockProvider("mock").WithCapabilities(llm.Capabilities{ToolCalls: true, SupportsToolChoice: true})
+	provider.AddToolCall("call_1", "submit_result", map[string]string{"result_json": `{"ok":true}`})
+	outputTool := tools.NewSetOutputTool("submit_result", "result_json", "Submit the result")
+
+	if err := ensureOutputToolCaptured(context.Background(), provider, nil, llm.Request{}, outputTool, ""); err != nil {
+		t.Fatalf("ensureOutputToolCaptured() error = %v", err)
+	}
+	if got := outputTool.Value(); got != `{"ok":true}` {
+		t.Fatalf("outputTool.Value() = %q", got)
+	}
+	if len(provider.Requests) != 1 {
+		t.Fatalf("provider saw %d requests, want 1", len(provider.Requests))
+	}
+	last := provider.Requests[0].Messages[len(provider.Requests[0].Messages)-1]
+	if last.Role != llm.RoleUser || !strings.Contains(last.Parts[0].Text, "MUST now make exactly one tool call") {
+		t.Fatalf("finalizer prompt = %#v", last)
+	}
+}
+
 func TestEnsureOutputToolCapturedNoopsAfterToolCapturesValue(t *testing.T) {
 	provider := llm.NewMockProvider("mock").WithCapabilities(llm.Capabilities{ToolCalls: true, SupportsToolChoice: true})
 	outputTool := tools.NewSetOutputTool("submit_result", "result_json", "Submit the result")
@@ -50,7 +70,7 @@ func TestEnsureOutputToolCapturedAllowsEmptyStringValue(t *testing.T) {
 	}
 }
 
-func TestRunOutputToolFinalizationKeepsOriginalToolsAndForcesOutputTool(t *testing.T) {
+func TestRunOutputToolFinalizationUsesOnlyOutputToolAndForcesIt(t *testing.T) {
 	provider := llm.NewMockProvider("mock").WithCapabilities(llm.Capabilities{ToolCalls: true, SupportsToolChoice: true})
 	provider.AddToolCall("call_1", "submit_result", map[string]string{"result_json": `{"status":"ok"}`})
 	outputTool := tools.NewSetOutputTool("submit_result", "result_json", "Submit the result")
@@ -81,8 +101,8 @@ func TestRunOutputToolFinalizationKeepsOriginalToolsAndForcesOutputTool(t *testi
 		t.Fatalf("provider saw %d requests, want 1", len(provider.Requests))
 	}
 	finalReq := provider.Requests[0]
-	if len(finalReq.Tools) != 2 || finalReq.Tools[0].Name != "submit_result" || finalReq.Tools[1].Name != "read_file" {
-		t.Fatalf("finalizer tools = %#v, want original tools including submit_result and read_file", finalReq.Tools)
+	if len(finalReq.Tools) != 1 || finalReq.Tools[0].Name != "submit_result" {
+		t.Fatalf("finalizer tools = %#v, want only submit_result", finalReq.Tools)
 	}
 	if finalReq.ToolChoice.Mode != llm.ToolChoiceName || finalReq.ToolChoice.Name != "submit_result" {
 		t.Fatalf("ToolChoice = %#v, want forced submit_result", finalReq.ToolChoice)
@@ -90,8 +110,8 @@ func TestRunOutputToolFinalizationKeepsOriginalToolsAndForcesOutputTool(t *testi
 	if finalReq.ParallelToolCalls {
 		t.Fatal("finalizer should disable parallel tool calls")
 	}
-	if finalReq.MaxTurns != 2 {
-		t.Fatalf("MaxTurns = %d, want 2", finalReq.MaxTurns)
+	if finalReq.MaxTurns != 3 {
+		t.Fatalf("MaxTurns = %d, want 3", finalReq.MaxTurns)
 	}
 	last := finalReq.Messages[len(finalReq.Messages)-1]
 	if last.Role != llm.RoleUser || !strings.Contains(last.Parts[0].Text, "The task is DONE") || !strings.Contains(last.Parts[0].Text, "MUST now make exactly one tool call") {
@@ -115,9 +135,34 @@ func TestRunOutputToolFinalizationFallsBackToAutoWhenToolChoiceUnsupported(t *te
 	}
 }
 
+func TestRunOutputToolFinalizationRetriesWhenModelRespondsWithText(t *testing.T) {
+	provider := llm.NewMockProvider("mock").WithCapabilities(llm.Capabilities{ToolCalls: true, SupportsToolChoice: true})
+	provider.AddTextResponse("Sorry, here is the final answer in prose.")
+	provider.AddTextResponse("Still prose instead of a tool call.")
+	provider.AddTextResponse("I continue to be prose-only.")
+	provider.AddToolCall("call_4", "submit_result", map[string]string{"result_json": `{"status":"ok"}`})
+	outputTool := tools.NewSetOutputTool("submit_result", "result_json", "Submit the result")
+
+	if err := runOutputToolFinalization(context.Background(), provider, nil, llm.Request{}, outputTool, "Done."); err != nil {
+		t.Fatalf("runOutputToolFinalization() error = %v", err)
+	}
+	if got := outputTool.Value(); got != `{"status":"ok"}` {
+		t.Fatalf("outputTool.Value() = %q", got)
+	}
+	if len(provider.Requests) != 4 {
+		t.Fatalf("provider saw %d requests, want 4", len(provider.Requests))
+	}
+	last := provider.Requests[3].Messages[len(provider.Requests[3].Messages)-1]
+	if !strings.Contains(last.Parts[0].Text, "FINALIZATION RETRY 2") {
+		t.Fatalf("retry prompt = %#v", last)
+	}
+}
+
 func TestRunOutputToolFinalizationFailsWhenToolStillMissing(t *testing.T) {
 	provider := llm.NewMockProvider("mock").WithCapabilities(llm.Capabilities{ToolCalls: true, SupportsToolChoice: true})
 	provider.AddTextResponse("Done.")
+	provider.AddTextResponse("Still prose.")
+	provider.AddTextResponse("Still not a tool call.")
 	outputTool := tools.NewSetOutputTool("submit_result", "result_json", "Submit the result")
 	baseReq := llm.Request{Messages: []llm.Message{llm.UserText("Review the thing.")}}
 

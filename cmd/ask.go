@@ -514,6 +514,16 @@ func runAsk(cmd *cobra.Command, args []string) error {
 		adapter.Stats().SeedTotals(sess.InputTokens, sess.OutputTokens, sess.CachedInputTokens, sess.CacheWriteTokens, sess.ToolCalls, sess.LLMTurns)
 	}
 
+	var outputToolMessagesMu sync.Mutex
+	outputToolMessages := append([]llm.Message{}, messages...)
+	outputToolFinalizationReq := func() llm.Request {
+		out := req
+		outputToolMessagesMu.Lock()
+		out.Messages = append([]llm.Message{}, outputToolMessages...)
+		outputToolMessagesMu.Unlock()
+		return out
+	}
+
 	// Set up text collection for output capture (output_tool finalization,
 	// commit_editmsg, on_complete, or session save).
 	var collector *textCollector
@@ -621,6 +631,29 @@ func runAsk(cmd *cobra.Command, args []string) error {
 		}
 	}
 
+	responseCompletedCallback := persistResponseCompleted
+	turnCompletedCallback := persistTurnCompleted
+	if outputTool != nil {
+		responseCompletedCallback = func(ctx context.Context, turnIndex int, assistantMsg llm.Message, metrics llm.TurnMetrics) error {
+			outputToolMessagesMu.Lock()
+			outputToolMessages = append(outputToolMessages, assistantMsg)
+			outputToolMessagesMu.Unlock()
+			if persistResponseCompleted != nil {
+				return persistResponseCompleted(ctx, turnIndex, assistantMsg, metrics)
+			}
+			return nil
+		}
+		turnCompletedCallback = func(ctx context.Context, turnIndex int, turnMessages []llm.Message, metrics llm.TurnMetrics) error {
+			outputToolMessagesMu.Lock()
+			outputToolMessages = append(outputToolMessages, turnMessages...)
+			outputToolMessagesMu.Unlock()
+			if persistTurnCompleted != nil {
+				return persistTurnCompleted(ctx, turnIndex, turnMessages, metrics)
+			}
+			return nil
+		}
+	}
+
 	// Enable context compaction or tracking for models with known context window data.
 	engine.ConfigureContextManagement(provider, cfg.DefaultProvider, activeModel(cfg), cfg.AutoCompact)
 	applyPersistedContextEstimate(engine, sess)
@@ -688,8 +721,8 @@ func runAsk(cmd *cobra.Command, args []string) error {
 			SessionID:              sessionID,
 			ForceNamedFinalization: provider.Capabilities().SupportsToolChoice,
 			OnSyntheticUserMessage: persistSyntheticUserMessage,
-			OnResponseCompleted:    persistResponseCompleted,
-			OnTurnCompleted:        persistTurnCompleted,
+			OnResponseCompleted:    responseCompletedCallback,
+			OnTurnCompleted:        turnCompletedCallback,
 		}
 		if bridge != nil {
 			runOpts.OnEvent = bridge.HandleEvent
@@ -756,7 +789,7 @@ func runAsk(cmd *cobra.Command, args []string) error {
 			return fmt.Errorf("progressive run failed: %w", progressiveRun.Err)
 		}
 		if outputTool != nil {
-			if err := ensureOutputToolCaptured(ctx, provider, engine.Tools(), req, outputTool, progressiveOutputText(progressiveResult)); err != nil {
+			if err := ensureOutputToolCaptured(ctx, provider, engine.Tools(), outputToolFinalizationReq(), outputTool, progressiveOutputText(progressiveResult)); err != nil {
 				if store != nil && sess != nil {
 					_ = store.UpdateStatus(context.Background(), sess.ID, session.StatusError)
 				}
@@ -796,11 +829,11 @@ func runAsk(cmd *cobra.Command, args []string) error {
 		}
 	} else {
 		streamEvents = wrapStreamEvents(streamEvents)
-		if persistResponseCompleted != nil {
-			engine.SetResponseCompletedCallback(persistResponseCompleted)
+		if responseCompletedCallback != nil {
+			engine.SetResponseCompletedCallback(responseCompletedCallback)
 		}
-		if persistTurnCompleted != nil {
-			engine.SetTurnCompletedCallback(persistTurnCompleted)
+		if turnCompletedCallback != nil {
+			engine.SetTurnCompletedCallback(turnCompletedCallback)
 		}
 
 		if useRichRenderer && toolMgr != nil {
@@ -871,7 +904,7 @@ func runAsk(cmd *cobra.Command, args []string) error {
 		} else if askProgressive {
 			assistantText = progressiveOutputText(progressiveResult)
 		}
-		if err := ensureOutputToolCaptured(ctx, provider, engine.Tools(), req, outputTool, assistantText); err != nil {
+		if err := ensureOutputToolCaptured(ctx, provider, engine.Tools(), outputToolFinalizationReq(), outputTool, assistantText); err != nil {
 			if store != nil && sess != nil {
 				_ = store.UpdateStatus(ctx, sess.ID, session.StatusError)
 			}
@@ -957,41 +990,81 @@ func runOutputToolFinalization(ctx context.Context, provider llm.Provider, regis
 	if strings.TrimSpace(assistantText) != "" {
 		messages = append(messages, llm.AssistantText(assistantText))
 	}
-	messages = append(messages, llm.UserText(fmt.Sprintf(
-		"The task is DONE. Do not continue investigating. Do not inspect files. Do not call research, shell, read, edit, search, or any other work tool. Your previous answer is complete, but you failed to return it through the configured output tool %q. You MUST now make exactly one tool call: call %s with the final answer. Do not write prose before or after the tool call.",
+
+	const maxFinalizationAttempts = 3
+	var lastErr error
+	for attempt := 1; attempt <= maxFinalizationAttempts; attempt++ {
+		attemptMessages := append([]llm.Message{}, messages...)
+		attemptMessages = append(attemptMessages, llm.UserText(outputToolFinalizationPrompt(toolName, attempt)))
+
+		finalEngine := llm.NewEngine(provider, registry)
+		finalReq := llm.Request{
+			Model:             baseReq.Model,
+			SessionID:         baseReq.SessionID,
+			Messages:          attemptMessages,
+			Tools:             []llm.ToolSpec{outputTool.Spec()},
+			ToolChoice:        llm.ToolChoice{Mode: llm.ToolChoiceAuto},
+			ParallelToolCalls: false,
+			MaxTurns:          3,
+			MaxOutputTokens:   baseReq.MaxOutputTokens,
+			Debug:             baseReq.Debug,
+			DebugRaw:          baseReq.DebugRaw,
+		}
+		if provider.Capabilities().SupportsToolChoice {
+			finalReq.ToolChoice = llm.ToolChoice{Mode: llm.ToolChoiceName, Name: toolName}
+		}
+
+		finalizerText, err := drainOutputToolFinalizationStream(ctx, finalEngine, finalReq, outputTool, toolName)
+		if err == nil && outputTool.Captured() {
+			return nil
+		}
+		if err != nil {
+			lastErr = err
+		}
+		if outputTool.Captured() {
+			return nil
+		}
+		if strings.TrimSpace(finalizerText) != "" {
+			messages = append(messages, llm.AssistantText(finalizerText))
+		}
+	}
+
+	if lastErr != nil && !isOutputToolFinalizationMiss(lastErr) {
+		return fmt.Errorf("output tool finalization failed: %w", lastErr)
+	}
+	return fmt.Errorf("output tool %q was not called after %d finalization attempts", toolName, maxFinalizationAttempts)
+}
+
+func outputToolFinalizationPrompt(toolName string, attempt int) string {
+	if attempt <= 1 {
+		return fmt.Sprintf(
+			"The task is DONE. Do not continue investigating. Do not inspect files. Do not call research, shell, read, edit, search, or any other work tool. Your previous answer is complete, but you failed to return it through the configured output tool %q. You MUST now make exactly one tool call: call %s with the final answer. Do not write prose before or after the tool call.",
+			toolName,
+			toolName,
+		)
+	}
+	return fmt.Sprintf(
+		"FINALIZATION RETRY %d: Your previous response still did not call the required output tool. This is a protocol error. The only valid response is exactly one tool call to %s. Do not output text. Do not explain. Do not call any other tool. Call %s now with the final answer.",
+		attempt,
 		toolName,
 		toolName,
-	)))
+	)
+}
 
-	finalEngine := llm.NewEngine(provider, registry)
-	finalTools := ensureOutputToolSpec(baseReq.Tools, outputTool.Spec())
-	finalReq := llm.Request{
-		Model:             baseReq.Model,
-		SessionID:         baseReq.SessionID,
-		Messages:          messages,
-		Tools:             finalTools,
-		ToolChoice:        llm.ToolChoice{Mode: llm.ToolChoiceAuto},
-		ParallelToolCalls: false,
-		MaxTurns:          2,
-		MaxOutputTokens:   baseReq.MaxOutputTokens,
-		Debug:             baseReq.Debug,
-		DebugRaw:          baseReq.DebugRaw,
-	}
-	if provider.Capabilities().SupportsToolChoice {
-		finalReq.ToolChoice = llm.ToolChoice{Mode: llm.ToolChoiceName, Name: toolName}
-	}
-
+func drainOutputToolFinalizationStream(ctx context.Context, finalEngine *llm.Engine, finalReq llm.Request, outputTool *tools.SetOutputTool, toolName string) (string, error) {
 	stream, err := finalEngine.Stream(ctx, finalReq)
 	if err != nil {
 		if outputTool.Captured() && isOutputToolFinalizationMiss(err) {
-			return nil
+			return "", nil
 		}
 		if !outputTool.Captured() && isOutputToolFinalizationMiss(err) {
-			return fmt.Errorf("output tool %q was not called", toolName)
+			return "", fmt.Errorf("output tool %q was not called", toolName)
 		}
-		return fmt.Errorf("output tool finalization failed: %w", err)
+		return "", err
 	}
 	defer stream.Close()
+
+	var text strings.Builder
 	for {
 		event, err := stream.Recv()
 		if err == io.EOF {
@@ -1002,25 +1075,28 @@ func runOutputToolFinalization(ctx context.Context, provider llm.Provider, regis
 				break
 			}
 			if !outputTool.Captured() && isOutputToolFinalizationMiss(err) {
-				return fmt.Errorf("output tool %q was not called", toolName)
+				return text.String(), fmt.Errorf("output tool %q was not called", toolName)
 			}
-			return fmt.Errorf("output tool finalization failed: %w", err)
+			return text.String(), err
+		}
+		if event.Type == llm.EventTextDelta && event.Text != "" {
+			text.WriteString(event.Text)
 		}
 		if event.Type == llm.EventError && event.Err != nil {
 			if outputTool.Captured() && isOutputToolFinalizationMiss(event.Err) {
 				break
 			}
 			if !outputTool.Captured() && isOutputToolFinalizationMiss(event.Err) {
-				return fmt.Errorf("output tool %q was not called", toolName)
+				return text.String(), fmt.Errorf("output tool %q was not called", toolName)
 			}
-			return fmt.Errorf("output tool finalization failed: %w", event.Err)
+			return text.String(), event.Err
 		}
 	}
 
 	if !outputTool.Captured() {
-		return fmt.Errorf("output tool %q was not called", toolName)
+		return text.String(), fmt.Errorf("output tool %q was not called", toolName)
 	}
-	return nil
+	return text.String(), nil
 }
 
 func isOutputToolFinalizationMiss(err error) bool {
@@ -1028,7 +1104,7 @@ func isOutputToolFinalizationMiss(err error) bool {
 		return false
 	}
 	msg := err.Error()
-	return strings.Contains(msg, "agentic loop ended unexpectedly") || strings.Contains(msg, "agentic loop exceeded max turns") || strings.Contains(msg, "no more turns configured")
+	return strings.Contains(msg, "agentic loop ended unexpectedly") || strings.Contains(msg, "agentic loop exceeded max turns") || strings.Contains(msg, "no more turns configured") || strings.Contains(msg, "output tool") && strings.Contains(msg, "was not called")
 }
 
 func ensureOutputToolSpec(specs []llm.ToolSpec, outputSpec llm.ToolSpec) []llm.ToolSpec {
