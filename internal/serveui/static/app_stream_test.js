@@ -420,6 +420,7 @@ function createHarness(options = {}) {
     setInterval,
     clearInterval,
     requestAnimationFrame(callback) {
+      if (typeof options.requestAnimationFrame === 'function') return options.requestAnimationFrame(callback);
       return setTimeout(callback, 0);
     },
     cancelAnimationFrame(handle) {
@@ -454,6 +455,7 @@ function createHarness(options = {}) {
     URL: urlAPI,
     URLSearchParams,
     Blob,
+    CSS: options.CSS,
     performance: { now: () => Date.now() },
     navigator: { mediaDevices: null },
     MediaRecorder: undefined,
@@ -465,6 +467,7 @@ function createHarness(options = {}) {
   windowObj.document = document;
   windowObj.localStorage = localStorage;
   windowObj.URL = urlAPI;
+  windowObj.CSS = options.CSS;
   windowObj.fetch = async function fetch(url, requestOptions = {}) {
     fetchCalls.push({
       url,
@@ -2756,6 +2759,147 @@ async function testSendButtonMorphsToInterjectWhileBusyAndTyping() {
   pass(name);
 }
 
+async function testAutoGrowPromptUsesNativeFieldSizingWithoutLayoutReads() {
+  const name = 'autoGrowPrompt uses native field-sizing without layout reads';
+  let supportsCalls = 0;
+  const harness = createHarness({
+    CSS: {
+      supports(property, value) {
+        supportsCalls += 1;
+        return property === 'field-sizing' && value === 'content';
+      },
+    },
+    requestAnimationFrame() {
+      fail(name, 'native field-sizing should not schedule fallback sizing');
+      return 0;
+    },
+  });
+  const { app, elements, cleanup } = harness;
+  let scrollReads = 0;
+  Object.defineProperty(elements.promptInput, 'scrollHeight', {
+    configurable: true,
+    get() {
+      scrollReads += 1;
+      return 96;
+    },
+  });
+
+  elements.promptInput.value = 'hello';
+  app.autoGrowPrompt();
+
+  if (supportsCalls !== 1) {
+    fail(name, `expected one feature-detection call, got ${supportsCalls}`);
+    await cleanup();
+    return;
+  }
+  if (scrollReads !== 0 || elements.promptInput.style.height) {
+    fail(name, `expected no fallback layout work, scrollReads=${scrollReads} height=${elements.promptInput.style.height || ''}`);
+    await cleanup();
+    return;
+  }
+  if (elements.sendBtn.title !== 'Send message') {
+    fail(name, 'send button should still update while native sizing is active');
+    await cleanup();
+    return;
+  }
+
+  await cleanup();
+  pass(name);
+}
+
+async function testAutoGrowPromptFallbackCoalescesLayoutWork() {
+  const name = 'autoGrowPrompt fallback coalesces layout work';
+  const frames = [];
+  const harness = createHarness({
+    requestAnimationFrame(callback) {
+      frames.push(callback);
+      return frames.length;
+    },
+  });
+  const { app, elements, cleanup } = harness;
+  let scrollReads = 0;
+  Object.defineProperty(elements.promptInput, 'scrollHeight', {
+    configurable: true,
+    get() {
+      scrollReads += 1;
+      return 96;
+    },
+  });
+
+  elements.promptInput.value = 'one';
+  app.autoGrowPrompt();
+  elements.promptInput.value = 'one two';
+  app.autoGrowPrompt();
+
+  if (frames.length !== 1) {
+    fail(name, `expected one animation frame for repeated calls, got ${frames.length}`);
+    await cleanup();
+    return;
+  }
+  if (scrollReads !== 0 || elements.promptInput.style.height) {
+    fail(name, `fallback should defer layout reads until the frame, scrollReads=${scrollReads}`);
+    await cleanup();
+    return;
+  }
+
+  frames.shift()();
+  if (scrollReads !== 1 || elements.promptInput.style.height !== '96px') {
+    fail(name, `expected one layout read and 96px height, reads=${scrollReads} height=${elements.promptInput.style.height || ''}`);
+    await cleanup();
+    return;
+  }
+
+  elements.promptInput.value = 'one two three';
+  app.autoGrowPrompt();
+  if (frames.length !== 1) {
+    fail(name, `changed same-height value should schedule fallback sizing, got ${frames.length}`);
+    await cleanup();
+    return;
+  }
+  frames.shift()();
+  if (scrollReads !== 2 || elements.promptInput.style.height !== '96px') {
+    fail(name, `changed same-height value should restore measured height, reads=${scrollReads} height=${elements.promptInput.style.height || ''}`);
+    await cleanup();
+    return;
+  }
+
+  app.autoGrowPrompt();
+  if (frames.length !== 0) {
+    fail(name, `unchanged value should not schedule fallback sizing, got ${frames.length} frame(s)`);
+    await cleanup();
+    return;
+  }
+  if (scrollReads !== 2) {
+    fail(name, `unchanged value should skip fallback layout read, got ${scrollReads}`);
+    await cleanup();
+    return;
+  }
+
+  elements.promptInput.value = 'capped';
+  Object.defineProperty(elements.promptInput, 'scrollHeight', {
+    configurable: true,
+    get() {
+      scrollReads += 1;
+      return 360;
+    },
+  });
+  app.autoGrowPrompt();
+  if (frames.length !== 1) {
+    fail(name, `capped value should schedule fallback sizing, got ${frames.length}`);
+    await cleanup();
+    return;
+  }
+  frames.shift()();
+  if (elements.promptInput.style.height !== '300px' || elements.promptInput.style.overflowY !== 'auto') {
+    fail(name, `expected tall prompt to cap at 300px with scrolling, height=${elements.promptInput.style.height || ''} overflow=${elements.promptInput.style.overflowY || ''}`);
+    await cleanup();
+    return;
+  }
+
+  await cleanup();
+  pass(name);
+}
+
 async function testNonImageAttachmentsDoNotCreatePreviewObjectURLs() {
   const name = 'non-image attachments do not create unused preview object URLs';
   const createdURLs = [];
@@ -3104,6 +3248,8 @@ function testRestoreLatestDraftMessageDoesNotCrossSessionBoundary() {
   testRestoreDraftMessageForSessionIsSessionBound();
   testRestoreLatestDraftMessageDoesNotCrossSessionBoundary();
   await testSendButtonMorphsToInterjectWhileBusyAndTyping();
+  await testAutoGrowPromptUsesNativeFieldSizingWithoutLayoutReads();
+  await testAutoGrowPromptFallbackCoalescesLayoutWork();
   await testNonImageAttachmentsDoNotCreatePreviewObjectURLs();
   await testSendMessageResumesFromEventsAfterPostStreamDrops();
   await testNewChatDuringStreamingClearsStreamingState();

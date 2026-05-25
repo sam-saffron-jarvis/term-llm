@@ -1962,14 +1962,16 @@
     .prompt {
       resize: none;
       min-height: 36px;
-      max-height: 200px;
+      max-height: min(300px, max(200px, 45dvh));
       border: none;
       background: transparent;
       color: var(--text);
       padding: 14px 8px;
       line-height: 1.5;
       font-size: 1rem;
-      overflow-y: hidden;
+      overflow-y: auto;
+      field-sizing: content;
+      scrollbar-gutter: stable;
       unicode-bidi: plaintext;
     }
 

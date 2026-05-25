@@ -2726,14 +2726,63 @@ const updateSendButtonState = () => {
   }
 };
 
+const composerUsesNativeAutoSize = (() => {
+  try {
+    const css = window.CSS || globalThis.CSS;
+    return !!(css && typeof css.supports === 'function' && css.supports('field-sizing', 'content'));
+  } catch {
+    return false;
+  }
+})();
+
+let pendingPromptGrowFrame = 0;
+let lastPromptGrowHeight = '';
+let lastPromptGrowValue = null;
+
+const promptFallbackMaxHeight = () => {
+  const viewportHeight = Number(window.innerHeight || 0);
+  if (!viewportHeight) return 300;
+  return Math.max(200, Math.min(300, Math.floor(viewportHeight * 0.45)));
+};
+
+const applyPromptFallbackSize = () => {
+  pendingPromptGrowFrame = 0;
+  const el = elements.promptInput;
+  if (!el || composerUsesNativeAutoSize) return;
+
+  const value = String(el.value || '');
+  if (lastPromptGrowValue === value && lastPromptGrowHeight) return;
+  lastPromptGrowValue = value;
+
+  el.style.height = 'auto';
+  const scrollHeight = el.scrollHeight || 0;
+  const maxHeight = promptFallbackMaxHeight();
+  const measured = Math.max(48, Math.min(scrollHeight, maxHeight));
+  const nextHeight = `${measured}px`;
+  const nextOverflow = scrollHeight > maxHeight ? 'auto' : 'hidden';
+
+  el.style.height = nextHeight;
+  lastPromptGrowHeight = nextHeight;
+  if (el.style.overflowY !== nextOverflow) {
+    el.style.overflowY = nextOverflow;
+  }
+};
+
+const schedulePromptFallbackSize = () => {
+  if (composerUsesNativeAutoSize || pendingPromptGrowFrame) return;
+  const el = elements.promptInput;
+  if (!el) return;
+  if (lastPromptGrowValue === String(el.value || '') && lastPromptGrowHeight) return;
+  pendingPromptGrowFrame = window.requestAnimationFrame(applyPromptFallbackSize);
+};
+
 const autoGrowPrompt = () => {
   const el = elements.promptInput;
+  if (!el) return;
+
   applyTextDirection(el, el.value || '');
-  el.style.height = 'auto';
-  const next = Math.min(el.scrollHeight, 200);
-  el.style.height = `${Math.max(48, next)}px`;
-  el.style.overflowY = el.scrollHeight > 200 ? 'auto' : 'hidden';
   updateSendButtonState();
+  schedulePromptFallbackSize();
 };
 
 // ===== File attachment =====
