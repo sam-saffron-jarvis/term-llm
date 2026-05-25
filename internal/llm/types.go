@@ -3,6 +3,8 @@ package llm
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"strings"
 )
 
 // contextKey is a private type for context keys to prevent collisions.
@@ -268,8 +270,10 @@ type Event struct {
 	Type                      EventType
 	Text                      string
 	InterjectionID            string // For EventInterjection: stable ID for matching queued interjections in the UI
-	ReasoningItemID           string // For EventReasoningDelta: reasoning item ID
-	ReasoningEncryptedContent string // For EventReasoningDelta: encrypted reasoning content
+	InterjectionStatus        InterjectionStatus
+	Message                   Message // For EventInterjection: structured user message including attachments
+	ReasoningItemID           string  // For EventReasoningDelta: reasoning item ID
+	ReasoningEncryptedContent string  // For EventReasoningDelta: encrypted reasoning content
 	Tool                      *ToolCall
 	ToolCallID                string          // For EventToolExecStart/End: unique ID of this tool invocation
 	ToolName                  string          // For EventToolExecStart/End: name of tool being executed
@@ -392,6 +396,34 @@ func UserText(text string) Message {
 		Role:  RoleUser,
 		Parts: []Part{{Type: PartText, Text: text}},
 	}
+}
+
+// MessageText returns the concatenated text parts of a message.
+func MessageText(msg Message) string {
+	var b strings.Builder
+	for _, part := range msg.Parts {
+		if part.Type == PartText && part.Text != "" {
+			b.WriteString(part.Text)
+		}
+	}
+	return b.String()
+}
+
+// MessageAttachmentSummary returns a compact summary of non-text content.
+func MessageAttachmentSummary(msg Message) string {
+	images := 0
+	for _, part := range msg.Parts {
+		if part.Type == PartImage {
+			images++
+		}
+	}
+	if images == 0 {
+		return ""
+	}
+	if images == 1 {
+		return "[1 image attached]"
+	}
+	return fmt.Sprintf("[%d images attached]", images)
 }
 
 // UserImageMessage creates a user message with an image and an optional text caption.

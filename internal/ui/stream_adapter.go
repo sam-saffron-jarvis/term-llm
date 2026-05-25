@@ -253,7 +253,7 @@ func (a *StreamAdapter) ProcessStream(ctx context.Context, stream llm.Stream) {
 
 		case llm.EventInterjection:
 			if event.Text != "" {
-				if !emit(InterjectionEvent(event.Text, event.InterjectionID)) {
+				if !emit(InterjectionEventWithMessage(event.Text, event.InterjectionID, event.Message)) {
 					return
 				}
 			}

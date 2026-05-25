@@ -1197,6 +1197,26 @@ func TestRenderInputInline_ShowsPendingInterjection(t *testing.T) {
 	}
 }
 
+func TestRenderInputInline_ShowsPendingInterjectionStack(t *testing.T) {
+	m := newTestChatModel(false)
+	m.setPendingInterjection("one", "first", "interject")
+	m.setPendingInterjection("two", "second", "deciding")
+	m.width = 80
+
+	output := m.renderInputInline()
+	stripped := ui.StripANSI(output)
+
+	if !strings.Contains(stripped, "first") || !strings.Contains(stripped, "second") {
+		t.Fatalf("expected both pending interjections in output, got %q", stripped)
+	}
+	if !strings.Contains(stripped, "will incorporate") || !strings.Contains(stripped, "deciding") {
+		t.Fatalf("expected stack labels in output, got %q", stripped)
+	}
+	if !strings.Contains(stripped, "[del cancels]") {
+		t.Fatalf("expected cancel affordance in output, got %q", stripped)
+	}
+}
+
 func TestRenderInputInline_ShowsInterruptNotice(t *testing.T) {
 	m := newTestChatModel(false)
 	m.interruptNotice = "✕ cancelled current response — draft restored below"

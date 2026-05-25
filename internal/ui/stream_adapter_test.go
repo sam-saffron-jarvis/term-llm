@@ -143,6 +143,7 @@ func TestStreamAdapter_PropagatesInterjectionID(t *testing.T) {
 			Type:           llm.EventInterjection,
 			Text:           "keep sleeping",
 			InterjectionID: "adapter-interject-1",
+			Message:        llm.UserImageMessage("image/png", "aW1n", "keep sleeping"),
 		}},
 	}
 
@@ -161,6 +162,9 @@ func TestStreamAdapter_PropagatesInterjectionID(t *testing.T) {
 	}
 	if ev.InterjectionID != "adapter-interject-1" {
 		t.Fatalf("event interjection ID = %q, want %q", ev.InterjectionID, "adapter-interject-1")
+	}
+	if len(ev.Message.Parts) != 2 || ev.Message.Parts[0].Type != llm.PartImage {
+		t.Fatalf("event message parts = %#v, want structured image message", ev.Message.Parts)
 	}
 }
 

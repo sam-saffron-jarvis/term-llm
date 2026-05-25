@@ -39,6 +39,7 @@ type responseRunRecoveryMessage struct {
 	Content        []byte
 	Created        int64
 	Tools          []responseRunRecoveryTool
+	Attachments    []map[string]any
 	Expanded       bool
 	Status         string
 	Usage          map[string]any
@@ -331,11 +332,16 @@ func (r *responseRun) applyRecoveryEventLocked(event string, payload map[string]
 		}
 		r.closeToolGroupLocked()
 		r.currentAssistant = -1
+		id := stringValue(payload["interjection_id"])
+		if id == "" {
+			id = r.nextRecoveryMessageIDLocked("user")
+		}
 		r.recoveryMessages = append(r.recoveryMessages, responseRunRecoveryMessage{
-			ID:             r.nextRecoveryMessageIDLocked("user"),
+			ID:             id,
 			Role:           "user",
 			Content:        []byte(text),
 			Created:        time.Now().UnixMilli(),
+			Attachments:    attachmentsFromPayload(payload["attachments"]),
 			InterruptState: "interject",
 		})
 		return
@@ -626,6 +632,13 @@ func (r *responseRun) recoveryPayloadLocked() map[string]any {
 				toolsPayload = append(toolsPayload, toolEntry)
 			}
 			entry["tools"] = toolsPayload
+		}
+		if len(msg.Attachments) > 0 {
+			atts := make([]map[string]any, 0, len(msg.Attachments))
+			for _, att := range msg.Attachments {
+				atts = append(atts, cloneJSONMap(att))
+			}
+			entry["attachments"] = atts
 		}
 		if len(msg.Usage) > 0 {
 			entry["usage"] = cloneJSONMap(msg.Usage)
@@ -1147,12 +1160,65 @@ func (s *serveServer) appendResponseRunEvent(runtime *serveRuntime, run *respons
 			"text": ev.Text,
 		})
 	case llm.EventInterjection:
-		return run.appendEvent("response.interjection", map[string]any{
+		payload := map[string]any{
 			"text": ev.Text,
-		})
+		}
+		if ev.InterjectionID != "" {
+			payload["interjection_id"] = ev.InterjectionID
+		}
+		if ev.InterjectionStatus != "" {
+			payload["status"] = string(ev.InterjectionStatus)
+		}
+		if atts := interjectionAttachmentsForEvent(ev.Message); len(atts) > 0 {
+			payload["attachments"] = atts
+		}
+		return run.appendEvent("response.interjection", payload)
 	default:
 		return nil
 	}
+}
+
+func attachmentsFromPayload(v any) []map[string]any {
+	switch items := v.(type) {
+	case []map[string]any:
+		out := make([]map[string]any, 0, len(items))
+		for _, item := range items {
+			if len(item) > 0 {
+				out = append(out, cloneJSONMap(item))
+			}
+		}
+		return out
+	case []any:
+		out := make([]map[string]any, 0, len(items))
+		for _, item := range items {
+			if m := mapValue(item); len(m) > 0 {
+				out = append(out, cloneJSONMap(m))
+			}
+		}
+		return out
+	default:
+		return nil
+	}
+}
+
+func interjectionAttachmentsForEvent(msg llm.Message) []map[string]any {
+	var out []map[string]any
+	imageCount := 0
+	for _, part := range msg.Parts {
+		if part.Type != llm.PartImage {
+			continue
+		}
+		imageCount++
+		mediaType := "image"
+		if part.ImageData != nil && part.ImageData.MediaType != "" {
+			mediaType = part.ImageData.MediaType
+		}
+		out = append(out, map[string]any{
+			"name": fmt.Sprintf("image %d", imageCount),
+			"type": mediaType,
+		})
+	}
+	return out
 }
 
 func (s *serveServer) storeCompletedResponseRun(runtime *serveRuntime, sessionID, previousResponseID, model string, created int64, result serveRunResult, resetResponseIDsOnSuccess bool) (string, error) {

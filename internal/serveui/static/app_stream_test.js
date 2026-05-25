@@ -26,10 +26,17 @@ function pass(name) {
 }
 
 function makeClassList() {
+  const classes = new Set();
   return {
-    toggle() {},
-    add() {},
-    remove() {},
+    toggle(name, force) {
+      const enabled = typeof force === 'boolean' ? force : !classes.has(name);
+      if (enabled) classes.add(name);
+      else classes.delete(name);
+      return enabled;
+    },
+    add(name) { classes.add(name); },
+    remove(name) { classes.delete(name); },
+    contains(name) { return classes.has(name); },
   };
 }
 
@@ -156,7 +163,14 @@ function createHarness(options = {}) {
       focus() {},
     },
     messages: makeMessageContainer(),
-    sendBtn: { disabled: false, classList: makeClassList() },
+    sendBtn: {
+      disabled: false,
+      title: '',
+      classList: makeClassList(),
+      _arrow: { textContent: '↑' },
+      setAttribute(name, value) { this[name] = value; },
+      querySelector(selector) { return selector === '.arrow' ? this._arrow : null; },
+    },
     stopBtn: { classList: makeClassList() },
     attachmentsStrip: {
       innerHTML: '',
@@ -1962,16 +1976,17 @@ async function testRecoverInterruptConflictQueuesWhenRunStillActive() {
   state.sessions.push(session);
   state.activeSessionId = session.id;
 
+  const attachment = { id: 'att_1', name: 'diagram.png', type: 'image/png', dataURL: 'data:image/png;base64,aW1n' };
   state.pendingInterjections = [
-    { sessionId: session.id, prompt: 'late thought', messageId: 'msg_late', action: 'deciding' },
+    { sessionId: session.id, prompt: 'late thought', messageId: 'msg_late', action: 'deciding', attachments: [attachment] },
   ];
   state.pendingInterruptCommits = [
-    { sessionId: session.id, prompt: 'late thought', messageId: 'msg_late' },
+    { sessionId: session.id, prompt: 'late thought', messageId: 'msg_late', attachments: [attachment] },
   ];
 
   app.syncActiveSessionFromServer = async () => ({ active_run: true, active_response_id: 'resp_still_running' });
 
-  const recovered = await app.recoverInterruptConflict(session, 'late thought', 'msg_late');
+  const recovered = await app.recoverInterruptConflict(session, 'late thought', 'msg_late', [attachment]);
   if (!recovered) {
     fail(name, 'recoverInterruptConflict returned false');
     await cleanup();
@@ -1994,6 +2009,11 @@ async function testRecoverInterruptConflictQueuesWhenRunStillActive() {
     await cleanup();
     return;
   }
+  if (!Array.isArray(state.queuedInterrupts[0].attachments) || state.queuedInterrupts[0].attachments[0]?.name !== 'diagram.png') {
+    fail(name, 'expected queued follow-up to preserve attachments', JSON.stringify(state.queuedInterrupts));
+    await cleanup();
+    return;
+  }
 
   const userMessages = session.messages.filter((m) => m.role === 'user');
   if (userMessages.length !== 1 || userMessages[0].id !== 'msg_late') {
@@ -2003,6 +2023,11 @@ async function testRecoverInterruptConflictQueuesWhenRunStillActive() {
   }
   if (userMessages[0].interruptState !== 'queue') {
     fail(name, `inline message interruptState = ${userMessages[0].interruptState}, want "queue"`);
+    await cleanup();
+    return;
+  }
+  if (!Array.isArray(userMessages[0].attachments) || userMessages[0].attachments[0]?.name !== 'diagram.png') {
+    fail(name, 'expected inline queued message to preserve attachment metadata', JSON.stringify(userMessages[0]));
     await cleanup();
     return;
   }
@@ -2671,6 +2696,66 @@ async function testSendMessageKeepsComposerWhenAttachmentMaterializationFails() 
   pass(name);
 }
 
+async function testSendButtonMorphsToInterjectWhileBusyAndTyping() {
+  const name = 'send button morphs to interject while busy and typing';
+  const harness = createHarness();
+  const { app, elements, state, cleanup } = harness;
+
+  app.setStreaming(true);
+  if (!elements.sendBtn.classList.contains('loading')) {
+    fail(name, 'expected send button to show loading when busy and composer is empty');
+    await cleanup();
+    return;
+  }
+  if (elements.sendBtn._arrow.textContent !== '↑') {
+    fail(name, `empty busy arrow = ${elements.sendBtn._arrow.textContent}, want ↑`);
+    await cleanup();
+    return;
+  }
+
+  elements.promptInput.value = 'quick note';
+  app.autoGrowPrompt();
+  if (elements.sendBtn.classList.contains('loading')) {
+    fail(name, 'expected loading spinner to hide once user types while busy');
+    await cleanup();
+    return;
+  }
+  if (!elements.sendBtn.classList.contains('interject')) {
+    fail(name, 'expected interject class once user types while busy');
+    await cleanup();
+    return;
+  }
+  if (elements.sendBtn._arrow.textContent !== '↳') {
+    fail(name, `busy typed arrow = ${elements.sendBtn._arrow.textContent}, want ↳`);
+    await cleanup();
+    return;
+  }
+  if (elements.sendBtn.title !== 'Interject' || elements.sendBtn['aria-label'] !== 'Interject') {
+    fail(name, `button labels = ${elements.sendBtn.title}/${elements.sendBtn['aria-label']}, want Interject`);
+    await cleanup();
+    return;
+  }
+
+  elements.promptInput.value = '';
+  state.attachments.push({ id: 'att_1', name: 'image.png', type: 'image/png' });
+  app.updateSendButtonState();
+  if (!elements.sendBtn.classList.contains('interject') || elements.sendBtn._arrow.textContent !== '↳') {
+    fail(name, 'expected attachment-only busy composer to use interject affordance');
+    await cleanup();
+    return;
+  }
+
+  app.setStreaming(false);
+  if (elements.sendBtn.classList.contains('loading') || elements.sendBtn.classList.contains('interject') || elements.sendBtn._arrow.textContent !== '↑') {
+    fail(name, 'expected send button to return to normal when idle');
+    await cleanup();
+    return;
+  }
+
+  await cleanup();
+  pass(name);
+}
+
 async function testNonImageAttachmentsDoNotCreatePreviewObjectURLs() {
   const name = 'non-image attachments do not create unused preview object URLs';
   const createdURLs = [];
@@ -3018,6 +3103,7 @@ function testRestoreLatestDraftMessageDoesNotCrossSessionBoundary() {
   testDraftMessageLimitIsTen();
   testRestoreDraftMessageForSessionIsSessionBound();
   testRestoreLatestDraftMessageDoesNotCrossSessionBoundary();
+  await testSendButtonMorphsToInterjectWhileBusyAndTyping();
   await testNonImageAttachmentsDoNotCreatePreviewObjectURLs();
   await testSendMessageResumesFromEventsAfterPostStreamDrops();
   await testNewChatDuringStreamingClearsStreamingState();

@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/session"
 )
 
@@ -29,8 +30,28 @@ func (s *serveServer) handleSessionState(w http.ResponseWriter, r *http.Request,
 				resp["pending_approval"] = approvals[0]
 			}
 			if rt.engine != nil {
-				if text := rt.engine.PeekInterjection(); text != "" {
-					resp["pending_interjection"] = map[string]any{"text": text}
+				if entries := rt.engine.ListPendingInterjections(); len(entries) > 0 {
+					items := make([]map[string]any, 0, len(entries))
+					for _, entry := range entries {
+						text := strings.TrimSpace(entry.DisplayText)
+						if text == "" {
+							text = strings.TrimSpace(llm.MessageText(entry.Message))
+						}
+						if text == "" {
+							text = strings.TrimSpace(llm.MessageAttachmentSummary(entry.Message))
+						}
+						item := map[string]any{
+							"id":     entry.ID,
+							"text":   text,
+							"status": string(entry.Status),
+						}
+						if summary := strings.TrimSpace(llm.MessageAttachmentSummary(entry.Message)); summary != "" {
+							item["attachment_summary"] = summary
+						}
+						items = append(items, item)
+					}
+					resp["pending_interjections"] = items
+					resp["pending_interjection"] = items[0]
 				}
 			}
 			if pk := strings.TrimSpace(rt.providerKey); pk != "" {

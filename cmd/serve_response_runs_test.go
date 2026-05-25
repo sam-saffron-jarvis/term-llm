@@ -340,6 +340,20 @@ func TestResponseRunInterjectionSplitsRecoveryMessages(t *testing.T) {
 	if got := messages[1]["interruptState"]; got != "interject" {
 		t.Fatalf("messages[1].interruptState = %v, want interject", got)
 	}
+	atts := []map[string]any{{"name": "image 1", "type": "image/png"}}
+	if err := run.appendEvent("response.interjection", map[string]any{"text": "see image", "interjection_id": "img-1", "attachments": atts}); err != nil {
+		t.Fatalf("append image interjection: %v", err)
+	}
+	recovery = run.recoveryPayloadLocked()
+	messages = recovery["messages"].([]map[string]any)
+	last := messages[len(messages)-1]
+	if got := last["id"]; got != "img-1" {
+		t.Fatalf("image interjection id = %v, want img-1", got)
+	}
+	gotAtts, ok := last["attachments"].([]map[string]any)
+	if !ok || len(gotAtts) != 1 || gotAtts[0]["type"] != "image/png" {
+		t.Fatalf("image interjection attachments = %#v, want image/png", last["attachments"])
+	}
 	if got := messages[2]["role"]; got != "assistant" {
 		t.Fatalf("messages[2].role = %v, want assistant", got)
 	}

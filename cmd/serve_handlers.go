@@ -1127,6 +1127,18 @@ func (s *serveServer) handleSessionByID(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	if strings.HasPrefix(suffix, "interjections/") {
+		id := strings.TrimPrefix(suffix, "interjections/")
+		id = strings.TrimSuffix(id, "/cancel")
+		if r.Method != http.MethodDelete && r.Method != http.MethodPost {
+			w.Header().Set("Allow", "DELETE, POST")
+			writeOpenAIError(w, http.StatusMethodNotAllowed, "invalid_request_error", "method not allowed")
+			return
+		}
+		s.handleSessionInterjectionCancel(w, r, sessionID, id)
+		return
+	}
+
 	if suffix == "ask_user" {
 		if r.Method != http.MethodPost {
 			w.Header().Set("Allow", "POST")
@@ -1330,12 +1342,32 @@ func (s *serveServer) handleSessionInterrupt(w http.ResponseWriter, r *http.Requ
 		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", err.Error())
 		return
 	}
-	msg := strings.TrimSpace(req.Message)
-	if msg == "" {
-		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "message is required")
+	displayText := strings.TrimSpace(req.Message)
+	var msg llm.Message
+	var err error
+	if len(req.Content) > 0 && strings.TrimSpace(string(req.Content)) != "" && strings.TrimSpace(string(req.Content)) != "null" {
+		msg, err = parseUserMessageContent(req.Content)
+		if err != nil {
+			writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", err.Error())
+			return
+		}
+		if displayText == "" {
+			displayText = strings.TrimSpace(llm.MessageText(msg))
+		} else if strings.TrimSpace(llm.MessageText(msg)) == "" {
+			msg.Parts = append(msg.Parts, llm.Part{Type: llm.PartText, Text: displayText})
+		}
+	} else {
+		msg = llm.UserText(displayText)
+	}
+	if displayText == "" && strings.TrimSpace(llm.MessageText(msg)) == "" && llm.MessageAttachmentSummary(msg) == "" {
+		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "message or content is required")
 		return
 	}
 
+	if s.sessionMgr == nil {
+		writeOpenAIError(w, http.StatusNotFound, "not_found_error", "session not found")
+		return
+	}
 	rt, ok := s.sessionMgr.Get(sessionID)
 	if !ok {
 		writeOpenAIError(w, http.StatusNotFound, "not_found_error", "session not found")
@@ -1346,7 +1378,7 @@ func (s *serveServer) handleSessionInterrupt(w http.ResponseWriter, r *http.Requ
 	if fastErr != nil {
 		log.Printf("[serve] fast provider unavailable for interrupt: %v", fastErr)
 	}
-	action, interruptErr := rt.Interrupt(r.Context(), msg, fastProvider)
+	action, interruptErr := rt.InterruptMessage(r.Context(), msg, displayText, strings.TrimSpace(req.InterjectionID), fastProvider)
 	if interruptErr != nil {
 		writeOpenAIError(w, http.StatusConflict, "conflict_error", interruptErr.Error())
 		return
@@ -1362,6 +1394,28 @@ func (s *serveServer) handleSessionInterrupt(w http.ResponseWriter, r *http.Requ
 	writeJSON(w, http.StatusOK, map[string]any{
 		"action": actionName,
 	})
+}
+
+func (s *serveServer) handleSessionInterjectionCancel(w http.ResponseWriter, r *http.Request, sessionID, interjectionID string) {
+	interjectionID = strings.TrimSpace(interjectionID)
+	if interjectionID == "" {
+		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "interjection id is required")
+		return
+	}
+	if s.sessionMgr == nil {
+		writeOpenAIError(w, http.StatusNotFound, "not_found_error", "session not found")
+		return
+	}
+	rt, ok := s.sessionMgr.Get(sessionID)
+	if !ok || rt == nil || rt.engine == nil {
+		writeOpenAIError(w, http.StatusNotFound, "not_found_error", "session not found")
+		return
+	}
+	if !rt.engine.CancelInterjection(interjectionID) {
+		writeOpenAIError(w, http.StatusConflict, "conflict_error", "interjection is not queued or has already been committed")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"cancelled": true, "interjection_id": interjectionID})
 }
 
 func (s *serveServer) handleSessionMetadataPatch(w http.ResponseWriter, r *http.Request, sessionID string) {

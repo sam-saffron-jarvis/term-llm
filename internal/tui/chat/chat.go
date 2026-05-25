@@ -32,6 +32,12 @@ import (
 )
 
 // Model is the main chat TUI model
+type pendingInterjectionUI struct {
+	ID      string
+	Text    string
+	UIState string
+}
+
 type Model struct {
 	// Dimensions
 	width  int
@@ -146,13 +152,15 @@ type Model struct {
 	localTools              []string // Names of enabled local tools (read, write, etc.)
 	toolsStr                string   // Original tools setting (for session persistence)
 	mcpStr                  string   // Original MCP setting (for session persistence)
-	pendingInterjection     string   // Interrupt text waiting to be injected or cancelled
-	pendingInterjectionID   string   // Stable ID for the currently displayed pending interjection
-	interjectionSeq         uint64   // Monotonic sequence for locally generated interjection IDs
-	interruptRequestSeq     uint64   // Monotonic sequence for async interrupt classification
-	activeInterruptSeq      uint64   // Currently active async interrupt classification request
-	pendingInterruptUI      string   // UI state: "", "deciding", "interject"
-	interruptNotice         string   // One-line UI notice for recent interrupt actions
+	pendingInterjection     string   // Interrupt text waiting to be injected or cancelled (latest, for compatibility)
+	pendingInterjectionID   string   // Stable ID for the latest displayed pending interjection
+	pendingInterjections    []pendingInterjectionUI
+	selectedInterjection    int    // Selected pending interjection; -1 means none
+	interjectionSeq         uint64 // Monotonic sequence for locally generated interjection IDs
+	interruptRequestSeq     uint64 // Monotonic sequence for async interrupt classification
+	activeInterruptSeq      uint64 // Currently active async interrupt classification request
+	pendingInterruptUI      string // UI state of latest pending interjection: "", "deciding", "interject"
+	interruptNotice         string // One-line UI notice for recent interrupt actions
 	// MCP (Model Context Protocol)
 	mcpManager    *mcp.Manager
 	mcpStatusChan chan mcp.StatusUpdate
@@ -337,6 +345,7 @@ type (
 		RequestID      uint64
 		InterjectionID string
 		Content        string
+		Parts          []llm.Part
 		Action         llm.InterruptAction
 	}
 	compactStartedMsg struct{}
@@ -669,6 +678,7 @@ func NewWithFastProvider(cfg *config.Config, provider llm.Provider, fastProvider
 		postFrameTransmittedImages: make(map[uint32]struct{}),
 		viewportImageArtifacts:     make(map[string]viewportImageArtifact),
 		selectedImage:              -1,
+		selectedInterjection:       -1,
 	}
 	model.configureImageRenderer()
 	model.configureContextManagementForSession()
@@ -1718,14 +1728,28 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// User interjected a message mid-stream (injected between tool turns).
 			matchedPending := false
 			switch {
-			case ev.InterjectionID != "" && ev.InterjectionID == m.pendingInterjectionID:
-				matchedPending = true
-			case ev.InterjectionID == "" && m.pendingInterjectionID == "" && strings.TrimSpace(ev.Text) == strings.TrimSpace(m.pendingInterjection):
-				matchedPending = true
+			case ev.InterjectionID != "":
+				// FIFO interjection events may arrive for an older queue item while a newer
+				// item is still pending, so remove by ID across the whole stack rather than
+				// comparing only with the latest pending row.
+				matchedPending = m.removePendingInterjectionByID(ev.InterjectionID)
+			case strings.TrimSpace(ev.Text) != "":
+				// Legacy/no-ID fallback: remove the first same-text pending item.
+				for i := range m.pendingInterjections {
+					if strings.TrimSpace(m.pendingInterjections[i].Text) == strings.TrimSpace(ev.Text) {
+						matchedPending = true
+						copy(m.pendingInterjections[i:], m.pendingInterjections[i+1:])
+						m.pendingInterjections = m.pendingInterjections[:len(m.pendingInterjections)-1]
+						m.syncLatestPendingInterjection()
+						break
+					}
+				}
+				if !matchedPending && m.pendingInterjectionID == "" && strings.TrimSpace(ev.Text) == strings.TrimSpace(m.pendingInterjection) {
+					matchedPending = true
+					m.clearPendingInterjectionState()
+				}
 			}
-			if matchedPending {
-				m.clearPendingInterjectionState()
-			}
+			_ = matchedPending
 			// Flush smooth buffer so any pending text appears before the interjection.
 			if m.smoothBuffer != nil {
 				remaining := m.smoothBuffer.FlushAll()
@@ -1753,15 +1777,16 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Once the interjection is visibly injected into the transcript, force the
 			// viewport to the bottom so the user sees where it landed.
 			m.scrollToBottom = true
-			// Persist interjected message to session store
+			// Persist interjected message to session store, preserving structured parts.
 			if m.store != nil {
-				userMsg := &session.Message{
-					SessionID:   m.sess.ID,
-					Role:        llm.RoleUser,
-					Parts:       []llm.Part{{Type: llm.PartText, Text: ev.Text}},
-					TextContent: ev.Text,
-					CreatedAt:   time.Now(),
-					Sequence:    -1, // Store will assign the next sequence number
+				msg := ev.Message
+				if len(msg.Parts) == 0 {
+					msg = llm.UserText(ev.Text)
+				}
+				msg.Role = llm.RoleUser
+				userMsg := session.NewMessage(m.sess.ID, msg, -1)
+				if userMsg.TextContent == "" {
+					userMsg.TextContent = ev.Text
 				}
 				_ = m.store.AddMessage(context.Background(), m.sess.ID, userMsg)
 			}

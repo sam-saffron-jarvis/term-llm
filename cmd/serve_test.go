@@ -2389,7 +2389,37 @@ func TestServeRuntimeRun_PersistsSessionAndMessages(t *testing.T) {
 	}
 }
 
-func TestServeRuntimeRun_PersistsPendingInterjectionAtEndOfSimpleStream(t *testing.T) {
+func TestHandleSessionInterrupt_MergesMessageWithImageOnlyContent(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	mgr := newServeSessionManager(time.Minute, 10, nil)
+	defer mgr.Close()
+	engine := llm.NewEngine(llm.NewMockProvider("mock"), nil)
+	rt := &serveRuntime{engine: engine, providerKey: "mock"}
+	state := &runtimeInterruptState{cancel: func() {}, done: make(chan struct{})}
+	rt.setActiveInterrupt(state)
+	defer rt.clearActiveInterrupt(state)
+	putTestSession(mgr, "sess-merge", rt)
+
+	srv := &serveServer{sessionMgr: mgr}
+	body := `{"message":"please inspect this image","interjection_id":"web-1","content":[{"type":"input_image","image_url":"data:image/png;base64,aGVsbG8=","filename":"img.png"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/sessions/sess-merge/interrupt", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	srv.handleSessionByID(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rr.Code, rr.Body.String())
+	}
+	entries := engine.ListPendingInterjections()
+	if len(entries) != 1 {
+		t.Fatalf("pending entries = %d, want 1", len(entries))
+	}
+	parts := entries[0].Message.Parts
+	if len(parts) != 2 || parts[0].Type != llm.PartImage || parts[1].Type != llm.PartText || parts[1].Text != "please inspect this image" {
+		t.Fatalf("queued parts = %#v, want image plus message text", parts)
+	}
+}
+
+func TestServeRuntimeRun_LeavesPendingInterjectionAtEndOfSimpleStream(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "sessions.db")
 	store, err := session.NewStore(session.Config{Enabled: true, Path: dbPath})
 	if err != nil {
@@ -2441,28 +2471,22 @@ func TestServeRuntimeRun_PersistsPendingInterjectionAtEndOfSimpleStream(t *testi
 		t.Fatal("timed out waiting for run to finish")
 	}
 
-	if len(rt.history) != 3 {
-		t.Fatalf("history len = %d, want 3", len(rt.history))
+	if len(rt.history) != 2 {
+		t.Fatalf("history len = %d, want 2", len(rt.history))
 	}
-	if rt.history[2].Role != llm.RoleUser {
-		t.Fatalf("last history role = %s, want user", rt.history[2].Role)
+	if got := engine.PeekInterjection(); got != "also remember this" {
+		t.Fatalf("pending interjection = %q, want %q", got, "also remember this")
 	}
-	if got := rt.history[2].Parts[0].Text; got != "also remember this" {
-		t.Fatalf("last history text = %q, want %q", got, "also remember this")
+	if !engine.CancelInterjection(engine.ListPendingInterjections()[0].ID) {
+		t.Fatal("expected residual interjection to remain cancellable")
 	}
 
 	msgs, err := store.GetMessages(context.Background(), "serve-interject-persist", 0, 0)
 	if err != nil {
 		t.Fatalf("GetMessages failed: %v", err)
 	}
-	if len(msgs) != 3 {
-		t.Fatalf("persisted message count = %d, want 3", len(msgs))
-	}
-	if msgs[2].Role != llm.RoleUser {
-		t.Fatalf("last persisted role = %s, want user", msgs[2].Role)
-	}
-	if msgs[2].TextContent != "also remember this" {
-		t.Fatalf("last persisted text = %q, want %q", msgs[2].TextContent, "also remember this")
+	if len(msgs) != 2 {
+		t.Fatalf("persisted message count = %d, want 2", len(msgs))
 	}
 }
 

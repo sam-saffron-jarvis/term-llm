@@ -23,7 +23,9 @@ import (
 )
 
 type sessionInterruptRequest struct {
-	Message string `json:"message"`
+	Message        string          `json:"message"`
+	Content        json.RawMessage `json:"content"`
+	InterjectionID string          `json:"interjection_id"`
 }
 
 func writeChatStreamChunk(w io.Writer, payload any) error {

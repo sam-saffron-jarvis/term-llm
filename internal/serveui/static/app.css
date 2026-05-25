@@ -2029,6 +2029,10 @@
       opacity: 0.85;
     }
 
+    .send-btn.interject {
+      opacity: 1;
+    }
+
     .send-btn:disabled {
       opacity: 0.35;
       cursor: not-allowed;

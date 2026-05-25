@@ -564,7 +564,36 @@ func (m *Model) buildFooterLayout() footerLayout {
 		appendMetaRow(noticeStyle.Render("  " + m.interruptNotice))
 	}
 
-	if m.pendingInterjection != "" {
+	if len(m.pendingInterjections) > 0 {
+		pendingStyle := lipgloss.NewStyle().Foreground(theme.Muted).Italic(true)
+		selectedStyle := lipgloss.NewStyle().Foreground(theme.Primary).Bold(true)
+		for i, pending := range m.pendingInterjections {
+			pendingText := pending.Text
+			label := "will incorporate"
+			switch pending.UIState {
+			case "deciding":
+				label = "deciding…"
+			case "interject":
+				label = "will incorporate"
+			}
+			// Truncate long messages before wrapping so very narrow widths remain stable.
+			maxLen := m.width - 26 // account for prefix/suffix
+			if maxLen > 0 && len(pendingText) > maxLen {
+				pendingText = pendingText[:maxLen] + "…"
+			}
+			prefix := "  ⏳ "
+			if i == m.selectedInterjection {
+				prefix = "  ▸ "
+			}
+			line := prefix + pendingText + " (" + label + ")"
+			if i == m.selectedInterjection {
+				line += "  [del cancels]"
+				appendMetaRow(selectedStyle.Render(line))
+			} else {
+				appendMetaRow(pendingStyle.Render(line))
+			}
+		}
+	} else if m.pendingInterjection != "" {
 		pendingStyle := lipgloss.NewStyle().Foreground(theme.Muted).Italic(true)
 		pendingText := m.pendingInterjection
 		label := "will incorporate"

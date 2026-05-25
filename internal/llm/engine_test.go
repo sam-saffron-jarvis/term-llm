@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -2842,7 +2843,7 @@ func TestEngineInterjection_NoToolCalls(t *testing.T) {
 }
 
 // TestEngineInterjection_MultipleInterjections verifies that sending multiple
-// interjections before a turn completes only keeps the latest one.
+// interjections before a turn completes injects all of them in FIFO order.
 func TestEngineInterjection_MultipleInterjections(t *testing.T) {
 	tool := &delayingTool{delay: 100 * time.Millisecond}
 	registry := NewToolRegistry()
@@ -2878,12 +2879,11 @@ func TestEngineInterjection_MultipleInterjections(t *testing.T) {
 	}
 	defer stream.Close()
 
-	// Queue two interjections rapidly — only the latest should be kept
+	// Queue two interjections rapidly — both should be kept FIFO
 	engine.Interject("first attempt")
 	engine.Interject("second attempt")
 
-	var interjectionText string
-	var interjectionCount int
+	var interjectionTexts []string
 
 	for {
 		event, err := stream.Recv()
@@ -2894,19 +2894,97 @@ func TestEngineInterjection_MultipleInterjections(t *testing.T) {
 			t.Fatalf("recv error: %v", err)
 		}
 		if event.Type == EventInterjection {
-			interjectionCount++
-			interjectionText = event.Text
+			interjectionTexts = append(interjectionTexts, event.Text)
 		}
 		if event.Type == EventError && event.Err != nil {
 			t.Fatalf("event error: %v", event.Err)
 		}
 	}
 
-	if interjectionCount != 1 {
-		t.Fatalf("expected exactly 1 interjection event, got %d", interjectionCount)
+	want := []string{"first attempt", "second attempt"}
+	if !reflect.DeepEqual(interjectionTexts, want) {
+		t.Fatalf("interjection texts = %#v, want %#v", interjectionTexts, want)
 	}
-	if interjectionText != "second attempt" {
-		t.Fatalf("expected latest interjection %q, got %q", "second attempt", interjectionText)
+}
+
+func TestEngineInterjection_StructuredImageFIFO(t *testing.T) {
+	tool := &delayingTool{delay: 10 * time.Millisecond}
+	registry := NewToolRegistry()
+	registry.Register(tool)
+
+	provider := &fakeProvider{
+		script: func(call int, req Request) []Event {
+			switch call {
+			case 0:
+				return []Event{{Type: EventToolCall, Tool: &ToolCall{ID: "call-1", Name: "delay_tool", Arguments: json.RawMessage(`{}`)}}, {Type: EventDone}}
+			default:
+				return []Event{{Type: EventTextDelta, Text: "done"}, {Type: EventDone}}
+			}
+		},
+	}
+	engine := NewEngine(provider, registry)
+	req := Request{Messages: []Message{UserText("run tool")}, Tools: []ToolSpec{tool.Spec()}, ToolChoice: ToolChoice{Mode: ToolChoiceAuto}}
+
+	stream, err := engine.Stream(context.Background(), req)
+	if err != nil {
+		t.Fatalf("stream error: %v", err)
+	}
+	defer stream.Close()
+
+	engine.QueueInterjection(QueuedInterjection{ID: "img-1", Message: UserImageMessage("image/png", "aW1n", "look"), DisplayText: "look"})
+
+	var gotEvent bool
+	for {
+		event, err := stream.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("recv error: %v", err)
+		}
+		if event.Type == EventInterjection {
+			gotEvent = true
+			if event.InterjectionID != "img-1" {
+				t.Fatalf("event id = %q, want img-1", event.InterjectionID)
+			}
+			if len(event.Message.Parts) != 2 || event.Message.Parts[0].Type != PartImage || event.Message.Parts[1].Type != PartText {
+				t.Fatalf("event message parts = %#v, want image+text", event.Message.Parts)
+			}
+		}
+	}
+	if !gotEvent {
+		t.Fatal("expected EventInterjection")
+	}
+	if len(provider.calls) < 2 {
+		t.Fatalf("provider calls = %d, want at least 2", len(provider.calls))
+	}
+	lastReq := provider.calls[1]
+	lastMsg := lastReq.Messages[len(lastReq.Messages)-1]
+	if lastMsg.Role != RoleUser || len(lastMsg.Parts) != 2 || lastMsg.Parts[0].Type != PartImage || lastMsg.Parts[1].Text != "look" {
+		t.Fatalf("injected message = %#v, want user image+text", lastMsg)
+	}
+}
+
+func TestEngineInterjection_CancelQueuedAndCommittedLifecycle(t *testing.T) {
+	engine := NewEngine(NewMockProvider("test"), nil)
+	id := engine.QueueInterjection(QueuedInterjection{ID: "cancel-me", Message: UserText("drop me")})
+	if id != "cancel-me" {
+		t.Fatalf("id = %q, want cancel-me", id)
+	}
+	if !engine.CancelInterjection("cancel-me") {
+		t.Fatal("expected queued interjection to cancel")
+	}
+	if got := engine.DrainInterjection(); got != "" {
+		t.Fatalf("drain after cancel = %q, want empty", got)
+	}
+
+	engine.QueueInterjection(QueuedInterjection{ID: "commit-me", Message: UserText("keep me")})
+	entries := engine.DrainInterjections()
+	if len(entries) != 1 || entries[0].ID != "commit-me" || entries[0].Status != InterjectionCommitted {
+		t.Fatalf("drained entries = %#v, want committed commit-me", entries)
+	}
+	if engine.CancelInterjection("commit-me") {
+		t.Fatal("committed interjection should not be cancellable")
 	}
 }
 

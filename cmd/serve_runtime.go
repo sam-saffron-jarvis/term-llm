@@ -164,6 +164,10 @@ func (rt *serveRuntime) updateInterruptFromEvent(ev llm.Event) {
 }
 
 func (rt *serveRuntime) Interrupt(ctx context.Context, msg string, fastProvider llm.Provider) (llm.InterruptAction, error) {
+	return rt.InterruptMessage(ctx, llm.UserText(msg), msg, "", fastProvider)
+}
+
+func (rt *serveRuntime) InterruptMessage(ctx context.Context, msg llm.Message, displayText string, interjectionID string, fastProvider llm.Provider) (llm.InterruptAction, error) {
 	rt.interruptMu.Lock()
 	state := rt.activeInterrupt
 	if state == nil {
@@ -178,14 +182,24 @@ func (rt *serveRuntime) Interrupt(ctx context.Context, msg string, fastProvider 
 		ActiveTool:  state.activeTool,
 	}
 	rt.interruptMu.Unlock()
-	action := llm.ClassifyInterrupt(ctx, fastProvider, msg, activity)
+	classifyText := strings.TrimSpace(displayText)
+	if classifyText == "" {
+		classifyText = strings.TrimSpace(llm.MessageText(msg))
+	}
+	if summary := llm.MessageAttachmentSummary(msg); summary != "" {
+		if classifyText != "" {
+			classifyText += " "
+		}
+		classifyText += summary
+	}
+	action := llm.ClassifyInterrupt(ctx, fastProvider, classifyText, activity)
 	switch action {
 	case llm.InterruptCancel:
 		if cancel != nil {
 			cancel()
 		}
 	case llm.InterruptInterject:
-		rt.engine.Interject(msg)
+		rt.engine.QueueInterjection(llm.QueuedInterjection{ID: interjectionID, Message: msg, DisplayText: displayText})
 	}
 	return action, nil
 }
@@ -985,11 +999,9 @@ func (rt *serveRuntime) run(ctx context.Context, stateful bool, replaceHistory b
 		}
 	}
 
-	if text := rt.engine.DrainInterjection(); text != "" {
-		producedMu.Lock()
-		produced = append(produced, llm.UserText(text))
-		producedMu.Unlock()
-	}
+	// Do not drain residual queued interjections here. If the run ended without a
+	// tool boundary, queued interjections were never submitted to the provider and
+	// must remain cancellable/pending for UI recovery or explicit follow-up.
 
 	// Accumulate cumulative session-level usage, including helper calls used for
 	// any auto-compaction that happened during this run.

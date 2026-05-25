@@ -1,6 +1,10 @@
 package ui
 
-import "encoding/json"
+import (
+	"encoding/json"
+
+	"github.com/samsaffron/term-llm/internal/llm"
+)
 
 // StreamEventType identifies the type of stream event
 type StreamEventType int
@@ -30,6 +34,7 @@ type StreamEvent struct {
 
 	// Interjection metadata (for StreamEventInterjection)
 	InterjectionID string
+	Message        llm.Message
 
 	// Tool events (for StreamEventToolStart, StreamEventToolEnd)
 	ToolCallID  string
@@ -176,9 +181,15 @@ func DiffEventWithOperation(path, old, new string, line int, operation string) S
 
 // InterjectionEvent creates an interjection event (user message injected mid-stream).
 func InterjectionEvent(text, interjectionID string) StreamEvent {
+	return InterjectionEventWithMessage(text, interjectionID, llm.Message{})
+}
+
+// InterjectionEventWithMessage creates an interjection event with structured content.
+func InterjectionEventWithMessage(text, interjectionID string, msg llm.Message) StreamEvent {
 	return StreamEvent{
 		Type:           StreamEventInterjection,
 		Text:           text,
 		InterjectionID: interjectionID,
+		Message:        msg,
 	}
 }

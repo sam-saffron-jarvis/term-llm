@@ -117,9 +117,11 @@ type Engine struct {
 	systemPrompt             string            // Captured for re-injection after compaction
 	contextNoticeEmitted     atomic.Bool       // one-shot flag: WARNING emitted once per session
 
-	// Interjection support: user can send a message while the agent is streaming.
-	// The message is injected after the current turn's tool results, before the next LLM turn.
-	interjection chan queuedInterjection // Buffered channel (size 1) for mid-stream user interjections
+	// Interjection support: users can send messages while the agent is streaming.
+	// Messages are injected FIFO after the current turn's tool results, before
+	// the next LLM turn. While entries remain in this queue they are cancellable;
+	// draining atomically commits them for the next provider request.
+	pendingInterjections []queuedInterjection
 
 	// chaosFailNext is armed by TERM_LLM_CHAOS_MONKEY UI shortcuts to inject a
 	// replayable stream failure at the next provider receive boundary.
@@ -152,10 +154,23 @@ type ProviderTurnCleaner interface {
 	CleanupTurn()
 }
 
-type queuedInterjection struct {
-	ID   string
-	Text string
+type InterjectionStatus string
+
+const (
+	InterjectionQueued    InterjectionStatus = "queued"
+	InterjectionCommitted InterjectionStatus = "committed"
+)
+
+// QueuedInterjection is a structured user message submitted while a run is active.
+// Queued entries are cancellable until the engine drains them into a provider turn.
+type QueuedInterjection struct {
+	ID          string
+	Message     Message
+	DisplayText string
+	Status      InterjectionStatus
 }
+
+type queuedInterjection = QueuedInterjection
 
 var engineInterjectionID atomic.Uint64
 
@@ -506,87 +521,135 @@ func (e *Engine) SetMaxToolOutputChars(n int) {
 	e.callbackMu.Unlock()
 }
 
-// Interject queues a user message to be inserted after the current turn's tool results,
-// right before the next LLM turn begins. Non-blocking: if an interjection is already
-// pending, the new one replaces it (only the latest interjection is kept).
-// Safe to call from any goroutine (e.g., the TUI thread).
+// Interject queues a text user message to be inserted after the current turn's tool results,
+// right before the next LLM turn begins. Safe to call from any goroutine.
 func (e *Engine) Interject(text string) {
 	e.InterjectWithID("", text)
 }
 
 // InterjectWithID behaves like Interject but preserves a caller-supplied stable
-// identifier. This lets higher layers match the eventual EventInterjection back
-// to the pending UI row they rendered while classification was in-flight.
+// identifier.
 func (e *Engine) InterjectWithID(id, text string) {
+	_ = e.QueueInterjection(QueuedInterjection{
+		ID:          id,
+		Message:     UserText(text),
+		DisplayText: text,
+	})
+}
+
+// QueueInterjection appends a structured interjection to the FIFO pending queue
+// and returns its stable ID. The message role is normalized to RoleUser.
+func (e *Engine) QueueInterjection(entry QueuedInterjection) string {
 	e.callbackMu.Lock()
 	defer e.callbackMu.Unlock()
 
-	if e.interjection == nil {
-		e.interjection = make(chan queuedInterjection, 1)
+	if strings.TrimSpace(entry.ID) == "" {
+		entry.ID = nextEngineInterjectionID()
 	}
-	ch := e.interjection
-	if strings.TrimSpace(id) == "" {
-		id = nextEngineInterjectionID()
+	entry.Message.Role = RoleUser
+	if entry.DisplayText == "" {
+		entry.DisplayText = MessageText(entry.Message)
+		if strings.TrimSpace(entry.DisplayText) == "" {
+			entry.DisplayText = MessageAttachmentSummary(entry.Message)
+		}
 	}
-	entry := queuedInterjection{ID: id, Text: text}
-
-	// Drain-then-send: replace any pending interjection with the new one.
-	select {
-	case <-ch:
-	default:
-	}
-	ch <- entry
+	entry.Status = InterjectionQueued
+	e.pendingInterjections = append(e.pendingInterjections, entry)
+	return entry.ID
 }
 
-// DrainInterjection returns the pending interjection text, or "" if none.
-// Non-blocking. Public so the TUI layer can recover a pending interjection
-// when the stream completes without tool calls (the "between turns" injection
-// point was never reached). The recovered text can be placed back in the textarea.
+// CancelInterjection removes a queued, not-yet-committed interjection. It returns
+// false if the ID is unknown or has already been drained for a provider request.
+func (e *Engine) CancelInterjection(id string) bool {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return false
+	}
+	e.callbackMu.Lock()
+	defer e.callbackMu.Unlock()
+	for i := range e.pendingInterjections {
+		if e.pendingInterjections[i].ID == id {
+			copy(e.pendingInterjections[i:], e.pendingInterjections[i+1:])
+			e.pendingInterjections[len(e.pendingInterjections)-1] = QueuedInterjection{}
+			e.pendingInterjections = e.pendingInterjections[:len(e.pendingInterjections)-1]
+			return true
+		}
+	}
+	return false
+}
+
+// ListPendingInterjections returns a snapshot of queued, cancellable interjections.
+func (e *Engine) ListPendingInterjections() []QueuedInterjection {
+	e.callbackMu.Lock()
+	defer e.callbackMu.Unlock()
+	out := make([]QueuedInterjection, len(e.pendingInterjections))
+	copy(out, e.pendingInterjections)
+	return out
+}
+
+// DrainInterjection returns pending interjection text and drains all queued
+// interjections. It is retained for legacy recovery paths; new callers should
+// use DrainInterjections or ListPendingInterjections.
 func (e *Engine) DrainInterjection() string {
-	return e.drainInterjection().Text
+	entries := e.DrainInterjections()
+	var b strings.Builder
+	for _, entry := range entries {
+		text := entry.DisplayText
+		if text == "" {
+			text = MessageText(entry.Message)
+		}
+		if strings.TrimSpace(text) == "" {
+			continue
+		}
+		if b.Len() > 0 {
+			b.WriteByte('\n')
+		}
+		b.WriteString(text)
+	}
+	return b.String()
 }
 
-// PeekInterjection returns the currently pending interjection text without
-// consuming it. Returns "" if none. Safe to call from any goroutine.
+// DrainInterjections drains all queued interjections and marks returned entries
+// committed. Draining is the atomic handoff after which cancellation fails.
+func (e *Engine) DrainInterjections() []QueuedInterjection {
+	return e.drainInterjections()
+}
+
+// PeekInterjection returns a text summary of currently pending interjections.
 func (e *Engine) PeekInterjection() string {
-	e.callbackMu.Lock()
-	defer e.callbackMu.Unlock()
-
-	if e.interjection == nil {
-		return ""
+	entries := e.ListPendingInterjections()
+	var b strings.Builder
+	for _, entry := range entries {
+		text := entry.DisplayText
+		if text == "" {
+			text = MessageText(entry.Message)
+		}
+		if strings.TrimSpace(text) == "" {
+			continue
+		}
+		if b.Len() > 0 {
+			b.WriteByte('\n')
+		}
+		b.WriteString(text)
 	}
-	ch := e.interjection
-	select {
-	case entry := <-ch:
-		// Put it back. We hold the write lock, so no concurrent Interject
-		// can fill the (size-1) buffer between the receive and re-send.
-		ch <- entry
-		return entry.Text
-	default:
-		return ""
-	}
+	return b.String()
 }
 
-// drainInterjection returns the pending interjection entry, or a zero value if none.
-// Non-blocking. Called within runLoop between turns.
-//
-// Takes the exclusive lock (matching Interject and PeekInterjection) so a
-// concurrent PeekInterjection cannot temporarily empty the channel between
-// our channel-read and the peek's put-back, which would cause us to return an
-// empty entry when an interjection was actually pending.
-func (e *Engine) drainInterjection() queuedInterjection {
+// drainInterjections atomically commits all queued interjections.
+func (e *Engine) drainInterjections() []queuedInterjection {
 	e.callbackMu.Lock()
 	defer e.callbackMu.Unlock()
 
-	if e.interjection == nil {
-		return queuedInterjection{}
+	if len(e.pendingInterjections) == 0 {
+		return nil
 	}
-	select {
-	case entry := <-e.interjection:
-		return entry
-	default:
-		return queuedInterjection{}
+	out := make([]queuedInterjection, len(e.pendingInterjections))
+	copy(out, e.pendingInterjections)
+	for i := range out {
+		out[i].Status = InterjectionCommitted
 	}
+	e.pendingInterjections = nil
+	return out
 }
 
 // applyToolOutputTruncation applies global and compaction truncation limits
@@ -1875,17 +1938,28 @@ turnLoop:
 				cancel()
 			}
 
-			// Check for user interjection (MCP sync path)
-			if interjection := e.drainInterjection(); interjection.Text != "" {
-				interjectionMsg := UserText(interjection.Text)
-				req.Messages = append(req.Messages, interjectionMsg)
+			// Check for user interjections (MCP sync path)
+			if interjections := e.drainInterjections(); len(interjections) > 0 {
+				interjectionMsgs := make([]Message, 0, len(interjections))
+				for _, interjection := range interjections {
+					interjectionMsg := interjection.Message
+					interjectionMsg.Role = RoleUser
+					req.Messages = append(req.Messages, interjectionMsg)
+					interjectionMsgs = append(interjectionMsgs, interjectionMsg)
+				}
 				if turnCallback != nil {
 					cbCtx, cancel := callbackContext(ctx)
-					_ = turnCallback(cbCtx, attempt, []Message{interjectionMsg}, TurnMetrics{})
+					_ = turnCallback(cbCtx, attempt, interjectionMsgs, TurnMetrics{})
 					cancel()
 				}
-				if err := send.Send(Event{Type: EventInterjection, Text: interjection.Text, InterjectionID: interjection.ID}); err != nil {
-					return err
+				for _, interjection := range interjections {
+					text := interjection.DisplayText
+					if text == "" {
+						text = MessageText(interjection.Message)
+					}
+					if err := send.Send(Event{Type: EventInterjection, Text: text, InterjectionID: interjection.ID, Message: interjection.Message, InterjectionStatus: InterjectionCommitted}); err != nil {
+						return err
+					}
 				}
 			}
 
@@ -2070,20 +2144,31 @@ turnLoop:
 			return nil
 		}
 
-		// Check for user interjection queued during this turn.
-		// If present, inject it as a user message so the LLM sees it on the next turn.
-		if interjection := e.drainInterjection(); interjection.Text != "" {
-			interjectionMsg := UserText(interjection.Text)
-			req.Messages = append(req.Messages, interjectionMsg)
-			// Fire turn callback so the interjection is persisted
+		// Check for user interjections queued during this turn.
+		// If present, inject them as FIFO user messages so the LLM sees them on the next turn.
+		if interjections := e.drainInterjections(); len(interjections) > 0 {
+			interjectionMsgs := make([]Message, 0, len(interjections))
+			for _, interjection := range interjections {
+				interjectionMsg := interjection.Message
+				interjectionMsg.Role = RoleUser
+				req.Messages = append(req.Messages, interjectionMsg)
+				interjectionMsgs = append(interjectionMsgs, interjectionMsg)
+			}
+			// Fire turn callback so interjections are persisted
 			if turnCallback != nil {
 				cbCtx, cancel := callbackContext(ctx)
-				_ = turnCallback(cbCtx, attempt, []Message{interjectionMsg}, TurnMetrics{})
+				_ = turnCallback(cbCtx, attempt, interjectionMsgs, TurnMetrics{})
 				cancel()
 			}
-			// Emit event so TUI can display the interjection inline
-			if err := send.Send(Event{Type: EventInterjection, Text: interjection.Text, InterjectionID: interjection.ID}); err != nil {
-				return err
+			// Emit events so UIs can display committed interjections inline
+			for _, interjection := range interjections {
+				text := interjection.DisplayText
+				if text == "" {
+					text = MessageText(interjection.Message)
+				}
+				if err := send.Send(Event{Type: EventInterjection, Text: text, InterjectionID: interjection.ID, Message: interjection.Message, InterjectionStatus: InterjectionCommitted}); err != nil {
+					return err
+				}
 			}
 		}
 	}

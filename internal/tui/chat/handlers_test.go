@@ -2,6 +2,7 @@ package chat
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
 	"strings"
 	"testing"
@@ -289,8 +290,30 @@ func TestHandleKeyMsg_StreamingEnterOnEmptyComposerShowsHint(t *testing.T) {
 	if cancelCalls != 0 {
 		t.Fatalf("expected empty enter to avoid cancellation, got %d cancel calls", cancelCalls)
 	}
-	if m.phase != "Type to interject, or press Esc to cancel" {
+	if m.phase != "Type to interject, attach an image, or press Esc to cancel" {
 		t.Fatalf("expected empty enter hint phase, got %q", m.phase)
+	}
+}
+
+func TestHandleKeyMsg_CancelsSelectedPendingInterjection(t *testing.T) {
+	m := newTestChatModel(false)
+	m.streaming = true
+	firstID := m.nextPendingInterjectionID()
+	secondID := m.nextPendingInterjectionID()
+	m.applyInterruptAction(firstID, "first note", llm.InterruptInterject)
+	m.applyInterruptAction(secondID, "second note", llm.InterruptInterject)
+
+	_, _ = m.handleKeyMsg(tea.KeyPressMsg{Code: tea.KeyUp})
+	if m.selectedInterjection != 0 {
+		t.Fatalf("selectedInterjection after up = %d, want 0", m.selectedInterjection)
+	}
+	_, _ = m.handleKeyMsg(tea.KeyPressMsg{Code: tea.KeyBackspace})
+
+	if got := m.engine.DrainInterjection(); got != "second note" {
+		t.Fatalf("queued interjections after cancel = %q, want second note", got)
+	}
+	if len(m.pendingInterjections) != 1 || m.pendingInterjections[0].ID != secondID {
+		t.Fatalf("pending stack = %#v, want only second", m.pendingInterjections)
 	}
 }
 
@@ -369,7 +392,7 @@ func TestStreamEventInterjection_DoesNotDiscardNewerPendingClassification(t *tes
 	firstID := m.nextPendingInterjectionID()
 	m.applyInterruptAction(firstID, "first note", llm.InterruptInterject)
 	secondID := m.nextPendingInterjectionID()
-	cmd := m.queueInterruptClassification(secondID, "second note")
+	cmd := m.queueInterruptClassification(secondID, "second note", nil)
 	if cmd == nil {
 		t.Fatal("expected async interrupt classification command")
 	}
@@ -392,6 +415,9 @@ func TestStreamEventInterjection_DoesNotDiscardNewerPendingClassification(t *tes
 	if got := m.activeInterruptSeq; got != requestID {
 		t.Fatalf("activeInterruptSeq after first event = %d, want %d", got, requestID)
 	}
+	if len(m.pendingInterjections) != 1 || m.pendingInterjections[0].ID != secondID {
+		t.Fatalf("pending stack after first event = %#v, want only second", m.pendingInterjections)
+	}
 
 	msg := cmd()
 	classified, ok := msg.(interruptClassifiedMsg)
@@ -406,8 +432,8 @@ func TestStreamEventInterjection_DoesNotDiscardNewerPendingClassification(t *tes
 	if got := m.pendingInterruptUI; got != "interject" {
 		t.Fatalf("pendingInterruptUI after classification = %q, want interject", got)
 	}
-	if got := m.engine.DrainInterjection(); got != "second note" {
-		t.Fatalf("expected second interjection to remain queued, got %q", got)
+	if got := m.engine.DrainInterjection(); got != "first note\nsecond note" {
+		t.Fatalf("expected both FIFO interjections to remain queued, got %q", got)
 	}
 }
 
@@ -431,8 +457,28 @@ func TestStreamEventInterjection_MatchesByIDNotText(t *testing.T) {
 	if got := m.pendingInterruptUI; got != "interject" {
 		t.Fatalf("pendingInterruptUI after stale event = %q, want interject", got)
 	}
-	if got := m.engine.DrainInterjection(); got != "same text" {
-		t.Fatalf("expected latest same-text interjection to remain queued, got %q", got)
+	if len(m.pendingInterjections) != 1 || m.pendingInterjections[0].ID != secondID {
+		t.Fatalf("pending stack after stale event = %#v, want only second", m.pendingInterjections)
+	}
+	if got := m.engine.DrainInterjection(); got != "same text\nsame text" {
+		t.Fatalf("expected both same-text interjections to remain queued FIFO, got %q", got)
+	}
+}
+
+func TestRestorePendingInterjectionDraft_RestoresImageParts(t *testing.T) {
+	m := newTestChatModel(false)
+	m.engine.QueueInterjection(llm.QueuedInterjection{
+		ID:      "img-draft",
+		Message: llm.UserImageMessage("image/png", base64.StdEncoding.EncodeToString([]byte("img")), "describe"),
+	})
+
+	m.restorePendingInterjectionDraft()
+
+	if got := m.textarea.Value(); got != "describe" {
+		t.Fatalf("restored text = %q, want describe", got)
+	}
+	if len(m.images) != 1 || m.images[0].MediaType != "image/png" || string(m.images[0].Data) != "img" {
+		t.Fatalf("restored images = %#v, want png img", m.images)
 	}
 }
 

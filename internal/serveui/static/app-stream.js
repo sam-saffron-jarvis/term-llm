@@ -775,23 +775,38 @@ const applyResponseStreamEvent = (session, streamState, event, payload) => {
         finalizeVisibleAssistantStreamRender(session, streamState.currentAssistantMessage);
         streamState.currentAssistantMessage = null;
       }
-      const pending = consumePendingInterjectionByText(session.id, interjectionText);
-      const messageId = pending?.messageId || generateId('msg');
+      const pending = payload.interjection_id
+        ? removePendingInterjectionById(String(payload.interjection_id))
+        : consumePendingInterjectionByText(session.id, interjectionText);
+      const messageId = pending?.messageId || String(payload.interjection_id || '') || generateId('msg');
       if (isSessionVisible(session)) {
         const emptyState = elements.messages.querySelector('.empty-state');
         if (emptyState) emptyState.remove();
       }
-      const message = {
+      const existingMessage = session.messages.find(m => m.id === messageId && m.role === 'user');
+      const message = existingMessage || {
         id: messageId,
         role: 'user',
         content: interjectionText,
         created: Date.now(),
         interruptState: 'interject'
       };
-      session.messages.push(message);
-      appendStreamMessageNode(session, message);
+      message.content = interjectionText;
+      message.interruptState = 'interject';
+      if (Array.isArray(payload.attachments) && payload.attachments.length > 0 && !message.attachments) {
+        message.attachments = payload.attachments;
+      }
+      if (!existingMessage) {
+        session.messages.push(message);
+        appendStreamMessageNode(session, message);
+      } else {
+        updateUserNode(message);
+      }
       if (isSessionVisible(session)) syncTurnActionPanels();
-      resolvePendingInterruptCommit(session.id, interjectionText);
+      const committed = payload.interjection_id
+        ? resolvePendingInterruptCommitById(String(payload.interjection_id))
+        : resolvePendingInterruptCommit(session.id, interjectionText);
+      if (!committed) resolvePendingInterruptCommit(session.id, interjectionText);
       saveSessions();
       scrollVisibleStreamToBottom(session, true);
     }
@@ -972,6 +987,18 @@ const applyResponseRecoverySnapshot = (session, payload) => {
     const recoveredMessages = rawMessages
       .map((message) => sanitizeMessage(message))
       .filter(Boolean);
+
+    for (const message of recoveredMessages) {
+      if (message?.role !== 'user' || message?.interruptState !== 'interject') continue;
+      if (message.id) {
+        removePendingInterjectionById(message.id);
+        resolvePendingInterruptCommitById(message.id);
+      } else if (message.content) {
+        const pending = consumePendingInterjectionByText(session.id, message.content);
+        if (pending?.messageId) discardPendingInterruptCommit(pending.messageId);
+        resolvePendingInterruptCommit(session.id, message.content);
+      }
+    }
 
     let anchorIndex = -1;
     for (let i = session.messages.length - 1; i >= 0; i -= 1) {
@@ -2679,6 +2706,26 @@ const toggleVoiceRecording = async () => {
   await startVoiceRecording();
 };
 
+const updateSendButtonState = () => {
+  const btn = elements.sendBtn;
+  if (!btn) return;
+  const hasComposerDraft = Boolean(String(elements.promptInput?.value || '').trim()) || state.attachments.length > 0;
+  const interjecting = Boolean(state.streaming && hasComposerDraft);
+  const loading = Boolean(state.streaming && !hasComposerDraft);
+  btn.disabled = false;
+  btn.classList.toggle('loading', loading);
+  btn.classList.toggle('interject', interjecting);
+  const label = interjecting ? 'Interject' : 'Send message';
+  btn.title = label;
+  if (typeof btn.setAttribute === 'function') {
+    btn.setAttribute('aria-label', label);
+  }
+  const arrow = typeof btn.querySelector === 'function' ? btn.querySelector('.arrow') : null;
+  if (arrow) {
+    arrow.textContent = interjecting ? '↳' : '↑';
+  }
+};
+
 const autoGrowPrompt = () => {
   const el = elements.promptInput;
   applyTextDirection(el, el.value || '');
@@ -2686,6 +2733,7 @@ const autoGrowPrompt = () => {
   const next = Math.min(el.scrollHeight, 200);
   el.style.height = `${Math.max(48, next)}px`;
   el.style.overflowY = el.scrollHeight > 200 ? 'auto' : 'hidden';
+  updateSendButtonState();
 };
 
 // ===== File attachment =====
@@ -2831,6 +2879,7 @@ const renderAttachments = () => {
   strip.innerHTML = '';
   if (state.attachments.length === 0) {
     strip.style.display = 'none';
+    updateSendButtonState();
     return;
   }
   strip.style.display = 'flex';
@@ -2867,6 +2916,7 @@ const renderAttachments = () => {
 
     strip.appendChild(chip);
   });
+  updateSendButtonState();
 };
 
 const MAX_ATTACHMENTS = 10;
@@ -2905,7 +2955,7 @@ const setStreaming = (streaming) => {
   state.streaming = streaming;
   elements.promptInput.disabled = false;
   elements.sendBtn.disabled = false;
-  elements.sendBtn.classList.toggle('loading', streaming);
+  updateSendButtonState();
   elements.stopBtn.classList.toggle('visible', streaming && (Boolean(state.abortController) || Boolean(state.currentStreamResponseId)));
   updateVoiceUI();
   updateSessionUsageDisplay(getActiveSession());
@@ -2919,21 +2969,29 @@ const setStreaming = (streaming) => {
   }
 };
 
-const queueInterruptFollowUp = (prompt, messageId) => {
+const queueInterruptFollowUp = (prompt, messageId, attachments = []) => {
   const normalizedMessageId = String(messageId || '').trim();
   if (normalizedMessageId && state.queuedInterrupts.some(entry => entry.messageId === normalizedMessageId)) {
     return;
   }
-  state.queuedInterrupts.push({ prompt, messageId });
+  state.queuedInterrupts.push({ prompt, messageId, attachments: Array.isArray(attachments) ? attachments : [] });
 };
 
-const trackPendingInterruptCommit = (sessionId, prompt, messageId) => {
+const trackPendingInterruptCommit = (sessionId, prompt, messageId, attachments = []) => {
   state.pendingInterruptCommits = state.pendingInterruptCommits.filter(entry => entry.messageId !== messageId);
-  state.pendingInterruptCommits.push({ sessionId, prompt, messageId });
+  state.pendingInterruptCommits.push({ sessionId, prompt, messageId, attachments: Array.isArray(attachments) ? attachments : [] });
 };
 
 const resolvePendingInterruptCommit = (sessionId, prompt) => {
   const idx = state.pendingInterruptCommits.findIndex(entry => entry.sessionId === sessionId && entry.prompt === prompt);
+  if (idx < 0) return null;
+  const [entry] = state.pendingInterruptCommits.splice(idx, 1);
+  return entry;
+};
+
+const resolvePendingInterruptCommitById = (messageId) => {
+  if (!messageId) return null;
+  const idx = state.pendingInterruptCommits.findIndex(entry => entry.messageId === messageId);
   if (idx < 0) return null;
   const [entry] = state.pendingInterruptCommits.splice(idx, 1);
   return entry;
@@ -2952,7 +3010,7 @@ const requeueUncommittedInterrupts = (session) => {
       remaining.push(entry);
       continue;
     }
-    queueInterruptFollowUp(entry.prompt, entry.messageId);
+    queueInterruptFollowUp(entry.prompt, entry.messageId, entry.attachments);
   }
   state.pendingInterruptCommits = remaining;
 };
@@ -2966,7 +3024,7 @@ const drainInterruptQueueIfIdle = (session) => {
     const queued = state.queuedInterrupts.shift();
     elements.promptInput.value = queued.prompt;
     autoGrowPrompt();
-    void sendMessage({ prompt: queued.prompt, attachments: [], reuseMessageId: queued.messageId, _skipContinuationRefresh: true });
+    void sendMessage({ prompt: queued.prompt, attachments: queued.attachments || [], reuseMessageId: queued.messageId, _skipContinuationRefresh: true });
   }
 };
 
@@ -2980,7 +3038,7 @@ const setInterruptMessageState = (session, messageId, interruptState) => {
   updateUserNode(message);
 };
 
-const addInlineInterruptMessage = (session, prompt, messageId, interruptState) => {
+const addInlineInterruptMessage = (session, prompt, messageId, interruptState, attachments = []) => {
   const normalized = sanitizeInterruptState(interruptState) || 'evaluating';
   const message = {
     id: messageId || generateId('msg'),
@@ -2989,6 +3047,9 @@ const addInlineInterruptMessage = (session, prompt, messageId, interruptState) =
     created: Date.now(),
     interruptState: normalized
   };
+  if (Array.isArray(attachments) && attachments.length > 0) {
+    message.attachments = attachments.map(cloneAttachmentForMessage);
+  }
   session.messages.push(message);
 
   const emptyState = elements.messages.querySelector('.empty-state');
@@ -3044,17 +3105,26 @@ const refreshPendingInterjectionBanner = () => {
   banner.appendChild(icon);
   banner.appendChild(text);
   banner.appendChild(tag);
+  if (latest.action === 'interject' || latest.action === 'queue') {
+    const cancel = document.createElement('button');
+    cancel.type = 'button';
+    cancel.className = 'pending-interjection-cancel';
+    cancel.textContent = 'Cancel';
+    cancel.addEventListener('click', () => cancelPendingInterjection(latest));
+    banner.appendChild(cancel);
+  }
   banner.classList.remove('hidden');
 };
 
-const trackPendingInterjection = (sessionId, prompt, messageId, action) => {
+const trackPendingInterjection = (sessionId, prompt, messageId, action, attachments = []) => {
   if (!sessionId || !messageId) return;
   const existing = state.pendingInterjections.find(entry => entry.messageId === messageId);
   if (existing) {
     existing.prompt = prompt;
     existing.action = action;
+    existing.attachments = Array.isArray(attachments) ? attachments : [];
   } else {
-    state.pendingInterjections.push({ sessionId, prompt, messageId, action });
+    state.pendingInterjections.push({ sessionId, prompt, messageId, action, attachments: Array.isArray(attachments) ? attachments : [] });
   }
   refreshPendingInterjectionBanner();
 };
@@ -3074,6 +3144,31 @@ const removePendingInterjectionById = (messageId) => {
   const [entry] = state.pendingInterjections.splice(idx, 1);
   refreshPendingInterjectionBanner();
   return entry;
+};
+
+const cancelPendingInterjection = async (entry) => {
+  if (!entry?.sessionId || !entry?.messageId) return;
+  try {
+    const response = await fetch(`${UI_PREFIX}/v1/sessions/${encodeURIComponent(entry.sessionId)}/interjections/${encodeURIComponent(entry.messageId)}`, {
+      method: 'DELETE',
+      headers: requestHeaders(entry.sessionId)
+    });
+    if (!response.ok) throw await normalizeError(response);
+    removePendingInterjectionById(entry.messageId);
+    const session = state.sessions.find(s => s.id === entry.sessionId);
+    if (session) {
+      const idx = session.messages.findIndex(m => m.id === entry.messageId && m.role === 'user');
+      if (idx >= 0) session.messages.splice(idx, 1);
+      if (isSessionVisible(session)) {
+        const node = Array.from(elements.messages.querySelectorAll('[data-message-id]'))
+          .find(el => el.getAttribute('data-message-id') === entry.messageId);
+        if (node) node.remove();
+      }
+    }
+    persistAndRefreshShell();
+  } catch (err) {
+    alert(err?.message || 'Unable to cancel interjection. It may already have been submitted.');
+  }
 };
 
 const consumePendingInterjectionByText = (sessionId, text) => {
@@ -3108,17 +3203,20 @@ const requeuePendingInterjections = (session) => {
       remaining.push(entry);
       continue;
     }
-    queueInterruptFollowUp(entry.prompt, entry.messageId);
+    queueInterruptFollowUp(entry.prompt, entry.messageId, entry.attachments);
   }
   state.pendingInterjections = remaining;
   refreshPendingInterjectionBanner();
 };
 
-const interruptActiveRun = async (session, prompt, messageId) => {
+const interruptActiveRun = async (session, prompt, messageId, contentParts = null, attachments = []) => {
+  const body = Array.isArray(contentParts) && contentParts.length > 0
+    ? { message: prompt, content: prompt ? [...contentParts, { type: 'input_text', text: prompt }] : contentParts, interjection_id: messageId }
+    : { message: prompt, interjection_id: messageId };
   const response = await fetch(`${UI_PREFIX}/v1/sessions/${encodeURIComponent(session.id)}/interrupt`, {
     method: 'POST',
     headers: requestHeaders(session.id),
-    body: JSON.stringify({ message: prompt })
+    body: JSON.stringify(body)
   });
   if (!response.ok) {
     throw await normalizeError(response);
@@ -3132,13 +3230,14 @@ const interruptActiveRun = async (session, prompt, messageId) => {
 
   if (action === 'interject') {
     updatePendingInterjectionAction(messageId, 'interject');
+    setInterruptMessageState(session, messageId, 'interject');
   } else {
     removePendingInterjectionById(messageId);
-    addInlineInterruptMessage(session, prompt, messageId, action);
+    setInterruptMessageState(session, messageId, action);
   }
 
   if (action === 'cancel' || action === 'queue') {
-    queueInterruptFollowUp(prompt, messageId);
+    queueInterruptFollowUp(prompt, messageId, attachments);
   }
   if (action === 'cancel') {
     state.expectCanceledRun = true;
@@ -3177,7 +3276,7 @@ const refreshSessionFromServerTruth = async (session, pollOnActive = false) => {
   return app.syncActiveSessionFromServer(session, pollOnActive);
 };
 
-const recoverInterruptFailure = async (session, prompt, messageId) => {
+const recoverInterruptFailure = async (session, prompt, messageId, attachments = []) => {
   const runtimeState = await refreshSessionFromServerTruth(session, true);
   if (!runtimeState) {
     return false;
@@ -3185,8 +3284,17 @@ const recoverInterruptFailure = async (session, prompt, messageId) => {
   if (runtimeHasActiveRun(runtimeState)) {
     discardPendingInterruptCommit(messageId);
     removePendingInterjectionById(messageId);
-    addInlineInterruptMessage(session, prompt, messageId, 'queue');
-    queueInterruptFollowUp(prompt, messageId);
+    const existing = session.messages.find(m => m.id === messageId && m.role === 'user');
+    if (existing) {
+      setInterruptMessageState(session, messageId, 'queue');
+      if (Array.isArray(attachments) && attachments.length > 0 && !existing.attachments) {
+        existing.attachments = attachments.map(cloneAttachmentForMessage);
+        updateUserNode(existing);
+      }
+    } else {
+      addInlineInterruptMessage(session, prompt, messageId, 'queue', attachments);
+    }
+    queueInterruptFollowUp(prompt, messageId, attachments);
     persistAndRefreshShell();
     scrollToBottom(true);
     clearDraftMessageForSession(session.id);
@@ -3199,7 +3307,7 @@ const recoverInterruptFailure = async (session, prompt, messageId) => {
   removePendingInterjectionById(messageId);
   await sendMessage({
     prompt,
-    attachments: [],
+    attachments,
     _skipContinuationRefresh: true
   });
   return true;
@@ -3249,23 +3357,33 @@ const sendMessage = async (options = {}) => {
   let session = getActiveSession();
   const sessionBusy = state.streaming || (session && session.activeResponseId);
   if (sessionBusy) {
+    const pendingMessageId = generateId('msg');
+    let requestAttachmentParts = [];
     if (pendingAttachments.length > 0) {
-      alert('Attachments are not supported while a run is active.');
-      return;
+      const controller = new AbortController();
+      try {
+        requestAttachmentParts = await buildAttachmentInputParts(pendingAttachments, controller.signal);
+      } catch (err) {
+        try { controller.abort(); } catch {}
+        alert(err?.message || 'Failed to read attachment.');
+        return;
+      }
     }
 
-    const pendingMessageId = generateId('msg');
     stageDraftMessage(prompt, session.id);
-    trackPendingInterruptCommit(session.id, prompt, pendingMessageId);
-    trackPendingInterjection(session.id, prompt, pendingMessageId, 'deciding');
+    trackPendingInterruptCommit(session.id, prompt, pendingMessageId, pendingAttachments);
+    trackPendingInterjection(session.id, prompt || pendingAttachments[0]?.name || 'Attachment', pendingMessageId, 'deciding', pendingAttachments);
+    addInlineInterruptMessage(session, prompt, pendingMessageId, 'evaluating', pendingAttachments);
     persistAndRefreshShell();
     scrollToBottom(true);
 
     elements.promptInput.value = '';
+    state.attachments = [];
+    renderAttachments();
     autoGrowPrompt();
 
     try {
-      await interruptActiveRun(session, prompt, pendingMessageId);
+      await interruptActiveRun(session, prompt, pendingMessageId, requestAttachmentParts, pendingAttachments);
       clearDraftMessageForSession(session.id);
     } catch (err) {
       // Interrupt can fail after backend restart or stale runtime state. For any
@@ -3273,7 +3391,7 @@ const sendMessage = async (options = {}) => {
       // queue locally, retry as a fresh message, or surface the original error.
       if (err?.status && err.status !== 401) {
         try {
-          const recovered = await recoverInterruptFailure(session, prompt, pendingMessageId);
+          const recovered = await recoverInterruptFailure(session, prompt, pendingMessageId, pendingAttachments);
           if (recovered) {
             return;
           }
@@ -3284,13 +3402,15 @@ const sendMessage = async (options = {}) => {
 
       discardPendingInterruptCommit(pendingMessageId);
       removePendingInterjectionById(pendingMessageId);
-      addInlineInterruptMessage(session, prompt, pendingMessageId, 'error');
+      setInterruptMessageState(session, pendingMessageId, 'error');
       const message = err?.message || 'Failed to interrupt active run.';
       addErrorMessage(message, session);
       if (err?.status === 401) {
         handleAuthFailure();
       }
       elements.promptInput.value = prompt;
+      state.attachments = pendingAttachments;
+      renderAttachments();
       autoGrowPrompt();
       persistAndRefreshShell();
       scrollToBottom(true);
@@ -3694,6 +3814,7 @@ Object.assign(app, {
   renderProviderOptions,
   renderModelOptions,
   autoGrowPrompt,
+  updateSendButtonState,
   updateVoiceUI,
   startVoiceRecording,
   stopVoiceRecording,
@@ -3707,6 +3828,7 @@ Object.assign(app, {
   queueInterruptFollowUp,
   trackPendingInterruptCommit,
   resolvePendingInterruptCommit,
+  resolvePendingInterruptCommitById,
   discardPendingInterruptCommit,
   requeueUncommittedInterrupts,
   drainInterruptQueueIfIdle,
