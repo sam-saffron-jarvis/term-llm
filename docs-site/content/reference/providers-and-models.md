@@ -51,6 +51,7 @@ Most providers use API keys via environment variables. Some use OAuth credential
 | `nearai` | `NEARAI_API_KEY` | NEAR AI Cloud OpenAI-compatible TEE inference key |
 | `sambanova` | `SAMBANOVA_API_KEY` | SambaNova Cloud OpenAI-compatible API key |
 | `openrouter` | `OPENROUTER_API_KEY` | OpenRouter API key |
+| `vllm` / custom `type: vllm` entries | `VLLM_API_KEY` or `<PROVIDER_NAME>_API_KEY` | Optional for unauthenticated local servers; vLLM OpenAI-compatible API plus Qwen thinking controls |
 | `zen` | `ZEN_API_KEY` optional | empty is valid for free tier |
 
 Examples:
@@ -116,9 +117,48 @@ providers:
 
 The provider uses `https://cloud-api.near.ai/v1`, supports tool calls, and has a curated fallback list of TEE-hosted text models. `term-llm models --provider nearai` queries NEAR AI Cloud's public `/model/list` catalog and filters it to chat-capable models, with token prices shown per 1M tokens when available.
 
+## vLLM Qwen reasoning provider
+
+For vLLM servers running Qwen reasoning models, prefer `type: vllm` instead of generic `openai_compatible`. The vLLM provider still uses the OpenAI-compatible `/v1/chat/completions` API, but sends vLLM/Qwen-specific thinking controls and replays prior assistant reasoning with vLLM's current `reasoning` message field.
+
+```yaml
+providers:
+  cdck_qwen:
+    type: vllm
+    base_url: https://gpu-server.example.com:8000/v1
+    model: Qwen/Qwen3.5-122B-A10B
+    api_key: ${CDCK_QWEN_API_KEY}
+    context_window: 200000
+    max_output_tokens: 50000
+```
+
+Use the normal provider flag, or append an effort suffix to the configured provider name:
+
+```bash
+term-llm ask -p cdck_qwen "hello"          # default: no thinking
+term-llm ask -p cdck_qwen-low "harder"     # thinking budget 1024
+term-llm ask -p cdck_qwen-medium "hard"    # thinking budget 4096
+term-llm ask -p cdck_qwen-high "very hard" # thinking budget 10000
+```
+
+The effort suffix is stripped before sending the model name upstream. For example, `-p cdck_qwen-high` sends `model: Qwen/Qwen3.5-122B-A10B` plus Qwen thinking controls, not a literal `Qwen/Qwen3.5-122B-A10B-high` model ID.
+
+| Effort | Request fields sent to vLLM |
+|---|---|
+| default / empty | `chat_template_kwargs.enable_thinking: false`, `thinking_token_budget: 256` |
+| `low` | `enable_thinking: true`, `thinking_token_budget: 1024` |
+| `medium` | `enable_thinking: true`, `thinking_token_budget: 4096` |
+| `high` / `xhigh` / `max` | `enable_thinking: true`, `thinking_token_budget: 10000` |
+
+Notes:
+
+- Start vLLM with the appropriate reasoning parser for your model, for example `--reasoning-parser qwen3` for Qwen3-family reasoning output.
+- vLLM currently streams reasoning text in `delta.reasoning`, but may not report `usage.completion_tokens_details.reasoning_tokens` accurately. In that case term-llm can show reasoning in debug output while `reasoning_tokens` remains `0`; this reflects vLLM usage metadata, not missing reasoning text.
+- For multi-turn conversations, term-llm persists streamed reasoning and replays it as assistant `reasoning` on the next vLLM request. This lets vLLM's chat template render the prior reasoning consistently and gives prefix caching the best chance to reuse shared prompt prefixes when the server has prefix caching enabled.
+
 ## OpenAI-compatible providers
 
-For local or custom backends, use `type: openai_compatible`.
+For local or custom backends that do not need vLLM/Qwen thinking controls, use `type: openai_compatible`.
 
 ```yaml
 providers:
@@ -145,7 +185,7 @@ Use `base_url` when the standard `/chat/completions` path should be appended aut
 
 | Field | Type | Description |
 |---|---|---|
-| `type` | string | Must be `openai_compatible` for custom providers. Inferred automatically for known names like `ollama`, `cerebras`, `groq`. |
+| `type` | string | Use `openai_compatible` for generic custom providers, or `vllm` for vLLM servers that should receive Qwen thinking controls. Inferred automatically for known names like `ollama`, `cerebras`, `groq`, and `vllm`. |
 | `base_url` | string | Base URL (e.g., `http://localhost:11434/v1`). `/chat/completions` is appended automatically. |
 | `url` | string | Full chat completions URL, used as-is. Use this when your endpoint path differs from the standard. Supports `srv://` for DNS SRV discovery and `$()` for command-based resolution. |
 | `api_key` | string | API key. Supports `${ENV_VAR}`, `op://`, `file://`, and `$()` resolution. If omitted, term-llm tries `<PROVIDER_NAME>_API_KEY` from the environment. |
@@ -164,7 +204,7 @@ Use `base_url` when the standard `/chat/completions` path should be appended aut
 ```yaml
 providers:
   my-vllm:
-    type: openai_compatible
+    type: vllm
     base_url: http://gpu-server:8000/v1
     model: Qwen/Qwen3-30B-A3B
     api_key: ${VLLM_API_KEY}
@@ -223,6 +263,35 @@ providers:
 | `medium` | balanced default |
 | `high` | more thorough reasoning |
 | `xhigh` | maximum reasoning on supported models |
+
+### vLLM Qwen thinking suffixes
+
+For configured providers with `type: vllm`, the same suffix parser can be applied to the provider name itself. This is useful when the model ID is long and already configured:
+
+```bash
+term-llm ask -p cdck_qwen-high "reason carefully"
+```
+
+With:
+
+```yaml
+providers:
+  cdck_qwen:
+    type: vllm
+    base_url: https://gpu-server.example.com:8000/v1
+    model: Qwen/Qwen3.5-122B-A10B
+```
+
+term-llm sends the base model ID plus vLLM/Qwen thinking controls:
+
+| Suffix | vLLM behavior |
+|---|---|
+| none | disable thinking by default (`enable_thinking: false`, budget `256`) |
+| `-low` | enable thinking, budget `1024` |
+| `-medium` | enable thinking, budget `4096` |
+| `-high` | enable thinking, budget `10000` |
+
+Reasoning replay uses vLLM's `reasoning` assistant-message field. vLLM may still report `reasoning_tokens: 0` in usage metadata even when reasoning text was streamed; this is a known vLLM-side accounting gap.
 
 ### Anthropic extended thinking
 

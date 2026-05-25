@@ -33,6 +33,18 @@ func ParseProviderModel(s string, cfg *config.Config) (string, string, error) {
 		if _, ok := cfg.Providers[provider]; ok {
 			return provider, model, nil
 		}
+		if len(parts) == 1 {
+			baseProvider, effort := ParseModelEffort(provider)
+			if effort != "" {
+				if providerCfg, ok := cfg.Providers[baseProvider]; ok {
+					baseModel, _ := ParseModelEffort(strings.TrimSpace(providerCfg.Model))
+					if baseModel == "" {
+						return "", "", fmt.Errorf("provider %q has no configured model for effort suffix %q", baseProvider, effort)
+					}
+					return baseProvider, baseModel + "-" + effort, nil
+				}
+			}
+		}
 	}
 
 	// Also accept built-in provider type names
@@ -401,7 +413,7 @@ func createProviderFromConfig(name string, cfg *config.ProviderConfig) (Provider
 		}
 		return NewOllamaChatProvider(cfg.BaseURL, cfg.Model, opts), nil
 
-	case config.ProviderTypeOpenAICompat:
+	case config.ProviderTypeOpenAICompat, config.ProviderTypeVLLM:
 		// Use ResolvedURL if available (from srv:// or $() resolution), otherwise use config values
 		baseURL := cfg.BaseURL
 		chatURL := cfg.URL
@@ -416,6 +428,11 @@ func createProviderFromConfig(name string, cfg *config.ProviderConfig) (Provider
 		}
 		// Use provider name as display name, with first letter capitalized
 		displayName := strings.ToUpper(name[:1]) + name[1:]
+		if providerType == config.ProviderTypeVLLM {
+			p := NewVLLMProviderFull(baseURL, chatURL, cfg.ResolvedAPIKey, cfg.Model, displayName)
+			p.noStreamOptions = cfg.NoStreamOptions
+			return p, nil
+		}
 		p := NewOpenAICompatProviderFull(baseURL, chatURL, cfg.ResolvedAPIKey, cfg.Model, displayName, nil)
 		p.noStreamOptions = cfg.NoStreamOptions
 		return p, nil

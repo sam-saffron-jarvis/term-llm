@@ -1746,6 +1746,131 @@ func TestOpenAICompatProviderStreamSendsReasoningEffort(t *testing.T) {
 	}
 }
 
+func TestVLLMProviderStreamSendsQwenThinkingControls(t *testing.T) {
+	tests := []struct {
+		name          string
+		providerModel string
+		model         string
+		effort        string
+		wantModel     string
+		wantEnable    bool
+		wantBudget    int
+	}{
+		{name: "default disables thinking", model: "Qwen/Qwen3.5-122B-A10B", wantModel: "Qwen/Qwen3.5-122B-A10B", wantEnable: false, wantBudget: 256},
+		{name: "provider model suffix", providerModel: "Qwen/Qwen3.5-122B-A10B-high", wantModel: "Qwen/Qwen3.5-122B-A10B", wantEnable: true, wantBudget: 10000},
+		{name: "low budget", model: "Qwen/Qwen3.5-122B-A10B-low", wantModel: "Qwen/Qwen3.5-122B-A10B", wantEnable: true, wantBudget: 1024},
+		{name: "medium budget", effort: "medium", wantModel: "Qwen/Qwen3.5-122B-A10B", wantEnable: true, wantBudget: 4096},
+		{name: "high budget", effort: "high", wantModel: "Qwen/Qwen3.5-122B-A10B", wantEnable: true, wantBudget: 10000},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var raw map[string]interface{}
+			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if err := json.NewDecoder(r.Body).Decode(&raw); err != nil {
+					t.Fatalf("decode request: %v", err)
+				}
+				w.Header().Set("Content-Type", "text/event-stream")
+				_, _ = w.Write([]byte("data: [DONE]\n\n"))
+			}))
+			defer ts.Close()
+
+			providerModel := tt.providerModel
+			if providerModel == "" {
+				providerModel = "Qwen/Qwen3.5-122B-A10B"
+			}
+			provider := NewVLLMProvider(ts.URL, "test-key", providerModel, "Test vLLM")
+			stream, err := provider.Stream(context.Background(), Request{
+				Model:           tt.model,
+				Messages:        []Message{UserText("hello")},
+				ReasoningEffort: tt.effort,
+			})
+			if err != nil {
+				t.Fatalf("Stream() error = %v", err)
+			}
+			defer stream.Close()
+
+			for {
+				ev, err := stream.Recv()
+				if err != nil {
+					t.Fatalf("Recv() error = %v", err)
+				}
+				if ev.Type == EventDone {
+					break
+				}
+			}
+
+			if _, ok := raw["reasoning_effort"]; ok {
+				t.Fatalf("reasoning_effort should not be sent to vLLM: %#v", raw["reasoning_effort"])
+			}
+			if got := raw["model"]; got != tt.wantModel {
+				t.Fatalf("model = %#v, want %#v", got, tt.wantModel)
+			}
+			kwargs, ok := raw["chat_template_kwargs"].(map[string]interface{})
+			if !ok {
+				t.Fatalf("chat_template_kwargs missing or wrong type: %#v", raw["chat_template_kwargs"])
+			}
+			if got := kwargs["enable_thinking"]; got != tt.wantEnable {
+				t.Fatalf("enable_thinking = %#v, want %#v", got, tt.wantEnable)
+			}
+			if got := int(raw["thinking_token_budget"].(float64)); got != tt.wantBudget {
+				t.Fatalf("thinking_token_budget = %d, want %d", got, tt.wantBudget)
+			}
+		})
+	}
+}
+
+func TestVLLMProviderReplaysReasoningWithCurrentFieldName(t *testing.T) {
+	var got struct {
+		Messages []struct {
+			Role             string `json:"role"`
+			Reasoning        string `json:"reasoning"`
+			ReasoningContent string `json:"reasoning_content"`
+		} `json:"messages"`
+	}
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer ts.Close()
+
+	provider := NewVLLMProvider(ts.URL, "test-key", "Qwen/Qwen3.5-122B-A10B", "Test vLLM")
+	stream, err := provider.Stream(context.Background(), Request{
+		Messages: []Message{
+			UserText("first"),
+			{Role: RoleAssistant, Parts: []Part{{Type: PartText, Text: "answer", ReasoningContent: "thinking trace"}}},
+			UserText("second"),
+		},
+	})
+	if err != nil {
+		t.Fatalf("Stream() error = %v", err)
+	}
+	defer stream.Close()
+	for {
+		ev, err := stream.Recv()
+		if err != nil {
+			t.Fatalf("Recv() error = %v", err)
+		}
+		if ev.Type == EventDone {
+			break
+		}
+	}
+
+	if len(got.Messages) != 3 {
+		t.Fatalf("messages len = %d, want 3", len(got.Messages))
+	}
+	assistant := got.Messages[1]
+	if assistant.Reasoning != "thinking trace" {
+		t.Fatalf("assistant reasoning = %q, want thinking trace", assistant.Reasoning)
+	}
+	if assistant.ReasoningContent != "" {
+		t.Fatalf("assistant reasoning_content should be omitted for vLLM, got %q", assistant.ReasoningContent)
+	}
+}
+
 // unexpectedEOFReader wraps a reader and substitutes io.ErrUnexpectedEOF for
 // the final io.EOF, mimicking Go's HTTP chunked-encoding transport when a local
 // inference server (e.g. Ollama) drops the connection without a proper terminator.

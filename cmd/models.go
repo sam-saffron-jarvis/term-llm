@@ -55,6 +55,7 @@ var modelListSupportedTypes = map[config.ProviderType]bool{
 	config.ProviderTypeCopilot:      true,
 	config.ProviderTypeOpenRouter:   true,
 	config.ProviderTypeOpenAICompat: true,
+	config.ProviderTypeVLLM:         true,
 	config.ProviderTypeZen:          true,
 	config.ProviderTypeXAI:          true,
 	config.ProviderTypeVenice:       true,
@@ -150,7 +151,7 @@ func runModels(cmd *cobra.Command, args []string) error {
 			return fmt.Errorf("openrouter API key not configured. Set OPENROUTER_API_KEY or configure api_key")
 		}
 		lister = llm.NewOpenRouterProvider(apiKey, "", providerCfg.AppURL, providerCfg.AppTitle)
-	case config.ProviderTypeOpenAICompat:
+	case config.ProviderTypeOpenAICompat, config.ProviderTypeVLLM:
 		if providerCfg.BaseURL == "" {
 			return fmt.Errorf("provider '%s' requires base_url to be configured", providerName)
 		}

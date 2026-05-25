@@ -48,6 +48,7 @@ type OpenAICompatProvider struct {
 	name            string // Display name: "Ollama", "LM Studio", etc.
 	headers         map[string]string
 	noStreamOptions bool // If true, don't send stream_options (for servers that reject it)
+	vllmThinking    bool // If true, send vLLM/Qwen thinking controls instead of reasoning_effort
 }
 
 func NewOpenAICompatProvider(baseURL, apiKey, model, name string) *OpenAICompatProvider {
@@ -115,18 +116,20 @@ func (p *OpenAICompatProvider) Capabilities() Capabilities {
 // OpenAI-compatible request/response structures
 // Tool choice can be string ("none"/"auto") or object.
 type oaiChatRequest struct {
-	Model             string                 `json:"model"`
-	Messages          []oaiMessage           `json:"messages"`
-	Tools             []oaiTool              `json:"tools,omitempty"`
-	ToolChoice        interface{}            `json:"tool_choice,omitempty"`
-	ParallelToolCalls *bool                  `json:"parallel_tool_calls,omitempty"`
-	ReasoningEffort   string                 `json:"reasoning_effort,omitempty"`
-	Temperature       *float64               `json:"temperature,omitempty"`
-	TopP              *float64               `json:"top_p,omitempty"`
-	MaxTokens         *int                   `json:"max_tokens,omitempty"`
-	Stream            bool                   `json:"stream,omitempty"`
-	StreamOptions     *oaiStreamOptions      `json:"stream_options,omitempty"`
-	VeniceParameters  map[string]interface{} `json:"venice_parameters,omitempty"`
+	Model               string                 `json:"model"`
+	Messages            []oaiMessage           `json:"messages"`
+	Tools               []oaiTool              `json:"tools,omitempty"`
+	ToolChoice          interface{}            `json:"tool_choice,omitempty"`
+	ParallelToolCalls   *bool                  `json:"parallel_tool_calls,omitempty"`
+	ReasoningEffort     string                 `json:"reasoning_effort,omitempty"`
+	Temperature         *float64               `json:"temperature,omitempty"`
+	TopP                *float64               `json:"top_p,omitempty"`
+	MaxTokens           *int                   `json:"max_tokens,omitempty"`
+	Stream              bool                   `json:"stream,omitempty"`
+	StreamOptions       *oaiStreamOptions      `json:"stream_options,omitempty"`
+	ChatTemplateKwargs  map[string]interface{} `json:"chat_template_kwargs,omitempty"`
+	ThinkingTokenBudget *int                   `json:"thinking_token_budget,omitempty"`
+	VeniceParameters    map[string]interface{} `json:"venice_parameters,omitempty"`
 }
 
 type oaiStreamOptions struct {
@@ -471,6 +474,9 @@ func (p *OpenAICompatProvider) Stream(ctx context.Context, req Request) (Stream,
 	req.MaxOutputTokens = ClampOutputTokens(req.MaxOutputTokens, chooseModel(req.Model, p.model))
 	// Build messages and tools synchronously
 	messages := buildCompatMessages(req.Messages)
+	if p.vllmThinking {
+		messages = convertCompatMessagesForVLLM(messages)
+	}
 	if len(messages) == 0 {
 		return nil, fmt.Errorf("no messages provided")
 	}
@@ -497,6 +503,14 @@ func (p *OpenAICompatProvider) Stream(ctx context.Context, req Request) (Stream,
 		Tools:           tools,
 		Stream:          true,
 		ReasoningEffort: effort,
+	}
+	if p.vllmThinking {
+		enableThinking, budget := vLLMThinkingSettings(effort)
+		chatReq.ReasoningEffort = ""
+		chatReq.ChatTemplateKwargs = map[string]interface{}{"enable_thinking": enableThinking}
+		if budget > 0 {
+			chatReq.ThinkingTokenBudget = &budget
+		}
 	}
 	if !p.noStreamOptions {
 		chatReq.StreamOptions = &oaiStreamOptions{IncludeUsage: true}
@@ -778,6 +792,19 @@ func buildCompatMessages(messages []Message) []oaiMessage {
 		})
 	}
 	return result
+}
+
+func convertCompatMessagesForVLLM(messages []oaiMessage) []oaiMessage {
+	for i := range messages {
+		if messages[i].Role == "assistant" && messages[i].ReasoningContent != "" {
+			// vLLM renamed reasoning_content to reasoning. Use the current field
+			// for assistant-message replay so Qwen reasoning is rendered by vLLM's
+			// chat template and can participate in prefix caching.
+			messages[i].Reasoning = messages[i].ReasoningContent
+			messages[i].ReasoningContent = ""
+		}
+	}
+	return messages
 }
 
 // splitParts extracts text, tool calls, and reasoning content from message parts.

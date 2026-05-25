@@ -27,6 +27,7 @@ const (
 	ProviderTypeZen          ProviderType = "zen"
 	ProviderTypeClaudeBin    ProviderType = "claude-bin"
 	ProviderTypeOpenAICompat ProviderType = "openai_compatible"
+	ProviderTypeVLLM         ProviderType = "vllm"
 	ProviderTypeXAI          ProviderType = "xai"
 	ProviderTypeVenice       ProviderType = "venice"
 	ProviderTypeNearAI       ProviderType = "nearai"
@@ -46,6 +47,7 @@ var builtInProviderTypes = map[string]ProviderType{
 	"openrouter": ProviderTypeOpenRouter,
 	"zen":        ProviderTypeZen,
 	"claude-bin": ProviderTypeClaudeBin,
+	"vllm":       ProviderTypeVLLM,
 	"xai":        ProviderTypeXAI,
 	"venice":     ProviderTypeVenice,
 	"nearai":     ProviderTypeNearAI,
@@ -940,7 +942,7 @@ func resolveProviderCredentials(name string, cfg *ProviderConfig) error {
 		}
 		cfg.Region = expandEnv(cfg.Region)
 
-	case ProviderTypeOpenAICompat:
+	case ProviderTypeOpenAICompat, ProviderTypeVLLM:
 		cfg.ResolvedAPIKey = expandEnv(cfg.APIKey)
 		if cfg.ResolvedAPIKey == "" {
 			// Try provider-specific env var (e.g., CEREBRAS_API_KEY for "cerebras")
@@ -1077,7 +1079,7 @@ func DescribeCredentialSource(name string, cfg *ProviderConfig) (string, bool) {
 		return "ChatGPT OAuth (interactive)", true
 	case ProviderTypeCopilot:
 		return "GitHub Copilot OAuth (interactive)", true
-	case ProviderTypeOpenAICompat:
+	case ProviderTypeOpenAICompat, ProviderTypeVLLM:
 		envName := strings.ToUpper(name) + "_API_KEY"
 		return describeEnvKeyCredential(cfg, envName)
 	}

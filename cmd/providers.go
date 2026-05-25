@@ -120,6 +120,13 @@ var builtinProviderMeta = map[string]struct {
 		supportsListModels: false,
 		description:        "Local Claude Code credentials (claude-bin CLI)",
 	},
+	"vllm": {
+		credential:         "api_key",
+		envVar:             "VLLM_API_KEY",
+		requiresKey:        false,
+		supportsListModels: true,
+		description:        "vLLM OpenAI-compatible server with Qwen thinking controls",
+	},
 	"xai": {
 		credential:         "api_key",
 		envVar:             "XAI_API_KEY",
@@ -263,7 +270,7 @@ func buildProviderList(cfg *config.Config) []ProviderInfo {
 				Type:               provType,
 				Credential:         "api_key",
 				RequiresKey:        true,
-				SupportsListModels: provType == "openai_compatible",
+				SupportsListModels: provType == "openai_compatible" || provType == "vllm",
 				Configured:         true,
 				IsBuiltin:          false,
 			}

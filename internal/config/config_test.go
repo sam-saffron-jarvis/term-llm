@@ -319,6 +319,7 @@ func TestInferProviderType(t *testing.T) {
 		{"openrouter", "", ProviderTypeOpenRouter},
 		{"nearai", "", ProviderTypeNearAI},
 		{"zen", "", ProviderTypeZen},
+		{"vllm", "", ProviderTypeVLLM},
 		{"cerebras", "", ProviderTypeOpenAICompat},
 		{"groq", "", ProviderTypeOpenAICompat},
 		{"custom", ProviderTypeOpenAICompat, ProviderTypeOpenAICompat},

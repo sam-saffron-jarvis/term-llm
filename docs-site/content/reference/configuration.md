@@ -305,6 +305,31 @@ providers:
 
 OpenAI-compatible providers (`type: openai_compatible`, including local/self-hosted endpoints and OpenRouter-style compatible APIs) do **not** enable WebSockets by default. They continue to use HTTP/SSE unless explicitly supported and wired by that provider.
 
+## vLLM providers
+
+Use `type: vllm` for vLLM servers that should receive Qwen thinking controls. It uses the same `base_url`, `url`, `api_key`, `context_window`, and `max_output_tokens` fields as `openai_compatible`, but maps term-llm reasoning effort suffixes into vLLM request fields:
+
+```yaml
+providers:
+  cdck_qwen:
+    type: vllm
+    base_url: https://gpu-server.example.com:8000/v1
+    model: Qwen/Qwen3.5-122B-A10B
+    api_key: ${CDCK_QWEN_API_KEY}
+    context_window: 200000
+    max_output_tokens: 50000
+```
+
+```bash
+term-llm ask -p cdck_qwen       "quick answer" # thinking disabled by default
+term-llm ask -p cdck_qwen-low   "think a bit"  # budget 1024
+term-llm ask -p cdck_qwen-high  "think hard"   # budget 10000
+```
+
+The suffix is stripped before the model name is sent upstream. For example `cdck_qwen-high` still sends `Qwen/Qwen3.5-122B-A10B` as the model and adds `chat_template_kwargs.enable_thinking=true` plus `thinking_token_budget=10000`.
+
+term-llm persists streamed reasoning and replays it as assistant `reasoning` on future vLLM turns so vLLM's chat template and prefix cache can see the same prior reasoning. vLLM may still report `reasoning_tokens: 0` in usage metadata even when reasoning text is present; that is a vLLM accounting limitation.
+
 ## Dynamic secrets and endpoints
 
 term-llm supports dynamic resolution for some config values:
@@ -318,7 +343,7 @@ Example:
 ```yaml
 providers:
   production-llm:
-    type: openai_compatible
+    type: vllm
     model: Qwen/Qwen3-30B-A3B
     url: "srv://_vllm._tcp.ml.company.com/v1/chat/completions"
     api_key: "op://Infrastructure/vLLM Cluster/credential?account=company.1password.com"

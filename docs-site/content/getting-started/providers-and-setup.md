@@ -341,7 +341,27 @@ providers:
     model: deepseek-coder-v2
 ```
 
-For other OpenAI-compatible servers (vLLM, text-generation-inference, etc.):
+For vLLM servers hosting Qwen reasoning models, use `type: vllm` to enable Qwen thinking controls:
+
+```yaml
+providers:
+  my-qwen:
+    type: vllm
+    base_url: http://gpu-server:8000/v1
+    model: Qwen/Qwen3.5-122B-A10B
+    context_window: 200000
+    max_output_tokens: 50000
+```
+
+Then choose thinking effort with the provider suffix:
+
+```bash
+term-llm ask -p my-qwen "hello"       # default: no thinking
+term-llm ask -p my-qwen-low "hard"    # thinking budget 1024
+term-llm ask -p my-qwen-high "harder" # thinking budget 10000
+```
+
+For other OpenAI-compatible servers (text-generation-inference, generic vLLM models without Qwen thinking controls, etc.):
 
 ```yaml
 providers:
@@ -356,7 +376,7 @@ providers:
 
 The `models` list enables tab completion for `--provider my-server:<TAB>`. The configured `model` is always included in completions.
 
-Built-in `openai` and `chatgpt` text providers use Responses WebSockets by default for faster tool-heavy conversations. `openai_compatible` providers do not: local/self-hosted compatible APIs stay on HTTP/SSE by default.
+Built-in `openai` and `chatgpt` text providers use Responses WebSockets by default for faster tool-heavy conversations. `openai_compatible` and `vllm` providers do not: local/self-hosted compatible APIs stay on HTTP/SSE by default.
 
 If your server rejects `stream_options` (causing errors on connect), disable it:
 
@@ -381,7 +401,7 @@ providers:
     max_output_tokens: 8192
 ```
 
-See [Providers and models](/reference/providers-and-models/#configuration-reference) for the full list of OpenAI-compatible provider options.
+See [Providers and models](/reference/providers-and-models/#configuration-reference) for the full list of OpenAI-compatible and vLLM provider options.
 
 ### Option 11: Use Claude Code (claude-bin)
 

@@ -385,6 +385,7 @@ var ProviderFastModels = map[string]string{
 	"gemini-cli": "gemini-2.5-flash-lite",
 	"xai":        "grok-3-mini-fast",
 	"zen":        "minimax-m2.5-free",
+	"vllm":       "Qwen/Qwen3.5-122B-A10B",
 	"bedrock":    "claude-haiku-4-5",
 	"venice":     "llama-3.2-3b",
 	"nearai":     "Qwen/Qwen3.6-35B-A3B-FP8",
@@ -546,7 +547,7 @@ func SortModelIDsByPopularity(provider, defaultModel string, ids []string) []str
 
 // GetBuiltInProviderNames returns the built-in provider type names
 func GetBuiltInProviderNames() []string {
-	return []string{"anthropic", "bedrock", "openai", "chatgpt", "copilot", "openrouter", "gemini", "gemini-cli", "zen", "claude-bin", "xai", "venice", "nearai", "sambanova", "ollama"}
+	return []string{"anthropic", "bedrock", "openai", "chatgpt", "copilot", "openrouter", "gemini", "gemini-cli", "zen", "claude-bin", "vllm", "xai", "venice", "nearai", "sambanova", "ollama"}
 }
 
 // GetProviderNames returns valid provider names from config plus built-in types.
