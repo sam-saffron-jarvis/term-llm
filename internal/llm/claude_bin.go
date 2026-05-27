@@ -1447,7 +1447,7 @@ func (p *ClaudeBinProvider) buildConversationPrompt(messages []Message) string {
 			}
 			for _, part := range msg.Parts {
 				switch part.Type {
-				case PartText:
+				case PartText, PartFile:
 					if part.Text != "" {
 						userParts = append(userParts, part.Text)
 					}
@@ -1799,7 +1799,7 @@ func buildSDKUserContentBlocks(parts []Part) []sdkContentBlock {
 	blocks := make([]sdkContentBlock, 0, len(parts))
 	for _, part := range parts {
 		switch part.Type {
-		case PartText:
+		case PartText, PartFile:
 			if part.Text != "" {
 				blocks = append(blocks, sdkContentBlock{Type: "text", Text: part.Text})
 			}

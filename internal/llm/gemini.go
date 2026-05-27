@@ -339,7 +339,7 @@ func buildGeminiContent(role string, parts []Part) *genai.Content {
 	content := &genai.Content{Role: role}
 	for _, part := range parts {
 		switch part.Type {
-		case PartText:
+		case PartText, PartFile:
 			if part.Text != "" {
 				content.Parts = append(content.Parts, &genai.Part{Text: part.Text})
 			}
@@ -383,7 +383,7 @@ func buildGeminiToolResultContent(parts []Part) *genai.Content {
 	content := &genai.Content{Role: genai.RoleUser}
 	for _, part := range parts {
 		switch part.Type {
-		case PartText:
+		case PartText, PartFile:
 			if part.Text != "" {
 				content.Parts = append(content.Parts, &genai.Part{Text: part.Text})
 			}

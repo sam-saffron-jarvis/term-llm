@@ -542,6 +542,56 @@ providers:
 	}
 }
 
+func TestLoadProviderFileUploadConfig(t *testing.T) {
+	viper.Reset()
+	defer viper.Reset()
+
+	configHome := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", configHome)
+	t.Setenv("OPENAI_API_KEY", "test-key")
+
+	configDir := filepath.Join(configHome, "term-llm")
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
+		t.Fatalf("mkdir config dir: %v", err)
+	}
+
+	configYAML := `default_provider: openai
+providers:
+  openai:
+    model: gpt-5.2
+    file_upload:
+      native_mime_types: []
+      max_native_bytes: 1234
+      text_embed_mime_types:
+        - text/csv
+      max_text_embed_bytes: 5678
+`
+	if err := os.WriteFile(filepath.Join(configDir, "config.yaml"), []byte(configYAML), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	fu := cfg.Providers["openai"].FileUpload
+	if fu == nil {
+		t.Fatal("file_upload config was not loaded")
+	}
+	if fu.NativeMimeTypes == nil || len(fu.NativeMimeTypes) != 0 {
+		t.Fatalf("native_mime_types = %#v, want explicit empty list", fu.NativeMimeTypes)
+	}
+	if fu.MaxNativeBytes != 1234 || fu.MaxTextEmbedBytes != 5678 {
+		t.Fatalf("file_upload byte limits = %d/%d", fu.MaxNativeBytes, fu.MaxTextEmbedBytes)
+	}
+	if len(fu.TextEmbedMimeTypes) != 1 || fu.TextEmbedMimeTypes[0] != "text/csv" {
+		t.Fatalf("text_embed_mime_types = %#v", fu.TextEmbedMimeTypes)
+	}
+	if !IsKnownKey("providers.openai.file_upload.native_mime_types") || !IsKnownKey("providers.openai.file_upload.max_native_bytes") {
+		t.Fatal("file_upload nested keys should be known")
+	}
+}
+
 func TestGetDefaultsIncludeChatGPTImageModel(t *testing.T) {
 	defaults := GetDefaults()
 

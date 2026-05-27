@@ -173,10 +173,25 @@ func (r *MessageBlockRenderer) userDisplayParts(msg *session.Message) (string, s
 		displayContent = extractTextParts(msg.Parts)
 	}
 
-	// Remove appended file bodies from the main user-message display.
-	if idx := strings.Index(displayContent, "\n\n---\n**Attached files:**"); idx != -1 {
-		displayContent = strings.TrimSpace(displayContent[:idx])
+	fileNames := llm.ExtractEmbeddedFileNames(displayContent)
+	seenFiles := make(map[string]bool, len(fileNames))
+	for _, name := range fileNames {
+		seenFiles[name] = true
 	}
+	for _, part := range msg.Parts {
+		if part.Type != llm.PartFile || part.FileData == nil {
+			continue
+		}
+		name := llm.EmbeddedFileDisplayName(part.FileData.Filename)
+		if name == "" || seenFiles[name] {
+			continue
+		}
+		seenFiles[name] = true
+		fileNames = append(fileNames, name)
+	}
+
+	// Remove embedded file bodies from the main user-message display.
+	displayContent = llm.StripEmbeddedFileText(displayContent)
 
 	imageCount := 0
 	for _, part := range msg.Parts {
@@ -184,29 +199,42 @@ func (r *MessageBlockRenderer) userDisplayParts(msg *session.Message) (string, s
 			imageCount++
 		}
 	}
+	fileCount := len(fileNames)
 
-	if strings.TrimSpace(displayContent) == "" && imageCount > 0 {
-		if imageCount == 1 {
+	if strings.TrimSpace(displayContent) == "" {
+		switch {
+		case imageCount > 0 && fileCount > 0:
+			displayContent = "[attachments]"
+		case imageCount == 1:
 			displayContent = "[image]"
-		} else {
+		case imageCount > 1:
 			displayContent = fmt.Sprintf("[%d images]", imageCount)
+		case fileCount == 1:
+			displayContent = "[file]"
+		case fileCount > 1:
+			displayContent = fmt.Sprintf("[%d files]", fileCount)
 		}
 	}
 
+	var attachmentNames []string
 	switch imageCount {
 	case 0:
-		return displayContent, ""
 	case 1:
-		return displayContent, "[with: image 1]"
+		attachmentNames = append(attachmentNames, "image 1")
 	default:
-		return displayContent, fmt.Sprintf("[with: %d images]", imageCount)
+		attachmentNames = append(attachmentNames, fmt.Sprintf("%d images", imageCount))
 	}
+	attachmentNames = append(attachmentNames, fileNames...)
+	if len(attachmentNames) == 0 {
+		return displayContent, ""
+	}
+	return displayContent, fmt.Sprintf("[with: %s]", strings.Join(attachmentNames, ", "))
 }
 
 func extractTextParts(parts []llm.Part) string {
 	var texts []string
 	for _, part := range parts {
-		if part.Type == llm.PartText && part.Text != "" {
+		if (part.Type == llm.PartText || part.Type == llm.PartFile) && part.Text != "" {
 			texts = append(texts, part.Text)
 		}
 	}

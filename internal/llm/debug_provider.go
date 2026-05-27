@@ -490,7 +490,7 @@ func getLastUserPrompt(msgs []Message) string {
 	for i := len(msgs) - 1; i >= 0; i-- {
 		if msgs[i].Role == RoleUser {
 			for _, part := range msgs[i].Parts {
-				if part.Type == PartText && part.Text != "" {
+				if (part.Type == PartText || part.Type == PartFile) && part.Text != "" {
 					return part.Text
 				}
 			}

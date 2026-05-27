@@ -132,3 +132,48 @@ func TestMessageBlockRenderer_MultipleImages_ShowsCountedAttachmentMeta(t *testi
 		t.Fatalf("expected counted image attachment meta, got %q", rendered)
 	}
 }
+
+func TestMessageBlockRenderer_UserMessageWithEmbeddedFile_ShowsAttachmentMetaWithoutBody(t *testing.T) {
+	renderer := NewMessageBlockRenderer(80, nil, false)
+	text := "what number was in the file\n\n" + llm.EmbeddedFileIntro + "\n\n" + llm.FormatEmbeddedFileText("test.txt", "text/plain", "100\n")
+	msg := &session.Message{
+		ID:          1,
+		Role:        llm.RoleUser,
+		TextContent: text,
+		Parts: []llm.Part{
+			{Type: llm.PartText, Text: text},
+		},
+	}
+
+	rendered := renderer.renderUserMessage(msg)
+	plain := ui.StripANSI(rendered)
+	if !strings.Contains(plain, "what number was in the file") {
+		t.Fatalf("expected prompt text in rendered message, got %q", plain)
+	}
+	if !strings.Contains(plain, "[with: test.txt]") {
+		t.Fatalf("expected file attachment meta, got %q", plain)
+	}
+	if strings.Contains(plain, "100") || strings.Contains(plain, "BEGIN USER-PROVIDED FILE") {
+		t.Fatalf("rendered message should hide embedded file body, got %q", plain)
+	}
+}
+
+func TestMessageBlockRenderer_FileOnlyUserMessage_ShowsPlaceholderAndAttachmentMeta(t *testing.T) {
+	renderer := NewMessageBlockRenderer(80, nil, false)
+	text := llm.FormatEmbeddedFileText("test.txt", "text/plain", "100\n")
+	msg := &session.Message{
+		ID:          1,
+		Role:        llm.RoleUser,
+		TextContent: text,
+		Parts:       []llm.Part{{Type: llm.PartFile, Text: text, FileData: &llm.ToolFileData{Filename: "test.txt"}}},
+	}
+
+	rendered := renderer.renderUserMessage(msg)
+	plain := ui.StripANSI(rendered)
+	if !strings.Contains(plain, "[file]") || !strings.Contains(plain, "[with: test.txt]") {
+		t.Fatalf("expected file placeholder and attachment meta, got %q", plain)
+	}
+	if strings.Contains(plain, "100") {
+		t.Fatalf("rendered file-only message should hide embedded file body, got %q", plain)
+	}
+}

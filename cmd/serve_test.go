@@ -1181,10 +1181,44 @@ func TestParseResponsesInput_FileUploadSavesToDisk(t *testing.T) {
 	if perm := info.Mode().Perm(); perm&0o077 != 0 {
 		t.Fatalf("file permissions = %o, want no group/other access", perm)
 	}
-	// Verify abbreviatePath works when path is under home dir
-	home, _ := os.UserHomeDir()
-	if home != "" && strings.HasPrefix(msg.Parts[0].Text, home) {
-		t.Fatalf("parts[0].text leaks absolute home path: %q", msg.Parts[0].Text)
+	// Verify prompt fallback does not leak the upload storage path.
+	if strings.Contains(msg.Parts[0].Text, dataHome) || strings.Contains(msg.Parts[0].Text, entries[0].Name()) {
+		t.Fatalf("parts[0].text leaks upload path: %q", msg.Parts[0].Text)
+	}
+}
+
+func TestParseResponsesInput_TextFileUploadEmbedsFallback(t *testing.T) {
+	dataHome := t.TempDir()
+	t.Setenv("XDG_DATA_HOME", dataHome)
+
+	b64 := base64.StdEncoding.EncodeToString([]byte("name,count\napples,3\n"))
+	payload := json.RawMessage(`[
+		{"type":"message","role":"user","content":[
+			{"type":"input_file","file_data":"data:application/octet-stream;base64,` + b64 + `","filename":"data.csv"}
+		]}
+	]`)
+	msgs, _, err := parseResponsesInput(payload)
+	if err != nil {
+		t.Fatalf("parseResponsesInput failed: %v", err)
+	}
+	if len(msgs) != 1 || len(msgs[0].Parts) != 1 {
+		t.Fatalf("messages = %#v, want one file part", msgs)
+	}
+	part := msgs[0].Parts[0]
+	if part.Type != llm.PartFile {
+		t.Fatalf("part type = %s, want file", part.Type)
+	}
+	if part.FileData == nil || part.FileData.MediaType != "text/csv" {
+		t.Fatalf("file data = %#v, want inferred text/csv", part.FileData)
+	}
+	if !strings.Contains(part.Text, "--- BEGIN USER-PROVIDED FILE: data.csv (text/csv) ---") ||
+		!strings.Contains(part.Text, "name,count") ||
+		!strings.Contains(part.Text, "```csv") ||
+		!strings.Contains(part.Text, "--- END USER-PROVIDED FILE: data.csv ---") {
+		t.Fatalf("fallback text = %q, want marked embedded csv content", part.Text)
+	}
+	if strings.Contains(part.Text, dataHome) {
+		t.Fatalf("fallback text leaks upload storage path: %q", part.Text)
 	}
 }
 
@@ -1215,6 +1249,9 @@ func TestParseResponsesInput_UnsupportedImageSavesToDisk(t *testing.T) {
 	}
 	if !strings.Contains(msg.Parts[0].Text, "icon.svg") {
 		t.Fatalf("parts[0].text = %q, should mention icon.svg", msg.Parts[0].Text)
+	}
+	if strings.Contains(msg.Parts[0].Text, dataHome) {
+		t.Fatalf("parts[0].text leaks upload storage path: %q", msg.Parts[0].Text)
 	}
 
 	// Verify file on disk

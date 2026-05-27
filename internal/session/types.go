@@ -95,8 +95,8 @@ type Session struct {
 }
 
 // Message represents a message in a session.
-// The Parts field stores the full llm.Message.Parts as JSON to preserve
-// tool calls and results exactly.
+// The Parts field stores the full llm.Message.Parts as JSON to preserve tool
+// calls, uploaded images/files, and provider replay state exactly.
 type Message struct {
 	ID          int64      `json:"id"`
 	SessionID   string     `json:"session_id"`
@@ -190,7 +190,7 @@ func NewMessage(sessionID string, msg llm.Message, sequence int) *Message {
 func (m *Message) ExtractTextContent() string {
 	var text string
 	for _, p := range m.Parts {
-		if p.Type == llm.PartText && p.Text != "" {
+		if (p.Type == llm.PartText || p.Type == llm.PartFile) && p.Text != "" {
 			if text != "" {
 				text += "\n"
 			}

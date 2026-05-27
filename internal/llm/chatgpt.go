@@ -29,17 +29,19 @@ var chatGPTHTTPClient = defaultHTTPClient
 
 // ChatGPTProvider implements Provider using the ChatGPT backend API with native OAuth.
 type ChatGPTProvider struct {
-	creds           *credentials.ChatGPTCredentials
-	model           string
-	effort          string // reasoning effort: "low", "medium", "high", "xhigh", or ""
-	useWebSocket    bool
-	responsesClient *ResponsesClient
-	serviceTier     string
+	creds            *credentials.ChatGPTCredentials
+	model            string
+	effort           string // reasoning effort: "low", "medium", "high", "xhigh", or ""
+	useWebSocket     bool
+	responsesClient  *ResponsesClient
+	serviceTier      string
+	fileUploadPolicy *FileUploadPolicy
 }
 
 type ChatGPTProviderOptions struct {
-	UseWebSocket bool
-	ServiceTier  string
+	UseWebSocket     bool
+	ServiceTier      string
+	FileUploadPolicy *FileUploadPolicy
 }
 
 // NewChatGPTProvider creates a new ChatGPT provider.
@@ -79,11 +81,12 @@ func NewChatGPTProviderWithOptions(model string, opts ChatGPTProviderOptions) (*
 	}
 
 	return &ChatGPTProvider{
-		creds:        creds,
-		model:        actualModel,
-		effort:       effort,
-		useWebSocket: opts.UseWebSocket,
-		serviceTier:  NormalizeServiceTier(opts.ServiceTier),
+		creds:            creds,
+		model:            actualModel,
+		effort:           effort,
+		useWebSocket:     opts.UseWebSocket,
+		serviceTier:      NormalizeServiceTier(opts.ServiceTier),
+		fileUploadPolicy: cloneFileUploadPolicy(opts.FileUploadPolicy),
 	}, nil
 }
 
@@ -99,11 +102,12 @@ func NewChatGPTProviderWithCredsAndOptions(creds *credentials.ChatGPTCredentials
 	}
 	actualModel, effort := ParseModelEffort(model)
 	return &ChatGPTProvider{
-		creds:        creds,
-		model:        actualModel,
-		effort:       effort,
-		useWebSocket: opts.UseWebSocket,
-		serviceTier:  NormalizeServiceTier(opts.ServiceTier),
+		creds:            creds,
+		model:            actualModel,
+		effort:           effort,
+		useWebSocket:     opts.UseWebSocket,
+		serviceTier:      NormalizeServiceTier(opts.ServiceTier),
+		fileUploadPolicy: cloneFileUploadPolicy(opts.FileUploadPolicy),
 	}
 }
 
@@ -244,6 +248,7 @@ func (p *ChatGPTProvider) Stream(ctx context.Context, req Request) (Stream, erro
 		Model:                           model,
 		Instructions:                    instructions,
 		Messages:                        req.Messages,
+		FileUploadPolicy:                p.effectiveFileUploadPolicy(),
 		ExtractInstructionsFromMessages: true,
 		Tools:                           tools,
 		Include:                         []string{"reasoning.encrypted_content"},

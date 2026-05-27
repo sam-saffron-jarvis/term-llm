@@ -12,18 +12,20 @@ import (
 
 // OpenAIProvider implements Provider using the standard OpenAI API.
 type OpenAIProvider struct {
-	client          *openai.Client // Used for ListModels
-	apiKey          string
-	model           string
-	effort          string           // reasoning effort: "low", "medium", "high", "xhigh", or ""
-	useWebSocket    bool             // Responses-over-WebSocket transport
-	serviceTier     string           // Optional Responses API service tier default
-	responsesClient *ResponsesClient // Shared client for Responses API with server state
+	client           *openai.Client // Used for ListModels
+	apiKey           string
+	model            string
+	effort           string            // reasoning effort: "low", "medium", "high", "xhigh", or ""
+	useWebSocket     bool              // Responses-over-WebSocket transport
+	serviceTier      string            // Optional Responses API service tier default
+	fileUploadPolicy *FileUploadPolicy // Provider-specific native file forwarding policy
+	responsesClient  *ResponsesClient  // Shared client for Responses API with server state
 }
 
 type OpenAIProviderOptions struct {
-	UseWebSocket bool
-	ServiceTier  string
+	UseWebSocket     bool
+	ServiceTier      string
+	FileUploadPolicy *FileUploadPolicy
 }
 
 // ParseModelEffort extracts effort suffix from model name.
@@ -50,12 +52,13 @@ func NewOpenAIProviderWithOptions(apiKey, model string, opts OpenAIProviderOptio
 	actualModel, effort := ParseModelEffort(model)
 	client := openai.NewClient(option.WithAPIKey(apiKey))
 	return &OpenAIProvider{
-		client:       &client,
-		apiKey:       apiKey,
-		model:        actualModel,
-		effort:       effort,
-		useWebSocket: opts.UseWebSocket,
-		serviceTier:  NormalizeServiceTier(opts.ServiceTier),
+		client:           &client,
+		apiKey:           apiKey,
+		model:            actualModel,
+		effort:           effort,
+		useWebSocket:     opts.UseWebSocket,
+		serviceTier:      NormalizeServiceTier(opts.ServiceTier),
+		fileUploadPolicy: cloneFileUploadPolicy(opts.FileUploadPolicy),
 	}
 }
 
@@ -128,13 +131,14 @@ func (p *OpenAIProvider) Stream(ctx context.Context, req Request) (Stream, error
 	}
 
 	responsesReq := ResponsesRequest{
-		Model:          model,
-		Messages:       req.Messages,
-		Tools:          tools,
-		Include:        []string{"reasoning.encrypted_content"},
-		PromptCacheKey: req.SessionID,
-		Stream:         true,
-		SessionID:      req.SessionID,
+		Model:            model,
+		Messages:         req.Messages,
+		FileUploadPolicy: p.effectiveFileUploadPolicy(),
+		Tools:            tools,
+		Include:          []string{"reasoning.encrypted_content"},
+		PromptCacheKey:   req.SessionID,
+		Stream:           true,
+		SessionID:        req.SessionID,
 	}
 
 	if serviceTier := p.serviceTier; req.ServiceTierSet || strings.TrimSpace(req.ServiceTier) != "" {
@@ -169,7 +173,7 @@ func (p *OpenAIProvider) Stream(ctx context.Context, req Request) (Stream, error
 	}
 
 	if req.Debug {
-		responsesReq.Input = BuildResponsesInput(req.Messages)
+		responsesReq.Input = BuildResponsesInputWithFilePolicy(req.Messages, responsesReq.FileUploadPolicy)
 		systemPreview := collectRoleText(req.Messages, RoleSystem)
 		userPreview := collectRoleText(req.Messages, RoleUser)
 		fmt.Fprintln(os.Stderr, "=== DEBUG: OpenAI Stream Request ===")

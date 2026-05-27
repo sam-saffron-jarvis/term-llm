@@ -289,6 +289,49 @@ providers:
 
 In chat mode, `/fast` toggles this service tier for the current session. It does not rewrite your config file.
 
+## Provider file upload policy
+
+Provider configs can override which MIME types may be forwarded as native file/document inputs. This matters for the web/API `input_file` path: term-llm saves uploads locally first, then either sends a native file part, embeds text-like files as prompt text, or falls back to a local marker for unsupported binaries.
+
+Built-in defaults are conservative:
+
+- `openai`, `chatgpt`, and `copilot` allow OpenAI Responses-style document/spreadsheet/text MIME types natively by default.
+- Providers without an implemented native file path do not forward native file parts; they use text fallback/marker behavior instead.
+- Text-like files (`txt`, `md`, `csv`, `tsv`, `json`, `yaml`, `xml`, `html`, and common code files) can still be embedded as ordinary text on providers without native file support, wrapped in explicit begin/end file markers.
+
+Example custom policy:
+
+```yaml
+providers:
+  openai:
+    model: gpt-5.4
+    file_upload:
+      native_mime_types:
+        - application/pdf
+        - text/plain
+        - text/markdown
+        - text/csv
+        - application/json
+      max_native_bytes: 20971520
+      text_embed_mime_types:
+        - text/plain
+        - text/markdown
+        - text/csv
+        - application/json
+      max_text_embed_bytes: 20971520
+```
+
+To disable native forwarding while keeping text fallback available:
+
+```yaml
+providers:
+  openai:
+    file_upload:
+      native_mime_types: []
+```
+
+The server still enforces its upload limits (10 attachments, 20 MB decoded per attachment, and 50 MB total JSON request body). Provider-native limits may be lower or higher; if a provider rejects a native file type, remove it from `native_mime_types` so term-llm falls back to text/marker behavior.
+
 ## Provider WebSocket transport
 
 Built-in `openai` and `chatgpt` text providers use the Responses WebSocket transport by default for lower-latency agent/tool loops. The WebSocket path keeps a persistent connection and, when safe, continues turns with `previous_response_id` plus only the new user/tool input. If the WebSocket connect/write step fails, term-llm falls back to HTTP/SSE; if a WebSocket continuation is rejected because the prior response state is unavailable, it retries that turn once with full state.

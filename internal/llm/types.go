@@ -205,6 +205,7 @@ type ToolFileData struct {
 	MediaType string `json:"media_type,omitempty"`
 	Base64    string `json:"base64,omitempty"`
 	Filename  string `json:"filename,omitempty"`
+	SizeBytes int64  `json:"size_bytes,omitempty"`
 }
 
 // ToolContentPart represents one structured piece of tool result content.
@@ -412,7 +413,7 @@ func UserText(text string) Message {
 func MessageText(msg Message) string {
 	var b strings.Builder
 	for _, part := range msg.Parts {
-		if part.Type == PartText && part.Text != "" {
+		if (part.Type == PartText || part.Type == PartFile) && part.Text != "" {
 			b.WriteString(part.Text)
 		}
 	}
@@ -422,18 +423,30 @@ func MessageText(msg Message) string {
 // MessageAttachmentSummary returns a compact summary of non-text content.
 func MessageAttachmentSummary(msg Message) string {
 	images := 0
+	files := 0
 	for _, part := range msg.Parts {
-		if part.Type == PartImage {
+		switch part.Type {
+		case PartImage:
 			images++
+		case PartFile:
+			files++
 		}
 	}
-	if images == 0 {
+	var summaries []string
+	if images == 1 {
+		summaries = append(summaries, "1 image")
+	} else if images > 1 {
+		summaries = append(summaries, fmt.Sprintf("%d images", images))
+	}
+	if files == 1 {
+		summaries = append(summaries, "1 file")
+	} else if files > 1 {
+		summaries = append(summaries, fmt.Sprintf("%d files", files))
+	}
+	if len(summaries) == 0 {
 		return ""
 	}
-	if images == 1 {
-		return "[1 image attached]"
-	}
-	return fmt.Sprintf("[%d images attached]", images)
+	return "[" + strings.Join(summaries, ", ") + " attached]"
 }
 
 // UserImageMessage creates a user message with an image and an optional text caption.

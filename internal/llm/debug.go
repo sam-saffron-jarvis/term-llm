@@ -89,7 +89,7 @@ func DebugRawRequest(enabled bool, providerName, credential string, req Request,
 			fmt.Fprintf(&b, "[%d] role=%s\n", i+1, msg.Role)
 			for _, part := range msg.Parts {
 				switch part.Type {
-				case PartText:
+				case PartText, PartFile:
 					b.WriteString("text:\n")
 					b.WriteString(part.Text)
 					b.WriteString("\n")

@@ -983,7 +983,7 @@ func buildGeminiCLIUserContent(parts []Part) map[string]interface{} {
 	apiParts := make([]map[string]interface{}, 0)
 	for _, part := range parts {
 		switch part.Type {
-		case PartText:
+		case PartText, PartFile:
 			if part.Text != "" {
 				apiParts = append(apiParts, map[string]interface{}{"text": part.Text})
 			}
@@ -1011,7 +1011,7 @@ func buildGeminiCLIModelContent(parts []Part) map[string]interface{} {
 	apiParts := make([]map[string]interface{}, 0)
 	for _, part := range parts {
 		switch part.Type {
-		case PartText:
+		case PartText, PartFile:
 			if part.Text != "" {
 				apiParts = append(apiParts, map[string]interface{}{"text": part.Text})
 			}
@@ -1049,7 +1049,7 @@ func buildGeminiCLIToolResultContent(parts []Part) map[string]interface{} {
 	apiParts := make([]map[string]interface{}, 0)
 	for _, part := range parts {
 		switch part.Type {
-		case PartText:
+		case PartText, PartFile:
 			if part.Text != "" {
 				apiParts = append(apiParts, map[string]interface{}{"text": part.Text})
 			}

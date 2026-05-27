@@ -64,6 +64,21 @@ If the jobs platform is also enabled, the jobs API is mounted under the same bas
 
 LLM job runs now expose a `session_id` and persist to the same sessions store by default, which makes web/API integrations much easier to inspect while a progressive run is still executing.
 
+## Attachments
+
+The browser UI accepts attachments from the paperclip button, drag/drop, and paste. The picker hints at the formats term-llm handles best: images (`png`, `jpeg`, `gif`, `webp`), PDFs, common text/data files (`txt`, `md`, `csv`, `tsv`, `json`, `yaml`, `xml`, `html`), and common Office document formats.
+
+Server-side limits are authoritative: at most 10 attachments, 20 MB decoded per attachment, and 50 MB for the whole JSON request body. Base64 adds overhead, so multiple near-20 MB files may hit the request-body limit first.
+
+File handling is provider-aware:
+
+- Images are sent as image parts when the selected provider supports images.
+- Providers with native file input support (currently OpenAI/ChatGPT/Copilot Responses transports by default) receive whitelisted MIME types as native file parts.
+- Text-like uploads such as `txt`, `md`, `csv`, `tsv`, `json`, `yaml`, `xml`, `html`, and common code files are embedded as ordinary text when native file input is unavailable. Embedded contents are wrapped in explicit `BEGIN USER-PROVIDED FILE` / `END USER-PROVIDED FILE` markers.
+- Unsupported binary files are saved locally and represented by a marker instead of being forwarded to the provider.
+
+Do not attach secrets unless you intend the selected provider to receive them. Native file forwarding and text fallback both send file contents upstream.
+
 ## Authentication
 
 By default, serve mode uses bearer-token auth.

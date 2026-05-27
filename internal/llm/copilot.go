@@ -65,11 +65,12 @@ var copilotHTTPClient = &http.Client{
 type CopilotProvider struct {
 	creds              *credentials.CopilotCredentials
 	model              string
-	effort             string           // reasoning effort: "low", "medium", "high", "xhigh", or ""
-	apiBaseURL         string           // Set from token exchange (business vs individual)
-	sessionToken       string           // Copilot session token (different from OAuth token)
-	sessionTokenExpiry time.Time        // When the session token expires
-	responsesClient    *ResponsesClient // Shared client for Responses API (GPT-5+, codex)
+	effort             string            // reasoning effort: "low", "medium", "high", "xhigh", or ""
+	apiBaseURL         string            // Set from token exchange (business vs individual)
+	sessionToken       string            // Copilot session token (different from OAuth token)
+	sessionTokenExpiry time.Time         // When the session token expires
+	fileUploadPolicy   *FileUploadPolicy // Provider-specific native file forwarding policy
+	responsesClient    *ResponsesClient  // Shared client for Responses API (GPT-5+, codex)
 }
 
 // NewCopilotProvider creates a new Copilot provider.
@@ -474,13 +475,14 @@ func (p *CopilotProvider) streamResponses(ctx context.Context, req Request, mode
 	p.responsesClient.GetAuthHeader = func() string { return "Bearer " + p.sessionToken }
 
 	responsesReq := ResponsesRequest{
-		Model:          model,
-		Input:          BuildResponsesInput(req.Messages),
-		Tools:          BuildResponsesTools(req.Tools),
-		Include:        []string{"reasoning.encrypted_content"},
-		PromptCacheKey: req.SessionID,
-		Stream:         true,
-		SessionID:      req.SessionID,
+		Model:            model,
+		Input:            BuildResponsesInputWithFilePolicy(req.Messages, p.effectiveFileUploadPolicy()),
+		FileUploadPolicy: p.effectiveFileUploadPolicy(),
+		Tools:            BuildResponsesTools(req.Tools),
+		Include:          []string{"reasoning.encrypted_content"},
+		PromptCacheKey:   req.SessionID,
+		Stream:           true,
+		SessionID:        req.SessionID,
 	}
 
 	if req.ToolChoice.Mode != "" {

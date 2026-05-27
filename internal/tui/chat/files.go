@@ -19,13 +19,38 @@ type FileAttachment struct {
 	Size    int64
 }
 
-// maxAttachmentSize is the maximum file size allowed for attachments (2MB).
-// This prevents accidental attachment of very large files that could hang the TUI
-// or consume excessive memory.
-const maxAttachmentSize = 2 * 1024 * 1024
+// maxAttachmentSize is the maximum text file size allowed for TUI attachments (20MB).
+// This matches the web/API decoded upload limit while still preventing accidental
+// attachment of extremely large files that could hang the TUI or consume memory.
+const maxAttachmentSize = 20 * 1024 * 1024
+
+// ExpandUserPath expands a leading ~ or ~/ in user-provided file paths before
+// globbing, approval checks, or file reads. Shells do not expand ~ inside the
+// TUI command parser, so slash commands need to do it explicitly.
+func ExpandUserPath(path string) (string, error) {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return path, nil
+	}
+	if path != "~" && !strings.HasPrefix(path, "~/") && !strings.HasPrefix(path, `~\`) {
+		return path, nil
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("expand ~: %w", err)
+	}
+	if path == "~" {
+		return home, nil
+	}
+	return filepath.Join(home, path[2:]), nil
+}
 
 // AttachFile reads a file and creates an attachment
 func AttachFile(path string) (*FileAttachment, error) {
+	path, err := ExpandUserPath(path)
+	if err != nil {
+		return nil, err
+	}
 	// Resolve path
 	absPath, err := filepath.Abs(path)
 	if err != nil {
@@ -173,6 +198,12 @@ func ListFiles(dir string, query string) []FileCompletion {
 
 // ExpandGlob expands a glob pattern to matching files
 func ExpandGlob(pattern string) ([]string, error) {
+	originalPattern := pattern
+	var err error
+	pattern, err = ExpandUserPath(pattern)
+	if err != nil {
+		return nil, err
+	}
 	matches, err := filepath.Glob(pattern)
 	if err != nil {
 		return nil, fmt.Errorf("invalid glob pattern: %w", err)
@@ -183,7 +214,7 @@ func ExpandGlob(pattern string) ([]string, error) {
 		if _, err := os.Stat(pattern); err == nil {
 			return []string{pattern}, nil
 		}
-		return nil, fmt.Errorf("no files match pattern: %s", pattern)
+		return nil, fmt.Errorf("no files match pattern: %s", originalPattern)
 	}
 
 	// Filter out directories
@@ -226,6 +257,11 @@ func FormatFileSize(bytes int64) string {
 
 // attachFile attempts to attach a file, prompting for directory approval if needed
 func (m *Model) attachFile(path string) (tea.Model, tea.Cmd) {
+	var err error
+	path, err = ExpandUserPath(path)
+	if err != nil {
+		return m.showSystemMessage(fmt.Sprintf("Failed to expand path: %v", err))
+	}
 	// Check if the path is approved
 	if !m.approvedDirs.IsPathApproved(path) {
 		// Need approval - show dialog

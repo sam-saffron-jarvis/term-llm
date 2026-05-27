@@ -90,6 +90,7 @@ type ResponsesRequest struct {
 	PreviousResponseID              string               `json:"previous_response_id,omitempty"`
 	ServiceTier                     string               `json:"service_tier,omitempty"`
 	SessionID                       string               `json:"-"`
+	FileUploadPolicy                *FileUploadPolicy    `json:"-"`
 }
 
 // ResponsesWebSearchTool represents the web search tool for OpenAI
@@ -121,7 +122,7 @@ type ResponsesInputItem struct {
 	Output string `json:"output,omitempty"`
 }
 
-// ResponsesContentPart represents a content part (text or image)
+// ResponsesContentPart represents a content part (text, image, or file).
 type ResponsesContentPart struct {
 	Type     string `json:"type"`
 	Text     string `json:"text,omitempty"`
@@ -236,6 +237,13 @@ type responsesSSEEvent struct {
 // including them as developer-role input items. This is used by providers that send
 // system content via the "instructions" request field (e.g., ChatGPT).
 func BuildResponsesInputWithInstructions(messages []Message) (instructions string, input []ResponsesInputItem) {
+	return BuildResponsesInputWithInstructionsAndFilePolicy(messages, nil)
+}
+
+// BuildResponsesInputWithInstructionsAndFilePolicy is like
+// BuildResponsesInputWithInstructions but gates native input_file parts using
+// the supplied provider policy.
+func BuildResponsesInputWithInstructionsAndFilePolicy(messages []Message, policy *FileUploadPolicy) (instructions string, input []ResponsesInputItem) {
 	messages = sanitizeToolHistory(messages)
 	var systemParts []string
 	for _, msg := range messages {
@@ -245,19 +253,19 @@ func BuildResponsesInputWithInstructions(messages []Message) (instructions strin
 				systemParts = append(systemParts, text)
 			}
 		default:
-			input = append(input, buildResponsesInputForRole(msg)...)
+			input = append(input, buildResponsesInputForRole(msg, policy)...)
 		}
 	}
 	return strings.Join(systemParts, "\n\n"), input
 }
 
-func buildResponsesInputItems(messages []Message) []ResponsesInputItem {
+func buildResponsesInputItems(messages []Message, policy *FileUploadPolicy) []ResponsesInputItem {
 	var inputItems []ResponsesInputItem
 	for _, msg := range messages {
 		if msg.Role == RoleSystem || msg.Role == RoleDeveloper {
-			inputItems = append(inputItems, buildResponsesMessageItems("developer", msg.Parts)...)
+			inputItems = append(inputItems, buildResponsesMessageItems("developer", msg.Parts, policy)...)
 		} else {
-			inputItems = append(inputItems, buildResponsesInputForRole(msg)...)
+			inputItems = append(inputItems, buildResponsesInputForRole(msg, policy)...)
 		}
 	}
 	return inputItems
@@ -265,7 +273,14 @@ func buildResponsesInputItems(messages []Message) []ResponsesInputItem {
 
 // BuildResponsesInput converts []Message to Open Responses input format.
 func BuildResponsesInput(messages []Message) []ResponsesInputItem {
-	return buildResponsesInputItems(sanitizeToolHistory(messages))
+	return BuildResponsesInputWithFilePolicy(messages, nil)
+}
+
+// BuildResponsesInputWithFilePolicy converts []Message to Open Responses input
+// format and sends PartFile as native input_file only when policy allows its
+// MIME type and decoded size. Passing nil uses OpenAI Responses defaults.
+func BuildResponsesInputWithFilePolicy(messages []Message, policy *FileUploadPolicy) []ResponsesInputItem {
+	return buildResponsesInputItems(sanitizeToolHistory(messages), policy)
 }
 
 // BuildResponsesContinuationInput converts only the newest turn payload needed for a
@@ -273,6 +288,13 @@ func BuildResponsesInput(messages []Message) []ResponsesInputItem {
 // whole-transcript tool-history sanitization so trailing tool results can be sent
 // back against server-side conversation state without rebuilding earlier turns.
 func BuildResponsesContinuationInput(messages []Message) []ResponsesInputItem {
+	return BuildResponsesContinuationInputWithFilePolicy(messages, nil)
+}
+
+// BuildResponsesContinuationInputWithFilePolicy converts only the newest turn
+// payload needed for a server-state continuation, using the supplied file policy
+// for any new file parts.
+func BuildResponsesContinuationInputWithFilePolicy(messages []Message, policy *FileUploadPolicy) []ResponsesInputItem {
 	messages = FilterConversationMessages(messages)
 	if len(messages) == 0 {
 		return nil
@@ -303,16 +325,16 @@ func BuildResponsesContinuationInput(messages []Message) []ResponsesInputItem {
 		}
 	}
 
-	return buildResponsesInputItems(messages[start:])
+	return buildResponsesInputItems(messages[start:], policy)
 }
 
 // buildResponsesInputForRole converts a single non-system message to input items.
-func buildResponsesInputForRole(msg Message) []ResponsesInputItem {
+func buildResponsesInputForRole(msg Message, policy *FileUploadPolicy) []ResponsesInputItem {
 	switch msg.Role {
 	case RoleUser:
-		return buildResponsesMessageItems("user", msg.Parts)
+		return buildResponsesMessageItems("user", msg.Parts, policy)
 	case RoleDeveloper:
-		return buildResponsesMessageItems("developer", msg.Parts)
+		return buildResponsesMessageItems("developer", msg.Parts, policy)
 	case RoleAssistant:
 		return buildResponsesAssistantItems(msg.Parts)
 	case RoleTool:
@@ -344,7 +366,7 @@ func buildResponsesInputForRole(msg Message) []ResponsesInputItem {
 	}
 }
 
-func buildResponsesMessageItems(role string, parts []Part) []ResponsesInputItem {
+func buildResponsesMessageItems(role string, parts []Part, policy *FileUploadPolicy) []ResponsesInputItem {
 	var items []ResponsesInputItem
 	var textBuf strings.Builder
 
@@ -381,13 +403,13 @@ func buildResponsesMessageItems(role string, parts []Part) []ResponsesInputItem 
 				})
 			}
 		case PartFile:
-			if part.FileData != nil && part.FileData.Base64 != "" {
+			if part.FileData != nil && part.FileData.Base64 != "" && responseNativeFileAllowed(part.FileData, policy) {
 				flushText()
 				filename := strings.TrimSpace(part.FileData.Filename)
 				if filename == "" {
 					filename = "upload"
 				}
-				mediaType := strings.TrimSpace(part.FileData.MediaType)
+				mediaType := NormalizeMediaType(part.FileData.MediaType)
 				if mediaType == "" {
 					mediaType = "application/octet-stream"
 				}
@@ -396,16 +418,13 @@ func buildResponsesMessageItems(role string, parts []Part) []ResponsesInputItem 
 					Filename: filename,
 					FileData: fmt.Sprintf("data:%s;base64,%s", mediaType, part.FileData.Base64),
 				}}
-				if part.FilePath != "" {
-					fileParts = append(fileParts, ResponsesContentPart{Type: "input_text", Text: "[file saved at: " + part.FilePath + "]"})
-				}
 				items = append(items, ResponsesInputItem{
 					Type:    "message",
 					Role:    role,
 					Content: fileParts,
 				})
-			} else if part.Text != "" {
-				textBuf.WriteString(part.Text)
+			} else if text := responseFileTextFallback(part, policy); text != "" {
+				textBuf.WriteString(text)
 			}
 		case PartToolCall:
 			if part.ToolCall == nil {
@@ -431,6 +450,43 @@ func buildResponsesMessageItems(role string, parts []Part) []ResponsesInputItem 
 
 	flushText()
 	return items
+}
+
+func effectiveResponsesFilePolicy(policy *FileUploadPolicy) FileUploadPolicy {
+	if policy == nil {
+		return DefaultOpenAIResponsesFileUploadPolicy()
+	}
+	return *policy
+}
+
+func responseNativeFileAllowed(file *ToolFileData, policy *FileUploadPolicy) bool {
+	if file == nil || strings.TrimSpace(file.Base64) == "" {
+		return false
+	}
+	active := effectiveResponsesFilePolicy(policy)
+	mediaType := NormalizeMediaType(file.MediaType)
+	return active.AllowsNative(mediaType, toolFileSizeBytes(file))
+}
+
+func responseFileTextFallback(part Part, policy *FileUploadPolicy) string {
+	if part.Text == "" {
+		return ""
+	}
+	if part.FileData == nil {
+		return part.Text
+	}
+	active := effectiveResponsesFilePolicy(policy)
+	if active.AllowsTextEmbed(part.FileData.MediaType, toolFileSizeBytes(part.FileData)) {
+		return part.Text
+	}
+	filename := strings.TrimSpace(part.FileData.Filename)
+	if filename == "" {
+		filename = "upload"
+	}
+	if part.FilePath != "" {
+		return "[User uploaded file: " + filename + " — saved locally]\n\n"
+	}
+	return "[User uploaded file: " + filename + "]\n\n"
 }
 
 func buildResponsesAssistantItems(parts []Part) []ResponsesInputItem {
@@ -632,9 +688,9 @@ func (c *ResponsesClient) Stream(ctx context.Context, req ResponsesRequest, debu
 			return fullInput
 		}
 		if req.ExtractInstructionsFromMessages {
-			_, fullInput = BuildResponsesInputWithInstructions(req.Messages)
+			_, fullInput = BuildResponsesInputWithInstructionsAndFilePolicy(req.Messages, req.FileUploadPolicy)
 		} else {
-			fullInput = BuildResponsesInput(req.Messages)
+			fullInput = BuildResponsesInputWithFilePolicy(req.Messages, req.FileUploadPolicy)
 		}
 		fullInputBuilt = true
 		return fullInput
@@ -647,7 +703,7 @@ func (c *ResponsesClient) Stream(ctx context.Context, req ResponsesRequest, debu
 			return continuationInput
 		}
 		if len(req.Messages) > 0 {
-			continuationInput = BuildResponsesContinuationInput(req.Messages)
+			continuationInput = BuildResponsesContinuationInputWithFilePolicy(req.Messages, req.FileUploadPolicy)
 		} else {
 			continuationInput = filterToNewInput(buildFullInput())
 		}

@@ -17,6 +17,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/session"
@@ -100,7 +101,7 @@ func parseDataURL(dataURL string) (mediaType, base64Data string) {
 
 // isLLMImageType returns true for image media types that LLM providers handle natively.
 func isLLMImageType(mediaType string) bool {
-	switch mediaType {
+	switch llm.NormalizeMediaType(mediaType) {
 	case "image/jpeg", "image/png", "image/gif", "image/webp":
 		return true
 	default:
@@ -221,12 +222,95 @@ func abbreviatePath(path string) string {
 	return path
 }
 
+func normalizeUploadMediaType(filename, mediaType string, raw []byte) string {
+	mediaType = llm.NormalizeMediaType(mediaType)
+	if mediaType == "" || mediaType == "application/octet-stream" {
+		if extType := llm.NormalizeMediaType(mime.TypeByExtension(strings.ToLower(filepath.Ext(filename)))); extType != "" {
+			mediaType = extType
+		}
+	}
+	if (mediaType == "" || mediaType == "application/octet-stream") && len(raw) > 0 {
+		if detected := llm.NormalizeMediaType(http.DetectContentType(raw)); detected != "" {
+			mediaType = detected
+		}
+	}
+	if mediaType == "application/octet-stream" && isTextUploadExtension(filename) && !bytes.Contains(raw, []byte{0}) && utf8.Valid(raw) {
+		mediaType = "text/plain"
+	}
+	return mediaType
+}
+
+func uploadFallbackText(filename, mediaType string, raw []byte) string {
+	if text, ok := textUploadContent(filename, mediaType, raw); ok {
+		return llm.FormatEmbeddedFileText(filename, mediaType, text)
+	}
+	return fmt.Sprintf("[User uploaded file: %s — saved locally]\n\n", llm.EmbeddedFileDisplayName(filename))
+}
+
+func textUploadContent(filename, mediaType string, raw []byte) (string, bool) {
+	if len(raw) == 0 {
+		return "", true
+	}
+	if bytes.Contains(raw, []byte{0}) || !utf8.Valid(raw) {
+		return "", false
+	}
+	mediaType = llm.NormalizeMediaType(mediaType)
+	genericMediaType := mediaType == "" || mediaType == "application/octet-stream"
+	if isTextUploadMIME(mediaType) || isTextUploadExtension(filename) || (genericMediaType && looksLikePlainText(raw)) {
+		return string(bytes.TrimPrefix(raw, []byte("\xef\xbb\xbf"))), true
+	}
+	return "", false
+}
+
+func isTextUploadMIME(mediaType string) bool {
+	if strings.HasPrefix(mediaType, "text/") {
+		return true
+	}
+	switch mediaType {
+	case "application/json", "application/x-ndjson", "application/xml", "application/yaml", "application/x-yaml":
+		return true
+	default:
+		return false
+	}
+}
+
+func isTextUploadExtension(filename string) bool {
+	switch strings.ToLower(filepath.Ext(filename)) {
+	case ".txt", ".text", ".md", ".markdown", ".csv", ".tsv", ".json", ".jsonl", ".yaml", ".yml", ".xml", ".html", ".htm",
+		".go", ".js", ".jsx", ".ts", ".tsx", ".py", ".rb", ".rs", ".java", ".c", ".cc", ".cpp", ".h", ".hpp", ".cs", ".sh", ".bash", ".zsh", ".fish", ".sql", ".css", ".scss", ".toml", ".ini", ".conf", ".log":
+		return true
+	default:
+		return false
+	}
+}
+
+func looksLikePlainText(raw []byte) bool {
+	checkLen := len(raw)
+	if checkLen > 8192 {
+		checkLen = 8192
+	}
+	if checkLen == 0 {
+		return true
+	}
+	printable := 0
+	for _, r := range string(raw[:checkLen]) {
+		switch {
+		case r == '\n' || r == '\r' || r == '\t':
+			printable++
+		case r >= 0x20 && r != utf8.RuneError:
+			printable++
+		}
+	}
+	return printable*100/checkLen >= 95
+}
+
 // parseUserMessageContent builds a user llm.Message from a content field
 // that may be a plain string or an array of content parts (input_text, input_image, input_file).
 // Chat Completions-style text/image_url parts are also accepted.
 // Supported image types are sent inline to the LLM and also saved to disk
-// so tools can reopen the original upload later. Other files are saved to disk
-// and referenced by path in a text part.
+// so tools can reopen the original upload later. Text-like files also get a
+// text fallback so providers without native file support can still read them.
+// Other files are saved to disk and referenced by a marker.
 //
 // Images exceeding 1 MB are resized/compressed only for the inline LLM payload
 // to avoid provider errors; the saved ImagePath always points at the original
@@ -251,6 +335,7 @@ func parseUserMessageContent(content json.RawMessage) (llm.Message, error) {
 					continue
 				}
 				mt, b64 := parseDataURL(imageURL)
+				mt = normalizeUploadMediaType(filename, mt, nil)
 				if mt == "" || b64 == "" {
 					continue
 				}
@@ -298,13 +383,12 @@ func parseUserMessageContent(content json.RawMessage) (llm.Message, error) {
 					if filename == "" {
 						filename = "image"
 					}
-					path, err := saveUploadedFile(filename, b64)
-					if err != nil {
+					if _, err := saveUploadedFile(filename, b64); err != nil {
 						return llm.Message{}, fmt.Errorf("save attachment %q: %w", filename, err)
 					}
 					llmParts = append(llmParts, llm.Part{
 						Type: llm.PartText,
-						Text: fmt.Sprintf("[User uploaded file: %s — saved to %s]", filename, abbreviatePath(path)),
+						Text: fmt.Sprintf("[User uploaded file: %s — saved locally]\n\n", llm.EmbeddedFileDisplayName(filename)),
 					})
 				}
 			case "input_file":
@@ -313,10 +397,12 @@ func parseUserMessageContent(content json.RawMessage) (llm.Message, error) {
 				if filename == "" {
 					filename = "upload"
 				}
+				displayFilename := llm.EmbeddedFileDisplayName(filename)
 				if !strings.HasPrefix(fileData, "data:") {
 					continue
 				}
 				mt, b64 := parseDataURL(fileData)
+				mt = normalizeUploadMediaType(displayFilename, mt, nil)
 				if mt == "" || b64 == "" {
 					continue
 				}
@@ -325,21 +411,23 @@ func parseUserMessageContent(content json.RawMessage) (llm.Message, error) {
 					return llm.Message{}, fmt.Errorf("too many attachments (max %d)", maxAttachments)
 				}
 				cleanB64 := stripBase64Newlines(b64)
-				raw, err := decodeUploadedFile(filename, cleanB64)
+				raw, err := decodeUploadedFile(displayFilename, cleanB64)
 				if err != nil {
-					return llm.Message{}, fmt.Errorf("decode attachment %q: %w", filename, err)
+					return llm.Message{}, fmt.Errorf("decode attachment %q: %w", displayFilename, err)
 				}
-				path, err := saveUploadedBytes(filename, raw)
+				mt = normalizeUploadMediaType(displayFilename, mt, raw)
+				path, err := saveUploadedBytes(displayFilename, raw)
 				if err != nil {
-					return llm.Message{}, fmt.Errorf("save attachment %q: %w", filename, err)
+					return llm.Message{}, fmt.Errorf("save attachment %q: %w", displayFilename, err)
 				}
 				llmParts = append(llmParts, llm.Part{
 					Type: llm.PartFile,
-					Text: fmt.Sprintf("[User uploaded file: %s — saved to %s]", filename, abbreviatePath(path)),
+					Text: uploadFallbackText(displayFilename, mt, raw),
 					FileData: &llm.ToolFileData{
 						MediaType: mt,
 						Base64:    cleanB64,
-						Filename:  filename,
+						Filename:  displayFilename,
+						SizeBytes: int64(len(raw)),
 					},
 					FilePath: path,
 				})

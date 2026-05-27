@@ -68,6 +68,17 @@ func InferProviderType(name string, explicit ProviderType) ProviderType {
 	return ProviderTypeOpenAICompat
 }
 
+// FileUploadConfig controls how user-uploaded files are forwarded to a provider.
+// Native MIME types may be sent as provider-native file/document parts when the
+// provider implementation supports them. Text-embed MIME types may be converted
+// to ordinary prompt text as a portable fallback.
+type FileUploadConfig struct {
+	NativeMimeTypes    []string `mapstructure:"native_mime_types" yaml:"native_mime_types,omitempty"`
+	MaxNativeBytes     int64    `mapstructure:"max_native_bytes" yaml:"max_native_bytes,omitempty"`
+	TextEmbedMimeTypes []string `mapstructure:"text_embed_mime_types" yaml:"text_embed_mime_types,omitempty"`
+	MaxTextEmbedBytes  int64    `mapstructure:"max_text_embed_bytes" yaml:"max_text_embed_bytes,omitempty"`
+}
+
 // ProviderConfig is a unified configuration for any provider
 type ProviderConfig struct {
 	// Type of provider - inferred from key name for built-ins, required for custom
@@ -84,6 +95,7 @@ type ProviderConfig struct {
 	Env          map[string]string `mapstructure:"env"`           // Extra subprocess env vars for providers that shell out (e.g. claude-bin)
 	EnableHooks  bool              `mapstructure:"enable_hooks"`  // Opt in to Claude Code hooks for claude-bin (disabled by default)
 	UseWebSocket bool              `mapstructure:"use_websocket"` // Enable Responses-over-WebSocket for providers that support it
+	FileUpload   *FileUploadConfig `mapstructure:"file_upload"`   // Optional upload/native-file support overrides
 
 	// Search behavior - nil means auto (use native if available)
 	UseNativeSearch *bool `mapstructure:"use_native_search"`
@@ -1590,6 +1602,7 @@ var KnownProviderKeys = map[string]bool{
 	"credentials":       true,
 	"env":               true,
 	"use_native_search": true,
+	"file_upload":       true,
 	"base_url":          true,
 	"url":               true,
 	"app_url":           true,
@@ -1737,6 +1750,12 @@ func IsKnownKey(keyPath string) bool {
 			// providers.<name>.<key> - check if <key> is valid
 			return KnownProviderKeys[parts[2]]
 		}
+		if len(parts) == 4 && parts[2] == "file_upload" {
+			switch parts[3] {
+			case "native_mime_types", "max_native_bytes", "text_embed_mime_types", "max_text_embed_bytes":
+				return true
+			}
+		}
 		if len(parts) >= 4 && parts[2] == "env" {
 			// providers.<name>.env.<VAR> - arbitrary subprocess env vars
 			return true
@@ -1788,14 +1807,15 @@ func Save(cfg *Config) error {
 	}
 
 	type saveProvider struct {
-		Type         ProviderType `yaml:"type,omitempty"`
-		Model        string       `yaml:"model,omitempty"`
-		FastModel    string       `yaml:"fast_model,omitempty"`
-		FastProvider string       `yaml:"fast_provider,omitempty"`
-		ServiceTier  string       `yaml:"service_tier,omitempty"`
-		BaseURL      string       `yaml:"base_url,omitempty"`
-		AppURL       string       `yaml:"app_url,omitempty"`
-		AppTitle     string       `yaml:"app_title,omitempty"`
+		Type         ProviderType      `yaml:"type,omitempty"`
+		Model        string            `yaml:"model,omitempty"`
+		FastModel    string            `yaml:"fast_model,omitempty"`
+		FastProvider string            `yaml:"fast_provider,omitempty"`
+		ServiceTier  string            `yaml:"service_tier,omitempty"`
+		FileUpload   *FileUploadConfig `yaml:"file_upload,omitempty"`
+		BaseURL      string            `yaml:"base_url,omitempty"`
+		AppURL       string            `yaml:"app_url,omitempty"`
+		AppTitle     string            `yaml:"app_title,omitempty"`
 	}
 	type saveExec struct {
 		Suggestions int `yaml:"suggestions"`
@@ -1825,6 +1845,7 @@ func Save(cfg *Config) error {
 			FastModel:    p.FastModel,
 			FastProvider: p.FastProvider,
 			ServiceTier:  p.ServiceTier,
+			FileUpload:   p.FileUpload,
 			BaseURL:      p.BaseURL,
 			AppURL:       p.AppURL,
 			AppTitle:     p.AppTitle,

@@ -113,6 +113,84 @@ func TestBuildResponsesInput(t *testing.T) {
 	}
 }
 
+func TestBuildResponsesInput_FilePolicyAllowsNativePDF(t *testing.T) {
+	messages := []Message{{Role: RoleUser, Parts: []Part{{
+		Type: PartFile,
+		Text: "[User uploaded file: doc.pdf — saved locally]",
+		FileData: &ToolFileData{
+			MediaType: "application/pdf",
+			Base64:    "aGVsbG8=",
+			Filename:  "doc.pdf",
+			SizeBytes: 5,
+		},
+		FilePath: "/tmp/term-llm/doc.pdf",
+	}}}}
+
+	input := BuildResponsesInput(messages)
+	if len(input) != 1 {
+		t.Fatalf("len(input) = %d, want 1", len(input))
+	}
+	parts, ok := input[0].Content.([]ResponsesContentPart)
+	if !ok || len(parts) != 1 {
+		t.Fatalf("content = %#v, want one content part", input[0].Content)
+	}
+	if parts[0].Type != "input_file" || parts[0].Filename != "doc.pdf" {
+		t.Fatalf("file part = %#v", parts[0])
+	}
+	if parts[0].FileData != "data:application/pdf;base64,aGVsbG8=" {
+		t.Fatalf("file_data = %q", parts[0].FileData)
+	}
+	if strings.Contains(fmt.Sprint(input[0].Content), "/tmp/term-llm") {
+		t.Fatalf("native file content leaked local path: %#v", input[0].Content)
+	}
+}
+
+func TestBuildResponsesInput_FilePolicyFallsBackToTextWhenNativeDisabled(t *testing.T) {
+	policy := DefaultPortableTextFileUploadPolicy()
+	messages := []Message{{Role: RoleUser, Parts: []Part{{
+		Type: PartFile,
+		Text: FormatEmbeddedFileText("data.csv", "text/csv", "a,b\n"),
+		FileData: &ToolFileData{
+			MediaType: "text/csv",
+			Base64:    "YSxiCg==",
+			Filename:  "data.csv",
+			SizeBytes: 4,
+		},
+	}}}}
+
+	input := BuildResponsesInputWithFilePolicy(messages, &policy)
+	if len(input) != 1 {
+		t.Fatalf("len(input) = %d, want 1", len(input))
+	}
+	content, ok := input[0].Content.(string)
+	if !ok {
+		t.Fatalf("content type = %T, want string", input[0].Content)
+	}
+	if !strings.Contains(content, "a,b") || strings.Contains(content, "input_file") {
+		t.Fatalf("fallback content = %q", content)
+	}
+}
+
+func TestBuildResponsesInput_FilePolicyRejectsUnsupportedNativeMIME(t *testing.T) {
+	messages := []Message{{Role: RoleUser, Parts: []Part{{
+		Type: PartFile,
+		Text: "[User uploaded file: archive.zip — saved locally]",
+		FileData: &ToolFileData{
+			MediaType: "application/zip",
+			Base64:    "UEsDBA==",
+			Filename:  "archive.zip",
+			SizeBytes: 4,
+		},
+	}}}}
+
+	input := BuildResponsesInput(messages)
+	if len(input) != 1 {
+		t.Fatalf("len(input) = %d, want 1", len(input))
+	}
+	if _, ok := input[0].Content.(string); !ok {
+		t.Fatalf("content = %#v, want text fallback for unsupported file", input[0].Content)
+	}
+}
 func TestBuildResponsesInput_ToolCalls(t *testing.T) {
 	messages := []Message{
 		{Role: RoleAssistant, Parts: []Part{

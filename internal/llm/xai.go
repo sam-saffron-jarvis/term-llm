@@ -474,7 +474,7 @@ func buildXAIInput(messages []Message) []xaiResponsesInput {
 	for _, msg := range messages {
 		var text string
 		for _, part := range msg.Parts {
-			if part.Type == PartText {
+			if part.Type == PartText || part.Type == PartFile {
 				text += part.Text
 			}
 		}

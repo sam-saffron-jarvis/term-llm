@@ -524,6 +524,13 @@ func convertParts(parts []Part) any {
 				dp.ReasoningEncryptedContentLen = len(part.ReasoningEncryptedContent)
 				dp.ReasoningEncryptedContentHash = shortContentHash(part.ReasoningEncryptedContent)
 			}
+		case PartFile:
+			dp.Text = part.Text
+			if part.FileData != nil {
+				mediaType := NormalizeMediaType(part.FileData.MediaType)
+				dp.Text = fmt.Sprintf("%s\n[file %s %s len=%d]", strings.TrimSpace(part.Text), part.FileData.Filename, mediaType, len(part.FileData.Base64))
+				dp.Text = strings.TrimSpace(dp.Text)
+			}
 		case PartImage:
 			if part.ImageData != nil {
 				dp.Text = fmt.Sprintf("[image %s len=%d]", part.ImageData.MediaType, len(part.ImageData.Base64))

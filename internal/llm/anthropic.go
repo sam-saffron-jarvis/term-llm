@@ -648,7 +648,7 @@ func buildAnthropicBlocks(parts []Part, allowToolUse bool) []anthropic.ContentBl
 	blocks := make([]anthropic.ContentBlockParamUnion, 0, len(parts))
 	for _, part := range parts {
 		switch part.Type {
-		case PartText:
+		case PartText, PartFile:
 			if allowToolUse && part.ReasoningEncryptedContent != "" {
 				blocks = append(blocks, anthropic.NewThinkingBlock(part.ReasoningEncryptedContent, part.ReasoningContent))
 			}
@@ -688,7 +688,7 @@ func buildAnthropicBetaBlocks(parts []Part, allowToolUse bool) []anthropic.BetaC
 	blocks := make([]anthropic.BetaContentBlockParamUnion, 0, len(parts))
 	for _, part := range parts {
 		switch part.Type {
-		case PartText:
+		case PartText, PartFile:
 			if allowToolUse && part.ReasoningEncryptedContent != "" {
 				blocks = append(blocks, anthropic.NewBetaThinkingBlock(part.ReasoningEncryptedContent, part.ReasoningContent))
 			}

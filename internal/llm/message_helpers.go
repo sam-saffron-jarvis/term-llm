@@ -5,7 +5,7 @@ import "strings"
 func collectTextParts(parts []Part) string {
 	var b strings.Builder
 	for _, part := range parts {
-		if part.Type == PartText {
+		if (part.Type == PartText || part.Type == PartFile) && part.Text != "" {
 			b.WriteString(part.Text)
 		}
 	}

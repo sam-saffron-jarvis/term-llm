@@ -294,10 +294,10 @@ func (m *Model) sendMessage(content string) (tea.Model, tea.Cmd) {
 
 	if len(m.files) > 0 {
 		var filesContent strings.Builder
-		filesContent.WriteString("\n\n---\n**Attached files:**\n")
+		filesContent.WriteString("\n\n" + llm.EmbeddedFileIntro + "\n\n")
 		for _, f := range m.files {
 			fileNames = append(fileNames, f.Name)
-			filesContent.WriteString(fmt.Sprintf("\n### %s\n```\n%s\n```\n", f.Name, f.Content))
+			filesContent.WriteString(llm.FormatEmbeddedFileText(f.Name, "text/plain", f.Content))
 		}
 		fullContent += filesContent.String()
 	}

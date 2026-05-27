@@ -84,6 +84,10 @@ func SaveApprovedDirs(dirs *ApprovedDirs) error {
 
 // IsPathApproved checks if a path is within an approved directory
 func (d *ApprovedDirs) IsPathApproved(path string) bool {
+	path, err := ExpandUserPath(path)
+	if err != nil {
+		return false
+	}
 	// Resolve to absolute path
 	absPath, err := filepath.Abs(path)
 	if err != nil {
@@ -116,6 +120,10 @@ func (d *ApprovedDirs) IsPathApproved(path string) bool {
 
 // AddDirectory adds a directory to the approved list
 func (d *ApprovedDirs) AddDirectory(dir string) error {
+	dir, err := ExpandUserPath(dir)
+	if err != nil {
+		return err
+	}
 	// Resolve to absolute path
 	absDir, err := filepath.Abs(dir)
 	if err != nil {
@@ -141,6 +149,10 @@ func (d *ApprovedDirs) AddDirectory(dir string) error {
 
 // RemoveDirectory removes a directory from the approved list
 func (d *ApprovedDirs) RemoveDirectory(dir string) error {
+	dir, err := ExpandUserPath(dir)
+	if err != nil {
+		return err
+	}
 	absDir, err := filepath.Abs(dir)
 	if err != nil {
 		return fmt.Errorf("failed to resolve path: %w", err)
@@ -167,6 +179,9 @@ func (d *ApprovedDirs) RemoveDirectory(dir string) error {
 
 // GetParentOptions returns the directory and its parents for approval choices
 func GetParentOptions(path string) []string {
+	if expanded, err := ExpandUserPath(path); err == nil {
+		path = expanded
+	}
 	absPath, err := filepath.Abs(path)
 	if err != nil {
 		return []string{path}

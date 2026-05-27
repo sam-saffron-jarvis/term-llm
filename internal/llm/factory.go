@@ -323,15 +323,20 @@ func createProviderFromConfig(name string, cfg *config.ProviderConfig) (Provider
 		return NewAnthropicProvider(cfg.ResolvedAPIKey, cfg.Model, cfg.Credentials)
 
 	case config.ProviderTypeOpenAI:
-		return NewOpenAIProviderWithOptions(cfg.ResolvedAPIKey, cfg.Model, OpenAIProviderOptions{UseWebSocket: cfg.UseWebSocket, ServiceTier: cfg.ServiceTier}), nil
+		return NewOpenAIProviderWithOptions(cfg.ResolvedAPIKey, cfg.Model, OpenAIProviderOptions{UseWebSocket: cfg.UseWebSocket, ServiceTier: cfg.ServiceTier, FileUploadPolicy: FileUploadPolicyOverrideForProviderConfig(name, *cfg)}), nil
 
 	case config.ProviderTypeChatGPT:
 		// ChatGPT uses native OAuth with interactive authentication
-		return NewChatGPTProviderWithOptions(cfg.Model, ChatGPTProviderOptions{UseWebSocket: cfg.UseWebSocket, ServiceTier: cfg.ServiceTier})
+		return NewChatGPTProviderWithOptions(cfg.Model, ChatGPTProviderOptions{UseWebSocket: cfg.UseWebSocket, ServiceTier: cfg.ServiceTier, FileUploadPolicy: FileUploadPolicyOverrideForProviderConfig(name, *cfg)})
 
 	case config.ProviderTypeCopilot:
 		// Copilot uses GitHub device code OAuth with interactive authentication
-		return NewCopilotProvider(cfg.Model)
+		provider, err := NewCopilotProvider(cfg.Model)
+		if err != nil {
+			return nil, err
+		}
+		provider.fileUploadPolicy = cloneFileUploadPolicy(FileUploadPolicyOverrideForProviderConfig(name, *cfg))
+		return provider, nil
 
 	case config.ProviderTypeOpenRouter:
 		return NewOpenRouterProvider(cfg.ResolvedAPIKey, cfg.Model, cfg.AppURL, cfg.AppTitle), nil

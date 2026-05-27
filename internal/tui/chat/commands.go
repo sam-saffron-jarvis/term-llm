@@ -1162,9 +1162,7 @@ func (m *Model) cmdExport(args []string) (tea.Model, tea.Cmd) {
 		// Content - for user messages, extract just the text (not file contents)
 		content := msg.TextContent
 		if msg.Role == llm.RoleUser {
-			if idx := strings.Index(content, "\n\n---\n**Attached files:**"); idx != -1 {
-				content = strings.TrimSpace(content[:idx])
-			}
+			content = llm.StripEmbeddedFileText(content)
 		}
 		b.WriteString(content)
 		b.WriteString("\n---\n\n")
@@ -1225,6 +1223,7 @@ func (m *Model) cmdFile(args []string) (tea.Model, tea.Cmd) {
 
 	// Join all args in case path has spaces
 	path := strings.Join(args, " ")
+	m.setTextareaValue("")
 
 	// Check if it's a glob pattern
 	if strings.ContainsAny(path, "*?[") {
