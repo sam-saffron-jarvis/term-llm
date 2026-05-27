@@ -853,16 +853,22 @@ func (m *jobsV2Manager) maybeRunCleanup(now time.Time) error {
 	if m.cleanupInterval <= 0 {
 		return nil
 	}
+	cleanupStartedAt := now.UTC()
 	m.mu.Lock()
-	if !m.lastCleanupCompleted.IsZero() && now.Sub(m.lastCleanupCompleted) < m.cleanupInterval {
+	if !m.lastCleanupCompleted.IsZero() && cleanupStartedAt.Sub(m.lastCleanupCompleted) < m.cleanupInterval {
 		m.mu.Unlock()
 		return nil
 	}
-	// Optimistically set before running to avoid stampeding.
-	m.lastCleanupCompleted = now
 	m.mu.Unlock()
 
-	return m.pruneOldData(now.UTC())
+	if err := m.pruneOldData(cleanupStartedAt); err != nil {
+		return err
+	}
+
+	m.mu.Lock()
+	m.lastCleanupCompleted = cleanupStartedAt
+	m.mu.Unlock()
+	return nil
 }
 
 func (m *jobsV2Manager) pruneOldData(now time.Time) error {
