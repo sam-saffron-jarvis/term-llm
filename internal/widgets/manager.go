@@ -14,6 +14,8 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"github.com/samsaffron/term-llm/internal/procutil"
 )
 
 const (
@@ -309,11 +311,12 @@ func (e *widgetEntry) startProcess(basePath string) error {
 		e.mu.Unlock()
 	}
 
-	cmd := exec.Command(argv[0], argv[1:]...)
+	cmd := exec.CommandContext(context.Background(), argv[0], argv[1:]...)
 	cmd.Dir = mf.Dir
 	cmd.Env = env
 	cmd.Stdout = os.Stderr
 	cmd.Stderr = os.Stderr
+	procutil.ConfigureCommandProcessGroup(cmd)
 
 	if err := cmd.Start(); err != nil {
 		return e.setError(fmt.Errorf("start process: %w", err))
@@ -360,7 +363,7 @@ func (e *widgetEntry) startProcess(basePath string) error {
 		p := e.proc
 		e.mu.Unlock()
 		if p != nil {
-			_ = p.Kill()
+			killProcessGroup(p, syscall.SIGKILL)
 		}
 		return e.setError(fmt.Errorf("did not respond within %s: %v", startupTimeout, lastErr))
 	}
@@ -391,7 +394,7 @@ func (e *widgetEntry) stopProcess() {
 	if proc == nil {
 		return
 	}
-	_ = proc.Signal(syscall.SIGTERM)
+	killProcessGroup(proc, syscall.SIGTERM)
 	done := make(chan struct{})
 	go func() {
 		proc.Wait()
@@ -400,10 +403,19 @@ func (e *widgetEntry) stopProcess() {
 	select {
 	case <-done:
 	case <-time.After(3 * time.Second):
-		_ = proc.Kill()
+		killProcessGroup(proc, syscall.SIGKILL)
 	}
 	if mode, _ := e.manifest.PlaceholderMode(); mode == "socket" {
 		_ = os.Remove(filepath.Join(socketRuntimeDir, e.manifest.ID+".sock"))
+	}
+}
+
+func killProcessGroup(proc *os.Process, sig syscall.Signal) {
+	if proc == nil {
+		return
+	}
+	if err := syscall.Kill(-proc.Pid, sig); err != nil {
+		_ = proc.Signal(sig)
 	}
 }
 
