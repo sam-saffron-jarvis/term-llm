@@ -489,6 +489,163 @@ func TestJobsV2RecoverRunsCancelsCancelRequestedRuns(t *testing.T) {
 	}
 }
 
+func TestJobsV2RecoverRunsFailsAbandonedRuns(t *testing.T) {
+	cases := []struct {
+		name   string
+		status jobsV2RunStatus
+	}{
+		{name: "claimed", status: jobsV2RunClaimed},
+		{name: "running", status: jobsV2RunRunning},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			mgr, err := newJobsV2Manager(":memory:", 0, nil)
+			if err != nil {
+				t.Fatalf("newJobsV2Manager failed: %v", err)
+			}
+			defer func() { _ = mgr.Close() }()
+
+			job, err := mgr.CreateJob(jobsV2Job{
+				Name:          "recover-abandoned-" + tc.name,
+				Enabled:       true,
+				RunnerType:    jobsV2RunnerProgram,
+				RunnerConfig:  json.RawMessage(`{"command":"echo","args":["x"]}`),
+				TriggerType:   jobsV2TriggerManual,
+				TriggerConfig: json.RawMessage(`{}`),
+			})
+			if err != nil {
+				t.Fatalf("CreateJob failed: %v", err)
+			}
+
+			run, err := mgr.TriggerJob(job.ID)
+			if err != nil {
+				t.Fatalf("TriggerJob failed: %v", err)
+			}
+
+			if tc.status == jobsV2RunRunning {
+				startedAt := time.Now().UTC().Add(-time.Second)
+				_, err = mgr.db.Exec(`UPDATE job_runs_v2 SET status = ?, started_at = ?, response = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, tc.status, startedAt, "partial output", run.ID)
+			} else {
+				_, err = mgr.db.Exec(`UPDATE job_runs_v2 SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, tc.status, run.ID)
+			}
+			if err != nil {
+				t.Fatalf("mark %s failed: %v", tc.status, err)
+			}
+
+			if err := mgr.recoverRuns(); err != nil {
+				t.Fatalf("recoverRuns failed: %v", err)
+			}
+
+			recovered, err := mgr.GetRun(run.ID)
+			if err != nil {
+				t.Fatalf("GetRun failed: %v", err)
+			}
+			if recovered.Status != jobsV2RunFailed {
+				t.Fatalf("status = %s, want %s", recovered.Status, jobsV2RunFailed)
+			}
+			if recovered.ExitReason != exitReasonWorkerLost {
+				t.Fatalf("exit_reason = %q, want %q", recovered.ExitReason, exitReasonWorkerLost)
+			}
+			if recovered.Error != errJobsV2WorkerLost.Error() {
+				t.Fatalf("error = %q, want %q", recovered.Error, errJobsV2WorkerLost.Error())
+			}
+			if recovered.FinishedAt == nil {
+				t.Fatalf("finished_at was not set for recovered failed run")
+			}
+			if tc.status == jobsV2RunRunning && recovered.Response != "partial output" {
+				t.Fatalf("response = %q, want preserved partial output", recovered.Response)
+			}
+
+			runs, total, err := mgr.ListRuns(job.ID, 10, 0)
+			if err != nil {
+				t.Fatalf("ListRuns failed: %v", err)
+			}
+			if total != 1 {
+				t.Fatalf("total = %d, want 1", total)
+			}
+			if len(runs) != 1 || runs[0].ID != run.ID || runs[0].Status != jobsV2RunFailed {
+				t.Fatalf("runs = %+v, want one failed recovered run", runs)
+			}
+		})
+	}
+}
+
+func TestJobsV2RecoverRunsSchedulesRetryForAbandonedRunWhenConfigured(t *testing.T) {
+	mgr, err := newJobsV2Manager(":memory:", 0, nil)
+	if err != nil {
+		t.Fatalf("newJobsV2Manager failed: %v", err)
+	}
+	defer func() { _ = mgr.Close() }()
+
+	job, err := mgr.CreateJob(jobsV2Job{
+		Name:          "recover-abandoned-retry",
+		Enabled:       true,
+		RunnerType:    jobsV2RunnerProgram,
+		RunnerConfig:  json.RawMessage(`{"command":"echo","args":["x"]}`),
+		TriggerType:   jobsV2TriggerManual,
+		TriggerConfig: json.RawMessage(`{}`),
+		RetryPolicy:   json.RawMessage(`{"max_attempts":2,"initial_delay":"1s"}`),
+	})
+	if err != nil {
+		t.Fatalf("CreateJob failed: %v", err)
+	}
+
+	run, err := mgr.TriggerJob(job.ID)
+	if err != nil {
+		t.Fatalf("TriggerJob failed: %v", err)
+	}
+
+	startedAt := time.Now().UTC().Add(-time.Second)
+	_, err = mgr.db.Exec(`UPDATE job_runs_v2 SET status = ?, started_at = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, jobsV2RunRunning, startedAt, run.ID)
+	if err != nil {
+		t.Fatalf("mark running failed: %v", err)
+	}
+
+	if err := mgr.recoverRuns(); err != nil {
+		t.Fatalf("recoverRuns failed: %v", err)
+	}
+
+	recovered, err := mgr.GetRun(run.ID)
+	if err != nil {
+		t.Fatalf("GetRun failed: %v", err)
+	}
+	if recovered.Status != jobsV2RunFailed {
+		t.Fatalf("status = %s, want %s", recovered.Status, jobsV2RunFailed)
+	}
+	if recovered.ExitReason != exitReasonWorkerLost {
+		t.Fatalf("exit_reason = %q, want %q", recovered.ExitReason, exitReasonWorkerLost)
+	}
+
+	runs, total, err := mgr.ListRuns(job.ID, 10, 0)
+	if err != nil {
+		t.Fatalf("ListRuns failed: %v", err)
+	}
+	if total != 2 {
+		t.Fatalf("total = %d, want 2", total)
+	}
+
+	var retryRun *jobsV2Run
+	for i := range runs {
+		if runs[i].ID != run.ID {
+			retryRun = &runs[i]
+			break
+		}
+	}
+	if retryRun == nil {
+		t.Fatalf("retry run not found in %+v", runs)
+	}
+	if retryRun.Status != jobsV2RunQueued {
+		t.Fatalf("retry status = %s, want %s", retryRun.Status, jobsV2RunQueued)
+	}
+	if retryRun.Trigger != "retry" {
+		t.Fatalf("retry trigger = %q, want %q", retryRun.Trigger, "retry")
+	}
+	if retryRun.Attempt != 2 {
+		t.Fatalf("retry attempt = %d, want 2", retryRun.Attempt)
+	}
+}
+
 func TestJobsV2CronValidation(t *testing.T) {
 	mgr, err := newJobsV2Manager(":memory:", 1, nil)
 	if err != nil {

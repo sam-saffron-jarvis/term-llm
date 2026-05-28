@@ -56,13 +56,16 @@ const (
 )
 
 const (
-	exitReasonNatural   = "natural_completion" // agent finished normally
-	exitReasonMaxTurns  = "max_turns_exceeded" // hit the agentic loop turn limit
-	exitReasonTimeout   = "timeout"            // context deadline exceeded
-	exitReasonCancelled = "cancelled"          // context cancelled
-	exitReasonException = "exception"          // unhandled error
-	exitReasonEmpty     = "empty_response"     // succeeded but produced no output
+	exitReasonNatural    = "natural_completion" // agent finished normally
+	exitReasonMaxTurns   = "max_turns_exceeded" // hit the agentic loop turn limit
+	exitReasonTimeout    = "timeout"            // context deadline exceeded
+	exitReasonCancelled  = "cancelled"          // context cancelled
+	exitReasonException  = "exception"          // unhandled error
+	exitReasonEmpty      = "empty_response"     // succeeded but produced no output
+	exitReasonWorkerLost = "worker_lost"        // worker vanished before run could finish
 )
+
+var errJobsV2WorkerLost = errors.New("worker lost before run could finish")
 
 type jobsV2RetryPolicy struct {
 	MaxAttempts  int    `json:"max_attempts,omitempty"`
@@ -461,6 +464,9 @@ func classifyRunError(err error, result jobsV2RunResult) (exitReason string, tru
 		if errors.Is(err, context.Canceled) {
 			return exitReasonCancelled, truncated
 		}
+		if errors.Is(err, errJobsV2WorkerLost) {
+			return exitReasonWorkerLost, truncated
+		}
 		if llm.IsMaxTurnsExceeded(err) || strings.Contains(err.Error(), "max turns") {
 			return exitReasonMaxTurns, true
 		}
@@ -688,22 +694,49 @@ func execJobsV2Schema(db *sql.DB) error {
 func (m *jobsV2Manager) recoverRuns() error {
 	_, err := m.db.Exec(`
 		UPDATE job_runs_v2
-		SET status = CASE
-				WHEN status = ? THEN ?
-				ELSE ?
-			END,
-			finished_at = CASE
-				WHEN status = ? THEN CURRENT_TIMESTAMP
-				ELSE finished_at
-			END,
+		SET status = ?,
+			finished_at = CURRENT_TIMESTAMP,
 			updated_at = CURRENT_TIMESTAMP
-		WHERE status IN (?, ?, ?, ?)`,
-		jobsV2RunCancelRequested, jobsV2RunCancelled,
-		jobsV2RunQueued,
-		jobsV2RunCancelRequested,
-		jobsV2RunQueued, jobsV2RunClaimed, jobsV2RunRunning, jobsV2RunCancelRequested)
+		WHERE status = ?`,
+		jobsV2RunCancelled,
+		jobsV2RunCancelRequested)
 	if err != nil {
-		return fmt.Errorf("recover runs: %w", err)
+		return fmt.Errorf("recover cancelled runs: %w", err)
+	}
+
+	rows, err := m.db.Query(`SELECT `+jobsV2RunFullColumns+` FROM job_runs_v2 WHERE status IN (?, ?)`, jobsV2RunClaimed, jobsV2RunRunning)
+	if err != nil {
+		return fmt.Errorf("load abandoned runs: %w", err)
+	}
+	defer rows.Close()
+
+	var abandoned []jobsV2Run
+	for rows.Next() {
+		run, err := scanRunV2(rows)
+		if err != nil {
+			return fmt.Errorf("scan abandoned run: %w", err)
+		}
+		abandoned = append(abandoned, run)
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("load abandoned runs: %w", err)
+	}
+
+	for _, run := range abandoned {
+		result := jobsV2RunResult{
+			Stdout:       run.Stdout,
+			Stderr:       run.Stderr,
+			Thinking:     run.Thinking,
+			Response:     run.Response,
+			SessionID:    run.SessionID,
+			TurnCount:    run.TurnCount,
+			InputTokens:  run.InputTokens,
+			OutputTokens: run.OutputTokens,
+			Truncated:    run.Truncated,
+		}
+		if err := m.finishRun(run.ID, jobsV2RunFailed, result, errJobsV2WorkerLost, run.Attempt); err != nil {
+			return fmt.Errorf("recover abandoned run %s: %w", run.ID, err)
+		}
 	}
 	return nil
 }
