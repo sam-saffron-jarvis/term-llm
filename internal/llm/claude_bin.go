@@ -376,6 +376,9 @@ func (p *ClaudeBinProvider) Stream(ctx context.Context, req Request) (Stream, er
 		args, effort := p.buildArgs(ctx, req, send)
 
 		systemPrompt := p.systemPromptForTurn(req.Messages)
+		if systemPrompt != "" {
+			args = append(args, "--system-prompt", systemPrompt)
+		}
 
 		// When resuming a session, only send new messages (claude CLI has the rest)
 		messagesToSend := req.Messages
@@ -391,19 +394,19 @@ func (p *ClaudeBinProvider) Stream(ctx context.Context, req Request) (Stream, er
 			useStreamJson = false
 		}
 		// buildPrompt produces the full stdin payload for a set of messages.
-		// For text mode it prepends the system prompt so retries keep it too.
-		// For stream-json mode the system prompt goes on argv instead.
+		// For text mode the system prompt is passed via --system-prompt above,
+		// not embedded in stdin as a fake "System:" transcript line. Claude Code
+		// treats stdin as user conversation text; putting the system prompt there
+		// makes it vulnerable to being interpreted or narrated as prompt content.
+		// For stream-json mode the system prompt also goes on argv.
 		buildPrompt := func(msgs []Message) string {
 			if useStreamJson {
 				return p.buildStreamJsonInput(msgs, p.sessionID)
 			}
-			return p.combinePrompt(systemPrompt, p.buildConversationPrompt(msgs))
+			return p.buildConversationPrompt(msgs)
 		}
 		if useStreamJson {
 			args = append(args, "--input-format", "stream-json")
-			if systemPrompt != "" {
-				args = append(args, "--system-prompt", systemPrompt)
-			}
 		}
 		userPrompt := buildPrompt(messagesToSend)
 
@@ -1140,7 +1143,8 @@ func (p *ClaudeBinProvider) buildArgs(ctx context.Context, req Request, send eve
 		"--output-format", "stream-json",
 		"--include-partial-messages", // Stream text as it arrives
 		"--verbose",
-		"--strict-mcp-config", // Ignore Claude's configured MCPs
+		"--strict-mcp-config",      // Ignore Claude's configured MCPs
+		"--disable-slash-commands", // Disable Claude Code's own slash-command skills; term-llm owns tools/skills
 		// Ignore user/project/local settings so Claude Code cannot apply its own
 		// permission rules or hooks. flagSettings (--settings below) and managed
 		// policy settings are still loaded by Claude Code.
@@ -1175,7 +1179,10 @@ func (p *ClaudeBinProvider) buildArgs(ctx context.Context, req Request, send eve
 		args = append(args, "--model", mapModelToClaudeArg(strippedModel))
 	}
 
-	// Disable all built-in tools - we use MCP for custom tools
+	// Disable all built-in Claude Code tools. MCP tools supplied via --mcp-config
+	// are still exposed by Claude Code even when this is empty; that gives
+	// term-llm a clean tool boundary: no Bash/Edit/Read/etc from Claude Code,
+	// only the MCP bridge tools term-llm explicitly configures.
 	args = append(args, "--tools", "")
 
 	// If we have tools and a tool executor, use persistent MCP server
@@ -1493,20 +1500,6 @@ func (p *ClaudeBinProvider) buildConversationPrompt(messages []Message) string {
 	}
 
 	return strings.TrimSpace(strings.Join(conversationParts, "\n\n"))
-}
-
-func (p *ClaudeBinProvider) combinePrompt(systemPrompt, conversationPrompt string) string {
-	systemPrompt = strings.TrimSpace(systemPrompt)
-	conversationPrompt = strings.TrimSpace(conversationPrompt)
-
-	switch {
-	case systemPrompt == "":
-		return conversationPrompt
-	case conversationPrompt == "":
-		return "System: " + systemPrompt
-	default:
-		return fmt.Sprintf("System: %s\n\n%s", systemPrompt, conversationPrompt)
-	}
 }
 
 // mapModelToClaudeArg converts a model name to claude CLI argument.

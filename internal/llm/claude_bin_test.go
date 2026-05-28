@@ -640,6 +640,9 @@ func TestClaudeBinProvider_BuildArgsDisablesHooksByDefault(t *testing.T) {
 	if !strings.Contains(joined, `{"disableAllHooks":true}`) {
 		t.Fatal("expected claude-bin args to disable hooks by default")
 	}
+	if !strings.Contains(joined, "--disable-slash-commands") {
+		t.Fatal("expected claude-bin args to disable Claude Code slash-command skills")
+	}
 	for i, arg := range args {
 		if arg == "--setting-sources" {
 			if i+1 >= len(args) || args[i+1] != "" {
@@ -741,31 +744,27 @@ func TestClaudeBinProvider_BuildArgsEffortPrecedence(t *testing.T) {
 	}
 }
 
-func TestClaudeBinProvider_CombinePromptIncludesSystemOnStdin(t *testing.T) {
+func TestClaudeBinProvider_BuildArgsDisablesBuiltInClaudeTools(t *testing.T) {
 	p := NewClaudeBinProvider("sonnet", nil)
 
-	got := p.combinePrompt("You are helpful.\nUse tools when needed.", "User: hi")
-	want := "System: You are helpful.\nUse tools when needed.\n\nUser: hi"
-	if got != want {
-		t.Fatalf("combinePrompt() = %q, want %q", got, want)
+	args, _ := p.buildArgs(context.Background(), Request{
+		Tools: []ToolSpec{{Name: "diagnostic_ping", Description: "diagnostic"}},
+	}, eventSender{})
+
+	foundTools := false
+	for i, arg := range args {
+		if arg == "--tools" {
+			foundTools = true
+			if i+1 >= len(args) || args[i+1] != "" {
+				t.Fatalf("--tools = %q, want empty to disable Claude Code built-ins", args[i+1])
+			}
+		}
 	}
-}
-
-func TestClaudeBinProvider_CombinePromptHandlesEmptyConversation(t *testing.T) {
-	p := NewClaudeBinProvider("sonnet", nil)
-
-	got := p.combinePrompt("You are helpful.", "")
-	if got != "System: You are helpful." {
-		t.Fatalf("combinePrompt() with empty conversation = %q", got)
+	if !foundTools {
+		t.Fatal("expected claude-bin args to include --tools empty")
 	}
-}
-
-func TestClaudeBinProvider_CombinePromptHandlesEmptySystem(t *testing.T) {
-	p := NewClaudeBinProvider("sonnet", nil)
-
-	got := p.combinePrompt("", "User: hello")
-	if got != "User: hello" {
-		t.Fatalf("combinePrompt() with empty system = %q", got)
+	if joined := strings.Join(args, "\n"); strings.Contains(joined, "--mcp-config") {
+		t.Fatal("expected no --mcp-config without a tool executor")
 	}
 }
 
@@ -1383,6 +1382,21 @@ func (t *testTool) Spec() ToolSpec                      { return ToolSpec{Name: 
 func (t *testTool) Preview(args json.RawMessage) string { return "" }
 func (t *testTool) Execute(ctx context.Context, args json.RawMessage) (ToolOutput, error) {
 	return t.exec(ctx, args)
+}
+
+func TestBuildConversationPrompt_DropsSystemMessages(t *testing.T) {
+	p := NewClaudeBinProvider("sonnet", nil)
+	msgs := []Message{
+		{Role: RoleSystem, Parts: []Part{{Type: PartText, Text: "SYSTEM_SHOULD_NOT_BE_ON_STDIN"}}},
+		{Role: RoleUser, Parts: []Part{{Type: PartText, Text: "hello"}}},
+	}
+	out := p.buildConversationPrompt(msgs)
+	if strings.Contains(out, "SYSTEM_SHOULD_NOT_BE_ON_STDIN") || strings.Contains(out, "System:") {
+		t.Fatalf("system prompt leaked into stdin prompt: %q", out)
+	}
+	if out != "User: hello" {
+		t.Fatalf("buildConversationPrompt() = %q, want %q", out, "User: hello")
+	}
 }
 
 func TestBuildConversationPrompt_DeveloperRole(t *testing.T) {
