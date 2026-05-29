@@ -56,12 +56,13 @@ const (
 )
 
 const (
-	exitReasonNatural   = "natural_completion" // agent finished normally
-	exitReasonMaxTurns  = "max_turns_exceeded" // hit the agentic loop turn limit
-	exitReasonTimeout   = "timeout"            // context deadline exceeded
-	exitReasonCancelled = "cancelled"          // context cancelled
-	exitReasonException = "exception"          // unhandled error
-	exitReasonEmpty     = "empty_response"     // succeeded but produced no output
+	exitReasonNatural    = "natural_completion" // agent finished normally
+	exitReasonMaxTurns   = "max_turns_exceeded" // hit the agentic loop turn limit
+	exitReasonTimeout    = "timeout"            // context deadline exceeded
+	exitReasonCancelled  = "cancelled"          // context cancelled
+	exitReasonException  = "exception"          // unhandled error
+	exitReasonEmpty      = "empty_response"     // succeeded but produced no output
+	exitReasonWorkerLost = "worker_lost"        // process stopped before a claimed/running job finished
 )
 
 type jobsV2RetryPolicy struct {
@@ -464,6 +465,9 @@ func classifyRunError(err error, result jobsV2RunResult) (exitReason string, tru
 		if llm.IsMaxTurnsExceeded(err) || strings.Contains(err.Error(), "max turns") {
 			return exitReasonMaxTurns, true
 		}
+		if result.ExitReason == exitReasonWorkerLost {
+			return result.ExitReason, truncated
+		}
 		return exitReasonException, truncated
 	}
 	if strings.TrimSpace(result.ExitReason) != "" {
@@ -686,25 +690,63 @@ func execJobsV2Schema(db *sql.DB) error {
 }
 
 func (m *jobsV2Manager) recoverRuns() error {
-	_, err := m.db.Exec(`
-		UPDATE job_runs_v2
-		SET status = CASE
-				WHEN status = ? THEN ?
-				ELSE ?
-			END,
-			finished_at = CASE
-				WHEN status = ? THEN CURRENT_TIMESTAMP
-				ELSE finished_at
-			END,
-			updated_at = CURRENT_TIMESTAMP
-		WHERE status IN (?, ?, ?, ?)`,
-		jobsV2RunCancelRequested, jobsV2RunCancelled,
-		jobsV2RunQueued,
-		jobsV2RunCancelRequested,
-		jobsV2RunQueued, jobsV2RunClaimed, jobsV2RunRunning, jobsV2RunCancelRequested)
+	rows, err := m.db.Query(`SELECT id, job_id, attempt, trigger, scheduled_for, status, worker_id, session_id, started_at, finished_at, exit_code, error, stdout, stderr, thinking, response, exit_reason, truncated, turn_count, input_tokens, output_tokens, created_at, updated_at FROM job_runs_v2 WHERE status IN (?, ?) ORDER BY created_at ASC`, jobsV2RunClaimed, jobsV2RunRunning)
 	if err != nil {
-		return fmt.Errorf("recover runs: %w", err)
+		return fmt.Errorf("load interrupted runs: %w", err)
 	}
+
+	var interrupted []jobsV2Run
+	for rows.Next() {
+		run, err := scanRunV2(rows)
+		if err != nil {
+			return fmt.Errorf("scan interrupted run: %w", err)
+		}
+		interrupted = append(interrupted, run)
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return fmt.Errorf("scan interrupted runs: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return fmt.Errorf("close interrupted runs query: %w", err)
+	}
+
+	if _, err := m.db.Exec(`
+		UPDATE job_runs_v2
+		SET status = ?,
+			finished_at = CURRENT_TIMESTAMP,
+			exit_reason = ?,
+			updated_at = CURRENT_TIMESTAMP
+		WHERE status = ?`,
+		jobsV2RunCancelled,
+		exitReasonCancelled,
+		jobsV2RunCancelRequested); err != nil {
+		return fmt.Errorf("recover cancel requested runs: %w", err)
+	}
+
+	for _, run := range interrupted {
+		exitCode := 0
+		if run.ExitCode != nil {
+			exitCode = *run.ExitCode
+		}
+		result := jobsV2RunResult{
+			ExitCode:     exitCode,
+			Stdout:       run.Stdout,
+			Stderr:       run.Stderr,
+			Thinking:     run.Thinking,
+			Response:     run.Response,
+			SessionID:    run.SessionID,
+			ExitReason:   exitReasonWorkerLost,
+			Truncated:    run.Truncated,
+			TurnCount:    run.TurnCount,
+			InputTokens:  run.InputTokens,
+			OutputTokens: run.OutputTokens,
+		}
+		if err := m.finishRun(run.ID, jobsV2RunFailed, result, errors.New("worker lost before run could finish"), run.Attempt); err != nil {
+			return fmt.Errorf("recover interrupted run %s: %w", run.ID, err)
+		}
+	}
+
 	return nil
 }
 

@@ -391,17 +391,31 @@ func (rt *serveRuntime) persistSnapshot(ctx context.Context, sessionID string, s
 		log.Printf("[serve] session ReplaceMessages failed for %s: %v", sessionID, err)
 		return false
 	}
-	if rt.sessionMeta != nil && rt.sessionMeta.Summary == "" {
-		for _, msg := range snapshot {
-			if msg.Role != llm.RoleUser {
-				continue
-			}
-			if text := session.NewMessage(sessionID, msg, -1).TextContent; text != "" {
-				rt.sessionMeta.Summary = session.TruncateSummary(text)
-				if updateErr := rt.store.Update(dbCtx, rt.sessionMeta); updateErr != nil {
-					log.Printf("[serve] session Update failed for %s: %v", sessionID, updateErr)
+	userTurns := countUserMessages(snapshot)
+	if rt.sessionMeta != nil {
+		updated := *rt.sessionMeta
+		needsUpdate := false
+		if updated.UserTurns != userTurns {
+			updated.UserTurns = userTurns
+			needsUpdate = true
+		}
+		if updated.Summary == "" {
+			for _, msg := range snapshot {
+				if msg.Role != llm.RoleUser {
+					continue
 				}
-				break
+				if text := session.NewMessage(sessionID, msg, -1).TextContent; text != "" {
+					updated.Summary = session.TruncateSummary(text)
+					needsUpdate = true
+					break
+				}
+			}
+		}
+		if needsUpdate {
+			if updateErr := rt.store.Update(dbCtx, &updated); updateErr != nil {
+				log.Printf("[serve] session Update failed for %s: %v", sessionID, updateErr)
+			} else {
+				*rt.sessionMeta = updated
 			}
 		}
 	}
@@ -436,6 +450,13 @@ func (rt *serveRuntime) appendMessages(ctx context.Context, sessionID string, me
 		if err := rt.store.AddMessage(dbCtx, sessionID, sessionMsg); err != nil {
 			log.Printf("[serve] session AddMessage failed for %s: %v", sessionID, err)
 			return written
+		}
+		if msg.Role == llm.RoleUser {
+			if err := rt.store.IncrementUserTurns(dbCtx, sessionID); err != nil {
+				log.Printf("[serve] session IncrementUserTurns failed for %s: %v", sessionID, err)
+			} else if rt.sessionMeta != nil {
+				rt.sessionMeta.UserTurns++
+			}
 		}
 		written++
 	}

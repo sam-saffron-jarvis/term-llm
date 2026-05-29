@@ -134,6 +134,7 @@ type serveRuntimeTestStore struct {
 	updateMessageCalls int
 	updateFailures     map[int]error
 	updateStatusCalls  int
+	incrementCalls     int
 	nextID             int64
 }
 
@@ -354,6 +355,12 @@ func (s *serveRuntimeTestStore) UpdateStatus(ctx context.Context, id string, sta
 }
 
 func (s *serveRuntimeTestStore) IncrementUserTurns(ctx context.Context, id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if sess, ok := s.sessions[id]; ok {
+		sess.UserTurns++
+	}
+	s.incrementCalls++
 	return nil
 }
 
@@ -408,6 +415,69 @@ func serveRuntimeTextMessage(role llm.Role, text string) llm.Message {
 			Type: llm.PartText,
 			Text: text,
 		}},
+	}
+}
+
+func TestServeRuntimePersistSnapshotUpdatesUserTurns(t *testing.T) {
+	store := newServeRuntimeTestStore()
+	sess := &session.Session{ID: "sess-snapshot-turns", Status: session.StatusActive}
+	if err := store.Create(context.Background(), sess); err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	rt := &serveRuntime{store: store, sessionMeta: sess}
+
+	snapshot := []llm.Message{
+		serveRuntimeTextMessage(llm.RoleUser, "first user"),
+		serveRuntimeTextMessage(llm.RoleAssistant, "first assistant"),
+		serveRuntimeTextMessage(llm.RoleUser, "second user"),
+	}
+	if !rt.persistSnapshot(context.Background(), sess.ID, snapshot) {
+		t.Fatal("persistSnapshot returned false")
+	}
+
+	stored, err := store.Get(context.Background(), sess.ID)
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	if stored.UserTurns != 2 {
+		t.Fatalf("stored UserTurns = %d, want 2", stored.UserTurns)
+	}
+	if rt.sessionMeta.UserTurns != 2 {
+		t.Fatalf("runtime UserTurns = %d, want 2", rt.sessionMeta.UserTurns)
+	}
+	if stored.Summary != "first user" {
+		t.Fatalf("summary = %q, want first user", stored.Summary)
+	}
+}
+
+func TestServeRuntimeAppendMessagesIncrementsUserTurns(t *testing.T) {
+	store := newServeRuntimeTestStore()
+	sess := &session.Session{ID: "sess-append-turns", Status: session.StatusActive}
+	if err := store.Create(context.Background(), sess); err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	rt := &serveRuntime{store: store, sessionMeta: sess}
+
+	written := rt.appendMessages(context.Background(), sess.ID, []llm.Message{
+		serveRuntimeTextMessage(llm.RoleUser, "first user"),
+		serveRuntimeTextMessage(llm.RoleAssistant, "assistant"),
+		serveRuntimeTextMessage(llm.RoleUser, "second user"),
+	}, 3)
+	if written != 3 {
+		t.Fatalf("written = %d, want 3", written)
+	}
+	if store.incrementCalls != 2 {
+		t.Fatalf("IncrementUserTurns calls = %d, want 2", store.incrementCalls)
+	}
+	stored, err := store.Get(context.Background(), sess.ID)
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	if stored.UserTurns != 2 {
+		t.Fatalf("stored UserTurns = %d, want 2", stored.UserTurns)
+	}
+	if rt.sessionMeta.UserTurns != 2 {
+		t.Fatalf("runtime UserTurns = %d, want 2", rt.sessionMeta.UserTurns)
 	}
 }
 
