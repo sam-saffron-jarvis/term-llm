@@ -68,6 +68,105 @@ func TestApprovedDirsExpandTilde(t *testing.T) {
 	}
 }
 
+func TestApprovedDirsAddDirectoryCanonicalizesSymlink(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+
+	realDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(realDir, "test.txt"), []byte("hi"), 0o600); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+	otherDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(otherDir, "other.txt"), []byte("hi"), 0o600); err != nil {
+		t.Fatalf("write other fixture: %v", err)
+	}
+
+	linkDir := filepath.Join(t.TempDir(), "link")
+	if err := os.Symlink(realDir, linkDir); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+
+	dirs := &ApprovedDirs{}
+	if err := dirs.AddDirectory(linkDir); err != nil {
+		t.Fatalf("AddDirectory() error = %v", err)
+	}
+	if len(dirs.Directories) != 1 {
+		t.Fatalf("approved dirs = %#v, want one entry", dirs.Directories)
+	}
+	wantDir, err := filepath.EvalSymlinks(realDir)
+	if err != nil {
+		wantDir = realDir
+	}
+	wantDir = filepath.Clean(wantDir)
+	if dirs.Directories[0] != wantDir {
+		t.Fatalf("stored approved dir = %q, want canonical target %q", dirs.Directories[0], wantDir)
+	}
+	if !dirs.IsPathApproved(filepath.Join(realDir, "test.txt")) {
+		t.Fatal("file under canonical target should be approved")
+	}
+	if !dirs.IsPathApproved(filepath.Join(linkDir, "test.txt")) {
+		t.Fatal("file accessed through approved symlink should be approved")
+	}
+
+	if err := os.Remove(linkDir); err != nil {
+		t.Fatalf("remove symlink: %v", err)
+	}
+	if err := os.Symlink(otherDir, linkDir); err != nil {
+		t.Fatalf("retarget symlink: %v", err)
+	}
+	if dirs.IsPathApproved(filepath.Join(otherDir, "other.txt")) {
+		t.Fatal("retargeted symlink destination should not become approved")
+	}
+	if dirs.IsPathApproved(filepath.Join(linkDir, "other.txt")) {
+		t.Fatal("retargeted symlink path should not remain approved")
+	}
+}
+
+func TestApprovedDirsAddDirectoryMigratesLegacySymlink(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+
+	realDir := t.TempDir()
+	filePath := filepath.Join(realDir, "test.txt")
+	if err := os.WriteFile(filePath, []byte("hi"), 0o600); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+	linkDir := filepath.Join(t.TempDir(), "link")
+	if err := os.Symlink(realDir, linkDir); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+
+	dirs := &ApprovedDirs{Directories: []string{linkDir}}
+	if dirs.IsPathApproved(filePath) {
+		t.Fatal("legacy symlink entry should not approve canonical file before migration")
+	}
+	if err := dirs.AddDirectory(linkDir); err != nil {
+		t.Fatalf("AddDirectory() error = %v", err)
+	}
+	wantDir, err := filepath.EvalSymlinks(realDir)
+	if err != nil {
+		wantDir = realDir
+	}
+	wantDir = filepath.Clean(wantDir)
+	if len(dirs.Directories) != 1 || dirs.Directories[0] != wantDir {
+		t.Fatalf("approved dirs = %#v, want migrated entry %q", dirs.Directories, wantDir)
+	}
+	if !dirs.IsPathApproved(filePath) {
+		t.Fatal("canonical file should be approved after migration")
+	}
+}
+
+func TestApprovedDirsRejectsSymlinkToRoot(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+
+	linkDir := filepath.Join(t.TempDir(), "root-link")
+	if err := os.Symlink(string(filepath.Separator), linkDir); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	dirs := &ApprovedDirs{}
+	if err := dirs.AddDirectory(linkDir); err == nil {
+		t.Fatal("AddDirectory(symlink to root) error = nil, want error")
+	}
+}
+
 func TestCmdFileClearsComposerAfterAttach(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "test.txt")

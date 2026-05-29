@@ -82,6 +82,29 @@ func SaveApprovedDirs(dirs *ApprovedDirs) error {
 	return nil
 }
 
+// canonicalApprovedDir expands and canonicalizes a directory for storage in the
+// approved directory list. If the directory exists, symlinks are resolved at
+// approval time so later symlink retargeting does not move the approval.
+func canonicalApprovedDir(dir string) (string, error) {
+	dir, err := ExpandUserPath(dir)
+	if err != nil {
+		return "", err
+	}
+	absDir, err := filepath.Abs(dir)
+	if err != nil {
+		return "", fmt.Errorf("failed to resolve path: %w", err)
+	}
+	if realDir, err := filepath.EvalSymlinks(absDir); err == nil {
+		absDir = realDir
+	}
+	return filepath.Clean(absDir), nil
+}
+
+func isFilesystemRoot(path string) bool {
+	path = filepath.Clean(path)
+	return filepath.Dir(path) == path
+}
+
 // IsPathApproved checks if a path is within an approved directory
 func (d *ApprovedDirs) IsPathApproved(path string) bool {
 	path, err := ExpandUserPath(path)
@@ -120,25 +143,29 @@ func (d *ApprovedDirs) IsPathApproved(path string) bool {
 
 // AddDirectory adds a directory to the approved list
 func (d *ApprovedDirs) AddDirectory(dir string) error {
-	dir, err := ExpandUserPath(dir)
+	absDir, err := canonicalApprovedDir(dir)
 	if err != nil {
 		return err
 	}
-	// Resolve to absolute path
-	absDir, err := filepath.Abs(dir)
-	if err != nil {
-		return fmt.Errorf("failed to resolve path: %w", err)
-	}
 
-	// Block root directory
-	if absDir == "/" {
+	// Block root directory after canonicalization, so symlinks to root cannot be approved.
+	if isFilesystemRoot(absDir) {
 		return fmt.Errorf("cannot approve root directory")
 	}
 
-	// Check if already approved
-	for _, existing := range d.Directories {
-		existingAbs, _ := filepath.Abs(existing)
+	// Check if already approved. If a legacy stored entry canonicalizes to the
+	// same directory, rewrite it to the canonical path so future checks work and
+	// the approval cannot follow later symlink retargeting.
+	for i, existing := range d.Directories {
+		existingAbs, err := canonicalApprovedDir(existing)
+		if err != nil {
+			existingAbs, _ = filepath.Abs(existing)
+		}
 		if existingAbs == absDir {
+			if existing != absDir {
+				d.Directories[i] = absDir
+				return SaveApprovedDirs(d)
+			}
 			return nil // Already approved
 		}
 	}
@@ -149,19 +176,18 @@ func (d *ApprovedDirs) AddDirectory(dir string) error {
 
 // RemoveDirectory removes a directory from the approved list
 func (d *ApprovedDirs) RemoveDirectory(dir string) error {
-	dir, err := ExpandUserPath(dir)
+	absDir, err := canonicalApprovedDir(dir)
 	if err != nil {
 		return err
-	}
-	absDir, err := filepath.Abs(dir)
-	if err != nil {
-		return fmt.Errorf("failed to resolve path: %w", err)
 	}
 
 	var newDirs []string
 	found := false
 	for _, existing := range d.Directories {
-		existingAbs, _ := filepath.Abs(existing)
+		existingAbs, err := canonicalApprovedDir(existing)
+		if err != nil {
+			existingAbs, _ = filepath.Abs(existing)
+		}
 		if existingAbs != absDir {
 			newDirs = append(newDirs, existing)
 		} else {
