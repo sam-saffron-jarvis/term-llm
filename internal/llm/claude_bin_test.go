@@ -812,13 +812,15 @@ func TestClaudeBinProvider_BuildCommandEnv(t *testing.T) {
 
 	t.Setenv("ANTHROPIC_API_KEY", "should-be-cleared")
 	t.Setenv("CLAUDE_CODE_EFFORT_LEVEL", "medium")
+	t.Setenv("CLAUDE_CODE_DISABLE_WORKFLOWS", "0")
 	t.Setenv("PATH", os.Getenv("PATH"))
 
 	p := NewClaudeBinProvider("opus-max", map[string]string{
-		"IS_SANDBOX":                 "1",
-		"CLAUDE_CODE_EFFORT_LEVEL":   "max-from-config-should-be-overridden",
-		"ANTHROPIC_API_KEY":          "config-value-should-not-survive",
-		"CUSTOM_TERM_LLM_TEST_VALUE": "ok",
+		"IS_SANDBOX":                    "1",
+		"CLAUDE_CODE_EFFORT_LEVEL":      "max-from-config-should-be-overridden",
+		"CLAUDE_CODE_DISABLE_WORKFLOWS": "config-value-should-be-overridden",
+		"ANTHROPIC_API_KEY":             "config-value-should-not-survive",
+		"CUSTOM_TERM_LLM_TEST_VALUE":    "ok",
 	})
 
 	env := p.buildCommandEnv("max")
@@ -841,6 +843,15 @@ func TestClaudeBinProvider_BuildCommandEnv(t *testing.T) {
 	}
 	if !strings.Contains(joined, "CLAUDE_CODE_EFFORT_LEVEL=max") {
 		t.Fatal("expected model-derived effort level to be present")
+	}
+	if strings.Contains(joined, "CLAUDE_CODE_DISABLE_WORKFLOWS=0") {
+		t.Fatal("expected inherited CLAUDE_CODE_DISABLE_WORKFLOWS to be removed")
+	}
+	if strings.Contains(joined, "CLAUDE_CODE_DISABLE_WORKFLOWS=config-value-should-be-overridden") {
+		t.Fatal("expected config CLAUDE_CODE_DISABLE_WORKFLOWS to be overridden")
+	}
+	if !strings.Contains(joined, "CLAUDE_CODE_DISABLE_WORKFLOWS=1") {
+		t.Fatal("expected CLAUDE_CODE_DISABLE_WORKFLOWS=1 to be forced unconditionally")
 	}
 }
 

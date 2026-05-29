@@ -466,6 +466,11 @@ func (p *ClaudeBinProvider) buildCommandEnv(effort string) []string {
 		if runningAsRoot && key == "IS_SANDBOX" {
 			continue
 		}
+		// Claude Code workflows injected from the user's environment contaminate
+		// term-llm's prompt, so drop any inherited value and force-disable below.
+		if key == "CLAUDE_CODE_DISABLE_WORKFLOWS" {
+			continue
+		}
 		if len(p.extraEnv) > 0 {
 			if _, ok := p.extraEnv[key]; ok {
 				continue
@@ -486,11 +491,17 @@ func (p *ClaudeBinProvider) buildCommandEnv(effort string) []string {
 		if runningAsRoot && k == "IS_SANDBOX" {
 			continue
 		}
+		if k == "CLAUDE_CODE_DISABLE_WORKFLOWS" {
+			continue
+		}
 		filtered = append(filtered, k+"="+v)
 	}
 	if runningAsRoot && !envHasTruthy(filtered, "CLAUDE_CODE_BUBBLEWRAP") {
 		filtered = append(filtered, "IS_SANDBOX=1")
 	}
+	// Always disable Claude Code workflows so they cannot bleed into the prompt
+	// term-llm sends; this must win over any inherited or configured value.
+	filtered = append(filtered, "CLAUDE_CODE_DISABLE_WORKFLOWS=1")
 	return filtered
 }
 
@@ -603,11 +614,15 @@ func (p *ClaudeBinProvider) commandEnvDebugFields(effort string) (map[string]str
 	if effort != "" {
 		env["CLAUDE_CODE_EFFORT_LEVEL"] = effort
 	}
+	env["CLAUDE_CODE_DISABLE_WORKFLOWS"] = "1"
 	for k, v := range p.extraEnv {
 		if p.preferOAuth && k == "ANTHROPIC_API_KEY" {
 			continue
 		}
 		if effort != "" && k == "CLAUDE_CODE_EFFORT_LEVEL" {
+			continue
+		}
+		if k == "CLAUDE_CODE_DISABLE_WORKFLOWS" {
 			continue
 		}
 		env[k] = redactEnvValue(k, v)
