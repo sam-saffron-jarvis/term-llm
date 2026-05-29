@@ -1941,6 +1941,52 @@ func (s *SQLiteStore) GetMessagesFrom(ctx context.Context, sessionID string, fro
 	return messages, rows.Err()
 }
 
+// GetMessagesPageDescending retrieves messages for a session in reverse
+// sequence order. When beforeSeq > 0, only rows with sequence < beforeSeq are
+// returned. Used for reverse tail pagination without loading entire sessions.
+func (s *SQLiteStore) GetMessagesPageDescending(ctx context.Context, sessionID string, beforeSeq, limit int) ([]Message, error) {
+	query := `
+		SELECT id, session_id, role, parts, text_content, duration_ms, turn_index, created_at, sequence
+		FROM messages
+		WHERE session_id = ?`
+	args := []any{sessionID}
+	if beforeSeq > 0 {
+		query += " AND sequence < ?"
+		args = append(args, beforeSeq)
+	}
+	query += " ORDER BY sequence DESC"
+	if limit > 0 {
+		query += " LIMIT ?"
+		args = append(args, limit)
+	}
+
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("query messages descending: %w", err)
+	}
+	defer rows.Close()
+
+	var messages []Message
+	for rows.Next() {
+		var msg Message
+		var partsJSON string
+		var durationMs sql.NullInt64
+		err := rows.Scan(&msg.ID, &msg.SessionID, &msg.Role, &partsJSON,
+			&msg.TextContent, &durationMs, &msg.TurnIndex, &msg.CreatedAt, &msg.Sequence)
+		if err != nil {
+			return nil, fmt.Errorf("scan message: %w", err)
+		}
+		if durationMs.Valid {
+			msg.DurationMs = durationMs.Int64
+		}
+		if err := msg.SetPartsFromJSON(partsJSON); err != nil {
+			return nil, fmt.Errorf("deserialize parts: %w", err)
+		}
+		messages = append(messages, msg)
+	}
+	return messages, rows.Err()
+}
+
 // GetMessageByID retrieves a single message by its global message id.
 func (s *SQLiteStore) GetMessageByID(ctx context.Context, msgID int64) (*Message, error) {
 	row := s.db.QueryRowContext(ctx, `

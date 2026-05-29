@@ -578,26 +578,93 @@ func (m *telegramSessionMgr) restoreHistoryFromDB(ctx context.Context, chatID in
 			continue
 		}
 
-		msgs, loadErr := m.store.GetMessages(ctx, s.ID, 0, 0)
+		history, loadedRows, loadErr := m.loadCarryoverHistory(ctx, s.ID, maxChars)
 		if loadErr != nil {
 			log.Printf("[telegram] restore history: get messages failed for session %s: %v", s.ID, loadErr)
 			continue
 		}
 
-		// Convert all messages, then take only the tail that fits within maxChars.
+		history = sanitizeCarryoverMessages(history)
+		if len(history) > 0 {
+			sess.history = history
+			log.Printf("[telegram] restored %d messages (loaded %d rows) from session %s for chat %d",
+				len(history), loadedRows, s.ID, chatID)
+		}
+		return
+	}
+}
+
+type telegramCarryoverPager interface {
+	GetMessagesPageDescending(ctx context.Context, sessionID string, beforeSeq, limit int) ([]session.Message, error)
+}
+
+func (m *telegramSessionMgr) loadCarryoverHistory(ctx context.Context, sessionID string, maxChars int) ([]llm.Message, int, error) {
+	if m.store == nil || maxChars <= 0 {
+		return nil, 0, nil
+	}
+
+	pager, ok := m.store.(telegramCarryoverPager)
+	if !ok {
+		msgs, err := m.store.GetMessages(ctx, sessionID, 0, 0)
+		if err != nil {
+			return nil, 0, err
+		}
 		all := make([]llm.Message, 0, len(msgs))
 		for _, msg := range msgs {
 			all = append(all, msg.ToLLMMessage())
 		}
-
-		history := sanitizeCarryoverMessages(tailMessages(all, maxChars))
-		if len(history) > 0 {
-			sess.history = history
-			log.Printf("[telegram] restored %d messages (of %d) from session %s for chat %d",
-				len(history), len(all), s.ID, chatID)
-		}
-		return
+		return tailMessages(all, maxChars), len(msgs), nil
 	}
+
+	const initialBatchSize = 32
+
+	selectedRev := make([]llm.Message, 0, initialBatchSize)
+	totalChars := 0
+	loadedRows := 0
+	beforeSeq := 0
+	batchSize := initialBatchSize
+
+	for {
+		msgs, err := pager.GetMessagesPageDescending(ctx, sessionID, beforeSeq, batchSize)
+		if err != nil {
+			return nil, loadedRows, err
+		}
+		if len(msgs) == 0 {
+			break
+		}
+		loadedRows += len(msgs)
+
+		for _, msg := range msgs {
+			llmMsg := msg.ToLLMMessage()
+			text := extractMessageTextWithPlaceholders(llmMsg)
+			n := len([]rune(text))
+			if totalChars+n > maxChars && len(selectedRev) > 0 {
+				return reverseMessages(selectedRev), loadedRows, nil
+			}
+			totalChars += n
+			selectedRev = append(selectedRev, llmMsg)
+		}
+
+		if len(msgs) < batchSize {
+			break
+		}
+		beforeSeq = msgs[len(msgs)-1].Sequence
+		batchSize *= 2
+	}
+
+	return reverseMessages(selectedRev), loadedRows, nil
+}
+
+func reverseMessages(msgs []llm.Message) []llm.Message {
+	if len(msgs) == 0 {
+		return nil
+	}
+
+	reversed := make([]llm.Message, len(msgs))
+	for i := range msgs {
+		reversed[len(msgs)-1-i] = msgs[i]
+	}
+	return reversed
 }
 
 // tailMessages returns the largest suffix of msgs whose combined text fits
