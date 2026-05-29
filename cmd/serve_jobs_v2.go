@@ -2617,7 +2617,7 @@ func (s *serveServer) attachJobHandoff(rt *serveRuntime, sessionID string) {
 }
 
 func (s *serveServer) jobHandoffFunc(parentSessionID, defaultAgent string) tools.JobHandoffFunc {
-	if s == nil || s.jobsV2 == nil {
+	if s == nil {
 		return nil
 	}
 	return func(ctx context.Context, req tools.JobHandoffRequest) (tools.JobHandoffResult, error) {
@@ -2637,56 +2637,96 @@ func (s *serveServer) jobHandoffFunc(parentSessionID, defaultAgent string) tools
 			}
 		}
 
-		timeout := req.TimeoutSeconds
-		if timeout <= 0 {
-			timeout = 2 * 60 * 60
+		jobReq := buildJobHandoffJob(req, agentName, strings.TrimSpace(parentSessionID))
+		if s.jobsV2 != nil {
+			return s.createLocalJobHandoff(jobReq)
 		}
-		if timeout > 6*60*60 {
-			timeout = 6 * 60 * 60
-		}
-		if timeout < 60 {
-			timeout = 60
-		}
-
-		childSessionID := session.NewID()
-		runnerConfig, _ := json.Marshal(jobsV2LLMConfig{
-			AgentName:        agentName,
-			Instructions:     req.Instructions,
-			SessionID:        childSessionID,
-			ReplyToSessionID: strings.TrimSpace(parentSessionID),
-		})
-		labels, _ := json.Marshal(map[string]string{
-			"kind":                "chat_handoff",
-			"reply_to_session_id": strings.TrimSpace(parentSessionID),
-		})
-		name := strings.TrimSpace(req.Name)
-		if name == "" {
-			name = defaultHandoffJobName(req.Instructions)
-		}
-		job, err := s.jobsV2.CreateJob(jobsV2Job{
-			Name:           name,
-			Enabled:        true,
-			RunnerType:     jobsV2RunnerLLM,
-			RunnerConfig:   runnerConfig,
-			TriggerType:    jobsV2TriggerManual,
-			TriggerConfig:  json.RawMessage(`{}`),
-			TimeoutSeconds: timeout,
-			Labels:         labels,
-		})
-		if err != nil {
-			return tools.JobHandoffResult{}, err
-		}
-		run, err := s.jobsV2.TriggerJob(job.ID)
-		if err != nil {
-			return tools.JobHandoffResult{}, err
-		}
-		return tools.JobHandoffResult{
-			Status:    "started",
-			JobID:     job.ID,
-			RunID:     run.ID,
-			SessionID: childSessionID,
-		}, nil
+		return createRemoteJobHandoff(ctx, jobReq)
 	}
+}
+
+func buildJobHandoffJob(req tools.JobHandoffRequest, agentName, parentSessionID string) jobsV2Job {
+	timeout := req.TimeoutSeconds
+	if timeout <= 0 {
+		timeout = 2 * 60 * 60
+	}
+	if timeout > 6*60*60 {
+		timeout = 6 * 60 * 60
+	}
+	if timeout < 60 {
+		timeout = 60
+	}
+
+	childSessionID := session.NewID()
+	runnerConfig, _ := json.Marshal(jobsV2LLMConfig{
+		AgentName:        agentName,
+		Instructions:     req.Instructions,
+		SessionID:        childSessionID,
+		ReplyToSessionID: parentSessionID,
+	})
+	labels, _ := json.Marshal(map[string]string{
+		"kind":                "chat_handoff",
+		"reply_to_session_id": parentSessionID,
+	})
+	name := strings.TrimSpace(req.Name)
+	if name == "" {
+		name = defaultHandoffJobName(req.Instructions)
+	}
+	return jobsV2Job{
+		Name:           name,
+		Enabled:        true,
+		RunnerType:     jobsV2RunnerLLM,
+		RunnerConfig:   runnerConfig,
+		TriggerType:    jobsV2TriggerManual,
+		TriggerConfig:  json.RawMessage(`{}`),
+		TimeoutSeconds: timeout,
+		Labels:         labels,
+	}
+}
+
+func (s *serveServer) createLocalJobHandoff(jobReq jobsV2Job) (tools.JobHandoffResult, error) {
+	job, err := s.jobsV2.CreateJob(jobReq)
+	if err != nil {
+		return tools.JobHandoffResult{}, err
+	}
+	run, err := s.jobsV2.TriggerJob(job.ID)
+	if err != nil {
+		return tools.JobHandoffResult{}, err
+	}
+	return tools.JobHandoffResult{
+		Status:    "started",
+		JobID:     job.ID,
+		RunID:     run.ID,
+		SessionID: handoffSessionID(job.RunnerConfig),
+	}, nil
+}
+
+func createRemoteJobHandoff(ctx context.Context, jobReq jobsV2Job) (tools.JobHandoffResult, error) {
+	client, err := newJobsClient()
+	if err != nil {
+		return tools.JobHandoffResult{}, err
+	}
+	payload, _ := json.Marshal(jobsV2JobToRequest(jobReq))
+	var job jobsV2Job
+	if err := client.do(ctx, http.MethodPost, "/v2/jobs", payload, &job); err != nil {
+		return tools.JobHandoffResult{}, fmt.Errorf("create remote job: %w", err)
+	}
+	var run jobsV2Run
+	if err := client.do(ctx, http.MethodPost, "/v2/jobs/"+job.ID+"/trigger", nil, &run); err != nil {
+		return tools.JobHandoffResult{}, fmt.Errorf("trigger remote job: %w", err)
+	}
+	return tools.JobHandoffResult{
+		Status:    "started",
+		JobID:     job.ID,
+		RunID:     run.ID,
+		SessionID: handoffSessionID(job.RunnerConfig),
+	}, nil
+}
+
+func handoffSessionID(raw json.RawMessage) string {
+	var cfg jobsV2LLMConfig
+	_ = json.Unmarshal(raw, &cfg)
+	return strings.TrimSpace(cfg.SessionID)
 }
 
 func defaultHandoffJobName(instructions string) string {

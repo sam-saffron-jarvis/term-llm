@@ -124,11 +124,14 @@ term-llm serve web --auth none --host 127.0.0.1
 
 ## Chat handoff to jobs
 
-When the web server is started with the `jobs` platform, agents can use the `handoff_to_job` tool to move long-running work out of the foreground chat response and into a durable manual LLM job:
+When the web server can reach a jobs runner, agents can use the `handoff_to_job` tool to move long-running work out of the foreground chat response and into a durable manual LLM job:
 
 ```bash
-term-llm serve web jobs
+term-llm serve web          # foreground chat process
+term-llm serve jobs         # separate durable jobs process, default http://127.0.0.1:8080
 ```
+
+`handoff_to_job` uses an in-process jobs manager when `web jobs` are served together, otherwise it talks to the jobs API configured by `TERM_LLM_JOBS_SERVER` / `TERM_LLM_JOBS_TOKEN` (the same settings used by `term-llm jobs`).
 
 The tool creates and triggers a background job, returns the job/run/session IDs to the chat, and appends the job's final result back to the originating chat session when it finishes. This is intended for long tool-heavy loops where the user should not have to keep a live response open.
 

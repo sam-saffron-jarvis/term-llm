@@ -3,6 +3,8 @@ package cmd
 import (
 	"context"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -60,6 +62,56 @@ func TestServeJobHandoffCreatesManualLLMRun(t *testing.T) {
 	}
 	if run.Status != jobsV2RunQueued {
 		t.Fatalf("run status = %s, want queued", run.Status)
+	}
+}
+
+func TestServeJobHandoffCanUseRemoteJobsProcess(t *testing.T) {
+	oldServer, oldToken, oldTimeout := jobsServerURL, jobsToken, jobsTimeout
+	defer func() {
+		jobsServerURL, jobsToken, jobsTimeout = oldServer, oldToken, oldTimeout
+	}()
+
+	var created jobsV2JobRequest
+	srvHTTP := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/v2/jobs":
+			if err := json.NewDecoder(r.Body).Decode(&created); err != nil {
+				t.Fatalf("decode create: %v", err)
+			}
+			job := created.toJob(true)
+			job.ID = "job_remote"
+			job.CreatedAt = time.Now()
+			job.UpdatedAt = job.CreatedAt
+			_ = json.NewEncoder(w).Encode(job)
+		case r.Method == http.MethodPost && r.URL.Path == "/v2/jobs/job_remote/trigger":
+			w.WriteHeader(http.StatusAccepted)
+			_ = json.NewEncoder(w).Encode(jobsV2Run{ID: "run_remote", JobID: "job_remote", Status: jobsV2RunQueued})
+		default:
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer srvHTTP.Close()
+	jobsServerURL = srvHTTP.URL
+	jobsToken = ""
+	jobsTimeout = time.Second
+
+	srv := &serveServer{cfg: serveServerConfig{agentName: "jarvis"}}
+	res, err := srv.jobHandoffFunc("sess_parent", "jarvis")(context.Background(), tools.JobHandoffRequest{
+		Instructions: "remote work",
+	})
+	if err != nil {
+		t.Fatalf("handoff error: %v", err)
+	}
+	if res.JobID != "job_remote" || res.RunID != "run_remote" || res.SessionID == "" {
+		t.Fatalf("unexpected result: %+v", res)
+	}
+	var cfg jobsV2LLMConfig
+	if err := json.Unmarshal(created.RunnerConfig, &cfg); err != nil {
+		t.Fatalf("runner config: %v", err)
+	}
+	if cfg.ReplyToSessionID != "sess_parent" || cfg.Instructions != "remote work" || cfg.AgentName != "jarvis" {
+		t.Fatalf("unexpected config: %+v", cfg)
 	}
 }
 
