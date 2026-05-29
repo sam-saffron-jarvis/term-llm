@@ -7812,7 +7812,7 @@ func TestResolveServeResponseTimeout(t *testing.T) {
 	}{
 		{
 			name: "default",
-			want: defaultServeRequestTimeout,
+			want: 2 * time.Hour,
 		},
 		{
 			name:    "flag wins",

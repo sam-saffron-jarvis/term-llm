@@ -728,7 +728,7 @@ const (
 	defaultResponseRunRetention        = 5 * time.Minute
 	defaultResponseRunReplayLimit      = 2048
 	defaultResponseRunSubscriberBuffer = 256
-	defaultServeRequestTimeout         = 30 * time.Minute
+	defaultServeRequestTimeout         = 2 * time.Hour
 )
 
 func responseRunTimeoutMessage(timeout time.Duration) string {

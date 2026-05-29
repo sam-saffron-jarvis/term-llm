@@ -2017,7 +2017,7 @@ func GetDefaults() map[string]any {
 		"skills.always_enabled":           []string{},
 		"skills.never_auto":               []string{},
 		"agents_md.enabled":               true,
-		"serve.response_timeout":          "30m",
+		"serve.response_timeout":          "2h",
 		"auto_compact":                    true,
 	}
 }

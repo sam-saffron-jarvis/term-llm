@@ -143,7 +143,7 @@ Relevant options include:
 - `--mcp`
 - `--tools`, `--read-dir`, `--write-dir`, `--shell-allow`
 - `--base-path`
-- `--response-timeout` (defaults to `30m`; also configurable as `serve.response_timeout` with Go durations like `45m` or `1h`)
+- `--response-timeout` (defaults to `2h`; also configurable as `serve.response_timeout` with Go durations like `45m` or `3h`)
 - `--cors-origin`
 - `--webrtc`, `--webrtc-signaling-url`, `--webrtc-token` (see [WebRTC direct routing](/guides/webrtc-direct-routing/))
 
