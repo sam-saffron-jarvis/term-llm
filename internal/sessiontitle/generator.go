@@ -22,7 +22,18 @@ type Candidate struct {
 	Confidence float64 `json:"confidence"`
 }
 
+type Options struct {
+	// MaxInputTokens caps the approximate prompt input budget for conversation text.
+	// A token is approximated as four UTF-8 bytes; this is deliberately conservative
+	// and provider-agnostic enough for autotitling.
+	MaxInputTokens int
+}
+
 func Generate(ctx context.Context, provider llm.Provider, sess *session.Session, messages []session.Message) (Candidate, error) {
+	return GenerateWithOptions(ctx, provider, sess, messages, Options{})
+}
+
+func GenerateWithOptions(ctx context.Context, provider llm.Provider, sess *session.Session, messages []session.Message, opts Options) (Candidate, error) {
 	if provider == nil {
 		return Candidate{}, fmt.Errorf("provider is nil")
 	}
@@ -30,7 +41,7 @@ func Generate(ctx context.Context, provider llm.Provider, sess *session.Session,
 		return Candidate{}, fmt.Errorf("session is nil")
 	}
 
-	slice := BuildConversationSlice(messages)
+	slice := BuildConversationSliceWithOptions(messages, opts)
 	if strings.TrimSpace(slice) == "" {
 		return Candidate{}, fmt.Errorf("no usable conversation text")
 	}
@@ -71,69 +82,109 @@ Conversation slice:
 }
 
 func BuildConversationSlice(messages []session.Message) string {
+	return BuildConversationSliceWithOptions(messages, Options{})
+}
+
+func BuildConversationSliceWithOptions(messages []session.Message, opts Options) string {
 	if len(messages) == 0 {
 		return ""
 	}
-	var lines []string
-	userWords := 0
-	assistantWords := 0
-
-	appendMsg := func(m session.Message) bool {
-		text := cleanMessageText(m.TextContent)
-		if text == "" {
-			return false
-		}
-		words := len(strings.Fields(text))
-		switch m.Role {
-		case llm.RoleUser:
-			if userWords >= 500 {
-				return false
-			}
-			if userWords+words > 500 {
-				text = truncateWords(text, 500-userWords)
-				words = len(strings.Fields(text))
-			}
-			userWords += words
-			lines = append(lines, "User: "+text)
-			return true
-		case llm.RoleAssistant:
-			if assistantWords >= 200 {
-				return false
-			}
-			if assistantWords+words > 200 {
-				text = truncateWords(text, 200-assistantWords)
-				words = len(strings.Fields(text))
-			}
-			assistantWords += words
-			lines = append(lines, "Assistant: "+text)
-			return true
-		default:
-			return false
-		}
+	maxChars := opts.MaxInputTokens * 4
+	if maxChars <= 0 {
+		maxChars = 2800
 	}
 
-	selected := 0
-	userCount := 0
-	assistantCount := 0
+	type line struct {
+		text  string
+		chars int
+	}
+	var lines []line
 	for _, m := range messages {
-		if m.Role == llm.RoleUser && userCount < 3 {
-			if appendMsg(m) {
-				selected++
-				userCount++
-			}
+		if m.Role != llm.RoleUser && m.Role != llm.RoleAssistant {
 			continue
 		}
-		if m.Role == llm.RoleAssistant && assistantCount < 2 && selected > 0 {
-			if appendMsg(m) {
-				assistantCount++
-			}
+		text := cleanMessageText(m.TextContent)
+		if text == "" {
+			continue
 		}
-		if userCount >= 3 && assistantCount >= 2 {
-			break
+		prefix := "Assistant: "
+		if m.Role == llm.RoleUser {
+			prefix = "User: "
 		}
+		entry := prefix + text
+		lines = append(lines, line{text: entry, chars: len(entry) + 1})
+	}
+	if len(lines) == 0 {
+		return ""
 	}
 
-	return strings.Join(lines, "\n")
+	total := 0
+	for _, l := range lines {
+		total += l.chars
+	}
+	if total <= maxChars {
+		out := make([]string, 0, len(lines))
+		for _, l := range lines {
+			out = append(out, l.text)
+		}
+		return strings.Join(out, "\n")
+	}
+
+	// Keep both the start and the latest turns. The opening usually names the task;
+	// the tail is what lets a later refresh improve an already-generated title.
+	headBudget := maxChars / 2
+	tailBudget := maxChars - headBudget - len("[… earlier middle turns omitted …]\n")
+	if tailBudget < maxChars/4 {
+		tailBudget = maxChars / 2
+		headBudget = maxChars - tailBudget
+	}
+
+	selected := make([]string, 0, len(lines)+1)
+	used := 0
+	headEnd := 0
+	for headEnd < len(lines) {
+		l := lines[headEnd]
+		if used > 0 && used+l.chars > headBudget {
+			break
+		}
+		if l.chars > headBudget && used == 0 {
+			selected = append(selected, truncateRunes(l.text, headBudget))
+			used = headBudget
+			headEnd++
+			break
+		}
+		selected = append(selected, l.text)
+		used += l.chars
+		headEnd++
+	}
+
+	tailStart := len(lines)
+	used = 0
+	for tailStart > headEnd {
+		l := lines[tailStart-1]
+		if used > 0 && used+l.chars > tailBudget {
+			break
+		}
+		if l.chars > tailBudget && used == 0 {
+			tailStart--
+			break
+		}
+		used += l.chars
+		tailStart--
+	}
+	if tailStart > headEnd {
+		selected = append(selected, "[… earlier middle turns omitted …]")
+	}
+	if tailStart < len(lines) {
+		for _, l := range lines[tailStart:] {
+			if l.chars > tailBudget && len(selected) > 0 {
+				selected = append(selected, truncateRunes(l.text, tailBudget))
+				continue
+			}
+			selected = append(selected, l.text)
+		}
+	}
+	return strings.Join(selected, "\n")
 }
 
 func ParseCandidate(raw string) (Candidate, error) {
@@ -244,6 +295,26 @@ func truncateWords(s string, maxWords int) string {
 		return s
 	}
 	return strings.Join(fields[:maxWords], " ")
+}
+
+func truncateRunes(s string, maxChars int) string {
+	if maxChars <= 0 {
+		return ""
+	}
+	if len(s) <= maxChars {
+		return s
+	}
+	out := make([]rune, 0, maxChars)
+	used := 0
+	for _, r := range s {
+		w := len(string(r))
+		if used+w > maxChars {
+			break
+		}
+		out = append(out, r)
+		used += w
+	}
+	return strings.TrimSpace(string(out)) + " …"
 }
 
 func normalizeTitle(s string) string {

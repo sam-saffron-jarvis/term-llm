@@ -2,6 +2,7 @@ package sessiontitle
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/samsaffron/term-llm/internal/llm"
@@ -217,5 +218,26 @@ func TestGenerateUsesProvider(t *testing.T) {
 	}
 	if cand.ShortTitle != "Delightful resume browser redesign" {
 		t.Fatalf("ShortTitle = %q", cand.ShortTitle)
+	}
+}
+
+func TestBuildConversationSliceWithOptionsIncludesTail(t *testing.T) {
+	messages := []session.Message{
+		{Role: llm.RoleUser, TextContent: "initial request about a boring placeholder task"},
+	}
+	for i := 0; i < 20; i++ {
+		messages = append(messages, session.Message{Role: llm.RoleAssistant, TextContent: "middle filler text that should not consume the entire title prompt budget"})
+	}
+	messages = append(messages, session.Message{Role: llm.RoleUser, TextContent: "final request adds the real topic: refresh generated titles when new messages arrive"})
+
+	slice := BuildConversationSliceWithOptions(messages, Options{MaxInputTokens: 80})
+	if !strings.Contains(slice, "initial request") {
+		t.Fatalf("expected head content in slice, got %q", slice)
+	}
+	if !strings.Contains(slice, "refresh generated titles") {
+		t.Fatalf("expected tail content in slice, got %q", slice)
+	}
+	if !strings.Contains(slice, "omitted") {
+		t.Fatalf("expected omission marker in slice, got %q", slice)
 	}
 }

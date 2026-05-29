@@ -23,10 +23,12 @@ User-set names always win in the UI and are not overwritten unless --force is pr
 }
 
 var (
-	sessionsAutotitleDryRun  bool
-	sessionsAutotitleForce   bool
-	sessionsAutotitleMinAge  time.Duration
-	sessionsAutotitleVerbose bool
+	sessionsAutotitleDryRun         bool
+	sessionsAutotitleForce          bool
+	sessionsAutotitleMinAge         time.Duration
+	sessionsAutotitleVerbose        bool
+	sessionsAutotitleRefreshChanged bool
+	sessionsAutotitleContextTokens  int
 )
 
 type autotitleSkipStats struct {
@@ -72,6 +74,8 @@ func init() {
 	sessionsAutotitleCmd.Flags().BoolVar(&sessionsAutotitleDryRun, "dry-run", false, "Preview generated titles without saving")
 	sessionsAutotitleCmd.Flags().BoolVar(&sessionsAutotitleForce, "force", false, "Regenerate even when a custom name already exists")
 	sessionsAutotitleCmd.Flags().DurationVar(&sessionsAutotitleMinAge, "min-age", 3*time.Minute, "Skip sessions updated more recently than this duration")
+	sessionsAutotitleCmd.Flags().BoolVar(&sessionsAutotitleRefreshChanged, "refresh-changed", false, "Regenerate generated titles when newer messages exist beyond the previous title basis")
+	sessionsAutotitleCmd.Flags().IntVar(&sessionsAutotitleContextTokens, "context-tokens", 0, "Approximate conversation-token budget for title generation (0 uses default)")
 	sessionsAutotitleCmd.Flags().BoolVarP(&sessionsAutotitleVerbose, "verbose", "v", false, "Print rejected candidates with rejection reason")
 	sessionsCmd.AddCommand(sessionsAutotitleCmd)
 }
@@ -131,6 +135,17 @@ func runSessionsAutotitle(cmd *cobra.Command, args []string) error {
 			continue
 		}
 		if sess.GeneratedShortTitle != "" && !sessionsAutotitleForce {
+			if sessionsAutotitleRefreshChanged {
+				changed, err := titleHasNewMessages(ctx, store, sess)
+				if err != nil {
+					fmt.Fprintf(cmd.ErrOrStderr(), "#%d refresh-check failed: %v\n", summary.Number, err)
+					continue
+				}
+				if changed {
+					candidates = append(candidates, candidate{summary: summary, sess: sess})
+					continue
+				}
+			}
 			skips.alreadyTitled++
 			continue
 		}
@@ -160,15 +175,19 @@ func runSessionsAutotitle(cmd *cobra.Command, args []string) error {
 	for _, c := range candidates {
 		sess := c.sess
 
-		// Only the first few user+assistant messages are used for titling.
-		// Fetch at most 50 rows to avoid loading entire large sessions.
-		messages, err := store.GetMessages(ctx, sess.ID, 50, 0)
+		// Default runs keep this cheap; refresh runs can use a larger conversation budget
+		// while still bounding DB reads for pathological long sessions.
+		messageLimit := 50
+		if sessionsAutotitleContextTokens > 0 {
+			messageLimit = 500
+		}
+		messages, err := store.GetMessages(ctx, sess.ID, messageLimit, 0)
 		if err != nil {
 			fmt.Fprintf(cmd.ErrOrStderr(), "#%d messages failed: %v\n", sess.Number, err)
 			continue
 		}
 
-		cand, err := sessiontitle.Generate(ctx, fastProvider, sess, messages)
+		cand, err := sessiontitle.GenerateWithOptions(ctx, fastProvider, sess, messages, sessiontitle.Options{MaxInputTokens: sessionsAutotitleContextTokens})
 		current := sess.PreferredShortTitle()
 		if strings.TrimSpace(current) == "" {
 			current = "Untitled"
@@ -201,8 +220,10 @@ func runSessionsAutotitle(cmd *cobra.Command, args []string) error {
 			sess.GeneratedLongTitle = cand.LongTitle
 			sess.TitleSource = session.TitleSourceGenerated
 			sess.TitleGeneratedAt = time.Now().UTC()
-			if len(messages) > 0 {
-				sess.TitleBasisMsgSeq = messages[len(messages)-1].Sequence
+			if basisSeq, err := titleBasisSequence(ctx, store, sess.ID, messages); err != nil {
+				fmt.Fprintf(cmd.ErrOrStderr(), "#%d basis-seq failed: %v\n", sess.Number, err)
+			} else if basisSeq > 0 {
+				sess.TitleBasisMsgSeq = basisSeq
 			}
 			if err := store.Update(ctx, sess); err != nil {
 				fmt.Fprintf(cmd.OutOrStdout(), "  save:    failed (%v)\n\n", err)
@@ -221,4 +242,51 @@ func runSessionsAutotitle(cmd *cobra.Command, args []string) error {
 		fmt.Fprintf(cmd.OutOrStdout(), "Generated titles for %d sessions (dry run).\n", generated)
 	}
 	return nil
+}
+
+func titleHasNewMessages(ctx context.Context, store session.Store, sess *session.Session) (bool, error) {
+	if sess == nil || sess.TitleBasisMsgSeq <= 0 {
+		return false, nil
+	}
+	messages, err := store.GetMessagesFrom(ctx, sess.ID, sess.TitleBasisMsgSeq+1, 20)
+	if err != nil {
+		return false, err
+	}
+	for _, msg := range messages {
+		if msg.Role == llm.RoleUser || msg.Role == llm.RoleAssistant {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func titleBasisSequence(ctx context.Context, store session.Store, sessionID string, loaded []session.Message) (int, error) {
+	maxSeq := 0
+	for _, msg := range loaded {
+		if (msg.Role == llm.RoleUser || msg.Role == llm.RoleAssistant) && msg.Sequence > maxSeq {
+			maxSeq = msg.Sequence
+		}
+	}
+	fromSeq := maxSeq + 1
+	if fromSeq <= 1 && len(loaded) > 0 {
+		fromSeq = loaded[len(loaded)-1].Sequence + 1
+	}
+	for {
+		messages, err := store.GetMessagesFrom(ctx, sessionID, fromSeq, 500)
+		if err != nil {
+			return maxSeq, err
+		}
+		if len(messages) == 0 {
+			return maxSeq, nil
+		}
+		for _, msg := range messages {
+			if (msg.Role == llm.RoleUser || msg.Role == llm.RoleAssistant) && msg.Sequence > maxSeq {
+				maxSeq = msg.Sequence
+			}
+		}
+		if len(messages) < 500 {
+			return maxSeq, nil
+		}
+		fromSeq = messages[len(messages)-1].Sequence + 1
+	}
 }
