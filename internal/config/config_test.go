@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -264,6 +265,71 @@ providers:
 	}
 	if got := cfg.Providers["claude-bin"].Env["IS_SANDBOX"]; got != "1" {
 		t.Fatalf("loaded IS_SANDBOX = %q", got)
+	}
+}
+
+func TestWriteFileAtomically_ReplacesExistingFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(path, []byte("old\n"), 0o644); err != nil {
+		t.Fatalf("write old config: %v", err)
+	}
+
+	if err := writeFileAtomically(path, []byte("new\n"), 0o600); err != nil {
+		t.Fatalf("writeFileAtomically: %v", err)
+	}
+
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read config: %v", err)
+	}
+	if string(got) != "new\n" {
+		t.Fatalf("config = %q, want %q", got, "new\n")
+	}
+
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat config: %v", err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("config mode = %o, want %o", info.Mode().Perm(), 0o600)
+	}
+}
+
+func TestWriteFileAtomically_CreateTempFailureLeavesExistingFileUntouched(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("directory permissions behave differently on Windows")
+	}
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(path, []byte("original\n"), 0o600); err != nil {
+		t.Fatalf("write original config: %v", err)
+	}
+
+	if err := os.Chmod(dir, 0o555); err != nil {
+		t.Fatalf("chmod dir read-only: %v", err)
+	}
+	defer func() {
+		if err := os.Chmod(dir, 0o755); err != nil {
+			t.Fatalf("restore dir permissions: %v", err)
+		}
+	}()
+
+	err := writeFileAtomically(path, []byte("updated\n"), 0o600)
+	if err == nil {
+		t.Fatal("expected writeFileAtomically to fail")
+	}
+	if !strings.Contains(err.Error(), "create temp file") {
+		t.Fatalf("error = %v, want create temp file", err)
+	}
+
+	got, readErr := os.ReadFile(path)
+	if readErr != nil {
+		t.Fatalf("read original config: %v", readErr)
+	}
+	if string(got) != "original\n" {
+		t.Fatalf("config changed on failure: got %q want %q", got, "original\n")
 	}
 }
 

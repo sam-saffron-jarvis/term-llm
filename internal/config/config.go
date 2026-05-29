@@ -940,7 +940,44 @@ func rewriteProviderEnvSections(path string, snapshot map[string]map[string]stri
 		return err
 	}
 	enc.Close()
-	return os.WriteFile(path, buf.Bytes(), 0600)
+	return writeFileAtomically(path, buf.Bytes(), 0o600)
+}
+
+func writeFileAtomically(path string, data []byte, perm os.FileMode) error {
+	dir := filepath.Dir(path)
+	base := filepath.Base(path)
+	tf, err := os.CreateTemp(dir, "."+base+".*.tmp")
+	if err != nil {
+		return fmt.Errorf("create temp file: %w", err)
+	}
+	tempPath := tf.Name()
+	cleanup := true
+	defer func() {
+		if cleanup {
+			_ = os.Remove(tempPath)
+		}
+	}()
+
+	if _, err := tf.Write(data); err != nil {
+		_ = tf.Close()
+		return fmt.Errorf("write temp file: %w", err)
+	}
+	if err := tf.Sync(); err != nil {
+		_ = tf.Close()
+		return fmt.Errorf("sync temp file: %w", err)
+	}
+	if err := tf.Close(); err != nil {
+		return fmt.Errorf("close temp file: %w", err)
+	}
+	if err := os.Chmod(tempPath, perm); err != nil {
+		return fmt.Errorf("set temp file permissions: %w", err)
+	}
+	if err := os.Rename(tempPath, path); err != nil {
+		return fmt.Errorf("rename temp file: %w", err)
+	}
+
+	cleanup = false
+	return nil
 }
 
 func findOrCreateChildMapping(parent *yaml.Node, key string) *yaml.Node {
@@ -2165,7 +2202,7 @@ func Save(cfg *Config) error {
 		return fmt.Errorf("failed to marshal config: %w", err)
 	}
 
-	return os.WriteFile(path, data, 0600)
+	return writeFileAtomically(path, data, 0o600)
 }
 
 // SetAgentPreference sets a preference for a specific agent.
