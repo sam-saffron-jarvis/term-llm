@@ -1444,6 +1444,72 @@ func TestPopulateMissingToolResultNames_UsesHistory(t *testing.T) {
 	}
 }
 
+func TestPopulateResponsesToolResultNames_UsesRuntimeHistoryBeforeStore(t *testing.T) {
+	messages := []llm.Message{{
+		Role: llm.RoleTool,
+		Parts: []llm.Part{{
+			Type: llm.PartToolResult,
+			ToolResult: &llm.ToolResult{
+				ID: "call_1",
+			},
+		}},
+	}}
+	runtime := &serveRuntime{history: []llm.Message{{
+		Role: llm.RoleAssistant,
+		Parts: []llm.Part{{
+			Type: llm.PartToolCall,
+			ToolCall: &llm.ToolCall{
+				ID:   "call_1",
+				Name: "read_file",
+			},
+		}},
+	}}}
+	store := newServeRuntimeTestStore()
+	srv := &serveServer{store: store}
+
+	srv.populateResponsesToolResultNames(context.Background(), "sess-runtime", runtime, messages)
+
+	if got := messages[0].Parts[0].ToolResult.Name; got != "read_file" {
+		t.Fatalf("tool result name = %q, want %q", got, "read_file")
+	}
+	if store.getMessagesCalls != 0 {
+		t.Fatalf("GetMessages calls = %d, want 0 when runtime history resolves all names", store.getMessagesCalls)
+	}
+}
+
+func TestPopulateResponsesToolResultNames_FallsBackToStoreForUnresolvedNames(t *testing.T) {
+	messages := []llm.Message{{
+		Role: llm.RoleTool,
+		Parts: []llm.Part{{
+			Type: llm.PartToolResult,
+			ToolResult: &llm.ToolResult{
+				ID: "call_2",
+			},
+		}},
+	}}
+	store := newServeRuntimeTestStore()
+	store.messages["sess-store"] = []session.Message{*session.NewMessage("sess-store", llm.Message{
+		Role: llm.RoleAssistant,
+		Parts: []llm.Part{{
+			Type: llm.PartToolCall,
+			ToolCall: &llm.ToolCall{
+				ID:   "call_2",
+				Name: "bash",
+			},
+		}},
+	}, 0)}
+	srv := &serveServer{store: store}
+
+	srv.populateResponsesToolResultNames(context.Background(), "sess-store", nil, messages)
+
+	if got := messages[0].Parts[0].ToolResult.Name; got != "bash" {
+		t.Fatalf("tool result name = %q, want %q", got, "bash")
+	}
+	if store.getMessagesCalls != 1 {
+		t.Fatalf("GetMessages calls = %d, want 1 when runtime cannot resolve names", store.getMessagesCalls)
+	}
+}
+
 func TestParseChatMessages_DeveloperDoesNotSuppressServerSystemPrompt(t *testing.T) {
 	msgs, replaceHistory, err := parseChatMessages([]chatMessage{
 		{Role: "developer", Content: json.RawMessage(`"Be concise"`)},

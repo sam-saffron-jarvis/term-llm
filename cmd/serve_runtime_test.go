@@ -133,6 +133,7 @@ type serveRuntimeTestStore struct {
 	addMessageCalls    int
 	updateMessageCalls int
 	updateFailures     map[int]error
+	getMessagesCalls   int
 	updateStatusCalls  int
 	incrementCalls     int
 	nextID             int64
@@ -253,6 +254,7 @@ func (s *serveRuntimeTestStore) UpdateMessage(ctx context.Context, sessionID str
 func (s *serveRuntimeTestStore) GetMessages(ctx context.Context, sessionID string, limit, offset int) ([]session.Message, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.getMessagesCalls++
 	msgs := s.messages[sessionID]
 	out := make([]session.Message, len(msgs))
 	copy(out, msgs)
