@@ -681,6 +681,66 @@ func TestSpawnAgentTool_RunnerError(t *testing.T) {
 	// Duration is included (may be 0 for very fast operations, which is valid)
 }
 
+func TestSpawnAgentTool_RunnerErrorPreservesPartialResult(t *testing.T) {
+	config := DefaultSpawnConfig()
+	tool := NewSpawnAgentTool(config, 0)
+
+	runner := newMockRunner().
+		SetOutput("partial analysis").
+		SetSessionID("child-session-123").
+		SetError(errors.New("agent failed to initialize"))
+	tool.SetRunner(runner)
+
+	ctx := context.Background()
+	args := makeSpawnArgs("test-agent", "do something", 0)
+
+	result, err := tool.Execute(ctx, args)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	r := parseResult(t, result.Content)
+	if r.Type != string(ErrExecutionFailed) {
+		t.Fatalf("expected error type %s, got %s", ErrExecutionFailed, r.Type)
+	}
+	if r.Output != "partial analysis" {
+		t.Errorf("expected partial output to be preserved, got %q", r.Output)
+	}
+	if r.SessionID != "child-session-123" {
+		t.Errorf("expected session ID to be preserved, got %q", r.SessionID)
+	}
+}
+
+func TestSpawnAgentTool_TimeoutPreservesPartialResult(t *testing.T) {
+	config := DefaultSpawnConfig()
+	tool := NewSpawnAgentTool(config, 0)
+
+	runner := newMockRunner().
+		SetOutput("partial timeout output").
+		SetSessionID("child-session-timeout").
+		SetError(context.DeadlineExceeded)
+	tool.SetRunner(runner)
+
+	ctx := context.Background()
+	args := makeSpawnArgs("test-agent", "do something", 10)
+
+	result, err := tool.Execute(ctx, args)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	r := parseResult(t, result.Content)
+	if r.Type != string(ErrTimeout) {
+		t.Fatalf("expected error type %s, got %s", ErrTimeout, r.Type)
+	}
+	if r.Output != "partial timeout output" {
+		t.Errorf("expected partial output to be preserved, got %q", r.Output)
+	}
+	if r.SessionID != "child-session-timeout" {
+		t.Errorf("expected session ID to be preserved, got %q", r.SessionID)
+	}
+}
+
 func TestSpawnAgentTool_MaxTurnsErrorIsExplicit(t *testing.T) {
 	config := DefaultSpawnConfig()
 	tool := NewSpawnAgentTool(config, 0)

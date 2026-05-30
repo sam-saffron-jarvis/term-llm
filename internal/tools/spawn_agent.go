@@ -311,18 +311,18 @@ func (t *SpawnAgentTool) Execute(ctx context.Context, args json.RawMessage) (llm
 
 	if err != nil {
 		if llm.IsMaxTurnsExceeded(err) {
-			return llm.TextOutput(t.formatErrorWithDuration(ErrExecutionFailed, fmt.Sprintf("agent '%s' stopped after reaching max turns: %v", a.AgentName, err), duration)), nil
+			return llm.TextOutput(t.formatErrorResultWithDuration(ErrExecutionFailed, fmt.Sprintf("agent '%s' stopped after reaching max turns: %v", a.AgentName, err), duration, runResult)), nil
 		}
 		// Check for specific error types - check the error itself first, then context state
 		if errors.Is(err, context.DeadlineExceeded) ||
 			ctx.Err() == context.DeadlineExceeded || childCtx.Err() == context.DeadlineExceeded {
-			return llm.TextOutput(t.formatErrorWithDuration(ErrTimeout, fmt.Sprintf("agent '%s' timed out after %d seconds", a.AgentName, timeout), duration)), nil
+			return llm.TextOutput(t.formatErrorResultWithDuration(ErrTimeout, fmt.Sprintf("agent '%s' timed out after %d seconds", a.AgentName, timeout), duration, runResult)), nil
 		}
 		if errors.Is(err, context.Canceled) ||
 			ctx.Err() == context.Canceled || childCtx.Err() == context.Canceled {
-			return llm.TextOutput(t.formatErrorWithDuration(ErrExecutionFailed, "agent execution cancelled", duration)), nil
+			return llm.TextOutput(t.formatErrorResultWithDuration(ErrExecutionFailed, "agent execution cancelled", duration, runResult)), nil
 		}
-		return llm.TextOutput(t.formatErrorWithDuration(ErrExecutionFailed, fmt.Sprintf("agent execution failed: %v", err), duration)), nil
+		return llm.TextOutput(t.formatErrorResultWithDuration(ErrExecutionFailed, fmt.Sprintf("agent execution failed: %v", err), duration, runResult)), nil
 	}
 
 	// Return success result
@@ -365,10 +365,17 @@ func (t *SpawnAgentTool) formatError(errType ToolErrorType, message string) stri
 
 // formatErrorWithDuration formats an error result with duration.
 func (t *SpawnAgentTool) formatErrorWithDuration(errType ToolErrorType, message string, durationMs int64) string {
+	return t.formatErrorResultWithDuration(errType, message, durationMs, SpawnAgentRunResult{})
+}
+
+// formatErrorResultWithDuration formats an error result with duration and any partial subagent result.
+func (t *SpawnAgentTool) formatErrorResultWithDuration(errType ToolErrorType, message string, durationMs int64, runResult SpawnAgentRunResult) string {
 	result := SpawnAgentResult{
-		Error:    message,
-		Type:     string(errType),
-		Duration: durationMs,
+		Error:     message,
+		Type:      string(errType),
+		Duration:  durationMs,
+		Output:    runResult.Output,
+		SessionID: runResult.SessionID,
 	}
 	data, _ := json.Marshal(result)
 	return string(data)
