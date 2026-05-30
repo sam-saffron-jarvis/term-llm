@@ -69,6 +69,13 @@ type Store interface {
 	Close() error
 }
 
+// MessagesDescendingPager is an optional Store capability for efficient reverse
+// pagination over session messages. Implementations return messages ordered by
+// descending sequence and, when beforeSeq > 0, only rows with sequence < beforeSeq.
+type MessagesDescendingPager interface {
+	GetMessagesPageDescending(ctx context.Context, sessionID string, beforeSeq, limit int) ([]Message, error)
+}
+
 // PushSubscription represents a Web Push subscription stored in the database.
 type PushSubscription struct {
 	ID        string

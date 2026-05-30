@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -22,6 +23,41 @@ import (
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/testutil"
 )
+
+type getMessagesCall struct {
+	sessionID string
+	beforeSeq int
+	limit     int
+}
+
+type carryoverPagingStore struct {
+	*session.NoopStore
+	summaries  []session.SessionSummary
+	messages   map[string][]session.Message
+	calls      []getMessagesCall
+	rowsLoaded int
+}
+
+func (s *carryoverPagingStore) List(ctx context.Context, opts session.ListOptions) ([]session.SessionSummary, error) {
+	return append([]session.SessionSummary(nil), s.summaries...), nil
+}
+
+func (s *carryoverPagingStore) GetMessagesPageDescending(ctx context.Context, sessionID string, beforeSeq, limit int) ([]session.Message, error) {
+	s.calls = append(s.calls, getMessagesCall{sessionID: sessionID, beforeSeq: beforeSeq, limit: limit})
+	msgs := s.messages[sessionID]
+	page := make([]session.Message, 0, limit)
+	for i := len(msgs) - 1; i >= 0; i-- {
+		if beforeSeq > 0 && msgs[i].Sequence >= beforeSeq {
+			continue
+		}
+		page = append(page, msgs[i])
+		if limit > 0 && len(page) >= limit {
+			break
+		}
+	}
+	s.rowsLoaded += len(page)
+	return page, nil
+}
 
 // fakeBotSender is a botSender that records all Send calls for test assertions.
 type fakeBotSender struct {
@@ -1960,6 +1996,59 @@ func TestExtractToolResultTextWithPlaceholders_FallsBackToContentWhenNoParts(t *
 	got := extractToolResultTextWithPlaceholders(result)
 	if got != "command output" {
 		t.Fatalf("expected fallback to Content, got %q", got)
+	}
+}
+
+func TestRestoreHistoryFromDB_LoadsCarryoverTailWithoutReadingWholeSession(t *testing.T) {
+	const (
+		chatID       = int64(42)
+		priorID      = "prior-session"
+		currentID    = "current-session"
+		messageCount = 100
+	)
+
+	store := &carryoverPagingStore{
+		NoopStore: &session.NoopStore{},
+		summaries: []session.SessionSummary{{ID: priorID, MessageCount: messageCount}},
+		messages:  map[string][]session.Message{priorID: make([]session.Message, 0, messageCount)},
+	}
+
+	for i := 0; i < messageCount; i++ {
+		role := llm.RoleUser
+		if i%2 == 1 {
+			role = llm.RoleAssistant
+		}
+		msg := session.NewMessage(priorID, llm.Message{Role: role, Parts: []llm.Part{{Type: llm.PartText, Text: fmt.Sprintf("m%03d", i)}}}, i)
+		store.messages[priorID] = append(store.messages[priorID], *msg)
+	}
+
+	mgr := &telegramSessionMgr{
+		store: store,
+		settings: Settings{
+			TelegramCarryoverChars: 8,
+		},
+	}
+	current := &telegramSession{meta: &session.Session{ID: currentID}}
+
+	mgr.restoreHistoryFromDB(context.Background(), chatID, current)
+
+	if len(current.history) != 2 {
+		t.Fatalf("restored history len = %d, want 2", len(current.history))
+	}
+	if got := extractMessageTextWithPlaceholders(current.history[0]); got != "m098" {
+		t.Fatalf("first restored message = %q, want m098", got)
+	}
+	if got := extractMessageTextWithPlaceholders(current.history[1]); got != "m099" {
+		t.Fatalf("second restored message = %q, want m099", got)
+	}
+	if len(store.calls) == 0 {
+		t.Fatal("expected paginated GetMessages calls")
+	}
+	if store.calls[0].limit <= 0 {
+		t.Fatalf("expected bounded GetMessages limit, got %d", store.calls[0].limit)
+	}
+	if store.rowsLoaded >= messageCount {
+		t.Fatalf("loaded %d rows, want fewer than full transcript (%d)", store.rowsLoaded, messageCount)
 	}
 }
 

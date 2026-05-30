@@ -168,6 +168,8 @@ func TestApprovedDirsRejectsSymlinkToRoot(t *testing.T) {
 }
 
 func TestCmdFileClearsComposerAfterAttach(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+
 	dir := t.TempDir()
 	path := filepath.Join(dir, "test.txt")
 	if err := os.WriteFile(path, []byte("hello"), 0o600); err != nil {
@@ -175,7 +177,10 @@ func TestCmdFileClearsComposerAfterAttach(t *testing.T) {
 	}
 
 	m := newTestChatModel(false)
-	m.approvedDirs = &ApprovedDirs{Directories: []string{dir}}
+	m.approvedDirs = &ApprovedDirs{}
+	if err := m.approvedDirs.AddDirectory(dir); err != nil {
+		t.Fatalf("AddDirectory() error = %v", err)
+	}
 	m.setTextareaValue("/file " + path)
 
 	result, _ := m.cmdFile([]string{path})

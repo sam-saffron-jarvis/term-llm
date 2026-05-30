@@ -1920,6 +1920,10 @@ func (s *SQLiteStore) GetMessagesFrom(ctx context.Context, sessionID string, fro
 	}
 	defer rows.Close()
 
+	return scanMessageRows(rows)
+}
+
+func scanMessageRows(rows *sql.Rows) ([]Message, error) {
 	var messages []Message
 	for rows.Next() {
 		var msg Message
@@ -1939,6 +1943,34 @@ func (s *SQLiteStore) GetMessagesFrom(ctx context.Context, sessionID string, fro
 		messages = append(messages, msg)
 	}
 	return messages, rows.Err()
+}
+
+// GetMessagesPageDescending retrieves messages for a session in reverse
+// sequence order. When beforeSeq > 0, only rows with sequence < beforeSeq are
+// returned. Used for reverse tail pagination without loading entire sessions.
+func (s *SQLiteStore) GetMessagesPageDescending(ctx context.Context, sessionID string, beforeSeq, limit int) ([]Message, error) {
+	query := `
+		SELECT id, session_id, role, parts, text_content, duration_ms, turn_index, created_at, sequence
+		FROM messages
+		WHERE session_id = ?`
+	args := []any{sessionID}
+	if beforeSeq > 0 {
+		query += " AND sequence < ?"
+		args = append(args, beforeSeq)
+	}
+	query += " ORDER BY sequence DESC"
+	if limit > 0 {
+		query += " LIMIT ?"
+		args = append(args, limit)
+	}
+
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("query messages descending: %w", err)
+	}
+	defer rows.Close()
+
+	return scanMessageRows(rows)
 }
 
 // GetMessageByID retrieves a single message by its global message id.

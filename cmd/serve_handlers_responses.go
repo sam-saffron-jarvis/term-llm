@@ -402,37 +402,41 @@ func (s *serveServer) populateResponsesToolResultNames(ctx context.Context, sess
 	}
 
 	names := map[string]string{}
+	collectParts := func(parts []llm.Part) {
+		for _, part := range parts {
+			if part.Type != llm.PartToolCall || part.ToolCall == nil {
+				continue
+			}
+			id := strings.TrimSpace(part.ToolCall.ID)
+			if id == "" || !missing[id] || names[id] != "" {
+				continue
+			}
+			if name := strings.TrimSpace(part.ToolCall.Name); name != "" {
+				names[id] = name
+			}
+		}
+	}
 	collect := func(history []llm.Message) {
 		for i := len(history) - 1; i >= 0; i-- {
-			for _, part := range history[i].Parts {
-				if part.Type != llm.PartToolCall || part.ToolCall == nil {
-					continue
-				}
-				id := strings.TrimSpace(part.ToolCall.ID)
-				if id == "" || !missing[id] || names[id] != "" {
-					continue
-				}
-				if name := strings.TrimSpace(part.ToolCall.Name); name != "" {
-					names[id] = name
-				}
-			}
+			collectParts(history[i].Parts)
 			if len(names) == len(missing) {
 				return
 			}
 		}
 	}
 
-	if s.store != nil && sessionID != "" {
-		if stored, err := s.store.GetMessages(ctx, sessionID, 0, 0); err == nil {
-			persisted := make([]llm.Message, 0, len(stored))
-			for _, msg := range stored {
-				persisted = append(persisted, msg.ToLLMMessage())
-			}
-			collect(persisted)
-		}
-	}
-	if len(names) < len(missing) && runtime != nil {
+	if runtime != nil {
 		collect(runtime.snapshotHistory())
+	}
+	if len(names) < len(missing) && s.store != nil && sessionID != "" {
+		if stored, err := s.store.GetMessages(ctx, sessionID, 0, 0); err == nil {
+			for i := len(stored) - 1; i >= 0; i-- {
+				collectParts(stored[i].Parts)
+				if len(names) == len(missing) {
+					break
+				}
+			}
+		}
 	}
 	if len(names) == 0 {
 		return

@@ -113,6 +113,42 @@ func (s *LoggingStore) GetLatestVisibleMessageID(ctx context.Context, sessionID 
 	return 0, nil
 }
 
+// GetMessagesPageDescending returns a reverse-ordered page of messages. It
+// delegates when the wrapped store supports efficient paging; otherwise it falls
+// back to in-memory paging over GetMessages.
+func (s *LoggingStore) GetMessagesPageDescending(ctx context.Context, sessionID string, beforeSeq, limit int) ([]Message, error) {
+	getter, ok := s.Store.(MessagesDescendingPager)
+	if ok {
+		msgs, err := getter.GetMessagesPageDescending(ctx, sessionID, beforeSeq, limit)
+		if err != nil {
+			s.logOnce("GetMessagesPageDescending", err)
+		}
+		return msgs, err
+	}
+
+	msgs, err := s.Store.GetMessages(ctx, sessionID, 0, 0)
+	if err != nil {
+		s.logOnce("GetMessagesPageDescending", err)
+		return nil, err
+	}
+
+	capHint := len(msgs)
+	if limit > 0 && limit < capHint {
+		capHint = limit
+	}
+	page := make([]Message, 0, capHint)
+	for i := len(msgs) - 1; i >= 0; i-- {
+		if beforeSeq > 0 && msgs[i].Sequence >= beforeSeq {
+			continue
+		}
+		page = append(page, msgs[i])
+		if limit > 0 && len(page) >= limit {
+			break
+		}
+	}
+	return page, nil
+}
+
 // UpdateMetrics wraps Store.UpdateMetrics with error logging.
 func (s *LoggingStore) UpdateMetrics(ctx context.Context, id string, llmTurns, toolCalls, inputTokens, outputTokens, cachedInputTokens, cacheWriteTokens int) error {
 	err := s.Store.UpdateMetrics(ctx, id, llmTurns, toolCalls, inputTokens, outputTokens, cachedInputTokens, cacheWriteTokens)

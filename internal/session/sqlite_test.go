@@ -86,6 +86,56 @@ func TestSQLiteStoreGetMessagesFromHonorsLimit(t *testing.T) {
 	}
 }
 
+func TestSQLiteStoreGetMessagesPageDescendingHonorsBeforeSeqAndLimit(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+
+	store, err := NewSQLiteStore(DefaultConfig())
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+	sess := &Session{ID: NewID(), Provider: "test", Model: "test-model", Mode: ModeChat}
+	if err := store.Create(ctx, sess); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	seed := []Message{
+		*NewMessage(sess.ID, llm.UserText("msg-0"), 0),
+		*NewMessage(sess.ID, llm.AssistantText("msg-1"), 1),
+		*NewMessage(sess.ID, llm.Message{Role: llm.RoleTool, Parts: []llm.Part{{Type: llm.PartText, Text: "tool-2"}}}, 2),
+		*NewMessage(sess.ID, llm.AssistantText("msg-3"), 3),
+	}
+	for i := range seed {
+		if err := store.AddMessage(ctx, sess.ID, &seed[i]); err != nil {
+			t.Fatalf("AddMessage(%d): %v", i, err)
+		}
+	}
+
+	got, err := store.GetMessagesPageDescending(ctx, sess.ID, 0, 2)
+	if err != nil {
+		t.Fatalf("GetMessagesPageDescending latest: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("latest len = %d, want 2", len(got))
+	}
+	if got[0].Sequence != 3 || got[1].Sequence != 2 {
+		t.Fatalf("latest sequences = [%d %d], want [3 2]", got[0].Sequence, got[1].Sequence)
+	}
+
+	got, err = store.GetMessagesPageDescending(ctx, sess.ID, 2, 2)
+	if err != nil {
+		t.Fatalf("GetMessagesPageDescending before seq: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("before seq len = %d, want 2", len(got))
+	}
+	if got[0].Sequence != 1 || got[1].Sequence != 0 {
+		t.Fatalf("before seq sequences = [%d %d], want [1 0]", got[0].Sequence, got[1].Sequence)
+	}
+}
+
 func TestSQLiteStoreGetLatestVisibleMessageIDSkipsInvisibleTail(t *testing.T) {
 	t.Setenv("XDG_DATA_HOME", t.TempDir())
 
