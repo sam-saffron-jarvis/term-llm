@@ -1,6 +1,7 @@
 package contain
 
 import (
+	"net"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -93,6 +94,43 @@ func TestUsedWorkspaceWebPortsScansEnvFiles(t *testing.T) {
 	}
 	if len(used) != 2 {
 		t.Fatalf("used = %v, want exactly 2 entries", used)
+	}
+}
+
+func TestDefaultWebPortSkipsWorkspaceClaimAndUnavailableHostPort(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	root, err := ContainersRoot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeWorkspaceEnv(t, root, "alpha", "WEB_PORT=8081\n")
+
+	ln, err := net.Listen("tcp", "127.0.0.1:8082")
+	if err == nil {
+		defer ln.Close()
+	} else if hostPortAvailable(8082) {
+		t.Fatalf("could not reserve port 8082 for test, but hostPortAvailable reports it free: %v", err)
+	}
+
+	port, err := strconv.Atoi(defaultWebPort())
+	if err != nil {
+		t.Fatalf("defaultWebPort is not numeric: %v", err)
+	}
+	if port <= 8082 {
+		t.Fatalf("defaultWebPort = %d, want above workspace-claimed 8081 and unavailable 8082", port)
+	}
+}
+
+func TestHostPortAvailableDetectsBoundLoopbackPort(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+
+	port := ln.Addr().(*net.TCPAddr).Port
+	if hostPortAvailable(port) {
+		t.Fatalf("hostPortAvailable(%d) = true while test listener is bound", port)
 	}
 }
 
