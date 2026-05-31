@@ -43,6 +43,34 @@ func TestCaptureRipgrepOutputPreservesCompleteLinesBeforeOversizedPartial(t *tes
 	}
 }
 
+func TestCaptureRipgrepOutputWithConsumerStopsAtGlobalMaxResults(t *testing.T) {
+	input := buildSyntheticRipgrepJSON(5000)
+	limits := ripgrepCaptureLimits{maxOutputLines: 20000, maxBufferedBytes: len(input) + 1024}
+	limiter := newRipgrepResultLimiter(100)
+
+	out, truncated, err := captureRipgrepOutputWithConsumer(strings.NewReader(string(input)), limits, limiter.consumeLine)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !truncated {
+		t.Fatal("expected capture to stop once the global result cap is satisfied")
+	}
+	if !strings.Contains(string(out), "f00099.go") {
+		t.Fatalf("expected useful prefix to include the 100th result, got:\n%s", string(out))
+	}
+	if strings.Contains(string(out), "f00100.go") {
+		t.Fatalf("expected capture to stop before buffering later results, got:\n%s", string(out))
+	}
+
+	matches, err := parseRipgrepOutput(out, 100, 0)
+	if err != nil {
+		t.Fatalf("unexpected parse error: %v", err)
+	}
+	if len(matches) != 100 {
+		t.Fatalf("expected 100 matches from the buffered prefix, got %d", len(matches))
+	}
+}
+
 func TestGrepTool_UsesFilePath(t *testing.T) {
 	dir := t.TempDir()
 	token := "unique_grep_token_1234567890"
