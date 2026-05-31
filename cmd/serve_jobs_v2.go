@@ -19,10 +19,8 @@ import (
 
 	"github.com/samsaffron/term-llm/internal/agents"
 	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/input"
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/procutil"
-	"github.com/samsaffron/term-llm/internal/prompt"
 	"github.com/samsaffron/term-llm/internal/session"
 	_ "modernc.org/sqlite"
 )
@@ -323,19 +321,23 @@ type jobsV2LLMConfig struct {
 	PersistSession *bool  `json:"persist_session,omitempty"`
 	SessionID      string `json:"session_id,omitempty"`
 
+	// cwd is REQUIRED: it roots this run's file/shell tools at a directory so a
+	// job never silently inherits the jobs server's process working directory.
+	// It is NOT an os.Chdir (see resolveJobLLMSettings) — the server runs many
+	// runs concurrently in one process.
+	Cwd string `json:"cwd"`
+
 	// Parity with the `ask` CLI. All optional; omitting a field preserves the
 	// previous behavior (it falls back to the serve-level flag / agent / config).
 	// These map onto the same execution path `ask` uses — this is plumbing, not
 	// new concepts.
 	Provider        string   `json:"provider,omitempty"`          // e.g. "chatgpt" or "chatgpt:gpt-5.5-xhigh"
 	Model           string   `json:"model,omitempty"`             // model override (alt to provider:model)
-	Cwd             string   `json:"cwd,omitempty"`               // tool root for this run (NOT os.Chdir — see resolveJobLLMSettings)
 	ReadDir         []string `json:"read_dir,omitempty"`          // additional read roots
 	WriteDir        []string `json:"write_dir,omitempty"`         // additional write roots
 	Tools           string   `json:"tools,omitempty"`             // tool set override ("all" or csv)
 	MaxTurns        int      `json:"max_turns,omitempty"`         // agentic turn cap
 	MaxOutputTokens int      `json:"max_output_tokens,omitempty"` // 0 = provider default
-	Files           []string `json:"files,omitempty"`             // context files (like -f)
 	Search          bool     `json:"search,omitempty"`
 	SystemMessage   string   `json:"system_message,omitempty"`
 	Skills          string   `json:"skills,omitempty"`
@@ -368,6 +370,11 @@ func (r *jobsV2LLMRunner) Run(ctx context.Context, job jobsV2Job, pw progressWri
 	}
 	if strings.TrimSpace(cfg.Instructions) == "" {
 		return jobsV2RunResult{}, fmt.Errorf("llm runner instructions is required")
+	}
+	// cwd is mandatory: an llm job must declare where its file/shell tools are
+	// rooted rather than silently inheriting the jobs server's working directory.
+	if strings.TrimSpace(cfg.Cwd) == "" {
+		return jobsV2RunResult{}, fmt.Errorf("llm runner cwd is required")
 	}
 	cfg.SessionID = cfg.effectiveSessionID()
 	progressiveOpts := askProgressiveOptions{
@@ -2749,33 +2756,23 @@ func resolveJobLLMSettings(jobCfg *config.Config, agent *agents.Agent, cfg jobsV
 		MaxTurnsSet:     maxTurnsSet,
 		MaxOutputTokens: cfg.MaxOutputTokens,
 		Search:          def.Search || cfg.Search,
-		Files:           cfg.Files,
 		Platform:        "jobs",
 	}, jobCfg.Ask.Provider, jobCfg.Ask.Model, jobCfg.Ask.Instructions, jobCfg.Ask.MaxTurns, 50)
 	if err != nil {
 		return SessionSettings{}, "", err
 	}
 
-	// cwd roots this run's file/shell tools at a directory WITHOUT a process-wide
-	// os.Chdir. It authorizes read/write within cwd and sets the shell tool's
-	// exec working directory.
+	// cwd (required, enforced in jobsV2LLMRunner.Run) roots this run's file/shell
+	// tools at a directory WITHOUT a process-wide os.Chdir: it authorizes
+	// read/write within cwd and sets the shell tool's exec working directory. The
+	// guard keeps this resolver defensive if a caller passes an empty cwd.
 	if runCwd := strings.TrimSpace(cfg.Cwd); runCwd != "" {
 		settings.ReadDirs = append(settings.ReadDirs, runCwd)
 		settings.WriteDirs = append(settings.WriteDirs, runCwd)
 		settings.ShellWorkingDir = runCwd
 	}
 
-	// Build the user prompt, attaching any -f-style context files like `ask` does.
-	userPrompt := cfg.Instructions
-	if len(cfg.Files) > 0 {
-		files, ferr := input.ReadFiles(cfg.Files)
-		if ferr != nil {
-			return SessionSettings{}, "", fmt.Errorf("read context files: %w", ferr)
-		}
-		userPrompt = prompt.AskUserPrompt(cfg.Instructions, files, "")
-	}
-
-	return settings, userPrompt, nil
+	return settings, cfg.Instructions, nil
 }
 
 func newServeJobsExecutor(baseCfg *config.Config) serveJobsExecutor {

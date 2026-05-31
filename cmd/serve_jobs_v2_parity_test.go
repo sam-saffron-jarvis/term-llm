@@ -42,7 +42,6 @@ func TestJobsV2LLMConfigParityRoundTrip(t *testing.T) {
 		Tools:           "all",
 		MaxTurns:        400,
 		MaxOutputTokens: 8192,
-		Files:           []string{"/spec.md"},
 		Search:          true,
 		SystemMessage:   "be terse",
 		Skills:          "all",
@@ -63,7 +62,7 @@ func TestJobsV2LLMConfigParityRoundTrip(t *testing.T) {
 
 	for _, key := range []string{
 		"provider", "model", "cwd", "read_dir", "write_dir", "tools",
-		"max_turns", "max_output_tokens", "files", "search", "system_message", "skills",
+		"max_turns", "max_output_tokens", "search", "system_message", "skills",
 	} {
 		if !strings.Contains(string(data), `"`+key+`"`) {
 			t.Errorf("marshaled config missing documented key %q: %s", key, data)
@@ -88,7 +87,7 @@ func TestJobsV2LLMConfigBackwardCompatDefaults(t *testing.T) {
 	if cfg.Provider != "" || cfg.Model != "" || cfg.Cwd != "" || cfg.Tools != "" ||
 		cfg.MaxTurns != 0 || cfg.MaxOutputTokens != 0 || cfg.Search ||
 		cfg.SystemMessage != "" || cfg.Skills != "" ||
-		cfg.ReadDir != nil || cfg.WriteDir != nil || cfg.Files != nil {
+		cfg.ReadDir != nil || cfg.WriteDir != nil {
 		t.Fatalf("new parity fields should default to zero, got: %+v", cfg)
 	}
 	// Session persistence default (nil → enabled) must be unchanged.
@@ -101,8 +100,8 @@ func TestJobsV2LLMConfigBackwardCompatDefaults(t *testing.T) {
 		t.Fatalf("marshal: %v", err)
 	}
 	for _, key := range []string{
-		"provider", "model", "cwd", "read_dir", "write_dir", "tools",
-		"max_turns", "max_output_tokens", "files", "system_message", "skills",
+		"provider", "model", "read_dir", "write_dir", "tools",
+		"max_turns", "max_output_tokens", "system_message", "skills",
 	} {
 		if strings.Contains(string(out), `"`+key+`"`) {
 			t.Errorf("omitempty broken: re-serialized legacy config unexpectedly contains %q: %s", key, out)
@@ -234,11 +233,6 @@ func TestCloneConfigForServeJobDeepCopiesProviderPointers(t *testing.T) {
 // resolved settings / user prompt, and that omitted options fall back to the
 // serve-level defaults (backward compatibility).
 func TestResolveJobLLMSettingsThreadsAskOptions(t *testing.T) {
-	ctxFile := filepath.Join(t.TempDir(), "ctx.txt")
-	if err := os.WriteFile(ctxFile, []byte("FILE-CONTEXT-SENTINEL"), 0o644); err != nil {
-		t.Fatalf("write ctx file: %v", err)
-	}
-
 	cases := []struct {
 		name   string
 		cfg    jobsV2LLMConfig
@@ -333,14 +327,11 @@ func TestResolveJobLLMSettingsThreadsAskOptions(t *testing.T) {
 			},
 		},
 		{
-			name: "files attach context to the user prompt",
-			cfg:  jobsV2LLMConfig{Instructions: "summarize", Files: []string{ctxFile}},
+			name: "instructions become the user prompt verbatim",
+			cfg:  jobsV2LLMConfig{Instructions: "summarize"},
 			verify: func(t *testing.T, _ SessionSettings, userPrompt string) {
-				if !strings.Contains(userPrompt, "FILE-CONTEXT-SENTINEL") {
-					t.Errorf("userPrompt = %q, want it to embed file context", userPrompt)
-				}
-				if !strings.Contains(userPrompt, "summarize") {
-					t.Errorf("userPrompt = %q, want it to retain the instructions", userPrompt)
+				if userPrompt != "summarize" {
+					t.Errorf("userPrompt = %q, want the instructions verbatim", userPrompt)
 				}
 			},
 		},
