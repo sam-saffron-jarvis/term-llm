@@ -11,6 +11,38 @@ import (
 	"time"
 )
 
+func TestCaptureRipgrepOutputStopsNearByteCapForOversizedLine(t *testing.T) {
+	limits := ripgrepCaptureLimits{maxOutputLines: 100, maxBufferedBytes: 1024}
+	input := strings.NewReader(strings.Repeat("x", limits.maxBufferedBytes*4) + "\n")
+
+	out, truncated, err := captureRipgrepOutput(input, limits)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !truncated {
+		t.Fatal("expected capture to be truncated")
+	}
+	if len(out) != 0 {
+		t.Fatalf("expected oversized partial line to be dropped, got %d bytes", len(out))
+	}
+}
+
+func TestCaptureRipgrepOutputPreservesCompleteLinesBeforeOversizedPartial(t *testing.T) {
+	limits := ripgrepCaptureLimits{maxOutputLines: 100, maxBufferedBytes: 64}
+	input := strings.NewReader("one\ntwo\n" + strings.Repeat("x", 128) + "\n")
+
+	out, truncated, err := captureRipgrepOutput(input, limits)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !truncated {
+		t.Fatal("expected capture to be truncated")
+	}
+	if string(out) != "one\ntwo\n" {
+		t.Fatalf("expected only prior complete lines, got %q", string(out))
+	}
+}
+
 func TestGrepTool_UsesFilePath(t *testing.T) {
 	dir := t.TempDir()
 	token := "unique_grep_token_1234567890"

@@ -310,19 +310,7 @@ func (t *SpawnAgentTool) Execute(ctx context.Context, args json.RawMessage) (llm
 	duration := time.Since(start).Milliseconds()
 
 	if err != nil {
-		if llm.IsMaxTurnsExceeded(err) {
-			return llm.TextOutput(t.formatErrorWithDuration(ErrExecutionFailed, fmt.Sprintf("agent '%s' stopped after reaching max turns: %v", a.AgentName, err), duration)), nil
-		}
-		// Check for specific error types - check the error itself first, then context state
-		if errors.Is(err, context.DeadlineExceeded) ||
-			ctx.Err() == context.DeadlineExceeded || childCtx.Err() == context.DeadlineExceeded {
-			return llm.TextOutput(t.formatErrorWithDuration(ErrTimeout, fmt.Sprintf("agent '%s' timed out after %d seconds", a.AgentName, timeout), duration)), nil
-		}
-		if errors.Is(err, context.Canceled) ||
-			ctx.Err() == context.Canceled || childCtx.Err() == context.Canceled {
-			return llm.TextOutput(t.formatErrorWithDuration(ErrExecutionFailed, "agent execution cancelled", duration)), nil
-		}
-		return llm.TextOutput(t.formatErrorWithDuration(ErrExecutionFailed, fmt.Sprintf("agent execution failed: %v", err), duration)), nil
+		return llm.TextOutput(t.formatErrorWithPartialResult(classifySpawnAgentError(err, ctx, childCtx), spawnAgentErrorMessage(err, ctx, childCtx, a.AgentName, timeout), duration, runResult)), nil
 	}
 
 	// Return success result
@@ -353,6 +341,31 @@ func (t *SpawnAgentTool) Preview(args json.RawMessage) string {
 	return fmt.Sprintf("@%s: %s", a.AgentName, prompt)
 }
 
+// classifySpawnAgentError maps runner/context errors to a stable tool error type.
+func classifySpawnAgentError(err error, parentCtx, childCtx context.Context) ToolErrorType {
+	if llm.IsMaxTurnsExceeded(err) {
+		return ErrExecutionFailed
+	}
+	if errors.Is(err, context.DeadlineExceeded) || parentCtx.Err() == context.DeadlineExceeded || childCtx.Err() == context.DeadlineExceeded {
+		return ErrTimeout
+	}
+	return ErrExecutionFailed
+}
+
+// spawnAgentErrorMessage formats runner/context errors without discarding any partial run result.
+func spawnAgentErrorMessage(err error, parentCtx, childCtx context.Context, agentName string, timeout int) string {
+	if llm.IsMaxTurnsExceeded(err) {
+		return fmt.Sprintf("agent '%s' stopped after reaching max turns: %v", agentName, err)
+	}
+	if errors.Is(err, context.DeadlineExceeded) || parentCtx.Err() == context.DeadlineExceeded || childCtx.Err() == context.DeadlineExceeded {
+		return fmt.Sprintf("agent '%s' timed out after %d seconds", agentName, timeout)
+	}
+	if errors.Is(err, context.Canceled) || parentCtx.Err() == context.Canceled || childCtx.Err() == context.Canceled {
+		return "agent execution cancelled"
+	}
+	return fmt.Sprintf("agent execution failed: %v", err)
+}
+
 // formatError formats an error result.
 func (t *SpawnAgentTool) formatError(errType ToolErrorType, message string) string {
 	result := SpawnAgentResult{
@@ -365,10 +378,17 @@ func (t *SpawnAgentTool) formatError(errType ToolErrorType, message string) stri
 
 // formatErrorWithDuration formats an error result with duration.
 func (t *SpawnAgentTool) formatErrorWithDuration(errType ToolErrorType, message string, durationMs int64) string {
+	return t.formatErrorWithPartialResult(errType, message, durationMs, SpawnAgentRunResult{})
+}
+
+// formatErrorWithPartialResult formats an error result while preserving partial subagent output/session metadata.
+func (t *SpawnAgentTool) formatErrorWithPartialResult(errType ToolErrorType, message string, durationMs int64, runResult SpawnAgentRunResult) string {
 	result := SpawnAgentResult{
-		Error:    message,
-		Type:     string(errType),
-		Duration: durationMs,
+		Output:    runResult.Output,
+		Error:     message,
+		Type:      string(errType),
+		Duration:  durationMs,
+		SessionID: runResult.SessionID,
 	}
 	data, _ := json.Marshal(result)
 	return string(data)

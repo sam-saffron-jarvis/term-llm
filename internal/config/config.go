@@ -943,6 +943,44 @@ func rewriteProviderEnvSections(path string, snapshot map[string]map[string]stri
 	return writeFileAtomically(path, buf.Bytes(), 0o600)
 }
 
+// WriteFileAtomically replaces path with data using a temp-file + fsync + rename sequence.
+// If path already exists, its mode is preserved; otherwise defaultPerm is used.
+// A final-path symlink is followed so dotfile-managed config symlinks keep pointing
+// at the original target instead of being replaced by a regular file.
+func WriteFileAtomically(path string, data []byte, defaultPerm os.FileMode) error {
+	writePath, err := resolveFinalSymlink(path)
+	if err != nil {
+		return err
+	}
+
+	perm := defaultPerm
+	if info, err := os.Stat(writePath); err == nil {
+		perm = info.Mode().Perm()
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("stat existing file: %w", err)
+	}
+	return writeFileAtomically(writePath, data, perm)
+}
+
+func resolveFinalSymlink(path string) (string, error) {
+	info, err := os.Lstat(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return path, nil
+		}
+		return "", fmt.Errorf("stat path: %w", err)
+	}
+	if info.Mode()&os.ModeSymlink == 0 {
+		return path, nil
+	}
+
+	resolved, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return "", fmt.Errorf("resolve symlink %s: %w", path, err)
+	}
+	return resolved, nil
+}
+
 func writeFileAtomically(path string, data []byte, perm os.FileMode) error {
 	dir := filepath.Dir(path)
 	base := filepath.Base(path)

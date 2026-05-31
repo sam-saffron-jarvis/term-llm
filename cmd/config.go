@@ -1061,7 +1061,7 @@ func configSet(cmd *cobra.Command, args []string) error {
 	}
 	encoder.Close()
 
-	if err := os.WriteFile(configPath, buf.Bytes(), 0644); err != nil {
+	if err := config.WriteFileAtomically(configPath, buf.Bytes(), 0644); err != nil {
 		return fmt.Errorf("failed to write config: %w", err)
 	}
 

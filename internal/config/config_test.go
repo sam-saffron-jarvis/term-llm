@@ -11,6 +11,48 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+func TestWriteFileAtomicallyFollowsFinalPathSymlink(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink creation requires extra privileges on Windows")
+	}
+
+	dir := t.TempDir()
+	target := filepath.Join(dir, "target.yaml")
+	link := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(target, []byte("old\n"), 0o600); err != nil {
+		t.Fatalf("seed target: %v", err)
+	}
+	if err := os.Symlink("target.yaml", link); err != nil {
+		t.Fatalf("create symlink: %v", err)
+	}
+
+	if err := WriteFileAtomically(link, []byte("new\n"), 0o644); err != nil {
+		t.Fatalf("atomic write via symlink: %v", err)
+	}
+
+	linkInfo, err := os.Lstat(link)
+	if err != nil {
+		t.Fatalf("lstat link: %v", err)
+	}
+	if linkInfo.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("expected config path to remain a symlink, got mode %s", linkInfo.Mode())
+	}
+	data, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatalf("read target: %v", err)
+	}
+	if string(data) != "new\n" {
+		t.Fatalf("target content = %q, want new", string(data))
+	}
+	targetInfo, err := os.Stat(target)
+	if err != nil {
+		t.Fatalf("stat target: %v", err)
+	}
+	if got := targetInfo.Mode().Perm(); got != 0o600 {
+		t.Fatalf("expected target mode 0600 to be preserved, got %o", got)
+	}
+}
+
 func TestApplyOverrides(t *testing.T) {
 	cfg := &Config{
 		DefaultProvider: "anthropic",

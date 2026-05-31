@@ -8,6 +8,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/samsaffron/term-llm/internal/llm"
 )
 
 // mockRunner implements SpawnAgentRunner for testing.
@@ -145,6 +147,57 @@ func parseResult(t *testing.T, result string) SpawnAgentResult {
 		t.Fatalf("failed to parse result: %v", err)
 	}
 	return r
+}
+
+func TestSpawnAgentTool_PreservesPartialRunResultOnError(t *testing.T) {
+	tool := NewSpawnAgentTool(SpawnConfig{MaxDepth: 5, DefaultTimeout: 300}, 0)
+	tool.SetRunner(newMockRunner().SetOutput("partial findings").SetSessionID("child-session-1").SetError(errors.New("boom")))
+
+	result, err := tool.Execute(context.Background(), makeSpawnArgs("codebase", "investigate", 0))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	r := parseResult(t, result.Content)
+	if r.Type != string(ErrExecutionFailed) {
+		t.Fatalf("expected execution_failed, got %q (%s)", r.Type, r.Error)
+	}
+	if r.Output != "partial findings" {
+		t.Fatalf("expected partial output to be preserved, got %q", r.Output)
+	}
+	if r.SessionID != "child-session-1" {
+		t.Fatalf("expected child session ID to be preserved, got %q", r.SessionID)
+	}
+}
+
+func TestSpawnAgentTool_PreservesPartialRunResultOnTimeoutError(t *testing.T) {
+	tool := NewSpawnAgentTool(SpawnConfig{MaxDepth: 5, DefaultTimeout: 300}, 0)
+	tool.SetRunner(newMockRunner().SetOutput("timeout findings").SetSessionID("child-session-timeout").SetError(context.DeadlineExceeded))
+
+	result, err := tool.Execute(context.Background(), makeSpawnArgs("codebase", "investigate", 0))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	r := parseResult(t, result.Content)
+	if r.Type != string(ErrTimeout) {
+		t.Fatalf("expected timeout, got %q (%s)", r.Type, r.Error)
+	}
+	if r.Output != "timeout findings" {
+		t.Fatalf("expected partial output to be preserved, got %q", r.Output)
+	}
+	if r.SessionID != "child-session-timeout" {
+		t.Fatalf("expected child session ID to be preserved, got %q", r.SessionID)
+	}
+}
+
+func TestSpawnAgentTool_MaxTurnsClassifiedAsExecutionFailedEvenIfContextTimedOut(t *testing.T) {
+	parentCtx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer cancel()
+	err := &llm.MaxTurnsExceededError{MaxTurns: 3}
+	if got := classifySpawnAgentError(err, parentCtx, parentCtx); got != ErrExecutionFailed {
+		t.Fatalf("expected max-turns error to be execution_failed, got %s", got)
+	}
 }
 
 func TestSpawnAgentTool_TimeoutEnforcement(t *testing.T) {
