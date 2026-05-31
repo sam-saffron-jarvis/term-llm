@@ -331,6 +331,13 @@ type Model struct {
 	footerMessageTone string   // "", "muted", "success", "warning", or "error"
 	footerMessageSeq  uint64   // monotonically increasing footer message timer token
 
+	// Worktree footer indicator cache. worktreeFooterSegment() shells out to git,
+	// so the status line (rendered every frame) reads this cached string and the
+	// cache is recomputed at most once per worktreeSegmentTTL. Empty when the
+	// session is on the root checkout (the common case → zero git calls).
+	worktreeSegCache   string
+	worktreeSegFetched time.Time
+
 	attemptInput          int
 	attemptOutput         int
 	attemptCached         int
@@ -1048,6 +1055,10 @@ func (m *Model) rootContext() context.Context {
 
 // Init initializes the model
 func (m *Model) Init() tea.Cmd {
+	// Re-enter the bound git worktree for a resumed session (no-op on root or
+	// when the bound dir is gone, in which case the session falls back to root).
+	m.RestoreWorktreeBinding()
+
 	// Update textarea height for any initial text
 	m.updateTextareaHeight()
 

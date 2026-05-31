@@ -943,6 +943,9 @@ func (m *Model) renderStatusLine() string {
 	if m.fastMode {
 		baseSegments = append(baseSegments, statusSegment{text: successStyle.Render("fast"), priority: 30})
 	}
+	if wtSeg := m.cachedWorktreeSegment(); wtSeg != "" {
+		baseSegments = append(baseSegments, statusSegment{text: successStyle.Render(wtSeg), priority: 45, essential: true})
+	}
 	if len(m.files) > 0 {
 		baseSegments = append(baseSegments, statusSegment{text: mutedStyle.Render(fmt.Sprintf("%d file(s)", len(m.files))), priority: 55})
 	}
