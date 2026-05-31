@@ -357,6 +357,33 @@ func (c jobsV2LLMConfig) effectiveSessionID() string {
 	return session.NewID()
 }
 
+func validateJobsV2RunnerConfig(runnerType jobsV2RunnerType, raw json.RawMessage) error {
+	switch runnerType {
+	case jobsV2RunnerLLM:
+		var cfg jobsV2LLMConfig
+		if err := json.Unmarshal([]byte(stringOrEmptyRaw(raw, "{}")), &cfg); err != nil {
+			return fmt.Errorf("invalid llm runner config: %w", err)
+		}
+		if strings.TrimSpace(cfg.AgentName) == "" {
+			return fmt.Errorf("llm runner_config.agent_name is required")
+		}
+		if strings.TrimSpace(cfg.Instructions) == "" {
+			return fmt.Errorf("llm runner_config.instructions is required")
+		}
+		if strings.TrimSpace(cfg.Cwd) == "" {
+			return fmt.Errorf("llm runner_config.cwd is required")
+		}
+	case jobsV2RunnerProgram:
+		// Program runner config is intentionally still validated at execution time:
+		// its optional cwd remains an explicit escape hatch, unlike llm cwd.
+	case "":
+		return fmt.Errorf("runner_type is required")
+	default:
+		return fmt.Errorf("runner_type must be one of: llm, program")
+	}
+	return nil
+}
+
 func (r *jobsV2LLMRunner) Run(ctx context.Context, job jobsV2Job, pw progressWriter) (jobsV2RunResult, error) {
 	if r.exec == nil {
 		return jobsV2RunResult{}, fmt.Errorf("llm runner is not configured")
@@ -1506,6 +1533,9 @@ func (m *jobsV2Manager) CreateJob(req jobsV2Job) (jobsV2Job, error) {
 	if req.RunnerType != jobsV2RunnerLLM && req.RunnerType != jobsV2RunnerProgram {
 		return jobsV2Job{}, fmt.Errorf("runner_type must be one of: llm, program")
 	}
+	if err := validateJobsV2RunnerConfig(req.RunnerType, req.RunnerConfig); err != nil {
+		return jobsV2Job{}, err
+	}
 	if req.TriggerType != jobsV2TriggerManual && req.TriggerType != jobsV2TriggerOnce && req.TriggerType != jobsV2TriggerCron {
 		return jobsV2Job{}, fmt.Errorf("trigger_type must be one of: manual, once, cron")
 	}
@@ -1708,6 +1738,9 @@ func (m *jobsV2Manager) UpdateJobPatch(id string, req jobsV2JobRequest) (jobsV2J
 
 	cfg, err := parseTriggerConfig(current.TriggerType, current.TriggerConfig, current.ScheduleTimezone)
 	if err != nil {
+		return jobsV2Job{}, err
+	}
+	if err := validateJobsV2RunnerConfig(current.RunnerType, current.RunnerConfig); err != nil {
 		return jobsV2Job{}, err
 	}
 	next := initialNextRun(current.TriggerType, cfg, current.ScheduleTimezone)

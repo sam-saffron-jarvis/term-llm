@@ -1548,6 +1548,41 @@ func TestJobsV2LLMRunnerAccumulatesStreamingDeltas(t *testing.T) {
 	}
 }
 
+func TestJobsV2LLMRunnerConfigValidationRequiresCwdOnCreateAndUpdate(t *testing.T) {
+	mgr := newJobsV2ManagerWithoutLoops(t)
+
+	_, err := mgr.CreateJob(jobsV2Job{
+		Name:          "missing-cwd",
+		Enabled:       true,
+		RunnerType:    jobsV2RunnerLLM,
+		RunnerConfig:  json.RawMessage(`{"agent_name":"planner","instructions":"plan"}`),
+		TriggerType:   jobsV2TriggerManual,
+		TriggerConfig: json.RawMessage(`{}`),
+	})
+	if err == nil || !strings.Contains(err.Error(), "runner_config.cwd is required") {
+		t.Fatalf("CreateJob err = %v, want runner_config.cwd is required", err)
+	}
+
+	created, err := mgr.CreateJob(jobsV2Job{
+		Name:          "has-cwd",
+		Enabled:       true,
+		RunnerType:    jobsV2RunnerLLM,
+		RunnerConfig:  json.RawMessage(`{"agent_name":"planner","instructions":"plan","cwd":"."}`),
+		TriggerType:   jobsV2TriggerManual,
+		TriggerConfig: json.RawMessage(`{}`),
+	})
+	if err != nil {
+		t.Fatalf("CreateJob with cwd failed: %v", err)
+	}
+
+	_, err = mgr.UpdateJobPatch(created.ID, jobsV2JobRequest{
+		RunnerConfig: json.RawMessage(`{"agent_name":"planner","instructions":"plan again"}`),
+	})
+	if err == nil || !strings.Contains(err.Error(), "runner_config.cwd is required") {
+		t.Fatalf("UpdateJobPatch err = %v, want runner_config.cwd is required", err)
+	}
+}
+
 // TestJobsV2LLMRunnerRequiresCwd asserts an llm job is rejected before execution
 // when cwd is missing, so a run never silently inherits the jobs server's working
 // directory. The executor must not be invoked.
