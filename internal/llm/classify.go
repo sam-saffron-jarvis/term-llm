@@ -90,6 +90,50 @@ func classifyInterruptHeuristic(msg string) (InterruptAction, bool) {
 	return InterruptInterject, false
 }
 
+func classifyInterruptFallback(msg string, activity InterruptActivity) InterruptAction {
+	normalized := strings.ToLower(strings.TrimSpace(msg))
+	if normalized == "" {
+		return InterruptInterject
+	}
+
+	// If the user is obviously amending the current work, keep the current run
+	// alive and inject the note at the next legal boundary.
+	steeringPrefixes := []string{
+		"also", "and ", "plus", "include", "add ", "use ", "make sure", "don't", "dont",
+		"instead", "not ", "actually,", "correction", "wait", "one more", "as well", "what about",
+	}
+	for _, prefix := range steeringPrefixes {
+		if normalized == strings.TrimSpace(prefix) || strings.HasPrefix(normalized, prefix) {
+			return InterruptInterject
+		}
+	}
+
+	active := strings.TrimSpace(activity.ActiveTool) != "" || strings.TrimSpace(activity.CurrentTask) != "" || len(activity.ToolsRun) > 0 || activity.ProseLen > 0
+	if !active {
+		return InterruptInterject
+	}
+
+	// Short standalone prompts sent while the agent is busy are usually the user
+	// replacing the task, not carefully steering the old one. This is especially
+	// important in the web UI where the send button becomes "Interject" during a
+	// stream; defaulting every ambiguous message to interject makes sessions go
+	// off chasing stale work.
+	standalonePrefixes := []string{
+		"who", "what", "when", "where", "why", "how", "can ", "could ", "please ",
+		"make ", "find ", "show ", "tell ", "say ", "list ", "compare ", "write ", "create ",
+	}
+	for _, prefix := range standalonePrefixes {
+		if strings.HasPrefix(normalized, prefix) {
+			return InterruptCancel
+		}
+	}
+	if strings.Contains(normalized, " vs ") || strings.Contains(normalized, " versus ") || strings.HasSuffix(normalized, "?") {
+		return InterruptCancel
+	}
+
+	return InterruptInterject
+}
+
 // ClassifyInterrupt decides how to handle a new user message while a stream is active.
 // It uses instant heuristics first and then an optional fast LLM call.
 func ClassifyInterrupt(ctx context.Context, fastProvider Provider, msg string, activity InterruptActivity) InterruptAction {
@@ -97,7 +141,7 @@ func ClassifyInterrupt(ctx context.Context, fastProvider Provider, msg string, a
 		return action
 	}
 	if fastProvider == nil {
-		return InterruptInterject
+		return classifyInterruptFallback(msg, activity)
 	}
 
 	toolsRun := "none"
@@ -134,7 +178,7 @@ Reply with exactly one word. If unsure, reply interject.`,
 
 	decision, err := Classify(ctx, fastProvider, prompt, 3*time.Second)
 	if err != nil {
-		return InterruptInterject
+		return classifyInterruptFallback(msg, activity)
 	}
 
 	switch strings.TrimSpace(decision) {

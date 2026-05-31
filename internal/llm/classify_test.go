@@ -56,3 +56,20 @@ func TestClassifyInterruptFallbackOnError(t *testing.T) {
 		t.Fatalf("ClassifyInterrupt fallback = %v, want InterruptInterject", got)
 	}
 }
+
+func TestClassifyInterruptFallbackTreatsStandalonePromptAsCancel(t *testing.T) {
+	activity := InterruptActivity{CurrentTask: "finding Okinawa photos", ProseLen: 240, ToolsRun: []string{"web_search"}}
+	got := ClassifyInterrupt(context.Background(), nil, "kanazawa vs kyoto", activity)
+	if got != InterruptCancel {
+		t.Fatalf("ClassifyInterrupt fallback = %v, want InterruptCancel for standalone replacement prompt", got)
+	}
+}
+
+func TestClassifyInterruptFallbackKeepsSteeringAsInterjection(t *testing.T) {
+	activity := InterruptActivity{CurrentTask: "finding Okinawa photos", ProseLen: 240, ToolsRun: []string{"web_search"}}
+	for _, msg := range []string{"also include quiet islands", "what about non beach places", "10 non beach places as well"} {
+		if got := ClassifyInterrupt(context.Background(), nil, msg, activity); got != InterruptInterject {
+			t.Fatalf("ClassifyInterrupt(%q) = %v, want InterruptInterject", msg, got)
+		}
+	}
+}
