@@ -27,7 +27,9 @@ prompts:
     default: chatgpt
     options:
       - chatgpt
+      - copilot
       - claude-bin
+      - gemini-cli
       - openrouter
       - zen
       - anthropic

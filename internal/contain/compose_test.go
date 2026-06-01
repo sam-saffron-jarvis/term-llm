@@ -22,6 +22,15 @@ func TestReadComposeInfoHintsAndLabels(t *testing.T) {
         - "@developer"
     redis:
       command: redis-cli -h redis
+    seed-chatgpt-auth:
+      description: Seed ChatGPT credentials
+      copy_files:
+        - from: "{{config_dir}}/chatgpt_oauth.json"
+          to: "{{workspace}}/.config/term-llm/chatgpt_oauth.json"
+          mode: "0600"
+          missing_hint: Run auth first
+      post_run_hint: Restart {{name}}
+      command: [true]
 services:
   web:
     build:
@@ -53,6 +62,16 @@ services:
 	}
 	if got := info.Hints.ExecRecipes["redis"].Command; len(got) != 3 || got[0] != "redis-cli" || got[2] != "redis" {
 		t.Fatalf("redis recipe command = %#v", got)
+	}
+	seed := info.Hints.ExecRecipes["seed-chatgpt-auth"]
+	if len(seed.CopyFiles) != 1 {
+		t.Fatalf("seed copy_files = %#v", seed.CopyFiles)
+	}
+	if got := seed.CopyFiles[0]; got.From != "{{config_dir}}/chatgpt_oauth.json" || got.To != "{{workspace}}/.config/term-llm/chatgpt_oauth.json" || got.Mode != "0600" || got.MissingHint != "Run auth first" {
+		t.Fatalf("seed copy_file = %#v", got)
+	}
+	if seed.PostRunHint != "Restart {{name}}" {
+		t.Fatalf("seed post_run_hint = %q", seed.PostRunHint)
 	}
 	if got := info.Services["web"].Labels["org.term-llm.contain.name"]; got != "app" {
 		t.Fatalf("map label = %q", got)

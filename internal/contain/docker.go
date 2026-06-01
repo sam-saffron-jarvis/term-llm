@@ -10,11 +10,14 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/clipboard"
+	"github.com/samsaffron/term-llm/internal/config"
 )
 
 type Runner interface {
@@ -196,9 +199,14 @@ func Exec(ctx context.Context, runner Runner, name string, cmdArgs []string, std
 	if err != nil {
 		return err
 	}
+	var recipe *ExecRecipe
 	if !forceRaw {
-		if recipe, ok := info.Hints.ExecRecipes[cmdArgs[0]]; ok {
-			cmdArgs = append(append([]string{}, recipe.Command...), cmdArgs[1:]...)
+		if resolved, ok := info.Hints.ExecRecipes[cmdArgs[0]]; ok {
+			recipe = &resolved
+			cmdArgs = append(append([]string{}, resolved.Command...), cmdArgs[1:]...)
+			if len(cmdArgs) == 0 {
+				cmdArgs = []string{"true"}
+			}
 		}
 	}
 	args, _, err := ComposeBaseArgs(name)
@@ -206,10 +214,15 @@ func Exec(ctx context.Context, runner Runner, name string, cmdArgs []string, std
 		return err
 	}
 	service := info.DefaultService()
+	user := info.DefaultUser(service)
+	if recipe != nil {
+		if err := copyRecipeFiles(ctx, runner, name, args, dir, service, user, info.Hints.Workspace, recipe.CopyFiles, stderr); err != nil {
+			return err
+		}
+	}
 	proxyEnv, cleanup := startPrimarySelectionProxy(ctx, runner, args, service, dir)
 	defer cleanup()
 	args = append(args, "exec")
-	user := info.DefaultUser(service)
 	if user != "" {
 		args = append(args, "--user", user)
 		args = appendContainUserEnvironment(args, user, info.Hints.Workspace)
@@ -218,7 +231,17 @@ func Exec(ctx context.Context, runner Runner, name string, cmdArgs []string, std
 	args = append(args, proxyEnv...)
 	args = append(args, service)
 	args = append(args, cmdArgs...)
-	return runner.Run(ctx, "docker", args, RunOptions{Stdin: stdin, Stdout: stdout, Stderr: stderr, Dir: dir})
+	if err := runner.Run(ctx, "docker", args, RunOptions{Stdin: stdin, Stdout: stdout, Stderr: stderr, Dir: dir}); err != nil {
+		return err
+	}
+	if recipe != nil && strings.TrimSpace(recipe.PostRunHint) != "" {
+		vars, err := newRecipeTemplateContext(name, dir, info.Hints.Workspace)
+		if err != nil {
+			return err
+		}
+		fmt.Fprintln(stderr, expandRecipeTemplate(recipe.PostRunHint, vars))
+	}
+	return nil
 }
 
 func Shell(ctx context.Context, runner Runner, name string, stdin io.Reader, stdout, stderr io.Writer) error {
@@ -262,6 +285,127 @@ func appendContainUserEnvironment(args []string, user, workspace string) []strin
 	args = append(args, "-e", "USER="+user)
 	args = append(args, "-e", "LOGNAME="+user)
 	return args
+}
+
+func copyRecipeFiles(ctx context.Context, runner Runner, name string, composeArgs []string, dir, service, user, workspace string, files []CopyFile, stderr io.Writer) error {
+	if len(files) == 0 {
+		return nil
+	}
+	vars, err := newRecipeTemplateContext(name, dir, workspace)
+	if err != nil {
+		return err
+	}
+	for _, spec := range files {
+		from := strings.TrimSpace(expandRecipeTemplate(spec.From, vars))
+		to := strings.TrimSpace(expandRecipeTemplate(spec.To, vars))
+		if from == "" {
+			return fmt.Errorf("copy_files entry missing from path")
+		}
+		if to == "" {
+			return fmt.Errorf("copy_files entry missing to path")
+		}
+		if !strings.HasPrefix(to, "/") {
+			return fmt.Errorf("copy_files destination must be an absolute container path: %q", spec.To)
+		}
+		to = path.Clean(to)
+		mode := strings.TrimSpace(expandRecipeTemplate(spec.Mode, vars))
+		if mode == "" {
+			mode = "0600"
+		}
+		if err := validateRecipeCopyMode(mode); err != nil {
+			return fmt.Errorf("copy_files %s -> %s: %w", spec.From, spec.To, err)
+		}
+		file, err := os.Open(from)
+		if err != nil {
+			if os.IsNotExist(err) {
+				message := fmt.Sprintf("recipe copy_files source not found: %s", from)
+				if hint := strings.TrimSpace(expandRecipeTemplate(spec.MissingHint, vars)); hint != "" {
+					message += "\n" + hint
+				}
+				return fmt.Errorf("%s", message)
+			}
+			return fmt.Errorf("open recipe copy_files source %s: %w", from, err)
+		}
+		fmt.Fprintf(stderr, "Copying %s to %s:%s\n", from, name, to)
+		if err := copyRecipeFile(ctx, runner, composeArgs, dir, service, user, workspace, to, mode, file, stderr); err != nil {
+			file.Close()
+			return err
+		}
+		if err := file.Close(); err != nil {
+			return fmt.Errorf("close recipe copy_files source %s: %w", from, err)
+		}
+	}
+	return nil
+}
+
+func copyRecipeFile(ctx context.Context, runner Runner, composeArgs []string, dir, service, user, workspace, target, mode string, stdin io.Reader, stderr io.Writer) error {
+	args := append(append([]string{}, composeArgs...), "exec", "-T")
+	if user != "" {
+		args = append(args, "--user", user)
+		args = appendContainUserEnvironment(args, user, workspace)
+	}
+	script := `set -e
+target=$1
+mode=$2
+dir=$(dirname "$target")
+mkdir -p "$dir"
+tmp=$(mktemp "$dir/.term-llm-copy.XXXXXX")
+trap 'rm -f "$tmp"' EXIT
+umask 077
+cat > "$tmp"
+chmod "$mode" "$tmp"
+mv -f "$tmp" "$target"
+trap - EXIT
+`
+	args = append(args, service, "sh", "-c", script, "term-llm-copy-files", target, mode)
+	if err := runner.Run(ctx, "docker", args, RunOptions{Stdin: stdin, Stdout: io.Discard, Stderr: stderr, Dir: dir}); err != nil {
+		return fmt.Errorf("copy recipe file into container: %w", err)
+	}
+	return nil
+}
+
+var recipeCopyModePattern = regexp.MustCompile(`^[0-7]{3,4}$`)
+
+func validateRecipeCopyMode(mode string) error {
+	if !recipeCopyModePattern.MatchString(mode) {
+		return fmt.Errorf("invalid mode %q: expected octal permissions like 0600", mode)
+	}
+	return nil
+}
+
+type recipeTemplateContext struct {
+	name      string
+	dir       string
+	configDir string
+	home      string
+	workspace string
+}
+
+func newRecipeTemplateContext(name, dir, workspace string) (recipeTemplateContext, error) {
+	configDir, err := config.GetConfigDir()
+	if err != nil {
+		return recipeTemplateContext{}, fmt.Errorf("locate host config dir: %w", err)
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return recipeTemplateContext{}, fmt.Errorf("locate host home dir: %w", err)
+	}
+	return recipeTemplateContext{name: name, dir: dir, configDir: configDir, home: home, workspace: strings.TrimSpace(workspace)}, nil
+}
+
+func expandRecipeTemplate(value string, vars recipeTemplateContext) string {
+	replacements := map[string]string{
+		"{{name}}":        vars.name,
+		"{{contain_dir}}": vars.dir,
+		"{{config_dir}}":  vars.configDir,
+		"{{home}}":        vars.home,
+		"{{workspace}}":   vars.workspace,
+	}
+	out := value
+	for old, replacement := range replacements {
+		out = strings.ReplaceAll(out, old, replacement)
+	}
+	return out
 }
 
 func appendConsoleEnvExecArgs(args []string) []string {

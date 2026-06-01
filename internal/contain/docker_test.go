@@ -2,6 +2,7 @@ package contain
 
 import (
 	"context"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -18,6 +19,8 @@ type fakeRunner struct {
 	outputsRun [][]string
 	output     []byte
 	outputs    [][]byte
+	stdins     [][]byte
+	runErrs    []error
 }
 
 func (f *fakeRunner) Run(ctx context.Context, name string, args []string, opts RunOptions) error {
@@ -25,6 +28,20 @@ func (f *fakeRunner) Run(ctx context.Context, name string, args []string, opts R
 	f.args = append([]string(nil), args...)
 	f.runs = append(f.runs, append([]string{name}, args...))
 	f.dir = opts.Dir
+	if opts.Stdin != nil {
+		data, err := io.ReadAll(opts.Stdin)
+		if err != nil {
+			return err
+		}
+		f.stdins = append(f.stdins, data)
+	} else {
+		f.stdins = append(f.stdins, nil)
+	}
+	if len(f.runErrs) > 0 {
+		err := f.runErrs[0]
+		f.runErrs = f.runErrs[1:]
+		return err
+	}
 	return nil
 }
 
@@ -385,5 +402,238 @@ func TestRebuildCommand(t *testing.T) {
 	}
 	if !reflect.DeepEqual(r.runs, want) {
 		t.Fatalf("runs = %#v\nwant %#v", r.runs, want)
+	}
+}
+
+func TestExecRecipeCopiesFilesBeforeCommand(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", tempHome)
+	clearConsoleEnvForContainTest(t)
+
+	configDir := filepath.Join(tempHome, "term-llm")
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	oauthPayload := []byte(`{"access_token":"abc","refresh_token":"xyz"}`)
+	if err := os.WriteFile(filepath.Join(configDir, "chatgpt_oauth.json"), oauthPayload, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	dir := writeComposeForDockerTest(t, "copybox", `x-term-llm:
+  default_service: app
+  workspace: /home/agent
+  exec_recipes:
+    seed-chatgpt-auth:
+      description: Seed ChatGPT auth
+      copy_files:
+        - from: "{{config_dir}}/chatgpt_oauth.json"
+          to: "{{workspace}}/.config/term-llm/chatgpt_oauth.json"
+          mode: "0600"
+          missing_hint: Run login first
+      post_run_hint: "Restart term-llm contain restart {{name}}"
+      command: [true]
+services:
+  app:
+    image: alpine
+    labels:
+      org.term-llm.contain.user: agent
+`)
+	compose := filepath.Join(dir, "compose.yaml")
+	base := []string{"compose", "-f", compose, "--project-directory", dir, "-p", "term-llm-contain-copybox"}
+
+	r := &fakeRunner{}
+	var stderr strings.Builder
+	if err := Exec(context.Background(), r, "copybox", []string{"seed-chatgpt-auth"}, strings.NewReader("final stdin"), io.Discard, &stderr); err != nil {
+		t.Fatal(err)
+	}
+
+	if len(r.runs) != 2 {
+		t.Fatalf("runs = %#v, want copy then final exec", r.runs)
+	}
+	copyRun := r.runs[0]
+	wantCopyHead := append(append([]string{"docker"}, base...), "exec", "-T", "--user", "agent", "--workdir", "/home/agent", "-e", "HOME=/home/agent", "-e", "USER=agent", "-e", "LOGNAME=agent", "app", "sh", "-c")
+	if len(copyRun) < len(wantCopyHead)+4 {
+		t.Fatalf("copy run too short: %#v", copyRun)
+	}
+	for i, want := range wantCopyHead {
+		if copyRun[i] != want {
+			t.Fatalf("copyRun[%d] = %q, want %q (full: %#v)", i, copyRun[i], want, copyRun)
+		}
+	}
+	copyTail := copyRun[len(wantCopyHead)+1:]
+	if script := copyRun[len(wantCopyHead)]; !strings.Contains(script, "mktemp") || !strings.Contains(script, "mv -f \"$tmp\" \"$target\"") || strings.Contains(script, "cat > \"$target\"") {
+		t.Fatalf("copy script should write atomically via temp file, got:\n%s", script)
+	}
+	wantTail := []string{"term-llm-copy-files", "/home/agent/.config/term-llm/chatgpt_oauth.json", "0600"}
+	if !reflect.DeepEqual(copyTail, wantTail) {
+		t.Fatalf("copy tail = %#v, want %#v (full: %#v)", copyTail, wantTail, copyRun)
+	}
+	finalRun := r.runs[1]
+	wantFinal := append(append([]string{"docker"}, base...), "exec", "--user", "agent", "--workdir", "/home/agent", "-e", "HOME=/home/agent", "-e", "USER=agent", "-e", "LOGNAME=agent", "app", "true")
+	if !reflect.DeepEqual(finalRun, wantFinal) {
+		t.Fatalf("final run = %#v\nwant %#v", finalRun, wantFinal)
+	}
+	if len(r.stdins) != 2 || string(r.stdins[0]) != string(oauthPayload) || string(r.stdins[1]) != "final stdin" {
+		t.Fatalf("stdins = %#v", r.stdins)
+	}
+	if !strings.Contains(stderr.String(), "Restart term-llm contain restart copybox") {
+		t.Fatalf("stderr missing post-run hint: %q", stderr.String())
+	}
+}
+
+func TestExecRecipeCopyFilesMissingSourceIncludesHint(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	clearConsoleEnvForContainTest(t)
+	writeComposeForDockerTest(t, "missingcopy", `x-term-llm:
+  default_service: app
+  workspace: /home/agent
+  exec_recipes:
+    seed-chatgpt-auth:
+      copy_files:
+        - from: "{{config_dir}}/chatgpt_oauth.json"
+          to: "{{workspace}}/.config/term-llm/chatgpt_oauth.json"
+          missing_hint: Run term-llm auth login chatgpt first
+      command: [true]
+services:
+  app:
+    image: alpine
+`)
+
+	r := &fakeRunner{}
+	err := Exec(context.Background(), r, "missingcopy", []string{"seed-chatgpt-auth"}, nil, io.Discard, io.Discard)
+	if err == nil {
+		t.Fatal("expected missing source error")
+	}
+	if !strings.Contains(err.Error(), "chatgpt_oauth.json") || !strings.Contains(err.Error(), "Run term-llm auth login chatgpt first") {
+		t.Fatalf("error = %v", err)
+	}
+	if len(r.runs) != 0 {
+		t.Fatalf("expected no docker runs, got %#v", r.runs)
+	}
+}
+
+func TestExecRecipeCopyOnlyNoCommandUsesTrue(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", tempHome)
+	clearConsoleEnvForContainTest(t)
+	configDir := filepath.Join(tempHome, "term-llm")
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(configDir, "copilot_oauth.json"), []byte(`{"access_token":"abc"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	dir := writeComposeForDockerTest(t, "copyonly", `x-term-llm:
+  default_service: app
+  workspace: /home/agent
+  exec_recipes:
+    seed-copilot-auth:
+      copy_files:
+        - from: "{{config_dir}}/copilot_oauth.json"
+          to: "{{workspace}}/.config/term-llm/copilot_oauth.json"
+services:
+  app:
+    image: alpine
+`)
+	compose := filepath.Join(dir, "compose.yaml")
+	base := []string{"docker", "compose", "-f", compose, "--project-directory", dir, "-p", "term-llm-contain-copyonly"}
+	r := &fakeRunner{}
+	if err := Exec(context.Background(), r, "copyonly", []string{"seed-copilot-auth"}, nil, io.Discard, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	if len(r.runs) != 2 {
+		t.Fatalf("runs = %#v, want copy plus true command", r.runs)
+	}
+	wantFinal := append(append([]string{}, base...), "exec", "app", "true")
+	if !reflect.DeepEqual(r.runs[1], wantFinal) {
+		t.Fatalf("final run = %#v\nwant %#v", r.runs[1], wantFinal)
+	}
+}
+
+func TestExecRecipeCopyFilesRejectsInvalidModeAndRelativeDestination(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", tempHome)
+	clearConsoleEnvForContainTest(t)
+	configDir := filepath.Join(tempHome, "term-llm")
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(configDir, "chatgpt_oauth.json"), []byte(`{"access_token":"abc"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		name    string
+		copyYML string
+		want    string
+	}{
+		{
+			name: "badmode",
+			copyYML: `        - from: "{{config_dir}}/chatgpt_oauth.json"
+          to: "{{workspace}}/.config/term-llm/chatgpt_oauth.json"
+          mode: "abc"
+`,
+			want: "invalid mode",
+		},
+		{
+			name: "relative",
+			copyYML: `        - from: "{{config_dir}}/chatgpt_oauth.json"
+          to: ".config/term-llm/chatgpt_oauth.json"
+`,
+			want: "absolute container path",
+		},
+		{
+			name: "missingto",
+			copyYML: `        - from: "{{config_dir}}/chatgpt_oauth.json"
+`,
+			want: "missing to path",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			writeComposeForDockerTest(t, tc.name, `x-term-llm:
+  default_service: app
+  workspace: /home/agent
+  exec_recipes:
+    seed-chatgpt-auth:
+      copy_files:
+`+tc.copyYML+`      command: [true]
+services:
+  app:
+    image: alpine
+`)
+			r := &fakeRunner{}
+			err := Exec(context.Background(), r, tc.name, []string{"seed-chatgpt-auth"}, nil, io.Discard, io.Discard)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("error = %v, want containing %q", err, tc.want)
+			}
+			if len(r.runs) != 0 {
+				t.Fatalf("expected no docker runs, got %#v", r.runs)
+			}
+		})
+	}
+}
+
+func TestExecRecipePostRunHintNotPrintedWhenFinalCommandFails(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	clearConsoleEnvForContainTest(t)
+	writeComposeForDockerTest(t, "failhint", `x-term-llm:
+  default_service: app
+  workspace: /home/agent
+  exec_recipes:
+    fail:
+      post_run_hint: Do not print me
+      command: [false]
+services:
+  app:
+    image: alpine
+`)
+	r := &fakeRunner{runErrs: []error{errors.New("boom")}}
+	var stderr strings.Builder
+	err := Exec(context.Background(), r, "failhint", []string{"fail"}, nil, io.Discard, &stderr)
+	if err == nil || !strings.Contains(err.Error(), "boom") {
+		t.Fatalf("error = %v", err)
+	}
+	if strings.Contains(stderr.String(), "Do not print me") {
+		t.Fatalf("post-run hint printed after failure: %q", stderr.String())
 	}
 }

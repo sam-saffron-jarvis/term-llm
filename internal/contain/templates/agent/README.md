@@ -9,7 +9,19 @@ credentials collected during setup. Keep it private; it is written with `0600`
 permissions.
 
 If you skipped provider setup, edit `.env` later and add the credentials you
-want to use.
+want to use. For OAuth-backed providers with host credential files, seed them
+into an existing workspace with the built-in exec recipes:
+
+```sh
+term-llm contain exec {{name}} seed-chatgpt-auth
+term-llm contain exec {{name}} seed-copilot-auth
+term-llm contain exec {{name}} seed-gemini-cli-auth
+```
+
+These recipes use `x-term-llm.exec_recipes[].copy_files` to copy host-side
+credential files into the container before running the recipe command. Treat
+workspace recipes as trusted code: `copy_files` can read declared host files and
+commands run inside the container.
 
 ## Commands
 

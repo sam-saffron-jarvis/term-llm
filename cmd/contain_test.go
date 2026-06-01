@@ -506,6 +506,54 @@ func TestContainNewAgentPrintsNextStepsLastWithWebUI(t *testing.T) {
 	}
 }
 
+func TestContainNewChatGPTWithoutHostAuthAdvertisesSeedRecipe(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	containNewTemplate = "agent"
+	if err := containNewCmd.Flags().Set("template", "agent"); err != nil {
+		t.Fatal(err)
+	}
+	stdout, stderr, err := executeRootForContainTest(t, "contain", "new", "noauthbox", "--no-input", "--set", "provider=chatgpt", "--set", "web_port=8484")
+	if err != nil {
+		t.Fatalf("contain new error = %v stderr=%s", err, stderr)
+	}
+	if !strings.Contains(stdout, "ChatGPT auth not seeded") {
+		t.Fatalf("stdout missing auth seed hint: %q", stdout)
+	}
+	if !strings.Contains(stdout, "term-llm contain exec noauthbox seed-chatgpt-auth") {
+		t.Fatalf("stdout missing seed recipe command with workspace name: %q", stdout)
+	}
+}
+
+func TestContainNewCopilotAdvertisesSeedRecipe(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	containNewTemplate = "agent"
+	if err := containNewCmd.Flags().Set("template", "agent"); err != nil {
+		t.Fatal(err)
+	}
+	stdout, stderr, err := executeRootForContainTest(t, "contain", "new", "copilotbox", "--no-input", "--set", "provider=copilot", "--set", "web_port=8485")
+	if err != nil {
+		t.Fatalf("contain new error = %v stderr=%s", err, stderr)
+	}
+	if !strings.Contains(stdout, "term-llm contain exec copilotbox seed-copilot-auth") {
+		t.Fatalf("stdout missing copilot seed recipe command: %q", stdout)
+	}
+}
+
+func TestContainNewGeminiCLIAdvertisesSeedRecipe(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	containNewTemplate = "agent"
+	if err := containNewCmd.Flags().Set("template", "agent"); err != nil {
+		t.Fatal(err)
+	}
+	stdout, stderr, err := executeRootForContainTest(t, "contain", "new", "geminibox", "--no-input", "--set", "provider=gemini-cli", "--set", "web_port=8486")
+	if err != nil {
+		t.Fatalf("contain new error = %v stderr=%s", err, stderr)
+	}
+	if !strings.Contains(stdout, "term-llm contain exec geminibox seed-gemini-cli-auth") {
+		t.Fatalf("stdout missing gemini-cli seed recipe command: %q", stdout)
+	}
+}
+
 func TestContainImageSyncCommand(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	containImageSyncForce = false

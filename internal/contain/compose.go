@@ -30,6 +30,15 @@ type ExecRecipe struct {
 	Name        string
 	Description string
 	Command     []string
+	CopyFiles   []CopyFile
+	PostRunHint string
+}
+
+type CopyFile struct {
+	From        string
+	To          string
+	Mode        string
+	MissingHint string
 }
 
 const containUserLabel = "org.term-llm.contain.user"
@@ -127,15 +136,39 @@ func parseExecRecipes(raw any) map[string]ExecRecipe {
 		if recipeMap, ok := asStringMap(value); ok {
 			recipe.Description = stringValue(recipeMap["description"])
 			recipe.Command = stringSliceValue(recipeMap["command"])
+			recipe.CopyFiles = parseCopyFiles(recipeMap["copy_files"])
+			recipe.PostRunHint = stringValue(recipeMap["post_run_hint"])
 		} else {
 			recipe.Command = stringSliceValue(value)
 		}
-		if len(recipe.Command) == 0 {
+		if len(recipe.Command) == 0 && len(recipe.CopyFiles) == 0 {
 			continue
 		}
 		recipes[name] = recipe
 	}
 	return recipes
+}
+
+func parseCopyFiles(raw any) []CopyFile {
+	values, ok := raw.([]any)
+	if !ok {
+		return nil
+	}
+	files := make([]CopyFile, 0, len(values))
+	for _, value := range values {
+		m, ok := asStringMap(value)
+		if !ok {
+			continue
+		}
+		file := CopyFile{
+			From:        stringValue(m["from"]),
+			To:          stringValue(m["to"]),
+			Mode:        stringValue(m["mode"]),
+			MissingHint: stringValue(m["missing_hint"]),
+		}
+		files = append(files, file)
+	}
+	return files
 }
 
 func stringSliceValue(v any) []string {

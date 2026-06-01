@@ -401,6 +401,33 @@ func printContainNextSteps(cmd *cobra.Command, name string, started bool) {
 	fmt.Fprintf(cmd.OutOrStdout(), "  Run command/recipe: term-llm contain exec %s <cmd-or-recipe> [args...]\n", name)
 	fmt.Fprintf(cmd.OutOrStdout(), "  Force raw command if a recipe collides: term-llm contain exec %s -- <cmd...>\n", name)
 	printContainWebUIInfo(cmd, name)
+	printContainAuthSeedHints(cmd, name)
+}
+
+func printContainAuthSeedHints(cmd *cobra.Command, name string) {
+	dir, err := contain.ContainerDir(name)
+	if err != nil {
+		return
+	}
+	values, err := readContainEnvFile(filepath.Join(dir, ".env"))
+	if err != nil {
+		return
+	}
+	provider := strings.TrimSpace(values["TERM_LLM_PROVIDER"])
+	switch provider {
+	case "chatgpt":
+		if strings.TrimSpace(values["TERM_LLM_CHATGPT_OAUTH_JSON_B64"]) == "" && hasContainExecRecipe(name, "seed-chatgpt-auth") {
+			fmt.Fprintf(cmd.OutOrStdout(), "  ChatGPT auth not seeded; after `term-llm auth login chatgpt` on the host run: term-llm contain exec %s seed-chatgpt-auth\n", name)
+		}
+	case "copilot":
+		if hasContainExecRecipe(name, "seed-copilot-auth") {
+			fmt.Fprintf(cmd.OutOrStdout(), "  To seed host Copilot auth, run: term-llm contain exec %s seed-copilot-auth\n", name)
+		}
+	case "gemini-cli":
+		if hasContainExecRecipe(name, "seed-gemini-cli-auth") {
+			fmt.Fprintf(cmd.OutOrStdout(), "  To seed host Gemini CLI auth, run: term-llm contain exec %s seed-gemini-cli-auth\n", name)
+		}
+	}
 }
 
 func hasContainExecRecipe(name, recipeName string) bool {
