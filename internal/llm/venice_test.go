@@ -84,6 +84,35 @@ func TestCreateProviderFromConfig_VeniceTrimsConfiguredAPIKey(t *testing.T) {
 	}
 }
 
+func TestVeniceListModelsKeepsLiveContextLengthForUncuratedModels(t *testing.T) {
+	cacheHome := t.TempDir()
+	t.Setenv("XDG_CACHE_HOME", cacheHome)
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/models" {
+			t.Fatalf("unexpected path %q", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"data":[{"id":"brand-new-venice-model","created":123,"owned_by":"venice.ai","context_length":777000}]}`)
+	}))
+	defer ts.Close()
+
+	provider := &VeniceProvider{OpenAICompatProvider: NewOpenAICompatProvider(ts.URL, "test-key", "", "Venice")}
+	models, err := provider.ListModels(context.Background())
+	if err != nil {
+		t.Fatalf("ListModels: %v", err)
+	}
+	if len(models) != 1 {
+		t.Fatalf("models len = %d, want 1", len(models))
+	}
+	if models[0].InputLimit != 777000 {
+		t.Fatalf("InputLimit = %d, want live context_length", models[0].InputLimit)
+	}
+	if got := InputLimitForProviderModel("venice", "brand-new-venice-model"); got != 777000 {
+		t.Fatalf("cached InputLimitForProviderModel = %d, want 777000", got)
+	}
+}
+
 func TestVeniceStream_SuppressesLeadingReasoningWhitespaceArtifact(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/chat/completions" {
@@ -149,7 +178,9 @@ func TestVeniceProviderCapabilities(t *testing.T) {
 	}
 }
 
-func TestVeniceProviderListModelsUsesProviderScopedLimits(t *testing.T) {
+func TestVeniceProviderListModelsDoesNotUseStaticLimitsWhenContextLengthMissing(t *testing.T) {
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/models" {
 			t.Fatalf("unexpected path %q", r.URL.Path)
@@ -167,11 +198,10 @@ func TestVeniceProviderListModelsUsesProviderScopedLimits(t *testing.T) {
 	if len(models) != 2 {
 		t.Fatalf("ListModels() returned %d models, want 2", len(models))
 	}
-	if models[0].InputLimit != 2_000_000 {
-		t.Fatalf("grok-4-20 InputLimit = %d, want 2000000", models[0].InputLimit)
-	}
-	if models[1].InputLimit != 198_000 {
-		t.Fatalf("minimax-m27 InputLimit = %d, want 198000", models[1].InputLimit)
+	for _, model := range models {
+		if model.InputLimit != 0 {
+			t.Fatalf("%s InputLimit = %d, want 0 when Venice omits context_length", model.ID, model.InputLimit)
+		}
 	}
 }
 

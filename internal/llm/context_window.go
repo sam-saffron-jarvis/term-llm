@@ -329,12 +329,31 @@ func InputLimitForProviderModel(providerName, model string) int {
 		}
 	}
 
-	// 3. Prefix-matched canonical tables
+	// 3. Provider model APIs can return dynamic context windows for models that
+	// move faster than the curated static table. Consult those provider caches
+	// before generic canonical prefix tables so provider-reported metadata wins.
+	if providerType == string(config.ProviderTypeOpenRouter) {
+		if result := openRouterCachedInputLimit(model); result > 0 {
+			return result
+		}
+	}
+
+	// Venice's model IDs and context windows are provider-specific and come from
+	// Venice /models. Do not fall back to canonical prefix tables here: they can
+	// be wrong for routed/renamed models and create a second source of truth.
+	if providerType == string(config.ProviderTypeVenice) {
+		if result := veniceCachedInputLimit(model); result > 0 {
+			return result
+		}
+		return configInputLimitForProvider(providerName, model)
+	}
+
+	// 4. Prefix-matched canonical tables
 	if result := lookupPrefix(model, inputLimitTable); result > 0 {
 		return result
 	}
 
-	// 4. Config fallback (provider-scoped, then model-only)
+	// 5. Config fallback (provider-scoped, then model-only)
 	return configInputLimitForProvider(providerName, model)
 }
 

@@ -1646,9 +1646,7 @@ func (s *serveServer) handleModels(w http.ResponseWriter, r *http.Request) {
 		if hasCfg {
 			apiKey = pc.ResolvedAPIKey
 		}
-		for _, id := range llm.GetCachedOpenRouterModels(apiKey) {
-			models = append(models, llm.ModelInfo{ID: id})
-		}
+		models = append(models, llm.GetCachedOpenRouterModelInfos(apiKey)...)
 	}
 	if len(models) == 0 {
 		models = s.getCachedModelsForProvider(effectiveName)
@@ -1713,6 +1711,9 @@ func (s *serveServer) handleModels(w http.ResponseWriter, r *http.Request) {
 				}
 				return "term-llm"
 			}(),
+		}
+		if m.InputLimit > 0 {
+			item["input_limit"] = m.InputLimit
 		}
 		if m.InputPrice > 0 || m.OutputPrice > 0 {
 			item["input_price"] = m.InputPrice

@@ -221,8 +221,14 @@ type oaiModel struct {
 	Created int64  `json:"created"`
 	OwnedBy string `json:"owned_by"`
 	// OpenRouter-specific fields
-	Name    string           `json:"name,omitempty"`
-	Pricing *oaiModelPricing `json:"pricing,omitempty"`
+	Name          string               `json:"name,omitempty"`
+	Pricing       *oaiModelPricing     `json:"pricing,omitempty"`
+	ContextLength int                  `json:"context_length,omitempty"`
+	TopProvider   *oaiModelTopProvider `json:"top_provider,omitempty"`
+}
+
+type oaiModelTopProvider struct {
+	MaxCompletionTokens int `json:"max_completion_tokens,omitempty"`
 }
 
 type oaiModelPricing struct {
@@ -323,7 +329,11 @@ func (p *OpenAICompatProvider) ListModels(ctx context.Context) ([]ModelInfo, err
 			DisplayName: m.Name,
 			Created:     m.Created,
 			OwnedBy:     m.OwnedBy,
-			InputLimit:  InputLimitForModel(m.ID),
+		}
+		if m.ContextLength > 0 {
+			info.InputLimit = m.ContextLength
+		} else {
+			info.InputLimit = InputLimitForProviderModel(strings.ToLower(p.name), m.ID)
 		}
 		// Parse OpenRouter-style pricing (per-token prices as strings)
 		if m.Pricing != nil {

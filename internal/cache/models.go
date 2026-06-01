@@ -13,8 +13,19 @@ const (
 )
 
 type ModelCache struct {
-	Models    []string  `json:"models"`
-	FetchedAt time.Time `json:"fetched_at"`
+	Models     []string      `json:"models"`
+	ModelInfos []CachedModel `json:"model_infos,omitempty"`
+	FetchedAt  time.Time     `json:"fetched_at"`
+}
+
+type CachedModel struct {
+	ID          string  `json:"id"`
+	DisplayName string  `json:"display_name,omitempty"`
+	Created     int64   `json:"created,omitempty"`
+	OwnedBy     string  `json:"owned_by,omitempty"`
+	InputLimit  int     `json:"input_limit,omitempty"`
+	InputPrice  float64 `json:"input_price,omitempty"`
+	OutputPrice float64 `json:"output_price,omitempty"`
 }
 
 func getCacheDir() (string, error) {
@@ -57,6 +68,20 @@ func ReadModelCache(provider string) (*ModelCache, error) {
 }
 
 func WriteModelCache(provider string, models []string) error {
+	return writeModelCache(provider, models, nil)
+}
+
+func WriteModelInfoCache(provider string, modelInfos []CachedModel) error {
+	models := make([]string, 0, len(modelInfos))
+	for _, m := range modelInfos {
+		if m.ID != "" {
+			models = append(models, m.ID)
+		}
+	}
+	return writeModelCache(provider, models, modelInfos)
+}
+
+func writeModelCache(provider string, models []string, modelInfos []CachedModel) error {
 	dir, err := getCacheDir()
 	if err != nil {
 		return err
@@ -72,8 +97,9 @@ func WriteModelCache(provider string, models []string) error {
 	}
 
 	cache := ModelCache{
-		Models:    models,
-		FetchedAt: time.Now(),
+		Models:     models,
+		ModelInfos: modelInfos,
+		FetchedAt:  time.Now(),
 	}
 
 	data, err := json.Marshal(cache)

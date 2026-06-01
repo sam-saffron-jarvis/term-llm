@@ -16,9 +16,18 @@ const openRouterCacheKey = "openrouter"
 var openRouterCacheRefreshInFlight atomic.Bool
 
 func GetCachedOpenRouterModels(apiKey string) []string {
+	models := GetCachedOpenRouterModelInfos(apiKey)
+	ids := make([]string, 0, len(models))
+	for _, m := range models {
+		ids = append(ids, m.ID)
+	}
+	return ids
+}
+
+func GetCachedOpenRouterModelInfos(apiKey string) []ModelInfo {
 	cached, err := cache.ReadModelCache(openRouterCacheKey)
 	if err == nil && cache.IsCacheValid(cached) {
-		return cached.Models
+		return modelInfosFromCache(cached)
 	}
 
 	if apiKey == "" {
@@ -26,7 +35,7 @@ func GetCachedOpenRouterModels(apiKey string) []string {
 	}
 	if apiKey == "" {
 		if cached != nil && len(cached.Models) > 0 {
-			return cached.Models
+			return modelInfosFromCache(cached)
 		}
 		return nil
 	}
@@ -35,13 +44,22 @@ func GetCachedOpenRouterModels(apiKey string) []string {
 		if openRouterCacheRefreshInFlight.CompareAndSwap(false, true) {
 			go refreshOpenRouterCache(apiKey)
 		}
-		return cached.Models
+		return modelInfosFromCache(cached)
 	}
 
-	return fetchOpenRouterModelsSync(apiKey)
+	return fetchOpenRouterModelInfosSync(apiKey)
 }
 
 func fetchOpenRouterModelsSync(apiKey string) []string {
+	models := fetchOpenRouterModelInfosSync(apiKey)
+	ids := make([]string, 0, len(models))
+	for _, m := range models {
+		ids = append(ids, m.ID)
+	}
+	return ids
+}
+
+func fetchOpenRouterModelInfosSync(apiKey string) []ModelInfo {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
@@ -51,14 +69,16 @@ func fetchOpenRouterModelsSync(apiKey string) []string {
 		return nil
 	}
 
-	modelIDs := make([]string, 0, len(models))
+	modelInfos := make([]ModelInfo, 0, len(models))
 	for _, m := range models {
-		modelIDs = append(modelIDs, m.ID)
+		if m.ID != "" {
+			modelInfos = append(modelInfos, m)
+		}
 	}
-	sort.Strings(modelIDs)
+	sort.Slice(modelInfos, func(i, j int) bool { return modelInfos[i].ID < modelInfos[j].ID })
 
-	_ = cache.WriteModelCache(openRouterCacheKey, modelIDs)
-	return modelIDs
+	_ = cache.WriteModelInfoCache(openRouterCacheKey, modelInfosToCache(modelInfos))
+	return modelInfos
 }
 
 func refreshOpenRouterCache(apiKey string) {
@@ -71,13 +91,82 @@ func RefreshOpenRouterCacheSync(apiKey string, models []ModelInfo) {
 		return
 	}
 
-	modelIDs := make([]string, 0, len(models))
+	modelInfos := make([]ModelInfo, 0, len(models))
 	for _, m := range models {
-		modelIDs = append(modelIDs, m.ID)
+		if m.ID != "" {
+			modelInfos = append(modelInfos, m)
+		}
 	}
-	sort.Strings(modelIDs)
+	sort.Slice(modelInfos, func(i, j int) bool { return modelInfos[i].ID < modelInfos[j].ID })
 
-	_ = cache.WriteModelCache(openRouterCacheKey, modelIDs)
+	_ = cache.WriteModelInfoCache(openRouterCacheKey, modelInfosToCache(modelInfos))
+}
+
+func modelInfosFromCache(cached *cache.ModelCache) []ModelInfo {
+	if cached == nil {
+		return nil
+	}
+	if len(cached.ModelInfos) > 0 {
+		models := make([]ModelInfo, 0, len(cached.ModelInfos))
+		for _, m := range cached.ModelInfos {
+			if m.ID == "" {
+				continue
+			}
+			models = append(models, ModelInfo{
+				ID:          m.ID,
+				DisplayName: m.DisplayName,
+				Created:     m.Created,
+				OwnedBy:     m.OwnedBy,
+				InputLimit:  m.InputLimit,
+				InputPrice:  m.InputPrice,
+				OutputPrice: m.OutputPrice,
+			})
+		}
+		return models
+	}
+	models := make([]ModelInfo, 0, len(cached.Models))
+	for _, id := range cached.Models {
+		if id != "" {
+			models = append(models, ModelInfo{ID: id})
+		}
+	}
+	return models
+}
+
+func modelInfosToCache(models []ModelInfo) []cache.CachedModel {
+	cached := make([]cache.CachedModel, 0, len(models))
+	for _, m := range models {
+		if m.ID == "" {
+			continue
+		}
+		cached = append(cached, cache.CachedModel{
+			ID:          m.ID,
+			DisplayName: m.DisplayName,
+			Created:     m.Created,
+			OwnedBy:     m.OwnedBy,
+			InputLimit:  m.InputLimit,
+			InputPrice:  m.InputPrice,
+			OutputPrice: m.OutputPrice,
+		})
+	}
+	return cached
+}
+
+func openRouterCachedInputLimit(model string) int {
+	model = strings.ToLower(strings.TrimSpace(model))
+	if model == "" {
+		return 0
+	}
+	cached, err := cache.ReadModelCache(openRouterCacheKey)
+	if err != nil || cached == nil {
+		return 0
+	}
+	for _, m := range cached.ModelInfos {
+		if strings.ToLower(strings.TrimSpace(m.ID)) == model {
+			return m.InputLimit
+		}
+	}
+	return 0
 }
 
 func FilterOpenRouterModels(models []string, prefix string) []string {

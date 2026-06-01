@@ -42,8 +42,14 @@ func (p *VeniceProvider) ListModels(ctx context.Context) ([]ModelInfo, error) {
 		return nil, err
 	}
 	for i := range models {
-		models[i].InputLimit = InputLimitForProviderModel("venice", models[i].ID)
+		// Venice's /models response includes context_length. Keep the live value and
+		// fall back only to a previously fetched Venice cache entry for compatible
+		// responses that omit it; do not mix in curated/static limits.
+		if models[i].InputLimit == 0 {
+			models[i].InputLimit = veniceCachedInputLimit(models[i].ID)
+		}
 	}
+	RefreshVeniceCacheSync(models)
 	return models, nil
 }
 

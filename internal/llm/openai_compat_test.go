@@ -53,6 +53,32 @@ func TestReadSSEEvent_StripsOnlyOptionalSingleSpaceAfterColon(t *testing.T) {
 	}
 }
 
+func TestOpenAICompatListModelsParsesOpenRouterContextLength(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/models" {
+			t.Fatalf("unexpected path %q", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"data":[{"id":"vendor/model","name":"Vendor Model","context_length":131072,"pricing":{"prompt":"0.000001","completion":"0.000002"}}]}`)
+	}))
+	defer server.Close()
+
+	provider := NewOpenAICompatProvider(server.URL, "", "", "OpenRouter")
+	models, err := provider.ListModels(context.Background())
+	if err != nil {
+		t.Fatalf("ListModels: %v", err)
+	}
+	if len(models) != 1 {
+		t.Fatalf("models len = %d, want 1", len(models))
+	}
+	if models[0].InputLimit != 131072 {
+		t.Fatalf("InputLimit = %d, want 131072", models[0].InputLimit)
+	}
+	if models[0].InputPrice != 1 || models[0].OutputPrice != 2 {
+		t.Fatalf("prices = %g/%g, want 1/2", models[0].InputPrice, models[0].OutputPrice)
+	}
+}
+
 func TestOpenAICompatStream_AllowsLargeSSEDataLines(t *testing.T) {
 	largeText := strings.Repeat("a", 1024*1024+1024)
 

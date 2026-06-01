@@ -1100,8 +1100,12 @@ func (m *Model) statusLineUsageParts() (string, string) {
 			contextTokens = m.estimateContextTokensCached()
 		}
 		limit := m.engine.InputLimit()
-		if contextTokens > 0 && limit > 0 {
-			usageBase = fmt.Sprintf("~%s/%s", llm.FormatTokenCount(contextTokens), llm.FormatTokenCount(limit))
+		if limit > 0 {
+			used := llm.FormatTokenCount(contextTokens)
+			if used == "" {
+				used = "0"
+			}
+			usageBase = fmt.Sprintf("~%s/%s", used, llm.FormatTokenCount(limit))
 		}
 	}
 

@@ -16,6 +16,43 @@ import (
 	"github.com/samsaffron/term-llm/internal/cache"
 )
 
+func TestOpenRouterModelInfoCachePreservesInputLimit(t *testing.T) {
+	cacheHome := t.TempDir()
+	t.Setenv("XDG_CACHE_HOME", cacheHome)
+
+	RefreshOpenRouterCacheSync("", []ModelInfo{{
+		ID:          "vendor/model",
+		DisplayName: "Vendor Model",
+		InputLimit:  131072,
+		InputPrice:  1.25,
+		OutputPrice: 2.5,
+	}})
+
+	models := GetCachedOpenRouterModelInfos("")
+	if len(models) != 1 {
+		t.Fatalf("models len = %d, want 1", len(models))
+	}
+	if models[0].ID != "vendor/model" || models[0].InputLimit != 131072 {
+		t.Fatalf("cached model = %+v, want id and input limit preserved", models[0])
+	}
+
+	ids := GetCachedOpenRouterModels("")
+	if len(ids) != 1 || ids[0] != "vendor/model" {
+		t.Fatalf("cached IDs = %v, want [vendor/model]", ids)
+	}
+}
+
+func TestOpenRouterCachedLimitFeedsProviderModelLookup(t *testing.T) {
+	cacheHome := t.TempDir()
+	t.Setenv("XDG_CACHE_HOME", cacheHome)
+
+	RefreshOpenRouterCacheSync("", []ModelInfo{{ID: "minimax/minimax-m3", InputLimit: 1048576}})
+
+	if got := InputLimitForProviderModel("openrouter", "minimax/minimax-m3"); got != 1048576 {
+		t.Fatalf("InputLimitForProviderModel(openrouter, minimax/minimax-m3) = %d, want 1048576", got)
+	}
+}
+
 func TestGetCachedOpenRouterModelsStartsSingleBackgroundRefreshForStaleCache(t *testing.T) {
 	origClient := defaultHTTPClient
 	openRouterCacheRefreshInFlight.Store(false)
