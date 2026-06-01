@@ -161,6 +161,100 @@ func TestVeniceStream_SuppressesLeadingReasoningWhitespaceArtifact(t *testing.T)
 	}
 }
 
+func TestVeniceStream_ParsesInlineThinkTagsAsReasoning(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/chat/completions" {
+			t.Fatalf("unexpected path %q", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w,
+			"data: {\"choices\":[{\"delta\":{\"content\":\"<thi\"}}]}\n\n"+
+				"data: {\"choices\":[{\"delta\":{\"content\":\"nk>The user said hi</think>\"}}]}\n\n"+
+				"data: {\"choices\":[{\"delta\":{\"content\":\"Hello!\"}}]}\n\n"+
+				"data: [DONE]\n\n",
+		)
+	}))
+	defer ts.Close()
+
+	provider := &VeniceProvider{OpenAICompatProvider: NewOpenAICompatProvider(ts.URL, "test-key", "venice-uncensored", "Venice")}
+	stream, err := provider.Stream(context.Background(), Request{Messages: []Message{UserText("hello")}})
+	if err != nil {
+		t.Fatalf("stream: %v", err)
+	}
+	defer stream.Close()
+
+	var gotText, gotReasoning string
+	for {
+		event, err := stream.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("recv: %v", err)
+		}
+		switch event.Type {
+		case EventTextDelta:
+			gotText += event.Text
+		case EventReasoningDelta:
+			gotReasoning += event.Text
+		case EventError:
+			t.Fatalf("unexpected error event: %v", event.Err)
+		}
+	}
+
+	if gotText != "Hello!" {
+		t.Fatalf("text = %q, want inline think stripped from visible text", gotText)
+	}
+	if gotReasoning != "The user said hi" {
+		t.Fatalf("reasoning = %q, want inline think body", gotReasoning)
+	}
+}
+
+func TestVeniceStream_DoesNotParseInlineThinkTagsAfterVisibleText(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/chat/completions" {
+			t.Fatalf("unexpected path %q", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w,
+			"data: {\"choices\":[{\"delta\":{\"content\":\"Use <think>literal</think> tags\"}}]}\n\n"+
+				"data: [DONE]\n\n",
+		)
+	}))
+	defer ts.Close()
+
+	provider := &VeniceProvider{OpenAICompatProvider: NewOpenAICompatProvider(ts.URL, "test-key", "venice-uncensored", "Venice")}
+	stream, err := provider.Stream(context.Background(), Request{Messages: []Message{UserText("hello")}})
+	if err != nil {
+		t.Fatalf("stream: %v", err)
+	}
+	defer stream.Close()
+
+	var gotText, gotReasoning string
+	for {
+		event, err := stream.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("recv: %v", err)
+		}
+		switch event.Type {
+		case EventTextDelta:
+			gotText += event.Text
+		case EventReasoningDelta:
+			gotReasoning += event.Text
+		}
+	}
+
+	if gotText != "Use <think>literal</think> tags" {
+		t.Fatalf("text = %q, want literal tags preserved", gotText)
+	}
+	if gotReasoning != "" {
+		t.Fatalf("reasoning = %q, want none", gotReasoning)
+	}
+}
+
 func TestVeniceProviderCapabilities(t *testing.T) {
 	provider := NewVeniceProvider("key", "")
 	caps := provider.Capabilities()

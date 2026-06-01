@@ -135,6 +135,7 @@ func (p *VeniceProvider) Stream(ctx context.Context, req Request) (Stream, error
 		var lastUsage *Usage
 		var lastEventType string
 		var reasoningBuilder strings.Builder
+		var inlineThink inlineThinkParser
 		sawVisibleText := false
 
 		for scanner.Scan() {
@@ -184,12 +185,32 @@ func (p *VeniceProvider) Stream(ctx context.Context, req Request) (Stream, error
 						reasoningDelta = choice.Delta.ReasoningContent
 					}
 					if content, ok := choice.Delta.Content.(string); ok && content != "" {
-						if !isLeadingReasoningWhitespaceArtifact(content, reasoningDelta, sawVisibleText) {
-							if hasVisibleTextDelta(content) {
-								sawVisibleText = true
+						if !shouldParseVeniceInlineThink(&inlineThink, content, sawVisibleText) {
+							if !isLeadingReasoningWhitespaceArtifact(content, reasoningDelta, sawVisibleText) {
+								if hasVisibleTextDelta(content) {
+									sawVisibleText = true
+								}
+								if err := send.Send(Event{Type: EventTextDelta, Text: content}); err != nil {
+									return err
+								}
 							}
-							if err := send.Send(Event{Type: EventTextDelta, Text: content}); err != nil {
-								return err
+						} else {
+							for _, part := range inlineThink.Process(content) {
+								if part.Reasoning {
+									reasoningBuilder.WriteString(part.Text)
+									if err := send.Send(Event{Type: EventReasoningDelta, Text: part.Text, ReasoningKind: ReasoningKindRaw}); err != nil {
+										return err
+									}
+									continue
+								}
+								if !isLeadingReasoningWhitespaceArtifact(part.Text, reasoningDelta, sawVisibleText) {
+									if hasVisibleTextDelta(part.Text) {
+										sawVisibleText = true
+									}
+									if err := send.Send(Event{Type: EventTextDelta, Text: part.Text}); err != nil {
+										return err
+									}
+								}
 							}
 						}
 					}
@@ -209,6 +230,23 @@ func (p *VeniceProvider) Stream(ctx context.Context, req Request) (Stream, error
 		if err := scanner.Err(); err != nil {
 			return fmt.Errorf("%s streaming error: %w", p.name, err)
 		}
+		for _, part := range inlineThink.Flush() {
+			if part.Reasoning {
+				reasoningBuilder.WriteString(part.Text)
+				if err := send.Send(Event{Type: EventReasoningDelta, Text: part.Text, ReasoningKind: ReasoningKindRaw}); err != nil {
+					return err
+				}
+				continue
+			}
+			if part.Text != "" {
+				if hasVisibleTextDelta(part.Text) {
+					sawVisibleText = true
+				}
+				if err := send.Send(Event{Type: EventTextDelta, Text: part.Text}); err != nil {
+					return err
+				}
+			}
+		}
 		if err := toolState.Validate(); err != nil {
 			return err
 		}
@@ -224,6 +262,20 @@ func (p *VeniceProvider) Stream(ctx context.Context, req Request) (Stream, error
 		}
 		return send.Send(Event{Type: EventDone})
 	}), nil
+}
+
+func shouldParseVeniceInlineThink(parser *inlineThinkParser, content string, sawVisibleText bool) bool {
+	if parser != nil && (parser.inThink || parser.pending != "") {
+		return true
+	}
+	if sawVisibleText {
+		return false
+	}
+	trimmed := strings.TrimLeft(content, " \t\r\n")
+	if trimmed == "" {
+		return false
+	}
+	return strings.HasPrefix(trimmed, "<think>") || strings.HasPrefix("<think>", trimmed)
 }
 
 func buildVeniceModelAndParams(model string, search bool) (string, map[string]interface{}) {

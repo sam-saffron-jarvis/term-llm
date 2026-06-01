@@ -695,6 +695,17 @@ func SortModelIDsByPopularity(provider, defaultModel string, ids []string) []str
 	return out
 }
 
+func resolvedProviderAPIKey(cfg *config.Config, provider string) string {
+	if cfg == nil {
+		return ""
+	}
+	_ = cfg.ResolveProviderCredentials(provider)
+	if providerCfg, ok := cfg.Providers[provider]; ok {
+		return providerCfg.ResolvedAPIKey
+	}
+	return ""
+}
+
 // GetBuiltInProviderNames returns the built-in provider type names
 func GetBuiltInProviderNames() []string {
 	return []string{"anthropic", "bedrock", "openai", "chatgpt", "copilot", "openrouter", "gemini", "gemini-cli", "zen", "claude-bin", "vllm", "xai", "venice", "nearai", "sambanova", "ollama"}
@@ -784,16 +795,17 @@ func GetProviderCompletions(toComplete string, isImage bool, cfg *config.Config)
 
 			// For LLM (non-image) openrouter, fetch models from API cache
 			if !isImage && (providerType == "openrouter" || provider == "openrouter") {
-				var apiKey string
-				if cfg != nil {
-					if providerCfg, ok := cfg.Providers[provider]; ok {
-						apiKey = providerCfg.ResolvedAPIKey
-					}
-				}
+				apiKey := resolvedProviderAPIKey(cfg, provider)
 				if cachedModels := GetCachedOpenRouterModels(apiKey); len(cachedModels) > 0 {
 					models = cachedModels
 				} else {
 					models = getModelIDs("openrouter")
+				}
+			} else if !isImage && providerType == "venice" {
+				apiKey := resolvedProviderAPIKey(cfg, provider)
+				models = GetCachedVeniceModels(apiKey)
+				if len(models) == 0 && configModel != "" {
+					models = []string{configModel}
 				}
 			} else {
 				models = getModelIDs(providerType)
