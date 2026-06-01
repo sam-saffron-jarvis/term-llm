@@ -105,6 +105,39 @@ func (m *Model) isYoloToggleKey(msg tea.KeyPressMsg) bool {
 	return key.Matches(msg, m.keyMap.ToggleYolo)
 }
 
+func (m *Model) isHelpKey(msg tea.KeyPressMsg) bool {
+	if key.Matches(msg, m.keyMap.Help) {
+		return true
+	}
+
+	matches := func(value string) bool {
+		switch strings.ToLower(strings.TrimSpace(value)) {
+		case "ctrl+h", "ctrl+?", "ctrl+shift+?", "ctrl+/", "ctrl+shift+/", "ctrl+_", "ctrl+shift+_":
+			return true
+		default:
+			return false
+		}
+	}
+	if matches(msg.String()) || matches(msg.Keystroke()) {
+		return true
+	}
+
+	k := msg.Key()
+	if !k.Mod.Contains(tea.ModCtrl) {
+		return false
+	}
+	if k.Text == "?" {
+		return true
+	}
+	for _, code := range []rune{k.Code, k.ShiftedCode, k.BaseCode} {
+		switch code {
+		case 'h', '?', '/', '_':
+			return true
+		}
+	}
+	return false
+}
+
 func (m *Model) isYoloModeActive() bool {
 	if m.yolo {
 		return true
@@ -238,6 +271,14 @@ func (m *Model) handleKeyMsg(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m, cmd
 		}
 		return m, nil
+	}
+
+	// Ctrl+? / Ctrl+Shift+/ opens help globally in the normal chat UI and
+	// preserves the current composer draft. Handle this before dialogs,
+	// completions, and the textarea so terminal-specific encodings don't leak
+	// into filters or render at the prompt.
+	if m.isHelpKey(msg) {
+		return m.showHelpShortcut()
 	}
 
 	// Bracketed paste and Ctrl+V image attach support for the composer.
@@ -738,12 +779,17 @@ func (m *Model) handleKeyMsg(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
+	// Cycle reasoning effort (Ctrl+R) without disturbing the current draft.
+	if key.Matches(msg, m.keyMap.CycleEffort) {
+		return m.cycleEffort()
+	}
+
 	// Handle new session (Ctrl+N)
 	if key.Matches(msg, m.keyMap.NewSession) {
 		return m.cmdNew()
 	}
 
-	// Handle MCP picker (Ctrl+M)
+	// Handle MCP picker (Ctrl+T)
 	if key.Matches(msg, m.keyMap.MCPPicker) {
 		if m.mcpManager == nil {
 			return m.showSystemMessage("MCP not initialized.")

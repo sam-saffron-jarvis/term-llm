@@ -319,6 +319,11 @@ func (m *Model) sendMessage(content string) (tea.Model, tea.Cmd) {
 	// Ensure system/platform context messages exist before the user turn.
 	m.ensureContextMessages()
 
+	// Deferred model-switch markers from non-submitting shortcuts (Ctrl+R) are
+	// appended only when the next user turn is submitted, so repeatedly cycling
+	// effort while drafting does not spam the visible scrollback.
+	m.appendPendingModelSwitchMarker()
+
 	// Create user message and store it
 	userMsg := &session.Message{
 		SessionID:   m.sess.ID,

@@ -75,7 +75,7 @@ func AllCommands() []Command {
 		},
 		{
 			Name:        "effort",
-			Description: "Switch reasoning effort for current model",
+			Description: "Switch reasoning effort for current model (Ctrl+R cycles)",
 			Usage:       "/effort [minimal|low|medium|high|xhigh|max|default]",
 		},
 		{
@@ -522,6 +522,20 @@ func (m *Model) cancelHandoverTool() {
 
 func (m *Model) cmdHelp() (tea.Model, tea.Cmd) {
 	m.setTextareaValue("")
+	return m.showHelpModal()
+}
+
+func (m *Model) showHelpShortcut() (tea.Model, tea.Cmd) {
+	draft := m.textarea.Value()
+	result, cmd := m.showHelpModal()
+	if rm, ok := result.(*Model); ok {
+		rm.setTextareaValue(draft)
+		return rm, cmd
+	}
+	return result, cmd
+}
+
+func (m *Model) showHelpModal() (tea.Model, tea.Cmd) {
 	var b strings.Builder
 	b.WriteString("Slash commands\n")
 	for _, cmd := range AllCommands() {
@@ -533,21 +547,66 @@ func (m *Model) cmdHelp() (tea.Model, tea.Cmd) {
 	}
 
 	b.WriteString("\nKeys\n")
-	keys := [][2]string{
-		{"Enter", "Send message"},
-		{"Ctrl+J / Alt+Enter", "Insert newline"},
-		{"Ctrl+C", "Quit"},
-		{"Ctrl+K", "Clear conversation"},
-		{"Ctrl+S", "Toggle web search"},
-		{"Shift+Tab", "Toggle yolo mode"},
-		{"Ctrl+T", "MCP servers (tools)"},
-		{"Ctrl+P", "Command palette"},
-		{"Ctrl+L", "Switch model"},
-		{"Ctrl+N", "New session"},
-		{"Esc", "Cancel streaming / close modal"},
+	keyGroups := []struct {
+		title string
+		rows  [][2]string
+	}{
+		{
+			title: "Global",
+			rows: [][2]string{
+				{"Ctrl+/ or Ctrl+H", "Show help"},
+				{"Ctrl+C", "Quit; while streaming, cancel; with selected text, copy"},
+				{"Esc", "Cancel streaming / close modal / clear selection or input"},
+				{"Ctrl+P", "Command palette"},
+				{"Ctrl+K", "Clear conversation"},
+				{"Ctrl+N", "New session"},
+				{"Ctrl+L", "Switch model"},
+				{"Ctrl+R", "Cycle reasoning effort"},
+				{"Ctrl+S", "Toggle web search"},
+				{"Shift+Tab", "Toggle yolo mode"},
+				{"Ctrl+T", "MCP servers (tools)"},
+				{"Ctrl+O", "Inspect conversation context"},
+				{"Ctrl+E", "Expand/collapse tool and reasoning details"},
+			},
+		},
+		{
+			title: "Composer",
+			rows: [][2]string{
+				{"Enter", "Send message; while streaming, queue interjection"},
+				{"Ctrl+J / Alt+Enter / Shift+Enter", "Insert newline"},
+				{"\\ + Enter", "Turn trailing backslash into a newline"},
+				{"/", "Open slash-command completions from an empty composer"},
+				{"Tab", "Complete command args / MCP server names where supported"},
+				{"Ctrl+U", "Clear current line (textarea)"},
+				{"Ctrl+W", "Delete previous word (textarea)"},
+				{"Ctrl+V", "Paste; attaches clipboard image when available"},
+				{"Ctrl+E", "Expand collapsed paste placeholder at cursor"},
+			},
+		},
+		{
+			title: "Navigation and selection",
+			rows: [][2]string{
+				{"PageUp / PageDown", "Scroll conversation"},
+				{"Up / Down", "Scroll when composer is empty; select queued interjections while streaming"},
+				{"Ctrl+Y", "Copy selected conversation text"},
+			},
+		},
+		{
+			title: "Pickers and completions",
+			rows: [][2]string{
+				{"Up/Down or Ctrl+P/Ctrl+N", "Move selection"},
+				{"Enter", "Execute command / choose model / toggle MCP server"},
+				{"Tab", "Fill selected completion or choose selected model"},
+				{"Backspace", "Edit filter"},
+				{"Esc or Ctrl+C", "Close picker"},
+			},
+		},
 	}
-	for _, row := range keys {
-		b.WriteString(fmt.Sprintf("  %-20s %s\n", row[0], row[1]))
+	for _, group := range keyGroups {
+		b.WriteString("\n" + group.title + "\n")
+		for _, row := range group.rows {
+			b.WriteString(fmt.Sprintf("  %-32s %s\n", row[0], row[1]))
+		}
 	}
 
 	m.dialog.ShowContent("Help", b.String())
@@ -703,6 +762,57 @@ func (m *Model) cmdEffort(args []string) (tea.Model, tea.Cmd) {
 		return m.showFooterWarning("Cannot switch effort: no current provider/model is active.")
 	}
 
+	return m.switchEffort(provider, model, args, false)
+}
+
+func (m *Model) cycleEffort() (tea.Model, tea.Cmd) {
+	if m.streaming {
+		return m.showFooterWarning("Cannot switch effort while streaming. It will apply to the next request once the current response finishes.")
+	}
+
+	provider := strings.TrimSpace(m.providerKey)
+	if provider == "" && m.sess != nil {
+		provider = strings.TrimSpace(m.sess.ProviderKey)
+	}
+	if provider == "" {
+		provider = strings.TrimSpace(m.providerName)
+	}
+
+	model := strings.TrimSpace(m.modelName)
+	if model == "" && m.sess != nil {
+		model = strings.TrimSpace(m.sess.Model)
+	}
+	if provider == "" || model == "" {
+		return m.showFooterWarning("Cannot switch effort: no current provider/model is active.")
+	}
+
+	_, currentEffort := llm.BaseModelAndEffortForProvider(provider, model)
+	efforts := llm.ReasoningEffortsForProviderModel(provider, model)
+	if len(efforts) == 0 {
+		return m.showFooterWarning(fmt.Sprintf("Model %s:%s does not expose switchable reasoning efforts.", provider, model))
+	}
+
+	next := efforts[0]
+	if currentEffort != "" {
+		if idx := slices.Index(efforts, currentEffort); idx >= 0 {
+			if idx == len(efforts)-1 {
+				next = "default"
+			} else {
+				next = efforts[idx+1]
+			}
+		}
+	}
+
+	draft := m.textarea.Value()
+	result, cmd := m.switchEffort(provider, model, []string{next}, true)
+	if rm, ok := result.(*Model); ok {
+		rm.setTextareaValue(draft)
+		return rm, cmd
+	}
+	return result, cmd
+}
+
+func (m *Model) switchEffort(provider, model string, args []string, deferMarker bool) (tea.Model, tea.Cmd) {
 	base, currentEffort := llm.BaseModelAndEffortForProvider(provider, model)
 	efforts := llm.ReasoningEffortsForProviderModel(provider, model)
 	if len(args) == 0 {
@@ -748,7 +858,7 @@ func (m *Model) cmdEffort(args []string) (tea.Model, tea.Cmd) {
 	if m.config == nil {
 		m.config = &config.Config{}
 	}
-	return m.switchModel(provider + ":" + targetModel)
+	return m.switchModelWithOptions(provider+":"+targetModel, switchModelOptions{deferMarker: deferMarker})
 }
 
 func cloneStrings(values []string) []string {
@@ -2008,8 +2118,16 @@ func (m *Model) cmdCompress() (tea.Model, tea.Cmd) {
 	)
 }
 
+type switchModelOptions struct {
+	deferMarker bool
+}
+
 // switchModel switches to a new provider:model
 func (m *Model) switchModel(providerModel string) (tea.Model, tea.Cmd) {
+	return m.switchModelWithOptions(providerModel, switchModelOptions{})
+}
+
+func (m *Model) switchModelWithOptions(providerModel string, opts switchModelOptions) (tea.Model, tea.Cmd) {
 	parts := strings.SplitN(providerModel, ":", 2)
 	if len(parts) != 2 {
 		return m.showSystemMessage(fmt.Sprintf("Invalid model format: %s", providerModel))
@@ -2066,25 +2184,18 @@ func (m *Model) switchModel(providerModel string) (tea.Model, tea.Cmd) {
 	m.setTextareaValue("")
 
 	if m.sess != nil && len(m.messages) > 0 {
-		marker := llm.ModelSwapEventMessage(llm.ModelSwapMarker{
+		marker := llm.ModelSwapMarker{
 			FromProvider: oldProvider,
 			FromModel:    oldModel,
 			ToProvider:   providerName,
 			ToModel:      modelName,
 			Status:       "started",
-		})
-		sm := *session.NewMessage(m.sess.ID, marker, -1)
-		m.messagesMu.Lock()
-		m.messages = append(m.messages, sm)
-		m.messagesMu.Unlock()
-		if m.store != nil {
-			_ = m.store.AddMessage(context.Background(), m.sess.ID, &sm)
 		}
-		// completedStream is an alt-screen-only cache of the response that was just
-		// streamed. Once we append a model-switch marker after that assistant turn,
-		// the cache is no longer a tail replacement; leaving it in place renders the
-		// persisted assistant from history plus the cached stream again.
-		m.invalidateViewCache()
+		if opts.deferMarker {
+			m.deferModelSwitchMarker(marker)
+		} else {
+			m.appendModelSwitchMarker(marker)
+		}
 	}
 
 	msg := fmt.Sprintf("Switched model to %s:%s. Next response will try the existing context; if incompatible, use /handover to prepare a compact handoff.", providerName, modelName)
@@ -2093,6 +2204,45 @@ func (m *Model) switchModel(providerModel string) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(footerCmd, fastMetadataCmd)
 	}
 	return m.showFooterMuted(msg)
+}
+
+func (m *Model) deferModelSwitchMarker(marker llm.ModelSwapMarker) {
+	if m.pendingModelSwitch != nil {
+		m.pendingModelSwitch.ToProvider = marker.ToProvider
+		m.pendingModelSwitch.ToModel = marker.ToModel
+		m.pendingModelSwitch.Status = marker.Status
+		return
+	}
+	pending := marker
+	m.pendingModelSwitch = &pending
+}
+
+func (m *Model) appendPendingModelSwitchMarker() {
+	if m.pendingModelSwitch == nil {
+		return
+	}
+	marker := *m.pendingModelSwitch
+	m.pendingModelSwitch = nil
+	m.appendModelSwitchMarker(marker)
+}
+
+func (m *Model) appendModelSwitchMarker(marker llm.ModelSwapMarker) {
+	if m.sess == nil {
+		return
+	}
+	msg := llm.ModelSwapEventMessage(marker)
+	sm := *session.NewMessage(m.sess.ID, msg, -1)
+	m.messagesMu.Lock()
+	m.messages = append(m.messages, sm)
+	m.messagesMu.Unlock()
+	if m.store != nil {
+		_ = m.store.AddMessage(context.Background(), m.sess.ID, &sm)
+	}
+	// completedStream is an alt-screen-only cache of the response that was just
+	// streamed. Once we append a model-switch marker after that assistant turn,
+	// the cache is no longer a tail replacement; leaving it in place renders the
+	// persisted assistant from history plus the cached stream again.
+	m.invalidateViewCache()
 }
 
 // cmdHandover handles /handover @agent [provider:model]

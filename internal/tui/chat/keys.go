@@ -24,10 +24,11 @@ type KeyMap struct {
 	PageDown key.Binding
 
 	// Shortcuts
+	Help        key.Binding
 	SwitchModel key.Binding
+	CycleEffort key.Binding
 	ToggleWeb   key.Binding
 	ToggleYolo  key.Binding
-	AttachFile  key.Binding
 	Clear       key.Binding
 	NewSession  key.Binding
 	MCPPicker   key.Binding
@@ -86,9 +87,17 @@ func DefaultKeyMap() KeyMap {
 			key.WithKeys("pgdown"),
 			key.WithHelp("pgdown", "page down"),
 		),
+		Help: key.NewBinding(
+			key.WithKeys("ctrl+/", "ctrl+_", "ctrl+h", "ctrl+?", "ctrl+shift+/"),
+			key.WithHelp("ctrl+/", "help"),
+		),
 		SwitchModel: key.NewBinding(
 			key.WithKeys("ctrl+l"),
 			key.WithHelp("ctrl+l", "model"),
+		),
+		CycleEffort: key.NewBinding(
+			key.WithKeys("ctrl+r"),
+			key.WithHelp("ctrl+r", "cycle effort"),
 		),
 		ToggleWeb: key.NewBinding(
 			key.WithKeys("ctrl+s"),
@@ -97,10 +106,6 @@ func DefaultKeyMap() KeyMap {
 		ToggleYolo: key.NewBinding(
 			key.WithKeys("shift+tab"),
 			key.WithHelp("shift+tab", "toggle yolo"),
-		),
-		AttachFile: key.NewBinding(
-			key.WithKeys("ctrl+f"),
-			key.WithHelp("ctrl+f", "file"),
 		),
 		Clear: key.NewBinding(
 			key.WithKeys("ctrl+k"),

@@ -322,6 +322,90 @@ func TestCmdHelpOpensModal(t *testing.T) {
 	if !strings.Contains(rm.dialog.Content(), "Slash commands") || !strings.Contains(rm.dialog.Content(), "/stats") {
 		t.Fatalf("help content missing expected commands: %q", rm.dialog.Content())
 	}
+	for _, want := range []string{
+		"Ctrl+/",
+		"Ctrl+H",
+		"Show help",
+		"Ctrl+R",
+		"Cycle reasoning effort",
+		"Ctrl+E",
+		"Expand/collapse tool and reasoning details",
+		"Ctrl+O",
+		"Inspect conversation context",
+		"Ctrl+Y",
+		"Copy selected conversation text",
+		"PageUp / PageDown",
+		"Ctrl+J / Alt+Enter / Shift+Enter",
+		"Pickers and completions",
+		"Ctrl+T",
+	} {
+		if !strings.Contains(rm.dialog.Content(), want) {
+			t.Fatalf("help content missing %q: %q", want, rm.dialog.Content())
+		}
+	}
+}
+
+func TestHelpShortcutCtrlShiftSlashOpensModalPreservesDraft(t *testing.T) {
+	m := newCmdTestModel(&mockStore{})
+	m.keyMap = DefaultKeyMap()
+	m.completions = NewCompletionsModel(m.styles)
+	m.setTextareaValue("draft prompt")
+
+	result, cmd := m.handleKeyMsg(tea.KeyPressMsg{
+		Code:        '/',
+		ShiftedCode: '?',
+		BaseCode:    '/',
+		Mod:         tea.ModCtrl | tea.ModShift,
+	})
+	if cmd != nil {
+		t.Fatalf("help shortcut returned unexpected command")
+	}
+	rm := result.(*Model)
+	if !rm.dialog.IsOpen() || rm.dialog.Type() != DialogContent {
+		t.Fatalf("help shortcut should open content dialog, got open=%v type=%v", rm.dialog.IsOpen(), rm.dialog.Type())
+	}
+	if !strings.Contains(rm.dialog.Content(), "Slash commands") || !strings.Contains(rm.dialog.Content(), "Ctrl+/") {
+		t.Fatalf("help shortcut opened unexpected content: %q", rm.dialog.Content())
+	}
+	if got := rm.textarea.Value(); got != "draft prompt" {
+		t.Fatalf("help shortcut should preserve composer draft, got %q", got)
+	}
+}
+
+func TestHelpShortcutCtrlQuestionTextOpensModal(t *testing.T) {
+	m := newCmdTestModel(&mockStore{})
+	m.keyMap = DefaultKeyMap()
+	m.completions = NewCompletionsModel(m.styles)
+
+	result, _ := m.handleKeyMsg(tea.KeyPressMsg{Code: '?', Text: "?", Mod: tea.ModCtrl | tea.ModShift})
+	rm := result.(*Model)
+	if !rm.dialog.IsOpen() || rm.dialog.Type() != DialogContent {
+		t.Fatalf("ctrl+? should open help dialog, got open=%v type=%v", rm.dialog.IsOpen(), rm.dialog.Type())
+	}
+}
+
+func TestHelpShortcutCtrlHOpensModal(t *testing.T) {
+	m := newCmdTestModel(&mockStore{})
+	m.keyMap = DefaultKeyMap()
+	m.completions = NewCompletionsModel(m.styles)
+
+	result, _ := m.handleKeyMsg(tea.KeyPressMsg{Code: 'h', Mod: tea.ModCtrl})
+	rm := result.(*Model)
+	if !rm.dialog.IsOpen() || rm.dialog.Type() != DialogContent {
+		t.Fatalf("ctrl+h should open help dialog, got open=%v type=%v", rm.dialog.IsOpen(), rm.dialog.Type())
+	}
+}
+
+func TestPlainQuestionDoesNotOpenHelp(t *testing.T) {
+	m := newCmdTestModel(&mockStore{})
+	m.keyMap = DefaultKeyMap()
+	m.completions = NewCompletionsModel(m.styles)
+
+	result, _ := m.handleKeyMsg(tea.KeyPressMsg{Code: '?', Text: "?"})
+	rm := result.(*Model)
+	if rm.dialog.IsOpen() {
+		t.Fatalf("plain ? should not open help dialog")
+	}
 }
 
 func TestCmdStatsOpensModalWithTotalsAndCompactions(t *testing.T) {
@@ -449,6 +533,99 @@ func newEffortCmdTestModel(provider, model string) (*Model, *mockStore) {
 	m.modelName = model
 	m.engine = llm.NewEngine(llm.NewMockProvider("old"), nil)
 	return m, store
+}
+
+func prepareEffortShortcutTestModel(m *Model) {
+	m.keyMap = DefaultKeyMap()
+	m.completions = NewCompletionsModel(m.styles)
+}
+
+func TestCycleEffortShortcutPreservesDraft(t *testing.T) {
+	m, store := newEffortCmdTestModel("openai", "gpt-5.4-low")
+	prepareEffortShortcutTestModel(m)
+	m.messages = []session.Message{*session.NewMessage(m.sess.ID, llm.UserText("previous"), 0)}
+	m.setTextareaValue("half-written prompt")
+
+	result, cmd := m.handleKeyMsg(tea.KeyPressMsg{Code: 'r', Mod: tea.ModCtrl})
+	rm := result.(*Model)
+	if cmd == nil {
+		t.Fatal("expected footer command")
+	}
+	if rm.modelName != "gpt-5.4-medium" {
+		t.Fatalf("modelName = %q, want gpt-5.4-medium; footer=%q", rm.modelName, rm.footerMessage)
+	}
+	if got := rm.textarea.Value(); got != "half-written prompt" {
+		t.Fatalf("draft = %q, want preserved draft", got)
+	}
+	if rm.sess.Model != "gpt-5.4-medium" || store.updated == nil {
+		t.Fatalf("session/store not updated: sess=%#v updated=%#v", rm.sess, store.updated)
+	}
+	if len(rm.messages) != 1 {
+		t.Fatalf("ctrl+r appended visible messages immediately: len=%d", len(rm.messages))
+	}
+	if len(store.added) != 0 {
+		t.Fatalf("ctrl+r persisted marker immediately: %#v", store.added)
+	}
+	if rm.pendingModelSwitch == nil {
+		t.Fatal("expected deferred model-switch marker")
+	}
+
+	result, _ = rm.sendMessage("half-written prompt")
+	rm = result.(*Model)
+	if len(rm.messages) < 3 {
+		t.Fatalf("messages len = %d, want previous + marker + user", len(rm.messages))
+	}
+	markerMsg := rm.messages[1]
+	if markerMsg.Role != llm.RoleEvent {
+		t.Fatalf("deferred marker role = %q, want event", markerMsg.Role)
+	}
+	marker, ok := llm.ParseModelSwapMarker(markerMsg.ToLLMMessage())
+	if !ok {
+		t.Fatalf("failed to parse deferred marker: %#v", markerMsg)
+	}
+	if marker.FromModel != "gpt-5.4-low" || marker.ToModel != "gpt-5.4-medium" {
+		t.Fatalf("unexpected deferred marker: %#v", marker)
+	}
+	if rm.pendingModelSwitch != nil {
+		t.Fatalf("pending marker was not cleared: %#v", rm.pendingModelSwitch)
+	}
+}
+
+func TestCycleEffortShortcutWrapsToDefault(t *testing.T) {
+	m, _ := newEffortCmdTestModel("claude-bin", "sonnet-high")
+	prepareEffortShortcutTestModel(m)
+	m.setTextareaValue("draft")
+
+	// Sonnet efforts are low, medium, high, so high wraps to default.
+	result, _ := m.handleKeyMsg(tea.KeyPressMsg{Code: 'r', Mod: tea.ModCtrl})
+	rm := result.(*Model)
+	if rm.modelName != "sonnet" {
+		t.Fatalf("modelName = %q, want sonnet; footer=%q", rm.modelName, rm.footerMessage)
+	}
+	if got := rm.textarea.Value(); got != "draft" {
+		t.Fatalf("draft = %q, want preserved draft", got)
+	}
+}
+
+func TestCycleEffortShortcutUnsupportedPreservesDraft(t *testing.T) {
+	m, store := newEffortCmdTestModel("mock", "mock-model")
+	prepareEffortShortcutTestModel(m)
+	m.setTextareaValue("keep me")
+
+	result, _ := m.handleKeyMsg(tea.KeyPressMsg{Code: 'r', Mod: tea.ModCtrl})
+	rm := result.(*Model)
+	if rm.modelName != "mock-model" {
+		t.Fatalf("modelName changed to %q", rm.modelName)
+	}
+	if got := rm.textarea.Value(); got != "keep me" {
+		t.Fatalf("draft = %q, want preserved draft", got)
+	}
+	if store.updated != nil {
+		t.Fatalf("store updated on unsupported effort: %#v", store.updated)
+	}
+	if !strings.Contains(rm.footerMessage, "does not expose switchable reasoning efforts") {
+		t.Fatalf("unexpected footer: %q", rm.footerMessage)
+	}
 }
 
 func TestCmdEffortSwitchesOpenAIEffort(t *testing.T) {

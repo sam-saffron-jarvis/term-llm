@@ -74,24 +74,45 @@ Agent examples (use @agent shortcut or --agent flag):
 Keyboard shortcuts:
   Enter        - Send message
   Shift+Enter  - Insert newline
-  Ctrl+C       - Quit
+  Ctrl+/ Ctrl+H - Show help
+  Ctrl+C       - Quit/cancel streaming/copy selection
   Ctrl+K       - Clear conversation
+  Ctrl+N       - New session
+  Ctrl+L       - Switch model
+  Ctrl+R       - Cycle reasoning effort
   Ctrl+S       - Toggle web search
   Shift+Tab    - Toggle yolo mode
+  Ctrl+T       - MCP servers (tools)
+  Ctrl+O       - Inspect conversation context
+  Ctrl+E       - Expand/collapse tool and reasoning details
   Ctrl+P       - Command palette
-  Esc          - Cancel streaming
+  Ctrl+Y       - Copy selected conversation text
+  PageUp/Down  - Scroll conversation
+  Esc          - Cancel streaming / close modal / clear input
 
 Slash commands:
   /help        - Show help
   /stats       - Show usage, cost, and context breakdown
   /clear       - Clear conversation
-  /model       - Show current model
+  /quit        - Exit chat
+  /model       - Switch provider/model
+  /effort      - Switch reasoning effort
   /search      - Toggle web search
+  /fast        - Toggle ChatGPT fast mode
+  /new         - Start a new session
+  /save        - Save session with a name
+  /export      - Export conversation as markdown
+  /thinking    - Toggle reasoning display
+  /system      - Set custom system prompt
+  /file        - Attach file(s) to next message
+  /dirs        - Manage approved directories
   /mcp         - Manage MCP servers
   /skills      - List available skills
+  /inspect     - View conversation/tool details
   /compact     - Compact conversation context
-  /handover    - Hand conversation to another agent
-  /quit        - Exit chat`,
+  /resume      - Browse and resume previous sessions
+  /reload      - Re-exec current binary and resume session
+  /handover    - Hand conversation to another agent`,
 	RunE:              runChat,
 	ValidArgsFunction: AtAgentCompletion,
 }

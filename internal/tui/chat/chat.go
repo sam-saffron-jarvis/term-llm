@@ -212,6 +212,10 @@ type Model struct {
 	// If set, auto-send this message on Init (used after handover restart).
 	handoverAutoSend string
 
+	// Deferred model switch marker for non-submitting shortcuts such as Ctrl+R.
+	// Coalesces repeated effort changes and is appended when the next user turn is sent.
+	pendingModelSwitch *llm.ModelSwapMarker
+
 	// Stats tracking
 	showStats  bool
 	stats      *ui.SessionStats
