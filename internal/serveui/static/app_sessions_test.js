@@ -65,6 +65,39 @@ function makeNode() {
   };
 }
 
+function parsedTestURL(url) {
+  try {
+    return new URL(String(url), 'https://example.test');
+  } catch (_) {
+    return null;
+  }
+}
+
+function isSessionMessagesURL(url, sessionId) {
+  const parsed = parsedTestURL(url);
+  return Boolean(parsed && parsed.pathname === `/ui/v1/sessions/${sessionId}/messages`);
+}
+
+function isTailMessagesURL(url, sessionId) {
+  const parsed = parsedTestURL(url);
+  return Boolean(parsed
+    && parsed.pathname === `/ui/v1/sessions/${sessionId}/messages`
+    && parsed.searchParams.get('tail') === '1'
+    && parsed.searchParams.get('limit') === '200'
+    && !parsed.searchParams.has('offset')
+    && !parsed.searchParams.has('before_seq'));
+}
+
+function isOlderMessagesURL(url, sessionId, beforeSeq) {
+  const parsed = parsedTestURL(url);
+  return Boolean(parsed
+    && parsed.pathname === `/ui/v1/sessions/${sessionId}/messages`
+    && parsed.searchParams.get('before_seq') === String(beforeSeq)
+    && parsed.searchParams.get('limit') === '200'
+    && !parsed.searchParams.has('offset')
+    && !parsed.searchParams.has('tail'));
+}
+
 function defaultAppStubs(app, overrides = {}) {
   return {
     persistAndRefreshShell() {},
@@ -460,7 +493,7 @@ async function testNumericDeepLinkResolvesRealSessionId() {
           }]
         }), { status: 200, headers: { 'Content-Type': 'application/json' } });
       }
-      if (url === '/ui/v1/sessions/sess_real/messages') {
+      if (isTailMessagesURL(url, 'sess_real')) {
         return new Response(JSON.stringify({
           messages: [{
             role: 'user',
@@ -472,7 +505,7 @@ async function testNumericDeepLinkResolvesRealSessionId() {
       if (url === '/ui/v1/sessions/sess_real/state') {
         return new Response(JSON.stringify({}), { status: 200, headers: { 'Content-Type': 'application/json' } });
       }
-      if (url === '/ui/v1/sessions/1291/messages') {
+      if (isTailMessagesURL(url, '1291')) {
         return new Response(JSON.stringify({
           messages: [{
             role: 'user',
@@ -492,11 +525,11 @@ async function testNumericDeepLinkResolvesRealSessionId() {
     fail(name, 'active session id should be reconciled to real server id', `got ${app.state.activeSessionId}`);
     return;
   }
-  if (!fetchCalls.includes('/ui/v1/sessions/sess_real/messages')) {
-    fail(name, 'should load messages via resolved server session id', JSON.stringify(fetchCalls));
+  if (!fetchCalls.some((url) => isTailMessagesURL(url, 'sess_real'))) {
+    fail(name, 'should load tail messages via resolved server session id', JSON.stringify(fetchCalls));
     return;
   }
-  if (fetchCalls.includes('/ui/v1/sessions/pending_1291/messages')) {
+  if (fetchCalls.some((url) => isSessionMessagesURL(url, 'pending_1291'))) {
     fail(name, 'should not use pending_ prefix in session id', JSON.stringify(fetchCalls));
     return;
   }
@@ -578,7 +611,7 @@ async function testDeveloperMessagesAreHidden() {
           }]
         }), { status: 200, headers: { 'Content-Type': 'application/json' } });
       }
-      if (url === '/ui/v1/sessions/sess_dev/messages') {
+      if (isTailMessagesURL(url, 'sess_dev')) {
         return new Response(JSON.stringify({
           messages: [
             {
@@ -686,8 +719,8 @@ async function testConvertServerMessagesAttachesToolResultImages() {
   pass(name);
 }
 
-async function testSessionHistoryPaginationLoadsAdditionalPages() {
-  const name = 'session history pagination loads additional pages';
+async function testSessionHistoryInitialLoadRequestsTailOnly() {
+  const name = 'initial session history load requests tail only';
   const fetchCalls = [];
   const { app } = await createSessionsHarness({
     pathname: '/ui/77',
@@ -709,26 +742,21 @@ async function testSessionHistoryPaginationLoadsAdditionalPages() {
           }]
         }), { status: 200, headers: { 'Content-Type': 'application/json' } });
       }
-      if (url === '/ui/v1/sessions/sess_page/messages') {
+      if (isTailMessagesURL(url, 'sess_page')) {
         return new Response(JSON.stringify({
           messages: [{
+            id: 201,
+            sequence: 200,
             role: 'user',
             created_at: 1710000000000,
-            parts: [{ type: 'text', text: 'first page' }],
+            parts: [{ type: 'text', text: 'tail page' }],
           }],
           has_more: true,
-          next_offset: 200,
-        }), { status: 200, headers: { 'Content-Type': 'application/json', ETag: '"sess-page-v1"' } });
-      }
-      if (url === '/ui/v1/sessions/sess_page/messages?limit=200&offset=200') {
-        return new Response(JSON.stringify({
-          messages: [{
-            role: 'assistant',
-            created_at: 1710000001000,
-            parts: [{ type: 'text', text: 'second page' }],
-          }],
-          has_more: false,
+          next_before_seq: 200,
         }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      if (isSessionMessagesURL(url, 'sess_page')) {
+        return new Response('unexpected non-tail messages request', { status: 500 });
       }
       if (url === '/ui/v1/sessions/sess_page/state') {
         return new Response(JSON.stringify({}), { status: 200, headers: { 'Content-Type': 'application/json' } });
@@ -737,74 +765,307 @@ async function testSessionHistoryPaginationLoadsAdditionalPages() {
     }
   });
 
-  if (!fetchCalls.includes('/ui/v1/sessions/sess_page/messages?limit=200&offset=200')) {
-    fail(name, 'expected follow-up paginated fetch', JSON.stringify(fetchCalls));
+  const messageFetches = fetchCalls.filter((url) => isSessionMessagesURL(url, 'sess_page'));
+  if (messageFetches.length !== 1 || !isTailMessagesURL(messageFetches[0], 'sess_page')) {
+    fail(name, 'expected exactly one tail messages fetch', JSON.stringify(fetchCalls));
+    return;
+  }
+  const offsetFetches = messageFetches.filter((url) => parsedTestURL(url)?.searchParams.has('offset'));
+  if (offsetFetches.length !== 0) {
+    fail(name, 'expected no offset pagination requests during initial load', JSON.stringify(fetchCalls));
     return;
   }
 
   const session = app.state.sessions.find((item) => item.id === 'sess_page');
   if (!session) {
-    fail(name, 'session not found after paginated load');
+    fail(name, 'session not found after tail load');
     return;
   }
-  if (session.messages.length !== 2) {
-    fail(name, `expected 2 merged messages, got ${session.messages.length}`);
+  if (session.messages.length !== 1 || session.messages[0].content !== 'tail page') {
+    fail(name, 'expected tail page to hydrate session messages', JSON.stringify(session.messages));
     return;
   }
-  if (session.messages[0].content !== 'first page' || session.messages[1].content !== 'second page') {
-    fail(name, 'expected both pages to merge in order', JSON.stringify(session.messages));
+  if (!session._history?.hasMoreOlder || session._history.oldestSeq !== 200) {
+    fail(name, 'expected runtime history cursor to track older pages', JSON.stringify(session._history));
     return;
   }
 
   pass(name);
 }
 
-async function testSessionHistoryPaginationFailureClearsEtagForRetry() {
-  const name = 'session history pagination failure clears etag for retry';
+async function testScrollNearTopLoadsOlderPageAndPreservesViewport() {
+  const name = 'scroll near top loads older session page and preserves viewport';
   const fetchCalls = [];
-  let firstPageCalls = 0;
-  let secondPageCalls = 0;
+  let appRef = null;
   const { app } = await createSessionsHarness({
-    fetchImpl: async (url, opts = {}) => {
-      fetchCalls.push({ url, ifNoneMatch: opts.headers && opts.headers['If-None-Match'] });
+    fetchImpl: async (url) => {
+      fetchCalls.push(url);
       if (url === '/ui/v1/sessions') {
         return new Response(JSON.stringify({ sessions: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
       }
-      if (url === '/ui/v1/sessions/sess_retry/messages') {
-        firstPageCalls += 1;
+      if (isTailMessagesURL(url, 'sess_scroll')) {
         return new Response(JSON.stringify({
-          messages: [{ role: 'user', created_at: 1710000000000, parts: [{ type: 'text', text: `page one ${firstPageCalls}` }] }],
+          messages: [{
+            id: 200,
+            sequence: 200,
+            role: 'assistant',
+            created_at: 1710000002000,
+            parts: [{ type: 'text', text: 'newest tail' }],
+          }],
           has_more: true,
-          next_offset: 200,
-        }), { status: 200, headers: { 'Content-Type': 'application/json', ETag: '"retry-v1"' } });
+          next_before_seq: 200,
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } });
       }
-      if (url === '/ui/v1/sessions/sess_retry/messages?limit=200&offset=200') {
-        secondPageCalls += 1;
-        if (secondPageCalls === 1) {
-          return new Response('temporary failure', { status: 500 });
-        }
+      if (isOlderMessagesURL(url, 'sess_scroll', 200)) {
         return new Response(JSON.stringify({
-          messages: [{ role: 'assistant', created_at: 1710000001000, parts: [{ type: 'text', text: 'page two' }] }],
+          messages: [{
+            id: 199,
+            sequence: 199,
+            role: 'user',
+            created_at: 1710000001000,
+            parts: [{ type: 'text', text: 'older message' }],
+          }],
           has_more: false,
         }), { status: 200, headers: { 'Content-Type': 'application/json' } });
       }
-      return new Response(JSON.stringify({}), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      return new Response(JSON.stringify({ messages: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    },
+    appOverrides: {
+      renderMessages() {
+        if (!appRef) return;
+        const active = appRef.state.sessions.find((session) => session.id === appRef.state.activeSessionId);
+        appRef.elements.chatScroll.scrollHeight = active && active.messages.length > 1 ? 1600 : 1000;
+      }
+    }
+  });
+  appRef = app;
+
+  const session = {
+    id: 'sess_scroll',
+    title: 'Scroll session',
+    origin: 'web',
+    created: 1710000000000,
+    messages: [],
+  };
+  app.state.sessions = [session];
+  app.state.activeSessionId = session.id;
+  app.state.draftSessionActive = false;
+
+  const tail = await app.loadServerSessionMessages(session.id);
+  app.mergeServerMessagesWithLocalState(session, tail);
+  app.elements.chatScroll.scrollHeight = 1000;
+  app.elements.chatScroll.scrollTop = 100;
+  app.elements.chatScroll.clientHeight = 400;
+  fetchCalls.length = 0;
+
+  const loaded = await app.maybeLoadOlderSessionMessages();
+  if (!loaded) {
+    fail(name, 'expected near-top scroll to load older history');
+    return;
+  }
+  if (!fetchCalls.some((url) => isOlderMessagesURL(url, 'sess_scroll', 200))) {
+    fail(name, 'expected older page request with before_seq cursor', JSON.stringify(fetchCalls));
+    return;
+  }
+  if (session.messages.length !== 2 || session.messages[0].content !== 'older message' || session.messages[1].content !== 'newest tail') {
+    fail(name, 'expected older messages to be prepended before tail', JSON.stringify(session.messages));
+    return;
+  }
+  if (app.elements.chatScroll.scrollTop !== 700) {
+    fail(name, `expected scrollTop to preserve viewport at 700, got ${app.elements.chatScroll.scrollTop}`);
+    return;
+  }
+  if (session._history.hasMoreOlder) {
+    fail(name, 'expected hasMoreOlder=false after final older page', JSON.stringify(session._history));
+    return;
+  }
+
+  pass(name);
+}
+
+async function testTailRefreshPreservesOlderHistoryCursor() {
+  const name = 'tail refresh preserves older history cursor after older pages load';
+  const fetchCalls = [];
+  let tailCalls = 0;
+  const { app } = await createSessionsHarness({
+    fetchImpl: async (url) => {
+      fetchCalls.push(url);
+      if (url === '/ui/v1/sessions') {
+        return new Response(JSON.stringify({ sessions: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      if (isTailMessagesURL(url, 'sess_cursor')) {
+        tailCalls += 1;
+        return new Response(JSON.stringify({
+          messages: [{
+            id: 100,
+            sequence: 100,
+            role: 'assistant',
+            created_at: 1710000002000,
+            parts: [{ type: 'text', text: `tail refresh ${tailCalls}` }],
+          }],
+          has_more: true,
+          next_before_seq: 100,
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      if (isOlderMessagesURL(url, 'sess_cursor', 100)) {
+        return new Response(JSON.stringify({
+          messages: [{
+            id: 55,
+            sequence: 55,
+            role: 'user',
+            created_at: 1710000001000,
+            parts: [{ type: 'text', text: 'older cursor page' }],
+          }],
+          has_more: true,
+          next_before_seq: 50,
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      if (isOlderMessagesURL(url, 'sess_cursor', 50)) {
+        return new Response(JSON.stringify({
+          messages: [{
+            id: 25,
+            sequence: 25,
+            role: 'user',
+            created_at: 1710000000500,
+            parts: [{ type: 'text', text: 'oldest page' }],
+          }],
+          has_more: false,
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      return new Response(JSON.stringify({ messages: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
     }
   });
 
-  const failed = await app.loadServerSessionMessages('sess_retry');
-  if (failed !== null) {
-    fail(name, 'expected first paginated load to fail');
+  const session = {
+    id: 'sess_cursor',
+    title: 'Cursor session',
+    origin: 'web',
+    created: 1710000000000,
+    messages: [],
+  };
+  app.state.sessions = [session];
+  app.state.activeSessionId = session.id;
+  app.state.draftSessionActive = false;
+  app.elements.chatScroll.scrollTop = 0;
+  app.elements.chatScroll.scrollHeight = 1000;
+  app.elements.chatScroll.clientHeight = 400;
+
+  let loaded = await app.loadServerSessionMessages(session.id);
+  app.mergeServerMessagesWithLocalState(session, loaded);
+  if (session._history.oldestSeq !== 100) {
+    fail(name, `initial tail cursor = ${session._history.oldestSeq}, want 100`);
     return;
   }
-  const loaded = await app.loadServerSessionMessages('sess_retry');
-  if (!Array.isArray(loaded) || loaded.length !== 2 || loaded[1].content !== 'page two') {
-    fail(name, 'expected retry to reload first page and fetch missing second page', JSON.stringify(loaded));
+
+  const olderLoaded = await app.maybeLoadOlderSessionMessages();
+  if (!olderLoaded || session._history.oldestSeq !== 50) {
+    fail(name, 'expected older page to set cursor from server response', JSON.stringify(session._history));
     return;
   }
-  const conditionalFirstPageFetches = fetchCalls.filter((call) => call.url === '/ui/v1/sessions/sess_retry/messages' && call.ifNoneMatch);
-  if (conditionalFirstPageFetches.length !== 0) {
-    fail(name, 'expected no conditional first-page request after partial pagination failure', JSON.stringify(fetchCalls));
+
+  loaded = await app.loadServerSessionMessages(session.id);
+  app.mergeServerMessagesWithLocalState(session, loaded);
+  if (session._history.oldestSeq !== 50) {
+    fail(name, 'tail refresh should preserve already-loaded older cursor', JSON.stringify(session._history));
+    return;
+  }
+
+  fetchCalls.length = 0;
+  const finalLoaded = await app.maybeLoadOlderSessionMessages();
+  if (!finalLoaded) {
+    fail(name, 'expected next older load to use the preserved cursor');
+    return;
+  }
+  if (!fetchCalls.some((url) => isOlderMessagesURL(url, 'sess_cursor', 50))
+      || fetchCalls.some((url) => isOlderMessagesURL(url, 'sess_cursor', 100))) {
+    fail(name, 'expected next older request to use before_seq=50, not repeat before_seq=100', JSON.stringify(fetchCalls));
+    return;
+  }
+
+  pass(name);
+}
+
+async function testOlderPageFailureAllowsRetryWithoutCorruptingTail() {
+  const name = 'failed older-page fetch allows retry without corrupting loaded tail';
+  const fetchCalls = [];
+  let olderCalls = 0;
+  const { app } = await createSessionsHarness({
+    fetchImpl: async (url) => {
+      fetchCalls.push(url);
+      if (url === '/ui/v1/sessions') {
+        return new Response(JSON.stringify({ sessions: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      if (isTailMessagesURL(url, 'sess_retry')) {
+        return new Response(JSON.stringify({
+          messages: [{
+            id: 200,
+            sequence: 200,
+            role: 'assistant',
+            created_at: 1710000002000,
+            parts: [{ type: 'text', text: 'tail survives' }],
+          }],
+          has_more: true,
+          next_before_seq: 200,
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      if (isOlderMessagesURL(url, 'sess_retry', 200)) {
+        olderCalls += 1;
+        if (olderCalls === 1) {
+          return new Response('temporary failure', { status: 500 });
+        }
+        return new Response(JSON.stringify({
+          messages: [{
+            id: 199,
+            sequence: 199,
+            role: 'user',
+            created_at: 1710000001000,
+            parts: [{ type: 'text', text: 'retry older' }],
+          }],
+          has_more: false,
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      return new Response(JSON.stringify({ messages: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }
+  });
+
+  const session = {
+    id: 'sess_retry',
+    title: 'Retry session',
+    origin: 'web',
+    created: 1710000000000,
+    messages: [],
+  };
+  app.state.sessions = [session];
+  app.state.activeSessionId = session.id;
+  app.state.draftSessionActive = false;
+
+  const tail = await app.loadServerSessionMessages(session.id);
+  app.mergeServerMessagesWithLocalState(session, tail);
+  app.elements.chatScroll.scrollTop = 0;
+  app.elements.chatScroll.scrollHeight = 1000;
+  app.elements.chatScroll.clientHeight = 400;
+
+  const failed = await app.maybeLoadOlderSessionMessages();
+  if (failed) {
+    fail(name, 'expected first older-page load to fail');
+    return;
+  }
+  if (session._history.loadingOlder) {
+    fail(name, 'expected loadingOlder=false after failure', JSON.stringify(session._history));
+    return;
+  }
+  if (session.messages.length !== 1 || session.messages[0].content !== 'tail survives') {
+    fail(name, 'expected failed older load not to corrupt tail messages', JSON.stringify(session.messages));
+    return;
+  }
+
+  const retried = await app.maybeLoadOlderSessionMessages();
+  if (!retried || olderCalls !== 2) {
+    fail(name, 'expected retry to fetch older page successfully', JSON.stringify({ olderCalls, fetchCalls }));
+    return;
+  }
+  if (session.messages.length !== 2 || session.messages[0].content !== 'retry older') {
+    fail(name, 'expected retry older page to prepend successfully', JSON.stringify(session.messages));
     return;
   }
 
@@ -871,7 +1132,7 @@ async function testSwitchToSessionSyncsWithoutTokenAndResumes() {
       if (url === '/ui/v1/sessions/sess_other/state') {
         return new Response(JSON.stringify({ active_run: false }), { status: 200, headers: { 'Content-Type': 'application/json' } });
       }
-      if (url === '/ui/v1/sessions/sess_other/messages') {
+      if (isTailMessagesURL(url, 'sess_other')) {
         return new Response(JSON.stringify({ messages: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
       }
       if (url === '/ui/v1/sessions/sess_resume/state') {
@@ -987,7 +1248,7 @@ async function testSwitchToSessionRecoversChangedActiveResponseFromSnapshot() {
       if (url === '/ui/v1/sessions/sess_other/state') {
         return new Response(JSON.stringify({ active_run: false }), { status: 200, headers: { 'Content-Type': 'application/json' } });
       }
-      if (url === '/ui/v1/sessions/sess_other/messages') {
+      if (isTailMessagesURL(url, 'sess_other')) {
         return new Response(JSON.stringify({ messages: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
       }
       if (url === '/ui/v1/sessions/sess_resume/state') {
@@ -1050,7 +1311,7 @@ async function testSwitchToLazyLoadedSessionFetchesMessagesOnce() {
           headers: { 'Content-Type': 'application/json' }
         });
       }
-      if (url === '/ui/v1/sessions/sess_lazy/messages') {
+      if (isTailMessagesURL(url, 'sess_lazy')) {
         return new Response(JSON.stringify({
           messages: [
             {
@@ -1105,9 +1366,9 @@ async function testSwitchToLazyLoadedSessionFetchesMessagesOnce() {
 
   await app.switchToSession('sess_lazy');
 
-  const messageFetches = fetchCalls.filter((url) => url === '/ui/v1/sessions/sess_lazy/messages');
-  if (messageFetches.length !== 1) {
-    fail(name, 'expected exactly one lazy session messages fetch during switch', JSON.stringify(fetchCalls));
+  const messageFetches = fetchCalls.filter((url) => isSessionMessagesURL(url, 'sess_lazy'));
+  if (messageFetches.length !== 1 || !isTailMessagesURL(messageFetches[0], 'sess_lazy')) {
+    fail(name, 'expected exactly one lazy session tail messages fetch during switch', JSON.stringify(fetchCalls));
     return;
   }
   if (!fetchCalls.includes('/ui/v1/sessions/sess_lazy/state')) {
@@ -1191,13 +1452,13 @@ async function testSwitchToSessionClearsStaleActiveResponseWithoutToken() {
       if (url === '/ui/v1/sessions/sess_other/state') {
         return new Response(JSON.stringify({ active_run: false }), { status: 200, headers: { 'Content-Type': 'application/json' } });
       }
-      if (url === '/ui/v1/sessions/sess_other/messages') {
+      if (isTailMessagesURL(url, 'sess_other')) {
         return new Response(JSON.stringify({ messages: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
       }
       if (url === '/ui/v1/sessions/sess_stale/state') {
         return new Response(JSON.stringify({ active_run: false }), { status: 200, headers: { 'Content-Type': 'application/json' } });
       }
-      if (url === '/ui/v1/sessions/sess_stale/messages') {
+      if (isTailMessagesURL(url, 'sess_stale')) {
         return new Response(JSON.stringify({
           messages: [
             {
@@ -1227,8 +1488,8 @@ async function testSwitchToSessionClearsStaleActiveResponseWithoutToken() {
     return;
   }
 
-  if (!fetchCalls.includes('/ui/v1/sessions/sess_stale/messages')) {
-    fail(name, 'expected completed session sync to reload messages from server', JSON.stringify(fetchCalls));
+  if (!fetchCalls.some((url) => isTailMessagesURL(url, 'sess_stale'))) {
+    fail(name, 'expected completed session sync to reload tail messages from server', JSON.stringify(fetchCalls));
     return;
   }
 
@@ -1267,7 +1528,7 @@ async function testSessionState404ClearsStaleActiveResponse() {
           headers: { 'Content-Type': 'application/json' }
         });
       }
-      if (url === '/ui/v1/sessions/sess_state_404/messages') {
+      if (isTailMessagesURL(url, 'sess_state_404')) {
         return new Response(JSON.stringify({ messages: [] }), {
           status: 200,
           headers: { 'Content-Type': 'application/json' }
@@ -1307,8 +1568,8 @@ async function testSessionState404ClearsStaleActiveResponse() {
     fail(name, 'expected state 404 to produce inactive runtime state', JSON.stringify(runtimeState));
     return;
   }
-  if (!fetchCalls.includes('/ui/v1/sessions/sess_state_404/messages')) {
-    fail(name, 'expected inactive 404 sync to continue through message refresh', JSON.stringify(fetchCalls));
+  if (!fetchCalls.some((url) => isTailMessagesURL(url, 'sess_state_404'))) {
+    fail(name, 'expected inactive 404 sync to continue through tail message refresh', JSON.stringify(fetchCalls));
     return;
   }
   if (session.activeResponseId !== null || session.lastSequenceNumber !== 0) {
@@ -1343,7 +1604,7 @@ async function testIdleSessionSyncRescuesPendingInterruptCommit() {
           headers: { 'Content-Type': 'application/json' }
         });
       }
-      if (url === '/ui/v1/sessions/sess_interrupt/messages') {
+      if (isTailMessagesURL(url, 'sess_interrupt')) {
         return new Response(JSON.stringify({ messages: [] }), {
           status: 200,
           headers: { 'Content-Type': 'application/json' }
@@ -1612,7 +1873,7 @@ async function testTerminalSyncRequeuesPendingInterjectionAsFollowUp() {
           pending_interjection: { text: 'rescued prompt' }
         }), { status: 200, headers: { 'Content-Type': 'application/json' } });
       }
-      if (url === '/ui/v1/sessions/sess_reload/messages') {
+      if (isTailMessagesURL(url, 'sess_reload')) {
         return new Response(JSON.stringify({ messages: [] }), {
           status: 200,
           headers: { 'Content-Type': 'application/json' }
@@ -1727,7 +1988,7 @@ async function testSyncUsesServerProvidedPendingInterjectionId() {
           pending_interjection: { id: 'real-id', text: 'rescued prompt' }
         }), { status: 200, headers: { 'Content-Type': 'application/json' } });
       }
-      if (url === '/ui/v1/sessions/sess_reload/messages') {
+      if (isTailMessagesURL(url, 'sess_reload')) {
         return new Response(JSON.stringify({ messages: [] }), {
           status: 200,
           headers: { 'Content-Type': 'application/json' }
@@ -1917,7 +2178,7 @@ async function testSwitchToSearchOnlySessionHydratesResult() {
           headers: { 'Content-Type': 'application/json' }
         });
       }
-      if (url === '/ui/v1/sessions/sess_search_only/messages') {
+      if (isTailMessagesURL(url, 'sess_search_only')) {
         return new Response(JSON.stringify({
           messages: [
             { id: 'u1', role: 'user', parts: [{ type: 'text', text: 'waterparks' }], created_at: 1710000000000 },
@@ -1975,8 +2236,8 @@ async function testSwitchToSearchOnlySessionHydratesResult() {
     fail(name, 'expected hydrated server messages to be loaded', JSON.stringify(session.messages));
     return;
   }
-  if (!fetchCalls.includes('/ui/v1/sessions/sess_search_only/messages')) {
-    fail(name, 'expected messages endpoint to be fetched', JSON.stringify(fetchCalls));
+  if (!fetchCalls.some((url) => isTailMessagesURL(url, 'sess_search_only'))) {
+    fail(name, 'expected tail messages endpoint to be fetched', JSON.stringify(fetchCalls));
     return;
   }
 
@@ -1992,8 +2253,10 @@ async function testSwitchToSearchOnlySessionHydratesResult() {
   await testMergeServerSessionsMigratesInterruptBuffersToRealSessionId();
   await testDeveloperMessagesAreHidden();
   await testConvertServerMessagesAttachesToolResultImages();
-  await testSessionHistoryPaginationLoadsAdditionalPages();
-  await testSessionHistoryPaginationFailureClearsEtagForRetry();
+  await testSessionHistoryInitialLoadRequestsTailOnly();
+  await testScrollNearTopLoadsOlderPageAndPreservesViewport();
+  await testTailRefreshPreservesOlderHistoryCursor();
+  await testOlderPageFailureAllowsRetryWithoutCorruptingTail();
   await testSwitchToSessionSyncsWithoutTokenAndResumes();
   await testSwitchToSessionRecoversChangedActiveResponseFromSnapshot();
   await testSwitchToLazyLoadedSessionFetchesMessagesOnce();

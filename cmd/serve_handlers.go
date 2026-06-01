@@ -778,6 +778,50 @@ func parseSessionMessagesOffset(raw string) int {
 	return offset
 }
 
+func parseSessionMessagesTail(raw string) bool {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "1", "t", "true", "y", "yes", "on":
+		return true
+	default:
+		return false
+	}
+}
+
+func parseSessionMessagesBeforeSeq(raw string) int {
+	seq, err := strconv.Atoi(strings.TrimSpace(raw))
+	if err != nil || seq < 0 {
+		return 0
+	}
+	return seq
+}
+
+type sessionMessagePartEntry struct {
+	Type       string   `json:"type"`
+	Text       string   `json:"text,omitempty"`
+	ToolName   string   `json:"tool_name,omitempty"`
+	ToolArgs   string   `json:"tool_arguments,omitempty"`
+	ToolCallID string   `json:"tool_call_id,omitempty"`
+	ImageURL   string   `json:"image_url,omitempty"`
+	Images     []string `json:"images,omitempty"`
+	MimeType   string   `json:"mime_type,omitempty"`
+}
+
+type sessionMessageEntry struct {
+	ID        int64                     `json:"id"`
+	Sequence  int                       `json:"sequence"`
+	Role      string                    `json:"role"`
+	Parts     []sessionMessagePartEntry `json:"parts"`
+	CreatedAt int64                     `json:"created_at"`
+}
+
+type sessionMessagesResponse struct {
+	LastResponseID string                `json:"lastResponseId,omitempty"`
+	Messages       []sessionMessageEntry `json:"messages"`
+	HasMore        bool                  `json:"has_more"`
+	NextOffset     int                   `json:"next_offset,omitempty"`
+	NextBeforeSeq  int                   `json:"next_before_seq,omitempty"`
+}
+
 func imageExtensionForMediaType(contentType string) string {
 	mediaType, _, err := mime.ParseMediaType(contentType)
 	if err != nil {
@@ -1080,6 +1124,142 @@ func (s *serveServer) handleSessionsSearch(w http.ResponseWriter, r *http.Reques
 	writeJSONConditional(w, r, http.StatusOK, map[string]any{"sessions": result})
 }
 
+func (s *serveServer) getSessionMessagesPageDescending(ctx context.Context, sessionID string, beforeSeq, limit int) ([]session.Message, error) {
+	if pager, ok := s.store.(session.MessagesDescendingPager); ok {
+		return pager.GetMessagesPageDescending(ctx, sessionID, beforeSeq, limit)
+	}
+
+	// Fallback for tests/custom stores that have not implemented the optional
+	// reverse pager. The built-in SQLite and logging stores implement the
+	// efficient path above.
+	msgs, err := s.store.GetMessages(ctx, sessionID, 0, 0)
+	if err != nil {
+		return nil, err
+	}
+	capHint := len(msgs)
+	if limit > 0 && limit < capHint {
+		capHint = limit
+	}
+	page := make([]session.Message, 0, capHint)
+	for i := len(msgs) - 1; i >= 0; i-- {
+		if beforeSeq > 0 && msgs[i].Sequence >= beforeSeq {
+			continue
+		}
+		page = append(page, msgs[i])
+		if limit > 0 && len(page) >= limit {
+			break
+		}
+	}
+	return page, nil
+}
+
+func (s *serveServer) sessionMessageEntries(msgs []session.Message) []sessionMessageEntry {
+	result := make([]sessionMessageEntry, 0, len(msgs))
+	for _, msg := range msgs {
+		// System and developer messages contain internal prompts — never expose to UI clients.
+		if msg.Role == llm.RoleSystem || msg.Role == llm.RoleDeveloper {
+			continue
+		}
+		entry := sessionMessageEntry{
+			ID:        msg.ID,
+			Sequence:  msg.Sequence,
+			Role:      string(msg.Role),
+			CreatedAt: msg.CreatedAt.UnixMilli(),
+		}
+		if msg.Role == llm.RoleEvent {
+			if marker, ok := llm.ParseModelSwapMarker(msg.ToLLMMessage()); ok {
+				entry.Parts = append(entry.Parts, sessionMessagePartEntry{Type: "model_swap", Text: marker.DisplayText})
+			} else {
+				for _, p := range msg.Parts {
+					if p.Type == llm.PartText && p.Text != "" {
+						entry.Parts = append(entry.Parts, sessionMessagePartEntry{Type: "text", Text: p.Text})
+					}
+				}
+			}
+			if len(entry.Parts) == 0 {
+				entry.Parts = []sessionMessagePartEntry{}
+			}
+			result = append(result, entry)
+			continue
+		}
+		for _, p := range msg.Parts {
+			switch p.Type {
+			case llm.PartText:
+				if p.Text != "" {
+					entry.Parts = append(entry.Parts, sessionMessagePartEntry{
+						Type: "text",
+						Text: p.Text,
+					})
+				}
+			case llm.PartImage:
+				if imageURL := s.sessionMessageImageURL(p); imageURL != "" {
+					mimeType := ""
+					if p.ImageData != nil {
+						mimeType = p.ImageData.MediaType
+					}
+					entry.Parts = append(entry.Parts, sessionMessagePartEntry{
+						Type:     "image",
+						ImageURL: imageURL,
+						MimeType: mimeType,
+					})
+				}
+			case llm.PartToolCall:
+				if p.ToolCall != nil {
+					pe := sessionMessagePartEntry{
+						Type:       "tool_call",
+						ToolName:   p.ToolCall.Name,
+						ToolCallID: p.ToolCall.ID,
+					}
+					if len(p.ToolCall.Arguments) > 0 {
+						pe.ToolArgs = string(p.ToolCall.Arguments)
+					}
+					entry.Parts = append(entry.Parts, pe)
+				}
+			case llm.PartToolResult:
+				if p.ToolResult != nil && len(p.ToolResult.Images) > 0 {
+					if imageURLs := s.toolImageURLs(p.ToolResult.Images); len(imageURLs) > 0 {
+						entry.Parts = append(entry.Parts, sessionMessagePartEntry{
+							Type:       "tool_result",
+							ToolName:   p.ToolResult.Name,
+							ToolCallID: p.ToolResult.ID,
+							Images:     imageURLs,
+						})
+					}
+				}
+			}
+		}
+		if len(entry.Parts) == 0 {
+			entry.Parts = []sessionMessagePartEntry{}
+		}
+		result = append(result, entry)
+	}
+	return result
+}
+
+func (s *serveServer) writeSessionMessagesResponse(w http.ResponseWriter, r *http.Request, sessionID string, resp sessionMessagesResponse) {
+	body, err := json.Marshal(resp)
+	if err != nil {
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	etagHash := sha256.New()
+	if meta, metaErr := s.store.Get(r.Context(), sessionID); metaErr == nil && meta != nil {
+		_, _ = io.WriteString(etagHash, strconv.FormatInt(meta.UpdatedAt.UnixMilli(), 10))
+		_, _ = io.WriteString(etagHash, "\n")
+	}
+	_, _ = etagHash.Write(body)
+	etag := `"` + hex.EncodeToString(etagHash.Sum(nil)) + `"`
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("ETag", etag)
+	if uiETagMatches(r.Header.Get("If-None-Match"), etag) {
+		w.Header().Set("Content-Type", "application/json")
+		uiAddVary(w.Header(), "Accept-Encoding")
+		w.WriteHeader(http.StatusNotModified)
+		return
+	}
+	writeJSONGzipBody(w, r, http.StatusOK, body)
+}
+
 func (s *serveServer) handleSessionByID(w http.ResponseWriter, r *http.Request) {
 	// Parse /v1/sessions/{id}/...
 	path := strings.TrimPrefix(r.URL.Path, "/v1/sessions/")
@@ -1192,148 +1372,62 @@ func (s *serveServer) handleSessionByID(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	limit := parseSessionMessagesLimit(r.URL.Query().Get("limit"))
-	offset := parseSessionMessagesOffset(r.URL.Query().Get("offset"))
-	msgs, err := s.store.GetMessages(r.Context(), sessionID, limit+1, offset)
-	if err != nil {
-		writeOpenAIError(w, http.StatusInternalServerError, "server_error", "failed to get messages")
-		return
+	query := r.URL.Query()
+	limit := parseSessionMessagesLimit(query.Get("limit"))
+	_, hasBeforeSeqParam := query["before_seq"]
+	reverseMode := parseSessionMessagesTail(query.Get("tail")) || hasBeforeSeqParam
+
+	var msgs []session.Message
+	var hasMore bool
+	var nextOffset int
+	var nextBeforeSeq int
+	var err error
+
+	if reverseMode {
+		beforeSeq := parseSessionMessagesBeforeSeq(query.Get("before_seq"))
+		descending, pageErr := s.getSessionMessagesPageDescending(r.Context(), sessionID, beforeSeq, limit+1)
+		if pageErr != nil {
+			writeOpenAIError(w, http.StatusInternalServerError, "server_error", "failed to get messages")
+			return
+		}
+		hasMore = len(descending) > limit
+		if hasMore {
+			descending = descending[:limit]
+		}
+		if hasMore && len(descending) > 0 {
+			nextBeforeSeq = descending[len(descending)-1].Sequence
+		}
+		msgs = make([]session.Message, len(descending))
+		for i := range descending {
+			msgs[len(descending)-1-i] = descending[i]
+		}
+	} else {
+		offset := parseSessionMessagesOffset(query.Get("offset"))
+		msgs, err = s.store.GetMessages(r.Context(), sessionID, limit+1, offset)
+		if err != nil {
+			writeOpenAIError(w, http.StatusInternalServerError, "server_error", "failed to get messages")
+			return
+		}
+		hasMore = len(msgs) > limit
+		if hasMore {
+			msgs = msgs[:limit]
+		}
+		nextOffset = offset + len(msgs)
 	}
-	hasMore := len(msgs) > limit
+
+	resp := sessionMessagesResponse{
+		LastResponseID: s.latestDurableResponseIDForSession(r.Context(), sessionID),
+		Messages:       s.sessionMessageEntries(msgs),
+		HasMore:        hasMore,
+	}
 	if hasMore {
-		msgs = msgs[:limit]
-	}
-	nextOffset := offset + len(msgs)
-
-	type partEntry struct {
-		Type       string   `json:"type"`
-		Text       string   `json:"text,omitempty"`
-		ToolName   string   `json:"tool_name,omitempty"`
-		ToolArgs   string   `json:"tool_arguments,omitempty"`
-		ToolCallID string   `json:"tool_call_id,omitempty"`
-		ImageURL   string   `json:"image_url,omitempty"`
-		Images     []string `json:"images,omitempty"`
-		MimeType   string   `json:"mime_type,omitempty"`
-	}
-
-	type messageEntry struct {
-		ID        int64       `json:"id"`
-		Role      string      `json:"role"`
-		Parts     []partEntry `json:"parts"`
-		CreatedAt int64       `json:"created_at"`
-	}
-
-	type messagesResponse struct {
-		LastResponseID string         `json:"lastResponseId,omitempty"`
-		Messages       []messageEntry `json:"messages"`
-		HasMore        bool           `json:"has_more"`
-		NextOffset     int            `json:"next_offset,omitempty"`
-	}
-
-	result := make([]messageEntry, 0, len(msgs))
-	for _, msg := range msgs {
-		// System and developer messages contain internal prompts — never expose to UI clients.
-		if msg.Role == llm.RoleSystem || msg.Role == llm.RoleDeveloper {
-			continue
+		if reverseMode {
+			resp.NextBeforeSeq = nextBeforeSeq
+		} else {
+			resp.NextOffset = nextOffset
 		}
-		entry := messageEntry{
-			ID:        msg.ID,
-			Role:      string(msg.Role),
-			CreatedAt: msg.CreatedAt.UnixMilli(),
-		}
-		if msg.Role == llm.RoleEvent {
-			if marker, ok := llm.ParseModelSwapMarker(msg.ToLLMMessage()); ok {
-				entry.Parts = append(entry.Parts, partEntry{Type: "model_swap", Text: marker.DisplayText})
-			} else {
-				for _, p := range msg.Parts {
-					if p.Type == llm.PartText && p.Text != "" {
-						entry.Parts = append(entry.Parts, partEntry{Type: "text", Text: p.Text})
-					}
-				}
-			}
-			if len(entry.Parts) == 0 {
-				entry.Parts = []partEntry{}
-			}
-			result = append(result, entry)
-			continue
-		}
-		for _, p := range msg.Parts {
-			switch p.Type {
-			case llm.PartText:
-				if p.Text != "" {
-					entry.Parts = append(entry.Parts, partEntry{
-						Type: "text",
-						Text: p.Text,
-					})
-				}
-			case llm.PartImage:
-				if imageURL := s.sessionMessageImageURL(p); imageURL != "" {
-					mimeType := ""
-					if p.ImageData != nil {
-						mimeType = p.ImageData.MediaType
-					}
-					entry.Parts = append(entry.Parts, partEntry{
-						Type:     "image",
-						ImageURL: imageURL,
-						MimeType: mimeType,
-					})
-				}
-			case llm.PartToolCall:
-				if p.ToolCall != nil {
-					pe := partEntry{
-						Type:       "tool_call",
-						ToolName:   p.ToolCall.Name,
-						ToolCallID: p.ToolCall.ID,
-					}
-					if len(p.ToolCall.Arguments) > 0 {
-						pe.ToolArgs = string(p.ToolCall.Arguments)
-					}
-					entry.Parts = append(entry.Parts, pe)
-				}
-			case llm.PartToolResult:
-				if p.ToolResult != nil && len(p.ToolResult.Images) > 0 {
-					if imageURLs := s.toolImageURLs(p.ToolResult.Images); len(imageURLs) > 0 {
-						entry.Parts = append(entry.Parts, partEntry{
-							Type:       "tool_result",
-							ToolName:   p.ToolResult.Name,
-							ToolCallID: p.ToolResult.ID,
-							Images:     imageURLs,
-						})
-					}
-				}
-			}
-		}
-		if len(entry.Parts) == 0 {
-			entry.Parts = []partEntry{}
-		}
-		result = append(result, entry)
 	}
-
-	resp := messagesResponse{LastResponseID: s.latestDurableResponseIDForSession(r.Context(), sessionID), Messages: result, HasMore: hasMore}
-	if hasMore {
-		resp.NextOffset = nextOffset
-	}
-	body, err := json.Marshal(resp)
-	if err != nil {
-		http.Error(w, "internal error", http.StatusInternalServerError)
-		return
-	}
-	etagHash := sha256.New()
-	if meta, metaErr := s.store.Get(r.Context(), sessionID); metaErr == nil && meta != nil {
-		_, _ = io.WriteString(etagHash, strconv.FormatInt(meta.UpdatedAt.UnixMilli(), 10))
-		_, _ = io.WriteString(etagHash, "\n")
-	}
-	_, _ = etagHash.Write(body)
-	etag := `"` + hex.EncodeToString(etagHash.Sum(nil)) + `"`
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("ETag", etag)
-	if uiETagMatches(r.Header.Get("If-None-Match"), etag) {
-		w.Header().Set("Content-Type", "application/json")
-		uiAddVary(w.Header(), "Accept-Encoding")
-		w.WriteHeader(http.StatusNotModified)
-		return
-	}
-	writeJSONGzipBody(w, r, http.StatusOK, body)
+	s.writeSessionMessagesResponse(w, r, sessionID, resp)
 }
 
 func (s *serveServer) handleSessionInterrupt(w http.ResponseWriter, r *http.Request, sessionID string) {

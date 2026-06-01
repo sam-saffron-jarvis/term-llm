@@ -4606,7 +4606,8 @@ func TestHandleSessionMessages_DefaultPagination(t *testing.T) {
 	var body struct {
 		LastResponseID string `json:"lastResponseId"`
 		Messages       []struct {
-			Parts []struct {
+			Sequence int `json:"sequence"`
+			Parts    []struct {
 				Text string `json:"text"`
 			} `json:"parts"`
 		} `json:"messages"`
@@ -4628,6 +4629,9 @@ func TestHandleSessionMessages_DefaultPagination(t *testing.T) {
 	if body.NextOffset != sessionMessagesPageSize {
 		t.Fatalf("next_offset = %d, want %d", body.NextOffset, sessionMessagesPageSize)
 	}
+	if body.Messages[0].Sequence != 0 {
+		t.Fatalf("first message sequence = %d, want 0", body.Messages[0].Sequence)
+	}
 	if got := body.Messages[0].Parts[0].Text; got != "msg-000" {
 		t.Fatalf("first message text = %q, want msg-000", got)
 	}
@@ -4644,7 +4648,8 @@ func TestHandleSessionMessages_DefaultPagination(t *testing.T) {
 	body = struct {
 		LastResponseID string `json:"lastResponseId"`
 		Messages       []struct {
-			Parts []struct {
+			Sequence int `json:"sequence"`
+			Parts    []struct {
 				Text string `json:"text"`
 			} `json:"parts"`
 		} `json:"messages"`
@@ -4668,6 +4673,106 @@ func TestHandleSessionMessages_DefaultPagination(t *testing.T) {
 	}
 	if got := body.Messages[0].Parts[0].Text; got != fmt.Sprintf("msg-%03d", sessionMessagesPageSize) {
 		t.Fatalf("page 2 first message text = %q, want %q", got, fmt.Sprintf("msg-%03d", sessionMessagesPageSize))
+	}
+}
+
+func TestHandleSessionMessages_TailPagination(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "sessions.db")
+	store, err := session.NewStore(session.Config{Enabled: true, Path: dbPath})
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+	sess := &session.Session{
+		ID:        "sess-tail",
+		Provider:  "mock",
+		Model:     "mock-model",
+		Mode:      session.ModeChat,
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+		Status:    session.StatusActive,
+	}
+	if err := store.Create(ctx, sess); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	for i := 0; i < sessionMessagesPageSize+5; i++ {
+		msg := session.NewMessage("sess-tail", llm.UserText(fmt.Sprintf("msg-%03d", i)), -1)
+		if err := store.AddMessage(ctx, "sess-tail", msg); err != nil {
+			t.Fatalf("AddMessage(%d): %v", i, err)
+		}
+	}
+
+	srv := &serveServer{store: store}
+	type messagePage struct {
+		Messages []struct {
+			Sequence int `json:"sequence"`
+			Parts    []struct {
+				Text string `json:"text"`
+			} `json:"parts"`
+		} `json:"messages"`
+		HasMore       bool `json:"has_more"`
+		NextOffset    int  `json:"next_offset"`
+		NextBeforeSeq int  `json:"next_before_seq"`
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/sessions/sess-tail/messages?tail=1&limit=50", nil)
+	rr := httptest.NewRecorder()
+	srv.handleSessionByID(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("tail status = %d, want 200", rr.Code)
+	}
+	var body messagePage
+	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode tail: %v", err)
+	}
+	if len(body.Messages) != 50 {
+		t.Fatalf("tail message count = %d, want 50", len(body.Messages))
+	}
+	if !body.HasMore {
+		t.Fatal("expected tail has_more=true")
+	}
+	if body.NextOffset != 0 {
+		t.Fatalf("tail next_offset = %d, want 0", body.NextOffset)
+	}
+	if body.NextBeforeSeq != 155 {
+		t.Fatalf("tail next_before_seq = %d, want 155", body.NextBeforeSeq)
+	}
+	if body.Messages[0].Sequence != 155 || body.Messages[len(body.Messages)-1].Sequence != 204 {
+		t.Fatalf("tail sequences = [%d..%d], want [155..204]", body.Messages[0].Sequence, body.Messages[len(body.Messages)-1].Sequence)
+	}
+	if got := body.Messages[0].Parts[0].Text; got != "msg-155" {
+		t.Fatalf("tail first message text = %q, want msg-155", got)
+	}
+	if got := body.Messages[len(body.Messages)-1].Parts[0].Text; got != "msg-204" {
+		t.Fatalf("tail last message text = %q, want msg-204", got)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, fmt.Sprintf("/v1/sessions/sess-tail/messages?before_seq=%d&limit=50", body.NextBeforeSeq), nil)
+	rr = httptest.NewRecorder()
+	srv.handleSessionByID(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("older page status = %d, want 200", rr.Code)
+	}
+	var older messagePage
+	if err := json.Unmarshal(rr.Body.Bytes(), &older); err != nil {
+		t.Fatalf("decode older page: %v", err)
+	}
+	if len(older.Messages) != 50 {
+		t.Fatalf("older page message count = %d, want 50", len(older.Messages))
+	}
+	if !older.HasMore {
+		t.Fatal("expected older page has_more=true")
+	}
+	if older.NextBeforeSeq != 105 {
+		t.Fatalf("older next_before_seq = %d, want 105", older.NextBeforeSeq)
+	}
+	if older.Messages[0].Sequence != 105 || older.Messages[len(older.Messages)-1].Sequence != 154 {
+		t.Fatalf("older page sequences = [%d..%d], want [105..154]", older.Messages[0].Sequence, older.Messages[len(older.Messages)-1].Sequence)
+	}
+	if got := older.Messages[0].Parts[0].Text; got != "msg-105" {
+		t.Fatalf("older first message text = %q, want msg-105", got)
 	}
 }
 

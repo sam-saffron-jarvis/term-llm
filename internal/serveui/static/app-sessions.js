@@ -295,15 +295,7 @@ const switchToSession = async (sessionId, options = {}) => {
 
   let preloadServerMessagesPromise = null;
   if (session._serverOnly) {
-    preloadServerMessagesPromise = loadServerSessionMessages(session.id, {
-      onInitialMessages: (messages) => {
-        mergeServerMessagesWithLocalState(session, messages);
-        persistAndRefreshShell();
-        if (session.id === state.activeSessionId) {
-          renderMessages(true);
-        }
-      }
-    });
+    preloadServerMessagesPromise = loadServerSessionMessages(session.id);
   }
 
   persistAndRefreshShell();
@@ -339,6 +331,44 @@ const switchToSession = async (sessionId, options = {}) => {
 };
 
 // ===== Server session helpers =====
+const safeServerIdToken = (value) => {
+  const token = String(value ?? '').trim();
+  return token ? token.replace(/[^A-Za-z0-9_-]/g, '_') : '';
+};
+
+const serverMessageRawKey = (msg) => {
+  if (!msg || typeof msg !== 'object') return '';
+  if (msg.sequence !== undefined && msg.sequence !== null && Number.isFinite(Number(msg.sequence))) {
+    return `seq:${Number(msg.sequence)}`;
+  }
+  if (msg.id !== undefined && msg.id !== null && String(msg.id).trim() !== '') {
+    return `id:${String(msg.id)}`;
+  }
+  return '';
+};
+
+const serverMessageBaseId = (msg) => {
+  if (!msg || typeof msg !== 'object') return generateId('msg');
+  if (msg.sequence !== undefined && msg.sequence !== null && Number.isFinite(Number(msg.sequence))) {
+    return `srv_seq_${Number(msg.sequence)}`;
+  }
+  if (msg.id !== undefined && msg.id !== null && String(msg.id).trim() !== '') {
+    const token = safeServerIdToken(msg.id);
+    if (token) return `srv_${token}`;
+  }
+  return generateId('msg');
+};
+
+const serverMessageSequence = (msg) => {
+  const seq = Number(msg?.sequence);
+  return Number.isFinite(seq) ? seq : null;
+};
+
+const serverMessageCreatedAt = (msg) => {
+  const created = Number(msg?.created_at);
+  return Number.isFinite(created) && created > 0 ? created : Date.now();
+};
+
 const convertServerMessages = (serverMessages) => {
   const result = [];
   let currentGroup = null;
@@ -365,10 +395,13 @@ const convertServerMessages = (serverMessages) => {
     }
   };
 
-  const ensureToolGroup = (created) => {
+  const toolGroupId = (msg, partIndex) => `${serverMessageBaseId(msg)}_tools_${partIndex}`;
+  const fallbackToolId = (msg, partIndex) => `${serverMessageBaseId(msg)}_tool_${partIndex}`;
+
+  const ensureToolGroup = (created, msg, partIndex) => {
     if (!currentGroup) {
       currentGroup = {
-        id: generateId('msg'),
+        id: toolGroupId(msg, partIndex),
         role: 'tool-group',
         tools: [],
         expanded: false,
@@ -379,10 +412,10 @@ const convertServerMessages = (serverMessages) => {
     return currentGroup;
   };
 
-  const attachToolResultImages = (part, created) => {
+  const attachToolResultImages = (part, created, msg, partIndex) => {
     const images = normalizeImages(part.images);
     if (images.length === 0) return;
-    const group = ensureToolGroup(created);
+    const group = ensureToolGroup(created, msg, partIndex);
     const callId = part.tool_call_id || '';
     let tool = callId ? group.tools.find((entry) => entry.id === callId) : null;
     if (!tool && part.tool_name) {
@@ -390,7 +423,7 @@ const convertServerMessages = (serverMessages) => {
     }
     if (!tool) {
       tool = {
-        id: callId || generateId('tool'),
+        id: callId || fallbackToolId(msg, partIndex),
         name: part.tool_name || 'tool',
         arguments: '',
         status: 'done',
@@ -404,7 +437,8 @@ const convertServerMessages = (serverMessages) => {
 
   for (const msg of serverMessages) {
     const parts = Array.isArray(msg.parts) ? msg.parts : [];
-    const created = msg.created_at || Date.now();
+    const created = serverMessageCreatedAt(msg);
+    const baseId = serverMessageBaseId(msg);
 
     if (msg.role === 'system' || msg.role === 'developer') continue;
 
@@ -412,7 +446,7 @@ const convertServerMessages = (serverMessages) => {
       flushGroup();
       const marker = parts.find((part) => part.type === 'model_swap') || parts.find((part) => part.type === 'text');
       result.push({
-        id: generateId('msg'),
+        id: baseId,
         role: 'model-swap',
         content: marker?.text || '↔ Model switch',
         created
@@ -438,7 +472,7 @@ const convertServerMessages = (serverMessages) => {
       }
 
       result.push({
-        id: generateId('msg'),
+        id: baseId,
         role: 'user',
         content: textParts.join('\n'),
         created,
@@ -448,18 +482,19 @@ const convertServerMessages = (serverMessages) => {
     }
 
     // Walk through assistant parts in order to preserve interleaving with tool calls.
-    for (const part of parts) {
+    for (let partIndex = 0; partIndex < parts.length; partIndex += 1) {
+      const part = parts[partIndex];
       if (part.type === 'text' && part.text) {
         flushGroup();
         result.push({
-          id: generateId('msg'),
+          id: `${baseId}_text_${partIndex}`,
           role: 'assistant',
           content: part.text,
           created
         });
       } else if (part.type === 'tool_call') {
-        const group = ensureToolGroup(created);
-        const toolId = part.tool_call_id || generateId('tool');
+        const group = ensureToolGroup(created, msg, partIndex);
+        const toolId = part.tool_call_id || fallbackToolId(msg, partIndex);
         let toolEntry = group.tools.find((entry) => entry.id === toolId);
         if (!toolEntry) {
           toolEntry = {
@@ -477,15 +512,15 @@ const convertServerMessages = (serverMessages) => {
         }
         appendUniqueImages(toolEntry, normalizeImages(part.images));
       } else if (part.type === 'tool_result') {
-        attachToolResultImages(part, created);
+        attachToolResultImages(part, created, msg, partIndex);
       }
     }
 
-    // If message had no recognized parts, emit text content if present
+    // If message had no recognized parts, emit empty assistant content if appropriate.
     if (parts.length === 0 && msg.role === 'assistant') {
       flushGroup();
       result.push({
-        id: generateId('msg'),
+        id: `${baseId}_empty`,
         role: 'assistant',
         content: '',
         created
@@ -497,18 +532,147 @@ const convertServerMessages = (serverMessages) => {
   return result;
 };
 
-const sessionMessagesEtag = new Map();
 const SESSION_MESSAGES_PAGE_SIZE = 200;
-// The serve UI session API uses stable offset pagination with a fixed page
-// size, so prefetch a small window of pages to avoid one RTT per history page.
-const SESSION_MESSAGES_PREFETCH_PAGES = 4;
+const SESSION_OLDER_LOAD_TOP_THRESHOLD_PX = 600;
 
-const fetchServerSessionMessagesPage = async (sessionId, { limit = 0, offset = 0, etag = '' } = {}) => {
+const findSessionById = (sessionId) => state.sessions.find((item) => item?.id === sessionId) || null;
+
+const ensureSessionHistory = (session) => {
+  if (!session || typeof session !== 'object') return null;
+  if (!session._history || typeof session._history !== 'object') {
+    session._history = {
+      rawMessages: [],
+      oldestSeq: 0,
+      hasMoreOlder: false,
+      loadingOlder: false,
+      loadedTail: false,
+      lastResponseId: ''
+    };
+  }
+  const history = session._history;
+  if (!Array.isArray(history.rawMessages)) history.rawMessages = [];
+  history.oldestSeq = Number.isFinite(Number(history.oldestSeq)) ? Number(history.oldestSeq) : 0;
+  history.hasMoreOlder = history.hasMoreOlder === true;
+  history.loadingOlder = history.loadingOlder === true;
+  history.loadedTail = history.loadedTail === true;
+  history.lastResponseId = String(history.lastResponseId || '').trim();
+  return history;
+};
+
+const oldestSequenceFromRawMessages = (messages) => {
+  let oldest = null;
+  for (const msg of Array.isArray(messages) ? messages : []) {
+    const seq = serverMessageSequence(msg);
+    if (seq === null) continue;
+    if (oldest === null || seq < oldest) oldest = seq;
+  }
+  return oldest;
+};
+
+const nextBeforeSeqFromResponse = (data) => {
+  const seq = Number(data?.next_before_seq);
+  return Number.isFinite(seq) && seq >= 0 ? seq : null;
+};
+
+const sortRawServerMessagesChronological = (messages) => messages
+  .map((msg, index) => ({ msg, index }))
+  .sort((a, b) => {
+    const aSeq = serverMessageSequence(a.msg);
+    const bSeq = serverMessageSequence(b.msg);
+    if (aSeq !== null && bSeq !== null && aSeq !== bSeq) return aSeq - bSeq;
+    const aCreated = Number(a.msg?.created_at) || 0;
+    const bCreated = Number(b.msg?.created_at) || 0;
+    if (aCreated !== bCreated) return aCreated - bCreated;
+    return a.index - b.index;
+  })
+  .map((entry) => entry.msg);
+
+const mergeRawServerMessages = (...messageLists) => {
+  const keyed = new Map();
+  const unkeyed = [];
+  for (const list of messageLists) {
+    for (const msg of Array.isArray(list) ? list : []) {
+      const key = serverMessageRawKey(msg);
+      if (key) {
+        keyed.set(key, msg);
+      } else {
+        unkeyed.push(msg);
+      }
+    }
+  }
+  return sortRawServerMessagesChronological([...keyed.values(), ...unkeyed]);
+};
+
+const rawServerMessagesOverlap = (left, right) => {
+  const keys = new Set((Array.isArray(left) ? left : []).map(serverMessageRawKey).filter(Boolean));
+  if (keys.size === 0) return false;
+  return (Array.isArray(right) ? right : []).some((msg) => {
+    const key = serverMessageRawKey(msg);
+    return key && keys.has(key);
+  });
+};
+
+const convertedMessagesFromHistory = (history) => {
+  const converted = convertServerMessages(history?.rawMessages || []);
+  const lastResponseId = String(history?.lastResponseId || '').trim();
+  if (lastResponseId) converted.lastResponseId = lastResponseId;
+  return converted;
+};
+
+const applyTailMessagesToSessionHistory = (sessionId, data) => {
+  const rawTail = Array.isArray(data?.messages) ? data.messages.slice() : [];
+  const lastResponseId = String(data?.lastResponseId || '').trim();
+  const session = findSessionById(sessionId);
+  if (!session) {
+    const converted = convertServerMessages(rawTail);
+    if (lastResponseId) converted.lastResponseId = lastResponseId;
+    return converted;
+  }
+
+  const history = ensureSessionHistory(session);
+  const hadRawMessages = history.rawMessages.length > 0;
+  const overlapsExisting = hadRawMessages && rawServerMessagesOverlap(history.rawMessages, rawTail);
+  const previousHasMoreOlder = history.hasMoreOlder === true;
+  const previousOldestSeq = Number(history.oldestSeq) || 0;
+
+  history.rawMessages = overlapsExisting
+    ? mergeRawServerMessages(history.rawMessages, rawTail)
+    : mergeRawServerMessages(rawTail);
+  history.loadedTail = true;
+  history.loadingOlder = false;
+  history.lastResponseId = lastResponseId;
+
+  if (overlapsExisting) {
+    history.hasMoreOlder = previousHasMoreOlder;
+  } else {
+    history.hasMoreOlder = data?.has_more === true;
+  }
+
+  const oldestSeq = oldestSequenceFromRawMessages(history.rawMessages);
+  const responseCursor = nextBeforeSeqFromResponse(data);
+  if (overlapsExisting && previousOldestSeq > 0) {
+    // Tail refreshes can overlap the loaded window after older pages have been
+    // prepended. Keep the existing older cursor; the tail page cursor only
+    // describes the oldest row in the tail page, not the oldest row already
+    // loaded in the combined window.
+    history.oldestSeq = previousOldestSeq;
+  } else {
+    history.oldestSeq = history.hasMoreOlder && responseCursor !== null
+      ? responseCursor
+      : (oldestSeq !== null ? oldestSeq : (responseCursor !== null ? responseCursor : 0));
+  }
+
+  return convertedMessagesFromHistory(history);
+};
+
+const fetchServerSessionMessagesPage = async (sessionId, { limit = 0, offset = 0, tail = false, beforeSeq = 0, etag = '' } = {}) => {
   const headers = {};
   if (state.token) headers.Authorization = `Bearer ${state.token}`;
   if (etag) headers['If-None-Match'] = etag;
 
   const params = new URLSearchParams();
+  if (tail) params.set('tail', '1');
+  if (beforeSeq > 0) params.set('before_seq', String(beforeSeq));
   if (limit > 0) params.set('limit', String(limit));
   if (offset > 0) params.set('offset', String(offset));
   const query = params.toString();
@@ -525,76 +689,100 @@ const fetchServerSessionMessagesPage = async (sessionId, { limit = 0, offset = 0
   };
 };
 
-const loadServerSessionMessages = async (sessionId, { onInitialMessages } = {}) => {
+const loadServerSessionMessages = async (sessionId) => {
   try {
-    const first = await fetchServerSessionMessagesPage(sessionId, { etag: sessionMessagesEtag.get(sessionId) || '' });
-    if (first === false) return false;
-    if (!first) return null;
-
-    const allMessages = first.data.messages.slice();
-    let hasMore = first.data.has_more === true;
-    let nextOffset = Number(first.data.next_offset);
-    const lastResponseId = String(first.data.lastResponseId || '').trim();
-    const seenOffsets = new Set();
-
-    if (hasMore && typeof onInitialMessages === 'function') {
-      const initialMessages = convertServerMessages(allMessages);
-      if (lastResponseId) initialMessages.lastResponseId = lastResponseId;
-      onInitialMessages(initialMessages);
-    }
-
-    while (hasMore) {
-      const offsets = [];
-      let candidateOffset = nextOffset;
-      while (offsets.length < SESSION_MESSAGES_PREFETCH_PAGES) {
-        if (!Number.isFinite(candidateOffset) || candidateOffset < 0 || seenOffsets.has(candidateOffset)) {
-          sessionMessagesEtag.delete(sessionId);
-          return null;
-        }
-        seenOffsets.add(candidateOffset);
-        offsets.push(candidateOffset);
-        candidateOffset += SESSION_MESSAGES_PAGE_SIZE;
-      }
-
-      const pages = await Promise.all(offsets.map((offset) => (
-        fetchServerSessionMessagesPage(sessionId, { limit: SESSION_MESSAGES_PAGE_SIZE, offset })
-      )));
-
-      let reachedEnd = false;
-      for (let index = 0; index < pages.length; index += 1) {
-        const page = pages[index];
-        const offset = offsets[index];
-        if (!page) {
-          sessionMessagesEtag.delete(sessionId);
-          return null;
-        }
-        allMessages.push(...page.data.messages);
-        if (page.data.has_more === true) {
-          nextOffset = Number(page.data.next_offset);
-          if (!Number.isFinite(nextOffset) || nextOffset <= offset) {
-            sessionMessagesEtag.delete(sessionId);
-            return null;
-          }
-          continue;
-        }
-        hasMore = false;
-        nextOffset = Number(page.data.next_offset);
-        reachedEnd = true;
-        break;
-      }
-
-      if (!reachedEnd) {
-        hasMore = true;
-      }
-    }
-
-    const converted = convertServerMessages(allMessages);
-    if (lastResponseId) converted.lastResponseId = lastResponseId;
-    if (first.etag) sessionMessagesEtag.set(sessionId, first.etag);
-    return converted;
+    const page = await fetchServerSessionMessagesPage(sessionId, {
+      tail: true,
+      limit: SESSION_MESSAGES_PAGE_SIZE
+    });
+    if (page === false) return false;
+    if (!page) return null;
+    return applyTailMessagesToSessionHistory(sessionId, page.data);
   } catch {
     return null;
   }
+};
+
+const loadOlderSessionMessages = async (session) => {
+  if (!session || session.id !== state.activeSessionId) return false;
+  if (state.abortController || sessionHasInProgressState(session)) return false;
+
+  const history = ensureSessionHistory(session);
+  if (!history.loadedTail || !history.hasMoreOlder || history.loadingOlder) return false;
+
+  const beforeSeq = Number(history.oldestSeq);
+  if (!Number.isFinite(beforeSeq) || beforeSeq <= 0) {
+    history.hasMoreOlder = false;
+    return false;
+  }
+
+  const chatScroll = elements.chatScroll;
+  const oldHeight = Number(chatScroll?.scrollHeight) || 0;
+  const oldTop = Number(chatScroll?.scrollTop) || 0;
+
+  history.loadingOlder = true;
+  try {
+    const page = await fetchServerSessionMessagesPage(session.id, {
+      beforeSeq,
+      limit: SESSION_MESSAGES_PAGE_SIZE
+    });
+    if (!page || page === false) return false;
+
+    const rawOlder = Array.isArray(page.data.messages) ? page.data.messages.slice() : [];
+    if (rawOlder.length === 0) {
+      const emptyPageCursor = nextBeforeSeqFromResponse(page.data);
+      if (page.data.has_more === true && emptyPageCursor !== null && emptyPageCursor < beforeSeq) {
+        history.oldestSeq = emptyPageCursor;
+        history.hasMoreOlder = true;
+      } else {
+        history.hasMoreOlder = false;
+      }
+      return false;
+    }
+
+    const previousRaw = history.rawMessages.slice();
+    history.rawMessages = mergeRawServerMessages(rawOlder, previousRaw);
+    const oldestSeq = oldestSequenceFromRawMessages(history.rawMessages);
+    const responseCursor = nextBeforeSeqFromResponse(page.data);
+    history.oldestSeq = page.data.has_more === true && responseCursor !== null
+      ? responseCursor
+      : (oldestSeq !== null ? oldestSeq : (responseCursor !== null ? responseCursor : beforeSeq));
+    history.hasMoreOlder = page.data.has_more === true;
+    const lastResponseId = String(page.data.lastResponseId || '').trim();
+    if (lastResponseId) history.lastResponseId = lastResponseId;
+
+    const converted = convertedMessagesFromHistory(history);
+    mergeServerMessagesWithLocalState(session, converted);
+    renderSidebar();
+
+    if (session.id === state.activeSessionId) {
+      noteUserScrollIntent();
+      renderMessages(false);
+      const newHeight = Number(chatScroll?.scrollHeight) || oldHeight;
+      chatScroll.scrollTop = oldTop + Math.max(0, newHeight - oldHeight);
+    }
+    return true;
+  } catch {
+    return false;
+  } finally {
+    history.loadingOlder = false;
+  }
+};
+
+const maybeLoadOlderSessionMessages = async () => {
+  const session = getActiveSession();
+  if (!session) return false;
+  const history = ensureSessionHistory(session);
+  if (!history.loadedTail || !history.hasMoreOlder || history.loadingOlder) return false;
+  if (state.abortController || sessionHasInProgressState(session)) return false;
+
+  const chatScroll = elements.chatScroll;
+  const scrollTop = Number(chatScroll?.scrollTop) || 0;
+  const clientHeight = Number(chatScroll?.clientHeight) || 0;
+  const threshold = Math.max(SESSION_OLDER_LOAD_TOP_THRESHOLD_PX, clientHeight * 2);
+  if (scrollTop > threshold) return false;
+
+  return loadOlderSessionMessages(session);
 };
 
 const loadServerSessionState = async (sessionId) => {
@@ -1148,16 +1336,7 @@ const hydrateActiveSessionAfterStartup = async () => {
   const statePromise = syncActiveSessionFromServer(active, true, { skipMessagesFetch: Boolean(active._serverOnly) });
 
   const preloadMessagesPromise = active._serverOnly
-    ? loadServerSessionMessages(active.id, {
-      onInitialMessages: (messages) => {
-        mergeServerMessagesWithLocalState(active, messages);
-        saveSessions();
-        renderSidebar();
-        if (active.id === state.activeSessionId) {
-          renderMessages(true);
-        }
-      }
-    })
+    ? loadServerSessionMessages(active.id)
     : null;
 
   if (preloadMessagesPromise) {
@@ -1330,6 +1509,7 @@ elements.chatScroll.addEventListener('touchmove', (event) => {
 
 elements.chatScroll.addEventListener('scroll', () => {
   noteScrollPositionChanged();
+  void maybeLoadOlderSessionMessages();
 });
 
 window.addEventListener('keydown', (event) => {
@@ -1611,6 +1791,8 @@ initialize();
 Object.assign(app, {
   convertServerMessages,
   loadServerSessionMessages,
+  loadOlderSessionMessages,
+  maybeLoadOlderSessionMessages,
   loadServerSessionState,
   mergeServerMessagesWithLocalState,
   stopSessionStatePoll,
