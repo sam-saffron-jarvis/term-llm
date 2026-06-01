@@ -551,6 +551,58 @@ const app = loadAppCore();
   pass(name);
 })();
 
+(function testForceScrollBypassesThrottle() {
+  const name = 'force scroll bypasses throttle delay';
+  let nowMs = 1000;
+  let clearedTimer = 0;
+  const timers = [];
+  const chatScroll = Object.assign(makeNode(), {
+    scrollTop: 0,
+    scrollHeight: 1000,
+    clientHeight: 100,
+  });
+  const testApp = loadAppCoreWith({
+    nodeOverrides: { chatScroll },
+    now: () => nowMs,
+    timerOverrides: {
+      setTimeout(fn, delay) {
+        timers.push({ fn, delay });
+        return timers.length;
+      },
+      clearTimeout(id) {
+        clearedTimer = id;
+      },
+    },
+  });
+
+  testApp.state.autoScroll = true;
+  testApp.scrollToBottom();
+  nowMs = 1100;
+  chatScroll.scrollHeight = 1100;
+  testApp.scrollToBottom();
+  if (chatScroll.scrollTop !== 1000 || timers.length !== 1) {
+    fail(name, 'expected non-forced scroll to be throttled before forcing', JSON.stringify({ scrollTop: chatScroll.scrollTop, timers: timers.length }));
+    return;
+  }
+
+  chatScroll.scrollHeight = 1200;
+  testApp.scrollToBottom(true);
+  if (clearedTimer !== 1) {
+    fail(name, `expected forced scroll to clear pending trailing timer, got ${clearedTimer}`);
+    return;
+  }
+  if (chatScroll.scrollTop !== 1200) {
+    fail(name, `expected forced scroll to bottom immediately, got ${chatScroll.scrollTop}`);
+    return;
+  }
+  if (testApp.state.autoScroll !== true) {
+    fail(name, 'forced scroll should restore autoScroll');
+    return;
+  }
+
+  pass(name);
+})();
+
 (function testPendingScrollDoesNotFightUserScrollIntent() {
   const name = 'pending scroll does not fight user scroll intent';
   let nowMs = 1000;

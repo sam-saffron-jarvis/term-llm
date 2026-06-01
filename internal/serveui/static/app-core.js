@@ -740,9 +740,11 @@ const performScrollToBottom = (force = false) => {
 const scrollToBottom = (force = false) => {
   if (!elements.chatScroll) return;
   if (force) {
-    state.autoScroll = true;
+    clearPendingScrollToBottom();
+    performScrollToBottom(true);
+    return;
   }
-  if (!(force || state.autoScroll)) {
+  if (!state.autoScroll) {
     clearPendingScrollToBottom();
     return;
   }
