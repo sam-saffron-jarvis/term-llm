@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -19,6 +20,7 @@ import (
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/mcphttp"
+	"github.com/samsaffron/term-llm/internal/procutil"
 )
 
 // claudeStderrTailMaxLines caps the number of trailing stderr lines we retain
@@ -61,6 +63,8 @@ var mcpCallCounter atomic.Int64
 
 // getEuid returns the effective user ID. Overridable in tests.
 var getEuid = os.Geteuid
+
+var claudeCommandWaitDelay = time.Second
 
 // ClaudeBinProvider implements Provider using the claude CLI binary.
 // This provider shells out to the claude command for inference,
@@ -724,6 +728,25 @@ func shellQuote(s string) string {
 	return s
 }
 
+func (p *ClaudeBinProvider) prepareClaudeCommand(ctx context.Context, args []string, effort string) (*exec.Cmd, io.WriteCloser, func(), error) {
+	cmd := exec.CommandContext(ctx, "claude", args...)
+	cmd.WaitDelay = claudeCommandWaitDelay
+	cmd.Env = p.buildCommandEnv(effort)
+
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("failed to get stdin pipe: %w", err)
+	}
+
+	cleanup, err := procutil.PrepareCommand(cmd)
+	if err != nil {
+		_ = stdin.Close()
+		return nil, nil, nil, fmt.Errorf("failed to prepare claude command: %w", err)
+	}
+
+	return cmd, stdin, cleanup, nil
+}
+
 // runClaudeCommand executes the claude CLI binary with the given arguments and prompt,
 // parsing its streaming JSON output into events. Returns nil on success.
 func (p *ClaudeBinProvider) runClaudeCommand(
@@ -749,14 +772,11 @@ func (p *ClaudeBinProvider) runClaudeCommand(
 		fmt.Fprintln(os.Stderr, "=================================")
 	}
 
-	cmd := exec.CommandContext(ctx, "claude", args...)
-	cmd.Env = p.buildCommandEnv(effort)
-
-	// Set up stdin pipe for the prompt
-	stdin, err := cmd.StdinPipe()
+	cmd, stdin, cleanup, err := p.prepareClaudeCommand(ctx, args, effort)
 	if err != nil {
-		return fmt.Errorf("failed to get stdin pipe: %w", err)
+		return err
 	}
+	defer cleanup()
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -776,6 +796,12 @@ func (p *ClaudeBinProvider) runClaudeCommand(
 		toolReqCh: make(chan claudeToolRequest, 64),
 		done:      make(chan struct{}),
 	}
+	var bridgeDoneOnce sync.Once
+	stopScanner := func() {
+		bridgeDoneOnce.Do(func() {
+			close(bridge.done)
+		})
+	}
 	p.eventsMu.Lock()
 	p.currentBridge = bridge
 	p.currentEvents = send.ch
@@ -787,7 +813,7 @@ func (p *ClaudeBinProvider) runClaudeCommand(
 			p.currentEvents = nil
 		}
 		p.eventsMu.Unlock()
-		close(bridge.done)
+		stopScanner()
 	}()
 
 	// Capture stderr in a bounded ring buffer so we can include a tail
@@ -850,9 +876,17 @@ func (p *ClaudeBinProvider) runClaudeCommand(
 
 	lastUsage, toolsExecuted, handledTerminalResult, err := p.dispatchClaudeEvents(ctx, lineCh, bridge.toolReqCh, debug, send)
 	if err != nil {
-		// Kill the process if dispatch failed (e.g., context cancelled)
-		// to avoid orphan processes.
-		cmd.Process.Kill()
+		// Unblock the stdout scanner before waiting on scanErrCh. If the
+		// downstream event consumer stopped reading, the scanner may be stuck
+		// trying to send into a full lineCh after dispatch returns early.
+		stopScanner()
+		// Kill the entire process group if dispatch failed (e.g., context cancelled)
+		// so helper descendants do not keep the stdio pipes open.
+		if cmd.Cancel != nil {
+			_ = cmd.Cancel()
+		} else if cmd.Process != nil {
+			_ = cmd.Process.Kill()
+		}
 	}
 
 	// Wait for scanner to finish BEFORE cmd.Wait().

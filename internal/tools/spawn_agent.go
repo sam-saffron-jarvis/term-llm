@@ -17,6 +17,7 @@ type SpawnAgentArgs struct {
 	AgentName string `json:"agent_name"`        // Required: name of the agent to spawn
 	Prompt    string `json:"prompt"`            // Required: task/prompt for the sub-agent
 	Timeout   int    `json:"timeout,omitempty"` // Optional: timeout in seconds (default 300)
+	Model     string `json:"model,omitempty"`   // Optional: per-call model override (model, alias, or provider:model)
 }
 
 // SpawnAgentResult is the result returned by spawn_agent.
@@ -182,7 +183,8 @@ Guidelines:
 - Spawn multiple agents concurrently for independent analysis tasks
 - Each agent runs with its own context and tools
 - Results are returned when the agent completes
-- Use descriptive prompts that give the agent clear objectives`,
+- Use descriptive prompts that give the agent clear objectives
+- Optionally set model when the user explicitly asks for a specific model/provider for this sub-agent`,
 		Schema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -199,6 +201,10 @@ Guidelines:
 					"description": "Optional timeout in seconds (default 300, max 3600)",
 					"minimum":     10,
 					"maximum":     3600,
+				},
+				"model": map[string]any{
+					"type":        "string",
+					"description": "Optional model override for this sub-agent call. Supports a model name, an alias, or provider:model format. If omitted, the agent default/configured spawn model is used.",
 				},
 			},
 			"required":             []string{"agent_name", "prompt"},
@@ -289,7 +295,11 @@ func (t *SpawnAgentTool) Execute(ctx context.Context, args json.RawMessage) (llm
 	// Get callback and call ID for event bubbling
 	cb := t.GetEventCallback()
 	callID := llm.CallIDFromContext(ctx)
-	opts := SpawnAgentRunOptions{ModelOverride: strings.TrimSpace(t.config.AgentModels[a.AgentName])}
+	modelOverride := strings.TrimSpace(a.Model)
+	if modelOverride == "" {
+		modelOverride = strings.TrimSpace(t.config.AgentModels[a.AgentName])
+	}
+	opts := SpawnAgentRunOptions{ModelOverride: modelOverride}
 	runnerWithOptions, supportsOptions := runner.(SpawnAgentRunnerWithOptions)
 
 	if cb != nil && callID != "" {

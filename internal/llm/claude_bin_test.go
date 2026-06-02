@@ -131,6 +131,27 @@ func TestClaudeBinProvider_CleanupTurn_DoesNotStopMCPServer(t *testing.T) {
 	}
 }
 
+func TestClaudeBinProvider_prepareClaudeCommand_ConfiguresProcessGroupAndWaitDelay(t *testing.T) {
+	provider := NewClaudeBinProvider("sonnet", nil)
+
+	cmd, stdin, cleanup, err := provider.prepareClaudeCommand(context.Background(), []string{"--version"}, "")
+	if err != nil {
+		t.Fatalf("prepareClaudeCommand failed: %v", err)
+	}
+	defer cleanup()
+	defer stdin.Close()
+
+	if cmd.WaitDelay != claudeCommandWaitDelay {
+		t.Fatalf("WaitDelay = %v, want %v", cmd.WaitDelay, claudeCommandWaitDelay)
+	}
+	if cmd.SysProcAttr == nil || !cmd.SysProcAttr.Setpgid {
+		t.Fatal("expected claude subprocess to run in its own process group")
+	}
+	if cmd.Cancel == nil {
+		t.Fatal("expected claude subprocess to install process-group cancellation")
+	}
+}
+
 func TestSafeSendEvent_ClosedChannel(t *testing.T) {
 	// Test that safeSendEvent doesn't panic on closed channel
 	ch := make(chan Event)
@@ -497,6 +518,47 @@ func TestHandleClaudeLine_ContextCancelledDoesNotBlock(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "canceled") {
 		t.Fatalf("expected context cancellation error, got %v", err)
+	}
+}
+
+func TestRunClaudeCommand_UnblocksScannerWhenEventConsumerStopsReading(t *testing.T) {
+	provider := NewClaudeBinProvider("sonnet", nil)
+	dir := t.TempDir()
+	scriptPath := dir + "/claude"
+	script := `#!/bin/sh
+	i=0
+	while [ "$i" -lt 400 ]; do
+		printf '%s\n' '{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"x"}}}'
+		i=$((i+1))
+	done
+`
+	if err := os.WriteFile(scriptPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake claude: %v", err)
+	}
+	path := dir
+	if existing := os.Getenv("PATH"); existing != "" {
+		path += ":" + existing
+	}
+	t.Setenv("PATH", path)
+
+	events := make(chan Event)
+	close(events)
+
+	done := make(chan error, 1)
+	go func() {
+		done <- provider.runClaudeCommand(context.Background(), nil, "", "prompt", false, eventSender{ctx: context.Background(), ch: events})
+	}()
+
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("expected stream closed error")
+		}
+		if !strings.Contains(err.Error(), "stream closed") {
+			t.Fatalf("expected stream closed error, got %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("runClaudeCommand hung waiting for stdout scanner to stop")
 	}
 }
 

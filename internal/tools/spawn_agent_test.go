@@ -26,9 +26,10 @@ type mockRunner struct {
 }
 
 type mockRunnerCall struct {
-	AgentName string
-	Prompt    string
-	Depth     int
+	AgentName     string
+	Prompt        string
+	Depth         int
+	ModelOverride string
 }
 
 func newMockRunner() *mockRunner {
@@ -65,7 +66,25 @@ func (m *mockRunner) SetSessionID(sessionID string) *mockRunner {
 	return m
 }
 
+func (m *mockRunner) RunAgentWithOptions(ctx context.Context, agentName string, prompt string, depth int, opts SpawnAgentRunOptions) (SpawnAgentRunResult, error) {
+	return m.runAgent(ctx, agentName, prompt, depth, opts)
+}
+
+func (m *mockRunner) RunAgentWithCallback(ctx context.Context, agentName string, prompt string, depth int,
+	callID string, cb SubagentEventCallback) (SpawnAgentRunResult, error) {
+	return m.RunAgent(ctx, agentName, prompt, depth)
+}
+
+func (m *mockRunner) RunAgentWithCallbackAndOptions(ctx context.Context, agentName string, prompt string, depth int,
+	callID string, cb SubagentEventCallback, opts SpawnAgentRunOptions) (SpawnAgentRunResult, error) {
+	return m.RunAgentWithOptions(ctx, agentName, prompt, depth, opts)
+}
+
 func (m *mockRunner) RunAgent(ctx context.Context, agentName string, prompt string, depth int) (SpawnAgentRunResult, error) {
+	return m.runAgent(ctx, agentName, prompt, depth, SpawnAgentRunOptions{})
+}
+
+func (m *mockRunner) runAgent(ctx context.Context, agentName string, prompt string, depth int, opts SpawnAgentRunOptions) (SpawnAgentRunResult, error) {
 	// Track concurrent execution
 	running := atomic.AddInt32(&m.runningCount, 1)
 	defer atomic.AddInt32(&m.runningCount, -1)
@@ -85,9 +104,10 @@ func (m *mockRunner) RunAgent(ctx context.Context, agentName string, prompt stri
 
 	m.mu.Lock()
 	m.calls = append(m.calls, mockRunnerCall{
-		AgentName: agentName,
-		Prompt:    prompt,
-		Depth:     depth,
+		AgentName:     agentName,
+		Prompt:        prompt,
+		Depth:         depth,
+		ModelOverride: opts.ModelOverride,
 	})
 	output := m.output
 	sessionID := m.sessionID
@@ -104,12 +124,6 @@ func (m *mockRunner) RunAgent(ctx context.Context, agentName string, prompt stri
 	}
 
 	return SpawnAgentRunResult{Output: output, SessionID: sessionID}, err
-}
-
-func (m *mockRunner) RunAgentWithCallback(ctx context.Context, agentName string, prompt string, depth int,
-	callID string, cb SubagentEventCallback) (SpawnAgentRunResult, error) {
-	// Just delegate to RunAgent for testing
-	return m.RunAgent(ctx, agentName, prompt, depth)
 }
 
 func (m *mockRunner) GetCalls() []mockRunnerCall {
@@ -139,6 +153,17 @@ func makeSpawnArgs(agentName, prompt string, timeout int) json.RawMessage {
 	return data
 }
 
+func makeSpawnArgsWithModel(agentName, prompt string, timeout int, model string) json.RawMessage {
+	args := SpawnAgentArgs{
+		AgentName: agentName,
+		Prompt:    prompt,
+		Timeout:   timeout,
+		Model:     model,
+	}
+	data, _ := json.Marshal(args)
+	return data
+}
+
 // Helper to parse result
 func parseResult(t *testing.T, result string) SpawnAgentResult {
 	t.Helper()
@@ -147,6 +172,62 @@ func parseResult(t *testing.T, result string) SpawnAgentResult {
 		t.Fatalf("failed to parse result: %v", err)
 	}
 	return r
+}
+
+func TestSpawnAgentTool_ModelArgumentOverridesConfiguredAgentModel(t *testing.T) {
+	tool := NewSpawnAgentTool(SpawnConfig{
+		MaxDepth:       5,
+		DefaultTimeout: 300,
+		AgentModels: map[string]string{
+			"reviewer": "configured-model",
+		},
+	}, 0)
+	runner := newMockRunner()
+	tool.SetRunner(runner)
+
+	result, err := tool.Execute(context.Background(), makeSpawnArgsWithModel("reviewer", "inspect", 0, " requested-model "))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if r := parseResult(t, result.Content); r.Error != "" {
+		t.Fatalf("unexpected tool error: %s", r.Error)
+	}
+
+	calls := runner.GetCalls()
+	if len(calls) != 1 {
+		t.Fatalf("runner call count = %d, want 1", len(calls))
+	}
+	if calls[0].ModelOverride != "requested-model" {
+		t.Fatalf("ModelOverride = %q, want requested-model", calls[0].ModelOverride)
+	}
+}
+
+func TestSpawnAgentTool_ModelArgumentFallsBackToConfiguredAgentModel(t *testing.T) {
+	tool := NewSpawnAgentTool(SpawnConfig{
+		MaxDepth:       5,
+		DefaultTimeout: 300,
+		AgentModels: map[string]string{
+			"reviewer": "configured-model",
+		},
+	}, 0)
+	runner := newMockRunner()
+	tool.SetRunner(runner)
+
+	result, err := tool.Execute(context.Background(), makeSpawnArgs("reviewer", "inspect", 0))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if r := parseResult(t, result.Content); r.Error != "" {
+		t.Fatalf("unexpected tool error: %s", r.Error)
+	}
+
+	calls := runner.GetCalls()
+	if len(calls) != 1 {
+		t.Fatalf("runner call count = %d, want 1", len(calls))
+	}
+	if calls[0].ModelOverride != "configured-model" {
+		t.Fatalf("ModelOverride = %q, want configured-model", calls[0].ModelOverride)
+	}
 }
 
 func TestSpawnAgentTool_PreservesPartialRunResultOnError(t *testing.T) {

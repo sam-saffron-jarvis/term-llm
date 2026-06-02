@@ -64,6 +64,15 @@ func applyAgentModelOverride(cfg *config.Config, model string) error {
 		cfg.ApplyOverrides(provider, resolvedModel)
 		return nil
 	}
+	if strings.Contains(resolvedModel, ":") {
+		if provider, parsedModel, err := llm.ParseProviderModel(resolvedModel, cfg); err == nil {
+			cfg.ApplyOverrides(provider, parsedModel)
+			return nil
+		}
+		// Some providers use colon-tagged model names (for example, local model
+		// tags). If the prefix is not a known provider, treat the whole value as
+		// a plain model name and let provider creation validate it later.
+	}
 	if resolvedModel != "" {
 		cfg.ApplyOverrides("", resolvedModel)
 	}
