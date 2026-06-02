@@ -237,7 +237,7 @@ func (t *ShellTool) Execute(ctx context.Context, args json.RawMessage) (llm.Tool
 		cmd.Env = append(cmd.Env, fmt.Sprintf("%s=%s", key, value))
 	}
 
-	cleanup, prepErr := prepareToolCommand(cmd)
+	cleanup, prepErr := prepareToolCommand(cmd, hasUnsafeShellSyntax(a.Command))
 	if prepErr != nil {
 		return textOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "command setup error: %v", prepErr))), nil
 	}

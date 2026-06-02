@@ -4,23 +4,30 @@ import (
 	"bytes"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 
 	"github.com/gobwas/glob"
 	"github.com/samsaffron/term-llm/internal/pathutil"
+	"golang.org/x/sys/unix"
 )
 
 // shellNonceEnvVar is the environment variable name used to tag every process
 // spawned by a tool command so descendants that escape the process group (via
 // setsid, daemonisation, etc.) can still be reliably reaped on cleanup.
 const shellNonceEnvVar = "TERMLLM_SHELL_NONCE"
+
+const descendantLivenessGracePeriod = 20 * time.Millisecond
+
+var taggedDescendantReaper = killTaggedDescendants
 
 type limitedBuffer struct {
 	buf   bytes.Buffer
@@ -58,7 +65,7 @@ func (b *limitedBuffer) Truncated() bool {
 	return b.total > int64(b.buf.Len())
 }
 
-func prepareToolCommand(cmd *exec.Cmd) (func(), error) {
+func prepareToolCommand(cmd *exec.Cmd, sweepTaggedDescendantsOnSuccess bool) (func(), error) {
 	var stdinCloser func()
 	if cmd.Stdin == nil {
 		if devNull, err := os.OpenFile(os.DevNull, os.O_RDONLY, 0); err == nil {
@@ -68,29 +75,109 @@ func prepareToolCommand(cmd *exec.Cmd) (func(), error) {
 	}
 
 	configureCommandProcessGroup(cmd)
+
+	var cancelCalled atomic.Bool
+	if cmd.Cancel != nil {
+		cancel := cmd.Cancel
+		cmd.Cancel = func() error {
+			cancelCalled.Store(true)
+			return cancel()
+		}
+	}
+
 	nonce := tagCommandWithNonce(cmd)
+	probe, probeErr := installDescendantLivenessProbe(cmd)
 
 	cleanup := func() {
+		if probe != nil {
+			probe.closeParentWriter()
+		}
+
 		// Tools must leave the world clean: after the command returns (success,
 		// failure, timeout, or cancellation) reap every descendant it spawned.
 		//
 		// First pass: SIGKILL the process group so `nohup foo &` style children
 		// that stayed in our pgid die immediately.
+		var pgroupKillErr error
 		if cmd.Process != nil {
-			_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+			pgroupKillErr = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
 		}
-		// Second pass: walk /proc for any process still alive that inherited
-		// the nonce env var. This catches descendants that escaped the pgroup
-		// via setsid, double-fork daemonisation, or explicit setpgid. We retry
-		// a few times because a process may be mid-exec when we scan.
-		if nonce != "" {
-			killTaggedDescendants(nonce)
+
+		// Second pass: only pay for the expensive /proc nonce sweep when we have
+		// evidence the fast-path process-group reap was not enough, or when the
+		// caller explicitly asked us to preserve the old always-sweep semantics.
+		shouldSweepTaggedDescendants := cancelCalled.Load() || probeErr != nil || sweepTaggedDescendantsOnSuccess
+		if !shouldSweepTaggedDescendants && pgroupKillErr != nil && !errors.Is(pgroupKillErr, syscall.ESRCH) {
+			shouldSweepTaggedDescendants = true
+		}
+		if !shouldSweepTaggedDescendants && probe != nil && probe.descendantsLikelyAlive(descendantLivenessGracePeriod) {
+			shouldSweepTaggedDescendants = true
+		}
+		if shouldSweepTaggedDescendants && nonce != "" {
+			taggedDescendantReaper(nonce)
+		}
+
+		if probe != nil {
+			probe.close()
 		}
 		if stdinCloser != nil {
 			stdinCloser()
 		}
 	}
 	return cleanup, nil
+}
+
+type descendantLivenessProbe struct {
+	readEnd  *os.File
+	writeEnd *os.File
+}
+
+func installDescendantLivenessProbe(cmd *exec.Cmd) (*descendantLivenessProbe, error) {
+	readEnd, writeEnd, err := os.Pipe()
+	if err != nil {
+		return nil, err
+	}
+	cmd.ExtraFiles = append(cmd.ExtraFiles, writeEnd)
+	return &descendantLivenessProbe{readEnd: readEnd, writeEnd: writeEnd}, nil
+}
+
+func (p *descendantLivenessProbe) closeParentWriter() {
+	if p == nil || p.writeEnd == nil {
+		return
+	}
+	_ = p.writeEnd.Close()
+	p.writeEnd = nil
+}
+
+func (p *descendantLivenessProbe) descendantsLikelyAlive(timeout time.Duration) bool {
+	if p == nil || p.readEnd == nil {
+		return false
+	}
+
+	pollTimeout := int(timeout / time.Millisecond)
+	if timeout > 0 && pollTimeout == 0 {
+		pollTimeout = 1
+	}
+	pollFds := []unix.PollFd{{Fd: int32(p.readEnd.Fd()), Events: unix.POLLIN | unix.POLLHUP | unix.POLLERR}}
+	n, err := unix.Poll(pollFds, pollTimeout)
+	if err != nil {
+		return true
+	}
+	if n == 0 {
+		return true
+	}
+	return pollFds[0].Revents&unix.POLLHUP == 0
+}
+
+func (p *descendantLivenessProbe) close() {
+	if p == nil {
+		return
+	}
+	p.closeParentWriter()
+	if p.readEnd != nil {
+		_ = p.readEnd.Close()
+		p.readEnd = nil
+	}
 }
 
 // tagCommandWithNonce adds a unique TERMLLM_SHELL_NONCE=<hex> entry to cmd.Env
@@ -160,7 +247,7 @@ func findPidsWithEnv(needle []byte) []int {
 
 // PrepareCommand configures a command for safe cancellation, including process-group teardown.
 func PrepareCommand(cmd *exec.Cmd) (func(), error) {
-	return prepareToolCommand(cmd)
+	return prepareToolCommand(cmd, true)
 }
 
 func configureCommandProcessGroup(cmd *exec.Cmd) {

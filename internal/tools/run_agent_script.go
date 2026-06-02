@@ -169,7 +169,7 @@ func (t *RunAgentScriptTool) Execute(ctx context.Context, args json.RawMessage) 
 	cmd := exec.CommandContext(execCtx, realScript, argv...)
 	cmd.Dir = workDir
 
-	cleanup, prepErr := prepareToolCommand(cmd)
+	cleanup, prepErr := prepareToolCommand(cmd, true)
 	if prepErr != nil {
 		return llm.TextOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "script setup error: %v", prepErr))), nil
 	}

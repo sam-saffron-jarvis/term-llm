@@ -119,7 +119,7 @@ func (t *CustomScriptTool) Execute(ctx context.Context, args json.RawMessage) (l
 	}
 	cmd.Env = env
 
-	cleanup, prepErr := prepareToolCommand(cmd)
+	cleanup, prepErr := prepareToolCommand(cmd, true)
 	if prepErr != nil {
 		return llm.TextOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "script setup error: %v", prepErr))), nil
 	}
