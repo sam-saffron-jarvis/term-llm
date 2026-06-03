@@ -146,6 +146,13 @@ func init() {
 	rootCmd.AddCommand(askCmd)
 }
 
+func askTurnMessagesAfterResponseCapture(assistantCaptured bool, turnMessages []llm.Message) []llm.Message {
+	if assistantCaptured && len(turnMessages) > 0 && turnMessages[0].Role == llm.RoleAssistant {
+		return turnMessages[1:]
+	}
+	return turnMessages
+}
+
 func runAsk(cmd *cobra.Command, args []string) error {
 	// Extract @agent from args if present
 	atAgent, filteredArgs := ExtractAgentFromArgs(args)
@@ -637,22 +644,46 @@ func runAsk(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	responseCompletedCallback := persistResponseCompleted
-	turnCompletedCallback := persistTurnCompleted
-	if outputTool != nil {
+	var assistantCapturedForTurnMu sync.Mutex
+	assistantCapturedForTurnCB := false
+	markAssistantCapturedForTurn := func() {
+		assistantCapturedForTurnMu.Lock()
+		assistantCapturedForTurnCB = true
+		assistantCapturedForTurnMu.Unlock()
+	}
+	consumeTurnMessages := func(turnMessages []llm.Message) []llm.Message {
+		assistantCapturedForTurnMu.Lock()
+		defer assistantCapturedForTurnMu.Unlock()
+		deduped := askTurnMessagesAfterResponseCapture(assistantCapturedForTurnCB, turnMessages)
+		assistantCapturedForTurnCB = false
+		return deduped
+	}
+
+	var responseCompletedCallback llm.ResponseCompletedCallback
+	if persistResponseCompleted != nil || outputTool != nil {
 		responseCompletedCallback = func(ctx context.Context, turnIndex int, assistantMsg llm.Message, metrics llm.TurnMetrics) error {
-			outputToolMessagesMu.Lock()
-			outputToolMessages = append(outputToolMessages, assistantMsg)
-			outputToolMessagesMu.Unlock()
+			markAssistantCapturedForTurn()
+			if outputTool != nil {
+				outputToolMessagesMu.Lock()
+				outputToolMessages = append(outputToolMessages, assistantMsg)
+				outputToolMessagesMu.Unlock()
+			}
 			if persistResponseCompleted != nil {
 				return persistResponseCompleted(ctx, turnIndex, assistantMsg, metrics)
 			}
 			return nil
 		}
+	}
+
+	var turnCompletedCallback llm.TurnCompletedCallback
+	if persistTurnCompleted != nil || outputTool != nil {
 		turnCompletedCallback = func(ctx context.Context, turnIndex int, turnMessages []llm.Message, metrics llm.TurnMetrics) error {
-			outputToolMessagesMu.Lock()
-			outputToolMessages = append(outputToolMessages, turnMessages...)
-			outputToolMessagesMu.Unlock()
+			turnMessages = consumeTurnMessages(turnMessages)
+			if outputTool != nil {
+				outputToolMessagesMu.Lock()
+				outputToolMessages = append(outputToolMessages, turnMessages...)
+				outputToolMessagesMu.Unlock()
+			}
 			if persistTurnCompleted != nil {
 				return persistTurnCompleted(ctx, turnIndex, turnMessages, metrics)
 			}
