@@ -614,33 +614,8 @@ func (m *Model) handleKeyMsg(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	if key.Matches(msg, m.keyMap.Inspector) {
 		// Only open inspector if we have messages
 		if len(m.messages) > 0 {
-			// Collect tool specs for the inspector
-			var toolSpecs []llm.ToolSpec
-			if m.mcpManager != nil {
-				for _, t := range m.mcpManager.AllTools() {
-					toolSpecs = append(toolSpecs, llm.ToolSpec{
-						Name:        t.Name,
-						Description: t.Description,
-						Schema:      t.Schema,
-					})
-				}
-			}
-			if len(m.localTools) > 0 {
-				for _, specName := range m.localTools {
-					if tool, ok := m.engine.Tools().Get(specName); ok {
-						toolSpecs = append(toolSpecs, tool.Spec())
-					}
-				}
-			}
-
-			cfg := &inspector.Config{
-				ProviderName:    m.providerName,
-				ModelName:       m.modelName,
-				ToolSpecs:       toolSpecs,
-				ReasoningConfig: m.effectiveReasoningConfig(),
-			}
 			m.inspectorMode = true
-			m.inspectorModel = inspector.NewWithConfig(m.messages, m.width, m.height, m.styles, m.store, cfg)
+			m.inspectorModel = inspector.NewWithConfig(m.messages, m.width, m.height, m.styles, m.store, m.newInspectorConfig())
 			return m, nil
 		}
 		return m, nil

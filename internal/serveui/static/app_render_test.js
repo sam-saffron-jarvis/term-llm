@@ -1228,6 +1228,42 @@ async function run(name, fn) {
     assertEqual(row.querySelector('.session-title').textContent, 'Z', 'known session row unchanged');
   });
 
+  await run('renderMessages: compaction summaries are collapsed and expandable', async () => {
+    const { app, session, messages } = createHarness();
+    const compaction = {
+      id: 'c1',
+      role: 'compaction',
+      content: 'Context compacted',
+      rawContent: '[Context Compaction]\nsecret transcript',
+      lineCount: 2,
+      activeBoundary: true,
+      compactionCount: 1,
+      created: Date.now(),
+    };
+    session.messages = [compaction];
+
+    app.renderMessages(true);
+
+    const node = findByMessageId(messages, 'c1');
+    assert(node && node.classList.contains('compaction'), 'expected compaction message node');
+    assert(!node.querySelector('.compaction-raw'), 'raw compaction body should be hidden by default');
+    assertEqual(node.querySelector('.compaction-label')?.textContent, '↳ Context compacted', 'compaction label');
+    assert(node.querySelector('.compaction-body')?.classList.contains('active-boundary'), 'active boundary class should be present');
+
+    const toggle = node.querySelector('.compaction-toggle');
+    assert(toggle, 'expected details toggle');
+    await toggle.dispatchEvent({ type: 'click' });
+
+    const raw = node.querySelector('.compaction-raw');
+    assert(raw, 'raw compaction body should appear after toggle');
+    assert(raw.textContent.includes('secret transcript'), 'raw compaction text should be preserved for details');
+    assert(compaction.expanded, 'toggle should persist expanded state on message');
+
+    app.renderMessages(false);
+    const rerendered = findByMessageId(messages, 'c1');
+    assert(rerendered?.querySelector('.compaction-raw'), 'expanded compaction details should survive a full render pass');
+  });
+
   await run('renderMessages: leaves server-only sessions blank while messages load', () => {
     const { app, session, messages } = createHarness();
     session.messages = [];

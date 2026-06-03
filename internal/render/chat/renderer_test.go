@@ -87,6 +87,31 @@ func TestRenderer_Render(t *testing.T) {
 	}
 }
 
+func TestRenderer_SkipsCompactionTailMessages(t *testing.T) {
+	renderer := NewRenderer(80, 24)
+	renderer.SetMarkdownRenderer(simpleMarkdownRenderer)
+
+	messages := []session.Message{
+		{ID: 1, Role: llm.RoleUser, TextContent: "visible before", Parts: []llm.Part{{Type: llm.PartText, Text: "visible before"}}},
+		{ID: 2, Role: llm.RoleAssistant, TextContent: "hidden retained tail", Parts: []llm.Part{{Type: llm.PartText, Text: "hidden retained tail"}}, CompactionTail: true},
+		{ID: 3, Role: llm.RoleAssistant, TextContent: "visible after", Parts: []llm.Part{{Type: llm.PartText, Text: "visible after"}}},
+	}
+
+	output := renderer.Render(RenderState{
+		Messages: messages,
+		Viewport: ViewportState{Height: 24, AtBottom: true},
+		Mode:     RenderModeAltScreen,
+		Width:    80,
+		Height:   24,
+	})
+	if strings.Contains(output, "hidden retained tail") {
+		t.Fatalf("compaction tail rendered unexpectedly: %q", output)
+	}
+	if !strings.Contains(output, "visible before") || !strings.Contains(output, "visible after") {
+		t.Fatalf("visible messages missing from output: %q", output)
+	}
+}
+
 func TestRenderer_BlockCacheKeyChangesWhenMessageContentChanges(t *testing.T) {
 	renderer := NewRenderer(80, 24)
 
@@ -120,6 +145,15 @@ func TestHistorySignatureChangesWhenSameCountMessagesChange(t *testing.T) {
 
 	if first == second {
 		t.Fatalf("expected history signature to change when same-count messages change")
+	}
+
+	messages[1].TextContent = "old reply"
+	messages[1].Parts = []llm.Part{{Type: llm.PartText, Text: "old reply"}}
+	third := MessageHistorySignature(messages)
+	messages[1].CompactionTail = true
+	fourth := MessageHistorySignature(messages)
+	if third == fourth {
+		t.Fatalf("expected history signature to change when display suppression changes")
 	}
 }
 

@@ -20,7 +20,7 @@ const maxContentLines = 40
 // ContentItem tracks a truncatable content block in the rendered output
 type ContentItem struct {
 	ID          string // e.g., "msg-0", "tool-call_123"
-	ItemType    string // "message", "tool_call", "tool_result"
+	ItemType    string // e.g., "message", "tool_call", "tool_result", "tool_definition", "compaction"
 	StartLine   int    // Start line in rendered content
 	EndLine     int    // End line (exclusive)
 	IsTruncated bool
@@ -37,6 +37,11 @@ type ContentRenderer struct {
 	modelName       string
 	toolSpecs       []llm.ToolSpec
 	reasoningConfig appconfig.ReasoningConfig
+
+	hasCompactionBoundary   bool
+	compactionBoundaryIndex int
+	compactionBoundarySeq   int
+	compactionCount         int
 }
 
 // NewContentRenderer creates a new content renderer
@@ -54,6 +59,16 @@ func NewContentRenderer(width int, styles *ui.Styles, expandedIDs map[string]boo
 		toolSpecs:       toolSpecs,
 		reasoningConfig: reasoningCfg,
 	}
+}
+
+// SetCompactionBoundary configures an optional marker for the latest active
+// context boundary. The renderer also detects every persisted compaction
+// summary message by content so older compactions remain visible in Ctrl+O.
+func (r *ContentRenderer) SetCompactionBoundary(hasBoundary bool, index, seq, count int) {
+	r.hasCompactionBoundary = hasBoundary
+	r.compactionBoundaryIndex = index
+	r.compactionBoundarySeq = seq
+	r.compactionCount = count
 }
 
 // renderHeader renders the model information and system message section
@@ -117,7 +132,9 @@ func (r *ContentRenderer) renderHeader(messages []session.Message) (string, []Co
 			currentLine += strings.Count(boxContent, "\n") + 1
 		}
 		b.WriteString("\n")
-		currentLine++
+		// This newline only terminates the system box's bottom-border line. The
+		// next rendered section starts on currentLine; it is not an extra blank
+		// content line unless another newline is written before content follows.
 	}
 
 	return b.String(), items, currentLine
@@ -239,26 +256,376 @@ func (r *ContentRenderer) RenderMessages(messages []session.Message) (string, []
 	}
 
 	// Render messages (skip system messages since shown in header)
-	firstMsg := true
-	for i, msg := range messages {
-		// Skip system messages - they're shown in the header
-		if msg.Role == llm.RoleSystem {
+	firstBlock := true
+	compactionSummaryOrdinal := 0
+	boundaryMarkerIndex := r.compactionBoundaryMarkerIndex(messages)
+	beginBlock := func() {
+		if !firstBlock {
+			// The separator newline terminates the previous block's last line and
+			// positions the next block at the current line number; it does not add
+			// an additional blank visual line.
+			b.WriteString("\n")
+		}
+		firstBlock = false
+	}
+	writeBlock := func(content string, lineCount int) {
+		if content == "" {
+			return
+		}
+		beginBlock()
+		b.WriteString(content)
+		currentLine += lineCount
+	}
+	for i := 0; i < len(messages); {
+		msg := messages[i]
+		if isInspectorCompactionSummaryMessage(msg) {
+			compactionSummaryOrdinal++
+			isActiveBoundary := boundaryMarkerIndex == i
+			beginBlock()
+			block, item, lineCount, next := r.renderCompactionDebugBlock(messages, i, compactionSummaryOrdinal, isActiveBoundary, currentLine)
+			b.WriteString(block)
+			currentLine += lineCount
+			if item != nil {
+				items = append(items, *item)
+			}
+			i = next
 			continue
 		}
 
-		if !firstMsg {
-			b.WriteString("\n")
-			currentLine++
+		isActiveBoundary := boundaryMarkerIndex == i
+		if isActiveBoundary {
+			marker := r.renderCompactionMarker(0, true, false)
+			writeBlock(marker, visualLineCount(marker))
 		}
-		firstMsg = false
+
+		// Skip system messages - they're shown in the header
+		if msg.Role == llm.RoleSystem {
+			i++
+			continue
+		}
 
 		msgID := fmt.Sprintf("msg-%d", i)
+		beginBlock()
 		content, msgItems, lineCount := r.renderMessageWithItems(msg, msgID, currentLine)
 		b.WriteString(content)
-		items = append(items, msgItems...)
 		currentLine += lineCount
+		items = append(items, msgItems...)
+		i++
 	}
 	return b.String(), items
+}
+
+func (r *ContentRenderer) compactionBoundaryMarkerIndex(messages []session.Message) int {
+	if !r.hasCompactionBoundary || len(messages) == 0 {
+		return -1
+	}
+	idx := -1
+	if r.compactionBoundarySeq >= 0 {
+		for i, msg := range messages {
+			if msg.Sequence >= r.compactionBoundarySeq {
+				idx = i
+				break
+			}
+		}
+	}
+	if idx < 0 && r.compactionBoundaryIndex >= 0 && r.compactionBoundaryIndex < len(messages) {
+		idx = r.compactionBoundaryIndex
+	}
+	if idx < 0 {
+		return -1
+	}
+	for idx < len(messages) && messages[idx].Role == llm.RoleSystem {
+		idx++
+	}
+	if idx >= len(messages) {
+		return -1
+	}
+	return idx
+}
+
+func (r *ContentRenderer) renderCompactionMarker(number int, activeBoundary, summaryFollows bool) string {
+	theme := r.styles.Theme()
+	label := "Context compaction"
+	if number <= 0 && r.compactionCount > 0 {
+		number = r.compactionCount
+	}
+	if number > 0 {
+		label = fmt.Sprintf("%s #%d", label, number)
+	}
+	details := make([]string, 0, 2)
+	if activeBoundary {
+		details = append(details, "active context starts here")
+	}
+	if summaryFollows {
+		details = append(details, "summary + retained turns available in debug block")
+	}
+	if len(details) == 0 {
+		details = append(details, "compaction boundary")
+	}
+	text := "── " + label + " · " + strings.Join(details, " · ") + " ──"
+	style := lipgloss.NewStyle().Foreground(theme.Muted).Italic(true)
+	lines := wrapLine(text, max(r.width, 20))
+	for i, line := range lines {
+		lines[i] = style.Render(line)
+	}
+	return strings.Join(lines, "\n")
+}
+
+func (r *ContentRenderer) renderCompactionDebugBlock(messages []session.Message, summaryIdx, ordinal int, activeBoundary bool, startLine int) (string, *ContentItem, int, int) {
+	next := compactionDebugTailEnd(messages, summaryIdx)
+	summary := messages[summaryIdx]
+	tail := messages[summaryIdx+1 : next]
+	itemID := fmt.Sprintf("compaction-%d", summaryIdx)
+	expanded := r.expandedIDs[itemID]
+
+	marker := r.renderCompactionMarker(ordinal, activeBoundary, true)
+	markerLines := visualLineCount(marker)
+
+	content := r.renderCollapsedCompactionDebug(summary, tail, activeBoundary)
+	if expanded {
+		content = r.renderExpandedCompactionDebug(summary, tail, activeBoundary)
+	}
+
+	theme := r.styles.Theme()
+	header := "Compaction Debug"
+	if ordinal > 0 {
+		header = fmt.Sprintf("Compaction Debug #%d", ordinal)
+	}
+	if expanded {
+		header += " (expanded)"
+	} else {
+		header += " (collapsed)"
+	}
+	headerStyle := lipgloss.NewStyle().Foreground(theme.Muted).Bold(true)
+	boxStart := startLine + markerLines
+	box, boxItem := r.renderBoxWithItem(header, headerStyle, content, itemID, "compaction", boxStart)
+
+	block := marker + "\n" + box
+	lineCount := visualLineCount(block)
+	if boxItem == nil {
+		return block, nil, lineCount, next
+	}
+	item := *boxItem
+	item.StartLine = startLine
+	item.EndLine = startLine + lineCount
+	item.IsTruncated = !expanded || item.IsTruncated
+	item.TotalLines = max(item.TotalLines+markerLines, lineCount)
+	return block, &item, lineCount, next
+}
+
+func compactionDebugTailEnd(messages []session.Message, summaryIdx int) int {
+	end := summaryIdx + 1
+	for end < len(messages) && messages[end].CompactionTail {
+		end++
+	}
+	return end
+}
+
+func (r *ContentRenderer) renderCollapsedCompactionDebug(summary session.Message, tail []session.Message, activeBoundary bool) string {
+	var b strings.Builder
+	b.WriteString("Boundary: ")
+	if activeBoundary {
+		b.WriteString("active model context starts at this summary")
+	} else {
+		b.WriteString("historical compaction point")
+	}
+	b.WriteString("\n")
+	b.WriteString(fmt.Sprintf("Summary row: %s, %d lines", formatCompactionDebugMessageRef(summary), textLineCount(compactionDebugMessageText(summary))))
+	b.WriteString("\n")
+	if len(tail) > 0 {
+		b.WriteString(fmt.Sprintf("Retained raw tail: %d message%s hidden from normal chat but still sent to the model", len(tail), pluralSuffix(len(tail))))
+	} else {
+		b.WriteString("Retained raw tail: none recorded after this summary")
+	}
+	b.WriteString("\n")
+	b.WriteString("Press 'e' anywhere in the inspector to expand all hidden debug details.")
+	return b.String()
+}
+
+func (r *ContentRenderer) renderExpandedCompactionDebug(summary session.Message, tail []session.Message, activeBoundary bool) string {
+	var b strings.Builder
+	b.WriteString("Boundary\n")
+	if activeBoundary {
+		b.WriteString("- active model context starts here\n")
+	} else {
+		b.WriteString("- historical compaction point; a later compaction may define the current active boundary\n")
+	}
+	b.WriteString("- summary row: ")
+	b.WriteString(formatCompactionDebugMessageRef(summary))
+	b.WriteString("\n")
+	b.WriteString(fmt.Sprintf("- retained raw tail rows: %d\n", len(tail)))
+	b.WriteString("\n")
+
+	b.WriteString("Compacted summary\n")
+	b.WriteString(strings.TrimRight(compactionDebugMessageText(summary), "\n"))
+	if len(tail) == 0 {
+		b.WriteString("\n\nRetained raw tail\n(none)")
+		return b.String()
+	}
+
+	b.WriteString("\n\nRetained raw tail\n")
+	b.WriteString("These rows are marked compaction_tail=true: hidden from normal transcript rendering, preserved in SQLite, and included in active LLM context.\n")
+	for i, msg := range tail {
+		if i > 0 {
+			b.WriteString("\n")
+		}
+		b.WriteString("\n")
+		b.WriteString(fmt.Sprintf("--- retained message %d/%d: %s ---\n", i+1, len(tail), formatCompactionDebugMessageRef(msg)))
+		b.WriteString(strings.TrimRight(compactionDebugMessageText(msg), "\n"))
+	}
+	return b.String()
+}
+
+func formatCompactionDebugMessageRef(msg session.Message) string {
+	parts := []string{fmt.Sprintf("role=%s", msg.Role)}
+	if msg.Sequence >= 0 {
+		parts = append(parts, fmt.Sprintf("seq=%d", msg.Sequence))
+	}
+	if msg.ID > 0 {
+		parts = append(parts, fmt.Sprintf("id=%d", msg.ID))
+	}
+	if msg.CompactionTail {
+		parts = append(parts, "compaction_tail=true")
+	}
+	return strings.Join(parts, ", ")
+}
+
+func compactionDebugMessageText(msg session.Message) string {
+	var sections []string
+	for _, part := range msg.Parts {
+		switch part.Type {
+		case llm.PartText, llm.PartFile:
+			if part.Text != "" {
+				sections = append(sections, part.Text)
+			}
+			if reasoning := compactionDebugReasoningText(part); reasoning != "" {
+				sections = append(sections, "[Reasoning]\n"+reasoning)
+			}
+		case llm.PartImage:
+			sections = append(sections, compactionDebugImageText(part))
+		case llm.PartToolCall:
+			if part.ToolCall != nil {
+				sections = append(sections, compactionDebugToolCallText(part.ToolCall))
+			}
+		case llm.PartToolResult:
+			if part.ToolResult != nil {
+				sections = append(sections, compactionDebugToolResultText(part.ToolResult))
+			}
+		}
+	}
+	if len(sections) == 0 && strings.TrimSpace(msg.TextContent) != "" {
+		sections = append(sections, msg.TextContent)
+	}
+	if len(sections) == 0 {
+		return "(empty)"
+	}
+	return strings.Join(sections, "\n\n")
+}
+
+func compactionDebugReasoningText(part llm.Part) string {
+	if len(part.ReasoningSummaryParts) > 0 {
+		return strings.Join(part.ReasoningSummaryParts, "\n\n")
+	}
+	return strings.TrimSpace(part.ReasoningContent)
+}
+
+func compactionDebugImageText(part llm.Part) string {
+	if part.ImageData != nil {
+		return fmt.Sprintf("[Image: %s, %d bytes]", part.ImageData.MediaType, len(part.ImageData.Base64))
+	}
+	if part.ImagePath != "" {
+		return "[Image: " + part.ImagePath + "]"
+	}
+	return "[Image]"
+}
+
+func compactionDebugToolCallText(tc *llm.ToolCall) string {
+	var b strings.Builder
+	b.WriteString("[Tool call]\n")
+	b.WriteString("Name: ")
+	b.WriteString(tc.Name)
+	if tc.ID != "" {
+		b.WriteString("\nID: ")
+		b.WriteString(tc.ID)
+	}
+	if tc.ToolInfo != "" {
+		b.WriteString("\nInfo: ")
+		b.WriteString(tc.ToolInfo)
+	}
+	b.WriteString("\nArguments:\n")
+	b.WriteString(formatCompactionDebugJSON(tc.Arguments))
+	return b.String()
+}
+
+func compactionDebugToolResultText(tr *llm.ToolResult) string {
+	var b strings.Builder
+	b.WriteString("[Tool result]\n")
+	b.WriteString("Name: ")
+	b.WriteString(tr.Name)
+	if tr.ID != "" {
+		b.WriteString("\nID: ")
+		b.WriteString(tr.ID)
+	}
+	if tr.IsError {
+		b.WriteString("\nStatus: error")
+	} else {
+		b.WriteString("\nStatus: ok")
+	}
+	b.WriteString("\nContent:\n")
+	if tr.Content != "" {
+		b.WriteString(tr.Content)
+	} else {
+		b.WriteString("(empty)")
+	}
+	return b.String()
+}
+
+func formatCompactionDebugJSON(data json.RawMessage) string {
+	if len(data) == 0 {
+		return "{}"
+	}
+	var parsed any
+	if err := json.Unmarshal(data, &parsed); err != nil {
+		return string(data)
+	}
+	formatted, err := json.MarshalIndent(parsed, "", "  ")
+	if err != nil {
+		return string(data)
+	}
+	return string(formatted)
+}
+
+func textLineCount(text string) int {
+	if text == "" {
+		return 0
+	}
+	return strings.Count(text, "\n") + 1
+}
+
+func pluralSuffix(n int) string {
+	if n == 1 {
+		return ""
+	}
+	return "s"
+}
+
+func visualLineCount(s string) int {
+	if s == "" {
+		return 0
+	}
+	return strings.Count(s, "\n") + 1
+}
+
+func isInspectorCompactionSummaryMessage(msg session.Message) bool {
+	if llm.IsInternalCompactionSummaryText(msg.TextContent) {
+		return true
+	}
+	for _, part := range msg.Parts {
+		if part.Type == llm.PartText && llm.IsInternalCompactionSummaryText(part.Text) {
+			return true
+		}
+	}
+	return false
 }
 
 // renderMessage renders a single message with its parts (backward compat, no item tracking)

@@ -153,8 +153,12 @@ func AllCommands() []Command {
 		},
 		{
 			Name:        "compact",
-			Description: "Compact conversation context into a summary",
-			Usage:       "/compact",
+			Description: "Compact context (soft brief by default; hard = full summary)",
+			Usage:       "/compact [hard]",
+			Subcommands: []Subcommand{
+				{Name: "soft", Description: "Write a compact continuation brief (default)"},
+				{Name: "hard", Description: "Create a full summary of conversation history"},
+			},
 		},
 		{
 			Name:        "resume",
@@ -410,7 +414,7 @@ func (m *Model) ExecuteCommand(input string) (tea.Model, tea.Cmd) {
 	case "inspect":
 		return m.cmdInspect()
 	case "compact":
-		return m.cmdCompress()
+		return m.cmdCompress(args...)
 	case "resume":
 		return m.cmdResume(args)
 	case "reload":
@@ -2032,6 +2036,45 @@ func (m *Model) cmdSkills() (tea.Model, tea.Cmd) {
 	return m.showSystemMessage(b.String())
 }
 
+func (m *Model) newInspectorConfig() *inspector.Config {
+	var toolSpecs []llm.ToolSpec
+	if m.mcpManager != nil {
+		for _, t := range m.mcpManager.AllTools() {
+			toolSpecs = append(toolSpecs, llm.ToolSpec{
+				Name:        t.Name,
+				Description: t.Description,
+				Schema:      t.Schema,
+			})
+		}
+	}
+	if len(m.localTools) > 0 && m.engine != nil {
+		for _, specName := range m.localTools {
+			if tool, ok := m.engine.Tools().Get(specName); ok {
+				toolSpecs = append(toolSpecs, tool.Spec())
+			}
+		}
+	}
+
+	cfg := &inspector.Config{
+		ProviderName:            m.providerName,
+		ModelName:               m.modelName,
+		ToolSpecs:               toolSpecs,
+		ReasoningConfig:         m.effectiveReasoningConfig(),
+		HasCompactionBoundary:   m.compactionIdx > 0 || session.HasCompactionBoundary(m.sess),
+		CompactionBoundaryIndex: -1,
+		CompactionBoundarySeq:   -1,
+		CompactionCount:         0,
+	}
+	if m.compactionIdx > 0 {
+		cfg.CompactionBoundaryIndex = m.compactionIdx
+	}
+	if m.sess != nil {
+		cfg.CompactionBoundarySeq = m.sess.CompactionSeq
+		cfg.CompactionCount = m.sess.CompactionCount
+	}
+	return cfg
+}
+
 func (m *Model) cmdInspect() (tea.Model, tea.Cmd) {
 	m.setTextareaValue("")
 
@@ -2040,14 +2083,27 @@ func (m *Model) cmdInspect() (tea.Model, tea.Cmd) {
 	}
 
 	m.inspectorMode = true
-	m.inspectorModel = inspector.NewWithConfig(m.messages, m.width, m.height, m.styles, m.store, &inspector.Config{
-		ReasoningConfig: m.effectiveReasoningConfig(),
-	})
+	m.inspectorModel = inspector.NewWithConfig(m.messages, m.width, m.height, m.styles, m.store, m.newInspectorConfig())
 	return m, nil
 }
 
-func (m *Model) cmdCompress() (tea.Model, tea.Cmd) {
+func (m *Model) cmdCompress(args ...string) (tea.Model, tea.Cmd) {
 	m.setTextareaValue("")
+
+	mode := "soft"
+	if len(args) > 1 {
+		return m.showSystemMessage("Usage: /compact [hard]")
+	}
+	if len(args) == 1 {
+		switch strings.ToLower(strings.TrimSpace(args[0])) {
+		case "", "soft":
+			mode = "soft"
+		case "hard":
+			mode = "hard"
+		default:
+			return m.showSystemMessage("Usage: /compact [hard]")
+		}
+	}
 
 	if m.streaming {
 		return m.showSystemMessage("Cannot compress while streaming. Wait for the response to finish.")
@@ -2094,12 +2150,21 @@ func (m *Model) cmdCompress() (tea.Model, tea.Cmd) {
 	}
 
 	compactConfig := llm.DefaultCompactionConfig()
+	if m.engine != nil && m.engine.InputLimit() > 0 {
+		compactConfig.InputLimit = m.engine.InputLimit()
+	} else if limit := llm.InputLimitForProviderModel(m.providerKey, m.modelName); limit > 0 {
+		compactConfig.InputLimit = limit
+	}
 	model := m.modelName
 	provider := m.provider
+	phase := llm.PhaseCompacting
+	if mode == "hard" {
+		phase = llm.PhaseCompactingSummarizeHistory
+	}
 
 	m.clearFooterMessage()
 	m.streaming = true
-	m.phase = "Compacting"
+	m.phase = phase
 	m.streamStartTime = time.Now()
 	if m.altScreen {
 		m.scrollToBottom = true
@@ -2110,7 +2175,15 @@ func (m *Model) cmdCompress() (tea.Model, tea.Cmd) {
 
 	return m, tea.Batch(
 		func() tea.Msg {
-			result, err := llm.Compact(ctx, provider, model, systemPrompt, llmMessages, compactConfig)
+			var (
+				result *llm.CompactionResult
+				err    error
+			)
+			if mode == "hard" {
+				result, err = llm.Compact(ctx, provider, model, systemPrompt, llmMessages, compactConfig)
+			} else {
+				result, err = llm.SoftCompact(ctx, provider, model, systemPrompt, llmMessages, compactConfig)
+			}
 			return compactDoneMsg{result: result, err: err}
 		},
 		m.spinner.Tick,

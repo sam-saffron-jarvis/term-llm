@@ -94,6 +94,22 @@ func TestEstimateMessageTokensSkipsEventMessages(t *testing.T) {
 	}
 }
 
+func TestEstimateMessageTokensCountsReasoningReplay(t *testing.T) {
+	msg := Message{Role: RoleAssistant, Parts: []Part{{
+		Type:                      PartText,
+		Text:                      "visible",
+		ReasoningContent:          strings.Repeat("r", 40),
+		ReasoningSummaryParts:     []string{strings.Repeat("s", 40)},
+		ReasoningEncryptedContent: strings.Repeat("e", 40),
+	}}}
+
+	got := EstimateMessageTokens([]Message{msg})
+	visibleOnly := EstimateTokens("visible")
+	if got <= visibleOnly {
+		t.Fatalf("EstimateMessageTokens = %d, want reasoning replay counted beyond visible-only %d", got, visibleOnly)
+	}
+}
+
 func TestReconstructHistory(t *testing.T) {
 	recentUser := []Message{UserText("recent question")}
 
@@ -148,6 +164,20 @@ func TestReconstructHistoryNoSystem(t *testing.T) {
 	}
 }
 
+func TestReconstructHistoryOmitsAckBeforeAssistantRawSuffix(t *testing.T) {
+	result := reconstructHistory("", "summary", []Message{AssistantText("continuing from retained state")})
+
+	if len(result) != 2 {
+		t.Fatalf("expected summary + retained assistant, got %d messages", len(result))
+	}
+	if result[0].Role != RoleUser || !strings.Contains(MessageText(result[0]), summaryPrefix) {
+		t.Fatalf("first message should be cache-anchored summary user, got role=%s text=%q", result[0].Role, MessageText(result[0]))
+	}
+	if result[1].Role != RoleAssistant || MessageText(result[1]) != "continuing from retained state" {
+		t.Fatalf("second message should be retained assistant, got role=%s text=%q", result[1].Role, MessageText(result[1]))
+	}
+}
+
 func TestCompactionPromptGuardsAgainstInventedStopRequest(t *testing.T) {
 	provider := NewMockProvider("test")
 	provider.AddTextResponse("Summary.")
@@ -170,9 +200,12 @@ func TestCompactionPromptGuardsAgainstInventedStopRequest(t *testing.T) {
 	prompt := last.Parts[0].Text
 	for _, want := range []string{
 		"automatic internal compaction, not a user stop/cancel/wait request",
-		"Do not infer that the user asked to stop, wait, summarize, or avoid tools unless a real user message explicitly says so",
-		"continue automatically by default",
-		"wait only on explicit user stop/wait or blocked user input",
+		"Do not infer that the user asked to stop, wait, summarize, avoid tools, or change direction unless a real user message explicitly says so",
+		"Return exactly this Markdown structure",
+		"## Objective",
+		"## Relevant Files & Symbols",
+		"Continue automatically by default",
+		"Wait only on explicit user stop/wait or blocked user input",
 	} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("compaction prompt missing %q:\n%s", want, prompt)
@@ -193,6 +226,489 @@ func TestSummaryPrefixMarksCompactionAsInternalNotStop(t *testing.T) {
 		if !strings.Contains(text, want) {
 			t.Fatalf("summary prefix missing %q:\n%s", want, text)
 		}
+	}
+}
+
+func TestBuildCompactionStaticInfoRespectsBudget(t *testing.T) {
+	messages := []Message{
+		UserText("latest request " + strings.Repeat("x", 2000)),
+		AssistantText("older assistant prose " + strings.Repeat("y", 2000)),
+	}
+
+	got := BuildCompactionStaticInfo(messages, 1000) // 5% * 4 chars = 200 chars
+	if gotLen := len([]rune(got)); gotLen > 200 {
+		t.Fatalf("previous turns length = %d, want <= 200:\n%s", gotLen, got)
+	}
+	for _, want := range []string{"<PREVIOUS_TURNS>", "user:", "</PREVIOUS_TURNS>"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("previous turns block missing %q: %q", want, got)
+		}
+	}
+	if !strings.Contains(got, "truncated") {
+		t.Fatalf("previous turns should visibly truncate oversized content: %q", got)
+	}
+
+	got = BuildCompactionStaticInfo([]Message{UserText(strings.Repeat("z", 40_000))}, 0)
+	if gotLen := len([]rune(got)); gotLen > maxPreviousTurnsChars {
+		t.Fatalf("fallback previous turns length = %d, want <= %d", gotLen, maxPreviousTurnsChars)
+	}
+
+	got = buildPreviousTurnsBlock([]Message{UserText(strings.Repeat("q", 100_000))}, 100_000)
+	if gotLen := len([]rune(got)); gotLen > maxPreviousTurnsChars {
+		t.Fatalf("direct previous turns length = %d, want <= %d", gotLen, maxPreviousTurnsChars)
+	}
+
+	maxInt := int(^uint(0) >> 1)
+	got = BuildCompactionStaticInfo([]Message{UserText(strings.Repeat("w", 100_000))}, maxInt)
+	if gotLen := len([]rune(got)); gotLen > maxPreviousTurnsChars {
+		t.Fatalf("large-limit previous turns length = %d, want <= %d", gotLen, maxPreviousTurnsChars)
+	}
+}
+
+func TestBuildCompactionStaticInfoKeepsNewestTurnsWhenBudgetTight(t *testing.T) {
+	messages := []Message{
+		UserText("old important signal: internal/llm/old.go TestOld failed with error OLD_SIGNAL"),
+		AssistantText("older assistant prose that should be safe to drop"),
+		UserText("latest user: reverse prev turns."),
+		AssistantText("most recent state: editing compaction.go now."),
+	}
+
+	got := BuildCompactionStaticInfo(messages, 800) // 5% * 4 chars = 160 chars
+	if gotLen := len([]rune(got)); gotLen > 160 {
+		t.Fatalf("previous turns length = %d, want <= 160:\n%s", gotLen, got)
+	}
+	for _, want := range []string{"latest user: reverse prev turns", "most recent state"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("previous turns missing recent context %q:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "OLD_SIGNAL") || strings.Contains(got, "older assistant prose") {
+		t.Fatalf("previous turns kept older context before newer context:\n%s", got)
+	}
+}
+
+func TestBuildCompactionStaticInfoPerEntryCapsKeepBudgetForImportantContext(t *testing.T) {
+	messages := []Message{
+		UserText("older but important: internal/llm/engine.go TestRunLoop failed with error boom"),
+		AssistantText(strings.Repeat("routine assistant prose ", 2000)),
+		UserText("latest user says continue " + strings.Repeat("A", 2000)),
+	}
+
+	got := BuildCompactionStaticInfo(messages, 5000) // 1000-char budget; latest user cap leaves room for older signals
+	if gotLen := len([]rune(got)); gotLen > 1000 {
+		t.Fatalf("previous turns length = %d, want <= 1000", gotLen)
+	}
+	for _, want := range []string{"<PREVIOUS_TURNS>", "user:", "latest user says continue", "internal/llm/engine.go", "TestRunLoop", "error boom"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("previous turns missing %q:\n%s", want, got)
+		}
+	}
+}
+
+func TestBuildCompactionStaticInfoPrioritizesSignalsAndOmitsBulkToolOutput(t *testing.T) {
+	messages := []Message{
+		AssistantText(strings.Repeat("low value prose ", 1000)),
+		UserText("Please keep changes minimal. Failing test: TestSoftCompaction in internal/llm/engine_test.go. Error: expected no compactionPrompt."),
+		{
+			Role: RoleAssistant,
+			Parts: []Part{
+				{Type: PartText, Text: "I'll inspect the test and update the compaction code."},
+				{Type: PartToolCall, ToolCall: &ToolCall{Name: "read_file", Arguments: json.RawMessage(`{"path":"internal/llm/engine_test.go"}`)}},
+				{Type: PartToolCall, ToolCall: &ToolCall{Name: "write_file", Arguments: json.RawMessage(`{"path":"internal/llm/compaction.go","content":"large replacement"}`)}},
+			},
+		},
+		{
+			Role: RoleTool,
+			Parts: []Part{{
+				Type:       PartToolResult,
+				ToolResult: &ToolResult{ID: "tool-1", Name: "shell", Content: strings.Repeat("ordinary output line\n", 1000)},
+			}},
+		},
+		AssistantText("Decision: use the brief directly. Next action: update tests."),
+	}
+
+	got := BuildCompactionStaticInfo(messages, 10000)
+	for _, want := range []string{"<PREVIOUS_TURNS>", "user:", "Please keep changes minimal", "TestSoftCompaction", "internal/llm/engine_test.go", "expected no compactionPrompt", "assistant:", "tool calls:", "read_file path=internal/llm/engine_test.go", "write_file path=internal/llm/compaction.go", "tool results:", "Decision: use the brief directly", "Next action: update tests", "bulk output omitted"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("previous turns missing %q:\n%s", want, got)
+		}
+	}
+	if strings.Count(got, "ordinary output line") > 2 {
+		t.Fatalf("previous turns included bulk tool output:\n%s", got)
+	}
+	if got2 := BuildCompactionStaticInfo(messages, 10000); got2 != got {
+		t.Fatalf("previous turns block is not deterministic:\nfirst=%q\nsecond=%q", got, got2)
+	}
+}
+
+func TestBuildCompactionStaticInfoExtractsPriorCompactionSummary(t *testing.T) {
+	prior := summaryPrefix + `<PREVIOUS_TURNS>
+user: stale raw request that should not be nested
+assistant:
+  **Considering test modifications**
+tool results:
+  - read_file completed: 123: noisy line-numbered output
+</PREVIOUS_TURNS>
+
+<SUMMARY_AND_NEXT_ACTIONS>
+Objective: improve compaction formatting.
+Current state: tests passed after editing internal/llm/compaction.go.
+Next action: review the final diff.
+</SUMMARY_AND_NEXT_ACTIONS>`
+	messages := []Message{
+		UserText(prior),
+		UserText("latest real user request: ok improve it then"),
+	}
+
+	got := BuildCompactionStaticInfo(messages, 20000)
+	if strings.Count(got, "<PREVIOUS_TURNS>") != 1 || strings.Count(got, "</PREVIOUS_TURNS>") != 1 {
+		t.Fatalf("previous turns should not nest old previous-turn tags:\n%s", got)
+	}
+	for _, want := range []string{"prior compaction summary:", "Objective: improve compaction formatting", "Next action: review the final diff", "user: latest real user request: ok improve it then"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("previous turns missing %q:\n%s", want, got)
+		}
+	}
+	for _, unwanted := range []string{"stale raw request", "Considering test modifications", "line-numbered output", "<SUMMARY_AND_NEXT_ACTIONS>"} {
+		if strings.Contains(got, unwanted) {
+			t.Fatalf("previous turns included stale/nested content %q:\n%s", unwanted, got)
+		}
+	}
+}
+
+func TestBuildCompactionStaticInfoOmitsAssistantReasoningSummaries(t *testing.T) {
+	messages := []Message{
+		UserText("please continue"),
+		{Role: RoleAssistant, Parts: []Part{{
+			Type:             PartText,
+			Text:             "Implemented the requested change.",
+			ReasoningContent: "Considering test modifications that should stay out of the previous-turn transcript.",
+			ReasoningKind:    ReasoningKindSummary,
+		}}},
+	}
+
+	got := BuildCompactionStaticInfo(messages, 10000)
+	if !strings.Contains(got, "assistant: Implemented the requested change.") {
+		t.Fatalf("previous turns missing visible assistant text:\n%s", got)
+	}
+	if strings.Contains(got, "Considering test modifications") {
+		t.Fatalf("previous turns included assistant reasoning summary:\n%s", got)
+	}
+}
+
+func TestBuildCompactionStaticInfoSuppressesReadFileToolResultBody(t *testing.T) {
+	messages := []Message{
+		UserText("inspect the compaction file"),
+		{Role: RoleAssistant, Parts: []Part{{Type: PartToolCall, ToolCall: &ToolCall{Name: "read_file", Arguments: json.RawMessage(`{"path":"internal/llm/compaction.go"}`)}}}},
+		{Role: RoleTool, Parts: []Part{{Type: PartToolResult, ToolResult: &ToolResult{Name: "read_file", Content: "1: package llm\n2: important implementation detail\n3: more line-numbered source"}}}},
+	}
+
+	got := BuildCompactionStaticInfo(messages, 10000)
+	for _, want := range []string{"tool calls:", "read_file path=internal/llm/compaction.go", "tool results:", "read_file completed: bulk output omitted"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("previous turns missing %q:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "1: package llm") || strings.Contains(got, "line-numbered source") {
+		t.Fatalf("previous turns included raw read_file body:\n%s", got)
+	}
+}
+
+func TestSoftCompactUsesBriefPromptAndReportsUsage(t *testing.T) {
+	provider := NewMockProvider("test")
+	provider.AddTurn(MockTurn{Text: "continue by editing internal/llm/engine.go", Usage: Usage{InputTokens: 12, OutputTokens: 7}})
+
+	result, err := SoftCompact(context.Background(), provider, "test-model", "system", []Message{
+		UserText("please continue"),
+		AssistantText("working"),
+	}, DefaultCompactionConfig())
+	if err != nil {
+		t.Fatalf("SoftCompact failed: %v", err)
+	}
+	if len(provider.Requests) != 1 {
+		t.Fatalf("provider requests = %d, want 1", len(provider.Requests))
+	}
+	last := provider.Requests[0].Messages[len(provider.Requests[0].Messages)-1]
+	prompt := MessageText(last)
+	if !strings.Contains(prompt, "compact continuation brief") || !strings.Contains(prompt, "## Objective") || !strings.Contains(prompt, "## Relevant Files & Symbols") || strings.Contains(prompt, "Create a detailed summary") {
+		t.Fatalf("soft compaction prompt mismatch:\n%s", prompt)
+	}
+	if result.Usage.InputTokens != 12 || result.Usage.OutputTokens != 7 {
+		t.Fatalf("result usage = %+v, want 12/7", result.Usage)
+	}
+	if !strings.Contains(result.Summary, "<PREVIOUS_TURNS>") || !strings.Contains(result.Summary, "<SUMMARY_AND_NEXT_ACTIONS>") || !strings.Contains(result.Summary, "continue by editing internal/llm/engine.go") {
+		t.Fatalf("soft compact summary missing previous turns/summary sections:\n%s", result.Summary)
+	}
+	if strings.Index(result.Summary, "<PREVIOUS_TURNS>") > strings.Index(result.Summary, "<SUMMARY_AND_NEXT_ACTIONS>") {
+		t.Fatalf("summary/next actions should appear after previous turns:\n%s", result.Summary)
+	}
+}
+
+func TestSoftCompactFallsBackToHardWhenBriefEmpty(t *testing.T) {
+	provider := NewMockProvider("test")
+	provider.AddTurn(MockTurn{Usage: Usage{InputTokens: 5, OutputTokens: 1}})
+	provider.AddTurn(MockTurn{Text: "hard fallback summary", Usage: Usage{InputTokens: 11, OutputTokens: 3}})
+
+	result, err := SoftCompact(context.Background(), provider, "test-model", "system", []Message{
+		UserText("please continue"),
+		AssistantText("working"),
+	}, DefaultCompactionConfig())
+	if err != nil {
+		t.Fatalf("SoftCompact fallback failed: %v", err)
+	}
+	if len(provider.Requests) != 2 {
+		t.Fatalf("provider requests = %d, want soft brief + hard fallback", len(provider.Requests))
+	}
+	firstLast := MessageText(provider.Requests[0].Messages[len(provider.Requests[0].Messages)-1])
+	if !strings.Contains(firstLast, "compact continuation brief") {
+		t.Fatalf("first request did not use brief prompt: %q", firstLast)
+	}
+	secondLast := MessageText(provider.Requests[1].Messages[len(provider.Requests[1].Messages)-1])
+	if !strings.Contains(secondLast, "Create a compact continuation brief") || !strings.Contains(secondLast, "## Objective") {
+		t.Fatalf("second request did not use structured hard compaction prompt: %q", secondLast)
+	}
+	if !strings.Contains(result.Summary, "<PREVIOUS_TURNS>") || !strings.Contains(result.Summary, "<SUMMARY_AND_NEXT_ACTIONS>") || !strings.Contains(result.Summary, "hard fallback summary") {
+		t.Fatalf("summary missing structured hard fallback sections/content:\n%s", result.Summary)
+	}
+	if result.Usage.InputTokens != 16 || result.Usage.OutputTokens != 4 {
+		t.Fatalf("usage = %+v, want soft+hard fallback usage 16/4", result.Usage)
+	}
+}
+
+func TestCompactRetainsRawRecentSuffixOutsideSummaryHelper(t *testing.T) {
+	provider := NewMockProvider("test")
+	provider.AddTextResponse("older prefix summary")
+
+	oldAssistant := Message{Role: RoleAssistant, Parts: []Part{{
+		Type:                      PartText,
+		Text:                      "older assistant state",
+		ReasoningContent:          "old hidden reasoning",
+		ReasoningSummaryParts:     []string{"old reasoning summary"},
+		ReasoningItemID:           "old-reasoning-id",
+		ReasoningEncryptedContent: "old-encrypted-reasoning",
+		ReasoningKind:             ReasoningKindRaw,
+		ReasoningSummaryTitle:     "old title",
+	}}}
+	messages := []Message{
+		UserText("older user goal"),
+		oldAssistant,
+		UserText("RECENT exact user request"),
+		{Role: RoleAssistant, Parts: []Part{{
+			Type:                      PartText,
+			Text:                      "RECENT exact assistant state",
+			ReasoningItemID:           "recent-reasoning-id",
+			ReasoningEncryptedContent: "recent-encrypted-reasoning",
+			ReasoningKind:             ReasoningKindEncrypted,
+		}}},
+	}
+	config := DefaultCompactionConfig()
+	config.RecentRawTurns = 1
+	config.RecentRawTokenBudget = 2_000
+
+	result, err := Compact(context.Background(), provider, "test-model", "", messages, config)
+	if err != nil {
+		t.Fatalf("Compact failed: %v", err)
+	}
+	if len(provider.Requests) != 1 {
+		t.Fatalf("provider requests = %d, want 1", len(provider.Requests))
+	}
+
+	helperText := requestMessagesText(provider.Requests[0].Messages)
+	for _, want := range []string{"older user goal", "older assistant state"} {
+		if !strings.Contains(helperText, want) {
+			t.Fatalf("helper request missing summarized prefix %q:\n%s", want, helperText)
+		}
+	}
+	for _, unwanted := range []string{"RECENT exact user request", "RECENT exact assistant state", "old hidden reasoning", "old-encrypted-reasoning", "old reasoning summary"} {
+		if strings.Contains(helperText, unwanted) {
+			t.Fatalf("helper request included retained/raw or reasoning-only content %q:\n%s", unwanted, helperText)
+		}
+	}
+
+	oldAssistantFound := false
+	for _, msg := range provider.Requests[0].Messages {
+		for _, part := range msg.Parts {
+			if part.Text != "older assistant state" {
+				continue
+			}
+			oldAssistantFound = true
+			if part.ReasoningContent != "" || len(part.ReasoningSummaryParts) != 0 || part.ReasoningItemID != "" || part.ReasoningEncryptedContent != "" || part.ReasoningKind != "" || part.ReasoningSummaryTitle != "" {
+				t.Fatalf("summary helper retained reasoning metadata: %+v", part)
+			}
+		}
+	}
+	if !oldAssistantFound {
+		t.Fatalf("did not find old assistant message in helper request")
+	}
+
+	if len(result.NewMessages) != 4 {
+		t.Fatalf("new messages = %d, want summary + ack + retained user + retained assistant", len(result.NewMessages))
+	}
+	if got := MessageText(result.NewMessages[2]); got != "RECENT exact user request" {
+		t.Fatalf("retained user = %q", got)
+	}
+	retainedAssistant := result.NewMessages[3]
+	if got := MessageText(retainedAssistant); got != "RECENT exact assistant state" {
+		t.Fatalf("retained assistant = %q", got)
+	}
+	if retainedAssistant.Parts[0].ReasoningEncryptedContent != "recent-encrypted-reasoning" || retainedAssistant.Parts[0].ReasoningItemID != "recent-reasoning-id" {
+		t.Fatalf("retained raw suffix lost reasoning replay metadata: %+v", retainedAssistant.Parts[0])
+	}
+}
+
+func TestSoftCompactAvoidsPreviousTurnsOverlapWithRawSuffix(t *testing.T) {
+	provider := NewMockProvider("test")
+	provider.AddTurn(MockTurn{Text: "continue from durable summary", Usage: Usage{InputTokens: 9, OutputTokens: 3}})
+
+	messages := []Message{
+		UserText("older durable user goal"),
+		AssistantText("older durable assistant state"),
+		UserText("RECENT raw user instruction"),
+		AssistantText("RECENT raw assistant progress"),
+	}
+	config := DefaultCompactionConfig()
+	config.RecentRawTurns = 1
+	config.RecentRawTokenBudget = 2_000
+
+	result, err := SoftCompact(context.Background(), provider, "test-model", "system", messages, config)
+	if err != nil {
+		t.Fatalf("SoftCompact failed: %v", err)
+	}
+	helperText := requestMessagesText(provider.Requests[0].Messages)
+	if !strings.Contains(helperText, "older durable user goal") || !strings.Contains(helperText, "older durable assistant state") {
+		t.Fatalf("helper request missing older prefix:\n%s", helperText)
+	}
+	if strings.Contains(helperText, "RECENT raw user instruction") || strings.Contains(helperText, "RECENT raw assistant progress") {
+		t.Fatalf("helper request included retained raw suffix:\n%s", helperText)
+	}
+	if strings.Contains(result.Summary, "RECENT raw user instruction") || strings.Contains(result.Summary, "RECENT raw assistant progress") {
+		t.Fatalf("summary duplicated retained raw suffix:\n%s", result.Summary)
+	}
+	if got := MessageText(result.NewMessages[len(result.NewMessages)-2]); got != "RECENT raw user instruction" {
+		t.Fatalf("retained raw user = %q", got)
+	}
+	if got := MessageText(result.NewMessages[len(result.NewMessages)-1]); got != "RECENT raw assistant progress" {
+		t.Fatalf("retained raw assistant = %q", got)
+	}
+}
+
+func TestCompactSplitRawSuffixDoesNotStartWithToolResult(t *testing.T) {
+	provider := NewMockProvider("test")
+	provider.AddTextResponse("summary including giant latest user prefix")
+
+	messages := []Message{
+		UserText("older context"),
+		AssistantText("older answer"),
+		UserText("latest huge request " + strings.Repeat("x", 2_000)),
+		{Role: RoleAssistant, Parts: []Part{{Type: PartToolCall, ToolCall: &ToolCall{ID: "call-1", Name: "shell", Arguments: json.RawMessage(`{"command":"go test ./..."}`)}}}},
+		{Role: RoleTool, Parts: []Part{{Type: PartToolResult, ToolResult: &ToolResult{ID: "call-1", Name: "shell", Content: "ok"}}}},
+	}
+	config := DefaultCompactionConfig()
+	config.RecentRawTurns = 1
+	config.RecentRawTokenBudget = 80
+
+	result, err := Compact(context.Background(), provider, "test-model", "", messages, config)
+	if err != nil {
+		t.Fatalf("Compact failed: %v", err)
+	}
+	if len(result.NewMessages) < 3 {
+		t.Fatalf("new messages too short: %#v", result.NewMessages)
+	}
+	firstRaw := result.NewMessages[1]
+	if firstRaw.Role == RoleTool {
+		t.Fatalf("raw suffix started with orphan tool result: %#v", result.NewMessages)
+	}
+	if firstRaw.Role != RoleAssistant {
+		t.Fatalf("first raw suffix message = %s, want assistant split point", firstRaw.Role)
+	}
+	if len(result.NewMessages) < 3 || result.NewMessages[2].Role != RoleTool {
+		t.Fatalf("tool result should be retained after its assistant call, got %#v", result.NewMessages)
+	}
+}
+
+func TestCompactRawSuffixCanBeDisabled(t *testing.T) {
+	provider := NewMockProvider("test")
+	provider.AddTextResponse("summary only")
+
+	config := DefaultCompactionConfig()
+	config.RecentRawTokenBudget = -1
+	result, err := Compact(context.Background(), provider, "test-model", "", []Message{
+		UserText("older user"),
+		AssistantText("older answer"),
+		UserText("recent user should not be raw"),
+	}, config)
+	if err != nil {
+		t.Fatalf("Compact failed: %v", err)
+	}
+	if len(result.NewMessages) != 2 {
+		t.Fatalf("new messages = %d, want summary + ack when raw suffix disabled", len(result.NewMessages))
+	}
+	for i, msg := range result.NewMessages[1:] {
+		if strings.Contains(MessageText(msg), "recent user should not be raw") {
+			t.Fatalf("disabled raw suffix retained recent message outside summary at new message %d: %#v", i+1, result.NewMessages)
+		}
+	}
+}
+
+func requestMessagesText(messages []Message) string {
+	var b strings.Builder
+	for _, msg := range messages {
+		if text := MessageText(msg); text != "" {
+			b.WriteString(text)
+			b.WriteByte('\n')
+		}
+		for _, part := range msg.Parts {
+			if part.ToolCall != nil {
+				b.WriteString(part.ToolCall.Name)
+				b.WriteString(" ")
+				b.Write(part.ToolCall.Arguments)
+				b.WriteByte('\n')
+			}
+			if part.ToolResult != nil {
+				b.WriteString(part.ToolResult.Name)
+				b.WriteString(" ")
+				b.WriteString(part.ToolResult.Content)
+				b.WriteByte('\n')
+			}
+		}
+	}
+	return b.String()
+}
+
+func TestContinuationBriefPrefersTextOverReasoningSummary(t *testing.T) {
+	msg := Message{Role: RoleAssistant, Parts: []Part{{
+		Type:             PartText,
+		Text:             "text brief",
+		ReasoningContent: "reasoning summary should not be included",
+		ReasoningKind:    ReasoningKindSummary,
+	}}}
+	if got := continuationBriefFromAssistantMessage(msg); got != "text brief" {
+		t.Fatalf("brief = %q, want text brief", got)
+	}
+
+	msg.Parts[0].Text = ""
+	if got := continuationBriefFromAssistantMessage(msg); got != "reasoning summary should not be included" {
+		t.Fatalf("reasoning fallback = %q", got)
+	}
+}
+
+func TestCompactionResultFromBriefDoesNotDuplicateInternalBriefTurn(t *testing.T) {
+	brief := "Continue by editing internal/llm/engine.go."
+	result := CompactionResultFromBrief("", brief, []Message{
+		UserText("latest user request"),
+		UserText(contextContinuationPrompt),
+		UserText(contextContinuationBriefPrompt),
+		AssistantText(brief),
+	}, CompactionConfig{InputLimit: 5000})
+
+	if strings.Contains(result.Summary, contextContinuationBriefPrompt) || strings.Contains(result.Summary, contextContinuationPrompt) {
+		t.Fatalf("summary duplicated internal continuation prompt:\n%s", result.Summary)
+	}
+	if strings.Count(result.Summary, brief) != 1 {
+		t.Fatalf("summary should contain brief exactly once, got %d:\n%s", strings.Count(result.Summary, brief), result.Summary)
+	}
+	if !strings.Contains(result.Summary, "latest user request") {
+		t.Fatalf("summary missing deterministic user context:\n%s", result.Summary)
 	}
 }
 
@@ -817,8 +1333,8 @@ func TestCompactUsesIsolatedProviderConversationState(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Compact failed: %v", err)
 	}
-	if result.Summary != "summary" {
-		t.Fatalf("summary = %q, want %q", result.Summary, "summary")
+	if !strings.Contains(result.Summary, "<PREVIOUS_TURNS>") || !strings.Contains(result.Summary, "<SUMMARY_AND_NEXT_ACTIONS>") || !strings.Contains(result.Summary, "summary") {
+		t.Fatalf("summary missing structured compaction content:\n%s", result.Summary)
 	}
 
 	if liveProvider.responsesClient.LastResponseID != "resp_live" {
@@ -997,8 +1513,8 @@ func TestCompactEndToEnd(t *testing.T) {
 	if lastMsg.Role != RoleUser {
 		t.Errorf("last request message should be user (compaction prompt), got %s", lastMsg.Role)
 	}
-	if !strings.Contains(lastMsg.Parts[0].Text, "Create a detailed summary") {
-		t.Errorf("last request message should contain compaction prompt")
+	if !strings.Contains(lastMsg.Parts[0].Text, "Create a compact continuation brief") || !strings.Contains(lastMsg.Parts[0].Text, "## Objective") {
+		t.Errorf("last request message should contain structured compaction prompt")
 	}
 	// Request should include original conversation messages (not serialized text)
 	foundOriginal := false
@@ -1065,7 +1581,7 @@ func TestCompactNoSystemPrompt(t *testing.T) {
 		t.Fatalf("Compact failed: %v", err)
 	}
 
-	// Without system prompt: summary + ack + recent user = 3
+	// Without system prompt the compacted transcript still starts with the summary.
 	if result.NewMessages[0].Role != RoleUser {
 		t.Errorf("first message should be user (summary) when no system prompt, got %s", result.NewMessages[0].Role)
 	}
@@ -1081,6 +1597,38 @@ func TestDefaultCompactionConfig(t *testing.T) {
 	}
 	if config.SummaryTokenBudget != 10_000 {
 		t.Errorf("SummaryTokenBudget = %d, want 10000", config.SummaryTokenBudget)
+	}
+	if config.RecentRawTurns != defaultRecentRawTurns {
+		t.Errorf("RecentRawTurns = %d, want %d", config.RecentRawTurns, defaultRecentRawTurns)
+	}
+	if config.RecentRawTokenBudget != 0 {
+		t.Errorf("RecentRawTokenBudget = %d, want 0 for auto", config.RecentRawTokenBudget)
+	}
+}
+
+func TestEffectiveRecentRawTokenBudgetAutoIsModest(t *testing.T) {
+	tests := []struct {
+		name      string
+		config    CompactionConfig
+		wantToken int
+	}{
+		{name: "disabled", config: CompactionConfig{RecentRawTokenBudget: -1, InputLimit: 128_000}, wantToken: 0},
+		{name: "explicit", config: CompactionConfig{RecentRawTokenBudget: 12_345, InputLimit: 128_000}, wantToken: 12_345},
+		{name: "unknown limit uses cap", config: CompactionConfig{}, wantToken: 8_000},
+		{name: "small limit uses floor", config: CompactionConfig{InputLimit: 16_000}, wantToken: 1_000},
+		{name: "32k uses five percent", config: CompactionConfig{InputLimit: 32_000}, wantToken: 1_600},
+		{name: "64k uses five percent", config: CompactionConfig{InputLimit: 64_000}, wantToken: 3_200},
+		{name: "128k uses five percent", config: CompactionConfig{InputLimit: 128_000}, wantToken: 6_400},
+		{name: "large limit caps", config: CompactionConfig{InputLimit: 200_000}, wantToken: 8_000},
+		{name: "huge limit caps", config: CompactionConfig{InputLimit: 922_000}, wantToken: 8_000},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := effectiveRecentRawTokenBudget(tt.config); got != tt.wantToken {
+				t.Fatalf("effectiveRecentRawTokenBudget(%+v) = %d, want %d", tt.config, got, tt.wantToken)
+			}
+		})
 	}
 }
 
@@ -1130,6 +1678,9 @@ func TestCompactMaxOutputTokensDefault(t *testing.T) {
 }
 
 func TestCompactAppendsSafeUserMessage(t *testing.T) {
+	config := DefaultCompactionConfig()
+	config.RecentRawTokenBudget = -1
+
 	// When last message is assistant, no separator needed
 	t.Run("last message assistant", func(t *testing.T) {
 		provider := NewMockProvider("test")
@@ -1140,7 +1691,7 @@ func TestCompactAppendsSafeUserMessage(t *testing.T) {
 			AssistantText("hi there"),
 		}
 
-		_, err := Compact(context.Background(), provider, "test-model", "", messages, DefaultCompactionConfig())
+		_, err := Compact(context.Background(), provider, "test-model", "", messages, config)
 		if err != nil {
 			t.Fatalf("Compact failed: %v", err)
 		}
@@ -1172,7 +1723,7 @@ func TestCompactAppendsSafeUserMessage(t *testing.T) {
 			UserText("thanks"),
 		}
 
-		_, err := Compact(context.Background(), provider, "test-model", "", messages, DefaultCompactionConfig())
+		_, err := Compact(context.Background(), provider, "test-model", "", messages, config)
 		if err != nil {
 			t.Fatalf("Compact failed: %v", err)
 		}
@@ -1215,7 +1766,7 @@ func TestCompactAppendsSafeUserMessage(t *testing.T) {
 			},
 		}
 
-		_, err := Compact(context.Background(), provider, "test-model", "", messages, DefaultCompactionConfig())
+		_, err := Compact(context.Background(), provider, "test-model", "", messages, config)
 		if err != nil {
 			t.Fatalf("Compact failed: %v", err)
 		}

@@ -18,9 +18,17 @@ type CloseMsg struct{}
 
 // Config holds optional configuration for the inspector
 type Config struct {
-	ProviderName    string
-	ModelName       string
-	ToolSpecs       []llm.ToolSpec
+	ProviderName string
+	ModelName    string
+	ToolSpecs    []llm.ToolSpec
+
+	// Compaction boundary metadata lets the inspector mark where the active
+	// compacted context begins while still showing the full preserved scrollback.
+	HasCompactionBoundary   bool
+	CompactionBoundaryIndex int
+	CompactionBoundarySeq   int
+	CompactionCount         int
+
 	ReasoningConfig appconfig.ReasoningConfig
 }
 
@@ -55,6 +63,12 @@ type Model struct {
 	modelName       string
 	toolSpecs       []llm.ToolSpec
 	reasoningConfig appconfig.ReasoningConfig
+
+	// Compaction boundary metadata for rendering debug markers in Ctrl+O.
+	hasCompactionBoundary   bool
+	compactionBoundaryIndex int
+	compactionBoundarySeq   int
+	compactionCount         int
 }
 
 // New creates a new inspector model
@@ -74,13 +88,15 @@ func NewWithConfig(messages []session.Message, width, height int, styles *ui.Sty
 	}
 
 	m := &Model{
-		width:         width,
-		height:        height,
-		messages:      messages,
-		styles:        styles,
-		keyMap:        DefaultKeyMap(),
-		expandedItems: make(map[string]bool),
-		store:         store,
+		width:                   width,
+		height:                  height,
+		messages:                messages,
+		styles:                  styles,
+		keyMap:                  DefaultKeyMap(),
+		expandedItems:           make(map[string]bool),
+		store:                   store,
+		compactionBoundaryIndex: -1,
+		compactionBoundarySeq:   -1,
 	}
 
 	// Apply config if provided
@@ -89,6 +105,12 @@ func NewWithConfig(messages []session.Message, width, height int, styles *ui.Sty
 		m.modelName = cfg.ModelName
 		m.toolSpecs = cfg.ToolSpecs
 		m.reasoningConfig = cfg.ReasoningConfig
+		m.hasCompactionBoundary = cfg.HasCompactionBoundary
+		if cfg.HasCompactionBoundary {
+			m.compactionBoundaryIndex = cfg.CompactionBoundaryIndex
+			m.compactionBoundarySeq = cfg.CompactionBoundarySeq
+			m.compactionCount = cfg.CompactionCount
+		}
 	}
 	if m.reasoningConfig == (appconfig.ReasoningConfig{}) {
 		m.reasoningConfig = appconfig.DefaultReasoningConfig()
@@ -101,6 +123,7 @@ func NewWithConfig(messages []session.Message, width, height int, styles *ui.Sty
 // renderContent renders all messages and splits into lines
 func (m *Model) renderContent() {
 	renderer := NewContentRenderer(m.width-2, m.styles, m.expandedItems, m.store, m.providerName, m.modelName, m.toolSpecs, m.reasoningConfig) // -2 for padding
+	renderer.SetCompactionBoundary(m.hasCompactionBoundary, m.compactionBoundaryIndex, m.compactionBoundarySeq, m.compactionCount)
 	content, items := renderer.RenderMessages(m.messages)
 	m.contentLines = strings.Split(content, "\n")
 	m.totalLines = len(m.contentLines)
@@ -191,78 +214,39 @@ func (m *Model) handleKeyMsg(msg tea.KeyPressMsg) (*Model, tea.Cmd) {
 	case key.Matches(msg, m.keyMap.GoToBottom):
 		m.scrollY = m.maxScroll()
 
-	case key.Matches(msg, m.keyMap.ExpandVisible):
-		m.toggleVisibleItems()
+	case key.Matches(msg, m.keyMap.ExpandAll):
+		m.expandAllItems()
 	}
 
 	return m, nil
 }
 
-// toggleVisibleItems toggles expand/collapse for items visible in the viewport.
-// If any visible items are truncated, expand them. Otherwise, collapse all expanded items.
-func (m *Model) toggleVisibleItems() {
-	if len(m.items) == 0 || len(m.itemAtLine) == 0 {
+// expandAllItems expands every collapsed/truncated item in the inspector,
+// regardless of its current viewport location.
+func (m *Model) expandAllItems() {
+	if len(m.items) == 0 {
 		return
 	}
 
-	// Find items visible in current viewport
-	vpHeight := m.viewportHeight()
-	startLine := m.scrollY
-	endLine := m.scrollY + vpHeight
-	if endLine > m.totalLines {
-		endLine = m.totalLines
-	}
-
-	// Collect visible items and check their state
-	seen := make(map[int]bool)
-	var visibleItemIDs []string
-	hasCollapsed := false
-
-	for line := startLine; line < endLine; line++ {
-		if line >= len(m.itemAtLine) {
+	oldScrollY := m.scrollY
+	changed := false
+	for {
+		expandedThisPass := false
+		for _, item := range m.items {
+			if item.ID == "" || !item.IsTruncated || m.expandedItems[item.ID] {
+				continue
+			}
+			m.expandedItems[item.ID] = true
+			expandedThisPass = true
+			changed = true
+		}
+		if !expandedThisPass {
 			break
 		}
-		itemIdx := m.itemAtLine[line]
-		if itemIdx < 0 || seen[itemIdx] {
-			continue
-		}
-		seen[itemIdx] = true
-
-		item := m.items[itemIdx]
-		visibleItemIDs = append(visibleItemIDs, item.ID)
-		// Check if this item is truncated (could be expanded)
-		if item.IsTruncated && !m.expandedItems[item.ID] {
-			hasCollapsed = true
-		}
-	}
-
-	if len(visibleItemIDs) == 0 {
-		return
-	}
-
-	changed := false
-	if hasCollapsed {
-		// Expand all truncated visible items
-		for _, id := range visibleItemIDs {
-			if !m.expandedItems[id] {
-				m.expandedItems[id] = true
-				changed = true
-			}
-		}
-	} else {
-		// Collapse all expanded visible items
-		for _, id := range visibleItemIDs {
-			if m.expandedItems[id] {
-				delete(m.expandedItems, id)
-				changed = true
-			}
-		}
-	}
-
-	// Re-render if we changed anything
-	if changed {
-		oldScrollY := m.scrollY
 		m.renderContent()
+	}
+
+	if changed {
 		m.scrollY = oldScrollY
 		m.clampScroll()
 	}
@@ -361,7 +345,7 @@ func (m *Model) View() tea.View {
 	}
 
 	// Help text (plain, no styling that could interfere with width calc)
-	help := "q:close  j/k:scroll  g/G:top/bottom  e:toggle"
+	help := "q:close  j/k:scroll  g/G:top/bottom  e/ctrl+e:expand all"
 
 	// Combine footer with manual padding
 	padding := m.width - len(scrollInfo) - len(help)

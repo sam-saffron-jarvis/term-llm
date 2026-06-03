@@ -164,12 +164,81 @@ func TestSQLiteStoreGetLatestVisibleMessageIDSkipsInvisibleTail(t *testing.T) {
 		t.Fatalf("AddMessage(tool): %v", err)
 	}
 
+	compactionTail := NewMessage(sess.ID, llm.AssistantText("hidden retained tail"), 3)
+	compactionTail.CompactionTail = true
+	if err := store.AddMessage(ctx, sess.ID, compactionTail); err != nil {
+		t.Fatalf("AddMessage(compaction tail): %v", err)
+	}
+
 	got, err := store.GetLatestVisibleMessageID(ctx, sess.ID)
 	if err != nil {
 		t.Fatalf("GetLatestVisibleMessageID: %v", err)
 	}
 	if got != assistant.ID {
 		t.Fatalf("latest visible message id = %d, want %d", got, assistant.ID)
+	}
+}
+
+func TestSQLiteStorePersistsCompactionTailFlag(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+
+	store, err := NewSQLiteStore(DefaultConfig())
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+	sess := &Session{ID: NewID(), Provider: "test", Model: "test-model", Mode: ModeChat}
+	if err := store.Create(ctx, sess); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	visible := NewMessage(sess.ID, llm.UserText("visible prompt"), -1)
+	if err := store.AddMessage(ctx, sess.ID, visible); err != nil {
+		t.Fatalf("AddMessage(visible): %v", err)
+	}
+	hidden := NewMessage(sess.ID, llm.AssistantText("hidden retained tail"), -1)
+	hidden.CompactionTail = true
+	if err := store.AddMessage(ctx, sess.ID, hidden); err != nil {
+		t.Fatalf("AddMessage(hidden): %v", err)
+	}
+
+	all, err := store.GetMessages(ctx, sess.ID, 0, 0)
+	if err != nil {
+		t.Fatalf("GetMessages: %v", err)
+	}
+	if len(all) != 2 || all[0].CompactionTail || !all[1].CompactionTail {
+		t.Fatalf("compaction tail flags from GetMessages = %#v", all)
+	}
+	from, err := store.GetMessagesFrom(ctx, sess.ID, all[1].Sequence, 0)
+	if err != nil {
+		t.Fatalf("GetMessagesFrom: %v", err)
+	}
+	if len(from) != 1 || !from[0].CompactionTail {
+		t.Fatalf("compaction tail flag from GetMessagesFrom = %#v", from)
+	}
+	byID, err := store.GetMessageByID(ctx, hidden.ID)
+	if err != nil {
+		t.Fatalf("GetMessageByID: %v", err)
+	}
+	if byID == nil || !byID.CompactionTail {
+		t.Fatalf("compaction tail flag from GetMessageByID = %#v", byID)
+	}
+
+	summaries, err := store.List(ctx, ListOptions{Limit: 1})
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(summaries) != 1 || summaries[0].MessageCount != 1 {
+		t.Fatalf("visible message count = %#v, want only non-tail user counted", summaries)
+	}
+	results, err := store.Search(ctx, "hidden", 10)
+	if err != nil {
+		t.Fatalf("Search hidden: %v", err)
+	}
+	if len(results) != 0 {
+		t.Fatalf("hidden compaction tail should not appear in search results: %#v", results)
 	}
 }
 

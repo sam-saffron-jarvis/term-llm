@@ -126,7 +126,11 @@ func (r *MessageBlockRenderer) Render(msg *session.Message) *MessageBlock {
 
 	switch msg.Role {
 	case llm.RoleUser:
-		content = r.renderUserMessage(msg)
+		if isInternalCompactionSummarySessionMessage(msg) {
+			content = r.renderCompactionSummaryPlaceholder(msg)
+		} else {
+			content = r.renderUserMessage(msg)
+		}
 		if strings.TrimSpace(content) != "" {
 			r.noteRenderedSegment(ui.SegmentText)
 		}
@@ -220,6 +224,45 @@ func (r *MessageBlockRenderer) renderEventMessage(msg *session.Message) string {
 	}
 	style := lipgloss.NewStyle().Foreground(r.theme.Muted).Italic(true)
 	return style.Render(text) + "\n\n"
+}
+
+func (r *MessageBlockRenderer) renderCompactionSummaryPlaceholder(msg *session.Message) string {
+	text := internalCompactionSummaryText(msg)
+	displayText := llm.CompactionSummaryDisplayText(text)
+	lineCount := 0
+	if displayText != "" {
+		lineCount = strings.Count(displayText, "\n") + 1
+	}
+	detail := "internal summary hidden"
+	if lineCount > 1 {
+		detail = fmt.Sprintf("internal summary hidden, %d lines", lineCount)
+	}
+	style := lipgloss.NewStyle().Foreground(r.theme.Muted).Italic(true)
+	line := "↳ Context compacted · " + detail + " · Ctrl+O to inspect"
+	wrapWidth := r.width
+	if wrapWidth < 20 {
+		wrapWidth = 20
+	}
+	return style.Render(wordwrap.String(line, wrapWidth)) + "\n\n"
+}
+
+func isInternalCompactionSummarySessionMessage(msg *session.Message) bool {
+	return llm.IsInternalCompactionSummaryText(internalCompactionSummaryText(msg))
+}
+
+func internalCompactionSummaryText(msg *session.Message) string {
+	if msg == nil {
+		return ""
+	}
+	if llm.IsInternalCompactionSummaryText(msg.TextContent) {
+		return msg.TextContent
+	}
+	for _, part := range msg.Parts {
+		if part.Type == llm.PartText && llm.IsInternalCompactionSummaryText(part.Text) {
+			return part.Text
+		}
+	}
+	return msg.TextContent
 }
 
 func renderUserMessageLine(prefix string, prefixStyle lipgloss.Style, content string, contentStyle lipgloss.Style, width int) string {

@@ -106,7 +106,7 @@ func (s *LoggingStore) GetLatestVisibleMessageID(ctx context.Context, sessionID 
 	}
 	for i := len(msgs) - 1; i >= 0; i-- {
 		role := string(msgs[i].Role)
-		if role == "user" || role == "assistant" {
+		if (role == "user" || role == "assistant") && !msgs[i].CompactionTail {
 			return msgs[i].ID, nil
 		}
 	}

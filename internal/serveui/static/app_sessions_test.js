@@ -665,6 +665,184 @@ async function testDeveloperMessagesAreHidden() {
   pass(name);
 }
 
+async function testConvertServerMessagesCompactionSummariesBecomeMarkers() {
+  const name = 'server compaction summary converts to compact marker with active boundary';
+  const { app } = await createSessionsHarness();
+  const raw = '[Context Compaction]\nInternal context only.\n\n<PREVIOUS_TURNS>\nnoisy tool output\n</PREVIOUS_TURNS>';
+
+  const converted = app.convertServerMessages([
+    {
+      sequence: 9,
+      role: 'system',
+      created_at: 900,
+      parts: [{ type: 'text', text: 'system prompt' }],
+    },
+    {
+      sequence: 10,
+      role: 'user',
+      created_at: 1000,
+      parts: [{ type: 'text', text: raw }],
+    },
+    {
+      sequence: 11,
+      role: 'assistant',
+      created_at: 1100,
+      parts: [{ type: 'text', text: 'ack' }],
+    },
+  ], { compactionSeq: 9, compactionCount: 2 });
+
+  if (converted.length !== 2) {
+    fail(name, `expected compaction marker + assistant, got ${converted.length}`, JSON.stringify(converted));
+    return;
+  }
+  const marker = converted[0];
+  if (marker.role !== 'compaction' || marker.rawContent !== raw || !marker.activeBoundary || marker.compactionCount !== 2) {
+    fail(name, 'converted compaction marker missing expected fields', JSON.stringify(marker));
+    return;
+  }
+  if (String(marker.content || '').includes('noisy tool output')) {
+    fail(name, 'compact marker display content should not include raw transcript', JSON.stringify(marker));
+    return;
+  }
+
+  pass(name);
+}
+
+async function testConvertServerMessagesSuppressesCompactionRetainedRawTail() {
+  const name = 'server compaction conversion suppresses post-marker retained raw suffix';
+  const { app } = await createSessionsHarness();
+  const raw = '[Context Compaction]\n\n<SUMMARY_AND_NEXT_ACTIONS>\ncontinue with recent answer\n</SUMMARY_AND_NEXT_ACTIONS>';
+
+  const converted = app.convertServerMessages([
+    { sequence: 1, role: 'user', created_at: 1000, parts: [{ type: 'text', text: 'old prompt' }] },
+    { sequence: 2, role: 'user', created_at: 2000, parts: [{ type: 'text', text: 'recent prompt' }] },
+    { sequence: 3, role: 'assistant', created_at: 3000, parts: [{ type: 'text', text: 'recent answer' }] },
+    { sequence: 4, role: 'user', created_at: 4000, parts: [{ type: 'text', text: raw }] },
+    { sequence: 5, role: 'user', created_at: 5000, parts: [{ type: 'text', text: 'recent prompt' }] },
+    { sequence: 6, role: 'assistant', created_at: 6000, parts: [{ type: 'text', text: 'recent answer' }] },
+  ], { compactionSeq: 4, compactionCount: 1 });
+
+  const rolesAndContent = converted.map((message) => `${message.role}:${message.content}`);
+  const want = [
+    'user:old prompt',
+    'user:recent prompt',
+    'assistant:recent answer',
+    'compaction:Context compacted',
+  ];
+  if (JSON.stringify(rolesAndContent) !== JSON.stringify(want)) {
+    fail(name, 'unexpected converted display messages', JSON.stringify(converted));
+    return;
+  }
+  if (!converted[3].activeBoundary || converted[3].lineCount !== 1) {
+    fail(name, 'compaction marker should remain the active boundary and count summary lines only', JSON.stringify(converted[3]));
+    return;
+  }
+
+  const convertedWithAck = app.convertServerMessages([
+    { sequence: 1, role: 'user', created_at: 1000, parts: [{ type: 'text', text: 'old prompt' }] },
+    { sequence: 2, role: 'user', created_at: 2000, parts: [{ type: 'text', text: 'recent prompt' }] },
+    { sequence: 3, role: 'assistant', created_at: 3000, parts: [{ type: 'text', text: 'recent answer' }] },
+    { sequence: 4, role: 'user', created_at: 4000, parts: [{ type: 'text', text: raw }] },
+    { sequence: 5, role: 'assistant', created_at: 4500, parts: [{ type: 'text', text: "I've reviewed the context summary. I'll continue from where we left off." }] },
+    { sequence: 6, role: 'user', created_at: 5000, parts: [{ type: 'text', text: 'recent prompt' }] },
+    { sequence: 7, role: 'assistant', created_at: 6000, parts: [{ type: 'text', text: 'recent answer' }] },
+  ], { compactionSeq: 4, compactionCount: 1 });
+  if (JSON.stringify(convertedWithAck.map((message) => `${message.role}:${message.content}`)) !== JSON.stringify(want)) {
+    fail(name, 'synthetic ack and retained tail should both be suppressed', JSON.stringify(convertedWithAck));
+    return;
+  }
+
+  pass(name);
+}
+
+async function testConvertServerMessagesSuppressesAuthoritativeCompactionTailFlag() {
+  const name = 'server compaction conversion suppresses authoritative compaction tail flag';
+  const { app } = await createSessionsHarness();
+  const raw = '[Context Compaction]\n\n<SUMMARY_AND_NEXT_ACTIONS>\ncontinue\n</SUMMARY_AND_NEXT_ACTIONS>';
+
+  const converted = app.convertServerMessages([
+    { sequence: 1, role: 'user', compaction_tail: false, created_at: 1000, parts: [{ type: 'text', text: 'recent prompt' }] },
+    { sequence: 2, role: 'assistant', compaction_tail: false, created_at: 2000, parts: [{ type: 'text', text: 'recent answer' }] },
+    { sequence: 3, role: 'user', compaction_tail: false, created_at: 3000, parts: [{ type: 'text', text: raw }] },
+    { sequence: 4, role: 'assistant', compaction_tail: true, created_at: 4000, parts: [{ type: 'text', text: 'recent answer' }] },
+    { sequence: 5, role: 'user', compaction_tail: false, created_at: 5000, parts: [{ type: 'text', text: 'recent answer' }] },
+  ], { compactionSeq: 3, compactionCount: 1 });
+
+  const rolesAndContent = converted.map((message) => `${message.role}:${message.content}`);
+  const want = [
+    'user:recent prompt',
+    'assistant:recent answer',
+    'compaction:Context compacted',
+    'user:recent answer',
+  ];
+  if (JSON.stringify(rolesAndContent) !== JSON.stringify(want)) {
+    fail(name, 'unexpected converted display messages', JSON.stringify(converted));
+    return;
+  }
+
+  pass(name);
+}
+
+async function testConvertServerMessagesHandlesMixedLegacyAndAuthoritativeCompactionTails() {
+  const name = 'server compaction conversion handles mixed legacy and authoritative tails';
+  const { app } = await createSessionsHarness();
+  const raw = '[Context Compaction]\n\n<SUMMARY_AND_NEXT_ACTIONS>\ncontinue\n</SUMMARY_AND_NEXT_ACTIONS>';
+
+  const converted = app.convertServerMessages([
+    { sequence: 1, role: 'user', created_at: 1000, parts: [{ type: 'text', text: 'legacy prompt' }] },
+    { sequence: 2, role: 'assistant', created_at: 2000, parts: [{ type: 'text', text: 'legacy answer' }] },
+    { sequence: 3, role: 'user', created_at: 3000, parts: [{ type: 'text', text: raw }] },
+    { sequence: 4, role: 'user', created_at: 4000, parts: [{ type: 'text', text: 'legacy prompt' }] },
+    { sequence: 5, role: 'assistant', created_at: 5000, parts: [{ type: 'text', text: 'legacy answer' }] },
+    { sequence: 6, role: 'user', created_at: 6000, parts: [{ type: 'text', text: 'repeat after flagged marker' }] },
+    { sequence: 7, role: 'user', created_at: 7000, parts: [{ type: 'text', text: raw }] },
+    { sequence: 8, role: 'user', compaction_tail: true, created_at: 8000, parts: [{ type: 'text', text: 'repeat after flagged marker' }] },
+    { sequence: 9, role: 'assistant', compaction_tail: true, created_at: 9000, parts: [{ type: 'text', text: 'hidden flagged tail' }] },
+    { sequence: 10, role: 'user', created_at: 10000, parts: [{ type: 'text', text: 'repeat after flagged marker' }] },
+  ], { compactionSeq: 7, compactionCount: 2 });
+
+  const rolesAndContent = converted.map((message) => `${message.role}:${message.content}`);
+  const want = [
+    'user:legacy prompt',
+    'assistant:legacy answer',
+    'compaction:Context compacted',
+    'user:repeat after flagged marker',
+    'compaction:Context compacted',
+    'user:repeat after flagged marker',
+  ];
+  if (JSON.stringify(rolesAndContent) !== JSON.stringify(want)) {
+    fail(name, 'legacy tail should be heuristically suppressed while flagged marker keeps later repeated visible content', JSON.stringify(converted));
+    return;
+  }
+
+  pass(name);
+}
+
+async function testConvertServerMessagesInsertsBoundaryWhenSummaryNotLoaded() {
+  const name = 'server compaction boundary marker appears when compacted summary is outside loaded page';
+  const { app } = await createSessionsHarness();
+
+  const converted = app.convertServerMessages([
+    {
+      sequence: 42,
+      role: 'assistant',
+      created_at: 4200,
+      parts: [{ type: 'text', text: 'recent raw answer' }],
+    },
+  ], { compactionSeq: 10, compactionCount: 1 });
+
+  if (converted.length !== 2 || converted[0].role !== 'compaction-boundary' || !converted[0].activeBoundary) {
+    fail(name, 'expected synthetic boundary before first visible compacted message', JSON.stringify(converted));
+    return;
+  }
+  if (converted[1].role !== 'assistant' || converted[1].content !== 'recent raw answer') {
+    fail(name, 'expected original assistant after boundary', JSON.stringify(converted));
+    return;
+  }
+
+  pass(name);
+}
+
 async function testConvertServerMessagesAttachesToolResultImages() {
   const name = 'server tool_result image parts attach to tool group artifacts';
   const { app } = await createSessionsHarness();
@@ -2252,6 +2430,11 @@ async function testSwitchToSearchOnlySessionHydratesResult() {
   await testNumericDeepLinkResolvesRealSessionId();
   await testMergeServerSessionsMigratesInterruptBuffersToRealSessionId();
   await testDeveloperMessagesAreHidden();
+  await testConvertServerMessagesCompactionSummariesBecomeMarkers();
+  await testConvertServerMessagesSuppressesCompactionRetainedRawTail();
+  await testConvertServerMessagesSuppressesAuthoritativeCompactionTailFlag();
+  await testConvertServerMessagesHandlesMixedLegacyAndAuthoritativeCompactionTails();
+  await testConvertServerMessagesInsertsBoundaryWhenSummaryNotLoaded();
   await testConvertServerMessagesAttachesToolResultImages();
   await testSessionHistoryInitialLoadRequestsTailOnly();
   await testScrollNearTopLoadsOlderPageAndPreservesViewport();

@@ -369,9 +369,148 @@ const serverMessageCreatedAt = (msg) => {
   return Number.isFinite(created) && created > 0 ? created : Date.now();
 };
 
-const convertServerMessages = (serverMessages) => {
+const isInternalCompactionSummaryText = (text) => (
+  String(text || '').trimStart().startsWith('[Context Compaction]')
+);
+
+const compactionSummaryDisplayText = (text) => {
+  let value = String(text || '').replace(/\r\n?/g, '\n');
+  const summaryMatch = value.match(/<SUMMARY_AND_NEXT_ACTIONS>\n?([\s\S]*?)\n?<\/SUMMARY_AND_NEXT_ACTIONS>/);
+  if (summaryMatch) return summaryMatch[1].trim();
+  value = value.replace(/^\s*\[Context Compaction\]\s*/, '');
+  value = value.replace(/<PREVIOUS_TURNS>\n?[\s\S]*?\n?<\/PREVIOUS_TURNS>/g, '');
+  return value.trim();
+};
+
+const lineCount = (text) => {
+  const value = String(text || '').trim();
+  return value ? value.split('\n').length : 0;
+};
+
+const responseCompactionMetadata = (data = {}) => {
+  const seq = Number(data.compaction_seq ?? data.compactionSeq);
+  const count = Number(data.compaction_count ?? data.compactionCount);
+  return {
+    compactionSeq: Number.isFinite(seq) ? seq : -1,
+    compactionCount: Number.isFinite(count) ? count : 0
+  };
+};
+
+const messageDedupeKey = (message) => {
+  if (!message || typeof message !== 'object') return '';
+  if (message.role === 'tool-group') {
+    return JSON.stringify({
+      role: message.role,
+      status: message.status || '',
+      tools: Array.isArray(message.tools)
+        ? message.tools.map((tool) => ({
+          name: tool?.name || '',
+          arguments: tool?.arguments || '',
+          status: tool?.status || '',
+          images: Array.isArray(tool?.images) ? tool.images : []
+        }))
+        : []
+    });
+  }
+  return JSON.stringify({
+    role: message.role || '',
+    content: message.content || '',
+    attachments: Array.isArray(message.attachments)
+      ? message.attachments.map((attachment) => ({
+        name: attachment?.name || '',
+        type: attachment?.type || '',
+        dataURL: attachment?.dataURL || '',
+        previewURL: attachment?.previewURL || ''
+      }))
+      : []
+  });
+};
+
+const messageRangesEquivalent = (messages, leftStart, rightStart, length) => {
+  for (let offset = 0; offset < length; offset += 1) {
+    if (messageDedupeKey(messages[leftStart + offset]) !== messageDedupeKey(messages[rightStart + offset])) {
+      return false;
+    }
+  }
+  return true;
+};
+
+const isSyntheticCompactionAckMessage = (message) => (
+  message?.role === 'assistant' && String(message.content || '').trim() === "I've reviewed the context summary. I'll continue from where we left off."
+);
+
+const compactionDuplicateTailRange = (messages, markerIndex) => {
+  if (markerIndex <= 0 || markerIndex + 1 >= messages.length) return { start: -1, length: 0 };
+  const candidates = [markerIndex + 1];
+  if (isSyntheticCompactionAckMessage(messages[markerIndex + 1])) candidates.push(markerIndex + 2);
+  let bestStart = -1;
+  let bestLength = 0;
+  candidates.forEach((start) => {
+    if (start >= messages.length) return;
+    const maxLength = Math.min(markerIndex, messages.length - start);
+    for (let length = 1; length <= maxLength; length += 1) {
+      if (length > bestLength && messageRangesEquivalent(messages, markerIndex - length, start, length)) {
+        bestStart = start;
+        bestLength = length;
+      }
+    }
+  });
+  return { start: bestStart, length: bestLength };
+};
+
+const suppressCompactionTailMessages = (messages) => {
+  if (!Array.isArray(messages) || messages.length === 0) return messages;
+  const out = messages.slice();
+  for (let index = 0; index < out.length; index += 1) {
+    if (out[index]?.role !== 'compaction') continue;
+    if (out[index]?.authoritativeTailSuppressed) continue;
+    const { start, length } = compactionDuplicateTailRange(out, index);
+    if (length > 0) {
+      out.splice(index + 1, start + length - (index + 1));
+    } else if (isSyntheticCompactionAckMessage(out[index + 1])) {
+      out.splice(index + 1, 1);
+    }
+  }
+  return out;
+};
+
+const annotateCompactionBoundary = (messages, options = {}) => {
+  const seq = Number(options.compactionSeq);
+  if (!Number.isFinite(seq) || seq < 0 || !Array.isArray(messages) || messages.length === 0) {
+    return messages;
+  }
+  const boundaryIndex = messages.findIndex((message) => {
+    const messageSeq = Number(message?.serverSeq);
+    return Number.isFinite(messageSeq) && messageSeq >= seq;
+  });
+  if (boundaryIndex < 0) return messages;
+
+  const count = Number(options.compactionCount);
+  const boundary = messages[boundaryIndex];
+  if (boundary?.role === 'compaction') {
+    boundary.activeBoundary = true;
+    boundary.compactionSeq = seq;
+    if (Number.isFinite(count) && count > 0) boundary.compactionCount = count;
+    return messages;
+  }
+
+  const marker = {
+    id: `compaction_boundary_${seq}`,
+    role: 'compaction-boundary',
+    content: 'Context compacted',
+    activeBoundary: true,
+    compactionSeq: seq,
+    created: boundary?.created || Date.now()
+  };
+  if (Number.isFinite(count) && count > 0) marker.compactionCount = count;
+  messages.splice(boundaryIndex, 0, marker);
+  return messages;
+};
+
+const convertServerMessages = (serverMessages, options = {}) => {
   const result = [];
   let currentGroup = null;
+  let pendingCompactionMarkerIndex = -1;
 
   const normalizeImages = (images) => (
     Array.isArray(images)
@@ -395,6 +534,16 @@ const convertServerMessages = (serverMessages) => {
     }
   };
 
+  const markAuthoritativeCompactionTailSuppressed = () => {
+    if (pendingCompactionMarkerIndex < 0) return;
+    const marker = result[pendingCompactionMarkerIndex];
+    if (marker?.role === 'compaction') marker.authoritativeTailSuppressed = true;
+  };
+
+  const clearPendingCompactionTail = () => {
+    pendingCompactionMarkerIndex = -1;
+  };
+
   const toolGroupId = (msg, partIndex) => `${serverMessageBaseId(msg)}_tools_${partIndex}`;
   const fallbackToolId = (msg, partIndex) => `${serverMessageBaseId(msg)}_tool_${partIndex}`;
 
@@ -406,7 +555,8 @@ const convertServerMessages = (serverMessages) => {
         tools: [],
         expanded: false,
         status: 'done',
-        created
+        created,
+        ...(serverMessageSequence(msg) !== null ? { serverSeq: serverMessageSequence(msg) } : {})
       };
     }
     return currentGroup;
@@ -439,8 +589,15 @@ const convertServerMessages = (serverMessages) => {
     const parts = Array.isArray(msg.parts) ? msg.parts : [];
     const created = serverMessageCreatedAt(msg);
     const baseId = serverMessageBaseId(msg);
+    const seq = serverMessageSequence(msg);
 
     if (msg.role === 'system' || msg.role === 'developer') continue;
+    if (msg.compaction_tail || msg.compactionTail) {
+      flushGroup();
+      markAuthoritativeCompactionTailSuppressed();
+      continue;
+    }
+    clearPendingCompactionTail();
 
     if (msg.role === 'event') {
       flushGroup();
@@ -449,7 +606,8 @@ const convertServerMessages = (serverMessages) => {
         id: baseId,
         role: 'model-swap',
         content: marker?.text || '↔ Model switch',
-        created
+        created,
+        ...(seq !== null ? { serverSeq: seq } : {})
       });
       continue;
     }
@@ -471,11 +629,27 @@ const convertServerMessages = (serverMessages) => {
         }
       }
 
+      const content = textParts.join('\n');
+      if (isInternalCompactionSummaryText(content)) {
+        result.push({
+          id: baseId,
+          role: 'compaction',
+          content: 'Context compacted',
+          rawContent: content,
+          lineCount: lineCount(compactionSummaryDisplayText(content)),
+          created,
+          ...(seq !== null ? { serverSeq: seq, compactionSeq: seq } : {})
+        });
+        pendingCompactionMarkerIndex = result.length - 1;
+        continue;
+      }
+
       result.push({
         id: baseId,
         role: 'user',
-        content: textParts.join('\n'),
+        content,
         created,
+        ...(seq !== null ? { serverSeq: seq } : {}),
         ...(attachments.length > 0 ? { attachments } : {})
       });
       continue;
@@ -490,7 +664,8 @@ const convertServerMessages = (serverMessages) => {
           id: `${baseId}_text_${partIndex}`,
           role: 'assistant',
           content: part.text,
-          created
+          created,
+          ...(seq !== null ? { serverSeq: seq } : {})
         });
       } else if (part.type === 'tool_call') {
         const group = ensureToolGroup(created, msg, partIndex);
@@ -523,13 +698,14 @@ const convertServerMessages = (serverMessages) => {
         id: `${baseId}_empty`,
         role: 'assistant',
         content: '',
-        created
+        created,
+        ...(seq !== null ? { serverSeq: seq } : {})
       });
     }
   }
 
   flushGroup();
-  return result;
+  return annotateCompactionBoundary(suppressCompactionTailMessages(result), options);
 };
 
 const SESSION_MESSAGES_PAGE_SIZE = 200;
@@ -546,12 +722,16 @@ const ensureSessionHistory = (session) => {
       hasMoreOlder: false,
       loadingOlder: false,
       loadedTail: false,
-      lastResponseId: ''
+      lastResponseId: '',
+      compactionSeq: -1,
+      compactionCount: 0
     };
   }
   const history = session._history;
   if (!Array.isArray(history.rawMessages)) history.rawMessages = [];
   history.oldestSeq = Number.isFinite(Number(history.oldestSeq)) ? Number(history.oldestSeq) : 0;
+  history.compactionSeq = Number.isFinite(Number(history.compactionSeq)) ? Number(history.compactionSeq) : -1;
+  history.compactionCount = Number.isFinite(Number(history.compactionCount)) ? Number(history.compactionCount) : 0;
   history.hasMoreOlder = history.hasMoreOlder === true;
   history.loadingOlder = history.loadingOlder === true;
   history.loadedTail = history.loadedTail === true;
@@ -613,7 +793,10 @@ const rawServerMessagesOverlap = (left, right) => {
 };
 
 const convertedMessagesFromHistory = (history) => {
-  const converted = convertServerMessages(history?.rawMessages || []);
+  const converted = convertServerMessages(history?.rawMessages || [], {
+    compactionSeq: history?.compactionSeq,
+    compactionCount: history?.compactionCount
+  });
   const lastResponseId = String(history?.lastResponseId || '').trim();
   if (lastResponseId) converted.lastResponseId = lastResponseId;
   return converted;
@@ -622,9 +805,10 @@ const convertedMessagesFromHistory = (history) => {
 const applyTailMessagesToSessionHistory = (sessionId, data) => {
   const rawTail = Array.isArray(data?.messages) ? data.messages.slice() : [];
   const lastResponseId = String(data?.lastResponseId || '').trim();
+  const compactionMeta = responseCompactionMetadata(data);
   const session = findSessionById(sessionId);
   if (!session) {
-    const converted = convertServerMessages(rawTail);
+    const converted = convertServerMessages(rawTail, compactionMeta);
     if (lastResponseId) converted.lastResponseId = lastResponseId;
     return converted;
   }
@@ -641,6 +825,8 @@ const applyTailMessagesToSessionHistory = (sessionId, data) => {
   history.loadedTail = true;
   history.loadingOlder = false;
   history.lastResponseId = lastResponseId;
+  history.compactionSeq = compactionMeta.compactionSeq;
+  history.compactionCount = compactionMeta.compactionCount;
 
   if (overlapsExisting) {
     history.hasMoreOlder = previousHasMoreOlder;
@@ -750,6 +936,9 @@ const loadOlderSessionMessages = async (session) => {
     history.hasMoreOlder = page.data.has_more === true;
     const lastResponseId = String(page.data.lastResponseId || '').trim();
     if (lastResponseId) history.lastResponseId = lastResponseId;
+    const compactionMeta = responseCompactionMetadata(page.data);
+    history.compactionSeq = compactionMeta.compactionSeq;
+    history.compactionCount = compactionMeta.compactionCount;
 
     const converted = convertedMessagesFromHistory(history);
     mergeServerMessagesWithLocalState(session, converted);

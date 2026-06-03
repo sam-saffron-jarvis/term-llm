@@ -399,6 +399,9 @@ func (r *Renderer) renderHistory(state RenderState) string {
 	hasPreviousRenderedSegment := false
 	for i := start; i < end; i++ {
 		msg := &state.Messages[i]
+		if msg.CompactionTail {
+			continue
+		}
 		// Skip non-renderable roles
 		if msg.Role != "user" && msg.Role != "assistant" && msg.Role != "event" {
 			continue
@@ -461,6 +464,7 @@ func MessageHistorySignature(messages []session.Message) uint64 {
 		h = writeIntHash(h, msg.Sequence)
 		h = writeStringHash(h, string(msg.Role))
 		h = writeStringHash(h, msg.TextContent)
+		h = writeBoolHash(h, msg.CompactionTail)
 		h = writeUint64Hash(h, messagePartsSignature(msg))
 	}
 	return h

@@ -1090,6 +1090,18 @@ const sanitizeMessage = (msg) => {
     return base;
   }
 
+  if (role === 'compaction' || role === 'compaction-boundary') {
+    base.content = String(msg.content || 'Context compacted');
+    base.rawContent = String(msg.rawContent || '');
+    base.lineCount = Number.isFinite(Number(msg.lineCount)) ? Number(msg.lineCount) : 0;
+    base.expanded = Boolean(msg.expanded);
+    base.activeBoundary = Boolean(msg.activeBoundary);
+    if (Number.isFinite(Number(msg.compactionSeq))) base.compactionSeq = Number(msg.compactionSeq);
+    if (Number.isFinite(Number(msg.compactionCount))) base.compactionCount = Number(msg.compactionCount);
+    if (Number.isFinite(Number(msg.serverSeq))) base.serverSeq = Number(msg.serverSeq);
+    return base;
+  }
+
   if (role === 'tool') {
     base.name = String(msg.name || 'tool');
     base.arguments = String(msg.arguments || '');

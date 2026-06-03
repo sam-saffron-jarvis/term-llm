@@ -54,6 +54,36 @@ term-llm chat --no-session
 term-llm ask --session-db /tmp/term-llm.db ...
 ```
 
+## Context compaction
+
+Long sessions do not keep sending the entire transcript forever. When `auto_compact` is enabled (the default) and term-llm knows the model's input limit, the engine tracks an estimated prompt size and compacts before the active context would grow too large.
+
+Compaction is intentionally non-destructive:
+
+1. The full original transcript remains in the SQLite session store for scrollback and auditability.
+2. term-llm asks the model for an internal continuation summary of the old context.
+3. It appends a compacted active-context block to the same session: a `[Context Compaction]` summary message followed by a recent raw tail of exact messages.
+4. The session records `compaction_seq` as the sequence number where active model context now begins, plus a `compaction_count`.
+5. Future model requests load only messages at or after that boundary, plus the configured system/instruction prompt when needed.
+
+The recent raw tail is duplicated on purpose. The original copy remains visible in the transcript where it happened; the appended copy gives the model exact recent wording, tool calls, and tool results after the summary. To avoid confusing UI echo, appended retained-tail rows are marked `compaction_tail` in storage. TUI and Web renderers suppress those rows, while the active model-context loader still sends them to the provider.
+
+Practical consequences:
+
+- You can still scroll/search the pre-compaction transcript; old history is not deleted.
+- The visible compaction marker shows where the active context was reset.
+- The hidden retained tail does not count as a visible message and is skipped by search/result continuation IDs, but it remains part of the active LLM context.
+- Resuming a compacted session starts from `compaction_seq` rather than replaying the whole transcript.
+- Older sessions compacted before `compaction_tail` existed are handled best-effort by matching the post-summary duplicate tail against the pre-summary transcript.
+
+You can disable automatic compaction globally:
+
+```yaml
+auto_compact: false
+```
+
+When disabled, sessions still persist normally, but term-llm will not automatically rewrite the active context to stay under known model limits.
+
 ## Session titles
 
 Sessions can have titles set in two ways:
@@ -87,13 +117,13 @@ When displaying sessions (in `list`, `show`, `export`, and `browse`), titles are
 
 ## Conversation inspector
 
-While in `chat` or `ask`, press `Ctrl+O` to open the conversation inspector.
+While in `chat` or `ask`, press `Ctrl+O` to open the conversation inspector. The inspector is intended as a debug view of the persisted conversation context. For compacted sessions it shows `Context compaction` boundary blocks; press `e` to expand all hidden inspector details, including full internal compaction summaries, previous-turns excerpts, and retained raw tail rows that remain in active model context but are hidden from normal chat rendering.
 
 | Key | Action |
 |---|---|
 | `j/k` | Scroll up/down |
 | `g/G` | Go to top/bottom |
-| `e` | Toggle expand/collapse |
+| `e` | Expand all hidden inspector details |
 | `q` | Close inspector |
 
 ## What sessions are for

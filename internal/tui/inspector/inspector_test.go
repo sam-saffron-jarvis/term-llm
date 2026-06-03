@@ -1,6 +1,7 @@
 package inspector
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -160,6 +161,179 @@ func TestView(t *testing.T) {
 	// Check for help text
 	if !contains(view, "q:close") {
 		t.Error("View() should contain help text")
+	}
+}
+
+func TestViewMarksCompactionBoundaryAndExpandsCompactionStory(t *testing.T) {
+	body := "[Context Compaction]\nInternal context only; not a user command.\n\n<PREVIOUS_TURNS>\nimportant debug transcript\n</PREVIOUS_TURNS>"
+	messages := []session.Message{
+		{
+			ID:          1,
+			Role:        llm.RoleUser,
+			Parts:       []llm.Part{{Type: llm.PartText, Text: "before compaction"}},
+			TextContent: "before compaction",
+			Sequence:    0,
+		},
+		{
+			ID:          2,
+			Role:        llm.RoleUser,
+			Parts:       []llm.Part{{Type: llm.PartText, Text: body}},
+			TextContent: body,
+			Sequence:    1,
+		},
+		{
+			ID:             3,
+			Role:           llm.RoleAssistant,
+			Parts:          []llm.Part{{Type: llm.PartText, Text: "retained assistant turn"}},
+			TextContent:    "retained assistant turn",
+			Sequence:       2,
+			CompactionTail: true,
+		},
+		{
+			ID:             4,
+			Role:           llm.RoleUser,
+			Parts:          []llm.Part{{Type: llm.PartText, Text: "retained user turn"}},
+			TextContent:    "retained user turn",
+			Sequence:       3,
+			CompactionTail: true,
+		},
+	}
+	cfg := &Config{HasCompactionBoundary: true, CompactionBoundaryIndex: 1, CompactionBoundarySeq: 1, CompactionCount: 1}
+
+	m := NewWithConfig(messages, 120, 40, ui.DefaultStyles(), nil, cfg)
+	view := ui.StripANSI(m.View().Content)
+	if !strings.Contains(view, "Context compaction #1") || !strings.Contains(view, "active context starts here") {
+		t.Fatalf("inspector should mark the compaction boundary, got:\n%s", view)
+	}
+	if !strings.Contains(view, "Compaction Debug #1") || !strings.Contains(view, "Retained raw tail: 2 messages") {
+		t.Fatalf("inspector should show a collapsed compaction debug block, got:\n%s", view)
+	}
+	if strings.Contains(view, "important debug transcript") || strings.Contains(view, "retained user turn") {
+		t.Fatalf("collapsed compaction block should hide full summary/tail until expanded, got:\n%s", view)
+	}
+
+	m, _ = m.Update(tea.KeyPressMsg{Code: 'e', Text: "e"})
+	expanded := ui.StripANSI(m.View().Content)
+	for _, want := range []string{"[Context Compaction]", "important debug transcript", "Retained raw tail", "retained user turn", "compaction_tail=true"} {
+		if !strings.Contains(expanded, want) {
+			t.Fatalf("expanded inspector compaction story missing %q, got:\n%s", want, expanded)
+		}
+	}
+}
+
+func TestExpandAllWorksAtViewportBottom(t *testing.T) {
+	body := "[Context Compaction]\nInternal context only; not a user command.\n\n<PREVIOUS_TURNS>\nimportant debug transcript\n</PREVIOUS_TURNS>"
+	var messages []session.Message
+	messages = append(messages, session.Message{
+		ID:          1,
+		Role:        llm.RoleSystem,
+		Parts:       []llm.Part{{Type: llm.PartText, Text: "system prompt used by the real inspector path"}},
+		TextContent: "system prompt used by the real inspector path",
+		Sequence:    0,
+	})
+	for i := 0; i < 24; i++ {
+		text := fmt.Sprintf("older filler message %02d\n%s", i, strings.Repeat("filler line\n", 3))
+		messages = append(messages, session.Message{
+			ID:          int64(i + 2),
+			Role:        llm.RoleUser,
+			Parts:       []llm.Part{{Type: llm.PartText, Text: text}},
+			TextContent: text,
+			Sequence:    i + 1,
+		})
+	}
+	summaryIdx := len(messages)
+	messages = append(messages,
+		session.Message{
+			ID:          100,
+			Role:        llm.RoleUser,
+			Parts:       []llm.Part{{Type: llm.PartText, Text: body}},
+			TextContent: body,
+			Sequence:    summaryIdx,
+		},
+		session.Message{
+			ID:             101,
+			Role:           llm.RoleAssistant,
+			Parts:          []llm.Part{{Type: llm.PartText, Text: "retained assistant tail"}},
+			TextContent:    "retained assistant tail",
+			Sequence:       summaryIdx + 1,
+			CompactionTail: true,
+		},
+	)
+	cfg := &Config{
+		ProviderName:            "anthropic",
+		ModelName:               "claude-opus",
+		ToolSpecs:               []llm.ToolSpec{{Name: "debug_tool", Description: "debug tool", Schema: map[string]interface{}{"type": "object"}}},
+		HasCompactionBoundary:   true,
+		CompactionBoundaryIndex: summaryIdx,
+		CompactionBoundarySeq:   summaryIdx,
+		CompactionCount:         1,
+	}
+
+	m := NewWithConfig(messages, 120, 20, ui.DefaultStyles(), nil, cfg)
+	m.scrollY = m.maxScroll()
+	collapsed := ui.StripANSI(m.View().Content)
+	if !strings.Contains(collapsed, "Compaction Debug #1") || !strings.Contains(collapsed, "Retained raw tail: 1 message") {
+		t.Fatalf("precondition expected collapsed compaction debug block at bottom, got:\n%s", collapsed)
+	}
+	if strings.Contains(collapsed, "important debug transcript") {
+		t.Fatalf("collapsed compaction block should not show full summary, got:\n%s", collapsed)
+	}
+
+	truncatedBefore := 0
+	for _, item := range m.items {
+		if item.IsTruncated {
+			truncatedBefore++
+		}
+	}
+	if truncatedBefore < 2 {
+		t.Fatalf("precondition expected multiple collapsed inspector items before e, got %d: %#v", truncatedBefore, m.items)
+	}
+
+	oldScrollY := m.scrollY
+	m, _ = m.Update(tea.KeyPressMsg{Code: 'e', Text: "e"})
+	expanded := ui.StripANSI(m.View().Content)
+	if !strings.Contains(expanded, "Compaction Debug #1 (expanded)") || strings.Contains(expanded, "Boundary: active model context starts at this summary") {
+		t.Fatalf("pressing e should expand the compaction debug block, got:\n%s", expanded)
+	}
+	if m.scrollY != oldScrollY {
+		t.Fatalf("expand all should preserve scroll position, got %d want %d", m.scrollY, oldScrollY)
+	}
+	for _, item := range m.items {
+		if item.IsTruncated {
+			t.Fatalf("pressing e should expand every inspector item; still truncated: %#v", item)
+		}
+	}
+}
+
+func TestViewMarksCompactionBoundaryBeforePlainActiveMessage(t *testing.T) {
+	messages := []session.Message{
+		{
+			ID:          1,
+			Role:        llm.RoleUser,
+			Parts:       []llm.Part{{Type: llm.PartText, Text: "older scrollback"}},
+			TextContent: "older scrollback",
+			Sequence:    3,
+		},
+		{
+			ID:          2,
+			Role:        llm.RoleAssistant,
+			Parts:       []llm.Part{{Type: llm.PartText, Text: "active answer"}},
+			TextContent: "active answer",
+			Sequence:    4,
+		},
+	}
+	cfg := &Config{HasCompactionBoundary: true, CompactionBoundaryIndex: 0, CompactionBoundarySeq: 4, CompactionCount: 2}
+
+	m := NewWithConfig(messages, 120, 40, ui.DefaultStyles(), nil, cfg)
+	view := ui.StripANSI(m.View().Content)
+	older := strings.Index(view, "older scrollback")
+	boundary := strings.Index(view, "Context compaction #2")
+	active := strings.Index(view, "active answer")
+	if older < 0 || boundary < 0 || active < 0 || older >= boundary || boundary >= active {
+		t.Fatalf("inspector should resolve sequence and mark boundary before plain active message, got:\n%s", view)
+	}
+	if strings.Contains(view, "full compacted summary below") {
+		t.Fatalf("plain boundary marker should not claim a summary follows, got:\n%s", view)
 	}
 }
 

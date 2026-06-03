@@ -72,6 +72,15 @@ func drainStream(t *testing.T, stream Stream) {
 	}
 }
 
+func slicesContain[T comparable](items []T, want T) bool {
+	for _, item := range items {
+		if item == want {
+			return true
+		}
+	}
+	return false
+}
+
 type concurrentCloseStream struct {
 	mu          sync.Mutex
 	calls       int
@@ -2285,13 +2294,6 @@ func TestRunLoopSoftThresholdCheckpointsCompactsAndContinues(t *testing.T) {
 		hasCapabilities: true,
 		capabilities:    Capabilities{ToolCalls: true, SupportsToolChoice: true},
 		script: func(call int, req Request) []Event {
-			last := ""
-			if len(req.Messages) > 0 {
-				last = collectTextParts(req.Messages[len(req.Messages)-1].Parts)
-			}
-			if strings.Contains(last, compactionPrompt) {
-				return []Event{{Type: EventTextDelta, Text: "pending task: continue investigation"}}
-			}
 			if call == 0 {
 				return []Event{{Type: EventTextDelta, Text: "checkpoint: still investigating"}, {Type: EventUsage, Use: &Usage{InputTokens: 84, OutputTokens: 2}}}
 			}
@@ -2300,6 +2302,18 @@ func TestRunLoopSoftThresholdCheckpointsCompactsAndContinues(t *testing.T) {
 	}
 	e := NewEngine(provider, nil)
 	e.ConfigureContextManagement(provider, "fake", "compact-rush", true)
+	var compactionResult *CompactionResult
+	e.SetCompactionCallback(func(ctx context.Context, result *CompactionResult) error {
+		compactionResult = result
+		return nil
+	})
+	defer e.SetCompactionCallback(nil)
+	var turnMetrics []TurnMetrics
+	e.SetTurnCompletedCallback(func(ctx context.Context, turnIndex int, messages []Message, metrics TurnMetrics) error {
+		turnMetrics = append(turnMetrics, metrics)
+		return nil
+	})
+	defer e.SetTurnCompletedCallback(nil)
 
 	stream, err := e.Stream(context.Background(), Request{
 		Model: "compact-rush",
@@ -2317,9 +2331,33 @@ func TestRunLoopSoftThresholdCheckpointsCompactsAndContinues(t *testing.T) {
 		t.Fatalf("Stream() error = %v", err)
 	}
 	defer stream.Close()
-	drainStream(t, stream)
+	var phases []string
+	var text strings.Builder
+	var usageEvents []Usage
+	for {
+		event, err := stream.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("Recv() error: %v", err)
+		}
+		if event.Type == EventError && event.Err != nil {
+			t.Fatalf("stream error event: %v", event.Err)
+		}
+		switch event.Type {
+		case EventPhase:
+			phases = append(phases, event.Text)
+		case EventTextDelta:
+			text.WriteString(event.Text)
+		case EventUsage:
+			if event.Use != nil {
+				usageEvents = append(usageEvents, *event.Use)
+			}
+		}
+	}
 
-	if len(provider.calls) != 3 {
+	if len(provider.calls) != 2 {
 		for i, call := range provider.calls {
 			last := ""
 			if len(call.Messages) > 0 {
@@ -2327,30 +2365,240 @@ func TestRunLoopSoftThresholdCheckpointsCompactsAndContinues(t *testing.T) {
 			}
 			t.Logf("call %d messages=%d tool_choice=%s tools=%d last=%q", i, len(call.Messages), call.ToolChoice.Mode, len(call.Tools), last)
 		}
-		t.Fatalf("provider calls = %d, want checkpoint + compaction + continued request", len(provider.calls))
+		t.Fatalf("provider calls = %d, want brief + continued request", len(provider.calls))
 	}
 	first := provider.calls[0]
-	if got := collectTextParts(first.Messages[len(first.Messages)-1].Parts); !strings.Contains(got, contextCheckpointPrompt) {
-		t.Fatalf("first call missing checkpoint prompt: %.120q", got)
+	if got := collectTextParts(first.Messages[len(first.Messages)-1].Parts); !strings.Contains(got, contextContinuationBriefPrompt) {
+		t.Fatalf("first call missing continuation brief prompt: %.120q", got)
 	}
 	if first.ToolChoice.Mode != ToolChoiceNone {
 		t.Fatalf("first ToolChoice = %q, want none", first.ToolChoice.Mode)
 	}
-	if got := collectTextParts(provider.calls[1].Messages[len(provider.calls[1].Messages)-1].Parts); !strings.Contains(got, compactionPrompt) {
-		t.Fatalf("second call was not compaction prompt: %.80q", got)
+	for i, call := range provider.calls {
+		last := collectTextParts(call.Messages[len(call.Messages)-1].Parts)
+		if strings.Contains(last, compactionPrompt) {
+			t.Fatalf("call %d unexpectedly used full compaction prompt: %.120q", i, last)
+		}
 	}
-	third := provider.calls[2]
-	if got := collectTextParts(third.Messages[1].Parts); !strings.Contains(got, summaryPrefix) || !strings.Contains(got, "pending task: continue investigation") {
-		t.Fatalf("continued request did not use compacted summary: %.120q", got)
+	second := provider.calls[1]
+	if got := collectTextParts(second.Messages[1].Parts); !strings.Contains(got, summaryPrefix) || !strings.Contains(got, "checkpoint: still investigating") {
+		t.Fatalf("continued request did not use compacted brief: %.120q", got)
 	}
-	if got := collectTextParts(third.Messages[len(third.Messages)-1].Parts); !strings.Contains(got, contextContinuationPrompt) {
+	if got := collectTextParts(second.Messages[len(second.Messages)-1].Parts); !strings.Contains(got, contextContinuationPrompt) {
 		t.Fatalf("continued request missing continuation prompt: %.120q", got)
 	}
-	if len(third.Tools) != 1 {
-		t.Fatalf("continued request tools = %d, want restored tools", len(third.Tools))
+	if len(second.Tools) != 1 {
+		t.Fatalf("continued request tools = %d, want restored tools", len(second.Tools))
 	}
-	if third.ToolChoice.Mode != ToolChoiceName || third.ToolChoice.Name != "dummy" {
-		t.Fatalf("continued request ToolChoice = %#v, want named dummy", third.ToolChoice)
+	if second.ToolChoice.Mode != ToolChoiceName || second.ToolChoice.Name != "dummy" {
+		t.Fatalf("continued request ToolChoice = %#v, want named dummy", second.ToolChoice)
+	}
+	if got := text.String(); got != "continued final answer" {
+		t.Fatalf("visible text = %q, want only continued final answer", got)
+	}
+	if !slicesContain(phases, PhaseCompactingWriteBrief) || !slicesContain(phases, PhaseCompactingResumeTask) {
+		t.Fatalf("phases = %#v, want write brief and resume", phases)
+	}
+	if compactionResult == nil {
+		t.Fatal("compaction callback was not called")
+	}
+	if compactionResult.Usage.InputTokens != 84 || compactionResult.Usage.OutputTokens != 2 {
+		t.Fatalf("compaction usage = %+v, want brief usage 84/2", compactionResult.Usage)
+	}
+	if len(usageEvents) != 1 || usageEvents[0].InputTokens != 20 || usageEvents[0].OutputTokens != 2 {
+		t.Fatalf("stream usage events = %+v, want only continuation usage 20/2", usageEvents)
+	}
+	if len(turnMetrics) != 1 || turnMetrics[0].InputTokens != 20 || turnMetrics[0].OutputTokens != 2 {
+		t.Fatalf("turn metrics = %+v, want only continuation usage 20/2", turnMetrics)
+	}
+}
+
+func TestRunLoopSoftThresholdEmptyBriefFallsBackToHardCompaction(t *testing.T) {
+	RegisterConfigLimits([]ConfigModelLimit{{Provider: "fake", Model: "compact-empty-brief", InputLimit: 200}})
+	defer RegisterConfigLimits(nil)
+
+	provider := &fakeProvider{
+		hasCapabilities: true,
+		capabilities:    Capabilities{ToolCalls: true, SupportsToolChoice: true},
+		script: func(call int, req Request) []Event {
+			last := ""
+			if len(req.Messages) > 0 {
+				last = collectTextParts(req.Messages[len(req.Messages)-1].Parts)
+			}
+			if strings.Contains(last, compactionPrompt) {
+				return []Event{{Type: EventTextDelta, Text: "hard fallback summary"}, {Type: EventUsage, Use: &Usage{InputTokens: 7, OutputTokens: 3}}}
+			}
+			if call == 0 {
+				return []Event{{Type: EventUsage, Use: &Usage{InputTokens: 5, OutputTokens: 1}}}
+			}
+			return []Event{{Type: EventTextDelta, Text: "continued after hard fallback"}, {Type: EventUsage, Use: &Usage{InputTokens: 20, OutputTokens: 2}}}
+		},
+	}
+	e := NewEngine(provider, nil)
+	e.ConfigureContextManagement(provider, "fake", "compact-empty-brief", true)
+	var compactionResult *CompactionResult
+	e.SetCompactionCallback(func(ctx context.Context, result *CompactionResult) error {
+		compactionResult = result
+		return nil
+	})
+	defer e.SetCompactionCallback(nil)
+
+	stream, err := e.Stream(context.Background(), Request{
+		Model: "compact-empty-brief",
+		Messages: []Message{
+			SystemText("system"),
+			UserText(strings.Repeat("soft threshold history ", 30)),
+			AssistantText("previous answer"),
+			UserText("continue"),
+		},
+		Tools:      []ToolSpec{{Name: "dummy", Schema: map[string]any{"type": "object"}}},
+		ToolChoice: ToolChoice{Mode: ToolChoiceName, Name: "dummy"},
+		MaxTurns:   1,
+	})
+	if err != nil {
+		t.Fatalf("Stream() error = %v", err)
+	}
+	defer stream.Close()
+	var phases []string
+	var text strings.Builder
+	for {
+		event, err := stream.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("Recv() error: %v", err)
+		}
+		switch event.Type {
+		case EventPhase:
+			phases = append(phases, event.Text)
+		case EventTextDelta:
+			text.WriteString(event.Text)
+		}
+	}
+
+	if len(provider.calls) != 3 {
+		t.Fatalf("provider calls = %d, want brief + hard fallback + continuation", len(provider.calls))
+	}
+	if got := collectTextParts(provider.calls[0].Messages[len(provider.calls[0].Messages)-1].Parts); !strings.Contains(got, contextContinuationBriefPrompt) {
+		t.Fatalf("first call missing brief prompt: %.120q", got)
+	}
+	if got := collectTextParts(provider.calls[1].Messages[len(provider.calls[1].Messages)-1].Parts); !strings.Contains(got, compactionPrompt) {
+		t.Fatalf("second call missing hard compaction prompt: %.120q", got)
+	}
+	for i, msg := range provider.calls[1].Messages[:len(provider.calls[1].Messages)-1] {
+		if got := collectTextParts(msg.Parts); strings.Contains(got, contextContinuationBriefPrompt) {
+			t.Fatalf("hard fallback request message %d included internal brief prompt: %.120q", i, got)
+		}
+	}
+	third := provider.calls[2]
+	if got := collectTextParts(third.Messages[1].Parts); !strings.Contains(got, "hard fallback summary") {
+		t.Fatalf("continuation did not use hard fallback summary: %.120q", got)
+	}
+	if got := collectTextParts(third.Messages[len(third.Messages)-1].Parts); !strings.Contains(got, contextContinuationPrompt) {
+		t.Fatalf("continuation missing resume prompt: %.120q", got)
+	}
+	if got := text.String(); got != "continued after hard fallback" {
+		t.Fatalf("visible text = %q", got)
+	}
+	if !slicesContain(phases, PhaseCompactingWriteBrief) || !slicesContain(phases, PhaseCompactingSummarizeHistory) || !slicesContain(phases, PhaseCompactingResumeTask) {
+		t.Fatalf("phases = %#v, want brief, summary, resume", phases)
+	}
+	if compactionResult == nil {
+		t.Fatal("compaction callback was not called")
+	}
+	if compactionResult.Usage.InputTokens != 12 || compactionResult.Usage.OutputTokens != 4 {
+		t.Fatalf("compaction usage = %+v, want soft+hard usage 12/4", compactionResult.Usage)
+	}
+}
+
+func TestRunLoopSoftThresholdToolCallBriefFallsBackToHardCompaction(t *testing.T) {
+	RegisterConfigLimits([]ConfigModelLimit{{Provider: "fake", Model: "compact-tool-brief", InputLimit: 200}})
+	defer RegisterConfigLimits(nil)
+
+	provider := &fakeProvider{
+		hasCapabilities: true,
+		capabilities:    Capabilities{ToolCalls: true, SupportsToolChoice: true},
+		script: func(call int, req Request) []Event {
+			last := ""
+			if len(req.Messages) > 0 {
+				last = collectTextParts(req.Messages[len(req.Messages)-1].Parts)
+			}
+			if strings.Contains(last, compactionPrompt) {
+				return []Event{{Type: EventTextDelta, Text: "hard fallback summary after tool leak"}, {Type: EventUsage, Use: &Usage{InputTokens: 7, OutputTokens: 3}}}
+			}
+			if call == 0 {
+				return []Event{
+					{Type: EventToolCall, Tool: &ToolCall{ID: "call_bad", Name: "dummy", Arguments: json.RawMessage(`{}`)}},
+					{Type: EventUsage, Use: &Usage{InputTokens: 5, OutputTokens: 1}},
+				}
+			}
+			return []Event{{Type: EventTextDelta, Text: "continued after leaked-tool fallback"}, {Type: EventUsage, Use: &Usage{InputTokens: 20, OutputTokens: 2}}}
+		},
+	}
+	e := NewEngine(provider, nil)
+	e.ConfigureContextManagement(provider, "fake", "compact-tool-brief", true)
+	var compactionResult *CompactionResult
+	e.SetCompactionCallback(func(ctx context.Context, result *CompactionResult) error {
+		compactionResult = result
+		return nil
+	})
+	defer e.SetCompactionCallback(nil)
+
+	stream, err := e.Stream(context.Background(), Request{
+		Model: "compact-tool-brief",
+		Messages: []Message{
+			SystemText("system"),
+			UserText(strings.Repeat("soft threshold history ", 30)),
+			AssistantText("previous answer"),
+			UserText("continue"),
+		},
+		Tools:      []ToolSpec{{Name: "dummy", Schema: map[string]any{"type": "object"}}},
+		ToolChoice: ToolChoice{Mode: ToolChoiceName, Name: "dummy"},
+		MaxTurns:   1,
+	})
+	if err != nil {
+		t.Fatalf("Stream() error = %v", err)
+	}
+	defer stream.Close()
+
+	var phases []string
+	var text strings.Builder
+	for {
+		event, err := stream.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("Recv() error: %v", err)
+		}
+		switch event.Type {
+		case EventPhase:
+			phases = append(phases, event.Text)
+		case EventTextDelta:
+			text.WriteString(event.Text)
+		case EventToolCall:
+			t.Fatalf("leaked internal brief tool call to user-visible stream: %#v", event.Tool)
+		}
+	}
+
+	if len(provider.calls) != 3 {
+		t.Fatalf("provider calls = %d, want brief + hard fallback + continuation", len(provider.calls))
+	}
+	if got := collectTextParts(provider.calls[1].Messages[len(provider.calls[1].Messages)-1].Parts); !strings.Contains(got, compactionPrompt) {
+		t.Fatalf("second call missing hard compaction prompt: %.120q", got)
+	}
+	if got := text.String(); got != "continued after leaked-tool fallback" {
+		t.Fatalf("visible text = %q", got)
+	}
+	if !slicesContain(phases, PhaseCompactingWriteBrief) || !slicesContain(phases, PhaseCompactingSummarizeHistory) || !slicesContain(phases, PhaseCompactingResumeTask) {
+		t.Fatalf("phases = %#v, want brief, summary, resume", phases)
+	}
+	if compactionResult == nil {
+		t.Fatal("compaction callback was not called")
+	}
+	if compactionResult.Usage.InputTokens != 12 || compactionResult.Usage.OutputTokens != 4 {
+		t.Fatalf("compaction usage = %+v, want soft+hard usage 12/4", compactionResult.Usage)
 	}
 }
 

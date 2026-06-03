@@ -2,6 +2,7 @@ package session
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"time"
 
@@ -66,6 +67,7 @@ func LoadScrollbackWithBoundary(ctx context.Context, store Store, sess *Session)
 	}
 	for i, msg := range messages {
 		if msg.Sequence >= sess.CompactionSeq {
+			messages = markCompactionDisplayTails(messages)
 			return messages, i, nil
 		}
 	}
@@ -93,9 +95,10 @@ func ApplyCompaction(ctx context.Context, store Store, sess *Session, full []Mes
 	if sess != nil {
 		sessionID = sess.ID
 	}
-	for _, msg := range result.NewMessages {
+	for _, msg := range dropLeadingCompactionSystemMessages(result.NewMessages) {
 		newSessionMsgs = append(newSessionMsgs, *NewMessage(sessionID, msg, -1))
 	}
+	markNewCompactionTailRows(newSessionMsgs)
 
 	refreshed := sess
 	if store != nil && sess != nil {
@@ -115,6 +118,152 @@ func ApplyCompaction(ctx context.Context, store Store, sess *Session, full []Mes
 
 	updated := append(append([]Message(nil), full...), newSessionMsgs...)
 	return updated, activeStart, refreshed, nil
+}
+
+func dropLeadingCompactionSystemMessages(messages []llm.Message) []llm.Message {
+	start := 0
+	for start < len(messages) && messages[start].Role == llm.RoleSystem {
+		start++
+	}
+	// A compaction result should always include a summary row after any system
+	// prompt. If it somehow does not, preserve the original result instead of
+	// creating an empty persisted boundary.
+	if start >= len(messages) {
+		return messages
+	}
+	return messages[start:]
+}
+
+func markNewCompactionTailRows(messages []Message) {
+	summaryIdx := -1
+	for i := range messages {
+		if isInternalCompactionSummaryMessage(messages[i]) {
+			summaryIdx = i
+			break
+		}
+	}
+	if summaryIdx < 0 {
+		return
+	}
+	for i := summaryIdx + 1; i < len(messages); i++ {
+		messages[i].CompactionTail = true
+	}
+}
+
+func markCompactionDisplayTails(messages []Message) []Message {
+	if len(messages) == 0 {
+		return messages
+	}
+	out := append([]Message(nil), messages...)
+	for i := 0; i < len(out); i++ {
+		if !isInternalCompactionSummaryMessage(out[i]) {
+			continue
+		}
+		if persistedCompactionTailAlreadyMarked(out, i) {
+			continue
+		}
+		start, dupLen := compactionDuplicateTailRange(out, i)
+		if dupLen > 0 {
+			// The rows from just after the summary through the retained raw suffix
+			// are compacted active context. They remain in m.messages / active loads,
+			// but are already visible in the pre-compaction transcript, so display
+			// renderers should suppress them instead of echoing them a second time.
+			for j := i + 1; j < start+dupLen && j < len(out); j++ {
+				out[j].CompactionTail = true
+			}
+			continue
+		}
+		if i+1 < len(out) && isSyntheticCompactionAckMessage(out[i+1]) {
+			out[i+1].CompactionTail = true
+		}
+	}
+	return out
+}
+
+func persistedCompactionTailAlreadyMarked(messages []Message, summaryIdx int) bool {
+	if summaryIdx+1 >= len(messages) {
+		return false
+	}
+	if messages[summaryIdx+1].CompactionTail {
+		return true
+	}
+	if isSyntheticCompactionAckMessage(messages[summaryIdx+1]) && summaryIdx+2 < len(messages) && messages[summaryIdx+2].CompactionTail {
+		messages[summaryIdx+1].CompactionTail = true
+		return true
+	}
+	return false
+}
+
+func compactionDuplicateTailRange(messages []Message, summaryIdx int) (int, int) {
+	if summaryIdx <= 0 || summaryIdx+1 >= len(messages) {
+		return -1, 0
+	}
+	fingerprints := make([]string, len(messages))
+	for i := range messages {
+		fingerprints[i] = messageDisplayFingerprint(messages[i])
+	}
+
+	candidates := []int{summaryIdx + 1}
+	if isSyntheticCompactionAckMessage(messages[summaryIdx+1]) {
+		candidates = append(candidates, summaryIdx+2)
+	}
+
+	bestStart, bestLen := -1, 0
+	for _, start := range candidates {
+		if start >= len(messages) {
+			continue
+		}
+		maxLen := summaryIdx
+		if after := len(messages) - start; after < maxLen {
+			maxLen = after
+		}
+		for length := 1; length <= maxLen; length++ {
+			leftStart := summaryIdx - length
+			if messageFingerprintRangesEqual(fingerprints, leftStart, start, length) && length > bestLen {
+				bestStart, bestLen = start, length
+			}
+		}
+	}
+	return bestStart, bestLen
+}
+
+func messageFingerprintRangesEqual(fingerprints []string, leftStart, rightStart, length int) bool {
+	if leftStart < 0 || rightStart < 0 || length < 0 || leftStart+length > len(fingerprints) || rightStart+length > len(fingerprints) {
+		return false
+	}
+	for offset := 0; offset < length; offset++ {
+		if fingerprints[leftStart+offset] != fingerprints[rightStart+offset] {
+			return false
+		}
+	}
+	return true
+}
+
+func isSyntheticCompactionAckMessage(msg Message) bool {
+	if msg.Role != llm.RoleAssistant {
+		return false
+	}
+	return strings.TrimSpace(msg.TextContent) == "I've reviewed the context summary. I'll continue from where we left off."
+}
+
+func messageDisplayFingerprint(msg Message) string {
+	parts, err := json.Marshal(msg.Parts)
+	if err != nil {
+		parts = []byte(msg.TextContent)
+	}
+	return string(msg.Role) + "\x00" + msg.TextContent + "\x00" + string(parts)
+}
+
+func isInternalCompactionSummaryMessage(msg Message) bool {
+	if llm.IsInternalCompactionSummaryText(msg.TextContent) {
+		return true
+	}
+	for _, part := range msg.Parts {
+		if part.Type == llm.PartText && llm.IsInternalCompactionSummaryText(part.Text) {
+			return true
+		}
+	}
+	return false
 }
 
 // LLMActiveMessages converts the active slice of session messages into LLM

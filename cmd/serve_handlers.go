@@ -807,19 +807,22 @@ type sessionMessagePartEntry struct {
 }
 
 type sessionMessageEntry struct {
-	ID        int64                     `json:"id"`
-	Sequence  int                       `json:"sequence"`
-	Role      string                    `json:"role"`
-	Parts     []sessionMessagePartEntry `json:"parts"`
-	CreatedAt int64                     `json:"created_at"`
+	ID             int64                     `json:"id"`
+	Sequence       int                       `json:"sequence"`
+	Role           string                    `json:"role"`
+	Parts          []sessionMessagePartEntry `json:"parts"`
+	CreatedAt      int64                     `json:"created_at"`
+	CompactionTail bool                      `json:"compaction_tail,omitempty"`
 }
 
 type sessionMessagesResponse struct {
-	LastResponseID string                `json:"lastResponseId,omitempty"`
-	Messages       []sessionMessageEntry `json:"messages"`
-	HasMore        bool                  `json:"has_more"`
-	NextOffset     int                   `json:"next_offset,omitempty"`
-	NextBeforeSeq  int                   `json:"next_before_seq,omitempty"`
+	LastResponseID  string                `json:"lastResponseId,omitempty"`
+	Messages        []sessionMessageEntry `json:"messages"`
+	HasMore         bool                  `json:"has_more"`
+	NextOffset      int                   `json:"next_offset,omitempty"`
+	NextBeforeSeq   int                   `json:"next_before_seq,omitempty"`
+	CompactionSeq   *int                  `json:"compaction_seq,omitempty"`
+	CompactionCount int                   `json:"compaction_count,omitempty"`
 }
 
 func imageExtensionForMediaType(contentType string) string {
@@ -1161,10 +1164,11 @@ func (s *serveServer) sessionMessageEntries(msgs []session.Message) []sessionMes
 			continue
 		}
 		entry := sessionMessageEntry{
-			ID:        msg.ID,
-			Sequence:  msg.Sequence,
-			Role:      string(msg.Role),
-			CreatedAt: msg.CreatedAt.UnixMilli(),
+			ID:             msg.ID,
+			Sequence:       msg.Sequence,
+			Role:           string(msg.Role),
+			CreatedAt:      msg.CreatedAt.UnixMilli(),
+			CompactionTail: msg.CompactionTail,
 		}
 		if msg.Role == llm.RoleEvent {
 			if marker, ok := llm.ParseModelSwapMarker(msg.ToLLMMessage()); ok {
@@ -1415,10 +1419,21 @@ func (s *serveServer) handleSessionByID(w http.ResponseWriter, r *http.Request) 
 		nextOffset = offset + len(msgs)
 	}
 
+	compactionSeq := -1
+	compactionCount := 0
+	if meta, metaErr := s.store.Get(r.Context(), sessionID); metaErr == nil && session.HasCompactionBoundary(meta) {
+		compactionSeq = meta.CompactionSeq
+		compactionCount = meta.CompactionCount
+	}
+
 	resp := sessionMessagesResponse{
 		LastResponseID: s.latestDurableResponseIDForSession(r.Context(), sessionID),
 		Messages:       s.sessionMessageEntries(msgs),
 		HasMore:        hasMore,
+	}
+	if compactionSeq >= 0 {
+		resp.CompactionSeq = &compactionSeq
+		resp.CompactionCount = compactionCount
 	}
 	if hasMore {
 		if reverseMode {

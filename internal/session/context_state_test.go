@@ -178,6 +178,144 @@ func TestApplyCompactionPersistsAppendsRefreshesAndClearsEstimate(t *testing.T) 
 	}
 }
 
+func TestApplyCompactionDropsPersistedSystemAndReinjectsCurrentPrompt(t *testing.T) {
+	ctx := context.Background()
+	store := newContextStateTestStore(t)
+	sess := seedContextStateSession(t, ctx, store)
+	full, err := store.GetMessages(ctx, sess.ID, 0, 0)
+	if err != nil {
+		t.Fatalf("GetMessages: %v", err)
+	}
+
+	result := &llm.CompactionResult{NewMessages: []llm.Message{
+		llm.SystemText("old compaction-time instructions"),
+		llm.UserText("[Context Compaction]\n\n<SUMMARY_AND_NEXT_ACTIONS>\ncontinue\n</SUMMARY_AND_NEXT_ACTIONS>"),
+		llm.AssistantText("I've reviewed the context summary. I'll continue from where we left off."),
+	}}
+	updated, activeStart, refreshed, err := ApplyCompaction(ctx, store, sess, full, result)
+	if err != nil {
+		t.Fatalf("ApplyCompaction: %v", err)
+	}
+	if activeStart != len(full) {
+		t.Fatalf("activeStart = %d, want %d", activeStart, len(full))
+	}
+	if len(updated) != len(full)+2 {
+		t.Fatalf("len(updated) = %d, want old scrollback + summary/ack only", len(updated))
+	}
+	if strings.Contains(strings.Join(messageTexts(updated[activeStart:]), "\n"), "old compaction-time instructions") {
+		t.Fatalf("compaction-time system prompt should not be persisted in compacted rows: %#v", updated[activeStart:])
+	}
+
+	active, err := LoadActiveMessages(ctx, store, refreshed)
+	if err != nil {
+		t.Fatalf("LoadActiveMessages: %v", err)
+	}
+	if len(active) != 2 || active[0].Role != llm.RoleUser || !llm.IsInternalCompactionSummaryText(active[0].TextContent) {
+		t.Fatalf("persisted active rows = %#v, want summary + ack without pinned system", active)
+	}
+	llmActive := LLMActiveMessages(active, 0, "new current instructions")
+	if len(llmActive) < 2 || llmActive[0].Role != llm.RoleSystem || llm.MessageText(llmActive[0]) != "new current instructions" {
+		t.Fatalf("LLMActiveMessages did not inject current system prompt: %#v", llmActive)
+	}
+	if !llmActive[1].CacheAnchor {
+		t.Fatalf("persisted compaction summary should rebuild with CacheAnchor=true: %#v", llmActive[1])
+	}
+}
+
+func TestApplyCompactionMarksRetainedRawSuffixHiddenFromDisplay(t *testing.T) {
+	full := []Message{
+		*NewMessage("s", llm.UserText("old user"), 0),
+		*NewMessage("s", llm.AssistantText("old assistant"), 1),
+		*NewMessage("s", llm.UserText("recent user"), 2),
+		*NewMessage("s", llm.AssistantText("recent assistant"), 3),
+	}
+	result := &llm.CompactionResult{NewMessages: []llm.Message{
+		llm.UserText("[Context Compaction]\n\n<SUMMARY_AND_NEXT_ACTIONS>\ncontinue\n</SUMMARY_AND_NEXT_ACTIONS>"),
+		llm.UserText("recent user"),
+		llm.AssistantText("recent assistant"),
+	}}
+
+	updated, activeStart, _, err := ApplyCompaction(context.Background(), nil, nil, full, result)
+	if err != nil {
+		t.Fatalf("ApplyCompaction: %v", err)
+	}
+	if activeStart != len(full) {
+		t.Fatalf("activeStart = %d, want %d at compacted summary", activeStart, len(full))
+	}
+	got := messageTexts(updated)
+	want := []string{"old user", "old assistant", "recent user", "recent assistant", "[Context Compaction]\n\n<SUMMARY_AND_NEXT_ACTIONS>\ncontinue\n</SUMMARY_AND_NEXT_ACTIONS>", "recent user", "recent assistant"}
+	if strings.Join(got, "|") != strings.Join(want, "|") {
+		t.Fatalf("updated texts = %#v, want %#v", got, want)
+	}
+	if updated[2].CompactionTail || updated[3].CompactionTail || updated[4].CompactionTail {
+		t.Fatalf("pre-compaction rows and summary should remain visible: %#v", updated)
+	}
+	if !updated[5].CompactionTail || !updated[6].CompactionTail {
+		t.Fatalf("retained raw suffix should be marked hidden from display: %#v", updated[5:])
+	}
+}
+
+func TestLoadScrollbackWithBoundaryMarksRetainedRawSuffixHiddenFromDisplay(t *testing.T) {
+	ctx := context.Background()
+	store := newContextStateTestStore(t)
+	sess := seedContextStateSession(t, ctx, store)
+	for _, msg := range []llm.Message{
+		llm.UserText("recent user"),
+		llm.AssistantText("recent assistant"),
+	} {
+		if err := store.AddMessage(ctx, sess.ID, NewMessage(sess.ID, msg, -1)); err != nil {
+			t.Fatalf("AddMessage recent: %v", err)
+		}
+	}
+	if err := store.CompactMessages(ctx, sess.ID, []Message{
+		*NewMessage(sess.ID, llm.UserText("[Context Compaction]\n\n<SUMMARY_AND_NEXT_ACTIONS>\ncontinue\n</SUMMARY_AND_NEXT_ACTIONS>"), -1),
+		*NewMessage(sess.ID, llm.AssistantText("I've reviewed the context summary. I'll continue from where we left off."), -1),
+		*NewMessage(sess.ID, llm.UserText("recent user"), -1),
+		*NewMessage(sess.ID, llm.AssistantText("recent assistant"), -1),
+	}); err != nil {
+		t.Fatalf("CompactMessages: %v", err)
+	}
+	refreshed, err := store.Get(ctx, sess.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+
+	all, idx, err := LoadScrollbackWithBoundary(ctx, store, refreshed)
+	if err != nil {
+		t.Fatalf("LoadScrollbackWithBoundary: %v", err)
+	}
+	got := messageTexts(all)
+	want := []string{"system", "old user", "old assistant", "recent user", "recent assistant", "[Context Compaction]\n\n<SUMMARY_AND_NEXT_ACTIONS>\ncontinue\n</SUMMARY_AND_NEXT_ACTIONS>", "I've reviewed the context summary. I'll continue from where we left off.", "recent user", "recent assistant"}
+	if strings.Join(got, "|") != strings.Join(want, "|") {
+		t.Fatalf("scrollback texts = %#v, want %#v", got, want)
+	}
+	if idx != 5 {
+		t.Fatalf("idx = %d, want 5 at compacted summary", idx)
+	}
+	if all[3].CompactionTail || all[4].CompactionTail || all[5].CompactionTail {
+		t.Fatalf("pre-compaction retained rows and summary should remain visible: %#v", all)
+	}
+	if !all[6].CompactionTail || !all[7].CompactionTail || !all[8].CompactionTail {
+		t.Fatalf("post-compaction ack/tail rows should be hidden from display: %#v", all[6:])
+	}
+
+	active, err := LoadActiveMessages(ctx, store, refreshed)
+	if err != nil {
+		t.Fatalf("LoadActiveMessages: %v", err)
+	}
+	if len(active) != 4 || active[2].TextContent != "recent user" || active[3].TextContent != "recent assistant" {
+		t.Fatalf("active messages = %#v, want compacted summary/ack plus retained raw suffix", active)
+	}
+}
+
+func messageTexts(messages []Message) []string {
+	out := make([]string, len(messages))
+	for i, msg := range messages {
+		out[i] = msg.TextContent
+	}
+	return out
+}
+
 type failingAfterCompactStore struct {
 	Store
 	failUpdateContext bool

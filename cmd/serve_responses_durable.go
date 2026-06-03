@@ -42,7 +42,7 @@ func isVisibleContinuationRole(role llm.Role) bool {
 
 func latestVisibleMessage(messages []session.Message) (session.Message, bool) {
 	for i := len(messages) - 1; i >= 0; i-- {
-		if isVisibleContinuationRole(messages[i].Role) {
+		if isVisibleContinuationRole(messages[i].Role) && !messages[i].CompactionTail {
 			return messages[i], true
 		}
 	}

@@ -807,7 +807,7 @@ func (rt *serveRuntime) run(ctx context.Context, stateful bool, replaceHistory b
 		if result == nil {
 			return nil
 		}
-		_, _, refreshed, err := session.ApplyCompaction(cbCtx, rt.store, rt.sessionMeta, nil, result)
+		updated, _, refreshed, err := session.ApplyCompaction(cbCtx, rt.store, rt.sessionMeta, nil, result)
 		if err != nil {
 			return err
 		}
@@ -827,8 +827,13 @@ func (rt *serveRuntime) run(ctx context.Context, stateful bool, replaceHistory b
 				rt.sessionMeta.CacheWriteTokens += result.Usage.CacheWriteTokens
 			}
 		}
-		compacted := make([]llm.Message, len(result.NewMessages))
-		copy(compacted, result.NewMessages)
+		compacted := make([]llm.Message, 0, len(updated))
+		for _, msg := range updated {
+			compacted = append(compacted, msg.ToLLMMessage())
+		}
+		if len(compacted) == 0 {
+			compacted = append(compacted, result.NewMessages...)
+		}
 		baseHistory = compacted
 		inputMessages = nil
 		produced = nil

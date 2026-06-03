@@ -4708,8 +4708,9 @@ func TestHandleSessionMessages_TailPagination(t *testing.T) {
 	srv := &serveServer{store: store}
 	type messagePage struct {
 		Messages []struct {
-			Sequence int `json:"sequence"`
-			Parts    []struct {
+			Sequence       int  `json:"sequence"`
+			CompactionTail bool `json:"compaction_tail"`
+			Parts          []struct {
 				Text string `json:"text"`
 			} `json:"parts"`
 		} `json:"messages"`
@@ -4774,6 +4775,112 @@ func TestHandleSessionMessages_TailPagination(t *testing.T) {
 	}
 	if got := older.Messages[0].Parts[0].Text; got != "msg-105" {
 		t.Fatalf("older first message text = %q, want msg-105", got)
+	}
+}
+
+func TestHandleSessionMessages_IncludesCompactionMetadata(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "sessions.db")
+	store, err := session.NewStore(session.Config{Enabled: true, Path: dbPath})
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+	sess := &session.Session{
+		ID:        "sess-compact-page",
+		Provider:  "mock",
+		Model:     "mock-model",
+		Mode:      session.ModeChat,
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+		Status:    session.StatusActive,
+	}
+	if err := store.Create(ctx, sess); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := store.AddMessage(ctx, sess.ID, session.NewMessage(sess.ID, llm.UserText("old prompt"), -1)); err != nil {
+		t.Fatalf("AddMessage old: %v", err)
+	}
+	compactionTail := session.NewMessage(sess.ID, llm.AssistantText("recent answer"), -1)
+	compactionTail.CompactionTail = true
+	if err := store.CompactMessages(ctx, sess.ID, []session.Message{
+		*session.NewMessage(sess.ID, llm.UserText("[Context Compaction]\ninternal summary"), -1),
+		*compactionTail,
+	}); err != nil {
+		t.Fatalf("CompactMessages: %v", err)
+	}
+
+	srv := &serveServer{store: store}
+	req := httptest.NewRequest(http.MethodGet, "/v1/sessions/sess-compact-page/messages?tail=1&limit=1", nil)
+	rr := httptest.NewRecorder()
+	srv.handleSessionByID(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rr.Code, rr.Body.String())
+	}
+
+	var body struct {
+		Messages []struct {
+			Sequence       int  `json:"sequence"`
+			CompactionTail bool `json:"compaction_tail"`
+			Parts          []struct {
+				Text string `json:"text"`
+			} `json:"parts"`
+		} `json:"messages"`
+		CompactionSeq   *int `json:"compaction_seq"`
+		CompactionCount int  `json:"compaction_count"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body.CompactionSeq == nil || *body.CompactionSeq != 1 {
+		if body.CompactionSeq == nil {
+			t.Fatalf("compaction_seq missing, want 1; body=%s", rr.Body.String())
+		}
+		t.Fatalf("compaction_seq = %d, want 1", *body.CompactionSeq)
+	}
+	if body.CompactionCount != 1 {
+		t.Fatalf("compaction_count = %d, want 1", body.CompactionCount)
+	}
+	if len(body.Messages) != 1 || body.Messages[0].Sequence != 2 || !body.Messages[0].CompactionTail || len(body.Messages[0].Parts) == 0 || body.Messages[0].Parts[0].Text != "recent answer" {
+		t.Fatalf("tail messages = %+v, want only hidden recent answer at sequence 2", body.Messages)
+	}
+}
+
+func TestHandleSessionMessages_OmitsCompactionMetadataWhenUncompacted(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "sessions.db")
+	store, err := session.NewStore(session.Config{Enabled: true, Path: dbPath})
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+	sess := &session.Session{
+		ID:        "sess-uncompact-page",
+		Provider:  "mock",
+		Model:     "mock-model",
+		Mode:      session.ModeChat,
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+		Status:    session.StatusActive,
+	}
+	if err := store.Create(ctx, sess); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := store.AddMessage(ctx, sess.ID, session.NewMessage(sess.ID, llm.UserText("hello"), -1)); err != nil {
+		t.Fatalf("AddMessage: %v", err)
+	}
+
+	srv := &serveServer{store: store}
+	req := httptest.NewRequest(http.MethodGet, "/v1/sessions/sess-uncompact-page/messages", nil)
+	rr := httptest.NewRecorder()
+	srv.handleSessionByID(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rr.Code, rr.Body.String())
+	}
+	if strings.Contains(rr.Body.String(), "compaction_seq") || strings.Contains(rr.Body.String(), "compaction_count") {
+		t.Fatalf("uncompacted session should omit compaction metadata, got body=%s", rr.Body.String())
 	}
 }
 

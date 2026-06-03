@@ -500,10 +500,13 @@ func (p *serveRuntimeCompactionProvider) Stream(ctx context.Context, req llm.Req
 			last += part.Text
 		}
 	}
-	if strings.Contains(last, "Create a detailed summary of our conversation") {
-		return &serveRuntimeTestStream{events: []llm.Event{{Type: llm.EventTextDelta, Text: "summary after runtime compaction"}}}, nil
+	if strings.Contains(last, "compact continuation brief") {
+		return &serveRuntimeTestStream{events: []llm.Event{{Type: llm.EventTextDelta, Text: "summary after runtime compaction"}, {Type: llm.EventUsage, Use: &llm.Usage{InputTokens: 11, OutputTokens: 3}}}}, nil
 	}
-	return &serveRuntimeTestStream{events: []llm.Event{{Type: llm.EventTextDelta, Text: "final after compaction"}}}, nil
+	if strings.Contains(last, "Create a detailed summary of the conversation history") {
+		return &serveRuntimeTestStream{events: []llm.Event{{Type: llm.EventTextDelta, Text: "unexpected hard summary"}}}, nil
+	}
+	return &serveRuntimeTestStream{events: []llm.Event{{Type: llm.EventTextDelta, Text: "final after compaction"}, {Type: llm.EventUsage, Use: &llm.Usage{InputTokens: 7, OutputTokens: 2}}}}, nil
 }
 
 type serveRuntimeBlockingStream struct {
@@ -984,7 +987,7 @@ func TestServeRuntimeFinalSnapshotReconcilesEarlierAssistantUpdateFailure(t *tes
 }
 
 func TestServeRuntimeCompactionCallbackUpdatesActiveContext(t *testing.T) {
-	llm.RegisterConfigLimits([]llm.ConfigModelLimit{{Provider: "serve-runtime-compact", Model: "compact-runtime", InputLimit: 100}})
+	llm.RegisterConfigLimits([]llm.ConfigModelLimit{{Provider: "serve-runtime-compact", Model: "compact-runtime", InputLimit: 1000}})
 	defer llm.RegisterConfigLimits(nil)
 
 	store := newServeRuntimeTestStore()
@@ -1011,11 +1014,11 @@ func TestServeRuntimeCompactionCallbackUpdatesActiveContext(t *testing.T) {
 	}
 
 	rt.configureContextManagementForRequest(llm.Request{Model: "compact-runtime"})
-	if got := engine.InputLimit(); got != 100 {
-		t.Fatalf("configured input limit = %d, want 100", got)
+	if got := engine.InputLimit(); got != 1000 {
+		t.Fatalf("configured input limit = %d, want 1000", got)
 	}
 
-	engine.SetContextEstimateBaseline(91, 4)
+	engine.SetContextEstimateBaseline(910, 4)
 
 	_, err := rt.Run(context.Background(), true, false, []llm.Message{serveRuntimeTextMessage(llm.RoleUser, "continue task")}, llm.Request{
 		SessionID: "sess-runtime-compact",
@@ -1025,15 +1028,26 @@ func TestServeRuntimeCompactionCallbackUpdatesActiveContext(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
-	if len(provider.calls) < 3 {
-		t.Fatalf("provider calls = %d, want checkpoint + compaction + continuation", len(provider.calls))
+	if len(provider.calls) < 2 {
+		t.Fatalf("provider calls = %d, want brief + continuation", len(provider.calls))
 	}
 	firstLast := ""
 	for _, part := range provider.calls[0].Messages[len(provider.calls[0].Messages)-1].Parts {
 		firstLast += part.Text
 	}
-	if !strings.Contains(firstLast, "Context budget is getting tight") {
-		t.Fatalf("first call did not request a soft checkpoint: %q", firstLast)
+	if !strings.Contains(firstLast, "compact continuation brief") {
+		t.Fatalf("first call did not request a soft continuation brief: %q", firstLast)
+	}
+	for i, call := range provider.calls {
+		last := ""
+		if len(call.Messages) > 0 {
+			for _, part := range call.Messages[len(call.Messages)-1].Parts {
+				last += part.Text
+			}
+		}
+		if strings.Contains(last, "Create a detailed summary of the conversation history") {
+			t.Fatalf("call %d unexpectedly used hard compaction prompt: %q", i, last)
+		}
 	}
 	compactedHistoryText := ""
 	for _, msg := range rt.history {
@@ -1063,8 +1077,10 @@ func TestServeRuntimeCompactionCallbackUpdatesActiveContext(t *testing.T) {
 	if !strings.Contains(activeText, "summary after runtime compaction") {
 		t.Fatalf("active context missing compacted summary: %q", activeText)
 	}
-	if strings.Contains(activeText, "stale pre-compaction history") {
-		t.Fatalf("active context resurrected stale pre-compaction history: %q", activeText)
+	for _, msg := range active {
+		if msg.TextContent == strings.Repeat("stale pre-compaction history ", 60) {
+			t.Fatalf("active context resurrected raw pre-compaction message: %#v", msg)
+		}
 	}
 }
 

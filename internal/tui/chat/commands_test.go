@@ -29,8 +29,11 @@ func TestAllCommandsIncludesCompact(t *testing.T) {
 	for _, cmd := range commands {
 		if cmd.Name == "compact" {
 			found = true
-			if cmd.Usage != "/compact" {
-				t.Errorf("compact usage = %q, want /compact", cmd.Usage)
+			if cmd.Usage != "/compact [hard]" {
+				t.Errorf("compact usage = %q, want /compact [hard]", cmd.Usage)
+			}
+			if len(cmd.Subcommands) == 0 {
+				t.Errorf("compact should expose subcommands for completion")
 			}
 			break
 		}
@@ -1107,8 +1110,8 @@ func TestCmdCompress_StartDoesNotPrintStatusLine(t *testing.T) {
 	if !rm.streaming {
 		t.Fatal("expected compaction to enter streaming mode")
 	}
-	if got := rm.phase; got != "Compacting" {
-		t.Fatalf("phase = %q, want %q", got, "Compacting")
+	if got := rm.phase; got != llm.PhaseCompacting {
+		t.Fatalf("phase = %q, want %q", got, llm.PhaseCompacting)
 	}
 	if cmd == nil {
 		t.Fatal("expected compaction start command")
@@ -1120,6 +1123,123 @@ func TestCmdCompress_StartDoesNotPrintStatusLine(t *testing.T) {
 	if len(batch) != 3 {
 		t.Fatalf("expected compaction start batch to avoid print command, got %d entries", len(batch))
 	}
+}
+
+func TestCmdCompressSoftDefaultUsesBriefPrompt(t *testing.T) {
+	provider := llm.NewMockProvider("mock").AddTextResponse("soft brief")
+	m := newTestChatModel(false)
+	m.provider = provider
+	m.engine = llm.NewEngine(provider, nil)
+	m.messages = []session.Message{
+		*session.NewMessage(m.sess.ID, llm.UserText("please continue"), 0),
+		*session.NewMessage(m.sess.ID, llm.AssistantText("working"), 1),
+	}
+
+	result, cmd := m.ExecuteCommand("/compact")
+	rm := result.(*Model)
+	if !rm.streaming {
+		t.Fatal("expected /compact to start streaming soft compaction")
+	}
+	if got := rm.phase; got != llm.PhaseCompacting {
+		t.Fatalf("phase = %q, want compacting phase", got)
+	}
+	batch := commandBatch(t, cmd)
+	msg := batch[0]()
+	done, ok := msg.(compactDoneMsg)
+	if !ok {
+		t.Fatalf("first command returned %T, want compactDoneMsg", msg)
+	}
+	if done.err != nil {
+		t.Fatalf("soft compact command error = %v", done.err)
+	}
+	if len(provider.Requests) != 1 {
+		t.Fatalf("provider requests = %d, want 1", len(provider.Requests))
+	}
+	last := llm.MessageText(provider.Requests[0].Messages[len(provider.Requests[0].Messages)-1])
+	if !strings.Contains(last, "compact continuation brief") {
+		t.Fatalf("/compact default did not use soft brief prompt: %q", last)
+	}
+	if strings.Contains(last, "Create a detailed summary") {
+		t.Fatalf("/compact default unexpectedly used hard compaction prompt: %q", last)
+	}
+	if done.result == nil || !strings.Contains(done.result.Summary, "<PREVIOUS_TURNS>") || !strings.Contains(done.result.Summary, "<SUMMARY_AND_NEXT_ACTIONS>") || !strings.Contains(done.result.Summary, "soft brief") {
+		t.Fatalf("soft result summary = %#v", done.result)
+	}
+}
+
+func TestCmdCompressHardUsesFullCompactionPrompt(t *testing.T) {
+	provider := llm.NewMockProvider("mock").AddTextResponse("hard summary")
+	m := newTestChatModel(false)
+	m.provider = provider
+	m.engine = llm.NewEngine(provider, nil)
+	m.messages = []session.Message{
+		*session.NewMessage(m.sess.ID, llm.UserText("please continue"), 0),
+		*session.NewMessage(m.sess.ID, llm.AssistantText("working"), 1),
+	}
+
+	result, cmd := m.ExecuteCommand("/compact hard")
+	rm := result.(*Model)
+	if !rm.streaming {
+		t.Fatal("expected /compact hard to start streaming hard compaction")
+	}
+	if got := rm.phase; got != llm.PhaseCompactingSummarizeHistory {
+		t.Fatalf("phase = %q, want hard summary phase", got)
+	}
+	batch := commandBatch(t, cmd)
+	msg := batch[0]()
+	done, ok := msg.(compactDoneMsg)
+	if !ok {
+		t.Fatalf("first command returned %T, want compactDoneMsg", msg)
+	}
+	if done.err != nil {
+		t.Fatalf("hard compact command error = %v", done.err)
+	}
+	if len(provider.Requests) != 1 {
+		t.Fatalf("provider requests = %d, want 1", len(provider.Requests))
+	}
+	last := llm.MessageText(provider.Requests[0].Messages[len(provider.Requests[0].Messages)-1])
+	if !strings.Contains(last, "Create a compact continuation brief") || !strings.Contains(last, "## Objective") {
+		t.Fatalf("/compact hard did not use structured hard compaction prompt: %q", last)
+	}
+	if done.result == nil || !strings.Contains(done.result.Summary, "hard summary") || !strings.Contains(done.result.Summary, "<SUMMARY_AND_NEXT_ACTIONS>") {
+		t.Fatalf("hard result summary = %#v", done.result)
+	}
+}
+
+func TestCmdCompressInvalidArgShowsUsage(t *testing.T) {
+	m := newTestChatModel(false)
+	m.messages = []session.Message{
+		*session.NewMessage(m.sess.ID, llm.UserText("please continue"), 0),
+		*session.NewMessage(m.sess.ID, llm.AssistantText("working"), 1),
+	}
+
+	result, cmd := m.ExecuteCommand("/compact banana")
+	rm := result.(*Model)
+	if rm.streaming {
+		t.Fatal("invalid /compact arg should not start streaming")
+	}
+	if got := rm.footerMessage; got != "Usage: /compact [hard]" {
+		t.Fatalf("footer = %q, want usage", got)
+	}
+	if cmd == nil {
+		t.Fatal("expected footer clear command")
+	}
+}
+
+func commandBatch(t *testing.T, cmd tea.Cmd) tea.BatchMsg {
+	t.Helper()
+	if cmd == nil {
+		t.Fatal("expected command")
+	}
+	msg := cmd()
+	batch, ok := msg.(tea.BatchMsg)
+	if !ok {
+		t.Fatalf("expected batch command, got %T", msg)
+	}
+	if len(batch) == 0 {
+		t.Fatalf("expected non-empty batch")
+	}
+	return batch
 }
 
 func TestUpdate_CompactDone_CancelUsesMutedFooterMessage(t *testing.T) {

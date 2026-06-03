@@ -18,21 +18,22 @@ import (
 
 // SQLiteStore implements Store using SQLite.
 type SQLiteStore struct {
-	db                   *sql.DB
-	cfg                  Config
-	hasGeneratedTitles   bool // true if sessions table has generated title columns
-	hasCompactionSeq     bool // true if sessions table has compaction_seq column
-	hasCompactionCount   bool // true if sessions table has compaction_count column
-	hasCacheWriteTokens  bool // true if sessions table has cache_write_tokens column
-	hasOrigin            bool // true if sessions table has origin column
-	hasPinned            bool // true if sessions table has pinned column
-	hasTitleSkippedAt    bool // true if sessions table has title_skipped_at column
-	hasLastUserMessageAt bool // true if sessions table has last_user_message_at column
-	hasLastMessageAt     bool // true if sessions table has last_message_at column
-	hasLastTotalTokens   bool // true if sessions table has last_total_tokens column
-	hasLastMessageCount  bool // true if sessions table has last_message_count column
-	hasMessageCount      bool // true if sessions table has message_count column
-	hasReasoningEffort   bool // true if sessions table has reasoning_effort column
+	db                       *sql.DB
+	cfg                      Config
+	hasGeneratedTitles       bool // true if sessions table has generated title columns
+	hasCompactionSeq         bool // true if sessions table has compaction_seq column
+	hasCompactionCount       bool // true if sessions table has compaction_count column
+	hasCacheWriteTokens      bool // true if sessions table has cache_write_tokens column
+	hasOrigin                bool // true if sessions table has origin column
+	hasPinned                bool // true if sessions table has pinned column
+	hasTitleSkippedAt        bool // true if sessions table has title_skipped_at column
+	hasLastUserMessageAt     bool // true if sessions table has last_user_message_at column
+	hasLastMessageAt         bool // true if sessions table has last_message_at column
+	hasLastTotalTokens       bool // true if sessions table has last_total_tokens column
+	hasLastMessageCount      bool // true if sessions table has last_message_count column
+	hasMessageCount          bool // true if sessions table has message_count column
+	hasReasoningEffort       bool // true if sessions table has reasoning_effort column
+	hasMessageCompactionTail bool // true if messages table has compaction_tail column
 }
 
 // Schema for the sessions database.
@@ -90,7 +91,8 @@ CREATE TABLE IF NOT EXISTS messages (
     duration_ms INTEGER,
     turn_index INTEGER DEFAULT 0,
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    sequence INTEGER NOT NULL
+    sequence INTEGER NOT NULL,
+    compaction_tail BOOLEAN DEFAULT FALSE
 );
 
 CREATE INDEX IF NOT EXISTS idx_sessions_updated_at ON sessions(updated_at DESC);
@@ -136,7 +138,8 @@ CREATE TABLE messages (
     duration_ms INTEGER,
     turn_index INTEGER DEFAULT 0,
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    sequence INTEGER NOT NULL
+    sequence INTEGER NOT NULL,
+    compaction_tail BOOLEAN DEFAULT FALSE
 )`
 
 // NewSQLiteStore creates a new SQLite-based session store.
@@ -195,12 +198,13 @@ func NewSQLiteStore(cfg Config) (*SQLiteStore, error) {
 
 	// Read-write stores have just created or migrated the schema above, so the
 	// current optional columns are known to be present. Read-only stores skip
-	// migrations and may be pointed at an older DB, so probe the sessions table
-	// once and derive every compatibility flag from that single scan.
+	// migrations and may be pointed at an older DB, so probe the tables once and
+	// derive compatibility flags from those scans.
 	if cfg.ReadOnly {
 		store.probeSessionColumns()
+		store.probeMessageColumns()
 	} else {
-		store.setCurrentSessionColumns()
+		store.setCurrentColumns()
 	}
 
 	// Run cleanup if configured (read-write mode only).
@@ -218,7 +222,7 @@ func NewSQLiteStore(cfg Config) (*SQLiteStore, error) {
 // - Fresh databases get the full schema from `schema` const and start at this version
 // - Existing databases run migrations to reach this version
 // Increment when adding new migrations.
-const schemaVersion = 25
+const schemaVersion = 26
 
 // migration represents a schema migration.
 type migration struct {
@@ -760,8 +764,34 @@ var migrations = []migration{
 			if err != nil {
 				return fmt.Errorf("backfill message_count: %w", err)
 			}
+			return nil
+		},
+	},
+	{
+		// Migration 26: Persist display suppression metadata for retained
+		// post-compaction tail rows. These rows remain active model context, but
+		// transcript renderers hide them because the same raw messages are already
+		// visible before the compaction marker.
+		version:     26,
+		description: "add message compaction_tail display flag",
+		up: func(db *sql.DB) error {
+			_, err := db.Exec("ALTER TABLE messages ADD COLUMN compaction_tail BOOLEAN DEFAULT FALSE")
+			if err != nil && !isDuplicateColumnError(err) {
+				return err
+			}
 			if err := createMessageCountTriggers(db); err != nil {
-				return fmt.Errorf("create message_count triggers: %w", err)
+				return fmt.Errorf("recreate message_count triggers: %w", err)
+			}
+			_, err = db.Exec(`
+				UPDATE sessions
+				SET message_count = COALESCE((
+					SELECT COUNT(*) FROM messages m
+					WHERE m.session_id = sessions.id
+					  AND m.role IN ('user', 'assistant')
+					  AND COALESCE(m.compaction_tail, FALSE) = FALSE
+				), 0)`)
+			if err != nil {
+				return fmt.Errorf("backfill visible message_count: %w", err)
 			}
 			return nil
 		},
@@ -770,33 +800,39 @@ var migrations = []migration{
 
 func createMessageCountTriggers(db *sql.DB) error {
 	stmts := []string{
-		`CREATE TRIGGER IF NOT EXISTS messages_count_ai AFTER INSERT ON messages
+		`DROP TRIGGER IF EXISTS messages_count_ai`,
+		`DROP TRIGGER IF EXISTS messages_count_ad`,
+		`DROP TRIGGER IF EXISTS messages_count_au`,
+		`CREATE TRIGGER messages_count_ai AFTER INSERT ON messages
 		WHEN new.role IN ('user', 'assistant')
+		  AND COALESCE(new.compaction_tail, FALSE) = FALSE
 		BEGIN
 		    UPDATE sessions
 		    SET message_count = COALESCE(message_count, 0) + 1
 		    WHERE id = new.session_id;
 		END;`,
-		`CREATE TRIGGER IF NOT EXISTS messages_count_ad AFTER DELETE ON messages
+		`CREATE TRIGGER messages_count_ad AFTER DELETE ON messages
 		WHEN old.role IN ('user', 'assistant')
+		  AND COALESCE(old.compaction_tail, FALSE) = FALSE
 		BEGIN
 		    UPDATE sessions
 		    SET message_count = COALESCE(message_count, 0) - 1
 		    WHERE id = old.session_id;
 		END;`,
-		`CREATE TRIGGER IF NOT EXISTS messages_count_au AFTER UPDATE ON messages
+		`CREATE TRIGGER messages_count_au AFTER UPDATE ON messages
 		WHEN old.session_id <> new.session_id
-		  OR (old.role IN ('user', 'assistant')) <> (new.role IN ('user', 'assistant'))
+		  OR ((old.role IN ('user', 'assistant') AND COALESCE(old.compaction_tail, FALSE) = FALSE)
+		      <> (new.role IN ('user', 'assistant') AND COALESCE(new.compaction_tail, FALSE) = FALSE))
 		BEGIN
 		    UPDATE sessions
 		    SET message_count = COALESCE(message_count, 0) - CASE
-		        WHEN old.role IN ('user', 'assistant') THEN 1
+		        WHEN old.role IN ('user', 'assistant') AND COALESCE(old.compaction_tail, FALSE) = FALSE THEN 1
 		        ELSE 0
 		    END
 		    WHERE id = old.session_id;
 		    UPDATE sessions
 		    SET message_count = COALESCE(message_count, 0) + CASE
-		        WHEN new.role IN ('user', 'assistant') THEN 1
+		        WHEN new.role IN ('user', 'assistant') AND COALESCE(new.compaction_tail, FALSE) = FALSE THEN 1
 		        ELSE 0
 		    END
 		    WHERE id = new.session_id;
@@ -1307,7 +1343,11 @@ func (s *SQLiteStore) List(ctx context.Context, opts ListOptions) ([]SessionSumm
 	}
 	messageCountCol := "COALESCE(s.message_count, 0)"
 	if !s.hasMessageCount {
-		messageCountCol = "(SELECT COUNT(*) FROM messages WHERE session_id = s.id AND role IN ('user', 'assistant'))"
+		compactionTailClause := ""
+		if s.hasMessageCompactionTail {
+			compactionTailClause = " AND COALESCE(compaction_tail, FALSE) = FALSE"
+		}
+		messageCountCol = "(SELECT COUNT(*) FROM messages WHERE session_id = s.id AND role IN ('user', 'assistant')" + compactionTailClause + ")"
 	}
 	query := `
 		SELECT s.id, s.number, s.name, s.summary, ` + generatedShortCol + `, ` + generatedLongCol + `, ` + titleSourceCol + `,
@@ -1476,8 +1516,16 @@ func (s *SQLiteStore) Search(ctx context.Context, query string, limit int) ([]Se
 	}
 
 	messageCountCol := "COALESCE(s.message_count, 0)"
+	compactionTailClause := ""
+	if s.hasMessageCompactionTail {
+		compactionTailClause = " AND COALESCE(m.compaction_tail, FALSE) = FALSE"
+	}
 	if !s.hasMessageCount {
-		messageCountCol = "(SELECT COUNT(*) FROM messages WHERE session_id = s.id AND role IN ('user', 'assistant'))"
+		countCompactionTailClause := ""
+		if s.hasMessageCompactionTail {
+			countCompactionTailClause = " AND COALESCE(compaction_tail, FALSE) = FALSE"
+		}
+		messageCountCol = "(SELECT COUNT(*) FROM messages WHERE session_id = s.id AND role IN ('user', 'assistant')" + countCompactionTailClause + ")"
 	}
 
 	rows, err := s.db.QueryContext(ctx, `
@@ -1486,7 +1534,7 @@ func (s *SQLiteStore) Search(ctx context.Context, query string, limit int) ([]Se
 		FROM messages_fts f
 		JOIN messages m ON m.id = f.rowid
 		JOIN sessions s ON s.id = m.session_id
-		WHERE messages_fts MATCH ?
+		WHERE messages_fts MATCH ?`+compactionTailClause+`
 		ORDER BY rank
 		LIMIT ?`, ftsQuery, limit)
 	if err != nil {
@@ -1560,9 +1608,9 @@ func (s *SQLiteStore) AddMessage(ctx context.Context, sessionID string, msg *Mes
 		}
 
 		result, err := tx.ExecContext(ctx, `
-			INSERT INTO messages (session_id, role, parts, text_content, duration_ms, turn_index, created_at, sequence)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-			sessionID, string(msg.Role), partsJSON, msg.TextContent, msg.DurationMs, msg.TurnIndex, msg.CreatedAt, msg.Sequence)
+			INSERT INTO messages (session_id, role, parts, text_content, duration_ms, turn_index, created_at, sequence, compaction_tail)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			sessionID, string(msg.Role), partsJSON, msg.TextContent, msg.DurationMs, msg.TurnIndex, msg.CreatedAt, msg.Sequence, msg.CompactionTail)
 		if err != nil {
 			return fmt.Errorf("insert message: %w", err)
 		}
@@ -1575,7 +1623,7 @@ func (s *SQLiteStore) AddMessage(ctx context.Context, sessionID string, msg *Mes
 		// conversation messages (user/assistant) so the web sidebar sort stays
 		// aligned with message_count. Tool/developer/system/event rows are excluded
 		// so they don't jostle order without a visible user/assistant change.
-		bumpLastMessageAt := s.hasLastMessageAt && (msg.Role == "user" || msg.Role == "assistant")
+		bumpLastMessageAt := s.hasLastMessageAt && !msg.CompactionTail && (msg.Role == "user" || msg.Role == "assistant")
 		if bumpLastMessageAt {
 			_, err = tx.ExecContext(ctx,
 				"UPDATE sessions SET updated_at = ?, last_message_at = ? WHERE id = ?",
@@ -1622,9 +1670,9 @@ func (s *SQLiteStore) UpdateMessage(ctx context.Context, sessionID string, msg *
 
 		result, err := tx.ExecContext(ctx, `
 			UPDATE messages
-			SET role = ?, parts = ?, text_content = ?, duration_ms = ?, turn_index = ?
+			SET role = ?, parts = ?, text_content = ?, duration_ms = ?, turn_index = ?, compaction_tail = ?
 			WHERE id = ? AND session_id = ?`,
-			string(msg.Role), partsJSON, msg.TextContent, msg.DurationMs, msg.TurnIndex, msg.ID, sessionID)
+			string(msg.Role), partsJSON, msg.TextContent, msg.DurationMs, msg.TurnIndex, msg.CompactionTail, msg.ID, sessionID)
 		if err != nil {
 			return fmt.Errorf("update message: %w", err)
 		}
@@ -1704,8 +1752,8 @@ func (s *SQLiteStore) ReplaceMessages(ctx context.Context, sessionID string, mes
 
 		if commonPrefix < len(messages) {
 			insertStmt, err := tx.PrepareContext(ctx, `
-				INSERT INTO messages (session_id, role, parts, text_content, duration_ms, turn_index, created_at, sequence)
-				VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+				INSERT INTO messages (session_id, role, parts, text_content, duration_ms, turn_index, created_at, sequence, compaction_tail)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 			if err != nil {
 				return fmt.Errorf("prepare message insert: %w", err)
 			}
@@ -1718,7 +1766,7 @@ func (s *SQLiteStore) ReplaceMessages(ctx context.Context, sessionID string, mes
 					createdAt = time.Now()
 				}
 				_, err = insertStmt.ExecContext(ctx,
-					sessionID, string(msg.Role), partsJSON[i], msg.TextContent, msg.DurationMs, msg.TurnIndex, createdAt, i)
+					sessionID, string(msg.Role), partsJSON[i], msg.TextContent, msg.DurationMs, msg.TurnIndex, createdAt, i, false)
 				if err != nil {
 					return fmt.Errorf("insert message %d: %w", i, err)
 				}
@@ -1762,7 +1810,7 @@ func prepareReplacementMessageParts(messages []Message) ([]string, error) {
 
 func replacementCommonPrefix(ctx context.Context, tx *sql.Tx, sessionID string, desired []Message, desiredPartsJSON []string) (prefix int, fullDelete bool, err error) {
 	rows, err := tx.QueryContext(ctx, `
-		SELECT sequence, role, parts, text_content, duration_ms, turn_index
+		SELECT sequence, role, parts, text_content, duration_ms, turn_index, COALESCE(compaction_tail, FALSE)
 		FROM messages
 		WHERE session_id = ?
 		ORDER BY sequence ASC, id ASC`, sessionID)
@@ -1777,7 +1825,8 @@ func replacementCommonPrefix(ctx context.Context, tx *sql.Tx, sessionID string, 
 		var textContent sql.NullString
 		var durationMs sql.NullInt64
 		var turnIndex sql.NullInt64
-		if err := rows.Scan(&sequence, &role, &partsJSON, &textContent, &durationMs, &turnIndex); err != nil {
+		var compactionTail bool
+		if err := rows.Scan(&sequence, &role, &partsJSON, &textContent, &durationMs, &turnIndex, &compactionTail); err != nil {
 			return 0, false, fmt.Errorf("scan existing message: %w", err)
 		}
 		if sequence < 0 {
@@ -1805,7 +1854,8 @@ func replacementCommonPrefix(ctx context.Context, tx *sql.Tx, sessionID string, 
 			partsJSON != desiredPartsJSON[prefix] ||
 			nullStringValue(textContent) != want.TextContent ||
 			nullInt64Value(durationMs) != want.DurationMs ||
-			int(nullInt64Value(turnIndex)) != want.TurnIndex {
+			int(nullInt64Value(turnIndex)) != want.TurnIndex ||
+			compactionTail {
 			break
 		}
 		prefix++
@@ -1852,8 +1902,8 @@ func (s *SQLiteStore) CompactMessages(ctx context.Context, sessionID string, mes
 		startSeq := maxSeq + 1
 
 		insertStmt, err := tx.PrepareContext(ctx, `
-			INSERT INTO messages (session_id, role, parts, text_content, duration_ms, turn_index, created_at, sequence)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+			INSERT INTO messages (session_id, role, parts, text_content, duration_ms, turn_index, created_at, sequence, compaction_tail)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 		if err != nil {
 			return fmt.Errorf("prepare message insert: %w", err)
 		}
@@ -1873,7 +1923,7 @@ func (s *SQLiteStore) CompactMessages(ctx context.Context, sessionID string, mes
 			}
 
 			_, err = insertStmt.ExecContext(ctx,
-				sessionID, string(msg.Role), partsJSON, msg.TextContent, msg.DurationMs, msg.TurnIndex, msg.CreatedAt, msg.Sequence)
+				sessionID, string(msg.Role), partsJSON, msg.TextContent, msg.DurationMs, msg.TurnIndex, msg.CreatedAt, msg.Sequence, msg.CompactionTail)
 			if err != nil {
 				return fmt.Errorf("insert message %d: %w", i, err)
 			}
@@ -1898,13 +1948,21 @@ func (s *SQLiteStore) CompactMessages(ctx context.Context, sessionID string, mes
 	})
 }
 
+func (s *SQLiteStore) messageSelectCols() string {
+	compactionTailCol := "FALSE AS compaction_tail"
+	if s.hasMessageCompactionTail {
+		compactionTailCol = "COALESCE(compaction_tail, FALSE) AS compaction_tail"
+	}
+	return `id, session_id, role, parts, text_content, duration_ms, turn_index, created_at, sequence, ` + compactionTailCol
+}
+
 // GetMessagesFrom retrieves messages for a session starting from a given
 // sequence number. Used on resume and for keyset-style pagination when walking
 // long transcripts.
 // When limit <= 0, all rows at/after fromSeq are returned.
 func (s *SQLiteStore) GetMessagesFrom(ctx context.Context, sessionID string, fromSeq, limit int) ([]Message, error) {
 	query := `
-		SELECT id, session_id, role, parts, text_content, duration_ms, turn_index, created_at, sequence
+		SELECT ` + s.messageSelectCols() + `
 		FROM messages
 		WHERE session_id = ? AND sequence >= ?
 		ORDER BY sequence ASC`
@@ -1930,7 +1988,7 @@ func scanMessageRows(rows *sql.Rows) ([]Message, error) {
 		var partsJSON string
 		var durationMs sql.NullInt64
 		err := rows.Scan(&msg.ID, &msg.SessionID, &msg.Role, &partsJSON,
-			&msg.TextContent, &durationMs, &msg.TurnIndex, &msg.CreatedAt, &msg.Sequence)
+			&msg.TextContent, &durationMs, &msg.TurnIndex, &msg.CreatedAt, &msg.Sequence, &msg.CompactionTail)
 		if err != nil {
 			return nil, fmt.Errorf("scan message: %w", err)
 		}
@@ -1950,7 +2008,7 @@ func scanMessageRows(rows *sql.Rows) ([]Message, error) {
 // returned. Used for reverse tail pagination without loading entire sessions.
 func (s *SQLiteStore) GetMessagesPageDescending(ctx context.Context, sessionID string, beforeSeq, limit int) ([]Message, error) {
 	query := `
-		SELECT id, session_id, role, parts, text_content, duration_ms, turn_index, created_at, sequence
+		SELECT ` + s.messageSelectCols() + `
 		FROM messages
 		WHERE session_id = ?`
 	args := []any{sessionID}
@@ -1976,14 +2034,14 @@ func (s *SQLiteStore) GetMessagesPageDescending(ctx context.Context, sessionID s
 // GetMessageByID retrieves a single message by its global message id.
 func (s *SQLiteStore) GetMessageByID(ctx context.Context, msgID int64) (*Message, error) {
 	row := s.db.QueryRowContext(ctx, `
-		SELECT id, session_id, role, parts, text_content, duration_ms, turn_index, created_at, sequence
+		SELECT `+s.messageSelectCols()+`
 		FROM messages
 		WHERE id = ?`, msgID)
 	var msg Message
 	var partsJSON string
 	var durationMs sql.NullInt64
 	err := row.Scan(&msg.ID, &msg.SessionID, &msg.Role, &partsJSON,
-		&msg.TextContent, &durationMs, &msg.TurnIndex, &msg.CreatedAt, &msg.Sequence)
+		&msg.TextContent, &durationMs, &msg.TurnIndex, &msg.CreatedAt, &msg.Sequence, &msg.CompactionTail)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -2002,10 +2060,14 @@ func (s *SQLiteStore) GetMessageByID(ctx context.Context, msgID int64) (*Message
 // GetLatestVisibleMessageID retrieves the latest persisted user/assistant message id for a session.
 func (s *SQLiteStore) GetLatestVisibleMessageID(ctx context.Context, sessionID string) (int64, error) {
 	var msgID int64
+	compactionTailClause := ""
+	if s.hasMessageCompactionTail {
+		compactionTailClause = " AND COALESCE(compaction_tail, FALSE) = FALSE"
+	}
 	err := s.db.QueryRowContext(ctx, `
 		SELECT id
 		FROM messages
-		WHERE session_id = ? AND role IN (?, ?)
+		WHERE session_id = ? AND role IN (?, ?)`+compactionTailClause+`
 		ORDER BY sequence DESC, id DESC
 		LIMIT 1`, sessionID, string(llm.RoleUser), string(llm.RoleAssistant)).Scan(&msgID)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -2020,7 +2082,7 @@ func (s *SQLiteStore) GetLatestVisibleMessageID(ctx context.Context, sessionID s
 // GetMessages retrieves messages for a session.
 func (s *SQLiteStore) GetMessages(ctx context.Context, sessionID string, limit, offset int) ([]Message, error) {
 	query := `
-		SELECT id, session_id, role, parts, text_content, duration_ms, turn_index, created_at, sequence
+		SELECT ` + s.messageSelectCols() + `
 		FROM messages
 		WHERE session_id = ?
 		ORDER BY sequence ASC`
@@ -2050,7 +2112,7 @@ func (s *SQLiteStore) GetMessages(ctx context.Context, sessionID string, limit, 
 		var partsJSON string
 		var durationMs sql.NullInt64
 		err := rows.Scan(&msg.ID, &msg.SessionID, &msg.Role, &partsJSON,
-			&msg.TextContent, &durationMs, &msg.TurnIndex, &msg.CreatedAt, &msg.Sequence)
+			&msg.TextContent, &durationMs, &msg.TurnIndex, &msg.CreatedAt, &msg.Sequence, &msg.CompactionTail)
 		if err != nil {
 			return nil, fmt.Errorf("scan message: %w", err)
 		}
@@ -2148,9 +2210,9 @@ func (s *SQLiteStore) Close() error {
 	return s.db.Close()
 }
 
-// setCurrentSessionColumns records optional columns that are guaranteed to
-// exist after read-write initialization/migration reaches the current schema.
-func (s *SQLiteStore) setCurrentSessionColumns() {
+// setCurrentColumns records optional columns that are guaranteed to exist after
+// read-write initialization/migration reaches the current schema.
+func (s *SQLiteStore) setCurrentColumns() {
 	s.hasGeneratedTitles = true
 	s.hasCompactionSeq = true
 	s.hasCompactionCount = true
@@ -2164,6 +2226,7 @@ func (s *SQLiteStore) setCurrentSessionColumns() {
 	s.hasLastMessageCount = true
 	s.hasMessageCount = true
 	s.hasReasoningEffort = true
+	s.hasMessageCompactionTail = true
 }
 
 // probeSessionColumns checks optional session columns in a single PRAGMA scan.
@@ -2213,6 +2276,28 @@ func (s *SQLiteStore) probeSessionColumns() {
 			s.hasMessageCount = true
 		case "reasoning_effort":
 			s.hasReasoningEffort = true
+		}
+	}
+}
+
+func (s *SQLiteStore) probeMessageColumns() {
+	rows, err := s.db.Query("PRAGMA table_info(messages)")
+	if err != nil {
+		return
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var cid int
+		var name, typ string
+		var notnull int
+		var dfltValue sql.NullString
+		var pk int
+		if err := rows.Scan(&cid, &name, &typ, &notnull, &dfltValue, &pk); err != nil {
+			return
+		}
+		if name == "compaction_tail" {
+			s.hasMessageCompactionTail = true
 		}
 	}
 }

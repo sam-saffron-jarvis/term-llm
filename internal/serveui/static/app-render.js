@@ -1229,10 +1229,93 @@ const updateModelSwapNode = (message) => {
   if (body) body.textContent = message.content || '↔ Model switch';
 };
 
+const updateCompactionNode = (message) => {
+  const node = findMessageElement(message.id);
+  const replacement = createCompactionNode(message);
+  if (node) {
+    node.replaceWith(replacement);
+  } else {
+    elements.messages.appendChild(replacement);
+  }
+};
+
+const compactionDetailText = (message) => {
+  const parts = [];
+  const count = Number(message?.compactionCount || 0);
+  if (count > 0) parts.push(`#${count}`);
+  if (message?.activeBoundary) parts.push('active context starts here');
+  const lines = Number(message?.lineCount || 0);
+  if (lines > 0) parts.push(`${lines} line${lines === 1 ? '' : 's'} hidden`);
+  if (parts.length === 0) parts.push('internal summary hidden');
+  return parts.join(' · ');
+};
+
+const appendCompactionRawPre = (body, message) => {
+  const raw = String(message?.rawContent || '');
+  if (!raw) return null;
+  const pre = document.createElement('pre');
+  pre.className = 'compaction-raw';
+  pre.textContent = raw;
+  body.appendChild(pre);
+  return pre;
+};
+
+const createCompactionNode = (message) => {
+  const article = document.createElement('article');
+  article.className = `message ${message.role}`;
+  article.dataset.messageId = message.id;
+
+  const body = document.createElement('div');
+  body.className = 'message-body compaction-body';
+  if (message.activeBoundary) body.classList.add('active-boundary');
+
+  const row = document.createElement('div');
+  row.className = 'compaction-summary-row';
+
+  const label = document.createElement('span');
+  label.className = 'compaction-label';
+  label.textContent = '↳ Context compacted';
+  row.appendChild(label);
+
+  const detail = document.createElement('span');
+  detail.className = 'compaction-detail';
+  detail.textContent = compactionDetailText(message);
+  row.appendChild(detail);
+
+  if (message.role === 'compaction' && message.rawContent) {
+    const toggle = document.createElement('button');
+    toggle.type = 'button';
+    toggle.className = 'compaction-toggle';
+    toggle.textContent = message.expanded ? 'Hide details' : 'Show details';
+    toggle.setAttribute('aria-expanded', message.expanded ? 'true' : 'false');
+    row.appendChild(toggle);
+
+    toggle.addEventListener('click', () => {
+      message.expanded = !message.expanded;
+      toggle.textContent = message.expanded ? 'Hide details' : 'Show details';
+      toggle.setAttribute('aria-expanded', message.expanded ? 'true' : 'false');
+      const existing = body.querySelector('.compaction-raw');
+      if (message.expanded && !existing) {
+        appendCompactionRawPre(body, message);
+      } else if (!message.expanded && existing) {
+        existing.remove();
+      }
+      saveSessions();
+    });
+  }
+
+  body.appendChild(row);
+  if (message.expanded) appendCompactionRawPre(body, message);
+  article.appendChild(body);
+  article.appendChild(createMetaNode(message.created, message));
+  return article;
+};
+
 const createMessageNode = (message) => {
   if (message.role === 'tool') return createToolCard(message);
   if (message.role === 'tool-group') return createToolGroupNode(message);
   if (message.role === 'model-swap') return createModelSwapNode(message);
+  if (message.role === 'compaction' || message.role === 'compaction-boundary') return createCompactionNode(message);
 
   const article = document.createElement('article');
   article.className = `message ${message.role}`;
@@ -2027,6 +2110,19 @@ const messageRenderKey = (message) => {
           }))
           : []
       });
+    case 'compaction':
+    case 'compaction-boundary':
+      return JSON.stringify({
+        role: message.role,
+        content: message.content || '',
+        rawContent: message.rawContent || '',
+        lineCount: Number(message.lineCount || 0),
+        expanded: Boolean(message.expanded),
+        activeBoundary: Boolean(message.activeBoundary),
+        compactionSeq: Number(message.compactionSeq ?? -1),
+        compactionCount: Number(message.compactionCount || 0),
+        created: message.created || 0
+      });
     default:
       return JSON.stringify({
         role: message.role,
@@ -2054,6 +2150,10 @@ const updateMessageNode = (message) => {
       break;
     case 'model-swap':
       updateModelSwapNode(message);
+      break;
+    case 'compaction':
+    case 'compaction-boundary':
+      updateCompactionNode(message);
       break;
     default:
       updateUserNode(message);

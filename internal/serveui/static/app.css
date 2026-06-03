@@ -1124,6 +1124,8 @@
     .message.assistant,
     .message.tool,
     .message.model-swap,
+    .message.compaction,
+    .message.compaction-boundary,
     .message.error {
       align-self: flex-start;
     }
@@ -1168,6 +1170,72 @@
       border-color: rgba(125,211,252,0.22);
       color: var(--muted);
       font-size: 0.9rem;
+    }
+
+    .message.compaction,
+    .message.compaction-boundary {
+      width: min(100%, 820px);
+    }
+
+    .message.compaction .message-body,
+    .message.compaction-boundary .message-body {
+      background: rgba(229,162,16,0.08);
+      border-color: rgba(229,162,16,0.22);
+      color: var(--text-muted);
+      font-size: 0.9rem;
+      white-space: normal;
+    }
+
+    .message.compaction .message-body.active-boundary,
+    .message.compaction-boundary .message-body.active-boundary {
+      border-color: rgba(229,162,16,0.45);
+    }
+
+    .compaction-summary-row {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      flex-wrap: wrap;
+    }
+
+    .compaction-label {
+      color: var(--accent-amber);
+      font-weight: 600;
+    }
+
+    .compaction-detail {
+      color: var(--text-muted);
+    }
+
+    .compaction-toggle {
+      border: 1px solid var(--border-strong);
+      border-radius: 999px;
+      background: transparent;
+      color: var(--text);
+      padding: 0.15rem 0.55rem;
+      font: inherit;
+      font-size: 0.82rem;
+      cursor: pointer;
+    }
+
+    .compaction-toggle:hover {
+      border-color: var(--accent-amber);
+      color: var(--accent-strong);
+    }
+
+    .compaction-raw {
+      margin: 0.7rem 0 0;
+      max-height: 24rem;
+      overflow: auto;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 0.75rem;
+      background: var(--surface);
+      color: var(--text);
+      white-space: pre-wrap;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+      font-size: 0.82rem;
+      line-height: 1.45;
     }
 
     .markdown-body {
@@ -1367,6 +1435,7 @@
 
     .markdown-body pre,
     .markdown-body code,
+    .compaction-raw,
     .tool-details pre,
     .tool-entry-args .arg-value,
     .approval-path {

@@ -11,6 +11,28 @@ import (
 	"github.com/samsaffron/term-llm/internal/ui"
 )
 
+func TestMessageBlockRenderer_InternalCompactionUserMessageIsSuppressed(t *testing.T) {
+	renderer := NewMessageBlockRenderer(100, nil, false)
+	body := "[Context Compaction]\nInternal context only; not a user command.\n\n<PREVIOUS_TURNS>\n" + strings.Repeat("noisy tool output\n", 20) + "</PREVIOUS_TURNS>\n\n<SUMMARY_AND_NEXT_ACTIONS>\nContinue the task.\nNext: run tests.\n</SUMMARY_AND_NEXT_ACTIONS>"
+	msg := &session.Message{
+		ID:          1,
+		Role:        llm.RoleUser,
+		TextContent: body,
+		Parts:       []llm.Part{{Type: llm.PartText, Text: body}},
+	}
+
+	rendered := ui.StripANSI(renderer.Render(msg).Rendered)
+	if !strings.Contains(rendered, "Context compacted") || !strings.Contains(rendered, "Ctrl+O to inspect") {
+		t.Fatalf("expected compact placeholder, got %q", rendered)
+	}
+	if strings.Contains(rendered, "noisy tool output") || strings.Contains(rendered, "<PREVIOUS_TURNS>") {
+		t.Fatalf("compaction body should be hidden from normal chat, got %q", rendered)
+	}
+	if !strings.Contains(rendered, "2 lines") || strings.Contains(rendered, "25 lines") {
+		t.Fatalf("placeholder should count summary lines, not internal transcript lines, got %q", rendered)
+	}
+}
+
 func TestMessageBlockRenderer_UserMessageBackground_UsesTruecolorTheme(t *testing.T) {
 	renderer := NewMessageBlockRenderer(80, nil, false)
 	msg := &session.Message{

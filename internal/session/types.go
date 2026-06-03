@@ -98,15 +98,16 @@ type Session struct {
 // The Parts field stores the full llm.Message.Parts as JSON to preserve tool
 // calls, uploaded images/files, and provider replay state exactly.
 type Message struct {
-	ID          int64      `json:"id"`
-	SessionID   string     `json:"session_id"`
-	Role        llm.Role   `json:"role"`
-	Parts       []llm.Part `json:"parts"`        // Full parts array
-	TextContent string     `json:"text_content"` // Extracted text for display/FTS
-	DurationMs  int64      `json:"duration_ms,omitempty"`
-	TurnIndex   int        `json:"turn_index,omitempty"`
-	CreatedAt   time.Time  `json:"created_at"`
-	Sequence    int        `json:"sequence"`
+	ID             int64      `json:"id"`
+	SessionID      string     `json:"session_id"`
+	Role           llm.Role   `json:"role"`
+	Parts          []llm.Part `json:"parts"`        // Full parts array
+	TextContent    string     `json:"text_content"` // Extracted text for display/FTS
+	DurationMs     int64      `json:"duration_ms,omitempty"`
+	TurnIndex      int        `json:"turn_index,omitempty"`
+	CreatedAt      time.Time  `json:"created_at"`
+	Sequence       int        `json:"sequence"`
+	CompactionTail bool       `json:"compaction_tail,omitempty"` // Persisted display hint: retained post-compaction context already visible before the marker
 }
 
 // SessionSummary is a lightweight view of a session for listing.
@@ -202,10 +203,32 @@ func (m *Message) ExtractTextContent() string {
 
 // ToLLMMessage converts a Message back to an llm.Message.
 func (m *Message) ToLLMMessage() llm.Message {
-	return llm.Message{
+	if m == nil {
+		return llm.Message{}
+	}
+	msg := llm.Message{
 		Role:  m.Role,
 		Parts: m.Parts,
 	}
+	if m.isInternalCompactionSummary() {
+		msg.CacheAnchor = true
+	}
+	return msg
+}
+
+func (m *Message) isInternalCompactionSummary() bool {
+	if m == nil {
+		return false
+	}
+	if llm.IsInternalCompactionSummaryText(m.TextContent) {
+		return true
+	}
+	for _, part := range m.Parts {
+		if (part.Type == llm.PartText || part.Type == llm.PartFile) && llm.IsInternalCompactionSummaryText(part.Text) {
+			return true
+		}
+	}
+	return false
 }
 
 // PartsJSON returns the Parts field serialized to JSON for database storage.

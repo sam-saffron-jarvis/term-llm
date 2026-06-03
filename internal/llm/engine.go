@@ -22,8 +22,11 @@ const (
 	defaultMaxParallelToolCalls        = 20
 	defaultUncommittedStreamMaxRetries = 5
 	stopSearchToolHint                 = "IMPORTANT: Do not call any tools. Use the information already retrieved and answer directly."
-	contextCheckpointPrompt            = "Context budget is getting tight. Produce a concise checkpoint of the current progress and the exact next action. Do not claim the task is complete unless it is complete. Do not call tools."
 	contextContinuationPrompt          = "Continue the task from the compacted context. Follow the pending next step; do not ask the user unless blocked."
+	PhaseCompacting                    = "Compacting"
+	PhaseCompactingWriteBrief          = "Compacting: write brief"
+	PhaseCompactingSummarizeHistory    = "Compacting: summarize history"
+	PhaseCompactingResumeTask          = "Compacting: resume task"
 	callbackTimeout                    = 5 * time.Second
 	toolHeartbeatInterval              = 10 * time.Second
 )
@@ -1162,6 +1165,11 @@ func (e *Engine) runLoop(ctx context.Context, req Request, send eventSender) err
 	var uncommittedPriorErr error
 	var softCheckpointInjected bool
 	var softCheckpointInProgress bool
+	var softCompactionUsage Usage
+	var softCheckpointOriginalMessages []Message
+	var softCheckpointPrepared preparedCompactionContext
+	var softCheckpointOriginalCount int
+	var resumeAfterCompaction bool
 	softThresholdRatio := defaultSoftThresholdRatio
 	hardThresholdRatio := defaultHardThresholdRatio
 	if compactionConfig != nil {
@@ -1211,11 +1219,69 @@ func (e *Engine) runLoop(ctx context.Context, req Request, send eventSender) err
 		// stale pre-compaction server transcript.
 		resetProviderConversation(e.provider)
 		req.Messages = result.NewMessages
+		resumeAfterCompaction = true
 		e.callbackMu.Lock()
 		e.lastTotalTokens = 0
 		e.lastMessageCount = 0
 		e.lastMessageTokenEstimate = 0
 		e.callbackMu.Unlock()
+		return true
+	}
+	resetSoftCheckpointState := func() {
+		softCheckpointInProgress = false
+		softCompactionUsage = Usage{}
+		softCheckpointOriginalMessages = nil
+		softCheckpointPrepared = preparedCompactionContext{}
+		softCheckpointOriginalCount = 0
+	}
+	beginSoftCheckpoint := func() {
+		softCheckpointInjected = true
+		softCheckpointInProgress = true
+		softCompactionUsage = Usage{}
+		softCheckpointOriginalMessages = append([]Message(nil), req.Messages...)
+		nonSystem := nonSystemMessages(softCheckpointOriginalMessages)
+		softCheckpointPrepared = prepareCompactionContext(nonSystem, *compactionConfig, "")
+		softCheckpointOriginalCount = len(nonSystem)
+	}
+	restoreAfterSoftCompactionFailure := func() {
+		if len(req.Messages) > 0 && strings.TrimSpace(MessageText(req.Messages[len(req.Messages)-1])) == strings.TrimSpace(contextContinuationBriefPrompt) {
+			req.Messages = req.Messages[:len(req.Messages)-1]
+		}
+		req.Tools = append([]ToolSpec(nil), originalTools...)
+		req.ToolChoice = originalToolChoice
+		resetProviderConversation(e.provider)
+		resetSoftCheckpointState()
+	}
+	messagesWithoutTrailingBriefPrompt := func() []Message {
+		messages := append([]Message(nil), req.Messages...)
+		if len(messages) > 0 && strings.TrimSpace(MessageText(messages[len(messages)-1])) == strings.TrimSpace(contextContinuationBriefPrompt) {
+			messages = messages[:len(messages)-1]
+		}
+		return messages
+	}
+	applySoftHardFallback := func() bool {
+		if compactionConfig == nil {
+			return false
+		}
+		fallbackMessages := softCheckpointOriginalMessages
+		if len(fallbackMessages) == 0 {
+			fallbackMessages = messagesWithoutTrailingBriefPrompt()
+		}
+		result, err := Compact(ctx, e.provider, req.Model, systemPrompt, nonSystemMessages(fallbackMessages), *compactionConfig)
+		if err != nil {
+			slog.Debug("soft compaction hard fallback failed", "error", err)
+			return false
+		}
+		if !softCompactionUsage.IsZero() {
+			result.Usage.Add(softCompactionUsage)
+		}
+		if !applyCompaction(result) {
+			return false
+		}
+		resetSoftCheckpointState()
+		req.Messages = append(req.Messages, UserText(contextContinuationPrompt))
+		req.Tools = append([]ToolSpec(nil), originalTools...)
+		req.ToolChoice = originalToolChoice
 		return true
 	}
 	maybeCompactAfterLLMCall := func(pending []Message) bool {
@@ -1247,7 +1313,7 @@ func (e *Engine) runLoop(ctx context.Context, req Request, send eventSender) err
 		if !shouldCompact {
 			return false
 		}
-		if err := send.Send(Event{Type: EventPhase, Text: "Compacting context..."}); err != nil {
+		if err := send.Send(Event{Type: EventPhase, Text: PhaseCompactingSummarizeHistory}); err != nil {
 			slog.Debug("send compaction phase failed", "error", err)
 			return false
 		}
@@ -1276,7 +1342,7 @@ turnLoop:
 		// turns to hit the provider before auto-compaction had a chance to run.
 		if compactionConfig != nil && canCompactBeforeTurn(req.Messages) {
 			if hardCompactionThresholdReached(req.Messages) {
-				if err := send.Send(Event{Type: EventPhase, Text: "Compacting context..."}); err != nil {
+				if err := send.Send(Event{Type: EventPhase, Text: PhaseCompactingSummarizeHistory}); err != nil {
 					return err
 				}
 				result, err := Compact(ctx, e.provider, req.Model, systemPrompt, nonSystemMessages(req.Messages), *compactionConfig)
@@ -1285,9 +1351,11 @@ turnLoop:
 				}
 				// On error: continue with full context (best effort)
 			} else if !softCheckpointInjected && len(req.Tools) > 0 && softCompactionThresholdReached(req.Messages) {
-				softCheckpointInjected = true
-				softCheckpointInProgress = true
-				req.Messages = append(req.Messages, UserText(contextCheckpointPrompt))
+				if err := send.Send(Event{Type: EventPhase, Text: PhaseCompactingWriteBrief}); err != nil {
+					return err
+				}
+				beginSoftCheckpoint()
+				req.Messages = append(req.Messages, UserText(contextContinuationBriefPrompt))
 				if e.provider.Capabilities().SupportsToolChoice {
 					req.ToolChoice = ToolChoice{Mode: ToolChoiceNone}
 				} else {
@@ -1313,7 +1381,7 @@ turnLoop:
 			if req.LastTurnToolChoice != nil {
 				req.ToolChoice = *req.LastTurnToolChoice
 			}
-		} else if attempt > 0 {
+		} else if attempt > 0 && !softCheckpointInProgress {
 			// Ensure we are in Auto mode for follow-up turns in the loop
 			req.ToolChoice = ToolChoice{Mode: ToolChoiceAuto}
 		}
@@ -1329,19 +1397,36 @@ turnLoop:
 			DebugRawRequest(req.DebugRaw, e.provider.Name(), e.provider.Credential(), req, fmt.Sprintf("Request (turn %d)", attempt))
 		}
 
+		if resumeAfterCompaction && !softCheckpointInProgress {
+			resumeAfterCompaction = false
+			if err := send.Send(Event{Type: EventPhase, Text: PhaseCompactingResumeTask}); err != nil {
+				return err
+			}
+		}
+
 		stream, err := e.provider.Stream(ctx, req)
 		if err != nil {
 			// Reactive compaction: if this is a context overflow error, try compacting and retrying (once)
 			if compactionConfig != nil && isContextOverflowError(err) && !reactiveCompactionDone {
 				reactiveCompactionDone = true
-				if err := send.Send(Event{Type: EventPhase, Text: "Compacting context..."}); err != nil {
+				if err := send.Send(Event{Type: EventPhase, Text: PhaseCompactingSummarizeHistory}); err != nil {
 					return err
 				}
-				result, compactErr := Compact(ctx, e.provider, req.Model, systemPrompt, nonSystemMessages(req.Messages), *compactionConfig)
-				if compactErr == nil && applyCompaction(result) {
-					attempt-- // Retry this turn
-					continue
+				if softCheckpointInProgress {
+					if applySoftHardFallback() {
+						attempt--
+						continue
+					}
+				} else {
+					result, compactErr := Compact(ctx, e.provider, req.Model, systemPrompt, nonSystemMessages(req.Messages), *compactionConfig)
+					if compactErr == nil && applyCompaction(result) {
+						attempt-- // Retry this turn
+						continue
+					}
 				}
+			}
+			if softCheckpointInProgress {
+				restoreAfterSoftCompactionFailure()
 			}
 			// Warn when compaction is disabled and we hit context overflow
 			if compactionConfig == nil && inputLimit > 0 && !e.contextNoticeEmitted.Load() && isContextOverflowError(err) {
@@ -1642,6 +1727,9 @@ turnLoop:
 			// Drop all attempt-local assistant output. Nothing from this provider
 			// attempt crossed a durable boundary, so replaying the same request is safe.
 			scratchpadEvents = nil
+			if softCheckpointInProgress {
+				softCompactionUsage = Usage{}
+			}
 			return true, nil
 		}
 		for {
@@ -1673,13 +1761,20 @@ turnLoop:
 				stream.Close()
 				if compactionConfig != nil && isContextOverflowError(err) && !reactiveCompactionDone && textBuilder.Len() == 0 && reasoningBuilder.Len() == 0 && len(toolCalls) == 0 && len(syncToolCalls) == 0 {
 					reactiveCompactionDone = true
-					if sendErr := send.Send(Event{Type: EventPhase, Text: "Compacting context..."}); sendErr != nil {
+					if sendErr := send.Send(Event{Type: EventPhase, Text: PhaseCompactingSummarizeHistory}); sendErr != nil {
 						return sendErr
 					}
-					result, compactErr := Compact(ctx, e.provider, req.Model, systemPrompt, nonSystemMessages(req.Messages), *compactionConfig)
-					if compactErr == nil && applyCompaction(result) {
-						attempt-- // Retry this turn
-						continue turnLoop
+					if softCheckpointInProgress {
+						if applySoftHardFallback() {
+							attempt--
+							continue turnLoop
+						}
+					} else {
+						result, compactErr := Compact(ctx, e.provider, req.Model, systemPrompt, nonSystemMessages(req.Messages), *compactionConfig)
+						if compactErr == nil && applyCompaction(result) {
+							attempt-- // Retry this turn
+							continue turnLoop
+						}
 					}
 				}
 				if recoveredToolWork && len(req.Messages) == recoveredAtMessageCount && len(toolCalls) == 0 && !syncToolsExecuted {
@@ -1698,19 +1793,29 @@ turnLoop:
 				} else if recovered {
 					continue turnLoop
 				}
+				if softCheckpointInProgress {
+					restoreAfterSoftCompactionFailure()
+				}
 				return err
 			}
 			if event.Type == EventError && event.Err != nil {
 				stream.Close()
 				if compactionConfig != nil && isContextOverflowError(event.Err) && !reactiveCompactionDone && textBuilder.Len() == 0 && reasoningBuilder.Len() == 0 && len(toolCalls) == 0 && len(syncToolCalls) == 0 {
 					reactiveCompactionDone = true
-					if sendErr := send.Send(Event{Type: EventPhase, Text: "Compacting context..."}); sendErr != nil {
+					if sendErr := send.Send(Event{Type: EventPhase, Text: PhaseCompactingSummarizeHistory}); sendErr != nil {
 						return sendErr
 					}
-					result, compactErr := Compact(ctx, e.provider, req.Model, systemPrompt, nonSystemMessages(req.Messages), *compactionConfig)
-					if compactErr == nil && applyCompaction(result) {
-						attempt-- // Retry this turn
-						continue turnLoop
+					if softCheckpointInProgress {
+						if applySoftHardFallback() {
+							attempt--
+							continue turnLoop
+						}
+					} else {
+						result, compactErr := Compact(ctx, e.provider, req.Model, systemPrompt, nonSystemMessages(req.Messages), *compactionConfig)
+						if compactErr == nil && applyCompaction(result) {
+							attempt-- // Retry this turn
+							continue turnLoop
+						}
 					}
 				}
 				if recoveredToolWork && len(req.Messages) == recoveredAtMessageCount && len(toolCalls) == 0 && !syncToolsExecuted {
@@ -1729,17 +1834,41 @@ turnLoop:
 				} else if recovered {
 					continue turnLoop
 				}
+				if softCheckpointInProgress {
+					restoreAfterSoftCompactionFailure()
+				}
 				return event.Err
 			}
 			if req.DebugRaw {
 				DebugRawEvent(true, event)
 			}
+			if event.Type == EventAttemptDiscard {
+				textBuilder.Reset()
+				reasoningBuilder.Reset()
+				reasoningItemID = ""
+				reasoningEncryptedContent = ""
+				reasoningSummaryParts = nil
+				reasoningKind = ""
+				turnMetrics = TurnMetrics{}
+				if softCheckpointInProgress {
+					softCompactionUsage = Usage{}
+					continue
+				}
+				if err := stageOrSendModelEvent(event); err != nil {
+					return err
+				}
+				continue
+			}
 			// Track usage metrics
 			if event.Type == EventUsage && event.Use != nil {
-				turnMetrics.InputTokens += event.Use.InputTokens
-				turnMetrics.OutputTokens += event.Use.OutputTokens
-				turnMetrics.CachedInputTokens += event.Use.CachedInputTokens
-				turnMetrics.CacheWriteTokens += event.Use.CacheWriteTokens
+				if softCheckpointInProgress {
+					softCompactionUsage.Add(*event.Use)
+				} else {
+					turnMetrics.InputTokens += event.Use.InputTokens
+					turnMetrics.OutputTokens += event.Use.OutputTokens
+					turnMetrics.CachedInputTokens += event.Use.CachedInputTokens
+					turnMetrics.CacheWriteTokens += event.Use.CacheWriteTokens
+				}
 				// Update token tracking for compaction threshold and status line display.
 				// InputTokens is the non-cached portion; CachedInputTokens is the cached
 				// portion. Together they equal the total context size this turn. Adding
@@ -1781,6 +1910,9 @@ turnLoop:
 					e.lastMessageTokenEstimate = EstimateMessageTokens(checkpointMessages)
 					e.callbackMu.Unlock()
 				}
+				if softCheckpointInProgress {
+					continue
+				}
 				if err := stageOrSendModelEvent(event); err != nil {
 					return err
 				}
@@ -1789,6 +1921,9 @@ turnLoop:
 			// Accumulate text for callback
 			if event.Type == EventTextDelta && event.Text != "" {
 				textBuilder.WriteString(event.Text)
+				if softCheckpointInProgress {
+					continue
+				}
 				if err := stageOrSendModelEvent(event); err != nil {
 					return err
 				}
@@ -1811,9 +1946,18 @@ turnLoop:
 					reasoningEncryptedContent = event.ReasoningEncryptedContent
 					reasoningKind = MergeReasoningKind(reasoningKind, event.ReasoningKind)
 				}
+				if softCheckpointInProgress {
+					continue
+				}
 				if err := stageOrSendModelEvent(event); err != nil {
 					return err
 				}
+				continue
+			}
+			if event.Type == EventToolCall && softCheckpointInProgress {
+				// The continuation-brief turn is internal and explicitly forbids tools.
+				// If a provider ignores tool_choice=none, discard the tool call and let
+				// the no-brief fallback compact hard at the end of the stream.
 				continue
 			}
 			if event.Type == EventToolCall && event.Tool != nil {
@@ -1950,20 +2094,30 @@ turnLoop:
 					reasoningKind,
 				)
 				if softCheckpointInProgress {
-					softCheckpointInProgress = false
-					if err := send.Send(Event{Type: EventPhase, Text: "Compacting context..."}); err != nil {
-						return err
+					brief := continuationBriefFromAssistantMessage(finalMsg)
+					if brief != "" && compactionConfig != nil && softCheckpointOriginalCount > 0 {
+						result := compactionResultFromBriefPrepared(systemPrompt, brief, softCheckpointPrepared, softCheckpointOriginalCount, *compactionConfig)
+						result.Usage = softCompactionUsage
+						if applyCompaction(result) {
+							resetSoftCheckpointState()
+							req.Messages = append(req.Messages, UserText(contextContinuationPrompt))
+							req.Tools = append([]ToolSpec(nil), originalTools...)
+							req.ToolChoice = originalToolChoice
+							attempt-- // brief/compaction is internal work; do not consume a normal agent turn
+							continue
+						}
+					} else if compactionConfig != nil {
+						if err := send.Send(Event{Type: EventPhase, Text: PhaseCompactingSummarizeHistory}); err != nil {
+							return err
+						}
+						if applySoftHardFallback() {
+							attempt--
+							continue
+						}
 					}
-					compactionMessages := append(append([]Message(nil), req.Messages...), finalMsg)
-					result, err := Compact(ctx, e.provider, req.Model, systemPrompt, nonSystemMessages(compactionMessages), *compactionConfig)
-					if err == nil && applyCompaction(result) {
-						req.Messages = append(req.Messages, UserText(contextContinuationPrompt))
-						req.Tools = append([]ToolSpec(nil), originalTools...)
-						req.ToolChoice = originalToolChoice
-						attempt-- // checkpoint/compaction is internal work; do not consume a normal agent turn
-						continue
-					}
-					// On compaction failure, fall through and complete this turn rather than looping.
+					restoreAfterSoftCompactionFailure()
+					attempt-- // retry the task without treating the internal brief as a user-visible response
+					continue
 				}
 				maybeCompactAfterLLMCall([]Message{finalMsg})
 				if turnCallback != nil {
@@ -1971,6 +2125,20 @@ turnLoop:
 					_ = turnCallback(cbCtx, attempt, []Message{finalMsg}, turnMetrics)
 					cancel()
 				}
+			}
+			if softCheckpointInProgress {
+				if compactionConfig != nil {
+					if err := send.Send(Event{Type: EventPhase, Text: PhaseCompactingSummarizeHistory}); err != nil {
+						return err
+					}
+					if applySoftHardFallback() {
+						attempt--
+						continue
+					}
+				}
+				restoreAfterSoftCompactionFailure()
+				attempt--
+				continue
 			}
 			if err := send.Send(Event{Type: EventDone}); err != nil {
 				return err
