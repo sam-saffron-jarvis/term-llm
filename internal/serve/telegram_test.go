@@ -244,6 +244,35 @@ func newTestMgrAndSession(h *testutil.EngineHarness) (*telegramSessionMgr, *tele
 	return mgr, sess
 }
 
+func TestSendStreamDone_OnlyFirstCompletionSends(t *testing.T) {
+	done := make(chan error, 1)
+	var once sync.Once
+	firstErr := errors.New("first")
+
+	sendStreamDone(done, &once, firstErr)
+
+	returned := make(chan struct{})
+	go func() {
+		sendStreamDone(done, &once, errors.New("second"))
+		close(returned)
+	}()
+
+	select {
+	case <-returned:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("second completion send blocked")
+	}
+
+	select {
+	case err := <-done:
+		if !errors.Is(err, firstErr) {
+			t.Fatalf("done error = %v, want %v", err, firstErr)
+		}
+	default:
+		t.Fatal("expected first completion to be sent")
+	}
+}
+
 func TestTelegramSessionMgrNewFastProvider_ReturnsFreshProviderEachTime(t *testing.T) {
 	mgr := &telegramSessionMgr{
 		cfg: &config.Config{

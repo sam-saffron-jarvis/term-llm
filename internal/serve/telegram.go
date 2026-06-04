@@ -1140,6 +1140,12 @@ func (m *telegramSessionMgr) handleMessage(ctx context.Context, bot *tgbotapi.Bo
 	}
 }
 
+func sendStreamDone(done chan<- error, once *sync.Once, err error) {
+	once.Do(func() {
+		done <- err
+	})
+}
+
 // streamReply streams an LLM response back to the chat via live message editing.
 func (m *telegramSessionMgr) streamReply(ctx context.Context, bot botSender, sess *telegramSession, chatID int64, userMsg llm.Message) error {
 	// We acquire the session lock for the entire streaming call so that
@@ -1355,6 +1361,7 @@ func (m *telegramSessionMgr) streamReply(ctx context.Context, bot botSender, ses
 		otherEvents      int
 		otherTypes       = make(map[llm.EventType]int)
 		streamDone       = make(chan error, 1)
+		streamDoneOnce   sync.Once
 		lastEventPing    = make(chan struct{}, 1)
 		watchdogTimedOut atomic.Bool
 	)
@@ -1380,10 +1387,7 @@ func (m *telegramSessionMgr) streamReply(ctx context.Context, bot botSender, ses
 				t.Reset(watchdogTimeout)
 			case <-t.C:
 				watchdogTimedOut.Store(true)
-				select {
-				case streamDone <- fmt.Errorf("stream timed out: no events for %s", watchdogTimeout):
-				default:
-				}
+				sendStreamDone(streamDone, &streamDoneOnce, fmt.Errorf("stream timed out: no events for %s", watchdogTimeout))
 				streamCancel()
 				return
 			case <-streamCtx.Done():
@@ -1397,11 +1401,11 @@ func (m *telegramSessionMgr) streamReply(ctx context.Context, bot botSender, ses
 		for {
 			ev, recvErr := stream.Recv()
 			if recvErr == io.EOF {
-				streamDone <- nil
+				sendStreamDone(streamDone, &streamDoneOnce, nil)
 				return
 			}
 			if recvErr != nil {
-				streamDone <- recvErr
+				sendStreamDone(streamDone, &streamDoneOnce, recvErr)
 				return
 			}
 			select {
@@ -1478,7 +1482,7 @@ func (m *telegramSessionMgr) streamReply(ctx context.Context, bot botSender, ses
 				errorEvents++
 				textMu.Unlock()
 				if ev.Err != nil {
-					streamDone <- ev.Err
+					sendStreamDone(streamDone, &streamDoneOnce, ev.Err)
 					return
 				}
 			default:
