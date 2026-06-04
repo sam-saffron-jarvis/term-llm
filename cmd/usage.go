@@ -3,40 +3,56 @@ package cmd
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"os"
+	"sort"
 	"strings"
 	"text/tabwriter"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	githubcopilot "github.com/samsaffron/term-llm/internal/copilot"
 	"github.com/samsaffron/term-llm/internal/usage"
 	"github.com/spf13/cobra"
 )
 
 var (
-	usageProvider        string
-	usageSince           string
-	usageUntil           string
-	usageJSON            bool
-	usageBreakdown       bool
-	usageIncludeExternal bool
+	usageProvider          string
+	usageSince             string
+	usageUntil             string
+	usageJSON              bool
+	usageBreakdown         bool
+	usageIncludeExternal   bool
+	usageCopilotScope      string
+	usageCopilotEntity     string
+	usageCopilotYear       int
+	usageCopilotMonth      int
+	usageCopilotDay        int
+	usageCopilotModel      string
+	usageCopilotProduct    string
+	usageCopilotUser       string
+	usageCopilotOrg        string
+	usageCopilotEnterprise string
+	usageCopilotCostCenter string
 )
 
 var usageCmd = &cobra.Command{
 	Use:   "usage",
-	Short: "Show token usage and costs from local CLI tools",
+	Short: "Show usage and costs from local CLI tools and GitHub Copilot",
 	Long: `Show token usage and costs from Claude Code, Codex CLI, Gemini CLI, and term-llm.
 
 This command reads local usage data stored by these CLI tools and displays
 aggregated statistics including token counts and estimated costs.
 
-For GitHub Copilot, it fetches quota information from the GitHub API.
+For GitHub Copilot, it fetches AI Credit usage from GitHub's latest
+billing usage API. Set GITHUB_TOKEN or GH_TOKEN with billing permissions.
 
 Examples:
   term-llm usage                              # show last 7 days
   term-llm usage --provider claude-code       # filter to Claude Code only
-  term-llm usage --provider copilot           # show GitHub Copilot quota
+  term-llm usage --provider copilot           # show personal GitHub Copilot AI Credit usage
+  term-llm usage --provider copilot --copilot-scope org --copilot-entity my-org
   term-llm usage --provider term-llm          # show term-llm direct API usage
   term-llm usage --since 20250101             # from Jan 1, 2025
   term-llm usage --json                       # output as JSON
@@ -52,15 +68,32 @@ func init() {
 	usageCmd.Flags().BoolVar(&usageJSON, "json", false, "Output as JSON")
 	usageCmd.Flags().BoolVar(&usageBreakdown, "breakdown", false, "Show per-model breakdown")
 	usageCmd.Flags().BoolVar(&usageIncludeExternal, "include-external", false, "Include externally-tracked term-llm usage (claude-bin, codex, gemini-cli calls)")
+	usageCmd.Flags().StringVar(&usageCopilotScope, "copilot-scope", "user", "Copilot billing scope (user, org, enterprise)")
+	usageCmd.Flags().StringVar(&usageCopilotEntity, "copilot-entity", "", "Copilot billing entity (username, organization, or enterprise slug; defaults to authenticated user for user scope)")
+	usageCmd.Flags().IntVar(&usageCopilotYear, "year", 0, "Copilot usage year (YYYY; defaults to GitHub API current year)")
+	usageCmd.Flags().IntVar(&usageCopilotMonth, "month", 0, "Copilot usage month (1-12; defaults to GitHub API current month)")
+	usageCmd.Flags().IntVar(&usageCopilotDay, "day", 0, "Copilot usage day (1-31)")
+	usageCmd.Flags().StringVar(&usageCopilotModel, "copilot-model", "", "Filter Copilot AI Credit usage by model")
+	usageCmd.Flags().StringVar(&usageCopilotProduct, "copilot-product", "", "Filter Copilot AI Credit usage by product")
+	usageCmd.Flags().StringVar(&usageCopilotUser, "copilot-user", "", "GitHub username for user scope, or user filter for organization/enterprise scope")
+	usageCmd.Flags().StringVar(&usageCopilotOrg, "copilot-org", "", "Organization for org scope, or organization filter for enterprise scope")
+	usageCmd.Flags().StringVar(&usageCopilotEnterprise, "copilot-enterprise", "", "Enterprise slug for enterprise scope")
+	usageCmd.Flags().StringVar(&usageCopilotCostCenter, "copilot-cost-center", "", "Filter enterprise Copilot usage by cost center ID")
 	if err := usageCmd.RegisterFlagCompletionFunc("provider", UsageProviderFlagCompletion); err != nil {
 		panic("failed to register provider completion: " + err.Error())
+	}
+	if err := usageCmd.RegisterFlagCompletionFunc("copilot-scope", CopilotScopeFlagCompletion); err != nil {
+		panic("failed to register copilot scope completion: " + err.Error())
 	}
 }
 
 func runUsage(cmd *cobra.Command, args []string) error {
-	// Special handling for copilot - fetch from GitHub API
+	// Special handling for copilot - fetch latest AI Credit usage from GitHub's billing API
 	if usageProvider == "copilot" {
 		return runCopilotUsage()
+	}
+	if copilotUsageFlagsChanged(cmd) {
+		return fmt.Errorf("Copilot usage flags require --provider copilot")
 	}
 
 	// Load all usage data
@@ -145,6 +178,30 @@ func runUsage(cmd *cobra.Command, args []string) error {
 	}
 
 	return outputTable(daily, totals, since, until)
+}
+
+func copilotUsageFlagsChanged(cmd *cobra.Command) bool {
+	if cmd == nil {
+		return false
+	}
+	for _, name := range []string{
+		"copilot-scope",
+		"copilot-entity",
+		"year",
+		"month",
+		"day",
+		"copilot-model",
+		"copilot-product",
+		"copilot-user",
+		"copilot-org",
+		"copilot-enterprise",
+		"copilot-cost-center",
+	} {
+		if flag := cmd.Flags().Lookup(name); flag != nil && flag.Changed {
+			return true
+		}
+	}
+	return false
 }
 
 // jsonOutput represents the JSON output format
@@ -405,85 +462,205 @@ func formatProviderName(provider string) string {
 	}
 }
 
-// runCopilotUsage fetches and displays GitHub Copilot usage from the API
+// runCopilotUsage fetches and displays latest GitHub Copilot AI Credit usage.
 func runCopilotUsage() error {
-	// Create provider (will prompt for auth if needed)
-	provider, err := llm.NewCopilotProvider("")
+	if usageSince != "" || usageUntil != "" {
+		return fmt.Errorf("Copilot AI Credit usage uses --year, --month, and --day filters instead of --since/--until")
+	}
+
+	scope, err := parseCopilotUsageScope(usageCopilotScope)
 	if err != nil {
-		return fmt.Errorf("copilot provider: %w", err)
+		return err
+	}
+	filters, err := copilotUsageFiltersFromFlags(scope)
+	if err != nil {
+		return err
+	}
+	entity := copilotUsageEntityFromFlags(scope)
+
+	client, err := githubcopilot.NewUsageClientFromEnv()
+	if err != nil {
+		if errors.Is(err, githubcopilot.ErrNoGitHubToken) {
+			return fmt.Errorf("GitHub Copilot AI Credit usage requires a GitHub token with billing permissions. " +
+				"Set GITHUB_TOKEN or GH_TOKEN and try again. Personal usage requires user Plan: read; " +
+				"organization usage requires organization Administration: read; enterprise usage requires enterprise admin or billing manager access")
+		}
+		return err
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	usageData, err := provider.GetUsage(ctx)
+	report, err := client.GetAICreditUsage(ctx, scope, entity, filters)
 	if err != nil {
-		return fmt.Errorf("failed to fetch usage: %w", err)
+		return fmt.Errorf("failed to fetch Copilot AI Credit usage: %w", err)
 	}
 
 	if usageJSON {
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
-		return enc.Encode(usageData)
+		return enc.Encode(report)
 	}
 
-	// Pretty print
-	fmt.Printf("GitHub Copilot Usage (%s plan)\n", usageData.Plan)
-	fmt.Println(strings.Repeat("─", 50))
+	return writeCopilotUsageText(os.Stdout, report)
+}
 
-	// Premium requests (main quota)
-	if q := usageData.PremiumChat; q != nil {
-		fmt.Println("\nPremium Requests:")
-		if q.Unlimited {
-			fmt.Println("  Unlimited")
-		} else {
-			printQuotaBar(q)
-		}
+func parseCopilotUsageScope(raw string) (githubcopilot.Scope, error) {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "", "user", "personal":
+		return githubcopilot.ScopeUser, nil
+	case "org", "organization":
+		return githubcopilot.ScopeOrganization, nil
+	case "enterprise":
+		return githubcopilot.ScopeEnterprise, nil
+	default:
+		return "", fmt.Errorf("unknown Copilot usage scope %q (use user, org, or enterprise)", raw)
+	}
+}
+
+func copilotUsageEntityFromFlags(scope githubcopilot.Scope) string {
+	if strings.TrimSpace(usageCopilotEntity) != "" {
+		return usageCopilotEntity
+	}
+	switch scope {
+	case githubcopilot.ScopeUser:
+		return usageCopilotUser
+	case githubcopilot.ScopeOrganization:
+		return usageCopilotOrg
+	case githubcopilot.ScopeEnterprise:
+		return usageCopilotEnterprise
+	default:
+		return ""
+	}
+}
+
+func copilotUsageFiltersFromFlags(scope githubcopilot.Scope) (githubcopilot.UsageFilters, error) {
+	if usageCopilotYear < 0 {
+		return githubcopilot.UsageFilters{}, fmt.Errorf("invalid --year %d", usageCopilotYear)
+	}
+	if usageCopilotMonth < 0 || usageCopilotMonth > 12 {
+		return githubcopilot.UsageFilters{}, fmt.Errorf("invalid --month %d (expected 1-12)", usageCopilotMonth)
+	}
+	if usageCopilotDay < 0 || usageCopilotDay > 31 {
+		return githubcopilot.UsageFilters{}, fmt.Errorf("invalid --day %d (expected 1-31)", usageCopilotDay)
+	}
+	filterUser := usageCopilotUser
+	filterOrg := usageCopilotOrg
+	if scope == githubcopilot.ScopeUser {
+		filterUser = ""
+	}
+	if scope == githubcopilot.ScopeOrganization {
+		filterOrg = ""
+	}
+	return githubcopilot.UsageFilters{
+		Year:         usageCopilotYear,
+		Month:        usageCopilotMonth,
+		Day:          usageCopilotDay,
+		User:         filterUser,
+		Organization: filterOrg,
+		Model:        usageCopilotModel,
+		Product:      usageCopilotProduct,
+		CostCenterID: usageCopilotCostCenter,
+	}, nil
+}
+
+func writeCopilotUsageText(w io.Writer, report *githubcopilot.UsageReport) error {
+	if report == nil {
+		return fmt.Errorf("nil Copilot usage report")
 	}
 
-	// Chat quota (if separate)
-	if q := usageData.Chat; q != nil && usageData.PremiumChat == nil {
-		fmt.Println("\nChat:")
-		if q.Unlimited {
-			fmt.Println("  Unlimited")
-		} else {
-			printQuotaBar(q)
-		}
+	fmt.Fprintln(w, "GitHub Copilot Usage - AI Credits")
+	fmt.Fprintf(w, "Scope: %s/%s\n", report.Scope, report.Entity)
+	fmt.Fprintf(w, "Period: %s\n", formatCopilotPeriod(report.TimePeriod))
+	fmt.Fprintln(w, "Source: GitHub Billing API")
+
+	for _, warning := range report.Warnings {
+		fmt.Fprintf(w, "Warning: %s\n", warning)
 	}
 
-	// Completions quota (if present)
-	if q := usageData.Completions; q != nil {
-		fmt.Println("\nCompletions:")
-		if q.Unlimited {
-			fmt.Println("  Unlimited")
-		} else {
-			printQuotaBar(q)
-		}
+	if len(report.Items) == 0 {
+		fmt.Fprintln(w, "\nNo AI Credit usage found for this period.")
+		return nil
 	}
 
-	// Reset date
-	if !usageData.ResetDate.IsZero() {
-		now := time.Now()
-		daysUntilReset := max(int(usageData.ResetDate.Sub(now).Hours()/24), 0)
-		fmt.Printf("\nResets: %s (%d days)\n", usageData.ResetDate.Format("Jan 2, 2006"), daysUntilReset)
-	}
+	fmt.Fprintln(w, "\nTotal")
+	fmt.Fprintf(w, "  Net credits:       %s\n", formatCopilotCredits(report.Totals.NetCredits))
+	fmt.Fprintf(w, "  Gross credits:     %s\n", formatCopilotCredits(report.Totals.GrossCredits))
+	fmt.Fprintf(w, "  Net cost:          %s\n", formatCost(report.Totals.NetAmountUSD))
+	fmt.Fprintf(w, "  Discounts:         %s\n", formatCost(report.Totals.DiscountAmountUSD))
+
+	writeCopilotBreakdown(w, "By model", aggregateCopilotUsage(report.Items, func(item githubcopilot.UsageItem) string {
+		return item.Model
+	}))
+	writeCopilotBreakdown(w, "By product", aggregateCopilotUsage(report.Items, func(item githubcopilot.UsageItem) string {
+		return item.Product
+	}))
 
 	return nil
 }
 
-// printQuotaBar prints a visual progress bar for quota usage
-func printQuotaBar(q *llm.CopilotQuota) {
-	used := q.Used
-	total := q.Entitlement
-	remaining := q.Remaining
-	pctUsed := 100.0 - q.PercentRemaining
+func formatCopilotPeriod(period githubcopilot.TimePeriod) string {
+	if period.Year == 0 {
+		return "current billing period"
+	}
+	if period.Month == 0 {
+		return fmt.Sprintf("%04d", period.Year)
+	}
+	monthName := time.Month(period.Month).String()
+	if period.Day == 0 {
+		return fmt.Sprintf("%s %04d", monthName, period.Year)
+	}
+	return fmt.Sprintf("%s %d, %04d", monthName, period.Day, period.Year)
+}
 
-	// Progress bar
-	barWidth := 30
-	filledWidth := min(int(float64(barWidth)*pctUsed/100), barWidth)
+func formatCopilotCredits(credits float64) string {
+	return fmt.Sprintf("%.2f", credits)
+}
 
-	bar := strings.Repeat("█", filledWidth) + strings.Repeat("░", barWidth-filledWidth)
+type copilotUsageBreakdown struct {
+	Name    string
+	Credits float64
+	Cost    float64
+}
 
-	fmt.Printf("  %s  %.1f%%\n", bar, pctUsed)
-	fmt.Printf("  Used: %d / %d  (Remaining: %d)\n", used, total, remaining)
+func aggregateCopilotUsage(items []githubcopilot.UsageItem, keyFunc func(githubcopilot.UsageItem) string) []copilotUsageBreakdown {
+	byName := make(map[string]*copilotUsageBreakdown)
+	for _, item := range items {
+		name := strings.TrimSpace(keyFunc(item))
+		if name == "" {
+			name = "(unknown)"
+		}
+		entry := byName[name]
+		if entry == nil {
+			entry = &copilotUsageBreakdown{Name: name}
+			byName[name] = entry
+		}
+		entry.Credits += item.NetQuantity
+		entry.Cost += item.NetAmountUSD
+	}
+
+	breakdown := make([]copilotUsageBreakdown, 0, len(byName))
+	for _, entry := range byName {
+		breakdown = append(breakdown, *entry)
+	}
+	sort.Slice(breakdown, func(i, j int) bool {
+		if breakdown[i].Credits == breakdown[j].Credits {
+			return breakdown[i].Name < breakdown[j].Name
+		}
+		return breakdown[i].Credits > breakdown[j].Credits
+	})
+	return breakdown
+}
+
+func writeCopilotBreakdown(w io.Writer, title string, breakdown []copilotUsageBreakdown) {
+	if len(breakdown) == 0 {
+		return
+	}
+	fmt.Fprintf(w, "\n%s\n", title)
+	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(tw, "  NAME\tCREDITS\tCOST")
+	for _, entry := range breakdown {
+		fmt.Fprintf(tw, "  %s\t%s\t%s\n", entry.Name, formatCopilotCredits(entry.Credits), formatCost(entry.Cost))
+	}
+	_ = tw.Flush()
 }

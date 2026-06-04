@@ -411,8 +411,12 @@ func (e *Engine) ConfigureContextManagement(provider Provider, providerName, mod
 	limit := 0
 	var compactionConfig *CompactionConfig
 
-	if !provider.Capabilities().ManagesOwnContext {
+	if provider != nil && !provider.Capabilities().ManagesOwnContext {
 		limit = InputLimitForProviderModel(providerName, modelName)
+		if limit == 0 {
+			refreshDynamicModelLimitsForContext(provider, providerName, modelName)
+			limit = InputLimitForProviderModel(providerName, modelName)
+		}
 		if limit > 0 && autoCompact {
 			cfg := DefaultCompactionConfig()
 			compactionConfig = &cfg
@@ -423,6 +427,27 @@ func (e *Engine) ConfigureContextManagement(provider Provider, providerName, mod
 	e.inputLimit = limit
 	e.compactionConfig = compactionConfig
 	e.callbackMu.Unlock()
+}
+
+func refreshDynamicModelLimitsForContext(provider Provider, providerName, modelName string) {
+	providerType := resolveProviderType(providerName)
+	if providerType != "copilot" || strings.TrimSpace(modelName) == "" {
+		return
+	}
+	lister, ok := provider.(interface {
+		ListModels(context.Context) ([]ModelInfo, error)
+	})
+	if !ok {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	models, err := lister.ListModels(ctx)
+	if err != nil {
+		slog.Debug("failed to refresh Copilot model metadata for context limits", "provider", providerName, "model", modelName, "error", err)
+		return
+	}
+	RefreshCopilotCacheSync(models)
 }
 
 // InputLimit returns the configured input token limit (0 if unknown).

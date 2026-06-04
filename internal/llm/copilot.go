@@ -19,14 +19,11 @@ import (
 	"golang.org/x/term"
 )
 
-const copilotDefaultModel = "gpt-4.1" // Free tier model
+const copilotDefaultModel = "gpt-4.1" // Broadly available Copilot model
 
 // copilotDefaultAPIURL is the default GitHub Copilot API base URL (for individual plans)
 // Business/Enterprise accounts use api.business.githubcopilot.com instead
 const copilotDefaultAPIURL = "https://api.githubcopilot.com"
-
-// copilotUsageURL is the GitHub API endpoint for Copilot usage data
-const copilotUsageURL = "https://api.github.com/copilot_internal/user"
 
 // copilotTokenURL is the endpoint to exchange GitHub OAuth token for Copilot session token
 const copilotTokenURL = "https://api.github.com/copilot_internal/v2/token"
@@ -538,12 +535,94 @@ type copilotModelsResponse struct {
 }
 
 type copilotModel struct {
-	ID                  string `json:"id"`
-	Name                string `json:"name"`
-	Version             string `json:"version"`
-	Vendor              string `json:"vendor"`
-	Preview             bool   `json:"preview"`
-	ModelPickerCategory string `json:"model_picker_category"` // "lightweight", "versatile", etc.
+	ID                  string              `json:"id"`
+	Name                string              `json:"name"`
+	Version             string              `json:"version"`
+	Vendor              string              `json:"vendor"`
+	Preview             bool                `json:"preview"`
+	ModelPickerCategory string              `json:"model_picker_category"` // "lightweight", "versatile", etc.
+	Capabilities        copilotCapabilities `json:"capabilities"`
+	// Limit fields are intentionally accepted in several shapes. Current Copilot
+	// responses use capabilities.limits, but accepting flat/top-level variants
+	// keeps the parser resilient if GitHub moves fields again.
+	Limits           copilotModelLimits `json:"limits"`
+	MaxPromptTokens  int                `json:"max_prompt_tokens"`
+	MaxInputTokens   int                `json:"max_input_tokens"`
+	InputTokenLimit  int                `json:"input_token_limit"`
+	ContextWindow    int                `json:"context_window"`
+	MaxContextWindow int                `json:"max_context_window_tokens"`
+	MaxOutputTokens  int                `json:"max_output_tokens"`
+}
+
+type copilotCapabilities struct {
+	Limits copilotModelLimits `json:"limits"`
+}
+
+type copilotModelLimits struct {
+	MaxPromptTokens  int `json:"max_prompt_tokens"`
+	MaxInputTokens   int `json:"max_input_tokens"`
+	InputTokenLimit  int `json:"input_token_limit"`
+	ContextWindow    int `json:"context_window"`
+	MaxContextWindow int `json:"max_context_window_tokens"`
+	MaxOutputTokens  int `json:"max_output_tokens"`
+}
+
+const copilotPracticalOutputReserve = 20_000
+
+func (m copilotModel) inputLimit() int {
+	// Prefer an explicit prompt/input budget from Copilot. That is the source of
+	// truth and avoids reverse-engineering context math.
+	if input := firstNonZero(
+		m.MaxPromptTokens,
+		m.MaxInputTokens,
+		m.InputTokenLimit,
+		m.Limits.MaxPromptTokens,
+		m.Limits.MaxInputTokens,
+		m.Limits.InputTokenLimit,
+		m.Capabilities.Limits.MaxPromptTokens,
+		m.Capabilities.Limits.MaxInputTokens,
+		m.Capabilities.Limits.InputTokenLimit,
+	); input > 0 {
+		return input
+	}
+
+	// Some Copilot responses expose only context-window and output metadata.
+	// term-llm almost never requests giant outputs from Copilot, so reserve at
+	// most 20K tokens instead of subtracting a huge theoretical max output.
+	contextWindow := firstNonZero(
+		m.MaxContextWindow,
+		m.ContextWindow,
+		m.Limits.MaxContextWindow,
+		m.Limits.ContextWindow,
+		m.Capabilities.Limits.MaxContextWindow,
+		m.Capabilities.Limits.ContextWindow,
+	)
+	if contextWindow <= 0 {
+		return 0
+	}
+	maxOutput := firstNonZero(
+		m.MaxOutputTokens,
+		m.Limits.MaxOutputTokens,
+		m.Capabilities.Limits.MaxOutputTokens,
+	)
+	return copilotInputLimit(contextWindow, maxOutput)
+}
+
+func copilotInputLimit(contextWindow, maxOutput int) int {
+	if contextWindow <= 0 {
+		return 0
+	}
+	reserve := maxOutput
+	if reserve <= 0 || reserve > copilotPracticalOutputReserve {
+		reserve = copilotPracticalOutputReserve
+	}
+	if reserve <= 0 {
+		return contextWindow
+	}
+	if reserve >= contextWindow {
+		return 0
+	}
+	return contextWindow - reserve
 }
 
 // ListModels returns available models from the GitHub Copilot API
@@ -595,9 +674,10 @@ func (p *CopilotProvider) ListModels(ctx context.Context) ([]ModelInfo, error) {
 			ID:          m.ID,
 			DisplayName: displayName,
 			OwnedBy:     m.Vendor,
-			InputLimit:  InputLimitForProviderModel("copilot", m.ID),
+			InputLimit:  m.inputLimit(),
 		})
 	}
+	RefreshCopilotCacheSync(models)
 
 	return models, nil
 }
@@ -707,129 +787,4 @@ func (p *CopilotProvider) fetchCopilotTokenInfo(ctx context.Context) (*copilotSe
 	}
 
 	return &tokenResp, nil
-}
-
-// CopilotUsage represents the usage data from GitHub Copilot
-type CopilotUsage struct {
-	Plan        string        `json:"plan"`
-	ResetDate   time.Time     `json:"reset_date"`
-	PremiumChat *CopilotQuota `json:"premium_chat,omitempty"`
-	Chat        *CopilotQuota `json:"chat,omitempty"`
-	Completions *CopilotQuota `json:"completions,omitempty"`
-}
-
-// CopilotQuota represents quota information for a specific feature
-type CopilotQuota struct {
-	Entitlement      int     `json:"entitlement"`
-	Used             int     `json:"used"`
-	Remaining        int     `json:"remaining"`
-	PercentRemaining float64 `json:"percent_remaining"`
-	Unlimited        bool    `json:"unlimited"`
-}
-
-// copilotUsageResponse represents the raw API response
-type copilotUsageResponse struct {
-	CopilotPlan    string `json:"copilot_plan"`
-	QuotaResetDate string `json:"quota_reset_date"`
-	QuotaSnapshots struct {
-		PremiumInteractions *struct {
-			Entitlement      int     `json:"entitlement"`
-			Remaining        int     `json:"remaining"`
-			PercentRemaining float64 `json:"percent_remaining"`
-			Unlimited        bool    `json:"unlimited"`
-		} `json:"premium_interactions"`
-		Chat *struct {
-			Entitlement      int     `json:"entitlement"`
-			Remaining        int     `json:"remaining"`
-			PercentRemaining float64 `json:"percent_remaining"`
-			Unlimited        bool    `json:"unlimited"`
-		} `json:"chat"`
-		Completions *struct {
-			Entitlement      int     `json:"entitlement"`
-			Remaining        int     `json:"remaining"`
-			PercentRemaining float64 `json:"percent_remaining"`
-			Unlimited        bool    `json:"unlimited"`
-		} `json:"completions"`
-	} `json:"quota_snapshots"`
-}
-
-// GetUsage fetches the current Copilot usage and quota information.
-// This uses GitHub's internal API which requires the VS Code OAuth client ID.
-func (p *CopilotProvider) GetUsage(ctx context.Context) (*CopilotUsage, error) {
-	httpReq, err := http.NewRequestWithContext(ctx, "GET", copilotUsageURL, nil)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
-	}
-
-	// Set required GitHub API headers (using OAuth token)
-	p.setGitHubAPIHeaders(httpReq)
-
-	resp, err := copilotHTTPClient.Do(httpReq)
-	if err != nil {
-		return nil, fmt.Errorf("Copilot usage request failed: %w", err)
-	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read response: %w", err)
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		if resp.StatusCode == http.StatusNotFound {
-			return nil, fmt.Errorf("Copilot usage API not available.\n" +
-				"This may happen if you're using a different OAuth app.\n" +
-				"To check your usage, visit: https://github.com/settings/copilot")
-		}
-		if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
-			return nil, fmt.Errorf("Copilot authentication failed: token may be invalid or expired")
-		}
-		return nil, fmt.Errorf("Copilot API error (status %d): %s", resp.StatusCode, string(body))
-	}
-
-	var rawResp copilotUsageResponse
-	if err := json.Unmarshal(body, &rawResp); err != nil {
-		return nil, fmt.Errorf("failed to decode usage response: %w", err)
-	}
-
-	// Parse reset date
-	resetDate, _ := time.Parse(time.RFC3339, rawResp.QuotaResetDate)
-
-	usage := &CopilotUsage{
-		Plan:      rawResp.CopilotPlan,
-		ResetDate: resetDate,
-	}
-
-	// Map premium_interactions to PremiumChat
-	if pi := rawResp.QuotaSnapshots.PremiumInteractions; pi != nil {
-		usage.PremiumChat = &CopilotQuota{
-			Entitlement:      pi.Entitlement,
-			Used:             pi.Entitlement - pi.Remaining,
-			Remaining:        pi.Remaining,
-			PercentRemaining: pi.PercentRemaining,
-			Unlimited:        pi.Unlimited,
-		}
-	}
-
-	if c := rawResp.QuotaSnapshots.Chat; c != nil {
-		usage.Chat = &CopilotQuota{
-			Entitlement:      c.Entitlement,
-			Used:             c.Entitlement - c.Remaining,
-			Remaining:        c.Remaining,
-			PercentRemaining: c.PercentRemaining,
-			Unlimited:        c.Unlimited,
-		}
-	}
-
-	if c := rawResp.QuotaSnapshots.Completions; c != nil {
-		usage.Completions = &CopilotQuota{
-			Entitlement:      c.Entitlement,
-			Used:             c.Entitlement - c.Remaining,
-			Remaining:        c.Remaining,
-			PercentRemaining: c.PercentRemaining,
-			Unlimited:        c.Unlimited,
-		}
-	}
-
-	return usage, nil
 }

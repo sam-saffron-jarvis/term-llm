@@ -290,17 +290,29 @@ func InputLimitForModel(model string) int {
 }
 
 // InputLimitForProviderModel returns the effective input token limit for a model
-// accessed through a specific provider. Providers like GitHub Copilot impose
-// their own limits that differ from the model's canonical input limit.
+// accessed through a specific provider. Some providers expose/reroute models
+// with limits that differ from the model's canonical direct-API limit.
 // The providerName can be either a provider type (e.g., "copilot") or a
 // custom provider name — it is resolved to the underlying type automatically.
-// Falls back to canonical numbers if no provider-specific data exists.
+// Most providers fall back to canonical numbers when provider-specific data is
+// unavailable; dynamic providers such as Copilot and Venice avoid that fallback
+// because canonical model-prefix tables can be wrong for their routed models.
 func InputLimitForProviderModel(providerName, model string) int {
 	model = strings.ToLower(model)
 
 	// Resolve provider name to type (e.g., "my-copilot" -> "copilot",
 	// or "acme" -> "venice" via registered aliases).
 	providerType := resolveProviderType(providerName)
+
+	// Copilot model metadata is account/provider-specific and fetched from the
+	// live /models endpoint. Do not fall back to canonical OpenAI/Gemini/Claude
+	// prefix tables here: those numbers can be wrong for Copilot's routed models.
+	if providerType == string(config.ProviderTypeCopilot) {
+		if result := copilotCachedInputLimit(model); result > 0 {
+			return result
+		}
+		return configInputLimitForProvider(providerName, model)
+	}
 
 	// 1. Explicit provider-scoped limits from ProviderModels
 	if v, ok := explicitProviderInput[configKey(providerType, model)]; ok {
@@ -322,7 +334,7 @@ func InputLimitForProviderModel(providerName, model string) int {
 		}
 	}
 
-	// 2. Provider-specific overrides (e.g., Copilot)
+	// 2. Provider-specific overrides (e.g., Zen)
 	if table, ok := providerInputOverrides[providerType]; ok {
 		if result := lookupPrefix(model, table); result > 0 {
 			return result
@@ -540,30 +552,8 @@ var inputLimitTable = []limitEntry{
 
 // providerInputOverrides contains provider-specific effective input limits
 // that differ from the model's canonical limits.
-// Values are context - output (effective input), from models.dev/api.json.
+// Values are effective input budgets for compaction/model-list display.
 var providerInputOverrides = map[string][]limitEntry{
-	// GitHub Copilot imposes its own limits (from models.dev github-copilot section)
-	"copilot": {
-		{"claude-haiku-4.5", 96_000},  // 128K - 32K
-		{"claude-opus-4.6", 64_000},   // 128K - 64K
-		{"claude-opus-4.5", 96_000},   // 128K - 32K
-		{"claude-sonnet-4.5", 96_000}, // 128K - 32K
-		{"claude-sonnet-4", 112_000},  // 128K - 16K
-		{"gemini-3-pro", 64_000},      // 128K - 64K
-		{"gemini-3-flash", 64_000},    // 128K - 64K
-		{"gemini-2.5-pro", 64_000},    // 128K - 64K
-		{"gpt-5.4", 922_000},          // 1,050,000 ctx - 128,000 out (same as canonical)
-		{"gpt-5.3-codex", 272_000},    // 400K ctx, input=272K
-		{"gpt-5.2-codex", 144_000},    // 272K - 128K
-		{"gpt-5.2", 64_000},           // 128K - 64K
-		{"gpt-5.1-codex", 64_000},     // 128K ctx but out=128K; conservative
-		{"gpt-5.1", 64_000},           // 128K - 64K
-		{"gpt-5-mini", 64_000},        // 128K - 64K
-		{"gpt-5", 64_000},             // 128K - 128K output is suspicious; use 64K
-		{"gpt-4.1", 48_000},           // 64K - 16K
-		{"gpt-4o", 48_000},            // 64K - 16K
-		{"grok-code", 64_000},         // 128K - 64K
-	},
 	// Zen free tier imposes lower limits than canonical models
 	"zen": {
 		{"gpt-5-nano", 96_000}, // 128K context on Zen (not 400K like direct OpenAI)

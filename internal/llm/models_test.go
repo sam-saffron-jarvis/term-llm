@@ -47,6 +47,34 @@ func TestProviderModelsIncludeNearAICloudDefaults(t *testing.T) {
 	}
 }
 
+func TestCopilotProviderModelsAreDynamicCacheOnly(t *testing.T) {
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+
+	if _, ok := ProviderModels["copilot"]; ok {
+		t.Fatal("ProviderModels should not contain a hardcoded Copilot model list")
+	}
+	if ids := ProviderModelIDs("copilot"); len(ids) != 0 {
+		t.Fatalf("ProviderModelIDs(copilot) before cache = %v, want empty", ids)
+	}
+
+	if got := InputLimitForProviderModel("copilot", "gpt-5.5"); got != 0 {
+		t.Fatalf("InputLimitForProviderModel(copilot, gpt-5.5) before cache = %d, want 0", got)
+	}
+
+	RefreshCopilotCacheSync([]ModelInfo{
+		{ID: "cached-copilot-a", InputLimit: 123_456},
+		{ID: "cached-copilot-b"},
+	})
+	ids := ProviderModelIDs("copilot")
+	want := []string{"cached-copilot-a", "cached-copilot-b"}
+	if !equalSlice(ids, want) {
+		t.Fatalf("ProviderModelIDs(copilot) = %v, want %v", ids, want)
+	}
+	if got := InputLimitForProviderModel("copilot", "cached-copilot-a"); got != 123_456 {
+		t.Fatalf("InputLimitForProviderModel(copilot, cached-copilot-a) = %d, want 123456", got)
+	}
+}
+
 func TestProviderModelIDs(t *testing.T) {
 	ids := ProviderModelIDs("anthropic")
 	if len(ids) == 0 {

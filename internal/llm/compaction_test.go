@@ -907,23 +907,46 @@ func TestInputLimitForModel(t *testing.T) {
 }
 
 func TestInputLimitForProviderModel(t *testing.T) {
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	RefreshCopilotCacheSync([]ModelInfo{
+		{ID: "gpt-5.5", InputLimit: 1_030_000},
+		{ID: "gpt-5.4", InputLimit: 1_030_000},
+		{ID: "gpt-5.4-mini", InputLimit: 380_000},
+		{ID: "gpt-5.3-codex", InputLimit: 380_000},
+		{ID: "gpt-5.2-codex", InputLimit: 252_000},
+		{ID: "gpt-5.2", InputLimit: 108_000},
+		{ID: "gpt-5.1-codex", InputLimit: 108_000},
+		{ID: "gpt-5.1", InputLimit: 108_000},
+		{ID: "gpt-5", InputLimit: 108_000},
+		{ID: "gemini-3-pro", InputLimit: 108_000},
+		{ID: "gpt-4.1", InputLimit: 48_000},
+		{ID: "gpt-4o", InputLimit: 48_000},
+	})
+
 	tests := []struct {
 		provider string
 		model    string
 		expected int
 	}{
-		// Copilot-specific effective input limits
-		{"copilot", "gpt-5.4", 922_000},       // copilot: same as canonical (1,050K - 128K)
-		{"copilot", "gpt-5.3-codex", 272_000}, // copilot: 400K ctx, input=272K
-		{"copilot", "gpt-5.2-codex", 144_000}, // copilot: 272K - 128K
-		{"copilot", "gpt-5.2", 64_000},        // copilot: 128K - 64K
-		{"copilot", "gpt-5.1-codex", 64_000},  // copilot: 128K ctx
-		{"copilot", "gpt-5.1", 64_000},        // copilot: 128K - 64K
-		{"copilot", "gpt-5", 64_000},          // copilot: 128K ctx
-		{"copilot", "gpt-4.1", 48_000},        // copilot: 64K - 16K
-		{"copilot", "gpt-4o", 48_000},         // copilot: 64K - 16K
-		// Copilot falls back to canonical for unknown models
-		{"copilot", "gpt-3.5-turbo", 12_000},
+		// Copilot-specific effective input limits come from the live model cache.
+		// The Copilot /models parser applies term-llm's practical 20K output
+		// reserve only when Copilot reports context+output but no explicit prompt
+		// limit.
+		{"copilot", "gpt-5.5", 1_030_000},
+		{"copilot", "gpt-5.5-medium", 1_030_000},
+		{"copilot", "gpt-5.4", 1_030_000},
+		{"copilot", "gpt-5.4-mini", 380_000},
+		{"copilot", "gpt-5.3-codex", 380_000},
+		{"copilot", "gpt-5.2-codex", 252_000},
+		{"copilot", "gpt-5.2", 108_000},
+		{"copilot", "gpt-5.1-codex", 108_000},
+		{"copilot", "gpt-5.1", 108_000},
+		{"copilot", "gpt-5", 108_000},
+		{"copilot", "gemini-3-pro", 108_000},
+		{"copilot", "gpt-4.1", 48_000},
+		{"copilot", "gpt-4o", 48_000},
+		// Copilot does not fall back to canonical limits; use live cache or config.
+		{"copilot", "gpt-3.5-turbo", 0},
 		// OpenAI direct uses canonical input limits
 		{"openai", "gpt-5.2-codex", 272_000},
 		{"openai", "gpt-5.4-mini", 272_000},

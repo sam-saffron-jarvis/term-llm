@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -102,5 +103,66 @@ func TestEnsureValidSessionRefreshesMissingExpiry(t *testing.T) {
 	}
 	if provider.sessionToken != "fresh-token" {
 		t.Fatalf("expected session token to be refreshed, got %q", provider.sessionToken)
+	}
+}
+
+func TestCopilotListModelsFetchesLiveModelsAndCachesThem(t *testing.T) {
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+
+	origClient := copilotHTTPClient
+	t.Cleanup(func() { copilotHTTPClient = origClient })
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/models" {
+			t.Fatalf("unexpected path %q", r.URL.Path)
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer session-token" {
+			t.Fatalf("Authorization header = %q, want Bearer session-token", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{
+			"data": [
+				{"id":"dynamic-copilot-model","name":"Dynamic Copilot Model","vendor":"github","capabilities":{"limits":{"max_prompt_tokens":123456,"max_context_window_tokens":200000,"max_output_tokens":64000}}},
+				{"id":"dynamic-preview-model","name":"Dynamic Preview","vendor":"openai","preview":true},
+				{"id":"gpt-5.5","name":"GPT 5.5","vendor":"openai","capabilities":{"limits":{"max_context_window_tokens":1050000,"max_output_tokens":128000}}}
+			]
+		}`)
+	}))
+	defer server.Close()
+	copilotHTTPClient = server.Client()
+
+	provider := &CopilotProvider{
+		creds:              &credentials.CopilotCredentials{AccessToken: "oauth-token"},
+		apiBaseURL:         server.URL,
+		sessionToken:       "session-token",
+		sessionTokenExpiry: time.Now().Add(time.Hour),
+	}
+
+	models, err := provider.ListModels(context.Background())
+	if err != nil {
+		t.Fatalf("ListModels: %v", err)
+	}
+	if len(models) != 3 {
+		t.Fatalf("models len = %d, want 3", len(models))
+	}
+	if models[0].ID != "dynamic-copilot-model" || models[0].DisplayName != "Dynamic Copilot Model" || models[0].OwnedBy != "github" {
+		t.Fatalf("first model not parsed as expected: %+v", models[0])
+	}
+	if models[0].InputLimit != 123_456 {
+		t.Fatalf("dynamic prompt token limit = %d, want 123456", models[0].InputLimit)
+	}
+	if models[1].DisplayName != "Dynamic Preview (preview)" {
+		t.Fatalf("preview display name = %q, want Dynamic Preview (preview)", models[1].DisplayName)
+	}
+	if models[2].ID != "gpt-5.5" || models[2].InputLimit != 1_030_000 {
+		t.Fatalf("gpt-5.5 list metadata = %+v, want 1,030,000 input limit", models[2])
+	}
+
+	ids := ProviderModelIDs("copilot")
+	if !containsModelID(ids, "dynamic-copilot-model") || !containsModelID(ids, "dynamic-preview-model") || !containsModelID(ids, "gpt-5.5") {
+		t.Fatalf("cached ProviderModelIDs(copilot) = %v, want fetched dynamic models", ids)
+	}
+	if got := InputLimitForProviderModel("copilot", "gpt-5.5"); got != 1_030_000 {
+		t.Fatalf("cached copilot gpt-5.5 input limit = %d, want 1030000", got)
 	}
 }

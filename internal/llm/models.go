@@ -18,9 +18,10 @@ type ModelEntry struct {
 	ReasoningEfforts []string // supported suffix-based reasoning-effort aliases (e.g. low, medium, high)
 }
 
-// ProviderModels contains the curated list of common models per LLM provider type.
-// This is the single source of truth for model names AND their token limits.
-// When adding a model, always include InputLimit/OutputLimit if known.
+// ProviderModels contains curated fallback model entries for providers without
+// dynamic discovery or for offline/default UIs. Dynamic providers such as Copilot
+// may intentionally omit entries and populate model IDs from their live cache.
+// When adding a curated model, include InputLimit/OutputLimit if known.
 var ProviderModels = map[string][]ModelEntry{
 	"anthropic": {
 		// Claude 4.x. Reasoning-effort metadata is provider-level below:
@@ -72,39 +73,6 @@ var ProviderModels = map[string][]ModelEntry{
 		{ID: "gpt-5-codex", InputLimit: 272_000, OutputLimit: 128_000},
 		{ID: "gpt-5-codex-mini", InputLimit: 272_000, OutputLimit: 128_000},
 		{ID: "gpt-5", InputLimit: 272_000, OutputLimit: 128_000},
-	},
-	"copilot": {
-		// Uses GitHub Copilot API with device code OAuth
-		// Run 'term-llm models --provider copilot' for live list
-		// Copilot imposes its own context limits (from models.dev github-copilot section)
-		// gpt-4.1 is free (no premium requests)
-		{ID: "gpt-4.1", InputLimit: 48_000, OutputLimit: 32_768},
-		// OpenAI Codex models
-		{ID: "gpt-5.3-codex", InputLimit: 272_000, OutputLimit: 128_000},
-		{ID: "gpt-5.2-codex", InputLimit: 144_000, OutputLimit: 128_000},
-		{ID: "gpt-5.1-codex", InputLimit: 64_000, OutputLimit: 128_000},
-		{ID: "gpt-5.1-codex-max", InputLimit: 64_000, OutputLimit: 128_000},
-		{ID: "gpt-5.1-codex-mini", InputLimit: 64_000, OutputLimit: 128_000},
-		// OpenAI standard
-		{ID: "gpt-5.4", InputLimit: 922_000, OutputLimit: 128_000},
-		{ID: "gpt-5.2", InputLimit: 64_000, OutputLimit: 128_000},
-		{ID: "gpt-5.1", InputLimit: 64_000, OutputLimit: 128_000},
-		{ID: "gpt-5-mini", InputLimit: 64_000, OutputLimit: 128_000},
-		// Anthropic Claude (Copilot uses dot naming: claude-opus-4.6)
-		{ID: "claude-opus-4.6-thinking", InputLimit: 64_000, OutputLimit: 64_000},
-		{ID: "claude-sonnet-4.6-thinking", InputLimit: 112_000, OutputLimit: 64_000},
-		{ID: "claude-opus-4.6", InputLimit: 64_000, OutputLimit: 64_000},
-		{ID: "claude-sonnet-4.6", InputLimit: 112_000, OutputLimit: 64_000},
-		{ID: "claude-opus-4.5", InputLimit: 96_000, OutputLimit: 64_000},
-		{ID: "claude-sonnet-4.5", InputLimit: 96_000, OutputLimit: 64_000},
-		{ID: "claude-sonnet-4", InputLimit: 112_000, OutputLimit: 64_000},
-		{ID: "claude-haiku-4.5", InputLimit: 96_000, OutputLimit: 64_000},
-		// Google Gemini
-		{ID: "gemini-3-pro", InputLimit: 64_000, OutputLimit: 65_536},
-		{ID: "gemini-3-flash", InputLimit: 64_000, OutputLimit: 65_536},
-		// Other
-		{ID: "grok-code-fast-1", InputLimit: 64_000, OutputLimit: 16_384},
-		{ID: "raptor-mini"},
 	},
 	"openrouter": {
 		{ID: "x-ai/grok-code-fast-1"},
@@ -274,10 +242,14 @@ func PricingForProviderModel(provider, model string) (inputPrice, outputPrice fl
 	return 0, 0, false
 }
 
-// ProviderModelIDs returns just the model ID strings for a provider.
-// This only checks the built-in ProviderModels map by exact key.
-// For callers that might receive a custom alias name, use ResolveProviderModelIDs.
+// ProviderModelIDs returns model IDs for a built-in provider.
+// Copilot is populated from the latest live model-list cache instead of a
+// hardcoded list. For callers that might receive a custom alias name, use
+// ResolveProviderModelIDs.
 func ProviderModelIDs(provider string) []string {
+	if resolveProviderType(provider) == "copilot" {
+		return GetCachedCopilotModels()
+	}
 	entries := ProviderModels[provider]
 	if entries == nil {
 		return nil
@@ -642,10 +614,11 @@ func DedupeEffortVariantsForProvider(provider string, ids []string) []string {
 
 // SortModelIDsByPopularity orders ids so the picker shows the models a user
 // is most likely to pick first, then everything else alpha-sorted for easy
-// scanning. The ranking signal comes from the curated ProviderModels list
-// (authored newest/best-first), with defaultModel pinned to the very top —
-// always included even if absent from ids, so the user's configured model
-// stays reachable when an upstream provider drops it from /v1/models.
+// scanning. The ranking signal comes from ResolveProviderModelIDs: curated
+// entries for static providers and cached live entries for dynamic providers
+// such as Copilot. defaultModel is pinned to the very top — always included
+// even if absent from ids, so the user's configured model stays reachable when
+// an upstream provider drops it from /v1/models.
 // IDs not in the curated list fall through to alpha-sort.
 //
 // Centralizing this here means the web picker, TUI picker, and CLI completion

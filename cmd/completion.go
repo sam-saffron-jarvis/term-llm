@@ -230,6 +230,18 @@ func UsageProviderFlagCompletion(cmd *cobra.Command, args []string, toComplete s
 	return completions, cobra.ShellCompDirectiveNoFileComp
 }
 
+// CopilotScopeFlagCompletion handles --copilot-scope completion for the usage command.
+func CopilotScopeFlagCompletion(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+	scopes := []string{"user", "org", "enterprise"}
+	var completions []string
+	for _, scope := range scopes {
+		if strings.HasPrefix(scope, toComplete) {
+			completions = append(completions, scope)
+		}
+	}
+	return completions, cobra.ShellCompDirectiveNoFileComp
+}
+
 // ExtractAgentFromArgs checks args for @agent-name syntax and returns the agent name
 // and filtered args. Returns empty string if no @agent found.
 func ExtractAgentFromArgs(args []string) (agentName string, filteredArgs []string) {

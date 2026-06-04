@@ -127,6 +127,9 @@ type fakeProvider struct {
 	capabilities    Capabilities
 	hasCapabilities bool
 	resetCalls      int
+	listModels      []ModelInfo
+	listModelsErr   error
+	listModelCalls  int
 }
 
 func (p *fakeProvider) Name() string {
@@ -157,6 +160,11 @@ func (p *fakeProvider) Stream(ctx context.Context, req Request) (Stream, error) 
 
 func (p *fakeProvider) ResetConversation() {
 	p.resetCalls++
+}
+
+func (p *fakeProvider) ListModels(ctx context.Context) ([]ModelInfo, error) {
+	p.listModelCalls++
+	return p.listModels, p.listModelsErr
 }
 
 type streamProvider struct {
@@ -2736,6 +2744,26 @@ func TestConfigureContextManagementClearsUnknownLimit(t *testing.T) {
 	}
 	if e.compactionConfig != nil {
 		t.Fatal("compactionConfig != nil after unknown model, want cleared")
+	}
+}
+
+func TestConfigureContextManagementRefreshesCopilotModelMetadata(t *testing.T) {
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+
+	provider := &fakeProvider{
+		listModels: []ModelInfo{{ID: "live-copilot-model", InputLimit: 1234}},
+	}
+	e := NewEngine(provider, nil)
+
+	e.ConfigureContextManagement(provider, "copilot", "live-copilot-model-high", true)
+	if provider.listModelCalls != 1 {
+		t.Fatalf("ListModels calls = %d, want 1", provider.listModelCalls)
+	}
+	if got := e.InputLimit(); got != 1234 {
+		t.Fatalf("InputLimit() after Copilot metadata refresh = %d, want 1234", got)
+	}
+	if e.compactionConfig == nil {
+		t.Fatal("compactionConfig = nil after Copilot metadata refresh, want enabled")
 	}
 }
 

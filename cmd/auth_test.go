@@ -205,6 +205,22 @@ func TestRunAuthStatusInvalidStoredFile(t *testing.T) {
 	}
 }
 
+func TestCopilotAuthStatusShowsBillingTokenEnv(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("GITHUB_TOKEN", "ghp_test")
+	t.Setenv("GH_TOKEN", "")
+
+	line, err := copilotAuthStatus()
+	if err != nil {
+		t.Fatalf("copilotAuthStatus: %v", err)
+	}
+	for _, want := range []string{"GitHub Copilot", "chat not signed in", "usage via GITHUB_TOKEN"} {
+		if !strings.Contains(line, want) {
+			t.Fatalf("status line missing %q: %s", want, line)
+		}
+	}
+}
+
 // guard against silent contract drift: each registered provider must
 // expose a non-nil hook for every responsibility.
 func TestAuthProvidersRegistryComplete(t *testing.T) {

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"charm.land/huh/v2"
+	githubcopilot "github.com/samsaffron/term-llm/internal/copilot"
 	"github.com/samsaffron/term-llm/internal/credentials"
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/spf13/cobra"
@@ -223,14 +224,15 @@ func chatgptAuthStatus() (string, error) {
 
 func copilotAuthStatus() (string, error) {
 	const label = "GitHub Copilot"
+	billingDetail := githubcopilot.BillingTokenStatus()
 	if !credentials.CopilotCredentialsExist() {
-		return formatAuthStatusLine(label, "not signed in", ""), nil
+		return formatAuthStatusLine(label, "chat not signed in", billingDetail), nil
 	}
 	creds, err := credentials.GetCopilotCredentials()
 	if err != nil {
 		return "", err
 	}
-	return formatAuthStatusLine(label, formatExpiry(creds.ExpiresAt, creds.IsExpired()), ""), nil
+	return formatAuthStatusLine(label, "chat "+formatExpiry(creds.ExpiresAt, creds.IsExpired()), billingDetail), nil
 }
 
 // formatExpiry renders a human-friendly state string given a Unix expiry

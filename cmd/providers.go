@@ -85,6 +85,13 @@ var builtinProviderMeta = map[string]struct {
 		supportsListModels: false,
 		description:        "ChatGPT via native OAuth (ChatGPT Plus/Pro subscription)",
 	},
+	"copilot": {
+		credential:         "oauth",
+		envVar:             "",
+		requiresKey:        false,
+		supportsListModels: true,
+		description:        "GitHub Copilot API (chat via OAuth; usage via GITHUB_TOKEN/GH_TOKEN)",
+	},
 	"gemini": {
 		credential:         "api_key",
 		envVar:             "GEMINI_API_KEY",
