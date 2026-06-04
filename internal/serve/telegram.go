@@ -518,6 +518,7 @@ func (m *telegramSessionMgr) getOrCreate(ctx context.Context, chatID int64) (*te
 		return existing, nil
 	}
 	m.sessions[chatID] = created
+	m.persistSession(ctx, created)
 	m.mu.Unlock()
 	return created, nil
 }
@@ -541,6 +542,7 @@ func (m *telegramSessionMgr) resetSessionIfCurrent(ctx context.Context, chatID i
 		return current, false, nil
 	}
 	m.sessions[chatID] = created
+	m.persistSession(ctx, created)
 	m.mu.Unlock()
 
 	if current != nil {
@@ -792,19 +794,25 @@ func (m *telegramSessionMgr) newSession(ctx context.Context, chatID int64) (*tel
 	}
 
 	if m.store != nil {
-		m.runStoreOp(ctx, meta.ID, "Create", func(storeCtx context.Context) error {
-			return m.store.Create(storeCtx, meta)
-		})
-		m.runStoreOp(ctx, meta.ID, "SetCurrent", func(storeCtx context.Context) error {
-			return m.store.SetCurrent(storeCtx, meta.ID)
-		})
-	}
-
-	if m.store != nil {
 		m.restoreHistoryFromDB(ctx, chatID, sess)
 	}
 
 	return sess, nil
+}
+
+// persistSession writes the already-published session metadata while the caller
+// still holds m.mu, so a replacement for the same chat cannot race in and
+// clobber current_session with a discarded runtime.
+func (m *telegramSessionMgr) persistSession(ctx context.Context, sess *telegramSession) {
+	if m.store == nil || sess == nil || sess.meta == nil {
+		return
+	}
+	m.runStoreOp(ctx, sess.meta.ID, "Create", func(storeCtx context.Context) error {
+		return m.store.Create(storeCtx, sess.meta)
+	})
+	m.runStoreOp(ctx, sess.meta.ID, "SetCurrent", func(storeCtx context.Context) error {
+		return m.store.SetCurrent(storeCtx, sess.meta.ID)
+	})
 }
 
 func (m *telegramSessionMgr) closeAllSessions() {
