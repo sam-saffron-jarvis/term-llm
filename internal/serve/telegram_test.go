@@ -244,6 +244,35 @@ func newTestMgrAndSession(h *testutil.EngineHarness) (*telegramSessionMgr, *tele
 	return mgr, sess
 }
 
+func TestSendStreamDone_OnlyFirstCompletionSends(t *testing.T) {
+	done := make(chan error, 1)
+	var once sync.Once
+	firstErr := errors.New("first")
+
+	sendStreamDone(done, &once, firstErr)
+
+	returned := make(chan struct{})
+	go func() {
+		sendStreamDone(done, &once, errors.New("second"))
+		close(returned)
+	}()
+
+	select {
+	case <-returned:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("second completion send blocked")
+	}
+
+	select {
+	case err := <-done:
+		if !errors.Is(err, firstErr) {
+			t.Fatalf("done error = %v, want %v", err, firstErr)
+		}
+	default:
+		t.Fatal("expected first completion to be sent")
+	}
+}
+
 func TestTelegramSessionMgrNewFastProvider_ReturnsFreshProviderEachTime(t *testing.T) {
 	mgr := &telegramSessionMgr{
 		cfg: &config.Config{
@@ -1023,11 +1052,118 @@ func TestTelegramSessionMgrGetOrCreate_DoesNotBlockOtherChatsWhileCreating(t *te
 	}
 }
 
+func TestTelegramSessionMgrGetOrCreate_PersistsOnlyWinningConcurrentSession(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "telegram-concurrent-create.db")
+	store, err := session.NewStore(session.Config{Enabled: true, Path: dbPath})
+	if err != nil {
+		t.Fatalf("create store: %v", err)
+	}
+	defer store.Close()
+
+	started := make(chan struct{}, 2)
+	release := make(chan struct{})
+	results := make(chan struct {
+		sess *telegramSession
+		err  error
+	}, 2)
+	var cleanupCalls atomic.Int32
+
+	mgr := &telegramSessionMgr{
+		sessions: make(map[int64]*telegramSession),
+		store:    store,
+		settings: Settings{
+			Store: store,
+			NewSession: func(ctx context.Context) (*SessionRuntime, error) {
+				started <- struct{}{}
+				<-release
+				return &SessionRuntime{
+					ProviderName: "mock",
+					ModelName:    "model",
+					Cleanup: func() {
+						cleanupCalls.Add(1)
+					},
+				}, nil
+			},
+		},
+	}
+
+	for i := 0; i < 2; i++ {
+		go func() {
+			sess, err := mgr.getOrCreate(context.Background(), 42)
+			results <- struct {
+				sess *telegramSession
+				err  error
+			}{sess: sess, err: err}
+		}()
+	}
+
+	for i := 0; i < 2; i++ {
+		select {
+		case <-started:
+		case <-time.After(500 * time.Millisecond):
+			t.Fatalf("NewSession call %d did not start", i+1)
+		}
+	}
+
+	close(release)
+
+	var first *telegramSession
+	for i := 0; i < 2; i++ {
+		select {
+		case result := <-results:
+			if result.err != nil {
+				t.Fatalf("getOrCreate returned error: %v", result.err)
+			}
+			if first == nil {
+				first = result.sess
+				continue
+			}
+			if result.sess != first {
+				t.Fatal("concurrent getOrCreate returned different sessions for the same chat")
+			}
+		case <-time.After(time.Second):
+			t.Fatal("timed out waiting for concurrent getOrCreate results")
+		}
+	}
+
+	if cleanupCalls.Load() != 1 {
+		t.Fatalf("cleanup calls = %d, want 1 for the discarded duplicate runtime", cleanupCalls.Load())
+	}
+
+	sessions, err := store.List(context.Background(), session.ListOptions{Name: "telegram:42", Limit: 10})
+	if err != nil {
+		t.Fatalf("List failed: %v", err)
+	}
+	if len(sessions) != 1 {
+		t.Fatalf("persisted session count = %d, want 1", len(sessions))
+	}
+
+	current, err := store.GetCurrent(context.Background())
+	if err != nil {
+		t.Fatalf("GetCurrent failed: %v", err)
+	}
+	if current == nil {
+		t.Fatal("expected current session to be set")
+	}
+	if current.ID != first.meta.ID {
+		t.Fatalf("current session ID = %s, want %s", current.ID, first.meta.ID)
+	}
+}
+
 func TestTelegramSessionMgrResetSessionIfCurrent_RejectsStaleExpectedSession(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "telegram-reset-stale.db")
+	store, err := session.NewStore(session.Config{Enabled: true, Path: dbPath})
+	if err != nil {
+		t.Fatalf("create store: %v", err)
+	}
+	defer store.Close()
+
 	var cleanupCalls atomic.Int32
 	mgr := &telegramSessionMgr{
 		sessions: make(map[int64]*telegramSession),
+		store:    store,
 		settings: Settings{
+			Store: store,
 			NewSession: func(ctx context.Context) (*SessionRuntime, error) {
 				return &SessionRuntime{
 					ProviderName: "mock",
@@ -1068,6 +1204,25 @@ func TestTelegramSessionMgrResetSessionIfCurrent_RejectsStaleExpectedSession(t *
 	}
 	if cleanupCalls.Load() != 2 {
 		t.Fatalf("cleanup calls = %d, want 2 (original closed + stale duplicate closed)", cleanupCalls.Load())
+	}
+
+	sessions, err := store.List(context.Background(), session.ListOptions{Name: "telegram:42", Limit: 10})
+	if err != nil {
+		t.Fatalf("List failed: %v", err)
+	}
+	if len(sessions) != 2 {
+		t.Fatalf("persisted session count = %d, want 2 (original + replacement)", len(sessions))
+	}
+
+	current, err := store.GetCurrent(context.Background())
+	if err != nil {
+		t.Fatalf("GetCurrent failed: %v", err)
+	}
+	if current == nil {
+		t.Fatal("expected current session to be set")
+	}
+	if current.ID != replacement.meta.ID {
+		t.Fatalf("current session ID = %s, want %s", current.ID, replacement.meta.ID)
 	}
 }
 

@@ -518,6 +518,7 @@ func (m *telegramSessionMgr) getOrCreate(ctx context.Context, chatID int64) (*te
 		return existing, nil
 	}
 	m.sessions[chatID] = created
+	m.persistSession(ctx, created)
 	m.mu.Unlock()
 	return created, nil
 }
@@ -541,6 +542,7 @@ func (m *telegramSessionMgr) resetSessionIfCurrent(ctx context.Context, chatID i
 		return current, false, nil
 	}
 	m.sessions[chatID] = created
+	m.persistSession(ctx, created)
 	m.mu.Unlock()
 
 	if current != nil {
@@ -792,19 +794,25 @@ func (m *telegramSessionMgr) newSession(ctx context.Context, chatID int64) (*tel
 	}
 
 	if m.store != nil {
-		m.runStoreOp(ctx, meta.ID, "Create", func(storeCtx context.Context) error {
-			return m.store.Create(storeCtx, meta)
-		})
-		m.runStoreOp(ctx, meta.ID, "SetCurrent", func(storeCtx context.Context) error {
-			return m.store.SetCurrent(storeCtx, meta.ID)
-		})
-	}
-
-	if m.store != nil {
 		m.restoreHistoryFromDB(ctx, chatID, sess)
 	}
 
 	return sess, nil
+}
+
+// persistSession writes the already-published session metadata while the caller
+// still holds m.mu, so a replacement for the same chat cannot race in and
+// clobber current_session with a discarded runtime.
+func (m *telegramSessionMgr) persistSession(ctx context.Context, sess *telegramSession) {
+	if m.store == nil || sess == nil || sess.meta == nil {
+		return
+	}
+	m.runStoreOp(ctx, sess.meta.ID, "Create", func(storeCtx context.Context) error {
+		return m.store.Create(storeCtx, sess.meta)
+	})
+	m.runStoreOp(ctx, sess.meta.ID, "SetCurrent", func(storeCtx context.Context) error {
+		return m.store.SetCurrent(storeCtx, sess.meta.ID)
+	})
 }
 
 func (m *telegramSessionMgr) closeAllSessions() {
@@ -1140,6 +1148,12 @@ func (m *telegramSessionMgr) handleMessage(ctx context.Context, bot *tgbotapi.Bo
 	}
 }
 
+func sendStreamDone(done chan<- error, once *sync.Once, err error) {
+	once.Do(func() {
+		done <- err
+	})
+}
+
 // streamReply streams an LLM response back to the chat via live message editing.
 func (m *telegramSessionMgr) streamReply(ctx context.Context, bot botSender, sess *telegramSession, chatID int64, userMsg llm.Message) error {
 	// We acquire the session lock for the entire streaming call so that
@@ -1355,6 +1369,7 @@ func (m *telegramSessionMgr) streamReply(ctx context.Context, bot botSender, ses
 		otherEvents      int
 		otherTypes       = make(map[llm.EventType]int)
 		streamDone       = make(chan error, 1)
+		streamDoneOnce   sync.Once
 		lastEventPing    = make(chan struct{}, 1)
 		watchdogTimedOut atomic.Bool
 	)
@@ -1380,10 +1395,7 @@ func (m *telegramSessionMgr) streamReply(ctx context.Context, bot botSender, ses
 				t.Reset(watchdogTimeout)
 			case <-t.C:
 				watchdogTimedOut.Store(true)
-				select {
-				case streamDone <- fmt.Errorf("stream timed out: no events for %s", watchdogTimeout):
-				default:
-				}
+				sendStreamDone(streamDone, &streamDoneOnce, fmt.Errorf("stream timed out: no events for %s", watchdogTimeout))
 				streamCancel()
 				return
 			case <-streamCtx.Done():
@@ -1397,11 +1409,11 @@ func (m *telegramSessionMgr) streamReply(ctx context.Context, bot botSender, ses
 		for {
 			ev, recvErr := stream.Recv()
 			if recvErr == io.EOF {
-				streamDone <- nil
+				sendStreamDone(streamDone, &streamDoneOnce, nil)
 				return
 			}
 			if recvErr != nil {
-				streamDone <- recvErr
+				sendStreamDone(streamDone, &streamDoneOnce, recvErr)
 				return
 			}
 			select {
@@ -1478,7 +1490,7 @@ func (m *telegramSessionMgr) streamReply(ctx context.Context, bot botSender, ses
 				errorEvents++
 				textMu.Unlock()
 				if ev.Err != nil {
-					streamDone <- ev.Err
+					sendStreamDone(streamDone, &streamDoneOnce, ev.Err)
 					return
 				}
 			default:
