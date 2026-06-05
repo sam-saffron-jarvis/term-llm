@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"image"
 	"image/color"
 	"image/png"
@@ -118,6 +119,50 @@ func TestViewImageToolExecute_CropsRegionAndScales(t *testing.T) {
 	bounds := img.Bounds()
 	if bounds.Dx() != 2 || bounds.Dy() != 4 {
 		t.Fatalf("decoded bounds = %dx%d, want 2x4", bounds.Dx(), bounds.Dy())
+	}
+}
+
+func TestViewImageToolSpec_DoesNotAdvertiseExactCrop(t *testing.T) {
+	tool := NewViewImageTool(nil)
+	spec := tool.Spec()
+	props, ok := spec.Schema["properties"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("schema properties has type %T, want map[string]interface{}", spec.Schema["properties"])
+	}
+	if _, ok := props["crop"]; ok {
+		t.Fatal("view_image schema should not advertise exact pixel crop")
+	}
+}
+
+func TestViewImageToolExecute_IgnoresStaleCropArgument(t *testing.T) {
+	tmpDir := t.TempDir()
+	filePath := filepath.Join(tmpDir, "sample.png")
+	writeTestPNG(t, filePath)
+
+	tool := NewViewImageTool(nil)
+	args := []byte(fmt.Sprintf(`{"file_path":%q,"crop":{"x":0,"y":0,"width":1,"height":1}}`, filePath))
+
+	out, err := tool.Execute(context.Background(), args)
+	if err != nil {
+		t.Fatalf("Execute returned error: %v", err)
+	}
+	if strings.Contains(out.Content, "crop") {
+		t.Fatalf("stale crop argument should not affect transform summary, got %q", out.Content)
+	}
+	if len(out.ContentParts) < 2 || out.ContentParts[1].ImageData == nil {
+		t.Fatalf("expected image content part in output")
+	}
+	decoded, err := base64.StdEncoding.DecodeString(out.ContentParts[1].ImageData.Base64)
+	if err != nil {
+		t.Fatalf("decode image_data: %v", err)
+	}
+	img, _, err := image.Decode(bytes.NewReader(decoded))
+	if err != nil {
+		t.Fatalf("decode output image: %v", err)
+	}
+	bounds := img.Bounds()
+	if bounds.Dx() != 2 || bounds.Dy() != 2 {
+		t.Fatalf("decoded bounds = %dx%d, want full image 2x2", bounds.Dx(), bounds.Dy())
 	}
 }
 

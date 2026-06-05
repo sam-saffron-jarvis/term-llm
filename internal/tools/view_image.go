@@ -35,18 +35,10 @@ func NewViewImageTool(approval *ApprovalManager) *ViewImageTool {
 
 // ViewImageArgs are the arguments for view_image.
 type ViewImageArgs struct {
-	FilePath string     `json:"file_path"`
-	Detail   string     `json:"detail,omitempty"` // "low", "high", or "auto"
-	Region   string     `json:"region,omitempty"` // "full", "left_half", "right_half", "top_half", "bottom_half"
-	Crop     *ImageCrop `json:"crop,omitempty"`
-	Scale    float64    `json:"scale,omitempty"` // 1-4x upscale after crop/region
-}
-
-type ImageCrop struct {
-	X      int `json:"x"`
-	Y      int `json:"y"`
-	Width  int `json:"width"`
-	Height int `json:"height"`
+	FilePath string  `json:"file_path"`
+	Detail   string  `json:"detail,omitempty"` // "low", "high", or "auto"
+	Region   string  `json:"region,omitempty"` // "full", "left_half", "right_half", "top_half", "bottom_half"
+	Scale    float64 `json:"scale,omitempty"`  // 1-4x upscale after region
 }
 
 const (
@@ -74,7 +66,7 @@ var supportedImageMimes = map[string]struct{}{
 func (t *ViewImageTool) Spec() llm.ToolSpec {
 	return llm.ToolSpec{
 		Name:        ViewImageToolName,
-		Description: "View and analyze an image file. Supports PNG, JPEG, GIF, WebP. For transcription or dense handwriting, crop to a page/region and use high detail.",
+		Description: "View and analyze an image file. Supports PNG, JPEG, GIF, WebP. For transcription, dense handwriting, or two-page spreads, use a preset region and high detail.",
 		Schema: map[string]interface{}{
 			"type": "object",
 			"properties": map[string]interface{}{
@@ -90,25 +82,13 @@ func (t *ViewImageTool) Spec() llm.ToolSpec {
 				},
 				"region": map[string]interface{}{
 					"type":        "string",
-					"description": "Optional preset crop before analysis. Use left_half/right_half for two-page notebook spreads.",
+					"description": "Optional preset region before analysis. Use left_half/right_half for two-page notebook spreads.",
 					"enum":        []string{"full", "left_half", "right_half", "top_half", "bottom_half"},
 					"default":     "full",
 				},
-				"crop": map[string]interface{}{
-					"type":        "object",
-					"description": "Optional exact pixel crop before analysis.",
-					"properties": map[string]interface{}{
-						"x":      map[string]interface{}{"type": "integer", "minimum": 0},
-						"y":      map[string]interface{}{"type": "integer", "minimum": 0},
-						"width":  map[string]interface{}{"type": "integer", "minimum": 1},
-						"height": map[string]interface{}{"type": "integer", "minimum": 1},
-					},
-					"required":             []string{"x", "y", "width", "height"},
-					"additionalProperties": false,
-				},
 				"scale": map[string]interface{}{
 					"type":        "number",
-					"description": "Optional 1-4x upscale after crop/region. Useful for small text crops; defaults to 1.",
+					"description": "Optional 1-4x upscale after region selection. Useful for small text regions; defaults to 1.",
 					"minimum":     1,
 					"maximum":     4,
 				},
@@ -190,7 +170,7 @@ func (t *ViewImageTool) Execute(ctx context.Context, args json.RawMessage) (llm.
 		return llm.TextOutput(formatToolError(NewToolErrorf(ErrUnsupportedFormat, "unsupported format: %s (supported: PNG, JPEG, GIF, WebP)", mimeType))), nil
 	}
 
-	// Apply optional crop/region/scale before normal provider-size processing.
+	// Apply optional region/scale before normal provider-size processing.
 	transformDesc := ""
 	data, mimeType, transformDesc, err = transformImageForView(data, mimeType, a)
 	if err != nil {
@@ -243,9 +223,9 @@ Detail: %s`,
 	}, nil
 }
 
-// transformImageForView applies crop/region/scale requested by the caller before
+// transformImageForView applies region/scale requested by the caller before
 // final provider-size processing. It is intentionally separate from processImage:
-// crop first preserves useful detail for dense handwriting and two-page spreads.
+// region selection first preserves useful detail for dense handwriting and two-page spreads.
 func transformImageForView(data []byte, mimeType string, args ViewImageArgs) ([]byte, string, string, error) {
 	region := strings.TrimSpace(strings.ToLower(args.Region))
 	if region == "" {
@@ -258,7 +238,7 @@ func transformImageForView(data []byte, mimeType string, args ViewImageArgs) ([]
 	if scale < 1 || scale > 4 {
 		return nil, "", "", fmt.Errorf("scale must be between 1 and 4")
 	}
-	if region == "full" && args.Crop == nil && scale == 1 {
+	if region == "full" && scale == 1 {
 		return data, mimeType, "", nil
 	}
 
@@ -267,7 +247,7 @@ func transformImageForView(data []byte, mimeType string, args ViewImageArgs) ([]
 		return nil, "", "", fmt.Errorf("failed to decode image: %w", err)
 	}
 	bounds := img.Bounds()
-	cropRect, desc, err := cropRectForView(bounds, region, args.Crop)
+	cropRect, desc, err := cropRectForView(bounds, region)
 	if err != nil {
 		return nil, "", "", err
 	}
@@ -291,16 +271,7 @@ func transformImageForView(data []byte, mimeType string, args ViewImageArgs) ([]
 	return encoded, outMime, desc, nil
 }
 
-func cropRectForView(bounds image.Rectangle, region string, crop *ImageCrop) (image.Rectangle, string, error) {
-	if crop != nil {
-		r := image.Rect(bounds.Min.X+crop.X, bounds.Min.Y+crop.Y, bounds.Min.X+crop.X+crop.Width, bounds.Min.Y+crop.Y+crop.Height)
-		r = r.Intersect(bounds)
-		if r.Empty() || r.Dx() != crop.Width || r.Dy() != crop.Height {
-			return image.Rectangle{}, "", fmt.Errorf("crop rectangle is outside image bounds %dx%d", bounds.Dx(), bounds.Dy())
-		}
-		return r, fmt.Sprintf("crop %dx%d at %d,%d", r.Dx(), r.Dy(), crop.X, crop.Y), nil
-	}
-
+func cropRectForView(bounds image.Rectangle, region string) (image.Rectangle, string, error) {
 	midX := bounds.Min.X + bounds.Dx()/2
 	midY := bounds.Min.Y + bounds.Dy()/2
 	switch region {
