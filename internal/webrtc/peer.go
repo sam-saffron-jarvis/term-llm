@@ -34,6 +34,10 @@ import (
 
 const maxFrameBytes = 10 * 1024 * 1024 // 10 MB
 
+// Cap per-channel HTTP dispatches so one client cannot create an unbounded
+// number of expensive handler goroutines.
+const maxDataChannelConcurrentRequests = 8
+
 // signalingMsg is a message exchanged via the signaling server.
 type signalingMsg struct {
 	SessionID string `json:"session_id"`
@@ -520,6 +524,15 @@ func (p *peer) runDataChannel(ctx context.Context, dc *datachannel.DataChannel) 
 
 	// Signal idle resets via channel so we avoid concurrent Timer.Reset / Timer.C access.
 	activity := make(chan struct{}, 1)
+	requestSlots := make(chan struct{}, maxDataChannelConcurrentRequests)
+	stop := make(chan struct{})
+	var stopOnce sync.Once
+	stopDataChannel := func() {
+		stopOnce.Do(func() {
+			close(stop)
+			_ = dc.Close()
+		})
+	}
 
 	var wg sync.WaitGroup
 	readDone := make(chan struct{})
@@ -544,18 +557,23 @@ func (p *peer) runDataChannel(ctx context.Context, dc *datachannel.DataChannel) 
 			case activity <- struct{}{}:
 			default:
 			}
+			if !acquireDataChannelRequestSlot(ctx, stop, requestSlots) {
+				return
+			}
 			wg.Add(1)
-			go func() {
+			go func(data []byte) {
 				defer wg.Done()
+				defer func() { <-requestSlots }()
 				p.dispatchRequest(ctx, send, data)
-			}()
+			}(data)
 		}
 	}()
 
 	for {
 		select {
 		case <-ctx.Done():
-			_ = dc.Close()
+			stopDataChannel()
+			<-readDone
 			wg.Wait()
 			return
 		case <-readDone:
@@ -571,10 +589,24 @@ func (p *peer) runDataChannel(ctx context.Context, dc *datachannel.DataChannel) 
 			idle.Reset(p.cfg.IdleTimeout)
 		case <-idle.C:
 			log.Printf("webrtc: connection idle timeout, closing data channel")
-			_ = dc.Close()
+			stopDataChannel()
+			<-readDone
 			wg.Wait()
 			return
 		}
+	}
+}
+
+// acquireDataChannelRequestSlot bounds per-channel request concurrency and
+// unblocks promptly when the peer is shutting down.
+func acquireDataChannelRequestSlot(ctx context.Context, stop <-chan struct{}, slots chan struct{}) bool {
+	select {
+	case slots <- struct{}{}:
+		return true
+	case <-ctx.Done():
+		return false
+	case <-stop:
+		return false
 	}
 }
 

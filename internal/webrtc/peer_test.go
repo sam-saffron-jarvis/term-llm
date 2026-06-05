@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 )
 
 // newTestPeer creates a peer wired to handler with the given basePath,
@@ -49,6 +50,60 @@ func encodeRequest(id, method, path string, headers map[string]string, body stri
 	}
 	data, _ := json.Marshal(f)
 	return data
+}
+
+func TestAcquireDataChannelRequestSlot_BlocksUntilReleased(t *testing.T) {
+	slots := make(chan struct{}, 1)
+	stop := make(chan struct{})
+	if !acquireDataChannelRequestSlot(context.Background(), stop, slots) {
+		t.Fatal("first slot acquire returned false")
+	}
+
+	acquired := make(chan bool, 1)
+	go func() {
+		acquired <- acquireDataChannelRequestSlot(context.Background(), stop, slots)
+	}()
+
+	select {
+	case ok := <-acquired:
+		t.Fatalf("second acquire completed before release: %v", ok)
+	case <-time.After(20 * time.Millisecond):
+	}
+
+	<-slots
+
+	select {
+	case ok := <-acquired:
+		if !ok {
+			t.Fatal("second acquire returned false after release")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("second acquire did not complete after release")
+	}
+}
+
+func TestAcquireDataChannelRequestSlot_StopsWhenConnectionClosing(t *testing.T) {
+	slots := make(chan struct{}, 1)
+	stop := make(chan struct{})
+	if !acquireDataChannelRequestSlot(context.Background(), stop, slots) {
+		t.Fatal("first slot acquire returned false")
+	}
+
+	acquired := make(chan bool, 1)
+	go func() {
+		acquired <- acquireDataChannelRequestSlot(context.Background(), stop, slots)
+	}()
+
+	close(stop)
+
+	select {
+	case ok := <-acquired:
+		if ok {
+			t.Fatal("acquire returned true after connection stop")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("acquire did not unblock after connection stop")
+	}
 }
 
 // --- validPath tests ---
