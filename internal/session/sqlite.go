@@ -1700,6 +1700,46 @@ func (s *SQLiteStore) UpdateMessage(ctx context.Context, sessionID string, msg *
 	})
 }
 
+func (s *SQLiteStore) PersistCompactionTailHints(ctx context.Context, sessionID string, messageIDs []int64) error {
+	if !s.hasMessageCompactionTail || len(messageIDs) == 0 {
+		return nil
+	}
+
+	args := make([]any, 0, len(messageIDs)+1)
+	args = append(args, sessionID)
+	placeholders := make([]string, 0, len(messageIDs))
+	seen := make(map[int64]struct{}, len(messageIDs))
+	for _, id := range messageIDs {
+		if id == 0 {
+			continue
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		placeholders = append(placeholders, "?")
+		args = append(args, id)
+	}
+	if len(placeholders) == 0 {
+		return nil
+	}
+
+	query := `
+		UPDATE messages
+		SET compaction_tail = TRUE
+		WHERE session_id = ?
+		  AND COALESCE(compaction_tail, FALSE) = FALSE
+		  AND id IN (` + strings.Join(placeholders, ",") + `)`
+
+	return retryOnBusy(ctx, 5, func() error {
+		_, err := s.db.ExecContext(ctx, query, args...)
+		if err != nil {
+			return fmt.Errorf("persist compaction tail hints: %w", err)
+		}
+		return nil
+	})
+}
+
 func (s *SQLiteStore) ClearCompactionBoundary(ctx context.Context, id string) error {
 	if !s.hasCompactionSeq {
 		return nil

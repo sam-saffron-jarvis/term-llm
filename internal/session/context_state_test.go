@@ -299,6 +299,14 @@ func TestLoadScrollbackWithBoundaryMarksRetainedRawSuffixHiddenFromDisplay(t *te
 		t.Fatalf("post-compaction ack/tail rows should be hidden from display: %#v", all[6:])
 	}
 
+	persisted, err := store.GetMessages(ctx, sess.ID, 0, 0)
+	if err != nil {
+		t.Fatalf("GetMessages after backfill: %v", err)
+	}
+	if !persisted[6].CompactionTail || !persisted[7].CompactionTail || !persisted[8].CompactionTail {
+		t.Fatalf("legacy compaction tail hints were not persisted: %#v", persisted[6:])
+	}
+
 	active, err := LoadActiveMessages(ctx, store, refreshed)
 	if err != nil {
 		t.Fatalf("LoadActiveMessages: %v", err)
