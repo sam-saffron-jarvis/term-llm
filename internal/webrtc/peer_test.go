@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 )
 
 // newTestPeer creates a peer wired to handler with the given basePath,
@@ -49,6 +50,70 @@ func encodeRequest(id, method, path string, headers map[string]string, body stri
 	}
 	data, _ := json.Marshal(f)
 	return data
+}
+
+func TestTryAcquireDataChannelRequestSlot_ReturnsFalseWhenFull(t *testing.T) {
+	slots := make(chan struct{}, 1)
+	stop := make(chan struct{})
+	if !tryAcquireDataChannelRequestSlot(context.Background(), stop, slots) {
+		t.Fatal("first slot acquire returned false")
+	}
+
+	start := time.Now()
+	if tryAcquireDataChannelRequestSlot(context.Background(), stop, slots) {
+		t.Fatal("second acquire returned true while slots were full")
+	}
+	if elapsed := time.Since(start); elapsed > 50*time.Millisecond {
+		t.Fatalf("full acquire blocked for %v", elapsed)
+	}
+
+	<-slots
+	if !tryAcquireDataChannelRequestSlot(context.Background(), stop, slots) {
+		t.Fatal("acquire returned false after release")
+	}
+}
+
+func TestTryAcquireDataChannelRequestSlot_StopsWhenConnectionClosing(t *testing.T) {
+	slots := make(chan struct{}, 1)
+	stop := make(chan struct{})
+	close(stop)
+
+	if tryAcquireDataChannelRequestSlot(context.Background(), stop, slots) {
+		t.Fatal("acquire returned true after connection stop")
+	}
+}
+
+func TestSendBusyDataChannelRequest(t *testing.T) {
+	raw := encodeRequest("busy-1", "GET", "/ui/v1/models", nil, "")
+	var frames []responseFrame
+	sendBusyDataChannelRequest(func(text string) error {
+		var f responseFrame
+		if err := json.Unmarshal([]byte(text), &f); err != nil {
+			t.Fatalf("decode response frame: %v", err)
+		}
+		frames = append(frames, f)
+		return nil
+	}, raw)
+	if len(frames) != 1 || frames[0].ID != "busy-1" || frames[0].Type != "done" || frames[0].Status != http.StatusServiceUnavailable {
+		t.Fatalf("busy frames = %#v, want single done/503", frames)
+	}
+}
+
+func TestIsDataChannelCancelRequest(t *testing.T) {
+	p := newTestPeer("/ui", nil)
+	if !p.isDataChannelCancelRequest(encodeRequest("cancel", "POST", "/ui/v1/responses/resp-123/cancel", nil, "")) {
+		t.Fatal("expected response cancel request to be recognized")
+	}
+	for _, raw := range [][]byte{
+		encodeRequest("get", "GET", "/ui/v1/responses/resp-123/cancel", nil, ""),
+		encodeRequest("event", "GET", "/ui/v1/responses/resp-123/events", nil, ""),
+		encodeRequest("outside", "POST", "/v1/responses/resp-123/cancel", nil, ""),
+		[]byte("not json"),
+	} {
+		if p.isDataChannelCancelRequest(raw) {
+			t.Fatalf("unexpected cancel recognition for %s", string(raw))
+		}
+	}
 }
 
 // --- validPath tests ---

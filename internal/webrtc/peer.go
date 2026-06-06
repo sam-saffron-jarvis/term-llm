@@ -34,6 +34,10 @@ import (
 
 const maxFrameBytes = 10 * 1024 * 1024 // 10 MB
 
+// Cap per-channel HTTP dispatches so one client cannot create an unbounded
+// number of expensive handler goroutines.
+const maxDataChannelConcurrentRequests = 8
+
 // signalingMsg is a message exchanged via the signaling server.
 type signalingMsg struct {
 	SessionID string `json:"session_id"`
@@ -520,6 +524,15 @@ func (p *peer) runDataChannel(ctx context.Context, dc *datachannel.DataChannel) 
 
 	// Signal idle resets via channel so we avoid concurrent Timer.Reset / Timer.C access.
 	activity := make(chan struct{}, 1)
+	requestSlots := make(chan struct{}, maxDataChannelConcurrentRequests)
+	stop := make(chan struct{})
+	var stopOnce sync.Once
+	stopDataChannel := func() {
+		stopOnce.Do(func() {
+			close(stop)
+			_ = dc.Close()
+		})
+	}
 
 	var wg sync.WaitGroup
 	readDone := make(chan struct{})
@@ -544,18 +557,39 @@ func (p *peer) runDataChannel(ctx context.Context, dc *datachannel.DataChannel) 
 			case activity <- struct{}{}:
 			default:
 			}
+			if !tryAcquireDataChannelRequestSlot(ctx, stop, requestSlots) {
+				select {
+				case <-ctx.Done():
+					return
+				case <-stop:
+					return
+				default:
+				}
+				if p.isDataChannelCancelRequest(data) {
+					// Cancellation/control requests must not be starved by long-lived
+					// streaming requests occupying every normal slot. Dispatch them
+					// synchronously to keep goroutine usage bounded while still letting
+					// them free a slot held by the stream they cancel.
+					p.dispatchRequest(ctx, send, data)
+					continue
+				}
+				sendBusyDataChannelRequest(send, data)
+				continue
+			}
 			wg.Add(1)
-			go func() {
+			go func(data []byte) {
 				defer wg.Done()
+				defer func() { <-requestSlots }()
 				p.dispatchRequest(ctx, send, data)
-			}()
+			}(data)
 		}
 	}()
 
 	for {
 		select {
 		case <-ctx.Done():
-			_ = dc.Close()
+			stopDataChannel()
+			<-readDone
 			wg.Wait()
 			return
 		case <-readDone:
@@ -571,11 +605,52 @@ func (p *peer) runDataChannel(ctx context.Context, dc *datachannel.DataChannel) 
 			idle.Reset(p.cfg.IdleTimeout)
 		case <-idle.C:
 			log.Printf("webrtc: connection idle timeout, closing data channel")
-			_ = dc.Close()
+			stopDataChannel()
+			<-readDone
 			wg.Wait()
 			return
 		}
 	}
+}
+
+// tryAcquireDataChannelRequestSlot bounds per-channel request concurrency. It
+// never blocks the data-channel reader: when the channel is saturated, callers
+// can reject ordinary requests while still reading later control frames (for
+// example cancellation requests that may release a long-lived streaming slot).
+func tryAcquireDataChannelRequestSlot(ctx context.Context, stop <-chan struct{}, slots chan struct{}) bool {
+	select {
+	case <-ctx.Done():
+		return false
+	case <-stop:
+		return false
+	default:
+	}
+	select {
+	case slots <- struct{}{}:
+		return true
+	default:
+		return false
+	}
+}
+
+func sendBusyDataChannelRequest(send func(string) error, raw []byte) {
+	var frame requestFrame
+	if err := json.Unmarshal(raw, &frame); err != nil || frame.ID == "" {
+		return
+	}
+	sendDoneFrame(send, frame.ID, http.StatusServiceUnavailable)
+}
+
+func (p *peer) isDataChannelCancelRequest(raw []byte) bool {
+	var frame requestFrame
+	if err := json.Unmarshal(raw, &frame); err != nil {
+		return false
+	}
+	if !strings.EqualFold(frame.Method, http.MethodPost) || !p.validPath(frame.Path) {
+		return false
+	}
+	prefix := p.cfg.BasePath + "/v1/responses/"
+	return strings.HasPrefix(frame.Path, prefix) && strings.HasSuffix(frame.Path, "/cancel")
 }
 
 // dispatchRequest decodes a requestFrame, validates it, dispatches it to the

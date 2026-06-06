@@ -155,6 +155,10 @@ func markCompactionDisplayTails(messages []Message) []Message {
 		return messages
 	}
 	out := append([]Message(nil), messages...)
+	fingerprints := make([]string, len(out))
+	for i := range out {
+		fingerprints[i] = messageDisplayFingerprint(out[i])
+	}
 	for i := 0; i < len(out); i++ {
 		if !isInternalCompactionSummaryMessage(out[i]) {
 			continue
@@ -162,7 +166,7 @@ func markCompactionDisplayTails(messages []Message) []Message {
 		if persistedCompactionTailAlreadyMarked(out, i) {
 			continue
 		}
-		start, dupLen := compactionDuplicateTailRange(out, i)
+		start, dupLen := compactionDuplicateTailRange(out, fingerprints, i)
 		if dupLen > 0 {
 			// The rows from just after the summary through the retained raw suffix
 			// are compacted active context. They remain in m.messages / active loads,
@@ -194,13 +198,9 @@ func persistedCompactionTailAlreadyMarked(messages []Message, summaryIdx int) bo
 	return false
 }
 
-func compactionDuplicateTailRange(messages []Message, summaryIdx int) (int, int) {
+func compactionDuplicateTailRange(messages []Message, fingerprints []string, summaryIdx int) (int, int) {
 	if summaryIdx <= 0 || summaryIdx+1 >= len(messages) {
 		return -1, 0
-	}
-	fingerprints := make([]string, len(messages))
-	for i := range messages {
-		fingerprints[i] = messageDisplayFingerprint(messages[i])
 	}
 
 	candidates := []int{summaryIdx + 1}
@@ -217,26 +217,46 @@ func compactionDuplicateTailRange(messages []Message, summaryIdx int) (int, int)
 		if after := len(messages) - start; after < maxLen {
 			maxLen = after
 		}
-		for length := 1; length <= maxLen; length++ {
-			leftStart := summaryIdx - length
-			if messageFingerprintRangesEqual(fingerprints, leftStart, start, length) && length > bestLen {
-				bestStart, bestLen = start, length
-			}
+		if overlap := messageFingerprintSuffixPrefixOverlap(fingerprints[:summaryIdx], fingerprints[start:start+maxLen]); overlap > bestLen {
+			bestStart, bestLen = start, overlap
 		}
 	}
 	return bestStart, bestLen
 }
 
-func messageFingerprintRangesEqual(fingerprints []string, leftStart, rightStart, length int) bool {
-	if leftStart < 0 || rightStart < 0 || length < 0 || leftStart+length > len(fingerprints) || rightStart+length > len(fingerprints) {
-		return false
+type fingerprintToken struct {
+	value string
+	sep   bool
+}
+
+// messageFingerprintSuffixPrefixOverlap returns the longest prefix of right
+// that matches a suffix of left using a single prefix-function scan.
+func messageFingerprintSuffixPrefixOverlap(left, right []string) int {
+	if len(left) == 0 || len(right) == 0 {
+		return 0
 	}
-	for offset := 0; offset < length; offset++ {
-		if fingerprints[leftStart+offset] != fingerprints[rightStart+offset] {
-			return false
+
+	combined := make([]fingerprintToken, 0, len(right)+1+len(left))
+	for _, fingerprint := range right {
+		combined = append(combined, fingerprintToken{value: fingerprint})
+	}
+	combined = append(combined, fingerprintToken{sep: true})
+	for _, fingerprint := range left {
+		combined = append(combined, fingerprintToken{value: fingerprint})
+	}
+
+	prefix := make([]int, len(combined))
+	for i := 1; i < len(combined); i++ {
+		j := prefix[i-1]
+		for j > 0 && combined[i] != combined[j] {
+			j = prefix[j-1]
 		}
+		if combined[i] == combined[j] {
+			j++
+		}
+		prefix[i] = j
 	}
-	return true
+	return prefix[len(prefix)-1]
 }
 
 func isSyntheticCompactionAckMessage(msg Message) bool {
