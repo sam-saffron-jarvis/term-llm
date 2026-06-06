@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"errors"
+	"net/http"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -129,6 +130,76 @@ func TestCreateStdioTransport_EnvOverridesParent(t *testing.T) {
 	}
 	if !found {
 		t.Error("expected overridden env var in subprocess env")
+	}
+}
+
+func TestCreateHTTPTransport_UsesTransportLevelTimeouts(t *testing.T) {
+	client := &Client{
+		name: "test",
+		config: ServerConfig{
+			URL: "https://example.com/mcp",
+		},
+	}
+
+	transport := client.createHTTPTransport()
+	st, ok := transport.(*sdkmcp.StreamableClientTransport)
+	if !ok {
+		t.Fatal("expected sdkmcp.StreamableClientTransport")
+	}
+	if st.HTTPClient == nil {
+		t.Fatal("expected HTTP client")
+	}
+	if st.HTTPClient.Timeout != 0 {
+		t.Fatalf("HTTPClient.Timeout = %v, want 0 so context controls long-running calls", st.HTTPClient.Timeout)
+	}
+
+	ht, ok := st.HTTPClient.Transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("HTTPClient.Transport = %T, want *http.Transport", st.HTTPClient.Transport)
+	}
+	if ht.DialContext == nil {
+		t.Fatal("expected DialContext timeout transport")
+	}
+	if ht.TLSHandshakeTimeout == 0 {
+		t.Fatal("expected TLS handshake timeout")
+	}
+	if ht.ResponseHeaderTimeout == 0 {
+		t.Fatal("expected response header timeout")
+	}
+	if ht.IdleConnTimeout == 0 {
+		t.Fatal("expected idle connection timeout")
+	}
+}
+
+func TestCreateHTTPTransport_HeadersWrapTimeoutTransport(t *testing.T) {
+	client := &Client{
+		name: "test",
+		config: ServerConfig{
+			URL:     "https://example.com/mcp",
+			Headers: map[string]string{"Authorization": "Bearer token"},
+		},
+	}
+
+	transport := client.createHTTPTransport()
+	st := transport.(*sdkmcp.StreamableClientTransport)
+	if st.HTTPClient.Timeout != 0 {
+		t.Fatalf("HTTPClient.Timeout = %v, want 0 so context controls long-running calls", st.HTTPClient.Timeout)
+	}
+
+	ht, ok := st.HTTPClient.Transport.(*headerTransport)
+	if !ok {
+		t.Fatalf("HTTPClient.Transport = %T, want *headerTransport", st.HTTPClient.Transport)
+	}
+	if got := ht.headers["Authorization"]; got != "Bearer token" {
+		t.Fatalf("Authorization header = %q, want %q", got, "Bearer token")
+	}
+
+	base, ok := ht.base.(*http.Transport)
+	if !ok {
+		t.Fatalf("headerTransport.base = %T, want *http.Transport", ht.base)
+	}
+	if base.ResponseHeaderTimeout == 0 {
+		t.Fatal("expected wrapped transport to keep response header timeout")
 	}
 }
 

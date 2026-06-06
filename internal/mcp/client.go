@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -134,22 +135,32 @@ func (c *Client) createStdioTransport(ctx context.Context) mcp.Transport {
 
 // createHTTPTransport creates an HTTP transport for URL-based servers.
 func (c *Client) createHTTPTransport() mcp.Transport {
-	// Create HTTP client with custom headers if specified
-	httpClient := &http.Client{Timeout: 30 * time.Second}
+	// Use transport-level timeouts so caller contexts control the full request
+	// lifetime, including long-running tool calls and streams.
+	baseTransport := &http.Transport{
+		DialContext: (&net.Dialer{
+			Timeout: 30 * time.Second,
+		}).DialContext,
+		TLSHandshakeTimeout:   15 * time.Second,
+		ResponseHeaderTimeout: 2 * time.Minute,
+		IdleConnTimeout:       90 * time.Second,
+	}
+
+	httpClient := &http.Client{Transport: baseTransport}
+
+	// If headers are specified, wrap the transport with a custom round tripper.
+	if len(c.config.Headers) > 0 {
+		httpClient.Transport = &headerTransport{
+			base:    baseTransport,
+			headers: c.config.Headers,
+		}
+	}
 
 	// Use StreamableClientTransport (the modern MCP transport)
 	transport := &mcp.StreamableClientTransport{
 		Endpoint:   c.config.URL,
 		HTTPClient: httpClient,
 		MaxRetries: 5,
-	}
-
-	// If headers are specified, wrap the transport with a custom round tripper
-	if len(c.config.Headers) > 0 {
-		httpClient.Transport = &headerTransport{
-			base:    http.DefaultTransport,
-			headers: c.config.Headers,
-		}
 	}
 
 	return transport
