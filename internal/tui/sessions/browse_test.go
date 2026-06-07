@@ -16,7 +16,7 @@ type ftsRefreshStore struct {
 	getMessagesCalls int
 }
 
-func (s *ftsRefreshStore) Search(ctx context.Context, query string, limit int) ([]session.SearchResult, error) {
+func (s *ftsRefreshStore) Search(ctx context.Context, opts session.SearchOptions) ([]session.SearchResult, error) {
 	return s.searchResults, nil
 }
 

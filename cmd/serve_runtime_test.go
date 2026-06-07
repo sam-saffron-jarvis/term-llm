@@ -205,7 +205,7 @@ func (s *serveRuntimeTestStore) List(ctx context.Context, opts session.ListOptio
 	return nil, nil
 }
 
-func (s *serveRuntimeTestStore) Search(ctx context.Context, query string, limit int) ([]session.SearchResult, error) {
+func (s *serveRuntimeTestStore) Search(ctx context.Context, opts session.SearchOptions) ([]session.SearchResult, error) {
 	return nil, nil
 }
 

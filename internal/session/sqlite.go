@@ -1505,12 +1505,12 @@ func (s *SQLiteStore) List(ctx context.Context, opts ListOptions) ([]SessionSumm
 }
 
 // Search finds sessions containing the query text using FTS5.
-func (s *SQLiteStore) Search(ctx context.Context, query string, limit int) ([]SearchResult, error) {
-	if limit == 0 {
-		limit = 20
+func (s *SQLiteStore) Search(ctx context.Context, opts SearchOptions) ([]SearchResult, error) {
+	if opts.Limit == 0 {
+		opts.Limit = 20
 	}
 
-	ftsQuery := sqlitefts.LiteralQuery(query)
+	ftsQuery := sqlitefts.LiteralQuery(opts.Query)
 	if ftsQuery == "" {
 		return []SearchResult{}, nil
 	}
@@ -1528,15 +1528,99 @@ func (s *SQLiteStore) Search(ctx context.Context, query string, limit int) ([]Se
 		messageCountCol = "(SELECT COUNT(*) FROM messages WHERE session_id = s.id AND role IN ('user', 'assistant')" + countCompactionTailClause + ")"
 	}
 
+	originCol := "'tui'"
+	if s.hasOrigin {
+		originCol = "COALESCE(NULLIF(TRIM(s.origin), ''), 'tui')"
+	}
+	pinnedCol := "FALSE"
+	if s.hasPinned {
+		pinnedCol = "COALESCE(s.pinned, FALSE)"
+	}
+	generatedShortCol := "''"
+	generatedLongCol := "''"
+	titleSourceCol := "''"
+	if s.hasGeneratedTitles {
+		generatedShortCol = "s.generated_short_title"
+		generatedLongCol = "s.generated_long_title"
+		titleSourceCol = "s.title_source"
+	}
+	lastMessageAtCol := "NULL"
+	if s.hasLastMessageAt {
+		lastMessageAtCol = "s.last_message_at"
+	}
+
+	filterClause := ""
+	args := []any{ftsQuery}
+	if len(opts.Categories) > 0 {
+		clauses := make([]string, 0, len(opts.Categories))
+		sawSpecificCategory := false
+		for _, raw := range opts.Categories {
+			category := strings.ToLower(strings.TrimSpace(raw))
+			switch category {
+			case "", "all":
+				clauses = nil
+			case "chat":
+				sawSpecificCategory = true
+				if s.hasOrigin {
+					clauses = append(clauses, "(s.mode = 'chat' AND COALESCE(NULLIF(TRIM(s.origin), ''), 'tui') = 'tui')")
+				} else {
+					clauses = append(clauses, "(s.mode = 'chat')")
+				}
+			case "web":
+				sawSpecificCategory = true
+				if s.hasOrigin {
+					clauses = append(clauses, "(COALESCE(NULLIF(TRIM(s.origin), ''), 'tui') = 'web')")
+				}
+			case "ask", "plan", "exec":
+				sawSpecificCategory = true
+				clauses = append(clauses, "(s.mode = ?)")
+				args = append(args, category)
+			}
+			if clauses == nil {
+				break
+			}
+		}
+		if len(clauses) > 0 {
+			filterClause += " AND (" + strings.Join(clauses, " OR ") + ")"
+		} else if sawSpecificCategory {
+			filterClause += " AND 1 = 0"
+		}
+	}
+	if !opts.Archived {
+		filterClause += " AND s.archived = FALSE"
+	}
+	args = append(args, opts.Limit)
+
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT m.session_id, s.number, m.id, s.name, s.summary, snippet(messages_fts, 0, '**', '**', '...', 32),
-		       s.provider, s.model, s.mode, s.status, `+messageCountCol+` as message_count, s.created_at, s.updated_at, m.created_at
-		FROM messages_fts f
-		JOIN messages m ON m.id = f.rowid
-		JOIN sessions s ON s.id = m.session_id
-		WHERE messages_fts MATCH ?`+compactionTailClause+`
-		ORDER BY rank
-		LIMIT ?`, ftsQuery, limit)
+		WITH raw_matches AS (
+			SELECT rowid AS message_id, rank AS match_rank
+			FROM messages_fts
+			WHERE messages_fts MATCH ?
+		), ranked_matches AS (
+			SELECT m.id AS message_id, m.session_id, raw_matches.match_rank,
+			       ROW_NUMBER() OVER (PARTITION BY m.session_id ORDER BY raw_matches.match_rank, m.id) AS session_row
+			FROM raw_matches
+			JOIN messages m ON m.id = raw_matches.message_id
+			JOIN sessions s ON s.id = m.session_id
+			WHERE 1=1`+compactionTailClause+filterClause+`
+		), session_matches AS (
+			SELECT message_id, session_id, match_rank
+			FROM ranked_matches
+			WHERE session_row = 1
+			ORDER BY match_rank, message_id
+			LIMIT ?
+		)
+		SELECT m.session_id, s.number, m.id, s.name, s.summary, `+generatedShortCol+` AS generated_short_title,
+		       `+generatedLongCol+` AS generated_long_title, `+titleSourceCol+` AS title_source,
+		       snippet(messages_fts, 0, '**', '**', '...', 32) AS snippet, s.provider, COALESCE(s.provider_key, '') AS provider_key,
+		       s.model, s.mode, `+originCol+` AS origin, s.archived, `+pinnedCol+` AS pinned, s.status,
+		       `+messageCountCol+` AS message_count, s.created_at, s.updated_at, `+lastMessageAtCol+` AS last_message_at,
+		       m.created_at AS message_created_at
+		FROM session_matches sm
+		JOIN messages m ON m.id = sm.message_id
+		JOIN sessions s ON s.id = sm.session_id
+		JOIN messages_fts ON messages_fts.rowid = sm.message_id
+		ORDER BY sm.match_rank, sm.message_id`, args...)
 	if err != nil {
 		return nil, fmt.Errorf("search messages: %w", err)
 	}
@@ -1546,20 +1630,43 @@ func (s *SQLiteStore) Search(ctx context.Context, query string, limit int) ([]Se
 	for rows.Next() {
 		var r SearchResult
 		var number sql.NullInt64
-		var mode, status sql.NullString
+		var generatedShortTitle, generatedLongTitle, titleSource, providerKey, mode, origin, status sql.NullString
+		var lastMessageAt sql.NullTime
 		err := rows.Scan(&r.SessionID, &number, &r.MessageID, &r.SessionName, &r.Summary,
-			&r.Snippet, &r.Provider, &r.Model, &mode, &status, &r.MessageCount, &r.SessionCreatedAt, &r.UpdatedAt, &r.CreatedAt)
+			&generatedShortTitle, &generatedLongTitle, &titleSource, &r.Snippet, &r.Provider, &providerKey,
+			&r.Model, &mode, &origin, &r.Archived, &r.Pinned, &status, &r.MessageCount,
+			&r.SessionCreatedAt, &r.UpdatedAt, &lastMessageAt, &r.CreatedAt)
 		if err != nil {
 			return nil, fmt.Errorf("scan search result: %w", err)
 		}
 		if number.Valid {
 			r.SessionNumber = number.Int64
 		}
+		if generatedShortTitle.Valid {
+			r.GeneratedShortTitle = generatedShortTitle.String
+		}
+		if generatedLongTitle.Valid {
+			r.GeneratedLongTitle = generatedLongTitle.String
+		}
+		if titleSource.Valid {
+			r.TitleSource = SessionTitleSource(titleSource.String)
+		}
+		if providerKey.Valid {
+			r.ProviderKey = providerKey.String
+		}
 		if mode.Valid {
 			r.Mode = SessionMode(mode.String)
 		}
+		if origin.Valid {
+			r.Origin = SessionOrigin(origin.String)
+		} else {
+			r.Origin = OriginTUI
+		}
 		if status.Valid {
 			r.Status = SessionStatus(status.String)
+		}
+		if lastMessageAt.Valid {
+			r.LastMessageAt = lastMessageAt.Time
 		}
 		results = append(results, r)
 	}

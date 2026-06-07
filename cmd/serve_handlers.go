@@ -1051,22 +1051,12 @@ func (s *serveServer) handleSessionsSearch(w http.ResponseWriter, r *http.Reques
 		}
 	}
 
-	summaries, err := s.store.List(r.Context(), session.ListOptions{
-		Limit:          2000,
-		Archived:       includeArchived,
-		Categories:     categories,
-		SortByActivity: true,
+	matches, err := s.store.Search(r.Context(), session.SearchOptions{
+		Query:      query,
+		Categories: categories,
+		Limit:      limit,
+		Archived:   includeArchived,
 	})
-	if err != nil {
-		writeOpenAIError(w, http.StatusInternalServerError, "server_error", "failed to list sessions")
-		return
-	}
-	allowed := make(map[string]session.SessionSummary, len(summaries))
-	for _, summary := range summaries {
-		allowed[summary.ID] = summary
-	}
-
-	matches, err := s.store.Search(r.Context(), query, limit*4)
 	if err != nil {
 		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "invalid search query")
 		return
@@ -1090,17 +1080,29 @@ func (s *serveServer) handleSessionsSearch(w http.ResponseWriter, r *http.Reques
 		MessageID     int64                 `json:"message_id,omitempty"`
 	}
 
-	result := make([]sessionSearchEntry, 0, min(limit, len(matches)))
-	seen := make(map[string]bool, len(matches))
+	result := make([]sessionSearchEntry, 0, len(matches))
 	for _, match := range matches {
-		if seen[match.SessionID] {
-			continue
+		summary := session.SessionSummary{
+			ID:                  match.SessionID,
+			Number:              match.SessionNumber,
+			Name:                match.SessionName,
+			Summary:             match.Summary,
+			GeneratedShortTitle: match.GeneratedShortTitle,
+			GeneratedLongTitle:  match.GeneratedLongTitle,
+			TitleSource:         match.TitleSource,
+			Provider:            match.Provider,
+			ProviderKey:         match.ProviderKey,
+			Model:               match.Model,
+			Mode:                match.Mode,
+			Origin:              match.Origin,
+			Archived:            match.Archived,
+			Pinned:              match.Pinned,
+			MessageCount:        match.MessageCount,
+			Status:              match.Status,
+			CreatedAt:           match.SessionCreatedAt,
+			UpdatedAt:           match.UpdatedAt,
+			LastMessageAt:       match.LastMessageAt,
 		}
-		summary, ok := allowed[match.SessionID]
-		if !ok {
-			continue
-		}
-		seen[match.SessionID] = true
 		lastMessageAt := sessionSummaryLastMessageAt(summary)
 		result = append(result, sessionSearchEntry{
 			ID:            summary.ID,
@@ -1119,9 +1121,6 @@ func (s *serveServer) handleSessionsSearch(w http.ResponseWriter, r *http.Reques
 			Snippet:       match.Snippet,
 			MessageID:     match.MessageID,
 		})
-		if len(result) >= limit {
-			break
-		}
 	}
 
 	writeJSONConditional(w, r, http.StatusOK, map[string]any{"sessions": result})

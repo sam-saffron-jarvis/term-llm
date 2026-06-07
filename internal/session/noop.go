@@ -44,7 +44,7 @@ func (s *NoopStore) List(ctx context.Context, opts ListOptions) ([]SessionSummar
 	return nil, nil
 }
 
-func (s *NoopStore) Search(ctx context.Context, query string, limit int) ([]SearchResult, error) {
+func (s *NoopStore) Search(ctx context.Context, opts SearchOptions) ([]SearchResult, error) {
 	return nil, nil
 }
 

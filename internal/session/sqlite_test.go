@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"testing"
 	"time"
 
@@ -233,7 +234,7 @@ func TestSQLiteStorePersistsCompactionTailFlag(t *testing.T) {
 	if len(summaries) != 1 || summaries[0].MessageCount != 1 {
 		t.Fatalf("visible message count = %#v, want only non-tail user counted", summaries)
 	}
-	results, err := store.Search(ctx, "hidden", 10)
+	results, err := store.Search(ctx, SearchOptions{Query: "hidden", Limit: 10})
 	if err != nil {
 		t.Fatalf("Search hidden: %v", err)
 	}
@@ -315,14 +316,14 @@ func TestSQLiteStoreReplaceMessagesPreservesUnchangedPrefix(t *testing.T) {
 		t.Fatalf("suffix texts = %q, %q; want new suffix/new tail", after[2].TextContent, after[3].TextContent)
 	}
 
-	results, err := store.Search(ctx, "old suffix", 10)
+	results, err := store.Search(ctx, SearchOptions{Query: "old suffix", Limit: 10})
 	if err != nil {
 		t.Fatalf("Search old suffix: %v", err)
 	}
 	if len(results) != 0 {
 		t.Fatalf("old suffix still in FTS: %#v", results)
 	}
-	results, err = store.Search(ctx, "new suffix", 10)
+	results, err = store.Search(ctx, SearchOptions{Query: "new suffix", Limit: 10})
 	if err != nil {
 		t.Fatalf("Search new suffix: %v", err)
 	}
@@ -385,7 +386,7 @@ func TestSQLiteStoreReplaceMessagesFallsBackForDuplicateSequences(t *testing.T) 
 	if len(got) != 1 || got[0].TextContent != "kept message" {
 		t.Fatalf("messages after duplicate cleanup = %#v, want one kept message", got)
 	}
-	results, err := store.Search(ctx, "stale duplicate", 10)
+	results, err := store.Search(ctx, SearchOptions{Query: "stale duplicate", Limit: 10})
 	if err != nil {
 		t.Fatalf("Search stale duplicate: %v", err)
 	}
@@ -532,7 +533,7 @@ func TestSQLiteStoreSearchEscapesUserQueryForFTS(t *testing.T) {
 		t.Fatalf("AddMessage: %v", err)
 	}
 
-	results, err := store.Search(ctx, "term-llm", 10)
+	results, err := store.Search(ctx, SearchOptions{Query: "term-llm", Limit: 10})
 	if err != nil {
 		t.Fatalf("Search(term-llm) error = %v", err)
 	}
@@ -553,6 +554,116 @@ func TestSQLiteStoreSearchEscapesUserQueryForFTS(t *testing.T) {
 	}
 	if results[0].UpdatedAt.IsZero() {
 		t.Fatal("Search(term-llm) updated_at = zero, want populated timestamp")
+	}
+}
+
+func TestSQLiteStoreSearchReturnsDistinctFilteredSessionMatches(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+
+	store, err := NewSQLiteStore(DefaultConfig())
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Second)
+	sessions := []*Session{
+		{
+			ID:                  "chat-session",
+			Provider:            "test",
+			ProviderKey:         "test",
+			Model:               "test-model",
+			Mode:                ModeChat,
+			Origin:              OriginTUI,
+			GeneratedShortTitle: "Chat result",
+			CreatedAt:           now,
+			UpdatedAt:           now,
+			Status:              StatusActive,
+		},
+		{
+			ID:                  "web-session",
+			Provider:            "test",
+			ProviderKey:         "test",
+			Model:               "test-model",
+			Mode:                ModeChat,
+			Origin:              OriginWeb,
+			GeneratedShortTitle: "Web result",
+			CreatedAt:           now.Add(time.Second),
+			UpdatedAt:           now.Add(time.Second),
+			Status:              StatusActive,
+		},
+		{
+			ID:                  "archived-web-session",
+			Provider:            "test",
+			ProviderKey:         "test",
+			Model:               "test-model",
+			Mode:                ModeChat,
+			Origin:              OriginWeb,
+			GeneratedShortTitle: "Archived web result",
+			CreatedAt:           now.Add(2 * time.Second),
+			UpdatedAt:           now.Add(2 * time.Second),
+			Status:              StatusActive,
+			Archived:            true,
+		},
+	}
+	for _, sess := range sessions {
+		if err := store.Create(ctx, sess); err != nil {
+			t.Fatalf("Create(%s): %v", sess.ID, err)
+		}
+	}
+	for i := 0; i < 3; i++ {
+		if err := store.AddMessage(ctx, "chat-session", NewMessage("chat-session", llm.UserText(fmt.Sprintf("shared needle duplicate %d", i)), i)); err != nil {
+			t.Fatalf("AddMessage(chat %d): %v", i, err)
+		}
+	}
+	if err := store.AddMessage(ctx, "web-session", NewMessage("web-session", llm.UserText("shared needle web match"), 0)); err != nil {
+		t.Fatalf("AddMessage(web): %v", err)
+	}
+	if err := store.AddMessage(ctx, "archived-web-session", NewMessage("archived-web-session", llm.UserText("shared needle archived match"), 0)); err != nil {
+		t.Fatalf("AddMessage(archived): %v", err)
+	}
+
+	results, err := store.Search(ctx, SearchOptions{Query: "shared needle", Limit: 2})
+	if err != nil {
+		t.Fatalf("Search distinct: %v", err)
+	}
+	if len(results) != 2 {
+		t.Fatalf("Search distinct len = %d, want 2", len(results))
+	}
+	seen := map[string]bool{}
+	for _, result := range results {
+		if seen[result.SessionID] {
+			t.Fatalf("duplicate session in results: %#v", results)
+		}
+		seen[result.SessionID] = true
+		if result.Archived {
+			t.Fatalf("unexpected archived result in default search: %#v", result)
+		}
+	}
+	if !seen["chat-session"] || !seen["web-session"] {
+		t.Fatalf("default search ids = %#v, want chat-session and web-session", results)
+	}
+
+	results, err = store.Search(ctx, SearchOptions{Query: "shared needle", Limit: 5, Categories: []string{"web"}})
+	if err != nil {
+		t.Fatalf("Search web category: %v", err)
+	}
+	if len(results) != 1 || results[0].SessionID != "web-session" {
+		t.Fatalf("web category results = %#v, want only web-session", results)
+	}
+
+	results, err = store.Search(ctx, SearchOptions{Query: "shared needle", Limit: 5, Categories: []string{"web"}, Archived: true})
+	if err != nil {
+		t.Fatalf("Search web include archived: %v", err)
+	}
+	if len(results) != 2 {
+		t.Fatalf("web include archived len = %d, want 2", len(results))
+	}
+	ids := []string{results[0].SessionID, results[1].SessionID}
+	sort.Strings(ids)
+	if ids[0] != "archived-web-session" || ids[1] != "web-session" {
+		t.Fatalf("web include archived ids = %v, want [archived-web-session web-session]", ids)
 	}
 }
 

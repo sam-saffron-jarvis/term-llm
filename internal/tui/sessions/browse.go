@@ -385,7 +385,7 @@ func (m *Model) doRefresh() (tea.Model, tea.Cmd) {
 
 	// If FTS search is enabled and there's a query, use Search
 	if m.ftsEnabled && m.searchQuery != "" {
-		results, err := m.store.Search(ctx, m.searchQuery, 100)
+		results, err := m.store.Search(ctx, session.SearchOptions{Query: m.searchQuery, Limit: 100})
 		if err != nil {
 			m.err = err
 			return m, nil
