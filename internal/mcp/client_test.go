@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"errors"
+	"net/http"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -14,6 +15,12 @@ import (
 
 	sdkmcp "github.com/modelcontextprotocol/go-sdk/mcp"
 )
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
+}
 
 func TestCreateStdioTransport_InheritsEnv(t *testing.T) {
 	// Server with custom env should inherit parent PATH
@@ -129,6 +136,117 @@ func TestCreateStdioTransport_EnvOverridesParent(t *testing.T) {
 	}
 	if !found {
 		t.Error("expected overridden env var in subprocess env")
+	}
+}
+
+func TestCreateHTTPTransport_UsesTransportLevelTimeouts(t *testing.T) {
+	client := &Client{
+		name: "test",
+		config: ServerConfig{
+			URL: "https://example.com/mcp",
+		},
+	}
+
+	transport := client.createHTTPTransport()
+	st, ok := transport.(*sdkmcp.StreamableClientTransport)
+	if !ok {
+		t.Fatal("expected sdkmcp.StreamableClientTransport")
+	}
+	if st.HTTPClient == nil {
+		t.Fatal("expected HTTP client")
+	}
+	if st.HTTPClient.Timeout != 0 {
+		t.Fatalf("HTTPClient.Timeout = %v, want 0 so context controls long-running calls", st.HTTPClient.Timeout)
+	}
+
+	ht, ok := st.HTTPClient.Transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("HTTPClient.Transport = %T, want *http.Transport", st.HTTPClient.Transport)
+	}
+	if ht.DialContext == nil {
+		t.Fatal("expected DialContext timeout transport")
+	}
+	if ht.TLSHandshakeTimeout == 0 {
+		t.Fatal("expected TLS handshake timeout")
+	}
+	if ht.ResponseHeaderTimeout == 0 {
+		t.Fatal("expected response header timeout")
+	}
+	if ht.IdleConnTimeout == 0 {
+		t.Fatal("expected idle connection timeout")
+	}
+	if ht.Proxy == nil {
+		t.Fatal("expected cloned default transport to preserve proxy configuration")
+	}
+	if !ht.ForceAttemptHTTP2 {
+		t.Fatal("expected cloned default transport to preserve HTTP/2 support")
+	}
+}
+
+func TestCreateHTTPTransport_HeadersWrapTimeoutTransport(t *testing.T) {
+	client := &Client{
+		name: "test",
+		config: ServerConfig{
+			URL:     "https://example.com/mcp",
+			Headers: map[string]string{"Authorization": "Bearer token"},
+		},
+	}
+
+	transport := client.createHTTPTransport()
+	st := transport.(*sdkmcp.StreamableClientTransport)
+	if st.HTTPClient.Timeout != 0 {
+		t.Fatalf("HTTPClient.Timeout = %v, want 0 so context controls long-running calls", st.HTTPClient.Timeout)
+	}
+
+	ht, ok := st.HTTPClient.Transport.(*headerTransport)
+	if !ok {
+		t.Fatalf("HTTPClient.Transport = %T, want *headerTransport", st.HTTPClient.Transport)
+	}
+	if got := ht.headers["Authorization"]; got != "Bearer token" {
+		t.Fatalf("Authorization header = %q, want %q", got, "Bearer token")
+	}
+
+	base, ok := ht.base.(*http.Transport)
+	if !ok {
+		t.Fatalf("headerTransport.base = %T, want *http.Transport", ht.base)
+	}
+	if base.ResponseHeaderTimeout == 0 {
+		t.Fatal("expected wrapped transport to keep response header timeout")
+	}
+}
+
+func TestHeaderTransportAddsHeadersWithoutMutatingRequest(t *testing.T) {
+	req, err := http.NewRequest("GET", "https://example.com/mcp", nil)
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	req.Header.Set("Authorization", "caller")
+
+	var observedAuth string
+	transport := &headerTransport{
+		base: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			observedAuth = req.Header.Get("Authorization")
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     make(http.Header),
+				Body:       http.NoBody,
+				Request:    req,
+			}, nil
+		}),
+		headers: map[string]string{"Authorization": "Bearer token"},
+	}
+
+	resp, err := transport.RoundTrip(req)
+	if err != nil {
+		t.Fatalf("RoundTrip: %v", err)
+	}
+	resp.Body.Close()
+
+	if observedAuth != "Bearer token" {
+		t.Fatalf("observed Authorization = %q, want %q", observedAuth, "Bearer token")
+	}
+	if got := req.Header.Get("Authorization"); got != "caller" {
+		t.Fatalf("original request Authorization mutated to %q", got)
 	}
 }
 

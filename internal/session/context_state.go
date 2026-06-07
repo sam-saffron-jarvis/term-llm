@@ -52,6 +52,17 @@ func clearCompactionBoundary(ctx context.Context, store Store, sess *Session) {
 	}
 }
 
+func persistCompactionTailHints(ctx context.Context, store Store, sess *Session, messageIDs []int64) {
+	if store == nil || sess == nil || len(messageIDs) == 0 {
+		return
+	}
+	if persister, ok := store.(interface {
+		PersistCompactionTailHints(context.Context, string, []int64) error
+	}); ok {
+		_ = persister.PersistCompactionTailHints(ctx, sess.ID, messageIDs)
+	}
+}
+
 // LoadScrollbackWithBoundary loads all persisted messages for display while
 // also returning the index where active LLM context begins.
 func LoadScrollbackWithBoundary(ctx context.Context, store Store, sess *Session) ([]Message, int, error) {
@@ -67,7 +78,11 @@ func LoadScrollbackWithBoundary(ctx context.Context, store Store, sess *Session)
 	}
 	for i, msg := range messages {
 		if msg.Sequence >= sess.CompactionSeq {
-			messages = markCompactionDisplayTails(messages)
+			var persistedTailIDs []int64
+			messages, persistedTailIDs = markCompactionDisplayTailsForPersistence(messages)
+			// Legacy compacted sessions may predate persisted display-tail hints.
+			// Backfill the hints best-effort so future loads skip duplicate detection.
+			persistCompactionTailHints(ctx, store, sess, persistedTailIDs)
 			return messages, i, nil
 		}
 	}
@@ -151,20 +166,33 @@ func markNewCompactionTailRows(messages []Message) {
 }
 
 func markCompactionDisplayTails(messages []Message) []Message {
+	marked, _ := markCompactionDisplayTailsForPersistence(messages)
+	return marked
+}
+
+func markCompactionDisplayTailsForPersistence(messages []Message) ([]Message, []int64) {
 	if len(messages) == 0 {
-		return messages
+		return messages, nil
 	}
 	out := append([]Message(nil), messages...)
-	fingerprints := make([]string, len(out))
-	for i := range out {
-		fingerprints[i] = messageDisplayFingerprint(out[i])
-	}
+	var fingerprints []string
+	var persistedTailIDs []int64
 	for i := 0; i < len(out); i++ {
 		if !isInternalCompactionSummaryMessage(out[i]) {
 			continue
 		}
+		ackWasTail := i+1 < len(out) && out[i+1].CompactionTail
 		if persistedCompactionTailAlreadyMarked(out, i) {
+			if !ackWasTail && i+1 < len(out) && isSyntheticCompactionAckMessage(out[i+1]) && out[i+1].CompactionTail && out[i+1].ID != 0 {
+				persistedTailIDs = append(persistedTailIDs, out[i+1].ID)
+			}
 			continue
+		}
+		if fingerprints == nil {
+			fingerprints = make([]string, len(out))
+			for j := range out {
+				fingerprints[j] = messageDisplayFingerprint(out[j])
+			}
 		}
 		start, dupLen := compactionDuplicateTailRange(out, fingerprints, i)
 		if dupLen > 0 {
@@ -173,15 +201,24 @@ func markCompactionDisplayTails(messages []Message) []Message {
 			// but are already visible in the pre-compaction transcript, so display
 			// renderers should suppress them instead of echoing them a second time.
 			for j := i + 1; j < start+dupLen && j < len(out); j++ {
+				if out[j].CompactionTail {
+					continue
+				}
 				out[j].CompactionTail = true
+				if out[j].ID != 0 {
+					persistedTailIDs = append(persistedTailIDs, out[j].ID)
+				}
 			}
 			continue
 		}
-		if i+1 < len(out) && isSyntheticCompactionAckMessage(out[i+1]) {
+		if i+1 < len(out) && isSyntheticCompactionAckMessage(out[i+1]) && !out[i+1].CompactionTail {
 			out[i+1].CompactionTail = true
+			if out[i+1].ID != 0 {
+				persistedTailIDs = append(persistedTailIDs, out[i+1].ID)
+			}
 		}
 	}
-	return out
+	return out, persistedTailIDs
 }
 
 func persistedCompactionTailAlreadyMarked(messages []Message, summaryIdx int) bool {

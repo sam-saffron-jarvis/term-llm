@@ -299,12 +299,39 @@ func TestLoadScrollbackWithBoundaryMarksRetainedRawSuffixHiddenFromDisplay(t *te
 		t.Fatalf("post-compaction ack/tail rows should be hidden from display: %#v", all[6:])
 	}
 
+	persisted, err := store.GetMessages(ctx, sess.ID, 0, 0)
+	if err != nil {
+		t.Fatalf("GetMessages after backfill: %v", err)
+	}
+	if !persisted[6].CompactionTail || !persisted[7].CompactionTail || !persisted[8].CompactionTail {
+		t.Fatalf("legacy compaction tail hints were not persisted: %#v", persisted[6:])
+	}
+
 	active, err := LoadActiveMessages(ctx, store, refreshed)
 	if err != nil {
 		t.Fatalf("LoadActiveMessages: %v", err)
 	}
 	if len(active) != 4 || active[2].TextContent != "recent user" || active[3].TextContent != "recent assistant" {
 		t.Fatalf("active messages = %#v, want compacted summary/ack plus retained raw suffix", active)
+	}
+}
+
+func TestMarkCompactionDisplayTailsPersistsSyntheticAckWhenTailAlreadyMarked(t *testing.T) {
+	summary := *NewMessage("s", llm.UserText("[Context Compaction]\n\n<SUMMARY_AND_NEXT_ACTIONS>\ncontinue\n</SUMMARY_AND_NEXT_ACTIONS>"), 0)
+	summary.ID = 1
+	ack := *NewMessage("s", llm.AssistantText("I've reviewed the context summary. I'll continue from where we left off."), 1)
+	ack.ID = 2
+	tail := *NewMessage("s", llm.UserText("recent user"), 2)
+	tail.ID = 3
+	tail.CompactionTail = true
+	messages := []Message{summary, ack, tail}
+
+	marked, ids := markCompactionDisplayTailsForPersistence(messages)
+	if !marked[1].CompactionTail {
+		t.Fatalf("synthetic ack should be hidden when following tail row is already marked: %#v", marked)
+	}
+	if len(ids) != 1 || ids[0] != 2 {
+		t.Fatalf("persisted IDs = %#v, want only synthetic ack ID 2", ids)
 	}
 }
 
