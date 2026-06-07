@@ -39,6 +39,11 @@ type pendingInterjectionUI struct {
 	UIState string
 }
 
+type pendingStreamModelSwitch struct {
+	provider string
+	model    string
+}
+
 type Model struct {
 	// Dimensions
 	width  int
@@ -215,6 +220,11 @@ type Model struct {
 	// Deferred model switch marker for non-submitting shortcuts such as Ctrl+R.
 	// Coalesces repeated effort changes and is appended when the next user turn is sent.
 	pendingModelSwitch *llm.ModelSwapMarker
+
+	// Deferred model/effort switch requested while a provider stream is active.
+	// The active llm.Engine must not be replaced mid-turn, so this is applied
+	// after the stream ends (or just before the next send if the turn is aborted).
+	pendingStreamModelSwitch *pendingStreamModelSwitch
 
 	// Stats tracking
 	showStats  bool
@@ -1557,6 +1567,10 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					_ = m.store.UpdateStatus(context.Background(), m.sess.ID, status)
 				}
 
+				if cmd := m.applyPendingStreamModelSwitch(); cmd != nil {
+					errorOutputCmds = append(errorOutputCmds, cmd)
+				}
+
 				if m.streamPerf != nil {
 					m.streamPerf.RecordDuration(durationMetricStreamEvent, time.Since(streamEventStart))
 					m.streamPerf.EmitSummaryIfActive(time.Now())
@@ -1976,6 +1990,10 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.streamRenderTickPending = false
 			if m.streamPerf != nil {
 				m.streamPerf.EmitSummaryIfActive(time.Now())
+			}
+
+			if cmd := m.applyPendingStreamModelSwitch(); cmd != nil {
+				cmds = append(cmds, cmd)
 			}
 
 			// Auto-save session

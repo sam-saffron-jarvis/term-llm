@@ -287,6 +287,10 @@ func (m *Model) sendMessage(content string) (tea.Model, tea.Cmd) {
 	m.selection = Selection{}
 	m.interruptNotice = ""
 	m.clearFooterMessage()
+	var preSendCmds []tea.Cmd
+	if cmd := m.applyPendingStreamModelSwitch(); cmd != nil {
+		preSendCmds = append(preSendCmds, cmd)
+	}
 	m.recordCurrentModelUse()
 
 	// Build the full message content including file attachments
@@ -420,18 +424,22 @@ func (m *Model) sendMessage(content string) (tea.Model, tea.Cmd) {
 	// In alt screen mode, View() renders history including user message
 	// In inline mode, print user message to scrollback first
 	if m.altScreen {
-		return m, tea.Batch(
+		cmds := []tea.Cmd{
 			m.startStream(fullContent),
 			m.spinner.Tick,
 			m.tickEvery(),
-		)
+		}
+		cmds = append(preSendCmds, cmds...)
+		return m, tea.Batch(cmds...)
 	}
-	return m, tea.Batch(
+	cmds := []tea.Cmd{
 		tea.Println(userDisplay.String()),
 		m.startStream(fullContent),
 		m.spinner.Tick,
 		m.tickEvery(),
-	)
+	}
+	cmds = append(preSendCmds, cmds...)
+	return m, tea.Batch(cmds...)
 }
 
 func (m *Model) startStream(content string) tea.Cmd {

@@ -49,6 +49,68 @@ func TestHandleKeyMsg_SlashPathSubmitsAsChatMessage(t *testing.T) {
 	}
 }
 
+func TestHandleKeyMsg_StreamingSlashShowsLocalCompletions(t *testing.T) {
+	m := newTestChatModel(false)
+	m.streaming = true
+
+	result, _ := m.handleKeyMsg(tea.KeyPressMsg{Code: '/', Text: "/"})
+	rm := result.(*Model)
+	if !rm.completions.IsVisible() {
+		t.Fatal("expected slash completions while streaming")
+	}
+	got := completionNames(rm.completions.filtered)
+	for _, want := range []string{"help", "stats", "effort", "thinking"} {
+		if !containsString(got, want) {
+			t.Fatalf("streaming completions missing %q: %v", want, got)
+		}
+	}
+	for _, reject := range []string{"model", "new", "handover"} {
+		if containsString(got, reject) {
+			t.Fatalf("streaming completions included unsafe command %q: %v", reject, got)
+		}
+	}
+}
+
+func TestHandleKeyMsg_StreamingEffortAutocomplete(t *testing.T) {
+	m := newTestChatModel(false)
+	m.streaming = true
+	m.providerKey = "openai"
+	m.providerName = "openai"
+	m.modelName = "gpt-5.4-high"
+	m.sess = &session.Session{ID: "sess-stream-complete", ProviderKey: "openai", Model: "gpt-5.4-high"}
+	m.setTextareaValue("/effort m")
+
+	result, _ := m.handleKeyMsg(tea.KeyPressMsg{Code: 'e', Text: "e"})
+	rm := result.(*Model)
+	if !rm.completions.IsVisible() {
+		t.Fatal("expected effort argument completions while streaming")
+	}
+	got := completionNames(rm.completions.filtered)
+	if !containsString(got, "effort medium") {
+		t.Fatalf("streaming effort completions missing medium: %v", got)
+	}
+	if containsString(got, "effort max") {
+		t.Fatalf("streaming effort completions included unsupported max: %v", got)
+	}
+}
+
+func TestHandleKeyMsg_StreamingCommandPaletteShowsLocalCompletions(t *testing.T) {
+	m := newTestChatModel(false)
+	m.streaming = true
+
+	result, _ := m.handleKeyMsg(tea.KeyPressMsg{Code: 'p', Mod: tea.ModCtrl})
+	rm := result.(*Model)
+	if got := rm.textarea.Value(); got != "/" {
+		t.Fatalf("textarea = %q, want slash", got)
+	}
+	if !rm.completions.IsVisible() {
+		t.Fatal("expected command palette completions while streaming")
+	}
+	if containsString(completionNames(rm.completions.filtered), "model") {
+		t.Fatalf("streaming command palette included unsafe /model: %v", completionNames(rm.completions.filtered))
+	}
+}
+
 func TestHandleKeyMsg_ShiftTabTogglesYoloDuringStreaming(t *testing.T) {
 	m := newTestChatModel(false)
 	approvalMgr := tools.NewApprovalManager(tools.NewToolPermissions())

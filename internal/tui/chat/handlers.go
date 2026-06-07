@@ -549,7 +549,7 @@ func (m *Model) handleKeyMsg(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			_ = m.engine.DrainInterjection()
 			m.clearPendingInterjectionState()
 
-			return m, nil
+			return m, m.applyPendingStreamModelSwitch()
 		}
 		m.quitting = true
 		// Print stats if enabled
@@ -595,7 +595,7 @@ func (m *Model) handleKeyMsg(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.clearPendingInterjectionState()
 
 			m.textarea.Focus()
-			return m, nil
+			return m, m.applyPendingStreamModelSwitch()
 		}
 		// Clear selection if active (before clearing textarea)
 		if m.selection.Active {
@@ -700,6 +700,20 @@ func (m *Model) handleKeyMsg(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
+	// Streaming-local shortcuts that affect the interjection composer or queue
+	// deferred state must run before the generic streaming textarea handler.
+	if m.streaming {
+		if key.Matches(msg, m.keyMap.Commands) {
+			m.setTextareaValue("/")
+			m.completions.Show()
+			m.updateCompletions()
+			return m, nil
+		}
+		if key.Matches(msg, m.keyMap.CycleEffort) {
+			return m.cycleEffort()
+		}
+	}
+
 	// During streaming: allow local slash commands, typing, image attachments,
 	// and interjection (send queues message for next turn). Commands like
 	// /thinking should update the UI immediately rather than being shipped as an
@@ -734,9 +748,20 @@ func (m *Model) handleKeyMsg(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m, m.queueInterruptClassification(interjectionID, content, parts)
 		}
 		// Allow textarea to receive input
+		old := m.textarea.Value()
 		var cmd tea.Cmd
 		m.textarea, cmd = m.textarea.Update(msg)
 		m.updateTextareaHeight()
+		if newVal := m.textarea.Value(); newVal != old {
+			if strings.HasPrefix(newVal, "/") {
+				if !m.completions.IsVisible() {
+					m.completions.Show()
+				}
+				m.updateCompletions()
+			} else if m.completions.IsVisible() {
+				m.completions.Hide()
+			}
+		}
 		return m, cmd
 	}
 
@@ -1015,12 +1040,12 @@ func (m *Model) handlePasteMsg(msg tea.PasteMsg) (tea.Model, tea.Cmd) {
 	}
 	if newVal := m.textarea.Value(); newVal != old {
 		m.reflowTextarea()
-		if !m.streaming && strings.HasPrefix(newVal, "/") {
+		if strings.HasPrefix(newVal, "/") {
 			if !m.completions.IsVisible() {
 				m.completions.Show()
 			}
 			m.updateCompletions()
-		} else if !m.streaming && m.completions.IsVisible() {
+		} else if m.completions.IsVisible() {
 			m.completions.Hide()
 		}
 	}

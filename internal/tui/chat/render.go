@@ -1298,10 +1298,27 @@ func (m *Model) mcpFindServerMatch(partial string) string {
 func (m *Model) updateCompletions() {
 	value := m.textarea.Value()
 	query := strings.TrimPrefix(value, "/")
+	lowerQuery := strings.ToLower(query)
+
+	// While streaming, completion choices must be limited to slash commands that
+	// are safe to execute locally. Keep /effort argument completions available,
+	// but do not suggest commands such as /model that would mutate stream state.
+	if m.streaming && strings.HasPrefix(lowerQuery, "effort ") {
+		parts := strings.SplitN(query, " ", 2)
+		partial := ""
+		if len(parts) == 2 {
+			partial = parts[1]
+		}
+		m.completions.SetItems(m.effortCompletionItems(parts[0]+" ", partial))
+		return
+	}
+	if m.streaming && strings.Contains(lowerQuery, " ") {
+		m.completions.Hide()
+		return
+	}
 
 	// Check for MCP server argument completions
 	// /mcp start <server>, /mcp stop <server>, /mcp add <server>
-	lowerQuery := strings.ToLower(query)
 
 	// Check for "/mcp start ", "/mcp stop ", "/mcp restart " - show configured servers
 	if strings.HasPrefix(lowerQuery, "mcp start ") ||
@@ -1428,7 +1445,19 @@ func (m *Model) updateCompletions() {
 		}
 	}
 
-	// Default: use standard command filtering
+	// Default: use standard command filtering. During streaming, only suggest
+	// commands that are handled locally instead of sent as interjections.
+	if m.streaming {
+		items := FilterCommands(query)
+		local := make([]Command, 0, len(items))
+		for _, item := range items {
+			if isStreamingLocalSlashCommand("/" + item.Name) {
+				local = append(local, item)
+			}
+		}
+		m.completions.SetItems(local)
+		return
+	}
 	m.completions.SetQuery(query)
 }
 

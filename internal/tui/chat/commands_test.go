@@ -145,6 +145,12 @@ func TestFilterCommandsMatchesEffort(t *testing.T) {
 	}
 }
 
+func TestStreamingLocalSlashCommandIncludesEffort(t *testing.T) {
+	if !isStreamingLocalSlashCommand("/effort high") {
+		t.Fatal("expected /effort to be handled locally while streaming")
+	}
+}
+
 // mockStore implements session.Store for testing resume behavior.
 type mockStore struct {
 	session.NoopStore
@@ -644,6 +650,241 @@ func TestCmdEffortSwitchesOpenAIEffort(t *testing.T) {
 	}
 	if rm.sess.Model != "gpt-5.4-medium" || store.updated == nil {
 		t.Fatalf("session/store not updated: sess=%#v updated=%#v", rm.sess, store.updated)
+	}
+}
+
+func TestStreamingCmdEffortQueuesWithoutSwitchingActiveEngine(t *testing.T) {
+	m, store := newEffortCmdTestModel("openai", "gpt-5.4-high")
+	prepareEffortShortcutTestModel(m)
+	m.streaming = true
+	m.setTextareaValue("/effort medium")
+	activeEngine := m.engine
+
+	result, cmd := m.handleKeyMsg(tea.KeyPressMsg{Code: tea.KeyEnter})
+	rm := result.(*Model)
+	if cmd == nil {
+		t.Fatal("expected queued-effort footer command")
+	}
+	if !rm.streaming {
+		t.Fatal("expected active stream to keep running")
+	}
+	if rm.engine != activeEngine {
+		t.Fatal("streaming /effort replaced the active engine")
+	}
+	if rm.modelName != "gpt-5.4-high" || rm.sess.Model != "gpt-5.4-high" {
+		t.Fatalf("model switched during stream: modelName=%q sess.Model=%q", rm.modelName, rm.sess.Model)
+	}
+	if store.updated != nil {
+		t.Fatalf("store updated before stream completed: %#v", store.updated)
+	}
+	if rm.pendingStreamModelSwitch == nil {
+		t.Fatal("expected queued stream model switch")
+	}
+	if rm.pendingStreamModelSwitch.provider != "openai" || rm.pendingStreamModelSwitch.model != "gpt-5.4-medium" {
+		t.Fatalf("unexpected queued switch: %#v", rm.pendingStreamModelSwitch)
+	}
+	if got := rm.textarea.Value(); got != "" {
+		t.Fatalf("textarea = %q, want cleared command", got)
+	}
+	if !strings.Contains(rm.footerMessage, "Effort medium queued") || !strings.Contains(rm.footerMessage, "current response") {
+		t.Fatalf("unexpected queued footer: %q", rm.footerMessage)
+	}
+}
+
+func TestStreamingCmdEffortCurrentEffortClearsQueuedSwitch(t *testing.T) {
+	m, _ := newEffortCmdTestModel("openai", "gpt-5.4-high")
+	m.streaming = true
+	m.pendingStreamModelSwitch = &pendingStreamModelSwitch{provider: "openai", model: "gpt-5.4-medium"}
+	activeEngine := m.engine
+
+	result, _ := m.cmdEffort([]string{"high"})
+	rm := result.(*Model)
+	if rm.pendingStreamModelSwitch != nil {
+		t.Fatalf("expected current-effort command to clear queued switch, got %#v", rm.pendingStreamModelSwitch)
+	}
+	if rm.engine != activeEngine || rm.modelName != "gpt-5.4-high" || rm.sess.Model != "gpt-5.4-high" {
+		t.Fatalf("current-effort command mutated state: engineChanged=%v model=%q sess=%q", rm.engine != activeEngine, rm.modelName, rm.sess.Model)
+	}
+	if !strings.Contains(rm.footerMessage, "cleared queued effort") {
+		t.Fatalf("unexpected footer: %q", rm.footerMessage)
+	}
+}
+
+func TestCycleEffortWhileStreamingQueuesNextEffortAndPreservesDraft(t *testing.T) {
+	m, store := newEffortCmdTestModel("openai", "gpt-5.4-low")
+	prepareEffortShortcutTestModel(m)
+	m.streaming = true
+	m.setTextareaValue("draft interjection")
+	activeEngine := m.engine
+
+	result, _ := m.handleKeyMsg(tea.KeyPressMsg{Code: 'r', Mod: tea.ModCtrl})
+	rm := result.(*Model)
+	if rm.engine != activeEngine || rm.modelName != "gpt-5.4-low" || rm.sess.Model != "gpt-5.4-low" {
+		t.Fatalf("streaming Ctrl+R mutated active model: engineChanged=%v model=%q sess=%q", rm.engine != activeEngine, rm.modelName, rm.sess.Model)
+	}
+	if store.updated != nil {
+		t.Fatalf("store updated before stream completed: %#v", store.updated)
+	}
+	if rm.pendingStreamModelSwitch == nil || rm.pendingStreamModelSwitch.model != "gpt-5.4-medium" {
+		t.Fatalf("unexpected queued switch: %#v", rm.pendingStreamModelSwitch)
+	}
+	if got := rm.textarea.Value(); got != "draft interjection" {
+		t.Fatalf("draft = %q, want preserved", got)
+	}
+	if !strings.Contains(rm.footerMessage, "Effort medium queued") {
+		t.Fatalf("unexpected footer: %q", rm.footerMessage)
+	}
+}
+
+func TestPendingStreamingEffortAppliesOnStreamDone(t *testing.T) {
+	m, store := newEffortCmdTestModel("openai", "gpt-5.4-high")
+	store.messages = map[string][]session.Message{
+		m.sess.ID: {*session.NewMessage(m.sess.ID, llm.UserText("previous"), 0)},
+	}
+	m.streaming = true
+	m.pendingStreamModelSwitch = &pendingStreamModelSwitch{provider: "openai", model: "gpt-5.4-medium"}
+	activeEngine := m.engine
+
+	result, _ := m.Update(streamEventMsg{event: ui.DoneEvent(0)})
+	rm := result.(*Model)
+	if rm.streaming {
+		t.Fatal("stream should be marked complete")
+	}
+	if rm.pendingStreamModelSwitch != nil {
+		t.Fatalf("pending switch was not cleared: %#v", rm.pendingStreamModelSwitch)
+	}
+	if rm.engine == activeEngine {
+		t.Fatal("expected engine to be replaced after stream completion")
+	}
+	if rm.modelName != "gpt-5.4-medium" || rm.sess.Model != "gpt-5.4-medium" {
+		t.Fatalf("queued switch not applied: modelName=%q sess.Model=%q", rm.modelName, rm.sess.Model)
+	}
+	if store.updated == nil || store.updated.Model != "gpt-5.4-medium" {
+		t.Fatalf("store metadata not updated after queued switch: %#v", store.updated)
+	}
+	if len(rm.messages) != 1 {
+		t.Fatalf("messages len = %d, want previous message only until next send", len(rm.messages))
+	}
+	if len(store.added) != 0 {
+		t.Fatalf("stream-done switch persisted marker immediately: %#v", store.added)
+	}
+	if rm.pendingModelSwitch == nil {
+		t.Fatal("expected model-swap marker to defer until next send")
+	}
+
+	result, _ = rm.sendMessage("next prompt")
+	rm = result.(*Model)
+	if len(rm.messages) < 3 {
+		t.Fatalf("messages len = %d, want previous + marker + user", len(rm.messages))
+	}
+	marker, ok := llm.ParseModelSwapMarker(rm.messages[1].ToLLMMessage())
+	if !ok {
+		t.Fatalf("expected deferred model-swap marker before next user turn, got %#v", rm.messages[1])
+	}
+	if marker.FromModel != "gpt-5.4-high" || marker.ToModel != "gpt-5.4-medium" {
+		t.Fatalf("unexpected marker: %#v", marker)
+	}
+	if rm.messages[2].Role != llm.RoleUser || rm.messages[2].TextContent != "next prompt" {
+		t.Fatalf("expected user message after marker, got %#v", rm.messages[2])
+	}
+	if rm.pendingModelSwitch != nil {
+		t.Fatalf("pending marker was not cleared: %#v", rm.pendingModelSwitch)
+	}
+}
+
+func TestPendingStreamingEffortAppliesOnStreamError(t *testing.T) {
+	m, store := newEffortCmdTestModel("openai", "gpt-5.4-high")
+	m.messages = []session.Message{*session.NewMessage(m.sess.ID, llm.UserText("previous"), 0)}
+	m.streaming = true
+	m.pendingStreamModelSwitch = &pendingStreamModelSwitch{provider: "openai", model: "gpt-5.4-medium"}
+	activeEngine := m.engine
+
+	result, _ := m.Update(streamEventMsg{event: ui.ErrorEvent(errors.New("boom"))})
+	rm := result.(*Model)
+	if rm.streaming {
+		t.Fatal("stream should be marked stopped after error")
+	}
+	if rm.pendingStreamModelSwitch != nil {
+		t.Fatalf("pending switch was not cleared on error: %#v", rm.pendingStreamModelSwitch)
+	}
+	if rm.engine == activeEngine || rm.modelName != "gpt-5.4-medium" || rm.sess.Model != "gpt-5.4-medium" {
+		t.Fatalf("queued switch not applied on error: engineChanged=%v model=%q sess=%q", rm.engine != activeEngine, rm.modelName, rm.sess.Model)
+	}
+	if store.updated == nil || store.updated.Model != "gpt-5.4-medium" {
+		t.Fatalf("store metadata not updated after error switch: %#v", store.updated)
+	}
+	if rm.pendingModelSwitch == nil {
+		t.Fatal("expected error-path model marker to defer until next send")
+	}
+}
+
+func TestManualModelSwitchClearsStaleQueuedStreamingEffort(t *testing.T) {
+	m, _ := newEffortCmdTestModel("openai", "gpt-5.4-high")
+	m.pendingStreamModelSwitch = &pendingStreamModelSwitch{provider: "openai", model: "gpt-5.4-medium"}
+	m.pendingModelSwitch = &llm.ModelSwapMarker{FromProvider: "openai", FromModel: "gpt-5.4-high", ToProvider: "openai", ToModel: "gpt-5.4-medium", Status: "started"}
+
+	result, _ := m.cmdEffort([]string{"low"})
+	rm := result.(*Model)
+	if rm.pendingStreamModelSwitch != nil {
+		t.Fatalf("manual effort switch left stale queued switch: %#v", rm.pendingStreamModelSwitch)
+	}
+	if rm.pendingModelSwitch != nil {
+		t.Fatalf("manual effort switch left stale deferred marker: %#v", rm.pendingModelSwitch)
+	}
+	if rm.modelName != "gpt-5.4-low" || rm.sess.Model != "gpt-5.4-low" {
+		t.Fatalf("manual effort switch did not apply: model=%q sess=%q", rm.modelName, rm.sess.Model)
+	}
+}
+
+func TestPendingStreamingEffortAppliesBeforeNextSendIfStillPending(t *testing.T) {
+	m, store := newEffortCmdTestModel("openai", "gpt-5.4-high")
+	m.messages = []session.Message{*session.NewMessage(m.sess.ID, llm.UserText("previous"), 0)}
+	m.pendingStreamModelSwitch = &pendingStreamModelSwitch{provider: "openai", model: "gpt-5.4-medium"}
+	activeEngine := m.engine
+
+	result, _ := m.sendMessage("next prompt")
+	rm := result.(*Model)
+	if rm.pendingStreamModelSwitch != nil {
+		t.Fatalf("pending switch was not cleared before send: %#v", rm.pendingStreamModelSwitch)
+	}
+	if rm.engine == activeEngine || rm.modelName != "gpt-5.4-medium" || rm.sess.Model != "gpt-5.4-medium" {
+		t.Fatalf("pending switch not applied before send: engineChanged=%v model=%q sess=%q", rm.engine != activeEngine, rm.modelName, rm.sess.Model)
+	}
+	if !rm.streaming {
+		t.Fatal("sendMessage should still start the next stream")
+	}
+	if store.updated == nil || store.updated.Model != "gpt-5.4-medium" {
+		t.Fatalf("store metadata not updated before send: %#v", store.updated)
+	}
+	if len(rm.messages) < 3 {
+		t.Fatalf("messages len = %d, want previous + marker + user", len(rm.messages))
+	}
+	if _, ok := llm.ParseModelSwapMarker(rm.messages[1].ToLLMMessage()); !ok {
+		t.Fatalf("expected model marker before user message, got %#v", rm.messages[1])
+	}
+	if rm.messages[2].Role != llm.RoleUser || rm.messages[2].TextContent != "next prompt" {
+		t.Fatalf("expected user message after marker, got %#v", rm.messages[2])
+	}
+}
+
+func TestStreamingCmdEffortRejectsInvalidWithoutQueue(t *testing.T) {
+	m, store := newEffortCmdTestModel("openai", "gpt-5.4-high")
+	m.streaming = true
+	activeEngine := m.engine
+
+	result, _ := m.cmdEffort([]string{"max"})
+	rm := result.(*Model)
+	if rm.pendingStreamModelSwitch != nil {
+		t.Fatalf("invalid effort queued a switch: %#v", rm.pendingStreamModelSwitch)
+	}
+	if rm.engine != activeEngine || rm.modelName != "gpt-5.4-high" || rm.sess.Model != "gpt-5.4-high" {
+		t.Fatalf("invalid streaming effort mutated state: engineChanged=%v model=%q sess=%q", rm.engine != activeEngine, rm.modelName, rm.sess.Model)
+	}
+	if store.updated != nil {
+		t.Fatalf("store updated on invalid streaming effort: %#v", store.updated)
+	}
+	if !strings.Contains(rm.footerMessage, "Unsupported effort") {
+		t.Fatalf("expected unsupported effort footer, got %q", rm.footerMessage)
 	}
 }
 
