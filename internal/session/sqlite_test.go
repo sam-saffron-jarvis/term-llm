@@ -1465,6 +1465,63 @@ INSERT INTO schema_version(version) VALUES (7);
 	}
 }
 
+func TestInitSchemaFreshDBSkipsMigrations(t *testing.T) {
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	db.SetMaxOpenConns(1)
+	defer db.Close()
+
+	originalMigrations := migrations
+	sentinelRuns := 0
+	migrations = append(append([]migration(nil), originalMigrations...), migration{
+		version:     schemaVersion,
+		description: "test sentinel",
+		up: func(db *sql.DB) error {
+			sentinelRuns++
+			return nil
+		},
+	})
+	defer func() {
+		migrations = originalMigrations
+	}()
+
+	if err := initSchema(db); err != nil {
+		t.Fatalf("initSchema: %v", err)
+	}
+	if sentinelRuns != 0 {
+		t.Fatalf("fresh DB ran migrations, sentinel ran %d times", sentinelRuns)
+	}
+
+	var version int
+	if err := db.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
+		t.Fatalf("read schema_version: %v", err)
+	}
+	if version != schemaVersion {
+		t.Fatalf("schema_version = %d, want %d", version, schemaVersion)
+	}
+
+	checks := []struct {
+		name  string
+		query string
+	}{
+		{"last_user_message_at column", "SELECT COUNT(*) FROM pragma_table_info('sessions') WHERE name = 'last_user_message_at'"},
+		{"push_subscriptions table", "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='push_subscriptions'"},
+		{"message sequence index", "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='idx_messages_session_sequence'"},
+		{"last user message index", "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='idx_sessions_last_user_msg'"},
+	}
+	for _, check := range checks {
+		var count int
+		if err := db.QueryRow(check.query).Scan(&count); err != nil {
+			t.Fatalf("check %s: %v", check.name, err)
+		}
+		if count != 1 {
+			t.Fatalf("%s count = %d, want 1", check.name, count)
+		}
+	}
+}
+
 func TestReadOnlyOldDBWithoutCompactionSeq(t *testing.T) {
 	// Simulate an old database that doesn't have the compaction_seq column.
 	// A read-only store should still be able to read sessions from it.

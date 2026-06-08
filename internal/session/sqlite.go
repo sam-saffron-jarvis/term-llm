@@ -907,6 +907,26 @@ func initSchema(db *sql.DB) error {
 // initSchemaFull handles schema creation and migrations.
 // Only called when schema needs initialization or migration.
 func initSchemaFull(db *sql.DB, versionErr error, currentVersion int) error {
+	noVersionRecord := versionErr != nil && (versionErr == sql.ErrNoRows || strings.Contains(versionErr.Error(), "no such table"))
+	isFreshDB := false
+
+	if noVersionRecord {
+		// Detect fresh DBs before creating the current schema. Once schema has been
+		// installed, sqlite_master can no longer distinguish a new empty DB from an
+		// older DB that predates schema_version.
+		var tableCount int
+		err := db.QueryRow(`
+			SELECT COUNT(*) FROM sqlite_master
+			WHERE type='table' AND name='sessions'
+		`).Scan(&tableCount)
+		if err != nil {
+			return fmt.Errorf("check sessions table: %w", err)
+		}
+		isFreshDB = tableCount == 0
+	} else if versionErr != nil {
+		return fmt.Errorf("get current version: %w", versionErr)
+	}
+
 	// Create base schema (uses IF NOT EXISTS, safe to run multiple times)
 	if _, err := db.Exec(schema); err != nil {
 		return fmt.Errorf("create base schema: %w", err)
@@ -924,31 +944,22 @@ func initSchemaFull(db *sql.DB, versionErr error, currentVersion int) error {
 
 	// Determine current version if we didn't get it earlier
 	// versionErr is non-nil if schema_version table doesn't exist or has no rows
-	if versionErr != nil && (versionErr == sql.ErrNoRows || strings.Contains(versionErr.Error(), "no such table")) {
-		// No version record - check if this is fresh DB or pre-migration DB
-		var tableCount int
-		err = db.QueryRow(`
-			SELECT COUNT(*) FROM sqlite_master
-			WHERE type='table' AND name='sessions'
-		`).Scan(&tableCount)
-		if err != nil {
-			return fmt.Errorf("check sessions table: %w", err)
-		}
-
-		if tableCount > 0 {
-			// Pre-migration DB - start at version 0, will run all migrations
-			currentVersion = 0
-		} else {
+	if noVersionRecord {
+		if isFreshDB {
+			if err := ensureFreshSchemaCurrentObjects(db); err != nil {
+				return err
+			}
 			// Fresh DB - schema already has all columns, start at latest
 			currentVersion = schemaVersion
+		} else {
+			// Pre-migration DB - start at version 0, will run all migrations
+			currentVersion = 0
 		}
 
 		// Insert initial version record
 		if _, err := db.Exec("INSERT INTO schema_version (version) VALUES (?)", currentVersion); err != nil {
 			return fmt.Errorf("insert initial version: %w", err)
 		}
-	} else if versionErr != nil {
-		return fmt.Errorf("get current version: %w", versionErr)
 	}
 
 	// Run pending migrations
@@ -977,6 +988,37 @@ func initSchemaFull(db *sql.DB, versionErr error, currentVersion int) error {
 	_, err = db.Exec("CREATE INDEX IF NOT EXISTS idx_sessions_pinned ON sessions(pinned)")
 	if err != nil {
 		return fmt.Errorf("ensure pinned index: %w", err)
+	}
+
+	return nil
+}
+
+func ensureFreshSchemaCurrentObjects(db *sql.DB) error {
+	if _, err := db.Exec("ALTER TABLE sessions ADD COLUMN last_user_message_at TIMESTAMP"); err != nil {
+		if !isDuplicateColumnError(err) {
+			return fmt.Errorf("ensure last_user_message_at column: %w", err)
+		}
+	}
+
+	stmts := []string{
+		`CREATE TABLE IF NOT EXISTS push_subscriptions (
+			id TEXT PRIMARY KEY,
+			endpoint TEXT NOT NULL UNIQUE,
+			key_p256dh TEXT NOT NULL,
+			key_auth TEXT NOT NULL,
+			created_at TEXT NOT NULL DEFAULT (datetime('now')),
+			last_used_at TEXT
+		)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_session_sequence ON messages(session_id, sequence)`,
+		`CREATE INDEX IF NOT EXISTS idx_sessions_status ON sessions(status)`,
+		`CREATE INDEX IF NOT EXISTS idx_sessions_title_skipped ON sessions(archived, title_skipped_at, updated_at DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_sessions_last_user_msg ON sessions(last_user_message_at DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_sessions_last_message ON sessions(last_message_at DESC)`,
+	}
+	for _, stmt := range stmts {
+		if _, err := db.Exec(stmt); err != nil {
+			return fmt.Errorf("ensure current schema objects: %w", err)
+		}
 	}
 
 	return nil
