@@ -1163,6 +1163,154 @@ async function testTailRefreshPreservesOlderHistoryCursor() {
   pass(name);
 }
 
+async function testCompactedTailRefreshPreservesPreCompactionScrollback() {
+  const name = 'compacted tail refresh preserves loaded pre-compaction scrollback without overlap';
+  const { app } = await createSessionsHarness({
+    fetchImpl: async (url) => {
+      if (url === '/ui/v1/sessions') {
+        return new Response(JSON.stringify({ sessions: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      if (isTailMessagesURL(url, 'sess_compacted_refresh')) {
+        return new Response(JSON.stringify({
+          messages: [
+            {
+              id: 50,
+              sequence: 50,
+              role: 'user',
+              created_at: 1710000050000,
+              parts: [{ type: 'text', text: '[Context Compaction]\n\n<SUMMARY_AND_NEXT_ACTIONS>\ncontinue\n</SUMMARY_AND_NEXT_ACTIONS>' }],
+            },
+            {
+              id: 51,
+              sequence: 51,
+              role: 'assistant',
+              created_at: 1710000051000,
+              parts: [{ type: 'text', text: 'post compact answer' }],
+            },
+          ],
+          has_more: false,
+          compaction_seq: 50,
+          compaction_count: 1,
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      return new Response(JSON.stringify({ messages: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }
+  });
+
+  const session = {
+    id: 'sess_compacted_refresh',
+    title: 'Compacted refresh',
+    origin: 'web',
+    created: 1710000000000,
+    messages: [],
+  };
+  app.state.sessions = [session];
+  app.state.activeSessionId = session.id;
+  app.state.draftSessionActive = false;
+
+  // Seed history like a user who already had pre-compaction scrollback loaded.
+  session._history = {
+    rawMessages: [
+      { id: 1, sequence: 1, role: 'user', created_at: 1710000001000, parts: [{ type: 'text', text: 'pre compact prompt' }] },
+      { id: 2, sequence: 2, role: 'assistant', created_at: 1710000002000, parts: [{ type: 'text', text: 'pre compact reply' }] },
+    ],
+    oldestSeq: 1,
+    hasMoreOlder: false,
+    loadingOlder: false,
+    loadedTail: true,
+    lastResponseId: '',
+    compactionSeq: -1,
+    compactionCount: 0,
+  };
+
+  const refreshed = await app.loadServerSessionMessages(session.id);
+  app.mergeServerMessagesWithLocalState(session, refreshed);
+
+  const contents = session.messages.map((message) => `${message.role}:${message.content}`);
+  const want = [
+    'user:pre compact prompt',
+    'assistant:pre compact reply',
+    'compaction:Context compacted',
+    'assistant:post compact answer',
+  ];
+  if (JSON.stringify(contents) !== JSON.stringify(want)) {
+    fail(name, 'expected pre-compaction messages to survive non-overlapping compacted tail refresh', JSON.stringify(session.messages));
+    return;
+  }
+  if (session._history.oldestSeq !== 1 || session._history.hasMoreOlder) {
+    fail(name, 'expected old scrollback cursor to remain intact', JSON.stringify(session._history));
+    return;
+  }
+
+  pass(name);
+}
+
+async function testCompactedTailRefreshPreservesLocalScrollbackWithoutRawHistory() {
+  const name = 'compacted tail refresh preserves local scrollback when raw history was never loaded';
+  const { app } = await createSessionsHarness({
+    fetchImpl: async (url) => {
+      if (url === '/ui/v1/sessions') {
+        return new Response(JSON.stringify({ sessions: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      if (isTailMessagesURL(url, 'sess_local_compacted_refresh')) {
+        return new Response(JSON.stringify({
+          messages: [
+            {
+              id: 50,
+              sequence: 50,
+              role: 'user',
+              created_at: 1710000050000,
+              parts: [{ type: 'text', text: '[Context Compaction]\n\n<SUMMARY_AND_NEXT_ACTIONS>\ncontinue\n</SUMMARY_AND_NEXT_ACTIONS>' }],
+            },
+            {
+              id: 51,
+              sequence: 51,
+              role: 'assistant',
+              created_at: 1710000051000,
+              parts: [{ type: 'text', text: 'post compact answer' }],
+            },
+          ],
+          has_more: false,
+          compaction_seq: 50,
+          compaction_count: 1,
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      return new Response(JSON.stringify({ messages: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }
+  });
+
+  const session = {
+    id: 'sess_local_compacted_refresh',
+    title: 'Local compacted refresh',
+    origin: 'web',
+    created: 1710000000000,
+    messages: [
+      { id: 'local_1', role: 'user', content: 'local pre compact prompt', created: 1710000001000 },
+      { id: 'local_2', role: 'assistant', content: 'local pre compact reply', created: 1710000002000 },
+    ],
+  };
+  app.state.sessions = [session];
+  app.state.activeSessionId = session.id;
+  app.state.draftSessionActive = false;
+
+  const refreshed = await app.loadServerSessionMessages(session.id);
+  app.mergeServerMessagesWithLocalState(session, refreshed);
+
+  const contents = session.messages.map((message) => `${message.role}:${message.content}`);
+  const want = [
+    'user:local pre compact prompt',
+    'assistant:local pre compact reply',
+    'compaction:Context compacted',
+    'assistant:post compact answer',
+  ];
+  if (JSON.stringify(contents) !== JSON.stringify(want)) {
+    fail(name, 'expected visible local scrollback to survive compacted tail refresh', JSON.stringify(session.messages));
+    return;
+  }
+
+  pass(name);
+}
+
 async function testOlderPageFailureAllowsRetryWithoutCorruptingTail() {
   const name = 'failed older-page fetch allows retry without corrupting loaded tail';
   const fetchCalls = [];
@@ -2439,6 +2587,8 @@ async function testSwitchToSearchOnlySessionHydratesResult() {
   await testSessionHistoryInitialLoadRequestsTailOnly();
   await testScrollNearTopLoadsOlderPageAndPreservesViewport();
   await testTailRefreshPreservesOlderHistoryCursor();
+  await testCompactedTailRefreshPreservesPreCompactionScrollback();
+  await testCompactedTailRefreshPreservesLocalScrollbackWithoutRawHistory();
   await testOlderPageFailureAllowsRetryWithoutCorruptingTail();
   await testSwitchToSessionSyncsWithoutTokenAndResumes();
   await testSwitchToSessionRecoversChangedActiveResponseFromSnapshot();

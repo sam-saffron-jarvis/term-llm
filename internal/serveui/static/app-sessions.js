@@ -802,6 +802,24 @@ const convertedMessagesFromHistory = (history) => {
   return converted;
 };
 
+const compactedTailRefreshPreservedPrefix = (previousRaw, rawTail, compactionSeq) => {
+  const boundary = Number(compactionSeq);
+  if (!Number.isFinite(boundary) || boundary < 0) return [];
+  if (!Array.isArray(previousRaw) || previousRaw.length === 0) return [];
+  if (!Array.isArray(rawTail) || rawTail.length === 0) return [];
+
+  // A compaction appends a new active-context suffix to the server log. During
+  // the completion/state refresh that follows, the tail window may no longer
+  // overlap the scrollback the browser already loaded. Do not throw away the
+  // pre-compaction transcript in that case; it is still valid display history
+  // and may be the only copy the user can scroll back through without another
+  // page fetch.
+  return previousRaw.filter((msg) => {
+    const seq = serverMessageSequence(msg);
+    return seq !== null && seq < boundary;
+  });
+};
+
 const applyTailMessagesToSessionHistory = (sessionId, data) => {
   const rawTail = Array.isArray(data?.messages) ? data.messages.slice() : [];
   const lastResponseId = String(data?.lastResponseId || '').trim();
@@ -815,32 +833,39 @@ const applyTailMessagesToSessionHistory = (sessionId, data) => {
 
   const history = ensureSessionHistory(session);
   const hadRawMessages = history.rawMessages.length > 0;
+  const previousRawMessages = hadRawMessages ? history.rawMessages.slice() : [];
   const overlapsExisting = hadRawMessages && rawServerMessagesOverlap(history.rawMessages, rawTail);
+  const preservedCompactionPrefix = overlapsExisting
+    ? []
+    : compactedTailRefreshPreservedPrefix(previousRawMessages, rawTail, compactionMeta.compactionSeq);
+  const preservesExistingScrollback = preservedCompactionPrefix.length > 0;
   const previousHasMoreOlder = history.hasMoreOlder === true;
   const previousOldestSeq = Number(history.oldestSeq) || 0;
 
   history.rawMessages = overlapsExisting
     ? mergeRawServerMessages(history.rawMessages, rawTail)
-    : mergeRawServerMessages(rawTail);
+    : mergeRawServerMessages(preservedCompactionPrefix, rawTail);
   history.loadedTail = true;
   history.loadingOlder = false;
   history.lastResponseId = lastResponseId;
   history.compactionSeq = compactionMeta.compactionSeq;
   history.compactionCount = compactionMeta.compactionCount;
 
-  if (overlapsExisting) {
-    history.hasMoreOlder = previousHasMoreOlder;
+  if (overlapsExisting || preservesExistingScrollback) {
+    history.hasMoreOlder = previousHasMoreOlder || data?.has_more === true;
   } else {
     history.hasMoreOlder = data?.has_more === true;
   }
 
   const oldestSeq = oldestSequenceFromRawMessages(history.rawMessages);
   const responseCursor = nextBeforeSeqFromResponse(data);
-  if (overlapsExisting && previousOldestSeq > 0) {
+  if ((overlapsExisting || preservesExistingScrollback) && previousOldestSeq > 0) {
     // Tail refreshes can overlap the loaded window after older pages have been
     // prepended. Keep the existing older cursor; the tail page cursor only
     // describes the oldest row in the tail page, not the oldest row already
-    // loaded in the combined window.
+    // loaded in the combined window. The same applies after compaction: a
+    // non-overlapping compacted tail must not make the browser forget the
+    // pre-compaction scrollback it already has.
     history.oldestSeq = previousOldestSeq;
   } else {
     history.oldestSeq = history.hasMoreOlder && responseCursor !== null
@@ -848,7 +873,11 @@ const applyTailMessagesToSessionHistory = (sessionId, data) => {
       : (oldestSeq !== null ? oldestSeq : (responseCursor !== null ? responseCursor : 0));
   }
 
-  return convertedMessagesFromHistory(history);
+  const converted = convertedMessagesFromHistory(history);
+  if (!overlapsExisting && compactionMeta.compactionSeq >= 0) {
+    converted.preserveLocalCompactionScrollback = true;
+  }
+  return converted;
 };
 
 const fetchServerSessionMessagesPage = async (sessionId, { limit = 0, offset = 0, tail = false, beforeSeq = 0, etag = '' } = {}) => {
@@ -993,6 +1022,22 @@ const loadServerSessionState = async (sessionId) => {
   }
 };
 
+const localCompactionScrollbackPrefix = (session, serverMessages) => {
+  if (!session || !Array.isArray(session.messages) || session.messages.length === 0) return [];
+  if (!Array.isArray(serverMessages) || serverMessages.preserveLocalCompactionScrollback !== true) return [];
+
+  const existingKeys = new Set(serverMessages.map(messageDedupeKey).filter(Boolean));
+  const prefix = [];
+  for (const message of session.messages) {
+    if (!message || message.transient || message.role === 'phase' || message.role === 'error') continue;
+    const key = messageDedupeKey(message);
+    if (key && existingKeys.has(key)) continue;
+    prefix.push({ ...message });
+    if (key) existingKeys.add(key);
+  }
+  return prefix;
+};
+
 const mergeServerMessagesWithLocalState = (session, serverMessages) => {
   if (!session || !Array.isArray(serverMessages)) return;
 
@@ -1000,7 +1045,11 @@ const mergeServerMessagesWithLocalState = (session, serverMessages) => {
     .filter((message) => message?.askUser && message.role === 'user' && message.content)
     .map((message) => ({ ...message }));
 
-  const merged = serverMessages.map((message) => ({ ...message }));
+  const preservedCompactionScrollback = localCompactionScrollbackPrefix(session, serverMessages);
+  const merged = [
+    ...preservedCompactionScrollback,
+    ...serverMessages.map((message) => ({ ...message }))
+  ];
   if (syntheticAskUserMessages.length > 0) {
     const insertAfter = (() => {
       for (let i = merged.length - 1; i >= 0; i -= 1) {
