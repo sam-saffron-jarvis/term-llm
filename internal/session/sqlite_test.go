@@ -29,6 +29,10 @@ func TestPromptHistoryCrossSessionTraversal(t *testing.T) {
 	if err := store.Create(ctx, sessB); err != nil {
 		t.Fatalf("Create sessB: %v", err)
 	}
+	sessBlankAgent := &Session{ID: NewID(), Provider: "test", Model: "test-model", Mode: ModeChat}
+	if err := store.Create(ctx, sessBlankAgent); err != nil {
+		t.Fatalf("Create sessBlankAgent: %v", err)
+	}
 	sessOtherAgent := &Session{ID: NewID(), Provider: "test", Model: "test-model", Mode: ModeChat, Agent: "other"}
 	if err := store.Create(ctx, sessOtherAgent); err != nil {
 		t.Fatalf("Create sessOtherAgent: %v", err)
@@ -45,6 +49,7 @@ func TestPromptHistoryCrossSessionTraversal(t *testing.T) {
 
 	firstID := addPrompt(sessA, "from terminal one")
 	secondID := addPrompt(sessB, "from terminal two")
+	blankAgentID := addPrompt(sessBlankAgent, "from default agent")
 	_ = addPrompt(sessOtherAgent, "from other agent")
 
 	history, ok := store.(PromptHistoryStore)
@@ -56,24 +61,159 @@ func TestPromptHistoryCrossSessionTraversal(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PreviousUserPrompt newest: %v", err)
 	}
-	if latest == nil || latest.ID != secondID || latest.Text != "from terminal two" {
-		t.Fatalf("latest = %#v, want id=%d text=%q", latest, secondID, "from terminal two")
+	if latest == nil || latest.ID != blankAgentID || latest.Text != "from default agent" {
+		t.Fatalf("latest = %#v, want id=%d text=%q", latest, blankAgentID, "from default agent")
 	}
 
 	older, err := history.PreviousUserPrompt(ctx, "jarvis", latest.ID)
 	if err != nil {
 		t.Fatalf("PreviousUserPrompt older: %v", err)
 	}
-	if older == nil || older.ID != firstID || older.Text != "from terminal one" {
-		t.Fatalf("older = %#v, want id=%d text=%q", older, firstID, "from terminal one")
+	if older == nil || older.ID != secondID || older.Text != "from terminal two" {
+		t.Fatalf("older = %#v, want id=%d text=%q", older, secondID, "from terminal two")
+	}
+
+	oldest, err := history.PreviousUserPrompt(ctx, "jarvis", older.ID)
+	if err != nil {
+		t.Fatalf("PreviousUserPrompt oldest: %v", err)
+	}
+	if oldest == nil || oldest.ID != firstID || oldest.Text != "from terminal one" {
+		t.Fatalf("oldest = %#v, want id=%d text=%q", oldest, firstID, "from terminal one")
 	}
 
 	newer, err := history.NextUserPrompt(ctx, "jarvis", older.ID)
 	if err != nil {
 		t.Fatalf("NextUserPrompt: %v", err)
 	}
-	if newer == nil || newer.ID != secondID || newer.Text != "from terminal two" {
-		t.Fatalf("newer = %#v, want id=%d text=%q", newer, secondID, "from terminal two")
+	if newer == nil || newer.ID != blankAgentID || newer.Text != "from default agent" {
+		t.Fatalf("newer = %#v, want id=%d text=%q", newer, blankAgentID, "from default agent")
+	}
+}
+
+func TestPromptHistoryOutsideSessionTraversalByDateAcrossAgents(t *testing.T) {
+	store, err := NewStore(Config{Enabled: true, Path: filepath.Join(t.TempDir(), "sessions.db")})
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer store.Close()
+	ctx := context.Background()
+
+	current := &Session{ID: NewID(), Provider: "test", Model: "test-model", Mode: ModeChat, Agent: "jarvis"}
+	if err := store.Create(ctx, current); err != nil {
+		t.Fatalf("Create current: %v", err)
+	}
+	other := &Session{ID: NewID(), Provider: "test", Model: "test-model", Mode: ModeChat, Agent: "reviewer"}
+	if err := store.Create(ctx, other); err != nil {
+		t.Fatalf("Create other: %v", err)
+	}
+	defaultAgent := &Session{ID: NewID(), Provider: "test", Model: "test-model", Mode: ModeChat}
+	if err := store.Create(ctx, defaultAgent); err != nil {
+		t.Fatalf("Create defaultAgent: %v", err)
+	}
+
+	base := time.Date(2026, 6, 9, 12, 0, 0, 0, time.UTC)
+	addPrompt := func(sess *Session, text string, at time.Time) int64 {
+		t.Helper()
+		msg := NewMessage(sess.ID, llm.UserText(text), -1)
+		msg.CreatedAt = at
+		if err := store.AddMessage(ctx, sess.ID, msg); err != nil {
+			t.Fatalf("AddMessage(%q): %v", text, err)
+		}
+		return msg.ID
+	}
+
+	olderID := addPrompt(defaultAgent, "default older", base.Add(time.Minute))
+	newerID := addPrompt(other, "reviewer newer", base.Add(2*time.Minute))
+	_ = addPrompt(current, "current newest excluded", base.Add(3*time.Minute))
+
+	history, ok := store.(PromptHistoryOutsideSessionStore)
+	if !ok {
+		t.Fatal("store does not implement PromptHistoryOutsideSessionStore")
+	}
+
+	latest, err := history.PreviousUserPromptOutsideSession(ctx, current.ID, 0, time.Time{})
+	if err != nil {
+		t.Fatalf("PreviousUserPromptOutsideSession newest: %v", err)
+	}
+	if latest == nil || latest.ID != newerID || latest.Text != "reviewer newer" {
+		t.Fatalf("latest = %#v, want id=%d text=%q", latest, newerID, "reviewer newer")
+	}
+
+	older, err := history.PreviousUserPromptOutsideSession(ctx, current.ID, latest.ID, latest.CreatedAt)
+	if err != nil {
+		t.Fatalf("PreviousUserPromptOutsideSession older: %v", err)
+	}
+	if older == nil || older.ID != olderID || older.Text != "default older" {
+		t.Fatalf("older = %#v, want id=%d text=%q", older, olderID, "default older")
+	}
+
+	newer, err := history.NextUserPromptOutsideSession(ctx, current.ID, older.ID, older.CreatedAt)
+	if err != nil {
+		t.Fatalf("NextUserPromptOutsideSession: %v", err)
+	}
+	if newer == nil || newer.ID != newerID || newer.Text != "reviewer newer" {
+		t.Fatalf("newer = %#v, want id=%d text=%q", newer, newerID, "reviewer newer")
+	}
+}
+
+func TestPromptHistoryOutsideSessionNextSkipsCursorWithRealStoredTimestamps(t *testing.T) {
+	store, err := NewStore(Config{Enabled: true, Path: filepath.Join(t.TempDir(), "sessions.db")})
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer store.Close()
+	ctx := context.Background()
+
+	current := &Session{ID: NewID(), Provider: "test", Model: "test-model", Mode: ModeChat}
+	if err := store.Create(ctx, current); err != nil {
+		t.Fatalf("Create current: %v", err)
+	}
+	other := &Session{ID: NewID(), Provider: "test", Model: "test-model", Mode: ModeChat, Agent: "reviewer"}
+	if err := store.Create(ctx, other); err != nil {
+		t.Fatalf("Create other: %v", err)
+	}
+
+	addPrompt := func(text string) int64 {
+		t.Helper()
+		msg := NewMessage(other.ID, llm.UserText(text), -1)
+		// Do not overwrite CreatedAt. This preserves time.Now's monotonic clock
+		// suffix in the value sent to SQLite, matching real AddMessage callers and
+		// guarding against the cursor row being returned by Next again.
+		if err := store.AddMessage(ctx, other.ID, msg); err != nil {
+			t.Fatalf("AddMessage(%q): %v", text, err)
+		}
+		time.Sleep(2 * time.Millisecond)
+		return msg.ID
+	}
+	_ = addPrompt("external one")
+	middleID := addPrompt("external two")
+	latestID := addPrompt("external three")
+
+	history, ok := store.(PromptHistoryOutsideSessionStore)
+	if !ok {
+		t.Fatal("store does not implement PromptHistoryOutsideSessionStore")
+	}
+	latest, err := history.PreviousUserPromptOutsideSession(ctx, current.ID, 0, time.Time{})
+	if err != nil {
+		t.Fatalf("PreviousUserPromptOutsideSession latest: %v", err)
+	}
+	if latest == nil || latest.ID != latestID {
+		t.Fatalf("latest = %#v, want id=%d", latest, latestID)
+	}
+	middle, err := history.PreviousUserPromptOutsideSession(ctx, current.ID, latest.ID, latest.CreatedAt)
+	if err != nil {
+		t.Fatalf("PreviousUserPromptOutsideSession middle: %v", err)
+	}
+	if middle == nil || middle.ID != middleID {
+		t.Fatalf("middle = %#v, want id=%d", middle, middleID)
+	}
+
+	newer, err := history.NextUserPromptOutsideSession(ctx, current.ID, middle.ID, middle.CreatedAt)
+	if err != nil {
+		t.Fatalf("NextUserPromptOutsideSession: %v", err)
+	}
+	if newer == nil || newer.ID != latestID {
+		t.Fatalf("newer = %#v, want id=%d (not the cursor id=%d)", newer, latestID, middleID)
 	}
 }
 

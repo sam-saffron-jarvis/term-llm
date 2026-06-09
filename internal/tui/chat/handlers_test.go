@@ -17,7 +17,28 @@ import (
 	"github.com/samsaffron/term-llm/internal/ui"
 )
 
-func TestPromptHistoryRecallsCrossSessionDraftAndRestoresLocalDraft(t *testing.T) {
+func pressPromptHistoryKey(t *testing.T, m *Model, msg tea.KeyPressMsg) *Model {
+	t.Helper()
+	updated, cmd := m.handleKeyMsg(msg)
+	rm, ok := updated.(*Model)
+	if !ok {
+		t.Fatalf("handleKeyMsg returned %T, want *Model", updated)
+	}
+	if cmd != nil {
+		lookupMsg := cmd()
+		updated, cmd = rm.Update(lookupMsg)
+		rm, ok = updated.(*Model)
+		if !ok {
+			t.Fatalf("Update(%T) returned %T, want *Model", lookupMsg, updated)
+		}
+		if cmd != nil {
+			t.Fatalf("Update(%T) returned unexpected follow-up command", lookupMsg)
+		}
+	}
+	return rm
+}
+
+func TestPromptHistoryRecallsCurrentSessionThenCrossSessionByDate(t *testing.T) {
 	store, err := session.NewStore(session.Config{Enabled: true, Path: t.TempDir() + "/sessions.db"})
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
@@ -25,39 +46,112 @@ func TestPromptHistoryRecallsCrossSessionDraftAndRestoresLocalDraft(t *testing.T
 	defer store.Close()
 	ctx := context.Background()
 
-	sess1 := &session.Session{ID: session.NewID(), Provider: "mock", Model: "mock-model", Mode: session.ModeChat, Agent: "jarvis"}
-	if err := store.Create(ctx, sess1); err != nil {
-		t.Fatalf("Create sess1: %v", err)
+	current := &session.Session{ID: session.NewID(), Provider: "mock", Model: "mock-model", Mode: session.ModeChat, Agent: "jarvis"}
+	if err := store.Create(ctx, current); err != nil {
+		t.Fatalf("Create current: %v", err)
 	}
-	sess2 := &session.Session{ID: session.NewID(), Provider: "mock", Model: "mock-model", Mode: session.ModeChat, Agent: "jarvis"}
-	if err := store.Create(ctx, sess2); err != nil {
-		t.Fatalf("Create sess2: %v", err)
+	otherAgent := &session.Session{ID: session.NewID(), Provider: "mock", Model: "mock-model", Mode: session.ModeChat, Agent: "reviewer"}
+	if err := store.Create(ctx, otherAgent); err != nil {
+		t.Fatalf("Create otherAgent: %v", err)
+	}
+	defaultAgent := &session.Session{ID: session.NewID(), Provider: "mock", Model: "mock-model", Mode: session.ModeChat}
+	if err := store.Create(ctx, defaultAgent); err != nil {
+		t.Fatalf("Create defaultAgent: %v", err)
 	}
 
-	addPrompt := func(sess *session.Session, text string) {
+	base := time.Date(2026, 6, 9, 12, 0, 0, 0, time.UTC)
+	addPrompt := func(sess *session.Session, text string, at time.Time) session.Message {
 		t.Helper()
 		msg := session.NewMessage(sess.ID, llm.UserText(text), -1)
+		msg.CreatedAt = at
 		if err := store.AddMessage(ctx, sess.ID, msg); err != nil {
 			t.Fatalf("AddMessage(%q): %v", text, err)
 		}
+		return *msg
 	}
-	addPrompt(sess1, "terminal one words")
-	addPrompt(sess2, "terminal two words")
+	currentOlder := addPrompt(current, "current older words", base.Add(time.Minute))
+	_ = addPrompt(defaultAgent, "default agent external words", base.Add(2*time.Minute))
+	_ = addPrompt(otherAgent, "other agent external words", base.Add(3*time.Minute))
+	currentNewer := addPrompt(current, "current newer words", base.Add(4*time.Minute))
 
 	m := newTestChatModel(false)
-	m.store = store
-	m.sess = sess1
+	m.store = session.NewLoggingStore(store, nil)
+	m.sess = current
 	m.agentName = "jarvis"
-	m.setTextareaValue("word")
+	m.messages = []session.Message{currentOlder, currentNewer}
+	m.setTextareaValue("draft words")
 
-	_, _ = m.handleKeyMsg(tea.KeyPressMsg{Code: tea.KeyUp})
-	if got := m.textarea.Value(); got != "terminal two words" {
-		t.Fatalf("after up textarea = %q, want latest cross-session prompt", got)
+	m = pressPromptHistoryKey(t, m, tea.KeyPressMsg{Code: tea.KeyUp})
+	if got := m.textarea.Value(); got != "current newer words" {
+		t.Fatalf("after up textarea = %q, want latest current-session prompt", got)
+	}
+	if got := m.textarea.Column(); got != len("current newer words") {
+		t.Fatalf("after up cursor column = %d, want end", got)
 	}
 
-	_, _ = m.handleKeyMsg(tea.KeyPressMsg{Code: tea.KeyDown})
-	if got := m.textarea.Value(); got != "word" {
-		t.Fatalf("after down textarea = %q, want restored draft", got)
+	m = pressPromptHistoryKey(t, m, tea.KeyPressMsg{Code: tea.KeyUp})
+	if got := m.textarea.Value(); got != "current older words" {
+		t.Fatalf("after second up textarea = %q, want older current-session prompt", got)
+	}
+	if got := m.textarea.Column(); got != len("current older words") {
+		t.Fatalf("after second up cursor column = %d, want end", got)
+	}
+
+	updated, cmd := m.handleKeyMsg(tea.KeyPressMsg{Code: tea.KeyUp})
+	m = updated.(*Model)
+	if cmd == nil {
+		t.Fatal("expected async global prompt history lookup command")
+	}
+	if got := m.textarea.Value(); got != "current older words" {
+		t.Fatalf("before async global lookup textarea = %q, want current prompt to remain", got)
+	}
+	if !m.promptHistory.lookupPending {
+		t.Fatal("expected global prompt history lookup to be marked pending")
+	}
+	updated, followup := m.Update(cmd())
+	m = updated.(*Model)
+	if followup != nil {
+		t.Fatal("global prompt history lookup returned unexpected follow-up command")
+	}
+	if m.promptHistory.lookupPending {
+		t.Fatal("expected global prompt history lookup pending flag to clear")
+	}
+	if got := m.textarea.Value(); got != "other agent external words" {
+		t.Fatalf("after third up textarea = %q, want newest cross-session prompt across agents", got)
+	}
+	if got := m.textarea.Column(); got != len("other agent external words") {
+		t.Fatalf("after third up cursor column = %d, want end", got)
+	}
+
+	m = pressPromptHistoryKey(t, m, tea.KeyPressMsg{Code: tea.KeyUp})
+	if got := m.textarea.Value(); got != "default agent external words" {
+		t.Fatalf("after fourth up textarea = %q, want older cross-session prompt across agents", got)
+	}
+
+	m = pressPromptHistoryKey(t, m, tea.KeyPressMsg{Code: tea.KeyDown})
+	if got := m.textarea.Value(); got != "other agent external words" {
+		t.Fatalf("after down textarea = %q, want newer cross-session prompt", got)
+	}
+	if got := m.textarea.Column(); got != 0 {
+		t.Fatalf("after down cursor column = %d, want start", got)
+	}
+
+	m = pressPromptHistoryKey(t, m, tea.KeyPressMsg{Code: tea.KeyDown})
+	if got := m.textarea.Value(); got != "current older words" {
+		t.Fatalf("after second down textarea = %q, want oldest current-session prompt", got)
+	}
+
+	m = pressPromptHistoryKey(t, m, tea.KeyPressMsg{Code: tea.KeyDown})
+	if got := m.textarea.Value(); got != "current newer words" {
+		t.Fatalf("after third down textarea = %q, want newer current-session prompt", got)
+	}
+
+	m = pressPromptHistoryKey(t, m, tea.KeyPressMsg{Code: tea.KeyDown})
+	if got := m.textarea.Value(); got != "draft words" {
+		t.Fatalf("after fourth down textarea = %q, want restored draft", got)
+	}
+	if got := m.textarea.Column(); got != 0 {
+		t.Fatalf("after fourth down cursor column = %d, want start", got)
 	}
 }
 
@@ -83,11 +177,78 @@ func TestPromptHistoryWorksDuringStreamingInterjectionComposer(t *testing.T) {
 	m.sess = sess
 	m.agentName = "jarvis"
 	m.streaming = true
+	m.messages = []session.Message{*msg}
 	m.setTextareaValue("interrupt draft")
 
-	_, _ = m.handleKeyMsg(tea.KeyPressMsg{Code: tea.KeyUp})
+	m = pressPromptHistoryKey(t, m, tea.KeyPressMsg{Code: tea.KeyUp})
 	if got := m.textarea.Value(); got != "streaming history prompt" {
 		t.Fatalf("streaming up textarea = %q, want prompt history", got)
+	}
+}
+
+func TestPromptHistoryFallsBackToInMemoryMessagesWithoutStore(t *testing.T) {
+	m := newTestChatModel(true)
+	m.store = &session.NoopStore{}
+	m.messages = []session.Message{
+		{Role: llm.RoleUser, TextContent: "first in-memory prompt"},
+		{Role: llm.RoleAssistant, TextContent: "reply"},
+		{Role: llm.RoleUser, TextContent: "second in-memory prompt"},
+	}
+	m.setTextareaValue("")
+
+	m = pressPromptHistoryKey(t, m, tea.KeyPressMsg{Code: tea.KeyUp})
+	if got := m.textarea.Value(); got != "second in-memory prompt" {
+		t.Fatalf("first up textarea = %q, want latest in-memory prompt", got)
+	}
+	if got := m.textarea.Column(); got != len("second in-memory prompt") {
+		t.Fatalf("first up cursor column = %d, want end", got)
+	}
+
+	m = pressPromptHistoryKey(t, m, tea.KeyPressMsg{Code: tea.KeyUp})
+	if got := m.textarea.Value(); got != "first in-memory prompt" {
+		t.Fatalf("second up textarea = %q, want older in-memory prompt", got)
+	}
+	if got := m.textarea.Column(); got != len("first in-memory prompt") {
+		t.Fatalf("second up cursor column = %d, want end", got)
+	}
+
+	m = pressPromptHistoryKey(t, m, tea.KeyPressMsg{Code: tea.KeyDown})
+	if got := m.textarea.Value(); got != "second in-memory prompt" {
+		t.Fatalf("down textarea = %q, want newer in-memory prompt", got)
+	}
+	if got := m.textarea.Column(); got != 0 {
+		t.Fatalf("down cursor column = %d, want start", got)
+	}
+
+	m = pressPromptHistoryKey(t, m, tea.KeyPressMsg{Code: tea.KeyDown})
+	if got := m.textarea.Value(); got != "" {
+		t.Fatalf("second down textarea = %q, want restored empty draft", got)
+	}
+	if got := m.textarea.Column(); got != 0 {
+		t.Fatalf("second down cursor column = %d, want start", got)
+	}
+}
+
+func TestPromptHistoryBoundaryKeysDoNotScrollViewportWhenStoreUnavailable(t *testing.T) {
+	m := newTestChatModel(true)
+	m.store = nil
+	m.setTextareaValue("")
+	m.viewport.SetContent(strings.Repeat("line\n", 200))
+	m.viewport.GotoBottom()
+	bottomOffset := m.viewport.YOffset()
+	if bottomOffset == 0 {
+		t.Fatal("precondition: expected scrollable viewport at bottom")
+	}
+
+	m = pressPromptHistoryKey(t, m, tea.KeyPressMsg{Code: tea.KeyUp})
+	if got := m.viewport.YOffset(); got != bottomOffset {
+		t.Fatalf("up at empty composer scrolled viewport from %d to %d", bottomOffset, got)
+	}
+
+	m.viewport.GotoTop()
+	m = pressPromptHistoryKey(t, m, tea.KeyPressMsg{Code: tea.KeyDown})
+	if got := m.viewport.YOffset(); got != 0 {
+		t.Fatalf("down at inactive empty composer scrolled viewport to %d", got)
 	}
 }
 

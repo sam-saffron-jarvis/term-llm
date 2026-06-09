@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"sync"
+	"time"
 )
 
 // WarnFunc is a function that logs warnings.
@@ -147,6 +148,62 @@ func (s *LoggingStore) GetMessagesPageDescending(ctx context.Context, sessionID 
 		}
 	}
 	return page, nil
+}
+
+// PreviousUserPrompt delegates the optional PromptHistoryStore capability when
+// the wrapped store supports it.
+func (s *LoggingStore) PreviousUserPrompt(ctx context.Context, agent string, beforeID int64) (*PromptHistoryEntry, error) {
+	history, ok := s.Store.(PromptHistoryStore)
+	if !ok {
+		return nil, nil
+	}
+	entry, err := history.PreviousUserPrompt(ctx, agent, beforeID)
+	if err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+		s.logOnce("PreviousUserPrompt", err)
+	}
+	return entry, err
+}
+
+// NextUserPrompt delegates the optional PromptHistoryStore capability when the
+// wrapped store supports it.
+func (s *LoggingStore) NextUserPrompt(ctx context.Context, agent string, afterID int64) (*PromptHistoryEntry, error) {
+	history, ok := s.Store.(PromptHistoryStore)
+	if !ok {
+		return nil, nil
+	}
+	entry, err := history.NextUserPrompt(ctx, agent, afterID)
+	if err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+		s.logOnce("NextUserPrompt", err)
+	}
+	return entry, err
+}
+
+// PreviousUserPromptOutsideSession delegates the optional global prompt-history
+// capability when the wrapped store supports it.
+func (s *LoggingStore) PreviousUserPromptOutsideSession(ctx context.Context, excludeSessionID string, beforeID int64, beforeCreatedAt time.Time) (*PromptHistoryEntry, error) {
+	history, ok := s.Store.(PromptHistoryOutsideSessionStore)
+	if !ok {
+		return nil, nil
+	}
+	entry, err := history.PreviousUserPromptOutsideSession(ctx, excludeSessionID, beforeID, beforeCreatedAt)
+	if err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+		s.logOnce("PreviousUserPromptOutsideSession", err)
+	}
+	return entry, err
+}
+
+// NextUserPromptOutsideSession delegates the optional global prompt-history
+// capability when the wrapped store supports it.
+func (s *LoggingStore) NextUserPromptOutsideSession(ctx context.Context, excludeSessionID string, afterID int64, afterCreatedAt time.Time) (*PromptHistoryEntry, error) {
+	history, ok := s.Store.(PromptHistoryOutsideSessionStore)
+	if !ok {
+		return nil, nil
+	}
+	entry, err := history.NextUserPromptOutsideSession(ctx, excludeSessionID, afterID, afterCreatedAt)
+	if err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+		s.logOnce("NextUserPromptOutsideSession", err)
+	}
+	return entry, err
 }
 
 // UpdateMetrics wraps Store.UpdateMetrics with error logging.

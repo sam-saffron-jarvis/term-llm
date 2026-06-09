@@ -76,6 +76,14 @@ func (s *NoopStore) NextUserPrompt(ctx context.Context, agent string, afterID in
 	return nil, nil
 }
 
+func (s *NoopStore) PreviousUserPromptOutsideSession(ctx context.Context, excludeSessionID string, beforeID int64, beforeCreatedAt time.Time) (*PromptHistoryEntry, error) {
+	return nil, nil
+}
+
+func (s *NoopStore) NextUserPromptOutsideSession(ctx context.Context, excludeSessionID string, afterID int64, afterCreatedAt time.Time) (*PromptHistoryEntry, error) {
+	return nil, nil
+}
+
 func (s *NoopStore) ReplaceMessages(ctx context.Context, sessionID string, messages []Message) error {
 	return nil
 }

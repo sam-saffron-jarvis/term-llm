@@ -100,6 +100,7 @@ CREATE INDEX IF NOT EXISTS idx_sessions_mode ON sessions(mode);
 CREATE INDEX IF NOT EXISTS idx_messages_session_id ON messages(session_id, sequence);
 CREATE INDEX IF NOT EXISTS idx_messages_session_role ON messages(session_id, role);
 CREATE INDEX IF NOT EXISTS idx_messages_role_id ON messages(role, id);
+CREATE INDEX IF NOT EXISTS idx_messages_role_created_id ON messages(role, created_at, id);
 
 -- Metadata table for current session tracking
 CREATE TABLE IF NOT EXISTS metadata (
@@ -223,7 +224,7 @@ func NewSQLiteStore(cfg Config) (*SQLiteStore, error) {
 // - Fresh databases get the full schema from `schema` const and start at this version
 // - Existing databases run migrations to reach this version
 // Increment when adding new migrations.
-const schemaVersion = 28
+const schemaVersion = 29
 
 // migration represents a schema migration.
 type migration struct {
@@ -825,6 +826,15 @@ var migrations = []migration{
 		description: "add prompt history role/id index",
 		up: func(db *sql.DB) error {
 			_, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_messages_role_id ON messages(role, id)`)
+			return err
+		},
+	},
+	{
+		// Migration 29: Add a timestamp index for date-ordered prompt history recall.
+		version:     29,
+		description: "add prompt history role/created index",
+		up: func(db *sql.DB) error {
+			_, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_messages_role_created_id ON messages(role, created_at, id)`)
 			return err
 		},
 	},
@@ -2178,14 +2188,14 @@ func (s *SQLiteStore) GetLatestVisibleMessageID(ctx context.Context, sessionID s
 // across sessions and optionally filtered by agent.
 func (s *SQLiteStore) PreviousUserPrompt(ctx context.Context, agent string, beforeID int64) (*PromptHistoryEntry, error) {
 	query := `
-		SELECT m.id, m.text_content
+		SELECT m.id, m.text_content, m.created_at
 		FROM messages m
 		JOIN sessions sess ON sess.id = m.session_id
 		WHERE m.role = 'user'
 		  AND TRIM(COALESCE(m.text_content, ''), char(9) || char(10) || char(11) || char(12) || char(13) || char(32)) <> ''
 		  AND substr(TRIM(COALESCE(m.text_content, ''), char(9) || char(10) || char(11) || char(12) || char(13) || char(32)), 1, ?) <> ?
 		  AND COALESCE(m.compaction_tail, FALSE) = FALSE
-		  AND (? = '' OR COALESCE(sess.agent, '') = ?)
+		  AND (? = '' OR COALESCE(sess.agent, '') = '' OR COALESCE(sess.agent, '') = ?)
 		  AND (? <= 0 OR m.id < ?)
 		ORDER BY m.id DESC
 		LIMIT 1`
@@ -2195,23 +2205,73 @@ func (s *SQLiteStore) PreviousUserPrompt(ctx context.Context, agent string, befo
 // NextUserPrompt returns the oldest persisted user prompt newer than afterID.
 func (s *SQLiteStore) NextUserPrompt(ctx context.Context, agent string, afterID int64) (*PromptHistoryEntry, error) {
 	query := `
-		SELECT m.id, m.text_content
+		SELECT m.id, m.text_content, m.created_at
 		FROM messages m
 		JOIN sessions sess ON sess.id = m.session_id
 		WHERE m.role = 'user'
 		  AND TRIM(COALESCE(m.text_content, ''), char(9) || char(10) || char(11) || char(12) || char(13) || char(32)) <> ''
 		  AND substr(TRIM(COALESCE(m.text_content, ''), char(9) || char(10) || char(11) || char(12) || char(13) || char(32)), 1, ?) <> ?
 		  AND COALESCE(m.compaction_tail, FALSE) = FALSE
-		  AND (? = '' OR COALESCE(sess.agent, '') = ?)
+		  AND (? = '' OR COALESCE(sess.agent, '') = '' OR COALESCE(sess.agent, '') = ?)
 		  AND m.id > ?
 		ORDER BY m.id ASC
 		LIMIT 1`
 	return s.queryPromptHistoryEntry(ctx, query, len(internalCompactionSummarySQLPrefix), internalCompactionSummarySQLPrefix, agent, agent, afterID)
 }
 
+// PreviousUserPromptOutsideSession returns the newest persisted user prompt older
+// than the cursor, ordered by message timestamp across all agents, excluding the
+// current session.
+func (s *SQLiteStore) PreviousUserPromptOutsideSession(ctx context.Context, excludeSessionID string, beforeID int64, beforeCreatedAt time.Time) (*PromptHistoryEntry, error) {
+	query := `
+		SELECT m.id, m.text_content, m.created_at
+		FROM messages m
+		WHERE m.role = 'user'
+		  AND TRIM(COALESCE(m.text_content, ''), char(9) || char(10) || char(11) || char(12) || char(13) || char(32)) <> ''
+		  AND substr(TRIM(COALESCE(m.text_content, ''), char(9) || char(10) || char(11) || char(12) || char(13) || char(32)), 1, ?) <> ?
+		  AND COALESCE(m.compaction_tail, FALSE) = FALSE
+		  AND (? = '' OR m.session_id <> ?)`
+	args := []any{len(internalCompactionSummarySQLPrefix), internalCompactionSummarySQLPrefix, excludeSessionID, excludeSessionID}
+	if beforeID > 0 {
+		query += `
+		  AND m.id <> ?
+		  AND (m.created_at, m.id) < (?, ?)`
+		args = append(args, beforeID, beforeCreatedAt, beforeID)
+	}
+	query += `
+		ORDER BY m.created_at DESC, m.id DESC
+		LIMIT 1`
+	return s.queryPromptHistoryEntry(ctx, query, args...)
+}
+
+// NextUserPromptOutsideSession returns the oldest persisted user prompt newer
+// than the cursor, ordered by message timestamp across all agents, excluding the
+// current session.
+func (s *SQLiteStore) NextUserPromptOutsideSession(ctx context.Context, excludeSessionID string, afterID int64, afterCreatedAt time.Time) (*PromptHistoryEntry, error) {
+	query := `
+		SELECT m.id, m.text_content, m.created_at
+		FROM messages m
+		WHERE m.role = 'user'
+		  AND TRIM(COALESCE(m.text_content, ''), char(9) || char(10) || char(11) || char(12) || char(13) || char(32)) <> ''
+		  AND substr(TRIM(COALESCE(m.text_content, ''), char(9) || char(10) || char(11) || char(12) || char(13) || char(32)), 1, ?) <> ?
+		  AND COALESCE(m.compaction_tail, FALSE) = FALSE
+		  AND (? = '' OR m.session_id <> ?)`
+	args := []any{len(internalCompactionSummarySQLPrefix), internalCompactionSummarySQLPrefix, excludeSessionID, excludeSessionID}
+	if afterID > 0 {
+		query += `
+		  AND m.id <> ?
+		  AND (m.created_at, m.id) > (?, ?)`
+		args = append(args, afterID, afterCreatedAt, afterID)
+	}
+	query += `
+		ORDER BY m.created_at ASC, m.id ASC
+		LIMIT 1`
+	return s.queryPromptHistoryEntry(ctx, query, args...)
+}
+
 func (s *SQLiteStore) queryPromptHistoryEntry(ctx context.Context, query string, args ...any) (*PromptHistoryEntry, error) {
 	var entry PromptHistoryEntry
-	err := s.db.QueryRowContext(ctx, query, args...).Scan(&entry.ID, &entry.Text)
+	err := s.db.QueryRowContext(ctx, query, args...).Scan(&entry.ID, &entry.Text, &entry.CreatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}

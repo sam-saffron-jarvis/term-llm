@@ -45,13 +45,18 @@ type pendingStreamModelSwitch struct {
 }
 
 type promptHistoryState struct {
-	active       bool
-	cursorID     int64
-	draftText    string
-	draftFiles   []FileAttachment
-	draftImages  []ImageAttachment
-	draftPastes  map[int]string
-	recalledText string
+	active          bool
+	cursorID        int64
+	cursorCreatedAt time.Time
+	lookupSeq       uint64
+	lookupPending   bool
+	memoryMode      bool
+	memoryIndex     int
+	draftText       string
+	draftFiles      []FileAttachment
+	draftImages     []ImageAttachment
+	draftPastes     map[int]string
+	recalledText    string
 }
 
 type Model struct {
@@ -189,6 +194,7 @@ type Model struct {
 	pendingInterruptUI      string // UI state of latest pending interjection: "", "deciding", "interject"
 	interruptNotice         string // One-line UI notice for recent interrupt actions
 	promptHistory           promptHistoryState
+	promptHistoryLookupSeq  uint64
 	// MCP (Model Context Protocol)
 	mcpManager    *mcp.Manager
 	mcpStatusChan chan mcp.StatusUpdate
@@ -1318,6 +1324,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case chatGPTModelsLoadedMsg:
 		return m.applyChatGPTModelsLoaded(msg)
+
+	case promptHistoryLookupMsg:
+		return m.handlePromptHistoryLookupMsg(msg)
 
 	case mcpStatusUpdateMsg:
 		m.refreshMCPPickerIfOpen()
