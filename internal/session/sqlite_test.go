@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -255,6 +256,226 @@ func TestNewSQLiteStoreMemoryDBUsesSingleConnection(t *testing.T) {
 	}
 }
 
+func TestSQLiteStoreListByNumberCursorReturnsCompleteSessions(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+
+	store, err := NewSQLiteStore(DefaultConfig())
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+	seed := []struct {
+		status   SessionStatus
+		archived bool
+	}{
+		{status: StatusComplete},
+		{status: StatusComplete},
+		{status: StatusActive},
+		{status: StatusComplete},
+		{status: StatusComplete},
+		{status: StatusComplete, archived: true},
+	}
+	for i, tc := range seed {
+		sess := &Session{
+			ID:       NewID(),
+			Provider: "test",
+			Model:    "test-model",
+			Mode:     ModeChat,
+			Status:   tc.status,
+			Archived: tc.archived,
+			Name:     fmt.Sprintf("session-%d", i+1),
+		}
+		if err := store.Create(ctx, sess); err != nil {
+			t.Fatalf("Create(%d): %v", i, err)
+		}
+	}
+
+	page1, err := store.List(ctx, ListOptions{Status: StatusComplete, Limit: 2, SortByNumberDesc: true})
+	if err != nil {
+		t.Fatalf("List page1: %v", err)
+	}
+	if len(page1) != 2 {
+		t.Fatalf("len(page1) = %d, want 2", len(page1))
+	}
+	if page1[0].Number != 5 || page1[1].Number != 4 {
+		t.Fatalf("page1 numbers = [%d %d], want [5 4]", page1[0].Number, page1[1].Number)
+	}
+
+	page2, err := store.List(ctx, ListOptions{Status: StatusComplete, Limit: 2, BeforeNumber: page1[len(page1)-1].Number, SortByNumberDesc: true})
+	if err != nil {
+		t.Fatalf("List page2: %v", err)
+	}
+	if len(page2) != 2 {
+		t.Fatalf("len(page2) = %d, want 2", len(page2))
+	}
+	if page2[0].Number != 2 || page2[1].Number != 1 {
+		t.Fatalf("page2 numbers = [%d %d], want [2 1]", page2[0].Number, page2[1].Number)
+	}
+
+	page3, err := store.List(ctx, ListOptions{Status: StatusComplete, Limit: 2, BeforeNumber: page2[len(page2)-1].Number, SortByNumberDesc: true})
+	if err != nil {
+		t.Fatalf("List page3: %v", err)
+	}
+	if len(page3) != 0 {
+		t.Fatalf("len(page3) = %d, want 0", len(page3))
+	}
+}
+
+func TestSQLiteStoreListByNumberCursorUsesSessionNumberIndex(t *testing.T) {
+	store, err := NewSQLiteStore(Config{Enabled: true, Path: ":memory:"})
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	defer store.Close()
+
+	plan := sqliteExplainPlan(t, store.db, `EXPLAIN QUERY PLAN
+		SELECT s.id, s.number
+		FROM sessions s INDEXED BY idx_sessions_number
+		WHERE s.status = ? AND s.archived = FALSE AND s.number < ?
+		ORDER BY s.number DESC
+		LIMIT ?`, string(StatusComplete), 1000, 200)
+	if !strings.Contains(plan, "idx_sessions_number") {
+		t.Fatalf("query plan = %q, want session number index", plan)
+	}
+	if strings.Contains(plan, "USE TEMP B-TREE") {
+		t.Fatalf("query plan = %q, want no temp sort", plan)
+	}
+}
+
+func sqliteExplainPlan(t *testing.T, db *sql.DB, query string, args ...any) string {
+	t.Helper()
+	rows, err := db.Query(query, args...)
+	if err != nil {
+		t.Fatalf("explain query: %v", err)
+	}
+	defer rows.Close()
+
+	var details []string
+	for rows.Next() {
+		var id, parent, notused int
+		var detail string
+		if err := rows.Scan(&id, &parent, &notused, &detail); err != nil {
+			t.Fatalf("scan explain row: %v", err)
+		}
+		details = append(details, detail)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("explain rows: %v", err)
+	}
+	return strings.Join(details, "\n")
+}
+
+func TestInitSchemaFreshDBDoesNotRunHistoricalMigrations(t *testing.T) {
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	db.SetMaxOpenConns(1)
+	defer db.Close()
+
+	originalMigrations := migrations
+	migrations = []migration{{
+		version:     1,
+		description: "sentinel migration",
+		up: func(db *sql.DB) error {
+			_, err := db.Exec(`CREATE TABLE migration_sentinel (id INTEGER PRIMARY KEY)`)
+			return err
+		},
+	}}
+	defer func() {
+		migrations = originalMigrations
+	}()
+
+	if err := initSchema(db); err != nil {
+		t.Fatalf("initSchema: %v", err)
+	}
+
+	var version int
+	if err := db.QueryRow(`SELECT version FROM schema_version`).Scan(&version); err != nil {
+		t.Fatalf("read schema version: %v", err)
+	}
+	if version != schemaVersion {
+		t.Fatalf("schema version = %d, want %d", version, schemaVersion)
+	}
+
+	var sentinelCount int
+	if err := db.QueryRow(`
+		SELECT COUNT(*) FROM sqlite_master
+		WHERE type='table' AND name='migration_sentinel'
+	`).Scan(&sentinelCount); err != nil {
+		t.Fatalf("check sentinel table: %v", err)
+	}
+	if sentinelCount != 0 {
+		t.Fatal("fresh DB should not replay historical migrations")
+	}
+
+	for _, tc := range []struct {
+		objectType string
+		name       string
+	}{
+		{objectType: "table", name: "push_subscriptions"},
+		{objectType: "index", name: "idx_messages_session_sequence"},
+		{objectType: "index", name: "idx_sessions_status"},
+		{objectType: "index", name: "idx_sessions_title_skipped"},
+		{objectType: "index", name: "idx_sessions_last_user_msg"},
+		{objectType: "index", name: "idx_sessions_last_message"},
+	} {
+		var count int
+		if err := db.QueryRow(`
+			SELECT COUNT(*) FROM sqlite_master
+			WHERE type = ? AND name = ?
+		`, tc.objectType, tc.name).Scan(&count); err != nil {
+			t.Fatalf("check %s %s: %v", tc.objectType, tc.name, err)
+		}
+		if count != 1 {
+			t.Fatalf("fresh DB missing %s %s", tc.objectType, tc.name)
+		}
+	}
+}
+
+func TestInitSchemaExistingDBWithoutSchemaVersionRunsMigrations(t *testing.T) {
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	db.SetMaxOpenConns(1)
+	defer db.Close()
+
+	if _, err := db.Exec(schema); err != nil {
+		t.Fatalf("seed schema without version table: %v", err)
+	}
+
+	originalMigrations := migrations
+	migrations = []migration{{
+		version:     1,
+		description: "sentinel migration",
+		up: func(db *sql.DB) error {
+			_, err := db.Exec(`CREATE TABLE migration_sentinel (id INTEGER PRIMARY KEY)`)
+			return err
+		},
+	}}
+	defer func() {
+		migrations = originalMigrations
+	}()
+
+	if err := initSchema(db); err != nil {
+		t.Fatalf("initSchema: %v", err)
+	}
+
+	var sentinelCount int
+	if err := db.QueryRow(`
+		SELECT COUNT(*) FROM sqlite_master
+		WHERE type='table' AND name='migration_sentinel'
+	`).Scan(&sentinelCount); err != nil {
+		t.Fatalf("check sentinel table: %v", err)
+	}
+	if sentinelCount != 1 {
+		t.Fatal("existing DB without schema_version should still run migrations")
+	}
+}
+
 func TestSQLiteStoreGetMessagesFromHonorsLimit(t *testing.T) {
 	t.Setenv("XDG_DATA_HOME", t.TempDir())
 
@@ -349,7 +570,6 @@ func TestSQLiteStoreGetMessagesPageDescendingHonorsBeforeSeqAndLimit(t *testing.
 		t.Fatalf("before seq sequences = [%d %d], want [1 0]", got[0].Sequence, got[1].Sequence)
 	}
 }
-
 func TestSQLiteStoreGetLatestVisibleMessageIDSkipsInvisibleTail(t *testing.T) {
 	t.Setenv("XDG_DATA_HOME", t.TempDir())
 
@@ -447,7 +667,7 @@ func TestSQLiteStorePersistsCompactionTailFlag(t *testing.T) {
 	if len(summaries) != 1 || summaries[0].MessageCount != 1 {
 		t.Fatalf("visible message count = %#v, want only non-tail user counted", summaries)
 	}
-	results, err := store.Search(ctx, "hidden", 10)
+	results, err := store.Search(ctx, SearchOptions{Query: "hidden", Limit: 10})
 	if err != nil {
 		t.Fatalf("Search hidden: %v", err)
 	}
@@ -527,9 +747,6 @@ func TestSQLiteStoreMigration27BackfillsChatBubbleMessageCount(t *testing.T) {
 	}
 	if _, err := db.Exec(schema); err != nil {
 		t.Fatalf("create seed schema: %v", err)
-	}
-	if _, err := db.Exec("ALTER TABLE sessions ADD COLUMN last_user_message_at TIMESTAMP"); err != nil {
-		t.Fatalf("add seed last_user_message_at column: %v", err)
 	}
 	_, err = db.Exec(`
 		CREATE TABLE schema_version (version INTEGER NOT NULL);
@@ -734,14 +951,14 @@ func TestSQLiteStoreReplaceMessagesPreservesUnchangedPrefix(t *testing.T) {
 		t.Fatalf("suffix texts = %q, %q; want new suffix/new tail", after[2].TextContent, after[3].TextContent)
 	}
 
-	results, err := store.Search(ctx, "old suffix", 10)
+	results, err := store.Search(ctx, SearchOptions{Query: "old suffix", Limit: 10})
 	if err != nil {
 		t.Fatalf("Search old suffix: %v", err)
 	}
 	if len(results) != 0 {
 		t.Fatalf("old suffix still in FTS: %#v", results)
 	}
-	results, err = store.Search(ctx, "new suffix", 10)
+	results, err = store.Search(ctx, SearchOptions{Query: "new suffix", Limit: 10})
 	if err != nil {
 		t.Fatalf("Search new suffix: %v", err)
 	}
@@ -804,7 +1021,7 @@ func TestSQLiteStoreReplaceMessagesFallsBackForDuplicateSequences(t *testing.T) 
 	if len(got) != 1 || got[0].TextContent != "kept message" {
 		t.Fatalf("messages after duplicate cleanup = %#v, want one kept message", got)
 	}
-	results, err := store.Search(ctx, "stale duplicate", 10)
+	results, err := store.Search(ctx, SearchOptions{Query: "stale duplicate", Limit: 10})
 	if err != nil {
 		t.Fatalf("Search stale duplicate: %v", err)
 	}
@@ -951,7 +1168,7 @@ func TestSQLiteStoreSearchEscapesUserQueryForFTS(t *testing.T) {
 		t.Fatalf("AddMessage: %v", err)
 	}
 
-	results, err := store.Search(ctx, "term-llm", 10)
+	results, err := store.Search(ctx, SearchOptions{Query: "term-llm", Limit: 10})
 	if err != nil {
 		t.Fatalf("Search(term-llm) error = %v", err)
 	}
@@ -972,6 +1189,116 @@ func TestSQLiteStoreSearchEscapesUserQueryForFTS(t *testing.T) {
 	}
 	if results[0].UpdatedAt.IsZero() {
 		t.Fatal("Search(term-llm) updated_at = zero, want populated timestamp")
+	}
+}
+
+func TestSQLiteStoreSearchReturnsDistinctFilteredSessionMatches(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+
+	store, err := NewSQLiteStore(DefaultConfig())
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Second)
+	sessions := []*Session{
+		{
+			ID:                  "chat-session",
+			Provider:            "test",
+			ProviderKey:         "test",
+			Model:               "test-model",
+			Mode:                ModeChat,
+			Origin:              OriginTUI,
+			GeneratedShortTitle: "Chat result",
+			CreatedAt:           now,
+			UpdatedAt:           now,
+			Status:              StatusActive,
+		},
+		{
+			ID:                  "web-session",
+			Provider:            "test",
+			ProviderKey:         "test",
+			Model:               "test-model",
+			Mode:                ModeChat,
+			Origin:              OriginWeb,
+			GeneratedShortTitle: "Web result",
+			CreatedAt:           now.Add(time.Second),
+			UpdatedAt:           now.Add(time.Second),
+			Status:              StatusActive,
+		},
+		{
+			ID:                  "archived-web-session",
+			Provider:            "test",
+			ProviderKey:         "test",
+			Model:               "test-model",
+			Mode:                ModeChat,
+			Origin:              OriginWeb,
+			GeneratedShortTitle: "Archived web result",
+			CreatedAt:           now.Add(2 * time.Second),
+			UpdatedAt:           now.Add(2 * time.Second),
+			Status:              StatusActive,
+			Archived:            true,
+		},
+	}
+	for _, sess := range sessions {
+		if err := store.Create(ctx, sess); err != nil {
+			t.Fatalf("Create(%s): %v", sess.ID, err)
+		}
+	}
+	for i := 0; i < 3; i++ {
+		if err := store.AddMessage(ctx, "chat-session", NewMessage("chat-session", llm.UserText(fmt.Sprintf("shared needle duplicate %d", i)), i)); err != nil {
+			t.Fatalf("AddMessage(chat %d): %v", i, err)
+		}
+	}
+	if err := store.AddMessage(ctx, "web-session", NewMessage("web-session", llm.UserText("shared needle web match"), 0)); err != nil {
+		t.Fatalf("AddMessage(web): %v", err)
+	}
+	if err := store.AddMessage(ctx, "archived-web-session", NewMessage("archived-web-session", llm.UserText("shared needle archived match"), 0)); err != nil {
+		t.Fatalf("AddMessage(archived): %v", err)
+	}
+
+	results, err := store.Search(ctx, SearchOptions{Query: "shared needle", Limit: 2})
+	if err != nil {
+		t.Fatalf("Search distinct: %v", err)
+	}
+	if len(results) != 2 {
+		t.Fatalf("Search distinct len = %d, want 2", len(results))
+	}
+	seen := map[string]bool{}
+	for _, result := range results {
+		if seen[result.SessionID] {
+			t.Fatalf("duplicate session in results: %#v", results)
+		}
+		seen[result.SessionID] = true
+		if result.Archived {
+			t.Fatalf("unexpected archived result in default search: %#v", result)
+		}
+	}
+	if !seen["chat-session"] || !seen["web-session"] {
+		t.Fatalf("default search ids = %#v, want chat-session and web-session", results)
+	}
+
+	results, err = store.Search(ctx, SearchOptions{Query: "shared needle", Limit: 5, Categories: []string{"web"}})
+	if err != nil {
+		t.Fatalf("Search web category: %v", err)
+	}
+	if len(results) != 1 || results[0].SessionID != "web-session" {
+		t.Fatalf("web category results = %#v, want only web-session", results)
+	}
+
+	results, err = store.Search(ctx, SearchOptions{Query: "shared needle", Limit: 5, Categories: []string{"web"}, Archived: true})
+	if err != nil {
+		t.Fatalf("Search web include archived: %v", err)
+	}
+	if len(results) != 2 {
+		t.Fatalf("web include archived len = %d, want 2", len(results))
+	}
+	ids := []string{results[0].SessionID, results[1].SessionID}
+	sort.Strings(ids)
+	if ids[0] != "archived-web-session" || ids[1] != "web-session" {
+		t.Fatalf("web include archived ids = %v, want [archived-web-session web-session]", ids)
 	}
 }
 

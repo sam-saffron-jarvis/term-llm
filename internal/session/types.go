@@ -143,35 +143,53 @@ type SessionSummary struct {
 
 // ListOptions configures session listing.
 type ListOptions struct {
-	Name           string        // Filter by name
-	Provider       string        // Filter by provider
-	Model          string        // Filter by model
-	Mode           SessionMode   // Filter by mode (chat, ask, plan, exec)
-	Status         SessionStatus // Filter by status
-	Tag            string        // Filter by tag (substring match)
-	Categories     []string      // Sidebar/web categories (all, chat, web, ask, plan, exec)
-	Limit          int           // Max results (0 = use default)
-	Offset         int           // Pagination offset
-	Archived       bool          // Include archived sessions
-	SortByActivity bool          // Sort by last_message_at (web sidebar); defaults to last_user_message_at
+	Name             string        // Filter by name
+	Provider         string        // Filter by provider
+	Model            string        // Filter by model
+	Mode             SessionMode   // Filter by mode (chat, ask, plan, exec)
+	Status           SessionStatus // Filter by status
+	Tag              string        // Filter by tag (substring match)
+	Categories       []string      // Sidebar/web categories (all, chat, web, ask, plan, exec)
+	Limit            int           // Max results (0 = use default)
+	Offset           int           // Pagination offset
+	BeforeNumber     int64         // Keyset cursor: only sessions with number < this value
+	SortByNumberDesc bool          // Order by session number descending instead of activity sort
+	Archived         bool          // Include archived sessions
+	SortByActivity   bool          // Sort by last_message_at (web sidebar); defaults to last_user_message_at
+}
+
+// SearchOptions configures session full-text search.
+type SearchOptions struct {
+	Query      string   // Text query to search for
+	Categories []string // Sidebar/web categories (all, chat, web, ask, plan, exec)
+	Limit      int      // Max results (0 = use default)
+	Archived   bool     // Include archived sessions
 }
 
 // SearchResult represents a search match.
 type SearchResult struct {
-	SessionID        string        `json:"session_id"`
-	SessionNumber    int64         `json:"session_number"` // Sequential session number
-	MessageID        int64         `json:"message_id"`
-	SessionName      string        `json:"session_name"`
-	Summary          string        `json:"summary"`
-	Snippet          string        `json:"snippet"` // Matched text snippet
-	Provider         string        `json:"provider"`
-	Model            string        `json:"model"`
-	Mode             SessionMode   `json:"mode,omitempty"`
-	Status           SessionStatus `json:"status,omitempty"`
-	MessageCount     int           `json:"message_count"`
-	SessionCreatedAt time.Time     `json:"session_created_at"`
-	UpdatedAt        time.Time     `json:"updated_at"`
-	CreatedAt        time.Time     `json:"created_at"`
+	SessionID           string             `json:"session_id"`
+	SessionNumber       int64              `json:"session_number"` // Sequential session number
+	MessageID           int64              `json:"message_id"`
+	SessionName         string             `json:"session_name"`
+	Summary             string             `json:"summary"`
+	GeneratedShortTitle string             `json:"generated_short_title,omitempty"`
+	GeneratedLongTitle  string             `json:"generated_long_title,omitempty"`
+	TitleSource         SessionTitleSource `json:"title_source,omitempty"`
+	Snippet             string             `json:"snippet"` // Matched text snippet
+	Provider            string             `json:"provider"`
+	ProviderKey         string             `json:"provider_key,omitempty"`
+	Model               string             `json:"model"`
+	Mode                SessionMode        `json:"mode,omitempty"`
+	Origin              SessionOrigin      `json:"origin,omitempty"`
+	Archived            bool               `json:"archived,omitempty"`
+	Pinned              bool               `json:"pinned,omitempty"`
+	Status              SessionStatus      `json:"status,omitempty"`
+	MessageCount        int                `json:"message_count"`
+	SessionCreatedAt    time.Time          `json:"session_created_at"`
+	UpdatedAt           time.Time          `json:"updated_at"`
+	LastMessageAt       time.Time          `json:"last_message_at,omitempty"`
+	CreatedAt           time.Time          `json:"created_at"`
 }
 
 // NewMessage creates a new Message from an llm.Message with the given session ID and sequence.

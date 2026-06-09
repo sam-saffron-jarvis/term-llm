@@ -4129,6 +4129,79 @@ func TestHandleSessionsSearch_UsesFTSAndReturnsSessionSummaries(t *testing.T) {
 	}
 }
 
+func TestHandleSessionsSearch_DoesNotDropOlderMatchesOutsideRecent2000ListWindow(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "sessions.db")
+	store, err := session.NewStore(session.Config{Enabled: true, Path: dbPath})
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+	base := time.Now().Add(-3 * time.Hour).UTC().Truncate(time.Second)
+	matching := &session.Session{
+		ID:        "older-match",
+		Provider:  "mock",
+		Model:     "mock-model",
+		Mode:      session.ModeChat,
+		Summary:   "older matching session",
+		CreatedAt: base,
+		UpdatedAt: base,
+		Status:    session.StatusActive,
+	}
+	if err := store.Create(ctx, matching); err != nil {
+		t.Fatalf("Create matching session: %v", err)
+	}
+	if err := store.AddMessage(ctx, matching.ID, &session.Message{
+		Role:        llm.RoleUser,
+		TextContent: "needle older searchable session",
+		Parts:       []llm.Part{{Type: llm.PartText, Text: "needle older searchable session"}},
+		CreatedAt:   base,
+	}); err != nil {
+		t.Fatalf("AddMessage matching session: %v", err)
+	}
+
+	for i := 0; i < 2000; i++ {
+		createdAt := base.Add(time.Duration(i+1) * time.Second)
+		sess := &session.Session{
+			ID:        fmt.Sprintf("newer-%04d", i),
+			Provider:  "mock",
+			Model:     "mock-model",
+			Mode:      session.ModeChat,
+			Summary:   fmt.Sprintf("newer session %d", i),
+			CreatedAt: createdAt,
+			UpdatedAt: createdAt,
+			Status:    session.StatusActive,
+		}
+		if err := store.Create(ctx, sess); err != nil {
+			t.Fatalf("Create newer session %d: %v", i, err)
+		}
+	}
+
+	srv := &serveServer{store: store}
+	req := httptest.NewRequest(http.MethodGet, "/v1/sessions/search?q=needle&limit=5", nil)
+	rr := httptest.NewRecorder()
+	srv.handleSessionsSearch(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200, body: %s", rr.Code, rr.Body.String())
+	}
+
+	var body struct {
+		Sessions []struct {
+			ID string `json:"id"`
+		} `json:"sessions"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(body.Sessions) != 1 {
+		t.Fatalf("session count = %d, want 1; body: %s", len(body.Sessions), rr.Body.String())
+	}
+	if body.Sessions[0].ID != matching.ID {
+		t.Fatalf("id = %q, want %q", body.Sessions[0].ID, matching.ID)
+	}
+}
+
 func TestHandleSessions_GzipCompressed(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "sessions.db")
 	store, err := session.NewStore(session.Config{Enabled: true, Path: dbPath})

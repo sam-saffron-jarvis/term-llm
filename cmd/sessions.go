@@ -335,7 +335,7 @@ func runSessionsSearch(cmd *cobra.Command, args []string) error {
 
 	query := strings.Join(args, " ")
 	ctx := context.Background()
-	results, err := store.Search(ctx, query, 20)
+	results, err := store.Search(ctx, session.SearchOptions{Query: query, Limit: 20})
 	if err != nil {
 		return fmt.Errorf("search failed: %w", err)
 	}

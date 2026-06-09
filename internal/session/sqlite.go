@@ -59,6 +59,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     cwd TEXT,
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    last_user_message_at TIMESTAMP,
     last_message_at TIMESTAMP,
     archived BOOLEAN DEFAULT FALSE,
     pinned BOOLEAN DEFAULT FALSE,
@@ -106,6 +107,15 @@ CREATE INDEX IF NOT EXISTS idx_messages_role_created_id ON messages(role, create
 CREATE TABLE IF NOT EXISTS metadata (
     key TEXT PRIMARY KEY,
     value TEXT
+);
+
+CREATE TABLE IF NOT EXISTS push_subscriptions (
+    id TEXT PRIMARY KEY,
+    endpoint TEXT NOT NULL UNIQUE,
+    key_p256dh TEXT NOT NULL,
+    key_auth TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    last_used_at TEXT
 );
 
 -- Full-text search on extracted text content
@@ -978,6 +988,20 @@ func initSchema(db *sql.DB) error {
 // initSchemaFull handles schema creation and migrations.
 // Only called when schema needs initialization or migration.
 func initSchemaFull(db *sql.DB, versionErr error, currentVersion int) error {
+	needsBootstrapVersion := versionErr != nil && (versionErr == sql.ErrNoRows || strings.Contains(versionErr.Error(), "no such table"))
+	preExistingSessionsTable := false
+	if needsBootstrapVersion {
+		var tableCount int
+		err := db.QueryRow(`
+			SELECT COUNT(*) FROM sqlite_master
+			WHERE type='table' AND name='sessions'
+		`).Scan(&tableCount)
+		if err != nil {
+			return fmt.Errorf("check sessions table before schema init: %w", err)
+		}
+		preExistingSessionsTable = tableCount > 0
+	}
+
 	// Create base schema (uses IF NOT EXISTS, safe to run multiple times)
 	if _, err := db.Exec(schema); err != nil {
 		return fmt.Errorf("create base schema: %w", err)
@@ -993,20 +1017,12 @@ func initSchemaFull(db *sql.DB, versionErr error, currentVersion int) error {
 		return fmt.Errorf("create schema_version table: %w", err)
 	}
 
-	// Determine current version if we didn't get it earlier
-	// versionErr is non-nil if schema_version table doesn't exist or has no rows
-	if versionErr != nil && (versionErr == sql.ErrNoRows || strings.Contains(versionErr.Error(), "no such table")) {
-		// No version record - check if this is fresh DB or pre-migration DB
-		var tableCount int
-		err = db.QueryRow(`
-			SELECT COUNT(*) FROM sqlite_master
-			WHERE type='table' AND name='sessions'
-		`).Scan(&tableCount)
-		if err != nil {
-			return fmt.Errorf("check sessions table: %w", err)
-		}
-
-		if tableCount > 0 {
+	// Determine current version if we didn't get it earlier.
+	// versionErr is non-nil if schema_version table doesn't exist or has no rows.
+	// For fresh DBs we must use the pre-schema check above; after db.Exec(schema)
+	// the sessions table always exists and cannot distinguish fresh installs.
+	if needsBootstrapVersion {
+		if preExistingSessionsTable {
 			// Pre-migration DB - start at version 0, will run all migrations
 			currentVersion = 0
 		} else {
@@ -1037,6 +1053,14 @@ func initSchemaFull(db *sql.DB, versionErr error, currentVersion int) error {
 	}
 
 	// Ensure indexes exist (handles fresh DBs where migrations don't run)
+	_, err = db.Exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_session_sequence ON messages(session_id, sequence)")
+	if err != nil {
+		return fmt.Errorf("ensure message sequence index: %w", err)
+	}
+	_, err = db.Exec("CREATE INDEX IF NOT EXISTS idx_sessions_status ON sessions(status)")
+	if err != nil {
+		return fmt.Errorf("ensure status index: %w", err)
+	}
 	_, err = db.Exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_sessions_number ON sessions(number)")
 	if err != nil {
 		return fmt.Errorf("ensure number index: %w", err)
@@ -1048,6 +1072,18 @@ func initSchemaFull(db *sql.DB, versionErr error, currentVersion int) error {
 	_, err = db.Exec("CREATE INDEX IF NOT EXISTS idx_sessions_pinned ON sessions(pinned)")
 	if err != nil {
 		return fmt.Errorf("ensure pinned index: %w", err)
+	}
+	_, err = db.Exec("CREATE INDEX IF NOT EXISTS idx_sessions_title_skipped ON sessions(archived, title_skipped_at, updated_at DESC)")
+	if err != nil {
+		return fmt.Errorf("ensure title_skipped index: %w", err)
+	}
+	_, err = db.Exec("CREATE INDEX IF NOT EXISTS idx_sessions_last_user_msg ON sessions(last_user_message_at DESC)")
+	if err != nil {
+		return fmt.Errorf("ensure last_user_message_at index: %w", err)
+	}
+	_, err = db.Exec("CREATE INDEX IF NOT EXISTS idx_sessions_last_message ON sessions(last_message_at DESC)")
+	if err != nil {
+		return fmt.Errorf("ensure last_message_at index: %w", err)
 	}
 
 	return nil
@@ -1416,12 +1452,19 @@ func (s *SQLiteStore) List(ctx context.Context, opts ListOptions) ([]SessionSumm
 	if !s.hasMessageCount {
 		messageCountCol = "(SELECT COUNT(*) FROM messages WHERE session_id = s.id AND " + countableConversationMessageSQL("", s.hasMessageCompactionTail) + ")"
 	}
+	fromClause := "FROM sessions s"
+	if opts.SortByNumberDesc {
+		// Completed-session walks page by descending session number. Force the
+		// number index so SQLite can continue scanning from the last seen number
+		// instead of picking a filter-only index and re-sorting each page.
+		fromClause = "FROM sessions s INDEXED BY idx_sessions_number"
+	}
 	query := `
 		SELECT s.id, s.number, s.name, s.summary, ` + generatedShortCol + `, ` + generatedLongCol + `, ` + titleSourceCol + `,
 		       s.provider, COALESCE(s.provider_key, ''), s.model, s.mode, ` + originCol + `, s.archived, ` + pinnedCol + `, s.created_at, s.updated_at, ` + lastMessageAtCol + `,
 		       ` + messageCountCol + ` as message_count,
 		       s.user_turns, s.llm_turns, s.tool_calls, s.input_tokens, s.cached_input_tokens, ` + cacheWriteCol + `, s.output_tokens, s.status, s.tags
-		FROM sessions s
+		` + fromClause + `
 		WHERE 1=1`
 	args := []any{}
 
@@ -1485,26 +1528,34 @@ func (s *SQLiteStore) List(ctx context.Context, opts ListOptions) ([]SessionSumm
 			query += " AND 1 = 0"
 		}
 	}
+	if opts.BeforeNumber > 0 {
+		query += " AND s.number < ?"
+		args = append(args, opts.BeforeNumber)
+	}
 	if !opts.Archived {
 		query += " AND s.archived = FALSE"
 	}
 
-	// Sort by last user message time (when the user last interacted), falling back
-	// to created_at for sessions with no user messages yet. This prevents background
-	// activity (autotitle, mining, status changes) from reordering the sidebar.
-	// Web sidebar callers set SortByActivity to use last_message_at instead so
-	// assistant-only turns also surface (keeps the top-N window aligned with the
-	// client-side "any-message" ordering).
-	sortCol := "s.updated_at"
-	if opts.SortByActivity && s.hasLastMessageAt {
-		sortCol = "COALESCE(s.last_message_at, s.last_user_message_at, s.created_at)"
-	} else if s.hasLastUserMessageAt {
-		sortCol = "COALESCE(s.last_user_message_at, s.created_at)"
-	}
-	if s.hasPinned {
-		query += " ORDER BY COALESCE(s.pinned, FALSE) DESC, " + sortCol + " DESC"
+	if opts.SortByNumberDesc {
+		query += " ORDER BY s.number DESC"
 	} else {
-		query += " ORDER BY " + sortCol + " DESC"
+		// Sort by last user message time (when the user last interacted), falling back
+		// to created_at for sessions with no user messages yet. This prevents background
+		// activity (autotitle, mining, status changes) from reordering the sidebar.
+		// Web sidebar callers set SortByActivity to use last_message_at instead so
+		// assistant-only turns also surface (keeps the top-N window aligned with the
+		// client-side "any-message" ordering).
+		sortCol := "s.updated_at"
+		if opts.SortByActivity && s.hasLastMessageAt {
+			sortCol = "COALESCE(s.last_message_at, s.last_user_message_at, s.created_at)"
+		} else if s.hasLastUserMessageAt {
+			sortCol = "COALESCE(s.last_user_message_at, s.created_at)"
+		}
+		if s.hasPinned {
+			query += " ORDER BY COALESCE(s.pinned, FALSE) DESC, " + sortCol + " DESC"
+		} else {
+			query += " ORDER BY " + sortCol + " DESC"
+		}
 	}
 
 	limit := opts.Limit
@@ -1572,12 +1623,12 @@ func (s *SQLiteStore) List(ctx context.Context, opts ListOptions) ([]SessionSumm
 }
 
 // Search finds sessions containing the query text using FTS5.
-func (s *SQLiteStore) Search(ctx context.Context, query string, limit int) ([]SearchResult, error) {
-	if limit == 0 {
-		limit = 20
+func (s *SQLiteStore) Search(ctx context.Context, opts SearchOptions) ([]SearchResult, error) {
+	if opts.Limit == 0 {
+		opts.Limit = 20
 	}
 
-	ftsQuery := sqlitefts.LiteralQuery(query)
+	ftsQuery := sqlitefts.LiteralQuery(opts.Query)
 	if ftsQuery == "" {
 		return []SearchResult{}, nil
 	}
@@ -1591,15 +1642,99 @@ func (s *SQLiteStore) Search(ctx context.Context, query string, limit int) ([]Se
 		messageCountCol = "(SELECT COUNT(*) FROM messages WHERE session_id = s.id AND " + countableConversationMessageSQL("", s.hasMessageCompactionTail) + ")"
 	}
 
+	originCol := "'tui'"
+	if s.hasOrigin {
+		originCol = "COALESCE(NULLIF(TRIM(s.origin), ''), 'tui')"
+	}
+	pinnedCol := "FALSE"
+	if s.hasPinned {
+		pinnedCol = "COALESCE(s.pinned, FALSE)"
+	}
+	generatedShortCol := "''"
+	generatedLongCol := "''"
+	titleSourceCol := "''"
+	if s.hasGeneratedTitles {
+		generatedShortCol = "s.generated_short_title"
+		generatedLongCol = "s.generated_long_title"
+		titleSourceCol = "s.title_source"
+	}
+	lastMessageAtCol := "NULL"
+	if s.hasLastMessageAt {
+		lastMessageAtCol = "s.last_message_at"
+	}
+
+	filterClause := ""
+	args := []any{ftsQuery}
+	if len(opts.Categories) > 0 {
+		clauses := make([]string, 0, len(opts.Categories))
+		sawSpecificCategory := false
+		for _, raw := range opts.Categories {
+			category := strings.ToLower(strings.TrimSpace(raw))
+			switch category {
+			case "", "all":
+				clauses = nil
+			case "chat":
+				sawSpecificCategory = true
+				if s.hasOrigin {
+					clauses = append(clauses, "(s.mode = 'chat' AND COALESCE(NULLIF(TRIM(s.origin), ''), 'tui') = 'tui')")
+				} else {
+					clauses = append(clauses, "(s.mode = 'chat')")
+				}
+			case "web":
+				sawSpecificCategory = true
+				if s.hasOrigin {
+					clauses = append(clauses, "(COALESCE(NULLIF(TRIM(s.origin), ''), 'tui') = 'web')")
+				}
+			case "ask", "plan", "exec":
+				sawSpecificCategory = true
+				clauses = append(clauses, "(s.mode = ?)")
+				args = append(args, category)
+			}
+			if clauses == nil {
+				break
+			}
+		}
+		if len(clauses) > 0 {
+			filterClause += " AND (" + strings.Join(clauses, " OR ") + ")"
+		} else if sawSpecificCategory {
+			filterClause += " AND 1 = 0"
+		}
+	}
+	if !opts.Archived {
+		filterClause += " AND s.archived = FALSE"
+	}
+	args = append(args, opts.Limit)
+
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT m.session_id, s.number, m.id, s.name, s.summary, snippet(messages_fts, 0, '**', '**', '...', 32),
-		       s.provider, s.model, s.mode, s.status, `+messageCountCol+` as message_count, s.created_at, s.updated_at, m.created_at
-		FROM messages_fts f
-		JOIN messages m ON m.id = f.rowid
-		JOIN sessions s ON s.id = m.session_id
-		WHERE messages_fts MATCH ?`+compactionTailClause+`
-		ORDER BY rank
-		LIMIT ?`, ftsQuery, limit)
+		WITH raw_matches AS (
+			SELECT rowid AS message_id, rank AS match_rank
+			FROM messages_fts
+			WHERE messages_fts MATCH ?
+		), ranked_matches AS (
+			SELECT m.id AS message_id, m.session_id, raw_matches.match_rank,
+			       ROW_NUMBER() OVER (PARTITION BY m.session_id ORDER BY raw_matches.match_rank, m.id) AS session_row
+			FROM raw_matches
+			JOIN messages m ON m.id = raw_matches.message_id
+			JOIN sessions s ON s.id = m.session_id
+			WHERE 1=1`+compactionTailClause+filterClause+`
+		), session_matches AS (
+			SELECT message_id, session_id, match_rank
+			FROM ranked_matches
+			WHERE session_row = 1
+			ORDER BY match_rank, message_id
+			LIMIT ?
+		)
+		SELECT m.session_id, s.number, m.id, s.name, s.summary, `+generatedShortCol+` AS generated_short_title,
+		       `+generatedLongCol+` AS generated_long_title, `+titleSourceCol+` AS title_source,
+		       snippet(messages_fts, 0, '**', '**', '...', 32) AS snippet, s.provider, COALESCE(s.provider_key, '') AS provider_key,
+		       s.model, s.mode, `+originCol+` AS origin, s.archived, `+pinnedCol+` AS pinned, s.status,
+		       `+messageCountCol+` AS message_count, s.created_at, s.updated_at, `+lastMessageAtCol+` AS last_message_at,
+		       m.created_at AS message_created_at
+		FROM session_matches sm
+		JOIN messages m ON m.id = sm.message_id
+		JOIN sessions s ON s.id = sm.session_id
+		JOIN messages_fts ON messages_fts.rowid = sm.message_id
+		ORDER BY sm.match_rank, sm.message_id`, args...)
 	if err != nil {
 		return nil, fmt.Errorf("search messages: %w", err)
 	}
@@ -1609,20 +1744,43 @@ func (s *SQLiteStore) Search(ctx context.Context, query string, limit int) ([]Se
 	for rows.Next() {
 		var r SearchResult
 		var number sql.NullInt64
-		var mode, status sql.NullString
+		var generatedShortTitle, generatedLongTitle, titleSource, providerKey, mode, origin, status sql.NullString
+		var lastMessageAt sql.NullTime
 		err := rows.Scan(&r.SessionID, &number, &r.MessageID, &r.SessionName, &r.Summary,
-			&r.Snippet, &r.Provider, &r.Model, &mode, &status, &r.MessageCount, &r.SessionCreatedAt, &r.UpdatedAt, &r.CreatedAt)
+			&generatedShortTitle, &generatedLongTitle, &titleSource, &r.Snippet, &r.Provider, &providerKey,
+			&r.Model, &mode, &origin, &r.Archived, &r.Pinned, &status, &r.MessageCount,
+			&r.SessionCreatedAt, &r.UpdatedAt, &lastMessageAt, &r.CreatedAt)
 		if err != nil {
 			return nil, fmt.Errorf("scan search result: %w", err)
 		}
 		if number.Valid {
 			r.SessionNumber = number.Int64
 		}
+		if generatedShortTitle.Valid {
+			r.GeneratedShortTitle = generatedShortTitle.String
+		}
+		if generatedLongTitle.Valid {
+			r.GeneratedLongTitle = generatedLongTitle.String
+		}
+		if titleSource.Valid {
+			r.TitleSource = SessionTitleSource(titleSource.String)
+		}
+		if providerKey.Valid {
+			r.ProviderKey = providerKey.String
+		}
 		if mode.Valid {
 			r.Mode = SessionMode(mode.String)
 		}
+		if origin.Valid {
+			r.Origin = SessionOrigin(origin.String)
+		} else {
+			r.Origin = OriginTUI
+		}
 		if status.Valid {
 			r.Status = SessionStatus(status.String)
+		}
+		if lastMessageAt.Valid {
+			r.LastMessageAt = lastMessageAt.Time
 		}
 		results = append(results, r)
 	}

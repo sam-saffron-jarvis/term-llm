@@ -31,7 +31,7 @@ type Store interface {
 
 	// Listing and search
 	List(ctx context.Context, opts ListOptions) ([]SessionSummary, error)
-	Search(ctx context.Context, query string, limit int) ([]SearchResult, error)
+	Search(ctx context.Context, opts SearchOptions) ([]SearchResult, error)
 
 	// Message operations - stores full llm.Message with Parts
 	AddMessage(ctx context.Context, sessionID string, msg *Message) error

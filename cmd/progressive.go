@@ -264,9 +264,6 @@ func runProgressiveSession(ctx context.Context, engine *llm.Engine, req llm.Requ
 				result = buildProgressiveRunResult(opts.SessionID, exitReason, finalized, tracker.latest, lastText)
 				return result, nil
 			}
-			if tracker.latest != nil {
-				return result, err
-			}
 			return result, err
 		}
 
@@ -530,23 +527,31 @@ func progressiveFinalizeReserve(total time.Duration) time.Duration {
 	return reserve
 }
 
-// progressiveFinalizationContext returns a detached, time-boxed context for the
-// finalization pass plus its CancelFunc, which the caller must invoke (via defer)
-// to release resources. It returns (nil, nil) when there is no grace budget.
+// progressiveFinalizationContext returns a time-boxed context for the finalization
+// pass plus its CancelFunc, which the caller must invoke (via defer) to release
+// resources. Natural completion gets a detached grace window so the model can add
+// final polish; timeout/cancel exits stay attached to the parent context and are
+// capped to the reserved budget. It returns (nil, nil) when finalization should
+// be skipped.
 func progressiveFinalizationContext(parent context.Context, reserve time.Duration, exitReason string) (context.Context, context.CancelFunc) {
-	grace := reserve
-	if grace < progressiveDefaultFinalizeGrace {
-		grace = progressiveDefaultFinalizeGrace
-	}
 	if exitReason == exitReasonNatural {
+		grace := reserve
+		if grace < progressiveDefaultFinalizeGrace {
+			grace = progressiveDefaultFinalizeGrace
+		}
 		if grace < progressiveMinFinalizeBudget {
 			grace = progressiveMinFinalizeBudget
 		}
+		if grace <= 0 {
+			return nil, nil
+		}
+		return context.WithTimeout(context.WithoutCancel(parent), grace)
 	}
-	if grace <= 0 {
+
+	if reserve <= 0 || parent.Err() != nil {
 		return nil, nil
 	}
-	return context.WithTimeout(context.WithoutCancel(parent), grace)
+	return context.WithTimeout(parent, reserve)
 }
 
 func buildProgressiveFinalizePrompt(latest *progressCommit) string {
