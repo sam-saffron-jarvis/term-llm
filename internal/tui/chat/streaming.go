@@ -388,6 +388,7 @@ func (m *Model) sendMessage(content string) (tea.Model, tea.Cmd) {
 	// tea.Println adds newline, no need for extra
 
 	// Clear input and attachments
+	m.resetPromptHistory()
 	m.setTextareaValue("")
 	m.files = nil
 	m.images = nil

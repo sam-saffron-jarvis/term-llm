@@ -99,6 +99,7 @@ CREATE INDEX IF NOT EXISTS idx_sessions_updated_at ON sessions(updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_sessions_mode ON sessions(mode);
 CREATE INDEX IF NOT EXISTS idx_messages_session_id ON messages(session_id, sequence);
 CREATE INDEX IF NOT EXISTS idx_messages_session_role ON messages(session_id, role);
+CREATE INDEX IF NOT EXISTS idx_messages_role_id ON messages(role, id);
 
 -- Metadata table for current session tracking
 CREATE TABLE IF NOT EXISTS metadata (
@@ -222,7 +223,7 @@ func NewSQLiteStore(cfg Config) (*SQLiteStore, error) {
 // - Fresh databases get the full schema from `schema` const and start at this version
 // - Existing databases run migrations to reach this version
 // Increment when adding new migrations.
-const schemaVersion = 27
+const schemaVersion = 28
 
 // migration represents a schema migration.
 type migration struct {
@@ -816,6 +817,15 @@ var migrations = []migration{
 				return fmt.Errorf("backfill chat-bubble message_count: %w", err)
 			}
 			return nil
+		},
+	},
+	{
+		// Migration 28: Add an index for cross-session prompt history recall.
+		version:     28,
+		description: "add prompt history role/id index",
+		up: func(db *sql.DB) error {
+			_, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_messages_role_id ON messages(role, id)`)
+			return err
 		},
 	},
 }
@@ -2161,6 +2171,54 @@ func (s *SQLiteStore) GetLatestVisibleMessageID(ctx context.Context, sessionID s
 		return 0, fmt.Errorf("query latest visible message id: %w", err)
 	}
 	return msgID, nil
+}
+
+// PreviousUserPrompt returns the newest persisted user prompt older than beforeID.
+// When beforeID <= 0, traversal starts at the newest prompt. History is global
+// across sessions and optionally filtered by agent.
+func (s *SQLiteStore) PreviousUserPrompt(ctx context.Context, agent string, beforeID int64) (*PromptHistoryEntry, error) {
+	query := `
+		SELECT m.id, m.text_content
+		FROM messages m
+		JOIN sessions sess ON sess.id = m.session_id
+		WHERE m.role = 'user'
+		  AND TRIM(COALESCE(m.text_content, ''), char(9) || char(10) || char(11) || char(12) || char(13) || char(32)) <> ''
+		  AND substr(TRIM(COALESCE(m.text_content, ''), char(9) || char(10) || char(11) || char(12) || char(13) || char(32)), 1, ?) <> ?
+		  AND COALESCE(m.compaction_tail, FALSE) = FALSE
+		  AND (? = '' OR COALESCE(sess.agent, '') = ?)
+		  AND (? <= 0 OR m.id < ?)
+		ORDER BY m.id DESC
+		LIMIT 1`
+	return s.queryPromptHistoryEntry(ctx, query, len(internalCompactionSummarySQLPrefix), internalCompactionSummarySQLPrefix, agent, agent, beforeID, beforeID)
+}
+
+// NextUserPrompt returns the oldest persisted user prompt newer than afterID.
+func (s *SQLiteStore) NextUserPrompt(ctx context.Context, agent string, afterID int64) (*PromptHistoryEntry, error) {
+	query := `
+		SELECT m.id, m.text_content
+		FROM messages m
+		JOIN sessions sess ON sess.id = m.session_id
+		WHERE m.role = 'user'
+		  AND TRIM(COALESCE(m.text_content, ''), char(9) || char(10) || char(11) || char(12) || char(13) || char(32)) <> ''
+		  AND substr(TRIM(COALESCE(m.text_content, ''), char(9) || char(10) || char(11) || char(12) || char(13) || char(32)), 1, ?) <> ?
+		  AND COALESCE(m.compaction_tail, FALSE) = FALSE
+		  AND (? = '' OR COALESCE(sess.agent, '') = ?)
+		  AND m.id > ?
+		ORDER BY m.id ASC
+		LIMIT 1`
+	return s.queryPromptHistoryEntry(ctx, query, len(internalCompactionSummarySQLPrefix), internalCompactionSummarySQLPrefix, agent, agent, afterID)
+}
+
+func (s *SQLiteStore) queryPromptHistoryEntry(ctx context.Context, query string, args ...any) (*PromptHistoryEntry, error) {
+	var entry PromptHistoryEntry
+	err := s.db.QueryRowContext(ctx, query, args...).Scan(&entry.ID, &entry.Text)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("query prompt history: %w", err)
+	}
+	return &entry, nil
 }
 
 // GetMessages retrieves messages for a session.

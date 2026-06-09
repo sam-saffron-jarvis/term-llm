@@ -75,6 +75,14 @@ func DefaultKeyMap() KeyMap {
 			key.WithKeys("esc"),
 			key.WithHelp("esc", "cancel"),
 		),
+		HistoryUp: key.NewBinding(
+			key.WithKeys("up"),
+			key.WithHelp("up", "history up"),
+		),
+		HistoryDown: key.NewBinding(
+			key.WithKeys("down"),
+			key.WithHelp("down", "history down"),
+		),
 		Tab: key.NewBinding(
 			key.WithKeys("tab"),
 			key.WithHelp("tab", "complete"),

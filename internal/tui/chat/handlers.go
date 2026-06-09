@@ -522,6 +522,14 @@ func (m *Model) handleKeyMsg(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 	}
 
+	// Shell-style prompt history: Up/Down first move within the composer, then
+	// recall cross-session persisted user prompts at the visual boundaries. This
+	// runs before viewport scrolling so the streaming interjection composer gets
+	// the same history behavior as the normal composer.
+	if handled, cmd := m.handlePromptHistoryKey(msg); handled {
+		return m, cmd
+	}
+
 	// Handle quit (Ctrl+C copies when text is selected)
 	if key.Matches(msg, m.keyMap.Quit) {
 		if m.selection.Active {
@@ -753,6 +761,7 @@ func (m *Model) handleKeyMsg(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.textarea, cmd = m.textarea.Update(msg)
 		m.updateTextareaHeight()
 		if newVal := m.textarea.Value(); newVal != old {
+			m.resetPromptHistoryIfEdited()
 			if strings.HasPrefix(newVal, "/") {
 				if !m.completions.IsVisible() {
 					m.completions.Show()
@@ -949,6 +958,9 @@ func (m *Model) handleKeyMsg(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		// Clear selection when user starts typing
 		if m.selection.Active && m.textarea.Value() != old {
 			m.selection = Selection{}
+		}
+		if m.textarea.Value() != old {
+			m.resetPromptHistoryIfEdited()
 		}
 		m.updateTextareaHeight()
 		// Show argument completions for commands that support them
