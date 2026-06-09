@@ -1481,7 +1481,7 @@ func (s *serveServer) handleSessionInterrupt(w http.ResponseWriter, r *http.Requ
 	if fastErr != nil {
 		log.Printf("[serve] fast provider unavailable for interrupt: %v", fastErr)
 	}
-	action, interruptErr := rt.InterruptMessage(r.Context(), msg, displayText, strings.TrimSpace(req.InterjectionID), fastProvider)
+	action, interruptErr := rt.InterruptMessage(r.Context(), msg, displayText, strings.TrimSpace(req.InterjectionID), fastProvider, false)
 	if interruptErr != nil {
 		writeOpenAIError(w, http.StatusConflict, "conflict_error", interruptErr.Error())
 		return

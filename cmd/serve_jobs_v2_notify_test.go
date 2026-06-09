@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/session"
@@ -206,6 +207,59 @@ func TestJobsV2NotifyWhenDoneAppendsWebNotificationToIdleSession(t *testing.T) {
 	}
 	if strings.Contains(text, "STATUS: COMPLETE") {
 		t.Fatalf("notification text should omit status footer, got %q", text)
+	}
+}
+
+func TestJobsV2NotifyWhenDoneContinuesLoadedIdleWebSession(t *testing.T) {
+	store := newServeRuntimeTestStore()
+	provider := llm.NewMockProvider("mock").AddTextResponse("I saw the queued job finish.")
+	rt := &serveRuntime{
+		provider:     provider,
+		providerKey:  "mock",
+		engine:       llm.NewEngine(provider, nil),
+		defaultModel: "mock-model",
+		store:        store,
+		platform:     "web",
+	}
+	mgr := newServeSessionManager(time.Minute, 10, func(context.Context) (*serveRuntime, error) {
+		return rt, nil
+	})
+	defer mgr.Close()
+	if _, err := mgr.GetOrCreate(context.Background(), "sess-origin"); err != nil {
+		t.Fatalf("GetOrCreate: %v", err)
+	}
+	srv := &serveServer{
+		store:        store,
+		sessionMgr:   mgr,
+		responseRuns: newServeResponseRunManager(),
+	}
+	defer srv.responseRuns.Close()
+
+	message := "Queued job job_123 (developer) succeeded: hello world"
+	if err := srv.notifyQueuedAgentWeb(context.Background(), "run_123", "sess-origin", message); err != nil {
+		t.Fatalf("notifyQueuedAgentWeb: %v", err)
+	}
+
+	waitForServeCondition(t, 2*time.Second, func() bool {
+		store.mu.Lock()
+		defer store.mu.Unlock()
+		return len(store.messages["sess-origin"]) >= 2
+	}, "notification continuation to persist user notice and assistant response")
+
+	store.mu.Lock()
+	msgs := append([]session.Message(nil), store.messages["sess-origin"]...)
+	store.mu.Unlock()
+	if len(msgs) != 2 {
+		t.Fatalf("messages = %d, want 2: %#v", len(msgs), msgs)
+	}
+	if msgs[0].Role != llm.RoleUser || !strings.Contains(msgs[0].TextContent, message) {
+		t.Fatalf("first message = (%s, %q), want user notification", msgs[0].Role, msgs[0].TextContent)
+	}
+	if msgs[1].Role != llm.RoleAssistant || !strings.Contains(msgs[1].TextContent, "I saw the queued job finish") {
+		t.Fatalf("second message = (%s, %q), want assistant continuation", msgs[1].Role, msgs[1].TextContent)
+	}
+	if provider.CurrentTurn() != 1 {
+		t.Fatalf("provider turns = %d, want 1", provider.CurrentTurn())
 	}
 }
 

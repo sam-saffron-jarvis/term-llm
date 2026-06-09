@@ -170,10 +170,10 @@ func (rt *serveRuntime) updateInterruptFromEvent(ev llm.Event) {
 }
 
 func (rt *serveRuntime) Interrupt(ctx context.Context, msg string, fastProvider llm.Provider) (llm.InterruptAction, error) {
-	return rt.InterruptMessage(ctx, llm.UserText(msg), msg, "", fastProvider)
+	return rt.InterruptMessage(ctx, llm.UserText(msg), msg, "", fastProvider, false)
 }
 
-func (rt *serveRuntime) InterruptMessage(ctx context.Context, msg llm.Message, displayText string, interjectionID string, fastProvider llm.Provider) (llm.InterruptAction, error) {
+func (rt *serveRuntime) InterruptMessage(ctx context.Context, msg llm.Message, displayText string, interjectionID string, fastProvider llm.Provider, autoContinue bool) (llm.InterruptAction, error) {
 	rt.interruptMu.Lock()
 	state := rt.activeInterrupt
 	if state == nil {
@@ -205,7 +205,7 @@ func (rt *serveRuntime) InterruptMessage(ctx context.Context, msg llm.Message, d
 			cancel()
 		}
 	case llm.InterruptInterject:
-		rt.engine.QueueInterjection(llm.QueuedInterjection{ID: interjectionID, Message: msg, DisplayText: displayText})
+		rt.engine.QueueInterjection(llm.QueuedInterjection{ID: interjectionID, Message: msg, DisplayText: displayText, AutoContinue: autoContinue})
 	}
 	return action, nil
 }

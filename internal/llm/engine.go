@@ -172,10 +172,11 @@ const (
 // QueuedInterjection is a structured user message submitted while a run is active.
 // Queued entries are cancellable until the engine drains them into a provider turn.
 type QueuedInterjection struct {
-	ID          string
-	Message     Message
-	DisplayText string
-	Status      InterjectionStatus
+	ID           string
+	Message      Message
+	DisplayText  string
+	Status       InterjectionStatus
+	AutoContinue bool // If true, drain at a text-only turn boundary and continue the run.
 }
 
 type queuedInterjection = QueuedInterjection
@@ -709,6 +710,66 @@ func (e *Engine) drainInterjections() []queuedInterjection {
 	}
 	e.pendingInterjections = nil
 	return out
+}
+
+// drainAutoContinueInterjections atomically commits the queued interjection
+// prefix marked AutoContinue. It intentionally preserves FIFO order: a normal
+// pending user interjection blocks later auto-continue notifications from being
+// injected ahead of it.
+func (e *Engine) drainAutoContinueInterjections() []queuedInterjection {
+	e.callbackMu.Lock()
+	defer e.callbackMu.Unlock()
+
+	if len(e.pendingInterjections) == 0 || !e.pendingInterjections[0].AutoContinue {
+		return nil
+	}
+	n := 0
+	for n < len(e.pendingInterjections) && e.pendingInterjections[n].AutoContinue {
+		n++
+	}
+	out := make([]queuedInterjection, n)
+	copy(out, e.pendingInterjections[:n])
+	for i := range out {
+		out[i].Status = InterjectionCommitted
+	}
+	copy(e.pendingInterjections, e.pendingInterjections[n:])
+	for i := len(e.pendingInterjections) - n; i < len(e.pendingInterjections); i++ {
+		e.pendingInterjections[i] = queuedInterjection{}
+	}
+	e.pendingInterjections = e.pendingInterjections[:len(e.pendingInterjections)-n]
+	return out
+}
+
+func (e *Engine) continueWithAutoInterjections(ctx context.Context, send eventSender, req *Request, turnCallback TurnCompletedCallback, attempt int, finalMsg Message) (bool, error) {
+	interjections := e.drainAutoContinueInterjections()
+	if len(interjections) == 0 {
+		return false, nil
+	}
+	if len(finalMsg.Parts) > 0 {
+		req.Messages = append(req.Messages, finalMsg)
+	}
+	interjectionMsgs := make([]Message, 0, len(interjections))
+	for _, interjection := range interjections {
+		interjectionMsg := interjection.Message
+		interjectionMsg.Role = RoleUser
+		req.Messages = append(req.Messages, interjectionMsg)
+		interjectionMsgs = append(interjectionMsgs, interjectionMsg)
+	}
+	if turnCallback != nil {
+		cbCtx, cancel := callbackContext(ctx)
+		_ = turnCallback(cbCtx, attempt, interjectionMsgs, TurnMetrics{})
+		cancel()
+	}
+	for _, interjection := range interjections {
+		text := interjection.DisplayText
+		if text == "" {
+			text = MessageText(interjection.Message)
+		}
+		if err := send.Send(Event{Type: EventInterjection, Text: text, InterjectionID: interjection.ID, Message: interjection.Message, InterjectionStatus: InterjectionCommitted}); err != nil {
+			return false, err
+		}
+	}
+	return true, nil
 }
 
 // applyToolOutputTruncation applies global and compaction truncation limits
@@ -2131,8 +2192,9 @@ turnLoop:
 			// Call turnCallback with final text-only response (no tools)
 			// Note: responseCallback is NOT called here because no tool execution follows.
 			// responseCallback is only for persisting assistant messages before tool execution.
+			var finalMsg Message
 			if textBuilder.Len() > 0 || reasoningBuilder.Len() > 0 || len(reasoningSummaryParts) > 0 || reasoningItemID != "" || reasoningEncryptedContent != "" {
-				finalMsg := buildAssistantMessageWithReasoningMetadata(
+				finalMsg = buildAssistantMessageWithReasoningMetadata(
 					textBuilder.String(),
 					nil,
 					reasoningBuilder.String(),
@@ -2187,6 +2249,19 @@ turnLoop:
 				restoreAfterSoftCompactionFailure()
 				attempt--
 				continue
+			}
+			// Auto-continue interjections are completion notices from background work.
+			// Unlike ordinary user interjections during prose, they should be handed to
+			// the provider immediately so the active web run can acknowledge them rather
+			// than leaving the session stopped with a pending notice.
+			if attempt < maxTurns-1 {
+				continued, err := e.continueWithAutoInterjections(ctx, send, &req, turnCallback, attempt, finalMsg)
+				if err != nil {
+					return err
+				}
+				if continued {
+					continue
+				}
 			}
 			if err := send.Send(Event{Type: EventDone}); err != nil {
 				return err
@@ -2310,6 +2385,10 @@ turnLoop:
 					cancel()
 				}
 			}
+			// Auto-continue interjections are completion notices from background work.
+			// Unlike ordinary user interjections during prose, they should be handed to
+			// the provider immediately so the active web run can acknowledge them rather
+			// than leaving the session stopped with a pending notice.
 			if err := send.Send(Event{Type: EventDone}); err != nil {
 				return err
 			}
