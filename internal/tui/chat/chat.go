@@ -44,6 +44,16 @@ type pendingStreamModelSwitch struct {
 	model    string
 }
 
+type promptHistoryState struct {
+	active       bool
+	cursorID     int64
+	draftText    string
+	draftFiles   []FileAttachment
+	draftImages  []ImageAttachment
+	draftPastes  map[int]string
+	recalledText string
+}
+
 type Model struct {
 	// Dimensions
 	width  int
@@ -178,6 +188,7 @@ type Model struct {
 	activeInterruptSeq      uint64 // Currently active async interrupt classification request
 	pendingInterruptUI      string // UI state of latest pending interjection: "", "deciding", "interject"
 	interruptNotice         string // One-line UI notice for recent interrupt actions
+	promptHistory           promptHistoryState
 	// MCP (Model Context Protocol)
 	mcpManager    *mcp.Manager
 	mcpStatusChan chan mcp.StatusUpdate

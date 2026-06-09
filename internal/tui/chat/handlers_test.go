@@ -17,6 +17,80 @@ import (
 	"github.com/samsaffron/term-llm/internal/ui"
 )
 
+func TestPromptHistoryRecallsCrossSessionDraftAndRestoresLocalDraft(t *testing.T) {
+	store, err := session.NewStore(session.Config{Enabled: true, Path: t.TempDir() + "/sessions.db"})
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer store.Close()
+	ctx := context.Background()
+
+	sess1 := &session.Session{ID: session.NewID(), Provider: "mock", Model: "mock-model", Mode: session.ModeChat, Agent: "jarvis"}
+	if err := store.Create(ctx, sess1); err != nil {
+		t.Fatalf("Create sess1: %v", err)
+	}
+	sess2 := &session.Session{ID: session.NewID(), Provider: "mock", Model: "mock-model", Mode: session.ModeChat, Agent: "jarvis"}
+	if err := store.Create(ctx, sess2); err != nil {
+		t.Fatalf("Create sess2: %v", err)
+	}
+
+	addPrompt := func(sess *session.Session, text string) {
+		t.Helper()
+		msg := session.NewMessage(sess.ID, llm.UserText(text), -1)
+		if err := store.AddMessage(ctx, sess.ID, msg); err != nil {
+			t.Fatalf("AddMessage(%q): %v", text, err)
+		}
+	}
+	addPrompt(sess1, "terminal one words")
+	addPrompt(sess2, "terminal two words")
+
+	m := newTestChatModel(false)
+	m.store = store
+	m.sess = sess1
+	m.agentName = "jarvis"
+	m.setTextareaValue("word")
+
+	_, _ = m.handleKeyMsg(tea.KeyPressMsg{Code: tea.KeyUp})
+	if got := m.textarea.Value(); got != "terminal two words" {
+		t.Fatalf("after up textarea = %q, want latest cross-session prompt", got)
+	}
+
+	_, _ = m.handleKeyMsg(tea.KeyPressMsg{Code: tea.KeyDown})
+	if got := m.textarea.Value(); got != "word" {
+		t.Fatalf("after down textarea = %q, want restored draft", got)
+	}
+}
+
+func TestPromptHistoryWorksDuringStreamingInterjectionComposer(t *testing.T) {
+	store, err := session.NewStore(session.Config{Enabled: true, Path: t.TempDir() + "/sessions.db"})
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer store.Close()
+	ctx := context.Background()
+
+	sess := &session.Session{ID: session.NewID(), Provider: "mock", Model: "mock-model", Mode: session.ModeChat, Agent: "jarvis"}
+	if err := store.Create(ctx, sess); err != nil {
+		t.Fatalf("Create sess: %v", err)
+	}
+	msg := session.NewMessage(sess.ID, llm.UserText("streaming history prompt"), -1)
+	if err := store.AddMessage(ctx, sess.ID, msg); err != nil {
+		t.Fatalf("AddMessage: %v", err)
+	}
+
+	m := newTestChatModel(false)
+	m.store = store
+	m.sess = sess
+	m.agentName = "jarvis"
+	m.streaming = true
+	m.setTextareaValue("interrupt draft")
+
+	_, _ = m.handleKeyMsg(tea.KeyPressMsg{Code: tea.KeyUp})
+	if got := m.textarea.Value(); got != "streaming history prompt" {
+		t.Fatalf("streaming up textarea = %q, want prompt history", got)
+	}
+}
+
 func TestHandlePasteMsg_SlashPathDoesNotLeaveCompletionsVisible(t *testing.T) {
 	m := newTestChatModel(false)
 

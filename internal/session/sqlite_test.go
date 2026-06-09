@@ -13,6 +13,70 @@ import (
 	"github.com/samsaffron/term-llm/internal/llm"
 )
 
+func TestPromptHistoryCrossSessionTraversal(t *testing.T) {
+	store, err := NewStore(Config{Enabled: true, Path: filepath.Join(t.TempDir(), "sessions.db")})
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer store.Close()
+	ctx := context.Background()
+
+	sessA := &Session{ID: NewID(), Provider: "test", Model: "test-model", Mode: ModeChat, Agent: "jarvis"}
+	if err := store.Create(ctx, sessA); err != nil {
+		t.Fatalf("Create sessA: %v", err)
+	}
+	sessB := &Session{ID: NewID(), Provider: "test", Model: "test-model", Mode: ModeChat, Agent: "jarvis"}
+	if err := store.Create(ctx, sessB); err != nil {
+		t.Fatalf("Create sessB: %v", err)
+	}
+	sessOtherAgent := &Session{ID: NewID(), Provider: "test", Model: "test-model", Mode: ModeChat, Agent: "other"}
+	if err := store.Create(ctx, sessOtherAgent); err != nil {
+		t.Fatalf("Create sessOtherAgent: %v", err)
+	}
+
+	addPrompt := func(sess *Session, text string) int64 {
+		t.Helper()
+		msg := NewMessage(sess.ID, llm.UserText(text), -1)
+		if err := store.AddMessage(ctx, sess.ID, msg); err != nil {
+			t.Fatalf("AddMessage(%q): %v", text, err)
+		}
+		return msg.ID
+	}
+
+	firstID := addPrompt(sessA, "from terminal one")
+	secondID := addPrompt(sessB, "from terminal two")
+	_ = addPrompt(sessOtherAgent, "from other agent")
+
+	history, ok := store.(PromptHistoryStore)
+	if !ok {
+		t.Fatal("store does not implement PromptHistoryStore")
+	}
+
+	latest, err := history.PreviousUserPrompt(ctx, "jarvis", 0)
+	if err != nil {
+		t.Fatalf("PreviousUserPrompt newest: %v", err)
+	}
+	if latest == nil || latest.ID != secondID || latest.Text != "from terminal two" {
+		t.Fatalf("latest = %#v, want id=%d text=%q", latest, secondID, "from terminal two")
+	}
+
+	older, err := history.PreviousUserPrompt(ctx, "jarvis", latest.ID)
+	if err != nil {
+		t.Fatalf("PreviousUserPrompt older: %v", err)
+	}
+	if older == nil || older.ID != firstID || older.Text != "from terminal one" {
+		t.Fatalf("older = %#v, want id=%d text=%q", older, firstID, "from terminal one")
+	}
+
+	newer, err := history.NextUserPrompt(ctx, "jarvis", older.ID)
+	if err != nil {
+		t.Fatalf("NextUserPrompt: %v", err)
+	}
+	if newer == nil || newer.ID != secondID || newer.Text != "from terminal two" {
+		t.Fatalf("newer = %#v, want id=%d text=%q", newer, secondID, "from terminal two")
+	}
+}
+
 func TestSessionPreferredTitlePrecedence(t *testing.T) {
 	sess := Session{Summary: "first message summary", GeneratedShortTitle: "Generated short title", GeneratedLongTitle: "Generated long title"}
 	if got := sess.PreferredShortTitle(); got != "Generated short title" {

@@ -76,6 +76,20 @@ type MessagesDescendingPager interface {
 	GetMessagesPageDescending(ctx context.Context, sessionID string, beforeSeq, limit int) ([]Message, error)
 }
 
+// PromptHistoryEntry is a user prompt recalled from cross-session composer history.
+type PromptHistoryEntry struct {
+	ID   int64
+	Text string
+}
+
+// PromptHistoryStore is an optional Store capability for shell-style composer
+// history recall. Implementations traverse persisted user prompts globally so
+// multiple TUI processes share the same prompt history.
+type PromptHistoryStore interface {
+	PreviousUserPrompt(ctx context.Context, agent string, beforeID int64) (*PromptHistoryEntry, error)
+	NextUserPrompt(ctx context.Context, agent string, afterID int64) (*PromptHistoryEntry, error)
+}
+
 // PushSubscription represents a Web Push subscription stored in the database.
 type PushSubscription struct {
 	ID        string

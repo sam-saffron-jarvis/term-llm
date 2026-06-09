@@ -68,6 +68,14 @@ func (s *NoopStore) GetMessageByID(ctx context.Context, msgID int64) (*Message, 
 	return nil, ErrNotFound
 }
 
+func (s *NoopStore) PreviousUserPrompt(ctx context.Context, agent string, beforeID int64) (*PromptHistoryEntry, error) {
+	return nil, nil
+}
+
+func (s *NoopStore) NextUserPrompt(ctx context.Context, agent string, afterID int64) (*PromptHistoryEntry, error) {
+	return nil, nil
+}
+
 func (s *NoopStore) ReplaceMessages(ctx context.Context, sessionID string, messages []Message) error {
 	return nil
 }
