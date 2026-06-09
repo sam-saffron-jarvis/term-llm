@@ -430,10 +430,11 @@ func lookupPrefix(model string, table []limitEntry) int {
 // Entries are matched by longest prefix. Unknown models return 0 (compaction disabled).
 var inputLimitTable = []limitEntry{
 	// Anthropic Claude 1M context: 1M ctx - 20K practical output reserve = 980K
-	// Opus 4.8, Opus 4.7, Opus 4.6, and Sonnet 4.6 have 1M context.
+	// Fable 5, Opus 4.8, Opus 4.7, Opus 4.6, and Sonnet 4.6 have 1M context.
 	// The -1m aliases remain for backwards compatibility with existing configs.
 	// Older 1M beta-only entries are enabled via -1m suffix (sends context-1m-2025-08-07 beta header).
 	// Requires Anthropic usage tier 4 or custom rate limits.
+	{"claude-fable-5", 980_000},
 	{"claude-opus-4-8", 980_000},
 	{"claude-opus-4-7", 980_000},
 	{"claude-opus-4-6", 980_000},
@@ -462,6 +463,7 @@ var inputLimitTable = []limitEntry{
 	// geographic prefixes (us./eu./ap.) followed by anthropic.<model>.
 	// Prefix matching covers all regions and ARN passthrough users can
 	// set context_window in config.
+	{"us.anthropic.claude-fable-5", 980_000},
 	{"us.anthropic.claude-opus-4-8", 980_000},
 	{"us.anthropic.claude-opus-4-7", 980_000},
 	{"us.anthropic.claude-sonnet-4-6", 980_000},
@@ -470,6 +472,7 @@ var inputLimitTable = []limitEntry{
 	{"us.anthropic.claude-sonnet-4-5", 180_000},
 	{"us.anthropic.claude-opus-4-5", 180_000},
 	{"us.anthropic.claude-sonnet-4", 180_000},
+	{"eu.anthropic.claude-fable-5", 980_000},
 	{"eu.anthropic.claude-opus-4-8", 980_000},
 	{"eu.anthropic.claude-opus-4-7", 980_000},
 	{"eu.anthropic.claude-sonnet-4-6", 980_000},
@@ -478,6 +481,7 @@ var inputLimitTable = []limitEntry{
 	{"eu.anthropic.claude-sonnet-4-5", 180_000},
 	{"eu.anthropic.claude-opus-4-5", 180_000},
 	{"eu.anthropic.claude-sonnet-4", 180_000},
+	{"ap.anthropic.claude-fable-5", 980_000},
 	{"ap.anthropic.claude-opus-4-8", 980_000},
 	{"ap.anthropic.claude-opus-4-7", 980_000},
 	{"ap.anthropic.claude-sonnet-4-6", 980_000},
@@ -486,6 +490,7 @@ var inputLimitTable = []limitEntry{
 	{"ap.anthropic.claude-sonnet-4-5", 180_000},
 	{"ap.anthropic.claude-opus-4-5", 180_000},
 	{"ap.anthropic.claude-sonnet-4", 180_000},
+	{"anthropic.claude-fable-5", 980_000},
 	{"anthropic.claude-opus-4-8", 980_000},
 	{"anthropic.claude-opus-4-7", 980_000},
 	{"anthropic.claude-sonnet-4-6", 980_000},
@@ -596,8 +601,9 @@ func ClampOutputTokens(requested int, model string) int {
 // Derived from context_window - input_limit (see inputLimitTable comments).
 // Entries are matched by longest prefix. Unknown models return 0 (no clamping).
 var outputLimitTable = []limitEntry{
-	// Anthropic Claude 4.x: theoretical max is 64K-128K but practical is 16K-20K.
+	// Anthropic Claude 4.x/5: theoretical max is 64K-128K but practical is 16K-20K.
 	// Use the actual API max to avoid rejections.
+	{"claude-fable-5", 128_000},
 	{"claude-opus-4-8", 128_000},
 	{"claude-sonnet-4-6-1m", 64_000},
 	{"claude-sonnet-4-5-1m", 64_000},
@@ -621,6 +627,7 @@ var outputLimitTable = []limitEntry{
 	{"claude-3-haiku", 4_096},
 
 	// AWS Bedrock (same as direct Anthropic, all geo prefixes)
+	{"us.anthropic.claude-fable-5", 128_000},
 	{"us.anthropic.claude-opus-4-8", 128_000},
 	{"us.anthropic.claude-opus-4-7", 64_000},
 	{"us.anthropic.claude-sonnet-4-6", 64_000},
@@ -629,6 +636,7 @@ var outputLimitTable = []limitEntry{
 	{"us.anthropic.claude-sonnet-4-5", 64_000},
 	{"us.anthropic.claude-opus-4-5", 64_000},
 	{"us.anthropic.claude-sonnet-4", 64_000},
+	{"eu.anthropic.claude-fable-5", 128_000},
 	{"eu.anthropic.claude-opus-4-8", 128_000},
 	{"eu.anthropic.claude-opus-4-7", 64_000},
 	{"eu.anthropic.claude-sonnet-4-6", 64_000},
@@ -637,6 +645,7 @@ var outputLimitTable = []limitEntry{
 	{"eu.anthropic.claude-sonnet-4-5", 64_000},
 	{"eu.anthropic.claude-opus-4-5", 64_000},
 	{"eu.anthropic.claude-sonnet-4", 64_000},
+	{"ap.anthropic.claude-fable-5", 128_000},
 	{"ap.anthropic.claude-opus-4-8", 128_000},
 	{"ap.anthropic.claude-opus-4-7", 64_000},
 	{"ap.anthropic.claude-sonnet-4-6", 64_000},
@@ -645,6 +654,7 @@ var outputLimitTable = []limitEntry{
 	{"ap.anthropic.claude-sonnet-4-5", 64_000},
 	{"ap.anthropic.claude-opus-4-5", 64_000},
 	{"ap.anthropic.claude-sonnet-4", 64_000},
+	{"anthropic.claude-fable-5", 128_000},
 	{"anthropic.claude-opus-4-8", 128_000},
 	{"anthropic.claude-opus-4-7", 64_000},
 	{"anthropic.claude-sonnet-4-6", 64_000},

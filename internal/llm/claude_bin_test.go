@@ -607,8 +607,14 @@ func TestParseClaudeEffort(t *testing.T) {
 		{"sonnet-low", "sonnet", "low"},
 		{"sonnet-medium", "sonnet", "medium"},
 		{"sonnet-high", "sonnet", "high"},
-		{"sonnet-xhigh", "sonnet-xhigh", ""}, // xhigh is opus-only
+		{"sonnet-xhigh", "sonnet-xhigh", ""}, // xhigh is opus/fable-only
 		{"sonnet", "sonnet", ""},
+		{"fable-max", "fable", "max"},
+		{"fable-xhigh", "fable", "xhigh"},
+		{"fable-high", "fable", "high"},
+		{"fable-medium", "fable", "medium"},
+		{"fable-low", "fable", "low"},
+		{"fable", "fable", ""},
 		{"haiku", "haiku", ""},
 		{"", "", ""},
 	}
@@ -642,6 +648,9 @@ func TestValidateClaudeBinModel(t *testing.T) {
 		{"sonnet-high", false, ""},
 		{"sonnet-medium", false, ""},
 		{"sonnet-low", false, ""},
+		{"fable", false, ""},
+		{"fable-max", false, ""},
+		{"fable-xhigh", false, ""},
 		{"haiku", false, ""},
 		// bare effort names — should error with a suggestion pointing at opus-<effort>.
 		{"max", true, "claude-bin:opus-max"},
@@ -1072,6 +1081,8 @@ func TestMapModelToClaudeArg(t *testing.T) {
 		{"opus", "opus"},
 		{"sonnet", "sonnet"},
 		{"haiku", "haiku"},
+		{"fable", "fable"},
+		{"claude-fable-5", "fable"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.input, func(t *testing.T) {

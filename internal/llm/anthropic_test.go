@@ -23,6 +23,7 @@ func TestParseModelThinking(t *testing.T) {
 		wantAdaptive bool
 	}{
 		// 4.6+ models: -thinking triggers adaptive (no budget)
+		{"claude-fable-5-thinking", "claude-fable-5", 0, true},
 		{"claude-opus-4-8-thinking", "claude-opus-4-8", 0, true},
 		{"claude-sonnet-4-6-thinking", "claude-sonnet-4-6", 0, true},
 		{"claude-opus-4-6-thinking", "claude-opus-4-6", 0, true},
@@ -30,6 +31,7 @@ func TestParseModelThinking(t *testing.T) {
 		// Older models: -thinking triggers budget_tokens
 		{"claude-haiku-4-5-thinking", "claude-haiku-4-5", 10000, false},
 		// No suffix: no thinking
+		{"claude-fable-5", "claude-fable-5", 0, false},
 		{"claude-sonnet-4-6", "claude-sonnet-4-6", 0, false},
 		{"claude-opus-4-6", "claude-opus-4-6", 0, false},
 		{"claude-opus-4-7", "claude-opus-4-7", 0, false},

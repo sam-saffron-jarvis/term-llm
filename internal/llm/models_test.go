@@ -120,6 +120,7 @@ func TestAllListedModelsHaveContextLimits(t *testing.T) {
 		// claude-bin aliases (resolved internally, limits don't apply)
 		"opus": true, "opus-low": true, "opus-medium": true, "opus-high": true, "opus-xhigh": true, "opus-max": true,
 		"sonnet": true, "sonnet-low": true, "sonnet-medium": true, "sonnet-high": true,
+		"fable": true, "fable-low": true, "fable-medium": true, "fable-high": true, "fable-xhigh": true, "fable-max": true,
 		"haiku": true,
 		// OpenRouter (slash in name, resolved via API cache)
 		"x-ai/grok-code-fast-1": true,
@@ -218,6 +219,8 @@ func TestReasoningEffortsForProviderModel(t *testing.T) {
 		{"claude-bin", "opus-high", []string{"low", "medium", "high", "xhigh", "max"}},
 		{"claude-bin", "sonnet", []string{"low", "medium", "high"}},
 		{"claude-bin", "sonnet-high", []string{"low", "medium", "high"}},
+		{"claude-bin", "fable", []string{"low", "medium", "high", "xhigh", "max"}},
+		{"claude-bin", "fable-high", []string{"low", "medium", "high", "xhigh", "max"}},
 		{"claude-bin", "haiku", nil},
 		{"openai", "gpt-5.4", []string{"minimal", "low", "medium", "high", "xhigh"}},
 		{"openai", "gpt-5.4-high", []string{"minimal", "low", "medium", "high", "xhigh"}},
@@ -228,6 +231,8 @@ func TestReasoningEffortsForProviderModel(t *testing.T) {
 		{"anthropic", "claude-sonnet-4-6-high", []string{"low", "medium", "high"}},
 		{"anthropic", "claude-haiku-4-5", nil},
 		{"anthropic", "claude-sonnet-4-5-1m", []string{"low", "medium", "high"}},
+		{"anthropic", "claude-fable-5", []string{"low", "medium", "high", "xhigh", "max"}},
+		{"anthropic", "claude-fable-5-max", []string{"low", "medium", "high", "xhigh", "max"}},
 	}
 
 	for _, tt := range tests {
@@ -262,7 +267,9 @@ func TestBaseModelAndEffortForProviderAvoidsFalseMaxParsing(t *testing.T) {
 		{"chatgpt", "gpt-5.1-codex-high", "gpt-5.1-codex", "high"},
 		{"claude-bin", "opus-max", "opus", "max"},
 		{"claude-bin", "sonnet-max", "sonnet-max", ""},
+		{"claude-bin", "fable-max", "fable", "max"},
 		{"anthropic", "claude-opus-4-8-max", "claude-opus-4-8", "max"},
+		{"anthropic", "claude-fable-5-max", "claude-fable-5", "max"},
 		{"anthropic", "claude-sonnet-4-6-high", "claude-sonnet-4-6", "high"},
 		{"anthropic", "claude-sonnet-4-6-max", "claude-sonnet-4-6-max", ""},
 		{"anthropic", "claude-haiku-4-5-high", "claude-haiku-4-5-high", ""},
@@ -279,8 +286,8 @@ func TestBaseModelAndEffortForProviderAvoidsFalseMaxParsing(t *testing.T) {
 }
 
 func TestExpandWithEffortVariantsForProvider(t *testing.T) {
-	got := ExpandWithEffortVariantsForProvider("claude-bin", []string{"opus", "sonnet", "haiku"})
-	for _, want := range []string{"opus-low", "opus-medium", "opus-high", "opus-xhigh", "opus-max", "sonnet-low", "sonnet-medium", "sonnet-high"} {
+	got := ExpandWithEffortVariantsForProvider("claude-bin", []string{"opus", "sonnet", "fable", "haiku"})
+	for _, want := range []string{"opus-low", "opus-medium", "opus-high", "opus-xhigh", "opus-max", "sonnet-low", "sonnet-medium", "sonnet-high", "fable-low", "fable-medium", "fable-high", "fable-xhigh", "fable-max"} {
 		if !containsModelID(got, want) {
 			t.Fatalf("expanded claude-bin models missing %q: %v", want, got)
 		}

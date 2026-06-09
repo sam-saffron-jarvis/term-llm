@@ -54,7 +54,8 @@ type AnthropicProvider struct {
 
 // isAdaptiveModel returns true for Claude models that support adaptive thinking.
 func isAdaptiveModel(model string) bool {
-	return strings.HasPrefix(model, "claude-opus-4-8") ||
+	return strings.HasPrefix(model, "claude-fable-5") ||
+		strings.HasPrefix(model, "claude-opus-4-8") ||
 		strings.HasPrefix(model, "claude-sonnet-4-6") ||
 		strings.HasPrefix(model, "claude-opus-4-6") ||
 		strings.HasPrefix(model, "claude-opus-4-7")

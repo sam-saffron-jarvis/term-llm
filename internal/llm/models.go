@@ -24,9 +24,10 @@ type ModelEntry struct {
 // When adding a curated model, include InputLimit/OutputLimit if known.
 var ProviderModels = map[string][]ModelEntry{
 	"anthropic": {
-		// Claude 4.x. Reasoning-effort metadata is provider-level below:
-		// Opus supports low/medium/high/xhigh/max; Sonnet supports low/medium/high.
+		// Claude 4.x/5. Reasoning-effort metadata is provider-level below:
+		// Fable and Opus support low/medium/high/xhigh/max; Sonnet supports low/medium/high.
 		// 1M-capable current models use 980K effective input (1M minus reserve).
+		{ID: "claude-fable-5", InputLimit: 980_000, OutputLimit: 128_000},
 		{ID: "claude-opus-4-8", InputLimit: 980_000, OutputLimit: 128_000},
 		{ID: "claude-opus-4-7", InputLimit: 980_000, OutputLimit: 64_000},
 		{ID: "claude-opus-4-7-1m", InputLimit: 980_000, OutputLimit: 64_000},
@@ -113,6 +114,12 @@ var ProviderModels = map[string][]ModelEntry{
 		{ID: "sonnet-low"},
 		{ID: "sonnet-medium"},
 		{ID: "sonnet-high"},
+		{ID: "fable", ReasoningEfforts: claudeBinFableEffortVariants},
+		{ID: "fable-low"},
+		{ID: "fable-medium"},
+		{ID: "fable-high"},
+		{ID: "fable-xhigh"},
+		{ID: "fable-max"},
 		{ID: "haiku"},
 	},
 	"xai": {
@@ -316,6 +323,9 @@ var defaultEffortVariants = []string{"minimal", "low", "medium", "high", "xhigh"
 var claudeBinOpusEffortVariants = []string{"low", "medium", "high", "xhigh", "max"}
 var claudeBinSonnetEffortVariants = []string{"low", "medium", "high"}
 
+// Fable 5 supports the same effort levels as Opus.
+var claudeBinFableEffortVariants = claudeBinOpusEffortVariants
+
 func DefaultReasoningEffortsForProviderType(providerType string) []string {
 	switch strings.ToLower(strings.TrimSpace(providerType)) {
 	case "vllm":
@@ -384,14 +394,14 @@ func defaultReasoningEffortsForProviderModel(provider, model string) []string {
 			return cloneEfforts(defaultEffortVariants)
 		}
 	case "anthropic", "bedrock":
-		if isClaudeOpusModelName(nameLower) {
+		if isClaudeOpusModelName(nameLower) || isClaudeFableModelName(nameLower) {
 			return cloneEfforts(claudeBinOpusEffortVariants)
 		}
 		if isClaudeSonnetModelName(nameLower) {
 			return cloneEfforts(claudeBinSonnetEffortVariants)
 		}
 	case "claude-bin":
-		if nameLower == "opus" {
+		if nameLower == "opus" || nameLower == "fable" {
 			return cloneEfforts(claudeBinOpusEffortVariants)
 		}
 		if nameLower == "sonnet" {
@@ -407,6 +417,10 @@ func isClaudeOpusModelName(name string) bool {
 
 func isClaudeSonnetModelName(name string) bool {
 	return strings.HasPrefix(name, "claude-sonnet-4")
+}
+
+func isClaudeFableModelName(name string) bool {
+	return strings.HasPrefix(name, "claude-fable-5")
 }
 
 func cloneEfforts(efforts []string) []string {

@@ -255,23 +255,24 @@ func loadClaudeToolLineDrainGrace() time.Duration {
 }
 
 // claudeEffortLevels lists the reasoning-effort suffixes recognised on
-// opus/sonnet model names (e.g. "opus-max", "sonnet-high"). "max" and
-// "xhigh" are accepted only on opus; see parseClaudeEffort.
+// opus/sonnet/fable model names (e.g. "opus-max", "sonnet-high"). "max" and
+// "xhigh" are accepted only on opus and fable; see parseClaudeEffort.
 var claudeEffortLevels = []string{"low", "medium", "high", "xhigh", "max"}
 
-// parseClaudeEffort extracts effort suffix from opus or sonnet model names.
+// parseClaudeEffort extracts effort suffix from opus, sonnet, or fable model names.
 // "opus-max" -> ("opus", "max"), "opus-low" -> ("opus", "low")
-// "sonnet-high" -> ("sonnet", "high"), "sonnet-low" -> ("sonnet", "low")
-// "haiku" -> ("haiku", "") — non-opus/sonnet models are not modified.
-// Note: "max" and "xhigh" efforts are only supported for opus.
+// "sonnet-high" -> ("sonnet", "high"), "fable-max" -> ("fable", "max")
+// "haiku" -> ("haiku", "") — other models are not modified.
+// Note: "max" and "xhigh" efforts are only supported for opus and fable.
 func parseClaudeEffort(model string) (string, string) {
 	isOpus := strings.HasPrefix(model, "opus")
 	isSonnet := strings.HasPrefix(model, "sonnet")
-	if !isOpus && !isSonnet {
+	isFable := strings.HasPrefix(model, "fable")
+	if !isOpus && !isSonnet && !isFable {
 		return model, ""
 	}
 	efforts := []string{"medium", "high", "low"}
-	if isOpus {
+	if isOpus || isFable {
 		efforts = append(efforts, "max", "xhigh")
 	}
 	for _, effort := range efforts {
@@ -292,7 +293,7 @@ func ValidateClaudeBinModel(model string) error {
 			return fmt.Errorf(
 				"claude-bin model %q is an effort level, not a model; "+
 					"did you mean \"claude-bin:opus-%s\"? "+
-					"(max/xhigh require opus; low/medium/high also work with sonnet)",
+					"(max/xhigh require opus or fable; low/medium/high also work with sonnet)",
 				model, model,
 			)
 		}
@@ -1579,6 +1580,9 @@ func mapModelToClaudeArg(model string) string {
 	model = strings.ToLower(model)
 	if strings.Contains(model, "opus") {
 		return "opus"
+	}
+	if strings.Contains(model, "fable") {
+		return "fable"
 	}
 	if strings.Contains(model, "haiku") {
 		return "haiku"
