@@ -3302,6 +3302,120 @@ func TestEngineInterjection_NoToolCalls(t *testing.T) {
 	}
 }
 
+func TestEngineInterjection_AutoContinueNoToolCalls(t *testing.T) {
+	provider := &fakeProvider{
+		script: func(call int, req Request) []Event {
+			switch call {
+			case 0:
+				return []Event{
+					{Type: EventTextDelta, Text: "first response"},
+					{Type: EventDone},
+				}
+			case 1:
+				if len(req.Messages) < 3 {
+					t.Fatalf("second call messages = %d, want original + assistant + interjection", len(req.Messages))
+				}
+				if req.Messages[len(req.Messages)-2].Role != RoleAssistant || MessageText(req.Messages[len(req.Messages)-2]) != "first response" {
+					t.Fatalf("second call penultimate message = %#v, want first assistant response", req.Messages[len(req.Messages)-2])
+				}
+				if req.Messages[len(req.Messages)-1].Role != RoleUser || MessageText(req.Messages[len(req.Messages)-1]) != "job done" {
+					t.Fatalf("second call final message = %#v, want auto-continue interjection", req.Messages[len(req.Messages)-1])
+				}
+				return []Event{
+					{Type: EventTextDelta, Text: "follow up"},
+					{Type: EventDone},
+				}
+			default:
+				t.Fatalf("unexpected provider call %d", call)
+				return nil
+			}
+		},
+	}
+
+	registry := NewToolRegistry()
+	tool := &delayingTool{}
+	registry.Register(tool)
+	engine := NewEngine(provider, registry)
+	engine.QueueInterjection(QueuedInterjection{ID: "job-notify", Message: UserText("job done"), DisplayText: "job done", AutoContinue: true})
+	stream, err := engine.Stream(context.Background(), Request{Messages: []Message{UserText("hello")}, Tools: []ToolSpec{tool.Spec()}, MaxTurns: 3})
+	if err != nil {
+		t.Fatalf("stream error: %v", err)
+	}
+	defer stream.Close()
+
+	var text strings.Builder
+	var gotInterjection bool
+	for {
+		event, err := stream.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("recv error: %v", err)
+		}
+		switch event.Type {
+		case EventTextDelta:
+			text.WriteString(event.Text)
+		case EventInterjection:
+			gotInterjection = true
+			if event.InterjectionID != "job-notify" || event.Text != "job done" {
+				t.Fatalf("interjection event = (%q, %q), want job-notify/job done", event.InterjectionID, event.Text)
+			}
+		}
+	}
+	if !gotInterjection {
+		t.Fatal("expected auto-continue interjection event")
+	}
+	if got := text.String(); got != "first responsefollow up" {
+		t.Fatalf("stream text = %q, want first responsefollow up", got)
+	}
+	if len(provider.calls) != 2 {
+		t.Fatalf("provider calls = %d, want 2", len(provider.calls))
+	}
+	if pending := engine.ListPendingInterjections(); len(pending) != 0 {
+		t.Fatalf("pending interjections = %#v, want none", pending)
+	}
+}
+
+func TestEngineInterjection_AutoContinuePreservesFIFOBehindUserInterjection(t *testing.T) {
+	provider := &fakeProvider{
+		script: func(call int, req Request) []Event {
+			return []Event{{Type: EventTextDelta, Text: "just text"}, {Type: EventDone}}
+		},
+	}
+	registry := NewToolRegistry()
+	tool := &delayingTool{}
+	registry.Register(tool)
+	engine := NewEngine(provider, registry)
+	engine.QueueInterjection(QueuedInterjection{ID: "user-note", Message: UserText("user note"), DisplayText: "user note"})
+	engine.QueueInterjection(QueuedInterjection{ID: "job-notify", Message: UserText("job done"), DisplayText: "job done", AutoContinue: true})
+
+	stream, err := engine.Stream(context.Background(), Request{Messages: []Message{UserText("hello")}, Tools: []ToolSpec{tool.Spec()}, MaxTurns: 3})
+	if err != nil {
+		t.Fatalf("stream error: %v", err)
+	}
+	defer stream.Close()
+	for {
+		event, err := stream.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("recv error: %v", err)
+		}
+		if event.Type == EventInterjection {
+			t.Fatalf("unexpected interjection event: %#v", event)
+		}
+	}
+	if len(provider.calls) != 1 {
+		t.Fatalf("provider calls = %d, want 1", len(provider.calls))
+	}
+	pending := engine.ListPendingInterjections()
+	if len(pending) != 2 || pending[0].ID != "user-note" || pending[1].ID != "job-notify" {
+		t.Fatalf("pending interjections = %#v, want FIFO user-note then job-notify", pending)
+	}
+}
+
 // TestEngineInterjection_MultipleInterjections verifies that sending multiple
 // interjections before a turn completes injects all of them in FIFO order.
 func TestEngineInterjection_MultipleInterjections(t *testing.T) {

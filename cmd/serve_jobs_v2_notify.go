@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"strconv"
@@ -172,9 +173,12 @@ func (s *serveServer) notifyQueuedAgentWeb(ctx context.Context, runID, sessionID
 				// originating session is already generating. Pass no classifier
 				// provider so this best-effort notice cannot be upgraded into a
 				// cancel/interrupt decision for the user's active run.
-				if _, err := rt.InterruptMessage(ctx, llm.UserText(message), message, "job_notify_"+strings.TrimSpace(runID), nil); err == nil {
+				if _, err := rt.InterruptMessage(ctx, llm.UserText(message), message, "job_notify_"+strings.TrimSpace(runID), nil, true); err == nil {
 					return nil
 				}
+			}
+			if s.startQueuedAgentNotificationContinuation(ctx, rt, sessionID, message) {
+				return nil
 			}
 			if err := rt.appendNotificationMessage(ctx, sessionID, message); err == nil {
 				return nil
@@ -185,6 +189,35 @@ func (s *serveServer) notifyQueuedAgentWeb(ctx context.Context, runID, sessionID
 		return nil
 	}
 	return appendQueuedAgentNotificationToStore(ctx, s.store, sessionID, message)
+}
+
+func (s *serveServer) startQueuedAgentNotificationContinuation(ctx context.Context, rt *serveRuntime, sessionID, message string) bool {
+	if s == nil || rt == nil || strings.TrimSpace(sessionID) == "" || strings.TrimSpace(message) == "" {
+		return false
+	}
+	if rt.hasActiveRun() {
+		return false
+	}
+	model := strings.TrimSpace(rt.defaultModel)
+	previousResponseID := strings.TrimSpace(rt.getLastResponseID())
+	if previousResponseID == "" {
+		previousResponseID = s.latestDurableResponseIDForSession(ctx, sessionID)
+	}
+	run, err := s.startResponseRun(rt, true, false, []llm.Message{llm.UserText(message)}, llm.Request{
+		SessionID: sessionID,
+		Model:     model,
+	}, sessionID, startResponseRunOptions{
+		previousResponseID: previousResponseID,
+		uiSession:          true,
+	})
+	if err != nil {
+		log.Printf("[jobs-v2] queued agent notification continuation failed for session %s: %v", sessionID, err)
+		return false
+	}
+	if run == nil {
+		return false
+	}
+	return true
 }
 
 func (rt *serveRuntime) appendNotificationMessage(ctx context.Context, sessionID, message string) error {
