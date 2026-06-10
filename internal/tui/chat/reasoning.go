@@ -35,6 +35,7 @@ func (m *Model) resetActiveReasoning() {
 	m.currentReasoning.Reset()
 	m.currentReasoningKind = ""
 	m.currentReasoningTitle = ""
+	m.currentReasoningExpanded = nil
 	m.reasoningPhaseActive = false
 }
 
@@ -225,7 +226,7 @@ func (m *Model) renderCurrentReasoningBlock() string {
 	if !ok {
 		return ""
 	}
-	return m.renderReasoningPartBlock(part)
+	return m.renderReasoningPartBlockWithConfig(part, reasoningConfigWithSegmentExpansion(m.effectiveReasoningConfig(), m.currentReasoningExpanded))
 }
 
 func (m *Model) rerenderCommittedReasoningSegments() {
@@ -264,7 +265,9 @@ func (m *Model) commitCurrentReasoningToStream() {
 	if strings.TrimSpace(rendered) == "" {
 		return
 	}
-	m.tracker.AddReasoningSegment(rendered, reasoningSegmentFromPart(part))
+	seg := reasoningSegmentFromPart(part)
+	seg.Expanded = m.currentReasoningExpanded
+	m.tracker.AddReasoningSegment(rendered, seg)
 	m.committedReasoning = append(m.committedReasoning, part)
 	m.resetActiveReasoning()
 	m.viewCache.cachedCompletedContent = ""
@@ -302,9 +305,7 @@ func (m *Model) setReasoningDetailsExpanded(expanded bool) {
 		// independently by the key handler.
 		return
 	}
-	if m.tracker != nil {
-		m.clearReasoningSegmentExpansionOverrides()
-	}
+	m.clearReasoningSegmentExpansionOverrides()
 	if m.chatRenderer != nil {
 		m.chatRenderer.SetReasoningConfig(m.effectiveReasoningConfig())
 	}

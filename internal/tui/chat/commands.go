@@ -2216,6 +2216,9 @@ func (m *Model) cmdCompress(args ...string) (tea.Model, tea.Cmd) {
 
 	m.clearFooterMessage()
 	m.streaming = true
+	// Drop the retained previous-turn tracker so it is not re-rendered as
+	// streaming content while compaction runs.
+	m.resetRetainedStreamTracker()
 	m.phase = phase
 	m.streamStartTime = time.Now()
 	if m.altScreen {
@@ -2595,6 +2598,12 @@ func (m *Model) cmdHandover(args []string) (tea.Model, tea.Cmd) {
 
 	m.clearFooterMessage()
 	m.streaming = true
+	// A tool-initiated handover continues the current engine stream, so leave
+	// its tracker intact; only a manual /handover starts fresh and should drop
+	// the retained previous-turn tracker to avoid re-rendering it.
+	if m.handoverToolDoneCh == nil {
+		m.resetRetainedStreamTracker()
+	}
 	m.phase = "Handover"
 	m.streamStartTime = time.Now()
 	if m.altScreen {
@@ -2735,6 +2744,11 @@ func (m *Model) startHandoverScriptHandover(scriptAgent *agents.Agent, sourceAge
 	m.streamCancelFunc = cancel
 	m.clearFooterMessage()
 	m.streaming = true
+	// As with the LLM handover path, only drop the retained tracker for a
+	// manual handover; a tool-initiated handover continues the engine stream.
+	if m.handoverToolDoneCh == nil {
+		m.resetRetainedStreamTracker()
+	}
 	m.phase = "Handover"
 	m.streamStartTime = time.Now()
 	if m.altScreen {

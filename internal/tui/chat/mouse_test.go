@@ -420,3 +420,186 @@ func TestMouseClickReloadedHistoryThoughtHeaderIgnoresPlainTextDecoys(t *testing
 		t.Fatalf("click should expand actual thought header despite earlier plain text decoy, got %q", view)
 	}
 }
+
+func TestMouseClickLiveThinkingHeaderTogglesBeforeCommit(t *testing.T) {
+	m := newTestChatModel(true)
+	m.width = 80
+	m.streaming = true
+	m.setTextareaValue("")
+	m.tracker = ui.NewToolTracker()
+
+	updated, _ := m.Update(streamEventMsg{event: ui.StreamEvent{
+		Type:           ui.StreamEventReasoning,
+		ReasoningKind:  llm.ReasoningKindRaw,
+		ReasoningText:  "live hidden body",
+		ReasoningTitle: "Live plan",
+	}})
+	m = updated.(*Model)
+	_ = m.View()
+	if m.contentLines == nil && m.viewCache.lastContentStr != "" {
+		m.contentLines = strings.Split(m.viewCache.lastContentStr, "\n")
+	}
+
+	headerLine := -1
+	for i, line := range m.contentLines {
+		if strings.Contains(ui.StripANSI(line), "▸ Thought: Live plan") {
+			headerLine = i
+			break
+		}
+	}
+	if headerLine < 0 {
+		t.Fatalf("could not find live collapsed thought header in %#v", m.contentLines)
+	}
+
+	updated, _ = m.Update(tea.MouseClickMsg{X: 0, Y: headerLine - m.viewport.YOffset(), Button: tea.MouseLeft})
+	m = updated.(*Model)
+	if m.selection.Active || m.selection.Dragging {
+		t.Fatal("click on live thought header should not start a selection")
+	}
+	if m.currentReasoningExpanded == nil || !*m.currentReasoningExpanded {
+		t.Fatal("click should set the live reasoning expansion override to expanded")
+	}
+	view := ui.StripANSI(m.View().Content)
+	if !strings.Contains(view, "▾ Thought: Live plan") || !strings.Contains(view, "live hidden body") {
+		t.Fatalf("click should expand live reasoning block, got %q", view)
+	}
+
+	updated, _ = m.Update(streamEventMsg{event: ui.StreamEvent{Type: ui.StreamEventText, Text: "Answer."}})
+	m = updated.(*Model)
+	var committed *ui.ReasoningSegment
+	for i := range m.tracker.Segments {
+		if m.tracker.Segments[i].Reasoning != nil {
+			committed = m.tracker.Segments[i].Reasoning
+		}
+	}
+	if committed == nil {
+		t.Fatal("text event should commit live reasoning block to tracker")
+	}
+	if committed.Expanded == nil || !*committed.Expanded {
+		t.Fatal("committed reasoning segment should preserve the click expansion override")
+	}
+	view = ui.StripANSI(m.View().Content)
+	if !strings.Contains(view, "▾ Thought: Live plan") || !strings.Contains(view, "live hidden body") {
+		t.Fatalf("toggled state should be preserved after commit, got %q", view)
+	}
+}
+
+func TestMouseClickThinkingHeaderTogglesAfterStreamDone(t *testing.T) {
+	m := newTestChatModel(true)
+	m.width = 80
+	m.streaming = true
+	m.setTextareaValue("")
+	m.tracker = ui.NewToolTracker()
+
+	stream := func(ev ui.StreamEvent) {
+		updated, _ := m.Update(streamEventMsg{event: ev})
+		m = updated.(*Model)
+	}
+	stream(ui.StreamEvent{
+		Type:           ui.StreamEventReasoning,
+		ReasoningKind:  llm.ReasoningKindRaw,
+		ReasoningText:  "done hidden body",
+		ReasoningTitle: "Done plan",
+	})
+	stream(ui.StreamEvent{Type: ui.StreamEventText, Text: "Final answer."})
+	stream(ui.StreamEvent{Type: ui.StreamEventDone, Done: true})
+
+	if m.streaming {
+		t.Fatal("precondition: stream should be done")
+	}
+
+	expand := ui.StripANSI(m.View().Content)
+	if !strings.Contains(expand, "▸ Thought: Done plan") {
+		t.Fatalf("reasoning header should be collapsed after done, got %q", expand)
+	}
+
+	if m.viewCache.lastContentStr != "" {
+		m.contentLines = strings.Split(m.viewCache.lastContentStr, "\n")
+	}
+	headerLine := -1
+	for i, line := range m.contentLines {
+		if strings.Contains(ui.StripANSI(line), "▸ Thought: Done plan") {
+			headerLine = i
+			break
+		}
+	}
+	if headerLine < 0 {
+		t.Fatalf("could not find collapsed header after done in %#v", m.contentLines)
+	}
+
+	updated, _ := m.Update(tea.MouseClickMsg{X: 0, Y: headerLine - m.viewport.YOffset(), Button: tea.MouseLeft})
+	m = updated.(*Model)
+	view := ui.StripANSI(m.View().Content)
+	if !strings.Contains(view, "▾ Thought: Done plan") || !strings.Contains(view, "done hidden body") {
+		t.Fatalf("click should expand reasoning block after stream done, got %q", view)
+	}
+
+	if m.viewCache.lastContentStr != "" {
+		m.contentLines = strings.Split(m.viewCache.lastContentStr, "\n")
+	}
+	headerLine = -1
+	for i, line := range m.contentLines {
+		if strings.Contains(ui.StripANSI(line), "▾ Thought: Done plan") {
+			headerLine = i
+			break
+		}
+	}
+	if headerLine < 0 {
+		t.Fatalf("could not find expanded header after done in %#v", m.contentLines)
+	}
+	updated, _ = m.Update(tea.MouseClickMsg{X: 0, Y: headerLine - m.viewport.YOffset(), Button: tea.MouseLeft})
+	m = updated.(*Model)
+	view = ui.StripANSI(m.View().Content)
+	if !strings.Contains(view, "▸ Thought: Done plan") || strings.Contains(view, "done hidden body") {
+		t.Fatalf("second click should collapse reasoning block after stream done, got %q", view)
+	}
+}
+
+// After a stream finishes, the tracker is intentionally kept populated in
+// alt-screen mode so reasoning headers stay clickable. A following /compact or
+// manual /handover starts streaming without going through sendMessage, so it
+// must drop that retained tracker — otherwise, once completedStream has been
+// cleared (e.g. by a resize), the finished turn renders twice: once from
+// message history and once from the stale tracker via renderStreamingInline.
+func TestRetainedTrackerDoesNotDuplicateTurnOnNextStream(t *testing.T) {
+	m := newTestChatModel(true)
+	m.width = 80
+	m.height = 24
+	m.streaming = true
+	m.setTextareaValue("")
+	m.tracker = ui.NewToolTracker()
+
+	stream := func(ev ui.StreamEvent) {
+		updated, _ := m.Update(streamEventMsg{event: ev})
+		m = updated.(*Model)
+	}
+	stream(ui.StreamEvent{
+		Type:           ui.StreamEventReasoning,
+		ReasoningKind:  llm.ReasoningKindRaw,
+		ReasoningText:  "thinking body",
+		ReasoningTitle: "Plan A",
+	})
+	stream(ui.StreamEvent{Type: ui.StreamEventText, Text: "UNIQUE_ANSWER_TOKEN"})
+	stream(ui.StreamEvent{Type: ui.StreamEventDone, Done: true})
+	_ = m.View()
+
+	// Simulate a resize: clears completedStream but leaves the tracker populated.
+	m.viewCache.completedStream = ""
+	m.invalidateHistoryCache()
+	m.bumpContentVersion()
+
+	// The finished turn now renders from message history exactly once.
+	historyView := ui.StripANSI(m.renderHistory())
+	if got := strings.Count(historyView, "UNIQUE_ANSWER_TOKEN"); got != 1 {
+		t.Fatalf("precondition: history should render the turn once, got %d", got)
+	}
+
+	// Start a fresh non-sendMessage stream the way /compact does.
+	m.streaming = true
+	m.resetRetainedStreamTracker()
+
+	streamingView := ui.StripANSI(m.renderStreamingInline())
+	if got := strings.Count(streamingView, "UNIQUE_ANSWER_TOKEN"); got != 0 {
+		t.Fatalf("retained tracker should be cleared before a fresh stream; streaming render duplicated the finished turn %d time(s): %q", got, streamingView)
+	}
+}

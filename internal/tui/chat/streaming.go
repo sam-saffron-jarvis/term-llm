@@ -397,6 +397,10 @@ func (m *Model) sendMessage(content string) (tea.Model, tea.Cmd) {
 
 	// Start streaming
 	m.streaming = true
+	// The previous turn's tracker is kept alive after stream-done so its
+	// reasoning headers stay click-toggleable; clear it now that a fresh
+	// assistant turn is beginning.
+	m.resetRetainedStreamTracker()
 	m.phase = "Thinking"
 	m.streamStartTime = time.Now()
 	if m.altScreen {

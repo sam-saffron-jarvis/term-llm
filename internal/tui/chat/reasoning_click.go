@@ -96,7 +96,51 @@ func (m *Model) toggleReasoningSegmentAtContentLine(line int) bool {
 	if ordinal < historyCount {
 		return m.toggleHistoryReasoningOrdinal(ordinal)
 	}
-	return m.toggleTrackerReasoningOrdinal(ordinal - historyCount)
+	if m.toggleTrackerReasoningOrdinal(ordinal - historyCount) {
+		return true
+	}
+	// The live (uncommitted) reasoning block renders one past the tracker's
+	// committed reasoning segments.
+	if ordinal-historyCount == m.trackerReasoningSegmentCount() {
+		return m.toggleCurrentReasoningBlock()
+	}
+	return false
+}
+
+func (m *Model) trackerReasoningSegmentCount() int {
+	if m.tracker == nil {
+		return 0
+	}
+	count := 0
+	for i := range m.tracker.Segments {
+		if m.tracker.Segments[i].Reasoning != nil {
+			count++
+		}
+	}
+	return count
+}
+
+func (m *Model) toggleCurrentReasoningBlock() bool {
+	part, ok := m.currentReasoningDisplayPart()
+	if !ok {
+		return false
+	}
+	current := false
+	if m.currentReasoningExpanded != nil {
+		current = *m.currentReasoningExpanded
+	} else {
+		kind := llm.NormalizeReasoningKind(part.ReasoningKind)
+		current = internalreasoning.HistoryExpanded(string(kind), m.effectiveReasoningConfig())
+	}
+	next := !current
+	m.currentReasoningExpanded = &next
+	m.viewCache.cachedCompletedContent = ""
+	m.viewCache.cachedTrackerVersion = 0
+	m.viewCache.lastTrackerVersion = 0
+	m.viewCache.lastSetContentAt = time.Time{}
+	m.resetAltScreenStreamingAppendCache()
+	m.bumpContentVersion()
+	return true
 }
 
 func (m *Model) toggleTrackerReasoningOrdinal(ordinal int) bool {
@@ -211,6 +255,7 @@ func (m *Model) reasoningSegmentExpanded(seg ui.ReasoningSegment) bool {
 
 func (m *Model) clearReasoningSegmentExpansionOverrides() {
 	m.reasoningExpansionOverrides = nil
+	m.currentReasoningExpanded = nil
 	if m.tracker == nil {
 		return
 	}
@@ -225,10 +270,17 @@ func reasoningConfigWithSegmentExpansion(cfg config.ReasoningConfig, expanded *b
 	if expanded == nil {
 		return cfg
 	}
+	// A per-block override must be authoritative for that block, so set both
+	// Display and History: the renderer's HistoryExpanded() treats History ==
+	// expanded as expanded regardless of Display, so changing Display alone
+	// would leave a collapse override as a no-op under reasoning.history:
+	// expanded.
 	if *expanded {
 		cfg.Display = config.ReasoningDisplayExpanded
+		cfg.History = config.ReasoningHistoryExpanded
 		return cfg
 	}
 	cfg.Display = config.ReasoningDisplayCollapsed
+	cfg.History = config.ReasoningHistoryCollapsed
 	return cfg
 }

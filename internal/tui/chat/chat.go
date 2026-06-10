@@ -86,9 +86,12 @@ type Model struct {
 	currentReasoning      strings.Builder
 	currentReasoningKind  llm.ReasoningKind
 	currentReasoningTitle string
-	committedReasoning    []llm.Part
-	reasoningPhaseActive  bool
-	reasoningRawWarned    bool
+	// Per-block expansion override for the live (uncommitted) reasoning
+	// block; carried onto the segment when it is committed to the tracker.
+	currentReasoningExpanded *bool
+	committedReasoning       []llm.Part
+	reasoningPhaseActive     bool
+	reasoningRawWarned       bool
 
 	// Streaming state
 	currentResponse  strings.Builder
@@ -993,6 +996,20 @@ func (m *Model) resetTracker() {
 	m.viewCache.cachedTrackerVersion = 0
 	m.viewCache.lastTrackerVersion = 0
 	m.viewCache.lastWavePos = 0
+}
+
+// resetRetainedStreamTracker clears the tracker that is intentionally kept
+// populated after an alt-screen chat stream finishes (so reasoning headers stay
+// click-toggleable). Call this before starting a fresh stream that does not go
+// through sendMessage — compaction and manual handover — so the previous turn,
+// shown from history once completedStream has been cleared (e.g. by a resize),
+// is not re-rendered a second time from the stale tracker by
+// renderStreamingInline. Tool-initiated handovers continue the current engine
+// stream and must keep their tracker, so those callers skip this.
+func (m *Model) resetRetainedStreamTracker() {
+	if m.altScreen && m.tracker != nil {
+		m.resetTracker()
+	}
 }
 
 func (m *Model) preserveStreamingContentOnError() {
@@ -1939,6 +1956,13 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				})
 
 				if m.altScreen {
+					// The stream is finished, so no tool should still be pending.
+					// Force any stragglers complete before rendering: the tracker
+					// is now retained after done (for reasoning click-toggling),
+					// and CompletedSegments() truncates at the first pending tool,
+					// so a stale pending tool would otherwise drop trailing content
+					// both here and in later rerenderCompletedStreamFromTracker calls.
+					m.tracker.ForceCompletePendingTools()
 					// In alt screen mode, save the full rendered content to completedStream.
 					// This preserves the correct position of images/diffs relative to text.
 					// The last assistant message will be skipped in renderHistory() to avoid duplication.
@@ -2003,7 +2027,15 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.currentTokens = 0
 			m.webSearchUsed = false
 			m.setRetryStatus("")
-			m.resetTracker()
+			// Keep the tracker's completed segments alive after the stream ends.
+			// In alt-screen mode the finished turn is shown from completedStream,
+			// but the tracker still backs reasoning-header click toggling (via
+			// rerenderCompletedStreamFromTracker). The tracker is reset when the
+			// next assistant turn starts (sendMessage), so leaving it populated
+			// here is render-neutral while preserving click metadata.
+			if !m.altScreen {
+				m.resetTracker()
+			}
 			if m.smoothBuffer != nil {
 				m.smoothBuffer.Reset()
 			}
