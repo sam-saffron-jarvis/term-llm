@@ -777,7 +777,13 @@ func runAsk(cmd *cobra.Command, args []string) error {
 			default:
 				err = streamPlainText(displayCtx, events, false)
 			}
+			if bridge != nil && err != nil {
+				bridge.Shutdown()
+			}
 			progressiveRun = <-runCh
+			if err != nil && errors.Is(progressiveRun.Err, errAskProgressiveBridgeClosed) {
+				progressiveRun.Err = nil
+			}
 		}
 		tools.ClearAskUserHooks() // Safe to call even if hooks weren't set
 
