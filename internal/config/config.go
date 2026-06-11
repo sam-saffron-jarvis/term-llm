@@ -405,6 +405,7 @@ type Config struct {
 	AgentsMd        AgentsMdConfig            `mapstructure:"agents_md"`
 	AutoCompact     bool                      `mapstructure:"auto_compact"`
 	Serve           ServeConfig               `mapstructure:"serve"`
+	FileTracking    FileTrackingConfig        `mapstructure:"file_tracking"`
 }
 
 // ServeConfig holds configuration for the serve command platforms.
@@ -517,6 +518,15 @@ type SessionsConfig struct {
 	MaxAgeDays int    `mapstructure:"max_age_days"` // Auto-delete sessions older than N days (0=never)
 	MaxCount   int    `mapstructure:"max_count"`    // Keep at most N sessions, delete oldest (0=unlimited)
 	Path       string `mapstructure:"path"`         // Optional SQLite DB path override (supports :memory:)
+}
+
+// FileTrackingConfig configures recording of file changes made by agent tools
+type FileTrackingConfig struct {
+	Enabled         bool   `mapstructure:"enabled"`           // Opt-in: record before/after content of files agents modify
+	MaxFileBytes    int    `mapstructure:"max_file_bytes"`    // Per-file content cap; larger files recorded metadata-only (default 2 MiB)
+	MaxSessionBytes int    `mapstructure:"max_session_bytes"` // Retained-content budget per session (default 100 MiB)
+	MaxTotalBytes   int64  `mapstructure:"max_total_bytes"`   // Whole-database size cap; oldest sessions' history pruned on startup (default 1 GiB)
+	Path            string `mapstructure:"path"`              // Optional SQLite DB path override
 }
 
 // ThemeConfig allows customization of UI colors
@@ -1763,6 +1773,14 @@ var KnownKeys = map[string]bool{
 	"sessions.max_count":    true,
 	"sessions.path":         true,
 
+	// File change tracking
+	"file_tracking":                   true,
+	"file_tracking.enabled":           true,
+	"file_tracking.max_file_bytes":    true,
+	"file_tracking.max_session_bytes": true,
+	"file_tracking.max_total_bytes":   true,
+	"file_tracking.path":              true,
+
 	// Exec
 	"exec.provider":     true,
 	"exec.model":        true,
@@ -2099,6 +2117,11 @@ func GetDefaults() map[string]any {
 		"sessions.max_age_days":           0,
 		"sessions.max_count":              0,
 		"sessions.path":                   "",
+		"file_tracking.enabled":           false,
+		"file_tracking.max_file_bytes":    2097152,
+		"file_tracking.max_session_bytes": 104857600,
+		"file_tracking.max_total_bytes":   1073741824,
+		"file_tracking.path":              "",
 		"agents.use_builtin":              true,
 		"agents.search_paths":             []string{},
 		"skills.enabled":                  true,

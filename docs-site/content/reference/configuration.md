@@ -32,7 +32,7 @@ A typical config has a few major parts:
 - `default_provider` for the global LLM default
 - `providers` for model-specific credentials and routing
 - per-command blocks such as `exec`, `ask`, and `edit`
-- feature-specific blocks such as `image`, `audio`, `music`, `embed`, `search`, `sessions`, `tools`, and `skills`
+- feature-specific blocks such as `image`, `audio`, `music`, `embed`, `search`, `sessions`, `file_tracking`, `tools`, and `skills`
 
 ## Example
 
@@ -228,6 +228,23 @@ sessions:
 ```
 
 Use this to control whether sessions are persisted, how long they are kept, and where the SQLite database lives.
+
+## File change tracking config
+
+```yaml
+file_tracking:
+  enabled: false
+  max_file_bytes: 2097152 # 2 MiB per-file content cap
+  max_session_bytes: 104857600 # 100 MiB retained content per session
+  max_total_bytes: 1073741824 # 1 GiB whole-database cap across sessions
+  path: "" # optional DB path override
+```
+
+Opt-in. When enabled, term-llm records the before/after contents of files that agent tools create, modify, or delete, so the web UI can show a live per-session diff sidebar.
+
+**Privacy note:** this persists actual file contents (not just paths) to a local SQLite database at `~/.local/share/term-llm/file_history.db`, separate from `sessions.db`. Contents are gzip-compressed and content-addressed. Files larger than `max_file_bytes`, binary files, and changes beyond the per-session budget are recorded as metadata only ("content not retained"). History for deleted sessions is swept on startup, following `sessions.max_age_days`; if the database still exceeds `max_total_bytes`, the least recently changed sessions' history is pruned until it fits.
+
+Shell-made changes are tracked best-effort: commands that declare an `affected_paths` hint are snapshotted precisely; otherwise term-llm relies on `git status` (when inside a repository) and re-checking files the session already touched. Broad scripts writing to non-git directories without a hint may not appear in the diff sidebar.
 
 ## Search config
 

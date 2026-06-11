@@ -210,6 +210,7 @@ const switchToDraftSession = async (options = {}) => {
   persistAndRefreshShell();
   renderMessages(true);
   restoreDraftMessageForSession('', { replace: true });
+  app.activateDiffSidebar?.('');
 
   if (options.focusPrompt) {
     elements.promptInput.focus();
@@ -313,6 +314,7 @@ const switchToSession = async (sessionId, options = {}) => {
   persistAndRefreshShell();
   renderMessages(true);
   restoreDraftMessageForSession(session.id, { replace: true });
+  app.activateDiffSidebar?.(session.id);
 
   let didPreloadServerMessages = false;
   if (preloadServerMessagesPromise) {
@@ -1871,6 +1873,9 @@ const initialize = async () => {
       ensureActiveSession();
       renderMessages(true);
     }
+    // Boot may have changed the active session (URL slug, server sync);
+    // activate the diff sidebar for wherever we actually landed.
+    app.activateDiffSidebar?.(state.draftSessionActive ? '' : state.activeSessionId);
 
     // Retry push enrollment now that auth is confirmed. Also recover automatically
     // when the browser permission is already granted but the old localStorage flag

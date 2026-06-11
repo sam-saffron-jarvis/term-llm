@@ -533,6 +533,11 @@ const applyResponseStreamEvent = (session, streamState, event, payload) => {
 
   updateResponseSequence(session, payload);
 
+  if (event === 'response.file_change') {
+    app.handleFileChangeEvent?.(session, payload);
+    return { terminal: false };
+  }
+
   if (event === 'response.created') {
     const responseId = String(payload?.response?.id || '').trim();
     setSessionOptimisticBusy(session, true);
@@ -881,6 +886,7 @@ const applyResponseStreamEvent = (session, streamState, event, payload) => {
     renderSidebar();
     forceSidebarStatusRefreshSoon();
     void maybeNotifyResponseComplete(session, lastAssistant, responseId);
+    app.refreshFileChangesAfterRun?.(session);
     scrollVisibleStreamToBottom(session);
     return { terminal: true };
   }
@@ -917,6 +923,7 @@ const applyResponseStreamEvent = (session, streamState, event, payload) => {
     saveSessions();
     renderSidebar();
     forceSidebarStatusRefreshSoon();
+    app.refreshFileChangesAfterRun?.(session);
     scrollVisibleStreamToBottom(session, true);
     return {
       terminal: true,

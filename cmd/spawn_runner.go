@@ -391,6 +391,7 @@ func (r *SpawnAgentRunner) setupAgentTools(cfg *config.Config, engine *llm.Engin
 		return nil, err
 	}
 	wireImageRecorder(toolMgr.Registry, agent.Name, childSessionID)
+	wireFileRecorder(toolMgr.Registry, cfg)
 
 	// Register any custom script-backed tools declared in agent.yaml
 	if len(agent.Tools.Custom) > 0 {

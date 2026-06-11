@@ -1354,6 +1354,20 @@ func (s *serveServer) handleSessionByID(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	if suffix == "file-changes" || suffix == "file-changes/diff" {
+		if r.Method != http.MethodGet {
+			w.Header().Set("Allow", "GET")
+			writeOpenAIError(w, http.StatusMethodNotAllowed, "invalid_request_error", "method not allowed")
+			return
+		}
+		if suffix == "file-changes" {
+			s.handleSessionFileChanges(w, r, sessionID)
+		} else {
+			s.handleSessionFileChangeDiff(w, r, sessionID)
+		}
+		return
+	}
+
 	if r.Method != http.MethodGet {
 		w.Header().Set("Allow", "GET, POST")
 		writeOpenAIError(w, http.StatusMethodNotAllowed, "invalid_request_error", "method not allowed")

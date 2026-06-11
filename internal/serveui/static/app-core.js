@@ -34,6 +34,7 @@ const STORAGE_KEYS = {
   selectedProvider: 'term_llm_selected_provider',
   selectedEffort: 'term_llm_selected_effort',
   sidebarCollapsed: 'term_llm_sidebar_collapsed',
+  diffSidebarWidth: 'term_llm_diff_sidebar_width',
   showHiddenSessions: 'term_llm_show_hidden_sessions',
   showWidgetsSidebar: 'term_llm_show_widgets_sidebar',
   notificationsEnabled: 'term_llm_notifications_enabled',
@@ -252,7 +253,14 @@ const elements = {
   lightboxExpand: document.getElementById('lightboxExpand'),
   lightboxClose: document.getElementById('lightboxClose'),
   startupSplash: document.getElementById('startupSplash'),
-  startupStatus: document.getElementById('startupStatus')
+  startupStatus: document.getElementById('startupStatus'),
+  diffSidebar: document.getElementById('diffSidebar'),
+  diffSidebarTotals: document.getElementById('diffSidebarTotals'),
+  diffSidebarCloseBtn: document.getElementById('diffSidebarCloseBtn'),
+  diffResizeHandle: document.getElementById('diffResizeHandle'),
+  diffFileList: document.getElementById('diffFileList'),
+  diffToggleBtn: document.getElementById('diffToggleBtn'),
+  diffToggleBadge: document.getElementById('diffToggleBadge')
 };
 
 const displayAgentName = (name) => {

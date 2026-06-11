@@ -14,6 +14,7 @@ const SHELL_ASSETS = [
   './app-stream.js',
   './app-sidebar.js',
   './app-sessions.js',
+  './app-diffs.js',
   // term-llm:webrtc-shell-asset
   './vendor/marked/marked.umd.min.js?v=16.3.0',
   './vendor/dompurify/purify.min.js?v=3.2.7'

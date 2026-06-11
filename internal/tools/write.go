@@ -15,6 +15,7 @@ import (
 // WriteFileTool implements the write_file tool.
 type WriteFileTool struct {
 	approval *ApprovalManager
+	recorder FileChangeRecorder
 }
 
 // NewWriteFileTool creates a new WriteFileTool.
@@ -97,6 +98,10 @@ func (t *WriteFileTool) Execute(ctx context.Context, args json.RawMessage) (llm.
 		return textOutput(formatToolError(NewToolErrorf(ErrInvalidParams, "cannot resolve path: %v", err))), nil
 	}
 
+	// Serialize concurrent writes/edits to the same file path so the
+	// existing-content read below pairs atomically with the final rename.
+	defer lockFilePath(absPath)()
+
 	// Check if file exists for diff info and preserve permissions
 	existingContent := ""
 	isNew := true
@@ -157,6 +162,9 @@ func (t *WriteFileTool) Execute(ctx context.Context, args json.RawMessage) (llm.
 
 	// Build result message
 	output := llm.ToolOutput{}
+	if fc := recordFileChange(ctx, t.recorder, WriteFileToolName, absPath, []byte(existingContent), []byte(a.Content), isNew, false); fc != nil {
+		output.FileChanges = []llm.FileChange{*fc}
+	}
 	if isNew {
 		output.Content = fmt.Sprintf("Created new file: %s (%d lines).", absPath, countLines(a.Content))
 

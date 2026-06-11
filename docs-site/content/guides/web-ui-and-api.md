@@ -64,6 +64,12 @@ If the jobs platform is also enabled, the jobs API is mounted under the same bas
 
 LLM job runs now expose a `session_id` and persist to the same sessions store by default, which makes web/API integrations much easier to inspect while a progressive run is still executing.
 
+## Live diff sidebar
+
+When [file change tracking](/reference/configuration/#file-change-tracking-config) is enabled, the browser UI shows a right-hand "Changes" panel for sessions in which agent tools modify files. Files appear as the agent edits them, expand inline to show the cumulative diff for the session (baseline = the file's state when the session first touched it), and can be collapsed individually. The panel is resizable and can be dismissed per session.
+
+Tracking is opt-in because it persists file contents to a local database — see the privacy note in the configuration reference. Changes made by shell commands are tracked best-effort: precise when the command declares `affected_paths`, otherwise inferred from `git status` and previously tracked files.
+
 ## Attachments
 
 The browser UI accepts attachments from the paperclip button, drag/drop, and paste. The picker hints at the formats term-llm handles best: images (`png`, `jpeg`, `gif`, `webp`), PDFs, common text/data files (`txt`, `md`, `csv`, `tsv`, `json`, `yaml`, `xml`, `html`), and common Office document formats.

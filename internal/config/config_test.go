@@ -559,6 +559,25 @@ func TestReasoningDefaultsAndKnownKeys(t *testing.T) {
 	}
 }
 
+func TestFileTrackingDefaultsAndKnownKeys(t *testing.T) {
+	defaults := GetDefaults()
+	checks := map[string]any{
+		"file_tracking.enabled":           false,
+		"file_tracking.max_file_bytes":    2097152,
+		"file_tracking.max_session_bytes": 104857600,
+		"file_tracking.max_total_bytes":   1073741824,
+		"file_tracking.path":              "",
+	}
+	for key, want := range checks {
+		if got := defaults[key]; got != want {
+			t.Fatalf("default %s = %#v, want %#v", key, got, want)
+		}
+		if !KnownKeys[key] {
+			t.Fatalf("KnownKeys missing %s", key)
+		}
+	}
+}
+
 func TestResolveReasoningPartialConfigPreservesSafeDefaults(t *testing.T) {
 	cfg := &Config{Reasoning: ReasoningConfig{Display: ReasoningDisplayOff}}
 	resolved := cfg.ResolveReasoning("chat")

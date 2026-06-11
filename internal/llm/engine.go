@@ -872,6 +872,10 @@ func (e *Engine) Stream(ctx context.Context, req Request) (Stream, error) {
 	useLoop := len(req.Tools) > 0 && caps.ToolCalls
 
 	if useLoop {
+		if req.SessionID != "" {
+			// Tools read this for session-scoped concerns like file-change tracking.
+			ctx = ContextWithSessionID(ctx, req.SessionID)
+		}
 		stream := newEventStream(ctx, func(ctx context.Context, send eventSender) error {
 			return e.runLoop(ctx, req, send)
 		})
@@ -2788,14 +2792,15 @@ func (e *Engine) executeSingleToolCall(ctx context.Context, call ToolCall, send 
 	DebugRawToolResult(debugRaw, call.ID, call.Name, output.Content)
 	// Best-effort: don't let a slow event consumer stall completed tool workers.
 	send.TrySend(Event{
-		Type:        EventToolExecEnd,
-		ToolCallID:  call.ID,
-		ToolName:    call.Name,
-		ToolInfo:    info,
-		ToolSuccess: !output.TimedOut,
-		ToolOutput:  output.Content,
-		ToolDiffs:   output.Diffs,
-		ToolImages:  output.Images,
+		Type:            EventToolExecEnd,
+		ToolCallID:      call.ID,
+		ToolName:        call.Name,
+		ToolInfo:        info,
+		ToolSuccess:     !output.TimedOut,
+		ToolOutput:      output.Content,
+		ToolDiffs:       output.Diffs,
+		ToolFileChanges: output.FileChanges,
+		ToolImages:      output.Images,
 	})
 	return []Message{ToolResultMessageFromOutput(call.ID, call.Name, output, call.ThoughtSig)}, nil
 }
@@ -2867,14 +2872,15 @@ func (e *Engine) handleSyncToolExecution(ctx context.Context, event Event, send 
 	}
 	// Emit end event to TUI (non-blocking to avoid deadlock if consumer is slow)
 	send.TrySend(Event{
-		Type:        EventToolExecEnd,
-		ToolCallID:  callID,
-		ToolName:    call.Name,
-		ToolInfo:    info,
-		ToolSuccess: err == nil && !result.TimedOut,
-		ToolOutput:  result.Content,
-		ToolDiffs:   result.Diffs,
-		ToolImages:  result.Images,
+		Type:            EventToolExecEnd,
+		ToolCallID:      callID,
+		ToolName:        call.Name,
+		ToolInfo:        info,
+		ToolSuccess:     err == nil && !result.TimedOut,
+		ToolOutput:      result.Content,
+		ToolDiffs:       result.Diffs,
+		ToolFileChanges: result.FileChanges,
+		ToolImages:      result.Images,
 	})
 
 	// Send result back to provider (claude_bin MCP handler)

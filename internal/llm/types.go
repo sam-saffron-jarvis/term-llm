@@ -30,6 +30,26 @@ func CallIDFromContext(ctx context.Context) string {
 	return ""
 }
 
+// sessionIDKey is the context key for the current session ID.
+const sessionIDKey contextKey = "session_id"
+
+// ContextWithSessionID returns a new context with the session ID set.
+// Used by the engine so tools (e.g. file-change recording) know which
+// session a tool execution belongs to.
+func ContextWithSessionID(ctx context.Context, sessionID string) context.Context {
+	return context.WithValue(ctx, sessionIDKey, sessionID)
+}
+
+// SessionIDFromContext extracts the session ID from context, or returns empty string.
+func SessionIDFromContext(ctx context.Context) string {
+	if v := ctx.Value(sessionIDKey); v != nil {
+		if id, ok := v.(string); ok {
+			return id
+		}
+	}
+	return ""
+}
+
 // Provider streams model output events for a request.
 type Provider interface {
 	Name() string
@@ -267,6 +287,19 @@ type DiffData struct {
 	Operation string `json:"op,omitempty"` // Optional operation hint, e.g. "create" for new files
 }
 
+// FileChange describes one recorded file modification made by a tool.
+// Emitted on EventToolExecEnd when file-change tracking is enabled.
+// Contents are never carried here — only metadata; the recorded blobs
+// are served on demand by the session file-changes endpoints.
+type FileChange struct {
+	Path      string `json:"path"`                // Absolute file path
+	Kind      string `json:"kind"`                // "create" | "modify" | "delete"
+	Adds      int    `json:"adds"`                // Lines added by this change (0 when truncated)
+	Dels      int    `json:"dels"`                // Lines removed by this change (0 when truncated)
+	Seq       int64  `json:"seq"`                 // Per-session monotonic change sequence
+	Truncated bool   `json:"truncated,omitempty"` // Content not retained (size cap, budget, binary, unknown before)
+}
+
 // ToolContentPartType identifies a structured tool result content item.
 type ToolContentPartType string
 
@@ -305,6 +338,7 @@ type ToolOutput struct {
 	ContentParts []ToolContentPart `json:"content_parts,omitempty"` // Structured multimodal tool content for provider formatting
 	Diffs        []DiffData        // Structured diff data (for UI rendering)
 	Images       []string          // Image paths (for UI rendering)
+	FileChanges  []FileChange      `json:"file_changes,omitempty"` // Recorded file changes (when file tracking is enabled)
 	TimedOut     bool              // Set by tools that support timeouts (e.g. shell); drives ToolSuccess=false without content sniffing
 }
 
@@ -379,6 +413,7 @@ type Event struct {
 	ToolSuccess               bool            // For EventToolExecEnd: whether tool execution succeeded
 	ToolOutput                string          // For EventToolExecEnd: the tool's text content
 	ToolDiffs                 []DiffData      // For EventToolExecEnd: structured diffs from edit tools
+	ToolFileChanges           []FileChange    // For EventToolExecEnd: recorded file changes (file tracking)
 	ToolImages                []string        // For EventToolExecEnd: image paths from image tools
 	Use                       *Usage
 	Err                       error

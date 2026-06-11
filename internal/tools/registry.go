@@ -21,9 +21,10 @@ type LocalToolRegistry struct {
 	limits      OutputLimits
 	appConfig   *config.Config
 
-	memoryStore ImageRecorder
-	agent       string
-	sessionID   string
+	memoryStore  ImageRecorder
+	agent        string
+	sessionID    string
+	fileRecorder FileChangeRecorder
 
 	// Registered tools
 	tools map[string]llm.Tool
@@ -68,6 +69,44 @@ func (r *LocalToolRegistry) SetImageRecorder(recorder ImageRecorder, agent, sess
 	r.memoryStore = recorder
 	r.agent = agent
 	r.sessionID = sessionID
+}
+
+// SetFileChangeRecorder wires a recorder for file-change tracking into the
+// already-registered file-modifying tools. Unlike SetImageRecorder, this
+// mutates registered instances directly (the SetServeMode pattern) so the
+// recorder takes effect regardless of registration order.
+func (r *LocalToolRegistry) SetFileChangeRecorder(recorder FileChangeRecorder) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	r.fileRecorder = recorder
+	r.applyFileRecorderLocked()
+}
+
+// applyFileRecorderLocked pushes r.fileRecorder into registered tool
+// instances. Callers must hold r.mu. SetLimits re-creates some tools, so it
+// re-applies the recorder through this helper.
+func (r *LocalToolRegistry) applyFileRecorderLocked() {
+	if t, ok := r.tools[WriteFileToolName]; ok {
+		if wt, ok := t.(*WriteFileTool); ok {
+			wt.recorder = r.fileRecorder
+		}
+	}
+	if t, ok := r.tools[EditFileToolName]; ok {
+		if et, ok := t.(*EditFileTool); ok {
+			et.recorder = r.fileRecorder
+		}
+	}
+	if t, ok := r.tools[UnifiedDiffToolName]; ok {
+		if ut, ok := t.(*UnifiedDiffTool); ok {
+			ut.recorder = r.fileRecorder
+		}
+	}
+	if t, ok := r.tools[ShellToolName]; ok {
+		if st, ok := t.(*ShellTool); ok {
+			st.recorder = r.fileRecorder
+		}
+	}
 }
 
 // registerEnabledTools registers all tools that are enabled in config.
@@ -190,6 +229,8 @@ func (r *LocalToolRegistry) SetLimits(limits OutputLimits) {
 			r.tools[specName] = NewRunAgentScriptTool(r.config, r.limits)
 		}
 	}
+	// Re-created tools start without the recorder; push it back in.
+	r.applyFileRecorderLocked()
 }
 
 // AddReadDir adds a directory to the read allowlist at runtime.

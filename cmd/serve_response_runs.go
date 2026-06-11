@@ -1098,6 +1098,10 @@ func (s *serveServer) toolImageURLs(imagePaths []string) []string {
 	return imageURLs
 }
 
+func (s *serveServer) suppressResponseRunServerToolEvent(runtime *serveRuntime, toolName string) bool {
+	return s != nil && s.cfg.suppressServerTools && runtime != nil && runtime.isServerExecutedTool(toolName)
+}
+
 func (s *serveServer) appendResponseRunEvent(runtime *serveRuntime, run *responseRun, state *responseRunStreamState, ev llm.Event) error {
 	switch ev.Type {
 	case llm.EventTextDelta:
@@ -1120,7 +1124,7 @@ func (s *serveServer) appendResponseRunEvent(runtime *serveRuntime, run *respons
 			return nil
 		}
 		// Suppress tool calls for server-executed tools in API mode
-		if s.cfg.suppressServerTools && runtime.isServerExecutedTool(ev.Tool.Name) {
+		if s.suppressResponseRunServerToolEvent(runtime, ev.Tool.Name) {
 			return nil
 		}
 		state.toolsSeen = true
@@ -1152,7 +1156,10 @@ func (s *serveServer) appendResponseRunEvent(runtime *serveRuntime, run *respons
 		state.outputIndex++
 		return nil
 	case llm.EventToolExecStart:
-		if ev.ToolName == tools.AskUserToolName {
+		if s.suppressResponseRunServerToolEvent(runtime, ev.ToolName) {
+			return nil
+		}
+		if ev.ToolName == tools.AskUserToolName && runtime != nil {
 			if prompt, err := runtime.prepareAskUserFromToolArgs(ev.ToolCallID, ev.ToolArgs); err == nil {
 				if err := run.appendEvent("response.ask_user.prompt", map[string]any{
 					"call_id":    prompt.CallID,
@@ -1170,8 +1177,11 @@ func (s *serveServer) appendResponseRunEvent(runtime *serveRuntime, run *respons
 			"tool_arguments": string(ev.ToolArgs),
 		})
 	case llm.EventToolExecEnd:
-		if ev.ToolName == tools.AskUserToolName {
+		if ev.ToolName == tools.AskUserToolName && runtime != nil {
 			runtime.clearPendingAskUser(ev.ToolCallID)
+		}
+		if s.suppressResponseRunServerToolEvent(runtime, ev.ToolName) {
+			return nil
 		}
 		payload := map[string]any{
 			"call_id":   ev.ToolCallID,
@@ -1183,7 +1193,25 @@ func (s *serveServer) appendResponseRunEvent(runtime *serveRuntime, run *respons
 				payload["images"] = imageURLs
 			}
 		}
-		return run.appendEvent("response.tool_exec.end", payload)
+		if err := run.appendEvent("response.tool_exec.end", payload); err != nil {
+			return err
+		}
+		// Metadata only — diff content is served by the session
+		// file-changes endpoints on demand.
+		for _, fc := range ev.ToolFileChanges {
+			if err := run.appendEvent("response.file_change", map[string]any{
+				"path":         fc.Path,
+				"kind":         fc.Kind,
+				"adds":         fc.Adds,
+				"dels":         fc.Dels,
+				"seq":          fc.Seq,
+				"truncated":    fc.Truncated,
+				"tool_call_id": ev.ToolCallID,
+			}); err != nil {
+				return err
+			}
+		}
+		return nil
 	case llm.EventHeartbeat:
 		return run.appendEvent("response.heartbeat", map[string]any{
 			"call_id":   ev.ToolCallID,

@@ -22,7 +22,8 @@ const (
 	StreamEventDiff         // Diff from edit tool
 	StreamEventInterjection // User interjected a message mid-stream
 	StreamEventAttemptDiscard
-	StreamEventReasoning // Classified, non-encrypted reasoning text/metadata
+	StreamEventReasoning  // Classified, non-encrypted reasoning text/metadata
+	StreamEventFileChange // Recorded file change metadata (file tracking)
 )
 
 // StreamEvent represents a unified event from the LLM stream.
@@ -72,6 +73,10 @@ type StreamEvent struct {
 	DiffNew       string
 	DiffLine      int    // 1-indexed starting line number (0 = unknown)
 	DiffOperation string // Optional operation hint, e.g. "create" for new files
+
+	// File change metadata (for StreamEventFileChange). Contents are never
+	// carried on events; viewers fetch diffs from the session endpoints.
+	FileChange llm.FileChange
 
 	// Reasoning (for StreamEventReasoning). Encrypted replay payloads are never
 	// included here; surfaces decide display policy from the classified text.
@@ -198,6 +203,14 @@ func DiffEventWithOperation(path, old, new string, line int, operation string) S
 		DiffNew:       new,
 		DiffLine:      line,
 		DiffOperation: operation,
+	}
+}
+
+// FileChangeEvent creates a file-change metadata event (file tracking).
+func FileChangeEvent(fc llm.FileChange) StreamEvent {
+	return StreamEvent{
+		Type:       StreamEventFileChange,
+		FileChange: fc,
 	}
 }
 

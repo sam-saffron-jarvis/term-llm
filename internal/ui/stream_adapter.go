@@ -232,6 +232,12 @@ func (a *StreamAdapter) ProcessStream(ctx context.Context, stream llm.Stream) {
 					return
 				}
 			}
+			// Emit file-change metadata events (file tracking)
+			for _, fc := range event.ToolFileChanges {
+				if !emit(FileChangeEvent(fc)) {
+					return
+				}
+			}
 
 		case llm.EventRetry:
 			if !emit(RetryEvent(event.RetryAttempt, event.RetryMaxAttempts, event.RetryWaitSecs)) {

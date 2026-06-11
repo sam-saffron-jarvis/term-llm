@@ -151,6 +151,9 @@ func runExec(cmd *cobra.Command, args []string) error {
 			return fmt.Errorf("failed to initialize tools: %w", err)
 		}
 		wireImageRecorder(toolMgr.Registry, "", "")
+		// exec runs without a session ID, so file-change recording no-ops;
+		// wiring is kept so recording activates if this flow gains sessions.
+		wireFileRecorder(toolMgr.Registry, cfg)
 		// Enable yolo mode if flag is set
 		if execYolo {
 			toolMgr.ApprovalMgr.SetYoloMode(true)

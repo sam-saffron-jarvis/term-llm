@@ -17,6 +17,7 @@ import (
 	webpush "github.com/SherClockHolmes/webpush-go"
 	"github.com/samsaffron/term-llm/internal/agents"
 	"github.com/samsaffron/term-llm/internal/config"
+	"github.com/samsaffron/term-llm/internal/filetrack"
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/mcp"
 	"github.com/samsaffron/term-llm/internal/serve"
@@ -990,6 +991,16 @@ type serveServer struct {
 	widgetsMgr        *widgets.Manager
 	indexHTMLOnce     sync.Once
 	cachedIndexHTML   []byte
+	fileTrackStoreFn  func() *filetrack.Store // test seam; nil → process-wide store from config
+}
+
+// fileTrackStore returns the file-change history store, or nil when file
+// tracking is disabled.
+func (s *serveServer) fileTrackStore() *filetrack.Store {
+	if s.fileTrackStoreFn != nil {
+		return s.fileTrackStoreFn()
+	}
+	return fileTrackingStore(s.cfgRef)
 }
 
 func (s *serveServer) Start() error {
@@ -1127,6 +1138,7 @@ func (s *serveServer) Stop(ctx context.Context) error {
 	if s.widgetsMgr != nil {
 		s.widgetsMgr.Close()
 	}
+	closeFileTrackingStore()
 	s.modelsMu.Lock()
 	for _, p := range s.modelsProviders {
 		if cleaner, ok := p.(interface{ CleanupMCP() }); ok {

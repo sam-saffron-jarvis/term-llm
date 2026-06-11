@@ -59,6 +59,81 @@ func TestAppendResponseRunEventEmitsPhase(t *testing.T) {
 	}
 }
 
+func TestAppendResponseRunEventSuppressesServerToolMetadata(t *testing.T) {
+	registry := llm.NewToolRegistry()
+	registry.Register(&echoTool{})
+	runtime := &serveRuntime{engine: llm.NewEngine(llm.NewMockProvider("mock"), registry)}
+	server := &serveServer{cfg: serveServerConfig{suppressServerTools: true}}
+	run := newResponseRun("resp_suppress_tools", "sess_test", "", "mock", time.Now().Unix(), func() {})
+	state := &responseRunStreamState{}
+
+	if err := server.appendResponseRunEvent(runtime, run, state, llm.Event{
+		Type:       llm.EventToolExecStart,
+		ToolCallID: "call-1",
+		ToolName:   "echo",
+		ToolArgs:   json.RawMessage(`{"path":"/secret/file.txt"}`),
+	}); err != nil {
+		t.Fatalf("append start: %v", err)
+	}
+	if err := server.appendResponseRunEvent(runtime, run, state, llm.Event{
+		Type:        llm.EventToolExecEnd,
+		ToolCallID:  "call-1",
+		ToolName:    "echo",
+		ToolSuccess: true,
+		ToolFileChanges: []llm.FileChange{{
+			Path: "/secret/file.txt",
+			Kind: "modify",
+			Seq:  1,
+		}},
+	}); err != nil {
+		t.Fatalf("append end: %v", err)
+	}
+
+	run.mu.Lock()
+	defer run.mu.Unlock()
+	if len(run.events) != 0 {
+		var names []string
+		for _, ev := range run.events {
+			names = append(names, ev.Event)
+		}
+		t.Fatalf("events = %v, want none for suppressed server tool", names)
+	}
+}
+
+func TestAppendResponseRunEventKeepsClientToolFileChanges(t *testing.T) {
+	registry := llm.NewToolRegistry()
+	runtime := &serveRuntime{engine: llm.NewEngine(llm.NewMockProvider("mock"), registry)}
+	server := &serveServer{cfg: serveServerConfig{suppressServerTools: true}}
+	run := newResponseRun("resp_client_tool", "sess_test", "", "mock", time.Now().Unix(), func() {})
+	state := &responseRunStreamState{}
+
+	if err := server.appendResponseRunEvent(runtime, run, state, llm.Event{
+		Type:        llm.EventToolExecEnd,
+		ToolCallID:  "call-client",
+		ToolName:    "client_tool",
+		ToolSuccess: true,
+		ToolFileChanges: []llm.FileChange{{
+			Path: "/client/file.txt",
+			Kind: "modify",
+			Seq:  1,
+		}},
+	}); err != nil {
+		t.Fatalf("append end: %v", err)
+	}
+
+	run.mu.Lock()
+	defer run.mu.Unlock()
+	var sawFileChange bool
+	for _, ev := range run.events {
+		if ev.Event == "response.file_change" {
+			sawFileChange = true
+		}
+	}
+	if !sawFileChange {
+		t.Fatalf("events = %+v, want response.file_change for non-server tool", run.events)
+	}
+}
+
 func TestResponseRunSubscriberSurvivesUpToBufferLimit(t *testing.T) {
 	run := newResponseRun("resp_test1", "sess_test", "", "mock", time.Now().Unix(), func() {})
 

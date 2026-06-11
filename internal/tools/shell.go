@@ -20,6 +20,7 @@ type ShellTool struct {
 	config    *ToolConfig
 	limits    OutputLimits
 	shellPath string
+	recorder  FileChangeRecorder
 }
 
 // NewShellTool creates a new ShellTool.
@@ -67,11 +68,12 @@ func (e *EnvMap) UnmarshalJSON(data []byte) error {
 
 // ShellArgs are the arguments for the shell tool.
 type ShellArgs struct {
-	Command        string `json:"command"`
-	WorkingDir     string `json:"working_dir,omitempty"`
-	TimeoutSeconds int    `json:"timeout_seconds,omitempty"`
-	Env            EnvMap `json:"env,omitempty"`
-	Description    string `json:"description,omitempty"`
+	Command        string   `json:"command"`
+	WorkingDir     string   `json:"working_dir,omitempty"`
+	TimeoutSeconds int      `json:"timeout_seconds,omitempty"`
+	Env            EnvMap   `json:"env,omitempty"`
+	Description    string   `json:"description,omitempty"`
+	AffectedPaths  []string `json:"affected_paths,omitempty"`
 }
 
 // ShellResult contains the result of a shell command.
@@ -113,6 +115,11 @@ func (t *ShellTool) Spec() llm.ToolSpec {
 					"type":        "string",
 					"description": "Optional short human-readable label (≤10 words) describing what this command does",
 				},
+				"affected_paths": map[string]interface{}{
+					"type":        "array",
+					"items":       map[string]interface{}{"type": "string"},
+					"description": "Optional files or glob patterns (relative to working_dir, or absolute) this command may create, modify, or delete. Always declare them when running scripts or commands that change files: without this hint, change tracking is best-effort (git status and previously tracked files only) and changes may be missed.",
+				},
 			},
 			"required":             []string{"command"},
 			"additionalProperties": false,
@@ -142,7 +149,7 @@ func (t *ShellTool) Preview(args json.RawMessage) string {
 }
 
 func (t *ShellTool) Execute(ctx context.Context, args json.RawMessage) (llm.ToolOutput, error) {
-	warning := WarnUnknownParams(args, []string{"command", "working_dir", "timeout_seconds", "description", "env"})
+	warning := WarnUnknownParams(args, []string{"command", "working_dir", "timeout_seconds", "description", "env", "affected_paths"})
 	textOutput := func(message string) llm.ToolOutput {
 		return llm.TextOutput(warning + message)
 	}
@@ -248,8 +255,15 @@ func (t *ShellTool) Execute(ctx context.Context, args json.RawMessage) (llm.Tool
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
 
+	// Snapshot relevant files so changes made by the command can be recorded.
+	snap := preShellSnapshot(ctx, t.recorder, workDir, a.AffectedPaths)
+
 	// Run command
 	err := cmd.Run()
+
+	// Diff against the snapshot even on timeout or failure — partial writes
+	// are real changes.
+	fileChanges := postShellChanges(ctx, t.recorder, snap)
 
 	result := ShellResult{
 		Stdout:          stdout.String(),
@@ -262,7 +276,7 @@ func (t *ShellTool) Execute(ctx context.Context, args json.RawMessage) (llm.Tool
 	// Check for timeout
 	if execCtx.Err() != nil {
 		result.TimedOut = true
-		return llm.ToolOutput{Content: warning + formatShellResult(result, t.limits), TimedOut: true}, nil
+		return llm.ToolOutput{Content: warning + formatShellResult(result, t.limits), TimedOut: true, FileChanges: fileChanges}, nil
 	}
 
 	// Get exit code
@@ -270,11 +284,15 @@ func (t *ShellTool) Execute(ctx context.Context, args json.RawMessage) (llm.Tool
 		if exitErr, ok := err.(*exec.ExitError); ok {
 			result.ExitCode = exitErr.ExitCode()
 		} else {
-			return textOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "command error: %v", err))), nil
+			output := textOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "command error: %v", err)))
+			output.FileChanges = fileChanges
+			return output, nil
 		}
 	}
 
-	return textOutput(formatShellResult(result, t.limits)), nil
+	output := textOutput(formatShellResult(result, t.limits))
+	output.FileChanges = fileChanges
+	return output, nil
 }
 
 // formatShellResult formats the shell result for the LLM.

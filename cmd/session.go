@@ -446,6 +446,7 @@ func (s *SessionSettings) SetupToolManager(cfg *config.Config, engine *llm.Engin
 		return nil, fmt.Errorf("failed to initialize tools: %w", err)
 	}
 	wireImageRecorder(toolMgr.Registry, s.AgentName, s.SessionID)
+	wireFileRecorder(toolMgr.Registry, cfg)
 
 	// Register any custom script-backed tools declared in agent.yaml
 	if len(s.CustomTools) > 0 {

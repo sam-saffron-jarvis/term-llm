@@ -324,6 +324,103 @@ func TestAppWebRTCDoesNotReferenceLexicalApp(t *testing.T) {
 	}
 }
 
+func TestAppDiffsJS(t *testing.T) {
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("node not found in PATH, skipping JS app-diffs tests")
+	}
+
+	_, thisFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("could not determine test file path")
+	}
+	script := filepath.Join(filepath.Dir(thisFile), "static", "app_diffs_test.js")
+	if _, err := os.Stat(script); err != nil {
+		t.Fatalf("app_diffs_test.js not found at %s: %v", script, err)
+	}
+
+	out, err := exec.Command(node, script).CombinedOutput()
+	t.Log(string(out))
+	if err != nil {
+		t.Fatalf("app_diffs_test.js failed: %v", err)
+	}
+}
+
+func TestStaticAssetsSupportDiffSidebar(t *testing.T) {
+	indexHTML, err := StaticAsset("index.html")
+	if err != nil {
+		t.Fatalf("StaticAsset(index.html): %v", err)
+	}
+	indexSrc := string(indexHTML)
+	for _, want := range []string{
+		`id="diffSidebar"`,
+		`id="diffToggleBtn"`,
+		`id="diffFileList"`,
+		`id="diffResizeHandle"`,
+		`src="app-diffs.js"`,
+	} {
+		if !strings.Contains(indexSrc, want) {
+			t.Fatalf("index.html missing %q", want)
+		}
+	}
+
+	css, err := StaticAsset("app.css")
+	if err != nil {
+		t.Fatalf("StaticAsset(app.css): %v", err)
+	}
+	cssSrc := string(css)
+	for _, want := range []string{
+		".app.diff-open",
+		"--diff-add-bg",
+		"--diff-del-bg",
+		".diff-file-row",
+		".diff-file-body",
+		".diff-chevron",
+		".diff-show-more",
+		".diff-sidebar.open",
+		".diff-resize-handle",
+		".app.diff-resizing",
+		"--diff-sidebar-user-width",
+		".diff-toggle[hidden]",
+		"pre-wrap",
+	} {
+		if !strings.Contains(cssSrc, want) {
+			t.Fatalf("app.css missing %q", want)
+		}
+	}
+
+	streamJS, err := StaticAsset("app-stream.js")
+	if err != nil {
+		t.Fatalf("StaticAsset(app-stream.js): %v", err)
+	}
+	for _, want := range []string{
+		"response.file_change",
+		"handleFileChangeEvent",
+		"refreshFileChangesAfterRun",
+	} {
+		if !strings.Contains(string(streamJS), want) {
+			t.Fatalf("app-stream.js missing %q", want)
+		}
+	}
+
+	swJS, err := StaticAsset("sw.js")
+	if err != nil {
+		t.Fatalf("StaticAsset(sw.js): %v", err)
+	}
+	if !strings.Contains(string(swJS), "'./app-diffs.js'") {
+		t.Fatal("sw.js SHELL_ASSETS missing app-diffs.js")
+	}
+
+	rendered := RenderIndexHTML("/ui", "", RenderOptions{})
+	if !strings.Contains(string(rendered), `src="app-diffs.js?v=`) {
+		t.Fatal("RenderIndexHTML does not version app-diffs.js")
+	}
+	renderedSW := RenderServiceWorker(RenderOptions{})
+	if !strings.Contains(string(renderedSW), "'./app-diffs.js?v=") {
+		t.Fatal("RenderServiceWorker does not version app-diffs.js")
+	}
+}
+
 func TestStaticAssetsSupportCodeBlockUX(t *testing.T) {
 	renderJS, err := StaticAsset("app-render.js")
 	if err != nil {
