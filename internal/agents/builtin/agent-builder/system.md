@@ -61,16 +61,16 @@ mcp:
 ```
 
 **system.md** - System prompt with optional template variables:
-- `{{date}}`, `{{datetime}}`, `{{datetime_rfc3339}}`, `{{time}}`, `{{year}}`, `{{weekday}}`
-- `{{timezone}}`, `{{timezone_abbr}}`, `{{timezone_offset}}`, `{{utc_date}}`, `{{utc_datetime}}`
-- `{{cwd}}`, `{{cwd_name}}`, `{{home}}`, `{{user}}`
-- `{{git_branch}}`, `{{git_repo}}`, `{{git_diff_stat}}`
-- `{{files}}`, `{{file_count}}` (from -f flags)
-- `{{os}}`, `{{platform}}`, `{{resource_dir}}`
-- `{{provider}}`, `{{model}}`, `{{provider_model}}`
-- `{{agents}}` - Loads project instructions (hierarchical AGENTS.md + fallbacks)
+- `{{!date}}`, `{{!datetime}}`, `{{!datetime_rfc3339}}`, `{{!time}}`, `{{!year}}`, `{{!weekday}}`
+- `{{!timezone}}`, `{{!timezone_abbr}}`, `{{!timezone_offset}}`, `{{!utc_date}}`, `{{!utc_datetime}}`
+- `{{!cwd}}`, `{{!cwd_name}}`, `{{!home}}`, `{{!user}}`
+- `{{!git_branch}}`, `{{!git_repo}}`, `{{!git_diff_stat}}`
+- `{{!files}}`, `{{!file_count}}` (from -f flags)
+- `{{!os}}`, `{{!platform}}`, `{{!resource_dir}}`
+- `{{!provider}}`, `{{!model}}`, `{{!provider_model}}`
+- `{{!agents}}` - Loads project instructions (hierarchical AGENTS.md + fallbacks)
 
-**The `{{agents}}` variable** loads project instructions using:
+**The `{{!agents}}` variable** loads project instructions using:
 1. User-level: `~/.config/term-llm/AGENTS.md` (always included if present)
 2. Project-level: AGENTS.md hierarchy from repo root → cwd (at each level, AGENTS.override.md takes precedence over AGENTS.md)
 3. Fallback (only if no AGENTS.md found): CLAUDE.md, .github/copilot-instructions.md, .cursor/rules, CONTRIBUTING.md
@@ -109,7 +109,7 @@ tools:
 - Use `custom` instead of `run_agent_script` when the tool has a clear name/schema the LLM should understand natively
 - No directory paths are exposed to the LLM — scripts are resolved from the agent's own directory
 - No permission prompts — scripts in the agent directory are implicitly trusted
-- This replaces the old `{{agent_dir}}` shell allow pattern approach which never worked
+- This replaces the old `{{!agent_dir}}` shell allow pattern approach which never worked
 - Scripts must be executable files (not symlinks to outside the agent directory)
 
 **Additional .md files** - Include reference material:
@@ -199,10 +199,10 @@ Structure system.md with:
 
 1. **Role** - Clear statement of what the agent does
 2. **Context** - Use template variables for dynamic info (date, repo, etc.)
-   - **Always include `Current local time: {{weekday}} {{datetime_rfc3339}} ({{timezone}}).`** at the top so the agent knows the current date and timezone
-   - Use `UTC: {{utc_datetime}}.` as well for jobs, logs, or cross-timezone coordination
-   - Add `User: {{user}}.` if user context is helpful
-   - Add `Working in: {{cwd_name}}` or `Repository: {{git_repo}}` for project-aware agents
+   - **Always include `Current local date: {{!weekday}} {{!date}} ({{!timezone}}).`** at the top so the agent knows the current local date without changing every minute and breaking prompt caches
+   - Add `{{!time}}`, `{{!datetime_rfc3339}}`, or `UTC: {{!utc_datetime}}.` only for agents that genuinely need time-of-day precision, logs, jobs, or cross-timezone coordination
+   - Add `User: {{!user}}.` if user context is helpful
+   - Add `Working in: {{!cwd_name}}` or `Repository: {{!git_repo}}` for project-aware agents
 3. **Process** - Step-by-step workflow the agent should follow
 4. **Guidelines** - Best practices and constraints
 5. **Output format** - How to structure responses (if relevant)

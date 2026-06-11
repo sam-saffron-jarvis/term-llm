@@ -19,6 +19,10 @@ import (
 // templateVarPattern matches {{variable}} tokens, allowing optional whitespace inside delimiters.
 var templateVarPattern = regexp.MustCompile(`\{\{\s*(\w+)\s*\}\}`)
 
+// escapedTemplateVarPattern matches {{!variable}} tokens. Escaped variables render as
+// literal {{variable}} text so prompts can document template syntax without expanding it.
+var escapedTemplateVarPattern = regexp.MustCompile(`\{\{\s*!\s*(\w+)\s*\}\}`)
+
 // TemplateContext holds values for template variable expansion.
 type TemplateContext struct {
 	// Time-related
@@ -223,8 +227,9 @@ func (c TemplateContext) WithLLM(provider, model string) TemplateContext {
 }
 
 // ExpandTemplate replaces {{variable}} placeholders with values from context.
+// Use {{!variable}} to render a literal {{variable}} without expanding it.
 func ExpandTemplate(text string, ctx TemplateContext) string {
-	return templateVarPattern.ReplaceAllStringFunc(text, func(match string) string {
+	expanded := templateVarPattern.ReplaceAllStringFunc(text, func(match string) string {
 		// Extract variable name.
 		matches := templateVarPattern.FindStringSubmatch(match)
 		if len(matches) != 2 {
@@ -312,6 +317,7 @@ func ExpandTemplate(text string, ctx TemplateContext) string {
 			return match
 		}
 	})
+	return escapedTemplateVarPattern.ReplaceAllString(expanded, "{{$1}}")
 }
 
 // gitProbeTimeout bounds git subprocesses used during template expansion so prompt construction

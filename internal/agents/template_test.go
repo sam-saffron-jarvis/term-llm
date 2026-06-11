@@ -92,6 +92,16 @@ func TestExpandTemplate(t *testing.T) {
 			expected: "Friday 2026-01-16T14:30:00+11:00 Australia/Sydney AEDT +11:00 UTC=2026-01-16T03:30:00Z",
 		},
 		{
+			name:     "escaped variable renders literally",
+			template: "Document {{!date}} and {{ ! timezone }}; expand {{date}}",
+			expected: "Document {{date}} and {{timezone}}; expand 2026-01-16",
+		},
+		{
+			name:     "escaped unknown variable renders literally",
+			template: "Old token {{!agent_dir}}",
+			expected: "Old token {{agent_dir}}",
+		},
+		{
 			name:     "all variables",
 			template: "{{date}} {{datetime}} {{datetime_rfc3339}} {{time}} {{year}} {{weekday}} {{timezone}} {{timezone_abbr}} {{timezone_offset}} {{utc_date}} {{utc_datetime}} {{cwd}} {{cwd_name}} {{home}} {{user}} {{git_branch}} {{git_repo}} {{files}} {{file_count}} {{os}} {{platform}} {{provider}} {{model}} {{provider_model}} {{resource_dir}} {{handover_dir}} {{handover_path}}",
 			expected: "2026-01-16 2026-01-16 14:30:00 2026-01-16T14:30:00+11:00 14:30 2026 Friday Australia/Sydney AEDT +11:00 2026-01-16 2026-01-16T03:30:00Z /home/user/project project /home/user testuser main term-llm main.go, utils.go 2 linux chat chatgpt gpt-5.4-medium chatgpt:gpt-5.4-medium /home/user/.cache/term-llm/agents/artist /home/user/.local/share/term-llm/handover/project-abc123 /home/user/.local/share/term-llm/handover/project-abc123/2026-01-16-amber-creek-bloom.md",
@@ -279,11 +289,14 @@ func TestNewTemplateContextForTemplate_GitDiffStatTimeoutFailsOpen(t *testing.T)
 }
 
 func TestTemplateVariablesAllowsWhitespace(t *testing.T) {
-	vars := templateVariables("{{ git_repo }}/{{git_branch}} {{ git_diff_stat }} {{ agents }} {{ handover_dir }} {{ handover_path }}")
+	vars := templateVariables("{{ git_repo }}/{{git_branch}} {{ git_diff_stat }} {{ agents }} {{ handover_dir }} {{ handover_path }} {{!date}}")
 	for _, name := range []string{"git_repo", "git_branch", "git_diff_stat", "agents", "handover_dir", "handover_path"} {
 		if !vars[name] {
 			t.Fatalf("templateVariables missing %q in %#v", name, vars)
 		}
+	}
+	if vars["date"] {
+		t.Fatalf("templateVariables should ignore escaped variable {{!date}}: %#v", vars)
 	}
 }
 
