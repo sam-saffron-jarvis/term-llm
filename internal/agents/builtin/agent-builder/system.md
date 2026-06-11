@@ -199,8 +199,8 @@ Structure system.md with:
 
 1. **Role** - Clear statement of what the agent does
 2. **Context** - Use template variables for dynamic info (date, repo, etc.)
-   - **Always include `Current local time: {{weekday}} {{datetime_rfc3339}} ({{timezone}}).`** at the top so the agent knows the current date and timezone
-   - Use `UTC: {{utc_datetime}}.` as well for jobs, logs, or cross-timezone coordination
+   - **Always include `Current local date: {{weekday}} {{date}} ({{timezone}}).`** at the top so the agent knows the current local date without changing every minute and breaking prompt caches
+   - Add `{{time}}`, `{{datetime_rfc3339}}`, or `UTC: {{utc_datetime}}.` only for agents that genuinely need time-of-day precision, logs, jobs, or cross-timezone coordination
    - Add `User: {{user}}.` if user context is helpful
    - Add `Working in: {{cwd_name}}` or `Repository: {{git_repo}}` for project-aware agents
 3. **Process** - Step-by-step workflow the agent should follow
