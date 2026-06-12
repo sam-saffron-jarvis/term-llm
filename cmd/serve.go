@@ -64,6 +64,9 @@ var (
 	serveEnableWidgets          bool
 	serveWidgetsDir             string
 	serveResponseTimeout        time.Duration
+	serveHubURL                 string
+	serveHubNodeID              string
+	serveHubNodeName            string
 )
 
 var serveCmd = &cobra.Command{
@@ -142,6 +145,9 @@ func init() {
 	serveCmd.Flags().BoolVar(&serveEnableWidgets, "enable-widgets", false, "Enable local widget apps proxied under {base}/widgets/<mount>/")
 	serveCmd.Flags().StringVar(&serveWidgetsDir, "widgets-dir", "", "Directory containing widget sub-directories (default: ~/.config/term-llm/widgets)")
 	serveCmd.Flags().DurationVar(&serveResponseTimeout, "response-timeout", defaultServeRequestTimeout, "Maximum duration for API/web response runs before timing out")
+	serveCmd.Flags().StringVar(&serveHubURL, "hub-url", "", "URL of the term-llm Hub this node belongs to (renders a Back to Hub link in the web UI)")
+	serveCmd.Flags().StringVar(&serveHubNodeID, "hub-node-id", "", "This node's id on the hub (used with --hub-url)")
+	serveCmd.Flags().StringVar(&serveHubNodeName, "hub-node-name", "", "This node's display name on the hub (used with --hub-url)")
 
 	AddCommonFlags(serveCmd,
 		CommonCoreFlags|CommonSearch|CommonNativeSearch|CommonMaxTurns|CommonAgent,
@@ -549,6 +555,9 @@ func runServe(cmd *cobra.Command, args []string) error {
 				enableWidgets:       serveEnableWidgets,
 				widgetsDir:          serveWidgetsDir,
 				responseTimeout:     responseTimeout,
+				hubURL:              strings.TrimSpace(serveHubURL),
+				hubNodeID:           strings.TrimSpace(serveHubNodeID),
+				hubNodeName:         strings.TrimSpace(serveHubNodeName),
 			},
 			sessionMgr:     sessionMgr,
 			jobsV2:         jobsV2,
@@ -860,6 +869,14 @@ type serveServerConfig struct {
 	enableWidgets       bool
 	widgetsDir          string
 	responseTimeout     time.Duration
+	// hubURL/hubNodeID/hubNodeName describe the term-llm Hub this node
+	// belongs to. When hubURL is set, the web UI gets window.TERM_LLM_HUB and
+	// renders a Back to Hub link. The hub proxy injects the same context
+	// server-side, so these are only needed when a node should be hub-aware
+	// even when opened directly.
+	hubURL      string
+	hubNodeID   string
+	hubNodeName string
 }
 
 // uiRoute returns the base-path with trailing slash, e.g. "/ui/" or "/chat/".

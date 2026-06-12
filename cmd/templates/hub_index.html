@@ -1,0 +1,228 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark light">
+  <title>term-llm Hub</title>
+  <style>{{.CSS}}</style>
+</head>
+<body>
+  <header class="hub-header">
+    <div class="hub-brand">
+      <svg class="hub-logo" width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <circle cx="12" cy="12" r="3"></circle>
+        <circle cx="4.5" cy="5" r="2"></circle>
+        <circle cx="19.5" cy="5" r="2"></circle>
+        <circle cx="4.5" cy="19" r="2"></circle>
+        <circle cx="19.5" cy="19" r="2"></circle>
+        <line x1="6.2" y1="6.4" x2="9.8" y2="10"></line>
+        <line x1="17.8" y1="6.4" x2="14.2" y2="10"></line>
+        <line x1="6.2" y1="17.6" x2="9.8" y2="14"></line>
+        <line x1="17.8" y1="17.6" x2="14.2" y2="14"></line>
+      </svg>
+      <h1>term-llm <span class="hub-brand-accent">Hub</span></h1>
+    </div>
+    <div class="hub-header-actions">
+      <span class="hub-summary" id="hubSummary" aria-live="polite"></span>
+      <button class="hub-btn ghost" id="refreshBtn" type="button" title="Refresh nodes">↻ Refresh</button>
+      {{if .CanAddNodes}}<button class="hub-btn primary" id="addNodeBtn" type="button">＋ Add node</button>{{end}}
+    </div>
+  </header>
+
+  <main class="hub-main">
+    <div class="hub-error hidden" id="hubError" role="alert"></div>
+    <section class="node-grid" id="nodeGrid" aria-label="Nodes"></section>
+    <div class="hub-empty hidden" id="hubEmpty">
+      <p>No nodes yet.</p>
+      <p class="hub-empty-hint">Point the hub at nodes with <code>--config</code>, create contain workspaces, or add one with <em>Add node</em>.</p>
+    </div>
+  </main>
+
+  {{if .CanAddNodes}}
+  <div class="modal-overlay hidden" id="addNodeModal" role="dialog" aria-modal="true" aria-labelledby="addNodeTitle">
+    <div class="modal">
+      <div class="modal-header">
+        <h2 id="addNodeTitle">Add node</h2>
+        <button class="hub-btn ghost" id="addNodeCloseBtn" type="button" aria-label="Close">✕</button>
+      </div>
+      <form id="addNodeForm">
+        <label>Name
+          <input id="nodeNameInput" type="text" placeholder="jarvis" autocomplete="off" required>
+        </label>
+        <label>URL
+          <input id="nodeUrlInput" type="url" placeholder="http://127.0.0.1:8081/chat" autocomplete="off" required>
+        </label>
+        <label>Bearer token <span class="optional">(optional, kept server-side)</span>
+          <input id="nodeTokenInput" type="password" autocomplete="off">
+        </label>
+        <div class="modal-status" id="addNodeStatus" aria-live="polite"></div>
+        <div class="modal-actions">
+          <button class="hub-btn ghost" id="testNodeBtn" type="button">Test connection</button>
+          <button class="hub-btn primary" type="submit">Add node</button>
+        </div>
+      </form>
+    </div>
+  </div>
+  {{end}}
+
+  <script>
+  (() => {
+    'use strict';
+    const grid = document.getElementById('nodeGrid');
+    const summary = document.getElementById('hubSummary');
+    const errorBox = document.getElementById('hubError');
+    const emptyBox = document.getElementById('hubEmpty');
+
+    const el = (tag, className, text) => {
+      const node = document.createElement(tag);
+      if (className) node.className = className;
+      if (text !== undefined) node.textContent = text;
+      return node;
+    };
+
+    const renderNode = (n) => {
+      const card = el('article', 'node-card');
+      const head = el('div', 'node-card-head');
+      const dotClass = n.status.reachable ? 'ok' : 'down';
+      const dot = el('span', `status-dot ${dotClass}`);
+      dot.title = n.status.reachable ? 'Reachable' : (n.status.error || 'Unreachable');
+      head.appendChild(dot);
+      head.appendChild(el('h2', 'node-name', n.name));
+      head.appendChild(el('span', `source-badge source-${n.source}`, n.source));
+      card.appendChild(head);
+
+      const meta = el('dl', 'node-meta');
+      const row = (label, value) => {
+        if (!value) return;
+        meta.appendChild(el('dt', '', label));
+        meta.appendChild(el('dd', '', value));
+      };
+      row('ID', n.id);
+      row('URL', n.url + (n.base_path || ''));
+      row('Status', n.status.state + (n.status.reachable ? ` · ${n.status.latency_ms} ms` : ''));
+      row('Agent', n.status.agent);
+      row('Version', n.status.version);
+      card.appendChild(meta);
+
+      if (Array.isArray(n.status.capabilities) && n.status.capabilities.length) {
+        const caps = el('div', 'node-caps');
+        n.status.capabilities.forEach((c) => caps.appendChild(el('span', 'cap-chip', c)));
+        card.appendChild(caps);
+      }
+      if (!n.status.reachable && n.status.error) {
+        card.appendChild(el('div', 'node-error', n.status.error));
+      }
+      if (!n.has_token) {
+        card.appendChild(el('div', 'node-warn', 'No bearer token configured — the open action may be rejected by the node.'));
+      }
+
+      const actions = el('div', 'node-actions');
+      const open = el('a', 'hub-btn primary', 'Open');
+      open.href = n.proxy_path;
+      actions.appendChild(open);
+      if (n.source === 'local') {
+        const del = el('button', 'hub-btn danger', 'Remove');
+        del.type = 'button';
+        del.addEventListener('click', async () => {
+          if (!confirm(`Remove node "${n.name}"?`)) return;
+          await fetch(`api/nodes/${encodeURIComponent(n.id)}`, { method: 'DELETE' });
+          refresh();
+        });
+        actions.appendChild(del);
+      }
+      card.appendChild(actions);
+      return card;
+    };
+
+    const refresh = async () => {
+      try {
+        const resp = await fetch('api/nodes');
+        if (!resp.ok) throw new Error(`api/nodes returned ${resp.status}`);
+        const data = await resp.json();
+        const nodes = Array.isArray(data.nodes) ? data.nodes : [];
+        grid.replaceChildren(...nodes.map(renderNode));
+        emptyBox.classList.toggle('hidden', nodes.length > 0);
+        const up = nodes.filter((n) => n.status.reachable).length;
+        summary.textContent = nodes.length ? `${up}/${nodes.length} nodes reachable` : '';
+        if (data.resolver_error) {
+          errorBox.textContent = `Some sources failed to resolve: ${data.resolver_error}`;
+          errorBox.classList.remove('hidden');
+        } else {
+          errorBox.classList.add('hidden');
+        }
+      } catch (err) {
+        errorBox.textContent = `Failed to load nodes: ${err.message}`;
+        errorBox.classList.remove('hidden');
+      }
+    };
+
+    document.getElementById('refreshBtn').addEventListener('click', refresh);
+    refresh();
+    setInterval(refresh, 15000);
+
+    const modal = document.getElementById('addNodeModal');
+    if (!modal) return;
+    const status = document.getElementById('addNodeStatus');
+    const nameInput = document.getElementById('nodeNameInput');
+    const urlInput = document.getElementById('nodeUrlInput');
+    const tokenInput = document.getElementById('nodeTokenInput');
+    const showModal = (show) => {
+      modal.classList.toggle('hidden', !show);
+      status.textContent = '';
+      if (show) nameInput.focus();
+    };
+    document.getElementById('addNodeBtn').addEventListener('click', () => showModal(true));
+    document.getElementById('addNodeCloseBtn').addEventListener('click', () => showModal(false));
+    modal.addEventListener('click', (e) => { if (e.target === modal) showModal(false); });
+
+    const payload = () => ({
+      name: nameInput.value.trim(),
+      url: urlInput.value.trim(),
+      token: tokenInput.value.trim(),
+    });
+
+    document.getElementById('testNodeBtn').addEventListener('click', async () => {
+      status.textContent = 'Testing…';
+      try {
+        const resp = await fetch('api/nodes/test', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload()),
+        });
+        if (!resp.ok) throw new Error(await resp.text());
+        const data = await resp.json();
+        const st = data.status || {};
+        status.textContent = st.reachable
+          ? `✓ Reachable in ${st.latency_ms} ms${st.agent ? ` · agent: ${st.agent}` : ''}${st.version ? ` · ${st.version}` : ''}`
+          : `✗ Not reachable: ${st.error || st.state}`;
+      } catch (err) {
+        status.textContent = `✗ ${err.message}`;
+      }
+    });
+
+    document.getElementById('addNodeForm').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      status.textContent = 'Adding…';
+      try {
+        const resp = await fetch('api/nodes', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload()),
+        });
+        if (!resp.ok) throw new Error(await resp.text());
+        const data = await resp.json();
+        status.textContent = data.warning ? `Added with warning: ${data.warning}` : '';
+        if (!data.warning) {
+          showModal(false);
+          nameInput.value = urlInput.value = tokenInput.value = '';
+        }
+        refresh();
+      } catch (err) {
+        status.textContent = `✗ ${err.message}`;
+      }
+    });
+  })();
+  </script>
+</body>
+</html>
