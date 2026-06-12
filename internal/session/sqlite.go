@@ -234,7 +234,15 @@ func NewSQLiteStore(cfg Config) (*SQLiteStore, error) {
 // - Fresh databases get the full schema from `schema` const and start at this version
 // - Existing databases run migrations to reach this version
 // Increment when adding new migrations.
-const schemaVersion = 29
+const schemaVersion = 30
+
+const (
+	// Keep these expressions aligned with List()'s hot ORDER BY clauses so SQLite
+	// can satisfy the sidebar top-N query directly from the matching indexes.
+	sessionListPinnedOrderExpr       = "COALESCE(pinned, FALSE)"
+	sessionListActivityOrderExpr     = "COALESCE(last_message_at, last_user_message_at, created_at)"
+	sessionListUserActivityOrderExpr = "COALESCE(last_user_message_at, created_at)"
+)
 
 // migration represents a schema migration.
 type migration struct {
@@ -848,6 +856,19 @@ var migrations = []migration{
 			return err
 		},
 	},
+	{
+		// Migration 30: Add expression indexes for the sidebar's two hot activity sorts.
+		// Without these, SQLite scans filtered sessions and builds a temp B-tree for
+		// every top-N refresh because the ORDER BY uses COALESCE() expressions.
+		version:     30,
+		description: "add sidebar session sort indexes",
+		up: func(db *sql.DB) error {
+			if err := createSessionListSortIndexes(db); err != nil {
+				return fmt.Errorf("create sidebar sort indexes: %w", err)
+			}
+			return nil
+		},
+	},
 }
 
 // Keep in sync with llm.IsInternalCompactionSummaryText. SQLite migrations and
@@ -1084,6 +1105,42 @@ func initSchemaFull(db *sql.DB, versionErr error, currentVersion int) error {
 	_, err = db.Exec("CREATE INDEX IF NOT EXISTS idx_sessions_last_message ON sessions(last_message_at DESC)")
 	if err != nil {
 		return fmt.Errorf("ensure last_message_at index: %w", err)
+	}
+	if err := createSessionListSortIndexes(db); err != nil {
+		return fmt.Errorf("ensure sidebar sort indexes: %w", err)
+	}
+
+	return nil
+}
+
+func createSessionListSortIndexes(db *sql.DB) error {
+	indexDefs := []struct {
+		name   string
+		expr   string
+		errMsg string
+	}{
+		{
+			name:   "idx_sessions_sidebar_activity",
+			expr:   sessionListActivityOrderExpr,
+			errMsg: "create sidebar activity index",
+		},
+		{
+			name:   "idx_sessions_sidebar_last_user_activity",
+			expr:   sessionListUserActivityOrderExpr,
+			errMsg: "create sidebar last-user activity index",
+		},
+	}
+
+	for _, indexDef := range indexDefs {
+		stmt := fmt.Sprintf(
+			"CREATE INDEX IF NOT EXISTS %s ON sessions(archived, %s DESC, %s DESC)",
+			indexDef.name,
+			sessionListPinnedOrderExpr,
+			indexDef.expr,
+		)
+		if _, err := db.Exec(stmt); err != nil {
+			return fmt.Errorf("%s: %w", indexDef.errMsg, err)
+		}
 	}
 
 	return nil
@@ -1545,14 +1602,14 @@ func (s *SQLiteStore) List(ctx context.Context, opts ListOptions) ([]SessionSumm
 		// Web sidebar callers set SortByActivity to use last_message_at instead so
 		// assistant-only turns also surface (keeps the top-N window aligned with the
 		// client-side "any-message" ordering).
-		sortCol := "s.updated_at"
+		sortCol := "updated_at"
 		if opts.SortByActivity && s.hasLastMessageAt {
-			sortCol = "COALESCE(s.last_message_at, s.last_user_message_at, s.created_at)"
+			sortCol = sessionListActivityOrderExpr
 		} else if s.hasLastUserMessageAt {
-			sortCol = "COALESCE(s.last_user_message_at, s.created_at)"
+			sortCol = sessionListUserActivityOrderExpr
 		}
 		if s.hasPinned {
-			query += " ORDER BY COALESCE(s.pinned, FALSE) DESC, " + sortCol + " DESC"
+			query += " ORDER BY " + sessionListPinnedOrderExpr + " DESC, " + sortCol + " DESC"
 		} else {
 			query += " ORDER BY " + sortCol + " DESC"
 		}

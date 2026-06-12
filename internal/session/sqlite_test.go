@@ -344,6 +344,48 @@ func TestSQLiteStoreListByNumberCursorUsesSessionNumberIndex(t *testing.T) {
 	}
 }
 
+func TestSQLiteStoreListByActivityUsesSidebarSortIndex(t *testing.T) {
+	store, err := NewSQLiteStore(Config{Enabled: true, Path: ":memory:"})
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	defer store.Close()
+
+	plan := sqliteExplainPlan(t, store.db, `EXPLAIN QUERY PLAN
+		SELECT s.id, s.number
+		FROM sessions s
+		WHERE s.archived = FALSE
+		ORDER BY COALESCE(pinned, FALSE) DESC, COALESCE(last_message_at, last_user_message_at, created_at) DESC
+		LIMIT ?`, 100)
+	if !strings.Contains(plan, "idx_sessions_sidebar_activity") {
+		t.Fatalf("query plan = %q, want sidebar activity index", plan)
+	}
+	if strings.Contains(plan, "USE TEMP B-TREE") {
+		t.Fatalf("query plan = %q, want no temp sort", plan)
+	}
+}
+
+func TestSQLiteStoreListByLastUserActivityUsesSidebarSortIndex(t *testing.T) {
+	store, err := NewSQLiteStore(Config{Enabled: true, Path: ":memory:"})
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	defer store.Close()
+
+	plan := sqliteExplainPlan(t, store.db, `EXPLAIN QUERY PLAN
+		SELECT s.id, s.number
+		FROM sessions s
+		WHERE s.archived = FALSE
+		ORDER BY COALESCE(pinned, FALSE) DESC, COALESCE(last_user_message_at, created_at) DESC
+		LIMIT ?`, 100)
+	if !strings.Contains(plan, "idx_sessions_sidebar_last_user_activity") {
+		t.Fatalf("query plan = %q, want sidebar last-user activity index", plan)
+	}
+	if strings.Contains(plan, "USE TEMP B-TREE") {
+		t.Fatalf("query plan = %q, want no temp sort", plan)
+	}
+}
+
 func sqliteExplainPlan(t *testing.T, db *sql.DB, query string, args ...any) string {
 	t.Helper()
 	rows, err := db.Query(query, args...)
@@ -421,6 +463,8 @@ func TestInitSchemaFreshDBDoesNotRunHistoricalMigrations(t *testing.T) {
 		{objectType: "index", name: "idx_sessions_title_skipped"},
 		{objectType: "index", name: "idx_sessions_last_user_msg"},
 		{objectType: "index", name: "idx_sessions_last_message"},
+		{objectType: "index", name: "idx_sessions_sidebar_activity"},
+		{objectType: "index", name: "idx_sessions_sidebar_last_user_activity"},
 	} {
 		var count int
 		if err := db.QueryRow(`
