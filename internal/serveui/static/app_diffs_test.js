@@ -226,6 +226,12 @@ function createHarness(options = {}) {
   return { app, elements, state, localStorage, storage, timers, fetchCalls, flushTimers, setDrawer, media, windowObj: context.window };
 }
 
+function elementText(node) {
+  if (!node) return '';
+  if (!node.children || node.children.length === 0) return node.textContent || '';
+  return node.children.map(elementText).join('');
+}
+
 async function run(name, fn) {
   try {
     await fn();
@@ -273,7 +279,7 @@ async function run(name, fn) {
     assert(elements.appShell.classList.contains('diff-open'), 'grid opens third column');
     assert(!elements.diffToggleBtn.hidden, 'toggle button visible');
     assertEqual(elements.diffFileList.querySelectorAll('.diff-file-row').length, 1, 'one file row rendered');
-    assertEqual(elements.diffToggleBadge.textContent, '1', 'badge shows file count');
+    assertEqual(elementText(elements.diffToggleBadge), '+3', 'badge shows diff stat');
   });
 
   await run('stale seq replays are idempotent', () => {
@@ -560,7 +566,7 @@ async function run(name, fn) {
 
     await app.fetchSessionFileChanges('s1');
     assertEqual(elements.diffFileList.querySelectorAll('.diff-file-row').length, 1, 'server refresh replaced stale live row instead of adding a duplicate');
-    assertEqual(elements.diffToggleBadge.textContent, '1', 'badge counts unique files');
+    assertEqual(elementText(elements.diffToggleBadge), '−3', 'badge shows cumulative diff stat');
   });
 
   await run('fresh page load activates the sidebar for the restored session', async () => {

@@ -371,7 +371,19 @@ const renderDiffTotals = (ds) => {
   if (adds > 0) summary.push(`+${adds}`);
   if (dels > 0) summary.push(`−${dels}`);
   if (elements.diffSidebarTotals) elements.diffSidebarTotals.textContent = summary.join(' ');
-  if (elements.diffToggleBadge) elements.diffToggleBadge.textContent = String(ds.files.size || '');
+  if (elements.diffToggleBadge) {
+    const parts = [];
+    if (adds > 0) parts.push(createEl('span', 'diff-toggle-stat-add', `+${adds}`));
+    if (dels > 0) parts.push(createEl('span', 'diff-toggle-stat-del', `−${dels}`));
+    if (parts.length === 0) parts.push(createEl('span', 'diff-toggle-stat-neutral', String(ds.files.size || '')));
+    elements.diffToggleBadge.replaceChildren(...parts);
+  }
+  if (elements.diffToggleBtn) {
+    const fileCount = ds.files.size || 0;
+    const fileLabel = `${fileCount} changed ${fileCount === 1 ? 'file' : 'files'}`;
+    elements.diffToggleBtn.title = summary.length > 0 ? `${fileLabel} (${summary.join(' ')})` : fileLabel;
+    elements.diffToggleBtn.setAttribute?.('aria-label', `Toggle file changes: ${elements.diffToggleBtn.title}`);
+  }
 };
 
 const renderDiffFileBody = (sessionId, ds, path) => {
