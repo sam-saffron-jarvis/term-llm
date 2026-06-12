@@ -458,16 +458,49 @@ func (m *Manager) reapIdle() {
 	}
 }
 
-// Close stops all widget processes and the idle reaper.
-func (m *Manager) Close() {
+// CloseContext stops all widget processes and the idle reaper, returning early
+// if ctx expires.
+func (m *Manager) CloseContext(ctx context.Context) error {
+	var entries []*widgetEntry
 	m.stopOnce.Do(func() {
 		close(m.stopCh)
 		m.mu.RLock()
-		defer m.mu.RUnlock()
+		entries = make([]*widgetEntry, 0, len(m.entries))
 		for _, e := range m.entries {
-			e.stopProcess()
+			entries = append(entries, e)
 		}
+		m.mu.RUnlock()
 	})
+	if entries == nil {
+		return nil
+	}
+
+	var wg sync.WaitGroup
+	wg.Add(len(entries))
+	for _, e := range entries {
+		go func(e *widgetEntry) {
+			defer wg.Done()
+			e.stopProcess()
+		}(e)
+	}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		wg.Wait()
+	}()
+
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// Close stops all widget processes and the idle reaper.
+func (m *Manager) Close() {
+	_ = m.CloseContext(context.Background())
 }
 
 func freePort() (int, error) {

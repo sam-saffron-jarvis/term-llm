@@ -918,11 +918,11 @@ func (m *responseRunManager) ActiveSessionIDs() map[string]bool {
 	return result
 }
 
-func (m *responseRunManager) Close() {
+func (m *responseRunManager) CloseContext(ctx context.Context) error {
 	m.mu.Lock()
 	if m.closed {
 		m.mu.Unlock()
-		return
+		return nil
 	}
 	m.closed = true
 	runs := make([]*responseRun, 0, len(m.runs))
@@ -938,7 +938,11 @@ func (m *responseRunManager) Close() {
 	for _, run := range runs {
 		_ = run.cancelRun()
 	}
-	m.runWG.Wait()
+	return waitForWaitGroupContext(ctx, &m.runWG)
+}
+
+func (m *responseRunManager) Close() {
+	_ = m.CloseContext(context.Background())
 }
 
 func usagePayload(usage llm.Usage) map[string]any {

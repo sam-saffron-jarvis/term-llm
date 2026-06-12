@@ -1129,24 +1129,67 @@ func (s *serveServer) Stop(ctx context.Context) error {
 			close(s.shutdownCh)
 		}
 	})
-	if s.jobsV2 != nil {
-		_ = s.jobsV2.Close()
-	}
-	if s.responseRuns != nil {
-		s.responseRuns.Close()
-	}
-	if s.widgetsMgr != nil {
-		s.widgetsMgr.Close()
-	}
-	closeFileTrackingStore()
-	s.modelsMu.Lock()
-	for _, p := range s.modelsProviders {
-		if cleaner, ok := p.(interface{ CleanupMCP() }); ok {
-			cleaner.CleanupMCP()
+
+	shutdownErrCh := make(chan error, 1)
+	go func() {
+		shutdownErrCh <- s.server.Shutdown(ctx)
+	}()
+
+	teardownErrCh := make(chan error, 1)
+	go func() {
+		var wg sync.WaitGroup
+		var errMu sync.Mutex
+		var teardownErr error
+		recordErr := func(err error) {
+			if err == nil {
+				return
+			}
+			errMu.Lock()
+			if teardownErr == nil {
+				teardownErr = err
+			}
+			errMu.Unlock()
 		}
+
+		if s.jobsV2 != nil {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				recordErr(s.jobsV2.CloseContext(ctx))
+			}()
+		}
+		if s.responseRuns != nil {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				recordErr(s.responseRuns.CloseContext(ctx))
+			}()
+		}
+		if s.widgetsMgr != nil {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				recordErr(s.widgetsMgr.CloseContext(ctx))
+			}()
+		}
+		wg.Wait()
+		closeFileTrackingStore()
+		s.modelsMu.Lock()
+		for _, p := range s.modelsProviders {
+			if cleaner, ok := p.(interface{ CleanupMCP() }); ok {
+				cleaner.CleanupMCP()
+			}
+		}
+		s.modelsProviders = nil
+		s.modelsCache = nil
+		s.modelsMu.Unlock()
+		teardownErrCh <- teardownErr
+	}()
+
+	shutdownErr := <-shutdownErrCh
+	teardownErr := <-teardownErrCh
+	if shutdownErr != nil {
+		return shutdownErr
 	}
-	s.modelsProviders = nil
-	s.modelsCache = nil
-	s.modelsMu.Unlock()
-	return s.server.Shutdown(ctx)
+	return teardownErr
 }

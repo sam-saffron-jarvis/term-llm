@@ -245,6 +245,43 @@ func TestServeServerStopIsIdempotent(t *testing.T) {
 	}
 }
 
+func TestServeServerStopHonorsShutdownContextDuringManagerTeardown(t *testing.T) {
+	jobs := &jobsV2Manager{}
+	jobs.wg.Add(1)
+	defer jobs.wg.Done()
+
+	responseRuns := newServeResponseRunManager()
+	responseRuns.runWG.Add(1)
+	defer responseRuns.runWG.Done()
+
+	s := &serveServer{
+		server:       &http.Server{},
+		shutdownCh:   make(chan struct{}),
+		jobsV2:       jobs,
+		responseRuns: responseRuns,
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+
+	start := time.Now()
+	err := s.Stop(ctx)
+	elapsed := time.Since(start)
+
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Stop() error = %v, want context deadline exceeded", err)
+	}
+	if elapsed > 500*time.Millisecond {
+		t.Fatalf("Stop() took %v, want it to honor shutdown context", elapsed)
+	}
+
+	select {
+	case <-s.shutdownCh:
+	default:
+		t.Fatal("shutdown channel was not closed")
+	}
+}
+
 func readSSEEvent(t *testing.T, scanner *bufio.Scanner) (string, string, bool) {
 	t.Helper()
 

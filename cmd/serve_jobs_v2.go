@@ -820,7 +820,7 @@ func (m *jobsV2Manager) recoverRuns() error {
 	return nil
 }
 
-func (m *jobsV2Manager) Close() error {
+func (m *jobsV2Manager) CloseContext(ctx context.Context) error {
 	m.mu.Lock()
 	if m.closed {
 		m.mu.Unlock()
@@ -839,8 +839,14 @@ func (m *jobsV2Manager) Close() error {
 	for _, cancel := range cancels {
 		cancel()
 	}
-	m.wg.Wait()
+	if err := waitForWaitGroupContext(ctx, &m.wg); err != nil {
+		return err
+	}
 	return m.db.Close()
+}
+
+func (m *jobsV2Manager) Close() error {
+	return m.CloseContext(context.Background())
 }
 
 func (m *jobsV2Manager) schedulerLoop() {
