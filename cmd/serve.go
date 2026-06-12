@@ -1118,6 +1118,38 @@ func (s *serveServer) contextWithShutdown(ctx context.Context) (context.Context,
 	return ctx, cancel
 }
 
+func runServeStopTasks(ctx context.Context, tasks ...func(context.Context) error) <-chan error {
+	done := make(chan error, 1)
+	go func() {
+		if len(tasks) == 0 {
+			done <- nil
+			return
+		}
+		var wg sync.WaitGroup
+		errCh := make(chan error, len(tasks))
+		for _, task := range tasks {
+			if task == nil {
+				continue
+			}
+			wg.Add(1)
+			go func(task func(context.Context) error) {
+				defer wg.Done()
+				if err := task(ctx); err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+					errCh <- err
+				}
+			}(task)
+		}
+		wg.Wait()
+		close(errCh)
+		for err := range errCh {
+			done <- err
+			return
+		}
+		done <- nil
+	}()
+	return done
+}
+
 func (s *serveServer) Stop(ctx context.Context) error {
 	if s.server == nil {
 		return nil
@@ -1129,15 +1161,19 @@ func (s *serveServer) Stop(ctx context.Context) error {
 			close(s.shutdownCh)
 		}
 	})
+
+	var stopTasks []func(context.Context) error
 	if s.jobsV2 != nil {
-		_ = s.jobsV2.Close()
+		stopTasks = append(stopTasks, s.jobsV2.CloseWithContext)
 	}
 	if s.responseRuns != nil {
-		s.responseRuns.Close()
+		stopTasks = append(stopTasks, s.responseRuns.CloseWithContext)
 	}
 	if s.widgetsMgr != nil {
-		s.widgetsMgr.Close()
+		stopTasks = append(stopTasks, s.widgetsMgr.CloseContext)
 	}
+	stopTasksDone := runServeStopTasks(ctx, stopTasks...)
+
 	closeFileTrackingStore()
 	s.modelsMu.Lock()
 	for _, p := range s.modelsProviders {
@@ -1148,5 +1184,18 @@ func (s *serveServer) Stop(ctx context.Context) error {
 	s.modelsProviders = nil
 	s.modelsCache = nil
 	s.modelsMu.Unlock()
-	return s.server.Shutdown(ctx)
+
+	shutdownErr := s.server.Shutdown(ctx)
+	select {
+	case stopErr := <-stopTasksDone:
+		if shutdownErr != nil {
+			return shutdownErr
+		}
+		return stopErr
+	case <-ctx.Done():
+		if shutdownErr != nil {
+			return shutdownErr
+		}
+		return ctx.Err()
+	}
 }
