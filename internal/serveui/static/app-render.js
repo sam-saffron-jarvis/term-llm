@@ -5,7 +5,8 @@ const app = window.TermLLMApp;
 const {
   STORAGE_KEYS, state, elements, INTERRUPT_BADGE_META, sanitizeInterruptState, relativeTime, fullDate, sessionBucket, toolIcon, formatUsage,
   saveSessions, findMessageElement, scrollToBottom, refreshRelativeTimes, ensureActiveSession, updateDocumentTitle,
-  updateSessionUsageDisplay, renderMath, visibleSessions, sessionHasInProgressState, setSessionServerActiveRun
+  updateSessionUsageDisplay, renderMath, visibleSessions, sessionHasInProgressState, setSessionServerActiveRun,
+  setAnimatedPanelOpen, initPanelSwipeToClose
 } = app;
 
 const isMobileViewport = () => window.matchMedia('(max-width: 767px)').matches;
@@ -37,13 +38,25 @@ const applyTextDirection = (element, value) => {
 };
 
 const openSidebar = () => {
-  elements.sidebar.classList.add('open');
-  elements.sidebarBackdrop.classList.add('open');
+  setAnimatedPanelOpen?.({
+    panel: elements.sidebar,
+    open: true,
+    classTargets: [
+      { element: elements.sidebar, className: 'open' },
+      { element: elements.sidebarBackdrop, className: 'open' }
+    ]
+  });
 };
 
 const closeSidebar = () => {
-  elements.sidebar.classList.remove('open');
-  elements.sidebarBackdrop.classList.remove('open');
+  setAnimatedPanelOpen?.({
+    panel: elements.sidebar,
+    open: false,
+    classTargets: [
+      { element: elements.sidebar, className: 'open' },
+      { element: elements.sidebarBackdrop, className: 'open' }
+    ]
+  });
 };
 
 const closeSidebarIfMobile = () => {
@@ -51,6 +64,14 @@ const closeSidebarIfMobile = () => {
     closeSidebar();
   }
 };
+
+initPanelSwipeToClose?.({
+  panel: elements.sidebar,
+  side: 'left',
+  isEnabled: isMobileViewport,
+  isOpen: () => elements.sidebar?.classList.contains('open'),
+  onClose: closeSidebar
+});
 
 const applySidebarToggleButtonState = () => {
   const expanded = !state.sidebarCollapsed;
