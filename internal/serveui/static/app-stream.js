@@ -2544,7 +2544,8 @@ const openRuntimePopover = (triggerEl) => {
   if (elements.chipPopoverBackdrop) elements.chipPopoverBackdrop.hidden = false;
   pop.hidden = false;
   positionChipPopover(triggerEl);
-  pop.querySelector?.('.runtime-popover-select')?.focus?.({ preventScroll: true });
+  // Leave focus on the trigger. Focusing a native <select> here can open the OS
+  // picker immediately, making the runtime panel feel like dueling modals.
 };
 
 elements.chipPopoverBackdrop?.addEventListener('click', () => {
