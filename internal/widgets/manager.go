@@ -460,12 +460,38 @@ func (m *Manager) reapIdle() {
 
 // Close stops all widget processes and the idle reaper.
 func (m *Manager) Close() {
+	m.CloseContext(context.Background())
+}
+
+// CloseContext stops all widget processes and the idle reaper, returning early
+// when ctx is cancelled. Widget process stops are best-effort and are issued in
+// parallel so one slow stop does not consume the whole serve shutdown budget.
+func (m *Manager) CloseContext(ctx context.Context) {
 	m.stopOnce.Do(func() {
 		close(m.stopCh)
 		m.mu.RLock()
-		defer m.mu.RUnlock()
+		entries := make([]*widgetEntry, 0, len(m.entries))
 		for _, e := range m.entries {
-			e.stopProcess()
+			entries = append(entries, e)
+		}
+		m.mu.RUnlock()
+
+		var wg sync.WaitGroup
+		for _, e := range entries {
+			wg.Add(1)
+			go func(e *widgetEntry) {
+				defer wg.Done()
+				e.stopProcess()
+			}(e)
+		}
+		done := make(chan struct{})
+		go func() {
+			wg.Wait()
+			close(done)
+		}()
+		select {
+		case <-done:
+		case <-ctx.Done():
 		}
 	})
 }

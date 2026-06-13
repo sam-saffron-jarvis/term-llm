@@ -889,6 +889,62 @@ func (m *telegramSessionMgr) runStoreOpWithoutCancel(ctx context.Context, sessio
 	}
 }
 
+type telegramStoreOp struct {
+	ctx context.Context
+	op  string
+	fn  func(context.Context) error
+}
+
+type telegramStoreOpQueue struct {
+	mgr       *telegramSessionMgr
+	sessionID string
+	ops       chan telegramStoreOp
+	done      chan struct{}
+	once      sync.Once
+}
+
+func newTelegramStoreOpQueue(mgr *telegramSessionMgr, sessionID string) *telegramStoreOpQueue {
+	q := &telegramStoreOpQueue{
+		mgr:       mgr,
+		sessionID: sessionID,
+		ops:       make(chan telegramStoreOp, 128),
+		done:      make(chan struct{}),
+	}
+	go q.run()
+	return q
+}
+
+func (q *telegramStoreOpQueue) run() {
+	defer close(q.done)
+	for op := range q.ops {
+		q.mgr.runStoreOpWithoutCancel(op.ctx, q.sessionID, op.op, op.fn)
+	}
+}
+
+func (q *telegramStoreOpQueue) enqueue(ctx context.Context, op string, fn func(context.Context) error) {
+	if q == nil || fn == nil {
+		return
+	}
+	storeOp := telegramStoreOp{ctx: ctx, op: op, fn: fn}
+	select {
+	case q.ops <- storeOp:
+	default:
+		log.Printf("[telegram] callback persistence queue full for %s; running %s asynchronously", q.sessionID, op)
+		go q.mgr.runStoreOpWithoutCancel(ctx, q.sessionID, op, fn)
+	}
+}
+
+func (q *telegramStoreOpQueue) closeAndWait(ctx context.Context) {
+	if q == nil {
+		return
+	}
+	q.once.Do(func() { close(q.ops) })
+	select {
+	case <-q.done:
+	case <-ctx.Done():
+	}
+}
+
 func telegramMessageVisibleText(msg llm.Message) string {
 	var b strings.Builder
 	for _, part := range msg.Parts {
@@ -1277,14 +1333,23 @@ func (m *telegramSessionMgr) streamReply(ctx context.Context, bot botSender, ses
 		produced                   []llm.Message
 		assistantCapturedForTurnCB bool
 	)
+	var callbackStoreQueue *telegramStoreOpQueue
+	if m.store != nil && sess.meta != nil {
+		callbackStoreQueue = newTelegramStoreOpQueue(m, sess.meta.ID)
+		defer func() {
+			drainCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			callbackStoreQueue.closeAndWait(drainCtx)
+		}()
+	}
 	sess.runtime.Engine.SetResponseCompletedCallback(func(cbCtx context.Context, _ int, assistantMsg llm.Message, _ llm.TurnMetrics) error {
 		producedMu.Lock()
 		produced = append(produced, assistantMsg)
 		assistantCapturedForTurnCB = true
 		producedMu.Unlock()
-		if m.store != nil && sess.meta != nil {
+		if callbackStoreQueue != nil {
 			sessionMsg := session.NewMessage(sess.meta.ID, assistantMsg, -1)
-			m.runStoreOp(cbCtx, sess.meta.ID, "AddMessage(response)", func(storeCtx context.Context) error {
+			callbackStoreQueue.enqueue(cbCtx, "AddMessage(response)", func(storeCtx context.Context) error {
 				return m.store.AddMessage(storeCtx, sess.meta.ID, sessionMsg)
 			})
 		}
@@ -1302,20 +1367,20 @@ func (m *telegramSessionMgr) streamReply(ctx context.Context, bot botSender, ses
 		}
 		assistantCapturedForTurnCB = false
 		producedMu.Unlock()
-		if m.store != nil && sess.meta != nil {
+		if callbackStoreQueue != nil {
 			for _, msg := range msgs[appendStart:] {
 				sessionMsg := session.NewMessage(sess.meta.ID, msg, -1)
-				m.runStoreOp(cbCtx, sess.meta.ID, "AddMessage(turn)", func(storeCtx context.Context) error {
+				callbackStoreQueue.enqueue(cbCtx, "AddMessage(turn)", func(storeCtx context.Context) error {
 					return m.store.AddMessage(storeCtx, sess.meta.ID, sessionMsg)
 				})
 			}
-			m.runStoreOp(cbCtx, sess.meta.ID, "UpdateMetrics", func(storeCtx context.Context) error {
+			callbackStoreQueue.enqueue(cbCtx, "UpdateMetrics", func(storeCtx context.Context) error {
 				return m.store.UpdateMetrics(storeCtx, sess.meta.ID, 1, metrics.ToolCalls, metrics.InputTokens, metrics.OutputTokens, metrics.CachedInputTokens, metrics.CacheWriteTokens)
 			})
 			if total, count := sess.runtime.Engine.ContextEstimateBaseline(); total > 0 && count > 0 {
 				sess.meta.LastTotalTokens = total
 				sess.meta.LastMessageCount = count
-				m.runStoreOp(cbCtx, sess.meta.ID, "UpdateContextEstimate", func(storeCtx context.Context) error {
+				callbackStoreQueue.enqueue(cbCtx, "UpdateContextEstimate", func(storeCtx context.Context) error {
 					return m.store.UpdateContextEstimate(storeCtx, sess.meta.ID, total, count)
 				})
 			}
@@ -1569,6 +1634,11 @@ func (m *telegramSessionMgr) streamReply(ctx context.Context, bot botSender, ses
 		newHistory = append(newHistory, normalizeUserMessageForHistory(userMsg))
 		newHistory = append(newHistory, producedSnapshot...)
 		if partial != "" {
+			if callbackStoreQueue != nil {
+				drainCtx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+				callbackStoreQueue.closeAndWait(drainCtx)
+				cancel()
+			}
 			assistantMsg := llm.AssistantText(partial)
 			if m.store != nil && sess.meta != nil && !m.persistedAssistantTextMatches(persistCtx, sess.meta.ID, partial) {
 				storeMsg := session.NewMessage(sess.meta.ID, assistantMsg, -1)

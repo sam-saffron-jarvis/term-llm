@@ -2426,3 +2426,107 @@ func TestSQLiteStoreMigratesCompactionCountColumn(t *testing.T) {
 		t.Fatalf("turn_index column count = %d, want 1", count)
 	}
 }
+
+func TestSQLiteStoreAddMessageConcurrentAutoSequence(t *testing.T) {
+	ctx := context.Background()
+	store, err := NewSQLiteStore(Config{Enabled: true, Path: filepath.Join(t.TempDir(), "sessions.db")})
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	defer store.Close()
+
+	sess := &Session{ID: NewID(), Provider: "test", Model: "test-model", Mode: ModeChat}
+	if err := store.Create(ctx, sess); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	const n = 64
+	errCh := make(chan error, n)
+	start := make(chan struct{})
+	for i := 0; i < n; i++ {
+		i := i
+		go func() {
+			<-start
+			msg := NewMessage(sess.ID, llm.UserText(fmt.Sprintf("msg-%02d", i)), -1)
+			errCh <- store.AddMessage(ctx, sess.ID, msg)
+		}()
+	}
+	close(start)
+	for i := 0; i < n; i++ {
+		if err := <-errCh; err != nil {
+			t.Fatalf("AddMessage concurrent: %v", err)
+		}
+	}
+
+	msgs, err := store.GetMessages(ctx, sess.ID, 0, 0)
+	if err != nil {
+		t.Fatalf("GetMessages: %v", err)
+	}
+	if len(msgs) != n {
+		t.Fatalf("got %d messages, want %d", len(msgs), n)
+	}
+	for i, msg := range msgs {
+		if msg.Sequence != i {
+			t.Fatalf("message %d sequence = %d, want %d", i, msg.Sequence, i)
+		}
+	}
+}
+
+func TestSQLiteStoreSidebarListUsesActivityIndexes(t *testing.T) {
+	store, err := NewSQLiteStore(Config{Enabled: true, Path: filepath.Join(t.TempDir(), "sessions.db")})
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	defer store.Close()
+
+	queries := []struct {
+		name      string
+		query     string
+		wantIndex string
+	}{
+		{
+			name:      "activity",
+			query:     `SELECT id FROM sessions WHERE archived = FALSE ORDER BY COALESCE(pinned, FALSE) DESC, COALESCE(last_message_at, last_user_message_at, created_at) DESC LIMIT 100`,
+			wantIndex: "idx_sessions_sidebar_activity",
+		},
+		{
+			name:      "last user activity",
+			query:     `SELECT id FROM sessions WHERE archived = FALSE ORDER BY COALESCE(pinned, FALSE) DESC, COALESCE(last_user_message_at, created_at) DESC LIMIT 100`,
+			wantIndex: "idx_sessions_sidebar_last_user_activity",
+		},
+	}
+	for _, tc := range queries {
+		t.Run(tc.name, func(t *testing.T) {
+			plan := explainQueryPlan(t, store.db, tc.query)
+			if !strings.Contains(plan, tc.wantIndex) {
+				t.Fatalf("plan does not use %s:\n%s", tc.wantIndex, plan)
+			}
+			if strings.Contains(plan, "USE TEMP B-TREE") {
+				t.Fatalf("plan uses temp sort:\n%s", plan)
+			}
+		})
+	}
+}
+
+func explainQueryPlan(t *testing.T, db *sql.DB, query string) string {
+	t.Helper()
+	rows, err := db.Query("EXPLAIN QUERY PLAN " + query)
+	if err != nil {
+		t.Fatalf("EXPLAIN QUERY PLAN: %v", err)
+	}
+	defer rows.Close()
+
+	var parts []string
+	for rows.Next() {
+		var id, parent, notUsed int
+		var detail string
+		if err := rows.Scan(&id, &parent, &notUsed, &detail); err != nil {
+			t.Fatalf("scan plan: %v", err)
+		}
+		parts = append(parts, detail)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate plan: %v", err)
+	}
+	return strings.Join(parts, "\n")
+}

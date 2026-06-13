@@ -1130,15 +1130,38 @@ func (s *serveServer) Stop(ctx context.Context) error {
 			close(s.shutdownCh)
 		}
 	})
+
+	var wg sync.WaitGroup
+	errCh := make(chan error, 4)
+	run := func(fn func() error) {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := fn(); err != nil {
+				select {
+				case errCh <- err:
+				default:
+				}
+			}
+		}()
+	}
 	if s.jobsV2 != nil {
-		_ = s.jobsV2.Close()
+		run(func() error { return s.jobsV2.CloseContext(ctx) })
 	}
 	if s.responseRuns != nil {
-		s.responseRuns.Close()
+		run(func() error {
+			s.responseRuns.CloseContext(ctx)
+			return nil
+		})
 	}
 	if s.widgetsMgr != nil {
-		s.widgetsMgr.Close()
+		run(func() error {
+			s.widgetsMgr.CloseContext(ctx)
+			return nil
+		})
 	}
+	run(func() error { return s.server.Shutdown(ctx) })
+
 	closeFileTrackingStore()
 	s.modelsMu.Lock()
 	for _, p := range s.modelsProviders {
@@ -1149,5 +1172,22 @@ func (s *serveServer) Stop(ctx context.Context) error {
 	s.modelsProviders = nil
 	s.modelsCache = nil
 	s.modelsMu.Unlock()
-	return s.server.Shutdown(ctx)
+
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		close(errCh)
+		for err := range errCh {
+			if err != nil {
+				return err
+			}
+		}
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
