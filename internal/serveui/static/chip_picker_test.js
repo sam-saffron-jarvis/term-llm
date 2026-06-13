@@ -146,6 +146,7 @@ function makeContext(options = {}) {
     createElement(tag) {
       const node = makeNode();
       node.tagName = tag.toUpperCase();
+      node.focus = () => { document.activeElement = node; };
       return node;
     },
     getElementById(id) {
@@ -690,7 +691,7 @@ function collectNodes(root, predicate, out = []) {
 
 function testCompressedModelChipOpensRuntimeControls() {
   const name = 'compressed model chip opens provider/model/effort controls';
-  const { app, elementMap, windowObj } = loadCoreAndStream();
+  const { app, elementMap, windowObj, ctx } = loadCoreAndStream();
   app.updateHeader = () => app.updateSessionUsageDisplay(null);
   app.state.selectedProvider = 'anthropic';
   app.state.selectedModel = 'claude-sonnet-4.5';
@@ -731,6 +732,10 @@ function testCompressedModelChipOpensRuntimeControls() {
   }
   if (selects[1].children[1]?.textContent !== 'sonnet 4.5') {
     fail(name, `expected compact model option label, got ${JSON.stringify(selects[1].children[1]?.textContent)}`);
+    return;
+  }
+  if (selects.includes(ctx.document.activeElement)) {
+    fail(name, 'runtime popover should not focus a native select on open');
     return;
   }
 
