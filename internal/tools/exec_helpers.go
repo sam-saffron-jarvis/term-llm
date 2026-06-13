@@ -24,6 +24,11 @@ import (
 // setsid, daemonisation, etc.) can still be reliably reaped on cleanup.
 const shellNonceEnvVar = "TERMLLM_SHELL_NONCE"
 
+type toolCommandCleanupOptions struct {
+	alwaysScanTaggedDescendants  bool
+	suspectBackgroundDescendants bool
+}
+
 type limitedBuffer struct {
 	buf   bytes.Buffer
 	limit int64
@@ -61,6 +66,10 @@ func (b *limitedBuffer) Truncated() bool {
 }
 
 func prepareToolCommand(cmd *exec.Cmd) (func(), error) {
+	return prepareToolCommandWithOptions(cmd, toolCommandCleanupOptions{alwaysScanTaggedDescendants: true})
+}
+
+func prepareToolCommandWithOptions(cmd *exec.Cmd, opts toolCommandCleanupOptions) (func(), error) {
 	var stdinCloser func()
 	if cmd.Stdin == nil {
 		if devNull, err := os.OpenFile(os.DevNull, os.O_RDONLY, 0); err == nil {
@@ -70,6 +79,14 @@ func prepareToolCommand(cmd *exec.Cmd) (func(), error) {
 	}
 
 	configureCommandProcessGroup(cmd)
+	cancelCalled := false
+	if cmd.Cancel != nil {
+		origCancel := cmd.Cancel
+		cmd.Cancel = func() error {
+			cancelCalled = true
+			return origCancel()
+		}
+	}
 	nonce := tagCommandWithNonce(cmd)
 
 	cleanup := func() {
@@ -78,14 +95,15 @@ func prepareToolCommand(cmd *exec.Cmd) (func(), error) {
 		//
 		// First pass: SIGKILL the process group so `nohup foo &` style children
 		// that stayed in our pgid die immediately.
+		var pgroupKillErr error = syscall.ESRCH
 		if cmd.Process != nil {
-			_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+			pgroupKillErr = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
 		}
-		// Second pass: walk /proc for any process still alive that inherited
-		// the nonce env var. This catches descendants that escaped the pgroup
-		// via setsid, double-fork daemonisation, or explicit setpgid. We retry
-		// a few times because a process may be mid-exec when we scan.
-		if nonce != "" {
+		// Second pass: only pay for the host-wide /proc walk when cancellation
+		// happened, the pgroup kill found lingering same-group processes, or the
+		// caller suspects background descendants may have escaped the pgid. This
+		// avoids a full descendant scan on ordinary foreground command exits.
+		if nonce != "" && shouldScanTaggedDescendants(opts, cancelCalled, pgroupKillErr) {
 			killTaggedDescendants(nonce)
 		}
 		if stdinCloser != nil {
@@ -93,6 +111,78 @@ func prepareToolCommand(cmd *exec.Cmd) (func(), error) {
 		}
 	}
 	return cleanup, nil
+}
+
+func shouldScanTaggedDescendants(opts toolCommandCleanupOptions, cancelCalled bool, pgroupKillErr error) bool {
+	if opts.alwaysScanTaggedDescendants {
+		return true
+	}
+	if cancelCalled {
+		return true
+	}
+	if pgroupKillErr == nil {
+		return true
+	}
+	if pgroupKillErr != nil && !errors.Is(pgroupKillErr, syscall.ESRCH) {
+		return true
+	}
+	return opts.suspectBackgroundDescendants
+}
+
+func shellCommandMayLeaveBackgroundDescendants(command string) bool {
+	for _, keyword := range []string{"nohup", "setsid", "disown", "coproc", "daemonize"} {
+		if strings.Contains(command, keyword) {
+			return true
+		}
+	}
+	return hasUnquotedBackgroundAmpersand(command)
+}
+
+func hasUnquotedBackgroundAmpersand(command string) bool {
+	var inSingle, inDouble, escaped bool
+	for i := 0; i < len(command); i++ {
+		switch {
+		case escaped:
+			escaped = false
+			continue
+		case inSingle:
+			if command[i] == '\'' {
+				inSingle = false
+			}
+			continue
+		case inDouble:
+			switch command[i] {
+			case '"':
+				inDouble = false
+			case '\\':
+				escaped = true
+			}
+			continue
+		}
+
+		switch command[i] {
+		case '\\':
+			escaped = true
+		case '\'':
+			inSingle = true
+		case '"':
+			inDouble = true
+		case '&':
+			if i > 0 {
+				if prev := command[i-1]; prev == '&' || prev == '>' {
+					continue
+				}
+			}
+			if i+1 < len(command) {
+				next := command[i+1]
+				if next == '&' || next == '>' {
+					continue
+				}
+			}
+			return true
+		}
+	}
+	return false
 }
 
 const scriptBusyMaxRetries = 4
