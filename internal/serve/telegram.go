@@ -515,7 +515,7 @@ func (m *telegramSessionMgr) getOrCreate(ctx context.Context, chatID int64) (*te
 	m.mu.Lock()
 	if existing, ok := m.sessions[chatID]; ok {
 		m.mu.Unlock()
-		closeTelegramSession(created)
+		m.closeTelegramSession(created)
 		return existing, nil
 	}
 	m.sessions[chatID] = created
@@ -539,7 +539,7 @@ func (m *telegramSessionMgr) resetSessionIfCurrent(ctx context.Context, chatID i
 	current := m.sessions[chatID]
 	if expected != nil && current != nil && current != expected {
 		m.mu.Unlock()
-		closeTelegramSession(created)
+		m.closeTelegramSession(created)
 		return current, false, nil
 	}
 	m.sessions[chatID] = created
@@ -547,7 +547,7 @@ func (m *telegramSessionMgr) resetSessionIfCurrent(ctx context.Context, chatID i
 	m.mu.Unlock()
 
 	if current != nil {
-		closeTelegramSession(current)
+		m.closeTelegramSession(current)
 	}
 	return created, true, nil
 }
@@ -826,11 +826,31 @@ func (m *telegramSessionMgr) closeAllSessions() {
 	m.mu.Unlock()
 
 	for _, sess := range sessions {
-		closeTelegramSession(sess)
+		m.closeTelegramSession(sess)
 	}
 }
 
-func closeTelegramSession(sess *telegramSession) {
+func telegramSessionCloseWait(timeout time.Duration) time.Duration {
+	if timeout > 0 {
+		return timeout
+	}
+	return 5 * time.Second
+}
+
+func telegramSessionLogLabel(sess *telegramSession) string {
+	if sess == nil || sess.meta == nil {
+		return "unknown"
+	}
+	if name := strings.TrimSpace(sess.meta.Name); name != "" {
+		return name
+	}
+	if id := strings.TrimSpace(sess.meta.ID); id != "" {
+		return id
+	}
+	return "unknown"
+}
+
+func (m *telegramSessionMgr) closeTelegramSession(sess *telegramSession) {
 	if sess == nil {
 		return
 	}
@@ -843,7 +863,12 @@ func closeTelegramSession(sess *telegramSession) {
 	if cancelFn != nil {
 		cancelFn()
 		if doneCh != nil {
-			<-doneCh
+			wait := telegramSessionCloseWait(m.interruptTimeout)
+			select {
+			case <-doneCh:
+			case <-time.After(wait):
+				log.Printf("[telegram] stream for session %s did not stop within %s during shutdown; continuing cleanup", telegramSessionLogLabel(sess), wait)
+			}
 		}
 	}
 
