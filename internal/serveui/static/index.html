@@ -199,12 +199,8 @@
             <h1 class="header-title" id="activeSessionTitle">Chat</h1>
             <span class="connection-state bad" id="connectionState" hidden aria-live="polite"></span>
           </div>
-          <button class="icon-btn diff-toggle" id="diffToggleBtn" type="button" hidden aria-label="Toggle file changes" title="File changes">
-            <span class="diff-toggle-badge" id="diffToggleBadge"></span>
-          </button>
-        </div>
-        <div class="header-controls-row">
-          <div class="header-stats" id="headerStats">
+          <div class="header-controls-row">
+            <div class="header-stats" id="headerStats">
             <div class="model-picker" id="modelPicker">
               <div class="model-chip" data-chip="provider" id="chipProvider">
                 <button type="button" class="chip-trigger" id="chipProviderTrigger" aria-haspopup="listbox" aria-expanded="false" aria-label="Provider">
@@ -242,6 +238,9 @@
             <span class="chip-sep header-tokens-sep" id="headerTokensSep" hidden>·</span>
             <span class="header-tokens" id="headerTokens"></span>
           </div>
+          <button class="icon-btn diff-toggle" id="diffToggleBtn" type="button" hidden aria-label="Toggle file changes" title="File changes">
+            <span class="diff-toggle-badge" id="diffToggleBadge"></span>
+          </button>
         </div>
       </header>
 
