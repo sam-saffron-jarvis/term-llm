@@ -440,6 +440,170 @@ const setAnimatedPanelOpen = ({
   panel._termLLMPanelAnimationTimer = setTimeout(finishOnce, PANEL_ANIMATION_FALLBACK_MS);
 };
 
+const PANEL_SWIPE_INTENT_PX = 8;
+const PANEL_SWIPE_VERTICAL_CANCEL_RATIO = 1.15;
+const PANEL_SWIPE_CLOSE_RATIO = 0.28;
+const PANEL_SWIPE_CLOSE_MIN_PX = 70;
+const PANEL_SWIPE_CLOSE_MAX_PX = 140;
+const PANEL_SWIPE_FLING_PX_PER_MS = 0.65;
+const PANEL_SWIPE_RESISTANCE = 0.25;
+const PANEL_SWIPE_MAX_OVERSHOOT_PX = 32;
+const PANEL_SWIPE_OFFSET_VAR = '--panel-swipe-offset-x';
+const PANEL_SWIPE_DRAG_CLASS = 'panel-swipe-dragging';
+
+const panelSwipePoint = (event) => ({
+  x: Number(event?.clientX) || 0,
+  y: Number(event?.clientY) || 0
+});
+
+const panelSwipeWidth = (panel) => {
+  const rectWidth = Number(panel?.getBoundingClientRect?.().width) || 0;
+  const offsetWidth = Number(panel?.offsetWidth) || 0;
+  return Math.max(1, rectWidth || offsetWidth || 280);
+};
+
+const panelSwipeThreshold = (panel, minPx, maxPx, ratio) => {
+  const width = panelSwipeWidth(panel);
+  return Math.min(maxPx, Math.max(minPx, width * ratio));
+};
+
+// Installs a drag-to-dismiss gesture for side panels. The panel tracks the
+// finger while the gesture is active, locks only after horizontal intent wins,
+// and commits on either distance or fling velocity. Vertical scrolling inside
+// the panel is left alone so the surface feels attached to the finger without
+// stealing ordinary scrolling.
+const initPanelSwipeToClose = ({
+  panel,
+  side = 'left',
+  isEnabled = () => true,
+  isOpen = () => panel?.classList?.contains?.('open'),
+  shouldIgnoreTarget = null,
+  onClose = null,
+  offsetVar = PANEL_SWIPE_OFFSET_VAR,
+  dragClass = PANEL_SWIPE_DRAG_CLASS,
+  intentPx = PANEL_SWIPE_INTENT_PX,
+  verticalCancelRatio = PANEL_SWIPE_VERTICAL_CANCEL_RATIO,
+  closeRatio = PANEL_SWIPE_CLOSE_RATIO,
+  closeMinPx = PANEL_SWIPE_CLOSE_MIN_PX,
+  closeMaxPx = PANEL_SWIPE_CLOSE_MAX_PX,
+  flingPxPerMs = PANEL_SWIPE_FLING_PX_PER_MS,
+  resistance = PANEL_SWIPE_RESISTANCE,
+  maxOvershootPx = PANEL_SWIPE_MAX_OVERSHOOT_PX
+} = {}) => {
+  if (!panel?.addEventListener) return () => {};
+  const direction = side === 'right' ? 1 : -1;
+  let gesture = null;
+
+  const matchesPointer = (event) => !gesture || event?.pointerId === undefined || gesture.pointerId === undefined || event.pointerId === gesture.pointerId;
+  const closeDeltaFor = (event) => (panelSwipePoint(event).x - gesture.startX) * direction;
+
+  const resetGesture = (event) => {
+    if (gesture?.dragging) panel.classList?.remove?.(dragClass);
+    try {
+      if (gesture?.pointerId !== undefined) panel.releasePointerCapture?.(gesture.pointerId);
+      if (event?.pointerId !== undefined && event.pointerId !== gesture?.pointerId) panel.releasePointerCapture?.(event.pointerId);
+    } catch (_) {
+      // Pointer capture may already be gone after browser cancellation.
+    }
+    gesture = null;
+  };
+
+  const setDragOffset = (closeDelta) => {
+    let distance = closeDelta;
+    if (distance < 0) distance = Math.max(distance * resistance, -maxOvershootPx);
+    else distance = Math.min(distance, panelSwipeWidth(panel));
+    panel.style?.setProperty?.(offsetVar, `${direction * distance}px`);
+  };
+
+  const updateVelocity = (event) => {
+    const now = Date.now();
+    const closeDelta = closeDeltaFor(event);
+    const elapsed = Math.max(1, now - gesture.lastAt);
+    gesture.velocity = (closeDelta - gesture.lastCloseDelta) / elapsed;
+    gesture.lastCloseDelta = closeDelta;
+    gesture.lastAt = now;
+    return closeDelta;
+  };
+
+  const onPointerDown = (event) => {
+    if (event?.button !== undefined && event.button !== 0) return;
+    if (event?.isPrimary === false) return;
+    if (typeof isEnabled === 'function' && !isEnabled()) return;
+    if (typeof isOpen === 'function' && !isOpen()) return;
+    if (typeof shouldIgnoreTarget === 'function' && shouldIgnoreTarget(event.target)) return;
+    const point = panelSwipePoint(event);
+    gesture = {
+      pointerId: event.pointerId,
+      startX: point.x,
+      startY: point.y,
+      lastCloseDelta: 0,
+      lastAt: Date.now(),
+      velocity: 0,
+      dragging: false
+    };
+  };
+
+  const onPointerMove = (event) => {
+    if (!gesture || !matchesPointer(event)) return;
+    const point = panelSwipePoint(event);
+    const dx = point.x - gesture.startX;
+    const dy = point.y - gesture.startY;
+    const closeDelta = dx * direction;
+
+    if (!gesture.dragging) {
+      const absX = Math.abs(dx);
+      const absY = Math.abs(dy);
+      if (absX < intentPx && absY < intentPx) return;
+      if (absY > absX * verticalCancelRatio || closeDelta <= 0) {
+        resetGesture(event);
+        return;
+      }
+      gesture.dragging = true;
+      panel.classList?.add?.(dragClass);
+      try { panel.setPointerCapture?.(event.pointerId); } catch (_) { /* pointer may be synthetic in tests */ }
+    }
+
+    event.preventDefault?.();
+    setDragOffset(updateVelocity(event));
+  };
+
+  const onPointerEnd = (event) => {
+    if (!gesture || !matchesPointer(event)) return;
+    if (!gesture.dragging) {
+      resetGesture(event);
+      return;
+    }
+    event.preventDefault?.();
+    const closeDelta = updateVelocity(event);
+    const shouldClose = Math.max(closeDelta, 0) >= panelSwipeThreshold(panel, closeMinPx, closeMaxPx, closeRatio)
+      || gesture.velocity >= flingPxPerMs;
+
+    panel.classList?.remove?.(dragClass);
+    try { void panel.offsetWidth; } catch (_) { /* non-browser test doubles */ }
+    if (shouldClose && typeof onClose === 'function') onClose(event);
+    panel.style?.removeProperty?.(offsetVar);
+    resetGesture(event);
+  };
+
+  const onPointerCancel = (event) => {
+    if (!gesture || !matchesPointer(event)) return;
+    panel.style?.removeProperty?.(offsetVar);
+    resetGesture(event);
+  };
+
+  panel.addEventListener('pointerdown', onPointerDown);
+  panel.addEventListener('pointermove', onPointerMove);
+  panel.addEventListener('pointerup', onPointerEnd);
+  panel.addEventListener('pointercancel', onPointerCancel);
+
+  return () => {
+    panel.removeEventListener?.('pointerdown', onPointerDown);
+    panel.removeEventListener?.('pointermove', onPointerMove);
+    panel.removeEventListener?.('pointerup', onPointerEnd);
+    panel.removeEventListener?.('pointercancel', onPointerCancel);
+  };
+};
+
 const INTERRUPT_BADGE_META = {
   evaluating: { className: 'pending', label: 'evaluating…' },
   pending_interject: { className: 'pending', icon: '⏳', label: 'will incorporate' },
@@ -1638,6 +1802,7 @@ Object.assign(app, {
   syncTokenCookie,
   setAnimatedPanelOpen,
   setElementHidden,
+  initPanelSwipeToClose,
   truncate,
   asTimestamp,
   fullDate,

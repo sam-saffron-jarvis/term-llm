@@ -433,6 +433,26 @@ async function run(name, fn) {
 }
 
 (async () => {
+  await run('sidebar registers shared swipe-to-close gesture', () => {
+    const swipeRegistrations = [];
+    const { app } = createHarness({
+      initPanelSwipeToClose(options) { swipeRegistrations.push(options); },
+      setAnimatedPanelOpen({ open, classTargets }) {
+        classTargets.forEach((target) => target.element.classList.toggle(target.className, Boolean(open)));
+      },
+    });
+
+    assertEqual(swipeRegistrations.length, 1, 'one sidebar swipe registration');
+    const registration = swipeRegistrations[0];
+    assertEqual(registration.panel, app.elements.sidebar, 'gesture is registered on the sidebar');
+    assertEqual(registration.side, 'left', 'sidebar closes toward the left edge');
+    app.elements.sidebar.classList.add('open');
+    app.elements.sidebarBackdrop.classList.add('open');
+    registration.onClose();
+    assert(!app.elements.sidebar.classList.contains('open'), 'gesture close calls sidebar close helper');
+    assert(!app.elements.sidebarBackdrop.classList.contains('open'), 'gesture close also clears backdrop');
+  });
+
   await run('discovers every assistant turn and skips empty assistant segments', () => {
     const { app, session } = createHarness();
     session.messages = [

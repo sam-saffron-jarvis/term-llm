@@ -42,6 +42,13 @@ class ClassList {
   }
 }
 
+class StyleDecl {
+  constructor() { this.values = new Map(); }
+  setProperty(name, value) { this.values.set(String(name), String(value)); }
+  removeProperty(name) { const value = this.values.get(String(name)) || ''; this.values.delete(String(name)); return value; }
+  getPropertyValue(name) { return this.values.get(String(name)) || ''; }
+}
+
 class Element {
   constructor(tagName) {
     this.tagName = String(tagName || '').toUpperCase();
@@ -51,7 +58,7 @@ class Element {
     this.attributes = new Map();
     this.className = '';
     this.classList = new ClassList(this);
-    this.style = {};
+    this.style = new StyleDecl();
     this.listeners = new Map();
     this.textContent = '';
     this.value = '';
@@ -102,6 +109,9 @@ class Element {
     return results;
   }
   querySelector(selector) { return this.querySelectorAll(selector)[0] || null; }
+  getBoundingClientRect() { return { width: 320, height: 600, top: 0, left: 0, right: 320, bottom: 600 }; }
+  setPointerCapture() {}
+  releasePointerCapture() {}
 }
 
 function createHarness(options = {}) {
@@ -180,6 +190,45 @@ function createHarness(options = {}) {
       if (open && hiddenWhenClosed) app.setElementHidden(panel, false);
       targets.forEach((target) => target.element?.classList?.toggle?.(target.className || openClass, Boolean(open)));
       if (!open && hiddenWhenClosed) app.setElementHidden(panel, true);
+    },
+    initPanelSwipeToClose({ panel, side = 'left', isEnabled = () => true, isOpen = () => true, shouldIgnoreTarget = null, onClose = null } = {}) {
+      const direction = side === 'right' ? 1 : -1;
+      let start = null;
+      panel.addEventListener('pointerdown', (event) => {
+        if (!isEnabled() || !isOpen() || shouldIgnoreTarget?.(event.target)) return;
+        start = { x: Number(event.clientX) || 0, y: Number(event.clientY) || 0, dragging: false };
+      });
+      panel.addEventListener('pointermove', (event) => {
+        if (!start) return;
+        const dx = (Number(event.clientX) || 0) - start.x;
+        const dy = Math.abs((Number(event.clientY) || 0) - start.y);
+        const closeDelta = dx * direction;
+        if (!start.dragging) {
+          if (Math.abs(dx) < 8 && dy < 8) return;
+          if (dy > Math.abs(dx) * 1.15 || closeDelta <= 0) {
+            start = null;
+            return;
+          }
+          start.dragging = true;
+          panel.classList.add('panel-swipe-dragging');
+        }
+        panel.style.setProperty('--panel-swipe-offset-x', `${direction * closeDelta}px`);
+      });
+      panel.addEventListener('pointerup', (event) => {
+        if (!start) return;
+        const dx = (Number(event.clientX) || 0) - start.x;
+        const closeDelta = dx * direction;
+        const shouldClose = start.dragging && closeDelta >= 70;
+        panel.classList.remove('panel-swipe-dragging');
+        panel.style.removeProperty('--panel-swipe-offset-x');
+        start = null;
+        if (shouldClose) onClose?.(event);
+      });
+      panel.addEventListener('pointercancel', () => {
+        panel.classList.remove('panel-swipe-dragging');
+        panel.style.removeProperty('--panel-swipe-offset-x');
+        start = null;
+      });
     }
   };
 
@@ -547,6 +596,8 @@ async function run(name, fn) {
     assert(elements.diffSidebar.classList.contains('open'), 'drawer starts open');
 
     await elements.diffSidebar.dispatchEvent({ type: 'pointerdown', target: elements.diffSidebar, clientX: 120, clientY: 40 });
+    await elements.diffSidebar.dispatchEvent({ type: 'pointermove', target: elements.diffSidebar, clientX: 205, clientY: 48 });
+    assertEqual(elements.diffSidebar.style.getPropertyValue('--panel-swipe-offset-x'), '85px', 'drawer follows the touch move');
     await elements.diffSidebar.dispatchEvent({ type: 'pointerup', target: elements.diffSidebar, clientX: 215, clientY: 48 });
     assert(!elements.diffSidebar.classList.contains('open'), 'rightward swipe closes drawer');
   });
@@ -558,6 +609,7 @@ async function run(name, fn) {
     app.toggleDiffSidebar();
 
     await elements.diffSidebar.dispatchEvent({ type: 'pointerdown', target: elements.diffSidebar, clientX: 120, clientY: 40 });
+    await elements.diffSidebar.dispatchEvent({ type: 'pointermove', target: elements.diffSidebar, clientX: 150, clientY: 150 });
     await elements.diffSidebar.dispatchEvent({ type: 'pointerup', target: elements.diffSidebar, clientX: 150, clientY: 150 });
     assert(elements.diffSidebar.classList.contains('open'), 'mostly vertical gesture keeps drawer open');
   });
