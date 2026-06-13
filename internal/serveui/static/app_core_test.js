@@ -743,6 +743,123 @@ const app = loadAppCore();
   pass(name);
 })();
 
+function makeSwipePanel(width = 320) {
+  const listeners = new Map();
+  const styleValues = new Map();
+  const classes = new Set();
+  const syncClassName = (panel) => { panel.className = Array.from(classes).join(' '); };
+  const panel = {
+    className: '',
+    offsetWidth: width,
+    style: {
+      setProperty(name, value) { styleValues.set(String(name), String(value)); },
+      removeProperty(name) { const value = styleValues.get(String(name)) || ''; styleValues.delete(String(name)); return value; },
+      getPropertyValue(name) { return styleValues.get(String(name)) || ''; },
+    },
+    classList: {
+      add(...tokens) { tokens.forEach((token) => classes.add(token)); syncClassName(panel); },
+      remove(...tokens) { tokens.forEach((token) => classes.delete(token)); syncClassName(panel); },
+      contains(token) { return classes.has(token); },
+      toggle(token, force) {
+        const enabled = force === undefined ? !classes.has(token) : Boolean(force);
+        if (enabled) classes.add(token); else classes.delete(token);
+        syncClassName(panel);
+        return enabled;
+      },
+    },
+    addEventListener(type, listener) {
+      const list = listeners.get(type) || [];
+      list.push(listener);
+      listeners.set(type, list);
+    },
+    removeEventListener(type, listener) {
+      const list = listeners.get(type) || [];
+      const idx = list.indexOf(listener);
+      if (idx !== -1) list.splice(idx, 1);
+      listeners.set(type, list);
+    },
+    dispatchEvent(event) {
+      const evt = { target: panel, button: 0, isPrimary: true, preventDefault() { this.defaultPrevented = true; }, ...event };
+      (listeners.get(evt.type) || []).slice().forEach((listener) => listener(evt));
+      return evt;
+    },
+    getBoundingClientRect() { return { width, height: 600, top: 0, left: 0, right: width, bottom: 600 }; },
+    setPointerCapture() {},
+    releasePointerCapture() {},
+  };
+  return panel;
+}
+
+(function testPanelSwipeToCloseTracksLeftPanelAndCommits() {
+  const name = 'initPanelSwipeToClose tracks a left panel and commits on touch move';
+  const testApp = loadAppCore();
+  const panel = makeSwipePanel(320);
+  let closed = 0;
+  testApp.initPanelSwipeToClose({
+    panel,
+    side: 'left',
+    isEnabled: () => true,
+    isOpen: () => true,
+    onClose: () => { closed += 1; },
+  });
+
+  panel.dispatchEvent({ type: 'pointerdown', pointerId: 1, clientX: 220, clientY: 20 });
+  const move = panel.dispatchEvent({ type: 'pointermove', pointerId: 1, clientX: 130, clientY: 24 });
+  if (!move.defaultPrevented) {
+    fail(name, 'dragging move should prevent the browser horizontal pan');
+    return;
+  }
+  if (panel.style.getPropertyValue('--panel-swipe-offset-x') !== '-90px') {
+    fail(name, `expected panel to follow finger at -90px, got ${panel.style.getPropertyValue('--panel-swipe-offset-x')}`);
+    return;
+  }
+  if (!panel.classList.contains('panel-swipe-dragging')) {
+    fail(name, 'drag class should be present while moving');
+    return;
+  }
+  panel.dispatchEvent({ type: 'pointerup', pointerId: 1, clientX: 120, clientY: 24 });
+  if (closed !== 1) {
+    fail(name, `expected close callback once, got ${closed}`);
+    return;
+  }
+  if (panel.style.getPropertyValue('--panel-swipe-offset-x')) {
+    fail(name, 'drag offset should be cleared after release');
+    return;
+  }
+  pass(name);
+})();
+
+(function testPanelSwipeToCloseIgnoresVerticalScrollIntent() {
+  const name = 'initPanelSwipeToClose leaves vertical scrolling alone';
+  const testApp = loadAppCore();
+  const panel = makeSwipePanel(320);
+  let closed = 0;
+  testApp.initPanelSwipeToClose({
+    panel,
+    side: 'right',
+    isEnabled: () => true,
+    isOpen: () => true,
+    onClose: () => { closed += 1; },
+  });
+
+  panel.dispatchEvent({ type: 'pointerdown', pointerId: 1, clientX: 120, clientY: 20 });
+  const move = panel.dispatchEvent({ type: 'pointermove', pointerId: 1, clientX: 145, clientY: 120 });
+  panel.dispatchEvent({ type: 'pointerup', pointerId: 1, clientX: 180, clientY: 160 });
+  if (move.defaultPrevented) {
+    fail(name, 'vertical intent should not be prevented');
+    return;
+  }
+  if (closed !== 0) {
+    fail(name, `vertical scroll should not close, got ${closed}`);
+    return;
+  }
+  if (panel.classList.contains('panel-swipe-dragging')) {
+    fail(name, 'vertical scroll should not enter drag mode');
+    return;
+  }
+  pass(name);
+})();
+
 if (failures > 0) {
   process.exit(1);
 }

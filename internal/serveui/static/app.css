@@ -262,6 +262,12 @@
       pointer-events: auto;
     }
 
+    .panel-swipe-dragging {
+      transition: none !important;
+      user-select: none;
+      -webkit-user-select: none;
+    }
+
     .diff-resize-handle {
       position: absolute;
       left: 0;
@@ -628,7 +634,7 @@
       }
 
       .diff-sidebar.open {
-        transform: translateX(0);
+        transform: translateX(var(--panel-swipe-offset-x, 0px));
         box-shadow: -4px 0 20px rgba(0, 0, 0, 0.28);
       }
     }
@@ -3353,6 +3359,7 @@
         padding-bottom: var(--safe-bottom);
         visibility: hidden;
         pointer-events: none;
+        touch-action: pan-y;
       }
 
       .sidebar-rail {
@@ -3372,7 +3379,7 @@
       }
 
       .sidebar.open {
-        transform: translateX(0);
+        transform: translateX(var(--panel-swipe-offset-x, 0px));
         box-shadow: 4px 0 20px rgba(0, 0, 0, 0.28);
         visibility: visible;
         pointer-events: auto;

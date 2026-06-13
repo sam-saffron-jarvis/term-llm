@@ -6,7 +6,7 @@ const {
   STORAGE_KEYS, state, elements, INTERRUPT_BADGE_META, sanitizeInterruptState, relativeTime, fullDate, sessionBucket, toolIcon, formatUsage,
   saveSessions, findMessageElement, scrollToBottom, refreshRelativeTimes, ensureActiveSession, updateDocumentTitle,
   updateSessionUsageDisplay, renderMath, visibleSessions, sessionHasInProgressState, setSessionServerActiveRun,
-  setAnimatedPanelOpen
+  setAnimatedPanelOpen, initPanelSwipeToClose
 } = app;
 
 const isMobileViewport = () => window.matchMedia('(max-width: 767px)').matches;
@@ -64,6 +64,14 @@ const closeSidebarIfMobile = () => {
     closeSidebar();
   }
 };
+
+initPanelSwipeToClose?.({
+  panel: elements.sidebar,
+  side: 'left',
+  isEnabled: isMobileViewport,
+  isOpen: () => elements.sidebar?.classList.contains('open'),
+  onClose: closeSidebar
+});
 
 const applySidebarToggleButtonState = () => {
   const expanded = !state.sidebarCollapsed;

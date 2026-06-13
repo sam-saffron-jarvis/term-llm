@@ -13,7 +13,8 @@ const {
   STORAGE_KEYS,
   UI_PREFIX,
   setAnimatedPanelOpen: setPanelOpen,
-  setElementHidden: setPanelHidden
+  setElementHidden: setPanelHidden,
+  initPanelSwipeToClose
 } = app;
 
 const DIFF_REFRESH_DEBOUNCE_MS = 350;
@@ -724,31 +725,13 @@ const isInsideDiffResizeHandle = (target) => {
 const initDiffCloseGesture = () => {
   const panel = elements.diffSidebar;
   if (!panel?.addEventListener) return;
-  let startX = 0;
-  let startY = 0;
-  let tracking = false;
-
-  panel.addEventListener('pointerdown', (event) => {
-    if (!isDiffDrawerViewport()) return;
-    if (!panel.classList.contains('open')) return;
-    if (isInsideDiffResizeHandle(event.target)) return;
-    startX = Number(event.clientX) || 0;
-    startY = Number(event.clientY) || 0;
-    tracking = true;
-  });
-
-  panel.addEventListener('pointerup', (event) => {
-    if (!tracking) return;
-    tracking = false;
-    const dx = (Number(event.clientX) || 0) - startX;
-    const dy = Math.abs((Number(event.clientY) || 0) - startY);
-    // Right-side drawer: a decisive rightward swipe closes it. Keep the
-    // threshold high enough that ordinary vertical diff scrolling is ignored.
-    if (dx > 70 && dx > dy * 1.4) closeDiffDrawer();
-  });
-
-  panel.addEventListener('pointercancel', () => {
-    tracking = false;
+  initPanelSwipeToClose?.({
+    panel,
+    side: 'right',
+    isEnabled: isDiffDrawerViewport,
+    isOpen: () => panel.classList.contains('open'),
+    shouldIgnoreTarget: isInsideDiffResizeHandle,
+    onClose: closeDiffDrawer
   });
 };
 
