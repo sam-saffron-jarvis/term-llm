@@ -267,10 +267,8 @@ func TestHubDelegationCreateHappyPath(t *testing.T) {
 		t.Fatalf("runner_config = %v", runner)
 	}
 	instructions, _ := runner["instructions"].(string)
-	for _, needle := range []string{"summarize the build failures", "STATUS: COMPLETE", "cross-node delegation", d.ID, "Origin node: alpha"} {
-		if !strings.Contains(instructions, needle) {
-			t.Fatalf("instructions missing %q:\n%s", needle, instructions)
-		}
+	if instructions != "summarize the build failures" {
+		t.Fatalf("instructions = %q, want delegated prompt verbatim", instructions)
 	}
 	labels, _ := json.Marshal(fake.lastJobBody["labels"])
 	if !strings.Contains(string(labels), d.ID) || !strings.Contains(string(labels), "hub_delegation") {

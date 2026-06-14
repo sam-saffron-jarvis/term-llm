@@ -596,33 +596,12 @@ func pathClean(p string) string {
 	return strings.TrimRight(cleaned.String(), "/")
 }
 
-const hubDelegationStatusFooter = `
-
----
-Before your final message, state your completion status on its own line in this exact format:
-STATUS: COMPLETE
-or
-STATUS: BLOCKED — <brief reason you could not complete the task>
-or
-STATUS: PARTIAL — <what was done and what is still missing>
-
-Choose COMPLETE only if you fully accomplished the task. Do not omit this line.`
-
-// hubDelegationInstructions wraps the delegated prompt with provenance so the
-// target agent knows the work arrived via the hub, plus the STATUS footer the
-// jobs-v2 agent flow expects.
-func hubDelegationInstructions(d hub.Delegation, prompt string) string {
-	var b strings.Builder
-	b.WriteString("You are handling a cross-node delegation routed through a term-llm Hub.\n")
-	fmt.Fprintf(&b, "Delegation id: %s\n", d.ID)
-	fmt.Fprintf(&b, "Origin node: %s\n", d.OriginNode)
-	fmt.Fprintf(&b, "Target node (you): %s\n", d.TargetNode)
-	fmt.Fprintf(&b, "Delegation depth: %d of max %d (chain: %s)\n", d.Depth, hub.DefaultDelegationMaxDepth, strings.Join(d.Chain, " -> "))
-	b.WriteString("Further hub_delegate calls from this job chain automatically: parent_delegation_id is attached for you.\n")
-	b.WriteString("\n---\n\n")
-	b.WriteString(prompt)
-	b.WriteString(hubDelegationStatusFooter)
-	return b.String()
+// hubDelegationInstructions returns the delegated prompt as the target node's
+// user-visible task text. Delegation provenance is trusted metadata carried in
+// hub-written job labels and tool context; it should not pollute the target
+// session transcript or change what the origin asked the target to do.
+func hubDelegationInstructions(_ hub.Delegation, prompt string) string {
+	return prompt
 }
 
 // jobsV2HubDelegationLabel is the trusted label shape the hub writes onto
