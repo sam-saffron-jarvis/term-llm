@@ -753,6 +753,7 @@ func (rt *serveRuntime) run(ctx context.Context, stateful bool, replaceHistory b
 	// text-only turns) both fields reset so the next turn starts fresh.
 	pendingAssistantIdx := -1
 	var pendingAssistantMsgID int64
+	pendingAssistantTextPersisted := false
 	persistPlatformInjectionLocked := func() {
 		if injectedPlatform != "" && (stateful || persisted) {
 			rt.lastInjectedPlatform = injectedPlatform
@@ -930,6 +931,7 @@ func (rt *serveRuntime) run(ctx context.Context, stateful bool, replaceHistory b
 		systemPromptInjected = false
 		pendingAssistantIdx = -1
 		pendingAssistantMsgID = 0
+		pendingAssistantTextPersisted = false
 		assistantSnapshotDirty = false
 		assistantSnapshotNeedsReconcile = false
 		if stateful {
@@ -945,11 +947,12 @@ func (rt *serveRuntime) run(ctx context.Context, stateful bool, replaceHistory b
 	// upsertPendingAssistantLocked writes (or rewrites) the in-progress
 	// assistant row for the current turn. First call inserts, subsequent calls
 	// update the same row; on ErrNotFound it re-inserts. Must hold producedMu.
-	upsertPendingAssistantLocked := func(persistCtx context.Context, assistantMsg llm.Message) {
+	upsertPendingAssistantLocked := func(persistCtx context.Context, assistantMsg llm.Message, finalizeText bool) {
 		firstInsert := pendingAssistantIdx < 0
 		if firstInsert {
 			pendingAssistantIdx = len(produced)
 			produced = append(produced, assistantMsg)
+			pendingAssistantTextPersisted = false
 		} else {
 			produced[pendingAssistantIdx] = assistantMsg
 		}
@@ -986,9 +989,12 @@ func (rt *serveRuntime) run(ctx context.Context, stateful bool, replaceHistory b
 		sessionMsg.TurnIndex = turnIndex
 		if pendingAssistantMsgID != 0 {
 			sessionMsg.ID = pendingAssistantMsgID
-			err := rt.store.UpdateMessage(dbCtx, req.SessionID, sessionMsg)
+			err := session.UpdateStreamingMessage(dbCtx, rt.store, req.SessionID, sessionMsg, finalizeText)
 			if err == nil {
 				assistantSnapshotDirty = false
+				if finalizeText {
+					pendingAssistantTextPersisted = true
+				}
 				persistPlatformInjectionLocked()
 				return
 			}
@@ -1002,6 +1008,7 @@ func (rt *serveRuntime) run(ctx context.Context, stateful bool, replaceHistory b
 			}
 			// Row missing (e.g., compaction). Fall through to re-insert.
 			pendingAssistantMsgID = 0
+			pendingAssistantTextPersisted = false
 			sessionMsg = session.NewMessage(req.SessionID, assistantMsg, -1)
 			sessionMsg.TurnIndex = turnIndex
 		}
@@ -1014,6 +1021,7 @@ func (rt *serveRuntime) run(ctx context.Context, stateful bool, replaceHistory b
 			return
 		}
 		pendingAssistantMsgID = sessionMsg.ID
+		pendingAssistantTextPersisted = finalizeText
 		assistantSnapshotDirty = false
 		// Reserve produced[pendingAssistantIdx] so plain append-path writes
 		// skip it on subsequent callbacks.
@@ -1028,7 +1036,7 @@ func (rt *serveRuntime) run(ctx context.Context, stateful bool, replaceHistory b
 	rt.engine.SetAssistantSnapshotCallback(func(cbCtx context.Context, _ int, assistantMsg llm.Message) error {
 		producedMu.Lock()
 		defer producedMu.Unlock()
-		upsertPendingAssistantLocked(cbCtx, assistantMsg)
+		upsertPendingAssistantLocked(cbCtx, assistantMsg, false)
 		return nil
 	})
 	defer rt.engine.SetAssistantSnapshotCallback(nil)
@@ -1036,7 +1044,7 @@ func (rt *serveRuntime) run(ctx context.Context, stateful bool, replaceHistory b
 	rt.engine.SetResponseCompletedCallback(func(cbCtx context.Context, _ int, assistantMsg llm.Message, _ llm.TurnMetrics) error {
 		producedMu.Lock()
 		defer producedMu.Unlock()
-		upsertPendingAssistantLocked(cbCtx, assistantMsg)
+		upsertPendingAssistantLocked(cbCtx, assistantMsg, true)
 		return nil
 	})
 	defer rt.engine.SetResponseCompletedCallback(nil)
@@ -1049,7 +1057,7 @@ func (rt *serveRuntime) run(ctx context.Context, stateful bool, replaceHistory b
 		defer producedMu.Unlock()
 		appendStart := 0
 		if len(msgs) > 0 && msgs[0].Role == llm.RoleAssistant {
-			upsertPendingAssistantLocked(cbCtx, msgs[0])
+			upsertPendingAssistantLocked(cbCtx, msgs[0], !pendingAssistantTextPersisted)
 			appendStart = 1
 		}
 		if appendStart < len(msgs) {
@@ -1058,6 +1066,7 @@ func (rt *serveRuntime) run(ctx context.Context, stateful bool, replaceHistory b
 		}
 		pendingAssistantIdx = -1
 		pendingAssistantMsgID = 0
+		pendingAssistantTextPersisted = false
 		return nil
 	})
 	defer rt.engine.SetTurnCompletedCallback(nil)
@@ -1203,7 +1212,7 @@ func (rt *serveRuntime) run(ctx context.Context, stateful bool, replaceHistory b
 	if persisted {
 		if appendOnlyPersisted {
 			if (assistantSnapshotDirty || assistantSnapshotNeedsReconcile) && pendingAssistantIdx >= 0 && pendingAssistantIdx < len(produced) {
-				upsertPendingAssistantLocked(ctx, produced[pendingAssistantIdx])
+				upsertPendingAssistantLocked(ctx, produced[pendingAssistantIdx], true)
 			}
 			updateStateAndAppendLocked(ctx)
 			needFinalSnapshot = !appendOnlyCaughtUpLocked()

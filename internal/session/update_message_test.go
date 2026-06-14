@@ -161,6 +161,84 @@ func TestSQLiteStoreUpdateMessageAdjustsVisibleMessageCountOnAssistantTextChange
 	assertListedMessageCount(t, store, 0)
 }
 
+func TestSQLiteStoreUpdateStreamingMessageDefersFTSRewriteUntilFinalized(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+
+	store, err := NewSQLiteStore(DefaultConfig())
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+	sess := &Session{ID: NewID(), Provider: "test", Model: "test-model", Mode: ModeChat}
+	if err := store.Create(ctx, sess); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	msg := NewMessage(sess.ID, llm.Message{
+		Role:  llm.RoleAssistant,
+		Parts: []llm.Part{{Type: llm.PartText, Text: "partial"}},
+	}, -1)
+	if err := store.AddMessage(ctx, sess.ID, msg); err != nil {
+		t.Fatalf("AddMessage: %v", err)
+	}
+
+	updated := NewMessage(sess.ID, llm.Message{
+		Role:  llm.RoleAssistant,
+		Parts: []llm.Part{{Type: llm.PartText, Text: "partial plus final tail"}},
+	}, -1)
+	updated.ID = msg.ID
+	updated.CreatedAt = msg.CreatedAt
+	updated.Sequence = msg.Sequence
+
+	if err := store.UpdateStreamingMessage(ctx, sess.ID, updated, false); err != nil {
+		t.Fatalf("UpdateStreamingMessage snapshot: %v", err)
+	}
+
+	var rawText string
+	if err := store.db.QueryRowContext(ctx, "SELECT COALESCE(text_content, '') FROM messages WHERE id = ?", msg.ID).Scan(&rawText); err != nil {
+		t.Fatalf("query raw text_content after snapshot: %v", err)
+	}
+	if rawText != "partial" {
+		t.Fatalf("raw text_content after snapshot = %q, want %q", rawText, "partial")
+	}
+
+	persisted, err := store.GetMessageByID(ctx, msg.ID)
+	if err != nil {
+		t.Fatalf("GetMessageByID after snapshot: %v", err)
+	}
+	if got := persisted.ExtractTextContent(); got != "partial plus final tail" {
+		t.Fatalf("persisted parts text after snapshot = %q, want %q", got, "partial plus final tail")
+	}
+
+	results, err := store.Search(ctx, SearchOptions{Query: "tail", Limit: 5})
+	if err != nil {
+		t.Fatalf("Search before finalize: %v", err)
+	}
+	if len(results) != 0 {
+		t.Fatalf("Search before finalize returned %d results, want 0", len(results))
+	}
+
+	if err := store.UpdateStreamingMessage(ctx, sess.ID, updated, true); err != nil {
+		t.Fatalf("UpdateStreamingMessage finalize: %v", err)
+	}
+	if err := store.db.QueryRowContext(ctx, "SELECT COALESCE(text_content, '') FROM messages WHERE id = ?", msg.ID).Scan(&rawText); err != nil {
+		t.Fatalf("query raw text_content after finalize: %v", err)
+	}
+	if rawText != "partial plus final tail" {
+		t.Fatalf("raw text_content after finalize = %q, want %q", rawText, "partial plus final tail")
+	}
+
+	results, err = store.Search(ctx, SearchOptions{Query: "tail", Limit: 5})
+	if err != nil {
+		t.Fatalf("Search after finalize: %v", err)
+	}
+	if len(results) != 1 || results[0].MessageID != msg.ID {
+		t.Fatalf("Search after finalize = %#v, want single result for message %d", results, msg.ID)
+	}
+}
+
 // TestSQLiteStoreUpdateMessageReturnsErrNotFound verifies that UpdateMessage
 // targeting a missing row returns ErrNotFound (used for the
 // compaction-race fallback path in the upsert callback).

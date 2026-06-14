@@ -99,6 +99,7 @@ func (m *Model) clearStreamCallbacks() {
 	m.engine.SetCompactionCallback(nil)
 	m.pendingMu.Lock()
 	m.pendingAssistantMsgID = 0
+	m.pendingAssistantTextSet = false
 	m.pendingMu.Unlock()
 	m.clearStreamingContextMessages()
 }
@@ -119,7 +120,7 @@ func (m *Model) setupStreamPersistenceCallbacks(streamStart time.Time) {
 	staleStreamSession := func() bool {
 		return streamSessionID != "" && (m.sess == nil || m.sess.ID != streamSessionID)
 	}
-	persistPendingAssistant := func(ctx context.Context, assistantMsg llm.Message) {
+	persistPendingAssistant := func(ctx context.Context, assistantMsg llm.Message, finalizeText bool) {
 		if m.store == nil || streamSess == nil || staleStreamSession() {
 			return
 		}
@@ -129,14 +130,18 @@ func (m *Model) setupStreamPersistenceCallbacks(streamStart time.Time) {
 		defer m.pendingMu.Unlock()
 		if m.pendingAssistantMsgID != 0 {
 			sessionMsg.ID = m.pendingAssistantMsgID
-			err := m.store.UpdateMessage(ctx, streamSess.ID, sessionMsg)
+			err := session.UpdateStreamingMessage(ctx, m.store, streamSess.ID, sessionMsg, finalizeText)
 			if err == nil {
+				if finalizeText {
+					m.pendingAssistantTextSet = true
+				}
 				return
 			}
 			if !errors.Is(err, session.ErrNotFound) {
 				return
 			}
 			m.pendingAssistantMsgID = 0
+			m.pendingAssistantTextSet = false
 			sessionMsg = session.NewMessageWithReasoningPolicy(streamSess.ID, assistantMsg, -1, reasoningCfg)
 			sessionMsg.DurationMs = time.Since(streamStart).Milliseconds()
 		}
@@ -144,6 +149,7 @@ func (m *Model) setupStreamPersistenceCallbacks(streamStart time.Time) {
 			return
 		}
 		m.pendingAssistantMsgID = sessionMsg.ID
+		m.pendingAssistantTextSet = finalizeText
 	}
 
 	m.engine.SetAssistantSnapshotCallback(func(ctx context.Context, _ int, assistantMsg llm.Message) error {
@@ -151,7 +157,7 @@ func (m *Model) setupStreamPersistenceCallbacks(streamStart time.Time) {
 			return nil
 		}
 		m.updateStreamingContextAssistant(assistantMsg)
-		persistPendingAssistant(ctx, assistantMsg)
+		persistPendingAssistant(ctx, assistantMsg, false)
 		return nil
 	})
 
@@ -160,7 +166,7 @@ func (m *Model) setupStreamPersistenceCallbacks(streamStart time.Time) {
 			return nil
 		}
 		m.updateStreamingContextAssistant(assistantMsg)
-		persistPendingAssistant(ctx, assistantMsg)
+		persistPendingAssistant(ctx, assistantMsg, true)
 		return nil
 	})
 
@@ -174,7 +180,10 @@ func (m *Model) setupStreamPersistenceCallbacks(streamStart time.Time) {
 		if len(turnMessages) > 0 && turnMessages[0].Role == llm.RoleAssistant {
 			// The estimate snapshot was already updated above. Persist/update the
 			// pending assistant row separately.
-			persistPendingAssistant(ctx, turnMessages[0])
+			m.pendingMu.Lock()
+			finalizeText := !m.pendingAssistantTextSet
+			m.pendingMu.Unlock()
+			persistPendingAssistant(ctx, turnMessages[0], finalizeText)
 			appendStart = 1
 		}
 		if m.store != nil && streamSess != nil {
@@ -188,6 +197,7 @@ func (m *Model) setupStreamPersistenceCallbacks(streamStart time.Time) {
 		}
 		m.pendingMu.Lock()
 		m.pendingAssistantMsgID = 0
+		m.pendingAssistantTextSet = false
 		m.pendingMu.Unlock()
 		if m.store != nil && streamSess != nil {
 			_ = m.store.UpdateMetrics(ctx, streamSess.ID, 1, metrics.ToolCalls, metrics.InputTokens, metrics.OutputTokens, metrics.CachedInputTokens, metrics.CacheWriteTokens)
@@ -569,6 +579,7 @@ func (m *Model) startStream(content string) tea.Cmd {
 			// a row that no longer exists.
 			m.pendingMu.Lock()
 			m.pendingAssistantMsgID = 0
+			m.pendingAssistantTextSet = false
 			m.pendingMu.Unlock()
 			return nil
 		})

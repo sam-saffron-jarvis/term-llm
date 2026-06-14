@@ -106,8 +106,9 @@ type Model struct {
 
 	// Persist-as-we-go: row ID of the in-progress assistant message (0 = none).
 	// Written from engine callbacks on a non-UI goroutine; protected by pendingMu.
-	pendingAssistantMsgID int64
-	pendingMu             sync.Mutex
+	pendingAssistantMsgID   int64
+	pendingAssistantTextSet bool
+	pendingMu               sync.Mutex
 
 	// In-progress LLM context used only for the status-line token estimate while
 	// a stream is active. The persisted session messages are not updated until

@@ -142,7 +142,7 @@ CREATE TRIGGER IF NOT EXISTS messages_ad AFTER DELETE ON messages BEGIN
     INSERT INTO messages_fts(messages_fts, rowid, text_content) VALUES ('delete', old.id, old.text_content);
 END;
 
-CREATE TRIGGER IF NOT EXISTS messages_au AFTER UPDATE ON messages BEGIN
+CREATE TRIGGER IF NOT EXISTS messages_au AFTER UPDATE OF text_content ON messages BEGIN
     INSERT INTO messages_fts(messages_fts, rowid, text_content) VALUES ('delete', old.id, old.text_content);
     INSERT INTO messages_fts(rowid, text_content) VALUES (new.id, new.text_content);
 END;
@@ -242,7 +242,7 @@ func NewSQLiteStore(cfg Config) (*SQLiteStore, error) {
 // - Fresh databases get the full schema from `schema` const and start at this version
 // - Existing databases run migrations to reach this version
 // Increment when adding new migrations.
-const schemaVersion = 31
+const schemaVersion = 32
 
 // migration represents a schema migration.
 type migration struct {
@@ -887,6 +887,22 @@ var migrations = []migration{
 			return err
 		},
 	},
+	{
+		// Migration 32: Avoid rewriting the FTS row when streaming updates only
+		// mutate assistant parts/duration. Only text_content changes need FTS sync.
+		version:     32,
+		description: "narrow messages FTS update trigger to text_content",
+		up: func(db *sql.DB) error {
+			if _, err := db.Exec(`DROP TRIGGER IF EXISTS messages_au`); err != nil {
+				return err
+			}
+			_, err := db.Exec(`CREATE TRIGGER messages_au AFTER UPDATE OF text_content ON messages BEGIN
+				INSERT INTO messages_fts(messages_fts, rowid, text_content) VALUES ('delete', old.id, old.text_content);
+				INSERT INTO messages_fts(rowid, text_content) VALUES (new.id, new.text_content);
+			END`)
+			return err
+		},
+	},
 }
 
 // Keep in sync with llm.IsInternalCompactionSummaryText. SQLite migrations and
@@ -996,7 +1012,7 @@ func rebuildMessagesTableForCurrentRoles(db *sql.DB) error {
 		`CREATE TRIGGER messages_ad AFTER DELETE ON messages BEGIN
 			INSERT INTO messages_fts(messages_fts, rowid, text_content) VALUES ('delete', old.id, old.text_content);
 		END`,
-		`CREATE TRIGGER messages_au AFTER UPDATE ON messages BEGIN
+		`CREATE TRIGGER messages_au AFTER UPDATE OF text_content ON messages BEGIN
 			INSERT INTO messages_fts(messages_fts, rowid, text_content) VALUES ('delete', old.id, old.text_content);
 			INSERT INTO messages_fts(rowid, text_content) VALUES (new.id, new.text_content);
 		END`,
@@ -2025,6 +2041,16 @@ func (s *SQLiteStore) insertMessageAndBumpSession(ctx context.Context, execer sq
 // "persist as we go" upsert path: the caller first calls AddMessage to stamp
 // an ID, then subsequent snapshots call UpdateMessage with the same ID.
 func (s *SQLiteStore) UpdateMessage(ctx context.Context, sessionID string, msg *Message) error {
+	return s.updateMessage(ctx, sessionID, msg, true)
+}
+
+// UpdateStreamingMessage updates an in-progress assistant message while letting
+// the caller defer the FTS-backed text_content rewrite until finalization.
+func (s *SQLiteStore) UpdateStreamingMessage(ctx context.Context, sessionID string, msg *Message, finalizeText bool) error {
+	return s.updateMessage(ctx, sessionID, msg, finalizeText)
+}
+
+func (s *SQLiteStore) updateMessage(ctx context.Context, sessionID string, msg *Message, updateText bool) error {
 	if msg == nil {
 		return fmt.Errorf("update message: nil msg")
 	}
@@ -2037,6 +2063,18 @@ func (s *SQLiteStore) UpdateMessage(ctx context.Context, sessionID string, msg *
 		return fmt.Errorf("serialize parts: %w", err)
 	}
 
+	query := `
+			UPDATE messages
+			SET role = ?, parts = ?`
+	args := []any{string(msg.Role), partsJSON}
+	if updateText {
+		query += `, text_content = ?`
+		args = append(args, msg.TextContent)
+	}
+	query += `, duration_ms = ?, turn_index = ?, compaction_tail = ?
+			WHERE id = ? AND session_id = ?`
+	args = append(args, msg.DurationMs, msg.TurnIndex, msg.CompactionTail, msg.ID, sessionID)
+
 	return retryOnBusy(ctx, 5, func() error {
 		tx, err := s.db.BeginTx(ctx, nil)
 		if err != nil {
@@ -2044,11 +2082,7 @@ func (s *SQLiteStore) UpdateMessage(ctx context.Context, sessionID string, msg *
 		}
 		defer tx.Rollback()
 
-		result, err := tx.ExecContext(ctx, `
-			UPDATE messages
-			SET role = ?, parts = ?, text_content = ?, duration_ms = ?, turn_index = ?, compaction_tail = ?
-			WHERE id = ? AND session_id = ?`,
-			string(msg.Role), partsJSON, msg.TextContent, msg.DurationMs, msg.TurnIndex, msg.CompactionTail, msg.ID, sessionID)
+		result, err := tx.ExecContext(ctx, query, args...)
 		if err != nil {
 			return fmt.Errorf("update message: %w", err)
 		}
