@@ -325,25 +325,48 @@ func (s *hubServer) handleCreateDelegation(w http.ResponseWriter, r *http.Reques
 		UpdatedAt:  now,
 	}
 
+	if err := s.delegations.Add(d); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
 	jobID, runID, err := s.createDelegationJob(r.Context(), target, d, prompt, timeout)
 	d.JobID = jobID
 	d.RunID = runID
 	if err != nil {
-		if jobID != "" {
-			// The job exists on the target but never triggered; keep an audit
-			// record so the orphan is traceable.
-			d.Status = hub.DelegationStatusError
-			d.Error = err.Error()
-			_ = s.delegations.Add(d)
+		updated, updateErr := s.delegations.Update(d.ID, func(rec *hub.Delegation) {
+			rec.JobID = jobID
+			rec.RunID = runID
+			rec.Error = err.Error()
+			if runID != "" {
+				rec.Status = hub.DelegationStatusRunning
+			} else if jobID != "" {
+				// The target job is known, but the trigger response was lost or failed.
+				// Keep the record non-terminal so later status reads can discover a run
+				// via /v2/runs?job_id=... after a node reconnects.
+				rec.Status = hub.DelegationStatusPending
+			} else {
+				rec.Status = hub.DelegationStatusError
+			}
+		})
+		if updateErr == nil {
+			d = updated
 		}
 		http.Error(w, fmt.Sprintf("delegate to node %q: %v", target.ID, err), http.StatusBadGateway)
 		return
 	}
 	d.Status = hub.DelegationStatusRunning
-	if err := s.delegations.Add(d); err != nil {
+	updated, err := s.delegations.Update(d.ID, func(rec *hub.Delegation) {
+		rec.JobID = jobID
+		rec.RunID = runID
+		rec.Status = hub.DelegationStatusRunning
+		rec.Error = ""
+	})
+	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	d = updated
 	writeJSON(w, http.StatusCreated, map[string]any{"delegation": d})
 }
 
@@ -377,6 +400,15 @@ func (s *hubServer) handleCancelDelegation(w http.ResponseWriter, r *http.Reques
 	if !found {
 		http.Error(w, fmt.Sprintf("target node %q is no longer known to the hub", d.TargetNode), http.StatusBadGateway)
 		return
+	}
+	if d.RunID == "" && d.JobID != "" {
+		// A previous create/trigger may have lost the trigger response across a
+		// direct/reverse disconnect. Try one refresh so cancel can target the run
+		// if the node did in fact start it.
+		if err := s.refreshDelegation(r.Context(), &d); err != nil {
+			http.Error(w, fmt.Sprintf("refresh delegation before cancel on node %q: %v", target.ID, err), http.StatusBadGateway)
+			return
+		}
 	}
 	if d.RunID != "" {
 		if err := s.doNodeJSON(r.Context(), target, http.MethodPost,
@@ -481,6 +513,7 @@ func (s *hubServer) refreshDelegation(ctx context.Context, d *hub.Delegation) er
 		if run.ID != "" {
 			rec.RunID = run.ID
 		}
+		rec.Error = ""
 		if hub.DelegationStatusTerminal(status) {
 			rec.Response = run.Response
 			rec.Error = run.Error
@@ -640,6 +673,13 @@ func jobsV2SessionName(job jobsV2Job, cfg jobsV2LLMConfig) string {
 	return ""
 }
 
+// hubNodeJobsJob mirrors the jobs-v2 job fields the hub needs.
+type hubNodeJobsJob struct {
+	ID     string          `json:"id"`
+	Name   string          `json:"name"`
+	Labels json.RawMessage `json:"labels"`
+}
+
 // hubNodeJobsRun mirrors the jobs-v2 run fields the hub needs.
 type hubNodeJobsRun struct {
 	ID       string `json:"id"`
@@ -651,8 +691,9 @@ type hubNodeJobsRun struct {
 
 // createDelegationJob creates and triggers a manual jobs-v2 LLM job on the
 // target node. Returns the target job and run ids; a non-empty job id with an
-// error means the job was created but never triggered.
+// error means the job is known, but no run could be confirmed.
 func (s *hubServer) createDelegationJob(ctx context.Context, target hub.Node, d hub.Delegation, prompt string, timeoutSeconds int) (jobID, runID string, err error) {
+	jobName := "hub-delegation-" + d.ID
 	labels, err := json.Marshal(map[string]any{"hub_delegation": map[string]any{
 		"id":     d.ID,
 		"origin": d.OriginNode,
@@ -671,7 +712,7 @@ func (s *hubServer) createDelegationJob(ctx context.Context, target hub.Node, d 
 		runnerConfig["model"] = d.Model
 	}
 	payload := map[string]any{
-		"name":               "hub-delegation-" + d.ID,
+		"name":               jobName,
 		"enabled":            true,
 		"runner_type":        "llm",
 		"runner_config":      runnerConfig,
@@ -681,23 +722,72 @@ func (s *hubServer) createDelegationJob(ctx context.Context, target hub.Node, d 
 		"misfire_policy":     "run",
 		"labels":             json.RawMessage(labels),
 	}
-	var job struct {
-		ID string `json:"id"`
-	}
+	var job hubNodeJobsJob
 	if err := s.doNodeJSON(ctx, target, http.MethodPost, "/v2/jobs", payload, &job); err != nil {
-		return "", "", fmt.Errorf("create job: %w", err)
+		// If the request reached the node but the response was lost (or a retry hit
+		// the jobs-v2 unique name constraint), recover by name/label instead of
+		// blindly creating another job.
+		if existing, ok, lookupErr := s.findDelegationJob(ctx, target, jobName, d.ID); lookupErr == nil && ok {
+			job = existing
+		} else {
+			if lookupErr != nil {
+				return "", "", fmt.Errorf("create job: %w (idempotency lookup failed: %v)", err, lookupErr)
+			}
+			return "", "", fmt.Errorf("create job: %w", err)
+		}
 	}
 	if job.ID == "" {
 		return "", "", errors.New("target jobs API returned a job without an id")
 	}
 	var run hubNodeJobsRun
 	if err := s.doNodeJSON(ctx, target, http.MethodPost, "/v2/jobs/"+url.PathEscape(job.ID)+"/trigger", map[string]any{}, &run); err != nil {
+		// The trigger may have succeeded but the reverse/direct connection dropped
+		// before the response made it back. Check the latest run for this job so the
+		// ledger can resume exact-run polling instead of leaving an orphan.
+		if latest, ok, lookupErr := s.findLatestDelegationRun(ctx, target, job.ID); lookupErr == nil && ok && latest.ID != "" {
+			return job.ID, latest.ID, nil
+		} else if lookupErr != nil {
+			return job.ID, "", fmt.Errorf("trigger job %s: %w (run lookup failed: %v)", job.ID, err, lookupErr)
+		}
 		return job.ID, "", fmt.Errorf("trigger job %s: %w", job.ID, err)
 	}
 	if run.ID == "" {
 		return job.ID, "", errors.New("target jobs API returned a run without an id")
 	}
 	return job.ID, run.ID, nil
+}
+
+func (s *hubServer) findDelegationJob(ctx context.Context, target hub.Node, name, delegationID string) (hubNodeJobsJob, bool, error) {
+	var jobs struct {
+		Data []hubNodeJobsJob `json:"data"`
+	}
+	if err := s.doNodeJSON(ctx, target, http.MethodGet, "/v2/jobs?limit=200&offset=0", nil, &jobs); err != nil {
+		return hubNodeJobsJob{}, false, err
+	}
+	for _, job := range jobs.Data {
+		if job.Name != name {
+			continue
+		}
+		if label := hubDelegationIDFromJobLabels(job.Labels); label != "" && label != delegationID {
+			continue
+		}
+		return job, true, nil
+	}
+	return hubNodeJobsJob{}, false, nil
+}
+
+func (s *hubServer) findLatestDelegationRun(ctx context.Context, target hub.Node, jobID string) (hubNodeJobsRun, bool, error) {
+	var runs struct {
+		Data []hubNodeJobsRun `json:"data"`
+	}
+	if err := s.doNodeJSON(ctx, target, http.MethodGet,
+		"/v2/runs?limit=1&offset=0&job_id="+url.QueryEscape(jobID), nil, &runs); err != nil {
+		return hubNodeJobsRun{}, false, err
+	}
+	if len(runs.Data) == 0 {
+		return hubNodeJobsRun{}, false, nil
+	}
+	return runs.Data[0], true, nil
 }
 
 // doNodeJSON performs one JSON request against a node's API (mounted under

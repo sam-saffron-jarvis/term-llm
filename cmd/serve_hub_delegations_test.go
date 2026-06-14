@@ -23,6 +23,8 @@ type fakeTargetJobs struct {
 	mu          sync.Mutex
 	server      *httptest.Server
 	jobSeq      int
+	jobs        map[string]hubNodeJobsJob
+	jobRuns     map[string]string
 	lastAuth    string
 	lastJobBody map[string]any
 	runStatus   string
@@ -40,12 +42,20 @@ type fakeTargetJobs struct {
 
 func newFakeTargetJobs(t *testing.T) *fakeTargetJobs {
 	t.Helper()
-	f := &fakeTargetJobs{runStatus: "running"}
+	f := &fakeTargetJobs{runStatus: "running", jobs: map[string]hubNodeJobsJob{}, jobRuns: map[string]string{}}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/chat/v2/jobs", func(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
 		defer f.mu.Unlock()
 		f.lastAuth = r.Header.Get("Authorization")
+		if r.Method == http.MethodGet {
+			jobs := make([]hubNodeJobsJob, 0, len(f.jobs))
+			for _, job := range f.jobs {
+				jobs = append(jobs, job)
+			}
+			writeJSON(w, http.StatusOK, map[string]any{"data": jobs, "total": len(jobs)})
+			return
+		}
 		if f.reflectAuthFailures {
 			http.Error(w, "upstream rejected credential "+r.Header.Get("Authorization"), http.StatusInternalServerError)
 			return
@@ -53,8 +63,23 @@ func newFakeTargetJobs(t *testing.T) *fakeTargetJobs {
 		var body map[string]any
 		_ = json.NewDecoder(r.Body).Decode(&body)
 		f.lastJobBody = body
+		name, _ := body["name"].(string)
+		for _, existing := range f.jobs {
+			if existing.Name == name {
+				http.Error(w, "job name already exists", http.StatusBadRequest)
+				return
+			}
+		}
 		f.jobSeq++
-		writeJSON(w, http.StatusCreated, map[string]any{"id": fmt.Sprintf("job_%d", f.jobSeq)})
+		id := fmt.Sprintf("job_%d", f.jobSeq)
+		job := hubNodeJobsJob{ID: id, Name: name}
+		if labels, ok := body["labels"].(map[string]any); ok {
+			if data, err := json.Marshal(labels); err == nil {
+				job.Labels = data
+			}
+		}
+		f.jobs[id] = job
+		writeJSON(w, http.StatusCreated, job)
 	})
 	mux.HandleFunc("/chat/v2/jobs/", func(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
@@ -65,20 +90,27 @@ func newFakeTargetJobs(t *testing.T) *fakeTargetJobs {
 			return
 		}
 		jobID := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/chat/v2/jobs/"), "/trigger")
-		writeJSON(w, http.StatusCreated, map[string]any{"id": "run-for-" + jobID, "job_id": jobID, "status": "queued"})
+		runID := "run-for-" + jobID
+		f.jobRuns[jobID] = runID
+		writeJSON(w, http.StatusCreated, map[string]any{"id": runID, "job_id": jobID, "status": "queued"})
 	})
 	mux.HandleFunc("/chat/v2/runs", func(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
 		defer f.mu.Unlock()
 		f.lastAuth = r.Header.Get("Authorization")
 		jobID := r.URL.Query().Get("job_id")
-		writeJSON(w, http.StatusOK, map[string]any{"data": []map[string]any{{
-			"id":       "run-for-" + jobID,
-			"job_id":   jobID,
-			"status":   f.runStatus,
-			"response": f.runResponse,
-			"error":    f.runError,
-		}}})
+		runID := f.jobRuns[jobID]
+		data := []map[string]any{}
+		if runID != "" {
+			data = append(data, map[string]any{
+				"id":       runID,
+				"job_id":   jobID,
+				"status":   f.runStatus,
+				"response": f.runResponse,
+				"error":    f.runError,
+			})
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"data": data})
 	})
 	mux.HandleFunc("/chat/v2/runs/", func(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
@@ -646,6 +678,77 @@ func TestHubDelegationTargetTokenRedactedFromLedger(t *testing.T) {
 	}
 }
 
+func TestHubDelegationTriggerFailureKeepsJobPollable(t *testing.T) {
+	s, fake := newDelegationHub(t)
+	fake.mu.Lock()
+	fake.reflectTriggerFailure = true
+	fake.mu.Unlock()
+
+	rec, _ := createDelegation(t, s, "alpha", "alpha-token", map[string]any{"target_node": "beta", "prompt": "x"})
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d %q", rec.Code, rec.Body.String())
+	}
+	records, err := s.delegations.List()
+	if err != nil || len(records) != 1 {
+		t.Fatalf("ledger records = %v (%v)", records, err)
+	}
+	d := records[0]
+	if d.JobID == "" || d.RunID != "" || d.Status != hub.DelegationStatusPending {
+		t.Fatalf("partial trigger record = %+v, want job_id only and pending", d)
+	}
+
+	fake.mu.Lock()
+	fake.reflectTriggerFailure = false
+	fake.jobRuns[d.JobID] = "run-for-" + d.JobID
+	fake.mu.Unlock()
+	fake.setRun("succeeded", "resumed", "")
+
+	rec = httptest.NewRecorder()
+	s.handler().ServeHTTP(rec, delegationRequest(http.MethodGet, "/api/delegations/"+d.ID, "alpha", "alpha-token", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("refresh: %d %q", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Delegation hub.Delegation `json:"delegation"`
+	}
+	_ = json.Unmarshal(rec.Body.Bytes(), &resp)
+	if resp.Delegation.RunID != "run-for-"+d.JobID || resp.Delegation.Status != hub.DelegationStatusSucceeded || resp.Delegation.Response != "resumed" || resp.Delegation.Error != "" {
+		t.Fatalf("refreshed partial trigger = %+v", resp.Delegation)
+	}
+}
+
+func TestHubDelegationCancelDiscoversRunAfterLostTriggerResponse(t *testing.T) {
+	s, fake := newDelegationHub(t)
+	fake.mu.Lock()
+	fake.reflectTriggerFailure = true
+	fake.mu.Unlock()
+
+	rec, _ := createDelegation(t, s, "alpha", "alpha-token", map[string]any{"target_node": "beta", "prompt": "x"})
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("create with lost trigger response: %d %q", rec.Code, rec.Body.String())
+	}
+	records, err := s.delegations.List()
+	if err != nil || len(records) != 1 {
+		t.Fatalf("ledger records = %v (%v)", records, err)
+	}
+	d := records[0]
+	fake.mu.Lock()
+	fake.reflectTriggerFailure = false
+	fake.jobRuns[d.JobID] = "run-for-" + d.JobID
+	fake.mu.Unlock()
+
+	rec = httptest.NewRecorder()
+	s.handler().ServeHTTP(rec, delegationRequest(http.MethodPost, "/api/delegations/"+d.ID+"/cancel", "alpha", "alpha-token", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("cancel: %d %q", rec.Code, rec.Body.String())
+	}
+	fake.mu.Lock()
+	cancelled := append([]string(nil), fake.cancelled...)
+	fake.mu.Unlock()
+	if len(cancelled) != 1 || cancelled[0] != "run-for-"+d.JobID {
+		t.Fatalf("cancelled runs = %v, want discovered run", cancelled)
+	}
+}
 func TestHubDelegationRefreshUsesExactRunID(t *testing.T) {
 	s, fake := newDelegationHub(t)
 	_, d := createDelegation(t, s, "alpha", "alpha-token", map[string]any{"target_node": "beta", "prompt": "x"})
