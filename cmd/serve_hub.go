@@ -274,11 +274,7 @@ func (s *hubServer) collectNodes(ctx context.Context) ([]hubNodeView, error) {
 		if n.UsesReverseConnection() {
 			connected, connectedAt, lastSeen := s.reverse.status(n.ID)
 			if connected {
-				view.Status = hub.Status{Reachable: true, State: "connected", LatencyMS: 0, Details: map[string]string{
-					"connection":   "reverse",
-					"connected_at": connectedAt.Format(time.RFC3339),
-					"last_seen":    lastSeen.Format(time.RFC3339),
-				}}
+				view.Status = s.probeReverseNode(probeCtx, n, connectedAt, lastSeen)
 			} else {
 				view.Status = hub.Status{State: "disconnected", Error: "waiting for reverse connection", Details: map[string]string{"connection": "reverse"}}
 			}
@@ -289,6 +285,43 @@ func (s *hubServer) collectNodes(ctx context.Context) ([]hubNodeView, error) {
 		views[i].Diagnostics = hubNodeDiagnostics(nodes[i], views[i], nodes)
 	}
 	return views, err
+}
+
+func (s *hubServer) probeReverseNode(ctx context.Context, n hub.Node, connectedAt, lastSeen time.Time) hub.Status {
+	details := map[string]string{
+		"connection":   "reverse",
+		"connected_at": connectedAt.Format(time.RFC3339),
+		"last_seen":    lastSeen.Format(time.RFC3339),
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://reverse.local"+hubJoinBasePath(n.BasePath, "/healthz"), nil)
+	if err != nil {
+		return hub.Status{Reachable: true, State: "connected", Details: details, Error: err.Error()}
+	}
+	if n.Token != "" {
+		req.Header.Set("Authorization", "Bearer "+n.Token)
+	}
+	start := time.Now()
+	resp, err := s.reverse.do(ctx, n, req)
+	if err != nil {
+		return hub.Status{Reachable: true, State: "connected", LatencyMS: time.Since(start).Milliseconds(), Details: details, Error: err.Error()}
+	}
+	defer resp.Body.Close()
+	st := hub.Status{Reachable: true, State: "connected", LatencyMS: time.Since(start).Milliseconds(), Details: details}
+	if resp.StatusCode != http.StatusOK {
+		st.Error = fmt.Sprintf("healthz returned %s", resp.Status)
+		return st
+	}
+	var body struct {
+		Version      string   `json:"version"`
+		Agent        string   `json:"agent"`
+		Capabilities []string `json:"capabilities"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err == nil {
+		st.Version = body.Version
+		st.Agent = body.Agent
+		st.Capabilities = body.Capabilities
+	}
+	return st
 }
 
 func hubNodeDiagnostics(n hub.Node, view hubNodeView, all []hub.Node) []hubNodeDiagnostic {
@@ -336,24 +369,26 @@ func hubPolicyMismatchDiagnostics(n hub.Node, all []hub.Node) []string {
 		return nil
 	}
 	messages := []string{}
-	for _, target := range all {
-		if target.ID == n.ID || !n.CanDelegateTo(target.ID) {
-			continue
-		}
-		if target.Delegation == nil || !target.Delegation.Enabled {
-			messages = append(messages, fmt.Sprintf("Can delegate to %q, but that node has delegation disabled.", target.ID))
-			continue
-		}
-		if strings.TrimSpace(target.Delegation.Workdir) == "" {
-			messages = append(messages, fmt.Sprintf("Can delegate to %q, but that node has no delegation workdir.", target.ID))
-			continue
-		}
-		acceptFrom := target.Delegation.AcceptFrom
-		if len(acceptFrom) == 0 {
-			acceptFrom = []string{"*"}
-		}
-		if !hubNodeListMatches(acceptFrom, n.ID) {
-			messages = append(messages, fmt.Sprintf("Can delegate to %q, but that node does not accept from %q.", target.ID, n.ID))
+	if len(n.Delegation.To) > 0 {
+		for _, target := range all {
+			if target.ID == n.ID || !n.CanDelegateTo(target.ID) {
+				continue
+			}
+			if target.Delegation == nil || !target.Delegation.Enabled {
+				messages = append(messages, fmt.Sprintf("Can delegate to %q, but that node has delegation disabled.", target.ID))
+				continue
+			}
+			if strings.TrimSpace(target.Delegation.Workdir) == "" {
+				messages = append(messages, fmt.Sprintf("Can delegate to %q, but that node has no delegation workdir.", target.ID))
+				continue
+			}
+			acceptFrom := target.Delegation.AcceptFrom
+			if len(acceptFrom) == 0 {
+				acceptFrom = []string{"*"}
+			}
+			if !hubNodeListMatches(acceptFrom, n.ID) {
+				messages = append(messages, fmt.Sprintf("Can delegate to %q, but that node does not accept from %q.", target.ID, n.ID))
+			}
 		}
 	}
 	if len(n.Delegation.AcceptFrom) > 0 && !hubNodeListMatches(n.Delegation.AcceptFrom, "*") && strings.TrimSpace(n.Delegation.Workdir) != "" {
