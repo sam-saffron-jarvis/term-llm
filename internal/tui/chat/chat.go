@@ -104,10 +104,15 @@ type Model struct {
 	tracker          *ui.ToolTracker     // Tool and segment tracking (shared component)
 	subagentTracker  *ui.SubagentTracker // Subagent progress tracking
 
-	// Persist-as-we-go: row ID of the in-progress assistant message (0 = none).
-	// Written from engine callbacks on a non-UI goroutine; protected by pendingMu.
-	pendingAssistantMsgID int64
-	pendingMu             sync.Mutex
+	// Persist-as-we-go: row ID and latest per-turn snapshot of the in-progress
+	// assistant message. Written from engine callbacks on a non-UI goroutine;
+	// protected by pendingMu.
+	pendingAssistantMsgID       int64
+	pendingAssistantTextSet     bool
+	pendingAssistantSnapshot    llm.Message
+	pendingAssistantSnapshotSet bool
+	completedAssistantTurns     int
+	pendingMu                   sync.Mutex
 
 	// In-progress LLM context used only for the status-line token estimate while
 	// a stream is active. The persisted session messages are not updated until
@@ -1047,6 +1052,97 @@ func (m *Model) flushStreamingContentOnErrorToScrollback() []tea.Cmd {
 	return ui.ScrollbackPrintlnCommands(output, true)
 }
 
+func (m *Model) interruptedAssistantFallbackMessage() (llm.Message, bool) {
+	m.pendingMu.Lock()
+	if m.pendingAssistantSnapshotSet {
+		assistantMsg := m.pendingAssistantSnapshot
+		m.pendingMu.Unlock()
+		return assistantMsg, true
+	}
+	completedAssistantTurns := m.completedAssistantTurns
+	m.pendingMu.Unlock()
+
+	// Store-backed streams persist each assistant/tool response as a separate
+	// turn row. Once a turn has completed, currentResponse is cumulative across
+	// turns, so using it as a fallback would duplicate earlier assistant text into
+	// the interrupted turn. Without a per-turn snapshot, fail open and leave the
+	// already persisted rows intact.
+	if m.store != nil && completedAssistantTurns > 0 {
+		return llm.Message{}, false
+	}
+
+	responseContent := m.currentResponse.String()
+	reasoningContent, reasoningKind, reasoningTitle := m.currentReasoningPartMetadata()
+	if responseContent == "" && reasoningContent == "" {
+		return llm.Message{}, false
+	}
+
+	part := llm.Part{Type: llm.PartText, Text: responseContent}
+	if reasoningContent != "" {
+		part.ReasoningContent = reasoningContent
+		part.ReasoningKind = reasoningKind
+		part.ReasoningSummaryTitle = reasoningTitle
+	}
+
+	return llm.Message{Role: llm.RoleAssistant, Parts: []llm.Part{part}}, true
+}
+
+func (m *Model) salvageInterruptedAssistantMessage() {
+	if m.sess == nil {
+		return
+	}
+	assistantMsg, ok := m.interruptedAssistantFallbackMessage()
+	if !ok {
+		return
+	}
+
+	sessionMsg := session.NewMessageWithReasoningPolicy(m.sess.ID, assistantMsg, -1, m.effectiveReasoningConfig())
+	sessionMsg.DurationMs = time.Since(m.streamStartTime).Milliseconds()
+
+	m.messagesMu.Lock()
+	localMsg := *sessionMsg
+	localMsg.Sequence = len(m.messages)
+	appendedIdx := len(m.messages)
+	m.messages = append(m.messages, localMsg)
+	m.messagesMu.Unlock()
+	m.invalidateHistoryCache()
+
+	if m.store == nil {
+		return
+	}
+
+	dbCtx, cancel := context.WithTimeout(context.WithoutCancel(context.Background()), 5*time.Second)
+	defer cancel()
+
+	m.pendingMu.Lock()
+	pendingAssistantMsgID := m.pendingAssistantMsgID
+	m.pendingMu.Unlock()
+	if pendingAssistantMsgID != 0 {
+		sessionMsg.ID = pendingAssistantMsgID
+		err := m.store.UpdateMessage(dbCtx, m.sess.ID, sessionMsg)
+		if err == nil {
+			m.messagesMu.Lock()
+			if appendedIdx >= 0 && appendedIdx < len(m.messages) {
+				m.messages[appendedIdx].ID = sessionMsg.ID
+			}
+			m.messagesMu.Unlock()
+			return
+		}
+		if !errors.Is(err, session.ErrNotFound) {
+			return
+		}
+		sessionMsg.ID = 0
+	}
+
+	if err := m.store.AddMessage(dbCtx, m.sess.ID, sessionMsg); err == nil {
+		m.messagesMu.Lock()
+		if appendedIdx >= 0 && appendedIdx < len(m.messages) {
+			m.messages[appendedIdx].ID = sessionMsg.ID
+		}
+		m.messagesMu.Unlock()
+	}
+}
+
 // SetAgentResolver configures the function used to resolve agent names
 // during /handover. The function should match cmd.LoadAgent's signature.
 func (m *Model) SetAgentResolver(resolver func(name string, cfg *config.Config) (*agents.Agent, error)) {
@@ -1578,6 +1674,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.streamRenderTickPending = false
 				m.preserveStreamingContentOnError()
 				errorOutputCmds := m.flushStreamingContentOnErrorToScrollback()
+				m.salvageInterruptedAssistantMessage()
 				m.resetCurrentReasoning()
 				m.streaming = false
 				m.err = nil
@@ -1781,6 +1878,10 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.resetAttemptUsage()
 			m.currentResponse.Reset()
+			m.pendingMu.Lock()
+			m.pendingAssistantSnapshot = llm.Message{}
+			m.pendingAssistantSnapshotSet = false
+			m.pendingMu.Unlock()
 			m.resetCurrentReasoning()
 			if m.smoothBuffer != nil {
 				m.smoothBuffer.Reset()

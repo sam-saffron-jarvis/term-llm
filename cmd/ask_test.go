@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/samsaffron/term-llm/internal/config"
@@ -55,6 +56,49 @@ func TestRunOnCompleteCapture_CapturesStderrAndError(t *testing.T) {
 	}
 	if result.Stderr != "err\n" {
 		t.Errorf("stderr = %q, want %q", result.Stderr, "err\n")
+	}
+}
+
+func TestRunOnCompleteCapture_TimesOutHungHook(t *testing.T) {
+	oldTimeout := onCompleteTimeout
+	onCompleteTimeout = 100 * time.Millisecond
+	t.Cleanup(func() { onCompleteTimeout = oldTimeout })
+
+	started := time.Now()
+	_, err := runOnCompleteCapture("sleep 10", "")
+	elapsed := time.Since(started)
+	if err == nil {
+		t.Fatal("expected timeout error, got nil")
+	}
+	if err.Error() != "timed out after 100ms" {
+		t.Fatalf("error = %q, want %q", err.Error(), "timed out after 100ms")
+	}
+	if elapsed >= time.Second {
+		t.Fatalf("runOnCompleteCapture took %v, want timeout well under 1s", elapsed)
+	}
+}
+
+func TestRunOnCompleteCapture_ReturnsWhenBackgroundChildKeepsPipeOpen(t *testing.T) {
+	oldTimeout := onCompleteTimeout
+	oldWaitDelay := onCompleteWaitDelay
+	onCompleteTimeout = time.Second
+	onCompleteWaitDelay = 50 * time.Millisecond
+	t.Cleanup(func() {
+		onCompleteTimeout = oldTimeout
+		onCompleteWaitDelay = oldWaitDelay
+	})
+
+	started := time.Now()
+	result, err := runOnCompleteCapture("(sleep 10) & printf done", "")
+	elapsed := time.Since(started)
+	if err != nil {
+		t.Fatalf("error = %v, want nil", err)
+	}
+	if result.Stdout != "done" {
+		t.Fatalf("stdout = %q, want %q", result.Stdout, "done")
+	}
+	if elapsed >= time.Second {
+		t.Fatalf("runOnCompleteCapture took %v, want wait-delay recovery well under 1s", elapsed)
 	}
 }
 

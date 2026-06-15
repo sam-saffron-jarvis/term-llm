@@ -2601,6 +2601,11 @@ type onCompleteResult struct {
 	Stderr string
 }
 
+var (
+	onCompleteTimeout   = 10 * time.Second
+	onCompleteWaitDelay = 2 * time.Second
+)
+
 // runOnCompleteCapture executes the on_complete shell command with input piped to stdin
 // and captures stdout/stderr. Runs in the git repo root if available, else cwd.
 func runOnCompleteCapture(command, input string) (onCompleteResult, error) {
@@ -2609,15 +2614,31 @@ func runOnCompleteCapture(command, input string) (onCompleteResult, error) {
 		dir = gitInfo.Root
 	}
 
-	cmd := exec.Command("sh", "-c", command)
+	ctx, cancel := context.WithTimeout(context.Background(), onCompleteTimeout)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "sh", "-c", command)
 	cmd.Dir = dir
 	cmd.Stdin = strings.NewReader(input)
+
+	cleanup, prepErr := tools.PrepareCommand(cmd)
+	if prepErr != nil {
+		return onCompleteResult{}, fmt.Errorf("on_complete setup failed: %w", prepErr)
+	}
+	defer cleanup()
+	cmd.WaitDelay = onCompleteWaitDelay
 
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 
 	err := cmd.Run()
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		return onCompleteResult{Stdout: stdout.String(), Stderr: stderr.String()}, fmt.Errorf("timed out after %s", onCompleteTimeout)
+	}
+	if errors.Is(err, exec.ErrWaitDelay) {
+		return onCompleteResult{Stdout: stdout.String(), Stderr: stderr.String()}, nil
+	}
 	return onCompleteResult{Stdout: stdout.String(), Stderr: stderr.String()}, err
 }
 

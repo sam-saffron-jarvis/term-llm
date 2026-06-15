@@ -3,6 +3,7 @@ package chat
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"path/filepath"
 	"strings"
@@ -283,6 +284,195 @@ func TestInterjectionDuringToolTurnDoesNotDoublePersist(t *testing.T) {
 	}
 	if userTexts[0] != "reconsider this" {
 		t.Fatalf("persisted user text = %q, want %q", userTexts[0], "reconsider this")
+	}
+}
+
+func TestUpdate_StreamErrorSalvagesPartialAssistantReply(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "sessions.db")
+	store, err := session.NewStore(session.Config{Enabled: true, Path: dbPath})
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer store.Close()
+
+	sess := &session.Session{ID: "stream-error-salvage", CreatedAt: time.Now()}
+	if err := store.Create(context.Background(), sess); err != nil {
+		t.Fatalf("Create session: %v", err)
+	}
+	userMsg := session.NewMessage(sess.ID, llm.UserText("hello"), -1)
+	if err := store.AddMessage(context.Background(), sess.ID, userMsg); err != nil {
+		t.Fatalf("AddMessage(user): %v", err)
+	}
+
+	m := newTestChatModel(false)
+	m.store = store
+	m.sess = sess
+	m.messages = []session.Message{*userMsg}
+	m.streaming = true
+	m.streamStartTime = time.Now().Add(-2 * time.Second)
+	m.width = 80
+	m.currentResponse.WriteString("partial answer")
+	m.tracker.AddTextSegment("partial answer", m.width)
+
+	_, _ = m.Update(streamEventMsg{event: ui.ErrorEvent(context.Canceled)})
+
+	if len(m.messages) != 2 {
+		t.Fatalf("in-memory message count = %d, want 2", len(m.messages))
+	}
+	if got := m.messages[1].TextContent; got != "partial answer" {
+		t.Fatalf("in-memory assistant text = %q, want %q", got, "partial answer")
+	}
+
+	persisted, err := store.GetMessages(context.Background(), sess.ID, 0, 0)
+	if err != nil {
+		t.Fatalf("GetMessages: %v", err)
+	}
+	if len(persisted) != 2 {
+		t.Fatalf("persisted message count = %d, want 2", len(persisted))
+	}
+	if persisted[1].Role != llm.RoleAssistant || persisted[1].TextContent != "partial answer" {
+		t.Fatalf("persisted assistant = (%s, %q), want (%s, %q)", persisted[1].Role, persisted[1].TextContent, llm.RoleAssistant, "partial answer")
+	}
+	if m.messages[1].ID != persisted[1].ID {
+		t.Fatalf("in-memory assistant ID = %d, want persisted ID %d", m.messages[1].ID, persisted[1].ID)
+	}
+}
+
+func TestUpdate_StreamErrorUpdatesPendingAssistantFallbackRow(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "sessions.db")
+	store, err := session.NewStore(session.Config{Enabled: true, Path: dbPath})
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer store.Close()
+
+	sess := &session.Session{ID: "stream-error-pending", CreatedAt: time.Now()}
+	if err := store.Create(context.Background(), sess); err != nil {
+		t.Fatalf("Create session: %v", err)
+	}
+	userMsg := session.NewMessage(sess.ID, llm.UserText("hello"), -1)
+	if err := store.AddMessage(context.Background(), sess.ID, userMsg); err != nil {
+		t.Fatalf("AddMessage(user): %v", err)
+	}
+	pendingMsg := session.NewMessage(sess.ID, llm.AssistantText("draft"), -1)
+	if err := store.AddMessage(context.Background(), sess.ID, pendingMsg); err != nil {
+		t.Fatalf("AddMessage(pending): %v", err)
+	}
+	persisted, err := store.GetMessages(context.Background(), sess.ID, 0, 0)
+	if err != nil {
+		t.Fatalf("GetMessages(before): %v", err)
+	}
+	if len(persisted) != 2 {
+		t.Fatalf("precondition persisted message count = %d, want 2", len(persisted))
+	}
+
+	m := newTestChatModel(false)
+	m.store = store
+	m.sess = sess
+	m.messages = []session.Message{persisted[0]}
+	m.pendingAssistantMsgID = persisted[1].ID
+	m.streaming = true
+	m.streamStartTime = time.Now().Add(-2 * time.Second)
+	m.width = 80
+	m.currentResponse.WriteString("updated partial")
+	m.tracker.AddTextSegment("updated partial", m.width)
+
+	_, _ = m.Update(streamEventMsg{event: ui.ErrorEvent(errors.New("boom"))})
+
+	if len(m.messages) != 2 {
+		t.Fatalf("in-memory message count = %d, want 2", len(m.messages))
+	}
+	if got := m.messages[1].TextContent; got != "updated partial" {
+		t.Fatalf("in-memory assistant text = %q, want %q", got, "updated partial")
+	}
+
+	persisted, err = store.GetMessages(context.Background(), sess.ID, 0, 0)
+	if err != nil {
+		t.Fatalf("GetMessages(after): %v", err)
+	}
+	if len(persisted) != 2 {
+		t.Fatalf("persisted message count = %d, want 2 (update existing pending row, not duplicate)", len(persisted))
+	}
+	if persisted[1].TextContent != "updated partial" {
+		t.Fatalf("persisted assistant text = %q, want %q", persisted[1].TextContent, "updated partial")
+	}
+	if m.messages[1].ID != persisted[1].ID {
+		t.Fatalf("in-memory assistant ID = %d, want pending row ID %d", m.messages[1].ID, persisted[1].ID)
+	}
+}
+
+func TestUpdate_StreamErrorUsesCurrentTurnSnapshotAfterToolTurn(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "sessions.db")
+	store, err := session.NewStore(session.Config{Enabled: true, Path: dbPath})
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer store.Close()
+
+	sess := &session.Session{ID: "stream-error-current-turn", CreatedAt: time.Now()}
+	if err := store.Create(context.Background(), sess); err != nil {
+		t.Fatalf("Create session: %v", err)
+	}
+	userMsg := session.NewMessage(sess.ID, llm.UserText("hello"), -1)
+	if err := store.AddMessage(context.Background(), sess.ID, userMsg); err != nil {
+		t.Fatalf("AddMessage(user): %v", err)
+	}
+	completedAssistant := session.NewMessage(sess.ID, llm.AssistantText("first turn"), -1)
+	if err := store.AddMessage(context.Background(), sess.ID, completedAssistant); err != nil {
+		t.Fatalf("AddMessage(completed assistant): %v", err)
+	}
+	pendingMsg := session.NewMessage(sess.ID, llm.AssistantText("stale second"), -1)
+	if err := store.AddMessage(context.Background(), sess.ID, pendingMsg); err != nil {
+		t.Fatalf("AddMessage(pending): %v", err)
+	}
+
+	persisted, err := store.GetMessages(context.Background(), sess.ID, 0, 0)
+	if err != nil {
+		t.Fatalf("GetMessages(before): %v", err)
+	}
+	if len(persisted) != 3 {
+		t.Fatalf("precondition persisted message count = %d, want 3", len(persisted))
+	}
+
+	m := newTestChatModel(false)
+	m.store = store
+	m.sess = sess
+	m.messages = []session.Message{persisted[0], persisted[1]}
+	m.pendingAssistantMsgID = persisted[2].ID
+	m.pendingAssistantSnapshot = llm.AssistantText("second turn partial")
+	m.pendingAssistantSnapshotSet = true
+	m.completedAssistantTurns = 1
+	m.streaming = true
+	m.streamStartTime = time.Now().Add(-2 * time.Second)
+	m.width = 80
+	// currentResponse is cumulative across the whole stream. Salvage must not use
+	// it to overwrite the per-turn pending row after a completed tool turn.
+	m.currentResponse.WriteString("first turnsecond turn partial")
+	m.tracker.AddTextSegment("first turnsecond turn partial", m.width)
+
+	_, _ = m.Update(streamEventMsg{event: ui.ErrorEvent(errors.New("boom"))})
+
+	persisted, err = store.GetMessages(context.Background(), sess.ID, 0, 0)
+	if err != nil {
+		t.Fatalf("GetMessages(after): %v", err)
+	}
+	if len(persisted) != 3 {
+		t.Fatalf("persisted message count = %d, want 3", len(persisted))
+	}
+	if got := persisted[1].TextContent; got != "first turn" {
+		t.Fatalf("completed assistant text = %q, want %q", got, "first turn")
+	}
+	if got := persisted[2].TextContent; got != "second turn partial" {
+		t.Fatalf("pending assistant text = %q, want current-turn snapshot", got)
+	}
+	if strings.Contains(persisted[2].TextContent, persisted[1].TextContent) {
+		t.Fatalf("pending assistant duplicated completed turn: %q", persisted[2].TextContent)
+	}
+	if len(m.messages) != 3 {
+		t.Fatalf("in-memory message count = %d, want 3", len(m.messages))
+	}
+	if m.messages[2].ID != persisted[2].ID {
+		t.Fatalf("in-memory assistant ID = %d, want pending row ID %d", m.messages[2].ID, persisted[2].ID)
 	}
 }
 

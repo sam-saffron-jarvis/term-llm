@@ -78,6 +78,20 @@ func (s *LoggingStore) UpdateMessage(ctx context.Context, sessionID string, msg 
 	return err
 }
 
+// UpdateStreamingMessage wraps the optional streaming-aware update path with the
+// same error logging semantics as UpdateMessage.
+func (s *LoggingStore) UpdateStreamingMessage(ctx context.Context, sessionID string, msg *Message, finalizeText bool) error {
+	updater, ok := s.Store.(StreamingMessageUpdater)
+	if !ok {
+		return s.UpdateMessage(ctx, sessionID, msg)
+	}
+	err := updater.UpdateStreamingMessage(ctx, sessionID, msg, finalizeText)
+	if err != nil && !errors.Is(err, ErrNotFound) {
+		s.logOnce("UpdateStreamingMessage", err)
+	}
+	return err
+}
+
 // GetMessageByID wraps Store.GetMessageByID with error logging.
 func (s *LoggingStore) GetMessageByID(ctx context.Context, msgID int64) (*Message, error) {
 	msg, err := s.Store.GetMessageByID(ctx, msgID)

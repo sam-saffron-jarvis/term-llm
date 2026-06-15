@@ -69,6 +69,23 @@ type Store interface {
 	Close() error
 }
 
+// StreamingMessageUpdater is an optional Store capability for the hot streaming
+// assistant upsert path. Implementations may update role/parts/duration without
+// rewriting the FTS-backed text_content column until finalizeText is true.
+type StreamingMessageUpdater interface {
+	UpdateStreamingMessage(ctx context.Context, sessionID string, msg *Message, finalizeText bool) error
+}
+
+// UpdateStreamingMessage updates an in-progress assistant message using the
+// store's streaming-aware fast path when available, otherwise it falls back to
+// Store.UpdateMessage.
+func UpdateStreamingMessage(ctx context.Context, store Store, sessionID string, msg *Message, finalizeText bool) error {
+	if updater, ok := store.(StreamingMessageUpdater); ok {
+		return updater.UpdateStreamingMessage(ctx, sessionID, msg, finalizeText)
+	}
+	return store.UpdateMessage(ctx, sessionID, msg)
+}
+
 // ProviderStateStore is an optional Store capability for provider-specific
 // resume state. It stores opaque JSON/blob payloads keyed by term-llm session
 // and provider key, allowing providers such as claude-bin to survive runtime
