@@ -831,6 +831,10 @@ func TestStreamError_PendingInterjectRestoresDraftWithoutEngineResidual(t *testi
 func TestHandleKeyMsg_StreamingEscCancelsActiveStream(t *testing.T) {
 	m := newTestChatModel(false)
 	m.streaming = true
+	m.pendingAssistantMsgID = 42
+	m.pendingAssistantSnapshot = llm.AssistantText("partial answer")
+	m.pendingAssistantSnapshotSet = true
+	m.completedAssistantTurns = 1
 
 	cancelCalls := 0
 	m.streamCancelFunc = func() {
@@ -842,8 +846,26 @@ func TestHandleKeyMsg_StreamingEscCancelsActiveStream(t *testing.T) {
 	if cancelCalls != 1 {
 		t.Fatalf("expected esc to call stream cancel once, got %d", cancelCalls)
 	}
-	if m.streaming {
-		t.Fatal("expected esc to end streaming mode immediately")
+	if !m.streaming {
+		t.Fatal("expected stream to remain active until the stream goroutine exits")
+	}
+	if !m.streamCancelRequested {
+		t.Fatal("expected esc to mark stream cancellation as pending")
+	}
+	if got := m.phase; got != "Stopping..." {
+		t.Fatalf("phase after esc = %q, want %q", got, "Stopping...")
+	}
+	if got := m.pendingAssistantMsgID; got != 42 {
+		t.Fatalf("pendingAssistantMsgID after esc = %d, want 42", got)
+	}
+	if !m.pendingAssistantSnapshotSet {
+		t.Fatal("expected pending assistant snapshot to remain available until stream shutdown")
+	}
+	if got := m.pendingAssistantSnapshot.Parts[0].Text; got != "partial answer" {
+		t.Fatalf("pending assistant snapshot text after esc = %q, want %q", got, "partial answer")
+	}
+	if got := m.completedAssistantTurns; got != 1 {
+		t.Fatalf("completedAssistantTurns after esc = %d, want 1", got)
 	}
 }
 

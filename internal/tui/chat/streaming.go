@@ -479,6 +479,7 @@ func (m *Model) sendMessage(content string) (tea.Model, tea.Cmd) {
 func (m *Model) startStream(content string) tea.Cmd {
 	ctx, cancel := context.WithCancel(m.rootContext())
 	m.streamCancelFunc = cancel
+	m.streamCancelRequested = false
 
 	return func() tea.Msg {
 		// Mark session as active when starting a new stream
@@ -692,18 +693,33 @@ func (m *Model) listenForStreamEventsSync() tea.Msg {
 	if co := m.streamCoalescer; co != nil {
 		event, ok := co.next()
 		if !ok {
+			if m.streamCancelRequested {
+				return streamEventMsg{event: ui.ErrorEvent(context.Canceled)}
+			}
 			return streamEventMsg{event: ui.DoneEvent(0)}
+		}
+		if m.streamCancelRequested && event.Type == ui.StreamEventDone {
+			return streamEventMsg{event: ui.ErrorEvent(context.Canceled)}
 		}
 		return streamEventMsg{event: event}
 	}
 
 	if m.streamChan == nil {
+		if m.streamCancelRequested {
+			return streamEventMsg{event: ui.ErrorEvent(context.Canceled)}
+		}
 		return streamEventMsg{event: ui.DoneEvent(0)}
 	}
 
 	event, ok := <-m.streamChan
 	if !ok {
+		if m.streamCancelRequested {
+			return streamEventMsg{event: ui.ErrorEvent(context.Canceled)}
+		}
 		return streamEventMsg{event: ui.DoneEvent(0)}
+	}
+	if m.streamCancelRequested && event.Type == ui.StreamEventDone {
+		return streamEventMsg{event: ui.ErrorEvent(context.Canceled)}
 	}
 	return streamEventMsg{event: event}
 }

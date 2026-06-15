@@ -94,15 +94,16 @@ type Model struct {
 	reasoningRawWarned       bool
 
 	// Streaming state
-	currentResponse  strings.Builder
-	currentTokens    int
-	streamStartTime  time.Time
-	webSearchUsed    bool
-	retryStatus      string
-	streamCancelFunc context.CancelFunc
-	streamDone       chan struct{}       // closed when the engine goroutine exits
-	tracker          *ui.ToolTracker     // Tool and segment tracking (shared component)
-	subagentTracker  *ui.SubagentTracker // Subagent progress tracking
+	currentResponse       strings.Builder
+	currentTokens         int
+	streamStartTime       time.Time
+	webSearchUsed         bool
+	retryStatus           string
+	streamCancelFunc      context.CancelFunc
+	streamDone            chan struct{}       // closed when the engine goroutine exits
+	streamCancelRequested bool                // user requested stream cancellation; wait for stream exit before final cleanup
+	tracker               *ui.ToolTracker     // Tool and segment tracking (shared component)
+	subagentTracker       *ui.SubagentTracker // Subagent progress tracking
 
 	// Persist-as-we-go: row ID and latest per-turn snapshot of the in-progress
 	// assistant message. Written from engine callbacks on a non-UI goroutine;
@@ -1677,6 +1678,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.salvageInterruptedAssistantMessage()
 				m.resetCurrentReasoning()
 				m.streaming = false
+				m.streamCancelRequested = false
 				m.err = nil
 				var footerCmd tea.Cmd
 				if !errors.Is(ev.Err, context.Canceled) {
@@ -2040,6 +2042,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 			m.persistContextEstimate(context.Background())
 			m.streaming = false
+			m.streamCancelRequested = false
 
 			// Flag to scroll to bottom after response completes (alt screen mode)
 			if m.altScreen {
