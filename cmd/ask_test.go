@@ -554,6 +554,67 @@ func TestProgressiveCollectorCapturesBridgeTextWhenDrained(t *testing.T) {
 	}
 }
 
+type nonProgressiveBlockingStream struct {
+	ctx    context.Context
+	sent   int
+	total  int
+	closed chan struct{}
+}
+
+func (s *nonProgressiveBlockingStream) Recv() (llm.Event, error) {
+	if s.sent < s.total {
+		s.sent++
+		return llm.Event{Type: llm.EventTextDelta, Text: "chunk"}, nil
+	}
+	<-s.ctx.Done()
+	return llm.Event{}, s.ctx.Err()
+}
+
+func (s *nonProgressiveBlockingStream) Close() error {
+	close(s.closed)
+	return nil
+}
+
+func TestNonProgressiveConsumerWriteErrorCancellationUnblocksProducer(t *testing.T) {
+	adapter := ui.NewStreamAdapter(1)
+	streamCtx, cancelStream := context.WithCancel(context.Background())
+	defer cancelStream()
+
+	stream := &nonProgressiveBlockingStream{
+		ctx:    streamCtx,
+		total:  8,
+		closed: make(chan struct{}),
+	}
+	errChan := make(chan error, 1)
+	go func() {
+		defer stream.Close()
+		adapter.ProcessStream(streamCtx, stream)
+		errChan <- nil
+	}()
+
+	_, _, writeErr := streamJSONEvents(streamCtx, adapter.Events(), newJSONEmitter(failingJSONWriter{}))
+	if writeErr == nil {
+		t.Fatal("expected streamJSONEvents to fail")
+	}
+
+	cancelStream()
+
+	select {
+	case err := <-errChan:
+		if err != nil {
+			t.Fatalf("producer error = %v, want nil", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("producer remained blocked after consumer cancellation")
+	}
+
+	select {
+	case <-stream.closed:
+	case <-time.After(2 * time.Second):
+		t.Fatal("stream.Close was not reached after consumer cancellation")
+	}
+}
+
 func TestAskViewNoForcedTrailingNewline(t *testing.T) {
 	model := newAskStreamModel()
 	model.pausedForExternalUI = true
