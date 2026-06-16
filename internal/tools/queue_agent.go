@@ -17,9 +17,10 @@ import (
 )
 
 const (
-	defaultQueuedAgentTimeout      = 3600
-	defaultQueuedAgentPollInterval = 5
-	defaultJobsServerBaseURL       = "http://127.0.0.1:8080"
+	defaultQueuedAgentTimeout        = 3600
+	defaultQueuedAgentPollInterval   = 5
+	defaultJobsServerBaseURL         = "http://127.0.0.1:8080"
+	QueueAgentEphemeralJobLabelsJSON = `{"term_llm_queue_agent":"ephemeral"}`
 )
 
 type QueueAgentArgs struct {
@@ -65,15 +66,16 @@ type jobsBackedAgentClient struct {
 }
 
 type jobsV2AgentJobPayload struct {
-	Name              string         `json:"name"`
-	Enabled           bool           `json:"enabled"`
-	RunnerType        string         `json:"runner_type"`
-	RunnerConfig      map[string]any `json:"runner_config"`
-	TriggerType       string         `json:"trigger_type"`
-	TriggerConfig     map[string]any `json:"trigger_config,omitempty"`
-	ConcurrencyPolicy string         `json:"concurrency_policy"`
-	TimeoutSeconds    int            `json:"timeout_seconds"`
-	MisfirePolicy     string         `json:"misfire_policy"`
+	Name              string          `json:"name"`
+	Enabled           bool            `json:"enabled"`
+	RunnerType        string          `json:"runner_type"`
+	RunnerConfig      map[string]any  `json:"runner_config"`
+	TriggerType       string          `json:"trigger_type"`
+	TriggerConfig     map[string]any  `json:"trigger_config,omitempty"`
+	ConcurrencyPolicy string          `json:"concurrency_policy"`
+	TimeoutSeconds    int             `json:"timeout_seconds"`
+	MisfirePolicy     string          `json:"misfire_policy"`
+	Labels            json.RawMessage `json:"labels,omitempty"`
 }
 
 type jobsV2AgentJobResponse struct {
@@ -339,6 +341,7 @@ Choose COMPLETE only if you fully accomplished the task. Do not omit this line.`
 		ConcurrencyPolicy: "allow",
 		TimeoutSeconds:    timeout,
 		MisfirePolicy:     "run",
+		Labels:            json.RawMessage(QueueAgentEphemeralJobLabelsJSON),
 	}
 
 	var job jobsV2AgentJobResponse

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/tools"
 )
 
 func TestNewJobsV2ManagerDoesNotForceSingleConnectionForFileBackedDB(t *testing.T) {
@@ -978,6 +979,91 @@ func TestJobsV2RetentionPrunesOldData(t *testing.T) {
 	if eventsCount != 0 {
 		t.Fatalf("eventsCount = %d, want 0 after event retention pruning", eventsCount)
 	}
+}
+
+func TestJobsV2RetentionPrunesOldQueueAgentJobs(t *testing.T) {
+	mgr := newJobsV2ManagerWithoutLoops(t)
+
+	mgr.retentionRunDays = 1
+	mgr.retentionEventDays = 1
+	mgr.retentionMaxRunsJob = 10
+
+	now := time.Now().UTC()
+	old := now.Add(-48 * time.Hour)
+	recent := now.Add(-1 * time.Hour)
+	labels := tools.QueueAgentEphemeralJobLabelsJSON
+	var err error
+
+	_, err = mgr.db.Exec(`INSERT INTO jobs_v2 (id, name, enabled, runner_type, runner_config, trigger_type, trigger_config, concurrency_policy, max_concurrent_runs, timeout_seconds, misfire_policy, labels, created_at, updated_at) VALUES (?, ?, 1, ?, ?, ?, ?, 'allow', 1, 60, 'run', ?, ?, ?)`,
+		"job_queue_agent_old", "queue-agent-old", jobsV2RunnerLLM, `{"agent_name":"developer","instructions":"old","cwd":"/tmp"}`, jobsV2TriggerManual, `{}`, labels, old, old)
+	if err != nil {
+		t.Fatalf("insert old queue_agent job: %v", err)
+	}
+	_, err = mgr.db.Exec(`INSERT INTO job_runs_v2 (id, job_id, attempt, trigger, scheduled_for, status, finished_at, created_at, updated_at) VALUES (?, ?, 1, 'manual', ?, ?, ?, ?, ?)`,
+		"run_queue_agent_old", "job_queue_agent_old", old, jobsV2RunSucceeded, old, old, old)
+	if err != nil {
+		t.Fatalf("insert old queue_agent run: %v", err)
+	}
+
+	_, err = mgr.db.Exec(`INSERT INTO jobs_v2 (id, name, enabled, runner_type, runner_config, trigger_type, trigger_config, concurrency_policy, max_concurrent_runs, timeout_seconds, misfire_policy, labels, created_at, updated_at) VALUES (?, ?, 1, ?, ?, ?, ?, 'allow', 1, 60, 'run', ?, ?, ?)`,
+		"job_queue_agent_recent", "queue-agent-recent", jobsV2RunnerLLM, `{"agent_name":"developer","instructions":"recent","cwd":"/tmp"}`, jobsV2TriggerManual, `{}`, labels, recent, recent)
+	if err != nil {
+		t.Fatalf("insert recent queue_agent job: %v", err)
+	}
+	_, err = mgr.db.Exec(`INSERT INTO job_runs_v2 (id, job_id, attempt, trigger, scheduled_for, status, finished_at, created_at, updated_at) VALUES (?, ?, 1, 'manual', ?, ?, ?, ?, ?)`,
+		"run_queue_agent_recent", "job_queue_agent_recent", recent, jobsV2RunSucceeded, recent, recent, recent)
+	if err != nil {
+		t.Fatalf("insert recent queue_agent run: %v", err)
+	}
+
+	_, err = mgr.db.Exec(`INSERT INTO jobs_v2 (id, name, enabled, runner_type, runner_config, trigger_type, trigger_config, concurrency_policy, max_concurrent_runs, timeout_seconds, misfire_policy, labels, created_at, updated_at) VALUES (?, ?, 1, ?, ?, ?, ?, 'allow', 1, 60, 'run', ?, ?, ?)`,
+		"job_queue_agent_running", "queue-agent-running", jobsV2RunnerLLM, `{"agent_name":"developer","instructions":"running","cwd":"/tmp"}`, jobsV2TriggerManual, `{}`, labels, old, old)
+	if err != nil {
+		t.Fatalf("insert running queue_agent job: %v", err)
+	}
+	_, err = mgr.db.Exec(`INSERT INTO job_runs_v2 (id, job_id, attempt, trigger, scheduled_for, status, created_at, updated_at) VALUES (?, ?, 1, 'manual', ?, ?, ?, ?)`,
+		"run_queue_agent_running", "job_queue_agent_running", old, jobsV2RunRunning, old, old)
+	if err != nil {
+		t.Fatalf("insert running queue_agent run: %v", err)
+	}
+
+	_, err = mgr.db.Exec(`INSERT INTO jobs_v2 (id, name, enabled, runner_type, runner_config, trigger_type, trigger_config, concurrency_policy, max_concurrent_runs, timeout_seconds, misfire_policy, labels, created_at, updated_at) VALUES (?, ?, 1, ?, ?, ?, ?, 'allow', 1, 60, 'run', ?, ?, ?)`,
+		"job_queue_agent_untriggered", "queue-agent-untriggered", jobsV2RunnerLLM, `{"agent_name":"developer","instructions":"untriggered","cwd":"/tmp"}`, jobsV2TriggerManual, `{}`, labels, old, old)
+	if err != nil {
+		t.Fatalf("insert untriggered queue_agent job: %v", err)
+	}
+
+	_, err = mgr.db.Exec(`INSERT INTO jobs_v2 (id, name, enabled, runner_type, runner_config, trigger_type, trigger_config, concurrency_policy, max_concurrent_runs, timeout_seconds, misfire_policy, created_at, updated_at) VALUES (?, ?, 1, ?, ?, ?, ?, 'forbid', 1, 60, 'skip', ?, ?)`,
+		"job_manual_old", "manual-old", jobsV2RunnerProgram, `{"command":"echo","args":["x"]}`, jobsV2TriggerManual, `{}`, old, old)
+	if err != nil {
+		t.Fatalf("insert manual control job: %v", err)
+	}
+	_, err = mgr.db.Exec(`INSERT INTO job_runs_v2 (id, job_id, attempt, trigger, scheduled_for, status, finished_at, created_at, updated_at) VALUES (?, ?, 1, 'manual', ?, ?, ?, ?, ?)`,
+		"run_manual_old", "job_manual_old", old, jobsV2RunSucceeded, old, old, old)
+	if err != nil {
+		t.Fatalf("insert manual control run: %v", err)
+	}
+
+	if err := mgr.pruneOldData(now); err != nil {
+		t.Fatalf("pruneOldData failed: %v", err)
+	}
+
+	assertJobExists := func(jobID string, want bool) {
+		t.Helper()
+		var count int
+		if err := mgr.db.QueryRow(`SELECT COUNT(1) FROM jobs_v2 WHERE id = ?`, jobID).Scan(&count); err != nil {
+			t.Fatalf("count job %s: %v", jobID, err)
+		}
+		if got := count == 1; got != want {
+			t.Fatalf("job %s exists = %v, want %v", jobID, got, want)
+		}
+	}
+
+	assertJobExists("job_queue_agent_old", false)
+	assertJobExists("job_queue_agent_recent", true)
+	assertJobExists("job_queue_agent_running", true)
+	assertJobExists("job_queue_agent_untriggered", false)
+	assertJobExists("job_manual_old", true)
 }
 
 func TestJobsV2LLMProgressiveRunStoresEnvelopeAndProgressEvents(t *testing.T) {
