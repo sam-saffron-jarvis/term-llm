@@ -22,6 +22,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/procutil"
 	"github.com/samsaffron/term-llm/internal/session"
+	"github.com/samsaffron/term-llm/internal/tools"
 	_ "modernc.org/sqlite"
 )
 
@@ -1010,6 +1011,36 @@ func (m *jobsV2Manager) pruneOldData(now time.Time) error {
 	if m.retentionRunDays > 0 {
 		cutoff := now.Add(-time.Duration(m.retentionRunDays) * 24 * time.Hour)
 		_, err := m.db.Exec(`
+			DELETE FROM jobs_v2
+			WHERE (
+				labels = ?
+				OR CASE
+					WHEN json_valid(labels) THEN json_extract(labels, ?) = ?
+					ELSE 0
+				END
+			  )
+			  AND NOT EXISTS (
+				  SELECT 1
+				  FROM job_runs_v2 active_runs
+				  WHERE active_runs.job_id = jobs_v2.id
+				    AND active_runs.status NOT IN (?, ?, ?, ?, ?)
+			  )
+			  AND COALESCE(
+				  (
+					  SELECT MAX(COALESCE(all_runs.finished_at, all_runs.created_at))
+					  FROM job_runs_v2 all_runs
+					  WHERE all_runs.job_id = jobs_v2.id
+				  ),
+				  jobs_v2.created_at
+			  ) < ?`,
+			tools.QueueAgentEphemeralJobLabelsJSON,
+			"$."+tools.QueueAgentEphemeralJobLabelKey,
+			tools.QueueAgentEphemeralJobLabelValue,
+			terminalStatuses[0], terminalStatuses[1], terminalStatuses[2], terminalStatuses[3], terminalStatuses[4], cutoff)
+		if err != nil {
+			return err
+		}
+		_, err = m.db.Exec(`
 			DELETE FROM job_runs_v2
 			WHERE status IN (?, ?, ?, ?, ?)
 			  AND COALESCE(finished_at, created_at) < ?`,

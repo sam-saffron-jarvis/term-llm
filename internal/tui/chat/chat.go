@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"charm.land/bubbles/v2/spinner"
@@ -94,15 +95,16 @@ type Model struct {
 	reasoningRawWarned       bool
 
 	// Streaming state
-	currentResponse  strings.Builder
-	currentTokens    int
-	streamStartTime  time.Time
-	webSearchUsed    bool
-	retryStatus      string
-	streamCancelFunc context.CancelFunc
-	streamDone       chan struct{}       // closed when the engine goroutine exits
-	tracker          *ui.ToolTracker     // Tool and segment tracking (shared component)
-	subagentTracker  *ui.SubagentTracker // Subagent progress tracking
+	currentResponse       strings.Builder
+	currentTokens         int
+	streamStartTime       time.Time
+	webSearchUsed         bool
+	retryStatus           string
+	streamCancelFunc      context.CancelFunc
+	streamDone            chan struct{}       // closed when the engine goroutine exits
+	streamCancelRequested *atomic.Bool        // user requested stream cancellation; wait for stream exit before final cleanup
+	tracker               *ui.ToolTracker     // Tool and segment tracking (shared component)
+	subagentTracker       *ui.SubagentTracker // Subagent progress tracking
 
 	// Persist-as-we-go: row ID and latest per-turn snapshot of the in-progress
 	// assistant message. Written from engine callbacks on a non-UI goroutine;
@@ -380,6 +382,20 @@ type Model struct {
 	attemptCacheWrite     int
 	attemptUsageCalls     int
 	attemptUsageCommitted bool
+}
+
+func (m *Model) setStreamCancelRequested(requested bool) {
+	if m.streamCancelRequested == nil {
+		return
+	}
+	m.streamCancelRequested.Store(requested)
+}
+
+func (m *Model) isStreamCancelRequested() bool {
+	if m.streamCancelRequested == nil {
+		return false
+	}
+	return m.streamCancelRequested.Load()
 }
 
 // streamEventMsg wraps ui.StreamEvent for bubbletea
@@ -732,6 +748,7 @@ func NewWithFastProvider(cfg *config.Config, provider llm.Provider, fastProvider
 		showStats:                  showStats,
 		stats:                      stats,
 		streamPerf:                 newStreamPerfTelemetryFromEnv(),
+		streamCancelRequested:      &atomic.Bool{},
 		altScreen:                  altScreen,
 		mouseMode:                  chatMouseModeFromEnv(),
 		viewport:                   vp,
@@ -1677,6 +1694,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.salvageInterruptedAssistantMessage()
 				m.resetCurrentReasoning()
 				m.streaming = false
+				m.setStreamCancelRequested(false)
 				m.err = nil
 				var footerCmd tea.Cmd
 				if !errors.Is(ev.Err, context.Canceled) {
@@ -2040,6 +2058,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 			m.persistContextEstimate(context.Background())
 			m.streaming = false
+			m.setStreamCancelRequested(false)
 
 			// Flag to scroll to bottom after response completes (alt screen mode)
 			if m.altScreen {

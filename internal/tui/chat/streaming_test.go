@@ -287,6 +287,58 @@ func TestInterjectionDuringToolTurnDoesNotDoublePersist(t *testing.T) {
 	}
 }
 
+func TestListenForStreamEventsSync_CancelledClosedStreamUsesInterruptedCleanup(t *testing.T) {
+	store := &mockStore{}
+	sess := &session.Session{ID: "stream-cancel-closed", CreatedAt: time.Now()}
+	userMsg := session.NewMessage(sess.ID, llm.UserText("hello"), -1)
+	if err := store.AddMessage(context.Background(), sess.ID, userMsg); err != nil {
+		t.Fatalf("AddMessage(user): %v", err)
+	}
+
+	m := newTestChatModel(false)
+	m.store = store
+	m.sess = sess
+	m.messages = []session.Message{*userMsg}
+	m.streaming = true
+	m.setStreamCancelRequested(true)
+	m.streamStartTime = time.Now().Add(-2 * time.Second)
+	m.pendingAssistantSnapshot = llm.AssistantText("partial answer")
+	m.pendingAssistantSnapshotSet = true
+	m.width = 80
+
+	closed := make(chan ui.StreamEvent)
+	close(closed)
+	m.streamCoalescer = &streamEventCoalescer{ch: closed}
+
+	msg := m.listenForStreamEventsSync()
+	ev, ok := msg.(streamEventMsg)
+	if !ok {
+		t.Fatalf("listenForStreamEventsSync returned %T, want streamEventMsg", msg)
+	}
+	if ev.event.Type != ui.StreamEventError || !errors.Is(ev.event.Err, context.Canceled) {
+		t.Fatalf("listenForStreamEventsSync event = %#v, want canceled error", ev.event)
+	}
+
+	_, _ = m.Update(msg)
+
+	if len(m.messages) != 2 {
+		t.Fatalf("in-memory message count = %d, want 2", len(m.messages))
+	}
+	if got := m.messages[1].TextContent; got != "partial answer" {
+		t.Fatalf("in-memory assistant text = %q, want %q", got, "partial answer")
+	}
+	if len(store.statusUpdates) == 0 {
+		t.Fatal("expected interrupted status update")
+	}
+	last := store.statusUpdates[len(store.statusUpdates)-1]
+	if last.status != session.StatusInterrupted {
+		t.Fatalf("final status = %q, want %q", last.status, session.StatusInterrupted)
+	}
+	if m.isStreamCancelRequested() {
+		t.Fatal("expected cancellation flag to clear after interrupted cleanup")
+	}
+}
+
 func TestUpdate_StreamErrorSalvagesPartialAssistantReply(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "sessions.db")
 	store, err := session.NewStore(session.Config{Enabled: true, Path: dbPath})

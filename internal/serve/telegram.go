@@ -923,7 +923,12 @@ type telegramStoreOpQueue struct {
 	sessionID string
 	ops       chan telegramStoreOp
 	done      chan struct{}
+	closedCh  chan struct{}
 	once      sync.Once
+
+	mu        sync.Mutex
+	closed    bool
+	enqueueWG sync.WaitGroup
 }
 
 func newTelegramStoreOpQueue(mgr *telegramSessionMgr, sessionID string) *telegramStoreOpQueue {
@@ -932,6 +937,7 @@ func newTelegramStoreOpQueue(mgr *telegramSessionMgr, sessionID string) *telegra
 		sessionID: sessionID,
 		ops:       make(chan telegramStoreOp, 128),
 		done:      make(chan struct{}),
+		closedCh:  make(chan struct{}),
 	}
 	go q.run()
 	return q
@@ -949,11 +955,21 @@ func (q *telegramStoreOpQueue) enqueue(ctx context.Context, op string, fn func(c
 		return
 	}
 	storeOp := telegramStoreOp{ctx: ctx, op: op, fn: fn}
+
+	q.mu.Lock()
+	if q.closed {
+		q.mu.Unlock()
+		q.mgr.runStoreOpWithoutCancel(ctx, q.sessionID, op, fn)
+		return
+	}
+	q.enqueueWG.Add(1)
+	q.mu.Unlock()
+	defer q.enqueueWG.Done()
+
 	select {
 	case q.ops <- storeOp:
-	default:
-		log.Printf("[telegram] callback persistence queue full for %s; running %s asynchronously", q.sessionID, op)
-		go q.mgr.runStoreOpWithoutCancel(ctx, q.sessionID, op, fn)
+	case <-q.closedCh:
+		q.mgr.runStoreOpWithoutCancel(ctx, q.sessionID, op, fn)
 	}
 }
 
@@ -961,7 +977,16 @@ func (q *telegramStoreOpQueue) closeAndWait(ctx context.Context) {
 	if q == nil {
 		return
 	}
-	q.once.Do(func() { close(q.ops) })
+	q.once.Do(func() {
+		q.mu.Lock()
+		q.closed = true
+		close(q.closedCh)
+		q.mu.Unlock()
+		go func() {
+			q.enqueueWG.Wait()
+			close(q.ops)
+		}()
+	})
 	select {
 	case <-q.done:
 	case <-ctx.Done():

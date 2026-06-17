@@ -855,16 +855,21 @@ func runAsk(cmd *cobra.Command, args []string) error {
 		}
 
 		stats = adapter.Stats()
+		streamCtx, cancelStream := context.WithCancel(ctx)
+		defer cancelStream()
 		errChan := make(chan error, 1)
 		go func() {
-			stream, err := engine.Stream(ctx, req)
+			stream, err := engine.Stream(streamCtx, req)
 			if err != nil {
+				adapter.EmitErrorAndClose(err)
 				errChan <- err
 				return
 			}
 			defer stream.Close()
-			// ProcessStream handles all events and closes the channel when done
-			adapter.ProcessStream(ctx, stream)
+			// ProcessStream handles all events and closes the channel when done.
+			// streamCtx cancellation is how the foreground consumer aborts the
+			// producer if stdout/renderer output fails mid-stream.
+			adapter.ProcessStream(streamCtx, stream)
 			errChan <- nil
 		}()
 
@@ -872,20 +877,24 @@ func runAsk(cmd *cobra.Command, args []string) error {
 		switch {
 		case askJSON:
 			if err := emitSessionStarted(jsonEmit, jsonInfo); err != nil {
+				cancelStream()
+				<-errChan
 				return err
 			}
 			var writeErr error
-			jsonTotalTokens, jsonStreamErr, writeErr = streamJSONEvents(ctx, streamEvents, jsonEmit)
+			jsonTotalTokens, jsonStreamErr, writeErr = streamJSONEvents(streamCtx, streamEvents, jsonEmit)
 			err = writeErr
 			jsonFinalPending = true
 		case useRichRenderer:
-			err = runRenderer(ctx, streamEvents)
+			err = runRenderer(streamCtx, streamEvents)
 		default:
-			err = streamPlainText(ctx, streamEvents, askPorcelain)
+			err = streamPlainText(streamCtx, streamEvents, askPorcelain)
 		}
 		tools.ClearAskUserHooks() // Safe to call even if hooks weren't set
 
 		if err != nil {
+			cancelStream()
+			<-errChan
 			if askJSON && !isTerminalFlushed(err) {
 				_ = emitFatalError(jsonEmit, stats, err)
 				jsonFinalPending = false

@@ -13,7 +13,6 @@ import (
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/mcp"
-	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/tools"
 	"github.com/samsaffron/term-llm/internal/tui/inspector"
 	sessionsui "github.com/samsaffron/term-llm/internal/tui/sessions"
@@ -538,20 +537,9 @@ func (m *Model) handleKeyMsg(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m, cmd
 		}
 		if m.streaming && m.streamCancelFunc != nil {
-			// Flush buffered text on cancel
-			if m.smoothBuffer != nil {
-				m.smoothBuffer.FlushAll()
-				m.smoothBuffer.Reset()
-			}
+			m.setStreamCancelRequested(true)
+			m.phase = "Stopping..."
 			m.streamCancelFunc()
-			m.streaming = false
-			m.resetCurrentReasoning()
-
-			// Clear callbacks and update status
-			m.clearStreamCallbacks()
-			if m.store != nil {
-				_ = m.store.UpdateStatus(context.Background(), m.sess.ID, session.StatusInterrupted)
-			}
 
 			// Drain any pending interjection (discard since we're quitting)
 			_ = m.engine.DrainInterjection()
@@ -581,20 +569,9 @@ func (m *Model) handleKeyMsg(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	// Handle cancel during streaming (takes priority over clearing selection)
 	if key.Matches(msg, m.keyMap.Cancel) {
 		if m.streaming && m.streamCancelFunc != nil {
-			// Flush buffered text on cancel
-			if m.smoothBuffer != nil {
-				m.smoothBuffer.FlushAll()
-				m.smoothBuffer.Reset()
-			}
+			m.setStreamCancelRequested(true)
+			m.phase = "Stopping..."
 			m.streamCancelFunc()
-			m.streaming = false
-			m.resetCurrentReasoning()
-
-			// Clear callbacks and update status
-			m.clearStreamCallbacks()
-			if m.store != nil {
-				_ = m.store.UpdateStatus(context.Background(), m.sess.ID, session.StatusInterrupted)
-			}
 
 			// Recover pending interjection text into textarea
 			if residual := m.engine.DrainInterjection(); residual != "" {
@@ -1354,6 +1331,7 @@ func (m *Model) applyInterruptActionWithParts(interjectionID, content string, pa
 			// Parts already came from current composer images, so leave m.images as-is if still present.
 		}
 		if m.streamCancelFunc != nil {
+			m.setStreamCancelRequested(true)
 			m.streamCancelFunc()
 		}
 	case llm.InterruptInterject:

@@ -159,6 +159,7 @@ func TestResolveSettings_AgentSystemPromptIncludeUsesAgentDir(t *testing.T) {
 	defer func() { _ = os.Chdir(origWD) }()
 
 	tmp := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(tmp, "xdg-config"))
 	other := t.TempDir()
 	agentDir := filepath.Join(tmp, "agent")
 	if err := os.MkdirAll(filepath.Join(agentDir, "parts"), 0755); err != nil {
