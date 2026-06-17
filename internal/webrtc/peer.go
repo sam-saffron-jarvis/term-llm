@@ -510,17 +510,14 @@ func (p *peer) handleOffer(ctx context.Context, offer signalingMsg) {
 }
 
 func (p *peer) runDataChannel(ctx context.Context, dc *datachannel.DataChannel) {
+	dataChannelCtx, cancelDataChannelRequests := context.WithCancel(ctx)
+	defer cancelDataChannelRequests()
+
 	idle := time.NewTimer(p.cfg.IdleTimeout)
 	defer idle.Stop()
 
 	// Serialize writes — concurrent WriteDataChannel calls can interleave frames.
 	var sendMu sync.Mutex
-	send := func(text string) error {
-		sendMu.Lock()
-		defer sendMu.Unlock()
-		_, err := dc.WriteDataChannel([]byte(text), true)
-		return err
-	}
 
 	// Signal idle resets via channel so we avoid concurrent Timer.Reset / Timer.C access.
 	activity := make(chan struct{}, 1)
@@ -529,9 +526,19 @@ func (p *peer) runDataChannel(ctx context.Context, dc *datachannel.DataChannel) 
 	var stopOnce sync.Once
 	stopDataChannel := func() {
 		stopOnce.Do(func() {
+			cancelDataChannelRequests()
 			close(stop)
 			_ = dc.Close()
 		})
+	}
+	send := func(text string) error {
+		sendMu.Lock()
+		defer sendMu.Unlock()
+		_, err := dc.WriteDataChannel([]byte(text), true)
+		if err != nil {
+			stopDataChannel()
+		}
+		return err
 	}
 
 	var wg sync.WaitGroup
@@ -557,9 +564,9 @@ func (p *peer) runDataChannel(ctx context.Context, dc *datachannel.DataChannel) 
 			case activity <- struct{}{}:
 			default:
 			}
-			if !tryAcquireDataChannelRequestSlot(ctx, stop, requestSlots) {
+			if !tryAcquireDataChannelRequestSlot(dataChannelCtx, stop, requestSlots) {
 				select {
-				case <-ctx.Done():
+				case <-dataChannelCtx.Done():
 					return
 				case <-stop:
 					return
@@ -570,7 +577,7 @@ func (p *peer) runDataChannel(ctx context.Context, dc *datachannel.DataChannel) 
 					// streaming requests occupying every normal slot. Dispatch them
 					// synchronously to keep goroutine usage bounded while still letting
 					// them free a slot held by the stream they cancel.
-					p.dispatchRequest(ctx, send, data)
+					p.dispatchRequest(dataChannelCtx, send, data)
 					continue
 				}
 				sendBusyDataChannelRequest(send, data)
@@ -580,7 +587,7 @@ func (p *peer) runDataChannel(ctx context.Context, dc *datachannel.DataChannel) 
 			go func(data []byte) {
 				defer wg.Done()
 				defer func() { <-requestSlots }()
-				p.dispatchRequest(ctx, send, data)
+				p.dispatchRequest(dataChannelCtx, send, data)
 			}(data)
 		}
 	}()
@@ -593,6 +600,7 @@ func (p *peer) runDataChannel(ctx context.Context, dc *datachannel.DataChannel) 
 			wg.Wait()
 			return
 		case <-readDone:
+			stopDataChannel()
 			wg.Wait()
 			return
 		case <-activity:
@@ -638,7 +646,7 @@ func sendBusyDataChannelRequest(send func(string) error, raw []byte) {
 	if err := json.Unmarshal(raw, &frame); err != nil || frame.ID == "" {
 		return
 	}
-	sendDoneFrame(send, frame.ID, http.StatusServiceUnavailable)
+	_ = sendDoneFrame(send, frame.ID, http.StatusServiceUnavailable)
 }
 
 func (p *peer) isDataChannelCancelRequest(raw []byte) bool {
@@ -663,13 +671,13 @@ func (p *peer) dispatchRequest(ctx context.Context, send func(string) error, raw
 
 	// Security: reject invalid or out-of-scope paths.
 	if !p.validPath(frame.Path) {
-		sendDoneFrame(send, frame.ID, http.StatusBadRequest)
+		_ = sendDoneFrame(send, frame.ID, http.StatusBadRequest)
 		return
 	}
 
 	// Security: enforce body size limit before decoding.
 	if len(frame.Body) > maxFrameBytes {
-		sendDoneFrame(send, frame.ID, http.StatusRequestEntityTooLarge)
+		_ = sendDoneFrame(send, frame.ID, http.StatusRequestEntityTooLarge)
 		return
 	}
 
@@ -677,15 +685,18 @@ func (p *peer) dispatchRequest(ctx context.Context, send func(string) error, raw
 	if frame.Body != "" {
 		bodyBytes, err := base64.StdEncoding.DecodeString(frame.Body)
 		if err != nil {
-			sendDoneFrame(send, frame.ID, http.StatusBadRequest)
+			_ = sendDoneFrame(send, frame.ID, http.StatusBadRequest)
 			return
 		}
 		bodyReader = bytes.NewReader(bodyBytes)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, frame.Method, "http://localhost"+frame.Path, bodyReader)
+	reqCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(reqCtx, frame.Method, "http://localhost"+frame.Path, bodyReader)
 	if err != nil {
-		sendDoneFrame(send, frame.ID, http.StatusBadRequest)
+		_ = sendDoneFrame(send, frame.ID, http.StatusBadRequest)
 		return
 	}
 	for k, v := range frame.Headers {
@@ -700,7 +711,7 @@ func (p *peer) dispatchRequest(ctx context.Context, send func(string) error, raw
 		req.Header.Set(k, v)
 	}
 
-	w := newDCResponseWriter(frame.ID, send)
+	w := newDCResponseWriter(frame.ID, send, cancel)
 	p.handler.ServeHTTP(w, req)
 	w.finish()
 }
@@ -764,18 +775,17 @@ func (l *loggedConn) Write(b []byte) (int, error) {
 	return n, err
 }
 
-func sendDoneFrame(send func(string) error, id string, status int) {
+func sendDoneFrame(send func(string) error, id string, status int) error {
 	f := responseFrame{ID: id, Type: "done", Status: status}
 	data, _ := json.Marshal(f)
-	_ = send(string(data))
+	return send(string(data))
 }
 
-func sendChunkFrames(send func(string) error, id string, data string) {
+func sendChunkFrames(send func(string) error, id string, data string) error {
 	if data == "" {
 		f := responseFrame{ID: id, Type: "chunk", Data: ""}
 		enc, _ := json.Marshal(f)
-		_ = send(string(enc))
-		return
+		return send(string(enc))
 	}
 
 	for len(data) > 0 {
@@ -793,9 +803,12 @@ func sendChunkFrames(send func(string) error, id string, data string) {
 		}
 		f := responseFrame{ID: id, Type: "chunk", Data: data[:n]}
 		enc, _ := json.Marshal(f)
-		_ = send(string(enc))
+		if err := send(string(enc)); err != nil {
+			return err
+		}
 		data = data[n:]
 	}
+	return nil
 }
 
 // dcResponseWriter implements http.ResponseWriter and http.Flusher.
@@ -803,17 +816,32 @@ func sendChunkFrames(send func(string) error, id string, data string) {
 type dcResponseWriter struct {
 	id          string
 	send        func(string) error
+	cancel      context.CancelFunc
 	header      http.Header
 	status      int
 	headersSent bool
 	buf         bytes.Buffer
+	sendErr     error
 }
 
-func newDCResponseWriter(id string, send func(string) error) *dcResponseWriter {
-	return &dcResponseWriter{id: id, send: send, header: make(http.Header)}
+func newDCResponseWriter(id string, send func(string) error, cancel context.CancelFunc) *dcResponseWriter {
+	return &dcResponseWriter{id: id, send: send, cancel: cancel, header: make(http.Header)}
 }
 
 func (w *dcResponseWriter) Header() http.Header { return w.header }
+
+func (w *dcResponseWriter) failClosed(err error) error {
+	if err == nil {
+		return nil
+	}
+	if w.sendErr == nil {
+		w.sendErr = err
+		if w.cancel != nil {
+			w.cancel()
+		}
+	}
+	return w.sendErr
+}
 
 func (w *dcResponseWriter) WriteHeader(code int) {
 	if w.headersSent {
@@ -832,12 +860,15 @@ func (w *dcResponseWriter) WriteHeader(code int) {
 	}
 	f := responseFrame{ID: w.id, Type: "headers", Status: code, Headers: hdrs}
 	data, _ := json.Marshal(f)
-	_ = w.send(string(data))
+	_ = w.failClosed(w.send(string(data)))
 }
 
 func (w *dcResponseWriter) Write(b []byte) (int, error) {
 	if !w.headersSent {
 		w.WriteHeader(http.StatusOK)
+	}
+	if w.sendErr != nil {
+		return 0, w.sendErr
 	}
 	w.buf.Write(b)
 	// Flush complete lines immediately so streaming handlers (SSE) work in real time.
@@ -849,7 +880,9 @@ func (w *dcResponseWriter) Write(b []byte) (int, error) {
 		}
 		fragment := string(data[:idx+1])
 		w.buf.Next(idx + 1)
-		sendChunkFrames(w.send, w.id, fragment)
+		if err := w.failClosed(sendChunkFrames(w.send, w.id, fragment)); err != nil {
+			return len(b), err
+		}
 	}
 	return len(b), nil
 }
@@ -866,13 +899,18 @@ func (w *dcResponseWriter) Flush() {
 
 // finish flushes any remaining buffered data and is called after ServeHTTP returns.
 func (w *dcResponseWriter) finish() {
+	if w.sendErr != nil {
+		return
+	}
 	if w.buf.Len() > 0 {
-		sendChunkFrames(w.send, w.id, w.buf.String())
+		if err := w.failClosed(sendChunkFrames(w.send, w.id, w.buf.String())); err != nil {
+			return
+		}
 		w.buf.Reset()
 	}
 	status := w.status
 	if status == 0 {
 		status = http.StatusOK
 	}
-	sendDoneFrame(w.send, w.id, status)
+	_ = w.failClosed(sendDoneFrame(w.send, w.id, status))
 }
