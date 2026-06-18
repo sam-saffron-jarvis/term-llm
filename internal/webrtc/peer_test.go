@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
 	"testing"
@@ -264,6 +265,37 @@ func TestDispatchRequest_BodyDecodedAndForwarded(t *testing.T) {
 
 	if gotBody != bodyContent {
 		t.Errorf("body not forwarded correctly: got %q, want %q", gotBody, bodyContent)
+	}
+}
+
+func TestDispatchRequest_SendFailureCancelsHandlerContext(t *testing.T) {
+	handlerDone := make(chan struct{})
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		<-r.Context().Done()
+		close(handlerDone)
+	})
+	p := newTestPeer("/ui", handler)
+	raw := encodeRequest("req-send-fail", "GET", "/ui/v1/models", nil, "")
+
+	dispatchDone := make(chan struct{})
+	go func() {
+		defer close(dispatchDone)
+		p.dispatchRequest(context.Background(), func(string) error {
+			return errors.New("data channel closed")
+		}, raw)
+	}()
+
+	select {
+	case <-handlerDone:
+	case <-time.After(time.Second):
+		t.Fatal("handler context was not canceled after send failure")
+	}
+
+	select {
+	case <-dispatchDone:
+	case <-time.After(time.Second):
+		t.Fatal("dispatchRequest did not return after send failure canceled the handler")
 	}
 }
 
