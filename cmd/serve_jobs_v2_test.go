@@ -16,7 +16,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/tools"
 )
 
-func TestNewJobsV2ManagerDoesNotForceSingleConnectionForFileBackedDB(t *testing.T) {
+func TestNewJobsV2ManagerLimitsFileBackedDBConnections(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "jobs_v2.db")
 	mgr, err := newJobsV2Manager(dbPath, 0, nil)
 	if err != nil {
@@ -24,8 +24,8 @@ func TestNewJobsV2ManagerDoesNotForceSingleConnectionForFileBackedDB(t *testing.
 	}
 	defer func() { _ = mgr.Close() }()
 
-	if got := mgr.db.Stats().MaxOpenConnections; got != 0 {
-		t.Fatalf("MaxOpenConnections = %d, want 0 for file-backed DB", got)
+	if got := mgr.db.Stats().MaxOpenConnections; got != 1 {
+		t.Fatalf("MaxOpenConnections = %d, want 1 for file-backed DB", got)
 	}
 }
 

@@ -669,10 +669,12 @@ func newJobsV2ManagerWithNotifier(dbPath string, workers int, llmExec serveJobsE
 	if err != nil {
 		return nil, fmt.Errorf("open jobs db: %w", err)
 	}
-	if dbPath == ":memory:" {
-		// Required for :memory: databases: keep a single connection so schema/data persist.
-		db.SetMaxOpenConns(1)
-	}
+	// The jobs manager has concurrent scheduler, worker, and HTTP paths that all
+	// write through this handle. SQLite still allows only one writer at a time,
+	// so keep the pool at a single connection to avoid SQLITE_BUSY contention and
+	// duplicate per-connection page caches.
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
 	if err := execJobsV2Schema(db); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("init jobs schema: %w", err)
