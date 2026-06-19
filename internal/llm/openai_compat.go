@@ -15,6 +15,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/samsaffron/term-llm/internal/config"
 )
 
 // defaultHTTPClient is a shared HTTP client with transport-level timeouts.
@@ -47,9 +49,13 @@ type OpenAICompatProvider struct {
 	effort            string // reasoning effort: "low", "medium", "high", "xhigh", or ""
 	name              string // Display name: "Ollama", "LM Studio", etc.
 	headers           map[string]string
-	noStreamOptions   bool   // If true, don't send stream_options (for servers that reject it)
-	vllmThinking      bool   // If true, send vLLM thinking controls instead of reasoning_effort
-	vllmThinkingParam string // Optional chat_template_kwargs key override ("thinking" for DeepSeek, "enable_thinking" for Qwen)
+	noStreamOptions   bool                         // If true, don't send stream_options (for servers that reject it)
+	vllmThinking      bool                         // If true, send vLLM thinking controls instead of reasoning_effort
+	vllmThinkingParam string                       // Optional chat_template_kwargs key override ("thinking" for DeepSeek, "enable_thinking" for Qwen)
+	parseReasoning    *bool                        // Optional parse_reasoning request flag for compatible reasoning parsers
+	includeReasoning  *bool                        // Optional include_reasoning request flag for compatible reasoning parsers
+	thinkingParam     string                       // Optional chat_template_kwargs key set to true when reasoning effort is requested
+	modelConfigs      []config.ProviderModelConfig // Optional per-model aliases/metadata from config
 }
 
 func NewOpenAICompatProvider(baseURL, apiKey, model, name string) *OpenAICompatProvider {
@@ -105,6 +111,27 @@ func (p *OpenAICompatProvider) Credential() string {
 	return "api_key"
 }
 
+func (p *OpenAICompatProvider) SetReasoningParser(parseReasoning, includeReasoning *bool, thinkingParam string) {
+	p.parseReasoning = parseReasoning
+	p.includeReasoning = includeReasoning
+	p.thinkingParam = strings.TrimSpace(thinkingParam)
+}
+
+func (p *OpenAICompatProvider) SetModelConfigs(modelConfigs []config.ProviderModelConfig) {
+	p.modelConfigs = cloneProviderModelConfigs(modelConfigs)
+}
+
+func cloneProviderModelConfigs(modelConfigs []config.ProviderModelConfig) []config.ProviderModelConfig {
+	if len(modelConfigs) == 0 {
+		return nil
+	}
+	out := append([]config.ProviderModelConfig(nil), modelConfigs...)
+	for i := range out {
+		out[i].ReasoningEfforts = append([]string(nil), out[i].ReasoningEfforts...)
+	}
+	return out
+}
+
 func (p *OpenAICompatProvider) Capabilities() Capabilities {
 	return Capabilities{
 		NativeWebSearch:    false,
@@ -130,6 +157,8 @@ type oaiChatRequest struct {
 	StreamOptions       *oaiStreamOptions      `json:"stream_options,omitempty"`
 	ChatTemplateKwargs  map[string]interface{} `json:"chat_template_kwargs,omitempty"`
 	ThinkingTokenBudget *int                   `json:"thinking_token_budget,omitempty"`
+	ParseReasoning      *bool                  `json:"parse_reasoning,omitempty"`
+	IncludeReasoning    *bool                  `json:"include_reasoning,omitempty"`
 	VeniceParameters    map[string]interface{} `json:"venice_parameters,omitempty"`
 }
 
@@ -233,8 +262,52 @@ type oaiModelTopProvider struct {
 }
 
 type oaiModelPricing struct {
-	Prompt     string `json:"prompt"`
-	Completion string `json:"completion"`
+	Prompt     oaiFlexibleFloat `json:"prompt"`
+	Completion oaiFlexibleFloat `json:"completion"`
+}
+
+type oaiFlexibleFloat float64
+
+func (f *oaiFlexibleFloat) UnmarshalJSON(data []byte) error {
+	data = bytes.TrimSpace(data)
+	if len(data) == 0 || bytes.Equal(data, []byte("null")) {
+		*f = 0
+		return nil
+	}
+	var n float64
+	if len(data) > 0 && data[0] == '"' {
+		var s string
+		if err := json.Unmarshal(data, &s); err != nil {
+			return err
+		}
+		s = strings.TrimSpace(s)
+		if s == "" {
+			*f = 0
+			return nil
+		}
+		v, err := strconv.ParseFloat(s, 64)
+		if err != nil {
+			return err
+		}
+		n = v
+	} else {
+		if err := json.Unmarshal(data, &n); err != nil {
+			return err
+		}
+	}
+	*f = oaiFlexibleFloat(n)
+	return nil
+}
+
+func (f oaiFlexibleFloat) Float64() float64 {
+	return float64(f)
+}
+
+func normalizeCompatModelPrice(price float64) float64 {
+	if price > 0 && price < 0.01 {
+		return price * 1_000_000
+	}
+	return price
 }
 
 func (p *OpenAICompatProvider) makeRequest(ctx context.Context, method, endpoint string, body []byte) (*http.Response, error) {
@@ -336,14 +409,11 @@ func (p *OpenAICompatProvider) ListModels(ctx context.Context) ([]ModelInfo, err
 		} else {
 			info.InputLimit = InputLimitForProviderModel(strings.ToLower(p.name), m.ID)
 		}
-		// Parse OpenRouter-style pricing (per-token prices as strings)
+		// Parse pricing. OpenRouter reports per-token prices as small decimals;
+		// some OpenAI-compatible providers report per-million prices directly.
 		if m.Pricing != nil {
-			if v, err := strconv.ParseFloat(m.Pricing.Prompt, 64); err == nil {
-				info.InputPrice = v * 1_000_000 // Convert to per-million tokens
-			}
-			if v, err := strconv.ParseFloat(m.Pricing.Completion, 64); err == nil {
-				info.OutputPrice = v * 1_000_000
-			}
+			info.InputPrice = normalizeCompatModelPrice(m.Pricing.Prompt.Float64())
+			info.OutputPrice = normalizeCompatModelPrice(m.Pricing.Completion.Float64())
 		}
 		models[i] = info
 	}
@@ -481,8 +551,134 @@ func readSSEEventBytes(reader *bufio.Reader) (eventType string, data []byte, eof
 	}
 }
 
+type openAICompatResolvedModel struct {
+	Model            string
+	Effort           string
+	ParseReasoning   *bool
+	IncludeReasoning *bool
+	ThinkingParam    string
+	MaxOutputTokens  int
+}
+
+func (p *OpenAICompatProvider) resolveConfiguredModel(model string) openAICompatResolvedModel {
+	model = strings.TrimSpace(model)
+	resolved := openAICompatResolvedModel{
+		Model:            model,
+		ParseReasoning:   p.parseReasoning,
+		IncludeReasoning: p.includeReasoning,
+		ThinkingParam:    p.thinkingParam,
+	}
+
+	for _, entry := range p.modelConfigs {
+		for _, name := range compatModelNames(entry) {
+			if model == name {
+				resolved.Model = strings.TrimSpace(entry.ID)
+				if resolved.Model == "" {
+					resolved.Model = name
+				}
+				resolved.apply(entry)
+				return resolved
+			}
+		}
+	}
+	for _, entry := range p.modelConfigs {
+		for _, effort := range entry.ReasoningEfforts {
+			effort = strings.TrimSpace(effort)
+			if effort == "" {
+				continue
+			}
+			for _, name := range compatModelNames(entry) {
+				if model == name+"-"+effort {
+					resolved.Model = strings.TrimSpace(entry.ID)
+					if resolved.Model == "" {
+						resolved.Model = name
+					}
+					resolved.Effort = effort
+					resolved.apply(entry)
+					return resolved
+				}
+			}
+		}
+	}
+
+	parsedModel, parsedEffort := ParseModelEffort(model)
+	if parsedEffort != "" && p.hasConfiguredModelName(parsedModel) {
+		return resolved
+	}
+	resolved.Model = parsedModel
+	resolved.Effort = parsedEffort
+	return resolved
+}
+
+func (p *OpenAICompatProvider) hasConfiguredModelName(model string) bool {
+	model = strings.TrimSpace(model)
+	if model == "" {
+		return false
+	}
+	for _, entry := range p.modelConfigs {
+		for _, name := range compatModelNames(entry) {
+			if model == name {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func (r *openAICompatResolvedModel) apply(entry config.ProviderModelConfig) {
+	if entry.ParseReasoning != nil {
+		r.ParseReasoning = entry.ParseReasoning
+	}
+	if entry.IncludeReasoning != nil {
+		r.IncludeReasoning = entry.IncludeReasoning
+	}
+	if thinkingParam := strings.TrimSpace(entry.ThinkingParam); thinkingParam != "" {
+		r.ThinkingParam = thinkingParam
+	}
+	if entry.MaxOutputTokens > 0 {
+		r.MaxOutputTokens = entry.MaxOutputTokens
+	}
+}
+
+func clampCompatOutputTokens(requested int, model string, configuredLimit int) int {
+	if requested <= 0 {
+		return requested
+	}
+	if configuredLimit > 0 && requested > configuredLimit {
+		return configuredLimit
+	}
+	return ClampOutputTokens(requested, model)
+}
+
+func compatModelNames(entry config.ProviderModelConfig) []string {
+	seen := make(map[string]bool, 2)
+	var names []string
+	appendName := func(name string) {
+		name = strings.TrimSpace(name)
+		if name == "" || seen[name] {
+			return
+		}
+		seen[name] = true
+		names = append(names, name)
+	}
+	appendName(entry.Alias)
+	appendName(entry.ID)
+	return names
+}
+
 func (p *OpenAICompatProvider) Stream(ctx context.Context, req Request) (Stream, error) {
-	req.MaxOutputTokens = ClampOutputTokens(req.MaxOutputTokens, chooseModel(req.Model, p.model))
+	// Effort precedence: explicit request effort wins over model suffix, which wins over provider-level effort.
+	configuredModel := chooseModel(req.Model, p.model)
+	resolvedModel := p.resolveConfiguredModel(configuredModel)
+	model := resolvedModel.Model
+	effort := p.effort
+	if resolvedModel.Effort != "" {
+		effort = resolvedModel.Effort
+	}
+	if v := strings.TrimSpace(req.ReasoningEffort); v != "" {
+		effort = v
+	}
+	req.MaxOutputTokens = clampCompatOutputTokens(req.MaxOutputTokens, model, resolvedModel.MaxOutputTokens)
 	// Build messages and tools synchronously
 	messages := buildCompatMessages(req.Messages)
 	if p.vllmThinking {
@@ -495,17 +691,6 @@ func (p *OpenAICompatProvider) Stream(ctx context.Context, req Request) (Stream,
 	tools, err := buildCompatTools(req.Tools)
 	if err != nil {
 		return nil, err
-	}
-
-	// Effort precedence: req.ReasoningEffort wins over model suffix, which wins over provider-level effort.
-	reqModel, reqEffort := ParseModelEffort(req.Model)
-	model := chooseModel(reqModel, p.model)
-	effort := p.effort
-	if reqEffort != "" {
-		effort = reqEffort
-	}
-	if v := strings.TrimSpace(req.ReasoningEffort); v != "" {
-		effort = v
 	}
 
 	chatReq := oaiChatRequest{
@@ -522,6 +707,18 @@ func (p *OpenAICompatProvider) Stream(ctx context.Context, req Request) (Stream,
 		if budget > 0 {
 			chatReq.ThinkingTokenBudget = &budget
 		}
+	}
+	if resolvedModel.ParseReasoning != nil {
+		chatReq.ParseReasoning = resolvedModel.ParseReasoning
+	}
+	if resolvedModel.IncludeReasoning != nil {
+		chatReq.IncludeReasoning = resolvedModel.IncludeReasoning
+	}
+	if effort != "" && resolvedModel.ThinkingParam != "" {
+		if chatReq.ChatTemplateKwargs == nil {
+			chatReq.ChatTemplateKwargs = map[string]interface{}{}
+		}
+		chatReq.ChatTemplateKwargs[resolvedModel.ThinkingParam] = true
 	}
 	if !p.noStreamOptions {
 		chatReq.StreamOptions = &oaiStreamOptions{IncludeUsage: true}

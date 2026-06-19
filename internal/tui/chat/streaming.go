@@ -545,6 +545,7 @@ func (m *Model) startStream(content string) tea.Cmd {
 		serviceTier, serviceTierSet := m.currentServiceTier()
 		req := llm.Request{
 			SessionID:               m.sess.ID,
+			Model:                   strings.TrimSpace(m.modelName),
 			Messages:                messages,
 			Tools:                   reqTools,
 			Search:                  m.searchEnabled,

@@ -863,6 +863,66 @@ providers:
 	}
 }
 
+func TestLoadProviderModelObjectConfigs(t *testing.T) {
+	viper.Reset()
+	defer viper.Reset()
+
+	configHome := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", configHome)
+
+	configDir := filepath.Join(configHome, "term-llm")
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
+		t.Fatalf("mkdir config dir: %v", err)
+	}
+
+	configYAML := `default_provider: custom
+providers:
+  custom:
+    type: openai_compatible
+    base_url: https://api.example.com/v1
+    api_key: test-key
+    model: friendly-name
+    models:
+      - id: upstream/model-id
+        alias: friendly-name
+        context_window: 1048576
+        max_output_tokens: 131072
+        parse_reasoning: true
+        include_reasoning: true
+        thinking_param: enable_thinking
+        reasoning_efforts: [high, max]
+      - another-upstream-model
+`
+	if err := os.WriteFile(filepath.Join(configDir, "config.yaml"), []byte(configYAML), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	pc := cfg.Providers["custom"]
+	if got := pc.Models; len(got) != 4 || got[0] != "friendly-name" || got[1] != "another-upstream-model" || got[2] != "friendly-name-high" || got[3] != "friendly-name-max" {
+		t.Fatalf("Models = %#v, want aliases/string entries plus configured effort variants", got)
+	}
+	if len(pc.ModelConfigs) != 1 {
+		t.Fatalf("ModelConfigs len = %d, want 1", len(pc.ModelConfigs))
+	}
+	mc := pc.ModelConfigs[0]
+	if mc.ID != "upstream/model-id" || mc.Alias != "friendly-name" || mc.ContextWindow != 1048576 || mc.MaxOutputTokens != 131072 {
+		t.Fatalf("ModelConfig basic fields = %+v", mc)
+	}
+	if mc.ParseReasoning == nil || !*mc.ParseReasoning || mc.IncludeReasoning == nil || !*mc.IncludeReasoning {
+		t.Fatalf("reasoning parser flags = %v/%v, want true/true", mc.ParseReasoning, mc.IncludeReasoning)
+	}
+	if mc.ThinkingParam != "enable_thinking" {
+		t.Fatalf("ThinkingParam = %q, want enable_thinking", mc.ThinkingParam)
+	}
+	if len(mc.ReasoningEfforts) != 2 || mc.ReasoningEfforts[0] != "high" || mc.ReasoningEfforts[1] != "max" {
+		t.Fatalf("ReasoningEfforts = %#v, want [high max]", mc.ReasoningEfforts)
+	}
+}
+
 func TestGetDefaultsIncludeChatGPTImageModel(t *testing.T) {
 	defaults := GetDefaults()
 

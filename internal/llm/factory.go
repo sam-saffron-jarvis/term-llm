@@ -437,13 +437,24 @@ func createProviderFromConfig(name string, cfg *config.ProviderConfig) (Provider
 			p := NewVLLMProviderFull(baseURL, chatURL, cfg.ResolvedAPIKey, cfg.Model, displayName)
 			p.noStreamOptions = cfg.NoStreamOptions
 			p.vllmThinkingParam = cfg.VLLMThinkingParam
+			p.SetModelConfigs(cfg.ModelConfigs)
 			return p, nil
 		}
 		p := NewOpenAICompatProviderFull(baseURL, chatURL, cfg.ResolvedAPIKey, cfg.Model, displayName, nil)
 		p.noStreamOptions = cfg.NoStreamOptions
+		parseReasoning, includeReasoning, thinkingParam := openAICompatReasoningParserOptions(cfg)
+		p.SetReasoningParser(parseReasoning, includeReasoning, thinkingParam)
+		p.SetModelConfigs(cfg.ModelConfigs)
 		return p, nil
 
 	default:
 		return nil, fmt.Errorf("unknown provider type: %s", providerType)
 	}
+}
+
+func openAICompatReasoningParserOptions(cfg *config.ProviderConfig) (parseReasoning, includeReasoning *bool, thinkingParam string) {
+	if cfg == nil {
+		return nil, nil, ""
+	}
+	return cfg.ParseReasoning, cfg.IncludeReasoning, strings.TrimSpace(cfg.ThinkingParam)
 }

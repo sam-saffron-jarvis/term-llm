@@ -212,16 +212,82 @@ Use `base_url` when the standard `/chat/completions` path should be appended aut
 | `base_url` | string | Base URL (e.g., `http://localhost:11434/v1`). `/chat/completions` is appended automatically. |
 | `url` | string | Full chat completions URL, used as-is. Use this when your endpoint path differs from the standard. Supports `srv://` for DNS SRV discovery and `$()` for command-based resolution. |
 | `api_key` | string | API key. Supports `${ENV_VAR}`, `op://`, `file://`, and `$()` resolution. If omitted, term-llm tries `<PROVIDER_NAME>_API_KEY` from the environment. |
-| `model` | string | Default model name sent to the server. |
-| `models` | list | Optional list of model names for shell tab completion with `--provider name:<TAB>`. |
+| `model` | string | Default model name. For configured model objects, this may be either the upstream `id` or the friendly `alias`. |
+| `models` | list | Optional list for model pickers and shell completion. Entries may be strings or objects with `id`, optional `alias`, `context_window`, `max_output_tokens`, `parse_reasoning`, `include_reasoning`, `thinking_param`, and `reasoning_efforts`. |
 | `fast_model` | string | Lightweight model used for control-plane tasks (e.g., title generation) and the agent `model: fast` alias. This is separate from service-tier fast mode. Usually this is all you need. |
 | `fast_provider` | string | Optional provider key to use when the `fast_model` should run on a different configured provider than this one. |
 | `service_tier` | string | Optional Responses API service tier for built-in `openai` and `chatgpt` providers. Use `fast` or `priority` to request fast/priority service where the selected model supports it. Omit the field to send no service tier. |
 | `context_window` | int | Override context window size in tokens. Use this for self-hosted models not in the built-in token limit tables. |
 | `max_output_tokens` | int | Override maximum output tokens. Same use case as `context_window`. |
 | `no_stream_options` | bool | When `true`, don't send `stream_options` in the request. Use this for servers that reject the field. Default `false`; most OpenAI-compatible servers (vLLM, Ollama, LM Studio) support it and need it to report token usage. |
+| `parse_reasoning` | bool | Send `parse_reasoning` for OpenAI-compatible APIs that can parse inline model thinking into `reasoning_content` (for example Friendli). |
+| `include_reasoning` | bool | Send `include_reasoning`; useful with `parse_reasoning: true` when you want streamed `delta.reasoning_content` events. |
+| `thinking_param` | string | Generic OpenAI-compatible chat-template control. When a reasoning effort is selected (for example a `-high`/`-max` suffix), term-llm sends `chat_template_kwargs.<thinking_param>: true`. Friendli GLM-5.2 uses `enable_thinking`. |
 | `vllm_thinking_param` | string | `type: vllm` only. Override the chat-template thinking key when auto-detection is not possible: `enable_thinking` for Qwen-style templates, `thinking` for DeepSeek-style templates. |
 | `use_websocket` | bool | Reserved for providers with native Responses WebSocket support. Defaults to `true` only for built-in `openai` and `chatgpt`; OpenAI-compatible providers default to HTTP/SSE. |
+
+### Model object entries
+
+`models` may mix plain strings and objects. Plain strings are enough for autocomplete/model picker entries. Object entries are for endpoints where the model you want to type locally differs from the model ID the API expects, or where each model needs its own metadata.
+
+```yaml
+providers:
+  custom:
+    type: openai_compatible
+    base_url: https://api.example.com/v1
+    api_key: ${CUSTOM_API_KEY}
+    model: friendly-name
+    models:
+      - simple-upstream-model
+      - id: upstream/model-id
+        alias: friendly-name
+        context_window: 262144
+        max_output_tokens: 32768
+        # Optional: only set these for APIs/models that support them.
+        parse_reasoning: true
+        include_reasoning: true
+        thinking_param: enable_thinking
+        reasoning_efforts: [high, max]
+```
+
+| Model object field | Description |
+|---|---|
+| `id` | Upstream model ID sent in the API request. If `alias` is omitted, this is also the local name. |
+| `alias` | Friendly local name for CLI use, shell completion, and model picker display. The provider default `model` may be either `id` or `alias`. |
+| `context_window` | Per-model context window metadata. |
+| `max_output_tokens` | Per-model output token cap metadata; OpenAI-compatible requests clamp explicit `max_output_tokens` to this value. |
+| `parse_reasoning` | Per-model override for the provider-level `parse_reasoning` flag. |
+| `include_reasoning` | Per-model override for the provider-level `include_reasoning` flag. |
+| `thinking_param` | Per-model override for the provider-level `thinking_param` key. Sent as `chat_template_kwargs.<thinking_param>: true` only when a non-default effort is selected. |
+| `reasoning_efforts` | Exact suffixes to expose for this model, for example `[high, max]`. The bare model/alias remains the default and sends no `reasoning_effort`. |
+
+For `-p custom:friendly-name-max`, term-llm sends `model: upstream/model-id` plus `reasoning_effort: max`. If `reasoning_efforts` is empty or omitted, no effort-suffixed aliases are generated for that model.
+
+### Friendli reasoning
+
+Friendli is OpenAI-compatible, but reasoning-capable models such as GLM-5.2 need explicit parser flags to expose thinking as `reasoning_content` instead of leaving it inline. Configure those fields on the specific model entry:
+
+```yaml
+providers:
+  friendli:
+    type: openai_compatible
+    base_url: https://api.friendli.ai/serverless/v1
+    api_key: ${FRIENDLI_API_KEY}
+    model: glm52
+    models:
+      - id: zai-org/GLM-5.2
+        alias: glm52
+        context_window: 1048576
+        max_output_tokens: 131072
+        parse_reasoning: true
+        include_reasoning: true
+        thinking_param: enable_thinking
+        reasoning_efforts: [high, max]
+```
+
+With that config, effort suffixes are generated only from the declared `reasoning_efforts`. For example `-p friendli:glm52-max` sends `model: zai-org/GLM-5.2`, `reasoning_effort: max`, `parse_reasoning: true`, `include_reasoning: true`, and `chat_template_kwargs.enable_thinking: true`. The bare `-p friendli:glm52` sends no `reasoning_effort`; because only `high` and `max` are listed, term-llm does not offer `glm52-low` or `glm52-medium` completions.
+
+You can set the same reasoning-parser fields at the provider level as defaults, then override them per model object when different models on the same endpoint need different behavior.
 
 ### Full example
 

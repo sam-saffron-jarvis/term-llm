@@ -145,6 +145,12 @@ func (r *SpawnAgentRunner) runAgentInternal(ctx context.Context, agentName strin
 			if v.Models != nil {
 				v.Models = append([]string(nil), v.Models...)
 			}
+			if v.ModelConfigs != nil {
+				v.ModelConfigs = append([]config.ProviderModelConfig(nil), v.ModelConfigs...)
+				for i := range v.ModelConfigs {
+					v.ModelConfigs[i].ReasoningEfforts = append([]string(nil), v.ModelConfigs[i].ReasoningEfforts...)
+				}
+			}
 			// Deep copy pointer fields
 			if v.UseNativeSearch != nil {
 				tmp := *v.UseNativeSearch

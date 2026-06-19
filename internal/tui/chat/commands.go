@@ -779,6 +779,84 @@ func (m *Model) currentProviderAndModelForEffortCycle() (provider, model string)
 	return provider, model
 }
 
+func (m *Model) baseModelAndEffort(provider, model string) (string, string) {
+	if base, effort, _, ok := m.configuredModelEffort(provider, model); ok {
+		return base, effort
+	}
+	return llm.BaseModelAndEffortForProvider(provider, model)
+}
+
+func (m *Model) reasoningEffortsForModel(provider, model string) []string {
+	if _, _, efforts, ok := m.configuredModelEffort(provider, model); ok {
+		return efforts
+	}
+	return llm.ReasoningEffortsForProviderModel(provider, model)
+}
+
+func (m *Model) configuredModelEffort(provider, model string) (base, effort string, efforts []string, ok bool) {
+	if m == nil || m.config == nil {
+		return "", "", nil, false
+	}
+	pc, exists := m.config.Providers[strings.TrimSpace(provider)]
+	if !exists || len(pc.ModelConfigs) == 0 {
+		return "", "", nil, false
+	}
+	model = strings.TrimSpace(model)
+	if model == "" {
+		return "", "", nil, false
+	}
+	modelLower := strings.ToLower(model)
+	for _, entry := range pc.ModelConfigs {
+		efforts = normalizedModelReasoningEfforts(entry.ReasoningEfforts)
+		if len(efforts) == 0 {
+			continue
+		}
+		for _, name := range configuredModelNamesForEffort(entry) {
+			nameLower := strings.ToLower(name)
+			if modelLower == nameLower {
+				return name, "", efforts, true
+			}
+			for _, candidateEffort := range efforts {
+				suffix := "-" + strings.ToLower(candidateEffort)
+				if strings.HasSuffix(modelLower, suffix) && strings.TrimSuffix(modelLower, suffix) == nameLower {
+					return name, candidateEffort, efforts, true
+				}
+			}
+		}
+	}
+	return "", "", nil, false
+}
+
+func configuredModelNamesForEffort(entry config.ProviderModelConfig) []string {
+	seen := make(map[string]bool, 2)
+	var names []string
+	appendName := func(name string) {
+		name = strings.TrimSpace(name)
+		if name == "" || seen[name] {
+			return
+		}
+		seen[name] = true
+		names = append(names, name)
+	}
+	appendName(entry.DisplayName())
+	appendName(entry.ID)
+	return names
+}
+
+func normalizedModelReasoningEfforts(efforts []string) []string {
+	seen := make(map[string]bool, len(efforts))
+	out := make([]string, 0, len(efforts))
+	for _, effort := range efforts {
+		effort = strings.ToLower(strings.TrimSpace(effort))
+		if effort == "" || seen[effort] {
+			continue
+		}
+		seen[effort] = true
+		out = append(out, effort)
+	}
+	return out
+}
+
 func (m *Model) pendingStreamEffortStatus() (label string, applied bool, ok bool) {
 	if m == nil || m.pendingStreamModelSwitch == nil {
 		return "", false, false
@@ -788,7 +866,7 @@ func (m *Model) pendingStreamEffortStatus() (label string, applied bool, ok bool
 	if provider == "" || model == "" {
 		return "", false, false
 	}
-	_, effort := llm.BaseModelAndEffortForProvider(provider, model)
+	_, effort := m.baseModelAndEffort(provider, model)
 	if effort == "" {
 		effort = "default"
 	}
@@ -830,14 +908,14 @@ func (m *Model) cmdEffort(args []string) (tea.Model, tea.Cmd) {
 	}
 	if m.streaming && len(args) == 0 {
 		if queued, applied, ok := m.pendingStreamEffortStatus(); ok {
-			_, currentEffort := llm.BaseModelAndEffortForProvider(provider, model)
+			_, currentEffort := m.baseModelAndEffort(provider, model)
 			if applied {
 				currentEffort = queued
 			}
 			if currentEffort == "" {
 				currentEffort = "default"
 			}
-			efforts := llm.ReasoningEffortsForProviderModel(provider, model)
+			efforts := m.reasoningEffortsForModel(provider, model)
 			available := append(cloneStrings(efforts), "default")
 			queuedText := fmt.Sprintf("Queued: %s (applies at next model turn)", queued)
 			if applied {
@@ -847,7 +925,7 @@ func (m *Model) cmdEffort(args []string) (tea.Model, tea.Cmd) {
 		}
 	}
 
-	resolved := resolveEffortSwitch(provider, model, args)
+	resolved := m.resolveEffortSwitch(provider, model, args)
 	if m.streaming && resolved.already {
 		if m.pendingStreamModelSwitch != nil {
 			m.clearPendingStreamModelSwitch()
@@ -873,8 +951,8 @@ func (m *Model) cycleEffort() (tea.Model, tea.Cmd) {
 		return m.showFooterWarning("Cannot switch effort: no current provider/model is active.")
 	}
 
-	_, currentEffort := llm.BaseModelAndEffortForProvider(provider, model)
-	efforts := llm.ReasoningEffortsForProviderModel(provider, model)
+	_, currentEffort := m.baseModelAndEffort(provider, model)
+	efforts := m.reasoningEffortsForModel(provider, model)
 	if len(efforts) == 0 {
 		return m.showFooterWarning(fmt.Sprintf("Model %s:%s does not expose switchable reasoning efforts.", provider, model))
 	}
@@ -892,7 +970,7 @@ func (m *Model) cycleEffort() (tea.Model, tea.Cmd) {
 
 	draft := m.textarea.Value()
 	if m.streaming {
-		resolved := resolveEffortSwitch(provider, model, []string{next})
+		resolved := m.resolveEffortSwitch(provider, model, []string{next})
 		if !resolved.ok {
 			return m.showEffortResolutionMessage(resolved)
 		}
@@ -920,9 +998,9 @@ type effortSwitchResolution struct {
 	already     bool
 }
 
-func resolveEffortSwitch(provider, model string, args []string) effortSwitchResolution {
-	base, currentEffort := llm.BaseModelAndEffortForProvider(provider, model)
-	efforts := llm.ReasoningEffortsForProviderModel(provider, model)
+func (m *Model) resolveEffortSwitch(provider, model string, args []string) effortSwitchResolution {
+	base, currentEffort := m.baseModelAndEffort(provider, model)
+	efforts := m.reasoningEffortsForModel(provider, model)
 	if len(args) == 0 {
 		if len(efforts) == 0 {
 			return effortSwitchResolution{message: fmt.Sprintf("Model %s:%s does not expose switchable reasoning efforts.", provider, model), tone: "warning"}
@@ -985,7 +1063,7 @@ func (m *Model) showEffortResolutionMessage(resolved effortSwitchResolution) (te
 }
 
 func (m *Model) switchEffort(provider, model string, args []string, deferMarker bool) (tea.Model, tea.Cmd) {
-	resolved := resolveEffortSwitch(provider, model, args)
+	resolved := m.resolveEffortSwitch(provider, model, args)
 	if !resolved.ok {
 		return m.showEffortResolutionMessage(resolved)
 	}
@@ -996,7 +1074,56 @@ func (m *Model) switchEffortResolved(resolved effortSwitchResolution, deferMarke
 	if m.config == nil {
 		m.config = &config.Config{}
 	}
+	currentProvider, _ := m.currentProviderAndModel()
+	if strings.TrimSpace(currentProvider) == strings.TrimSpace(resolved.provider) {
+		return m.switchEffortStateOnly(resolved, deferMarker)
+	}
 	return m.switchModelWithOptions(resolved.provider+":"+resolved.targetModel, switchModelOptions{deferMarker: deferMarker})
+}
+
+func (m *Model) switchEffortStateOnly(resolved effortSwitchResolution, deferMarker bool) (tea.Model, tea.Cmd) {
+	oldProvider := strings.TrimSpace(m.providerKey)
+	if oldProvider == "" {
+		oldProvider = strings.TrimSpace(m.providerName)
+	}
+	oldModel := strings.TrimSpace(m.modelName)
+
+	m.clearPendingStreamModelSwitch()
+	if !deferMarker {
+		m.pendingModelSwitch = nil
+	}
+
+	m.providerKey = resolved.provider
+	m.modelName = resolved.targetModel
+	m.refreshEffectiveFastMode()
+
+	if m.sess != nil {
+		m.sess.ProviderKey = m.providerKey
+		m.sess.Model = resolved.targetModel
+		if m.store != nil {
+			_ = m.store.Update(context.Background(), m.sess)
+		}
+	}
+
+	m.recordCurrentModelUse()
+	m.setTextareaValue("")
+
+	if m.sess != nil && len(m.messages) > 0 {
+		marker := llm.ModelSwapMarker{
+			FromProvider: oldProvider,
+			FromModel:    oldModel,
+			ToProvider:   resolved.provider,
+			ToModel:      resolved.targetModel,
+			Status:       "started",
+		}
+		if deferMarker {
+			m.deferModelSwitchMarker(marker)
+		} else {
+			m.appendModelSwitchMarker(marker)
+		}
+	}
+
+	return m.showFooterMuted(fmt.Sprintf("Switched effort to %s for %s:%s. Next response will use the selected reasoning effort.", resolved.label, resolved.provider, resolved.targetModel))
 }
 
 func cloneStrings(values []string) []string {
@@ -1199,8 +1326,8 @@ func (m *Model) effortCompletionItems(commandPrefix, partial string) []Command {
 		return nil
 	}
 
-	base, _ := llm.BaseModelAndEffortForProvider(provider, model)
-	efforts := llm.ReasoningEffortsForProviderModel(provider, model)
+	base, _ := m.baseModelAndEffort(provider, model)
+	efforts := m.reasoningEffortsForModel(provider, model)
 	if len(efforts) == 0 {
 		return nil
 	}

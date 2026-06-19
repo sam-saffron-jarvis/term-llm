@@ -550,24 +550,37 @@ func prepareEffortShortcutTestModel(m *Model) {
 }
 
 func TestCycleEffortShortcutPreservesDraft(t *testing.T) {
-	m, store := newEffortCmdTestModel("openai", "gpt-5.4-low")
+	m, store := newEffortCmdTestModel("custom", "alias-model")
+	m.config.Providers["custom"] = config.ProviderConfig{
+		Type:  config.ProviderTypeOpenAICompat,
+		Model: "alias-model",
+		ModelConfigs: []config.ProviderModelConfig{{
+			ID:               "upstream/model-id",
+			Alias:            "alias-model",
+			ReasoningEfforts: []string{"high", "max"},
+		}},
+	}
 	prepareEffortShortcutTestModel(m)
 	m.messages = []session.Message{*session.NewMessage(m.sess.ID, llm.UserText("previous"), 0)}
 	m.setTextareaValue("half-written prompt")
+	activeEngine := m.engine
 
 	result, cmd := m.handleKeyMsg(tea.KeyPressMsg{Code: 'r', Mod: tea.ModCtrl})
 	rm := result.(*Model)
 	if cmd == nil {
 		t.Fatal("expected footer command")
 	}
-	if rm.modelName != "gpt-5.4-medium" {
-		t.Fatalf("modelName = %q, want gpt-5.4-medium; footer=%q", rm.modelName, rm.footerMessage)
+	if rm.modelName != "alias-model-high" {
+		t.Fatalf("modelName = %q, want alias-model-high; footer=%q", rm.modelName, rm.footerMessage)
 	}
 	if got := rm.textarea.Value(); got != "half-written prompt" {
 		t.Fatalf("draft = %q, want preserved draft", got)
 	}
-	if rm.sess.Model != "gpt-5.4-medium" || store.updated == nil {
+	if rm.sess.Model != "alias-model-high" || store.updated == nil {
 		t.Fatalf("session/store not updated: sess=%#v updated=%#v", rm.sess, store.updated)
+	}
+	if rm.engine != activeEngine {
+		t.Fatal("ctrl+r should update effort state without rebuilding the provider/engine")
 	}
 	if len(rm.messages) != 1 {
 		t.Fatalf("ctrl+r appended visible messages immediately: len=%d", len(rm.messages))
@@ -592,7 +605,7 @@ func TestCycleEffortShortcutPreservesDraft(t *testing.T) {
 	if !ok {
 		t.Fatalf("failed to parse deferred marker: %#v", markerMsg)
 	}
-	if marker.FromModel != "gpt-5.4-low" || marker.ToModel != "gpt-5.4-medium" {
+	if marker.FromModel != "alias-model" || marker.ToModel != "alias-model-high" {
 		t.Fatalf("unexpected deferred marker: %#v", marker)
 	}
 	if rm.pendingModelSwitch != nil {

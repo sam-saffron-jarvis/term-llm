@@ -26,3 +26,33 @@ func TestCreateProviderFromConfig_OpenAICompatRequiresProviderName(t *testing.T)
 		t.Fatalf("expected empty name guidance, got %v", err)
 	}
 }
+
+func TestOpenAICompatReasoningParserOptionsUsesOnlyExplicitConfig(t *testing.T) {
+	parseReasoning, includeReasoning, thinkingParam := openAICompatReasoningParserOptions(&config.ProviderConfig{
+		Type:    config.ProviderTypeOpenAICompat,
+		BaseURL: "https://example.invalid/v1",
+	})
+	if parseReasoning != nil || includeReasoning != nil || thinkingParam != "" {
+		t.Fatalf("reasoning options = %v/%v/%q, want nil/nil/empty", parseReasoning, includeReasoning, thinkingParam)
+	}
+}
+
+func TestOpenAICompatReasoningParserOptionsReadsExplicitConfig(t *testing.T) {
+	no := false
+	parseReasoning, includeReasoning, thinkingParam := openAICompatReasoningParserOptions(&config.ProviderConfig{
+		Type:             config.ProviderTypeOpenAICompat,
+		BaseURL:          "https://example.invalid/v1",
+		ParseReasoning:   &no,
+		IncludeReasoning: &no,
+		ThinkingParam:    "custom_thinking",
+	})
+	if parseReasoning == nil || *parseReasoning {
+		t.Fatalf("parseReasoning = %v, want false", parseReasoning)
+	}
+	if includeReasoning == nil || *includeReasoning {
+		t.Fatalf("includeReasoning = %v, want false", includeReasoning)
+	}
+	if thinkingParam != "custom_thinking" {
+		t.Fatalf("thinkingParam = %q, want custom_thinking", thinkingParam)
+	}
+}

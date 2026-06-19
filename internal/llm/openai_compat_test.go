@@ -12,6 +12,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/samsaffron/term-llm/internal/config"
 )
 
 func TestDefaultHTTPClient_HasNoOverallTimeout(t *testing.T) {
@@ -76,6 +78,143 @@ func TestOpenAICompatListModelsParsesOpenRouterContextLength(t *testing.T) {
 	}
 	if models[0].InputPrice != 1 || models[0].OutputPrice != 2 {
 		t.Fatalf("prices = %g/%g, want 1/2", models[0].InputPrice, models[0].OutputPrice)
+	}
+}
+
+func TestOpenAICompatListModelsParsesNumericPricing(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/models" {
+			t.Fatalf("unexpected path %q", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"data":[{"id":"zai-org/GLM-5.2","pricing":{"prompt":1.4,"completion":4.4}}]}`)
+	}))
+	defer server.Close()
+
+	provider := NewOpenAICompatProvider(server.URL, "", "", "NumericCompat")
+	models, err := provider.ListModels(context.Background())
+	if err != nil {
+		t.Fatalf("ListModels: %v", err)
+	}
+	if len(models) != 1 {
+		t.Fatalf("models len = %d, want 1", len(models))
+	}
+	if models[0].InputPrice != 1.4 || models[0].OutputPrice != 4.4 {
+		t.Fatalf("prices = %g/%g, want 1.4/4.4", models[0].InputPrice, models[0].OutputPrice)
+	}
+}
+
+func TestOpenAICompatStream_ExplicitReasoningParserConfigAndProviderModelEffort(t *testing.T) {
+	requestCh := make(chan oaiChatRequest, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/chat/completions" {
+			t.Fatalf("unexpected path %q", r.URL.Path)
+		}
+		var got oaiChatRequest
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		requestCh <- got
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w,
+			"data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"thinking\"}}]}\n\n"+
+				"data: {\"choices\":[{\"delta\":{\"content\":\"answer\"}}]}\n\n"+
+				"data: [DONE]\n\n",
+		)
+	}))
+	defer server.Close()
+
+	provider := NewOpenAICompatProvider(server.URL, "", "zai-org/GLM-5.2-max", "Compat")
+	provider.SetReasoningParser(boolPtr(true), boolPtr(true), "enable_thinking")
+	stream, err := provider.Stream(context.Background(), Request{Messages: []Message{UserText("hello")}})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	for {
+		event, err := stream.Recv()
+		if err != nil {
+			t.Fatalf("Recv: %v", err)
+		}
+		if event.Type == EventDone {
+			break
+		}
+	}
+
+	select {
+	case got := <-requestCh:
+		if got.Model != "zai-org/GLM-5.2" {
+			t.Fatalf("model = %q, want zai-org/GLM-5.2", got.Model)
+		}
+		if got.ReasoningEffort != "max" {
+			t.Fatalf("reasoning_effort = %q, want max", got.ReasoningEffort)
+		}
+		if got.ParseReasoning == nil || !*got.ParseReasoning || got.IncludeReasoning == nil || !*got.IncludeReasoning {
+			t.Fatalf("parse/include reasoning = %v/%v, want true/true", got.ParseReasoning, got.IncludeReasoning)
+		}
+		if got.ChatTemplateKwargs == nil || got.ChatTemplateKwargs["enable_thinking"] != true {
+			t.Fatalf("chat_template_kwargs = %#v, want enable_thinking true", got.ChatTemplateKwargs)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for request")
+	}
+}
+
+func TestOpenAICompatStream_ModelConfigAliasEffortAndParser(t *testing.T) {
+	requestCh := make(chan oaiChatRequest, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var got oaiChatRequest
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		requestCh <- got
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n\ndata: [DONE]\n\n")
+	}))
+	defer server.Close()
+
+	provider := NewOpenAICompatProvider(server.URL, "", "glm52-max", "Compat")
+	provider.SetModelConfigs([]config.ProviderModelConfig{{
+		ID:               "zai-org/GLM-5.2",
+		Alias:            "glm52",
+		ParseReasoning:   boolPtr(true),
+		IncludeReasoning: boolPtr(true),
+		ThinkingParam:    "enable_thinking",
+		MaxOutputTokens:  2048,
+		ReasoningEfforts: []string{"high", "max"},
+	}})
+	stream, err := provider.Stream(context.Background(), Request{Messages: []Message{UserText("hello")}, MaxOutputTokens: 9999})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	for {
+		event, err := stream.Recv()
+		if err != nil {
+			t.Fatalf("Recv: %v", err)
+		}
+		if event.Type == EventDone {
+			break
+		}
+	}
+
+	select {
+	case got := <-requestCh:
+		if got.Model != "zai-org/GLM-5.2" {
+			t.Fatalf("model = %q, want zai-org/GLM-5.2", got.Model)
+		}
+		if got.ReasoningEffort != "max" {
+			t.Fatalf("reasoning_effort = %q, want max", got.ReasoningEffort)
+		}
+		if got.MaxTokens == nil || *got.MaxTokens != 2048 {
+			t.Fatalf("max_tokens = %v, want 2048", got.MaxTokens)
+		}
+		if got.ParseReasoning == nil || !*got.ParseReasoning || got.IncludeReasoning == nil || !*got.IncludeReasoning {
+			t.Fatalf("parse/include reasoning = %v/%v, want true/true", got.ParseReasoning, got.IncludeReasoning)
+		}
+		if got.ChatTemplateKwargs == nil || got.ChatTemplateKwargs["enable_thinking"] != true {
+			t.Fatalf("chat_template_kwargs = %#v, want enable_thinking true", got.ChatTemplateKwargs)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for request")
 	}
 }
 

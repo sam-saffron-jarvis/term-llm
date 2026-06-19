@@ -5,9 +5,11 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strings"
 
+	mapstructure "github.com/go-viper/mapstructure/v2"
 	"github.com/samsaffron/term-llm/internal/credentials"
 	"github.com/spf13/viper"
 	"gopkg.in/yaml.v3"
@@ -79,24 +81,47 @@ type FileUploadConfig struct {
 	MaxTextEmbedBytes  int64    `mapstructure:"max_text_embed_bytes" yaml:"max_text_embed_bytes,omitempty"`
 }
 
+// ProviderModelConfig describes a configured model entry. A model can be a
+// simple string in YAML (stored in ProviderConfig.Models) or an object with
+// metadata here. Alias is the friendly name exposed in pickers/completions;
+// ID is the upstream model string sent to the provider.
+type ProviderModelConfig struct {
+	ID               string   `mapstructure:"id" yaml:"id,omitempty"`
+	Alias            string   `mapstructure:"alias" yaml:"alias,omitempty"`
+	ContextWindow    int      `mapstructure:"context_window" yaml:"context_window,omitempty"`
+	MaxOutputTokens  int      `mapstructure:"max_output_tokens" yaml:"max_output_tokens,omitempty"`
+	ParseReasoning   *bool    `mapstructure:"parse_reasoning" yaml:"parse_reasoning,omitempty"`
+	IncludeReasoning *bool    `mapstructure:"include_reasoning" yaml:"include_reasoning,omitempty"`
+	ThinkingParam    string   `mapstructure:"thinking_param" yaml:"thinking_param,omitempty"`
+	ReasoningEfforts []string `mapstructure:"reasoning_efforts" yaml:"reasoning_efforts,omitempty"`
+}
+
+func (m ProviderModelConfig) DisplayName() string {
+	if alias := strings.TrimSpace(m.Alias); alias != "" {
+		return alias
+	}
+	return strings.TrimSpace(m.ID)
+}
+
 // ProviderConfig is a unified configuration for any provider
 type ProviderConfig struct {
 	// Type of provider - inferred from key name for built-ins, required for custom
 	Type ProviderType `mapstructure:"type"`
 
 	// Common fields
-	APIKey       string            `mapstructure:"api_key"`
-	Model        string            `mapstructure:"model"`
-	FastModel    string            `mapstructure:"fast_model"`    // Lightweight model for control-plane tasks
-	FastProvider string            `mapstructure:"fast_provider"` // Optional provider key override for FastModel
-	ServiceTier  string            `mapstructure:"service_tier"`  // Optional model service tier (e.g. "fast"/"priority" for ChatGPT)
-	Models       []string          `mapstructure:"models"`        // Available models for autocomplete
-	Reasoning    string            `mapstructure:"reasoning"`     // "auto"/empty, "enabled", or "disabled" for suffix-based reasoning efforts
-	Credentials  string            `mapstructure:"credentials"`   // "api_key", "codex", "gemini-cli"
-	Env          map[string]string `mapstructure:"env"`           // Extra subprocess env vars for providers that shell out (e.g. claude-bin)
-	EnableHooks  bool              `mapstructure:"enable_hooks"`  // Opt in to Claude Code hooks for claude-bin (disabled by default)
-	UseWebSocket bool              `mapstructure:"use_websocket"` // Enable Responses-over-WebSocket for providers that support it
-	FileUpload   *FileUploadConfig `mapstructure:"file_upload"`   // Optional upload/native-file support overrides
+	APIKey       string                `mapstructure:"api_key"`
+	Model        string                `mapstructure:"model"`
+	FastModel    string                `mapstructure:"fast_model"`    // Lightweight model for control-plane tasks
+	FastProvider string                `mapstructure:"fast_provider"` // Optional provider key override for FastModel
+	ServiceTier  string                `mapstructure:"service_tier"`  // Optional model service tier (e.g. "fast"/"priority" for ChatGPT)
+	Models       []string              `mapstructure:"models"`        // Available model names/aliases for autocomplete
+	ModelConfigs []ProviderModelConfig `mapstructure:"-"`             // Metadata for object entries in models
+	Reasoning    string                `mapstructure:"reasoning"`     // "auto"/empty, "enabled", or "disabled" for suffix-based reasoning efforts
+	Credentials  string                `mapstructure:"credentials"`   // "api_key", "codex", "gemini-cli"
+	Env          map[string]string     `mapstructure:"env"`           // Extra subprocess env vars for providers that shell out (e.g. claude-bin)
+	EnableHooks  bool                  `mapstructure:"enable_hooks"`  // Opt in to Claude Code hooks for claude-bin (disabled by default)
+	UseWebSocket bool                  `mapstructure:"use_websocket"` // Enable Responses-over-WebSocket for providers that support it
+	FileUpload   *FileUploadConfig     `mapstructure:"file_upload"`   // Optional upload/native-file support overrides
 
 	// Search behavior - nil means auto (use native if available)
 	UseNativeSearch *bool `mapstructure:"use_native_search"`
@@ -110,6 +135,9 @@ type ProviderConfig struct {
 	URL               string `mapstructure:"url"`                 // Full URL - used as-is without appending endpoint
 	NoStreamOptions   bool   `mapstructure:"no_stream_options"`   // Don't send stream_options (for servers that reject it)
 	VLLMThinkingParam string `mapstructure:"vllm_thinking_param"` // vLLM chat_template_kwargs key: "enable_thinking" (Qwen) or "thinking" (DeepSeek)
+	ParseReasoning    *bool  `mapstructure:"parse_reasoning"`     // Send parse_reasoning for OpenAI-compatible reasoning parsers
+	IncludeReasoning  *bool  `mapstructure:"include_reasoning"`   // Send include_reasoning when parse_reasoning is enabled
+	ThinkingParam     string `mapstructure:"thinking_param"`      // chat_template_kwargs key to set true when reasoning effort is requested
 
 	// OpenRouter specific
 	AppURL   string `mapstructure:"app_url"`
@@ -828,9 +856,10 @@ func Load() (*Config, error) {
 	}
 
 	var cfg Config
-	if err := viper.Unmarshal(&cfg); err != nil {
+	if err := viper.Unmarshal(&cfg, viper.DecodeHook(providerModelsDecodeHook())); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal config: %w", err)
 	}
+	applyProviderModelConfigs(&cfg, providerModelConfigsFromViper(viper.GetViper()))
 	markReasoningConfigPresence(&cfg.Reasoning, viper.GetViper())
 
 	if err := overlayProviderEnvFromRawConfig(&cfg); err != nil {
@@ -854,6 +883,280 @@ func Load() (*Config, error) {
 	resolveSearchCredentials(&cfg.Search)
 
 	return &cfg, nil
+}
+
+func providerModelsDecodeHook() mapstructure.DecodeHookFunc {
+	stringSliceType := reflect.TypeOf([]string{})
+	return func(from reflect.Type, to reflect.Type, data any) (any, error) {
+		if to != stringSliceType || from.Kind() != reflect.Slice {
+			return data, nil
+		}
+
+		value := reflect.ValueOf(data)
+		if !value.IsValid() {
+			return data, nil
+		}
+		hasObject := false
+		for i := 0; i < value.Len(); i++ {
+			if _, ok := mapFromAny(value.Index(i).Interface()); ok {
+				hasObject = true
+				break
+			}
+		}
+		if !hasObject {
+			return data, nil
+		}
+
+		models := make([]string, 0, value.Len())
+		for i := 0; i < value.Len(); i++ {
+			model, ok := modelDisplayStringFromAny(value.Index(i).Interface())
+			if !ok {
+				return data, fmt.Errorf("models entries must be strings or objects with id/alias")
+			}
+			if model != "" {
+				models = append(models, model)
+			}
+		}
+		return models, nil
+	}
+}
+
+func modelDisplayStringFromAny(raw any) (string, bool) {
+	switch v := raw.(type) {
+	case string:
+		return strings.TrimSpace(v), true
+	default:
+		m, ok := mapFromAny(raw)
+		if !ok {
+			return "", false
+		}
+		alias := stringFromMap(m, "alias")
+		if alias != "" {
+			return alias, true
+		}
+		id := stringFromMap(m, "id")
+		if id == "" {
+			id = stringFromMap(m, "model")
+		}
+		return id, id != ""
+	}
+}
+
+func providerModelConfigsFromViper(v *viper.Viper) map[string][]ProviderModelConfig {
+	if v == nil {
+		return nil
+	}
+	providers := v.GetStringMap("providers")
+	if len(providers) == 0 {
+		return nil
+	}
+	out := make(map[string][]ProviderModelConfig)
+	for providerName, rawProvider := range providers {
+		providerMap, ok := mapFromAny(rawProvider)
+		if !ok {
+			continue
+		}
+		modelsRaw, ok := lookupMapValue(providerMap, "models")
+		if !ok {
+			continue
+		}
+		configs := providerModelConfigsFromAny(modelsRaw)
+		if len(configs) > 0 {
+			out[providerName] = configs
+		}
+	}
+	return out
+}
+
+func providerModelConfigsFromAny(raw any) []ProviderModelConfig {
+	value := reflect.ValueOf(raw)
+	if !value.IsValid() || value.Kind() != reflect.Slice {
+		return nil
+	}
+	var configs []ProviderModelConfig
+	for i := 0; i < value.Len(); i++ {
+		m, ok := mapFromAny(value.Index(i).Interface())
+		if !ok {
+			continue
+		}
+		cfg := providerModelConfigFromMap(m)
+		if cfg.ID == "" && cfg.Alias == "" {
+			continue
+		}
+		configs = append(configs, cfg)
+	}
+	return configs
+}
+
+func providerModelConfigFromMap(m map[string]any) ProviderModelConfig {
+	return ProviderModelConfig{
+		ID:               firstNonEmpty(stringFromMap(m, "id"), stringFromMap(m, "model")),
+		Alias:            stringFromMap(m, "alias"),
+		ContextWindow:    intFromMap(m, "context_window"),
+		MaxOutputTokens:  intFromMap(m, "max_output_tokens"),
+		ParseReasoning:   boolPtrFromMap(m, "parse_reasoning"),
+		IncludeReasoning: boolPtrFromMap(m, "include_reasoning"),
+		ThinkingParam:    stringFromMap(m, "thinking_param"),
+		ReasoningEfforts: stringSliceFromMap(m, "reasoning_efforts"),
+	}
+}
+
+func applyProviderModelConfigs(cfg *Config, modelConfigs map[string][]ProviderModelConfig) {
+	if cfg == nil || len(modelConfigs) == 0 {
+		return
+	}
+	for providerName, entries := range modelConfigs {
+		pc, ok := cfg.Providers[providerName]
+		if !ok {
+			continue
+		}
+		pc.ModelConfigs = entries
+		seen := make(map[string]bool, len(pc.Models)+len(entries))
+		models := make([]string, 0, len(pc.Models)+len(entries))
+		appendModel := func(model string) {
+			model = strings.TrimSpace(model)
+			if model == "" || seen[model] {
+				return
+			}
+			seen[model] = true
+			models = append(models, model)
+		}
+		for _, model := range pc.Models {
+			appendModel(model)
+		}
+		for _, entry := range entries {
+			name := entry.DisplayName()
+			appendModel(name)
+			for _, effort := range entry.ReasoningEfforts {
+				effort = strings.TrimSpace(effort)
+				if name != "" && effort != "" {
+					appendModel(name + "-" + effort)
+				}
+			}
+		}
+		pc.Models = models
+		cfg.Providers[providerName] = pc
+	}
+}
+
+func mapFromAny(raw any) (map[string]any, bool) {
+	switch m := raw.(type) {
+	case map[string]any:
+		return m, true
+	case map[any]any:
+		out := make(map[string]any, len(m))
+		for key, value := range m {
+			out[fmt.Sprint(key)] = value
+		}
+		return out, true
+	default:
+		return nil, false
+	}
+}
+
+func lookupMapValue(m map[string]any, key string) (any, bool) {
+	if v, ok := m[key]; ok {
+		return v, true
+	}
+	lower := strings.ToLower(key)
+	for k, v := range m {
+		if strings.ToLower(k) == lower {
+			return v, true
+		}
+	}
+	return nil, false
+}
+
+func stringFromMap(m map[string]any, key string) string {
+	v, ok := lookupMapValue(m, key)
+	if !ok || v == nil {
+		return ""
+	}
+	if s, ok := v.(string); ok {
+		return strings.TrimSpace(s)
+	}
+	return strings.TrimSpace(fmt.Sprint(v))
+}
+
+func intFromMap(m map[string]any, key string) int {
+	v, ok := lookupMapValue(m, key)
+	if !ok || v == nil {
+		return 0
+	}
+	switch n := v.(type) {
+	case int:
+		return n
+	case int64:
+		return int(n)
+	case int32:
+		return int(n)
+	case uint64:
+		return int(n)
+	case uint:
+		return int(n)
+	case float64:
+		return int(n)
+	case float32:
+		return int(n)
+	default:
+		return 0
+	}
+}
+
+func boolPtrFromMap(m map[string]any, key string) *bool {
+	v, ok := lookupMapValue(m, key)
+	if !ok || v == nil {
+		return nil
+	}
+	if b, ok := v.(bool); ok {
+		return &b
+	}
+	return nil
+}
+
+func stringSliceFromMap(m map[string]any, key string) []string {
+	v, ok := lookupMapValue(m, key)
+	if !ok || v == nil {
+		return nil
+	}
+	switch s := v.(type) {
+	case []string:
+		return trimStringSlice(s)
+	default:
+		value := reflect.ValueOf(v)
+		if !value.IsValid() || value.Kind() != reflect.Slice {
+			return nil
+		}
+		out := make([]string, 0, value.Len())
+		for i := 0; i < value.Len(); i++ {
+			item := strings.TrimSpace(fmt.Sprint(value.Index(i).Interface()))
+			if item != "" {
+				out = append(out, item)
+			}
+		}
+		return out
+	}
+}
+
+func trimStringSlice(values []string) []string {
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value != "" {
+			out = append(out, value)
+		}
+	}
+	return out
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func markReasoningConfigPresence(reasoning *ReasoningConfig, v *viper.Viper) {
@@ -1996,24 +2299,29 @@ var KnownKeys = map[string]bool{
 
 // KnownProviderKeys contains valid keys for provider configurations
 var KnownProviderKeys = map[string]bool{
-	"type":              true,
-	"api_key":           true,
-	"model":             true,
-	"fast_model":        true,
-	"fast_provider":     true,
-	"service_tier":      true,
-	"models":            true,
-	"credentials":       true,
-	"env":               true,
-	"use_native_search": true,
-	"file_upload":       true,
-	"base_url":          true,
-	"url":               true,
-	"app_url":           true,
-	"app_title":         true,
-	"context_window":    true,
-	"max_output_tokens": true,
-	"enable_hooks":      true,
+	"type":                true,
+	"api_key":             true,
+	"model":               true,
+	"fast_model":          true,
+	"fast_provider":       true,
+	"service_tier":        true,
+	"models":              true,
+	"credentials":         true,
+	"env":                 true,
+	"use_native_search":   true,
+	"file_upload":         true,
+	"base_url":            true,
+	"url":                 true,
+	"app_url":             true,
+	"app_title":           true,
+	"context_window":      true,
+	"max_output_tokens":   true,
+	"no_stream_options":   true,
+	"vllm_thinking_param": true,
+	"parse_reasoning":     true,
+	"include_reasoning":   true,
+	"thinking_param":      true,
+	"enable_hooks":        true,
 	// Ollama-native options
 	"think":            true,
 	"top_k":            true,

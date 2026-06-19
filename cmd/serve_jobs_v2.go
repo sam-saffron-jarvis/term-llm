@@ -2793,6 +2793,12 @@ func cloneConfigForServeJob(src *config.Config) *config.Config {
 			if pc.Models != nil {
 				pc.Models = append([]string(nil), pc.Models...)
 			}
+			if pc.ModelConfigs != nil {
+				pc.ModelConfigs = append([]config.ProviderModelConfig(nil), pc.ModelConfigs...)
+				for i := range pc.ModelConfigs {
+					pc.ModelConfigs[i].ReasoningEfforts = append([]string(nil), pc.ModelConfigs[i].ReasoningEfforts...)
+				}
+			}
 			if pc.UseNativeSearch != nil {
 				v := *pc.UseNativeSearch
 				pc.UseNativeSearch = &v

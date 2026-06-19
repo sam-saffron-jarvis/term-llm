@@ -441,7 +441,7 @@ func printProvidersSection(defaults map[string]any, rawKeys map[string]bool, raw
 
 // printProviderConfig prints a single provider's config
 func printProviderConfig(name string, defaults map[string]any, rawKeys map[string]bool, rawValues map[string]string, hasFile bool, cfg *config.Config) {
-	providerKeys := []string{"type", "model", "fast_model", "fast_provider", "service_tier", "models", "api_key", "credentials", "base_url", "url", "app_url", "app_title", "use_native_search", "context_window", "max_output_tokens"}
+	providerKeys := []string{"type", "model", "fast_model", "fast_provider", "service_tier", "models", "api_key", "credentials", "base_url", "url", "app_url", "app_title", "use_native_search", "context_window", "max_output_tokens", "parse_reasoning", "include_reasoning", "thinking_param"}
 
 	// Check if provider has any values
 	hasValues := false
@@ -1326,6 +1326,9 @@ func configKeyCompletions(toComplete string) []string {
 		keySet["providers."+name+".reasoning"] = true
 		keySet["providers."+name+".credentials"] = true
 		keySet["providers."+name+".api_key"] = true
+		keySet["providers."+name+".parse_reasoning"] = true
+		keySet["providers."+name+".include_reasoning"] = true
+		keySet["providers."+name+".thinking_param"] = true
 	}
 
 	// Convert to sorted slice
