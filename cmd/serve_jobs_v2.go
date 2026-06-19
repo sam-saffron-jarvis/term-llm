@@ -1447,7 +1447,7 @@ func (m *jobsV2Manager) finishRun(runID string, status jobsV2RunStatus, result j
 		"input_tokens":  result.InputTokens,
 		"output_tokens": result.OutputTokens,
 	})
-	m.notifyRunDone(runID, status, result, exitReason, truncated, errText)
+	m.notifyRunDoneAsync(run, status, result, exitReason, truncated, errText)
 
 	if status == jobsV2RunFailed || status == jobsV2RunTimedOut {
 		job, err := m.GetJob(run.JobID)
@@ -1484,22 +1484,29 @@ func jobsV2NotifyTerminalStatus(status jobsV2RunStatus) bool {
 	}
 }
 
-func (m *jobsV2Manager) notifyRunDone(runID string, status jobsV2RunStatus, result jobsV2RunResult, exitReason string, truncated bool, errText string) {
+func (m *jobsV2Manager) notifyRunDoneAsync(run jobsV2Run, status jobsV2RunStatus, result jobsV2RunResult, exitReason string, truncated bool, errText string) {
 	if m == nil || m.notifyDone == nil || !jobsV2NotifyTerminalStatus(status) {
 		return
 	}
-	run, err := m.GetRun(runID)
-	if err != nil {
-		return
-	}
-	job, err := m.GetJob(run.JobID)
-	if err != nil {
+	m.wg.Add(1)
+	go func() {
+		defer m.wg.Done()
+		job, err := m.GetJob(run.JobID)
+		if err != nil {
+			return
+		}
+		m.notifyRunDone(run, job, status, result, exitReason, truncated, errText)
+	}()
+}
+
+func (m *jobsV2Manager) notifyRunDone(run jobsV2Run, job jobsV2Job, status jobsV2RunStatus, result jobsV2RunResult, exitReason string, truncated bool, errText string) {
+	if m == nil || m.notifyDone == nil || !jobsV2NotifyTerminalStatus(status) {
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if err := m.notifyDone(ctx, run, job, status, result, exitReason, truncated, errText); err != nil {
-		_ = m.addRunEvent(runID, "notify_failed", "completion notification failed", map[string]any{"error": err.Error()})
+		_ = m.addRunEvent(run.ID, "notify_failed", "completion notification failed", map[string]any{"error": err.Error()})
 	}
 }
 
