@@ -2223,27 +2223,58 @@ func (s *SQLiteStore) ReplaceMessages(ctx context.Context, sessionID string, mes
 			}
 		}
 
-		// Update session's updated_at and clear any stale compaction boundary. A
+		// Update session activity metadata and clear any stale compaction boundary. A
 		// replace is a full-history rewrite; keeping an old compaction_seq could make
-		// future active-context loads start past the end of the rewritten rows.
+		// future active-context loads start past the end of the rewritten rows. Compute
+		// activity from the persisted rows after the rewrite so unchanged prefixes keep
+		// their original created_at values instead of freshly rebuilt snapshot times.
 		now := time.Now()
-		if s.hasCompactionSeq && s.hasCompactionCount {
-			if _, err := tx.ExecContext(ctx, "UPDATE sessions SET updated_at = ?, compaction_seq = -1, compaction_count = 0 WHERE id = ?",
-				now, sessionID); err != nil {
-				return fmt.Errorf("update session timestamp: %w", err)
-			}
-		} else if s.hasCompactionSeq {
-			if _, err := tx.ExecContext(ctx, "UPDATE sessions SET updated_at = ?, compaction_seq = -1 WHERE id = ?",
-				now, sessionID); err != nil {
-				return fmt.Errorf("update session timestamp: %w", err)
-			}
-		} else if _, err := tx.ExecContext(ctx, "UPDATE sessions SET updated_at = ? WHERE id = ?",
-			now, sessionID); err != nil {
-			return fmt.Errorf("update session timestamp: %w", err)
+		if err := s.updateReplaceMessagesSessionMetadata(ctx, tx, sessionID, now); err != nil {
+			return err
 		}
 
 		return tx.Commit()
 	})
+}
+
+func (s *SQLiteStore) updateReplaceMessagesSessionMetadata(ctx context.Context, tx *sql.Tx, sessionID string, now time.Time) error {
+	setClauses := []string{
+		"updated_at = ?",
+		"user_turns = (SELECT COUNT(*) FROM messages WHERE session_id = ? AND role = 'user')",
+	}
+	args := []any{now, sessionID}
+
+	if s.hasLastUserMessageAt {
+		// Preserve existing user-activity semantics: every persisted user row counts,
+		// including any internal context-summary user rows that ReplaceMessages is
+		// asked to make part of the complete transcript.
+		setClauses = append(setClauses, "last_user_message_at = (SELECT MAX(created_at) FROM messages WHERE session_id = ? AND role = 'user')")
+		args = append(args, sessionID)
+	}
+	if s.hasLastMessageAt {
+		// last_message_at drives visible conversation activity and matches
+		// insertMessageAndBumpSession: user/assistant rows count unless they are
+		// retained compaction-tail context.
+		visibleTailClause := ""
+		if s.hasMessageCompactionTail {
+			visibleTailClause = " AND COALESCE(compaction_tail, FALSE) = FALSE"
+		}
+		setClauses = append(setClauses, "last_message_at = (SELECT MAX(created_at) FROM messages WHERE session_id = ? AND role IN ('user', 'assistant')"+visibleTailClause+")")
+		args = append(args, sessionID)
+	}
+	if s.hasCompactionSeq {
+		setClauses = append(setClauses, "compaction_seq = -1")
+	}
+	if s.hasCompactionCount {
+		setClauses = append(setClauses, "compaction_count = 0")
+	}
+
+	args = append(args, sessionID)
+	query := "UPDATE sessions SET " + strings.Join(setClauses, ", ") + " WHERE id = ?"
+	if _, err := tx.ExecContext(ctx, query, args...); err != nil {
+		return fmt.Errorf("update session replacement metadata: %w", err)
+	}
+	return nil
 }
 
 func prepareReplacementMessageParts(messages []Message) ([]string, error) {

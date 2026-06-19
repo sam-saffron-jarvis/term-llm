@@ -982,6 +982,79 @@ func TestSQLiteStoreReplaceMessagesPreservesUnchangedPrefix(t *testing.T) {
 	}
 }
 
+func TestSQLiteStoreReplaceMessagesRecomputesActivityMetadata(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+
+	store, err := NewSQLiteStore(DefaultConfig())
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+	sess := &Session{ID: NewID(), Provider: "test", Model: "test-model", Mode: ModeChat}
+	if err := store.Create(ctx, sess); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	base := time.Now().UTC().Add(-2 * time.Hour).Truncate(time.Second)
+	messages := []Message{
+		*NewMessage(sess.ID, llm.UserText("first user"), 0),
+		*NewMessage(sess.ID, llm.AssistantText("first assistant"), 1),
+		*NewMessage(sess.ID, llm.Message{Role: llm.RoleTool, Parts: []llm.Part{{Type: llm.PartText, Text: "tool output"}}}, 2),
+		*NewMessage(sess.ID, llm.UserText("second user"), 3),
+	}
+	for i := range messages {
+		messages[i].CreatedAt = base.Add(time.Duration(i+1) * time.Second)
+	}
+	if err := store.ReplaceMessages(ctx, sess.ID, messages); err != nil {
+		t.Fatalf("initial ReplaceMessages: %v", err)
+	}
+
+	userTurns, lastUserAt, lastMessageAt := queryReplaceActivityMetadata(t, store, sess.ID)
+	if userTurns != 2 {
+		t.Fatalf("user_turns after initial replace = %d, want 2", userTurns)
+	}
+	wantLastUser := base.Add(4 * time.Second)
+	if !lastUserAt.Valid || !lastUserAt.Time.Equal(wantLastUser) {
+		t.Fatalf("last_user_message_at after initial replace = %v (valid %v), want %v", lastUserAt.Time, lastUserAt.Valid, wantLastUser)
+	}
+	if !lastMessageAt.Valid || !lastMessageAt.Time.Equal(wantLastUser) {
+		t.Fatalf("last_message_at after initial replace = %v (valid %v), want %v", lastMessageAt.Time, lastMessageAt.Valid, wantLastUser)
+	}
+
+	for i := range messages {
+		messages[i].CreatedAt = base.Add(time.Duration(i+100) * time.Second)
+	}
+	if err := store.ReplaceMessages(ctx, sess.ID, messages); err != nil {
+		t.Fatalf("unchanged-prefix ReplaceMessages: %v", err)
+	}
+
+	userTurns, lastUserAt, lastMessageAt = queryReplaceActivityMetadata(t, store, sess.ID)
+	if userTurns != 2 {
+		t.Fatalf("user_turns after unchanged-prefix replace = %d, want 2", userTurns)
+	}
+	if !lastUserAt.Valid || !lastUserAt.Time.Equal(wantLastUser) {
+		t.Fatalf("last_user_message_at after unchanged-prefix replace = %v (valid %v), want preserved %v", lastUserAt.Time, lastUserAt.Valid, wantLastUser)
+	}
+	if !lastMessageAt.Valid || !lastMessageAt.Time.Equal(wantLastUser) {
+		t.Fatalf("last_message_at after unchanged-prefix replace = %v (valid %v), want preserved %v", lastMessageAt.Time, lastMessageAt.Valid, wantLastUser)
+	}
+}
+
+func queryReplaceActivityMetadata(t *testing.T, store *SQLiteStore, sessionID string) (int, sql.NullTime, sql.NullTime) {
+	t.Helper()
+	var userTurns int
+	var lastUserAt, lastMessageAt sql.NullTime
+	if err := store.db.QueryRow(`
+		SELECT user_turns, last_user_message_at, last_message_at
+		FROM sessions
+		WHERE id = ?`, sessionID).Scan(&userTurns, &lastUserAt, &lastMessageAt); err != nil {
+		t.Fatalf("query replacement activity metadata: %v", err)
+	}
+	return userTurns, lastUserAt, lastMessageAt
+}
+
 func TestSQLiteStoreReplaceMessagesFallsBackForDuplicateSequences(t *testing.T) {
 	t.Setenv("XDG_DATA_HOME", t.TempDir())
 

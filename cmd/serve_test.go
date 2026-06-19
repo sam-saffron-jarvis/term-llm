@@ -1567,6 +1567,75 @@ func TestPopulateResponsesToolResultNames_FallsBackToStoreForUnresolvedNames(t *
 	}
 }
 
+type pagedResponsesToolNameStore struct {
+	*serveRuntimeTestStore
+	pageCalls int
+}
+
+func (s *pagedResponsesToolNameStore) GetMessagesPageDescending(ctx context.Context, sessionID string, beforeSeq, limit int) ([]session.Message, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.pageCalls++
+	msgs := s.messages[sessionID]
+	out := make([]session.Message, 0)
+	if limit > 0 {
+		out = make([]session.Message, 0, limit)
+	}
+	for i := len(msgs) - 1; i >= 0; i-- {
+		if beforeSeq > 0 && msgs[i].Sequence >= beforeSeq {
+			continue
+		}
+		out = append(out, msgs[i])
+		if limit > 0 && len(out) >= limit {
+			break
+		}
+	}
+	return out, nil
+}
+
+func TestPopulateResponsesToolResultNames_UsesReversePagedStoreLookup(t *testing.T) {
+	messages := []llm.Message{{
+		Role: llm.RoleTool,
+		Parts: []llm.Part{{
+			Type: llm.PartToolResult,
+			ToolResult: &llm.ToolResult{
+				ID: "call_older",
+			},
+		}},
+	}}
+	base := newServeRuntimeTestStore()
+	store := &pagedResponsesToolNameStore{serveRuntimeTestStore: base}
+	for i := 0; i < 300; i++ {
+		msg := llm.AssistantText(fmt.Sprintf("filler-%d", i))
+		if i == 42 {
+			msg = llm.Message{
+				Role: llm.RoleAssistant,
+				Parts: []llm.Part{{
+					Type: llm.PartToolCall,
+					ToolCall: &llm.ToolCall{
+						ID:   "call_older",
+						Name: "grep",
+					},
+				}},
+			}
+		}
+		store.messages["sess-paged"] = append(store.messages["sess-paged"], *session.NewMessage("sess-paged", msg, i))
+	}
+	srv := &serveServer{store: store}
+
+	srv.populateResponsesToolResultNames(context.Background(), "sess-paged", nil, messages)
+
+	if got := messages[0].Parts[0].ToolResult.Name; got != "grep" {
+		t.Fatalf("tool result name = %q, want %q", got, "grep")
+	}
+	if store.pageCalls < 2 {
+		t.Fatalf("GetMessagesPageDescending calls = %d, want a reverse-paged scan", store.pageCalls)
+	}
+	if store.getMessagesCalls != 0 {
+		t.Fatalf("GetMessages calls = %d, want 0 when reverse pager is available", store.getMessagesCalls)
+	}
+}
+
 func TestParseChatMessages_DeveloperDoesNotSuppressServerSystemPrompt(t *testing.T) {
 	msgs, replaceHistory, err := parseChatMessages([]chatMessage{
 		{Role: "developer", Content: json.RawMessage(`"Be concise"`)},

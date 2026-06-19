@@ -585,6 +585,51 @@ func (rt *serveRuntime) appendMessages(ctx context.Context, sessionID string, me
 	return written
 }
 
+func (rt *serveRuntime) persistTurnAccounting(ctx context.Context, persisted bool, sessionID string, messages []llm.Message, metrics llm.TurnMetrics) {
+	if !persisted || rt.store == nil || rt.sessionMeta == nil || strings.TrimSpace(sessionID) == "" {
+		return
+	}
+	if !isModelTurnCompletion(messages, metrics) {
+		return
+	}
+	if err := rt.store.UpdateMetrics(ctx, sessionID, 1, metrics.ToolCalls, metrics.InputTokens, metrics.OutputTokens, metrics.CachedInputTokens, metrics.CacheWriteTokens); err != nil {
+		log.Printf("[serve] session UpdateMetrics failed for %s: %v", sessionID, err)
+	} else {
+		rt.sessionMeta.LLMTurns++
+		rt.sessionMeta.ToolCalls += metrics.ToolCalls
+		rt.sessionMeta.InputTokens += metrics.InputTokens
+		rt.sessionMeta.OutputTokens += metrics.OutputTokens
+		rt.sessionMeta.CachedInputTokens += metrics.CachedInputTokens
+		rt.sessionMeta.CacheWriteTokens += metrics.CacheWriteTokens
+	}
+	if rt.engine == nil {
+		return
+	}
+	total, count := rt.engine.ContextEstimateBaseline()
+	if total <= 0 || count <= 0 {
+		return
+	}
+	if err := rt.store.UpdateContextEstimate(ctx, sessionID, total, count); err != nil {
+		log.Printf("[serve] session UpdateContextEstimate failed for %s: %v", sessionID, err)
+		return
+	}
+	rt.sessionMeta.LastTotalTokens = total
+	rt.sessionMeta.LastMessageCount = count
+}
+
+func isModelTurnCompletion(messages []llm.Message, metrics llm.TurnMetrics) bool {
+	if metrics.InputTokens != 0 || metrics.OutputTokens != 0 || metrics.CachedInputTokens != 0 || metrics.CacheWriteTokens != 0 || metrics.ToolCalls != 0 {
+		return true
+	}
+	for _, msg := range messages {
+		switch msg.Role {
+		case llm.RoleAssistant, llm.RoleTool:
+			return true
+		}
+	}
+	return false
+}
+
 func (rt *serveRuntime) persistStatus(ctx context.Context, sessionID string, status session.SessionStatus) {
 	if rt.store == nil || sessionID == "" {
 		return
@@ -1105,21 +1150,25 @@ func (rt *serveRuntime) run(ctx context.Context, stateful bool, replaceHistory b
 	// Turn callback: upsert the assistant row if present as first element, then
 	// plain-append the rest (tool results or interjections). Reset pending at
 	// end of turn.
-	rt.engine.SetTurnCompletedCallback(func(cbCtx context.Context, _ int, msgs []llm.Message, _ llm.TurnMetrics) error {
-		producedMu.Lock()
-		defer producedMu.Unlock()
-		appendStart := 0
-		if len(msgs) > 0 && msgs[0].Role == llm.RoleAssistant {
-			upsertPendingAssistantLocked(cbCtx, msgs[0], !pendingAssistantTextPersisted)
-			appendStart = 1
-		}
-		if appendStart < len(msgs) {
-			produced = append(produced, msgs[appendStart:]...)
-			updateStateAndAppendLocked(cbCtx)
-		}
-		pendingAssistantIdx = -1
-		pendingAssistantMsgID = 0
-		pendingAssistantTextPersisted = false
+	rt.engine.SetTurnCompletedCallback(func(cbCtx context.Context, _ int, msgs []llm.Message, metrics llm.TurnMetrics) error {
+		func() {
+			producedMu.Lock()
+			defer producedMu.Unlock()
+			appendStart := 0
+			if len(msgs) > 0 && msgs[0].Role == llm.RoleAssistant {
+				upsertPendingAssistantLocked(cbCtx, msgs[0], !pendingAssistantTextPersisted)
+				appendStart = 1
+			}
+			if appendStart < len(msgs) {
+				produced = append(produced, msgs[appendStart:]...)
+				updateStateAndAppendLocked(cbCtx)
+			}
+			pendingAssistantIdx = -1
+			pendingAssistantMsgID = 0
+			pendingAssistantTextPersisted = false
+		}()
+
+		rt.persistTurnAccounting(cbCtx, persisted, req.SessionID, msgs, metrics)
 		return nil
 	})
 	defer rt.engine.SetTurnCompletedCallback(nil)

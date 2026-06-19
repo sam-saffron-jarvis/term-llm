@@ -391,6 +391,47 @@ func (s *serveServer) handleResolvedResponses(w http.ResponseWriter, r *http.Req
 }
 
 func (s *serveServer) populateResponsesToolResultNames(ctx context.Context, sessionID string, runtime *serveRuntime, messages []llm.Message) {
+	missing := missingResponsesToolResultNames(messages)
+	if len(missing) == 0 {
+		return
+	}
+
+	names := make(map[string]string, len(missing))
+	collectParts := func(parts []llm.Part) bool {
+		for _, part := range parts {
+			if part.Type != llm.PartToolCall || part.ToolCall == nil {
+				continue
+			}
+			id := strings.TrimSpace(part.ToolCall.ID)
+			if id == "" || !missing[id] || names[id] != "" {
+				continue
+			}
+			if name := strings.TrimSpace(part.ToolCall.Name); name != "" {
+				names[id] = name
+			}
+		}
+		return len(names) == len(missing)
+	}
+	collectHistory := func(history []llm.Message) bool {
+		for i := len(history) - 1; i >= 0; i-- {
+			if collectParts(history[i].Parts) {
+				return true
+			}
+		}
+		return len(names) == len(missing)
+	}
+
+	if runtime != nil && collectHistory(runtime.snapshotHistory()) {
+		applyResponsesToolResultNames(messages, names)
+		return
+	}
+	if len(names) < len(missing) && s.store != nil && sessionID != "" {
+		s.collectResponsesToolCallNamesFromStore(ctx, sessionID, collectParts)
+	}
+	applyResponsesToolResultNames(messages, names)
+}
+
+func missingResponsesToolResultNames(messages []llm.Message) map[string]bool {
 	missing := map[string]bool{}
 	for _, msg := range messages {
 		for _, part := range msg.Parts {
@@ -404,51 +445,50 @@ func (s *serveServer) populateResponsesToolResultNames(ctx context.Context, sess
 			missing[id] = true
 		}
 	}
-	if len(missing) == 0 {
-		return
-	}
+	return missing
+}
 
-	names := map[string]string{}
-	collectParts := func(parts []llm.Part) {
-		for _, part := range parts {
-			if part.Type != llm.PartToolCall || part.ToolCall == nil {
-				continue
-			}
-			id := strings.TrimSpace(part.ToolCall.ID)
-			if id == "" || !missing[id] || names[id] != "" {
-				continue
-			}
-			if name := strings.TrimSpace(part.ToolCall.Name); name != "" {
-				names[id] = name
-			}
-		}
-	}
-	collect := func(history []llm.Message) {
-		for i := len(history) - 1; i >= 0; i-- {
-			collectParts(history[i].Parts)
-			if len(names) == len(missing) {
+const responsesToolNameLookupPageSize = 128
+
+func (s *serveServer) collectResponsesToolCallNamesFromStore(ctx context.Context, sessionID string, collectParts func([]llm.Part) bool) {
+	if pager, ok := s.store.(session.MessagesDescendingPager); ok {
+		beforeSeq := 0
+		for {
+			page, err := pager.GetMessagesPageDescending(ctx, sessionID, beforeSeq, responsesToolNameLookupPageSize)
+			if err != nil || len(page) == 0 {
 				return
 			}
+			for i := range page {
+				if collectParts(page[i].Parts) {
+					return
+				}
+			}
+			if len(page) < responsesToolNameLookupPageSize {
+				return
+			}
+			nextBeforeSeq := page[len(page)-1].Sequence
+			if nextBeforeSeq <= 0 || (beforeSeq > 0 && nextBeforeSeq >= beforeSeq) {
+				return
+			}
+			beforeSeq = nextBeforeSeq
 		}
 	}
 
-	if runtime != nil {
-		collect(runtime.snapshotHistory())
+	stored, err := s.store.GetMessages(ctx, sessionID, 0, 0)
+	if err != nil {
+		return
 	}
-	if len(names) < len(missing) && s.store != nil && sessionID != "" {
-		if stored, err := s.store.GetMessages(ctx, sessionID, 0, 0); err == nil {
-			for i := len(stored) - 1; i >= 0; i-- {
-				collectParts(stored[i].Parts)
-				if len(names) == len(missing) {
-					break
-				}
-			}
+	for i := len(stored) - 1; i >= 0; i-- {
+		if collectParts(stored[i].Parts) {
+			return
 		}
 	}
+}
+
+func applyResponsesToolResultNames(messages []llm.Message, names map[string]string) {
 	if len(names) == 0 {
 		return
 	}
-
 	for msgIndex := range messages {
 		for partIndex := range messages[msgIndex].Parts {
 			part := &messages[msgIndex].Parts[partIndex]
