@@ -354,10 +354,25 @@ term-llm serve hub</code></pre>
       return `'${s}'`;
     };
     const copyText = async (text, label) => {
-      await navigator.clipboard.writeText(text);
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        await navigator.clipboard.writeText(text);
+      } else {
+        const ta = document.createElement('textarea');
+        ta.value = text;
+        ta.setAttribute('readonly', '');
+        ta.style.position = 'fixed';
+        ta.style.left = '-9999px';
+        document.body.appendChild(ta);
+        ta.select();
+        try {
+          if (!document.execCommand('copy')) throw new Error('clipboard copy unavailable');
+        } finally {
+          document.body.removeChild(ta);
+        }
+      }
       registrationHelpStatus.textContent = `Copied ${label}.`;
     };
-    const currentHubURL = () => new URL('/', window.location.href).href;
+    const currentHubURL = () => window.location.href.replace(/[?#].*$/, '').replace(/\/?$/, '/');
     const buildRegistrationCommand = (hubURL) => `export HUB_URL=${shellQuote(hubURL)}
 export HUB_REGISTRATION_TOKEN="<copy registration token from above>"
 export NODE_TOKEN="$(openssl rand -hex 32)"
@@ -419,6 +434,10 @@ term-llm serve web \\
     const showModal = (show) => {
       modal.classList.toggle('hidden', !show);
       status.textContent = '';
+      if (!show && registrationTokenRevealed) {
+        registrationTokenRevealed = false;
+        updateRegistrationTokenDisplay();
+      }
       if (show) nameInput.focus();
     };
     document.getElementById('addNodeBtn').addEventListener('click', () => showModal(true));

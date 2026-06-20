@@ -214,6 +214,14 @@ func TestHubRegistrationInfoRequiresHubAuthAndNoStores(t *testing.T) {
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("cross-site status = %d, want 403", rec.Code)
 	}
+
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/api/registration-info", nil)
+	req.Header.Set("Authorization", "Bearer hub-secret")
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusMethodNotAllowed || rec.Header().Get("Allow") != "GET" {
+		t.Fatalf("method status=%d allow=%q, want 405 Allow: GET", rec.Code, rec.Header().Get("Allow"))
+	}
 }
 
 func TestHubIndexShowsRegistrationHelpWithoutEmbeddingToken(t *testing.T) {
@@ -255,6 +263,27 @@ func TestHubRegistrationInfoDisabledOmitsToken(t *testing.T) {
 	}
 	if strings.Contains(rec.Body.String(), "registration_token") {
 		t.Fatalf("disabled response should omit registration_token: %s", rec.Body.String())
+	}
+}
+
+func TestHubRegistrationInfoWithTokenButNoStoreOmitsToken(t *testing.T) {
+	s := newHubServer(hub.NewRegistry(), nil)
+	s.registrationToken = "reg-secret"
+
+	rec := httptest.NewRecorder()
+	s.handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/registration-info", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%q", rec.Code, rec.Body.String())
+	}
+	var info hubRegistrationInfo
+	if err := json.Unmarshal(rec.Body.Bytes(), &info); err != nil {
+		t.Fatalf("decode registration info: %v", err)
+	}
+	if info.Enabled || !info.TokenConfigured || info.CanPersistNodes || info.RegistrationToken != "" {
+		t.Fatalf("persistence-disabled registration info = %+v", info)
+	}
+	if strings.Contains(rec.Body.String(), "reg-secret") || strings.Contains(rec.Body.String(), "registration_token") {
+		t.Fatalf("persistence-disabled response leaked token: %s", rec.Body.String())
 	}
 }
 
