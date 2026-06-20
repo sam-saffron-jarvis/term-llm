@@ -295,6 +295,38 @@ func TestHubReverseReadLoopSurvivesCanceledUndrainedStream(t *testing.T) {
 	}
 }
 
+func TestHubReverseConnectionNextRequestIDIsUnique(t *testing.T) {
+	var c hubReverseConnection
+
+	const goroutines = 8
+	const perGoroutine = 256
+
+	ids := make(chan string, goroutines*perGoroutine)
+	var wg sync.WaitGroup
+	for range goroutines {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := 0; i < perGoroutine; i++ {
+				ids <- c.nextRequestID()
+			}
+		}()
+	}
+	wg.Wait()
+	close(ids)
+
+	seen := make(map[string]struct{}, goroutines*perGoroutine)
+	for id := range ids {
+		if _, exists := seen[id]; exists {
+			t.Fatalf("duplicate reverse request ID %q", id)
+		}
+		seen[id] = struct{}{}
+	}
+	if len(seen) != goroutines*perGoroutine {
+		t.Fatalf("unique reverse request IDs = %d, want %d", len(seen), goroutines*perGoroutine)
+	}
+}
+
 type reverseDoResult struct {
 	resp *http.Response
 	err  error
