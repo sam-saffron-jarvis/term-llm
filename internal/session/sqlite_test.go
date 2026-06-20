@@ -256,6 +256,18 @@ func TestNewSQLiteStoreMemoryDBUsesSingleConnection(t *testing.T) {
 	}
 }
 
+func TestNewSQLiteStoreFileDBUsesSingleConnection(t *testing.T) {
+	store, err := NewSQLiteStore(Config{Enabled: true, Path: filepath.Join(t.TempDir(), "sessions.db")})
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	defer store.Close()
+
+	if got := store.db.Stats().MaxOpenConnections; got != 1 {
+		t.Fatalf("MaxOpenConnections = %d, want 1 for file-backed databases", got)
+	}
+}
+
 func TestSQLiteStoreListByNumberCursorReturnsCompleteSessions(t *testing.T) {
 	t.Setenv("XDG_DATA_HOME", t.TempDir())
 
@@ -2318,7 +2330,6 @@ INSERT INTO schema_version(version) VALUES (7);
 	if err != nil {
 		t.Fatalf("failed to inspect sessions table: %v", err)
 	}
-	defer rows.Close()
 
 	var hasProviderKey bool
 	for rows.Next() {
@@ -2327,15 +2338,19 @@ INSERT INTO schema_version(version) VALUES (7);
 		var notNull, pk int
 		var dflt sql.NullString
 		if err := rows.Scan(&cid, &name, &colType, &notNull, &dflt, &pk); err != nil {
+			_ = rows.Close()
 			t.Fatalf("failed to scan table info: %v", err)
 		}
 		if name == "provider_key" {
 			hasProviderKey = true
-			break
 		}
 	}
 	if err := rows.Err(); err != nil {
+		_ = rows.Close()
 		t.Fatalf("failed iterating table info: %v", err)
+	}
+	if err := rows.Close(); err != nil {
+		t.Fatalf("failed closing table info rows: %v", err)
 	}
 	if !hasProviderKey {
 		t.Fatal("expected provider_key column after migration")

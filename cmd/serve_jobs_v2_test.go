@@ -16,7 +16,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/tools"
 )
 
-func TestNewJobsV2ManagerDoesNotForceSingleConnectionForFileBackedDB(t *testing.T) {
+func TestNewJobsV2ManagerLimitsFileBackedDBConnections(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "jobs_v2.db")
 	mgr, err := newJobsV2Manager(dbPath, 0, nil)
 	if err != nil {
@@ -24,8 +24,8 @@ func TestNewJobsV2ManagerDoesNotForceSingleConnectionForFileBackedDB(t *testing.
 	}
 	defer func() { _ = mgr.Close() }()
 
-	if got := mgr.db.Stats().MaxOpenConnections; got != 0 {
-		t.Fatalf("MaxOpenConnections = %d, want 0 for file-backed DB", got)
+	if got := mgr.db.Stats().MaxOpenConnections; got != 1 {
+		t.Fatalf("MaxOpenConnections = %d, want 1 for file-backed DB", got)
 	}
 }
 
@@ -1626,6 +1626,12 @@ func newJobsV2ManagerWithoutLoops(t *testing.T) *jobsV2Manager {
 	}
 }
 
+type jobsV2RunnerFunc func(ctx context.Context, job jobsV2Job, pw progressWriter) (jobsV2RunResult, error)
+
+func (fn jobsV2RunnerFunc) Run(ctx context.Context, job jobsV2Job, pw progressWriter) (jobsV2RunResult, error) {
+	return fn(ctx, job, pw)
+}
+
 type testJobsV2Runner struct {
 	called bool
 }
@@ -1701,6 +1707,103 @@ func TestJobsV2ExecuteRunDoesNotStartWhenManagerClosed(t *testing.T) {
 	}
 	if updated.StartedAt != nil {
 		t.Fatal("started_at was set even though closed manager should not start the run")
+	}
+}
+
+func TestJobsV2ExecuteRunRetriesFinishRunAfterTransientDBLock(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "jobs_v2.db")
+	dsn := dbPath + "?_pragma=foreign_keys(1)&_pragma=journal_mode(WAL)&_pragma=busy_timeout(5)&_pragma=synchronous(NORMAL)"
+	db, err := sql.Open("sqlite", dsn)
+	if err != nil {
+		t.Fatalf("sql.Open failed: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
+	if err := execJobsV2Schema(db); err != nil {
+		t.Fatalf("execJobsV2Schema failed: %v", err)
+	}
+
+	lockReleased := make(chan struct{})
+	var runID string
+	mgr := &jobsV2Manager{
+		db:       db,
+		workerID: "worker_test",
+		runners: map[jobsV2RunnerType]jobsV2Runner{
+			jobsV2RunnerProgram: jobsV2RunnerFunc(func(ctx context.Context, job jobsV2Job, pw progressWriter) (jobsV2RunResult, error) {
+				lockDB, err := sql.Open("sqlite", dsn)
+				if err != nil {
+					return jobsV2RunResult{}, err
+				}
+				lockDB.SetMaxOpenConns(1)
+				lockDB.SetMaxIdleConns(1)
+				tx, err := lockDB.Begin()
+				if err != nil {
+					_ = lockDB.Close()
+					return jobsV2RunResult{}, err
+				}
+				if _, err := tx.Exec(`INSERT INTO job_run_events_v2 (run_id, event_type, message, created_at) VALUES (?, 'lock', 'transient lock', CURRENT_TIMESTAMP)`, runID); err != nil {
+					_ = tx.Rollback()
+					_ = lockDB.Close()
+					return jobsV2RunResult{}, err
+				}
+				go func() {
+					time.Sleep(70 * time.Millisecond)
+					_ = tx.Rollback()
+					_ = lockDB.Close()
+					close(lockReleased)
+				}()
+				return jobsV2RunResult{Stdout: "ok"}, nil
+			}),
+		},
+		cancels: make(map[string]context.CancelFunc),
+	}
+
+	job, err := mgr.CreateJob(jobsV2Job{
+		Name:           "retry-finish-run",
+		Enabled:        true,
+		RunnerType:     jobsV2RunnerProgram,
+		RunnerConfig:   json.RawMessage(`{}`),
+		TriggerType:    jobsV2TriggerManual,
+		TriggerConfig:  json.RawMessage(`{}`),
+		TimeoutSeconds: 30,
+	})
+	if err != nil {
+		t.Fatalf("CreateJob failed: %v", err)
+	}
+	queued, err := mgr.TriggerJob(job.ID)
+	if err != nil {
+		t.Fatalf("TriggerJob failed: %v", err)
+	}
+	claimed, ok, err := mgr.claimNextRun()
+	if err != nil {
+		t.Fatalf("claimNextRun failed: %v", err)
+	}
+	if !ok || claimed.ID != queued.ID {
+		t.Fatalf("claimNextRun = (%q, %v), want %q true", claimed.ID, ok, queued.ID)
+	}
+	runID = claimed.ID
+
+	mgr.executeRun(claimed)
+
+	select {
+	case <-lockReleased:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for transient lock release")
+	}
+	updated, err := mgr.GetRun(claimed.ID)
+	if err != nil {
+		t.Fatalf("GetRun after executeRun failed: %v", err)
+	}
+	if updated.Status != jobsV2RunSucceeded {
+		t.Fatalf("status = %s, want %s", updated.Status, jobsV2RunSucceeded)
+	}
+	active, err := mgr.countActiveRuns(job.ID)
+	if err != nil {
+		t.Fatalf("countActiveRuns failed: %v", err)
+	}
+	if active != 0 {
+		t.Fatalf("active runs = %d, want 0", active)
 	}
 }
 

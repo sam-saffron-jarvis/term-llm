@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"os/exec"
@@ -234,6 +235,8 @@ const (
 	jobsV2WorkerMinDelay      = 100 * time.Millisecond
 	jobsV2WorkerIdleDelay     = time.Minute
 	jobsV2WorkerErrorDelay    = 200 * time.Millisecond
+	jobsV2FinishRunAttempts   = 3
+	jobsV2FinishRunRetryDelay = 50 * time.Millisecond
 )
 
 type jobsV2ProgramConfig struct {
@@ -679,10 +682,11 @@ func newJobsV2ManagerWithNotifier(dbPath string, workers int, llmExec serveJobsE
 	if err != nil {
 		return nil, fmt.Errorf("open jobs db: %w", err)
 	}
-	if dbPath == ":memory:" {
-		// Required for :memory: databases: keep a single connection so schema/data persist.
-		db.SetMaxOpenConns(1)
-	}
+	// The jobs scheduler, workers, and admin paths all share one SQLite file.
+	// Keep the database/sql pool to one connection so concurrent writes are
+	// serialized before they reach SQLite's single-writer lock.
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
 	if err := execJobsV2Schema(db); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("init jobs schema: %w", err)
@@ -1330,13 +1334,13 @@ func (m *jobsV2Manager) claimNextRun() (jobsV2Run, bool, error) {
 func (m *jobsV2Manager) executeRun(run jobsV2Run) {
 	job, err := m.GetJob(run.JobID)
 	if err != nil {
-		_ = m.finishRun(run.ID, jobsV2RunFailed, jobsV2RunResult{}, fmt.Errorf("load job: %w", err), run.Attempt)
+		m.finishRunWithRetry(run.ID, jobsV2RunFailed, jobsV2RunResult{}, fmt.Errorf("load job: %w", err), run.Attempt)
 		return
 	}
 
 	runner, ok := m.runners[job.RunnerType]
 	if !ok {
-		_ = m.finishRun(run.ID, jobsV2RunFailed, jobsV2RunResult{}, fmt.Errorf("unknown runner type: %s", job.RunnerType), run.Attempt)
+		m.finishRunWithRetry(run.ID, jobsV2RunFailed, jobsV2RunResult{}, fmt.Errorf("unknown runner type: %s", job.RunnerType), run.Attempt)
 		return
 	}
 
@@ -1362,7 +1366,7 @@ func (m *jobsV2Manager) executeRun(run jobsV2Run) {
 	started := time.Now().UTC()
 	res, err := m.db.Exec(`UPDATE job_runs_v2 SET status = ?, started_at = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND status = ?`, jobsV2RunRunning, started, run.ID, jobsV2RunClaimed)
 	if err != nil {
-		_ = m.finishRun(run.ID, jobsV2RunFailed, jobsV2RunResult{}, fmt.Errorf("mark run running: %w", err), run.Attempt)
+		m.finishRunWithRetry(run.ID, jobsV2RunFailed, jobsV2RunResult{}, fmt.Errorf("mark run running: %w", err), run.Attempt)
 		return
 	}
 	affected, _ := res.RowsAffected()
@@ -1390,26 +1394,42 @@ func (m *jobsV2Manager) executeRun(run jobsV2Run) {
 	}
 	result, runErr := runner.Run(ctx, job, pw)
 	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-		_ = m.finishRun(run.ID, jobsV2RunTimedOut, result, context.DeadlineExceeded, run.Attempt)
+		m.finishRunWithRetry(run.ID, jobsV2RunTimedOut, result, context.DeadlineExceeded, run.Attempt)
 		return
 	}
 	if errors.Is(ctx.Err(), context.Canceled) {
-		_ = m.finishRun(run.ID, jobsV2RunCancelled, result, context.Canceled, run.Attempt)
+		m.finishRunWithRetry(run.ID, jobsV2RunCancelled, result, context.Canceled, run.Attempt)
 		return
 	}
 	if result.ExitReason == exitReasonTimeout {
-		_ = m.finishRun(run.ID, jobsV2RunTimedOut, result, context.DeadlineExceeded, run.Attempt)
+		m.finishRunWithRetry(run.ID, jobsV2RunTimedOut, result, context.DeadlineExceeded, run.Attempt)
 		return
 	}
 	if result.ExitReason == exitReasonCancelled {
-		_ = m.finishRun(run.ID, jobsV2RunCancelled, result, context.Canceled, run.Attempt)
+		m.finishRunWithRetry(run.ID, jobsV2RunCancelled, result, context.Canceled, run.Attempt)
 		return
 	}
 	if runErr != nil {
-		_ = m.finishRun(run.ID, jobsV2RunFailed, result, runErr, run.Attempt)
+		m.finishRunWithRetry(run.ID, jobsV2RunFailed, result, runErr, run.Attempt)
 		return
 	}
-	_ = m.finishRun(run.ID, jobsV2RunSucceeded, result, nil, run.Attempt)
+	m.finishRunWithRetry(run.ID, jobsV2RunSucceeded, result, nil, run.Attempt)
+}
+
+func (m *jobsV2Manager) finishRunWithRetry(runID string, status jobsV2RunStatus, result jobsV2RunResult, runErr error, policyAttempt int) {
+	var lastErr error
+	for attempt := 1; attempt <= jobsV2FinishRunAttempts; attempt++ {
+		if err := m.finishRun(runID, status, result, runErr, policyAttempt); err != nil {
+			lastErr = err
+			if attempt < jobsV2FinishRunAttempts {
+				time.Sleep(jobsV2FinishRunRetryDelay)
+				continue
+			}
+		} else {
+			return
+		}
+	}
+	log.Printf("jobs v2: failed to finish run %q as %s after %d attempts; run may remain active: %v", runID, status, jobsV2FinishRunAttempts, lastErr)
 }
 
 func (m *jobsV2Manager) finishRun(runID string, status jobsV2RunStatus, result jobsV2RunResult, runErr error, attempt int) error {
@@ -1457,7 +1477,7 @@ func (m *jobsV2Manager) finishRun(runID string, status jobsV2RunStatus, result j
 		"input_tokens":  result.InputTokens,
 		"output_tokens": result.OutputTokens,
 	})
-	m.notifyRunDone(runID, status, result, exitReason, truncated, errText)
+	m.enqueueRunDoneNotification(run, status, result, exitReason, truncated, errText)
 
 	if status == jobsV2RunFailed || status == jobsV2RunTimedOut {
 		job, err := m.GetJob(run.JobID)
@@ -1494,12 +1514,19 @@ func jobsV2NotifyTerminalStatus(status jobsV2RunStatus) bool {
 	}
 }
 
-func (m *jobsV2Manager) notifyRunDone(runID string, status jobsV2RunStatus, result jobsV2RunResult, exitReason string, truncated bool, errText string) {
+func (m *jobsV2Manager) enqueueRunDoneNotification(run jobsV2Run, status jobsV2RunStatus, result jobsV2RunResult, exitReason string, truncated bool, errText string) {
 	if m == nil || m.notifyDone == nil || !jobsV2NotifyTerminalStatus(status) {
 		return
 	}
-	run, err := m.GetRun(runID)
-	if err != nil {
+	m.wg.Add(1)
+	go func() {
+		defer m.wg.Done()
+		m.notifyRunDone(run, status, result, exitReason, truncated, errText)
+	}()
+}
+
+func (m *jobsV2Manager) notifyRunDone(run jobsV2Run, status jobsV2RunStatus, result jobsV2RunResult, exitReason string, truncated bool, errText string) {
+	if m == nil || m.notifyDone == nil || !jobsV2NotifyTerminalStatus(status) {
 		return
 	}
 	job, err := m.GetJob(run.JobID)
@@ -1509,7 +1536,7 @@ func (m *jobsV2Manager) notifyRunDone(runID string, status jobsV2RunStatus, resu
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if err := m.notifyDone(ctx, run, job, status, result, exitReason, truncated, errText); err != nil {
-		_ = m.addRunEvent(runID, "notify_failed", "completion notification failed", map[string]any{"error": err.Error()})
+		_ = m.addRunEvent(run.ID, "notify_failed", "completion notification failed", map[string]any{"error": err.Error()})
 	}
 }
 

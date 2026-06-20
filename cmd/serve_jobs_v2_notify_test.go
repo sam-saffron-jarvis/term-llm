@@ -192,6 +192,12 @@ func TestJobsV2NotifyWhenDoneAppendsWebNotificationToIdleSession(t *testing.T) {
 		t.Fatalf("finishRun: %v", err)
 	}
 
+	waitForServeCondition(t, 2*time.Second, func() bool {
+		store.mu.Lock()
+		defer store.mu.Unlock()
+		return len(store.messages["sess-origin"]) == 1
+	}, "completion notification to idle web session")
+
 	store.mu.Lock()
 	defer store.mu.Unlock()
 	msgs := store.messages["sess-origin"]
@@ -298,10 +304,20 @@ func TestJobsV2NotifyFailureDoesNotChangeRunStatus(t *testing.T) {
 	if updated.Status != jobsV2RunSucceeded {
 		t.Fatalf("status = %s, want succeeded", updated.Status)
 	}
-	events, _, err := mgr.ListRunEvents(run.ID, 0, 20, 0)
-	if err != nil {
-		t.Fatalf("ListRunEvents: %v", err)
-	}
+	var events []jobsV2RunEvent
+	waitForServeCondition(t, 2*time.Second, func() bool {
+		var err error
+		events, _, err = mgr.ListRunEvents(run.ID, 0, 20, 0)
+		if err != nil {
+			return false
+		}
+		for _, ev := range events {
+			if ev.EventType == "notify_failed" {
+				return true
+			}
+		}
+		return false
+	}, "async notify_failed event")
 	foundNotifyFailure := false
 	for _, ev := range events {
 		if ev.EventType == "notify_failed" {
@@ -310,5 +326,54 @@ func TestJobsV2NotifyFailureDoesNotChangeRunStatus(t *testing.T) {
 	}
 	if !foundNotifyFailure {
 		t.Fatalf("expected notify_failed event, got %#v", events)
+	}
+}
+
+func TestJobsV2FinishRunDoesNotBlockOnCompletionNotification(t *testing.T) {
+	notifyStarted := make(chan struct{})
+	releaseNotify := make(chan struct{})
+	mgr, err := newJobsV2ManagerWithNotifier(":memory:", 0, nil, func(ctx context.Context, run jobsV2Run, job jobsV2Job, status jobsV2RunStatus, result jobsV2RunResult, exitReason string, truncated bool, errText string) error {
+		close(notifyStarted)
+		select {
+		case <-releaseNotify:
+			return nil
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	})
+	if err != nil {
+		t.Fatalf("newJobsV2ManagerWithNotifier: %v", err)
+	}
+	defer func() { _ = mgr.Close() }()
+	defer close(releaseNotify)
+
+	job, err := mgr.CreateJob(jobsV2Job{
+		Name:          "notify-nonblocking",
+		Enabled:       true,
+		RunnerType:    jobsV2RunnerProgram,
+		RunnerConfig:  json.RawMessage(`{}`),
+		TriggerType:   jobsV2TriggerManual,
+		TriggerConfig: json.RawMessage(`{}`),
+	})
+	if err != nil {
+		t.Fatalf("CreateJob: %v", err)
+	}
+	run, err := mgr.TriggerJob(job.ID)
+	if err != nil {
+		t.Fatalf("TriggerJob: %v", err)
+	}
+
+	started := time.Now()
+	if err := mgr.finishRun(run.ID, jobsV2RunSucceeded, jobsV2RunResult{Stdout: "ok"}, nil, run.Attempt); err != nil {
+		t.Fatalf("finishRun: %v", err)
+	}
+	if elapsed := time.Since(started); elapsed > 200*time.Millisecond {
+		t.Fatalf("finishRun blocked on notification for %v", elapsed)
+	}
+
+	select {
+	case <-notifyStarted:
+	case <-time.After(time.Second):
+		t.Fatal("completion notification did not start asynchronously")
 	}
 }

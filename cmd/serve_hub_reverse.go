@@ -9,6 +9,7 @@ import (
 	"log"
 	"net/http"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -71,6 +72,7 @@ type hubReverseConnection struct {
 	lastSeen    time.Time
 	conn        *websocket.Conn
 	writeMu     sync.Mutex
+	requestSeq  atomic.Uint64
 	pendingMu   sync.Mutex
 	pending     map[string]*hubReversePending
 }
@@ -223,6 +225,10 @@ func (c *hubReverseConnection) lastSeenValue() time.Time {
 	return c.lastSeen
 }
 
+func (c *hubReverseConnection) nextRequestID() string {
+	return fmt.Sprintf("req_%d", c.requestSeq.Add(1))
+}
+
 func hubReverseSetHeartbeat(conn *websocket.Conn, touch func()) error {
 	if touch != nil {
 		touch()
@@ -356,7 +362,7 @@ func (m *hubReverseManager) do(ctx context.Context, node hub.Node, req *http.Req
 			return nil, readErr
 		}
 	}
-	id := fmt.Sprintf("req_%d", time.Now().UnixNano())
+	id := c.nextRequestID()
 	pending := newHubReversePending()
 	c.pendingMu.Lock()
 	c.pending[id] = pending

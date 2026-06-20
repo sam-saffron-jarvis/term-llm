@@ -15,6 +15,37 @@ import (
 	"github.com/samsaffron/term-llm/internal/hub"
 )
 
+func TestHubReverseConnectionNextRequestIDIsUnique(t *testing.T) {
+	var c hubReverseConnection
+	const goroutines = 32
+	const idsPerGoroutine = 512
+
+	ids := make(chan string, goroutines*idsPerGoroutine)
+	var wg sync.WaitGroup
+	for i := 0; i < goroutines; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < idsPerGoroutine; j++ {
+				ids <- c.nextRequestID()
+			}
+		}()
+	}
+	wg.Wait()
+	close(ids)
+
+	seen := make(map[string]struct{}, goroutines*idsPerGoroutine)
+	for id := range ids {
+		if _, ok := seen[id]; ok {
+			t.Fatalf("duplicate request ID %q", id)
+		}
+		seen[id] = struct{}{}
+	}
+	if len(seen) != goroutines*idsPerGoroutine {
+		t.Fatalf("unique IDs = %d, want %d", len(seen), goroutines*idsPerGoroutine)
+	}
+}
+
 func TestHubReverseNodeProxy(t *testing.T) {
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/chat/healthz" {
