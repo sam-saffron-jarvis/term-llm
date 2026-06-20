@@ -63,7 +63,7 @@ function makeNode() {
   };
 }
 
-function loadAppCoreWith({ nodeOverrides = {}, docQSTracker = () => [], navigatorOverrides = {}, initialStorage = {}, agentName = '', now = () => Date.now(), timerOverrides = {} } = {}) {
+function loadAppCoreWith({ nodeOverrides = {}, docQSTracker = () => [], navigatorOverrides = {}, initialStorage = {}, agentName = '', hub = null, now = () => Date.now(), timerOverrides = {} } = {}) {
   const nodes = new Map(Object.entries(nodeOverrides));
   const cookieWrites = [];
   const document = {
@@ -111,6 +111,7 @@ function loadAppCoreWith({ nodeOverrides = {}, docQSTracker = () => [], navigato
     TERM_LLM_UI_PREFIX: '/chat',
     TERM_LLM_SIDEBAR_SESSIONS: 'all',
     TERM_LLM_AGENT_NAME: agentName,
+    TERM_LLM_HUB: hub,
     navigator: navigatorObj,
     visualViewport: null,
     innerHeight: 1000,
@@ -205,6 +206,45 @@ const app = loadAppCore();
   const finalWrite = writes[writes.length - 1] || '';
   if (finalWrite !== 'term_llm_token=initial-token; path=/chat; SameSite=Strict; max-age=31536000') {
     fail(name, `got ${JSON.stringify(finalWrite)}`);
+    return;
+  }
+  pass(name);
+})();
+
+(function testHubScopedStorageMigratesUnscopedKeysExceptToken() {
+  const name = 'hub scoped storage copies direct keys except token';
+  const testApp = loadAppCoreWith({
+    hub: { url: '/', nodeId: 'jarvis', nodeName: 'Jarvis' },
+    initialStorage: {
+      term_llm_token: 'direct-token',
+      term_llm_active_session: 'sess_direct',
+      term_llm_selected_model: 'gpt-5.5'
+    }
+  });
+
+  if (testApp.STORAGE_KEYS.token !== 'term_llm_token:jarvis') {
+    fail(name, `scoped token key = ${JSON.stringify(testApp.STORAGE_KEYS.token)}`);
+    return;
+  }
+  if (testApp.state.token !== '' || testApp.state.activeSessionId !== 'sess_direct' || testApp.state.selectedModel !== 'gpt-5.5') {
+    fail(name, `state did not read expected scoped values: ${JSON.stringify({ token: testApp.state.token, activeSessionId: testApp.state.activeSessionId, selectedModel: testApp.state.selectedModel })}`);
+    return;
+  }
+  pass(name);
+})();
+
+(function testHubScopedStorageKeepsExistingScopedValues() {
+  const name = 'hub scoped storage keeps existing scoped values over direct keys';
+  const testApp = loadAppCoreWith({
+    hub: { url: '/', nodeId: 'jarvis', nodeName: 'Jarvis' },
+    initialStorage: {
+      term_llm_token: 'direct-token',
+      'term_llm_token:jarvis': 'scoped-token'
+    }
+  });
+
+  if (testApp.state.token !== 'scoped-token') {
+    fail(name, `token = ${JSON.stringify(testApp.state.token)}`);
     return;
   }
   pass(name);

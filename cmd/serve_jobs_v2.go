@@ -329,6 +329,7 @@ type jobsV2LLMConfig struct {
 	ContinueWith   string              `json:"continue_with,omitempty"`
 	PersistSession *bool               `json:"persist_session,omitempty"`
 	SessionID      string              `json:"session_id,omitempty"`
+	SessionName    string              `json:"session_name,omitempty"`
 	NotifyWhenDone bool                `json:"notify_when_done,omitempty"`
 	NotifyOrigin   *jobsV2NotifyOrigin `json:"notify_origin,omitempty"`
 
@@ -415,6 +416,9 @@ func (r *jobsV2LLMRunner) Run(ctx context.Context, job jobsV2Job, pw progressWri
 		return jobsV2RunResult{}, fmt.Errorf("llm runner cwd is required")
 	}
 	cfg.SessionID = cfg.effectiveSessionID()
+	if strings.TrimSpace(cfg.SessionName) == "" {
+		cfg.SessionName = jobsV2SessionName(job)
+	}
 	progressiveOpts := askProgressiveOptions{
 		Enabled:      cfg.Progressive,
 		Timeout:      time.Duration(job.TimeoutSeconds) * time.Second,
@@ -428,6 +432,12 @@ func (r *jobsV2LLMRunner) Run(ctx context.Context, job jobsV2Job, pw progressWri
 	cfg.StopWhen = string(progressiveOpts.StopWhen)
 	cfg.ContinueWith = progressiveOpts.ContinueWith
 	res := jobsV2RunResult{SessionID: cfg.SessionID}
+	// Delegated hub jobs carry their delegation id as a hub-written label;
+	// surface it on the context so hub_delegate chains depth/loop tracking
+	// without trusting the model to pass parent_delegation_id.
+	if delegationID := hubDelegationIDFromJobLabels(job.Labels); delegationID != "" {
+		ctx = tools.WithHubDelegationID(ctx, delegationID)
+	}
 	var thinkingBuilder strings.Builder
 	var responseBuilder strings.Builder
 	progressTracker := newProgressTracker()
@@ -3013,9 +3023,12 @@ func newServeJobsExecutor(baseCfg *config.Config) serveJobsExecutor {
 		var persistSyntheticUserMessage func(context.Context, llm.Message) error
 		var sess *session.Session
 		turnStartTime := time.Now()
+		sessionName := strings.TrimSpace(cfg.SessionName)
 		if store != nil {
 			sess = &session.Session{
 				ID:        cfg.SessionID,
+				Name:      sessionName,
+				Summary:   sessionName,
 				Provider:  provider.Name(),
 				Model:     modelName,
 				Mode:      session.ModeAsk,

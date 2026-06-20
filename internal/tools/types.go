@@ -129,12 +129,18 @@ const (
 	WaitForJobsToolName      = "wait_for_jobs"
 	RunAgentScriptToolName   = "run_agent_script"
 	InitiateHandoverToolName = "initiate_handover"
+
+	HubDelegateToolName        = "hub_delegate"
+	HubCheckDelegationToolName = "hub_check_delegation"
 )
 
-// AllToolNames returns all standard tool spec names that can be registered directly.
+// AllToolNames returns standard tool spec names that can be registered directly.
+// Hub delegation tools are included only when this process has Hub delegation
+// credentials, so --tools all and disabled-list agents do not advertise
+// inoperable hub tools on standalone nodes.
 // Note: activate_skill is excluded as it requires a skills registry and is registered separately.
 func AllToolNames() []string {
-	return []string{
+	names := []string{
 		ReadFileToolName,
 		WriteFileToolName,
 		EditFileToolName,
@@ -152,27 +158,33 @@ func AllToolNames() []string {
 		RunAgentScriptToolName,
 		InitiateHandoverToolName,
 	}
+	if HubDelegationConfigured() {
+		names = append(names, HubDelegateToolName, HubCheckDelegationToolName)
+	}
+	return names
 }
 
 // validToolNames is a set of valid tool spec names for fast lookup.
 // Note: activate_skill is excluded as it requires a skills registry and is registered separately.
 var validToolNames = map[string]bool{
-	ReadFileToolName:         true,
-	WriteFileToolName:        true,
-	EditFileToolName:         true,
-	UnifiedDiffToolName:      true,
-	ShellToolName:            true,
-	GrepToolName:             true,
-	GlobToolName:             true,
-	ViewImageToolName:        true,
-	ShowImageToolName:        true,
-	ImageGenerateToolName:    true,
-	AskUserToolName:          true,
-	SpawnAgentToolName:       true,
-	QueueAgentToolName:       true,
-	WaitForJobsToolName:      true,
-	RunAgentScriptToolName:   true,
-	InitiateHandoverToolName: true,
+	ReadFileToolName:           true,
+	WriteFileToolName:          true,
+	EditFileToolName:           true,
+	UnifiedDiffToolName:        true,
+	ShellToolName:              true,
+	GrepToolName:               true,
+	GlobToolName:               true,
+	ViewImageToolName:          true,
+	ShowImageToolName:          true,
+	ImageGenerateToolName:      true,
+	AskUserToolName:            true,
+	SpawnAgentToolName:         true,
+	QueueAgentToolName:         true,
+	WaitForJobsToolName:        true,
+	RunAgentScriptToolName:     true,
+	InitiateHandoverToolName:   true,
+	HubDelegateToolName:        true,
+	HubCheckDelegationToolName: true,
 }
 
 // ValidToolName checks if a name is a valid tool spec name.
@@ -195,7 +207,8 @@ func GetToolKind(specName string) ToolKind {
 		return KindImage
 	case AskUserToolName:
 		return KindInteractive
-	case SpawnAgentToolName, QueueAgentToolName, WaitForJobsToolName, InitiateHandoverToolName:
+	case SpawnAgentToolName, QueueAgentToolName, WaitForJobsToolName, InitiateHandoverToolName,
+		HubDelegateToolName, HubCheckDelegationToolName:
 		return KindAgent
 	case RunAgentScriptToolName:
 		return KindExecute

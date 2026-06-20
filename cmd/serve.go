@@ -65,6 +65,10 @@ var (
 	serveEnableWidgets          bool
 	serveWidgetsDir             string
 	serveResponseTimeout        time.Duration
+	serveHubURL                 string
+	serveHubNodeID              string
+	serveHubNodeName            string
+	serveHubConnect             string
 )
 
 var serveCmd = &cobra.Command{
@@ -143,6 +147,10 @@ func init() {
 	serveCmd.Flags().BoolVar(&serveEnableWidgets, "enable-widgets", false, "Enable local widget apps proxied under {base}/widgets/<mount>/")
 	serveCmd.Flags().StringVar(&serveWidgetsDir, "widgets-dir", "", "Directory containing widget sub-directories (default: ~/.config/term-llm/widgets)")
 	serveCmd.Flags().DurationVar(&serveResponseTimeout, "response-timeout", defaultServeRequestTimeout, "Maximum duration for API/web response runs before timing out")
+	serveCmd.Flags().StringVar(&serveHubURL, "hub-url", "", "URL of the term-llm Hub this node belongs to (renders a Back to Hub link in the web UI)")
+	serveCmd.Flags().StringVar(&serveHubNodeID, "hub-node-id", "", "This node's id on the hub (used with --hub-url)")
+	serveCmd.Flags().StringVar(&serveHubNodeName, "hub-node-name", "", "This node's display name on the hub (used with --hub-url)")
+	serveCmd.Flags().StringVar(&serveHubConnect, "hub-connect", "direct", "Hub connection mode for this node: direct or reverse")
 
 	AddCommonFlags(serveCmd,
 		CommonCoreFlags|CommonSearch|CommonNativeSearch|CommonMaxTurns|CommonAgent,
@@ -225,6 +233,25 @@ func runServe(cmd *cobra.Command, args []string) error {
 	token, tokenSource, err := resolveServeToken(serveToken, os.Getenv("TERM_LLM_SERVE_TOKEN"), requireAuth, generateServeToken)
 	if err != nil {
 		return err
+	}
+
+	serveHubConnect = strings.ToLower(strings.TrimSpace(serveHubConnect))
+	if serveHubConnect == "" {
+		serveHubConnect = "direct"
+	}
+	if serveHubConnect != "direct" && serveHubConnect != "reverse" {
+		return fmt.Errorf("invalid --hub-connect %q (use direct or reverse)", serveHubConnect)
+	}
+
+	// Hub-joined nodes: hand the hub context to in-process tools and jobs-v2
+	// runs so hub_delegate/hub_check_delegation work without extra setup. The
+	// node authenticates to the hub with its own serve token. Explicit
+	// TERM_LLM_HUB_* env (captured and scrubbed at startup) wins — only gaps
+	// are filled — and the token stays in process memory, never in the
+	// process environment, browser-facing config, or injected HTML, so tool
+	// subprocesses (shell/custom/widget/MCP) cannot inherit it.
+	if hubURL, hubNodeID := strings.TrimSpace(serveHubURL), strings.TrimSpace(serveHubNodeID); hubURL != "" && hubNodeID != "" && token != "" {
+		tools.ConfigureHubDelegation(hubURL, hubNodeID, token)
 	}
 
 	ctx, stop := signal.NotifyContext()
@@ -552,6 +579,9 @@ func runServe(cmd *cobra.Command, args []string) error {
 				enableWidgets:       serveEnableWidgets,
 				widgetsDir:          serveWidgetsDir,
 				responseTimeout:     responseTimeout,
+				hubURL:              strings.TrimSpace(serveHubURL),
+				hubNodeID:           strings.TrimSpace(serveHubNodeID),
+				hubNodeName:         strings.TrimSpace(serveHubNodeName),
 			},
 			sessionMgr:     sessionMgr,
 			jobsV2:         jobsV2,
@@ -581,6 +611,17 @@ func runServe(cmd *cobra.Command, args []string) error {
 
 		if err := s.Start(); err != nil {
 			return err
+		}
+
+		if serveHubConnect == "reverse" {
+			hubURL := strings.TrimSpace(serveHubURL)
+			hubNodeID := strings.TrimSpace(serveHubNodeID)
+			if hubURL == "" || hubNodeID == "" || token == "" {
+				return fmt.Errorf("--hub-connect reverse requires --hub-url, --hub-node-id, and a bearer --token")
+			}
+			localBase := localHubConnectBase(serveHost, servePort)
+			go runHubReverseConnector(ctx, hubURL, hubNodeID, token, localBase, serveBasePath, newHubReverseLocalClient())
+			fmt.Fprintf(cmd.ErrOrStderr(), "hub reverse: connecting %s to %s\n", hubNodeID, hubURL)
 		}
 
 		fmt.Fprintf(cmd.ErrOrStderr(), "term-llm serve listening on http://%s:%d\n", serveHost, servePort)
@@ -863,6 +904,14 @@ type serveServerConfig struct {
 	enableWidgets       bool
 	widgetsDir          string
 	responseTimeout     time.Duration
+	// hubURL/hubNodeID/hubNodeName describe the term-llm Hub this node
+	// belongs to. When hubURL is set, the web UI gets window.TERM_LLM_HUB and
+	// renders a Back to Hub link. The hub proxy injects the same context
+	// server-side, so these are only needed when a node should be hub-aware
+	// even when opened directly.
+	hubURL      string
+	hubNodeID   string
+	hubNodeName string
 }
 
 // uiRoute returns the base-path with trailing slash, e.g. "/ui/" or "/chat/".

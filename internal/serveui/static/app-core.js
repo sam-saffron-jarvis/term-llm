@@ -9,7 +9,26 @@ app.markdownStreaming = window.TermLLMMarkdownStreaming || null;
 // into index.html as window.TERM_LLM_UI_PREFIX, defaults to '/ui'.
 const UI_PREFIX = (window.TERM_LLM_UI_PREFIX || '/ui');
 const UI_VERSION = String(window.TERM_LLM_UI_VERSION || '');
+const HUB_CONTEXT = window.TERM_LLM_HUB || null;
+const STORAGE_SCOPE = HUB_CONTEXT && HUB_CONTEXT.nodeId ? `:${HUB_CONTEXT.nodeId}` : '';
+const scopedStorageKey = (key) => STORAGE_SCOPE ? `${key}${STORAGE_SCOPE}` : key;
 const LEGACY_DRAFT_SESSION_ID = '__draft__';
+
+const STORAGE_BASE_KEYS = {
+  token: 'term_llm_token',
+  activeSession: 'term_llm_active_session',
+  draftSessionActive: 'term_llm_draft_session_active',
+  selectedModel: 'term_llm_selected_model',
+  selectedProvider: 'term_llm_selected_provider',
+  selectedEffort: 'term_llm_selected_effort',
+  sidebarCollapsed: 'term_llm_sidebar_collapsed',
+  diffSidebarWidth: 'term_llm_diff_sidebar_width',
+  showHiddenSessions: 'term_llm_show_hidden_sessions',
+  showWidgetsSidebar: 'term_llm_show_widgets_sidebar',
+  notificationsEnabled: 'term_llm_notifications_enabled',
+  lastNotifiedResponseId: 'term_llm_last_notified_response_id',
+  draftMessages: 'term_llm_draft_messages'
+};
 
 const parseSidebarSessionCategories = (raw) => {
   const input = Array.isArray(raw)
@@ -26,21 +45,23 @@ const parseSidebarSessionCategories = (raw) => {
   return categories.includes('all') || categories.length === 0 ? ['all'] : categories;
 };
 
-const STORAGE_KEYS = {
-  token: 'term_llm_token',
-  activeSession: 'term_llm_active_session',
-  draftSessionActive: 'term_llm_draft_session_active',
-  selectedModel: 'term_llm_selected_model',
-  selectedProvider: 'term_llm_selected_provider',
-  selectedEffort: 'term_llm_selected_effort',
-  sidebarCollapsed: 'term_llm_sidebar_collapsed',
-  diffSidebarWidth: 'term_llm_diff_sidebar_width',
-  showHiddenSessions: 'term_llm_show_hidden_sessions',
-  showWidgetsSidebar: 'term_llm_show_widgets_sidebar',
-  notificationsEnabled: 'term_llm_notifications_enabled',
-  lastNotifiedResponseId: 'term_llm_last_notified_response_id',
-  draftMessages: 'term_llm_draft_messages'
+const STORAGE_KEYS = {};
+Object.entries(STORAGE_BASE_KEYS).forEach(([name, key]) => {
+  STORAGE_KEYS[name] = scopedStorageKey(key);
+});
+
+const migrateHubScopedStorage = () => {
+  if (!STORAGE_SCOPE) return;
+  Object.entries(STORAGE_BASE_KEYS).forEach(([name, unscopedKey]) => {
+    if (name === 'token') return;
+    const scopedKey = STORAGE_KEYS[name];
+    if (!scopedKey || scopedKey === unscopedKey || localStorage.getItem(scopedKey) !== null) return;
+    const unscopedValue = localStorage.getItem(unscopedKey);
+    if (unscopedValue !== null) localStorage.setItem(scopedKey, unscopedValue);
+  });
 };
+
+migrateHubScopedStorage();
 
 const initialStoredActiveSessionId = localStorage.getItem(STORAGE_KEYS.activeSession) || '';
 const initialDraftSessionActive = initialStoredActiveSessionId === LEGACY_DRAFT_SESSION_ID
@@ -177,6 +198,7 @@ const elements = {
   sidebarBrandText: document.getElementById('sidebarBrandText'),
   newChatBtn: document.getElementById('newChatBtn'),
   widgetsOpenBtn: document.getElementById('widgetsOpenBtn'),
+  backToHubLink: document.getElementById('backToHubLink'),
   widgetsModal: document.getElementById('widgetsModal'),
   widgetsModalList: document.getElementById('widgetsModalList'),
   widgetsModalCloseBtn: document.getElementById('widgetsModalCloseBtn'),
@@ -2094,6 +2116,7 @@ Object.assign(app, {
   syncViewportShell,
   UI_PREFIX,
   UI_VERSION,
+  HUB_CONTEXT,
   maybeReloadForUIVersion,
   parseSidebarSessionCategories,
   isStandalone,
