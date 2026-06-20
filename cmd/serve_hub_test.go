@@ -235,10 +235,13 @@ func TestHubIndexShowsRegistrationHelpWithoutEmbeddingToken(t *testing.T) {
 		t.Fatalf("index status = %d", rec.Code)
 	}
 	body := rec.Body.String()
-	for _, want := range []string{"? Private node", "Register a private / Docker node", "api/registration-info", "Registration token", "Copy token", "Reveal"} {
+	for _, want := range []string{"Private node", "Register a private / Docker node", "api/registration-info", "Registration token", "Copy token", "Reveal"} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("index missing %q", want)
 		}
+	}
+	if strings.Contains(body, "? Private node") {
+		t.Fatalf("index still contains question-mark private node label")
 	}
 	if strings.Contains(body, "reg-secret") {
 		t.Fatalf("index embedded registration token: %s", body)
