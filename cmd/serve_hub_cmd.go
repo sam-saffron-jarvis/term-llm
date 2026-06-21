@@ -5,6 +5,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"path"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -23,6 +24,7 @@ var (
 	serveHubAuthMode              string
 	serveHubToken                 string
 	serveHubRegistrationTokenFlag string
+	serveHubBasePath              string
 )
 
 var serveHubCmd = &cobra.Command{
@@ -38,14 +40,14 @@ detected agent/version/capabilities, and opens a node's full web UI through
 the hub at /node/<id>/ with the node's bearer token injected server-side —
 node tokens never reach the browser.
 
-Routes:
+Routes (root-mounted by default; when --base-path is set, prefix each route):
   GET  /                  hub dashboard
   GET  /api/nodes         list nodes with probe status (never includes tokens)
   POST /api/nodes         add a node to the local store
   DELETE /api/nodes/<id>  remove a local-store node
   POST /api/nodes/test    probe a node spec without persisting it
   POST /api/register-node register/update a reverse node (registration token)
-  GET  /api/connect      reverse-node websocket endpoint (node auth)
+  GET  /api/connect       reverse-node websocket endpoint (node auth)
   ANY  /node/<id>/...     reverse proxy to that node's serve
   POST /api/delegations   create a cross-node delegation (node auth)
   GET  /api/delegations   list delegations
@@ -79,6 +81,27 @@ func validateHubBind(host string, port int, requireAuth bool) error {
 	return nil
 }
 
+func normalizeHubBasePath(raw string) (string, error) {
+	p := strings.TrimSpace(raw)
+	if p == "" || p == "/" {
+		return "", nil
+	}
+	if strings.Contains(p, "://") || strings.ContainsAny(p, "?#") {
+		return "", fmt.Errorf("--base-path must be a URL path such as /hub, not %q", raw)
+	}
+	if !strings.HasPrefix(p, "/") {
+		p = "/" + p
+	}
+	if hubHasDotDotSegment(p) {
+		return "", fmt.Errorf("--base-path must not contain .. segments")
+	}
+	p = path.Clean(p)
+	if p == "/" || p == "." {
+		return "", nil
+	}
+	return p, nil
+}
+
 // defaultHubNodesFile is where dashboard-added nodes persist when
 // --nodes-file is not given.
 func defaultHubNodesFile() (string, error) {
@@ -96,6 +119,10 @@ func runServeHub(cmd *cobra.Command, args []string) error {
 	}
 	requireAuth := authMode != "none"
 	if err := validateHubBind(serveHubHost, serveHubPort, requireAuth); err != nil {
+		return err
+	}
+	hubBasePath, err := normalizeHubBasePath(serveHubBasePath)
+	if err != nil {
 		return err
 	}
 	token, tokenSource, err := resolveServeToken(serveHubToken, os.Getenv("TERM_LLM_HUB_TOKEN"), requireAuth, generateServeToken)
@@ -125,15 +152,16 @@ func runServeHub(cmd *cobra.Command, args []string) error {
 	s.requireAuth = requireAuth
 	s.token = token
 	s.registrationToken = resolveServeHubRegistrationToken(serveHubRegistrationTokenFlag)
+	s.basePath = hubBasePath
 	// The delegation ledger lives beside the node store (same private dir).
 	s.delegations = hub.NewDelegationStore(filepath.Join(filepath.Dir(nodesFile), "delegations.json"))
 	addr := net.JoinHostPort(serveHubHost, strconv.Itoa(serveHubPort))
 	srv := &http.Server{Addr: addr, Handler: s.handler()}
 
 	out := cmd.OutOrStdout()
-	fmt.Fprintf(out, "term-llm Hub listening on http://%s\n", addr)
-	fmt.Fprintf(out, "  GET http://%s/api/nodes\n", addr)
-	fmt.Fprintf(out, "  ANY http://%s/node/<id>/...\n", addr)
+	fmt.Fprintf(out, "term-llm Hub listening on http://%s%s\n", addr, s.hubPath("/"))
+	fmt.Fprintf(out, "  GET http://%s%s\n", addr, s.hubPath("/api/nodes"))
+	fmt.Fprintf(out, "  ANY http://%s%s\n", addr, s.hubPath("/node/<id>/..."))
 	fmt.Fprintf(out, "  node store: %s\n", nodesFile)
 	fmt.Fprintf(out, "  auth: %s\n", authSummary(requireAuth))
 	if requireAuth {
@@ -163,5 +191,6 @@ func init() {
 	serveHubCmd.Flags().StringVar(&serveHubNodesFile, "nodes-file", "", "Path to the JSON store for dashboard-added nodes (default: <data-dir>/hub/nodes.json)")
 	serveHubCmd.Flags().StringVar(&serveHubAuthMode, "auth", "bearer", "Hub auth mode: bearer or none (none is loopback-only)")
 	serveHubCmd.Flags().StringVar(&serveHubToken, "token", "", "Hub bearer token (defaults to $TERM_LLM_HUB_TOKEN, else auto-generated)")
+	serveHubCmd.Flags().StringVar(&serveHubBasePath, "base-path", "/", "URL prefix for the Hub dashboard/API when mounted behind a reverse proxy (e.g. /hub)")
 	serveHubCmd.Flags().StringVar(&serveHubRegistrationTokenFlag, "registration-token", "", "Token that allows reverse nodes to self-register (defaults to $TERM_LLM_HUB_REGISTRATION_TOKEN; empty disables registration)")
 }

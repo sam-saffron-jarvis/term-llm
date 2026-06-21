@@ -2,6 +2,7 @@ package cmd
 
 import (
 	_ "embed"
+	"encoding/json"
 	"html/template"
 	"net/http"
 )
@@ -20,7 +21,8 @@ var hubIndexCSS string
 var hubIndexTmpl = template.Must(template.New("hub-index").Parse(hubIndexHTML))
 
 type hubIndexView struct {
-	CSS template.CSS
+	CSS          template.CSS
+	BasePathJSON template.JS
 	// CanAddNodes toggles the Add Node UI.
 	CanAddNodes bool
 }
@@ -31,10 +33,12 @@ func (s *hubServer) handleIndex(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	baseJSON, _ := json.Marshal(s.basePath)
 	// Headers are committed if Execute fails mid-stream; nothing useful to
 	// surface to the client at that point.
 	_ = hubIndexTmpl.Execute(w, hubIndexView{
-		CSS:         template.CSS(hubIndexCSS),
-		CanAddNodes: s.store != nil,
+		CSS:          template.CSS(hubIndexCSS),
+		BasePathJSON: template.JS(string(baseJSON)),
+		CanAddNodes:  s.store != nil,
 	})
 }

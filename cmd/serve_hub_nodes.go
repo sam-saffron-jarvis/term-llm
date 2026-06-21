@@ -57,7 +57,7 @@ func (s *hubServer) collectNodes(ctx context.Context) ([]hubNodeView, error) {
 			Connection: n.Connection,
 			URL:        n.URL,
 			BasePath:   n.BasePath,
-			ProxyPath:  "/node/" + n.ID + "/",
+			ProxyPath:  s.hubPath("/node/" + n.ID + "/"),
 			HasToken:   n.Token != "",
 			Status:     statuses[n.ID],
 		}

@@ -27,7 +27,8 @@ type hubProxyTarget struct {
 	path     string // backend path: node base path + remainder
 	token    string // per-node bearer token, injected server-side
 	basePath string // node's baked-in prefix, e.g. /chat ("" when root)
-	mount    string // hub-facing prefix, e.g. /node/<id>
+	mount    string // hub-facing prefix, e.g. /hub/node/<id>
+	hubURL   string // hub-facing dashboard URL, e.g. /hub/
 }
 
 type hubProxyTargetKey struct{}
@@ -77,7 +78,7 @@ func (s *hubServer) handleNodeProxy(w http.ResponseWriter, r *http.Request) {
 	// Bare /node/<id> -> /node/<id>/ so the node UI's relative URLs resolve
 	// under the mount. Preserve the query string.
 	if rest == "" {
-		target := "/node/" + id + "/"
+		target := s.hubPath("/node/" + id + "/")
 		if r.URL.RawQuery != "" {
 			target += "?" + r.URL.RawQuery
 		}
@@ -97,7 +98,8 @@ func (s *hubServer) handleNodeProxy(w http.ResponseWriter, r *http.Request) {
 		path:     hubJoinBasePath(node.BasePath, rest),
 		token:    node.Token,
 		basePath: strings.TrimRight(node.BasePath, "/"),
-		mount:    "/node/" + node.ID,
+		mount:    s.hubNodeMount(node.ID),
+		hubURL:   s.hubPath("/"),
 	}
 	s.proxy.ServeHTTP(w, r.WithContext(withHubProxyTarget(r.Context(), t)))
 }
@@ -108,7 +110,7 @@ func (s *hubServer) handleReverseNodeProxy(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	if rest == "" {
-		target := "/node/" + node.ID + "/"
+		target := s.hubPath("/node/" + node.ID + "/")
 		if r.URL.RawQuery != "" {
 			target += "?" + r.URL.RawQuery
 		}
@@ -121,7 +123,8 @@ func (s *hubServer) handleReverseNodeProxy(w http.ResponseWriter, r *http.Reques
 		path:     hubJoinBasePath(node.BasePath, rest),
 		token:    node.Token,
 		basePath: strings.TrimRight(node.BasePath, "/"),
-		mount:    "/node/" + node.ID,
+		mount:    s.hubNodeMount(node.ID),
+		hubURL:   s.hubPath("/"),
 	}
 	body := r.Body
 	if body == nil {
@@ -389,11 +392,16 @@ func hubRebaseUIPrefix(body []byte, basePath, mount string) (out []byte, baseHit
 
 // hubInjectContext injects window.TERM_LLM_HUB into the served HTML head so
 // the node's web UI knows it was opened via the hub and can render a "Back
-// to Hub" link. The hub URL is root-relative ("/") because the proxied UI is
-// same-origin with the hub.
+// to Hub" link. The hub URL is root-relative because the proxied UI is
+// same-origin with the hub; it includes the hub mount when served under a
+// prefix such as /hub.
 func hubInjectContext(body []byte, t *hubProxyTarget) []byte {
+	hubURL := t.hubURL
+	if hubURL == "" {
+		hubURL = "/"
+	}
 	ctxJSON, err := json.Marshal(map[string]string{
-		"url":      "/",
+		"url":      hubURL,
 		"nodeId":   t.nodeID,
 		"nodeName": t.nodeName,
 	})

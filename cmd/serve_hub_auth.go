@@ -25,7 +25,7 @@ func (s *hubServer) handler() http.Handler {
 	mux.HandleFunc("/api/connect", s.handleReverseConnect)
 	mux.HandleFunc("/node/", s.handleNodeProxy)
 	mux.HandleFunc("/", s.handleIndex)
-	return s.auth(mux)
+	return s.mountBasePath(s.auth(mux))
 }
 
 func (s *hubServer) auth(next http.Handler) http.Handler {
@@ -47,13 +47,15 @@ func (s *hubServer) auth(next http.Handler) http.Handler {
 				if clean.RawQuery == "" {
 					clean.ForceQuery = false
 				}
+				clean.Path = s.hubPath(clean.Path)
+				clean.RawPath = ""
 				http.Redirect(w, r, clean.String(), http.StatusFound)
 				return
 			}
 		}
 		if !hubBearerTokenMatches(r, s.token) {
 			if hubShouldRenderLogin(r) {
-				writeHubLoginPage(w, r, hubQueryTokenSupplied(r))
+				s.writeHubLoginPage(w, r, hubQueryTokenSupplied(r))
 				return
 			}
 			writeOpenAIError(w, http.StatusUnauthorized, "invalid_api_key", "invalid hub authentication credentials")
@@ -197,13 +199,13 @@ var hubLoginTemplate = template.Must(template.New("hub-login").Parse(`<!doctype 
 </body>
 </html>`))
 
-func writeHubLoginPage(w http.ResponseWriter, r *http.Request, invalid bool) {
+func (s *hubServer) writeHubLoginPage(w http.ResponseWriter, r *http.Request, invalid bool) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(http.StatusUnauthorized)
-	action := r.URL.EscapedPath()
+	action := s.hubPath(r.URL.Path)
 	if action == "" {
-		action = "/"
+		action = s.hubPath("/")
 	}
 	if err := hubLoginTemplate.Execute(w, struct {
 		Action  string

@@ -248,6 +248,147 @@ func TestHubIndexShowsRegistrationHelpWithoutEmbeddingToken(t *testing.T) {
 	}
 }
 
+func TestHubBasePathMountsDashboardAPIAndProxy(t *testing.T) {
+	const body = `<html><head><base href="/chat/"><script>window.TERM_LLM_UI_PREFIX="/chat";</script></head><body></body></html>`
+	s := hubWithBackend(t, "/chat", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		io.WriteString(w, body)
+	})
+	s.basePath = "/hub"
+	h := s.handler()
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("root healthz status = %d, want 200", rec.Code)
+	}
+
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/nodes", nil))
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("unmounted API status = %d, want 404", rec.Code)
+	}
+
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/hub", nil))
+	if rec.Code != http.StatusTemporaryRedirect || rec.Header().Get("Location") != "/hub/" {
+		t.Fatalf("mount redirect status=%d location=%q, want 307 /hub/", rec.Code, rec.Header().Get("Location"))
+	}
+
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/hub/", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("index status = %d body=%q", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `const hubBasePath = "/hub";`) {
+		t.Fatalf("index did not expose hub base path: %s", rec.Body.String())
+	}
+
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/hub/api/nodes", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("nodes status = %d body=%q", rec.Code, rec.Body.String())
+	}
+	var nodesResp struct {
+		Nodes []hubNodeView `json:"nodes"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &nodesResp); err != nil {
+		t.Fatalf("decode nodes response: %v", err)
+	}
+	if len(nodesResp.Nodes) != 1 || nodesResp.Nodes[0].ProxyPath != "/hub/node/alpha/" {
+		t.Fatalf("nodes response = %+v, want prefixed proxy path", nodesResp.Nodes)
+	}
+
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/hub/node/alpha", nil))
+	if rec.Code != http.StatusTemporaryRedirect || rec.Header().Get("Location") != "/hub/node/alpha/" {
+		t.Fatalf("node redirect status=%d location=%q, want 307 /hub/node/alpha/", rec.Code, rec.Header().Get("Location"))
+	}
+
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/hub/node/alpha/", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("node proxy status = %d body=%q", rec.Code, rec.Body.String())
+	}
+	got := rec.Body.String()
+	for _, want := range []string{`<base href="/hub/node/alpha/">`, `window.TERM_LLM_UI_PREFIX="/hub/node/alpha"`, `"url":"/hub/"`} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("proxied node body missing %q: %s", want, got)
+		}
+	}
+}
+
+func TestHubAuthQueryTokenRedirectsInsideBasePath(t *testing.T) {
+	s := hubWithBackend(t, "/chat", func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, "ok")
+	})
+	s.requireAuth = true
+	s.token = "hub-secret"
+	s.basePath = "/hub"
+	h := s.handler()
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/hub/?token=hub-secret", nil))
+	if rec.Code != http.StatusFound || rec.Header().Get("Location") != "/hub/" {
+		t.Fatalf("query token redirect status=%d location=%q, want 302 /hub/", rec.Code, rec.Header().Get("Location"))
+	}
+
+	rec = httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/hub/", nil)
+	req.Header.Set("Accept", "text/html")
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("login status = %d, want 401", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), `action="/hub/"`) {
+		t.Fatalf("login form action not mounted: %s", rec.Body.String())
+	}
+}
+
+func TestHubBasePathRejectsEncodedSeparators(t *testing.T) {
+	s := newHubServer(hub.NewRegistry(), nil)
+	s.basePath = "/hub"
+	rec := httptest.NewRecorder()
+	s.handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/hub/node/a%2fb/", nil))
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", rec.Code)
+	}
+}
+
+func TestNormalizeHubBasePath(t *testing.T) {
+	cases := []struct {
+		in      string
+		want    string
+		wantErr bool
+	}{
+		{in: "", want: ""},
+		{in: "/", want: ""},
+		{in: "hub", want: "/hub"},
+		{in: "/hub/", want: "/hub"},
+		{in: "/hub//private", want: "/hub/private"},
+		{in: "https://wasnotwas.com/hub", wantErr: true},
+		{in: "/hub?x=1", wantErr: true},
+		{in: "/hub/../admin", wantErr: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.in, func(t *testing.T) {
+			got, err := normalizeHubBasePath(tc.in)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("normalizeHubBasePath(%q) = %q, want error", tc.in, got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("normalizeHubBasePath(%q): %v", tc.in, err)
+			}
+			if got != tc.want {
+				t.Fatalf("normalizeHubBasePath(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestHubRegistrationInfoDisabledOmitsToken(t *testing.T) {
 	store := hub.NewStore(filepath.Join(t.TempDir(), "nodes.json"))
 	s := newHubServer(hub.NewRegistry(store), store)
