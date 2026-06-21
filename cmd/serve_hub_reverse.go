@@ -142,16 +142,9 @@ func (p *hubReversePending) enqueue(resp hubReverseResponse) bool {
 		return false
 	}
 	select {
-	case <-p.done:
-		return false
-	default:
-	}
-	select {
 	case p.ch <- resp:
 		return true
 	case <-p.done:
-		return false
-	default:
 		return false
 	}
 }
