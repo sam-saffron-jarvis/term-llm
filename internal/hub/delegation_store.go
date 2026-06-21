@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"sync"
 	"time"
@@ -61,6 +62,62 @@ func (s *DelegationStore) readLocked() ([]Delegation, error) {
 	return f.Delegations, nil
 }
 
+func writeDelegationFileAtomically(path string, data []byte) error {
+	dir := filepath.Dir(path)
+	base := filepath.Base(path)
+	tf, err := os.CreateTemp(dir, "."+base+".*.tmp")
+	if err != nil {
+		return fmt.Errorf("create temp file: %w", err)
+	}
+	tempPath := tf.Name()
+	cleanup := true
+	defer func() {
+		if cleanup {
+			_ = os.Remove(tempPath)
+		}
+	}()
+
+	if _, err := tf.Write(data); err != nil {
+		_ = tf.Close()
+		return fmt.Errorf("write temp file: %w", err)
+	}
+	if err := tf.Sync(); err != nil {
+		_ = tf.Close()
+		return fmt.Errorf("sync temp file: %w", err)
+	}
+	if err := tf.Close(); err != nil {
+		return fmt.Errorf("close temp file: %w", err)
+	}
+	if err := os.Chmod(tempPath, 0o600); err != nil {
+		return fmt.Errorf("set temp file permissions: %w", err)
+	}
+	if err := os.Rename(tempPath, path); err != nil {
+		return fmt.Errorf("rename temp file: %w", err)
+	}
+	if err := os.Chmod(path, 0o600); err != nil {
+		return fmt.Errorf("secure hub delegation ledger permissions: %w", err)
+	}
+	if err := syncDirIfSupported(dir); err != nil {
+		return fmt.Errorf("sync hub delegation ledger dir: %w", err)
+	}
+
+	cleanup = false
+	return nil
+}
+
+func syncDirIfSupported(path string) error {
+	switch runtime.GOOS {
+	case "windows", "darwin":
+		return nil
+	}
+	d, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer d.Close()
+	return d.Sync()
+}
+
 func (s *DelegationStore) writeLocked(records []Delegation) error {
 	records = s.pruneLocked(records)
 	data, err := json.MarshalIndent(delegationFile{Delegations: records}, "", "  ")
@@ -71,15 +128,12 @@ func (s *DelegationStore) writeLocked(records []Delegation) error {
 		return fmt.Errorf("create hub delegation ledger dir: %w", err)
 	}
 	// 0600: prompts/responses are private content. Chmod first so an existing
-	// overly-permissive file is corrected as well as newly created files.
+	// overly-permissive file is corrected even if the atomic rewrite fails.
 	if err := os.Chmod(s.path, 0o600); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("secure hub delegation ledger permissions: %w", err)
 	}
-	if err := os.WriteFile(s.path, append(data, '\n'), 0o600); err != nil {
+	if err := writeDelegationFileAtomically(s.path, append(data, '\n')); err != nil {
 		return fmt.Errorf("write hub delegation ledger: %w", err)
-	}
-	if err := os.Chmod(s.path, 0o600); err != nil {
-		return fmt.Errorf("secure hub delegation ledger permissions: %w", err)
 	}
 	return nil
 }
