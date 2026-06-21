@@ -47,6 +47,10 @@ type hubServer struct {
 	requireAuth       bool
 	token             string
 	registrationToken string
+	// basePath is the external mount prefix for the hub dashboard/API. Empty
+	// means root-mounted; otherwise it is normalized like "/hub" with no
+	// trailing slash.
+	basePath string
 }
 
 func newHubServer(registry *hub.Registry, store *hub.Store) *hubServer {

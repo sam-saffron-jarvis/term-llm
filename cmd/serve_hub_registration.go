@@ -157,7 +157,7 @@ func (s *hubServer) handleRegisterNode(w http.ResponseWriter, r *http.Request) {
 			Source:     stored.Source,
 			Connection: stored.Connection,
 			BasePath:   stored.BasePath,
-			ProxyPath:  "/node/" + stored.ID + "/",
+			ProxyPath:  s.hubPath("/node/" + stored.ID + "/"),
 			HasToken:   stored.Token != "",
 		},
 		"created": created,

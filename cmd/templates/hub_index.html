@@ -133,6 +133,11 @@ term-llm serve hub</code></pre>
   <script>
   (() => {
     'use strict';
+    const hubBasePath = {{.BasePathJSON}};
+    const hubPath = (path) => {
+      const p = path.startsWith('/') ? path : `/${path}`;
+      return `${hubBasePath}${p}`;
+    };
     const grid = document.getElementById('nodeGrid');
     const delegationsList = document.getElementById('delegationsList');
     const delegationsCount = document.getElementById('delegationsCount');
@@ -154,13 +159,15 @@ term-llm serve hub</code></pre>
         const u = new URL(raw, window.location.href);
         if (u.protocol === 'http:' || u.protocol === 'https:') return u.href;
       } catch (_) {}
-      if (raw.startsWith('/node/')) return raw;
+      const nodePrefix = hubPath('/node/');
+      if (raw.startsWith(nodePrefix)) return raw;
+      if (raw.startsWith('/node/')) return hubPath(raw);
       if (raw.startsWith('/') && delegation && delegation.target_node) {
         const base = nodeBasePaths.get(delegation.target_node) || '';
         let p = raw;
         if (base && p === base) p = '/';
         if (base && p.startsWith(base + '/')) p = p.slice(base.length);
-        return `/node/${encodeURIComponent(delegation.target_node)}${p}`;
+        return hubPath(`/node/${encodeURIComponent(delegation.target_node)}${p}`);
       }
       if (raw.startsWith('/')) return raw;
       return '';
