@@ -1,8 +1,10 @@
 package cmd
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -77,6 +79,30 @@ func TestHubReverseNodeProxy(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), `"agent":"artist"`) {
 		t.Fatalf("body = %q", rec.Body.String())
+	}
+}
+
+func TestHubReverseNodeProxyRejectsOversizedRequestBody(t *testing.T) {
+	node := hub.Node{ID: "artist", Name: "Artist", Connection: "reverse", BasePath: "/chat", Token: "node-token"}
+	s := newHubServer(hub.NewRegistry(fakeHubResolver{nodes: []hub.Node{node}}), nil)
+	s.reverse.mu.Lock()
+	s.reverse.conns[node.ID] = &hubReverseConnection{pending: map[string]*hubReversePending{}}
+	conn := s.reverse.conns[node.ID]
+	s.reverse.mu.Unlock()
+
+	body := bytes.Repeat([]byte("x"), hubReverseRequestMaxBodyBytes+1)
+	req := httptest.NewRequest(http.MethodPost, "/node/artist/upload", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	s.handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("status = %d body=%q", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), fmt.Sprintf("exceeds %d bytes", hubReverseRequestMaxBodyBytes)) {
+		t.Fatalf("body = %q", rec.Body.String())
+	}
+	if got := conn.requestSeq.Load(); got != 0 {
+		t.Fatalf("reverse request sequence advanced to %d for rejected oversized request", got)
 	}
 }
 

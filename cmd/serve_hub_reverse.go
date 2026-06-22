@@ -25,11 +25,12 @@ import (
 // accepted and exposed as an ordinary http.Response reader.
 
 const (
-	hubReversePingInterval  = 20 * time.Second
-	hubReversePongWait      = 60 * time.Second
-	hubReverseWriteWait     = 10 * time.Second
-	hubReverseChunkSize     = 32 * 1024
-	hubReversePendingBuffer = 16
+	hubReversePingInterval        = 20 * time.Second
+	hubReversePongWait            = 60 * time.Second
+	hubReverseWriteWait           = 10 * time.Second
+	hubReverseChunkSize           = 32 * 1024
+	hubReversePendingBuffer       = 16
+	hubReverseRequestMaxBodyBytes = 32 << 20
 
 	hubReverseFrameRequest       = "request"
 	hubReverseFrameCancel        = "cancel"
@@ -339,6 +340,33 @@ func (c *hubReverseConnection) writeRequest(frame hubReverseRequest) error {
 	return err
 }
 
+func hubReadReverseRequestBody(body io.ReadCloser) (data []byte, overLimit bool, err error) {
+	defer body.Close()
+	data, err = io.ReadAll(io.LimitReader(body, hubReverseRequestMaxBodyBytes+1))
+	if err != nil {
+		return nil, false, err
+	}
+	if len(data) > hubReverseRequestMaxBodyBytes {
+		return data, true, nil
+	}
+	return data, false, nil
+}
+
+func hubReverseErrorResponse(req *http.Request, status int, msg string) *http.Response {
+	if msg != "" && msg[len(msg)-1] != '\n' {
+		msg += "\n"
+	}
+	body := []byte(msg)
+	return &http.Response{
+		StatusCode:    status,
+		Status:        fmt.Sprintf("%d %s", status, http.StatusText(status)),
+		Header:        http.Header{"Content-Type": []string{"text/plain; charset=utf-8"}},
+		Body:          io.NopCloser(bytes.NewReader(body)),
+		ContentLength: int64(len(body)),
+		Request:       req,
+	}
+}
+
 func (m *hubReverseManager) do(ctx context.Context, node hub.Node, req *http.Request) (*http.Response, error) {
 	if m == nil {
 		return nil, fmt.Errorf("node %q is configured for reverse connection but reverse transport is disabled", node.ID)
@@ -351,10 +379,14 @@ func (m *hubReverseManager) do(ctx context.Context, node hub.Node, req *http.Req
 	}
 	var body []byte
 	if req.Body != nil {
+		var overLimit bool
 		var readErr error
-		body, readErr = io.ReadAll(io.LimitReader(req.Body, 32<<20))
+		body, overLimit, readErr = hubReadReverseRequestBody(req.Body)
 		if readErr != nil {
 			return nil, readErr
+		}
+		if overLimit {
+			return hubReverseErrorResponse(req, http.StatusRequestEntityTooLarge, fmt.Sprintf("hub reverse proxy request body exceeds %d bytes", hubReverseRequestMaxBodyBytes)), nil
 		}
 	}
 	id := c.nextRequestID()
