@@ -817,3 +817,150 @@ func TestJobsV2LLMRunnerHubDelegationContext(t *testing.T) {
 		t.Fatalf("delegation id without labels = %q, want empty", got)
 	}
 }
+
+func TestDelegationRefreshErrorTerminalDoesNotTerminalizeDeadline(t *testing.T) {
+	prevStaleAfter := hubDelegationCapRefreshErrorStaleAfter
+	hubDelegationCapRefreshErrorStaleAfter = time.Nanosecond
+	defer func() { hubDelegationCapRefreshErrorStaleAfter = prevStaleAfter }()
+
+	d := hub.Delegation{
+		ID:        "dlg_deadline",
+		Status:    hub.DelegationStatusRunning,
+		UpdatedAt: time.Now().Add(-time.Hour),
+	}
+	if delegationRefreshErrorTerminal(d, context.DeadlineExceeded) {
+		t.Fatal("context deadline exceeded should not terminalize a potentially healthy running delegation")
+	}
+	if !delegationRefreshErrorTerminal(d, fmt.Errorf("lookup target: %w", errDelegationTargetNotRegistered)) {
+		t.Fatal("missing target sentinel should terminalize the delegation")
+	}
+}
+
+func TestCheckDelegationCapsRecoversMissingTargetRecords(t *testing.T) {
+	s, _ := newDelegationHub(t)
+	now := time.Now().Add(-time.Hour).UTC()
+	for i := 0; i < hubDelegationOriginMaxInFlight; i++ {
+		if err := s.delegations.Add(hub.Delegation{
+			ID:         fmt.Sprintf("dlg_missing_%d", i),
+			OriginNode: "alpha",
+			TargetNode: "gone",
+			JobID:      fmt.Sprintf("job_%d", i),
+			RunID:      fmt.Sprintf("run_%d", i),
+			Status:     hub.DelegationStatusRunning,
+			Depth:      1,
+			Chain:      []string{"alpha", "gone"},
+			CreatedAt:  now.Add(time.Duration(i) * time.Second),
+			UpdatedAt:  now.Add(time.Duration(i) * time.Second),
+		}); err != nil {
+			t.Fatalf("Add stale delegation %d: %v", i, err)
+		}
+	}
+
+	origin, ok := s.registry.Lookup("alpha")
+	if !ok {
+		t.Fatal("origin node alpha missing from registry")
+	}
+	target, ok := s.registry.Lookup("beta")
+	if !ok {
+		t.Fatal("target node beta missing from registry")
+	}
+	if err := s.checkDelegationCaps(t.Context(), origin, target); err != nil {
+		t.Fatalf("checkDelegationCaps: %v", err)
+	}
+
+	records, err := s.delegations.List()
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	for _, d := range records {
+		if d.Status != hub.DelegationStatusError {
+			t.Fatalf("delegation %q status = %q, want %q", d.ID, d.Status, hub.DelegationStatusError)
+		}
+		if !strings.Contains(d.Error, `target node "gone": target node is not present in the hub registry`) {
+			t.Fatalf("delegation %q error = %q, want missing-target refresh error", d.ID, d.Error)
+		}
+	}
+
+	total, byOrigin, byTarget, err := s.delegations.ActiveCounts()
+	if err != nil {
+		t.Fatalf("ActiveCounts: %v", err)
+	}
+	if total != 0 || byOrigin[origin.ID] != 0 || byTarget["gone"] != 0 {
+		t.Fatalf("active counts after recovery = total=%d byOrigin=%v byTarget=%v, want all cleared", total, byOrigin, byTarget)
+	}
+}
+
+func TestCheckDelegationCapsRefreshIsTimeBound(t *testing.T) {
+	prevBudget := hubDelegationCapRefreshBudget
+	prevTimeout := hubDelegationCapRefreshTimeout
+	prevParallelism := hubDelegationCapRefreshParallelism
+	prevStaleAfter := hubDelegationCapRefreshErrorStaleAfter
+	hubDelegationCapRefreshBudget = 120 * time.Millisecond
+	hubDelegationCapRefreshTimeout = 40 * time.Millisecond
+	hubDelegationCapRefreshParallelism = 4
+	hubDelegationCapRefreshErrorStaleAfter = 0
+	defer func() {
+		hubDelegationCapRefreshBudget = prevBudget
+		hubDelegationCapRefreshTimeout = prevTimeout
+		hubDelegationCapRefreshParallelism = prevParallelism
+		hubDelegationCapRefreshErrorStaleAfter = prevStaleAfter
+	}()
+
+	slow := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasPrefix(r.URL.Path, "/chat/v2/runs/") {
+			http.NotFound(w, r)
+			return
+		}
+		select {
+		case <-r.Context().Done():
+			return
+		case <-time.After(200 * time.Millisecond):
+			writeJSON(w, http.StatusOK, map[string]any{"id": strings.TrimPrefix(r.URL.Path, "/chat/v2/runs/"), "status": "running"})
+		}
+	}))
+	defer slow.Close()
+
+	nodes := []hub.Node{
+		{ID: "alpha", Name: "Alpha", URL: slow.URL, BasePath: "/chat", Token: "alpha-token", Delegation: &hub.DelegationPolicy{Enabled: true, Workdir: "/work"}},
+		{ID: "beta", Name: "Beta", URL: slow.URL, BasePath: "/chat", Token: "beta-token", Delegation: &hub.DelegationPolicy{Enabled: true, Workdir: "/work", MaxInFlight: 1}},
+	}
+	s := newHubServer(hub.NewRegistry(fakeHubResolver{nodes: nodes}), nil)
+	s.delegations = hub.NewDelegationStore(filepath.Join(t.TempDir(), "delegations.json"))
+
+	now := time.Now().Add(-time.Minute).UTC()
+	for i := 0; i < 8; i++ {
+		if err := s.delegations.Add(hub.Delegation{
+			ID:         fmt.Sprintf("dlg_slow_%d", i),
+			OriginNode: "alpha",
+			TargetNode: "beta",
+			JobID:      fmt.Sprintf("job_%d", i),
+			RunID:      fmt.Sprintf("run_%d", i),
+			Status:     hub.DelegationStatusRunning,
+			Depth:      1,
+			Chain:      []string{"alpha", "beta"},
+			CreatedAt:  now.Add(time.Duration(i) * time.Second),
+			UpdatedAt:  now.Add(time.Duration(i) * time.Second),
+		}); err != nil {
+			t.Fatalf("Add slow delegation %d: %v", i, err)
+		}
+	}
+
+	origin, ok := s.registry.Lookup("alpha")
+	if !ok {
+		t.Fatal("origin node alpha missing from registry")
+	}
+	target, ok := s.registry.Lookup("beta")
+	if !ok {
+		t.Fatal("target node beta missing from registry")
+	}
+
+	start := time.Now()
+	err := s.checkDelegationCaps(t.Context(), origin, target)
+	elapsed := time.Since(start)
+	if err == nil {
+		t.Fatal("checkDelegationCaps unexpectedly succeeded with all active records still running")
+	}
+	if elapsed >= 300*time.Millisecond {
+		t.Fatalf("checkDelegationCaps took %v, want bounded parallel refresh under 300ms", elapsed)
+	}
+}
