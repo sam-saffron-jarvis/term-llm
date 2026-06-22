@@ -3070,6 +3070,47 @@ async function testToolExecImagesAttachToToolArtifactNotAssistantMarkdown() {
   pass(name);
 }
 
+async function testToolExecImagesUseHubAssetRebase() {
+  const name = 'tool_exec.end images use hub asset rebase helper';
+  const harness = createHarness();
+  const { app, state, cleanup } = harness;
+  app.rebaseHubAssetURL = (url) => String(url || '').replace('/ui/images/', '/hub/node/alpha/images/');
+
+  const session = {
+    id: 'session_tool_image_hub',
+    title: 'image artifact hub',
+    messages: [],
+    lastResponseId: null,
+    activeResponseId: 'resp_tool_image_hub',
+    lastSequenceNumber: 0,
+    number: 1,
+  };
+  state.sessions.push(session);
+  state.activeSessionId = session.id;
+
+  const streamState = app.createResponseStreamState(session);
+  app.applyResponseStreamEvent(session, streamState, 'response.output_item.added', {
+    output_index: 0,
+    item: { type: 'function_call', call_id: 'call_img_hub', name: 'image_generate' },
+  });
+  app.applyResponseStreamEvent(session, streamState, 'response.tool_exec.end', {
+    call_id: 'call_img_hub',
+    tool_name: 'image_generate',
+    success: true,
+    images: ['/ui/images/generated.png'],
+  });
+
+  const tool = session.messages.find((message) => message.role === 'tool-group')?.tools?.[0];
+  if (!tool || !Array.isArray(tool.images) || tool.images[0] !== '/hub/node/alpha/images/generated.png') {
+    fail(name, 'tool image URL was not rebased through helper', JSON.stringify(session.messages));
+    await cleanup();
+    return;
+  }
+
+  await cleanup();
+  pass(name);
+}
+
 async function testSendMessageLazilyMaterializesAttachmentDataURLs() {
   const name = 'sendMessage lazily materializes attachment data URLs only when sending';
   let readCount = 0;
@@ -4037,6 +4078,7 @@ function testCompletedResponseClearsUnappliedQueuedEffort() {
   await testArgumentDeltasContinueUntilOutputItemDone();
   await testSeededToolArgumentsIgnoreReplayDeltas();
   await testToolExecImagesAttachToToolArtifactNotAssistantMarkdown();
+  await testToolExecImagesUseHubAssetRebase();
   await testResumeActiveResponseFallsBackToReplayWhenSnapshotUnavailable();
   await testResumeActiveResponseClearsTerminalTrackingWhen409SnapshotHasNoRecovery();
   await testSendMessageIncludesModelSwapForChangedTarget();

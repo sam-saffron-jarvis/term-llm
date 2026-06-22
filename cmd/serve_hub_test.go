@@ -126,7 +126,7 @@ func TestHubBasePathRebasesProxyDashboardLinksAndRedirects(t *testing.T) {
 	for _, want := range []string{
 		`<base href="/hub/node/alpha/">`,
 		`window.TERM_LLM_UI_PREFIX="/hub/node/alpha"`,
-		`window.TERM_LLM_HUB={"nodeId":"alpha","nodeName":"Alpha","url":"/hub/"}`,
+		`window.TERM_LLM_HUB={"nodeBasePath":"/chat","nodeId":"alpha","nodeName":"Alpha","url":"/hub/"}`,
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("proxied HTML missing %q: %s", want, got)
@@ -409,7 +409,7 @@ func TestHubBasePathMountsDashboardAPIAndProxy(t *testing.T) {
 		t.Fatalf("node proxy status = %d body=%q", rec.Code, rec.Body.String())
 	}
 	got := rec.Body.String()
-	for _, want := range []string{`<base href="/hub/node/alpha/">`, `window.TERM_LLM_UI_PREFIX="/hub/node/alpha"`, `"url":"/hub/"`} {
+	for _, want := range []string{`<base href="/hub/node/alpha/">`, `window.TERM_LLM_UI_PREFIX="/hub/node/alpha"`, `"nodeBasePath":"/chat"`, `"url":"/hub/"`} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("proxied node body missing %q: %s", want, got)
 		}
@@ -868,7 +868,7 @@ func TestHubProxyRebasesAndInjectsHubContext(t *testing.T) {
 	if !strings.Contains(got, `window.TERM_LLM_UI_PREFIX="/node/alpha"`) {
 		t.Errorf("UI prefix not rebased: %s", got)
 	}
-	if !strings.Contains(got, `window.TERM_LLM_HUB={"nodeId":"alpha","nodeName":"Alpha","url":"/"}`) {
+	if !strings.Contains(got, `window.TERM_LLM_HUB={"nodeBasePath":"/chat","nodeId":"alpha","nodeName":"Alpha","url":"/"}`) {
 		t.Errorf("hub context not injected: %s", got)
 	}
 	if cl := rec.Header().Get("Content-Length"); cl != fmt.Sprintf("%d", len(got)) {

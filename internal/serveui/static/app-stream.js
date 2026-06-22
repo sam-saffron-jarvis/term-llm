@@ -12,6 +12,12 @@ const {
   renderAttachments, buildAttachmentInputParts, cloneAttachmentForMessage
 } = app;
 
+const rebaseStreamAssetURL = (url) => (
+  typeof app.rebaseHubAssetURL === 'function'
+    ? app.rebaseHubAssetURL(url)
+    : String(url || '').trim()
+);
+
 // ===== Network helpers =====
 const requestHeaders = (sessionId, tokenOverride = '') => {
   const headers = {
@@ -831,7 +837,7 @@ const applyResponseStreamEvent = (session, streamState, event, payload) => {
       if (entry) {
         const existing = Array.isArray(entry.images) ? entry.images : [];
         payload.images.forEach((url) => {
-          const normalized = String(url || '').trim();
+          const normalized = rebaseStreamAssetURL(url);
           if (normalized && !existing.includes(normalized)) existing.push(normalized);
         });
         if (existing.length > 0) entry.images = existing;

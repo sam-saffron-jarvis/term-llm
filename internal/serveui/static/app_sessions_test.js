@@ -286,9 +286,10 @@ async function createSessionsHarness(options = {}) {
   };
 
   const windowObj = {
-    TERM_LLM_UI_PREFIX: '/ui',
+    TERM_LLM_UI_PREFIX: options.uiPrefix || '/ui',
     TERM_LLM_SIDEBAR_SESSIONS: 'all',
-    location: { pathname: options.pathname || '/ui/', search: '', origin: 'https://example.test' },
+    TERM_LLM_HUB: options.hub || null,
+    location: { pathname: options.pathname || `${options.uiPrefix || '/ui'}/`, search: '', origin: 'https://example.test', protocol: 'https:', host: 'example.test' },
     history: { pushState(_state, _title, url) { windowObj.location.pathname = url; } },
     matchMedia() {
       return {
@@ -1127,6 +1128,52 @@ async function testConvertServerMessagesAttachesToolResultImages() {
   ));
   if (assistantMarkdown) {
     fail(name, 'tool result image should not become assistant markdown', JSON.stringify(assistantMarkdown));
+    return;
+  }
+
+  pass(name);
+}
+
+async function testConvertServerMessagesRebasesHubImageURLs() {
+  const name = 'server message conversion rebases hub image URLs';
+  const { app } = await createSessionsHarness({
+    uiPrefix: '/hub/node/alpha',
+    pathname: '/hub/node/alpha/',
+    hub: { url: '/hub/', nodeId: 'alpha', nodeName: 'Alpha', nodeBasePath: '/ui' }
+  });
+
+  const converted = app.convertServerMessages([
+    {
+      role: 'user',
+      created_at: 1000,
+      parts: [
+        { type: 'image', image_url: '/ui/images/upload.png', mime_type: 'image/png' },
+        { type: 'text', text: 'look at this' },
+      ],
+    },
+    {
+      role: 'tool',
+      created_at: 2000,
+      parts: [{
+        type: 'tool_result',
+        tool_name: 'image_generate',
+        tool_call_id: 'call_img',
+        images: ['/ui/images/generated.png', '/ui/files/artifact.svg'],
+      }],
+    },
+  ]);
+
+  const user = converted.find((message) => message.role === 'user');
+  const userImage = user?.attachments?.[0]?.dataURL;
+  if (userImage !== '/hub/node/alpha/images/upload.png') {
+    fail(name, `user image URL = ${JSON.stringify(userImage)}`, JSON.stringify(converted));
+    return;
+  }
+
+  const tool = converted.find((message) => message.role === 'tool-group')?.tools?.[0];
+  const images = tool?.images || [];
+  if (images[0] !== '/hub/node/alpha/images/generated.png' || images[1] !== '/hub/node/alpha/files/artifact.svg') {
+    fail(name, 'tool image URLs were not rebased', JSON.stringify(converted));
     return;
   }
 
@@ -3598,6 +3645,7 @@ async function testMCPPatchConflictDoesNotOptimisticallyEnable() {
   await testConvertServerMessagesHandlesMixedLegacyAndAuthoritativeCompactionTails();
   await testConvertServerMessagesInsertsBoundaryWhenSummaryNotLoaded();
   await testConvertServerMessagesAttachesToolResultImages();
+  await testConvertServerMessagesRebasesHubImageURLs();
   await testConvertServerMessagesSuppressesNonBubbleAssistantRows();
   await testSessionHistoryInitialLoadRequestsTailOnly();
   await testScrollNearTopLoadsOlderPageAndPreservesViewport();

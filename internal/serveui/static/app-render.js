@@ -11,6 +11,12 @@ const {
 
 const isMobileViewport = () => window.matchMedia('(max-width: 767px)').matches;
 
+const rebaseAssetURL = (url) => (
+  typeof app.rebaseHubAssetURL === 'function'
+    ? app.rebaseHubAssetURL(url)
+    : String(url || '').trim()
+);
+
 const directionForText = (value) => {
   const text = String(value || '');
   for (let i = 0; i < text.length; i++) {
@@ -527,8 +533,8 @@ const buildDeferredVideoNode = (video) => {
   button.className = 'deferred-video-btn';
   button.textContent = 'Load video';
 
-  const src = video.getAttribute('src') || '';
-  const poster = video.getAttribute('poster') || '';
+  const src = rebaseAssetURL(video.getAttribute('src') || '');
+  const poster = rebaseAssetURL(video.getAttribute('poster') || '');
   const preload = video.getAttribute('preload') || '';
   if (src) button.dataset.videoSrc = src;
   if (poster) button.dataset.videoPoster = poster;
@@ -536,7 +542,7 @@ const buildDeferredVideoNode = (video) => {
 
   const sources = Array.from(video.querySelectorAll('source'))
     .map((source) => ({
-      src: source.getAttribute('src') || '',
+      src: rebaseAssetURL(source.getAttribute('src') || ''),
       type: source.getAttribute('type') || ''
     }))
     .filter((source) => source.src);
@@ -750,7 +756,15 @@ const decorateAssistantFragment = (target, options = {}) => {
   if (!target) return;
   const streaming = Boolean(options.streaming);
   deferEmbeddedVideos(target);
+  target.querySelectorAll('img').forEach((img) => {
+    const rawSrc = img.getAttribute?.('src') || img.src || '';
+    const rebased = rebaseAssetURL(rawSrc);
+    if (rebased && rebased !== rawSrc) img.src = rebased;
+  });
   target.querySelectorAll('a').forEach((a) => {
+    const rawHref = a.getAttribute?.('href') || a.href || '';
+    const rebased = rebaseAssetURL(rawHref);
+    if (rebased && rebased !== rawHref) a.href = rebased;
     a.target = '_blank';
     a.rel = 'noopener noreferrer';
   });
@@ -1394,7 +1408,8 @@ const createMessageNode = (message) => {
       const attDiv = document.createElement('div');
       attDiv.className = 'message-attachments';
       message.attachments.forEach(att => {
-        const previewURL = att.previewURL || att.dataURL || '';
+        const rawPreviewURL = att.previewURL || att.dataURL || '';
+        const previewURL = rebaseAssetURL(rawPreviewURL);
         if (att.type && att.type.startsWith('image/') && previewURL) {
           const img = document.createElement('img');
           img.src = previewURL;
@@ -1498,7 +1513,7 @@ const toolImageArtifacts = (message) => {
   const artifacts = [];
   const seen = new Set();
   const append = (url, toolName) => {
-    const src = String(url || '').trim();
+    const src = rebaseAssetURL(url);
     if (!src || seen.has(src)) return;
     seen.add(src);
     artifacts.push({ src, toolName: String(toolName || 'tool') });

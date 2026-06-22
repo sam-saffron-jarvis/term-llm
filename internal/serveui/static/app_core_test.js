@@ -126,7 +126,7 @@ function loadAppCoreWith({ nodeOverrides = {}, docQSTracker = () => [], navigato
     cancelAnimationFrame() {},
     setTimeout: timerOverrides.setTimeout || function setTimeoutStub(fn) { return 1; },
     clearTimeout: timerOverrides.clearTimeout || function clearTimeoutStub() {},
-    location: { pathname: '/chat', href: '/chat' },
+    location: { pathname: '/chat', href: 'http://localhost/chat', origin: 'http://localhost', protocol: 'http:', host: 'localhost' },
     history: { pushState() {} },
     MediaRecorder: undefined,
     focus() {},
@@ -248,6 +248,45 @@ const app = loadAppCore();
 
   if (testApp.state.token !== 'scoped-token') {
     fail(name, `token = ${JSON.stringify(testApp.state.token)}`);
+    return;
+  }
+  pass(name);
+})();
+
+(function testHubAssetURLsRebaseToCurrentNodeMount() {
+  const name = 'hub asset URLs rebase from node base path to current mount';
+  const testApp = loadAppCoreWith({
+    hub: { url: '/', nodeId: 'alpha', nodeName: 'Alpha', nodeBasePath: '/ui' }
+  });
+
+  const cases = [
+    ['/ui/images/serve-abc.png', '/chat/images/serve-abc.png'],
+    ['/ui/files/art.svg?download=1#preview', '/chat/files/art.svg?download=1#preview'],
+    ['http://localhost/ui/images/serve-abc.png', 'http://localhost/chat/images/serve-abc.png'],
+    ['/ui/v1/models', '/ui/v1/models'],
+    ['images/local.png', 'images/local.png'],
+    ['data:image/png;base64,aaa', 'data:image/png;base64,aaa'],
+    ['https://elsewhere.test/ui/images/serve-abc.png', 'https://elsewhere.test/ui/images/serve-abc.png']
+  ];
+
+  for (const [input, expected] of cases) {
+    const got = testApp.rebaseHubAssetURL(input);
+    if (got !== expected) {
+      fail(name, `${JSON.stringify(input)} -> ${JSON.stringify(got)}, want ${JSON.stringify(expected)}`);
+      return;
+    }
+  }
+  pass(name);
+})();
+
+(function testHubAssetURLsDoNotRebaseDirectHubContext() {
+  const name = 'hub asset URL rebase is inert without proxied node base path';
+  const testApp = loadAppCoreWith({
+    hub: { url: '/', nodeId: 'alpha', nodeName: 'Alpha' }
+  });
+  const got = testApp.rebaseHubAssetURL('/ui/images/serve-abc.png');
+  if (got !== '/ui/images/serve-abc.png') {
+    fail(name, `got ${JSON.stringify(got)}`);
     return;
   }
   pass(name);

@@ -153,6 +153,65 @@ const apiPathForURL = (url) => {
   }
 };
 
+const normalizeRoutePrefix = (value) => {
+  let prefix = String(value || '').trim();
+  if (!prefix || !prefix.startsWith('/')) return '';
+  prefix = prefix.replace(/\/+$/, '');
+  return prefix;
+};
+
+const sameOriginForURLParsing = () => {
+  const origin = String(window.location?.origin || '').trim();
+  if (origin) return origin;
+  const protocol = String(window.location?.protocol || '').trim();
+  const host = String(window.location?.host || '').trim();
+  if (protocol && host) return `${protocol}//${host}`;
+  return 'http://localhost';
+};
+
+const hubAssetRouteSuffix = (pathname, nodeBasePath) => {
+  for (const route of ['/images/', '/files/']) {
+    const prefix = nodeBasePath + route;
+    if (pathname.startsWith(prefix)) return pathname.slice(nodeBasePath.length);
+    const routeWithoutSlash = route.slice(0, -1);
+    if (pathname === nodeBasePath + routeWithoutSlash) return routeWithoutSlash;
+  }
+  return '';
+};
+
+// The hub proxy leaves JSON/SSE bodies untouched so streaming stays streaming.
+// When a proxied node reports root-relative asset URLs using its baked-in base
+// path (for example /ui/images/foo.png), re-home those URLs under the current
+// hub node mount (for example /hub/node/alpha/images/foo.png) before rendering.
+const rebaseHubAssetURL = (rawURL) => {
+  const value = String(rawURL || '').trim();
+  if (!value || !HUB_CONTEXT) return value;
+
+  const nodeBasePath = normalizeRoutePrefix(HUB_CONTEXT.nodeBasePath || HUB_CONTEXT.basePath || '');
+  const mountBasePath = normalizeRoutePrefix(UI_PREFIX);
+  if (!nodeBasePath || !mountBasePath || nodeBasePath === mountBasePath) return value;
+
+  const origin = sameOriginForURLParsing();
+  let parsed;
+  try {
+    parsed = new URL(value, origin);
+  } catch {
+    return value;
+  }
+  if (parsed.origin !== origin) return value;
+
+  const isRootRelative = value.startsWith('/');
+  const isAbsolute = /^[a-z][a-z0-9+.-]*:\/\//i.test(value);
+  if (!isRootRelative && !isAbsolute) return value;
+
+  const suffix = hubAssetRouteSuffix(parsed.pathname, nodeBasePath);
+  if (!suffix) return value;
+
+  parsed.pathname = mountBasePath + suffix;
+  if (isAbsolute) return parsed.href;
+  return parsed.pathname + parsed.search + parsed.hash;
+};
+
 const maybeReloadForUIVersion = (response) => {
   if (!response || !UI_VERSION || uiVersionReloading) return false;
   const serverVersion = response.headers?.get?.('x-term-llm-ui-version') || '';
@@ -1771,7 +1830,7 @@ const sanitizeMessage = (msg) => {
     base.status = msg.status === 'done' ? 'done' : 'running';
     base.expanded = Boolean(msg.expanded);
     if (Array.isArray(msg.images) && msg.images.length > 0) {
-      base.images = msg.images.map((url) => String(url || '').trim()).filter(Boolean);
+      base.images = msg.images.map((url) => rebaseHubAssetURL(url)).filter(Boolean);
     }
     return base;
   }
@@ -1786,7 +1845,7 @@ const sanitizeMessage = (msg) => {
         created: asTimestamp(t.created)
       };
       if (Array.isArray(t.images) && t.images.length > 0) {
-        tool.images = t.images.map((url) => String(url || '').trim()).filter(Boolean);
+        tool.images = t.images.map((url) => rebaseHubAssetURL(url)).filter(Boolean);
       }
       return tool;
     }) : [];
@@ -2181,6 +2240,7 @@ Object.assign(app, {
   UI_PREFIX,
   UI_VERSION,
   HUB_CONTEXT,
+  rebaseHubAssetURL,
   maybeReloadForUIVersion,
   parseSidebarSessionCategories,
   isStandalone,

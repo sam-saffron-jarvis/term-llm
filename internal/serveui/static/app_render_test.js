@@ -29,6 +29,19 @@ function assertEqual(actual, expected, message) {
   }
 }
 
+function parseAttributes(rawAttrs) {
+  const attrs = [];
+  String(rawAttrs || '').replace(/([A-Za-z_:][-A-Za-z0-9_:.]*)\s*=\s*"([^"]*)"/g, (_match, name, value) => {
+    attrs.push([name, value]);
+    return '';
+  });
+  return attrs;
+}
+
+function applyParsedAttributes(node, rawAttrs) {
+  parseAttributes(rawAttrs).forEach(([name, value]) => node.setAttribute(name, value));
+}
+
 class ClassList {
   constructor(element) {
     this.element = element;
@@ -105,6 +118,38 @@ class Element {
       pre.textContent = codeMatch[2];
       pre.appendChild(code);
       this.appendChild(pre);
+      return;
+    }
+
+    const videoMatch = html.match(/<video\b([^>]*)>([\s\S]*?)<\/video>/i);
+    if (videoMatch) {
+      const video = new Element('video');
+      applyParsedAttributes(video, videoMatch[1]);
+      const sourceRe = /<source\b([^>]*)>/gi;
+      let sourceMatch;
+      while ((sourceMatch = sourceRe.exec(videoMatch[2])) !== null) {
+        const source = new Element('source');
+        applyParsedAttributes(source, sourceMatch[1]);
+        video.appendChild(source);
+      }
+      this.appendChild(video);
+    }
+
+    const imgRe = /<img\b([^>]*)>/gi;
+    let imgMatch;
+    while ((imgMatch = imgRe.exec(html)) !== null) {
+      const img = new Element('img');
+      applyParsedAttributes(img, imgMatch[1]);
+      this.appendChild(img);
+    }
+
+    const anchorRe = /<a\b([^>]*)>([\s\S]*?)<\/a>/gi;
+    let anchorMatch;
+    while ((anchorMatch = anchorRe.exec(html)) !== null) {
+      const anchor = new Element('a');
+      applyParsedAttributes(anchor, anchorMatch[1]);
+      anchor.textContent = anchorMatch[2];
+      this.appendChild(anchor);
     }
   }
 
@@ -164,12 +209,19 @@ class Element {
   }
 
   setAttribute(name, value) {
-    this.attributes.set(name, String(value));
-    if (name === 'class') this.className = String(value);
+    const key = String(name);
+    const strValue = String(value);
+    this.attributes.set(key, strValue);
+    if (key === 'class') this.className = strValue;
+    if (['alt', 'href', 'poster', 'preload', 'src', 'type'].includes(key)) this[key] = strValue;
   }
 
   getAttribute(name) {
     return this.attributes.get(name) || null;
+  }
+
+  hasAttribute(name) {
+    return this.attributes.has(name);
   }
 
   removeAttribute(name) {
@@ -469,6 +521,82 @@ async function run(name, fn) {
     assertEqual(turns[0].lastAssistantId, 'a0', 'initial turn target');
     assertEqual(turns[1].lastAssistantId, 'a1', 'first user-bounded turn target');
     assertEqual(turns[2].lastAssistantId, 'a2', 'second user-bounded turn target');
+  });
+
+  await run('rebases assistant markdown image and file links before decoration opens them', () => {
+    const { app } = createHarness({
+      rebaseHubAssetURL(url) {
+        return String(url || '')
+          .replace('/ui/images/', '/hub/node/alpha/images/')
+          .replace('/ui/files/', '/hub/node/alpha/files/');
+      }
+    });
+    const node = app.createMessageNode({
+      id: 'a_img',
+      role: 'assistant',
+      content: '<img src="/ui/images/from-md.png"><a href="/ui/files/report.pdf">report</a>',
+      created: Date.now()
+    });
+    const img = node.querySelector('img');
+    const link = node.querySelector('a');
+    assert(img, 'expected markdown img');
+    assert(link, 'expected markdown link');
+    assertEqual(img.src, '/hub/node/alpha/images/from-md.png', 'markdown image src');
+    assertEqual(link.href, '/hub/node/alpha/files/report.pdf', 'markdown file link href');
+  });
+
+  await run('rebases deferred assistant video artifact URLs', () => {
+    const { app } = createHarness({
+      rebaseHubAssetURL(url) {
+        return String(url || '')
+          .replace('/ui/images/', '/hub/node/alpha/images/')
+          .replace('/ui/files/', '/hub/node/alpha/files/');
+      }
+    });
+    const node = app.createMessageNode({
+      id: 'a_video',
+      role: 'assistant',
+      content: '<video src="/ui/files/movie.mp4" poster="/ui/images/poster.png"><source src="/ui/files/movie.webm" type="video/webm"></video>',
+      created: Date.now()
+    });
+    const button = node.querySelector('button');
+    const poster = node.querySelector('img');
+    assert(button, 'expected deferred video button');
+    assert(poster, 'expected deferred video poster');
+    assertEqual(button.dataset.videoSrc, '/hub/node/alpha/files/movie.mp4', 'video src');
+    assertEqual(button.dataset.videoPoster, '/hub/node/alpha/images/poster.png', 'video poster dataset');
+    assertEqual(poster.src, '/hub/node/alpha/images/poster.png', 'video poster img');
+    const sources = JSON.parse(button.dataset.videoSources || '[]');
+    assertEqual(sources[0]?.src, '/hub/node/alpha/files/movie.webm', 'video source src');
+  });
+
+  await run('rebases user attachment image URLs before rendering', () => {
+    const { app } = createHarness({
+      rebaseHubAssetURL(url) { return String(url || '').replace('/ui/images/', '/hub/node/alpha/images/'); }
+    });
+    const node = app.createMessageNode({
+      id: 'u_img',
+      role: 'user',
+      content: 'see image',
+      created: Date.now(),
+      attachments: [{ name: 'image', type: 'image/png', dataURL: '/ui/images/upload.png' }]
+    });
+    const img = node.querySelector('img');
+    assert(img, 'expected attachment img');
+    assertEqual(img.src, '/hub/node/alpha/images/upload.png', 'attachment image src');
+  });
+
+  await run('rebases tool artifact image URLs before rendering', () => {
+    const { app } = createHarness({
+      rebaseHubAssetURL(url) { return String(url || '').replace('/ui/images/', '/hub/node/alpha/images/'); }
+    });
+    const node = app.createToolArtifactsNode({
+      role: 'tool-group',
+      tools: [{ name: 'image_generate', images: ['/ui/images/generated.png'] }]
+    });
+    const img = node.querySelector('img');
+    assert(img, 'expected artifact img');
+    assertEqual(img.src, '/hub/node/alpha/images/generated.png', 'tool artifact image src');
   });
 
   await run('copies a whole user-bounded turn in message order', () => {

@@ -309,12 +309,14 @@ func hubReadHTMLBodyForRebase(body io.ReadCloser) (data []byte, overLimit bool, 
 // hubRebaseProxyResponse rewrites the node's baked-in base path onto the hub
 // mount (/node/<id>, or /<base-path>/node/<id> when mounted under a prefix)
 // for HTML documents, fixes redirect Location headers, and injects the
-// window.TERM_LLM_HUB context so the node UI can render its "Back to Hub" link.
-// Because the SPA derives every URL it builds from the single
-// window.TERM_LLM_UI_PREFIX value and the <base> tag, rebasing those two
-// strings re-homes all subsequent requests onto the hub node mount where the
-// token is injected. Non-HTML bodies (JS, JSON, SSE, images) pass through
-// untouched, which keeps streaming responses streaming.
+// window.TERM_LLM_HUB context so the node UI can render its "Back to Hub" link
+// and re-home asset URLs returned by JSON/SSE APIs. Because the SPA derives the
+// URLs it builds from the single window.TERM_LLM_UI_PREFIX value and the <base>
+// tag, rebasing those two strings re-homes subsequent requests onto the hub
+// node mount where the token is injected. Non-HTML bodies (JS, JSON, SSE,
+// images) pass through untouched, which keeps streaming responses streaming;
+// the injected hub context tells the browser how to rebase node-authored
+// /images/ and /files/ links found in those bodies.
 func hubRebaseProxyResponse(resp *http.Response) error {
 	t := hubProxyTargetFrom(resp.Request.Context())
 	if t == nil {
@@ -404,9 +406,10 @@ func hubInjectContext(body []byte, t *hubProxyTarget) []byte {
 		hubURL = "/"
 	}
 	ctxJSON, err := json.Marshal(map[string]string{
-		"url":      hubURL,
-		"nodeId":   t.nodeID,
-		"nodeName": t.nodeName,
+		"url":          hubURL,
+		"nodeId":       t.nodeID,
+		"nodeName":     t.nodeName,
+		"nodeBasePath": t.basePath,
 	})
 	if err != nil {
 		return body

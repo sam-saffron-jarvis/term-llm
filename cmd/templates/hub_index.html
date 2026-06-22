@@ -154,11 +154,8 @@ term-llm serve hub</code></pre>
       return node;
     };
     const safeURL = (raw, delegation) => {
+      raw = String(raw || '').trim();
       if (!raw) return '';
-      try {
-        const u = new URL(raw, window.location.href);
-        if (u.protocol === 'http:' || u.protocol === 'https:') return u.href;
-      } catch (_) {}
       const nodePrefix = hubPath('/node/');
       if (raw.startsWith(nodePrefix)) return raw;
       if (raw.startsWith('/node/')) return hubPath(raw);
@@ -170,6 +167,10 @@ term-llm serve hub</code></pre>
         return hubPath(`/node/${encodeURIComponent(delegation.target_node)}${p}`);
       }
       if (raw.startsWith('/')) return raw;
+      try {
+        const u = new URL(raw, window.location.href);
+        if (u.protocol === 'http:' || u.protocol === 'https:') return u.href;
+      } catch (_) {}
       return '';
     };
 

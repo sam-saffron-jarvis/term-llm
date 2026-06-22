@@ -20,6 +20,12 @@ const {
 } = app;
 let sessionStatePollTimer = null;
 
+const rebaseSessionAssetURL = (url) => (
+  typeof app.rebaseHubAssetURL === 'function'
+    ? app.rebaseHubAssetURL(url)
+    : String(url || '').trim()
+);
+
 const resumeAndDrain = (session, options) => {
   void resumeActiveResponse(session, options).finally(() => {
     drainInterruptQueueIfIdle(session);
@@ -544,7 +550,7 @@ const convertServerMessages = (serverMessages, options = {}) => {
 
   const normalizeImages = (images) => (
     Array.isArray(images)
-      ? images.map((url) => String(url || '').trim()).filter(Boolean)
+      ? images.map((url) => rebaseSessionAssetURL(url)).filter(Boolean)
       : []
   );
 
@@ -652,7 +658,7 @@ const convertServerMessages = (serverMessages, options = {}) => {
           attachments.push({
             name: 'image',
             type: part.mime_type || 'image/*',
-            dataURL: part.image_url
+            dataURL: rebaseSessionAssetURL(part.image_url)
           });
         } else if (part.type === 'text' && part.text) {
           textParts.push(part.text);
