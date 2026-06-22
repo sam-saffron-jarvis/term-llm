@@ -17,6 +17,7 @@ func (s *hubServer) handler() http.Handler {
 	mux.HandleFunc("/healthz", s.handleHubHealth)
 	mux.HandleFunc("/api/nodes/test", s.handleTestNode)
 	mux.HandleFunc("/api/registration-info", s.handleRegistrationInfo)
+	mux.HandleFunc("/api/register-node/", s.handleRegisterNode)
 	mux.HandleFunc("/api/register-node", s.handleRegisterNode)
 	mux.HandleFunc("/api/nodes/", s.handleNodeItem)
 	mux.HandleFunc("/api/nodes", s.handleNodes)
@@ -38,7 +39,7 @@ func (s *hubServer) auth(next http.Handler) http.Handler {
 			return
 		}
 		if hubQueryTokenMatches(r, s.token) {
-			setHubAuthCookie(w, r.URL.Query().Get("token"))
+			setHubAuthCookie(w, r.URL.Query().Get("token"), s.publicPath("/"))
 			if r.Method == http.MethodGet || r.Method == http.MethodHead {
 				clean := *r.URL
 				q := clean.Query()
@@ -47,9 +48,7 @@ func (s *hubServer) auth(next http.Handler) http.Handler {
 				if clean.RawQuery == "" {
 					clean.ForceQuery = false
 				}
-				clean.Path = s.hubPath(clean.Path)
-				clean.RawPath = ""
-				http.Redirect(w, r, clean.String(), http.StatusFound)
+				http.Redirect(w, r, s.publicURLString(&clean), http.StatusFound)
 				return
 			}
 		}
@@ -203,9 +202,9 @@ func (s *hubServer) writeHubLoginPage(w http.ResponseWriter, r *http.Request, in
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(http.StatusUnauthorized)
-	action := s.hubPath(r.URL.Path)
+	action := s.publicPath(r.URL.EscapedPath())
 	if action == "" {
-		action = s.hubPath("/")
+		action = s.publicPath("/")
 	}
 	if err := hubLoginTemplate.Execute(w, struct {
 		Action  string
@@ -234,11 +233,15 @@ func hubTokenMatches(want, got string) bool {
 	return subtle.ConstantTimeCompare(wantHash[:], gotHash[:]) == 1
 }
 
-func setHubAuthCookie(w http.ResponseWriter, token string) {
+func setHubAuthCookie(w http.ResponseWriter, token, path string) {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		path = "/"
+	}
 	http.SetCookie(w, &http.Cookie{
 		Name:     hubAuthCookieName,
 		Value:    strings.TrimSpace(token),
-		Path:     "/",
+		Path:     path,
 		Expires:  time.Now().Add(365 * 24 * time.Hour),
 		MaxAge:   365 * 24 * 60 * 60,
 		SameSite: http.SameSiteStrictMode,

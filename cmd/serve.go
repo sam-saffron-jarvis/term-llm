@@ -554,6 +554,8 @@ func runServe(cmd *cobra.Command, args []string) error {
 	hasHTTP := hasWeb || hasAPI || hasJobs
 
 	var s *serveServer
+	registeredHubURL := ""
+	registeredHubNodeID := ""
 	if hasHTTP {
 		var jobsV2 *jobsV2Manager
 		serveUI := hasWeb
@@ -648,6 +650,8 @@ func runServe(cmd *cobra.Command, args []string) error {
 				cancel()
 				return err
 			}
+			registeredHubURL = reverseHubURL
+			registeredHubNodeID = reverseHubNodeID
 			fmt.Fprintf(cmd.ErrOrStderr(), "hub registration: registered %s with %s\n", reverseHubNodeID, reverseHubURL)
 		}
 
@@ -692,6 +696,16 @@ func runServe(cmd *cobra.Command, args []string) error {
 	}
 
 	<-ctx.Done()
+
+	if registeredHubURL != "" && registeredHubNodeID != "" && hubRegistrationToken != "" {
+		deregisterCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		if err := unregisterServeHubNode(deregisterCtx, nil, registeredHubURL, hubRegistrationToken, registeredHubNodeID); err != nil {
+			log.Printf("hub registration: deregister %s from %s: %v", registeredHubNodeID, registeredHubURL, err)
+		} else {
+			log.Printf("hub registration: deregistered %s from %s", registeredHubNodeID, registeredHubURL)
+		}
+		cancel()
+	}
 
 	if s != nil {
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)

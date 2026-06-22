@@ -78,6 +78,7 @@ body {
 .hub-btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
 .hub-btn.primary:hover { filter: brightness(1.1); }
 .hub-btn.ghost { background: transparent; }
+.hub-btn.copied { color: var(--ok); border-color: var(--ok); background: color-mix(in srgb, var(--ok) 10%, transparent); }
 .hub-btn.danger { color: var(--down); }
 .hub-btn.danger:hover { border-color: var(--down); }
 .hub-btn.small { padding: 0.24rem 0.55rem; font-size: 0.78rem; border-radius: 7px; }
@@ -237,6 +238,11 @@ body {
   color: var(--text);
   padding: 0.42rem 0.55rem;
   font-size: 0.82rem;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+.copy-row code.copy-flash, .command-box.copy-flash {
+  border-color: var(--ok);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--ok) 18%, transparent);
 }
 .help-warning { color: var(--warn) !important; }
 .help-note { border-left: 3px solid var(--accent); padding-left: 0.7rem; }
@@ -251,6 +257,7 @@ body {
   padding: 0.75rem;
   font-size: 0.8rem;
   line-height: 1.45;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
 }
 .token-glossary {
   display: grid;

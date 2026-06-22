@@ -75,8 +75,9 @@ func (s *hubServer) handleNodeProxy(w http.ResponseWriter, r *http.Request) {
 		s.handleReverseNodeProxy(w, r, node, rest)
 		return
 	}
-	// Bare /node/<id> -> /node/<id>/ so the node UI's relative URLs resolve
-	// under the mount. Preserve the query string.
+	// Bare /node/<id> -> /node/<id>/ (including any external hub base path)
+	// so the node UI's relative URLs resolve under the mount. Preserve the query
+	// string.
 	if rest == "" {
 		target := s.hubPath("/node/" + id + "/")
 		if r.URL.RawQuery != "" {
@@ -305,11 +306,12 @@ func hubReadHTMLBodyForRebase(body io.ReadCloser) (data []byte, overLimit bool, 
 }
 
 // hubRebaseProxyResponse rewrites the node's baked-in base path onto the hub
-// mount (/node/<id>) for HTML documents, fixes redirect Location headers, and
-// injects the window.TERM_LLM_HUB context so the node UI can render its
-// "Back to Hub" link. Because the SPA derives every URL it builds from the
-// single window.TERM_LLM_UI_PREFIX value and the <base> tag, rebasing those
-// two strings re-homes all subsequent requests onto /node/<id>/* where the
+// mount (/node/<id>, or /<base-path>/node/<id> when mounted under a prefix)
+// for HTML documents, fixes redirect Location headers, and injects the
+// window.TERM_LLM_HUB context so the node UI can render its "Back to Hub" link.
+// Because the SPA derives every URL it builds from the single
+// window.TERM_LLM_UI_PREFIX value and the <base> tag, rebasing those two
+// strings re-homes all subsequent requests onto the hub node mount where the
 // token is injected. Non-HTML bodies (JS, JSON, SSE, images) pass through
 // untouched, which keeps streaming responses streaming.
 func hubRebaseProxyResponse(resp *http.Response) error {

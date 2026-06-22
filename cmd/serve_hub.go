@@ -4,6 +4,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httputil"
+	"net/url"
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/hub"
@@ -35,6 +36,9 @@ type hubServer struct {
 	// requests over a websocket instead of direct hub -> node HTTP.
 	reverse *hubReverseManager
 	proxy   *httputil.ReverseProxy
+	// basePath is the external mount prefix (for example /hub) when the hub is
+	// served behind a reverse proxy. Empty means root-mounted.
+	basePath string
 	// delegations is the cross-node delegation ledger; nil disables the
 	// /api/delegations endpoints.
 	delegations *hub.DelegationStore
@@ -47,10 +51,6 @@ type hubServer struct {
 	requireAuth       bool
 	token             string
 	registrationToken string
-	// basePath is the external mount prefix for the hub dashboard/API. Empty
-	// means root-mounted; otherwise it is normalized like "/hub" with no
-	// trailing slash.
-	basePath string
 }
 
 func newHubServer(registry *hub.Registry, store *hub.Store) *hubServer {
@@ -69,6 +69,33 @@ func newHubServer(registry *hub.Registry, store *hub.Store) *hubServer {
 		Transport:      transport,
 	}
 	return s
+}
+
+// publicPath returns a root-relative path as seen by browsers. Internal hub
+// handlers run on stripped paths when --base-path is set, but any redirect,
+// dashboard link, or injected node UI prefix must include the external mount.
+func (s *hubServer) publicPath(path string) string {
+	return s.hubPath(path)
+}
+
+// publicURLString rebases an internal URL (normally from a stripped request)
+// onto the browser-visible hub mount, preserving query and fragment data.
+func (s *hubServer) publicURLString(u *url.URL) string {
+	if u == nil {
+		return s.publicPath("/")
+	}
+	path := u.EscapedPath()
+	if path == "" {
+		path = "/"
+	}
+	out := s.publicPath(path)
+	if u.RawQuery != "" {
+		out += "?" + u.RawQuery
+	}
+	if u.Fragment != "" {
+		out += "#" + u.EscapedFragment()
+	}
+	return out
 }
 
 // newHubTransport returns the proxy's HTTP transport with bounded connection

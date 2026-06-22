@@ -103,6 +103,104 @@ func TestHubAuthQueryTokenSetsCookie(t *testing.T) {
 	}
 }
 
+func TestHubBasePathRebasesProxyDashboardLinksAndRedirects(t *testing.T) {
+	const body = `<html><head><base href="/chat/"><script>window.TERM_LLM_UI_PREFIX="/chat";</script></head><body></body></html>`
+	s := hubWithBackend(t, "/chat", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/chat/healthz" {
+			w.Header().Set("Content-Type", "application/json")
+			io.WriteString(w, `{"status":"ok","agent":"alpha-agent"}`)
+			return
+		}
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		io.WriteString(w, body)
+	})
+	s.basePath = "/hub"
+	h := s.handler()
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/hub/node/alpha/", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("proxy status = %d body=%q", rec.Code, rec.Body.String())
+	}
+	got := rec.Body.String()
+	for _, want := range []string{
+		`<base href="/hub/node/alpha/">`,
+		`window.TERM_LLM_UI_PREFIX="/hub/node/alpha"`,
+		`window.TERM_LLM_HUB={"nodeId":"alpha","nodeName":"Alpha","url":"/hub/"}`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("proxied HTML missing %q: %s", want, got)
+		}
+	}
+
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/hub/node/alpha?x=1", nil))
+	if rec.Code != http.StatusTemporaryRedirect {
+		t.Fatalf("bare node status = %d, want 307", rec.Code)
+	}
+	if loc := rec.Header().Get("Location"); loc != "/hub/node/alpha/?x=1" {
+		t.Fatalf("bare node redirect = %q, want /hub/node/alpha/?x=1", loc)
+	}
+
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/hub/api/nodes", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("nodes status = %d body=%q", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Nodes []hubNodeView `json:"nodes"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode nodes: %v", err)
+	}
+	if len(resp.Nodes) != 1 || resp.Nodes[0].ProxyPath != "/hub/node/alpha/" {
+		t.Fatalf("nodes response = %+v", resp.Nodes)
+	}
+}
+
+func TestHubBasePathAuthRedirectsAndLoginAction(t *testing.T) {
+	s := hubWithBackend(t, "/chat", func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, "ok")
+	})
+	s.requireAuth = true
+	s.token = "hub-secret"
+	s.basePath = "/hub"
+	h := s.handler()
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/hub?token=hub-secret", nil))
+	if rec.Code != http.StatusTemporaryRedirect {
+		t.Fatalf("base path slash status = %d, want 307", rec.Code)
+	}
+	if loc := rec.Header().Get("Location"); loc != "/hub/?token=hub-secret" {
+		t.Fatalf("base path slash redirect = %q, want query preserved", loc)
+	}
+
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/hub/?token=hub-secret&next=1", nil))
+	if rec.Code != http.StatusFound {
+		t.Fatalf("query token status = %d, want 302", rec.Code)
+	}
+	if loc := rec.Header().Get("Location"); loc != "/hub/?next=1" {
+		t.Fatalf("query token redirect = %q, want /hub/?next=1", loc)
+	}
+	cookies := rec.Result().Cookies()
+	if len(cookies) != 1 || cookies[0].Path != "/hub/" {
+		t.Fatalf("auth cookie = %#v, want path /hub/", cookies)
+	}
+
+	rec = httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/hub/node/alpha/", nil)
+	req.Header.Set("Accept", "text/html")
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("login status = %d, want 401", rec.Code)
+	}
+	if body := rec.Body.String(); !strings.Contains(body, `action="/hub/node/alpha/"`) {
+		t.Fatalf("login action not under base path: %s", body)
+	}
+}
+
 func TestHubAuthBrowserNavigationShowsLoginPage(t *testing.T) {
 	s := hubWithBackend(t, "/chat", func(w http.ResponseWriter, r *http.Request) {
 		io.WriteString(w, "ok")
@@ -235,7 +333,7 @@ func TestHubIndexShowsRegistrationHelpWithoutEmbeddingToken(t *testing.T) {
 		t.Fatalf("index status = %d", rec.Code)
 	}
 	body := rec.Body.String()
-	for _, want := range []string{"Private node", "Register a private / Docker node", "api/registration-info", "Registration token", "Copy token", "Reveal"} {
+	for _, want := range []string{"Private node", "Register a private / Docker node", "api/registration-info", "Registration token", "Copy token", "Reveal", "copyButtonFeedback", "copy-flash"} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("index missing %q", want)
 		}
@@ -514,6 +612,122 @@ func TestHubRegisterNodeAuthDisabledAndConflict(t *testing.T) {
 	h.ServeHTTP(rec, req)
 	if rec.Code != http.StatusConflict {
 		t.Fatalf("static conflict status = %d body=%q", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHubUnregisterNodeRemovesRegisteredNodeIdempotently(t *testing.T) {
+	store := hub.NewStore(filepath.Join(t.TempDir(), "nodes.json"))
+	s := newHubServer(hub.NewRegistry(store), store)
+	s.registrationToken = "reg-secret"
+	h := s.handler()
+
+	payload := `{"id":"docker-a","name":"Docker A","connection":"reverse","base_path":"/chat","token":"node-token-1"}`
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/register-node", strings.NewReader(payload))
+	req.Header.Set("Authorization", "Bearer reg-secret")
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("register status = %d body=%q", rec.Code, rec.Body.String())
+	}
+
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodDelete, "/api/register-node/docker-a", nil)
+	req.Header.Set("Authorization", "Bearer reg-secret")
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("unregister status = %d body=%q", rec.Code, rec.Body.String())
+	}
+	if body := rec.Body.String(); !strings.Contains(body, `"id":"docker-a"`) || !strings.Contains(body, `"removed":true`) {
+		t.Fatalf("unregister response = %s", body)
+	}
+
+	authReq := httptest.NewRequest(http.MethodGet, "/api/connect?node_id=docker-a", nil)
+	authReq.Header.Set(hubNodeIDHeader, "docker-a")
+	authReq.Header.Set("Authorization", "Bearer node-token-1")
+	if node, err := s.authenticateNode(authReq); err == nil || node.ID == "docker-a" {
+		t.Fatalf("unregistered node authenticated: node=%+v err=%v", node, err)
+	}
+
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodDelete, "/api/register-node/docker-a", nil)
+	req.Header.Set("Authorization", "Bearer reg-secret")
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("idempotent unregister status = %d body=%q", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"removed":false`) {
+		t.Fatalf("idempotent unregister response = %s", rec.Body.String())
+	}
+}
+
+func TestHubUnregisterNodeAuthDisabledAndMethod(t *testing.T) {
+	store := hub.NewStore(filepath.Join(t.TempDir(), "nodes.json"))
+	s := newHubServer(hub.NewRegistry(store), store)
+	h := s.handler()
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodDelete, "/api/register-node/docker-a", nil)
+	req.Header.Set("Authorization", "Bearer reg-secret")
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("disabled unregister status = %d, want 404", rec.Code)
+	}
+
+	s.registrationToken = "reg-secret"
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodDelete, "/api/register-node/docker-a", nil)
+	req.Header.Set("Authorization", "Bearer wrong")
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("wrong token unregister status = %d, want 401", rec.Code)
+	}
+
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/api/register-node/docker-a", nil)
+	req.Header.Set("Authorization", "Bearer reg-secret")
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusMethodNotAllowed || rec.Header().Get("Allow") != "DELETE" {
+		t.Fatalf("method status=%d allow=%q, want 405 Allow: DELETE", rec.Code, rec.Header().Get("Allow"))
+	}
+}
+
+func TestHubUnregisterNodeRejectsDirectLocalNode(t *testing.T) {
+	store := hub.NewStore(filepath.Join(t.TempDir(), "nodes.json"))
+	if _, err := store.Add(hub.Node{ID: "direct-a", Name: "Direct A", URL: "http://127.0.0.1:1", BasePath: "/chat", Token: "direct-token"}); err != nil {
+		t.Fatalf("add direct node: %v", err)
+	}
+	s := newHubServer(hub.NewRegistry(store), store)
+	s.registrationToken = "reg-secret"
+	h := s.handler()
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodDelete, "/api/register-node/direct-a", nil)
+	req.Header.Set("Authorization", "Bearer reg-secret")
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("unregister direct status = %d body=%q, want 403", rec.Code, rec.Body.String())
+	}
+	if _, ok := s.registry.Lookup("direct-a"); !ok {
+		t.Fatal("direct local node was removed by registration token")
+	}
+}
+
+func TestUnregisterServeHubNodeClient(t *testing.T) {
+	var gotAuth string
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/register-node/docker-a" || r.Method != http.MethodDelete {
+			t.Fatalf("unexpected deregistration request %s %s", r.Method, r.URL.Path)
+		}
+		gotAuth = r.Header.Get("Authorization")
+		writeJSON(w, http.StatusOK, map[string]any{"id": "docker-a", "removed": true})
+	}))
+	defer ts.Close()
+
+	if err := unregisterServeHubNode(t.Context(), ts.Client(), ts.URL, "reg-secret", "docker-a"); err != nil {
+		t.Fatalf("unregisterServeHubNode: %v", err)
+	}
+	if gotAuth != "Bearer reg-secret" {
+		t.Fatalf("request auth=%q", gotAuth)
 	}
 }
 

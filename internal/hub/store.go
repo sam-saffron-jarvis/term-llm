@@ -138,11 +138,24 @@ func (s *Store) Upsert(n Node) (Node, bool, error) {
 // Remove deletes a stored node by ID. Removing an unknown ID is an error so
 // the UI can surface a stale dashboard.
 func (s *Store) Remove(id string) error {
+	removed, err := s.RemoveIfExists(id)
+	if err != nil {
+		return err
+	}
+	if !removed {
+		return fmt.Errorf("node %q not found in local store", id)
+	}
+	return nil
+}
+
+// RemoveIfExists deletes a stored node by ID and reports whether it existed.
+// It is intentionally idempotent for lifecycle hooks that may run more than once.
+func (s *Store) RemoveIfExists(id string) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	nodes, err := s.readLocked()
 	if err != nil {
-		return err
+		return false, err
 	}
 	kept := nodes[:0]
 	found := false
@@ -154,7 +167,10 @@ func (s *Store) Remove(id string) error {
 		kept = append(kept, n)
 	}
 	if !found {
-		return fmt.Errorf("node %q not found in local store", id)
+		return false, nil
 	}
-	return s.writeLocked(kept)
+	if err := s.writeLocked(kept); err != nil {
+		return false, err
+	}
+	return true, nil
 }

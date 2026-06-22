@@ -351,6 +351,9 @@ term-llm serve hub</code></pre>
     const registrationHubUrl = document.getElementById('registrationHubUrl');
     const registrationTokenValue = document.getElementById('registrationTokenValue');
     const revealRegistrationTokenBtn = document.getElementById('revealRegistrationTokenBtn');
+    const copyHubUrlBtn = document.getElementById('copyHubUrlBtn');
+    const copyRegistrationTokenBtn = document.getElementById('copyRegistrationTokenBtn');
+    const copyRegistrationCommandBtn = document.getElementById('copyRegistrationCommandBtn');
     const registrationCommand = document.getElementById('registrationCommand');
     let registrationToken = '';
     let registrationTokenRevealed = false;
@@ -360,7 +363,27 @@ term-llm serve hub</code></pre>
       const s = String(value).replace(/'/g, "'\\''");
       return `'${s}'`;
     };
-    const copyText = async (text, label) => {
+    const copyFeedbackTimers = new WeakMap();
+    const copyButtonFeedback = (button, target) => {
+      if (!button) return;
+      const original = button.dataset.copyLabel || button.textContent;
+      button.dataset.copyLabel = original;
+      button.textContent = '✓ Copied';
+      button.classList.add('copied');
+      button.setAttribute('aria-label', `${original} copied`);
+      if (target) target.classList.add('copy-flash');
+      const previous = copyFeedbackTimers.get(button);
+      if (previous) clearTimeout(previous);
+      const timer = setTimeout(() => {
+        button.textContent = button.dataset.copyLabel || original;
+        button.classList.remove('copied');
+        button.removeAttribute('aria-label');
+        if (target) target.classList.remove('copy-flash');
+        copyFeedbackTimers.delete(button);
+      }, 1400);
+      copyFeedbackTimers.set(button, timer);
+    };
+    const copyText = async (text, label, button, target) => {
       if (navigator.clipboard && navigator.clipboard.writeText) {
         await navigator.clipboard.writeText(text);
       } else {
@@ -378,6 +401,7 @@ term-llm serve hub</code></pre>
         }
       }
       registrationHelpStatus.textContent = `Copied ${label}.`;
+      copyButtonFeedback(button, target);
     };
     const currentHubURL = () => window.location.href.replace(/[?#].*$/, '').replace(/\/?$/, '/');
     const buildRegistrationCommand = (hubURL) => `export HUB_URL=${shellQuote(hubURL)}
@@ -455,14 +479,14 @@ term-llm serve web \\
       registrationTokenRevealed = !registrationTokenRevealed;
       updateRegistrationTokenDisplay();
     });
-    document.getElementById('copyHubUrlBtn').addEventListener('click', async () => {
-      try { await copyText(registrationHubUrl.textContent, 'Hub URL'); } catch (err) { registrationHelpStatus.textContent = `Copy failed: ${err.message}`; }
+    copyHubUrlBtn.addEventListener('click', async () => {
+      try { await copyText(registrationHubUrl.textContent, 'Hub URL', copyHubUrlBtn, registrationHubUrl); } catch (err) { registrationHelpStatus.textContent = `Copy failed: ${err.message}`; }
     });
-    document.getElementById('copyRegistrationTokenBtn').addEventListener('click', async () => {
-      try { await copyText(registrationToken, 'registration token'); } catch (err) { registrationHelpStatus.textContent = `Copy failed: ${err.message}`; }
+    copyRegistrationTokenBtn.addEventListener('click', async () => {
+      try { await copyText(registrationToken, 'registration token', copyRegistrationTokenBtn, registrationTokenValue); } catch (err) { registrationHelpStatus.textContent = `Copy failed: ${err.message}`; }
     });
-    document.getElementById('copyRegistrationCommandBtn').addEventListener('click', async () => {
-      try { await copyText(registrationCommand.textContent, 'reverse node command'); } catch (err) { registrationHelpStatus.textContent = `Copy failed: ${err.message}`; }
+    copyRegistrationCommandBtn.addEventListener('click', async () => {
+      try { await copyText(registrationCommand.textContent, 'reverse node command', copyRegistrationCommandBtn, registrationCommand.closest('.command-box')); } catch (err) { registrationHelpStatus.textContent = `Copy failed: ${err.message}`; }
     });
 
     const payload = () => ({

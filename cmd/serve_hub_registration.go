@@ -57,7 +57,7 @@ type hubRegistrationInfo struct {
 }
 
 func hubRegistrationRoute(r *http.Request) bool {
-	return r.URL.Path == "/api/register-node"
+	return r.URL.Path == "/api/register-node" || strings.HasPrefix(r.URL.Path, "/api/register-node/")
 }
 
 func (s *hubServer) handleRegistrationInfo(w http.ResponseWriter, r *http.Request) {
@@ -88,6 +88,10 @@ func hubRegistrationBearerTokenMatches(r *http.Request, want string) bool {
 }
 
 func (s *hubServer) handleRegisterNode(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path != "/api/register-node" {
+		s.handleUnregisterNode(w, r)
+		return
+	}
 	if r.Method != http.MethodPost {
 		w.Header().Set("Allow", "POST")
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -164,6 +168,52 @@ func (s *hubServer) handleRegisterNode(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (s *hubServer) handleUnregisterNode(w http.ResponseWriter, r *http.Request) {
+	id := strings.TrimPrefix(r.URL.Path, "/api/register-node/")
+	if id == "" || strings.Contains(id, "/") || hub.ValidateID(id) != nil {
+		http.NotFound(w, r)
+		return
+	}
+	if r.Method != http.MethodDelete {
+		w.Header().Set("Allow", "DELETE")
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if strings.TrimSpace(s.registrationToken) == "" {
+		http.NotFound(w, r)
+		return
+	}
+	if !hubRegistrationBearerTokenMatches(r, s.registrationToken) {
+		writeOpenAIError(w, http.StatusUnauthorized, "invalid_api_key", "invalid hub registration token")
+		return
+	}
+	if s.store == nil {
+		http.Error(w, "node persistence is disabled", http.StatusForbidden)
+		return
+	}
+	storedNodes, err := s.store.Nodes()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	for _, existing := range storedNodes {
+		if existing.ID == id && !existing.UsesReverseConnection() {
+			http.Error(w, fmt.Sprintf("node %q is not a reverse registered node", id), http.StatusForbidden)
+			return
+		}
+	}
+
+	removed, err := s.store.RemoveIfExists(id)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if removed {
+		log.Printf("hub registration: removed reverse node %q", id)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"id": id, "removed": removed})
+}
+
 func resolveServeHubRegistrationToken(flagValue string) string {
 	captureHubRegistrationEnv()
 	if v := strings.TrimSpace(flagValue); v != "" {
@@ -227,6 +277,37 @@ func registerServeHubNode(ctx context.Context, client *http.Client, hubURL, regi
 			msg = resp.Status
 		}
 		return fmt.Errorf("hub registration failed: HTTP %d: %s", resp.StatusCode, msg)
+	}
+	return nil
+}
+
+func unregisterServeHubNode(ctx context.Context, client *http.Client, hubURL, registrationToken, id string) error {
+	if client == nil {
+		client = http.DefaultClient
+	}
+	u, err := url.Parse(strings.TrimRight(strings.TrimSpace(hubURL), "/") + "/api/register-node/" + url.PathEscape(strings.TrimSpace(id)))
+	if err != nil {
+		return fmt.Errorf("parse hub url: %w", err)
+	}
+	callCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	httpReq, err := http.NewRequestWithContext(callCtx, http.MethodDelete, u.String(), nil)
+	if err != nil {
+		return err
+	}
+	httpReq.Header.Set("Authorization", "Bearer "+strings.TrimSpace(registrationToken))
+	resp, err := client.Do(httpReq)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		data, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		msg := strings.TrimSpace(string(data))
+		if msg == "" {
+			msg = resp.Status
+		}
+		return fmt.Errorf("hub deregistration failed: HTTP %d: %s", resp.StatusCode, msg)
 	}
 	return nil
 }

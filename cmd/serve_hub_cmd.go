@@ -47,6 +47,7 @@ Routes (root-mounted by default; when --base-path is set, prefix each route):
   DELETE /api/nodes/<id>  remove a local-store node
   POST /api/nodes/test    probe a node spec without persisting it
   POST /api/register-node register/update a reverse node (registration token)
+  DELETE /api/register-node/<id> deregister a reverse node (registration token)
   GET  /api/connect       reverse-node websocket endpoint (node auth)
   ANY  /node/<id>/...     reverse proxy to that node's serve
   POST /api/delegations   create a cross-node delegation (node auth)
