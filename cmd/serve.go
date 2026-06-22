@@ -36,6 +36,7 @@ var (
 	serveAllowNoAuth            bool
 	serveAuthMode               string
 	serveBasePath               string
+	serveTitle                  string
 	serveCORSOrigins            []string
 	serveSessionTTL             time.Duration
 	serveSessionMax             int
@@ -93,6 +94,7 @@ Examples:
   term-llm serve telegram        # Telegram bot only
   term-llm serve telegram web    # both platforms
   term-llm serve web --base-path /chat
+  term-llm serve web --title "My Lab"
 
 All HTTP routes are mounted under --base-path (default /ui):
   POST {base}/v1/responses
@@ -134,6 +136,7 @@ func init() {
 	_ = serveCmd.Flags().MarkHidden("allow-no-auth")
 	serveCmd.Flags().StringVar(&serveAuthMode, "auth", "bearer", "Auth mode: bearer or none")
 	serveCmd.Flags().StringVar(&serveBasePath, "base-path", "/ui", "URL prefix the UI uses for session URLs (e.g. /chat)")
+	serveCmd.Flags().StringVar(&serveTitle, "title", "", "Override the web UI sidebar title (defaults to agent name or Chat)")
 	serveCmd.Flags().StringArrayVar(&serveCORSOrigins, "cors-origin", nil, "Allowed CORS origin (repeatable, or '*' for all)")
 	serveCmd.Flags().DurationVar(&serveSessionTTL, "session-ttl", 30*time.Minute, "Stateful session idle TTL")
 	serveCmd.Flags().IntVar(&serveSessionMax, "session-max", 1000, "Max stateful sessions in memory")
@@ -304,6 +307,11 @@ func runServe(cmd *cobra.Command, args []string) error {
 	serveBasePath, err = normalizeBasePath(serveBasePath)
 	if err != nil {
 		return err
+	}
+
+	resolvedTitle := strings.TrimSpace(serveTitle)
+	if !cmd.Flags().Changed("title") {
+		resolvedTitle = strings.TrimSpace(cfg.Serve.Title)
 	}
 
 	responseTimeout, err := resolveServeResponseTimeout(cmd.Flags().Changed("response-timeout"), serveResponseTimeout, cfg.Serve.ResponseTimeout)
@@ -582,6 +590,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 				suppressServerTools: serveFilterServerTools,
 				verbose:             serveVerbose,
 				basePath:            serveBasePath,
+				uiTitle:             resolvedTitle,
 				sidebarSessions:     append([]string(nil), sidebarSessions...),
 				agentName:           agentName,
 				corsOrigins:         append([]string(nil), serveCORSOrigins...),
@@ -944,6 +953,7 @@ type serveServerConfig struct {
 	suppressServerTools bool
 	verbose             bool
 	basePath            string // e.g. "/ui" or "/chat", always without trailing slash
+	uiTitle             string
 	sidebarSessions     []string
 	agentName           string
 	corsOrigins         []string

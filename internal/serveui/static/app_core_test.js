@@ -63,10 +63,11 @@ function makeNode() {
   };
 }
 
-function loadAppCoreWith({ nodeOverrides = {}, docQSTracker = () => [], navigatorOverrides = {}, initialStorage = {}, agentName = '', hub = null, now = () => Date.now(), timerOverrides = {} } = {}) {
+function loadAppCoreWith({ nodeOverrides = {}, docQSTracker = () => [], navigatorOverrides = {}, initialStorage = {}, agentName = '', uiTitle = '', hub = null, now = () => Date.now(), timerOverrides = {} } = {}) {
   const nodes = new Map(Object.entries(nodeOverrides));
   const cookieWrites = [];
   const document = {
+    title: 'Chat',
     body: makeNode(),
     documentElement: makeNode(),
     get cookie() { return cookieWrites[cookieWrites.length - 1] || ''; },
@@ -111,6 +112,7 @@ function loadAppCoreWith({ nodeOverrides = {}, docQSTracker = () => [], navigato
     TERM_LLM_UI_PREFIX: '/chat',
     TERM_LLM_SIDEBAR_SESSIONS: 'all',
     TERM_LLM_AGENT_NAME: agentName,
+    TERM_LLM_UI_TITLE: uiTitle,
     TERM_LLM_HUB: hub,
     navigator: navigatorObj,
     visualViewport: null,
@@ -157,6 +159,7 @@ function loadAppCoreWith({ nodeOverrides = {}, docQSTracker = () => [], navigato
 
   vm.runInNewContext(source, context, { filename: 'app-core.js' });
   context.window.TermLLMApp.__testCookieWrites = cookieWrites;
+  context.window.TermLLMApp.__testDocument = document;
   return context.window.TermLLMApp;
 }
 
@@ -245,6 +248,78 @@ const app = loadAppCore();
 
   if (testApp.state.token !== 'scoped-token') {
     fail(name, `token = ${JSON.stringify(testApp.state.token)}`);
+    return;
+  }
+  pass(name);
+})();
+
+(function testSidebarBrandUsesUiTitleOverride() {
+  const name = 'sidebar brand uses UI title override';
+  const brandNode = makeNode();
+  loadAppCoreWith({
+    agentName: 'jarvis',
+    uiTitle: 'My Custom Title',
+    nodeOverrides: { sidebarBrandText: brandNode },
+  });
+
+  if (brandNode.textContent !== 'My Custom Title') {
+    fail(name, `got ${JSON.stringify(brandNode.textContent)}`);
+    return;
+  }
+  pass(name);
+})();
+
+(function testSidebarBrandWhitespaceTitleFallsBackToAgent() {
+  const name = 'sidebar brand whitespace UI title falls back to agent name';
+  const brandNode = makeNode();
+  loadAppCoreWith({
+    agentName: 'jarvis',
+    uiTitle: '   ',
+    nodeOverrides: { sidebarBrandText: brandNode },
+  });
+
+  if (brandNode.textContent !== 'Jarvis') {
+    fail(name, `got ${JSON.stringify(brandNode.textContent)}`);
+    return;
+  }
+  pass(name);
+})();
+
+(function testDocumentTitleUsesUiTitlePrefix() {
+  const name = 'document title uses UI title prefix';
+  const testApp = loadAppCoreWith({ uiTitle: 'My Lab' });
+  testApp.state.sessions = [{ id: 's1', title: 'can you visit hacker news', messages: [] }];
+  testApp.state.activeSessionId = 's1';
+  testApp.updateDocumentTitle();
+
+  if (testApp.__testDocument.title !== 'My Lab · can you visit hacker news') {
+    fail(name, `got ${JSON.stringify(testApp.__testDocument.title)}`);
+    return;
+  }
+  pass(name);
+})();
+
+(function testDocumentTitleUsesOnlyUiTitleWithoutSession() {
+  const name = 'document title uses only UI title without session';
+  const testApp = loadAppCoreWith({ uiTitle: 'My Lab' });
+  testApp.updateDocumentTitle();
+
+  if (testApp.__testDocument.title !== 'My Lab') {
+    fail(name, `got ${JSON.stringify(testApp.__testDocument.title)}`);
+    return;
+  }
+  pass(name);
+})();
+
+(function testDocumentTitleFallsBackWithoutUiTitlePrefix() {
+  const name = 'document title falls back without UI title prefix';
+  const testApp = loadAppCoreWith();
+  testApp.state.sessions = [{ id: 's1', title: 'can you visit hacker news', messages: [] }];
+  testApp.state.activeSessionId = 's1';
+  testApp.updateDocumentTitle();
+
+  if (testApp.__testDocument.title !== 'Chat · can you visit hacker news') {
+    fail(name, `got ${JSON.stringify(testApp.__testDocument.title)}`);
     return;
   }
   pass(name);

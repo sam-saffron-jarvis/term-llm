@@ -313,8 +313,15 @@ const displayAgentName = (name) => {
     .join(' ');
 };
 
+const uiTitleOverride = () => String(window.TERM_LLM_UI_TITLE || '').trim();
+
 const applySidebarBrand = () => {
   if (!elements.sidebarBrandText) return;
+  const uiTitle = uiTitleOverride();
+  if (uiTitle) {
+    elements.sidebarBrandText.textContent = uiTitle;
+    return;
+  }
   elements.sidebarBrandText.textContent = displayAgentName(window.TERM_LLM_AGENT_NAME);
 };
 
@@ -1470,11 +1477,13 @@ const hideStartupSplash = () => {
 
 const updateDocumentTitle = () => {
   const session = getActiveSession();
-  if (session && session.title && session.title !== 'New chat') {
-    document.title = `Chat · ${session.title}`;
-  } else {
-    document.title = 'Chat';
+  const sessionTitle = session && session.title && session.title !== 'New chat' ? session.title : '';
+  const prefix = uiTitleOverride();
+  if (prefix) {
+    document.title = sessionTitle ? `${prefix} · ${sessionTitle}` : prefix;
+    return;
   }
+  document.title = sessionTitle ? `Chat · ${sessionTitle}` : 'Chat';
 };
 
 const isStandalone = () => window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone === true;

@@ -19,6 +19,7 @@ Useful variants:
 ```bash
 term-llm serve api                 # API only (no chat UI)
 term-llm serve web --base-path /chat
+term-llm serve web --title "My Lab"
 term-llm serve web --host 127.0.0.1 --port 8080
 term-llm serve web jobs
 term-llm serve web jobs telegram   # all platforms at once
@@ -149,6 +150,7 @@ Relevant options include:
 - `--mcp`
 - `--tools`, `--read-dir`, `--write-dir`, `--shell-allow`
 - `--base-path`
+- `--title` (overrides the web UI sidebar title; also configurable as `serve.title`)
 - `--response-timeout` (defaults to `30m`; also configurable as `serve.response_timeout` with Go durations like `45m` or `1h`)
 - `--cors-origin`
 - `--webrtc`, `--webrtc-signaling-url`, `--webrtc-token` (see [WebRTC direct routing](/guides/webrtc-direct-routing/))

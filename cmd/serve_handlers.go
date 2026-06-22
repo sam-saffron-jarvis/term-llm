@@ -312,6 +312,8 @@ func (s *serveServer) buildIndexHTML() []byte {
 	headSnippet += `<script>window.TERM_LLM_SIDEBAR_SESSIONS=` + string(sidebarEscaped) + `;</script>`
 	agentEscaped, _ := json.Marshal(s.cfg.agentName)
 	headSnippet += `<script>window.TERM_LLM_AGENT_NAME=` + string(agentEscaped) + `;</script>`
+	titleEscaped, _ := json.Marshal(s.cfg.uiTitle)
+	headSnippet += `<script>window.TERM_LLM_UI_TITLE=` + string(titleEscaped) + `;</script>`
 	if s.cfg.hubURL != "" {
 		hubEscaped, _ := json.Marshal(map[string]string{
 			"url":      s.cfg.hubURL,

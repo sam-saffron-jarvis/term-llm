@@ -440,6 +440,7 @@ type Config struct {
 type ServeConfig struct {
 	Platforms       []string            `mapstructure:"platforms" yaml:"platforms,omitempty"`
 	BasePath        string              `mapstructure:"base_path" yaml:"base_path,omitempty"`
+	Title           string              `mapstructure:"title" yaml:"title,omitempty"`
 	FilesDir        string              `mapstructure:"files_dir" yaml:"files_dir,omitempty"`
 	WidgetsDir      string              `mapstructure:"widgets_dir" yaml:"widgets_dir,omitempty"`
 	ResponseTimeout string              `mapstructure:"response_timeout" yaml:"response_timeout,omitempty"` // Go duration string, e.g. "30m" or "1h"
