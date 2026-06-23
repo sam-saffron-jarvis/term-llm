@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"io/fs"
 	"os"
 	"os/exec"
@@ -452,8 +453,26 @@ func gitShowIndex(ctx context.Context, root, absPath string, maxBytes int) ([]by
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, "git", "-C", root, "show", ":"+filepath.ToSlash(rel))
-	out, err := cmd.Output()
-	if err != nil || len(out) > maxBytes {
+	cmd.Stderr = io.Discard
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, false
+	}
+	if err := cmd.Start(); err != nil {
+		return nil, false
+	}
+
+	out, err := io.ReadAll(io.LimitReader(stdout, int64(maxBytes)+1))
+	if err != nil {
+		_ = cmd.Wait()
+		return nil, false
+	}
+	if len(out) > maxBytes {
+		cancel()
+		_ = cmd.Wait()
+		return nil, false
+	}
+	if err := cmd.Wait(); err != nil {
 		return nil, false
 	}
 	return out, true

@@ -351,6 +351,50 @@ func TestShellToolGitFallback(t *testing.T) {
 	}
 }
 
+func TestShellToolGitFallbackRespectsMaxFileBytes(t *testing.T) {
+	dir := t.TempDir()
+	runGit := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+		cmd.Env = append(os.Environ(),
+			"GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t", "GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Skipf("git unavailable, skipping: %v (%s)", err, out)
+		}
+	}
+	runGit("init")
+
+	large := filepath.Join(dir, "large.txt")
+	if err := os.WriteFile(large, []byte(strings.Repeat("a", 200)+"\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	runGit("add", "large.txt")
+	runGit("commit", "-m", "init")
+
+	recorder := &fakeFileRecorder{maxFileBytes: 64}
+	tool := NewShellTool(nil, nil, DefaultOutputLimits())
+	tool.recorder = recorder
+
+	args, _ := json.Marshal(ShellArgs{
+		Command:    `awk 'BEGIN { for (i = 0; i < 200; i++) printf "b"; printf "\n" }' > large.txt`,
+		WorkingDir: dir,
+	})
+	if _, err := tool.Execute(trackingContext(), args); err != nil {
+		t.Fatal(err)
+	}
+
+	rec := recorder.findRecord(t, large)
+	if !rec.BeforeUnknown || !rec.AfterUnknown {
+		t.Fatalf("large tracked file should stay metadata-only, got %+v", rec)
+	}
+	if rec.Before != nil || rec.After != nil {
+		t.Fatalf("large tracked file content must not be captured, got %+v", rec)
+	}
+	if rec.AfterSizeHint <= int64(recorder.maxFileBytes) {
+		t.Fatalf("after size hint = %d, want > %d", rec.AfterSizeHint, recorder.maxFileBytes)
+	}
+}
+
 func TestShellToolSkipsGitIgnoredAffectedPathMatches(t *testing.T) {
 	dir := t.TempDir()
 	runGit := func(args ...string) {
