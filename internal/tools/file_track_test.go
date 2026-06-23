@@ -351,6 +351,57 @@ func TestShellToolGitFallback(t *testing.T) {
 	}
 }
 
+func TestShellToolGitAffectedPathsBoundTracking(t *testing.T) {
+	dir := t.TempDir()
+	runGit := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+		cmd.Env = append(os.Environ(),
+			"GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t", "GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Skipf("git unavailable, skipping: %v (%s)", err, out)
+		}
+	}
+	runGit("init")
+	hinted := filepath.Join(dir, "hinted.txt")
+	outside := filepath.Join(dir, "outside.txt")
+	if err := os.WriteFile(hinted, []byte("before\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(outside, []byte("outside-before\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	runGit("add", ".")
+	runGit("commit", "-m", "init")
+
+	recorder := &fakeFileRecorder{}
+	tool := NewShellTool(nil, nil, DefaultOutputLimits())
+	tool.recorder = recorder
+
+	args, _ := json.Marshal(ShellArgs{
+		Command:       "echo after > hinted.txt && echo outside-after > outside.txt && echo fresh > untracked.txt",
+		WorkingDir:    dir,
+		AffectedPaths: []string{"hinted.txt"},
+	})
+	output, err := tool.Execute(trackingContext(), args)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(output.FileChanges) != 1 {
+		t.Fatalf("file changes = %+v, want only hinted.txt", output.FileChanges)
+	}
+
+	rec := recorder.findRecord(t, hinted)
+	if string(rec.Before) != "before\n" || string(rec.After) != "after\n" {
+		t.Fatalf("hinted record = %q → %q", rec.Before, rec.After)
+	}
+	for _, rec := range recorder.recorded() {
+		if canonicalTestPath(rec.Path) != canonicalTestPath(hinted) {
+			t.Fatalf("unexpected record outside affected_paths: %+v", rec)
+		}
+	}
+}
+
 func TestShellToolSkipsGitIgnoredAffectedPathMatches(t *testing.T) {
 	dir := t.TempDir()
 	runGit := func(args ...string) {

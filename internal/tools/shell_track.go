@@ -35,18 +35,20 @@ type shellSnapshotEntry struct {
 }
 
 // shellSnapshot holds the pre-exec state used to detect file changes made by
-// a shell command. Three layers feed it: declared affected_paths globs, the
-// session's already-tracked paths, and git status when inside a repository.
+// a shell command. Three layers can feed it: declared affected_paths globs,
+// the session's already-tracked paths, and a repo-wide git-status fallback
+// when no narrower hints exist.
 type shellSnapshot struct {
-	sessionID    string
-	workDir      string
-	patterns     []string
-	files        map[string]*shellSnapshotEntry
-	gitRoot      string
-	gitStatus    map[string]string // absolute path -> porcelain XY status
-	contentReads int
-	contentBytes int64
-	maxFileBytes int
+	sessionID            string
+	workDir              string
+	patterns             []string
+	files                map[string]*shellSnapshotEntry
+	gitRoot              string
+	gitStatus            map[string]string // absolute path -> porcelain XY status
+	useGitStatusFallback bool
+	contentReads         int
+	contentBytes         int64
+	maxFileBytes         int
 }
 
 // canReadContent reports whether a file of the given size may have its
@@ -85,9 +87,16 @@ func preShellSnapshot(ctx context.Context, recorder FileChangeRecorder, workDir 
 		maxFileBytes: recorder.MaxFileBytes(),
 	}
 
+	var sessionPaths []string
 	if repo := DetectGitRepo(workDir); repo.IsRepo {
 		snap.gitRoot = repo.Root
-		snap.gitStatus = gitStatusPorcelain(ctx, repo.Root)
+		sessionPaths = recorder.SessionPaths(ctx, sessionID)
+		if !hasShellTrackingHints(patterns, sessionPaths) {
+			snap.useGitStatusFallback = true
+			snap.gitStatus = gitStatusPorcelain(ctx, repo.Root)
+		}
+	} else {
+		sessionPaths = recorder.SessionPaths(ctx, sessionID)
 	}
 
 	candidates := expandShellPatterns(workDir, patterns)
@@ -110,7 +119,7 @@ func preShellSnapshot(ctx context.Context, recorder FileChangeRecorder, workDir 
 			candidates = append(candidates, path)
 		}
 	}
-	candidates = append(candidates, recorder.SessionPaths(ctx, sessionID)...)
+	candidates = append(candidates, sessionPaths...)
 	for _, path := range candidates {
 		if _, seen := snap.files[path]; seen {
 			continue
@@ -155,7 +164,7 @@ func postShellChanges(ctx context.Context, recorder FileChangeRecorder, snap *sh
 	}
 
 	var postStatus map[string]string
-	if snap.gitRoot != "" {
+	if snap.gitRoot != "" && snap.useGitStatusFallback {
 		postStatus = gitStatusPorcelain(ctx, snap.gitRoot)
 		for path := range gitChangedPaths(snap.gitStatus, postStatus) {
 			if _, seen := candidates[path]; !seen {
@@ -322,6 +331,18 @@ func expandShellPatterns(workDir string, patterns []string) []string {
 		}, doublestar.WithNoFollow())
 	}
 	return paths
+}
+
+func hasShellTrackingHints(patterns, sessionPaths []string) bool {
+	if len(sessionPaths) > 0 {
+		return true
+	}
+	for _, pattern := range patterns {
+		if strings.TrimSpace(pattern) != "" {
+			return true
+		}
+	}
+	return false
 }
 
 // gitIgnoredCandidates returns the subset of paths ignored by Git. It uses
