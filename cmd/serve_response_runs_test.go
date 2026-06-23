@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -652,7 +653,7 @@ func waitForResponseRunCondition(t *testing.T, timeout time.Duration, fn func() 
 	t.Fatal(message)
 }
 
-func TestStreamResponseRunEventsDoesNotWriteDoneWhenSubscriberOverflows(t *testing.T) {
+func TestStreamResponseRunEventsEmitsStructuredErrorWhenSubscriberOverflows(t *testing.T) {
 	srv := &serveServer{shutdownCh: make(chan struct{})}
 	run := newResponseRun("resp_overflow", "sess_test", "", "mock", time.Now().Unix(), func() {})
 	gate := make(chan struct{})
@@ -702,7 +703,50 @@ func TestStreamResponseRunEventsDoesNotWriteDoneWhenSubscriberOverflows(t *testi
 	if !strings.Contains(body, "event: response.output_text.delta\n") {
 		t.Fatalf("stream body missing replayed delta events: %q", body)
 	}
-	if strings.Contains(body, "data: [DONE]\n\n") {
-		t.Fatalf("overflowed stream should not emit [DONE], got: %q", body)
+
+	scanner := bufio.NewScanner(strings.NewReader(body))
+	sawStreamError := false
+	sawDone := false
+	for {
+		eventName, data, ok := readSSEEvent(t, scanner)
+		if !ok {
+			break
+		}
+		if data == "[DONE]" {
+			sawDone = true
+			break
+		}
+		if eventName != "response.stream_error" {
+			continue
+		}
+		sawStreamError = true
+		var payload map[string]any
+		if err := json.Unmarshal([]byte(data), &payload); err != nil {
+			t.Fatalf("unmarshal stream error payload: %v", err)
+		}
+		if got := payload["response_id"]; got != run.id {
+			t.Fatalf("response_id = %v, want %q", got, run.id)
+		}
+		if got := payload["status"]; got != "completed" {
+			t.Fatalf("status = %v, want completed", got)
+		}
+		errPayload, _ := payload["error"].(map[string]any)
+		if got := errPayload["type"]; got != "stream_buffer_overflow" {
+			t.Fatalf("error.type = %v, want stream_buffer_overflow", got)
+		}
+		wantSequence := float64(defaultResponseRunSubscriberBuffer + 17)
+		if got := payload["sequence_number"]; got != wantSequence {
+			t.Fatalf("sequence_number = %v, want %v", got, wantSequence)
+		}
+		recovery, _ := payload["recovery"].(map[string]any)
+		if got := recovery["sequence_number"]; got != wantSequence {
+			t.Fatalf("recovery.sequence_number = %v, want %v", got, wantSequence)
+		}
+	}
+	if !sawStreamError {
+		t.Fatalf("overflowed stream missing response.stream_error: %q", body)
+	}
+	if !sawDone {
+		t.Fatalf("overflowed stream missing [DONE]: %q", body)
 	}
 }

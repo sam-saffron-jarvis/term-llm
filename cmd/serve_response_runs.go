@@ -569,14 +569,24 @@ func (r *responseRun) subscribe(after int64) responseRunSubscribeResult {
 	return responseRunSubscribeResult{id: id, replay: replay, ch: ch}
 }
 
-func (r *responseRun) subscriberWasDropped(id int) bool {
+func (r *responseRun) droppedSubscriberTerminalPayload(id int) (map[string]any, bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if !r.subscriberDropped[id] {
-		return false
+		return nil, false
 	}
 	delete(r.subscriberDropped, id)
-	return true
+	return map[string]any{
+		"response_id":      r.id,
+		"status":           r.status,
+		"sequence_number":  r.lastSequenceNumber,
+		"min_replay_after": r.minReplayAfter,
+		"error": map[string]any{
+			"type":    "stream_buffer_overflow",
+			"message": "live response stream fell behind; reconnect with the last received sequence number or fetch the response snapshot if replay is no longer available",
+		},
+		"recovery": r.recoveryPayloadLocked(),
+	}, true
 }
 
 func (r *responseRun) unsubscribe(ch <-chan responseRunEvent) {
@@ -1582,6 +1592,14 @@ func (s *serveServer) streamResponseRunEvents(ctx context.Context, w http.Respon
 		_, _ = io.WriteString(w, "data: [DONE]\n\n")
 		flusher.Flush()
 	}
+	writeDropped := func(payload map[string]any) {
+		stopKeepalive()
+		if err := writeSSEEvent(w, "response.stream_error", payload); err != nil {
+			return
+		}
+		_, _ = io.WriteString(w, "data: [DONE]\n\n")
+		flusher.Flush()
+	}
 
 	if len(replay) > 0 {
 		pingMu.Lock()
@@ -1611,7 +1629,8 @@ func (s *serveServer) streamResponseRunEvents(ctx context.Context, w http.Respon
 			return
 		case ev, ok := <-ch:
 			if !ok {
-				if run.subscriberWasDropped(subscriberID) {
+				if payload, dropped := run.droppedSubscriberTerminalPayload(subscriberID); dropped {
+					writeDropped(payload)
 					return
 				}
 				writeDone()
@@ -1642,7 +1661,8 @@ func (s *serveServer) streamResponseRunEvents(ctx context.Context, w http.Respon
 				return
 			}
 			if closed {
-				if run.subscriberWasDropped(subscriberID) {
+				if payload, dropped := run.droppedSubscriberTerminalPayload(subscriberID); dropped {
+					writeDropped(payload)
 					return
 				}
 				writeDone()
