@@ -46,7 +46,7 @@ func (p *NearAIProvider) ListModels(ctx context.Context) ([]ModelInfo, error) {
 		return nil, fmt.Errorf("failed to read NEAR AI models response: %w", err)
 	}
 	if resp.StatusCode != 200 {
-		return nil, fmt.Errorf("NEAR AI API error (status %d): %s", resp.StatusCode, string(body))
+		return nil, newHTTPStatusError("NEAR AI", resp, body)
 	}
 
 	var catalog nearAIModelCatalog

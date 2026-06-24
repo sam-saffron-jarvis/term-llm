@@ -9,6 +9,8 @@ import (
 	"io"
 	"net/http"
 	"time"
+
+	"github.com/samsaffron/term-llm/internal/providerhttp"
 )
 
 const (
@@ -82,7 +84,7 @@ func (p *XAIProvider) Generate(ctx context.Context, req GenerateRequest) (*Image
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("xAI API error (status %d): %s", resp.StatusCode, string(body))
+		return nil, providerhttp.NewStatusError("xAI", resp, body)
 	}
 
 	var apiResp xaiResponse
@@ -123,7 +125,7 @@ func (p *XAIProvider) Generate(ctx context.Context, req GenerateRequest) (*Image
 		defer fetchResp.Body.Close()
 		if fetchResp.StatusCode != http.StatusOK {
 			body, _ := io.ReadAll(fetchResp.Body)
-			return nil, fmt.Errorf("image URL returned status %d: %s", fetchResp.StatusCode, string(body))
+			return nil, providerhttp.NewStatusErrorMessagef(fetchResp, body, "image URL returned status %d: %s", fetchResp.StatusCode, string(body))
 		}
 		imageData, err := io.ReadAll(fetchResp.Body)
 		if err != nil {

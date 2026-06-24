@@ -12,6 +12,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/samsaffron/term-llm/internal/providerhttp"
 )
 
 const (
@@ -173,7 +175,7 @@ func (p *GeminiProvider) do(ctx context.Context, model string, payload any, debu
 		debugLog("Gemini Audio Response", "status=%d content-type=%s body_len=%d", resp.StatusCode, contentType, len(body))
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, "", fmt.Errorf("Gemini API error (status %d): %s", resp.StatusCode, strings.TrimSpace(string(body)))
+		return nil, "", providerhttp.NewStatusError("Gemini", resp, body)
 	}
 
 	var decoded struct {

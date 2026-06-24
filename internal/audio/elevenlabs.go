@@ -11,6 +11,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/samsaffron/term-llm/internal/providerhttp"
 )
 
 const (
@@ -194,7 +196,7 @@ func (p *ElevenLabsProvider) doSpeech(ctx context.Context, voiceID, format strin
 		debugLog("ElevenLabs Audio Response", "status=%d content-type=%s body_len=%d", resp.StatusCode, contentType, len(body))
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, "", fmt.Errorf("ElevenLabs API error (status %d): %s", resp.StatusCode, strings.TrimSpace(string(body)))
+		return nil, "", providerhttp.NewStatusError("ElevenLabs", resp, body)
 	}
 	return body, contentType, nil
 }
@@ -248,7 +250,7 @@ func (p *ElevenLabsProvider) listVoices(ctx context.Context, debug bool) ([]elev
 		debugLog("ElevenLabs Voices Response", "status=%d body_len=%d", resp.StatusCode, len(body))
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("ElevenLabs voices API error (status %d): %s", resp.StatusCode, strings.TrimSpace(string(body)))
+		return nil, providerhttp.NewStatusError("ElevenLabs voices", resp, body)
 	}
 	var decoded struct {
 		Voices []elevenLabsVoice `json:"voices"`

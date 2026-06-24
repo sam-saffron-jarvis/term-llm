@@ -1943,8 +1943,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 
 		case ui.StreamEventRetry:
-			m.setRetryStatus(fmt.Sprintf("Retrying stream (%d/%d), waiting %.1fs...",
-				ev.RetryAttempt, ev.RetryMax, ev.RetryWait))
+			m.setRetryStatus(ev.RetryStatus("Retrying stream", 1, "..."))
 
 		case ui.StreamEventImage:
 			m.setRetryStatus("")

@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/samsaffron/term-llm/internal/providerhttp"
 )
 
 // ExaSearcher implements Searcher using the Exa API.
@@ -85,7 +87,7 @@ func (e *ExaSearcher) Search(ctx context.Context, query string, maxResults int) 
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("exa http %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+		return nil, providerhttp.NewStatusErrorMessagef(resp, body, "exa http %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
 	}
 
 	var exaResp exaResponse

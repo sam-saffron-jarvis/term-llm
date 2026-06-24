@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"os"
 	"strconv"
 	"strings"
@@ -119,9 +118,7 @@ func (p *VeniceProvider) Stream(ctx context.Context, req Request) (Stream, error
 		return nil, fmt.Errorf("%s API request failed: %w", p.name, err)
 	}
 	if resp.StatusCode != 200 {
-		body, _ := io.ReadAll(resp.Body)
-		resp.Body.Close()
-		return nil, fmt.Errorf("%s API error (status %d): %s", p.name, resp.StatusCode, string(body))
+		return nil, newOpenAICompatStatusErrorFromResponse(p.name, resp)
 	}
 
 	return newEventStreamWithCancelHook(ctx, func() { _ = resp.Body.Close() }, func(ctx context.Context, send eventSender) error {

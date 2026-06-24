@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/samsaffron/term-llm/internal/providerhttp"
 )
 
 // PerplexitySearcher implements Searcher using the Perplexity Search API.
@@ -82,7 +84,7 @@ func (p *PerplexitySearcher) Search(ctx context.Context, query string, maxResult
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("perplexity http %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+		return nil, providerhttp.NewStatusErrorMessagef(resp, body, "perplexity http %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
 	}
 
 	var pplxResp perplexityResponse

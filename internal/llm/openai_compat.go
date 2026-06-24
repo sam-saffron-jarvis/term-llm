@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/config"
+	"github.com/samsaffron/term-llm/internal/providerhttp"
 )
 
 // defaultHTTPClient is a shared HTTP client with transport-level timeouts.
@@ -240,6 +241,16 @@ type oaiAPIError struct {
 	Message string `json:"message"`
 }
 
+func newOpenAICompatStatusErrorFromResponse(provider string, resp *http.Response) *HTTPStatusError {
+	body := providerhttp.ReadBodyAndClose(resp, 0)
+	errMsg := string(body)
+	var errResp oaiChatResponse
+	if json.Unmarshal(body, &errResp) == nil && errResp.Error != nil && errResp.Error.Message != "" {
+		errMsg = errResp.Error.Message
+	}
+	return newHTTPStatusErrorWithDisplayBody(provider, resp, body, errMsg)
+}
+
 // Model listing structures
 type oaiModelsResponse struct {
 	Data []oaiModel `json:"data"`
@@ -388,7 +399,7 @@ func (p *OpenAICompatProvider) ListModels(ctx context.Context) ([]ModelInfo, err
 	}
 
 	if resp.StatusCode != 200 {
-		return nil, fmt.Errorf("API error (status %d): %s", resp.StatusCode, string(body))
+		return nil, newHTTPStatusError("", resp, body)
 	}
 
 	var modelsResp oaiModelsResponse
@@ -764,14 +775,7 @@ func (p *OpenAICompatProvider) Stream(ctx context.Context, req Request) (Stream,
 
 	// Check for error responses synchronously so retry logic can handle them
 	if resp.StatusCode != 200 {
-		body, _ := io.ReadAll(resp.Body)
-		resp.Body.Close()
-		errMsg := string(body)
-		var errResp oaiChatResponse
-		if json.Unmarshal(body, &errResp) == nil && errResp.Error != nil && errResp.Error.Message != "" {
-			errMsg = errResp.Error.Message
-		}
-		return nil, fmt.Errorf("%s API error (status %d): %s", p.name, resp.StatusCode, errMsg)
+		return nil, newOpenAICompatStatusErrorFromResponse(p.name, resp)
 	}
 
 	// Only create async stream for successful HTTP responses

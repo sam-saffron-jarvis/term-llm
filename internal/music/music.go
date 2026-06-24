@@ -19,6 +19,7 @@ import (
 
 	"github.com/samsaffron/term-llm/internal/audio"
 	"github.com/samsaffron/term-llm/internal/config"
+	"github.com/samsaffron/term-llm/internal/providerhttp"
 )
 
 const (
@@ -292,7 +293,7 @@ func (p *VeniceProvider) do(ctx context.Context, endpoint string, payload any, d
 		debugLog("Venice Music Response", "status=%d content-type=%s body_len=%d", resp.StatusCode, contentType, len(body))
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, "", fmt.Errorf("Venice API error (status %d): %s", resp.StatusCode, strings.TrimSpace(string(body)))
+		return nil, "", providerhttp.NewStatusError("Venice", resp, body)
 	}
 	return body, contentType, nil
 }
@@ -408,7 +409,7 @@ func (p *ElevenLabsProvider) do(ctx context.Context, endpoint string, payload an
 		debugLog("ElevenLabs Music Response", "status=%d content-type=%s body_len=%d", resp.StatusCode, contentType, len(body))
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, "", fmt.Errorf("ElevenLabs API error (status %d): %s", resp.StatusCode, strings.TrimSpace(string(body)))
+		return nil, "", providerhttp.NewStatusError("ElevenLabs", resp, body)
 	}
 	return body, contentType, nil
 }

@@ -1301,8 +1301,7 @@ func streamPlainText(ctx context.Context, events <-chan ui.StreamEvent, suppress
 				trailingNewlines = 0
 				continue
 			case ui.StreamEventRetry:
-				fmt.Fprintf(os.Stderr, "\rRate limited (%d/%d), waiting %.0fs...\n",
-					ev.RetryAttempt, ev.RetryMax, ev.RetryWait)
+				fmt.Fprintf(os.Stderr, "\r%s\n", ev.RetryStatus("Rate limited", 0, "..."))
 
 			case ui.StreamEventUsage:
 				// Skip usage events in plain text mode
@@ -2069,8 +2068,7 @@ func (m askStreamModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.tickEvery()
 
 	case askRetryMsg:
-		m.retryStatus = fmt.Sprintf("Rate limited (%d/%d), waiting %.0fs...",
-			msg.Attempt, msg.MaxAttempts, msg.WaitSecs)
+		m.retryStatus = ui.FormatRetryStatus("Rate limited", msg.Attempt, msg.MaxAttempts, msg.WaitSecs, 0, "...")
 		return m, m.tickEvery()
 
 	case askPhaseMsg:

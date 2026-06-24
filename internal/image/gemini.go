@@ -11,6 +11,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/samsaffron/term-llm/internal/providerhttp"
 )
 
 const (
@@ -127,7 +129,7 @@ func (p *GeminiProvider) doRequest(ctx context.Context, parts []geminiPart, size
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("API error (status %d): %s", resp.StatusCode, string(body))
+		return nil, providerhttp.NewStatusError("", resp, body)
 	}
 
 	var apiResp geminiResponse

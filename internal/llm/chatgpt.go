@@ -12,6 +12,7 @@ import (
 
 	"github.com/samsaffron/term-llm/internal/credentials"
 	"github.com/samsaffron/term-llm/internal/oauth"
+	"github.com/samsaffron/term-llm/internal/providerhttp"
 	"github.com/samsaffron/term-llm/internal/signal"
 	"golang.org/x/term"
 )
@@ -335,32 +336,14 @@ type chatGPTRateLimitResponse struct {
 	} `json:"error"`
 }
 
-// RateLimitError represents a rate limit error with retry information.
-type RateLimitError struct {
-	Message       string
-	RetryAfter    time.Duration
-	PlanType      string
-	PrimaryUsed   int
-	SecondaryUsed int
-}
-
-func (e *RateLimitError) Error() string {
-	return e.Message
-}
-
-// IsLongWait returns true if the retry wait is too long for automatic retry.
-func (e *RateLimitError) IsLongWait() bool {
-	return e.RetryAfter > 2*time.Minute
-}
-
 // parseChatGPTRateLimitError parses a 429 response and returns a RateLimitError.
-// For short waits, the retry logic can use RetryAfter to wait and retry.
-// For long waits, it gives a clear message about when to try again.
+// The retry loop uses RetryAfter with its configured elapsed-time budget to
+// decide whether to wait and retry.
 func parseChatGPTRateLimitError(body []byte, headers http.Header) error {
 	var resp chatGPTRateLimitResponse
 	if err := json.Unmarshal(body, &resp); err != nil {
-		// Couldn't parse, return generic error
-		return fmt.Errorf("rate limit exceeded (429): %s", string(body))
+		msg := fmt.Sprintf("rate limit exceeded (429): %s", string(body))
+		return newHTTPStatusErrorMessageString(msg, http.StatusTooManyRequests, "", headers, string(body))
 	}
 
 	resetsIn := resp.Error.ResetsInSecs
@@ -372,12 +355,24 @@ func parseChatGPTRateLimitError(body []byte, headers http.Header) error {
 		}
 	}
 
+	retryAfter := time.Duration(resetsIn) * time.Second
+	if wait, ok := providerhttp.ParseRetryAfter(headers, time.Now()); ok {
+		retryAfter = wait
+		resetsIn = int(wait.Seconds())
+	} else if retryAfter <= 0 && resp.Error.ResetsAt > 0 {
+		retryAfter = time.Until(time.Unix(resp.Error.ResetsAt, 0))
+		if retryAfter < 0 {
+			retryAfter = 0
+		}
+		resetsIn = int(retryAfter.Seconds())
+	}
+
 	// Get usage percentages from headers for context
 	primaryUsed, _ := parseIntHeader(headers.Get("X-Codex-Primary-Used-Percent"))
 	secondaryUsed, _ := parseIntHeader(headers.Get("X-Codex-Secondary-Used-Percent"))
 
 	// Format the reset time in a human-readable way
-	resetTime := formatDuration(time.Duration(resetsIn) * time.Second)
+	resetTime := formatDuration(retryAfter)
 
 	// Build informative error message
 	var msg strings.Builder
@@ -403,8 +398,6 @@ func parseChatGPTRateLimitError(body []byte, headers http.Header) error {
 		}
 		msg.WriteString(")")
 	}
-
-	retryAfter := time.Duration(resetsIn) * time.Second
 
 	return &RateLimitError{
 		Message:       msg.String(),

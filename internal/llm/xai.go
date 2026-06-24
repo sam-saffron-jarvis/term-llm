@@ -114,9 +114,7 @@ func (p *XAIProvider) streamStandard(ctx context.Context, req Request) (Stream, 
 	}
 
 	if resp.StatusCode != 200 {
-		body, _ := io.ReadAll(resp.Body)
-		resp.Body.Close()
-		return nil, fmt.Errorf("xAI API error (status %d): %s", resp.StatusCode, string(body))
+		return nil, newOpenAICompatStatusErrorFromResponse("xAI", resp)
 	}
 
 	return newEventStreamWithCancelHook(ctx, func() { _ = resp.Body.Close() }, func(ctx context.Context, send eventSender) error {
@@ -302,9 +300,7 @@ func (p *XAIProvider) streamWithSearch(ctx context.Context, req Request) (Stream
 	}
 
 	if resp.StatusCode != 200 {
-		body, _ := io.ReadAll(resp.Body)
-		resp.Body.Close()
-		return nil, fmt.Errorf("xAI Responses API error (status %d): %s", resp.StatusCode, string(body))
+		return nil, newHTTPStatusErrorMessageFromResponsef(resp, "xAI Responses API error (status %d): %s")
 	}
 
 	return newEventStreamWithCancelHook(ctx, func() { _ = resp.Body.Close() }, func(ctx context.Context, send eventSender) error {
@@ -440,7 +436,7 @@ func (p *XAIProvider) ListModels(ctx context.Context) ([]ModelInfo, error) {
 	}
 
 	if resp.StatusCode != 200 {
-		return nil, fmt.Errorf("xAI API error (status %d): %s", resp.StatusCode, string(body))
+		return nil, newHTTPStatusError("xAI", resp, body)
 	}
 
 	var modelsResp oaiModelsResponse

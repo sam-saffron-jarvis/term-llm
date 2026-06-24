@@ -10,6 +10,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/samsaffron/term-llm/internal/providerhttp"
 )
 
 // BraveSearcher implements Searcher using the Brave Search API.
@@ -77,7 +79,7 @@ func (b *BraveSearcher) Search(ctx context.Context, query string, maxResults int
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("brave http %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+		return nil, providerhttp.NewStatusErrorMessagef(resp, body, "brave http %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
 	}
 
 	var braveResp braveResponse

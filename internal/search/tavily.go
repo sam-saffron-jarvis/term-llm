@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/samsaffron/term-llm/internal/providerhttp"
 )
 
 // TavilySearcher implements Searcher using the Tavily Search API.
@@ -89,7 +91,7 @@ func (t *TavilySearcher) Search(ctx context.Context, query string, maxResults in
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("tavily http %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+		return nil, providerhttp.NewStatusErrorMessagef(resp, body, "tavily http %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
 	}
 
 	var tavilyResp tavilyResponse

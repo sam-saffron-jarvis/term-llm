@@ -2,6 +2,7 @@ package ui
 
 import (
 	"encoding/json"
+	"fmt"
 
 	"github.com/samsaffron/term-llm/internal/llm"
 )
@@ -156,6 +157,34 @@ func PhaseEvent(phase string) StreamEvent {
 		Type:  StreamEventPhase,
 		Phase: phase,
 	}
+}
+
+// RetryAttemptLabel formats retry attempt progress. A max value of 0 means the
+// retry policy is time-budgeted and has no fixed attempt ceiling.
+func RetryAttemptLabel(attempt, max int) string {
+	if max > 0 {
+		return fmt.Sprintf("%d/%d", attempt, max)
+	}
+	return fmt.Sprintf("attempt %d", attempt)
+}
+
+// FormatRetryStatus returns a consistent retry status string for CLI/TUI
+// surfaces. precision controls the wait seconds decimal places; suffix is often
+// "..." for live terminal status messages.
+func FormatRetryStatus(label string, attempt, max int, waitSecs float64, precision int, suffix string) string {
+	if label == "" {
+		label = "Retrying"
+	}
+	if precision < 0 {
+		precision = 0
+	}
+	wait := fmt.Sprintf("%.*f", precision, waitSecs)
+	return fmt.Sprintf("%s (%s), waiting %ss%s", label, RetryAttemptLabel(attempt, max), wait, suffix)
+}
+
+// RetryStatus formats this event as retry status text.
+func (e StreamEvent) RetryStatus(label string, precision int, suffix string) string {
+	return FormatRetryStatus(label, e.RetryAttempt, e.RetryMax, e.RetryWait, precision, suffix)
 }
 
 // RetryEvent creates a retry notification event

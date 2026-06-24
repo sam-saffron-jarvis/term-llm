@@ -87,7 +87,7 @@ func (p *ZenProvider) ListModels(ctx context.Context) ([]ModelInfo, error) {
 	}
 
 	if resp.StatusCode != 200 {
-		return nil, fmt.Errorf("API error (status %d): %s", resp.StatusCode, string(body))
+		return nil, newHTTPStatusError("", resp, body)
 	}
 
 	var modelsResp oaiModelsResponse

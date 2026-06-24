@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/samsaffron/term-llm/internal/providerhttp"
 	"golang.org/x/net/html"
 )
 
@@ -61,7 +62,7 @@ func (d *DuckDuckGoLite) Search(ctx context.Context, query string, maxResults in
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("duckduckgo http %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+		return nil, providerhttp.NewStatusErrorMessagef(resp, body, "duckduckgo http %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
 	}
 
 	body, err := io.ReadAll(resp.Body)

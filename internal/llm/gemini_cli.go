@@ -7,7 +7,6 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"os"
@@ -424,8 +423,7 @@ func (p *GeminiCLIProvider) Stream(ctx context.Context, req Request) (Stream, er
 			defer resp.Body.Close()
 
 			if resp.StatusCode != 200 {
-				body, _ := io.ReadAll(resp.Body)
-				return fmt.Errorf("generateContent failed with status %d: %s", resp.StatusCode, string(body))
+				return newHTTPStatusErrorMessageFromResponsef(resp, "generateContent failed with status %d: %s")
 			}
 
 			var genResp struct {
@@ -506,8 +504,7 @@ func (p *GeminiCLIProvider) Stream(ctx context.Context, req Request) (Stream, er
 		defer resp.Body.Close()
 
 		if resp.StatusCode != 200 {
-			body, _ := io.ReadAll(resp.Body)
-			return fmt.Errorf("streamGenerateContent failed with status %d: %s", resp.StatusCode, string(body))
+			return newHTTPStatusErrorMessageFromResponsef(resp, "streamGenerateContent failed with status %d: %s")
 		}
 
 		type groundingSource struct {
@@ -679,8 +676,9 @@ func (p *GeminiCLIProvider) refreshAccessToken(ctx context.Context, debug bool, 
 	logTiming(debug, "token refresh", refreshStart, detail)
 
 	if resp.StatusCode != 200 {
-		body, _ := io.ReadAll(resp.Body)
-		return "", 0, fmt.Errorf("token refresh failed: %s", string(body))
+		return "", 0, newHTTPStatusErrorMessageFromResponse(resp, func(body []byte) string {
+			return fmt.Sprintf("token refresh failed: %s", string(body))
+		})
 	}
 
 	var tokenResp struct {
@@ -829,8 +827,7 @@ func (p *GeminiCLIProvider) ensureProjectID(ctx context.Context, debug bool) err
 	logTiming(debug, "loadCodeAssist request", loadStart, "")
 
 	if resp.StatusCode != 200 {
-		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("loadCodeAssist failed with status %d: %s", resp.StatusCode, string(body))
+		return newHTTPStatusErrorMessageFromResponsef(resp, "loadCodeAssist failed with status %d: %s")
 	}
 
 	var loadResp struct {
@@ -903,8 +900,7 @@ func (p *GeminiCLIProvider) performSearch(ctx context.Context, query string, deb
 	defer resp.Body.Close()
 
 	if resp.StatusCode != 200 {
-		body, _ := io.ReadAll(resp.Body)
-		return "", fmt.Errorf("search failed with status %d: %s", resp.StatusCode, string(body))
+		return "", newHTTPStatusErrorMessageFromResponsef(resp, "search failed with status %d: %s")
 	}
 
 	var genResp struct {

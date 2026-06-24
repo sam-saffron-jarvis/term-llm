@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/config"
+	"github.com/samsaffron/term-llm/internal/providerhttp"
 )
 
 const (
@@ -237,7 +238,7 @@ func (p *VeniceProvider) doJSONRequest(httpReq *http.Request, debugRaw bool) (*I
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("Venice API error (status %d): %s", resp.StatusCode, string(body))
+		return nil, providerhttp.NewStatusError("Venice", resp, body)
 	}
 
 	var apiResp veniceGenerateResponse
@@ -277,7 +278,7 @@ func (p *VeniceProvider) doRawRequest(httpReq *http.Request, debugRaw bool) (*Im
 		if debugRaw {
 			debugRawImageLog(debugRaw, "Venice Error Body", "%s", truncateDebugBody(body, 1024))
 		}
-		return nil, fmt.Errorf("Venice API error (status %d): %s", resp.StatusCode, string(body))
+		return nil, providerhttp.NewStatusError("Venice", resp, body)
 	}
 
 	return &ImageResult{Data: body, MimeType: "image/png"}, nil

@@ -10,6 +10,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/samsaffron/term-llm/internal/providerhttp"
 )
 
 // GoogleSearcher implements Searcher using Google Custom Search API.
@@ -93,7 +95,7 @@ func (g *GoogleSearcher) Search(ctx context.Context, query string, maxResults in
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("google http %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+		return nil, providerhttp.NewStatusErrorMessagef(resp, body, "google http %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
 	}
 
 	results := make([]Result, 0, len(googleResp.Items))

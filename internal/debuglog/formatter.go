@@ -409,11 +409,10 @@ func formatEventEntry(w io.Writer, evt EventEntry, opts FormatOptions, styles *u
 		attempt, _ := evt.Data["attempt"].(float64)
 		maxAttempts, _ := evt.Data["max_attempts"].(float64)
 		waitSecs, _ := evt.Data["wait_secs"].(float64)
-		fmt.Fprintf(w, "%s%s attempt %d/%d (waiting %.1fs)\n",
+		fmt.Fprintf(w, "%s%s %s (waiting %.1fs)\n",
 			ts,
 			styles.Bold.Render("RETRY"),
-			int(attempt),
-			int(maxAttempts),
+			ui.RetryAttemptLabel(int(attempt), int(maxAttempts)),
 			waitSecs,
 		)
 

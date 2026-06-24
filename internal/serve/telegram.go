@@ -24,6 +24,7 @@ import (
 	memorystore "github.com/samsaffron/term-llm/internal/memory"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/tools"
+	"github.com/samsaffron/term-llm/internal/ui"
 )
 
 const telegramMaxMessageLen = 4000 // Telegram limit is 4096; leave margin
@@ -1600,7 +1601,7 @@ func (m *telegramSessionMgr) streamReply(ctx context.Context, bot botSender, ses
 			case llm.EventRetry:
 				textMu.Lock()
 				retryEvents++
-				activePhase = fmt.Sprintf("Retrying (%d/%d), waiting %.0fs", ev.RetryAttempt, ev.RetryMaxAttempts, ev.RetryWaitSecs)
+				activePhase = ui.FormatRetryStatus("Retrying", ev.RetryAttempt, ev.RetryMaxAttempts, ev.RetryWaitSecs, 0, "")
 				textMu.Unlock()
 			case llm.EventInterjection:
 				textMu.Lock()

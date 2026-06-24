@@ -338,7 +338,7 @@ func (p *CopilotProvider) streamChatCompletions(ctx context.Context, req Request
 			if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
 				return fmt.Errorf("Copilot authentication failed (status %d): token may be invalid or expired. Re-run with --provider copilot to re-authenticate", resp.StatusCode)
 			}
-			return fmt.Errorf("Copilot API error (status %d): %s", resp.StatusCode, string(respBody))
+			return newHTTPStatusError("Copilot", resp, respBody)
 		}
 
 		scanner := bufio.NewScanner(resp.Body)
@@ -656,7 +656,7 @@ func (p *CopilotProvider) ListModels(ctx context.Context) ([]ModelInfo, error) {
 		if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
 			return nil, fmt.Errorf("Copilot authentication failed: token may be invalid or expired")
 		}
-		return nil, fmt.Errorf("Copilot API error (status %d): %s", resp.StatusCode, string(body))
+		return nil, newHTTPStatusError("Copilot", resp, body)
 	}
 
 	var modelsResp copilotModelsResponse
@@ -692,18 +692,17 @@ type copilotSessionTokenResponse struct {
 	} `json:"endpoints"`
 }
 
-// copilotAPIError represents an error response from the Copilot API with status code
+// copilotAPIError represents an error response from the Copilot API with status code.
 type copilotAPIError struct {
-	StatusCode int
-	Body       string
+	*HTTPStatusError
 }
 
-func (e *copilotAPIError) Error() string {
-	return fmt.Sprintf("Copilot API error (status %d): %s", e.StatusCode, e.Body)
+func newCopilotAPIError(resp *http.Response, body []byte) *copilotAPIError {
+	return &copilotAPIError{HTTPStatusError: newHTTPStatusError("Copilot", resp, body)}
 }
 
 func (e *copilotAPIError) Is404() bool {
-	return e.StatusCode == http.StatusNotFound
+	return e != nil && e.HTTPStatusCode() == http.StatusNotFound
 }
 
 // ensureValidSession ensures we have a valid session token, refreshing if needed.
@@ -778,7 +777,7 @@ func (p *CopilotProvider) fetchCopilotTokenInfo(ctx context.Context) (*copilotSe
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, &copilotAPIError{StatusCode: resp.StatusCode, Body: string(body)}
+		return nil, newCopilotAPIError(resp, body)
 	}
 
 	var tokenResp copilotSessionTokenResponse

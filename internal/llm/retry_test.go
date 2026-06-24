@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 )
@@ -119,6 +120,41 @@ func (p *syncToolProvider) Stream(ctx context.Context, req Request) (Stream, err
 	}), nil
 }
 
+func TestDefaultRetryConfigUsesThirtyMinuteElapsedBudget(t *testing.T) {
+	cfg := DefaultRetryConfig()
+	if cfg.MaxAttempts != 0 {
+		t.Fatalf("MaxAttempts = %d, want 0 for time-budgeted retries", cfg.MaxAttempts)
+	}
+	if cfg.MaxElapsedTime != 30*time.Minute {
+		t.Fatalf("MaxElapsedTime = %s, want 30m", cfg.MaxElapsedTime)
+	}
+	if cfg.BaseBackoff != time.Second || cfg.MaxBackoff != 30*time.Second {
+		t.Fatalf("backoff defaults = %s/%s, want 1s/30s", cfg.BaseBackoff, cfg.MaxBackoff)
+	}
+}
+
+func TestRetryProvider_ZeroConfigDoesNotRetry(t *testing.T) {
+	inner := &retryFailNTimesProvider{failures: 2, err: errors.New("503 service unavailable")}
+	provider := WrapWithRetry(inner, RetryConfig{})
+
+	stream, err := provider.Stream(context.Background(), Request{})
+	if err != nil {
+		t.Fatalf("Stream returned error: %v", err)
+	}
+	defer stream.Close()
+
+	event, err := stream.Recv()
+	if err != nil {
+		t.Fatalf("Recv returned error: %v", err)
+	}
+	if event.Type != EventError || event.Err == nil {
+		t.Fatalf("got event %+v, want error event", event)
+	}
+	if inner.attempts != 1 {
+		t.Fatalf("attempts = %d, want 1", inner.attempts)
+	}
+}
+
 func TestIsRetryable_500InternalServerError(t *testing.T) {
 	cases := []struct {
 		msg       string
@@ -127,9 +163,13 @@ func TestIsRetryable_500InternalServerError(t *testing.T) {
 		{"anthropic streaming error: POST \"https://api.anthropic.com/v1/messages\": 500 Internal Server Error", true},
 		{"500 internal server error", true},
 		{"got 500 from upstream", true},
+		{"501 not implemented from upstream", true},
+		{"provider returned status 525", true},
+		{"provider returned status 599", true},
 		{"internal server error occurred", true},
 		{"400 Bad Request", false},
 		{"401 Unauthorized", false},
+		{"token budget 1500 exceeded", false},
 	}
 	for _, tc := range cases {
 		got := isRetryable(errors.New(tc.msg))
@@ -185,6 +225,140 @@ func (p *toolThenErrorProvider) Stream(ctx context.Context, req Request) (Stream
 		send.Send(Event{Type: EventError, Err: errors.New("502 bad gateway")})
 		return nil
 	}), nil
+}
+
+type retryFailNTimesProvider struct {
+	attempts int
+	failures int
+	err      error
+}
+
+func (p *retryFailNTimesProvider) Name() string               { return "retry-fail-n-times" }
+func (p *retryFailNTimesProvider) Credential() string         { return "mock" }
+func (p *retryFailNTimesProvider) Capabilities() Capabilities { return Capabilities{} }
+func (p *retryFailNTimesProvider) Stream(ctx context.Context, req Request) (Stream, error) {
+	p.attempts++
+	if p.attempts <= p.failures {
+		return nil, p.err
+	}
+	return newEventStream(ctx, func(ctx context.Context, send eventSender) error {
+		return send.Send(Event{Type: EventDone})
+	}), nil
+}
+
+func TestRetryProvider_TimeBudgetRetriesBeyondFiveAttempts(t *testing.T) {
+	inner := &retryFailNTimesProvider{failures: 6, err: errors.New("503 service unavailable")}
+	provider := WrapWithRetry(inner, RetryConfig{
+		MaxAttempts:    0,
+		MaxElapsedTime: 2 * time.Second,
+		BaseBackoff:    time.Millisecond,
+		MaxBackoff:     time.Millisecond,
+	})
+
+	stream, err := provider.Stream(context.Background(), Request{})
+	if err != nil {
+		t.Fatalf("Stream returned error: %v", err)
+	}
+	defer stream.Close()
+
+	retryEvents := 0
+	for {
+		event, err := stream.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("Recv returned error: %v", err)
+		}
+		if event.Type == EventError {
+			t.Fatalf("unexpected error event: %v", event.Err)
+		}
+		if event.Type == EventRetry {
+			retryEvents++
+			if event.RetryMaxAttempts != 0 {
+				t.Fatalf("RetryMaxAttempts = %d, want 0 for time-budget retry", event.RetryMaxAttempts)
+			}
+		}
+	}
+
+	if inner.attempts != 7 {
+		t.Fatalf("attempts = %d, want 7", inner.attempts)
+	}
+	if retryEvents != 6 {
+		t.Fatalf("retryEvents = %d, want 6", retryEvents)
+	}
+}
+
+func TestRetryProvider_StopsWhenRetryAfterExceedsElapsedBudget(t *testing.T) {
+	inner := &retryFailNTimesProvider{
+		failures: 100,
+		err:      &RateLimitError{Message: "rate limit", RetryAfter: 20 * time.Millisecond},
+	}
+	provider := WrapWithRetry(inner, RetryConfig{
+		MaxAttempts:    0,
+		MaxElapsedTime: 5 * time.Millisecond,
+		BaseBackoff:    time.Millisecond,
+		MaxBackoff:     time.Millisecond,
+	})
+
+	stream, err := provider.Stream(context.Background(), Request{})
+	if err != nil {
+		t.Fatalf("Stream returned error: %v", err)
+	}
+	defer stream.Close()
+
+	event, err := stream.Recv()
+	if err != nil {
+		t.Fatalf("Recv returned error: %v", err)
+	}
+	if event.Type != EventError || event.Err == nil {
+		t.Fatalf("got event %+v, want error event", event)
+	}
+	if !strings.Contains(event.Err.Error(), "exceeds remaining retry window") {
+		t.Fatalf("error = %v, want retry window context", event.Err)
+	}
+	if inner.attempts != 1 {
+		t.Fatalf("attempts = %d, want 1", inner.attempts)
+	}
+}
+
+func TestIsRetryable_HTTPStatusError(t *testing.T) {
+	for _, status := range []int{http.StatusInternalServerError, http.StatusNotImplemented, http.StatusServiceUnavailable, 525} {
+		if !isRetryable(newHTTPStatusErrorString("test", status, http.StatusText(status), nil, "transient")) {
+			t.Fatalf("%d HTTPStatusError should be retryable", status)
+		}
+	}
+	if isRetryable(newHTTPStatusErrorString("test", http.StatusNotFound, "404 Not Found", nil, "not found")) {
+		t.Fatal("404 HTTPStatusError should not be retryable")
+	}
+	if isRetryable(newHTTPStatusErrorString("test", http.StatusConflict, "409 Conflict", nil, "conflict")) {
+		t.Fatal("409 HTTPStatusError should not be retryable by default")
+	}
+}
+
+func TestRetryProvider_BackoffUsesStructuredRetryAfterWithoutMaxBackoffCap(t *testing.T) {
+	provider := &RetryProvider{config: RetryConfig{
+		BaseBackoff: time.Second,
+		MaxBackoff:  30 * time.Second,
+	}}
+
+	err := &RateLimitError{Message: "rate limit", RetryAfter: 2 * time.Minute}
+	if got := provider.calculateBackoff(1, err); got != 2*time.Minute {
+		t.Fatalf("backoff = %s, want uncapped Retry-After 2m", got)
+	}
+}
+
+func TestRetryProvider_BackoffParsesRetryAfterMsFromHTTPStatusError(t *testing.T) {
+	provider := &RetryProvider{config: RetryConfig{
+		BaseBackoff: time.Second,
+		MaxBackoff:  30 * time.Second,
+	}}
+	header := http.Header{"Retry-After-Ms": {"250"}}
+	err := newHTTPStatusErrorString("test", http.StatusTooManyRequests, "429 Too Many Requests", header, "slow down")
+
+	if got := provider.calculateBackoff(1, err); got != 250*time.Millisecond {
+		t.Fatalf("backoff = %s, want Retry-After-Ms 250ms", got)
+	}
 }
 
 func TestRetryProvider_DoesNotRetryAfterCommittedToolCall(t *testing.T) {
@@ -524,7 +698,7 @@ func TestRetryProvider_BackoffParsesRetryAfterHTTPDate(t *testing.T) {
 	}
 }
 
-func TestRetryProvider_BackoffCapsRetryAfterHTTPDate(t *testing.T) {
+func TestRetryProvider_BackoffDoesNotCapRetryAfterHTTPDate(t *testing.T) {
 	provider := &RetryProvider{config: RetryConfig{
 		BaseBackoff: time.Second,
 		MaxBackoff:  30 * time.Second,
@@ -532,8 +706,9 @@ func TestRetryProvider_BackoffCapsRetryAfterHTTPDate(t *testing.T) {
 	retryAt := time.Now().Add(time.Hour).UTC().Truncate(time.Second)
 	err := errors.New("upstream 429: Retry-After: " + retryAt.Format(http.TimeFormat))
 
-	if got := provider.calculateBackoff(1, err); got != 30*time.Second {
-		t.Fatalf("backoff = %s, want max backoff cap 30s", got)
+	got := provider.calculateBackoff(1, err)
+	if got < 59*time.Minute || got > 61*time.Minute {
+		t.Fatalf("backoff = %s, want uncapped Retry-After HTTP-date of about 1h", got)
 	}
 }
 
@@ -556,6 +731,46 @@ func TestRetryProviderForwardsListModels(t *testing.T) {
 	}
 	if inner.calls != 1 {
 		t.Fatalf("inner.ListModels called %d times, want 1", inner.calls)
+	}
+}
+
+type retryingListModelsProvider struct {
+	calls int
+}
+
+func (p *retryingListModelsProvider) Name() string               { return "retrying-list-models" }
+func (p *retryingListModelsProvider) Credential() string         { return "mock" }
+func (p *retryingListModelsProvider) Capabilities() Capabilities { return Capabilities{} }
+func (p *retryingListModelsProvider) Stream(ctx context.Context, req Request) (Stream, error) {
+	return nil, errors.New("not used in this test")
+}
+func (p *retryingListModelsProvider) ListModels(ctx context.Context) ([]ModelInfo, error) {
+	p.calls++
+	if p.calls == 1 {
+		return nil, newHTTPStatusErrorString("test", http.StatusServiceUnavailable, "503 Service Unavailable", nil, "try again")
+	}
+	return []ModelInfo{{ID: "ok"}}, nil
+}
+
+func TestRetryProviderRetriesListModelsTransientError(t *testing.T) {
+	inner := &retryingListModelsProvider{}
+	wrapped := WrapWithRetry(inner, RetryConfig{
+		MaxAttempts: 2,
+		BaseBackoff: time.Millisecond,
+		MaxBackoff:  time.Millisecond,
+	})
+	lister := wrapped.(interface {
+		ListModels(context.Context) ([]ModelInfo, error)
+	})
+	models, err := lister.ListModels(context.Background())
+	if err != nil {
+		t.Fatalf("ListModels returned error: %v", err)
+	}
+	if inner.calls != 2 {
+		t.Fatalf("ListModels calls = %d, want 2", inner.calls)
+	}
+	if len(models) != 1 || models[0].ID != "ok" {
+		t.Fatalf("models = %+v, want ok", models)
 	}
 }
 

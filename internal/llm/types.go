@@ -434,7 +434,8 @@ type Event struct {
 	ToolImages                []string        // For EventToolExecEnd: image paths from image tools
 	Use                       *Usage
 	Err                       error
-	// Retry fields (for EventRetry)
+	// Retry fields (for EventRetry). RetryMaxAttempts == 0 means the retry
+	// policy is governed by a time budget rather than a fixed attempt count.
 	RetryAttempt     int
 	RetryMaxAttempts int
 	RetryWaitSecs    float64

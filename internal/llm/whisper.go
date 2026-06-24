@@ -75,7 +75,14 @@ func TranscribeFile(ctx context.Context, filePath string, opts TranscribeOptions
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("whisper API error %d: %s", resp.StatusCode, readLimitedBody(resp.Body, whisperErrorBodyLimit))
+		body := readLimitedBody(resp.Body, whisperErrorBodyLimit)
+		return "", newHTTPStatusErrorMessageString(
+			fmt.Sprintf("whisper API error %d: %s", resp.StatusCode, body),
+			resp.StatusCode,
+			resp.Status,
+			resp.Header,
+			body,
+		)
 	}
 
 	if opts.Provider == "elevenlabs" && opts.Timestamps {

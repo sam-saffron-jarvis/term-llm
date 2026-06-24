@@ -134,9 +134,11 @@ func (p *ChatGPTProvider) fetchChatGPTModels(ctx context.Context) ([]ModelInfo, 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		if len(body) > 0 {
-			return nil, "", fmt.Errorf("ChatGPT models request failed: %s: %s", resp.Status, string(body))
+			msg := fmt.Sprintf("ChatGPT models request failed: %s: %s", resp.Status, string(body))
+			return nil, "", newHTTPStatusErrorMessage(msg, resp, body)
 		}
-		return nil, "", fmt.Errorf("ChatGPT models request failed: %s", resp.Status)
+		msg := fmt.Sprintf("ChatGPT models request failed: %s", resp.Status)
+		return nil, "", newHTTPStatusErrorMessage(msg, resp, nil)
 	}
 	var decoded chatGPTModelsResponse
 	if err := json.NewDecoder(resp.Body).Decode(&decoded); err != nil {

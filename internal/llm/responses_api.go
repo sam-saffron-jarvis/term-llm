@@ -933,7 +933,7 @@ func (c *ResponsesClient) streamHTTPPrepared(ctx context.Context, httpPayload Re
 			}
 			if resp.StatusCode != http.StatusOK {
 				retryBody := readResponsesAPIErrorBody(resp)
-				return nil, fmt.Errorf("Responses API error (status %d): %s", resp.StatusCode, string(retryBody))
+				return nil, newHTTPStatusErrorMessagef(resp, retryBody, "Responses API error (status %d): %s", resp.StatusCode, string(retryBody))
 			}
 		} else if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
 			if c.OnAuthRetry != nil {
@@ -962,13 +962,13 @@ func (c *ResponsesClient) streamHTTPPrepared(ctx context.Context, httpPayload Re
 				}
 				if resp.StatusCode != http.StatusOK {
 					retryBody := readResponsesAPIErrorBody(resp)
-					return nil, fmt.Errorf("Responses API error after re-auth (status %d): %s", resp.StatusCode, string(retryBody))
+					return nil, newHTTPStatusErrorMessagef(resp, retryBody, "Responses API error after re-auth (status %d): %s", resp.StatusCode, string(retryBody))
 				}
 			} else {
 				return nil, fmt.Errorf("Responses API authentication failed (status %d): token may be invalid or expired", resp.StatusCode)
 			}
 		} else {
-			return nil, fmt.Errorf("Responses API error (status %d): %s", resp.StatusCode, string(respBody))
+			return nil, newHTTPStatusErrorMessagef(resp, respBody, "Responses API error (status %d): %s", resp.StatusCode, string(respBody))
 		}
 	}
 

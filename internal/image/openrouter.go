@@ -10,6 +10,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/samsaffron/term-llm/internal/providerhttp"
 )
 
 const openrouterImageEndpoint = "https://openrouter.ai/api/v1/chat/completions"
@@ -103,7 +105,7 @@ func (p *OpenRouterProvider) doRequest(ctx context.Context, content []orMessageC
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("API error (status %d): %s", resp.StatusCode, string(body))
+		return nil, providerhttp.NewStatusError("", resp, body)
 	}
 
 	var apiResp orResponse

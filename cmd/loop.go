@@ -488,8 +488,7 @@ func runLoopIteration(ctx context.Context, engine *llm.Engine, req llm.Request, 
 			}
 
 		case llm.EventRetry:
-			fmt.Fprintf(stderr, "  Rate limited (%d/%d), waiting %.0fs...\n",
-				event.RetryAttempt, event.RetryMaxAttempts, event.RetryWaitSecs)
+			fmt.Fprintf(stderr, "  %s\n", ui.FormatRetryStatus("Rate limited", event.RetryAttempt, event.RetryMaxAttempts, event.RetryWaitSecs, 0, "..."))
 
 		case llm.EventError:
 			if event.Err != nil {

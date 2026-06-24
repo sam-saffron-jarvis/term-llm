@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/config"
+	"github.com/samsaffron/term-llm/internal/providerhttp"
 )
 
 const (
@@ -211,7 +212,7 @@ func (p *VeniceProvider) do(ctx context.Context, method, endpoint string, payloa
 		debugLog("Venice Audio Response", "status=%d content-type=%s body_len=%d", resp.StatusCode, contentType, len(body))
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, "", fmt.Errorf("Venice API error (status %d): %s", resp.StatusCode, strings.TrimSpace(string(body)))
+		return nil, "", providerhttp.NewStatusError("Venice", resp, body)
 	}
 	return body, contentType, nil
 }

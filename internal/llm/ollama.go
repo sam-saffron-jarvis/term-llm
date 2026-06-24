@@ -10,6 +10,8 @@ import (
 	"net/http"
 	"os"
 	"strings"
+
+	"github.com/samsaffron/term-llm/internal/providerhttp"
 )
 
 const (
@@ -329,15 +331,7 @@ func (p *OllamaProvider) Stream(ctx context.Context, req Request) (Stream, error
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		raw, _ := io.ReadAll(resp.Body)
-		resp.Body.Close()
-		var errBody struct {
-			Error string `json:"error"`
-		}
-		if json.Unmarshal(raw, &errBody) == nil && errBody.Error != "" {
-			return nil, fmt.Errorf("Ollama API error: %s", errBody.Error)
-		}
-		return nil, fmt.Errorf("Ollama API error (status %d): %s", resp.StatusCode, string(raw))
+		return nil, newOllamaStatusErrorFromResponse(resp)
 	}
 
 	return newEventStreamWithCancelHook(ctx, func() { _ = resp.Body.Close() }, func(ctx context.Context, send eventSender) error {
@@ -421,6 +415,17 @@ func (p *OllamaProvider) Stream(ctx context.Context, req Request) (Stream, error
 	}), nil
 }
 
+func newOllamaStatusErrorFromResponse(resp *http.Response) *HTTPStatusError {
+	raw := providerhttp.ReadBodyAndClose(resp, 0)
+	var errBody struct {
+		Error string `json:"error"`
+	}
+	if json.Unmarshal(raw, &errBody) == nil && errBody.Error != "" {
+		return newHTTPStatusErrorMessagef(resp, raw, "Ollama API error: %s", errBody.Error)
+	}
+	return newHTTPStatusError("Ollama", resp, raw)
+}
+
 // ListModels returns locally available Ollama models via /api/tags.
 func (p *OllamaProvider) ListModels(ctx context.Context) ([]ModelInfo, error) {
 	httpReq, err := http.NewRequestWithContext(ctx, "GET", p.baseURL+"/api/tags", nil)
@@ -440,7 +445,7 @@ func (p *OllamaProvider) ListModels(ctx context.Context) ([]ModelInfo, error) {
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("Ollama API error (status %d): %s", resp.StatusCode, string(raw))
+		return nil, newHTTPStatusError("Ollama", resp, raw)
 	}
 
 	var tagsResp struct {

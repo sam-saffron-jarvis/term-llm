@@ -15,6 +15,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/samsaffron/term-llm/internal/providerhttp"
 )
 
 const (
@@ -159,7 +161,7 @@ func (p *OpenAIProvider) doRequest(httpReq *http.Request) (*ImageResult, error) 
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("API error (status %d): %s", resp.StatusCode, string(body))
+		return nil, providerhttp.NewStatusError("", resp, body)
 	}
 
 	var apiResp openaiResponse
@@ -198,7 +200,7 @@ func (p *OpenAIProvider) doRequest(httpReq *http.Request) (*ImageResult, error) 
 		defer resp.Body.Close()
 		if resp.StatusCode != http.StatusOK {
 			body, _ := io.ReadAll(resp.Body)
-			return nil, fmt.Errorf("image URL returned status %d: %s", resp.StatusCode, string(body))
+			return nil, providerhttp.NewStatusErrorMessagef(resp, body, "image URL returned status %d: %s", resp.StatusCode, string(body))
 		}
 		imageData, err := io.ReadAll(resp.Body)
 		if err != nil {

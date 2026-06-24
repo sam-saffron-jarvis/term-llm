@@ -7,6 +7,8 @@ import (
 	"io"
 	"net/http"
 	"time"
+
+	"github.com/samsaffron/term-llm/internal/providerhttp"
 )
 
 const (
@@ -84,7 +86,7 @@ func (p *VoyageProvider) Embed(req EmbedRequest) (*EmbeddingResult, error) {
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("Voyage API error (status %d): %s", resp.StatusCode, string(body))
+		return nil, providerhttp.NewStatusError("Voyage", resp, body)
 	}
 
 	var voyageResp voyageEmbedResponse

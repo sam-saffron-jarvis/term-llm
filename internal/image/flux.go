@@ -9,6 +9,8 @@ import (
 	"io"
 	"net/http"
 	"time"
+
+	"github.com/samsaffron/term-llm/internal/providerhttp"
 )
 
 const (
@@ -130,7 +132,7 @@ func (p *FluxProvider) submitRequest(ctx context.Context, endpoint string, reqBo
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("API error (status %d): %s", resp.StatusCode, string(body))
+		return "", providerhttp.NewStatusError("", resp, body)
 	}
 
 	var taskResp fluxTaskResponse
@@ -214,7 +216,7 @@ func (p *FluxProvider) downloadImage(ctx context.Context, url string) (*ImageRes
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("download failed with status %d", resp.StatusCode)
+		return nil, providerhttp.NewStatusErrorMessagef(resp, nil, "download failed with status %d", resp.StatusCode)
 	}
 
 	imageData, err := io.ReadAll(resp.Body)

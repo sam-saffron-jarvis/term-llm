@@ -4,28 +4,36 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
+	"math"
 	"math/rand"
-	"net/http"
 	"regexp"
-	"strconv"
 	"strings"
 	"time"
+
+	"github.com/samsaffron/term-llm/internal/providerhttp"
 )
 
 // RetryConfig configures retry behavior.
 type RetryConfig struct {
+	// MaxAttempts limits total attempts. A value of 0 means there is no
+	// attempt-count limit and retries are governed by MaxElapsedTime.
 	MaxAttempts int
-	BaseBackoff time.Duration
-	MaxBackoff  time.Duration
+	// MaxElapsedTime limits the retry window from the first attempt. A value of
+	// 0 disables the elapsed-time budget (useful for tests/custom fixed attempts).
+	MaxElapsedTime time.Duration
+	BaseBackoff    time.Duration
+	MaxBackoff     time.Duration
 }
 
-// DefaultRetryConfig returns sensible defaults for rate limit retries.
+// DefaultRetryConfig returns sensible defaults for transient provider retries.
 func DefaultRetryConfig() RetryConfig {
 	return RetryConfig{
-		MaxAttempts: 5,
-		BaseBackoff: 1 * time.Second,
-		MaxBackoff:  30 * time.Second,
+		MaxAttempts:    0,
+		MaxElapsedTime: 30 * time.Minute,
+		BaseBackoff:    1 * time.Second,
+		MaxBackoff:     30 * time.Second,
 	}
 }
 
@@ -37,7 +45,56 @@ type RetryProvider struct {
 
 // WrapWithRetry wraps a provider with retry logic.
 func WrapWithRetry(p Provider, config RetryConfig) Provider {
-	return &RetryProvider{inner: p, config: config}
+	return &RetryProvider{inner: p, config: normalizeRetryConfig(config)}
+}
+
+func normalizeRetryConfig(config RetryConfig) RetryConfig {
+	zeroConfig := config == (RetryConfig{})
+	if zeroConfig {
+		// Preserve the zero-value contract for custom/test callers: perform the
+		// initial provider call but do not retry. Production providers opt into the
+		// time-budgeted policy via DefaultRetryConfig().
+		config.MaxAttempts = 1
+	}
+	if config.MaxAttempts < 0 {
+		config.MaxAttempts = 0
+	}
+	if config.BaseBackoff <= 0 {
+		config.BaseBackoff = time.Second
+	}
+	if config.MaxBackoff <= 0 {
+		config.MaxBackoff = 30 * time.Second
+	}
+	if config.MaxBackoff < config.BaseBackoff {
+		config.MaxBackoff = config.BaseBackoff
+	}
+	return config
+}
+
+// RateLimitError represents a rate limit error with retry information.
+type RateLimitError struct {
+	Message        string
+	RetryAfter     time.Duration
+	PlanType       string
+	PrimaryUsed    int
+	PrimaryLimit   int
+	SecondaryUsed  int
+	SecondaryLimit int
+}
+
+func (e *RateLimitError) Error() string {
+	if e == nil {
+		return "rate limit"
+	}
+	return e.Message
+}
+
+// RetryAfterDelay exposes structured Retry-After metadata to the retry loop.
+func (e *RateLimitError) RetryAfterDelay() (time.Duration, bool) {
+	if e == nil || e.RetryAfter <= 0 {
+		return 0, false
+	}
+	return e.RetryAfter, true
 }
 
 func (r *RetryProvider) Name() string {
@@ -94,7 +151,8 @@ func (r *RetryProvider) CleanupTurn() {
 // can report it.
 var ErrListModelsUnsupported = errors.New("provider does not support model listing")
 
-// ListModels forwards to the inner provider if it implements model listing.
+// ListModels forwards to the inner provider if it implements model listing and
+// applies the same retry policy as Stream for transient HTTP/provider failures.
 // Without this forwarder, callers that type-assert on a ListModels interface
 // would silently miss it on any retry-wrapped provider — and every provider
 // built via NewProvider/NewProviderByName is retry-wrapped.
@@ -102,64 +160,107 @@ func (r *RetryProvider) ListModels(ctx context.Context) ([]ModelInfo, error) {
 	if lister, ok := r.inner.(interface {
 		ListModels(context.Context) ([]ModelInfo, error)
 	}); ok {
-		return lister.ListModels(ctx)
+		return retryCall(ctx, r.config, func() ([]ModelInfo, error) {
+			return lister.ListModels(ctx)
+		}, nil)
 	}
 	return nil, ErrListModelsUnsupported
 }
 
 func (r *RetryProvider) Stream(ctx context.Context, req Request) (Stream, error) {
+	config := normalizeRetryConfig(r.config)
 	return newEventStream(ctx, func(ctx context.Context, send eventSender) error {
-		var lastErr error
-
-		for attempt := 1; attempt <= r.config.MaxAttempts; attempt++ {
+		_, err := retryCall(ctx, config, func() (struct{}, error) {
 			stream, err := r.inner.Stream(ctx, req)
 			if err != nil {
-				// Error creating stream
-				if !isRetryable(err) {
-					return err
-				}
-				lastErr = err
-			} else {
-				err = r.forwardAttempt(ctx, stream, send)
-				if err == nil {
-					return nil // Success!
-				}
-				if !isRetryable(err) {
-					return err
-				}
-				lastErr = err
+				return struct{}{}, err
 			}
-
-			// Don't retry if context is already cancelled
-			if ctx.Err() != nil {
-				return ctx.Err()
-			}
-
-			// Don't retry if this was the last attempt
-			if attempt >= r.config.MaxAttempts {
-				break
-			}
-
-			wait := r.calculateBackoff(attempt, lastErr)
-
-			// Emit retry event so UI can show progress
-			if err := send.Send(Event{
+			return struct{}{}, r.forwardAttempt(ctx, stream, send)
+		}, func(info retryInfo) error {
+			// Emit retry event so UI can show progress. RetryMaxAttempts==0 means
+			// time-budgeted retry with no fixed attempt ceiling.
+			return send.Send(Event{
 				Type:             EventRetry,
-				RetryAttempt:     attempt,
-				RetryMaxAttempts: r.config.MaxAttempts,
-				RetryWaitSecs:    wait.Seconds(),
-			}); err != nil {
-				return err
-			}
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			case <-time.After(wait):
-			}
+				RetryAttempt:     info.Attempt,
+				RetryMaxAttempts: info.MaxAttempts,
+				RetryWaitSecs:    info.Wait.Seconds(),
+			})
+		})
+		return err
+	}), nil
+}
+
+type retryInfo struct {
+	Attempt     int
+	MaxAttempts int
+	Wait        time.Duration
+}
+
+func retryCall[T any](ctx context.Context, config RetryConfig, run func() (T, error), onRetry func(retryInfo) error) (T, error) {
+	config = normalizeRetryConfig(config)
+	started := time.Now()
+	var zero T
+	var lastErr error
+
+	for attempt := 1; ; attempt++ {
+		if config.MaxAttempts > 0 && attempt > config.MaxAttempts {
+			break
 		}
 
-		return lastErr
-	}), nil
+		result, err := run()
+		if err == nil {
+			return result, nil
+		}
+		if !isRetryable(err) {
+			return zero, err
+		}
+		lastErr = err
+
+		// Don't retry if context is already cancelled.
+		if ctx.Err() != nil {
+			return zero, ctx.Err()
+		}
+
+		// Don't retry if this was the last count-limited attempt.
+		if config.MaxAttempts > 0 && attempt >= config.MaxAttempts {
+			break
+		}
+
+		wait := calculateRetryBackoff(config, attempt, lastErr)
+		if err := checkRetryBudget(started, config.MaxElapsedTime, wait, lastErr); err != nil {
+			return zero, err
+		}
+
+		if onRetry != nil {
+			if err := onRetry(retryInfo{Attempt: attempt, MaxAttempts: config.MaxAttempts, Wait: wait}); err != nil {
+				return zero, err
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return zero, ctx.Err()
+		case <-time.After(wait):
+		}
+	}
+
+	return zero, lastErr
+}
+
+func checkRetryBudget(started time.Time, maxElapsedTime time.Duration, wait time.Duration, lastErr error) error {
+	if maxElapsedTime <= 0 {
+		return nil
+	}
+	remaining := maxElapsedTime - time.Since(started)
+	if remaining <= 0 {
+		return fmt.Errorf("%w (retry window %s exhausted)", lastErr, maxElapsedTime)
+	}
+	if wait <= remaining {
+		return nil
+	}
+	if hasRetryAfter(lastErr) {
+		return fmt.Errorf("%w (retry-after %s exceeds remaining retry window %s; max retry window %s)", lastErr, wait.Round(time.Millisecond), remaining.Round(time.Millisecond), maxElapsedTime)
+	}
+	return fmt.Errorf("%w (next retry wait %s exceeds remaining retry window %s; max retry window %s)", lastErr, wait.Round(time.Millisecond), remaining.Round(time.Millisecond), maxElapsedTime)
 }
 
 // committedError wraps an error that occurred after events were already
@@ -288,9 +389,17 @@ func isRetryable(err error) bool {
 		return true
 	}
 
-	// Check for RateLimitError - only retry if it's a short wait
-	if rle, ok := err.(*RateLimitError); ok {
-		return !rle.IsLongWait()
+	// Structured HTTP status errors from providers.
+	var statusErr interface{ HTTPStatusCode() int }
+	if errors.As(err, &statusErr) {
+		return providerhttp.RetryableStatus(statusErr.HTTPStatusCode())
+	}
+
+	// Check for structured rate-limit errors. Long waits are handled by the
+	// elapsed-time budget in the retry loop rather than by retryability.
+	var rle *RateLimitError
+	if errors.As(err, &rle) {
+		return true
 	}
 
 	errStr := strings.ToLower(err.Error())
@@ -300,11 +409,9 @@ func isRetryable(err error) bool {
 		strings.Contains(errStr, "rate limit") ||
 		strings.Contains(errStr, "too many requests") ||
 		strings.Contains(errStr, "high concurrency") ||
-		strings.Contains(errStr, "500") ||
+		containsHTTP5xxStatus(errStr) ||
 		strings.Contains(errStr, "internal server error") ||
-		strings.Contains(errStr, "502") ||
 		strings.Contains(errStr, "bad gateway") ||
-		strings.Contains(errStr, "503") ||
 		strings.Contains(errStr, "service unavailable") ||
 		strings.Contains(errStr, "overloaded") ||
 		strings.Contains(errStr, "api error: terminated") {
@@ -324,71 +431,89 @@ func isRetryable(err error) bool {
 	return false
 }
 
+// http5xxStatusRegex matches standalone HTTP 5xx status codes in legacy string
+// errors from providers that have not attached structured status metadata.
+var http5xxStatusRegex = regexp.MustCompile(`\b5\d\d\b`)
+
+func containsHTTP5xxStatus(message string) bool {
+	return http5xxStatusRegex.MatchString(message)
+}
+
 // retryAfterHeaderRegex matches Retry-After header-like values in error messages.
-var retryAfterHeaderRegex = regexp.MustCompile(`(?im)retry[- ]?after[:\s]+([^\r\n]+)`)
+var retryAfterHeaderRegex = regexp.MustCompile(`(?im)retry[- ]?after(?:[- ]?(ms))?[:\s]+([^\r\n]+)`)
 
 func parseRetryAfterDelay(message string, now time.Time) (time.Duration, bool) {
 	matches := retryAfterHeaderRegex.FindStringSubmatch(message)
-	if len(matches) <= 1 {
+	if len(matches) <= 2 {
 		return 0, false
 	}
-	value := strings.TrimSpace(matches[1])
+	unit := strings.ToLower(strings.TrimSpace(matches[1]))
+	value := strings.TrimSpace(matches[2])
 	if value == "" {
 		return 0, false
 	}
-	if secs, err := strconv.Atoi(value); err == nil && secs > 0 {
-		return time.Duration(secs) * time.Second, true
+	if unit == "ms" {
+		return providerhttp.ParseRetryAfterMillisecondsValue(value)
 	}
-	if fields := strings.Fields(value); len(fields) > 0 {
-		first := strings.Trim(fields[0], ",;.")
-		if secs, err := strconv.Atoi(first); err == nil && secs > 0 {
-			return time.Duration(secs) * time.Second, true
-		}
+	return providerhttp.ParseRetryAfterValue(value, now)
+}
+
+type retryAfterError interface {
+	RetryAfterDelay() (time.Duration, bool)
+}
+
+func retryAfterDelay(err error) (time.Duration, bool) {
+	if err == nil {
+		return 0, false
 	}
-	if when, err := http.ParseTime(value); err == nil {
-		wait := time.Until(when)
-		if !now.IsZero() {
-			wait = when.Sub(now)
-		}
-		if wait > 0 {
+	var typed retryAfterError
+	if errors.As(err, &typed) {
+		if wait, ok := typed.RetryAfterDelay(); ok {
 			return wait, true
 		}
 	}
-	return 0, false
+	return parseRetryAfterDelay(err.Error(), time.Now())
+}
+
+func hasRetryAfter(err error) bool {
+	_, ok := retryAfterDelay(err)
+	return ok
 }
 
 // calculateBackoff computes the wait duration for a retry attempt.
 func (r *RetryProvider) calculateBackoff(attempt int, err error) time.Duration {
-	// Check for RateLimitError with explicit RetryAfter
-	if rle, ok := err.(*RateLimitError); ok && rle.RetryAfter > 0 {
-		wait := rle.RetryAfter
-		// Cap at max backoff for automatic retries
-		if wait > r.config.MaxBackoff {
-			wait = r.config.MaxBackoff
-		}
+	return calculateRetryBackoff(r.config, attempt, err)
+}
+
+func calculateRetryBackoff(config RetryConfig, attempt int, err error) time.Duration {
+	// Prefer structured Retry-After metadata from provider errors, then fall back
+	// to parsing wrapped/stringified errors. Retry-After is an explicit server
+	// instruction and is not capped by MaxBackoff; the retry loop's elapsed-time
+	// budget decides whether it is too long to honor.
+	if wait, ok := retryAfterDelay(err); ok {
 		return wait
 	}
 
-	// Try to parse Retry-After from error message. Accept both numeric
-	// seconds and HTTP-date forms because gateways/providers commonly
-	// surface raw header text in wrapped errors.
-	if err != nil {
-		if wait, ok := parseRetryAfterDelay(err.Error(), time.Now()); ok {
-			if wait > r.config.MaxBackoff {
-				wait = r.config.MaxBackoff
-			}
-			return wait
-		}
-	}
-
 	// Exponential backoff with jitter: base * 2^(attempt-1) * jitter (jitter in [0.5, 1.5])
+	base := config.BaseBackoff
+	if base <= 0 {
+		base = time.Second
+	}
+	maxBackoff := config.MaxBackoff
+	if maxBackoff <= 0 {
+		maxBackoff = 30 * time.Second
+	}
 	jitter := 0.5 + rand.Float64()
-	multiplier := 1 << max(attempt-1, 0)
-	delay := time.Duration(float64(r.config.BaseBackoff) * float64(multiplier) * jitter)
+	exponent := max(attempt-1, 0)
+	delayFloat := math.Ldexp(float64(base), exponent) * jitter
+	if delayFloat >= float64(maxBackoff) {
+		return maxBackoff
+	}
+	delay := time.Duration(delayFloat)
 
-	// Cap at max backoff
-	if delay > r.config.MaxBackoff {
-		delay = r.config.MaxBackoff
+	// Cap fallback exponential backoff.
+	if delay > maxBackoff {
+		delay = maxBackoff
 	}
 
 	return delay
