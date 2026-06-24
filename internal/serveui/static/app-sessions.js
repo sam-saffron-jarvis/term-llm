@@ -4,7 +4,7 @@
 const app = window.TermLLMApp;
 const {
   UI_PREFIX, STORAGE_KEYS, state, elements, generateId, truncate, asTimestamp, loadSessions, saveSessions, getActiveSession, createSession, ensureActiveSession,
-  sessionIdFromURL, sessionSlug, findSessionBySlug, updateURL, scrollToBottom, setConnectionState, setStartupStatus, hideStartupSplash, persistAndRefreshShell, refreshRelativeTimes,
+  sessionIdFromURL, sessionSlug, findSessionBySlug, updateURL, updateDocumentTitle, scrollToBottom, setConnectionState, setStartupStatus, hideStartupSplash, persistAndRefreshShell, refreshRelativeTimes,
   splitHeaderModelEffort, updateMCPStatusDisplay, setElementHidden,
   openAuthModal, closeAuthModal, handleAuthFailure, closeAskUserModal, openAskUserModal, setActiveResponseTracking,
   clearActiveResponseTracking, setStreaming, resumeActiveResponse, renderSidebar, renderMessages, renderProviderOptions, renderModelOptions, normalizeSelectedProvider,
@@ -184,6 +184,16 @@ const forceNewSessionFromURL = () => {
   } catch {
     return false;
   }
+};
+
+const clearFreshSessionURL = () => {
+  const target = `${UI_PREFIX}/`;
+  if (typeof history !== 'undefined' && typeof history.replaceState === 'function') {
+    history.replaceState(null, '', target);
+    updateDocumentTitle();
+    return;
+  }
+  updateURL('');
 };
 
 const stageCurrentComposerForSession = (sessionId) => {
@@ -1974,7 +1984,7 @@ const initialize = async () => {
   if (forceNewSession) {
     state.activeSessionId = '';
     state.draftSessionActive = true;
-    updateURL('');
+    clearFreshSessionURL();
   } else if (urlSlug) {
     const found = findSessionBySlug(urlSlug);
     if (found) {

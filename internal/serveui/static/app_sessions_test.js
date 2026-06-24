@@ -290,7 +290,18 @@ async function createSessionsHarness(options = {}) {
     TERM_LLM_SIDEBAR_SESSIONS: 'all',
     TERM_LLM_HUB: options.hub || null,
     location: { pathname: options.pathname || `${options.uiPrefix || '/ui'}/`, search: options.search || '', origin: 'https://example.test', protocol: 'https:', host: 'example.test' },
-    history: { pushState(_state, _title, url) { windowObj.location.pathname = url; } },
+    history: {
+      pushState(_state, _title, url) {
+        const parsed = new URL(url, windowObj.location.origin);
+        windowObj.location.pathname = parsed.pathname;
+        windowObj.location.search = parsed.search;
+      },
+      replaceState(_state, _title, url) {
+        const parsed = new URL(url, windowObj.location.origin);
+        windowObj.location.pathname = parsed.pathname;
+        windowObj.location.search = parsed.search;
+      },
+    },
     matchMedia() {
       return {
         matches: false,
@@ -776,7 +787,7 @@ async function testNumericDeepLinkResolvesRealSessionId() {
 
 async function testNewQueryStartsDraftInsteadOfLastSession() {
   const name = 'new query starts draft instead of resuming last session';
-  const { app } = await createSessionsHarness({
+  const { app, windowObj } = await createSessionsHarness({
     search: '?new=1',
     initialStorage: {
       term_llm_active_session: 'sess_old',
@@ -807,6 +818,10 @@ async function testNewQueryStartsDraftInsteadOfLastSession() {
       draftSessionActive: app.state.draftSessionActive,
       activeSessionId: app.state.activeSessionId,
     }));
+    return;
+  }
+  if (windowObj.location.search !== '') {
+    fail(name, 'expected ?new=1 to be cleared from the address bar', windowObj.location.search);
     return;
   }
 
