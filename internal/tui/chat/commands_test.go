@@ -526,6 +526,12 @@ func newCmdTestModel(store session.Store) *Model {
 		styles:   styles,
 		dialog:   NewDialogModel(styles),
 		store:    store,
+		handoverSystemPromptResolver: func(agent *agents.Agent, providerKey, modelName string) (string, error) {
+			if agent == nil {
+				return "", nil
+			}
+			return agent.SystemPrompt, nil
+		},
 	}
 }
 
@@ -1698,6 +1704,40 @@ func TestCmdHandover_StartDoesNotPrintStatusLine(t *testing.T) {
 	}
 }
 
+func TestCmdHandover_LightModeResultCarriesContextOnly(t *testing.T) {
+	m := newCmdTestModel(&mockStore{})
+	m.config = &config.Config{}
+	m.sess = &session.Session{ID: "sess-handover-light", CreatedAt: time.Now()}
+	m.agentName = "source"
+	m.currentAgent = &agents.Agent{Name: "source", HandoverMode: "light"}
+	m.messages = []session.Message{
+		*session.NewMessage(m.sess.ID, llm.UserText("what next?"), 0),
+		*session.NewMessage(m.sess.ID, llm.AssistantText("handover this update"), 1),
+	}
+	targetAgent := &agents.Agent{Name: "target", SystemPrompt: "You are target."}
+	m.agentResolver = func(name string, cfg *config.Config) (*agents.Agent, error) {
+		return targetAgent, nil
+	}
+
+	_, cmd := m.cmdHandover([]string{"@target"})
+	if cmd == nil {
+		t.Fatal("expected light handover command")
+	}
+	msg, ok := cmd().(handoverDoneMsg)
+	if !ok {
+		t.Fatalf("handover command returned %T, want handoverDoneMsg", cmd())
+	}
+	if msg.result == nil || len(msg.result.NewMessages) == 0 {
+		t.Fatalf("expected handover result messages, got %#v", msg.result)
+	}
+	if msg.result.NewMessages[0].Role == llm.RoleSystem {
+		t.Fatalf("intermediate handover result should not carry target system prompt: %#v", msg.result.NewMessages[0])
+	}
+	if msg.result.NewMessages[0].Role != llm.RoleUser || !strings.Contains(llm.MessageText(msg.result.NewMessages[0]), "handover this update") {
+		t.Fatalf("first handover result message should be user context, got %#v", msg.result.NewMessages[0])
+	}
+}
+
 func TestStartHandoverScriptHandover_DoesNotPrintStatusLine(t *testing.T) {
 	m := newTestChatModel(false)
 	targetAgent := &agents.Agent{Name: "target", SystemPrompt: "You are target.", HandoverScript: "./handover.sh"}
@@ -1845,6 +1885,7 @@ func TestExecuteHandover_CreatesNewIsolatedSessionAndRequestsResume(t *testing.T
 		Model:         "gemini-2.5-pro",
 		Search:        true,
 		DefaultPrompt: "Continue from handover.",
+		AgentsMd:      "false",
 		Tools:         agents.ToolsConfig{Enabled: []string{"read_file", "edit_file"}},
 		MCP:           []agents.MCPConfig{{Name: "server-a"}, {Name: "server-b"}},
 	}
@@ -1939,6 +1980,156 @@ func TestExecuteHandover_CreatesNewIsolatedSessionAndRequestsResume(t *testing.T
 	}
 	if rm.pendingHandover != nil {
 		t.Fatal("expected successful handover to clear pending handover")
+	}
+}
+
+func TestExecuteHandover_PersistsResolvedTargetSystemPromptWithAgentsMdFirst(t *testing.T) {
+	store := &mockStore{}
+	m := newCmdTestModel(store)
+	m.config = &config.Config{}
+	oldSess := &session.Session{
+		ID:          "old-session",
+		ProviderKey: "old-provider",
+		Model:       "old-model",
+		Agent:       "source",
+		CreatedAt:   time.Now().Add(-time.Hour),
+	}
+	m.sess = oldSess
+	m.providerKey = "old-provider"
+	m.modelName = "old-model"
+
+	targetAgent := &agents.Agent{
+		Name:         "target",
+		SystemPrompt: "raw target prompt without project instructions",
+		AgentsMd:     "true",
+	}
+	if !targetAgent.ShouldLoadProjectInstructions() {
+		t.Fatal("test target agent should request AGENTS.md/project instruction loading")
+	}
+
+	expectedResult := llm.HandoverFromFile("handover doc", "stale raw prompt from handover result", "source", targetAgent.Name)
+	m.pendingHandover = &handoverDoneMsg{
+		agentName: "target",
+		result:    expectedResult,
+	}
+	m.agentResolver = func(name string, cfg *config.Config) (*agents.Agent, error) {
+		if name != "target" {
+			t.Fatalf("resolver called with %q, want target", name)
+		}
+		return targetAgent, nil
+	}
+	wantPrompt := targetAgent.SystemPrompt + "\n\n---\n\nAGENTS.md instructions"
+	m.handoverSystemPromptResolver = func(agent *agents.Agent, providerKey, modelName string) (string, error) {
+		if agent != targetAgent {
+			t.Fatalf("system prompt resolver agent = %#v, want target agent", agent)
+		}
+		if providerKey != "old-provider" || modelName != "old-model" {
+			t.Fatalf("system prompt resolver provider/model = %q/%q, want old-provider/old-model", providerKey, modelName)
+		}
+		return wantPrompt, nil
+	}
+
+	result, cmd := m.executeHandover()
+	rm := result.(*Model)
+
+	if cmd == nil {
+		t.Fatal("expected executeHandover to quit for relaunch")
+	}
+	if !rm.quitting {
+		t.Fatal("expected model to be quitting for handover relaunch")
+	}
+	if len(store.created) != 1 {
+		t.Fatalf("expected exactly one new session, got %d", len(store.created))
+	}
+	if len(store.added) != len(expectedResult.NewMessages) {
+		t.Fatalf("expected %d handover context messages to be persisted, got %d", len(expectedResult.NewMessages), len(store.added))
+	}
+
+	if store.added[0].Role != llm.RoleSystem {
+		t.Fatalf("first persisted message role = %q, want system", store.added[0].Role)
+	}
+	if store.added[0].TextContent != wantPrompt {
+		t.Fatalf("first persisted system prompt = %q, want resolved target prompt %q", store.added[0].TextContent, wantPrompt)
+	}
+	if strings.Contains(store.added[0].TextContent, "stale raw prompt") {
+		t.Fatalf("persisted system prompt used stale handover result prompt: %q", store.added[0].TextContent)
+	}
+	if store.added[0].Sequence != 0 {
+		t.Fatalf("first persisted system sequence = %d, want 0", store.added[0].Sequence)
+	}
+	if len(store.added) < 2 || store.added[1].Role != llm.RoleUser || !strings.Contains(store.added[1].TextContent, "handover doc") {
+		t.Fatalf("expected handover document immediately after system prompt, got %#v", store.added)
+	}
+
+	active := session.LLMActiveMessages(store.added, 0, wantPrompt)
+	if len(active) != len(store.added) {
+		t.Fatalf("active message count = %d, want %d", len(active), len(store.added))
+	}
+	if active[0].Role != llm.RoleSystem || llm.MessageText(active[0]) != wantPrompt {
+		t.Fatalf("active first message = role %q text %q, want resolved target system prompt", active[0].Role, llm.MessageText(active[0]))
+	}
+	systemCount := 0
+	for _, msg := range active {
+		if msg.Role == llm.RoleSystem {
+			systemCount++
+		}
+	}
+	if systemCount != 1 {
+		t.Fatalf("active messages contain %d system prompts, want exactly 1: %#v", systemCount, active)
+	}
+}
+
+func TestExecuteHandover_PersistsAgentsMdSystemPromptWhenTargetPromptEmpty(t *testing.T) {
+	store := &mockStore{}
+	m := newCmdTestModel(store)
+	m.config = &config.Config{}
+	m.sess = &session.Session{
+		ID:          "old-session",
+		ProviderKey: "old-provider",
+		Model:       "old-model",
+		Agent:       "source",
+		CreatedAt:   time.Now().Add(-time.Hour),
+	}
+	m.providerKey = "old-provider"
+	m.modelName = "old-model"
+
+	targetAgent := &agents.Agent{
+		Name:     "target",
+		AgentsMd: "true",
+	}
+	m.pendingHandover = &handoverDoneMsg{
+		agentName: "target",
+		result:    llm.HandoverFromFile("handover doc", "", "source", targetAgent.Name),
+	}
+	m.agentResolver = func(name string, cfg *config.Config) (*agents.Agent, error) {
+		if name != "target" {
+			t.Fatalf("resolver called with %q, want target", name)
+		}
+		return targetAgent, nil
+	}
+	m.handoverSystemPromptResolver = func(agent *agents.Agent, providerKey, modelName string) (string, error) {
+		if agent != targetAgent {
+			t.Fatalf("system prompt resolver agent = %#v, want target agent", agent)
+		}
+		return "AGENTS-only instructions", nil
+	}
+
+	result, cmd := m.executeHandover()
+	rm := result.(*Model)
+	if cmd == nil || !rm.quitting {
+		t.Fatal("expected executeHandover to request relaunch")
+	}
+	if len(store.added) != 3 {
+		t.Fatalf("expected system + handover user + ack to be persisted, got %d messages: %#v", len(store.added), store.added)
+	}
+	if store.added[0].Role != llm.RoleSystem || store.added[0].TextContent != "AGENTS-only instructions" {
+		t.Fatalf("first persisted message = role %q text %q, want AGENTS.md-only system prompt", store.added[0].Role, store.added[0].TextContent)
+	}
+	if store.added[0].Sequence != 0 {
+		t.Fatalf("first persisted system sequence = %d, want 0", store.added[0].Sequence)
+	}
+	if store.added[1].Role != llm.RoleUser || !strings.Contains(store.added[1].TextContent, "handover doc") {
+		t.Fatalf("expected handover document immediately after system prompt, got %#v", store.added[1])
 	}
 }
 

@@ -3,10 +3,14 @@ package cmd
 import (
 	"errors"
 	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
+	"github.com/samsaffron/term-llm/internal/agents"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/tools"
+	"github.com/spf13/cobra"
 )
 
 func TestBuildChatHandoverApprovalManager_SeedsShellPolicy(t *testing.T) {
@@ -39,6 +43,57 @@ func TestBuildChatHandoverApprovalManager_SeedsShellPolicy(t *testing.T) {
 		if got != tc.want {
 			t.Fatalf("CheckShellApproval(%q) = %v, want %v", tc.command, got, tc.want)
 		}
+	}
+}
+
+func TestResolveChatHandoverSystemPromptWithConfig_UsesStartupPipelineIncludingSkills(t *testing.T) {
+	origWD, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chdir(origWD)
+
+	tmp := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(tmp, ".skills", "demo"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tmp, ".skills", "demo", "SKILL.md"), []byte(`---
+name: demo
+description: Demo skill
+---
+
+Use this demo skill when appropriate.
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(tmp); err != nil {
+		t.Fatal(err)
+	}
+
+	oldChatSkills := chatSkills
+	chatSkills = ""
+	t.Cleanup(func() { chatSkills = oldChatSkills })
+
+	cfg := &config.Config{Providers: map[string]config.ProviderConfig{"openai": {Model: "gpt-4o"}}}
+	cfg.Skills = config.SkillsConfig{
+		Enabled:               true,
+		AutoInvoke:            true,
+		MetadataBudgetTokens:  8000,
+		MaxVisibleSkills:      8,
+		IncludeProjectSkills:  true,
+		IncludeEcosystemPaths: false,
+	}
+	targetAgent := &agents.Agent{Name: "target", SystemPrompt: "Target prompt"}
+
+	got, err := resolveChatHandoverSystemPromptWithConfig(&cobra.Command{Use: "test"}, cfg, targetAgent, "openai", "gpt-4o")
+	if err != nil {
+		t.Fatalf("resolveChatHandoverSystemPromptWithConfig() error = %v", err)
+	}
+	if !strings.Contains(got, "Target prompt") {
+		t.Fatalf("resolved prompt missing target prompt: %q", got)
+	}
+	if !strings.Contains(got, "<available_skills>") || !strings.Contains(got, "demo") {
+		t.Fatalf("resolved prompt missing skills metadata: %q", got)
 	}
 }
 

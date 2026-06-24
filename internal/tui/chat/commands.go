@@ -2616,6 +2616,12 @@ func (m *Model) appendModelSwitchMarker(marker llm.ModelSwapMarker) {
 	m.invalidateViewCache()
 }
 
+// transientHandoverSystemPrompt intentionally keeps generated handover results
+// free of target-agent system prompts. executeHandover resolves the target prompt
+// through the normal chat startup pipeline and prepends it when persisting the
+// new session, so these intermediate results should carry handover context only.
+const transientHandoverSystemPrompt = ""
+
 // cmdHandover handles /handover @agent [provider:model]
 func (m *Model) cmdHandover(args []string) (tea.Model, tea.Cmd) {
 	m.setTextareaValue("")
@@ -2658,9 +2664,9 @@ func (m *Model) cmdHandover(args []string) (tea.Model, tea.Cmd) {
 		return m.showSystemMessage(fmt.Sprintf("Agent @%s not found.", agentName))
 	}
 
-	// Determine the new system prompt from the target agent.
-	// Fall back to empty string — the restart path will resolve it properly.
-	newSystemPrompt := targetAgent.SystemPrompt
+	// Handover results are intermediate context documents. The target agent's
+	// actual system prompt is resolved during executeHandover via the same pipeline
+	// used to start a new chat session.
 
 	// Determine handover mode from the current (source) agent
 	mode := ""
@@ -2677,7 +2683,7 @@ func (m *Model) cmdHandover(args []string) (tea.Model, tea.Cmd) {
 	// only runs after the user explicitly confirms the handover.
 	if strings.TrimSpace(targetAgent.HandoverScript) != "" {
 		preview := pendingTargetScriptPreview(targetAgent)
-		result := llm.HandoverFromFile(preview, newSystemPrompt, sourceAgent, targetAgent.Name)
+		result := llm.HandoverFromFile(preview, transientHandoverSystemPrompt, sourceAgent, targetAgent.Name)
 		return m, func() tea.Msg {
 			return handoverDoneMsg{result: result, agentName: agentName, providerStr: providerStr}
 		}
@@ -2689,7 +2695,7 @@ func (m *Model) cmdHandover(args []string) (tea.Model, tea.Cmd) {
 		if doc == "" {
 			doc = "(No assistant response to hand over.)"
 		}
-		result := llm.HandoverFromFile(doc, newSystemPrompt, sourceAgent, targetAgent.Name)
+		result := llm.HandoverFromFile(doc, transientHandoverSystemPrompt, sourceAgent, targetAgent.Name)
 		return m, func() tea.Msg {
 			return handoverDoneMsg{
 				result:      result,
@@ -2738,7 +2744,7 @@ func (m *Model) cmdHandover(args []string) (tea.Model, tea.Cmd) {
 				if !stale {
 					content, readErr := os.ReadFile(latestFile)
 					if readErr == nil && len(content) > 0 {
-						result := llm.HandoverFromFile(string(content), newSystemPrompt, sourceAgent, targetAgent.Name)
+						result := llm.HandoverFromFile(string(content), transientHandoverSystemPrompt, sourceAgent, targetAgent.Name)
 						return m, func() tea.Msg {
 							return handoverDoneMsg{
 								result:      result,
@@ -2767,7 +2773,7 @@ func (m *Model) cmdHandover(args []string) (tea.Model, tea.Cmd) {
 	m.messagesMu.Unlock()
 
 	if len(snapshot) < 2 {
-		result := llm.HandoverFromFile("(No prior conversation to hand over.)", newSystemPrompt, sourceAgent, targetAgent.Name)
+		result := llm.HandoverFromFile("(No prior conversation to hand over.)", transientHandoverSystemPrompt, sourceAgent, targetAgent.Name)
 		return m, func() tea.Msg {
 			return handoverDoneMsg{
 				result:      result,
@@ -2794,7 +2800,7 @@ func (m *Model) cmdHandover(args []string) (tea.Model, tea.Cmd) {
 	}
 
 	if len(llmMessages) == 0 {
-		result := llm.HandoverFromFile("(No prior conversation to hand over.)", newSystemPrompt, sourceAgent, targetAgent.Name)
+		result := llm.HandoverFromFile("(No prior conversation to hand over.)", transientHandoverSystemPrompt, sourceAgent, targetAgent.Name)
 		return m, func() tea.Msg {
 			return handoverDoneMsg{
 				result:      result,
@@ -2827,7 +2833,7 @@ func (m *Model) cmdHandover(args []string) (tea.Model, tea.Cmd) {
 
 	return m, tea.Batch(
 		func() tea.Msg {
-			result, err := llm.Handover(ctx, provider, model, currentSystemPrompt, newSystemPrompt, llmMessages, sourceAgent, targetAgent.Name, compactConfig)
+			result, err := llm.Handover(ctx, provider, model, currentSystemPrompt, transientHandoverSystemPrompt, llmMessages, sourceAgent, targetAgent.Name, compactConfig)
 			return handoverDoneMsg{result: result, err: err, agentName: agentName, providerStr: providerStr}
 		},
 		m.spinner.Tick,
@@ -2948,7 +2954,7 @@ func buildScriptBackedHandover(ctx context.Context, approvalMgr *tools.ApprovalM
 	if strings.TrimSpace(doc) == "" {
 		return nil, fmt.Errorf("handover script produced no output")
 	}
-	return llm.HandoverFromFile(doc, targetAgent.SystemPrompt, sourceAgent, targetAgent.Name), nil
+	return llm.HandoverFromFile(doc, transientHandoverSystemPrompt, sourceAgent, targetAgent.Name), nil
 }
 
 func (m *Model) startHandoverScriptHandover(scriptAgent *agents.Agent, sourceAgent string, targetAgent *agents.Agent, providerStr string, confirmed bool, instructions string) (tea.Model, tea.Cmd) {
@@ -3096,6 +3102,22 @@ func handoverSystemPrompt(messages []llm.Message) string {
 	return ""
 }
 
+func handoverMessagesToPersist(messages []llm.Message, systemPrompt string) []llm.Message {
+	start := 0
+	for start < len(messages) && messages[start].Role == llm.RoleSystem {
+		start++
+	}
+
+	if strings.TrimSpace(systemPrompt) == "" {
+		return messages[start:]
+	}
+
+	out := make([]llm.Message, 0, len(messages)-start+1)
+	out = append(out, llm.SystemText(systemPrompt))
+	out = append(out, messages[start:]...)
+	return out
+}
+
 // executeHandover performs the actual agent switch after user confirmation.
 // It creates a brand-new session containing only the reconstructed handover
 // context, then triggers a TUI restart so the target agent's full runtime
@@ -3136,6 +3158,16 @@ func (m *Model) executeHandover() (tea.Model, tea.Cmd) {
 	// only the reconstructed handover context.
 	newSess := m.buildHandoverSession(pending, targetAgent)
 
+	if m.handoverSystemPromptResolver == nil {
+		m.cancelHandoverTool()
+		return m.showFooterError("Handover failed to resolve target system prompt: resolver is not configured")
+	}
+	targetSystemPrompt, err := m.handoverSystemPromptResolver(targetAgent, newSess.ProviderKey, newSess.Model)
+	if err != nil {
+		m.cancelHandoverTool()
+		return m.showFooterError(fmt.Sprintf("Handover failed to resolve target system prompt: %v", err))
+	}
+
 	if err := m.store.Create(ctx, newSess); err != nil {
 		m.cancelHandoverTool()
 		return m.showFooterError(fmt.Sprintf("Handover failed to persist: %v", err))
@@ -3144,7 +3176,11 @@ func (m *Model) executeHandover() (tea.Model, tea.Cmd) {
 		_ = m.store.Delete(context.Background(), newSess.ID)
 	}
 
-	for _, msg := range result.NewMessages {
+	// Persist the target agent's resolved system prompt first, followed by the
+	// conversational handover context. Keeping the system prompt at sequence 0 is
+	// required so every resume/reload sees the target agent's prompt before the
+	// handover document and does not inject duplicates later.
+	for _, msg := range handoverMessagesToPersist(result.NewMessages, targetSystemPrompt) {
 		newMsg := session.NewMessage(newSess.ID, msg, -1)
 		if err := m.store.AddMessage(ctx, newSess.ID, newMsg); err != nil {
 			cleanupNewSession()

@@ -1674,7 +1674,7 @@ func HandoverFromFile(content, newSystemPrompt, sourceAgent, targetAgent string)
 }
 
 // ReconstructHandoverHistory builds the message list for the new agent:
-// [SystemText(newSystemPrompt)] + [handover doc (user, CacheAnchor)] + [assistant ack]
+// [SystemText(newSystemPrompt)] + [handover doc (user, CacheAnchor)] + [assistant ack].
 func ReconstructHandoverHistory(systemPrompt, document, sourceAgent, targetAgent string) []Message {
 	var messages []Message
 

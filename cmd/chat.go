@@ -11,6 +11,7 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/samsaffron/term-llm/internal/agents"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/mcp"
@@ -564,6 +565,9 @@ func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent 
 
 	// Wire agent resolver, lister, and current agent for /handover support
 	model.SetAgentResolver(LoadAgent)
+	model.SetHandoverSystemPromptResolver(func(targetAgent *agents.Agent, providerKey, modelName string) (string, error) {
+		return resolveChatHandoverSystemPrompt(cmd, targetAgent, providerKey, modelName)
+	})
 	model.SetAgentLister(ListAgentNames)
 	if agent != nil {
 		model.SetCurrentAgent(agent)
@@ -754,6 +758,60 @@ func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent 
 	}
 
 	return nextResumeID, nextHandoverAutoSend, nil
+}
+
+func resolveChatHandoverSystemPrompt(cmd *cobra.Command, targetAgent *agents.Agent, providerKey, modelName string) (string, error) {
+	cfg, err := loadConfigWithSetup()
+	if err != nil {
+		return "", err
+	}
+	return resolveChatHandoverSystemPromptWithConfig(cmd, cfg, targetAgent, providerKey, modelName)
+}
+
+func resolveChatHandoverSystemPromptWithConfig(cmd *cobra.Command, cfg *config.Config, targetAgent *agents.Agent, providerKey, modelName string) (string, error) {
+	if targetAgent == nil {
+		return "", nil
+	}
+	if cfg == nil {
+		cfg = &config.Config{}
+	}
+
+	// Handover starts a new conversation for the target agent. Resolve its prompt
+	// through the same chat-startup settings path (agent prompt/includes/templates,
+	// AGENTS.md, memory insights, and skills metadata), with the provider/model that
+	// will be stored on the new session.
+	promptAgent := *targetAgent
+	promptAgent.Provider = strings.TrimSpace(providerKey)
+	promptAgent.Model = strings.TrimSpace(modelName)
+
+	maxTurnsSet := false
+	errWriter := io.Discard
+	if cmd != nil {
+		maxTurnsSet = cmd.Flags().Changed("max-turns")
+		errWriter = cmd.ErrOrStderr()
+	}
+
+	settings, err := ResolveSettings(cfg, &promptAgent, CLIFlags{
+		Provider:        "",
+		Tools:           chatTools,
+		ReadDirs:        chatReadDirs,
+		WriteDirs:       chatWriteDirs,
+		ShellAllow:      chatShellAllow,
+		MCP:             chatMCP,
+		SystemMessage:   "",
+		MaxTurns:        chatMaxTurns,
+		MaxTurnsSet:     maxTurnsSet,
+		Search:          chatSearch,
+		NoSearch:        chatNoSearch,
+		MaxOutputTokens: 0,
+		Platform:        "chat",
+	}, providerKey, modelName, cfg.Chat.Instructions, cfg.Chat.MaxTurns, 200)
+	if err != nil {
+		return "", err
+	}
+
+	skillsSetup := SetupSkills(&cfg.Skills, chatSkills, promptAgent.Skills, errWriter)
+	return InjectSkillsMetadata(settings.SystemPrompt, skillsSetup), nil
 }
 
 func chatResumeCommand(sess *session.Session) string {

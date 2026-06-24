@@ -171,13 +171,14 @@ type Model struct {
 	currentOrigin            session.SessionOrigin
 
 	// Agent handover
-	agentResolver       func(name string, cfg *config.Config) (*agents.Agent, error)
-	agentLister         func(cfg *config.Config) ([]string, error) // Lists available agent names
-	pendingHandover     *handoverDoneMsg                           // Non-nil while awaiting confirmation
-	handoverPreview     *handoverPreviewModel                      // Inline confirmation UI (alt screen)
-	currentAgent        *agents.Agent                              // Current agent config (for enable_handover)
-	handoverApprovalMgr *tools.ApprovalManager                     // Shell approval flow for handover scripts
-	handoverToolDoneCh  chan<- bool                                // Signal back to initiate_handover tool
+	agentResolver                func(name string, cfg *config.Config) (*agents.Agent, error)
+	agentLister                  func(cfg *config.Config) ([]string, error) // Lists available agent names
+	handoverSystemPromptResolver func(agent *agents.Agent, providerKey, modelName string) (string, error)
+	pendingHandover              *handoverDoneMsg       // Non-nil while awaiting confirmation
+	handoverPreview              *handoverPreviewModel  // Inline confirmation UI (alt screen)
+	currentAgent                 *agents.Agent          // Current agent config (for enable_handover)
+	handoverApprovalMgr          *tools.ApprovalManager // Shell approval flow for handover scripts
+	handoverToolDoneCh           chan<- bool            // Signal back to initiate_handover tool
 
 	// Pending message context
 	files                   []FileAttachment // Attached files for next message
@@ -1166,6 +1167,12 @@ func (m *Model) salvageInterruptedAssistantMessage() {
 // during /handover. The function should match cmd.LoadAgent's signature.
 func (m *Model) SetAgentResolver(resolver func(name string, cfg *config.Config) (*agents.Agent, error)) {
 	m.agentResolver = resolver
+}
+
+// SetHandoverSystemPromptResolver configures the normal chat-startup prompt
+// pipeline used to resolve the target agent's persisted handover system prompt.
+func (m *Model) SetHandoverSystemPromptResolver(resolver func(agent *agents.Agent, providerKey, modelName string) (string, error)) {
+	m.handoverSystemPromptResolver = resolver
 }
 
 // SetAgentLister configures the function used to list available agent names

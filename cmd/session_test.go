@@ -91,6 +91,69 @@ func TestResolveSettings_ConfigSystemPromptComputesContextAfterIncludes(t *testi
 	}
 }
 
+func TestResolveSettings_AgentAgentsMdWithoutSystemPromptUsesProjectInstructions(t *testing.T) {
+	origWD, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chdir(origWD)
+
+	tmp := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(tmp, "xdg-config"))
+	projectDir := filepath.Join(tmp, "project")
+	if err := os.Mkdir(projectDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(projectDir, "AGENTS.md"), []byte("project-only instructions"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(projectDir); err != nil {
+		t.Fatal(err)
+	}
+
+	settings, err := ResolveSettings(&config.Config{}, &agents.Agent{Name: "target", AgentsMd: "true"}, CLIFlags{}, "", "", "config fallback", 0, 20)
+	if err != nil {
+		t.Fatalf("ResolveSettings() error = %v", err)
+	}
+	if settings.SystemPrompt != "project-only instructions" {
+		t.Fatalf("SystemPrompt = %q, want AGENTS.md instructions only", settings.SystemPrompt)
+	}
+}
+
+func TestResolveSettings_AgentAutoAgentsMdWithoutProjectInstructionsFallsBackToConfig(t *testing.T) {
+	origWD, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chdir(origWD)
+
+	tmp := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(tmp, "xdg-config"))
+	projectDir := filepath.Join(tmp, "project")
+	if err := os.Mkdir(projectDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(projectDir); err != nil {
+		t.Fatal(err)
+	}
+
+	agent := &agents.Agent{
+		Name:  "target",
+		Tools: agents.ToolsConfig{Enabled: []string{"edit_file"}},
+	}
+	if !agent.ShouldLoadProjectInstructions() {
+		t.Fatal("test agent should request project instructions via auto agents_md")
+	}
+
+	settings, err := ResolveSettings(&config.Config{}, agent, CLIFlags{}, "", "", "config fallback", 0, 20)
+	if err != nil {
+		t.Fatalf("ResolveSettings() error = %v", err)
+	}
+	if settings.SystemPrompt != "config fallback" {
+		t.Fatalf("SystemPrompt = %q, want config fallback when no project instructions exist", settings.SystemPrompt)
+	}
+}
+
 func TestResolveSettings_AgentSpawnConfigAppliesToToolManager(t *testing.T) {
 	agent := &agents.Agent{
 		Name: "spawn-limited",

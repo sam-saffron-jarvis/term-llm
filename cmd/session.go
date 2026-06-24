@@ -249,35 +249,55 @@ func ResolveSettings(cfg *config.Config, agent *agents.Agent, cli CLIFlags, conf
 			return s, fmt.Errorf("expand --system prompt: %w", err)
 		}
 		s.SystemPrompt = expanded
-	} else if agent != nil && agent.SystemPrompt != "" {
-		templateCtx, includeBaseDir, err := agentPromptTemplateContextAndBaseDir(agent, cli.Files)
-		if err != nil {
-			return s, fmt.Errorf("prepare agent system prompt context: %w", err)
-		}
-		templateCtx = templateCtx.WithPlatform(cli.Platform).WithLLM(s.Provider, s.Model)
-		expanded, err := expandSystemPromptWithIncludes(agent.SystemPrompt, templateCtx, includeBaseDir)
-		if err != nil {
-			return s, fmt.Errorf("expand agent system prompt: %w", err)
-		}
-		s.SystemPrompt = expanded
+	} else {
+		usedAgentPrompt := false
+		if agent != nil {
+			projectInstructions := ""
+			if agent.ShouldLoadProjectInstructions() {
+				projectInstructions = agents.DiscoverProjectInstructions()
+			}
 
-		// Append project instructions if agent requests them
-		if agent.ShouldLoadProjectInstructions() {
-			if projectInstructions := agents.DiscoverProjectInstructions(); projectInstructions != "" {
-				s.SystemPrompt += "\n\n---\n\n" + projectInstructions
+			// Use the agent branch only when it can actually produce a prompt. This
+			// lets agents_md:true agents without system.md use AGENTS.md as their prompt,
+			// while preserving the config fallback when auto agents request project
+			// instructions but none exist.
+			if strings.TrimSpace(agent.SystemPrompt) != "" || projectInstructions != "" {
+				usedAgentPrompt = true
+				if strings.TrimSpace(agent.SystemPrompt) != "" {
+					templateCtx, includeBaseDir, err := agentPromptTemplateContextAndBaseDir(agent, cli.Files)
+					if err != nil {
+						return s, fmt.Errorf("prepare agent system prompt context: %w", err)
+					}
+					templateCtx = templateCtx.WithPlatform(cli.Platform).WithLLM(s.Provider, s.Model)
+					expanded, err := expandSystemPromptWithIncludes(agent.SystemPrompt, templateCtx, includeBaseDir)
+					if err != nil {
+						return s, fmt.Errorf("expand agent system prompt: %w", err)
+					}
+					s.SystemPrompt = expanded
+				}
+
+				if projectInstructions != "" {
+					if strings.TrimSpace(s.SystemPrompt) == "" {
+						s.SystemPrompt = projectInstructions
+					} else {
+						s.SystemPrompt += "\n\n---\n\n" + projectInstructions
+					}
+				}
 			}
 		}
-	} else {
-		templateCtx := agents.NewTemplateContextForTemplate(configInstructions).WithFiles(cli.Files).WithPlatform(cli.Platform).WithLLM(s.Provider, s.Model)
-		cwd, err := systemPromptCWDBaseDir()
-		if err != nil {
-			return s, err
+
+		if !usedAgentPrompt {
+			templateCtx := agents.NewTemplateContextForTemplate(configInstructions).WithFiles(cli.Files).WithPlatform(cli.Platform).WithLLM(s.Provider, s.Model)
+			cwd, err := systemPromptCWDBaseDir()
+			if err != nil {
+				return s, err
+			}
+			expanded, err := expandSystemPromptWithIncludes(configInstructions, templateCtx, cwd)
+			if err != nil {
+				return s, fmt.Errorf("expand config system prompt: %w", err)
+			}
+			s.SystemPrompt = expanded
 		}
-		expanded, err := expandSystemPromptWithIncludes(configInstructions, templateCtx, cwd)
-		if err != nil {
-			return s, fmt.Errorf("expand config system prompt: %w", err)
-		}
-		s.SystemPrompt = expanded
 	}
 
 	// Max turns: CLI (if set) > agent > config > default
