@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/samsaffron/term-llm/internal/agents"
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/session"
 )
@@ -1682,5 +1683,192 @@ func TestServeRuntimePersistsPartialAssistantTextOnErrorBeforeCallbacks(t *testi
 	}
 	if rt.history[1].Role != llm.RoleAssistant || len(rt.history[1].Parts) != 1 || rt.history[1].Parts[0].Type != llm.PartText || rt.history[1].Parts[0].Text != "partial text" {
 		t.Fatalf("runtime history[1] = %+v, want partial assistant text", rt.history[1])
+	}
+}
+
+// TestServeRuntimeRun_DoesNotReinjectPlatformMessageWhenHistoryRestoredFromStore is a red
+// test documenting Bug 2: ensurePersistedSession restores history that already contains the
+// developer message but leaves lastInjectedPlatform empty, so the next Run() injects the
+// developer message again, producing a duplicate at the start of the conversation.
+func TestServeRuntimeRun_DoesNotReinjectPlatformMessageWhenHistoryRestoredFromStore(t *testing.T) {
+	const (
+		devText   = "web developer instructions"
+		sessionID = "sess-devmsg-reinjection"
+	)
+
+	store := newServeRuntimeTestStore()
+
+	// First runtime: establishes session with developer message baked into history.
+	provider1 := llm.NewMockProvider("mock1").AddTextResponse("first response")
+	rt1 := &serveRuntime{
+		provider:         provider1,
+		providerKey:      provider1.Name(),
+		engine:           llm.NewEngine(provider1, nil),
+		store:            store,
+		platform:         "web",
+		platformMessages: agents.PlatformMessagesConfig{Web: devText},
+		defaultModel:     "test-model",
+	}
+	rt1.Touch()
+
+	_, err := rt1.Run(context.Background(), true, false,
+		[]llm.Message{serveRuntimeTextMessage(llm.RoleUser, "hello")},
+		llm.Request{SessionID: sessionID})
+	if err != nil {
+		t.Fatalf("rt1.Run() error = %v", err)
+	}
+	if rt1.lastInjectedPlatform != "web" {
+		t.Fatalf("rt1.lastInjectedPlatform = %q, want web", rt1.lastInjectedPlatform)
+	}
+
+	// Confirm the store has the developer message as the first persisted message.
+	storedMsgs, _ := store.GetMessages(context.Background(), sessionID, 0, 0)
+	if len(storedMsgs) == 0 || storedMsgs[0].Role != llm.RoleDeveloper {
+		t.Fatalf("expected developer message first in store, got %d messages: %+v", len(storedMsgs), storedMsgs)
+	}
+
+	// Second runtime: fresh instance for the same session (simulates runtime eviction/restart).
+	// lastInjectedPlatform is intentionally zero — this is the state after eviction.
+	provider2 := llm.NewMockProvider("mock2").AddTextResponse("second response")
+	rt2 := &serveRuntime{
+		provider:         provider2,
+		providerKey:      provider2.Name(),
+		engine:           llm.NewEngine(provider2, nil),
+		store:            store,
+		platform:         "web",
+		platformMessages: agents.PlatformMessagesConfig{Web: devText},
+		defaultModel:     "test-model",
+	}
+	rt2.Touch()
+
+	_, err = rt2.Run(context.Background(), true, false,
+		[]llm.Message{serveRuntimeTextMessage(llm.RoleUser, "follow-up")},
+		llm.Request{SessionID: sessionID})
+	if err != nil {
+		t.Fatalf("rt2.Run() error = %v", err)
+	}
+
+	if len(provider2.Requests) != 1 {
+		t.Fatalf("provider2 request count = %d, want 1", len(provider2.Requests))
+	}
+
+	// Count developer-role messages sent to the provider: exactly one is expected.
+	devCount := 0
+	for _, msg := range provider2.Requests[0].Messages {
+		if msg.Role == llm.RoleDeveloper {
+			devCount++
+		}
+	}
+	// BUG 2: currently devCount == 2 because ensurePersistedSession loads history that
+	// already contains the developer message but does not set lastInjectedPlatform, so
+	// Run() injects a second copy.
+	if devCount != 1 {
+		t.Fatalf("developer message count in second request = %d, want 1 (duplicate injection bug)", devCount)
+	}
+}
+
+// TestServeRuntimeRun_InterruptedRunLeavesOrphanedUserMessageInStore is a red test
+// documenting Bug 3: when a run is interrupted (context.Canceled) after the user message
+// is persisted but before any assistant reply is written, the session is left with a
+// trailing unanswered user message. On the next Run the orphaned message and the new user
+// message arrive at the LLM as consecutive user turns, which is an invalid conversation
+// structure that most providers reject or handle incorrectly.
+func TestServeRuntimeRun_InterruptedRunLeavesOrphanedUserMessageInStore(t *testing.T) {
+	const sessionID = "sess-interrupted-orphan"
+
+	store := newServeRuntimeTestStore()
+
+	// Seed the store to simulate a session interrupted mid-run.
+	// Completed turn: user1 → asst1. Orphaned turn: user2 (no assistant reply).
+	sess := &session.Session{ID: sessionID, Status: session.StatusInterrupted}
+	if err := store.Create(context.Background(), sess); err != nil {
+		t.Fatalf("Create session: %v", err)
+	}
+	seeded := []llm.Message{
+		{Role: llm.RoleUser, Parts: []llm.Part{{Type: llm.PartText, Text: "first message"}}},
+		{Role: llm.RoleAssistant, Parts: []llm.Part{{Type: llm.PartText, Text: "first reply"}}},
+		{Role: llm.RoleUser, Parts: []llm.Part{{Type: llm.PartText, Text: "interrupted message"}}},
+	}
+	for i, msg := range seeded {
+		sm := session.NewMessage(sessionID, msg, i)
+		if err := store.AddMessage(context.Background(), sessionID, sm); err != nil {
+			t.Fatalf("AddMessage[%d]: %v", i, err)
+		}
+	}
+
+	provider := llm.NewMockProvider("mock").AddTextResponse("recovery response")
+	rt := &serveRuntime{
+		provider:     provider,
+		providerKey:  provider.Name(),
+		engine:       llm.NewEngine(provider, nil),
+		store:        store,
+		defaultModel: "test-model",
+	}
+	rt.Touch()
+
+	_, err := rt.Run(context.Background(), true, false,
+		[]llm.Message{serveRuntimeTextMessage(llm.RoleUser, "new message after interrupt")},
+		llm.Request{SessionID: sessionID})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+
+	if len(provider.Requests) != 1 {
+		t.Fatalf("provider request count = %d, want 1", len(provider.Requests))
+	}
+
+	msgs := provider.Requests[0].Messages
+	// A valid conversation must not have consecutive user messages.
+	for i := 1; i < len(msgs); i++ {
+		if msgs[i].Role == llm.RoleUser && msgs[i-1].Role == llm.RoleUser {
+			// BUG 3: the orphaned user message from the interrupted run is loaded
+			// verbatim from the store and prepended to the new user message with no
+			// recovery, producing consecutive user turns that the LLM cannot handle.
+			t.Fatalf("consecutive user messages at positions %d and %d — orphaned message not recovered: %+v", i-1, i, msgs)
+		}
+	}
+}
+
+// TestServeRuntimeRun_DuplicateUserMessageFromDoubleSubmit is a red test documenting Bug 1:
+// the WebRTC and HTTP transports can each deliver the same user message for a single send
+// (HTTP fires as a fallback after WebRTC). The runtime has no idempotency guard, so both
+// deliveries are processed and the user turn is duplicated in the conversation.
+func TestServeRuntimeRun_DuplicateUserMessageFromDoubleSubmit(t *testing.T) {
+	const (
+		sessionID = "sess-double-submit"
+		userMsg   = "grab tuner"
+	)
+
+	store := newServeRuntimeTestStore()
+
+	provider := llm.NewMockProvider("mock").
+		AddTextResponse("response 1").
+		AddTextResponse("response 2")
+	rt := &serveRuntime{
+		provider:     provider,
+		providerKey:  provider.Name(),
+		engine:       llm.NewEngine(provider, nil),
+		store:        store,
+		defaultModel: "test-model",
+	}
+	rt.Touch()
+
+	input := []llm.Message{serveRuntimeTextMessage(llm.RoleUser, userMsg)}
+
+	// First delivery — e.g. via WebRTC.
+	if _, err := rt.Run(context.Background(), true, false, input, llm.Request{SessionID: sessionID}); err != nil {
+		t.Fatalf("first Run() error = %v", err)
+	}
+
+	// Second delivery of the identical message — e.g. HTTP fallback arriving after WebRTC.
+	if _, err := rt.Run(context.Background(), true, false, input, llm.Request{SessionID: sessionID}); err != nil {
+		t.Fatalf("second Run() error = %v", err)
+	}
+
+	// With correct deduplication only one provider call should occur.
+	// BUG 1: currently len(provider.Requests) == 2 because the runtime has no
+	// idempotency guard against the same user message being submitted twice.
+	if len(provider.Requests) != 1 {
+		t.Fatalf("provider request count = %d, want 1 — same user message submitted twice without deduplication", len(provider.Requests))
 	}
 }
