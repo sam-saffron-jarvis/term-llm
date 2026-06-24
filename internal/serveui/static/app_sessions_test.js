@@ -285,6 +285,11 @@ async function createSessionsHarness(options = {}) {
     removeItem(key) { storage.delete(key); },
   };
 
+  const timerSetTimeout = options.setTimeout || setTimeout;
+  const timerClearTimeout = options.clearTimeout || clearTimeout;
+  const timerSetInterval = options.setInterval || (() => 0);
+  const timerClearInterval = options.clearInterval || (() => {});
+
   const windowObj = {
     TERM_LLM_UI_PREFIX: options.uiPrefix || '/ui',
     TERM_LLM_SIDEBAR_SESSIONS: 'all',
@@ -315,12 +320,12 @@ async function createSessionsHarness(options = {}) {
     visualViewport: null,
     addEventListener() {},
     removeEventListener() {},
-    requestAnimationFrame(callback) { return setTimeout(callback, 0); },
-    cancelAnimationFrame(handle) { clearTimeout(handle); },
-    setTimeout,
-    clearTimeout,
-    setInterval() { return 0; },
-    clearInterval() {},
+    requestAnimationFrame(callback) { return timerSetTimeout(callback, 0); },
+    cancelAnimationFrame(handle) { timerClearTimeout(handle); },
+    setTimeout: timerSetTimeout,
+    clearTimeout: timerClearTimeout,
+    setInterval: timerSetInterval,
+    clearInterval: timerClearInterval,
     focus() {},
   };
   windowObj.document = document;
@@ -334,10 +339,10 @@ async function createSessionsHarness(options = {}) {
     location: windowObj.location,
     navigator: windowObj.navigator,
     console,
-    setTimeout,
-    clearTimeout,
-    setInterval() { return 0; },
-    clearInterval() {},
+    setTimeout: timerSetTimeout,
+    clearTimeout: timerClearTimeout,
+    setInterval: timerSetInterval,
+    clearInterval: timerClearInterval,
     URL,
     URLSearchParams,
     CSS: { escape(value) { return String(value).replace(/"/g, '\\"'); } },
@@ -3197,6 +3202,124 @@ async function testLateActiveMessagesResponseIgnoredAfterSessionSwitch() {
   pass(name);
 }
 
+async function testSessionStatePollRetriesAfterTransientFailure() {
+  const name = 'session state poll retries after transient failure';
+  const scheduled = [];
+  let stateCalls = 0;
+  const { app } = await createSessionsHarness({
+    setTimeout(fn, delay) {
+      const handle = { fn, delay, cleared: false };
+      scheduled.push(handle);
+      return handle;
+    },
+    clearTimeout(handle) {
+      if (handle) handle.cleared = true;
+    },
+    fetchImpl: async (url) => {
+      if (url === '/ui/v1/sessions/sess_retry/state') {
+        stateCalls += 1;
+        if (stateCalls === 1) {
+          return new Response('temporary upstream failure', { status: 502 });
+        }
+        return new Response(JSON.stringify({ active_run: false, active_response_id: '' }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      return new Response(JSON.stringify({ sessions: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }
+  });
+  app.stopSidebarStatusPoll();
+  scheduled.length = 0;
+
+  const session = {
+    id: 'sess_retry',
+    title: 'Retry me',
+    origin: 'web',
+    created: 1,
+    messages: [],
+    activeResponseId: null,
+    lastSequenceNumber: 0,
+  };
+  app.state.sessions = [session];
+  app.state.activeSessionId = session.id;
+  app.state.draftSessionActive = true;
+
+  app.scheduleSessionStatePoll(session.id, 0);
+  const first = scheduled.find((item) => item.delay === 0 && !item.cleared);
+  if (!first) {
+    fail(name, 'expected initial zero-delay state poll to be scheduled', JSON.stringify(scheduled.map(({ delay, cleared }) => ({ delay, cleared }))));
+    return;
+  }
+  await first.fn();
+
+  if (stateCalls !== 1) {
+    fail(name, `expected one state endpoint fetch before retry, got ${stateCalls}`);
+    return;
+  }
+  const retry = scheduled.find((item) => item !== first && item.delay === 5000 && !item.cleared);
+  if (!retry) {
+    fail(name, 'expected failed state poll to schedule a retry', JSON.stringify(scheduled.map(({ delay, cleared }) => ({ delay, cleared }))));
+    return;
+  }
+
+  await retry.fn();
+  if (stateCalls !== 2) {
+    fail(name, `expected retry to fetch state endpoint again, got ${stateCalls}`);
+    return;
+  }
+  const extraRetry = scheduled.find((item) => item !== retry && item.delay === 5000 && !item.cleared);
+  if (extraRetry) {
+    fail(name, 'expected successful retry to stop the transient retry loop', JSON.stringify(scheduled.map(({ delay, cleared }) => ({ delay, cleared }))));
+    return;
+  }
+
+  pass(name);
+}
+
+async function testSessionStatePollDoesNotRetryAfterSessionSwitch() {
+  const name = 'session state poll does not retry after session switch';
+  const scheduled = [];
+  const { app } = await createSessionsHarness({
+    setTimeout(fn, delay) {
+      const handle = { fn, delay, cleared: false };
+      scheduled.push(handle);
+      return handle;
+    },
+    clearTimeout(handle) {
+      if (handle) handle.cleared = true;
+    },
+    fetchImpl: async (url) => {
+      if (url === '/ui/v1/sessions/sess_retry_switch/state') {
+        app.state.activeSessionId = 'sess_other';
+        return new Response('temporary upstream failure', { status: 502 });
+      }
+      return new Response(JSON.stringify({ sessions: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }
+  });
+  app.stopSidebarStatusPoll();
+  scheduled.length = 0;
+
+  const session = { id: 'sess_retry_switch', title: 'Retry switch', origin: 'web', created: 1, messages: [] };
+  const other = { id: 'sess_other', title: 'Other', origin: 'web', created: 2, messages: [] };
+  app.state.sessions = [session, other];
+  app.state.activeSessionId = session.id;
+  app.state.draftSessionActive = true;
+
+  app.scheduleSessionStatePoll(session.id, 0);
+  const first = scheduled.find((item) => item.delay === 0 && !item.cleared);
+  if (!first) {
+    fail(name, 'expected initial zero-delay state poll to be scheduled', JSON.stringify(scheduled.map(({ delay, cleared }) => ({ delay, cleared }))));
+    return;
+  }
+  await first.fn();
+
+  const retry = scheduled.find((item) => item !== first && item.delay === 5000 && !item.cleared);
+  if (retry) {
+    fail(name, 'expected session switch to suppress transient retry', JSON.stringify(scheduled.map(({ delay, cleared }) => ({ delay, cleared }))));
+    return;
+  }
+
+  pass(name);
+}
+
 async function testLateActiveRunSyncDoesNotMarkDraftStreaming() {
   const name = 'late active-run sync does not mark New Chat draft as streaming';
   const { app } = await createSessionsHarness({
@@ -3729,6 +3852,8 @@ async function testMCPPatchConflictDoesNotOptimisticallyEnable() {
   await testStatusPollUnchangedTranscriptDoesNotFetchMessages();
   await testActiveTranscriptRefreshSkipsBusyStates();
   await testLateActiveMessagesResponseIgnoredAfterSessionSwitch();
+  await testSessionStatePollRetriesAfterTransientFailure();
+  await testSessionStatePollDoesNotRetryAfterSessionSwitch();
   await testLateActiveRunSyncDoesNotMarkDraftStreaming();
   await testOlderPendingTranscriptVersionIsIgnoredOnStatus304();
   await testSyncActiveSessionIdleUsesTranscriptRefreshHelper();

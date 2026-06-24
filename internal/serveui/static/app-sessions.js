@@ -66,6 +66,9 @@ const shouldRecoverActiveResponseFromSnapshot = (session, responseId, responseCh
 const SIDEBAR_POLL_ACTIVE = 2000;
 const SIDEBAR_POLL_VISIBLE_ACTIVE = 5000;
 const SIDEBAR_POLL_IDLE = 30000;
+// Retry selected-session state after transient upstream/proxy failures so a
+// single hub/reverse blip does not permanently stop active-session updates.
+const SESSION_STATE_POLL_RETRY = 5000;
 let sidebarStatusTimer = null;
 let sidebarStatusEtag = null;
 let sidebarHasActive = false;
@@ -1379,7 +1382,18 @@ const scheduleSessionStatePoll = (sessionId, delay = 1200) => {
       stopSessionStatePoll();
       return;
     }
-    await syncActiveSessionFromServer(active, true);
+    let runtimeState = null;
+    try {
+      runtimeState = await syncActiveSessionFromServer(active, true);
+    } catch (_) {
+      runtimeState = null;
+    }
+    if (runtimeState === null) {
+      const stillActive = getActiveSession();
+      if (stillActive && stillActive.id === sessionId && !state.abortController) {
+        scheduleSessionStatePoll(sessionId, SESSION_STATE_POLL_RETRY);
+      }
+    }
   }, delay);
 };
 
