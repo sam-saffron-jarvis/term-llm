@@ -960,7 +960,6 @@ func (q *telegramStoreOpQueue) enqueue(ctx context.Context, op string, fn func(c
 	q.mu.Lock()
 	if q.closed {
 		q.mu.Unlock()
-		q.mgr.runStoreOpWithoutCancel(ctx, q.sessionID, op, fn)
 		return
 	}
 	q.enqueueWG.Add(1)
@@ -970,7 +969,6 @@ func (q *telegramStoreOpQueue) enqueue(ctx context.Context, op string, fn func(c
 	select {
 	case q.ops <- storeOp:
 	case <-q.closedCh:
-		q.mgr.runStoreOpWithoutCancel(ctx, q.sessionID, op, fn)
 	}
 }
 
@@ -1684,9 +1682,10 @@ func (m *telegramSessionMgr) streamReply(ctx context.Context, bot botSender, ses
 		newHistory = append(newHistory, producedSnapshot...)
 		if partial != "" {
 			if callbackStoreQueue != nil {
-				drainCtx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
-				callbackStoreQueue.closeAndWait(drainCtx)
-				cancel()
+				// Keep fallback persistence on the same serialized path by waiting for
+				// queued callback writes to drain before checking/persisting the final
+				// assistant text.
+				callbackStoreQueue.closeAndWait(context.Background())
 			}
 			assistantMsg := llm.AssistantText(partial)
 			if m.store != nil && sess.meta != nil && !m.persistedAssistantTextMatches(persistCtx, sess.meta.ID, partial) {

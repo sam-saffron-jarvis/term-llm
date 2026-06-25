@@ -122,8 +122,45 @@ func TestTelegramStoreOpQueueCloseUnblocksFullQueueEnqueue(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("blocked enqueue did not return after closeAndWait")
 	}
-	if !finalRan.Load() {
-		t.Fatal("blocked enqueue fallback op did not run")
+	if finalRan.Load() {
+		t.Fatal("blocked enqueue ran inline after closeAndWait started")
+	}
+
+	close(releaseFirst)
+	drainCtx, drainCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer drainCancel()
+	q.closeAndWait(drainCtx)
+}
+
+func TestTelegramStoreOpQueueDropsLateEnqueueAfterCloseStarts(t *testing.T) {
+	mgr := &telegramSessionMgr{store: &session.NoopStore{}}
+	q := newTelegramStoreOpQueue(mgr, "session-1")
+
+	firstStarted := make(chan struct{})
+	releaseFirst := make(chan struct{})
+	q.enqueue(context.Background(), "first", func(context.Context) error {
+		close(firstStarted)
+		<-releaseFirst
+		return nil
+	})
+
+	select {
+	case <-firstStarted:
+	case <-time.After(5 * time.Second):
+		t.Fatal("first op did not start")
+	}
+
+	closeCtx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	q.closeAndWait(closeCtx)
+
+	var lateRan atomic.Bool
+	q.enqueue(context.Background(), "late", func(context.Context) error {
+		lateRan.Store(true)
+		return nil
+	})
+	if lateRan.Load() {
+		t.Fatal("late enqueue ran inline after close started")
 	}
 
 	close(releaseFirst)
