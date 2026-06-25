@@ -84,7 +84,7 @@ func SaveCopilotCredentials(creds *CopilotCredentials) error {
 	}
 
 	// Write with restrictive permissions (owner read/write only)
-	if err := os.WriteFile(credPath, data, 0600); err != nil {
+	if err := writeFileAtomically(credPath, data, 0600); err != nil {
 		return fmt.Errorf("failed to write credentials: %w", err)
 	}
 
