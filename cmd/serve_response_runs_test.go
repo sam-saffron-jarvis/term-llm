@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/session"
 )
 
 func TestEncodeTextDeltaPayloadMatchesJSONMarshalForInvalidUTF8(t *testing.T) {
@@ -170,6 +171,96 @@ func TestAppendResponseRunEventKeepsClientToolFileChanges(t *testing.T) {
 	}
 	if !sawFileChange {
 		t.Fatalf("events = %+v, want response.file_change for non-server tool", run.events)
+	}
+}
+
+type fixedLatestVisibleMessageIDStore struct {
+	session.Store
+	id          int64
+	sawDeadline bool
+}
+
+func (s *fixedLatestVisibleMessageIDStore) GetLatestVisibleMessageID(ctx context.Context, sessionID string) (int64, error) {
+	_, s.sawDeadline = ctx.Deadline()
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	return s.id, nil
+}
+
+type blockingLatestVisibleMessageIDStore struct {
+	session.Store
+	sawDeadline bool
+}
+
+func (s *blockingLatestVisibleMessageIDStore) GetLatestVisibleMessageID(ctx context.Context, sessionID string) (int64, error) {
+	_, s.sawDeadline = ctx.Deadline()
+	<-ctx.Done()
+	return 0, ctx.Err()
+}
+
+func TestLatestDurableResponseIDForSessionBestEffortIgnoresParentCancellation(t *testing.T) {
+	store := &fixedLatestVisibleMessageIDStore{id: 42}
+	srv := &serveServer{store: store}
+	parentCtx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	got := srv.latestDurableResponseIDForSessionBestEffort(parentCtx, "sess_test")
+	want := durableResponseIDForMessageID(42)
+	if got != want {
+		t.Fatalf("latestDurableResponseIDForSessionBestEffort() = %q, want %q", got, want)
+	}
+	if !store.sawDeadline {
+		t.Fatal("best-effort durable lookup should apply its own deadline")
+	}
+}
+
+func TestStoreCompletedResponseRunFallsBackWhenDurableLookupTimesOut(t *testing.T) {
+	oldTimeout := durableResponseLookupTimeout
+	durableResponseLookupTimeout = 20 * time.Millisecond
+	t.Cleanup(func() {
+		durableResponseLookupTimeout = oldTimeout
+	})
+
+	store := &blockingLatestVisibleMessageIDStore{}
+	srv := &serveServer{store: store}
+	runtime := &serveRuntime{}
+	var result serveRunResult
+	result.Text.WriteString("done")
+
+	done := make(chan struct{})
+	var (
+		respID string
+		err    error
+	)
+	go func() {
+		respID, err = srv.storeCompletedResponseRun(runtime, "sess_timeout", "", "mock", time.Now().Unix(), result, false)
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("storeCompletedResponseRun blocked on durable response lookup")
+	}
+	if err != nil {
+		t.Fatalf("storeCompletedResponseRun() error = %v", err)
+	}
+	if strings.HasPrefix(respID, durableResponseMessagePrefix) {
+		t.Fatalf("respID = %q, want ephemeral fallback id after durable lookup timeout", respID)
+	}
+	if !strings.HasPrefix(respID, "resp_") {
+		t.Fatalf("respID = %q, want ephemeral response id prefix", respID)
+	}
+	if !store.sawDeadline {
+		t.Fatal("durable response lookup should use a bounded deadline")
+	}
+	run, ok := srv.ensureResponseRuns().get(respID)
+	if !ok {
+		t.Fatalf("completed run %q not found", respID)
+	}
+	if status := run.snapshot()["status"]; status != "completed" {
+		t.Fatalf("run status = %v, want completed", status)
 	}
 }
 

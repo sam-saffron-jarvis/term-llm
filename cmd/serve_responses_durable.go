@@ -6,12 +6,15 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/session"
 )
 
 const durableResponseMessagePrefix = "resp_msg_"
+
+var durableResponseLookupTimeout = 5 * time.Second
 
 type latestVisibleMessageIDStore interface {
 	GetLatestVisibleMessageID(ctx context.Context, sessionID string) (int64, error)
@@ -146,4 +149,16 @@ func (s *serveServer) latestDurableResponseIDForSession(ctx context.Context, ses
 		return ""
 	}
 	return durableResponseIDForMessageID(msgID)
+}
+
+func (s *serveServer) latestDurableResponseIDForSessionBestEffort(ctx context.Context, sessionID string) string {
+	if s == nil || s.store == nil || sessionID == "" {
+		return ""
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	dbCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), durableResponseLookupTimeout)
+	defer cancel()
+	return s.latestDurableResponseIDForSession(dbCtx, sessionID)
 }
