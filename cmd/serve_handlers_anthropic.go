@@ -195,10 +195,10 @@ func (s *serveServer) streamAnthropicMessages(ctx context.Context, w http.Respon
 		model = runtime.defaultModel
 	}
 
-	pingMu, stopPing := sseKeepalive(w, flusher, 20*time.Second)
-
 	ctx, cancelShutdown := s.contextWithShutdown(ctx)
 	defer cancelShutdown()
+
+	pingMu, stopPing := sseKeepalive(ctx, w, flusher, 10*time.Second)
 
 	var (
 		blockIndex int

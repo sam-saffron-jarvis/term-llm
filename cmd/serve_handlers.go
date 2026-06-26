@@ -2252,7 +2252,8 @@ func (s *serveServer) getModelsProvider(name string) (llm.Provider, string, erro
 // The returned mu must wrap all writes to w inside the RunWithEvents callback.
 // Call stop() immediately after RunWithEvents returns; it blocks until the
 // goroutine has exited so subsequent final writes to w are safe without a lock.
-func sseKeepalive(w http.ResponseWriter, flusher http.Flusher, interval time.Duration) (mu *sync.Mutex, stop func()) {
+// The goroutine also exits when ctx is cancelled between writes.
+func sseKeepalive(ctx context.Context, w http.ResponseWriter, flusher http.Flusher, interval time.Duration) (mu *sync.Mutex, stop func()) {
 	mu = &sync.Mutex{}
 	done := make(chan struct{})
 	var wg sync.WaitGroup
@@ -2268,6 +2269,8 @@ func sseKeepalive(w http.ResponseWriter, flusher http.Flusher, interval time.Dur
 				_, _ = io.WriteString(w, ": ping\n\n")
 				flusher.Flush()
 				mu.Unlock()
+			case <-ctx.Done():
+				return
 			case <-done:
 				return
 			}

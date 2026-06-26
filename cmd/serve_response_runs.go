@@ -1655,7 +1655,7 @@ func (s *serveServer) streamResponseRunEvents(ctx context.Context, w http.Respon
 	ch := subscription.ch
 	subscriberID := subscription.id
 
-	pingMu, stopPing := sseKeepalive(w, flusher, 20*time.Second)
+	pingMu, stopPing := sseKeepalive(ctx, w, flusher, 10*time.Second)
 	var stopPingOnce sync.Once
 	stopKeepalive := func() {
 		stopPingOnce.Do(stopPing)

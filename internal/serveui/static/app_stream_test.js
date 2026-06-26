@@ -408,10 +408,10 @@ function createHarness(options = {}) {
 
   const windowObj = {
     TermLLMApp: app,
-    setTimeout,
-    clearTimeout,
-    setInterval,
-    clearInterval,
+    setTimeout: typeof options.setTimeout === 'function' ? options.setTimeout : setTimeout,
+    clearTimeout: typeof options.clearTimeout === 'function' ? options.clearTimeout : clearTimeout,
+    setInterval: typeof options.setInterval === 'function' ? options.setInterval : setInterval,
+    clearInterval: typeof options.clearInterval === 'function' ? options.clearInterval : clearInterval,
     requestAnimationFrame(callback) {
       if (typeof options.requestAnimationFrame === 'function') return options.requestAnimationFrame(callback);
       return setTimeout(callback, 0);
@@ -434,10 +434,10 @@ function createHarness(options = {}) {
     document,
     console,
     localStorage,
-    setTimeout,
-    clearTimeout,
-    setInterval,
-    clearInterval,
+    setTimeout: typeof options.setTimeout === 'function' ? options.setTimeout : setTimeout,
+    clearTimeout: typeof options.clearTimeout === 'function' ? options.clearTimeout : clearTimeout,
+    setInterval: typeof options.setInterval === 'function' ? options.setInterval : setInterval,
+    clearInterval: typeof options.clearInterval === 'function' ? options.clearInterval : clearInterval,
     AbortController,
     DOMException,
     TextEncoder,
@@ -982,6 +982,446 @@ async function testConsumeResponseStreamReportsStaleWithoutApplyingEvents() {
   }
 
   await cleanup();
+  pass(name);
+}
+
+async function testParseSSEStreamUpdatesHeartbeatOnCommentFrame() {
+  const name = 'parseSSEStream updates heartbeat timestamp on comment keepalive frames';
+  const harness = createHarness();
+  const { app, state, cleanup } = harness;
+  const encoder = new TextEncoder();
+  state.lastEventTime = 1;
+
+  const stream = new ReadableStream({
+    start(controller) {
+      controller.enqueue(encoder.encode(': ping\n\n'));
+      controller.close();
+    },
+  });
+
+  let eventCount = 0;
+  await app.parseSSEStream(stream, () => {
+    eventCount += 1;
+    return true;
+  });
+
+  if (state.lastEventTime <= 1) {
+    fail(name, `lastEventTime was not refreshed: ${state.lastEventTime}`);
+    await cleanup();
+    return;
+  }
+  if (eventCount !== 1) {
+    fail(name, `expected one parsed empty comment block, got ${eventCount}`);
+    await cleanup();
+    return;
+  }
+
+  await cleanup();
+  pass(name);
+}
+
+async function testSendMessageHeartbeatAbortResumesPostStream() {
+  const name = 'heartbeat abort of POST stream resumes from events without custom abort reason';
+  const intervalCallbacks = [];
+  const harness = createHarness({
+    postKeepOpen: true,
+    postBody: [
+      'id: 1\n',
+      'event: response.created\n',
+      'data: {"response":{"id":"resp_test","model":"test-model","status":"in_progress"},"sequence_number":1}\n\n',
+      'id: 2\n',
+      'event: response.output_text.delta\n',
+      'data: {"delta":"partial","sequence_number":2}\n\n',
+    ].join(''),
+    setInterval(callback) {
+      intervalCallbacks.push(callback);
+      return intervalCallbacks.length;
+    },
+    clearInterval() {},
+  });
+  const { app, elements, state, getEventsStarted, cleanup } = harness;
+  elements.promptInput.value = 'hello';
+
+  const sendPromise = app.sendMessage();
+  const attached = await waitFor(() => state.currentStreamResponseId === 'resp_test' && state.abortController, 1000);
+  if (!attached) {
+    fail(name, 'POST stream did not attach response tracking');
+    await cleanup();
+    await sendPromise.catch(() => {});
+    return;
+  }
+  if (intervalCallbacks.length === 0) {
+    fail(name, 'heartbeat monitor was not started');
+    await cleanup();
+    await sendPromise.catch(() => {});
+    return;
+  }
+
+  const controller = state.abortController;
+  const staleThreshold = Math.max(app.HEARTBEAT_STALE_THRESHOLD, Number(state.abortController?._heartbeatStaleThreshold || 0) || 0);
+  state.lastEventTime = Date.now() - staleThreshold - 1;
+  intervalCallbacks[intervalCallbacks.length - 1]();
+
+  if (!controller.signal.aborted) {
+    fail(name, 'heartbeat callback did not abort the controller');
+    await cleanup();
+    await sendPromise.catch(() => {});
+    return;
+  }
+  if (controller.signal.reason === app.HEARTBEAT_ABORT_REASON) {
+    fail(name, 'heartbeat abort used the custom string reason');
+    await cleanup();
+    await sendPromise.catch(() => {});
+    return;
+  }
+
+  const resumed = await waitFor(() => getEventsStarted(), 1000);
+  await sendPromise.catch((err) => {
+    fail(name, 'sendMessage rejected after heartbeat abort', String(err));
+  });
+  await cleanup();
+
+  if (!resumed) {
+    fail(name, 'heartbeat abort did not resume via /events');
+    return;
+  }
+
+  pass(name);
+}
+
+async function testSendMessageHeartbeatAbortRetriesBeforeResponseId() {
+  const name = 'heartbeat abort before response id retries POST with same idempotency key';
+  const intervalCallbacks = [];
+  let postCount = 0;
+  const postBodies = [];
+  const idempotencyKeys = [];
+  const retryDelays = [];
+  const harness = createHarness({
+    setTimeout(callback, ms) {
+      retryDelays.push(Number(ms || 0));
+      return setTimeout(callback, 0);
+    },
+    clearTimeout(handle) { clearTimeout(handle); },
+    setInterval(callback) {
+      intervalCallbacks.push(callback);
+      return intervalCallbacks.length;
+    },
+    clearInterval() {},
+    fetchImpl: async (url, requestOptions, { Response, ReadableStream, TextEncoder }) => {
+      if (url !== '/ui/v1/responses' || (requestOptions.method || 'GET') !== 'POST') {
+        throw new Error(`unexpected fetch: ${url}`);
+      }
+      postCount += 1;
+      postBodies.push(String(requestOptions.body || ''));
+      idempotencyKeys.push(requestOptions.headers?.['Idempotency-Key'] || '');
+      if (postCount === 1) {
+        return new Promise((_resolve, reject) => {
+          requestOptions.signal.addEventListener('abort', () => {
+            reject(new DOMException('The operation was aborted.', 'AbortError'));
+          });
+        });
+      }
+      const encoder = new TextEncoder();
+      const body = [
+        'event: response.created\n',
+        'data: {"response":{"id":"resp_test","model":"test-model","status":"in_progress"},"sequence_number":1}\n\n',
+        'event: response.completed\n',
+        'data: {"response":{"id":"resp_test","model":"test-model","status":"completed"},"sequence_number":2}\n\n',
+        'data: [DONE]\n\n',
+      ].join('');
+      return new Response(new ReadableStream({
+        start(controller) {
+          controller.enqueue(encoder.encode(body));
+          controller.close();
+        },
+      }), {
+        status: 200,
+        headers: { 'x-response-id': 'resp_test' },
+      });
+    },
+  });
+  const { app, elements, state, cleanup } = harness;
+  elements.promptInput.value = 'hello';
+
+  const sendPromise = app.sendMessage();
+  const attached = await waitFor(() => state.currentStreamSessionId && state.abortController && postCount === 1, 1000);
+  if (!attached) {
+    fail(name, 'initial POST did not attach heartbeat-monitored stream state');
+    await cleanup();
+    await sendPromise.catch(() => {});
+    return;
+  }
+  if (intervalCallbacks.length === 0) {
+    fail(name, 'heartbeat monitor was not started');
+    await cleanup();
+    await sendPromise.catch(() => {});
+    return;
+  }
+
+  const preResponseStaleThreshold = Math.max(app.HEARTBEAT_STALE_THRESHOLD, Number(state.abortController?._heartbeatStaleThreshold || 0) || 0);
+  state.lastEventTime = Date.now() - preResponseStaleThreshold - 1;
+  intervalCallbacks[intervalCallbacks.length - 1]();
+  const retried = await waitFor(() => postCount === 2, 1000);
+  if (!retried) {
+    fail(name, `retry POST did not start, postCount=${postCount}`);
+    await cleanup();
+    await sendPromise.catch(() => {});
+    return;
+  }
+  await waitFor(() => !state.streaming && !state.currentStreamResponseId, 1000);
+  await sendPromise.catch((err) => {
+    fail(name, 'sendMessage rejected after pre-response-id heartbeat retry', String(err));
+  });
+  await cleanup();
+
+  if (postCount !== 2) {
+    fail(name, `expected exactly two POST attempts, got ${postCount}`);
+    return;
+  }
+  if (!retryDelays.includes(1000)) {
+    fail(name, 'first heartbeat retry did not use the normal reconnect delay', JSON.stringify(retryDelays));
+    return;
+  }
+  if (!idempotencyKeys[0] || idempotencyKeys[0] !== idempotencyKeys[1]) {
+    fail(name, 'retry did not reuse the same idempotency key', JSON.stringify(idempotencyKeys));
+    return;
+  }
+  const session = state.sessions[0];
+  const userMessages = (session?.messages || []).filter((message) => message.role === 'user');
+  if (userMessages.length !== 1) {
+    fail(name, `retry duplicated the user message: ${userMessages.length}`, JSON.stringify(session?.messages || []));
+    return;
+  }
+  if (postBodies.length === 2 && postBodies[0] !== postBodies[1]) {
+    fail(name, 'retry POST body changed', JSON.stringify(postBodies));
+    return;
+  }
+
+  pass(name);
+}
+
+async function testSendMessageLargeUploadUsesLongerPreResponseHeartbeatGrace() {
+  const name = 'large initial POST upload gets longer heartbeat grace before first response byte';
+  const intervalCallbacks = [];
+  let postCount = 0;
+  const harness = createHarness({
+    setInterval(callback) {
+      intervalCallbacks.push(callback);
+      return intervalCallbacks.length;
+    },
+    clearInterval() {},
+    fetchImpl: async (url, requestOptions) => {
+      if (url !== '/ui/v1/responses' || (requestOptions.method || 'GET') !== 'POST') {
+        throw new Error(`unexpected fetch: ${url}`);
+      }
+      postCount += 1;
+      return new Promise((_resolve, reject) => {
+        requestOptions.signal.addEventListener('abort', () => {
+          reject(new DOMException('The operation was aborted.', 'AbortError'));
+        });
+      });
+    },
+  });
+  const { app, elements, state, cleanup } = harness;
+  elements.promptInput.value = 'x'.repeat(1024 * 1024);
+
+  const sendPromise = app.sendMessage();
+  const attached = await waitFor(() => postCount === 1 && state.abortController && !state.abortController.signal.aborted, 1000);
+  if (!attached) {
+    fail(name, `large POST did not attach heartbeat controller, postCount=${postCount}`);
+    await cleanup();
+    await sendPromise.catch(() => {});
+    return;
+  }
+  const controller = state.abortController;
+  if (!(controller._heartbeatStaleThreshold > app.HEARTBEAT_STALE_THRESHOLD)) {
+    fail(name, `expected upload heartbeat threshold > ${app.HEARTBEAT_STALE_THRESHOLD}, got ${controller._heartbeatStaleThreshold}`);
+    app.detachResponseStream();
+    await sendPromise.catch(() => {});
+    await cleanup();
+    return;
+  }
+
+  state.lastEventTime = Date.now() - app.HEARTBEAT_STALE_THRESHOLD - 1000;
+  intervalCallbacks[intervalCallbacks.length - 1]();
+  if (controller.signal.aborted) {
+    fail(name, 'heartbeat aborted during large upload grace period');
+    await cleanup();
+    await sendPromise.catch(() => {});
+    return;
+  }
+
+  app.detachResponseStream();
+  await sendPromise.catch((err) => {
+    fail(name, 'sendMessage rejected after intentional large-upload detach', String(err));
+  });
+  await cleanup();
+  pass(name);
+}
+
+async function testSendMessageTransientPreResponseFailureRetries() {
+  const name = 'transient pre-response POST failure retries with same idempotency key';
+  let postCount = 0;
+  const retryDelays = [];
+  const idempotencyKeys = [];
+  const harness = createHarness({
+    setTimeout(callback, ms) {
+      retryDelays.push(Number(ms || 0));
+      return setTimeout(callback, 0);
+    },
+    clearTimeout(handle) { clearTimeout(handle); },
+    fetchImpl: async (url, requestOptions, { Response, ReadableStream, TextEncoder }) => {
+      if (url !== '/ui/v1/responses' || (requestOptions.method || 'GET') !== 'POST') {
+        throw new Error(`unexpected fetch: ${url}`);
+      }
+      postCount += 1;
+      idempotencyKeys.push(requestOptions.headers?.['Idempotency-Key'] || '');
+      if (postCount === 1) {
+        return new Response(JSON.stringify({ error: { message: 'temporary upstream failure' } }), {
+          status: 503,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      const encoder = new TextEncoder();
+      const body = [
+        'event: response.created\n',
+        'data: {"response":{"id":"resp_test","model":"test-model","status":"in_progress"},"sequence_number":1}\n\n',
+        'event: response.completed\n',
+        'data: {"response":{"id":"resp_test","model":"test-model","status":"completed"},"sequence_number":2}\n\n',
+        'data: [DONE]\n\n',
+      ].join('');
+      return new Response(new ReadableStream({
+        start(controller) {
+          controller.enqueue(encoder.encode(body));
+          controller.close();
+        },
+      }), {
+        status: 200,
+        headers: { 'x-response-id': 'resp_test' },
+      });
+    },
+  });
+  const { app, elements, state, cleanup } = harness;
+  elements.promptInput.value = 'hello';
+
+  await app.sendMessage().catch((err) => {
+    fail(name, 'sendMessage rejected after transient pre-response retry', String(err));
+  });
+  await cleanup();
+
+  if (postCount !== 2) {
+    fail(name, `expected two POST attempts, got ${postCount}`);
+    return;
+  }
+  if (!retryDelays.includes(1000)) {
+    fail(name, 'transient failure did not use reconnect delay', JSON.stringify(retryDelays));
+    return;
+  }
+  if (!idempotencyKeys[0] || idempotencyKeys[0] !== idempotencyKeys[1]) {
+    fail(name, 'transient retry did not reuse idempotency key', JSON.stringify(idempotencyKeys));
+    return;
+  }
+  const userMessages = (state.sessions[0]?.messages || []).filter((message) => message.role === 'user');
+  if (userMessages.length !== 1) {
+    fail(name, `transient retry duplicated user message: ${userMessages.length}`, JSON.stringify(state.sessions[0]?.messages || []));
+    return;
+  }
+
+  pass(name);
+}
+
+async function testSendMessageHeartbeatAbortKeepsRetryingWithSlowBackoff() {
+  const name = 'heartbeat abort before response id keeps retrying but slows to once a minute';
+  const intervalCallbacks = [];
+  const retryDelays = [];
+  let postCount = 0;
+  const idempotencyKeys = [];
+  const harness = createHarness({
+    setTimeout(callback, ms) {
+      retryDelays.push(Number(ms || 0));
+      return setTimeout(callback, 0);
+    },
+    clearTimeout(handle) { clearTimeout(handle); },
+    setInterval(callback) {
+      intervalCallbacks.push(callback);
+      return intervalCallbacks.length;
+    },
+    clearInterval() {},
+    fetchImpl: async (url, requestOptions, { Response, ReadableStream, TextEncoder }) => {
+      if (url !== '/ui/v1/responses' || (requestOptions.method || 'GET') !== 'POST') {
+        throw new Error(`unexpected fetch: ${url}`);
+      }
+      postCount += 1;
+      idempotencyKeys.push(requestOptions.headers?.['Idempotency-Key'] || '');
+      if (postCount <= 6) {
+        return new Promise((_resolve, reject) => {
+          requestOptions.signal.addEventListener('abort', () => {
+            reject(new DOMException('The operation was aborted.', 'AbortError'));
+          });
+        });
+      }
+      const encoder = new TextEncoder();
+      const body = [
+        'event: response.created\n',
+        'data: {"response":{"id":"resp_test","model":"test-model","status":"in_progress"},"sequence_number":1}\n\n',
+        'event: response.completed\n',
+        'data: {"response":{"id":"resp_test","model":"test-model","status":"completed"},"sequence_number":2}\n\n',
+        'data: [DONE]\n\n',
+      ].join('');
+      return new Response(new ReadableStream({
+        start(controller) {
+          controller.enqueue(encoder.encode(body));
+          controller.close();
+        },
+      }), {
+        status: 200,
+        headers: { 'x-response-id': 'resp_test' },
+      });
+    },
+  });
+  const { app, elements, state, cleanup } = harness;
+  elements.promptInput.value = 'hello';
+
+  const sendPromise = app.sendMessage();
+  for (let attempt = 1; attempt <= 6; attempt += 1) {
+    const attached = await waitFor(() => postCount === attempt && state.abortController && !state.abortController.signal.aborted, 1000);
+    if (!attached) {
+      fail(name, `POST attempt ${attempt} did not attach heartbeat controller; postCount=${postCount}`);
+      await cleanup();
+      await sendPromise.catch(() => {});
+      return;
+    }
+    const preResponseStaleThreshold = Math.max(app.HEARTBEAT_STALE_THRESHOLD, Number(state.abortController?._heartbeatStaleThreshold || 0) || 0);
+    state.lastEventTime = Date.now() - preResponseStaleThreshold - 1;
+    intervalCallbacks[intervalCallbacks.length - 1]();
+  }
+
+  const recovered = await waitFor(() => postCount === 7 && !state.streaming && !state.currentStreamResponseId, 1000);
+  await sendPromise.catch((err) => {
+    fail(name, 'sendMessage rejected during long heartbeat retry recovery', String(err));
+  });
+  await cleanup();
+
+  if (!recovered) {
+    fail(name, `retry loop did not eventually recover, postCount=${postCount}`);
+    return;
+  }
+  if (!retryDelays.includes(60000)) {
+    fail(name, 'long-running retry loop never slowed to one minute', JSON.stringify(retryDelays));
+    return;
+  }
+  const uniqueKeys = [...new Set(idempotencyKeys.filter(Boolean))];
+  if (uniqueKeys.length !== 1 || idempotencyKeys.length !== 7) {
+    fail(name, 'retry loop did not reuse a single idempotency key', JSON.stringify(idempotencyKeys));
+    return;
+  }
+  const session = state.sessions[0];
+  const userMessages = (session?.messages || []).filter((message) => message.role === 'user');
+  if (userMessages.length !== 1) {
+    fail(name, `retry loop duplicated the user message: ${userMessages.length}`, JSON.stringify(session?.messages || []));
+    return;
+  }
+
   pass(name);
 }
 
@@ -1926,6 +2366,116 @@ async function testRecoverySnapshotDoesNotDuplicateOptimisticInterjection() {
   }
 
   await cleanup();
+  pass(name);
+}
+
+async function testResumeActiveResponseHeartbeatAbortSlowsAndRecovers() {
+  const name = 'resumeActiveResponse heartbeat aborts keep recovering with slow backoff';
+  const responseId = 'resp_events_heartbeat_retry';
+  const intervalCallbacks = [];
+  const retryDelays = [];
+  let eventsCount = 0;
+  let syncCalls = 0;
+  const harness = createHarness({
+    responseId,
+    setTimeout(callback, ms) {
+      retryDelays.push(Number(ms || 0));
+      return setTimeout(callback, 0);
+    },
+    clearTimeout(handle) { clearTimeout(handle); },
+    setInterval(callback) {
+      intervalCallbacks.push(callback);
+      return intervalCallbacks.length;
+    },
+    clearInterval() {},
+    fetchImpl: async (url, requestOptions, { Response, ReadableStream, TextEncoder }) => {
+      if (url.startsWith(`/ui/v1/responses/${responseId}/events?after=`)) {
+        eventsCount += 1;
+        if (eventsCount <= 6) {
+          const signal = requestOptions.signal;
+          return new Response(new ReadableStream({
+            start(controller) {
+              signal.addEventListener('abort', () => {
+                try { controller.error(new DOMException('The operation was aborted.', 'AbortError')); } catch (_err) { /* ignore */ }
+              });
+            },
+          }), {
+            status: 200,
+            headers: { 'Content-Type': 'text/event-stream' },
+          });
+        }
+        const encoder = new TextEncoder();
+        const body = [
+          'event: response.created\n',
+          `data: {"response":{"id":"${responseId}","model":"test-model","status":"in_progress"},"sequence_number":1}\n\n`,
+          'event: response.completed\n',
+          `data: {"response":{"id":"${responseId}","model":"test-model","status":"completed"},"sequence_number":2}\n\n`,
+          'data: [DONE]\n\n',
+        ].join('');
+        return new Response(new ReadableStream({
+          start(controller) {
+            controller.enqueue(encoder.encode(body));
+            controller.close();
+          },
+        }), {
+          status: 200,
+          headers: { 'Content-Type': 'text/event-stream' },
+        });
+      }
+      throw new Error(`unexpected fetch: ${url}`);
+    },
+  });
+  const { app, state, cleanup } = harness;
+  app.syncActiveSessionFromServer = async (session) => {
+    syncCalls += 1;
+    session.activeResponseId = responseId;
+    return { active_run: true, active_response_id: responseId };
+  };
+
+  const session = {
+    id: 'session_events_heartbeat_retry',
+    title: 'Events heartbeat retry',
+    messages: [],
+    lastResponseId: null,
+    activeResponseId: responseId,
+    lastSequenceNumber: 0,
+    number: 1,
+  };
+  state.sessions.push(session);
+  state.activeSessionId = session.id;
+
+  const resumePromise = app.resumeActiveResponse(session, { responseId });
+  for (let attempt = 1; attempt <= 6; attempt += 1) {
+    const attached = await waitFor(() => eventsCount === attempt && state.abortController && !state.abortController.signal.aborted, 1000);
+    if (!attached) {
+      fail(name, `events attempt ${attempt} did not attach heartbeat controller; eventsCount=${eventsCount}`);
+      await cleanup();
+      await resumePromise.catch(() => {});
+      return;
+    }
+    state.lastEventTime = Date.now() - app.HEARTBEAT_STALE_THRESHOLD - 1;
+    intervalCallbacks[intervalCallbacks.length - 1]();
+  }
+
+  const recovered = await waitFor(() => eventsCount === 7 && !session.activeResponseId, 1000);
+  await resumePromise.catch((err) => {
+    fail(name, 'resumeActiveResponse rejected during heartbeat retry recovery', String(err));
+  });
+  await cleanup();
+
+  if (!recovered) {
+    fail(name, `resume loop did not eventually recover, eventsCount=${eventsCount}, active=${session.activeResponseId}`);
+    return;
+  }
+  if (!retryDelays.includes(60000)) {
+    fail(name, 'events retry loop never slowed to one minute', JSON.stringify(retryDelays));
+    return;
+  }
+  if (syncCalls === 0) {
+    fail(name, 'events retry loop did not poll server state after repeated heartbeat aborts');
+    return;
+  }
+
   pass(name);
 }
 
@@ -3805,8 +4355,8 @@ async function testStaleInterruptRecoveryFailedPostKeepsDraft() {
   const harness = createHarness({
     interruptStatus: 404,
     interruptErrorPayload: { error: { message: 'session runtime not found' } },
-    postStatus: 503,
-    postErrorPayload: { error: { message: 'server unavailable' } },
+    postStatus: 400,
+    postErrorPayload: { error: { message: 'bad request' } },
   });
   const { app, elements, state, localStorage, cleanup } = harness;
   const session = {
@@ -3850,7 +4400,7 @@ async function testStaleInterruptRecoveryFailedPostKeepsDraft() {
 
 async function testFailedSendKeepsSessionDraftAndRestagesComposer() {
   const name = 'failed send keeps a session-bound draft and restores the composer';
-  const harness = createHarness({ postStatus: 503, postErrorPayload: { error: { message: 'server unavailable' } } });
+  const harness = createHarness({ postStatus: 400, postErrorPayload: { error: { message: 'bad request' } } });
   const { app, elements, state, localStorage, cleanup } = harness;
   const session = {
     id: 'session_failed_draft',
@@ -4154,6 +4704,12 @@ function testCompletedResponseClearsUnappliedQueuedEffort() {
   await testInactiveSessionPromptEventsRemainActionable();
   await testInactiveSessionFailureDoesNotAppendToVisibleDOM();
   await testConsumeResponseStreamReportsStaleWithoutApplyingEvents();
+  await testParseSSEStreamUpdatesHeartbeatOnCommentFrame();
+  await testSendMessageHeartbeatAbortResumesPostStream();
+  await testSendMessageHeartbeatAbortRetriesBeforeResponseId();
+  await testSendMessageLargeUploadUsesLongerPreResponseHeartbeatGrace();
+  await testSendMessageTransientPreResponseFailureRetries();
+  await testSendMessageHeartbeatAbortKeepsRetryingWithSlowBackoff();
   await testSendMessageDoesNotResumeAfterStalePostStream();
   await testSendMessageUsesLocalContinuationIdWithoutPreflightSync();
   await testSendMessageIncludesServerToolsForFirstPartyUI();
@@ -4191,6 +4747,7 @@ function testCompletedResponseClearsUnappliedQueuedEffort() {
   await testSeededToolArgumentsIgnoreReplayDeltas();
   await testToolExecImagesAttachToToolArtifactNotAssistantMarkdown();
   await testToolExecImagesUseHubAssetRebase();
+  await testResumeActiveResponseHeartbeatAbortSlowsAndRecovers();
   await testResumeActiveResponseFallsBackToReplayWhenSnapshotUnavailable();
   await testResumeActiveResponseClearsTerminalTrackingWhen409SnapshotHasNoRecovery();
   await testSendMessageIncludesModelSwapForChangedTarget();

@@ -208,6 +208,9 @@ const parseSSEStream = async (stream, onEvent) => {
     const decoded = decoder.decode(value, { stream: true });
     buffer += decoded.includes('\r') ? decoded.replace(/\r/g, '') : decoded;
     state.lastEventTime = Date.now();
+    if (state.abortController) {
+      state.abortController._heartbeatStaleThreshold = HEARTBEAT_STALE_THRESHOLD;
+    }
 
     let idx;
     while ((idx = buffer.indexOf('\n\n')) !== -1) {
@@ -227,6 +230,32 @@ const parseSSEStream = async (stream, onEvent) => {
 };
 
 const sleep = (ms) => new Promise((resolve) => window.setTimeout(resolve, ms));
+
+const STREAM_FAST_RETRY_LIMIT = 5;
+const STREAM_SLOW_RETRY_DELAY = 60000;
+const streamReconnectDelay = (attempt) => {
+  const normalized = Math.max(0, Number(attempt || 0));
+  if (normalized >= STREAM_FAST_RETRY_LIMIT) return STREAM_SLOW_RETRY_DELAY;
+  return 1000 * Math.pow(1.5, normalized);
+};
+
+const streamReconnectLabel = (attempt) => (
+  attempt >= STREAM_FAST_RETRY_LIMIT
+    ? 'Connection unstable; retrying once a minute…'
+    : (attempt < 3 ? 'Reconnecting…' : `Reconnecting (attempt ${attempt + 1})…`)
+);
+
+const streamHadActivitySince = (timestamp) => Number(state.lastEventTime || 0) > Number(timestamp || 0);
+
+const isTransientPreResponsePostError = (err) => {
+  const status = Number(err?.status || 0);
+  if (Object.prototype.hasOwnProperty.call(err || {}, 'status')) {
+    return status === 0 || status === 408 || status === 425 || status === 429 || status >= 500;
+  }
+  const name = String(err?.name || '');
+  const message = String(err?.message || '').toLowerCase();
+  return name === 'TypeError' || name === 'NetworkError' || message.includes('network') || message.includes('failed to fetch');
+};
 
 const DRAFT_MESSAGE_LIMIT = 10;
 const draftMessagesStorageKey = () => STORAGE_KEYS.draftMessages || 'term_llm_draft_messages';
@@ -335,34 +364,54 @@ const setActiveResponseTracking = (session, responseId, sequenceNumber = null) =
 };
 
 let heartbeatTimerId = null;
-const HEARTBEAT_STALE_THRESHOLD = 45000; // Backend pings every 20s
+const HEARTBEAT_STALE_THRESHOLD = 30000; // Backend pings every 10s
+const HEARTBEAT_UPLOAD_GRACE_BYTES_PER_SECOND = 32 * 1024;
+const HEARTBEAT_UPLOAD_GRACE_MAX = 15 * 60 * 1000;
+const heartbeatUploadGraceThreshold = (bodyText = '') => {
+  const bytes = String(bodyText || '').length;
+  if (bytes <= 0) return HEARTBEAT_STALE_THRESHOLD;
+  return Math.min(
+    HEARTBEAT_UPLOAD_GRACE_MAX,
+    Math.max(HEARTBEAT_STALE_THRESHOLD, HEARTBEAT_STALE_THRESHOLD + Math.ceil((bytes / HEARTBEAT_UPLOAD_GRACE_BYTES_PER_SECOND) * 1000))
+  );
+};
+// Deliberately not passed to AbortController.abort(): custom abort reasons can
+// make fetch reject with a raw string instead of an AbortError in some browsers.
 const HEARTBEAT_ABORT_REASON = 'heartbeat';
 
 const startHeartbeatMonitor = () => {
   stopHeartbeatMonitor();
   state.lastEventTime = Date.now();
   heartbeatTimerId = window.setInterval(() => {
-    if (!state.abortController || !state.currentStreamResponseId) {
-      stopHeartbeatMonitor();
-      return;
-    }
-    // While an ask_user or approval modal is open the server is intentionally
-    // silent — it is blocked waiting for user input.  A stale-heartbeat abort
-    // here would needlessly reconnect the SSE stream and replay the prompt
-    // event, resetting any partial answer the user has typed.
-    if (state.askUser || state.approval) return;
-    if (Date.now() - state.lastEventTime > HEARTBEAT_STALE_THRESHOLD) {
-      if (state.abortController) {
-        state.abortController._heartbeatAbort = true;
-        state.abortController.abort(HEARTBEAT_ABORT_REASON);
+    try {
+      if (!state.abortController || !state.currentStreamSessionId) {
+        stopHeartbeatMonitor();
+        return;
       }
+      // While an ask_user or approval modal is open the application event stream
+      // may be intentionally quiet while blocked waiting for user input.  A
+      // stale-heartbeat abort here would needlessly reconnect the SSE stream and
+      // replay the prompt event, resetting any partial answer the user has typed.
+      if (state.askUser || state.approval) return;
+      const staleThreshold = Math.max(
+        HEARTBEAT_STALE_THRESHOLD,
+        Number(state.abortController?._heartbeatStaleThreshold || 0) || 0
+      );
+      if (Date.now() - state.lastEventTime > staleThreshold) {
+        if (state.abortController) {
+          state.abortController._heartbeatAbort = true;
+          state.abortController.abort();
+        }
+      }
+    } catch (err) {
+      console.warn('[stream] heartbeat monitor failed', err);
     }
   }, 10000);
 };
 
 const stopHeartbeatMonitor = () => {
   if (heartbeatTimerId !== null) {
-    clearInterval(heartbeatTimerId);
+    window.clearInterval(heartbeatTimerId);
     heartbeatTimerId = null;
   }
 };
@@ -1321,17 +1370,23 @@ const resumeActiveResponseInner = async (session, responseId, options) => {
     ? createResponseStreamState(session)
     : (options.streamState || createResponseStreamState(session));
   let consecutiveHttpFailures = 0;
+  let consecutiveHeartbeatAborts = 0;
+  let retryAttempt = 0;
 
-  for (let attempt = 0; ; attempt += 1) {
+  for (;;) {
     if (session.activeResponseId !== responseId) {
       setStreaming(Boolean(state.currentStreamResponseId));
       return true;
     }
 
-    // After repeated HTTP failures, fall back to session-state polling to
-    // detect whether the run has finished while we can't reach the event stream.
-    if (consecutiveHttpFailures >= 5) {
+    // After repeated HTTP failures or stale-heartbeat reconnects, fall back to
+    // session-state polling to detect whether the run has finished while we
+    // can't reach the event stream.  The resume loop keeps recovering forever;
+    // once a connection goes bad for long enough, retryDelay slows to one
+    // attempt per minute until a stream delivers bytes again.
+    if (consecutiveHttpFailures >= 5 || consecutiveHeartbeatAborts >= 5) {
       consecutiveHttpFailures = 0;
+      consecutiveHeartbeatAborts = 0;
       setConnectionState('Checking session state\u2026');
       // Temporarily clear the abort controller so syncActiveSessionFromServer
       // can act on the server state.  The !activeRun && !state.abortController
@@ -1357,6 +1412,7 @@ const resumeActiveResponseInner = async (session, responseId, options) => {
     controller._heartbeatAbort = false;
     attachResponseStream(session, responseId, controller);
     setStreaming(true);
+    let streamActivityBaseline = Number(state.lastEventTime || 0);
 
     try {
       const response = await fetch(`${UI_PREFIX}/v1/responses/${encodeURIComponent(responseId)}/events?after=${encodeURIComponent(session.lastSequenceNumber || 0)}`, {
@@ -1366,17 +1422,19 @@ const resumeActiveResponseInner = async (session, responseId, options) => {
       if (!response.ok) {
         throw await normalizeError(response);
       }
-      // Prefer the original POST SSE stream for first-token latency and only
-    // fall back to the resumable /events endpoint if that transport cannot
-    // carry the run to completion.
-    if (!response.body) {
+      if (!response.body) {
         throw { status: 0, message: 'No response body from server.' };
       }
 
       consecutiveHttpFailures = 0;
       setConnectionState('', '');
       const streamGeneration = state.streamGeneration;
+      streamActivityBaseline = Number(state.lastEventTime || 0);
       const result = await consumeResponseStream(response.body, session, streamState, { generation: streamGeneration, responseId });
+      if (streamHadActivitySince(streamActivityBaseline)) {
+        retryAttempt = 0;
+        consecutiveHeartbeatAborts = 0;
+      }
       if (state.abortController === controller) {
         state.abortController = null;
       }
@@ -1398,16 +1456,28 @@ const resumeActiveResponseInner = async (session, responseId, options) => {
         state.abortController = null;
       }
 
-      if (err?.name === 'AbortError') {
+      const sawStreamActivity = streamHadActivitySince(streamActivityBaseline);
+      if (sawStreamActivity) {
+        retryAttempt = 0;
+        consecutiveHttpFailures = 0;
+        consecutiveHeartbeatAborts = 0;
+      }
+
+      const controllerAborted = Boolean(controller.signal?.aborted || err?.name === 'AbortError');
+      if (controllerAborted) {
         // Only retry if this was a heartbeat-triggered abort.
         // Intentional detach/session-switch aborts should exit immediately.
         if (!controller._heartbeatAbort) {
           setStreaming(Boolean(state.currentStreamResponseId));
           return false;
         }
-        // Heartbeat abort: fall through to retry
+        // Heartbeat abort: fall through to retry without counting this as an
+        // HTTP failure.  Some browsers reject aborted fetches with the custom
+        // abort reason instead of a DOMException, so key off the controller.
+        consecutiveHeartbeatAborts += 1;
       } else {
         consecutiveHttpFailures += 1;
+        consecutiveHeartbeatAborts = 0;
       }
       if (err?.status === 401) {
         handleAuthFailure();
@@ -1449,12 +1519,14 @@ const resumeActiveResponseInner = async (session, responseId, options) => {
       }
     }
 
-    setConnectionState(attempt < 3 ? 'Reconnecting\u2026' : `Reconnecting (attempt ${attempt + 1})\u2026`);
+    setConnectionState(streamReconnectLabel(retryAttempt));
     if (session.activeResponseId !== responseId) {
       setStreaming(Boolean(state.currentStreamResponseId));
       return true;
     }
-    await sleep(Math.min(1000 * Math.pow(1.5, Math.min(attempt, 6)), 8000));
+    const retryDelay = streamReconnectDelay(retryAttempt);
+    retryAttempt += 1;
+    await sleep(retryDelay);
   }
 };
 
@@ -3700,6 +3772,8 @@ const sendMessage = async (options = {}) => {
   }
 
   let session = getActiveSession();
+  const heartbeatPostRetryCount = Math.max(0, Number(options._heartbeatPostRetry || 0));
+  const retryingHeartbeatPost = heartbeatPostRetryCount > 0 && typeof options.reuseMessageId === 'string';
   const progressEntry = session ? state.sessionProgressById?.[session.id] : null;
   const ownsLiveStream = Boolean(
     session
@@ -3711,7 +3785,7 @@ const sendMessage = async (options = {}) => {
     && !state.draftSessionActive
     && (session.activeResponseId || progressEntry?.serverActiveRun || ownsLiveStream)
   );
-  if (activeSessionBusy) {
+  if (activeSessionBusy && !retryingHeartbeatPost) {
     const pendingMessageId = generateId('msg');
     let requestAttachmentParts = [];
     if (pendingAttachments.length > 0) {
@@ -3773,6 +3847,7 @@ const sendMessage = async (options = {}) => {
   }
 
   const controller = new AbortController();
+  controller._heartbeatAbort = false;
   let requestAttachmentParts = [];
   if (pendingAttachments.length > 0) {
     try {
@@ -3941,12 +4016,15 @@ const sendMessage = async (options = {}) => {
     const headers = requestHeaders(session.id);
     headers['Idempotency-Key'] = userMessage.id;
     headers['X-Term-LLM-Request-ID'] = userMessage.id;
+    const requestBody = JSON.stringify(body);
+    controller._heartbeatStaleThreshold = heartbeatUploadGraceThreshold(requestBody);
     let response = await fetch(`${UI_PREFIX}/v1/responses`, {
       method: 'POST',
       headers,
-      body: JSON.stringify(body),
+      body: requestBody,
       signal: controller.signal
     });
+    controller._heartbeatStaleThreshold = HEARTBEAT_STALE_THRESHOLD;
     const headerResponseId = String(response.headers.get('x-response-id') || '').trim();
     const headerSessionNumber = Number(response.headers.get('x-session-number') || 0);
     if (headerSessionNumber > 0 && session.number !== headerSessionNumber) {
@@ -3956,6 +4034,7 @@ const sendMessage = async (options = {}) => {
     if (!response.ok) {
       throw await normalizeError(response);
     }
+    setConnectionState('', '');
     clearDraftMessageForSession(session.id);
     if (wasDraftSessionSend) {
       clearDraftMessageForSession('');
@@ -3993,7 +4072,8 @@ const sendMessage = async (options = {}) => {
     streamState.closeToolGroup();
     markToolGroupsDone(session);
 
-    if (err?.name === 'AbortError') {
+    const controllerAborted = Boolean(controller.signal?.aborted || err?.name === 'AbortError');
+    if (controllerAborted && !controller._heartbeatAbort) {
       persistAndRefreshShell();
       return;
     }
@@ -4002,6 +4082,41 @@ const sendMessage = async (options = {}) => {
     // touch DOM or streaming state for this session.
     if (sendGeneration !== state.streamGeneration) {
       return;
+    }
+
+    const retryPreResponsePost = async () => {
+      const retryCount = heartbeatPostRetryCount;
+      const retryOptions = {
+        ...options,
+        prompt,
+        _heartbeatPostRetry: retryCount + 1,
+        reuseMessageId: userMessage.id
+      };
+      if (Array.isArray(userMessage.attachments) && userMessage.attachments.length > 0) {
+        retryOptions.attachments = userMessage.attachments.map(cloneAttachmentForMessage);
+      }
+      if (state.abortController === controller) {
+        state.abortController = null;
+      }
+      detachResponseStream();
+      attachResponseStream(session, '', null);
+      setSessionOptimisticBusy(session, true);
+      setStreaming(true);
+      setConnectionState(streamReconnectLabel(retryCount));
+      const retryGeneration = state.streamGeneration;
+      await sleep(streamReconnectDelay(retryCount));
+      if (state.streamGeneration !== retryGeneration || state.activeSessionId !== session.id) {
+        persistAndRefreshShell();
+        return;
+      }
+      return sendMessage(retryOptions);
+    };
+
+    if (!session.activeResponseId && (
+      (controllerAborted && controller._heartbeatAbort)
+      || isTransientPreResponsePostError(err)
+    )) {
+      return retryPreResponsePost();
     }
 
     const lastAssistant = session.messages.findLast(m => m.role === 'assistant');

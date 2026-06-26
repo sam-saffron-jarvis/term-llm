@@ -11,7 +11,7 @@ const {
   autoGrowPrompt, updateVoiceUI, toggleVoiceRecording, fetchProviders, fetchModels, addErrorMessage, sendMessage, openSidebar, closeSidebar, closeSidebarIfMobile,
   connectToken, submitAskUserModal, cancelActiveResponse, handleFiles, noteUserScrollIntent, noteScrollPositionChanged, shouldDisableAutoScrollForKey,
   openApprovalModal, closeApprovalModal, submitApprovalModal, registerServiceWorker, subscribeToPush, refreshNotificationUI,
-  requestNotificationPermission, shouldAutoSubscribeToPush, detachResponseStream, HEARTBEAT_STALE_THRESHOLD, HEARTBEAT_ABORT_REASON,
+  requestNotificationPermission, shouldAutoSubscribeToPush, detachResponseStream, HEARTBEAT_STALE_THRESHOLD,
   applyDesktopSidebarState, toggleSidebarCollapsed, flushStreamPersistence, requestHeaders, normalizeError, discardPendingAttachments,
   updateSidebarStatus, sessionHasInProgressState, hasAnySessionInProgressState, setSessionServerActiveRun, setSessionOptimisticBusy,
   moveSessionProgressState, requeueUncommittedInterrupts, drainInterruptQueueIfIdle, requeuePendingInterjections,
@@ -2694,7 +2694,7 @@ document.addEventListener('visibilitychange', async () => {
   }
   if (state.abortController && state.lastEventTime > 0 && Date.now() - state.lastEventTime > HEARTBEAT_STALE_THRESHOLD) {
     state.abortController._heartbeatAbort = true;
-    state.abortController.abort(HEARTBEAT_ABORT_REASON); // triggers retry in resumeActiveResponse
+    state.abortController.abort(); // triggers retry in resumeActiveResponse
     return;
   }
   if (!state.streaming && !state.abortController) {
@@ -2712,9 +2712,9 @@ window.addEventListener('online', async () => {
   if (!session) return;
   if (session.activeResponseId && state.abortController) {
     // Abort the stale fetch so the existing resume loop reconnects immediately
-    // instead of waiting for the 45s heartbeat timeout.
+    // instead of waiting for the heartbeat timeout.
     state.abortController._heartbeatAbort = true;
-    state.abortController.abort(HEARTBEAT_ABORT_REASON);
+    state.abortController.abort();
   } else if (session.activeResponseId && !state.abortController) {
     setConnectionState('Network restored, reconnecting\u2026');
     setStreaming(true);
