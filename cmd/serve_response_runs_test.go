@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/session"
 )
 
 func TestEncodeTextDeltaPayloadMatchesJSONMarshalForInvalidUTF8(t *testing.T) {
@@ -29,6 +30,75 @@ func TestEncodeTextDeltaPayloadMatchesJSONMarshalForInvalidUTF8(t *testing.T) {
 	}
 	if got["output_index"] != float64(2) || got["sequence_number"] != float64(7) {
 		t.Fatalf("payload = %#v, want output_index=2 sequence_number=7", got)
+	}
+}
+
+type fixedLatestVisibleMessageIDStore struct {
+	session.NoopStore
+	msgID int64
+}
+
+func (s *fixedLatestVisibleMessageIDStore) GetLatestVisibleMessageID(ctx context.Context, sessionID string) (int64, error) {
+	return s.msgID, nil
+}
+
+type blockingLatestVisibleMessageIDStore struct {
+	session.NoopStore
+	call func(context.Context)
+}
+
+func (s *blockingLatestVisibleMessageIDStore) GetLatestVisibleMessageID(ctx context.Context, sessionID string) (int64, error) {
+	if s.call != nil {
+		s.call(ctx)
+	}
+	<-ctx.Done()
+	return 0, ctx.Err()
+}
+
+func TestCompletedResponseIDForSessionUsesDurableIDWhenLookupSucceeds(t *testing.T) {
+	t.Parallel()
+
+	server := &serveServer{store: &fixedLatestVisibleMessageIDStore{msgID: 42}}
+	got := server.completedResponseIDForSessionWithin(context.Background(), "sess_test", "resp_ephemeral", time.Second)
+	want := durableResponseIDForMessageID(42)
+	if got != want {
+		t.Fatalf("completedResponseIDForSessionWithin() = %q, want %q", got, want)
+	}
+}
+
+func TestCompletedResponseIDForSessionFallsBackAfterBoundedLookup(t *testing.T) {
+	t.Parallel()
+
+	type ctxKey struct{}
+
+	var sawLiveCtx bool
+	var sawValue bool
+	server := &serveServer{store: &blockingLatestVisibleMessageIDStore{call: func(ctx context.Context) {
+		sawLiveCtx = ctx.Err() == nil
+		sawValue = ctx.Value(ctxKey{}) == "trace-123"
+	}}}
+
+	parentCtx, cancel := context.WithCancel(context.WithValue(context.Background(), ctxKey{}, "trace-123"))
+	cancel()
+
+	start := time.Now()
+	got := server.completedResponseIDForSessionWithin(parentCtx, "sess_test", "resp_ephemeral", 20*time.Millisecond)
+	elapsed := time.Since(start)
+
+	if got != "resp_ephemeral" {
+		t.Fatalf("completedResponseIDForSessionWithin() = %q, want fallback response id", got)
+	}
+	if !sawLiveCtx {
+		t.Fatal("durable lookup did not receive a live best-effort context")
+	}
+	if !sawValue {
+		t.Fatal("durable lookup did not preserve parent context values")
+	}
+	if elapsed < 10*time.Millisecond {
+		t.Fatalf("durable lookup returned too quickly (%v), want timeout-bounded best-effort lookup", elapsed)
+	}
+	if elapsed > 500*time.Millisecond {
+		t.Fatalf("durable lookup took too long (%v), want bounded fallback", elapsed)
 	}
 }
 

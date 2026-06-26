@@ -18,6 +18,8 @@ import (
 	"github.com/samsaffron/term-llm/internal/tools"
 )
 
+const responseCompletionDurableLookupTimeout = 5 * time.Second
+
 type responseRunEvent struct {
 	Sequence int64
 	Event    string
@@ -1757,6 +1759,25 @@ func (s *serveServer) streamResponseRunEvents(ctx context.Context, w http.Respon
 	}
 }
 
+func (s *serveServer) completedResponseIDForSessionWithin(ctx context.Context, sessionID, fallbackID string, timeout time.Duration) string {
+	if fallbackID == "" || sessionID == "" {
+		return fallbackID
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	lookupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), timeout)
+	defer cancel()
+	if durableID := s.latestDurableResponseIDForSession(lookupCtx, sessionID); durableID != "" {
+		return durableID
+	}
+	return fallbackID
+}
+
+func (s *serveServer) completedResponseIDForSession(ctx context.Context, sessionID, fallbackID string) string {
+	return s.completedResponseIDForSessionWithin(ctx, sessionID, fallbackID, responseCompletionDurableLookupTimeout)
+}
+
 func (s *serveServer) startResponseRun(runtime *serveRuntime, stateful bool, replaceHistory bool, inputMessages []llm.Message, llmReq llm.Request, sessionID string, options startResponseRunOptions) (*responseRun, error) {
 	mgr := s.ensureResponseRuns()
 
@@ -1910,11 +1931,7 @@ func (s *serveServer) startResponseRun(runtime *serveRuntime, stateful bool, rep
 		if options.resetResponseIDsOnSuccess {
 			s.unregisterSessionResponseIDs(sessionID)
 		}
-		durableID := s.latestDurableResponseIDForSession(context.Background(), sessionID)
-		completedID := respID
-		if durableID != "" {
-			completedID = durableID
-		}
+		completedID := s.completedResponseIDForSession(runCtx, sessionID, respID)
 		if completedID != respID {
 			s.registerResponseID(runtime, respID, sessionID)
 		}
