@@ -63,6 +63,33 @@ func persistCompactionTailHints(ctx context.Context, store Store, sess *Session,
 	}
 }
 
+// LoadInitialScrollbackWithBoundary loads the messages needed for the first UI
+// paint while also returning the index where active LLM context begins. For
+// compacted sessions it loads only rows at/after the persisted boundary so long
+// resumes avoid an eager full-transcript read; callers may load older display
+// history lazily if needed.
+func LoadInitialScrollbackWithBoundary(ctx context.Context, store Store, sess *Session) ([]Message, int, error) {
+	if store == nil || sess == nil {
+		return nil, 0, nil
+	}
+	if !HasCompactionBoundary(sess) {
+		return LoadScrollbackWithBoundary(ctx, store, sess)
+	}
+	messages, err := store.GetMessagesFrom(ctx, sess.ID, sess.CompactionSeq, 0)
+	if err != nil {
+		return nil, 0, err
+	}
+	if len(messages) > 0 {
+		var persistedTailIDs []int64
+		messages, persistedTailIDs = markCompactionDisplayTailsForPersistence(messages)
+		persistCompactionTailHints(ctx, store, sess, persistedTailIDs)
+		return messages, 0, nil
+	}
+	// Stale boundary: fall back to the full scrollback path so the UI and model do
+	// not start from an empty transcript.
+	return LoadScrollbackWithBoundary(ctx, store, sess)
+}
+
 // LoadScrollbackWithBoundary loads all persisted messages for display while
 // also returning the index where active LLM context begins.
 func LoadScrollbackWithBoundary(ctx context.Context, store Store, sess *Session) ([]Message, int, error) {

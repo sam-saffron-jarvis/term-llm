@@ -77,9 +77,12 @@ type Model struct {
 	sess          *session.Session  // Current session
 	messages      []session.Message // In-memory messages for current session
 	compactionIdx int               // Prefix length to skip for LLM context; 0 means no prefix is skipped.
-	messagesMu    sync.Mutex        // Protects messages from concurrent compaction callback
-	streaming     bool
-	phase         string // "Thinking", "Searching", "Reading", "Responding"
+	// olderScrollbackLoaded is false when a compacted resume initially loaded only
+	// the active tail; scrolling upward can hydrate the older display prefix once.
+	olderScrollbackLoaded bool
+	messagesMu            sync.Mutex // Protects messages from concurrent compaction callback
+	streaming             bool
+	phase                 string // "Thinking", "Searching", "Reading", "Responding"
 
 	// Reasoning display/status state. Provider replay metadata is persisted in
 	// assistant parts by the LLM engine; these fields only affect live UI policy.
@@ -511,6 +514,10 @@ func loadSessionMessagesForScrollback(ctx context.Context, store session.Store, 
 	return session.LoadScrollbackWithBoundary(ctx, store, sess)
 }
 
+func loadInitialSessionMessagesForScrollback(ctx context.Context, store session.Store, sess *session.Session) ([]session.Message, int, error) {
+	return session.LoadInitialScrollbackWithBoundary(ctx, store, sess)
+}
+
 func (m *Model) refreshSessionFromStore(ctx context.Context) error {
 	if m.store == nil || m.sess == nil {
 		return nil
@@ -550,6 +557,30 @@ func (m *Model) reloadMessagesFromStore(ctx context.Context) error {
 	m.messagesMu.Unlock()
 	m.invalidateHistoryCache()
 	return nil
+}
+
+func (m *Model) loadOlderScrollbackPrefix(ctx context.Context) {
+	if m == nil || m.store == nil || m.sess == nil || m.olderScrollbackLoaded || !session.HasCompactionBoundary(m.sess) {
+		return
+	}
+	// Streaming turns keep in-flight assistant state in m.messages while store
+	// callbacks are still assigning IDs/updating rows. Do not replace that slice
+	// with a persisted snapshot mid-stream; hydrate older display history after the
+	// stream completes or on a later scroll.
+	if m.streaming {
+		return
+	}
+	loadedMsgs, compactionIdx, err := loadSessionMessagesForScrollback(ctx, m.store, m.sess)
+	if err != nil || len(loadedMsgs) == 0 || compactionIdx <= 0 {
+		m.olderScrollbackLoaded = true
+		return
+	}
+	m.messagesMu.Lock()
+	m.messages = loadedMsgs
+	m.compactionIdx = compactionIdx
+	m.messagesMu.Unlock()
+	m.olderScrollbackLoaded = true
+	m.invalidateHistoryCache()
 }
 
 // New creates a new chat model.
@@ -649,7 +680,7 @@ func NewWithFastProvider(cfg *config.Config, provider llm.Provider, fastProvider
 	var messages []session.Message
 	var compactionIdx int
 	if store != nil && sess.ID != "" {
-		if loadedMsgs, idx, err := loadSessionMessagesForScrollback(context.Background(), store, sess); err == nil {
+		if loadedMsgs, idx, err := loadInitialSessionMessagesForScrollback(context.Background(), store, sess); err == nil {
 			messages = loadedMsgs
 			compactionIdx = idx
 		}
@@ -740,6 +771,7 @@ func NewWithFastProvider(cfg *config.Config, provider llm.Provider, fastProvider
 		sess:                       sess,
 		messages:                   messages,
 		compactionIdx:              compactionIdx,
+		olderScrollbackLoaded:      !session.HasCompactionBoundary(sess) || compactionIdx > 0,
 		rootCtx:                    context.Background(),
 		provider:                   provider,
 		fastProvider:               fastProvider,
@@ -1501,6 +1533,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Do not let horizontal wheel/shift-wheel gestures modify the viewport's
 		// hidden x-offset; chat history is always rendered at column zero.
 		if m.altScreen {
+			if mouse := msg.Mouse(); mouse.Button == tea.MouseWheelUp {
+				m.loadOlderScrollbackPrefix(context.Background())
+			}
 			if isHorizontalViewportScroll(msg) {
 				m.resetViewportHorizontalOffset()
 				return m, nil
@@ -2344,6 +2379,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.messages = msg.messages
 			m.seedStatsFromSession()
 			m.configureContextManagementForSession()
+			m.olderScrollbackLoaded = true
 			m.invalidateHistoryCache()
 			m.scrollOffset = 0
 			if m.store != nil {

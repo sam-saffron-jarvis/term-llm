@@ -119,6 +119,57 @@ func TestLoadActiveMessagesUsesFullHistoryWithoutBoundary(t *testing.T) {
 	}
 }
 
+type initialScrollbackCountingStore struct {
+	*SQLiteStore
+	getMessagesCalls     int
+	getMessagesFromCalls int
+}
+
+func (s *initialScrollbackCountingStore) GetMessages(ctx context.Context, sessionID string, limit, offset int) ([]Message, error) {
+	s.getMessagesCalls++
+	return s.SQLiteStore.GetMessages(ctx, sessionID, limit, offset)
+}
+
+func (s *initialScrollbackCountingStore) GetMessagesFrom(ctx context.Context, sessionID string, fromSeq, limit int) ([]Message, error) {
+	s.getMessagesFromCalls++
+	return s.SQLiteStore.GetMessagesFrom(ctx, sessionID, fromSeq, limit)
+}
+
+func TestLoadInitialScrollbackWithBoundaryStartsAtCompactionSeq(t *testing.T) {
+	ctx := context.Background()
+	sqliteStore, err := NewSQLiteStore(Config{Enabled: true, Path: ":memory:"})
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	t.Cleanup(func() { _ = sqliteStore.Close() })
+	store := &initialScrollbackCountingStore{SQLiteStore: sqliteStore}
+	sess := seedContextStateSession(t, ctx, store)
+	if err := store.CompactMessages(ctx, sess.ID, []Message{*NewMessage(sess.ID, llm.UserText("summary"), -1)}); err != nil {
+		t.Fatalf("CompactMessages: %v", err)
+	}
+	refreshed, err := store.Get(ctx, sess.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+
+	initial, idx, err := LoadInitialScrollbackWithBoundary(ctx, store, refreshed)
+	if err != nil {
+		t.Fatalf("LoadInitialScrollbackWithBoundary: %v", err)
+	}
+	if idx != 0 {
+		t.Fatalf("idx = %d, want 0 for compacted initial tail", idx)
+	}
+	if len(initial) != 1 || initial[0].Sequence < refreshed.CompactionSeq || initial[0].TextContent != "summary" {
+		t.Fatalf("initial messages = %#v, want post-compaction tail only", initial)
+	}
+	if store.getMessagesFromCalls != 1 {
+		t.Fatalf("GetMessagesFrom calls = %d, want 1", store.getMessagesFromCalls)
+	}
+	if store.getMessagesCalls != 0 {
+		t.Fatalf("GetMessages calls = %d, want 0", store.getMessagesCalls)
+	}
+}
+
 func TestLoadScrollbackWithBoundary(t *testing.T) {
 	ctx := context.Background()
 	store := newContextStateTestStore(t)
