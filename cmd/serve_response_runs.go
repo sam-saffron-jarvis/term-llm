@@ -1648,6 +1648,9 @@ func (s *serveServer) streamResponseRunEvents(ctx context.Context, w http.Respon
 		writeOpenAIError(w, http.StatusInternalServerError, "server_error", "streaming not supported")
 		return
 	}
+	streamWriter := newStreamingResponseWriter(w, serveStreamingWriteTimeout)
+	w = streamWriter
+	flusher = streamWriter
 
 	setSSEHeaders(w)
 	flusher.Flush()

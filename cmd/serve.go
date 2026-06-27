@@ -1105,6 +1105,12 @@ type serveServer struct {
 	fileTrackStoreFn     func() *filetrack.Store // test seam; nil → process-wide store from config
 }
 
+const (
+	serveReadHeaderTimeout     = 5 * time.Second
+	serveIdleTimeout           = 2 * time.Minute
+	serveStreamingWriteTimeout = 30 * time.Second
+)
+
 // fileTrackStore returns the file-change history store, or nil when file
 // tracking is disabled.
 func (s *serveServer) fileTrackStore() *filetrack.Store {
@@ -1114,13 +1120,21 @@ func (s *serveServer) fileTrackStore() *filetrack.Store {
 	return fileTrackingStore(s.cfgRef)
 }
 
+func (s *serveServer) newHTTPServer() *http.Server {
+	return &http.Server{
+		Addr:              fmt.Sprintf("%s:%d", s.cfg.host, s.cfg.port),
+		Handler:           s.httpHandler(),
+		ReadHeaderTimeout: serveReadHeaderTimeout,
+		IdleTimeout:       serveIdleTimeout,
+		// Leave WriteTimeout at zero: several endpoints stream for minutes or
+		// longer, so they use per-write deadlines on the ResponseWriter instead.
+	}
+}
+
 func (s *serveServer) Start() error {
 	s.shutdownCh = make(chan struct{})
 	s.shutdownOnce = sync.Once{}
-	s.server = &http.Server{
-		Addr:    fmt.Sprintf("%s:%d", s.cfg.host, s.cfg.port),
-		Handler: s.httpHandler(),
-	}
+	s.server = s.newHTTPServer()
 
 	if s.cfg.ui {
 		s.prewarmUIAssetCache()

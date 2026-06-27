@@ -8,11 +8,13 @@ import (
 	"image"
 	"image/color"
 	"image/jpeg"
+	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/samsaffron/term-llm/internal/session"
 )
@@ -45,6 +47,81 @@ func TestSetSessionNumberHeader(t *testing.T) {
 	setSessionNumberHeader(recorder, &serveRuntime{sessionMeta: &session.Session{Number: 42}})
 	if got := recorder.Header().Get("x-session-number"); got != "42" {
 		t.Fatalf("x-session-number = %q, want 42", got)
+	}
+}
+
+type streamingDeadlineRecorder struct {
+	header    http.Header
+	body      bytes.Buffer
+	deadlines []time.Time
+	flushes   int
+}
+
+func (r *streamingDeadlineRecorder) Header() http.Header {
+	if r.header == nil {
+		r.header = make(http.Header)
+	}
+	return r.header
+}
+
+func (r *streamingDeadlineRecorder) Write(b []byte) (int, error) {
+	return r.body.Write(b)
+}
+
+func (r *streamingDeadlineRecorder) WriteHeader(statusCode int) {}
+
+func (r *streamingDeadlineRecorder) Flush() {
+	r.flushes++
+}
+
+func (r *streamingDeadlineRecorder) SetWriteDeadline(deadline time.Time) error {
+	r.deadlines = append(r.deadlines, deadline)
+	return nil
+}
+
+func TestStreamingResponseWriterSetsAndClearsWriteDeadline(t *testing.T) {
+	recorder := &streamingDeadlineRecorder{}
+	w := newStreamingResponseWriter(recorder, 3*time.Second)
+
+	if _, err := w.Write([]byte("hello")); err != nil {
+		t.Fatalf("Write() error = %v", err)
+	}
+	w.Flush()
+
+	if got := recorder.body.String(); got != "hello" {
+		t.Fatalf("body = %q, want hello", got)
+	}
+	if recorder.flushes != 1 {
+		t.Fatalf("flushes = %d, want 1", recorder.flushes)
+	}
+	if len(recorder.deadlines) != 4 {
+		t.Fatalf("deadline calls = %d, want 4", len(recorder.deadlines))
+	}
+	if recorder.deadlines[0].IsZero() {
+		t.Fatal("first deadline was not set")
+	}
+	if !recorder.deadlines[1].IsZero() {
+		t.Fatal("second deadline was not cleared")
+	}
+	if recorder.deadlines[2].IsZero() {
+		t.Fatal("third deadline was not set")
+	}
+	if !recorder.deadlines[3].IsZero() {
+		t.Fatal("fourth deadline was not cleared")
+	}
+}
+
+func TestStreamingResponseWriterIgnoresUnsupportedDeadline(t *testing.T) {
+	recorder := httptest.NewRecorder()
+	w := newStreamingResponseWriter(recorder, 3*time.Second)
+
+	if _, err := w.Write([]byte("ok")); err != nil {
+		t.Fatalf("Write() error = %v", err)
+	}
+	w.Flush()
+
+	if got := recorder.Body.String(); got != "ok" {
+		t.Fatalf("body = %q, want ok", got)
 	}
 }
 

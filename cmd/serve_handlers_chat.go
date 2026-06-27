@@ -164,6 +164,9 @@ func (s *serveServer) streamChatCompletions(ctx context.Context, w http.Response
 		writeOpenAIError(w, http.StatusInternalServerError, "server_error", "streaming not supported")
 		return
 	}
+	streamWriter := newStreamingResponseWriter(w, serveStreamingWriteTimeout)
+	w = streamWriter
+	flusher = streamWriter
 
 	setSSEHeaders(w)
 	flusher.Flush()

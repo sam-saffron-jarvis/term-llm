@@ -245,6 +245,24 @@ func TestServeServerStopIsIdempotent(t *testing.T) {
 	}
 }
 
+func TestServeServerNewHTTPServerSetsTimeouts(t *testing.T) {
+	s := &serveServer{cfg: serveServerConfig{host: "127.0.0.1", port: 8080}}
+	server := s.newHTTPServer()
+
+	if server == nil {
+		t.Fatal("newHTTPServer() = nil")
+	}
+	if got := server.ReadHeaderTimeout; got != serveReadHeaderTimeout {
+		t.Fatalf("ReadHeaderTimeout = %v, want %v", got, serveReadHeaderTimeout)
+	}
+	if got := server.IdleTimeout; got != serveIdleTimeout {
+		t.Fatalf("IdleTimeout = %v, want %v", got, serveIdleTimeout)
+	}
+	if got := server.WriteTimeout; got != 0 {
+		t.Fatalf("WriteTimeout = %v, want 0 for streaming endpoints", got)
+	}
+}
+
 func readSSEEvent(t *testing.T, scanner *bufio.Scanner) (string, string, bool) {
 	t.Helper()
 

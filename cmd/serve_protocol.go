@@ -8,6 +8,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"mime"
@@ -48,6 +49,54 @@ func setSSEHeaders(w http.ResponseWriter) {
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
 	w.Header().Set("X-Accel-Buffering", "no")
+}
+
+// streamingResponseWriter bounds each blocking Write/Flush call without putting
+// a lifetime cap on the entire streaming response.
+type streamingResponseWriter struct {
+	http.ResponseWriter
+	writeTimeout time.Duration
+}
+
+func newStreamingResponseWriter(w http.ResponseWriter, writeTimeout time.Duration) *streamingResponseWriter {
+	return &streamingResponseWriter{ResponseWriter: w, writeTimeout: writeTimeout}
+}
+
+func (w *streamingResponseWriter) Write(b []byte) (int, error) {
+	if err := w.setWriteDeadline(); err != nil {
+		return 0, err
+	}
+	defer w.clearWriteDeadline()
+	return w.ResponseWriter.Write(b)
+}
+
+func (w *streamingResponseWriter) Flush() {
+	if err := w.setWriteDeadline(); err != nil {
+		return
+	}
+	defer w.clearWriteDeadline()
+	w.ResponseWriter.(http.Flusher).Flush()
+}
+
+func (w *streamingResponseWriter) setWriteDeadline() error {
+	if w.writeTimeout <= 0 {
+		return nil
+	}
+	err := http.NewResponseController(w.ResponseWriter).SetWriteDeadline(time.Now().Add(w.writeTimeout))
+	if err == nil || errors.Is(err, http.ErrNotSupported) {
+		return nil
+	}
+	return fmt.Errorf("set streaming write deadline: %w", err)
+}
+
+func (w *streamingResponseWriter) clearWriteDeadline() {
+	if w.writeTimeout <= 0 {
+		return
+	}
+	err := http.NewResponseController(w.ResponseWriter).SetWriteDeadline(time.Time{})
+	if err != nil && !errors.Is(err, http.ErrNotSupported) {
+		return
+	}
 }
 
 func writeSSEEvent(w io.Writer, event string, payload any) error {

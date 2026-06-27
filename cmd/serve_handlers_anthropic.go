@@ -185,6 +185,9 @@ func (s *serveServer) streamAnthropicMessages(ctx context.Context, w http.Respon
 		writeAnthropicError(w, http.StatusInternalServerError, "api_error", "streaming not supported")
 		return
 	}
+	streamWriter := newStreamingResponseWriter(w, serveStreamingWriteTimeout)
+	w = streamWriter
+	flusher = streamWriter
 
 	setSSEHeaders(w)
 	flusher.Flush()
