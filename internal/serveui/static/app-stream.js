@@ -1053,7 +1053,12 @@ const applyResponseStreamEvent = (session, streamState, event, payload) => {
   if (event === 'response.cancelled') {
     streamState.closeToolGroup();
     markToolGroupsDone(session);
-    requeuePendingInterjections(session);
+    if (state.expectCanceledRun) {
+      discardPendingInterruptStateForSession(session);
+      state.expectCanceledRun = false;
+    } else {
+      requeuePendingInterjections(session);
+    }
     clearTerminalPendingEffort(session);
     clearActiveResponseTracking(session, session.activeResponseId || state.currentStreamResponseId);
     setSessionOptimisticBusy(session, false);
@@ -1090,7 +1095,11 @@ const applyResponseStreamEvent = (session, streamState, event, payload) => {
 
     streamState.closeToolGroup();
     markToolGroupsDone(session);
-    requeuePendingInterjections(session);
+    if (canceledByInterrupt) {
+      discardPendingInterruptStateForSession(session);
+    } else {
+      requeuePendingInterjections(session);
+    }
     clearTerminalPendingEffort(session);
     clearActiveResponseTracking(session, session.activeResponseId || state.currentStreamResponseId);
     setSessionOptimisticBusy(session, false);
@@ -3654,6 +3663,13 @@ const consumePendingInterjectionByText = (sessionId, text) => {
   return entry;
 };
 
+const discardPendingInterruptStateForSession = (session) => {
+  if (!session?.id) return;
+  state.pendingInterjections = state.pendingInterjections.filter(entry => entry.sessionId !== session.id);
+  state.pendingInterruptCommits = state.pendingInterruptCommits.filter(entry => entry.sessionId !== session.id);
+  refreshPendingInterjectionBanner();
+};
+
 const requeuePendingInterjections = (session) => {
   if (!session?.id) return;
   const remaining = [];
@@ -4352,6 +4368,7 @@ Object.assign(app, {
   consumePendingInterjectionByText,
   refreshPendingInterjectionBanner,
   requeuePendingInterjections,
+  discardPendingInterruptStateForSession,
   interruptActiveRun,
   recoverInterruptFailure,
   recoverInterruptConflict,

@@ -3346,6 +3346,61 @@ async function testInterjectQueuedShowsPendingBadgeThenInjectedOnCommit() {
   pass(name);
 }
 
+async function testUserCancelDiscardsPendingInterjectionStateButPreservesFollowUpQueue() {
+  const name = 'user cancel discards pending interjection state but preserves queued follow-up';
+  const harness = createHarness();
+  const { app, state, cleanup } = harness;
+
+  const session = {
+    id: 'session_cancel_preserve_followup',
+    title: 'Cancel preserve follow-up',
+    messages: [],
+    activeResponseId: 'resp_cancel_preserve_followup',
+    lastSequenceNumber: 0,
+    number: 1,
+  };
+  state.sessions.push(session);
+  state.activeSessionId = session.id;
+  state.expectCanceledRun = true;
+  state.pendingInterjections = [
+    { sessionId: session.id, prompt: 'switch to x', messageId: 'msg_cancel', action: 'cancel' },
+  ];
+  state.pendingInterruptCommits = [
+    { sessionId: session.id, prompt: 'switch to x', messageId: 'msg_cancel' },
+  ];
+  state.queuedInterrupts = [
+    { sessionId: session.id, prompt: 'switch to x', messageId: 'msg_cancel', attachments: [] },
+  ];
+
+  const streamState = app.createResponseStreamState(session);
+  app.applyResponseStreamEvent(session, streamState, 'response.cancelled', {
+    response: { id: 'resp_cancel_preserve_followup', status: 'cancelled' },
+    sequence_number: 5,
+  });
+
+  if (state.pendingInterjections.length !== 0 || state.pendingInterruptCommits.length !== 0) {
+    fail(name, 'pending interjection tracking should be cleared after user cancel', JSON.stringify({
+      pendingInterjections: state.pendingInterjections,
+      pendingInterruptCommits: state.pendingInterruptCommits,
+    }));
+    await cleanup();
+    return;
+  }
+  if (state.queuedInterrupts.length !== 1 || state.queuedInterrupts[0].messageId !== 'msg_cancel') {
+    fail(name, 'queued follow-up should survive cancellation terminal event', JSON.stringify(state.queuedInterrupts));
+    await cleanup();
+    return;
+  }
+  if (state.expectCanceledRun) {
+    fail(name, 'expectCanceledRun should be reset after cancellation terminal event');
+    await cleanup();
+    return;
+  }
+
+  await cleanup();
+  pass(name);
+}
+
 async function testRecoverInterruptConflictQueuesWhenRunStillActive() {
   const name = 'recoverInterruptConflict queues follow-up when server still reports active run';
   const harness = createHarness();
@@ -4841,6 +4896,7 @@ function testCompletedResponseClearsUnappliedQueuedEffort() {
   await testCommittedInterjectionWithRealIdClearsStaleSyntheticPending();
   await testCommittedInterjectionReusesOptimisticMessageEvenWhenPendingTrackedUnderServerId();
   await testInterjectQueuedShowsPendingBadgeThenInjectedOnCommit();
+  await testUserCancelDiscardsPendingInterjectionStateButPreservesFollowUpQueue();
   await testRunCompletesWithoutInterjectionQueuesOrphan();
   await testRecoverInterruptConflictQueuesWhenRunStillActive();
   await testRecoverInterruptConflictClearsPendingWhenRunFinished();

@@ -8515,7 +8515,34 @@ func TestResponsesCompletedRunExpiresAfterRetention(t *testing.T) {
 	}
 }
 
-func TestHandleResponseByID_CancelIsIdempotentWhileRunInProgress(t *testing.T) {
+func TestHandleResponseCancelDiscardsPendingInterjections(t *testing.T) {
+	mgr := newServeSessionManager(time.Minute, 10, nil)
+	defer mgr.Close()
+
+	engine := llm.NewEngine(llm.NewMockProvider("mock"), nil)
+	engine.QueueInterjection(llm.QueuedInterjection{ID: "interject-1", Message: llm.UserText("please also do x")})
+	rt := &serveRuntime{engine: engine}
+	putTestSession(mgr, "sess-cancel-interject", rt)
+
+	runCancel := func() {}
+	run := newResponseRun("resp_cancel_interject", "sess-cancel-interject", "", "mock-model", time.Now().Unix(), runCancel)
+	srv := &serveServer{sessionMgr: mgr, responseRuns: newServeResponseRunManager()}
+	if err := srv.responseRuns.create(run); err != nil {
+		t.Fatalf("create run: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses/resp_cancel_interject/cancel", nil)
+	rr := httptest.NewRecorder()
+	srv.handleResponseByID(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("cancel status = %d, want 200 body=%s", rr.Code, rr.Body.String())
+	}
+	if got := engine.ListPendingInterjections(); len(got) != 0 {
+		t.Fatalf("pending interjections after explicit cancel = %#v, want none", got)
+	}
+}
+
+func TestHandleResponseCancelIsIdempotentWhileRunIsFinishing(t *testing.T) {
 	_, cancel := context.WithCancel(context.Background())
 	defer cancel()
 

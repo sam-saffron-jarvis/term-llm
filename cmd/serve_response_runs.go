@@ -1569,6 +1569,21 @@ func (s *serveServer) streamFailedResponseRun(ctx context.Context, w http.Respon
 	s.streamResponseRunEvents(ctx, w, run, 0)
 }
 
+func (s *serveServer) discardPendingInterjectionsForResponseRun(run *responseRun) {
+	if s == nil || s.sessionMgr == nil || run == nil {
+		return
+	}
+	sessionID := strings.TrimSpace(run.sessionID)
+	if sessionID == "" {
+		return
+	}
+	rt, ok := s.sessionMgr.Get(sessionID)
+	if !ok || rt == nil || rt.engine == nil {
+		return
+	}
+	rt.engine.DiscardPendingInterjections()
+}
+
 func (s *serveServer) handleResponseByID(w http.ResponseWriter, r *http.Request) {
 	mgr := s.ensureResponseRuns()
 
@@ -1621,6 +1636,7 @@ func (s *serveServer) handleResponseByID(w http.ResponseWriter, r *http.Request)
 			writeOpenAIError(w, http.StatusConflict, "conflict_error", "response is not running")
 			return
 		}
+		s.discardPendingInterjectionsForResponseRun(run)
 		writeJSON(w, http.StatusOK, map[string]any{
 			"id":     runID,
 			"object": "response.cancel",

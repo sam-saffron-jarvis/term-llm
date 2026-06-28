@@ -684,6 +684,19 @@ func (e *Engine) CancelInterjection(id string) bool {
 	return false
 }
 
+// DiscardPendingInterjections removes all queued, not-yet-committed
+// interjections and returns how many were discarded.
+func (e *Engine) DiscardPendingInterjections() int {
+	e.callbackMu.Lock()
+	defer e.callbackMu.Unlock()
+	count := len(e.pendingInterjections)
+	for i := range e.pendingInterjections {
+		e.pendingInterjections[i] = QueuedInterjection{}
+	}
+	e.pendingInterjections = nil
+	return count
+}
+
 // ListPendingInterjections returns a snapshot of queued, cancellable interjections.
 func (e *Engine) ListPendingInterjections() []QueuedInterjection {
 	e.callbackMu.Lock()
