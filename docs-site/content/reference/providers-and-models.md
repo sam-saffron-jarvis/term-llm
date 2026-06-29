@@ -237,6 +237,9 @@ providers:
     base_url: https://api.example.com/v1
     api_key: ${CUSTOM_API_KEY}
     model: friendly-name
+    # Optional provider-level default for all models under this provider.
+    # The target may be provider:model, or just provider to use that provider's default model.
+    vision_via: gemini
     models:
       - simple-upstream-model
       - id: upstream/model-id
@@ -248,6 +251,8 @@ providers:
         include_reasoning: true
         thinking_param: enable_thinking
         reasoning_efforts: [high, max]
+        # Optional per-model override; if omitted, provider-level vision_via is used.
+        vision_via: gemini:gemini-2.5-pro
 ```
 
 | Model object field | Description |
@@ -260,6 +265,7 @@ providers:
 | `include_reasoning` | Per-model override for the provider-level `include_reasoning` flag. |
 | `thinking_param` | Per-model override for the provider-level `thinking_param` key. Sent as `chat_template_kwargs.<thinking_param>: true` only when a non-default effort is selected. |
 | `reasoning_efforts` | Exact suffixes to expose for this model, for example `[high, max]`. The bare model/alias remains the default and sends no `reasoning_effort`. |
+| `vision_via` | Optional `provider` or `provider:model` route for indirect image understanding. Can be set at provider level (`providers.<name>.vision_via`) as the default for all models on that provider, or on an individual model object to override the provider default. If only `provider` is given, that provider's configured default `model` is used. When set, uploaded image parts are replaced with local path references for the primary model, `view_image` is auto-enabled, and that tool asks the configured vision model to return a text-only analysis. Requires the primary model to support tool calls and the vision provider credentials to be configured. |
 
 For `-p custom:friendly-name-max`, term-llm sends `model: upstream/model-id` plus `reasoning_effort: max`. If `reasoning_efforts` is empty or omitted, no effort-suffixed aliases are generated for that model.
 

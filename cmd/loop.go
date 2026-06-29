@@ -294,6 +294,7 @@ func runLoop(cmd *cobra.Command, args []string) error {
 	}
 
 	// Initialize tools
+	alignSettingsToActiveProvider(&settings, cfg, provider)
 	toolMgr, err := settings.SetupToolManager(cfg, engine)
 	if err != nil {
 		return err

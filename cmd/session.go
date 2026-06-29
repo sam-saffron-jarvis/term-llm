@@ -445,11 +445,15 @@ func agentPromptTemplateContextAndBaseDir(agent *agents.Agent, files []string) (
 // SetupToolManager creates and configures a ToolManager from settings.
 // Returns nil if no tools are enabled.
 func (s *SessionSettings) SetupToolManager(cfg *config.Config, engine *llm.Engine) (*tools.ToolManager, error) {
-	if s.Tools == "" {
+	visionTarget := indirectVisionTarget(cfg, s.Provider, s.Model)
+	if s.Tools == "" && visionTarget == "" {
 		return nil, nil
 	}
 
 	toolConfig := buildToolConfig(s.Tools, s.ReadDirs, s.WriteDirs, s.ShellAllow, cfg)
+	if visionTarget != "" {
+		toolConfig.Enabled = appendUniqueString(toolConfig.Enabled, tools.ViewImageToolName)
+	}
 	toolConfig.AgentDir = s.AgentDir
 	if s.ShellAutoRun {
 		toolConfig.ShellAutoRun = true
@@ -470,6 +474,21 @@ func (s *SessionSettings) SetupToolManager(cfg *config.Config, engine *llm.Engin
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize tools: %w", err)
 	}
+	if visionTarget != "" {
+		visionProvider, visionModel, err := newVisionProviderForTarget(cfg, visionTarget)
+		if err != nil {
+			return nil, err
+		}
+		if uploadsDir := uploadsReadDir(); uploadsDir != "" {
+			if err := toolMgr.ApprovalMgr.AddToolReadDir(tools.ViewImageToolName, uploadsDir); err != nil {
+				return nil, fmt.Errorf("allow view_image uploads directory: %w", err)
+			}
+		}
+		toolMgr.Registry.SetViewImageVisionProvider(visionProvider, visionModel)
+		if engine != nil {
+			engine.SetIndirectVision(true)
+		}
+	}
 	wireImageRecorder(toolMgr.Registry, s.AgentName, s.SessionID)
 	wireFileRecorder(toolMgr.Registry, cfg)
 
@@ -482,6 +501,82 @@ func (s *SessionSettings) SetupToolManager(cfg *config.Config, engine *llm.Engin
 
 	toolMgr.SetupEngine(engine)
 	return toolMgr, nil
+}
+
+func indirectVisionTarget(cfg *config.Config, providerName, modelName string) string {
+	if cfg == nil {
+		return ""
+	}
+	providerName = strings.TrimSpace(providerName)
+	if providerName == "" {
+		providerName = strings.TrimSpace(cfg.DefaultProvider)
+	}
+	if providerName == "" {
+		return ""
+	}
+	modelName = strings.TrimSpace(modelName)
+	if modelName == "" {
+		if pc, ok := cfg.Providers[providerName]; ok {
+			modelName = strings.TrimSpace(pc.Model)
+		}
+	}
+	return config.VisionViaForProviderModel(cfg, providerName, modelName)
+}
+
+func newVisionProviderForTarget(cfg *config.Config, target string) (llm.Provider, string, error) {
+	providerName, modelName, err := llm.ParseProviderModel(target, cfg)
+	if err != nil {
+		return nil, "", fmt.Errorf("invalid vision_via %q: %w", target, err)
+	}
+	if modelName == "" && cfg != nil {
+		if pc, ok := cfg.Providers[providerName]; ok {
+			modelName = strings.TrimSpace(pc.Model)
+		}
+	}
+	provider, err := llm.NewProviderByName(cfg, providerName, modelName)
+	if err != nil {
+		return nil, "", fmt.Errorf("initialize vision_via provider %q: %w", target, err)
+	}
+	return provider, modelName, nil
+}
+
+func uploadsReadDir() string {
+	dataDir, err := session.GetDataDir()
+	if err != nil {
+		return ""
+	}
+	dir := filepath.Join(dataDir, "uploads")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return ""
+	}
+	return dir
+}
+
+func appendUniqueString(values []string, value string) []string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return values
+	}
+	for _, existing := range values {
+		if existing == value {
+			return values
+		}
+	}
+	return append(values, value)
+}
+
+func alignSettingsToActiveProvider(settings *SessionSettings, cfg *config.Config, provider llm.Provider) {
+	if settings == nil || cfg == nil {
+		return
+	}
+	settings.Provider = strings.TrimSpace(cfg.DefaultProvider)
+	if settings.Provider == "" && provider != nil {
+		settings.Provider = strings.TrimSpace(provider.Name())
+	}
+	settings.Model = strings.TrimSpace(activeModel(cfg))
+	if settings.Model == "" && provider != nil {
+		settings.Model = strings.TrimSpace(extractModelFromProviderName(provider.Name()))
+	}
 }
 
 // WireSpawnAgentRunner sets up the spawn_agent runner if the tool is enabled.
@@ -518,10 +613,11 @@ func sessionStoreConfig(cfg *config.Config) session.Config {
 		path = cliPath
 	}
 	return session.Config{
-		Enabled:    cfg.Sessions.Enabled && !noSession,
-		MaxAgeDays: cfg.Sessions.MaxAgeDays,
-		MaxCount:   cfg.Sessions.MaxCount,
-		Path:       path,
+		Enabled:          cfg.Sessions.Enabled && !noSession,
+		MaxAgeDays:       cfg.Sessions.MaxAgeDays,
+		MaxCount:         cfg.Sessions.MaxCount,
+		Path:             path,
+		StripImageBase64: cfg.Sessions.StripImageBase64,
 	}
 }
 

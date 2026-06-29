@@ -11,6 +11,7 @@ import (
 	_ "image/gif" // GIF decode support
 	"image/jpeg"
 	"image/png"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -23,7 +24,9 @@ import (
 
 // ViewImageTool implements the view_image tool.
 type ViewImageTool struct {
-	approval *ApprovalManager
+	approval       *ApprovalManager
+	visionProvider llm.Provider
+	visionModel    string
 }
 
 // NewViewImageTool creates a new ViewImageTool.
@@ -33,12 +36,24 @@ func NewViewImageTool(approval *ApprovalManager) *ViewImageTool {
 	}
 }
 
+// NewViewImageToolWithVision creates a view_image tool that analyzes images by
+// calling a separate vision-capable LLM and returning text only.
+func NewViewImageToolWithVision(approval *ApprovalManager, provider llm.Provider, model string) *ViewImageTool {
+	return &ViewImageTool{
+		approval:       approval,
+		visionProvider: provider,
+		visionModel:    strings.TrimSpace(model),
+	}
+}
+
 // ViewImageArgs are the arguments for view_image.
 type ViewImageArgs struct {
 	FilePath string  `json:"file_path"`
-	Detail   string  `json:"detail,omitempty"` // "low", "high", or "auto"
-	Region   string  `json:"region,omitempty"` // "full", "left_half", "right_half", "top_half", "bottom_half"
-	Scale    float64 `json:"scale,omitempty"`  // 1-4x upscale after region
+	Question string  `json:"question,omitempty"` // Optional focused question for routed-vision mode
+	Prompt   string  `json:"prompt,omitempty"`   // Alias for question
+	Detail   string  `json:"detail,omitempty"`   // "low", "high", or "auto"
+	Region   string  `json:"region,omitempty"`   // "full", "left_half", "right_half", "top_half", "bottom_half"
+	Scale    float64 `json:"scale,omitempty"`    // 1-4x upscale after region
 }
 
 const (
@@ -66,13 +81,21 @@ var supportedImageMimes = map[string]struct{}{
 func (t *ViewImageTool) Spec() llm.ToolSpec {
 	return llm.ToolSpec{
 		Name:        ViewImageToolName,
-		Description: "View and analyze an image file. Supports PNG, JPEG, GIF, WebP. For transcription, dense handwriting, or two-page spreads, use a preset region and high detail.",
+		Description: "View and analyze an image file. Supports PNG, JPEG, GIF, WebP. In routed-vision mode this returns a textual analysis from a vision-capable model. For transcription, dense handwriting, or two-page spreads, use a preset region and high detail.",
 		Schema: map[string]interface{}{
 			"type": "object",
 			"properties": map[string]interface{}{
 				"file_path": map[string]interface{}{
 					"type":        "string",
 					"description": "Path to the image file",
+				},
+				"question": map[string]interface{}{
+					"type":        "string",
+					"description": "Optional focused question or task for image analysis (e.g. transcribe text, identify objects, compare layout)",
+				},
+				"prompt": map[string]interface{}{
+					"type":        "string",
+					"description": "Alias for question; use only if question is not provided",
 				},
 				"detail": map[string]interface{}{
 					"type":        "string",
@@ -207,6 +230,14 @@ Detail: %s`,
 		getDetail(a.Detail),
 	)
 
+	if t.visionProvider != nil {
+		analysis, err := t.analyzeWithVisionProvider(ctx, processedMime, encoded, textResult, a)
+		if err != nil {
+			return llm.TextOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "vision analysis failed: %v", err))), nil
+		}
+		return llm.TextOutput(analysis), nil
+	}
+
 	return llm.ToolOutput{
 		Content: textResult,
 		ContentParts: []llm.ToolContentPart{
@@ -221,6 +252,70 @@ Detail: %s`,
 			},
 		},
 	}, nil
+}
+
+func (t *ViewImageTool) analyzeWithVisionProvider(ctx context.Context, mimeType, base64Data, metadata string, args ViewImageArgs) (string, error) {
+	question := strings.TrimSpace(args.Question)
+	if question == "" {
+		question = strings.TrimSpace(args.Prompt)
+	}
+	if question == "" {
+		question = "Describe the image, transcribe any visible text, and call out details relevant to the user's likely request. If uncertain, say so."
+	}
+
+	prompt := fmt.Sprintf(`You are the vision analysis backend for a text-only LLM's view_image tool.
+Return a concise but useful textual interpretation of the supplied image.
+If the request asks for transcription, preserve line breaks and uncertain characters where practical.
+If details are ambiguous or low confidence, explicitly mention uncertainty.
+
+Tool request metadata:
+%s
+
+Question/task from caller:
+%s`, metadata, question)
+
+	req := llm.Request{
+		Model: strings.TrimSpace(t.visionModel),
+		Messages: []llm.Message{{
+			Role: llm.RoleUser,
+			Parts: []llm.Part{
+				{Type: llm.PartText, Text: prompt},
+				{Type: llm.PartImage, ImageData: &llm.ToolImageData{MediaType: mimeType, Base64: base64Data, Detail: getDetail(args.Detail)}},
+			},
+		}},
+		MaxTurns: 1,
+	}
+
+	stream, err := t.visionProvider.Stream(ctx, req)
+	if err != nil {
+		return "", err
+	}
+	defer stream.Close()
+
+	var b strings.Builder
+	for {
+		event, err := stream.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return "", err
+		}
+		switch event.Type {
+		case llm.EventTextDelta:
+			b.WriteString(event.Text)
+		case llm.EventError:
+			if event.Err != nil {
+				return "", event.Err
+			}
+		}
+	}
+
+	analysis := strings.TrimSpace(b.String())
+	if analysis == "" {
+		analysis = "Vision analysis completed, but the vision model returned no text."
+	}
+	return metadata + "\n\nVision analysis:\n" + analysis, nil
 }
 
 // transformImageForView applies region/scale requested by the caller before

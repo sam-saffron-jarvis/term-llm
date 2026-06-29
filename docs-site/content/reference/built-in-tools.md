@@ -25,13 +25,29 @@ term-llm exec --tools read_file,write_file,edit_file,shell,grep,glob,view_image
 | `shell` | Execute shell commands; accepts optional `affected_paths` hints so file-change tracking can snapshot generated/modified files reliably |
 | `grep` | Search file contents (uses ripgrep) |
 | `glob` | Find files by glob pattern |
-| `view_image` | Display images in terminal (icat) |
+| `view_image` | Inspect an image file. Normally returns structured image content to a vision-capable primary model; with `vision_via`, calls the configured vision model and returns text only. |
 | `show_image` | Show image file info |
 | `image_generate` | Generate images via configured provider |
 | `ask_user` | Prompt user for input |
 | `spawn_agent` | Spawn child agents for parallel tasks |
 | `run_agent_script` | Run a script bundled in the agent directory |
 | `activate_skill` | Activate a skill by name |
+
+### Indirect image understanding for text-only models
+
+For a text-only model that supports tool calls, add `vision_via` to that model's provider entry:
+
+```yaml
+providers:
+  local-text:
+    type: openai_compatible
+    model: qwen-text
+    vision_via: gemini
+```
+
+Set `vision_via` either at provider level, as above, or on a specific `models:` object when only one model should use the route or needs a different vision backend. Use `provider` to select that provider's default model, or `provider:model` to force a specific model. It inserts a prompt reference such as `[User uploaded image: /.../uploads/image_123.png — use view_image ...]`, auto-enables `view_image`, and lets the model call `view_image` with `file_path` plus an optional `question`. The tool then forwards the processed image to the configured vision-capable provider/model and returns a textual analysis.
+
+Limitations: the primary model must call tools; the `vision_via` provider must be configured and able to process image parts; and `view_image` can only read uploaded images or paths allowed through normal read permissions/approvals.
 
 ### File-change tracking hints
 

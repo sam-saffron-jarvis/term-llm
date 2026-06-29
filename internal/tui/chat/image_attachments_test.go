@@ -199,3 +199,37 @@ func TestSendMessage_InjectsPlatformDeveloperMessageWhenOriginChanges(t *testing
 		t.Fatalf("session origin = %q, want %q", m.sess.Origin, session.OriginTUI)
 	}
 }
+
+func TestImagePartListDoesNotPopulateImagePathWithoutIndirectVision(t *testing.T) {
+	m := newTestChatModel(false)
+	m.images = []ImageAttachment{{MediaType: "image/png", Data: []byte("img-data")}}
+
+	parts := m.imagePartList()
+	if len(parts) != 1 {
+		t.Fatalf("parts len = %d, want 1", len(parts))
+	}
+	if parts[0].ImagePath != "" {
+		t.Fatalf("ImagePath = %q, want empty without indirect vision", parts[0].ImagePath)
+	}
+	if m.images[0].Path != "" {
+		t.Fatalf("stored image path = %q, want empty without indirect vision", m.images[0].Path)
+	}
+}
+
+func TestImagePartListPopulatesImagePathWithIndirectVision(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	m := newTestChatModel(false)
+	m.engine.SetIndirectVision(true)
+	m.images = []ImageAttachment{{MediaType: "image/png", Data: []byte("img-data")}}
+
+	parts := m.imagePartList()
+	if len(parts) != 1 {
+		t.Fatalf("parts len = %d, want 1", len(parts))
+	}
+	if parts[0].ImagePath == "" {
+		t.Fatal("ImagePath is empty with indirect vision")
+	}
+	if m.images[0].Path != parts[0].ImagePath {
+		t.Fatalf("stored path = %q, part path = %q", m.images[0].Path, parts[0].ImagePath)
+	}
+}

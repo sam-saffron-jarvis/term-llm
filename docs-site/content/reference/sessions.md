@@ -45,7 +45,10 @@ sessions:
   max_age_days: 0
   max_count: 0
   path: ""
+  strip_image_base64: false
 ```
+
+By default, image uploads remain portable because session rows keep the image base64 as well as any saved local path. If you prefer a smaller SQLite database and are willing to keep the uploads directory with it, set `sessions.strip_image_base64: true` to store only image path/metadata for image parts that have an `ImagePath`.
 
 CLI overrides:
 

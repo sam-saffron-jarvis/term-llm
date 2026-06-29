@@ -162,13 +162,33 @@ func decodeUploadedFile(filename, b64Data string) ([]byte, error) {
 }
 
 // saveUploadedFile decodes base64 data and writes it to the uploads directory,
-// returning the full filesystem path. Uses O_CREATE|O_EXCL for atomic uniqueness.
+// returning the full filesystem path. The final filename includes a random suffix
+// created atomically by os.CreateTemp.
 func saveUploadedFile(filename, b64Data string) (string, error) {
 	raw, err := decodeUploadedFile(filename, b64Data)
 	if err != nil {
 		return "", err
 	}
 	return saveUploadedBytes(filename, raw)
+}
+
+func uploadFilenameForMediaType(prefix, mediaType string) string {
+	prefix = strings.TrimSpace(prefix)
+	if prefix == "" {
+		prefix = "upload"
+	}
+	switch strings.ToLower(strings.TrimSpace(mediaType)) {
+	case "image/jpeg":
+		return prefix + ".jpg"
+	case "image/png":
+		return prefix + ".png"
+	case "image/gif":
+		return prefix + ".gif"
+	case "image/webp":
+		return prefix + ".webp"
+	default:
+		return prefix
+	}
 }
 
 func saveUploadedBytes(filename string, raw []byte) (string, error) {

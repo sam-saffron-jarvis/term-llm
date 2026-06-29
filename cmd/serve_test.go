@@ -10644,6 +10644,47 @@ func TestParseAnthropicMessages_ContentBlocks(t *testing.T) {
 	}
 }
 
+func TestParseAnthropicMessages_ImageContentSavesPath(t *testing.T) {
+	dataHome := t.TempDir()
+	t.Setenv("XDG_DATA_HOME", dataHome)
+	b64 := base64.StdEncoding.EncodeToString([]byte("png bytes"))
+	content := json.RawMessage(fmt.Sprintf(`[{ 
+		"type":"image",
+		"source":{"type":"base64","media_type":"image/png","data":%q}
+	}]`, b64))
+
+	msgs, err := parseAnthropicMessages([]anthropicMessage{{Role: "user", Content: content}})
+	if err != nil {
+		t.Fatalf("parseAnthropicMessages: %v", err)
+	}
+	if len(msgs) != 1 || len(msgs[0].Parts) != 1 || msgs[0].Parts[0].Type != llm.PartImage {
+		t.Fatalf("messages = %#v, want one image part", msgs)
+	}
+	part := msgs[0].Parts[0]
+	if part.ImagePath == "" {
+		t.Fatal("ImagePath is empty, want saved upload path")
+	}
+	if filepath.Ext(part.ImagePath) != ".png" {
+		t.Fatalf("ImagePath = %q, want .png extension", part.ImagePath)
+	}
+	if !strings.HasPrefix(part.ImagePath, filepath.Join(dataHome, "term-llm", "uploads")) {
+		t.Fatalf("ImagePath = %q, want under uploads dir", part.ImagePath)
+	}
+}
+
+func TestParseAnthropicMessages_InvalidImageBase64ReturnsError(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	content := json.RawMessage(`[{
+		"type":"image",
+		"source":{"type":"base64","media_type":"image/png","data":"not base64!!!"}
+	}]`)
+
+	_, err := parseAnthropicMessages([]anthropicMessage{{Role: "user", Content: content}})
+	if err == nil || !strings.Contains(err.Error(), "decode image attachment") {
+		t.Fatalf("parseAnthropicMessages error = %v, want decode image attachment", err)
+	}
+}
+
 func TestParseAnthropicMessages_ToolUseRoundTrip(t *testing.T) {
 	msgs, err := parseAnthropicMessages([]anthropicMessage{
 		{Role: "assistant", Content: json.RawMessage(`[{"type":"tool_use","id":"call_1","name":"read_file","input":{"path":"a.txt"}}]`)},

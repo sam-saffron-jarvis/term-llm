@@ -225,9 +225,10 @@ sessions:
   max_age_days: 0
   max_count: 0
   path: ""
+  strip_image_base64: false
 ```
 
-Use this to control whether sessions are persisted, how long they are kept, and where the SQLite database lives.
+Use this to control whether sessions are persisted, how long they are kept, and where the SQLite database lives. By default, uploaded image base64 is kept in the DB for portability; set `strip_image_base64: true` to store only image paths/metadata when a local `ImagePath` exists, reducing DB size at the cost of requiring the uploads directory to move with the database.
 
 ## File change tracking config
 

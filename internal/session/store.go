@@ -137,11 +137,12 @@ type PushSubscription struct {
 
 // Config holds session storage configuration.
 type Config struct {
-	Enabled    bool   `mapstructure:"enabled"`      // Master switch
-	MaxAgeDays int    `mapstructure:"max_age_days"` // Auto-delete after N days (0=never)
-	MaxCount   int    `mapstructure:"max_count"`    // Keep at most N sessions (0=unlimited)
-	Path       string `mapstructure:"path"`         // Optional DB path override (supports :memory:)
-	ReadOnly   bool   `mapstructure:"-"`            // Open DB in read-only mode (skip schema init/cleanup)
+	Enabled          bool   `mapstructure:"enabled"`            // Master switch
+	MaxAgeDays       int    `mapstructure:"max_age_days"`       // Auto-delete after N days (0=never)
+	MaxCount         int    `mapstructure:"max_count"`          // Keep at most N sessions (0=unlimited)
+	Path             string `mapstructure:"path"`               // Optional DB path override (supports :memory:)
+	StripImageBase64 bool   `mapstructure:"strip_image_base64"` // Store path/metadata only for images with ImagePath (smaller DB, less portable)
+	ReadOnly         bool   `mapstructure:"-"`                  // Open DB in read-only mode (skip schema init/cleanup)
 }
 
 // DefaultConfig returns the default session configuration.

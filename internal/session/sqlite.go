@@ -1921,7 +1921,7 @@ func (s *SQLiteStore) AddMessage(ctx context.Context, sessionID string, msg *Mes
 		msg.CreatedAt = time.Now()
 	}
 
-	partsJSON, err := msg.PartsJSON()
+	partsJSON, err := msg.PartsJSONForStorage(s.cfg.StripImageBase64)
 	if err != nil {
 		return fmt.Errorf("serialize parts: %w", err)
 	}
@@ -2059,7 +2059,7 @@ func (s *SQLiteStore) updateMessage(ctx context.Context, sessionID string, msg *
 		return fmt.Errorf("update message: missing id")
 	}
 
-	partsJSON, err := msg.PartsJSON()
+	partsJSON, err := msg.PartsJSONForStorage(s.cfg.StripImageBase64)
 	if err != nil {
 		return fmt.Errorf("serialize parts: %w", err)
 	}
@@ -2171,7 +2171,7 @@ func (s *SQLiteStore) ClearCompactionBoundary(ctx context.Context, id string) er
 // Because the replacement snapshot becomes the complete persisted history, any
 // previous compaction boundary is cleared.
 func (s *SQLiteStore) ReplaceMessages(ctx context.Context, sessionID string, messages []Message) error {
-	partsJSON, err := prepareReplacementMessageParts(messages)
+	partsJSON, err := prepareReplacementMessageParts(messages, s.cfg.StripImageBase64)
 	if err != nil {
 		return err
 	}
@@ -2278,10 +2278,10 @@ func (s *SQLiteStore) updateReplaceMessagesSessionMetadata(ctx context.Context, 
 	return nil
 }
 
-func prepareReplacementMessageParts(messages []Message) ([]string, error) {
+func prepareReplacementMessageParts(messages []Message, stripImageBase64 bool) ([]string, error) {
 	partsJSON := make([]string, len(messages))
 	for i := range messages {
-		parts, err := messages[i].PartsJSON()
+		parts, err := messages[i].PartsJSONForStorage(stripImageBase64)
 		if err != nil {
 			return nil, fmt.Errorf("serialize parts for message %d: %w", i, err)
 		}
@@ -2399,7 +2399,7 @@ func (s *SQLiteStore) CompactMessages(ctx context.Context, sessionID string, mes
 				msg.CreatedAt = time.Now()
 			}
 
-			partsJSON, err := msg.PartsJSON()
+			partsJSON, err := msg.PartsJSONForStorage(s.cfg.StripImageBase64)
 			if err != nil {
 				return fmt.Errorf("serialize parts for message %d: %w", i, err)
 			}

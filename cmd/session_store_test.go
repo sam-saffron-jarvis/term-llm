@@ -114,3 +114,20 @@ func TestInitSessionStore_UsesConfigSessionPath(t *testing.T) {
 		t.Fatalf("expected session database at config path %q: %v", dbPath, err)
 	}
 }
+
+func TestSessionStoreConfigPassesStripImageBase64(t *testing.T) {
+	oldNoSession := noSession
+	oldSessionDB := sessionDBPath
+	t.Cleanup(func() {
+		noSession = oldNoSession
+		sessionDBPath = oldSessionDB
+	})
+	noSession = false
+	sessionDBPath = ""
+
+	cfg := &config.Config{Sessions: config.SessionsConfig{Enabled: true, StripImageBase64: true}}
+	got := sessionStoreConfig(cfg)
+	if !got.StripImageBase64 {
+		t.Fatal("StripImageBase64 = false, want true")
+	}
+}

@@ -389,7 +389,7 @@ func buildResponsesMessageItems(role string, parts []Part, policy *FileUploadPol
 				textBuf.WriteString(part.Text)
 			}
 		case PartImage:
-			if part.ImageData != nil {
+			if part.ImageData != nil && strings.TrimSpace(part.ImageData.Base64) != "" {
 				flushText()
 				dataURL := fmt.Sprintf("data:%s;base64,%s", part.ImageData.MediaType, part.ImageData.Base64)
 				imageParts := []ResponsesContentPart{{Type: "input_image", ImageURL: dataURL, Detail: imageDetail(part.ImageData.Detail)}}

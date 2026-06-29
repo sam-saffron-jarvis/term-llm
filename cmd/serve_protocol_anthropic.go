@@ -105,10 +105,21 @@ func parseAnthropicMessages(msgs []anthropicMessage) ([]llm.Message, error) {
 				}
 			case "image":
 				if block.Source != nil {
-					parts = append(parts, llm.Part{
+					imagePart := llm.Part{
 						Type:      llm.PartImage,
 						ImageData: &llm.ToolImageData{MediaType: block.Source.MediaType, Base64: block.Source.Data},
-					})
+					}
+					raw, err := decodeUploadedFile("image", block.Source.Data)
+					if err != nil {
+						return nil, fmt.Errorf("decode image attachment: %w", err)
+					}
+					filename := uploadFilenameForMediaType("image", block.Source.MediaType)
+					path, err := saveUploadedBytes(filename, raw)
+					if err != nil {
+						return nil, fmt.Errorf("save image attachment: %w", err)
+					}
+					imagePart.ImagePath = path
+					parts = append(parts, imagePart)
 				}
 			case "tool_use":
 				args := block.Input

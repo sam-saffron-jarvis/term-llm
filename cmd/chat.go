@@ -438,6 +438,7 @@ func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent 
 	}
 
 	// Initialize tools if enabled (using possibly-updated settings from resume)
+	alignSettingsToActiveProvider(&settings, cfg, provider)
 	enabledLocalTools := tools.ParseToolsFlag(settings.Tools)
 	toolMgr, err := settings.SetupToolManager(cfg, engine)
 	if err != nil {

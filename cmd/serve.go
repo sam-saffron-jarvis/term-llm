@@ -734,6 +734,8 @@ func runServe(cmd *cobra.Command, args []string) error {
 // before constructing serveRuntime/serveSettings so the mutation is not lost.
 func newServeEngineWithTools(cfg *config.Config, settings SessionSettings, provider llm.Provider, providerName, modelName string, yoloMode bool, wireSpawn func(*config.Config, *tools.ToolManager, bool) error, skillsSetup *skills.Setup) (*llm.Engine, *tools.ToolManager, error) {
 	engine := newEngine(provider, cfg)
+	settings.Provider = providerName
+	settings.Model = modelName
 
 	toolMgr, err := settings.SetupToolManager(cfg, engine)
 	if err != nil {

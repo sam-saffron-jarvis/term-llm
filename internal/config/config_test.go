@@ -882,6 +882,7 @@ providers:
     base_url: https://api.example.com/v1
     api_key: test-key
     model: friendly-name
+    vision_via: openai:gpt-4.1
     models:
       - id: upstream/model-id
         alias: friendly-name
@@ -891,6 +892,7 @@ providers:
         include_reasoning: true
         thinking_param: enable_thinking
         reasoning_efforts: [high, max]
+        vision_via: gemini:gemini-2.5-pro
       - another-upstream-model
 `
 	if err := os.WriteFile(filepath.Join(configDir, "config.yaml"), []byte(configYAML), 0o600); err != nil {
@@ -920,6 +922,30 @@ providers:
 	}
 	if len(mc.ReasoningEfforts) != 2 || mc.ReasoningEfforts[0] != "high" || mc.ReasoningEfforts[1] != "max" {
 		t.Fatalf("ReasoningEfforts = %#v, want [high max]", mc.ReasoningEfforts)
+	}
+	if mc.VisionVia != "gemini:gemini-2.5-pro" {
+		t.Fatalf("VisionVia = %q, want gemini:gemini-2.5-pro", mc.VisionVia)
+	}
+	if got := VisionViaForProviderModel(cfg, "custom", "friendly-name-high"); got != "gemini:gemini-2.5-pro" {
+		t.Fatalf("VisionViaForProviderModel alias effort = %q", got)
+	}
+	if got := VisionViaForProviderModel(cfg, "custom", "upstream/model-id"); got != "gemini:gemini-2.5-pro" {
+		t.Fatalf("VisionViaForProviderModel upstream id = %q", got)
+	}
+	if got := VisionViaForProviderModel(cfg, "custom", "another-upstream-model"); got != "openai:gpt-4.1" {
+		t.Fatalf("VisionViaForProviderModel provider fallback = %q", got)
+	}
+	if got := DisplayModelForProviderModel(cfg, "custom", "upstream/model-id"); got != "friendly-name" {
+		t.Fatalf("DisplayModelForProviderModel upstream id = %q", got)
+	}
+	if got := DisplayModelForProviderModel(cfg, "custom", "upstream/model-id-high"); got != "friendly-name-high" {
+		t.Fatalf("DisplayModelForProviderModel upstream effort = %q", got)
+	}
+	if got := DisplayModelForProviderModel(cfg, "custom", "friendly-name-max"); got != "friendly-name-max" {
+		t.Fatalf("DisplayModelForProviderModel alias effort = %q", got)
+	}
+	if got := DisplayModelForProviderModel(cfg, "custom", "another-upstream-model"); got != "another-upstream-model" {
+		t.Fatalf("DisplayModelForProviderModel unaliased model = %q", got)
 	}
 }
 

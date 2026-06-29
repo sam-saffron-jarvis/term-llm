@@ -333,6 +333,7 @@ func runAsk(cmd *cobra.Command, args []string) error {
 	sessionID = ensureRequestSessionID(sessionID, resuming)
 	settings.SessionID = sessionID
 	settings.SystemPrompt = InjectSkillsMetadata(settings.SystemPrompt, skillsSetup)
+	alignSettingsToActiveProvider(&settings, cfg, provider)
 
 	// Initialize local tools if we have any
 	toolMgr, err := settings.SetupToolManager(cfg, engine)

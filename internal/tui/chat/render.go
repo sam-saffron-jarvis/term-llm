@@ -12,6 +12,7 @@ import (
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/muesli/reflow/wordwrap"
+	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/mcp"
 	render "github.com/samsaffron/term-llm/internal/render/chat"
@@ -688,15 +689,43 @@ func (m *Model) agentPrefix() string {
 }
 
 func (m *Model) displayModelName() string {
-	if m != nil && m.streaming && m.pendingStreamModelSwitch != nil && m.pendingStreamModelSwitch.applied {
-		provider := strings.TrimSpace(m.pendingStreamModelSwitch.provider)
-		if provider == "" || provider == strings.TrimSpace(m.providerKey) || provider == strings.TrimSpace(m.providerName) {
-			if model := strings.TrimSpace(m.pendingStreamModelSwitch.model); model != "" {
-				return model
+	if m == nil {
+		return ""
+	}
+	provider := strings.TrimSpace(m.providerKey)
+	model := strings.TrimSpace(m.modelName)
+	if m.streaming && m.pendingStreamModelSwitch != nil && m.pendingStreamModelSwitch.applied {
+		pendingProvider := strings.TrimSpace(m.pendingStreamModelSwitch.provider)
+		if pendingProvider == "" || pendingProvider == strings.TrimSpace(m.providerKey) || pendingProvider == strings.TrimSpace(m.providerName) {
+			if pendingModel := strings.TrimSpace(m.pendingStreamModelSwitch.model); pendingModel != "" {
+				model = pendingModel
+				if pendingProvider != "" {
+					provider = pendingProvider
+				}
 			}
 		}
 	}
-	return m.modelName
+	return m.displayNameForProviderModel(provider, model)
+}
+
+func (m *Model) displayNameForProviderModel(provider, model string) string {
+	model = strings.TrimSpace(model)
+	if m == nil || m.config == nil {
+		return model
+	}
+	providers := []string{provider, m.providerKey, m.providerName}
+	seen := make(map[string]bool, len(providers))
+	for _, candidate := range providers {
+		candidate = strings.TrimSpace(candidate)
+		if candidate == "" || seen[candidate] {
+			continue
+		}
+		seen[candidate] = true
+		if display := config.DisplayModelForProviderModel(m.config, candidate, model); display != model {
+			return display
+		}
+	}
+	return model
 }
 
 func (m *Model) renderMd(text string, width int) string {

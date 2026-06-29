@@ -94,6 +94,7 @@ type ProviderModelConfig struct {
 	IncludeReasoning *bool    `mapstructure:"include_reasoning" yaml:"include_reasoning,omitempty"`
 	ThinkingParam    string   `mapstructure:"thinking_param" yaml:"thinking_param,omitempty"`
 	ReasoningEfforts []string `mapstructure:"reasoning_efforts" yaml:"reasoning_efforts,omitempty"`
+	VisionVia        string   `mapstructure:"vision_via" yaml:"vision_via,omitempty"`
 }
 
 func (m ProviderModelConfig) DisplayName() string {
@@ -122,6 +123,7 @@ type ProviderConfig struct {
 	EnableHooks  bool                  `mapstructure:"enable_hooks"`  // Opt in to Claude Code hooks for claude-bin (disabled by default)
 	UseWebSocket bool                  `mapstructure:"use_websocket"` // Enable Responses-over-WebSocket for providers that support it
 	FileUpload   *FileUploadConfig     `mapstructure:"file_upload"`   // Optional upload/native-file support overrides
+	VisionVia    string                `mapstructure:"vision_via"`    // Optional provider:model route for indirect image understanding
 
 	// Search behavior - nil means auto (use native if available)
 	UseNativeSearch *bool `mapstructure:"use_native_search"`
@@ -543,10 +545,11 @@ type DebugLogsConfig struct {
 
 // SessionsConfig configures session storage
 type SessionsConfig struct {
-	Enabled    bool   `mapstructure:"enabled"`      // Master switch - set to false to disable all session storage
-	MaxAgeDays int    `mapstructure:"max_age_days"` // Auto-delete sessions older than N days (0=never)
-	MaxCount   int    `mapstructure:"max_count"`    // Keep at most N sessions, delete oldest (0=unlimited)
-	Path       string `mapstructure:"path"`         // Optional SQLite DB path override (supports :memory:)
+	Enabled          bool   `mapstructure:"enabled"`            // Master switch - set to false to disable all session storage
+	MaxAgeDays       int    `mapstructure:"max_age_days"`       // Auto-delete sessions older than N days (0=never)
+	MaxCount         int    `mapstructure:"max_count"`          // Keep at most N sessions, delete oldest (0=unlimited)
+	Path             string `mapstructure:"path"`               // Optional SQLite DB path override (supports :memory:)
+	StripImageBase64 bool   `mapstructure:"strip_image_base64"` // Store path/metadata only for images with ImagePath (smaller DB, less portable)
 }
 
 // FileTrackingConfig configures recording of file changes made by agent tools
@@ -999,7 +1002,118 @@ func providerModelConfigFromMap(m map[string]any) ProviderModelConfig {
 		IncludeReasoning: boolPtrFromMap(m, "include_reasoning"),
 		ThinkingParam:    stringFromMap(m, "thinking_param"),
 		ReasoningEfforts: stringSliceFromMap(m, "reasoning_efforts"),
+		VisionVia:        stringFromMap(m, "vision_via"),
 	}
+}
+
+// ModelConfigForProviderModel returns the configured metadata entry for a model,
+// matching either its upstream id, alias/display name, or configured reasoning-effort variants.
+func ModelConfigForProviderModel(cfg *Config, providerName, modelName string) (ProviderModelConfig, bool) {
+	if cfg == nil {
+		return ProviderModelConfig{}, false
+	}
+	providerName = strings.TrimSpace(providerName)
+	pc, ok := cfg.Providers[providerName]
+	if !ok {
+		return ProviderModelConfig{}, false
+	}
+	modelName = strings.TrimSpace(modelName)
+	if modelName == "" {
+		modelName = strings.TrimSpace(pc.Model)
+	}
+	if modelName == "" || len(pc.ModelConfigs) == 0 {
+		return ProviderModelConfig{}, false
+	}
+	for _, entry := range pc.ModelConfigs {
+		if providerModelConfigMatches(entry, modelName) {
+			return entry, true
+		}
+	}
+	return ProviderModelConfig{}, false
+}
+
+// DisplayModelForProviderModel returns the user-facing name for a configured model.
+// When a models[] object defines an alias, the alias takes display precedence even
+// if callers track the upstream model id internally. Configured reasoning-effort
+// suffixes are preserved (for example upstream/model-high -> friendly-high).
+func DisplayModelForProviderModel(cfg *Config, providerName, modelName string) string {
+	modelName = strings.TrimSpace(modelName)
+	entry, ok := ModelConfigForProviderModel(cfg, providerName, modelName)
+	if !ok {
+		return modelName
+	}
+	alias := strings.TrimSpace(entry.Alias)
+	if alias == "" {
+		return modelName
+	}
+	if effort := providerModelConfigMatchedEffort(entry, modelName); effort != "" {
+		return alias + "-" + effort
+	}
+	return alias
+}
+
+// VisionViaForProviderModel returns the configured vision routing target for a model.
+// A per-model models[].vision_via value overrides providers.<name>.vision_via.
+// The value is a provider:model string understood by llm.ParseProviderModel.
+func VisionViaForProviderModel(cfg *Config, providerName, modelName string) string {
+	if entry, ok := ModelConfigForProviderModel(cfg, providerName, modelName); ok {
+		if target := strings.TrimSpace(entry.VisionVia); target != "" {
+			return target
+		}
+	}
+	if cfg == nil {
+		return ""
+	}
+	pc, ok := cfg.Providers[strings.TrimSpace(providerName)]
+	if !ok {
+		return ""
+	}
+	return strings.TrimSpace(pc.VisionVia)
+}
+
+func providerModelConfigMatches(entry ProviderModelConfig, modelName string) bool {
+	modelName = strings.TrimSpace(modelName)
+	if modelName == "" {
+		return false
+	}
+	candidates := []string{entry.ID, entry.Alias, entry.DisplayName()}
+	for _, candidate := range candidates {
+		candidate = strings.TrimSpace(candidate)
+		if candidate == "" {
+			continue
+		}
+		if candidate == modelName {
+			return true
+		}
+		for _, effort := range entry.ReasoningEfforts {
+			effort = strings.TrimSpace(effort)
+			if effort != "" && candidate+"-"+effort == modelName {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func providerModelConfigMatchedEffort(entry ProviderModelConfig, modelName string) string {
+	modelName = strings.TrimSpace(modelName)
+	if modelName == "" {
+		return ""
+	}
+	candidates := []string{entry.ID, entry.Alias, entry.DisplayName()}
+	for _, candidate := range candidates {
+		candidate = strings.TrimSpace(candidate)
+		if candidate == "" {
+			continue
+		}
+		for _, effort := range entry.ReasoningEfforts {
+			effort = strings.TrimSpace(effort)
+			if effort != "" && candidate+"-"+effort == modelName {
+				return effort
+			}
+		}
+	}
+	return ""
 }
 
 func applyProviderModelConfigs(cfg *Config, modelConfigs map[string][]ProviderModelConfig) {
@@ -2071,11 +2185,12 @@ var KnownKeys = map[string]bool{
 	"debug_logs.dir":     true,
 
 	// Sessions
-	"sessions":              true,
-	"sessions.enabled":      true,
-	"sessions.max_age_days": true,
-	"sessions.max_count":    true,
-	"sessions.path":         true,
+	"sessions":                    true,
+	"sessions.enabled":            true,
+	"sessions.max_age_days":       true,
+	"sessions.max_count":          true,
+	"sessions.path":               true,
+	"sessions.strip_image_base64": true,
 
 	// File change tracking
 	"file_tracking":                   true,
@@ -2426,6 +2541,7 @@ func GetDefaults() map[string]any {
 		"sessions.max_age_days":           0,
 		"sessions.max_count":              0,
 		"sessions.path":                   "",
+		"sessions.strip_image_base64":     false,
 		"file_tracking.enabled":           false,
 		"file_tracking.max_file_bytes":    2097152,
 		"file_tracking.max_session_bytes": 104857600,

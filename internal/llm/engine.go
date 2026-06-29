@@ -2,17 +2,23 @@ package llm
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
+	"mime"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/samsaffron/term-llm/internal/appdata"
 	internalreasoning "github.com/samsaffron/term-llm/internal/reasoning"
 	"github.com/samsaffron/term-llm/internal/usage"
 )
@@ -97,6 +103,10 @@ type Engine struct {
 	provider    Provider
 	tools       *ToolRegistry
 	debugLogger *DebugLogger
+
+	// indirectVision routes user image parts through textual path references so
+	// text-only models can call view_image instead of receiving image bytes.
+	indirectVision atomic.Bool
 
 	// allowedTools filters which tools can be executed.
 	// If nil or empty, all tools are allowed. When set, only listed tools can run.
@@ -236,6 +246,25 @@ func (e *Engine) consumeChaosFailure() error {
 		return nil
 	}
 	return &StreamIncompleteError{Transport: "simulated stream", Terminal: "completion"}
+}
+
+// SetIndirectVision enables or disables image reference mode. When enabled,
+// user image parts are not sent to the primary provider. Instead, provider
+// requests contain textual file-path references and an instruction to call the
+// view_image tool when visual content matters.
+func (e *Engine) SetIndirectVision(enabled bool) {
+	if e == nil {
+		return
+	}
+	e.indirectVision.Store(enabled)
+}
+
+// IndirectVision reports whether image reference mode is enabled.
+func (e *Engine) IndirectVision() bool {
+	if e == nil {
+		return false
+	}
+	return e.indirectVision.Load()
 }
 
 // RegisterTool adds a tool to the engine's registry.
@@ -888,12 +917,244 @@ func (e *Engine) IsToolAllowed(name string) bool {
 	return e.allowedTools[name]
 }
 
+const indirectVisionInstruction = "Uploaded images are represented as local file-path references for this text-only model. When visual content matters, call the view_image tool with the referenced file_path and, if useful, a focused question. Do not claim to have inspected an image unless you have called view_image or the user-provided text is sufficient."
+
+func (e *Engine) prepareProviderRequest(req Request) Request {
+	if e.IndirectVision() {
+		prepared := req
+		normalized := ensureIndirectVisionImagePaths(req.Messages)
+		rewritten, changed := rewriteImagePartsAsReferences(normalized)
+		prepared.Messages = rewritten
+		if changed {
+			prepared.Messages = prependIndirectVisionInstruction(prepared.Messages)
+		}
+		return prepared
+	}
+	prepared := req
+	prepared.Messages = hydrateImageDataFromPaths(req.Messages)
+	return prepared
+}
+
+func ensureIndirectVisionImagePaths(messages []Message) []Message {
+	out := make([]Message, len(messages))
+	copy(out, messages)
+	for i, msg := range messages {
+		if msg.Role != RoleUser {
+			continue
+		}
+		parts := make([]Part, len(msg.Parts))
+		copy(parts, msg.Parts)
+		changed := false
+		for j, part := range parts {
+			if part.Type != PartImage || isTermLLMUploadPath(part.ImagePath) {
+				continue
+			}
+			path, ok := saveImageDataToUploads(part.ImageData)
+			if !ok {
+				continue
+			}
+			parts[j].ImagePath = path
+			changed = true
+		}
+		if changed {
+			out[i].Parts = parts
+		}
+	}
+	return out
+}
+
+func saveImageDataToUploads(imageData *ToolImageData) (string, bool) {
+	if imageData == nil || strings.TrimSpace(imageData.Base64) == "" {
+		return "", false
+	}
+	raw, err := base64.StdEncoding.DecodeString(strings.TrimSpace(imageData.Base64))
+	if err != nil || len(raw) == 0 {
+		return "", false
+	}
+	dataDir, err := appdata.GetDataDir()
+	if err != nil {
+		return "", false
+	}
+	uploadsDir := filepath.Join(dataDir, "uploads")
+	if err := os.MkdirAll(uploadsDir, 0o700); err != nil {
+		return "", false
+	}
+	ext := imageExtensionForMediaType(imageData.MediaType)
+	sum := sha256.Sum256(raw)
+	path := filepath.Join(uploadsDir, fmt.Sprintf("uploaded_image_%x%s", sum[:16], ext))
+	if err := os.WriteFile(path, raw, 0o600); err != nil {
+		if _, statErr := os.Stat(path); statErr == nil {
+			return path, true
+		}
+		return "", false
+	}
+	return path, true
+}
+
+func imageExtensionForMediaType(mediaType string) string {
+	switch strings.ToLower(strings.TrimSpace(mediaType)) {
+	case "image/jpeg":
+		return ".jpg"
+	case "image/png":
+		return ".png"
+	case "image/gif":
+		return ".gif"
+	case "image/webp":
+		return ".webp"
+	default:
+		return ".png"
+	}
+}
+
+func hydrateImageDataFromPaths(messages []Message) []Message {
+	out := make([]Message, len(messages))
+	copy(out, messages)
+	for i, msg := range messages {
+		parts := make([]Part, len(msg.Parts))
+		copy(parts, msg.Parts)
+		changed := false
+		for j, part := range parts {
+			if part.Type != PartImage || strings.TrimSpace(part.ImagePath) == "" {
+				continue
+			}
+			if part.ImageData != nil && strings.TrimSpace(part.ImageData.Base64) != "" {
+				continue
+			}
+			data, ok := readHydratableImagePath(part.ImagePath)
+			if !ok {
+				parts[j] = Part{Type: PartText, Text: unavailableImageText(part.ImagePath)}
+				changed = true
+				continue
+			}
+			mediaType := ""
+			if part.ImageData != nil {
+				mediaType = strings.TrimSpace(part.ImageData.MediaType)
+			}
+			if mediaType == "" {
+				mediaType = strings.TrimSpace(mime.TypeByExtension(strings.ToLower(filepath.Ext(part.ImagePath))))
+			}
+			if mediaType == "" {
+				mediaType = "image/png"
+			}
+			imageData := ToolImageData{MediaType: mediaType, Base64: base64.StdEncoding.EncodeToString(data)}
+			if part.ImageData != nil {
+				imageData.Detail = part.ImageData.Detail
+			}
+			parts[j].ImageData = &imageData
+			changed = true
+		}
+		if changed {
+			out[i].Parts = parts
+		}
+	}
+	return out
+}
+
+func readHydratableImagePath(path string) ([]byte, bool) {
+	path = strings.TrimSpace(path)
+	if path == "" || !isTermLLMUploadPath(path) {
+		return nil, false
+	}
+	data, err := os.ReadFile(path)
+	if err != nil || len(data) == 0 {
+		return nil, false
+	}
+	return data, true
+}
+
+func isTermLLMUploadPath(path string) bool {
+	dataDir, err := appdata.GetDataDir()
+	if err != nil {
+		return false
+	}
+	uploadsDir := filepath.Join(dataDir, "uploads")
+	uploadsDir, err = filepath.EvalSymlinks(uploadsDir)
+	if err != nil {
+		return false
+	}
+	path, err = filepath.EvalSymlinks(strings.TrimSpace(path))
+	if err != nil {
+		return false
+	}
+	if path == uploadsDir {
+		return false
+	}
+	return strings.HasPrefix(path, uploadsDir+string(filepath.Separator))
+}
+
+func unavailableImageText(path string) string {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return "[image unavailable: saved file could not be read]"
+	}
+	return fmt.Sprintf("[image unavailable: saved file could not be read at %s]", path)
+}
+
+func prependIndirectVisionInstruction(messages []Message) []Message {
+	for _, msg := range messages {
+		if msg.Role == RoleDeveloper && strings.Contains(collectTextParts(msg.Parts), "Uploaded images are represented as local file-path references") {
+			return messages
+		}
+	}
+	instruction := Message{Role: RoleDeveloper, Parts: []Part{{Type: PartText, Text: indirectVisionInstruction}}}
+	insertAt := 0
+	for insertAt < len(messages) && messages[insertAt].Role == RoleSystem {
+		insertAt++
+	}
+	out := make([]Message, 0, len(messages)+1)
+	out = append(out, messages[:insertAt]...)
+	out = append(out, instruction)
+	out = append(out, messages[insertAt:]...)
+	return out
+}
+
+func rewriteImagePartsAsReferences(messages []Message) ([]Message, bool) {
+	out := make([]Message, len(messages))
+	changedAny := false
+	for i, msg := range messages {
+		out[i] = msg
+		if msg.Role != RoleUser {
+			continue
+		}
+		parts := make([]Part, 0, len(msg.Parts))
+		changed := false
+		for _, part := range msg.Parts {
+			if part.Type != PartImage {
+				parts = append(parts, part)
+				continue
+			}
+			changed = true
+			changedAny = true
+			parts = append(parts, Part{Type: PartText, Text: imageReferenceText(part)})
+		}
+		if changed {
+			out[i].Parts = parts
+		}
+	}
+	return out, changedAny
+}
+
+func imageReferenceText(part Part) string {
+	path := strings.TrimSpace(part.ImagePath)
+	mediaType := ""
+	if part.ImageData != nil {
+		mediaType = strings.TrimSpace(part.ImageData.MediaType)
+	}
+	if path == "" {
+		if mediaType == "" {
+			return "[User uploaded an image, but no local file path is available for view_image.]"
+		}
+		return fmt.Sprintf("[User uploaded an image (%s), but no local file path is available for view_image.]", mediaType)
+	}
+	if mediaType == "" {
+		return fmt.Sprintf("[User uploaded image: %s — use view_image with this file_path to inspect it.]", path)
+	}
+	return fmt.Sprintf("[User uploaded image: %s (%s) — use view_image with this file_path to inspect it.]", path, mediaType)
+}
+
 // Stream returns a stream, applying external tools when needed.
 func (e *Engine) Stream(ctx context.Context, req Request) (Stream, error) {
 	req.Messages = FilterConversationMessages(req.Messages)
-	if req.DebugRaw {
-		DebugRawRequest(req.DebugRaw, e.provider.Name(), e.provider.Credential(), req, "Request")
-	}
 
 	caps := e.provider.Capabilities()
 
@@ -926,6 +1187,11 @@ func (e *Engine) Stream(ctx context.Context, req Request) (Stream, error) {
 		req.Search = false
 	}
 
+	if req.DebugRaw {
+		debugReq := e.prepareProviderRequest(req)
+		DebugRawRequest(req.DebugRaw, e.provider.Name(), e.provider.Credential(), debugReq, "Request")
+	}
+
 	// 2. Decide if we use the agentic loop
 	// We use it if request has tools AND provider supports tool calls
 	useLoop := len(req.Tools) > 0 && caps.ToolCalls
@@ -955,7 +1221,8 @@ func (e *Engine) Stream(ctx context.Context, req Request) (Stream, error) {
 	// staged in an attempt-local scratchpad until the stream completes; if the
 	// transport fails first, we can discard the scratchpad and replay safely.
 	if e.debugLogger != nil {
-		e.debugLogger.LogRequest(e.provider.Name(), req.Model, req)
+		debugReq := e.prepareProviderRequest(req)
+		e.debugLogger.LogRequest(e.provider.Name(), req.Model, debugReq)
 	}
 	stream := newEventStream(ctx, func(ctx context.Context, send eventSender) error {
 		return e.runSimpleScratchpad(ctx, req, send)
@@ -1147,7 +1414,8 @@ func (e *Engine) runSimpleScratchpad(ctx context.Context, req Request, send even
 	turnCallback := e.getTurnCallback()
 	var priorErr error
 	for retry := 0; ; retry++ {
-		stream, err := e.provider.Stream(ctx, req)
+		providerReq := e.prepareProviderRequest(req)
+		stream, err := e.provider.Stream(ctx, providerReq)
 		if err != nil {
 			return err
 		}
@@ -1588,17 +1856,6 @@ turnLoop:
 			req.ToolChoice = ToolChoice{Mode: ToolChoiceAuto}
 		}
 
-		// Log per-turn request state
-		// For attempt 0: captures state after applyExternalSearch modifications
-		// For attempt > 0: captures tool results appended in previous turn
-		if e.debugLogger != nil {
-			e.debugLogger.LogTurnRequest(attempt, e.provider.Name(), req.Model, req)
-		}
-
-		if req.DebugRaw {
-			DebugRawRequest(req.DebugRaw, e.provider.Name(), e.provider.Credential(), req, fmt.Sprintf("Request (turn %d)", attempt))
-		}
-
 		if resumeAfterCompaction && !softCheckpointInProgress {
 			resumeAfterCompaction = false
 			if err := send.Send(Event{Type: EventPhase, Text: PhaseCompactingResumeTask}); err != nil {
@@ -1610,7 +1867,20 @@ turnLoop:
 			return err
 		}
 
-		stream, err := e.provider.Stream(ctx, req)
+		providerReq := e.prepareProviderRequest(req)
+
+		// Log per-turn request state
+		// For attempt 0: captures state after applyExternalSearch modifications
+		// For attempt > 0: captures tool results appended in previous turn
+		if e.debugLogger != nil {
+			e.debugLogger.LogTurnRequest(attempt, e.provider.Name(), providerReq.Model, providerReq)
+		}
+
+		if req.DebugRaw {
+			DebugRawRequest(req.DebugRaw, e.provider.Name(), e.provider.Credential(), providerReq, fmt.Sprintf("Request (turn %d)", attempt))
+		}
+
+		stream, err := e.provider.Stream(ctx, providerReq)
 		if err != nil {
 			// Reactive compaction: if this is a context overflow error, try compacting and retrying (once)
 			if compactionConfig != nil && isContextOverflowError(err) && !reactiveCompactionDone {

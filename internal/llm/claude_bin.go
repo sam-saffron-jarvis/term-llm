@@ -2066,12 +2066,12 @@ func buildSDKToolResultImageBlocks(result *ToolResult) []sdkContentBlock {
 func buildSDKImageBlock(imagePath string, imageData *ToolImageData) (sdkContentBlock, string, bool) {
 	mediaType, base64Data := "", ""
 	switch {
-	case imageData != nil && imageData.Base64 != "":
+	case imageData != nil && strings.TrimSpace(imageData.Base64) != "":
 		mediaType = imageData.MediaType
 		base64Data = imageData.Base64
-	case imagePath != "":
-		data, err := os.ReadFile(imagePath)
-		if err != nil {
+	case strings.TrimSpace(imagePath) != "":
+		data, ok := readHydratableImagePath(imagePath)
+		if !ok {
 			return sdkContentBlock{}, "", false
 		}
 		mediaType = mediaTypeFromPath(imagePath)

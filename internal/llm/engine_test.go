@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"sync"
@@ -4941,5 +4943,287 @@ func TestEngineDoesNotRecoverToolCallAfterSemanticProviderError(t *testing.T) {
 	}
 	if got := len(provider.calls); got != 1 {
 		t.Fatalf("provider calls = %d, want no recovery retry", got)
+	}
+}
+
+func TestEngineIndirectVisionRewritesUserImagesAsReferences(t *testing.T) {
+	provider := NewMockProvider("mock").WithCapabilities(Capabilities{})
+	provider.AddTextResponse("ok")
+	engine := NewEngine(provider, nil)
+	engine.SetIndirectVision(true)
+
+	stream, err := engine.Stream(context.Background(), Request{
+		Messages: []Message{{
+			Role: RoleUser,
+			Parts: []Part{
+				{Type: PartImage, ImageData: &ToolImageData{MediaType: "image/png"}, ImagePath: "/tmp/upload.png"},
+				{Type: PartText, Text: "describe it"},
+			},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	defer stream.Close()
+	for {
+		_, err := stream.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("Recv: %v", err)
+		}
+	}
+
+	if len(provider.Requests) != 1 {
+		t.Fatalf("provider requests = %d, want 1", len(provider.Requests))
+	}
+	got := provider.Requests[0].Messages
+	if len(got) != 2 || got[0].Role != RoleDeveloper {
+		t.Fatalf("messages = %#v, want developer instruction plus user", got)
+	}
+	if !strings.Contains(MessageText(got[0]), "call the view_image tool") {
+		t.Fatalf("developer instruction = %q", MessageText(got[0]))
+	}
+	user := got[1]
+	if user.Role != RoleUser || len(user.Parts) != 2 {
+		t.Fatalf("user message = %#v, want two text parts", user)
+	}
+	if user.Parts[0].Type != PartText || !strings.Contains(user.Parts[0].Text, "/tmp/upload.png") || !strings.Contains(user.Parts[0].Text, "view_image") {
+		t.Fatalf("rewritten image part = %#v", user.Parts[0])
+	}
+	if user.Parts[0].ImageData != nil || user.Parts[0].ImagePath != "" {
+		t.Fatalf("rewritten image leaked image fields: %#v", user.Parts[0])
+	}
+	if user.Parts[1].Type != PartText || user.Parts[1].Text != "describe it" {
+		t.Fatalf("text part = %#v", user.Parts[1])
+	}
+}
+
+func TestEngineIndirectVisionRewritesImagesInAgenticLoop(t *testing.T) {
+	provider := NewMockProvider("mock").WithCapabilities(Capabilities{ToolCalls: true})
+	provider.AddTextResponse("ok")
+	engine := NewEngine(provider, nil)
+	engine.SetIndirectVision(true)
+
+	stream, err := engine.Stream(context.Background(), Request{
+		Messages: []Message{{
+			Role:  RoleUser,
+			Parts: []Part{{Type: PartImage, ImageData: &ToolImageData{MediaType: "image/png"}, ImagePath: "/tmp/loop.png"}},
+		}},
+		Tools:    []ToolSpec{{Name: "dummy"}},
+		MaxTurns: 2,
+	})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	defer stream.Close()
+	for {
+		_, err := stream.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("Recv: %v", err)
+		}
+	}
+
+	if len(provider.Requests) != 1 {
+		t.Fatalf("provider requests = %d, want 1", len(provider.Requests))
+	}
+	msgs := provider.Requests[0].Messages
+	if len(msgs) != 2 || msgs[1].Role != RoleUser || len(msgs[1].Parts) != 1 {
+		t.Fatalf("messages = %#v, want developer plus rewritten user", msgs)
+	}
+	part := msgs[1].Parts[0]
+	if part.Type != PartText || !strings.Contains(part.Text, "/tmp/loop.png") || part.ImageData != nil || part.ImagePath != "" {
+		t.Fatalf("rewritten part = %#v", part)
+	}
+}
+
+func TestImageReferenceTextNoPath(t *testing.T) {
+	got := imageReferenceText(Part{Type: PartImage, ImageData: &ToolImageData{MediaType: "image/png", Base64: "abc"}})
+	if !strings.Contains(got, "no local file path") || !strings.Contains(got, "image/png") {
+		t.Fatalf("imageReferenceText() = %q, want no-path explanation with media type", got)
+	}
+}
+
+func TestEngineHydratesPathOnlyImageForNativeVision(t *testing.T) {
+	dataHome := t.TempDir()
+	t.Setenv("XDG_DATA_HOME", dataHome)
+	uploadsDir := filepath.Join(dataHome, "term-llm", "uploads")
+	if err := os.MkdirAll(uploadsDir, 0o700); err != nil {
+		t.Fatalf("mkdir uploads: %v", err)
+	}
+	imagePath := filepath.Join(uploadsDir, "upload.png")
+	if err := os.WriteFile(imagePath, []byte("hello"), 0o600); err != nil {
+		t.Fatalf("write image: %v", err)
+	}
+	provider := NewMockProvider("mock").AddTextResponse("ok")
+	engine := NewEngine(provider, nil)
+
+	stream, err := engine.Stream(context.Background(), Request{Messages: []Message{{
+		Role: RoleUser,
+		Parts: []Part{{
+			Type:      PartImage,
+			ImagePath: imagePath,
+			ImageData: &ToolImageData{MediaType: "image/png"},
+		}},
+	}}})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	for {
+		_, err := stream.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("Recv: %v", err)
+		}
+	}
+	if len(provider.Requests) != 1 {
+		t.Fatalf("provider requests = %d, want 1", len(provider.Requests))
+	}
+	part := provider.Requests[0].Messages[0].Parts[0]
+	if part.ImageData == nil {
+		t.Fatal("ImageData is nil after hydration")
+	}
+	if part.ImageData.MediaType != "image/png" {
+		t.Fatalf("MediaType = %q, want image/png", part.ImageData.MediaType)
+	}
+	if part.ImageData.Base64 != "aGVsbG8=" {
+		t.Fatalf("Base64 = %q, want hydrated file bytes", part.ImageData.Base64)
+	}
+}
+
+func TestEngineHydrationFailureReplacesImageWithText(t *testing.T) {
+	dataHome := t.TempDir()
+	t.Setenv("XDG_DATA_HOME", dataHome)
+	missingPath := filepath.Join(dataHome, "term-llm", "uploads", "missing.png")
+	provider := NewMockProvider("mock").AddTextResponse("ok")
+	engine := NewEngine(provider, nil)
+
+	stream, err := engine.Stream(context.Background(), Request{Messages: []Message{{
+		Role: RoleUser,
+		Parts: []Part{{
+			Type:      PartImage,
+			ImagePath: missingPath,
+			ImageData: &ToolImageData{MediaType: "image/png"},
+		}},
+	}}})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	for {
+		_, err := stream.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("Recv: %v", err)
+		}
+	}
+	part := provider.Requests[0].Messages[0].Parts[0]
+	if part.Type != PartText || !strings.Contains(part.Text, "image unavailable") || !strings.Contains(part.Text, missingPath) {
+		t.Fatalf("part = %#v, want unavailable image text", part)
+	}
+	if part.ImageData != nil {
+		t.Fatalf("part.ImageData = %#v, want nil", part.ImageData)
+	}
+}
+
+func TestEngineDoesNotHydrateImageOutsideUploadsDir(t *testing.T) {
+	dataHome := t.TempDir()
+	t.Setenv("XDG_DATA_HOME", dataHome)
+	outsidePath := filepath.Join(t.TempDir(), "secret.png")
+	if err := os.WriteFile(outsidePath, []byte("secret"), 0o600); err != nil {
+		t.Fatalf("write outside image: %v", err)
+	}
+	provider := NewMockProvider("mock").AddTextResponse("ok")
+	engine := NewEngine(provider, nil)
+
+	stream, err := engine.Stream(context.Background(), Request{Messages: []Message{{
+		Role: RoleUser,
+		Parts: []Part{{
+			Type:      PartImage,
+			ImagePath: outsidePath,
+			ImageData: &ToolImageData{MediaType: "image/png"},
+		}},
+	}}})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	for {
+		_, err := stream.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("Recv: %v", err)
+		}
+	}
+	part := provider.Requests[0].Messages[0].Parts[0]
+	if part.Type != PartText || !strings.Contains(part.Text, "image unavailable") {
+		t.Fatalf("part = %#v, want unavailable image text for disallowed path", part)
+	}
+}
+
+func TestEngineIndirectVisionCopiesNonUploadImageToUploads(t *testing.T) {
+	dataHome := t.TempDir()
+	t.Setenv("XDG_DATA_HOME", dataHome)
+	outsidePath := filepath.Join(t.TempDir(), "clipboard.png")
+	if err := os.WriteFile(outsidePath, []byte("ignored-original-path"), 0o600); err != nil {
+		t.Fatalf("write outside image: %v", err)
+	}
+	provider := NewMockProvider("mock").AddTextResponse("ok")
+	engine := NewEngine(provider, nil)
+	engine.SetIndirectVision(true)
+
+	stream, err := engine.Stream(context.Background(), Request{Messages: []Message{{
+		Role: RoleUser,
+		Parts: []Part{{
+			Type:      PartImage,
+			ImagePath: outsidePath,
+			ImageData: &ToolImageData{MediaType: "image/png", Base64: "aGVsbG8="},
+		}},
+	}}})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	for {
+		_, err := stream.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("Recv: %v", err)
+		}
+	}
+	if len(provider.Requests) != 1 {
+		t.Fatalf("provider requests = %d, want 1", len(provider.Requests))
+	}
+	last := provider.Requests[0].Messages[len(provider.Requests[0].Messages)-1]
+	if len(last.Parts) != 1 || last.Parts[0].Type != PartText {
+		t.Fatalf("last parts = %#v, want text reference", last.Parts)
+	}
+	text := last.Parts[0].Text
+	uploadsDir := filepath.Join(dataHome, "term-llm", "uploads")
+	if !strings.Contains(text, uploadsDir) || strings.Contains(text, outsidePath) {
+		t.Fatalf("reference text = %q, want uploads path and no original outside path", text)
+	}
+	entries, err := os.ReadDir(uploadsDir)
+	if err != nil {
+		t.Fatalf("read uploads: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("uploads entries = %d, want 1", len(entries))
+	}
+	got, err := os.ReadFile(filepath.Join(uploadsDir, entries[0].Name()))
+	if err != nil {
+		t.Fatalf("read copied upload: %v", err)
+	}
+	if string(got) != "hello" {
+		t.Fatalf("copied upload bytes = %q, want hello", got)
 	}
 }

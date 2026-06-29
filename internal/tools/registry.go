@@ -173,6 +173,29 @@ func (r *LocalToolRegistry) registerTool(specName string) error {
 	return nil
 }
 
+// SetViewImageVisionProvider switches view_image into routed-vision mode. If
+// view_image was not enabled, it is registered so the primary model can call it.
+func (r *LocalToolRegistry) SetViewImageVisionProvider(provider llm.Provider, model string) {
+	if r == nil || provider == nil {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.tools[ViewImageToolName] = NewViewImageToolWithVision(r.approval, provider, model)
+	if !stringSliceContains(r.config.Enabled, ViewImageToolName) {
+		r.config.Enabled = append(r.config.Enabled, ViewImageToolName)
+	}
+}
+
+func stringSliceContains(values []string, needle string) bool {
+	for _, value := range values {
+		if value == needle {
+			return true
+		}
+	}
+	return false
+}
+
 // RegisterWithEngine registers all enabled tools with the LLM engine.
 func (r *LocalToolRegistry) RegisterWithEngine(engine *llm.Engine) {
 	r.mu.RLock()

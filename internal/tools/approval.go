@@ -192,6 +192,9 @@ type ApprovalManager struct {
 	projectCache map[string]*ProjectApprovals // repo root -> approvals
 	projectMu    sync.Mutex
 
+	toolAllowMu  sync.RWMutex
+	toolReadDirs map[string][]string // per-tool read allowlist, e.g. routed view_image uploads
+
 	// promptMu serializes interactive approval prompts.
 	// When tools execute in parallel, multiple may need approval simultaneously.
 	// This mutex ensures only one prompt is shown at a time to avoid UI conflicts.
@@ -235,7 +238,55 @@ func NewApprovalManager(perms *ToolPermissions) *ApprovalManager {
 		shellCache:   NewShellApprovalCache(),
 		permissions:  perms,
 		projectCache: make(map[string]*ProjectApprovals),
+		toolReadDirs: make(map[string][]string),
 	}
+}
+
+// AddToolReadDir adds a per-tool read-only directory allowlist entry. Unlike
+// ToolPermissions.ReadDirs, this does not grant access to other read tools.
+func (m *ApprovalManager) AddToolReadDir(toolName, dir string) error {
+	if m == nil {
+		return nil
+	}
+	toolName = strings.TrimSpace(toolName)
+	if toolName == "" {
+		return fmt.Errorf("tool name is required")
+	}
+	abs, err := canonicalizePath(dir)
+	if err != nil {
+		return err
+	}
+	m.toolAllowMu.Lock()
+	defer m.toolAllowMu.Unlock()
+	for _, existing := range m.toolReadDirs[toolName] {
+		if existing == abs {
+			return nil
+		}
+	}
+	m.toolReadDirs[toolName] = append(m.toolReadDirs[toolName], abs)
+	return nil
+}
+
+func (m *ApprovalManager) isPathAllowedForToolRead(toolName, path string) bool {
+	if m == nil || strings.TrimSpace(toolName) == "" {
+		return false
+	}
+	resolved, err := canonicalizePath(path)
+	if err != nil {
+		return false
+	}
+	m.toolAllowMu.RLock()
+	dirs := append([]string(nil), m.toolReadDirs[toolName]...)
+	m.toolAllowMu.RUnlock()
+	for _, dir := range dirs {
+		if strings.HasPrefix(resolved, dir+string(filepath.Separator)) || resolved == dir {
+			return true
+		}
+	}
+	if m.parent != nil {
+		return m.parent.isPathAllowedForToolRead(toolName, path)
+	}
+	return false
 }
 
 // SetParent sets the parent ApprovalManager for inheritance.
@@ -342,6 +393,14 @@ func (m *ApprovalManager) checkPathApprovalNoPrompt(toolName, path, absPath stri
 	if allowed {
 		if m.DebugApproval {
 			log.Printf("[approval]   allowlist approved %q (isWrite=%v)", path, isWrite)
+		}
+		return ProceedOnce, true, nil
+	}
+
+	// 1a. Check per-tool read allowlist (used for routed view_image uploads)
+	if !isWrite && m.isPathAllowedForToolRead(toolName, path) {
+		if m.DebugApproval {
+			log.Printf("[approval]   tool read allowlist approved %q for %s", path, toolName)
 		}
 		return ProceedOnce, true, nil
 	}

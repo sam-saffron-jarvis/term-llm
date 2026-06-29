@@ -2,6 +2,7 @@ package session
 
 import (
 	"encoding/json"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -256,6 +257,62 @@ func (m *Message) PartsJSON() (string, error) {
 		return "", err
 	}
 	return string(data), nil
+}
+
+func (m *Message) PartsJSONForStorage(stripImageBase64 bool) (string, error) {
+	parts := m.Parts
+	if stripImageBase64 {
+		parts = partsForStorage(m.Parts)
+	}
+	data, err := json.Marshal(parts)
+	if err != nil {
+		return "", err
+	}
+	return string(data), nil
+}
+
+func partsForStorage(parts []llm.Part) []llm.Part {
+	var out []llm.Part
+	for i, part := range parts {
+		if part.Type == llm.PartImage && isSessionUploadPath(part.ImagePath) && part.ImageData != nil && strings.TrimSpace(part.ImageData.Base64) != "" {
+			if out == nil {
+				out = append([]llm.Part(nil), parts[:i]...)
+			}
+			copyPart := part
+			imageData := *part.ImageData
+			imageData.Base64 = ""
+			copyPart.ImageData = &imageData
+			out = append(out, copyPart)
+			continue
+		}
+		if out != nil {
+			out = append(out, part)
+		}
+	}
+	if out != nil {
+		return out
+	}
+	return parts
+}
+
+func isSessionUploadPath(path string) bool {
+	dataDir, err := GetDataDir()
+	if err != nil {
+		return false
+	}
+	uploadsDir := filepath.Join(dataDir, "uploads")
+	uploadsDir, err = filepath.EvalSymlinks(uploadsDir)
+	if err != nil {
+		return false
+	}
+	path, err = filepath.EvalSymlinks(strings.TrimSpace(path))
+	if err != nil {
+		return false
+	}
+	if path == uploadsDir {
+		return false
+	}
+	return strings.HasPrefix(path, uploadsDir+string(filepath.Separator))
 }
 
 // SetPartsFromJSON deserializes JSON into the Parts field.

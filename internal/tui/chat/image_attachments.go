@@ -4,11 +4,14 @@ import (
 	"encoding/base64"
 	"fmt"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/samsaffron/term-llm/internal/clipboard"
 	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/session"
 )
 
 const maxPastedImageSize = 20 * 1024 * 1024
@@ -19,6 +22,7 @@ var readClipboardImage = clipboard.ReadImage
 type ImageAttachment struct {
 	MediaType string
 	Data      []byte
+	Path      string
 }
 
 func (m *Model) maybeAttachImageFromPaste(msg tea.KeyPressMsg) bool {
@@ -112,12 +116,21 @@ func (m *Model) imagePartList() []llm.Part {
 	if len(m.images) == 0 {
 		return nil
 	}
+	indirectVision := m.engine != nil && m.engine.IndirectVision()
 	parts := make([]llm.Part, 0, len(m.images))
-	for _, img := range m.images {
-		parts = append(parts, llm.Part{
+	for i := range m.images {
+		img := &m.images[i]
+		if indirectVision && img.Path == "" {
+			img.Path = saveChatImageAttachment(img.Data, img.MediaType)
+		}
+		part := llm.Part{
 			Type:      llm.PartImage,
 			ImageData: &llm.ToolImageData{MediaType: img.MediaType, Base64: base64.StdEncoding.EncodeToString(img.Data)},
-		})
+		}
+		if indirectVision {
+			part.ImagePath = img.Path
+		}
+		parts = append(parts, part)
 	}
 	return parts
 }
@@ -128,6 +141,51 @@ func (m *Model) imageAttachmentLabels() []string {
 		labels = append(labels, fmt.Sprintf("image %d", i+1))
 	}
 	return labels
+}
+
+func saveChatImageAttachment(data []byte, mediaType string) string {
+	dataDir, err := session.GetDataDir()
+	if err != nil {
+		return ""
+	}
+	uploadsDir := filepath.Join(dataDir, "uploads")
+	if err := os.MkdirAll(uploadsDir, 0o700); err != nil {
+		return ""
+	}
+	ext := imageExtensionForMediaType(mediaType)
+	f, err := os.CreateTemp(uploadsDir, "pasted_image_*"+ext)
+	if err != nil {
+		return ""
+	}
+	path := f.Name()
+	if err := f.Chmod(0o600); err != nil {
+		f.Close()
+		_ = os.Remove(path)
+		return ""
+	}
+	if _, err := f.Write(data); err != nil {
+		f.Close()
+		_ = os.Remove(path)
+		return ""
+	}
+	if err := f.Close(); err != nil {
+		_ = os.Remove(path)
+		return ""
+	}
+	return path
+}
+
+func imageExtensionForMediaType(mediaType string) string {
+	switch strings.ToLower(strings.TrimSpace(mediaType)) {
+	case "image/jpeg":
+		return ".jpg"
+	case "image/gif":
+		return ".gif"
+	case "image/webp":
+		return ".webp"
+	default:
+		return ".png"
+	}
 }
 
 func detectImageMediaType(data []byte) string {

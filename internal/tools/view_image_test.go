@@ -87,6 +87,43 @@ func TestViewImageToolExecute_ReturnsStructuredImageData(t *testing.T) {
 	}
 }
 
+func TestViewImageToolExecute_RoutedVisionReturnsTextOnly(t *testing.T) {
+	tmpDir := t.TempDir()
+	filePath := filepath.Join(tmpDir, "sample.png")
+	writeTestPNG(t, filePath)
+
+	vision := llm.NewMockProvider("vision").AddTextResponse("The image contains colored pixels.")
+	tool := NewViewImageToolWithVision(nil, vision, "vision-model")
+	args, err := json.Marshal(ViewImageArgs{FilePath: filePath, Detail: "high", Question: "What is shown?"})
+	if err != nil {
+		t.Fatalf("marshal args: %v", err)
+	}
+
+	out, err := tool.Execute(context.Background(), args)
+	if err != nil {
+		t.Fatalf("Execute returned error: %v", err)
+	}
+	if !strings.Contains(out.Content, "Vision analysis:") || !strings.Contains(out.Content, "colored pixels") {
+		t.Fatalf("expected routed vision analysis in content, got %q", out.Content)
+	}
+	if len(out.ContentParts) != 0 {
+		t.Fatalf("routed vision should return text only, got content parts %#v", out.ContentParts)
+	}
+	if len(vision.Requests) != 1 {
+		t.Fatalf("vision requests = %d, want 1", len(vision.Requests))
+	}
+	req := vision.Requests[0]
+	if req.Model != "vision-model" {
+		t.Fatalf("vision request model = %q, want vision-model", req.Model)
+	}
+	if len(req.Messages) != 1 || len(req.Messages[0].Parts) != 2 {
+		t.Fatalf("vision request messages = %#v, want text + image", req.Messages)
+	}
+	if req.Messages[0].Parts[1].Type != llm.PartImage || req.Messages[0].Parts[1].ImageData == nil {
+		t.Fatalf("vision request second part = %#v, want image data", req.Messages[0].Parts[1])
+	}
+}
+
 func TestViewImageToolExecute_CropsRegionAndScales(t *testing.T) {
 	tmpDir := t.TempDir()
 	filePath := filepath.Join(tmpDir, "sample.png")
