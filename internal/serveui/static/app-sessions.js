@@ -2080,6 +2080,7 @@ const initialize = async () => {
     state.providers = await fetchProviders();
     normalizeSelectedProvider();
     renderProviderOptions();
+    app.updateHeader?.();
 
     let modelsPromise;
     if (speculativeModelsPromise !== null && state.selectedProvider === speculativeProvider) {
@@ -2093,6 +2094,7 @@ const initialize = async () => {
     [state.models] = await Promise.all([modelsPromise, sessionsPromise]);
     state.connected = true;
     renderModelOptions();
+    app.updateHeader?.();
     setConnectionState('', '');
     startSidebarStatusPoll();
     void refreshWidgetsSidebar();

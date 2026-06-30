@@ -833,6 +833,45 @@ async function testNewQueryStartsDraftInsteadOfLastSession() {
   pass(name);
 }
 
+async function testNewQueryRefreshesHeaderAfterRuntimeMetadataLoads() {
+  const name = 'new query refreshes header after runtime metadata loads';
+  const headerCalls = [];
+  await createSessionsHarness({
+    search: '?new=1',
+    appOverrides: {
+      fetchProviders: async () => [{
+        name: 'chatgpt',
+        configured: true,
+        is_default: true,
+        default_model: 'gpt-5.5-medium',
+        models: ['gpt-5.5'],
+      }],
+      fetchModels: async () => ['gpt-5.5'],
+      updateHeader() {
+        headerCalls.push({
+          providers: this.state.providers.map((provider) => provider.name),
+          models: this.state.models.slice(),
+          draftSessionActive: this.state.draftSessionActive,
+          activeSessionId: this.state.activeSessionId,
+        });
+      },
+    },
+  });
+
+  const postMetadataCall = headerCalls.find((call) => (
+    call.draftSessionActive
+    && call.activeSessionId === ''
+    && call.providers.includes('chatgpt')
+    && call.models.includes('gpt-5.5')
+  ));
+  if (!postMetadataCall) {
+    fail(name, 'expected initialize to refresh the draft header after providers and models load', JSON.stringify(headerCalls));
+    return;
+  }
+
+  pass(name);
+}
+
 async function testMergeServerSessionsMigratesInterruptBuffersToRealSessionId() {
   const name = 'session id reconciliation migrates interrupt buffers to real session id';
   const { app } = await createSessionsHarness({
@@ -3917,6 +3956,7 @@ async function testMCPPatchConflictDoesNotOptimisticallyEnable() {
   await testSwitchToSessionSyncsSelectedRuntime();
   await testNumericDeepLinkResolvesRealSessionId();
   await testNewQueryStartsDraftInsteadOfLastSession();
+  await testNewQueryRefreshesHeaderAfterRuntimeMetadataLoads();
   await testMergeServerSessionsMigratesInterruptBuffersToRealSessionId();
   await testDeveloperMessagesAreHidden();
   await testConvertServerMessagesCompactionSummariesBecomeMarkers();
