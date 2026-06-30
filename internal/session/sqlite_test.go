@@ -1388,6 +1388,77 @@ func TestSQLiteStoreSearchReturnsDistinctFilteredSessionMatches(t *testing.T) {
 	}
 }
 
+func TestSQLiteStoreSearchCommonTermReturnsLimitFromLargeCandidateSet(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+
+	store, err := NewSQLiteStore(DefaultConfig())
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+	const sessionCount = 30
+	const messagesPerSession = 80
+	const resultLimit = 20
+	base := time.Now().UTC().Truncate(time.Second)
+
+	tx, err := store.db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("BeginTx: %v", err)
+	}
+	defer tx.Rollback()
+
+	sessStmt, err := tx.PrepareContext(ctx, `
+		INSERT INTO sessions (id, number, name, summary, provider, model, mode, origin, created_at, updated_at, last_user_message_at, last_message_at, archived, pinned, status)
+		VALUES (?, ?, '', '', 'test', 'test-model', 'chat', 'web', ?, ?, ?, ?, FALSE, FALSE, 'active')`)
+	if err != nil {
+		t.Fatalf("prepare session insert: %v", err)
+	}
+	defer sessStmt.Close()
+
+	msgStmt, err := tx.PrepareContext(ctx, `
+		INSERT INTO messages (session_id, role, parts, text_content, created_at, sequence)
+		VALUES (?, 'user', '[]', ?, ?, ?)`)
+	if err != nil {
+		t.Fatalf("prepare message insert: %v", err)
+	}
+	defer msgStmt.Close()
+
+	for i := 0; i < sessionCount; i++ {
+		sessionID := fmt.Sprintf("search-common-%02d", i)
+		createdAt := base.Add(time.Duration(i) * time.Minute)
+		lastVisibleAt := createdAt.Add(time.Duration(messagesPerSession-1) * time.Second)
+		if _, err := sessStmt.ExecContext(ctx, sessionID, i+1, createdAt, lastVisibleAt, createdAt, lastVisibleAt); err != nil {
+			t.Fatalf("insert session %d: %v", i, err)
+		}
+		for j := 0; j < messagesPerSession; j++ {
+			text := fmt.Sprintf("common sidebar search token in session %02d message %03d", i, j)
+			if _, err := msgStmt.ExecContext(ctx, sessionID, text, createdAt.Add(time.Duration(j)*time.Second), j); err != nil {
+				t.Fatalf("insert message %d/%d: %v", i, j, err)
+			}
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+
+	results, err := store.Search(ctx, SearchOptions{Query: "common", Limit: resultLimit})
+	if err != nil {
+		t.Fatalf("Search common: %v", err)
+	}
+	if len(results) != resultLimit {
+		t.Fatalf("Search common len = %d, want %d", len(results), resultLimit)
+	}
+	seen := map[string]bool{}
+	for _, result := range results {
+		if seen[result.SessionID] {
+			t.Fatalf("duplicate session in common search results: %#v", results)
+		}
+		seen[result.SessionID] = true
+	}
+}
+
 func TestSQLiteStorePersistsDeveloperMessages(t *testing.T) {
 	t.Setenv("XDG_DATA_HOME", t.TempDir())
 

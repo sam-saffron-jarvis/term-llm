@@ -162,6 +162,17 @@ CREATE TABLE messages (
     compaction_tail BOOLEAN DEFAULT FALSE
 )`
 
+const (
+	searchFTSDefaultLimit = 20
+
+	// Search returns at most one message per session, so common terms can produce
+	// many same-session FTS hits before enough distinct sessions are found. Keep
+	// the rank/window stages bounded while still sampling a generous candidate
+	// set for long conversations.
+	searchFTSMinCandidateLimit            = 2048
+	searchFTSCandidatesPerRequestedResult = 512
+)
+
 // NewSQLiteStore creates a new SQLite-based session store.
 func NewSQLiteStore(cfg Config) (*SQLiteStore, error) {
 	dbPath, err := ResolveDBPath(cfg.Path)
@@ -1748,10 +1759,21 @@ func (s *SQLiteStore) List(ctx context.Context, opts ListOptions) ([]SessionSumm
 	return results, rows.Err()
 }
 
+func searchFTSCandidateLimit(resultLimit int) int {
+	if resultLimit <= 0 {
+		resultLimit = searchFTSDefaultLimit
+	}
+	candidateLimit := resultLimit * searchFTSCandidatesPerRequestedResult
+	if candidateLimit < searchFTSMinCandidateLimit {
+		return searchFTSMinCandidateLimit
+	}
+	return candidateLimit
+}
+
 // Search finds sessions containing the query text using FTS5.
 func (s *SQLiteStore) Search(ctx context.Context, opts SearchOptions) ([]SearchResult, error) {
-	if opts.Limit == 0 {
-		opts.Limit = 20
+	if opts.Limit <= 0 {
+		opts.Limit = searchFTSDefaultLimit
 	}
 
 	ftsQuery := sqlitefts.LiteralQuery(opts.Query)
@@ -1829,20 +1851,22 @@ func (s *SQLiteStore) Search(ctx context.Context, opts SearchOptions) ([]SearchR
 	if !opts.Archived {
 		filterClause += " AND s.archived = FALSE"
 	}
-	args = append(args, opts.Limit)
+	candidateLimit := searchFTSCandidateLimit(opts.Limit)
+	args = append(args, candidateLimit, opts.Limit)
 
 	rows, err := s.db.QueryContext(ctx, `
-		WITH raw_matches AS (
-			SELECT rowid AS message_id, rank AS match_rank
+		WITH raw_matches AS MATERIALIZED (
+			SELECT m.id AS message_id, m.session_id, messages_fts.rank AS match_rank
 			FROM messages_fts
-			WHERE messages_fts MATCH ?
-		), ranked_matches AS (
-			SELECT m.id AS message_id, m.session_id, raw_matches.match_rank,
-			       ROW_NUMBER() OVER (PARTITION BY m.session_id ORDER BY raw_matches.match_rank, m.id) AS session_row
-			FROM raw_matches
-			JOIN messages m ON m.id = raw_matches.message_id
+			JOIN messages m ON m.id = messages_fts.rowid
 			JOIN sessions s ON s.id = m.session_id
-			WHERE 1=1`+compactionTailClause+filterClause+`
+			WHERE messages_fts MATCH ?`+compactionTailClause+filterClause+`
+			ORDER BY messages_fts.rank
+			LIMIT ?
+		), ranked_matches AS (
+			SELECT message_id, session_id, match_rank,
+			       ROW_NUMBER() OVER (PARTITION BY session_id ORDER BY match_rank, message_id) AS session_row
+			FROM raw_matches
 		), session_matches AS (
 			SELECT message_id, session_id, match_rank
 			FROM ranked_matches
