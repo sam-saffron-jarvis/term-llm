@@ -2726,11 +2726,11 @@ func (m *Model) cmdHandover(args []string) (tea.Model, tea.Cmd) {
 			}
 		}
 		if handoverDir != "" {
-			// Prefer the pinned handover path — the exact file agents are told
-			// about via {{handover_path}} — so documents written by other
-			// sessions or stray .md files can't shadow the plan. Fall back to
-			// scanning for the latest .md for legacy/cross-day sessions.
-			latestFile, latestInfo := pinnedHandoverFile()
+			// Prefer the exact file this session's agent was told about via
+			// {{handover_path}}, so documents written by concurrent sessions
+			// or stray .md files can't shadow the plan. Fall back to scanning
+			// for the latest .md when the prompt names no handover file.
+			latestFile, latestInfo := m.sessionHandoverFile(handoverDir)
 			if latestFile == "" || latestInfo.Size() == 0 {
 				latestFile, latestInfo = findLatestHandoverFile(handoverDir)
 			}
@@ -2893,12 +2893,32 @@ func pendingTargetScriptPreview(agent *agents.Agent) string {
 	return b.String()
 }
 
-// pinnedHandoverFile returns the process-pinned handover path for the current
-// project — the exact path agents see via {{handover_path}} — if a non-empty
-// file exists there (following the rename symlink). Returns ("", nil) otherwise.
-func pinnedHandoverFile() (string, os.FileInfo) {
-	path, err := session.GetHandoverPath(".", time.Now().Format("2006-01-02"))
-	if err != nil {
+// currentSystemPromptText returns the text of this session's persisted system
+// message, or "" if none exists.
+func (m *Model) currentSystemPromptText() string {
+	m.messagesMu.Lock()
+	defer m.messagesMu.Unlock()
+	for _, msg := range m.messages {
+		if msg.Role != llm.RoleSystem {
+			continue
+		}
+		for _, p := range msg.Parts {
+			if p.Text != "" {
+				return p.Text
+			}
+		}
+	}
+	return ""
+}
+
+// sessionHandoverFile returns the handover file this session's agent was told
+// about via {{handover_path}} — recovered from the persisted system prompt —
+// if a file exists there (following the rename symlink). Returns ("", nil)
+// otherwise. Each session names its own file, so concurrent sessions in the
+// same project cannot shadow each other's plans.
+func (m *Model) sessionHandoverFile(dir string) (string, os.FileInfo) {
+	path := session.ExtractHandoverPath(m.currentSystemPromptText(), dir)
+	if path == "" {
 		return "", nil
 	}
 	info, err := os.Stat(path)

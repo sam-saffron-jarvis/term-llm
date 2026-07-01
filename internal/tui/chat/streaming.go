@@ -836,14 +836,16 @@ func (m *Model) maybeRenameHandoverCmd() tea.Cmd {
 	if provider == nil {
 		return nil
 	}
+	// Snapshot the prompt before the async command to avoid racing on m.messages.
+	promptText := m.currentSystemPromptText()
 	return func() tea.Msg {
 		dir, err := session.GetHandoverDir(".")
 		if err != nil {
 			return handoverRenameDoneMsg{err: err}
 		}
-		// Rename the pinned handover file the agent writes to; only fall back
-		// to the latest-.md scan when the pinned path has no file yet.
-		path, _ := pinnedHandoverFile()
+		// Rename the file this session's agent writes to; only fall back to
+		// the latest-.md scan when the prompt names no handover file.
+		path := session.ExtractHandoverPath(promptText, dir)
 		if path == "" {
 			path, _ = findLatestHandoverFile(dir)
 		}

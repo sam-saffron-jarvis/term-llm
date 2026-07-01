@@ -8,13 +8,16 @@ import (
 
 	"github.com/samsaffron/term-llm/internal/agents"
 	"github.com/samsaffron/term-llm/internal/config"
+	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/session"
 )
 
-// TestCmdHandoverFileModePrefersPinnedPath ensures /handover reads the exact
-// file agents are told about via {{handover_path}}, even when another .md in
-// the handover directory has a newer modification time.
-func TestCmdHandoverFileModePrefersPinnedPath(t *testing.T) {
+// TestCmdHandoverFileModeUsesSessionPromptPath ensures /handover reads the
+// exact file this session's agent was told about via {{handover_path}} (as
+// recorded in its persisted system prompt), even when another .md in the
+// handover directory — e.g. from a concurrent session — has a newer
+// modification time.
+func TestCmdHandoverFileModeUsesSessionPromptPath(t *testing.T) {
 	tmp := t.TempDir()
 	oldWD, err := os.Getwd()
 	if err != nil {
@@ -25,23 +28,21 @@ func TestCmdHandoverFileModePrefersPinnedPath(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = os.Chdir(oldWD) })
 	t.Setenv("XDG_DATA_HOME", filepath.Join(tmp, "xdg-data"))
-	session.ResetHandoverPathCache()
-	t.Cleanup(session.ResetHandoverPathCache)
 
-	pinned, err := session.GetHandoverPath(".", time.Now().Format("2006-01-02"))
+	planPath, err := session.GetHandoverPath(".", time.Now().Format("2006-01-02"))
 	if err != nil {
 		t.Fatalf("GetHandoverPath: %v", err)
 	}
-	if err := os.MkdirAll(filepath.Dir(pinned), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(planPath), 0o755); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}
-	if err := os.WriteFile(pinned, []byte("the pinned plan"), 0o644); err != nil {
-		t.Fatalf("WriteFile pinned: %v", err)
+	if err := os.WriteFile(planPath, []byte("the session plan"), 0o644); err != nil {
+		t.Fatalf("WriteFile plan: %v", err)
 	}
 
-	// A stray document with a newer mtime must not shadow the pinned plan.
-	decoy := filepath.Join(filepath.Dir(pinned), "2026-01-01-stray-notes.md")
-	if err := os.WriteFile(decoy, []byte("stray notes"), 0o644); err != nil {
+	// A concurrent session's document with a newer mtime must not shadow it.
+	decoy := filepath.Join(filepath.Dir(planPath), "2026-01-01-other-session-plan.md")
+	if err := os.WriteFile(decoy, []byte("someone else's plan"), 0o644); err != nil {
 		t.Fatalf("WriteFile decoy: %v", err)
 	}
 	future := time.Now().Add(time.Hour)
@@ -52,11 +53,15 @@ func TestCmdHandoverFileModePrefersPinnedPath(t *testing.T) {
 	m := newTestChatModel(false)
 	m.store = &mockStore{}
 	m.config = &config.Config{}
-	m.sess = &session.Session{ID: "pinned-handover", CreatedAt: time.Now().Add(-time.Minute)}
+	m.sess = &session.Session{ID: "prompt-path-handover", CreatedAt: time.Now().Add(-time.Minute)}
 	m.agentName = "planner"
 	m.currentAgent = &agents.Agent{Name: "planner", EnableHandover: true, HandoverMode: "file"}
 	m.agentResolver = func(name string, cfg *config.Config) (*agents.Agent, error) {
 		return &agents.Agent{Name: name, SystemPrompt: "You are target."}, nil
+	}
+	sysPrompt := "You are a planner. Maintain your plan in `" + planPath + "`."
+	m.messages = []session.Message{
+		*session.NewMessage(m.sess.ID, llm.SystemText(sysPrompt), -1),
 	}
 
 	_, cmd := m.cmdHandover([]string{"@developer"})
@@ -71,7 +76,7 @@ func TestCmdHandoverFileModePrefersPinnedPath(t *testing.T) {
 	if done.result == nil {
 		t.Fatal("expected handover result")
 	}
-	if done.result.Document != "the pinned plan" {
+	if done.result.Document != "the session plan" {
 		t.Fatalf("handover used wrong document: %q", done.result.Document)
 	}
 }

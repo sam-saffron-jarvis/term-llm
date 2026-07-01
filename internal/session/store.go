@@ -8,8 +8,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/appdata"
@@ -188,41 +188,29 @@ func GetHandoverDir(cwd string) (string, error) {
 	return filepath.Join(dataDir, "handover", projectID), nil
 }
 
-// handoverPathCache pins the generated handover path per (handover dir, date)
-// for the lifetime of the process. System prompts embed this path via
-// {{handover_path}}; without pinning, every re-expansion (chat relaunch,
-// serve runtime recreation, spawned sub-agents) would mint a fresh random
-// slug and point the agent at a different file mid-session.
-var (
-	handoverPathMu    sync.Mutex
-	handoverPathCache = map[string]string{}
-)
-
-// GetHandoverPath returns the handover file path for the given working
-// directory and date, e.g. "2026-04-03-amber-creek-bloom.md". The random
-// slug is generated once per (project, date) and pinned for the lifetime of
-// the process, so repeated prompt expansions always name the same file.
+// GetHandoverPath returns a full handover file path with a random name like
+// "2026-04-03-amber-creek-bloom.md". A fresh slug is generated per call so
+// concurrent sessions in the same project get distinct plan files. The
+// expanded system prompt is the durable per-session record of the path; use
+// ExtractHandoverPath to recover it.
 func GetHandoverPath(cwd, date string) (string, error) {
 	dir, err := GetHandoverDir(cwd)
 	if err != nil {
 		return "", err
 	}
-	key := dir + "\x00" + date
-	handoverPathMu.Lock()
-	defer handoverPathMu.Unlock()
-	if p, ok := handoverPathCache[key]; ok {
-		return p, nil
-	}
-	p := filepath.Join(dir, date+"-"+RandomHandoverSlug()+".md")
-	handoverPathCache[key] = p
-	return p, nil
+	slug := RandomHandoverSlug()
+	return filepath.Join(dir, date+"-"+slug+".md"), nil
 }
 
-// ResetHandoverPathCache clears pinned handover paths. Test helper.
-func ResetHandoverPathCache() {
-	handoverPathMu.Lock()
-	defer handoverPathMu.Unlock()
-	handoverPathCache = map[string]string{}
+// ExtractHandoverPath recovers the handover file path embedded in a system
+// prompt via {{handover_path}}. It matches the first path under dir with the
+// "<date>-<slug>.md" shape. Returns "" when the prompt names no such file.
+func ExtractHandoverPath(prompt, dir string) string {
+	if prompt == "" || dir == "" {
+		return ""
+	}
+	re := regexp.MustCompile(regexp.QuoteMeta(dir) + `[\\/]\d{4}-\d{2}-\d{2}-[a-zA-Z0-9-]+\.md`)
+	return re.FindString(prompt)
 }
 
 // ResolveDBPath resolves an optional DB path override.
