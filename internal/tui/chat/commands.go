@@ -2726,7 +2726,14 @@ func (m *Model) cmdHandover(args []string) (tea.Model, tea.Cmd) {
 			}
 		}
 		if handoverDir != "" {
-			latestFile, latestInfo := findLatestHandoverFile(handoverDir)
+			// Prefer the pinned handover path — the exact file agents are told
+			// about via {{handover_path}} — so documents written by other
+			// sessions or stray .md files can't shadow the plan. Fall back to
+			// scanning for the latest .md for legacy/cross-day sessions.
+			latestFile, latestInfo := pinnedHandoverFile()
+			if latestFile == "" || latestInfo.Size() == 0 {
+				latestFile, latestInfo = findLatestHandoverFile(handoverDir)
+			}
 			if latestFile != "" && latestInfo.Size() > 0 {
 				// Check freshness: file must have been modified after the session started
 				sessionStart := time.Time{}
@@ -2884,6 +2891,21 @@ func pendingTargetScriptPreview(agent *agents.Agent) string {
 		b.WriteString("\n```\n")
 	}
 	return b.String()
+}
+
+// pinnedHandoverFile returns the process-pinned handover path for the current
+// project — the exact path agents see via {{handover_path}} — if a non-empty
+// file exists there (following the rename symlink). Returns ("", nil) otherwise.
+func pinnedHandoverFile() (string, os.FileInfo) {
+	path, err := session.GetHandoverPath(".", time.Now().Format("2006-01-02"))
+	if err != nil {
+		return "", nil
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return "", nil
+	}
+	return path, info
 }
 
 // findLatestHandoverFile scans dir for .md files and returns the path and

@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/appdata"
@@ -187,16 +188,41 @@ func GetHandoverDir(cwd string) (string, error) {
 	return filepath.Join(dataDir, "handover", projectID), nil
 }
 
-// GetHandoverPath returns a full handover file path with a deterministic
-// random name like "2026-04-03-amber-creek-bloom.md". The random slug is
-// generated once per call; callers should cache the result for the session.
+// handoverPathCache pins the generated handover path per (handover dir, date)
+// for the lifetime of the process. System prompts embed this path via
+// {{handover_path}}; without pinning, every re-expansion (chat relaunch,
+// serve runtime recreation, spawned sub-agents) would mint a fresh random
+// slug and point the agent at a different file mid-session.
+var (
+	handoverPathMu    sync.Mutex
+	handoverPathCache = map[string]string{}
+)
+
+// GetHandoverPath returns the handover file path for the given working
+// directory and date, e.g. "2026-04-03-amber-creek-bloom.md". The random
+// slug is generated once per (project, date) and pinned for the lifetime of
+// the process, so repeated prompt expansions always name the same file.
 func GetHandoverPath(cwd, date string) (string, error) {
 	dir, err := GetHandoverDir(cwd)
 	if err != nil {
 		return "", err
 	}
-	slug := RandomHandoverSlug()
-	return filepath.Join(dir, date+"-"+slug+".md"), nil
+	key := dir + "\x00" + date
+	handoverPathMu.Lock()
+	defer handoverPathMu.Unlock()
+	if p, ok := handoverPathCache[key]; ok {
+		return p, nil
+	}
+	p := filepath.Join(dir, date+"-"+RandomHandoverSlug()+".md")
+	handoverPathCache[key] = p
+	return p, nil
+}
+
+// ResetHandoverPathCache clears pinned handover paths. Test helper.
+func ResetHandoverPathCache() {
+	handoverPathMu.Lock()
+	defer handoverPathMu.Unlock()
+	handoverPathCache = map[string]string{}
 }
 
 // ResolveDBPath resolves an optional DB path override.

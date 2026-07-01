@@ -841,7 +841,12 @@ func (m *Model) maybeRenameHandoverCmd() tea.Cmd {
 		if err != nil {
 			return handoverRenameDoneMsg{err: err}
 		}
-		path, _ := findLatestHandoverFile(dir)
+		// Rename the pinned handover file the agent writes to; only fall back
+		// to the latest-.md scan when the pinned path has no file yet.
+		path, _ := pinnedHandoverFile()
+		if path == "" {
+			path, _ = findLatestHandoverFile(dir)
+		}
 		if path == "" {
 			return handoverRenameDoneMsg{}
 		}
