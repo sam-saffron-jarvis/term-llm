@@ -38,8 +38,9 @@ var (
 	execWriteDirs     []string
 	execShellAllow    []string
 	execSystemMessage string
-	// Yolo mode
-	execYolo bool
+	// Yolo/auto modes
+	execYolo         bool
+	execAutoApproval bool
 	// Skills flag
 	execSkills string
 )
@@ -95,6 +96,7 @@ func init() {
 			Files:            &execFiles,
 			FilesDescription: "File(s) to include as context (supports globs, 'clipboard')",
 			Yolo:             &execYolo,
+			Auto:             &execAutoApproval,
 			Skills:           &execSkills,
 		})
 
@@ -160,9 +162,18 @@ func runExec(cmd *cobra.Command, args []string) error {
 		// exec runs without a session ID, so file-change recording no-ops;
 		// wiring is kept so recording activates if this flow gains sessions.
 		wireFileRecorder(toolMgr.Registry, cfg)
-		// Enable yolo mode if flag is set
+		// Enable approval mode if flag is set
 		if execYolo {
 			toolMgr.ApprovalMgr.SetYoloMode(true)
+		} else if execAutoApproval {
+			providerCfg := cfg.GetActiveProviderConfig()
+			model := ""
+			if providerCfg != nil {
+				model = providerCfg.Model
+			}
+			if err := installGuardianReviewer(cfg, toolMgr.ApprovalMgr, provider, nil, model, true); err != nil {
+				return err
+			}
 		}
 		toolMgr.ApprovalMgr.PromptFunc = tools.HuhApprovalPrompt
 		toolMgr.SetupEngine(engine)

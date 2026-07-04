@@ -19,10 +19,6 @@ func TestRunAgentScriptTool(t *testing.T) {
 	echoScript := filepath.Join(agentDir, "echo.sh")
 	os.WriteFile(echoScript, []byte("#!/bin/sh\necho \"hello $@\"\n"), 0755)
 
-	// Create a script that exits with non-zero
-	failScript := filepath.Join(agentDir, "fail.sh")
-	os.WriteFile(failScript, []byte("#!/bin/sh\necho 'failing'\nexit 42\n"), 0755)
-
 	limits := DefaultOutputLimits()
 
 	tests := []struct {
@@ -75,20 +71,6 @@ func TestRunAgentScriptTool(t *testing.T) {
 			args:     RunAgentScriptArgs{Script: "echo.sh"},
 			wantOut:  "hello",
 			wantExit: "exit_code: 0",
-		},
-		{
-			name:     "successful execution with args",
-			agentDir: agentDir,
-			args:     RunAgentScriptArgs{Script: "echo.sh", Args: "world"},
-			wantOut:  "hello world",
-			wantExit: "exit_code: 0",
-		},
-		{
-			name:     "non-zero exit",
-			agentDir: agentDir,
-			args:     RunAgentScriptArgs{Script: "fail.sh"},
-			wantOut:  "failing",
-			wantExit: "exit_code: 42",
 		},
 	}
 

@@ -60,8 +60,9 @@ var (
 	askSystemMessage string
 	// Agent flag
 	askAgent string
-	// Yolo mode
+	// Yolo/auto modes
 	askYolo bool
+	askAuto bool
 	// Fast provider flag
 	askFast bool
 	// Skills flag
@@ -128,6 +129,7 @@ func init() {
 			FilesDescription: "File(s) to include as context (supports globs, line ranges like file.go:10-20, 'clipboard')",
 			Agent:            &askAgent,
 			Yolo:             &askYolo,
+			Auto:             &askAuto,
 			Skills:           &askSkills,
 		})
 
@@ -342,9 +344,18 @@ func runAsk(cmd *cobra.Command, args []string) error {
 	}
 	var outputTool *tools.SetOutputTool
 	if toolMgr != nil {
-		// Enable yolo mode if flag is set
+		// Enable approval mode if flag is set
 		if askYolo {
 			toolMgr.ApprovalMgr.SetYoloMode(true)
+		} else if askAuto {
+			providerCfg := cfg.GetActiveProviderConfig()
+			model := ""
+			if providerCfg != nil {
+				model = providerCfg.Model
+			}
+			if err := installGuardianReviewer(cfg, toolMgr.ApprovalMgr, provider, nil, model, false); err != nil {
+				return err
+			}
 		}
 
 		// PromptFunc is set in streamWithRenderer to use bubbletea UI

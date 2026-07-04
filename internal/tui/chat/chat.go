@@ -383,6 +383,8 @@ type Model struct {
 	footerMessageTone string   // "", "muted", "success", "warning", or "error"
 	footerMessageSeq  uint64   // monotonically increasing footer message timer token
 
+	lastGuardianReviewForApproval string // latest non-success guardian review message to show durably above an approval prompt
+
 	attemptInput          int
 	attemptOutput         int
 	attemptCached         int
@@ -450,6 +452,7 @@ type (
 	handoverCancelMsg     struct{}
 	handoverRenameDoneMsg struct{ err error }
 	mcpStatusUpdateMsg    struct{ update mcp.StatusUpdate }
+	GuardianReviewMsg     struct{ Message string }
 )
 
 const (
@@ -1413,6 +1416,16 @@ func (m *Model) YoloModeActive() bool {
 	return m.isYoloModeActive()
 }
 
+// ApprovalModeActive returns the current effective approval mode.
+func (m *Model) ApprovalModeActive() tools.ApprovalMode {
+	return m.currentApprovalMode()
+}
+
+// PersistApprovalModeActive stores the model's current effective approval mode on the session.
+func (m *Model) PersistApprovalModeActive() {
+	m.persistApprovalMode(m.currentApprovalMode())
+}
+
 // WaitStreamDone blocks until the engine streaming goroutine has exited.
 // It is safe to call when no stream was started (no-op). Shutdown must not
 // hang forever if a provider/tool ignores cancellation, so the wait is bounded
@@ -1627,6 +1640,21 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case mcpStatusUpdateMsg:
 		m.refreshMCPPickerIfOpen()
 		cmds = append(cmds, m.listenForMCPStatusUpdates())
+
+	case GuardianReviewMsg:
+		message := strings.TrimSpace(msg.Message)
+		tone := guardianFooterTone(message)
+		if message != "" && m.tracker != nil {
+			m.tracker.AddExternalUIResult(message)
+			m.invalidateViewCache()
+		}
+		if message != "" && tone != "success" {
+			m.lastGuardianReviewForApproval = message
+		}
+		_, cmd := m.showFooterMessageWithTone(message, tone)
+		if cmd != nil {
+			cmds = append(cmds, cmd)
+		}
 
 	case interruptClassifiedMsg:
 		return m.handleInterruptClassified(msg)
@@ -2532,6 +2560,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		// In alt screen mode, render approval UI inline
 		if m.altScreen {
+			m.addGuardianReviewBeforeApprovalPrompt()
 			m.pausedForExternalUI = true
 			m.approvalDoneCh = msg.DoneCh
 			if msg.IsShell {

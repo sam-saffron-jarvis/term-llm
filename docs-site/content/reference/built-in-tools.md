@@ -148,3 +148,42 @@ When a tool needs access outside approved directories, term-llm prompts for appr
 - **Proceed once**: Allow this specific action
 - **Proceed always**: Allow for this session (memory only)
 - **Proceed always + save**: Allow permanently (saved to config)
+
+### Approval modes
+
+Interactive chat has three approval modes, shown in the status line when active:
+
+- **Prompt** (default): unapproved tool actions ask before proceeding.
+- **Auto**: unmatched shell commands are reviewed by a guardian model before falling back to the human prompt. Path/file/MCP approvals still prompt.
+- **Yolo**: tool approvals auto-approve without prompting.
+
+Use flags for one run:
+
+```bash
+term-llm chat --auto
+term-llm chat --yolo
+```
+
+In the TUI, Shift+Tab cycles `prompt → auto → yolo → prompt`. If no guardian reviewer is configured, Shift+Tab skips auto and tells you why.
+
+Auto mode is intentionally narrow. It does not turn shell approval into a glob pattern and does not grant broad shell access. The guardian reviews the exact command and working directory, transcript/tool evidence, and deterministic approval context such as configured/session read and write directories. That lets it recognize narrow shell equivalents of already-approved first-party file operations while still denying or escalating unrelated shell side effects, network transfer, process control, or credential disclosure.
+
+Guardian outcomes are added to scrollback. In terminal chat, if guardian denies or cannot review and a human approval prompt appears, the guardian rationale is repeated immediately above the prompt so you can scroll up and read why you are approving. In web/serve mode, guardian review messages are emitted into the response stream before any approval prompt.
+
+To make new chat sessions start in auto mode:
+
+```yaml
+approval:
+  default_mode: auto
+```
+
+Optional guardian overrides:
+
+```yaml
+guardian:
+  provider: anthropic
+  model: claude-sonnet-4-6
+  policy_path: ~/.config/term-llm/guardian-policy.md
+```
+
+Privacy note: guardian review receives approval evidence, including recent transcript snippets, tool call arguments/results, and deterministic approval context. If `guardian.provider` points at a different provider than your chat session, that evidence is sent to the guardian provider too. Leave `guardian.provider` unset to avoid routing approval evidence to an additional provider.

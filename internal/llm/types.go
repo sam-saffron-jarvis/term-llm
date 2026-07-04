@@ -33,6 +33,28 @@ func CallIDFromContext(ctx context.Context) string {
 // sessionIDKey is the context key for the current session ID.
 const sessionIDKey contextKey = "session_id"
 
+const approvalTranscriptKey contextKey = "approval_transcript"
+
+// ContextWithApprovalTranscript returns a new context carrying the conversation
+// messages that should be used by policy reviewers for tool approval decisions.
+func ContextWithApprovalTranscript(ctx context.Context, messages []Message) context.Context {
+	copied := make([]Message, len(messages))
+	copy(copied, messages)
+	return context.WithValue(ctx, approvalTranscriptKey, copied)
+}
+
+// ApprovalTranscriptFromContext extracts the policy-review transcript messages.
+func ApprovalTranscriptFromContext(ctx context.Context) []Message {
+	if v := ctx.Value(approvalTranscriptKey); v != nil {
+		if msgs, ok := v.([]Message); ok {
+			copied := make([]Message, len(msgs))
+			copy(copied, msgs)
+			return copied
+		}
+	}
+	return nil
+}
+
 // ContextWithSessionID returns a new context with the session ID set.
 // Used by the engine so tools (e.g. file-change recording) know which
 // session a tool execution belongs to.
@@ -89,28 +111,29 @@ type Stream interface {
 
 // Request represents a single model turn.
 type Request struct {
-	Model                   string
-	SessionID               string // Optional session ID for provider-side continuity/caching hints
-	Messages                []Message
-	Tools                   []ToolSpec
-	ToolChoice              ToolChoice
-	LastTurnToolChoice      *ToolChoice // If set, force this tool choice on the last agentic turn
-	ParallelToolCalls       bool
-	Search                  bool
-	ForceExternalSearch     bool // If true, use external search even if provider supports native
-	DisableExternalWebFetch bool // If true, do not inject external read_url even when provider lacks native fetch
-	ReasoningEffort         string
-	MaxOutputTokens         int
-	Temperature             float32
-	TemperatureSet          bool // If true, Temperature was explicitly provided, including zero
-	TopP                    float32
-	TopPSet                 bool              // If true, TopP was explicitly provided, including zero
-	ServiceTier             string            // Optional Responses API service tier; "priority" enables ChatGPT fast mode
-	ServiceTierSet          bool              // If true, ServiceTier overrides any provider-level default; empty clears it
-	MaxTurns                int               // Max agentic turns for tool execution (0 = use default)
-	ToolMap                 map[string]string // Maps client tool names to server tool names (e.g. "WebSearch" → "search")
-	Debug                   bool
-	DebugRaw                bool
+	Model                    string
+	SessionID                string // Optional session ID for provider-side continuity/caching hints
+	Messages                 []Message
+	ApprovalTranscriptPrefix []Message // Optional policy-review-only evidence prepended to tool approval transcripts; never sent to providers.
+	Tools                    []ToolSpec
+	ToolChoice               ToolChoice
+	LastTurnToolChoice       *ToolChoice // If set, force this tool choice on the last agentic turn
+	ParallelToolCalls        bool
+	Search                   bool
+	ForceExternalSearch      bool // If true, use external search even if provider supports native
+	DisableExternalWebFetch  bool // If true, do not inject external read_url even when provider lacks native fetch
+	ReasoningEffort          string
+	MaxOutputTokens          int
+	Temperature              float32
+	TemperatureSet           bool // If true, Temperature was explicitly provided, including zero
+	TopP                     float32
+	TopPSet                  bool              // If true, TopP was explicitly provided, including zero
+	ServiceTier              string            // Optional Responses API service tier; "priority" enables ChatGPT fast mode
+	ServiceTierSet           bool              // If true, ServiceTier overrides any provider-level default; empty clears it
+	MaxTurns                 int               // Max agentic turns for tool execution (0 = use default)
+	ToolMap                  map[string]string // Maps client tool names to server tool names (e.g. "WebSearch" → "search")
+	Debug                    bool
+	DebugRaw                 bool
 }
 
 // Role identifies a message role.
@@ -144,9 +167,10 @@ const (
 
 // Message holds a role with structured parts.
 type Message struct {
-	Role        Role
-	Parts       []Part
-	CacheAnchor bool // provider should apply cache_control to this message (Anthropic-specific)
+	Role         Role
+	Parts        []Part
+	CacheAnchor  bool   // provider should apply cache_control to this message (Anthropic-specific)
+	ApprovalRole string `json:",omitempty"` // Optional role override for guardian/policy-review transcripts only.
 }
 
 // ReasoningKind classifies provider reasoning/thinking payloads for safe display.

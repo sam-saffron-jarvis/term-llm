@@ -1039,3 +1039,14 @@ func TestResolveSearchCredentialsExaMCPEnvFallbackOnlyForOfficialURL(t *testing.
 		t.Fatalf("explicit custom Exa MCP API key = %q, want expanded env value", explicit.ExaMCP.APIKey)
 	}
 }
+
+func TestApprovalDefaultModeDefaultIsPrompt(t *testing.T) {
+	defaults := GetDefaults()
+	got, ok := defaults["approval.default_mode"].(string)
+	if !ok {
+		t.Fatalf("approval.default_mode default missing or not string: %#v", defaults["approval.default_mode"])
+	}
+	if got != "prompt" {
+		t.Fatalf("approval.default_mode = %q, want prompt", got)
+	}
+}

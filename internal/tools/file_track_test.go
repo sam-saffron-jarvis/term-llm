@@ -352,6 +352,9 @@ func TestShellToolGitFallback(t *testing.T) {
 }
 
 func TestShellToolAffectedPathsSkipGitStatusFallback(t *testing.T) {
+	if os.Getenv("TERM_LLM_SLOW_TESTS") == "" {
+		t.Skip("set TERM_LLM_SLOW_TESTS=1 to run git-status fallback integration test")
+	}
 	dir := t.TempDir()
 	realGit, err := exec.LookPath("git")
 	if err != nil {

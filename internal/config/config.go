@@ -417,6 +417,8 @@ type Config struct {
 	Diagnostics     DiagnosticsConfig         `mapstructure:"diagnostics"`
 	DebugLogs       DebugLogsConfig           `mapstructure:"debug_logs"`
 	Sessions        SessionsConfig            `mapstructure:"sessions"`
+	Approval        ApprovalConfig            `mapstructure:"approval"`
+	Guardian        GuardianConfig            `mapstructure:"guardian"`
 	Exec            ExecConfig                `mapstructure:"exec"`
 	Ask             AskConfig                 `mapstructure:"ask"`
 	Chat            ChatConfig                `mapstructure:"chat"`
@@ -436,6 +438,21 @@ type Config struct {
 	AutoCompact     bool                      `mapstructure:"auto_compact"`
 	Serve           ServeConfig               `mapstructure:"serve"`
 	FileTracking    FileTrackingConfig        `mapstructure:"file_tracking"`
+}
+
+// ApprovalConfig configures default approval behavior.
+type ApprovalConfig struct {
+	// DefaultMode controls the approval mode for new chat sessions when no CLI flag
+	// or resumed session value overrides it. Valid values: prompt, auto.
+	// yolo is intentionally not accepted as a config default.
+	DefaultMode string `mapstructure:"default_mode" yaml:"default_mode,omitempty"`
+}
+
+// GuardianConfig configures auto approval policy review.
+type GuardianConfig struct {
+	Provider   string `mapstructure:"provider" yaml:"provider,omitempty"`
+	Model      string `mapstructure:"model" yaml:"model,omitempty"`
+	PolicyPath string `mapstructure:"policy_path" yaml:"policy_path,omitempty"`
 }
 
 // ServeConfig holds configuration for the serve command platforms.
@@ -2451,6 +2468,7 @@ var KnownProviderKeys = map[string]bool{
 func GetDefaults() map[string]any {
 	return map[string]any{
 		"default_provider":                "anthropic",
+		"approval.default_mode":           "prompt",
 		"exec.suggestions":                3,
 		"exec.instructions":               "",
 		"ask.max_turns":                   50,

@@ -2118,7 +2118,9 @@ turnLoop:
 				}
 			}
 
-			toolResults, err := e.executeToolCalls(ctx, registered, req.ParallelToolCalls, send, req.Debug, req.DebugRaw)
+			transcriptForApproval := append(append([]Message(nil), req.ApprovalTranscriptPrefix...), req.Messages...)
+			transcriptForApproval = append(transcriptForApproval, assistantMsg)
+			toolResults, err := e.executeToolCalls(ctx, registered, req.ParallelToolCalls, send, req.Debug, req.DebugRaw, transcriptForApproval)
 			if err != nil {
 				return false, err
 			}
@@ -2821,7 +2823,9 @@ turnLoop:
 			}
 		}
 
-		toolResults, err := e.executeToolCalls(ctx, registered, req.ParallelToolCalls, send, req.Debug, req.DebugRaw)
+		transcriptForApproval := append(append([]Message(nil), req.ApprovalTranscriptPrefix...), req.Messages...)
+		transcriptForApproval = append(transcriptForApproval, assistantMsg)
+		toolResults, err := e.executeToolCalls(ctx, registered, req.ParallelToolCalls, send, req.Debug, req.DebugRaw, transcriptForApproval)
 		if err != nil {
 			return err
 		}
@@ -2962,7 +2966,11 @@ func buildAssistantMessageWithReasoningMetadata(text string, toolCalls []ToolCal
 // are emitted from concurrent goroutines. While the channel is thread-safe, events
 // may arrive in non-deterministic order. Consumers should use ToolCallID to correlate
 // start/end events rather than relying on ordering.
-func (e *Engine) executeToolCalls(ctx context.Context, calls []ToolCall, parallel bool, send eventSender, debug bool, debugRaw bool) ([]Message, error) {
+func (e *Engine) executeToolCalls(ctx context.Context, calls []ToolCall, parallel bool, send eventSender, debug bool, debugRaw bool, transcriptOpt ...[]Message) ([]Message, error) {
+	var transcript []Message
+	if len(transcriptOpt) > 0 {
+		transcript = transcriptOpt[0]
+	}
 	// Cancellation must still yield a result message for every announced call:
 	// the caller persists the assistant message with its tool calls, and a turn
 	// with dangling tool calls breaks conversation resume on strict providers.
@@ -2972,16 +2980,17 @@ func (e *Engine) executeToolCalls(ctx context.Context, calls []ToolCall, paralle
 
 	// Fast path: single call, no concurrency overhead
 	if len(calls) == 1 {
-		return e.executeSingleToolCallSafe(ctx, calls[0], send, debug, debugRaw)
+		return e.executeSingleToolCallSafe(ContextWithApprovalTranscript(ctx, transcript), calls[0], send, debug, debugRaw)
 	}
 
 	if !parallel {
 		results := make([]Message, 0, len(calls))
+		toolCtx := ContextWithApprovalTranscript(ctx, transcript)
 		for i, call := range calls {
 			if err := ctx.Err(); err != nil {
 				return append(results, cancelledToolCallMessages(calls[i:], err)...), nil
 			}
-			msgs, err := e.executeSingleToolCallSafe(ctx, call, send, debug, debugRaw)
+			msgs, err := e.executeSingleToolCallSafe(toolCtx, call, send, debug, debugRaw)
 			if err != nil {
 				return nil, err
 			}
@@ -3006,6 +3015,7 @@ func (e *Engine) executeToolCalls(ctx context.Context, calls []ToolCall, paralle
 	workerCount := maxParallelToolWorkers(len(calls))
 	var nextCall atomic.Uint32
 
+	workerCtx := ContextWithApprovalTranscript(ctx, transcript)
 	for worker := 0; worker < workerCount; worker++ {
 		go func() {
 			for {
@@ -3023,7 +3033,7 @@ func (e *Engine) executeToolCalls(ctx context.Context, calls []ToolCall, paralle
 				}
 
 				call := calls[idx]
-				msgs, _ := e.executeSingleToolCallSafe(ctx, call, send, debug, debugRaw)
+				msgs, _ := e.executeSingleToolCallSafe(workerCtx, call, send, debug, debugRaw)
 				msg := ToolErrorMessage(call.ID, call.Name, "tool returned no result", call.ThoughtSig)
 				if len(msgs) > 0 {
 					msg = msgs[0]

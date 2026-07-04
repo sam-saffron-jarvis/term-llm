@@ -53,6 +53,8 @@ func netJoinHostPortForURL(host string, port int) string {
 	return fmt.Sprintf("%s:%d", host, port)
 }
 
+var hubReverseReconnectDelay = 2 * time.Second
+
 func runHubReverseConnector(ctx context.Context, hubURL, nodeID, token, localBase, allowedBasePath string, client *http.Client) {
 	if client == nil {
 		client = newHubReverseLocalClient()
@@ -64,7 +66,7 @@ func runHubReverseConnector(ctx context.Context, hubURL, nodeID, token, localBas
 		select {
 		case <-ctx.Done():
 			return
-		case <-time.After(2 * time.Second):
+		case <-time.After(hubReverseReconnectDelay):
 		}
 	}
 }

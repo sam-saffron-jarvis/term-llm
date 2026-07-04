@@ -6,7 +6,6 @@ import (
 	"net/http/httptest"
 	"sync/atomic"
 	"testing"
-	"time"
 )
 
 func TestProbeReadsIdentityFields(t *testing.T) {
@@ -40,11 +39,12 @@ func TestProbeReadsIdentityFields(t *testing.T) {
 }
 
 func TestProbeUnreachable(t *testing.T) {
+	dead := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	deadURL := dead.URL
+	dead.Close()
+
 	p := NewProber(http.DefaultTransport)
-	// Reserved TEST-NET-1 address: connection should fail fast via context.
-	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
-	defer cancel()
-	st := p.Probe(ctx, Node{ID: "n", URL: "http://192.0.2.1:9", BasePath: ""})
+	st := p.Probe(context.Background(), Node{ID: "n", URL: deadURL, BasePath: ""})
 	if st.Reachable || st.State != "unreachable" || st.Error == "" {
 		t.Fatalf("status = %+v, want unreachable with error", st)
 	}
@@ -92,10 +92,14 @@ func TestProbeAllKeysByID(t *testing.T) {
 	}))
 	defer backend.Close()
 
+	dead := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	deadURL := dead.URL
+	dead.Close()
+
 	p := NewProber(http.DefaultTransport)
 	statuses := p.ProbeAll(context.Background(), []Node{
 		{ID: "a", URL: backend.URL},
-		{ID: "b", URL: "http://192.0.2.1:9"},
+		{ID: "b", URL: deadURL},
 	})
 	if !statuses["a"].Reachable {
 		t.Errorf("a = %+v, want reachable", statuses["a"])

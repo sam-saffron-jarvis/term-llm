@@ -2310,7 +2310,7 @@ func TestNewServeEngineWithTools_ConfiguresToolManagerAndSpawnWiring(t *testing.
 		return nil
 	}
 
-	engine, toolMgr, err := newServeEngineWithTools(cfg, settings, provider, "mock", "mock-model", true, wireSpawn, nil)
+	engine, toolMgr, err := newServeEngineWithTools(cfg, settings, provider, "mock", "mock-model", true, false, wireSpawn, nil)
 	if err != nil {
 		t.Fatalf("newServeEngineWithTools failed: %v", err)
 	}
@@ -2320,8 +2320,8 @@ func TestNewServeEngineWithTools_ConfiguresToolManagerAndSpawnWiring(t *testing.
 	if toolMgr == nil {
 		t.Fatalf("toolMgr = nil")
 	}
-	if !toolMgr.ApprovalMgr.YoloMode {
-		t.Fatalf("toolMgr.ApprovalMgr.YoloMode = false, want true")
+	if !toolMgr.ApprovalMgr.YoloEnabled() {
+		t.Fatalf("toolMgr.ApprovalMgr.YoloEnabled() = false, want true")
 	}
 	if wireCalls != 1 {
 		t.Fatalf("wireCalls = %d, want 1", wireCalls)
@@ -2345,7 +2345,7 @@ func TestNewServeEngineWithTools_SkipsToolManagerWhenToolsDisabled(t *testing.T)
 		return nil
 	}
 
-	engine, toolMgr, err := newServeEngineWithTools(cfg, settings, provider, "mock", "mock-model", false, wireSpawn, nil)
+	engine, toolMgr, err := newServeEngineWithTools(cfg, settings, provider, "mock", "mock-model", false, false, wireSpawn, nil)
 	if err != nil {
 		t.Fatalf("newServeEngineWithTools failed: %v", err)
 	}
@@ -2367,7 +2367,7 @@ func TestNewServeEngineWithTools_ConfiguresContextManagement(t *testing.T) {
 	cfg := &config.Config{AutoCompact: true}
 	provider := llm.NewMockProvider("mock")
 
-	engine, _, err := newServeEngineWithTools(cfg, SessionSettings{}, provider, "mock", "serve-test-model", false, nil, nil)
+	engine, _, err := newServeEngineWithTools(cfg, SessionSettings{}, provider, "mock", "serve-test-model", false, false, nil, nil)
 	if err != nil {
 		t.Fatalf("newServeEngineWithTools failed: %v", err)
 	}
@@ -2391,7 +2391,7 @@ func TestNewServeEngineWithTools_TracksContextWhenAutoCompactDisabled(t *testing
 	cfg := &config.Config{AutoCompact: false}
 	provider := llm.NewMockProvider("mock")
 
-	engine, _, err := newServeEngineWithTools(cfg, SessionSettings{}, provider, "mock", "serve-test-model", false, nil, nil)
+	engine, _, err := newServeEngineWithTools(cfg, SessionSettings{}, provider, "mock", "serve-test-model", false, false, nil, nil)
 	if err != nil {
 		t.Fatalf("newServeEngineWithTools failed: %v", err)
 	}
@@ -11757,5 +11757,45 @@ func TestResolveServeToken(t *testing.T) {
 				t.Errorf("source = %q, want %q", source, tc.wantSource)
 			}
 		})
+	}
+}
+
+func TestNewServeEngineWithTools_AutoModeInstallsGuardian(t *testing.T) {
+	cfg := &config.Config{DefaultProvider: "mock", Providers: map[string]config.ProviderConfig{"mock": {Model: "mock-model"}}}
+	settings := SessionSettings{Tools: tools.ShellToolName}
+	provider := llm.NewMockProvider("mock")
+
+	_, toolMgr, err := newServeEngineWithTools(cfg, settings, provider, "mock", "mock-model", false, true, nil, nil)
+	if err != nil {
+		t.Fatalf("newServeEngineWithTools failed: %v", err)
+	}
+	if toolMgr == nil {
+		t.Fatal("toolMgr = nil")
+	}
+	if got := toolMgr.ApprovalMgr.ApprovalMode(); got != tools.ModeAuto {
+		t.Fatalf("approval mode = %v, want auto", got)
+	}
+	if !toolMgr.ApprovalMgr.GuardianReviewerAvailable() {
+		t.Fatal("guardian reviewer not installed")
+	}
+}
+
+func TestServeRuntimeEmitGuardianReviewUsesApprovalEventStream(t *testing.T) {
+	rt := &serveRuntime{}
+	var gotEvent string
+	var gotData map[string]any
+	rt.approvalEventFunc = func(event string, data map[string]any) error {
+		gotEvent = event
+		gotData = data
+		return nil
+	}
+
+	rt.emitGuardianReview("guardian: denied: nope")
+
+	if gotEvent != "response.guardian.review" {
+		t.Fatalf("event = %q, want response.guardian.review", gotEvent)
+	}
+	if gotData["message"] != "guardian: denied: nope" {
+		t.Fatalf("message payload = %#v", gotData)
 	}
 }

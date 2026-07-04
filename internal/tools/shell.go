@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -21,6 +22,102 @@ type ShellTool struct {
 	limits    OutputLimits
 	shellPath string
 	recorder  FileChangeRecorder
+}
+
+func shellApprovalTranscriptFromContext(ctx context.Context) []TranscriptEntry {
+	msgs := llm.ApprovalTranscriptFromContext(ctx)
+	if len(msgs) == 0 {
+		return nil
+	}
+	entries := make([]TranscriptEntry, 0, len(msgs))
+	for _, msg := range msgs {
+		text := strings.TrimSpace(renderApprovalMessageText(msg))
+		if text == "" {
+			continue
+		}
+		role := strings.TrimSpace(msg.ApprovalRole)
+		if role == "" {
+			role = string(msg.Role)
+		}
+		entries = append(entries, TranscriptEntry{Role: role, Text: text})
+	}
+	return entries
+}
+
+func renderApprovalMessageText(msg llm.Message) string {
+	var b strings.Builder
+	for _, part := range msg.Parts {
+		switch part.Type {
+		case llm.PartText, llm.PartFile:
+			if strings.TrimSpace(part.Text) != "" {
+				appendApprovalSection(&b, part.Text)
+			}
+		case llm.PartToolCall:
+			if part.ToolCall == nil {
+				continue
+			}
+			appendApprovalSection(&b, renderToolCallForApproval(part.ToolCall))
+		case llm.PartToolResult:
+			if part.ToolResult == nil {
+				continue
+			}
+			appendApprovalSection(&b, renderToolResultForApproval(part.ToolResult))
+		}
+	}
+	if b.Len() == 0 {
+		return llm.MessageAttachmentSummary(msg)
+	}
+	return b.String()
+}
+
+func appendApprovalSection(b *strings.Builder, text string) {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return
+	}
+	if b.Len() > 0 {
+		b.WriteString("\n\n")
+	}
+	b.WriteString(text)
+}
+
+func renderToolCallForApproval(call *llm.ToolCall) string {
+	args := strings.TrimSpace(string(call.Arguments))
+	if args == "" {
+		args = "{}"
+	}
+	var pretty bytes.Buffer
+	if json.Valid([]byte(args)) && json.Indent(&pretty, []byte(args), "", "  ") == nil {
+		args = pretty.String()
+	}
+	return fmt.Sprintf("tool_call name=%q id=%q arguments:\n%s", call.Name, call.ID, args)
+}
+
+func renderToolResultForApproval(result *llm.ToolResult) string {
+	status := "ok"
+	if result.IsError {
+		status = "error"
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "tool_result name=%q id=%q status=%s", result.Name, result.ID, status)
+	if strings.TrimSpace(result.Content) != "" {
+		fmt.Fprintf(&b, "\ncontent:\n%s", strings.TrimSpace(result.Content))
+	}
+	for _, part := range result.ContentParts {
+		if part.Type == llm.ToolContentPartText && strings.TrimSpace(part.Text) != "" {
+			fmt.Fprintf(&b, "\ncontent_part_text:\n%s", strings.TrimSpace(part.Text))
+		}
+		if part.Type == llm.ToolContentPartImageData && part.ImageData != nil {
+			fmt.Fprintf(&b, "\ncontent_part_image: media_type=%q detail=%q bytes=%d", part.ImageData.MediaType, part.ImageData.Detail, len(part.ImageData.Base64))
+		}
+	}
+	if len(result.Diffs) > 0 {
+		fmt.Fprintf(&b, "\ndiffs: %d file diff(s)", len(result.Diffs))
+	}
+	if len(result.Images) > 0 {
+		fmt.Fprintf(&b, "\nimages: %d image path(s)", len(result.Images))
+	}
+	return b.String()
 }
 
 // NewShellTool creates a new ShellTool.
@@ -175,7 +272,7 @@ func (t *ShellTool) Execute(ctx context.Context, args json.RawMessage) (llm.Tool
 	// Check permissions — pass both command and working directory so the
 	// approval UI can show the user where the command will run.
 	if t.approval != nil {
-		outcome, err := t.approval.CheckShellApproval(a.Command, a.WorkingDir)
+		outcome, err := t.approval.CheckShellApprovalWithContext(ctx, a.Command, a.WorkingDir, shellApprovalTranscriptFromContext(ctx))
 		if err != nil {
 			if toolErr, ok := err.(*ToolError); ok {
 				return errorOutput(formatToolError(toolErr)), nil

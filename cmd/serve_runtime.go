@@ -74,6 +74,23 @@ type runtimeInterruptState struct {
 	reasoningEffort string
 }
 
+func (rt *serveRuntime) emitGuardianReview(message string) {
+	message = strings.TrimSpace(message)
+	if message == "" {
+		return
+	}
+	rt.approvalMu.Lock()
+	eventFunc := rt.approvalEventFunc
+	rt.approvalMu.Unlock()
+	if eventFunc != nil {
+		if err := eventFunc("response.guardian.review", map[string]any{"message": message}); err != nil {
+			log.Printf("[serve] guardian review event failed: %v", err)
+		}
+		return
+	}
+	log.Printf("[serve] %s", message)
+}
+
 func (rt *serveRuntime) Touch() {
 	rt.lastUsedUnixNano.Store(time.Now().UnixNano())
 }

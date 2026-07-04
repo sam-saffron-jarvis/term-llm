@@ -961,6 +961,23 @@ const applyResponseStreamEvent = (session, streamState, event, payload) => {
     return { terminal: false };
   }
 
+  if (event === 'response.guardian.review') {
+    const text = String(payload.message || '').trim();
+    if (text) {
+      const message = {
+        id: generateId('msg'),
+        role: 'event',
+        content: text,
+        created: Date.now()
+      };
+      session.messages.push(message);
+      appendStreamMessageNode(session, message);
+      saveSessions();
+      scrollVisibleStreamToBottom(session, true);
+    }
+    return { terminal: false };
+  }
+
   if (event === 'response.approval.prompt') {
     const approvalId = String(payload.approval_id || '').trim();
     const options = Array.isArray(payload.options) ? payload.options : [];

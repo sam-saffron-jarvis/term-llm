@@ -349,6 +349,9 @@ func TestHandleKeyMsg_StreamingCommandPaletteShowsLocalCompletions(t *testing.T)
 func TestHandleKeyMsg_ShiftTabTogglesYoloDuringStreaming(t *testing.T) {
 	m := newTestChatModel(false)
 	approvalMgr := tools.NewApprovalManager(tools.NewToolPermissions())
+	approvalMgr.PolicyReviewFunc = func(ctx context.Context, req tools.PolicyReviewRequest) (tools.PolicyDecision, error) {
+		return tools.PolicyDecision{Allowed: true, Rationale: "ok"}, nil
+	}
 	m.SetApprovalManager(approvalMgr)
 	m.streaming = true
 	m.phase = "Thinking"
@@ -359,19 +362,24 @@ func TestHandleKeyMsg_ShiftTabTogglesYoloDuringStreaming(t *testing.T) {
 	if !m.streaming {
 		t.Fatal("expected stream to keep running")
 	}
-	if !m.yolo {
-		t.Fatal("expected model yolo mode to be enabled")
-	}
-	if !approvalMgr.YoloEnabled() {
-		t.Fatal("expected approval manager yolo mode to be enabled")
+	if m.currentApprovalMode() != tools.ModeAuto {
+		t.Fatalf("expected first Shift+Tab to enable auto mode, got %v", m.currentApprovalMode())
 	}
 	if got := m.textarea.Value(); got != "draft interjection" {
 		t.Fatalf("expected composer draft to remain unchanged, got %q", got)
 	}
 
 	_, _ = m.handleKeyMsg(tea.KeyPressMsg{Code: tea.KeyTab, Mod: tea.ModShift})
+	if !m.yolo {
+		t.Fatal("expected second Shift+Tab to enable yolo mode")
+	}
+	if !approvalMgr.YoloEnabled() {
+		t.Fatal("expected approval manager yolo mode to be enabled")
+	}
+
+	_, _ = m.handleKeyMsg(tea.KeyPressMsg{Code: tea.KeyTab, Mod: tea.ModShift})
 	if m.yolo {
-		t.Fatal("expected second Shift+Tab to disable yolo mode")
+		t.Fatal("expected third Shift+Tab to disable yolo mode")
 	}
 	if approvalMgr.YoloEnabled() {
 		t.Fatal("expected approval manager yolo mode to be disabled")
@@ -387,6 +395,7 @@ func TestHandleKeyMsg_ShiftTabAutoApprovesActiveApprovalPrompt(t *testing.T) {
 	m.approvalDoneCh = doneCh
 	m.pausedForExternalUI = true
 
+	_, _ = m.handleKeyMsg(tea.KeyPressMsg{Code: tea.KeyTab, Mod: tea.ModShift})
 	_, _ = m.handleKeyMsg(tea.KeyPressMsg{Code: tea.KeyTab, Mod: tea.ModShift})
 
 	select {
@@ -1374,5 +1383,20 @@ func TestHandlePasteMsg_ShowsCommandCompletionsForPastedSlashCommand(t *testing.
 	}
 	if !m.completions.IsVisible() {
 		t.Fatal("expected completions to be visible after pasting a slash command")
+	}
+}
+
+func TestHandleKeyMsg_ShiftTabSkipsAutoWhenGuardianUnavailable(t *testing.T) {
+	m := newTestChatModel(false)
+	approvalMgr := tools.NewApprovalManager(tools.NewToolPermissions())
+	m.SetApprovalManager(approvalMgr)
+
+	_, _ = m.handleKeyMsg(tea.KeyPressMsg{Code: tea.KeyTab, Mod: tea.ModShift})
+
+	if got := m.currentApprovalMode(); got != tools.ModeYolo {
+		t.Fatalf("approval mode = %v, want yolo when auto reviewer is unavailable", got)
+	}
+	if !m.yolo || !approvalMgr.YoloEnabled() {
+		t.Fatal("expected Shift+Tab to skip unavailable auto and enable yolo")
 	}
 }

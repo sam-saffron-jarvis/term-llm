@@ -85,6 +85,18 @@ ask:
 chat:
   max_turns: 200
 
+approval:
+  # New chat sessions start in prompt mode by default.
+  # Set to auto to have unmatched shell commands reviewed by guardian first.
+  default_mode: prompt
+
+guardian:
+  # Optional: override the provider/model used for auto approval review.
+  # If omitted, the current chat provider/model is used.
+  # provider: anthropic
+  # model: claude-sonnet-4-6
+  # policy_path: ~/.config/term-llm/guardian-policy.md
+
 edit:
   model: gpt-5.2-codex
   diff_format: auto
@@ -100,6 +112,46 @@ search:
 tools:
   max_tool_output_chars: 20000
 ```
+
+## Approval modes
+
+Tool access normally uses **prompt** mode: if a command or path is outside the configured allowlists, term-llm asks before proceeding.
+
+Interactive chat also supports **auto** mode for shell commands. In auto mode, deterministic approvals still run first (`--shell-allow`, session approvals, project approvals, and exact guardian cache hits). If a shell command is still unmatched, term-llm asks a guardian reviewer model to evaluate the exact command, working directory, transcript evidence, and existing read/write/tool approval context. Guardian approvals are cached only for the exact command and working directory. Guardian denials or review failures fall back to the human prompt in interactive chat and fail closed in headless runs.
+
+You can enable auto mode per run:
+
+```bash
+term-llm chat --auto
+```
+
+Or make new chat and web/serve sessions start in auto mode:
+
+```yaml
+approval:
+  default_mode: auto
+```
+
+Explicit flags still win. `--yolo` starts yolo mode, `--auto` starts auto mode, and resumed sessions restore their saved `prompt`/`auto` mode. Stored `yolo` is not restored on cold resume for safety.
+
+Auto mode is intentionally narrower than yolo:
+
+- `prompt`: ask before unapproved tool actions.
+- `auto`: guardian-review unmatched shell commands; other approvals still prompt.
+- `yolo`: auto-approve tool actions without prompting.
+
+Configure guardian review with:
+
+```yaml
+guardian:
+  provider: anthropic       # optional override
+  model: claude-sonnet-4-6  # optional override
+  policy_path: ~/.config/term-llm/guardian-policy.md # optional custom policy
+```
+
+If `guardian.provider` is set and `guardian.model` is omitted, term-llm uses that provider's configured model/fast model instead of accidentally mixing it with the chat provider's model.
+
+> Privacy note: guardian review receives approval evidence, including recent transcript snippets, tool call arguments/results, and deterministic approval context. If you set `guardian.provider` to a different provider than your chat provider, that evidence is sent to the guardian provider as well. Leave `guardian.provider` unset if you do not want approval evidence routed to an additional provider.
 
 ## Per-command overrides
 

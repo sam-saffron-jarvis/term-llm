@@ -1,6 +1,8 @@
 package agents
 
 import (
+	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -224,23 +226,15 @@ func TestNewTemplateContextForTemplate_SkipsGitWhenTemplateDoesNotUseGitFields(t
 }
 
 func TestNewTemplateContextForTemplate_CoalescesGitLookups(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("git PATH shim test requires a POSIX shell")
-	}
-
-	shimDir := t.TempDir()
-	logPath := filepath.Join(shimDir, "git.log")
-	gitPath := filepath.Join(shimDir, "git")
-	script := "#!/bin/sh\necho invoked >> \"" + logPath + "\"\nprintf 'feature/test\n/tmp/fake-repo\n'\n"
-	if err := os.WriteFile(gitPath, []byte(script), 0o755); err != nil {
-		t.Fatalf("write git shim: %v", err)
-	}
-
-	origPath := os.Getenv("PATH")
-	if err := os.Setenv("PATH", shimDir+string(os.PathListSeparator)+origPath); err != nil {
-		t.Fatalf("set PATH: %v", err)
-	}
-	defer os.Setenv("PATH", origPath)
+	calls := 0
+	restore := SetGitOutputRunnerForTest(func(ctx context.Context, dir string, args ...string) ([]byte, error) {
+		calls++
+		if strings.Join(args, " ") != "rev-parse --abbrev-ref HEAD --show-toplevel" {
+			return nil, errors.New("unexpected git args")
+		}
+		return []byte("feature/test\n/tmp/fake-repo\n"), nil
+	})
+	defer restore()
 
 	ctx := NewTemplateContextForTemplate("{{ git_repo }}/{{ git_branch }}")
 	if ctx.GitBranch != "feature/test" {
@@ -249,14 +243,8 @@ func TestNewTemplateContextForTemplate_CoalescesGitLookups(t *testing.T) {
 	if ctx.GitRepo != "fake-repo" {
 		t.Fatalf("GitRepo = %q, want %q", ctx.GitRepo, "fake-repo")
 	}
-
-	logData, err := os.ReadFile(logPath)
-	if err != nil {
-		t.Fatalf("read git log: %v", err)
-	}
-	invocations := strings.Count(strings.TrimSpace(string(logData)), "invoked")
-	if invocations != 1 {
-		t.Fatalf("git invoked %d times, want 1", invocations)
+	if calls != 1 {
+		t.Fatalf("git invoked %d times, want 1", calls)
 	}
 }
 

@@ -568,7 +568,7 @@ func (m *Model) showHelpModal() (tea.Model, tea.Cmd) {
 				{"Ctrl+L", "Switch model"},
 				{"Ctrl+R", "Cycle reasoning effort"},
 				{"Ctrl+S", "Toggle web search"},
-				{"Shift+Tab", "Toggle yolo mode"},
+				{"Shift+Tab", "Cycle approval mode"},
 				{"Ctrl+T", "MCP servers (tools)"},
 				{"Ctrl+O", "Inspect conversation context"},
 				{"Ctrl+E", "Expand/collapse tool and reasoning details"},
@@ -2954,32 +2954,34 @@ func handoverSourceAgent(pending *handoverDoneMsg, fallback string) string {
 	return fallback
 }
 
-func handoverScriptCmd(ctx context.Context, approvalMgr *tools.ApprovalManager, scriptAgent *agents.Agent, sourceAgent string, targetAgent *agents.Agent, providerStr string, confirmed bool, instructions string) tea.Cmd {
+var runHandoverScriptForCmd = runHandoverScript
+
+func handoverScriptCmd(ctx context.Context, approvalMgr *tools.ApprovalManager, scriptAgent *agents.Agent, sourceAgent string, targetAgent *agents.Agent, provider string, confirmed bool, instructions string) tea.Cmd {
 	agentName := ""
 	if targetAgent != nil {
 		agentName = targetAgent.Name
 	}
 	return func() tea.Msg {
-		result, err := buildScriptBackedHandover(ctx, approvalMgr, scriptAgent, sourceAgent, targetAgent)
+		result, err := buildScriptBackedHandover(ctx, approvalMgr, scriptAgent, sourceAgent, targetAgent, provider, instructions)
 		return handoverDoneMsg{
 			result:       result,
 			err:          err,
 			agentName:    agentName,
-			providerStr:  providerStr,
+			providerStr:  provider,
 			confirmed:    confirmed,
 			instructions: instructions,
 		}
 	}
 }
 
-func buildScriptBackedHandover(ctx context.Context, approvalMgr *tools.ApprovalManager, scriptAgent *agents.Agent, sourceAgent string, targetAgent *agents.Agent) (*llm.HandoverResult, error) {
+func buildScriptBackedHandover(ctx context.Context, approvalMgr *tools.ApprovalManager, scriptAgent *agents.Agent, sourceAgent string, targetAgent *agents.Agent, provider string, instructions string) (*llm.HandoverResult, error) {
 	if scriptAgent == nil {
 		return nil, fmt.Errorf("handover script agent is not configured")
 	}
 	if targetAgent == nil {
 		return nil, fmt.Errorf("target agent is not configured")
 	}
-	doc, err := runHandoverScript(ctx, approvalMgr, scriptAgent, scriptAgent.HandoverScript)
+	doc, err := runHandoverScriptForCmd(ctx, approvalMgr, scriptAgent, scriptAgent.HandoverScript, handoverApprovalTranscript(sourceAgent, provider, instructions))
 	if err != nil {
 		return nil, err
 	}
@@ -3013,7 +3015,7 @@ func (m *Model) startHandoverScriptHandover(scriptAgent *agents.Agent, sourceAge
 }
 
 // runHandoverScript executes a handover command without invoking a shell and returns its stdout.
-func runHandoverScript(ctx context.Context, approvalMgr *tools.ApprovalManager, agent *agents.Agent, script string) (string, error) {
+func runHandoverScript(ctx context.Context, approvalMgr *tools.ApprovalManager, agent *agents.Agent, script string, transcript []tools.TranscriptEntry) (string, error) {
 	script = strings.TrimSpace(script)
 	if script == "" {
 		return "", fmt.Errorf("handover_script is empty")
@@ -3038,7 +3040,7 @@ func runHandoverScript(ctx context.Context, approvalMgr *tools.ApprovalManager, 
 	if approvalMgr == nil {
 		return "", fmt.Errorf("handover script approval is not configured")
 	}
-	outcome, err := approvalMgr.CheckShellApproval(script, workDir)
+	outcome, err := approvalMgr.CheckShellApprovalWithContext(ctx, script, workDir, transcript)
 	if err != nil {
 		return "", err
 	}
@@ -3332,4 +3334,17 @@ func (m *Model) buildHandoverSession(pending *handoverDoneMsg, targetAgent *agen
 		newSess.CWD = cwd
 	}
 	return newSess
+}
+
+func handoverApprovalTranscript(sourceAgent, targetAgent, instructions string) []tools.TranscriptEntry {
+	var b strings.Builder
+	b.WriteString("The operator initiated a handover")
+	if strings.TrimSpace(sourceAgent) != "" || strings.TrimSpace(targetAgent) != "" {
+		fmt.Fprintf(&b, " from agent %q to agent %q", strings.TrimSpace(sourceAgent), strings.TrimSpace(targetAgent))
+	}
+	b.WriteString(". Running the configured handover_script is the narrow handover preparation step.")
+	if strings.TrimSpace(instructions) != "" {
+		fmt.Fprintf(&b, " Operator handover instructions: %s", strings.TrimSpace(instructions))
+	}
+	return []tools.TranscriptEntry{{Role: "user", Text: b.String()}}
 }

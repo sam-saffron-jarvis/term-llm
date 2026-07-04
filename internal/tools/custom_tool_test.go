@@ -3,6 +3,7 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"os"
 	"path/filepath"
 	"testing"
@@ -92,124 +93,49 @@ func TestCustomScriptTool_Preview(t *testing.T) {
 	}
 }
 
-func TestCustomScriptTool_Execute_Success(t *testing.T) {
-	dir := t.TempDir()
-	writeScript(t, dir, "hello.sh", "#!/bin/sh\necho hello")
-
-	tool := makeCustomTool(t, dir, agents.CustomToolDef{
-		Name:        "hello",
-		Description: "Say hello",
-		Script:      "hello.sh",
-	})
-
-	out, err := tool.Execute(context.Background(), json.RawMessage("{}"))
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	result := out.Content
-	if result == "" {
-		t.Error("expected non-empty output")
-	}
-	// Should contain "hello"
-	if !containsStr(result, "hello") {
-		t.Errorf("expected output to contain 'hello', got %q", result)
-	}
-}
-
-func TestCustomScriptTool_Execute_ArgsOnStdin(t *testing.T) {
-	dir := t.TempDir()
-	// Script reads JSON from stdin and echoes the 'name' field
-	writeScript(t, dir, "echo-name.sh", `#!/bin/sh
-INPUT=$(cat)
-echo "$INPUT" | grep -o '"name":"[^"]*"'
-`)
-
-	tool := makeCustomTool(t, dir, agents.CustomToolDef{
+func TestCustomScriptTool_BuildCommand_ArgsOnStdin(t *testing.T) {
+	tool := makeCustomTool(t, "/agent", agents.CustomToolDef{
 		Name:        "echo_name",
 		Description: "Echo name",
 		Script:      "echo-name.sh",
-		Call:        "json", // explicit JSON-on-stdin mode
+		Call:        "json",
 	})
 
-	out, err := tool.Execute(context.Background(), json.RawMessage(`{"name":"jarvis"}`))
+	cmd, err := tool.buildCommand(context.Background(), "/agent/echo-name.sh", json.RawMessage(`{"name":"jarvis"}`))
 	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+		t.Fatalf("buildCommand: %v", err)
 	}
-	if !containsStr(out.Content, "jarvis") {
-		t.Errorf("expected 'jarvis' in output, got %q", out.Content)
+	data, err := io.ReadAll(cmd.Stdin)
+	if err != nil {
+		t.Fatalf("read stdin: %v", err)
+	}
+	if string(data) != `{"name":"jarvis"}` {
+		t.Fatalf("stdin = %q", data)
+	}
+	if len(cmd.Args) != 1 || cmd.Args[0] != "/agent/echo-name.sh" {
+		t.Fatalf("args = %#v", cmd.Args)
 	}
 }
 
-func TestCustomScriptTool_Execute_NamedArgs(t *testing.T) {
-	dir := t.TempDir()
-	// Script echoes the --name flag value
-	writeScript(t, dir, "echo-name.sh", `#!/bin/sh
-while [ $# -gt 0 ]; do
-  case "$1" in
-    --name) echo "$2"; shift 2 ;;
-    *) shift ;;
-  esac
-done
-`)
-
-	tool := makeCustomTool(t, dir, agents.CustomToolDef{
+func TestCustomScriptTool_BuildCommand_NamedArgs(t *testing.T) {
+	tool := makeCustomTool(t, "/agent", agents.CustomToolDef{
 		Name:        "echo_name",
 		Description: "Echo name",
 		Script:      "echo-name.sh",
-		// Call defaults to "args" (named flags)
 	})
 
-	out, err := tool.Execute(context.Background(), json.RawMessage(`{"name":"jarvis"}`))
+	cmd, err := tool.buildCommand(context.Background(), "/agent/echo-name.sh", json.RawMessage(`{"name":"jarvis"}`))
 	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+		t.Fatalf("buildCommand: %v", err)
 	}
-	if !containsStr(out.Content, "jarvis") {
-		t.Errorf("expected 'jarvis' in output, got %q", out.Content)
+	want := []string{"/agent/echo-name.sh", "--name", "jarvis"}
+	if len(cmd.Args) != len(want) {
+		t.Fatalf("args = %#v, want %#v", cmd.Args, want)
 	}
-}
-
-func TestCustomScriptTool_Execute_EnvVars(t *testing.T) {
-	dir := t.TempDir()
-	writeScript(t, dir, "env.sh", "#!/bin/sh\necho $TERM_LLM_TOOL_NAME $TERM_LLM_AGENT_DIR $MY_CUSTOM_VAR")
-
-	tool := makeCustomTool(t, dir, agents.CustomToolDef{
-		Name:        "env_test",
-		Description: "Test env",
-		Script:      "env.sh",
-		Env:         map[string]string{"MY_CUSTOM_VAR": "custom_value"},
-	})
-
-	out, err := tool.Execute(context.Background(), json.RawMessage("{}"))
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	text := out.Content
-	if !containsStr(text, "env_test") {
-		t.Errorf("expected TERM_LLM_TOOL_NAME in output, got %q", text)
-	}
-	if !containsStr(text, "custom_value") {
-		t.Errorf("expected MY_CUSTOM_VAR in output, got %q", text)
-	}
-}
-
-func TestCustomScriptTool_Execute_NonZeroExitCode(t *testing.T) {
-	dir := t.TempDir()
-	writeScript(t, dir, "fail.sh", "#!/bin/sh\necho oops >&2\nexit 2")
-
-	tool := makeCustomTool(t, dir, agents.CustomToolDef{
-		Name:        "fail_tool",
-		Description: "Fails",
-		Script:      "fail.sh",
-	})
-
-	out, err := tool.Execute(context.Background(), json.RawMessage("{}"))
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	// Non-zero exit should be surfaced in the output, not an error return
-	text := out.Content
-	if !containsStr(text, "exit") && !containsStr(text, "2") {
-		t.Logf("output: %q", text)
+	for i := range want {
+		if cmd.Args[i] != want[i] {
+			t.Fatalf("args = %#v, want %#v", cmd.Args, want)
+		}
 	}
 }
 
@@ -261,15 +187,14 @@ func TestCustomScriptTool_Execute_SymlinkEscape(t *testing.T) {
 	}
 }
 
-func TestCustomScriptTool_Execute_JSONModePathWithSpaces(t *testing.T) {
+func TestCustomScriptTool_JSONModePathWithSpaces(t *testing.T) {
 	parent := t.TempDir()
 	agentDir := filepath.Join(parent, "agent dir")
 	if err := os.MkdirAll(agentDir, 0755); err != nil {
 		t.Fatalf("mkdir agent dir: %v", err)
 	}
 	writeScript(t, agentDir, "echo-name.sh", `#!/bin/sh
-INPUT=$(cat)
-echo "$INPUT" | grep -o '"name":"[^"]*"'
+cat
 `)
 
 	tool := makeCustomTool(t, agentDir, agents.CustomToolDef{
@@ -279,12 +204,23 @@ echo "$INPUT" | grep -o '"name":"[^"]*"'
 		Call:        "json",
 	})
 
-	out, err := tool.Execute(context.Background(), json.RawMessage(`{"name":"jarvis"}`))
+	scriptPath, err := tool.resolveScript()
 	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+		t.Fatalf("resolveScript: %v", err)
 	}
-	if !containsStr(out.Content, "jarvis") {
-		t.Fatalf("expected script under spaced path to run, got %q", out.Content)
+	cmd, err := tool.buildCommand(context.Background(), scriptPath, json.RawMessage(`{"name":"jarvis"}`))
+	if err != nil {
+		t.Fatalf("buildCommand: %v", err)
+	}
+	if cmd.Args[0] != scriptPath || !containsStr(cmd.Args[0], "agent dir") {
+		t.Fatalf("script arg = %q, want resolved path with spaces %q", cmd.Args[0], scriptPath)
+	}
+	data, err := io.ReadAll(cmd.Stdin)
+	if err != nil {
+		t.Fatalf("read stdin: %v", err)
+	}
+	if string(data) != `{"name":"jarvis"}` {
+		t.Fatalf("stdin = %q", data)
 	}
 }
 

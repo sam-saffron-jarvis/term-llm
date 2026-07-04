@@ -38,8 +38,9 @@ var (
 	loopSystemMessage string
 	// Agent flag
 	loopAgent string
-	// Yolo mode
+	// Yolo/auto modes
 	loopYolo bool
+	loopAuto bool
 	// Loop-specific flags
 	loopDone     string // Command that returns 0 when done
 	loopDoneFile string // FILE:TEXT - done when file contains text
@@ -109,6 +110,7 @@ func init() {
 			SystemMessage:   &loopSystemMessage,
 			Agent:           &loopAgent,
 			Yolo:            &loopYolo,
+			Auto:            &loopAuto,
 		})
 
 	// Loop-specific flags
@@ -300,9 +302,18 @@ func runLoop(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	if toolMgr != nil {
-		// In loop mode, we use yolo (auto-approve) by default for headless operation
+		// In loop mode, use explicit approval mode.
 		if loopYolo {
 			toolMgr.ApprovalMgr.SetYoloMode(true)
+		} else if loopAuto {
+			providerCfg := cfg.GetActiveProviderConfig()
+			model := ""
+			if providerCfg != nil {
+				model = providerCfg.Model
+			}
+			if err := installGuardianReviewer(cfg, toolMgr.ApprovalMgr, provider, nil, model, true); err != nil {
+				return err
+			}
 		} else {
 			// Non-yolo mode: use huh approval prompts
 			toolMgr.ApprovalMgr.PromptFunc = tools.HuhApprovalPrompt

@@ -549,6 +549,9 @@ func uploadsReadDir() string {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return ""
 	}
+	if resolved, err := filepath.EvalSymlinks(dir); err == nil {
+		return resolved
+	}
 	return dir
 }
 

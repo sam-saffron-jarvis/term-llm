@@ -299,7 +299,9 @@ func (r *SpawnAgentRunner) runAgentInternal(ctx context.Context, agentName strin
 	if systemPrompt != "" {
 		messages = append(messages, llm.SystemText(systemPrompt))
 	}
-	messages = append(messages, llm.UserText(prompt))
+	userMsg := llm.UserText(prompt)
+	userMsg.ApprovalRole = "parent_agent_task"
+	messages = append(messages, userMsg)
 
 	// Determine max turns
 	maxTurns := 20
@@ -309,12 +311,13 @@ func (r *SpawnAgentRunner) runAgentInternal(ctx context.Context, agentName strin
 
 	// Build request
 	req := llm.Request{
-		SessionID:           childSessionID,
-		Messages:            messages,
-		Search:              agent.Search,
-		ForceExternalSearch: resolveForceExternalSearch(cfg, false, false),
-		ParallelToolCalls:   true,
-		MaxTurns:            maxTurns,
+		SessionID:                childSessionID,
+		Messages:                 messages,
+		ApprovalTranscriptPrefix: subagentApprovalTranscriptPrefix(ctx),
+		Search:                   agent.Search,
+		ForceExternalSearch:      resolveForceExternalSearch(cfg, false, false),
+		ParallelToolCalls:        true,
+		MaxTurns:                 maxTurns,
 	}
 
 	// Add tools if any
@@ -543,4 +546,34 @@ func safeStoreOp(op func() error) (err error) {
 		}
 	}()
 	return op()
+}
+
+const maxSubagentParentApprovalEntries = 12
+
+func subagentApprovalTranscriptPrefix(ctx context.Context) []llm.Message {
+	parent := llm.ApprovalTranscriptFromContext(ctx)
+	if len(parent) == 0 {
+		return nil
+	}
+	if len(parent) > maxSubagentParentApprovalEntries {
+		parent = parent[len(parent)-maxSubagentParentApprovalEntries:]
+	}
+	prefix := make([]llm.Message, 0, len(parent))
+	for _, msg := range parent {
+		copyMsg := msg
+		if copyMsg.ApprovalRole == "" {
+			switch copyMsg.Role {
+			case llm.RoleUser:
+				copyMsg.ApprovalRole = "parent_user"
+			case llm.RoleAssistant:
+				copyMsg.ApprovalRole = "parent_assistant"
+			case llm.RoleTool:
+				copyMsg.ApprovalRole = "parent_tool"
+			default:
+				copyMsg.ApprovalRole = "parent_" + string(copyMsg.Role)
+			}
+		}
+		prefix = append(prefix, copyMsg)
+	}
+	return prefix
 }

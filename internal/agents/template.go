@@ -395,12 +395,25 @@ func getGitDiffStat() string {
 	return strings.TrimSpace(result.String())
 }
 
-func runGitOutput(dir string, args ...string) ([]byte, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), gitProbeTimeout)
-	defer cancel()
+var gitOutputRunner = defaultGitOutputRunner
+
+func defaultGitOutputRunner(ctx context.Context, dir string, args ...string) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Dir = dir
 	return cmd.Output()
+}
+
+// SetGitOutputRunnerForTest replaces the git command runner and returns a restore function.
+func SetGitOutputRunnerForTest(fn func(context.Context, string, ...string) ([]byte, error)) func() {
+	orig := gitOutputRunner
+	gitOutputRunner = fn
+	return func() { gitOutputRunner = orig }
+}
+
+func runGitOutput(dir string, args ...string) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), gitProbeTimeout)
+	defer cancel()
+	return gitOutputRunner(ctx, dir, args...)
 }
 
 func localTimezoneName(now time.Time) string {

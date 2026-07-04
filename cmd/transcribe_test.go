@@ -2,7 +2,6 @@ package cmd
 
 import (
 	"context"
-	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -26,7 +25,13 @@ func writeWhisperScript(t *testing.T, body string) string {
 }
 
 func TestTranscribeWhisperCLI_RejectsOversizedOutput(t *testing.T) {
-	scriptDir := writeWhisperScript(t, `head -c 1100000 /dev/zero | tr '\000' x`)
+	origRunner := transcribeWhisperRunner
+	transcribeWhisperRunner = func(context.Context, string, []string) (string, string, bool, error) {
+		return "", "", true, nil
+	}
+	defer func() { transcribeWhisperRunner = origRunner }()
+
+	scriptDir := writeWhisperScript(t, `:`)
 
 	t.Setenv("PATH", scriptDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	t.Setenv("WHISPER_MODEL", "/tmp/fake-model.bin")
@@ -48,7 +53,13 @@ func TestTranscribeWhisperCLI_RejectsOversizedOutput(t *testing.T) {
 func TestTranscribeWhisperCLI_TruncatesImplausiblyLongTranscript(t *testing.T) {
 	// Generate a 400-word output (exceeds 350 WPM for 1 minute)
 	words := strings.TrimSpace(strings.Repeat("alpha ", 400))
-	scriptDir := writeWhisperScript(t, fmt.Sprintf(`echo "%s"`, words))
+	scriptDir := writeWhisperScript(t, `:`)
+
+	origRunner := transcribeWhisperRunner
+	transcribeWhisperRunner = func(context.Context, string, []string) (string, string, bool, error) {
+		return words, "", false, nil
+	}
+	defer func() { transcribeWhisperRunner = origRunner }()
 
 	origTruncator := transcribeTruncator
 	defer func() {

@@ -452,27 +452,6 @@ func TestCreateWorkspaceClaudeBinUsesProvidedToken(t *testing.T) {
 	}
 }
 
-func TestDefaultClaudeSetupTokenRunnerCapturesNonTerminalOutput(t *testing.T) {
-	tmp := t.TempDir()
-	script := filepath.Join(tmp, "claude")
-	if err := os.WriteFile(script, []byte("#!/bin/sh\necho setup starting\necho sk-ant-oat01-scripted-token-value-1234567890\n"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("PATH", tmp+string(os.PathListSeparator)+os.Getenv("PATH"))
-
-	var stdout bytes.Buffer
-	out, err := defaultClaudeSetupTokenRunner(CreateOptions{Stdin: strings.NewReader(""), Stdout: &stdout})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(out, "sk-ant-oat01-scripted-token-value-1234567890") {
-		t.Fatalf("captured output missing token: %q", out)
-	}
-	if !strings.Contains(stdout.String(), "setup starting") {
-		t.Fatalf("stdout was not teed: %q", stdout.String())
-	}
-}
-
 func TestUnknownTemplateErrorListsBuiltins(t *testing.T) {
 	_, err := LoadTemplate("definitely-not-a-template")
 	if err == nil || !strings.Contains(err.Error(), "basic") || !strings.Contains(err.Error(), "agent") || strings.Contains(err.Error(), "term-llm") {

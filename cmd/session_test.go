@@ -7,7 +7,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -51,10 +50,6 @@ func TestResolveSettings_ConfigSystemPromptExpandsIncludeThenTemplate(t *testing
 }
 
 func TestResolveSettings_ConfigSystemPromptComputesContextAfterIncludes(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("git PATH shim test requires a POSIX shell")
-	}
-
 	origWD, err := os.Getwd()
 	if err != nil {
 		t.Fatal(err)
@@ -69,17 +64,10 @@ func TestResolveSettings_ConfigSystemPromptComputesContextAfterIncludes(t *testi
 		t.Fatal(err)
 	}
 
-	shimDir := t.TempDir()
-	gitPath := filepath.Join(shimDir, "git")
-	script := "#!/bin/sh\nprintf 'feature/include\n/tmp/include-repo\n'\n"
-	if err := os.WriteFile(gitPath, []byte(script), 0o755); err != nil {
-		t.Fatalf("write git shim: %v", err)
-	}
-	origPath := os.Getenv("PATH")
-	if err := os.Setenv("PATH", shimDir+string(os.PathListSeparator)+origPath); err != nil {
-		t.Fatalf("set PATH: %v", err)
-	}
-	defer os.Setenv("PATH", origPath)
+	restore := agents.SetGitOutputRunnerForTest(func(ctx context.Context, dir string, args ...string) ([]byte, error) {
+		return []byte("feature/include\n/tmp/include-repo\n"), nil
+	})
+	defer restore()
 
 	settings, err := ResolveSettings(&config.Config{}, nil, CLIFlags{}, "", "", "Start {{file:inc.md}} End", 0, 20)
 	if err != nil {

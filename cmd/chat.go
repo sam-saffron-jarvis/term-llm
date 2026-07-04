@@ -45,8 +45,9 @@ var (
 	chatSkills string
 	// Session resume flag
 	chatResume string
-	// Yolo mode
-	chatYolo bool
+	// Yolo/auto approval modes
+	chatYolo         bool
+	chatAutoApproval bool
 	// Auto-send mode (for benchmarking) - queue of messages to send
 	chatAutoSend []string
 	// Text mode (no markdown rendering)
@@ -141,6 +142,7 @@ func init() {
 			Agent:           &chatAgent,
 			Skills:          &chatSkills,
 			Yolo:            &chatYolo,
+			Auto:            &chatAutoApproval,
 		})
 
 	// Auto-send flag for benchmarking (repeatable for multiple messages)
@@ -390,6 +392,10 @@ func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent 
 	}
 
 	// Apply provider/model overrides.
+	desiredApprovalMode := resolveChatApprovalMode(cmd, cfg, sess)
+	chatYolo = desiredApprovalMode == tools.ModeYolo
+	chatAutoApproval = desiredApprovalMode == tools.ModeAuto
+
 	if sess != nil {
 		resumeProvider := resolveSessionProviderKey(cfg, sess)
 		if resumeProvider == "" {
@@ -456,9 +462,19 @@ func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent 
 	}
 	if toolMgr != nil {
 		approvalMgr = toolMgr.ApprovalMgr
-		// Enable yolo mode if flag is set
-		if chatYolo {
+		guardianAvailable := true
+		if err := installGuardianReviewerCallbacks(cfg, approvalMgr, provider, fastProvider, getModelName(cfg), false); err != nil {
+			guardianAvailable = false
+			fmt.Fprintf(cmd.ErrOrStderr(), "warning: guardian auto-approval unavailable; using prompt mode: %v\n", err)
+		}
+		// Enable approval mode if flag/session state requests it.
+		switch desiredApprovalMode {
+		case tools.ModeYolo:
 			approvalMgr.SetYoloMode(true)
+		case tools.ModeAuto:
+			if guardianAvailable {
+				approvalMgr.SetApprovalMode(tools.ModeAuto)
+			}
 		}
 
 		// output_tool defines a single-shot return channel for ask. Chat has no
@@ -480,8 +496,20 @@ func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent 
 			}
 			return "", "", wireErr
 		}
-	} else if chatYolo {
-		approvalMgr.SetYoloMode(true)
+	} else {
+		guardianAvailable := true
+		if err := installGuardianReviewerCallbacks(cfg, approvalMgr, provider, fastProvider, getModelName(cfg), false); err != nil {
+			guardianAvailable = false
+			fmt.Fprintf(cmd.ErrOrStderr(), "warning: guardian auto-approval unavailable; using prompt mode: %v\n", err)
+		}
+		switch desiredApprovalMode {
+		case tools.ModeYolo:
+			approvalMgr.SetYoloMode(true)
+		case tools.ModeAuto:
+			if guardianAvailable {
+				approvalMgr.SetApprovalMode(tools.ModeAuto)
+			}
+		}
 	}
 
 	// Initialize skills system
@@ -513,6 +541,7 @@ func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent 
 		sess.ProviderKey = providerKey
 		sess.Model = modelName
 		sess.Agent = agentName
+		sess.ApprovalMode = approvalModeToSession(desiredApprovalMode)
 		_ = store.Update(context.Background(), sess)
 	}
 
@@ -564,6 +593,7 @@ func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent 
 		model.SetHandoverAutoSend(handoverAutoSend)
 	}
 	model.SetHandoverApprovalManager(approvalMgr)
+	model.PersistApprovalModeActive()
 
 	// Wire agent resolver, lister, and current agent for /handover support
 	model.SetAgentResolver(LoadAgent)
@@ -609,6 +639,9 @@ func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent 
 	// Set up the improved approval UI with git-aware heuristics.
 	// This also powers /handover script approvals even when no shell tool is enabled.
 	if approvalMgr != nil {
+		approvalMgr.GuardianEventFunc = func(message string) {
+			p.Send(chat.GuardianReviewMsg{Message: message})
+		}
 		approvalMgr.PromptUIFunc = func(path string, isWrite bool, isShell bool, workDir string) (tools.ApprovalResult, error) {
 			// In alt screen mode, use inline approval UI
 			if useAltScreen {
@@ -731,10 +764,12 @@ func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent 
 	if m, ok := finalModel.(*chat.Model); ok {
 		nextResumeID = m.RequestedResumeSessionID()
 		nextHandoverAutoSend = m.RequestedHandoverAutoSend()
-		// Preserve interactive yolo toggles across handover/relaunch. The next
-		// runChatOnce iteration reads chatYolo while constructing approvals,
+		// Preserve interactive approval-mode toggles across handover/relaunch. The next
+		// runChatOnce iteration reads these while constructing approvals,
 		// sub-agent runners, MCP sampling, and the replacement chat model.
-		chatYolo = m.YoloModeActive()
+		mode := m.ApprovalModeActive()
+		chatYolo = mode == tools.ModeYolo
+		chatAutoApproval = mode == tools.ModeAuto
 	}
 
 	// Handle /reload: close the store, then re-exec under the (potentially new) binary.

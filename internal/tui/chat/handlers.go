@@ -155,41 +155,80 @@ func (m *Model) isHelpKey(msg tea.KeyPressMsg) bool {
 	return false
 }
 
-func (m *Model) isYoloModeActive() bool {
+func (m *Model) currentApprovalMode() tools.ApprovalMode {
+	if m.approvalMgr != nil {
+		return m.approvalMgr.ApprovalMode()
+	}
+	if m.handoverApprovalMgr != nil {
+		return m.handoverApprovalMgr.ApprovalMode()
+	}
 	if m.yolo {
-		return true
+		return tools.ModeYolo
 	}
-	if m.approvalMgr != nil && m.approvalMgr.YoloEnabled() {
-		return true
-	}
-	if m.handoverApprovalMgr != nil && m.handoverApprovalMgr.YoloEnabled() {
-		return true
-	}
-	return false
+	return tools.ModePrompt
+}
+
+func (m *Model) isYoloModeActive() bool {
+	return m.currentApprovalMode() == tools.ModeYolo
 }
 
 func isChaosMonkeyKey(msg tea.KeyPressMsg) bool {
 	return os.Getenv("TERM_LLM_CHAOS_MONKEY") != "" && key.Matches(msg, key.NewBinding(key.WithKeys("ctrl+m", "ctrl+g")))
 }
 
-func (m *Model) setApprovalYoloMode(enabled bool) {
+func (m *Model) setApprovalMode(mode tools.ApprovalMode) {
+	m.yolo = mode == tools.ModeYolo
 	if m.approvalMgr != nil {
-		m.approvalMgr.SetYoloMode(enabled)
+		m.approvalMgr.SetApprovalMode(mode)
 	}
 	if m.handoverApprovalMgr != nil && m.handoverApprovalMgr != m.approvalMgr {
-		m.handoverApprovalMgr.SetYoloMode(enabled)
+		m.handoverApprovalMgr.SetApprovalMode(mode)
 	}
 	if m.mcpManager != nil {
-		m.mcpManager.SetSamplingYoloMode(enabled)
+		m.mcpManager.SetSamplingYoloMode(mode == tools.ModeYolo)
+	}
+	m.persistApprovalMode(mode)
+}
+
+func (m *Model) setApprovalYoloMode(enabled bool) {
+	if enabled {
+		m.setApprovalMode(tools.ModeYolo)
+	} else {
+		m.setApprovalMode(tools.ModePrompt)
 	}
 }
 
+func (m *Model) autoApprovalAvailable() bool {
+	if m.approvalMgr != nil && m.approvalMgr.GuardianReviewerAvailable() {
+		return true
+	}
+	if m.handoverApprovalMgr != nil && m.handoverApprovalMgr != m.approvalMgr && m.handoverApprovalMgr.GuardianReviewerAvailable() {
+		return true
+	}
+	return false
+}
+
 func (m *Model) toggleYoloMode() (tea.Model, tea.Cmd) {
-	m.yolo = !m.yolo
-	m.setApprovalYoloMode(m.yolo)
+	current := m.currentApprovalMode()
+	next := tools.ModeAuto
+	autoUnavailable := false
+	switch current {
+	case tools.ModePrompt:
+		if m.autoApprovalAvailable() {
+			next = tools.ModeAuto
+		} else {
+			next = tools.ModeYolo
+			autoUnavailable = true
+		}
+	case tools.ModeAuto:
+		next = tools.ModeYolo
+	case tools.ModeYolo:
+		next = tools.ModePrompt
+	}
+	m.setApprovalMode(next)
 
 	var cmds []tea.Cmd
-	if m.yolo && m.approvalModel != nil && m.approvalDoneCh != nil {
+	if next == tools.ModeYolo && m.approvalModel != nil && m.approvalDoneCh != nil {
 		m.approvalDoneCh <- tools.ApprovalResult{Choice: tools.ApprovalChoiceOnce}
 		m.approvalModel = nil
 		m.approvalDoneCh = nil
@@ -197,11 +236,21 @@ func (m *Model) toggleYoloMode() (tea.Model, tea.Cmd) {
 		cmds = append(cmds, m.spinner.Tick)
 	}
 
-	message := "Yolo mode disabled. Tool approvals will prompt."
+	message := "Prompt approval mode enabled. Tool approvals will prompt."
 	tone := "muted"
-	if m.yolo {
-		message = "Yolo mode enabled. Tool approvals will auto-approve."
+	if autoUnavailable {
+		message = "Auto approval mode unavailable: no guardian reviewer configured. Skipping to yolo mode."
+		tone = "warning"
+	}
+	switch next {
+	case tools.ModeAuto:
+		message = "Auto approval mode enabled. Unmatched shell commands will be reviewed by guardian. Other approvals will still prompt."
 		tone = "success"
+	case tools.ModeYolo:
+		if !autoUnavailable {
+			message = "Yolo mode enabled. Tool approvals will auto-approve."
+			tone = "success"
+		}
 	}
 	_, footerCmd := m.showFooterMessageWithTone(message, tone)
 	if footerCmd != nil {

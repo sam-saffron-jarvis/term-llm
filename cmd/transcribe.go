@@ -27,6 +27,7 @@ var (
 	transcribeCLIOutputLimit int64         = 1 << 20
 	transcribeCLIWaitDelay   time.Duration = time.Second
 	transcribeTruncator                    = llm.TruncateTranscriptIfImplausible
+	transcribeWhisperRunner                = runTranscribeWhisperCommand
 )
 
 var transcribeCmd = &cobra.Command{
@@ -72,11 +73,41 @@ func transcribeWhisperCLI(ctx context.Context, cfg *config.Config, filePath, lan
 		args = append(args, "--language", language)
 	}
 
+	stdout, stderr, truncated, err := transcribeWhisperRunner(ctx, whisperBin, args)
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		return "", fmt.Errorf("whisper-cli: %w", context.DeadlineExceeded)
+	}
+	if errors.Is(ctx.Err(), context.Canceled) {
+		return "", fmt.Errorf("whisper-cli: %w", context.Canceled)
+	}
+	if truncated {
+		return "", fmt.Errorf("whisper-cli: output exceeded %d bytes", transcribeCLIOutputLimit)
+	}
+	if err != nil {
+		if msg := strings.TrimSpace(stderr); msg != "" {
+			return "", fmt.Errorf("whisper-cli: %s", msg)
+		}
+		return "", fmt.Errorf("whisper-cli: %w", err)
+	}
+
+	re := regexp.MustCompile(`^\[[\d:.,\s>-]+\]\s*`)
+	var lines []string
+	for _, line := range strings.Split(stdout, "\n") {
+		line = re.ReplaceAllString(strings.TrimSpace(line), "")
+		if line != "" {
+			lines = append(lines, line)
+		}
+	}
+	transcript := strings.Join(lines, " ")
+	return transcribeTruncator(ctx, filePath, transcript), nil
+}
+
+func runTranscribeWhisperCommand(ctx context.Context, whisperBin string, args []string) (string, string, bool, error) {
 	cmd := exec.CommandContext(ctx, whisperBin, args...)
 	cmd.WaitDelay = transcribeCLIWaitDelay
 	cleanup, prepErr := procutil.PrepareCommand(cmd)
 	if prepErr != nil {
-		return "", fmt.Errorf("whisper-cli setup failed: %w", prepErr)
+		return "", "", false, fmt.Errorf("whisper-cli setup failed: %w", prepErr)
 	}
 	defer cleanup()
 
@@ -85,33 +116,8 @@ func transcribeWhisperCLI(ctx context.Context, cfg *config.Config, filePath, lan
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
 
-	err = cmd.Run()
-	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-		return "", fmt.Errorf("whisper-cli: %w", context.DeadlineExceeded)
-	}
-	if errors.Is(ctx.Err(), context.Canceled) {
-		return "", fmt.Errorf("whisper-cli: %w", context.Canceled)
-	}
-	if stdout.Truncated() || stderr.Truncated() {
-		return "", fmt.Errorf("whisper-cli: output exceeded %d bytes", transcribeCLIOutputLimit)
-	}
-	if err != nil {
-		if msg := strings.TrimSpace(stderr.String()); msg != "" {
-			return "", fmt.Errorf("whisper-cli: %s", msg)
-		}
-		return "", fmt.Errorf("whisper-cli: %w", err)
-	}
-
-	re := regexp.MustCompile(`^\[[\d:.,\s>-]+\]\s*`)
-	var lines []string
-	for _, line := range strings.Split(stdout.String(), "\n") {
-		line = re.ReplaceAllString(strings.TrimSpace(line), "")
-		if line != "" {
-			lines = append(lines, line)
-		}
-	}
-	transcript := strings.Join(lines, " ")
-	return transcribeTruncator(ctx, filePath, transcript), nil
+	err := cmd.Run()
+	return stdout.String(), stderr.String(), stdout.Truncated() || stderr.Truncated(), err
 }
 
 func init() {

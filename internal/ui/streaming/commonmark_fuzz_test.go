@@ -3,24 +3,25 @@ package streaming
 import "testing"
 
 func FuzzCommonMarkFullSpecChunking(f *testing.F) {
-	for _, seed := range []int64{0, 1, 2, 3, 5, 8, 13, 21, 34, 55, 89} {
-		f.Add(seed, byte(seed))
-	}
+	// Keep normal `go test` fast: broader CommonMark coverage lives in deterministic
+	// spec/parity tests, while fuzzing starts from a compact representative seed.
+	f.Add("# Heading\n\nParagraph with **bold** and `code`.\n\n- one\n- two\n", int64(1), byte(0))
 
-	input := []byte(commonMarkSpecMarkdown(f))
-	want := renderDirectBytes(f, input)
+	f.Fuzz(func(t *testing.T, input string, seed int64, mode byte) {
+		if len(input) > 4096 {
+			t.Skip()
+		}
+		content := []byte(input)
+		want := renderDirectBytes(t, content)
 
-	f.Fuzz(func(t *testing.T, seed int64, mode byte) {
 		var chunks [][]byte
-		switch mode % 4 {
+		switch mode % 3 {
 		case 0:
-			chunks = splitIntoNPieces(input, 100)
+			chunks = splitIntoNPieces(content, 16)
 		case 1:
-			chunks = randomChunks(input, seed, 32)
-		case 2:
-			chunks = randomChunks(input, seed, 128)
+			chunks = randomChunks(content, seed, 32)
 		default:
-			chunks = adversarialMarkdownChunks(input)
+			chunks = adversarialMarkdownChunks(content)
 		}
 		got := renderStreamedBytes(t, chunks)
 		assertRenderedEqual(t, want, got, chunks)

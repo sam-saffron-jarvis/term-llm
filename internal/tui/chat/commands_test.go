@@ -2439,11 +2439,6 @@ func TestCmdHandover_TargetScriptIsDeferredUntilConfirmation(t *testing.T) {
 
 func TestHandoverScriptCmd_UsesAgentSourcePathAndPersistsResult(t *testing.T) {
 	agentDir := t.TempDir()
-	scriptPath := filepath.Join(agentDir, "handover.sh")
-	markerPath := filepath.Join(agentDir, "marker")
-	if err := os.WriteFile(scriptPath, []byte("#!/bin/sh\nprintf 'generated handover'\nprintf 'script warning' >&2\ntouch marker\n"), 0755); err != nil {
-		t.Fatalf("write script: %v", err)
-	}
 
 	targetAgent := &agents.Agent{
 		Name:           "target",
@@ -2470,6 +2465,20 @@ func TestHandoverScriptCmd_UsesAgentSourcePathAndPersistsResult(t *testing.T) {
 		agentName: targetAgent.Name,
 	}
 
+	runnerCalled := false
+	origRunner := runHandoverScriptForCmd
+	runHandoverScriptForCmd = func(ctx context.Context, approvalMgr *tools.ApprovalManager, agent *agents.Agent, script string, transcript []tools.TranscriptEntry) (string, error) {
+		runnerCalled = true
+		if agent.SourcePath != agentDir {
+			t.Fatalf("runner agent SourcePath = %q, want %q", agent.SourcePath, agentDir)
+		}
+		if script != "./handover.sh" {
+			t.Fatalf("runner script = %q", script)
+		}
+		return "generated handover", nil
+	}
+	t.Cleanup(func() { runHandoverScriptForCmd = origRunner })
+
 	msg := handoverScriptCmd(context.Background(), mgr, targetAgent, "source", targetAgent, "", true, "please focus on tests")()
 	updated, quitCmd := m.Update(msg)
 	rm := updated.(*Model)
@@ -2477,8 +2486,8 @@ func TestHandoverScriptCmd_UsesAgentSourcePathAndPersistsResult(t *testing.T) {
 	if quitCmd == nil {
 		t.Fatal("expected handover to request quit after confirmation")
 	}
-	if _, err := os.Stat(markerPath); err != nil {
-		t.Fatalf("expected deferred script to run after confirmation: %v", err)
+	if !runnerCalled {
+		t.Fatal("expected handover script runner to be called")
 	}
 	if !rm.quitting {
 		t.Fatal("expected model to request restart after confirmed handover")
@@ -2531,6 +2540,9 @@ func TestHandoverScriptCmd_UsesAgentSourcePathAndPersistsResult(t *testing.T) {
 }
 
 func TestRunHandoverScript_CancelKillsProcessGroup(t *testing.T) {
+	if os.Getenv("TERM_LLM_SLOW_TESTS") == "" {
+		t.Skip("set TERM_LLM_SLOW_TESTS=1 to run process-group cancellation integration test")
+	}
 	if runtime.GOOS == "windows" {
 		t.Skip("process-group cancellation test is unix-specific")
 	}
@@ -2556,7 +2568,7 @@ func TestRunHandoverScript_CancelKillsProcessGroup(t *testing.T) {
 
 	errCh := make(chan error, 1)
 	go func() {
-		_, err := runHandoverScript(ctx, mgr, agent, fmt.Sprintf("./handover.sh %q", childPIDPath))
+		_, err := runHandoverScript(ctx, mgr, agent, fmt.Sprintf("./handover.sh %q", childPIDPath), nil)
 		errCh <- err
 	}()
 

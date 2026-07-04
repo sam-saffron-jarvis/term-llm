@@ -76,6 +76,7 @@ var (
 	serveMCPWriteDirs  []string
 	serveMCPShellAllow []string
 	serveMCPYolo       bool
+	serveMCPAuto       bool
 	serveMCPDebug      bool
 )
 
@@ -113,6 +114,8 @@ func init() {
 	serveMCPCmd.Flags().StringArrayVar(&serveMCPWriteDirs, "write-dir", nil, "Allowed write directories (repeatable)")
 	serveMCPCmd.Flags().StringArrayVar(&serveMCPShellAllow, "shell-allow", nil, "Allowed shell patterns (repeatable, glob syntax)")
 	serveMCPCmd.Flags().BoolVar(&serveMCPYolo, "yolo", false, "Auto-approve all tool actions")
+	serveMCPCmd.Flags().BoolVar(&serveMCPAuto, "auto", false, "Use guardian LLM review for unmatched shell approvals (requires reviewer wiring)")
+	serveMCPCmd.MarkFlagsMutuallyExclusive("yolo", "auto")
 	serveMCPCmd.Flags().BoolVarP(&serveMCPDebug, "debug", "d", false, "Verbose logging")
 
 	_ = serveMCPCmd.RegisterFlagCompletionFunc("tools", MCPToolsFlagCompletion)
@@ -176,6 +179,18 @@ func runServeMCP(cmd *cobra.Command, args []string) error {
 	approvalMgr := tools.NewApprovalManager(perms)
 	if serveMCPYolo {
 		approvalMgr.SetYoloMode(true)
+	} else if serveMCPAuto {
+		var provider llm.Provider
+		if strings.TrimSpace(cfg.Guardian.Provider) == "" {
+			var providerErr error
+			provider, providerErr = llm.NewProvider(cfg)
+			if providerErr != nil {
+				return fmt.Errorf("auto approval requires guardian reviewer provider: %w", providerErr)
+			}
+		}
+		if err := installGuardianReviewer(cfg, approvalMgr, provider, nil, getModelName(cfg), true); err != nil {
+			return fmt.Errorf("auto approval unavailable: %w", err)
+		}
 	}
 
 	registry, err := tools.NewLocalToolRegistry(&toolConfig, cfg, approvalMgr)
@@ -299,6 +314,8 @@ func runServeMCP(cmd *cobra.Command, args []string) error {
 	fmt.Fprintf(os.Stderr, "tools: %s\n", strings.Join(toolNames, ", "))
 	if serveMCPYolo {
 		fmt.Fprintf(os.Stderr, "yolo: true (all operations auto-approved)\n")
+	} else if serveMCPAuto {
+		fmt.Fprintf(os.Stderr, "auto: true (unmatched shell operations require guardian approval; unavailable reviewer denies)\n")
 	}
 
 	<-ctx.Done()

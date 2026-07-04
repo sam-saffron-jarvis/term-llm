@@ -58,6 +58,7 @@ type CommonFlagBindings struct {
 	ShellAllow       *[]string
 	SystemMessage    *string
 	Yolo             *bool
+	Auto             *bool
 	Skills           *string
 	MaxTurns         *int
 	MaxTurnsDefault  int
@@ -96,6 +97,7 @@ var commonFlagMetas = []commonFlagMeta{
 	{Name: "shell-allow", Kind: flagKindStringArray, PreCommand: true, Bit: CommonTools},
 	{Name: "system-message", Shorthand: "m", Kind: flagKindString, PreCommand: true, Bit: CommonSystemMessage},
 	{Name: "yolo", Kind: flagKindBool, PreCommand: true, Bit: CommonYolo},
+	{Name: "auto", Kind: flagKindBool, PreCommand: true, Bit: CommonYolo},
 	{Name: "skills", Kind: flagKindString, PreCommand: true, Bit: CommonSkills},
 	{Name: "max-turns", Kind: flagKindString, Bit: CommonMaxTurns},
 	{Name: "max-output-tokens", Kind: flagKindString, Bit: CommonMaxOutputTokens},
@@ -169,7 +171,10 @@ func AddCommonFlags(cmd *cobra.Command, set CommonFlagSet, b CommonFlagBindings)
 	}
 	if set.has(CommonYolo) {
 		requireBoolFlagBinding("yolo", b.Yolo)
+		requireBoolFlagBinding("auto", b.Auto)
 		AddYoloFlag(cmd, b.Yolo)
+		AddAutoFlag(cmd, b.Auto)
+		cmd.MarkFlagsMutuallyExclusive("yolo", "auto")
 	}
 	if set.has(CommonSkills) {
 		requireStringFlagBinding("skills", b.Skills)
@@ -281,6 +286,11 @@ func AddAgentFlag(cmd *cobra.Command, dest *string) {
 // AddYoloFlag adds the --yolo flag for auto-approving all tool operations
 func AddYoloFlag(cmd *cobra.Command, dest *bool) {
 	cmd.Flags().BoolVar(dest, "yolo", false, "Auto-approve all tool operations (for CI/container use, bypasses all prompts)")
+}
+
+// AddAutoFlag adds the --auto flag for LLM-reviewed automatic shell approvals.
+func AddAutoFlag(cmd *cobra.Command, dest *bool) {
+	cmd.Flags().BoolVar(dest, "auto", false, "Use guardian LLM review for unmatched shell approvals instead of prompting when safe")
 }
 
 // AddSkillsFlag adds the --skills flag with completion

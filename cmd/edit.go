@@ -36,8 +36,9 @@ var (
 	editWriteDirs     []string
 	editShellAllow    []string
 	editSystemMessage string
-	// Yolo mode
+	// Yolo/auto modes
 	editYolo bool
+	editAuto bool
 	// Skills flag
 	editSkills string
 )
@@ -89,6 +90,7 @@ func init() {
 			ShellAllow:    &editShellAllow,
 			SystemMessage: &editSystemMessage,
 			Yolo:          &editYolo,
+			Auto:          &editAuto,
 			Skills:        &editSkills,
 		})
 
@@ -168,9 +170,18 @@ func runEdit(cmd *cobra.Command, args []string) error {
 		// edit runs without a session ID, so file-change recording no-ops;
 		// wiring is kept so recording activates if this flow gains sessions.
 		wireFileRecorder(toolMgr.Registry, cfg)
-		// Enable yolo mode if flag is set
+		// Enable approval mode if flag is set
 		if editYolo {
 			toolMgr.ApprovalMgr.SetYoloMode(true)
+		} else if editAuto {
+			providerCfg := cfg.GetActiveProviderConfig()
+			model := ""
+			if providerCfg != nil {
+				model = providerCfg.Model
+			}
+			if err := installGuardianReviewer(cfg, toolMgr.ApprovalMgr, provider, nil, model, false); err != nil {
+				return err
+			}
 		}
 		// Set up the improved approval UI with git-aware heuristics
 		toolMgr.ApprovalMgr.PromptUIFunc = func(path string, isWrite bool, isShell bool, workDir string) (tools.ApprovalResult, error) {

@@ -33,6 +33,7 @@ type SQLiteStore struct {
 	hasLastMessageCount      bool // true if sessions table has last_message_count column
 	hasMessageCount          bool // true if sessions table has message_count column
 	hasReasoningEffort       bool // true if sessions table has reasoning_effort column
+	hasApprovalMode          bool // true if sessions table has approval_mode column
 	hasMessageCompactionTail bool // true if messages table has compaction_tail column
 }
 
@@ -49,12 +50,13 @@ CREATE TABLE IF NOT EXISTS sessions (
     title_generated_at TIMESTAMP,
     title_basis_msg_seq INTEGER DEFAULT 0,
     title_skipped_at TIMESTAMP,
-    provider TEXT NOT NULL,
-    provider_key TEXT,
-    model TEXT NOT NULL,
-    reasoning_effort TEXT,
-    mode TEXT DEFAULT 'chat',
-    origin TEXT DEFAULT 'tui',
+	provider TEXT NOT NULL,
+	provider_key TEXT,
+	model TEXT NOT NULL,
+	reasoning_effort TEXT,
+	mode TEXT DEFAULT 'chat',
+	approval_mode TEXT,
+	origin TEXT DEFAULT 'tui',
     agent TEXT,
     cwd TEXT,
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -243,7 +245,7 @@ func NewSQLiteStore(cfg Config) (*SQLiteStore, error) {
 // - Fresh databases get the full schema from `schema` const and start at this version
 // - Existing databases run migrations to reach this version
 // Increment when adding new migrations.
-const schemaVersion = 32
+const schemaVersion = 33
 
 // migration represents a schema migration.
 type migration struct {
@@ -904,6 +906,18 @@ var migrations = []migration{
 			return err
 		},
 	},
+	{
+		// Migration 33: Persist per-session tool approval mode for chat resumes.
+		version:     33,
+		description: "add session approval_mode column",
+		up: func(db *sql.DB) error {
+			_, err := db.Exec("ALTER TABLE sessions ADD COLUMN approval_mode TEXT")
+			if err != nil && !isDuplicateColumnError(err) {
+				return err
+			}
+			return nil
+		},
+	},
 }
 
 // Keep in sync with llm.IsInternalCompactionSummaryText. SQLite migrations and
@@ -1228,21 +1242,33 @@ func (s *SQLiteStore) Create(ctx context.Context, sess *Session) error {
 			reasoningEffortPlaceholder = ", ?"
 			reasoningEffortArgs = []any{nullString(sess.ReasoningEffort)}
 		}
+		approvalModeCol := ""
+		approvalModePlaceholder := ""
+		var approvalModeArgs []any
+		if s.hasApprovalMode {
+			approvalModeCol = ", approval_mode"
+			approvalModePlaceholder = ", ?"
+			approvalModeArgs = []any{nullString(string(sess.ApprovalMode))}
+		}
 		insertArgs := []any{
 			sess.ID, sess.Name, sess.Summary, nullString(sess.GeneratedShortTitle), nullString(sess.GeneratedLongTitle), nullString(string(sess.TitleSource)), nullTime(sess.TitleGeneratedAt), sess.TitleBasisMsgSeq, nullTime(sess.TitleSkippedAt),
-			sess.Provider, nullString(sess.ProviderKey), sess.Model, string(sess.Mode), nullString(string(sess.Origin)), nullString(sess.Agent), sess.CWD,
+			sess.Provider, nullString(sess.ProviderKey), sess.Model, string(sess.Mode),
+		}
+		insertArgs = append(insertArgs, approvalModeArgs...)
+		insertArgs = append(insertArgs,
+			nullString(string(sess.Origin)), nullString(sess.Agent), sess.CWD,
 			sess.CreatedAt, sess.UpdatedAt, sess.Archived, sess.Pinned, nullString(sess.ParentID),
 			sess.Search, nullString(sess.Tools), nullString(sess.MCP),
 			sess.UserTurns, sess.LLMTurns, sess.ToolCalls, sess.InputTokens, sess.CachedInputTokens, sess.CacheWriteTokens, sess.OutputTokens,
 			sess.LastTotalTokens, sess.LastMessageCount, string(sess.Status), nullString(sess.Tags),
-		}
+		)
 		insertArgs = append(insertArgs, reasoningEffortArgs...)
 		result, err := s.db.ExecContext(ctx, `
 			INSERT INTO sessions (id, number, name, summary, generated_short_title, generated_long_title, title_source, title_generated_at, title_basis_msg_seq, title_skipped_at,
-			                      provider, provider_key, model, mode, origin, agent, cwd, created_at, updated_at, archived, pinned, parent_id, search, tools, mcp,
+			                      provider, provider_key, model, mode`+approvalModeCol+`, origin, agent, cwd, created_at, updated_at, archived, pinned, parent_id, search, tools, mcp,
 			                      user_turns, llm_turns, tool_calls, input_tokens, cached_input_tokens, cache_write_tokens, output_tokens,
 			                      last_total_tokens, last_message_count, status, tags`+reasoningEffortCol+`)
-			VALUES (?, (SELECT COALESCE(MAX(number), 0) + 1 FROM sessions), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?`+reasoningEffortPlaceholder+`)`,
+			VALUES (?, (SELECT COALESCE(MAX(number), 0) + 1 FROM sessions), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?`+approvalModePlaceholder+`, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?`+reasoningEffortPlaceholder+`)`,
 			insertArgs...)
 		if err != nil {
 			return fmt.Errorf("insert session: %w", err)
@@ -1347,10 +1373,14 @@ func (s *SQLiteStore) Update(ctx context.Context, sess *Session) error {
 	if s.hasReasoningEffort {
 		reasoningEffortClause = ", reasoning_effort = ?"
 	}
+	approvalModeClause := ""
+	if s.hasApprovalMode {
+		approvalModeClause = ", approval_mode = ?"
+	}
 	query := `
 		UPDATE sessions SET name = ?, summary = ?, generated_short_title = ?, generated_long_title = ?, title_source = ?, title_generated_at = ?, title_basis_msg_seq = ?` +
 		titleSkippedAtClause + `,
-		       provider = ?, provider_key = ?, model = ?` + reasoningEffortClause + `, mode = ?, origin = ?, agent = ?, cwd = ?,
+		       provider = ?, provider_key = ?, model = ?` + reasoningEffortClause + `, mode = ?` + approvalModeClause + `, origin = ?, agent = ?, cwd = ?,
 		       updated_at = ?, archived = ?, pinned = ?, parent_id = ?, search = ?, tools = ?, mcp = ?,
 		       status = ?, tags = ?
 		WHERE id = ?`
@@ -1368,7 +1398,13 @@ func (s *SQLiteStore) Update(ctx context.Context, sess *Session) error {
 		args = append(args, nullString(sess.ReasoningEffort))
 	}
 	args = append(args,
-		string(sess.Mode), nullString(string(sess.Origin)), nullString(sess.Agent), sess.CWD,
+		string(sess.Mode),
+	)
+	if s.hasApprovalMode {
+		args = append(args, nullString(string(sess.ApprovalMode)))
+	}
+	args = append(args,
+		nullString(string(sess.Origin)), nullString(sess.Agent), sess.CWD,
 		sess.UpdatedAt, sess.Archived, sess.Pinned, nullString(sess.ParentID),
 		sess.Search, nullString(sess.Tools), nullString(sess.MCP),
 		string(sess.Status), nullString(sess.Tags), sess.ID,
@@ -2966,6 +3002,7 @@ func (s *SQLiteStore) setCurrentColumns() {
 	s.hasLastMessageCount = true
 	s.hasMessageCount = true
 	s.hasReasoningEffort = true
+	s.hasApprovalMode = true
 	s.hasMessageCompactionTail = true
 }
 
@@ -3016,6 +3053,8 @@ func (s *SQLiteStore) probeSessionColumns() {
 			s.hasMessageCount = true
 		case "reasoning_effort":
 			s.hasReasoningEffort = true
+		case "approval_mode":
+			s.hasApprovalMode = true
 		}
 	}
 }
@@ -3062,6 +3101,11 @@ func (s *SQLiteStore) sessionSelectCols() string {
 		base += ", NULL AS reasoning_effort"
 	}
 	base += `, mode`
+	if s.hasApprovalMode {
+		base += ", approval_mode"
+	} else {
+		base += ", NULL AS approval_mode"
+	}
 	if s.hasOrigin {
 		base += ", origin"
 	} else {
@@ -3102,7 +3146,7 @@ func scanSessionRow(row *sql.Row, hasGeneratedTitles, hasCacheWriteTokens, hasCo
 	var name, summary, cwd sql.NullString
 	var generatedShortTitle, generatedLongTitle, titleSource sql.NullString
 	var titleGeneratedAt, titleSkippedAt sql.NullTime
-	var mode, origin, agent, parentID, tools, mcp, status, tags, providerKey, reasoningEffort sql.NullString
+	var mode, approvalMode, origin, agent, parentID, tools, mcp, status, tags, providerKey, reasoningEffort sql.NullString
 
 	var scanArgs []any
 	scanArgs = append(scanArgs, &sess.ID, &number, &name, &summary)
@@ -3113,7 +3157,7 @@ func scanSessionRow(row *sql.Row, hasGeneratedTitles, hasCacheWriteTokens, hasCo
 		}
 	}
 	scanArgs = append(scanArgs,
-		&sess.Provider, &providerKey, &sess.Model, &reasoningEffort, &mode, &origin, &sess.Pinned,
+		&sess.Provider, &providerKey, &sess.Model, &reasoningEffort, &mode, &approvalMode, &origin, &sess.Pinned,
 		&agent, &cwd, &sess.CreatedAt, &sess.UpdatedAt, &sess.Archived, &parentID,
 		&sess.Search, &tools, &mcp,
 		&sess.UserTurns, &sess.LLMTurns, &sess.ToolCalls, &sess.InputTokens, &sess.CachedInputTokens,
@@ -3179,6 +3223,9 @@ func scanSessionRow(row *sql.Row, hasGeneratedTitles, hasCacheWriteTokens, hasCo
 	}
 	if mode.Valid {
 		sess.Mode = SessionMode(mode.String)
+	}
+	if approvalMode.Valid {
+		sess.ApprovalMode = SessionApprovalMode(approvalMode.String)
 	}
 	if origin.Valid {
 		sess.Origin = SessionOrigin(origin.String)

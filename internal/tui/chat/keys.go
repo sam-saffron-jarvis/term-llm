@@ -113,7 +113,7 @@ func DefaultKeyMap() KeyMap {
 		),
 		ToggleYolo: key.NewBinding(
 			key.WithKeys("shift+tab"),
-			key.WithHelp("shift+tab", "toggle yolo"),
+			key.WithHelp("shift+tab", "approval mode"),
 		),
 		Clear: key.NewBinding(
 			key.WithKeys("ctrl+k"),

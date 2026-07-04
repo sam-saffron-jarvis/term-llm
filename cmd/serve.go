@@ -55,6 +55,7 @@ var (
 	serveSystemMessage          string
 	serveAgent                  string
 	serveYolo                   bool
+	serveAuto                   bool
 	serveTelegramCarryoverChars int
 	serveJobsWorkers            int
 	serveSetup                  bool
@@ -178,6 +179,7 @@ func init() {
 			SystemMessage:   &serveSystemMessage,
 			Agent:           &serveAgent,
 			Yolo:            &serveYolo,
+			Auto:            &serveAuto,
 		})
 }
 
@@ -397,6 +399,8 @@ func runServe(cmd *cobra.Command, args []string) error {
 		toolMap[parts[0]] = parts[1]
 	}
 
+	autoMode := serveAuto || (!serveYolo && approvalModeFromConfig(cfg) == tools.ModeAuto)
+
 	modelName := activeModel(cfg)
 	runtimeFactory := func(ctx context.Context, providerName string, providerModel string) (*serveRuntime, error) {
 		var provider llm.Provider
@@ -427,7 +431,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 			return nil, err
 		}
 
-		engine, toolMgr, err := newServeEngineWithTools(cfg, settings, provider, provKey, rtModelName, serveYolo, WireSpawnAgentRunner, skillsSetup)
+		engine, toolMgr, err := newServeEngineWithTools(cfg, settings, provider, provKey, rtModelName, serveYolo, autoMode, WireSpawnAgentRunner, skillsSetup)
 		if err != nil {
 			return nil, err
 		}
@@ -478,6 +482,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 			platformMessages:    agentPlatformMsgs,
 		}
 		if toolMgr != nil {
+			toolMgr.ApprovalMgr.GuardianEventFunc = runtime.emitGuardianReview
 			imageBaseURL := ""
 			if hasWeb {
 				imageBaseURL = strings.TrimRight(serveBasePath, "/") + "/images/"
@@ -732,7 +737,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 // function registers the activate_skill tool on the engine but does NOT inject
 // <available_skills> metadata into the system prompt — the caller must do that
 // before constructing serveRuntime/serveSettings so the mutation is not lost.
-func newServeEngineWithTools(cfg *config.Config, settings SessionSettings, provider llm.Provider, providerName, modelName string, yoloMode bool, wireSpawn func(*config.Config, *tools.ToolManager, bool) error, skillsSetup *skills.Setup) (*llm.Engine, *tools.ToolManager, error) {
+func newServeEngineWithTools(cfg *config.Config, settings SessionSettings, provider llm.Provider, providerName, modelName string, yoloMode bool, autoMode bool, wireSpawn func(*config.Config, *tools.ToolManager, bool) error, skillsSetup *skills.Setup) (*llm.Engine, *tools.ToolManager, error) {
 	engine := newEngine(provider, cfg)
 	settings.Provider = providerName
 	settings.Model = modelName
@@ -744,6 +749,10 @@ func newServeEngineWithTools(cfg *config.Config, settings SessionSettings, provi
 	if toolMgr != nil {
 		if yoloMode {
 			toolMgr.ApprovalMgr.SetYoloMode(true)
+		} else if autoMode {
+			if err := installGuardianReviewer(cfg, toolMgr.ApprovalMgr, provider, nil, modelName, false); err != nil {
+				return nil, nil, err
+			}
 		}
 		if wireSpawn != nil {
 			if err := wireSpawn(cfg, toolMgr, yoloMode); err != nil {

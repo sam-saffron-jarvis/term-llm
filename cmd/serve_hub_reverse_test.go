@@ -509,7 +509,15 @@ func TestHubReverseRequestAllowsEncodedSlashInQuery(t *testing.T) {
 	}
 }
 
+func withFastHubReverseReconnect(t *testing.T) {
+	t.Helper()
+	orig := hubReverseReconnectDelay
+	hubReverseReconnectDelay = time.Millisecond
+	t.Cleanup(func() { hubReverseReconnectDelay = orig })
+}
+
 func TestHubReverseConnectorReconnectsAfterDroppedWebsocket(t *testing.T) {
+	withFastHubReverseReconnect(t)
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/chat/healthz" {
 			t.Fatalf("backend path = %q", r.URL.Path)
@@ -542,6 +550,7 @@ func TestHubReverseConnectorReconnectsAfterDroppedWebsocket(t *testing.T) {
 }
 
 func TestHubReverseConnectorFailsInFlightRequestAndRecoversAfterDrop(t *testing.T) {
+	withFastHubReverseReconnect(t)
 	slowStarted := make(chan struct{})
 	slowCanceled := make(chan struct{})
 	var slowStartedOnce, slowCanceledOnce sync.Once

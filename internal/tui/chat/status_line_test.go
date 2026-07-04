@@ -6,6 +6,7 @@ import (
 
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/tools"
 	"github.com/samsaffron/term-llm/internal/ui"
 )
 
@@ -20,6 +21,32 @@ func TestRenderStatusLineShowsConfiguredContextWindow(t *testing.T) {
 	line := ui.StripANSI(m.renderStatusLine())
 	if !strings.Contains(line, "~0/1M") {
 		t.Fatalf("status line %q does not show context window", line)
+	}
+}
+
+func TestRenderStatusLineShowsExactlyOneApprovalMode(t *testing.T) {
+	m := newTestChatModel(false)
+	m.width = 120
+	approvalMgr := tools.NewApprovalManager(tools.NewToolPermissions())
+	m.SetApprovalManager(approvalMgr)
+
+	approvalMgr.SetApprovalMode(tools.ModeAuto)
+	m.yolo = true // stale local bool must not make status show both modes
+	line := ui.StripANSI(m.renderStatusLine())
+	if !strings.Contains(line, "auto") {
+		t.Fatalf("status line %q does not show auto mode", line)
+	}
+	if strings.Contains(line, "yolo") {
+		t.Fatalf("status line %q shows yolo while effective mode is auto", line)
+	}
+
+	approvalMgr.SetApprovalMode(tools.ModeYolo)
+	line = ui.StripANSI(m.renderStatusLine())
+	if !strings.Contains(line, "yolo") {
+		t.Fatalf("status line %q does not show yolo mode", line)
+	}
+	if strings.Contains(line, "auto") {
+		t.Fatalf("status line %q shows auto while effective mode is yolo", line)
 	}
 }
 

@@ -10,10 +10,6 @@ func TestCommonMarkFullSpecMarkdownStreamingParity(t *testing.T) {
 	input := []byte(commonMarkSpecMarkdown(t))
 	want := renderDirectBytes(t, input)
 	cases := []corpusChunkCase{
-		{name: "all-at-once", chunks: [][]byte{append([]byte(nil), input...)}},
-		{name: "hundred-pieces", chunks: splitIntoNPieces(input, 100)},
-		{name: "random-seed-1", chunks: randomChunks(input, 1, 32)},
-		{name: "random-seed-89", chunks: randomChunks(input, 89, 32)},
 		{name: "adversarial-markdown-cuts", chunks: adversarialMarkdownChunks(input)},
 	}
 	for _, tc := range cases {

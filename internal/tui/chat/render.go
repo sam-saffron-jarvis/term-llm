@@ -997,7 +997,10 @@ func (m *Model) renderStatusLine() string {
 	if model != "" {
 		baseSegments = append(baseSegments, seg(mutedStyle.Render(model), 0, true))
 	}
-	if m.yolo {
+	switch m.currentApprovalMode() {
+	case tools.ModeAuto:
+		baseSegments = append(baseSegments, seg(successStyle.Render("auto"), 40, false))
+	case tools.ModeYolo:
 		baseSegments = append(baseSegments, seg(mutedStyle.Render("yolo"), 40, false))
 	}
 	if m.searchEnabled {
