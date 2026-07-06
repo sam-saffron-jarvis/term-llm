@@ -1,7 +1,6 @@
 package llm
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -120,49 +119,33 @@ func (p *XAIProvider) streamStandard(ctx context.Context, req Request) (Stream, 
 	return newEventStreamWithCancelHook(ctx, func() { _ = resp.Body.Close() }, func(ctx context.Context, send eventSender) error {
 		defer resp.Body.Close()
 
-		reader := bufio.NewReader(resp.Body)
+		decoder := newSSEDecoder(resp.Body, sseDecoderOptions{RequireDone: false, Transport: "xAI SSE"})
 
 		toolState := newCompatToolState()
 		tagStripper := newXAITagStripper()
 		var lastUsage *Usage
-		var lastEventType string
 		sawVisibleText := false
+		skippedJSONChunks := 0
 
 		for {
-			line, eof, err := readSSELine(reader)
+			eventType, data, err := decoder.Next()
+			if err == io.EOF {
+				break
+			}
 			if err != nil {
 				return fmt.Errorf("xAI streaming error: %w", err)
 			}
-			if eof && line == "" {
-				break
-			}
-			if strings.HasPrefix(line, "event: ") {
-				lastEventType = strings.TrimPrefix(line, "event: ")
-				if eof {
-					break
-				}
-				continue
-			}
-			if !strings.HasPrefix(line, "data: ") {
-				if eof {
-					break
-				}
-				continue
-			}
-			data := strings.TrimPrefix(line, "data: ")
-			if data == "[DONE]" {
-				break
-			}
 
 			var chatResp oaiChatResponse
-			if err := json.Unmarshal([]byte(data), &chatResp); err != nil {
-				if eof {
-					break
+			if err := json.Unmarshal(data, &chatResp); err != nil {
+				skippedJSONChunks++
+				if req.DebugRaw {
+					DebugRawSection(req.DebugRaw, "xAI SSE Skipped JSON Chunk", fmt.Sprintf("skipped_chunks: %d\nerror: %v\ndata:\n%s", skippedJSONChunks, err, string(data)))
 				}
 				continue
 			}
 
-			if lastEventType == "error" || chatResp.Error != nil {
+			if eventType == "error" || chatResp.Error != nil {
 				errMsg := "unknown error"
 				if chatResp.Error != nil {
 					errMsg = chatResp.Error.Message
@@ -237,11 +220,10 @@ func (p *XAIProvider) streamStandard(ctx context.Context, req Request) (Stream, 
 					}
 				}
 			}
+		}
 
-			lastEventType = ""
-			if eof {
-				break
-			}
+		if skippedJSONChunks > 0 && req.DebugRaw {
+			DebugRawSection(req.DebugRaw, "xAI SSE Skipped JSON Summary", fmt.Sprintf("skipped_chunks: %d", skippedJSONChunks))
 		}
 
 		// Flush any remaining buffered content
@@ -306,34 +288,26 @@ func (p *XAIProvider) streamWithSearch(ctx context.Context, req Request) (Stream
 	return newEventStreamWithCancelHook(ctx, func() { _ = resp.Body.Close() }, func(ctx context.Context, send eventSender) error {
 		defer resp.Body.Close()
 
-		reader := bufio.NewReader(resp.Body)
+		decoder := newSSEDecoder(resp.Body, sseDecoderOptions{RequireDone: false, Transport: "xAI Responses SSE"})
 
 		var lastUsage *Usage
 		var searchStarted bool
+		skippedJSONChunks := 0
 
 		for {
-			line, eof, err := readSSELine(reader)
+			_, data, err := decoder.Next()
+			if err == io.EOF {
+				break
+			}
 			if err != nil {
 				return fmt.Errorf("xAI Responses streaming error: %w", err)
 			}
-			if eof && line == "" {
-				break
-			}
-			if !strings.HasPrefix(line, "data: ") {
-				if eof {
-					break
-				}
-				continue
-			}
-			data := strings.TrimPrefix(line, "data: ")
-			if data == "[DONE]" {
-				break
-			}
 
 			var event xaiResponsesEvent
-			if err := json.Unmarshal([]byte(data), &event); err != nil {
-				if eof {
-					break
+			if err := json.Unmarshal(data, &event); err != nil {
+				skippedJSONChunks++
+				if req.DebugRaw {
+					DebugRawSection(req.DebugRaw, "xAI Responses SSE Skipped JSON Chunk", fmt.Sprintf("skipped_chunks: %d\nerror: %v\ndata:\n%s", skippedJSONChunks, err, string(data)))
 				}
 				continue
 			}
@@ -376,9 +350,10 @@ func (p *XAIProvider) streamWithSearch(ctx context.Context, req Request) (Stream
 			case "error":
 				return fmt.Errorf("xAI Responses API error: %s", event.Error)
 			}
-			if eof {
-				break
-			}
+		}
+
+		if skippedJSONChunks > 0 && req.DebugRaw {
+			DebugRawSection(req.DebugRaw, "xAI Responses SSE Skipped JSON Summary", fmt.Sprintf("skipped_chunks: %d", skippedJSONChunks))
 		}
 
 		if lastUsage != nil {

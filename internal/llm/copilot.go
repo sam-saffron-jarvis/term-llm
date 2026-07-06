@@ -1,7 +1,6 @@
 package llm
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -341,39 +340,34 @@ func (p *CopilotProvider) streamChatCompletions(ctx context.Context, req Request
 			return newHTTPStatusError("Copilot", resp, respBody)
 		}
 
-		scanner := bufio.NewScanner(resp.Body)
-		buf := make([]byte, 0, 64*1024)
-		scanner.Buffer(buf, 1024*1024)
+		// TODO: Confirm GitHub Copilot's chat/completions stream always
+		// terminates with [DONE], then switch RequireDone to true. The previous
+		// parser accepted EOF without [DONE], so keep this lenient for now.
+		decoder := newSSEDecoder(resp.Body, sseDecoderOptions{RequireDone: false, Transport: "Copilot SSE"})
 
 		toolState := newCompatToolState()
 		var lastUsage *Usage
-		var lastEventType string
 		sawVisibleText := false
 		unmarshalErrors := 0
 
-		for scanner.Scan() {
-			line := scanner.Text()
-			if strings.HasPrefix(line, "event: ") {
-				lastEventType = strings.TrimPrefix(line, "event: ")
-				continue
-			}
-			if !strings.HasPrefix(line, "data: ") {
-				continue
-			}
-			data := strings.TrimPrefix(line, "data: ")
-			if data == "[DONE]" {
+		for {
+			eventType, data, err := decoder.Next()
+			if err == io.EOF {
 				break
+			}
+			if err != nil {
+				return fmt.Errorf("Copilot streaming error: %w", err)
 			}
 
 			if debugRaw {
-				DebugRawSection(debugRaw, "Copilot SSE Line", data)
+				DebugRawSection(debugRaw, "Copilot SSE Event", string(data))
 			}
 
 			var chatResp oaiChatResponse
-			if err := json.Unmarshal([]byte(data), &chatResp); err != nil {
+			if err := json.Unmarshal(data, &chatResp); err != nil {
 				unmarshalErrors++
 				if debugRaw {
-					DebugRawSection(debugRaw, "Copilot SSE Parse Error", fmt.Sprintf("error: %v, data: %s", err, data))
+					DebugRawSection(debugRaw, "Copilot SSE Parse Error", fmt.Sprintf("error: %v, data: %s", err, string(data)))
 				}
 				// Allow some parse errors (keepalives, partial data) but fail if too many
 				if unmarshalErrors > 10 {
@@ -382,7 +376,7 @@ func (p *CopilotProvider) streamChatCompletions(ctx context.Context, req Request
 				continue
 			}
 
-			if lastEventType == "error" || chatResp.Error != nil {
+			if eventType == "error" || chatResp.Error != nil {
 				errMsg := "unknown error"
 				if chatResp.Error != nil {
 					errMsg = chatResp.Error.Message
@@ -428,12 +422,6 @@ func (p *CopilotProvider) streamChatCompletions(ctx context.Context, req Request
 					}
 				}
 			}
-
-			lastEventType = ""
-		}
-
-		if err := scanner.Err(); err != nil {
-			return fmt.Errorf("Copilot streaming error: %w", err)
 		}
 
 		if err := toolState.Validate(); err != nil {
