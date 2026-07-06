@@ -9,8 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/samsaffron/term-llm/cmd/udiff"
 	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/udiff"
 )
 
 // MaxRetryAttempts is the maximum number of retry attempts for failed edits.

@@ -9,10 +9,10 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/samsaffron/term-llm/cmd/udiff"
 	"github.com/samsaffron/term-llm/internal/diff"
 	"github.com/samsaffron/term-llm/internal/edit"
 	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/udiff"
 )
 
 // fileMu serialises concurrent edits to the same file path.
