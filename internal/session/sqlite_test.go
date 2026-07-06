@@ -3,6 +3,7 @@ package session
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -391,7 +392,7 @@ func TestInitSchemaFreshDBDoesNotRunHistoricalMigrations(t *testing.T) {
 	migrations = []migration{{
 		version:     1,
 		description: "sentinel migration",
-		up: func(db *sql.DB) error {
+		up: func(db schemaExecutor) error {
 			_, err := db.Exec(`CREATE TABLE migration_sentinel (id INTEGER PRIMARY KEY)`)
 			return err
 		},
@@ -464,7 +465,7 @@ func TestInitSchemaExistingDBWithoutSchemaVersionRunsMigrations(t *testing.T) {
 	migrations = []migration{{
 		version:     1,
 		description: "sentinel migration",
-		up: func(db *sql.DB) error {
+		up: func(db schemaExecutor) error {
 			_, err := db.Exec(`CREATE TABLE migration_sentinel (id INTEGER PRIMARY KEY)`)
 			return err
 		},
@@ -486,6 +487,63 @@ func TestInitSchemaExistingDBWithoutSchemaVersionRunsMigrations(t *testing.T) {
 	}
 	if sentinelCount != 1 {
 		t.Fatal("existing DB without schema_version should still run migrations")
+	}
+}
+
+func TestInitSchemaFailedMigrationRollsBackSchemaAndVersion(t *testing.T) {
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	db.SetMaxOpenConns(1)
+	defer db.Close()
+
+	if _, err := db.Exec(schema); err != nil {
+		t.Fatalf("seed schema: %v", err)
+	}
+	if _, err := db.Exec(`
+		CREATE TABLE schema_version (version INTEGER NOT NULL);
+		INSERT INTO schema_version(version) VALUES (0);
+	`); err != nil {
+		t.Fatalf("seed schema version: %v", err)
+	}
+
+	originalMigrations := migrations
+	migrations = []migration{{
+		version:     1,
+		description: "failing migration",
+		up: func(db schemaExecutor) error {
+			if _, err := db.Exec(`CREATE TABLE partial_migration_sentinel (id INTEGER PRIMARY KEY)`); err != nil {
+				return err
+			}
+			return errors.New("injected migration failure")
+		},
+	}}
+	defer func() {
+		migrations = originalMigrations
+	}()
+
+	if err := initSchema(db); err == nil {
+		t.Fatal("initSchema succeeded; want injected migration failure")
+	}
+
+	var version int
+	if err := db.QueryRow(`SELECT version FROM schema_version`).Scan(&version); err != nil {
+		t.Fatalf("read schema version: %v", err)
+	}
+	if version != 0 {
+		t.Fatalf("schema version = %d, want previous version 0", version)
+	}
+
+	var partialCount int
+	if err := db.QueryRow(`
+		SELECT COUNT(*) FROM sqlite_master
+		WHERE type='table' AND name='partial_migration_sentinel'
+	`).Scan(&partialCount); err != nil {
+		t.Fatalf("check partial migration table: %v", err)
+	}
+	if partialCount != 0 {
+		t.Fatal("failed migration left partial schema behind")
 	}
 }
 

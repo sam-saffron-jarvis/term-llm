@@ -251,7 +251,52 @@ const schemaVersion = 33
 type migration struct {
 	version     int
 	description string
-	up          func(db *sql.DB) error
+	up          func(db schemaExecutor) error
+}
+
+type schemaExecutor interface {
+	Exec(query string, args ...any) (sql.Result, error)
+	Query(query string, args ...any) (*sql.Rows, error)
+}
+
+type connSchemaExecutor struct {
+	ctx  context.Context
+	conn *sql.Conn
+}
+
+func (e connSchemaExecutor) Exec(query string, args ...any) (sql.Result, error) {
+	return e.conn.ExecContext(e.ctx, query, args...)
+}
+
+func (e connSchemaExecutor) Query(query string, args ...any) (*sql.Rows, error) {
+	return e.conn.QueryContext(e.ctx, query, args...)
+}
+
+func withImmediateMigrationTx(ctx context.Context, db *sql.DB, fn func(schemaExecutor) error) (err error) {
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		return fmt.Errorf("get migration connection: %w", err)
+	}
+	defer conn.Close()
+
+	if _, err := conn.ExecContext(ctx, "BEGIN IMMEDIATE"); err != nil {
+		return fmt.Errorf("begin immediate migration transaction: %w", err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_, _ = conn.ExecContext(context.Background(), "ROLLBACK")
+		}
+	}()
+
+	if err := fn(connSchemaExecutor{ctx: ctx, conn: conn}); err != nil {
+		return err
+	}
+	if _, err := conn.ExecContext(ctx, "COMMIT"); err != nil {
+		return fmt.Errorf("commit migration transaction: %w", err)
+	}
+	committed = true
+	return nil
 }
 
 // migrations defines schema migrations for upgrading existing databases.
@@ -268,7 +313,7 @@ var migrations = []migration{
 		// Only runs on databases created before these columns existed
 		version:     1,
 		description: "add session settings columns (search, tools, mcp)",
-		up: func(db *sql.DB) error {
+		up: func(db schemaExecutor) error {
 			alterStatements := []string{
 				"ALTER TABLE sessions ADD COLUMN search BOOLEAN DEFAULT FALSE",
 				"ALTER TABLE sessions ADD COLUMN tools TEXT",
@@ -289,7 +334,7 @@ var migrations = []migration{
 		// Tracks user turns, LLM turns, tool calls, tokens, status, and tags
 		version:     2,
 		description: "add session metrics columns (user_turns, llm_turns, tool_calls, tokens, status, tags)",
-		up: func(db *sql.DB) error {
+		up: func(db schemaExecutor) error {
 			alterStatements := []string{
 				"ALTER TABLE sessions ADD COLUMN user_turns INTEGER DEFAULT 0",
 				"ALTER TABLE sessions ADD COLUMN llm_turns INTEGER DEFAULT 0",
@@ -315,7 +360,7 @@ var migrations = []migration{
 		// Also adds index on sessions.status for query performance.
 		version:     3,
 		description: "add unique constraint on message sequences and status index",
-		up: func(db *sql.DB) error {
+		up: func(db schemaExecutor) error {
 			// First, fix any existing duplicate sequences within sessions.
 			// Renumber messages by created_at order within each session.
 			rows, err := db.Query(`
@@ -395,7 +440,7 @@ var migrations = []migration{
 		// Distinguishes chat, ask, plan, and exec sessions
 		version:     4,
 		description: "add session mode column",
-		up: func(db *sql.DB) error {
+		up: func(db schemaExecutor) error {
 			_, err := db.Exec("ALTER TABLE sessions ADD COLUMN mode TEXT DEFAULT 'chat'")
 			if err != nil && !isDuplicateColumnError(err) {
 				return err
@@ -413,7 +458,7 @@ var migrations = []migration{
 		// Tracks which agent was used for the session
 		version:     5,
 		description: "add agent column",
-		up: func(db *sql.DB) error {
+		up: func(db schemaExecutor) error {
 			_, err := db.Exec("ALTER TABLE sessions ADD COLUMN agent TEXT")
 			if err != nil && !isDuplicateColumnError(err) {
 				return err
@@ -426,7 +471,7 @@ var migrations = []migration{
 		// Adds number column for simpler session identification (1, 2, 3...)
 		version:     6,
 		description: "add session number column",
-		up: func(db *sql.DB) error {
+		up: func(db schemaExecutor) error {
 			// Add number column
 			_, err := db.Exec("ALTER TABLE sessions ADD COLUMN number INTEGER")
 			if err != nil && !isDuplicateColumnError(err) {
@@ -461,7 +506,7 @@ var migrations = []migration{
 		// Tracks prompt-cache token reads for cumulative session stats
 		version:     7,
 		description: "add cached_input_tokens metric column",
-		up: func(db *sql.DB) error {
+		up: func(db schemaExecutor) error {
 			_, err := db.Exec("ALTER TABLE sessions ADD COLUMN cached_input_tokens INTEGER DEFAULT 0")
 			if err != nil && !isDuplicateColumnError(err) {
 				return err
@@ -473,7 +518,7 @@ var migrations = []migration{
 		// Migration 8: Add canonical provider key for reliable resume behavior
 		version:     8,
 		description: "add provider_key column",
-		up: func(db *sql.DB) error {
+		up: func(db schemaExecutor) error {
 			_, err := db.Exec("ALTER TABLE sessions ADD COLUMN provider_key TEXT")
 			if err != nil && !isDuplicateColumnError(err) {
 				return err
@@ -485,7 +530,7 @@ var migrations = []migration{
 		// Migration 9: Create push_subscriptions table for Web Push notifications
 		version:     9,
 		description: "create push_subscriptions table",
-		up: func(db *sql.DB) error {
+		up: func(db schemaExecutor) error {
 			_, err := db.Exec(`
 				CREATE TABLE IF NOT EXISTS push_subscriptions (
 					id TEXT PRIMARY KEY,
@@ -503,7 +548,7 @@ var migrations = []migration{
 		// Migration 10: Add compaction_seq to track compaction boundary
 		version:     10,
 		description: "add compaction_seq column",
-		up: func(db *sql.DB) error {
+		up: func(db schemaExecutor) error {
 			_, err := db.Exec("ALTER TABLE sessions ADD COLUMN compaction_seq INTEGER DEFAULT -1")
 			if err != nil && !isDuplicateColumnError(err) {
 				return err
@@ -518,7 +563,7 @@ var migrations = []migration{
 		// the largest cost bucket on cold-cache turns was silently dropped.
 		version:     11,
 		description: "add cache_write_tokens column",
-		up: func(db *sql.DB) error {
+		up: func(db schemaExecutor) error {
 			_, err := db.Exec("ALTER TABLE sessions ADD COLUMN cache_write_tokens INTEGER DEFAULT 0")
 			if err != nil && !isDuplicateColumnError(err) {
 				return err
@@ -530,7 +575,7 @@ var migrations = []migration{
 		// Migration 12: Add generated session title fields for autotitling experiments.
 		version:     12,
 		description: "add generated title columns",
-		up: func(db *sql.DB) error {
+		up: func(db schemaExecutor) error {
 			alterStatements := []string{
 				"ALTER TABLE sessions ADD COLUMN generated_short_title TEXT",
 				"ALTER TABLE sessions ADD COLUMN generated_long_title TEXT",
@@ -552,7 +597,7 @@ var migrations = []migration{
 		// Migration 13: Add session origin column for UI/source filtering.
 		version:     13,
 		description: "add session origin column",
-		up: func(db *sql.DB) error {
+		up: func(db schemaExecutor) error {
 			_, err := db.Exec("ALTER TABLE sessions ADD COLUMN origin TEXT DEFAULT 'tui'")
 			if err != nil && !isDuplicateColumnError(err) {
 				return err
@@ -572,7 +617,7 @@ var migrations = []migration{
 		// Migration 14: Add pinned flag for promoting sessions in sidebars.
 		version:     14,
 		description: "add session pinned column",
-		up: func(db *sql.DB) error {
+		up: func(db schemaExecutor) error {
 			_, err := db.Exec("ALTER TABLE sessions ADD COLUMN pinned BOOLEAN DEFAULT FALSE")
 			if err != nil && !isDuplicateColumnError(err) {
 				return err
@@ -592,7 +637,7 @@ var migrations = []migration{
 		// Migration 15: Add title_skipped_at for autotitle skip-until-changed logic.
 		version:     15,
 		description: "add title_skipped_at column",
-		up: func(db *sql.DB) error {
+		up: func(db schemaExecutor) error {
 			_, err := db.Exec("ALTER TABLE sessions ADD COLUMN title_skipped_at TIMESTAMP")
 			if err != nil && !isDuplicateColumnError(err) {
 				return err
@@ -612,7 +657,7 @@ var migrations = []migration{
 		// touch them. Sorting by last user message time reflects actual user engagement.
 		version:     16,
 		description: "add last_user_message_at column",
-		up: func(db *sql.DB) error {
+		up: func(db schemaExecutor) error {
 			_, err := db.Exec("ALTER TABLE sessions ADD COLUMN last_user_message_at TIMESTAMP")
 			if err != nil && !isDuplicateColumnError(err) {
 				return err
@@ -643,7 +688,7 @@ var migrations = []migration{
 		// messages table still rejected role='developer', causing silent drops.
 		version:     17,
 		description: "allow developer messages in messages table",
-		up: func(db *sql.DB) error {
+		up: func(db schemaExecutor) error {
 			return rebuildMessagesTableForCurrentRoles(db)
 		},
 	},
@@ -651,7 +696,7 @@ var migrations = []migration{
 		// Migration 18: Persist last observed context estimate baseline for resumes.
 		version:     18,
 		description: "add last context estimate columns",
-		up: func(db *sql.DB) error {
+		up: func(db schemaExecutor) error {
 			alterStatements := []string{
 				"ALTER TABLE sessions ADD COLUMN last_total_tokens INTEGER DEFAULT 0",
 				"ALTER TABLE sessions ADD COLUMN last_message_count INTEGER DEFAULT 0",
@@ -671,7 +716,7 @@ var migrations = []migration{
 		// can lock provider/model/effort after the first message.
 		version:     19,
 		description: "add reasoning_effort column for locking web session config",
-		up: func(db *sql.DB) error {
+		up: func(db schemaExecutor) error {
 			if _, err := db.Exec("ALTER TABLE sessions ADD COLUMN reasoning_effort TEXT"); err != nil {
 				if !isDuplicateColumnError(err) {
 					return err
@@ -687,7 +732,7 @@ var migrations = []migration{
 		// autotitle. Tool, developer, and system rows are excluded.
 		version:     20,
 		description: "add last_message_at column for visible-message activity sort",
-		up: func(db *sql.DB) error {
+		up: func(db schemaExecutor) error {
 			_, err := db.Exec("ALTER TABLE sessions ADD COLUMN last_message_at TIMESTAMP")
 			if err != nil && !isDuplicateColumnError(err) {
 				return err
@@ -722,7 +767,7 @@ var migrations = []migration{
 		// subquery from the index alone.
 		version:     21,
 		description: "add covering index for visible message counts",
-		up: func(db *sql.DB) error {
+		up: func(db schemaExecutor) error {
 			_, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_messages_session_role ON messages(session_id, role)`)
 			if err != nil {
 				return fmt.Errorf("create messages session role index: %w", err)
@@ -736,7 +781,7 @@ var migrations = []migration{
 		// rendered by clients but filtered before provider requests.
 		version:     22,
 		description: "allow event messages in messages table",
-		up: func(db *sql.DB) error {
+		up: func(db schemaExecutor) error {
 			return rebuildMessagesTableForCurrentRoles(db)
 		},
 	},
@@ -744,7 +789,7 @@ var migrations = []migration{
 		// Migration 23: Track the total number of compactions per session.
 		version:     23,
 		description: "add compaction_count column",
-		up: func(db *sql.DB) error {
+		up: func(db schemaExecutor) error {
 			_, err := db.Exec("ALTER TABLE sessions ADD COLUMN compaction_count INTEGER DEFAULT 0")
 			if err != nil && !isDuplicateColumnError(err) {
 				return err
@@ -756,7 +801,7 @@ var migrations = []migration{
 		// Migration 24: Add turn_index for debugging and per-turn stats.
 		version:     24,
 		description: "add message turn_index column",
-		up: func(db *sql.DB) error {
+		up: func(db schemaExecutor) error {
 			_, err := db.Exec("ALTER TABLE messages ADD COLUMN turn_index INTEGER DEFAULT 0")
 			if err != nil && !isDuplicateColumnError(err) {
 				return err
@@ -770,7 +815,7 @@ var migrations = []migration{
 		// of running a COUNT(*) subquery per returned session.
 		version:     25,
 		description: "add persisted session message_count column",
-		up: func(db *sql.DB) error {
+		up: func(db schemaExecutor) error {
 			_, err := db.Exec("ALTER TABLE sessions ADD COLUMN message_count INTEGER DEFAULT 0")
 			if err != nil && !isDuplicateColumnError(err) {
 				return err
@@ -795,7 +840,7 @@ var migrations = []migration{
 		// visible before the compaction marker.
 		version:     26,
 		description: "add message compaction_tail display flag",
-		up: func(db *sql.DB) error {
+		up: func(db schemaExecutor) error {
 			_, err := db.Exec("ALTER TABLE messages ADD COLUMN compaction_tail BOOLEAN DEFAULT FALSE")
 			if err != nil && !isDuplicateColumnError(err) {
 				return err
@@ -824,7 +869,7 @@ var migrations = []migration{
 		// rows hidden from normal chat.
 		version:     27,
 		description: "exclude non-chat-bubble rows from message_count",
-		up: func(db *sql.DB) error {
+		up: func(db schemaExecutor) error {
 			if err := createMessageCountTriggers(db); err != nil {
 				return fmt.Errorf("recreate message_count triggers: %w", err)
 			}
@@ -845,7 +890,7 @@ var migrations = []migration{
 		// Migration 28: Add an index for cross-session prompt history recall.
 		version:     28,
 		description: "add prompt history role/id index",
-		up: func(db *sql.DB) error {
+		up: func(db schemaExecutor) error {
 			_, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_messages_role_id ON messages(role, id)`)
 			return err
 		},
@@ -854,7 +899,7 @@ var migrations = []migration{
 		// Migration 29: Add a timestamp index for date-ordered prompt history recall.
 		version:     29,
 		description: "add prompt history role/created index",
-		up: func(db *sql.DB) error {
+		up: func(db schemaExecutor) error {
 			_, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_messages_role_created_id ON messages(role, created_at, id)`)
 			return err
 		},
@@ -865,7 +910,7 @@ var migrations = []migration{
 		// refresh for both any-message activity and last-user-activity orderings.
 		version:     30,
 		description: "add sidebar activity ordering indexes",
-		up: func(db *sql.DB) error {
+		up: func(db schemaExecutor) error {
 			if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_sessions_sidebar_activity ON sessions(archived, COALESCE(pinned, FALSE) DESC, COALESCE(last_message_at, last_user_message_at, created_at) DESC)`); err != nil {
 				return fmt.Errorf("create sidebar activity index: %w", err)
 			}
@@ -879,7 +924,7 @@ var migrations = []migration{
 		// Migration 31: Persist provider-owned resume state outside the transcript.
 		version:     31,
 		description: "create session provider state table",
-		up: func(db *sql.DB) error {
+		up: func(db schemaExecutor) error {
 			_, err := db.Exec(`CREATE TABLE IF NOT EXISTS session_provider_state (
 				session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
 				provider_key TEXT NOT NULL,
@@ -895,7 +940,7 @@ var migrations = []migration{
 		// mutate assistant parts/duration. Only text_content changes need FTS sync.
 		version:     32,
 		description: "narrow messages FTS update trigger to text_content",
-		up: func(db *sql.DB) error {
+		up: func(db schemaExecutor) error {
 			if _, err := db.Exec(`DROP TRIGGER IF EXISTS messages_au`); err != nil {
 				return err
 			}
@@ -910,7 +955,7 @@ var migrations = []migration{
 		// Migration 33: Persist per-session tool approval mode for chat resumes.
 		version:     33,
 		description: "add session approval_mode column",
-		up: func(db *sql.DB) error {
+		up: func(db schemaExecutor) error {
 			_, err := db.Exec("ALTER TABLE sessions ADD COLUMN approval_mode TEXT")
 			if err != nil && !isDuplicateColumnError(err) {
 				return err
@@ -950,7 +995,7 @@ func qualifiedMessageColumn(alias, column string) string {
 	return alias + "." + column
 }
 
-func createMessageCountTriggers(db *sql.DB) error {
+func createMessageCountTriggers(db schemaExecutor) error {
 	oldCountable := countableConversationMessageSQL("old", true)
 	newCountable := countableConversationMessageSQL("new", true)
 	stmts := []string{
@@ -997,7 +1042,7 @@ func createMessageCountTriggers(db *sql.DB) error {
 	return nil
 }
 
-func rebuildMessagesTableForCurrentRoles(db *sql.DB) error {
+func rebuildMessagesTableForCurrentRoles(db schemaExecutor) error {
 	stmts := []string{
 		`DROP TRIGGER IF EXISTS messages_ai`,
 		`DROP TRIGGER IF EXISTS messages_ad`,
@@ -1108,17 +1153,16 @@ func initSchemaFull(db *sql.DB, versionErr error, currentVersion int) error {
 		return fmt.Errorf("get current version: %w", versionErr)
 	}
 
-	// Run pending migrations
+	// Run pending migrations. Each migration and its schema_version bump commit
+	// atomically under BEGIN IMMEDIATE. The current migration list contains only
+	// transaction-safe DDL/DML; future transaction-unsafe PRAGMA migrations should
+	// be handled explicitly outside this helper.
 	for _, m := range migrations {
 		if m.version > currentVersion {
-			if err := m.up(db); err != nil {
-				return fmt.Errorf("migration %d (%s): %w", m.version, m.description, err)
+			if err := runSessionMigration(db, m); err != nil {
+				return err
 			}
-
-			// Update version
-			if _, err := db.Exec("UPDATE schema_version SET version = ?", m.version); err != nil {
-				return fmt.Errorf("update version to %d: %w", m.version, err)
-			}
+			currentVersion = m.version
 		}
 	}
 
@@ -1165,6 +1209,19 @@ func initSchemaFull(db *sql.DB, versionErr error, currentVersion int) error {
 	}
 
 	return nil
+}
+
+func runSessionMigration(db *sql.DB, m migration) error {
+	ctx := context.Background()
+	return withImmediateMigrationTx(ctx, db, func(tx schemaExecutor) error {
+		if err := m.up(tx); err != nil {
+			return fmt.Errorf("migration %d (%s): %w", m.version, m.description, err)
+		}
+		if _, err := tx.Exec("UPDATE schema_version SET version = ?", m.version); err != nil {
+			return fmt.Errorf("update version to %d: %w", m.version, err)
+		}
+		return nil
+	})
 }
 
 // isDuplicateColumnError checks if an error is due to a column already existing.
