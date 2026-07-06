@@ -3,9 +3,11 @@ package memory
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"math"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -719,6 +721,167 @@ func TestStoreInitMigratesLegacyEmbeddingTableBeforeVectorIndex(t *testing.T) {
 	if !rows.Next() {
 		t.Fatal("idx_memory_embeddings_vector_search_cover was not created")
 	}
+}
+
+func TestStoreInitFailedMigrationRollsBackSchemaAndVersion(t *testing.T) {
+	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "memory.db"))
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer db.Close()
+
+	originalMigrations := memoryMigrations
+	memoryMigrations = []memoryMigration{{
+		version:     1,
+		description: "failing migration",
+		up: func(db schemaExecutor) error {
+			if _, err := db.Exec(`CREATE TABLE partial_memory_migration (id INTEGER PRIMARY KEY)`); err != nil {
+				return err
+			}
+			return errors.New("injected memory migration failure")
+		},
+	}}
+	defer func() {
+		memoryMigrations = originalMigrations
+	}()
+
+	if err := initSchema(db); err == nil {
+		t.Fatal("initSchema succeeded; want injected migration failure")
+	}
+
+	var partialCount int
+	if err := db.QueryRow(`
+		SELECT COUNT(*) FROM sqlite_master
+		WHERE type='table' AND name='partial_memory_migration'
+	`).Scan(&partialCount); err != nil {
+		t.Fatalf("check partial migration table: %v", err)
+	}
+	if partialCount != 0 {
+		t.Fatal("failed memory migration left partial schema behind")
+	}
+
+	var version string
+	err = db.QueryRow(`SELECT value FROM memory_meta WHERE key = ?`, memorySchemaVersionKey).Scan(&version)
+	if err != sql.ErrNoRows {
+		t.Fatalf("schema version marker error = %v, value = %q; want sql.ErrNoRows", err, version)
+	}
+}
+
+func TestStoreInitFreshAndMigratedSchemasEquivalent(t *testing.T) {
+	fresh, err := NewStore(Config{Path: filepath.Join(t.TempDir(), "fresh.db")})
+	if err != nil {
+		t.Fatalf("NewStore() fresh error = %v", err)
+	}
+	defer fresh.Close()
+
+	migratedPath := filepath.Join(t.TempDir(), "migrated.db")
+	seedLegacyMemorySchema(t, migratedPath)
+	migrated, err := NewStore(Config{Path: migratedPath})
+	if err != nil {
+		t.Fatalf("NewStore() migrated error = %v", err)
+	}
+	defer migrated.Close()
+
+	tables := []string{
+		"memory_fragments",
+		"memory_embeddings",
+		"memory_mining_state",
+		"memory_meta",
+		"generated_images",
+		"memory_fragment_sources",
+		"memory_insights",
+		"memory_insight_mining_state",
+	}
+	freshSchema := memoryTableInfoSignature(t, fresh.db, tables)
+	migratedSchema := memoryTableInfoSignature(t, migrated.db, tables)
+	if freshSchema != migratedSchema {
+		t.Fatalf("fresh and migrated schemas differ\n--- fresh ---\n%s\n--- migrated ---\n%s", freshSchema, migratedSchema)
+	}
+
+	for _, db := range []*sql.DB{fresh.db, migrated.db} {
+		var version string
+		if err := db.QueryRow(`SELECT value FROM memory_meta WHERE key = ?`, memorySchemaVersionKey).Scan(&version); err != nil {
+			t.Fatalf("read memory schema version: %v", err)
+		}
+		if version != fmt.Sprint(memorySchemaVersion) {
+			t.Fatalf("memory schema version = %q, want %d", version, memorySchemaVersion)
+		}
+	}
+}
+
+func seedLegacyMemorySchema(t *testing.T, dbPath string) {
+	t.Helper()
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open legacy db: %v", err)
+	}
+	defer db.Close()
+
+	if _, err := db.Exec(`
+		CREATE TABLE memory_embeddings (
+			fragment_id TEXT NOT NULL REFERENCES memory_fragments(id) ON DELETE CASCADE,
+			provider TEXT NOT NULL,
+			model TEXT NOT NULL,
+			dimensions INTEGER NOT NULL,
+			vector BLOB NOT NULL,
+			embedded_at DATETIME NOT NULL,
+			PRIMARY KEY (fragment_id, provider, model)
+		);
+		CREATE TABLE memory_insights (
+			id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+			agent               TEXT NOT NULL,
+			content             TEXT NOT NULL,
+			category            TEXT NOT NULL DEFAULT '',
+			trigger_desc        TEXT NOT NULL DEFAULT '',
+			confidence          REAL NOT NULL DEFAULT 0.5,
+			reinforcement_count INTEGER NOT NULL DEFAULT 1,
+			created_at          DATETIME NOT NULL DEFAULT (datetime('now')),
+			last_reinforced     DATETIME NOT NULL DEFAULT (datetime('now'))
+		);
+	`); err != nil {
+		t.Fatalf("seed legacy schema: %v", err)
+	}
+}
+
+func memoryTableInfoSignature(t *testing.T, db *sql.DB, tables []string) string {
+	t.Helper()
+	var signatures []string
+	for _, table := range tables {
+		rows, err := db.Query(`PRAGMA table_info(` + quoteSQLiteIdent(table) + `)`)
+		if err != nil {
+			t.Fatalf("PRAGMA table_info(%s): %v", table, err)
+		}
+
+		var columns []string
+		for rows.Next() {
+			var cid int
+			var name, typeName string
+			var notNull int
+			var defaultValue sql.NullString
+			var pk int
+			if err := rows.Scan(&cid, &name, &typeName, &notNull, &defaultValue, &pk); err != nil {
+				rows.Close()
+				t.Fatalf("scan table_info(%s): %v", table, err)
+			}
+			defaultString := "<nil>"
+			if defaultValue.Valid {
+				defaultString = defaultValue.String
+			}
+			columns = append(columns, fmt.Sprintf("%s|type=%s|notnull=%d|default=%s|pk=%d", name, typeName, notNull, defaultString, pk))
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			t.Fatalf("table_info(%s) rows: %v", table, err)
+		}
+		rows.Close()
+		sort.Strings(columns)
+		signatures = append(signatures, table+":"+strings.Join(columns, ";"))
+	}
+	return strings.Join(signatures, "\n")
+}
+
+func quoteSQLiteIdent(ident string) string {
+	return `"` + strings.ReplaceAll(ident, `"`, `""`) + `"`
 }
 
 func TestStoreVectorSearchNormalizesUpperBoundForNonUnitQuery(t *testing.T) {

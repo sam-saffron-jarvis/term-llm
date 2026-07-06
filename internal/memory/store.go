@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -225,6 +226,136 @@ CREATE TABLE IF NOT EXISTS memory_insight_mining_state (
 );
 `
 
+const memorySchemaVersion = 11
+
+const memorySchemaVersionKey = "schema_version"
+
+type schemaExecutor interface {
+	Exec(query string, args ...any) (sql.Result, error)
+}
+
+type memoryMigration struct {
+	version     int
+	description string
+	up          func(db schemaExecutor) error
+}
+
+var memoryMigrations = []memoryMigration{
+	{
+		version:     1,
+		description: "add compact_content column to memory_insights",
+		up: func(db schemaExecutor) error {
+			return execAllowDuplicateColumn(db, `ALTER TABLE memory_insights ADD COLUMN compact_content TEXT NOT NULL DEFAULT ''`)
+		},
+	},
+	{
+		version:     2,
+		description: "add vector search prefix 0 column",
+		up: func(db schemaExecutor) error {
+			return execAllowDuplicateColumn(db, `ALTER TABLE memory_embeddings ADD COLUMN search_prefix_0 REAL NOT NULL DEFAULT 0`)
+		},
+	},
+	{
+		version:     3,
+		description: "add vector search prefix 1 column",
+		up: func(db schemaExecutor) error {
+			return execAllowDuplicateColumn(db, `ALTER TABLE memory_embeddings ADD COLUMN search_prefix_1 REAL NOT NULL DEFAULT 0`)
+		},
+	},
+	{
+		version:     4,
+		description: "add vector search prefix 2 column",
+		up: func(db schemaExecutor) error {
+			return execAllowDuplicateColumn(db, `ALTER TABLE memory_embeddings ADD COLUMN search_prefix_2 REAL NOT NULL DEFAULT 0`)
+		},
+	},
+	{
+		version:     5,
+		description: "add vector search prefix 3 column",
+		up: func(db schemaExecutor) error {
+			return execAllowDuplicateColumn(db, `ALTER TABLE memory_embeddings ADD COLUMN search_prefix_3 REAL NOT NULL DEFAULT 0`)
+		},
+	},
+	{
+		version:     6,
+		description: "add vector search prefix 4 column",
+		up: func(db schemaExecutor) error {
+			return execAllowDuplicateColumn(db, `ALTER TABLE memory_embeddings ADD COLUMN search_prefix_4 REAL NOT NULL DEFAULT 0`)
+		},
+	},
+	{
+		version:     7,
+		description: "add vector search prefix 5 column",
+		up: func(db schemaExecutor) error {
+			return execAllowDuplicateColumn(db, `ALTER TABLE memory_embeddings ADD COLUMN search_prefix_5 REAL NOT NULL DEFAULT 0`)
+		},
+	},
+	{
+		version:     8,
+		description: "add vector search prefix 6 column",
+		up: func(db schemaExecutor) error {
+			return execAllowDuplicateColumn(db, `ALTER TABLE memory_embeddings ADD COLUMN search_prefix_6 REAL NOT NULL DEFAULT 0`)
+		},
+	},
+	{
+		version:     9,
+		description: "add vector search prefix 7 column",
+		up: func(db schemaExecutor) error {
+			return execAllowDuplicateColumn(db, `ALTER TABLE memory_embeddings ADD COLUMN search_prefix_7 REAL NOT NULL DEFAULT 0`)
+		},
+	},
+	{
+		version:     10,
+		description: "add vector search tail norm column",
+		up: func(db schemaExecutor) error {
+			return execAllowDuplicateColumn(db, `ALTER TABLE memory_embeddings ADD COLUMN search_tail_norm REAL NOT NULL DEFAULT -1`)
+		},
+	},
+	{
+		version:     11,
+		description: "add vector search norm column",
+		up: func(db schemaExecutor) error {
+			return execAllowDuplicateColumn(db, `ALTER TABLE memory_embeddings ADD COLUMN search_vector_norm REAL NOT NULL DEFAULT -1`)
+		},
+	},
+}
+
+type connSchemaExecutor struct {
+	ctx  context.Context
+	conn *sql.Conn
+}
+
+func (e connSchemaExecutor) Exec(query string, args ...any) (sql.Result, error) {
+	return e.conn.ExecContext(e.ctx, query, args...)
+}
+
+func withImmediateMigrationTx(ctx context.Context, db *sql.DB, fn func(schemaExecutor) error) (err error) {
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		return fmt.Errorf("get migration connection: %w", err)
+	}
+	defer conn.Close()
+
+	if _, err := conn.ExecContext(ctx, "BEGIN IMMEDIATE"); err != nil {
+		return fmt.Errorf("begin immediate migration transaction: %w", err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_, _ = conn.ExecContext(context.Background(), "ROLLBACK")
+		}
+	}()
+
+	if err := fn(connSchemaExecutor{ctx: ctx, conn: conn}); err != nil {
+		return err
+	}
+	if _, err := conn.ExecContext(ctx, "COMMIT"); err != nil {
+		return fmt.Errorf("commit migration transaction: %w", err)
+	}
+	committed = true
+	return nil
+}
+
 // NewStore opens memory.db and initializes schema.
 func NewStore(cfg Config) (*Store, error) {
 	dbPath, err := ResolveDBPath(cfg.Path)
@@ -267,26 +398,29 @@ func initSchema(db *sql.DB) error {
 		return fmt.Errorf("initialize memory schema: %w", err)
 	}
 
-	// Idempotent column migrations for existing databases.
-	// SQLite returns "duplicate column name" when the column already exists;
-	// we suppress that specific error so initSchema is safe to run on any DB.
-	migrations := []string{
-		`ALTER TABLE memory_insights ADD COLUMN compact_content TEXT NOT NULL DEFAULT ''`,
-		`ALTER TABLE memory_embeddings ADD COLUMN search_prefix_0 REAL NOT NULL DEFAULT 0`,
-		`ALTER TABLE memory_embeddings ADD COLUMN search_prefix_1 REAL NOT NULL DEFAULT 0`,
-		`ALTER TABLE memory_embeddings ADD COLUMN search_prefix_2 REAL NOT NULL DEFAULT 0`,
-		`ALTER TABLE memory_embeddings ADD COLUMN search_prefix_3 REAL NOT NULL DEFAULT 0`,
-		`ALTER TABLE memory_embeddings ADD COLUMN search_prefix_4 REAL NOT NULL DEFAULT 0`,
-		`ALTER TABLE memory_embeddings ADD COLUMN search_prefix_5 REAL NOT NULL DEFAULT 0`,
-		`ALTER TABLE memory_embeddings ADD COLUMN search_prefix_6 REAL NOT NULL DEFAULT 0`,
-		`ALTER TABLE memory_embeddings ADD COLUMN search_prefix_7 REAL NOT NULL DEFAULT 0`,
-		`ALTER TABLE memory_embeddings ADD COLUMN search_tail_norm REAL NOT NULL DEFAULT -1`,
-		`ALTER TABLE memory_embeddings ADD COLUMN search_vector_norm REAL NOT NULL DEFAULT -1`,
+	currentVersion, err := getMemorySchemaVersion(db)
+	if err != nil {
+		return fmt.Errorf("get memory schema version: %w", err)
 	}
-	for _, m := range migrations {
-		if _, err := db.Exec(m); err != nil && !strings.Contains(err.Error(), "duplicate column name") {
-			return fmt.Errorf("schema migration %q: %w", m, err)
+
+	// Run pending migrations. Databases created before version tracking have no
+	// memory_meta schema_version row, so they start at version 0 and replay these
+	// idempotent ALTER TABLE migrations once. Fresh databases already have the
+	// columns from schema and tolerate duplicate-column errors before being stamped.
+	// The current migration list contains only transaction-safe DDL; future
+	// transaction-unsafe PRAGMA migrations should be handled explicitly outside
+	// this helper.
+	for _, m := range memoryMigrations {
+		if m.version > currentVersion {
+			if err := runMemoryMigration(db, m); err != nil {
+				return err
+			}
+			currentVersion = m.version
 		}
+	}
+
+	if currentVersion < memorySchemaVersion {
+		return fmt.Errorf("memory schema version %d is older than expected %d", currentVersion, memorySchemaVersion)
 	}
 
 	if err := createVectorSearchIndex(db); err != nil {
@@ -298,6 +432,47 @@ func initSchema(db *sql.DB) error {
 	}
 
 	return nil
+}
+
+func getMemorySchemaVersion(db *sql.DB) (int, error) {
+	var value string
+	err := db.QueryRow(`SELECT value FROM memory_meta WHERE key = ?`, memorySchemaVersionKey).Scan(&value)
+	if err == sql.ErrNoRows {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, err
+	}
+	version, err := strconv.Atoi(value)
+	if err != nil {
+		return 0, fmt.Errorf("parse memory schema version %q: %w", value, err)
+	}
+	return version, nil
+}
+
+func runMemoryMigration(db *sql.DB, m memoryMigration) error {
+	ctx := context.Background()
+	return withImmediateMigrationTx(ctx, db, func(tx schemaExecutor) error {
+		if err := m.up(tx); err != nil {
+			return fmt.Errorf("memory migration %d (%s): %w", m.version, m.description, err)
+		}
+		if _, err := tx.Exec(`INSERT OR REPLACE INTO memory_meta(key, value) VALUES(?, ?)`, memorySchemaVersionKey, strconv.Itoa(m.version)); err != nil {
+			return fmt.Errorf("update memory schema version to %d: %w", m.version, err)
+		}
+		return nil
+	})
+}
+
+func execAllowDuplicateColumn(db schemaExecutor, stmt string) error {
+	_, err := db.Exec(stmt)
+	if err != nil && !isDuplicateMemoryColumnError(err) {
+		return fmt.Errorf("execute %q: %w", stmt, err)
+	}
+	return nil
+}
+
+func isDuplicateMemoryColumnError(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "duplicate column name")
 }
 
 func createVectorSearchIndex(db *sql.DB) error {
