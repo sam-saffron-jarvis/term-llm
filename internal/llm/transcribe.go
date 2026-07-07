@@ -102,7 +102,7 @@ func TranscribeWithConfig(ctx context.Context, cfg *config.Config, filePath, lan
 		}
 		model := modelOverride
 		if model == "" {
-			model = "voxtral-mini-latest"
+			model = config.DefaultTranscriptionMistralModel
 		}
 		return transcribeAndTruncate(ctx, filePath, TranscribeOptions{
 			APIKey:   apiKey,
@@ -142,7 +142,7 @@ func TranscribeWithConfig(ctx context.Context, cfg *config.Config, filePath, lan
 				endpoint = strings.TrimRight(baseURL, "/") + "/audio/transcriptions"
 			}
 		}
-		model := firstNonEmptyString(modelOverride, cfg.Transcription.Venice.Model, "nvidia/parakeet-tdt-0.6b-v3")
+		model := firstNonEmptyString(modelOverride, cfg.Transcription.Venice.Model, config.DefaultTranscriptionVeniceModel)
 		return transcribeAndTruncate(ctx, filePath, TranscribeOptions{
 			APIKey:     apiKey,
 			Endpoint:   endpoint,
@@ -183,7 +183,7 @@ func TranscribeWithConfig(ctx context.Context, cfg *config.Config, filePath, lan
 				endpoint = strings.TrimRight(baseURL, "/") + "/speech-to-text"
 			}
 		}
-		model := firstNonEmptyString(modelOverride, cfg.Transcription.ElevenLabs.Model, "scribe_v2")
+		model := firstNonEmptyString(modelOverride, cfg.Transcription.ElevenLabs.Model, config.DefaultTranscriptionElevenLabsModel)
 		return transcribeAndTruncate(ctx, filePath, TranscribeOptions{
 			APIKey:     apiKey,
 			Endpoint:   endpoint,

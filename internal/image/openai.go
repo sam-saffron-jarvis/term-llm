@@ -16,13 +16,13 @@ import (
 	"strings"
 	"time"
 
+	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/providerhttp"
 )
 
 const (
 	openaiGenerateEndpoint = "https://api.openai.com/v1/images/generations"
 	openaiEditEndpoint     = "https://api.openai.com/v1/images/edits"
-	openaiDefaultModel     = "gpt-image-2"
 	openaiHTTPTimeout      = 10 * time.Minute
 
 	openaiMinPixels   = 655_360
@@ -36,9 +36,12 @@ const (
 	openaiFormatPNG   = "png"
 )
 
-var openaiHTTPClient = &http.Client{
-	Timeout: openaiHTTPTimeout,
-}
+var (
+	openaiDefaultModel = config.DefaultImageOpenAIModel
+	openaiHTTPClient   = &http.Client{
+		Timeout: openaiHTTPTimeout,
+	}
+)
 
 // OpenAIProvider implements ImageProvider using OpenAI's Image API.
 //

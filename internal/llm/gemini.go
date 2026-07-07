@@ -8,6 +8,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/samsaffron/term-llm/internal/config"
 	"google.golang.org/genai"
 )
 
@@ -60,7 +61,7 @@ func parseGeminiModelThinking(model string) (string, geminiThinkingConfig) {
 
 func NewGeminiProvider(apiKey, model string) *GeminiProvider {
 	if model == "" {
-		model = "gemini-3-flash-preview"
+		model = config.DefaultProviderModel("gemini")
 	}
 	baseModel, thinkingCfg := parseGeminiModelThinking(model)
 	return &GeminiProvider{

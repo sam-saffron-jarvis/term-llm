@@ -235,18 +235,18 @@ func RunHeadlessSetup() (*config.Config, error) {
 	cfg := &config.Config{
 		DefaultProvider: provider,
 		Providers: map[string]config.ProviderConfig{
-			"chatgpt":    {Model: "gpt-5.5-medium"},
-			"anthropic":  {Model: "claude-sonnet-4-6"},
-			"openai":     {Model: "gpt-5.4"},
-			"claude-bin": {Model: "sonnet"},
-			"openrouter": {Model: "minimax/minimax-m2.7", AppURL: "https://github.com/samsaffron/term-llm", AppTitle: "term-llm"},
-			"gemini":     {Model: "gemini-3-flash-preview"},
+			"chatgpt":    {Model: config.DefaultProviderModel("chatgpt")},
+			"anthropic":  {Model: config.DefaultProviderModel("anthropic")},
+			"openai":     {Model: config.DefaultProviderModel("openai")},
+			"claude-bin": {Model: config.DefaultProviderModel("claude-bin")},
+			"openrouter": {Model: config.DefaultProviderModel("openrouter"), AppURL: "https://github.com/samsaffron/term-llm", AppTitle: "term-llm"},
+			"gemini":     {Model: config.DefaultProviderModel("gemini")},
 			"codeassist": {Model: "gemini-3.1-pro"},
-			"xai":        {Model: "grok-4-20"},
-			"venice":     {Model: "minimax-m27"},
-			"nearai":     {Model: "zai-org/GLM-5.1-FP8"},
-			"sambanova":  {Model: "gpt-oss-120b"},
-			"zen":        {Model: "minimax-m2.5-free"},
+			"xai":        {Model: config.DefaultProviderModel("xai")},
+			"venice":     {Model: config.DefaultProviderModel("venice")},
+			"nearai":     {Model: config.DefaultProviderModel("nearai")},
+			"sambanova":  {Model: config.DefaultProviderModel("sambanova")},
+			"zen":        {Model: config.DefaultProviderModel("zen")},
 		},
 		Exec: config.ExecConfig{
 			Suggestions: 3,
@@ -405,42 +405,42 @@ func RunSetupWizard() (*config.Config, error) {
 		DefaultProvider: provider,
 		Providers: map[string]config.ProviderConfig{
 			"chatgpt": {
-				Model: "gpt-5.5-medium",
+				Model: config.DefaultProviderModel("chatgpt"),
 			},
 			"anthropic": {
-				Model: "claude-sonnet-4-6",
+				Model: config.DefaultProviderModel("anthropic"),
 			},
 			"openai": {
-				Model: "gpt-5.2",
+				Model: config.DefaultProviderModel("openai"),
 			},
 			"claude-bin": {
-				Model: "sonnet",
+				Model: config.DefaultProviderModel("claude-bin"),
 			},
 			"openrouter": {
-				Model:    "x-ai/grok-code-fast-1",
+				Model:    config.DefaultProviderModel("openrouter"),
 				AppURL:   "https://github.com/samsaffron/term-llm",
 				AppTitle: "term-llm",
 			},
 			"gemini": {
-				Model: "gemini-3-flash-preview",
+				Model: config.DefaultProviderModel("gemini"),
 			},
 			"codeassist": {
 				Model: "gemini-2.5-pro",
 			},
 			"xai": {
-				Model: "grok-4-1-fast",
+				Model: config.DefaultProviderModel("xai"),
 			},
 			"venice": {
-				Model: "venice-uncensored",
+				Model: config.DefaultProviderModel("venice"),
 			},
 			"nearai": {
-				Model: "zai-org/GLM-5.1-FP8",
+				Model: config.DefaultProviderModel("nearai"),
 			},
 			"sambanova": {
-				Model: "gpt-oss-120b",
+				Model: config.DefaultProviderModel("sambanova"),
 			},
 			"zen": {
-				Model: "minimax-m2.5-free",
+				Model: config.DefaultProviderModel("zen"),
 			},
 		},
 		Exec: config.ExecConfig{

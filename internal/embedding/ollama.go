@@ -8,11 +8,12 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/providerhttp"
 )
 
 const (
-	ollamaDefaultModel = "nomic-embed-text"
+	ollamaDefaultModel = config.DefaultEmbedOllamaModel
 	ollamaEmbedTimeout = 2 * time.Minute
 )
 

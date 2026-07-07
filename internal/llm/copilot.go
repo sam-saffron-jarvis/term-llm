@@ -12,13 +12,14 @@ import (
 	"strings"
 	"time"
 
+	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/credentials"
 	"github.com/samsaffron/term-llm/internal/oauth"
 	"github.com/samsaffron/term-llm/internal/signal"
 	"golang.org/x/term"
 )
 
-const copilotDefaultModel = "gpt-4.1" // Broadly available Copilot model
+var copilotDefaultModel = config.DefaultProviderModel("copilot") // Broadly available Copilot model
 
 // copilotDefaultAPIURL is the default GitHub Copilot API base URL (for individual plans)
 // Business/Enterprise accounts use api.business.githubcopilot.com instead

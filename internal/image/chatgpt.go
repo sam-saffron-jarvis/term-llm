@@ -7,11 +7,12 @@ import (
 	"io"
 	"strings"
 
+	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/credentials"
 	"github.com/samsaffron/term-llm/internal/llm"
 )
 
-const chatGPTImageDefaultModel = "gpt-5.4-mini"
+var chatGPTImageDefaultModel = config.DefaultImageChatGPTModel
 
 // ChatGPTProvider implements ImageProvider using the chatgpt.com backend's
 // built-in image_generation tool, authenticated via the user's existing

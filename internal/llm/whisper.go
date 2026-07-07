@@ -10,6 +10,8 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+
+	"github.com/samsaffron/term-llm/internal/config"
 )
 
 type TranscribeOptions struct {
@@ -40,11 +42,11 @@ func TranscribeFile(ctx context.Context, filePath string, opts TranscribeOptions
 	if model == "" {
 		switch opts.Provider {
 		case "venice":
-			model = "nvidia/parakeet-tdt-0.6b-v3"
+			model = config.DefaultTranscriptionVeniceModel
 		case "elevenlabs":
-			model = "scribe_v2"
+			model = config.DefaultTranscriptionElevenLabsModel
 		default:
-			model = "whisper-1"
+			model = config.DefaultTranscriptionOpenAIModel
 		}
 	}
 

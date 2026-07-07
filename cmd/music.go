@@ -121,7 +121,7 @@ func runMusic(cmd *cobra.Command, args []string) error {
 	}
 	initThemeFromConfig(cfg)
 
-	providerName := firstNonEmpty(musicProvider, cfg.Music.Provider, "venice")
+	providerName := firstNonEmpty(musicProvider, cfg.Music.Provider, config.DefaultMusicProvider)
 	req := music.Request{
 		Prompt:                      prompt,
 		CompositionPlan:             plan,
@@ -172,7 +172,7 @@ func runVeniceMusic(cmd *cobra.Command, cfg *config.Config, req music.Request) e
 	if apiKey == "" {
 		return fmt.Errorf("VENICE_API_KEY not configured. Set environment variable or add to music.venice.api_key in config")
 	}
-	req.Model = firstNonEmpty(musicModel, cfg.Music.Venice.Model, "elevenlabs-sound-effects-v2")
+	req.Model = firstNonEmpty(musicModel, cfg.Music.Venice.Model, config.DefaultMusicVeniceModel)
 	if req.Format == "" {
 		req.Format = firstNonEmpty(cfg.Music.Venice.Format, music.VeniceDefaultFormatForModel(req.Model))
 	}
@@ -202,9 +202,9 @@ func runElevenLabsMusic(cmd *cobra.Command, cfg *config.Config, req music.Reques
 	if apiKey == "" {
 		return fmt.Errorf("ELEVENLABS_API_KEY not configured. Set environment variable or add to music.elevenlabs.api_key in config")
 	}
-	req.Model = firstNonEmpty(musicModel, cfg.Music.ElevenLabs.Model, "music_v1")
+	req.Model = firstNonEmpty(musicModel, cfg.Music.ElevenLabs.Model, config.DefaultMusicElevenLabsModel)
 	if req.Format == "" {
-		req.Format = firstNonEmpty(cfg.Music.ElevenLabs.Format, "mp3_44100_128")
+		req.Format = firstNonEmpty(cfg.Music.ElevenLabs.Format, config.DefaultMusicElevenLabsFormat)
 	}
 	ctx, stop := signal.NotifyContext()
 	defer stop()

@@ -20,7 +20,7 @@ type NearAIProvider struct {
 func NewNearAIProvider(apiKey, model string) *NearAIProvider {
 	apiKey = config.NormalizeVeniceAPIKey(apiKey)
 	if model == "" {
-		model = "zai-org/GLM-5.1-FP8"
+		model = config.DefaultProviderModel("nearai")
 	}
 	return &NearAIProvider{OpenAICompatProvider: NewOpenAICompatProvider(nearAIBaseURL, apiKey, model, "NEAR AI")}
 }

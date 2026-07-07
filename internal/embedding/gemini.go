@@ -5,13 +5,13 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/samsaffron/term-llm/internal/config"
 	"google.golang.org/genai"
 )
 
-const (
-	geminiDefaultModel = "gemini-embedding-001"
-	geminiEmbedTimeout = 2 * time.Minute
-)
+const geminiEmbedTimeout = 2 * time.Minute
+
+const geminiDefaultModel = config.DefaultEmbedGeminiModel
 
 // GeminiProvider implements EmbeddingProvider using Google's Gemini API
 type GeminiProvider struct {

@@ -27,11 +27,11 @@ const (
 	veniceQueueEndpoint     = "/audio/queue"
 	veniceRetrieveEndpoint  = "/audio/retrieve"
 	veniceQuoteEndpoint     = "/audio/quote"
-	veniceDefaultModel      = "elevenlabs-sound-effects-v2"
-	veniceDefaultFormat     = "mp3"
+	veniceDefaultModel      = config.DefaultMusicVeniceModel
+	veniceDefaultFormat     = config.DefaultMusicVeniceFormat
 	elevenLabsBaseURL       = "https://api.elevenlabs.io"
-	elevenLabsDefaultModel  = "music_v1"
-	elevenLabsDefaultFormat = "mp3_44100_128"
+	elevenLabsDefaultModel  = config.DefaultMusicElevenLabsModel
+	elevenLabsDefaultFormat = config.DefaultMusicElevenLabsFormat
 	defaultPollInterval     = 2 * time.Second
 	defaultPollTimeout      = 10 * time.Minute
 )
@@ -417,7 +417,7 @@ func (p *ElevenLabsProvider) do(ctx context.Context, endpoint string, payload an
 func Save(data []byte, outputDir, prompt, format string) (string, error) {
 	dir := expandPath(outputDir)
 	if dir == "" {
-		dir = expandPath("~/Music/term-llm/")
+		dir = expandPath(config.DefaultMusicOutputDir)
 	}
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", fmt.Errorf("create output directory: %w", err)

@@ -12,14 +12,16 @@ import (
 	"strings"
 	"time"
 
+	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/providerhttp"
 )
 
 const (
-	geminiBaseURL      = "https://generativelanguage.googleapis.com/v1beta/models/"
-	geminiDefaultModel = "gemini-2.5-flash-image"
-	geminiHTTPTimeout  = 3 * time.Minute
+	geminiBaseURL     = "https://generativelanguage.googleapis.com/v1beta/models/"
+	geminiHTTPTimeout = 3 * time.Minute
 )
+
+var geminiDefaultModel = config.DefaultImageGeminiModel
 
 var geminiHTTPClient = &http.Client{
 	Timeout: geminiHTTPTimeout,

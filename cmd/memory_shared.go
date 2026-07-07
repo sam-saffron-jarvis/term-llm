@@ -126,27 +126,27 @@ func defaultEmbeddingModel(cfg *config.Config, provider string) string {
 		if strings.TrimSpace(cfg.Embed.Gemini.Model) != "" {
 			return strings.TrimSpace(cfg.Embed.Gemini.Model)
 		}
-		return "gemini-embedding-001"
+		return config.DefaultEmbedGeminiModel
 	case "openai":
 		if strings.TrimSpace(cfg.Embed.OpenAI.Model) != "" {
 			return strings.TrimSpace(cfg.Embed.OpenAI.Model)
 		}
-		return "text-embedding-3-small"
+		return config.DefaultEmbedOpenAIModel
 	case "jina":
 		if strings.TrimSpace(cfg.Embed.Jina.Model) != "" {
 			return strings.TrimSpace(cfg.Embed.Jina.Model)
 		}
-		return "jina-embeddings-v3"
+		return config.DefaultEmbedJinaModel
 	case "voyage":
 		if strings.TrimSpace(cfg.Embed.Voyage.Model) != "" {
 			return strings.TrimSpace(cfg.Embed.Voyage.Model)
 		}
-		return "voyage-3.5"
+		return config.DefaultEmbedVoyageModel
 	case "ollama":
 		if strings.TrimSpace(cfg.Embed.Ollama.Model) != "" {
 			return strings.TrimSpace(cfg.Embed.Ollama.Model)
 		}
-		return "nomic-embed-text"
+		return config.DefaultEmbedOllamaModel
 	default:
 		return ""
 	}

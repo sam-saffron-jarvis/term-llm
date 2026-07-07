@@ -12,14 +12,15 @@ import (
 	"strings"
 	"time"
 
+	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/providerhttp"
 )
 
 const (
 	elevenLabsBaseURL       = "https://api.elevenlabs.io"
-	elevenLabsDefaultModel  = "eleven_multilingual_v2"
-	elevenLabsDefaultVoice  = "JBFqnCBsd6RMkjVDRZzb"
-	elevenLabsDefaultFormat = "mp3_44100_128"
+	elevenLabsDefaultModel  = config.DefaultAudioElevenLabsModel
+	elevenLabsDefaultVoice  = config.DefaultAudioElevenLabsVoice
+	elevenLabsDefaultFormat = config.DefaultAudioElevenLabsFormat
 	elevenLabsHTTPTimeout   = 2 * time.Minute
 )
 

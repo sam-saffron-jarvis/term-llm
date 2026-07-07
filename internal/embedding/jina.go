@@ -8,12 +8,13 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/providerhttp"
 )
 
 const (
 	jinaEndpoint     = "https://api.jina.ai/v1/embeddings"
-	jinaDefaultModel = "jina-embeddings-v3"
+	jinaDefaultModel = config.DefaultEmbedJinaModel
 	jinaEmbedTimeout = 2 * time.Minute
 )
 

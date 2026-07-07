@@ -8,12 +8,13 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/providerhttp"
 )
 
 const (
 	voyageEndpoint     = "https://api.voyageai.com/v1/embeddings"
-	voyageDefaultModel = "voyage-3.5"
+	voyageDefaultModel = config.DefaultEmbedVoyageModel
 	voyageEmbedTimeout = 2 * time.Minute
 )
 

@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/providerhttp"
 )
 
@@ -24,7 +25,7 @@ type OpenRouterProvider struct {
 
 func NewOpenRouterProvider(apiKey, model string) *OpenRouterProvider {
 	if model == "" {
-		model = "google/gemini-2.5-flash-image"
+		model = config.DefaultImageOpenRouterModel
 	}
 	return &OpenRouterProvider{apiKey: apiKey, model: model}
 }

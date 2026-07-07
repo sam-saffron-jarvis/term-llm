@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/credentials"
 	"github.com/samsaffron/term-llm/internal/oauth"
 	"github.com/samsaffron/term-llm/internal/providerhttp"
@@ -17,7 +18,7 @@ import (
 	"golang.org/x/term"
 )
 
-const chatGPTDefaultModel = "gpt-5.5-medium"
+var chatGPTDefaultModel = config.DefaultProviderModel("chatgpt")
 
 // chatGPTResponsesURL is the ChatGPT backend API endpoint for responses
 const chatGPTResponsesURL = "https://chatgpt.com/backend-api/codex/responses"

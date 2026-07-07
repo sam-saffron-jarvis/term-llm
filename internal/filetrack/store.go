@@ -21,14 +21,16 @@ import (
 	"sync"
 	"time"
 
+	"github.com/samsaffron/term-llm/internal/config"
+
 	_ "modernc.org/sqlite"
 )
 
 // Default caps, overridable via config.
 const (
-	DefaultMaxFileBytes    = 2 * 1024 * 1024           // per-file content cap
-	DefaultMaxSessionBytes = 100 * 1024 * 1024         // retained-content budget per session
-	DefaultMaxTotalBytes   = int64(1024 * 1024 * 1024) // whole-database size cap (across sessions)
+	DefaultMaxFileBytes    = config.DefaultFileTrackingMaxFileBytes    // per-file content cap
+	DefaultMaxSessionBytes = config.DefaultFileTrackingMaxSessionBytes // retained-content budget per session
+	DefaultMaxTotalBytes   = config.DefaultFileTrackingMaxTotalBytes   // whole-database size cap (across sessions)
 )
 
 // Change kinds.

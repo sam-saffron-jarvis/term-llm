@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/credentials"
 )
 
@@ -291,7 +292,7 @@ type GeminiCLIProvider struct {
 
 func NewGeminiCLIProvider(creds *credentials.GeminiOAuthCredentials, model string) *GeminiCLIProvider {
 	if model == "" {
-		model = "gemini-3-flash-preview"
+		model = config.DefaultProviderModel("gemini-cli")
 	}
 	baseModel, thinkingCfg := parseGeminiModelThinking(model)
 	return &GeminiCLIProvider{

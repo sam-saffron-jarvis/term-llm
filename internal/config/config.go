@@ -244,17 +244,17 @@ type ReasoningConfig struct {
 // DefaultReasoningConfig returns the safe, useful default reasoning display policy.
 func DefaultReasoningConfig() ReasoningConfig {
 	return ReasoningConfig{
-		Display:          ReasoningDisplayAuto,
-		Source:           ReasoningSourceSummaryOrProviderSafe,
-		Status:           ReasoningStatusTitle,
-		History:          ReasoningHistoryCollapsed,
-		Export:           ReasoningExportAsk,
-		Raw:              false,
-		MaxSummaryChars:  12000,
-		MaxRawChars:      20000,
-		ExtractTitles:    true,
-		HiddenLabel:      "Thinking...",
-		PersistSummaries: true,
+		Display:          defaultString("reasoning.display"),
+		Source:           defaultString("reasoning.source"),
+		Status:           defaultString("reasoning.status"),
+		History:          defaultString("reasoning.history"),
+		Export:           defaultString("reasoning.export"),
+		Raw:              defaultBool("reasoning.raw"),
+		MaxSummaryChars:  defaultInt("reasoning.max_summary_chars"),
+		MaxRawChars:      defaultInt("reasoning.max_raw_chars"),
+		ExtractTitles:    defaultBool("reasoning.extract_titles"),
+		HiddenLabel:      defaultString("reasoning.hidden_label"),
+		PersistSummaries: defaultBool("reasoning.persist_summaries"),
 	}
 }
 
@@ -373,19 +373,20 @@ func (r *ReasoningConfig) normalize() {
 	if r == nil {
 		return
 	}
-	r.Display = normalizeOneOf(r.Display, ReasoningDisplayAuto, ReasoningDisplayAuto, ReasoningDisplayOff, ReasoningDisplayStatus, ReasoningDisplayCollapsed, ReasoningDisplayExpanded, ReasoningDisplayRaw)
-	r.Source = normalizeOneOf(r.Source, ReasoningSourceSummaryOrProviderSafe, ReasoningSourceSummaryOnly, ReasoningSourceSummaryOrProviderSafe, ReasoningSourceAll)
-	r.Status = normalizeOneOf(r.Status, ReasoningStatusTitle, ReasoningStatusNone, ReasoningStatusGeneric, ReasoningStatusTitle, ReasoningStatusSummary)
-	r.History = normalizeOneOf(r.History, ReasoningHistoryCollapsed, ReasoningHistoryNone, ReasoningHistoryCollapsed, ReasoningHistoryExpanded, ReasoningHistoryTranscriptOnly)
-	r.Export = normalizeOneOf(r.Export, ReasoningExportAsk, ReasoningExportNever, ReasoningExportAsk, ReasoningExportSummaries, ReasoningExportRaw)
+	defaults := DefaultReasoningConfig()
+	r.Display = normalizeOneOf(r.Display, defaults.Display, ReasoningDisplayAuto, ReasoningDisplayOff, ReasoningDisplayStatus, ReasoningDisplayCollapsed, ReasoningDisplayExpanded, ReasoningDisplayRaw)
+	r.Source = normalizeOneOf(r.Source, defaults.Source, ReasoningSourceSummaryOnly, ReasoningSourceSummaryOrProviderSafe, ReasoningSourceAll)
+	r.Status = normalizeOneOf(r.Status, defaults.Status, ReasoningStatusNone, ReasoningStatusGeneric, ReasoningStatusTitle, ReasoningStatusSummary)
+	r.History = normalizeOneOf(r.History, defaults.History, ReasoningHistoryNone, ReasoningHistoryCollapsed, ReasoningHistoryExpanded, ReasoningHistoryTranscriptOnly)
+	r.Export = normalizeOneOf(r.Export, defaults.Export, ReasoningExportNever, ReasoningExportAsk, ReasoningExportSummaries, ReasoningExportRaw)
 	if r.MaxSummaryChars <= 0 {
-		r.MaxSummaryChars = 12000
+		r.MaxSummaryChars = defaults.MaxSummaryChars
 	}
 	if r.MaxRawChars <= 0 {
-		r.MaxRawChars = 20000
+		r.MaxRawChars = defaults.MaxRawChars
 	}
 	if strings.TrimSpace(r.HiddenLabel) == "" {
-		r.HiddenLabel = "Thinking..."
+		r.HiddenLabel = defaults.HiddenLabel
 	}
 }
 
@@ -2058,7 +2059,7 @@ func resolveSearchCredentials(cfg *SearchConfig) {
 	// Exa MCP credentials (optional; remote MCP has a free tier without a key)
 	cfg.ExaMCP.URL = expandEnv(cfg.ExaMCP.URL)
 	cfg.ExaMCP.APIKey = expandEnv(cfg.ExaMCP.APIKey)
-	if cfg.ExaMCP.APIKey == "" && (cfg.ExaMCP.URL == "" || cfg.ExaMCP.URL == "https://mcp.exa.ai/mcp") {
+	if cfg.ExaMCP.APIKey == "" && (cfg.ExaMCP.URL == "" || cfg.ExaMCP.URL == DefaultSearchExaMCPURL) {
 		cfg.ExaMCP.APIKey = os.Getenv("EXA_API_KEY")
 	}
 
@@ -2173,421 +2174,6 @@ func GetDebugLogsDir() string {
 	return filepath.Join(homeDir, ".local", "share", "term-llm", "debug")
 }
 
-// KnownKeys contains all valid configuration key paths
-// Dynamic keys like providers.* and image.* have their subkeys validated separately
-var KnownKeys = map[string]bool{
-	// Top-level
-	"default_provider": true,
-	"providers":        true,
-	"diagnostics":      true,
-	"debug_logs":       true,
-	"exec":             true,
-	"ask":              true,
-	"chat":             true,
-	"edit":             true,
-	"image":            true,
-	"audio":            true,
-	"transcription":    true,
-	"search":           true,
-	"reasoning":        true,
-	"theme":            true,
-	"tools":            true,
-	"agents":           true,
-	"skills":           true,
-	"agents_md":        true,
-
-	// Diagnostics
-	"diagnostics.enabled": true,
-	"diagnostics.dir":     true,
-
-	// Debug logs
-	"debug_logs.enabled": true,
-	"debug_logs.dir":     true,
-
-	// Sessions
-	"sessions":                    true,
-	"sessions.enabled":            true,
-	"sessions.max_age_days":       true,
-	"sessions.max_count":          true,
-	"sessions.path":               true,
-	"sessions.strip_image_base64": true,
-
-	// File change tracking
-	"file_tracking":                   true,
-	"file_tracking.enabled":           true,
-	"file_tracking.max_file_bytes":    true,
-	"file_tracking.max_session_bytes": true,
-	"file_tracking.max_total_bytes":   true,
-	"file_tracking.path":              true,
-
-	// Exec
-	"exec.provider":     true,
-	"exec.model":        true,
-	"exec.suggestions":  true,
-	"exec.instructions": true,
-
-	// Ask
-	"ask.provider":     true,
-	"ask.model":        true,
-	"ask.instructions": true,
-	"ask.max_turns":    true,
-
-	// Chat
-	"chat.provider":              true,
-	"chat.model":                 true,
-	"chat.instructions":          true,
-	"chat.max_turns":             true,
-	"chat.terminal_title":        true,
-	"chat.terminal_title_format": true,
-
-	// Edit
-	"edit.provider":          true,
-	"edit.model":             true,
-	"edit.instructions":      true,
-	"edit.show_line_numbers": true,
-	"edit.context_lines":     true,
-	"edit.editor":            true,
-	"edit.diff_format":       true,
-
-	// Image
-	"image.provider":           true,
-	"image.output_dir":         true,
-	"image.gemini":             true,
-	"image.gemini.api_key":     true,
-	"image.gemini.model":       true,
-	"image.gemini.image_size":  true,
-	"image.openai":             true,
-	"image.openai.api_key":     true,
-	"image.openai.model":       true,
-	"image.chatgpt":            true,
-	"image.chatgpt.model":      true,
-	"image.xai":                true,
-	"image.xai.api_key":        true,
-	"image.xai.model":          true,
-	"image.venice":             true,
-	"image.venice.api_key":     true,
-	"image.venice.model":       true,
-	"image.venice.edit_model":  true,
-	"image.venice.resolution":  true,
-	"image.flux":               true,
-	"image.flux.api_key":       true,
-	"image.flux.model":         true,
-	"image.openrouter":         true,
-	"image.openrouter.api_key": true,
-	"image.openrouter.model":   true,
-	"image.debug":              true,
-	"image.debug.delay":        true,
-
-	// Audio
-	"audio.provider":       true,
-	"audio.output_dir":     true,
-	"audio.venice":         true,
-	"audio.venice.api_key": true,
-	"audio.venice.model":   true,
-	"audio.venice.voice":   true,
-	"audio.venice.format":  true,
-
-	// Transcription
-	"transcription.provider":           true,
-	"transcription.model":              true,
-	"transcription.save_dir":           true,
-	"transcription.timestamps":         true,
-	"transcription.venice.api_key":     true,
-	"transcription.venice.model":       true,
-	"transcription.elevenlabs.api_key": true,
-	"transcription.elevenlabs.model":   true,
-
-	// Embed
-	"embed.provider":        true,
-	"embed.openai":          true,
-	"embed.openai.api_key":  true,
-	"embed.openai.model":    true,
-	"embed.gemini":          true,
-	"embed.gemini.api_key":  true,
-	"embed.gemini.model":    true,
-	"embed.jina":            true,
-	"embed.jina.api_key":    true,
-	"embed.jina.model":      true,
-	"embed.voyage":          true,
-	"embed.voyage.api_key":  true,
-	"embed.voyage.model":    true,
-	"embed.ollama":          true,
-	"embed.ollama.base_url": true,
-	"embed.ollama.model":    true,
-
-	// Search
-	"search.provider":           true,
-	"search.fetch_provider":     true,
-	"search.force_external":     true,
-	"search.exa":                true,
-	"search.exa.api_key":        true,
-	"search.exa_mcp":            true,
-	"search.exa_mcp.url":        true,
-	"search.exa_mcp.api_key":    true,
-	"search.perplexity":         true,
-	"search.perplexity.api_key": true,
-	"search.tavily":             true,
-	"search.tavily.api_key":     true,
-	"search.brave":              true,
-	"search.brave.api_key":      true,
-	"search.google":             true,
-	"search.google.api_key":     true,
-	"search.google.cx":          true,
-
-	// Reasoning display policy
-	"reasoning.display":           true,
-	"reasoning.source":            true,
-	"reasoning.status":            true,
-	"reasoning.history":           true,
-	"reasoning.export":            true,
-	"reasoning.raw":               true,
-	"reasoning.max_summary_chars": true,
-	"reasoning.max_raw_chars":     true,
-	"reasoning.extract_titles":    true,
-	"reasoning.hidden_label":      true,
-	"reasoning.persist_summaries": true,
-	"reasoning.chat":              true,
-	"reasoning.chat.display":      true,
-	"reasoning.chat.status":       true,
-	"reasoning.chat.history":      true,
-	"reasoning.chat.export":       true,
-	"reasoning.chat.raw":          true,
-	"reasoning.ask":               true,
-	"reasoning.ask.display":       true,
-	"reasoning.ask.status":        true,
-	"reasoning.ask.history":       true,
-	"reasoning.ask.export":        true,
-	"reasoning.ask.raw":           true,
-	"reasoning.serve":             true,
-	"reasoning.serve.display":     true,
-	"reasoning.serve.status":      true,
-	"reasoning.serve.history":     true,
-	"reasoning.serve.export":      true,
-	"reasoning.serve.raw":         true,
-	"reasoning.jobs":              true,
-	"reasoning.jobs.display":      true,
-	"reasoning.jobs.status":       true,
-	"reasoning.jobs.history":      true,
-	"reasoning.jobs.export":       true,
-	"reasoning.jobs.raw":          true,
-
-	// Theme
-	"theme.primary":           true,
-	"theme.secondary":         true,
-	"theme.success":           true,
-	"theme.error":             true,
-	"theme.warning":           true,
-	"theme.muted":             true,
-	"theme.text":              true,
-	"theme.spinner":           true,
-	"theme.reasoning_summary": true,
-	"theme.reasoning_header":  true,
-	"theme.reasoning_raw":     true,
-
-	// Tools
-	"tools.enabled":               true,
-	"tools.read_dirs":             true,
-	"tools.write_dirs":            true,
-	"tools.shell_allow":           true,
-	"tools.shell_auto_run":        true,
-	"tools.shell_auto_run_env":    true,
-	"tools.shell_non_tty_env":     true,
-	"tools.image_provider":        true,
-	"tools.max_tool_output_chars": true,
-
-	// Agents
-	"agents.use_builtin":  true,
-	"agents.search_paths": true,
-	"agents.preferences":  true,
-
-	// Skills
-	"skills.enabled":                 true,
-	"skills.auto_invoke":             true,
-	"skills.metadata_budget_tokens":  true,
-	"skills.max_visible_skills":      true,
-	"skills.include_project_skills":  true,
-	"skills.include_ecosystem_paths": true,
-	"skills.always_enabled":          true,
-	"skills.never_auto":              true,
-
-	// AGENTS.md
-	"agents_md.enabled": true,
-
-	// Serve
-	"serve":                            true,
-	"serve.platforms":                  true,
-	"serve.base_path":                  true,
-	"serve.files_dir":                  true,
-	"serve.widgets_dir":                true,
-	"serve.response_timeout":           true,
-	"serve.telegram":                   true,
-	"serve.telegram.token":             true,
-	"serve.telegram.allowed_user_ids":  true,
-	"serve.telegram.allowed_usernames": true,
-	"serve.telegram.idle_timeout":      true,
-	"serve.telegram.interrupt_timeout": true,
-	"serve.web_push":                   true,
-	"serve.web_push.vapid_public_key":  true,
-	"serve.web_push.vapid_private_key": true,
-	"serve.web_push.subject":           true,
-
-	// Auto-compaction
-	"auto_compact": true,
-}
-
-// KnownProviderKeys contains valid keys for provider configurations
-var KnownProviderKeys = map[string]bool{
-	"type":                true,
-	"api_key":             true,
-	"model":               true,
-	"fast_model":          true,
-	"fast_provider":       true,
-	"service_tier":        true,
-	"models":              true,
-	"credentials":         true,
-	"env":                 true,
-	"use_native_search":   true,
-	"file_upload":         true,
-	"base_url":            true,
-	"url":                 true,
-	"app_url":             true,
-	"app_title":           true,
-	"context_window":      true,
-	"max_output_tokens":   true,
-	"no_stream_options":   true,
-	"vllm_thinking_param": true,
-	"parse_reasoning":     true,
-	"include_reasoning":   true,
-	"thinking_param":      true,
-	"enable_hooks":        true,
-	// Ollama-native options
-	"think":            true,
-	"top_k":            true,
-	"min_p":            true,
-	"presence_penalty": true,
-	"num_ctx":          true,
-	"num_predict":      true,
-}
-
-// GetDefaults returns a map of all default configuration values
-func GetDefaults() map[string]any {
-	return map[string]any{
-		"default_provider":                "anthropic",
-		"approval.default_mode":           "prompt",
-		"exec.suggestions":                3,
-		"exec.instructions":               "",
-		"ask.max_turns":                   50,
-		"ask.instructions":                "You are a helpful assistant. Today's date is {{date}}.",
-		"chat.max_turns":                  200,
-		"chat.instructions":               "You are a helpful assistant. Today's date is {{date}}.",
-		"chat.terminal_title":             "smart",
-		"chat.terminal_title_format":      "",
-		"edit.show_line_numbers":          true,
-		"edit.instructions":               "",
-		"edit.context_lines":              3,
-		"edit.diff_format":                "auto",
-		"providers.anthropic.model":       "claude-sonnet-4-6",
-		"providers.anthropic.fast_model":  "claude-haiku-4-5",
-		"providers.openai.model":          "gpt-5.2",
-		"providers.openai.fast_model":     "gpt-5.4-nano",
-		"providers.openai.use_websocket":  false,
-		"providers.chatgpt.model":         "gpt-5.5-medium",
-		"providers.chatgpt.fast_model":    "gpt-5.4-mini",
-		"providers.chatgpt.use_websocket": true,
-		"providers.xai.model":             "grok-4-1-fast",
-		"providers.xai.fast_model":        "grok-3-mini-fast",
-		"providers.venice.model":          "venice-uncensored",
-		"providers.venice.fast_model":     "llama-3.2-3b",
-		"providers.nearai.model":          "zai-org/GLM-5.1-FP8",
-		"providers.nearai.fast_model":     "Qwen/Qwen3.6-35B-A3B-FP8",
-		"providers.sambanova.model":       "gpt-oss-120b",
-		"providers.sambanova.fast_model":  "Meta-Llama-3.3-70B-Instruct",
-		"providers.openrouter.model":      "x-ai/grok-code-fast-1",
-		"providers.openrouter.fast_model": "anthropic/claude-haiku-4-5",
-		"providers.openrouter.app_url":    "https://github.com/samsaffron/term-llm",
-		"providers.openrouter.app_title":  "term-llm",
-		"providers.gemini.model":          "gemini-3-flash-preview",
-		"providers.gemini.fast_model":     "gemini-2.5-flash-lite",
-		"providers.zen.model":             "minimax-m2.5-free",
-		"providers.zen.fast_model":        "minimax-m2.5-free",
-		"image.provider":                  "gemini",
-		"image.output_dir":                "~/Pictures/term-llm",
-		"image.gemini.model":              "gemini-2.5-flash-image",
-		"image.openai.model":              "gpt-image-2",
-		"image.chatgpt.model":             "gpt-5.4-mini",
-		"image.xai.model":                 "grok-2-image-1212",
-		"image.venice.model":              "nano-banana-pro",
-		"image.venice.resolution":         "2K",
-		"image.flux.model":                "flux-2-pro",
-		"image.openrouter.model":          "google/gemini-2.5-flash-image",
-		"image.debug.delay":               0.0,
-		"audio.provider":                  "venice",
-		"audio.output_dir":                "~/Music/term-llm",
-		"audio.venice.model":              "tts-kokoro",
-		"audio.venice.voice":              "af_sky",
-		"audio.venice.format":             "mp3",
-		"transcription.provider":          "openai",
-		"transcription.venice.model":      "nvidia/parakeet-tdt-0.6b-v3",
-		"transcription.elevenlabs.model":  "scribe_v2",
-		"embed.openai.model":              "text-embedding-3-small",
-		"embed.gemini.model":              "gemini-embedding-001",
-		"embed.jina.model":                "jina-embeddings-v3",
-		"embed.voyage.model":              "voyage-3.5",
-		"embed.ollama.model":              "nomic-embed-text",
-		"embed.ollama.base_url":           "http://127.0.0.1:11434",
-		"search.provider":                 "exa_mcp",
-		"search.fetch_provider":           "jina",
-		"search.force_external":           false,
-		"search.exa_mcp.url":              "https://mcp.exa.ai/mcp",
-		"reasoning.display":               ReasoningDisplayAuto,
-		"reasoning.source":                ReasoningSourceSummaryOrProviderSafe,
-		"reasoning.status":                ReasoningStatusTitle,
-		"reasoning.history":               ReasoningHistoryCollapsed,
-		"reasoning.export":                ReasoningExportAsk,
-		"reasoning.raw":                   false,
-		"reasoning.max_summary_chars":     12000,
-		"reasoning.max_raw_chars":         20000,
-		"reasoning.extract_titles":        true,
-		"reasoning.hidden_label":          "Thinking...",
-		"reasoning.persist_summaries":     true,
-		"reasoning.chat.display":          ReasoningInherit,
-		"reasoning.ask.display":           ReasoningInherit,
-		"reasoning.serve.display":         ReasoningInherit,
-		"reasoning.jobs.display":          ReasoningInherit,
-		"tools.enabled":                   []string{},
-		"tools.read_dirs":                 []string{},
-		"tools.write_dirs":                []string{},
-		"tools.shell_allow":               []string{},
-		"tools.shell_auto_run":            false,
-		"tools.shell_auto_run_env":        "TERM_LLM_ALLOW_AUTORUN",
-		"tools.shell_non_tty_env":         "TERM_LLM_ALLOW_NON_TTY",
-		"tools.max_tool_output_chars":     20000,
-		"sessions.enabled":                true,
-		"sessions.max_age_days":           0,
-		"sessions.max_count":              0,
-		"sessions.path":                   "",
-		"sessions.strip_image_base64":     false,
-		"file_tracking.enabled":           false,
-		"file_tracking.max_file_bytes":    2097152,
-		"file_tracking.max_session_bytes": 104857600,
-		"file_tracking.max_total_bytes":   1073741824,
-		"file_tracking.path":              "",
-		"agents.use_builtin":              true,
-		"agents.search_paths":             []string{},
-		"skills.enabled":                  true,
-		"skills.auto_invoke":              true,
-		"skills.metadata_budget_tokens":   8000,
-		"skills.max_visible_skills":       50,
-		"skills.include_project_skills":   true,
-		"skills.include_ecosystem_paths":  true,
-		"skills.always_enabled":           []string{},
-		"skills.never_auto":               []string{},
-		"agents_md.enabled":               true,
-		"serve.response_timeout":          "30m",
-		"auto_compact":                    true,
-	}
-}
-
 // KnownAgentPreferenceKeys contains valid keys for agent preference configurations
 var KnownAgentPreferenceKeys = map[string]bool{
 	"provider":             true,
@@ -2620,19 +2206,19 @@ func IsKnownKey(keyPath string) bool {
 			// providers.<name> is always valid
 			return true
 		}
-		if len(parts) == 3 {
-			// providers.<name>.<key> - check if <key> is valid
-			return KnownProviderKeys[parts[2]]
-		}
-		if len(parts) == 4 && parts[2] == "file_upload" {
-			switch parts[3] {
-			case "native_mime_types", "max_native_bytes", "text_embed_mime_types", "max_text_embed_bytes":
+		if len(parts) >= 3 {
+			subKey := strings.Join(parts[2:], ".")
+			if KnownProviderKeys[subKey] {
 				return true
 			}
-		}
-		if len(parts) >= 4 && parts[2] == "env" {
-			// providers.<name>.env.<VAR> - arbitrary subprocess env vars
-			return true
+			if len(parts) >= 4 && parts[2] == "env" {
+				// providers.<name>.env.<VAR> - arbitrary subprocess env vars
+				return true
+			}
+			if len(parts) >= 4 && parts[2] == "model_map" {
+				// providers.<name>.model_map.<alias> - arbitrary friendly aliases
+				return true
+			}
 		}
 	}
 

@@ -147,7 +147,7 @@ func runAudio(cmd *cobra.Command, args []string) error {
 	}
 	initThemeFromConfig(cfg)
 
-	providerName := firstNonEmpty(audioProvider, cfg.Audio.Provider, "venice")
+	providerName := firstNonEmpty(audioProvider, cfg.Audio.Provider, config.DefaultAudioProvider)
 	switch providerName {
 	case "venice":
 		return runVeniceAudio(cmd, cfg, text, temperature, topP)
@@ -223,9 +223,9 @@ func runGeminiAudio(cmd *cobra.Command, cfg *config.Config, text string, tempera
 		return fmt.Errorf("Gemini TTS does not support --speed; use --prompt for pacing instructions")
 	}
 
-	model := firstNonEmpty(audioModel, cfg.Audio.Gemini.Model, "gemini-3.1-flash-tts-preview")
-	voice := firstNonEmpty(audioVoice, cfg.Audio.Gemini.Voice, "Kore")
-	format := firstNonEmpty(audioFormat, cfg.Audio.Gemini.Format, "wav")
+	model := firstNonEmpty(audioModel, cfg.Audio.Gemini.Model, config.DefaultAudioGeminiModel)
+	voice := firstNonEmpty(audioVoice, cfg.Audio.Gemini.Voice, config.DefaultAudioGeminiVoice)
+	format := firstNonEmpty(audioFormat, cfg.Audio.Gemini.Format, config.DefaultAudioGeminiFormat)
 	if err := audio.ValidateGeminiFormat(format); err != nil {
 		return err
 	}
@@ -276,9 +276,9 @@ func runElevenLabsAudio(cmd *cobra.Command, cfg *config.Config, text string) err
 		return fmt.Errorf("ElevenLabs TTS does not support --temperature or --top-p")
 	}
 
-	model := firstNonEmpty(audioModel, cfg.Audio.ElevenLabs.Model, "eleven_multilingual_v2")
-	voice := firstNonEmpty(audioVoice, cfg.Audio.ElevenLabs.Voice, "JBFqnCBsd6RMkjVDRZzb")
-	format := firstNonEmpty(audioFormat, cfg.Audio.ElevenLabs.Format, "mp3_44100_128")
+	model := firstNonEmpty(audioModel, cfg.Audio.ElevenLabs.Model, config.DefaultAudioElevenLabsModel)
+	voice := firstNonEmpty(audioVoice, cfg.Audio.ElevenLabs.Voice, config.DefaultAudioElevenLabsVoice)
+	format := firstNonEmpty(audioFormat, cfg.Audio.ElevenLabs.Format, config.DefaultAudioElevenLabsFormat)
 	if err := audio.ValidateElevenLabsFormat(format); err != nil {
 		return err
 	}

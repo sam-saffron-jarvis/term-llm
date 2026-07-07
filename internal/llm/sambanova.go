@@ -15,7 +15,7 @@ type SambaNovaProvider struct {
 func NewSambaNovaProvider(apiKey, model string) *SambaNovaProvider {
 	apiKey = config.NormalizeVeniceAPIKey(apiKey)
 	if model == "" {
-		model = "gpt-oss-120b"
+		model = config.DefaultProviderModel("sambanova")
 	}
 	return &SambaNovaProvider{OpenAICompatProvider: NewOpenAICompatProvider(sambaNovaBaseURL, apiKey, model, "SambaNova")}
 }

@@ -10,18 +10,21 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/providerhttp"
 )
 
 const (
 	xaiImageEndpoint = "https://api.x.ai/v1/images/generations"
-	xaiImageModel    = "grok-2-image-1212"
 	xaiImageTimeout  = 10 * time.Minute
 )
 
-var xaiHTTPClient = &http.Client{
-	Timeout: xaiImageTimeout,
-}
+var (
+	xaiImageModel = config.DefaultImageXAIModel
+	xaiHTTPClient = &http.Client{
+		Timeout: xaiImageTimeout,
+	}
+)
 
 // XAIProvider implements ImageProvider using xAI's Grok image API
 type XAIProvider struct {

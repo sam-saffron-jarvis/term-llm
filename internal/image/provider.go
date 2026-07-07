@@ -64,7 +64,7 @@ func NewImageProvider(cfg *config.Config, providerOverride string) (ImageProvide
 		providerStr = cfg.Image.Provider
 	}
 	if providerStr == "" {
-		providerStr = "gemini" // default
+		providerStr = config.DefaultImageProvider
 	}
 
 	// Parse provider:model syntax

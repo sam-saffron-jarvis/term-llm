@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strings"
 	"testing"
@@ -592,6 +593,193 @@ func TestFileTrackingDefaultsAndKnownKeys(t *testing.T) {
 			t.Fatalf("KnownKeys missing %s", key)
 		}
 	}
+}
+
+func TestEveryDefaultIsKnownKey(t *testing.T) {
+	for key := range GetDefaults() {
+		if !IsKnownKey(key) {
+			t.Fatalf("default key %s is not accepted by IsKnownKey", key)
+		}
+	}
+}
+
+func TestSchemaCoversConfigMapstructureFields(t *testing.T) {
+	for _, key := range collectMapstructurePaths(reflect.TypeOf(Config{}), "") {
+		if !IsKnownKey(key) {
+			t.Fatalf("Config mapstructure field %s is missing from schema/KnownKeys", key)
+		}
+	}
+}
+
+func TestProviderSchemaCoversProviderConfigFields(t *testing.T) {
+	for _, key := range collectMapstructurePaths(reflect.TypeOf(ProviderConfig{}), "") {
+		if !IsKnownKey("providers.example." + key) {
+			t.Fatalf("ProviderConfig mapstructure field %s is missing from provider schema", key)
+		}
+	}
+	for _, key := range collectMapstructurePaths(reflect.TypeOf(AgentPreference{}), "") {
+		if !KnownAgentPreferenceKeys[key] {
+			t.Fatalf("AgentPreference mapstructure field %s is missing from KnownAgentPreferenceKeys", key)
+		}
+	}
+}
+
+func TestCanonicalDefaultsCoverage(t *testing.T) {
+	defaults := GetDefaults()
+	checks := map[string]any{
+		"approval.default_mode":         DefaultApprovalMode,
+		"audio.gemini.model":            DefaultAudioGeminiModel,
+		"audio.gemini.voice":            DefaultAudioGeminiVoice,
+		"audio.gemini.format":           DefaultAudioGeminiFormat,
+		"audio.elevenlabs.model":        DefaultAudioElevenLabsModel,
+		"audio.elevenlabs.voice":        DefaultAudioElevenLabsVoice,
+		"audio.elevenlabs.format":       DefaultAudioElevenLabsFormat,
+		"music.provider":                DefaultMusicProvider,
+		"music.output_dir":              DefaultMusicOutputDir,
+		"music.venice.model":            DefaultMusicVeniceModel,
+		"music.elevenlabs.model":        DefaultMusicElevenLabsModel,
+		"transcription.save_dir":        "",
+		"transcription.timestamps":      false,
+		"serve.base_path":               DefaultServeBasePath,
+		"serve.response_timeout":        DefaultServeResponseTimeout,
+		"sessions.strip_image_base64":   false,
+		"tools.max_tool_output_chars":   DefaultToolsMaxToolOutputChars,
+		"skills.metadata_budget_tokens": DefaultSkillsMetadataBudgetTokens,
+	}
+	for key, want := range checks {
+		if got, ok := defaults[key]; !ok || got != want {
+			t.Fatalf("default %s = %#v (present %t), want %#v", key, got, ok, want)
+		}
+		if !IsKnownKey(key) {
+			t.Fatalf("%s should be known", key)
+		}
+	}
+	optionalKnown := []string{
+		"guardian.provider",
+		"guardian.model",
+		"music.venice.api_key",
+		"embed.provider",
+		"serve.title",
+		"providers.example.reasoning",
+		"providers.example.model_map.my_alias",
+		"providers.example.region",
+		"providers.example.use_websocket",
+		"providers.example.vision_via",
+	}
+	for _, key := range optionalKnown {
+		if !IsKnownKey(key) {
+			t.Fatalf("optional key %s should be known", key)
+		}
+	}
+}
+
+func TestDefaultReasoningConfigMatchesSchemaDefaults(t *testing.T) {
+	defaults := GetDefaults()
+	r := DefaultReasoningConfig()
+	checks := map[string]any{
+		"reasoning.display":           r.Display,
+		"reasoning.source":            r.Source,
+		"reasoning.status":            r.Status,
+		"reasoning.history":           r.History,
+		"reasoning.export":            r.Export,
+		"reasoning.raw":               r.Raw,
+		"reasoning.max_summary_chars": r.MaxSummaryChars,
+		"reasoning.max_raw_chars":     r.MaxRawChars,
+		"reasoning.extract_titles":    r.ExtractTitles,
+		"reasoning.hidden_label":      r.HiddenLabel,
+		"reasoning.persist_summaries": r.PersistSummaries,
+	}
+	for key, want := range checks {
+		if got := defaults[key]; got != want {
+			t.Fatalf("%s = %#v, want DefaultReasoningConfig value %#v", key, got, want)
+		}
+	}
+}
+
+func TestNoViperSetDefaultOutsideConfigPackage(t *testing.T) {
+	root := filepath.Clean(filepath.Join("..", ".."))
+	pattern := "viper." + "SetDefault("
+	allowed := filepath.Clean(filepath.Join(root, "internal", "config", "config.go"))
+	if err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			switch d.Name() {
+			case ".git", "docs-site", "term-llm":
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if filepath.Ext(path) != ".go" || filepath.Clean(path) == allowed {
+			return nil
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		if strings.Contains(string(data), pattern) {
+			t.Fatalf("unexpected viper.SetDefault outside internal/config/config.go: %s", path)
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("walk repo: %v", err)
+	}
+}
+
+func TestSchemaHasNoLeafPrefixCollisions(t *testing.T) {
+	paths := make([]string, 0)
+	for _, spec := range ConfigKeySpecs() {
+		paths = append(paths, spec.Path)
+	}
+	for _, spec := range ProviderKeySpecs() {
+		paths = append(paths, "providers.*."+spec.Path)
+	}
+	for i, path := range paths {
+		for j, other := range paths {
+			if i == j {
+				continue
+			}
+			if strings.HasPrefix(other, path+".") {
+				t.Fatalf("schema path %q is both a leaf and prefix of %q", path, other)
+			}
+		}
+	}
+}
+
+func collectMapstructurePaths(t reflect.Type, prefix string) []string {
+	for t.Kind() == reflect.Pointer {
+		t = t.Elem()
+	}
+	if t.Kind() != reflect.Struct {
+		return nil
+	}
+	var paths []string
+	for i := 0; i < t.NumField(); i++ {
+		field := t.Field(i)
+		if field.PkgPath != "" {
+			continue
+		}
+		tag := field.Tag.Get("mapstructure")
+		name := strings.Split(tag, ",")[0]
+		if name == "" || name == "-" {
+			continue
+		}
+		path := name
+		if prefix != "" {
+			path = prefix + "." + name
+		}
+		paths = append(paths, path)
+
+		ft := field.Type
+		for ft.Kind() == reflect.Pointer {
+			ft = ft.Elem()
+		}
+		if ft.Kind() == reflect.Struct {
+			paths = append(paths, collectMapstructurePaths(ft, path)...)
+		}
+	}
+	return paths
 }
 
 func TestResolveReasoningPartialConfigPreservesSafeDefaults(t *testing.T) {

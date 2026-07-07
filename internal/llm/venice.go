@@ -21,7 +21,7 @@ type VeniceProvider struct {
 func NewVeniceProvider(apiKey, model string) *VeniceProvider {
 	apiKey = config.NormalizeVeniceAPIKey(apiKey)
 	if model == "" {
-		model = "venice-uncensored"
+		model = config.DefaultProviderModel("venice")
 	}
 	return &VeniceProvider{OpenAICompatProvider: NewOpenAICompatProvider(veniceBaseURL, apiKey, model, "Venice")}
 }

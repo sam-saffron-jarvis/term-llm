@@ -10,20 +10,23 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/providerhttp"
 )
 
 const (
-	fluxBaseURL              = "https://api.bfl.ai/v1"
-	fluxDefaultGenerateModel = "flux-2-pro"
-	fluxDefaultEditModel     = "flux-kontext-pro"
-	fluxHTTPTimeout          = 10 * time.Minute
+	fluxBaseURL     = "https://api.bfl.ai/v1"
+	fluxHTTPTimeout = 10 * time.Minute
 )
 
-// fluxHTTPClient is a shared HTTP client with reasonable timeouts
-var fluxHTTPClient = &http.Client{
-	Timeout: fluxHTTPTimeout,
-}
+var (
+	fluxDefaultGenerateModel = config.DefaultImageFluxModel
+	fluxDefaultEditModel     = config.DefaultImageFluxEditModel
+	// fluxHTTPClient is a shared HTTP client with reasonable timeouts
+	fluxHTTPClient = &http.Client{
+		Timeout: fluxHTTPTimeout,
+	}
+)
 
 // FluxProvider implements ImageProvider using Black Forest Labs' Flux API
 type FluxProvider struct {

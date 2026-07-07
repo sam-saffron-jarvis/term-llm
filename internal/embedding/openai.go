@@ -8,12 +8,12 @@ import (
 	"github.com/openai/openai-go"
 	"github.com/openai/openai-go/option"
 	"github.com/openai/openai-go/packages/param"
+	"github.com/samsaffron/term-llm/internal/config"
 )
 
-const (
-	openaiDefaultModel = "text-embedding-3-small"
-	openaiEmbedTimeout = 2 * time.Minute
-)
+const openaiEmbedTimeout = 2 * time.Minute
+
+const openaiDefaultModel = config.DefaultEmbedOpenAIModel
 
 // OpenAIProvider implements EmbeddingProvider using OpenAI's embeddings API
 type OpenAIProvider struct {

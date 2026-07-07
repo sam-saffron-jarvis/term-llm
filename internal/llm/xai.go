@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"os"
 	"strings"
+
+	"github.com/samsaffron/term-llm/internal/config"
 )
 
 const (
@@ -26,7 +28,7 @@ type XAIProvider struct {
 // NewXAIProvider creates a new xAI provider.
 func NewXAIProvider(apiKey, model string) *XAIProvider {
 	if model == "" {
-		model = "grok-4-1-fast"
+		model = config.DefaultProviderModel("xai")
 	}
 	return &XAIProvider{
 		apiKey: apiKey,

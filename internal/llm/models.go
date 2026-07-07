@@ -285,24 +285,7 @@ func ResolveProviderModelIDs(name string) []string {
 
 // ProviderFastModels contains the default lightweight model for each provider type.
 // These are used for short control-plane tasks (interrupt classification, summarization).
-var ProviderFastModels = map[string]string{
-	"anthropic":  "claude-haiku-4-5",
-	"openai":     "gpt-5.4-nano",
-	"chatgpt":    "gpt-5.4-mini",
-	"copilot":    "gpt-4.1",
-	"gemini":     "gemini-2.5-flash-lite",
-	"gemini-cli": "gemini-2.5-flash-lite",
-	"xai":        "grok-3-mini-fast",
-	"zen":        "minimax-m2.5-free",
-	"vllm":       "Qwen/Qwen3.5-122B-A10B",
-	"bedrock":    "claude-haiku-4-5",
-	"venice":     "llama-3.2-3b",
-	"nearai":     "Qwen/Qwen3.6-35B-A3B-FP8",
-	"sambanova":  "Meta-Llama-3.3-70B-Instruct",
-	"openrouter": "anthropic/claude-haiku-4-5",
-	"claude-bin": "haiku",
-	"ollama":     ollamaChatDefaultModel,
-}
+var ProviderFastModels = config.DefaultProviderFastModels()
 
 var ImageProviderModels = map[string][]string{
 	"debug":      {"random"},

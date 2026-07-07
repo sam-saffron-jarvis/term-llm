@@ -9,10 +9,11 @@ import (
 	"time"
 
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/samsaffron/term-llm/internal/config"
 )
 
 const (
-	defaultExaMCPURL       = "https://mcp.exa.ai/mcp"
+	defaultExaMCPURL       = config.DefaultSearchExaMCPURL
 	exaMCPSearchTool       = "web_search_exa"
 	exaMCPFetchTool        = "web_fetch_exa"
 	exaMCPDefaultMaxChars  = 50000

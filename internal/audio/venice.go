@@ -20,18 +20,21 @@ import (
 const (
 	veniceBaseURL        = "https://api.venice.ai/api/v1"
 	veniceSpeechEndpoint = "/audio/speech"
-	veniceDefaultModel   = "tts-kokoro"
-	veniceDefaultVoice   = "af_sky"
-	veniceDefaultFormat  = "mp3"
-	veniceDefaultSpeed   = 1.0
 	veniceHTTPTimeout    = 2 * time.Minute
 )
 
 const (
-	DefaultModel  = veniceDefaultModel
-	DefaultVoice  = veniceDefaultVoice
-	DefaultFormat = veniceDefaultFormat
-	DefaultSpeed  = veniceDefaultSpeed
+	DefaultModel  = config.DefaultAudioVeniceModel
+	DefaultVoice  = config.DefaultAudioVeniceVoice
+	DefaultFormat = config.DefaultAudioVeniceFormat
+	DefaultSpeed  = config.DefaultAudioVeniceSpeed
+)
+
+const (
+	veniceDefaultModel  = DefaultModel
+	veniceDefaultVoice  = DefaultVoice
+	veniceDefaultFormat = DefaultFormat
+	veniceDefaultSpeed  = DefaultSpeed
 )
 
 var (
@@ -247,6 +250,9 @@ func ValidateTopP(topP float64) error {
 
 func Save(data []byte, outputDir, text, format string) (string, error) {
 	dir := expandPath(outputDir)
+	if dir == "" {
+		dir = expandPath(config.DefaultAudioOutputDir)
+	}
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", fmt.Errorf("create output directory: %w", err)
 	}

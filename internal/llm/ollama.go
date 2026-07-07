@@ -11,12 +11,13 @@ import (
 	"os"
 	"strings"
 
+	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/providerhttp"
 )
 
-const (
-	ollamaChatDefaultModel   = "qwen2.5-coder:7b"
-	ollamaChatDefaultBaseURL = "http://127.0.0.1:11434"
+var (
+	ollamaChatDefaultModel   = config.DefaultProviderModel("ollama")
+	ollamaChatDefaultBaseURL = config.DefaultOllamaBaseURL
 )
 
 // OllamaOptions holds Ollama-native generation knobs that have no equivalent

@@ -3,6 +3,7 @@ package cmd
 import (
 	"bytes"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -140,7 +141,7 @@ func configShow(cmd *cobra.Command, args []string) error {
 	fmt.Println()
 
 	// Print annotated config
-	printAnnotatedConfig(defaults, rawKeys, unknownKeys, &rawRoot, readErr == nil, cfg)
+	printAnnotatedConfig(os.Stdout, defaults, rawKeys, unknownKeys, &rawRoot, readErr == nil, cfg)
 
 	return nil
 }
@@ -184,93 +185,8 @@ func extractConfigKeys(node *yaml.Node, prefix string, rawKeys, unknownKeys map[
 	}
 }
 
-// printAnnotatedConfig outputs the effective config with annotations
-func printAnnotatedConfig(defaults map[string]any, rawKeys, unknownKeys map[string]bool, rawRoot *yaml.Node, hasFile bool, cfg *config.Config) {
-	// Define the order and structure of sections to print
-	sections := []struct {
-		name   string
-		keys   []string
-		nested map[string][]string
-	}{
-		{
-			name: "",
-			keys: []string{"default_provider"},
-		},
-		{
-			name: "exec",
-			keys: []string{"provider", "model", "suggestions", "instructions"},
-		},
-		{
-			name: "ask",
-			keys: []string{"provider", "model", "instructions", "max_turns"},
-		},
-		{
-			name: "chat",
-			keys: []string{"provider", "model", "instructions", "max_turns"},
-		},
-		{
-			name: "edit",
-			keys: []string{"provider", "model", "instructions", "show_line_numbers", "context_lines", "editor", "diff_format"},
-		},
-		{
-			name: "image",
-			keys: []string{"provider", "output_dir"},
-			nested: map[string][]string{
-				"gemini":     {"model", "api_key"},
-				"openai":     {"model", "api_key"},
-				"chatgpt":    {"model"},
-				"xai":        {"model", "api_key"},
-				"venice":     {"model", "edit_model", "resolution", "api_key"},
-				"flux":       {"model", "api_key"},
-				"openrouter": {"model", "api_key"},
-			},
-		},
-		{
-			name: "search",
-			keys: []string{"provider", "fetch_provider", "force_external"},
-			nested: map[string][]string{
-				"exa":        {"api_key"},
-				"exa_mcp":    {"url", "api_key"},
-				"perplexity": {"api_key"},
-				"tavily":     {"api_key"},
-				"brave":      {"api_key"},
-				"google":     {"api_key", "cx"},
-			},
-		},
-		{
-			name: "theme",
-			keys: []string{"primary", "secondary", "success", "error", "warning", "muted", "text", "spinner"},
-		},
-		{
-			name: "tools",
-			keys: []string{"enabled", "read_dirs", "write_dirs", "shell_allow", "shell_auto_run", "shell_auto_run_env", "shell_non_tty_env", "image_provider"},
-		},
-		{
-			name: "agents",
-			keys: []string{"use_builtin", "search_paths"},
-		},
-		{
-			name: "skills",
-			keys: []string{"enabled", "include_project_skills", "include_ecosystem_paths"},
-		},
-		{
-			name: "agents_md",
-			keys: []string{"enabled"},
-		},
-		{
-			name: "sessions",
-			keys: []string{"enabled", "max_age_days", "max_count", "path"},
-		},
-		{
-			name: "diagnostics",
-			keys: []string{"enabled", "dir"},
-		},
-		{
-			name: "debug_logs",
-			keys: []string{"enabled", "dir"},
-		},
-	}
-
+// printAnnotatedConfig outputs the effective config with annotations.
+func printAnnotatedConfig(out io.Writer, defaults map[string]any, rawKeys, unknownKeys map[string]bool, rawRoot *yaml.Node, hasFile bool, cfg *config.Config) {
 	// Get raw values from the config file for comparison
 	rawValues := make(map[string]string)
 	if hasFile && rawRoot != nil {
@@ -279,76 +195,201 @@ func printAnnotatedConfig(defaults map[string]any, rawKeys, unknownKeys map[stri
 
 	// Print unknown keys first as warnings
 	if len(unknownKeys) > 0 {
-		fmt.Println("# Unknown keys (will be ignored):")
+		fmt.Fprintln(out, "# Unknown keys (will be ignored):")
+		keys := make([]string, 0, len(unknownKeys))
 		for key := range unknownKeys {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		for _, key := range keys {
 			if val, ok := rawValues[key]; ok {
-				fmt.Printf("# %s: %s\n", key, val)
+				fmt.Fprintf(out, "# %s: %s\n", key, val)
 			} else {
-				fmt.Printf("# %s\n", key)
+				fmt.Fprintf(out, "# %s\n", key)
 			}
 		}
-		fmt.Println()
+		fmt.Fprintln(out)
 	}
 
 	// Print providers section specially (dynamic keys)
-	printProvidersSection(defaults, rawKeys, rawValues, hasFile, cfg)
+	printProvidersSection(out, defaults, rawKeys, rawValues, hasFile, cfg)
 
-	// Print each section
-	for _, section := range sections {
-		if section.name == "" {
-			// Top-level keys
-			for _, key := range section.keys {
-				printConfigValue(key, defaults, rawKeys, rawValues, hasFile, 0)
-			}
-			fmt.Println()
+	var keys []renderKey
+	for _, spec := range config.ConfigKeySpecs() {
+		if !spec.ShowInConfig {
+			continue
+		}
+		keys = append(keys, renderKeyFromSpec(spec))
+	}
+	renderConfigTree(out, keys, rawKeys, rawValues, hasFile, 0)
+}
+
+type renderKey struct {
+	RenderPath  string
+	FullPath    string
+	Default     any
+	HasDefault  bool
+	Sensitive   bool
+	Placeholder any
+}
+
+type renderNode struct {
+	name     string
+	key      *renderKey
+	children []*renderNode
+	byName   map[string]*renderNode
+}
+
+func renderKeyFromSpec(spec config.KeySpec) renderKey {
+	return renderKey{
+		RenderPath:  spec.Path,
+		FullPath:    spec.Path,
+		Default:     spec.Default,
+		HasDefault:  spec.HasDefault,
+		Sensitive:   spec.Sensitive,
+		Placeholder: spec.Placeholder,
+	}
+}
+
+func renderKeyFromProviderSpec(providerName string, spec config.ProviderFieldSpec, defaultVal any, hasDefault bool) renderKey {
+	placeholder := spec.Placeholder
+	if placeholder == nil {
+		placeholder = ""
+	}
+	return renderKey{
+		RenderPath:  spec.Path,
+		FullPath:    "providers." + providerName + "." + spec.Path,
+		Default:     defaultVal,
+		HasDefault:  hasDefault,
+		Sensitive:   spec.Sensitive,
+		Placeholder: placeholder,
+	}
+}
+
+func renderConfigTree(out io.Writer, keys []renderKey, rawKeys map[string]bool, rawValues map[string]string, hasFile bool, indent int) {
+	root := &renderNode{byName: make(map[string]*renderNode)}
+	for i := range keys {
+		insertRenderKey(root, &keys[i])
+	}
+	for _, child := range root.children {
+		renderNodeTree(out, child, rawKeys, rawValues, hasFile, indent, false)
+	}
+	if len(root.children) > 0 {
+		fmt.Fprintln(out)
+	}
+}
+
+func insertRenderKey(root *renderNode, key *renderKey) {
+	parts := strings.Split(key.RenderPath, ".")
+	current := root
+	for _, part := range parts {
+		if current.byName == nil {
+			current.byName = make(map[string]*renderNode)
+		}
+		child := current.byName[part]
+		if child == nil {
+			child = &renderNode{name: part, byName: make(map[string]*renderNode)}
+			current.byName[part] = child
+			current.children = append(current.children, child)
+		}
+		current = child
+	}
+	current.key = key
+}
+
+func renderNodeTree(out io.Writer, node *renderNode, rawKeys map[string]bool, rawValues map[string]string, hasFile bool, indent int, parentCommented bool) {
+	if node == nil {
+		return
+	}
+	if len(node.children) == 0 {
+		if node.key != nil {
+			printRenderValue(out, *node.key, rawKeys, rawValues, hasFile, indent, parentCommented)
+		}
+		return
+	}
+
+	commented := parentCommented || !renderNodeHasActive(node, rawKeys)
+	indentStr := strings.Repeat("  ", indent)
+	commentPrefix := ""
+	if commented {
+		commentPrefix = "# "
+	}
+	fmt.Fprintf(out, "%s%s%s:\n", indentStr, commentPrefix, node.name)
+	for _, child := range node.children {
+		renderNodeTree(out, child, rawKeys, rawValues, hasFile, indent+1, commented)
+	}
+}
+
+func renderNodeHasActive(node *renderNode, rawKeys map[string]bool) bool {
+	if node == nil {
+		return false
+	}
+	if node.key != nil && (node.key.HasDefault || rawKeys[node.key.FullPath]) {
+		return true
+	}
+	for _, child := range node.children {
+		if renderNodeHasActive(child, rawKeys) {
+			return true
+		}
+	}
+	return false
+}
+
+func printRenderValue(out io.Writer, key renderKey, rawKeys map[string]bool, rawValues map[string]string, hasFile bool, indent int, parentCommented bool) {
+	parts := strings.Split(key.RenderPath, ".")
+	keyName := parts[len(parts)-1]
+	rawVal, hasRawVal := rawValues[key.FullPath]
+	isExplicit := rawKeys[key.FullPath]
+	active := !parentCommented && (isExplicit || key.HasDefault)
+
+	var valueStr string
+	var annotation string
+	if active && isExplicit && hasRawVal {
+		if key.Sensitive && strings.TrimSpace(rawVal) != "" {
+			valueStr = "<redacted>"
+			annotation = "# (set, redacted)"
 		} else {
-			// Check if section has any explicit values or if we should show defaults
-			sectionHasValues := false
-			for _, key := range section.keys {
-				fullKey := section.name + "." + key
-				if rawKeys[fullKey] || defaults[fullKey] != nil {
-					sectionHasValues = true
-					break
-				}
-			}
-			for nestedSection := range section.nested {
-				for _, key := range section.nested[nestedSection] {
-					fullKey := section.name + "." + nestedSection + "." + key
-					if rawKeys[fullKey] || defaults[fullKey] != nil {
-						sectionHasValues = true
-						break
-					}
-				}
-			}
-
-			if sectionHasValues {
-				fmt.Printf("%s:\n", section.name)
-				for _, key := range section.keys {
-					fullKey := section.name + "." + key
-					printConfigValue(fullKey, defaults, rawKeys, rawValues, hasFile, 1)
-				}
-
-				// Print nested sections
-				for nestedSection, nestedKeys := range section.nested {
-					nestedHasValues := false
-					for _, key := range nestedKeys {
-						fullKey := section.name + "." + nestedSection + "." + key
-						if rawKeys[fullKey] || defaults[fullKey] != nil {
-							nestedHasValues = true
-							break
-						}
-					}
-					if nestedHasValues {
-						fmt.Printf("  %s:\n", nestedSection)
-						for _, key := range nestedKeys {
-							fullKey := section.name + "." + nestedSection + "." + key
-							printConfigValue(fullKey, defaults, rawKeys, rawValues, hasFile, 2)
-						}
-					}
-				}
-				fmt.Println()
+			valueStr = rawVal
+			if key.HasDefault && valueMatchesDefault(rawVal, key.Default) {
+				annotation = "# (same as default)"
+			} else {
+				annotation = "# (set)"
 			}
 		}
+	} else if active && key.HasDefault {
+		valueStr = formatDefaultValue(key.Default)
+		annotation = "# (default)"
+	} else {
+		valueStr = formatPlaceholderValue(key.Placeholder)
+		annotation = "# (unset)"
+	}
+
+	indentStr := strings.Repeat("  ", indent)
+	commentPrefix := ""
+	if !active {
+		commentPrefix = "# "
+	}
+
+	// Print with proper indentation. Multiline active values use block scalar style;
+	// commented placeholders are intentionally single-line examples.
+	if active && strings.Contains(valueStr, "\n") {
+		if annotation != "" {
+			fmt.Fprintf(out, "%s%s: |  %s\n", indentStr, keyName, annotation)
+		} else {
+			fmt.Fprintf(out, "%s%s: |\n", indentStr, keyName)
+		}
+		blockIndent := indentStr + "  "
+		for _, line := range strings.Split(valueStr, "\n") {
+			fmt.Fprintf(out, "%s%s\n", blockIndent, line)
+		}
+		return
+	}
+
+	formattedVal := formatValue(valueStr, key.Default)
+	if annotation != "" {
+		fmt.Fprintf(out, "%s%s%s: %s  %s\n", indentStr, commentPrefix, keyName, formattedVal, annotation)
+	} else {
+		fmt.Fprintf(out, "%s%s%s: %s\n", indentStr, commentPrefix, keyName, formattedVal)
 	}
 }
 
@@ -394,18 +435,15 @@ func extractRawValues(node *yaml.Node, prefix string, values map[string]string) 
 	}
 }
 
-// printProvidersSection prints the providers section with annotations
-func printProvidersSection(defaults map[string]any, rawKeys map[string]bool, rawValues map[string]string, hasFile bool, cfg *config.Config) {
-	// Collect all provider names from defaults and raw config
+// printProvidersSection prints the providers section with annotations.
+func printProvidersSection(out io.Writer, defaults map[string]any, rawKeys map[string]bool, rawValues map[string]string, hasFile bool, cfg *config.Config) {
 	providerNames := make(map[string]bool)
-
-	// Default providers
-	defaultProviders := []string{"anthropic", "openai", "chatgpt", "xai", "venice", "sambanova", "openrouter", "gemini", "zen"}
+	defaultProviders := config.DefaultProviderNames()
 	for _, p := range defaultProviders {
 		providerNames[p] = true
 	}
 
-	// Providers from raw config
+	// Providers from raw config.
 	for key := range rawKeys {
 		if strings.HasPrefix(key, "providers.") {
 			parts := strings.SplitN(key, ".", 3)
@@ -415,55 +453,69 @@ func printProvidersSection(defaults map[string]any, rawKeys map[string]bool, raw
 		}
 	}
 
-	fmt.Println("providers:")
+	fmt.Fprintln(out, "providers:")
 
-	// Print in a consistent order (defaults first, then custom)
+	printed := make(map[string]bool)
 	for _, pName := range defaultProviders {
-		printProviderConfig(pName, defaults, rawKeys, rawValues, hasFile, cfg)
+		printProviderConfig(out, pName, true, defaults, rawKeys, rawValues, hasFile, cfg)
+		printed[pName] = true
 	}
 
-	// Print any custom providers
+	var custom []string
 	for pName := range providerNames {
-		isDefault := false
-		for _, dp := range defaultProviders {
-			if pName == dp {
-				isDefault = true
-				break
-			}
-		}
-		if !isDefault {
-			printProviderConfig(pName, defaults, rawKeys, rawValues, hasFile, cfg)
+		if !printed[pName] {
+			custom = append(custom, pName)
 		}
 	}
+	sort.Strings(custom)
+	for _, pName := range custom {
+		printProviderConfig(out, pName, false, defaults, rawKeys, rawValues, hasFile, cfg)
+	}
 
-	fmt.Println()
+	fmt.Fprintln(out)
 }
 
-// printProviderConfig prints a single provider's config
-func printProviderConfig(name string, defaults map[string]any, rawKeys map[string]bool, rawValues map[string]string, hasFile bool, cfg *config.Config) {
-	providerKeys := []string{"type", "model", "fast_model", "fast_provider", "service_tier", "models", "api_key", "credentials", "base_url", "url", "app_url", "app_title", "use_native_search", "context_window", "max_output_tokens", "parse_reasoning", "include_reasoning", "thinking_param"}
-
-	// Check if provider has any values
-	hasValues := false
-	for _, key := range providerKeys {
-		fullKey := "providers." + name + "." + key
-		if rawKeys[fullKey] || defaults[fullKey] != nil {
-			hasValues = true
-			break
+// printProviderConfig prints a single provider's config.
+func printProviderConfig(out io.Writer, name string, includeOptional bool, defaults map[string]any, rawKeys map[string]bool, rawValues map[string]string, hasFile bool, cfg *config.Config) {
+	var keys []renderKey
+	for _, field := range config.ProviderKeySpecs() {
+		fullKey := "providers." + name + "." + field.Path
+		defaultVal, hasDefault := defaults[fullKey]
+		if includeOptional || hasDefault || rawKeys[fullKey] || hasRawDescendant(rawKeys, fullKey+".") {
+			keys = append(keys, renderKeyFromProviderSpec(name, field, defaultVal, hasDefault))
 		}
 	}
 
-	if !hasValues {
+	// Include dynamic env/model_map keys from the raw file so config show does not
+	// hide case-sensitive env vars or custom Bedrock model aliases.
+	dynamicPrefix := "providers." + name + "."
+	for rawKey := range rawKeys {
+		if !strings.HasPrefix(rawKey, dynamicPrefix) {
+			continue
+		}
+		rel := strings.TrimPrefix(rawKey, dynamicPrefix)
+		if strings.HasPrefix(rel, "env.") || strings.HasPrefix(rel, "model_map.") {
+			keys = append(keys, renderKey{RenderPath: rel, FullPath: rawKey, Sensitive: isSensitiveProviderEnvKey(rel), Placeholder: ""})
+		}
+	}
+
+	if len(keys) == 0 {
+		return
+	}
+	root := &renderNode{byName: make(map[string]*renderNode)}
+	for i := range keys {
+		insertRenderKey(root, &keys[i])
+	}
+	if !includeOptional && !renderNodeHasActive(root, rawKeys) {
 		return
 	}
 
-	fmt.Printf("  %s:\n", name)
-	for _, key := range providerKeys {
-		fullKey := "providers." + name + "." + key
-		printConfigValue(fullKey, defaults, rawKeys, rawValues, hasFile, 2)
+	fmt.Fprintf(out, "  %s:\n", name)
+	for _, child := range root.children {
+		renderNodeTree(out, child, rawKeys, rawValues, hasFile, 2, false)
 	}
 
-	// Show resolved credential source
+	// Show resolved credential source.
 	if cfg != nil {
 		var providerCfg config.ProviderConfig
 		if pc, ok := cfg.Providers[name]; ok {
@@ -474,71 +526,36 @@ func printProviderConfig(name string, defaults map[string]any, rawKeys map[strin
 		if !found {
 			status = "✗"
 		}
-		fmt.Printf("    # credential: %s %s\n", status, source)
+		fmt.Fprintf(out, "    # credential: %s %s\n", status, source)
 	}
 }
 
-// printConfigValue prints a single config value with annotation
-func printConfigValue(fullKey string, defaults map[string]any, rawKeys map[string]bool, rawValues map[string]string, hasFile bool, indent int) {
-	// Get the key name (last part of the path)
-	parts := strings.Split(fullKey, ".")
-	keyName := parts[len(parts)-1]
-
-	defaultVal := defaults[fullKey]
-	rawVal, hasRawVal := rawValues[fullKey]
-	isExplicit := rawKeys[fullKey]
-
-	// Determine what value to show
-	var valueStr string
-	var annotation string
-
-	if isExplicit && hasRawVal {
-		// Value was explicitly set in config
-		valueStr = rawVal
-		// Check if it matches default
-		if defaultVal != nil && valueMatchesDefault(rawVal, defaultVal) {
-			annotation = "# (same as default)"
+func hasRawDescendant(rawKeys map[string]bool, prefix string) bool {
+	for key := range rawKeys {
+		if strings.HasPrefix(key, prefix) {
+			return true
 		}
-	} else if defaultVal != nil {
-		// Show default value
-		valueStr = formatDefaultValue(defaultVal)
-		annotation = "# (default)"
-	} else {
-		// No default and not set - skip
-		return
 	}
+	return false
+}
 
-	// Print with proper indentation
-	indentStr := strings.Repeat("  ", indent)
-
-	// Check if value is multiline - use block scalar style
-	if strings.Contains(valueStr, "\n") {
-		if annotation != "" {
-			fmt.Printf("%s%s: |  %s\n", indentStr, keyName, annotation)
-		} else {
-			fmt.Printf("%s%s: |\n", indentStr, keyName)
+func isSensitiveProviderEnvKey(rel string) bool {
+	if !strings.HasPrefix(rel, "env.") {
+		return false
+	}
+	name := strings.ToUpper(strings.TrimPrefix(rel, "env."))
+	for _, marker := range []string{"TOKEN", "KEY", "SECRET", "PASSWORD", "CREDENTIAL", "AUTH"} {
+		if strings.Contains(name, marker) {
+			return true
 		}
-		// Print each line with extra indentation
-		blockIndent := indentStr + "  "
-		for _, line := range strings.Split(valueStr, "\n") {
-			fmt.Printf("%s%s\n", blockIndent, line)
-		}
-		return
 	}
-
-	// Format single-line value
-	formattedVal := formatValue(valueStr, defaultVal)
-	if annotation != "" {
-		fmt.Printf("%s%s: %s  %s\n", indentStr, keyName, formattedVal, annotation)
-	} else {
-		fmt.Printf("%s%s: %s\n", indentStr, keyName, formattedVal)
-	}
+	return false
 }
 
 // formatValue formats a raw value for display
 func formatValue(raw string, defaultVal any) string {
-	// If it looks like a sequence marker, return as-is
-	if strings.HasPrefix(raw, "[") {
+	// If it looks like a sequence or map marker, return as-is
+	if strings.HasPrefix(raw, "[") || strings.HasPrefix(raw, "{") {
 		return raw
 	}
 	// Handle booleans
@@ -571,6 +588,10 @@ func formatDefaultValue(val any) string {
 		return fmt.Sprintf("%t", v)
 	case int:
 		return fmt.Sprintf("%d", v)
+	case int64:
+		return fmt.Sprintf("%d", v)
+	case float64:
+		return fmt.Sprintf("%g", v)
 	case []string:
 		if len(v) == 0 {
 			return "[]"
@@ -580,9 +601,28 @@ func formatDefaultValue(val any) string {
 			items = append(items, quoteArrayItem(item))
 		}
 		return "[" + strings.Join(items, ", ") + "]"
-	default:
-		return fmt.Sprintf("%v", v)
+	case []int64:
+		if len(v) == 0 {
+			return "[]"
+		}
+		items := make([]string, 0, len(v))
+		for _, item := range v {
+			items = append(items, fmt.Sprintf("%d", item))
+		}
+		return "[" + strings.Join(items, ", ") + "]"
+	case map[string]any:
+		if len(v) == 0 {
+			return "{}"
+		}
 	}
+	return fmt.Sprintf("%v", val)
+}
+
+func formatPlaceholderValue(val any) string {
+	if val == nil {
+		return "null"
+	}
+	return formatDefaultValue(val)
 }
 
 // needsQuoting checks if a string value needs YAML quoting
@@ -643,6 +683,10 @@ func valueMatchesDefault(raw string, defaultVal any) bool {
 		return raw == fmt.Sprintf("%t", v)
 	case int:
 		return raw == fmt.Sprintf("%d", v)
+	case int64:
+		return raw == fmt.Sprintf("%d", v)
+	case float64:
+		return raw == fmt.Sprintf("%g", v)
 	case []string:
 		// Compare array representation
 		if len(v) == 0 {
@@ -668,7 +712,7 @@ func configEdit(cmd *cobra.Command, args []string) error {
 
 	// Create default config if it doesn't exist
 	if _, err := os.Stat(configPath); os.IsNotExist(err) {
-		if err := os.WriteFile(configPath, []byte(defaultConfigContent()), 0644); err != nil {
+		if err := config.WriteFileAtomically(configPath, []byte(defaultConfigContent()), 0o600); err != nil {
 			return fmt.Errorf("failed to create config file: %w", err)
 		}
 	}
@@ -747,7 +791,7 @@ func configReset(cmd *cobra.Command, args []string) error {
 	}
 
 	// Write default config
-	if err := os.WriteFile(configPath, []byte(defaultConfigContent()), 0644); err != nil {
+	if err := config.WriteFileAtomically(configPath, []byte(defaultConfigContent()), 0o600); err != nil {
 		return fmt.Errorf("failed to write config file: %w", err)
 	}
 
@@ -756,146 +800,11 @@ func configReset(cmd *cobra.Command, args []string) error {
 }
 
 func defaultConfigContent() string {
-	return `# term-llm configuration
-# Run 'term-llm config edit' to modify
-
-default_provider: anthropic
-
-providers:
-  # Built-in providers - type is inferred from the key name
-  anthropic:
-    model: claude-sonnet-4-6
-    # Credential resolution order:
-    #   1. api_key in config (or ${ANTHROPIC_API_KEY} expansion)
-    #   2. ANTHROPIC_API_KEY environment variable
-    # Run 'term-llm config' to see which credential is active
-
-  openai:
-    model: gpt-5.2
-
-  gemini:
-    model: gemini-3-flash-preview
-    # credentials: api_key (default) or gemini-cli (gemini-cli OAuth)
-
-  openrouter:
-    model: x-ai/grok-code-fast-1
-    app_url: https://github.com/samsaffron/term-llm
-    app_title: term-llm
-
-  xai:
-    model: grok-4-1-fast
-
-  venice:
-    model: venice-uncensored
-
-  nearai:
-    model: zai-org/GLM-5.1-FP8
-    fast_model: Qwen/Qwen3.6-35B-A3B-FP8
-
-  sambanova:
-    model: gpt-oss-120b
-    fast_model: Meta-Llama-3.3-70B-Instruct
-
-  zen:
-    model: minimax-m2.5-free
-    # api_key optional - free tier access via opencode.ai
-
-  # Local LLM providers (require explicit type)
-  # ollama:
-  #   type: openai_compatible
-  #   base_url: http://localhost:11434/v1
-  #   model: llama3.2:latest
-
-  # lmstudio:
-  #   type: openai_compatible
-  #   base_url: http://localhost:1234/v1
-  #   model: deepseek-coder-v2
-
-  # Custom OpenAI-compatible endpoints
-  # cerebras:
-  #   type: openai_compatible
-  #   base_url: https://api.cerebras.ai/v1
-  #   model: llama-4-scout-17b
-  #   api_key: ${CEREBRAS_API_KEY}
-  #   context_window: 128000       # total context window (tokens)
-  #   max_output_tokens: 8192      # max output tokens (set both for best results)
-
-  # groq:
-  #   type: openai_compatible
-  #   base_url: https://api.groq.com/openai/v1
-  #   model: llama-3.3-70b-versatile
-  #   api_key: ${GROQ_API_KEY}
-
-# Per-command overrides
-exec:
-  suggestions: 3
-  # provider: anthropic    # override provider for exec only
-  # model: claude-opus-4   # override model for exec only
-  # instructions: |
-  #   Custom context for command suggestions
-
-ask:
-  # provider: openai       # override provider for ask only
-  # model: gpt-4o
-
-edit:
-  # provider: anthropic    # override provider for edit only
-
-# UI theme colors (ANSI 0-255 or hex #RRGGBB)
-# theme:
-#   primary: "10"     # commands, highlights
-#   muted: "245"      # explanations, footers
-#   spinner: "205"    # loading spinner
-#   error: "9"        # error messages
-
-# Debug logging (for troubleshooting LLM requests)
-# debug_logs:
-#   enabled: false
-#   dir: ~/.local/share/term-llm/debug/
-
-# Session storage (enabled by default)
-# sessions:
-#   enabled: true       # Master switch - set to false to disable storage
-#   max_age_days: 0     # Auto-delete sessions older than N days (0=never)
-#   max_count: 0        # Keep at most N sessions (0=unlimited)
-#   path: ""            # Optional DB path override (supports :memory:)
-
-# Image generation settings
-image:
-  provider: gemini  # gemini, openai, chatgpt, xai, venice, flux, or openrouter
-  output_dir: ~/Pictures/term-llm
-
-  gemini:
-    model: gemini-2.5-flash-image
-    # api_key: uses GEMINI_API_KEY env var
-
-  openai:
-    model: gpt-image-2
-    # api_key: uses OPENAI_API_KEY env var
-
-  chatgpt:
-    model: gpt-5.4-mini
-    # uses your existing ChatGPT OAuth login (see: term-llm ask --provider chatgpt)
-    # try gpt-5.4 for higher-quality image generation
-
-  xai:
-    model: grok-2-image-1212
-    # api_key: uses XAI_API_KEY env var
-
-  venice:
-    model: nano-banana-pro
-    # edit_model: optional override for image edits
-    resolution: 2K
-    # api_key: uses VENICE_API_KEY env var
-
-  flux:
-    model: flux-2-pro
-    # api_key: uses BFL_API_KEY env var
-
-  openrouter:
-    model: google/gemini-2.5-flash-image
-    # api_key: uses OPENROUTER_API_KEY env var
-`
+	var buf bytes.Buffer
+	buf.WriteString("# term-llm configuration\n")
+	buf.WriteString("# Run 'term-llm config edit' to modify\n\n")
+	printAnnotatedConfig(&buf, config.GetDefaults(), map[string]bool{}, map[string]bool{}, nil, false, nil)
+	return buf.String()
 }
 
 var installCompletions bool
@@ -1223,112 +1132,29 @@ func configGetCompletion(cmd *cobra.Command, args []string, toComplete string) (
 
 // configKeyCompletions returns completions for config keys
 func configKeyCompletions(toComplete string) []string {
-	// Load config to get dynamic provider names
 	cfg, _ := config.Load()
 
-	// Start with keys from GetDefaults() - single source of truth
-	defaults := config.GetDefaults()
 	keySet := make(map[string]bool)
-	for key := range defaults {
-		keySet[key] = true
+	for _, spec := range config.ConfigKeySpecs() {
+		keySet[spec.Path] = true
 	}
 
-	// Add keys that don't have defaults but are valid config keys
-	extraKeys := []string{
-		// Command overrides (provider/model/instructions)
-		"exec.provider",
-		"exec.model",
-		"ask.provider",
-		"ask.model",
-		"ask.instructions",
-		"chat.provider",
-		"chat.model",
-		"chat.instructions",
-		"edit.provider",
-		"edit.model",
-		"edit.instructions",
-		"edit.editor",
-		// Theme
-		"theme.primary",
-		"theme.secondary",
-		"theme.success",
-		"theme.error",
-		"theme.warning",
-		"theme.muted",
-		"theme.text",
-		"theme.spinner",
-		"theme.reasoning_summary",
-		"theme.reasoning_header",
-		"theme.reasoning_raw",
-		// Reasoning display
-		"reasoning.display",
-		"reasoning.source",
-		"reasoning.status",
-		"reasoning.history",
-		"reasoning.export",
-		"reasoning.raw",
-		"reasoning.max_summary_chars",
-		"reasoning.max_raw_chars",
-		"reasoning.extract_titles",
-		"reasoning.hidden_label",
-		"reasoning.persist_summaries",
-		"reasoning.chat.display",
-		"reasoning.chat.status",
-		"reasoning.chat.history",
-		"reasoning.chat.export",
-		"reasoning.chat.raw",
-		"reasoning.ask.display",
-		"reasoning.ask.status",
-		"reasoning.ask.history",
-		"reasoning.ask.export",
-		"reasoning.ask.raw",
-		"reasoning.serve.display",
-		"reasoning.serve.status",
-		"reasoning.serve.history",
-		"reasoning.serve.export",
-		"reasoning.serve.raw",
-		"reasoning.jobs.display",
-		"reasoning.jobs.status",
-		"reasoning.jobs.history",
-		"reasoning.jobs.export",
-		"reasoning.jobs.raw",
-		// Debug/diagnostics
-		"debug_logs.enabled",
-		"debug_logs.dir",
-		"diagnostics.enabled",
-		"diagnostics.dir",
-		// Image API keys
-		"image.gemini.api_key",
-		"image.openai.api_key",
-		"image.xai.api_key",
-		"image.flux.api_key",
-		"image.openrouter.api_key",
-		// Search API keys
-		"search.exa.api_key",
-		"search.perplexity.api_key",
-		"search.brave.api_key",
-		"search.google.api_key",
-		"search.google.cx",
-		// Tools
-		"tools.image_provider",
+	providerNames := make(map[string]bool)
+	for _, name := range config.DefaultProviderNames() {
+		providerNames[name] = true
 	}
-	for _, key := range extraKeys {
-		keySet[key] = true
+	for _, name := range llm.GetProviderNames(cfg) {
+		providerNames[name] = true
 	}
-
-	// Add provider-specific keys
-	providerNames := llm.GetProviderNames(cfg)
-	for _, name := range providerNames {
-		keySet["providers."+name+".model"] = true
-		keySet["providers."+name+".fast_model"] = true
-		keySet["providers."+name+".fast_provider"] = true
-		keySet["providers."+name+".service_tier"] = true
-		keySet["providers."+name+".reasoning"] = true
-		keySet["providers."+name+".credentials"] = true
-		keySet["providers."+name+".api_key"] = true
-		keySet["providers."+name+".parse_reasoning"] = true
-		keySet["providers."+name+".include_reasoning"] = true
-		keySet["providers."+name+".thinking_param"] = true
+	var names []string
+	for name := range providerNames {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		for _, spec := range config.ProviderKeySpecs() {
+			keySet["providers."+name+"."+spec.Path] = true
+		}
 	}
 
 	// Convert to sorted slice
@@ -1352,7 +1178,7 @@ func configValueCompletions(key, toComplete string) []string {
 	cfg, _ := config.Load()
 
 	switch key {
-	case "default_provider", "exec.provider", "ask.provider", "edit.provider":
+	case "default_provider", "exec.provider", "ask.provider", "chat.provider", "edit.provider", "guardian.provider":
 		// Provider names
 		names := llm.GetProviderNames(cfg)
 		var completions []string
@@ -1364,7 +1190,7 @@ func configValueCompletions(key, toComplete string) []string {
 		return completions
 
 	case "image.provider":
-		providers := []string{"gemini", "openai", "flux"}
+		providers := []string{"gemini", "openai", "chatgpt", "xai", "venice", "flux", "openrouter", "debug"}
 		var completions []string
 		for _, p := range providers {
 			if strings.HasPrefix(p, toComplete) {
@@ -1402,16 +1228,10 @@ func configValueCompletions(key, toComplete string) []string {
 			}
 		}
 		return completions
+	}
 
-	case "edit.show_line_numbers", "search.force_external":
-		bools := []string{"true", "false"}
-		var completions []string
-		for _, b := range bools {
-			if strings.HasPrefix(b, toComplete) {
-				completions = append(completions, b)
-			}
-		}
-		return completions
+	if isBoolConfigKey(key) {
+		return filterPrefix([]string{"true", "false"}, toComplete)
 	}
 
 	// Check for provider model keys
@@ -1506,6 +1326,31 @@ func configValueCompletions(key, toComplete string) []string {
 	}
 
 	return nil
+}
+
+func isBoolConfigKey(key string) bool {
+	for _, spec := range config.ConfigKeySpecs() {
+		if spec.Path != key {
+			continue
+		}
+		if _, ok := spec.Default.(bool); ok {
+			return true
+		}
+		_, ok := spec.Placeholder.(bool)
+		return ok
+	}
+	if strings.HasPrefix(key, "providers.") {
+		parts := strings.SplitN(key, ".", 3)
+		if len(parts) == 3 {
+			for _, spec := range config.ProviderKeySpecs() {
+				if spec.Path == parts[2] {
+					_, ok := spec.Placeholder.(bool)
+					return ok
+				}
+			}
+		}
+	}
+	return false
 }
 
 // filterPrefix filters a slice to items starting with prefix

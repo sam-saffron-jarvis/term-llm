@@ -13,14 +13,15 @@ import (
 	"strings"
 	"time"
 
+	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/providerhttp"
 )
 
 const (
 	geminiBaseURL       = "https://generativelanguage.googleapis.com/v1beta/models"
-	geminiDefaultModel  = "gemini-3.1-flash-tts-preview"
-	geminiDefaultVoice  = "Kore"
-	geminiDefaultFormat = "wav"
+	geminiDefaultModel  = config.DefaultAudioGeminiModel
+	geminiDefaultVoice  = config.DefaultAudioGeminiVoice
+	geminiDefaultFormat = config.DefaultAudioGeminiFormat
 	geminiHTTPTimeout   = 2 * time.Minute
 	geminiSampleRate    = 24000
 	geminiChannels      = 1

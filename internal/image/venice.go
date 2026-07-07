@@ -25,14 +25,16 @@ const (
 	veniceGenerateEndpoint  = veniceBaseURL + "/image/generate"
 	veniceEditEndpoint      = veniceBaseURL + "/image/edit"
 	veniceMultiEditEndpoint = veniceBaseURL + "/image/multi-edit"
-	veniceDefaultModel      = "nano-banana-pro"
-	veniceDefaultResolution = "2K"
 	veniceHTTPTimeout       = 5 * time.Minute
 )
 
-var veniceHTTPClient = &http.Client{
-	Timeout: veniceHTTPTimeout,
-}
+var (
+	veniceDefaultModel      = config.DefaultImageVeniceModel
+	veniceDefaultResolution = config.DefaultImageVeniceResolution
+	veniceHTTPClient        = &http.Client{
+		Timeout: veniceHTTPTimeout,
+	}
+)
 
 // VeniceProvider implements ImageProvider using Venice AI's native image API.
 // - Text-to-image: POST /image/generate (JSON, returns base64 in JSON)

@@ -11,7 +11,7 @@ import (
 func NewSearcher(cfg *config.Config) (Searcher, error) {
 	provider := cfg.Search.Provider
 	if provider == "" {
-		provider = "exa_mcp"
+		provider = config.DefaultSearchProvider
 	}
 
 	switch provider {
