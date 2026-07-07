@@ -1006,20 +1006,26 @@ func TestRenderStatusLine_IdleUsesProviderBaselineWithoutHeuristicInflation(t *t
 	m.modelName = "gpt-5"
 	m.engine.ConfigureContextManagement(m.provider, m.providerName, m.modelName, false)
 	m.engine.SetContextEstimateBaseline(130_715, 1)
+	assistantText := strings.Repeat("large heuristic text ", 2500)
 	m.messages = []session.Message{
 		{Role: llm.RoleUser, Parts: []llm.Part{{Type: llm.PartText, Text: "hello"}}, TextContent: "hello"},
-		{Role: llm.RoleAssistant, Parts: []llm.Part{{Type: llm.PartText, Text: strings.Repeat("large heuristic text ", 2500)}}, TextContent: strings.Repeat("large heuristic text ", 2500)},
+		{Role: llm.RoleAssistant, Parts: []llm.Part{{Type: llm.PartText, Text: assistantText}}, TextContent: assistantText},
 	}
 
-	if inflated := m.engine.EstimateTokens(m.buildMessagesForContextEstimate()); inflated <= 130_715 {
-		t.Fatalf("test setup expected heuristic estimate > provider baseline, got %d", inflated)
+	inflatedIfDoubleCounted := 130_715 + llm.EstimateMessageTokens([]llm.Message{llm.AssistantText(assistantText)})
+	if inflatedIfDoubleCounted <= 130_715 {
+		t.Fatalf("test setup expected assistant heuristic to inflate provider baseline, got %d", inflatedIfDoubleCounted)
+	}
+	if got := m.engine.EstimateTokens(m.buildMessagesForContextEstimate()); got != 130_715 {
+		t.Fatalf("engine estimate = %d, want provider baseline 130715 at assistant-resting point", got)
 	}
 
 	line := ui.StripANSI(m.renderStatusLine())
 	if !strings.Contains(line, "~131K/272K") {
 		t.Fatalf("expected idle status line to use provider baseline ~131K/272K, got %q", line)
 	}
-	if strings.Contains(line, "~142K/272K") {
+	inflatedUsage := "~" + llm.FormatTokenCount(inflatedIfDoubleCounted) + "/272K"
+	if strings.Contains(line, inflatedUsage) {
 		t.Fatalf("idle status line used inflated heuristic estimate, got %q", line)
 	}
 }
@@ -1139,16 +1145,27 @@ func TestNew_ResumeSession_ConfiguresContextEstimateFromLoadedSession(t *testing
 		LastMessageCount: 1,
 	}
 	userText := strings.Repeat("architecture tradeoffs and implementation details ", 80)
+	assistantText := strings.Repeat("implementation plan and tradeoffs ", 80)
 	store := &mockStore{
 		messages: map[string][]session.Message{
-			sess.ID: {{
-				SessionID:   sess.ID,
-				Role:        llm.RoleUser,
-				TextContent: userText,
-				Parts:       []llm.Part{{Type: llm.PartText, Text: userText}},
-				CreatedAt:   time.Now(),
-				Sequence:    0,
-			}},
+			sess.ID: []session.Message{
+				{
+					SessionID:   sess.ID,
+					Role:        llm.RoleUser,
+					TextContent: userText,
+					Parts:       []llm.Part{{Type: llm.PartText, Text: userText}},
+					CreatedAt:   time.Now(),
+					Sequence:    0,
+				},
+				{
+					SessionID:   sess.ID,
+					Role:        llm.RoleAssistant,
+					TextContent: assistantText,
+					Parts:       []llm.Part{{Type: llm.PartText, Text: assistantText}},
+					CreatedAt:   time.Now(),
+					Sequence:    1,
+				},
+			},
 		},
 	}
 
@@ -1212,14 +1229,25 @@ func TestUpdate_SessionLoadedMsg_ReseedsStatsAndContextTracking(t *testing.T) {
 		LastMessageCount:  1,
 	}
 	userText := strings.Repeat("architecture tradeoffs and implementation details ", 80)
-	messages := []session.Message{{
-		SessionID:   loadedSess.ID,
-		Role:        llm.RoleUser,
-		TextContent: userText,
-		Parts:       []llm.Part{{Type: llm.PartText, Text: userText}},
-		CreatedAt:   time.Now(),
-		Sequence:    0,
-	}}
+	assistantText := strings.Repeat("implementation plan and tradeoffs ", 80)
+	messages := []session.Message{
+		{
+			SessionID:   loadedSess.ID,
+			Role:        llm.RoleUser,
+			TextContent: userText,
+			Parts:       []llm.Part{{Type: llm.PartText, Text: userText}},
+			CreatedAt:   time.Now(),
+			Sequence:    0,
+		},
+		{
+			SessionID:   loadedSess.ID,
+			Role:        llm.RoleAssistant,
+			TextContent: assistantText,
+			Parts:       []llm.Part{{Type: llm.PartText, Text: assistantText}},
+			CreatedAt:   time.Now(),
+			Sequence:    1,
+		},
+	}
 
 	_, _ = m.Update(sessionLoadedMsg{sess: loadedSess, messages: messages})
 

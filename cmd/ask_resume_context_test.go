@@ -10,15 +10,14 @@ import (
 func TestApplyPersistedContextEstimateSeedsEngineBaseline(t *testing.T) {
 	engine := llm.NewEngine(llm.NewMockProvider("mock"), nil)
 	sess := &session.Session{
-		LastTotalTokens:  336_000,
-		LastMessageCount: 2,
+		LastTotalTokens: 336_000,
 	}
 
 	applyPersistedContextEstimate(engine, sess)
 
 	total, count := engine.ContextEstimateBaseline()
-	if total != 336_000 || count != 2 {
-		t.Fatalf("ContextEstimateBaseline() = (%d, %d), want (%d, %d)", total, count, 336_000, 2)
+	if total != 336_000 || count != 0 {
+		t.Fatalf("ContextEstimateBaseline() = (%d, %d), want (%d, %d)", total, count, 336_000, 0)
 	}
 
 	msgs := []llm.Message{llm.UserText("hello"), llm.AssistantText("world")}

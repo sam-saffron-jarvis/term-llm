@@ -2158,7 +2158,7 @@ loop:
 				return m.store.UpdateMetrics(storeCtx, sess.meta.ID, turnsSnapshot, metricsSnapshot.ToolCalls, metricsSnapshot.InputTokens, metricsSnapshot.OutputTokens, metricsSnapshot.CachedInputTokens, metricsSnapshot.CacheWriteTokens)
 			})
 		}
-		if total, count := sess.runtime.Engine.ContextEstimateBaseline(); total > 0 && count > 0 {
+		if total, count := sess.runtime.Engine.ContextEstimateBaseline(); total > 0 {
 			sess.meta.LastTotalTokens = total
 			sess.meta.LastMessageCount = count
 			m.runStoreOpWithoutCancel(ctx, sess.meta.ID, "UpdateContextEstimate", func(storeCtx context.Context) error {

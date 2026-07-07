@@ -261,7 +261,7 @@ func (r *cmdRunner) prepare(ctx context.Context, req runpkg.Request, sink runpkg
 			}
 		}
 	}
-	if req.ContextEstimateTotalTokens > 0 && req.ContextEstimateMessageCount > 0 {
+	if req.ContextEstimateTotalTokens > 0 {
 		engine.SetContextEstimateBaseline(req.ContextEstimateTotalTokens, req.ContextEstimateMessageCount)
 	}
 	if toolMgr != nil && r.defaults.ParentApprovalMgr != nil {
@@ -587,7 +587,7 @@ func (r *cmdRunner) runProgressive(ctx context.Context, runtime *serveRuntime, e
 			if err := persistStore.UpdateMetrics(cbCtx, sess.ID, 1, metrics.ToolCalls, metrics.InputTokens, metrics.OutputTokens, metrics.CachedInputTokens, metrics.CacheWriteTokens); err != nil {
 				log.Printf("[runner] session UpdateMetrics failed for %s: %v", sess.ID, err)
 			}
-			if total, count := engine.ContextEstimateBaseline(); total > 0 && count > 0 {
+			if total, count := engine.ContextEstimateBaseline(); total > 0 {
 				if err := persistStore.UpdateContextEstimate(cbCtx, sess.ID, total, count); err != nil {
 					log.Printf("[runner] session UpdateContextEstimate failed for %s: %v", sess.ID, err)
 				}

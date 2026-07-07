@@ -46,6 +46,52 @@ func (s *updateMessageFailStore) GetMessages(ctx context.Context, sessionID stri
 	return append([]session.Message(nil), msgs...), nil
 }
 
+func TestEnsureContextMessagesResetsBaselineWhenMutatingPrefix(t *testing.T) {
+	baseMessages := []session.Message{
+		{Role: llm.RoleUser, Parts: []llm.Part{{Type: llm.PartText, Text: "hello"}}, TextContent: "hello", Sequence: 0},
+		{Role: llm.RoleAssistant, Parts: []llm.Part{{Type: llm.PartText, Text: "hi"}}, TextContent: "hi", Sequence: 1},
+	}
+
+	tests := []struct {
+		name  string
+		setup func(*Model)
+	}{
+		{
+			name: "system prompt prepended",
+			setup: func(m *Model) {
+				m.config.Chat.Instructions = "new system instructions"
+			},
+		},
+		{
+			name: "developer prompt inserted",
+			setup: func(m *Model) {
+				m.platformDeveloperMessage = "platform developer instructions"
+				m.sess.Origin = session.OriginWeb
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := newTestChatModel(false)
+			m.messages = append([]session.Message(nil), baseMessages...)
+			m.sess.LastTotalTokens = 100_000
+			m.sess.LastMessageCount = len(baseMessages)
+			m.engine.SetContextEstimateBaseline(100_000, len(baseMessages))
+			tt.setup(m)
+
+			m.ensureContextMessages()
+
+			if total, count := m.engine.ContextEstimateBaseline(); total != 0 || count != 0 {
+				t.Fatalf("ContextEstimateBaseline() = (%d, %d), want (0, 0)", total, count)
+			}
+			if m.sess.LastTotalTokens != 0 || m.sess.LastMessageCount != 0 {
+				t.Fatalf("session context estimate = (%d, %d), want (0, 0)", m.sess.LastTotalTokens, m.sess.LastMessageCount)
+			}
+		})
+	}
+}
+
 func TestRunnerStreamDoneWaitsForRunnerAfterCancellation(t *testing.T) {
 	m := newTestChatModel(false)
 	runner := &blockingChatRunner{

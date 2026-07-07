@@ -2418,9 +2418,6 @@ func TestEngineResetConversation(t *testing.T) {
 	if e.lastMessageCount != 0 {
 		t.Errorf("expected lastMessageCount=0, got %d", e.lastMessageCount)
 	}
-	if e.lastMessageTokenEstimate != 0 {
-		t.Errorf("expected lastMessageTokenEstimate=0, got %d", e.lastMessageTokenEstimate)
-	}
 	if e.systemPrompt != "" {
 		t.Errorf("expected systemPrompt=\"\", got %q", e.systemPrompt)
 	}
@@ -3111,6 +3108,80 @@ func TestContextEstimateBaselineMessageCountIncludesAssistantOutput(t *testing.T
 	messagesAfterPersistence := []Message{UserText("hi"), AssistantText("hello")}
 	if got := e.EstimateTokens(messagesAfterPersistence); got != 1500 {
 		t.Fatalf("EstimateTokens after persisted assistant = %d, want baseline 1500 without double-counting assistant", got)
+	}
+}
+
+func TestEstimateTokensUsesStructuralDeltaAfterResume(t *testing.T) {
+	encryptedReasoning := strings.Repeat("encrypted-reasoning-payload/", 20_000)
+	assistantWithEncryptedReasoning := Message{
+		Role: RoleAssistant,
+		Parts: []Part{{
+			Type:                      PartText,
+			Text:                      "final answer",
+			ReasoningEncryptedContent: encryptedReasoning,
+			ReasoningKind:             ReasoningKindEncrypted,
+		}},
+	}
+	trailingToolResult := Message{
+		Role: RoleTool,
+		Parts: []Part{{
+			Type:       PartToolResult,
+			ToolResult: &ToolResult{ID: "call-1", Name: "read_file", Content: strings.Repeat("tool output ", 200)},
+		}},
+	}
+	trailingUser := UserText("follow-up question")
+
+	tests := []struct {
+		name              string
+		messages          []Message
+		want              int
+		wantFullHeuristic bool
+	}{
+		{
+			name: "assistant-at-end-uses-exact-baseline-despite-count-drift-and-encrypted-reasoning",
+			messages: []Message{
+				SystemText("system prompt"),
+				UserText("first question"),
+				assistantWithEncryptedReasoning,
+			},
+			want: 100_000,
+		},
+		{
+			name: "trailing-structural-delta-after-last-assistant",
+			messages: []Message{
+				SystemText("system prompt"),
+				UserText("first question"),
+				assistantWithEncryptedReasoning,
+				trailingToolResult,
+				trailingUser,
+			},
+			want: 100_000 + EstimateMessageTokens([]Message{trailingToolResult, trailingUser}),
+		},
+		{
+			name: "no-assistant-ignores-stale-baseline",
+			messages: []Message{
+				SystemText("compacted summary only"),
+				UserText("new question after cleared history"),
+			},
+			wantFullHeuristic: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			e := NewEngine(NewMockProvider("test"), nil)
+			// The persisted message count intentionally differs from len(tt.messages)
+			// to simulate a resumed session rebuilt through session.LLMActiveMessages.
+			e.SetContextEstimateBaseline(100_000, 1)
+
+			want := tt.want
+			if tt.wantFullHeuristic {
+				want = EstimateMessageTokens(tt.messages)
+			}
+			if got := e.EstimateTokens(tt.messages); got != want {
+				t.Fatalf("EstimateTokens() = %d, want %d", got, want)
+			}
+		})
 	}
 }
 

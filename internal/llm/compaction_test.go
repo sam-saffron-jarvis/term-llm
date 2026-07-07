@@ -1806,7 +1806,7 @@ func TestCompactAppendsSafeUserMessage(t *testing.T) {
 	})
 }
 
-func TestEstimatedTokensUsesTokenCheckpointDelta(t *testing.T) {
+func TestEstimatedTokensUsesStructuralDeltaAfterLastAssistant(t *testing.T) {
 	e := NewEngine(NewMockProvider("test"), nil)
 
 	checkpoint := []Message{
@@ -1816,7 +1816,6 @@ func TestEstimatedTokensUsesTokenCheckpointDelta(t *testing.T) {
 	}
 	e.lastTotalTokens = 150
 	e.lastMessageCount = len(checkpoint)
-	e.lastMessageTokenEstimate = EstimateMessageTokens(checkpoint)
 
 	msgs := append([]Message(nil), checkpoint...)
 	msgs = append(msgs, UserText("follow-up question"))
@@ -1824,7 +1823,7 @@ func TestEstimatedTokensUsesTokenCheckpointDelta(t *testing.T) {
 	got := e.estimatedTokens(msgs)
 	want := 150 + EstimateMessageTokens([]Message{UserText("follow-up question")})
 	if got != want {
-		t.Errorf("estimatedTokens (token checkpoint) = %d, want %d", got, want)
+		t.Errorf("estimatedTokens (structural delta) = %d, want %d", got, want)
 	}
 }
 
@@ -1843,37 +1842,38 @@ func TestEstimatedTokens(t *testing.T) {
 		t.Errorf("estimatedTokens (no API data) = %d, want %d", got, want)
 	}
 
-	// Simulate API response: 100 input + 50 output, with 2 messages at call time
+	// Simulate API response: 100 input + 50 output. The provider baseline already
+	// includes the assistant response, so only structurally trailing messages after
+	// the last assistant turn should be estimated heuristically.
 	e.lastTotalTokens = 150
 	e.lastMessageCount = 2
 
-	// Now add an assistant response and a new user message after the API call
+	// Now add an assistant response and a new user message after the API call.
 	msgs = append(msgs, AssistantText("response from model"))
 	msgs = append(msgs, UserText("follow-up question"))
 
 	got = e.estimatedTokens(msgs)
-	// Should be: lastTotalTokens + estimate(msgs[2:])
-	newMsgsEstimate := EstimateMessageTokens(msgs[2:])
+	newMsgsEstimate := EstimateMessageTokens([]Message{msgs[len(msgs)-1]})
 	want = 150 + newMsgsEstimate
 	if got != want {
 		t.Errorf("estimatedTokens (with API data) = %d, want %d (150 + %d)", got, want, newMsgsEstimate)
 	}
 }
 
-func TestEstimatedTokensUsesBaselineWhenMessageCountAhead(t *testing.T) {
+func TestEstimatedTokensIgnoresStaleBaselineWithoutAssistantAnchor(t *testing.T) {
 	e := NewEngine(NewMockProvider("test"), nil)
 
-	// Usage events can report a baseline that includes assistant output before
-	// the UI/session message list has appended that assistant message. Prefer the
-	// provider baseline over a full heuristic fallback to avoid inflated live
-	// status-line estimates.
+	// A provider baseline is only valid if it can be anchored to an assistant turn
+	// in the current transcript. Summary-only or cleared histories should not reuse
+	// a stale pre-compaction baseline.
 	e.lastTotalTokens = 100
 	e.lastMessageCount = 5
 
 	msgs := []Message{UserText("short")}
+	want := EstimateMessageTokens(msgs)
 	got := e.estimatedTokens(msgs)
-	if got != 100 {
-		t.Errorf("estimatedTokens (baseline ahead) = %d, want baseline 100", got)
+	if got != want {
+		t.Errorf("estimatedTokens (stale unanchored baseline) = %d, want heuristic %d", got, want)
 	}
 }
 

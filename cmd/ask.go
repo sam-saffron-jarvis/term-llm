@@ -662,7 +662,7 @@ func runAsk(cmd *cobra.Command, args []string) error {
 			askPersistence.reset()
 			// Update metrics
 			_ = store.UpdateMetrics(ctx, sess.ID, 1, metrics.ToolCalls, metrics.InputTokens, metrics.OutputTokens, metrics.CachedInputTokens, metrics.CacheWriteTokens)
-			if total, count := engine.ContextEstimateBaseline(); total > 0 && count > 0 {
+			if total, count := engine.ContextEstimateBaseline(); total > 0 {
 				_ = store.UpdateContextEstimate(ctx, sess.ID, total, count)
 				sess.LastTotalTokens = total
 				sess.LastMessageCount = count

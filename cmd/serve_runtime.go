@@ -677,7 +677,7 @@ func (rt *serveRuntime) persistTurnAccounting(ctx context.Context, persisted boo
 		return
 	}
 	total, count := rt.engine.ContextEstimateBaseline()
-	if total <= 0 || count <= 0 {
+	if total <= 0 {
 		return
 	}
 	if err := rt.store.UpdateContextEstimate(ctx, sessionID, total, count); err != nil {

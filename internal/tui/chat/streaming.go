@@ -297,6 +297,7 @@ func (m *Model) shouldInjectPlatformDeveloperMessage() bool {
 func (m *Model) prependMessage(msg session.Message) {
 	m.messages = append([]session.Message{msg}, m.messages...)
 	m.invalidateHistoryCache()
+	m.resetContextEstimateBaseline(context.Background())
 }
 
 func (m *Model) insertDeveloperMessage(msg session.Message) {
@@ -306,6 +307,7 @@ func (m *Model) insertDeveloperMessage(msg session.Message) {
 	}
 	m.messages = append(m.messages[:insertAt], append([]session.Message{msg}, m.messages[insertAt:]...)...)
 	m.invalidateHistoryCache()
+	m.resetContextEstimateBaseline(context.Background())
 }
 
 func (m *Model) ensureContextMessages() {

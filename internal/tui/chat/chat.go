@@ -906,7 +906,7 @@ func (m *Model) persistContextEstimate(ctx context.Context) {
 		return
 	}
 	total, count := m.engine.ContextEstimateBaseline()
-	if total <= 0 || count <= 0 {
+	if total <= 0 {
 		if m.sess.LastTotalTokens != 0 || m.sess.LastMessageCount != 0 {
 			_ = session.ResetContextEstimate(ctx, m.store, m.sess)
 		}
@@ -915,6 +915,26 @@ func (m *Model) persistContextEstimate(ctx context.Context) {
 	_ = m.store.UpdateContextEstimate(ctx, m.sess.ID, total, count)
 	m.sess.LastTotalTokens = total
 	m.sess.LastMessageCount = count
+}
+
+func (m *Model) resetContextEstimateBaseline(ctx context.Context) {
+	if m == nil {
+		return
+	}
+	if m.engine != nil {
+		m.engine.SetContextEstimateBaseline(0, 0)
+	}
+	if m.sess == nil {
+		return
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if m.store != nil && (m.sess.LastTotalTokens != 0 || m.sess.LastMessageCount != 0) {
+		_ = session.ResetContextEstimate(ctx, m.store, m.sess)
+	}
+	m.sess.LastTotalTokens = 0
+	m.sess.LastMessageCount = 0
 }
 
 // WantsReload reports whether the user requested a binary reload via /reload.

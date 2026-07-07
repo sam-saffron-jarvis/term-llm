@@ -648,7 +648,7 @@ func applyPersistedContextEstimate(engine *llm.Engine, sess *session.Session) {
 	if engine == nil || sess == nil {
 		return
 	}
-	if sess.LastTotalTokens <= 0 || sess.LastMessageCount <= 0 {
+	if sess.LastTotalTokens <= 0 {
 		return
 	}
 	engine.SetContextEstimateBaseline(sess.LastTotalTokens, sess.LastMessageCount)

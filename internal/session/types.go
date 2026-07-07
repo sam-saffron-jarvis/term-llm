@@ -97,7 +97,7 @@ type Session struct {
 	CacheWriteTokens  int           `json:"cache_write_tokens,omitempty"`  // Total tokens written to cache (cache misses)
 	OutputTokens      int           `json:"output_tokens,omitempty"`       // Total output tokens used
 	LastTotalTokens   int           `json:"last_total_tokens,omitempty"`   // Last observed request context size (input+cached+output)
-	LastMessageCount  int           `json:"last_message_count,omitempty"`  // Message count at time LastTotalTokens was observed
+	LastMessageCount  int           `json:"last_message_count,omitempty"`  // Legacy checkpoint count; estimator uses structural delta
 	Status            SessionStatus `json:"status,omitempty"`              // Session status
 	Tags              string        `json:"tags,omitempty"`                // Comma-separated tags
 	CompactionSeq     int           `json:"compaction_seq,omitempty"`      // Sequence of first post-compaction message (-1 = none)

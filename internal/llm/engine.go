@@ -132,13 +132,12 @@ type Engine struct {
 	maxToolOutputChars int // 0 = disabled; truncate tool output to this many runes
 
 	// Context compaction
-	compactionConfig         *CompactionConfig // nil = compaction disabled
-	inputLimit               int               // 0 = unknown/disabled
-	lastTotalTokens          int               // cached+input+output from most recent API response
-	lastMessageCount         int               // len(req.Messages) at time of last API call
-	lastMessageTokenEstimate int               // heuristic token estimate of messages included in lastTotalTokens
-	systemPrompt             string            // Captured for re-injection after compaction
-	contextNoticeEmitted     atomic.Bool       // one-shot flag: WARNING emitted once per session
+	compactionConfig     *CompactionConfig // nil = compaction disabled
+	inputLimit           int               // 0 = unknown/disabled
+	lastTotalTokens      int               // cached+input+output from most recent API response
+	lastMessageCount     int               // retained/persisted for compatibility; estimator anchors structurally
+	systemPrompt         string            // Captured for re-injection after compaction
+	contextNoticeEmitted atomic.Bool       // one-shot flag: WARNING emitted once per session
 
 	// Interjection support: users can send messages while the agent is streaming.
 	// Messages are injected FIFO after the current turn's tool results, before
@@ -322,7 +321,6 @@ func (e *Engine) ResetConversation() {
 	e.callbackMu.Lock()
 	e.lastTotalTokens = 0
 	e.lastMessageCount = 0
-	e.lastMessageTokenEstimate = 0
 	e.systemPrompt = ""
 	e.contextNoticeEmitted.Store(false)
 	e.callbackMu.Unlock()
@@ -538,8 +536,9 @@ func (e *Engine) LastTotalTokens() int {
 	return v
 }
 
-// ContextEstimateBaseline returns the persisted context-estimate baseline:
-// the last observed total tokens and the message count at which it was observed.
+// ContextEstimateBaseline returns the persisted context-estimate baseline: the
+// last observed exact total tokens plus a legacy message count retained for
+// compatibility with existing session metadata.
 func (e *Engine) ContextEstimateBaseline() (int, int) {
 	e.callbackMu.RLock()
 	total := e.lastTotalTokens
@@ -549,59 +548,49 @@ func (e *Engine) ContextEstimateBaseline() (int, int) {
 }
 
 // SetContextEstimateBaseline seeds the context-estimate baseline, typically
-// from persisted session state on resume.
+// from persisted session state on resume. The message count is legacy metadata;
+// EstimateTokens recomputes the delta boundary from the transcript shape.
 func (e *Engine) SetContextEstimateBaseline(lastTotalTokens, lastMessageCount int) {
 	if lastTotalTokens < 0 {
 		lastTotalTokens = 0
 	}
-	if lastMessageCount < 0 {
+	if lastMessageCount < 0 || lastTotalTokens == 0 {
 		lastMessageCount = 0
 	}
 	e.callbackMu.Lock()
 	e.lastTotalTokens = lastTotalTokens
 	e.lastMessageCount = lastMessageCount
-	e.lastMessageTokenEstimate = 0
 	e.callbackMu.Unlock()
 }
 
 // EstimateTokens returns the estimated input token count for the next API call
-// based on the current message list. It uses the most recent API usage as a
-// baseline when possible, then adds heuristic estimates for newly appended
-// messages.
+// based on the current message list. When a provider usage baseline is available,
+// it treats that exact total as covering the transcript through the last assistant
+// message and adds only the structural delta appended after that assistant turn.
 func (e *Engine) EstimateTokens(messages []Message) int {
 	e.callbackMu.RLock()
 	lastTotalTokens := e.lastTotalTokens
-	lastMessageCount := e.lastMessageCount
-	lastMessageTokenEstimate := e.lastMessageTokenEstimate
 	e.callbackMu.RUnlock()
 
-	if lastTotalTokens > 0 && lastMessageTokenEstimate > 0 {
-		// Prefer token-estimate checkpoints over message-count checkpoints. The
-		// provider baseline already includes the prompt plus assistant output from
-		// the checkpointed turn; only add heuristic tokens for content that appears
-		// after that checkpoint. This is robust to message-count drift from
-		// persistence details (e.g. assistant rows being upserted/reloaded).
-		if delta := EstimateMessageTokens(messages) - lastMessageTokenEstimate; delta > 0 {
-			return lastTotalTokens + delta
-		}
-		return lastTotalTokens
+	if lastTotalTokens <= 0 {
+		return EstimateMessageTokens(messages)
 	}
 
-	if lastTotalTokens > 0 && lastMessageCount > 0 {
-		switch {
-		case lastMessageCount == len(messages):
-			return lastTotalTokens
-		case lastMessageCount < len(messages):
-			return lastTotalTokens + EstimateMessageTokens(messages[lastMessageCount:])
-		case lastMessageCount > len(messages):
-			// The latest provider usage can arrive before the UI/session has appended
-			// the assistant output that the usage already includes. In that transient
-			// state, the provider baseline is more accurate than falling back to a full
-			// heuristic estimate, which can badly inflate the status-line meter.
-			return lastTotalTokens
+	afterLastAssistant := -1
+	for i := len(messages) - 1; i >= 0; i-- {
+		if messages[i].Role == RoleAssistant {
+			afterLastAssistant = i + 1
+			break
 		}
 	}
-	return EstimateMessageTokens(messages)
+	if afterLastAssistant < 0 {
+		// A persisted baseline is only valid when it can be anchored to an
+		// assistant turn in the current transcript. Summary-only / cleared
+		// contexts should not inherit a stale pre-compaction baseline.
+		return EstimateMessageTokens(messages)
+	}
+
+	return lastTotalTokens + EstimateMessageTokens(messages[afterLastAssistant:])
 }
 
 // SetCompactionCallback sets the callback for context compaction events.
@@ -887,9 +876,9 @@ func (e *Engine) getCompactionCallback() CompactionCallback {
 }
 
 // estimatedTokens returns the estimated input token count for the next API
-// call. Uses total_tokens (input+output) from the last API response as a
-// baseline — because the model's output gets echoed back as input on the
-// next turn — then adds heuristic estimates for messages appended since.
+// call. Uses total_tokens (input+output) from the last API response as the exact
+// baseline through the last assistant turn, then adds heuristic estimates only
+// for messages structurally appended after that assistant turn.
 func (e *Engine) estimatedTokens(messages []Message) int {
 	return e.EstimateTokens(messages)
 }
@@ -1670,7 +1659,6 @@ func (e *Engine) runLoop(ctx context.Context, req Request, send eventSender) err
 		e.callbackMu.Lock()
 		e.lastTotalTokens = 0
 		e.lastMessageCount = 0
-		e.lastMessageTokenEstimate = 0
 		e.callbackMu.Unlock()
 		return true
 	}
@@ -2353,38 +2341,17 @@ turnLoop:
 				// (the model's output becomes assistant-message input on the next turn).
 				// All providers normalise to this convention — see Usage type docs.
 				if inputLimit > 0 {
-					checkpointMessages := append([]Message(nil), req.Messages...)
-					messageCount := len(checkpointMessages)
+					messageCount := len(req.Messages)
 					// Usage total includes the assistant output from this provider turn.
 					// That output becomes assistant-message input on the next request, so
-					// include the accumulated assistant state in the checkpoint. Later
-					// estimates can then add only heuristic deltas that appear after this
-					// checkpoint (for example tool results or a new user message).
+					// retain a compatibility count that includes the in-flight assistant
+					// row when this usage event carries provider output.
 					if event.Use.OutputTokens > 0 || textBuilder.Len() > 0 || reasoningBuilder.Len() > 0 || len(toolCalls) > 0 || len(syncToolCalls) > 0 || reasoningItemID != "" || reasoningEncryptedContent != "" {
-						assistantCalls := toolCalls
-						if len(assistantCalls) == 0 && len(syncToolCalls) > 0 {
-							assistantCalls = syncToolCalls
-						}
-						assistantMsg := buildAssistantMessageWithReasoningMetadata(
-							textBuilder.String(),
-							e.withToolPreview(ensureToolCallIDs(dedupeToolCalls(assistantCalls))),
-							reasoningBuilder.String(),
-							reasoningSummaryParts,
-							reasoningItemID,
-							reasoningEncryptedContent,
-							reasoningKind,
-						)
-						if len(assistantMsg.Parts) > 0 {
-							checkpointMessages = append(checkpointMessages, assistantMsg)
-							messageCount = len(checkpointMessages)
-						} else if event.Use.OutputTokens > 0 {
-							messageCount++
-						}
+						messageCount++
 					}
 					e.callbackMu.Lock()
 					e.lastTotalTokens = event.Use.InputTokens + event.Use.CachedInputTokens + event.Use.OutputTokens
 					e.lastMessageCount = messageCount
-					e.lastMessageTokenEstimate = EstimateMessageTokens(checkpointMessages)
 					e.callbackMu.Unlock()
 				}
 				if softCheckpointInProgress {
