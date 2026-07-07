@@ -697,8 +697,10 @@ func (m *Model) cmdClear() (tea.Model, tea.Cmd) {
 	m.viewCache.lastSetContentAt = time.Time{}
 	m.resetAltScreenStreamingAppendCache()
 	m.bumpContentVersion()
+	m.resetTitleGenerationStateForSession()
 
-	return m.showFooterSuccess("Started a new session.")
+	updated, footerCmd := m.showFooterSuccess("Started a new session.")
+	return updated, tea.Batch(footerCmd, m.terminalTitleCmd())
 }
 
 func (m *Model) cmdQuit() (tea.Model, tea.Cmd) {
@@ -1517,8 +1519,10 @@ func (m *Model) cmdNew() (tea.Model, tea.Cmd) {
 	m.viewCache.lastSetContentAt = time.Time{}
 	m.resetAltScreenStreamingAppendCache()
 	m.bumpContentVersion()
+	m.resetTitleGenerationStateForSession()
 
-	return m.showFooterSuccess("Started a new session.")
+	updated, footerCmd := m.showFooterSuccess("Started a new session.")
+	return updated, tea.Batch(footerCmd, m.terminalTitleCmd())
 }
 
 func (m *Model) cmdSave(args []string) (tea.Model, tea.Cmd) {
@@ -1564,7 +1568,8 @@ func (m *Model) cmdSave(args []string) (tea.Model, tea.Cmd) {
 	}
 
 	m.setTextareaValue("")
-	return m.showFooterSuccess(fmt.Sprintf("Saved session as '%s'.", name))
+	updated, footerCmd := m.showFooterSuccess(fmt.Sprintf("Saved session as '%s'.", name))
+	return updated, tea.Batch(footerCmd, m.terminalTitleCmd())
 }
 
 func (m *Model) cmdResume(args []string) (tea.Model, tea.Cmd) {

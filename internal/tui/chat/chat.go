@@ -26,6 +26,7 @@ import (
 
 	internalreasoning "github.com/samsaffron/term-llm/internal/reasoning"
 	render "github.com/samsaffron/term-llm/internal/render/chat"
+	"github.com/samsaffron/term-llm/internal/sessiontitle"
 	"github.com/samsaffron/term-llm/internal/termimage"
 	"github.com/samsaffron/term-llm/internal/tools"
 	"github.com/samsaffron/term-llm/internal/tui/inspector"
@@ -272,6 +273,17 @@ type Model struct {
 	stats      *ui.SessionStats
 	streamPerf *streamPerfTelemetry
 
+	// Terminal/window title state
+	titleMode      TerminalTitleMode
+	titleFormat    string
+	titleFormatter *terminalTitleFormatter
+	titleManager   *terminalTitleManager
+	// Live generated session-title state
+	titleGenerationSessionID        string
+	titleGenerationAttempts         int
+	titleGenerationLastMessageCount int
+	titleGenerationInFlight         bool
+
 	// Inspector mode
 	inspectorMode  bool
 	inspectorModel *inspector.Model
@@ -397,6 +409,14 @@ type Model struct {
 	attemptUsageCommitted bool
 }
 
+func (m *Model) releaseStreamCancelFunc() {
+	if m == nil || m.streamCancelFunc == nil {
+		return
+	}
+	m.streamCancelFunc()
+	m.streamCancelFunc = nil
+}
+
 func (m *Model) setStreamCancelRequested(requested bool) {
 	if m.streamCancelRequested == nil {
 		return
@@ -455,8 +475,15 @@ type (
 	handoverConfirmMsg    struct{}
 	handoverCancelMsg     struct{}
 	handoverRenameDoneMsg struct{ err error }
-	mcpStatusUpdateMsg    struct{ update mcp.StatusUpdate }
-	GuardianReviewMsg     struct{ Message string }
+	titleGeneratedMsg     struct {
+		sessionID   string
+		candidate   sessiontitle.Candidate
+		generatedAt time.Time
+		basisMsgSeq int
+		err         error
+	}
+	mcpStatusUpdateMsg struct{ update mcp.StatusUpdate }
+	GuardianReviewMsg  struct{ Message string }
 )
 
 const (
@@ -773,6 +800,8 @@ func NewWithFastProvider(cfg *config.Config, provider llm.Provider, fastProvider
 		}
 	}
 
+	titleMode, _ := ParseTerminalTitleMode(cfg.Chat.TerminalTitle)
+
 	model := &Model{
 		width:                      width,
 		height:                     height,
@@ -823,6 +852,10 @@ func NewWithFastProvider(cfg *config.Config, provider llm.Provider, fastProvider
 		showStats:                  showStats,
 		stats:                      stats,
 		streamPerf:                 newStreamPerfTelemetryFromEnv(),
+		titleMode:                  titleMode,
+		titleFormat:                cfg.Chat.TerminalTitleFormat,
+		titleFormatter:             newTerminalTitleFormatter(cfg.Chat.TerminalTitleFormat, TerminalTitleEnvironment{}),
+		titleManager:               newTerminalTitleManager(titleMode, TerminalTitleEnvironment{}),
 		streamCancelRequested:      &atomic.Bool{},
 		altScreen:                  altScreen,
 		mouseMode:                  chatMouseModeFromEnv(),
@@ -1385,6 +1418,9 @@ func (m *Model) Init() tea.Cmd {
 	if cmd := m.listenForMCPStatusUpdates(); cmd != nil {
 		baseCmds = append(baseCmds, cmd)
 	}
+	if cmd := m.terminalTitleCmd(); cmd != nil {
+		baseCmds = append(baseCmds, cmd)
+	}
 
 	// Set markdown renderer for chat renderer
 	if m.chatRenderer != nil {
@@ -1539,6 +1575,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if timeoutMsg, ok := msg.(streamCancelTimeoutMsg); ok {
 		return m.handleStreamCancelTimeout(timeoutMsg)
 	}
+	if handled, cmd := m.handleTerminalTitleProviderMsg(msg); handled {
+		return m, cmd
+	}
 
 	// Chat-owned self-scheduling ticks must keep running even while an embedded
 	// modal is active. If a spinner tick is forwarded to the inspector/session
@@ -1691,10 +1730,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case compactDoneMsg:
 		m.streaming = false
 		m.phase = "Thinking"
-		if m.streamCancelFunc != nil {
-			m.streamCancelFunc()
-			m.streamCancelFunc = nil
-		}
+		m.releaseStreamCancelFunc()
 		if msg.err != nil {
 			if errors.Is(msg.err, context.Canceled) || errors.Is(msg.err, context.DeadlineExceeded) {
 				return m.showFooterMuted("Compaction cancelled.")
@@ -1740,9 +1776,8 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.phase = "Thinking"
 		// Don't cancel the stream when a tool-initiated handover is pending:
 		// the engine must stay alive to receive the tool result.
-		if m.handoverToolDoneCh == nil && m.streamCancelFunc != nil {
-			m.streamCancelFunc()
-			m.streamCancelFunc = nil
+		if m.handoverToolDoneCh == nil {
+			m.releaseStreamCancelFunc()
 		}
 		if msg.err != nil {
 			m.cancelHandoverTool()
@@ -1781,7 +1816,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.width, m.styles,
 		)
 		m.scrollToBottom = true
-		return m, nil
+		return m, m.terminalTitleCmd()
 
 	case handoverConfirmMsg:
 		// Don't signal the tool yet — wait until the handover is actually
@@ -1822,11 +1857,27 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if toolWasPending {
 			m.streaming = true
 		}
-		return m, nil
+		return m, m.terminalTitleCmd()
 
 	case handoverRenameDoneMsg:
 		// Silently ignore — rename is best-effort background work.
 		return m, nil
+
+	case titleGeneratedMsg:
+		if msg.sessionID == m.titleGenerationSessionID {
+			m.titleGenerationInFlight = false
+		}
+		if msg.sessionID == "" || m.sess == nil || msg.sessionID != m.sess.ID || msg.err != nil {
+			return m, nil
+		}
+		if strings.TrimSpace(m.sess.GeneratedShortTitle) == "" {
+			m.sess.GeneratedShortTitle = msg.candidate.ShortTitle
+			m.sess.GeneratedLongTitle = msg.candidate.LongTitle
+			m.sess.TitleSource = session.TitleSourceGenerated
+			m.sess.TitleGeneratedAt = msg.generatedAt
+			m.sess.TitleBasisMsgSeq = msg.basisMsgSeq
+		}
+		return m, m.terminalTitleCmd()
 
 	case ui.WaveTickMsg:
 		if m.tracker != nil {
@@ -1916,6 +1967,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				salvageResult := m.salvageInterruptedAssistantMessage()
 				m.resetCurrentReasoning()
 				m.streaming = false
+				m.releaseStreamCancelFunc()
 				m.setStreamCancelRequested(false)
 				m.err = nil
 				var footerCmd tea.Cmd
@@ -1970,8 +2022,12 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.restorePendingInterjectionDraft()
 				m.clearPendingInterjectionState()
 
+				titleCmd := m.terminalTitleCmd()
 				if m.altScreen {
-					return m, tea.Batch(tea.ClearScreen, footerCmd)
+					return m, tea.Batch(tea.ClearScreen, footerCmd, titleCmd)
+				}
+				if titleCmd != nil {
+					errorOutputCmds = append(errorOutputCmds, titleCmd)
 				}
 				if footerCmd != nil {
 					errorOutputCmds = append(errorOutputCmds, footerCmd)
@@ -2293,6 +2349,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 			m.persistContextEstimate(context.Background())
 			m.streaming = false
+			m.releaseStreamCancelFunc()
 			m.setStreamCancelRequested(false)
 
 			// Flag to scroll to bottom after response completes (alt screen mode)
@@ -2415,6 +2472,13 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				cmds = append(cmds, cmd)
 			}
 
+			// Generate a short task title for session browsers and live terminal titles.
+			if cmd := m.maybeGenerateSessionTitleCmd(); cmd != nil {
+				cmds = append(cmds, cmd)
+			}
+
+			m.appendTerminalTitleCmd(&cmds)
+
 			// In auto-send mode, check if there are more messages to send
 			if m.autoSendQueue != nil {
 				// Print per-message stats if enabled
@@ -2476,6 +2540,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.messages = msg.messages
 			m.seedStatsFromSession()
 			m.configureContextManagementForSession()
+			m.resetTitleGenerationStateForSession()
 			m.olderScrollbackLoaded = true
 			m.invalidateHistoryCache()
 			m.scrollOffset = 0
@@ -2572,11 +2637,13 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.tracker.AddExternalUIResult(summary)
 			// Flush now to ensure it's printed in correct sequence
 			if cmd := m.maybeFlushToScrollback(); cmd != nil {
-				return m, ui.ComposeFlushFirstCommands([]tea.Cmd{cmd}, []tea.Cmd{m.spinner.Tick})
+				cmds := []tea.Cmd{m.spinner.Tick}
+				m.appendTerminalTitleCmd(&cmds)
+				return m, ui.ComposeFlushFirstCommands([]tea.Cmd{cmd}, cmds)
 			}
 		}
 
-		return m, m.spinner.Tick
+		return m, m.withTerminalTitleCmd(m.spinner.Tick)
 
 	case ApprovalRequestMsg:
 		if m.isYoloModeActive() {
@@ -2605,7 +2672,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			// Scroll to bottom so the prompt is visible even if the user had scrolled up.
 			m.scrollToBottom = true
-			return m, nil
+			return m, m.terminalTitleCmd()
 		}
 		// Non-alt screen mode: shouldn't happen, but fall back to immediate deny
 		msg.DoneCh <- tools.ApprovalResult{Choice: tools.ApprovalChoiceCancelled, Cancelled: true}
@@ -2625,7 +2692,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			// Scroll to bottom so the prompt is visible even if the user had scrolled up.
 			m.scrollToBottom = true
-			return m, nil
+			return m, m.terminalTitleCmd()
 		}
 		// Non-alt screen mode: shouldn't happen, but fall back to cancelled
 		msg.DoneCh <- nil
@@ -2660,6 +2727,8 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if cmd := m.drainPendingImageUploadCmd(); cmd != nil {
 		flushCmds = append(flushCmds, cmd)
 	}
+
+	m.appendTerminalTitleCmd(&cmds)
 
 	return m, ui.ComposeFlushFirstCommands(flushCmds, cmds)
 }

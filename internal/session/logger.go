@@ -92,6 +92,31 @@ func (s *LoggingStore) UpdateStreamingMessage(ctx context.Context, sessionID str
 	return err
 }
 
+// UpdateGeneratedTitle wraps the optional title-only update path with error logging.
+func (s *LoggingStore) UpdateGeneratedTitle(ctx context.Context, id, shortTitle, longTitle string, generatedAt time.Time, basisMsgSeq int) error {
+	updater, ok := s.Store.(GeneratedTitleUpdater)
+	if !ok {
+		sess, err := s.Get(ctx, id)
+		if err != nil {
+			s.logOnce("Get", err)
+			return err
+		}
+		if sess == nil {
+			return ErrNotFound
+		}
+		err = UpdateGeneratedTitle(ctx, s.Store, sess, shortTitle, longTitle, generatedAt, basisMsgSeq)
+		if err != nil && !errors.Is(err, ErrNotFound) {
+			s.logOnce("UpdateGeneratedTitle", err)
+		}
+		return err
+	}
+	err := updater.UpdateGeneratedTitle(ctx, id, shortTitle, longTitle, generatedAt, basisMsgSeq)
+	if err != nil && !errors.Is(err, ErrNotFound) {
+		s.logOnce("UpdateGeneratedTitle", err)
+	}
+	return err
+}
+
 // GetMessageByID wraps Store.GetMessageByID with error logging.
 func (s *LoggingStore) GetMessageByID(ctx context.Context, msgID int64) (*Message, error) {
 	msg, err := s.Store.GetMessageByID(ctx, msgID)

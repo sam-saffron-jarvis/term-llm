@@ -610,10 +610,12 @@ type AskConfig struct {
 }
 
 type ChatConfig struct {
-	Provider     string `mapstructure:"provider"`     // Override provider for chat only
-	Model        string `mapstructure:"model"`        // Override model for chat only
-	Instructions string `mapstructure:"instructions"` // Custom system prompt for chat
-	MaxTurns     int    `mapstructure:"max_turns"`    // Max agentic turns (default 200)
+	Provider            string `mapstructure:"provider"`              // Override provider for chat only
+	Model               string `mapstructure:"model"`                 // Override model for chat only
+	Instructions        string `mapstructure:"instructions"`          // Custom system prompt for chat
+	MaxTurns            int    `mapstructure:"max_turns"`             // Max agentic turns (default 200)
+	TerminalTitle       string `mapstructure:"terminal_title"`        // smart, basic, or off (default smart)
+	TerminalTitleFormat string `mapstructure:"terminal_title_format"` // Optional custom terminal title template
 }
 
 type EditConfig struct {
@@ -2231,10 +2233,12 @@ var KnownKeys = map[string]bool{
 	"ask.max_turns":    true,
 
 	// Chat
-	"chat.provider":     true,
-	"chat.model":        true,
-	"chat.instructions": true,
-	"chat.max_turns":    true,
+	"chat.provider":              true,
+	"chat.model":                 true,
+	"chat.instructions":          true,
+	"chat.max_turns":             true,
+	"chat.terminal_title":        true,
+	"chat.terminal_title_format": true,
 
 	// Edit
 	"edit.provider":          true,
@@ -2476,6 +2480,8 @@ func GetDefaults() map[string]any {
 		"ask.instructions":                "You are a helpful assistant. Today's date is {{date}}.",
 		"chat.max_turns":                  200,
 		"chat.instructions":               "You are a helpful assistant. Today's date is {{date}}.",
+		"chat.terminal_title":             "smart",
+		"chat.terminal_title_format":      "",
 		"edit.show_line_numbers":          true,
 		"edit.instructions":               "",
 		"edit.context_lines":              3,

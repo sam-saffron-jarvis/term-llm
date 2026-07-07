@@ -84,6 +84,10 @@ ask:
 
 chat:
   max_turns: 200
+  # smart: update terminal tab titles and tmux window names.
+  # basic: only emit the terminal/tab OSC title.
+  # off: do not touch terminal/window titles at all.
+  terminal_title: smart
 
 approval:
   # New chat sessions start in prompt mode by default.
@@ -214,6 +218,77 @@ chat:
 Models may request many independent tool calls in a single turn, such as several `read_file`, `grep`, or `glob` calls. term-llm executes independent tool calls concurrently when parallel tool calls are enabled by the provider/request, but caps one model turn at **20 concurrently running tool calls**. Additional tool calls from the same turn are queued and run as earlier calls finish.
 
 This is a built-in safety limit rather than a config option today. It preserves useful batching while preventing a single response from spawning an unbounded number of shells, greps, reads, or subagents at once.
+
+## Chat terminal titles
+
+`chat.terminal_title` controls whether interactive chat updates terminal titles:
+
+- `smart` (default): update the terminal/tab title and, inside tmux, rename the current tmux window.
+- `basic`: emit only the terminal/tab title escape; tmux window names and Ghostty progress are not managed.
+- `off`: emit no title/progress escape sequences and do not rename tmux windows.
+
+```yaml
+chat:
+  terminal_title: smart
+```
+
+`chat.terminal_title_format` optionally customizes the text used for both the terminal/tab title and smart tmux window title. Leave it empty for the built-in smart format (`agent · task · model`, with streaming/attention variants).
+
+```yaml
+chat:
+  terminal_title: smart
+  terminal_title_format: "[{{env.DOCKER_CONTAINER_NAME}}] {{agent}} · {{task}} · {{model}}"
+```
+
+Supported placeholders:
+
+- `{{title}}` - the built-in title for the current state.
+- `{{stable_title}}` - built-in title without elapsed streaming seconds; useful for low-churn window names.
+- `{{agent}}` - current agent name.
+- `{{task}}` - session/task title, generated from the conversation when available.
+- `{{model}}` - display model name.
+- `{{phase}}` - current phase, such as `Thinking` or `Responding`.
+- `{{state}}` - `idle`, `streaming`, or `attention`.
+- `{{activity}}` - model name while idle, streaming activity while streaming, or `attention` while waiting for input.
+- `{{elapsed}}` - streaming elapsed time such as `12s` when available.
+- `{{attention}}` / `{{attention_marker}}` - `‼` when approval/ask-user/handover attention is needed, otherwise empty.
+- `{{env "NAME"}}` or `{{env.NAME}}` - environment variable from the chat process. Use this sparingly: terminal titles can be visible to your terminal, window manager, tmux, screen sharing, and logs, so do not include secrets.
+
+The format is a Go `text/template`, so pipelines work too. A small `default` helper returns its first argument when the piped value is empty:
+
+```yaml
+chat:
+  terminal_title_format: "[{{env \"DOCKER_CONTAINER_NAME\" | default \"host\"}}] {{title}}"
+```
+
+Title text is sanitized before emission: control characters are removed, whitespace is collapsed, and very long results are truncated.
+
+Ghostty note: Ghostty honors `OSC 2` title updates, but Ghostty can also override or ignore program-supplied titles in a few cases. In `smart` mode, term-llm also emits Ghostty's `OSC 9;4` indeterminate progress indicator while a chat turn is running and clears it when the turn settles. When running inside tmux, term-llm wraps this progress sequence in tmux passthrough so Ghostty can still see it; tmux 3.3+ may require `set -g allow-passthrough on` in `~/.tmux.conf` for passthrough sequences to reach Ghostty.
+
+Ghostty title caveats:
+
+- A Ghostty config `title = ...` forces a fixed title and ignores title escape sequences.
+- A configured `title-command` takes precedence over title escape sequences.
+- A title set with Ghostty's title prompt/actions (for example `prompt_surface_title`, `prompt_tab_title`, `set_surface_title`, or `set_tab_title`) can override terminal-supplied titles until cleared.
+- Ghostty shell integration's `title` feature rewrites the title before/after shell commands. If you want manual/program titles to persist at the shell prompt, set this in Ghostty config and reload/restart the shell:
+
+```ini
+shell-integration-features = no-title
+```
+
+To debug Ghostty title handling outside term-llm, run this from a Ghostty shell:
+
+```sh
+printf '\033]2;ghostty title test\a'; sleep 10
+```
+
+To debug the Ghostty header progress indicator:
+
+```sh
+printf '\033]9;4;3\a'; sleep 10; printf '\033]9;4;0\a'
+```
+
+If the title changes only during `sleep` and resets afterward, Ghostty shell integration is overwriting it at the prompt. If it never changes, check for a fixed `title`, `title-command`, or a manual surface/tab title override.
 
 ## Reasoning and thinking display
 

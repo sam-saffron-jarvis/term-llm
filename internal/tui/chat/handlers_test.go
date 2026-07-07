@@ -188,6 +188,41 @@ func TestCtrlCFirstCancelsStreamingThenRequiresConfirmation(t *testing.T) {
 	assertQuitCommand(t, cmd)
 }
 
+func TestCtrlCRequiresConfirmationAfterStreamDone(t *testing.T) {
+	m := newTestChatModel(true)
+	m.streaming = true
+	m.streamStartTime = time.Now().Add(-time.Second)
+	cancelled := false
+	m.streamCancelFunc = func() { cancelled = true }
+
+	updated, _ := m.Update(streamEventMsg{event: ui.DoneEvent(0)})
+	rm := updated.(*Model)
+	if rm.streaming {
+		t.Fatal("stream should be settled after done event")
+	}
+	if rm.streamCancelFunc != nil {
+		t.Fatal("streamCancelFunc should be cleared after normal stream completion")
+	}
+	if !cancelled {
+		t.Fatal("stream cancel func should be called to release context resources")
+	}
+
+	updated, cmd := rm.handleKeyMsg(tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl})
+	rm = updated.(*Model)
+	if rm.quitting {
+		t.Fatal("first Ctrl+C after stream completion should arm exit, not quit")
+	}
+	if cmd == nil {
+		t.Fatal("expected footer confirmation command")
+	}
+	if strings.Contains(rm.footerMessage, "Interrupted current response/tool") {
+		t.Fatalf("footerMessage = %q, want exit confirmation not phantom interrupt", rm.footerMessage)
+	}
+	if !strings.Contains(rm.footerMessage, "Press Ctrl-C again to exit") {
+		t.Fatalf("footerMessage = %q, want exit confirmation", rm.footerMessage)
+	}
+}
+
 func TestCtrlCConfirmationExpires(t *testing.T) {
 	m := newTestChatModel(true)
 	m.ctrlCExitArmedUntil = time.Now().Add(-time.Second)

@@ -70,6 +70,31 @@ type Store interface {
 	Close() error
 }
 
+// GeneratedTitleUpdater is an optional Store capability for updating only the
+// generated title fields. It avoids full-session Update writes from async title
+// generation paths, where a stale in-memory Session snapshot could clobber
+// concurrently updated metadata such as status or pinned state.
+type GeneratedTitleUpdater interface {
+	UpdateGeneratedTitle(ctx context.Context, id, shortTitle, longTitle string, generatedAt time.Time, basisMsgSeq int) error
+}
+
+// UpdateGeneratedTitle persists generated title fields using a title-only fast
+// path when available, and falls back to Store.Update for test/custom stores.
+func UpdateGeneratedTitle(ctx context.Context, store Store, sess *Session, shortTitle, longTitle string, generatedAt time.Time, basisMsgSeq int) error {
+	if store == nil || sess == nil {
+		return nil
+	}
+	if updater, ok := store.(GeneratedTitleUpdater); ok {
+		return updater.UpdateGeneratedTitle(ctx, sess.ID, shortTitle, longTitle, generatedAt, basisMsgSeq)
+	}
+	sess.GeneratedShortTitle = shortTitle
+	sess.GeneratedLongTitle = longTitle
+	sess.TitleSource = TitleSourceGenerated
+	sess.TitleGeneratedAt = generatedAt
+	sess.TitleBasisMsgSeq = basisMsgSeq
+	return store.Update(ctx, sess)
+}
+
 // StreamingMessageUpdater is an optional Store capability for the hot streaming
 // assistant upsert path. Implementations may update role/parts/duration without
 // rewriting the FTS-backed text_content column until finalizeText is true.

@@ -1478,6 +1478,34 @@ func (s *SQLiteStore) Update(ctx context.Context, sess *Session) error {
 	return nil
 }
 
+// UpdateGeneratedTitle updates only generated title columns for a session.
+func (s *SQLiteStore) UpdateGeneratedTitle(ctx context.Context, id, shortTitle, longTitle string, generatedAt time.Time, basisMsgSeq int) error {
+	if !s.hasGeneratedTitles {
+		return nil
+	}
+	if strings.TrimSpace(id) == "" {
+		return fmt.Errorf("session id is empty")
+	}
+	result, err := s.db.ExecContext(ctx, `
+		UPDATE sessions SET
+		       generated_short_title = ?,
+		       generated_long_title = ?,
+		       title_source = ?,
+		       title_generated_at = ?,
+		       title_basis_msg_seq = ?,
+		       updated_at = ?
+		WHERE id = ?`,
+		nullString(shortTitle), nullString(longTitle), nullString(string(TitleSourceGenerated)), nullTime(generatedAt), basisMsgSeq, time.Now(), id)
+	if err != nil {
+		return fmt.Errorf("update generated title: %w", err)
+	}
+	rows, _ := result.RowsAffected()
+	if rows == 0 {
+		return fmt.Errorf("session not found %s: %w", id, ErrNotFound)
+	}
+	return nil
+}
+
 // MarkTitleSkipped sets title_skipped_at on a session without bumping updated_at.
 // This lets the autotitle job skip trivial sessions until real new messages arrive.
 func (s *SQLiteStore) MarkTitleSkipped(ctx context.Context, id string, t time.Time) error {

@@ -45,18 +45,14 @@ func (m *Model) View() tea.View {
 		m.streamPerf.RecordFrameAt(time.Now())
 	}
 
-	// Set terminal title
-	title := m.getTerminalTitle()
-	titleSeq := fmt.Sprintf("\x1b]0;%s\x07", title)
-
 	// Alt screen mode: use viewport for scrollable content
 	if m.altScreen {
-		return m.newView(titleSeq + m.viewAltScreen())
+		return m.newView(m.viewAltScreen())
 	}
 
 	// Auto-send mode: minimal rendering for benchmarking (skip expensive UI)
 	if m.autoSendQueue != nil {
-		return m.newView(titleSeq + m.viewAutoSend())
+		return m.newView(m.viewAutoSend())
 	}
 
 	// Inline mode: traditional rendering
@@ -110,7 +106,7 @@ func (m *Model) View() tea.View {
 	m.applyFooterLayout(renderedLines, footer)
 	b.WriteString(footer.view)
 
-	return m.newView(titleSeq + b.String())
+	return m.newView(b.String())
 }
 
 // newView wraps content in a tea.View with the model's declarative flags.
@@ -1622,21 +1618,6 @@ func isAllDigits(s string) bool {
 		}
 	}
 	return true
-}
-
-// getTerminalTitle returns the appropriate terminal title based on state
-func (m *Model) getTerminalTitle() string {
-	if m.streaming {
-		elapsed := time.Since(m.streamStartTime)
-		return fmt.Sprintf("term-llm · %s... (%.0fs)", m.phase, elapsed.Seconds())
-	}
-
-	msgCount := len(m.messages)
-	if msgCount == 0 {
-		return "term-llm chat"
-	}
-
-	return fmt.Sprintf("term-llm · %d messages · %s", msgCount, m.modelName)
 }
 
 func (m *Model) renderHistory() string {

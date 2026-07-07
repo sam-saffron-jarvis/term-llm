@@ -1871,6 +1871,75 @@ func TestSQLiteStoreGeneratedTitleRoundTrip(t *testing.T) {
 	}
 }
 
+func TestSQLiteStoreUpdateGeneratedTitleDoesNotClobberMetadata(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+
+	store, err := NewSQLiteStore(DefaultConfig())
+	if err != nil {
+		t.Fatalf("failed to create sqlite store: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+	sess := &Session{
+		ID:        NewID(),
+		Provider:  "test",
+		Model:     "test-model",
+		Mode:      ModeChat,
+		Summary:   "original summary",
+		Status:    StatusActive,
+		Pinned:    true,
+		Tags:      "important",
+		Search:    true,
+		Tools:     "read_file",
+		CreatedAt: time.Now().Add(-time.Minute),
+		UpdatedAt: time.Now().Add(-time.Minute),
+	}
+	if err := store.Create(ctx, sess); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := store.UpdateStatus(ctx, sess.ID, StatusInterrupted); err != nil {
+		t.Fatalf("UpdateStatus: %v", err)
+	}
+
+	generatedAt := time.Now().UTC().Truncate(time.Second)
+	if err := store.UpdateGeneratedTitle(ctx, sess.ID, "Fix Ctrl C", "Fixing Ctrl C exit confirmation", generatedAt, 4); err != nil {
+		t.Fatalf("UpdateGeneratedTitle: %v", err)
+	}
+
+	loaded, err := store.Get(ctx, sess.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if loaded.GeneratedShortTitle != "Fix Ctrl C" || loaded.GeneratedLongTitle != "Fixing Ctrl C exit confirmation" {
+		t.Fatalf("generated titles = %q/%q", loaded.GeneratedShortTitle, loaded.GeneratedLongTitle)
+	}
+	if loaded.TitleSource != TitleSourceGenerated || loaded.TitleBasisMsgSeq != 4 || loaded.TitleGeneratedAt.IsZero() {
+		t.Fatalf("title metadata not persisted: source=%q seq=%d at=%v", loaded.TitleSource, loaded.TitleBasisMsgSeq, loaded.TitleGeneratedAt)
+	}
+	if loaded.Status != StatusInterrupted {
+		t.Fatalf("Status = %q, want %q", loaded.Status, StatusInterrupted)
+	}
+	if !loaded.Pinned || loaded.Tags != "important" || !loaded.Search || loaded.Tools != "read_file" || loaded.Summary != "original summary" {
+		t.Fatalf("metadata clobbered: %#v", loaded)
+	}
+}
+
+func TestSQLiteStoreUpdateGeneratedTitleReturnsErrNotFound(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+
+	store, err := NewSQLiteStore(DefaultConfig())
+	if err != nil {
+		t.Fatalf("failed to create sqlite store: %v", err)
+	}
+	defer store.Close()
+
+	err = store.UpdateGeneratedTitle(context.Background(), "missing-session", "Short", "Long", time.Now(), 1)
+	if !errors.Is(err, ErrNotFound) {
+		t.Fatalf("UpdateGeneratedTitle missing session: got %v, want ErrNotFound", err)
+	}
+}
+
 func TestSQLiteStoreSessionOriginRoundTripAndFiltering(t *testing.T) {
 	t.Setenv("XDG_DATA_HOME", t.TempDir())
 

@@ -559,6 +559,22 @@ func TestReasoningDefaultsAndKnownKeys(t *testing.T) {
 	}
 }
 
+func TestChatTerminalTitleDefaultAndKnownKey(t *testing.T) {
+	defaults := GetDefaults()
+	if got := defaults["chat.terminal_title"]; got != "smart" {
+		t.Fatalf("chat.terminal_title default = %#v, want smart", got)
+	}
+	if got := defaults["chat.terminal_title_format"]; got != "" {
+		t.Fatalf("chat.terminal_title_format default = %#v, want empty", got)
+	}
+	if !KnownKeys["chat.terminal_title"] {
+		t.Fatal("KnownKeys missing chat.terminal_title")
+	}
+	if !KnownKeys["chat.terminal_title_format"] {
+		t.Fatal("KnownKeys missing chat.terminal_title_format")
+	}
+}
+
 func TestFileTrackingDefaultsAndKnownKeys(t *testing.T) {
 	defaults := GetDefaults()
 	checks := map[string]any{

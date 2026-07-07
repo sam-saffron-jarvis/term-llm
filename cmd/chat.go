@@ -423,6 +423,16 @@ func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent 
 
 	initThemeFromConfig(cfg)
 
+	titleMode, titleModeOK := chat.ParseTerminalTitleMode(cfg.Chat.TerminalTitle)
+	if !titleModeOK {
+		fmt.Fprintf(cmd.ErrOrStderr(), "warning: unknown chat.terminal_title %q; using %q\n", cfg.Chat.TerminalTitle, titleMode)
+	}
+	cfg.Chat.TerminalTitle = string(titleMode)
+	if err := chat.ValidateTerminalTitleFormat(cfg.Chat.TerminalTitleFormat); err != nil {
+		fmt.Fprintf(cmd.ErrOrStderr(), "warning: invalid chat.terminal_title_format %q: %v; using default title format\n", cfg.Chat.TerminalTitleFormat, err)
+		cfg.Chat.TerminalTitleFormat = ""
+	}
+
 	// Create LLM provider and engine
 	provider, err := llm.NewProvider(cfg)
 	if err != nil {
@@ -585,6 +595,16 @@ func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent 
 		chatPlatformMessage = agent.PlatformMessages.For("chat")
 	}
 	model := chat.NewWithFastProvider(cfg, provider, fastProvider, engine, providerKey, modelName, mcpManager, settings.MaxTurns, forceExternalSearch, chatNoWebFetch, settings.Search, enabledLocalTools, settings.Tools, settings.MCP, false, initialText, store, sess, useAltScreen, chatAutoSend, autoSendMode, chatTextMode, agentName, chatPlatformMessage, chatYolo)
+	model.ConfigureTerminalTitleEnvironment(chat.TerminalTitleEnvironmentFromEnv())
+	terminalTitleRestored := false
+	restoreTerminalTitle := func() {
+		if terminalTitleRestored {
+			return
+		}
+		terminalTitleRestored = true
+		model.RestoreTerminalTitle()
+	}
+	defer restoreTerminalTitle()
 	if agent != nil && agent.OutputTool.IsConfigured() {
 		model.SetFooterWarning("agent output_tool is ignored in chat; use ask for tool-captured output")
 	}
@@ -787,6 +807,7 @@ func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent 
 	}()
 
 	finalModel, err = p.Run()
+	restoreTerminalTitle()
 
 	// Cleanup MCP servers
 	mcpManager.StopAll()

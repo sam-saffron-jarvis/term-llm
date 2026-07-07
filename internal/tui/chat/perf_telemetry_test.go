@@ -236,7 +236,7 @@ func newTestChatModel(altScreen bool) *Model {
 	engine := llm.NewEngine(provider, nil)
 
 	return New(
-		&config.Config{DefaultProvider: "mock"},
+		&config.Config{DefaultProvider: "mock", Chat: config.ChatConfig{TerminalTitle: string(TerminalTitleOff)}},
 		provider,
 		engine,
 		"mock",

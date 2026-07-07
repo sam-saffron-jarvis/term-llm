@@ -527,6 +527,7 @@ func (m *Model) sendMessage(content string) (tea.Model, tea.Cmd) {
 			m.tickEvery(),
 		}
 		cmds = append(preSendCmds, cmds...)
+		m.appendTerminalTitleCmd(&cmds)
 		return m, tea.Batch(cmds...)
 	}
 	cmds := []tea.Cmd{
@@ -536,6 +537,7 @@ func (m *Model) sendMessage(content string) (tea.Model, tea.Cmd) {
 		m.tickEvery(),
 	}
 	cmds = append(preSendCmds, cmds...)
+	m.appendTerminalTitleCmd(&cmds)
 	return m, tea.Batch(cmds...)
 }
 
