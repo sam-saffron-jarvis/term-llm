@@ -3,15 +3,14 @@ package cmd
 import (
 	"context"
 	"fmt"
-	"io"
 	"os"
 	"sort"
 	"strings"
 
 	"github.com/samsaffron/term-llm/internal/input"
 	"github.com/samsaffron/term-llm/internal/llm"
-	"github.com/samsaffron/term-llm/internal/mcp"
 	"github.com/samsaffron/term-llm/internal/prompt"
+	runpkg "github.com/samsaffron/term-llm/internal/run"
 	"github.com/samsaffron/term-llm/internal/signal"
 	"github.com/samsaffron/term-llm/internal/tools"
 	"github.com/samsaffron/term-llm/internal/ui"
@@ -122,87 +121,7 @@ func runExec(cmd *cobra.Command, args []string) error {
 		execSearch = false
 	}
 
-	if err := applyProviderOverrides(cfg, cfg.Exec.Provider, cfg.Exec.Model, execProvider); err != nil {
-		return err
-	}
-
 	initThemeFromConfig(cfg)
-
-	// Create LLM provider
-	provider, err := llm.NewProvider(cfg)
-	if err != nil {
-		return err
-	}
-
-	caps := provider.Capabilities()
-	engine := newEngine(provider, cfg)
-
-	// Set up debug logger if enabled
-	debugLogger, err := createDebugLogger(cfg)
-	if err != nil {
-		fmt.Fprintf(cmd.ErrOrStderr(), "warning: %v\n", err)
-	}
-	if debugLogger != nil {
-		engine.SetDebugLogger(debugLogger)
-		defer debugLogger.Close()
-	}
-
-	// Initialize local tools if --tools flag is set
-	var localToolSpecs []llm.ToolSpec
-	if execTools != "" {
-		toolConfig := buildToolConfig(execTools, execReadDirs, execWriteDirs, execShellAllow, cfg)
-		if errs := toolConfig.Validate(); len(errs) > 0 {
-			return fmt.Errorf("invalid tool config: %v", errs[0])
-		}
-		toolMgr, err := tools.NewToolManager(&toolConfig, cfg)
-		if err != nil {
-			return fmt.Errorf("failed to initialize tools: %w", err)
-		}
-		wireImageRecorder(toolMgr.Registry, "", "")
-		// exec runs without a session ID, so file-change recording no-ops;
-		// wiring is kept so recording activates if this flow gains sessions.
-		wireFileRecorder(toolMgr.Registry, cfg)
-		// Enable approval mode if flag is set
-		if execYolo {
-			toolMgr.ApprovalMgr.SetYoloMode(true)
-		} else if execAutoApproval {
-			providerCfg := cfg.GetActiveProviderConfig()
-			model := ""
-			if providerCfg != nil {
-				model = providerCfg.Model
-			}
-			if err := installGuardianReviewer(cfg, toolMgr.ApprovalMgr, cfg.DefaultProvider, model, true); err != nil {
-				return err
-			}
-		}
-		toolMgr.ApprovalMgr.PromptFunc = tools.HuhApprovalPrompt
-		toolMgr.SetupEngine(engine)
-		localToolSpecs = toolMgr.GetSpecs()
-
-		// Wire spawn_agent runner if enabled
-		if err := WireSpawnAgentRunner(cfg, toolMgr, execYolo); err != nil {
-			return err
-		}
-	}
-
-	// Initialize MCP servers if --mcp flag is set
-	var mcpManager *mcp.Manager
-	if execMCP != "" {
-		mcpOpts := &MCPOptions{
-			Provider: provider,
-			YoloMode: execYolo,
-		}
-		if providerCfg := cfg.GetActiveProviderConfig(); providerCfg != nil {
-			mcpOpts.Model = providerCfg.Model
-		}
-		mcpManager, err = enableMCPServersWithFeedback(ctx, execMCP, engine, cmd.ErrOrStderr(), mcpOpts)
-		if err != nil {
-			return err
-		}
-		if mcpManager != nil {
-			defer mcpManager.StopAll()
-		}
-	}
 
 	// Detect shell
 	shell := detectShell()
@@ -210,7 +129,6 @@ func runExec(cmd *cobra.Command, args []string) error {
 	// Read files if provided
 	var files []input.FileContent
 	if len(execFiles) > 0 {
-		var err error
 		files, err = input.ReadFiles(execFiles)
 		if err != nil {
 			return fmt.Errorf("failed to read files: %w", err)
@@ -245,58 +163,98 @@ func runExec(cmd *cobra.Command, args []string) error {
 	if execSystemMessage != "" {
 		instructions = execSystemMessage
 	}
+	forceTool := llm.SuggestCommandsToolName
+	lastTurnForceTool := ""
+	if strings.TrimSpace(execTools) != "" {
+		forceTool = ""
+		lastTurnForceTool = llm.SuggestCommandsToolName
+	}
+
+	runner := newCmdRunner(cfg, cmdRunnerOptions{
+		Provider:           execProvider,
+		ConfigSet:          true,
+		ConfigProvider:     cfg.Exec.Provider,
+		ConfigModel:        cfg.Exec.Model,
+		ConfigInstructions: cfg.Exec.Instructions,
+		Tools:              execTools,
+		ReadDirs:           append([]string(nil), execReadDirs...),
+		WriteDirs:          append([]string(nil), execWriteDirs...),
+		ShellAllow:         append([]string(nil), execShellAllow...),
+		MCP:                execMCP,
+		MaxTurns:           execMaxTurns,
+		Search:             execSearch,
+		NoSearch:           execNoSearch,
+		NativeSearch:       execNativeSearch,
+		NoNativeSearch:     execNoNativeSearch,
+		Yolo:               execYolo,
+		Auto:               execAutoApproval,
+		Debug:              execDebug,
+		DebugRaw:           debugRaw,
+		ErrWriter:          cmd.ErrOrStderr(),
+	}).(*cmdRunner)
+	execEnv, err := runner.prepare(ctx, runpkg.Request{
+		Platform:                runpkg.PlatformExec,
+		DeferSession:            true,
+		Provider:                execProvider,
+		Tools:                   execTools,
+		ReadDirs:                append([]string(nil), execReadDirs...),
+		WriteDirs:               append([]string(nil), execWriteDirs...),
+		ShellAllow:              append([]string(nil), execShellAllow...),
+		MCP:                     execMCP,
+		MaxTurns:                execMaxTurns,
+		Search:                  execBoolPtr(execSearch),
+		NoSearch:                execNoSearch,
+		Yolo:                    execYolo,
+		Auto:                    execAutoApproval,
+		Debug:                   debugMode,
+		DebugRaw:                debugRaw,
+		ForceExternalSearch:     execBoolPtr(resolveForceExternalSearch(cfg, execNativeSearch, execNoNativeSearch)),
+		DisableExternalWebFetch: execNoWebFetch,
+		ExtraTools:              []llm.ToolSpec{llm.SuggestCommandsToolSpec(numSuggestions)},
+		ForceToolName:           forceTool,
+		LastTurnForceToolName:   lastTurnForceTool,
+	}, nil)
+	if err != nil {
+		return err
+	}
+	defer execEnv.Close()
+
 	for {
 		systemPrompt := prompt.SuggestSystemPrompt(shell, instructions, numSuggestions, execSearch)
 		userPrompt := prompt.SuggestUserPrompt(userInput, files, stdinContent)
-		// Build tools list: suggest_commands + any local tools
-		reqTools := []llm.ToolSpec{llm.SuggestCommandsToolSpec(numSuggestions)}
-		reqTools = append(reqTools, localToolSpecs...)
-
-		// Use auto tool choice if we have local tools (so model can use them first),
-		// otherwise force suggest_commands. Always force suggest_commands on last turn.
-		// If provider doesn't support tool_choice, rely on the strong prompt hint instead.
-		var toolChoice llm.ToolChoice
-		var lastTurnToolChoice *llm.ToolChoice
-		if caps.SupportsToolChoice {
-			toolChoice = llm.ToolChoice{Mode: llm.ToolChoiceName, Name: llm.SuggestCommandsToolName}
-			if len(localToolSpecs) > 0 {
-				toolChoice = llm.ToolChoice{Mode: llm.ToolChoiceAuto}
-				lastTurnToolChoice = &llm.ToolChoice{Mode: llm.ToolChoiceName, Name: llm.SuggestCommandsToolName}
-			}
-		}
-
-		req := llm.Request{
-			Messages: []llm.Message{
-				llm.SystemText(systemPrompt),
-				llm.UserText(userPrompt),
-			},
-			Tools:                   reqTools,
-			ToolChoice:              toolChoice,
-			LastTurnToolChoice:      lastTurnToolChoice,
-			ParallelToolCalls:       true,
-			Search:                  execSearch,
-			ForceExternalSearch:     resolveForceExternalSearch(cfg, execNativeSearch, execNoNativeSearch),
-			DisableExternalWebFetch: execNoWebFetch,
-			MaxTurns:                execMaxTurns,
-			Debug:                   debugMode,
-			DebugRaw:                debugRaw,
-		}
 
 		// Create progress channel for spinner updates
 		progressCh := make(chan ui.ProgressUpdate, 10)
 
 		// Set up approval hooks when tools are enabled to pause spinner during prompts
 		var approvalHooks ui.ApprovalHookSetup
-		if len(localToolSpecs) > 0 {
+		if strings.TrimSpace(execTools) != "" {
 			approvalHooks = func(pause, resume func()) {
 				tools.SetApprovalHooks(pause, resume)
 				tools.SetAskUserHooks(pause, resume)
 			}
 		}
 
+		sink := &execRunSink{progressCh: progressCh, stats: stats, debug: debugMode || debugRaw, debugRaw: debugRaw}
 		result, err := ui.RunWithSpinnerProgressAndHooks(ctx, debugMode || debugRaw, progressCh, func(ctx context.Context) (any, error) {
 			defer close(progressCh)
-			return collectSuggestions(ctx, engine, req, progressCh, stats)
+			configureInteractiveSink(execEnv.runtime.toolMgr, sink)
+			llmReq := execEnv.llmReq
+			_, runErr := execEnv.runtime.RunWithEvents(ctx, false, false, []llm.Message{llm.SystemText(systemPrompt), llm.UserText(userPrompt)}, llmReq, func(ev llm.Event) error {
+				sink.Event(ev)
+				return nil
+			})
+			if runErr != nil {
+				return nil, runErr
+			}
+			if sink.err != nil {
+				return nil, sink.err
+			}
+			suggestions := sink.Suggestions()
+			if len(suggestions) == 0 {
+				return nil, fmt.Errorf("no suggestions returned")
+			}
+			return execSuggestionsResult{suggestions: suggestions, engine: execEnv.engine}, nil
 		}, approvalHooks)
 		tools.ClearApprovalHooks() // Safe to call even if hooks weren't set
 		tools.ClearAskUserHooks()  // Safe to call even if hooks weren't set
@@ -307,10 +265,11 @@ func runExec(cmd *cobra.Command, args []string) error {
 			return fmt.Errorf("failed to get suggestions: %w", err)
 		}
 
-		suggestions, ok := result.([]llm.CommandSuggestion)
+		suggestionResult, ok := result.(execSuggestionsResult)
 		if !ok {
 			return fmt.Errorf("unexpected suggestions result")
 		}
+		suggestions := suggestionResult.suggestions
 
 		// Sort by likelihood (highest first)
 		sort.Slice(suggestions, func(i, j int) bool {
@@ -337,7 +296,7 @@ func runExec(cmd *cobra.Command, args []string) error {
 
 		// Interactive mode: show selection UI (with help support via 'i' key)
 		allowNonTTY := execPrintOnly || envEnabled(allowNonTTYEnv)
-		selected, refinement, err := ui.SelectCommand(suggestions, shell, engine, allowNonTTY)
+		selected, refinement, err := ui.SelectCommand(suggestions, shell, suggestionResult.engine, allowNonTTY)
 		if err != nil {
 			if err.Error() == "cancelled" {
 				return nil
@@ -368,108 +327,118 @@ func runExec(cmd *cobra.Command, args []string) error {
 	}
 }
 
-func collectSuggestions(ctx context.Context, engine *llm.Engine, req llm.Request, progressCh chan<- ui.ProgressUpdate, stats *ui.SessionStats) ([]llm.CommandSuggestion, error) {
-	stream, err := engine.Stream(ctx, req)
-	if err != nil {
-		return nil, err
-	}
-	defer stream.Close()
+type execSuggestionsResult struct {
+	suggestions []llm.CommandSuggestion
+	engine      *llm.Engine
+}
 
-	var suggestions []llm.CommandSuggestion
-	sentFirstToken := false
-	for {
-		event, err := stream.Recv()
-		if err == io.EOF {
-			break
+type execRunSink struct {
+	progressCh chan<- ui.ProgressUpdate
+	stats      *ui.SessionStats
+	debug      bool
+	debugRaw   bool
+
+	suggestions []llm.CommandSuggestion
+	err         error
+	sentFirst   bool
+}
+
+func execBoolPtr(v bool) *bool { return &v }
+
+func (s *execRunSink) PromptApproval(target string, isWrite, isShell bool, workDir string) (tools.ApprovalResult, error) {
+	if isShell {
+		return tools.RunShellApprovalUI(target, workDir)
+	}
+	return tools.RunFileApprovalUI(target, isWrite)
+}
+
+func (s *execRunSink) Event(event llm.Event) {
+	if s == nil {
+		return
+	}
+	// Handle tool execution events
+	if event.Type == llm.EventToolExecStart {
+		if event.ToolName != "" {
+			if s.stats != nil {
+				s.stats.ToolStart()
+			}
+			phase := ui.FormatToolPhase(event.ToolName, event.ToolInfo).Active
+			if s.debug {
+				fmt.Fprintf(os.Stderr, "  > %s\n", phase)
+			}
+		} else if s.stats != nil {
+			s.stats.ToolEnd()
 		}
+		if event.ToolName == tools.AskUserToolName {
+			return
+		}
+		phase := "Thinking"
+		if event.ToolName != "" {
+			phase = ui.FormatToolPhase(event.ToolName, event.ToolInfo).Active
+		}
+		s.sendProgress(ui.ProgressUpdate{Phase: phase})
+		return
+	}
+
+	if event.Type == llm.EventToolExecEnd && s.debug {
+		if event.ToolName != "" {
+			phase := ui.FormatToolPhase(event.ToolName, event.ToolInfo)
+			if event.ToolSuccess {
+				fmt.Fprintf(os.Stderr, "  %s %s\n", ui.SuccessCircle(), phase.Completed)
+			} else {
+				fmt.Fprintf(os.Stderr, "  %s %s\n", ui.ErrorCircle(), phase.Completed)
+			}
+		}
+	}
+
+	if event.Type == llm.EventRetry {
+		status := ui.FormatRetryStatus("Rate limited", event.RetryAttempt, event.RetryMaxAttempts, event.RetryWaitSecs, 0, "...")
+		s.sendProgress(ui.ProgressUpdate{Status: status})
+		return
+	}
+
+	if event.Type == llm.EventUsage && event.Use != nil {
+		if s.stats != nil {
+			s.stats.AddUsage(event.Use.InputTokens, event.Use.OutputTokens, event.Use.CachedInputTokens, event.Use.CacheWriteTokens)
+		}
+		return
+	}
+
+	if !s.sentFirst {
+		s.sentFirst = true
+		s.sendProgress(ui.ProgressUpdate{Phase: "Responding"})
+	}
+
+	if event.Type == llm.EventError && event.Err != nil {
+		s.err = event.Err
+		return
+	}
+	if event.Type == llm.EventToolCall && event.Tool != nil && event.Tool.Name == llm.SuggestCommandsToolName {
+		llm.DebugToolCall(s.debug, *event.Tool)
+		parsed, err := llm.ParseCommandSuggestions(*event.Tool)
 		if err != nil {
-			return nil, err
+			s.err = err
+			return
 		}
-
-		// Handle tool execution events
-		if event.Type == llm.EventToolExecStart {
-			if event.ToolName != "" {
-				stats.ToolStart()
-				// In debug mode, spinner is disabled so output to stderr directly
-				phase := ui.FormatToolPhase(event.ToolName, event.ToolInfo).Active
-				if req.Debug || req.DebugRaw {
-					fmt.Fprintf(os.Stderr, "  > %s\n", phase)
-				}
-			} else {
-				stats.ToolEnd()
-			}
-			// Skip phase update for ask_user - it has its own UI
-			if event.ToolName == tools.AskUserToolName {
-				continue
-			}
-			var phase string
-			if event.ToolName == "" {
-				// Empty tool name means back to thinking
-				phase = "Thinking"
-			} else {
-				phase = ui.FormatToolPhase(event.ToolName, event.ToolInfo).Active
-			}
-			select {
-			case progressCh <- ui.ProgressUpdate{Phase: phase}:
-			default:
-			}
-			continue
-		}
-
-		// Handle tool execution end events in debug mode
-		if event.Type == llm.EventToolExecEnd && (req.Debug || req.DebugRaw) {
-			if event.ToolName != "" {
-				phase := ui.FormatToolPhase(event.ToolName, event.ToolInfo)
-				if event.ToolSuccess {
-					fmt.Fprintf(os.Stderr, "  %s %s\n", ui.SuccessCircle(), phase.Completed)
-				} else {
-					fmt.Fprintf(os.Stderr, "  %s %s\n", ui.ErrorCircle(), phase.Completed)
-				}
-			}
-		}
-
-		// Handle retry events (rate limit backoff)
-		if event.Type == llm.EventRetry {
-			status := ui.FormatRetryStatus("Rate limited", event.RetryAttempt, event.RetryMaxAttempts, event.RetryWaitSecs, 0, "...")
-			select {
-			case progressCh <- ui.ProgressUpdate{Status: status}:
-			default:
-			}
-			continue
-		}
-
-		// Track usage for stats
-		if event.Type == llm.EventUsage && event.Use != nil {
-			stats.AddUsage(event.Use.InputTokens, event.Use.OutputTokens, event.Use.CachedInputTokens, event.Use.CacheWriteTokens)
-			continue
-		}
-
-		// Send phase update on first event
-		if !sentFirstToken {
-			sentFirstToken = true
-			select {
-			case progressCh <- ui.ProgressUpdate{Phase: "Responding"}:
-			default:
-			}
-		}
-
-		if event.Type == llm.EventError && event.Err != nil {
-			return nil, event.Err
-		}
-		if event.Type == llm.EventToolCall && event.Tool != nil && event.Tool.Name == llm.SuggestCommandsToolName {
-			llm.DebugToolCall(req.Debug, *event.Tool)
-			parsed, err := llm.ParseCommandSuggestions(*event.Tool)
-			if err != nil {
-				return nil, err
-			}
-			suggestions = append(suggestions, parsed...)
-		}
+		s.suggestions = append(s.suggestions, parsed...)
 	}
+}
 
-	if len(suggestions) == 0 {
-		return nil, fmt.Errorf("no suggestions returned")
+func (s *execRunSink) sendProgress(update ui.ProgressUpdate) {
+	if s == nil || s.progressCh == nil {
+		return
 	}
-	return suggestions, nil
+	select {
+	case s.progressCh <- update:
+	default:
+	}
+}
+
+func (s *execRunSink) Suggestions() []llm.CommandSuggestion {
+	if s == nil || len(s.suggestions) == 0 {
+		return nil
+	}
+	return append([]llm.CommandSuggestion(nil), s.suggestions...)
 }
 
 func envEnabled(name string) bool {

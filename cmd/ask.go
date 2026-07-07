@@ -24,6 +24,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/mcp"
 	"github.com/samsaffron/term-llm/internal/prompt"
 	internalreasoning "github.com/samsaffron/term-llm/internal/reasoning"
+	runpkg "github.com/samsaffron/term-llm/internal/run"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/signal"
 	"github.com/samsaffron/term-llm/internal/tools"
@@ -699,11 +700,16 @@ func runAsk(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	// Enable context compaction or tracking for models with known context window data.
-	engine.ConfigureContextManagement(provider, cfg.DefaultProvider, activeModel(cfg), cfg.AutoCompact)
-	applyPersistedContextEstimate(engine, sess)
+	var assistantSnapshotCallback llm.AssistantSnapshotCallback
+	if askPersistence != nil {
+		assistantSnapshotCallback = func(ctx context.Context, turnIndex int, assistantMsg llm.Message) error {
+			return askPersistence.persist(ctx, assistantMsg, time.Since(turnStartTime).Milliseconds(), false)
+		}
+	}
+
+	var compactionCallback llm.CompactionCallback
 	if store != nil && sess != nil {
-		engine.SetCompactionCallback(func(cbCtx context.Context, result *llm.CompactionResult) error {
+		compactionCallback = func(cbCtx context.Context, result *llm.CompactionResult) error {
 			_, _, refreshed, err := session.ApplyCompaction(cbCtx, store, sess, nil, result)
 			if err != nil {
 				return err
@@ -714,10 +720,8 @@ func runAsk(cmd *cobra.Command, args []string) error {
 			if result != nil && !result.Usage.BillableCountersZero() {
 				_ = store.UpdateMetrics(cbCtx, sess.ID, 0, 0, result.Usage.InputTokens, result.Usage.OutputTokens, result.Usage.CachedInputTokens, result.Usage.CacheWriteTokens)
 			}
-			engine.SetContextEstimateBaseline(0, 0)
 			return nil
-		})
-		defer engine.SetCompactionCallback(nil)
+		}
 	}
 
 	var jsonInfo sessionInfo
@@ -744,6 +748,100 @@ func runAsk(cmd *cobra.Command, args []string) error {
 	jsonTotalTokens := 0
 	jsonFinalPending := false
 
+	var parentApprovalMgr *tools.ApprovalManager
+	if toolMgr != nil {
+		parentApprovalMgr = toolMgr.ApprovalMgr
+	}
+	askRunner := newCmdRunner(cfg, cmdRunnerOptions{
+		Provider:           askProvider,
+		Fast:               askFast,
+		ConfigSet:          true,
+		ConfigProvider:     cfg.Ask.Provider,
+		ConfigModel:        cfg.Ask.Model,
+		ConfigInstructions: cfg.Ask.Instructions,
+		ConfigMaxTurns:     cfg.Ask.MaxTurns,
+		Tools:              settings.Tools,
+		ReadDirs:           append([]string(nil), askReadDirs...),
+		WriteDirs:          append([]string(nil), askWriteDirs...),
+		ShellAllow:         append([]string(nil), askShellAllow...),
+		MCP:                settings.MCP,
+		MaxTurns:           settings.MaxTurns,
+		DefaultMaxTurns:    50,
+		Search:             settings.Search,
+		NoSearch:           askNoSearch,
+		NativeSearch:       askNativeSearch,
+		NoNativeSearch:     askNoNativeSearch,
+		Yolo:               askYolo,
+		Auto:               askAuto,
+		Debug:              askDebug,
+		DebugRaw:           debugRaw,
+		ErrWriter:          cmd.ErrOrStderr(),
+		Store:              store,
+		ParentApprovalMgr:  parentApprovalMgr,
+	})
+	includeConfiguredTools := false
+	searchEnabled := settings.Search
+	forceExternalSearch := req.ForceExternalSearch
+	contextEstimateTotal, contextEstimateCount := 0, 0
+	if sess != nil {
+		contextEstimateTotal = sess.LastTotalTokens
+		contextEstimateCount = sess.LastMessageCount
+	}
+	baseRunReq := runpkg.Request{
+		Platform:                    runpkg.PlatformConsole,
+		AgentName:                   askAgent,
+		Messages:                    messages,
+		Engine:                      engine,
+		ProviderInstance:            provider,
+		SessionID:                   sessionID,
+		DeferSession:                true,
+		DisableRuntimePersistence:   true,
+		Provider:                    askProvider,
+		Model:                       activeModel(cfg),
+		Tools:                       settings.Tools,
+		ReadDirs:                    append([]string(nil), askReadDirs...),
+		WriteDirs:                   append([]string(nil), askWriteDirs...),
+		ShellAllow:                  append([]string(nil), askShellAllow...),
+		MCP:                         settings.MCP,
+		Skills:                      askSkills,
+		SystemMessage:               instructions,
+		MaxTurns:                    settings.MaxTurns,
+		MaxTurnsSet:                 true,
+		MaxOutputTokens:             settings.MaxOutputTokens,
+		Search:                      &searchEnabled,
+		Yolo:                        askYolo,
+		Auto:                        askAuto,
+		Debug:                       debugMode,
+		DebugRaw:                    debugRaw,
+		ForceExternalSearch:         &forceExternalSearch,
+		DisableExternalWebFetch:     askNoWebFetch,
+		ExtraTools:                  append([]llm.ToolSpec(nil), req.Tools...),
+		IncludeConfiguredTools:      &includeConfiguredTools,
+		OnAssistantSnapshot:         assistantSnapshotCallback,
+		OnResponseCompleted:         responseCompletedCallback,
+		OnTurnCompleted:             turnCompletedCallback,
+		OnCompaction:                compactionCallback,
+		OnSyntheticUserMessage:      persistSyntheticUserMessage,
+		ContextEstimateTotalTokens:  contextEstimateTotal,
+		ContextEstimateMessageCount: contextEstimateCount,
+	}
+	applyRunResult := func(result runpkg.Result) {
+		if result.ProviderInstance != nil {
+			provider = result.ProviderInstance
+		}
+		if result.Engine == nil {
+			return
+		}
+		engine = result.Engine
+		if outputTool != nil {
+			if tool, ok := result.Engine.Tools().Get(outputTool.Name()); ok {
+				if capturedOutput, ok := tool.(*tools.SetOutputTool); ok {
+					outputTool = capturedOutput
+				}
+			}
+		}
+	}
+
 	if askProgressive {
 		var bridge *askProgressiveBridge
 		var events <-chan ui.StreamEvent
@@ -762,25 +860,23 @@ func runAsk(cmd *cobra.Command, args []string) error {
 			}
 		}
 
-		runOpts := progressiveRunOptions{
-			StopWhen:               progressiveOpts.StopWhen,
-			ContinueWith:           progressiveOpts.ContinueWith,
-			SessionID:              sessionID,
-			ForceNamedFinalization: provider.Capabilities().SupportsToolChoice,
-			OnSyntheticUserMessage: persistSyntheticUserMessage,
-			OnResponseCompleted:    responseCompletedCallback,
-			OnTurnCompleted:        turnCompletedCallback,
+		progressiveRunReq := baseRunReq
+		progressiveRunReq.Progressive = &runpkg.ProgressiveOptions{
+			Timeout:      progressiveOpts.Timeout,
+			StopWhen:     string(progressiveOpts.StopWhen),
+			ContinueWith: progressiveOpts.ContinueWith,
 		}
-		if bridge != nil {
-			runOpts.OnEvent = bridge.HandleEvent
-		}
-
-		if useRichRenderer && toolMgr != nil {
-			_, teaProgram = newAskRendererProgram(cfg, toolMgr, store, sess, events)
-		}
-
 		runProgressive := func() askProgressiveRunResult {
-			result, runErr := runProgressiveSession(ctx, engine, req, runOpts)
+			sink := runpkg.EventSink(eventSinkFunc(func(llm.Event) {}))
+			if bridge != nil {
+				sink = askProgressiveRunnerSink{bridge: bridge}
+			}
+			runResult, runErr := askRunner.Run(ctx, progressiveRunReq, sink)
+			applyRunResult(runResult)
+			result := progressiveRunResult{}
+			if runResult.Progressive != nil {
+				result = *progressiveFromRunResult(runResult.Progressive)
+			}
 			if bridge != nil {
 				if runErr != nil {
 					bridge.CloseError(runErr)
@@ -789,6 +885,10 @@ func runAsk(cmd *cobra.Command, args []string) error {
 				}
 			}
 			return askProgressiveRunResult{Result: result, Err: runErr}
+		}
+
+		if useRichRenderer && toolMgr != nil {
+			_, teaProgram = newAskRendererProgram(cfg, toolMgr, store, sess, events)
 		}
 
 		var progressiveRun askProgressiveRunResult
@@ -882,17 +982,6 @@ func runAsk(cmd *cobra.Command, args []string) error {
 		}
 	} else {
 		streamEvents = wrapStreamEvents(streamEvents)
-		if askPersistence != nil {
-			engine.SetAssistantSnapshotCallback(func(ctx context.Context, turnIndex int, assistantMsg llm.Message) error {
-				return askPersistence.persist(ctx, assistantMsg, time.Since(turnStartTime).Milliseconds(), false)
-			})
-		}
-		if responseCompletedCallback != nil {
-			engine.SetResponseCompletedCallback(responseCompletedCallback)
-		}
-		if turnCompletedCallback != nil {
-			engine.SetTurnCompletedCallback(turnCompletedCallback)
-		}
 
 		if useRichRenderer && toolMgr != nil {
 			_, teaProgram = newAskRendererProgram(cfg, toolMgr, store, sess, streamEvents)
@@ -901,20 +990,20 @@ func runAsk(cmd *cobra.Command, args []string) error {
 		stats = adapter.Stats()
 		streamCtx, cancelStream := context.WithCancel(ctx)
 		defer cancelStream()
+		var runnerResult runpkg.Result
 		errChan := make(chan error, 1)
 		go func() {
-			stream, err := engine.Stream(streamCtx, req)
-			if err != nil {
-				adapter.EmitErrorAndClose(err)
-				errChan <- err
-				return
-			}
-			defer stream.Close()
-			// ProcessStream handles all events and closes the channel when done.
-			// streamCtx cancellation is how the foreground consumer aborts the
-			// producer if stdout/renderer output fails mid-stream.
-			adapter.ProcessStream(streamCtx, stream)
-			errChan <- nil
+			pipe := runpkg.NewEventPipe(streamCtx, ui.DefaultStreamBufferSize)
+			var runErr error
+			done := make(chan struct{})
+			go func() {
+				runnerResult, runErr = askRunner.Run(streamCtx, baseRunReq, pipe)
+				pipe.CloseWithError(runErr)
+				close(done)
+			}()
+			adapter.ProcessStream(streamCtx, pipe)
+			<-done
+			errChan <- runErr
 		}()
 
 		var jsonStreamErr error
@@ -923,6 +1012,7 @@ func runAsk(cmd *cobra.Command, args []string) error {
 			if err := emitSessionStarted(jsonEmit, jsonInfo); err != nil {
 				cancelStream()
 				<-errChan
+				applyRunResult(runnerResult)
 				return err
 			}
 			var writeErr error
@@ -964,11 +1054,9 @@ func runAsk(cmd *cobra.Command, args []string) error {
 		if err != nil {
 			cancelStream()
 			streamErr = <-errChan
+			applyRunResult(runnerResult)
 			streamDone = true
 			if isInterruptedErr(err) || isInterruptedErr(streamErr) {
-				engine.SetAssistantSnapshotCallback(nil)
-				engine.SetResponseCompletedCallback(nil)
-				engine.SetTurnCompletedCallback(nil)
 				return finishInterrupted()
 			}
 			if askJSON && !isTerminalFlushed(err) {
@@ -978,10 +1066,13 @@ func runAsk(cmd *cobra.Command, args []string) error {
 			return err
 		}
 		if askJSON && jsonStreamErr != nil {
+			cancelStream()
+			if !streamDone {
+				streamErr = <-errChan
+				applyRunResult(runnerResult)
+				streamDone = true
+			}
 			if isInterruptedErr(jsonStreamErr) {
-				engine.SetAssistantSnapshotCallback(nil)
-				engine.SetResponseCompletedCallback(nil)
-				engine.SetTurnCompletedCallback(nil)
 				return finishInterrupted()
 			}
 			if emitErr := emitFinal(jsonEmit, stats, jsonTotalTokens); emitErr != nil {
@@ -991,13 +1082,9 @@ func runAsk(cmd *cobra.Command, args []string) error {
 			return &terminalFlushedError{err: jsonStreamErr}
 		}
 
-		// Clear callbacks and update status
-		engine.SetAssistantSnapshotCallback(nil)
-		engine.SetResponseCompletedCallback(nil)
-		engine.SetTurnCompletedCallback(nil)
-
 		if !streamDone {
 			streamErr = <-errChan
+			applyRunResult(runnerResult)
 		}
 		if streamErr != nil {
 			// Update session status based on error type

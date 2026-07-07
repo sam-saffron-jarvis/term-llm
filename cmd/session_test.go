@@ -379,6 +379,16 @@ func TestInjectSkillsMetadata_KeepsInsightsAtTail(t *testing.T) {
 	}
 }
 
+func TestInjectSkillsMetadata_DoesNotDuplicateExistingMetadata(t *testing.T) {
+	instructions := "Base prompt\n\n<available_skills>existing</available_skills>"
+	skillsSetup := &skills.Setup{XML: "<available_skills>new</available_skills>"}
+
+	got := InjectSkillsMetadata(instructions, skillsSetup)
+	if got != instructions {
+		t.Fatalf("InjectSkillsMetadata() = %q, want unchanged instructions", got)
+	}
+}
+
 func TestInjectSkillsMetadata_SkipsLazyDiscoveryWhenAgentsProvidesSkills(t *testing.T) {
 	origWD, err := os.Getwd()
 	if err != nil {

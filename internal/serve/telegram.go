@@ -22,6 +22,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/image"
 	"github.com/samsaffron/term-llm/internal/llm"
 	memorystore "github.com/samsaffron/term-llm/internal/memory"
+	runpkg "github.com/samsaffron/term-llm/internal/run"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/tools"
 	"github.com/samsaffron/term-llm/internal/ui"
@@ -446,8 +447,9 @@ type telegramSession struct {
 	meta                  *session.Session
 	lastActivity          time.Time
 
-	cancelMu      sync.Mutex         // protects streamCancel, replyDone and task/tool tracking
+	cancelMu      sync.Mutex         // protects streamCancel, replyDone, streamEngine and task/tool tracking
 	streamCancel  context.CancelFunc // cancels the active stream's context
+	streamEngine  *llm.Engine        // active runner engine for mid-stream interjections
 	replyDone     chan struct{}      // closed when streamReply exits
 	currentTask   string             // text from the user message that started the active stream
 	toolsRanNames []string           // tool names executed during the active stream
@@ -1227,6 +1229,7 @@ func (m *telegramSessionMgr) handleMessage(ctx context.Context, bot *tgbotapi.Bo
 			newMsgText = strings.TrimSpace(collectUserText(userMsg))
 		}
 
+	activeWait:
 		select {
 		case <-doneCh:
 			// Stream finished naturally within the grace period.
@@ -1265,7 +1268,36 @@ func (m *telegramSessionMgr) handleMessage(ctx context.Context, bot *tgbotapi.Bo
 					return
 				}
 			case llm.InterruptInterject:
-				sess.runtime.Engine.Interject(newMsgText)
+				sess.cancelMu.Lock()
+				activeEngine := sess.streamEngine
+				if activeEngine == nil && m.settings.Runner == nil && sess.runtime != nil {
+					activeEngine = sess.runtime.Engine
+				}
+				sess.cancelMu.Unlock()
+				if activeEngine == nil {
+					log.Printf("[telegram] no active stream engine for interjection in chat %d; cancelling stream", chatID)
+					_, _ = bot.Send(tgbotapi.NewMessage(chatID, "↩️ I could not attach that note to the active response, so I am stopping and switching to your new request."))
+					cancelFn()
+					return
+				}
+				select {
+				case <-doneCh:
+					log.Printf("[telegram] stream for chat %d finished before interjection could be queued; handling message as a new turn", chatID)
+					break activeWait
+				default:
+				}
+				interjectionID := activeEngine.QueueInterjection(llm.QueuedInterjection{
+					Message:     llm.UserText(newMsgText),
+					DisplayText: newMsgText,
+				})
+				select {
+				case <-doneCh:
+					if activeEngine.CancelInterjection(interjectionID) {
+						log.Printf("[telegram] stream for chat %d finished before interjection %s was accepted; handling message as a new turn", chatID, interjectionID)
+						break activeWait
+					}
+				default:
+				}
 				_, _ = bot.Send(tgbotapi.NewMessage(chatID, "📝 Noted. I will incorporate that while I continue."))
 				// Do not persist here: the engine persists the interjection exactly once
 				// when it drains it into the conversation via TurnCompletedCallback.
@@ -1440,7 +1472,7 @@ func (m *telegramSessionMgr) streamReply(ctx context.Context, bot botSender, ses
 			callbackStoreQueue.closeAndWait(drainCtx)
 		}()
 	}
-	sess.runtime.Engine.SetResponseCompletedCallback(func(cbCtx context.Context, _ int, assistantMsg llm.Message, _ llm.TurnMetrics) error {
+	responseCompletedCB := func(cbCtx context.Context, _ int, assistantMsg llm.Message, _ llm.TurnMetrics) error {
 		producedMu.Lock()
 		produced = append(produced, assistantMsg)
 		assistantCapturedForTurnCB = true
@@ -1452,9 +1484,8 @@ func (m *telegramSessionMgr) streamReply(ctx context.Context, bot botSender, ses
 			})
 		}
 		return nil
-	})
-	defer sess.runtime.Engine.SetResponseCompletedCallback(nil)
-	sess.runtime.Engine.SetTurnCompletedCallback(func(cbCtx context.Context, _ int, msgs []llm.Message, metrics llm.TurnMetrics) error {
+	}
+	turnCompletedCB := func(cbCtx context.Context, _ int, msgs []llm.Message, metrics llm.TurnMetrics) error {
 		appendStart := 0
 		producedMu.Lock()
 		if assistantCapturedForTurnCB && len(msgs) > 0 && msgs[0].Role == llm.RoleAssistant {
@@ -1480,35 +1511,104 @@ func (m *telegramSessionMgr) streamReply(ctx context.Context, bot botSender, ses
 			}
 		}
 		return nil
-	})
-	defer sess.runtime.Engine.SetTurnCompletedCallback(nil)
-
-	req := llm.Request{
-		SessionID:           sessionID,
-		Messages:            messages,
-		MaxTurns:            m.settings.MaxTurns,
-		Debug:               m.settings.Debug,
-		DebugRaw:            m.settings.DebugRaw,
-		Search:              m.settings.Search,
-		ForceExternalSearch: m.settings.ForceExternalSearch,
+	}
+	if m.settings.Runner == nil {
+		sess.runtime.Engine.SetResponseCompletedCallback(responseCompletedCB)
+		defer sess.runtime.Engine.SetResponseCompletedCallback(nil)
+		sess.runtime.Engine.SetTurnCompletedCallback(turnCompletedCB)
+		defer sess.runtime.Engine.SetTurnCompletedCallback(nil)
 	}
 
-	// Populate tools so the engine enters the agentic tool loop.
-	if specs := llm.ToolSpecsForRequest(sess.runtime.Engine.Tools(), m.settings.Search); len(specs) > 0 {
-		req.Tools = specs
-		req.ToolChoice = llm.ToolChoice{Mode: llm.ToolChoiceAuto}
-	}
+	streamDone := make(chan error, 1)
+	var streamDoneOnce sync.Once
 
-	stream, err := sess.runtime.Engine.Stream(streamCtx, req)
-	if err != nil {
-		if m.store != nil && sess.meta != nil {
-			m.runStoreOpWithTimeout(sess.meta.ID, "UpdateStatus(error)", func(storeCtx context.Context) error {
-				return m.store.UpdateStatus(storeCtx, sess.meta.ID, session.StatusError)
-			})
+	var stream llm.Stream
+	var runnerDone <-chan struct{}
+	waitForRunnerDone := func() {
+		if runnerDone == nil {
+			return
 		}
-		return fmt.Errorf("stream: %w", err)
+		select {
+		case <-runnerDone:
+			return
+		case <-time.After(5 * time.Second):
+			log.Printf("[telegram] runner for chat %d still shutting down after cleanup timeout; waiting to avoid overlapping the shared engine", chatID)
+		}
+		<-runnerDone
 	}
-	defer stream.Close()
+	defer waitForRunnerDone()
+	if m.settings.Runner != nil {
+		pipe := runpkg.NewEventPipe(streamCtx, ui.DefaultStreamBufferSize)
+		stream = pipe
+		done := make(chan struct{})
+		runnerDone = done
+		search := m.settings.Search
+		forceExternalSearch := m.settings.ForceExternalSearch
+		go func() {
+			defer close(done)
+			_, runErr := m.settings.Runner.Run(streamCtx, runpkg.Request{
+				Platform:                  runpkg.PlatformTelegram,
+				AgentName:                 m.settings.Agent,
+				Messages:                  messages,
+				Engine:                    sess.runtime.Engine,
+				ProviderInstance:          sess.runtime.Provider,
+				SessionID:                 sessionID,
+				DeferSession:              true,
+				DisableRuntimePersistence: true,
+				Persist:                   false,
+				Tools:                     m.settings.Tools,
+				MCP:                       m.settings.MCP,
+				MaxTurns:                  m.settings.MaxTurns,
+				Search:                    &search,
+				Debug:                     m.settings.Debug,
+				DebugRaw:                  m.settings.DebugRaw,
+				ForceExternalSearch:       &forceExternalSearch,
+				OnResponseCompleted:       responseCompletedCB,
+				OnTurnCompleted:           turnCompletedCB,
+				OnEngineReady: func(engine *llm.Engine) {
+					sess.cancelMu.Lock()
+					sess.streamEngine = engine
+					sess.cancelMu.Unlock()
+				},
+				OnEngineDone: func(engine *llm.Engine) {
+					sess.cancelMu.Lock()
+					if sess.streamEngine == engine {
+						sess.streamEngine = nil
+					}
+					sess.cancelMu.Unlock()
+				},
+			}, pipe)
+			pipe.CloseWithError(runErr)
+		}()
+	} else {
+		req := llm.Request{
+			SessionID:           sessionID,
+			Messages:            messages,
+			MaxTurns:            m.settings.MaxTurns,
+			Debug:               m.settings.Debug,
+			DebugRaw:            m.settings.DebugRaw,
+			Search:              m.settings.Search,
+			ForceExternalSearch: m.settings.ForceExternalSearch,
+		}
+
+		// Populate tools so the engine enters the agentic tool loop.
+		if specs := llm.ToolSpecsForRequest(sess.runtime.Engine.Tools(), m.settings.Search); len(specs) > 0 {
+			req.Tools = specs
+			req.ToolChoice = llm.ToolChoice{Mode: llm.ToolChoiceAuto}
+		}
+
+		var err error
+		stream, err = sess.runtime.Engine.Stream(streamCtx, req)
+		if err != nil {
+			if m.store != nil && sess.meta != nil {
+				m.runStoreOpWithTimeout(sess.meta.ID, "UpdateStatus(error)", func(storeCtx context.Context) error {
+					return m.store.UpdateStatus(storeCtx, sess.meta.ID, session.StatusError)
+				})
+			}
+			return fmt.Errorf("stream: %w", err)
+		}
+		defer stream.Close()
+	}
 
 	// Send placeholder message to obtain a message ID for live editing.
 	placeholder, err := bot.Send(tgbotapi.NewMessage(chatID, "⏳"))
@@ -1535,8 +1635,6 @@ func (m *telegramSessionMgr) streamReply(ctx context.Context, bot botSender, ses
 		errorEvents      int
 		otherEvents      int
 		otherTypes       = make(map[llm.EventType]int)
-		streamDone       = make(chan error, 1)
-		streamDoneOnce   sync.Once
 		lastEventPing    = make(chan struct{}, 1)
 		watchdogTimedOut atomic.Bool
 	)
@@ -1871,7 +1969,13 @@ loop:
 		// Close the stream and wait for the Recv goroutine to finish draining
 		// anything already in-flight so history snapshots include the final
 		// partial text and callback-produced messages from the interrupted turn.
-		stream.Close()
+		if m.settings.Runner != nil {
+			streamCancel()
+		} else if stream != nil {
+			stream.Close()
+		} else {
+			streamCancel()
+		}
 		if !streamDoneDrained {
 			<-streamDone
 		}

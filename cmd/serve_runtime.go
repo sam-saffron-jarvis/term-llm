@@ -46,6 +46,7 @@ type serveRuntime struct {
 	debug                bool
 	debugRaw             bool
 	autoCompact          bool
+	skipProviderCleanup  bool
 	defaultModel         string
 	yoloMode             bool
 	lastUsedUnixNano     atomic.Int64
@@ -54,6 +55,11 @@ type serveRuntime struct {
 	responseIDs          []string
 	cumulativeUsage      llm.Usage
 	pendingAskUsers      map[string]*servePendingAskUser
+	askUserFunc          func(context.Context, []tools.AskUserQuestion) ([]tools.AskUserAnswer, error)
+	assistantSnapshotCB  llm.AssistantSnapshotCallback
+	responseCompletedCB  llm.ResponseCompletedCallback
+	turnCompletedCB      llm.TurnCompletedCallback
+	compactionCB         llm.CompactionCallback
 	pendingApprovals     map[string]*servePendingApproval
 	approvalEventFunc    func(event string, data map[string]any) error
 	approvalCtx          context.Context
@@ -227,8 +233,10 @@ func (rt *serveRuntime) Close() {
 		rt.mcpManager.StopAll()
 		rt.mcpManager = nil
 	}
-	if cleaner, ok := rt.provider.(interface{ CleanupMCP() }); ok {
-		cleaner.CleanupMCP()
+	if !rt.skipProviderCleanup {
+		if cleaner, ok := rt.provider.(interface{ CleanupMCP() }); ok {
+			cleaner.CleanupMCP()
+		}
 	}
 }
 
@@ -864,7 +872,21 @@ func (rt *serveRuntime) run(ctx context.Context, stateful bool, replaceHistory b
 
 	runCtx, runCancel := context.WithCancel(ctx)
 	defer runCancel()
-	runCtx = tools.ContextWithAskUserUIFunc(runCtx, rt.awaitAskUser)
+	askUserFunc := rt.askUserFunc
+	if askUserFunc == nil {
+		switch rt.platform {
+		case "", "web":
+			askUserFunc = rt.awaitAskUser
+		case "telegram", "jobs":
+			platform := rt.platform
+			askUserFunc = func(context.Context, []tools.AskUserQuestion) ([]tools.AskUserAnswer, error) {
+				return nil, fmt.Errorf("ask_user is not available on %s sessions", platform)
+			}
+		}
+	}
+	if askUserFunc != nil {
+		runCtx = tools.ContextWithAskUserUIFunc(runCtx, askUserFunc)
+	}
 	if rt.platform == "web" && strings.TrimSpace(req.SessionID) != "" {
 		runCtx = tools.ContextWithQueueAgentOrigin(runCtx, tools.QueueAgentOriginContext{
 			Origin:    tools.QueueAgentOriginWeb,
@@ -1070,12 +1092,27 @@ func (rt *serveRuntime) run(ctx context.Context, stateful bool, replaceHistory b
 		if result == nil {
 			return nil
 		}
-		updated, _, refreshed, err := session.ApplyCompaction(cbCtx, rt.store, rt.sessionMeta, nil, result)
-		if err != nil {
-			return err
+		handledByPlatform := rt.compactionCB != nil
+		if handledByPlatform {
+			if err := rt.compactionCB(cbCtx, result); err != nil {
+				return err
+			}
 		}
-		if refreshed != nil {
-			rt.sessionMeta = refreshed
+		var compacted []llm.Message
+		if handledByPlatform {
+			compacted = append(compacted, result.NewMessages...)
+		} else {
+			updated, _, refreshed, err := session.ApplyCompaction(cbCtx, rt.store, rt.sessionMeta, nil, result)
+			if err != nil {
+				return err
+			}
+			if refreshed != nil {
+				rt.sessionMeta = refreshed
+			}
+			compacted = make([]llm.Message, 0, len(updated))
+			for _, msg := range updated {
+				compacted = append(compacted, msg.ToLLMMessage())
+			}
 		}
 		if !result.Usage.IsZero() {
 			compactionUsageMu.Lock()
@@ -1089,10 +1126,6 @@ func (rt *serveRuntime) run(ctx context.Context, stateful bool, replaceHistory b
 				rt.sessionMeta.CachedInputTokens += result.Usage.CachedInputTokens
 				rt.sessionMeta.CacheWriteTokens += result.Usage.CacheWriteTokens
 			}
-		}
-		compacted := make([]llm.Message, 0, len(updated))
-		for _, msg := range updated {
-			compacted = append(compacted, msg.ToLLMMessage())
 		}
 		if len(compacted) == 0 {
 			compacted = append(compacted, result.NewMessages...)
@@ -1209,18 +1242,24 @@ func (rt *serveRuntime) run(ctx context.Context, stateful bool, replaceHistory b
 
 	// Snapshot fires before each EventToolCall so partial content survives a
 	// consumer cancellation mid-turn.
-	rt.engine.SetAssistantSnapshotCallback(func(cbCtx context.Context, _ int, assistantMsg llm.Message) error {
+	rt.engine.SetAssistantSnapshotCallback(func(cbCtx context.Context, callbackTurnIndex int, assistantMsg llm.Message) error {
 		producedMu.Lock()
 		defer producedMu.Unlock()
 		upsertPendingAssistantLocked(cbCtx, assistantMsg, false)
+		if rt.assistantSnapshotCB != nil {
+			return rt.assistantSnapshotCB(cbCtx, callbackTurnIndex, assistantMsg)
+		}
 		return nil
 	})
 	defer rt.engine.SetAssistantSnapshotCallback(nil)
 
-	rt.engine.SetResponseCompletedCallback(func(cbCtx context.Context, _ int, assistantMsg llm.Message, _ llm.TurnMetrics) error {
+	rt.engine.SetResponseCompletedCallback(func(cbCtx context.Context, callbackTurnIndex int, assistantMsg llm.Message, metrics llm.TurnMetrics) error {
 		producedMu.Lock()
 		defer producedMu.Unlock()
 		upsertPendingAssistantLocked(cbCtx, assistantMsg, true)
+		if rt.responseCompletedCB != nil {
+			return rt.responseCompletedCB(cbCtx, callbackTurnIndex, assistantMsg, metrics)
+		}
 		return nil
 	})
 	defer rt.engine.SetResponseCompletedCallback(nil)
@@ -1228,7 +1267,7 @@ func (rt *serveRuntime) run(ctx context.Context, stateful bool, replaceHistory b
 	// Turn callback: upsert the assistant row if present as first element, then
 	// plain-append the rest (tool results or interjections). Reset pending at
 	// end of turn.
-	rt.engine.SetTurnCompletedCallback(func(cbCtx context.Context, _ int, msgs []llm.Message, metrics llm.TurnMetrics) error {
+	rt.engine.SetTurnCompletedCallback(func(cbCtx context.Context, callbackTurnIndex int, msgs []llm.Message, metrics llm.TurnMetrics) error {
 		func() {
 			producedMu.Lock()
 			defer producedMu.Unlock()
@@ -1247,6 +1286,9 @@ func (rt *serveRuntime) run(ctx context.Context, stateful bool, replaceHistory b
 		}()
 
 		rt.persistTurnAccounting(cbCtx, persisted, req.SessionID, msgs, metrics)
+		if rt.turnCompletedCB != nil {
+			return rt.turnCompletedCB(cbCtx, callbackTurnIndex, msgs, metrics)
+		}
 		return nil
 	})
 	defer rt.engine.SetTurnCompletedCallback(nil)

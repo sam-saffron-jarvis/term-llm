@@ -11,9 +11,21 @@ import (
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/llm"
+	runpkg "github.com/samsaffron/term-llm/internal/run"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/ui"
 )
+
+type blockingChatRunner struct {
+	started chan struct{}
+	release chan struct{}
+}
+
+func (r *blockingChatRunner) Run(ctx context.Context, req runpkg.Request, sink runpkg.EventSink) (runpkg.Result, error) {
+	close(r.started)
+	<-r.release
+	return runpkg.Result{}, nil
+}
 
 type interjectionTestTool struct{}
 
@@ -32,6 +44,54 @@ func (s *updateMessageFailStore) GetMessages(ctx context.Context, sessionID stri
 		return nil, err
 	}
 	return append([]session.Message(nil), msgs...), nil
+}
+
+func TestRunnerStreamDoneWaitsForRunnerAfterCancellation(t *testing.T) {
+	m := newTestChatModel(false)
+	runner := &blockingChatRunner{
+		started: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	defer func() {
+		select {
+		case <-runner.release:
+		default:
+			close(runner.release)
+		}
+	}()
+	m.SetRunner(runner)
+
+	cmd := m.startStream("hello")
+	cmdDone := make(chan any, 1)
+	go func() {
+		cmdDone <- cmd()
+	}()
+
+	select {
+	case <-runner.started:
+	case <-time.After(time.Second):
+		t.Fatal("runner did not start")
+	}
+
+	m.streamCancelFunc()
+	select {
+	case <-cmdDone:
+	case <-time.After(time.Second):
+		t.Fatal("stream command did not observe cancellation")
+	}
+
+	select {
+	case <-m.streamDone:
+		t.Fatal("streamDone closed before runner returned")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	close(runner.release)
+	select {
+	case <-m.streamDone:
+	case <-time.After(time.Second):
+		t.Fatal("streamDone did not close after runner returned")
+	}
 }
 
 func TestStatusLineContextEstimateUsesInProgressStreamingSnapshot(t *testing.T) {

@@ -19,7 +19,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/filetrack"
 	"github.com/samsaffron/term-llm/internal/llm"
-	"github.com/samsaffron/term-llm/internal/mcp"
+	runpkg "github.com/samsaffron/term-llm/internal/run"
 	"github.com/samsaffron/term-llm/internal/serve"
 	servehttp "github.com/samsaffron/term-llm/internal/serve/http"
 	"github.com/samsaffron/term-llm/internal/session"
@@ -421,86 +421,57 @@ func runServeLegacy(parentCtx context.Context, cmd *cobra.Command, args []string
 
 	modelName := activeModel(cfg)
 	runtimeFactory := func(ctx context.Context, providerName string, providerModel string) (*serveRuntime, error) {
-		var provider llm.Provider
-		var err error
-		provKey := cfg.DefaultProvider
-		rtModelName := modelName
-
-		if providerName != "" && (providerName != cfg.DefaultProvider || providerModel != "") {
-			provider, err = llm.NewProviderByName(cfg, providerName, providerModel)
-			provKey = providerName
-			if providerModel != "" {
-				rtModelName = providerModel
-			} else {
-				// Use provider's configured model or first curated model
-				if pc, ok := cfg.Providers[providerName]; ok && pc.Model != "" {
-					rtModelName = pc.Model
-				} else if models := llm.ResolveProviderModelIDs(providerName); len(models) > 0 {
-					rtModelName = models[0]
-				}
-			}
-		} else {
-			provider, err = llm.NewProvider(cfg)
-			if providerModel != "" {
-				rtModelName = providerModel
-			}
-		}
+		runner := &cmdRunner{baseCfg: cfg, defaults: cmdRunnerOptions{
+			Provider:       serveProvider,
+			Tools:          serveTools,
+			ReadDirs:       append([]string(nil), serveReadDirs...),
+			WriteDirs:      append([]string(nil), serveWriteDirs...),
+			ShellAllow:     append([]string(nil), serveShellAllow...),
+			MCP:            serveMCP,
+			SystemMessage:  serveSystemMessage,
+			MaxTurns:       serveMaxTurns,
+			Search:         serveSearch,
+			NoSearch:       serveNoSearch,
+			NativeSearch:   serveNativeSearch,
+			NoNativeSearch: serveNoNativeSearch,
+			Yolo:           serveYolo,
+			Auto:           autoMode,
+			Debug:          serveDebug,
+			DebugRaw:       debugRaw,
+			ErrWriter:      io.Discard,
+			WireSpawn:      WireSpawnAgentRunner,
+			Store:          store,
+		}}
+		env, err := runner.prepare(ctx, runpkg.Request{
+			Platform:     runpkg.PlatformWeb,
+			AgentName:    serveAgent,
+			Provider:     strings.TrimSpace(providerName),
+			Model:        strings.TrimSpace(providerModel),
+			DeferSession: true,
+		}, nil)
 		if err != nil {
 			return nil, err
 		}
-
-		engine, toolMgr, err := newServeEngineWithTools(cfg, settings, provider, provKey, rtModelName, serveYolo, autoMode, WireSpawnAgentRunner, skillsSetup)
-		if err != nil {
-			return nil, err
-		}
-
-		var mcpManager *mcp.Manager
-		if settings.MCP != "" {
-			mcpOpts := &MCPOptions{Provider: provider, Model: rtModelName, YoloMode: serveYolo}
-			mgr, err := enableMCPServersWithFeedback(ctx, settings.MCP, engine, io.Discard, mcpOpts)
-			if err != nil {
-				return nil, err
-			}
-			mcpManager = mgr
-		}
+		runtime := env.runtime
+		runtime.toolMap = toolMap
+		runtime.platform = "web"
+		runtime.platformMessages = agentPlatformMsgs
 
 		// Validate --tool-map targets exist as registered server tools.
 		// This runs after MCP registration so mapped MCP tools are visible.
 		for clientName, serverName := range toolMap {
-			if _, ok := engine.Tools().Get(serverName); !ok {
+			if _, ok := runtime.engine.Tools().Get(serverName); !ok {
 				names := make([]string, 0)
-				for _, spec := range engine.Tools().AllSpecs() {
+				for _, spec := range runtime.engine.Tools().AllSpecs() {
 					names = append(names, spec.Name)
 				}
+				runtime.Close()
 				return nil, fmt.Errorf("--tool-map %s:%s: server tool %q not found (registered tools: %v)", clientName, serverName, serverName, names)
 			}
 		}
 
-		runtime := &serveRuntime{
-			provider:            provider,
-			providerKey:         provKey,
-			engine:              engine,
-			toolMgr:             toolMgr,
-			mcpManager:          mcpManager,
-			systemPrompt:        settings.SystemPrompt,
-			search:              settings.Search,
-			forceExternalSearch: forceExternalSearch,
-			maxTurns:            settings.MaxTurns,
-			toolMap:             toolMap,
-			debug:               serveDebug,
-			debugRaw:            debugRaw,
-			autoCompact:         cfg.AutoCompact,
-			defaultModel:        rtModelName,
-			yoloMode:            serveYolo,
-			store:               store,
-			toolsSetting:        settings.Tools,
-			mcpSetting:          settings.MCP,
-			agentName:           agentName,
-			platform:            "web",
-			platformMessages:    agentPlatformMsgs,
-		}
-		if toolMgr != nil {
-			toolMgr.ApprovalMgr.GuardianEventFunc = runtime.emitGuardianReview
+		if runtime.toolMgr != nil {
+			runtime.toolMgr.ApprovalMgr.GuardianEventFunc = runtime.emitGuardianReview
 			imageBaseURL := ""
 			if hasWeb {
 				imageBaseURL = strings.TrimRight(serveBasePath, "/") + "/images/"
@@ -543,6 +514,26 @@ func runServeLegacy(parentCtx context.Context, cmd *cobra.Command, args []string
 		Agent:                  agentName,
 		PlatformMessages:       agentPlatformMsgs,
 		Store:                  store,
+		Runner: newCmdRunner(cfg, cmdRunnerOptions{
+			Provider:       serveProvider,
+			Tools:          serveTools,
+			ReadDirs:       append([]string(nil), serveReadDirs...),
+			WriteDirs:      append([]string(nil), serveWriteDirs...),
+			ShellAllow:     append([]string(nil), serveShellAllow...),
+			MCP:            serveMCP,
+			SystemMessage:  serveSystemMessage,
+			MaxTurns:       serveMaxTurns,
+			Search:         serveSearch,
+			NoSearch:       serveNoSearch,
+			NativeSearch:   serveNativeSearch,
+			NoNativeSearch: serveNoNativeSearch,
+			Yolo:           serveYolo,
+			Auto:           autoMode,
+			Debug:          serveDebug,
+			DebugRaw:       debugRaw,
+			ErrWriter:      io.Discard,
+			WireSpawn:      WireSpawnAgentRunner,
+		}),
 		NewSession: func(ctx context.Context) (*serve.SessionRuntime, error) {
 			rt, err := factory(ctx)
 			if err != nil {
@@ -550,6 +541,7 @@ func runServeLegacy(parentCtx context.Context, cmd *cobra.Command, args []string
 			}
 			return &serve.SessionRuntime{
 				Engine:       rt.engine,
+				Provider:     rt.provider,
 				ProviderName: rt.provider.Name(),
 				ModelName:    rt.defaultModel,
 				Cleanup:      rt.Close,

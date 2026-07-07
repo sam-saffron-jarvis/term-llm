@@ -21,6 +21,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/jobs"
 	"github.com/samsaffron/term-llm/internal/llm"
+	runpkg "github.com/samsaffron/term-llm/internal/run"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/tools"
 	_ "modernc.org/sqlite"
@@ -307,10 +308,8 @@ type jobsV2LLMConfig struct {
 	// runs concurrently in one process.
 	Cwd string `json:"cwd"`
 
-	// Parity with the `ask` CLI. All optional; omitting a field preserves the
-	// previous behavior (it falls back to the serve-level flag / agent / config).
-	// These map onto the same execution path `ask` uses — this is plumbing, not
-	// new concepts.
+	// Ask-compatible execution overrides. All optional; omitting a field preserves
+	// the previous behavior (it falls back to the serve-level flag / agent / config).
 	Provider        string   `json:"provider,omitempty"`          // e.g. "chatgpt" or "chatgpt:gpt-5.5-xhigh"
 	Model           string   `json:"model,omitempty"`             // model override (alt to provider:model)
 	ReadDir         []string `json:"read_dir,omitempty"`          // additional read roots
@@ -2922,7 +2921,7 @@ func resolveJobLLMSettings(jobCfg *config.Config, agent *agents.Agent, cfg jobsV
 		MaxOutputTokens: cfg.MaxOutputTokens,
 		Search:          def.Search || cfg.Search,
 		NoSearch:        def.NoSearch && !cfg.Search,
-		Platform:        "jobs",
+		Platform:        runpkg.PlatformJob,
 	}, jobCfg.Ask.Provider, jobCfg.Ask.Model, jobCfg.Ask.Instructions, jobCfg.Ask.MaxTurns, 50)
 	if err != nil {
 		return SessionSettings{}, "", err
@@ -2943,210 +2942,61 @@ func resolveJobLLMSettings(jobCfg *config.Config, agent *agents.Agent, cfg jobsV
 
 func newServeJobsExecutor(baseCfg *config.Config) serveJobsExecutor {
 	return func(ctx context.Context, cfg jobsV2LLMConfig, onEvent func(llm.Event)) (serveJobsExecResult, error) {
-		jobCfg := cloneConfigForServeJob(baseCfg)
-
-		agent, err := LoadAgent(cfg.AgentName, jobCfg)
-		if err != nil {
-			return serveJobsExecResult{}, err
-		}
-		if agent == nil {
-			return serveJobsExecResult{}, fmt.Errorf("agent %q not found", cfg.AgentName)
+		var search *bool
+		if cfg.Search {
+			v := true
+			search = &v
 		}
 
-		// Provider/model: the job config takes precedence over the serve-level
-		// --provider, then agent, then config — reusing the same override path as
-		// `ask`. Mutations land on the deep-copied jobCfg, never the base config.
-		if err := applyJobLLMProviderModel(jobCfg, cfg, serveProvider, agent.Provider, agent.Model); err != nil {
-			return serveJobsExecResult{}, err
-		}
-
-		// Merge the job's runner config with the serve-level defaults into the
-		// final settings + user prompt. Omitted parity fields fall back to the
-		// serve flag, so existing jobs resolve to identical settings.
-		settings, userPrompt, err := resolveJobLLMSettings(jobCfg, agent, cfg, jobLLMServeDefaults{
-			Provider:      serveProvider,
-			Tools:         serveTools,
-			ReadDirs:      serveReadDirs,
-			WriteDirs:     serveWriteDirs,
-			ShellAllow:    serveShellAllow,
-			MCP:           serveMCP,
-			SystemMessage: serveSystemMessage,
-			MaxTurns:      serveMaxTurns,
-			Search:        serveSearch,
-			NoSearch:      serveNoSearch,
-		})
-		if err != nil {
-			return serveJobsExecResult{}, err
-		}
-
-		// Setup skills and inject metadata into settings.SystemPrompt before
-		// constructing serveRuntime; skills.Setup is then passed to the engine
-		// factory for per-session activate_skill tool registration. The job's
-		// skills override falls back to the agent's when empty.
-		jobSkillsSetup := SetupSkills(&jobCfg.Skills, cfg.Skills, agent.Skills, io.Discard)
-		settings.SystemPrompt = InjectSkillsMetadata(settings.SystemPrompt, jobSkillsSetup)
-
-		modelName := activeModel(jobCfg)
-		provider, err := llm.NewProvider(jobCfg)
-		if err != nil {
-			return serveJobsExecResult{}, err
-		}
-
-		engine, toolMgr, err := newServeEngineWithTools(jobCfg, settings, provider, jobCfg.DefaultProvider, modelName, serveYolo, serveAuto, WireSpawnAgentRunner, jobSkillsSetup)
-		if err != nil {
-			return serveJobsExecResult{}, err
-		}
-
-		forceExternalSearch := resolveForceExternalSearch(jobCfg, serveNativeSearch, serveNoNativeSearch)
-		var store session.Store
-		var closeStore func()
-		if cfg.sessionPersistenceEnabled() {
-			store, closeStore = InitSessionStore(jobCfg, io.Discard)
-			if closeStore != nil {
-				defer closeStore()
-			}
-		}
-		runtime := &serveRuntime{
-			provider:            provider,
-			providerKey:         jobCfg.DefaultProvider,
-			engine:              engine,
-			toolMgr:             toolMgr,
-			store:               store,
-			systemPrompt:        settings.SystemPrompt,
-			search:              settings.Search,
-			forceExternalSearch: forceExternalSearch,
-			maxTurns:            settings.MaxTurns,
-			debug:               serveDebug,
-			debugRaw:            debugRaw,
-			autoCompact:         jobCfg.AutoCompact,
-			defaultModel:        modelName,
-			toolsSetting:        settings.Tools,
-			mcpSetting:          settings.MCP,
-			agentName:           agent.Name,
-		}
-		defer runtime.Close()
-
-		var persistResponseCompleted llm.ResponseCompletedCallback
-		var persistTurnCompleted llm.TurnCompletedCallback
-		var persistSyntheticUserMessage func(context.Context, llm.Message) error
-		var sess *session.Session
-		turnStartTime := time.Now()
-		sessionName := strings.TrimSpace(cfg.SessionName)
-		if store != nil {
-			sess = &session.Session{
-				ID:        cfg.SessionID,
-				Name:      sessionName,
-				Summary:   sessionName,
-				Provider:  provider.Name(),
-				Model:     modelName,
-				Mode:      session.ModeAsk,
-				Agent:     agent.Name,
-				CreatedAt: time.Now(),
-				UpdatedAt: time.Now(),
-				Search:    settings.Search,
-				Tools:     settings.Tools,
-				MCP:       settings.MCP,
-				Status:    session.StatusActive,
-			}
-			if cwd, cwdErr := os.Getwd(); cwdErr == nil {
-				sess.CWD = cwd
-			}
-			_ = store.Create(ctx, sess)
-			runtime.sessionMeta = sess
-			persistResponseCompleted = func(ctx context.Context, turnIndex int, assistantMsg llm.Message, metrics llm.TurnMetrics) error {
-				sessionMsg := session.NewMessage(sess.ID, assistantMsg, -1)
-				sessionMsg.DurationMs = time.Since(turnStartTime).Milliseconds()
-				return store.AddMessage(ctx, sess.ID, sessionMsg)
-			}
-			persistTurnCompleted = func(ctx context.Context, turnIndex int, turnMessages []llm.Message, metrics llm.TurnMetrics) error {
-				for _, msg := range turnMessages {
-					sessionMsg := session.NewMessage(sess.ID, msg, -1)
-					if msg.Role == llm.RoleAssistant {
-						sessionMsg.DurationMs = time.Since(turnStartTime).Milliseconds()
-					}
-					if err := store.AddMessage(ctx, sess.ID, sessionMsg); err != nil {
-						return err
-					}
-				}
-				return nil
-			}
-			persistSyntheticUserMessage = func(ctx context.Context, msg llm.Message) error {
-				turnStartTime = time.Now()
-				return store.AddMessage(ctx, sess.ID, session.NewMessage(sess.ID, msg, -1))
-			}
-		}
-
-		if settings.MCP != "" {
-			mcpOpts := &MCPOptions{Provider: provider, Model: modelName, YoloMode: serveYolo}
-			mgr, err := enableMCPServersWithFeedback(ctx, settings.MCP, engine, io.Discard, mcpOpts)
-			if err != nil {
-				return serveJobsExecResult{}, err
-			}
-			runtime.mcpManager = mgr
-		}
-
-		llmReq := llm.Request{
-			SessionID:           cfg.SessionID,
-			Tools:               runtime.selectTools(nil),
-			ToolChoice:          llm.ToolChoice{Mode: llm.ToolChoiceAuto},
-			ParallelToolCalls:   true,
-			Search:              settings.Search,
-			ForceExternalSearch: forceExternalSearch,
-			MaxTurns:            settings.MaxTurns,
-			MaxOutputTokens:     settings.MaxOutputTokens,
-			Debug:               serveDebug,
-			DebugRaw:            debugRaw,
-		}
-
+		var progressive *runpkg.ProgressiveOptions
 		if cfg.Progressive {
-			messages := []llm.Message{llm.UserText(userPrompt)}
-			if runtime.systemPrompt != "" {
-				messages = append([]llm.Message{llm.SystemText(runtime.systemPrompt)}, messages...)
+			progressive = &runpkg.ProgressiveOptions{
+				StopWhen:     cfg.StopWhen,
+				ContinueWith: cfg.ContinueWith,
 			}
-			llmReq.Messages = messages
-			if store != nil && sess != nil {
-				if runtime.systemPrompt != "" {
-					_ = store.AddMessage(ctx, sess.ID, session.NewMessage(sess.ID, llm.SystemText(runtime.systemPrompt), -1))
-				}
-				_ = store.AddMessage(ctx, sess.ID, session.NewMessage(sess.ID, llm.UserText(userPrompt), -1))
-			}
-
-			progressiveResult, err := runProgressiveSession(ctx, engine, llmReq, progressiveRunOptions{
-				StopWhen:               progressiveStopWhen(cfg.StopWhen),
-				ContinueWith:           cfg.ContinueWith,
-				SessionID:              cfg.SessionID,
-				ForceNamedFinalization: provider.Capabilities().SupportsToolChoice,
-				OnSyntheticUserMessage: persistSyntheticUserMessage,
-				OnResponseCompleted:    persistResponseCompleted,
-				OnTurnCompleted:        persistTurnCompleted,
-				OnEvent: func(ev llm.Event) error {
-					if onEvent != nil {
-						onEvent(ev)
-					}
-					return nil
-				},
-			})
-			if store != nil && sess != nil {
-				status := session.StatusComplete
-				switch progressiveResult.ExitReason {
-				case exitReasonTimeout, exitReasonCancelled:
-					status = session.StatusInterrupted
-				}
-				if err != nil && status != session.StatusInterrupted {
-					status = session.StatusError
-				}
-				_ = store.UpdateStatus(context.Background(), sess.ID, status)
-				_ = store.SetCurrent(context.Background(), sess.ID)
-			}
-			return serveJobsExecResult{Progressive: &progressiveResult}, err
 		}
 
-		_, err = runtime.RunWithEvents(ctx, false, false, []llm.Message{llm.UserText(userPrompt)}, llmReq, func(ev llm.Event) error {
-			if onEvent != nil {
-				onEvent(ev)
-			}
-			return nil
+		runner := newCmdRunner(baseCfg, cmdRunnerOptions{
+			Provider:       serveProvider,
+			Tools:          serveTools,
+			ReadDirs:       append([]string(nil), serveReadDirs...),
+			WriteDirs:      append([]string(nil), serveWriteDirs...),
+			ShellAllow:     append([]string(nil), serveShellAllow...),
+			MCP:            serveMCP,
+			SystemMessage:  serveSystemMessage,
+			MaxTurns:       serveMaxTurns,
+			Search:         serveSearch,
+			NoSearch:       serveNoSearch,
+			NativeSearch:   serveNativeSearch,
+			NoNativeSearch: serveNoNativeSearch,
+			Yolo:           serveYolo,
+			Auto:           serveAuto,
+			Debug:          serveDebug,
+			DebugRaw:       debugRaw,
+			ErrWriter:      io.Discard,
+			WireSpawn:      WireSpawnAgentRunner,
 		})
-		return serveJobsExecResult{}, err
+
+		result, err := runner.Run(ctx, runpkg.Request{
+			Platform:        runpkg.PlatformJob,
+			AgentName:       cfg.AgentName,
+			Prompt:          cfg.Instructions,
+			SessionID:       cfg.SessionID,
+			SessionName:     cfg.SessionName,
+			Persist:         cfg.sessionPersistenceEnabled(),
+			Provider:        cfg.Provider,
+			Model:           cfg.Model,
+			Cwd:             cfg.Cwd,
+			Tools:           cfg.Tools,
+			ReadDirs:        append([]string(nil), cfg.ReadDir...),
+			WriteDirs:       append([]string(nil), cfg.WriteDir...),
+			MaxTurns:        cfg.MaxTurns,
+			MaxOutputTokens: cfg.MaxOutputTokens,
+			Search:          search,
+			SystemMessage:   cfg.SystemMessage,
+			Skills:          cfg.Skills,
+			Progressive:     progressive,
+		}, eventSinkFunc(onEvent))
+		return serveJobsExecResult{Progressive: progressiveFromRunResult(result.Progressive)}, err
 	}
 }

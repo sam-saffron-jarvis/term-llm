@@ -16,6 +16,21 @@ type askProgressiveRunResult struct {
 	Err    error
 }
 
+type askProgressiveRunnerSink struct {
+	bridge *askProgressiveBridge
+}
+
+func (s askProgressiveRunnerSink) Event(ev llm.Event) {
+	_ = s.EventWithError(ev)
+}
+
+func (s askProgressiveRunnerSink) EventWithError(ev llm.Event) error {
+	if s.bridge == nil {
+		return nil
+	}
+	return s.bridge.HandleEvent(ev)
+}
+
 type askProgressiveBridge struct {
 	events chan ui.StreamEvent
 	stats  *ui.SessionStats

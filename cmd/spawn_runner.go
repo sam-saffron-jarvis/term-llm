@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"os"
 	"strings"
 	"sync"
 	"time"
@@ -13,6 +12,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/agents"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
+	runpkg "github.com/samsaffron/term-llm/internal/run"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/tools"
 )
@@ -113,428 +113,197 @@ func (r *SpawnAgentRunner) runAgentInternal(ctx context.Context, agentName strin
 
 	emptyResult := tools.SpawnAgentRunResult{}
 
-	// Load the agent
 	agent, err := r.registry.Get(agentName)
 	if err != nil {
 		return emptyResult, fmt.Errorf("load agent '%s': %w", agentName, err)
 	}
-
 	if strings.TrimSpace(opts.ModelOverride) != "" {
 		agentCopy := *agent
 		agentCopy.Model = strings.TrimSpace(opts.ModelOverride)
 		agent = &agentCopy
 	}
-
 	if err := agent.Validate(); err != nil {
 		return emptyResult, fmt.Errorf("invalid agent '%s': %w", agentName, err)
 	}
 
-	// Create a copy of config for potential provider overrides
-	cfg := r.cfg
-
-	// Apply provider overrides from agent
-	if agent.Provider != "" || agent.Model != "" {
-		// Deep copy to avoid modifying the original config (which may be shared
-		// by other sub-agents or the parent). This is critical because ProviderConfig
-		// contains pointer fields (UseNativeSearch, OAuthCreds) and slices (Models)
-		// that would be shared in a shallow copy.
-		cfgCopy := *cfg
-		cfgCopy.Providers = make(map[string]config.ProviderConfig, len(cfg.Providers))
-		for k, v := range cfg.Providers {
-			// Deep copy slice fields
-			if v.Models != nil {
-				v.Models = append([]string(nil), v.Models...)
-			}
-			if v.ModelConfigs != nil {
-				v.ModelConfigs = append([]config.ProviderModelConfig(nil), v.ModelConfigs...)
-				for i := range v.ModelConfigs {
-					v.ModelConfigs[i].ReasoningEfforts = append([]string(nil), v.ModelConfigs[i].ReasoningEfforts...)
-				}
-			}
-			// Deep copy pointer fields
-			if v.UseNativeSearch != nil {
-				tmp := *v.UseNativeSearch
-				v.UseNativeSearch = &tmp
-			}
-			if v.OAuthCreds != nil {
-				credsCopy := *v.OAuthCreds
-				v.OAuthCreds = &credsCopy
-			}
-			cfgCopy.Providers[k] = v
-		}
-		cfg = &cfgCopy
-
-		if agent.Provider != "" {
-			cfg.DefaultProvider = agent.Provider
-		}
-		if agent.Model != "" {
-			if err := applyAgentModelOverride(cfg, agent.Model); err != nil {
-				return emptyResult, fmt.Errorf("apply model override for agent %q: %w", agentName, err)
-			}
-		}
-	}
-
-	// Create provider
-	provider, err := llm.NewProvider(cfg)
-	if err != nil {
-		return emptyResult, fmt.Errorf("create provider: %w", err)
-	}
-
-	// Get provider name and model for session tracking
-	providerName := cfg.DefaultProvider
-	modelName := ""
-	if providerCfg := cfg.GetActiveProviderConfig(); providerCfg != nil {
-		modelName = providerCfg.Model
-	}
-	if modelName == "" && !isAgentFastModelAlias(agent.Model) {
-		modelName = agent.Model
-	}
-
-	// Create child session ID up front so provider-side continuity/cache hints are
-	// available even when local session persistence is disabled.
 	childSessionID := session.NewID()
-	persistChildSession := false
-	if r.store != nil {
-		childSession := &session.Session{
-			ID:         childSessionID,
-			ParentID:   r.parentSessionID,
-			IsSubagent: true,
-			Provider:   providerName,
-			Model:      modelName,
-			Agent:      agentName,
-			Summary:    fmt.Sprintf("@%s: %s", agentName, session.TruncateSummary(prompt)),
-			CreatedAt:  time.Now(),
-			UpdatedAt:  time.Now(),
-			Status:     session.StatusActive,
-		}
-		if cwd, err := os.Getwd(); err == nil {
-			childSession.CWD = cwd
-		}
-		if err := safeStoreOp(func() error { return r.store.Create(ctx, childSession) }); err != nil {
-			r.warn("session Create failed: %v", err)
-		} else {
-			persistChildSession = true
+	providerName, modelName := r.previewAgentProviderModel(agent)
+	sink := &spawnRunSink{callID: callID, cb: cb, provider: providerName, model: modelName}
+	sink.Start()
+	defer sink.Done()
 
-			// Save initial user prompt as first message
-			userMsg := session.NewMessage(childSessionID, llm.UserText(prompt), -1)
-			if err := safeStoreOp(func() error { return r.store.AddMessage(ctx, childSessionID, userMsg) }); err != nil {
-				r.warn("session AddMessage failed: %v", err)
-			}
-			if err := safeStoreOp(func() error { return r.store.IncrementUserTurns(ctx, childSessionID) }); err != nil {
-				r.warn("session IncrementUserTurns failed: %v", err)
-			}
-		}
-	}
-
-	// Create engine with default tool registry
-	engine := newEngine(provider, cfg)
-
-	// Set up tools from agent config (pass child session ID for nested agents)
-	toolMgr, err := r.setupAgentTools(cfg, engine, agent, depth, childSessionID)
-	if err != nil {
-		return emptyResult, fmt.Errorf("setup tools: %w", err)
-	}
-
-	// Set up callbacks to save messages incrementally (after tools setup)
-	// Track when streaming starts for duration calculation
-	streamStartTime := time.Now()
-	if persistChildSession {
-		// Response callback saves assistant message immediately (before tool execution)
-		// This ensures the message is persisted even if tool execution fails/crashes
-		engine.SetResponseCompletedCallback(func(ctx context.Context, turnIndex int, assistantMsg llm.Message, metrics llm.TurnMetrics) error {
-			sessionMsg := session.NewMessage(childSessionID, assistantMsg, -1)
-			sessionMsg.DurationMs = time.Since(streamStartTime).Milliseconds()
-			if err := r.store.AddMessage(ctx, childSessionID, sessionMsg); err != nil {
-				r.warn("session AddMessage failed: %v", err)
-			}
-			return nil
-		})
-
-		// Turn callback saves tool result messages and updates metrics
-		engine.SetTurnCompletedCallback(func(ctx context.Context, turnIndex int, turnMessages []llm.Message, metrics llm.TurnMetrics) error {
-			for _, msg := range turnMessages {
-				sessionMsg := session.NewMessage(childSessionID, msg, -1)
-				// Set duration for assistant messages (when responseCallback didn't run)
-				if msg.Role == llm.RoleAssistant {
-					sessionMsg.DurationMs = time.Since(streamStartTime).Milliseconds()
-				}
-				if err := r.store.AddMessage(ctx, childSessionID, sessionMsg); err != nil {
-					r.warn("session AddMessage failed: %v", err)
-				}
-			}
-			if err := r.store.UpdateMetrics(ctx, childSessionID, 1, metrics.ToolCalls, metrics.InputTokens, metrics.OutputTokens, metrics.CachedInputTokens, metrics.CacheWriteTokens); err != nil {
-				r.warn("session UpdateMetrics failed: %v", err)
-			}
-			if total, count := engine.ContextEstimateBaseline(); total > 0 && count > 0 {
-				if err := r.store.UpdateContextEstimate(ctx, childSessionID, total, count); err != nil {
-					r.warn("session UpdateContextEstimate failed: %v", err)
-				}
-			}
-			return nil
-		})
-	}
-
-	// Build system prompt
-	systemPrompt := ""
-	if agent.SystemPrompt != "" {
-		templateCtx, includeBaseDir, err := agentPromptTemplateContextAndBaseDir(agent, nil)
-		if err != nil {
-			return tools.SpawnAgentRunResult{}, fmt.Errorf("prepare agent system prompt context: %w", err)
-		}
-		systemPrompt, err = expandSystemPromptWithIncludes(agent.SystemPrompt, templateCtx, includeBaseDir)
-		if err != nil {
-			return tools.SpawnAgentRunResult{}, fmt.Errorf("expand agent system prompt: %w", err)
-		}
-
-		// Append project instructions if agent requests them
-		if agent.ShouldLoadProjectInstructions() {
-			if projectInstructions := agents.DiscoverProjectInstructions(); projectInstructions != "" {
-				systemPrompt += "\n\n---\n\n" + projectInstructions
-			}
-		}
-	}
-
-	// Build messages
-	messages := []llm.Message{}
-	if systemPrompt != "" {
-		messages = append(messages, llm.SystemText(systemPrompt))
-	}
-	userMsg := llm.UserText(prompt)
-	userMsg.ApprovalRole = "parent_agent_task"
-	messages = append(messages, userMsg)
-
-	// Determine max turns
-	maxTurns := 20
-	if agent.MaxTurns > 0 {
-		maxTurns = agent.MaxTurns
-	}
-
-	// Build request
-	req := llm.Request{
+	search := agent.Search
+	runner := newCmdRunner(r.cfg, cmdRunnerOptions{
+		ConfigSet:         true,
+		Yolo:              r.yoloMode,
+		DefaultMaxTurns:   20,
+		ErrWriter:         io.Discard,
+		Store:             r.store,
+		ParentApprovalMgr: r.parentApprovalMgr,
+	})
+	result, err := runner.Run(ctx, runpkg.Request{
+		Platform:                 runpkg.PlatformConsole,
+		AgentName:                agentName,
+		Prompt:                   prompt,
 		SessionID:                childSessionID,
-		Messages:                 messages,
+		SessionName:              fmt.Sprintf("@%s: %s", agentName, session.TruncateSummary(prompt)),
+		Persist:                  r.store != nil,
+		Model:                    strings.TrimSpace(opts.ModelOverride),
+		Search:                   &search,
+		ParentSessionID:          r.parentSessionID,
+		IsSubagent:               true,
+		Depth:                    depth,
+		ApprovalRole:             "parent_agent_task",
 		ApprovalTranscriptPrefix: subagentApprovalTranscriptPrefix(ctx),
-		Search:                   agent.Search,
-		ForceExternalSearch:      resolveForceExternalSearch(cfg, false, false),
-		ParallelToolCalls:        true,
-		MaxTurns:                 maxTurns,
-	}
+	}, sink)
 
-	// Add tools if any
-	if toolMgr != nil {
-		if specs := llm.ToolSpecsForRequest(engine.Tools(), agent.Search); len(specs) > 0 {
-			req.Tools = specs
-			req.ToolChoice = llm.ToolChoice{Mode: llm.ToolChoiceAuto}
+	output := sink.Output()
+	if output == "" {
+		output = result.Response
+	}
+	if r.store != nil {
+		status := session.StatusComplete
+		if err != nil {
+			status = session.StatusError
 		}
-	}
-
-	// Run the agent and collect output
-	output, err := r.runAndCollectWithCallback(ctx, engine, req, callID, cb, providerName, modelName)
-	if err != nil {
-		// Update session status on error
-		if persistChildSession {
-			dbCtx, dbCancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
-			if statusErr := r.store.UpdateStatus(dbCtx, childSessionID, session.StatusError); statusErr != nil {
-				r.warn("session UpdateStatus failed: %v", statusErr)
-			}
-			dbCancel()
-		}
-		return tools.SpawnAgentRunResult{Output: output, SessionID: childSessionID}, err
-	}
-
-	// Update session status on completion
-	if persistChildSession {
 		dbCtx, dbCancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
-		if statusErr := r.store.UpdateStatus(dbCtx, childSessionID, session.StatusComplete); statusErr != nil {
+		if statusErr := safeStoreOp(func() error { return r.store.UpdateStatus(dbCtx, childSessionID, status) }); statusErr != nil {
 			r.warn("session UpdateStatus failed: %v", statusErr)
 		}
 		dbCancel()
 	}
-
+	if err != nil {
+		return tools.SpawnAgentRunResult{Output: output, SessionID: childSessionID}, err
+	}
 	return tools.SpawnAgentRunResult{Output: output, SessionID: childSessionID}, nil
 }
 
-// setupAgentTools sets up tools based on agent configuration.
-// childSessionID is the session ID for this agent run, used as parent for nested agents.
-func (r *SpawnAgentRunner) setupAgentTools(cfg *config.Config, engine *llm.Engine, agent *agents.Agent, depth int, childSessionID string) (*tools.ToolManager, error) {
-	// Determine which tools to enable
-	var enabledTools string
-	if agent.HasEnabledList() {
-		enabledTools = strings.Join(agent.Tools.Enabled, ",")
-	} else if agent.HasDisabledList() {
-		allTools := tools.AllToolNames()
-		enabled := agent.GetEnabledTools(allTools)
-		enabledTools = strings.Join(enabled, ",")
+func (r *SpawnAgentRunner) previewAgentProviderModel(agent *agents.Agent) (string, string) {
+	cfg := cloneConfigForServeJob(r.cfg)
+	if agent != nil {
+		_ = applyProviderOverridesWithAgent(cfg, "", "", "", agent.Provider, agent.Model)
+	} else {
+		cfg.ApplyOverrides(cfg.Ask.Provider, cfg.Ask.Model)
 	}
+	return strings.TrimSpace(cfg.DefaultProvider), strings.TrimSpace(activeModel(cfg))
+}
 
-	if enabledTools == "" {
-		return nil, nil
-	}
+type spawnRunSink struct {
+	callID   string
+	cb       tools.SubagentEventCallback
+	provider string
+	model    string
 
-	// Build tool config
-	toolConfig := buildToolConfig(enabledTools, agent.Read.Dirs, nil, agent.Shell.Allow, cfg)
-	toolConfig.AgentDir = agent.SourcePath
-	if agent.Shell.AutoRun {
-		toolConfig.ShellAutoRun = true
+	mu       sync.Mutex
+	output   strings.Builder
+	started  bool
+	doneSent bool
+}
+
+func (s *spawnRunSink) Start() {
+	if s == nil || s.cb == nil || s.callID == "" {
+		return
 	}
-	if len(agent.Shell.Scripts) > 0 {
-		for _, script := range agent.Shell.Scripts {
-			toolConfig.ScriptCommands = append(toolConfig.ScriptCommands, script)
+	s.mu.Lock()
+	if s.started {
+		s.mu.Unlock()
+		return
+	}
+	s.started = true
+	provider := s.provider
+	model := s.model
+	s.mu.Unlock()
+	s.cb(s.callID, tools.SubagentEvent{Type: tools.SubagentEventInit, Provider: provider, Model: model})
+}
+
+func (s *spawnRunSink) Done() {
+	if s == nil || s.cb == nil || s.callID == "" {
+		return
+	}
+	s.mu.Lock()
+	if s.doneSent {
+		s.mu.Unlock()
+		return
+	}
+	s.doneSent = true
+	s.mu.Unlock()
+	s.cb(s.callID, tools.SubagentEvent{Type: tools.SubagentEventDone})
+}
+
+func (s *spawnRunSink) Output() string {
+	if s == nil {
+		return ""
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.output.String()
+}
+
+func (s *spawnRunSink) Event(event llm.Event) {
+	if s == nil {
+		return
+	}
+	s.Start()
+	s.mu.Lock()
+	if event.Type == llm.EventTextDelta {
+		s.output.WriteString(event.Text)
+	}
+	s.mu.Unlock()
+	if s.cb == nil || s.callID == "" {
+		return
+	}
+	subagentEvent := subagentEventFromLLM(event)
+	if subagentEvent.Type == "" {
+		return
+	}
+	s.cb(s.callID, subagentEvent)
+}
+
+func subagentEventFromLLM(event llm.Event) tools.SubagentEvent {
+	switch event.Type {
+	case llm.EventTextDelta:
+		return tools.SubagentEvent{Type: tools.SubagentEventText, Text: event.Text}
+	case llm.EventToolExecStart:
+		return tools.SubagentEvent{Type: tools.SubagentEventToolStart, ToolName: event.ToolName, ToolInfo: event.ToolInfo}
+	case llm.EventToolExecEnd:
+		return tools.SubagentEvent{Type: tools.SubagentEventToolEnd, ToolName: event.ToolName, Diffs: event.ToolDiffs, Images: event.ToolImages, Success: event.ToolSuccess}
+	case llm.EventPhase:
+		return tools.SubagentEvent{Type: tools.SubagentEventPhase, Phase: event.Text}
+	case llm.EventUsage:
+		if event.Use != nil {
+			return tools.SubagentEvent{Type: tools.SubagentEventUsage, InputTokens: event.Use.InputTokens, OutputTokens: event.Use.OutputTokens}
 		}
 	}
+	return tools.SubagentEvent{}
+}
 
-	applySpawnConfig(&toolConfig, tools.SpawnConfig{
-		MaxParallel:    agent.Spawn.MaxParallel,
-		MaxDepth:       agent.Spawn.MaxDepth,
-		DefaultTimeout: agent.Spawn.DefaultTimeout,
-		AllowedAgents:  agent.Spawn.AllowedAgents,
-		AgentModels:    cloneStringMap(agent.Spawn.AgentModels),
-	})
-
-	if errs := toolConfig.Validate(); len(errs) > 0 {
-		return nil, fmt.Errorf("invalid tool config: %v", errs[0])
-	}
-
-	toolMgr, err := tools.NewToolManager(&toolConfig, cfg)
+// setupAgentTools keeps the historical spawn-agent tool wiring path available for
+// focused tests while delegating to the shared SessionSettings tool setup.
+func (r *SpawnAgentRunner) setupAgentTools(cfg *config.Config, engine *llm.Engine, agent *agents.Agent, depth int, childSessionID string) (*tools.ToolManager, error) {
+	settings, err := ResolveSettings(cfg, agent, CLIFlags{}, cfg.Ask.Provider, cfg.Ask.Model, cfg.Ask.Instructions, cfg.Ask.MaxTurns, 20)
 	if err != nil {
 		return nil, err
 	}
-	wireImageRecorder(toolMgr.Registry, agent.Name, childSessionID)
-	wireFileRecorder(toolMgr.Registry, cfg)
-
-	// Register any custom script-backed tools declared in agent.yaml
-	if len(agent.Tools.Custom) > 0 {
-		if err := toolMgr.Registry.RegisterCustomTools(agent.Tools.Custom, agent.SourcePath); err != nil {
-			return nil, fmt.Errorf("custom tools: %w", err)
-		}
+	settings.SessionID = childSessionID
+	settings.Provider = strings.TrimSpace(cfg.DefaultProvider)
+	settings.Model = strings.TrimSpace(activeModel(cfg))
+	toolMgr, err := settings.SetupToolManager(cfg, engine)
+	if err != nil || toolMgr == nil {
+		return toolMgr, err
 	}
-
-	// Set yolo mode for standalone sub-agent runners. When a parent approval
-	// manager exists, inherit yolo dynamically from the parent instead so a
-	// Shift+Tab toggle in the chat can affect already-created descendants.
 	if r.yoloMode && r.parentApprovalMgr == nil {
 		toolMgr.ApprovalMgr.SetYoloMode(true)
 	}
-
-	// Inherit parent's session approvals and prompting capability
 	if r.parentApprovalMgr != nil {
 		if err := toolMgr.ApprovalMgr.SetParent(r.parentApprovalMgr); err != nil {
 			return nil, fmt.Errorf("failed to set parent approval manager: %w", err)
 		}
 	}
-
-	toolMgr.SetupEngine(engine)
-
-	// Wire up spawn_agent runner for nested agents (with incremented depth)
-	if spawnTool := toolMgr.GetSpawnAgentTool(); spawnTool != nil {
-		// Set the depth for this nested spawn tool
-		spawnTool.SetDepth(depth)
-		// Create a new runner - this sub-agent's ApprovalMgr becomes the parent for nested agents
-		// Pass store and childSessionID so nested agents can track their sessions
-		childRunner := &SpawnAgentRunner{
-			cfg:               r.cfg,
-			registry:          r.registry,
-			yoloMode:          r.yoloMode,
-			parentApprovalMgr: toolMgr.ApprovalMgr,
-			store:             r.store,
-			parentSessionID:   childSessionID, // This agent's session becomes parent for nested agents
-			warnFunc:          r.warnFunc,
-			wg:                r.wg, // share parent's WaitGroup so all nested runs are tracked
-		}
-		spawnTool.SetRunner(childRunner)
-	}
-
-	return toolMgr, nil
-}
-
-// runAndCollectWithCallback runs the engine and collects text output, optionally forwarding events.
-func (r *SpawnAgentRunner) runAndCollectWithCallback(
-	ctx context.Context, engine *llm.Engine, req llm.Request,
-	callID string, cb tools.SubagentEventCallback,
-	providerName, modelName string) (string, error) {
-	stream, err := engine.Stream(ctx, req)
+	_, err = WireSpawnAgentRunnerWithStoreAndDepth(cfg, toolMgr, r.yoloMode, r.store, childSessionID, depth)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
-	defer stream.Close()
-
-	// Send init event with provider/model info
-	if cb != nil && callID != "" {
-		cb(callID, tools.SubagentEvent{
-			Type:     tools.SubagentEventInit,
-			Provider: providerName,
-			Model:    modelName,
-		})
-	}
-
-	var output strings.Builder
-	for {
-		event, err := stream.Recv()
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			// Send done event before returning on stream error
-			if cb != nil && callID != "" {
-				cb(callID, tools.SubagentEvent{Type: tools.SubagentEventDone})
-			}
-			// Return partial output alongside the error to aid debugging.
-			// The caller can check output.String() for any content collected before the failure.
-			return output.String(), err
-		}
-
-		switch event.Type {
-		case llm.EventTextDelta:
-			output.WriteString(event.Text)
-			if cb != nil && callID != "" {
-				cb(callID, tools.SubagentEvent{Type: tools.SubagentEventText, Text: event.Text})
-			}
-		case llm.EventToolExecStart:
-			if cb != nil && callID != "" {
-				cb(callID, tools.SubagentEvent{
-					Type:     tools.SubagentEventToolStart,
-					ToolName: event.ToolName,
-					ToolInfo: event.ToolInfo,
-				})
-			}
-		case llm.EventToolExecEnd:
-			if cb != nil && callID != "" {
-				cb(callID, tools.SubagentEvent{
-					Type:     tools.SubagentEventToolEnd,
-					ToolName: event.ToolName,
-					Diffs:    event.ToolDiffs,
-					Images:   event.ToolImages,
-					Success:  event.ToolSuccess,
-				})
-			}
-		case llm.EventPhase:
-			if cb != nil && callID != "" {
-				cb(callID, tools.SubagentEvent{Type: tools.SubagentEventPhase, Phase: event.Text})
-			}
-		case llm.EventUsage:
-			if cb != nil && callID != "" && event.Use != nil {
-				cb(callID, tools.SubagentEvent{
-					Type:         tools.SubagentEventUsage,
-					InputTokens:  event.Use.InputTokens,
-					OutputTokens: event.Use.OutputTokens,
-				})
-			}
-		case llm.EventError:
-			if event.Err != nil {
-				if cb != nil && callID != "" {
-					cb(callID, tools.SubagentEvent{Type: tools.SubagentEventDone})
-				}
-				return output.String(), event.Err
-			}
-		}
-	}
-
-	// Send done event
-	if cb != nil && callID != "" {
-		cb(callID, tools.SubagentEvent{Type: tools.SubagentEventDone})
-	}
-
-	return output.String(), nil
+	return toolMgr, nil
 }
 
 // safeStoreOp wraps a store operation with panic recovery so that panics in

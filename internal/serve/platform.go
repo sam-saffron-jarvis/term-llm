@@ -7,12 +7,14 @@ import (
 	"github.com/samsaffron/term-llm/internal/agents"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
+	runpkg "github.com/samsaffron/term-llm/internal/run"
 	"github.com/samsaffron/term-llm/internal/session"
 )
 
 // SessionRuntime is a per-conversation runtime for non-web platforms.
 type SessionRuntime struct {
 	Engine       *llm.Engine
+	Provider     llm.Provider
 	ProviderName string
 	ModelName    string
 	Cleanup      func()
@@ -38,6 +40,7 @@ type Settings struct {
 	Agent               string
 	PlatformMessages    agents.PlatformMessagesConfig
 	Store               session.Store
+	Runner              runpkg.Runner
 	// NewSession creates a fresh runtime instance for a new conversation.
 	// Called once per platform session (for example, per Telegram chat session).
 	NewSession func(context.Context) (*SessionRuntime, error)

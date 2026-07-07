@@ -589,6 +589,32 @@ func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent 
 		model.SetFooterWarning("agent output_tool is ignored in chat; use ask for tool-captured output")
 	}
 	model.SetRootContext(ctx)
+	model.SetRunner(newCmdRunner(cfg, cmdRunnerOptions{
+		Provider:           chatProvider,
+		ConfigSet:          true,
+		ConfigProvider:     cfg.Chat.Provider,
+		ConfigModel:        cfg.Chat.Model,
+		ConfigInstructions: cfg.Chat.Instructions,
+		ConfigMaxTurns:     cfg.Chat.MaxTurns,
+		Tools:              settings.Tools,
+		ReadDirs:           append([]string(nil), chatReadDirs...),
+		WriteDirs:          append([]string(nil), chatWriteDirs...),
+		ShellAllow:         append([]string(nil), chatShellAllow...),
+		MCP:                settings.MCP,
+		MaxTurns:           settings.MaxTurns,
+		DefaultMaxTurns:    200,
+		Search:             settings.Search,
+		NoSearch:           chatNoSearch,
+		NativeSearch:       chatNativeSearch,
+		NoNativeSearch:     chatNoNativeSearch,
+		Yolo:               chatYolo,
+		Auto:               chatAutoApproval,
+		Debug:              chatDebug,
+		DebugRaw:           debugRaw,
+		ErrWriter:          cmd.ErrOrStderr(),
+		Store:              store,
+		ParentApprovalMgr:  approvalMgr,
+	}))
 
 	// Wire handover auto-send if pending from previous iteration
 	if handoverAutoSend != "" {

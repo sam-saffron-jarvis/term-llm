@@ -20,11 +20,12 @@ import (
 	"github.com/samsaffron/term-llm/internal/clipboard"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
-
 	"github.com/samsaffron/term-llm/internal/mcp"
+	runpkg "github.com/samsaffron/term-llm/internal/run"
+	"github.com/samsaffron/term-llm/internal/session"
+
 	internalreasoning "github.com/samsaffron/term-llm/internal/reasoning"
 	render "github.com/samsaffron/term-llm/internal/render/chat"
-	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/termimage"
 	"github.com/samsaffron/term-llm/internal/tools"
 	"github.com/samsaffron/term-llm/internal/tui/inspector"
@@ -165,6 +166,7 @@ type Model struct {
 	provider     llm.Provider
 	fastProvider llm.Provider
 	engine       *llm.Engine
+	runner       runpkg.Runner
 	config       *config.Config
 	providerName string
 	providerKey  string
@@ -1329,6 +1331,11 @@ func (m *Model) SetRootContext(ctx context.Context) {
 		ctx = context.Background()
 	}
 	m.rootCtx = ctx
+}
+
+// SetRunner configures the shared execution runner used for chat turns.
+func (m *Model) SetRunner(runner runpkg.Runner) {
+	m.runner = runner
 }
 
 // SetProgram gives the model a handle to the running Bubble Tea program for

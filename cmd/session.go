@@ -595,6 +595,12 @@ func WireSpawnAgentRunner(cfg *config.Config, toolMgr *tools.ToolManager, yoloMo
 // store is used to save subagent turns, parentSessionID links child sessions to parent.
 // Returns the runner so callers can call Wait() to drain in-flight runs before closing the store.
 func WireSpawnAgentRunnerWithStore(cfg *config.Config, toolMgr *tools.ToolManager, yoloMode bool, store session.Store, parentSessionID string) (*SpawnAgentRunner, error) {
+	return WireSpawnAgentRunnerWithStoreAndDepth(cfg, toolMgr, yoloMode, store, parentSessionID, 0)
+}
+
+// WireSpawnAgentRunnerWithStoreAndDepth is WireSpawnAgentRunnerWithStore with an
+// explicit current depth for nested spawn_agent tools.
+func WireSpawnAgentRunnerWithStoreAndDepth(cfg *config.Config, toolMgr *tools.ToolManager, yoloMode bool, store session.Store, parentSessionID string, depth int) (*SpawnAgentRunner, error) {
 	if toolMgr == nil {
 		return nil, nil
 	}
@@ -606,6 +612,7 @@ func WireSpawnAgentRunnerWithStore(cfg *config.Config, toolMgr *tools.ToolManage
 	if err != nil {
 		return nil, fmt.Errorf("setup spawn_agent: %w", err)
 	}
+	spawnTool.SetDepth(depth)
 	spawnTool.SetRunner(runner)
 	return runner, nil
 }
@@ -846,6 +853,9 @@ func RegisterSkillToolWithEngine(engine *llm.Engine, toolMgr *tools.ToolManager,
 // InjectSkillsMetadata appends <available_skills> metadata to instructions when available.
 func InjectSkillsMetadata(instructions string, skillsSetup *skills.Setup) string {
 	if skillsSetup == nil {
+		return instructions
+	}
+	if strings.Contains(instructions, "<available_skills>") {
 		return instructions
 	}
 	if suppressed, known := skillsSetup.PromptMetadataSuppressed(); suppressed || (!known && skills.CheckAgentsMdForSkills()) {

@@ -13,6 +13,7 @@ import (
 	"github.com/muesli/reflow/wordwrap"
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/mcp"
+	runpkg "github.com/samsaffron/term-llm/internal/run"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/ui"
 )
@@ -89,14 +90,17 @@ func (m *Model) appendStreamingContextTurnMessages(turnMessages []llm.Message) {
 	m.invalidateContextEstimateCacheLocked()
 }
 
-// clearStreamCallbacks detaches every engine callback wired in startStream
-// and resets the per-turn "persist as we go" state. Safe to call even when
-// streaming never started; safe to call from any goroutine.
+// clearStreamCallbacks detaches legacy direct-engine callbacks when chat is not
+// using the shared runner and resets the per-turn "persist as we go" state. The
+// runner path owns borrowed-engine callback lifetimes itself, so clearing them
+// here would race the active run.
 func (m *Model) clearStreamCallbacks() {
-	m.engine.SetAssistantSnapshotCallback(nil)
-	m.engine.SetResponseCompletedCallback(nil)
-	m.engine.SetTurnCompletedCallback(nil)
-	m.engine.SetCompactionCallback(nil)
+	if m.runner == nil {
+		m.engine.SetAssistantSnapshotCallback(nil)
+		m.engine.SetResponseCompletedCallback(nil)
+		m.engine.SetTurnCompletedCallback(nil)
+		m.engine.SetCompactionCallback(nil)
+	}
 	m.pendingMu.Lock()
 	m.pendingAssistantMsgID = 0
 	m.pendingAssistantTextSet = false
@@ -107,13 +111,9 @@ func (m *Model) clearStreamCallbacks() {
 	m.clearStreamingContextMessages()
 }
 
-// setupStreamPersistenceCallbacks wires snapshot/response/turn callbacks on the
-// engine so assistant messages and tool results persist incrementally as the
-// turn progresses. The snapshot and response callbacks upsert the same pending
-// row so a mid-stream crash still leaves something on disk. The turn callback
-// skips RoleUser messages (interjections) because the ui.StreamEventInterjection
-// handler persists those — appending them here would create duplicate rows.
-func (m *Model) setupStreamPersistenceCallbacks(streamStart time.Time) {
+// streamPersistenceCallbacks builds callbacks so assistant messages and tool
+// results persist incrementally as the turn progresses.
+func (m *Model) streamPersistenceCallbacks(streamStart time.Time) (llm.AssistantSnapshotCallback, llm.ResponseCompletedCallback, llm.TurnCompletedCallback) {
 	streamSess := m.sess
 	streamSessionID := ""
 	if streamSess != nil {
@@ -159,25 +159,23 @@ func (m *Model) setupStreamPersistenceCallbacks(streamStart time.Time) {
 		m.pendingAssistantTextSet = finalizeText
 	}
 
-	m.engine.SetAssistantSnapshotCallback(func(ctx context.Context, _ int, assistantMsg llm.Message) error {
+	assistantSnapshot := func(ctx context.Context, _ int, assistantMsg llm.Message) error {
 		if staleStreamSession() {
 			return nil
 		}
 		m.updateStreamingContextAssistant(assistantMsg)
 		persistPendingAssistant(ctx, assistantMsg, false)
 		return nil
-	})
-
-	m.engine.SetResponseCompletedCallback(func(ctx context.Context, _ int, assistantMsg llm.Message, _ llm.TurnMetrics) error {
+	}
+	responseCompleted := func(ctx context.Context, _ int, assistantMsg llm.Message, _ llm.TurnMetrics) error {
 		if staleStreamSession() {
 			return nil
 		}
 		m.updateStreamingContextAssistant(assistantMsg)
 		persistPendingAssistant(ctx, assistantMsg, true)
 		return nil
-	})
-
-	m.engine.SetTurnCompletedCallback(func(ctx context.Context, _ int, turnMessages []llm.Message, metrics llm.TurnMetrics) error {
+	}
+	turnCompleted := func(ctx context.Context, _ int, turnMessages []llm.Message, metrics llm.TurnMetrics) error {
 		if staleStreamSession() {
 			return nil
 		}
@@ -185,8 +183,6 @@ func (m *Model) setupStreamPersistenceCallbacks(streamStart time.Time) {
 
 		appendStart := 0
 		if len(turnMessages) > 0 && turnMessages[0].Role == llm.RoleAssistant {
-			// The estimate snapshot was already updated above. Persist/update the
-			// pending assistant row separately.
 			m.pendingMu.Lock()
 			finalizeText := !m.pendingAssistantTextSet
 			m.pendingMu.Unlock()
@@ -216,7 +212,64 @@ func (m *Model) setupStreamPersistenceCallbacks(streamStart time.Time) {
 			m.persistContextEstimate(ctx)
 		}
 		return nil
-	})
+	}
+	return assistantSnapshot, responseCompleted, turnCompleted
+}
+
+// setupStreamPersistenceCallbacks wires snapshot/response/turn callbacks on the engine.
+func (m *Model) setupStreamPersistenceCallbacks(streamStart time.Time) {
+	assistantSnapshot, responseCompleted, turnCompleted := m.streamPersistenceCallbacks(streamStart)
+	m.engine.SetAssistantSnapshotCallback(assistantSnapshot)
+	m.engine.SetResponseCompletedCallback(responseCompleted)
+	m.engine.SetTurnCompletedCallback(turnCompleted)
+}
+
+func (m *Model) streamCompactionCallback(streamSess *session.Session) llm.CompactionCallback {
+	streamSessionID := ""
+	if streamSess != nil {
+		streamSessionID = streamSess.ID
+	}
+	return func(ctx context.Context, result *llm.CompactionResult) error {
+		if streamSessionID != "" && (m.sess == nil || m.sess.ID != streamSessionID) {
+			return nil
+		}
+		m.messagesMu.Lock()
+		full := append([]session.Message(nil), m.messages...)
+		m.messagesMu.Unlock()
+		updated, activeStart, refreshed, err := session.ApplyCompaction(ctx, m.store, streamSess, full, result)
+		if err != nil {
+			return err
+		}
+		m.messagesMu.Lock()
+		m.messages = updated
+		m.compactionIdx = activeStart
+		m.messagesMu.Unlock()
+		if refreshed != nil {
+			m.sess = refreshed
+		}
+		if result != nil {
+			m.recordCompactionUsage(ctx, streamSessionID, result.Usage)
+		}
+		if m.engine != nil {
+			m.engine.SetContextEstimateBaseline(0, 0)
+		}
+		if result != nil {
+			m.setStreamingContextMessages(result.NewMessages)
+		}
+		m.invalidateHistoryCache()
+		// Any pending assistant row that snapshot had upserted is now stale:
+		// compaction rewrote the message table. Clear the tracking so the
+		// next snapshot/response inserts fresh instead of trying to update
+		// a row that no longer exists.
+		m.pendingMu.Lock()
+		m.pendingAssistantMsgID = 0
+		m.pendingAssistantTextSet = false
+		m.pendingAssistantSnapshot = llm.Message{}
+		m.pendingAssistantSnapshotSet = false
+		m.completedAssistantTurns = 0
+		m.pendingMu.Unlock()
+		return nil
+	}
 }
 
 func (m *Model) shouldInjectPlatformDeveloperMessage() bool {
@@ -567,8 +620,12 @@ func (m *Model) startStream(content string) tea.Cmd {
 			MaxTurns:                m.maxTurns,
 		}
 
-		// Set up callbacks for incremental message saving (sequence auto-allocated)
-		m.setupStreamPersistenceCallbacks(m.streamStartTime)
+		assistantSnapshotCB, responseCompletedCB, turnCompletedCB := m.streamPersistenceCallbacks(m.streamStartTime)
+		if m.runner == nil {
+			m.engine.SetAssistantSnapshotCallback(assistantSnapshotCB)
+			m.engine.SetResponseCompletedCallback(responseCompletedCB)
+			m.engine.SetTurnCompletedCallback(turnCompletedCB)
+		}
 
 		// Enable context compaction or tracking for models with known input limits.
 		// Re-set each turn in case the provider/model changed mid-session.
@@ -577,56 +634,62 @@ func (m *Model) startStream(content string) tea.Cmd {
 		// Set up compaction callback to update in-memory state and persist.
 		// This runs on the engine goroutine, so we protect m.messages with a mutex.
 		streamSess := m.sess
-		streamSessionID := ""
-		if streamSess != nil {
-			streamSessionID = streamSess.ID
+		compactionCB := m.streamCompactionCallback(streamSess)
+		if m.runner == nil {
+			m.engine.SetCompactionCallback(compactionCB)
 		}
-		m.engine.SetCompactionCallback(func(ctx context.Context, result *llm.CompactionResult) error {
-			if streamSessionID != "" && (m.sess == nil || m.sess.ID != streamSessionID) {
-				return nil
-			}
-			m.messagesMu.Lock()
-			full := append([]session.Message(nil), m.messages...)
-			m.messagesMu.Unlock()
-			updated, activeStart, refreshed, err := session.ApplyCompaction(ctx, m.store, streamSess, full, result)
-			if err != nil {
-				return err
-			}
-			m.messagesMu.Lock()
-			m.messages = updated
-			m.compactionIdx = activeStart
-			m.messagesMu.Unlock()
-			if refreshed != nil {
-				m.sess = refreshed
-			}
-			if result != nil {
-				m.recordCompactionUsage(ctx, streamSessionID, result.Usage)
-			}
-			if m.engine != nil {
-				m.engine.SetContextEstimateBaseline(0, 0)
-			}
-			if result != nil {
-				m.setStreamingContextMessages(result.NewMessages)
-			}
-			m.invalidateHistoryCache()
-			// Any pending assistant row that snapshot had upserted is now stale:
-			// compaction rewrote the message table. Clear the tracking so the
-			// next snapshot/response inserts fresh instead of trying to update
-			// a row that no longer exists.
-			m.pendingMu.Lock()
-			m.pendingAssistantMsgID = 0
-			m.pendingAssistantTextSet = false
-			m.pendingAssistantSnapshot = llm.Message{}
-			m.pendingAssistantSnapshotSet = false
-			m.completedAssistantTurns = 0
-			m.pendingMu.Unlock()
-			return nil
-		})
 
 		// Start streaming in background - adapter handles all event conversion
 		m.streamDone = make(chan struct{})
 		go func() {
 			defer close(m.streamDone)
+			if m.runner != nil {
+				includeConfiguredTools := false
+				searchEnabled := m.searchEnabled
+				forceExternalSearch := m.forceExternalSearch
+				runReq := runpkg.Request{
+					Platform:                  runpkg.PlatformChat,
+					AgentName:                 m.agentName,
+					Messages:                  messages,
+					Engine:                    m.engine,
+					ProviderInstance:          m.provider,
+					SessionID:                 req.SessionID,
+					DeferSession:              true,
+					DisableRuntimePersistence: true,
+					Provider:                  strings.TrimSpace(m.providerKey),
+					Model:                     strings.TrimSpace(m.modelName),
+					Tools:                     m.toolsStr,
+					MCP:                       m.mcpStr,
+					SystemMessage:             m.config.Chat.Instructions,
+					MaxTurns:                  m.maxTurns,
+					MaxTurnsSet:               m.maxTurns > 0,
+					Search:                    &searchEnabled,
+					ForceExternalSearch:       &forceExternalSearch,
+					DisableExternalWebFetch:   m.disableExternalWebFetch,
+					ExtraTools:                reqTools,
+					IncludeConfiguredTools:    &includeConfiguredTools,
+					ServiceTier:               serviceTier,
+					ServiceTierSet:            serviceTierSet,
+					OnAssistantSnapshot:       assistantSnapshotCB,
+					OnResponseCompleted:       responseCompletedCB,
+					OnTurnCompleted:           turnCompletedCB,
+					OnCompaction:              compactionCB,
+				}
+				runCtx, cancelRun := context.WithCancel(ctx)
+				defer cancelRun()
+				pipe := runpkg.NewEventPipe(runCtx, ui.DefaultStreamBufferSize)
+				done := make(chan struct{})
+				go func() {
+					defer close(done)
+					_, err := m.runner.Run(runCtx, runReq, pipe)
+					pipe.CloseWithError(err)
+				}()
+				adapter.ProcessStream(runCtx, pipe)
+				cancelRun()
+				<-done
+				return
+			}
+
 			stream, err := m.engine.Stream(ctx, req)
 			if err != nil {
 				adapter.EmitErrorAndClose(err)
