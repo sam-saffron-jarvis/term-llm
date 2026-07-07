@@ -25,9 +25,14 @@ const (
 )
 
 const (
-	terminalTitleMaxRunes       = 60
+	terminalTitleMaxRunes       = 120
 	liveTitleGenerationMaxTries = 2
+	liveTitleFallbackDelay      = 30 * time.Second
 )
+
+type titleFallbackTickMsg struct {
+	sessionID string
+}
 
 // ParseTerminalTitleMode normalizes a chat.terminal_title config value.
 // Empty values default to smart. The bool is false only for unknown non-empty values.
@@ -59,26 +64,43 @@ func buildTitle(st titleState) string {
 	task := titleSegment(st.Task)
 	model := titleSegment(st.Model)
 
-	segments := make([]string, 0, 3)
-	if agent != "" {
-		segments = append(segments, agent)
-	}
 	if task == "" {
 		task = "term-llm"
 	}
-	segments = append(segments, task)
 
+	metaSegments := make([]string, 0, 2)
+	if agent != "" {
+		metaSegments = append(metaSegments, agent)
+	}
+	if model != "" {
+		metaSegments = append(metaSegments, model)
+	}
+
+	prefix := ""
 	if st.Attention {
-		return limitTitleRunes("‼ "+strings.Join(segments, " · "), terminalTitleMaxRunes)
+		prefix = "‼ "
 	}
-
-	if st.Streaming {
-		segments = append(segments, streamingTitleActivity(st))
-	} else if model != "" {
-		segments = append(segments, model)
+	suffix := ""
+	if len(metaSegments) > 0 {
+		suffix = " · " + strings.Join(metaSegments, " · ")
 	}
+	return buildTitleWithElidedTask(prefix, task, suffix)
+}
 
-	return limitTitleRunes(strings.Join(segments, " · "), terminalTitleMaxRunes)
+func buildTitleWithElidedTask(prefix, task, suffix string) string {
+	full := strings.TrimSpace(prefix + task + suffix)
+	if utf8.RuneCountInString(full) <= terminalTitleMaxRunes {
+		return full
+	}
+	if suffix == "" {
+		return limitTitleRunes(full, terminalTitleMaxRunes)
+	}
+	availableTaskRunes := terminalTitleMaxRunes - utf8.RuneCountInString(prefix) - utf8.RuneCountInString(suffix)
+	if availableTaskRunes < 1 {
+		return limitTitleRunes(full, terminalTitleMaxRunes)
+	}
+	task = limitTitleRunes(task, availableTaskRunes)
+	return strings.TrimSpace(prefix + task + suffix)
 }
 
 func titleSegment(s string) string {
@@ -557,7 +579,27 @@ func (m *Model) resetTitleGenerationStateForSession() {
 	m.titleGenerationInFlight = false
 }
 
+func (m *Model) scheduleTitleFallbackCmd() tea.Cmd {
+	if m == nil || m.sess == nil || m.fastProvider == nil || m.store == nil {
+		return nil
+	}
+	if strings.TrimSpace(m.sess.GeneratedShortTitle) != "" {
+		return nil
+	}
+	sessionID := strings.TrimSpace(m.sess.ID)
+	if sessionID == "" {
+		return nil
+	}
+	return tea.Tick(liveTitleFallbackDelay, func(time.Time) tea.Msg {
+		return titleFallbackTickMsg{sessionID: sessionID}
+	})
+}
+
 func (m *Model) maybeGenerateSessionTitleCmd() tea.Cmd {
+	return m.generateSessionTitleCmd(false, false, 0)
+}
+
+func (m *Model) generateSessionTitleCmd(force bool, clearManualName bool, manualEditVersion uint64) tea.Cmd {
 	if m == nil || m.sess == nil || m.fastProvider == nil || m.store == nil {
 		return nil
 	}
@@ -568,10 +610,13 @@ func (m *Model) maybeGenerateSessionTitleCmd() tea.Cmd {
 	if m.titleGenerationSessionID != sessionID {
 		m.resetTitleGenerationStateForSession()
 	}
-	if strings.TrimSpace(m.sess.GeneratedShortTitle) != "" || m.titleGenerationInFlight {
+	if m.titleGenerationInFlight {
 		return nil
 	}
-	if m.titleGenerationAttempts >= liveTitleGenerationMaxTries {
+	if !force && strings.TrimSpace(m.sess.GeneratedShortTitle) != "" {
+		return nil
+	}
+	if !force && m.titleGenerationAttempts >= liveTitleGenerationMaxTries {
 		return nil
 	}
 
@@ -581,7 +626,7 @@ func (m *Model) maybeGenerateSessionTitleCmd() tea.Cmd {
 	if len(messages) == 0 {
 		return nil
 	}
-	if m.titleGenerationAttempts > 0 && len(messages) <= m.titleGenerationLastMessageCount {
+	if !force && m.titleGenerationAttempts > 0 && len(messages) <= m.titleGenerationLastMessageCount {
 		return nil
 	}
 
@@ -599,17 +644,22 @@ func (m *Model) maybeGenerateSessionTitleCmd() tea.Cmd {
 	return func() tea.Msg {
 		cand, err := sessiontitle.Generate(rootCtx, provider, &sessCopy, messages)
 		if err != nil {
-			return titleGeneratedMsg{sessionID: sessionID, err: err}
+			return titleGeneratedMsg{sessionID: sessionID, err: err, force: force, clearManualName: clearManualName, manualEditVersion: manualEditVersion}
 		}
 		generatedAt := time.Now().UTC()
-		if err := session.UpdateGeneratedTitle(rootCtx, store, &sessCopy, cand.ShortTitle, cand.LongTitle, generatedAt, basisSeq); err != nil {
-			return titleGeneratedMsg{sessionID: sessionID, err: err}
+		if !force {
+			if err := session.UpdateGeneratedTitle(rootCtx, store, &sessCopy, cand.ShortTitle, cand.LongTitle, generatedAt, basisSeq); err != nil {
+				return titleGeneratedMsg{sessionID: sessionID, err: err}
+			}
 		}
 		return titleGeneratedMsg{
-			sessionID:   sessionID,
-			candidate:   cand,
-			generatedAt: generatedAt,
-			basisMsgSeq: basisSeq,
+			sessionID:         sessionID,
+			candidate:         cand,
+			generatedAt:       generatedAt,
+			basisMsgSeq:       basisSeq,
+			force:             force,
+			clearManualName:   clearManualName,
+			manualEditVersion: manualEditVersion,
 		}
 	}
 }

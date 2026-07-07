@@ -283,6 +283,7 @@ type Model struct {
 	titleGenerationAttempts         int
 	titleGenerationLastMessageCount int
 	titleGenerationInFlight         bool
+	titleManualEditVersion          uint64
 
 	// Inspector mode
 	inspectorMode  bool
@@ -476,11 +477,14 @@ type (
 	handoverCancelMsg     struct{}
 	handoverRenameDoneMsg struct{ err error }
 	titleGeneratedMsg     struct {
-		sessionID   string
-		candidate   sessiontitle.Candidate
-		generatedAt time.Time
-		basisMsgSeq int
-		err         error
+		sessionID         string
+		candidate         sessiontitle.Candidate
+		generatedAt       time.Time
+		basisMsgSeq       int
+		err               error
+		force             bool
+		clearManualName   bool
+		manualEditVersion uint64
 	}
 	mcpStatusUpdateMsg struct{ update mcp.StatusUpdate }
 	GuardianReviewMsg  struct{ Message string }
@@ -1863,12 +1867,54 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Silently ignore — rename is best-effort background work.
 		return m, nil
 
+	case titleFallbackTickMsg:
+		if m.sess != nil && msg.sessionID == m.sess.ID {
+			if cmd := m.maybeGenerateSessionTitleCmd(); cmd != nil {
+				return m, cmd
+			}
+		}
+		return m, nil
+
 	case titleGeneratedMsg:
 		if msg.sessionID == m.titleGenerationSessionID {
 			m.titleGenerationInFlight = false
 		}
-		if msg.sessionID == "" || m.sess == nil || msg.sessionID != m.sess.ID || msg.err != nil {
+		if msg.sessionID == "" || m.sess == nil || msg.sessionID != m.sess.ID {
 			return m, nil
+		}
+		if msg.err != nil {
+			if msg.force {
+				return m.showFooterError(fmt.Sprintf("Title generation failed: %v", msg.err))
+			}
+			return m, nil
+		}
+		if msg.force {
+			if msg.manualEditVersion != m.titleManualEditVersion {
+				return m, nil
+			}
+			if msg.clearManualName {
+				m.sess.Name = ""
+			} else if strings.TrimSpace(m.sess.Name) != "" || m.sess.TitleSource == session.TitleSourceUser {
+				return m, nil
+			}
+			m.sess.GeneratedShortTitle = msg.candidate.ShortTitle
+			m.sess.GeneratedLongTitle = msg.candidate.LongTitle
+			m.sess.TitleSource = session.TitleSourceGenerated
+			m.sess.TitleGeneratedAt = msg.generatedAt
+			m.sess.TitleBasisMsgSeq = msg.basisMsgSeq
+			if m.store != nil {
+				var err error
+				if msg.clearManualName {
+					err = m.store.Update(context.Background(), m.sess)
+				} else {
+					err = session.UpdateGeneratedTitle(context.Background(), m.store, m.sess, msg.candidate.ShortTitle, msg.candidate.LongTitle, msg.generatedAt, msg.basisMsgSeq)
+				}
+				if err != nil {
+					return m.showFooterError(fmt.Sprintf("Failed to update title: %v", err))
+				}
+			}
+			updated, footerCmd := m.showFooterSuccess(fmt.Sprintf("Updated title: %s", msg.candidate.ShortTitle))
+			return updated, tea.Batch(footerCmd, m.terminalTitleCmd())
 		}
 		if strings.TrimSpace(m.sess.GeneratedShortTitle) == "" {
 			m.sess.GeneratedShortTitle = msg.candidate.ShortTitle

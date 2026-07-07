@@ -430,6 +430,10 @@ func (m *Model) sendMessage(content string) (tea.Model, tea.Cmd) {
 		}
 	}
 
+	if cmd := m.scheduleTitleFallbackCmd(); cmd != nil {
+		preSendCmds = append(preSendCmds, cmd)
+	}
+
 	// Name the handover file from the first user message so it carries a
 	// descriptive filename from the start.
 	if m.userMessageCount() == 1 {

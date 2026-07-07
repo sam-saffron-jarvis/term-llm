@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strings"
 	"time"
+	"unicode"
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/sahilm/fuzzy"
@@ -99,6 +100,16 @@ func AllCommands() []Command {
 			Name:        "save",
 			Description: "Save session with a name",
 			Usage:       "/save [name]",
+		},
+		{
+			Name:        "title",
+			Description: "Set the session title (or /autotitle to regenerate)",
+			Usage:       "/title <name>",
+		},
+		{
+			Name:        "autotitle",
+			Description: "Regenerate the session title with the fast model",
+			Usage:       "/autotitle",
 		},
 		{
 			Name:        "export",
@@ -314,8 +325,25 @@ func isStreamingLocalSlashCommand(input string) bool {
 		"stats":     true,
 		"st":        true,
 		"effort":    true,
+		"title":     true,
+		"autotitle": true,
 	}
 	return localCommands[name]
+}
+
+// rawCommandArgs returns everything after the command token while preserving
+// interior whitespace. This is used by commands like /title where spaces are
+// part of the user-provided value rather than mere argument separators.
+func rawCommandArgs(input string) string {
+	trimmed := strings.TrimSpace(input)
+	if trimmed == "" {
+		return ""
+	}
+	idx := strings.IndexFunc(trimmed, unicode.IsSpace)
+	if idx < 0 {
+		return ""
+	}
+	return strings.TrimSpace(trimmed[idx:])
 }
 
 // ExecuteCommand handles slash command execution
@@ -327,6 +355,7 @@ func (m *Model) ExecuteCommand(input string) (tea.Model, tea.Cmd) {
 
 	cmdName := strings.ToLower(strings.TrimPrefix(parts[0], "/"))
 	args := parts[1:]
+	rawArgs := rawCommandArgs(input)
 
 	// Find matching command - first try exact match
 	var cmd *Command
@@ -398,6 +427,10 @@ func (m *Model) ExecuteCommand(input string) (tea.Model, tea.Cmd) {
 		return m.cmdNew()
 	case "save":
 		return m.cmdSave(args)
+	case "title":
+		return m.cmdTitleRaw(rawArgs)
+	case "autotitle":
+		return m.cmdAutotitle()
 	case "export":
 		return m.cmdExport(args)
 	case "thinking":
@@ -1525,6 +1558,67 @@ func (m *Model) cmdNew() (tea.Model, tea.Cmd) {
 	return updated, tea.Batch(footerCmd, m.terminalTitleCmd())
 }
 
+func (m *Model) cmdTitleRaw(rawName string) (tea.Model, tea.Cmd) {
+	m.setTextareaValue("")
+	name := strings.TrimSpace(rawName)
+	if name == "" {
+		return m.showFooterError("Usage: /title <name>")
+	}
+	if m.sess == nil {
+		return m.showFooterError("No active session to title.")
+	}
+	if m.store == nil {
+		return m.showFooterError("Session storage is disabled. Enable it in config with `sessions.enabled: true`.")
+	}
+
+	m.sess.Name = name
+	m.sess.TitleSource = session.TitleSourceUser
+	m.titleManualEditVersion++
+	if err := m.store.Update(context.Background(), m.sess); err != nil {
+		return m.showFooterError(fmt.Sprintf("Failed to set session title: %v", err))
+	}
+
+	updated, footerCmd := m.showFooterSuccess(fmt.Sprintf("Session title set to '%s'.", name))
+	return updated, tea.Batch(footerCmd, m.terminalTitleCmd())
+}
+
+func (m *Model) cmdAutotitle() (tea.Model, tea.Cmd) {
+	m.setTextareaValue("")
+	if m.sess == nil {
+		return m.showFooterError("No active session to title.")
+	}
+	sessionID := strings.TrimSpace(m.sess.ID)
+	if sessionID == "" {
+		return m.showFooterError("No active session to title.")
+	}
+	if m.titleGenerationSessionID != sessionID {
+		m.resetTitleGenerationStateForSession()
+	}
+	if m.titleGenerationInFlight {
+		return m.showFooterError("Title generation is already running.")
+	}
+	if m.fastProvider == nil {
+		return m.showFooterError("Fast title generation is unavailable.")
+	}
+	if m.store == nil {
+		return m.showFooterError("Session storage is disabled. Enable it in config with `sessions.enabled: true`.")
+	}
+
+	m.messagesMu.Lock()
+	hasMessages := len(m.messages) > 0
+	m.messagesMu.Unlock()
+	if !hasMessages {
+		return m.showFooterError("No conversation messages to title yet.")
+	}
+
+	clearManualName := strings.TrimSpace(m.sess.Name) != ""
+	cmd := m.generateSessionTitleCmd(true, clearManualName, m.titleManualEditVersion)
+	if cmd == nil {
+		return m.showFooterError("No conversation messages to title yet.")
+	}
+	return m, cmd
+}
+
 func (m *Model) cmdSave(args []string) (tea.Model, tea.Cmd) {
 	name := ""
 	if len(args) > 0 {
@@ -1563,6 +1657,7 @@ func (m *Model) cmdSave(args []string) (tea.Model, tea.Cmd) {
 	}
 
 	m.sess.Name = name
+	m.titleManualEditVersion++
 	if err := m.store.Update(context.Background(), m.sess); err != nil {
 		return m.showSystemMessage(fmt.Sprintf("Failed to save session: %v", err))
 	}

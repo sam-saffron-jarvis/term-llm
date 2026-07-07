@@ -24,22 +24,22 @@ func TestBuildTitle(t *testing.T) {
 		{
 			name: "attention keeps marker first",
 			st:   titleState{Attention: true, Agent: "developer", Task: "Fix ctrl-c exit", Model: "fable"},
-			want: "‼ developer · Fix ctrl-c exit",
+			want: "‼ Fix ctrl-c exit · developer · fable",
 		},
 		{
-			name: "streaming includes elapsed activity",
+			name: "streaming does not include elapsed activity",
 			st:   titleState{Agent: "developer", Task: "Fix ctrl-c exit", Model: "fable", Streaming: true, Elapsed: 12 * time.Second},
-			want: "developer · Fix ctrl-c exit · 12s…",
+			want: "Fix ctrl-c exit · developer · fable",
 		},
 		{
-			name: "idle includes model",
+			name: "idle includes model and agent suffix",
 			st:   titleState{Agent: "developer", Task: "Fix ctrl-c exit", Model: "fable"},
-			want: "developer · Fix ctrl-c exit · fable",
+			want: "Fix ctrl-c exit · developer · fable",
 		},
 		{
 			name: "missing task falls back to term llm",
 			st:   titleState{Agent: "developer", Model: "fable"},
-			want: "developer · term-llm · fable",
+			want: "term-llm · developer · fable",
 		},
 		{
 			name: "missing agent omits segment",
@@ -63,12 +63,15 @@ func TestBuildTitle(t *testing.T) {
 }
 
 func TestBuildTitleTruncates(t *testing.T) {
-	got := buildTitle(titleState{Agent: "developer", Task: strings.Repeat("verylong ", 20), Model: "fable"})
+	got := buildTitle(titleState{Agent: "developer", Task: strings.Repeat("verylong ", 20), Model: "fable-medium"})
 	if n := len([]rune(got)); n > terminalTitleMaxRunes {
 		t.Fatalf("title length = %d, want <= %d: %q", n, terminalTitleMaxRunes, got)
 	}
-	if !strings.HasSuffix(got, "…") {
-		t.Fatalf("truncated title should end with ellipsis: %q", got)
+	if !strings.Contains(got, " · developer · fable-medium") {
+		t.Fatalf("truncated title should preserve agent/model suffix: %q", got)
+	}
+	if strings.HasSuffix(got, "…") {
+		t.Fatalf("default title should not end with streaming activity ellipsis: %q", got)
 	}
 }
 
@@ -108,7 +111,7 @@ func TestTerminalTitleFormat(t *testing.T) {
 
 	formatter = newTerminalTitleFormatter(`{{env "MISSING" | default "host"}} · {{title}}`, env)
 	got = formatter.Format(titleState{Agent: "developer", Task: "Custom title", Model: "fable"})
-	want = "host · developer · Custom title · fable"
+	want = "host · Custom title · developer · fable"
 	if got != want {
 		t.Fatalf("formatted title with default env = %q, want %q", got, want)
 	}
@@ -369,6 +372,102 @@ func TestMaybeGenerateSessionTitleCmd(t *testing.T) {
 	}
 	if m.sess.TitleSource != session.TitleSourceGenerated {
 		t.Fatalf("TitleSource = %q, want generated", m.sess.TitleSource)
+	}
+}
+
+func TestTitleFallbackTickGeneratesForCurrentUntitledSession(t *testing.T) {
+	m := newTestChatModel(false)
+	m.store = &mockStore{}
+	m.sess = &session.Session{ID: "fallback-title", Provider: "mock", Model: "mock-model", Mode: session.ModeChat}
+	m.fastProvider = llm.NewMockProvider("fast").AddTextResponse(`{"short_title":"Fallback Handover Title","long_title":"Fallback title from long handover prompt","confidence":0.93}`)
+	m.messages = []session.Message{{SessionID: m.sess.ID, Role: llm.RoleUser, TextContent: "A detailed handover asks the developer agent to implement session title fallback behavior.", Sequence: 0}}
+
+	updated, cmd := m.Update(titleFallbackTickMsg{sessionID: m.sess.ID})
+	m = updated.(*Model)
+	if cmd == nil {
+		t.Fatal("expected fallback tick to start title generation")
+	}
+	if !m.titleGenerationInFlight {
+		t.Fatal("expected title generation to be in flight")
+	}
+
+	updated, _ = m.Update(cmd())
+	m = updated.(*Model)
+	if got := m.sess.GeneratedShortTitle; got != "Fallback Handover Title" {
+		t.Fatalf("GeneratedShortTitle = %q, want fallback title", got)
+	}
+	if cmd := m.maybeGenerateSessionTitleCmd(); cmd != nil {
+		t.Fatal("stream completion title generation should no-op after fallback success")
+	}
+}
+
+func TestTitleFallbackTickIgnoresStaleSession(t *testing.T) {
+	m := newTestChatModel(false)
+	m.store = &mockStore{}
+	m.sess = &session.Session{ID: "current-title-session", Provider: "mock", Model: "mock-model", Mode: session.ModeChat}
+	m.fastProvider = llm.NewMockProvider("fast").AddTextResponse(`{"short_title":"Should Not Run","long_title":"Should not run for stale fallback","confidence":0.9}`)
+	m.messages = []session.Message{{SessionID: m.sess.ID, Role: llm.RoleUser, TextContent: "Current session text.", Sequence: 0}}
+
+	updated, cmd := m.Update(titleFallbackTickMsg{sessionID: "old-title-session"})
+	m = updated.(*Model)
+	if cmd != nil {
+		t.Fatal("stale fallback tick returned unexpected command")
+	}
+	if m.titleGenerationAttempts != 0 {
+		t.Fatalf("title generation attempts = %d, want 0", m.titleGenerationAttempts)
+	}
+}
+
+func TestTitleFallbackTickNoopsWhenGeneratedOrInFlight(t *testing.T) {
+	tests := []struct {
+		name      string
+		configure func(*Model)
+	}{
+		{
+			name: "already generated",
+			configure: func(m *Model) {
+				m.sess.GeneratedShortTitle = "Already Titled"
+			},
+		},
+		{
+			name: "generation in flight",
+			configure: func(m *Model) {
+				m.titleGenerationSessionID = m.sess.ID
+				m.titleGenerationInFlight = true
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := newTestChatModel(false)
+			m.store = &mockStore{}
+			m.sess = &session.Session{ID: "fallback-noop", Provider: "mock", Model: "mock-model", Mode: session.ModeChat}
+			m.fastProvider = llm.NewMockProvider("fast").AddTextResponse(`{"short_title":"Should Not Run","long_title":"Should not run fallback","confidence":0.9}`)
+			m.messages = []session.Message{{SessionID: m.sess.ID, Role: llm.RoleUser, TextContent: "Current session text.", Sequence: 0}}
+			tt.configure(m)
+
+			updated, cmd := m.Update(titleFallbackTickMsg{sessionID: m.sess.ID})
+			m = updated.(*Model)
+			if cmd != nil {
+				t.Fatal("fallback tick returned unexpected command")
+			}
+		})
+	}
+}
+
+func TestScheduleTitleFallbackCmdRequiresUntitledSession(t *testing.T) {
+	m := newTestChatModel(false)
+	m.store = &mockStore{}
+	m.sess = &session.Session{ID: "schedule-fallback", Provider: "mock", Model: "mock-model", Mode: session.ModeChat}
+	m.fastProvider = llm.NewMockProvider("fast")
+	if cmd := m.scheduleTitleFallbackCmd(); cmd == nil {
+		t.Fatal("expected fallback tick command for untitled session")
+	}
+
+	m.sess.GeneratedShortTitle = "Already Titled"
+	if cmd := m.scheduleTitleFallbackCmd(); cmd != nil {
+		t.Fatal("did not expect fallback tick command for already titled session")
 	}
 }
 

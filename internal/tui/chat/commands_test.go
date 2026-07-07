@@ -71,6 +71,24 @@ func TestFilterCommandsMatchesCompact(t *testing.T) {
 	}
 }
 
+func TestAllCommandsIncludesTitleCommands(t *testing.T) {
+	want := map[string]string{
+		"title":     "/title <name>",
+		"autotitle": "/autotitle",
+	}
+	for _, cmd := range AllCommands() {
+		if usage, ok := want[cmd.Name]; ok {
+			if cmd.Usage != usage {
+				t.Fatalf("%s usage = %q, want %q", cmd.Name, cmd.Usage, usage)
+			}
+			delete(want, cmd.Name)
+		}
+	}
+	for name := range want {
+		t.Fatalf("AllCommands() should include %q command", name)
+	}
+}
+
 func TestAllCommandsIncludesStats(t *testing.T) {
 	for _, cmd := range AllCommands() {
 		if cmd.Name == "stats" {
@@ -532,6 +550,254 @@ func newCmdTestModel(store session.Store) *Model {
 			}
 			return agent.SystemPrompt, nil
 		},
+	}
+}
+
+func TestCmdTitleSetsSessionNameVerbatim(t *testing.T) {
+	store := &mockStore{}
+	m := newCmdTestModel(store)
+	m.sess = &session.Session{ID: "manual-title", GeneratedShortTitle: "Old Auto"}
+	m.setTextareaValue("/title Research  plan   v2")
+
+	result, cmd := m.ExecuteCommand("/title   Research  plan   v2")
+	m = result.(*Model)
+
+	if got := m.sess.Name; got != "Research  plan   v2" {
+		t.Fatalf("session name = %q, want spaces preserved", got)
+	}
+	if m.sess.TitleSource != session.TitleSourceUser {
+		t.Fatalf("TitleSource = %q, want user", m.sess.TitleSource)
+	}
+	if store.updated == nil || store.updated.Name != "Research  plan   v2" {
+		t.Fatalf("store updated name = %#v", store.updated)
+	}
+	if got := m.textarea.Value(); got != "" {
+		t.Fatalf("textarea = %q, want cleared", got)
+	}
+	if got := m.footerMessage; got != "Session title set to 'Research  plan   v2'." {
+		t.Fatalf("footer = %q", got)
+	}
+	if cmd == nil {
+		t.Fatal("expected footer clear command")
+	}
+}
+
+func TestCmdTitleWithoutArgsDoesNotClobberName(t *testing.T) {
+	store := &mockStore{}
+	m := newCmdTestModel(store)
+	m.sess = &session.Session{ID: "manual-title-empty", Name: "Existing Name"}
+
+	result, cmd := m.ExecuteCommand("/title")
+	m = result.(*Model)
+
+	if got := m.sess.Name; got != "Existing Name" {
+		t.Fatalf("session name = %q, want unchanged", got)
+	}
+	if store.updated != nil {
+		t.Fatalf("store should not be updated, got %#v", store.updated)
+	}
+	if got := m.footerMessage; got != "Usage: /title <name>" {
+		t.Fatalf("footer = %q, want usage", got)
+	}
+	if got := m.footerMessageTone; got != "error" {
+		t.Fatalf("footer tone = %q, want error", got)
+	}
+	if cmd == nil {
+		t.Fatal("expected footer clear command")
+	}
+}
+
+func TestCmdAutotitleForcesGenerationDespiteExistingTitleAndAttempts(t *testing.T) {
+	m := newCmdTestModel(&mockStore{})
+	m.sess = &session.Session{
+		ID:                  "force-autotitle",
+		Provider:            "mock",
+		Model:               "mock-model",
+		Mode:                session.ModeChat,
+		GeneratedShortTitle: "Old Title",
+		GeneratedLongTitle:  "Old long title",
+		TitleSource:         session.TitleSourceGenerated,
+	}
+	m.fastProvider = llm.NewMockProvider("fast").AddTextResponse(`{"short_title":"Fresh Forced Title","long_title":"Fresh forced title from command","confidence":0.95}`)
+	m.messages = []session.Message{
+		{SessionID: m.sess.ID, Role: llm.RoleUser, TextContent: "Please investigate the flaky websocket reconnection tests.", Sequence: 0},
+		{SessionID: m.sess.ID, Role: llm.RoleAssistant, TextContent: "I'll trace the reconnect loop and add coverage.", Sequence: 1},
+	}
+	m.titleGenerationSessionID = m.sess.ID
+	m.titleGenerationAttempts = liveTitleGenerationMaxTries
+	m.titleGenerationLastMessageCount = len(m.messages)
+
+	result, cmd := m.ExecuteCommand("/autotitle")
+	m = result.(*Model)
+	if cmd == nil {
+		t.Fatal("expected forced title generation command")
+	}
+	if !m.titleGenerationInFlight {
+		t.Fatal("expected title generation to be in flight")
+	}
+
+	updated, _ := m.Update(cmd())
+	m = updated.(*Model)
+	if got := m.sess.GeneratedShortTitle; got != "Fresh Forced Title" {
+		t.Fatalf("GeneratedShortTitle = %q, want fresh title", got)
+	}
+	if got := m.footerMessage; got != "Updated title: Fresh Forced Title" {
+		t.Fatalf("footer = %q", got)
+	}
+	if got := m.footerMessageTone; got != "success" {
+		t.Fatalf("footer tone = %q, want success", got)
+	}
+}
+
+func TestCmdAutotitleWhileInFlightShowsFooterError(t *testing.T) {
+	m := newCmdTestModel(&mockStore{})
+	m.sess = &session.Session{ID: "autotitle-inflight", Provider: "mock", Model: "mock-model", Mode: session.ModeChat}
+	m.fastProvider = llm.NewMockProvider("fast")
+	m.messages = []session.Message{{SessionID: m.sess.ID, Role: llm.RoleUser, TextContent: "Name this later", Sequence: 0}}
+	m.titleGenerationSessionID = m.sess.ID
+	m.titleGenerationInFlight = true
+
+	result, cmd := m.ExecuteCommand("/autotitle")
+	m = result.(*Model)
+	if got := m.footerMessage; got != "Title generation is already running." {
+		t.Fatalf("footer = %q", got)
+	}
+	if got := m.footerMessageTone; got != "error" {
+		t.Fatalf("footer tone = %q, want error", got)
+	}
+	if cmd == nil {
+		t.Fatal("expected footer clear command")
+	}
+}
+
+func TestCmdAutotitleWithoutFastProviderShowsFooterError(t *testing.T) {
+	m := newCmdTestModel(&mockStore{})
+	m.sess = &session.Session{ID: "autotitle-no-fast", Provider: "mock", Model: "mock-model", Mode: session.ModeChat}
+	m.messages = []session.Message{{SessionID: m.sess.ID, Role: llm.RoleUser, TextContent: "Name this later", Sequence: 0}}
+
+	result, cmd := m.ExecuteCommand("/autotitle")
+	m = result.(*Model)
+	if got := m.footerMessage; got != "Fast title generation is unavailable." {
+		t.Fatalf("footer = %q", got)
+	}
+	if got := m.footerMessageTone; got != "error" {
+		t.Fatalf("footer tone = %q, want error", got)
+	}
+	if cmd == nil {
+		t.Fatal("expected footer clear command")
+	}
+}
+
+func TestCmdAutotitleClearsManualNameOnSuccess(t *testing.T) {
+	store := &mockStore{}
+	m := newCmdTestModel(store)
+	m.sess = &session.Session{
+		ID:                  "autotitle-clears-name",
+		Provider:            "mock",
+		Model:               "mock-model",
+		Mode:                session.ModeChat,
+		Name:                "Custom Manual Name",
+		GeneratedShortTitle: "Old Auto Title",
+		GeneratedLongTitle:  "Old automatic title",
+		TitleSource:         session.TitleSourceUser,
+	}
+	m.fastProvider = llm.NewMockProvider("fast").AddTextResponse(`{"short_title":"Regenerated Auto Title","long_title":"Regenerated automatic title after manual name","confidence":0.94}`)
+	m.messages = []session.Message{{SessionID: m.sess.ID, Role: llm.RoleUser, TextContent: "Retitle this session from the actual task.", Sequence: 0}}
+
+	result, cmd := m.ExecuteCommand("/autotitle")
+	m = result.(*Model)
+	if cmd == nil {
+		t.Fatal("expected title generation command")
+	}
+	if got := m.sess.Name; got != "Custom Manual Name" {
+		t.Fatalf("session name = %q, want preserved until generation succeeds", got)
+	}
+
+	updated, _ := m.Update(cmd())
+	m = updated.(*Model)
+	if got := m.sess.Name; got != "" {
+		t.Fatalf("session name = %q, want cleared after success", got)
+	}
+	if store.updated == nil || store.updated.Name != "" {
+		t.Fatalf("store should persist cleared name, got %#v", store.updated)
+	}
+	if got := m.sess.PreferredShortTitle(); got != "Regenerated Auto Title" {
+		t.Fatalf("PreferredShortTitle = %q, want regenerated title", got)
+	}
+}
+
+func TestCmdAutotitlePreservesManualNameOnFailure(t *testing.T) {
+	store := &mockStore{}
+	m := newCmdTestModel(store)
+	m.sess = &session.Session{
+		ID:                  "autotitle-fails-name",
+		Provider:            "mock",
+		Model:               "mock-model",
+		Mode:                session.ModeChat,
+		Name:                "Custom Manual Name",
+		GeneratedShortTitle: "Old Auto Title",
+		TitleSource:         session.TitleSourceUser,
+	}
+	m.fastProvider = llm.NewMockProvider("fast").AddError(errors.New("provider down"))
+	m.messages = []session.Message{{SessionID: m.sess.ID, Role: llm.RoleUser, TextContent: "Retitle this session from the actual task.", Sequence: 0}}
+
+	result, cmd := m.ExecuteCommand("/autotitle")
+	m = result.(*Model)
+	if cmd == nil {
+		t.Fatal("expected title generation command")
+	}
+
+	updated, _ := m.Update(cmd())
+	m = updated.(*Model)
+	if got := m.sess.Name; got != "Custom Manual Name" {
+		t.Fatalf("session name = %q, want preserved after generation failure", got)
+	}
+	if got := m.sess.TitleSource; got != session.TitleSourceUser {
+		t.Fatalf("TitleSource = %q, want user", got)
+	}
+	if got := m.sess.GeneratedShortTitle; got != "Old Auto Title" {
+		t.Fatalf("GeneratedShortTitle = %q, want unchanged", got)
+	}
+	if got := m.footerMessage; !strings.Contains(got, "Title generation failed") {
+		t.Fatalf("footer = %q, want failure message", got)
+	}
+}
+
+func TestCmdAutotitleResultDoesNotClobberLaterManualTitle(t *testing.T) {
+	store := &mockStore{}
+	m := newCmdTestModel(store)
+	m.sess = &session.Session{
+		ID:                  "autotitle-title-race",
+		Provider:            "mock",
+		Model:               "mock-model",
+		Mode:                session.ModeChat,
+		GeneratedShortTitle: "Old Auto Title",
+		TitleSource:         session.TitleSourceGenerated,
+	}
+	m.fastProvider = llm.NewMockProvider("fast").AddTextResponse(`{"short_title":"Late Auto Title","long_title":"Late automatic title result","confidence":0.94}`)
+	m.messages = []session.Message{{SessionID: m.sess.ID, Role: llm.RoleUser, TextContent: "Retitle this session from the actual task.", Sequence: 0}}
+
+	result, cmd := m.ExecuteCommand("/autotitle")
+	m = result.(*Model)
+	if cmd == nil {
+		t.Fatal("expected title generation command")
+	}
+	result, _ = m.ExecuteCommand("/title Manual Override")
+	m = result.(*Model)
+	if got := m.titleManualEditVersion; got != 1 {
+		t.Fatalf("titleManualEditVersion = %d, want 1 after /title", got)
+	}
+
+	updated, _ := m.Update(cmd())
+	m = updated.(*Model)
+	if got := m.sess.Name; got != "Manual Override" {
+		t.Fatalf("session name = %q, want manual override", got)
+	}
+	if got := m.sess.TitleSource; got != session.TitleSourceUser {
+		t.Fatalf("TitleSource = %q, want user", got)
+	}
+	if got := m.sess.GeneratedShortTitle; got != "Old Auto Title" {
+		t.Fatalf("GeneratedShortTitle = %q, want unchanged", got)
 	}
 }
 
