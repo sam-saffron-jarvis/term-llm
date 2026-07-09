@@ -669,10 +669,14 @@ func (m *Model) handleKeyMsg(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			// Enter executes immediately with the selected command
 			selected := m.completions.Selected()
 			if selected != nil {
-				// Capture typed input before clearing
+				// Capture typed input before clearing. Worktree commands clear their own
+				// composer only after validation succeeds so failed commands remain editable.
 				input := m.textarea.Value()
 				m.completions.Hide()
-				m.setTextareaValue("")
+				clearBeforeExecute := !strings.HasPrefix(selected.Name, "worktree")
+				if clearBeforeExecute {
+					m.setTextareaValue("")
+				}
 
 				// Multi-word completion items (e.g., "handover @developer",
 				// "mcp start server") already contain the selected arg.

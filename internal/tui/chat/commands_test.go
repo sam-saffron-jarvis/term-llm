@@ -3186,6 +3186,51 @@ func TestUpdateCompletions_WorktreeTargetCommandsUseManagedNames(t *testing.T) {
 	}
 }
 
+func TestCmdWorktreeNewClearsComposerImmediately(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	repo := newGitRepoForChatWorktreeTest(t)
+	m := newTestChatModel(false)
+	m.sess = &session.Session{ID: "sess-worktree-new-clear", CWD: repo}
+	m.setTextareaValue("/worktree new feature-clean")
+
+	result, cmd := m.ExecuteCommand("/worktree new feature-clean")
+	m = result.(*Model)
+
+	if got := m.textarea.Value(); got != "" {
+		t.Fatalf("textarea = %q, want cleared", got)
+	}
+	if cmd == nil {
+		t.Fatal("expected async worktree create command")
+	}
+	if got := m.worktreeOperation; got != "new" {
+		t.Fatalf("worktreeOperation = %q, want new", got)
+	}
+}
+
+func TestCmdWorktreeClearsComposerForImmediateSubcommands(t *testing.T) {
+	m := newTestChatModel(false)
+	m.setTextareaValue("/worktree pwd")
+
+	result, _ := m.ExecuteCommand("/worktree pwd")
+	m = result.(*Model)
+
+	if got := m.textarea.Value(); got != "" {
+		t.Fatalf("textarea = %q, want cleared", got)
+	}
+}
+
+func TestCmdWorktreeKeepsComposerOnCommandError(t *testing.T) {
+	m := newTestChatModel(false)
+	m.setTextareaValue("/worktree switch")
+
+	result, _ := m.ExecuteCommand("/worktree switch")
+	m = result.(*Model)
+
+	if got := m.textarea.Value(); got != "/worktree switch" {
+		t.Fatalf("textarea = %q, want failed command preserved", got)
+	}
+}
+
 func TestUpdateCompletions_WorktreeOptionCommands(t *testing.T) {
 	m := newTestChatModel(false)
 	m.completions.Show()

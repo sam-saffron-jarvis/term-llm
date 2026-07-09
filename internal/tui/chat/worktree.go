@@ -46,6 +46,7 @@ func (m *Model) cmdWorktree(args []string) (tea.Model, tea.Cmd) {
 	subArgs := args[1:]
 	switch sub {
 	case "pwd":
+		m.clearWorktreeCommandComposer()
 		return m.showSystemMessage(m.boundWorktreeDir())
 	case "list":
 		return m.cmdWorktreeList()
@@ -87,6 +88,13 @@ func (m *Model) worktreeOperationBusy() bool {
 
 func (m *Model) worktreeBusyMessage() (tea.Model, tea.Cmd) {
 	return m.showFooterWarning("A worktree operation is already running.")
+}
+
+func (m *Model) clearWorktreeCommandComposer() {
+	m.setTextareaValue("")
+	if m.completions != nil {
+		m.completions.Hide()
+	}
 }
 
 func (m *Model) repoRootForWorktree() (string, error) {
@@ -175,6 +183,7 @@ func (m *Model) cmdWorktreeList() (tea.Model, tea.Cmd) {
 		return m.showFooterError(err.Error())
 	}
 	if len(items) == 0 {
+		m.clearWorktreeCommandComposer()
 		return m.showFooterMuted("No managed worktrees.")
 	}
 	var b strings.Builder
@@ -190,6 +199,7 @@ func (m *Model) cmdWorktreeList() (tea.Model, tea.Cmd) {
 		}
 		fmt.Fprintf(&b, "%s %s  %s  dirty:%d  %s\n", mark, wt.Name, ref, wt.DirtyFiles, wt.Dir)
 	}
+	m.clearWorktreeCommandComposer()
 	return m.showSystemMessage(b.String())
 }
 
@@ -229,6 +239,7 @@ func (m *Model) cmdWorktreeNew(args []string) (tea.Model, tea.Cmd) {
 	}
 	parentCtx := m.rootContext()
 	m.worktreeOperation = "new"
+	m.clearWorktreeCommandComposer()
 	return m.showFooterMutedWithCmd("Creating worktree…", func() tea.Msg {
 		ctx, cancel := context.WithTimeout(parentCtx, 15*time.Minute)
 		defer cancel()
@@ -255,6 +266,7 @@ func (m *Model) cmdWorktreeSwitch(args []string) (tea.Model, tea.Cmd) {
 	if err := m.bindWorktreeDir(dir); err != nil {
 		return m.showFooterError(err.Error())
 	}
+	m.clearWorktreeCommandComposer()
 	return m.showFooterSuccess("Switched worktree to " + dir)
 }
 
@@ -272,6 +284,7 @@ func (m *Model) cmdWorktreeRoot() (tea.Model, tea.Cmd) {
 	if err := m.bindRootDir(root); err != nil {
 		return m.showFooterError(err.Error())
 	}
+	m.clearWorktreeCommandComposer()
 	return m.showFooterSuccess("Back on root checkout: " + root)
 }
 
@@ -319,9 +332,11 @@ func (m *Model) cmdWorktreeDiff(args []string) (tea.Model, tea.Cmd) {
 		dir = strings.TrimSpace(m.sess.WorktreeDir)
 	}
 	if dir == "" {
+		m.clearWorktreeCommandComposer()
 		return m.showFooterMuted("No worktree is bound.")
 	}
 	m.worktreeOperation = "diff"
+	m.clearWorktreeCommandComposer()
 	return m.showFooterMutedWithCmd("Generating worktree diff…", func() tea.Msg {
 		diff, err := worktree.Diff(dir)
 		return worktreeOperationDoneMsg{op: "diff", dir: dir, diff: diff, err: err}
@@ -367,6 +382,7 @@ func (m *Model) cmdWorktreeMerge(args []string) (tea.Model, tea.Cmd) {
 		dir = resolved
 	}
 	if dir == "" {
+		m.clearWorktreeCommandComposer()
 		return m.showFooterMuted("No worktree is bound.")
 	}
 	wt, err := worktree.Get(dir)
@@ -377,6 +393,7 @@ func (m *Model) cmdWorktreeMerge(args []string) (tea.Model, tea.Cmd) {
 	parentCtx := m.rootContext()
 	m.worktreeOperation = "merge"
 	preflight := formatWorktreeMergePreflight(wt, usingBound, opts)
+	m.clearWorktreeCommandComposer()
 	return m.showSystemMessageWithCmd(preflight, func() tea.Msg {
 		res, err := worktree.MergeBack(parentCtx, dir, opts)
 		return worktreeOperationDoneMsg{op: "merge", dir: dir, merge: res, err: err}
@@ -395,6 +412,7 @@ func (m *Model) cmdWorktreePromote(args []string) (tea.Model, tea.Cmd) {
 		dir = strings.TrimSpace(m.sess.WorktreeDir)
 	}
 	if dir == "" {
+		m.clearWorktreeCommandComposer()
 		return m.showFooterMuted("No worktree is bound.")
 	}
 	branch := ""
@@ -419,6 +437,7 @@ func (m *Model) cmdWorktreePromote(args []string) (tea.Model, tea.Cmd) {
 	parentCtx := m.rootContext()
 	m.worktreeOperation = "promote"
 	preflight := formatWorktreePromotePreflight(wt, branch)
+	m.clearWorktreeCommandComposer()
 	return m.showSystemMessageWithCmd(preflight, func() tea.Msg {
 		res, err := worktree.PromoteToRoot(parentCtx, dir, branch, worktree.PromoteOptions{})
 		return worktreeOperationDoneMsg{op: "promote", dir: dir, branch: branch, promote: res, err: err}
@@ -470,6 +489,7 @@ func (m *Model) cmdWorktreeRemove(args []string) (tea.Model, tea.Cmd) {
 	}
 	parentCtx := m.rootContext()
 	m.worktreeOperation = "remove"
+	m.clearWorktreeCommandComposer()
 	return m.showFooterMutedWithCmd("Removing worktree…", func() tea.Msg {
 		err := worktree.Remove(parentCtx, dir, worktree.RemoveOptions{Force: force})
 		return worktreeOperationDoneMsg{op: "remove", dir: dir, root: root, bound: bound, err: err}
