@@ -92,19 +92,23 @@ func TestEnsureContextMessagesResetsBaselineWhenMutatingPrefix(t *testing.T) {
 	}
 }
 
-func TestRunnerStreamDoneWaitsForRunnerAfterCancellation(t *testing.T) {
+func TestRunnerStreamDoneDetachesAfterCancellationCleanupTimeout(t *testing.T) {
+	oldTimeout := eventPipeRunnerCleanupTimeout
+	eventPipeRunnerCleanupTimeout = 20 * time.Millisecond
+	t.Cleanup(func() { eventPipeRunnerCleanupTimeout = oldTimeout })
+
 	m := newTestChatModel(false)
 	runner := &blockingChatRunner{
 		started: make(chan struct{}),
 		release: make(chan struct{}),
 	}
-	defer func() {
+	t.Cleanup(func() {
 		select {
 		case <-runner.release:
 		default:
 			close(runner.release)
 		}
-	}()
+	})
 	m.SetRunner(runner)
 
 	cmd := m.startStream("hello")
@@ -128,15 +132,8 @@ func TestRunnerStreamDoneWaitsForRunnerAfterCancellation(t *testing.T) {
 
 	select {
 	case <-m.streamDone:
-		t.Fatal("streamDone closed before runner returned")
-	case <-time.After(50 * time.Millisecond):
-	}
-
-	close(runner.release)
-	select {
-	case <-m.streamDone:
 	case <-time.After(time.Second):
-		t.Fatal("streamDone did not close after runner returned")
+		t.Fatal("streamDone did not close after runner cleanup timeout")
 	}
 }
 

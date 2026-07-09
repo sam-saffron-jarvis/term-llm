@@ -18,6 +18,8 @@ import (
 	"github.com/samsaffron/term-llm/internal/ui"
 )
 
+var eventPipeRunnerCleanupTimeout = runpkg.DefaultRunnerCleanupTimeout
+
 func copyLLMMessages(messages []llm.Message) []llm.Message {
 	if len(messages) == 0 {
 		return nil
@@ -710,7 +712,7 @@ func (m *Model) startStream(content string) tea.Cmd {
 				}()
 				adapter.ProcessStream(runCtx, pipe)
 				cancelRun()
-				<-done
+				runpkg.WaitForRunnerDone(context.Background(), done, eventPipeRunnerCleanupTimeout)
 				return
 			}
 

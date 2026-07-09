@@ -40,6 +40,8 @@ const telegramMaxVoiceDownloadBytes int64 = 25 << 20
 const telegramDownloadTimeout = 5 * time.Minute
 const telegramSessionShutdownFallbackTimeout = 5 * time.Second
 
+var telegramRunnerCleanupTimeout = runpkg.DefaultRunnerCleanupTimeout
+
 var telegramDownloadHTTPClient = &http.Client{Timeout: telegramDownloadTimeout}
 
 // botSender is the subset of tgbotapi.BotAPI used by streamReply and
@@ -441,6 +443,7 @@ type telegramSession struct {
 	runtime               *SessionRuntime
 	history               []llm.Message
 	systemPromptPersisted bool
+	runtimeStale          bool   // true when a detached runner may still be using runtime; reset before reuse
 	carryoverContext      string // one-time context carried from the previous replaced session
 	carryoverContextLabel string
 	carryoverMessageCount int // number of restored prior-session messages at the start of history; not persisted to this session
@@ -1202,14 +1205,16 @@ func (m *telegramSessionMgr) handleMessage(ctx context.Context, bot *tgbotapi.Bo
 		return
 	}
 
-	// Check idle timeout and replace the whole session if expired.
+	// Check idle timeout and replace the whole session if expired or if a
+	// previously detached runner may still own the session runtime.
 	sess.mu.Lock()
+	runtimeStale := sess.runtimeStale
 	expired := time.Since(sess.lastActivity) > m.idleTimeout
-	if !expired {
+	if !expired && !runtimeStale {
 		sess.lastActivity = time.Now()
 	}
 	sess.mu.Unlock()
-	if expired {
+	if expired || runtimeStale {
 		sess, _, err = m.resetSessionIfCurrent(ctx, chatID, sess)
 		if err != nil {
 			_, _ = bot.Send(tgbotapi.NewMessage(chatID, "Error resetting session: "+err.Error()))
@@ -1528,13 +1533,14 @@ func (m *telegramSessionMgr) streamReply(ctx context.Context, bot botSender, ses
 		if runnerDone == nil {
 			return
 		}
-		select {
-		case <-runnerDone:
-			return
-		case <-time.After(5 * time.Second):
-			log.Printf("[telegram] runner for chat %d still shutting down after cleanup timeout; waiting to avoid overlapping the shared engine", chatID)
+		cleanupTimeout := telegramRunnerCleanupTimeout
+		if cleanupTimeout <= 0 {
+			cleanupTimeout = runpkg.DefaultRunnerCleanupTimeout
 		}
-		<-runnerDone
+		if !runpkg.WaitForRunnerDone(context.Background(), runnerDone, cleanupTimeout) {
+			sess.runtimeStale = true
+			go log.Printf("[telegram] runner for chat %d did not stop within %s after stream cancellation; detaching and resetting runtime before reuse", chatID, cleanupTimeout)
+		}
 	}
 	defer waitForRunnerDone()
 	if m.settings.Runner != nil {
