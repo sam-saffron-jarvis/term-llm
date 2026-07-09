@@ -9,30 +9,32 @@ import (
 )
 
 type responsesStreamEventHandler struct {
-	client                  *ResponsesClient
-	responseStateGeneration uint64
-	debugRaw                bool
-	debugPrefix             string
-	toolState               *responsesToolState
-	reasoningState          *responsesReasoningState
-	lastUsage               *Usage
-	outputItems             []ResponsesInputItem
-	sawTextDelta            bool
-	allowResponseState      bool
-	stateSessionID          string
-	emitted                 bool
+	client                         *ResponsesClient
+	responseStateGeneration        uint64
+	debugRaw                       bool
+	debugPrefix                    string
+	toolState                      *responsesToolState
+	reasoningState                 *responsesReasoningState
+	lastUsage                      *Usage
+	outputItems                    []ResponsesInputItem
+	sawTextDelta                   bool
+	allowResponseState             bool
+	stateSessionID                 string
+	suppressReasoningSummaryDeltas bool
+	emitted                        bool
 }
 
-func newResponsesStreamEventHandler(client *ResponsesClient, responseStateGeneration uint64, debugRaw bool, debugPrefix string, allowResponseState bool, stateSessionID string) *responsesStreamEventHandler {
+func newResponsesStreamEventHandler(client *ResponsesClient, responseStateGeneration uint64, debugRaw bool, debugPrefix string, allowResponseState bool, stateSessionID string, suppressReasoningSummaryDeltas bool) *responsesStreamEventHandler {
 	return &responsesStreamEventHandler{
-		client:                  client,
-		responseStateGeneration: responseStateGeneration,
-		debugRaw:                debugRaw,
-		debugPrefix:             debugPrefix,
-		allowResponseState:      allowResponseState,
-		stateSessionID:          stateSessionID,
-		toolState:               newResponsesToolState(),
-		reasoningState:          newResponsesReasoningState(),
+		client:                         client,
+		responseStateGeneration:        responseStateGeneration,
+		debugRaw:                       debugRaw,
+		debugPrefix:                    debugPrefix,
+		allowResponseState:             allowResponseState,
+		stateSessionID:                 stateSessionID,
+		suppressReasoningSummaryDeltas: suppressReasoningSummaryDeltas,
+		toolState:                      newResponsesToolState(),
+		reasoningState:                 newResponsesReasoningState(),
 	}
 }
 
@@ -69,7 +71,9 @@ func knownResponsesEventType(typ string) bool {
 		"response.function_call_arguments.delta",
 		"response.output_item.done",
 		"response.reasoning_summary_part.added",
+		"response.reasoning_summary_part.done",
 		"response.reasoning_summary_text.delta",
+		"response.reasoning_summary_text.done",
 		"response.completed",
 		"response.failed",
 		"error":
@@ -271,22 +275,39 @@ func (h *responsesStreamEventHandler) HandleJSONEvent(data []byte, eventType str
 
 	case "response.reasoning_summary_part.added":
 		var partEvent struct {
-			OutputIndex int `json:"output_index"`
+			OutputIndex  int  `json:"output_index"`
+			SummaryIndex *int `json:"summary_index"`
 		}
 		if err := unmarshalEvent(&partEvent); err != nil {
 			return false, err
 		}
-		h.reasoningState.SummaryPartAdded(partEvent.OutputIndex)
+		if partEvent.SummaryIndex != nil {
+			h.reasoningState.SummaryPartAdded(partEvent.OutputIndex, *partEvent.SummaryIndex)
+		} else {
+			h.reasoningState.SummaryPartAdded(partEvent.OutputIndex)
+		}
+
+	case "response.reasoning_summary_part.done":
+		// The text.done event carries the displayable section text. part.done is
+		// only a section boundary marker for our state machine.
 
 	case "response.reasoning_summary_text.delta":
 		var summaryDeltaEvent struct {
-			OutputIndex int    `json:"output_index"`
-			Delta       string `json:"delta"`
+			OutputIndex  int    `json:"output_index"`
+			SummaryIndex *int   `json:"summary_index"`
+			Delta        string `json:"delta"`
 		}
 		if err := unmarshalEvent(&summaryDeltaEvent); err != nil {
 			return false, err
 		}
-		if part := h.reasoningState.AppendSummary(summaryDeltaEvent.OutputIndex, summaryDeltaEvent.Delta); part != nil {
+		summaryIndex := -1
+		if summaryDeltaEvent.SummaryIndex != nil {
+			summaryIndex = *summaryDeltaEvent.SummaryIndex
+		}
+		if part := h.reasoningState.AppendSummaryAt(summaryDeltaEvent.OutputIndex, summaryIndex, summaryDeltaEvent.Delta); part != nil {
+			if h.suppressReasoningSummaryDeltas {
+				return false, nil
+			}
 			if err := sendEvent(Event{
 				Type:                      EventReasoningDelta,
 				Text:                      part.ReasoningContent,
@@ -298,6 +319,33 @@ func (h *responsesStreamEventHandler) HandleJSONEvent(data []byte, eventType str
 				return false, err
 			}
 			h.reasoningState.MarkEmitted(summaryDeltaEvent.OutputIndex)
+		}
+
+	case "response.reasoning_summary_text.done":
+		var summaryDoneEvent struct {
+			OutputIndex  int    `json:"output_index"`
+			SummaryIndex *int   `json:"summary_index"`
+			Text         string `json:"text"`
+		}
+		if err := unmarshalEvent(&summaryDoneEvent); err != nil {
+			return false, err
+		}
+		summaryIndex := -1
+		if summaryDoneEvent.SummaryIndex != nil {
+			summaryIndex = *summaryDoneEvent.SummaryIndex
+		}
+		if part := h.reasoningState.SummaryDone(summaryDoneEvent.OutputIndex, summaryIndex, summaryDoneEvent.Text); part != nil {
+			if err := sendEvent(Event{
+				Type:                      EventReasoningDelta,
+				Text:                      part.ReasoningContent,
+				ReasoningKind:             ReasoningKindSummary,
+				ReasoningIndex:            summaryDoneEvent.OutputIndex,
+				ReasoningItemID:           part.ReasoningItemID,
+				ReasoningEncryptedContent: part.ReasoningEncryptedContent,
+			}); err != nil {
+				return false, err
+			}
+			h.reasoningState.MarkEmitted(summaryDoneEvent.OutputIndex)
 		}
 
 	case "response.completed":

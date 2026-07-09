@@ -516,6 +516,258 @@ func TestResponsesReasoningStateFinishDoesNotOverwriteStreamedSummary(t *testing
 	}
 }
 
+func TestStripReasoningSummaryHTMLComments(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{
+			name: "complete span",
+			in:   "before <!-- hidden markdown --> after",
+			want: "before  after",
+		},
+		{
+			name: "complete span from accumulated split deltas",
+			in:   "**Title**\n\n<!-- abandoned tail -->",
+			want: "**Title**\n\n",
+		},
+		{
+			name: "unmatched opener strips abandoned tail",
+			in:   "**Title**\n\n<!-- abandoned tail",
+			want: "**Title**\n\n",
+		},
+		{
+			name: "plain summary untouched",
+			in:   "No marker text.",
+			want: "No marker text.",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := stripReasoningSummaryHTMLComments(tt.in); got != tt.want {
+				t.Fatalf("stripReasoningSummaryHTMLComments(%q) = %q, want %q", tt.in, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestResponsesReasoningStateSummaryDoneEmitsOnlyMissingSuffix(t *testing.T) {
+	state := newResponsesReasoningState()
+	state.SummaryPartAdded(0)
+	part := state.AppendSummary(0, "Already")
+	if part == nil {
+		t.Fatal("expected initial summary delta")
+	}
+	state.MarkEmitted(0)
+
+	part = state.SummaryDone(0, 0, "Already done")
+	if part == nil {
+		t.Fatal("expected done event to emit missing suffix")
+	}
+	if got, want := part.ReasoningContent, " done"; got != want {
+		t.Fatalf("done delta = %q, want %q", got, want)
+	}
+
+	snapshot := state.Part(0)
+	if snapshot == nil {
+		t.Fatal("expected accumulated reasoning part")
+	}
+	if got, want := snapshot.ReasoningContent, "Already done"; got != want {
+		t.Fatalf("accumulated reasoning = %q, want %q", got, want)
+	}
+}
+
+func TestResponsesReasoningStateSummaryDoneAfterSuppressedDeltasEmitsCleanSection(t *testing.T) {
+	state := newResponsesReasoningState()
+	state.SummaryPartAdded(0)
+	state.AppendSummary(0, "**Analyzing**\n\n<!--")
+	state.AppendSummary(0, " -->")
+
+	part := state.SummaryDone(0, 0, "**Analyzing**\n\n<!-- -->")
+	if part == nil {
+		t.Fatal("expected done event to emit full clean section")
+	}
+	if got, want := part.ReasoningContent, "**Analyzing**"; got != want {
+		t.Fatalf("done delta = %q, want %q", got, want)
+	}
+
+	snapshot := state.Part(0)
+	if snapshot == nil {
+		t.Fatal("expected accumulated reasoning part")
+	}
+	if got, want := snapshot.ReasoningContent, "**Analyzing**"; got != want {
+		t.Fatalf("accumulated reasoning = %q, want %q", got, want)
+	}
+	if got, want := strings.Join(snapshot.ReasoningSummaryParts, "|"), "**Analyzing**"; got != want {
+		t.Fatalf("structured summary parts = %q, want %q", got, want)
+	}
+}
+
+func TestResponsesClientSequentialCutoffSuppressesSummaryDeltasAndUsesDone(t *testing.T) {
+	sse := strings.Join([]string{
+		`event: response.output_item.added`,
+		`data: {"type":"response.output_item.added","output_index":0,"item":{"type":"reasoning","id":"rs_cutoff","encrypted_content":"enc_cutoff"}}`,
+		`event: response.reasoning_summary_part.added`,
+		`data: {"type":"response.reasoning_summary_part.added","output_index":0,"summary_index":0}`,
+		`event: response.reasoning_summary_text.delta`,
+		`data: {"type":"response.reasoning_summary_text.delta","output_index":0,"summary_index":0,"delta":"**Analyzing**\n\n<!--"}`,
+		`event: response.reasoning_summary_text.delta`,
+		`data: {"type":"response.reasoning_summary_text.delta","output_index":0,"summary_index":0,"delta":" -->"}`,
+		`event: response.reasoning_summary_text.done`,
+		`data: {"type":"response.reasoning_summary_text.done","output_index":0,"summary_index":0,"text":"**Analyzing**\n\n<!-- -->"}`,
+		`event: response.output_item.done`,
+		`data: {"type":"response.output_item.done","output_index":0,"item":{"type":"reasoning","id":"rs_cutoff","encrypted_content":"enc_cutoff"}}`,
+		`event: response.completed`,
+		`data: {"type":"response.completed","response":{"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}`,
+		`data: [DONE]`,
+	}, "\n")
+
+	events := streamResponsesFixture(t, sse, ResponsesRequest{
+		Model:  "gpt-test",
+		Input:  []ResponsesInputItem{{Type: "message", Role: "user", Content: "hi"}},
+		Stream: true,
+		StreamOptions: &ResponsesStreamOptions{
+			ReasoningSummaryDelivery: "sequential_cutoff",
+		},
+	})
+
+	var reasoning []Event
+	for _, event := range events {
+		if event.Type == EventReasoningDelta {
+			reasoning = append(reasoning, event)
+		}
+	}
+	if len(reasoning) != 1 {
+		t.Fatalf("reasoning event count = %d, want 1: %#v", len(reasoning), reasoning)
+	}
+	if got, want := reasoning[0].Text, "**Analyzing**"; got != want {
+		t.Fatalf("reasoning text = %q, want %q", got, want)
+	}
+	if strings.Contains(reasoning[0].Text, "<!--") || strings.Contains(reasoning[0].Text, "-->") {
+		t.Fatalf("reasoning text contains HTML comment marker: %q", reasoning[0].Text)
+	}
+}
+
+func TestResponsesClientSequentialCutoffFallsBackToCleanFinalSummary(t *testing.T) {
+	sse := strings.Join([]string{
+		`event: response.output_item.added`,
+		`data: {"type":"response.output_item.added","output_index":0,"item":{"type":"reasoning","id":"rs_cutoff","encrypted_content":"enc_cutoff"}}`,
+		`event: response.reasoning_summary_part.added`,
+		`data: {"type":"response.reasoning_summary_part.added","output_index":0,"summary_index":0}`,
+		`event: response.reasoning_summary_text.delta`,
+		`data: {"type":"response.reasoning_summary_text.delta","output_index":0,"summary_index":0,"delta":"**Analyzing**\n\n<!--"}`,
+		`event: response.reasoning_summary_text.delta`,
+		`data: {"type":"response.reasoning_summary_text.delta","output_index":0,"summary_index":0,"delta":" -->"}`,
+		`event: response.output_item.done`,
+		`data: {"type":"response.output_item.done","output_index":0,"item":{"type":"reasoning","id":"rs_cutoff","encrypted_content":"enc_cutoff"}}`,
+		`event: response.completed`,
+		`data: {"type":"response.completed","response":{"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}`,
+		`data: [DONE]`,
+	}, "\n")
+
+	events := streamResponsesFixture(t, sse, ResponsesRequest{
+		Model:  "gpt-test",
+		Input:  []ResponsesInputItem{{Type: "message", Role: "user", Content: "hi"}},
+		Stream: true,
+		StreamOptions: &ResponsesStreamOptions{
+			ReasoningSummaryDelivery: "sequential_cutoff",
+		},
+	})
+
+	var reasoning []Event
+	for _, event := range events {
+		if event.Type == EventReasoningDelta {
+			reasoning = append(reasoning, event)
+		}
+	}
+	if len(reasoning) != 1 {
+		t.Fatalf("reasoning event count = %d, want 1: %#v", len(reasoning), reasoning)
+	}
+	if got, want := reasoning[0].Text, "**Analyzing**"; got != want {
+		t.Fatalf("reasoning text = %q, want %q", got, want)
+	}
+	if !reasoning[0].ReasoningFinal {
+		t.Fatal("fallback summary should be emitted as final reasoning event")
+	}
+}
+
+func TestResponsesClientReasoningSummaryDoneIsIdempotentWithRenderedDeltas(t *testing.T) {
+	sse := strings.Join([]string{
+		`event: response.output_item.added`,
+		`data: {"type":"response.output_item.added","output_index":0,"item":{"type":"reasoning","id":"rs_both","encrypted_content":"enc_both"}}`,
+		`event: response.reasoning_summary_part.added`,
+		`data: {"type":"response.reasoning_summary_part.added","output_index":0,"summary_index":0}`,
+		`event: response.reasoning_summary_text.delta`,
+		`data: {"type":"response.reasoning_summary_text.delta","output_index":0,"summary_index":0,"delta":"Partial"}`,
+		`event: response.reasoning_summary_text.done`,
+		`data: {"type":"response.reasoning_summary_text.done","output_index":0,"summary_index":0,"text":"Partial done"}`,
+		`event: response.output_item.done`,
+		`data: {"type":"response.output_item.done","output_index":0,"item":{"type":"reasoning","id":"rs_both","encrypted_content":"enc_both"}}`,
+		`event: response.completed`,
+		`data: {"type":"response.completed","response":{"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}`,
+		`data: [DONE]`,
+	}, "\n")
+
+	events := streamResponsesFixture(t, sse, ResponsesRequest{
+		Model:  "gpt-test",
+		Input:  []ResponsesInputItem{{Type: "message", Role: "user", Content: "hi"}},
+		Stream: true,
+	})
+
+	var got strings.Builder
+	var reasoningEvents int
+	for _, event := range events {
+		if event.Type == EventReasoningDelta {
+			reasoningEvents++
+			got.WriteString(event.Text)
+		}
+	}
+	if got.String() != "Partial done" {
+		t.Fatalf("combined reasoning text = %q, want %q", got.String(), "Partial done")
+	}
+	if reasoningEvents != 2 {
+		t.Fatalf("reasoning event count = %d, want 2", reasoningEvents)
+	}
+}
+
+func streamResponsesFixture(t *testing.T, sse string, req ResponsesRequest) []Event {
+	t.Helper()
+	httpClient := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Status:     "200 OK",
+			Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+			Body:       io.NopCloser(strings.NewReader(sse)),
+		}, nil
+	})}
+	client := &ResponsesClient{
+		BaseURL:    "https://example.test/v1/responses",
+		HTTPClient: httpClient,
+	}
+	stream, err := client.Stream(context.Background(), req, false)
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	defer stream.Close()
+
+	var events []Event
+	for {
+		event, recvErr := stream.Recv()
+		if recvErr == io.EOF {
+			return events
+		}
+		if recvErr != nil {
+			t.Fatalf("stream recv failed: %v", recvErr)
+		}
+		events = append(events, event)
+		if event.Type == EventDone {
+			return events
+		}
+	}
+}
+
 func TestBuildResponsesTools(t *testing.T) {
 	specs := []ToolSpec{
 		{

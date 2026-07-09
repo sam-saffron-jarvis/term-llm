@@ -270,6 +270,40 @@ func TestMessageBlockRenderer_RenderReasoningSummaryExpanded(t *testing.T) {
 	}
 }
 
+func TestMessageBlockRenderer_ExpandedReasoningSummaryUsesMarkdown(t *testing.T) {
+	renderer := NewMessageBlockRenderer(80, ui.RenderMarkdown, false)
+	cfg := config.DefaultReasoningConfig()
+	cfg.Display = config.ReasoningDisplayExpanded
+	renderer.SetReasoningConfig(cfg)
+	msg := &session.Message{
+		Role: llm.RoleAssistant,
+		Parts: []llm.Part{{
+			Type: llm.PartText,
+			Text: "Answer.",
+			ReasoningContent: strings.Join([]string{
+				"**Planning**",
+				"- visible item",
+				"<!-- abandoned markdown tail -->",
+				"After **bold**.",
+			}, "\n\n"),
+			ReasoningKind: llm.ReasoningKindSummary,
+		}},
+	}
+
+	rendered := ui.StripANSI(renderer.renderAssistantMessage(msg))
+	if !strings.Contains(rendered, "▾ Thought: Planning") {
+		t.Fatalf("expected expanded reasoning header, got %q", rendered)
+	}
+	if !strings.Contains(rendered, "• visible item") || !strings.Contains(rendered, "After bold.") {
+		t.Fatalf("expected expanded reasoning body to be markdown-rendered, got %q", rendered)
+	}
+	for _, unwanted := range []string{"<!--", "-->", "abandoned markdown tail", "- visible item"} {
+		if strings.Contains(rendered, unwanted) {
+			t.Fatalf("expanded reasoning should render markdown rather than raw source; found %q in %q", unwanted, rendered)
+		}
+	}
+}
+
 func TestMessageBlockRenderer_HidesReasoningWhenOffOrStatusOnly(t *testing.T) {
 	msg := &session.Message{
 		Role: llm.RoleAssistant,

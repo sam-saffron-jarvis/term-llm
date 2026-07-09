@@ -39,21 +39,22 @@ func responsesWebSocketURL(baseURL string) (string, error) {
 type responsesWSRequest struct {
 	Type string `json:"type"`
 
-	Model              string               `json:"model"`
-	Instructions       string               `json:"instructions,omitempty"`
-	Input              []ResponsesInputItem `json:"input"`
-	Tools              []any                `json:"tools,omitempty"`
-	ToolChoice         any                  `json:"tool_choice,omitempty"`
-	ParallelToolCalls  *bool                `json:"parallel_tool_calls,omitempty"`
-	MaxOutputTokens    int                  `json:"max_output_tokens,omitempty"`
-	Temperature        *float64             `json:"temperature,omitempty"`
-	TopP               *float64             `json:"top_p,omitempty"`
-	Reasoning          *ResponsesReasoning  `json:"reasoning,omitempty"`
-	Include            []string             `json:"include,omitempty"`
-	PromptCacheKey     string               `json:"prompt_cache_key,omitempty"`
-	Store              *bool                `json:"store,omitempty"`
-	Generate           *bool                `json:"generate,omitempty"`
-	PreviousResponseID string               `json:"previous_response_id,omitempty"`
+	Model              string                  `json:"model"`
+	Instructions       string                  `json:"instructions,omitempty"`
+	Input              []ResponsesInputItem    `json:"input"`
+	Tools              []any                   `json:"tools,omitempty"`
+	ToolChoice         any                     `json:"tool_choice,omitempty"`
+	ParallelToolCalls  *bool                   `json:"parallel_tool_calls,omitempty"`
+	MaxOutputTokens    int                     `json:"max_output_tokens,omitempty"`
+	Temperature        *float64                `json:"temperature,omitempty"`
+	TopP               *float64                `json:"top_p,omitempty"`
+	Reasoning          *ResponsesReasoning     `json:"reasoning,omitempty"`
+	Include            []string                `json:"include,omitempty"`
+	PromptCacheKey     string                  `json:"prompt_cache_key,omitempty"`
+	Store              *bool                   `json:"store,omitempty"`
+	Generate           *bool                   `json:"generate,omitempty"`
+	StreamOptions      *ResponsesStreamOptions `json:"stream_options,omitempty"`
+	PreviousResponseID string                  `json:"previous_response_id,omitempty"`
 }
 
 func newResponsesWSRequest(req ResponsesRequest) responsesWSRequest {
@@ -73,6 +74,7 @@ func newResponsesWSRequest(req ResponsesRequest) responsesWSRequest {
 		PromptCacheKey:     req.PromptCacheKey,
 		Store:              req.Store,
 		Generate:           req.Generate,
+		StreamOptions:      req.StreamOptions,
 		PreviousResponseID: req.PreviousResponseID,
 	}
 }
@@ -144,7 +146,7 @@ func (c *ResponsesClient) streamWebSocketPrepared(ctx context.Context, req Respo
 		}()
 		defer stopWatchingContext()
 
-		handler := newResponsesStreamEventHandler(c, responseStateGeneration, debugRaw, "Responses WebSocket", c.websocketServerStateEnabled(), wireReq.SessionID)
+		handler := newResponsesStreamEventHandler(c, responseStateGeneration, debugRaw, "Responses WebSocket", c.websocketServerStateEnabled(), wireReq.SessionID, wireReq.suppressReasoningSummaryDeltas())
 		retriedFullState := false
 		idleTimeout := c.WebSocketIdleTimeout
 		if idleTimeout == 0 {
@@ -194,7 +196,7 @@ func (c *ResponsesClient) streamWebSocketPrepared(ctx context.Context, req Respo
 					c.wsLastRequest = nil
 					wireReq.PreviousResponseID = ""
 					wireReq.Input = buildFullInput()
-					handler = newResponsesStreamEventHandler(c, responseStateGeneration, debugRaw, "Responses WebSocket", c.websocketServerStateEnabled(), wireReq.SessionID)
+					handler = newResponsesStreamEventHandler(c, responseStateGeneration, debugRaw, "Responses WebSocket", c.websocketServerStateEnabled(), wireReq.SessionID, wireReq.suppressReasoningSummaryDeltas())
 					if debugRaw {
 						DebugRawSection(debugRaw, "Responses WebSocket Full-State Retry", err.Error())
 					}
@@ -310,7 +312,8 @@ func responsesRequestNonInputEqual(prev, current ResponsesRequest) bool {
 		reflect.DeepEqual(prev.Include, current.Include) &&
 		prev.PromptCacheKey == current.PromptCacheKey &&
 		reflect.DeepEqual(prev.Store, current.Store) &&
-		reflect.DeepEqual(prev.Generate, current.Generate)
+		reflect.DeepEqual(prev.Generate, current.Generate) &&
+		reflect.DeepEqual(prev.StreamOptions, current.StreamOptions)
 }
 
 func jsonLikeEqualForCompare(a, b any) bool {

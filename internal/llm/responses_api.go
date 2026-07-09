@@ -74,27 +74,40 @@ type ResponsesClient struct {
 
 // ResponsesRequest follows the Open Responses spec
 type ResponsesRequest struct {
-	Model                           string               `json:"model"`
-	Instructions                    string               `json:"instructions,omitempty"` // System instructions (alternative to developer-role input items)
-	Input                           []ResponsesInputItem `json:"input"`
-	Messages                        []Message            `json:"-"`               // Optional raw transcript for lazy input materialization
-	ExtractInstructionsFromMessages bool                 `json:"-"`               // When lazily materializing Input from Messages, omit system messages because they are sent via Instructions.
-	Tools                           []any                `json:"tools,omitempty"` // Can contain ResponsesTool or ResponsesWebSearchTool
-	ToolChoice                      any                  `json:"tool_choice,omitempty"`
-	ParallelToolCalls               *bool                `json:"parallel_tool_calls,omitempty"`
-	MaxOutputTokens                 int                  `json:"max_output_tokens,omitempty"`
-	Temperature                     *float64             `json:"temperature,omitempty"`
-	TopP                            *float64             `json:"top_p,omitempty"`
-	Reasoning                       *ResponsesReasoning  `json:"reasoning,omitempty"`
-	Include                         []string             `json:"include,omitempty"`
-	PromptCacheKey                  string               `json:"prompt_cache_key,omitempty"`
-	Store                           *bool                `json:"store,omitempty"`
-	Generate                        *bool                `json:"generate,omitempty"` // WebSocket warmup support; omitted for normal HTTP/WS requests
-	Stream                          bool                 `json:"stream"`
-	PreviousResponseID              string               `json:"previous_response_id,omitempty"`
-	ServiceTier                     string               `json:"service_tier,omitempty"`
-	SessionID                       string               `json:"-"`
-	FileUploadPolicy                *FileUploadPolicy    `json:"-"`
+	Model                           string                  `json:"model"`
+	Instructions                    string                  `json:"instructions,omitempty"` // System instructions (alternative to developer-role input items)
+	Input                           []ResponsesInputItem    `json:"input"`
+	Messages                        []Message               `json:"-"`               // Optional raw transcript for lazy input materialization
+	ExtractInstructionsFromMessages bool                    `json:"-"`               // When lazily materializing Input from Messages, omit system messages because they are sent via Instructions.
+	Tools                           []any                   `json:"tools,omitempty"` // Can contain ResponsesTool or ResponsesWebSearchTool
+	ToolChoice                      any                     `json:"tool_choice,omitempty"`
+	ParallelToolCalls               *bool                   `json:"parallel_tool_calls,omitempty"`
+	MaxOutputTokens                 int                     `json:"max_output_tokens,omitempty"`
+	Temperature                     *float64                `json:"temperature,omitempty"`
+	TopP                            *float64                `json:"top_p,omitempty"`
+	Reasoning                       *ResponsesReasoning     `json:"reasoning,omitempty"`
+	Include                         []string                `json:"include,omitempty"`
+	PromptCacheKey                  string                  `json:"prompt_cache_key,omitempty"`
+	Store                           *bool                   `json:"store,omitempty"`
+	Generate                        *bool                   `json:"generate,omitempty"` // WebSocket warmup support; omitted for normal HTTP/WS requests
+	Stream                          bool                    `json:"stream"`
+	StreamOptions                   *ResponsesStreamOptions `json:"stream_options,omitempty"`
+	PreviousResponseID              string                  `json:"previous_response_id,omitempty"`
+	ServiceTier                     string                  `json:"service_tier,omitempty"`
+	SessionID                       string                  `json:"-"`
+	FileUploadPolicy                *FileUploadPolicy       `json:"-"`
+}
+
+// ResponsesStreamOptions contains streaming delivery options for the Responses API.
+type ResponsesStreamOptions struct {
+	ReasoningSummaryDelivery string `json:"reasoning_summary_delivery,omitempty"`
+}
+
+func (r ResponsesRequest) suppressReasoningSummaryDeltas() bool {
+	if r.StreamOptions == nil {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(r.StreamOptions.ReasoningSummaryDelivery), "sequential_cutoff")
 }
 
 // ResponsesWebSearchTool represents the web search tool for OpenAI
@@ -987,7 +1000,7 @@ func (c *ResponsesClient) streamHTTPPrepared(ctx context.Context, httpPayload Re
 
 		var lastEventType string
 		var eventData []byte
-		handler := newResponsesStreamEventHandler(client, responseStateGeneration, debugRaw, "Responses API SSE", !client.DisableServerState, httpPayload.SessionID)
+		handler := newResponsesStreamEventHandler(client, responseStateGeneration, debugRaw, "Responses API SSE", !client.DisableServerState, httpPayload.SessionID, httpPayload.suppressReasoningSummaryDeltas())
 		sawTerminal := false
 
 		flushEvent := func() (bool, error) {
@@ -1386,7 +1399,7 @@ type responsesReasoningItemState struct {
 	part                    Part
 	summaryParts            []string
 	currentSummaryPart      int
-	emittedTextLen          int
+	emittedSummaryContent   string
 	emittedEncrypted        string
 	pendingSummarySeparator bool
 }
@@ -1418,24 +1431,27 @@ func (s *responsesReasoningState) Start(outputIndex int, itemID, encrypted strin
 			state.part.ReasoningKind = ReasoningKindEncrypted
 		}
 	}
-	if text := extractReasoningSummaryText(summary); text != "" {
+	if summaryTexts := extractReasoningSummaryTexts(summary); len(summaryTexts) > 0 {
 		// Start is called for both output_item.added and output_item.done. If
 		// summary_text deltas already populated the state, keep the streamed
 		// aggregate instead of replacing it with the final item snapshot.
 		if strings.TrimSpace(state.part.ReasoningContent) == "" && len(state.summaryParts) == 0 {
-			state.summaryParts = extractReasoningSummaryTexts(summary)
-			state.part.ReasoningSummaryParts = append([]string(nil), state.summaryParts...)
-			state.part.ReasoningContent = text
+			state.summaryParts = summaryTexts
+			state.rebuildReasoningSummaryContent()
 		}
 		state.part.ReasoningKind = ReasoningKindSummary
 	}
 }
 
-func (s *responsesReasoningState) SummaryPartAdded(outputIndex int) {
+func (s *responsesReasoningState) SummaryPartAdded(outputIndex int, summaryIndex ...int) {
 	s.Ensure(outputIndex)
 	state := s.items[outputIndex]
 	if strings.TrimSpace(state.part.ReasoningContent) != "" && !strings.HasSuffix(state.part.ReasoningContent, "\n\n") {
 		state.pendingSummarySeparator = true
+	}
+	if len(summaryIndex) > 0 && summaryIndex[0] >= 0 {
+		state.currentSummaryPart = summaryIndex[0]
+		return
 	}
 	if len(state.summaryParts) == 0 && strings.TrimSpace(state.part.ReasoningContent) == "" {
 		state.currentSummaryPart = 0
@@ -1450,14 +1466,19 @@ func (s *responsesReasoningState) SummaryPartAdded(outputIndex int) {
 // when a new summary part starts), and ReasoningSummaryParts is nil; callers can
 // use Part() when they need a snapshot of the accumulated content/parts.
 func (s *responsesReasoningState) AppendSummary(outputIndex int, delta string) *Part {
+	return s.AppendSummaryAt(outputIndex, -1, delta)
+}
+
+func (s *responsesReasoningState) AppendSummaryAt(outputIndex int, summaryIndex int, delta string) *Part {
 	if delta == "" {
 		return nil
 	}
 	s.Ensure(outputIndex)
 	state := s.items[outputIndex]
-	for len(state.summaryParts) <= state.currentSummaryPart {
-		state.summaryParts = append(state.summaryParts, "")
+	if summaryIndex >= 0 {
+		state.currentSummaryPart = summaryIndex
 	}
+	state.ensureSummaryPart(state.currentSummaryPart)
 	state.summaryParts[state.currentSummaryPart] += delta
 	state.part.ReasoningSummaryParts = append([]string(nil), state.summaryParts...)
 	if state.pendingSummarySeparator {
@@ -1472,12 +1493,36 @@ func (s *responsesReasoningState) AppendSummary(outputIndex int, delta string) *
 	return &part
 }
 
+func (s *responsesReasoningState) SummaryDone(outputIndex int, summaryIndex int, text string) *Part {
+	s.Ensure(outputIndex)
+	state := s.items[outputIndex]
+	if summaryIndex < 0 {
+		summaryIndex = state.currentSummaryPart
+	}
+	state.currentSummaryPart = summaryIndex
+	state.ensureSummaryPart(summaryIndex)
+	state.summaryParts[summaryIndex] = cleanReasoningSummaryPartText(text)
+	state.rebuildReasoningSummaryContent()
+	state.part.ReasoningKind = ReasoningKindSummary
+
+	missing := missingReasoningSummarySuffix(state.emittedSummaryContent, state.part.ReasoningContent)
+	if missing == "" {
+		return nil
+	}
+	part := state.part
+	part.ReasoningContent = missing
+	part.ReasoningSummaryParts = nil
+	return &part
+}
+
 func (s *responsesReasoningState) MarkEmitted(outputIndex int) {
 	state, ok := s.items[outputIndex]
 	if !ok {
 		return
 	}
-	state.emittedTextLen = len(state.part.ReasoningContent)
+	if state.part.ReasoningKind == ReasoningKindSummary {
+		state.emittedSummaryContent = state.cleanReasoningSummaryContent()
+	}
 	state.emittedEncrypted = state.part.ReasoningEncryptedContent
 }
 
@@ -1486,7 +1531,10 @@ func (s *responsesReasoningState) NeedsFinalEvent(outputIndex int) bool {
 	if !ok {
 		return false
 	}
-	if state.part.ReasoningContent != "" && state.emittedTextLen == 0 {
+	if state.part.ReasoningContent != "" && state.emittedSummaryContent == "" {
+		return true
+	}
+	if state.part.ReasoningContent != "" && missingReasoningSummarySuffix(state.emittedSummaryContent, state.part.ReasoningContent) != "" {
 		return true
 	}
 	if len(state.part.ReasoningSummaryParts) > 1 {
@@ -1497,14 +1545,17 @@ func (s *responsesReasoningState) NeedsFinalEvent(outputIndex int) bool {
 
 func (s *responsesReasoningState) FinalEventText(outputIndex int) string {
 	state, ok := s.items[outputIndex]
-	if !ok || state.emittedTextLen > 0 {
+	if !ok {
 		return ""
 	}
-	return state.part.ReasoningContent
+	return missingReasoningSummarySuffix(state.emittedSummaryContent, state.part.ReasoningContent)
 }
 
 func (s *responsesReasoningState) Finish(outputIndex int, itemID, encrypted string, summary []responsesReasoningSummaryPart) {
 	s.Start(outputIndex, itemID, encrypted, summary)
+	if state, ok := s.items[outputIndex]; ok {
+		state.sanitizeSummaryParts()
+	}
 }
 
 // Part returns a snapshot of the accumulated reasoning item. The returned Part
@@ -1522,6 +1573,86 @@ func (s *responsesReasoningState) Part(outputIndex int) *Part {
 	return &part
 }
 
+func (state *responsesReasoningItemState) ensureSummaryPart(summaryIndex int) {
+	for len(state.summaryParts) <= summaryIndex {
+		state.summaryParts = append(state.summaryParts, "")
+	}
+}
+
+func (state *responsesReasoningItemState) sanitizeSummaryParts() {
+	if len(state.summaryParts) == 0 {
+		return
+	}
+	for i := range state.summaryParts {
+		state.summaryParts[i] = cleanReasoningSummaryPartText(state.summaryParts[i])
+	}
+	state.rebuildReasoningSummaryContent()
+}
+
+func (state *responsesReasoningItemState) rebuildReasoningSummaryContent() {
+	parts := displayReasoningSummaryParts(state.summaryParts)
+	state.part.ReasoningSummaryParts = parts
+	state.part.ReasoningContent = strings.Join(parts, "\n\n")
+	if state.part.ReasoningContent != "" {
+		state.part.ReasoningKind = ReasoningKindSummary
+	}
+}
+
+func (state *responsesReasoningItemState) cleanReasoningSummaryContent() string {
+	if len(state.summaryParts) == 0 {
+		return cleanReasoningSummaryPartText(state.part.ReasoningContent)
+	}
+	return strings.Join(displayReasoningSummaryParts(state.summaryParts), "\n\n")
+}
+
+func displayReasoningSummaryParts(parts []string) []string {
+	if len(parts) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if cleaned := cleanReasoningSummaryPartText(part); cleaned != "" {
+			out = append(out, cleaned)
+		}
+	}
+	return out
+}
+
+func missingReasoningSummarySuffix(emitted, full string) string {
+	if full == "" {
+		return ""
+	}
+	if emitted == "" {
+		return full
+	}
+	if strings.HasPrefix(full, emitted) {
+		return full[len(emitted):]
+	}
+	return ""
+}
+
+func stripReasoningSummaryHTMLComments(text string) string {
+	var out strings.Builder
+	for {
+		start := strings.Index(text, "<!--")
+		if start < 0 {
+			out.WriteString(text)
+			return out.String()
+		}
+		out.WriteString(text[:start])
+		text = text[start+len("<!--"):]
+		end := strings.Index(text, "-->")
+		if end < 0 {
+			return out.String()
+		}
+		text = text[end+len("-->"):]
+	}
+}
+
+func cleanReasoningSummaryPartText(text string) string {
+	return strings.TrimSpace(stripReasoningSummaryHTMLComments(text))
+}
+
 func extractReasoningSummaryText(summary []responsesReasoningSummaryPart) string {
 	return strings.Join(extractReasoningSummaryTexts(summary), "\n\n")
 }
@@ -1532,10 +1663,12 @@ func extractReasoningSummaryTexts(summary []responsesReasoningSummaryPart) []str
 	}
 	var texts []string
 	for _, part := range summary {
-		if part.Type != "summary_text" || strings.TrimSpace(part.Text) == "" {
+		if part.Type != "summary_text" {
 			continue
 		}
-		texts = append(texts, strings.TrimSpace(part.Text))
+		if text := cleanReasoningSummaryPartText(part.Text); text != "" {
+			texts = append(texts, text)
+		}
 	}
 	return texts
 }

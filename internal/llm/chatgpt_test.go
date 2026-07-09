@@ -175,6 +175,48 @@ func TestChatGPTStream_ServiceTierOverrideCanClearProviderDefault(t *testing.T) 
 	}
 }
 
+func TestChatGPTStream_IncludesSequentialCutoffReasoningSummaryDelivery(t *testing.T) {
+	origClient := chatGPTHTTPClient
+	defer func() { chatGPTHTTPClient = origClient }()
+
+	var captured map[string]any
+	chatGPTHTTPClient = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if err := json.NewDecoder(req.Body).Decode(&captured); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body: io.NopCloser(strings.NewReader(strings.Join([]string{
+				`event: response.completed`,
+				`data: {"type":"response.completed","response":{"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}`,
+				`data: [DONE]`,
+			}, "\n"))),
+			Header: make(http.Header),
+		}, nil
+	})}
+
+	provider := NewChatGPTProviderWithCreds(&credentials.ChatGPTCredentials{
+		AccessToken: "test-token",
+		AccountID:   "test-account",
+		ExpiresAt:   time.Now().Add(1 * time.Hour).Unix(),
+	}, "gpt-5.5-xhigh")
+
+	stream, err := provider.Stream(context.Background(), Request{Messages: []Message{UserText("hello")}})
+	if err != nil {
+		t.Fatalf("stream creation failed: %v", err)
+	}
+	defer stream.Close()
+	drainStreamToDone(t, stream)
+
+	streamOptions, ok := captured["stream_options"].(map[string]any)
+	if !ok {
+		t.Fatalf("stream_options missing or wrong type in request: %#v", captured)
+	}
+	if got, want := streamOptions["reasoning_summary_delivery"], "sequential_cutoff"; got != want {
+		t.Fatalf("reasoning_summary_delivery = %#v, want %q", got, want)
+	}
+}
+
 func TestChatGPTStream_ReasoningSummaryByOutputIndex(t *testing.T) {
 	origClient := chatGPTHTTPClient
 	defer func() {

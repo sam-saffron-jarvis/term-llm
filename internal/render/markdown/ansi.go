@@ -288,7 +288,11 @@ func (r *ANSI) renderBlock(node gast.Node, source []byte, width int, styles ansi
 		}
 		return prefixLinesWithStyle(inner, "🠶 ", "  ", styles.definition), nil
 	case *gast.HTMLBlock:
-		return wrapANSI(styles.text.Render(string(bytesOrEmpty(node.Text(source)))), width), nil
+		raw := string(bytesOrEmpty(node.Text(source)))
+		if isHTMLComment(raw) {
+			return "", nil
+		}
+		return wrapANSI(styles.text.Render(raw), width), nil
 	default:
 		if node.FirstChild() != nil {
 			return r.renderBlockChildren(node, source, width, styles, "\n")
@@ -679,7 +683,11 @@ func (r *ANSI) renderInline(node gast.Node, source []byte, styles ansiStyles) (s
 		}
 		return styles.text.Render("[ ] "), nil
 	case *gast.RawHTML:
-		return styles.text.Render(string(bytesOrEmpty(node.Text(source)))), nil
+		raw := string(bytesOrEmpty(node.Text(source)))
+		if isHTMLComment(raw) {
+			return "", nil
+		}
+		return styles.text.Render(raw), nil
 	default:
 		if node.FirstChild() != nil {
 			return r.renderInlineChildren(node, source, styles)
@@ -1131,6 +1139,11 @@ func bytesOrEmpty(v []byte) []byte {
 		return []byte{}
 	}
 	return v
+}
+
+func isHTMLComment(raw string) bool {
+	text := strings.TrimSpace(raw)
+	return strings.HasPrefix(text, "<!--") && strings.HasSuffix(text, "-->")
 }
 
 // multiNewlineRe matches 3 or more consecutive newlines.

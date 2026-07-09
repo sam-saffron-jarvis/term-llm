@@ -134,6 +134,29 @@ func TestRenderString_DecodesEscapesAndEntities(t *testing.T) {
 	}
 }
 
+func TestRenderString_HidesHTMLComments(t *testing.T) {
+	got, err := RenderString("before <!-- inline hidden --> after\n\n<!-- block hidden -->\n\n- visible", Config{
+		Palette:           testPalette,
+		Width:             80,
+		WrapOffset:        1,
+		NormalizeTabs:     true,
+		NormalizeNewlines: true,
+		TrimSpace:         true,
+	})
+	if err != nil {
+		t.Fatalf("RenderString failed: %v", err)
+	}
+	visible := normalizeVisibleOutput(got)
+	for _, unwanted := range []string{"<!--", "-->", "inline hidden", "block hidden"} {
+		if strings.Contains(visible, unwanted) {
+			t.Fatalf("HTML comment content should be hidden from terminal markdown output; found %q in %q", unwanted, visible)
+		}
+	}
+	if !strings.Contains(visible, "before") || !strings.Contains(visible, "after") || !strings.Contains(visible, "• visible") {
+		t.Fatalf("expected surrounding markdown to remain visible, got %q", visible)
+	}
+}
+
 func TestRenderString_BlockquotePreservesNestedStructure(t *testing.T) {
 	got, err := RenderString("> outer\n>\n> > inner1\n> >\n> > inner2\n>\n> tail", Config{
 		Palette:           testPalette,

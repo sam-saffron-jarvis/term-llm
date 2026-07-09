@@ -69,6 +69,9 @@ func TestResponsesWebSocketRequestOmitsTransportFields(t *testing.T) {
 		Input:    []ResponsesInputItem{{Type: "message", Role: "user", Content: "hi"}},
 		Stream:   true,
 		Generate: &generate,
+		StreamOptions: &ResponsesStreamOptions{
+			ReasoningSummaryDelivery: "sequential_cutoff",
+		},
 	})
 	body, err := json.Marshal(wsReq)
 	if err != nil {
@@ -86,6 +89,13 @@ func TestResponsesWebSocketRequestOmitsTransportFields(t *testing.T) {
 	}
 	if decoded["generate"] != false {
 		t.Fatalf("generate = %#v, want false", decoded["generate"])
+	}
+	streamOptions, ok := decoded["stream_options"].(map[string]any)
+	if !ok {
+		t.Fatalf("stream_options = %#v, want object", decoded["stream_options"])
+	}
+	if got, want := streamOptions["reasoning_summary_delivery"], "sequential_cutoff"; got != want {
+		t.Fatalf("reasoning_summary_delivery = %#v, want %q", got, want)
 	}
 }
 
@@ -241,6 +251,25 @@ func TestResponsesRequestNonInputEqual_JSONLikeTools(t *testing.T) {
 
 	if !responsesRequestNonInputEqual(previous, current) {
 		t.Fatalf("expected requests to compare equal: previous=%#v current=%#v", previous, current)
+	}
+}
+
+func TestResponsesRequestNonInputEqual_ComparesStreamOptions(t *testing.T) {
+	previous := ResponsesRequest{
+		Model: "gpt-test",
+		StreamOptions: &ResponsesStreamOptions{
+			ReasoningSummaryDelivery: "sequential_cutoff",
+		},
+	}
+	current := ResponsesRequest{
+		Model: "gpt-test",
+		StreamOptions: &ResponsesStreamOptions{
+			ReasoningSummaryDelivery: "",
+		},
+	}
+
+	if responsesRequestNonInputEqual(previous, current) {
+		t.Fatal("expected requests with different stream_options to compare unequal")
 	}
 }
 
