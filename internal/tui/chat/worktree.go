@@ -14,15 +14,22 @@ import (
 )
 
 type worktreeOperationDoneMsg struct {
-	op     string
-	wt     *worktree.Worktree
-	dir    string
-	root   string
-	branch string
-	bound  bool
-	merge  worktree.MergeResult
-	diff   string
-	err    error
+	op      string
+	wt      *worktree.Worktree
+	dir     string
+	root    string
+	branch  string
+	bound   bool
+	merge   worktree.MergeResult
+	promote worktree.PromoteResult
+	assist  worktree.AssistedMergeResult
+	diff    string
+	err     error
+}
+
+type pendingWorktreeRecovery struct {
+	kind  string
+	merge worktree.MergeResult
 }
 
 func (m *Model) cmdWorktree(args []string) (tea.Model, tea.Cmd) {
@@ -262,10 +269,27 @@ func (m *Model) cmdWorktreeRoot() (tea.Model, tea.Cmd) {
 	if err != nil {
 		return m.showFooterError(err.Error())
 	}
+	if err := m.bindRootDir(root); err != nil {
+		return m.showFooterError(err.Error())
+	}
+	return m.showFooterSuccess("Back on root checkout: " + root)
+}
+
+func (m *Model) bindRootDir(root string) error {
+	root = strings.TrimSpace(root)
+	if root == "" {
+		return fmt.Errorf("root checkout is required")
+	}
+	if resolved, err := worktree.MainRepoRoot(root); err == nil {
+		root = resolved
+	}
 	if m.toolMgr != nil {
 		if err := m.toolMgr.SetBaseDir(root); err != nil {
-			return m.showFooterError(err.Error())
+			return err
 		}
+	}
+	if m.approvedDirs != nil {
+		_ = m.approvedDirs.AddDirectory(root)
 	}
 	if m.sess != nil {
 		changed := strings.TrimSpace(m.sess.WorktreeDir) != "" || filepath.Clean(m.sess.CWD) != filepath.Clean(root)
@@ -273,11 +297,11 @@ func (m *Model) cmdWorktreeRoot() (tea.Model, tea.Cmd) {
 		m.sess.CWD = root
 		if m.store != nil && changed {
 			if err := m.store.Update(context.Background(), m.sess); err != nil {
-				return m.showFooterError(err.Error())
+				return err
 			}
 		}
 	}
-	return m.showFooterSuccess("Back on root checkout: " + root)
+	return nil
 }
 
 func (m *Model) cmdWorktreeDiff(args []string) (tea.Model, tea.Cmd) {
@@ -334,6 +358,7 @@ func (m *Model) cmdWorktreeMerge(args []string) (tea.Model, tea.Cmd) {
 			}
 		}
 	}
+	usingBound := target == ""
 	if target != "" {
 		resolved, err := m.resolveWorktreeTarget(target)
 		if err != nil {
@@ -344,9 +369,15 @@ func (m *Model) cmdWorktreeMerge(args []string) (tea.Model, tea.Cmd) {
 	if dir == "" {
 		return m.showFooterMuted("No worktree is bound.")
 	}
+	wt, err := worktree.Get(dir)
+	if err != nil {
+		return m.showFooterError(err.Error())
+	}
+	dir = wt.Dir
 	parentCtx := m.rootContext()
 	m.worktreeOperation = "merge"
-	return m.showFooterMutedWithCmd("Merging worktree changes…", func() tea.Msg {
+	preflight := formatWorktreeMergePreflight(wt, usingBound, opts)
+	return m.showSystemMessageWithCmd(preflight, func() tea.Msg {
 		res, err := worktree.MergeBack(parentCtx, dir, opts)
 		return worktreeOperationDoneMsg{op: "merge", dir: dir, merge: res, err: err}
 	})
@@ -366,15 +397,31 @@ func (m *Model) cmdWorktreePromote(args []string) (tea.Model, tea.Cmd) {
 	if dir == "" {
 		return m.showFooterMuted("No worktree is bound.")
 	}
-	if len(args) == 0 {
+	branch := ""
+	for _, arg := range args {
+		if strings.HasPrefix(arg, "-") {
+			return m.showFooterError("Usage: /worktree promote <branch>")
+		}
+		if branch == "" {
+			branch = arg
+		} else {
+			return m.showFooterError("Usage: /worktree promote <branch>")
+		}
+	}
+	if branch == "" {
 		return m.showFooterError("Usage: /worktree promote <branch>")
 	}
-	branch := args[0]
+	wt, err := worktree.Get(dir)
+	if err != nil {
+		return m.showFooterError(err.Error())
+	}
+	dir = wt.Dir
 	parentCtx := m.rootContext()
 	m.worktreeOperation = "promote"
-	return m.showFooterMutedWithCmd("Promoting worktree…", func() tea.Msg {
-		err := worktree.Promote(parentCtx, dir, branch)
-		return worktreeOperationDoneMsg{op: "promote", dir: dir, branch: branch, err: err}
+	preflight := formatWorktreePromotePreflight(wt, branch)
+	return m.showSystemMessageWithCmd(preflight, func() tea.Msg {
+		res, err := worktree.PromoteToRoot(parentCtx, dir, branch, worktree.PromoteOptions{})
+		return worktreeOperationDoneMsg{op: "promote", dir: dir, branch: branch, promote: res, err: err}
 	})
 }
 
@@ -430,15 +477,28 @@ func (m *Model) cmdWorktreeRemove(args []string) (tea.Model, tea.Cmd) {
 }
 
 func (m *Model) handleWorktreeOperationDone(msg worktreeOperationDoneMsg) (tea.Model, tea.Cmd) {
-	if msg.op != "" && m.worktreeOperation == msg.op {
-		m.worktreeOperation = ""
-	} else if msg.op == "" || m.worktreeOperation != "" {
+	if strings.TrimSpace(m.worktreeOperation) != "" {
+		if msg.op == "" || msg.op != m.worktreeOperation {
+			return m, nil
+		}
 		m.worktreeOperation = ""
 	}
 	if msg.err != nil {
 		switch {
 		case msg.op == "merge" && errors.Is(msg.err, worktree.ErrConflict):
-			return m.showSystemMessage("Merge conflicts; root checkout was reset cleanly. Conflicts:\n- " + strings.Join(msg.merge.Conflicts, "\n- "))
+			pending := pendingWorktreeRecovery{kind: "conflict", merge: msg.merge}
+			m.pendingWorktreeRecovery = &pending
+			m.openWorktreeRecoveryPrompt(pending)
+			return m.showSystemMessage(formatWorktreeMergeConflictMessage(msg.merge))
+		case msg.op == "merge" && errors.Is(msg.err, worktree.ErrRootDirty):
+			pending := pendingWorktreeRecovery{kind: "dirty-root", merge: msg.merge}
+			m.pendingWorktreeRecovery = &pending
+			m.openWorktreeRecoveryPrompt(pending)
+			return m.showSystemMessage(formatWorktreeMergeDirtyRootMessage(msg.merge))
+		case msg.op == "promote" && errors.Is(msg.err, worktree.ErrRootDirty):
+			return m.showSystemMessage(formatWorktreePromoteDirtyRootMessage(msg.promote))
+		case msg.op == "assist-merge" && errors.Is(msg.err, worktree.ErrRootDirty):
+			return m.showSystemMessage(formatAssistedMergeRootDirtyMessage(msg.assist))
 		case msg.op == "remove" && errors.Is(msg.err, worktree.ErrDirty):
 			return m.showFooterWarning("Worktree has changes; use /worktree rm --force to remove it.")
 		default:
@@ -460,12 +520,23 @@ func (m *Model) handleWorktreeOperationDone(msg worktreeOperationDoneMsg) (tea.M
 		}
 		return m.showSystemMessage("```diff\n" + msg.diff + "\n```")
 	case "merge":
-		if msg.merge.Committed {
-			return m.showFooterSuccess("Merged and committed worktree changes onto root.")
+		m.pendingWorktreeRecovery = nil
+		return m.showSystemMessage(formatWorktreeMergeSuccessMessage(msg.merge))
+	case "assist-merge":
+		m.pendingWorktreeRecovery = nil
+		if msg.assist.RootDir != "" {
+			if err := m.bindRootDir(msg.assist.RootDir); err != nil {
+				return m.showFooterError(err.Error())
+			}
 		}
-		return m.showFooterSuccess("Merged worktree changes onto root (staged, uncommitted). Review, commit, then /worktree rm when ready.")
+		return m.startAssistedMergeLLM(msg.assist)
 	case "promote":
-		return m.showFooterSuccess("Promoted worktree to branch " + msg.branch)
+		if msg.promote.RootDir != "" {
+			if err := m.bindRootDir(msg.promote.RootDir); err != nil {
+				return m.showFooterError(err.Error())
+			}
+		}
+		return m.showSystemMessage(formatWorktreePromoteSuccessMessage(msg.promote))
 	case "remove":
 		if msg.bound && msg.root != "" && m.sess != nil {
 			if m.toolMgr != nil {
@@ -481,6 +552,431 @@ func (m *Model) handleWorktreeOperationDone(msg worktreeOperationDoneMsg) (tea.M
 	default:
 		return m.showFooterMuted("Worktree operation finished.")
 	}
+}
+
+func formatWorktreeMergePreflight(wt *worktree.Worktree, usingBound bool, opts worktree.MergeOptions) string {
+	var b strings.Builder
+	name := worktreeDisplayName(wt.Name)
+	fmt.Fprintf(&b, "Merging worktree %s (%s) into root checkout\n\n", name, wt.Dir)
+	if usingBound {
+		fmt.Fprintf(&b, "Using currently bound worktree: %s\n", name)
+	}
+	fmt.Fprintf(&b, "Source: %s (%s)\n", name, wt.Dir)
+	fmt.Fprintf(&b, "Destination: %s\n", wt.RepoRoot)
+	if opts.Commit {
+		b.WriteString("Result if successful: commit the merged changes on the root checkout.\n")
+	} else {
+		b.WriteString("Result if successful: stage the changes on the root checkout (uncommitted).\n")
+	}
+	b.WriteString("The current session stays bound to the worktree until you run `/worktree root` or promote it.\n")
+	return b.String()
+}
+
+func formatWorktreeMergeSuccessMessage(res worktree.MergeResult) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "Merged worktree %s → root checkout\n\n", worktreeDisplayName(res.WorktreeName))
+	fmt.Fprintf(&b, "Source: %s (%s)\n", worktreeDisplayName(res.WorktreeName), res.WorktreeDir)
+	fmt.Fprintf(&b, "Destination: %s\n", res.RootDir)
+	if res.SnapshotCommit != "" {
+		fmt.Fprintf(&b, "Snapshot: %s\n", shortSHA(res.SnapshotCommit))
+	}
+	if res.Committed {
+		b.WriteString("Result: changes were committed on the root checkout.\n")
+	} else if res.Applied {
+		b.WriteString("Result: changes are staged and uncommitted on the root checkout.\n")
+	} else {
+		b.WriteString("Result: no worktree changes needed to be applied.\n")
+	}
+	b.WriteString("Current session: still bound to the source worktree. `/shell` still opens the worktree until you run `/worktree root`.\n")
+	appendLinesSection(&b, "Changed files", res.ChangedFiles, 20)
+	b.WriteString("\nNext:\n")
+	b.WriteString("  /worktree root\n")
+	b.WriteString("  /shell\n")
+	b.WriteString("  git status\n")
+	if !res.Committed && res.Applied {
+		b.WriteString("  git commit -m \"...\"\n")
+	}
+	b.WriteString("  /worktree rm " + shellishName(res.WorktreeName, res.WorktreeDir) + "   # when you are done\n")
+	return b.String()
+}
+
+func formatWorktreeMergeDirtyRootMessage(res worktree.MergeResult) string {
+	var b strings.Builder
+	b.WriteString("Merge not attempted: the root checkout has uncommitted changes.\n\n")
+	fmt.Fprintf(&b, "Source: %s (%s)\n", worktreeDisplayName(res.WorktreeName), res.WorktreeDir)
+	fmt.Fprintf(&b, "Destination: %s\n", res.RootDir)
+	appendStatusSection(&b, "Root status", res.RootStatus, 30)
+	b.WriteString("\nInteractive recovery:\n")
+	b.WriteString("  A Yes/No prompt has opened in the TUI. Select Yes to let me inspect the dirty root/worktree state and help sort it out before retrying.\n")
+	b.WriteString("  Select No to leave everything unchanged.\n")
+	b.WriteString("\nNext:\n")
+	b.WriteString("  /worktree root\n")
+	b.WriteString("  /shell\n")
+	b.WriteString("  git status\n")
+	b.WriteString("  git commit -m \"...\"    # or git stash / discard the root changes\n")
+	b.WriteString("  /worktree merge " + shellishName(res.WorktreeName, res.WorktreeDir) + "\n")
+	appendMergeRecoveryPrompt(&b, res, "dirty root preflight refusal")
+	return b.String()
+}
+
+func formatWorktreeMergeConflictMessage(res worktree.MergeResult) string {
+	var b strings.Builder
+	if res.ConflictReset {
+		b.WriteString("Merge conflict: the root checkout was reset cleanly.\n\n")
+	} else {
+		b.WriteString("Merge conflict: the root checkout may still need cleanup.\n\n")
+	}
+	fmt.Fprintf(&b, "Source: %s (%s)\n", worktreeDisplayName(res.WorktreeName), res.WorktreeDir)
+	fmt.Fprintf(&b, "Destination: %s\n", res.RootDir)
+	if res.SnapshotCommit != "" {
+		fmt.Fprintf(&b, "Snapshot: %s\n", shortSHA(res.SnapshotCommit))
+	}
+	if res.ConflictReset {
+		b.WriteString("Cleanup: ran `git reset --merge` and `git cherry-pick --quit`; no merge state should remain in root.\n")
+	} else {
+		b.WriteString("Cleanup: attempted `git reset --merge` and `git cherry-pick --quit`, but cleanup did not fully complete. Inspect the root checkout with `git status` before retrying.\n")
+		if strings.TrimSpace(res.ConflictCleanupError) != "" {
+			fmt.Fprintf(&b, "Cleanup error: %s\n", res.ConflictCleanupError)
+		}
+	}
+	appendLinesSection(&b, "Conflicts", res.Conflicts, 20)
+	appendLinesSection(&b, "Changed files in source snapshot", res.ChangedFiles, 30)
+	statusTitle := "Root status after cleanup"
+	if !res.ConflictReset {
+		statusTitle = "Root status after attempted cleanup"
+	}
+	appendStatusSection(&b, statusTitle, res.RootStatus, 30)
+	b.WriteString("\nInteractive recovery:\n")
+	b.WriteString("  A Yes/No prompt has opened in the TUI. Select Yes to merge this for you on a safe recovery branch.\n")
+	b.WriteString("  Select No to leave the root clean and keep working manually.\n")
+	b.WriteString("\nNext options:\n")
+	b.WriteString("  /worktree promote <branch>   # continue from root on a branch based at the worktree HEAD\n")
+	b.WriteString("  /worktree root && /shell     # inspect the clean root checkout\n")
+	b.WriteString("  Ask the LLM to compare/rebase the worktree before retrying `/worktree merge`.\n")
+	appendMergeRecoveryPrompt(&b, res, "merge conflict after cherry-pick -n")
+	return b.String()
+}
+
+func formatWorktreePromotePreflight(wt *worktree.Worktree, branch string) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "Promoting worktree %s (%s) to root branch %s\n\n", worktreeDisplayName(wt.Name), wt.Dir, branch)
+	fmt.Fprintf(&b, "Source: %s (%s)\n", worktreeDisplayName(wt.Name), wt.Dir)
+	fmt.Fprintf(&b, "Destination root: %s\n", wt.RepoRoot)
+	b.WriteString("Result if successful: checkout the new branch in the root project checkout, apply dirty worktree changes there, and rebind this session to root.\n")
+	return b.String()
+}
+
+func formatWorktreePromoteSuccessMessage(res worktree.PromoteResult) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "Promoted %s → branch %s\n\n", worktreeDisplayName(res.WorktreeName), res.Branch)
+	fmt.Fprintf(&b, "Checked out %s in root: %s\n", res.Branch, res.RootDir)
+	if res.Applied {
+		b.WriteString("Your dirty worktree changes are staged/uncommitted there.\n")
+	} else {
+		b.WriteString("No dirty worktree changes needed to be applied; the branch points at the worktree HEAD.\n")
+	}
+	b.WriteString("You are no longer bound to the worktree; `/shell` now opens the root checkout.\n")
+	if res.OriginalWorktreeStillExists {
+		fmt.Fprintf(&b, "Original worktree still exists at: %s\n", res.WorktreeDir)
+	}
+	if res.WorktreeHead != "" {
+		fmt.Fprintf(&b, "Branch base/worktree HEAD: %s\n", shortSHA(res.WorktreeHead))
+	}
+	if res.PreviousRootBranch != "" || res.PreviousRootRef != "" {
+		b.WriteString("Note: the new branch starts at the worktree HEAD, so it may be behind the previous root branch until you rebase/merge as needed.\n")
+	}
+	if res.PreviousRootBranch != "" {
+		fmt.Fprintf(&b, "Previous root branch: %s (%s)\n", res.PreviousRootBranch, shortSHA(res.PreviousRootRef))
+		fmt.Fprintf(&b, "Escape hatch: git checkout %s\n", res.PreviousRootBranch)
+	} else if res.PreviousRootRef != "" {
+		fmt.Fprintf(&b, "Previous root ref: %s\n", shortSHA(res.PreviousRootRef))
+		fmt.Fprintf(&b, "Escape hatch: git checkout %s\n", res.PreviousRootRef)
+	}
+	appendLinesSection(&b, "Changed files", res.ChangedFiles, 20)
+	appendStatusSection(&b, "Root status", res.RootStatus, 30)
+	b.WriteString("\nNext:\n")
+	b.WriteString("  /shell\n")
+	b.WriteString("  git status\n")
+	if res.Applied {
+		b.WriteString("  git commit -m \"...\"\n")
+	}
+	fmt.Fprintf(&b, "  git push -u origin %s\n", res.Branch)
+	return b.String()
+}
+
+func formatWorktreePromoteDirtyRootMessage(res worktree.PromoteResult) string {
+	var b strings.Builder
+	b.WriteString("Promote not attempted: the root checkout has uncommitted changes.\n\n")
+	fmt.Fprintf(&b, "Source: %s (%s)\n", worktreeDisplayName(res.WorktreeName), res.WorktreeDir)
+	fmt.Fprintf(&b, "Destination root: %s\n", res.RootDir)
+	fmt.Fprintf(&b, "Requested branch: %s\n", res.Branch)
+	appendStatusSection(&b, "Root status", res.RootStatus, 30)
+	b.WriteString("\nNext:\n")
+	b.WriteString("  /worktree root\n")
+	b.WriteString("  /shell\n")
+	b.WriteString("  git status\n")
+	b.WriteString("  commit, stash, or discard root changes\n")
+	fmt.Fprintf(&b, "  /worktree promote %s\n", res.Branch)
+	return b.String()
+}
+
+func (m *Model) openWorktreeRecoveryPrompt(pending pendingWorktreeRecovery) {
+	if m == nil || m.dialog == nil {
+		return
+	}
+	title, question := worktreeRecoveryPromptText(pending)
+	m.dialog.ShowWorktreeRecovery(title, question)
+	m.scrollToBottom = true
+}
+
+func worktreeRecoveryPromptText(pending pendingWorktreeRecovery) (string, string) {
+	switch pending.kind {
+	case "conflict":
+		return "Assisted Worktree Recovery", "This worktree does not merge cleanly. Would you like me to merge this for you on a safe recovery branch?"
+	case "dirty-root":
+		return "Assisted Worktree Recovery", "The root checkout is dirty. Would you like me to inspect the dirty root/worktree state and help sort it out before retrying?"
+	default:
+		return "Assisted Worktree Recovery", "Would you like assisted worktree merge recovery?"
+	}
+}
+
+func (m *Model) resolveWorktreeRecoveryPrompt(proceed bool) (tea.Model, tea.Cmd) {
+	if m == nil {
+		return m, nil
+	}
+	if m.dialog != nil && m.dialog.IsOpen() && m.dialog.Type() == DialogWorktreeRecovery {
+		m.dialog.Close()
+	}
+	if m.pendingWorktreeRecovery == nil {
+		return m.showFooterMuted("No pending worktree recovery.")
+	}
+	pending := *m.pendingWorktreeRecovery
+	m.pendingWorktreeRecovery = nil
+	if proceed {
+		return m.startPendingWorktreeRecovery(pending)
+	}
+	return m.showSystemMessage(formatWorktreeRecoveryDeclinedMessage(pending))
+}
+
+func formatWorktreeRecoveryDeclinedMessage(pending pendingWorktreeRecovery) string {
+	if pending.kind == "dirty-root" {
+		return "Okay — leaving the root checkout unchanged. Clean/commit/stash root changes, then retry `/worktree merge` when ready."
+	}
+	return "Okay — leaving the root checkout clean. You can retry `/worktree merge`, use `/worktree promote <branch>`, or ask for help later."
+}
+
+func (m *Model) startPendingWorktreeRecovery(pending pendingWorktreeRecovery) (tea.Model, tea.Cmd) {
+	if pending.kind == "dirty-root" {
+		if strings.TrimSpace(pending.merge.RootDir) != "" {
+			if err := m.bindRootDir(pending.merge.RootDir); err != nil {
+				return m.showFooterError(err.Error())
+			}
+		}
+		prompt := formatDirtyRootAssistedMergePrompt(pending.merge)
+		return m.sendMessage(prompt)
+	}
+	parentCtx := m.rootContext()
+	m.worktreeOperation = "assist-merge"
+	message := fmt.Sprintf("Okay — preparing a safe recovery branch for %s. I will ask the LLM to resolve it there without committing or pushing.", worktreeDisplayName(pending.merge.WorktreeName))
+	return m.showSystemMessageWithCmd(message, func() tea.Msg {
+		res, err := worktree.StartAssistedMerge(parentCtx, pending.merge.WorktreeDir, worktree.AssistedMergeOptions{})
+		return worktreeOperationDoneMsg{op: "assist-merge", dir: pending.merge.WorktreeDir, assist: res, err: err}
+	})
+}
+
+func (m *Model) startAssistedMergeLLM(res worktree.AssistedMergeResult) (tea.Model, tea.Cmd) {
+	if strings.TrimSpace(res.RootDir) == "" {
+		return m.showFooterError("assisted merge failed: missing root checkout")
+	}
+	if len(res.ChangedFiles) == 0 {
+		return m.showSystemMessage(formatAssistedMergeNothingToApplyMessage(res))
+	}
+	prompt := formatAssistedMergeLLMPrompt(res)
+	_, systemCmd := m.showSystemMessage(formatAssistedMergeReadyMessage(res))
+	model, streamCmd := m.sendMessage(prompt)
+	return model, tea.Sequence(systemCmd, streamCmd)
+}
+
+func formatAssistedMergeRootDirtyMessage(res worktree.AssistedMergeResult) string {
+	var b strings.Builder
+	b.WriteString("Assisted recovery could not start because the root checkout became dirty.\n\n")
+	fmt.Fprintf(&b, "Root checkout: %s\n", res.RootDir)
+	fmt.Fprintf(&b, "Source worktree: %s (%s)\n", worktreeDisplayName(res.WorktreeName), res.WorktreeDir)
+	appendStatusSection(&b, "Root status", res.RootStatus, 30)
+	b.WriteString("\nNo recovery branch was created. Clean/commit/stash root changes, then retry `/worktree merge`.\n")
+	return b.String()
+}
+
+func formatAssistedMergeNothingToApplyMessage(res worktree.AssistedMergeResult) string {
+	var b strings.Builder
+	b.WriteString("Assisted recovery did not need to start: there are no worktree changes to apply.\n\n")
+	fmt.Fprintf(&b, "Root checkout: %s\n", res.RootDir)
+	fmt.Fprintf(&b, "Source worktree: %s (%s)\n", worktreeDisplayName(res.WorktreeName), res.WorktreeDir)
+	if res.SnapshotCommit != "" {
+		fmt.Fprintf(&b, "Snapshot checked: %s\n", shortSHA(res.SnapshotCommit))
+	}
+	b.WriteString("No recovery branch was created.\n")
+	return b.String()
+}
+
+func formatAssistedMergeReadyMessage(res worktree.AssistedMergeResult) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "Prepared assisted worktree merge on branch %s\n\n", res.Branch)
+	fmt.Fprintf(&b, "Root checkout: %s\n", res.RootDir)
+	fmt.Fprintf(&b, "Source worktree: %s (%s)\n", worktreeDisplayName(res.WorktreeName), res.WorktreeDir)
+	if res.NeedsResolution {
+		b.WriteString("Status: conflicts are intentionally left on this recovery branch for the LLM to resolve.\n")
+	} else if res.Applied {
+		b.WriteString("Status: worktree changes applied cleanly, staged/uncommitted on the recovery branch.\n")
+	}
+	appendLinesSection(&b, "Conflicts", res.Conflicts, 20)
+	appendStatusSection(&b, "Root status", res.RootStatus, 30)
+	b.WriteString("\nI am sending the LLM a recovery task now. It may inspect/edit files and run local commands, but it must not commit or push.\n")
+	b.WriteString("Abort manually if needed:\n")
+	b.WriteString("  git reset --merge\n")
+	b.WriteString("  git cherry-pick --quit\n")
+	if res.PreviousRootBranch != "" {
+		fmt.Fprintf(&b, "  git checkout %s\n", res.PreviousRootBranch)
+	} else if res.PreviousRootRef != "" {
+		fmt.Fprintf(&b, "  git checkout %s\n", res.PreviousRootRef)
+	}
+	fmt.Fprintf(&b, "  git branch -D %s\n", res.Branch)
+	return b.String()
+}
+
+func formatAssistedMergeLLMPrompt(res worktree.AssistedMergeResult) string {
+	var b strings.Builder
+	b.WriteString("The user confirmed interactive recovery for a failed `/worktree merge`. You have permission to sort this out on the prepared recovery branch.\n\n")
+	b.WriteString("Goal:\n")
+	b.WriteString("- Resolve/apply the source worktree changes onto the current root checkout branch.\n")
+	b.WriteString("- Leave the result staged/uncommitted in the root checkout.\n")
+	b.WriteString("- Do not commit, push, delete branches, discard user changes, or remove the original worktree unless the user explicitly confirms later.\n\n")
+	b.WriteString("State:\n")
+	fmt.Fprintf(&b, "- Root checkout: %s\n", res.RootDir)
+	fmt.Fprintf(&b, "- Recovery branch checked out in root: %s\n", res.Branch)
+	fmt.Fprintf(&b, "- Source worktree: %s (%s)\n", worktreeDisplayName(res.WorktreeName), res.WorktreeDir)
+	fmt.Fprintf(&b, "- Previous root branch/ref: %s %s\n", res.PreviousRootBranch, res.PreviousRootRef)
+	fmt.Fprintf(&b, "- Worktree base SHA: %s\n", res.Base)
+	fmt.Fprintf(&b, "- Root HEAD before recovery: %s\n", res.RootHead)
+	fmt.Fprintf(&b, "- Worktree HEAD: %s\n", res.WorktreeHead)
+	fmt.Fprintf(&b, "- Snapshot commit being applied: %s\n", res.SnapshotCommit)
+	if len(res.Conflicts) > 0 {
+		fmt.Fprintf(&b, "- Conflict files: %s\n", strings.Join(res.Conflicts, ", "))
+	}
+	if len(res.ChangedFiles) > 0 {
+		fmt.Fprintf(&b, "- Changed files: %s\n", strings.Join(res.ChangedFiles, "; "))
+	}
+	if strings.TrimSpace(res.RootStatus) != "" {
+		fmt.Fprintf(&b, "- Current root status:\n%s\n", res.RootStatus)
+	}
+	b.WriteString("Instructions:\n")
+	b.WriteString("0. Use available shell/read/edit tools as needed; operate in the root checkout unless inspecting the source worktree.\n")
+	b.WriteString("1. Start with `git status --short` in the root checkout and inspect conflicted files if any.\n")
+	b.WriteString("2. Resolve conflict markers or apply equivalent edits that preserve the user's worktree intent on top of current root.\n")
+	b.WriteString("3. Stage resolved files with `git add` as appropriate.\n")
+	b.WriteString("4. If a cherry-pick state remains after staging, run `git cherry-pick --quit` (not `--continue`) so the result stays uncommitted.\n")
+	b.WriteString("5. Finish by running `git status --short` and summarizing what changed plus next commands: `git status`, `git commit -m \"...\"`, and `git push -u origin <branch>`.\n")
+	return b.String()
+}
+
+func formatDirtyRootAssistedMergePrompt(res worktree.MergeResult) string {
+	var b strings.Builder
+	target := shellishName(res.WorktreeName, res.WorktreeDir)
+	b.WriteString("The user confirmed interactive recovery for a `/worktree merge` that was blocked because the root checkout is dirty. You have permission to inspect and help sort this out safely.\n\n")
+	b.WriteString("Goal:\n")
+	b.WriteString("- Determine why the root checkout is dirty and recommend or perform safe steps to preserve those changes before retrying the worktree merge.\n")
+	b.WriteString("- Do not discard, overwrite, commit, push, or stash changes unless you clearly explain the action first and it is safe. If uncertain, ask the user.\n\n")
+	fmt.Fprintf(&b, "Source worktree: %s (%s)\n", worktreeDisplayName(res.WorktreeName), res.WorktreeDir)
+	fmt.Fprintf(&b, "Destination root: %s\n", res.RootDir)
+	fmt.Fprintf(&b, "Base SHA: %s\n", res.Base)
+	fmt.Fprintf(&b, "Root HEAD: %s\n", res.RootHead)
+	fmt.Fprintf(&b, "Worktree HEAD: %s\n", res.WorktreeHead)
+	if strings.TrimSpace(res.RootStatus) != "" {
+		fmt.Fprintf(&b, "Root status that blocked merge:\n%s\n", res.RootStatus)
+	}
+	b.WriteString("\nSuggested first commands:\n")
+	b.WriteString("- Use available shell/read/edit tools as needed; operate in the root checkout unless inspecting the source worktree.\n")
+	b.WriteString("- `git status --short` in the root checkout\n")
+	b.WriteString("- inspect relevant diffs before deciding whether to commit, stash, or ask the user\n")
+	b.WriteString("- once root is clean, retry `/worktree merge " + target + "` or use `/worktree promote <branch>` if safer\n")
+	return b.String()
+}
+
+func appendMergeRecoveryPrompt(b *strings.Builder, res worktree.MergeResult, reason string) {
+	b.WriteString("\nLLM-assisted recovery prompt (send this if you want guidance):\n")
+	b.WriteString("```text\n")
+	b.WriteString("Help me choose a safe recovery strategy for a term-llm worktree merge. Do not edit files or run commands until I confirm.\n")
+	fmt.Fprintf(b, "Reason: %s\n", reason)
+	fmt.Fprintf(b, "Source worktree: %s (%s)\n", worktreeDisplayName(res.WorktreeName), res.WorktreeDir)
+	fmt.Fprintf(b, "Destination root: %s\n", res.RootDir)
+	fmt.Fprintf(b, "Base SHA: %s\n", res.Base)
+	fmt.Fprintf(b, "Root HEAD: %s\n", res.RootHead)
+	fmt.Fprintf(b, "Worktree HEAD: %s\n", res.WorktreeHead)
+	fmt.Fprintf(b, "Snapshot commit: %s\n", res.SnapshotCommit)
+	if len(res.Conflicts) > 0 {
+		fmt.Fprintf(b, "Conflict files: %s\n", strings.Join(res.Conflicts, ", "))
+	}
+	if len(res.ChangedFiles) > 0 {
+		fmt.Fprintf(b, "Changed files: %s\n", strings.Join(res.ChangedFiles, "; "))
+	}
+	if strings.TrimSpace(res.RootStatus) != "" {
+		fmt.Fprintf(b, "Root status:\n%s\n", res.RootStatus)
+	} else {
+		b.WriteString("Root status: clean after cleanup/preflight.\n")
+	}
+	b.WriteString("Commands already run: snapshot commit, git cherry-pick -n (if merge reached apply), git reset --merge and git cherry-pick --quit on conflict.\n")
+	b.WriteString("Please recommend one of: clean root then retry, promote to a branch, rebase/update the worktree, or manually apply a small patch.\n")
+	b.WriteString("```\n")
+}
+
+func appendLinesSection(b *strings.Builder, title string, lines []string, max int) {
+	if len(lines) == 0 {
+		return
+	}
+	if max <= 0 || max > len(lines) {
+		max = len(lines)
+	}
+	fmt.Fprintf(b, "\n%s:\n", title)
+	for _, line := range lines[:max] {
+		fmt.Fprintf(b, "- %s\n", line)
+	}
+	if len(lines) > max {
+		fmt.Fprintf(b, "- … and %d more\n", len(lines)-max)
+	}
+}
+
+func appendStatusSection(b *strings.Builder, title, status string, max int) {
+	lines := nonEmptyLines(status)
+	if len(lines) == 0 {
+		fmt.Fprintf(b, "\n%s: clean\n", title)
+		return
+	}
+	appendLinesSection(b, title, lines, max)
+}
+
+func nonEmptyLines(value string) []string {
+	var lines []string
+	for _, line := range strings.Split(value, "\n") {
+		line = strings.TrimRight(line, "\r")
+		if strings.TrimSpace(line) != "" {
+			lines = append(lines, line)
+		}
+	}
+	return lines
+}
+
+func worktreeDisplayName(name string) string {
+	if strings.TrimSpace(name) == "" {
+		return "worktree"
+	}
+	return name
+}
+
+func shellishName(name, dir string) string {
+	if strings.TrimSpace(name) != "" {
+		return name
+	}
+	return dir
 }
 
 func (m *Model) worktreeCompletionItems(query string) ([]Command, bool) {

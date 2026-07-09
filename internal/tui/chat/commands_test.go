@@ -3398,6 +3398,220 @@ func TestCmdWorktreePromoteBlockedWhileStreaming(t *testing.T) {
 	}
 }
 
+func TestWorktreeMergeConflictMessageGuidesRecovery(t *testing.T) {
+	msg := formatWorktreeMergeConflictMessage(worktree.MergeResult{
+		WorktreeName:   "goal",
+		WorktreeDir:    "/tmp/wt/goal",
+		RootDir:        "/repo/root",
+		Base:           "1111111111111111111111111111111111111111",
+		RootHead:       "2222222222222222222222222222222222222222",
+		WorktreeHead:   "3333333333333333333333333333333333333333",
+		SnapshotCommit: "4444444444444444444444444444444444444444",
+		Conflicts:      []string{"file.txt"},
+		ChangedFiles:   []string{"M\tfile.txt"},
+		ConflictReset:  true,
+	})
+	for _, want := range []string{"root checkout was reset cleanly", "/tmp/wt/goal", "/repo/root", "file.txt", "Yes/No prompt", "Select Yes", "/worktree promote <branch>", "LLM-assisted recovery prompt", "git cherry-pick -n"} {
+		if !strings.Contains(msg, want) {
+			t.Fatalf("merge conflict message missing %q:\n%s", want, msg)
+		}
+	}
+}
+
+func TestWorktreeMergeConflictMessageWarnsWhenCleanupFailed(t *testing.T) {
+	msg := formatWorktreeMergeConflictMessage(worktree.MergeResult{
+		WorktreeName:         "goal",
+		WorktreeDir:          "/tmp/wt/goal",
+		RootDir:              "/repo/root",
+		Conflicts:            []string{"file.txt"},
+		ConflictCleanupError: "git reset --merge: failed",
+		RootStatus:           "UU file.txt",
+	})
+	for _, want := range []string{"may still need cleanup", "Cleanup error", "git status", "UU file.txt"} {
+		if !strings.Contains(msg, want) {
+			t.Fatalf("merge conflict cleanup-failed message missing %q:\n%s", want, msg)
+		}
+	}
+	if strings.Contains(msg, "was reset cleanly") {
+		t.Fatalf("cleanup-failed message should not claim clean reset:\n%s", msg)
+	}
+}
+
+func TestWorktreeOperationDoneStaleMessageDoesNotClearCurrentOperation(t *testing.T) {
+	m := newTestChatModel(false)
+	m.worktreeOperation = "assist-merge"
+	model, cmd := m.handleWorktreeOperationDone(worktreeOperationDoneMsg{op: "diff", diff: "stale"})
+	got := model.(*Model)
+	if got.worktreeOperation != "assist-merge" {
+		t.Fatalf("worktreeOperation = %q, want assist-merge", got.worktreeOperation)
+	}
+	if cmd != nil {
+		t.Fatal("stale worktree result should not schedule commands")
+	}
+}
+
+func TestAssistedMergeNothingToApplyMessageDoesNotMentionBranch(t *testing.T) {
+	msg := formatAssistedMergeNothingToApplyMessage(worktree.AssistedMergeResult{
+		RootDir:        "/repo/root",
+		WorktreeDir:    "/tmp/wt/goal",
+		WorktreeName:   "goal",
+		Branch:         "assist-was-not-created",
+		SnapshotCommit: "4444444444444444444444444444444444444444",
+	})
+	for _, want := range []string{"no worktree changes", "No recovery branch was created", "/tmp/wt/goal"} {
+		if !strings.Contains(msg, want) {
+			t.Fatalf("nothing-to-apply message missing %q:\n%s", want, msg)
+		}
+	}
+	if strings.Contains(msg, "Prepared assisted") || strings.Contains(msg, "assist-was-not-created") || strings.Contains(msg, "git branch -D") {
+		t.Fatalf("nothing-to-apply message mentioned nonexistent branch:\n%s", msg)
+	}
+}
+
+func TestWorktreeRecoveryPromptOpensOnMergeConflict(t *testing.T) {
+	m := newTestChatModel(false)
+	model, _ := m.handleWorktreeOperationDone(worktreeOperationDoneMsg{
+		op:    "merge",
+		merge: worktree.MergeResult{WorktreeName: "goal", WorktreeDir: "/tmp/wt/goal", RootDir: "/repo/root"},
+		err:   worktree.ErrConflict,
+	})
+	got := model.(*Model)
+	if got.pendingWorktreeRecovery == nil {
+		t.Fatal("expected pending recovery after merge conflict")
+	}
+	if !got.dialog.IsOpen() || got.dialog.Type() != DialogWorktreeRecovery {
+		t.Fatalf("expected worktree recovery dialog, got open=%v type=%v", got.dialog.IsOpen(), got.dialog.Type())
+	}
+	view := ui.StripANSI(got.dialog.View())
+	for _, want := range []string{"does not merge cleanly", "Yes", "No"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("recovery dialog missing %q:\n%s", want, view)
+		}
+	}
+}
+
+func TestPendingWorktreeRecoveryYesStartsAssistedMerge(t *testing.T) {
+	m := newTestChatModel(false)
+	pending := pendingWorktreeRecovery{kind: "conflict", merge: worktree.MergeResult{WorktreeName: "goal", WorktreeDir: "/tmp/wt/goal", SnapshotCommit: "abc123"}}
+	m.pendingWorktreeRecovery = &pending
+	m.openWorktreeRecoveryPrompt(pending)
+
+	model, cmd := m.handleKeyMsg(tea.KeyPressMsg{Code: tea.KeyEnter})
+	got := model.(*Model)
+	if got.pendingWorktreeRecovery != nil {
+		t.Fatal("pending recovery should be cleared after yes selection")
+	}
+	if got.dialog.IsOpen() {
+		t.Fatal("recovery dialog should close after selection")
+	}
+	if got.worktreeOperation != "assist-merge" {
+		t.Fatalf("worktreeOperation after yes = %q, want assist-merge", got.worktreeOperation)
+	}
+	if got.streaming {
+		t.Fatal("affirmative conflict recovery should prepare branch before starting LLM stream")
+	}
+	if cmd == nil {
+		t.Fatal("expected assisted merge preparation command")
+	}
+}
+
+func TestPendingWorktreeRecoveryNoClearsPrompt(t *testing.T) {
+	m := newTestChatModel(false)
+	pending := pendingWorktreeRecovery{kind: "conflict", merge: worktree.MergeResult{WorktreeName: "goal", WorktreeDir: "/tmp/wt/goal"}}
+	m.pendingWorktreeRecovery = &pending
+	m.openWorktreeRecoveryPrompt(pending)
+
+	model, _ := m.handleKeyMsg(tea.KeyPressMsg{Code: tea.KeyDown})
+	m = model.(*Model)
+	model, _ = m.handleKeyMsg(tea.KeyPressMsg{Code: tea.KeyEnter})
+	got := model.(*Model)
+	if got.pendingWorktreeRecovery != nil {
+		t.Fatal("pending recovery should be cleared after no selection")
+	}
+	if got.dialog.IsOpen() {
+		t.Fatal("recovery dialog should close after no selection")
+	}
+	if got.worktreeOperation == "assist-merge" || got.streaming {
+		t.Fatalf("negative recovery selection should not start recovery: op=%q streaming=%v", got.worktreeOperation, got.streaming)
+	}
+}
+
+func TestPendingWorktreeDirtyRootYesSendsLLMPrompt(t *testing.T) {
+	m := newTestChatModel(false)
+	pending := pendingWorktreeRecovery{kind: "dirty-root", merge: worktree.MergeResult{WorktreeName: "goal", WorktreeDir: "/tmp/wt/goal", RootDir: "", RootStatus: " M file.txt"}}
+	m.pendingWorktreeRecovery = &pending
+	m.openWorktreeRecoveryPrompt(pending)
+
+	model, cmd := m.handleKeyMsg(tea.KeyPressMsg{Code: tea.KeyEnter})
+	got := model.(*Model)
+	if got.pendingWorktreeRecovery != nil {
+		t.Fatal("pending recovery should be cleared after affirmative selection")
+	}
+	if got.dialog.IsOpen() {
+		t.Fatal("recovery dialog should close after affirmative selection")
+	}
+	if !got.streaming {
+		t.Fatal("dirty-root affirmative recovery should send an LLM prompt")
+	}
+	if cmd == nil {
+		t.Fatal("expected stream command")
+	}
+	if len(got.messages) == 0 || !strings.Contains(got.messages[len(got.messages)-1].TextContent, "blocked because the root checkout is dirty") {
+		t.Fatalf("last message = %#v, want dirty-root recovery prompt", got.messages)
+	}
+}
+
+func TestPendingWorktreeRecoveryEscCancelsPrompt(t *testing.T) {
+	m := newTestChatModel(false)
+	pending := pendingWorktreeRecovery{kind: "conflict", merge: worktree.MergeResult{WorktreeName: "goal", WorktreeDir: "/tmp/wt/goal"}}
+	m.pendingWorktreeRecovery = &pending
+	m.openWorktreeRecoveryPrompt(pending)
+
+	model, _ := m.handleKeyMsg(tea.KeyPressMsg{Code: tea.KeyEsc})
+	got := model.(*Model)
+	if got.pendingWorktreeRecovery != nil {
+		t.Fatal("pending recovery should be cleared after esc")
+	}
+	if got.dialog.IsOpen() {
+		t.Fatal("recovery dialog should close after esc")
+	}
+	if got.worktreeOperation == "assist-merge" || got.streaming {
+		t.Fatalf("esc should not start recovery: op=%q streaming=%v", got.worktreeOperation, got.streaming)
+	}
+}
+
+func TestWorktreePromoteDoneRebindsSessionToRoot(t *testing.T) {
+	store := &mockStore{}
+	m := newCmdTestModel(store)
+	root := t.TempDir()
+	wtDir := filepath.Join(t.TempDir(), "goal")
+	m.sess = &session.Session{ID: "s1", CWD: wtDir, WorktreeDir: wtDir}
+	m.worktreeOperation = "promote"
+
+	model, _ := m.handleWorktreeOperationDone(worktreeOperationDoneMsg{
+		op: "promote",
+		promote: worktree.PromoteResult{
+			RootDir:                     root,
+			WorktreeDir:                 wtDir,
+			WorktreeName:                "goal",
+			Branch:                      "feature/goal",
+			PreviousRootBranch:          "main",
+			PreviousRootRef:             "1111111111111111111111111111111111111111",
+			WorktreeHead:                "2222222222222222222222222222222222222222",
+			Applied:                     true,
+			OriginalWorktreeStillExists: true,
+			RootStatus:                  "M  file.txt",
+		},
+	})
+	got := model.(*Model)
+	if got.sess.WorktreeDir != "" || got.sess.CWD != root {
+		t.Fatalf("session worktree/cwd = %q/%q, want empty/%q", got.sess.WorktreeDir, got.sess.CWD, root)
+	}
+	if store.updated == nil || store.updated.CWD != root || store.updated.WorktreeDir != "" {
+		t.Fatalf("store updated session = %#v, want root binding", store.updated)
+	}
+}
+
 func TestWorktreeOperationBlocksSend(t *testing.T) {
 	m := newTestChatModel(false)
 	m.worktreeOperation = "merge"

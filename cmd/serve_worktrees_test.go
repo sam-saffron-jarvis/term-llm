@@ -127,16 +127,122 @@ func TestServeWorktreeMergeBlocksActiveRootRun(t *testing.T) {
 	mgr.mu.Lock()
 	mgr.sessions["root-active"] = &serveRuntime{activeInterrupt: &runtimeInterruptState{}}
 	mgr.mu.Unlock()
+	defer func() {
+		mgr.mu.Lock()
+		delete(mgr.sessions, "root-active")
+		mgr.mu.Unlock()
+	}()
+	// Leave one active root run registered and exercise both root-mutating endpoints.
 	srv := &serveServer{store: store, sessionMgr: mgr}
 
-	req := httptest.NewRequest(http.MethodPost, "/v1/worktrees/merge", bytes.NewBufferString(`{"dir":"`+worktreeDir+`"}`))
+	mergeReq := httptest.NewRequest(http.MethodPost, "/v1/worktrees/merge", bytes.NewBufferString(`{"dir":"`+worktreeDir+`"}`))
+	mergeRec := httptest.NewRecorder()
+	srv.handleWorktreeMerge(mergeRec, mergeReq)
+	if mergeRec.Code != http.StatusConflict {
+		t.Fatalf("merge status = %d body=%s", mergeRec.Code, mergeRec.Body.String())
+	}
+	if !strings.Contains(mergeRec.Body.String(), "root-active") {
+		t.Fatalf("merge body = %s, want active root session id", mergeRec.Body.String())
+	}
+
+	promoteReq := httptest.NewRequest(http.MethodPost, "/v1/worktrees/promote", bytes.NewBufferString(`{"dir":"`+worktreeDir+`","branch":"blocked-promote"}`))
+	promoteRec := httptest.NewRecorder()
+	srv.handleWorktreePromote(promoteRec, promoteReq)
+	if promoteRec.Code != http.StatusConflict {
+		t.Fatalf("promote status = %d body=%s", promoteRec.Code, promoteRec.Body.String())
+	}
+	if !strings.Contains(promoteRec.Body.String(), "root-active") {
+		t.Fatalf("promote body = %s, want active root session id", promoteRec.Body.String())
+	}
+}
+
+func TestServeWorktreeMergeConflictReturnsRicherResult(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	repo := newGitRepoForBindingTest(t)
+	oldWD, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd: %v", err)
+	}
+	if err := os.Chdir(repo); err != nil {
+		t.Fatalf("Chdir repo: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(oldWD) })
+	wt, err := worktree.Create(context.Background(), repo, worktree.CreateOptions{Name: "merge-conflict-api"})
+	if err != nil {
+		t.Fatalf("Create worktree: %v", err)
+	}
+	t.Cleanup(func() { _ = worktree.Remove(context.Background(), wt.Dir, worktree.RemoveOptions{Force: true}) })
+	if err := os.WriteFile(filepath.Join(repo, "file.txt"), []byte("root api change\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile root: %v", err)
+	}
+	runGitForBindingTest(t, repo, "add", "file.txt")
+	runGitForBindingTest(t, repo, "commit", "-m", "root api change")
+	if err := os.WriteFile(filepath.Join(wt.Dir, "file.txt"), []byte("worktree api change\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile worktree: %v", err)
+	}
+
+	srv := &serveServer{}
+	req := httptest.NewRequest(http.MethodPost, "/v1/worktrees/merge", bytes.NewBufferString(`{"dir":"`+wt.Dir+`"}`))
 	rec := httptest.NewRecorder()
 	srv.handleWorktreeMerge(rec, req)
 	if rec.Code != http.StatusConflict {
 		t.Fatalf("merge status = %d body=%s", rec.Code, rec.Body.String())
 	}
-	if !strings.Contains(rec.Body.String(), "root-active") {
-		t.Fatalf("merge body = %s, want active root session id", rec.Body.String())
+	var resp struct {
+		Error  string               `json:"error"`
+		Result worktree.MergeResult `json:"result"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode merge response: %v", err)
+	}
+	if resp.Error != "conflicts" || !resp.Result.ConflictReset || resp.Result.RootDir == "" || resp.Result.WorktreeDir == "" || len(resp.Result.Conflicts) == 0 {
+		t.Fatalf("merge conflict response = %+v", resp)
+	}
+	if status := runGitForBindingTest(t, repo, "status", "--porcelain"); strings.TrimSpace(status) != "" {
+		t.Fatalf("root status after API conflict = %q, want clean", status)
+	}
+}
+
+func TestServeWorktreePromoteReturnsRootResult(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	repo := newGitRepoForBindingTest(t)
+	oldWD, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd: %v", err)
+	}
+	if err := os.Chdir(repo); err != nil {
+		t.Fatalf("Chdir repo: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(oldWD) })
+	wt, err := worktree.Create(context.Background(), repo, worktree.CreateOptions{Name: "promote-api"})
+	if err != nil {
+		t.Fatalf("Create worktree: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(wt.Dir, "api-new.txt"), []byte("hello promote api\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile worktree: %v", err)
+	}
+
+	srv := &serveServer{}
+	req := httptest.NewRequest(http.MethodPost, "/v1/worktrees/promote", bytes.NewBufferString(`{"dir":"`+wt.Dir+`","branch":"feature-api-promote"}`))
+	rec := httptest.NewRecorder()
+	srv.handleWorktreePromote(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("promote status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Result worktree.PromoteResult `json:"result"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode promote response: %v", err)
+	}
+	if resp.Result.Branch != "feature-api-promote" || resp.Result.RootDir == "" || resp.Result.WorktreeDir == "" || !resp.Result.Applied {
+		t.Fatalf("promote response = %+v", resp.Result)
+	}
+	if got := strings.TrimSpace(runGitForBindingTest(t, repo, "branch", "--show-current")); got != "feature-api-promote" {
+		t.Fatalf("root branch = %q, want feature-api-promote", got)
+	}
+	if status := runGitForBindingTest(t, repo, "status", "--porcelain"); !strings.Contains(status, "A  api-new.txt") {
+		t.Fatalf("root status = %q, want promoted staged api-new.txt", status)
 	}
 }
 

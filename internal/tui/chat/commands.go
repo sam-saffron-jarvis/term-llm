@@ -171,8 +171,8 @@ func AllCommands() []Command {
 				{Name: "root", Description: "Return to the root checkout"},
 				{Name: "pwd", Description: "Show current bound directory"},
 				{Name: "diff", Description: "Show worktree diff including untracked files"},
-				{Name: "merge", Description: "Stage worktree changes onto the root checkout"},
-				{Name: "promote", Description: "Create a branch for the worktree"},
+				{Name: "merge", Description: "Stage worktree changes onto the root checkout with guided recovery"},
+				{Name: "promote", Description: "Check out a new worktree branch in the root checkout"},
 				{Name: "rm", Description: "Remove a worktree"},
 			},
 		},
@@ -595,6 +595,11 @@ func (m *Model) showFooterMessageWithToneFor(content string, tone string, durati
 func (m *Model) showFooterMutedWithCmd(content string, cmd tea.Cmd) (tea.Model, tea.Cmd) {
 	_, footerCmd := m.showFooterMuted(content)
 	return m, tea.Batch(footerCmd, cmd)
+}
+
+func (m *Model) showSystemMessageWithCmd(content string, cmd tea.Cmd) (tea.Model, tea.Cmd) {
+	_, systemCmd := m.showSystemMessage(content)
+	return m, tea.Batch(systemCmd, cmd)
 }
 
 // cancelHandoverTool signals false on the tool-initiated handover channel

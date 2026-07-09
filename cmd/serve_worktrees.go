@@ -227,7 +227,15 @@ func (s *serveServer) handleWorktreeMerge(w http.ResponseWriter, r *http.Request
 	}
 	res, err := worktree.MergeBack(r.Context(), wt.Dir, worktree.MergeOptions{Commit: req.Commit, Message: req.Message})
 	if errors.Is(err, worktree.ErrConflict) {
-		writeJSON(w, http.StatusConflict, map[string]any{"result": res, "error": "conflicts"})
+		message := "root checkout was reset cleanly after conflicts"
+		if !res.ConflictReset {
+			message = "merge conflicts occurred and automatic cleanup did not fully complete; inspect the root checkout"
+		}
+		writeJSON(w, http.StatusConflict, map[string]any{"result": res, "error": "conflicts", "message": message})
+		return
+	}
+	if errors.Is(err, worktree.ErrRootDirty) {
+		writeJSON(w, http.StatusConflict, map[string]any{"result": res, "error": "root_dirty", "message": err.Error()})
 		return
 	}
 	if err != nil {
@@ -295,11 +303,20 @@ func (s *serveServer) handleWorktreePromote(w http.ResponseWriter, r *http.Reque
 		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", err.Error())
 		return
 	}
-	if err := worktree.Promote(r.Context(), wt.Dir, req.Branch); err != nil {
+	if activeRootSessions := s.activeRootRunsForWorktreeMerge(r.Context(), root); len(activeRootSessions) > 0 {
+		writeOpenAIError(w, http.StatusConflict, "conflict_error", fmt.Sprintf("root checkout has active session run(s): %s", strings.Join(activeRootSessions, ", ")))
+		return
+	}
+	res, err := worktree.PromoteToRoot(r.Context(), wt.Dir, req.Branch, worktree.PromoteOptions{})
+	if errors.Is(err, worktree.ErrRootDirty) {
+		writeJSON(w, http.StatusConflict, map[string]any{"result": res, "error": "root_dirty", "message": err.Error()})
+		return
+	}
+	if err != nil {
 		writeOpenAIError(w, http.StatusInternalServerError, "server_error", err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+	writeJSON(w, http.StatusOK, map[string]any{"result": res})
 }
 
 func (s *serveServer) handleWorktreeDelete(w http.ResponseWriter, r *http.Request) {

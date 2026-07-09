@@ -123,14 +123,29 @@ const worktreeApp = window.TermLLMApp || (window.TermLLMApp = {});
         const res = await fetch(`${UI_PREFIX}/v1/worktrees/merge`, { method: 'POST', headers: authHeaders(), body: JSON.stringify({ dir }) });
         if (!res.ok && res.status !== 409) throw await (worktreeApp.normalizeError ? worktreeApp.normalizeError(res) : res.text());
         const data = await res.json().catch(() => ({}));
-        if (res.status === 409) window.alert(`Conflicts:\n${(data.result?.conflicts || []).join('\n')}`);
-        else window.alert('Merged back staged, uncommitted on root.');
+        const result = data.result || {};
+        if (res.status === 409) {
+          if (data.error === 'root_dirty') {
+            window.alert(`Merge not attempted: root checkout is dirty.\n\nRoot: ${result.root_dir || ''}\nSource: ${result.worktree_name || ''} ${result.worktree_dir || ''}\n\nRoot status:\n${result.root_status || '(dirty)'}\n\nNext: inspect/commit/stash root changes, then retry merge.`);
+          } else {
+            window.alert(`Merge conflicts; root was reset cleanly.\n\nRoot: ${result.root_dir || ''}\nSource: ${result.worktree_name || ''} ${result.worktree_dir || ''}\n\nConflicts:\n${(result.conflicts || []).join('\n')}\n\nNext: consider promoting the worktree or ask the LLM for a recovery plan.`);
+          }
+        } else {
+          window.alert(`Merged back to root: ${result.root_dir || ''}\nSource: ${result.worktree_name || ''} ${result.worktree_dir || ''}\nResult: ${result.committed ? 'committed' : 'staged, uncommitted'}\n\nNext: open root, run git status, commit, then remove the worktree when ready.`);
+        }
       } else if (value === 'promote') {
         const branch = window.prompt('Branch name:', '');
         if (!branch) return;
         const res = await fetch(`${UI_PREFIX}/v1/worktrees/promote`, { method: 'POST', headers: authHeaders(), body: JSON.stringify({ dir, branch }) });
-        if (!res.ok) throw await (worktreeApp.normalizeError ? worktreeApp.normalizeError(res) : res.text());
-        window.alert('Promoted.');
+        if (!res.ok && res.status !== 409) throw await (worktreeApp.normalizeError ? worktreeApp.normalizeError(res) : res.text());
+        const data = await res.json().catch(() => ({}));
+        if (res.status === 409) {
+          const result = data.result || {};
+          window.alert(`Promote not attempted: root checkout is dirty.\n\nRoot: ${result.root_dir || ''}\nBranch: ${branch}\n\nRoot status:\n${result.root_status || '(dirty)'}\n\nNext: inspect/commit/stash root changes, then retry promote.`);
+        } else {
+          const result = data.result || {};
+          window.alert(`Promoted to branch ${result.branch || branch}.\n\nChecked out in root: ${result.root_dir || ''}\nSource worktree: ${result.worktree_dir || dir}\n${result.applied ? 'Dirty worktree changes are staged/uncommitted in root.' : 'No dirty changes were applied.'}\n\nNext: open a shell, run git status, commit, and push.`);
+        }
       } else if (value === 'remove' || value === 'rm') {
         if (!window.confirm('Remove this worktree?')) return;
         const res = await fetch(`${UI_PREFIX}/v1/worktrees?dir=${encodeURIComponent(dir)}`, { method: 'DELETE', headers: authHeaders() });

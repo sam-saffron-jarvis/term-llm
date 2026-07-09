@@ -363,6 +363,10 @@ func (m *Model) handleCtrlC() (tea.Model, tea.Cmd) {
 		m.completions.Hide()
 	}
 	if m.dialog.IsOpen() {
+		if m.dialog.Type() == DialogWorktreeRecovery {
+			m.ctrlCExitArmedUntil = time.Time{}
+			return m.resolveWorktreeRecoveryPrompt(false)
+		}
 		m.dialog.Close()
 	}
 	_, footerCmd := m.showFooterMessageWithToneFor("Press Ctrl-C again to exit.", "warning", ctrlCExitConfirmWindow)
@@ -598,6 +602,24 @@ func (m *Model) handleKeyMsg(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 
+		if m.dialog.Type() == DialogWorktreeRecovery {
+			switch {
+			case key.Matches(msg, key.NewBinding(key.WithKeys("enter"))):
+				selected := m.dialog.Selected()
+				if selected == nil {
+					return m.resolveWorktreeRecoveryPrompt(false)
+				}
+				return m.resolveWorktreeRecoveryPrompt(selected.ID == "yes")
+			case key.Matches(msg, key.NewBinding(key.WithKeys("esc", "q"))):
+				return m.resolveWorktreeRecoveryPrompt(false)
+			case key.Matches(msg, key.NewBinding(key.WithKeys("up", "k", "down", "j"))):
+				m.dialog.Update(msg)
+				return m, nil
+			default:
+				return m, nil
+			}
+		}
+
 		// Other dialogs (SessionList, DirApproval) use standard handling
 		switch {
 		case key.Matches(msg, key.NewBinding(key.WithKeys("enter", "tab"))):
@@ -629,6 +651,9 @@ func (m *Model) handleKeyMsg(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		case key.Matches(msg, key.NewBinding(key.WithKeys("esc", "q"))):
 			m.pendingFilePath = ""
+			if m.dialog.Type() == DialogWorktreeRecovery {
+				return m.resolveWorktreeRecoveryPrompt(false)
+			}
 			m.dialog.Close()
 			return m, nil
 		default:

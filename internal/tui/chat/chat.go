@@ -402,7 +402,8 @@ type Model struct {
 	footerMessageTone             string   // "", "muted", "success", "warning", or "error"
 	footerMessageSeq              uint64   // monotonically increasing footer message timer token
 	worktreeOperation             string   // non-empty while an async /worktree operation is running
-	lastGuardianReviewForApproval string   // latest non-success guardian review message to show durably above an approval prompt
+	pendingWorktreeRecovery       *pendingWorktreeRecovery
+	lastGuardianReviewForApproval string // latest non-success guardian review message to show durably above an approval prompt
 
 	attemptInput          int
 	attemptOutput         int

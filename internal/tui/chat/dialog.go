@@ -23,6 +23,7 @@ const (
 	DialogSessionList
 	DialogDirApproval
 	DialogMCPPicker
+	DialogWorktreeRecovery
 	DialogContent
 )
 
@@ -41,6 +42,9 @@ type DialogModel struct {
 	// Directory approval specific
 	dirApprovalPath    string
 	dirApprovalOptions []string
+
+	// Worktree recovery confirmation specific
+	worktreeRecoveryQuestion string
 
 	// Static content modal specific
 	contentLines  []string
@@ -94,6 +98,7 @@ func (d *DialogModel) Close() {
 	d.contentLines = nil
 	d.contentScroll = 0
 	d.contentFooter = ""
+	d.worktreeRecoveryQuestion = ""
 }
 
 // ShowModelPicker opens the model picker dialog.
@@ -195,6 +200,26 @@ func (d *DialogModel) ShowDirApproval(filePath string, options []string) {
 		ID:    "__deny__",
 		Label: "Deny",
 	})
+	d.filtered = d.items
+}
+
+// ShowWorktreeRecovery opens a yes/no confirmation dialog for assisted recovery.
+func (d *DialogModel) ShowWorktreeRecovery(title, question string) {
+	d.dialogType = DialogWorktreeRecovery
+	d.title = strings.TrimSpace(title)
+	if d.title == "" {
+		d.title = "Assisted Worktree Recovery"
+	}
+	d.cursor = 0
+	d.query = ""
+	d.contentLines = nil
+	d.contentScroll = 0
+	d.contentFooter = ""
+	d.worktreeRecoveryQuestion = strings.TrimSpace(question)
+	d.items = []DialogItem{
+		{ID: "yes", Label: "Yes — start assisted recovery"},
+		{ID: "no", Label: "No — leave everything unchanged"},
+	}
 	d.filtered = d.items
 }
 
@@ -592,6 +617,14 @@ func (d *DialogModel) viewStandardDialog() string {
 		b.WriteString(mutedStyle.Render("Allow access to read files from:"))
 		b.WriteString("\n\n")
 		b.WriteString("  " + d.dirApprovalPath)
+		b.WriteString("\n\n")
+	}
+
+	// Worktree recovery asks an explicit yes/no question.
+	if d.dialogType == DialogWorktreeRecovery && d.worktreeRecoveryQuestion != "" {
+		b.WriteString("\n")
+		questionStyle := lipgloss.NewStyle().Width(max(20, dialogWidth-6))
+		b.WriteString(questionStyle.Render(d.worktreeRecoveryQuestion))
 		b.WriteString("\n\n")
 	}
 

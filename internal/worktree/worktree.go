@@ -81,11 +81,69 @@ type MergeOptions struct {
 
 // MergeResult describes the result of MergeBack.
 type MergeResult struct {
-	Applied        bool     `json:"applied"`
-	Committed      bool     `json:"committed"`
-	SnapshotCommit string   `json:"snapshot_commit,omitempty"`
-	Conflicts      []string `json:"conflicts,omitempty"`
-	Message        string   `json:"message,omitempty"`
+	Applied              bool     `json:"applied"`
+	Committed            bool     `json:"committed"`
+	SnapshotCommit       string   `json:"snapshot_commit,omitempty"`
+	Conflicts            []string `json:"conflicts,omitempty"`
+	Message              string   `json:"message,omitempty"`
+	WorktreeDir          string   `json:"worktree_dir,omitempty"`
+	RootDir              string   `json:"root_dir,omitempty"`
+	WorktreeName         string   `json:"worktree_name,omitempty"`
+	Base                 string   `json:"base,omitempty"`
+	WorktreeHead         string   `json:"worktree_head,omitempty"`
+	RootHead             string   `json:"root_head,omitempty"`
+	RootStatus           string   `json:"root_status,omitempty"`
+	ChangedFiles         []string `json:"changed_files,omitempty"`
+	ConflictReset        bool     `json:"conflict_reset,omitempty"`
+	ConflictCleanupError string   `json:"conflict_cleanup_error,omitempty"`
+}
+
+// PromoteOptions configures PromoteToRoot.
+type PromoteOptions struct {
+	Message string
+}
+
+// PromoteResult describes the result of PromoteToRoot.
+type PromoteResult struct {
+	RootDir                     string   `json:"root_dir,omitempty"`
+	WorktreeDir                 string   `json:"worktree_dir,omitempty"`
+	WorktreeName                string   `json:"worktree_name,omitempty"`
+	Branch                      string   `json:"branch,omitempty"`
+	PreviousRootRef             string   `json:"previous_root_ref,omitempty"`
+	PreviousRootBranch          string   `json:"previous_root_branch,omitempty"`
+	WorktreeHead                string   `json:"worktree_head,omitempty"`
+	SnapshotCommit              string   `json:"snapshot_commit,omitempty"`
+	ChangedFiles                []string `json:"changed_files,omitempty"`
+	RootStatus                  string   `json:"root_status,omitempty"`
+	Applied                     bool     `json:"applied"`
+	OriginalWorktreeStillExists bool     `json:"original_worktree_still_exists"`
+}
+
+// AssistedMergeOptions configures StartAssistedMerge.
+type AssistedMergeOptions struct {
+	Branch         string
+	SnapshotCommit string
+	Message        string
+}
+
+// AssistedMergeResult describes a recovery branch prepared for LLM-assisted merge resolution.
+type AssistedMergeResult struct {
+	RootDir            string   `json:"root_dir,omitempty"`
+	WorktreeDir        string   `json:"worktree_dir,omitempty"`
+	WorktreeName       string   `json:"worktree_name,omitempty"`
+	Branch             string   `json:"branch,omitempty"`
+	PreviousRootRef    string   `json:"previous_root_ref,omitempty"`
+	PreviousRootBranch string   `json:"previous_root_branch,omitempty"`
+	Base               string   `json:"base,omitempty"`
+	RootHead           string   `json:"root_head,omitempty"`
+	WorktreeHead       string   `json:"worktree_head,omitempty"`
+	SnapshotCommit     string   `json:"snapshot_commit,omitempty"`
+	ChangedFiles       []string `json:"changed_files,omitempty"`
+	Conflicts          []string `json:"conflicts,omitempty"`
+	RootStatus         string   `json:"root_status,omitempty"`
+	Applied            bool     `json:"applied"`
+	NeedsResolution    bool     `json:"needs_resolution"`
+	Message            string   `json:"message,omitempty"`
 }
 
 // InUseSession describes a session bound to a worktree.
@@ -108,9 +166,10 @@ type metadata struct {
 }
 
 var (
-	ErrDirty    = errors.New("worktree has uncommitted changes")
-	ErrExists   = errors.New("worktree already exists")
-	ErrConflict = errors.New("merge back has conflicts")
+	ErrDirty     = errors.New("worktree has uncommitted changes")
+	ErrExists    = errors.New("worktree already exists")
+	ErrConflict  = errors.New("merge back has conflicts")
+	ErrRootDirty = errors.New("root checkout has uncommitted changes")
 )
 
 func (o *CreateOptions) progress(msg string) {
@@ -477,6 +536,245 @@ func Promote(ctx context.Context, dir, branch string) error {
 	return nil
 }
 
+// PromoteToRoot creates a branch from the worktree HEAD, checks it out in the
+// root checkout, and applies dirty worktree changes there staged and
+// uncommitted. The original linked worktree is left in place.
+func PromoteToRoot(ctx context.Context, dir, branch string, opts PromoteOptions) (PromoteResult, error) {
+	branch = strings.TrimSpace(branch)
+	res := PromoteResult{Branch: branch}
+	if branch == "" {
+		return res, fmt.Errorf("branch is required")
+	}
+	wt, err := Get(dir)
+	if err != nil {
+		return res, err
+	}
+	root := wt.RepoRoot
+	worktreeHead := strings.TrimSpace(wt.HeadSHA)
+	if worktreeHead == "" {
+		worktreeHead, _ = revParseFull(wt.Dir, "HEAD")
+	}
+	res.RootDir = root
+	res.WorktreeDir = wt.Dir
+	res.WorktreeName = wt.Name
+	res.WorktreeHead = worktreeHead
+	res.RootStatus = statusPorcelain(root)
+	res.OriginalWorktreeStillExists = pathExists(wt.Dir)
+
+	if out, err := runGitCtx(ctx, root, "check-ref-format", "--branch", branch); err != nil {
+		return res, fmt.Errorf("worktree: invalid branch %q: %w: %s", branch, err, strings.TrimSpace(out))
+	}
+	exists, err := localBranchExists(root, branch)
+	if err != nil {
+		return res, err
+	}
+	if exists {
+		return res, fmt.Errorf("branch %q already exists", branch)
+	}
+	if strings.TrimSpace(res.RootStatus) != "" {
+		return res, ErrRootDirty
+	}
+
+	previousRootRef, _ := revParseFull(root, "HEAD")
+	previousRootBranch := currentBranch(root)
+	res.PreviousRootRef = previousRootRef
+	res.PreviousRootBranch = previousRootBranch
+
+	branchCreated := false
+	rollback := func() {
+		cleanupCherryPickState(root)
+		if previousRootBranch != "" {
+			if _, err := runGit(root, "checkout", previousRootBranch); err != nil && previousRootRef != "" {
+				_, _ = runGit(root, "checkout", previousRootRef)
+			}
+		} else if previousRootRef != "" {
+			_, _ = runGit(root, "checkout", previousRootRef)
+		}
+		if branchCreated {
+			_, _ = runGit(root, "branch", "-D", branch)
+		}
+	}
+	fail := func(err error) (PromoteResult, error) {
+		rollback()
+		res.RootStatus = statusPorcelain(root)
+		res.OriginalWorktreeStillExists = pathExists(wt.Dir)
+		return res, err
+	}
+
+	if out, err := runGitCtx(ctx, root, "branch", branch, worktreeHead); err != nil {
+		return res, fmt.Errorf("worktree: create root branch: %w: %s", err, strings.TrimSpace(out))
+	}
+	branchCreated = true
+	if err := runPromoteToRootHook("after-branch"); err != nil {
+		return fail(err)
+	}
+	if out, err := runGitCtx(ctx, root, "checkout", branch); err != nil {
+		return fail(fmt.Errorf("worktree: checkout root branch: %w: %s", err, strings.TrimSpace(out)))
+	}
+	if err := runPromoteToRootHook("after-checkout"); err != nil {
+		return fail(err)
+	}
+
+	if dirtyCount(wt.Dir) > 0 {
+		msg := strings.TrimSpace(opts.Message)
+		if msg == "" {
+			msg = fmt.Sprintf("Promote term-llm worktree %s dirty changes", wt.Name)
+		}
+		snapshot, err := snapshotCommit(ctx, wt.Dir, worktreeHead, msg)
+		if err != nil {
+			return fail(err)
+		}
+		res.SnapshotCommit = snapshot
+		res.ChangedFiles = changedFilesForCommit(root, snapshot)
+		if len(res.ChangedFiles) > 0 {
+			out, err := runGitCtx(ctx, root, "cherry-pick", "-n", snapshot)
+			if err != nil {
+				return fail(fmt.Errorf("worktree: apply promoted dirty changes: %w: %s", err, strings.TrimSpace(out)))
+			}
+			res.Applied = true
+		}
+	}
+	res.RootStatus = statusPorcelain(root)
+	res.OriginalWorktreeStillExists = pathExists(wt.Dir)
+	return res, nil
+}
+
+var promoteToRootTestHook func(stage string) error
+
+func runPromoteToRootHook(stage string) error {
+	if promoteToRootTestHook == nil {
+		return nil
+	}
+	return promoteToRootTestHook(stage)
+}
+
+// StartAssistedMerge prepares a safe root recovery branch for LLM-assisted
+// resolution. It applies the worktree snapshot with cherry-pick -n and leaves
+// conflicts in place on the recovery branch when they occur.
+func StartAssistedMerge(ctx context.Context, dir string, opts AssistedMergeOptions) (AssistedMergeResult, error) {
+	wt, err := Get(dir)
+	if err != nil {
+		return AssistedMergeResult{}, err
+	}
+	root := wt.RepoRoot
+	base := strings.TrimSpace(wt.Base)
+	if base == "" {
+		base = "HEAD"
+	}
+	rootHead, _ := revParseFull(root, "HEAD")
+	worktreeHead := strings.TrimSpace(wt.HeadSHA)
+	if worktreeHead == "" {
+		worktreeHead, _ = revParseFull(wt.Dir, "HEAD")
+	}
+	previousRootBranch := currentBranch(root)
+	res := AssistedMergeResult{
+		RootDir:            root,
+		WorktreeDir:        wt.Dir,
+		WorktreeName:       wt.Name,
+		PreviousRootRef:    rootHead,
+		PreviousRootBranch: previousRootBranch,
+		Base:               base,
+		RootHead:           rootHead,
+		WorktreeHead:       worktreeHead,
+		RootStatus:         statusPorcelain(root),
+	}
+	if strings.TrimSpace(res.RootStatus) != "" {
+		return res, ErrRootDirty
+	}
+
+	snapshot := strings.TrimSpace(opts.SnapshotCommit)
+	if snapshot == "" {
+		msg := strings.TrimSpace(opts.Message)
+		if msg == "" {
+			msg = fmt.Sprintf("Assisted merge term-llm worktree %s", wt.Name)
+		}
+		snapshot, err = snapshotCommit(ctx, wt.Dir, base, msg)
+		if err != nil {
+			return res, err
+		}
+	}
+	res.SnapshotCommit = snapshot
+	res.ChangedFiles = changedFilesForCommit(root, snapshot)
+	if len(res.ChangedFiles) == 0 {
+		res.Message = "No worktree changes to merge."
+		return res, nil
+	}
+
+	branch := strings.TrimSpace(opts.Branch)
+	if branch == "" {
+		branch = recoveryBranchName(root, wt.Name)
+	}
+	res.Branch = branch
+	if out, err := runGitCtx(ctx, root, "check-ref-format", "--branch", branch); err != nil {
+		return res, fmt.Errorf("worktree: invalid recovery branch %q: %w: %s", branch, err, strings.TrimSpace(out))
+	}
+	exists, err := localBranchExists(root, branch)
+	if err != nil {
+		return res, err
+	}
+	if exists {
+		return res, fmt.Errorf("branch %q already exists", branch)
+	}
+
+	branchCreated := false
+	rollback := func() {
+		cleanupCherryPickState(root)
+		if previousRootBranch != "" {
+			if _, err := runGit(root, "checkout", previousRootBranch); err != nil && rootHead != "" {
+				_, _ = runGit(root, "checkout", rootHead)
+			}
+		} else if rootHead != "" {
+			_, _ = runGit(root, "checkout", rootHead)
+		}
+		if branchCreated {
+			_, _ = runGit(root, "branch", "-D", branch)
+		}
+	}
+	fail := func(err error) (AssistedMergeResult, error) {
+		rollback()
+		res.RootStatus = statusPorcelain(root)
+		return res, err
+	}
+
+	if out, err := runGitCtx(ctx, root, "checkout", "-b", branch); err != nil {
+		return res, fmt.Errorf("worktree: create recovery branch: %w: %s", err, strings.TrimSpace(out))
+	}
+	branchCreated = true
+	out, err := runGitCtx(ctx, root, "cherry-pick", "-n", snapshot)
+	if err != nil {
+		conflicts := conflictFiles(root)
+		if len(conflicts) == 0 {
+			return fail(fmt.Errorf("worktree: apply recovery snapshot: %w: %s", err, strings.TrimSpace(out)))
+		}
+		res.Applied = false
+		res.NeedsResolution = true
+		res.Conflicts = conflicts
+		res.Message = strings.TrimSpace(out)
+		res.RootStatus = statusPorcelain(root)
+		return res, nil
+	}
+	res.Applied = true
+	res.RootStatus = statusPorcelain(root)
+	return res, nil
+}
+
+func recoveryBranchName(root, worktreeName string) string {
+	name := slug(worktreeName)
+	if name == "" {
+		name = "worktree"
+	}
+	stamp := time.Now().UTC().Format("20060102-150405")
+	base := fmt.Sprintf("term-llm/merge-%s-%s", name, stamp)
+	branch := base
+	for i := 2; ; i++ {
+		exists, err := localBranchExists(root, branch)
+		if err != nil || !exists {
+			return branch
+		}
+		branch = fmt.Sprintf("%s-%d", base, i)
+	}
+}
+
 // Remove removes a managed worktree and prunes git's worktree metadata.
 func Remove(ctx context.Context, dir string, opts RemoveOptions) error {
 	wt, err := Get(dir)
@@ -513,14 +811,26 @@ func MergeBack(ctx context.Context, dir string, opts MergeOptions) (MergeResult,
 		return MergeResult{}, err
 	}
 	root := wt.RepoRoot
-	if !opts.AllowDirty {
-		if dirtyCount(root) > 0 {
-			return MergeResult{}, fmt.Errorf("root checkout has uncommitted changes")
-		}
-	}
 	base := strings.TrimSpace(wt.Base)
 	if base == "" {
 		base = "HEAD"
+	}
+	rootHead, _ := revParseFull(root, "HEAD")
+	worktreeHead := strings.TrimSpace(wt.HeadSHA)
+	if worktreeHead == "" {
+		worktreeHead, _ = revParseFull(wt.Dir, "HEAD")
+	}
+	res := MergeResult{
+		WorktreeDir:  wt.Dir,
+		RootDir:      root,
+		WorktreeName: wt.Name,
+		Base:         base,
+		WorktreeHead: worktreeHead,
+		RootHead:     rootHead,
+		RootStatus:   statusPorcelain(root),
+	}
+	if !opts.AllowDirty && strings.TrimSpace(res.RootStatus) != "" {
+		return res, ErrRootDirty
 	}
 	msg := strings.TrimSpace(opts.Message)
 	if msg == "" {
@@ -528,21 +838,38 @@ func MergeBack(ctx context.Context, dir string, opts MergeOptions) (MergeResult,
 	}
 	snapshot, err := snapshotCommit(ctx, wt.Dir, base, msg)
 	if err != nil {
-		return MergeResult{}, err
+		return res, err
+	}
+	res.SnapshotCommit = snapshot
+	res.ChangedFiles = changedFilesForCommit(root, snapshot)
+	if len(res.ChangedFiles) == 0 {
+		res.Message = "No worktree changes to merge."
+		res.RootStatus = statusPorcelain(root)
+		return res, nil
 	}
 	out, err := runGitCtx(ctx, root, "cherry-pick", "-n", snapshot)
 	if err != nil {
 		conflicts := conflictFiles(root)
-		_, _ = runGit(root, "reset", "--merge")
-		res := MergeResult{Applied: false, SnapshotCommit: snapshot, Conflicts: conflicts, Message: strings.TrimSpace(out)}
+		cleanupErr := cleanupCherryPickState(root)
+		res.Applied = false
+		res.Conflicts = conflicts
+		res.Message = strings.TrimSpace(out)
+		if cleanupErr == nil {
+			res.ConflictReset = true
+		} else {
+			res.ConflictCleanupError = cleanupErr.Error()
+		}
+		res.RootStatus = statusPorcelain(root)
 		return res, ErrConflict
 	}
-	res := MergeResult{Applied: true, SnapshotCommit: snapshot}
+	res.Applied = true
+	res.RootStatus = statusPorcelain(root)
 	if opts.Commit {
 		if out, err := runGitCtx(ctx, root, "commit", "-m", msg); err != nil {
 			return res, fmt.Errorf("worktree: commit merged changes: %w: %s", err, strings.TrimSpace(out))
 		}
 		res.Committed = true
+		res.RootStatus = statusPorcelain(root)
 	}
 	return res, nil
 }
@@ -639,17 +966,115 @@ func conflictFiles(root string) []string {
 }
 
 func dirtyCount(dir string) int {
+	return len(statusLines(statusPorcelain(dir)))
+}
+
+func statusPorcelain(dir string) string {
 	out, err := runGit(dir, "status", "--porcelain")
 	if err != nil {
-		return 0
+		return ""
 	}
-	count := 0
-	for _, line := range strings.Split(out, "\n") {
+	return strings.TrimRight(out, "\n")
+}
+
+func statusLines(status string) []string {
+	var lines []string
+	for _, line := range strings.Split(status, "\n") {
+		line = strings.TrimRight(line, "\r")
 		if strings.TrimSpace(line) != "" {
-			count++
+			lines = append(lines, line)
 		}
 	}
-	return count
+	return lines
+}
+
+func changedFilesForCommit(dir, commit string) []string {
+	commit = strings.TrimSpace(commit)
+	if commit == "" {
+		return nil
+	}
+	out, err := runGit(dir, "diff-tree", "--no-commit-id", "--name-status", "-r", "--find-renames", commit)
+	if err != nil {
+		return nil
+	}
+	return boundedLines(out, 50)
+}
+
+func boundedLines(out string, max int) []string {
+	if max <= 0 {
+		max = 50
+	}
+	all := statusLines(out)
+	if len(all) <= max {
+		return all
+	}
+	truncated := append([]string{}, all[:max]...)
+	truncated = append(truncated, fmt.Sprintf("… and %d more", len(all)-max))
+	return truncated
+}
+
+func cleanupCherryPickState(root string) error {
+	var errs []string
+	if out, err := runGit(root, "reset", "--merge"); err != nil {
+		errs = append(errs, fmt.Sprintf("git reset --merge: %v: %s", err, strings.TrimSpace(out)))
+	}
+	if out, err := runGit(root, "cherry-pick", "--quit"); err != nil && cherryPickStateExists(root) {
+		errs = append(errs, fmt.Sprintf("git cherry-pick --quit: %v: %s", err, strings.TrimSpace(out)))
+	}
+	if len(errs) > 0 {
+		return errors.New(strings.Join(errs, "; "))
+	}
+	return nil
+}
+
+func cherryPickStateExists(root string) bool {
+	path := gitPath(root, "CHERRY_PICK_HEAD")
+	if path == "" {
+		return false
+	}
+	_, err := os.Stat(path)
+	return err == nil
+}
+
+func gitPath(root, name string) string {
+	out, err := runGit(root, "rev-parse", "--git-path", name)
+	if err != nil {
+		return filepath.Join(root, ".git", name)
+	}
+	path := strings.TrimSpace(out)
+	if path == "" {
+		return ""
+	}
+	if filepath.IsAbs(path) {
+		return path
+	}
+	return filepath.Join(root, path)
+}
+
+func currentBranch(dir string) string {
+	out, err := runGit(dir, "symbolic-ref", "--short", "-q", "HEAD")
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(out)
+}
+
+func localBranchExists(root, branch string) (bool, error) {
+	cmd := exec.Command("git", "show-ref", "--verify", "--quiet", "refs/heads/"+branch)
+	cmd.Dir = root
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		return true, nil
+	}
+	if ee, ok := err.(*exec.ExitError); ok && ee.ExitCode() == 1 {
+		return false, nil
+	}
+	return false, fmt.Errorf("worktree: check branch exists: %w: %s", err, strings.TrimSpace(string(out)))
+}
+
+func pathExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
 }
 
 func mergeBase(dir, ref string) (string, error) {
