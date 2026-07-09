@@ -20,6 +20,7 @@ import (
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
+	runpkg "github.com/samsaffron/term-llm/internal/run"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/testutil"
 )
@@ -226,6 +227,44 @@ func (s *errorAfterTextStream) Recv() (llm.Event, error) {
 }
 
 func (s *errorAfterTextStream) Close() error { return nil }
+
+type cancelIgnoringRunner struct {
+	started   chan struct{}
+	cancelled chan struct{}
+	release   chan struct{}
+	finished  chan struct{}
+
+	startOnce  sync.Once
+	cancelOnce sync.Once
+	finishOnce sync.Once
+}
+
+func newCancelIgnoringRunner() *cancelIgnoringRunner {
+	return &cancelIgnoringRunner{
+		started:   make(chan struct{}),
+		cancelled: make(chan struct{}),
+		release:   make(chan struct{}),
+		finished:  make(chan struct{}),
+	}
+}
+
+func (r *cancelIgnoringRunner) Run(ctx context.Context, req runpkg.Request, sink runpkg.EventSink) (runpkg.Result, error) {
+	r.startOnce.Do(func() { close(r.started) })
+	if req.OnEngineReady != nil {
+		req.OnEngineReady(req.Engine)
+	}
+	defer func() {
+		if req.OnEngineDone != nil {
+			req.OnEngineDone(req.Engine)
+		}
+		r.finishOnce.Do(func() { close(r.finished) })
+	}()
+
+	<-ctx.Done()
+	r.cancelOnce.Do(func() { close(r.cancelled) })
+	<-r.release
+	return runpkg.Result{}, ctx.Err()
+}
 
 // newTestMgrAndSession builds a minimal manager and session backed by h's engine.
 func newTestMgrAndSession(h *testutil.EngineHarness) (*telegramSessionMgr, *telegramSession) {
@@ -1997,6 +2036,91 @@ func TestStreamReply_WatchdogTimeoutIsNotTreatedAsUserInterrupt(t *testing.T) {
 	sess.mu.Unlock()
 	if historyLen != 2 {
 		t.Fatalf("watchdog timeout should not persist partial history; got %d messages", historyLen)
+	}
+}
+
+func TestStreamReply_RunnerCleanupTimeoutDoesNotHoldSessionMutex(t *testing.T) {
+	h := testutil.NewEngineHarness()
+	mgr, sess := newTestMgrAndSession(h)
+	mgr.streamEventTimeout = 10 * time.Millisecond
+	mgr.runnerCleanupTimeout = 20 * time.Millisecond
+
+	runner := newCancelIgnoringRunner()
+	mgr.settings.Runner = runner
+	released := false
+	defer func() {
+		if !released {
+			close(runner.release)
+		}
+		select {
+		case <-runner.finished:
+		case <-time.After(time.Second):
+			t.Errorf("runner did not finish after release")
+		}
+	}()
+
+	bot := &fakeBotSender{}
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- mgr.streamReply(context.Background(), bot, sess, 42, llm.UserText("hello"))
+	}()
+
+	select {
+	case <-runner.started:
+	case <-time.After(time.Second):
+		t.Fatal("runner never started")
+	}
+
+	var err error
+	select {
+	case err = <-errCh:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("streamReply remained blocked after runner cleanup timeout")
+	}
+	if err == nil || !strings.Contains(err.Error(), "stream timed out") {
+		t.Fatalf("expected stream timeout error, got: %v", err)
+	}
+
+	select {
+	case <-runner.cancelled:
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("runner context was not cancelled")
+	}
+
+	sess.cancelMu.Lock()
+	streamCancel := sess.streamCancel
+	replyDone := sess.replyDone
+	streamEngine := sess.streamEngine
+	streamToken := sess.streamToken
+	sess.cancelMu.Unlock()
+	if streamCancel != nil || replyDone != nil || streamEngine != nil || streamToken != nil {
+		t.Fatalf("active stream state was not cleared: cancel=%v replyDone=%v engine=%v token=%v", streamCancel != nil, replyDone != nil, streamEngine != nil, streamToken != nil)
+	}
+
+	locked := make(chan struct{})
+	go func() {
+		sess.mu.Lock()
+		sess.mu.Unlock()
+		close(locked)
+	}()
+	select {
+	case <-locked:
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("session mutex remained held after streamReply returned")
+	}
+
+	h.Provider.AddTextResponse("second reply")
+	mgr.settings.Runner = nil
+	if err := mgr.streamReply(context.Background(), bot, sess, 42, llm.UserText("second")); err != nil {
+		t.Fatalf("second streamReply failed after stuck runner cleanup: %v", err)
+	}
+
+	close(runner.release)
+	released = true
+	select {
+	case <-runner.finished:
+	case <-time.After(time.Second):
+		t.Fatal("runner did not finish after release")
 	}
 }
 

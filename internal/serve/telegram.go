@@ -34,6 +34,10 @@ const minEditInterval = 3 * time.Second
 // defaultStreamEventTimeout is used when telegramSessionMgr.streamEventTimeout is zero.
 const defaultStreamEventTimeout = 10 * time.Minute
 
+// defaultRunnerCleanupTimeout bounds how long streamReply waits for the shared
+// runner to observe cancellation before releasing the Telegram session lock.
+const defaultRunnerCleanupTimeout = 5 * time.Second
+
 const telegramMaxConcurrentHandlers = 8
 const telegramMaxPhotoDownloadBytes int64 = 25 << 20
 const telegramMaxVoiceDownloadBytes int64 = 25 << 20
@@ -447,9 +451,10 @@ type telegramSession struct {
 	meta                  *session.Session
 	lastActivity          time.Time
 
-	cancelMu      sync.Mutex         // protects streamCancel, replyDone, streamEngine and task/tool tracking
+	cancelMu      sync.Mutex         // protects streamCancel, replyDone, streamEngine, streamToken and task/tool tracking
 	streamCancel  context.CancelFunc // cancels the active stream's context
 	streamEngine  *llm.Engine        // active runner engine for mid-stream interjections
+	streamToken   chan struct{}      // identifies callbacks owned by the active stream
 	replyDone     chan struct{}      // closed when streamReply exits
 	currentTask   string             // text from the user message that started the active stream
 	toolsRanNames []string           // tool names executed during the active stream
@@ -476,6 +481,10 @@ type telegramSessionMgr struct {
 	// streamEventTimeout bounds how long the stream watchdog waits between events
 	// before declaring the stream dead. 0 means use defaultStreamEventTimeout.
 	streamEventTimeout time.Duration
+
+	// runnerCleanupTimeout bounds how long streamReply waits for settings.Runner
+	// to return after cancellation. 0 means use defaultRunnerCleanupTimeout.
+	runnerCleanupTimeout time.Duration
 }
 
 func (m *telegramSessionMgr) newFastProvider() llm.Provider {
@@ -1354,19 +1363,25 @@ func (m *telegramSessionMgr) streamReply(ctx context.Context, bot botSender, ses
 	defer streamCancel()
 
 	replyDone := make(chan struct{})
+	streamToken := make(chan struct{})
 	sess.cancelMu.Lock()
 	sess.streamCancel = streamCancel
 	sess.replyDone = replyDone
+	sess.streamToken = streamToken
 	sess.cancelMu.Unlock()
 	defer func() {
 		sess.cancelMu.Lock()
-		sess.streamCancel = nil
-		sess.replyDone = nil
-		sess.currentTask = ""
-		sess.toolsRanNames = nil
-		sess.streamProseLen.Store(0)
-		sess.streamToolCnt.Store(0)
-		sess.streamToolName.Store("")
+		if sess.streamToken == streamToken {
+			sess.streamCancel = nil
+			sess.replyDone = nil
+			sess.streamEngine = nil
+			sess.streamToken = nil
+			sess.currentTask = ""
+			sess.toolsRanNames = nil
+			sess.streamProseLen.Store(0)
+			sess.streamToolCnt.Store(0)
+			sess.streamToolName.Store("")
+		}
 		sess.cancelMu.Unlock()
 		close(replyDone)
 	}()
@@ -1531,10 +1546,26 @@ func (m *telegramSessionMgr) streamReply(ctx context.Context, bot botSender, ses
 		select {
 		case <-runnerDone:
 			return
-		case <-time.After(5 * time.Second):
-			log.Printf("[telegram] runner for chat %d still shutting down after cleanup timeout; waiting to avoid overlapping the shared engine", chatID)
+		default:
 		}
-		<-runnerDone
+
+		// Ensure early return paths (for example, Telegram send failures after the
+		// runner starts) still ask the runner to stop before we wait for cleanup.
+		streamCancel()
+
+		cleanupTimeout := m.runnerCleanupTimeout
+		if cleanupTimeout <= 0 {
+			cleanupTimeout = defaultRunnerCleanupTimeout
+		}
+		timer := time.NewTimer(cleanupTimeout)
+		defer timer.Stop()
+		select {
+		case <-runnerDone:
+			return
+		case <-timer.C:
+			log.Printf("[telegram] runner for chat %d still shutting down after %s; releasing session lock and allowing cleanup to finish in background", chatID, cleanupTimeout)
+			return
+		}
 	}
 	defer waitForRunnerDone()
 	if m.settings.Runner != nil {
@@ -1567,12 +1598,14 @@ func (m *telegramSessionMgr) streamReply(ctx context.Context, bot botSender, ses
 				OnTurnCompleted:           turnCompletedCB,
 				OnEngineReady: func(engine *llm.Engine) {
 					sess.cancelMu.Lock()
-					sess.streamEngine = engine
+					if sess.streamToken == streamToken {
+						sess.streamEngine = engine
+					}
 					sess.cancelMu.Unlock()
 				},
 				OnEngineDone: func(engine *llm.Engine) {
 					sess.cancelMu.Lock()
-					if sess.streamEngine == engine {
+					if sess.streamToken == streamToken && sess.streamEngine == engine {
 						sess.streamEngine = nil
 					}
 					sess.cancelMu.Unlock()
