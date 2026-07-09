@@ -6,6 +6,8 @@ import (
 )
 
 func TestNormalizeAskUserAnswers(t *testing.T) {
+	t.Parallel()
+
 	questions := []AskUserQuestion{
 		{
 			Header:   "Color",
@@ -82,6 +84,8 @@ func TestNormalizeAskUserAnswers(t *testing.T) {
 }
 
 func TestAskUserAnswerSummary(t *testing.T) {
+	t.Parallel()
+
 	summary := AskUserAnswerSummary([]AskUserAnswer{
 		{Header: "Color", Selected: "Blue"},
 		{Header: "Tools", Selected: "Go, Git"},

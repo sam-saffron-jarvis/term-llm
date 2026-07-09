@@ -13,6 +13,8 @@ import (
 )
 
 func TestBuildResponsesInputWithInstructions_ExtractsSystem(t *testing.T) {
+	t.Parallel()
+
 	messages := []Message{
 		{Role: RoleSystem, Parts: []Part{{Type: PartText, Text: "You are helpful."}}},
 		{Role: RoleSystem, Parts: []Part{{Type: PartText, Text: "Be concise."}}},
@@ -35,12 +37,16 @@ func TestBuildResponsesInputWithInstructions_ExtractsSystem(t *testing.T) {
 }
 
 func TestChatGPTHTTPClient_DoesNotUseClientTimeout(t *testing.T) {
+	t.Parallel()
+
 	if chatGPTHTTPClient.Timeout != 0 {
 		t.Fatalf("expected no http.Client.Timeout for ChatGPT streaming client, got %s", chatGPTHTTPClient.Timeout)
 	}
 }
 
 func TestNewChatGPTProviderWithCredsDefaultsToGPT55Medium(t *testing.T) {
+	t.Parallel()
+
 	provider := NewChatGPTProviderWithCreds(&credentials.ChatGPTCredentials{
 		AccessToken: "test-token",
 		AccountID:   "test-account",

@@ -8,6 +8,8 @@ import (
 )
 
 func TestCreateProviderFromConfig_OpenAICompatRequiresProviderName(t *testing.T) {
+	t.Parallel()
+
 	defer func() {
 		if r := recover(); r != nil {
 			t.Fatalf("createProviderFromConfig panicked: %v", r)
@@ -28,6 +30,8 @@ func TestCreateProviderFromConfig_OpenAICompatRequiresProviderName(t *testing.T)
 }
 
 func TestOpenAICompatReasoningParserOptionsUsesOnlyExplicitConfig(t *testing.T) {
+	t.Parallel()
+
 	parseReasoning, includeReasoning, thinkingParam := openAICompatReasoningParserOptions(&config.ProviderConfig{
 		Type:    config.ProviderTypeOpenAICompat,
 		BaseURL: "https://example.invalid/v1",
@@ -38,6 +42,8 @@ func TestOpenAICompatReasoningParserOptionsUsesOnlyExplicitConfig(t *testing.T) 
 }
 
 func TestOpenAICompatReasoningParserOptionsReadsExplicitConfig(t *testing.T) {
+	t.Parallel()
+
 	no := false
 	parseReasoning, includeReasoning, thinkingParam := openAICompatReasoningParserOptions(&config.ProviderConfig{
 		Type:             config.ProviderTypeOpenAICompat,

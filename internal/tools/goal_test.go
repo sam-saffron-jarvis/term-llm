@@ -11,6 +11,8 @@ import (
 )
 
 func TestGoalToolsCreateUpdateGet(t *testing.T) {
+	t.Parallel()
+
 	create := NewCreateGoalTool()
 	out, err := create.Execute(context.Background(), json.RawMessage(`{"objective":"ship /goal","token_budget":123}`))
 	if err != nil {
@@ -47,6 +49,8 @@ func TestGoalToolsCreateUpdateGet(t *testing.T) {
 }
 
 func TestGoalToolValidation(t *testing.T) {
+	t.Parallel()
+
 	if _, err := NewCreateGoalTool().Execute(context.Background(), json.RawMessage(`{"objective":""}`)); err == nil {
 		t.Fatal("create_goal with empty objective: expected error")
 	}

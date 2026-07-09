@@ -46,6 +46,9 @@ type worktreeRow struct {
 
 func (s *serveServer) currentGitRootOr409(w http.ResponseWriter) (string, bool) {
 	cwd, err := os.Getwd()
+	if s.worktreeRootFn != nil {
+		cwd, err = s.worktreeRootFn()
+	}
 	if err != nil || !worktree.IsGitRepo(cwd) {
 		writeOpenAIError(w, http.StatusConflict, "invalid_request_error", "not a git repository")
 		return "", false

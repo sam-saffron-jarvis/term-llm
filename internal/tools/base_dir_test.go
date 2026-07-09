@@ -19,6 +19,8 @@ func mustToolArgs(t *testing.T, v any) json.RawMessage {
 }
 
 func TestToolsResolveRelativePathsAgainstBaseDir(t *testing.T) {
+	t.Parallel()
+
 	base := t.TempDir()
 	cfg := &ToolConfig{BaseDir: base}
 	ctx := context.Background()
@@ -68,6 +70,8 @@ func TestToolsResolveRelativePathsAgainstBaseDir(t *testing.T) {
 }
 
 func TestToolManagerSetBaseDirUpdatesRegisteredTools(t *testing.T) {
+	t.Parallel()
+
 	first := t.TempDir()
 	second := t.TempDir()
 	cfg := &ToolConfig{Enabled: []string{ReadFileToolName}, BaseDir: first}

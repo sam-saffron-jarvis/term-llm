@@ -25,6 +25,8 @@ func (t *namedTestTool) Preview(args json.RawMessage) string { return t.name }
 func (t *finishingNamedTestTool) IsFinishingTool() bool { return true }
 
 func TestToolRegistryAllSpecsSortedByName(t *testing.T) {
+	t.Parallel()
+
 	registry := NewToolRegistry()
 	registry.Register(&namedTestTool{name: "zeta"})
 	registry.Register(&namedTestTool{name: "alpha"})
@@ -44,6 +46,8 @@ func TestToolRegistryAllSpecsSortedByName(t *testing.T) {
 }
 
 func TestToolSpecsForRequestPreservesSortedOrderAfterFiltering(t *testing.T) {
+	t.Parallel()
+
 	registry := NewToolRegistry()
 	registry.Register(&namedTestTool{name: "zeta"})
 	registry.Register(&namedTestTool{name: WebSearchToolName})
@@ -64,6 +68,8 @@ func TestToolSpecsForRequestPreservesSortedOrderAfterFiltering(t *testing.T) {
 }
 
 func TestToolRegistryConcurrentAccess(t *testing.T) {
+	t.Parallel()
+
 	registry := NewToolRegistry()
 	registry.Register(&finishingNamedTestTool{namedTestTool{name: "base"}})
 
@@ -117,6 +123,8 @@ func TestToolRegistryConcurrentAccess(t *testing.T) {
 }
 
 func TestToolRegistryAllSpecsReturnedSliceIsIndependent(t *testing.T) {
+	t.Parallel()
+
 	registry := NewToolRegistry()
 	registry.Register(&namedTestTool{name: "alpha"})
 	registry.Register(&namedTestTool{name: "beta"})
@@ -134,6 +142,8 @@ func TestToolRegistryAllSpecsReturnedSliceIsIndependent(t *testing.T) {
 }
 
 func TestToolRegistryAllSpecsInvalidatesCache(t *testing.T) {
+	t.Parallel()
+
 	registry := NewToolRegistry()
 	registry.Register(&namedTestTool{name: "alpha"})
 

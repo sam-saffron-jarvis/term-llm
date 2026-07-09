@@ -7,6 +7,8 @@ import (
 )
 
 func TestProviderFastModelsMatchConfigDefaults(t *testing.T) {
+	t.Parallel()
+
 	for provider, want := range config.DefaultProviderFastModels() {
 		if got := ProviderFastModels[provider]; got != want {
 			t.Fatalf("ProviderFastModels[%q] = %q, want %q", provider, got, want)
@@ -15,6 +17,8 @@ func TestProviderFastModelsMatchConfigDefaults(t *testing.T) {
 }
 
 func TestProviderConstructorsUseConfigDefaultModels(t *testing.T) {
+	t.Parallel()
+
 	if got := NewXAIProvider("", "").model; got != config.DefaultProviderModel("xai") {
 		t.Fatalf("xai default model = %q, want %q", got, config.DefaultProviderModel("xai"))
 	}

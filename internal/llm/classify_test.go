@@ -7,6 +7,8 @@ import (
 )
 
 func TestClassify(t *testing.T) {
+	t.Parallel()
+
 	provider := NewMockProvider("mock").AddTextResponse("Interject please")
 	got, err := Classify(context.Background(), provider, "classify", 2*time.Second)
 	if err != nil {
@@ -18,6 +20,8 @@ func TestClassify(t *testing.T) {
 }
 
 func TestClassifyTimeout(t *testing.T) {
+	t.Parallel()
+
 	provider := NewMockProvider("mock").AddTurn(MockTurn{Delay: 250 * time.Millisecond, Text: "queue"})
 	_, err := Classify(context.Background(), provider, "classify", 50*time.Millisecond)
 	if err == nil {
@@ -26,12 +30,16 @@ func TestClassifyTimeout(t *testing.T) {
 }
 
 func TestClassifyInterruptExplicitCancel(t *testing.T) {
+	t.Parallel()
+
 	if got := ClassifyInterrupt(context.Background(), nil, "/cancel now", InterruptActivity{}); got != InterruptCancel {
 		t.Fatalf("ClassifyInterrupt(cancel) = %v, want InterruptCancel", got)
 	}
 }
 
 func TestClassifyInterruptLLM(t *testing.T) {
+	t.Parallel()
+
 	provider := NewMockProvider("mock").AddTextResponse("queue")
 	a := InterruptActivity{CurrentTask: "analyzing", ActiveTool: "shell", ProseLen: 120}
 	if got := ClassifyInterrupt(context.Background(), provider, "new topic", a); got != InterruptInterject {
@@ -50,6 +58,8 @@ func TestClassifyInterruptLLM(t *testing.T) {
 }
 
 func TestClassifyInterruptFallbackOnError(t *testing.T) {
+	t.Parallel()
+
 	provider := NewMockProvider("mock").AddError(context.DeadlineExceeded)
 	got := ClassifyInterrupt(context.Background(), provider, "what about y", InterruptActivity{CurrentTask: "task"})
 	if got != InterruptInterject {

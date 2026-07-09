@@ -231,14 +231,12 @@ func TestGetGitRepoID(t *testing.T) {
 
 func TestGetGitRepoIDCanonicalizesLinkedWorktree(t *testing.T) {
 	repo := t.TempDir()
-	runGitTestCommand(t, repo, "init")
-	runGitTestCommand(t, repo, "config", "user.email", "test@example.com")
-	runGitTestCommand(t, repo, "config", "user.name", "Test User")
+	runGitTestCommand(t, repo, "init", "-q")
 	if err := os.WriteFile(filepath.Join(repo, "README.md"), []byte("hello\n"), 0o644); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
 	runGitTestCommand(t, repo, "add", "README.md")
-	runGitTestCommand(t, repo, "commit", "-m", "init")
+	runGitTestCommand(t, repo, "commit", "-q", "-m", "init")
 
 	worktreeDir := filepath.Join(t.TempDir(), "linked")
 	runGitTestCommand(t, repo, "worktree", "add", "--detach", worktreeDir, "HEAD")
@@ -262,7 +260,14 @@ func runGitTestCommand(t *testing.T, dir string, args ...string) {
 func runGitTestCommandAllowError(dir string, args ...string) ([]byte, error) {
 	cmd := exec.Command("git", args...)
 	cmd.Dir = dir
-	cmd.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_NOSYSTEM=1")
+	cmd.Env = append(os.Environ(),
+		"GIT_CONFIG_GLOBAL=/dev/null",
+		"GIT_CONFIG_NOSYSTEM=1",
+		"GIT_AUTHOR_NAME=Test User",
+		"GIT_AUTHOR_EMAIL=test@example.com",
+		"GIT_COMMITTER_NAME=Test User",
+		"GIT_COMMITTER_EMAIL=test@example.com",
+	)
 	return cmd.CombinedOutput()
 }
 

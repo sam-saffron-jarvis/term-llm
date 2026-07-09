@@ -9,6 +9,8 @@ import (
 )
 
 func TestUpdateProgressToolRejectsNonObjectState(t *testing.T) {
+	t.Parallel()
+
 	tool := NewUpdateProgressTool()
 
 	_, err := tool.Execute(context.Background(), json.RawMessage(`{"state":"bad"}`))
@@ -18,6 +20,8 @@ func TestUpdateProgressToolRejectsNonObjectState(t *testing.T) {
 }
 
 func TestFinalizeProgressToolIsFinishing(t *testing.T) {
+	t.Parallel()
+
 	tool := NewFinalizeProgressTool()
 
 	finishing, ok := any(tool).(llm.FinishingTool)

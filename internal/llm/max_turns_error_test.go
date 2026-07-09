@@ -6,6 +6,8 @@ import (
 )
 
 func TestIsMaxTurnsExceeded(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name string
 		err  error

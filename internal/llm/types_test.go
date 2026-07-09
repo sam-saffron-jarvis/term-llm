@@ -6,6 +6,8 @@ import (
 )
 
 func TestToolResultMessageFromOutput_WithDiffs(t *testing.T) {
+	t.Parallel()
+
 	output := ToolOutput{
 		Content: "Edited test.go: replaced 5 lines with 7 lines.",
 		Diffs: []DiffData{
@@ -34,6 +36,8 @@ func TestToolResultMessageFromOutput_WithDiffs(t *testing.T) {
 }
 
 func TestToolResultMessageFromOutput_PreservesErrorStatus(t *testing.T) {
+	t.Parallel()
+
 	msg := ToolResultMessageFromOutput("call-1", "shell", ToolOutput{
 		Content: "exit_code: 7",
 		IsError: true,
@@ -49,6 +53,8 @@ func TestToolResultMessageFromOutput_PreservesErrorStatus(t *testing.T) {
 }
 
 func TestToolResultMessage_PlainText(t *testing.T) {
+	t.Parallel()
+
 	raw := "Created new file: /tmp/test.go (10 lines)."
 	msg := ToolResultMessage("call-1", "write_file", raw, nil)
 
@@ -65,6 +71,8 @@ func TestToolResultMessage_PlainText(t *testing.T) {
 }
 
 func TestToolResultMessageFromOutput_WithImages(t *testing.T) {
+	t.Parallel()
+
 	output := ToolOutput{
 		Content: "Generated image successfully.",
 		Images:  []string{"/tmp/generated.png"},
@@ -81,6 +89,8 @@ func TestToolResultMessageFromOutput_WithImages(t *testing.T) {
 }
 
 func TestToolResultMessageFromOutput_WithContentParts(t *testing.T) {
+	t.Parallel()
+
 	output := ToolOutput{
 		Content: "Image loaded",
 		ContentParts: []ToolContentPart{
@@ -106,6 +116,8 @@ func TestToolResultMessageFromOutput_WithContentParts(t *testing.T) {
 }
 
 func TestToolResult_SessionRoundTrip(t *testing.T) {
+	t.Parallel()
+
 	original := ToolResult{
 		ID:      "call-1",
 		Name:    "edit_file",
@@ -144,6 +156,8 @@ func TestToolResult_SessionRoundTrip(t *testing.T) {
 }
 
 func TestToolResult_SessionRoundTrip_WithContentParts(t *testing.T) {
+	t.Parallel()
+
 	original := ToolResult{
 		ID:      "call-image",
 		Name:    "view_image",
@@ -175,6 +189,8 @@ func TestToolResult_SessionRoundTrip_WithContentParts(t *testing.T) {
 }
 
 func TestToolResult_OldSessionWithDisplay(t *testing.T) {
+	t.Parallel()
+
 	// Simulate deserializing an old session that has Display but no Diffs
 	jsonData := `{"ID":"call-1","Name":"edit_file","Content":"Edited test.go","Display":"Edited test.go\n__DIFF__:abc123"}`
 	var result ToolResult
@@ -190,6 +206,8 @@ func TestToolResult_OldSessionWithDisplay(t *testing.T) {
 }
 
 func TestToolErrorMessage_NoDiffsOrImages(t *testing.T) {
+	t.Parallel()
+
 	msg := ToolErrorMessage("call-1", "edit_file", "file not found", nil)
 
 	result := msg.Parts[0].ToolResult
@@ -208,6 +226,8 @@ func TestToolErrorMessage_NoDiffsOrImages(t *testing.T) {
 }
 
 func TestTextOutput(t *testing.T) {
+	t.Parallel()
+
 	output := TextOutput("hello world")
 	if output.Content != "hello world" {
 		t.Errorf("Content = %q, want %q", output.Content, "hello world")

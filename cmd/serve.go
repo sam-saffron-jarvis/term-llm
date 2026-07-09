@@ -1078,6 +1078,7 @@ type serveServer struct {
 	indexHTMLOnce        sync.Once
 	cachedIndexHTML      []byte
 	fileTrackStoreFn     func() *filetrack.Store // test seam; nil → process-wide store from config
+	worktreeRootFn       func() (string, error)  // test seam; nil → os.Getwd
 }
 
 // fileTrackStore returns the file-change history store, or nil when file

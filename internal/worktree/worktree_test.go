@@ -11,20 +11,33 @@ import (
 	"testing"
 )
 
+func TestMain(m *testing.M) {
+	dataHome, err := os.MkdirTemp("", "term-llm-worktree-test-*")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "create temp XDG_DATA_HOME: %v\n", err)
+		os.Exit(1)
+	}
+	if err := os.Setenv("XDG_DATA_HOME", dataHome); err != nil {
+		fmt.Fprintf(os.Stderr, "set XDG_DATA_HOME: %v\n", err)
+		os.Exit(1)
+	}
+	code := m.Run()
+	_ = os.RemoveAll(dataHome)
+	os.Exit(code)
+}
+
 func newGitRepoForWorktreeTest(t *testing.T) string {
 	t.Helper()
 	repo := filepath.Join(t.TempDir(), "repo")
 	if err := os.MkdirAll(repo, 0o755); err != nil {
 		t.Fatalf("MkdirAll repo: %v", err)
 	}
-	runGitForWorktreeTest(t, repo, "init")
-	runGitForWorktreeTest(t, repo, "config", "user.email", "test@example.com")
-	runGitForWorktreeTest(t, repo, "config", "user.name", "Test User")
+	runGitForWorktreeTest(t, repo, "init", "-q")
 	if err := os.WriteFile(filepath.Join(repo, "file.txt"), []byte("base\n"), 0o644); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
 	runGitForWorktreeTest(t, repo, "add", "file.txt")
-	runGitForWorktreeTest(t, repo, "commit", "-m", "init")
+	runGitForWorktreeTest(t, repo, "commit", "-q", "-m", "init")
 	return repo
 }
 
@@ -32,7 +45,14 @@ func runGitForWorktreeTest(t *testing.T, dir string, args ...string) string {
 	t.Helper()
 	cmd := exec.Command("git", args...)
 	cmd.Dir = dir
-	cmd.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_NOSYSTEM=1")
+	cmd.Env = append(os.Environ(),
+		"GIT_CONFIG_GLOBAL=/dev/null",
+		"GIT_CONFIG_NOSYSTEM=1",
+		"GIT_AUTHOR_NAME=Test User",
+		"GIT_AUTHOR_EMAIL=test@example.com",
+		"GIT_COMMITTER_NAME=Test User",
+		"GIT_COMMITTER_EMAIL=test@example.com",
+	)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Skipf("git %v failed: %v\n%s", args, err, strings.TrimSpace(string(out)))
@@ -41,7 +61,8 @@ func runGitForWorktreeTest(t *testing.T, dir string, args ...string) string {
 }
 
 func TestDiffIncludesUntrackedFiles(t *testing.T) {
-	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	t.Parallel()
+
 	repo := newGitRepoForWorktreeTest(t)
 	wt, err := Create(context.Background(), repo, CreateOptions{Name: "diff-test"})
 	if err != nil {
@@ -62,7 +83,8 @@ func TestDiffIncludesUntrackedFiles(t *testing.T) {
 }
 
 func TestMergeBackStagesWorktreeChangesOnRoot(t *testing.T) {
-	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	t.Parallel()
+
 	repo := newGitRepoForWorktreeTest(t)
 	wt, err := Create(context.Background(), repo, CreateOptions{Name: "merge-test"})
 	if err != nil {
@@ -91,7 +113,8 @@ func TestMergeBackStagesWorktreeChangesOnRoot(t *testing.T) {
 }
 
 func TestMergeBackRefusesDirtyRootByDefault(t *testing.T) {
-	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	t.Parallel()
+
 	repo := newGitRepoForWorktreeTest(t)
 	wt, err := Create(context.Background(), repo, CreateOptions{Name: "dirty-root-test"})
 	if err != nil {
@@ -112,7 +135,8 @@ func TestMergeBackRefusesDirtyRootByDefault(t *testing.T) {
 }
 
 func TestMergeBackConflictCleansCherryPickState(t *testing.T) {
-	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	t.Parallel()
+
 	repo := newGitRepoForWorktreeTest(t)
 	wt, err := Create(context.Background(), repo, CreateOptions{Name: "conflict-test"})
 	if err != nil {
@@ -159,7 +183,8 @@ func TestMergeBackConflictCleansCherryPickState(t *testing.T) {
 }
 
 func TestPromoteToRootChecksOutBranchAndAppliesDirtyWorktreeChanges(t *testing.T) {
-	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	t.Parallel()
+
 	repo := newGitRepoForWorktreeTest(t)
 	previousBranch := strings.TrimSpace(runGitForWorktreeTest(t, repo, "branch", "--show-current"))
 	wt, err := Create(context.Background(), repo, CreateOptions{Name: "promote-test"})
@@ -197,7 +222,8 @@ func TestPromoteToRootChecksOutBranchAndAppliesDirtyWorktreeChanges(t *testing.T
 }
 
 func TestPromoteToRootRefusesDirtyRoot(t *testing.T) {
-	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	t.Parallel()
+
 	repo := newGitRepoForWorktreeTest(t)
 	previousBranch := strings.TrimSpace(runGitForWorktreeTest(t, repo, "branch", "--show-current"))
 	wt, err := Create(context.Background(), repo, CreateOptions{Name: "promote-dirty-root"})
@@ -222,7 +248,8 @@ func TestPromoteToRootRefusesDirtyRoot(t *testing.T) {
 }
 
 func TestPromoteToRootRejectsExistingBranch(t *testing.T) {
-	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	t.Parallel()
+
 	repo := newGitRepoForWorktreeTest(t)
 	wt, err := Create(context.Background(), repo, CreateOptions{Name: "promote-existing"})
 	if err != nil {
@@ -238,7 +265,6 @@ func TestPromoteToRootRejectsExistingBranch(t *testing.T) {
 }
 
 func TestPromoteToRootRollsBackAfterCheckoutFailure(t *testing.T) {
-	t.Setenv("XDG_DATA_HOME", t.TempDir())
 	repo := newGitRepoForWorktreeTest(t)
 	previousBranch := strings.TrimSpace(runGitForWorktreeTest(t, repo, "branch", "--show-current"))
 	wt, err := Create(context.Background(), repo, CreateOptions{Name: "promote-rollback"})
@@ -270,7 +296,8 @@ func TestPromoteToRootRollsBackAfterCheckoutFailure(t *testing.T) {
 }
 
 func TestStartAssistedMergeNoChangesDoesNotCreateRecoveryBranch(t *testing.T) {
-	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	t.Parallel()
+
 	repo := newGitRepoForWorktreeTest(t)
 	wt, err := Create(context.Background(), repo, CreateOptions{Name: "assist-noop"})
 	if err != nil {
@@ -291,7 +318,8 @@ func TestStartAssistedMergeNoChangesDoesNotCreateRecoveryBranch(t *testing.T) {
 }
 
 func TestStartAssistedMergeLeavesConflictsOnRecoveryBranch(t *testing.T) {
-	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	t.Parallel()
+
 	repo := newGitRepoForWorktreeTest(t)
 	previousBranch := strings.TrimSpace(runGitForWorktreeTest(t, repo, "branch", "--show-current"))
 	wt, err := Create(context.Background(), repo, CreateOptions{Name: "assist-conflict"})

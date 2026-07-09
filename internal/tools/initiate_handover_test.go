@@ -7,6 +7,8 @@ import (
 )
 
 func TestInitiateHandoverTool_Spec(t *testing.T) {
+	t.Parallel()
+
 	tool := NewInitiateHandoverTool()
 	spec := tool.Spec()
 	if spec.Name != InitiateHandoverToolName {
@@ -15,6 +17,8 @@ func TestInitiateHandoverTool_Spec(t *testing.T) {
 }
 
 func TestInitiateHandoverTool_Preview(t *testing.T) {
+	t.Parallel()
+
 	tool := NewInitiateHandoverTool()
 
 	args, _ := json.Marshal(InitiateHandoverArgs{Agent: "developer"})
@@ -30,6 +34,8 @@ func TestInitiateHandoverTool_Preview(t *testing.T) {
 }
 
 func TestInitiateHandoverTool_Execute_EmptyAgent(t *testing.T) {
+	t.Parallel()
+
 	tool := NewInitiateHandoverTool()
 	args, _ := json.Marshal(InitiateHandoverArgs{Agent: ""})
 	out, err := tool.Execute(context.Background(), args)

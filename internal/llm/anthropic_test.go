@@ -16,6 +16,8 @@ import (
 )
 
 func TestParseModelThinking(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		input        string
 		wantModel    string
@@ -59,6 +61,8 @@ func TestParseModelThinking(t *testing.T) {
 }
 
 func TestParseModel1m(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		input     string
 		wantModel string
@@ -89,6 +93,8 @@ func TestParseModel1m(t *testing.T) {
 }
 
 func TestParseModelCombined1mThinking(t *testing.T) {
+	t.Parallel()
+
 	// Test the full chain as used in NewAnthropicProvider:
 	// strip -thinking first, then strip -1m
 	tests := []struct {
@@ -125,6 +131,8 @@ func TestParseModelCombined1mThinking(t *testing.T) {
 }
 
 func TestAnthropicRequestModelAndEffort(t *testing.T) {
+	t.Parallel()
+
 	provider := &AnthropicProvider{model: "claude-sonnet-4-6"}
 	tests := []struct {
 		name       string

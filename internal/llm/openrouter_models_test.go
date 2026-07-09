@@ -141,7 +141,7 @@ func TestGetCachedOpenRouterModelsStartsSingleBackgroundRefreshForStaleCache(t *
 		t.Fatal("timed out waiting for background refresh request")
 	}
 
-	time.Sleep(100 * time.Millisecond)
+	time.Sleep(20 * time.Millisecond)
 	if got := atomic.LoadInt32(&requests); got != 1 {
 		t.Fatalf("background refresh requests = %d, want 1", got)
 	}

@@ -6,6 +6,8 @@ import (
 )
 
 func TestWarnUnknownParams(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name      string
 		args      json.RawMessage

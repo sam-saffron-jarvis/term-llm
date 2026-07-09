@@ -3,6 +3,8 @@ package llm
 import "testing"
 
 func TestProviderModelsIncludeLatestOpenAIModels(t *testing.T) {
+	t.Parallel()
+
 	if !containsModelID(ProviderModelIDs("openai"), "gpt-5.5") {
 		t.Fatalf("openai models missing gpt-5.5")
 	}
@@ -27,6 +29,8 @@ func TestProviderModelsIncludeLatestOpenAIModels(t *testing.T) {
 }
 
 func TestProviderFastModelsUseLatestGPT54LightweightModels(t *testing.T) {
+	t.Parallel()
+
 	if got := ProviderFastModels["openai"]; got != "gpt-5.4-nano" {
 		t.Fatalf("ProviderFastModels[openai] = %q, want %q", got, "gpt-5.4-nano")
 	}
@@ -36,6 +40,8 @@ func TestProviderFastModelsUseLatestGPT54LightweightModels(t *testing.T) {
 }
 
 func TestProviderModelsIncludeNearAICloudDefaults(t *testing.T) {
+	t.Parallel()
+
 	if !containsModelID(ProviderModelIDs("nearai"), "zai-org/GLM-5.1-FP8") {
 		t.Fatalf("nearai models missing zai-org/GLM-5.1-FP8")
 	}
@@ -76,6 +82,8 @@ func TestCopilotProviderModelsAreDynamicCacheOnly(t *testing.T) {
 }
 
 func TestProviderModelIDs(t *testing.T) {
+	t.Parallel()
+
 	ids := ProviderModelIDs("anthropic")
 	if len(ids) == 0 {
 		t.Fatal("expected non-empty model list for anthropic")
@@ -92,6 +100,8 @@ func TestProviderModelIDs(t *testing.T) {
 }
 
 func TestProviderModelIDsMatchEntries(t *testing.T) {
+	t.Parallel()
+
 	for provider, entries := range ProviderModels {
 		ids := ProviderModelIDs(provider)
 		if len(ids) != len(entries) {
@@ -112,6 +122,8 @@ func TestProviderModelIDsMatchEntries(t *testing.T) {
 // resolves to a non-zero input limit via explicit entry, prefix table, or
 // config. Models with genuinely unknown limits are exempted.
 func TestAllListedModelsHaveContextLimits(t *testing.T) {
+	t.Parallel()
+
 	// Models where upstream limits are unknown or not applicable
 	exemptions := map[string]bool{
 		// Venice models with unknown upstream limits
@@ -157,6 +169,8 @@ func TestProviderAliasResolvesConfigLimits(t *testing.T) {
 }
 
 func TestExpandWithEffortVariantsSkipsAlreadySuffixed(t *testing.T) {
+	t.Parallel()
+
 	models := []string{"gpt-5.4", "gpt-5.4-high", "gpt-5.2-low", "claude-sonnet-4-6"}
 	expanded := ExpandWithEffortVariants(models)
 
@@ -187,6 +201,8 @@ func TestExpandWithEffortVariantsSkipsAlreadySuffixed(t *testing.T) {
 // ProviderModels via the prefix tables. This catches drift between the two
 // data sources.
 func TestEffortVariantLimitsMatchBase(t *testing.T) {
+	t.Parallel()
+
 	for provider, entries := range ProviderModels {
 		for _, e := range entries {
 			variants := EffortVariantsFor(e.ID)
@@ -210,6 +226,8 @@ func TestEffortVariantLimitsMatchBase(t *testing.T) {
 }
 
 func TestReasoningEffortsForProviderModel(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		provider string
 		model    string
@@ -246,6 +264,8 @@ func TestReasoningEffortsForProviderModel(t *testing.T) {
 }
 
 func TestReasoningEffortsAreProviderSpecific(t *testing.T) {
+	t.Parallel()
+
 	if got := ReasoningEffortsForProviderModel("openai", "gpt-5.4"); containsModelID(got, "max") {
 		t.Fatalf("openai:gpt-5.4 efforts unexpectedly include max: %v", got)
 	}
@@ -255,6 +275,8 @@ func TestReasoningEffortsAreProviderSpecific(t *testing.T) {
 }
 
 func TestBaseModelAndEffortForProviderAvoidsFalseMaxParsing(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		provider   string
 		model      string
@@ -286,6 +308,8 @@ func TestBaseModelAndEffortForProviderAvoidsFalseMaxParsing(t *testing.T) {
 }
 
 func TestExpandWithEffortVariantsForProvider(t *testing.T) {
+	t.Parallel()
+
 	got := ExpandWithEffortVariantsForProvider("claude-bin", []string{"opus", "sonnet", "fable", "haiku"})
 	for _, want := range []string{"opus-low", "opus-medium", "opus-high", "opus-xhigh", "opus-max", "sonnet-low", "sonnet-medium", "sonnet-high", "fable-low", "fable-medium", "fable-high", "fable-xhigh", "fable-max"} {
 		if !containsModelID(got, want) {
@@ -329,6 +353,8 @@ func TestProviderAliasResolvesReasoningEfforts(t *testing.T) {
 }
 
 func TestDedupeEffortVariants(t *testing.T) {
+	t.Parallel()
+
 	// claude-bin curated list has base + effort-suffixed aliases; the
 	// suffixed ones should be dropped when the base is present.
 	in := []string{
@@ -364,6 +390,8 @@ func TestDedupeEffortVariants(t *testing.T) {
 }
 
 func TestAnthropicProviderModelsIncludeLatestOpus(t *testing.T) {
+	t.Parallel()
+
 	entry, ok := findProviderModelEntry("anthropic", "claude-opus-4-8")
 	if !ok {
 		t.Fatal("ProviderModels[anthropic] missing claude-opus-4-8")
@@ -413,6 +441,8 @@ func TestConfigReasoningEffortsClearedOnReload(t *testing.T) {
 }
 
 func TestDedupeEffortVariantsForProviderAvoidsFalseMaxDrops(t *testing.T) {
+	t.Parallel()
+
 	got := DedupeEffortVariantsForProvider("chatgpt", []string{"gpt-5.1-codex", "gpt-5.1-codex-max", "gpt-5.1-codex-high"})
 	want := []string{"gpt-5.1-codex", "gpt-5.1-codex-max"}
 	if !equalSlice(got, want) {

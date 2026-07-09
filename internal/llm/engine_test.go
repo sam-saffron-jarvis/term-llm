@@ -332,6 +332,8 @@ func (t *timeoutTool) Preview(args json.RawMessage) string {
 }
 
 func TestEngineExternalSearchLoopsUntilNoToolCalls(t *testing.T) {
+	t.Parallel()
+
 	tool := &countingSearchTool{}
 	registry := NewToolRegistry()
 	registry.Register(tool)
@@ -419,6 +421,8 @@ func TestEngineExternalSearchLoopsUntilNoToolCalls(t *testing.T) {
 }
 
 func TestEngineDedupesToolCallsByID(t *testing.T) {
+	t.Parallel()
+
 	tool := &countingTool{}
 	registry := NewToolRegistry()
 	registry.Register(tool)
@@ -473,6 +477,8 @@ func TestEngineDedupesToolCallsByID(t *testing.T) {
 }
 
 func TestEngineExecutesServerToolsSequentiallyWhenParallelToolCallsDisabled(t *testing.T) {
+	t.Parallel()
+
 	tool := &overlapDetectTool{}
 	registry := NewToolRegistry()
 	registry.Register(tool)
@@ -528,6 +534,8 @@ func TestEngineExecutesServerToolsSequentiallyWhenParallelToolCallsDisabled(t *t
 }
 
 func TestEngineToolTimeoutOutputMarksToolEndNonSuccessButContinuesLoop(t *testing.T) {
+	t.Parallel()
+
 	tool := &timeoutTool{}
 	registry := NewToolRegistry()
 	registry.Register(tool)
@@ -627,6 +635,8 @@ func (t *failingStatusTool) Execute(_ context.Context, _ json.RawMessage) (ToolO
 func (t *failingStatusTool) Preview(_ json.RawMessage) string { return "" }
 
 func TestEngineToolOutputIsErrorMarksToolExecEndFailed(t *testing.T) {
+	t.Parallel()
+
 	tool := &failingStatusTool{}
 	registry := NewToolRegistry()
 	registry.Register(tool)
@@ -680,6 +690,8 @@ func TestEngineToolOutputIsErrorMarksToolExecEndFailed(t *testing.T) {
 }
 
 func TestEngineToolWithTimeoutStringInContentIsNotMarkedFailed(t *testing.T) {
+	t.Parallel()
+
 	tool := &contentWithTimeoutStringTool{}
 	registry := NewToolRegistry()
 	registry.Register(tool)
@@ -737,6 +749,8 @@ func TestEngineToolWithTimeoutStringInContentIsNotMarkedFailed(t *testing.T) {
 }
 
 func TestEngineExternalSearchStopsAfterMaxLoops(t *testing.T) {
+	t.Parallel()
+
 	tool := &countingSearchTool{}
 	registry := NewToolRegistry()
 	registry.Register(tool)
@@ -793,6 +807,8 @@ func TestEngineExternalSearchStopsAfterMaxLoops(t *testing.T) {
 }
 
 func TestEngineForceExternalSearchDisablesNativeProviderSearch(t *testing.T) {
+	t.Parallel()
+
 	registry := NewToolRegistry()
 	registry.Register(&countingSearchTool{})
 
@@ -856,6 +872,8 @@ func TestEngineForceExternalSearchDisablesNativeProviderSearch(t *testing.T) {
 }
 
 func TestEngineDisableExternalWebFetchWithNativeSearch(t *testing.T) {
+	t.Parallel()
+
 	registry := NewToolRegistry()
 	registry.Register(&countingSearchTool{})
 	registry.Register(NewReadURLTool())
@@ -912,6 +930,8 @@ func TestEngineDisableExternalWebFetchWithNativeSearch(t *testing.T) {
 }
 
 func TestEngineDisableExternalWebFetchStillAllowsExternalSearch(t *testing.T) {
+	t.Parallel()
+
 	registry := NewToolRegistry()
 	registry.Register(&countingSearchTool{})
 	registry.Register(NewReadURLTool())
@@ -1145,6 +1165,8 @@ func (t *cancellableDelayTool) Preview(args json.RawMessage) string {
 }
 
 func TestEngineParallelToolExecution(t *testing.T) {
+	t.Parallel()
+
 	// Create a tool that takes 100ms to execute
 	tool := &delayingTool{delay: 100 * time.Millisecond}
 	registry := NewToolRegistry()
@@ -1224,6 +1246,8 @@ func TestEngineParallelToolExecution(t *testing.T) {
 }
 
 func TestEngineParallelToolExecutionRespectsDefaultLimit(t *testing.T) {
+	t.Parallel()
+
 	totalCalls := defaultMaxParallelToolCalls + 3
 	tool := newBlockingTool(totalCalls)
 	registry := NewToolRegistry()
@@ -1320,6 +1344,8 @@ func TestEngineParallelToolExecutionRespectsDefaultLimit(t *testing.T) {
 }
 
 func TestExecuteToolCallsParallelReturnsOnContextCancel(t *testing.T) {
+	t.Parallel()
+
 	tool := &delayingTool{delay: 300 * time.Millisecond}
 	registry := NewToolRegistry()
 	registry.Register(tool)
@@ -1403,6 +1429,8 @@ func (t *finishingNamedTool) IsFinishingTool() bool {
 
 // TestEngineAllowedToolsEnforcement verifies that the engine blocks tools not in the allowed list.
 func TestEngineAllowedToolsEnforcement(t *testing.T) {
+	t.Parallel()
+
 	// Create tools with different names
 	toolA := &namedTool{name: "tool_a"}
 	toolB := &namedTool{name: "tool_b"}
@@ -1463,6 +1491,8 @@ func TestEngineAllowedToolsEnforcement(t *testing.T) {
 }
 
 func TestEngineStopsAfterAsyncFinishingTool(t *testing.T) {
+	t.Parallel()
+
 	tool := &finishingNamedTool{name: "finish_now"}
 	registry := NewToolRegistry()
 	registry.Register(tool)
@@ -1512,6 +1542,8 @@ func TestEngineStopsAfterAsyncFinishingTool(t *testing.T) {
 }
 
 func TestBuildAssistantMessage_WithReasoning(t *testing.T) {
+	t.Parallel()
+
 	// Test building assistant message with reasoning content
 	toolCalls := []ToolCall{
 		{
@@ -1553,6 +1585,8 @@ func TestBuildAssistantMessage_WithReasoning(t *testing.T) {
 }
 
 func TestBuildAssistantMessage_ReasoningOnlyCreatesTextPart(t *testing.T) {
+	t.Parallel()
+
 	// Test that reasoning alone (without text) still creates a text part
 	msg := buildAssistantMessage("", nil, "Some reasoning content")
 
@@ -1573,6 +1607,8 @@ func TestBuildAssistantMessage_ReasoningOnlyCreatesTextPart(t *testing.T) {
 }
 
 func TestBuildAssistantMessage_NoReasoningLeavesKindEmpty(t *testing.T) {
+	t.Parallel()
+
 	msg := buildAssistantMessageWithReasoningMetadata("answer", nil, "", nil, "", "", ReasoningKindUnknown)
 	if len(msg.Parts) != 1 {
 		t.Fatalf("expected one text part, got %d", len(msg.Parts))
@@ -1583,6 +1619,8 @@ func TestBuildAssistantMessage_NoReasoningLeavesKindEmpty(t *testing.T) {
 }
 
 func TestMergeReasoningKindEmptyIncomingIsNoSignal(t *testing.T) {
+	t.Parallel()
+
 	kind := MergeReasoningKind("", "")
 	kind = MergeReasoningKind(kind, ReasoningKindSummary)
 	if kind != ReasoningKindSummary {
@@ -1596,6 +1634,8 @@ func TestMergeReasoningKindEmptyIncomingIsNoSignal(t *testing.T) {
 }
 
 func TestMergeReasoningKindUnknownDoesNotDemoteKnownKind(t *testing.T) {
+	t.Parallel()
+
 	if got := MergeReasoningKind("", ReasoningKindUnknown); got != "" {
 		t.Fatalf("unknown-only incoming should not create display kind, got %q", got)
 	}
@@ -1611,6 +1651,8 @@ func TestMergeReasoningKindUnknownDoesNotDemoteKnownKind(t *testing.T) {
 }
 
 func TestMergeReasoningKindPreservesEncryptedHandling(t *testing.T) {
+	t.Parallel()
+
 	if got := MergeReasoningKind("", ReasoningKindEncrypted); got != ReasoningKindEncrypted {
 		t.Fatalf("encrypted-only incoming should create encrypted replay kind, got %q", got)
 	}
@@ -1623,6 +1665,8 @@ func TestMergeReasoningKindPreservesEncryptedHandling(t *testing.T) {
 }
 
 func TestEnginePersistsToolInfoInAssistantMessage(t *testing.T) {
+	t.Parallel()
+
 	tool := &imageTool{}
 	registry := NewToolRegistry()
 	registry.Register(tool)
@@ -1706,6 +1750,8 @@ func TestEnginePersistsToolInfoInAssistantMessage(t *testing.T) {
 }
 
 func TestRunLoopPersistsPartialAssistantMessageOnStreamRecvError(t *testing.T) {
+	t.Parallel()
+
 	tool := &countingTool{}
 	registry := NewToolRegistry()
 	registry.Register(tool)
@@ -1765,6 +1811,8 @@ func TestRunLoopPersistsPartialAssistantMessageOnStreamRecvError(t *testing.T) {
 }
 
 func TestRunLoopPersistsPartialAssistantMessageOnEventErrorAfterToolCall(t *testing.T) {
+	t.Parallel()
+
 	tool := &countingTool{}
 	registry := NewToolRegistry()
 	registry.Register(tool)
@@ -1845,6 +1893,8 @@ func TestRunLoopPersistsPartialAssistantMessageOnEventErrorAfterToolCall(t *test
 }
 
 func TestEngineTurnCallbackExcludesAssistantAfterResponseCallbackSucceeds(t *testing.T) {
+	t.Parallel()
+
 	tool := &countingTool{}
 	registry := NewToolRegistry()
 	registry.Register(tool)
@@ -1913,6 +1963,8 @@ func TestEngineTurnCallbackExcludesAssistantAfterResponseCallbackSucceeds(t *tes
 }
 
 func TestEngineTurnCallbackIncludesAssistantWhenResponseCallbackFails(t *testing.T) {
+	t.Parallel()
+
 	tool := &countingTool{}
 	registry := NewToolRegistry()
 	registry.Register(tool)
@@ -1979,6 +2031,8 @@ func TestEngineTurnCallbackIncludesAssistantWhenResponseCallbackFails(t *testing
 }
 
 func TestEngineEmitsToolCallAndExecStartForEachTool(t *testing.T) {
+	t.Parallel()
+
 	// This test verifies that the engine emits both EventToolCall (during streaming)
 	// and EventToolExecStart (at execution time) for each tool, with matching IDs.
 	// The UI layer should deduplicate these.
@@ -2067,6 +2121,8 @@ func TestEngineEmitsToolCallAndExecStartForEachTool(t *testing.T) {
 }
 
 func TestRunLoopDoesNotDeadlockOnBlockedToolCallForwardingWhenCancelled(t *testing.T) {
+	t.Parallel()
+
 	stream := &signalRecvStream{
 		recvCalled: make(chan struct{}),
 		event: Event{
@@ -2110,6 +2166,8 @@ func TestRunLoopDoesNotDeadlockOnBlockedToolCallForwardingWhenCancelled(t *testi
 }
 
 func TestRunLoopDoesNotDeadlockOnBlockedToolExecStartWhenCancelled(t *testing.T) {
+	t.Parallel()
+
 	tool := &countingTool{}
 	registry := NewToolRegistry()
 	registry.Register(tool)
@@ -2163,6 +2221,8 @@ func TestRunLoopDoesNotDeadlockOnBlockedToolExecStartWhenCancelled(t *testing.T)
 }
 
 func TestExecuteSingleToolCallDoesNotDeadlockOnBlockedToolExecEndWhenCancelled(t *testing.T) {
+	t.Parallel()
+
 	tool := &signalTool{started: make(chan struct{})}
 	registry := NewToolRegistry()
 	registry.Register(tool)
@@ -2210,6 +2270,8 @@ func TestExecuteSingleToolCallDoesNotDeadlockOnBlockedToolExecEndWhenCancelled(t
 }
 
 func TestExecuteToolCallsParallelDoesNotBlockOnFullToolExecEndBuffer(t *testing.T) {
+	t.Parallel()
+
 	tool := &countingTool{}
 	registry := NewToolRegistry()
 	registry.Register(tool)
@@ -2286,6 +2348,8 @@ func (t *imageTool) Preview(args json.RawMessage) string {
 }
 
 func TestEngineToolOutputStructuredFields(t *testing.T) {
+	t.Parallel()
+
 	// Verify that structured ToolOutput fields (Images, Diffs) propagate
 	// through to EventToolExecEnd events and ToolResult messages.
 	tool := &imageTool{}
@@ -2396,6 +2460,8 @@ func (m *mockResettableProvider) ResetConversation() {
 }
 
 func TestEngineResetConversation(t *testing.T) {
+	t.Parallel()
+
 	provider := NewMockProvider("test")
 	e := NewEngine(provider, nil)
 
@@ -2428,6 +2494,8 @@ func TestEngineResetConversation(t *testing.T) {
 }
 
 func TestEngineResetConversationCallsProvider(t *testing.T) {
+	t.Parallel()
+
 	inner := NewMockProvider("test")
 	provider := &mockResettableProvider{MockProvider: inner}
 	e := NewEngine(provider, nil)
@@ -2440,6 +2508,8 @@ func TestEngineResetConversationCallsProvider(t *testing.T) {
 }
 
 func TestEngineResetConversationCallsWrappedProvider(t *testing.T) {
+	t.Parallel()
+
 	inner := &mockResettableProvider{MockProvider: NewMockProvider("test")}
 	provider := WrapWithRetry(inner, DefaultRetryConfig())
 	e := NewEngine(provider, nil)
@@ -2452,6 +2522,8 @@ func TestEngineResetConversationCallsWrappedProvider(t *testing.T) {
 }
 
 func TestEngineResetConversationSkipsNonResettableProvider(t *testing.T) {
+	t.Parallel()
+
 	// Regular MockProvider doesn't implement ResetConversation
 	provider := NewMockProvider("test")
 	e := NewEngine(provider, nil)
@@ -3006,6 +3078,8 @@ func TestConfigureContextManagementClearsManagedContextProvider(t *testing.T) {
 }
 
 func TestLastTotalTokensIncludesCachedTokens(t *testing.T) {
+	t.Parallel()
+
 	// Provider returns a text response with usage that has cached tokens.
 	// Uses a tool spec so the engine enters the agentic runLoop path
 	// where lastTotalTokens is updated.
@@ -3064,6 +3138,8 @@ func TestLastTotalTokensIncludesCachedTokens(t *testing.T) {
 }
 
 func TestContextEstimateBaselineMessageCountIncludesAssistantOutput(t *testing.T) {
+	t.Parallel()
+
 	provider := &fakeProvider{
 		script: func(call int, req Request) []Event {
 			return []Event{
@@ -3112,6 +3188,8 @@ func TestContextEstimateBaselineMessageCountIncludesAssistantOutput(t *testing.T
 }
 
 func TestEstimateTokensUsesStructuralDeltaAfterResume(t *testing.T) {
+	t.Parallel()
+
 	encryptedReasoning := strings.Repeat("encrypted-reasoning-payload/", 20_000)
 	assistantWithEncryptedReasoning := Message{
 		Role: RoleAssistant,
@@ -3197,6 +3275,8 @@ func TestEstimateTokensUsesStructuralDeltaAfterResume(t *testing.T) {
 // additive: lastTotalTokens = (prompt-cached) + cached + output = prompt + output.
 // This matches the actual context size and prevents false compaction triggers.
 func TestLastTotalTokensNoDoubleCounting(t *testing.T) {
+	t.Parallel()
+
 	// Simulate a high-cache-hit turn: 127K total input, 127K cached (warm session).
 	// Old (buggy) OpenAI provider would have set InputTokens=127431, CachedInputTokens=126976.
 	// New (fixed) provider sets InputTokens=455, CachedInputTokens=126976.
@@ -3258,6 +3338,8 @@ func TestLastTotalTokensNoDoubleCounting(t *testing.T) {
 }
 
 func TestEngineRequestRuntimeSwitchAppliesReasoningEffortBeforeNextToolTurn(t *testing.T) {
+	t.Parallel()
+
 	tool := &delayingTool{delay: 50 * time.Millisecond}
 	registry := NewToolRegistry()
 	registry.Register(tool)
@@ -3328,6 +3410,8 @@ func TestEngineRequestRuntimeSwitchAppliesReasoningEffortBeforeNextToolTurn(t *t
 }
 
 func TestEngineRequestModelSwitchAppliesBeforeNextToolTurn(t *testing.T) {
+	t.Parallel()
+
 	tool := &delayingTool{delay: 50 * time.Millisecond}
 	registry := NewToolRegistry()
 	registry.Register(tool)
@@ -3415,6 +3499,8 @@ func TestEngineRequestModelSwitchAppliesBeforeNextToolTurn(t *testing.T) {
 // TestEngineInterjection_Basic verifies that a user interjection queued during
 // tool execution appears in the conversation as a user message after tool results.
 func TestEngineInterjection_Basic(t *testing.T) {
+	t.Parallel()
+
 	tool := &delayingTool{delay: 50 * time.Millisecond}
 	registry := NewToolRegistry()
 	registry.Register(tool)
@@ -3503,6 +3589,8 @@ func TestEngineInterjection_Basic(t *testing.T) {
 }
 
 func TestEngineInterjection_WithIDEmitsMatchingEvent(t *testing.T) {
+	t.Parallel()
+
 	tool := &delayingTool{delay: 50 * time.Millisecond}
 	registry := NewToolRegistry()
 	registry.Register(tool)
@@ -3559,6 +3647,8 @@ func TestEngineInterjection_WithIDEmitsMatchingEvent(t *testing.T) {
 // TestEngineInterjection_NoToolCalls verifies that an interjection stays in the
 // channel when the LLM returns no tool calls (text-only response).
 func TestEngineInterjection_NoToolCalls(t *testing.T) {
+	t.Parallel()
+
 	provider := &fakeProvider{
 		script: func(call int, req Request) []Event {
 			return []Event{
@@ -3609,6 +3699,8 @@ func TestEngineInterjection_NoToolCalls(t *testing.T) {
 }
 
 func TestEngineInterjection_AutoContinueNoToolCalls(t *testing.T) {
+	t.Parallel()
+
 	provider := &fakeProvider{
 		script: func(call int, req Request) []Event {
 			switch call {
@@ -3684,6 +3776,8 @@ func TestEngineInterjection_AutoContinueNoToolCalls(t *testing.T) {
 }
 
 func TestEngineInterjection_AutoContinuePreservesFIFOBehindUserInterjection(t *testing.T) {
+	t.Parallel()
+
 	provider := &fakeProvider{
 		script: func(call int, req Request) []Event {
 			return []Event{{Type: EventTextDelta, Text: "just text"}, {Type: EventDone}}
@@ -3725,6 +3819,8 @@ func TestEngineInterjection_AutoContinuePreservesFIFOBehindUserInterjection(t *t
 // TestEngineInterjection_MultipleInterjections verifies that sending multiple
 // interjections before a turn completes injects all of them in FIFO order.
 func TestEngineInterjection_MultipleInterjections(t *testing.T) {
+	t.Parallel()
+
 	tool := &delayingTool{delay: 100 * time.Millisecond}
 	registry := NewToolRegistry()
 	registry.Register(tool)
@@ -3788,6 +3884,8 @@ func TestEngineInterjection_MultipleInterjections(t *testing.T) {
 }
 
 func TestEngineInterjection_StructuredImageFIFO(t *testing.T) {
+	t.Parallel()
+
 	tool := &delayingTool{delay: 10 * time.Millisecond}
 	registry := NewToolRegistry()
 	registry.Register(tool)
@@ -3846,6 +3944,8 @@ func TestEngineInterjection_StructuredImageFIFO(t *testing.T) {
 }
 
 func TestEngineInterjection_CancelQueuedAndCommittedLifecycle(t *testing.T) {
+	t.Parallel()
+
 	engine := NewEngine(NewMockProvider("test"), nil)
 	id := engine.QueueInterjection(QueuedInterjection{ID: "cancel-me", Message: UserText("drop me")})
 	if id != "cancel-me" {
@@ -3872,6 +3972,8 @@ func TestEngineInterjection_CancelQueuedAndCommittedLifecycle(t *testing.T) {
 // returns "" when nothing is queued and that DrainInterjection is safe
 // to call before any Interject().
 func TestEngineInterjection_DrainOnNoPending(t *testing.T) {
+	t.Parallel()
+
 	engine := NewEngine(NewMockProvider("test"), nil)
 
 	// Before any Interject: channel is nil, should return ""
@@ -3891,6 +3993,8 @@ func TestEngineInterjection_DrainOnNoPending(t *testing.T) {
 // text non-destructively: the channel retains the value so DrainInterjection
 // can still consume it afterwards.
 func TestEnginePeekInterjection(t *testing.T) {
+	t.Parallel()
+
 	engine := NewEngine(NewMockProvider("test"), nil)
 
 	// Before any Interject: channel is nil, should return ""
@@ -3920,6 +4024,8 @@ func TestEnginePeekInterjection(t *testing.T) {
 }
 
 func TestCallbackStream_CloseWhileDrainingFiresCallbackOnce(t *testing.T) {
+	t.Parallel()
+
 	inner := newConcurrentCloseStream()
 
 	var (
@@ -3984,6 +4090,8 @@ func TestCallbackStream_CloseWhileDrainingFiresCallbackOnce(t *testing.T) {
 // Interject calls remain non-blocking even when several goroutines race to
 // replace the single pending interjection.
 func TestEngineInterject_ConcurrentCallsDoNotBlock(t *testing.T) {
+	t.Parallel()
+
 	for attempt := 0; attempt < 50; attempt++ {
 		engine := NewEngine(NewMockProvider("test"), nil)
 
@@ -4023,6 +4131,8 @@ func TestEngineInterject_ConcurrentCallsDoNotBlock(t *testing.T) {
 // TestEngineInterjection_TurnCallback verifies that the turn callback receives
 // the interjected user message for session persistence.
 func TestEngineInterjection_TurnCallback(t *testing.T) {
+	t.Parallel()
+
 	tool := &delayingTool{delay: 50 * time.Millisecond}
 	registry := NewToolRegistry()
 	registry.Register(tool)
@@ -4107,6 +4217,8 @@ func TestEngineInterjection_TurnCallback(t *testing.T) {
 }
 
 func TestEngineTurnCallbackContextSurvivesCancellation(t *testing.T) {
+	t.Parallel()
+
 	tool := &cancellableDelayTool{delay: 200 * time.Millisecond}
 	registry := NewToolRegistry()
 	registry.Register(tool)
@@ -4200,6 +4312,8 @@ func TestEngineTurnCallbackContextSurvivesCancellation(t *testing.T) {
 // TestEngineInterjection_EventEmitted verifies that EventInterjection events
 // are properly emitted through the stream with the correct text.
 func TestEngineInterjection_EventEmitted(t *testing.T) {
+	t.Parallel()
+
 	tool := &countingTool{}
 	registry := NewToolRegistry()
 	registry.Register(tool)
@@ -4283,6 +4397,8 @@ func (t *panickingTool) Preview(args json.RawMessage) string {
 }
 
 func TestEnginePanickingToolSingleCall(t *testing.T) {
+	t.Parallel()
+
 	tool := &panickingTool{}
 	registry := NewToolRegistry()
 	registry.Register(tool)
@@ -4354,6 +4470,8 @@ func TestEnginePanickingToolSingleCall(t *testing.T) {
 }
 
 func TestEnginePanickingToolParallelCalls(t *testing.T) {
+	t.Parallel()
+
 	panicTool := &panickingTool{}
 	countTool := &countingTool{}
 	registry := NewToolRegistry()
@@ -4441,6 +4559,8 @@ func TestEnginePanickingToolParallelCalls(t *testing.T) {
 }
 
 func TestEnginePanickingToolSyncCall(t *testing.T) {
+	t.Parallel()
+
 	tool := &panickingTool{}
 	registry := NewToolRegistry()
 	registry.Register(tool)
@@ -4518,6 +4638,8 @@ func TestEnginePanickingToolSyncCall(t *testing.T) {
 }
 
 func TestEngineNormalizesToolCallID(t *testing.T) {
+	t.Parallel()
+
 	// When a provider sets ToolCallID on the event but leaves Tool.ID empty,
 	// the engine should copy ToolCallID into Tool.ID so downstream consumers
 	// (serve handlers, API responses) get the correct ID.
@@ -4598,6 +4720,8 @@ func TestEngineNormalizesToolCallID(t *testing.T) {
 }
 
 func TestEngineRetriesUncommittedTextScratchpadAfterStreamError(t *testing.T) {
+	t.Parallel()
+
 	provider := &recoverTextProvider{}
 	engine := NewEngine(provider, NewToolRegistry())
 	stream, err := engine.Stream(context.Background(), Request{
@@ -4646,6 +4770,8 @@ func TestEngineRetriesUncommittedTextScratchpadAfterStreamError(t *testing.T) {
 }
 
 func TestEngineRetriesAgenticUncommittedTextAfterStreamError(t *testing.T) {
+	t.Parallel()
+
 	provider := &recoverTextProvider{}
 	tool := &countingTool{}
 	registry := NewToolRegistry()
@@ -4723,6 +4849,8 @@ func (p *recoverTextProvider) Stream(ctx context.Context, req Request) (Stream, 
 }
 
 func TestEngineRecoveryReconstructsAssistantForTurnCallbackOnly(t *testing.T) {
+	t.Parallel()
+
 	tool := &countingTool{}
 	registry := NewToolRegistry()
 	registry.Register(tool)
@@ -4763,6 +4891,8 @@ func TestEngineRecoveryReconstructsAssistantForTurnCallbackOnly(t *testing.T) {
 }
 
 func TestEngineRecoversDistinctToolFailuresWithReconstructedHistory(t *testing.T) {
+	t.Parallel()
+
 	tool := &countingTool{}
 	registry := NewToolRegistry()
 	registry.Register(tool)
@@ -4836,6 +4966,8 @@ func (p *twoToolFailureProvider) Stream(ctx context.Context, req Request) (Strea
 }
 
 func TestEngineRecoversToolCallAfterRetryWrappedStreamError(t *testing.T) {
+	t.Parallel()
+
 	streamErr := &NonRecoverableStreamError{Err: errors.New("websocket disconnected after tool call")}
 	tool := &countingTool{}
 	registry := NewToolRegistry()
@@ -4887,6 +5019,8 @@ func TestEngineRecoversToolCallAfterRetryWrappedStreamError(t *testing.T) {
 }
 
 func TestEngineRecoversToolCallAfterStreamError(t *testing.T) {
+	t.Parallel()
+
 	streamErr := &NonRecoverableStreamError{Err: errors.New("websocket disconnected after tool call")}
 	tool := &countingTool{}
 	registry := NewToolRegistry()
@@ -4967,6 +5101,8 @@ func (p *recoverToolCallProvider) Stream(ctx context.Context, req Request) (Stre
 }
 
 func TestEngineDoesNotRecoverToolCallAfterSemanticProviderError(t *testing.T) {
+	t.Parallel()
+
 	tool := &countingTool{}
 	registry := NewToolRegistry()
 	registry.Register(tool)
@@ -5018,6 +5154,8 @@ func TestEngineDoesNotRecoverToolCallAfterSemanticProviderError(t *testing.T) {
 }
 
 func TestEngineIndirectVisionRewritesUserImagesAsReferences(t *testing.T) {
+	t.Parallel()
+
 	provider := NewMockProvider("mock").WithCapabilities(Capabilities{})
 	provider.AddTextResponse("ok")
 	engine := NewEngine(provider, nil)
@@ -5072,6 +5210,8 @@ func TestEngineIndirectVisionRewritesUserImagesAsReferences(t *testing.T) {
 }
 
 func TestEngineIndirectVisionRewritesImagesInAgenticLoop(t *testing.T) {
+	t.Parallel()
+
 	provider := NewMockProvider("mock").WithCapabilities(Capabilities{ToolCalls: true})
 	provider.AddTextResponse("ok")
 	engine := NewEngine(provider, nil)
@@ -5113,6 +5253,8 @@ func TestEngineIndirectVisionRewritesImagesInAgenticLoop(t *testing.T) {
 }
 
 func TestImageReferenceTextNoPath(t *testing.T) {
+	t.Parallel()
+
 	got := imageReferenceText(Part{Type: PartImage, ImageData: &ToolImageData{MediaType: "image/png", Base64: "abc"}})
 	if !strings.Contains(got, "no local file path") || !strings.Contains(got, "image/png") {
 		t.Fatalf("imageReferenceText() = %q, want no-path explanation with media type", got)

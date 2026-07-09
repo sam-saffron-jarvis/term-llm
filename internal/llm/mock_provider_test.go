@@ -11,6 +11,8 @@ import (
 )
 
 func TestMockProvider_BasicInfo(t *testing.T) {
+	t.Parallel()
+
 	p := NewMockProvider("test-mock")
 
 	if got := p.Name(); got != "test-mock" {
@@ -29,6 +31,8 @@ func TestMockProvider_BasicInfo(t *testing.T) {
 }
 
 func TestMockProvider_WithCapabilities(t *testing.T) {
+	t.Parallel()
+
 	p := NewMockProvider("test").WithCapabilities(Capabilities{
 		NativeWebSearch: true,
 		NativeWebFetch:  true,
@@ -48,6 +52,8 @@ func TestMockProvider_WithCapabilities(t *testing.T) {
 }
 
 func TestMockProvider_StreamTextResponse(t *testing.T) {
+	t.Parallel()
+
 	p := NewMockProvider("test")
 	p.AddTextResponse("Hello, world!")
 
@@ -94,6 +100,8 @@ func TestMockProvider_StreamTextResponse(t *testing.T) {
 }
 
 func TestMockProvider_StreamToolCall(t *testing.T) {
+	t.Parallel()
+
 	p := NewMockProvider("test")
 	p.AddToolCall("call_123", "read_file", map[string]string{"path": "main.go"})
 
@@ -140,6 +148,8 @@ func TestMockProvider_StreamToolCall(t *testing.T) {
 }
 
 func TestMockProvider_MultiTurn(t *testing.T) {
+	t.Parallel()
+
 	p := NewMockProvider("test")
 	p.AddToolCall("call_1", "read_file", map[string]string{"path": "main.go"})
 	p.AddTextResponse("The file contains the main function.")
@@ -206,6 +216,8 @@ func TestMockProvider_MultiTurn(t *testing.T) {
 }
 
 func TestMockProvider_NoMoreTurns(t *testing.T) {
+	t.Parallel()
+
 	p := NewMockProvider("test")
 	p.AddTextResponse("Hello")
 
@@ -235,6 +247,8 @@ func TestMockProvider_NoMoreTurns(t *testing.T) {
 }
 
 func TestMockProvider_Error(t *testing.T) {
+	t.Parallel()
+
 	testErr := errors.New("test error")
 	p := NewMockProvider("test")
 	p.AddError(testErr)
@@ -270,6 +284,8 @@ func TestMockProvider_Error(t *testing.T) {
 }
 
 func TestMockProvider_Delay(t *testing.T) {
+	t.Parallel()
+
 	p := NewMockProvider("test")
 	p.AddTurn(MockTurn{
 		Text:  "Delayed response",
@@ -303,6 +319,8 @@ func TestMockProvider_Delay(t *testing.T) {
 }
 
 func TestMockProvider_CancelDuringDelay(t *testing.T) {
+	t.Parallel()
+
 	p := NewMockProvider("test")
 	p.AddTurn(MockTurn{
 		Text:  "Delayed response",
@@ -328,6 +346,8 @@ func TestMockProvider_CancelDuringDelay(t *testing.T) {
 }
 
 func TestMockProvider_Reset(t *testing.T) {
+	t.Parallel()
+
 	p := NewMockProvider("test")
 	p.AddTextResponse("Hello")
 
@@ -372,6 +392,8 @@ func TestMockProvider_Reset(t *testing.T) {
 }
 
 func TestChunkText(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		text      string
 		chunkSize int
@@ -401,6 +423,8 @@ func TestChunkText(t *testing.T) {
 }
 
 func TestChunkText_MultiByteUTF8(t *testing.T) {
+	t.Parallel()
+
 	// "世" is 3 bytes; with chunkSize=10 the old byte-based logic
 	// would split at byte 10, landing inside the 4th character.
 	text := "世界世界世界" // 6 × 3 = 18 bytes

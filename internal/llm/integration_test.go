@@ -13,6 +13,8 @@ import (
 )
 
 func TestEngineHarness_SimpleTextResponse(t *testing.T) {
+	t.Parallel()
+
 	h := testutil.NewEngineHarness()
 	h.Provider.AddTextResponse("Hello! I'm a mock LLM.")
 
@@ -33,6 +35,8 @@ func TestEngineHarness_SimpleTextResponse(t *testing.T) {
 }
 
 func TestEngineHarness_MultiTurnConversation(t *testing.T) {
+	t.Parallel()
+
 	h := testutil.NewEngineHarness()
 	h.Provider.AddTextResponse("Hello!")
 
@@ -64,6 +68,8 @@ func TestEngineHarness_MultiTurnConversation(t *testing.T) {
 }
 
 func TestEngineHarness_ToolCall(t *testing.T) {
+	t.Parallel()
+
 	h := testutil.NewEngineHarness()
 
 	// Add a mock tool
@@ -116,6 +122,8 @@ func TestEngineHarness_ToolCall(t *testing.T) {
 }
 
 func TestEngineHarness_MultipleToolCalls(t *testing.T) {
+	t.Parallel()
+
 	h := testutil.NewEngineHarness()
 
 	// Add mock tools
@@ -154,6 +162,8 @@ func TestEngineHarness_MultipleToolCalls(t *testing.T) {
 }
 
 func TestEngineHarness_ToolError(t *testing.T) {
+	t.Parallel()
+
 	h := testutil.NewEngineHarness()
 
 	// Add a tool that returns an error
@@ -189,6 +199,8 @@ func TestEngineHarness_ToolError(t *testing.T) {
 }
 
 func TestEngineHarness_ScreenCapture(t *testing.T) {
+	t.Parallel()
+
 	h := testutil.NewEngineHarness()
 	h.EnableScreenCapture()
 
@@ -225,6 +237,8 @@ func TestEngineHarness_ScreenCapture(t *testing.T) {
 }
 
 func TestEngineHarness_StreamingChunks(t *testing.T) {
+	t.Parallel()
+
 	h := testutil.NewEngineHarness()
 	h.EnableScreenCapture()
 
@@ -253,6 +267,8 @@ func TestEngineHarness_StreamingChunks(t *testing.T) {
 }
 
 func TestEngineHarness_ContextCancellation(t *testing.T) {
+	t.Parallel()
+
 	h := testutil.NewEngineHarness()
 
 	// Add a response with delay
@@ -276,6 +292,8 @@ func TestEngineHarness_ContextCancellation(t *testing.T) {
 }
 
 func TestEngineHarness_MaxToolOutputChars(t *testing.T) {
+	t.Parallel()
+
 	h := testutil.NewEngineHarness()
 
 	// Return a large tool output (5000 chars)
@@ -344,6 +362,8 @@ func TestEngineHarness_MaxToolOutputChars(t *testing.T) {
 }
 
 func TestEngineHarness_MaxToolOutputCharsDisabled(t *testing.T) {
+	t.Parallel()
+
 	h := testutil.NewEngineHarness()
 
 	// Return a large tool output
@@ -388,6 +408,8 @@ func TestEngineHarness_MaxToolOutputCharsDisabled(t *testing.T) {
 }
 
 func TestAssertions_StripANSI(t *testing.T) {
+	t.Parallel()
+
 	// Test ANSI stripping
 	input := "\x1b[31mRed text\x1b[0m and \x1b[32mgreen text\x1b[0m"
 	expected := "Red text and green text"
@@ -399,6 +421,8 @@ func TestAssertions_StripANSI(t *testing.T) {
 }
 
 func TestScreenCapture_SaveAndLoad(t *testing.T) {
+	t.Parallel()
+
 	sc := testutil.NewScreenCapture()
 	sc.Enable()
 	sc.Capture("Frame 1", "Thinking")

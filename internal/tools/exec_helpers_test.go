@@ -9,6 +9,8 @@ import (
 // TestResolveToolPath_TildeExpanded verifies that resolveToolPath correctly
 // expands a bare ~ to the user's home directory.
 func TestResolveToolPath_TildeExpanded(t *testing.T) {
+	t.Parallel()
+
 	home, err := os.UserHomeDir()
 	if err != nil {
 		t.Skip("cannot determine home dir")
@@ -24,6 +26,8 @@ func TestResolveToolPath_TildeExpanded(t *testing.T) {
 
 // TestResolveToolPath_TildeSlashExpanded verifies ~/subpath expansion.
 func TestResolveToolPath_TildeSlashExpanded(t *testing.T) {
+	t.Parallel()
+
 	home, err := os.UserHomeDir()
 	if err != nil {
 		t.Skip("cannot determine home dir")

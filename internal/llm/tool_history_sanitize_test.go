@@ -7,6 +7,8 @@ import (
 )
 
 func TestSanitizeToolHistory_ReusesValidHistory(t *testing.T) {
+	t.Parallel()
+
 	toolCall := &ToolCall{
 		ID:         "call-1",
 		Name:       "read_file",
@@ -50,6 +52,8 @@ func TestSanitizeToolHistory_ReusesValidHistory(t *testing.T) {
 }
 
 func TestSanitizeToolHistory_RepairsOrphanedToolCalls(t *testing.T) {
+	t.Parallel()
+
 	messages := []Message{
 		{Role: RoleUser, Parts: []Part{{Type: PartText, Text: "Run a tool"}}},
 		{

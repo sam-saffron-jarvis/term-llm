@@ -40,6 +40,8 @@ func eventTypes(events []Event) []EventType {
 }
 
 func TestEngineOrchestration_BasicToolLoop(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	registry := NewToolRegistry()
 	registry.Register(&mockTool{name: "test_tool", result: "tool output"})
@@ -120,6 +122,8 @@ func TestEngineOrchestration_BasicToolLoop(t *testing.T) {
 }
 
 func TestEngineOrchestration_ExternalSearch(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	registry := NewToolRegistry()
 	registry.Register(&mockTool{name: WebSearchToolName, result: "search results"})
@@ -171,6 +175,8 @@ func TestEngineOrchestration_ExternalSearch(t *testing.T) {
 }
 
 func TestEngineOrchestration_MaxTurns(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	registry := NewToolRegistry()
 	registry.Register(&mockTool{name: "loop_tool", result: "looping"})
@@ -243,6 +249,8 @@ func TestEngineOrchestration_MaxTurns(t *testing.T) {
 }
 
 func TestEngineOrchestration_UnregisteredToolPassthrough(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	registry := NewToolRegistry()
 
@@ -280,6 +288,8 @@ func TestEngineOrchestration_UnregisteredToolPassthrough(t *testing.T) {
 }
 
 func TestEngineOrchestration_ExternalSearchMixedCalls(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	registry := NewToolRegistry()
 	registry.Register(&mockTool{name: WebSearchToolName, result: "search results"})

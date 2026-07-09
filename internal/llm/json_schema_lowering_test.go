@@ -3,6 +3,8 @@ package llm
 import "testing"
 
 func TestJSONSchemaToOpenResponsesParametersDoesNotApplyOpenAIStrictRules(t *testing.T) {
+	t.Parallel()
+
 	parsed, err := ParseToolJSONSchemaMap(map[string]interface{}{
 		"type": "object",
 		"properties": map[string]interface{}{
@@ -34,6 +36,8 @@ func TestJSONSchemaToOpenResponsesParametersDoesNotApplyOpenAIStrictRules(t *tes
 }
 
 func TestJSONSchemaToOpenAIParametersAppliesStrictRules(t *testing.T) {
+	t.Parallel()
+
 	parsed, err := ParseToolJSONSchemaMap(map[string]interface{}{
 		"type": "object",
 		"properties": map[string]interface{}{
@@ -69,6 +73,8 @@ func TestJSONSchemaToOpenAIParametersAppliesStrictRules(t *testing.T) {
 }
 
 func TestJSONSchemaToOpenAIParametersScrubsUnsupportedKeywords(t *testing.T) {
+	t.Parallel()
+
 	parsed, err := ParseToolJSONSchemaMap(map[string]interface{}{
 		"$schema": "https://json-schema.org/draft/2020-12/schema",
 		"type":    "object",

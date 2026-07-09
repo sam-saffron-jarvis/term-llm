@@ -11,6 +11,8 @@ import (
 )
 
 func TestDebugProviderName(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		variant string
 		want    string
@@ -35,6 +37,8 @@ func TestDebugProviderName(t *testing.T) {
 }
 
 func TestDebugProviderCredential(t *testing.T) {
+	t.Parallel()
+
 	p := NewDebugProvider("")
 	if got := p.Credential(); got != "none" {
 		t.Errorf("Credential() = %q, want %q", got, "none")
@@ -42,6 +46,8 @@ func TestDebugProviderCredential(t *testing.T) {
 }
 
 func TestDebugProviderCapabilities(t *testing.T) {
+	t.Parallel()
+
 	p := NewDebugProvider("")
 	caps := p.Capabilities()
 	if caps.NativeWebSearch {
@@ -53,6 +59,8 @@ func TestDebugProviderCapabilities(t *testing.T) {
 }
 
 func TestDebugProviderStream(t *testing.T) {
+	t.Parallel()
+
 	p := NewDebugProvider("fast")
 	p.preset.Delay = 0 // chunking behavior is unchanged; no need to pace tests
 	ctx := context.Background()
@@ -116,6 +124,8 @@ func TestDebugProviderStream(t *testing.T) {
 }
 
 func TestDebugProviderStreamCancellation(t *testing.T) {
+	t.Parallel()
+
 	p := NewDebugProvider("slow") // Use slow to ensure we can cancel mid-stream
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -151,6 +161,8 @@ func TestDebugProviderStreamCancellation(t *testing.T) {
 }
 
 func TestDebugPresets(t *testing.T) {
+	t.Parallel()
+
 	presets := GetDebugPresets()
 
 	expectedPresets := []string{"fast", "normal", "slow", "realtime", "burst"}
@@ -187,6 +199,8 @@ func TestDebugPresets(t *testing.T) {
 }
 
 func TestDebugProviderUnknownVariant(t *testing.T) {
+	t.Parallel()
+
 	// Unknown variants should fall back to normal preset
 	p := NewDebugProvider("nonexistent")
 
@@ -200,6 +214,8 @@ func TestDebugProviderUnknownVariant(t *testing.T) {
 }
 
 func TestParseSequenceDSL(t *testing.T) {
+	t.Parallel()
+
 	tools := []ToolSpec{
 		{Name: "read_file"},
 		{Name: "glob"},
@@ -302,6 +318,8 @@ func TestParseSequenceDSL(t *testing.T) {
 }
 
 func TestParseSequenceDSLMarkdownLength(t *testing.T) {
+	t.Parallel()
+
 	tools := []ToolSpec{{Name: "read_file"}}
 
 	tests := []struct {
@@ -345,6 +363,8 @@ func TestParseSequenceDSLMarkdownLength(t *testing.T) {
 }
 
 func TestDebugProviderMixedStream(t *testing.T) {
+	t.Parallel()
+
 	p := NewDebugProvider("fast")
 	ctx := context.Background()
 
@@ -422,6 +442,8 @@ func TestDebugProviderMixedStream(t *testing.T) {
 }
 
 func TestDebugProviderMixedStreamToolArguments(t *testing.T) {
+	t.Parallel()
+
 	p := NewDebugProvider("fast")
 	ctx := context.Background()
 
@@ -480,6 +502,8 @@ func TestDebugProviderMixedStreamToolArguments(t *testing.T) {
 }
 
 func TestDebugProviderDSLEdgeCases(t *testing.T) {
+	t.Parallel()
+
 	p := NewDebugProvider("fast")
 	p.preset.Delay = 0 // chunking behavior is unchanged; no need to pace tests
 	ctx := context.Background()
@@ -556,6 +580,8 @@ func TestDebugProviderDSLEdgeCases(t *testing.T) {
 }
 
 func TestDebugProviderEditCommand(t *testing.T) {
+	t.Parallel()
+
 	p := NewDebugProvider("fast")
 	ctx := context.Background()
 
@@ -629,6 +655,8 @@ func TestDebugProviderEditCommand(t *testing.T) {
 }
 
 func TestDebugProviderEditCommandFallback(t *testing.T) {
+	t.Parallel()
+
 	// Test fallback behavior when file doesn't exist
 	p := NewDebugProvider("fast")
 	ctx := context.Background()
@@ -692,6 +720,8 @@ func TestDebugProviderEditCommandFallback(t *testing.T) {
 }
 
 func TestGenerateWriteContent(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		n         int
 		wantLines int
@@ -724,6 +754,8 @@ func TestGenerateWriteContent(t *testing.T) {
 }
 
 func TestParseCommandWriteLines(t *testing.T) {
+	t.Parallel()
+
 	tools := []ToolSpec{{Name: "write_file"}}
 
 	tests := []struct {
@@ -802,6 +834,8 @@ func TestParseCommandWriteLines(t *testing.T) {
 }
 
 func TestParseSequenceDSLWithWrite(t *testing.T) {
+	t.Parallel()
+
 	tools := []ToolSpec{
 		{Name: "write_file"},
 		{Name: "read_file"},
@@ -870,6 +904,8 @@ func drainDebugStream(t *testing.T, p *DebugProvider, req Request) ([]*ToolCall,
 // only a conversation ENDING in tool results is the follow-up round of the
 // current turn.
 func TestDebugProviderCommandsWorkAfterEarlierToolResults(t *testing.T) {
+	t.Parallel()
+
 	p := NewDebugProvider("fast")
 	tools := []ToolSpec{{Name: "read_file"}}
 
@@ -896,6 +932,8 @@ func TestDebugProviderCommandsWorkAfterEarlierToolResults(t *testing.T) {
 }
 
 func TestDebugProviderCompletionWhenConversationEndsWithToolResults(t *testing.T) {
+	t.Parallel()
+
 	p := NewDebugProvider("fast")
 	tools := []ToolSpec{{Name: "read_file"}}
 
@@ -916,6 +954,8 @@ func TestDebugProviderCompletionWhenConversationEndsWithToolResults(t *testing.T
 }
 
 func TestDebugProviderDSLSequenceAfterEarlierToolResults(t *testing.T) {
+	t.Parallel()
+
 	p := NewDebugProvider("fast")
 	tools := []ToolSpec{{Name: "read_file"}, {Name: "write_file"}}
 

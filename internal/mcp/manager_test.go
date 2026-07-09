@@ -165,7 +165,7 @@ func TestManagerDisable_CancelsInFlightStartup(t *testing.T) {
 		t.Fatalf("status error immediately after Disable = %v, want nil", err)
 	}
 
-	time.Sleep(200 * time.Millisecond)
+	time.Sleep(50 * time.Millisecond)
 
 	status, err = manager.ServerStatus("sleepy")
 	if status != StatusStopped {

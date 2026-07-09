@@ -18,19 +18,15 @@ import (
 	"github.com/samsaffron/term-llm/internal/worktree"
 )
 
-func TestServeWorktreeHandlersCreateListDiffDelete(t *testing.T) {
-	t.Setenv("XDG_DATA_HOME", t.TempDir())
-	repo := newGitRepoForBindingTest(t)
-	oldWD, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("Getwd: %v", err)
-	}
-	if err := os.Chdir(repo); err != nil {
-		t.Fatalf("Chdir repo: %v", err)
-	}
-	t.Cleanup(func() { _ = os.Chdir(oldWD) })
+func worktreeRootForTest(repo string) func() (string, error) {
+	return func() (string, error) { return repo, nil }
+}
 
-	srv := &serveServer{}
+func TestServeWorktreeHandlersCreateListDiffDelete(t *testing.T) {
+	t.Parallel()
+
+	repo := newGitRepoForBindingTest(t)
+	srv := &serveServer{worktreeRootFn: worktreeRootForTest(repo)}
 
 	createReq := httptest.NewRequest(http.MethodPost, "/v1/worktrees", bytes.NewBufferString(`{"name":"api-test"}`))
 	createRec := httptest.NewRecorder()
@@ -85,16 +81,9 @@ type worktreeAPIResponse struct {
 }
 
 func TestServeWorktreeMergeBlocksActiveRootRun(t *testing.T) {
-	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	t.Parallel()
+
 	repo := newGitRepoForBindingTest(t)
-	oldWD, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("Getwd: %v", err)
-	}
-	if err := os.Chdir(repo); err != nil {
-		t.Fatalf("Chdir repo: %v", err)
-	}
-	t.Cleanup(func() { _ = os.Chdir(oldWD) })
 
 	wt, err := worktree.Create(context.Background(), repo, worktree.CreateOptions{Name: "merge-block"})
 	if err != nil {
@@ -133,7 +122,7 @@ func TestServeWorktreeMergeBlocksActiveRootRun(t *testing.T) {
 		mgr.mu.Unlock()
 	}()
 	// Leave one active root run registered and exercise both root-mutating endpoints.
-	srv := &serveServer{store: store, sessionMgr: mgr}
+	srv := &serveServer{store: store, sessionMgr: mgr, worktreeRootFn: worktreeRootForTest(repo)}
 
 	mergeReq := httptest.NewRequest(http.MethodPost, "/v1/worktrees/merge", bytes.NewBufferString(`{"dir":"`+worktreeDir+`"}`))
 	mergeRec := httptest.NewRecorder()
@@ -157,16 +146,9 @@ func TestServeWorktreeMergeBlocksActiveRootRun(t *testing.T) {
 }
 
 func TestServeWorktreeMergeConflictReturnsRicherResult(t *testing.T) {
-	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	t.Parallel()
+
 	repo := newGitRepoForBindingTest(t)
-	oldWD, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("Getwd: %v", err)
-	}
-	if err := os.Chdir(repo); err != nil {
-		t.Fatalf("Chdir repo: %v", err)
-	}
-	t.Cleanup(func() { _ = os.Chdir(oldWD) })
 	wt, err := worktree.Create(context.Background(), repo, worktree.CreateOptions{Name: "merge-conflict-api"})
 	if err != nil {
 		t.Fatalf("Create worktree: %v", err)
@@ -181,7 +163,7 @@ func TestServeWorktreeMergeConflictReturnsRicherResult(t *testing.T) {
 		t.Fatalf("WriteFile worktree: %v", err)
 	}
 
-	srv := &serveServer{}
+	srv := &serveServer{worktreeRootFn: worktreeRootForTest(repo)}
 	req := httptest.NewRequest(http.MethodPost, "/v1/worktrees/merge", bytes.NewBufferString(`{"dir":"`+wt.Dir+`"}`))
 	rec := httptest.NewRecorder()
 	srv.handleWorktreeMerge(rec, req)
@@ -204,16 +186,9 @@ func TestServeWorktreeMergeConflictReturnsRicherResult(t *testing.T) {
 }
 
 func TestServeWorktreePromoteReturnsRootResult(t *testing.T) {
-	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	t.Parallel()
+
 	repo := newGitRepoForBindingTest(t)
-	oldWD, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("Getwd: %v", err)
-	}
-	if err := os.Chdir(repo); err != nil {
-		t.Fatalf("Chdir repo: %v", err)
-	}
-	t.Cleanup(func() { _ = os.Chdir(oldWD) })
 	wt, err := worktree.Create(context.Background(), repo, worktree.CreateOptions{Name: "promote-api"})
 	if err != nil {
 		t.Fatalf("Create worktree: %v", err)
@@ -222,7 +197,7 @@ func TestServeWorktreePromoteReturnsRootResult(t *testing.T) {
 		t.Fatalf("WriteFile worktree: %v", err)
 	}
 
-	srv := &serveServer{}
+	srv := &serveServer{worktreeRootFn: worktreeRootForTest(repo)}
 	req := httptest.NewRequest(http.MethodPost, "/v1/worktrees/promote", bytes.NewBufferString(`{"dir":"`+wt.Dir+`","branch":"feature-api-promote"}`))
 	rec := httptest.NewRecorder()
 	srv.handleWorktreePromote(rec, req)
@@ -247,16 +222,9 @@ func TestServeWorktreePromoteReturnsRootResult(t *testing.T) {
 }
 
 func TestServeWorktreeHandlersRejectUnmanagedDir(t *testing.T) {
-	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	t.Parallel()
+
 	repo := newGitRepoForBindingTest(t)
-	oldWD, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("Getwd: %v", err)
-	}
-	if err := os.Chdir(repo); err != nil {
-		t.Fatalf("Chdir repo: %v", err)
-	}
-	t.Cleanup(func() { _ = os.Chdir(oldWD) })
 
 	externalDir := filepath.Join(t.TempDir(), "external-worktree")
 	runGitForBindingTest(t, repo, "worktree", "add", "--detach", externalDir, "HEAD")
@@ -267,7 +235,7 @@ func TestServeWorktreeHandlersRejectUnmanagedDir(t *testing.T) {
 		_ = cmd.Run()
 	})
 
-	srv := &serveServer{}
+	srv := &serveServer{worktreeRootFn: worktreeRootForTest(repo)}
 	tests := []struct {
 		name string
 		req  *http.Request
@@ -309,8 +277,8 @@ func TestServeWorktreeHandlersRejectUnmanagedDir(t *testing.T) {
 }
 
 func TestServeWorktreeHandlersRejectForeignManagedDir(t *testing.T) {
-	xdg := t.TempDir()
-	t.Setenv("XDG_DATA_HOME", xdg)
+	t.Parallel()
+
 	repo := newGitRepoForBindingTest(t)
 	foreignRepo := newGitRepoForBindingTest(t)
 	foreignWT, err := worktree.Create(context.Background(), foreignRepo, worktree.CreateOptions{Name: "foreign"})
@@ -321,16 +289,7 @@ func TestServeWorktreeHandlersRejectForeignManagedDir(t *testing.T) {
 		_ = worktree.Remove(context.Background(), foreignWT.Dir, worktree.RemoveOptions{Force: true})
 	})
 
-	oldWD, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("Getwd: %v", err)
-	}
-	if err := os.Chdir(repo); err != nil {
-		t.Fatalf("Chdir repo: %v", err)
-	}
-	t.Cleanup(func() { _ = os.Chdir(oldWD) })
-
-	srv := &serveServer{}
+	srv := &serveServer{worktreeRootFn: worktreeRootForTest(repo)}
 	req := httptest.NewRequest(http.MethodGet, "/v1/worktrees/diff?dir="+url.QueryEscape(foreignWT.Dir), nil)
 	rec := httptest.NewRecorder()
 	srv.handleWorktreeDiff(rec, req)

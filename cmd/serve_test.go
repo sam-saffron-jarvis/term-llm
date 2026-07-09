@@ -7971,10 +7971,12 @@ func TestFreshProviderRequest_ConcurrentReplace(t *testing.T) {
 	defer manager.Close()
 	manager.onEvict = func(rt *serveRuntime) {}
 
+	// Leave store nil so this test isolates ReplaceIdleWith provider races;
+	// persisted-session base-dir/MCP restoration has separate coverage and may
+	// legitimately return busy when many callers share the replacement runtime.
 	srv := &serveServer{
 		cfgRef:     &config.Config{DefaultProvider: "default"},
 		sessionMgr: manager,
-		store:      store,
 		runtimeFactory: func(ctx context.Context, providerName string, model string) (*serveRuntime, error) {
 			return newRuntime(providerName), nil
 		},
@@ -8023,7 +8025,7 @@ func TestFreshProviderRequest_ConcurrentReplace(t *testing.T) {
 		anySuccess = true
 	}
 	if !anySuccess {
-		t.Fatal("all goroutines failed; expected at least one success")
+		t.Fatalf("all goroutines failed; expected at least one success (errors=%v providers=%v)", errs, providers)
 	}
 
 	// The session should have a consistent provider after the race.
@@ -9305,8 +9307,8 @@ func TestResponseToSessionMap_CleanedOnEviction(t *testing.T) {
 		t.Fatalf("responseToSession should contain %q after request", respID)
 	}
 
-	// Wait for TTL expiry + janitor tick
-	time.Sleep(200 * time.Millisecond)
+	// Wait for TTL expiry, then evict explicitly.
+	time.Sleep(75 * time.Millisecond)
 	mgr.evictExpired()
 
 	// Mapping should be cleaned up
@@ -10119,8 +10121,8 @@ func TestServeSessionManager_EvictionCallbackCleansResponseIDs(t *testing.T) {
 		t.Fatal("resp_b should exist before eviction")
 	}
 
-	// Wait for TTL and evict.
-	time.Sleep(100 * time.Millisecond)
+	// Wait for TTL, then evict explicitly.
+	time.Sleep(75 * time.Millisecond)
 	mgr.evictExpired()
 
 	// Mappings should be cleaned up.
