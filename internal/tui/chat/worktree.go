@@ -411,29 +411,51 @@ func (m *Model) cmdWorktreePromote(args []string) (tea.Model, tea.Cmd) {
 	if m.sess != nil {
 		dir = strings.TrimSpace(m.sess.WorktreeDir)
 	}
-	if dir == "" {
-		m.clearWorktreeCommandComposer()
-		return m.showFooterMuted("No worktree is bound.")
-	}
 	branch := ""
+	nonFlagArgs := make([]string, 0, len(args))
 	for _, arg := range args {
 		if strings.HasPrefix(arg, "-") {
-			return m.showFooterError("Usage: /worktree promote <branch>")
+			return m.showFooterError("Usage: /worktree promote [name-or-dir] [branch]")
 		}
-		if branch == "" {
-			branch = arg
-		} else {
-			return m.showFooterError("Usage: /worktree promote <branch>")
-		}
+		nonFlagArgs = append(nonFlagArgs, arg)
 	}
-	if branch == "" {
-		return m.showFooterError("Usage: /worktree promote <branch>")
+	switch len(nonFlagArgs) {
+	case 0:
+		if dir == "" {
+			m.clearWorktreeCommandComposer()
+			return m.showFooterMuted("No worktree is bound.")
+		}
+	case 1:
+		if dir == "" {
+			resolved, err := m.resolveWorktreeTarget(nonFlagArgs[0])
+			if err != nil {
+				return m.showFooterError(err.Error())
+			}
+			dir = resolved
+		} else {
+			branch = nonFlagArgs[0]
+		}
+	case 2:
+		resolved, err := m.resolveWorktreeTarget(nonFlagArgs[0])
+		if err != nil {
+			return m.showFooterError(err.Error())
+		}
+		dir = resolved
+		branch = nonFlagArgs[1]
+	default:
+		return m.showFooterError("Usage: /worktree promote [name-or-dir] [branch]")
 	}
 	wt, err := worktree.Get(dir)
 	if err != nil {
 		return m.showFooterError(err.Error())
 	}
 	dir = wt.Dir
+	if strings.TrimSpace(branch) == "" {
+		branch = defaultWorktreePromoteBranch(wt)
+	}
+	if branch == "" {
+		return m.showFooterError("Usage: /worktree promote [name-or-dir] [branch]")
+	}
 	parentCtx := m.rootContext()
 	m.worktreeOperation = "promote"
 	preflight := formatWorktreePromotePreflight(wt, branch)
@@ -442,6 +464,19 @@ func (m *Model) cmdWorktreePromote(args []string) (tea.Model, tea.Cmd) {
 		res, err := worktree.PromoteToRoot(parentCtx, dir, branch, worktree.PromoteOptions{})
 		return worktreeOperationDoneMsg{op: "promote", dir: dir, branch: branch, promote: res, err: err}
 	})
+}
+
+func defaultWorktreePromoteBranch(wt *worktree.Worktree) string {
+	if wt == nil {
+		return ""
+	}
+	if name := strings.TrimSpace(wt.Name); name != "" {
+		return name
+	}
+	if dir := strings.TrimSpace(wt.Dir); dir != "" {
+		return filepath.Base(dir)
+	}
+	return ""
 }
 
 func (m *Model) cmdWorktreeRemove(args []string) (tea.Model, tea.Cmd) {
@@ -1017,6 +1052,11 @@ func (m *Model) worktreeCompletionItems(query string) ([]Command, bool) {
 	switch sub {
 	case "switch", "diff", "merge", "rm", "remove":
 		return m.worktreeTargetCompletionItems(parts, trailingSpace, sub), true
+	case "promote":
+		if m == nil || m.sess == nil || strings.TrimSpace(m.sess.WorktreeDir) == "" {
+			return m.worktreeTargetCompletionItems(parts, trailingSpace, sub), true
+		}
+		return nil, false
 	case "new":
 		return worktreeOptionCompletionItems(parts, trailingSpace, []worktreeOptionCompletion{
 			{Name: "--base", Description: "Base ref for the new worktree"},

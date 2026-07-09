@@ -3168,6 +3168,7 @@ func TestUpdateCompletions_WorktreeTargetCommandsUseManagedNames(t *testing.T) {
 		{input: "/wt switch alp", want: "wt switch alpha-feature"},
 		{input: "/worktree diff ", want: "worktree diff alpha-feature"},
 		{input: "/worktree merge ", want: "worktree merge alpha-feature"},
+		{input: "/worktree promote ", want: "worktree promote alpha-feature"},
 	}
 
 	for _, tt := range tests {
@@ -3183,6 +3184,84 @@ func TestUpdateCompletions_WorktreeTargetCommandsUseManagedNames(t *testing.T) {
 				t.Fatalf("completions = %v, want %q", got, tt.want)
 			}
 		})
+	}
+}
+
+func runWorktreeOperationTestCmd(t *testing.T, cmd tea.Cmd) worktreeOperationDoneMsg {
+	t.Helper()
+	raw := cmd()
+	if msg, ok := raw.(worktreeOperationDoneMsg); ok {
+		return msg
+	}
+	if batch, ok := raw.(tea.BatchMsg); ok {
+		for _, child := range batch {
+			if child == nil {
+				continue
+			}
+			childRaw := child()
+			if msg, ok := childRaw.(worktreeOperationDoneMsg); ok {
+				return msg
+			}
+		}
+	}
+	t.Fatalf("promote command returned %T", raw)
+	return worktreeOperationDoneMsg{}
+}
+
+func TestCmdWorktreePromoteDefaultsBranchToBoundWorktreeName(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	repo := newGitRepoForChatWorktreeTest(t)
+	wt, err := worktree.Create(context.Background(), repo, worktree.CreateOptions{Name: "promote-selected"})
+	if err != nil {
+		t.Fatalf("Create worktree: %v", err)
+	}
+	t.Cleanup(func() { _ = worktree.Remove(context.Background(), wt.Dir, worktree.RemoveOptions{Force: true}) })
+
+	m := newTestChatModel(false)
+	m.sess = &session.Session{ID: "sess-promote-selected", WorktreeDir: wt.Dir, CWD: wt.Dir}
+	m.setTextareaValue("/worktree promote")
+
+	result, cmd := m.ExecuteCommand("/worktree promote")
+	m = result.(*Model)
+	if cmd == nil {
+		t.Fatalf("expected promote command, footer=%q", m.footerMessage)
+	}
+	msg := runWorktreeOperationTestCmd(t, cmd)
+	if msg.err != nil {
+		t.Fatalf("promote command error: %v", msg.err)
+	}
+	if msg.branch != "promote-selected" || msg.promote.Branch != "promote-selected" {
+		t.Fatalf("promote branch = msg:%q result:%q, want promote-selected", msg.branch, msg.promote.Branch)
+	}
+}
+
+func TestCmdWorktreePromoteUsesSelectedWorktreeWhenUnbound(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	repo := newGitRepoForChatWorktreeTest(t)
+	wt, err := worktree.Create(context.Background(), repo, worktree.CreateOptions{Name: "promote-unbound"})
+	if err != nil {
+		t.Fatalf("Create worktree: %v", err)
+	}
+	t.Cleanup(func() { _ = worktree.Remove(context.Background(), wt.Dir, worktree.RemoveOptions{Force: true}) })
+
+	m := newTestChatModel(false)
+	m.sess = &session.Session{ID: "sess-promote-unbound", CWD: repo}
+	m.setTextareaValue("/worktree promote promote-unbound")
+
+	result, cmd := m.ExecuteCommand("/worktree promote promote-unbound")
+	m = result.(*Model)
+	if cmd == nil {
+		t.Fatalf("expected promote command, footer=%q", m.footerMessage)
+	}
+	msg := runWorktreeOperationTestCmd(t, cmd)
+	if msg.err != nil {
+		t.Fatalf("promote command error: %v", msg.err)
+	}
+	if msg.dir != wt.Dir || msg.promote.WorktreeDir != wt.Dir {
+		t.Fatalf("promote source = msg:%q result:%q, want %q", msg.dir, msg.promote.WorktreeDir, wt.Dir)
+	}
+	if msg.branch != "promote-unbound" || msg.promote.Branch != "promote-unbound" {
+		t.Fatalf("promote branch = msg:%q result:%q, want promote-unbound", msg.branch, msg.promote.Branch)
 	}
 }
 
