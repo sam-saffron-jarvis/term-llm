@@ -293,7 +293,9 @@ func (t *ShellTool) Execute(ctx context.Context, args json.RawMessage) (llm.Tool
 	// Check permissions — pass both command and working directory so the
 	// approval UI can show the user where the command will run.
 	if t.approval != nil {
-		outcome, err := t.approval.CheckShellApprovalWithContext(ctx, a.Command, workDir, shellApprovalTranscriptFromContext(ctx))
+		outcome, err := t.approval.checkShellApprovalWithContext(ctx, a.Command, workDir, func() []TranscriptEntry {
+			return shellApprovalTranscriptFromContext(ctx)
+		})
 		if err != nil {
 			if toolErr, ok := err.(*ToolError); ok {
 				return errorOutput(formatToolError(toolErr)), nil
