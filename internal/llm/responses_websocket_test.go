@@ -261,6 +261,114 @@ func TestResponsesWebSocketPrepareUsesContinuationWithoutFullInputRebuild(t *tes
 	}
 }
 
+func TestResponsesWebSocketCompletionStoresLightweightLastRequest(t *testing.T) {
+	var gotReq map[string]any
+	upgrader := websocket.Upgrader{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Errorf("upgrade: %v", err)
+			return
+		}
+		defer conn.Close()
+
+		_, msg, err := conn.ReadMessage()
+		if err != nil {
+			t.Errorf("read request: %v", err)
+			return
+		}
+		if err := json.Unmarshal(msg, &gotReq); err != nil {
+			t.Errorf("decode request: %v", err)
+			return
+		}
+		_ = conn.WriteJSON(map[string]any{"type": "response.completed", "response": map[string]any{"id": "resp_next"}})
+	}))
+	defer server.Close()
+
+	client := &ResponsesClient{
+		BaseURL:              server.URL,
+		UseWebSocket:         true,
+		WebSocketServerState: true,
+		DisableServerState:   true,
+		LastResponseID:       "resp_prev",
+		wsLastRequest: &ResponsesRequest{
+			Model:        "gpt-test",
+			Instructions: "Be concise",
+			Input:        []ResponsesInputItem{{Type: "message", Role: "user", Content: "old"}},
+			Messages:     []Message{UserText("old")},
+		},
+	}
+	var fullInputCalls atomic.Int32
+	stream, err := client.streamWebSocketPrepared(context.Background(), ResponsesRequest{
+		Model:        "gpt-test",
+		Instructions: "Be concise",
+		Messages: []Message{
+			UserText("one"),
+			AssistantText("old"),
+			UserText("two"),
+		},
+		Stream: true,
+	}, func() []ResponsesInputItem {
+		return []ResponsesInputItem{{Type: "message", Role: "user", Content: "two"}}
+	}, func() []ResponsesInputItem {
+		fullInputCalls.Add(1)
+		return []ResponsesInputItem{
+			{Type: "message", Role: "user", Content: "one"},
+			{Type: "message", Role: "assistant", Content: "old"},
+			{Type: "message", Role: "user", Content: "two"},
+		}
+	}, false, 0)
+	if err != nil {
+		t.Fatalf("streamWebSocketPrepared: %v", err)
+	}
+
+	for {
+		event, err := stream.Recv()
+		if err != nil {
+			t.Fatalf("Recv: %v", err)
+		}
+		if event.Type == EventDone {
+			break
+		}
+		if event.Type == EventError {
+			t.Fatalf("stream error: %v", event.Err)
+		}
+	}
+	if err := stream.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	if fullInputCalls.Load() != 0 {
+		t.Fatalf("buildFullInput calls = %d, want 0", fullInputCalls.Load())
+	}
+	if gotReq["previous_response_id"] != "resp_prev" {
+		t.Fatalf("previous_response_id = %#v, want resp_prev", gotReq["previous_response_id"])
+	}
+	input, ok := gotReq["input"].([]any)
+	if !ok || len(input) != 1 || !strings.Contains(toJSON(input[0]), "two") {
+		t.Fatalf("input = %#v, want only continuation input", gotReq["input"])
+	}
+
+	client.wsMu.Lock()
+	lastReq := client.wsLastRequest
+	client.wsMu.Unlock()
+	if lastReq == nil {
+		t.Fatal("wsLastRequest = nil, want lightweight metadata")
+	}
+	if lastReq.Input != nil {
+		t.Fatalf("wsLastRequest.Input = %#v, want nil", lastReq.Input)
+	}
+	if lastReq.Messages != nil {
+		t.Fatalf("wsLastRequest.Messages = %#v, want nil", lastReq.Messages)
+	}
+	if lastReq.PreviousResponseID != "" {
+		t.Fatalf("wsLastRequest.PreviousResponseID = %q, want empty", lastReq.PreviousResponseID)
+	}
+	if lastReq.Model != "gpt-test" || lastReq.Instructions != "Be concise" {
+		t.Fatalf("wsLastRequest metadata = %#v, want model/instructions preserved", lastReq)
+	}
+}
+
 func TestResponsesRequestNonInputEqual_JSONLikeTools(t *testing.T) {
 	previous := ResponsesRequest{
 		Model: "gpt-test",
