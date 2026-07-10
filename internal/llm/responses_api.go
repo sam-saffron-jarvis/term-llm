@@ -98,6 +98,7 @@ type ResponsesRequest struct {
 	PreviousResponseID              string                       `json:"previous_response_id,omitempty"`
 	ServiceTier                     string                       `json:"service_tier,omitempty"`
 	SessionID                       string                       `json:"-"`
+	ForceHTTP                       bool                         `json:"-"` // Bypass WebSocket for request features that require HTTP/SSE.
 	ExtraHeaders                    map[string]string            `json:"-"` // Request-scoped headers (combined with client headers).
 	FileUploadPolicy                *FileUploadPolicy            `json:"-"`
 }
@@ -903,7 +904,7 @@ func (c *ResponsesClient) Stream(ctx context.Context, req ResponsesRequest, debu
 		httpPayload.Input = fullInput
 	}
 
-	if c.UseWebSocket && !c.websocketDisabled {
+	if c.UseWebSocket && !c.websocketDisabled && !req.ForceHTTP {
 		buildWebSocketFallbacks := func(nextAttempt int) []responsesWebSocketFallback {
 			fallbacks := make([]responsesWebSocketFallback, 0, responsesWebSocketMaxAttempts-nextAttempt+2)
 			for attempt := nextAttempt; attempt <= responsesWebSocketMaxAttempts; attempt++ {

@@ -120,7 +120,7 @@ Accepted values are:
 - `reasoning.mode`: `standard` or `pro`.
 - `reasoning.context`: `auto`, `current_turn`, or `all_turns`.
 - `prompt_cache_options.mode`: `implicit` or `explicit`; `ttl` currently supports only `30m`.
-- `multi_agent.max_concurrent_subagents`: defaults to `3` when multi-agent is enabled and the value is omitted.
+- `multi_agent.max_concurrent_subagents`: defaults to `3` when multi-agent is enabled and the value is omitted. Multi-agent requests use HTTP/SSE even if WebSocket transport is configured, pending WebSocket `response.inject` support.
 
 Programmatic tool calling is requested with an eligible function tool plus the PTC marker tool:
 

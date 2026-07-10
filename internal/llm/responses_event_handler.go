@@ -379,14 +379,17 @@ func (h *responsesStreamEventHandler) HandleJSONEvent(data []byte, eventType str
 	case "response.completed", "response.incomplete":
 		var completedEvent struct {
 			Response struct {
-				ID    string          `json:"id"`
-				Usage *responsesUsage `json:"usage,omitempty"`
+				ID                string          `json:"id"`
+				Usage             *responsesUsage `json:"usage,omitempty"`
+				IncompleteDetails struct {
+					Reason string `json:"reason"`
+				} `json:"incomplete_details,omitempty"`
 			} `json:"response"`
 		}
 		if err := unmarshalEvent(&completedEvent); err != nil {
 			return false, err
 		}
-		if h.allowResponseState && completedEvent.Response.ID != "" {
+		if eventType == "response.completed" && h.allowResponseState && completedEvent.Response.ID != "" {
 			h.client.setLastResponseIDIfGeneration(h.responseStateGeneration, completedEvent.Response.ID, h.stateSessionID)
 		}
 		if completedEvent.Response.Usage != nil {
@@ -405,6 +408,12 @@ func (h *responsesStreamEventHandler) HandleJSONEvent(data []byte, eventType str
 				ProviderTotalTokens:    completedEvent.Response.Usage.TotalTokens,
 				ReasoningTokens:        completedEvent.Response.Usage.OutputTokensDetails.ReasoningTokens,
 			}
+		}
+		if eventType == "response.incomplete" {
+			if err := h.FinishIncomplete(send); err != nil {
+				return false, err
+			}
+			return false, &ResponsesIncompleteError{Reason: strings.TrimSpace(completedEvent.Response.IncompleteDetails.Reason)}
 		}
 		return true, nil
 

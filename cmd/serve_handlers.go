@@ -2655,6 +2655,9 @@ func (s *serveServer) syncPersistedSessionRuntime(ctx context.Context, sessionID
 	effort := strings.TrimSpace(clientEffort)
 	modelName, effort = normalizeProviderModelEffort(providerKey, modelName, effort)
 	reasoningMode = strings.ToLower(strings.TrimSpace(reasoningMode))
+	if syncReasoningMode && ((reasoningMode != "standard" && reasoningMode != "pro") || !llm.SupportsReasoningMode(providerKey, modelName)) {
+		reasoningMode = ""
+	}
 
 	requestedWorktree := strings.TrimSpace(worktreeDir)
 	if requestedWorktree != "" {

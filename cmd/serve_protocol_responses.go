@@ -268,6 +268,29 @@ func parseRequestedFunctionTool(generic map[string]json.RawMessage) (llm.ToolSpe
 	return spec, true
 }
 
+func responsesUsagePayload(usage llm.Usage) map[string]any {
+	inputTokens := usage.ProviderRawInputTokens
+	if inputTokens <= 0 {
+		inputTokens = usage.InputTokens + usage.CachedInputTokens + usage.CacheWriteTokens
+	}
+	totalTokens := usage.ProviderTotalTokens
+	if totalTokens <= 0 {
+		totalTokens = inputTokens + usage.OutputTokens
+	}
+	return map[string]any{
+		"input_tokens":  inputTokens,
+		"output_tokens": usage.OutputTokens,
+		"total_tokens":  totalTokens,
+		"input_tokens_details": map[string]any{
+			"cached_tokens":      usage.CachedInputTokens,
+			"cache_write_tokens": usage.CacheWriteTokens,
+		},
+		"output_tokens_details": map[string]any{
+			"reasoning_tokens": usage.ReasoningTokens,
+		},
+	}
+}
+
 func responsesFinalResponse(result serveRunResult, model string, respID string, created int64) map[string]any {
 	output := []map[string]any{}
 	if result.Text.Len() > 0 {
@@ -292,28 +315,12 @@ func responsesFinalResponse(result serveRunResult, model string, respID string, 
 	}
 
 	return map[string]any{
-		"id":      respID,
-		"object":  "response",
-		"created": created,
-		"model":   model,
-		"output":  output,
-		"usage": map[string]any{
-			"input_tokens":  result.Usage.InputTokens,
-			"output_tokens": result.Usage.OutputTokens,
-			"total_tokens":  result.Usage.InputTokens + result.Usage.CachedInputTokens + result.Usage.CacheWriteTokens + result.Usage.OutputTokens,
-			"input_tokens_details": map[string]any{
-				"cached_tokens":      result.Usage.CachedInputTokens,
-				"cache_write_tokens": result.Usage.CacheWriteTokens,
-			},
-		},
-		"session_usage": map[string]any{
-			"input_tokens":  result.SessionUsage.InputTokens,
-			"output_tokens": result.SessionUsage.OutputTokens,
-			"total_tokens":  result.SessionUsage.InputTokens + result.SessionUsage.CachedInputTokens + result.SessionUsage.CacheWriteTokens + result.SessionUsage.OutputTokens,
-			"input_tokens_details": map[string]any{
-				"cached_tokens":      result.SessionUsage.CachedInputTokens,
-				"cache_write_tokens": result.SessionUsage.CacheWriteTokens,
-			},
-		},
+		"id":            respID,
+		"object":        "response",
+		"created":       created,
+		"model":         model,
+		"output":        output,
+		"usage":         responsesUsagePayload(result.Usage),
+		"session_usage": responsesUsagePayload(result.SessionUsage),
 	}
 }

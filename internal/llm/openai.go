@@ -190,6 +190,10 @@ func (p *OpenAIProvider) Stream(ctx context.Context, req Request) (Stream, error
 			Enabled:                true,
 			MaxConcurrentSubagents: responsesOptions.MultiAgent.MaxConcurrentSubagents,
 		}
+		// Multi-agent WebSocket streams require response.inject support. Until
+		// that bidirectional protocol is implemented, use the fully supported
+		// HTTP/SSE transport for these requests even when WebSocket is configured.
+		responsesReq.ForceHTTP = true
 		responsesReq.ExtraHeaders = map[string]string{"OpenAI-Beta": "responses_multi_agent=v1"}
 	}
 	if responsesOptions.PromptCache.Mode != "" || responsesOptions.PromptCache.TTL != "" {

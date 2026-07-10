@@ -19,14 +19,15 @@ type responseRuntimeSettings struct {
 }
 
 type responseModelSwapPlan struct {
-	enabled           bool
-	fallbackHandover  bool
-	requestedProvider string
-	requestedModel    string
-	requestedEffort   string
-	previousProvider  string
-	previousModel     string
-	previousEffort    string
+	enabled                bool
+	fallbackHandover       bool
+	requestedProvider      string
+	requestedModel         string
+	requestedEffort        string
+	requestedReasoningMode string
+	previousProvider       string
+	previousModel          string
+	previousEffort         string
 }
 
 type responseModelSwapExecution struct {
@@ -46,7 +47,11 @@ func responseRequestedRuntime(req responsesCreateRequest, defaultProvider string
 	if provider == "" {
 		provider = strings.TrimSpace(defaultProvider)
 	}
-	model, effort := normalizeProviderModelEffort(provider, req.Model, req.ReasoningEffort)
+	effort := req.ReasoningEffort
+	if req.Reasoning != nil && strings.TrimSpace(req.Reasoning.Effort) != "" {
+		effort = req.Reasoning.Effort
+	}
+	model, effort := normalizeProviderModelEffort(provider, req.Model, effort)
 	reasoningMode := ""
 	if req.Reasoning != nil {
 		reasoningMode = strings.ToLower(strings.TrimSpace(req.Reasoning.Mode))
@@ -508,7 +513,7 @@ func (s *serveServer) executeResponseRunModelSwap(runCtx context.Context, runtim
 			s.unregisterSessionResponseIDs(sessionID)
 		}
 		exec.markCommitted()
-		s.syncPersistedSessionRuntime(runCtx, sessionID, runtime, effectiveTargetModel(exec.plan, runtime), exec.plan.requestedEffort, "", false, "")
+		s.syncPersistedSessionRuntime(runCtx, sessionID, runtime, effectiveTargetModel(exec.plan, runtime), exec.plan.requestedEffort, exec.plan.requestedReasoningMode, true, "")
 		s.persistModelSwapMarker(runCtx, sessionID, exec.plan, runtime, "succeeded", "naive")
 		s.registerResponseID(runtime, respID, sessionID)
 		appendProgress("complete", fmt.Sprintf("Continuing on %s.", exec.plan.targetLabel(runtime)))
@@ -595,7 +600,7 @@ func (s *serveServer) executeResponseRunModelSwap(runCtx context.Context, runtim
 		s.unregisterSessionResponseIDs(sessionID)
 	}
 	exec.markCommitted()
-	s.syncPersistedSessionRuntime(runCtx, sessionID, runtime, effectiveTargetModel(exec.plan, runtime), exec.plan.requestedEffort, "", false, "")
+	s.syncPersistedSessionRuntime(runCtx, sessionID, runtime, effectiveTargetModel(exec.plan, runtime), exec.plan.requestedEffort, exec.plan.requestedReasoningMode, true, "")
 	s.persistModelSwapMarker(runCtx, sessionID, exec.plan, runtime, "succeeded", "handover")
 	s.registerResponseID(runtime, respID, sessionID)
 	appendProgress("complete", fmt.Sprintf("Continuing on %s.", exec.plan.targetLabel(runtime)))
@@ -629,7 +634,7 @@ func (s *serveServer) runResponseWithModelSwapFallback(ctx context.Context, runt
 	})
 	if err == nil {
 		exec.markCommitted()
-		s.syncPersistedSessionRuntime(ctx, sessionID, runtime, effectiveTargetModel(exec.plan, runtime), exec.plan.requestedEffort, "", false, "")
+		s.syncPersistedSessionRuntime(ctx, sessionID, runtime, effectiveTargetModel(exec.plan, runtime), exec.plan.requestedEffort, exec.plan.requestedReasoningMode, true, "")
 		s.persistModelSwapMarker(ctx, sessionID, exec.plan, runtime, "succeeded", "naive")
 		return result, "naive", nil
 	}
@@ -654,7 +659,7 @@ func (s *serveServer) runResponseWithModelSwapFallback(ctx context.Context, runt
 		return serveRunResult{}, "", modelSwapCombinedError(err, retryErr)
 	}
 	exec.markCommitted()
-	s.syncPersistedSessionRuntime(ctx, sessionID, runtime, effectiveTargetModel(exec.plan, runtime), exec.plan.requestedEffort, "", false, "")
+	s.syncPersistedSessionRuntime(ctx, sessionID, runtime, effectiveTargetModel(exec.plan, runtime), exec.plan.requestedEffort, exec.plan.requestedReasoningMode, true, "")
 	s.persistModelSwapMarker(ctx, sessionID, exec.plan, runtime, "succeeded", "handover")
 	return result, "handover", nil
 }

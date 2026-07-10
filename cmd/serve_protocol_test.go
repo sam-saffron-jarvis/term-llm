@@ -14,6 +14,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/session"
 )
 
@@ -37,6 +38,70 @@ func TestNormalizeProviderModelEffort_PreservesNaturalMaxModelName(t *testing.T)
 	model, effort := normalizeProviderModelEffort("chatgpt", "gpt-5.1-codex-max", "xhigh")
 	if model != "gpt-5.1-codex-max" || effort != "xhigh" {
 		t.Fatalf("normalizeProviderModelEffort = (%q, %q), want gpt-5.1-codex-max/xhigh", model, effort)
+	}
+}
+
+func TestResponseRequestedRuntimePrefersNestedReasoningEffort(t *testing.T) {
+	req := responsesCreateRequest{
+		Provider:        "openai",
+		Model:           "gpt-5.6-sol",
+		ReasoningEffort: "low",
+		Reasoning:       &responsesReasoningRequest{Effort: "high"},
+	}
+
+	got := responseRequestedRuntime(req, "")
+	if got.effort != "high" {
+		t.Fatalf("responseRequestedRuntime effort = %q, want high", got.effort)
+	}
+}
+
+func TestValidateResponseReasoningModeUsesFinalProviderModel(t *testing.T) {
+	tests := []struct {
+		name      string
+		provider  string
+		model     string
+		mode      string
+		explicit  bool
+		wantMode  string
+		wantClear bool
+		wantErr   bool
+	}{
+		{name: "supported explicit", provider: "openai", model: "gpt-5.6-terra", mode: " Pro ", explicit: true, wantMode: "pro"},
+		{name: "unsupported explicit", provider: "chatgpt", model: "gpt-5.6-terra", mode: "pro", explicit: true, wantErr: true},
+		{name: "unsupported persisted", provider: "chatgpt", model: "gpt-5.6-terra", mode: "pro", wantClear: true},
+		{name: "invalid explicit", provider: "openai", model: "gpt-5.6-sol", mode: "turbo", explicit: true, wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mode, clear, err := validateResponseReasoningMode(tt.provider, tt.model, tt.mode, tt.explicit)
+			if (err != nil) != tt.wantErr || mode != tt.wantMode || clear != tt.wantClear {
+				t.Fatalf("validateResponseReasoningMode() = (%q, %t, %v), want (%q, %t, err=%t)", mode, clear, err, tt.wantMode, tt.wantClear, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestResponsesFinalResponseUsesProviderRawInputTokens(t *testing.T) {
+	result := serveRunResult{Usage: llm.Usage{
+		InputTokens:            150,
+		CachedInputTokens:      600,
+		CacheWriteTokens:       250,
+		OutputTokens:           100,
+		ProviderRawInputTokens: 1000,
+		ReasoningTokens:        40,
+	}}
+
+	response := responsesFinalResponse(result, "gpt-5.6-sol", "resp_test", 1)
+	usage := response["usage"].(map[string]any)
+	if got := usage["input_tokens"]; got != 1000 {
+		t.Fatalf("input_tokens = %v, want provider raw total 1000", got)
+	}
+	if got := usage["total_tokens"]; got != 1100 {
+		t.Fatalf("total_tokens = %v, want 1100", got)
+	}
+	outputDetails := usage["output_tokens_details"].(map[string]any)
+	if got := outputDetails["reasoning_tokens"]; got != 40 {
+		t.Fatalf("reasoning_tokens = %v, want 40", got)
 	}
 }
 

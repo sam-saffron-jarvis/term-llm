@@ -41,6 +41,44 @@ func (v dynamicMarshalJSONLikeValue) MarshalJSON() ([]byte, error) {
 	return []byte(fmt.Sprintf(`{"type":"function","name":"tool","version":%d}`, v.Version)), nil
 }
 
+func TestResponsesClientForceHTTPBypassesConfiguredWebSocket(t *testing.T) {
+	var sawUpgrade atomic.Bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.EqualFold(r.Header.Get("Upgrade"), "websocket") {
+			sawUpgrade.Store(true)
+			http.Error(w, "unexpected websocket", http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = fmt.Fprint(w, "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_http\"}}\n\n")
+	}))
+	defer server.Close()
+
+	client := &ResponsesClient{BaseURL: server.URL, HTTPClient: server.Client(), UseWebSocket: true}
+	stream, err := client.Stream(context.Background(), ResponsesRequest{
+		Model:     "gpt-5.6-sol",
+		Input:     []ResponsesInputItem{{Type: "message", Role: "user", Content: "hi"}},
+		Stream:    true,
+		ForceHTTP: true,
+	}, false)
+	if err != nil {
+		t.Fatalf("Stream() error = %v", err)
+	}
+	defer stream.Close()
+	for {
+		event, recvErr := stream.Recv()
+		if recvErr != nil {
+			t.Fatalf("Recv() error = %v", recvErr)
+		}
+		if event.Type == EventDone {
+			break
+		}
+	}
+	if sawUpgrade.Load() {
+		t.Fatal("ForceHTTP request attempted a WebSocket upgrade")
+	}
+}
+
 func TestResponsesWebSocketURL(t *testing.T) {
 	tests := []struct {
 		in   string

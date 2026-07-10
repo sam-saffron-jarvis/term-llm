@@ -9386,8 +9386,9 @@ func TestResponsesHandler_ReasoningEffortFlowsToProvider(t *testing.T) {
 		engine := llm.NewEngine(provider, nil)
 		rt := &serveRuntime{
 			provider:     provider,
+			providerKey:  "openai",
 			engine:       engine,
-			defaultModel: "mock-model",
+			defaultModel: "gpt-5.6-sol",
 		}
 		rt.Touch()
 		return rt, nil
@@ -9395,7 +9396,7 @@ func TestResponsesHandler_ReasoningEffortFlowsToProvider(t *testing.T) {
 	mgr := newServeSessionManager(time.Minute, 100, factory)
 	srv := &serveServer{sessionMgr: mgr}
 
-	body := `{"input":"hello","reasoning":{"effort":"high","mode":"pro","context":"all_turns"}}`
+	body := `{"input":"hello","reasoning_effort":"high","reasoning":{"mode":"pro","context":"all_turns"}}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	rr := httptest.NewRecorder()

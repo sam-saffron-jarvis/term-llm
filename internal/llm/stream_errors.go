@@ -33,3 +33,16 @@ func (e *StreamIncompleteError) Unwrap() error {
 	}
 	return e.Err
 }
+
+// ResponsesIncompleteError reports an explicit response.incomplete terminal
+// event from the provider. Partial output and usage may have been emitted.
+type ResponsesIncompleteError struct {
+	Reason string
+}
+
+func (e *ResponsesIncompleteError) Error() string {
+	if e == nil || e.Reason == "" {
+		return "Responses API returned an incomplete response"
+	}
+	return fmt.Sprintf("Responses API returned an incomplete response: %s", e.Reason)
+}

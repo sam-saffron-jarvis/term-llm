@@ -25,6 +25,26 @@ type resolvedResponsesRequest struct {
 	idempotencyKey     string
 }
 
+func validateResponseReasoningMode(provider, model, mode string, explicit bool) (normalized string, clearStale bool, err error) {
+	normalized = strings.ToLower(strings.TrimSpace(mode))
+	if normalized == "" {
+		return "", false, nil
+	}
+	if normalized != "standard" && normalized != "pro" {
+		if explicit {
+			return "", false, fmt.Errorf("reasoning.mode must be standard or pro")
+		}
+		return "", true, nil
+	}
+	if !llm.SupportsReasoningMode(provider, model) {
+		if explicit {
+			return "", false, fmt.Errorf("reasoning.mode is not supported by provider %q model %q", provider, model)
+		}
+		return "", true, nil
+	}
+	return normalized, false, nil
+}
+
 func (s *serveServer) handleResponses(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		w.Header().Set("Allow", "POST")
@@ -270,7 +290,6 @@ func (s *serveServer) handleResolvedResponses(w http.ResponseWriter, r *http.Req
 				providerForNormalization = runtimeProviderKey(runtime)
 			}
 			req.Model, req.ReasoningEffort = normalizeProviderModelEffort(providerForNormalization, req.Model, req.ReasoningEffort)
-			s.syncPersistedSessionRuntime(ctx, sessionID, runtime, req.Model, req.ReasoningEffort, requestedRuntime.reasoningMode, true, req.WorktreeDir)
 		}
 
 		// Enforce chaining from the latest in-memory response only for ephemeral
@@ -300,6 +319,43 @@ func (s *serveServer) handleResolvedResponses(w http.ResponseWriter, r *http.Req
 			s.populateResponsesToolResultNames(ctx, sessionID, runtime, inputMessages)
 		}
 	}
+
+	effectiveProvider := strings.TrimSpace(reqProvider)
+	if effectiveProvider == "" {
+		effectiveProvider = runtimeProviderKey(runtime)
+	}
+	effectiveModel := strings.TrimSpace(req.Model)
+	if effectiveModel == "" {
+		effectiveModel = strings.TrimSpace(runtime.defaultModel)
+	}
+	modeRequestedExplicitly := requestedRuntime.reasoningMode != ""
+	reasoningMode := ""
+	if req.Reasoning != nil {
+		reasoningMode = req.Reasoning.Mode
+	}
+	reasoningMode, clearStaleReasoningMode, reasoningModeErr := validateResponseReasoningMode(effectiveProvider, effectiveModel, reasoningMode, modeRequestedExplicitly)
+	if reasoningModeErr != nil {
+		if modelSwapExec != nil {
+			modelSwapExec.markRolledBack()
+		}
+		if !stateful {
+			s.unregisterResponseIDs(runtime)
+			runtime.Close()
+		}
+		handleRuntimeErr(reasoningModeErr)
+		return
+	}
+	if req.Reasoning != nil {
+		req.Reasoning.Mode = reasoningMode
+	}
+	if swapPlan.enabled {
+		swapPlan.requestedReasoningMode = reasoningMode
+		modelSwapExec.plan.requestedReasoningMode = reasoningMode
+	}
+	if freshConversation {
+		s.syncPersistedSessionRuntime(ctx, sessionID, runtime, req.Model, req.ReasoningEffort, reasoningMode, true, req.WorktreeDir)
+	}
+
 	cleanupRuntime := !stateful
 	if cleanupRuntime {
 		defer func() {
@@ -335,7 +391,9 @@ func (s *serveServer) handleResolvedResponses(w http.ResponseWriter, r *http.Req
 	reasoningEffort := normalizeReasoningEffort(req.ReasoningEffort)
 	responsesOptions := &llm.ResponsesOptions{}
 	if req.Reasoning != nil {
-		reasoningEffort = normalizeReasoningEffort(req.Reasoning.Effort)
+		if nestedEffort := normalizeReasoningEffort(req.Reasoning.Effort); nestedEffort != "" {
+			reasoningEffort = nestedEffort
+		}
 		responsesOptions.ReasoningMode = req.Reasoning.Mode
 		responsesOptions.ReasoningContext = req.Reasoning.Context
 	}
@@ -361,8 +419,7 @@ func (s *serveServer) handleResolvedResponses(w http.ResponseWriter, r *http.Req
 		responsesOptions = nil
 	}
 	if !freshConversation && req.Reasoning != nil {
-		reasoningMode := strings.ToLower(strings.TrimSpace(req.Reasoning.Mode))
-		if (reasoningMode == "standard" || reasoningMode == "pro") && llm.SupportsReasoningMode(reqProvider, req.Model) {
+		if clearStaleReasoningMode || ((reasoningMode == "standard" || reasoningMode == "pro") && llm.SupportsReasoningMode(effectiveProvider, effectiveModel)) {
 			s.syncPersistedSessionReasoningMode(ctx, sessionID, runtime, reasoningMode)
 		}
 	}

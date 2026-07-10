@@ -2,6 +2,7 @@ package llm
 
 import (
 	"context"
+	"errors"
 	"testing"
 )
 
@@ -34,6 +35,37 @@ func TestResponsesUsageSeparatesCacheReadsAndWrites(t *testing.T) {
 	if got.InputTokens != 150 || got.CachedInputTokens != 600 || got.CacheWriteTokens != 250 ||
 		got.OutputTokens != 100 || got.ReasoningTokens != 40 || got.ProviderRawInputTokens != 1000 || got.ProviderTotalTokens != 1100 {
 		t.Fatalf("usage = %+v", got)
+	}
+}
+
+func TestResponsesIncompleteReturnsErrorAfterUsage(t *testing.T) {
+	handler := newResponsesStreamEventHandler(&ResponsesClient{}, 0, false, "test", false, "", false)
+	events := make(chan Event, 4)
+	completed, err := handler.HandleJSONEvent([]byte(`{
+		"type":"response.incomplete",
+		"response":{
+			"id":"resp_incomplete",
+			"incomplete_details":{"reason":"max_output_tokens"},
+			"usage":{"input_tokens":10,"output_tokens":5,"total_tokens":15}
+		}
+	}`), "response.incomplete", eventSender{ctx: context.Background(), ch: events})
+	if completed {
+		t.Fatal("HandleJSONEvent() completed = true for incomplete response")
+	}
+	var incompleteErr *ResponsesIncompleteError
+	if !errors.As(err, &incompleteErr) {
+		t.Fatalf("HandleJSONEvent() error = %T %v, want ResponsesIncompleteError", err, err)
+	}
+	if incompleteErr.Reason != "max_output_tokens" {
+		t.Fatalf("incomplete reason = %q, want max_output_tokens", incompleteErr.Reason)
+	}
+	select {
+	case event := <-events:
+		if event.Type != EventUsage || event.Use == nil || event.Use.OutputTokens != 5 {
+			t.Fatalf("final event = %+v, want usage", event)
+		}
+	default:
+		t.Fatal("incomplete response did not emit final usage")
 	}
 }
 
