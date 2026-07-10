@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"time"
@@ -142,7 +143,9 @@ var sessionsExportGistCmd = &cobra.Command{
 	Long: `Export a session to a GitHub Gist for sharing.
 
 Requires the gh CLI to be installed and authenticated.
-Creates a new gist with the session exported as pretty markdown.
+Creates index.html and session.md in a new secret Gist by default. Secret Gists
+are unlisted, not private: anyone with the URL can view them. The primary rich
+transcript link is rendered through https://gisthost.github.io/.
 
 Examples:
   term-llm sessions export gist 42
@@ -187,7 +190,7 @@ func init() {
 	sessionsExportCmd.Flags().BoolVar(&sessionsExportIncludeRawReasoning, "include-raw-reasoning", false, "Include raw reasoning when reasoning.raw is enabled")
 
 	// Gist export flags
-	sessionsExportGistCmd.Flags().BoolVar(&sessionsGistPublic, "public", false, "Create a public gist (default: private)")
+	sessionsExportGistCmd.Flags().BoolVar(&sessionsGistPublic, "public", false, "Create a public Gist (default: secret/unlisted, not private)")
 	sessionsExportGistCmd.Flags().BoolVar(&sessionsGistIncludeSystem, "include-system", false, "Include system prompt in export")
 	sessionsExportGistCmd.Flags().BoolVar(&sessionsGistIncludeReasoning, "include-reasoning", false, "Include provider reasoning summaries in export")
 	sessionsExportGistCmd.Flags().BoolVar(&sessionsGistIncludeRawReasoning, "include-raw-reasoning", false, "Include raw reasoning when reasoning.raw is enabled")
@@ -494,12 +497,12 @@ func runSessionsExport(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("session '%s' not found", args[0])
 	}
 
-	messages, err := store.GetMessages(ctx, sess.ID, 0, 0)
+	messages, _, err := session.LoadScrollbackWithBoundary(ctx, store, sess)
 	if err != nil {
 		return fmt.Errorf("failed to get messages: %w", err)
 	}
+	messages = session.VisibleExportMessages(messages)
 
-	// Determine output path
 	var outputPath string
 	if len(args) > 1 {
 		outputPath = args[1]
@@ -523,7 +526,7 @@ func runSessionsExport(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to write file: %w", err)
 	}
 
-	fmt.Printf("Exported %d messages to %s\n", len(messages), outputPath)
+	fmt.Fprintf(cmd.OutOrStdout(), "Exported %d messages to %s\n", len(messages), outputPath)
 	return nil
 }
 
@@ -872,8 +875,6 @@ func runSessionsExportGist(cmd *cobra.Command, args []string) error {
 	defer store.Close()
 
 	ctx := context.Background()
-
-	// Get session
 	sess, err := store.GetByPrefix(ctx, args[0])
 	if err != nil {
 		return fmt.Errorf("failed to get session: %w", err)
@@ -882,48 +883,68 @@ func runSessionsExportGist(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("session '%s' not found", args[0])
 	}
 
-	// Get messages
-	messages, err := store.GetMessages(ctx, sess.ID, 0, 0)
+	messages, _, err := session.LoadScrollbackWithBoundary(ctx, store, sess)
 	if err != nil {
 		return fmt.Errorf("failed to get messages: %w", err)
 	}
+	messages = session.VisibleExportMessages(messages)
 
-	// Generate markdown with reasoning export policy applied from config and flags.
-	markdown := session.ExportToMarkdown(sess, messages, buildSessionExportOptions(
+	opts := buildSessionExportOptions(
 		sess,
 		sessionsGistIncludeSystem,
 		sessionsGistIncludeReasoning,
 		sessionsGistIncludeRawReasoning,
-	))
+	)
+	files, err := buildSessionGistFiles(sess, messages, opts)
+	if err != nil {
+		return err
+	}
 
-	// Initialize gist client
 	client, err := gist.NewClient()
 	if err != nil {
 		return err
 	}
 
-	// Build description
 	name := sess.Name
 	if name == "" {
 		name = fmt.Sprintf("#%d", sess.Number)
 	}
 	description := fmt.Sprintf("term-llm session: %s", name)
 
-	// Create gist
-	fmt.Println("Creating gist...")
-	files := map[string]string{
-		"session.md": markdown,
-	}
-
+	out := cmd.OutOrStdout()
+	fmt.Fprintln(out, "Creating Gist...")
 	g, err := client.Create(description, sessionsGistPublic, files)
 	if err != nil {
 		return fmt.Errorf("create gist: %w", err)
 	}
+	preview := gistPreviewURL(g.ID)
+	if preview == "" {
+		return fmt.Errorf("created Gist returned an invalid ID %q", g.ID)
+	}
 
-	fmt.Printf("Created: %s\n", g.URL)
-	fmt.Println()
-	fmt.Println("Share with:")
-	fmt.Printf("  %s\n", g.URL)
-
+	fmt.Fprintln(out, "Share:")
+	fmt.Fprintln(out, preview)
+	fmt.Fprintf(out, "Gist/source: %s\n", g.URL)
 	return nil
+}
+
+func buildSessionGistFiles(sess *session.Session, messages []session.Message, opts session.ExportOptions) (map[string]string, error) {
+	markdown := session.ExportToMarkdown(sess, messages, opts)
+	html, err := session.ExportToHTML(sess, messages, opts)
+	if err != nil {
+		return nil, fmt.Errorf("render HTML transcript: %w", err)
+	}
+	return map[string]string{
+		"index.html": html,
+		"session.md": markdown,
+	}, nil
+}
+
+var gistIDPattern = regexp.MustCompile(`^[a-f0-9]+$`)
+
+func gistPreviewURL(id string) string {
+	if !gistIDPattern.MatchString(id) {
+		return ""
+	}
+	return "https://gisthost.github.io/?" + id + "/index.html"
 }
