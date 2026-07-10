@@ -2522,6 +2522,122 @@ func TestDownloadTelegramPhoto_TooLarge(t *testing.T) {
 	}
 }
 
+func writeTelegramGetMeOK(w http.ResponseWriter) {
+	w.Header().Set("Content-Type", "application/json")
+	_, _ = io.WriteString(w, `{"ok":true,"result":{"id":123,"is_bot":true,"first_name":"Test","username":"test_bot"}}`)
+}
+
+func telegramTestAPIEndpoint(serverURL string) string {
+	return serverURL + "/bot%s/%s"
+}
+
+func TestTelegramBotAPIClientTimesOutStartup(t *testing.T) {
+	const requestTimeout = 50 * time.Millisecond
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var once sync.Once
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		once.Do(func() { close(started) })
+		select {
+		case <-r.Context().Done():
+		case <-release:
+		}
+	}))
+	defer ts.Close()
+	defer close(release)
+
+	start := time.Now()
+	_, err := tgbotapi.NewBotAPIWithClient("test-token", telegramTestAPIEndpoint(ts.URL), newTelegramBotHTTPClient(requestTimeout, time.Second))
+	elapsed := time.Since(start)
+	if err == nil {
+		t.Fatal("expected startup timeout error")
+	}
+	if elapsed > time.Second {
+		t.Fatalf("startup timeout took too long: %s", elapsed)
+	}
+	select {
+	case <-started:
+	default:
+		t.Fatal("expected getMe request to reach test server")
+	}
+}
+
+func TestTelegramBotAPIClientTimesOutSend(t *testing.T) {
+	const requestTimeout = 50 * time.Millisecond
+	sendStarted := make(chan struct{})
+	release := make(chan struct{})
+	var once sync.Once
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/getMe"):
+			writeTelegramGetMeOK(w)
+		case strings.HasSuffix(r.URL.Path, "/sendMessage"):
+			once.Do(func() { close(sendStarted) })
+			select {
+			case <-r.Context().Done():
+			case <-release:
+			}
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer ts.Close()
+	defer close(release)
+
+	bot, err := tgbotapi.NewBotAPIWithClient("test-token", telegramTestAPIEndpoint(ts.URL), newTelegramBotHTTPClient(requestTimeout, time.Second))
+	if err != nil {
+		t.Fatalf("new bot: %v", err)
+	}
+
+	start := time.Now()
+	_, err = bot.Send(tgbotapi.NewMessage(123, "hello"))
+	elapsed := time.Since(start)
+	if err == nil {
+		t.Fatal("expected send timeout error")
+	}
+	if elapsed > time.Second {
+		t.Fatalf("send timeout took too long: %s", elapsed)
+	}
+	select {
+	case <-sendStarted:
+	default:
+		t.Fatal("expected sendMessage request to reach test server")
+	}
+}
+
+func TestTelegramBotAPIClientAllowsLongPollPastRegularTimeout(t *testing.T) {
+	const requestTimeout = 30 * time.Millisecond
+	const longPollTimeout = 500 * time.Millisecond
+	const longPollDelay = 100 * time.Millisecond
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/getMe"):
+			writeTelegramGetMeOK(w)
+		case strings.HasSuffix(r.URL.Path, "/getUpdates"):
+			time.Sleep(longPollDelay)
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, `{"ok":true,"result":[]}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer ts.Close()
+
+	bot, err := tgbotapi.NewBotAPIWithClient("test-token", telegramTestAPIEndpoint(ts.URL), newTelegramBotHTTPClient(requestTimeout, longPollTimeout))
+	if err != nil {
+		t.Fatalf("new bot: %v", err)
+	}
+	u := tgbotapi.NewUpdate(0)
+	u.Timeout = telegramUpdateLongPollSeconds
+	updates, err := bot.GetUpdates(u)
+	if err != nil {
+		t.Fatalf("expected long poll to outlive regular timeout: %v", err)
+	}
+	if len(updates) != 0 {
+		t.Fatalf("expected no updates, got %d", len(updates))
+	}
+}
+
 func TestDownloadTelegramPhoto_Timeout(t *testing.T) {
 	oldClient := telegramDownloadHTTPClient
 	telegramDownloadHTTPClient = &http.Client{Timeout: 50 * time.Millisecond}

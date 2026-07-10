@@ -38,9 +38,86 @@ const telegramMaxConcurrentHandlers = 8
 const telegramMaxPhotoDownloadBytes int64 = 25 << 20
 const telegramMaxVoiceDownloadBytes int64 = 25 << 20
 const telegramDownloadTimeout = 5 * time.Minute
+const telegramBotAPIRequestTimeout = 30 * time.Second
+const telegramUpdateLongPollSeconds = 60
+const telegramBotAPILongPollTimeout = (telegramUpdateLongPollSeconds * time.Second) + 10*time.Second
 const telegramSessionShutdownFallbackTimeout = 5 * time.Second
 
 var telegramDownloadHTTPClient = &http.Client{Timeout: telegramDownloadTimeout}
+
+// telegramBotHTTPClient applies per-request deadlines to the Telegram Bot API
+// client. The upstream library builds requests without contexts, so wrapping Do
+// here is the only way to keep startup, sends, edits, and long polling bounded.
+type telegramBotHTTPClient struct {
+	client          *http.Client
+	requestTimeout  time.Duration
+	longPollTimeout time.Duration
+}
+
+func newTelegramBotHTTPClient(requestTimeout, longPollTimeout time.Duration) *telegramBotHTTPClient {
+	transport := http.DefaultTransport
+	if defaultTransport, ok := http.DefaultTransport.(*http.Transport); ok {
+		transport = defaultTransport.Clone()
+	}
+	return &telegramBotHTTPClient{
+		client: &http.Client{
+			Transport: transport,
+			Timeout:   longPollTimeout,
+		},
+		requestTimeout:  requestTimeout,
+		longPollTimeout: longPollTimeout,
+	}
+}
+
+func newTelegramBotAPI(token string) (*tgbotapi.BotAPI, error) {
+	return tgbotapi.NewBotAPIWithClient(token, tgbotapi.APIEndpoint, newTelegramBotHTTPClient(telegramBotAPIRequestTimeout, telegramBotAPILongPollTimeout))
+}
+
+func (c *telegramBotHTTPClient) Do(req *http.Request) (*http.Response, error) {
+	timeout := c.requestTimeout
+	if telegramBotAPIIsLongPoll(req) {
+		timeout = c.longPollTimeout
+	}
+	if timeout <= 0 {
+		return c.client.Do(req)
+	}
+
+	ctx, cancel := context.WithTimeout(req.Context(), timeout)
+	resp, err := c.client.Do(req.WithContext(ctx))
+	if err != nil {
+		cancel()
+		return resp, err
+	}
+	if resp == nil || resp.Body == nil {
+		cancel()
+		return resp, nil
+	}
+	resp.Body = &telegramCancelOnCloseReadCloser{ReadCloser: resp.Body, cancel: cancel}
+	return resp, nil
+}
+
+func telegramBotAPIIsLongPoll(req *http.Request) bool {
+	if req == nil || req.URL == nil {
+		return false
+	}
+	path := strings.TrimRight(req.URL.Path, "/")
+	if i := strings.LastIndex(path, "/"); i >= 0 {
+		path = path[i+1:]
+	}
+	return path == "getUpdates"
+}
+
+type telegramCancelOnCloseReadCloser struct {
+	io.ReadCloser
+	cancel context.CancelFunc
+	once   sync.Once
+}
+
+func (r *telegramCancelOnCloseReadCloser) Close() error {
+	err := r.ReadCloser.Close()
+	r.once.Do(r.cancel)
+	return err
+}
 
 // botSender is the subset of tgbotapi.BotAPI used by streamReply and
 // handleMessage, allowing tests to supply a fake without a live connection.
@@ -339,7 +416,7 @@ func (p *TelegramPlatform) Run(ctx context.Context, cfg *config.Config, settings
 		log.Println("[telegram] warning: no allowed_user_ids or allowed_usernames configured; all messages will be rejected")
 	}
 
-	bot, err := tgbotapi.NewBotAPI(token)
+	bot, err := newTelegramBotAPI(token)
 	if err != nil {
 		return fmt.Errorf("telegram connect: %w", err)
 	}
@@ -372,7 +449,7 @@ func (p *TelegramPlatform) Run(ctx context.Context, cfg *config.Config, settings
 	}
 
 	u := tgbotapi.NewUpdate(0)
-	u.Timeout = 60
+	u.Timeout = telegramUpdateLongPollSeconds
 	updates := bot.GetUpdatesChan(u)
 
 	for {
