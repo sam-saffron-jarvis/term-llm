@@ -1541,6 +1541,73 @@ func TestEngineStopsAfterAsyncFinishingTool(t *testing.T) {
 	}
 }
 
+func TestRunLoopPersistsDeduplicatedCumulativeReasoningSummary(t *testing.T) {
+	events := cumulativeReasoningEvents(t)
+	for i, event := range events {
+		if event.Type == EventDone {
+			events = append(events[:i], append([]Event{{Type: EventTextDelta, Text: "answer"}}, events[i:]...)...)
+			break
+		}
+	}
+	provider := &fakeProvider{script: func(call int, req Request) []Event {
+		if call != 0 {
+			t.Fatalf("provider called %d times, want 1", call+1)
+		}
+		return events
+	}}
+	tool := &countingTool{}
+	registry := NewToolRegistry()
+	registry.Register(tool)
+	engine := NewEngine(provider, registry)
+
+	var persisted Message
+	engine.SetTurnCompletedCallback(func(ctx context.Context, turnIndex int, messages []Message, metrics TurnMetrics) error {
+		if len(messages) > 0 {
+			persisted = messages[len(messages)-1]
+		}
+		return nil
+	})
+
+	stream, err := engine.Stream(context.Background(), Request{
+		Messages: []Message{UserText("test")},
+		Tools:    []ToolSpec{tool.Spec()},
+	})
+	if err != nil {
+		t.Fatalf("stream error: %v", err)
+	}
+	defer stream.Close()
+	drainStream(t, stream)
+
+	if len(persisted.Parts) == 0 {
+		t.Fatal("expected persisted assistant message")
+	}
+	textPart := persisted.Parts[0]
+	if got, want := textPart.ReasoningContent, "**A**\n\n**B**\n\n**C**\n\n**D**"; got != want {
+		t.Fatalf("persisted reasoning content = %q, want %q", got, want)
+	}
+	if got, want := strings.Join(textPart.ReasoningSummaryParts, "|"), "**A**|**B**|**C**|**D**"; got != want {
+		t.Fatalf("persisted summary parts = %q, want %q", got, want)
+	}
+	if textPart.ReasoningItemID != "rs_3" || textPart.ReasoningEncryptedContent != "enc_3" {
+		t.Fatalf("persisted reasoning metadata = id %q encrypted %q, want rs_3/enc_3", textPart.ReasoningItemID, textPart.ReasoningEncryptedContent)
+	}
+
+	var replayItems []string
+	for _, part := range persisted.Parts {
+		if part.Type != PartProviderReplay || part.ProviderReplay == nil {
+			continue
+		}
+		var item responsesOutputItem
+		if err := json.Unmarshal(part.ProviderReplay.Raw, &item); err != nil {
+			t.Fatalf("decode replay item: %v", err)
+		}
+		replayItems = append(replayItems, fmt.Sprintf("%s:%s:%d", item.ID, item.EncryptedContent, len(item.Summary)))
+	}
+	if got, want := strings.Join(replayItems, "|"), "rs_0:enc_0:2|rs_1:enc_1:2|rs_2:enc_2:3|rs_3:enc_3:4"; got != want {
+		t.Fatalf("persisted replay reasoning items = %q, want %q", got, want)
+	}
+}
+
 func TestBuildAssistantMessage_WithReasoning(t *testing.T) {
 	t.Parallel()
 

@@ -352,11 +352,15 @@ func (h *responsesStreamEventHandler) HandleJSONEvent(data []byte, eventType str
 	case "response.reasoning_summary_text.done":
 		var summaryDoneEvent struct {
 			OutputIndex  int    `json:"output_index"`
+			ItemID       string `json:"item_id"`
 			SummaryIndex *int   `json:"summary_index"`
 			Text         string `json:"text"`
 		}
 		if err := unmarshalEvent(&summaryDoneEvent); err != nil {
 			return false, err
+		}
+		if !h.reasoningState.MatchesItem(summaryDoneEvent.OutputIndex, summaryDoneEvent.ItemID) {
+			break
 		}
 		summaryIndex := -1
 		if summaryDoneEvent.SummaryIndex != nil {

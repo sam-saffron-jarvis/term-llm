@@ -732,6 +732,119 @@ func TestResponsesClientReasoningSummaryDoneIsIdempotentWithRenderedDeltas(t *te
 	}
 }
 
+func cumulativeReasoningSSEFixture() string {
+	return strings.Join([]string{
+		`event: response.output_item.added`,
+		`data: {"type":"response.output_item.added","output_index":0,"item":{"type":"reasoning","id":"rs_0","encrypted_content":"enc_0"}}`,
+		`event: response.reasoning_summary_text.done`,
+		`data: {"type":"response.reasoning_summary_text.done","output_index":0,"item_id":"rs_0","summary_index":0,"text":"**A**"}`,
+		`event: response.reasoning_summary_text.done`,
+		`data: {"type":"response.reasoning_summary_text.done","output_index":0,"item_id":"rs_0","summary_index":1,"text":"**B**"}`,
+		`event: response.output_item.done`,
+		`data: {"type":"response.output_item.done","output_index":0,"item":{"type":"reasoning","id":"rs_0","encrypted_content":"enc_0","summary":[{"type":"summary_text","text":"**A**"},{"type":"summary_text","text":"**B**"}]}}`,
+		`event: response.output_item.added`,
+		`data: {"type":"response.output_item.added","output_index":1,"item":{"type":"reasoning","id":"rs_1","encrypted_content":"enc_1"}}`,
+		`event: response.reasoning_summary_text.done`,
+		`data: {"type":"response.reasoning_summary_text.done","output_index":1,"item_id":"rs_1","summary_index":0,"text":"**A**"}`,
+		`event: response.reasoning_summary_text.done`,
+		`data: {"type":"response.reasoning_summary_text.done","output_index":1,"item_id":"rs_1","summary_index":1,"text":"**B**"}`,
+		`event: response.output_item.done`,
+		`data: {"type":"response.output_item.done","output_index":1,"item":{"type":"reasoning","id":"rs_1","encrypted_content":"enc_1","summary":[{"type":"summary_text","text":"**A**"},{"type":"summary_text","text":"**B**"}]}}`,
+		`event: response.output_item.added`,
+		`data: {"type":"response.output_item.added","output_index":2,"item":{"type":"reasoning","id":"rs_2","encrypted_content":"enc_2"}}`,
+		`event: response.reasoning_summary_text.done`,
+		`data: {"type":"response.reasoning_summary_text.done","output_index":2,"item_id":"rs_2","summary_index":0,"text":"**A**"}`,
+		`event: response.reasoning_summary_text.done`,
+		`data: {"type":"response.reasoning_summary_text.done","output_index":2,"item_id":"rs_2","summary_index":1,"text":"**B**"}`,
+		`event: response.reasoning_summary_text.done`,
+		`data: {"type":"response.reasoning_summary_text.done","output_index":2,"item_id":"rs_2","summary_index":2,"text":"**C**"}`,
+		`event: response.output_item.done`,
+		`data: {"type":"response.output_item.done","output_index":2,"item":{"type":"reasoning","id":"rs_2","encrypted_content":"enc_2","summary":[{"type":"summary_text","text":"**A**"},{"type":"summary_text","text":"**B**"},{"type":"summary_text","text":"**C**"}]}}`,
+		`event: response.output_item.added`,
+		`data: {"type":"response.output_item.added","output_index":3,"item":{"type":"reasoning","id":"rs_3","encrypted_content":"enc_3"}}`,
+		`event: response.reasoning_summary_text.done`,
+		`data: {"type":"response.reasoning_summary_text.done","output_index":3,"item_id":"rs_3","summary_index":0,"text":"**A**"}`,
+		`event: response.reasoning_summary_text.done`,
+		`data: {"type":"response.reasoning_summary_text.done","output_index":3,"item_id":"rs_3","summary_index":1,"text":"**B**"}`,
+		`event: response.reasoning_summary_text.done`,
+		`data: {"type":"response.reasoning_summary_text.done","output_index":3,"item_id":"rs_3","summary_index":2,"text":"**C**"}`,
+		`event: response.reasoning_summary_text.done`,
+		`data: {"type":"response.reasoning_summary_text.done","output_index":3,"item_id":"rs_3","summary_index":3,"text":"**D**"}`,
+		`event: response.output_item.done`,
+		`data: {"type":"response.output_item.done","output_index":3,"item":{"type":"reasoning","id":"rs_3","encrypted_content":"enc_3","summary":[{"type":"summary_text","text":"**A**"},{"type":"summary_text","text":"**B**"},{"type":"summary_text","text":"**C**"},{"type":"summary_text","text":"**D**"}]}}`,
+		`event: response.completed`,
+		`data: {"type":"response.completed","response":{"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}`,
+	}, "\n")
+}
+
+func cumulativeReasoningEvents(t *testing.T) []Event {
+	t.Helper()
+	return streamResponsesFixture(t, cumulativeReasoningSSEFixture(), ResponsesRequest{
+		Model:  "gpt-test",
+		Input:  []ResponsesInputItem{{Type: "message", Role: "user", Content: "hi"}},
+		Stream: true,
+		StreamOptions: &ResponsesStreamOptions{
+			ReasoningSummaryDelivery: "sequential_cutoff",
+		},
+	})
+}
+
+func TestResponsesClientSequentialCutoffDeduplicatesCumulativeReasoningItems(t *testing.T) {
+	events := cumulativeReasoningEvents(t)
+
+	var text strings.Builder
+	var last Event
+	for _, event := range events {
+		if event.Type == EventReasoningDelta {
+			text.WriteString(event.Text)
+			last = event
+		}
+	}
+	if got, want := text.String(), "**A**\n\n**B**\n\n**C**\n\n**D**"; got != want {
+		t.Fatalf("combined reasoning text = %q, want %q", got, want)
+	}
+	if !last.ReasoningFinal {
+		t.Fatal("last reasoning event should carry final snapshot metadata")
+	}
+	if got, want := strings.Join(last.ReasoningSummaryParts, "|"), "**A**|**B**|**C**|**D**"; got != want {
+		t.Fatalf("last structured summary parts = %q, want %q", got, want)
+	}
+	if last.ReasoningItemID != "rs_3" || last.ReasoningEncryptedContent != "enc_3" {
+		t.Fatalf("last reasoning metadata = id %q encrypted %q, want rs_3/enc_3", last.ReasoningItemID, last.ReasoningEncryptedContent)
+	}
+}
+
+func TestResponsesClientIgnoresReasoningSummaryDoneForMismatchedItem(t *testing.T) {
+	sse := strings.Join([]string{
+		`event: response.output_item.added`,
+		`data: {"type":"response.output_item.added","output_index":0,"item":{"type":"reasoning","id":"rs_active","encrypted_content":"enc_active"}}`,
+		`event: response.reasoning_summary_text.done`,
+		`data: {"type":"response.reasoning_summary_text.done","output_index":0,"item_id":"rs_stale","summary_index":0,"text":"stale"}`,
+		`event: response.reasoning_summary_text.done`,
+		`data: {"type":"response.reasoning_summary_text.done","output_index":0,"item_id":"rs_active","summary_index":0,"text":"active"}`,
+		`event: response.output_item.done`,
+		`data: {"type":"response.output_item.done","output_index":0,"item":{"type":"reasoning","id":"rs_active","encrypted_content":"enc_active","summary":[{"type":"summary_text","text":"active"}]}}`,
+		`event: response.completed`,
+		`data: {"type":"response.completed","response":{}}`,
+		`data: [DONE]`,
+	}, "\n")
+
+	events := streamResponsesFixture(t, sse, ResponsesRequest{
+		Model:  "gpt-test",
+		Input:  []ResponsesInputItem{{Type: "message", Role: "user", Content: "hi"}},
+		Stream: true,
+	})
+	var got strings.Builder
+	for _, event := range events {
+		if event.Type == EventReasoningDelta {
+			got.WriteString(event.Text)
+		}
+	}
+	if got.String() != "active" {
+		t.Fatalf("combined reasoning text = %q, want active", got.String())
+	}
+}
+
 func streamResponsesFixture(t *testing.T, sse string, req ResponsesRequest) []Event {
 	t.Helper()
 	httpClient := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {

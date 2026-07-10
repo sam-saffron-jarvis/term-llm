@@ -1526,13 +1526,16 @@ func (s *responsesToolState) Calls() []ToolCall {
 
 type responsesReasoningState struct {
 	items map[int]*responsesReasoningItemState
+	// The ChatGPT backend may repeat the complete summary accumulated so far in
+	// each new reasoning output item. Track displayed summary content across the
+	// whole response so later cumulative snapshots emit only their new suffix.
+	emittedSummaryContent string
 }
 
 type responsesReasoningItemState struct {
 	part                    Part
 	summaryParts            []string
 	currentSummaryPart      int
-	emittedSummaryContent   string
 	emittedEncrypted        string
 	pendingSummarySeparator bool
 }
@@ -1638,7 +1641,7 @@ func (s *responsesReasoningState) SummaryDone(outputIndex int, summaryIndex int,
 	state.rebuildReasoningSummaryContent()
 	state.part.ReasoningKind = ReasoningKindSummary
 
-	missing := missingReasoningSummarySuffix(state.emittedSummaryContent, state.part.ReasoningContent)
+	missing := missingReasoningSummarySuffix(s.emittedSummaryContent, state.part.ReasoningContent)
 	if missing == "" {
 		return nil
 	}
@@ -1654,7 +1657,10 @@ func (s *responsesReasoningState) MarkEmitted(outputIndex int) {
 		return
 	}
 	if state.part.ReasoningKind == ReasoningKindSummary {
-		state.emittedSummaryContent = state.cleanReasoningSummaryContent()
+		full := state.cleanReasoningSummaryContent()
+		if s.emittedSummaryContent == "" || strings.HasPrefix(full, s.emittedSummaryContent) {
+			s.emittedSummaryContent = full
+		}
 	}
 	state.emittedEncrypted = state.part.ReasoningEncryptedContent
 }
@@ -1664,10 +1670,10 @@ func (s *responsesReasoningState) NeedsFinalEvent(outputIndex int) bool {
 	if !ok {
 		return false
 	}
-	if state.part.ReasoningContent != "" && state.emittedSummaryContent == "" {
+	if state.part.ReasoningContent != "" && s.emittedSummaryContent == "" {
 		return true
 	}
-	if state.part.ReasoningContent != "" && missingReasoningSummarySuffix(state.emittedSummaryContent, state.part.ReasoningContent) != "" {
+	if state.part.ReasoningContent != "" && missingReasoningSummarySuffix(s.emittedSummaryContent, state.part.ReasoningContent) != "" {
 		return true
 	}
 	if len(state.part.ReasoningSummaryParts) > 1 {
@@ -1681,7 +1687,7 @@ func (s *responsesReasoningState) FinalEventText(outputIndex int) string {
 	if !ok {
 		return ""
 	}
-	return missingReasoningSummarySuffix(state.emittedSummaryContent, state.part.ReasoningContent)
+	return missingReasoningSummarySuffix(s.emittedSummaryContent, state.part.ReasoningContent)
 }
 
 func (s *responsesReasoningState) Finish(outputIndex int, itemID, encrypted string, summary []responsesReasoningSummaryPart) {
@@ -1689,6 +1695,14 @@ func (s *responsesReasoningState) Finish(outputIndex int, itemID, encrypted stri
 	if state, ok := s.items[outputIndex]; ok {
 		state.sanitizeSummaryParts()
 	}
+}
+
+func (s *responsesReasoningState) MatchesItem(outputIndex int, itemID string) bool {
+	if itemID == "" {
+		return true
+	}
+	state, ok := s.items[outputIndex]
+	return !ok || state.part.ReasoningItemID == "" || state.part.ReasoningItemID == itemID
 }
 
 // Part returns a snapshot of the accumulated reasoning item. The returned Part
