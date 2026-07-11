@@ -54,6 +54,22 @@ func TestGrokBinProviderCapabilities(t *testing.T) {
 	}
 }
 
+func TestGrokBinProviderBuildArgsDisablesNativeTools(t *testing.T) {
+	p := NewGrokBinProvider("grok-4.5", nil)
+	p.grokHome = t.TempDir()
+
+	args, _, err := p.buildArgs(Request{}, filepath.Join(p.grokHome, "prompt.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := argValue(args, "--disallowed-tools"); got != grokDisallowedNativeTools {
+		t.Fatalf("--disallowed-tools = %q, want %q", got, grokDisallowedNativeTools)
+	}
+	if got := argValue(args, "--tools"); got != "" {
+		t.Fatalf("unexpected --tools allowlist %q", got)
+	}
+}
+
 func TestGrokBinProviderBuildArgsUsesPrivatePromptFileAndNeutralCWD(t *testing.T) {
 	home := t.TempDir()
 	p := NewGrokBinProvider("grok-4.5-high", nil)
@@ -74,7 +90,7 @@ func TestGrokBinProviderBuildArgsUsesPrivatePromptFileAndNeutralCWD(t *testing.T
 		"--prompt-file " + promptPath,
 		"--output-format streaming-json",
 		"--always-approve",
-		"--tools ",
+		"--disallowed-tools " + grokDisallowedNativeTools,
 		"--max-turns 30",
 		"--reasoning-effort high",
 		"--resume grok-session-1",

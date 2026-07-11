@@ -31,6 +31,10 @@ const (
 	grokHomeMaxAge         = 30 * 24 * time.Hour
 	grokToolLineGrace      = 25 * time.Millisecond
 	grokToolLineGraceEnv   = "TERM_LLM_GROK_TOOL_LINE_GRACE_MS"
+	// An empty --tools value is interpreted by Grok as no filter. Explicitly
+	// deny its built-ins while leaving search_tool/use_tool available, since
+	// those are Grok's MCP discovery and invocation mechanism.
+	grokDisallowedNativeTools = "run_terminal_cmd,bash,grep,grep_search,read_file,search_replace,list_dir,web_search,web_fetch,todo_write,task,kill_task,get_task_output,memory_search,memory_get,lsp,image_gen,image_edit"
 )
 
 var grokCommandWaitDelay = time.Second
@@ -358,7 +362,7 @@ func (p *GrokBinProvider) buildArgs(req Request, promptPath string) ([]string, s
 		"--prompt-file", promptPath,
 		"--output-format", "streaming-json",
 		"--always-approve",
-		"--tools", "",
+		"--disallowed-tools", grokDisallowedNativeTools,
 		"--max-turns", strconv.Itoa(grokMaxTurns),
 		"--cwd", neutralCWD,
 		"--no-memory",
