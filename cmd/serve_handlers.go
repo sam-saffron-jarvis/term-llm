@@ -1577,11 +1577,14 @@ func (s *serveServer) handleSessionInterrupt(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	displayText := strings.TrimSpace(req.Message)
+	uploads := &managedRequestUploads{}
+	defer uploads.rollback()
 	var msg llm.Message
 	var err error
 	if len(req.Content) > 0 && strings.TrimSpace(string(req.Content)) != "" && strings.TrimSpace(string(req.Content)) != "null" {
-		msg, err = parseUserMessageContent(req.Content)
+		msg, err = parseUserMessageContentWithUploads(req.Content, uploads)
 		if err != nil {
+			uploads.rollback()
 			writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", err.Error())
 			return
 		}
@@ -1616,6 +1619,9 @@ func (s *serveServer) handleSessionInterrupt(w http.ResponseWriter, r *http.Requ
 	if interruptErr != nil {
 		writeOpenAIError(w, http.StatusConflict, "conflict_error", interruptErr.Error())
 		return
+	}
+	if action == llm.InterruptInterject {
+		uploads.commit()
 	}
 	if action == llm.InterruptCancel && s.store != nil {
 		goalCtx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), goalPersistTimeout)

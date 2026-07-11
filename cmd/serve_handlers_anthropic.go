@@ -41,11 +41,14 @@ func (s *serveServer) handleAnthropicMessages(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	messages, err := parseAnthropicMessages(req.Messages)
+	uploads := &managedRequestUploads{}
+	messages, err := parseAnthropicMessagesWithUploads(req.Messages, uploads)
 	if err != nil {
+		uploads.rollback()
 		writeAnthropicError(w, http.StatusBadRequest, "invalid_request_error", err.Error())
 		return
 	}
+	defer uploads.rollback()
 
 	// Prepend system message if provided
 	if sysText := parseAnthropicSystem(req.System); sysText != "" {
@@ -143,10 +146,12 @@ func (s *serveServer) handleAnthropicMessages(w http.ResponseWriter, r *http.Req
 	}
 
 	if req.Stream {
+		uploads.commit()
 		s.streamAnthropicMessages(ctx, w, runtime, stateful, replaceHistory, messages, llmReq, sessionID)
 		return
 	}
 
+	uploads.commit()
 	result, err := runtime.Run(ctx, stateful, replaceHistory, messages, llmReq)
 	if err != nil {
 		s.verboseLog("✗ POST /v1/messages error: %v", err)

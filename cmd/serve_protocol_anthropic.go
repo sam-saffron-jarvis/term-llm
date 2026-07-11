@@ -71,6 +71,17 @@ func writeAnthropicSSE(w io.Writer, eventType string, payload any) error {
 
 // parseAnthropicMessages converts Anthropic-format messages to llm.Message.
 func parseAnthropicMessages(msgs []anthropicMessage) ([]llm.Message, error) {
+	uploads := &managedRequestUploads{}
+	messages, err := parseAnthropicMessagesWithUploads(msgs, uploads)
+	if err != nil {
+		uploads.rollback()
+		return nil, err
+	}
+	uploads.commit()
+	return messages, nil
+}
+
+func parseAnthropicMessagesWithUploads(msgs []anthropicMessage, uploads *managedRequestUploads) ([]llm.Message, error) {
 	result := make([]llm.Message, 0, len(msgs))
 
 	for _, msg := range msgs {
@@ -114,7 +125,7 @@ func parseAnthropicMessages(msgs []anthropicMessage) ([]llm.Message, error) {
 						return nil, fmt.Errorf("decode image attachment: %w", err)
 					}
 					filename := uploadFilenameForMediaType("image", block.Source.MediaType)
-					path, err := saveUploadedBytes(filename, raw)
+					path, err := uploads.saveUploadedBytes(filename, raw)
 					if err != nil {
 						return nil, fmt.Errorf("save image attachment: %w", err)
 					}

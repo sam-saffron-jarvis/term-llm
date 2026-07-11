@@ -51,6 +51,17 @@ type responsesCreateRequest struct {
 }
 
 func parseResponsesInput(input json.RawMessage) ([]llm.Message, bool, error) {
+	uploads := &managedRequestUploads{}
+	messages, replaceHistory, err := parseResponsesInputWithUploads(input, uploads)
+	if err != nil {
+		uploads.rollback()
+		return nil, false, err
+	}
+	uploads.commit()
+	return messages, replaceHistory, nil
+}
+
+func parseResponsesInputWithUploads(input json.RawMessage, uploads *managedRequestUploads) ([]llm.Message, bool, error) {
 	trimmed := strings.TrimSpace(string(input))
 	if trimmed == "" || trimmed == "null" {
 		return nil, false, fmt.Errorf("input is required")
@@ -99,7 +110,7 @@ func parseResponsesInput(input json.RawMessage) ([]llm.Message, bool, error) {
 				messages = append(messages, llm.AssistantText(extractItemContent(item["content"])))
 				replaceHistory = true
 			default:
-				msg, err := parseUserMessageContent(item["content"])
+				msg, err := parseUserMessageContentWithUploads(item["content"], uploads)
 				if err != nil {
 					return nil, false, fmt.Errorf("user message: %w", err)
 				}

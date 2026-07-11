@@ -178,6 +178,67 @@ func saveUploadedFile(filename, b64Data string) (string, error) {
 	return saveUploadedBytes(filename, raw)
 }
 
+type managedRequestUploads struct {
+	paths     []string
+	committed bool
+}
+
+func (u *managedRequestUploads) saveUploadedFile(filename, b64Data string) (string, error) {
+	path, err := saveUploadedFile(filename, b64Data)
+	if err != nil {
+		return "", err
+	}
+	u.track(path)
+	return path, nil
+}
+
+func (u *managedRequestUploads) saveUploadedBytes(filename string, raw []byte) (string, error) {
+	path, err := saveUploadedBytes(filename, raw)
+	if err != nil {
+		return "", err
+	}
+	u.track(path)
+	return path, nil
+}
+
+func (u *managedRequestUploads) track(path string) {
+	if u == nil || strings.TrimSpace(path) == "" {
+		return
+	}
+	u.paths = append(u.paths, path)
+}
+
+func (u *managedRequestUploads) commit() {
+	if u == nil {
+		return
+	}
+	u.committed = true
+	u.paths = nil
+}
+
+func (u *managedRequestUploads) rollback() {
+	if u == nil || u.committed {
+		return
+	}
+	for i := len(u.paths) - 1; i >= 0; i-- {
+		removeCreatedUpload(u.paths[i])
+	}
+	u.committed = true
+	u.paths = nil
+}
+
+func removeCreatedUpload(path string) {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return
+	}
+	info, err := os.Lstat(path)
+	if err != nil || !info.Mode().IsRegular() {
+		return
+	}
+	_ = os.Remove(path)
+}
+
 func uploadFilenameForMediaType(prefix, mediaType string) string {
 	prefix = strings.TrimSpace(prefix)
 	if prefix == "" {
@@ -347,6 +408,17 @@ func looksLikePlainText(raw []byte) bool {
 // to avoid provider errors; the saved ImagePath always points at the original
 // uploaded bytes.
 func parseUserMessageContent(content json.RawMessage) (llm.Message, error) {
+	uploads := &managedRequestUploads{}
+	msg, err := parseUserMessageContentWithUploads(content, uploads)
+	if err != nil {
+		uploads.rollback()
+		return llm.Message{}, err
+	}
+	uploads.commit()
+	return msg, nil
+}
+
+func parseUserMessageContentWithUploads(content json.RawMessage, uploads *managedRequestUploads) (llm.Message, error) {
 	var parts []map[string]json.RawMessage
 	if err := json.Unmarshal(content, &parts); err == nil && len(parts) > 0 {
 		var llmParts []llm.Part
@@ -384,7 +456,7 @@ func parseUserMessageContent(content json.RawMessage) (llm.Message, error) {
 					if err != nil {
 						return llm.Message{}, fmt.Errorf("decode attachment %q: %w", filename, err)
 					}
-					path, err := saveUploadedBytes(filename, raw)
+					path, err := uploads.saveUploadedBytes(filename, raw)
 					if err != nil {
 						return llm.Message{}, fmt.Errorf("save attachment %q: %w", filename, err)
 					}
@@ -414,7 +486,7 @@ func parseUserMessageContent(content json.RawMessage) (llm.Message, error) {
 					if filename == "" {
 						filename = "image"
 					}
-					if _, err := saveUploadedFile(filename, b64); err != nil {
+					if _, err := uploads.saveUploadedFile(filename, b64); err != nil {
 						return llm.Message{}, fmt.Errorf("save attachment %q: %w", filename, err)
 					}
 					llmParts = append(llmParts, llm.Part{
@@ -447,7 +519,7 @@ func parseUserMessageContent(content json.RawMessage) (llm.Message, error) {
 					return llm.Message{}, fmt.Errorf("decode attachment %q: %w", displayFilename, err)
 				}
 				mt = normalizeUploadMediaType(displayFilename, mt, raw)
-				path, err := saveUploadedBytes(displayFilename, raw)
+				path, err := uploads.saveUploadedBytes(displayFilename, raw)
 				if err != nil {
 					return llm.Message{}, fmt.Errorf("save attachment %q: %w", displayFilename, err)
 				}

@@ -1290,6 +1290,8 @@ func isDuplicateColumnError(err error) bool {
 		strings.Contains(errStr, "already exists")
 }
 
+const managedUploadGCGracePeriod = time.Hour
+
 // cleanup removes old sessions based on configuration.
 func (s *SQLiteStore) cleanup() error {
 	ctx := context.Background()
@@ -1319,7 +1321,157 @@ func (s *SQLiteStore) cleanup() error {
 		}
 	}
 
+	if s.cleanupManagedUploadsEnabled() {
+		if err := s.cleanupManagedUploads(ctx, time.Now()); err != nil {
+			return fmt.Errorf("cleanup managed uploads: %w", err)
+		}
+	}
+
 	return nil
+}
+
+func (s *SQLiteStore) cleanupManagedUploadsEnabled() bool {
+	if s == nil || s.cfg.ReadOnly {
+		return false
+	}
+	dbPath, err := ResolveDBPath(s.cfg.Path)
+	if err != nil || dbPath == ":memory:" {
+		return false
+	}
+	dataDir, err := GetDataDir()
+	if err != nil {
+		return false
+	}
+	dbPath, err = filepath.Abs(dbPath)
+	if err != nil {
+		return false
+	}
+	dataDir, err = filepath.Abs(dataDir)
+	if err != nil {
+		return false
+	}
+	dbPath = filepath.Clean(dbPath)
+	dataDir = filepath.Clean(dataDir)
+	return dbPath == filepath.Join(dataDir, "sessions.db") || strings.HasPrefix(dbPath, dataDir+string(filepath.Separator))
+}
+
+func (s *SQLiteStore) cleanupManagedUploads(ctx context.Context, now time.Time) error {
+	dataDir, err := GetDataDir()
+	if err != nil {
+		return fmt.Errorf("get data dir: %w", err)
+	}
+	uploadsDir := filepath.Join(dataDir, "uploads")
+	info, err := os.Lstat(uploadsDir)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("stat uploads dir: %w", err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+		return nil
+	}
+	canonicalUploadsDir, err := filepath.EvalSymlinks(uploadsDir)
+	if err != nil {
+		return fmt.Errorf("canonicalize uploads dir: %w", err)
+	}
+
+	cutoff := now.Add(-managedUploadGCGracePeriod)
+	entries, err := os.ReadDir(canonicalUploadsDir)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("read uploads dir: %w", err)
+	}
+	type uploadCandidate struct {
+		path      string
+		canonical string
+	}
+	var candidates []uploadCandidate
+	for _, entry := range entries {
+		path := filepath.Join(canonicalUploadsDir, entry.Name())
+		info, err := entry.Info()
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return fmt.Errorf("stat upload %s: %w", path, err)
+		}
+		mode := info.Mode()
+		if mode&os.ModeSymlink != 0 || !mode.IsRegular() || !info.ModTime().Before(cutoff) {
+			continue
+		}
+		canonicalPath, ok := canonicalManagedUploadPath(canonicalUploadsDir, path)
+		if !ok {
+			continue
+		}
+		candidates = append(candidates, uploadCandidate{path: path, canonical: canonicalPath})
+	}
+	if len(candidates) == 0 {
+		return nil
+	}
+
+	referenced, err := s.referencedManagedUploadPaths(ctx, canonicalUploadsDir)
+	if err != nil {
+		return err
+	}
+	for _, candidate := range candidates {
+		if referenced[candidate.canonical] {
+			continue
+		}
+		if err := os.Remove(candidate.path); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("remove upload %s: %w", candidate.path, err)
+		}
+	}
+	return nil
+}
+
+func (s *SQLiteStore) referencedManagedUploadPaths(ctx context.Context, canonicalUploadsDir string) (map[string]bool, error) {
+	rows, err := s.db.QueryContext(ctx, "SELECT parts FROM messages")
+	if err != nil {
+		return nil, fmt.Errorf("query message parts: %w", err)
+	}
+	defer rows.Close()
+
+	referenced := make(map[string]bool)
+	for rows.Next() {
+		var partsJSON string
+		if err := rows.Scan(&partsJSON); err != nil {
+			return nil, fmt.Errorf("scan message parts: %w", err)
+		}
+		var parts []llm.Part
+		if err := json.Unmarshal([]byte(partsJSON), &parts); err != nil {
+			return nil, fmt.Errorf("parse message parts: %w", err)
+		}
+		for _, part := range parts {
+			if path, ok := canonicalManagedUploadPath(canonicalUploadsDir, part.ImagePath); ok {
+				referenced[path] = true
+			}
+			if path, ok := canonicalManagedUploadPath(canonicalUploadsDir, part.FilePath); ok {
+				referenced[path] = true
+			}
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate message parts: %w", err)
+	}
+	return referenced, nil
+}
+
+func canonicalManagedUploadPath(canonicalUploadsDir, path string) (string, bool) {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return "", false
+	}
+	canonicalPath, err := filepath.EvalSymlinks(path)
+	if err != nil || canonicalPath == canonicalUploadsDir {
+		return "", false
+	}
+	if !strings.HasPrefix(canonicalPath, canonicalUploadsDir+string(filepath.Separator)) {
+		return "", false
+	}
+	return canonicalPath, true
 }
 
 // Create inserts a new session.
@@ -1834,6 +1986,11 @@ func (s *SQLiteStore) Delete(ctx context.Context, id string) error {
 	rows, _ := result.RowsAffected()
 	if rows == 0 {
 		return fmt.Errorf("session not found: %s", id)
+	}
+	if s.cleanupManagedUploadsEnabled() {
+		if err := s.cleanupManagedUploads(ctx, time.Now()); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: session upload cleanup failed after deleting %s: %v\n", id, err)
+		}
 	}
 	return nil
 }

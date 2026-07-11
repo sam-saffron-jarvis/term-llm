@@ -184,6 +184,47 @@ func TestParseUserMessageContent_RejectsInvalidSmallInlineImage(t *testing.T) {
 	}
 }
 
+func TestParseUserMessageContent_RollsBackSavedUploadsAfterLaterError(t *testing.T) {
+	dataHome := t.TempDir()
+	t.Setenv("XDG_DATA_HOME", dataHome)
+
+	content, err := json.Marshal([]map[string]any{
+		{
+			"type":      "input_image",
+			"image_url": "data:image/png;base64," + base64.StdEncoding.EncodeToString([]byte("image-bytes")),
+			"filename":  "ok.png",
+		},
+		{
+			"type":      "input_file",
+			"file_data": "data:application/pdf;base64,!!!invalid!!!",
+			"filename":  "bad.pdf",
+		},
+	})
+	if err != nil {
+		t.Fatalf("json.Marshal() error = %v", err)
+	}
+
+	_, err = parseUserMessageContent(content)
+	if err == nil {
+		t.Fatal("parseUserMessageContent() error = nil, want later decode error")
+	}
+	if !strings.Contains(err.Error(), "bad.pdf") {
+		t.Fatalf("parseUserMessageContent() error = %v, want bad.pdf", err)
+	}
+
+	uploadsDir := filepath.Join(dataHome, "term-llm", "uploads")
+	entries, readErr := os.ReadDir(uploadsDir)
+	if os.IsNotExist(readErr) {
+		return
+	}
+	if readErr != nil {
+		t.Fatalf("read uploads dir: %v", readErr)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("uploads dir has %d entries after failed parse, want none", len(entries))
+	}
+}
+
 func TestDecodeUploadedFile_AllowsWrappedBase64(t *testing.T) {
 	wrapped := "aGVs\r\nbG8="
 	raw, err := decodeUploadedFile("hello.txt", wrapped)

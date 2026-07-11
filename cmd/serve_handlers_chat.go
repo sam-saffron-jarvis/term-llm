@@ -38,11 +38,14 @@ func (s *serveServer) handleChatCompletions(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	messages, replaceHistory, err := parseChatMessages(req.Messages)
+	uploads := &managedRequestUploads{}
+	messages, replaceHistory, err := parseChatMessagesWithUploads(req.Messages, uploads)
 	if err != nil {
+		uploads.rollback()
 		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", err.Error())
 		return
 	}
+	defer uploads.rollback()
 
 	sessionID := resolveRequestSessionID(r)
 	if sessionID == "" {
@@ -123,10 +126,12 @@ func (s *serveServer) handleChatCompletions(w http.ResponseWriter, r *http.Reque
 	}
 
 	if req.Stream {
+		uploads.commit()
 		s.streamChatCompletions(ctx, w, runtime, stateful, replaceHistory, messages, llmReq, req.StreamOptions, sessionID)
 		return
 	}
 
+	uploads.commit()
 	result, err := runtime.Run(ctx, stateful, replaceHistory, messages, llmReq)
 	if err != nil {
 		if errors.Is(err, errServeSessionBusy) {

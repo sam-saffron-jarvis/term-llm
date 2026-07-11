@@ -23,6 +23,7 @@ type resolvedResponsesRequest struct {
 	freshConversation  bool
 	uiStream           bool
 	idempotencyKey     string
+	uploads            *managedRequestUploads
 }
 
 func validateResponseReasoningMode(provider, model, mode string, explicit bool) (normalized string, clearStale bool, err error) {
@@ -68,11 +69,14 @@ func (s *serveServer) handleResponses(w http.ResponseWriter, r *http.Request) {
 		req.Model, len(req.Tools), req.Stream, r.ContentLength)
 	defer func() { s.verboseLog("← POST /v1/responses completed in %s", time.Since(reqStart)) }()
 
-	inputMessages, replaceHistory, err := parseResponsesInput(req.Input)
+	uploads := &managedRequestUploads{}
+	inputMessages, replaceHistory, err := parseResponsesInputWithUploads(req.Input, uploads)
 	if err != nil {
+		uploads.rollback()
 		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", err.Error())
 		return
 	}
+	defer uploads.rollback()
 	if len(inputMessages) == 0 {
 		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "input is required")
 		return
@@ -135,6 +139,7 @@ func (s *serveServer) handleResponses(w http.ResponseWriter, r *http.Request) {
 		previousDurable:    previousDurable,
 		freshConversation:  req.PreviousResponseID == "",
 		idempotencyKey:     responseIdempotencyKeyFromRequest(r),
+		uploads:            uploads,
 	})
 }
 
@@ -459,6 +464,9 @@ func (s *serveServer) handleResolvedResponses(w http.ResponseWriter, r *http.Req
 		}
 	}
 	if req.Stream {
+		if rr.uploads != nil {
+			rr.uploads.commit()
+		}
 		if rr.uiStream && stateful {
 			s.streamUIResponses(w, r, runtime, stateful, replaceHistory, inputMessages, llmReq, sessionID, previousResponseID, resetResponseIDsOnSuccess, modelSwapExec, runIdempotencyKey)
 		} else {
@@ -470,6 +478,9 @@ func (s *serveServer) handleResolvedResponses(w http.ResponseWriter, r *http.Req
 		return
 	}
 
+	if rr.uploads != nil {
+		rr.uploads.commit()
+	}
 	result, _, err := s.runResponseWithModelSwapFallback(ctx, runtime, stateful, replaceHistory, inputMessages, llmReq, sessionID, modelSwapExec)
 	if err != nil {
 		if errors.Is(err, errServeSessionBusy) {

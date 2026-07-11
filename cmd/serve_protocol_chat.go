@@ -56,6 +56,17 @@ type chatToolCall struct {
 }
 
 func parseChatMessages(msgs []chatMessage) ([]llm.Message, bool, error) {
+	uploads := &managedRequestUploads{}
+	messages, replaceHistory, err := parseChatMessagesWithUploads(msgs, uploads)
+	if err != nil {
+		uploads.rollback()
+		return nil, false, err
+	}
+	uploads.commit()
+	return messages, replaceHistory, nil
+}
+
+func parseChatMessagesWithUploads(msgs []chatMessage, uploads *managedRequestUploads) ([]llm.Message, bool, error) {
 	callNameByID := make(map[string]string)
 	result := make([]llm.Message, 0, len(msgs))
 	allToolMessages := len(msgs) > 0
@@ -77,13 +88,13 @@ func parseChatMessages(msgs []chatMessage) ([]llm.Message, bool, error) {
 			result = append(result, llm.Message{Role: llm.RoleDeveloper, Parts: []llm.Part{{Type: llm.PartText, Text: extractMessageText(msg.Content)}}})
 			replaceHistory = true
 		case "user":
-			userMsg, err := parseUserMessageContent(msg.Content)
+			userMsg, err := parseUserMessageContentWithUploads(msg.Content, uploads)
 			if err != nil {
 				return nil, false, fmt.Errorf("user message: %w", err)
 			}
 			result = append(result, userMsg)
 		case "assistant":
-			assistantMsg, err := parseUserMessageContent(msg.Content)
+			assistantMsg, err := parseUserMessageContentWithUploads(msg.Content, uploads)
 			if err != nil {
 				return nil, false, fmt.Errorf("assistant message: %w", err)
 			}

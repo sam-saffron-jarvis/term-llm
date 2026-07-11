@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/samsaffron/term-llm/internal/llm"
 )
@@ -183,5 +184,108 @@ func TestMessageDoesNotStripImageBase64ForNonUploadPath(t *testing.T) {
 	}
 	if !strings.Contains(partsJSON, b64) {
 		t.Fatalf("storage parts json stripped non-upload image base64: %s", partsJSON)
+	}
+}
+
+func TestSQLiteStoreDeleteCleansOnlyStaleUnreferencedManagedUploads(t *testing.T) {
+	ctx := context.Background()
+	dataHome := t.TempDir()
+	t.Setenv("XDG_DATA_HOME", dataHome)
+
+	store, err := NewSQLiteStore(Config{Enabled: true})
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	defer store.Close()
+
+	uploadsDir := filepath.Join(dataHome, "term-llm", "uploads")
+	if err := os.MkdirAll(uploadsDir, 0o700); err != nil {
+		t.Fatalf("mkdir uploads: %v", err)
+	}
+	old := time.Now().Add(-managedUploadGCGracePeriod - time.Minute)
+	writeOldUpload := func(name string) string {
+		t.Helper()
+		path := filepath.Join(uploadsDir, name)
+		if err := os.WriteFile(path, []byte(name), 0o600); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+		if err := os.Chtimes(path, old, old); err != nil {
+			t.Fatalf("chtimes %s: %v", name, err)
+		}
+		return path
+	}
+	shared := writeOldUpload("shared.png")
+	deleteOnly := writeOldUpload("delete-only.png")
+	keepOnly := writeOldUpload("keep-only.bin")
+
+	recent := filepath.Join(uploadsDir, "recent-orphan.png")
+	if err := os.WriteFile(recent, []byte("recent"), 0o600); err != nil {
+		t.Fatalf("write recent orphan: %v", err)
+	}
+
+	escaped := filepath.Join(dataHome, "term-llm", "escaped.txt")
+	if err := os.WriteFile(escaped, []byte("escaped"), 0o600); err != nil {
+		t.Fatalf("write escaped file: %v", err)
+	}
+	traversalPath := uploadsDir + string(filepath.Separator) + ".." + string(filepath.Separator) + "escaped.txt"
+
+	linkTarget := filepath.Join(dataHome, "link-target.png")
+	if err := os.WriteFile(linkTarget, []byte("target"), 0o600); err != nil {
+		t.Fatalf("write link target: %v", err)
+	}
+	symlinkPath := filepath.Join(uploadsDir, "link.png")
+	symlinkCreated := true
+	if err := os.Symlink(linkTarget, symlinkPath); err != nil {
+		symlinkCreated = false
+		t.Logf("skipping symlink assertion: %v", err)
+	}
+
+	keep := &Session{ID: "sess_keep_uploads", Provider: "mock", Model: "mock"}
+	deleted := &Session{ID: "sess_delete_uploads", Provider: "mock", Model: "mock"}
+	if err := store.Create(ctx, keep); err != nil {
+		t.Fatalf("Create keep: %v", err)
+	}
+	if err := store.Create(ctx, deleted); err != nil {
+		t.Fatalf("Create deleted: %v", err)
+	}
+	if err := store.AddMessage(ctx, keep.ID, NewMessage(keep.ID, llm.Message{Role: llm.RoleUser, Parts: []llm.Part{
+		{Type: llm.PartImage, ImagePath: shared, ImageData: &llm.ToolImageData{MediaType: "image/png"}},
+		{Type: llm.PartFile, Text: "keep file", FilePath: keepOnly, FileData: &llm.ToolFileData{Filename: "keep-only.bin"}},
+	}}, -1)); err != nil {
+		t.Fatalf("AddMessage keep: %v", err)
+	}
+	if err := store.AddMessage(ctx, deleted.ID, NewMessage(deleted.ID, llm.Message{Role: llm.RoleUser, Parts: []llm.Part{
+		{Type: llm.PartImage, ImagePath: shared, ImageData: &llm.ToolImageData{MediaType: "image/png"}},
+		{Type: llm.PartImage, ImagePath: deleteOnly, ImageData: &llm.ToolImageData{MediaType: "image/png"}},
+		{Type: llm.PartFile, Text: "escaped file", FilePath: traversalPath, FileData: &llm.ToolFileData{Filename: "escaped.txt"}},
+	}}, -1)); err != nil {
+		t.Fatalf("AddMessage deleted: %v", err)
+	}
+
+	if err := store.Delete(ctx, deleted.ID); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+
+	assertExists := func(name, path string) {
+		t.Helper()
+		if _, err := os.Lstat(path); err != nil {
+			t.Fatalf("%s was removed, want preserved: %v", name, err)
+		}
+	}
+	assertMissing := func(name, path string) {
+		t.Helper()
+		if _, err := os.Lstat(path); !os.IsNotExist(err) {
+			t.Fatalf("%s still exists after upload GC (err=%v)", name, err)
+		}
+	}
+
+	assertExists("shared upload", shared)
+	assertExists("surviving session file upload", keepOnly)
+	assertExists("recent orphan upload", recent)
+	assertExists("traversal target", escaped)
+	assertMissing("deleted session upload", deleteOnly)
+	if symlinkCreated {
+		assertExists("symlink upload", symlinkPath)
+		assertExists("symlink target", linkTarget)
 	}
 }
