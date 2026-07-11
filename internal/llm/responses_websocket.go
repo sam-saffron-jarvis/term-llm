@@ -228,10 +228,13 @@ func (c *ResponsesClient) streamWebSocketPrepared(ctx context.Context, req Respo
 		if err := handler.Finish(send); err != nil {
 			return err
 		}
-		fullReq := wireReq
-		fullReq.Input = append([]ResponsesInputItem(nil), buildFullInput()...)
-		fullReq.PreviousResponseID = ""
-		c.wsLastRequest = &fullReq
+		lastReq := wireReq
+		// Future continuation checks only compare non-input request metadata. Do not
+		// rebuild or retain the full transcript after every completed WebSocket turn.
+		lastReq.Input = nil
+		lastReq.Messages = nil
+		lastReq.PreviousResponseID = ""
+		c.wsLastRequest = &lastReq
 		return nil
 	}), nil
 }

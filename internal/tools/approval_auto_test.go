@@ -78,6 +78,72 @@ func TestApprovalManagerAutoReviewerOnlyAfterDeterministicMiss(t *testing.T) {
 	}
 }
 
+func TestApprovalManagerLazyTranscriptSupplierSkipsFastPaths(t *testing.T) {
+	t.Run("yolo", func(t *testing.T) {
+		mgr := newApprovalAutoTestManager(NewToolPermissions())
+		mgr.SetApprovalMode(ModeYolo)
+		calls := 0
+		outcome, err := mgr.checkShellApprovalWithContext(context.Background(), "echo hi", "", func() []TranscriptEntry {
+			calls++
+			return []TranscriptEntry{{Role: "user", Text: "expensive transcript"}}
+		})
+		if err != nil || outcome != ProceedOnce {
+			t.Fatalf("outcome = %v, err = %v, want yolo allow", outcome, err)
+		}
+		if calls != 0 {
+			t.Fatalf("transcript supplier called %d times on yolo fast path, want 0", calls)
+		}
+	})
+
+	t.Run("deterministic allow", func(t *testing.T) {
+		perms := NewToolPermissions()
+		perms.ShellAllow = []string{"git *"}
+		if err := perms.CompileShellPatterns(); err != nil {
+			t.Fatal(err)
+		}
+		mgr := newApprovalAutoTestManager(perms)
+		mgr.SetApprovalMode(ModeAuto)
+		mgr.PolicyReviewFunc = func(ctx context.Context, req PolicyReviewRequest) (PolicyDecision, error) {
+			t.Fatal("guardian reviewer should not be called for deterministic allow")
+			return PolicyDecision{}, nil
+		}
+		calls := 0
+		outcome, err := mgr.checkShellApprovalWithContext(context.Background(), "git status", "", func() []TranscriptEntry {
+			calls++
+			return []TranscriptEntry{{Role: "user", Text: "expensive transcript"}}
+		})
+		if err != nil || outcome != ProceedOnce {
+			t.Fatalf("outcome = %v, err = %v, want deterministic allow", outcome, err)
+		}
+		if calls != 0 {
+			t.Fatalf("transcript supplier called %d times on deterministic fast path, want 0", calls)
+		}
+	})
+}
+
+func TestApprovalManagerLazyTranscriptSupplierInvokedForGuardian(t *testing.T) {
+	mgr := newApprovalAutoTestManager(NewToolPermissions())
+	mgr.SetApprovalMode(ModeAuto)
+	wantTranscript := TranscriptEntry{Role: "user", Text: "please inspect before running"}
+	mgr.PolicyReviewFunc = func(ctx context.Context, req PolicyReviewRequest) (PolicyDecision, error) {
+		if len(req.Transcript) != 1 || req.Transcript[0] != wantTranscript {
+			t.Fatalf("review transcript = %#v, want %#v", req.Transcript, []TranscriptEntry{wantTranscript})
+		}
+		return PolicyDecision{Allowed: true, RiskLevel: "low", UserAuthorization: "high", Rationale: "ok"}, nil
+	}
+	calls := 0
+	outcome, err := mgr.checkShellApprovalWithContext(context.Background(), "echo hi", t.TempDir(), func() []TranscriptEntry {
+		calls++
+		return []TranscriptEntry{wantTranscript}
+	})
+	if err != nil || outcome != ProceedAlways {
+		t.Fatalf("outcome = %v, err = %v, want guardian allow", outcome, err)
+	}
+	if calls != 1 {
+		t.Fatalf("transcript supplier called %d times for guardian review, want 1", calls)
+	}
+}
+
 func TestApprovalManagerGuardianExactCacheDoesNotTreatStarAsPattern(t *testing.T) {
 	mgr := newApprovalAutoTestManager(NewToolPermissions())
 	mgr.SetApprovalMode(ModeAuto)

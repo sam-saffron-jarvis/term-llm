@@ -62,6 +62,130 @@ func runGitForWorktreeTest(t *testing.T, dir string, args ...string) string {
 	return string(out)
 }
 
+func TestListUsesPorcelainMetadataWithoutPerWorktreeGitProbes(t *testing.T) {
+	repo := newGitRepoForWorktreeTest(t)
+	wt1, err := Create(context.Background(), repo, CreateOptions{Name: "list-fast-one"})
+	if err != nil {
+		t.Fatalf("Create wt1: %v", err)
+	}
+	t.Cleanup(func() { _ = Remove(context.Background(), wt1.Dir, RemoveOptions{Force: true}) })
+	wt2, err := Create(context.Background(), repo, CreateOptions{Name: "list-fast-two"})
+	if err != nil {
+		t.Fatalf("Create wt2: %v", err)
+	}
+	t.Cleanup(func() { _ = Remove(context.Background(), wt2.Dir, RemoveOptions{Force: true}) })
+
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatalf("LookPath git: %v", err)
+	}
+	wrapperDir := t.TempDir()
+	wrapper := filepath.Join(wrapperDir, "git")
+	logPath := filepath.Join(wrapperDir, "git.log")
+	script := "#!/bin/sh\n" +
+		"printf '%s|%s\\n' \"$PWD\" \"$*\" >> \"$TERM_LLM_GIT_LOG\"\n" +
+		"exec \"$TERM_LLM_REAL_GIT\" \"$@\"\n"
+	if err := os.WriteFile(wrapper, []byte(script), 0o755); err != nil {
+		t.Fatalf("write git wrapper: %v", err)
+	}
+	t.Setenv("TERM_LLM_REAL_GIT", realGit)
+	t.Setenv("TERM_LLM_GIT_LOG", logPath)
+	t.Setenv("PATH", wrapperDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	items, err := List(repo)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(items) != 2 {
+		t.Fatalf("List returned %d worktrees, want 2: %+v", len(items), items)
+	}
+	wantByDir := map[string]Worktree{
+		filepath.Clean(wt1.Dir): *wt1,
+		filepath.Clean(wt2.Dir): *wt2,
+	}
+	for _, item := range items {
+		want, ok := wantByDir[filepath.Clean(item.Dir)]
+		if !ok {
+			t.Fatalf("List returned unexpected worktree: %+v", item)
+		}
+		if item.Name != want.Name || item.Base != want.Base || item.Branch != want.Branch || item.HeadSHA != want.HeadSHA {
+			t.Fatalf("List metadata = %+v, want name=%q base=%q branch=%q head=%q", item, want.Name, want.Base, want.Branch, want.HeadSHA)
+		}
+	}
+
+	data, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("read git log: %v", err)
+	}
+	worktreeDirs := map[string]bool{filepath.Clean(wt1.Dir): true, filepath.Clean(wt2.Dir): true}
+	statusCalls := 0
+	for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+		if line == "" {
+			continue
+		}
+		cwd, args, ok := strings.Cut(line, "|")
+		if !ok || !worktreeDirs[filepath.Clean(cwd)] {
+			continue
+		}
+		if args == "status --porcelain" {
+			statusCalls++
+			continue
+		}
+		if strings.HasPrefix(args, "rev-parse ") || strings.HasPrefix(args, "symbolic-ref ") || strings.HasPrefix(args, "merge-base ") {
+			t.Fatalf("List ran per-worktree metadata probe in %s: git %s\nfull log:\n%s", cwd, args, data)
+		}
+	}
+	if statusCalls != 2 {
+		t.Fatalf("per-worktree status calls = %d, want 2\nfull log:\n%s", statusCalls, data)
+	}
+}
+
+func TestListKeepsDetachedBranchEmpty(t *testing.T) {
+	repo := newGitRepoForWorktreeTest(t)
+	wt, err := Create(context.Background(), repo, CreateOptions{Name: "detached-list"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	t.Cleanup(func() { _ = Remove(context.Background(), wt.Dir, RemoveOptions{Force: true}) })
+	runGitForWorktreeTest(t, wt.Dir, "checkout", "--detach", "-q")
+
+	items, err := List(repo)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("List returned %d worktrees, want 1: %+v", len(items), items)
+	}
+	if !items[0].Detached || items[0].Branch != "" {
+		t.Fatalf("detached worktree = %+v, want Detached true with empty Branch", items[0])
+	}
+}
+
+func TestMetadataByDirUsesCanonicalPathKeys(t *testing.T) {
+	root := t.TempDir()
+	realDir := filepath.Join(t.TempDir(), "real")
+	if err := os.MkdirAll(realDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	linkDir := filepath.Join(t.TempDir(), "link")
+	if err := os.Symlink(realDir, linkDir); err != nil {
+		t.Skipf("symlink unsupported: %v", err)
+	}
+	want := metadata{Name: "canonical", Dir: linkDir, Base: "base"}
+	if err := writeMetadata(root, want); err != nil {
+		t.Fatalf("writeMetadata: %v", err)
+	}
+
+	key, err := samePathKey(realDir)
+	if err != nil {
+		t.Fatalf("samePathKey: %v", err)
+	}
+	got, ok := metadataByDir(root)[key]
+	if !ok || got.Name != want.Name {
+		t.Fatalf("metadataByDir[%q] = %+v, %v; want metadata %q", key, got, ok, want.Name)
+	}
+}
+
 func TestDiffIncludesUntrackedFiles(t *testing.T) {
 	t.Parallel()
 

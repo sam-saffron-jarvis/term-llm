@@ -992,11 +992,20 @@ func getDirectoryForApproval(path string) string {
 // CheckShellApproval checks if a shell command is approved.
 // workDir is the directory where the command will execute (may be empty for cwd).
 func (m *ApprovalManager) CheckShellApproval(command, workDir string) (ConfirmOutcome, error) {
-	return m.CheckShellApprovalWithContext(context.Background(), command, workDir, nil)
+	return m.checkShellApprovalWithContext(context.Background(), command, workDir, nil)
 }
 
 // CheckShellApprovalWithContext checks shell approval with optional transcript evidence.
+// It keeps the existing eager transcript API for callers that have already
+// materialized approval evidence.
 func (m *ApprovalManager) CheckShellApprovalWithContext(ctx context.Context, command, workDir string, transcript []TranscriptEntry) (ConfirmOutcome, error) {
+	return m.checkShellApprovalWithContext(ctx, command, workDir, func() []TranscriptEntry { return transcript })
+}
+
+// checkShellApprovalWithContext checks shell approval with lazily-supplied
+// transcript evidence. The supplier is only evaluated when an auto guardian
+// reviewer actually needs the transcript.
+func (m *ApprovalManager) checkShellApprovalWithContext(ctx context.Context, command, workDir string, transcript func() []TranscriptEntry) (ConfirmOutcome, error) {
 	// Yolo mode - auto-approve everything
 	if m.YoloEnabled() {
 		if m.DebugApproval {
@@ -1152,7 +1161,7 @@ func addApprovalContextLine(b *strings.Builder, seen map[string]struct{}, label,
 	fmt.Fprintf(b, "%s=%q\n", label, value)
 }
 
-func (m *ApprovalManager) checkShellGuardianApproval(ctx context.Context, command, workDir string, transcript []TranscriptEntry) (ConfirmOutcome, bool, error) {
+func (m *ApprovalManager) checkShellGuardianApproval(ctx context.Context, command, workDir string, transcript func() []TranscriptEntry) (ConfirmOutcome, bool, error) {
 	reviewFunc := m.lookupPolicyReviewFunc()
 	if reviewFunc == nil {
 		m.emitGuardianEvent(m.guardianEvent(ctx, command, workDir, GuardianWarning, "guardian: auto mode unavailable (no reviewer configured); prompting for approval"))
@@ -1162,7 +1171,11 @@ func (m *ApprovalManager) checkShellGuardianApproval(ctx context.Context, comman
 		return Cancel, false, nil
 	}
 	approvalContext := m.guardianApprovalContext(command, workDir)
-	decision, err := reviewFunc(ctx, PolicyReviewRequest{Command: command, WorkDir: normalizeGuardianWorkDir(workDir), Transcript: transcript, ApprovalContext: approvalContext, ScopeID: llm.SessionIDFromContext(ctx)})
+	var entries []TranscriptEntry
+	if transcript != nil {
+		entries = transcript()
+	}
+	decision, err := reviewFunc(ctx, PolicyReviewRequest{Command: command, WorkDir: normalizeGuardianWorkDir(workDir), Transcript: entries, ApprovalContext: approvalContext, ScopeID: llm.SessionIDFromContext(ctx)})
 	if err != nil {
 		m.emitGuardianEvent(m.guardianEvent(ctx, command, workDir, GuardianError, fmt.Sprintf("guardian: review failed (%v)", err)))
 		if m.AutoHeadless() {

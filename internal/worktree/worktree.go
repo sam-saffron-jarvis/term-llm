@@ -17,6 +17,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 	"unicode"
 
@@ -403,34 +404,56 @@ func listForRoot(mainRoot, bucket string) ([]Worktree, error) {
 		if dir == "" {
 			continue
 		}
+		if _, ok := rec["prunable"]; ok {
+			continue
+		}
 		if samePath(dir, mainRoot) {
 			continue
 		}
-		if !strings.HasPrefix(filepath.Clean(dir), filepath.Clean(bucket)+string(filepath.Separator)) {
+		cleanDir := filepath.Clean(dir)
+		if !strings.HasPrefix(cleanDir, filepath.Clean(bucket)+string(filepath.Separator)) {
 			continue
 		}
-		wt, err := describeWorktree(dir, true)
+		abs, err := filepath.Abs(dir)
 		if err != nil {
 			continue
 		}
-		if m, ok := metasByDir[filepath.Clean(dir)]; ok {
+		dirKey, _ := samePathKey(abs)
+		branch := branchNameFromPorcelain(rec["branch"])
+		wt := Worktree{
+			Name:     slug(filepath.Base(abs)),
+			Dir:      abs,
+			RepoRoot: mainRoot,
+			Branch:   branch,
+			Detached: branch == "",
+			Status:   StatusReady,
+			HeadSHA:  strings.TrimSpace(rec["HEAD"]),
+		}
+		if wt.Name == "" {
+			wt.Name = filepath.Base(abs)
+		}
+		if m, ok := metasByDir[dirKey]; ok {
 			wt.Name = m.Name
 			wt.Base = m.Base
-			wt.Branch = firstNonEmpty(wt.Branch, m.Branch)
 			wt.RepoRoot = m.RepoRoot
 			wt.CreatedAt = m.CreatedAt
 			wt.LastBoundAt = m.LastBoundAt
-		} else {
-			wt.Name = slug(filepath.Base(dir))
-			if wt.Name == "" {
-				wt.Name = filepath.Base(dir)
+			if strings.TrimSpace(wt.Base) == "" {
+				wt.Base, _ = mergeBase(abs, "HEAD")
+				if strings.TrimSpace(wt.Base) != "" {
+					m.Base = wt.Base
+					_ = writeMetadata(bucket, m)
+				}
 			}
-			m := metadata{Name: wt.Name, Dir: dir, Base: wt.Base, Branch: wt.Branch, RepoRoot: mainRoot, CreatedAt: time.Now()}
+		} else {
+			wt.Base, _ = mergeBase(abs, "HEAD")
+			m := metadata{Name: wt.Name, Dir: abs, Base: wt.Base, Branch: wt.Branch, RepoRoot: mainRoot, CreatedAt: time.Now()}
 			_ = writeMetadata(bucket, m)
 		}
-		seen[filepath.Clean(dir)] = true
-		result = append(result, *wt)
+		seen[dirKey] = true
+		result = append(result, wt)
 	}
+	populateDirtyCounts(result)
 	// Drop stale metadata whose directory is no longer in git's worktree list.
 	for dir, m := range metasByDir {
 		if !seen[dir] {
@@ -467,10 +490,10 @@ func getWorktree(dir string, includeDirty bool) (*Worktree, error) {
 	}
 	mainRoot, _ := canonicalRepoRoot(abs)
 	if root, err := ManagedRoot(mainRoot); err == nil {
-		if m, ok := metadataByDir(root)[filepath.Clean(abs)]; ok {
+		key, _ := samePathKey(abs)
+		if m, ok := metadataByDir(root)[key]; ok {
 			wt.Name = m.Name
 			wt.Base = m.Base
-			wt.Branch = firstNonEmpty(wt.Branch, m.Branch)
 			wt.RepoRoot = m.RepoRoot
 			wt.CreatedAt = m.CreatedAt
 			wt.LastBoundAt = m.LastBoundAt
@@ -932,24 +955,48 @@ func MergeBackAndCleanup(ctx context.Context, dir string, opts MergeOptions, sto
 
 // InUse returns active, non-archived sessions currently bound to dir when the store exposes worktree summaries.
 func InUse(ctx context.Context, store session.Store, dir string) ([]InUseSession, error) {
-	if store == nil {
-		return nil, nil
-	}
-	abs, err := filepath.Abs(dir)
+	byDir, err := InUseByDir(ctx, store, []string{dir})
 	if err != nil {
 		return nil, err
+	}
+	return byDir[dir], nil
+}
+
+// InUseByDir returns active, non-archived sessions grouped by requested worktree directory.
+func InUseByDir(ctx context.Context, store session.Store, dirs []string) (map[string][]InUseSession, error) {
+	if store == nil || len(dirs) == 0 {
+		return nil, nil
+	}
+	out := make(map[string][]InUseSession, len(dirs))
+	dirsByKey := make(map[string][]string, len(dirs))
+	for _, dir := range dirs {
+		if _, ok := out[dir]; ok {
+			continue
+		}
+		abs, err := filepath.Abs(dir)
+		if err != nil {
+			return nil, err
+		}
+		key, _ := samePathKey(abs)
+		out[dir] = nil
+		dirsByKey[key] = append(dirsByKey[key], dir)
 	}
 	list, err := store.List(ctx, session.ListOptions{Status: session.StatusActive, Archived: false, Limit: 10000})
 	if err != nil {
 		return nil, err
 	}
-	var out []InUseSession
 	for _, s := range list {
-		if s.WorktreeDir == "" {
+		if s.Status != session.StatusActive || s.WorktreeDir == "" {
 			continue
 		}
-		if samePath(s.WorktreeDir, abs) {
-			out = append(out, InUseSession{ID: s.ID, Number: s.Number, Name: s.Name, Status: string(s.Status)})
+		key, _ := samePathKey(s.WorktreeDir)
+		matches := dirsByKey[key]
+		if len(matches) == 0 {
+			continue
+		}
+		inUse := InUseSession{ID: s.ID, Number: s.Number, Name: s.Name, Status: string(s.Status)}
+		for _, dir := range matches {
+			out[dir] = append(out[dir], inUse)
 		}
 	}
 	return out, nil
@@ -1026,6 +1073,32 @@ func conflictFiles(root string) []string {
 
 func dirtyCount(dir string) int {
 	return len(statusLines(statusPorcelain(dir)))
+}
+
+func populateDirtyCounts(items []Worktree) {
+	if len(items) == 0 {
+		return
+	}
+	workers := 4
+	if len(items) < workers {
+		workers = len(items)
+	}
+	jobs := make(chan int)
+	var wg sync.WaitGroup
+	wg.Add(workers)
+	for i := 0; i < workers; i++ {
+		go func() {
+			defer wg.Done()
+			for idx := range jobs {
+				items[idx].DirtyFiles = dirtyCount(items[idx].Dir)
+			}
+		}()
+	}
+	for i := range items {
+		jobs <- i
+	}
+	close(jobs)
+	wg.Wait()
 }
 
 func statusPorcelain(dir string) string {
@@ -1325,9 +1398,18 @@ func readAllMetadata(root string) []metadata {
 func metadataByDir(root string) map[string]metadata {
 	out := map[string]metadata{}
 	for _, m := range readAllMetadata(root) {
-		out[filepath.Clean(m.Dir)] = m
+		key, _ := samePathKey(m.Dir)
+		out[key] = m
 	}
 	return out
+}
+
+func branchNameFromPorcelain(ref string) string {
+	ref = strings.TrimSpace(ref)
+	if strings.HasPrefix(ref, "refs/heads/") {
+		return strings.TrimPrefix(ref, "refs/heads/")
+	}
+	return ref
 }
 
 func parsePorcelainWorktrees(out string) []map[string]string {
@@ -1463,15 +1545,20 @@ func runGitAllowExit(dir string, args []string, allowed map[int]bool) (string, e
 }
 
 func samePath(a, b string) bool {
-	aa, _ := filepath.Abs(a)
-	bb, _ := filepath.Abs(b)
-	if ra, err := filepath.EvalSymlinks(aa); err == nil {
-		aa = ra
+	aa, _ := samePathKey(a)
+	bb, _ := samePathKey(b)
+	return aa == bb
+}
+
+func samePathKey(path string) (string, error) {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return filepath.Clean(path), err
 	}
-	if rb, err := filepath.EvalSymlinks(bb); err == nil {
-		bb = rb
+	if resolved, err := filepath.EvalSymlinks(abs); err == nil {
+		abs = resolved
 	}
-	return filepath.Clean(aa) == filepath.Clean(bb)
+	return filepath.Clean(abs), nil
 }
 
 func firstNonEmpty(values ...string) string {
