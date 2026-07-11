@@ -95,16 +95,18 @@ type Segment struct {
 	LastFlushedRenderedLen int    // Byte length of rendered LastFlushedRaw
 
 	// Subagent stats (for spawn_agent tools only)
-	SubagentToolCalls   int            // Number of tool calls made by subagent
-	SubagentTotalTokens int            // Total tokens used by subagent
-	SubagentHasProgress bool           // True if we have progress from this subagent
-	SubagentProvider    string         // Provider name if different from parent
-	SubagentModel       string         // Model name if different from parent
-	SubagentPrompt      string         // Prompt/task passed to the subagent
-	SubagentPreview     []string       // Preview lines (active tools + last few text lines)
-	SubagentStartTime   time.Time      // Start time for elapsed time display
-	SubagentEndTime     time.Time      // When subagent completed (zero if still running)
-	SubagentDiffs       []SubagentDiff // Diffs from subagent's edit_file/write_file calls
+	SubagentToolCalls       int            // Number of tool calls made by subagent
+	SubagentTotalTokens     int            // Total tokens used by subagent
+	SubagentHasProgress     bool           // True if we have progress from this subagent
+	SubagentProvider        string         // Provider name if different from parent
+	SubagentModel           string         // Model name if different from parent
+	SubagentPrompt          string         // Prompt/task passed to the subagent
+	SubagentPreview         []string       // Bounded nested tool-call preview for collapsed display
+	SubagentExpandedPreview []string       // Complete nested tool-call preview for expanded display
+	SubagentPreviewTextOnly bool           // Preview is prose fallback and needs a visual-line bound
+	SubagentStartTime       time.Time      // Start time for elapsed time display
+	SubagentEndTime         time.Time      // When subagent completed (zero if still running)
+	SubagentDiffs           []SubagentDiff // Diffs from subagent's edit_file/write_file calls
 }
 
 // SubagentDiff holds diff info from a subagent's edit_file/write_file call
@@ -695,6 +697,29 @@ func renderSubagentPreviewLines(preview []string, width int) []string {
 	return lines
 }
 
+// renderSubagentTextPreviewLines intentionally keeps prose bounded in both
+// collapsed and expanded modes. Ctrl-E expands nested tool history, not verbose
+// subagent prose.
+func renderSubagentTextPreviewLines(preview []string, width int) []string {
+	lines := renderSubagentPreviewLines(preview, width)
+	if len(lines) <= defaultSubagentTextPreviewLines {
+		return lines
+	}
+
+	lines = append([]string(nil), lines[len(lines)-defaultSubagentTextPreviewLines:]...)
+	wrapWidth := width - runewidth.StringWidth(subagentPromptPrefix)
+	if wrapWidth <= 0 {
+		wrapWidth = 80
+	}
+	const prefix = "..."
+	if wrapWidth <= runewidth.StringWidth(prefix) {
+		lines[0] = prefix
+	} else {
+		lines[0] = prefix + truncate.String(lines[0], uint(wrapWidth-runewidth.StringWidth(prefix)))
+	}
+	return lines
+}
+
 const subagentPromptPrefix = "  │ "
 
 // ImageArtifact is a rendered generated-image artifact split into a safe display
@@ -818,7 +843,11 @@ func RenderSegmentsWithLeadingAndImageRenderer(leading *Segment, segments []*Seg
 		case SegmentTool:
 			rendered = RenderToolSegment(seg, wavePos, width, expanded)
 			// Render subagent prompt and preview lines beneath spawn_agent tools.
-			if seg.ToolName == "spawn_agent" && (seg.SubagentPrompt != "" || len(seg.SubagentPreview) > 0) {
+			subagentPreview := seg.SubagentPreview
+			if expanded && seg.SubagentExpandedPreview != nil {
+				subagentPreview = seg.SubagentExpandedPreview
+			}
+			if seg.ToolName == "spawn_agent" && (seg.SubagentPrompt != "" || len(subagentPreview) > 0) {
 				var sb strings.Builder
 				sb.WriteString(rendered)
 				for _, line := range renderSubagentPromptLines(seg.SubagentPrompt, width, expanded) {
@@ -826,7 +855,13 @@ func RenderSegmentsWithLeadingAndImageRenderer(leading *Segment, segments []*Seg
 					sb.WriteString(subagentPromptPrefix)
 					sb.WriteString(line)
 				}
-				for _, line := range renderSubagentPreviewLines(seg.SubagentPreview, width) {
+				var previewLines []string
+				if seg.SubagentPreviewTextOnly {
+					previewLines = renderSubagentTextPreviewLines(subagentPreview, width)
+				} else {
+					previewLines = renderSubagentPreviewLines(subagentPreview, width)
+				}
+				for _, line := range previewLines {
 					sb.WriteString("\n")
 					sb.WriteString(subagentPromptPrefix)
 					sb.WriteString(line)

@@ -379,6 +379,73 @@ func TestRenderSegmentsWrapsSubagentPreviewAtVeryNarrowWidths(t *testing.T) {
 	}
 }
 
+func TestRenderSegmentsSwitchesSubagentPreviewWithExpansion(t *testing.T) {
+	const width = 32
+	seg := &Segment{
+		Type:                SegmentTool,
+		ToolName:            "spawn_agent",
+		ToolStatus:          ToolPending,
+		ToolInfo:            "reviewer",
+		SubagentHasProgress: true,
+		SubagentPreview: []string{
+			SuccessCircle() + " read_file recent-file-with-a-long-name.go",
+		},
+		SubagentExpandedPreview: []string{
+			SuccessCircle() + " read_file old-file.go",
+			SuccessCircle() + " read_file recent-file-with-a-long-name.go",
+		},
+	}
+
+	collapsed := StripANSI(RenderSegments([]*Segment{seg}, width, -1, nil, false, false))
+	if strings.Contains(collapsed, "old-file.go") || !strings.Contains(collapsed, "recent-file") {
+		t.Fatalf("collapsed render should use bounded preview, got %q", collapsed)
+	}
+
+	expanded := RenderSegments([]*Segment{seg}, width, -1, nil, false, true)
+	plainExpanded := StripANSI(expanded)
+	if !strings.Contains(plainExpanded, "old-file.go") || !strings.Contains(plainExpanded, "recent-file") {
+		t.Fatalf("expanded render should use complete preview, got %q", plainExpanded)
+	}
+	for i, line := range strings.Split(expanded, "\n") {
+		if w := xansi.StringWidth(line); w > width {
+			t.Fatalf("expanded line %d exceeds width %d (got %d): %q", i, width, w, StripANSI(line))
+		}
+	}
+}
+
+func TestRenderSegmentsBoundsTextOnlySubagentPreviewByVisualLines(t *testing.T) {
+	const (
+		width        = 30
+		maxTextLines = 4
+	)
+	seg := &Segment{
+		Type:                    SegmentTool,
+		ToolName:                "spawn_agent",
+		ToolStatus:              ToolPending,
+		ToolInfo:                "reviewer",
+		SubagentHasProgress:     true,
+		SubagentPreviewTextOnly: true,
+		SubagentPreview:         []string{strings.Repeat("verbose output ", 100)},
+		SubagentExpandedPreview: []string{strings.Repeat("verbose output ", 100)},
+	}
+
+	for _, expanded := range []bool{false, true} {
+		rendered := StripANSI(RenderSegments([]*Segment{seg}, width, -1, nil, false, expanded))
+		previewLines := 0
+		for _, line := range strings.Split(rendered, "\n") {
+			if strings.HasPrefix(line, subagentPromptPrefix) {
+				previewLines++
+			}
+		}
+		if previewLines != maxTextLines {
+			t.Fatalf("expanded=%v rendered %d text preview lines, want %d: %q", expanded, previewLines, maxTextLines, rendered)
+		}
+		if !strings.Contains(rendered, "...") {
+			t.Fatalf("expanded=%v should indicate truncated text output: %q", expanded, rendered)
+		}
+	}
+}
+
 func TestRenderSegmentsImageFallbackWhenInlineUnsupported(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "generated-cat.png")
 	seg := &Segment{Type: SegmentImage, ImagePath: path, Complete: true}

@@ -2,8 +2,11 @@ package ui
 
 import (
 	"encoding/json"
+	"slices"
+	"strconv"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/mattn/go-runewidth"
 	"github.com/samsaffron/term-llm/internal/tools"
@@ -124,7 +127,7 @@ func TestBuildSubagentPreview_ChronologicalOrder(t *testing.T) {
 	}
 }
 
-func TestBuildSubagentPreview_MaxLinesLimitsCompleted(t *testing.T) {
+func TestBuildSubagentPreview_MaxCallsLimitsCompleted(t *testing.T) {
 	p := &SubagentProgress{
 		CompletedTools: []ToolSegment{
 			{Name: "Read", Info: "file1.go", Success: true, Done: true},
@@ -136,7 +139,7 @@ func TestBuildSubagentPreview_MaxLinesLimitsCompleted(t *testing.T) {
 	}
 	result := BuildSubagentPreview(p, 2)
 	if len(result) != 2 {
-		t.Fatalf("expected 2 lines (maxLines limit), got %d", len(result))
+		t.Fatalf("expected 2 calls (maxCalls limit), got %d lines", len(result))
 	}
 	// Should show the most recent completed tools
 	if !strings.Contains(result[0], "file4.go") {
@@ -144,6 +147,76 @@ func TestBuildSubagentPreview_MaxLinesLimitsCompleted(t *testing.T) {
 	}
 	if !strings.Contains(result[1], "file5.go") {
 		t.Errorf("expected file5.go in second line: %s", result[1])
+	}
+}
+
+func TestBuildSubagentPreview_LimitsRecentToolCallsAndKeepsGuardianGrouped(t *testing.T) {
+	guardian := func(message string) *tools.GuardianEvent {
+		return &tools.GuardianEvent{Message: message, Outcome: tools.GuardianApproved}
+	}
+	p := &SubagentProgress{
+		CompletedTools: []ToolSegment{
+			{Name: "read_file", Info: "file1.go", Success: true, Done: true},
+			{Name: "read_file", Info: "file2.go", Guardian: guardian("guardian: approved file2"), Success: true, Done: true},
+			{Name: "read_file", Info: "file3.go", Success: true, Done: true},
+			{Name: "read_file", Info: "file4.go", Success: true, Done: true},
+			{Name: "read_file", Info: "file5.go", Success: true, Done: true},
+			{Name: "read_file", Info: "file6.go", Guardian: guardian("guardian: approved file6"), Success: true, Done: true},
+		},
+	}
+
+	result := BuildSubagentPreview(p, 5)
+	joined := strings.Join(result, "\n")
+	if strings.Contains(joined, "file1.go") {
+		t.Fatalf("oldest call should be omitted: %q", joined)
+	}
+	for _, want := range []string{"file2.go", "file3.go", "file4.go", "file5.go", "file6.go"} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("latest five calls should include %q: %q", want, joined)
+		}
+	}
+	if !strings.Contains(joined, "file2.go\n  Guardian: approved file2") ||
+		!strings.Contains(joined, "file6.go\n  Guardian: approved file6") {
+		t.Fatalf("guardian annotations should remain attached to selected calls: %q", joined)
+	}
+}
+
+func TestBuildSubagentPreview_ActiveCallsShareRecentCallWindow(t *testing.T) {
+	p := &SubagentProgress{
+		CompletedTools: []ToolSegment{
+			{Name: "read_file", Info: "completed1", Success: true, Done: true},
+			{Name: "read_file", Info: "completed2", Success: true, Done: true},
+			{Name: "read_file", Info: "completed3", Success: true, Done: true},
+			{Name: "read_file", Info: "completed4", Success: true, Done: true},
+		},
+		ActiveTools: []ToolSegment{
+			{Name: "grep", Info: "active1"},
+			{Name: "shell", Info: "active2"},
+		},
+	}
+
+	result := strings.Join(BuildSubagentPreview(p, 5), "\n")
+	if strings.Contains(result, "completed1") {
+		t.Fatalf("oldest completed call should be omitted: %q", result)
+	}
+	for _, want := range []string{"completed2", "completed3", "completed4", "active1", "active2"} {
+		if !strings.Contains(result, want) {
+			t.Fatalf("recent call window should include %q: %q", want, result)
+		}
+	}
+}
+
+func TestBuildSubagentPreview_NonPositiveLimitIsUnbounded(t *testing.T) {
+	p := &SubagentProgress{CompletedTools: []ToolSegment{
+		{Name: "read_file", Info: "file1.go", Success: true, Done: true},
+		{Name: "read_file", Info: "file2.go", Success: true, Done: true},
+		{Name: "read_file", Info: "file3.go", Success: true, Done: true},
+	}}
+
+	for _, maxCalls := range []int{0, -1} {
+		if got := BuildSubagentPreview(p, maxCalls); len(got) != 3 {
+			t.Fatalf("maxCalls=%d returned %d calls, want all 3: %#v", maxCalls, len(got), got)
+		}
 	}
 }
 
@@ -157,6 +230,36 @@ func TestBuildSubagentPreview_TextOnlyWhenNoTools(t *testing.T) {
 	}
 	if result[0] != "line1" || result[1] != "line2" {
 		t.Errorf("expected text lines, got %v", result)
+	}
+}
+
+func TestSubagentTextPreviewBoundsLongLogicalLines(t *testing.T) {
+	tests := []struct {
+		name   string
+		prefix string
+		suffix string
+	}{
+		{name: "ASCII", prefix: strings.Repeat("a", maxSubagentPreviewLineBytes), suffix: "LATEST"},
+		{name: "multibyte UTF-8", prefix: strings.Repeat("界", maxSubagentPreviewLineBytes), suffix: "最新"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			p := &SubagentProgress{}
+			p.updatePreviewLines(tt.prefix+tt.suffix, defaultSubagentTextPreviewLines)
+
+			if len(p.previewLines) != 1 {
+				t.Fatalf("preview lines = %d, want 1", len(p.previewLines))
+			}
+			if len(p.previewLines[0]) > maxSubagentPreviewLineBytes {
+				t.Fatalf("preview retained %d bytes, want <= %d", len(p.previewLines[0]), maxSubagentPreviewLineBytes)
+			}
+			if !strings.HasSuffix(p.previewLines[0], tt.suffix) {
+				t.Fatalf("bounded preview should preserve newest text, got %q", p.previewLines[0])
+			}
+			if !utf8.ValidString(p.previewLines[0]) {
+				t.Fatalf("bounded preview is not valid UTF-8: %q", p.previewLines[0])
+			}
+		})
 	}
 }
 
@@ -201,6 +304,83 @@ func TestBuildSubagentPreview_MixedSuccessAndError(t *testing.T) {
 	}
 	if !strings.Contains(result[2], SuccessCircle()) {
 		t.Errorf("Edit should have success circle: %s", result[2])
+	}
+}
+
+func TestUpdateSegmentFromSubagentProgress_CanSkipUnchangedPreviewRebuild(t *testing.T) {
+	tracker := NewToolTracker()
+	tracker.HandleToolStart("spawn", "spawn_agent", "reviewer", nil)
+	p := &SubagentProgress{CompletedTools: []ToolSegment{{Name: "read_file", Info: "file1", Success: true, Done: true}}}
+	UpdateSegmentFromSubagentProgress(tracker, "spawn", p)
+	seg := FindSegmentByCallID(tracker, "spawn")
+	if seg == nil {
+		t.Fatal("spawn_agent segment missing")
+	}
+	collapsedBefore := slices.Clone(seg.SubagentPreview)
+	expandedBefore := slices.Clone(seg.SubagentExpandedPreview)
+
+	p.CompletedTools = append(p.CompletedTools, ToolSegment{Name: "read_file", Info: "file2", Success: true, Done: true})
+	updateSegmentFromSubagentProgress(tracker, "spawn", p, false)
+
+	if !slices.Equal(seg.SubagentPreview, collapsedBefore) || !slices.Equal(seg.SubagentExpandedPreview, expandedBefore) {
+		t.Fatalf("preview refresh disabled but snapshots changed: collapsed=%#v expanded=%#v", seg.SubagentPreview, seg.SubagentExpandedPreview)
+	}
+}
+
+func TestUpdateSegmentFromSubagentProgress_MarksTextOnlyPreview(t *testing.T) {
+	tracker := NewToolTracker()
+	tracker.HandleToolStart("spawn", "spawn_agent", "reviewer", nil)
+	p := &SubagentProgress{previewLines: []string{"verbose text"}}
+
+	UpdateSegmentFromSubagentProgress(tracker, "spawn", p)
+	seg := FindSegmentByCallID(tracker, "spawn")
+	if seg == nil || !seg.SubagentPreviewTextOnly {
+		t.Fatalf("text fallback should be marked for bounded rendering: %#v", seg)
+	}
+
+	p.ActiveTools = append(p.ActiveTools, ToolSegment{Name: "read_file", Info: "file.go"})
+	UpdateSegmentFromSubagentProgress(tracker, "spawn", p)
+	if seg.SubagentPreviewTextOnly {
+		t.Fatal("tool-call preview should not use text-only visual truncation")
+	}
+}
+
+func TestUpdateSegmentFromSubagentProgress_FullPreviewChangeBumpsVersion(t *testing.T) {
+	tracker := NewToolTracker()
+	tracker.HandleToolStart("spawn", "spawn_agent", "reviewer", nil)
+	p := &SubagentProgress{}
+	for i := 1; i <= 6; i++ {
+		p.CompletedTools = append(p.CompletedTools, ToolSegment{
+			CallID: "nested-" + strconv.Itoa(i), Name: "read_file", Info: "file" + strconv.Itoa(i), Success: true, Done: true,
+		})
+	}
+	UpdateSegmentFromSubagentProgress(tracker, "spawn", p)
+	seg := FindSegmentByCallID(tracker, "spawn")
+	if seg == nil {
+		t.Fatal("spawn_agent segment missing")
+	}
+	collapsedBefore := slices.Clone(seg.SubagentPreview)
+	versionBefore := tracker.Version
+
+	p.CompletedTools[0].Guardian = &tools.GuardianEvent{Message: "guardian: approved oldest", Outcome: tools.GuardianApproved}
+	UpdateSegmentFromSubagentProgress(tracker, "spawn", p)
+
+	if !slices.Equal(seg.SubagentPreview, collapsedBefore) {
+		t.Fatalf("guardian on omitted call should not change collapsed preview: before=%#v after=%#v", collapsedBefore, seg.SubagentPreview)
+	}
+	if tracker.Version <= versionBefore {
+		t.Fatalf("expanded-preview-only update should bump tracker version: before=%d after=%d", versionBefore, tracker.Version)
+	}
+	if !strings.Contains(strings.Join(seg.SubagentExpandedPreview, "\n"), "Guardian: approved oldest") {
+		t.Fatalf("complete preview did not retain older guardian update: %#v", seg.SubagentExpandedPreview)
+	}
+	collapsed := StripANSI(RenderSegments([]*Segment{seg}, 80, -1, nil, false, false))
+	expanded := StripANSI(RenderSegments([]*Segment{seg}, 80, -1, nil, false, true))
+	if strings.Contains(collapsed, "Guardian: approved oldest") {
+		t.Fatalf("collapsed render should hide guardian with its omitted call: %q", collapsed)
+	}
+	if !strings.Contains(expanded, "Guardian: approved oldest") {
+		t.Fatalf("expanded render should reveal guardian with its older call: %q", expanded)
 	}
 }
 

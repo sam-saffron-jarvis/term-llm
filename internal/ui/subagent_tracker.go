@@ -6,6 +6,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/samsaffron/term-llm/internal/tools"
 )
@@ -13,7 +14,11 @@ import (
 // maxTextBufferBytes is the maximum size of a subagent's text buffer.
 // Once exceeded, new text is only added to previewLines, not the full buffer.
 // This prevents unbounded memory growth from verbose subagents.
-const maxTextBufferBytes = 64 * 1024 // 64KB
+const (
+	maxTextBufferBytes              = 64 * 1024 // 64KB
+	maxSubagentPreviewLineBytes     = 4 * 1024  // Bounds newline-free verbose output retained for display.
+	defaultSubagentTextPreviewLines = 4         // Independent of the nested tool-call preview limit.
+)
 
 // SubagentProgress tracks progress from a single spawned subagent.
 type SubagentProgress struct {
@@ -72,7 +77,7 @@ func NewSubagentTracker() *SubagentTracker {
 	return &SubagentTracker{
 		agents:       make(map[string]*SubagentProgress),
 		removed:      make(map[string]struct{}),
-		previewLines: 4,
+		previewLines: defaultSubagentTextPreviewLines,
 		expanded:     false,
 	}
 }
@@ -200,7 +205,7 @@ func (t *SubagentTracker) HandleTextDelta(callID, text string) {
 		}
 	}
 	// Always update preview lines (these are bounded by maxLines)
-	p.updatePreviewLines(text, 4)
+	p.updatePreviewLines(text, defaultSubagentTextPreviewLines)
 }
 
 // HandleToolStart records a tool starting in a subagent.
@@ -320,13 +325,25 @@ func (p *SubagentProgress) updatePreviewLines(newText string, maxLines int) {
 	// Add new lines
 	for line := range strings.SplitSeq(newText, "\n") {
 		if line != "" || len(p.previewLines) > 0 {
-			p.previewLines = append(p.previewLines, line)
+			p.previewLines = append(p.previewLines, boundSubagentPreviewLine(line))
 		}
 	}
 	// Keep only last N lines
 	if len(p.previewLines) > maxLines {
 		p.previewLines = p.previewLines[len(p.previewLines)-maxLines:]
 	}
+}
+
+func boundSubagentPreviewLine(line string) string {
+	if len(line) <= maxSubagentPreviewLineBytes {
+		return line
+	}
+	const prefix = "..."
+	start := len(line) - (maxSubagentPreviewLineBytes - len(prefix))
+	for start < len(line) && !utf8.RuneStart(line[start]) {
+		start++
+	}
+	return prefix + line[start:]
 }
 
 // RenderHeader returns "@name  N calls · X.Xk tokens [expanded]".
@@ -417,7 +434,7 @@ func RenderSubagentProgress(p *SubagentProgress, expanded bool) string {
 	if p == nil {
 		return ""
 	}
-	return p.Render(expanded, 4)
+	return p.Render(expanded, defaultSubagentTextPreviewLines)
 }
 
 // formatTokens formats a token count in compact form: 1, 999, 1.5k, 12.3k

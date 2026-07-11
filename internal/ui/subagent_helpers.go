@@ -83,8 +83,13 @@ func HandleSubagentProgress(tracker *ToolTracker, subagentTracker *SubagentTrack
 		}
 	}
 
-	// Update the spawn_agent segment's stats for display
-	UpdateSegmentFromSubagentProgress(tracker, callID, p)
+	// Update the spawn_agent segment's stats for display. Preview snapshots only
+	// need rebuilding for events that can change visible nested activity.
+	refreshPreview := event.Type == tools.SubagentEventToolStart ||
+		event.Type == tools.SubagentEventToolEnd ||
+		event.Type == tools.SubagentEventGuardian ||
+		(event.Type == tools.SubagentEventText && len(p.CompletedTools) == 0 && len(p.ActiveTools) == 0)
+	updateSegmentFromSubagentProgress(tracker, callID, p, refreshPreview)
 }
 
 // FindSegmentByCallID finds a segment by its tool call ID.
@@ -101,23 +106,40 @@ func FindSegmentByCallID(tracker *ToolTracker, callID string) *Segment {
 	return nil
 }
 
+// defaultSubagentPreviewCalls is the number of most recent nested tool calls
+// shown for each spawn_agent while tool details are collapsed.
+const defaultSubagentPreviewCalls = 5
+
 // UpdateSegmentFromSubagentProgress updates the spawn_agent segment stats from subagent progress.
 // This syncs the subagent's stats (tool calls, tokens, provider/model) to the segment for display.
 func UpdateSegmentFromSubagentProgress(tracker *ToolTracker, callID string, p *SubagentProgress) {
+	updateSegmentFromSubagentProgress(tracker, callID, p, true)
+}
+
+func updateSegmentFromSubagentProgress(tracker *ToolTracker, callID string, p *SubagentProgress, refreshPreview bool) {
 	if tracker == nil || p == nil {
 		return
 	}
 	for i := range tracker.Segments {
 		if tracker.Segments[i].ToolCallID == callID && tracker.Segments[i].ToolName == "spawn_agent" {
 			seg := &tracker.Segments[i]
-			preview := BuildSubagentPreview(p, 4)
+			preview := seg.SubagentPreview
+			expandedPreview := seg.SubagentExpandedPreview
+			previewTextOnly := seg.SubagentPreviewTextOnly
+			if refreshPreview {
+				preview = BuildSubagentPreview(p, defaultSubagentPreviewCalls)
+				expandedPreview = BuildSubagentPreview(p, 0)
+				previewTextOnly = len(preview) > 0 && len(p.CompletedTools) == 0 && len(p.ActiveTools) == 0
+			}
 			changed := !seg.SubagentHasProgress ||
 				seg.SubagentToolCalls != p.ToolCalls ||
 				seg.SubagentTotalTokens != p.InputTokens+p.OutputTokens ||
 				seg.SubagentProvider != p.Provider ||
 				seg.SubagentModel != p.Model ||
 				seg.SubagentPrompt != p.Prompt ||
+				seg.SubagentPreviewTextOnly != previewTextOnly ||
 				!slices.Equal(seg.SubagentPreview, preview) ||
+				!slices.Equal(seg.SubagentExpandedPreview, expandedPreview) ||
 				!seg.SubagentStartTime.Equal(p.StartTime)
 
 			seg.SubagentHasProgress = true
@@ -127,6 +149,8 @@ func UpdateSegmentFromSubagentProgress(tracker *ToolTracker, callID string, p *S
 			seg.SubagentModel = p.Model
 			seg.SubagentPrompt = p.Prompt
 			seg.SubagentPreview = preview
+			seg.SubagentExpandedPreview = expandedPreview
+			seg.SubagentPreviewTextOnly = previewTextOnly
 			seg.SubagentStartTime = p.StartTime
 			if changed {
 				tracker.RecordActivity()
@@ -167,63 +191,57 @@ func AttachSubagentProgressToSegment(tracker *ToolTracker, subagentTracker *Suba
 
 // BuildSubagentPreview builds preview lines for a subagent in chronological order.
 // Shows completed tools first (oldest first), then active tools (most recent).
-// maxLines is the total number of lines to show.
-func BuildSubagentPreview(p *SubagentProgress, maxLines int) []string {
+// maxCalls limits the number of nested tool calls, not rendered lines. A guardian
+// annotation remains grouped with its tool; annotations on older omitted calls
+// are available in the unbounded expanded preview. A non-positive limit shows all calls.
+func BuildSubagentPreview(p *SubagentProgress, maxCalls int) []string {
 	if p == nil {
 		return nil
 	}
 
-	var preview []string
-
-	// 1. Completed tools first (chronological order - oldest first)
+	type previewTool struct {
+		tool   ToolSegment
+		active bool
+	}
+	toolsToShow := make([]previewTool, 0, len(p.CompletedTools)+len(p.ActiveTools))
 	for _, tool := range p.CompletedTools {
-		var circle string
-		if tool.Success {
-			circle = SuccessCircle()
-		} else {
-			circle = ErrorCircle()
-		}
-		line := circle + " " + tool.Name
-		if tool.Info != "" {
-			line += " " + tool.Info
-		}
-		preview = append(preview, line)
-		preview = append(preview, renderSubagentGuardian(tool.Guardian)...)
+		toolsToShow = append(toolsToShow, previewTool{tool: tool})
 	}
-
-	// 2. Active tools after (they are the most recent)
 	for _, tool := range p.ActiveTools {
-		line := WorkingCircle() + " " + tool.Name
-		if tool.Info != "" {
-			line += " " + tool.Info
-		}
-		preview = append(preview, line)
-		preview = append(preview, renderSubagentGuardian(tool.Guardian)...)
+		toolsToShow = append(toolsToShow, previewTool{tool: tool, active: true})
+	}
+	if maxCalls > 0 && len(toolsToShow) > maxCalls {
+		toolsToShow = toolsToShow[len(toolsToShow)-maxCalls:]
 	}
 
-	// 3. Text lines only if no tools shown
-	if len(preview) == 0 {
-		textLines := p.GetPreviewLines()
-		if len(textLines) > 0 {
-			for _, line := range textLines {
-				if line != "" {
-					preview = append(preview, line)
-				}
+	var preview []string
+	for _, item := range toolsToShow {
+		circle := WorkingCircle()
+		if !item.active {
+			if item.tool.Success {
+				circle = SuccessCircle()
+			} else {
+				circle = ErrorCircle()
 			}
 		}
+		line := circle + " " + item.tool.Name
+		if item.tool.Info != "" {
+			line += " " + item.tool.Info
+		}
+		preview = append(preview, line)
+		preview = append(preview, renderSubagentGuardian(item.tool.Guardian)...)
 	}
 
-	// Guardian annotations are durable and must never be trimmed away from their
-	// command in collapsed mode. Otherwise keep the usual compact preview.
-	hasGuardian := false
-	for _, tool := range append(append([]ToolSegment(nil), p.CompletedTools...), p.ActiveTools...) {
-		if tool.Guardian != nil {
-			hasGuardian = true
-			break
+	// Text is a fallback only when the subagent has not emitted any tool calls.
+	if len(toolsToShow) == 0 {
+		for _, line := range p.GetPreviewLines() {
+			if line != "" {
+				preview = append(preview, line)
+			}
 		}
-	}
-	if !hasGuardian && len(preview) > maxLines {
-		preview = preview[len(preview)-maxLines:]
+		if maxCalls > 0 && len(preview) > maxCalls {
+			preview = preview[len(preview)-maxCalls:]
+		}
 	}
 
 	return preview

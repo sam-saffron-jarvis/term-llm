@@ -302,6 +302,43 @@ func TestUpdate_MultipleSubagentsWithOutOfOrderProgressAllRender(t *testing.T) {
 	if !strings.Contains(plain, "output from second agent") {
 		t.Fatalf("expected second subagent output in render, got %q", plain)
 	}
+
+	// Each concurrent subagent gets its own five-call window. Keep the seventh
+	// call active to verify pending nested activity remains visible as the newest call.
+	for _, agent := range []struct {
+		callID string
+		prefix string
+	}{
+		{callID: "call-1", prefix: "first"},
+		{callID: "call-2", prefix: "second"},
+	} {
+		for i := 1; i <= 7; i++ {
+			nestedCallID := agent.prefix + "-nested-" + strconv.Itoa(i)
+			info := agent.prefix + "-file-" + strconv.Itoa(i) + ".go"
+			_, _ = m.Update(SubagentProgressMsg{CallID: agent.callID, Event: tools.SubagentEvent{
+				Type: tools.SubagentEventToolStart, ToolCallID: nestedCallID, ToolName: "read_file", ToolInfo: info,
+			}})
+			if i < 7 {
+				_, _ = m.Update(SubagentProgressMsg{CallID: agent.callID, Event: tools.SubagentEvent{
+					Type: tools.SubagentEventToolEnd, ToolCallID: nestedCallID, ToolName: "read_file", Success: true,
+				}})
+			}
+		}
+	}
+
+	plain = ui.StripANSI(m.renderStreamingInline())
+	for _, prefix := range []string{"first", "second"} {
+		for i := 1; i <= 2; i++ {
+			if old := prefix + "-file-" + strconv.Itoa(i) + ".go"; strings.Contains(plain, old) {
+				t.Fatalf("%s subagent should independently omit old call %q: %q", prefix, old, plain)
+			}
+		}
+		for i := 3; i <= 7; i++ {
+			if recent := prefix + "-file-" + strconv.Itoa(i) + ".go"; !strings.Contains(plain, recent) {
+				t.Fatalf("%s subagent missing recent call %q: %q", prefix, recent, plain)
+			}
+		}
+	}
 }
 
 func TestRenderStreamingInlineKeepsCompletedConcurrentToolVisible(t *testing.T) {
@@ -1630,6 +1667,92 @@ func TestRenderStreamingInline_ExpandedPendingShellTool(t *testing.T) {
 	if strings.Contains(plain, "(CTRL+e to expand)") {
 		t.Fatalf("expected expand hint hidden while expanded, got %q", plain)
 	}
+}
+
+func TestChatCtrlETogglesCompleteNestedSubagentCallsDuringStream(t *testing.T) {
+	m := newTestChatModel(false)
+	m.width = 80
+	m.streaming = true
+
+	args, err := json.Marshal(tools.SpawnAgentArgs{AgentName: "reviewer", Prompt: "review the code"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = m.Update(streamEventMsg{event: ui.ToolStartEvent("spawn-1", "spawn_agent", "reviewer", args)})
+	for i := 1; i <= 7; i++ {
+		callID := "nested-" + strconv.Itoa(i)
+		info := "file-" + strconv.Itoa(i) + ".go"
+		_, _ = m.Update(SubagentProgressMsg{CallID: "spawn-1", Event: tools.SubagentEvent{
+			Type: tools.SubagentEventToolStart, ToolCallID: callID, ToolName: "read_file", ToolInfo: info,
+		}})
+		_, _ = m.Update(SubagentProgressMsg{CallID: "spawn-1", Event: tools.SubagentEvent{
+			Type: tools.SubagentEventToolEnd, ToolCallID: callID, ToolName: "read_file", Success: true,
+		}})
+	}
+
+	collapsed := ui.StripANSI(m.renderStreamingInline())
+	if strings.Contains(collapsed, "file-1.go") || strings.Contains(collapsed, "file-2.go") {
+		t.Fatalf("collapsed subagent should omit calls older than the latest five, got %q", collapsed)
+	}
+	for i := 3; i <= 7; i++ {
+		if want := "file-" + strconv.Itoa(i) + ".go"; !strings.Contains(collapsed, want) {
+			t.Fatalf("collapsed subagent missing recent call %q: %q", want, collapsed)
+		}
+	}
+
+	updated, _ := m.Update(tea.KeyPressMsg{Code: 'e', Mod: tea.ModCtrl})
+	m = updated.(*Model)
+	expanded := ui.StripANSI(m.renderStreamingInline())
+	for i := 1; i <= 7; i++ {
+		if want := "file-" + strconv.Itoa(i) + ".go"; !strings.Contains(expanded, want) {
+			t.Fatalf("expanded subagent missing call %q: %q", want, expanded)
+		}
+	}
+
+	updated, _ = m.Update(tea.KeyPressMsg{Code: 'e', Mod: tea.ModCtrl})
+	m = updated.(*Model)
+	recollapsed := ui.StripANSI(m.renderStreamingInline())
+	if strings.Contains(recollapsed, "file-1.go") || strings.Contains(recollapsed, "file-2.go") {
+		t.Fatalf("second ctrl+e should restore bounded subagent preview, got %q", recollapsed)
+	}
+}
+
+func TestChatVerboseTextOnlySubagentStaysVisuallyBounded(t *testing.T) {
+	m := newTestChatModel(false)
+	m.width = 40
+	m.streaming = true
+
+	args, err := json.Marshal(tools.SpawnAgentArgs{AgentName: "reviewer"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = m.Update(streamEventMsg{event: ui.ToolStartEvent("spawn-text", "spawn_agent", "reviewer", args)})
+	verbose := strings.Repeat("long subagent prose ", 2000) + "THE-END"
+	_, _ = m.Update(SubagentProgressMsg{CallID: "spawn-text", Event: tools.SubagentEvent{
+		Type: tools.SubagentEventText, Text: verbose,
+	}})
+
+	assertBounded := func(label, rendered string) {
+		t.Helper()
+		plain := ui.StripANSI(rendered)
+		previewLines := 0
+		for _, line := range strings.Split(plain, "\n") {
+			if strings.HasPrefix(line, "  │ ") {
+				previewLines++
+			}
+		}
+		if previewLines > 4 {
+			t.Fatalf("%s verbose text preview used %d visual lines, want <= 4: %q", label, previewLines, plain)
+		}
+		if !strings.Contains(plain, "...") || !strings.Contains(plain, "THE-END") {
+			t.Fatalf("%s should show truncation and retain newest output: %q", label, plain)
+		}
+	}
+
+	assertBounded("collapsed", m.renderStreamingInline())
+	updated, _ := m.Update(tea.KeyPressMsg{Code: 'e', Mod: tea.ModCtrl})
+	m = updated.(*Model)
+	assertBounded("expanded", m.renderStreamingInline())
 }
 
 func TestRenderStreamingInline_TextToPendingToolUsesBlankLine(t *testing.T) {
