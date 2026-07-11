@@ -18,7 +18,7 @@ tools:
   enabled: [shell, read_file]
 
 shell:
-  allow: ["git diff**", "git log**", "git status", "git show**"]
+  allow: ["pwd", "git diff**", "git log**", "git status", "git show**"]
   auto_run: true
   scripts:
     git-status: "git status --porcelain=v1"

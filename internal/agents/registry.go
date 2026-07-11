@@ -358,7 +358,9 @@ tools:
 	// Create system.md
 	systemMD := fmt.Sprintf(`You are a helpful assistant for the {{git_repo}} project.
 
-Current local date: {{weekday}} {{date}} ({{timezone}}). Working directory: {{cwd}}
+Current local date: {{weekday}} {{date}} ({{timezone}}).
+
+Use relative paths; the working directory may change. Do not rely on old absolute paths.
 
 ## Your Role
 

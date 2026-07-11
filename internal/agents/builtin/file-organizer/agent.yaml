@@ -8,6 +8,7 @@ tools:
 
 shell:
   allow:
+    - "pwd"
     - "ls *"
     - "mv *"
     - "mkdir *"

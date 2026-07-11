@@ -1,6 +1,7 @@
 package agents
 
 import (
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -157,6 +158,106 @@ func TestBuiltinAgentConfigs(t *testing.T) {
 				t.Errorf("Search = %v, want %v", agent.Search, tt.expectedSearch)
 			}
 		})
+	}
+}
+
+func TestBuiltinPromptsAvoidVolatileDirectoryContext(t *testing.T) {
+	entries, err := fs.ReadDir(builtinFS, "builtin")
+	if err != nil {
+		t.Fatalf("read builtin agents: %v", err)
+	}
+
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		name := entry.Name()
+		prompt, err := builtinFS.ReadFile("builtin/" + name + "/system.md")
+		if err != nil {
+			t.Errorf("read %s system prompt: %v", name, err)
+			continue
+		}
+		text := string(prompt)
+		for _, token := range []string{"{{cwd}}", "{{git_branch}}"} {
+			if strings.Contains(text, token) {
+				t.Errorf("%s system prompt contains volatile token %s", name, token)
+			}
+		}
+
+		agent, err := getBuiltinAgent(name)
+		if err != nil {
+			t.Errorf("getBuiltinAgent(%s): %v", name, err)
+			continue
+		}
+		hasShell := stringSliceContains(agent.Tools.Enabled, "shell")
+		instructsPwd := strings.Contains(text, "run `pwd`")
+		if instructsPwd && !hasShell && name != "agent-builder" {
+			t.Errorf("shell-less %s prompt instructs agent to run pwd", name)
+		}
+		if instructsPwd && hasShell && len(agent.Shell.Allow) > 0 && !stringSliceContains(agent.Shell.Allow, "pwd") {
+			t.Errorf("%s shell.allow = %#v, missing pwd required by its prompt", name, agent.Shell.Allow)
+		}
+	}
+
+	planner, err := getBuiltinAgent("planner")
+	if err != nil {
+		t.Fatalf("getBuiltinAgent(planner): %v", err)
+	}
+	if got := strings.Count(planner.SystemPrompt, "{{handover_path}}"); got != 1 {
+		t.Errorf("planner handover path count = %d, want 1", got)
+	}
+}
+
+func TestBuiltinPromptsUseCapabilityAwareDirectoryGuidance(t *testing.T) {
+	const shellGuidance = "Use relative paths; the working directory may change. Run `pwd` when you need its current absolute path. Do not reuse old absolute paths."
+	const shellLessGuidance = "Use relative paths; the working directory may change. Do not rely on old absolute paths."
+
+	tests := []struct {
+		name     string
+		guidance string
+	}{
+		{name: "active-review", guidance: shellLessGuidance},
+		{name: "codebase", guidance: shellGuidance},
+		{name: "commit-message", guidance: shellGuidance},
+		{name: "developer", guidance: shellGuidance},
+		{name: "editor", guidance: shellLessGuidance},
+		{name: "file-organizer", guidance: shellGuidance},
+		{name: "planner", guidance: shellGuidance},
+		{name: "reviewer", guidance: shellGuidance},
+		{name: "shell", guidance: shellGuidance},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			agent, err := getBuiltinAgent(tt.name)
+			if err != nil {
+				t.Fatalf("getBuiltinAgent(%s): %v", tt.name, err)
+			}
+			if !strings.Contains(agent.SystemPrompt, tt.guidance) {
+				t.Errorf("system prompt missing capability-aware directory guidance %q", tt.guidance)
+			}
+		})
+	}
+
+	contain, err := getBuiltinAgent("contain")
+	if err != nil {
+		t.Fatalf("getBuiltinAgent(contain): %v", err)
+	}
+	for _, want := range []string{"Before creating a bind mount, run `pwd`", "Never reuse an old path"} {
+		if !strings.Contains(contain.SystemPrompt, want) {
+			t.Errorf("contain system prompt missing %q", want)
+		}
+	}
+}
+
+func TestAgentBuilderDocumentsVolatileDirectoryContext(t *testing.T) {
+	agent, err := getBuiltinAgent("agent-builder")
+	if err != nil {
+		t.Fatalf("getBuiltinAgent(agent-builder): %v", err)
+	}
+	for _, want := range []string{"Avoid `{{!cwd}}`, `{{!cwd_name}}`, and `{{!git_branch}}`; they can go stale", "If `shell.allow` is set, include `pwd`"} {
+		if !strings.Contains(agent.SystemPrompt, want) {
+			t.Errorf("agent-builder system prompt missing %q", want)
+		}
 	}
 }
 

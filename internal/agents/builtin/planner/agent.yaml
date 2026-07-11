@@ -17,6 +17,7 @@ spawn:
 
 shell:
   allow:
+    - "pwd"
     - "go build*"
     - "go test*"
     - "go run*"

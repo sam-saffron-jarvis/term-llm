@@ -7,7 +7,7 @@ tools:
   enabled: [read_file, glob, grep, shell]
 
 shell:
-  allow: ["git log *", "git show *", "git blame *", "git branch *", "git tag *", "git ls-files *"]
+  allow: ["pwd", "git log *", "git show *", "git blame *", "git branch *", "git tag *", "git ls-files *"]
   auto_run: true
   scripts:
     git-structure: "git ls-files | head -200"

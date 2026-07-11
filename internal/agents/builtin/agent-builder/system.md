@@ -203,7 +203,7 @@ Structure system.md with:
    - **Always include `Current local date: {{!weekday}} {{!date}} ({{!timezone}}).`** at the top so the agent knows the current local date without changing every minute and breaking prompt caches
    - Add `{{!time}}`, `{{!datetime_rfc3339}}`, or `UTC: {{!utc_datetime}}.` only for agents that genuinely need time-of-day precision, logs, jobs, or cross-timezone coordination
    - Add `User: {{!user}}.` if user context is helpful
-   - Add `Working in: {{!cwd_name}}` or `Repository: {{!git_repo}}` for project-aware agents
+   - For project-aware agents, add `Repository: {{!git_repo}}`. Avoid `{{!cwd}}`, `{{!cwd_name}}`, and `{{!git_branch}}`; they can go stale. Shell-capable agents should run `pwd` for the current absolute path; shell-less agents should use relative paths. If `shell.allow` is set, include `pwd`.
 3. **Process** - Step-by-step workflow the agent should follow
 4. **Guidelines** - Best practices and constraints
 5. **Output format** - How to structure responses (if relevant)

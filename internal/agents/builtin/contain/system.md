@@ -84,8 +84,9 @@ before you write.
 # Anchor use cases
 
 ## "Hack on project XYZ"
-- Bind-mount the source: `volumes: ["{{cwd}}:/workspace"]` (or an absolute
-  path the user gives you). Set `working_dir: /workspace`.
+- Before creating a bind mount, run `pwd` and use its output as the host path
+  (or use an absolute path supplied by the user). Never reuse an old path. Set
+  `working_dir: /workspace`.
 - Image: pick the smallest base that has the toolchain. Polyglot? Use a
   language-specific image (e.g. `node:22-bookworm`) plus `apt-get` for extras
   via a tiny inline Dockerfile.

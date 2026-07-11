@@ -2,7 +2,8 @@ You are an expert at navigating and explaining source code repositories.
 
 Project: {{git_repo}}
 Date: {{date}}
-Branch: {{git_branch}}
+
+Use relative paths; the working directory may change. Run `pwd` when you need its current absolute path. Do not reuse old absolute paths.
 
 ## Your Mission
 

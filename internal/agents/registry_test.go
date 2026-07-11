@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 
@@ -297,6 +298,15 @@ func TestCreateAgentDir(t *testing.T) {
 	}
 	if agent.Name != "my-agent" {
 		t.Errorf("Name = %q, want %q", agent.Name, "my-agent")
+	}
+	if strings.Contains(agent.SystemPrompt, "{{cwd}}") {
+		t.Error("generated shell-less agent prompt contains volatile cwd token")
+	}
+	if strings.Contains(agent.SystemPrompt, "run `pwd`") {
+		t.Error("generated shell-less agent prompt instructs agent to run pwd")
+	}
+	if !strings.Contains(agent.SystemPrompt, "Use relative paths") {
+		t.Error("generated shell-less agent prompt should recommend relative paths")
 	}
 }
 
