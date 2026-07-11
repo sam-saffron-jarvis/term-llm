@@ -1087,6 +1087,21 @@ func TestRenderStatusLine_ShowsCompactModelLabel(t *testing.T) {
 	}
 }
 
+func TestAutoSendMessageStats(t *testing.T) {
+	m := newTestChatModel(false)
+	m.streamStartTime = time.Now().Add(-1500 * time.Millisecond)
+	m.stats.LLMCallCount = 3
+
+	if got := m.autoSendMessageStats(); got != "" {
+		t.Fatalf("stats with display disabled = %q, want empty", got)
+	}
+	m.showStats = true
+	got := m.autoSendMessageStats()
+	if !strings.HasPrefix(got, "[Message 3] ") || !strings.HasSuffix(got, "s") {
+		t.Fatalf("auto-send message stats = %q, want managed one-line summary", got)
+	}
+}
+
 func TestRenderStatusLine_UsesReadableElapsedWhileStreaming(t *testing.T) {
 	m := newTestChatModel(false)
 	m.streaming = true

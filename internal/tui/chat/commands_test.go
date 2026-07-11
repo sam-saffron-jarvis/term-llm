@@ -3646,6 +3646,44 @@ func TestWorktreeUsageUsesContentDialog(t *testing.T) {
 	}
 }
 
+func TestBoundWorktreeDirPrefersActiveSessionCWD(t *testing.T) {
+	m := newTestChatModel(false)
+	m.sess = &session.Session{CWD: "/worktrees/active", WorktreeDir: "/worktrees/stale"}
+	if got := m.boundWorktreeDir(); got != m.sess.CWD {
+		t.Fatalf("boundWorktreeDir = %q, want active session CWD %q", got, m.sess.CWD)
+	}
+}
+
+func TestCmdWorktreeMergeDefaultsToActiveSessionCWD(t *testing.T) {
+	repo := newGitRepoForChatWorktreeTest(t)
+	wtA, err := worktree.Create(context.Background(), repo, worktree.CreateOptions{Name: "merge-active-a"})
+	if err != nil {
+		t.Fatalf("Create A: %v", err)
+	}
+	wtB, err := worktree.Create(context.Background(), repo, worktree.CreateOptions{Name: "merge-stale-b"})
+	if err != nil {
+		t.Fatalf("Create B: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = worktree.Remove(context.Background(), wtA.Dir, worktree.RemoveOptions{Force: true})
+		_ = worktree.Remove(context.Background(), wtB.Dir, worktree.RemoveOptions{Force: true})
+	})
+	if err := os.WriteFile(filepath.Join(wtA.Dir, "active.txt"), []byte("active\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	m := newTestChatModel(false)
+	m.sess = &session.Session{ID: "merge-active", CWD: wtA.Dir, WorktreeDir: wtB.Dir}
+	_, cmd := m.ExecuteCommand("/worktree merge --keep")
+	msg := runWorktreeOperationTestCmd(t, cmd)
+	if msg.err != nil {
+		t.Fatalf("merge: %v", msg.err)
+	}
+	if !sameWorktreePath(msg.dir, wtA.Dir) {
+		t.Fatalf("merged worktree = %q, want active session worktree %q", msg.dir, wtA.Dir)
+	}
+}
+
 func TestCmdWorktreeMergeDefaultRemovesAndRebinds(t *testing.T) {
 	repo := newGitRepoForChatWorktreeTest(t)
 	wt, err := worktree.Create(context.Background(), repo, worktree.CreateOptions{Name: "merge-cleanup-tui"})

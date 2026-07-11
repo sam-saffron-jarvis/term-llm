@@ -229,5 +229,14 @@ func (m *Model) handleBrowserWorktreeOperationDone(msg worktreeOperationDoneMsg)
 }
 
 func sameWorktreePath(a, b string) bool {
-	return strings.TrimSpace(a) != "" && strings.TrimSpace(b) != "" && filepath.Clean(a) == filepath.Clean(b)
+	a, b = strings.TrimSpace(a), strings.TrimSpace(b)
+	if a == "" || b == "" {
+		return false
+	}
+	if filepath.Clean(a) == filepath.Clean(b) {
+		return true
+	}
+	resolvedA, errA := filepath.EvalSymlinks(a)
+	resolvedB, errB := filepath.EvalSymlinks(b)
+	return errA == nil && errB == nil && filepath.Clean(resolvedA) == filepath.Clean(resolvedB)
 }

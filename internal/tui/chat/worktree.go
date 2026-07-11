@@ -72,12 +72,29 @@ func (m *Model) cmdWorktree(args []string) (tea.Model, tea.Cmd) {
 	}
 }
 
-func (m *Model) boundWorktreeDir() string {
-	if m != nil && m.sess != nil && strings.TrimSpace(m.sess.WorktreeDir) != "" {
-		return m.sess.WorktreeDir
+func (m *Model) activeWorktreeDir() string {
+	if m != nil && m.sess != nil {
+		cwd := strings.TrimSpace(m.sess.CWD)
+		stored := strings.TrimSpace(m.sess.WorktreeDir)
+		if cwd == "" {
+			return stored
+		}
+		if sameWorktreePath(cwd, stored) {
+			return cwd
+		}
+		if root, err := worktree.MainRepoRoot(cwd); err == nil && !sameWorktreePath(root, cwd) {
+			return cwd
+		}
 	}
+	return ""
+}
+
+func (m *Model) boundWorktreeDir() string {
 	if m != nil && m.sess != nil && strings.TrimSpace(m.sess.CWD) != "" {
 		return m.sess.CWD
+	}
+	if m != nil && m.sess != nil && strings.TrimSpace(m.sess.WorktreeDir) != "" {
+		return m.sess.WorktreeDir
 	}
 	if cwd, err := os.Getwd(); err == nil {
 		return cwd
@@ -438,8 +455,8 @@ func (m *Model) cmdWorktreeDiff(args []string) (tea.Model, tea.Cmd) {
 			return m.showFooterError(err.Error())
 		}
 		dir = resolved
-	} else if m.sess != nil {
-		dir = strings.TrimSpace(m.sess.WorktreeDir)
+	} else {
+		dir = m.activeWorktreeDir()
 	}
 	if dir == "" {
 		m.clearWorktreeCommandComposer()
@@ -464,7 +481,7 @@ func (m *Model) cmdWorktreeMerge(args []string) (tea.Model, tea.Cmd) {
 	sessionID := ""
 	boundDir := ""
 	if m.sess != nil {
-		dir = strings.TrimSpace(m.sess.WorktreeDir)
+		dir = m.activeWorktreeDir()
 		boundDir = dir
 		sessionID = strings.TrimSpace(m.sess.ID)
 	}
@@ -525,10 +542,7 @@ func (m *Model) cmdWorktreePromote(args []string) (tea.Model, tea.Cmd) {
 	if m.worktreeOperationBusy() {
 		return m.worktreeBusyMessage()
 	}
-	dir := ""
-	if m.sess != nil {
-		dir = strings.TrimSpace(m.sess.WorktreeDir)
-	}
+	dir := m.activeWorktreeDir()
 	branch := ""
 	target := ""
 	nonFlagArgs := make([]string, 0, len(args))
@@ -603,8 +617,8 @@ func (m *Model) cmdWorktreeRemove(args []string) (tea.Model, tea.Cmd) {
 			dir = arg
 		}
 	}
-	if dir == "" && m.sess != nil {
-		dir = strings.TrimSpace(m.sess.WorktreeDir)
+	if dir == "" {
+		dir = m.activeWorktreeDir()
 	}
 	if dir == "" {
 		return m.showFooterError("Usage: /worktree rm [name-or-dir] [--force]")
@@ -614,7 +628,7 @@ func (m *Model) cmdWorktreeRemove(args []string) (tea.Model, tea.Cmd) {
 		return m.showFooterError(err.Error())
 	}
 	dir = resolvedDir
-	bound := m.sess != nil && filepath.Clean(m.sess.WorktreeDir) == filepath.Clean(dir)
+	bound := sameWorktreePath(m.activeWorktreeDir(), dir)
 	root := ""
 	if bound {
 		if r, err := worktree.MainRepoRoot(dir); err == nil {

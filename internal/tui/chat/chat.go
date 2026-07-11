@@ -1452,7 +1452,15 @@ func (m *Model) rootContext() context.Context {
 	return context.Background()
 }
 
-// Init initializes the model
+func (m *Model) autoSendMessageStats() string {
+	if m == nil || !m.showStats || m.stats == nil || m.streamStartTime.IsZero() {
+		return ""
+	}
+	elapsed := time.Since(m.streamStartTime)
+	return fmt.Sprintf("[Message %d] %.1fs", m.stats.LLMCallCount, elapsed.Seconds())
+}
+
+// Init initializes the model.
 func (m *Model) Init() tea.Cmd {
 	// Update textarea height for any initial text
 	m.updateTextareaHeight()
@@ -2596,10 +2604,11 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 			// In auto-send mode, check if there are more messages to send
 			if m.autoSendQueue != nil {
-				// Print per-message stats if enabled
-				if m.showStats {
-					elapsed := time.Since(m.streamStartTime)
-					fmt.Printf("[Message %d] %.1fs\n", m.stats.LLMCallCount, elapsed.Seconds())
+				var messageStatsCmd tea.Cmd
+				if summary := m.autoSendMessageStats(); summary != "" {
+					// tea.Println writes above the managed program output without
+					// bypassing Bubble Tea's renderer.
+					messageStatsCmd = tea.Println(summary)
 				}
 
 				if len(m.autoSendQueue) > 0 {
@@ -2607,7 +2616,11 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.textarea.SetValue(m.autoSendQueue[0])
 					m.autoSendQueue = m.autoSendQueue[1:]
 					m.updateTextareaHeight()
-					return m.sendMessage(m.textarea.Value())
+					model, sendCmd := m.sendMessage(m.textarea.Value())
+					if messageStatsCmd != nil {
+						return model, tea.Sequence(messageStatsCmd, sendCmd)
+					}
+					return model, sendCmd
 				}
 
 				if m.autoSendExitOnDone {
@@ -2615,12 +2628,15 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.quitting = true
 					if m.showStats && m.stats.LLMCallCount > 0 {
 						m.stats.Finalize()
-						return m, m.quitCmd(tea.Println(m.stats.Render()))
+						return m, m.quitCmd(messageStatsCmd, tea.Println(m.stats.Render()))
 					}
-					return m, m.quitCmd()
+					return m, m.quitCmd(messageStatsCmd)
 				}
 
 				// Queue exhausted, continue in interactive mode
+				if messageStatsCmd != nil {
+					cmds = append(cmds, messageStatsCmd)
+				}
 				m.autoSendQueue = nil
 			}
 
