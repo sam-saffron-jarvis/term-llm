@@ -146,9 +146,13 @@ func (s *serveServer) handleWorktreeList(w http.ResponseWriter, r *http.Request)
 		writeOpenAIError(w, http.StatusInternalServerError, "server_error", err.Error())
 		return
 	}
+	dirs := make([]string, 0, len(items))
 	for _, wt := range items {
-		inUse, _ := worktree.InUse(r.Context(), s.store, wt.Dir)
-		rows = append(rows, worktreeRow{Name: wt.Name, Dir: wt.Dir, RepoRoot: wt.RepoRoot, Branch: wt.Branch, Detached: wt.Detached, Base: wt.Base, HeadSHA: wt.HeadSHA, DirtyFiles: wt.DirtyFiles, InUse: inUse})
+		dirs = append(dirs, wt.Dir)
+	}
+	inUseByDir, _ := worktree.InUseByDir(r.Context(), s.store, dirs)
+	for _, wt := range items {
+		rows = append(rows, worktreeRow{Name: wt.Name, Dir: wt.Dir, RepoRoot: wt.RepoRoot, Branch: wt.Branch, Detached: wt.Detached, Base: wt.Base, HeadSHA: wt.HeadSHA, DirtyFiles: wt.DirtyFiles, InUse: inUseByDir[wt.Dir]})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"worktrees": rows})
 }

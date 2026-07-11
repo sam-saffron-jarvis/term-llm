@@ -80,6 +80,76 @@ type worktreeAPIResponse struct {
 	Dir  string `json:"dir"`
 }
 
+type countingWorktreeListStore struct {
+	session.NoopStore
+	summaries []session.SessionSummary
+	listCalls int
+	lastOpts  session.ListOptions
+}
+
+func (s *countingWorktreeListStore) List(ctx context.Context, opts session.ListOptions) ([]session.SessionSummary, error) {
+	s.listCalls++
+	s.lastOpts = opts
+	return append([]session.SessionSummary(nil), s.summaries...), nil
+}
+
+func TestServeWorktreeListBatchesSessionUsage(t *testing.T) {
+	repo := newGitRepoForBindingTest(t)
+	wt1, err := worktree.Create(context.Background(), repo, worktree.CreateOptions{Name: "batched-one"})
+	if err != nil {
+		t.Fatalf("Create wt1: %v", err)
+	}
+	t.Cleanup(func() { _ = worktree.Remove(context.Background(), wt1.Dir, worktree.RemoveOptions{Force: true}) })
+	wt2, err := worktree.Create(context.Background(), repo, worktree.CreateOptions{Name: "batched-two"})
+	if err != nil {
+		t.Fatalf("Create wt2: %v", err)
+	}
+	t.Cleanup(func() { _ = worktree.Remove(context.Background(), wt2.Dir, worktree.RemoveOptions{Force: true}) })
+
+	store := &countingWorktreeListStore{summaries: []session.SessionSummary{
+		{ID: "sess-one", Number: 11, Name: "one", WorktreeDir: wt1.Dir, Status: session.StatusActive},
+		{ID: "sess-two", Number: 12, Name: "two", WorktreeDir: wt2.Dir, Status: session.StatusComplete},
+	}}
+	srv := &serveServer{store: store, worktreeRootFn: worktreeRootForTest(repo)}
+	req := httptest.NewRequest(http.MethodGet, "/v1/worktrees", nil)
+	rec := httptest.NewRecorder()
+	srv.handleWorktrees(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if store.listCalls != 1 {
+		t.Fatalf("session List calls = %d, want 1", store.listCalls)
+	}
+	if store.lastOpts.Archived || store.lastOpts.Limit != 10000 {
+		t.Fatalf("List options = %+v, want non-archived limit 10000", store.lastOpts)
+	}
+
+	var resp struct {
+		Worktrees []struct {
+			Dir   string                  `json:"dir"`
+			InUse []worktree.InUseSession `json:"in_use,omitempty"`
+		} `json:"worktrees"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode list response: %v", err)
+	}
+	assertInUse := func(dir, id string) {
+		t.Helper()
+		for _, row := range resp.Worktrees {
+			if !sameServePath(row.Dir, dir) {
+				continue
+			}
+			if len(row.InUse) != 1 || row.InUse[0].ID != id {
+				t.Fatalf("worktree %s in_use = %+v, want %s", dir, row.InUse, id)
+			}
+			return
+		}
+		t.Fatalf("worktree %s missing from response: %+v", dir, resp.Worktrees)
+	}
+	assertInUse(wt1.Dir, "sess-one")
+	assertInUse(wt2.Dir, "sess-two")
+}
+
 func TestServeWorktreeMergeCleanupSemantics(t *testing.T) {
 	tests := []struct {
 		name        string

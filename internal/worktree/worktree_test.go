@@ -62,6 +62,71 @@ func runGitForWorktreeTest(t *testing.T, dir string, args ...string) string {
 	return string(out)
 }
 
+func TestListUsesPorcelainMetadataWithoutPerWorktreeGitProbes(t *testing.T) {
+	repo := newGitRepoForWorktreeTest(t)
+	wt1, err := Create(context.Background(), repo, CreateOptions{Name: "list-fast-one"})
+	if err != nil {
+		t.Fatalf("Create wt1: %v", err)
+	}
+	t.Cleanup(func() { _ = Remove(context.Background(), wt1.Dir, RemoveOptions{Force: true}) })
+	wt2, err := Create(context.Background(), repo, CreateOptions{Name: "list-fast-two"})
+	if err != nil {
+		t.Fatalf("Create wt2: %v", err)
+	}
+	t.Cleanup(func() { _ = Remove(context.Background(), wt2.Dir, RemoveOptions{Force: true}) })
+
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatalf("LookPath git: %v", err)
+	}
+	wrapperDir := t.TempDir()
+	wrapper := filepath.Join(wrapperDir, "git")
+	logPath := filepath.Join(wrapperDir, "git.log")
+	script := "#!/bin/sh\n" +
+		"printf '%s|%s\\n' \"$PWD\" \"$*\" >> \"$TERM_LLM_GIT_LOG\"\n" +
+		"exec \"$TERM_LLM_REAL_GIT\" \"$@\"\n"
+	if err := os.WriteFile(wrapper, []byte(script), 0o755); err != nil {
+		t.Fatalf("write git wrapper: %v", err)
+	}
+	t.Setenv("TERM_LLM_REAL_GIT", realGit)
+	t.Setenv("TERM_LLM_GIT_LOG", logPath)
+	t.Setenv("PATH", wrapperDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	items, err := List(repo)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(items) != 2 {
+		t.Fatalf("List returned %d worktrees, want 2: %+v", len(items), items)
+	}
+
+	data, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("read git log: %v", err)
+	}
+	worktreeDirs := map[string]bool{filepath.Clean(wt1.Dir): true, filepath.Clean(wt2.Dir): true}
+	statusCalls := 0
+	for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+		if line == "" {
+			continue
+		}
+		cwd, args, ok := strings.Cut(line, "|")
+		if !ok || !worktreeDirs[filepath.Clean(cwd)] {
+			continue
+		}
+		if args == "status --porcelain" {
+			statusCalls++
+			continue
+		}
+		if strings.HasPrefix(args, "rev-parse ") || strings.HasPrefix(args, "symbolic-ref ") || strings.HasPrefix(args, "merge-base ") {
+			t.Fatalf("List ran per-worktree metadata probe in %s: git %s\nfull log:\n%s", cwd, args, data)
+		}
+	}
+	if statusCalls != 2 {
+		t.Fatalf("per-worktree status calls = %d, want 2\nfull log:\n%s", statusCalls, data)
+	}
+}
+
 func TestDiffIncludesUntrackedFiles(t *testing.T) {
 	t.Parallel()
 
