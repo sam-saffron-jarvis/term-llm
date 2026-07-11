@@ -3,6 +3,7 @@ package chat
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -182,6 +183,90 @@ func TestResolveHandoverPathAfterWorktreeSwitchUsesOriginalProcessPath(t *testin
 	}
 }
 
+func TestApplyRuntimeDirectoryPreservesPinnedHandoverDocument(t *testing.T) {
+	originalDir := t.TempDir()
+	worktreeDir := t.TempDir()
+	t.Setenv("XDG_DATA_HOME", filepath.Join(t.TempDir(), "xdg-data"))
+
+	originalPath, err := session.GetHandoverPath(originalDir, "2026-07-11")
+	if err != nil {
+		t.Fatalf("GetHandoverPath original: %v", err)
+	}
+	worktreePath, err := session.GetHandoverPath(worktreeDir, "2026-07-11")
+	if err != nil {
+		t.Fatalf("GetHandoverPath worktree: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(originalPath), 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(originalPath, []byte("the original planner document"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	m := newFileHandoverTestModel(originalPath, "runtime-switch-pinned")
+	m.sess.CWD = originalDir
+	m.config = &config.Config{}
+	m.runtimeSystemContextResolver = func(_ *agents.Agent, _, _, dir string) (RuntimeSystemContext, error) {
+		return RuntimeSystemContext{SystemPrompt: handoverAssignment(worktreePath) + "\n\nrefreshed cwd=" + dir}, nil
+	}
+
+	if err := m.applyRuntimeDirectory(worktreeDir, worktreeDir); err != nil {
+		t.Fatalf("applyRuntimeDirectory: %v", err)
+	}
+	prompt := m.currentSystemPromptText()
+	if !strings.Contains(prompt, originalPath) {
+		t.Fatalf("refreshed prompt lost original handover path: %q", prompt)
+	}
+	if strings.Contains(prompt, worktreePath) {
+		t.Fatalf("refreshed prompt retained newly generated handover path: %q", prompt)
+	}
+	if !strings.Contains(prompt, "refreshed cwd="+worktreeDir) {
+		t.Fatalf("refreshed prompt lost worktree context: %q", prompt)
+	}
+	assertHandoverDocument(t, handoverCommand(t, m), "the original planner document")
+}
+
+func TestCarryPinnedHandoverPath(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", filepath.Join(t.TempDir(), "xdg-data"))
+	oldPath, err := session.GetHandoverPath(t.TempDir(), "2026-07-11")
+	if err != nil {
+		t.Fatal(err)
+	}
+	newPath, err := session.GetHandoverPath(t.TempDir(), "2026-07-11")
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherPath, err := session.GetHandoverPath(t.TempDir(), "2026-07-11")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		name      string
+		oldPrompt string
+		candidate string
+		want      string
+	}{
+		{name: "no old assignment", oldPrompt: "legacy", candidate: handoverAssignment(newPath), want: handoverAssignment(newPath)},
+		{name: "no candidate assignment", oldPrompt: handoverAssignment(oldPath), candidate: "refreshed context", want: "refreshed context"},
+		{name: "ambiguous old assignment", oldPrompt: handoverAssignment(oldPath) + "\n" + handoverAssignment(otherPath), candidate: handoverAssignment(newPath), want: handoverAssignment(newPath)},
+		{name: "ambiguous candidate assignment", oldPrompt: handoverAssignment(oldPath), candidate: handoverAssignment(newPath) + "\n" + handoverAssignment(otherPath), want: handoverAssignment(newPath) + "\n" + handoverAssignment(otherPath)},
+		{name: "already matches", oldPrompt: handoverAssignment(oldPath), candidate: handoverAssignment(oldPath), want: handoverAssignment(oldPath)},
+		{name: "replace exact generated path", oldPrompt: handoverAssignment(oldPath), candidate: "before " + handoverAssignment(newPath) + " after " + newPath, want: "before " + handoverAssignment(oldPath) + " after " + oldPath},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := carryPinnedHandoverPath(tt.oldPrompt, tt.candidate); got != tt.want {
+				t.Fatalf("carryPinnedHandoverPath() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func handoverAssignment(path string) string {
+	return "Your plan lives at exactly this path, decided upfront and fixed for this session:\n\n`" + path + "`"
+}
+
 func TestMaybeNameHandoverUsesBoundWorktreePath(t *testing.T) {
 	processDir := t.TempDir()
 	worktreeDir := t.TempDir()
@@ -291,7 +376,7 @@ func newFileHandoverTestModel(planPath, id string) *Model {
 	m.agentResolver = func(name string, cfg *config.Config) (*agents.Agent, error) {
 		return &agents.Agent{Name: name, SystemPrompt: "You are target."}, nil
 	}
-	sysPrompt := "Your plan lives at exactly this path, decided upfront and fixed for this session:\n\n`" + planPath + "`"
+	sysPrompt := handoverAssignment(planPath)
 	m.messages = []session.Message{*session.NewMessage(m.sess.ID, llm.SystemText(sysPrompt), -1)}
 	return m
 }

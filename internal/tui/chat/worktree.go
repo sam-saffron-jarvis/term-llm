@@ -314,6 +314,10 @@ func (m *Model) applyRuntimeDirectory(dir, worktreeDir string) error {
 		}
 	}
 
+	if !m.systemPromptOverridden {
+		candidate.SystemPrompt = carryPinnedHandoverPath(m.currentSystemPromptText(), candidate.SystemPrompt)
+	}
+
 	oldCWD, oldWorktree := "", ""
 	if m.sess != nil {
 		oldCWD, oldWorktree = m.sess.CWD, m.sess.WorktreeDir
@@ -377,6 +381,19 @@ func (m *Model) applyRuntimeDirectory(dir, worktreeDir string) error {
 	m.invalidateHistoryCache()
 	m.resetContextEstimateBaseline(context.Background())
 	return nil
+}
+
+func carryPinnedHandoverPath(oldPrompt, candidatePrompt string) string {
+	// Deliberately omit candidate directories: only the planner's explicit,
+	// globally rooted assignment is durable enough to carry across projects.
+	// Legacy directory-derived matches and ambiguous assignments must not be
+	// guessed during a runtime prompt refresh.
+	oldPath, oldPinned := session.ResolvePinnedHandoverPath(oldPrompt)
+	candidatePath, candidatePinned := session.ResolvePinnedHandoverPath(candidatePrompt)
+	if !oldPinned || oldPath == "" || !candidatePinned || candidatePath == "" || oldPath == candidatePath {
+		return candidatePrompt
+	}
+	return strings.ReplaceAll(candidatePrompt, candidatePath, oldPath)
 }
 
 func runtimeRollbackBase(baseDir, sessionCWD string) string {

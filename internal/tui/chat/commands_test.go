@@ -4081,6 +4081,12 @@ func TestApplyRuntimeDirectoryPreservesExplicitSystemOverride(t *testing.T) {
 	if got := m.messages[0].TextContent; got != "custom" {
 		t.Fatalf("system prompt = %q, want explicit override", got)
 	}
+	if len(store.messageUpdates) != 1 || store.messageUpdates[0].TextContent != "custom" {
+		t.Fatalf("persisted system prompt updates = %#v, want explicit override", store.messageUpdates)
+	}
+	if m.config.Chat.Instructions != "custom" {
+		t.Fatalf("config instructions = %q, want explicit override", m.config.Chat.Instructions)
+	}
 }
 
 func TestApplyRuntimeDirectoryResolutionFailureLeavesStateUntouched(t *testing.T) {
