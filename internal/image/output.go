@@ -23,13 +23,36 @@ func SaveImage(data []byte, outputDir, prompt string) (string, error) {
 	}
 
 	filename := generateFilename(prompt)
-	path := filepath.Join(dir, filename)
+	ext := filepath.Ext(filename)
+	stem := strings.TrimSuffix(filename, ext)
 
-	if err := os.WriteFile(path, data, 0644); err != nil {
-		return "", fmt.Errorf("failed to write image: %w", err)
+	for suffix := 0; ; suffix++ {
+		candidate := filename
+		if suffix > 0 {
+			candidate = fmt.Sprintf("%s-%d%s", stem, suffix+1, ext)
+		}
+		path := filepath.Join(dir, candidate)
+
+		file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0644)
+		if os.IsExist(err) {
+			continue
+		}
+		if err != nil {
+			return "", fmt.Errorf("failed to create image: %w", err)
+		}
+
+		if _, err := file.Write(data); err != nil {
+			_ = file.Close()
+			_ = os.Remove(path)
+			return "", fmt.Errorf("failed to write image: %w", err)
+		}
+		if err := file.Close(); err != nil {
+			_ = os.Remove(path)
+			return "", fmt.Errorf("failed to close image: %w", err)
+		}
+
+		return path, nil
 	}
-
-	return path, nil
 }
 
 // DisplayImage displays the image in terminal using the shared termimage renderer.
