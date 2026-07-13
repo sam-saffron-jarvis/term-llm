@@ -1366,8 +1366,14 @@ func (m *telegramSessionMgr) handleMessage(ctx context.Context, bot telegramBot,
 			}
 			sess.cancelMu.Unlock()
 
-			fastProvider := m.newFastProvider()
-			action := llm.ClassifyInterrupt(ctx, fastProvider, newMsgText, activity)
+			// Photo interjections cannot outlive this handler's temporary image path.
+			// Cancel and process them as replacement turns so the full structured
+			// message remains available until the provider consumes it.
+			action := llm.InterruptCancel
+			if tempImagePath == "" {
+				fastProvider := m.newFastProvider()
+				action = llm.ClassifyInterrupt(ctx, fastProvider, newMsgText, activity)
+			}
 			switch action {
 			case llm.InterruptCancel:
 				_, _ = bot.Send(tgbotapi.NewMessage(chatID, "↩️ Stopping current work and switching to your new request."))
