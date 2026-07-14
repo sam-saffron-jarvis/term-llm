@@ -38,6 +38,16 @@ func (r *capturingSpawnRunner) RunAgentWithCallbackAndOptions(ctx context.Contex
 	return r.RunAgentWithOptions(ctx, agentName, prompt, depth, opts)
 }
 
+func TestSpawnRunnerBuildRunRequestInheritsParentBaseDir(t *testing.T) {
+	runner := &SpawnAgentRunner{}
+	runner.SetBaseDir("  /tmp/parent-worktree  ")
+
+	req := runner.buildRunRequest(context.Background(), "reviewer", "review this", "child-session", 1, false, tools.SpawnAgentRunOptions{})
+	if req.Cwd != "/tmp/parent-worktree" {
+		t.Fatalf("Cwd = %q, want inherited parent BaseDir", req.Cwd)
+	}
+}
+
 func TestSpawnRunnerSetupAgentToolsPropagatesAgentModels(t *testing.T) {
 	cfg := &config.Config{}
 	runner := &SpawnAgentRunner{cfg: cfg}

@@ -113,6 +113,25 @@ func (r *SpawnAgentRunner) RunAgentWithCallbackAndOptions(ctx context.Context, a
 	return r.runAgentInternal(ctx, agentName, prompt, depth, callID, cb, opts)
 }
 
+func (r *SpawnAgentRunner) buildRunRequest(ctx context.Context, agentName, prompt, childSessionID string, depth int, search bool, opts tools.SpawnAgentRunOptions) runpkg.Request {
+	return runpkg.Request{
+		Platform:                 runpkg.PlatformConsole,
+		AgentName:                agentName,
+		Prompt:                   prompt,
+		SessionID:                childSessionID,
+		SessionName:              fmt.Sprintf("@%s: %s", agentName, session.TruncateSummary(prompt)),
+		Persist:                  r.store != nil,
+		Model:                    strings.TrimSpace(opts.ModelOverride),
+		Cwd:                      r.parentBaseDir,
+		Search:                   &search,
+		ParentSessionID:          r.parentSessionID,
+		IsSubagent:               true,
+		Depth:                    depth,
+		ApprovalRole:             "parent_agent_task",
+		ApprovalTranscriptPrefix: subagentApprovalTranscriptPrefix(ctx),
+	}
+}
+
 // runAgentInternal is the shared implementation for running sub-agents.
 func (r *SpawnAgentRunner) runAgentInternal(ctx context.Context, agentName string, prompt string, depth int,
 	callID string, cb tools.SubagentEventCallback, opts tools.SpawnAgentRunOptions) (tools.SpawnAgentRunResult, error) {
@@ -149,21 +168,7 @@ func (r *SpawnAgentRunner) runAgentInternal(ctx context.Context, agentName strin
 		Store:             r.store,
 		ParentApprovalMgr: r.parentApprovalMgr,
 	})
-	result, err := runner.Run(ctx, runpkg.Request{
-		Platform:                 runpkg.PlatformConsole,
-		AgentName:                agentName,
-		Prompt:                   prompt,
-		SessionID:                childSessionID,
-		SessionName:              fmt.Sprintf("@%s: %s", agentName, session.TruncateSummary(prompt)),
-		Persist:                  r.store != nil,
-		Model:                    strings.TrimSpace(opts.ModelOverride),
-		Search:                   &search,
-		ParentSessionID:          r.parentSessionID,
-		IsSubagent:               true,
-		Depth:                    depth,
-		ApprovalRole:             "parent_agent_task",
-		ApprovalTranscriptPrefix: subagentApprovalTranscriptPrefix(ctx),
-	}, sink)
+	result, err := runner.Run(ctx, r.buildRunRequest(ctx, agentName, prompt, childSessionID, depth, search, opts), sink)
 
 	output := sink.Output()
 	if output == "" {
