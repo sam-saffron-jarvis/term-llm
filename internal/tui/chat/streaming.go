@@ -247,8 +247,12 @@ func (m *Model) streamCompactionCallback(streamSess *session.Session) llm.Compac
 		if refreshed != nil {
 			m.sess = refreshed
 		}
-		if result != nil {
-			m.recordCompactionUsage(ctx, streamSessionID, result.Usage)
+		if result != nil && m.program != nil {
+			m.program.Send(compactionUsageMsg{
+				sessionID: streamSessionID,
+				model:     result.Model,
+				usage:     result.Usage,
+			})
 		}
 		if m.engine != nil {
 			m.engine.SetContextEstimateBaseline(0, 0)
@@ -495,6 +499,10 @@ func (m *Model) sendMessage(content string) (tea.Model, tea.Cmd) {
 	m.resetRetainedStreamTracker()
 	m.phase = "Thinking"
 	m.streamStartTime = time.Now()
+	if m.stats != nil {
+		m.stats.SetModel(m.statsPricingModel())
+		m.stats.RequestStart()
+	}
 	if m.altScreen {
 		m.scrollToBottom = true
 	}

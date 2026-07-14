@@ -49,13 +49,32 @@ func DefaultCompactionConfig() CompactionConfig {
 	}
 }
 
+func effectiveCompactionThresholdRatios(config *CompactionConfig) (soft, hard float64) {
+	soft, hard = defaultSoftThresholdRatio, defaultHardThresholdRatio
+	if config == nil {
+		return soft, hard
+	}
+	if config.SoftThresholdRatio > 0 {
+		soft = config.SoftThresholdRatio
+	} else if config.ThresholdRatio > 0 {
+		soft = config.ThresholdRatio
+	}
+	if config.HardThresholdRatio > 0 {
+		hard = config.HardThresholdRatio
+	} else if config.ThresholdRatio > 0 {
+		hard = config.ThresholdRatio
+	}
+	return soft, hard
+}
+
 // CompactionResult describes what happened during compaction.
 type CompactionResult struct {
 	Summary        string
 	NewMessages    []Message
 	OriginalCount  int
 	CompactedCount int
-	Usage          Usage // Token usage/cost of the helper LLM call that produced the summary.
+	Model          string // Model used by the helper LLM call.
+	Usage          Usage  // Token usage/cost of the helper LLM call that produced the summary.
 }
 
 // EstimateTokens returns an approximate token count for a string using a
@@ -578,6 +597,7 @@ func SoftCompact(ctx context.Context, provider Provider, model, systemPrompt str
 	}
 
 	result := compactionResultFromBriefPrepared(systemPrompt, briefText, prepared, originalCount, config)
+	result.Model = strings.TrimSpace(model)
 	result.Usage = usage
 	return result, nil
 }
@@ -1549,6 +1569,7 @@ func Compact(ctx context.Context, provider Provider, model, systemPrompt string,
 	// compaction: deterministic previous-turn excerpts, the model-written
 	// continuation brief, then a bounded raw suffix.
 	result := compactionResultFromBriefPrepared(systemPrompt, briefText, prepared, originalCount, config)
+	result.Model = strings.TrimSpace(model)
 	result.Usage = usage
 	return result, nil
 }

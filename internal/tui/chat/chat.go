@@ -798,7 +798,7 @@ func NewWithFastProvider(cfg *config.Config, provider llm.Provider, fastProvider
 
 	stats := ui.NewSessionStats()
 	if sess != nil {
-		stats.SeedTotals(sess.InputTokens, sess.OutputTokens, sess.CachedInputTokens, sess.CacheWriteTokens, sess.ToolCalls, sess.LLMTurns)
+		stats.SeedTotals(sess.InputTokens, sess.OutputTokens, sess.CachedInputTokens, sess.CacheWriteTokens, sess.ToolCalls, sess.LLMTurns+sess.CompactionCount)
 	}
 
 	var mcpStatusChan chan mcp.StatusUpdate
@@ -942,7 +942,7 @@ func (m *Model) seedStatsFromSession() {
 	if m.stats == nil {
 		m.stats = ui.NewSessionStats()
 	}
-	m.stats.SeedTotals(m.sess.InputTokens, m.sess.OutputTokens, m.sess.CachedInputTokens, m.sess.CacheWriteTokens, m.sess.ToolCalls, m.sess.LLMTurns)
+	m.stats.SeedTotals(m.sess.InputTokens, m.sess.OutputTokens, m.sess.CachedInputTokens, m.sess.CacheWriteTokens, m.sess.ToolCalls, m.sess.LLMTurns+m.sess.CompactionCount)
 }
 
 func (m *Model) configureContextManagementForSession() {
@@ -1631,6 +1631,12 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if timeoutMsg, ok := msg.(streamCancelTimeoutMsg); ok {
 		return m.handleStreamCancelTimeout(timeoutMsg)
 	}
+	if usageMsg, ok := msg.(compactionUsageMsg); ok {
+		// Compaction callbacks run on the stream goroutine. Apply stats and
+		// session-counter mutations only on Bubble Tea's Update goroutine.
+		m.recordCompactionUsage(context.Background(), usageMsg.sessionID, usageMsg.model, usageMsg.usage)
+		return m, nil
+	}
 	if handled, cmd := m.handleTerminalTitleProviderMsg(msg); handled {
 		return m, cmd
 	}
@@ -1839,7 +1845,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if refreshed != nil {
 			m.sess = refreshed
 		}
-		m.recordCompactionUsage(context.Background(), sessionIDOf(m.sess), msg.result.Usage)
+		m.recordCompactionUsage(context.Background(), sessionIDOf(m.sess), msg.result.Model, msg.result.Usage)
 		m.messagesMu.Lock()
 		m.messages = updated
 		m.compactionIdx = activeStart
@@ -2231,6 +2237,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 
 		case ui.StreamEventUsage:
+			if m.stats != nil {
+				m.stats.GenerationEnd()
+			}
 			inputTokens := ev.InputTokens
 			outputTokens := ev.OutputTokens
 			cachedTokens := ev.CachedTokens
@@ -2247,8 +2256,12 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if writeTokens < 0 {
 				writeTokens = 0
 			}
-			if m.stats != nil && (inputTokens > 0 || outputTokens > 0 || cachedTokens > 0 || writeTokens > 0) {
+			if m.stats != nil {
+				// Even an all-zero terminal usage event consumes pending request
+				// timing; SessionStats intentionally does not count it as a call.
 				m.stats.AddUsage(inputTokens, outputTokens, cachedTokens, writeTokens)
+			}
+			if inputTokens > 0 || outputTokens > 0 || cachedTokens > 0 || writeTokens > 0 {
 				if !m.attemptUsageCommitted {
 					m.attemptInput += inputTokens
 					m.attemptOutput += outputTokens
@@ -2260,6 +2273,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case ui.StreamEventText:
 			m.commitCurrentReasoningToStream()
 			m.attemptUsageCommitted = false
+			if m.stats != nil && ev.Text != "" {
+				m.stats.ObserveOutput()
+			}
 			text := ev.Text
 			if m.newlineCompactor == nil {
 				m.newlineCompactor = ui.NewStreamingNewlineCompactor(ui.MaxStreamingConsecutiveNewlines)
@@ -2297,11 +2313,19 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.phase = "Responding"
 			m.setRetryStatus("")
 
+		case ui.StreamEventGenerationActivity:
+			if m.stats != nil {
+				m.stats.ObserveOutput()
+			}
+
 		case ui.StreamEventReasoning:
+			if m.stats != nil && ev.ReasoningText != "" {
+				m.stats.ObserveOutput()
+			}
 			m.handleReasoningStreamEvent(ev)
 
 		case ui.StreamEventAttemptDiscard:
-			if m.stats != nil && m.attemptUsageCalls > 0 {
+			if m.stats != nil {
 				m.stats.DiscardUsage(m.attemptInput, m.attemptOutput, m.attemptCached, m.attemptCacheWrite, m.attemptUsageCalls)
 			}
 			m.resetAttemptUsage()
@@ -2346,11 +2370,17 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 
 		case ui.StreamEventModelSwitch:
+			if m.stats != nil {
+				m.stats.SetModel(ev.Text)
+			}
 			if m.markPendingStreamModelSwitchApplied(ev.Text) {
 				m.bumpContentVersion()
 			}
 
 		case ui.StreamEventRetry:
+			if m.stats != nil {
+				m.stats.ScheduleRetryStart(ev.RetryWait)
+			}
 			m.setRetryStatus(ev.RetryStatus("Retrying stream", 1, "..."))
 
 		case ui.StreamEventImage:
@@ -2626,9 +2656,8 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if m.autoSendExitOnDone {
 					// Queue exhausted and exit requested, quit
 					m.quitting = true
-					if m.showStats && m.stats.LLMCallCount > 0 {
-						m.stats.Finalize()
-						return m, m.quitCmd(messageStatsCmd, tea.Println(m.stats.Render()))
+					if summary := m.exitStatsSummary(); summary != "" {
+						return m, m.quitCmd(messageStatsCmd, tea.Println(summary))
 					}
 					return m, m.quitCmd(messageStatsCmd)
 				}

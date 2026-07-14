@@ -2762,6 +2762,9 @@ func TestRunLoopSoftThresholdCheckpointsCompactsAndContinues(t *testing.T) {
 	if compactionResult == nil {
 		t.Fatal("compaction callback was not called")
 	}
+	if compactionResult.Model != "compact-rush" {
+		t.Fatalf("compaction model = %q, want compact-rush", compactionResult.Model)
+	}
 	if compactionResult.Usage.InputTokens != 84 || compactionResult.Usage.OutputTokens != 2 {
 		t.Fatalf("compaction usage = %+v, want brief usage 84/2", compactionResult.Usage)
 	}
@@ -3072,6 +3075,23 @@ func TestRunLoopReactiveCompactsOnContextOverflowEvent(t *testing.T) {
 	}
 	if got := collectTextParts(provider.calls[2].Messages[1].Parts); !strings.Contains(got, "reactive summary") {
 		t.Fatalf("retry did not use reactive summary: %.120q", got)
+	}
+}
+
+func TestCompactionThresholdsUseEffectiveEngineConfig(t *testing.T) {
+	e := NewEngine(nil, nil)
+	if soft, hard, enabled := e.CompactionThresholds(); soft != 0 || hard != 0 || enabled {
+		t.Fatalf("disabled thresholds = (%d, %d, %v), want (0, 0, false)", soft, hard, enabled)
+	}
+
+	e.SetCompaction(10_000, CompactionConfig{SoftThresholdRatio: 0.72, HardThresholdRatio: 0.88})
+	if soft, hard, enabled := e.CompactionThresholds(); soft != 7200 || hard != 8800 || !enabled {
+		t.Fatalf("custom thresholds = (%d, %d, %v), want (7200, 8800, true)", soft, hard, enabled)
+	}
+
+	e.SetCompaction(10_000, CompactionConfig{ThresholdRatio: 0.80})
+	if soft, hard, enabled := e.CompactionThresholds(); soft != 8000 || hard != 8000 || !enabled {
+		t.Fatalf("legacy thresholds = (%d, %d, %v), want (8000, 8000, true)", soft, hard, enabled)
 	}
 }
 
