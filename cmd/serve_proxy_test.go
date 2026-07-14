@@ -230,6 +230,44 @@ func TestProxyGateWildcardGrant(t *testing.T) {
 	}
 }
 
+func TestProxyAdminUIShellAndCatalog(t *testing.T) {
+	p, _ := newProxyTest(t)
+	h := p.handler(&serveServer{})
+
+	for _, path := range []string{"/", "/proxy-admin.css", "/proxy-admin.js"} {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		rr := httptest.NewRecorder()
+		h.ServeHTTP(rr, req)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("GET %s = %d", path, rr.Code)
+		}
+		if strings.Contains(rr.Body.String(), "admin-secret") {
+			t.Fatalf("GET %s leaked the admin token", path)
+		}
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/admin/proxy/models", nil)
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, req)
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("catalog without admin token = %d, want 401", rr.Code)
+	}
+	req = httptest.NewRequest(http.MethodGet, "/admin/proxy/models", nil)
+	req.Header.Set("Authorization", "Bearer admin-secret")
+	rr = httptest.NewRecorder()
+	h.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("catalog with admin token = %d: %s", rr.Code, rr.Body.String())
+	}
+	var catalog struct {
+		Models []proxy.ModelAlias `json:"models"`
+	}
+	mustJSON(t, rr, &catalog)
+	if len(catalog.Models) == 0 {
+		t.Fatal("expected admin model catalog")
+	}
+}
+
 func TestProxyAdminAndSelfServiceFlow(t *testing.T) {
 	p, _ := newProxyTest(t)
 	h := p.handler(&serveServer{})

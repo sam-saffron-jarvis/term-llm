@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/config"
+	"github.com/samsaffron/term-llm/internal/proxyadminui"
 	runpkg "github.com/samsaffron/term-llm/internal/run"
 	"github.com/samsaffron/term-llm/internal/serve/proxy"
 	"github.com/spf13/cobra"
@@ -334,6 +335,10 @@ func (p *proxyServer) handleClientRequestAccess(w http.ResponseWriter, r *http.R
 
 // ---- admin handlers ------------------------------------------------------
 
+func (p *proxyServer) handleAdminModels(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{"models": p.catalog.List()})
+}
+
 func (p *proxyServer) handleAdminListClients(w http.ResponseWriter, r *http.Request) {
 	clients, err := p.store.ListClients(r.Context())
 	if err != nil {
@@ -534,11 +539,36 @@ func decodeProxyJSON(r *http.Request, dst any) error {
 	return nil
 }
 
+// handleProxyAdminAsset serves the public UI shell. Management data remains
+// protected by the existing admin API middleware; the shell stores the supplied
+// admin token in JavaScript memory only.
+func handleProxyAdminAsset(name, contentType string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		asset, err := proxyadminui.Asset(name)
+		if err != nil {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", contentType)
+		w.Header().Set("Cache-Control", "no-cache")
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("Referrer-Policy", "no-referrer")
+		if name == "index.html" {
+			w.Header().Set("Content-Security-Policy", "default-src 'self'; connect-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'")
+		}
+		_, _ = w.Write(asset)
+	}
+}
+
 // handler builds the proxy HTTP mux. LLM endpoints are gated and forwarded to
 // the reused provider handlers on llmServer; the admin and self-service planes
-// are served directly. Routes are mounted at the root (the proxy is API-only).
+// are served directly alongside the embedded management UI.
 func (p *proxyServer) handler(llmServer *serveServer) http.Handler {
 	mux := http.NewServeMux()
+
+	mux.HandleFunc("GET /", handleProxyAdminAsset("index.html", "text/html; charset=utf-8"))
+	mux.HandleFunc("GET /proxy-admin.css", handleProxyAdminAsset("proxy-admin.css", "text/css; charset=utf-8"))
+	mux.HandleFunc("GET /proxy-admin.js", handleProxyAdminAsset("proxy-admin.js", "text/javascript; charset=utf-8"))
 
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "platform": "proxy"})
@@ -555,6 +585,7 @@ func (p *proxyServer) handler(llmServer *serveServer) http.Handler {
 	mux.HandleFunc("POST /v1/proxy/access-requests", p.clientAuth(p.handleClientRequestAccess))
 
 	// Admin plane.
+	mux.HandleFunc("GET /admin/proxy/models", p.adminAuth(p.handleAdminModels))
 	mux.HandleFunc("GET /admin/proxy/clients", p.adminAuth(p.handleAdminListClients))
 	mux.HandleFunc("POST /admin/proxy/clients", p.adminAuth(p.handleAdminCreateClient))
 	mux.HandleFunc("GET /admin/proxy/clients/{id}", p.adminAuth(p.handleAdminGetClient))
