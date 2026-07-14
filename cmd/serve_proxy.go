@@ -745,15 +745,24 @@ func runServeProxy(ctx context.Context, cmd *cobra.Command, cfg *config.Config, 
 		errw:        out,
 	}
 
+	proxyHandler := p.handler(llmServer)
+	// Match the other HTTP serve surfaces: all proxy UI and API routes live
+	// beneath --base-path, with the prefix stripped before dispatch.
+	outerMux := http.NewServeMux()
+	outerMux.Handle(serveBasePath+"/", http.StripPrefix(serveBasePath, proxyHandler))
+	outerMux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, serveBasePath+"/", http.StatusTemporaryRedirect)
+	})
+
 	srv := &http.Server{
 		Addr:              fmt.Sprintf("%s:%d", serveHost, servePort),
-		Handler:           p.handler(llmServer),
+		Handler:           outerMux,
 		ReadHeaderTimeout: serveReadHeaderTimeout,
 		IdleTimeout:       serveIdleTimeout,
 	}
 
 	aliases := catalog.List()
-	fmt.Fprintf(out, "term-llm serve proxy listening on http://%s:%d\n", serveHost, servePort)
+	fmt.Fprintf(out, "term-llm serve proxy listening on http://%s:%d%s/\n", serveHost, servePort, serveBasePath)
 	fmt.Fprintf(out, "auth: %s\n", authSummary(requireAuth))
 	switch adminSource {
 	case "generated":

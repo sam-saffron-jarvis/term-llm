@@ -36,6 +36,10 @@
   if (typeof document === 'undefined') return;
 
   const $ = (id) => document.getElementById(id);
+  // Resolve API calls relative to the mounted UI so --base-path works without
+  // baking a deployment-specific prefix into the embedded assets.
+  const apiBase = new URL('.', window.location.href);
+  const apiURL = (path) => new URL(String(path).replace(/^\//, ''), apiBase).toString();
   const state = {
     adminToken: '', clients: [], models: [], requests: [], pendingRequests: [], audit: [], grants: new Map(),
     page: 'overview', requestStatus: 'pending', detailClientID: '', decisionRequestID: '', oneTimeToken: ''
@@ -71,7 +75,7 @@
     if (state.adminToken) headers.set('Authorization', `Bearer ${state.adminToken}`);
     if (options.body) headers.set('Content-Type', 'application/json');
     let response;
-    try { response = await fetch(path, { ...options, headers }); }
+    try { response = await fetch(apiURL(path), { ...options, headers }); }
     catch (error) { setConnection('offline', 'Offline'); throw new Error(`Proxy is unreachable: ${error.message}`); }
     if (response.status === 401 && !allowUnauthorized) { lock(); throw new Error('Admin session locked'); }
     let payload = null;
@@ -109,6 +113,7 @@
     state.page = page;
     document.querySelectorAll('.page').forEach((node) => node.classList.toggle('active', node.id === `page-${page}`));
     document.querySelectorAll('[data-page]').forEach((node) => node.classList.toggle('active', node.closest('.nav') && node.dataset.page === page));
+    if (page === 'overview' && state.adminToken) loadCore().catch((error) => flash(error.message, true));
     if (page === 'models') loadGrants();
     if (page === 'requests') loadRequests();
     if (page === 'activity') loadAudit();
@@ -280,5 +285,5 @@
   window.addEventListener('pagehide', () => { state.adminToken = ''; state.oneTimeToken = ''; helpers.clearSecret($('secretValue')); });
   document.addEventListener('keydown', (event) => { if (event.key !== 'Escape') return; const open = [...document.querySelectorAll('.modal-backdrop:not([hidden])')].pop(); if (open && open.id !== 'authModal' && open.id !== 'secretModal') hideModal(open); });
 
-  loadCore(true).then(() => { hideModal($('authModal')); setConnection('online', 'Connected'); }).catch(() => { state.adminToken = ''; setConnection('', 'Locked'); showModal('authModal'); });
+  lock();
 })();

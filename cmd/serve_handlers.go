@@ -2597,6 +2597,16 @@ func (s *serveServer) runtimeForFreshProviderRequest(ctx context.Context, sessio
 		defaultProvider = strings.TrimSpace(s.cfgRef.DefaultProvider)
 	}
 	providerName = strings.TrimSpace(providerName)
+	forcedModel := ""
+	forcedRoute := false
+	// Proxy mode pins both provider and model at the authorization gate. Fresh
+	// Responses API conversations use this separate path, so honor the route here
+	// as well as in runtimeForProviderModelRequest.
+	if route, ok := proxyForcedRouteFromContext(ctx); ok {
+		providerName = route.Provider
+		forcedModel = route.Model
+		forcedRoute = true
+	}
 	desiredProvider := providerName
 	if desiredProvider == "" {
 		desiredProvider = defaultProvider
@@ -2605,9 +2615,9 @@ func (s *serveServer) runtimeForFreshProviderRequest(ctx context.Context, sessio
 		desiredProvider = ""
 	}
 	create := s.sessionMgr.factory
-	if s.runtimeFactory != nil && providerName != "" && providerName != defaultProvider {
+	if s.runtimeFactory != nil && (forcedRoute || (providerName != "" && providerName != defaultProvider)) {
 		create = func(ctx context.Context) (*serveRuntime, error) {
-			return s.runtimeFactory(ctx, providerName, "")
+			return s.runtimeFactory(ctx, providerName, forcedModel)
 		}
 	}
 	if sessionID == "" {

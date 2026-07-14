@@ -450,6 +450,35 @@ func newProxyLLMServer(responses ...string) (*serveServer, *serveSessionManager)
 	return srv, mgr
 }
 
+func TestProxyFreshResponsesRouteUsesGrantedProviderAndModel(t *testing.T) {
+	var gotProvider, gotModel string
+	defaultFactory := func(context.Context) (*serveRuntime, error) {
+		return &serveRuntime{}, nil
+	}
+	mgr := newServeSessionManager(time.Minute, 10, defaultFactory)
+	defer mgr.Close()
+	srv := &serveServer{
+		cfgRef:     &config.Config{DefaultProvider: "chatgpt"},
+		sessionMgr: mgr,
+		runtimeFactory: func(_ context.Context, provider, model string) (*serveRuntime, error) {
+			gotProvider, gotModel = provider, model
+			return &serveRuntime{}, nil
+		},
+	}
+
+	ctx := withProxyForcedRoute(context.Background(), "claude-bin", "haiku")
+	_, stateful, err := srv.runtimeForFreshProviderRequest(ctx, "", "chatgpt")
+	if err != nil {
+		t.Fatalf("runtimeForFreshProviderRequest: %v", err)
+	}
+	if stateful {
+		t.Fatal("empty session id should create a stateless runtime")
+	}
+	if gotProvider != "claude-bin" || gotModel != "haiku" {
+		t.Fatalf("runtime route = %q/%q, want claude-bin/haiku", gotProvider, gotModel)
+	}
+}
+
 // TestProxyTwoClientSessionIsolationThroughHandler drives two authenticated
 // clients through the real gate + OpenAI Responses handler path using the SAME
 // client-supplied session_id, and proves they cannot share session/runtime state
