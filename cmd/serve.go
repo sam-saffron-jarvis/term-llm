@@ -87,9 +87,26 @@ Available platforms:
   api        HTTP server with API endpoints only (no UI)
   jobs       HTTP server with async job runner
   telegram   Telegram bot
+  proxy      Standalone capability proxy (mutually exclusive)
 
 Platforms are specified as positional arguments. If none are given, the
 serve.platforms list from config.yaml is used.
+
+The proxy platform (PROTOTYPE) runs a standalone capability proxy that exports a
+curated set of provider/model aliases to API clients. It reuses the OpenAI
+Responses/Chat and Anthropic Messages handlers behind a per-client grant check,
+with a separate admin token (--proxy-admin-token) from the per-client bearer
+tokens it issues. Clients calling an un-granted model get a structured 403 and a
+deduplicated pending access request. State (clients, hashed+expiring tokens,
+grants, access requests, audit) is persisted in a local SQLite database
+(--proxy-db). The proxy runtime exposes no server tools or agent memory.
+Prototype limits: single admin token, no rate limiting/quotas, no admin UI.
+
+  # run a proxy that exports whatever providers are configured (incl. claude-bin)
+  term-llm serve proxy --port 8081
+  # admin APIs:  {base}/admin/proxy/clients|tokens|grants|requests|audit
+  # client APIs: POST {base}/v1/responses|chat/completions|messages,
+  #              GET  {base}/v1/models, POST {base}/v1/proxy/access-requests
 
 Examples:
   term-llm serve web             # web server with UI enabled
@@ -192,6 +209,7 @@ func servePlatformCompletion(cmd *cobra.Command, args []string, toComplete strin
 		"api\tHTTP server with API endpoints only (no UI)",
 		"jobs\tAsync job runner with HTTP management API",
 		"telegram\tTelegram bot",
+		"proxy\tStandalone capability proxy (mutually exclusive)",
 	}
 
 	// Filter out already-selected platforms
@@ -303,6 +321,16 @@ func runServeLegacy(parentCtx context.Context, cmd *cobra.Command, args []string
 	hasWeb := platformContains(platformNames, "web")
 	hasAPI := platformContains(platformNames, "api")
 	hasTelegram := platformContains(platformNames, "telegram")
+
+	// The proxy platform is a mutually-exclusive standalone capability proxy:
+	// it reuses the provider protocol handlers behind a per-client grant gate
+	// and cannot be combined with the web/api/jobs/telegram platforms.
+	if err := ensureProxyExclusive(platformNames); err != nil {
+		return err
+	}
+	if platformContains(platformNames, "proxy") {
+		return runServeProxy(ctx, cmd, cfg, requireAuth)
+	}
 
 	// Auto-generate VAPID keys for web push if not already configured.
 	if hasWeb && (cfg.Serve.WebPush.VAPIDPublicKey == "" || cfg.Serve.WebPush.VAPIDPrivateKey == "") {
