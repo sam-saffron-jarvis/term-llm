@@ -259,7 +259,7 @@ func TestChatGPTStream_ServiceTierOverrideCanClearProviderDefault(t *testing.T) 
 	}
 }
 
-func TestChatGPTStream_IncludesSequentialCutoffReasoningSummaryDelivery(t *testing.T) {
+func TestChatGPTStream_OmitsReasoningSummaryDeliveryOverride(t *testing.T) {
 	origClient := chatGPTHTTPClient
 	defer func() { chatGPTHTTPClient = origClient }()
 
@@ -292,12 +292,8 @@ func TestChatGPTStream_IncludesSequentialCutoffReasoningSummaryDelivery(t *testi
 	defer stream.Close()
 	drainStreamToDone(t, stream)
 
-	streamOptions, ok := captured["stream_options"].(map[string]any)
-	if !ok {
-		t.Fatalf("stream_options missing or wrong type in request: %#v", captured)
-	}
-	if got, want := streamOptions["reasoning_summary_delivery"], "sequential_cutoff"; got != want {
-		t.Fatalf("reasoning_summary_delivery = %#v, want %q", got, want)
+	if streamOptions, ok := captured["stream_options"]; ok {
+		t.Fatalf("stream_options = %#v, want omitted", streamOptions)
 	}
 }
 
