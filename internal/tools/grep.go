@@ -307,6 +307,12 @@ func (l *ripgrepResultLimiter) flushPending() {
 	l.pending = false
 }
 
+func captureRipgrepStderr(stderr io.Reader) []byte {
+	data, _ := io.ReadAll(io.LimitReader(stderr, 64*1024))
+	_, _ = io.Copy(io.Discard, stderr)
+	return data
+}
+
 func runRipgrep(ctx context.Context, args []string, limits ripgrepCaptureLimits, maxResults int, filesWithMatches bool) ([]byte, bool, error) {
 	limits = limits.normalize()
 	cmd := exec.CommandContext(ctx, "rg", args...)
@@ -325,8 +331,7 @@ func runRipgrep(ctx context.Context, args []string, limits ripgrepCaptureLimits,
 
 	stderrCh := make(chan []byte, 1)
 	go func() {
-		data, _ := io.ReadAll(io.LimitReader(stderr, 64*1024))
-		stderrCh <- data
+		stderrCh <- captureRipgrepStderr(stderr)
 	}()
 
 	var consumeLine ripgrepLineConsumer
@@ -349,8 +354,8 @@ func runRipgrep(ctx context.Context, args []string, limits ripgrepCaptureLimits,
 		_ = cmd.Process.Kill()
 	}
 
-	waitErr := cmd.Wait()
 	stderrOut := strings.TrimSpace(string(<-stderrCh))
+	waitErr := cmd.Wait()
 
 	if waitErr != nil {
 		if truncated {

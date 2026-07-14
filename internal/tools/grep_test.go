@@ -12,6 +12,20 @@ import (
 	"time"
 )
 
+func TestCaptureRipgrepStderrDrainsBeyondCaptureLimit(t *testing.T) {
+	input := bytes.Repeat([]byte("x"), 128*1024)
+	stderr := bytes.NewReader(input)
+
+	got := captureRipgrepStderr(stderr)
+
+	if len(got) != 64*1024 {
+		t.Fatalf("captured stderr = %d bytes, want %d", len(got), 64*1024)
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("stderr reader has %d undrained bytes", stderr.Len())
+	}
+}
+
 func TestCaptureRipgrepOutputStopsNearByteCapForOversizedLine(t *testing.T) {
 	limits := ripgrepCaptureLimits{maxOutputLines: 100, maxBufferedBytes: 1024}
 	input := strings.NewReader(strings.Repeat("x", limits.maxBufferedBytes*4) + "\n")

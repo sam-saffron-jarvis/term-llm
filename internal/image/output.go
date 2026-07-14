@@ -2,6 +2,7 @@ package image
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -22,14 +23,45 @@ func SaveImage(data []byte, outputDir, prompt string) (string, error) {
 		return "", fmt.Errorf("failed to create output directory: %w", err)
 	}
 
-	filename := generateFilename(prompt)
-	path := filepath.Join(dir, filename)
+	return saveImageFile(data, dir, generateFilename(prompt))
+}
 
-	if err := os.WriteFile(path, data, 0644); err != nil {
-		return "", fmt.Errorf("failed to write image: %w", err)
+// saveImageFile exclusively creates filename or the next available suffixed name.
+func saveImageFile(data []byte, dir, filename string) (string, error) {
+	ext := filepath.Ext(filename)
+	stem := strings.TrimSuffix(filename, ext)
+
+	for suffix := 0; ; suffix++ {
+		candidate := filename
+		if suffix > 0 {
+			candidate = fmt.Sprintf("%s-%d%s", stem, suffix+1, ext)
+		}
+		path := filepath.Join(dir, candidate)
+
+		file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0644)
+		if os.IsExist(err) {
+			continue
+		}
+		if err != nil {
+			return "", fmt.Errorf("failed to create image: %w", err)
+		}
+
+		n, writeErr := file.Write(data)
+		if writeErr == nil && n != len(data) {
+			writeErr = io.ErrShortWrite
+		}
+		if writeErr != nil {
+			_ = file.Close()
+			_ = os.Remove(path)
+			return "", fmt.Errorf("failed to write image: %w", writeErr)
+		}
+		if err := file.Close(); err != nil {
+			_ = os.Remove(path)
+			return "", fmt.Errorf("failed to close image: %w", err)
+		}
+
+		return path, nil
 	}
-
-	return path, nil
 }
 
 // DisplayImage displays the image in terminal using the shared termimage renderer.

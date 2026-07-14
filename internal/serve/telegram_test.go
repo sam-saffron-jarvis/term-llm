@@ -68,6 +68,7 @@ type fakeBotSender struct {
 	nextID         int      // auto-incrementing MessageID
 	sendErr        error    // if non-nil, returned on the very first Send call
 	maxEditRunes   int      // if positive, reject EditMessageText calls over this many runes
+	fileURL        string   // if non-empty, returned for Telegram file downloads
 }
 
 func (f *fakeBotSender) Send(c tgbotapi.Chattable) (tgbotapi.Message, error) {
@@ -113,6 +114,9 @@ func (f *fakeBotSender) GetFile(config tgbotapi.FileConfig) (tgbotapi.File, erro
 }
 
 func (f *fakeBotSender) GetFileDirectURL(fileID string) (string, error) {
+	if f.fileURL != "" {
+		return f.fileURL, nil
+	}
 	return "", errors.New("fake bot does not support GetFileDirectURL")
 }
 
@@ -2904,9 +2908,16 @@ func TestCloseTelegramSessionDefersCleanupUntilDetachedRunnerReturns(t *testing.
 	}
 }
 
+type imagePathObservation struct {
+	path  string
+	valid bool
+}
+
 type interruptSequenceProvider struct {
 	firstChunkSent        chan struct{}
 	firstContextCancelled chan struct{}
+	secondRequest         chan llm.Request
+	secondImagePath       chan imagePathObservation
 	streamCount           atomic.Int32
 }
 
@@ -2914,6 +2925,8 @@ func newInterruptSequenceProvider() *interruptSequenceProvider {
 	return &interruptSequenceProvider{
 		firstChunkSent:        make(chan struct{}),
 		firstContextCancelled: make(chan struct{}),
+		secondRequest:         make(chan llm.Request, 1),
+		secondImagePath:       make(chan imagePathObservation, 1),
 	}
 }
 
@@ -2921,7 +2934,8 @@ func (p *interruptSequenceProvider) Name() string                   { return "in
 func (p *interruptSequenceProvider) Credential() string             { return "mock" }
 func (p *interruptSequenceProvider) Capabilities() llm.Capabilities { return llm.Capabilities{} }
 func (p *interruptSequenceProvider) Stream(ctx context.Context, req llm.Request) (llm.Stream, error) {
-	if p.streamCount.Add(1) == 1 {
+	streamNumber := p.streamCount.Add(1)
+	if streamNumber == 1 {
 		return &cancelAwareBlockingStream{
 			ctx:                   ctx,
 			text:                  "partial answer",
@@ -2929,6 +2943,19 @@ func (p *interruptSequenceProvider) Stream(ctx context.Context, req llm.Request)
 			firstContextCancelled: p.firstContextCancelled,
 			closed:                make(chan struct{}),
 		}, nil
+	}
+	if streamNumber == 2 {
+		imagePath := ""
+		for _, msg := range req.Messages {
+			for _, part := range msg.Parts {
+				if part.Type == llm.PartImage && part.ImagePath != "" {
+					imagePath = part.ImagePath
+				}
+			}
+		}
+		p.secondRequest <- req
+		_, statErr := os.Stat(imagePath)
+		p.secondImagePath <- imagePathObservation{path: imagePath, valid: statErr == nil}
 	}
 	return &oneShotTextStream{text: "new answer"}, nil
 }
@@ -3040,5 +3067,113 @@ func TestHandleMessage_CancelInterruptIsNotBlockedBySessionMutex(t *testing.T) {
 	}
 	if provider.streamCount.Load() < 2 {
 		t.Fatalf("provider stream count = %d, want at least 2", provider.streamCount.Load())
+	}
+}
+
+func TestHandleMessage_PhotoInterruptCancelsAndPreservesImage(t *testing.T) {
+	provider := newInterruptSequenceProvider()
+	mgr := &telegramSessionMgr{
+		sessions:         make(map[int64]*telegramSession),
+		allowedUserIDs:   map[int64]struct{}{7: {}},
+		idleTimeout:      time.Hour,
+		interruptTimeout: time.Second,
+		tickerInterval:   5 * time.Millisecond,
+		settings: Settings{
+			MaxTurns: 5,
+			NewSession: func(ctx context.Context) (*SessionRuntime, error) {
+				return &SessionRuntime{
+					Engine:       llm.NewEngine(provider, llm.NewToolRegistry()),
+					ProviderName: "mock",
+					ModelName:    "test",
+				}, nil
+			},
+		},
+	}
+	imageServer := newTestImageServer(t, []byte{0xff, 0xd8, 0xff, 0xdb, 0x00, 0x43, 0x00, 0x08})
+	defer imageServer.Close()
+	bot := &fakeBotSender{fileURL: imageServer.URL}
+	textMessage := &tgbotapi.Message{
+		From: &tgbotapi.User{ID: 7, UserName: "sam"},
+		Chat: &tgbotapi.Chat{ID: 42},
+		Text: "write a long reply",
+	}
+	photoMessage := &tgbotapi.Message{
+		From:  &tgbotapi.User{ID: 7, UserName: "sam"},
+		Chat:  &tgbotapi.Chat{ID: 42},
+		Photo: []tgbotapi.PhotoSize{{FileID: "photo-1", Width: 800, Height: 600}},
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	firstDone := make(chan struct{})
+	go func() {
+		mgr.handleMessage(ctx, bot, textMessage)
+		close(firstDone)
+	}()
+	select {
+	case <-provider.firstChunkSent:
+	case <-time.After(5 * time.Second):
+		t.Fatal("first stream never emitted initial chunk")
+	}
+
+	secondDone := make(chan struct{})
+	go func() {
+		mgr.handleMessage(ctx, bot, photoMessage)
+		close(secondDone)
+	}()
+	select {
+	case <-provider.firstContextCancelled:
+	case <-time.After(2 * time.Second):
+		t.Fatal("photo did not cancel the active stream")
+	}
+	select {
+	case <-firstDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("first message did not finish after photo interrupt")
+	}
+
+	var secondReq llm.Request
+	select {
+	case secondReq = <-provider.secondRequest:
+	case <-time.After(2 * time.Second):
+		t.Fatal("photo was not sent in a replacement provider request")
+	}
+	var imagePath string
+	select {
+	case observation := <-provider.secondImagePath:
+		imagePath = observation.path
+		if imagePath == "" {
+			t.Fatal("replacement provider request did not contain an image path")
+		}
+		if !observation.valid {
+			t.Fatal("photo path was removed before the provider consumed it")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("provider did not inspect the replacement photo path")
+	}
+	select {
+	case <-secondDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("photo replacement request did not finish")
+	}
+	if _, err := os.Stat(imagePath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("temporary photo path still exists after request completed: %v", err)
+	}
+
+	foundImage := false
+	for _, msg := range secondReq.Messages {
+		for _, part := range msg.Parts {
+			if part.Type == llm.PartImage && part.ImageData != nil && part.ImageData.Base64 != "" {
+				foundImage = true
+			}
+		}
+	}
+	if !foundImage {
+		t.Fatalf("replacement provider request did not contain image data: %+v", secondReq.Messages)
+	}
+	for _, text := range bot.allTexts() {
+		if strings.Contains(text, "Noted") {
+			t.Fatalf("photo was acknowledged as an interjection instead of a replacement: %v", bot.allTexts())
+		}
 	}
 }
