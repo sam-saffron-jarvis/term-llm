@@ -530,14 +530,15 @@ type jobsV2Manager struct {
 	lastCleanupCompleted time.Time
 	cleanupRunning       bool
 
-	enqueueMu     sync.Mutex
-	mu            sync.Mutex
-	closed        bool
-	done          chan struct{}
-	schedulerWake chan struct{}
-	workerWake    chan struct{}
-	wg            sync.WaitGroup
-	cancels       map[string]context.CancelFunc
+	enqueueMu         sync.Mutex
+	mu                sync.Mutex
+	closed            bool
+	done              chan struct{}
+	schedulerWake     chan struct{}
+	workerWake        chan struct{}
+	wg                sync.WaitGroup
+	cancels           map[string]context.CancelFunc
+	cancelRunAfterGet func(jobsV2Run) // test seam for status-transition races
 }
 
 const jobsV2Schema = `
@@ -2018,31 +2019,59 @@ func (m *jobsV2Manager) listRuns(jobID string, limit, offset int, includeOutput 
 }
 
 func (m *jobsV2Manager) CancelRun(id string) (jobsV2Run, error) {
-	run, err := m.GetRun(id)
-	if err != nil {
-		return jobsV2Run{}, err
-	}
-	now := time.Now().UTC()
-	switch run.Status {
-	case jobsV2RunQueued, jobsV2RunClaimed:
-		_, err = m.db.Exec(`UPDATE job_runs_v2 SET status = ?, finished_at = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, jobsV2RunCancelled, now, id)
-		_ = m.addRunEvent(id, "cancelled", "run cancelled before start", nil)
-	case jobsV2RunRunning:
-		_, err = m.db.Exec(`UPDATE job_runs_v2 SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, jobsV2RunCancelRequested, id)
-		_ = m.addRunEvent(id, "cancel_requested", "cancellation requested", nil)
-		m.mu.Lock()
-		cancel := m.cancels[id]
-		m.mu.Unlock()
-		if cancel != nil {
-			cancel()
+	// A run can advance while cancellation is reading it. Retry conditional
+	// transitions so a newly running process is signalled instead of merely
+	// having its database row overwritten as cancelled.
+	for attempt := 0; attempt < 3; attempt++ {
+		run, err := m.GetRun(id)
+		if err != nil {
+			return jobsV2Run{}, err
 		}
-	default:
-		return run, nil
+		if m.cancelRunAfterGet != nil {
+			m.cancelRunAfterGet(run)
+		}
+
+		switch run.Status {
+		case jobsV2RunQueued, jobsV2RunClaimed:
+			now := time.Now().UTC()
+			res, err := m.db.Exec(`UPDATE job_runs_v2 SET status = ?, finished_at = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND status IN (?, ?)`, jobsV2RunCancelled, now, id, jobsV2RunQueued, jobsV2RunClaimed)
+			if err != nil {
+				return jobsV2Run{}, fmt.Errorf("cancel queued run: %w", err)
+			}
+			affected, err := res.RowsAffected()
+			if err != nil {
+				return jobsV2Run{}, fmt.Errorf("inspect queued run cancellation: %w", err)
+			}
+			if affected == 0 {
+				continue
+			}
+			_ = m.addRunEvent(id, "cancelled", "run cancelled before start", nil)
+			return m.GetRun(id)
+		case jobsV2RunRunning:
+			res, err := m.db.Exec(`UPDATE job_runs_v2 SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND status = ?`, jobsV2RunCancelRequested, id, jobsV2RunRunning)
+			if err != nil {
+				return jobsV2Run{}, fmt.Errorf("request run cancellation: %w", err)
+			}
+			affected, err := res.RowsAffected()
+			if err != nil {
+				return jobsV2Run{}, fmt.Errorf("inspect run cancellation request: %w", err)
+			}
+			if affected == 0 {
+				continue
+			}
+			_ = m.addRunEvent(id, "cancel_requested", "cancellation requested", nil)
+			m.mu.Lock()
+			cancel := m.cancels[id]
+			m.mu.Unlock()
+			if cancel != nil {
+				cancel()
+			}
+			return m.GetRun(id)
+		default:
+			return run, nil
+		}
 	}
-	if err != nil {
-		return jobsV2Run{}, err
-	}
-	return m.GetRun(id)
+	return jobsV2Run{}, fmt.Errorf("cancel run %q: status changed during cancellation", id)
 }
 
 func scanJobV2(scanner interface{ Scan(dest ...any) error }) (jobsV2Job, error) {
