@@ -268,10 +268,7 @@ func (p *ChatGPTProvider) Stream(ctx context.Context, req Request) (Stream, erro
 		PromptCacheKey:                  req.SessionID,
 		Store:                           boolPtr(false),
 		Stream:                          true,
-		StreamOptions: &ResponsesStreamOptions{
-			ReasoningSummaryDelivery: "sequential_cutoff",
-		},
-		SessionID: req.SessionID,
+		SessionID:                       req.SessionID,
 	}
 
 	if serviceTier := p.serviceTier; req.ServiceTierSet || strings.TrimSpace(req.ServiceTier) != "" {
