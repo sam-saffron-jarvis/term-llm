@@ -910,6 +910,52 @@ func TestResponsesClientWebSocketReadFailureAfterEventsReturnsIncomplete(t *test
 	}
 }
 
+func TestResponsesClientWebSocketMalformedCompletedReturnsIncomplete(t *testing.T) {
+	upgrader := websocket.Upgrader{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.EqualFold(r.Header.Get("Upgrade"), "websocket") {
+			t.Fatal("HTTP fallback should not be used after visible WebSocket output")
+			return
+		}
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Errorf("upgrade: %v", err)
+			return
+		}
+		defer conn.Close()
+		_, _, _ = conn.ReadMessage()
+		_ = conn.WriteJSON(map[string]any{"type": "response.output_text.delta", "delta": "partial"})
+		_ = conn.WriteMessage(websocket.TextMessage, []byte(`{"type":"response.completed","response":`))
+	}))
+	defer server.Close()
+
+	client := &ResponsesClient{BaseURL: server.URL, UseWebSocket: true}
+	stream, err := client.Stream(context.Background(), ResponsesRequest{Model: "gpt-test", Input: []ResponsesInputItem{{Type: "message", Role: "user", Content: "hi"}}, Stream: true}, false)
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	defer stream.Close()
+
+	event, err := stream.Recv()
+	if err != nil || event.Type != EventTextDelta || event.Text != "partial" {
+		t.Fatalf("first event = %#v, err=%v, want partial text", event, err)
+	}
+	event, err = stream.Recv()
+	if err != nil {
+		t.Fatalf("second Recv returned transport error instead of EventError: %v", err)
+	}
+	if event.Type != EventError || event.Err == nil {
+		t.Fatalf("second event = %#v, want error event", event)
+	}
+	var incomplete *StreamIncompleteError
+	if !errors.As(event.Err, &incomplete) {
+		t.Fatalf("error type = %T, want StreamIncompleteError: %v", event.Err, event.Err)
+	}
+	if !strings.Contains(event.Err.Error(), "decode Responses API response.completed event") {
+		t.Fatalf("incomplete stream missing decode cause: %v", event.Err)
+	}
+}
+
 func TestResponsesClientWebSocketBackoffHonorsContextCancellation(t *testing.T) {
 	withResponsesWebSocketBaseBackoff(t, time.Hour)
 

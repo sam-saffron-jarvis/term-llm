@@ -1090,6 +1090,20 @@ func (c *ResponsesClient) streamHTTPPrepared(ctx context.Context, httpPayload Re
 			lastEventType = ""
 
 			stop, err := handler.HandleJSONEvent(data, eventType, send)
+			if err != nil && (eventType == "response.completed" || eventType == "response.incomplete") && !json.Valid(data) {
+				// A truncated terminal event is a transport failure, not a provider
+				// rejection. Classifying it as incomplete lets the engine preserve
+				// committed tool progress and resume instead of surfacing a misleading
+				// invalid_request_error to the user.
+				if finishErr := handler.FinishIncomplete(send); finishErr != nil {
+					err = errors.Join(err, finishErr)
+				}
+				return false, &StreamIncompleteError{
+					Transport: "Responses API SSE",
+					Terminal:  eventType,
+					Err:       err,
+				}
+			}
 			if stop {
 				sawTerminal = true
 			}

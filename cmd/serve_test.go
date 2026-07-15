@@ -9094,7 +9094,20 @@ func TestResolveServeResponseTimeout(t *testing.T) {
 	}
 }
 
-func TestStartResponseRunDeadlineExceededFailsWithHelpfulTimeoutMessage(t *testing.T) {
+func TestResponseRunDeadlineMessageUsesConfiguredLimitOnlyWhenRunContextExpired(t *testing.T) {
+	timeout := 45 * time.Minute
+	if got := responseRunDeadlineMessage(context.Background(), timeout); strings.Contains(got, "45 minutes") {
+		t.Fatalf("live run context falsely claimed configured timeout: %q", got)
+	}
+
+	expiredCtx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer cancel()
+	if got := responseRunDeadlineMessage(expiredCtx, timeout); !strings.Contains(got, "timed out after 45 minutes") {
+		t.Fatalf("expired run context message = %q, want configured timeout", got)
+	}
+}
+
+func TestStartResponseRunProviderDeadlineDoesNotClaimRunTimeout(t *testing.T) {
 	provider := llm.NewMockProvider("mock").AddError(context.DeadlineExceeded)
 	engine := llm.NewEngine(provider, nil)
 	rt := &serveRuntime{
@@ -9135,8 +9148,11 @@ func TestStartResponseRunDeadlineExceededFailsWithHelpfulTimeoutMessage(t *testi
 		t.Fatalf("error type = %v, want timeout_error: %#v", got, snapshot)
 	}
 	message, _ := errPayload["message"].(string)
-	if !strings.Contains(message, "timed out after 45 minutes") {
-		t.Fatalf("timeout message = %q, want configured 45 minute explanation", message)
+	if !strings.Contains(message, "provider request timed out before the response run deadline") {
+		t.Fatalf("timeout message = %q, want provider timeout explanation", message)
+	}
+	if strings.Contains(message, "45 minutes") {
+		t.Fatalf("provider timeout falsely claimed the configured response deadline: %q", message)
 	}
 	if strings.Contains(message, "context deadline exceeded") {
 		t.Fatalf("timeout message leaked raw context error: %q", message)
