@@ -871,6 +871,58 @@ func TestEngineForceExternalSearchDisablesNativeProviderSearch(t *testing.T) {
 	}
 }
 
+func TestEngineNativeSearchRemovesPrepopulatedExternalSearchTools(t *testing.T) {
+	t.Parallel()
+
+	provider := &fakeProvider{
+		hasCapabilities: true,
+		capabilities: Capabilities{
+			NativeWebSearch: true,
+			NativeWebFetch:  true,
+			ToolCalls:       true,
+		},
+		script: func(call int, req Request) []Event {
+			return []Event{{Type: EventDone}}
+		},
+	}
+	engine := NewEngine(provider, NewToolRegistry())
+	stream, err := engine.Stream(context.Background(), Request{
+		Messages: []Message{UserText("search this")},
+		Search:   true,
+		Tools: []ToolSpec{
+			WebSearchToolSpec(),
+			ReadURLToolSpec(),
+			{Name: "other_tool", Schema: map[string]any{"type": "object"}},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stream.Close()
+	for {
+		_, err := stream.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(provider.calls) != 1 {
+		t.Fatalf("provider calls = %d", len(provider.calls))
+	}
+	got := provider.calls[0]
+	if !got.Search {
+		t.Fatal("native search was disabled")
+	}
+	if hasToolNamed(got.Tools, WebSearchToolName) || hasToolNamed(got.Tools, ReadURLToolName) {
+		t.Fatalf("external search tools leaked into native request: %+v", got.Tools)
+	}
+	if !hasToolNamed(got.Tools, "other_tool") {
+		t.Fatalf("non-search tool was removed: %+v", got.Tools)
+	}
+}
+
 func TestEngineDisableExternalWebFetchWithNativeSearch(t *testing.T) {
 	t.Parallel()
 

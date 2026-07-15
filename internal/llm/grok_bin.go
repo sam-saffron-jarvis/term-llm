@@ -32,10 +32,27 @@ const (
 	grokToolLineGrace      = 25 * time.Millisecond
 	grokToolLineGraceEnv   = "TERM_LLM_GROK_TOOL_LINE_GRACE_MS"
 	// An empty --tools value is interpreted by Grok as no filter. Explicitly
-	// deny its built-ins while leaving search_tool/use_tool available, since
-	// those are Grok's MCP discovery and invocation mechanism.
-	grokDisallowedNativeTools = "run_terminal_cmd,bash,grep,grep_search,read_file,search_replace,list_dir,web_search,web_fetch,todo_write,task,kill_task,get_task_output,memory_search,memory_get,lsp,image_gen,image_edit"
+	// deny its built-ins while leaving search_tool/use_tool available for MCP.
+	// Read-only native web, fetch, and X search are removed from this deny list
+	// only when Request.Search selects provider-native search.
+	grokDisallowedNativeTools     = "run_terminal_cmd,bash,grep,grep_search,read_file,search_replace,list_dir,web_search,web_fetch,x_search,todo_write,task,kill_task,get_task_output,memory_search,memory_get,lsp,image_gen,image_edit"
+	grokNativeSearchToolAllowlist = "search_tool,use_tool,web_search,web_fetch,x_search"
 )
+
+func grokDisallowedTools(nativeSearch bool) string {
+	if !nativeSearch {
+		return grokDisallowedNativeTools
+	}
+	allowed := map[string]bool{"web_search": true, "web_fetch": true, "x_search": true}
+	tools := strings.Split(grokDisallowedNativeTools, ",")
+	filtered := tools[:0]
+	for _, tool := range tools {
+		if !allowed[tool] {
+			filtered = append(filtered, tool)
+		}
+	}
+	return strings.Join(filtered, ",")
+}
 
 var grokCommandWaitDelay = time.Second
 var grokToolDrainGrace = loadCLIToolLineDrainGrace(grokToolLineGraceEnv, grokToolLineGrace)
@@ -46,13 +63,17 @@ var grokToolDrainGrace = loadCLIToolLineDrainGrace(grokToolLineGraceEnv, grokToo
 var grokEffortLevels = []string{"none", "minimal", "low", "medium", "high", "xhigh", "max"}
 
 // GrokBinProvider uses the locally installed Grok Build CLI as an authenticated
-// model transport. term-llm remains the sole tool owner: the CLI sees only an
-// isolated in-process HTTP MCP server and all Grok built-in tools are disabled.
+// model transport. term-llm remains the sole owner of executable local tools:
+// ACP receives a restricted agent profile plus an isolated in-process HTTP MCP
+// server. When Request.Search selects provider-native search, the profile also
+// permits Grok's read-only web_search, web_fetch, and x_search backend tools.
+// Grok's standard ACP prompt completion metadata supplies provider token usage;
+// image turns temporarily retain the legacy headless transport because Grok
+// 0.2.x does not advertise ACP image prompt support.
 //
-// Grok's streaming-json protocol does not include token usage, so this provider
-// intentionally emits no EventUsage. Its isolated GROK_HOME also does not load
-// custom [model.*] definitions from the user's normal ~/.grok/config.toml;
-// model names remain open-ended and are passed through to the CLI.
+// Its isolated GROK_HOME does not load custom [model.*] definitions from the
+// user's normal ~/.grok/config.toml; model names remain open-ended and are
+// passed through to the CLI.
 // It is not safe for concurrent conversation streams; create one provider per conversation.
 type GrokBinProvider struct {
 	model                  string
@@ -68,6 +89,11 @@ type GrokBinProvider struct {
 	grokHome string
 
 	mcpServer *mcphttp.Server
+	mcpURL    string
+	mcpToken  string
+
+	acpMu      sync.Mutex
+	acpProcess *grokACPProcess
 
 	cliToolBridgeState
 	tempFileTracker
@@ -154,6 +180,8 @@ func (p *GrokBinProvider) Credential() string { return "grok-bin" }
 
 func (p *GrokBinProvider) Capabilities() Capabilities {
 	return Capabilities{
+		NativeWebSearch:    true,
+		NativeWebFetch:     true,
 		ToolCalls:          true,
 		SupportsToolChoice: false,
 		ManagesOwnContext:  true,
@@ -181,6 +209,12 @@ func (p *GrokBinProvider) SetToolExecutor(executor func(context.Context, string,
 }
 
 func (p *GrokBinProvider) ResetConversation() {
+	p.acpMu.Lock()
+	if p.acpProcess != nil {
+		p.stopGrokACPProcess(p.acpProcess)
+		p.acpProcess = nil
+	}
+	p.acpMu.Unlock()
 	p.sessionID = ""
 	p.messagesSent = 0
 }
@@ -282,22 +316,37 @@ func (p *GrokBinProvider) Stream(ctx context.Context, req Request) (Stream, erro
 			}
 		}
 
-		prompt, err := buildGrokACPPrompt(messagesToSend)
-		if err != nil {
-			return err
-		}
-		promptPath, err := p.writePromptFile(prompt)
-		if err != nil {
-			return err
-		}
-		args, effort, err := p.buildArgs(req, promptPath)
-		if err != nil {
-			return err
-		}
+		useLegacy := os.Getenv(grokLegacyTransportEnv) == "1" || requestHasImages(messagesToSend)
+		var result grokCommandResult
+		if useLegacy {
+			p.acpMu.Lock()
+			if p.acpProcess != nil {
+				p.stopGrokACPProcess(p.acpProcess)
+				p.acpProcess = nil
+			}
+			p.acpMu.Unlock()
 
-		result, err := p.runGrokCommand(ctx, args, effort, prompt, req.WorkingDir, debug, send, req.Ephemeral, exposeToolBridge)
-		if err != nil {
-			return err
+			prompt, err := buildGrokACPPrompt(messagesToSend)
+			if err != nil {
+				return err
+			}
+			promptPath, err := p.writePromptFile(prompt)
+			if err != nil {
+				return err
+			}
+			args, effort, err := p.buildArgs(req, promptPath)
+			if err != nil {
+				return err
+			}
+			result, err = p.runGrokCommand(ctx, args, effort, prompt, req.WorkingDir, debug, send, req.Ephemeral, exposeToolBridge)
+			if err != nil {
+				return err
+			}
+		} else {
+			result, err = p.runGrokACP(ctx, req, messagesToSend, debug, send, exposeToolBridge)
+			if err != nil {
+				return err
+			}
 		}
 		if !req.Ephemeral && result.sawEnd {
 			if result.sessionID != "" {
@@ -366,14 +415,18 @@ func (p *GrokBinProvider) buildArgs(req Request, promptPath string) ([]string, s
 		"--prompt-file", promptPath,
 		"--output-format", "streaming-json",
 		"--always-approve",
-		"--disallowed-tools", grokDisallowedNativeTools,
+		"--disallowed-tools", grokDisallowedTools(req.Search),
 		"--max-turns", strconv.Itoa(grokMaxTurns),
 		"--cwd", neutralCWD,
 		"--no-memory",
 		"--no-subagents",
 		"--no-plan",
-		"--disable-web-search",
 		"--no-auto-update",
+	}
+	if req.Search {
+		args = append(args, "--tools", grokNativeSearchToolAllowlist)
+	} else {
+		args = append(args, "--disable-web-search")
 	}
 
 	model := chooseModel(req.Model, p.model)
@@ -858,18 +911,29 @@ func (p *GrokBinProvider) ensureMCPServer(ctx context.Context, tools []ToolSpec,
 		return err
 	}
 	p.mcpServer = server
+	p.mcpURL = url
+	p.mcpToken = token
 	return nil
 }
 
-// CleanupMCP stops the per-provider HTTP bridge and removes per-turn prompt
-// files. It intentionally keeps GROK_HOME because Grok's --resume data lives
-// there and may be restored after serve runtime eviction.
+// CleanupMCP stops the conversation-scoped ACP process and HTTP tool bridge,
+// then removes per-turn prompt files. It intentionally keeps GROK_HOME because
+// Grok's resumable ACP session data lives there and may be restored after serve
+// runtime eviction.
 func (p *GrokBinProvider) CleanupMCP() {
+	p.acpMu.Lock()
+	if p.acpProcess != nil {
+		p.stopGrokACPProcess(p.acpProcess)
+		p.acpProcess = nil
+	}
+	p.acpMu.Unlock()
 	if p.mcpServer != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), mcpStopTimeout)
 		p.mcpServer.Stop(ctx)
 		cancel()
 		p.mcpServer = nil
+		p.mcpURL = ""
+		p.mcpToken = ""
 	}
 	p.cleanupTempFiles()
 }

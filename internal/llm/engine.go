@@ -1174,6 +1174,12 @@ func (e *Engine) Stream(ctx context.Context, req Request) (Stream, error) {
 		needsExternalSearch := !caps.NativeWebSearch || req.ForceExternalSearch
 		needsExternalFetch := (!caps.NativeWebFetch || req.ForceExternalSearch) && !req.DisableExternalWebFetch
 
+		// Callers commonly pre-populate req.Tools from the full registry. Remove
+		// external search tools when the provider owns that capability so native
+		// search is exclusive rather than silently competing with (for example)
+		// an Exa-backed MCP tool. Forced external search keeps the external tools.
+		req.Tools = filterExternalSearchTools(req.Tools, needsExternalSearch, needsExternalFetch)
+
 		if needsExternalSearch {
 			if t, ok := e.tools.Get(WebSearchToolName); ok {
 				if !hasToolNamed(req.Tools, WebSearchToolName) {
@@ -1387,6 +1393,24 @@ func (s *callbackStream) Close() error {
 	// Best-effort: fire callback if stream closed without EOF/error
 	s.fireCallback()
 	return s.inner.Close()
+}
+
+func filterExternalSearchTools(tools []ToolSpec, keepSearch, keepFetch bool) []ToolSpec {
+	filtered := make([]ToolSpec, 0, len(tools))
+	for _, tool := range tools {
+		switch tool.Name {
+		case WebSearchToolName:
+			if !keepSearch {
+				continue
+			}
+		case ReadURLToolName:
+			if !keepFetch {
+				continue
+			}
+		}
+		filtered = append(filtered, tool)
+	}
+	return filtered
 }
 
 // hasToolNamed checks if a tool with the given name exists in the tool list.

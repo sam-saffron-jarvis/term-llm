@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -34,6 +35,7 @@ func TestGrokBinProviderPrepareCommandUsesWorkingDir(t *testing.T) {
 }
 
 func TestGrokBinProviderStreamSeparatesProcessAndCLICWD(t *testing.T) {
+	t.Setenv(grokLegacyTransportEnv, "1")
 	t.Setenv("XDG_CACHE_HOME", t.TempDir())
 	binDir := t.TempDir()
 	capturePath := filepath.Join(t.TempDir(), "invocation.txt")
@@ -142,8 +144,8 @@ func TestValidateGrokBinModel(t *testing.T) {
 
 func TestGrokBinProviderCapabilities(t *testing.T) {
 	caps := NewGrokBinProvider("grok-4.5", nil).Capabilities()
-	if !caps.ToolCalls || !caps.ManagesOwnContext || !caps.InlineToolLoop {
-		t.Fatalf("capabilities = %+v, want tool calls, managed context, and inline loop", caps)
+	if !caps.NativeWebSearch || !caps.NativeWebFetch || !caps.ToolCalls || !caps.ManagesOwnContext || !caps.InlineToolLoop {
+		t.Fatalf("capabilities = %+v, want native search/fetch, tool calls, managed context, and inline loop", caps)
 	}
 }
 
@@ -160,6 +162,28 @@ func TestGrokBinProviderBuildArgsDisablesNativeTools(t *testing.T) {
 	}
 	if got := argValue(args, "--tools"); got != "" {
 		t.Fatalf("unexpected --tools allowlist %q", got)
+	}
+}
+
+func TestGrokBinProviderBuildArgsEnablesNativeWebAndXSearch(t *testing.T) {
+	p := NewGrokBinProvider("grok-4.5", nil)
+	p.grokHome = t.TempDir()
+
+	args, _, err := p.buildArgs(Request{Search: true}, filepath.Join(p.grokHome, "prompt.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := argValue(args, "--tools"); got != "search_tool,use_tool,web_search,web_fetch,x_search" {
+		t.Fatalf("--tools = %q", got)
+	}
+	disallowed := "," + argValue(args, "--disallowed-tools") + ","
+	for _, tool := range []string{"web_search", "web_fetch", "x_search"} {
+		if strings.Contains(disallowed, ","+tool+",") {
+			t.Fatalf("native search tool %q remained disallowed: %s", tool, disallowed)
+		}
+	}
+	if slices.Contains(args, "--disable-web-search") {
+		t.Fatalf("native search args unexpectedly disable web search: %q", args)
 	}
 }
 
@@ -441,6 +465,7 @@ func TestGrokBinProviderMaxTurnsIsWarningNotError(t *testing.T) {
 }
 
 func TestGrokBinProviderMaxTurnsExitPersistsTurnAndWarns(t *testing.T) {
+	t.Setenv(grokLegacyTransportEnv, "1")
 	t.Setenv("XDG_CACHE_HOME", t.TempDir())
 	binDir := t.TempDir()
 	path := filepath.Join(binDir, "grok")
@@ -481,6 +506,7 @@ func TestGrokBinProviderMaxTurnsExitPersistsTurnAndWarns(t *testing.T) {
 }
 
 func TestGrokBinProviderMaxTurnsWithoutEndIsNonfatalAndDoesNotAdvanceState(t *testing.T) {
+	t.Setenv(grokLegacyTransportEnv, "1")
 	t.Setenv("XDG_CACHE_HOME", t.TempDir())
 	binDir := t.TempDir()
 	path := filepath.Join(binDir, "grok")
@@ -845,6 +871,7 @@ func envSliceMap(env []string) map[string]string {
 
 func writeFakeGrok(t *testing.T, dir, output string) {
 	t.Helper()
+	t.Setenv(grokLegacyTransportEnv, "1")
 	path := filepath.Join(dir, "grok")
 	script := "#!/bin/sh\ncat <<'EOF'\n" + output + "\nEOF\n"
 	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {

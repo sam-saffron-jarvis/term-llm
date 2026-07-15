@@ -127,10 +127,10 @@ func copyToolSpecs(specs []ToolSpec) []ToolSpec {
 	return out
 }
 
-// ToolSpecsForRequest returns the tool specs to include in a request,
-// filtering out search tools when searchEnabled is false (the engine adds
-// them automatically when req.Search is true). Returns nil if no tools are
-// registered.
+// ToolSpecsForRequest returns the registered tool specs for a request, filtering
+// out search tools when searchEnabled is false. When search is enabled, Engine
+// normalizes the full list: native-capable providers have external web_search
+// and read_url removed, while other providers retain or receive them.
 func ToolSpecsForRequest(registry *ToolRegistry, searchEnabled bool) []ToolSpec {
 	all := registry.AllSpecs()
 	if len(all) == 0 {
