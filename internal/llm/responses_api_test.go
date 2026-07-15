@@ -1734,6 +1734,10 @@ func TestResponsesClientStream_ErrorsOnMalformedCompletedEvent(t *testing.T) {
 			if event.Err == nil {
 				t.Fatal("expected EventError.Err to be set")
 			}
+			var incomplete *StreamIncompleteError
+			if !errors.As(event.Err, &incomplete) {
+				t.Fatalf("malformed terminal event error = %T %v, want StreamIncompleteError", event.Err, event.Err)
+			}
 			if !strings.Contains(event.Err.Error(), "decode Responses API response.completed event") {
 				t.Fatalf("expected completed decode error, got: %v", event.Err)
 			}

@@ -807,6 +807,13 @@ func responseRunTimeoutMessage(timeout time.Duration) string {
 	return fmt.Sprintf("Response run timed out after %s. Continue to resume from saved progress, or move long-running investigations to a background job.", humanDuration(timeout))
 }
 
+func responseRunDeadlineMessage(runCtx context.Context, timeout time.Duration) string {
+	if runCtx != nil && errors.Is(runCtx.Err(), context.DeadlineExceeded) {
+		return responseRunTimeoutMessage(timeout)
+	}
+	return "The model provider request timed out before the response run deadline. Continue to retry from saved progress."
+}
+
 func humanDuration(d time.Duration) string {
 	if d%time.Hour == 0 {
 		hours := int(d / time.Hour)
@@ -1927,7 +1934,7 @@ func (s *serveServer) startResponseRun(runtime *serveRuntime, stateful bool, rep
 			errMessage := err.Error()
 			if errors.Is(err, context.DeadlineExceeded) {
 				errType = "timeout_error"
-				errMessage = responseRunTimeoutMessage(s.responseTimeout())
+				errMessage = responseRunDeadlineMessage(runCtx, s.responseTimeout())
 			} else if errors.Is(err, errServeSessionBusy) {
 				errType = "conflict_error"
 			}

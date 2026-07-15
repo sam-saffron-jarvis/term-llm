@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -185,6 +186,17 @@ func (c *ResponsesClient) streamWebSocketPrepared(ctx context.Context, req Respo
 			}
 			completed, err := handler.HandleJSONEvent(data, eventType, send)
 			if err != nil {
+				if (eventType == "response.completed" || eventType == "response.incomplete") && !json.Valid(data) {
+					c.discardWebSocketLocked()
+					if finishErr := handler.FinishIncomplete(send); finishErr != nil {
+						err = errors.Join(err, finishErr)
+					}
+					return &StreamIncompleteError{
+						Transport: "Responses WebSocket",
+						Terminal:  eventType,
+						Err:       err,
+					}
+				}
 				if wsErr, ok := err.(*responsesAPIEventError); ok && wsErr.APIError != nil {
 					switch wsErr.APIError.Code {
 					case "previous_response_not_found":
