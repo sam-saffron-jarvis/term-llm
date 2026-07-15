@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -183,6 +184,57 @@ func TestClaudeBinProvider_prepareClaudeCommand_ConfiguresProcessGroupWaitDelayA
 	}
 	if cmd.Cancel == nil {
 		t.Fatal("expected claude subprocess to install process-group cancellation")
+	}
+}
+
+func TestClaudeBinProvider_StreamUsesWorkingDir(t *testing.T) {
+	binDir := t.TempDir()
+	cwdFile := filepath.Join(t.TempDir(), "cwd.txt")
+	script := `#!/bin/sh
+pwd > "$CLAUDE_TEST_CWD_FILE"
+cat > /dev/null
+printf '%s\n' '{"type":"system","session_id":"test-session","model":"sonnet","tools":[]}'
+printf '%s\n' '{"type":"result","is_error":false,"result":"ok","usage":{"input_tokens":1,"output_tokens":1,"cache_read_input_tokens":0}}'
+`
+	if err := os.WriteFile(filepath.Join(binDir, "claude"), []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake claude: %v", err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("CLAUDE_TEST_CWD_FILE", cwdFile)
+
+	workingDir := t.TempDir()
+	provider := NewClaudeBinProvider("sonnet", nil)
+	stream, err := provider.Stream(context.Background(), Request{
+		Ephemeral:  true,
+		WorkingDir: workingDir,
+		Messages:   []Message{UserText("hello")},
+	})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	defer stream.Close()
+	for {
+		event, err := stream.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("Recv: %v", err)
+		}
+		if event.Type == EventError {
+			t.Fatalf("stream error: %v", event.Err)
+		}
+	}
+
+	captured, err := os.ReadFile(cwdFile)
+	if err != nil {
+		t.Fatalf("read captured cwd: %v", err)
+	}
+	gotCWD := strings.TrimSpace(string(captured))
+	gotInfo, gotErr := os.Stat(gotCWD)
+	wantInfo, wantErr := os.Stat(workingDir)
+	if gotErr != nil || wantErr != nil || !os.SameFile(gotInfo, wantInfo) {
+		t.Fatalf("Claude process cwd = %q, want %q (stat errors: %v, %v)", gotCWD, workingDir, gotErr, wantErr)
 	}
 }
 

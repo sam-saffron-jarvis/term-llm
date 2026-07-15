@@ -33,6 +33,78 @@ func TestGrokBinProviderPrepareCommandUsesWorkingDir(t *testing.T) {
 	}
 }
 
+func TestGrokBinProviderStreamSeparatesProcessAndCLICWD(t *testing.T) {
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	binDir := t.TempDir()
+	capturePath := filepath.Join(t.TempDir(), "invocation.txt")
+	script := `#!/bin/sh
+{
+  printf 'process_cwd=%s\n' "$PWD"
+  while [ "$#" -gt 0 ]; do
+    printf 'arg=%s\n' "$1"
+    shift
+  done
+} > "$GROK_TEST_CAPTURE"
+printf '%s\n' '{"type":"end","stopReason":"EndTurn","sessionId":"test-session"}'
+`
+	if err := os.WriteFile(filepath.Join(binDir, "grok"), []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake grok: %v", err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	workingDir := t.TempDir()
+	provider := NewGrokBinProvider("grok-4.5", map[string]string{"GROK_TEST_CAPTURE": capturePath})
+	stream, err := provider.Stream(context.Background(), Request{
+		Ephemeral:  true,
+		WorkingDir: workingDir,
+		Messages:   []Message{UserText("hello")},
+	})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	defer stream.Close()
+	for {
+		event, err := stream.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("Recv: %v", err)
+		}
+		if event.Type == EventError {
+			t.Fatalf("stream error: %v", event.Err)
+		}
+	}
+
+	capture, err := os.ReadFile(capturePath)
+	if err != nil {
+		t.Fatalf("ReadFile capture: %v", err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(capture)), "\n")
+	if len(lines) == 0 || !strings.HasPrefix(lines[0], "process_cwd=") {
+		t.Fatalf("capture missing process cwd: %q", lines)
+	}
+	gotProcessCWD := strings.TrimPrefix(lines[0], "process_cwd=")
+	gotInfo, gotErr := os.Stat(gotProcessCWD)
+	wantInfo, wantErr := os.Stat(workingDir)
+	if gotErr != nil || wantErr != nil || !os.SameFile(gotInfo, wantInfo) {
+		t.Fatalf("capture process cwd = %q, want %q (stat errors: %v, %v)", gotProcessCWD, workingDir, gotErr, wantErr)
+	}
+	var args []string
+	for _, line := range lines[1:] {
+		if arg, ok := strings.CutPrefix(line, "arg="); ok {
+			args = append(args, arg)
+		}
+	}
+	wantCLICWD := filepath.Join(provider.grokHome, "cwd")
+	if got := argValue(args, "--cwd"); got != wantCLICWD {
+		t.Fatalf("Grok --cwd = %q, want neutral cwd %q", got, wantCLICWD)
+	}
+	if wantCLICWD == workingDir {
+		t.Fatalf("neutral Grok cwd unexpectedly equals process cwd %q", workingDir)
+	}
+}
+
 func TestParseGrokEffort(t *testing.T) {
 	tests := []struct {
 		model      string

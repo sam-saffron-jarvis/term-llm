@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -23,10 +24,28 @@ var mcpCallCounter atomic.Int64
 
 // newCLICommand is the common subprocess boundary for local CLI providers.
 // An empty working directory deliberately preserves os/exec's inherited-cwd behavior.
-func newCLICommand(ctx context.Context, binary string, args []string, workingDir string) *exec.Cmd {
+// A non-empty directory intentionally affects project discovery for CLIs that use the
+// process cwd; providers requiring a neutral semantic cwd must enforce it separately.
+func newCLICommand(ctx context.Context, binary string, args []string, workingDir string) (*exec.Cmd, error) {
+	dir := strings.TrimSpace(workingDir)
+	if dir != "" {
+		abs, err := filepath.Abs(dir)
+		if err != nil {
+			return nil, fmt.Errorf("resolve CLI working directory %q: %w", dir, err)
+		}
+		info, err := os.Stat(abs)
+		if err != nil {
+			return nil, fmt.Errorf("CLI working directory %q is not accessible: %w", abs, err)
+		}
+		if !info.IsDir() {
+			return nil, fmt.Errorf("CLI working directory %q is not a directory", abs)
+		}
+		dir = abs
+	}
+
 	cmd := exec.CommandContext(ctx, binary, args...)
-	cmd.Dir = strings.TrimSpace(workingDir)
-	return cmd
+	cmd.Dir = dir
+	return cmd, nil
 }
 
 // UserFacingProviderError keeps detailed subprocess diagnostics available to
@@ -66,8 +85,10 @@ func (e *UserFacingProviderError) DebugFields() map[string]any {
 }
 
 // CLICommandError carries bounded, redacted diagnostics for a failed local CLI
-// transport. Prompt content should not be included for prompt-file transports;
-// PromptLen and PromptSHA256 are sufficient to correlate failures safely.
+// transport. Cwd describes the operating-system process working directory;
+// CLICwd optionally records a distinct provider-level cwd argument. Prompt
+// content should not be included for prompt-file transports; PromptLen and
+// PromptSHA256 are sufficient to correlate failures safely.
 type CLICommandError struct {
 	BinName        string
 	ErrorType      string
@@ -76,8 +97,6 @@ type CLICommandError struct {
 	Args           []string
 	CommandLine    string
 	Cwd            string
-	// CLICwd is an optional provider-level cwd argument. It can differ from Cwd,
-	// which always describes the operating-system process working directory.
 	CLICwd         string
 	Effort         string
 	ToolsExecuted  bool

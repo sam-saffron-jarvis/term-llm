@@ -37,6 +37,30 @@ func TestCmdRunnerPreparePropagatesWorkingDirToLLMRequest(t *testing.T) {
 	}
 }
 
+func TestCmdRunnerEnsureRunSessionUsesConfiguredBaseDir(t *testing.T) {
+	provider := llm.NewMockProvider("mock")
+	runner := newCmdRunner(&config.Config{}, cmdRunnerOptions{}).(*cmdRunner)
+	store := newServeRuntimeTestStore()
+	workingDir := t.TempDir()
+
+	sess := runner.ensureRunSession(
+		context.Background(),
+		store,
+		runpkg.Request{Platform: runpkg.PlatformConsole, SessionID: "working-dir-session"},
+		provider,
+		"mock",
+		"mock-model",
+		"",
+		SessionSettings{BaseDir: workingDir},
+	)
+	if sess == nil {
+		t.Fatal("ensureRunSession returned nil")
+	}
+	if sess.CWD != workingDir {
+		t.Fatalf("session CWD = %q, want %q", sess.CWD, workingDir)
+	}
+}
+
 func TestCmdRunnerPrepareUsesBorrowedEngineProvider(t *testing.T) {
 	cfg := &config.Config{
 		DefaultProvider: "mock",

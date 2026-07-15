@@ -179,7 +179,8 @@ func TestRunOutputToolFinalizationUsesOnlyOutputToolAndForcesIt(t *testing.T) {
 	provider.AddToolCall("call_1", "submit_result", map[string]string{"result_json": `{"status":"ok"}`})
 	outputTool := tools.NewSetOutputTool("submit_result", "result_json", "Submit the result")
 	baseReq := llm.Request{
-		Model: "mock-model",
+		Model:      "mock-model",
+		WorkingDir: t.TempDir(),
 		Messages: []llm.Message{
 			llm.SystemText("You are a test agent."),
 			llm.UserText("Review the thing."),
@@ -205,6 +206,9 @@ func TestRunOutputToolFinalizationUsesOnlyOutputToolAndForcesIt(t *testing.T) {
 		t.Fatalf("provider saw %d requests, want 1", len(provider.Requests))
 	}
 	finalReq := provider.Requests[0]
+	if finalReq.WorkingDir != baseReq.WorkingDir {
+		t.Fatalf("finalizer WorkingDir = %q, want %q", finalReq.WorkingDir, baseReq.WorkingDir)
+	}
 	if len(finalReq.Tools) != 1 || finalReq.Tools[0].Name != "submit_result" {
 		t.Fatalf("finalizer tools = %#v, want only submit_result", finalReq.Tools)
 	}

@@ -619,7 +619,10 @@ func shellQuote(s string) string {
 }
 
 func (p *ClaudeBinProvider) prepareClaudeCommand(ctx context.Context, args []string, effort, workingDir string) (*exec.Cmd, io.WriteCloser, func(), error) {
-	cmd := newCLICommand(ctx, "claude", args, workingDir)
+	cmd, err := newCLICommand(ctx, "claude", args, workingDir)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("prepare claude command: %w", err)
+	}
 	cmd.WaitDelay = claudeCommandWaitDelay
 	cmd.Env = p.buildCommandEnv(effort)
 
@@ -820,7 +823,7 @@ func (p *ClaudeBinProvider) runClaudeCommand(
 		expectedToolExit := toolsExecuted && exitCode == 1
 		expectedHandledTerminalResult := handledTerminalResult && exitCode == 1
 		if !expectedToolExit && !expectedHandledTerminalResult {
-			claudeErr := p.newClaudeCommandError(cmdErr, exitCode, args, effort, userPrompt, workingDir, toolsExecuted, stdoutSnapshot, stderrSnapshot)
+			claudeErr := p.newClaudeCommandError(cmdErr, exitCode, args, effort, userPrompt, cmd.Dir, toolsExecuted, stdoutSnapshot, stderrSnapshot)
 			slog.Error("claude command failed",
 				"exit_code", exitCode,
 				"tools_executed", toolsExecuted,

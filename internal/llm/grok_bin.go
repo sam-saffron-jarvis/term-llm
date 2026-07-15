@@ -480,7 +480,10 @@ func (p *GrokBinProvider) buildCommandEnv() []string {
 }
 
 func (p *GrokBinProvider) prepareGrokCommand(ctx context.Context, args []string, workingDir string) (*exec.Cmd, func(), error) {
-	cmd := newCLICommand(ctx, "grok", args, workingDir)
+	cmd, err := newCLICommand(ctx, "grok", args, workingDir)
+	if err != nil {
+		return nil, nil, fmt.Errorf("prepare grok command: %w", err)
+	}
 	cmd.WaitDelay = grokCommandWaitDelay
 	cmd.Env = p.buildCommandEnv()
 	cleanup, err := procutil.PrepareCommand(cmd)
@@ -610,7 +613,7 @@ func (p *GrokBinProvider) runGrokCommand(
 			exitCode = exitErr.ExitCode()
 		}
 		if !state.maxTurnsReached {
-			commandErr := p.newGrokCommandError(cmdErr, exitCode, args, effort, prompt, workingDir, toolsExecuted,
+			commandErr := p.newGrokCommandError(cmdErr, exitCode, args, effort, prompt, cmd.Dir, toolsExecuted,
 				snapshotCLITail(&stdoutMu, stdoutTail), snapshotCLITail(&stderrMu, stderrTail))
 			slog.Error("grok command failed",
 				"exit_code", exitCode,

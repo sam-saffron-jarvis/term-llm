@@ -5,8 +5,10 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 )
 
@@ -43,22 +45,54 @@ func TestCLIProvidersUseSharedCommandConstructor(t *testing.T) {
 }
 
 func TestNewCLICommandAppliesWorkingDirectoryPolicy(t *testing.T) {
+	workingDir := t.TempDir()
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd: %v", err)
+	}
+	relativeDir, err := filepath.Rel(cwd, workingDir)
+	if err != nil {
+		t.Fatalf("Rel: %v", err)
+	}
 	tests := []struct {
 		name       string
 		workingDir string
 		want       string
 	}{
-		{name: "directory", workingDir: "/tmp/project", want: "/tmp/project"},
-		{name: "trimmed", workingDir: "  /tmp/project  ", want: "/tmp/project"},
+		{name: "directory", workingDir: workingDir, want: workingDir},
+		{name: "relative directory", workingDir: relativeDir, want: workingDir},
+		{name: "trimmed", workingDir: "  " + workingDir + "  ", want: workingDir},
 		{name: "empty inherits process directory"},
 		{name: "whitespace inherits process directory", workingDir: "   "},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			cmd := newCLICommand(context.Background(), "test-binary", nil, tt.workingDir)
+			cmd, err := newCLICommand(context.Background(), "test-binary", nil, tt.workingDir)
+			if err != nil {
+				t.Fatalf("newCLICommand: %v", err)
+			}
 			if cmd.Dir != tt.want {
 				t.Fatalf("Dir = %q, want %q", cmd.Dir, tt.want)
+			}
+		})
+	}
+}
+
+func TestNewCLICommandRejectsInvalidWorkingDirectory(t *testing.T) {
+	filePath := filepath.Join(t.TempDir(), "file.txt")
+	if err := os.WriteFile(filePath, []byte("not a directory"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	for _, path := range []string{filepath.Join(t.TempDir(), "missing"), filePath} {
+		t.Run(filepath.Base(path), func(t *testing.T) {
+			cmd, err := newCLICommand(context.Background(), "test-binary", nil, path)
+			if err == nil {
+				t.Fatalf("newCLICommand(%q) = %+v, want error", path, cmd)
+			}
+			if !strings.Contains(err.Error(), "working directory") {
+				t.Fatalf("error = %q, want working directory context", err)
 			}
 		})
 	}
