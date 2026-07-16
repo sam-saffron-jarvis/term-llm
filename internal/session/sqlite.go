@@ -3314,7 +3314,8 @@ func (s *SQLiteStore) GetMessages(ctx context.Context, sessionID string, limit, 
 func (s *SQLiteStore) SetCurrent(ctx context.Context, sessionID string) error {
 	if s.hasSideMetadata {
 		var rootID string
-		if err := s.db.QueryRowContext(ctx, "SELECT COALESCE(root_id,id) FROM sessions WHERE id = ?", sessionID).Scan(&rootID); err == nil && rootID != "" {
+		var kind SessionKind
+		if err := s.db.QueryRowContext(ctx, "SELECT COALESCE(root_id,id), COALESCE(kind,'root') FROM sessions WHERE id = ?", sessionID).Scan(&rootID, &kind); err == nil && kind == KindSide && rootID != "" {
 			sessionID = rootID
 		}
 	}

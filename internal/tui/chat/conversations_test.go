@@ -237,6 +237,100 @@ func TestConversationHostRoutesAfterClearAndNewSessionReplacement(t *testing.T) 
 	}
 }
 
+func TestConversationHostReturnsToMainAfterRepeatedSessionReplacement(t *testing.T) {
+	commands := map[string]func(*Model) (tea.Model, tea.Cmd){
+		"clear": func(m *Model) (tea.Model, tea.Cmd) { return m.cmdClear() },
+		"new":   func(m *Model) (tea.Model, tea.Cmd) { return m.cmdNew() },
+	}
+	for _, order := range [][]string{{"clear", "new"}, {"new", "clear"}} {
+		t.Run(strings.Join(order, "-"), func(t *testing.T) {
+			store, err := session.NewSQLiteStore(session.Config{Path: t.TempDir() + "/sessions.db"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer store.Close()
+			original := &session.Session{ID: "original", Kind: session.KindRoot, Status: session.StatusActive}
+			if err := store.Create(context.Background(), original); err != nil {
+				t.Fatal(err)
+			}
+
+			main := newTestChatModel(true)
+			main.store, main.sess = store, original
+			var side *Model
+			rootFactoryCalls := 0
+			host := NewConversationHost(main, func(id, _ string) (*Model, error) {
+				if side != nil && id == side.ConversationID() {
+					return side, nil
+				}
+				rootFactoryCalls++
+				return nil, context.Canceled
+			})
+
+			_, _ = commands[order[0]](main)
+			intermediateID := main.ConversationID()
+			sideSession, err := store.ForkSide(context.Background(), intermediateID, session.OriginTUI)
+			if err != nil {
+				t.Fatal(err)
+			}
+			side = newTestChatModel(true)
+			side.store, side.sess = store, sideSession
+			_, _ = host.Update(ConversationNavigationMsg{SessionID: sideSession.ID})
+			if host.ActiveRuntime() != side {
+				t.Fatal("side runtime was not activated")
+			}
+			_, returnCmd := side.cmdMain(false)
+			if returnCmd == nil {
+				t.Fatal("first /main returned no navigation command")
+			}
+			_, _ = host.Update(returnCmd())
+			if host.ActiveRuntime() != main {
+				t.Fatal("first /main did not restore main runtime")
+			}
+
+			_, _ = commands[order[1]](main)
+			latestID := main.ConversationID()
+			if latestID == intermediateID {
+				t.Fatal("second command did not replace the main session")
+			}
+			_, sideCmd := main.cmdSide("")
+			if sideCmd == nil {
+				t.Fatal("reopening side returned no navigation command")
+			}
+			_, _ = host.Update(sideCmd())
+			if host.ActiveRuntime() != side {
+				t.Fatal("open side was not restored after second replacement")
+			}
+			_, cmd := side.cmdMain(false)
+			if cmd == nil {
+				t.Fatal("/main returned no navigation command")
+			}
+			msg := cmd()
+			nav, ok := msg.(ConversationNavigationMsg)
+			if !ok {
+				t.Fatalf("/main command returned %T", msg)
+			}
+			_, _ = host.Update(nav)
+			if rootFactoryCalls != 0 {
+				t.Fatalf("/main attempted to create %d root runtime(s)", rootFactoryCalls)
+			}
+			if host.ActiveRuntime() != main || main.ConversationID() != latestID {
+				t.Fatalf("/main did not restore hosted main runtime: active=%p main=%p session=%q want=%q", host.ActiveRuntime(), main, main.ConversationID(), latestID)
+			}
+			current, err := store.GetCurrent(context.Background())
+			if err != nil || current == nil || current.ID != latestID {
+				t.Fatalf("current main session = %+v, %v; want %q", current, err, latestID)
+			}
+
+			approvalDone := make(chan tools.ApprovalResult, 1)
+			_, _ = host.Update(RoutedConversationMsg{ConversationID: main.RuntimeRoutingID(), Generation: main.StreamGeneration(), Msg: ApprovalRequestMsg{Path: "/tmp/main", IsWrite: true, DoneCh: approvalDone}})
+			if main.approvalModel == nil || side.approvalModel != nil {
+				t.Fatalf("post-/main interaction crossed routes: main=%v side=%v", main.approvalModel != nil, side.approvalModel != nil)
+			}
+			host.Shutdown()
+		})
+	}
+}
+
 func TestConversationHostRoutingIDIsRaceSafeAcrossSessionReplacement(t *testing.T) {
 	model := newTestChatModel(true)
 	model.sess = &session.Session{ID: "original", Kind: session.KindRoot}

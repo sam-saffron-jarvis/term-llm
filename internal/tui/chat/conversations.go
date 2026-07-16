@@ -1,6 +1,7 @@
 package chat
 
 import (
+	"context"
 	"fmt"
 	"reflect"
 	"strings"
@@ -149,6 +150,9 @@ func (h *ConversationHost) navigate(msg ConversationNavigationMsg) tea.Cmd {
 	routingID := h.routingIDForSession(target)
 	if existing := h.runtimes[routingID]; existing != nil {
 		h.activeID = routingID
+		if existing.store != nil {
+			_ = existing.store.SetCurrent(context.Background(), existing.ConversationID())
+		}
 		return h.routeCmd(routingID, existing.StreamGeneration(), existing.QueueAutoSend(msg.AutoSend))
 	}
 	if h.factory == nil {

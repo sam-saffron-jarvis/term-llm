@@ -595,6 +595,10 @@ func (m *Model) cmdMain(closeSide bool) (tea.Model, tea.Cmd) {
 	if m.sess == nil || m.sess.Kind != session.KindSide || strings.TrimSpace(m.sess.ParentID) == "" {
 		return m.showSystemMessage("Already in the main conversation.")
 	}
+	mainID := m.sess.ParentID
+	if m.conversationNavigation && strings.TrimSpace(m.sess.RootID) != "" {
+		mainID = m.sess.RootConversationID()
+	}
 	if closeSide {
 		sideStore, ok := m.store.(session.SideStore)
 		if !ok {
@@ -604,11 +608,14 @@ func (m *Model) cmdMain(closeSide bool) (tea.Model, tea.Cmd) {
 			return m.showSystemMessage(fmt.Sprintf("Could not close side conversation: %v", err))
 		}
 		if m.conversationNavigation {
-			parentID, sideID := m.sess.ParentID, m.sess.ID
-			return m, func() tea.Msg { return ConversationNavigationMsg{SessionID: parentID, CloseID: sideID} }
+			sideID := m.sess.ID
+			return m, func() tea.Msg { return ConversationNavigationMsg{SessionID: mainID, CloseID: sideID} }
 		}
 	}
-	return m.requestResumeSession(m.sess.ParentID)
+	if m.conversationNavigation {
+		return m, func() tea.Msg { return ConversationNavigationMsg{SessionID: mainID} }
+	}
+	return m.requestResumeSession(mainID)
 }
 
 // Command implementations
@@ -997,6 +1004,10 @@ func (m *Model) showHelpModal() (tea.Model, tea.Cmd) {
 func (m *Model) cmdClear() (tea.Model, tea.Cmd) {
 	m.advanceRoutingGeneration()
 	m.clearPendingStreamModelSwitch()
+	rootID := ""
+	if m.sess != nil {
+		rootID = m.sess.RootConversationID()
+	}
 	// Mark the old session as complete before creating a new one
 	if m.store != nil && m.sess != nil {
 		_ = m.store.UpdateStatus(context.Background(), m.sess.ID, session.StatusComplete)
@@ -1006,6 +1017,7 @@ func (m *Model) cmdClear() (tea.Model, tea.Cmd) {
 	// This preserves the old session in history while starting fresh
 	m.sess = &session.Session{
 		ID:          session.NewID(),
+		RootID:      rootID,
 		Provider:    m.providerName,
 		ProviderKey: m.providerKey,
 		Model:       m.modelName,
@@ -1897,6 +1909,10 @@ func (m *Model) cmdNew() (tea.Model, tea.Cmd) {
 	m.advanceRoutingGeneration()
 	m.pauseGoalForLocalAction("paused because a new session was started")
 	m.clearPendingStreamModelSwitch()
+	rootID := ""
+	if m.sess != nil {
+		rootID = m.sess.RootConversationID()
+	}
 	// Mark the old session as complete before creating a new one
 	if m.store != nil && m.sess != nil {
 		_ = m.store.UpdateStatus(context.Background(), m.sess.ID, session.StatusComplete)
@@ -1905,6 +1921,7 @@ func (m *Model) cmdNew() (tea.Model, tea.Cmd) {
 	// Create new session with current settings
 	m.sess = &session.Session{
 		ID:          session.NewID(),
+		RootID:      rootID,
 		Provider:    m.providerName,
 		ProviderKey: m.providerKey,
 		Model:       m.modelName,
