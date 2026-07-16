@@ -223,6 +223,16 @@ func AllCommands() []Command {
 			},
 		},
 		{
+			Name:        "side",
+			Description: "Fork or reopen a side conversation",
+			Usage:       "/side [question] | close",
+		},
+		{
+			Name:        "main",
+			Description: "Return to the main conversation without closing this side",
+			Usage:       "/main",
+		},
+		{
 			Name:        "resume",
 			Aliases:     []string{"r"},
 			Description: "Browse and resume a previous session",
@@ -519,6 +529,10 @@ func (m *Model) ExecuteCommand(input string) (tea.Model, tea.Cmd) {
 		return m.cmdInspect()
 	case "compact":
 		return m.cmdCompress(args...)
+	case "side":
+		return m.cmdSide(rawArgs)
+	case "main":
+		return m.cmdMain(false)
 	case "resume":
 		return m.cmdResume(args)
 	case "reload":
@@ -528,6 +542,64 @@ func (m *Model) ExecuteCommand(input string) (tea.Model, tea.Cmd) {
 	default:
 		return m.showSystemMessage(fmt.Sprintf("Command /%s is not yet implemented.", cmd.Name))
 	}
+}
+
+func (m *Model) cmdSide(question string) (tea.Model, tea.Cmd) {
+	sideStore, ok := m.store.(session.SideStore)
+	if !ok || m.sess == nil {
+		return m.showSystemMessage("Side conversations require session persistence.")
+	}
+	question = strings.TrimSpace(question)
+	if strings.EqualFold(question, "close") {
+		if m.sess.Kind == session.KindSide {
+			return m.cmdMain(true)
+		}
+		open, err := sideStore.GetOpenSide(context.Background(), m.sess.RootConversationID())
+		if err != nil || open == nil {
+			return m.showSystemMessage("No open side conversation.")
+		}
+		if err := sideStore.CloseSide(context.Background(), open.ID); err != nil {
+			return m.showSystemMessage(fmt.Sprintf("Could not close side conversation: %v", err))
+		}
+		return m.showSystemMessage("Side conversation closed.")
+	}
+	if m.sess.Kind == session.KindSide {
+		return m.showSystemMessage("Nested side conversations are not supported. Use /main to return to the main conversation.")
+	}
+
+	side, err := sideStore.GetOpenSide(context.Background(), m.sess.RootConversationID())
+	if err != nil {
+		return m.showSystemMessage(fmt.Sprintf("Could not find side conversation: %v", err))
+	}
+	if side == nil {
+		closed, listErr := sideStore.ListSides(context.Background(), m.sess.RootConversationID())
+		if listErr == nil && len(closed) > 0 && closed[0].SideState == session.SideClosed {
+			side, err = sideStore.ReopenSide(context.Background(), closed[0].ID)
+		} else {
+			side, err = sideStore.ForkSide(context.Background(), m.sess.ID, session.OriginTUI)
+		}
+	}
+	if err != nil {
+		return m.showSystemMessage(fmt.Sprintf("Could not open side conversation: %v", err))
+	}
+	m.pendingHandoverAutoSend = question
+	return m.requestResumeSession(side.ID)
+}
+
+func (m *Model) cmdMain(closeSide bool) (tea.Model, tea.Cmd) {
+	if m.sess == nil || m.sess.Kind != session.KindSide || strings.TrimSpace(m.sess.ParentID) == "" {
+		return m.showSystemMessage("Already in the main conversation.")
+	}
+	if closeSide {
+		sideStore, ok := m.store.(session.SideStore)
+		if !ok {
+			return m.showSystemMessage("Side conversations require session persistence.")
+		}
+		if err := sideStore.CloseSide(context.Background(), m.sess.ID); err != nil && err != session.ErrSideClosed {
+			return m.showSystemMessage(fmt.Sprintf("Could not close side conversation: %v", err))
+		}
+	}
+	return m.requestResumeSession(m.sess.ParentID)
 }
 
 // Command implementations

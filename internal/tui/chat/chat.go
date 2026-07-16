@@ -84,6 +84,7 @@ type Model struct {
 	store         session.Store     // Session storage backend
 	sess          *session.Session  // Current session
 	messages      []session.Message // In-memory messages for current session
+	inheritedBase []llm.Message     // Side model context; never rendered or persisted as local transcript
 	compactionIdx int               // Prefix length to skip for LLM context; 0 means no prefix is skipped.
 	// olderScrollbackLoaded is false when a compacted resume initially loaded only
 	// the active tail; scrolling upward can hydrate the older display prefix once.
@@ -751,11 +752,17 @@ func NewWithFastProvider(cfg *config.Config, provider llm.Provider, fastProvider
 	// compaction boundary so buildMessages only sends the active post-compaction
 	// window to the LLM.
 	var messages []session.Message
+	var inheritedBase []llm.Message
 	var compactionIdx int
 	if store != nil && sess.ID != "" {
 		if loadedMsgs, idx, err := loadInitialSessionMessagesForScrollback(context.Background(), store, sess); err == nil {
 			messages = loadedMsgs
 			compactionIdx = idx
+		}
+		if sess.Kind == session.KindSide {
+			if sideStore, ok := store.(session.SideStore); ok {
+				inheritedBase, _ = sideStore.GetSideContext(context.Background(), sess.ID)
+			}
 		}
 	}
 
@@ -849,6 +856,7 @@ func NewWithFastProvider(cfg *config.Config, provider llm.Provider, fastProvider
 		store:                      store,
 		sess:                       sess,
 		messages:                   messages,
+		inheritedBase:              inheritedBase,
 		compactionIdx:              compactionIdx,
 		olderScrollbackLoaded:      !session.HasCompactionBoundary(sess) || compactionIdx > 0,
 		rootCtx:                    context.Background(),

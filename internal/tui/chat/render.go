@@ -1009,7 +1009,12 @@ func (m *Model) renderStatusLine() string {
 
 	usageLong, usageShort := m.statusLineUsageParts()
 
-	baseSegments := make([]statusSegment, 0, 10)
+	baseSegments := make([]statusSegment, 0, 11)
+	conversationLabel := "main"
+	if m.sess != nil && m.sess.Kind == session.KindSide {
+		conversationLabel = "side"
+	}
+	baseSegments = append(baseSegments, seg(successStyle.Render(conversationLabel), 0, true))
 	if m.agentName != "" {
 		baseSegments = append(baseSegments, seg(mutedStyle.Render(m.agentName), 0, true))
 	}

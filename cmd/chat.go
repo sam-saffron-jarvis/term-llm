@@ -412,6 +412,9 @@ func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent 
 
 	// Apply provider/model overrides.
 	desiredApprovalMode := resolveChatApprovalMode(cmd, cfg, sess)
+	if sess != nil && sess.Kind == session.KindSide {
+		desiredApprovalMode = tools.ModePrompt
+	}
 	chatYolo = desiredApprovalMode == tools.ModeYolo
 	chatAutoApproval = desiredApprovalMode == tools.ModeAuto
 
@@ -523,7 +526,9 @@ func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent 
 			parentSessionID = sess.ID
 		}
 		var wireErr error
-		spawnRunner, wireErr = WireSpawnAgentRunnerWithStore(cfg, toolMgr, chatYolo, store, parentSessionID)
+		if sess == nil || sess.Kind != session.KindSide {
+			spawnRunner, wireErr = WireSpawnAgentRunnerWithStore(cfg, toolMgr, chatYolo, store, parentSessionID)
+		}
 		if wireErr != nil {
 			if debugLogger != nil {
 				debugLogger.Close()
@@ -610,6 +615,20 @@ func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent 
 	// Disable alt-screen in auto-send mode for clean output
 	autoSendMode := len(chatAutoSend) > 0
 	useAltScreen := term.IsTerminal(int(os.Stdout.Fd())) && !autoSendMode
+
+	// Side conversations share the parent's workspace. Their runtime cannot
+	// inherit yolo/remembered mutation approvals or delegation tools.
+	if sess != nil && sess.Kind == session.KindSide {
+		if approvalMgr != nil {
+			approvalMgr.SetApprovalMode(tools.ModePrompt)
+			approvalMgr.SetRequireExplicitMutations(true)
+			approvalMgr.IgnoreProjectApprovals = true
+		}
+		mcpManager.SetSamplingYoloMode(false)
+		for _, name := range []string{tools.SpawnAgentToolName, tools.QueueAgentToolName, tools.WaitForJobsToolName, tools.InitiateHandoverToolName, tools.HubDelegateToolName, tools.HubCheckDelegationToolName} {
+			engine.UnregisterTool(name)
+		}
+	}
 
 	// Create chat model
 	chatPlatformMessage := ""

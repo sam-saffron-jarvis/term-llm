@@ -95,9 +95,20 @@ Pasting an image from the clipboard attaches it as an image when the terminal/cl
 | `/mcp` | Manage MCP servers |
 | `/goal` | Set, edit, pause, resume, clear, or show the persistent session goal |
 | `/share [new] [public]` | Share the session as a GitHub Gist; repeat to update or create a new gist |
+| `/side [question]` | Fork or reopen a side conversation with hidden point-in-time context |
+| `/main` | Return to the main conversation without closing the side |
+| `/side close` | Explicitly close the current/open side conversation |
 | `/quit` | Exit chat |
 
 When web search is enabled, the chat status line shows `web`; when fast service tier is enabled, it shows `fast`.
+
+### Side conversations
+
+Use a side conversation for a focused question without adding the main transcript to the side's visible history. The fork captures the main conversation's structured model context at that instant, including completed tool protocol state, while keeping it out of child pagination, search, message counts, exports, and prompt history. Main and side sessions have independent runs and local transcripts and share the same working directory.
+
+Only one side can be open for a main conversation, and sides cannot be nested. In the web UI, **Back to main** only navigates; it does not close the side, so **Open side** returns to it. Use **Close side** when finished. The TUI equivalents are `/side`, `/main`, and `/side close`. Side runs always require explicit approval for shell and workspace mutations and cannot delegate to subagents, even when the main session uses yolo mode.
+
+A side is persisted across crashes and restarts. Automatic resume remains rooted at the main conversation; reopen the side explicitly to continue it.
 
 ### Persistent goals
 
