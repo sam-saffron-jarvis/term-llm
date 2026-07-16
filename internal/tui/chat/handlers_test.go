@@ -1423,19 +1423,29 @@ func TestStreamingSlashThinkingExecutesLocally(t *testing.T) {
 	}
 }
 
-func TestStreamingSideSlashClearsComposer(t *testing.T) {
+func TestStreamingSideSlashClearsRenderedComposerBeforeOverlay(t *testing.T) {
 	m := newTestChatModel(false)
 	m.streaming = true
 	m.SetSideQuestionProviderFactory(func(_, _ string) (llm.Provider, error) {
 		return llm.NewMockProvider("side").AddTextResponse("answer"), nil
 	})
 	m.images = []ImageAttachment{{MediaType: "image/png", Data: []byte("image")}}
-	m.setTextareaValue("/side question")
+	const submitted = "/side stale-composer-token"
+	m.setTextareaValue(submitted)
+	if view := ui.StripANSI(m.View().Content); !strings.Contains(view, submitted) {
+		t.Fatalf("precondition: rendered composer does not contain %q: %q", submitted, view)
+	}
 
 	updated, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	m = updated.(*Model)
 	if cmd == nil {
 		t.Fatal("expected side question stream command")
+	}
+	if got := fmt.Sprintf("%T", cmd()); got != "tea.sequenceMsg" {
+		t.Fatalf("side submission command = %s, want ordered clear-screen/listener sequence", got)
+	}
+	if view := ui.StripANSI(m.View().Content); strings.Contains(view, submitted) {
+		t.Fatalf("submitted composer remained in overlay frame: %q", view)
 	}
 	if got := m.textarea.Value(); got != "" {
 		t.Fatalf("textarea = %q, want cleared", got)

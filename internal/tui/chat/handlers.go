@@ -928,7 +928,12 @@ func (m *Model) handleKeyMsg(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			if strings.HasPrefix(raw, "/") && isStreamingLocalSlashCommand(raw) {
 				m.setTextareaValue("")
 				m.completions.Hide()
-				return m.handleSlashCommand(raw)
+				updated, cmd := m.handleSlashCommand(raw)
+				// Clearing the textarea changes the next View, but Bubble Tea's inline
+				// diff renderer can retain the old composer cells when the command also
+				// adds a panel below it. Force the renderer to discard its screen cache
+				// before it starts waiting for any asynchronous command result.
+				return updated, tea.Sequence(tea.ClearScreen, cmd)
 			}
 			content := m.expandPastePlaceholders(raw)
 			parts := m.imagePartList()
