@@ -359,14 +359,13 @@ func (m *Manager) CallTool(ctx context.Context, fullName string, args json.RawMe
 
 	m.mu.RLock()
 	state, ok := m.statuses[serverName]
-	if !ok || state.Status != StatusReady || state.Client == nil {
-		m.mu.RUnlock()
-		return llm.ToolOutput{}, fmt.Errorf("MCP server %s is not running", serverName)
-	}
-	client := state.Client
 	m.mu.RUnlock()
 
-	return client.CallTool(ctx, toolName, args)
+	if !ok || state.Status != StatusReady || state.Client == nil {
+		return llm.ToolOutput{}, fmt.Errorf("MCP server %s is not running", serverName)
+	}
+
+	return state.Client.CallTool(ctx, toolName, args)
 }
 
 // parseToolName extracts server name and tool name from prefixed name.

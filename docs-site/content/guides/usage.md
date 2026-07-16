@@ -94,21 +94,19 @@ Pasting an image from the clipboard attaches it as an image when the terminal/cl
 | `/fast` | Toggle fast/priority service tier for supported OpenAI/ChatGPT models |
 | `/mcp` | Manage MCP servers |
 | `/goal` | Set, edit, pause, resume, clear, or show the persistent session goal |
+| `/side <question>` | Ask a private, tool-less one-turn question without interrupting or changing the main conversation |
 | `/share [new] [public]` | Share the session as a GitHub Gist; repeat to update or create a new gist |
-| `/side [question]` | Fork or reopen a side conversation with hidden point-in-time context |
-| `/main` | Return to the main conversation without closing the side |
-| `/side close` | Explicitly close the current/open side conversation |
 | `/quit` | Exit chat |
 
 When web search is enabled, the chat status line shows `web`; when fast service tier is enabled, it shows `fast`.
 
-### Side conversations
+### Side questions
 
-Use a side conversation for a focused question without adding the main transcript to the side's visible history. The fork captures the main conversation's structured model context at that instant, including completed tool protocol state, while keeping it out of child pagination, search, message counts, exports, and prompt history. Main and side sessions have independent runs and local transcripts and share the same working directory.
+`/side <question>` opens an overlay over the current TUI or web conversation. The main answer keeps running and remains visible. Each side question is a single provider request with no local tools, MCP, search, approvals, or subagents. It uses the latest completed main context plus up to 20 successful side exchanges kept only in the active runtime's memory. Side questions are never added to the transcript, resume state, exports, search index, compaction input, title input, or session message count.
 
-Only one side can be open for a main conversation, and sides cannot be nested. In the web UI, **Back to main** only navigates; it does not close the side, so **Open side** returns to it. Use **Close side** when finished. The TUI equivalents are `/side`, `/main`, and `/side close`. Side runs always require explicit approval for shell and workspace mutations and cannot delegate to subagents, even when the main session uses yolo mode.
+Use `/side` without text to reopen the latest overlay. In the TUI, use Left/Right for history, Up/Down to scroll, `c` to copy, and `x` twice to clear history. `Esc` cancels a running side question without cancelling the main turn. The web overlay provides equivalent cancel, history, copy, and clear controls. Side history is intentionally lost on a new/cleared/resumed session, runtime eviction, or server restart.
 
-A side is persisted across crashes and restarts. Automatic resume remains rooted at the main conversation; reopen the side explicitly to continue it.
+Promotion or merging a side answer into the main transcript is not supported; copy it or restate the conclusion in the main conversation.
 
 ### Persistent goals
 

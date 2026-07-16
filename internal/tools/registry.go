@@ -67,8 +67,7 @@ func NewLocalToolRegistry(toolConfig *ToolConfig, appConfig *config.Config, appr
 	return r, nil
 }
 
-// SetImageRecorder wires an image recorder for image generation tracking into
-// the already-registered image generation tool.
+// SetImageRecorder wires an image recorder for image generation tracking.
 func (r *LocalToolRegistry) SetImageRecorder(recorder ImageRecorder, agent, sessionID string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -76,25 +75,12 @@ func (r *LocalToolRegistry) SetImageRecorder(recorder ImageRecorder, agent, sess
 	r.memoryStore = recorder
 	r.agent = agent
 	r.sessionID = sessionID
-	r.applyImageRecorderLocked()
-}
-
-// applyImageRecorderLocked pushes the recorder and attribution into the
-// registered image generation tool. Callers must hold r.mu.
-func (r *LocalToolRegistry) applyImageRecorderLocked() {
-	if t, ok := r.tools[ImageGenerateToolName]; ok {
-		if it, ok := t.(*ImageGenerateTool); ok {
-			it.imageRecorder = r.memoryStore
-			it.agent = r.agent
-			it.sessionID = r.sessionID
-		}
-	}
 }
 
 // SetFileChangeRecorder wires a recorder for file-change tracking into the
-// already-registered file-modifying tools. This mutates registered instances
-// directly (the SetServeMode pattern) so the recorder takes effect regardless
-// of registration order.
+// already-registered file-modifying tools. Unlike SetImageRecorder, this
+// mutates registered instances directly (the SetServeMode pattern) so the
+// recorder takes effect regardless of registration order.
 func (r *LocalToolRegistry) SetFileChangeRecorder(recorder FileChangeRecorder) {
 	r.mu.Lock()
 	defer r.mu.Unlock()

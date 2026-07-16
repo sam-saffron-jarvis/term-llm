@@ -1,0 +1,329 @@
+package chat
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"strings"
+	"time"
+
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
+	"github.com/muesli/reflow/wordwrap"
+	"github.com/samsaffron/term-llm/internal/clipboard"
+	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/sidequestion"
+)
+
+type SideQuestionState struct {
+	Visible      bool
+	Running      bool
+	Question     string
+	Response     strings.Builder
+	Synthetic    bool
+	Selected     int
+	History      []sidequestion.Entry
+	Cancel       context.CancelFunc
+	Generation   uint64
+	Usage        llm.Usage
+	Err          error
+	Scroll       int
+	ConfirmClear bool
+	events       chan sideQuestionEventMsg
+}
+
+type sideQuestionEventMsg struct {
+	generation uint64
+	event      llm.Event
+	result     *sidequestion.Result
+	err        error
+}
+
+func (m *Model) SetSideQuestionProviderFactory(factory func(providerKey, model string) (llm.Provider, error)) {
+	m.sideProviderFactory = factory
+}
+
+func (m *Model) sideSnapshot() []llm.Message {
+	messages := m.buildMessages()
+	// While the main stream is active, buildMessages contains the submitted user
+	// turn but not a completed assistant response. A side question sees the last
+	// completed main boundary, so exclude that entire active turn.
+	if m.streaming {
+		for i := len(messages) - 1; i >= 0; i-- {
+			if messages[i].Role == llm.RoleUser {
+				messages = messages[:i]
+				break
+			}
+		}
+	}
+	return sidequestion.PrepareContextSnapshot(messages)
+}
+
+func (m *Model) cmdSide(question string) (tea.Model, tea.Cmd) {
+	question = strings.TrimSpace(question)
+	if question == "" {
+		if len(m.sideQuestion.History) == 0 {
+			return m.showSystemMessage("Usage: /side <question>")
+		}
+		m.sideQuestion.Visible = true
+		m.sideQuestion.Selected = len(m.sideQuestion.History) - 1
+		m.loadSelectedSideEntry()
+		return m, nil
+	}
+	if m.sideQuestion.Running {
+		m.sideQuestion.Visible = true
+		m.sideQuestion.Err = errors.New("A side question is already running")
+		return m, nil
+	}
+	if m.sideProviderFactory == nil {
+		return m.showSystemMessage("Side questions are unavailable for this runtime")
+	}
+	provider, err := m.sideProviderFactory(m.providerKey, m.modelName)
+	if err != nil {
+		return m.showSystemMessage(fmt.Sprintf("Unable to start side question: %v", err))
+	}
+
+	m.sideQuestion.Generation++
+	generation := m.sideQuestion.Generation
+	ctx, cancel := context.WithCancel(m.rootCtx)
+	m.sideQuestion.Visible = true
+	m.sideQuestion.Running = true
+	m.sideQuestion.Question = question
+	m.sideQuestion.Response.Reset()
+	m.sideQuestion.Synthetic = false
+	m.sideQuestion.Cancel = cancel
+	m.sideQuestion.Err = nil
+	m.sideQuestion.Scroll = 0
+	m.sideQuestion.ConfirmClear = false
+	m.sideQuestion.Selected = len(m.sideQuestion.History)
+	m.sideQuestion.events = make(chan sideQuestionEventMsg, 64)
+	events := m.sideQuestion.events
+	history := append([]sidequestion.Entry(nil), m.sideQuestion.History...)
+	req := llm.Request{
+		Model:           m.modelName,
+		Messages:        sidequestion.BuildMessages(m.sideSnapshot(), history, question),
+		ReasoningEffort: m.reasoningModeOverride,
+	}
+	go func() {
+		defer close(events)
+		defer func() {
+			if cleaner, ok := provider.(llm.ProviderCleaner); ok {
+				cleaner.CleanupMCP()
+			}
+		}()
+		result, runErr := sidequestion.Run(ctx, provider, req, func(event llm.Event) {
+			select {
+			case events <- sideQuestionEventMsg{generation: generation, event: event}:
+			case <-ctx.Done():
+			}
+		})
+		select {
+		case events <- sideQuestionEventMsg{generation: generation, result: &result, err: runErr}:
+		case <-ctx.Done():
+		}
+	}()
+	return m, m.listenSideQuestion(events)
+}
+
+func (m *Model) listenSideQuestion(events <-chan sideQuestionEventMsg) tea.Cmd {
+	return func() tea.Msg {
+		msg, ok := <-events
+		if !ok {
+			return nil
+		}
+		return msg
+	}
+}
+
+func (m *Model) updateSideQuestion(msg sideQuestionEventMsg) tea.Cmd {
+	if msg.generation != m.sideQuestion.Generation {
+		return nil
+	}
+	if msg.result != nil || msg.err != nil {
+		m.sideQuestion.Running = false
+		m.sideQuestion.Cancel = nil
+		if errors.Is(msg.err, context.Canceled) {
+			m.sideQuestion.Response.Reset()
+			m.sideQuestion.Visible = false
+			return nil
+		}
+		if msg.err != nil {
+			m.sideQuestion.Err = msg.err
+			return nil
+		}
+		m.sideQuestion.Response.Reset()
+		m.sideQuestion.Response.WriteString(msg.result.Response)
+		m.sideQuestion.Synthetic = msg.result.Synthetic
+		m.sideQuestion.Usage = msg.result.Usage
+		if !msg.result.Synthetic && strings.TrimSpace(msg.result.Response) != "" {
+			m.sideQuestion.History = sidequestion.AppendHistory(m.sideQuestion.History, sidequestion.Entry{
+				Question: m.sideQuestion.Question, Response: msg.result.Response,
+				CreatedAt: time.Now(), Usage: msg.result.Usage,
+			})
+			m.sideQuestion.Selected = len(m.sideQuestion.History) - 1
+		}
+		return nil
+	}
+	switch msg.event.Type {
+	case llm.EventTextDelta:
+		m.sideQuestion.Response.WriteString(msg.event.Text)
+	case llm.EventAttemptDiscard:
+		m.sideQuestion.Response.Reset()
+	case llm.EventUsage:
+		if msg.event.Use != nil {
+			m.sideQuestion.Usage.Add(*msg.event.Use)
+		}
+	case llm.EventRetry:
+		m.sideQuestion.Err = fmt.Errorf("retrying side question (attempt %d)", msg.event.RetryAttempt)
+	}
+	return m.listenSideQuestion(m.sideQuestion.events)
+}
+
+func (m *Model) cancelSideQuestion() {
+	if m.sideQuestion.Cancel != nil {
+		m.sideQuestion.Cancel()
+	}
+	m.sideQuestion.Generation++
+	m.sideQuestion.Running = false
+	m.sideQuestion.Cancel = nil
+	m.sideQuestion.Response.Reset()
+	m.sideQuestion.Visible = false
+	m.sideQuestion.Err = nil
+}
+
+func (m *Model) clearSideQuestionHistory() {
+	if m.sideQuestion.Running {
+		m.cancelSideQuestion()
+	}
+	m.sideQuestion.History = nil
+	m.sideQuestion.Selected = 0
+	m.sideQuestion.Response.Reset()
+	m.sideQuestion.Visible = false
+	m.sideQuestion.ConfirmClear = false
+}
+
+func (m *Model) loadSelectedSideEntry() {
+	if m.sideQuestion.Selected < 0 || m.sideQuestion.Selected >= len(m.sideQuestion.History) {
+		return
+	}
+	entry := m.sideQuestion.History[m.sideQuestion.Selected]
+	m.sideQuestion.Question = entry.Question
+	m.sideQuestion.Response.Reset()
+	m.sideQuestion.Response.WriteString(entry.Response)
+	m.sideQuestion.Usage = entry.Usage
+	m.sideQuestion.Err = nil
+	m.sideQuestion.Scroll = 0
+}
+
+func (m *Model) handleSideQuestionKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	keyName := strings.ToLower(msg.String())
+	if m.sideQuestion.ConfirmClear && keyName != "x" {
+		m.sideQuestion.ConfirmClear = false
+	}
+	switch keyName {
+	case "esc":
+		if m.sideQuestion.Running {
+			m.cancelSideQuestion()
+		} else {
+			m.sideQuestion.Visible = false
+		}
+	case "enter", " ", "space":
+		if !m.sideQuestion.Running {
+			m.sideQuestion.Visible = false
+		}
+	case "left":
+		if !m.sideQuestion.Running && m.sideQuestion.Selected > 0 {
+			m.sideQuestion.Selected--
+			m.loadSelectedSideEntry()
+		}
+	case "right":
+		if !m.sideQuestion.Running && m.sideQuestion.Selected+1 < len(m.sideQuestion.History) {
+			m.sideQuestion.Selected++
+			m.loadSelectedSideEntry()
+		}
+	case "up":
+		m.sideQuestion.Scroll++
+	case "down":
+		if m.sideQuestion.Scroll > 0 {
+			m.sideQuestion.Scroll--
+		}
+	case "c":
+		if !m.sideQuestion.Running {
+			_ = clipboard.CopyTextOSC52(m.sideQuestion.Response.String())
+		}
+	case "x":
+		if !m.sideQuestion.Running {
+			if m.sideQuestion.ConfirmClear {
+				m.clearSideQuestionHistory()
+			} else {
+				m.sideQuestion.ConfirmClear = true
+			}
+		}
+	}
+	return m, nil
+}
+
+func (m *Model) renderSideQuestionPanel() string {
+	width := min(max(40, m.width-12), 88)
+	bodyWidth := max(20, width-4)
+	response := m.sideQuestion.Response.String()
+	if response == "" && m.sideQuestion.Running {
+		response = "Thinking…"
+	}
+	if m.sideQuestion.Err != nil {
+		response += "\n\n" + m.sideQuestion.Err.Error()
+	}
+	wrapped := wordwrap.String(response, bodyWidth)
+	lines := strings.Split(wrapped, "\n")
+	maxLines := max(4, min(16, m.height-10))
+	start := max(0, len(lines)-maxLines-m.sideQuestion.Scroll)
+	end := min(len(lines), start+maxLines)
+	visible := strings.Join(lines[start:end], "\n")
+	status := "done"
+	if m.sideQuestion.Running {
+		status = "answering"
+	}
+	attention := ""
+	if m.approvalModel != nil || m.approvalDoneCh != nil {
+		attention = " · main needs approval"
+	} else if m.askUserModel != nil || m.askUserDoneCh != nil {
+		attention = " · main needs input"
+	}
+	position := ""
+	if len(m.sideQuestion.History) > 1 && !m.sideQuestion.Running {
+		position = fmt.Sprintf(" · %d/%d", m.sideQuestion.Selected+1, len(m.sideQuestion.History))
+	}
+	footer := "Esc cancel"
+	if !m.sideQuestion.Running {
+		footer = "Esc/Enter close · ←/→ history · ↑/↓ scroll · c copy · x clear"
+	}
+	if m.sideQuestion.ConfirmClear {
+		footer = "Press x again to clear side history"
+	}
+	content := fmt.Sprintf("Side question · %s%s%s\n\n%s\n\n%s", status, position, attention, visible, footer)
+	return m.styles.TableBorder.Border(lipgloss.RoundedBorder()).Width(width).Padding(0, 1).Render(content)
+}
+
+func (m *Model) renderSideQuestionOverlay(background string) string {
+	panel := m.renderSideQuestionPanel()
+	lines := strings.Split(background, "\n")
+	for len(lines) < m.height {
+		lines = append(lines, strings.Repeat(" ", max(1, m.width)))
+	}
+	panelLines := strings.Split(panel, "\n")
+	x := max(0, (m.width-lipgloss.Width(panel))/2)
+	y := max(0, (m.height-len(panelLines))/2)
+	for i, panelLine := range panelLines {
+		row := y + i
+		if row >= len(lines) || x >= m.width {
+			break
+		}
+		left := ansi.Cut(lines[row], 0, x)
+		overlay := ansi.Cut(panelLine, 0, m.width-x)
+		rightStart := x + lipgloss.Width(overlay)
+		right := ansi.Cut(lines[row], rightStart, m.width)
+		lines[row] = left + overlay + right
+	}
+	return strings.Join(lines, "\n")
+}

@@ -5,7 +5,6 @@ import (
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
-	"github.com/samsaffron/term-llm/internal/session"
 	sessionsui "github.com/samsaffron/term-llm/internal/tui/sessions"
 )
 
@@ -39,23 +38,9 @@ func (m *Model) requestResumeSession(sessionID string) (tea.Model, tea.Cmd) {
 	if sessionID == "" {
 		return m, nil
 	}
+	m.clearSideQuestionHistory()
 	if m.store != nil {
 		_ = m.store.SetCurrent(context.Background(), sessionID)
-	}
-	if m.conversationNavigation {
-		inProcess := false
-		if m.store != nil && m.sess != nil {
-			if target, err := m.store.Get(context.Background(), sessionID); err == nil && target != nil {
-				inProcess = (m.sess.Kind == session.KindSide || target.Kind == session.KindSide) && m.sess.RootConversationID() == target.RootConversationID()
-			}
-		}
-		if inProcess {
-			autoSend := m.pendingHandoverAutoSend
-			m.pendingHandoverAutoSend = ""
-			return m, func() tea.Msg {
-				return ConversationNavigationMsg{SessionID: sessionID, AutoSend: autoSend}
-			}
-		}
 	}
 	m.pendingResumeSessionID = sessionID
 	m.quitting = true

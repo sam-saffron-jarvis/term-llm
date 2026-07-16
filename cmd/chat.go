@@ -343,9 +343,6 @@ func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent 
 		if m, ok := finalModel.(*chat.Model); ok {
 			m.WaitStreamDone()
 		}
-		if h, ok := finalModel.(*chat.ConversationHost); ok {
-			h.Shutdown()
-		}
 		storeCleanup()
 	}()
 
@@ -415,9 +412,6 @@ func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent 
 
 	// Apply provider/model overrides.
 	desiredApprovalMode := resolveChatApprovalMode(cmd, cfg, sess)
-	if sess != nil && sess.Kind == session.KindSide {
-		desiredApprovalMode = tools.ModePrompt
-	}
 	chatYolo = desiredApprovalMode == tools.ModeYolo
 	chatAutoApproval = desiredApprovalMode == tools.ModeAuto
 
@@ -529,9 +523,7 @@ func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent 
 			parentSessionID = sess.ID
 		}
 		var wireErr error
-		if sess == nil || sess.Kind != session.KindSide {
-			spawnRunner, wireErr = WireSpawnAgentRunnerWithStore(cfg, toolMgr, chatYolo, store, parentSessionID)
-		}
+		spawnRunner, wireErr = WireSpawnAgentRunnerWithStore(cfg, toolMgr, chatYolo, store, parentSessionID)
 		if wireErr != nil {
 			if debugLogger != nil {
 				debugLogger.Close()
@@ -619,37 +611,6 @@ func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent 
 	autoSendMode := len(chatAutoSend) > 0
 	useAltScreen := term.IsTerminal(int(os.Stdout.Fd())) && !autoSendMode
 
-	// Side conversations share the parent's workspace. Their runtime cannot
-	// inherit yolo/remembered mutation approvals or delegation tools.
-	if sess != nil && sess.Kind == session.KindSide {
-		if approvalMgr != nil {
-			approvalMgr.SetApprovalMode(tools.ModePrompt)
-			approvalMgr.SetRequireExplicitMutations(true)
-			approvalMgr.IgnoreProjectApprovals = true
-		}
-		mcpManager.SetSamplingYoloMode(false)
-		mcpManager.StopAll()
-		settings.MCP = ""
-		blocked := map[string]bool{
-			tools.SpawnAgentToolName: true, tools.QueueAgentToolName: true, tools.WaitForJobsToolName: true,
-			tools.InitiateHandoverToolName: true, tools.RunAgentScriptToolName: true,
-			tools.HubDelegateToolName: true, tools.HubCheckDelegationToolName: true,
-			"activate_skill": true,
-		}
-		for _, spec := range engine.Tools().AllSpecs() {
-			if blocked[spec.Name] || !tools.ValidToolName(spec.Name) {
-				engine.UnregisterTool(spec.Name)
-			}
-		}
-		filteredTools := enabledLocalTools[:0]
-		for _, name := range enabledLocalTools {
-			if !blocked[name] && tools.ValidToolName(name) {
-				filteredTools = append(filteredTools, name)
-			}
-		}
-		enabledLocalTools = filteredTools
-	}
-
 	// Create chat model
 	chatPlatformMessage := ""
 	if agent != nil {
@@ -701,6 +662,12 @@ func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent 
 	if handoverAutoSend != "" {
 		model.SetHandoverAutoSend(handoverAutoSend)
 	}
+	model.SetSideQuestionProviderFactory(func(providerKey, modelName string) (llm.Provider, error) {
+		if strings.TrimSpace(providerKey) == "" {
+			providerKey = provider.Name()
+		}
+		return llm.NewProviderByName(cfg, providerKey, modelName)
+	})
 	model.SetHandoverApprovalManager(approvalMgr)
 	model.PersistApprovalModeActive()
 
@@ -744,62 +711,17 @@ func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent 
 	}
 
 	// Run the TUI
-	var p *tea.Program
-	factory := func(sessionID, autoSend string) (*chat.Model, error) {
-		sideModel, buildErr := buildConcurrentSideChatModel(ctx, cmd, store, sessionID, autoSend, useAltScreen, func(msg tea.Msg) {
-			if p != nil {
-				p.Send(msg)
-			}
-		})
-		if buildErr == nil && sideModel != nil {
-			sideModel.SetProgram(p)
-		}
-		return sideModel, buildErr
-	}
-	host := chat.NewConversationHost(model, factory)
 	if useAltScreen {
-		opts = append(opts, tea.WithOutput(newPostFrameWriter(os.Stdout, host.TakePostFrameImageSequence)))
+		opts = append(opts, tea.WithOutput(newPostFrameWriter(os.Stdout, model.TakePostFrameImageSequence)))
 	}
-	p = tea.NewProgram(host, opts...)
+	p := tea.NewProgram(model, opts...)
 	model.SetProgram(p)
-	sendModel := func(msg tea.Msg) {
-		p.Send(chat.RoutedConversationMsg{ConversationID: model.RuntimeRoutingID(), Generation: model.StreamGeneration(), Msg: msg})
-	}
-
-	modelCtx, modelCancel := context.WithCancel(ctx)
-	if useAltScreen {
-		modelCtx = tools.ContextWithAskUserUIFunc(modelCtx, func(requestCtx context.Context, questions []tools.AskUserQuestion) ([]tools.AskUserAnswer, error) {
-			done := make(chan []tools.AskUserAnswer, 1)
-			sendModel(chat.AskUserRequestMsg{Questions: questions, DoneCh: done})
-			select {
-			case answers := <-done:
-				if answers == nil {
-					return nil, fmt.Errorf("cancelled by user")
-				}
-				return answers, nil
-			case <-requestCtx.Done():
-				return nil, requestCtx.Err()
-			}
-		})
-	}
-	modelCtx = tools.ContextWithHandoverFunc(modelCtx, func(requestCtx context.Context, agent string) (bool, error) {
-		done := make(chan bool, 1)
-		sendModel(chat.HandoverRequestMsg{Agent: agent, DoneCh: done})
-		select {
-		case confirmed := <-done:
-			return confirmed, nil
-		case <-requestCtx.Done():
-			return false, requestCtx.Err()
-		}
-	})
-	model.SetRootContext(modelCtx)
-	model.SetRuntimeCancel(modelCancel)
 
 	// Set up spawn_agent event callback for subagent progress visibility
 	if toolMgr != nil {
 		if spawnTool := toolMgr.GetSpawnAgentTool(); spawnTool != nil {
 			dispatcher := newSubagentProgressDispatcher(func(callID string, event tools.SubagentEvent) {
-				sendModel(chat.SubagentProgressMsg{CallID: callID, Event: event})
+				p.Send(chat.SubagentProgressMsg{CallID: callID, Event: event})
 			})
 			spawnTool.SetEventCallback(dispatcher.Callback)
 		}
@@ -809,14 +731,14 @@ func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent 
 	// This also powers /handover script approvals even when no shell tool is enabled.
 	if approvalMgr != nil {
 		approvalMgr.GuardianEventFunc = func(event tools.GuardianEvent) {
-			sendModel(chat.GuardianReviewMsg{Event: event})
+			p.Send(chat.GuardianReviewMsg{Event: event})
 		}
 		approvalMgr.PromptUIFunc = func(path string, isWrite bool, isShell bool, workDir string) (tools.ApprovalResult, error) {
 			// In alt screen mode, use inline approval UI
 			if useAltScreen {
 				// Use buffered channel to prevent goroutine leak if TUI exits before responding
 				doneCh := make(chan tools.ApprovalResult, 1)
-				sendModel(chat.ApprovalRequestMsg{
+				p.Send(chat.ApprovalRequestMsg{
 					Path:    path,
 					IsWrite: isWrite,
 					IsShell: isShell,
@@ -858,7 +780,7 @@ func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent 
 		tools.SetAskUserUIFunc(func(questions []tools.AskUserQuestion) ([]tools.AskUserAnswer, error) {
 			// Use buffered channel to prevent goroutine leak if TUI exits before responding
 			doneCh := make(chan []tools.AskUserAnswer, 1)
-			sendModel(chat.AskUserRequestMsg{
+			p.Send(chat.AskUserRequestMsg{
 				Questions: questions,
 				DoneCh:    doneCh,
 			})
@@ -895,7 +817,7 @@ func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent 
 	// because cmdHandover already handles both.
 	tools.SetHandoverUIFunc(func(toolCtx context.Context, agent string) (bool, error) {
 		doneCh := make(chan bool, 1)
-		sendModel(chat.HandoverRequestMsg{
+		p.Send(chat.HandoverRequestMsg{
 			Agent:  agent,
 			DoneCh: doneCh,
 		})
@@ -944,14 +866,8 @@ func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent 
 		return "", "", fmt.Errorf("failed to run chat: %w", err)
 	}
 
-	var resultChatModel *chat.Model
-	if m, ok := finalModel.(*chat.Model); ok {
-		resultChatModel = m
-	} else if h, ok := finalModel.(*chat.ConversationHost); ok {
-		resultChatModel = h.ActiveRuntime()
-	}
 	var nextResumeID, nextHandoverAutoSend string
-	if m := resultChatModel; m != nil {
+	if m, ok := finalModel.(*chat.Model); ok {
 		nextResumeID = m.RequestedResumeSessionID()
 		nextHandoverAutoSend = m.RequestedHandoverAutoSend()
 		// Preserve interactive approval-mode toggles across handover/relaunch. The next
@@ -963,7 +879,7 @@ func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent 
 	}
 
 	// Handle /reload: close the store, then re-exec under the (potentially new) binary.
-	if m := resultChatModel; m != nil && m.WantsReload() {
+	if m, ok := finalModel.(*chat.Model); ok && m.WantsReload() {
 		if spawnRunner != nil {
 			spawnRunner.Wait()
 		}

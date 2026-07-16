@@ -84,7 +84,6 @@ type Model struct {
 	store         session.Store     // Session storage backend
 	sess          *session.Session  // Current session
 	messages      []session.Message // In-memory messages for current session
-	inheritedBase []llm.Message     // Side model context; never rendered or persisted as local transcript
 	compactionIdx int               // Prefix length to skip for LLM context; 0 means no prefix is skipped.
 	// olderScrollbackLoaded is false when a compacted resume initially loaded only
 	// the active tail; scrolling upward can hydrate the older display prefix once.
@@ -119,7 +118,6 @@ type Model struct {
 	streamCancelFunc      context.CancelFunc
 	streamDone            chan struct{}       // closed when the engine goroutine exits
 	streamGeneration      uint64              // increments for each stream; used to ignore stale listener messages
-	routedGeneration      atomic.Uint64       // lock-free generation tag for callbacks outside the UI goroutine
 	streamCancelRequested *atomic.Bool        // user requested stream cancellation; wait for stream exit before final cleanup
 	tracker               *ui.ToolTracker     // Tool and segment tracking (shared component)
 	subagentTracker       *ui.SubagentTracker // Subagent progress tracking
@@ -176,16 +174,18 @@ type Model struct {
 	askUserDoneCh chan<- []tools.AskUserAnswer
 
 	// LLM context
-	rootCtx      context.Context
-	provider     llm.Provider
-	fastProvider llm.Provider
-	engine       *llm.Engine
-	runner       runpkg.Runner
-	config       *config.Config
-	providerName string
-	providerKey  string
-	modelName    string
-	agentName    string
+	rootCtx             context.Context
+	provider            llm.Provider
+	fastProvider        llm.Provider
+	sideProviderFactory func(providerKey, model string) (llm.Provider, error)
+	sideQuestion        SideQuestionState
+	engine              *llm.Engine
+	runner              runpkg.Runner
+	config              *config.Config
+	providerName        string
+	providerKey         string
+	modelName           string
+	agentName           string
 
 	platformDeveloperMessage string
 	currentOrigin            session.SessionOrigin
@@ -269,11 +269,6 @@ type Model struct {
 
 	// If set, the caller should relaunch chat with this session ID.
 	pendingResumeSessionID string
-	conversationNavigation bool
-	parentRuntimeStatus    string
-	sideRuntimeStatus      string
-	runtimeRoutingID       atomic.Value // string; immutable after the runtime is installed in a host
-	runtimeCancel          context.CancelFunc
 
 	// If set, the caller should auto-send this message after handover restart.
 	pendingHandoverAutoSend string
@@ -758,17 +753,11 @@ func NewWithFastProvider(cfg *config.Config, provider llm.Provider, fastProvider
 	// compaction boundary so buildMessages only sends the active post-compaction
 	// window to the LLM.
 	var messages []session.Message
-	var inheritedBase []llm.Message
 	var compactionIdx int
 	if store != nil && sess.ID != "" {
 		if loadedMsgs, idx, err := loadInitialSessionMessagesForScrollback(context.Background(), store, sess); err == nil {
 			messages = loadedMsgs
 			compactionIdx = idx
-		}
-		if sess.Kind == session.KindSide {
-			if sideStore, ok := store.(session.SideStore); ok {
-				inheritedBase, _ = sideStore.GetSideContext(context.Background(), sess.ID)
-			}
 		}
 	}
 
@@ -862,7 +851,6 @@ func NewWithFastProvider(cfg *config.Config, provider llm.Provider, fastProvider
 		store:                      store,
 		sess:                       sess,
 		messages:                   messages,
-		inheritedBase:              inheritedBase,
 		compactionIdx:              compactionIdx,
 		olderScrollbackLoaded:      !session.HasCompactionBoundary(sess) || compactionIdx > 0,
 		rootCtx:                    context.Background(),
@@ -1639,6 +1627,13 @@ func (m *Model) shouldIgnoreStreamEvent(msg streamEventMsg) bool {
 func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmds []tea.Cmd
 	var flushCmds []tea.Cmd
+
+	if sideMsg, ok := msg.(sideQuestionEventMsg); ok {
+		return m, m.updateSideQuestion(sideMsg)
+	}
+	if keyMsg, ok := msg.(tea.KeyPressMsg); ok && m.sideQuestion.Visible {
+		return m.handleSideQuestionKey(keyMsg)
+	}
 
 	// The yolo toggle is intentionally global so it works while streaming,
 	// inspecting, or browsing embedded views.

@@ -61,7 +61,11 @@ func (m *Model) View() tea.View {
 
 	// Alt screen mode: use viewport for scrollable content
 	if m.altScreen {
-		return m.newView(m.viewAltScreen())
+		content := m.viewAltScreen()
+		if m.sideQuestion.Visible {
+			content = m.renderSideQuestionOverlay(content)
+		}
+		return m.newView(content)
 	}
 
 	// Auto-send mode: minimal rendering for benchmarking (skip expensive UI)
@@ -120,7 +124,11 @@ func (m *Model) View() tea.View {
 	m.applyFooterLayout(renderedLines, footer)
 	b.WriteString(footer.view)
 
-	return m.newView(b.String())
+	content := b.String()
+	if m.sideQuestion.Visible {
+		content += "\n" + m.renderSideQuestionPanel()
+	}
+	return m.newView(content)
 }
 
 // newView wraps content in a tea.View with the model's declarative flags.
@@ -1009,26 +1017,7 @@ func (m *Model) renderStatusLine() string {
 
 	usageLong, usageShort := m.statusLineUsageParts()
 
-	baseSegments := make([]statusSegment, 0, 11)
-	conversationLabel := "main"
-	if m.sess != nil && m.sess.Kind == session.KindSide {
-		conversationLabel = "side"
-	}
-	baseSegments = append(baseSegments, seg(successStyle.Render(conversationLabel), 0, true))
-	if conversationLabel == "side" && m.parentRuntimeStatus != "" {
-		parentStyle := mutedStyle
-		if strings.HasPrefix(m.parentRuntimeStatus, "needs") || m.parentRuntimeStatus == "failed" {
-			parentStyle = warningStyle
-		}
-		baseSegments = append(baseSegments, seg(parentStyle.Render("main: "+m.parentRuntimeStatus), 5, false))
-	}
-	if conversationLabel == "main" && m.sideRuntimeStatus != "" {
-		sideStyle := mutedStyle
-		if strings.HasPrefix(m.sideRuntimeStatus, "needs") || m.sideRuntimeStatus == "failed" || m.sideRuntimeStatus == "done" {
-			sideStyle = warningStyle
-		}
-		baseSegments = append(baseSegments, seg(sideStyle.Render("side: "+m.sideRuntimeStatus), 5, false))
-	}
+	baseSegments := make([]statusSegment, 0, 10)
 	if m.agentName != "" {
 		baseSegments = append(baseSegments, seg(mutedStyle.Render(m.agentName), 0, true))
 	}

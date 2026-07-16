@@ -3947,6 +3947,12 @@ const sendMessage = async (options = {}) => {
     return;
   }
 
+  if (/^\/side(?:\s|$)/i.test(prompt)) {
+    const question = prompt.replace(/^\/side\b/i, '').trim();
+    if (typeof app.openSideQuestion === 'function') await app.openSideQuestion(question);
+    return;
+  }
+
   let session = getActiveSession();
   const heartbeatPostRetryCount = Math.max(0, Number(options._heartbeatPostRetry || 0));
   const retryingHeartbeatPost = heartbeatPostRetryCount > 0 && typeof options.reuseMessageId === 'string';

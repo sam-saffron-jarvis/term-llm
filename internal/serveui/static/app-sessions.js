@@ -146,7 +146,6 @@ const pollSidebarStatus = async () => {
       const data = await resp.json();
       if (Array.isArray(data.sessions)) {
         updateSidebarStatus(data.sessions);
-        renderSideStatusFromPoll(data.sessions);
         await reconcileActiveTranscriptFromStatus(data.sessions);
         recordTranscriptVersionsFromStatus(data.sessions);
         // Discover sessions created in other tabs/devices
@@ -317,146 +316,6 @@ const syncSelectedRuntimeFromSession = (session) => {
   return true;
 };
 
-const localSessionFromSide = (raw) => ({
-  id: String(raw?.id || ''),
-  number: Number(raw?.number || 0),
-  name: String(raw?.name || ''),
-  title: raw?.name || raw?.summary || (raw?.kind === 'side' ? 'Side chat' : 'Chat'),
-  longTitle: '',
-  mode: String(raw?.mode || 'chat'),
-  origin: String(raw?.origin || 'web'),
-  provider: String(raw?.provider_key || raw?.provider || ''),
-  model: String(raw?.model || ''),
-  archived: Boolean(raw?.archived),
-  pinned: Boolean(raw?.pinned),
-  created: asTimestamp(raw?.created_at) || Date.now(),
-  lastMessageAt: asTimestamp(raw?.updated_at) || Date.now(),
-  messageCount: Number(raw?.message_count || 0),
-  parentId: String(raw?.parent_id || ''),
-  rootId: String(raw?.root_id || raw?.id || ''),
-  kind: String(raw?.kind || 'root'),
-  sideState: String(raw?.side_state || ''),
-  messages: [],
-  lastResponseId: null,
-  activeResponseId: null,
-  lastSequenceNumber: 0,
-  _serverOnly: true
-});
-
-const upsertSideSession = (raw) => {
-  if (!raw?.id) return null;
-  let local = state.sessions.find((item) => item.id === raw.id);
-  if (!local) {
-    local = localSessionFromSide(raw);
-    state.sessions.push(local);
-  }
-  local.parentId = String(raw.parent_id || local.parentId || '');
-  local.rootId = String(raw.root_id || local.rootId || raw.id);
-  local.kind = String(raw.kind || local.kind || 'root');
-  local.sideState = String(raw.side_state || local.sideState || '');
-  return local;
-};
-
-const renderSideRelationship = (relationship) => {
-  const active = getActiveSession();
-  const isSide = active?.kind === 'side';
-  setElementHidden(elements.sideChatBanner, !isSide);
-  if (elements.sideChatBtn) {
-    elements.sideChatBtn.disabled = !active || isSide;
-    const hasOpen = Boolean(relationship?.open_side);
-    elements.sideChatBtn.classList.toggle('has-open-side', hasOpen);
-    if (elements.sideChatBtnLabel) elements.sideChatBtnLabel.textContent = hasOpen ? 'Open side' : 'Side chat';
-  }
-  if (isSide && elements.sideParentStatus) {
-    const attention = Boolean(relationship?.parent_attention);
-    const running = Boolean(relationship?.parent_active_run);
-    elements.sideParentStatus.textContent = attention ? 'Main needs your attention' : (running ? 'Main is running' : 'Main is idle');
-    elements.sideParentStatus.classList.toggle('needs-attention', attention);
-  }
-};
-
-const renderSideStatusFromPoll = (statusSessions) => {
-  const active = getActiveSession();
-  if (!active || !Array.isArray(statusSessions)) return;
-  const byId = new Map(statusSessions.map((entry) => [String(entry.id || ''), entry]));
-  if (active.kind === 'side') {
-    const parent = byId.get(String(active.parentId || ''));
-    if (parent && elements.sideParentStatus) {
-      const status = String(parent.runtime_status || (parent.active_run ? 'running' : 'done'));
-      elements.sideParentStatus.textContent = `Main: ${status}`;
-      elements.sideParentStatus.classList.toggle('needs-attention', status.startsWith('needs') || status === 'failed');
-    }
-    return;
-  }
-  const side = statusSessions.find((entry) => entry.kind === 'side'
-    && entry.side_state === 'open'
-    && String(entry.root_id || entry.parent_id || '') === String(active.rootId || active.id));
-  if (!side || !elements.sideChatBtnLabel) return;
-  const status = String(side.runtime_status || (side.active_run ? 'running' : 'done'));
-  elements.sideChatBtnLabel.textContent = `Side: ${status}`;
-  elements.sideChatBtn?.classList.toggle('needs-attention', status.startsWith('needs') || status === 'failed' || status === 'done');
-};
-
-const loadSideRelationship = async (session = getActiveSession()) => {
-  if (!session?.id) {
-    renderSideRelationship(null);
-    return null;
-  }
-  const resp = await fetch(`${UI_PREFIX}/v1/sessions/${encodeURIComponent(session.id)}/relationship`, {
-    headers: requestHeaders(session.id)
-  });
-  if (!resp.ok) return null;
-  const relationship = await resp.json();
-  upsertSideSession(relationship.session);
-  upsertSideSession(relationship.parent);
-  upsertSideSession(relationship.open_side);
-  (relationship.sides || []).forEach(upsertSideSession);
-  renderSideRelationship(relationship);
-  return relationship;
-};
-
-const openSideConversation = async () => {
-  const active = getActiveSession();
-  if (!active || active.kind === 'side') return;
-  let relationship = null;
-  try { relationship = await loadSideRelationship(active); } catch (_) {}
-  let side = relationship?.open_side || null;
-  if (!side) {
-    const closed = (relationship?.sides || []).find((item) => item.side_state === 'closed');
-    const endpoint = closed
-      ? `${UI_PREFIX}/v1/sessions/${encodeURIComponent(closed.id)}/side/reopen`
-      : `${UI_PREFIX}/v1/sessions/${encodeURIComponent(active.id)}/side`;
-    const resp = await fetch(endpoint, { method: 'POST', headers: requestHeaders(active.id), body: '{}' });
-    if (!resp.ok) {
-      addErrorMessage(normalizeError(await resp.text()));
-      return;
-    }
-    side = await resp.json();
-  }
-  const local = upsertSideSession(side);
-  if (local) await switchToSession(local.id, { focusPrompt: true });
-};
-
-const backToMainConversation = async () => {
-  const active = getActiveSession();
-  if (!active?.parentId) return;
-  await switchToSession(active.parentId, { focusPrompt: true });
-};
-
-const closeSideConversation = async () => {
-  const active = getActiveSession();
-  if (!active || active.kind !== 'side') return;
-  const resp = await fetch(`${UI_PREFIX}/v1/sessions/${encodeURIComponent(active.id)}/side/close`, {
-    method: 'POST', headers: requestHeaders(active.id), body: '{}'
-  });
-  if (!resp.ok) {
-    addErrorMessage(normalizeError(await resp.text()));
-    return;
-  }
-  active.sideState = 'closed';
-  await backToMainConversation();
-};
-
 const switchToSession = async (sessionId, options = {}) => {
   const nextId = String(sessionId || '').trim();
   if (!nextId) return null;
@@ -531,12 +390,11 @@ const switchToSession = async (sessionId, options = {}) => {
     }
   }
 
-	if (options.sync !== false) {
+  if (options.sync !== false) {
     await syncActiveSessionFromServer(session, true, {
       skipMessagesFetch: didPreloadServerMessages,
       expectedSwitchGeneration: switchGeneration
     });
-    try { await loadSideRelationship(session); } catch (_) { renderSideRelationship(null); }
     if (!isCurrentSwitch()) return null;
   }
   if (!isCurrentSwitch()) return null;
@@ -2782,9 +2640,6 @@ const applySessionMCP = async (sessionId, enabledNames) => {
 
 // ===== Event listeners =====
 elements.newChatBtn.addEventListener('click', createAndSwitchToFreshSession);
-elements.sideChatBtn?.addEventListener('click', openSideConversation);
-elements.backToMainBtn?.addEventListener('click', backToMainConversation);
-elements.closeSideBtn?.addEventListener('click', closeSideConversation);
 elements.sidebarRailNewChatBtn.addEventListener('click', async () => {
   await createAndSwitchToFreshSession();
 });
@@ -3400,11 +3255,6 @@ Object.assign(app, {
   setSessionPinned,
   switchToDraftSession,
   switchToSession,
-  loadSideRelationship,
-  renderSideStatusFromPoll,
-  openSideConversation,
-  backToMainConversation,
-  closeSideConversation,
   initialize
 });
 })();

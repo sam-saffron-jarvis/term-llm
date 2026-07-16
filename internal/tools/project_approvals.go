@@ -302,9 +302,6 @@ func (p *ProjectApprovals) ApproveShellPattern(pattern string) error {
 	if p == nil {
 		return nil
 	}
-	if err := validateShellApprovalPattern(pattern); err != nil {
-		return NewToolErrorf(ErrInvalidParams, "invalid shell pattern %q: %v", pattern, err)
-	}
 
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -314,14 +311,8 @@ func (p *ProjectApprovals) ApproveShellPattern(pattern string) error {
 			return nil
 		}
 	}
-	previousUpdatedAt := p.UpdatedAt
 	p.ShellPatterns = append(p.ShellPatterns, pattern)
-	if err := p.saveLocked(); err != nil {
-		p.ShellPatterns = p.ShellPatterns[:len(p.ShellPatterns)-1]
-		p.UpdatedAt = previousUpdatedAt
-		return err
-	}
-	return nil
+	return p.saveLocked()
 }
 
 // GenerateShellPattern creates a glob pattern from a command.

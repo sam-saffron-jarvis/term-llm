@@ -554,13 +554,6 @@ func (m *Model) currentTitleState(includeElapsed bool) titleState {
 	}
 	if m.sess != nil {
 		st.Task = m.sess.PreferredShortTitle()
-		if m.sess.Kind == session.KindSide {
-			if st.Agent == "" {
-				st.Agent = "side"
-			} else {
-				st.Agent = "side/" + st.Agent
-			}
-		}
 	}
 	if includeElapsed && m.streaming && !m.streamStartTime.IsZero() {
 		st.Elapsed = time.Since(m.streamStartTime)

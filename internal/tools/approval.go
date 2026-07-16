@@ -159,82 +159,30 @@ func (c *DirCache) Snapshot() (readDirs []string, writeDirs []string) {
 	return readDirs, writeDirs
 }
 
-type shellCommandApproval struct {
-	command string
-	workDir string
-}
-
-// ShellApprovalCache caches exact shell commands and glob pattern approvals for
-// the session.
+// ShellApprovalCache caches shell command pattern approvals for the session.
 type ShellApprovalCache struct {
 	mu       sync.RWMutex
-	patterns []string               // Glob patterns approved during this session
-	commands []shellCommandApproval // Exact command/workdir pairs approved during this session
+	patterns []string // Patterns approved during this session
 }
 
 // NewShellApprovalCache creates a new ShellApprovalCache.
 func NewShellApprovalCache() *ShellApprovalCache {
 	return &ShellApprovalCache{
 		patterns: []string{},
-		commands: []shellCommandApproval{},
 	}
 }
 
-// AddPattern adds a validated glob pattern to the session cache.
-func (c *ShellApprovalCache) AddPattern(pattern string) error {
-	if err := validateShellApprovalPattern(pattern); err != nil {
-		return NewToolErrorf(ErrInvalidParams, "invalid shell pattern %q: %v", pattern, err)
-	}
+// AddPattern adds a pattern to the session cache.
+func (c *ShellApprovalCache) AddPattern(pattern string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	// Avoid duplicates
 	for _, p := range c.patterns {
 		if p == pattern {
-			return nil
+			return
 		}
 	}
 	c.patterns = append(c.patterns, pattern)
-	return nil
-}
-
-// AddCommand adds an exact command/workdir pair to the session cache. Exact
-// commands are kept separate from glob patterns so shell syntax and glob
-// metacharacters are compared literally.
-func (c *ShellApprovalCache) AddCommand(command, workDir string) error {
-	command = strings.TrimSpace(command)
-	if command == "" {
-		return NewToolError(ErrInvalidParams, "shell command is required")
-	}
-	approval := shellCommandApproval{
-		command: command,
-		workDir: normalizeGuardianWorkDir(workDir),
-	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	for _, existing := range c.commands {
-		if existing == approval {
-			return nil
-		}
-	}
-	c.commands = append(c.commands, approval)
-	return nil
-}
-
-// IsCommandApproved reports whether command has an exact session approval in
-// workDir.
-func (c *ShellApprovalCache) IsCommandApproved(command, workDir string) bool {
-	approval := shellCommandApproval{
-		command: strings.TrimSpace(command),
-		workDir: normalizeGuardianWorkDir(workDir),
-	}
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	for _, existing := range c.commands {
-		if existing == approval {
-			return true
-		}
-	}
-	return false
 }
 
 // GetPatterns returns all session-approved patterns.
@@ -244,13 +192,6 @@ func (c *ShellApprovalCache) GetPatterns() []string {
 	result := make([]string, len(c.patterns))
 	copy(result, c.patterns)
 	return result
-}
-
-// getCommands returns all exact command approvals for the session.
-func (c *ShellApprovalCache) getCommands() []shellCommandApproval {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	return append([]shellCommandApproval(nil), c.commands...)
 }
 
 // ApprovalMode controls how unmatched tool approval requests are handled.
@@ -357,11 +298,10 @@ type ApprovalManager struct {
 	// Approval mode. Yolo mode auto-approves all tool executions without prompting;
 	// auto mode asks a policy reviewer for shell commands after deterministic
 	// checks fail and before falling back to a human prompt.
-	modeMu                   sync.RWMutex
-	mode                     ApprovalMode
-	YoloMode                 bool // Deprecated compatibility mirror for ModeYolo.
-	autoHeadless             bool
-	requireExplicitMutations bool
+	modeMu       sync.RWMutex
+	mode         ApprovalMode
+	YoloMode     bool // Deprecated compatibility mirror for ModeYolo.
+	autoHeadless bool
 
 	guardianConsecutiveDenials  int
 	guardianCircuitBreakerLimit int
@@ -556,29 +496,6 @@ func (m *ApprovalManager) SetApprovalMode(mode ApprovalMode) {
 	if old == ModeAuto && mode != ModeAuto {
 		m.clearGuardianExactShell()
 	}
-}
-
-// SetRequireExplicitMutations makes every shell execution and write operation
-// require a fresh human decision, bypassing yolo, allowlists, and remembered
-// approvals. Side conversations use this because they share the parent's
-// workspace and can otherwise race it.
-func (m *ApprovalManager) SetRequireExplicitMutations(required bool) {
-	if m == nil {
-		return
-	}
-	m.modeMu.Lock()
-	m.requireExplicitMutations = required
-	m.modeMu.Unlock()
-}
-
-func (m *ApprovalManager) requiresExplicitMutations() bool {
-	if m == nil {
-		return false
-	}
-	m.modeMu.RLock()
-	required := m.requireExplicitMutations
-	m.modeMu.RUnlock()
-	return required
 }
 
 // ApprovalMode returns this manager's effective mode, inheriting from parents.
@@ -832,19 +749,13 @@ func (m *ApprovalManager) checkShellApprovalNoPrompt(command, workDir string) (C
 		return ProceedAlways, true
 	}
 
-	// Check session-approved exact commands and patterns.
-	if m.shellCache.IsCommandApproved(command, workDir) {
-		return ProceedAlways, true
-	}
+	// Check session-approved patterns
 	if matchAnyShellPattern(m.shellCache.GetPatterns(), command) {
 		return ProceedAlways, true
 	}
 
-	// Check parent's session-approved commands and patterns (inherited approvals).
+	// Check parent's session-approved patterns (inherited approvals)
 	if m.parent != nil {
-		if m.parent.shellCache.IsCommandApproved(command, workDir) {
-			return ProceedAlways, true
-		}
 		if matchAnyShellPattern(m.parent.shellCache.GetPatterns(), command) {
 			return ProceedAlways, true
 		}
@@ -871,10 +782,8 @@ func (m *ApprovalManager) checkShellApprovalNoPrompt(command, workDir string) (C
 // for one tool allows all tools to access files within it.
 // toolInfo is optional context for display (e.g., filename being accessed).
 func (m *ApprovalManager) CheckPathApproval(toolName, path, toolInfo string, isWrite bool) (ConfirmOutcome, error) {
-	forceExplicit := isWrite && m.requiresExplicitMutations()
-	// 0. Yolo mode - auto-approve everything unless this runtime mechanically
-	// requires a fresh decision for shared-state mutations.
-	if !forceExplicit && m.YoloEnabled() {
+	// 0. Yolo mode - auto-approve everything
+	if m.YoloEnabled() {
 		if m.DebugApproval {
 			log.Printf("[approval] CheckPathApproval tool=%s path=%q isWrite=%v → yolo auto-approve", toolName, path, isWrite)
 		}
@@ -893,20 +802,18 @@ func (m *ApprovalManager) CheckPathApproval(toolName, path, toolInfo string, isW
 		originalPath = resolved
 	}
 
-	if !forceExplicit {
-		outcome, ok, err := m.checkPathApprovalNoPrompt(toolName, absPath, absPath, isWrite)
-		if err != nil {
-			if m.DebugApproval {
-				log.Printf("[approval] CheckPathApproval tool=%s path=%q → no-prompt error: %v", toolName, absPath, err)
-			}
-			return Cancel, err
+	outcome, ok, err := m.checkPathApprovalNoPrompt(toolName, absPath, absPath, isWrite)
+	if err != nil {
+		if m.DebugApproval {
+			log.Printf("[approval] CheckPathApproval tool=%s path=%q → no-prompt error: %v", toolName, absPath, err)
 		}
-		if ok {
-			if m.DebugApproval {
-				log.Printf("[approval] CheckPathApproval tool=%s path=%q → no-prompt decided: %v", toolName, absPath, outcome)
-			}
-			return outcome, nil
+		return Cancel, err
+	}
+	if ok {
+		if m.DebugApproval {
+			log.Printf("[approval] CheckPathApproval tool=%s path=%q → no-prompt decided: %v", toolName, absPath, outcome)
 		}
+		return outcome, nil
 	}
 	if originalPath != absPath {
 		return Cancel, NewToolErrorf(ErrSymlinkEscape, "path %s resolves to %s which is outside approved directories", originalPath, absPath)
@@ -920,28 +827,26 @@ func (m *ApprovalManager) CheckPathApproval(toolName, path, toolInfo string, isW
 
 	// Recheck yolo now that we hold the prompt lock; the user may have toggled it
 	// while this request was waiting behind another prompt.
-	if !forceExplicit && m.YoloEnabled() {
+	if m.YoloEnabled() {
 		if m.DebugApproval {
 			log.Printf("[approval] CheckPathApproval tool=%s path=%q isWrite=%v → yolo auto-approve after lock", toolName, path, isWrite)
 		}
 		return ProceedOnce, nil
 	}
 
-	// Recheck now that we hold the prompt lock to avoid duplicate prompts.
-	if !forceExplicit {
-		outcome, ok, err := m.checkPathApprovalNoPrompt(toolName, absPath, absPath, isWrite)
-		if err != nil {
-			if m.DebugApproval {
-				log.Printf("[approval] CheckPathApproval tool=%s path=%q → recheck error: %v", toolName, absPath, err)
-			}
-			return Cancel, err
+	// Recheck now that we hold the prompt lock to avoid duplicate prompts
+	outcome, ok, err = m.checkPathApprovalNoPrompt(toolName, absPath, absPath, isWrite)
+	if err != nil {
+		if m.DebugApproval {
+			log.Printf("[approval] CheckPathApproval tool=%s path=%q → recheck error: %v", toolName, absPath, err)
 		}
-		if ok {
-			if m.DebugApproval {
-				log.Printf("[approval] CheckPathApproval tool=%s path=%q → recheck decided: %v", toolName, absPath, outcome)
-			}
-			return outcome, nil
+		return Cancel, err
+	}
+	if ok {
+		if m.DebugApproval {
+			log.Printf("[approval] CheckPathApproval tool=%s path=%q → recheck decided: %v", toolName, absPath, outcome)
 		}
+		return outcome, nil
 	}
 	if originalPath != absPath {
 		return Cancel, NewToolErrorf(ErrSymlinkEscape, "path %s resolves to %s which is outside approved directories", originalPath, absPath)
@@ -964,9 +869,6 @@ func (m *ApprovalManager) CheckPathApproval(toolName, path, toolInfo string, isW
 		}
 		if m.DebugApproval {
 			log.Printf("[approval] CheckPathApproval tool=%s path=%q → PromptUIFunc result: choice=%v cancelled=%v", toolName, absPath, result.Choice, result.Cancelled)
-		}
-		if forceExplicit && !result.Cancelled && result.Choice != ApprovalChoiceDeny {
-			return ProceedOnce, nil
 		}
 		return m.handleFileApprovalResult(result, absPath, isWrite, projectApprovals)
 	}
@@ -999,11 +901,8 @@ func (m *ApprovalManager) CheckPathApproval(toolName, path, toolInfo string, isW
 		ToolInfo:    toolInfo,
 	}
 
-	outcome, _ := promptFunc(req)
+	outcome, _ = promptFunc(req)
 
-	if forceExplicit && (outcome == ProceedAlways || outcome == ProceedAlwaysAndSave) {
-		return ProceedOnce, nil
-	}
 	if outcome == ProceedAlways || outcome == ProceedAlwaysAndSave {
 		m.dirCache.Set(absDir, outcome, isWrite)
 	}
@@ -1107,26 +1006,23 @@ func (m *ApprovalManager) CheckShellApprovalWithContext(ctx context.Context, com
 // transcript evidence. The supplier is only evaluated when an auto guardian
 // reviewer actually needs the transcript.
 func (m *ApprovalManager) checkShellApprovalWithContext(ctx context.Context, command, workDir string, transcript func() []TranscriptEntry) (ConfirmOutcome, error) {
-	forceExplicit := m.requiresExplicitMutations()
-	// Yolo mode - auto-approve everything unless shared-state safety requires a prompt.
-	if !forceExplicit && m.YoloEnabled() {
+	// Yolo mode - auto-approve everything
+	if m.YoloEnabled() {
 		if m.DebugApproval {
 			log.Printf("[approval] CheckShellApproval cmd=%q → yolo auto-approve", command)
 		}
 		return ProceedOnce, nil
 	}
 
-	if !forceExplicit {
-		if outcome, ok := m.checkShellApprovalNoPrompt(command, workDir); ok {
-			if m.DebugApproval {
-				log.Printf("[approval] CheckShellApproval cmd=%q → no-prompt decided: %v", command, outcome)
-			}
-			return outcome, nil
+	if outcome, ok := m.checkShellApprovalNoPrompt(command, workDir); ok {
+		if m.DebugApproval {
+			log.Printf("[approval] CheckShellApproval cmd=%q → no-prompt decided: %v", command, outcome)
 		}
+		return outcome, nil
 	}
 
 	guardianAttemptedBeforeLock := false
-	if !forceExplicit && m.ApprovalMode() == ModeAuto {
+	if m.ApprovalMode() == ModeAuto {
 		guardianAttemptedBeforeLock = true
 		if outcome, decided, err := m.checkShellGuardianApproval(ctx, command, workDir, transcript); decided || err != nil {
 			return outcome, err
@@ -1141,24 +1037,22 @@ func (m *ApprovalManager) checkShellApprovalWithContext(ctx context.Context, com
 
 	// Recheck yolo now that we hold the prompt lock; the user may have toggled it
 	// while this request was waiting behind another prompt.
-	if !forceExplicit && m.YoloEnabled() {
+	if m.YoloEnabled() {
 		if m.DebugApproval {
 			log.Printf("[approval] CheckShellApproval cmd=%q → yolo auto-approve after lock", command)
 		}
 		return ProceedOnce, nil
 	}
 
-	// Recheck now that we hold the prompt lock to avoid duplicate prompts.
-	if !forceExplicit {
-		if outcome, ok := m.checkShellApprovalNoPrompt(command, workDir); ok {
-			if m.DebugApproval {
-				log.Printf("[approval] CheckShellApproval cmd=%q → recheck decided: %v", command, outcome)
-			}
-			return outcome, nil
+	// Recheck now that we hold the prompt lock to avoid duplicate prompts
+	if outcome, ok := m.checkShellApprovalNoPrompt(command, workDir); ok {
+		if m.DebugApproval {
+			log.Printf("[approval] CheckShellApproval cmd=%q → recheck decided: %v", command, outcome)
 		}
+		return outcome, nil
 	}
 
-	if !forceExplicit && m.ApprovalMode() == ModeAuto && !guardianAttemptedBeforeLock {
+	if m.ApprovalMode() == ModeAuto && !guardianAttemptedBeforeLock {
 		if outcome, decided, err := m.checkShellGuardianApproval(ctx, command, workDir, transcript); decided || err != nil {
 			return outcome, err
 		}
@@ -1182,11 +1076,7 @@ func (m *ApprovalManager) checkShellApprovalWithContext(ctx context.Context, com
 		if err != nil {
 			return Cancel, err
 		}
-		if forceExplicit && !result.Cancelled && result.Choice != ApprovalChoiceDeny {
-			m.resetGuardianDenials()
-			return ProceedOnce, nil
-		}
-		return m.handleShellApprovalResult(result, command, workDir, projectApprovals)
+		return m.handleShellApprovalResult(result, command, projectApprovals)
 	}
 
 	// Fall back to legacy PromptFunc (local, then ancestors)
@@ -1204,20 +1094,12 @@ func (m *ApprovalManager) checkShellApprovalWithContext(ctx context.Context, com
 
 	outcome, pattern := promptFunc(req)
 
-	if forceExplicit && (outcome == ProceedAlways || outcome == ProceedAlwaysAndSave) {
-		m.resetGuardianDenials()
-		return ProceedOnce, nil
-	}
 	if outcome == ProceedAlways || outcome == ProceedAlwaysAndSave {
-		// Cache the command or pattern for future use. A malformed remembered
-		// pattern still honors the user's approval for this invocation.
+		// Cache the command or pattern for future use
 		if pattern != "" {
-			if err := m.shellCache.AddPattern(pattern); err != nil {
-				log.Printf("[approval] failed to remember shell pattern %q; using one-time approval: %v", pattern, err)
-				outcome = ProceedOnce
-			}
-		} else if err := m.shellCache.AddCommand(command, workDir); err != nil {
-			return Cancel, fmt.Errorf("remember exact shell command: %w", err)
+			m.shellCache.AddPattern(pattern)
+		} else {
+			m.shellCache.AddPattern(command)
 		}
 	}
 	if outcome == ProceedOnce || outcome == ProceedAlways || outcome == ProceedAlwaysAndSave {
@@ -1263,19 +1145,7 @@ func (m *ApprovalManager) appendApprovalContextFromChain(b *strings.Builder) {
 		for _, pattern := range cur.shellCache.GetPatterns() {
 			addApprovalContextLine(b, seenShell, "session_shell_pattern", pattern)
 		}
-		for _, approval := range cur.shellCache.getCommands() {
-			addShellCommandApprovalContextLine(b, seenShell, approval)
-		}
 	}
-}
-
-func addShellCommandApprovalContextLine(b *strings.Builder, seen map[string]struct{}, approval shellCommandApproval) {
-	key := "session_shell_command\x00" + approval.command + "\x00" + approval.workDir
-	if _, ok := seen[key]; ok {
-		return
-	}
-	seen[key] = struct{}{}
-	fmt.Fprintf(b, "session_shell_command=%q workdir=%q\n", approval.command, approval.workDir)
 }
 
 func addApprovalContextLine(b *strings.Builder, seen map[string]struct{}, label, value string) {
@@ -1423,7 +1293,7 @@ func (m *ApprovalManager) recordGuardianDenial() {
 }
 
 // handleShellApprovalResult processes the result from the shell approval UI.
-func (m *ApprovalManager) handleShellApprovalResult(result ApprovalResult, command, workDir string, projectApprovals *ProjectApprovals) (ConfirmOutcome, error) {
+func (m *ApprovalManager) handleShellApprovalResult(result ApprovalResult, command string, projectApprovals *ProjectApprovals) (ConfirmOutcome, error) {
 	if result.Cancelled {
 		return Cancel, nil
 	}
@@ -1437,11 +1307,9 @@ func (m *ApprovalManager) handleShellApprovalResult(result ApprovalResult, comma
 		return ProceedOnce, nil
 
 	case ApprovalChoiceCommand:
-		// Session-only exact command approval.
-		if err := m.shellCache.AddCommand(command, workDir); err != nil {
-			return Cancel, fmt.Errorf("remember exact shell command: %w", err)
-		}
 		m.resetGuardianDenials()
+		// Session-only command approval
+		m.shellCache.AddPattern(command)
 		return ProceedAlways, nil
 
 	case ApprovalChoicePattern:
@@ -1450,26 +1318,16 @@ func (m *ApprovalManager) handleShellApprovalResult(result ApprovalResult, comma
 		if pattern == "" {
 			pattern = GenerateShellPattern(command)
 		}
-		if err := validateShellApprovalPattern(pattern); err != nil {
-			log.Printf("[approval] invalid shell pattern %q; using one-time approval: %v", pattern, err)
-			m.resetGuardianDenials()
-			return ProceedOnce, nil
-		}
-		// Cache before persistence so a durable success can never be followed by a
-		// failed session insertion. Validation failures degrade to this invocation.
-		if err := m.shellCache.AddPattern(pattern); err != nil {
-			log.Printf("[approval] failed to remember shell pattern %q; using one-time approval: %v", pattern, err)
-			m.resetGuardianDenials()
-			return ProceedOnce, nil
-		}
 
-		var persistErr error
 		if result.SaveToRepo && projectApprovals != nil {
-			persistErr = projectApprovals.ApproveShellPattern(pattern)
+			if err := projectApprovals.ApproveShellPattern(pattern); err != nil {
+				if m.DebugApproval {
+					log.Printf("[approval] failed to persist shell pattern %q: %v", pattern, err)
+				}
+			}
 		}
-		if persistErr != nil {
-			log.Printf("[approval] failed to persist shell pattern %q; using session-only approval: %v", pattern, persistErr)
-		}
+		// Also add to session cache for fast lookups
+		m.shellCache.AddPattern(pattern)
 		m.resetGuardianDenials()
 		return ProceedAlways, nil
 
@@ -1479,8 +1337,8 @@ func (m *ApprovalManager) handleShellApprovalResult(result ApprovalResult, comma
 }
 
 // ApproveShellPattern adds a pattern to the session cache.
-func (m *ApprovalManager) ApproveShellPattern(pattern string) error {
-	return m.shellCache.AddPattern(pattern)
+func (m *ApprovalManager) ApproveShellPattern(pattern string) {
+	m.shellCache.AddPattern(pattern)
 }
 
 // ApprovePath adds a path/directory approval to the session cache.
@@ -1531,15 +1389,8 @@ func isSafePipeTarget(command string) bool {
 //	gh pr diff 1 | python summarize.py           → approved
 //	gh pr view 1 && rm -rf /tmp                  → denied
 func matchAnyShellPattern(patterns []string, command string) bool {
-	validPatterns := make([]string, 0, len(patterns))
 	for _, pattern := range patterns {
-		if validateShellApprovalPattern(pattern) == nil {
-			validPatterns = append(validPatterns, pattern)
-		}
-	}
-
-	for _, pattern := range validPatterns {
-		if matchPatternValidated(pattern, command) {
+		if matchPattern(pattern, command) {
 			return true
 		}
 	}
@@ -1556,7 +1407,7 @@ func matchAnyShellPattern(patterns []string, command string) bool {
 			return false
 		}
 		for i, pipePart := range pipeParts {
-			if matchAnyPatternSingle(validPatterns, pipePart) {
+			if matchAnyPatternSingle(patterns, pipePart) {
 				continue
 			}
 			if i > 0 && isSafePipeTarget(pipePart) {
@@ -1585,15 +1436,6 @@ func matchAnyPatternSingle(patterns []string, command string) bool {
 //  2. Within each segment, split on pipes (|) — the first command must match
 //     the pattern, and remaining pipe targets must match OR be safe pipe targets.
 func matchPattern(pattern, command string) bool {
-	if validateShellApprovalPattern(pattern) != nil {
-		return false
-	}
-	return matchPatternValidated(pattern, command)
-}
-
-// matchPatternValidated matches a pattern that has already passed
-// validateShellApprovalPattern.
-func matchPatternValidated(pattern, command string) bool {
 	if matchPatternSingle(pattern, command) {
 		return true
 	}

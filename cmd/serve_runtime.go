@@ -36,8 +36,6 @@ type serveRuntime struct {
 	goalStore            session.Store
 	syntheticUserCB      func(context.Context, llm.Message) error
 	systemPrompt         string
-	baseContext          []llm.Message // inherited side context; never part of the local transcript
-	sidePolicyConfigured bool
 	history              []llm.Message
 	historyPersisted     bool // history matches the persisted active transcript and can safely append next turn
 	search               bool
@@ -72,6 +70,8 @@ type serveRuntime struct {
 	platform             string
 	platformMessages     agents.PlatformMessagesConfig
 	lastInjectedPlatform string
+	sideQuestion         sideQuestionRuntime
+	sideProviderFactory  func(providerKey, model string) (llm.Provider, error)
 }
 
 type runtimeInterruptState struct {
@@ -234,6 +234,9 @@ func (rt *serveRuntime) Close() {
 }
 
 func (rt *serveRuntime) CloseContext(ctx context.Context) {
+	sideCtx, sideCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	rt.sideQuestion.close(sideCtx)
+	sideCancel()
 	rt.interruptMu.Lock()
 	state := rt.activeInterrupt
 	rt.interruptMu.Unlock()
@@ -486,70 +489,6 @@ func (rt *serveRuntime) ensureSessionInStore(ctx context.Context, sessionID stri
 		return 0
 	}
 	return sess.Number
-}
-
-func (rt *serveRuntime) configureSideRuntime(ctx context.Context, sess *session.Session) error {
-	if sess == nil || sess.Kind != session.KindSide {
-		return nil
-	}
-	// Lifecycle is persisted independently of runtime status; refresh it on every
-	// start so a close/reopen from another process is authoritative.
-	if rt.store != nil {
-		fresh, err := rt.store.Get(ctx, sess.ID)
-		if err != nil {
-			return fmt.Errorf("refresh side conversation: %w", err)
-		}
-		if fresh != nil {
-			rt.sessionMeta = fresh
-			sess = fresh
-		}
-	}
-	if sess.SideState != session.SideOpen {
-		return session.ErrSideClosed
-	}
-	if !rt.sidePolicyConfigured {
-		if rt.toolMgr != nil && rt.toolMgr.ApprovalMgr != nil {
-			rt.toolMgr.ApprovalMgr.SetApprovalMode(tools.ModePrompt)
-			rt.toolMgr.ApprovalMgr.SetRequireExplicitMutations(true)
-			rt.toolMgr.ApprovalMgr.IgnoreProjectApprovals = true
-		}
-		if rt.engine != nil {
-			blocked := map[string]bool{
-				tools.SpawnAgentToolName: true, tools.QueueAgentToolName: true, tools.WaitForJobsToolName: true,
-				tools.InitiateHandoverToolName: true, tools.RunAgentScriptToolName: true,
-				tools.HubDelegateToolName: true, tools.HubCheckDelegationToolName: true,
-				"activate_skill": true,
-			}
-			for _, spec := range rt.engine.Tools().AllSpecs() {
-				// Unknown tools include custom scripts and dynamically registered MCP
-				// mutation surfaces. Fail closed rather than assuming they are reads.
-				if blocked[spec.Name] || !tools.ValidToolName(spec.Name) {
-					rt.engine.UnregisterTool(spec.Name)
-				}
-			}
-		}
-		if rt.mcpManager != nil {
-			rt.mcpManager.StopAll()
-		}
-		rt.yoloMode = false
-		rt.sidePolicyConfigured = true
-	}
-	// Reassert the clamp on every run. Settings endpoints must not be able to
-	// leave a side runtime with an MCP selection between one-shot executions.
-	rt.mcpSetting = ""
-	if rt.mcpManager != nil {
-		rt.mcpManager.StopAll()
-	}
-	if rt.baseContext == nil {
-		if sideStore, ok := rt.store.(session.SideStore); ok {
-			base, err := sideStore.GetSideContext(ctx, sess.ID)
-			if err != nil {
-				return fmt.Errorf("load inherited side context: %w", err)
-			}
-			rt.baseContext = base
-		}
-	}
-	return nil
 }
 
 func (rt *serveRuntime) restorePersistedHistory(ctx context.Context, sess *session.Session) bool {
@@ -975,11 +914,6 @@ func (rt *serveRuntime) runOnce(ctx context.Context, stateful bool, replaceHisto
 	rt.Touch()
 	persisted := rt.ensurePersistedSession(ctx, req.SessionID, inputMessages)
 	if persisted {
-		if err := rt.configureSideRuntime(ctx, rt.sessionMeta); err != nil {
-			return serveRunResult{}, err
-		}
-	}
-	if persisted {
 		rt.persistStatus(ctx, req.SessionID, session.StatusActive)
 	}
 
@@ -999,12 +933,17 @@ func (rt *serveRuntime) runOnce(ctx context.Context, stateful bool, replaceHisto
 
 	baseHistory := make([]llm.Message, len(rt.history))
 	copy(baseHistory, rt.history)
+	rt.initializeSideQuestionSnapshot(baseHistory)
+	rt.updateSideQuestionConfig(req.Model)
 	replacingExistingHistory := replaceHistory && len(baseHistory) > 0
 	replaceHistoryBackup := baseHistory
 	replaceUsageBackup := rt.cumulativeUsage
 	replacePlatformBackup := rt.lastInjectedPlatform
 	replacePersistedBackup := rt.historyPersisted
 	if replaceHistory {
+		rt.sideQuestion.cancelActive()
+		rt.sideQuestion.clearHistory()
+		rt.refreshSideQuestionSnapshot(nil)
 		baseHistory = nil
 		rt.history = nil
 		rt.engine.ResetConversation()
@@ -1070,15 +1009,11 @@ func (rt *serveRuntime) runOnce(ctx context.Context, stateful bool, replaceHisto
 		}
 	}()
 
-	messages := make([]llm.Message, 0, len(rt.baseContext)+len(baseHistory)+len(inputMessages)+2)
-	if rt.sessionMeta != nil && rt.sessionMeta.Kind == session.KindSide {
-		messages = append(messages, llm.SystemText(session.SideSystemPolicy))
-	}
+	messages := make([]llm.Message, 0, len(baseHistory)+len(inputMessages)+1)
 	systemPromptInjected := rt.systemPrompt != "" && !containsSystemMessage(baseHistory) && !containsSystemMessage(inputMessages)
 	if systemPromptInjected {
 		messages = append(messages, llm.SystemText(rt.systemPrompt))
 	}
-	messages = append(messages, rt.baseContext...)
 	messages = append(messages, baseHistory...)
 	messages = append(messages, inputMessages...)
 
@@ -1295,14 +1230,6 @@ func (rt *serveRuntime) runOnce(ctx context.Context, stateful bool, replaceHisto
 		}
 		if len(compacted) == 0 {
 			compacted = append(compacted, result.NewMessages...)
-		}
-		if len(rt.baseContext) > 0 && rt.sessionMeta != nil && rt.sessionMeta.Kind == session.KindSide {
-			if sideStore, ok := rt.store.(session.SideStore); ok {
-				if _, err := sideStore.ConsumeSideContext(cbCtx, rt.sessionMeta.ID); err != nil {
-					return fmt.Errorf("consume inherited side context after compaction: %w", err)
-				}
-			}
-			rt.baseContext = nil
 		}
 		baseHistory = compacted
 		compactedActiveHistory = true
@@ -1604,6 +1531,8 @@ func (rt *serveRuntime) runOnce(ctx context.Context, stateful bool, replaceHisto
 	if stateful {
 		rt.history = newHistory
 		rt.historyPersisted = false
+		rt.refreshSideQuestionSnapshot(newHistory)
+		rt.updateSideQuestionConfig(req.Model)
 	}
 	needFinalSnapshot = false
 	if persisted {

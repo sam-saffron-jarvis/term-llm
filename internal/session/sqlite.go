@@ -39,7 +39,6 @@ type SQLiteStore struct {
 	hasWorktreeDir           bool // true if sessions table has worktree_dir column
 	hasGoal                  bool // true if sessions table has goal column
 	hasShare                 bool // true if sessions table has share column
-	hasSideMetadata          bool // true if sessions table has kind/root_id/side_state columns
 	hasMessageCompactionTail bool // true if messages table has compaction_tail column
 }
 
@@ -73,10 +72,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     last_message_at TIMESTAMP,
     archived BOOLEAN DEFAULT FALSE,
     pinned BOOLEAN DEFAULT FALSE,
-    parent_id TEXT REFERENCES sessions(id) ON DELETE CASCADE,
-    root_id TEXT REFERENCES sessions(id) ON DELETE CASCADE,
-    kind TEXT NOT NULL DEFAULT 'root' CHECK (kind IN ('root', 'side')),
-    side_state TEXT CHECK (side_state IS NULL OR side_state IN ('open', 'closed')),
+    parent_id TEXT REFERENCES sessions(id),
     search BOOLEAN DEFAULT FALSE,
     tools TEXT,
     mcp TEXT,
@@ -117,13 +113,6 @@ CREATE INDEX IF NOT EXISTS idx_messages_session_id ON messages(session_id, seque
 CREATE INDEX IF NOT EXISTS idx_messages_session_role ON messages(session_id, role);
 CREATE INDEX IF NOT EXISTS idx_messages_role_id ON messages(role, id);
 CREATE INDEX IF NOT EXISTS idx_messages_role_created_id ON messages(role, created_at, id);
-
-CREATE TABLE IF NOT EXISTS side_context_messages (
-    side_session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
-    sequence INTEGER NOT NULL,
-    message BLOB NOT NULL,
-    PRIMARY KEY (side_session_id, sequence)
-);
 
 CREATE TABLE IF NOT EXISTS session_provider_state (
     session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
@@ -265,7 +254,7 @@ func NewSQLiteStore(cfg Config) (*SQLiteStore, error) {
 // - Fresh databases get the full schema from `schema` const and start at this version
 // - Existing databases run migrations to reach this version
 // Increment when adding new migrations.
-const schemaVersion = 38
+const schemaVersion = 37
 
 // migration represents a schema migration.
 type migration struct {
@@ -1030,37 +1019,6 @@ var migrations = []migration{
 			return nil
 		},
 	},
-	{
-		version:     38,
-		description: "add side conversation relationships and inherited context",
-		up: func(db schemaExecutor) error {
-			for _, stmt := range []string{
-				"ALTER TABLE sessions ADD COLUMN root_id TEXT REFERENCES sessions(id)",
-				"ALTER TABLE sessions ADD COLUMN kind TEXT NOT NULL DEFAULT 'root' CHECK (kind IN ('root', 'side'))",
-				"ALTER TABLE sessions ADD COLUMN side_state TEXT CHECK (side_state IS NULL OR side_state IN ('open', 'closed'))",
-			} {
-				if _, err := db.Exec(stmt); err != nil && !isDuplicateColumnError(err) {
-					return err
-				}
-			}
-			for _, stmt := range []string{
-				"UPDATE sessions SET root_id = id WHERE root_id IS NULL",
-				"CREATE INDEX IF NOT EXISTS idx_sessions_root_kind ON sessions(root_id, kind, updated_at DESC)",
-				"CREATE UNIQUE INDEX IF NOT EXISTS idx_sessions_one_open_side ON sessions(root_id) WHERE kind = 'side' AND side_state = 'open'",
-				`CREATE TABLE IF NOT EXISTS side_context_messages (
-					side_session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
-					sequence INTEGER NOT NULL,
-					message BLOB NOT NULL,
-					PRIMARY KEY (side_session_id, sequence)
-				)`,
-			} {
-				if _, err := db.Exec(stmt); err != nil {
-					return err
-				}
-			}
-			return nil
-		},
-	},
 }
 
 // Keep in sync with llm.IsInternalCompactionSummaryText. SQLite migrations and
@@ -1190,7 +1148,8 @@ func initSchema(db *sql.DB) error {
 	var currentVersion int
 	err := db.QueryRow("SELECT version FROM schema_version").Scan(&currentVersion)
 	if err == nil && currentVersion >= schemaVersion {
-		return ensureSideIndexes(db)
+		// Schema is current, nothing to do
+		return nil
 	}
 
 	// Slow path: need to initialize or migrate
@@ -1304,18 +1263,7 @@ func initSchemaFull(db *sql.DB, versionErr error, currentVersion int) error {
 	if err != nil {
 		return fmt.Errorf("ensure sidebar last-user activity index: %w", err)
 	}
-	return ensureSideIndexes(db)
-}
 
-func ensureSideIndexes(db *sql.DB) error {
-	for _, stmt := range []string{
-		"CREATE INDEX IF NOT EXISTS idx_sessions_root_kind ON sessions(root_id, kind, updated_at DESC)",
-		"CREATE UNIQUE INDEX IF NOT EXISTS idx_sessions_one_open_side ON sessions(root_id) WHERE kind = 'side' AND side_state = 'open'",
-	} {
-		if _, err := db.Exec(stmt); err != nil {
-			return fmt.Errorf("ensure side conversation index: %w", err)
-		}
-	}
 	return nil
 }
 
@@ -1349,13 +1297,6 @@ func (s *SQLiteStore) cleanup() error {
 	// Delete old sessions
 	if s.cfg.MaxAgeDays > 0 {
 		cutoff := time.Now().AddDate(0, 0, -s.cfg.MaxAgeDays)
-		if s.hasSideMetadata {
-			if _, err := s.db.ExecContext(ctx, `DELETE FROM sessions WHERE kind = 'side' AND root_id IN (
-				SELECT id FROM sessions WHERE kind = 'root' AND updated_at < ? AND archived = FALSE
-			)`, cutoff); err != nil {
-				return fmt.Errorf("delete old side sessions: %w", err)
-			}
-		}
 		_, err := s.db.ExecContext(ctx,
 			"DELETE FROM sessions WHERE updated_at < ? AND archived = FALSE",
 			cutoff)
@@ -1366,22 +1307,10 @@ func (s *SQLiteStore) cleanup() error {
 
 	// Keep only max_count sessions
 	if s.cfg.MaxCount > 0 {
-		if s.hasSideMetadata {
-			if _, err := s.db.ExecContext(ctx, `DELETE FROM sessions WHERE kind = 'side' AND root_id IN (
-				SELECT id FROM sessions WHERE archived = FALSE AND kind = 'root'
-				ORDER BY updated_at DESC LIMIT -1 OFFSET ?
-			)`, s.cfg.MaxCount); err != nil {
-				return fmt.Errorf("delete excess side sessions: %w", err)
-			}
-		}
-		kindClause := ""
-		if s.hasSideMetadata {
-			kindClause = " AND kind = 'root'"
-		}
 		_, err := s.db.ExecContext(ctx, `
 			DELETE FROM sessions WHERE id IN (
 				SELECT id FROM sessions
-				WHERE archived = FALSE`+kindClause+`
+				WHERE archived = FALSE
 				ORDER BY updated_at DESC
 				LIMIT -1 OFFSET ?
 			)`, s.cfg.MaxCount)
@@ -1466,20 +1395,6 @@ func (s *SQLiteStore) Create(ctx context.Context, sess *Session) error {
 			sharePlaceholder = ", ?"
 			shareArgs = []any{shareJSONString(sess.Share)}
 		}
-		sideCol := ""
-		sidePlaceholder := ""
-		var sideArgs []any
-		if s.hasSideMetadata {
-			if sess.Kind == "" {
-				sess.Kind = KindRoot
-			}
-			if sess.RootID == "" {
-				sess.RootID = sess.ID
-			}
-			sideCol = ", root_id, kind, side_state"
-			sidePlaceholder = ", ?, ?, ?"
-			sideArgs = []any{sess.RootID, string(sess.Kind), nullString(string(sess.SideState))}
-		}
 		insertArgs := []any{
 			sess.ID, sess.Name, sess.Summary, nullString(sess.GeneratedShortTitle), nullString(sess.GeneratedLongTitle), nullString(string(sess.TitleSource)), nullTime(sess.TitleGeneratedAt), sess.TitleBasisMsgSeq, nullTime(sess.TitleSkippedAt),
 			sess.Provider, nullString(sess.ProviderKey), sess.Model, string(sess.Mode),
@@ -1497,15 +1412,14 @@ func (s *SQLiteStore) Create(ctx context.Context, sess *Session) error {
 		)
 		insertArgs = append(insertArgs, goalArgs...)
 		insertArgs = append(insertArgs, shareArgs...)
-		insertArgs = append(insertArgs, sideArgs...)
 		insertArgs = append(insertArgs, reasoningEffortArgs...)
 		insertArgs = append(insertArgs, reasoningModeArgs...)
 		result, err := s.db.ExecContext(ctx, `
 			INSERT INTO sessions (id, number, name, summary, generated_short_title, generated_long_title, title_source, title_generated_at, title_basis_msg_seq, title_skipped_at,
 			                      provider, provider_key, model, mode`+approvalModeCol+`, origin, agent, cwd`+worktreeDirCol+`, created_at, updated_at, archived, pinned, parent_id, search, tools, mcp,
 			                      user_turns, llm_turns, tool_calls, input_tokens, cached_input_tokens, cache_write_tokens, output_tokens,
-				                      last_total_tokens, last_message_count, status, tags`+goalCol+shareCol+sideCol+reasoningEffortCol+reasoningModeCol+`)
-			VALUES (?, (SELECT COALESCE(MAX(number), 0) + 1 FROM sessions), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?`+approvalModePlaceholder+`, ?, ?, ?`+worktreeDirPlaceholder+`, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?`+goalPlaceholder+sharePlaceholder+sidePlaceholder+reasoningEffortPlaceholder+reasoningModePlaceholder+`)`,
+				                      last_total_tokens, last_message_count, status, tags`+goalCol+shareCol+reasoningEffortCol+reasoningModeCol+`)
+			VALUES (?, (SELECT COALESCE(MAX(number), 0) + 1 FROM sessions), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?`+approvalModePlaceholder+`, ?, ?, ?`+worktreeDirPlaceholder+`, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?`+goalPlaceholder+sharePlaceholder+reasoningEffortPlaceholder+reasoningModePlaceholder+`)`,
 			insertArgs...)
 		if err != nil {
 			return fmt.Errorf("insert session: %w", err)
@@ -1910,30 +1824,16 @@ func (s *SQLiteStore) IncrementUserTurns(ctx context.Context, id string) error {
 	})
 }
 
-// Delete removes a session and its messages. Deleting a root also removes its
-// side conversations on migrated databases whose legacy parent foreign key did
-// not have ON DELETE CASCADE.
+// Delete removes a session and its messages.
 func (s *SQLiteStore) Delete(ctx context.Context, id string) error {
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("begin delete session: %w", err)
-	}
-	defer tx.Rollback()
-	if s.hasSideMetadata {
-		if _, err := tx.ExecContext(ctx, "DELETE FROM sessions WHERE root_id = ? AND kind = 'side'", id); err != nil {
-			return fmt.Errorf("delete side sessions: %w", err)
-		}
-	}
-	result, err := tx.ExecContext(ctx, "DELETE FROM sessions WHERE id = ?", id)
+	// Foreign key cascade handles messages
+	result, err := s.db.ExecContext(ctx, "DELETE FROM sessions WHERE id = ?", id)
 	if err != nil {
 		return fmt.Errorf("delete session: %w", err)
 	}
 	rows, _ := result.RowsAffected()
 	if rows == 0 {
 		return fmt.Errorf("session not found: %s", id)
-	}
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("commit delete session: %w", err)
 	}
 	return nil
 }
@@ -1980,10 +1880,6 @@ func (s *SQLiteStore) List(ctx context.Context, opts ListOptions) ([]SessionSumm
 	if s.hasWorktreeDir {
 		worktreeDirCol = "COALESCE(s.worktree_dir, '')"
 	}
-	sideCols := "s.id, 'root', NULL"
-	if s.hasSideMetadata {
-		sideCols = "COALESCE(s.root_id,s.id), COALESCE(s.kind,'root'), s.side_state"
-	}
 	fromClause := "FROM sessions s"
 	if opts.SortByNumberDesc {
 		// Completed-session walks page by descending session number. Force the
@@ -1995,22 +1891,10 @@ func (s *SQLiteStore) List(ctx context.Context, opts ListOptions) ([]SessionSumm
 		SELECT s.id, s.number, s.name, s.summary, ` + generatedShortCol + `, ` + generatedLongCol + `, ` + titleSourceCol + `,
 		       s.provider, COALESCE(s.provider_key, ''), s.model, s.mode, ` + originCol + `, s.archived, ` + pinnedCol + `, s.created_at, s.updated_at, ` + lastMessageAtCol + `,
 		       ` + messageCountCol + ` as message_count,
-		       s.user_turns, s.llm_turns, s.tool_calls, s.input_tokens, s.cached_input_tokens, ` + cacheWriteCol + `, s.output_tokens, s.status, s.tags, ` + worktreeDirCol + `, ` + goalCol + `, ` + shareCol + `,
-		       COALESCE(s.parent_id,''), ` + sideCols + `
+		       s.user_turns, s.llm_turns, s.tool_calls, s.input_tokens, s.cached_input_tokens, ` + cacheWriteCol + `, s.output_tokens, s.status, s.tags, ` + worktreeDirCol + `, ` + goalCol + `, ` + shareCol + `
 		` + fromClause + `
 		WHERE 1=1`
 	args := []any{}
-	if s.hasSideMetadata {
-		if opts.OnlySides {
-			query += " AND s.kind = 'side'"
-		} else if !opts.IncludeSides {
-			query += " AND COALESCE(s.kind, 'root') = 'root'"
-		}
-		if opts.RootID != "" {
-			query += " AND s.root_id = ?"
-			args = append(args, opts.RootID)
-		}
-	}
 
 	if opts.Name != "" {
 		query += " AND s.name = ?"
@@ -2123,12 +2007,12 @@ func (s *SQLiteStore) List(ctx context.Context, opts ListOptions) ([]SessionSumm
 	for rows.Next() {
 		var sum SessionSummary
 		var number sql.NullInt64
-		var mode, status, tags, generatedShortTitle, generatedLongTitle, titleSource, origin, worktreeDir, goalRaw, shareRaw, parentID, rootID, kind, sideState sql.NullString
+		var mode, status, tags, generatedShortTitle, generatedLongTitle, titleSource, origin, worktreeDir, goalRaw, shareRaw sql.NullString
 		var lastMessageAt sql.NullTime
 		err := rows.Scan(&sum.ID, &number, &sum.Name, &sum.Summary, &generatedShortTitle, &generatedLongTitle, &titleSource, &sum.Provider, &sum.ProviderKey, &sum.Model, &mode,
 			&origin, &sum.Archived, &sum.Pinned, &sum.CreatedAt, &sum.UpdatedAt, &lastMessageAt, &sum.MessageCount,
 			&sum.UserTurns, &sum.LLMTurns, &sum.ToolCalls, &sum.InputTokens, &sum.CachedInputTokens, &sum.CacheWriteTokens, &sum.OutputTokens,
-			&status, &tags, &worktreeDir, &goalRaw, &shareRaw, &parentID, &rootID, &kind, &sideState)
+			&status, &tags, &worktreeDir, &goalRaw, &shareRaw)
 		if err != nil {
 			return nil, fmt.Errorf("scan session summary: %w", err)
 		}
@@ -2169,18 +2053,6 @@ func (s *SQLiteStore) List(ctx context.Context, opts ListOptions) ([]SessionSumm
 		}
 		if share := parseShareJSONString(shareRaw); share != nil {
 			sum.Share = share
-		}
-		if parentID.Valid {
-			sum.ParentID = parentID.String
-		}
-		if rootID.Valid {
-			sum.RootID = rootID.String
-		}
-		if kind.Valid {
-			sum.Kind = SessionKind(kind.String)
-		}
-		if sideState.Valid {
-			sum.SideState = SideLifecycle(sideState.String)
 		}
 		results = append(results, sum)
 	}
@@ -2229,9 +2101,6 @@ func (s *SQLiteStore) Search(ctx context.Context, opts SearchOptions) ([]SearchR
 	}
 
 	filterClause := ""
-	if s.hasSideMetadata {
-		filterClause = " AND COALESCE(s.kind, 'root') = 'root'"
-	}
 	args := []any{ftsQuery}
 	if len(opts.Categories) > 0 {
 		clauses := make([]string, 0, len(opts.Categories))
@@ -3309,16 +3178,8 @@ func (s *SQLiteStore) GetMessages(ctx context.Context, sessionID string, limit, 
 	return messages, rows.Err()
 }
 
-// SetCurrent marks a root session as the current auto-resume target. Entering a
-// side does not steal the process-wide root resume pointer.
+// SetCurrent marks a session as the current one.
 func (s *SQLiteStore) SetCurrent(ctx context.Context, sessionID string) error {
-	if s.hasSideMetadata {
-		var rootID string
-		var kind SessionKind
-		if err := s.db.QueryRowContext(ctx, "SELECT COALESCE(root_id,id), COALESCE(kind,'root') FROM sessions WHERE id = ?", sessionID).Scan(&rootID, &kind); err == nil && kind == KindSide && rootID != "" {
-			sessionID = rootID
-		}
-	}
 	_, err := s.db.ExecContext(ctx, `
 		INSERT OR REPLACE INTO metadata (key, value) VALUES ('current_session', ?)`,
 		sessionID)
@@ -3421,7 +3282,6 @@ func (s *SQLiteStore) setCurrentColumns() {
 	s.hasWorktreeDir = true
 	s.hasGoal = true
 	s.hasShare = true
-	s.hasSideMetadata = true
 	s.hasMessageCompactionTail = true
 }
 
@@ -3482,8 +3342,6 @@ func (s *SQLiteStore) probeSessionColumns() {
 			s.hasGoal = true
 		case "share":
 			s.hasShare = true
-		case "kind":
-			s.hasSideMetadata = true
 		}
 	}
 }
@@ -3579,11 +3437,6 @@ func (s *SQLiteStore) sessionSelectCols() string {
 	} else {
 		base += ", NULL AS share"
 	}
-	if s.hasSideMetadata {
-		base += ", root_id, kind, side_state"
-	} else {
-		base += ", id AS root_id, 'root' AS kind, NULL AS side_state"
-	}
 	if s.hasCompactionSeq {
 		base += ", compaction_seq"
 	}
@@ -3601,7 +3454,7 @@ func scanSessionRow(row *sql.Row, hasGeneratedTitles, hasCacheWriteTokens, hasCo
 	var name, summary, cwd, worktreeDir sql.NullString
 	var generatedShortTitle, generatedLongTitle, titleSource sql.NullString
 	var titleGeneratedAt, titleSkippedAt sql.NullTime
-	var mode, approvalMode, origin, agent, parentID, rootID, kind, sideState, tools, mcp, status, tags, providerKey, reasoningEffort, reasoningMode, goalRaw, shareRaw sql.NullString
+	var mode, approvalMode, origin, agent, parentID, tools, mcp, status, tags, providerKey, reasoningEffort, reasoningMode, goalRaw, shareRaw sql.NullString
 
 	var scanArgs []any
 	scanArgs = append(scanArgs, &sess.ID, &number, &name, &summary)
@@ -3627,7 +3480,7 @@ func scanSessionRow(row *sql.Row, hasGeneratedTitles, hasCacheWriteTokens, hasCo
 	if hasLastMessageCount {
 		scanArgs = append(scanArgs, &sess.LastMessageCount)
 	}
-	scanArgs = append(scanArgs, &status, &tags, &goalRaw, &shareRaw, &rootID, &kind, &sideState)
+	scanArgs = append(scanArgs, &status, &tags, &goalRaw, &shareRaw)
 	if hasCompactionSeq {
 		scanArgs = append(scanArgs, &sess.CompactionSeq)
 	}
@@ -3704,15 +3557,6 @@ func scanSessionRow(row *sql.Row, hasGeneratedTitles, hasCacheWriteTokens, hasCo
 	}
 	if parentID.Valid {
 		sess.ParentID = parentID.String
-	}
-	if rootID.Valid {
-		sess.RootID = rootID.String
-	}
-	if kind.Valid {
-		sess.Kind = SessionKind(kind.String)
-	}
-	if sideState.Valid {
-		sess.SideState = SideLifecycle(sideState.String)
 	}
 	if tools.Valid {
 		sess.Tools = tools.String

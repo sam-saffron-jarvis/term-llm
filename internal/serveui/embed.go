@@ -16,7 +16,7 @@ import (
 //go:embed static/index.html static/manifest.webmanifest static/icon-512.png static/sw.js
 //go:embed static/app.css
 //go:embed static/app-core.js static/app-render.js static/app-sessions.js static/app-sidebar.js
-//go:embed static/app-attachments.js static/app-stream.js static/app-webrtc.js static/app-diffs.js static/app-worktrees.js
+//go:embed static/app-attachments.js static/app-stream.js static/side-question.js static/app-webrtc.js static/app-diffs.js static/app-worktrees.js
 //go:embed static/decoration.js static/markdown-setup.js static/markdown-streaming.js
 //go:embed static/vendor
 var staticFiles embed.FS
@@ -94,6 +94,7 @@ func RenderIndexHTML(basePath, headSnippet string, opts RenderOptions) []byte {
 		{`href="app-render.js"`, `href="` + versioned("app-render.js") + `"`},
 		{`href="app-attachments.js"`, `href="` + versioned("app-attachments.js") + `"`},
 		{`href="app-stream.js"`, `href="` + versioned("app-stream.js") + `"`},
+		{`href="side-question.js"`, `href="` + versioned("side-question.js") + `"`},
 		{`href="app-sidebar.js"`, `href="` + versioned("app-sidebar.js") + `"`},
 		{`href="app-sessions.js"`, `href="` + versioned("app-sessions.js") + `"`},
 		{`href="app-diffs.js"`, `href="` + versioned("app-diffs.js") + `"`},
@@ -105,6 +106,7 @@ func RenderIndexHTML(basePath, headSnippet string, opts RenderOptions) []byte {
 		{`src="app-render.js"`, `src="` + versioned("app-render.js") + `"`},
 		{`src="app-attachments.js"`, `src="` + versioned("app-attachments.js") + `"`},
 		{`src="app-stream.js"`, `src="` + versioned("app-stream.js") + `"`},
+		{`src="side-question.js"`, `src="` + versioned("side-question.js") + `"`},
 		{`src="app-sidebar.js"`, `src="` + versioned("app-sidebar.js") + `"`},
 		{`src="app-sessions.js"`, `src="` + versioned("app-sessions.js") + `"`},
 		{`src="app-diffs.js"`, `src="` + versioned("app-diffs.js") + `"`},
@@ -172,6 +174,7 @@ func renderServiceWorkerBytes(opts RenderOptions) []byte {
 		{"'./app-render.js'", "'./" + versioned("app-render.js") + "'"},
 		{"'./app-attachments.js'", "'./" + versioned("app-attachments.js") + "'"},
 		{"'./app-stream.js'", "'./" + versioned("app-stream.js") + "'"},
+		{"'./side-question.js'", "'./" + versioned("side-question.js") + "'"},
 		{"'./app-sidebar.js'", "'./" + versioned("app-sidebar.js") + "'"},
 		{"'./app-sessions.js'", "'./" + versioned("app-sessions.js") + "'"},
 		{"'./app-diffs.js'", "'./" + versioned("app-diffs.js") + "'"},

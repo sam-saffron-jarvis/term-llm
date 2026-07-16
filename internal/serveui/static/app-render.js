@@ -253,7 +253,6 @@ const buildCachedSessionRow = (session) => {
   row.className = 'session-row';
   row.dataset.sessionId = session.id;
   row.classList.toggle('is-active', sessionHasInProgressState(session));
-  row.classList.toggle('is-side-session', session.kind === 'side');
   row.classList.toggle('is-refining-title', Boolean(session._refiningTitle));
 
   const btn = document.createElement('button');
@@ -374,7 +373,6 @@ const updateCachedSessionRow = (session, cached) => {
   const { row, btn, titleEl, metaEl, pinIconEl, pinLabelEl, archiveIconEl, archiveLabelEl } = cached;
 
   row.classList.toggle('is-active', sessionHasInProgressState(session));
-  row.classList.toggle('is-side-session', session.kind === 'side');
   row.classList.toggle('is-refining-title', Boolean(session._refiningTitle));
   btn.classList.toggle('active', session.id === state.activeSessionId);
 
@@ -2457,11 +2455,6 @@ const updateSidebarStatus = (statusSessions) => {
     const nextActive = sessionHasInProgressState(busyTarget);
 
     if (local) {
-      if (entry.kind) local.kind = String(entry.kind);
-      if (entry.parent_id !== undefined) local.parentId = String(entry.parent_id || '');
-      if (entry.root_id !== undefined) local.rootId = String(entry.root_id || local.id);
-      if (entry.side_state !== undefined) local.sideState = String(entry.side_state || '');
-      if (entry.runtime_status !== undefined) local.runtimeStatus = String(entry.runtime_status || '');
       const nextLastMessageAt = Number(entry.last_message_at);
       if (Number.isFinite(nextLastMessageAt) && nextLastMessageAt > 0) {
         const prev = Number(local.lastMessageAt) || 0;

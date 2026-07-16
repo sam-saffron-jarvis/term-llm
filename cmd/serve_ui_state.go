@@ -2,8 +2,12 @@ package cmd
 
 func (rt *serveRuntime) hasActiveRun() bool {
 	rt.interruptMu.Lock()
-	defer rt.interruptMu.Unlock()
-	return rt.activeInterrupt != nil
+	mainRunning := rt.activeInterrupt != nil
+	rt.interruptMu.Unlock()
+	rt.sideQuestion.mu.Lock()
+	sideRunning := rt.sideQuestion.running
+	rt.sideQuestion.mu.Unlock()
+	return mainRunning || sideRunning
 }
 
 func (rt *serveRuntime) clearLastUIRunError() {

@@ -240,14 +240,6 @@ func (m *Model) streamCompactionCallback(streamSess *session.Session) llm.Compac
 		if err != nil {
 			return err
 		}
-		if streamSess != nil && streamSess.Kind == session.KindSide && len(m.inheritedBase) > 0 {
-			if sideStore, ok := m.store.(session.SideStore); ok {
-				if _, err := sideStore.ConsumeSideContext(ctx, streamSess.ID); err != nil {
-					return fmt.Errorf("consume inherited side context: %w", err)
-				}
-			}
-			m.inheritedBase = nil
-		}
 		m.messagesMu.Lock()
 		m.messages = updated
 		m.compactionIdx = activeStart
@@ -567,7 +559,6 @@ func (m *Model) sendMessage(content string) (tea.Model, tea.Cmd) {
 func (m *Model) startStream(content string) tea.Cmd {
 	ctx, cancel := context.WithCancel(m.rootContext())
 	m.streamGeneration++
-	m.routedGeneration.Store(m.streamGeneration)
 	streamGeneration := m.streamGeneration
 	m.streamCancelFunc = cancel
 	m.setStreamCancelRequested(false)
@@ -589,7 +580,7 @@ func (m *Model) startStream(content string) tea.Cmd {
 
 		// Collect MCP tools if available and register them with the engine
 		var reqTools []llm.ToolSpec
-		if m.mcpManager != nil && (m.sess == nil || m.sess.Kind != session.KindSide) {
+		if m.mcpManager != nil {
 			mcpTools := m.mcpManager.AllTools()
 			for _, t := range mcpTools {
 				reqTools = append(reqTools, llm.ToolSpec{
@@ -867,15 +858,7 @@ func (m *Model) buildMessages() []llm.Message {
 	compIdx := m.compactionIdx
 	m.messagesMu.Unlock()
 
-	local := session.LLMActiveMessages(snapshot, compIdx, m.config.Chat.Instructions)
-	if m.sess == nil || m.sess.Kind != session.KindSide {
-		return local
-	}
-	messages := make([]llm.Message, 0, len(m.inheritedBase)+len(local)+1)
-	messages = append(messages, llm.SystemText(session.SideSystemPolicy))
-	messages = append(messages, m.inheritedBase...)
-	messages = append(messages, local...)
-	return messages
+	return session.LLMActiveMessages(snapshot, compIdx, m.config.Chat.Instructions)
 }
 
 func (m *Model) buildMessagesForStream() []llm.Message {
