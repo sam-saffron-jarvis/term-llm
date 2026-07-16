@@ -926,6 +926,8 @@ func (m *Model) handleKeyMsg(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			if strings.HasPrefix(raw, "/") && isStreamingLocalSlashCommand(raw) {
+				m.setTextareaValue("")
+				m.completions.Hide()
 				return m.handleSlashCommand(raw)
 			}
 			content := m.expandPastePlaceholders(raw)

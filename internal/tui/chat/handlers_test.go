@@ -1423,6 +1423,31 @@ func TestStreamingSlashThinkingExecutesLocally(t *testing.T) {
 	}
 }
 
+func TestStreamingSideSlashClearsComposer(t *testing.T) {
+	m := newTestChatModel(false)
+	m.streaming = true
+	m.SetSideQuestionProviderFactory(func(_, _ string) (llm.Provider, error) {
+		return llm.NewMockProvider("side").AddTextResponse("answer"), nil
+	})
+	m.images = []ImageAttachment{{MediaType: "image/png", Data: []byte("image")}}
+	m.setTextareaValue("/side question")
+
+	updated, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	m = updated.(*Model)
+	if cmd == nil {
+		t.Fatal("expected side question stream command")
+	}
+	if got := m.textarea.Value(); got != "" {
+		t.Fatalf("textarea = %q, want cleared", got)
+	}
+	if m.completions.IsVisible() {
+		t.Fatal("expected command completions to be hidden")
+	}
+	if len(m.images) != 1 {
+		t.Fatalf("attachments = %d, want preserved for the main composer", len(m.images))
+	}
+}
+
 func TestStreamingSlashCommandPrefixQueuesInterjection(t *testing.T) {
 	for _, input := range []string{"/s", "/se", "/system-prompt-question", "/i", "/t"} {
 		t.Run(input, func(t *testing.T) {
