@@ -321,13 +321,14 @@ type sideQuestionPanelSize struct {
 }
 
 func (m *Model) sideQuestionPanelGeometry() sideQuestionPanelSize {
-	// Leave the underlying conversation visible around the panel while making
-	// the response a useful reading surface on normal terminals. The clamps keep
-	// very large terminals comfortable and let small terminals use every cell.
+	// Leave several rows of the underlying conversation visible around the panel
+	// while making the response a useful reading surface on normal terminals.
+	// The clamps keep very large terminals comfortable and let small terminals
+	// use every cell safely.
 	width := min(120, max(64, m.width-8))
 	width = min(width, max(1, m.width))
 	bodyWidth := max(1, width-4) // border plus one cell of padding on each side
-	responseRows := min(40, max(1, m.height-10))
+	responseRows := min(40, max(1, m.height-14))
 	return sideQuestionPanelSize{width: width, bodyWidth: bodyWidth, responseRows: responseRows}
 }
 
@@ -387,6 +388,13 @@ func (m *Model) renderSideQuestionPanel() string {
 	if m.sideQuestion.Running {
 		status = "answering"
 	}
+	mainStatus := ""
+	if m.streaming {
+		mainStatus = " · main running"
+		if strings.EqualFold(strings.TrimSpace(m.phase), "responding") {
+			mainStatus = " · main responding"
+		}
+	}
 	attention := ""
 	if m.approvalModel != nil || m.approvalDoneCh != nil {
 		attention = " · main needs approval"
@@ -397,7 +405,7 @@ func (m *Model) renderSideQuestionPanel() string {
 	if len(m.sideQuestion.History) > 1 && !m.sideQuestion.Running {
 		position = fmt.Sprintf(" · %d/%d", m.sideQuestion.Selected+1, len(m.sideQuestion.History))
 	}
-	header := ansi.Truncate("Side question · "+status+position+attention, geometry.bodyWidth, "…")
+	header := ansi.Truncate("Side question · "+status+position+mainStatus+attention, geometry.bodyWidth, "…")
 	footer := sideQuestionFooter(m.sideQuestion.Running, m.sideQuestion.ConfirmClear, geometry.bodyWidth)
 	content := fmt.Sprintf("%s\n\n%s\n\n%s", header, visible, footer)
 	return m.styles.TableBorder.Border(lipgloss.RoundedBorder()).Width(geometry.bodyWidth).Padding(0, 1).Render(content)

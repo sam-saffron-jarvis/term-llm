@@ -25,10 +25,12 @@ func TestSideQuestionPanelResponsiveReadingSurface(t *testing.T) {
 		terminalHeight   int
 		wantWidth        int
 		wantResponseRows int
+		wantPanelRows    int
 	}{
-		{name: "demo terminal", terminalWidth: 120, terminalHeight: 36, wantWidth: 112, wantResponseRows: 26},
-		{name: "maximum", terminalWidth: 200, terminalHeight: 100, wantWidth: 120, wantResponseRows: 40},
-		{name: "small terminal", terminalWidth: 28, terminalHeight: 10, wantWidth: 28, wantResponseRows: 1},
+		{name: "demo terminal", terminalWidth: 120, terminalHeight: 36, wantWidth: 112, wantResponseRows: 22, wantPanelRows: 28},
+		{name: "tall terminal grows", terminalWidth: 120, terminalHeight: 48, wantWidth: 112, wantResponseRows: 34, wantPanelRows: 40},
+		{name: "maximum", terminalWidth: 200, terminalHeight: 100, wantWidth: 120, wantResponseRows: 40, wantPanelRows: 46},
+		{name: "small terminal", terminalWidth: 28, terminalHeight: 10, wantWidth: 28, wantResponseRows: 1, wantPanelRows: 8},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -42,10 +44,47 @@ func TestSideQuestionPanelResponsiveReadingSurface(t *testing.T) {
 			if got := lipgloss.Width(panel); got > tc.terminalWidth {
 				t.Fatalf("panel width = %d, terminal width = %d", got, tc.terminalWidth)
 			}
+			if got := lipgloss.Height(panel); got != tc.wantPanelRows {
+				t.Fatalf("panel height = %d, want %d", got, tc.wantPanelRows)
+			}
 			if got := lipgloss.Height(panel); got > tc.terminalHeight {
 				t.Fatalf("panel height = %d, terminal height = %d", got, tc.terminalHeight)
 			}
 		})
+	}
+}
+
+func TestSideQuestionPanelShowsLiveMainStatus(t *testing.T) {
+	m := newTestChatModel(true)
+	m.width, m.height = 120, 36
+	m.sideQuestion.Running = true
+
+	m.streaming = true
+	m.phase = "Responding"
+	responding := ui.StripANSI(m.renderSideQuestionPanel())
+	if !strings.Contains(responding, "Side question · answering · main responding") {
+		t.Fatalf("responding header missing live main status: %q", responding)
+	}
+
+	m.phase = "Thinking"
+	running := ui.StripANSI(m.renderSideQuestionPanel())
+	if !strings.Contains(running, "Side question · answering · main running") {
+		t.Fatalf("running header missing live main status: %q", running)
+	}
+
+	m.sideQuestion.Running = false
+	mainStillRunning := ui.StripANSI(m.renderSideQuestionPanel())
+	if !strings.Contains(mainStillRunning, "Side question · done · main running") {
+		t.Fatalf("done side header missing live main status: %q", mainStillRunning)
+	}
+
+	m.streaming = false
+	done := ui.StripANSI(m.renderSideQuestionPanel())
+	if strings.Contains(done, "main responding") || strings.Contains(done, "main running") {
+		t.Fatalf("completed main status remained in side header: %q", done)
+	}
+	if !strings.Contains(done, "Side question · done") {
+		t.Fatalf("side status changed when main completed: %q", done)
 	}
 }
 
