@@ -605,11 +605,12 @@ const scheduleVisibleStreamScroll = (session) => {
 };
 
 const createResponseStreamState = (session) => {
-	let currentToolGroup = session.messages.findLast((message) => (
-		message.role === 'tool-group' && message.status === 'running'
-	)) || null;
-	let currentAssistantMessage = null;
-	let currentPhaseMessage = null;
+  let currentToolGroup = session.messages.findLast((message) => (
+    message.role === 'tool-group' && message.status === 'running'
+  )) || null;
+  let currentAssistantMessage = null;
+  let currentPhaseMessage = null;
+  let currentPhaseKind = '';
 
   if (!currentToolGroup) {
     const lastMessage = session.messages[session.messages.length - 1];
@@ -660,6 +661,13 @@ const createResponseStreamState = (session) => {
     },
     set currentPhaseMessage(value) {
       currentPhaseMessage = value;
+      if (!value) currentPhaseKind = '';
+    },
+    get currentPhaseKind() {
+      return currentPhaseKind;
+    },
+    set currentPhaseKind(value) {
+      currentPhaseKind = String(value || '');
     }
   };
 };
@@ -671,6 +679,11 @@ const applyResponseStreamEvent = (session, streamState, event, payload) => {
     const delta = payload.delta || '';
     if (delta) {
       streamState.closeToolGroup();
+      // A later retry belongs after resumed output rather than updating an
+      // older interruption marker. Non-retry phase updates may span output.
+      if (streamState.currentPhaseKind === 'retry') {
+        streamState.currentPhaseMessage = null;
+      }
       const msg = streamState.ensureAssistantMessage();
       msg.content += delta;
       scheduleStreamPersistence();
@@ -810,7 +823,9 @@ const applyResponseStreamEvent = (session, streamState, event, payload) => {
         finalizeVisibleAssistantStreamRender(session, streamState.currentAssistantMessage);
       }
       streamState.currentAssistantMessage = null;
-      let marker = streamState.currentPhaseMessage || null;
+      let marker = streamState.currentPhaseKind === 'phase'
+        ? (streamState.currentPhaseMessage || null)
+        : null;
       if (!marker) {
         marker = {
           id: generateId('phase'),
@@ -820,11 +835,12 @@ const applyResponseStreamEvent = (session, streamState, event, payload) => {
           transient: true
         };
         streamState.currentPhaseMessage = marker;
+        streamState.currentPhaseKind = 'phase';
         session.messages.push(marker);
         appendStreamMessageNode(session, marker);
       } else {
         marker.content = text;
-        if (isSessionVisible(session)) updateVisibleUserNode(session, marker);
+        updateVisibleUserNode(session, marker);
       }
       scheduleStreamPersistence();
       scrollVisibleStreamToBottom(session);
@@ -838,7 +854,9 @@ const applyResponseStreamEvent = (session, streamState, event, payload) => {
       finalizeVisibleAssistantStreamRender(session, streamState.currentAssistantMessage);
     }
     streamState.currentAssistantMessage = null;
-    let marker = streamState.currentPhaseMessage || null;
+    let marker = streamState.currentPhaseKind === 'retry'
+      ? (streamState.currentPhaseMessage || null)
+      : null;
     if (!marker) {
       marker = {
         id: generateId('phase'),
@@ -848,11 +866,12 @@ const applyResponseStreamEvent = (session, streamState, event, payload) => {
         transient: true
       };
       streamState.currentPhaseMessage = marker;
+      streamState.currentPhaseKind = 'retry';
       session.messages.push(marker);
       appendStreamMessageNode(session, marker);
     } else {
       marker.content = message;
-      if (isSessionVisible(session)) updateUserNode(marker);
+      updateVisibleUserNode(session, marker);
     }
     setConnectionState(message);
     scheduleStreamPersistence();

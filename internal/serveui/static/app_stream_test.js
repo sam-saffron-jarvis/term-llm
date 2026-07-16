@@ -3118,6 +3118,91 @@ function testResponseRetryEventUpdatesTransientMarker() {
   pass(name);
 }
 
+function testResponseRetryAfterResumedOutputStaysAtNewInterruption() {
+  const name = 'response retry after resumed output creates a marker at the new interruption';
+  const harness = createHarness();
+  const { app, state } = harness;
+  const session = {
+    id: 'session_retry_order',
+    title: 'Retry ordering test',
+    messages: [],
+    lastResponseId: null,
+    activeResponseId: null,
+    lastSequenceNumber: 0,
+    number: 1,
+  };
+  state.sessions.push(session);
+  state.activeSessionId = session.id;
+  const streamState = app.createResponseStreamState(session);
+
+  app.applyResponseStreamEvent(session, streamState, 'response.output_text.delta', {
+    delta: 'first attempt',
+    sequence_number: 1,
+  });
+  app.applyResponseStreamEvent(session, streamState, 'response.retry', {
+    message: 'Model stream interrupted; reconnecting (2/6)…',
+    sequence_number: 2,
+  });
+  app.applyResponseStreamEvent(session, streamState, 'response.output_text.delta', {
+    delta: 'second attempt',
+    sequence_number: 3,
+  });
+  app.applyResponseStreamEvent(session, streamState, 'response.retry', {
+    message: 'Model stream interrupted; reconnecting (3/6)…',
+    sequence_number: 4,
+  });
+
+  const roles = session.messages.map((message) => message.role);
+  if (roles.join(',') !== 'assistant,phase,assistant,phase') {
+    fail(name, `unexpected message roles/order: ${roles.join(',')}`, JSON.stringify(session.messages));
+    return;
+  }
+  if (session.messages[1].content !== 'Model stream interrupted; reconnecting (2/6)…'
+      || session.messages[3].content !== 'Model stream interrupted; reconnecting (3/6)…') {
+    fail(name, 'retry markers did not remain at their interruption points', JSON.stringify(session.messages));
+    return;
+  }
+  pass(name);
+}
+
+function testResponsePhaseUpdateCanStraddleResumedOutput() {
+  const name = 'response phase update can straddle resumed output without duplicating its marker';
+  const harness = createHarness();
+  const { app, state } = harness;
+  const session = {
+    id: 'session_phase_straddle',
+    title: 'Phase straddle test',
+    messages: [],
+    lastResponseId: null,
+    activeResponseId: null,
+    lastSequenceNumber: 0,
+    number: 1,
+  };
+  state.sessions.push(session);
+  state.activeSessionId = session.id;
+  const streamState = app.createResponseStreamState(session);
+
+  app.applyResponseStreamEvent(session, streamState, 'response.phase', {
+    text: 'Working…',
+    sequence_number: 1,
+  });
+  app.applyResponseStreamEvent(session, streamState, 'response.output_text.delta', {
+    delta: 'intermediate output',
+    sequence_number: 2,
+  });
+  app.applyResponseStreamEvent(session, streamState, 'response.phase', {
+    text: 'Done working.',
+    sequence_number: 3,
+  });
+
+  const markers = session.messages.filter((message) => message.role === 'phase');
+  if (markers.length !== 1 || markers[0].content !== 'Done working.') {
+    fail(name, 'phase update created a duplicate marker around resumed output', JSON.stringify(session.messages));
+    return;
+  }
+  pass(name);
+}
+
 function testResponsePhaseSeparatesAssistantSegments() {
   const name = 'response phase separates assistant segments in order';
   const harness = createHarness();
@@ -5156,6 +5241,8 @@ function testCompletedResponseClearsUnappliedQueuedEffort() {
   testModelSwapProgressEventUpdatesTransientMarker();
   testResponsePhaseEventUpdatesTransientMarker();
   testResponseRetryEventUpdatesTransientMarker();
+  testResponseRetryAfterResumedOutputStaysAtNewInterruption();
+  testResponsePhaseUpdateCanStraddleResumedOutput();
   testResponsePhaseSeparatesAssistantSegments();
   await testConnectTokenPreservesSelectedModelAndProviderFromState();
   await testCancelActiveResponseTearsDownLocallyBeforeServerPost();

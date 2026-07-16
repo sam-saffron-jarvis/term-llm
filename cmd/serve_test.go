@@ -7631,17 +7631,20 @@ func TestHandleResponses_ModelSwapNaiveSuccessCommitsTargetRuntime(t *testing.T)
 	if err != nil {
 		t.Fatalf("GetMessages after swap: %v", err)
 	}
-	foundMarker := false
-	for _, msg := range storedMessages {
+	markerIndex := -1
+	for i, msg := range storedMessages {
 		if msg.Role == llm.RoleEvent {
-			foundMarker = true
+			markerIndex = i
 			if marker, ok := llm.ParseModelSwapMarker(msg.ToLLMMessage()); !ok || marker.Status != "succeeded" || marker.Strategy != "naive" {
 				t.Fatalf("unexpected model-swap marker: ok=%v marker=%#v", ok, marker)
 			}
 		}
 	}
-	if !foundMarker {
+	if markerIndex < 0 {
 		t.Fatalf("expected persisted model-swap event marker, messages=%#v", storedMessages)
+	}
+	if markerIndex == 0 || markerIndex+1 >= len(storedMessages) || storedMessages[markerIndex-1].Role != llm.RoleUser || storedMessages[markerIndex-1].TextContent != "continue" || storedMessages[markerIndex+1].Role != llm.RoleAssistant {
+		t.Fatalf("model-swap marker must remain between the triggering user message and its reply, marker index=%d messages=%#v", markerIndex, storedMessages)
 	}
 
 	respID2 := resp2["id"].(string)
@@ -7732,6 +7735,23 @@ func TestHandleResponses_ModelSwapNaiveFailureFallsBackToHandover(t *testing.T) 
 	}
 	if len(providersByCreate["old"]) < 2 || len(providersByCreate["old"][1].Requests) != 1 {
 		t.Fatalf("expected helper old provider to generate handover")
+	}
+
+	storedMessages, err := store.GetMessages(context.Background(), "swap-handover", 0, 0)
+	if err != nil {
+		t.Fatalf("GetMessages after handover swap: %v", err)
+	}
+	markerIndex := -1
+	for i, msg := range storedMessages {
+		if marker, ok := llm.ParseModelSwapMarker(msg.ToLLMMessage()); ok {
+			if marker.Status != "succeeded" || marker.Strategy != "handover" {
+				t.Fatalf("unexpected handover model-swap marker: %#v", marker)
+			}
+			markerIndex = i
+		}
+	}
+	if markerIndex < 0 || markerIndex == 0 || markerIndex+1 >= len(storedMessages) || storedMessages[markerIndex-1].Role != llm.RoleUser || storedMessages[markerIndex-1].TextContent != "continue" || storedMessages[markerIndex+1].Role != llm.RoleAssistant {
+		t.Fatalf("handover model-swap marker must remain between the triggering user message and its reply, marker index=%d messages=%#v", markerIndex, storedMessages)
 	}
 }
 

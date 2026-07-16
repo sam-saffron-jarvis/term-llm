@@ -3857,6 +3857,127 @@ async function testSyncActiveSessionIdleUsesTranscriptRefreshHelper() {
   pass(name);
 }
 
+async function testIdleSyncDoesNotDuplicatePersistedRunError() {
+  const name = 'idle session sync does not append last_error already present in durable history';
+  let addErrorCalls = 0;
+  const { app } = await createSessionsHarness({
+    fetchImpl: async (url) => {
+      if (url === '/ui/v1/sessions') {
+        return new Response(JSON.stringify({ sessions: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      if (url === '/ui/v1/sessions/sess_error_dedupe/state') {
+        return new Response(JSON.stringify({ active_run: false, last_error: 'provider failed' }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      if (isTailMessagesURL(url, 'sess_error_dedupe')) {
+        return new Response(JSON.stringify({
+          messages: [{
+            id: 'error_event',
+            sequence: 2,
+            role: 'event',
+            created_at: 1710000000002,
+            parts: [{ type: 'error', text: 'provider failed' }],
+          }]
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      return new Response(JSON.stringify({ sessions: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    },
+    appOverrides: {
+      addErrorMessage(text, session) {
+        addErrorCalls += 1;
+        session.messages.push({ id: `local_error_${addErrorCalls}`, role: 'error', content: text });
+      }
+    }
+  });
+  app.stopSidebarStatusPoll();
+
+  const session = {
+    id: 'sess_error_dedupe',
+    title: 'Error dedupe',
+    origin: 'web',
+    created: 1710000000000,
+    transcriptUpdatedAt: 7000,
+    messages: [],
+  };
+  app.state.sessions = [session];
+  app.state.activeSessionId = session.id;
+  app.state.draftSessionActive = false;
+
+  await app.syncActiveSessionFromServer(session, false);
+
+  const errors = session.messages.filter((message) => message.role === 'error');
+  if (addErrorCalls !== 0 || errors.length !== 1 || errors[0].content !== 'provider failed') {
+    fail(name, 'expected only the durable run error after sync', JSON.stringify({ addErrorCalls, messages: session.messages }));
+    return;
+  }
+
+  pass(name);
+}
+
+async function testIdleSyncKeepsSameTextErrorForNewTurn() {
+  const name = 'idle session sync scopes last_error dedupe to the current turn';
+  let addErrorCalls = 0;
+  const { app } = await createSessionsHarness({
+    fetchImpl: async (url) => {
+      if (url === '/ui/v1/sessions') {
+        return new Response(JSON.stringify({ sessions: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      if (url === '/ui/v1/sessions/sess_error_repeat/state') {
+        return new Response(JSON.stringify({ active_run: false, last_error: 'provider failed' }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      if (isTailMessagesURL(url, 'sess_error_repeat')) {
+        return new Response(JSON.stringify({
+          messages: [
+            {
+              id: 'prior_error',
+              sequence: 1,
+              role: 'event',
+              created_at: 1710000000001,
+              parts: [{ type: 'error', text: 'provider failed' }],
+            },
+            {
+              id: 'new_user',
+              sequence: 2,
+              role: 'user',
+              created_at: 1710000000002,
+              parts: [{ type: 'text', text: 'try again' }],
+            },
+          ]
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      return new Response(JSON.stringify({ sessions: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    },
+    appOverrides: {
+      addErrorMessage(text, session) {
+        addErrorCalls += 1;
+        session.messages.push({ id: `local_error_${addErrorCalls}`, role: 'error', content: text });
+      }
+    }
+  });
+  app.stopSidebarStatusPoll();
+
+  const session = {
+    id: 'sess_error_repeat',
+    title: 'Repeated error',
+    origin: 'web',
+    created: 1710000000000,
+    transcriptUpdatedAt: 7000,
+    messages: [],
+  };
+  app.state.sessions = [session];
+  app.state.activeSessionId = session.id;
+  app.state.draftSessionActive = false;
+
+  await app.syncActiveSessionFromServer(session, false);
+
+  const errors = session.messages.filter((message) => message.role === 'error');
+  if (addErrorCalls !== 1 || errors.length !== 2) {
+    fail(name, 'expected the new turn to retain its identical error text', JSON.stringify({ addErrorCalls, messages: session.messages }));
+    return;
+  }
+
+  pass(name);
+}
+
 async function testSwitchToSearchOnlySessionHydratesResult() {
   const name = 'switching to a search-only session adds it to local state before hydration';
   const fetchCalls = [];
@@ -4392,6 +4513,8 @@ async function testMCPPatchConflictDoesNotOptimisticallyEnable() {
   await testLateActiveRunSyncDoesNotMarkDraftStreaming();
   await testOlderPendingTranscriptVersionIsIgnoredOnStatus304();
   await testSyncActiveSessionIdleUsesTranscriptRefreshHelper();
+  await testIdleSyncDoesNotDuplicatePersistedRunError();
+  await testIdleSyncKeepsSameTextErrorForNewTurn();
   await testAddMenuAttachOptionTriggersFileInput();
   await testAddMenuLocationAddsReviewableDraft();
   await testLocationSharingCanBeDisabled();

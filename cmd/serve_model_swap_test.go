@@ -1,0 +1,357 @@
+package cmd
+
+import (
+	"context"
+	"errors"
+	"path/filepath"
+	"testing"
+
+	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/session"
+)
+
+type modelSwapSessionViewStore struct {
+	session.Store
+	sess *session.Session
+	err  error
+}
+
+func (s *modelSwapSessionViewStore) Get(context.Context, string) (*session.Session, error) {
+	return s.sess, s.err
+}
+
+type blockingModelSwapReplaceStore struct {
+	session.Store
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (s *blockingModelSwapReplaceStore) ReplaceMessages(ctx context.Context, sessionID string, messages []session.Message) error {
+	close(s.entered)
+	select {
+	case <-s.release:
+		return s.Store.ReplaceMessages(ctx, sessionID, messages)
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func TestInsertModelSwapMarkerFallsBackToLatestUser(t *testing.T) {
+	history := []llm.Message{
+		llm.UserText("original trigger"),
+		llm.AssistantText("old reply"),
+		llm.UserText("normalized trigger"),
+		llm.AssistantText("current reply"),
+	}
+	updated := insertModelSwapMarkerAfterTrigger(
+		history,
+		llm.ModelSwapEventMessage(llm.ModelSwapMarker{Status: "succeeded"}),
+	)
+
+	if len(updated) != 5 || updated[2].Role != llm.RoleUser || updated[3].Role != llm.RoleEvent || updated[4].Role != llm.RoleAssistant {
+		t.Fatalf("marker matched an older repeated prompt instead of the latest user: %#v", updated)
+	}
+}
+
+func TestInsertModelSwapMarkerImageOnlyTriggerUsesLatestUser(t *testing.T) {
+	imageOnly := llm.Message{Role: llm.RoleUser, Parts: []llm.Part{{Type: llm.PartImage, ImagePath: "image.png"}}}
+	history := []llm.Message{
+		llm.UserText("handover summary"),
+		imageOnly,
+		llm.AssistantText("reply"),
+	}
+	updated := insertModelSwapMarkerAfterTrigger(
+		history,
+		llm.ModelSwapEventMessage(llm.ModelSwapMarker{Status: "succeeded"}),
+	)
+
+	if len(updated) != 4 || updated[1].Role != llm.RoleUser || updated[2].Role != llm.RoleEvent || updated[3].Role != llm.RoleAssistant {
+		t.Fatalf("image-only trigger anchored marker to handover context: %#v", updated)
+	}
+}
+
+func TestPersistModelSwapMarkerSurvivesCancelledRequestContext(t *testing.T) {
+	store, err := session.NewStore(session.Config{Enabled: true, Path: filepath.Join(t.TempDir(), "sessions.db")})
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+	sess := &session.Session{ID: session.NewID(), Provider: "new", Model: "new-model", Mode: session.ModeChat}
+	if err := store.Create(ctx, sess); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	history := []llm.Message{llm.UserText("continue"), llm.AssistantText("reply")}
+	if err := store.ReplaceMessages(ctx, sess.ID, []session.Message{
+		*session.NewMessage(sess.ID, history[0], 0),
+		*session.NewMessage(sess.ID, history[1], 1),
+	}); err != nil {
+		t.Fatalf("ReplaceMessages: %v", err)
+	}
+
+	candidate := &serveRuntime{store: store, history: copyLLMMessageSlice(history)}
+	server := &serveServer{store: store}
+	plan := responseModelSwapPlan{enabled: true, previousProvider: "old", previousModel: "old-model", requestedProvider: "new", requestedModel: "new-model"}
+	cancelledCtx, cancel := context.WithCancel(ctx)
+	cancel()
+	server.persistModelSwapMarker(cancelledCtx, sess.ID, plan, candidate, "succeeded", "naive")
+
+	messages, err := store.GetMessages(ctx, sess.ID, 0, 0)
+	if err != nil {
+		t.Fatalf("GetMessages: %v", err)
+	}
+	if len(messages) != 3 || messages[1].Role != llm.RoleEvent {
+		t.Fatalf("cancelled request context lost durable model-swap marker: %#v", messages)
+	}
+}
+
+func TestPersistModelSwapMarkerUsesServerStoreWhenCandidateStoreMissing(t *testing.T) {
+	store, err := session.NewStore(session.Config{Enabled: true, Path: filepath.Join(t.TempDir(), "sessions.db")})
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+	sess := &session.Session{ID: session.NewID(), Provider: "new", Model: "new-model", Mode: session.ModeChat}
+	if err := store.Create(ctx, sess); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	history := []llm.Message{llm.UserText("continue"), llm.AssistantText("reply")}
+	if err := store.ReplaceMessages(ctx, sess.ID, []session.Message{
+		*session.NewMessage(sess.ID, history[0], 0),
+		*session.NewMessage(sess.ID, history[1], 1),
+	}); err != nil {
+		t.Fatalf("ReplaceMessages: %v", err)
+	}
+
+	candidate := &serveRuntime{history: copyLLMMessageSlice(history)}
+	server := &serveServer{store: store}
+	plan := responseModelSwapPlan{enabled: true, previousProvider: "old", previousModel: "old-model", requestedProvider: "new", requestedModel: "new-model"}
+	server.persistModelSwapMarker(ctx, sess.ID, plan, candidate, "succeeded", "naive")
+
+	messages, err := store.GetMessages(ctx, sess.ID, 0, 0)
+	if err != nil {
+		t.Fatalf("GetMessages: %v", err)
+	}
+	if len(messages) != 3 || messages[0].Role != llm.RoleUser || messages[1].Role != llm.RoleEvent || messages[2].Role != llm.RoleAssistant {
+		t.Fatalf("server-store fallback persisted wrong marker order: %#v", messages)
+	}
+	if candidate.store != store {
+		t.Fatal("candidate runtime did not adopt the server session store")
+	}
+}
+
+func TestPersistModelSwapMarkerTreatsZeroValueSessionAsUncompacted(t *testing.T) {
+	store, err := session.NewStore(session.Config{Enabled: true, Path: filepath.Join(t.TempDir(), "sessions.db")})
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+	sess := &session.Session{ID: session.NewID(), Provider: "new", Model: "new-model", Mode: session.ModeChat}
+	if err := store.Create(ctx, sess); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	history := []llm.Message{llm.UserText("continue"), llm.AssistantText("reply")}
+	if err := store.ReplaceMessages(ctx, sess.ID, []session.Message{
+		*session.NewMessage(sess.ID, history[0], 0),
+		*session.NewMessage(sess.ID, history[1], 1),
+	}); err != nil {
+		t.Fatalf("ReplaceMessages: %v", err)
+	}
+
+	viewStore := &modelSwapSessionViewStore{
+		Store: store,
+		sess:  &session.Session{ID: sess.ID, CompactionSeq: 0, CompactionCount: 0},
+	}
+	candidate := &serveRuntime{store: viewStore, history: copyLLMMessageSlice(history)}
+	server := &serveServer{store: viewStore}
+	plan := responseModelSwapPlan{enabled: true, previousProvider: "old", previousModel: "old-model", requestedProvider: "new", requestedModel: "new-model"}
+	server.persistModelSwapMarker(ctx, sess.ID, plan, candidate, "succeeded", "naive")
+
+	messages, err := store.GetMessages(ctx, sess.ID, 0, 0)
+	if err != nil {
+		t.Fatalf("GetMessages: %v", err)
+	}
+	if len(messages) != 3 || messages[1].Role != llm.RoleEvent {
+		t.Fatalf("zero-value session was misclassified as compacted: %#v", messages)
+	}
+}
+
+func TestPersistModelSwapMarkerDoesNotRewriteUnknownCompactionState(t *testing.T) {
+	store, err := session.NewStore(session.Config{Enabled: true, Path: filepath.Join(t.TempDir(), "sessions.db")})
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+	sess := &session.Session{ID: session.NewID(), Provider: "new", Model: "new-model", Mode: session.ModeChat}
+	if err := store.Create(ctx, sess); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	for _, msg := range []llm.Message{llm.UserText("old prompt"), llm.AssistantText("old reply")} {
+		if err := store.AddMessage(ctx, sess.ID, session.NewMessage(sess.ID, msg, -1)); err != nil {
+			t.Fatalf("AddMessage: %v", err)
+		}
+	}
+	activeHistory := []llm.Message{
+		llm.UserText("compacted context"),
+		llm.UserText("continue"),
+		llm.AssistantText("new reply"),
+	}
+	compacted := make([]session.Message, 0, len(activeHistory))
+	for _, msg := range activeHistory {
+		compacted = append(compacted, *session.NewMessage(sess.ID, msg, -1))
+	}
+	if err := store.CompactMessages(ctx, sess.ID, compacted); err != nil {
+		t.Fatalf("CompactMessages: %v", err)
+	}
+	before, err := store.Get(ctx, sess.ID)
+	if err != nil {
+		t.Fatalf("Get before marker: %v", err)
+	}
+
+	viewStore := &modelSwapSessionViewStore{Store: store, err: errors.New("metadata unavailable")}
+	candidate := &serveRuntime{store: viewStore, history: copyLLMMessageSlice(activeHistory)}
+	server := &serveServer{store: viewStore}
+	plan := responseModelSwapPlan{enabled: true, previousProvider: "old", previousModel: "old-model", requestedProvider: "new", requestedModel: "new-model"}
+	server.persistModelSwapMarker(ctx, sess.ID, plan, candidate, "succeeded", "naive")
+
+	after, err := store.Get(ctx, sess.ID)
+	if err != nil {
+		t.Fatalf("Get after marker: %v", err)
+	}
+	if after.CompactionSeq != before.CompactionSeq || after.CompactionCount != before.CompactionCount {
+		t.Fatalf("unknown compaction state cleared boundary from %d/%d to %d/%d", before.CompactionSeq, before.CompactionCount, after.CompactionSeq, after.CompactionCount)
+	}
+	messages, err := store.GetMessages(ctx, sess.ID, 0, 0)
+	if err != nil {
+		t.Fatalf("GetMessages: %v", err)
+	}
+	if len(messages) < 2 || messages[0].TextContent != "old prompt" || messages[1].TextContent != "old reply" {
+		t.Fatalf("unknown compaction state rewrote pre-compaction scrollback: %#v", messages)
+	}
+	if candidate.historyPersisted {
+		t.Fatal("marker history was marked persisted after metadata lookup failure")
+	}
+}
+
+func TestPersistModelSwapMarkerHoldsRuntimeLockThroughPersistence(t *testing.T) {
+	store, err := session.NewStore(session.Config{Enabled: true, Path: filepath.Join(t.TempDir(), "sessions.db")})
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+	sess := &session.Session{ID: session.NewID(), Provider: "new", Model: "new-model", Mode: session.ModeChat}
+	if err := store.Create(ctx, sess); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	history := []llm.Message{llm.UserText("continue"), llm.AssistantText("reply")}
+	if err := store.ReplaceMessages(ctx, sess.ID, []session.Message{
+		*session.NewMessage(sess.ID, history[0], 0),
+		*session.NewMessage(sess.ID, history[1], 1),
+	}); err != nil {
+		t.Fatalf("ReplaceMessages: %v", err)
+	}
+
+	blocking := &blockingModelSwapReplaceStore{
+		Store:   store,
+		entered: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	candidate := &serveRuntime{store: blocking, history: copyLLMMessageSlice(history)}
+	server := &serveServer{store: blocking}
+	plan := responseModelSwapPlan{enabled: true, previousProvider: "old", previousModel: "old-model", requestedProvider: "new", requestedModel: "new-model"}
+
+	done := make(chan struct{})
+	go func() {
+		server.persistModelSwapMarker(ctx, sess.ID, plan, candidate, "succeeded", "naive")
+		close(done)
+	}()
+
+	<-blocking.entered
+	lockWasHeld := !candidate.mu.TryLock()
+	if !lockWasHeld {
+		candidate.mu.Unlock()
+	}
+	close(blocking.release)
+	<-done
+
+	if !lockWasHeld {
+		t.Fatal("runtime lock was released while model-swap history was being persisted")
+	}
+}
+
+func TestPersistModelSwapMarkerPreservesCompactedScrollback(t *testing.T) {
+	store, err := session.NewStore(session.Config{Enabled: true, Path: filepath.Join(t.TempDir(), "sessions.db")})
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+	sess := &session.Session{ID: session.NewID(), Provider: "new", Model: "new-model", Mode: session.ModeChat}
+	if err := store.Create(ctx, sess); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	for _, msg := range []llm.Message{llm.UserText("old prompt"), llm.AssistantText("old reply")} {
+		if err := store.AddMessage(ctx, sess.ID, session.NewMessage(sess.ID, msg, -1)); err != nil {
+			t.Fatalf("AddMessage: %v", err)
+		}
+	}
+
+	activeHistory := []llm.Message{
+		llm.UserText("compacted context"),
+		llm.UserText("continue"),
+		llm.AssistantText("new reply"),
+	}
+	compacted := make([]session.Message, 0, len(activeHistory))
+	for _, msg := range activeHistory {
+		compacted = append(compacted, *session.NewMessage(sess.ID, msg, -1))
+	}
+	if err := store.CompactMessages(ctx, sess.ID, compacted); err != nil {
+		t.Fatalf("CompactMessages: %v", err)
+	}
+	before, err := store.Get(ctx, sess.ID)
+	if err != nil {
+		t.Fatalf("Get before marker: %v", err)
+	}
+
+	candidate := &serveRuntime{store: store, history: copyLLMMessageSlice(activeHistory)}
+	server := &serveServer{store: store}
+	plan := responseModelSwapPlan{enabled: true, previousProvider: "old", previousModel: "old-model", requestedProvider: "new", requestedModel: "new-model"}
+	server.persistModelSwapMarker(ctx, sess.ID, plan, candidate, "succeeded", "naive")
+
+	after, err := store.Get(ctx, sess.ID)
+	if err != nil {
+		t.Fatalf("Get after marker: %v", err)
+	}
+	if after.CompactionSeq != before.CompactionSeq || after.CompactionCount != before.CompactionCount {
+		t.Fatalf("compaction boundary changed from seq/count %d/%d to %d/%d", before.CompactionSeq, before.CompactionCount, after.CompactionSeq, after.CompactionCount)
+	}
+
+	messages, err := store.GetMessages(ctx, sess.ID, 0, 0)
+	if err != nil {
+		t.Fatalf("GetMessages: %v", err)
+	}
+	if len(messages) < 2 || messages[0].TextContent != "old prompt" || messages[1].TextContent != "old reply" {
+		t.Fatalf("pre-compaction scrollback was not preserved: %#v", messages)
+	}
+	markerIndex := -1
+	for i, msg := range messages {
+		if _, ok := llm.ParseModelSwapMarker(msg.ToLLMMessage()); ok {
+			markerIndex = i
+			break
+		}
+	}
+	if markerIndex == 0 || markerIndex+1 >= len(messages) || messages[markerIndex-1].TextContent != "continue" || messages[markerIndex+1].TextContent != "new reply" {
+		t.Fatalf("model-swap marker has wrong compacted-history position, index=%d messages=%#v", markerIndex, messages)
+	}
+}

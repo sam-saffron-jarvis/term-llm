@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 
@@ -398,14 +399,24 @@ func modelSwapMarkerMessage(plan responseModelSwapPlan, candidate *serveRuntime,
 	return llm.ModelSwapEventMessage(marker)
 }
 
-func appendRuntimeHistoryEvent(rt *serveRuntime, msg llm.Message) {
-	if rt == nil || msg.Role == "" {
-		return
+func insertModelSwapMarkerAfterTrigger(history []llm.Message, marker llm.Message) []llm.Message {
+	// Live progress is rendered after the submitted user message and before the
+	// reply. The triggering input is the latest user message in both the naive
+	// and handover histories, so anchoring there avoids matching an older turn
+	// when prompt text was repeated or normalized during persistence.
+	insertAt := len(history)
+	for i := len(history) - 1; i >= 0; i-- {
+		if history[i].Role == llm.RoleUser {
+			insertAt = i + 1
+			break
+		}
 	}
-	rt.mu.Lock()
-	rt.history = append(rt.history, msg)
-	rt.historyPersisted = false
-	rt.mu.Unlock()
+
+	updated := make([]llm.Message, 0, len(history)+1)
+	updated = append(updated, history[:insertAt]...)
+	updated = append(updated, marker)
+	updated = append(updated, history[insertAt:]...)
+	return updated
 }
 
 func setRuntimeHistoryPreserveEngine(rt *serveRuntime, history []llm.Message) {
@@ -423,13 +434,47 @@ func (s *serveServer) persistModelSwapMarker(ctx context.Context, sessionID stri
 		return
 	}
 	msg := modelSwapMarkerMessage(plan, candidate, status, strategy)
+	if candidate != nil {
+		candidate.mu.Lock()
+		defer candidate.mu.Unlock()
+
+		updatedHistory := insertModelSwapMarkerAfterTrigger(candidate.history, msg)
+		candidate.history = updatedHistory
+		candidate.historyPersisted = false
+		if candidate.store == nil {
+			candidate.store = s.store
+		}
+
+		if candidate.store != nil {
+			persistCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+			defer cancel()
+
+			compacted := session.HasCompactionBoundary(candidate.sessionMeta)
+			persistedSession, getErr := candidate.store.Get(persistCtx, sessionID)
+			switch {
+			case getErr != nil && !compacted:
+				log.Printf("[serve] model-swap marker persistence skipped for %s: compaction state unavailable: %v", sessionID, getErr)
+				return
+			case getErr == nil && persistedSession != nil:
+				compacted = session.HasCompactionBoundary(persistedSession)
+			case getErr == nil && persistedSession == nil && !compacted:
+				log.Printf("[serve] model-swap marker persistence skipped for %s: session metadata unavailable", sessionID)
+				return
+			}
+			if compacted {
+				candidate.historyPersisted = candidate.persistCompactedSnapshot(persistCtx, sessionID, updatedHistory)
+			} else {
+				candidate.historyPersisted = candidate.persistSnapshot(persistCtx, sessionID, updatedHistory)
+			}
+		}
+		return
+	}
 	if s.store != nil {
 		sm := session.NewMessage(sessionID, msg, -1)
 		dbCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 		defer cancel()
 		_ = s.store.AddMessage(dbCtx, sessionID, sm)
 	}
-	appendRuntimeHistoryEvent(candidate, msg)
 }
 
 func (s *serveServer) restoreModelSwapRollback(ctx context.Context, sessionID string, exec *responseModelSwapExecution, candidate *serveRuntime, status, strategy string) {
@@ -437,6 +482,9 @@ func (s *serveServer) restoreModelSwapRollback(ctx context.Context, sessionID st
 		return
 	}
 	msg := modelSwapMarkerMessage(exec.plan, candidate, status, strategy)
+	// The failed trigger turn is intentionally omitted from restored history so
+	// the previous runtime cannot resume with an orphaned user message. The
+	// failure marker is therefore the terminal event of the restored transcript.
 	restoredHistory := copyLLMMessageSlice(exec.restoreHistory)
 	restoredHistory = append(restoredHistory, msg)
 	if exec.previous != nil {

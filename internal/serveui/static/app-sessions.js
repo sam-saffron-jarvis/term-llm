@@ -1795,8 +1795,19 @@ const syncActiveSessionFromServer = async (session, pollOnActive = false, { skip
         forceScroll: true
       });
     }
-    if (runtimeState.last_error) {
-      addErrorMessage(String(runtimeState.last_error), session);
+    const lastError = String(runtimeState.last_error || '').trim();
+    let currentTurnStart = 0;
+    for (let i = session.messages.length - 1; i >= 0; i -= 1) {
+      if (session.messages[i]?.role === 'user' && !session.messages[i]?.askUser) {
+        currentTurnStart = i + 1;
+        break;
+      }
+    }
+    const alreadyHasLastError = Boolean(lastError) && session.messages.slice(currentTurnStart).some((message) => (
+      message?.role === 'error' && String(message.content || '').trim() === lastError
+    ));
+    if (lastError && !alreadyHasLastError) {
+      addErrorMessage(lastError, session);
       persistAndRefreshShell();
       if (isStillActive()) {
         scrollToBottom(true);
