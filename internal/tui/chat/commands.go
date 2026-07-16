@@ -177,7 +177,7 @@ func AllCommands() []Command {
 			Name:        "worktree",
 			Aliases:     []string{"wt"},
 			Description: "Manage git worktrees for this chat session",
-			Usage:       "/worktree [new|browse|switch|root|pwd|diff|merge|promote|rm]",
+			Usage:       "/worktree [new|browse|switch|root|pwd|diff|promote|rm]",
 			Subcommands: []Subcommand{
 				{Name: "new", Description: "Create and bind a new worktree"},
 				{Name: "browse", Description: "Browse managed worktrees"},
@@ -185,8 +185,7 @@ func AllCommands() []Command {
 				{Name: "root", Description: "Return to the root checkout"},
 				{Name: "pwd", Description: "Show current bound directory"},
 				{Name: "diff", Description: "Show worktree diff including untracked files"},
-				{Name: "merge", Description: "Merge into root, remove the worktree, and rebind the session"},
-				{Name: "promote", Description: "Check out a new worktree branch in the root checkout"},
+				{Name: "promote", Description: "Promote the current worktree into root"},
 				{Name: "rm", Description: "Remove a worktree"},
 			},
 		},

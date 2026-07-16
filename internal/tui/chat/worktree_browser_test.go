@@ -24,14 +24,14 @@ func TestWorktreeCommandMetadataUsesBrowseOnly(t *testing.T) {
 	if found == nil {
 		t.Fatal("worktree command not found")
 	}
-	if strings.Contains(found.Usage, "list") || !strings.Contains(found.Usage, "browse") {
+	if strings.Contains(found.Usage, "list") || strings.Contains(found.Usage, "merge") || !strings.Contains(found.Usage, "browse") {
 		t.Fatalf("unexpected usage: %q", found.Usage)
 	}
 	names := map[string]bool{}
 	for _, sub := range found.Subcommands {
 		names[sub.Name] = true
 	}
-	if !names["browse"] || names["list"] || names["ls"] {
+	if !names["browse"] || names["list"] || names["ls"] || names["merge"] {
 		t.Fatalf("unexpected worktree subcommands: %#v", names)
 	}
 }

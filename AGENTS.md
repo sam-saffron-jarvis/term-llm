@@ -29,6 +29,7 @@
 - Small, focused functions with explicit error handling
 - Wrap errors with context: `fmt.Errorf("operation failed: %w", err)`
 - **When adding features, find similar existing code first**
+- Remove superseded code, state, handlers, and tests in the same change. Do not leave dead or unreachable compatibility paths unless they are explicitly required and documented.
 
 ## Testing
 - **Write a failing test first**, then fix code to make it pass

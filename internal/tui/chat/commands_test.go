@@ -3270,8 +3270,6 @@ func TestUpdateCompletions_WorktreeTargetCommandsUseManagedNames(t *testing.T) {
 		{input: "/worktree rm --force ", want: "worktree rm --force alpha-feature"},
 		{input: "/wt switch alp", want: "wt switch alpha-feature"},
 		{input: "/worktree diff ", want: "worktree diff alpha-feature"},
-		{input: "/worktree merge ", want: "worktree merge alpha-feature"},
-		{input: "/worktree promote ", want: "worktree promote alpha-feature"},
 	}
 
 	for _, tt := range tests {
@@ -3311,7 +3309,7 @@ func runWorktreeOperationTestCmd(t *testing.T, cmd tea.Cmd) worktreeOperationDon
 	return worktreeOperationDoneMsg{}
 }
 
-func TestCmdWorktreePromoteDefaultsBranchToBoundWorktreeName(t *testing.T) {
+func TestCmdWorktreePromoteBranchUsesBoundWorktreeName(t *testing.T) {
 	t.Parallel()
 
 	repo := newGitRepoForChatWorktreeTest(t)
@@ -3323,9 +3321,9 @@ func TestCmdWorktreePromoteDefaultsBranchToBoundWorktreeName(t *testing.T) {
 
 	m := newTestChatModel(false)
 	m.sess = &session.Session{ID: "sess-promote-selected", WorktreeDir: wt.Dir, CWD: wt.Dir}
-	m.setTextareaValue("/worktree promote")
+	m.setTextareaValue("/worktree promote --branch")
 
-	result, cmd := m.ExecuteCommand("/worktree promote")
+	result, cmd := m.ExecuteCommand("/worktree promote --branch")
 	m = result.(*Model)
 	if cmd == nil {
 		t.Fatalf("expected promote command, footer=%q", m.footerMessage)
@@ -3339,34 +3337,34 @@ func TestCmdWorktreePromoteDefaultsBranchToBoundWorktreeName(t *testing.T) {
 	}
 }
 
-func TestCmdWorktreePromoteUsesSelectedWorktreeWhenUnbound(t *testing.T) {
-	t.Parallel()
+func TestCmdWorktreePromoteRejectsArgumentsOtherThanBranchMode(t *testing.T) {
+	for _, command := range []string{
+		"/worktree promote another-worktree",
+		"/worktree promote --branch feature",
+		"/worktree promote --branch=feature",
+	} {
+		t.Run(command, func(t *testing.T) {
+			m := newTestChatModel(false)
+			m.sess = &session.Session{ID: "sess-promote-invalid", CWD: t.TempDir()}
 
-	repo := newGitRepoForChatWorktreeTest(t)
-	wt, err := worktree.Create(context.Background(), repo, worktree.CreateOptions{Name: "promote-unbound"})
-	if err != nil {
-		t.Fatalf("Create worktree: %v", err)
+			result, _ := m.ExecuteCommand(command)
+			m = result.(*Model)
+			if m.worktreeOperation != "" {
+				t.Fatalf("invalid promote command started operation %q", m.worktreeOperation)
+			}
+			if !strings.Contains(m.footerMessage, "Usage: /worktree promote [--branch]") {
+				t.Fatalf("footer = %q, want promote usage", m.footerMessage)
+			}
+		})
 	}
-	t.Cleanup(func() { _ = worktree.Remove(context.Background(), wt.Dir, worktree.RemoveOptions{Force: true}) })
+}
 
+func TestCmdWorktreeMergeIsUnknown(t *testing.T) {
 	m := newTestChatModel(false)
-	m.sess = &session.Session{ID: "sess-promote-unbound", CWD: repo}
-	m.setTextareaValue("/worktree promote promote-unbound")
-
-	result, cmd := m.ExecuteCommand("/worktree promote promote-unbound")
+	result, _ := m.ExecuteCommand("/worktree merge")
 	m = result.(*Model)
-	if cmd == nil {
-		t.Fatalf("expected promote command, footer=%q", m.footerMessage)
-	}
-	msg := runWorktreeOperationTestCmd(t, cmd)
-	if msg.err != nil {
-		t.Fatalf("promote command error: %v", msg.err)
-	}
-	if msg.dir != wt.Dir || msg.promote.WorktreeDir != wt.Dir {
-		t.Fatalf("promote source = msg:%q result:%q, want %q", msg.dir, msg.promote.WorktreeDir, wt.Dir)
-	}
-	if msg.branch != "promote-unbound" || msg.promote.Branch != "promote-unbound" {
-		t.Fatalf("promote branch = msg:%q result:%q, want promote-unbound", msg.branch, msg.promote.Branch)
+	if m.worktreeOperation != "" || !strings.Contains(m.footerMessage, "Unknown /worktree subcommand: merge") {
+		t.Fatalf("removed merge command state = operation:%q footer:%q", m.worktreeOperation, m.footerMessage)
 	}
 }
 
@@ -3427,19 +3425,36 @@ func TestUpdateCompletions_WorktreeOptionCommands(t *testing.T) {
 	}
 
 	m.completions.Show()
-	m.setTextareaValue("/worktree merge --c")
+	m.setTextareaValue("/worktree promote --b")
 	m.updateCompletions()
 	got = completionNames(m.completions.filtered)
-	if !containsString(got, "worktree merge --commit") {
-		t.Fatalf("merge option completions = %v, want --commit", got)
+	if !containsString(got, "worktree promote --branch") {
+		t.Fatalf("promote option completions = %v, want --branch", got)
 	}
+}
 
+func TestUpdateCompletions_WorktreePromotePinsCurrentWorktree(t *testing.T) {
+	repo := newGitRepoForChatWorktreeTest(t)
+	wt, err := worktree.Create(context.Background(), repo, worktree.CreateOptions{Name: "current-feature"})
+	if err != nil {
+		t.Fatalf("Create worktree: %v", err)
+	}
+	t.Cleanup(func() { _ = worktree.Remove(context.Background(), wt.Dir, worktree.RemoveOptions{Force: true}) })
+
+	m := newTestChatModel(false)
+	m.sess = &session.Session{ID: "sess-promote-complete", CWD: wt.Dir, WorktreeDir: wt.Dir}
 	m.completions.Show()
-	m.setTextareaValue("/worktree merge --k")
+	m.setTextareaValue("/worktree promote ")
 	m.updateCompletions()
-	got = completionNames(m.completions.filtered)
-	if !containsString(got, "worktree merge --keep") {
-		t.Fatalf("merge option completions = %v, want --keep", got)
+
+	if len(m.completions.filtered) < 2 {
+		t.Fatalf("promote completions = %#v, want current action and --branch", m.completions.filtered)
+	}
+	if got := m.completions.filtered[0]; got.Name != "worktree promote" || !strings.Contains(got.Description, "current-feature") {
+		t.Fatalf("first promote completion = %#v, want current worktree action", got)
+	}
+	if !containsString(completionNames(m.completions.filtered), "worktree promote --branch") {
+		t.Fatalf("promote completions = %#v, want --branch", m.completions.filtered)
 	}
 }
 
@@ -3702,7 +3717,7 @@ func TestCmdWorktreePromoteBlockedWhileStreaming(t *testing.T) {
 	m := newTestChatModel(false)
 	m.streaming = true
 	m.sess = &session.Session{WorktreeDir: t.TempDir()}
-	model, _ := m.cmdWorktreePromote([]string{"feature"})
+	model, _ := m.cmdWorktreePromote([]string{"--branch"})
 	got := model.(*Model)
 	if !strings.Contains(got.footerMessage, "streaming") {
 		t.Fatalf("footerMessage = %q, want streaming warning", got.footerMessage)
@@ -3722,7 +3737,7 @@ func TestWorktreeMergeConflictMessageGuidesRecovery(t *testing.T) {
 		ChangedFiles:   []string{"M\tfile.txt"},
 		ConflictReset:  true,
 	})
-	for _, want := range []string{"root checkout was reset cleanly", "/tmp/wt/goal", "/repo/root", "file.txt", "Yes/No prompt", "Select Yes", "/worktree promote <branch>", "LLM-assisted recovery prompt", "git cherry-pick -n"} {
+	for _, want := range []string{"root checkout was reset cleanly", "/tmp/wt/goal", "/repo/root", "file.txt", "Yes/No prompt", "Select Yes", "/worktree promote --branch", "LLM-assisted recovery prompt", "git cherry-pick -n"} {
 		if !strings.Contains(msg, want) {
 			t.Fatalf("merge conflict message missing %q:\n%s", want, msg)
 		}
@@ -3755,7 +3770,7 @@ func TestWorktreeRichOutputUsesDialogsWithoutPrintCommands(t *testing.T) {
 		want string
 	}{
 		{name: "diff", msg: worktreeOperationDoneMsg{op: "diff", diff: "diff --git a/file b/file\n+changed"}, want: "diff --git"},
-		{name: "merge", msg: worktreeOperationDoneMsg{op: "merge", merge: worktree.MergeResult{WorktreeName: "goal", WorktreeDir: "/tmp/goal", RootDir: "/repo"}}, want: "Merged worktree"},
+		{name: "promote current branch", msg: worktreeOperationDoneMsg{op: "merge", merge: worktree.MergeResult{WorktreeName: "goal", WorktreeDir: "/tmp/goal", RootDir: "/repo"}}, want: "Promoted worktree"},
 		{name: "promote dirty root", msg: worktreeOperationDoneMsg{op: "promote", promote: worktree.PromoteResult{WorktreeName: "goal", WorktreeDir: "/tmp/goal", RootDir: "/repo", Branch: "goal", RootStatus: " M file"}, err: worktree.ErrRootDirty}, want: "root checkout has uncommitted changes"},
 	}
 	for _, tt := range tests {
@@ -3796,7 +3811,7 @@ func TestBoundWorktreeDirPrefersActiveSessionCWD(t *testing.T) {
 	}
 }
 
-func TestCmdWorktreeMergeDefaultsToActiveSessionCWD(t *testing.T) {
+func TestCmdWorktreePromoteDefaultsToActiveSessionCWD(t *testing.T) {
 	repo := newGitRepoForChatWorktreeTest(t)
 	wtA, err := worktree.Create(context.Background(), repo, worktree.CreateOptions{Name: "merge-active-a"})
 	if err != nil {
@@ -3816,7 +3831,7 @@ func TestCmdWorktreeMergeDefaultsToActiveSessionCWD(t *testing.T) {
 
 	m := newTestChatModel(false)
 	m.sess = &session.Session{ID: "merge-active", CWD: wtA.Dir, WorktreeDir: wtB.Dir}
-	_, cmd := m.ExecuteCommand("/worktree merge --keep")
+	_, cmd := m.ExecuteCommand("/worktree promote")
 	msg := runWorktreeOperationTestCmd(t, cmd)
 	if msg.err != nil {
 		t.Fatalf("merge: %v", msg.err)
@@ -3826,7 +3841,7 @@ func TestCmdWorktreeMergeDefaultsToActiveSessionCWD(t *testing.T) {
 	}
 }
 
-func TestCmdWorktreeMergeDefaultRemovesAndRebinds(t *testing.T) {
+func TestCmdWorktreePromoteDefaultAppliesRemovesAndRebinds(t *testing.T) {
 	repo := newGitRepoForChatWorktreeTest(t)
 	wt, err := worktree.Create(context.Background(), repo, worktree.CreateOptions{Name: "merge-cleanup-tui"})
 	if err != nil {
@@ -3838,7 +3853,7 @@ func TestCmdWorktreeMergeDefaultRemovesAndRebinds(t *testing.T) {
 
 	m := newTestChatModel(false)
 	m.sess = &session.Session{ID: "merge-cleanup", WorktreeDir: wt.Dir, CWD: wt.Dir}
-	model, cmd := m.ExecuteCommand("/worktree merge")
+	model, cmd := m.ExecuteCommand("/worktree promote")
 	m = model.(*Model)
 	msg := runWorktreeOperationTestCmd(t, cmd)
 	if msg.err != nil || !msg.cleanup.Removed {
@@ -3856,36 +3871,42 @@ func TestCmdWorktreeMergeDefaultRemovesAndRebinds(t *testing.T) {
 	}
 }
 
-func TestCmdWorktreeMergeKeepPreservesBinding(t *testing.T) {
+func TestCmdWorktreePromoteConflictOpensAssistedRecovery(t *testing.T) {
 	repo := newGitRepoForChatWorktreeTest(t)
-	wt, err := worktree.Create(context.Background(), repo, worktree.CreateOptions{Name: "merge-keep-tui"})
+	wt, err := worktree.Create(context.Background(), repo, worktree.CreateOptions{Name: "promote-conflict"})
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 	t.Cleanup(func() { _ = worktree.Remove(context.Background(), wt.Dir, worktree.RemoveOptions{Force: true}) })
-	if err := os.WriteFile(filepath.Join(wt.Dir, "kept.txt"), []byte("kept\n"), 0o644); err != nil {
+
+	if err := os.WriteFile(filepath.Join(repo, "file.txt"), []byte("root change\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGitForChatWorktreeTest(t, repo, "add", "file.txt")
+	runGitForChatWorktreeTest(t, repo, "commit", "-m", "root change")
+	if err := os.WriteFile(filepath.Join(wt.Dir, "file.txt"), []byte("worktree change\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
 	m := newTestChatModel(false)
-	m.sess = &session.Session{ID: "merge-keep", WorktreeDir: wt.Dir, CWD: wt.Dir}
-	model, cmd := m.ExecuteCommand("/worktree merge --keep")
+	m.sess = &session.Session{ID: "promote-conflict", WorktreeDir: wt.Dir, CWD: wt.Dir}
+	model, cmd := m.ExecuteCommand("/worktree promote")
 	m = model.(*Model)
 	msg := runWorktreeOperationTestCmd(t, cmd)
-	if msg.err != nil || !msg.keep || msg.cleanup.Removed {
-		t.Fatalf("merge message = %+v, want kept worktree", msg)
+	if !errors.Is(msg.err, worktree.ErrConflict) {
+		t.Fatalf("promote error = %v, want conflict", msg.err)
 	}
 	model, _ = m.handleWorktreeOperationDone(msg)
 	m = model.(*Model)
-	if !sameWorktreePath(m.sess.WorktreeDir, wt.Dir) {
-		t.Fatalf("binding = %q, want %q", m.sess.WorktreeDir, wt.Dir)
+	if m.pendingWorktreeRecovery == nil || !m.dialog.IsOpen() || m.dialog.Type() != DialogWorktreeRecovery {
+		t.Fatal("promote conflict did not open assisted recovery")
 	}
 	if _, err := os.Stat(wt.Dir); err != nil {
-		t.Fatalf("kept worktree missing: %v", err)
+		t.Fatalf("source worktree was not preserved: %v", err)
 	}
 }
 
-func TestWorktreeMergeInUsePromptNoKeepsWorktree(t *testing.T) {
+func TestWorktreePromoteInUsePromptNoKeepsWorktree(t *testing.T) {
 	m := newTestChatModel(false)
 	msg := worktreeOperationDoneMsg{
 		op:      "merge",
@@ -3899,7 +3920,7 @@ func TestWorktreeMergeInUsePromptNoKeepsWorktree(t *testing.T) {
 		t.Fatal("expected remove-in-use confirmation prompt")
 	}
 	view := ui.StripANSI(m.dialog.View())
-	if !strings.Contains(view, "used by 1 ot") || !strings.Contains(view, "remove it anyway") {
+	if !strings.Contains(view, "promotion succeeded") || !strings.Contains(view, "remove it anyway") {
 		t.Fatalf("prompt missing in-use warning:\n%s", view)
 	}
 	model, _ = m.resolveWorktreeRecoveryPrompt(false)
@@ -3909,7 +3930,7 @@ func TestWorktreeMergeInUsePromptNoKeepsWorktree(t *testing.T) {
 	}
 }
 
-func TestPendingWorktreeMergeInUseYesRemoves(t *testing.T) {
+func TestPendingWorktreePromoteInUseYesRemoves(t *testing.T) {
 	repo := newGitRepoForChatWorktreeTest(t)
 	wt, err := worktree.Create(context.Background(), repo, worktree.CreateOptions{Name: "merge-in-use-yes"})
 	if err != nil {
@@ -3942,13 +3963,13 @@ func TestPendingWorktreeMergeInUseYesRemoves(t *testing.T) {
 	}
 }
 
-func TestCmdWorktreeMergeValidationRunsAsynchronously(t *testing.T) {
+func TestCmdWorktreePromoteValidationRunsAsynchronously(t *testing.T) {
 	m := newTestChatModel(false)
 	invalid := filepath.Join(t.TempDir(), "missing")
 	m.sess = &session.Session{ID: "async-merge", CWD: invalid, WorktreeDir: invalid}
-	m.setTextareaValue("/worktree merge")
+	m.setTextareaValue("/worktree promote")
 
-	model, cmd := m.ExecuteCommand("/worktree merge")
+	model, cmd := m.ExecuteCommand("/worktree promote")
 	got := model.(*Model)
 	if cmd == nil || got.worktreeOperation != "merge" {
 		t.Fatalf("merge did not start asynchronously: cmd=%v operation=%q footer=%q", cmd != nil, got.worktreeOperation, got.footerMessage)
@@ -3963,22 +3984,6 @@ func TestCmdWorktreeMergeValidationRunsAsynchronously(t *testing.T) {
 	model, _ = got.handleWorktreeOperationDone(msg)
 	if model.(*Model).worktreeOperation != "" {
 		t.Fatal("async validation failure did not clear operation state")
-	}
-}
-
-func TestCmdWorktreeMergeExplicitTargetResolutionRunsAsynchronously(t *testing.T) {
-	repo := newGitRepoForChatWorktreeTest(t)
-	m := newTestChatModel(false)
-	m.sess = &session.Session{ID: "async-merge-target", CWD: repo}
-
-	model, cmd := m.ExecuteCommand("/worktree merge does-not-exist")
-	got := model.(*Model)
-	if cmd == nil || got.worktreeOperation != "merge" {
-		t.Fatalf("explicit merge did not start asynchronously: cmd=%v operation=%q", cmd != nil, got.worktreeOperation)
-	}
-	msg := runWorktreeOperationTestCmd(t, cmd)
-	if msg.err == nil || !strings.Contains(msg.err.Error(), "unknown managed worktree") {
-		t.Fatalf("async target resolution error = %v", msg.err)
 	}
 }
 
@@ -4036,7 +4041,7 @@ func TestWorktreeRecoveryPromptOpensOnMergeConflict(t *testing.T) {
 		t.Fatalf("expected worktree recovery dialog, got open=%v type=%v", got.dialog.IsOpen(), got.dialog.Type())
 	}
 	view := ui.StripANSI(got.dialog.View())
-	for _, want := range []string{"does not merge cleanly", "/tmp/wt/goal", "/repo/root", "first.txt", "Yes", "No"} {
+	for _, want := range []string{"does not promote cleanly", "/tmp/wt/goal", "/repo/root", "first.txt", "Yes", "No"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("recovery dialog missing %q:\n%s", want, view)
 		}

@@ -63,18 +63,21 @@ Chat sessions can bind their tools to a git worktree without changing the term-l
 
 ```text
 /worktree new [name] [--base REF] [-b branch]
-/worktree list
+/worktree browse
 /worktree switch <name-or-dir>
 /worktree diff
-/worktree merge [--commit] [-m message] [--keep]
-/worktree promote <branch>
+/worktree promote [--branch]
 /worktree root
 /worktree rm [name-or-dir] [--force]
 ```
 
-A bound worktree becomes the session `BaseDir`: relative `read_file`, `write_file`, `edit_file`, `grep`, `glob`, shell working directories, image paths, and spawned agents resolve there. The binding is saved as `worktree_dir` in SQLite and is restored on resume. `/worktree merge` applies worktree changes back to the root checkout staged and uncommitted by default, removes the source worktree, and rebinds the current session to root. The merge success message includes the snapshot commit as a recovery pointer. Use `--keep` to retain the worktree and its session binding after merging. If another session is bound to the worktree, term-llm asks before removing it; failed or conflicting merges always preserve it.
+A bound worktree becomes the session `BaseDir`: relative `read_file`, `write_file`, `edit_file`, `grep`, `glob`, shell working directories, image paths, and spawned agents resolve there. The binding is saved as `worktree_dir` in SQLite and is restored on resume.
 
-In the Web UI, the header worktree chip is available for draft sessions launched from a git checkout. Choose or create a worktree before the first send; the choice is locked to that session after the first message and sent as `worktree_dir` on the Responses API request. The merge action also removes the worktree by default and asks for confirmation before forcing removal when sessions still use it.
+`/worktree promote` always promotes the current bound worktree; it does not accept a worktree name or path. The root checkout must be clean. By default, promotion applies the worktree changes onto the branch currently checked out in root, leaves them staged and uncommitted, removes the source worktree when no other session is using it, and rebinds the session to root. If applying the changes conflicts, term-llm preserves the source worktree and offers assisted recovery on a safe recovery branch.
+
+Use `/worktree promote --branch` to avoid applying onto the current root branch. This mode creates and checks out a new root branch named after the managed worktree at the worktree HEAD, applies dirty and untracked changes there as staged and uncommitted changes, rebinds the session to root, and leaves the original worktree in place. To promote another worktree in either mode, switch to it first with `/worktree switch` or select it in `/worktree browse`.
+
+In the Web UI, the header worktree chip is available for draft sessions launched from a git checkout. Choose or create a worktree before the first send; the choice is locked to that session after the first message and sent as `worktree_dir` on the Responses API request. The Web UI merge action removes the worktree by default and asks for confirmation before forcing removal when sessions still use it.
 
 ## File change history
 
