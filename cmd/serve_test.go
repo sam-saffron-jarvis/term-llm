@@ -2753,6 +2753,62 @@ func TestHandleSessionInterrupt_DeduplicatesRetriedImageInterjection(t *testing.
 	}
 }
 
+func TestInterruptMessage_DeduplicatesConcurrentRetry(t *testing.T) {
+	engine := llm.NewEngine(llm.NewMockProvider("engine"), nil)
+	fastProvider := llm.NewMockProvider("classifier")
+	fastProvider.AddTurn(llm.MockTurn{Text: "interject", Delay: 100 * time.Millisecond})
+	rt := &serveRuntime{engine: engine}
+	state := &runtimeInterruptState{cancel: func() {}, done: make(chan struct{})}
+	rt.setActiveInterrupt(state)
+	defer rt.clearActiveInterrupt(state)
+
+	type result struct {
+		action   llm.InterruptAction
+		replayed bool
+		err      error
+	}
+	results := make(chan result, 2)
+	call := func() {
+		action, replayed, err := rt.InterruptMessage(
+			context.Background(),
+			llm.UserText("please incorporate this"),
+			"please incorporate this",
+			"web-concurrent-1",
+			fastProvider,
+			false,
+		)
+		results <- result{action: action, replayed: replayed, err: err}
+	}
+
+	go call()
+	deadline := time.Now().Add(time.Second)
+	for fastProvider.CurrentTurn() == 0 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if fastProvider.CurrentTurn() != 1 {
+		t.Fatal("first interrupt never reached classifier")
+	}
+	go call()
+
+	first := <-results
+	second := <-results
+	if first.err != nil || second.err != nil {
+		t.Fatalf("interrupt errors = %v, %v", first.err, second.err)
+	}
+	if first.action != llm.InterruptInterject || second.action != llm.InterruptInterject {
+		t.Fatalf("actions = %v, %v, want interject", first.action, second.action)
+	}
+	if first.replayed == second.replayed {
+		t.Fatalf("replayed flags = %v, %v, want exactly one replay", first.replayed, second.replayed)
+	}
+	if got := fastProvider.CurrentTurn(); got != 1 {
+		t.Fatalf("classifier calls = %d, want 1", got)
+	}
+	if pending := engine.ListPendingInterjections(); len(pending) != 1 {
+		t.Fatalf("pending interjections = %d, want 1", len(pending))
+	}
+}
+
 func TestHandleSessionRuntimeGoalMutatesPersistentGoal(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "sessions.db")
 	store, err := session.NewStore(session.Config{Enabled: true, Path: dbPath})

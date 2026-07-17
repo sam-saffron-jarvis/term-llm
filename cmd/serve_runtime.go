@@ -482,6 +482,8 @@ func (rt *serveRuntime) InterruptMessage(ctx context.Context, msg llm.Message, d
 	classifyCtx := ctx
 	classifyCancel := func() {}
 	if interjectionID != "" {
+		// Stay below the web client's 5-second mutation first-frame timeout so a
+		// healthy classifier normally responds before transport fallback begins.
 		classifyCtx, classifyCancel = context.WithTimeout(context.WithoutCancel(ctx), 4*time.Second)
 	}
 	action := llm.ClassifyInterrupt(classifyCtx, fastProvider, classifyText, activity)
