@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -25,6 +26,10 @@ const (
 	ChatGPTScopes       = "openid profile email offline_access"
 	ChatGPTCallbackPort = 1455
 )
+
+// ErrChatGPTRefreshTokenInvalid indicates that the authorization server has
+// definitively rejected a refresh token, rather than a transient refresh error.
+var ErrChatGPTRefreshTokenInvalid = errors.New("ChatGPT refresh token expired or revoked")
 
 type ChatGPTTokenResponse struct {
 	AccessToken  string `json:"access_token"`
@@ -179,7 +184,7 @@ func RefreshToken(refreshToken string) (*ChatGPTTokenResponse, error) {
 		}
 		json.NewDecoder(resp.Body).Decode(&errResp)
 		if errResp.Error == "invalid_grant" || strings.Contains(errResp.ErrorDescription, "revoked") {
-			return nil, fmt.Errorf("refresh token expired or revoked: please re-authenticate")
+			return nil, fmt.Errorf("%w: please re-authenticate", ErrChatGPTRefreshTokenInvalid)
 		}
 		if errResp.ErrorDescription != "" {
 			return nil, fmt.Errorf("token refresh failed: %s - %s", errResp.Error, errResp.ErrorDescription)
