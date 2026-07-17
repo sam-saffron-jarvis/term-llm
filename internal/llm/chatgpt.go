@@ -74,8 +74,10 @@ func NewChatGPTProviderWithOptions(model string, opts ChatGPTProviderOptions) (*
 
 	// Refresh if expired
 	if creds.IsExpired() {
-		if err := credentials.RefreshChatGPTCredentials(creds); err != nil {
-			// Refresh failed - need to re-authenticate
+		if refreshErr := credentials.RefreshChatGPTCredentials(creds); refreshErr != nil {
+			if !errors.Is(refreshErr, oauth.ErrChatGPTRefreshTokenInvalid) {
+				return nil, fmt.Errorf("token refresh failed: %w", refreshErr)
+			}
 			fmt.Println("Token refresh failed. Re-authentication required.")
 			creds, err = PromptForChatGPTAuth()
 			if err != nil {
@@ -331,13 +333,17 @@ func NewChatGPTResponsesClient(creds *credentials.ChatGPTCredentials) *Responses
 			return nil
 		},
 		OnAuthRetry: func(_ context.Context) error {
-			if err := credentials.RefreshChatGPTCredentials(creds); err == nil {
-				return nil
+			if err := credentials.RefreshChatGPTCredentials(creds); err != nil {
+				if !errors.Is(err, oauth.ErrChatGPTRefreshTokenInvalid) {
+					return fmt.Errorf("failed to refresh ChatGPT session: %w", err)
+				}
+				failedRefreshToken := creds.RefreshToken
+				if clearErr := credentials.ClearChatGPTCredentialsIfRefreshToken(failedRefreshToken); clearErr != nil {
+					return fmt.Errorf("ChatGPT session expired and failed to clear credentials: %w", clearErr)
+				}
+				return fmt.Errorf("ChatGPT session expired — please re-run your command to re-authenticate")
 			}
-			if clearErr := credentials.ClearChatGPTCredentials(); clearErr != nil {
-				return fmt.Errorf("ChatGPT session expired and failed to clear credentials: %w", clearErr)
-			}
-			return fmt.Errorf("ChatGPT session expired — please re-run your command to re-authenticate")
+			return nil
 		},
 	}
 }
