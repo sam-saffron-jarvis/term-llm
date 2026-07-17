@@ -190,28 +190,38 @@ const worktreeApp = window.TermLLMApp || (window.TermLLMApp = {});
     const rows = await loadWorktrees();
     closeMenu();
     menu = document.createElement('div');
-    menu.className = 'chip-popover-runtime worktree-popover';
+    menu.className = 'chip-popover chip-popover-runtime worktree-popover';
     menu.setAttribute('role', 'listbox');
-    const addRow = (text, onClick) => {
+    const addRow = (labelText, metaText, onClick, selected = false) => {
       const btn = document.createElement('button');
       btn.type = 'button';
-      btn.className = 'chip-option';
-      btn.textContent = text;
+      btn.className = 'chip-popover-item worktree-option';
+      btn.setAttribute('role', 'option');
+      if (selected) btn.setAttribute('aria-selected', 'true');
+      const label = document.createElement('span');
+      label.className = 'chip-popover-item-label';
+      label.textContent = labelText;
+      btn.appendChild(label);
+      if (metaText) {
+        const meta = document.createElement('span');
+        meta.className = 'chip-popover-item-meta';
+        meta.textContent = metaText;
+        btn.appendChild(meta);
+      }
       btn.addEventListener('click', onClick);
       menu.appendChild(btn);
     };
-    addRow('root checkout', () => chooseWorktree(null));
+    const selectedDir = state.selectedWorktreeDir || '';
+    addRow('root checkout', '', () => chooseWorktree(null), !selectedDir);
     rows.filter((r) => !r.root).forEach((row) => {
       const ref = row.branch || (row.head_sha ? `detached@${row.head_sha.slice(0, 8)}` : 'detached');
-      addRow(`${row.name} · ±${row.dirty_files || 0} · ${ref}`, () => chooseWorktree(row));
+      addRow(row.name, `±${row.dirty_files || 0} · ${ref}`, () => chooseWorktree(row), row.dir === selectedDir);
     });
-    addRow(loading ? 'creating…' : '+ new worktree…', () => { void createWorktree(); });
-    const rect = elements.chipWorktreeTrigger.getBoundingClientRect();
-    menu.style.position = 'fixed';
-    menu.style.top = `${Math.round(rect.bottom + 6)}px`;
-    menu.style.left = `${Math.round(rect.left)}px`;
-    menu.style.zIndex = '1000';
+    addRow(loading ? 'creating…' : '+ new worktree…', '', () => { void createWorktree(); });
     document.body.appendChild(menu);
+    if (typeof worktreeApp.positionChipPopover === 'function') {
+      worktreeApp.positionChipPopover(elements.chipWorktreeTrigger, menu);
+    }
     elements.chipWorktreeTrigger.setAttribute('aria-expanded', 'true');
   };
 
@@ -226,6 +236,22 @@ const worktreeApp = window.TermLLMApp || (window.TermLLMApp = {});
     if (event.target === elements.chipWorktreeTrigger || menu.contains(event.target)) return;
     closeMenu();
   });
+  document.addEventListener('keydown', (event) => {
+    if (event.key !== 'Escape' || !menu) return;
+    closeMenu();
+    elements.chipWorktreeTrigger?.focus?.();
+  });
+
+  const repositionMenu = () => {
+    if (!menu || typeof worktreeApp.positionChipPopover !== 'function') return;
+    worktreeApp.positionChipPopover(elements.chipWorktreeTrigger, menu);
+  };
+  window.addEventListener('resize', repositionMenu);
+  window.addEventListener('orientationchange', repositionMenu);
+  if (window.visualViewport) {
+    window.visualViewport.addEventListener('resize', repositionMenu);
+    window.visualViewport.addEventListener('scroll', repositionMenu);
+  }
 
   Object.assign(worktreeApp, {
     loadWorktrees,

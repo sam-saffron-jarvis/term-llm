@@ -373,6 +373,23 @@ func TestChipPickerJS(t *testing.T) {
 	}
 }
 
+func TestWorktreePopoverUsesResponsiveChipUI(t *testing.T) {
+	worktreesJS, err := StaticAsset("app-worktrees.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := string(worktreesJS)
+	for _, want := range []string{
+		"chip-popover chip-popover-runtime worktree-popover",
+		"chip-popover-item worktree-option",
+		"worktreeApp.positionChipPopover(elements.chipWorktreeTrigger, menu)",
+	} {
+		if !strings.Contains(src, want) {
+			t.Fatalf("app-worktrees.js missing responsive popover integration %q", want)
+		}
+	}
+}
+
 func TestAppWebRTCDoesNotReferenceLexicalApp(t *testing.T) {
 	webrtcJS, err := StaticAsset("app-webrtc.js")
 	if err != nil {
