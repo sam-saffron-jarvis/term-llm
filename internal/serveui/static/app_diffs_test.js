@@ -750,6 +750,76 @@ async function run(name, fn) {
     assertEqual(marks[1].textContent, '2', 'add mark wraps the inserted literal');
   });
 
+  await run('image diffs render before and after previews', async () => {
+    const { app, elements, flushTimers } = createHarness({
+      fetch: async (url) => ({
+        ok: true,
+        json: async () => (String(url).includes('/diff?')
+          ? { path: '/work/animated preview.gif', kind: 'modify', lang: 'gif', truncated: false, image: true, hunks: [] }
+          : { file_changes: [] })
+      })
+    });
+    app.toggleDiffSidebar();
+    app.handleFileChangeEvent({ id: 's1' }, { path: '/work/animated preview.gif', kind: 'modify', adds: 0, dels: 0, seq: 1 });
+    await flushTimers();
+    await flushTimers();
+
+    const previews = elements.diffFileList.querySelectorAll('.diff-image-preview');
+    assertEqual(previews.length, 2, 'modified image shows both sides');
+    assert(previews[0].src.includes('/file-changes/content?'), 'preview uses recorded content endpoint');
+    assert(previews[0].src.includes('side=before'), 'first preview is baseline image');
+    assert(previews[0].src.includes('path=%2Fwork%2Fanimated%20preview.gif'), 'image path is URL encoded');
+    assert(previews[1].src.includes('side=after'), 'second preview is current image');
+    assertEqual(elementText(elements.diffFileList.querySelector('.diff-image-label')), 'Before', 'preview side is labelled');
+    assertEqual(elements.diffFileList.querySelectorAll('.diff-row').length, 0, 'binary image is not rendered as text rows');
+    const actions = elements.diffFileList.querySelectorAll('.diff-action-btn');
+    assert(actions[1].hidden, 'copy-diff action is hidden for image files');
+
+    await previews[0].dispatchEvent({ type: 'error' });
+    assert(previews[0].hidden, 'failed preview is hidden');
+    assertEqual(elementText(elements.diffFileList.querySelector('.diff-image-error')), 'Preview unavailable', 'failed preview shows a useful fallback');
+  });
+
+  await run('created image diffs render only the current preview', async () => {
+    const { app, elements, flushTimers } = createHarness({
+      fetch: async (url) => ({
+        ok: true,
+        json: async () => (String(url).includes('/diff?')
+          ? { path: '/work/new.png', kind: 'create', truncated: false, image: true, hunks: [] }
+          : { file_changes: [] })
+      })
+    });
+    app.toggleDiffSidebar();
+    app.handleFileChangeEvent({ id: 's1' }, { path: '/work/new.png', kind: 'create', adds: 0, dels: 0, seq: 1 });
+    await flushTimers();
+    await flushTimers();
+
+    const previews = elements.diffFileList.querySelectorAll('.diff-image-preview');
+    assertEqual(previews.length, 1, 'created image shows one preview');
+    assert(previews[0].src.includes('side=after'), 'created image shows the current side');
+    assertEqual(elementText(elements.diffFileList.querySelector('.diff-image-label')), 'After', 'created image side is labelled');
+  });
+
+  await run('deleted image diffs render only the baseline preview', async () => {
+    const { app, elements, flushTimers } = createHarness({
+      fetch: async (url) => ({
+        ok: true,
+        json: async () => (String(url).includes('/diff?')
+          ? { path: '/work/old.gif', kind: 'delete', truncated: false, image: true, hunks: [] }
+          : { file_changes: [] })
+      })
+    });
+    app.toggleDiffSidebar();
+    app.handleFileChangeEvent({ id: 's1' }, { path: '/work/old.gif', kind: 'delete', adds: 0, dels: 0, seq: 1 });
+    await flushTimers();
+    await flushTimers();
+
+    const previews = elements.diffFileList.querySelectorAll('.diff-image-preview');
+    assertEqual(previews.length, 1, 'deleted image shows one preview');
+    assert(previews[0].src.includes('side=before'), 'deleted image shows the baseline side');
+    assertEqual(elementText(elements.diffFileList.querySelector('.diff-image-label')), 'Before', 'deleted image side is labelled');
+  });
+
   await run('failed diff fetches surface an error with retry', async () => {
     let failFetches = true;
     const { app, elements, flushTimers } = createHarness({

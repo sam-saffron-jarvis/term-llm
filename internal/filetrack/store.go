@@ -11,6 +11,7 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -95,6 +96,20 @@ type FileDiffContent struct {
 	Before    []byte
 	After     []byte
 	Truncated bool
+	IsImage   bool
+}
+
+// ErrInvalidDiffSide means the requested side does not exist for the resolved
+// change kind, such as the baseline side of a newly created file.
+var ErrInvalidDiffSide = errors.New("invalid file diff side")
+
+// FileDiffSide contains one retained side of a browser-renderable image diff.
+type FileDiffSide struct {
+	Path      string
+	Kind      string
+	Side      string
+	Data      []byte
+	MediaType string
 }
 
 // Options configures a Store.
@@ -335,12 +350,14 @@ func (s *Store) RecordChange(ctx context.Context, rec ChangeRecord) (*Change, er
 		afterSize = rec.AfterSizeHint
 	}
 
-	isBinary := (hasBefore && isBinaryContent(rec.Before)) || (hasAfter && isBinaryContent(rec.After))
+	_, isImage := imageChangeMediaType(kind, rec.Before, rec.After)
+	isBinary := isImage || (hasBefore && isBinaryContent(rec.Before)) || (hasAfter && isBinaryContent(rec.After))
 
 	// A change is either fully retained (all sides the kind needs are stored)
 	// or metadata-only. Mixed retention would complicate baseline resolution
-	// for marginal benefit.
-	retain := !isBinary && !rec.BeforeUnknown && !rec.AfterUnknown
+	// for marginal benefit. Browser-renderable images are the sole binary
+	// exception: retaining them lets the web diff show the actual before/after.
+	retain := (!isBinary || isImage) && !rec.BeforeUnknown && !rec.AfterUnknown
 	if retain && hasBefore && len(rec.Before) > s.maxFileBytes {
 		retain = false
 	}
@@ -358,7 +375,7 @@ func (s *Store) RecordChange(ctx context.Context, rec ChangeRecord) (*Change, er
 	}
 
 	var adds, dels int
-	if retain {
+	if retain && !isImage {
 		switch kind {
 		case KindCreate:
 			adds, _ = CountAddsDels(nil, rec.After)
@@ -494,14 +511,16 @@ type pathSpan struct {
 	path            string
 	firstKind       string
 	firstBeforeHash string
+	firstBinary     bool
 	lastKind        string
 	lastAfterHash   string
+	lastBinary      bool
 	lastSeq         int64
 }
 
 func (s *Store) sessionSpans(ctx context.Context, sessionID string) ([]*pathSpan, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT seq, path, kind, COALESCE(before_hash, ''), COALESCE(after_hash, '')
+		SELECT seq, path, kind, COALESCE(before_hash, ''), COALESCE(after_hash, ''), is_binary
 		FROM file_changes WHERE session_id = ? ORDER BY seq`, sessionID)
 	if err != nil {
 		return nil, fmt.Errorf("query session changes: %w", err)
@@ -513,7 +532,8 @@ func (s *Store) sessionSpans(ctx context.Context, sessionID string) ([]*pathSpan
 	for rows.Next() {
 		var seq int64
 		var path, kind, beforeHash, afterHash string
-		if err := rows.Scan(&seq, &path, &kind, &beforeHash, &afterHash); err != nil {
+		var isBinary bool
+		if err := rows.Scan(&seq, &path, &kind, &beforeHash, &afterHash, &isBinary); err != nil {
 			return nil, err
 		}
 		path = normalizePath(path)
@@ -522,12 +542,13 @@ func (s *Store) sessionSpans(ctx context.Context, sessionID string) ([]*pathSpan
 		}
 		span, ok := spans[path]
 		if !ok {
-			span = &pathSpan{path: path, firstKind: kind, firstBeforeHash: beforeHash}
+			span = &pathSpan{path: path, firstKind: kind, firstBeforeHash: beforeHash, firstBinary: isBinary}
 			spans[path] = span
 			order = append(order, path)
 		}
 		span.lastKind = kind
 		span.lastAfterHash = afterHash
+		span.lastBinary = isBinary
 		span.lastSeq = seq
 	}
 	if err := rows.Err(); err != nil {
@@ -539,6 +560,34 @@ func (s *Store) sessionSpans(ctx context.Context, sessionID string) ([]*pathSpan
 		result = append(result, spans[p])
 	}
 	return result, nil
+}
+
+func (s *Store) sessionPathSpan(ctx context.Context, sessionID, path string) (*pathSpan, error) {
+	path = normalizePath(path)
+	if path == "" {
+		return nil, nil
+	}
+	sp := &pathSpan{path: path}
+	if err := s.db.QueryRowContext(ctx, `
+		SELECT kind, COALESCE(before_hash, ''), is_binary
+		FROM file_changes
+		WHERE session_id = ? AND path = ?
+		ORDER BY seq ASC LIMIT 1`, sessionID, path).
+		Scan(&sp.firstKind, &sp.firstBeforeHash, &sp.firstBinary); err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("query first path change: %w", err)
+	}
+	if err := s.db.QueryRowContext(ctx, `
+		SELECT seq, kind, COALESCE(after_hash, ''), is_binary
+		FROM file_changes
+		WHERE session_id = ? AND path = ?
+		ORDER BY seq DESC LIMIT 1`, sessionID, path).
+		Scan(&sp.lastSeq, &sp.lastKind, &sp.lastAfterHash, &sp.lastBinary); err != nil {
+		return nil, fmt.Errorf("query last path change: %w", err)
+	}
+	return sp, nil
 }
 
 // resolve computes the cumulative kind for a span. ok=false means the file is
@@ -560,6 +609,25 @@ func (sp *pathSpan) resolve() (kind string, ok bool) {
 		}
 		return KindModify, true
 	}
+}
+
+// retainedImage relies on images being the only binary content RecordChange
+// retains. Hash presence distinguishes retained images from metadata-only
+// unsupported binaries.
+func (sp *pathSpan) retainedImage(kind string) bool {
+	needBefore, needAfter := blobsNeeded(kind)
+	if needBefore && (!sp.firstBinary || sp.firstBeforeHash == "") {
+		return false
+	}
+	if needAfter && (!sp.lastBinary || sp.lastAfterHash == "") {
+		return false
+	}
+	return needBefore || needAfter
+}
+
+func (sp *pathSpan) hasBinarySide(kind string) bool {
+	needBefore, needAfter := blobsNeeded(kind)
+	return (needBefore && sp.firstBinary) || (needAfter && sp.lastBinary)
 }
 
 // blobsNeeded reports which sides a cumulative diff requires.
@@ -592,6 +660,27 @@ func (s *Store) ListSessionChanges(ctx context.Context, sessionID string) ([]Cum
 		change := CumulativeChange{Path: sp.path, Kind: kind, Seq: sp.lastSeq}
 		needBefore, needAfter := blobsNeeded(kind)
 
+		// Retained binaries are browser-renderable images. Their line counts are
+		// always zero, so verify blob presence without reading and decompressing
+		// potentially multi-megabyte image bodies on every list refresh.
+		if sp.retainedImage(kind) {
+			if needBefore && !s.blobExists(ctx, sp.firstBeforeHash) {
+				change.Truncated = true
+			}
+			if needAfter && !s.blobExists(ctx, sp.lastAfterHash) {
+				change.Truncated = true
+			}
+			changes = append(changes, change)
+			continue
+		}
+		// A binary side paired with a non-binary side is not a renderable image
+		// comparison and must never be passed through line-based diffing.
+		if sp.hasBinarySide(kind) {
+			change.Truncated = true
+			changes = append(changes, change)
+			continue
+		}
+
 		var before, after []byte
 		truncated := false
 		if needBefore {
@@ -611,7 +700,7 @@ func (s *Store) ListSessionChanges(ctx context.Context, sessionID string) ([]Cum
 
 		if truncated {
 			change.Truncated = true
-		} else {
+		} else if _, isImage := imageChangeMediaType(kind, before, after); !isImage {
 			change.Adds, change.Dels = CountAddsDels(before, after)
 		}
 		changes = append(changes, change)
@@ -624,43 +713,88 @@ func (s *Store) ListSessionChanges(ctx context.Context, sessionID string) ([]Cum
 // GetFileDiffContent returns the baseline and current contents for one path
 // in a session, or nil when the path has no net change recorded.
 func (s *Store) GetFileDiffContent(ctx context.Context, sessionID, path string) (*FileDiffContent, error) {
-	path = normalizePath(path)
-	if path == "" {
-		return nil, nil
-	}
-	spans, err := s.sessionSpans(ctx, sessionID)
-	if err != nil {
+	sp, err := s.sessionPathSpan(ctx, sessionID, path)
+	if err != nil || sp == nil {
 		return nil, err
 	}
+	kind, ok := sp.resolve()
+	if !ok {
+		return nil, nil
+	}
 
-	for _, sp := range spans {
-		if sp.path != path {
-			continue
+	content := &FileDiffContent{Path: sp.path, Kind: kind}
+	needBefore, needAfter := blobsNeeded(kind)
+	if sp.retainedImage(kind) {
+		content.IsImage = true
+		if needBefore && !s.blobExists(ctx, sp.firstBeforeHash) {
+			content.Truncated = true
 		}
-		kind, ok := sp.resolve()
-		if !ok {
-			return nil, nil
-		}
-
-		content := &FileDiffContent{Path: path, Kind: kind}
-		needBefore, needAfter := blobsNeeded(kind)
-		if needBefore {
-			if sp.firstBeforeHash == "" {
-				content.Truncated = true
-			} else if content.Before, err = s.getBlob(ctx, sp.firstBeforeHash); err != nil {
-				content.Truncated = true
-			}
-		}
-		if needAfter {
-			if sp.lastAfterHash == "" {
-				content.Truncated = true
-			} else if content.After, err = s.getBlob(ctx, sp.lastAfterHash); err != nil {
-				content.Truncated = true
-			}
+		if needAfter && !s.blobExists(ctx, sp.lastAfterHash) {
+			content.Truncated = true
 		}
 		return content, nil
 	}
-	return nil, nil
+	if sp.hasBinarySide(kind) {
+		content.Truncated = true
+		return content, nil
+	}
+	if needBefore {
+		if sp.firstBeforeHash == "" {
+			content.Truncated = true
+		} else if content.Before, err = s.getBlob(ctx, sp.firstBeforeHash); err != nil {
+			content.Truncated = true
+		}
+	}
+	if needAfter {
+		if sp.lastAfterHash == "" {
+			content.Truncated = true
+		} else if content.After, err = s.getBlob(ctx, sp.lastAfterHash); err != nil {
+			content.Truncated = true
+		}
+	}
+	if !content.Truncated && (imageMediaType(content.Before) != "" || imageMediaType(content.After) != "" || isBinaryContent(content.Before) || isBinaryContent(content.After)) {
+		content.Before = nil
+		content.After = nil
+		content.Truncated = true
+	}
+	return content, nil
+}
+
+// GetFileDiffSide returns one retained side of an image diff without loading
+// the other side. It returns nil for unknown paths, truncated content, and
+// non-image diffs.
+func (s *Store) GetFileDiffSide(ctx context.Context, sessionID, path, side string) (*FileDiffSide, error) {
+	if side != "before" && side != "after" {
+		return nil, ErrInvalidDiffSide
+	}
+	sp, err := s.sessionPathSpan(ctx, sessionID, path)
+	if err != nil || sp == nil {
+		return nil, err
+	}
+	kind, ok := sp.resolve()
+	if !ok {
+		return nil, nil
+	}
+	needBefore, needAfter := blobsNeeded(kind)
+	if (side == "before" && !needBefore) || (side == "after" && !needAfter) {
+		return nil, ErrInvalidDiffSide
+	}
+	if !sp.retainedImage(kind) {
+		return nil, nil
+	}
+	hash := sp.firstBeforeHash
+	if side == "after" {
+		hash = sp.lastAfterHash
+	}
+	data, err := s.getBlob(ctx, hash)
+	if err != nil {
+		return nil, err
+	}
+	mediaType := imageMediaType(data)
+	if mediaType == "" {
+		return nil, nil
+	}
+	return &FileDiffSide{Path: sp.path, Kind: kind, Side: side, Data: data, MediaType: mediaType}, nil
 }
 
 // GC removes change rows for sessions that no longer exist in the sessions DB
@@ -800,6 +934,14 @@ func (s *Store) getBlob(ctx context.Context, hash string) ([]byte, error) {
 	return decompress(data, compression)
 }
 
+func (s *Store) blobExists(ctx context.Context, hash string) bool {
+	var exists bool
+	if err := s.db.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM blobs WHERE hash = ?)", hash).Scan(&exists); err != nil {
+		return false
+	}
+	return exists
+}
+
 func compress(content []byte) (data []byte, compression string) {
 	var buf bytes.Buffer
 	w := gzip.NewWriter(&buf)
@@ -829,6 +971,57 @@ func decompress(data []byte, compression string) ([]byte, error) {
 	default:
 		return nil, fmt.Errorf("unknown blob compression %q", compression)
 	}
+}
+
+var browserImageMediaTypes = map[string]struct{}{
+	"image/bmp":    {},
+	"image/gif":    {},
+	"image/jpeg":   {},
+	"image/png":    {},
+	"image/webp":   {},
+	"image/x-icon": {},
+}
+
+// imageMediaType returns a conservative browser-renderable image type. SVG is
+// intentionally excluded because it is text and remains more useful as a
+// source diff; unknown binary formats continue to use metadata-only tracking.
+func imageMediaType(data []byte) string {
+	if len(data) == 0 {
+		return ""
+	}
+	sample := data
+	if len(sample) > 512 {
+		sample = sample[:512]
+	}
+	contentType := strings.TrimSpace(strings.SplitN(http.DetectContentType(sample), ";", 2)[0])
+	if _, ok := browserImageMediaTypes[contentType]; ok {
+		return contentType
+	}
+	return ""
+}
+
+// imageChangeMediaType reports whether every side needed by this change is a
+// renderable image. The selected type prefers the current side so callers can
+// use it as the diff's display hint even if an image changed formats.
+func imageChangeMediaType(kind string, before, after []byte) (string, bool) {
+	needBefore, needAfter := blobsNeeded(kind)
+	beforeType, afterType := "", ""
+	if needBefore {
+		beforeType = imageMediaType(before)
+		if beforeType == "" {
+			return "", false
+		}
+	}
+	if needAfter {
+		afterType = imageMediaType(after)
+		if afterType == "" {
+			return "", false
+		}
+	}
+	if afterType != "" {
+		return afterType, true
+	}
+	return beforeType, beforeType != ""
 }
 
 // isBinaryContent detects binary content via http.DetectContentType plus a NUL

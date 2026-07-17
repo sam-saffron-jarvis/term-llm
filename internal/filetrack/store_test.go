@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -290,7 +291,112 @@ func TestBinaryContentTruncates(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !change.Truncated || !change.IsBinary {
-		t.Fatalf("expected binary+truncated, got %+v", change)
+		t.Fatalf("expected unsupported binary to be binary+truncated, got %+v", change)
+	}
+}
+
+func TestImageContentIsRetained(t *testing.T) {
+	tests := []struct {
+		name      string
+		path      string
+		mediaType string
+		prefix    string
+	}{
+		{name: "PNG", path: "/tmp/image.png", mediaType: "image/png", prefix: "\x89PNG\r\n\x1a\n"},
+		{name: "animated GIF", path: "/tmp/image.gif", mediaType: "image/gif", prefix: "GIF89a"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := openTestStore(t, Options{})
+			ctx := context.Background()
+			before := []byte(tt.prefix + "old image payload")
+			after := []byte(tt.prefix + "new image payload")
+
+			change, err := store.RecordChange(ctx, ChangeRecord{
+				SessionID: "s1", Path: tt.path, Before: before, After: after,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if change.Truncated || !change.IsBinary {
+				t.Fatalf("expected retained binary image, got %+v", change)
+			}
+			if change.Adds != 0 || change.Dels != 0 {
+				t.Fatalf("image line counts = +%d -%d, want zero", change.Adds, change.Dels)
+			}
+
+			content, err := store.GetFileDiffContent(ctx, "s1", tt.path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if content == nil || !content.IsImage {
+				t.Fatalf("image diff content = %+v", content)
+			}
+			if len(content.Before) != 0 || len(content.After) != 0 {
+				t.Fatal("image diff metadata should not load blob bodies")
+			}
+			beforeSide, err := store.GetFileDiffSide(ctx, "s1", tt.path, "before")
+			if err != nil {
+				t.Fatal(err)
+			}
+			afterSide, err := store.GetFileDiffSide(ctx, "s1", tt.path, "after")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if beforeSide == nil || afterSide == nil || beforeSide.MediaType != tt.mediaType || afterSide.MediaType != tt.mediaType {
+				t.Fatalf("image sides = before %+v, after %+v", beforeSide, afterSide)
+			}
+			if !bytes.Equal(beforeSide.Data, before) || !bytes.Equal(afterSide.Data, after) {
+				t.Fatal("retained image contents do not match")
+			}
+
+			changes := mustList(t, store, "s1")
+			if len(changes) != 1 || changes[0].Truncated || changes[0].Adds != 0 || changes[0].Dels != 0 {
+				t.Fatalf("image cumulative change = %+v", changes)
+			}
+		})
+	}
+}
+
+func TestGetFileDiffSideLoadsOnlyRequestedImage(t *testing.T) {
+	store := openTestStore(t, Options{})
+	ctx := context.Background()
+	before := []byte("\x89PNG\r\n\x1a\nbefore")
+	after := []byte("\x89PNG\r\n\x1a\nafter")
+	change := mustRecord(t, store, ChangeRecord{
+		SessionID: "s1", Path: "/tmp/image.png", Before: before, After: after,
+	})
+
+	// If serving the baseline also loads the current side, this deliberately
+	// broken current blob will make the request fail.
+	if _, err := store.db.Exec("UPDATE blobs SET compression = 'broken' WHERE hash = ?", change.AfterHash); err != nil {
+		t.Fatal(err)
+	}
+	changes := mustList(t, store, "s1")
+	if len(changes) != 1 || changes[0].Truncated {
+		t.Fatalf("image list metadata = %+v, want retained image without loading bodies", changes)
+	}
+	side, err := store.GetFileDiffSide(ctx, "s1", "/tmp/image.png", "before")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if side == nil || side.MediaType != "image/png" || !bytes.Equal(side.Data, before) {
+		t.Fatalf("before side = %+v", side)
+	}
+
+	if _, err := store.GetFileDiffSide(ctx, "s1", "/tmp/image.png", "after"); err == nil {
+		t.Fatal("expected broken requested side to fail")
+	}
+
+	created := mustRecord(t, store, ChangeRecord{
+		SessionID: "s1", Path: "/tmp/created.gif", BeforeMissing: true, After: []byte("GIF89acreated"),
+	})
+	if created.Truncated {
+		t.Fatal("created GIF should be retained")
+	}
+	if _, err := store.GetFileDiffSide(ctx, "s1", "/tmp/created.gif", "before"); !errors.Is(err, ErrInvalidDiffSide) {
+		t.Fatalf("created image before side error = %v, want ErrInvalidDiffSide", err)
 	}
 }
 
@@ -394,6 +500,78 @@ func TestCumulativeResolution(t *testing.T) {
 		if changes[0].Dels != 2 {
 			t.Fatalf("dels = %d, want 2 (baseline content)", changes[0].Dels)
 		}
+	})
+	t.Run("image cumulative spans", func(t *testing.T) {
+		png := func(label string) []byte { return []byte("\x89PNG\r\n\x1a\n" + label) }
+
+		t.Run("multiple modifies keep baseline and latest", func(t *testing.T) {
+			store := openTestStore(t, Options{})
+			mustRecord(t, store, ChangeRecord{SessionID: "s", Path: "/image.png", Before: png("a"), After: png("b")})
+			mustRecord(t, store, ChangeRecord{SessionID: "s", Path: "/image.png", Before: png("b"), After: png("c")})
+
+			changes := mustList(t, store, "s")
+			if len(changes) != 1 || changes[0].Kind != KindModify || changes[0].Truncated {
+				t.Fatalf("changes = %+v", changes)
+			}
+			before, err := store.GetFileDiffSide(ctx, "s", "/image.png", "before")
+			if err != nil {
+				t.Fatal(err)
+			}
+			after, err := store.GetFileDiffSide(ctx, "s", "/image.png", "after")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(before.Data) != string(png("a")) || string(after.Data) != string(png("c")) {
+				t.Fatalf("image sides = %q → %q", before.Data, after.Data)
+			}
+		})
+
+		t.Run("create then modify stays create", func(t *testing.T) {
+			store := openTestStore(t, Options{})
+			mustRecord(t, store, ChangeRecord{SessionID: "s", Path: "/image.png", After: png("a"), BeforeMissing: true})
+			mustRecord(t, store, ChangeRecord{SessionID: "s", Path: "/image.png", Before: png("a"), After: png("b")})
+
+			changes := mustList(t, store, "s")
+			if len(changes) != 1 || changes[0].Kind != KindCreate || changes[0].Truncated {
+				t.Fatalf("changes = %+v", changes)
+			}
+			if _, err := store.GetFileDiffSide(ctx, "s", "/image.png", "before"); !errors.Is(err, ErrInvalidDiffSide) {
+				t.Fatalf("before error = %v, want ErrInvalidDiffSide", err)
+			}
+			after, err := store.GetFileDiffSide(ctx, "s", "/image.png", "after")
+			if err != nil || after == nil || string(after.Data) != string(png("b")) {
+				t.Fatalf("after = %+v, err = %v", after, err)
+			}
+		})
+
+		t.Run("return to baseline is omitted", func(t *testing.T) {
+			store := openTestStore(t, Options{})
+			mustRecord(t, store, ChangeRecord{SessionID: "s", Path: "/image.png", Before: png("a"), After: png("b")})
+			mustRecord(t, store, ChangeRecord{SessionID: "s", Path: "/image.png", Before: png("b"), After: png("a")})
+			if changes := mustList(t, store, "s"); len(changes) != 0 {
+				t.Fatalf("changes = %+v, want none", changes)
+			}
+		})
+
+		t.Run("mixed image and text span is truncated", func(t *testing.T) {
+			store := openTestStore(t, Options{})
+			mustRecord(t, store, ChangeRecord{SessionID: "s", Path: "/mixed", Before: png("a"), After: png("b")})
+			// Simulate an incomplete tracking sequence where an intervening
+			// image-to-text transition was not captured.
+			mustRecord(t, store, ChangeRecord{SessionID: "s", Path: "/mixed", Before: []byte("old\n"), After: []byte("new\n")})
+
+			changes := mustList(t, store, "s")
+			if len(changes) != 1 || !changes[0].Truncated {
+				t.Fatalf("changes = %+v, want truncated mixed span", changes)
+			}
+			content, err := store.GetFileDiffContent(ctx, "s", "/mixed")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if content == nil || !content.Truncated || content.IsImage || len(content.Before) != 0 || len(content.After) != 0 {
+				t.Fatalf("mixed content = %+v", content)
+			}
+		})
 	})
 }
 

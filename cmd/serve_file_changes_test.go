@@ -54,6 +54,20 @@ func TestSessionFileChangesEndpoints(t *testing.T) {
 		SessionID: "sess-1", Path: "/work/a.go",
 		Before: []byte("package a\n"), After: []byte("package a\n\nfunc A() {}\n"),
 	})
+	pngBefore := []byte("\x89PNG\r\n\x1a\nbefore")
+	pngAfter := []byte("\x89PNG\r\n\x1a\nafter")
+	mustStoreRecord(filetrack.ChangeRecord{
+		SessionID: "sess-image", Path: "/work/preview.png",
+		Before: pngBefore, After: pngAfter,
+	})
+	mustStoreRecord(filetrack.ChangeRecord{
+		SessionID: "sess-image", Path: "/work/created.gif",
+		BeforeMissing: true, After: []byte("GIF89acreated"),
+	})
+	mustStoreRecord(filetrack.ChangeRecord{
+		SessionID: "sess-image", Path: "/work/deleted.gif",
+		Before: []byte("GIF89adeleted"), AfterMissing: true,
+	})
 
 	t.Run("list", func(t *testing.T) {
 		code, body := getSessionPath(t, srv, "/v1/sessions/sess-1/file-changes")
@@ -91,6 +105,75 @@ func TestSessionFileChangesEndpoints(t *testing.T) {
 		lines := hunks[0].(map[string]any)["lines"].([]any)
 		if len(lines) != 3 {
 			t.Fatalf("lines = %#v, want 3 added lines", lines)
+		}
+	})
+
+	t.Run("image diff and content", func(t *testing.T) {
+		code, body := getSessionPath(t, srv, "/v1/sessions/sess-image/file-changes/diff?path=/work/preview.png")
+		if code != http.StatusOK {
+			t.Fatalf("status = %d, body = %v", code, body)
+		}
+		if body["image"] != true || body["truncated"] != false {
+			t.Fatalf("image diff meta = %#v", body)
+		}
+		if hunks, ok := body["hunks"].([]any); !ok || len(hunks) != 0 {
+			t.Fatalf("image hunks = %#v, want empty", body["hunks"])
+		}
+
+		for _, tc := range []struct {
+			side string
+			want []byte
+		}{{"before", pngBefore}, {"after", pngAfter}} {
+			req := httptest.NewRequest(http.MethodGet, "/v1/sessions/sess-image/file-changes/content?path=/work/preview.png&side="+tc.side, nil)
+			rr := httptest.NewRecorder()
+			srv.handleSessionByID(rr, req)
+			if rr.Code != http.StatusOK || rr.Header().Get("Content-Type") != "image/png" {
+				t.Fatalf("%s content status = %d, type = %q", tc.side, rr.Code, rr.Header().Get("Content-Type"))
+			}
+			if rr.Header().Get("Cache-Control") != "private, no-store" || rr.Header().Get("X-Content-Type-Options") != "nosniff" {
+				t.Fatalf("%s content security headers = %#v", tc.side, rr.Header())
+			}
+			if string(rr.Body.Bytes()) != string(tc.want) {
+				t.Fatalf("%s content = %q, want %q", tc.side, rr.Body.Bytes(), tc.want)
+			}
+		}
+	})
+
+	t.Run("created and deleted GIF content", func(t *testing.T) {
+		for _, tc := range []struct {
+			path string
+			side string
+			want string
+		}{
+			{path: "/work/created.gif", side: "after", want: "GIF89acreated"},
+			{path: "/work/deleted.gif", side: "before", want: "GIF89adeleted"},
+		} {
+			req := httptest.NewRequest(http.MethodGet, "/v1/sessions/sess-image/file-changes/content?path="+tc.path+"&side="+tc.side, nil)
+			rr := httptest.NewRecorder()
+			srv.handleSessionByID(rr, req)
+			if rr.Code != http.StatusOK || rr.Header().Get("Content-Type") != "image/gif" || rr.Body.String() != tc.want {
+				t.Fatalf("%s %s: status=%d type=%q body=%q", tc.path, tc.side, rr.Code, rr.Header().Get("Content-Type"), rr.Body.String())
+			}
+		}
+	})
+
+	t.Run("image content rejects invalid or unavailable side", func(t *testing.T) {
+		for _, path := range []string{
+			"/v1/sessions/sess-image/file-changes/content?path=/work/preview.png&side=middle",
+			"/v1/sessions/sess-image/file-changes/content?path=/work/created.gif&side=before",
+			"/v1/sessions/sess-image/file-changes/content?path=/work/deleted.gif&side=after",
+		} {
+			code, _ := getSessionPath(t, srv, path)
+			if code != http.StatusBadRequest {
+				t.Fatalf("%s status = %d, want 400", path, code)
+			}
+		}
+	})
+
+	t.Run("image content rejects non-image file", func(t *testing.T) {
+		code, _ := getSessionPath(t, srv, "/v1/sessions/sess-1/file-changes/content?path=/work/a.go&side=after")
+		if code != http.StatusNotFound {
+			t.Fatalf("status = %d, want 404", code)
 		}
 	})
 
@@ -173,5 +256,9 @@ func TestSessionFileChangesRequireLiveSession(t *testing.T) {
 	code, _ = getSessionPath(t, srv, "/v1/sessions/deleted-session/file-changes/diff?path=/work/f.txt")
 	if code != http.StatusNotFound {
 		t.Fatalf("deleted session diff status = %d, want 404", code)
+	}
+	code, _ = getSessionPath(t, srv, "/v1/sessions/deleted-session/file-changes/content?path=/work/f.txt&side=after")
+	if code != http.StatusNotFound {
+		t.Fatalf("deleted session content status = %d, want 404", code)
 	}
 }

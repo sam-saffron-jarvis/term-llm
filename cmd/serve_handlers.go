@@ -1472,16 +1472,19 @@ func (s *serveServer) handleSessionByID(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	if suffix == "file-changes" || suffix == "file-changes/diff" {
+	if suffix == "file-changes" || suffix == "file-changes/diff" || suffix == "file-changes/content" {
 		if r.Method != http.MethodGet {
 			w.Header().Set("Allow", "GET")
 			writeOpenAIError(w, http.StatusMethodNotAllowed, "invalid_request_error", "method not allowed")
 			return
 		}
-		if suffix == "file-changes" {
+		switch suffix {
+		case "file-changes":
 			s.handleSessionFileChanges(w, r, sessionID)
-		} else {
+		case "file-changes/diff":
 			s.handleSessionFileChangeDiff(w, r, sessionID)
+		default:
+			s.handleSessionFileChangeContent(w, r, sessionID)
 		}
 		return
 	}

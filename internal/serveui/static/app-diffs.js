@@ -404,7 +404,7 @@ const fetchFileDiff = (sessionId, path) => {
 
       // True-up the list entry with cumulative counts from the actual diff.
       const entry = ds.files.get(path);
-      if (entry && !data.truncated) {
+      if (entry && !data.truncated && !data.image) {
         const { adds, dels } = countRowChanges(buildDiffRowModel(data.hunks));
         entry.adds = adds;
         entry.dels = dels;
@@ -620,6 +620,32 @@ const copyDiffText = (button, text) => {
   }).catch(() => {});
 };
 
+const imageDiffContentURL = (sessionId, path, side) => `${UI_PREFIX}/v1/sessions/${encodeURIComponent(sessionId)}/file-changes/content?path=${encodeURIComponent(path)}&side=${side}`;
+
+const renderImageDiff = (sessionId, path, data) => {
+  const comparison = createEl('div', `diff-image-comparison diff-image-${data.kind || 'modify'}`);
+  const sides = data.kind === 'create' ? ['after'] : data.kind === 'delete' ? ['before'] : ['before', 'after'];
+  sides.forEach((side) => {
+    const panel = createEl('div', 'diff-image-side');
+    panel.appendChild(createEl('div', 'diff-image-label', side === 'before' ? 'Before' : 'After'));
+    const src = imageDiffContentURL(sessionId, path, side);
+    const image = createEl('img', 'diff-image-preview');
+    image.src = src;
+    image.alt = `${side === 'before' ? 'Before' : 'After'} ${fileBaseName(path)}`;
+    image.loading = 'lazy';
+    image.addEventListener('click', () => app.openLightbox?.(src));
+    image.addEventListener('error', () => {
+      image.hidden = true;
+      if (!panel.querySelector?.('.diff-image-error')) {
+        panel.appendChild(createEl('div', 'diff-note diff-image-error', 'Preview unavailable'));
+      }
+    });
+    panel.appendChild(image);
+    comparison.appendChild(panel);
+  });
+  return comparison;
+};
+
 const renderDiffFileBody = (sessionId, ds, path) => {
   const body = createEl('div', 'diff-file-body');
   const cached = ds.diffCache.get(path);
@@ -644,7 +670,11 @@ const renderDiffFileBody = (sessionId, ds, path) => {
     return body;
   }
   if (cached.data.truncated) {
-    body.appendChild(createEl('div', 'diff-note', 'Diff content was not retained for this file (too large, binary, or unrecoverable).'));
+    body.appendChild(createEl('div', 'diff-note', 'Diff content was not retained for this file (too large, unsupported binary, or unrecoverable).'));
+    return body;
+  }
+  if (cached.data.image) {
+    body.appendChild(renderImageDiff(sessionId, path, cached.data));
     return body;
   }
 
@@ -751,12 +781,12 @@ const syncDiffFileBlock = (sessionId, ds, path) => {
     copyPatch.addEventListener('click', (event) => {
       event.stopPropagation?.();
       const cached = ds.diffCache.get(path);
-      if (cached && !cached.data.truncated) {
+      if (cached && !cached.data.truncated && !cached.data.image) {
         copyDiffText(copyPatch, buildUnifiedDiff(path, cached.data));
         return;
       }
       fetchFileDiff(sessionId, path).then((data) => {
-        if (data && !data.truncated) copyDiffText(copyPatch, buildUnifiedDiff(path, data));
+        if (data && !data.truncated && !data.image) copyDiffText(copyPatch, buildUnifiedDiff(path, data));
       });
     });
     actions.appendChild(copyPath);
@@ -769,7 +799,7 @@ const syncDiffFileBlock = (sessionId, ds, path) => {
     header.appendChild(actions);
     el.appendChild(header);
 
-    block = { el, header, kindBadge, counts, body: null, bodyKey: '', renderedKind: '', renderedAdds: null, renderedDels: null, renderedTruncated: null };
+    block = { el, header, kindBadge, counts, copyPatch, body: null, bodyKey: '', renderedKind: '', renderedAdds: null, renderedDels: null, renderedTruncated: null };
     ds.blocks.set(path, block);
   }
 
@@ -804,6 +834,11 @@ const syncDiffFileBlock = (sessionId, ds, path) => {
     block.renderedTruncated = entry.truncated;
   }
 
+  const cached = ds.diffCache.get(path);
+  block.copyPatch.hidden = Boolean(cached?.data?.image);
+  if (block.copyPatch.hidden) block.copyPatch.setAttribute?.('hidden', '');
+  else block.copyPatch.removeAttribute?.('hidden');
+
   if (!expanded) {
     if (block.body) {
       block.body = null;
@@ -813,7 +848,6 @@ const syncDiffFileBlock = (sessionId, ds, path) => {
     return block;
   }
 
-  const cached = ds.diffCache.get(path);
   const bodyKey = [
     cached ? cached.rev : 'none',
     ds.rowLimits.get(path) || 0,
