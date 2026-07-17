@@ -2727,8 +2727,7 @@ const buildChipOptionLabel = (opt) => {
   return { primary: text, meta: '' };
 };
 
-const positionChipPopover = (triggerEl) => {
-  const pop = elements.chipPopover;
+const positionChipPopover = (triggerEl, pop = elements.chipPopover) => {
   if (!pop || !triggerEl?.getBoundingClientRect) return;
   pop.hidden = false;
 
@@ -4443,6 +4442,7 @@ restoreLatestDraftMessage();
 Object.assign(app, {
   requestHeaders,
   normalizeError,
+  positionChipPopover,
   fetchProviders,
   fetchModels,
   parseSSEStream,
