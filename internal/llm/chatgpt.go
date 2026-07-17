@@ -331,13 +331,10 @@ func NewChatGPTResponsesClient(creds *credentials.ChatGPTCredentials) *Responses
 			return nil
 		},
 		OnAuthRetry: func(_ context.Context) error {
-			if err := credentials.RefreshChatGPTCredentials(creds); err == nil {
-				return nil
+			if err := credentials.RefreshChatGPTCredentials(creds); err != nil {
+				return fmt.Errorf("ChatGPT session refresh failed: %w", err)
 			}
-			if clearErr := credentials.ClearChatGPTCredentials(); clearErr != nil {
-				return fmt.Errorf("ChatGPT session expired and failed to clear credentials: %w", clearErr)
-			}
-			return fmt.Errorf("ChatGPT session expired — please re-run your command to re-authenticate")
+			return nil
 		},
 	}
 }

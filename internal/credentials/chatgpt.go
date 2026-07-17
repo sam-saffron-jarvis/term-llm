@@ -5,9 +5,15 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/oauth"
+)
+
+var (
+	chatGPTRefreshMu    sync.Mutex
+	refreshChatGPTToken = oauth.RefreshToken
 )
 
 // ChatGPTCredentials holds the OAuth tokens for ChatGPT
@@ -108,30 +114,46 @@ func ClearChatGPTCredentials() error {
 }
 
 // RefreshChatGPTCredentials refreshes the access token using the refresh token.
-// The updated credentials are automatically saved to storage.
+// Concurrent refreshes are serialized so rotating a shared persisted token only
+// performs one exchange. The updated credentials are automatically saved to storage.
 func RefreshChatGPTCredentials(creds *ChatGPTCredentials) error {
+	chatGPTRefreshMu.Lock()
+	defer chatGPTRefreshMu.Unlock()
+
 	if creds.RefreshToken == "" {
 		return fmt.Errorf("no refresh token available")
 	}
 
-	tokenResp, err := oauth.RefreshToken(creds.RefreshToken)
+	// Providers keep independent in-memory copies of the same credentials. A
+	// caller waiting for the refresh lock may therefore still hold the token
+	// that another caller just rotated. Prefer the newly persisted credentials
+	// instead of exchanging that stale refresh token again.
+	if stored, err := GetChatGPTCredentials(); err == nil && *stored != *creds {
+		*creds = *stored
+		return nil
+	}
+
+	tokenResp, err := refreshChatGPTToken(creds.RefreshToken)
 	if err != nil {
 		return err
 	}
 
-	// Update credentials
-	creds.AccessToken = tokenResp.AccessToken
-	creds.ExpiresAt = time.Now().Unix() + int64(tokenResp.ExpiresIn)
+	// Do not mutate the caller until persistence succeeds. This keeps its copy
+	// consistent with storage if the atomic save fails.
+	refreshed := *creds
+	refreshed.AccessToken = tokenResp.AccessToken
+	refreshed.ExpiresAt = time.Now().Unix() + int64(tokenResp.ExpiresIn)
 
 	// Update refresh token if a new one was provided
 	if tokenResp.RefreshToken != "" {
-		creds.RefreshToken = tokenResp.RefreshToken
+		refreshed.RefreshToken = tokenResp.RefreshToken
 	}
 
 	// Save updated credentials
-	if err := SaveChatGPTCredentials(creds); err != nil {
+	if err := SaveChatGPTCredentials(&refreshed); err != nil {
 		return fmt.Errorf("failed to save refreshed credentials: %w", err)
 	}
+	*creds = refreshed
 
 	return nil
 }

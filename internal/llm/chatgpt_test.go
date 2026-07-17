@@ -82,6 +82,32 @@ func TestNewChatGPTResponsesClientUsesCurrentCodexHeaders(t *testing.T) {
 	}
 }
 
+func TestChatGPTAuthRetryFailurePreservesStoredCredentials(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+
+	creds := &credentials.ChatGPTCredentials{
+		AccessToken: "current-access",
+		ExpiresAt:   time.Now().Add(time.Hour).Unix(),
+		AccountID:   "test-account",
+	}
+	if err := credentials.SaveChatGPTCredentials(creds); err != nil {
+		t.Fatalf("save credentials: %v", err)
+	}
+
+	client := NewChatGPTResponsesClient(creds)
+	if err := client.OnAuthRetry(context.Background()); err == nil {
+		t.Fatal("auth retry succeeded without a refresh token")
+	}
+
+	stored, err := credentials.GetChatGPTCredentials()
+	if err != nil {
+		t.Fatalf("auth retry failure removed stored credentials: %v", err)
+	}
+	if stored.AccessToken != "current-access" {
+		t.Fatalf("stored access token = %q, want preserved token", stored.AccessToken)
+	}
+}
+
 func TestChatGPTStream_OmitsPromptCacheKeyButKeepsSessionHeader(t *testing.T) {
 	origClient := chatGPTHTTPClient
 	defer func() { chatGPTHTTPClient = origClient }()
