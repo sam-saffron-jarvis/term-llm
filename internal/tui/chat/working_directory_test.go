@@ -1,6 +1,7 @@
 package chat
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -36,6 +37,30 @@ func TestPendingWorkingDirectoryReportIsEmittedAfterUpdate(t *testing.T) {
 	}
 	if m.pendingTerminalDirectory != "" {
 		t.Fatalf("pending terminal directory was not cleared: %q", m.pendingTerminalDirectory)
+	}
+}
+
+func TestNewSessionReportsProcessWorkingDirectory(t *testing.T) {
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, tt := range []struct {
+		name string
+		run  func(*Model)
+	}{
+		{name: "clear", run: func(m *Model) { _, _ = m.cmdClear() }},
+		{name: "new", run: func(m *Model) { _, _ = m.cmdNew() }},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			m := newTestChatModel(false)
+			m.sess = &session.Session{CWD: "/stale/worktree", WorktreeDir: "/stale/worktree"}
+			tt.run(m)
+			if m.pendingTerminalDirectory != cwd {
+				t.Fatalf("pending terminal directory = %q, want process cwd %q", m.pendingTerminalDirectory, cwd)
+			}
+		})
 	}
 }
 
