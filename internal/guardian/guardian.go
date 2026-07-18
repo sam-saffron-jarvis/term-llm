@@ -46,10 +46,12 @@ type Request struct {
 }
 
 type Decision struct {
-	RiskLevel         string `json:"risk_level"`
-	UserAuthorization string `json:"user_authorization"`
-	Outcome           string `json:"outcome"`
-	Rationale         string `json:"rationale"`
+	RiskLevel         string    `json:"risk_level"`
+	UserAuthorization string    `json:"user_authorization"`
+	Outcome           string    `json:"outcome"`
+	Rationale         string    `json:"rationale"`
+	Model             string    `json:"-"`
+	Usage             llm.Usage `json:"-"`
 }
 
 func (d Decision) Allowed() bool { return strings.EqualFold(strings.TrimSpace(d.Outcome), "allow") }
@@ -113,16 +115,19 @@ func (r *Reviewer) Review(ctx context.Context, req Request) (Decision, error) {
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	raw, err := r.runReviewRequest(ctx, providerMessages)
+	raw, usage, err := r.runReviewRequest(ctx, providerMessages)
+	accounting := Decision{Model: strings.TrimSpace(r.Model), Usage: usage}
 	if err != nil {
 		r.resetLocked()
-		return Decision{}, err
+		return accounting, err
 	}
 	decision, err := ParseDecision(raw)
 	if err != nil {
 		r.resetLocked()
-		return Decision{}, err
+		return accounting, err
 	}
+	decision.Model = accounting.Model
+	decision.Usage = accounting.Usage
 
 	r.reviewMessages = append(providerMessages, llm.AssistantText(canonicalDecisionJSON(decision)))
 	r.sessionActive = true
@@ -175,31 +180,36 @@ func (r *Reviewer) turnMessages(policy string, req Request, mode PromptMode) []l
 	return messages
 }
 
-func (r *Reviewer) runReviewRequest(ctx context.Context, messages []llm.Message) (string, error) {
+func (r *Reviewer) runReviewRequest(ctx context.Context, messages []llm.Message) (string, llm.Usage, error) {
 	stream, err := r.Provider.Stream(ctx, llm.Request{Model: r.Model, Messages: messages, MaxOutputTokens: 2000, Temperature: 0, TemperatureSet: true})
 	if err != nil {
-		return "", err
+		return "", llm.Usage{}, err
 	}
 	defer stream.Close()
 	var b strings.Builder
+	var usage llm.Usage
 	for {
 		event, err := stream.Recv()
 		if err == io.EOF {
 			break
 		}
 		if err != nil {
-			return "", err
+			return "", usage, err
 		}
 		switch event.Type {
 		case llm.EventTextDelta:
 			b.WriteString(event.Text)
+		case llm.EventUsage:
+			if event.Use != nil {
+				usage.Add(*event.Use)
+			}
 		case llm.EventError:
 			if event.Err != nil {
-				return "", event.Err
+				return "", usage, event.Err
 			}
 		}
 	}
-	return b.String(), nil
+	return b.String(), usage, nil
 }
 
 func canonicalDecisionJSON(d Decision) string {

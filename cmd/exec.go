@@ -360,6 +360,12 @@ func (s *execRunSink) PromptApproval(target string, isWrite, isShell bool, workD
 	return tools.RunFileApprovalUI(target, isWrite)
 }
 
+func (s *execRunSink) GuardianEvent(event tools.GuardianEvent) {
+	if s != nil {
+		addGuardianUsage(s.stats, event)
+	}
+}
+
 func (s *execRunSink) Event(event llm.Event) {
 	if s == nil {
 		return

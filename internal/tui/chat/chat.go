@@ -1834,6 +1834,7 @@ func (m *Model) Update(msg tea.Msg) (model tea.Model, cmd tea.Cmd) {
 		cmds = append(cmds, m.listenForMCPStatusUpdates())
 
 	case GuardianReviewMsg:
+		m.recordGuardianUsage(context.Background(), msg.Event.Model, msg.Event.Usage)
 		message := strings.TrimSpace(msg.Event.Message)
 		tone := guardianFooterTone(message)
 		if m.tracker != nil {
@@ -2906,7 +2907,10 @@ func (m *Model) Update(msg tea.Msg) (model tea.Model, cmd tea.Cmd) {
 		return m.cmdHandover([]string{msg.Agent})
 
 	case SubagentProgressMsg:
-		// Handle subagent progress events and update segment stats
+		// Handle subagent progress events and update segment stats.
+		if msg.Event.Type == tools.SubagentEventGuardian && msg.Event.Guardian != nil {
+			m.recordGuardianUsage(context.Background(), msg.Event.Guardian.Model, msg.Event.Guardian.Usage)
+		}
 		ui.HandleSubagentProgress(m.tracker, m.subagentTracker, msg.CallID, msg.Event)
 	}
 

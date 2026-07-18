@@ -8,6 +8,38 @@ import (
 	"github.com/samsaffron/term-llm/internal/llm"
 )
 
+func TestReviewerReportsProviderUsage(t *testing.T) {
+	provider := llm.NewMockProvider("guardian").AddTurn(llm.MockTurn{
+		Text:  `{"risk_level":"low","user_authorization":"high","outcome":"allow","rationale":"ok"}`,
+		Usage: llm.Usage{InputTokens: 101, OutputTokens: 12, CachedInputTokens: 80, CacheWriteTokens: 7},
+	})
+	reviewer := &Reviewer{Provider: provider, Model: "guardian-model", Policy: "policy"}
+
+	decision, err := reviewer.Review(context.Background(), Request{Command: "echo ok"})
+	if err != nil {
+		t.Fatalf("Review: %v", err)
+	}
+	if decision.Model != "guardian-model" || decision.Usage.InputTokens != 101 || decision.Usage.OutputTokens != 12 || decision.Usage.CachedInputTokens != 80 || decision.Usage.CacheWriteTokens != 7 {
+		t.Fatalf("decision usage = %+v, model = %q", decision.Usage, decision.Model)
+	}
+}
+
+func TestReviewerReportsUsageWhenDecisionIsInvalid(t *testing.T) {
+	provider := llm.NewMockProvider("guardian").AddTurn(llm.MockTurn{
+		Text:  `not json`,
+		Usage: llm.Usage{InputTokens: 22, OutputTokens: 3},
+	})
+	reviewer := &Reviewer{Provider: provider, Model: "guardian-model", Policy: "policy"}
+
+	decision, err := reviewer.Review(context.Background(), Request{Command: "echo ok"})
+	if err == nil {
+		t.Fatal("Review succeeded with an invalid decision")
+	}
+	if decision.Model != "guardian-model" || decision.Usage.InputTokens != 22 || decision.Usage.OutputTokens != 3 {
+		t.Fatalf("failed decision lost usage: %+v", decision)
+	}
+}
+
 func TestBuildPromptFramesTranscriptAsUntrustedEvidence(t *testing.T) {
 	prompt := BuildPrompt(Request{
 		Command:    "git status",

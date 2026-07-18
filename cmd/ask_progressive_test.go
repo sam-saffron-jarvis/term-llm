@@ -8,8 +8,22 @@ import (
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/tools"
 	"github.com/samsaffron/term-llm/internal/ui"
 )
+
+func TestAskProgressiveRunnerSinkAccountsGuardianUsage(t *testing.T) {
+	bridge := newAskProgressiveBridge(1)
+	sink := askProgressiveRunnerSink{bridge: bridge}
+	usage := llm.Usage{InputTokens: 13, OutputTokens: 4, CachedInputTokens: 8, CacheWriteTokens: 2}
+
+	sink.GuardianEvent(tools.GuardianEvent{Model: "guardian-model", Usage: usage})
+
+	calls, _ := bridge.Stats().UsageCalls()
+	if bridge.stats.InputTokens != 13 || bridge.stats.OutputTokens != 4 || bridge.stats.CachedInputTokens != 8 || bridge.stats.CacheWriteTokens != 2 || len(calls) != 1 || !calls[0].Guardian || calls[0].Model != "guardian-model" {
+		t.Fatalf("progressive guardian stats = %+v calls=%+v", bridge.stats, calls)
+	}
+}
 
 func TestAskProgressiveBridge_PropagatesInterjectionID(t *testing.T) {
 	bridge := newAskProgressiveBridge(ui.DefaultStreamBufferSize)

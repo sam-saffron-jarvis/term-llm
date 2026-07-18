@@ -28,6 +28,40 @@ func TestSessionStatsSeedTotals(t *testing.T) {
 	}
 }
 
+func TestAddGuardianUsagePreservesMainContextHintsAndPendingTiming(t *testing.T) {
+	stats := NewSessionStats()
+	stats.SetModel("main-model")
+	stats.AddUsage(100, 20, 5, 0)
+	lastInput, lastOutput, peak := stats.lastInputTokens, stats.lastOutputTokens, stats.peakInputTokens
+	requestStart := time.Now().Add(-time.Second)
+	stats.requestStartTime = requestStart
+
+	stats.AddGuardianUsageForModel("guardian-model", 1000, 50, 100, 10)
+
+	if stats.lastInputTokens != lastInput || stats.lastOutputTokens != lastOutput || stats.peakInputTokens != peak {
+		t.Fatalf("guardian usage changed main context hints: last=%d/%d peak=%d", stats.lastInputTokens, stats.lastOutputTokens, stats.peakInputTokens)
+	}
+	if stats.requestStartTime != requestStart {
+		t.Fatal("guardian usage disturbed pending main request timing")
+	}
+	if stats.InputTokens != 1100 || stats.OutputTokens != 70 || stats.CachedInputTokens != 105 || stats.CacheWriteTokens != 10 || stats.LLMCallCount != 2 {
+		t.Fatalf("guardian usage missing from aggregate totals: %+v", stats)
+	}
+	if stats.GuardianInputTokens != 1000 || stats.GuardianOutputTokens != 50 || stats.GuardianCachedInputTokens != 100 || stats.GuardianCacheWriteTokens != 10 || stats.GuardianLLMCallCount != 1 {
+		t.Fatalf("guardian usage missing from guardian totals: %+v", stats)
+	}
+	calls, _ := stats.UsageCalls()
+	if len(calls) != 2 || !calls[1].Guardian || calls[1].Model != "guardian-model" {
+		t.Fatalf("guardian usage call = %+v", calls)
+	}
+
+	stats.DiscardUsage(100, 20, 5, 0, 1)
+	calls, _ = stats.UsageCalls()
+	if len(calls) != 1 || !calls[0].Guardian {
+		t.Fatalf("main retry discard removed guardian usage: %+v", calls)
+	}
+}
+
 func TestAddSideQuestionUsagePreservesMainContextHintsAndPendingTiming(t *testing.T) {
 	stats := NewSessionStats()
 	stats.SetModel("main-model")

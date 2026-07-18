@@ -11,9 +11,19 @@ import (
 	"github.com/samsaffron/term-llm/internal/guardian"
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/tools"
+	"github.com/samsaffron/term-llm/internal/ui"
 )
 
 var newGuardianProviderByName = llm.NewProviderByName
+
+func addGuardianUsage(stats *ui.SessionStats, event tools.GuardianEvent) bool {
+	if stats == nil || event.Usage.BillableCountersZero() {
+		return false
+	}
+	u := event.Usage
+	stats.AddGuardianUsageForModel(event.Model, u.InputTokens, u.OutputTokens, u.CachedInputTokens, u.CacheWriteTokens)
+	return true
+}
 
 func installGuardianReviewer(cfg *config.Config, approvalMgr *tools.ApprovalManager, providerName string, modelName string, headless bool) error {
 	if err := installGuardianReviewerCallbacks(cfg, approvalMgr, providerName, modelName, headless); err != nil {
@@ -76,10 +86,11 @@ func installGuardianReviewerCallbacks(cfg *config.Config, approvalMgr *tools.App
 			transcript = append(transcript, guardian.TranscriptEntry{Role: e.Role, Text: e.Text})
 		}
 		decision, err := reviewer.Review(ctx, guardian.Request{Command: req.Command, WorkDir: req.WorkDir, Transcript: transcript, ApprovalContext: req.ApprovalContext, ScopeID: req.ScopeID})
+		result := tools.PolicyDecision{Allowed: decision.Allowed(), RiskLevel: decision.RiskLevel, UserAuthorization: decision.UserAuthorization, Rationale: decision.Rationale, Model: decision.Model, Usage: decision.Usage}
 		if err != nil {
-			return tools.PolicyDecision{}, err
+			return result, err
 		}
-		return tools.PolicyDecision{Allowed: decision.Allowed(), RiskLevel: decision.RiskLevel, UserAuthorization: decision.UserAuthorization, Rationale: decision.Rationale}, nil
+		return result, nil
 	}
 	if approvalMgr.GuardianEventFunc == nil {
 		approvalMgr.GuardianEventFunc = func(event tools.GuardianEvent) {

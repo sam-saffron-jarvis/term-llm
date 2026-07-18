@@ -294,6 +294,8 @@ type PolicyDecision struct {
 	RiskLevel         string
 	UserAuthorization string
 	Rationale         string
+	Model             string
+	Usage             llm.Usage
 }
 
 // ApprovalRequest represents a pending approval request.
@@ -333,6 +335,8 @@ type GuardianEvent struct {
 	WorkDir    string
 	Message    string
 	Outcome    GuardianOutcome
+	Model      string
+	Usage      llm.Usage
 }
 
 // ApprovalManager coordinates approval requests and caching.
@@ -1258,7 +1262,7 @@ func (m *ApprovalManager) checkShellGuardianApproval(ctx context.Context, comman
 	}
 	decision, err := reviewFunc(ctx, PolicyReviewRequest{Command: command, WorkDir: normalizeGuardianWorkDir(workDir), Transcript: entries, ApprovalContext: approvalContext, ScopeID: llm.SessionIDFromContext(ctx)})
 	if err != nil {
-		m.emitGuardianEvent(m.guardianEvent(ctx, command, workDir, GuardianError, fmt.Sprintf("guardian: review failed (%v)", err)))
+		m.emitGuardianEvent(m.guardianDecisionEvent(ctx, command, workDir, GuardianError, fmt.Sprintf("guardian: review failed (%v)", err), decision))
 		if m.AutoHeadless() {
 			return Cancel, true, NewToolErrorf(ErrPermissionDenied, "guardian review failed: %v", err)
 		}
@@ -1269,7 +1273,7 @@ func (m *ApprovalManager) checkShellGuardianApproval(ctx context.Context, comman
 		if rationale == "" {
 			rationale = "guardian allow contradicted policy risk/authorization fields"
 		}
-		m.emitGuardianEvent(m.guardianEvent(ctx, command, workDir, GuardianDenied, "guardian: denied: "+rationale))
+		m.emitGuardianEvent(m.guardianDecisionEvent(ctx, command, workDir, GuardianDenied, "guardian: denied: "+rationale, decision))
 		m.recordGuardianDenial()
 		if !m.AutoHeadless() {
 			return Cancel, false, nil
@@ -1279,14 +1283,14 @@ func (m *ApprovalManager) checkShellGuardianApproval(ctx context.Context, comman
 	if decision.Allowed {
 		m.resetGuardianDenials()
 		m.addGuardianExactShell(command, workDir)
-		m.emitGuardianEvent(m.guardianEvent(ctx, command, workDir, GuardianApproved, "guardian: "+formatGuardianApproval(decision)))
+		m.emitGuardianEvent(m.guardianDecisionEvent(ctx, command, workDir, GuardianApproved, "guardian: "+formatGuardianApproval(decision), decision))
 		return ProceedAlways, true, nil
 	}
 	rationale := strings.TrimSpace(decision.Rationale)
 	if rationale == "" {
 		rationale = "action was not approved by guardian policy"
 	}
-	m.emitGuardianEvent(m.guardianEvent(ctx, command, workDir, GuardianDenied, "guardian: denied: "+rationale))
+	m.emitGuardianEvent(m.guardianDecisionEvent(ctx, command, workDir, GuardianDenied, "guardian: denied: "+rationale, decision))
 	m.recordGuardianDenial()
 	if !m.AutoHeadless() {
 		// In interactive auto mode, guardian denials are rare and high-signal.
@@ -1328,6 +1332,13 @@ func humanGuardianAuthorization(value string) string {
 	default:
 		return "authorization unclear"
 	}
+}
+
+func (m *ApprovalManager) guardianDecisionEvent(ctx context.Context, command, workDir string, outcome GuardianOutcome, message string, decision PolicyDecision) GuardianEvent {
+	event := m.guardianEvent(ctx, command, workDir, outcome, message)
+	event.Model = strings.TrimSpace(decision.Model)
+	event.Usage = decision.Usage
+	return event
 }
 
 func (m *ApprovalManager) guardianEvent(ctx context.Context, command, workDir string, outcome GuardianOutcome, message string) GuardianEvent {

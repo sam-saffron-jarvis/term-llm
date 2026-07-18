@@ -538,6 +538,17 @@ func runAsk(cmd *cobra.Command, args []string) error {
 		adapter.Stats().SeedTotals(sess.InputTokens, sess.OutputTokens, sess.CachedInputTokens, sess.CacheWriteTokens, sess.ToolCalls, sess.LLMTurns+sess.CompactionCount)
 	}
 	adapter.Stats().SetModel(activeModel(cfg))
+	if !askProgressive && toolMgr != nil {
+		toolMgr.ApprovalMgr.GuardianEventFunc = func(event tools.GuardianEvent) {
+			if addGuardianUsage(adapter.Stats(), event) && store != nil && sess != nil {
+				u := event.Usage
+				_ = store.UpdateMetrics(context.Background(), sess.ID, 0, 0, u.InputTokens, u.OutputTokens, u.CachedInputTokens, u.CacheWriteTokens)
+			}
+			if strings.TrimSpace(event.Message) != "" {
+				fmt.Fprintln(cmd.ErrOrStderr(), event.Message)
+			}
+		}
+	}
 
 	var outputToolMessagesMu sync.Mutex
 	outputToolMessages := append([]llm.Message{}, messages...)
@@ -882,7 +893,18 @@ func runAsk(cmd *cobra.Command, args []string) error {
 			}
 			sink := runpkg.EventSink(eventSinkFunc(func(llm.Event) {}))
 			if bridge != nil {
-				sink = askProgressiveRunnerSink{bridge: bridge}
+				sink = askProgressiveRunnerSink{
+					bridge: bridge,
+					guardian: func(event tools.GuardianEvent) {
+						if !event.Usage.BillableCountersZero() && store != nil && sess != nil {
+							u := event.Usage
+							_ = store.UpdateMetrics(context.Background(), sess.ID, 0, 0, u.InputTokens, u.OutputTokens, u.CachedInputTokens, u.CacheWriteTokens)
+						}
+						if strings.TrimSpace(event.Message) != "" {
+							fmt.Fprintln(cmd.ErrOrStderr(), event.Message)
+						}
+					},
+				}
 			}
 			runResult, runErr := askRunner.Run(ctx, progressiveRunReq, sink)
 			applyRunResult(runResult)

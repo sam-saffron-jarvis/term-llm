@@ -63,6 +63,18 @@ func TestSetEstimatedStatsCostTracksModelSwitchPerCall(t *testing.T) {
 	}
 }
 
+func TestSetEstimatedStatsCostPricesGuardianWithOwnModel(t *testing.T) {
+	stats := ui.NewSessionStats()
+	stats.SetModel("gpt-5.6-sol")
+	stats.AddUsage(100_000, 0, 0, 0)                                 // $0.50
+	stats.AddGuardianUsageForModel("gpt-5.6-luna", 100_000, 0, 0, 0) // $0.10
+
+	setEstimatedStatsCost(stats, "gpt-5.6-sol")
+	if out := stats.Render(); !strings.Contains(out, "$0.6000") {
+		t.Fatalf("guardian call was not priced with its own model: %s", out)
+	}
+}
+
 func TestSetEstimatedStatsCostOmitsResumedHistoricalUsage(t *testing.T) {
 	stats := ui.NewSessionStats()
 	stats.SeedTotals(100, 10, 0, 0, 0, 1)

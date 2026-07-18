@@ -20,6 +20,7 @@ type UsageCall struct {
 	ObservedOutput    bool
 	Compaction        bool
 	SideQuestion      bool
+	Guardian          bool
 }
 
 // SessionStats tracks statistics for a session.
@@ -31,6 +32,12 @@ type SessionStats struct {
 	CacheWriteTokens  int
 	ToolCallCount     int
 	LLMCallCount      int
+
+	GuardianInputTokens       int
+	GuardianOutputTokens      int
+	GuardianCachedInputTokens int
+	GuardianCacheWriteTokens  int
+	GuardianLLMCallCount      int
 
 	CompactionInputTokens       int
 	CompactionOutputTokens      int
@@ -70,6 +77,9 @@ func (s *SessionStats) SeedTotals(input, output, cached, cacheWrite, toolCalls, 
 	s.InputTokens, s.OutputTokens = input, output
 	s.CachedInputTokens, s.CacheWriteTokens = cached, cacheWrite
 	s.ToolCallCount, s.LLMCallCount = toolCalls, llmCalls
+	s.GuardianInputTokens, s.GuardianOutputTokens = 0, 0
+	s.GuardianCachedInputTokens, s.GuardianCacheWriteTokens = 0, 0
+	s.GuardianLLMCallCount = 0
 	s.CompactionInputTokens, s.CompactionOutputTokens = 0, 0
 	s.CompactionCachedInputTokens, s.CompactionCacheWriteTokens = 0, 0
 	s.CompactionLLMCallCount = 0
@@ -179,6 +189,32 @@ func (s *SessionStats) AddSideQuestionUsageForModel(model string, input, output,
 	})
 }
 
+// AddGuardianUsageForModel records guardian-review usage in aggregate token,
+// call, and pricing totals without disturbing main-request timing or context hints.
+func (s *SessionStats) AddGuardianUsageForModel(model string, input, output, cached, cacheWrite int) {
+	if input == 0 && output == 0 && cached == 0 && cacheWrite == 0 {
+		return
+	}
+	s.InputTokens += input
+	s.OutputTokens += output
+	s.CachedInputTokens += cached
+	s.CacheWriteTokens += cacheWrite
+	s.LLMCallCount++
+	s.GuardianInputTokens += input
+	s.GuardianOutputTokens += output
+	s.GuardianCachedInputTokens += cached
+	s.GuardianCacheWriteTokens += cacheWrite
+	s.GuardianLLMCallCount++
+	s.usageCalls = append(s.usageCalls, UsageCall{
+		Model:             strings.TrimSpace(model),
+		InputTokens:       input,
+		OutputTokens:      output,
+		CachedInputTokens: cached,
+		CacheWriteTokens:  cacheWrite,
+		Guardian:          true,
+	})
+}
+
 // DiscardUsage removes provisional usage calls from the tail and resets any
 // uncompleted attempt activity. Performance is always derived from retained
 // call records, so TTFT and throughput are restored exactly after a retry.
@@ -190,7 +226,7 @@ func (s *SessionStats) DiscardUsage(input, output, cached, cacheWrite, calls int
 	s.LLMCallCount = max(0, s.LLMCallCount-calls)
 	remaining := calls
 	for i := len(s.usageCalls) - 1; i >= 0 && remaining > 0; i-- {
-		if s.usageCalls[i].Compaction || s.usageCalls[i].SideQuestion {
+		if s.usageCalls[i].Compaction || s.usageCalls[i].SideQuestion || s.usageCalls[i].Guardian {
 			continue
 		}
 		s.usageCalls = append(s.usageCalls[:i], s.usageCalls[i+1:]...)
@@ -205,7 +241,7 @@ func (s *SessionStats) rebuildPerCallHints() {
 	s.lastInputTokens, s.lastOutputTokens, s.peakInputTokens = 0, 0, 0
 	s.hasPerCallUsage = false
 	for _, call := range s.usageCalls {
-		if call.SideQuestion {
+		if call.SideQuestion || call.Guardian {
 			continue
 		}
 		total := call.InputTokens + call.CachedInputTokens + call.OutputTokens

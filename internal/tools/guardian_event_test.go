@@ -10,8 +10,9 @@ import (
 func TestGuardianEventRetainsShellCorrelation(t *testing.T) {
 	mgr := NewApprovalManager(nil)
 	mgr.SetAutoHeadless(true)
+	wantUsage := llm.Usage{InputTokens: 31, OutputTokens: 7, CachedInputTokens: 20, CacheWriteTokens: 4}
 	mgr.PolicyReviewFunc = func(context.Context, PolicyReviewRequest) (PolicyDecision, error) {
-		return PolicyDecision{Allowed: true, RiskLevel: "low", UserAuthorization: "high"}, nil
+		return PolicyDecision{Allowed: true, RiskLevel: "low", UserAuthorization: "high", Model: "guardian-model", Usage: wantUsage}, nil
 	}
 	var got GuardianEvent
 	mgr.GuardianEventFunc = func(event GuardianEvent) { got = event }
@@ -23,5 +24,8 @@ func TestGuardianEventRetainsShellCorrelation(t *testing.T) {
 	}
 	if got.ToolCallID != "shell-call" || got.Command != "echo hello" || got.WorkDir != "/tmp/work" || got.Outcome != GuardianApproved {
 		t.Fatalf("guardian event lost correlation: %#v", got)
+	}
+	if got.Model != "guardian-model" || got.Usage != wantUsage {
+		t.Fatalf("guardian event lost accounting data: %#v", got)
 	}
 }

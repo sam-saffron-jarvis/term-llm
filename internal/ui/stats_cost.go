@@ -25,6 +25,9 @@ func EstimateSessionStatsCost(stats *SessionStats, fallbackModel string) (float6
 	var total float64
 	for _, call := range calls {
 		model := strings.TrimSpace(call.Model)
+		if model == "" && call.Guardian {
+			return 0, fmt.Errorf("guardian model unknown")
+		}
 		if model == "" {
 			model = strings.TrimSpace(fallbackModel)
 		}

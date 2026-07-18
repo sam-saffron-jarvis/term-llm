@@ -207,11 +207,22 @@ type mockStore struct {
 	compacted        []session.Message
 	compactSession   string
 	compactErr       error
+	metricUpdates    []metricUpdate
+}
+
+type metricUpdate struct {
+	id                                                     string
+	llmTurns, toolCalls, input, output, cached, cacheWrite int
 }
 
 type statusUpdate struct {
 	id     string
 	status session.SessionStatus
+}
+
+func (s *mockStore) UpdateMetrics(_ context.Context, id string, llmTurns, toolCalls, inputTokens, outputTokens, cachedInputTokens, cacheWriteTokens int) error {
+	s.metricUpdates = append(s.metricUpdates, metricUpdate{id: id, llmTurns: llmTurns, toolCalls: toolCalls, input: inputTokens, output: outputTokens, cached: cachedInputTokens, cacheWrite: cacheWriteTokens})
+	return nil
 }
 
 func (s *mockStore) Get(_ context.Context, id string) (*session.Session, error) {
@@ -462,6 +473,26 @@ func TestPlainQuestionDoesNotOpenHelp(t *testing.T) {
 	rm := result.(*Model)
 	if rm.dialog.IsOpen() {
 		t.Fatalf("plain ? should not open help dialog")
+	}
+}
+
+func TestStatsModalRendersGuardianUsageBreakdown(t *testing.T) {
+	m := newCmdTestModel(&mockStore{})
+	m.stats = ui.NewSessionStats()
+	m.stats.AddGuardianUsageForModel("guardian-model", 41, 9, 30, 5)
+
+	content := m.renderStatsModal()
+	for _, want := range []string{
+		"Guardian Usage",
+		"Requests:           1",
+		"Fresh input tokens: 41",
+		"Cache read tokens:  30",
+		"Cache write tokens: 5",
+		"Output tokens:      9",
+	} {
+		if !strings.Contains(content, want) {
+			t.Fatalf("stats content missing %q:\n%s", want, content)
+		}
 	}
 }
 

@@ -4,9 +4,55 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/tools"
 	"github.com/samsaffron/term-llm/internal/ui"
 )
+
+func TestGuardianReviewPersistsSessionMetrics(t *testing.T) {
+	store := &mockStore{}
+	m := newTestChatModel(true)
+	m.store = store
+	m.sess = &session.Session{ID: "session-1"}
+	usage := llm.Usage{InputTokens: 41, OutputTokens: 9, CachedInputTokens: 30, CacheWriteTokens: 5}
+
+	m.Update(GuardianReviewMsg{Event: tools.GuardianEvent{Model: "guardian-model", Usage: usage, Message: "guardian: denied", Outcome: tools.GuardianDenied}})
+
+	if len(store.metricUpdates) != 1 || store.metricUpdates[0] != (metricUpdate{id: "session-1", input: 41, output: 9, cached: 30, cacheWrite: 5}) {
+		t.Fatalf("persisted guardian metrics = %+v", store.metricUpdates)
+	}
+	if m.sess.InputTokens != 41 || m.sess.OutputTokens != 9 || m.sess.CachedInputTokens != 30 || m.sess.CacheWriteTokens != 5 {
+		t.Fatalf("session guardian metrics = %+v", m.sess)
+	}
+}
+
+func TestSubagentGuardianReviewAccountsUsage(t *testing.T) {
+	m := newTestChatModel(true)
+	usage := llm.Usage{InputTokens: 17, OutputTokens: 6, CachedInputTokens: 9, CacheWriteTokens: 3}
+
+	m.Update(SubagentProgressMsg{CallID: "spawn-1", Event: tools.SubagentEvent{Type: tools.SubagentEventGuardian, Guardian: &tools.GuardianEvent{Model: "child-guardian", Usage: usage}}})
+
+	calls, _ := m.stats.UsageCalls()
+	if m.stats.InputTokens != 17 || m.stats.OutputTokens != 6 || len(calls) != 1 || !calls[0].Guardian || calls[0].Model != "child-guardian" {
+		t.Fatalf("subagent guardian usage not accounted: stats=%+v calls=%+v", m.stats, calls)
+	}
+}
+
+func TestGuardianReviewAccountsUsage(t *testing.T) {
+	m := newTestChatModel(true)
+	usage := llm.Usage{InputTokens: 41, OutputTokens: 9, CachedInputTokens: 30, CacheWriteTokens: 5}
+
+	m.Update(GuardianReviewMsg{Event: tools.GuardianEvent{Model: "guardian-model", Usage: usage, Message: "guardian: approved", Outcome: tools.GuardianApproved}})
+
+	if m.stats.InputTokens != 41 || m.stats.OutputTokens != 9 || m.stats.CachedInputTokens != 30 || m.stats.CacheWriteTokens != 5 || m.stats.LLMCallCount != 1 {
+		t.Fatalf("guardian usage not accounted: %+v", m.stats)
+	}
+	calls, _ := m.stats.UsageCalls()
+	if len(calls) != 1 || !calls[0].Guardian || calls[0].Model != "guardian-model" {
+		t.Fatalf("guardian call not retained for pricing: %+v", calls)
+	}
+}
 
 func TestGuardianReviewAttachesByToolCallIDOutOfOrder(t *testing.T) {
 	m := newTestChatModel(true)

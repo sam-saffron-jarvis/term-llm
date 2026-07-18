@@ -6,6 +6,7 @@ import (
 
 	"github.com/samsaffron/term-llm/internal/llm"
 	internalreasoning "github.com/samsaffron/term-llm/internal/reasoning"
+	"github.com/samsaffron/term-llm/internal/tools"
 	"github.com/samsaffron/term-llm/internal/ui"
 )
 
@@ -17,7 +18,17 @@ type askProgressiveRunResult struct {
 }
 
 type askProgressiveRunnerSink struct {
-	bridge *askProgressiveBridge
+	bridge   *askProgressiveBridge
+	guardian func(tools.GuardianEvent)
+}
+
+func (s askProgressiveRunnerSink) GuardianEvent(event tools.GuardianEvent) {
+	if s.bridge != nil {
+		addGuardianUsage(s.bridge.stats, event)
+	}
+	if s.guardian != nil {
+		s.guardian(event)
+	}
 }
 
 func (s askProgressiveRunnerSink) Event(ev llm.Event) {

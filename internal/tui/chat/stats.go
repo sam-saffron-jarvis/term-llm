@@ -167,6 +167,17 @@ func (m *Model) renderStatsModal() string {
 	b.WriteString(fmt.Sprintf("Cache read tokens:  %s\n", ui.FormatTokenCount(sideUsage.CachedInputTokens)))
 	b.WriteString(fmt.Sprintf("Output tokens:      %s\n", ui.FormatTokenCount(sideUsage.OutputTokens)))
 
+	b.WriteString("\nGuardian Usage\n")
+	if m.stats != nil {
+		b.WriteString(fmt.Sprintf("Requests:           %d\n", m.stats.GuardianLLMCallCount))
+		b.WriteString(fmt.Sprintf("Fresh input tokens: %s\n", ui.FormatTokenCount(m.stats.GuardianInputTokens)))
+		b.WriteString(fmt.Sprintf("Cache read tokens:  %s\n", ui.FormatTokenCount(m.stats.GuardianCachedInputTokens)))
+		b.WriteString(fmt.Sprintf("Cache write tokens: %s\n", ui.FormatTokenCount(m.stats.GuardianCacheWriteTokens)))
+		b.WriteString(fmt.Sprintf("Output tokens:      %s\n", ui.FormatTokenCount(m.stats.GuardianOutputTokens)))
+	} else {
+		b.WriteString("Requests:           0\n")
+	}
+
 	b.WriteString("\nCumulative Session Activity\n")
 	if m.stats != nil {
 		b.WriteString(fmt.Sprintf("LLM calls:          %d\n", m.stats.LLMCallCount))
@@ -209,6 +220,26 @@ type compactionUsageMsg struct {
 	sessionID string
 	model     string
 	usage     llm.Usage
+}
+
+func (m *Model) recordGuardianUsage(ctx context.Context, model string, u llm.Usage) {
+	if u.BillableCountersZero() {
+		return
+	}
+	if m.stats == nil {
+		m.stats = ui.NewSessionStats()
+	}
+	m.stats.AddGuardianUsageForModel(model, u.InputTokens, u.OutputTokens, u.CachedInputTokens, u.CacheWriteTokens)
+	sessionID := sessionIDOf(m.sess)
+	if m.store != nil && sessionID != "" {
+		_ = m.store.UpdateMetrics(ctx, sessionID, 0, 0, u.InputTokens, u.OutputTokens, u.CachedInputTokens, u.CacheWriteTokens)
+	}
+	if m.sess != nil {
+		m.sess.InputTokens += u.InputTokens
+		m.sess.OutputTokens += u.OutputTokens
+		m.sess.CachedInputTokens += u.CachedInputTokens
+		m.sess.CacheWriteTokens += u.CacheWriteTokens
+	}
 }
 
 func (m *Model) recordCompactionUsage(ctx context.Context, sessionID, model string, u llm.Usage) {

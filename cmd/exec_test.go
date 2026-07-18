@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/tools"
 	"github.com/samsaffron/term-llm/internal/ui"
 )
 
@@ -34,6 +35,19 @@ func TestEnvEnabled(t *testing.T) {
 				t.Fatalf("envEnabled(%q)=%v, want %v", allowAutoRunEnv, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestExecRunSinkAccountsGuardianUsage(t *testing.T) {
+	stats := ui.NewSessionStats()
+	sink := &execRunSink{stats: stats}
+	usage := llm.Usage{InputTokens: 11, OutputTokens: 3, CachedInputTokens: 7, CacheWriteTokens: 2}
+
+	sink.GuardianEvent(tools.GuardianEvent{Model: "guardian-model", Usage: usage})
+
+	calls, _ := stats.UsageCalls()
+	if stats.InputTokens != 11 || stats.OutputTokens != 3 || stats.CachedInputTokens != 7 || stats.CacheWriteTokens != 2 || len(calls) != 1 || !calls[0].Guardian || calls[0].Model != "guardian-model" {
+		t.Fatalf("exec guardian stats = %+v calls=%+v", stats, calls)
 	}
 }
 
