@@ -3858,6 +3858,73 @@ func TestResponsesUIBareSessionIDAppendsServerHistory(t *testing.T) {
 	}
 }
 
+func TestResponsesMessageBackedPreviousResponseAcceptsBatchedToolOutputs(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "sessions.db")
+	store, err := session.NewStore(session.Config{Enabled: true, Path: dbPath})
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer store.Close()
+
+	provider := llm.NewMockProvider("mock").
+		AddTurn(llm.MockTurn{ToolCalls: []llm.ToolCall{
+			{ID: "call_1", Name: "read_file", Arguments: json.RawMessage(`{"path":"a.txt"}`)},
+			{ID: "call_2", Name: "read_file", Arguments: json.RawMessage(`{"path":"b.txt"}`)},
+		}}).
+		AddTextResponse("done")
+	manager := newServeSessionManager(time.Minute, 10, func(ctx context.Context) (*serveRuntime, error) {
+		engine := llm.NewEngine(provider, nil)
+		rt := &serveRuntime{
+			provider:     provider,
+			engine:       engine,
+			store:        store,
+			defaultModel: "mock-model",
+		}
+		rt.Touch()
+		return rt, nil
+	})
+	defer manager.Close()
+
+	srv := &serveServer{sessionMgr: manager, store: store}
+	const sessionID = "sess_durable_tool_batch"
+	firstBody := `{"input":"read both files","tools":[{"type":"function","name":"read_file","parameters":{"type":"object","properties":{"path":{"type":"string"}}}}]}`
+	code, firstResponse := doResponsesWithHeader(t, srv, firstBody, sessionID)
+	if code != http.StatusOK {
+		t.Fatalf("first request status = %d, want 200", code)
+	}
+	previousID, _ := firstResponse["id"].(string)
+	if !strings.HasPrefix(previousID, durableResponseMessagePrefix) {
+		t.Fatalf("first response id = %q, want %s*", previousID, durableResponseMessagePrefix)
+	}
+
+	secondBody := fmt.Sprintf(`{"previous_response_id":%q,"input":[{"type":"function_call_output","call_id":"call_1","output":"alpha"},{"type":"function_call_output","call_id":"call_2","output":"beta"}]}`, previousID)
+	code, _ = doResponses(t, srv, secondBody)
+	if code != http.StatusOK {
+		t.Fatalf("second request status = %d, want 200", code)
+	}
+	if len(provider.Requests) != 2 {
+		t.Fatalf("provider request count = %d, want 2", len(provider.Requests))
+	}
+
+	gotResults := map[string]llm.ToolResult{}
+	for _, msg := range provider.Requests[1].Messages {
+		for _, part := range msg.Parts {
+			if part.Type == llm.PartToolResult && part.ToolResult != nil {
+				gotResults[part.ToolResult.ID] = *part.ToolResult
+			}
+		}
+	}
+	for id, content := range map[string]string{"call_1": "alpha", "call_2": "beta"} {
+		result, ok := gotResults[id]
+		if !ok {
+			t.Fatalf("second provider request missing tool result %q", id)
+		}
+		if result.Name != "read_file" || result.Content != content {
+			t.Fatalf("tool result %q = (%q, %q), want (%q, %q)", id, result.Name, result.Content, "read_file", content)
+		}
+	}
+}
+
 func TestResponsesMessageBackedPreviousResponseIgnoresStaleRuntimeTail(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "sessions.db")
 	store, err := session.NewStore(session.Config{Enabled: true, Path: dbPath})

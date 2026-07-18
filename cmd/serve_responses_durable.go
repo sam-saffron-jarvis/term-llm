@@ -120,13 +120,22 @@ func (s *serveServer) resolveDurablePreviousResponseID(ctx context.Context, prev
 }
 
 func validateDurableContinuationInput(inputMessages []llm.Message) error {
-	if len(inputMessages) != 1 {
-		return fmt.Errorf("message-backed previous_response_id requires exactly one new user message")
+	if len(inputMessages) == 1 && inputMessages[0].Role == llm.RoleUser {
+		return nil
 	}
-	if inputMessages[0].Role != llm.RoleUser && inputMessages[0].Role != llm.RoleTool {
-		return fmt.Errorf("message-backed previous_response_id only accepts one new user message or tool result")
+	if len(inputMessages) > 0 {
+		allTools := true
+		for _, msg := range inputMessages {
+			if msg.Role != llm.RoleTool {
+				allTools = false
+				break
+			}
+		}
+		if allTools {
+			return nil
+		}
 	}
-	return nil
+	return fmt.Errorf("message-backed previous_response_id requires exactly one new user message or one or more tool results")
 }
 
 func getMessageByID(ctx context.Context, store session.Store, msgID int64) (session.Message, error) {
