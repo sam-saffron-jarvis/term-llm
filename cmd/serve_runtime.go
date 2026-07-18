@@ -975,6 +975,23 @@ type serveRunResult struct {
 	SessionUsage llm.Usage
 }
 
+type serveRuntimeSetupContextKey struct{}
+
+func withServeRuntimeSetup(ctx context.Context, setup func(*llm.Request) error) context.Context {
+	if setup == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, serveRuntimeSetupContextKey{}, setup)
+}
+
+func serveRuntimeSetupFromContext(ctx context.Context) func(*llm.Request) error {
+	if ctx == nil {
+		return nil
+	}
+	setup, _ := ctx.Value(serveRuntimeSetupContextKey{}).(func(*llm.Request) error)
+	return setup
+}
+
 var (
 	errServeSessionBusy         = errors.New("session is busy processing another request")
 	errServeSessionLimitReached = errors.New("session limit reached: all sessions are busy")
@@ -992,11 +1009,33 @@ func (rt *serveRuntime) RunWithEventsAndStart(ctx context.Context, stateful bool
 	return rt.runWithGoal(ctx, stateful, replaceHistory, inputMessages, req, onStart, onEvent)
 }
 
+func (rt *serveRuntime) applyRequestAllowedTools(req *llm.Request) func() {
+	if rt == nil || rt.engine == nil || req == nil || !req.AllowedToolsPresent {
+		return func() {}
+	}
+	prior, priorPresent := rt.engine.AllowedToolsFilter()
+	effective := append([]string(nil), req.AllowedTools...)
+	if priorPresent {
+		effective = intersectAllowedToolNames(effective, prior)
+	}
+	rt.engine.SetAllowedToolsFilter(effective)
+	return func() {
+		rt.engine.RestoreAllowedToolsFilter(prior, priorPresent)
+	}
+}
+
 func (rt *serveRuntime) runOnce(ctx context.Context, stateful bool, replaceHistory bool, inputMessages []llm.Message, req llm.Request, onStart func(), onEvent func(llm.Event) error) (serveRunResult, error) {
 	if !rt.mu.TryLock() {
 		return serveRunResult{}, errServeSessionBusy
 	}
 	defer rt.mu.Unlock()
+	if setup := serveRuntimeSetupFromContext(ctx); setup != nil {
+		if err := setup(&req); err != nil {
+			return serveRunResult{}, err
+		}
+	}
+	restoreAllowedTools := rt.applyRequestAllowedTools(&req)
+	defer restoreAllowedTools()
 	rt.Touch()
 	persisted := rt.ensurePersistedSession(ctx, req.SessionID, inputMessages)
 	if persisted {

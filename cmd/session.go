@@ -8,8 +8,10 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
+	"sync"
 
 	"github.com/samsaffron/term-llm/internal/agents"
 	"github.com/samsaffron/term-llm/internal/config"
@@ -848,6 +850,20 @@ func SetupSkillsInDir(cfg *config.SkillsConfig, skillsFlag string, agentSkills s
 	return setup
 }
 
+func intersectAllowedToolNames(left, right []string) []string {
+	allowed := make(map[string]bool, len(right))
+	for _, name := range right {
+		allowed[name] = true
+	}
+	result := make([]string, 0, len(left))
+	for _, name := range left {
+		if allowed[name] {
+			result = append(result, name)
+		}
+	}
+	return result
+}
+
 // RegisterSkillToolWithEngine registers activate_skill on the engine when skills are available.
 // This is independent of local tool manager setup so skills work in both agent-only and tools modes.
 func RegisterSkillToolWithEngine(engine *llm.Engine, toolMgr *tools.ToolManager, skillsSetup *skills.Setup) {
@@ -865,8 +881,40 @@ func RegisterSkillToolWithEngine(engine *llm.Engine, toolMgr *tools.ToolManager,
 		return
 	}
 
-	skillTool.SetOnActivated(func(allowedTools []string) {
-		engine.SetAllowedTools(allowedTools)
+	var skillPolicyMu sync.Mutex
+	var baselineTools []string
+	var baselinePresent bool
+	var appliedTools []string
+	var appliedPresent bool
+	var skillPolicyActive bool
+	skillTool.SetOnActivated(func(allowedTools []string, present bool) {
+		skillPolicyMu.Lock()
+		defer skillPolicyMu.Unlock()
+		currentTools, currentPresent := engine.AllowedToolsFilter()
+		if !skillPolicyActive || currentPresent != appliedPresent || !slices.Equal(currentTools, appliedTools) {
+			// Another owner (for example a direct user skill turn) restored or
+			// changed policy since the last model activation. Treat that current
+			// policy as the new baseline rather than restoring stale state.
+			baselineTools, baselinePresent = currentTools, currentPresent
+			skillPolicyActive = true
+		}
+		if !present {
+			// Omitted means end any prior model-skill restriction and inherit
+			// the agent/session policy captured before activation.
+			engine.RestoreAllowedToolsFilter(baselineTools, baselinePresent)
+			baselineTools = nil
+			baselinePresent = false
+			appliedTools = nil
+			appliedPresent = false
+			skillPolicyActive = false
+			return
+		}
+		effective := append([]string(nil), allowedTools...)
+		if baselinePresent {
+			effective = intersectAllowedToolNames(effective, baselineTools)
+		}
+		engine.SetAllowedToolsFilter(effective)
+		appliedTools, appliedPresent = engine.AllowedToolsFilter()
 	})
 	if toolMgr != nil {
 		skillTool.SetOnToolsActivated(func(defs []skills.SkillToolDef, skillDir string) {

@@ -6,7 +6,7 @@ const { elements } = app;
 const input = elements.promptInput;
 const menu = elements.slashCommandMenu;
 
-const commands = [
+const builtInCommands = [
   {
     name: '/compact',
     description: 'Compress the active conversation context',
@@ -36,6 +36,88 @@ const commands = [
     description: 'Ask without interrupting the main response',
   },
 ].sort((a, b) => a.name.localeCompare(b.name));
+
+let skillCommands = [];
+let commands = [...builtInCommands];
+let skillRefreshGeneration = 0;
+const builtInNames = new Set(builtInCommands.map((command) => command.name));
+
+const rebuildCommands = () => {
+  commands = [...builtInCommands, ...skillCommands]
+    .sort((a, b) => a.name.localeCompare(b.name));
+};
+
+const setSkillCommands = (payload) => {
+  const rows = Array.isArray(payload) ? payload : (Array.isArray(payload?.skills) ? payload.skills : []);
+  const seen = new Set();
+  skillCommands = [];
+  rows.forEach((skill) => {
+    const bareName = String(skill?.name || '').trim();
+    if (!/^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/.test(bareName) || skill?.collides_with_builtin) return;
+    const name = `/${bareName}`;
+    if (builtInNames.has(name) || seen.has(name)) return;
+    seen.add(name);
+    const hint = String(skill?.argument_hint || '').trim();
+    const source = String(skill?.source || 'skill').trim();
+    const isolated = skill?.execution === 'isolated';
+    const markers = [`skill:${source}`];
+    if (isolated) markers.push('isolated');
+    skillCommands.push({
+      name,
+      displayName: hint ? `${name} ${hint}` : name,
+      description: `${String(skill?.description || '').trim()} · ${markers.join(' · ')}`,
+      skill: {
+        name: bareName,
+        execution: isolated ? 'isolated' : 'main',
+        source,
+        argumentHint: hint,
+      },
+    });
+  });
+  rebuildCommands();
+  update();
+};
+
+const matchSkillInvocation = (value) => {
+  const match = String(value || '').match(/^\/([a-z0-9](?:[a-z0-9-]*[a-z0-9])?)(?:\s+([\s\S]*))?$/);
+  if (!match) return null;
+  const command = skillCommands.find((entry) => entry.skill?.name === match[1]);
+  if (!command) return null;
+  return {
+    ...command.skill,
+    arguments: match[2] || '',
+    invocation: String(value || ''),
+  };
+};
+
+const refreshSkillCommands = async (sessionId) => {
+  const generation = ++skillRefreshGeneration;
+  const id = String(sessionId || '').trim();
+  if (!id || typeof fetch !== 'function') {
+    if (generation === skillRefreshGeneration) setSkillCommands([]);
+    return [];
+  }
+  const prefix = app.UI_PREFIX || '/ui';
+  const headers = typeof app.requestHeaders === 'function'
+    ? app.requestHeaders(id)
+    : { 'Content-Type': 'application/json', session_id: id };
+  try {
+    const response = await fetch(`${prefix}/v1/sessions/${encodeURIComponent(id)}/skills`, { headers });
+    if (!response.ok) {
+      if (generation === skillRefreshGeneration) setSkillCommands([]);
+      return [];
+    }
+    const payload = await response.json();
+    if (generation !== skillRefreshGeneration) return [];
+    setSkillCommands(payload);
+    app.reconcileSkillRuns?.(id, payload?.runs);
+    return skillCommands.map((entry) => ({ ...entry.skill }));
+  } catch (error) {
+    if (generation === skillRefreshGeneration) setSkillCommands([]);
+    console.warn('Failed to refresh skills', error);
+    return [];
+  }
+};
 
 let matches = [];
 let selected = 0;
@@ -71,7 +153,7 @@ const render = () => {
 
     const name = document.createElement('span');
     name.className = 'slash-command-name';
-    name.textContent = command.name;
+    name.textContent = command.displayName || command.name;
     const description = document.createElement('span');
     description.className = 'slash-command-description';
     description.textContent = command.description;
@@ -98,7 +180,14 @@ const update = () => {
     return;
   }
   const query = value.toLowerCase();
-  matches = commands.filter((command) => command.name.startsWith(query));
+  matches = commands.filter((command) => (
+    command.name.startsWith(query)
+    && (
+      !app.state?.streaming
+      || command.skill?.execution === 'isolated'
+      || command.name === '/side'
+    )
+  ));
   selected = 0;
   render();
 };
@@ -130,5 +219,11 @@ input.addEventListener('keydown', (event) => {
   }
 });
 
-Object.assign(app, { hideSlashCommands: hide, updateSlashCommands: update });
+Object.assign(app, {
+  hideSlashCommands: hide,
+  updateSlashCommands: update,
+  setSkillCommands,
+  refreshSkillCommands,
+  matchSkillInvocation,
+});
 })();

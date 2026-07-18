@@ -1942,10 +1942,74 @@
     .message.assistant,
     .message.tool,
     .message.model-swap,
+    .message.skill-run,
     .message.compaction,
     .message.compaction-boundary,
     .message.error {
       align-self: flex-start;
+    }
+
+    .message.skill-run {
+      width: min(100%, 820px);
+    }
+
+    .message.skill-run .message-body {
+      background: rgba(125,211,252,0.06);
+      border-color: rgba(125,211,252,0.24);
+      color: var(--text);
+      white-space: normal;
+    }
+
+    .skill-run-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 0.75rem;
+      color: var(--accent-strong);
+    }
+
+    .skill-run-detail {
+      margin-top: 0.35rem;
+      color: var(--text-muted);
+      font-size: 0.82rem;
+    }
+
+    .skill-run-output {
+      margin: 0.75rem 0 0;
+      max-height: 28rem;
+      overflow: auto;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+      color: var(--text);
+      font: inherit;
+    }
+
+    .skill-run-error {
+      margin-top: 0.6rem;
+      color: var(--error-text);
+    }
+
+    .skill-run-action {
+      display: inline-block;
+      margin-top: 0.6rem;
+      border: 1px solid var(--border-strong);
+      border-radius: 999px;
+      padding: 0.2rem 0.6rem;
+      background: transparent;
+      color: var(--accent-strong);
+      font: inherit;
+      font-size: 0.78rem;
+      text-decoration: none;
+      cursor: pointer;
+    }
+
+    .skill-run-header .skill-run-action {
+      margin-top: 0;
+    }
+
+    .skill-run-action:disabled {
+      cursor: default;
+      opacity: 0.6;
     }
 
     .message-body {

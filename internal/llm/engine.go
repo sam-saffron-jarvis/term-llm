@@ -108,9 +108,9 @@ type Engine struct {
 	// text-only models can call view_image instead of receiving image bytes.
 	indirectVision atomic.Bool
 
-	// allowedTools filters which tools can be executed.
-	// If nil or empty, all tools are allowed. When set, only listed tools can run.
-	// Used by skills with allowed-tools to restrict tool access.
+	// allowedTools filters which tools can be executed. A nil map means no
+	// filter; a non-nil empty map is an explicit filter allowing no tools.
+	// Used by skills with a present allowed-tools field.
 	allowedTools map[string]bool
 	allowedMu    sync.RWMutex
 
@@ -354,6 +354,68 @@ func (e *Engine) SetAllowedTools(tools []string) {
 			e.allowedTools[name] = true
 		}
 	}
+}
+
+// SetAllowedToolsFilter applies a present tool allowlist. Unlike
+// SetAllowedTools, an empty slice is meaningful and blocks every callable tool.
+func (e *Engine) SetAllowedToolsFilter(tools []string) {
+	e.allowedMu.Lock()
+	defer e.allowedMu.Unlock()
+	e.allowedTools = e.intersectAllowedTools(tools)
+}
+
+func (e *Engine) intersectAllowedTools(tools []string) map[string]bool {
+	allowed := make(map[string]bool, len(tools))
+	for _, name := range tools {
+		// Only add if tool is registered (intersection with available tools).
+		if _, ok := e.tools.Get(name); ok {
+			allowed[name] = true
+		}
+	}
+	return allowed
+}
+
+// AllowedToolsFilter returns a copy of the active filter and whether a filter
+// is present. It is used to restore a temporary per-turn skill restriction.
+func (e *Engine) AllowedToolsFilter() (tools []string, present bool) {
+	e.allowedMu.RLock()
+	defer e.allowedMu.RUnlock()
+	if e.allowedTools == nil {
+		return nil, false
+	}
+	tools = make([]string, 0, len(e.allowedTools))
+	for name := range e.allowedTools {
+		tools = append(tools, name)
+	}
+	sort.Strings(tools)
+	return tools, true
+}
+
+// FilterAllowedToolSpecs removes tool definitions that cannot execute under the
+// active allowlist. An omitted filter returns specs unchanged; a present empty
+// filter returns an empty non-nil slice.
+func (e *Engine) FilterAllowedToolSpecs(specs []ToolSpec) []ToolSpec {
+	e.allowedMu.RLock()
+	defer e.allowedMu.RUnlock()
+	if e.allowedTools == nil {
+		return specs
+	}
+	filtered := make([]ToolSpec, 0, len(specs))
+	for _, spec := range specs {
+		if e.allowedTools[spec.Name] {
+			filtered = append(filtered, spec)
+		}
+	}
+	return filtered
+}
+
+// RestoreAllowedToolsFilter restores a filter captured by AllowedToolsFilter.
+func (e *Engine) RestoreAllowedToolsFilter(tools []string, present bool) {
+	if !present {
+		e.ClearAllowedTools()
+		return
+	}
+	e.SetAllowedToolsFilter(tools)
 }
 
 // ClearAllowedTools removes the tool filter, allowing all registered tools.
@@ -929,9 +991,10 @@ func (e *Engine) IsToolAllowed(name string) bool {
 const indirectVisionInstruction = "Uploaded images are represented as local file-path references for this text-only model. When visual content matters, call the view_image tool with the referenced file_path and, if useful, a focused question. Do not claim to have inspected an image unless you have called view_image or the user-provided text is sufficient."
 
 func (e *Engine) prepareProviderRequest(req Request) Request {
+	prepared := req
+	prepared.Messages = providerSafeRequestMessages(req.Messages)
 	if e.IndirectVision() {
-		prepared := req
-		normalized := ensureIndirectVisionImagePaths(req.Messages)
+		normalized := ensureIndirectVisionImagePaths(prepared.Messages)
 		rewritten, changed := rewriteImagePartsAsReferences(normalized)
 		prepared.Messages = rewritten
 		if changed {
@@ -939,9 +1002,45 @@ func (e *Engine) prepareProviderRequest(req Request) Request {
 		}
 		return prepared
 	}
-	prepared := req
-	prepared.Messages = hydrateImageDataFromPaths(req.Messages)
+	prepared.Messages = hydrateImageDataFromPaths(prepared.Messages)
 	return prepared
+}
+
+func providerSafeRequestMessages(messages []Message) []Message {
+	var output []Message
+	for index, message := range messages {
+		hasControlPart := false
+		for _, part := range message.Parts {
+			if part.Type == PartSkillActivation {
+				hasControlPart = true
+				break
+			}
+		}
+		if !hasControlPart {
+			if output != nil {
+				output = append(output, messages[index:]...)
+				return output
+			}
+			continue
+		}
+		if output == nil {
+			output = append([]Message(nil), messages[:index]...)
+		}
+		copyMessage := message
+		copyMessage.Parts = make([]Part, 0, len(message.Parts)-1)
+		for _, part := range message.Parts {
+			if part.Type != PartSkillActivation {
+				copyMessage.Parts = append(copyMessage.Parts, part)
+			}
+		}
+		if len(copyMessage.Parts) > 0 {
+			output = append(output, copyMessage)
+		}
+	}
+	if output == nil {
+		return messages
+	}
+	return output
 }
 
 func ensureIndirectVisionImagePaths(messages []Message) []Message {
@@ -1200,6 +1299,17 @@ func (e *Engine) Stream(ctx context.Context, req Request) (Stream, error) {
 	// Keep req.Search=true only for providers that must handle native search.
 	if req.ForceExternalSearch && caps.NativeWebSearch {
 		req.Search = false
+	}
+
+	// Keep the provider-visible tool surface aligned with execution policy. This
+	// matters for explicit-empty skill filters and for restrictions activated
+	// between agentic turns.
+	req.Tools = e.FilterAllowedToolSpecs(req.Tools)
+	if len(req.Tools) == 0 {
+		req.ToolChoice = ToolChoice{}
+		req.LastTurnToolChoice = nil
+	} else if req.ToolChoice.Mode == ToolChoiceName && !hasToolNamed(req.Tools, req.ToolChoice.Name) {
+		return nil, fmt.Errorf("selected tool %q is not allowed by the active tool filter", req.ToolChoice.Name)
 	}
 
 	if req.DebugRaw {
@@ -1839,8 +1949,17 @@ func (e *Engine) runLoop(ctx context.Context, req Request, send eventSender) err
 	}
 turnLoop:
 	for attempt := 0; attempt < maxTurns; attempt++ {
+		// A model-activated skill can tighten the filter between turns. Remove
+		// now-disallowed definitions before the next provider request.
+		req.Tools = e.FilterAllowedToolSpecs(req.Tools)
+		if len(req.Tools) == 0 {
+			req.ToolChoice = ToolChoice{}
+			req.LastTurnToolChoice = nil
+		}
+
 		// Inject any tool specs registered mid-loop (e.g. via skill activation)
 		if pending := e.drainPendingToolSpecs(); len(pending) > 0 {
+			pending = e.FilterAllowedToolSpecs(pending)
 			for _, spec := range pending {
 				if !hasToolNamed(req.Tools, spec.Name) {
 					req.Tools = append(req.Tools, spec)

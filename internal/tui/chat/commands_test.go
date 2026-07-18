@@ -21,7 +21,9 @@ import (
 	"github.com/samsaffron/term-llm/internal/agents/gist"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
+	runpkg "github.com/samsaffron/term-llm/internal/run"
 	"github.com/samsaffron/term-llm/internal/session"
+	"github.com/samsaffron/term-llm/internal/skills"
 	"github.com/samsaffron/term-llm/internal/tools"
 	"github.com/samsaffron/term-llm/internal/ui"
 	"github.com/samsaffron/term-llm/internal/worktree"
@@ -1810,6 +1812,84 @@ func TestSendMessage_RecordsCurrentModelUse(t *testing.T) {
 	}
 	if len(history) == 0 || history[0].Model != "claude-bin:opus" {
 		t.Fatalf("expected claude-bin:opus in model history, got %v", history)
+	}
+}
+
+func TestCmdQuitCancelsAndDrainsIsolatedSkillRun(t *testing.T) {
+	m := newTestChatModel(false)
+	m.sess = &session.Session{ID: "sess-skill-quit"}
+	cancelled := false
+	m.skillRuns = map[string]*skillRunState{
+		"skill-1": {
+			ID: "skill-1", Name: "review", Agent: "reviewer", Status: "running",
+			StartedAt: time.Now().Add(-time.Second), Cancel: func() { cancelled = true },
+			Activation: &skills.Activation{Skill: &skills.Skill{Name: "review"}, Metadata: skills.InvocationMetadata{Execution: skills.SkillExecutionIsolatedAgent}},
+		},
+	}
+
+	updated, quitCmd := m.cmdQuit()
+	rm := updated.(*Model)
+	if !cancelled {
+		t.Fatal("quit did not cancel isolated skill run")
+	}
+	if quitCmd != nil {
+		t.Fatal("quit must wait for isolated skill result persistence")
+	}
+
+	doneCmd := rm.handleSkillRunDone(skillRunDoneMsg{
+		RunID: "skill-1",
+		Result: runpkg.ChildRunResult{
+			RunID: "skill-1", ChildSessionID: "child-1", Output: "partial", CompletedAt: time.Now(),
+		},
+		Err: context.Canceled,
+	})
+	if doneCmd == nil {
+		t.Fatal("final isolated skill result did not release deferred quit")
+	}
+	if got := rm.skillRuns["skill-1"].Status; got != "cancelled" {
+		t.Fatalf("skill status = %q, want cancelled", got)
+	}
+}
+
+func TestCmdReloadCancelsAndDrainsIsolatedSkillRun(t *testing.T) {
+	m := newTestChatModel(false)
+	m.sess = &session.Session{ID: "sess-skill-reload"}
+	cancelled := false
+	m.skillRuns = map[string]*skillRunState{
+		"skill-1": {ID: "skill-1", Name: "review", Agent: "reviewer", Status: "running", StartedAt: time.Now(), Cancel: func() { cancelled = true }},
+	}
+
+	updated, reloadCmd := m.cmdReload()
+	rm := updated.(*Model)
+	if !cancelled || reloadCmd != nil {
+		t.Fatalf("reload should cancel and wait: cancelled=%v cmd=%v", cancelled, reloadCmd != nil)
+	}
+	if !rm.WantsReload() {
+		t.Fatal("reload request was not retained while draining skill run")
+	}
+}
+
+func TestCmdQuitAndReloadDrainAlreadyCancellingIsolatedSkillRun(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		run  func(*Model) (tea.Model, tea.Cmd)
+	}{
+		{name: "quit", run: func(m *Model) (tea.Model, tea.Cmd) { return m.cmdQuit() }},
+		{name: "reload", run: func(m *Model) (tea.Model, tea.Cmd) { return m.cmdReload() }},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			m := newTestChatModel(false)
+			m.sess = &session.Session{ID: "sess-skill-drain"}
+			m.skillRuns = map[string]*skillRunState{
+				"skill-1": {ID: "skill-1", Name: "review", Agent: "reviewer", Status: "cancelling", StartedAt: time.Now()},
+			}
+
+			updated, cmd := test.run(m)
+			result := updated.(*Model)
+			if cmd != nil || !result.quitAfterSkillRuns {
+				t.Fatalf("already-cancelling run was not drained: cmd=%v wait=%v", cmd != nil, result.quitAfterSkillRuns)
+			}
+		})
 	}
 }
 

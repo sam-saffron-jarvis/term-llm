@@ -120,6 +120,10 @@ type Request struct {
 	Depth                    int
 	ApprovalRole             string
 	ApprovalTranscriptPrefix []llm.Message
+
+	// ChildSkill configures an already-resolved direct skill on a fresh child
+	// engine. It is never interpreted as a request for model-driven activation.
+	ChildSkill *SkillRunMetadata
 }
 
 // EventSink receives the raw llm.Event stream for a run. Implementations should

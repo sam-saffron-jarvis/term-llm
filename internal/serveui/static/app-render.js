@@ -1416,7 +1416,68 @@ const createCompactionNode = (message) => {
   return article;
 };
 
+const createSkillRunNode = (message) => {
+  const article = document.createElement('article');
+  article.className = 'message skill-run';
+  article.dataset.messageId = message.id;
+  article.dataset.runId = message.runId || '';
+
+  const body = document.createElement('div');
+  body.className = 'message-body skill-run-body';
+  const header = document.createElement('div');
+  header.className = 'skill-run-header';
+  const title = document.createElement('strong');
+  title.textContent = `/${message.skill || 'skill'} · ${message.agent ? `@${message.agent} · ` : ''}${message.status || 'running'}`;
+  header.appendChild(title);
+
+  if (message.status === 'running' || message.status === 'cancelling') {
+    const cancel = document.createElement('button');
+    cancel.type = 'button';
+    cancel.className = 'skill-run-action';
+    cancel.textContent = message.status === 'cancelling' ? 'Cancelling…' : 'Cancel';
+    cancel.disabled = message.status === 'cancelling';
+    cancel.addEventListener('click', () => app.cancelSkillRun?.(message.sessionId || state.activeSessionId, message.runId));
+    header.appendChild(cancel);
+  }
+  body.appendChild(header);
+
+  const detail = document.createElement('div');
+  detail.className = 'skill-run-detail';
+  const duration = Number(message.durationMs || 0);
+  detail.textContent = [
+    message.runId ? `run ${message.runId}` : '',
+    duration > 0 ? `${(duration / 1000).toFixed(1)}s` : '',
+    message.progress || '',
+  ].filter(Boolean).join(' · ');
+  if (detail.textContent) body.appendChild(detail);
+
+  if (message.output) {
+    const output = document.createElement('pre');
+    output.className = 'skill-run-output';
+    output.textContent = message.output;
+    body.appendChild(output);
+  }
+  if (message.error) {
+    const error = document.createElement('div');
+    error.className = 'skill-run-error';
+    error.textContent = message.error;
+    body.appendChild(error);
+  }
+  if (message.childSessionId) {
+    const link = document.createElement('a');
+    link.className = 'skill-run-action';
+    link.href = `${app.UI_PREFIX || '/ui'}/${encodeURIComponent(message.childSessionId)}`;
+    link.textContent = 'Open child session';
+    body.appendChild(link);
+  }
+
+  article.appendChild(body);
+  article.appendChild(createMetaNode(message.created, message));
+  return article;
+};
+
 const createMessageNode = (message) => {
+  if (message.role === 'skill-run') return createSkillRunNode(message);
   if (message.role === 'tool') return createToolCard(message);
   if (message.role === 'tool-group') return createToolGroupNode(message);
   if (message.role === 'model-swap') return createModelSwapNode(message);
@@ -2282,6 +2343,20 @@ const messageRenderKey = (message) => {
         activeBoundary: Boolean(message.activeBoundary),
         compactionSeq: Number(message.compactionSeq ?? -1),
         compactionCount: Number(message.compactionCount || 0),
+        created: message.created || 0
+      });
+    case 'skill-run':
+      return JSON.stringify({
+        role: message.role,
+        runId: message.runId || '',
+        skill: message.skill || '',
+        agent: message.agent || '',
+        status: message.status || '',
+        progress: message.progress || '',
+        output: message.output || '',
+        error: message.error || '',
+        childSessionId: message.childSessionId || '',
+        durationMs: Number(message.durationMs || 0),
         created: message.created || 0
       });
     default:

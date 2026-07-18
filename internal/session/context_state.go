@@ -354,23 +354,65 @@ func isInternalCompactionSummaryMessage(msg Message) bool {
 // messages, injecting systemPrompt only when the active context doesn't already
 // include a system message, then applies provider-safe conversation filtering.
 func LLMActiveMessages(messages []Message, activeStart int, systemPrompt string) []llm.Message {
-	if activeStart > 0 {
-		if activeStart < len(messages) {
-			messages = messages[activeStart:]
-		} else {
-			messages = nil
-		}
+	if activeStart < 0 || activeStart > len(messages) {
+		activeStart = 0
 	}
 
-	out := make([]llm.Message, 0, len(messages)+1)
+	var retained []Message
+	if activeStart > 0 {
+		activeKeys := make(map[string]bool)
+		for i := activeStart; i < len(messages); i++ {
+			if key := skillContextMessageKey(messages[i]); key != "" {
+				activeKeys[key] = true
+			}
+		}
+		// Retain only the latest pre-boundary activation for each skill context.
+		// The durable transcript keeps every invocation; this protects provider
+		// context from growing without bound after repeated compactions.
+		for i := activeStart - 1; i >= 0; i-- {
+			key := skillContextMessageKey(messages[i])
+			if key == "" || activeKeys[key] {
+				continue
+			}
+			activeKeys[key] = true
+			retained = append(retained, messages[i])
+		}
+		for left, right := 0, len(retained)-1; left < right; left, right = left+1, right-1 {
+			retained[left], retained[right] = retained[right], retained[left]
+		}
+		messages = messages[activeStart:]
+	}
+
+	out := make([]llm.Message, 0, len(retained)+len(messages)+1)
 	hasSystem := len(messages) > 0 && messages[0].Role == llm.RoleSystem
-	if strings.TrimSpace(systemPrompt) != "" && !hasSystem {
+	messageStart := 0
+	if hasSystem {
+		out = append(out, messages[0].ToLLMMessage())
+		messageStart = 1
+	} else if strings.TrimSpace(systemPrompt) != "" {
 		out = append(out, llm.SystemText(systemPrompt))
 	}
-	for i := range messages {
+	for i := range retained {
+		out = append(out, retained[i].ToLLMMessage())
+	}
+	for i := messageStart; i < len(messages); i++ {
 		out = append(out, messages[i].ToLLMMessage())
 	}
 	return llm.FilterConversationMessages(out)
+}
+
+func skillContextMessageKey(message Message) string {
+	if message.Role != llm.RoleDeveloper {
+		return ""
+	}
+	for _, part := range message.Parts {
+		if part.Type != llm.PartSkillActivation || part.SkillActivation == nil {
+			continue
+		}
+		provenance := part.SkillActivation
+		return strings.Join([]string{provenance.Name, provenance.SourcePath, provenance.Origin, provenance.Execution}, "\x00")
+	}
+	return ""
 }
 
 // ResetContextEstimate clears the persisted context estimate baseline for the

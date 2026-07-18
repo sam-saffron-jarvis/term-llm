@@ -91,6 +91,13 @@ func (m *MockProvider) AddError(err error) *MockProvider {
 	return m.AddTurn(MockTurn{Error: err})
 }
 
+// RecordedRequests returns a snapshot of requests observed by the provider.
+func (m *MockProvider) RecordedRequests() []Request {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return append([]Request(nil), m.Requests...)
+}
+
 // Reset clears recorded requests and resets the turn index.
 func (m *MockProvider) Reset() {
 	m.mu.Lock()

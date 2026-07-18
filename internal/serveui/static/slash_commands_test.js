@@ -57,6 +57,7 @@ const document = {
 };
 const app = {
   elements: { promptInput, slashCommandMenu },
+  state: { streaming: false },
   autoGrowPrompt() { app.growCalls = (app.growCalls || 0) + 1; },
 };
 const window = { TermLLMApp: app };
@@ -108,5 +109,34 @@ assert(promptInput.value === '/compress ', 'Enter did not complete /compress');
 promptInput.value = '/unknown';
 promptInput.dispatch('input');
 assert(slashCommandMenu.hidden, 'autocomplete displayed with no matching commands');
+
+app.setSkillCommands({ skills: [
+  { name: 'review', description: 'Review changes', argument_hint: '[scope]', execution: 'isolated', source: 'local' },
+  { name: 'explain', description: 'Explain code', argument_hint: '', execution: 'main', source: 'user' },
+  { name: 'compact', description: 'Must not shadow built-in', execution: 'main', source: 'local', collides_with_builtin: true },
+  { name: 'h', description: 'Must not shadow built-in alias', execution: 'main', source: 'local', collides_with_builtin: true },
+] });
+promptInput.value = '/';
+promptInput.dispatch('input');
+const dynamicNames = slashCommandMenu.children.map((option) => option.children[0].textContent);
+assert(dynamicNames.includes('/review [scope]'), `dynamic skill hint missing: ${JSON.stringify(dynamicNames)}`);
+assert(dynamicNames.includes('/explain'), `dynamic main skill missing: ${JSON.stringify(dynamicNames)}`);
+assert(dynamicNames.filter((name) => name.startsWith('/compact')).length === 1, `built-in collision was duplicated: ${JSON.stringify(dynamicNames)}`);
+assert(!dynamicNames.includes('/h'), `built-in alias collision was shown: ${JSON.stringify(dynamicNames)}`);
+const reviewOption = slashCommandMenu.children.find((option) => option.children[0].textContent.startsWith('/review'));
+assert(reviewOption.children[1].textContent.includes('skill:local') && reviewOption.children[1].textContent.includes('isolated'), 'skill source/execution markers missing');
+
+const invocation = app.matchSkillInvocation('/review "internal config" lifecycle');
+assert(invocation && invocation.name === 'review' && invocation.arguments === '"internal config" lifecycle', `exact skill arguments were not preserved: ${JSON.stringify(invocation)}`);
+assert(app.matchSkillInvocation('/rev scope') === null, 'skill prefixes should not dispatch');
+assert(app.matchSkillInvocation('/tmp/file') === null, 'absolute paths should remain ordinary prompt text');
+
+app.state.streaming = true;
+promptInput.value = '/';
+promptInput.dispatch('input');
+const streamingNames = slashCommandMenu.children.map((option) => option.children[0].textContent);
+assert(streamingNames.includes('/review [scope]'), `isolated skill missing while streaming: ${JSON.stringify(streamingNames)}`);
+assert(streamingNames.includes('/side'), `streaming-safe built-in missing: ${JSON.stringify(streamingNames)}`);
+assert(!streamingNames.includes('/explain') && !streamingNames.includes('/compact'), `unsafe entries shown while streaming: ${JSON.stringify(streamingNames)}`);
 
 console.log('PASS: slash command discovery and keyboard completion');

@@ -101,6 +101,8 @@ type startResponseRunOptions struct {
 	resetResponseIDsOnSuccess bool
 	modelSwap                 *responseModelSwapExecution
 	idempotencyKey            string
+	onDone                    func()
+	runtimeSetup              func(*llm.Request) error
 }
 
 func newResponseRun(respID, sessionID, previousResponseID, model string, created int64, cancel context.CancelFunc) *responseRun {
@@ -1033,6 +1035,19 @@ func (m *responseRunManager) activeRunID(sessionID string) string {
 	return m.activeBySession[sessionID]
 }
 
+func (m *responseRunManager) runIfSessionIdle(sessionID string, fn func()) bool {
+	if strings.TrimSpace(sessionID) == "" || fn == nil {
+		return false
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.activeBySession[sessionID] != "" {
+		return false
+	}
+	fn()
+	return true
+}
+
 // ActiveSessionIDs returns session IDs that currently have an active
 // response run. Does not touch any runtime TTLs.
 func (m *responseRunManager) ActiveSessionIDs() map[string]bool {
@@ -1843,6 +1858,9 @@ func (s *serveServer) startResponseRun(runtime *serveRuntime, stateful bool, rep
 	}
 	if duplicate {
 		cancel()
+		if options.onDone != nil {
+			options.onDone()
+		}
 		return createdRun, nil
 	}
 
@@ -1873,6 +1891,9 @@ func (s *serveServer) startResponseRun(runtime *serveRuntime, stateful bool, rep
 	}
 
 	if err := mgr.start(func() {
+		if options.onDone != nil {
+			defer options.onDone()
+		}
 		defer func() {
 			mgr.clearActiveRun(sessionID, respID)
 			mgr.scheduleCleanup(respID)
@@ -1904,7 +1925,8 @@ func (s *serveServer) startResponseRun(runtime *serveRuntime, stateful bool, rep
 		}
 
 		streamState := newResponseRunStreamState(model, llmReq.ReasoningEffort)
-		result, err := runtime.RunWithEventsAndStart(runCtx, stateful, replaceHistory, inputMessages, llmReq, func() {
+		runtimeRunCtx := withServeRuntimeSetup(runCtx, options.runtimeSetup)
+		result, err := runtime.RunWithEventsAndStart(runtimeRunCtx, stateful, replaceHistory, inputMessages, llmReq, func() {
 			mgr.setActiveRun(sessionID, respID)
 		}, func(ev llm.Event) error {
 			return s.appendResponseRunEvent(runtime, run, streamState, ev)

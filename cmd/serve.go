@@ -390,7 +390,8 @@ func runServeLegacy(parentCtx context.Context, cmd *cobra.Command, args []string
 	if agent != nil {
 		agentSkills = agent.Skills
 	}
-	skillsSetup := SetupSkills(&cfg.Skills, "", agentSkills, cmd.ErrOrStderr())
+	effectiveSkillsConfig := applySkillsFlag(&cfg.Skills, agentSkills)
+	skillsSetup := SetupSkills(effectiveSkillsConfig, "", "", cmd.ErrOrStderr())
 	settings.SystemPrompt = InjectSkillsMetadata(settings.SystemPrompt, skillsSetup)
 
 	agentName := ""
@@ -637,6 +638,8 @@ func runServeLegacy(parentCtx context.Context, cmd *cobra.Command, args []string
 			jobsV2:         jobsV2,
 			cfgRef:         cfg,
 			store:          store,
+			skillsSetup:    skillsSetup,
+			skillsConfig:   effectiveSkillsConfig,
 			runtimeFactory: runtimeFactory,
 			widgetsMgr:     widgetsMgr,
 		}
@@ -1071,30 +1074,40 @@ func normalizeBasePath(raw string) (string, error) {
 }
 
 type serveServer struct {
-	cfg                  serveServerConfig
-	sessionMgr           *serveSessionManager
-	jobsV2               *jobsV2Manager
-	cfgRef               *config.Config
-	store                session.Store
-	server               *http.Server
-	shutdownCh           chan struct{}
-	shutdownOnce         sync.Once
-	modelsMu             sync.Mutex
-	modelsProviders      map[string]llm.Provider // keyed by provider name
-	modelsCache          map[string]serveModelsCacheEntry
-	responseToSession    sync.Map // response_id (string) → session_id (string)
-	sessionToResponse    sync.Map // session_id (string) → latest response_id (string)
-	responseRunsOnce     sync.Once
-	responseRuns         *responseRunManager
-	webrtcEnabled        bool
-	webrtcHeadSnippet    string // injected into index.html <head>; empty when WebRTC disabled
-	runtimeFactory       func(ctx context.Context, providerName string, model string) (*serveRuntime, error)
-	titleProviderFactory func(*config.Config) (llm.Provider, error)
-	widgetsMgr           *widgets.Manager
-	indexHTMLOnce        sync.Once
-	cachedIndexHTML      []byte
-	fileTrackStoreFn     func() *filetrack.Store // test seam; nil → process-wide store from config
-	worktreeRootFn       func() (string, error)  // test seam; nil → os.Getwd
+	cfg                     serveServerConfig
+	sessionMgr              *serveSessionManager
+	jobsV2                  *jobsV2Manager
+	cfgRef                  *config.Config
+	store                   session.Store
+	server                  *http.Server
+	shutdownCh              chan struct{}
+	shutdownOnce            sync.Once
+	modelsMu                sync.Mutex
+	modelsProviders         map[string]llm.Provider // keyed by provider name
+	modelsCache             map[string]serveModelsCacheEntry
+	responseToSession       sync.Map // response_id (string) → session_id (string)
+	sessionToResponse       sync.Map // session_id (string) → latest response_id (string)
+	responseRunsOnce        sync.Once
+	responseRuns            *responseRunManager
+	skillsSetup             *skills.Setup
+	skillsConfig            *config.SkillsConfig
+	skillsCacheMu           sync.Mutex
+	skillsByDir             map[string]serveSkillsCacheEntry
+	skillRunsMu             sync.Mutex
+	skillRuns               map[string]*serveSkillRun
+	skillRunsWG             sync.WaitGroup
+	skillRunsStopping       bool
+	skillRunRetention       time.Duration
+	skillChildRunnerFactory func(sessionID string, runtime *serveRuntime) (runpkg.ChildRunner, error)
+	webrtcEnabled           bool
+	webrtcHeadSnippet       string // injected into index.html <head>; empty when WebRTC disabled
+	runtimeFactory          func(ctx context.Context, providerName string, model string) (*serveRuntime, error)
+	titleProviderFactory    func(*config.Config) (llm.Provider, error)
+	widgetsMgr              *widgets.Manager
+	indexHTMLOnce           sync.Once
+	cachedIndexHTML         []byte
+	fileTrackStoreFn        func() *filetrack.Store // test seam; nil → process-wide store from config
+	worktreeRootFn          func() (string, error)  // test seam; nil → os.Getwd
 }
 
 // fileTrackStore returns the file-change history store, or nil when file
@@ -1109,6 +1122,12 @@ func (s *serveServer) fileTrackStore() *filetrack.Store {
 func (s *serveServer) Start() error {
 	s.shutdownCh = make(chan struct{})
 	s.shutdownOnce = sync.Once{}
+	s.skillRunsMu.Lock()
+	s.skillRunsStopping = false
+	s.skillRunsMu.Unlock()
+	s.skillsCacheMu.Lock()
+	s.skillsByDir = nil
+	s.skillsCacheMu.Unlock()
 	s.server = &http.Server{
 		Addr:              fmt.Sprintf("%s:%d", s.cfg.host, s.cfg.port),
 		Handler:           s.httpHandler(),
@@ -1231,19 +1250,19 @@ func (s *serveServer) contextWithShutdown(ctx context.Context) (context.Context,
 }
 
 func (s *serveServer) Stop(ctx context.Context) error {
-	if s.server == nil {
-		return nil
-	}
-	// Signal all SSE handlers to return immediately so server.Shutdown
-	// does not block waiting for long-lived streaming connections.
+	// Signal all SSE handlers and direct child runs to return immediately so
+	// server shutdown cannot outlive the session store they persist into.
 	s.shutdownOnce.Do(func() {
 		if s.shutdownCh != nil {
 			close(s.shutdownCh)
 		}
 	})
+	if s.server == nil {
+		return s.stopServeSkillRuns(ctx)
+	}
 
 	var wg sync.WaitGroup
-	errCh := make(chan error, 4)
+	errCh := make(chan error, 5)
 	run := func(fn func() error) {
 		wg.Add(1)
 		go func() {
@@ -1271,6 +1290,7 @@ func (s *serveServer) Stop(ctx context.Context) error {
 			return nil
 		})
 	}
+	run(func() error { return s.stopServeSkillRuns(ctx) })
 	run(func() error { return s.server.Shutdown(ctx) })
 
 	closeFileTrackingStore()

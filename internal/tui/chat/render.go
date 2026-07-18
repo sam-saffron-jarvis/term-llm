@@ -86,8 +86,8 @@ func (m *Model) View() tea.View {
 		renderedLines++
 	}
 
-	// Streaming response (if active)
-	if m.streaming {
+	// Live response/child-agent stream (if active)
+	if m.streaming || m.activeSkillRunCount() > 0 {
 		streaming := m.renderStreamingInline()
 		b.WriteString(streaming)
 		renderedLines += lipgloss.Height(streaming)
@@ -235,7 +235,7 @@ func (m *Model) viewAltScreen() string {
 	var streamingContent string
 	usedIncrementalAppend := false
 	waveOnlyChanged := false
-	if m.streaming {
+	if m.streaming || m.activeSkillRunCount() > 0 {
 		if m.tracker != nil {
 			trackerVersion := m.tracker.Version
 			if m.streamPerf != nil {
@@ -276,7 +276,7 @@ func (m *Model) viewAltScreen() string {
 	}
 
 	if contentChanged {
-		if m.streaming {
+		if m.streaming || m.activeSkillRunCount() > 0 {
 			streamingContent = m.renderStreamingInline()
 			if m.approvalModel == nil && m.askUserModel == nil && m.handoverPreview == nil {
 				contentLines, usedIncrementalAppend = m.tryAppendAltScreenStreamingContent(streamingContent)
@@ -330,12 +330,12 @@ func (m *Model) viewAltScreen() string {
 		m.captureReasoningClickSnapshot()
 		m.viewCache.lastRenderedVersion = m.viewCache.contentVersion
 		// On first render (including resumed sessions), anchor at latest content.
-		// On subsequent renders while streaming, preserve user scroll position
-		// unless they were already at bottom.
+		// On subsequent renders while a parent response or isolated child is live,
+		// preserve user scroll position unless they were already at bottom.
 		if m.handoverPreview != nil && m.handoverPreview.editing {
 			m.scrollToBottom = true
 		}
-		if firstRender || (m.streaming && wasAtBottom) || m.scrollToBottom {
+		if firstRender || ((m.streaming || m.activeSkillRunCount() > 0) && wasAtBottom) || m.scrollToBottom {
 			m.viewport.GotoBottom()
 			m.scrollToBottom = false
 		}
@@ -403,15 +403,14 @@ func (m *Model) viewAltScreen() string {
 		} else {
 			m.viewCache.lastContentStr = contentStr
 			m.contentLines = nil
-			m.viewCache.lastContentHistoryPlusStream = m.streaming && m.approvalModel == nil && m.askUserModel == nil && m.handoverPreview == nil
+			m.viewCache.lastContentHistoryPlusStream = (m.streaming || m.activeSkillRunCount() > 0) && m.approvalModel == nil && m.askUserModel == nil && m.handoverPreview == nil
 		}
-		if m.streaming {
+		if m.streaming || m.activeSkillRunCount() > 0 {
 			m.viewCache.lastStreamingContent = streamingContent
 		} else {
 			m.viewCache.lastStreamingContent = ""
 		}
 	}
-
 	// Post-process: apply selection highlight
 	viewOutput := m.viewCache.lastViewportView
 	if m.selection.Active {
@@ -1504,6 +1503,11 @@ func (m *Model) updateCompletions() {
 	query := strings.TrimPrefix(value, "/")
 	lowerQuery := strings.ToLower(query)
 
+	if items, ok := m.skillArgumentCompletionItems(query); ok {
+		m.completions.SetItems(items)
+		return
+	}
+
 	// While streaming, completion choices must be limited to slash commands that
 	// are safe to execute locally. Keep /effort argument completions available,
 	// but do not suggest commands such as /model that would mutate stream state.
@@ -1659,20 +1663,13 @@ func (m *Model) updateCompletions() {
 		}
 	}
 
-	// Default: use standard command filtering. During streaming, only suggest
-	// commands that are handled locally instead of sent as interjections.
+	// Default: use the combined built-in and dynamic skill catalog. During
+	// streaming, only local built-ins and isolated-agent skills are safe.
 	if m.streaming {
-		items := FilterCommands(query)
-		local := make([]Command, 0, len(items))
-		for _, item := range items {
-			if isStreamingLocalSlashCommand("/" + item.Name) {
-				local = append(local, item)
-			}
-		}
-		m.completions.SetItems(local)
+		m.completions.SetItems(m.filterStreamingSlashEntries(query))
 		return
 	}
-	m.completions.SetQuery(query)
+	m.completions.SetItems(m.filterSlashEntries(query))
 }
 
 // shortenModelName removes date suffixes from model names (e.g., "claude-sonnet-4-20250514" -> "claude-sonnet-4")

@@ -3,6 +3,7 @@ package skills
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -197,6 +198,36 @@ allowed-tools:
 				if skill.AllowedTools[i] != tool {
 					t.Errorf("expected tool %q at index %d, got %q", tool, i, skill.AllowedTools[i])
 				}
+			}
+		})
+	}
+}
+
+func TestParseSkillMDContent_AllowedToolsPresence(t *testing.T) {
+	tests := []struct {
+		name        string
+		field       string
+		wantPresent bool
+		wantTools   []string
+	}{
+		{name: "omitted", wantPresent: false},
+		{name: "explicit empty list", field: "allowed-tools: []\n", wantPresent: true, wantTools: []string{}},
+		{name: "explicit empty string", field: "allowed-tools: \"\"\n", wantPresent: true, wantTools: []string{}},
+		{name: "non-empty", field: "allowed-tools: read_file grep\n", wantPresent: true, wantTools: []string{"read_file", "grep"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			content := "---\nname: allowed-presence\ndescription: Presence test\n" + tt.field + "---\nBody\n"
+			skill, err := ParseSkillMDContent(content, false)
+			if err != nil {
+				t.Fatalf("ParseSkillMDContent() error = %v", err)
+			}
+			if skill.AllowedToolsPresent != tt.wantPresent {
+				t.Fatalf("AllowedToolsPresent = %v, want %v", skill.AllowedToolsPresent, tt.wantPresent)
+			}
+			if !reflect.DeepEqual(skill.AllowedTools, tt.wantTools) {
+				t.Fatalf("AllowedTools = %#v, want %#v", skill.AllowedTools, tt.wantTools)
 			}
 		})
 	}

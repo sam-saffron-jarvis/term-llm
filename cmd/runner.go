@@ -181,6 +181,7 @@ func (r *cmdRunner) prepare(ctx context.Context, req runpkg.Request, sink runpkg
 	settings.SessionID = req.SessionID
 	skillsSetup := SetupSkillsInDir(&cfg.Skills, req.Skills, agentSkills, r.errWriter(), settings.BaseDir)
 	settings.SystemPrompt = InjectSkillsMetadata(settings.SystemPrompt, skillsSetup)
+	settings.SystemPrompt = appendChildSkillSystemContext(settings.SystemPrompt, req.ChildSkill)
 
 	modelName := activeModel(cfg)
 	provider := req.ProviderInstance
@@ -262,6 +263,9 @@ func (r *cmdRunner) prepare(ctx context.Context, req runpkg.Request, sink runpkg
 			}
 		}
 	}
+	if err := applyChildSkillRuntime(engine, toolMgr, req.ChildSkill); err != nil {
+		return nil, err
+	}
 	if req.ContextEstimateTotalTokens > 0 {
 		engine.SetContextEstimateBaseline(req.ContextEstimateTotalTokens, req.ContextEstimateMessageCount)
 	}
@@ -338,6 +342,7 @@ func (r *cmdRunner) prepare(ctx context.Context, req runpkg.Request, sink runpkg
 	if len(req.ExtraTools) > 0 {
 		toolSpecs = append(toolSpecs, req.ExtraTools...)
 	}
+	toolSpecs = filterEngineAllowedToolSpecs(toolSpecs, engine)
 	toolChoice := llm.ToolChoice{}
 	if len(toolSpecs) > 0 {
 		toolChoice = llm.ToolChoice{Mode: llm.ToolChoiceAuto}

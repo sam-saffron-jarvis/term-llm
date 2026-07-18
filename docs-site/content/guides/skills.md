@@ -9,7 +9,7 @@ next:
   label: Built-in tools
   url: /reference/built-in-tools/
 ---
-Skills are portable instruction bundles that provide specialized knowledge for specific tasks. Unlike agents, skills don't change the provider or model. They just add context.
+Skills are portable instruction bundles that provide specialized knowledge for specific tasks. A skill can add instructions to the current conversation or, when declared with `context: fork`, run through a named agent in a fresh child session.
 
 ### Using Skills
 
@@ -55,7 +55,137 @@ When helping with Git:
 - Explain the implications of destructive operations
 ```
 
-**Skill search order:** local (project) → user (`~/.config/term-llm/skills/`) → built-in
+**Skill search order:** local (project, nearest directory first) → user (`~/.config/term-llm/skills/`) → ecosystem paths. The first skill with a given name wins.
+
+### Invoke a skill from chat
+
+User-invocable skills appear alongside built-in slash commands in the terminal and Web composers. Type the exact skill name followed by optional arguments:
+
+```text
+/explain internal/config
+/review "the staged changes"
+/commit-message src/ internal/
+```
+
+Only an exact listed name invokes a skill. Prefixes such as `/rev` and unknown slash text remain ordinary prompt input. Built-in commands win collisions; use `/skills run <name> [arguments]` in the TUI to run a colliding skill explicitly.
+
+Useful TUI commands:
+
+```text
+/skills list                     # user-invocable skills and execution mode
+/skills show review              # metadata and source
+/skills run review staged        # explicit invocation, including collisions
+/skills active                   # running isolated skills
+/skills cancel skill-1           # cancel only this child run
+```
+
+A normal skill runs in the current conversation. Its expanded body is stored as hidden developer context while the concise slash invocation remains visible. A `context: fork` skill starts an isolated child with no parent transcript, displays independent progress, and returns a linked result block. Forked skills can run while the parent is streaming; Esc still targets the parent response, while the skill-run cancel action or `/skills cancel` targets the child.
+
+The browser uses the same server-owned catalog and activation service. Reloading or switching sessions reconnects to active isolated runs instead of converting skill files into client-side prompt text.
+
+### Invocation metadata
+
+`name` and `description` are portable Agent Skills fields. The fields below are optional **client extensions** supported for compatibility with Claude-style skill clients; they are not part of the portable Agent Skills core format:
+
+| Field | Default | Meaning |
+|---|---:|---|
+| `user-invocable` | `true` | Set `false` for a model-only skill that should not appear as a slash command. |
+| `disable-model-invocation` | `false` | Set `true` for a manual-only skill hidden from model discovery and activation. |
+| `argument-hint` | empty | Completion hint such as `[scope]` or `<issue> [notes]`. |
+| `context` | `main` | `main` adds context to the active conversation; `fork` starts a fresh child. |
+| `agent` | `developer` for forks | Agent used for `context: fork`. It must resolve before a child session starts. |
+| `model` | agent default | Optional forked-run model override, using the same aliases or `provider:model` form as agents. |
+
+Unknown extension fields remain available to compatible clients. Known fields are validated strictly: booleans must be booleans, strings must be strings, and `context` must be `main` or `fork`.
+
+Arguments use deterministic shell-like tokenization: whitespace separates values, single and double quotes group values, and backslashes escape characters. There is no shell, environment-variable, tilde, command, or glob expansion. `$ARGUMENTS` expands to the original raw argument text and zero-based `$ARGUMENTS[N]` expands to one parsed value. Expansion is one pass, so placeholder-looking text supplied by a user is not expanded again. If the body contains no placeholder, non-empty arguments are appended under an `Invocation arguments` heading.
+
+#### Main-context example
+
+```markdown
+---
+name: explain
+description: Explain a code path in the current conversation
+argument-hint: <path-or-symbol>
+disable-model-invocation: true
+---
+
+Explain `$ARGUMENTS` using the current conversation and repository context.
+Do not edit files unless the user asks.
+```
+
+`disable-model-invocation: true` makes this manual-only: `/explain ...` works, but the model cannot discover or activate it.
+
+#### Isolated review example
+
+```markdown
+---
+name: review
+description: Review changes without consuming the parent transcript
+argument-hint: [scope]
+context: fork
+agent: reviewer
+model: fast
+allowed-tools: [read_file, grep, shell]
+---
+
+Review $ARGUMENTS for correctness, regressions, and missing tests.
+Report findings with file and line references. Do not modify files.
+```
+
+The reviewer sees the expanded skill instructions and the live workspace, but no parent conversation messages. Parent and child may read or modify the same working directory concurrently: results reflect the files observed during the run, not an immutable snapshot. Existing path restrictions, approvals, and tool permissions remain in force.
+
+#### Commit-message and model-only examples
+
+```markdown
+---
+name: commit-message
+description: Draft a commit message in an isolated specialist
+context: fork
+agent: commit-message
+argument-hint: [scope]
+allowed-tools: [shell]
+---
+
+Inspect the requested diff ($ARGUMENTS) and return one concise imperative commit message.
+```
+
+```markdown
+---
+name: internal-conventions
+description: Repository conventions for the model to load when useful
+user-invocable: false
+---
+
+Follow the repository's internal conventions...
+```
+
+`user-invocable: false` makes the second skill model-only. `never_auto` is different: it keeps a skill out of automatic model metadata while the skill remains visible to users.
+
+### Tool restrictions for direct invocation
+
+`allowed-tools` is a restrictive allowlist, never a permission grant. The skill's list is intersected with existing policy:
+
+- omitted `allowed-tools` adds no new restriction;
+- `allowed-tools: []` blocks every tool for that activation;
+- a non-empty list permits only those names that existing policy already allows;
+- script-backed `tools` declared by the skill are registered before filtering, but still require inclusion in a present allowlist.
+
+For isolated runs, normal approvals still apply to mutations. Cancellation preserves any partial final output returned by the child and keeps the child transcript linked for inspection. On quit, reload, or server shutdown, active child runners are cancelled and drained before their session store is closed.
+
+### Structured Web API
+
+First-party browser dispatch uses session-bound endpoints rather than reading `SKILL.md` in JavaScript:
+
+```text
+GET    /v1/sessions/{session-id}/skills
+POST   /v1/sessions/{session-id}/skills/invoke
+GET    /v1/sessions/{session-id}/skill-runs/{run-id}
+GET    /v1/sessions/{session-id}/skill-runs/{run-id}/events
+DELETE /v1/sessions/{session-id}/skill-runs/{run-id}
+```
+
+The invocation body is `{"name":"review","arguments":"staged"}`. The server resolves execution mode and returns either a normal response stream ID or an isolated run ID, child session ID, and event URL. Requests pass the server's normal bearer-token authentication and must send a `session_id` header matching the URL; run lookup also verifies that the run belongs to that session. This is a request-consistency check, not separate per-client authorization: a holder of the server token can access other server sessions by their IDs.
 
 ### Configuration
 
@@ -116,7 +246,7 @@ When `skills.enabled` is `true`, this happens at startup:
 5. The `activate_skill` tool is registered. When the model calls it, the full skill body is loaded and returned
 6. If there are more skills than shown, the `search_skills` tool is also registered and a hint is added to the system prompt telling the model to use it
 
-When `auto_invoke` is `false`, the `<available_skills>` block is still injected but the model won't call `activate_skill` on its own. It only fires when you pass `--skills name`.
+When `auto_invoke` is `false`, model-facing skill metadata and model activation are disabled, but user-invocable skills remain available through slash completion and `/skills run`.
 
 ### Skill Tools
 

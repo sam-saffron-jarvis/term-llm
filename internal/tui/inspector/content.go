@@ -679,6 +679,14 @@ func (r *ContentRenderer) renderMessageWithItems(msg session.Message, msgID stri
 			items = append(items, *item)
 			lineCount = item.EndLine - startLine
 		}
+	case llm.RoleEvent:
+		roleStyle = roleStyle.Foreground(theme.Muted)
+		content, item := r.renderBoxWithItem("Event", roleStyle, r.renderTextContent(msg), msgID, "message", startLine)
+		b.WriteString(content)
+		if item != nil {
+			items = append(items, *item)
+			lineCount = item.EndLine - startLine
+		}
 	case llm.RoleTool:
 		content, toolItems := r.renderToolResultsWithItems(msg, msgID, startLine)
 		b.WriteString(content)
@@ -854,14 +862,54 @@ func (r *ContentRenderer) renderUserContent(msg session.Message) string {
 func (r *ContentRenderer) renderTextContent(msg session.Message) string {
 	var texts []string
 	for _, part := range msg.Parts {
-		if part.Type == llm.PartText && part.Text != "" {
-			texts = append(texts, part.Text)
+		switch part.Type {
+		case llm.PartSkillActivation:
+			if part.SkillActivation != nil {
+				texts = append(texts, formatSkillActivationProvenance(part.SkillActivation))
+			}
+		case llm.PartText:
+			if part.Text != "" {
+				texts = append(texts, part.Text)
+			}
 		}
 	}
 	if len(texts) == 0 {
 		return "(empty)"
 	}
-	return strings.Join(texts, "\n")
+	return strings.Join(texts, "\n\n")
+}
+
+func formatSkillActivationProvenance(provenance *llm.SkillActivationProvenance) string {
+	if provenance == nil {
+		return ""
+	}
+	var lines []string
+	lines = append(lines, "Skill activation: "+provenance.Name)
+	appendField := func(label, value string) {
+		if strings.TrimSpace(value) != "" {
+			lines = append(lines, label+": "+value)
+		}
+	}
+	appendField("Source", provenance.Source)
+	appendField("Source path", provenance.SourcePath)
+	appendField("Origin", provenance.Origin)
+	appendField("Execution", provenance.Execution)
+	appendField("Arguments", provenance.RawArguments)
+	appendField("Agent", provenance.Agent)
+	appendField("Model", provenance.Model)
+	appendField("Run ID", provenance.RunID)
+	appendField("Child session", provenance.ChildSessionID)
+	appendField("Status", provenance.Status)
+	appendField("Started", provenance.StartedAt)
+	appendField("Completed", provenance.CompletedAt)
+	if provenance.AllowedToolsPresent {
+		allowed := "(none)"
+		if len(provenance.AllowedTools) > 0 {
+			allowed = strings.Join(provenance.AllowedTools, ", ")
+		}
+		appendField("Allowed tools", allowed)
+	}
+	return strings.Join(lines, "\n")
 }
 
 // renderAssistantContent renders assistant message content including tool calls

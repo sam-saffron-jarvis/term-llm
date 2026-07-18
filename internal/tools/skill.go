@@ -3,6 +3,7 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 
 	"github.com/samsaffron/term-llm/internal/llm"
@@ -18,9 +19,10 @@ type ActivateSkillArgs struct {
 	Prompt string `json:"prompt,omitempty"`
 }
 
-// SkillActivatedCallback is called when a skill is activated.
-// It receives the skill's allowed tools list (may be empty if skill has no restrictions).
-type SkillActivatedCallback func(allowedTools []string)
+// SkillActivatedCallback is called after a skill is activated. The presence bit
+// distinguishes an omitted allowlist (inherit all runtime tools) from an
+// explicitly empty allowlist (allow no callable tools).
+type SkillActivatedCallback func(allowedTools []string, present bool)
 
 // SkillToolsRegisteredCallback is called when a skill with declared tools is activated.
 // It receives the skill's tool definitions and the skill's source directory,
@@ -44,7 +46,6 @@ func NewActivateSkillTool(registry *skills.Registry, approval *ApprovalManager) 
 }
 
 // SetOnActivated sets a callback that's called when a skill is activated.
-// If the skill has allowed-tools, the callback receives the list for enforcement.
 func (t *ActivateSkillTool) SetOnActivated(cb SkillActivatedCallback) {
 	t.onActivated = cb
 }
@@ -98,28 +99,38 @@ func (t *ActivateSkillTool) Execute(ctx context.Context, args json.RawMessage) (
 		return llm.TextOutput(t.formatError(ErrInvalidParams, "skill name is required")), nil
 	}
 
-	// Get the skill
-	skill, err := t.registry.Get(a.Name)
+	activation, err := skills.NewActivator(t.registry).Activate(skills.ActivationRequest{
+		Name:   a.Name,
+		Origin: skills.SkillActivationModel,
+	})
 	if err != nil {
-		return llm.TextOutput(t.formatError(ErrFileNotFound, fmt.Sprintf("skill not found: %s", a.Name))), nil
+		var activationErr *skills.ActivationError
+		if errors.As(err, &activationErr) {
+			switch activationErr.Kind {
+			case skills.ActivationNotFound:
+				return llm.TextOutput(t.formatError(ErrFileNotFound, activationErr.Error())), nil
+			case skills.ActivationDisabledForOrigin:
+				return llm.TextOutput(t.formatError(ErrPermissionDenied, activationErr.Error())), nil
+			default:
+				return llm.TextOutput(t.formatError(ErrInvalidParams, activationErr.Error())), nil
+			}
+		}
+		return llm.TextOutput(t.formatError(ErrExecutionFailed, err.Error())), nil
 	}
 
-	// Check if skill directory is in allowed read paths
-	// For now, we'll trust the skill since it was discovered via the registry
-	// Future: Add approval flow for skill directory access
-
-	// Register skill-declared tools first so any allowed-tools filter can include them.
-	if t.onToolsActivated != nil && skill.HasTools() {
-		t.onToolsActivated(skill.Tools, skill.SourcePath)
+	// Register skill-declared tools first so a present allowed-tools filter can
+	// include the validated tools it declares.
+	if t.onToolsActivated != nil && len(activation.ToolDefs) > 0 {
+		t.onToolsActivated(activation.ToolDefs, activation.BaseDir)
 	}
 
-	// Notify callback about allowed-tools (if callback is set and skill has restrictions)
-	if t.onActivated != nil && len(skill.AllowedTools) > 0 {
-		t.onActivated(skill.AllowedTools)
+	// Notify on every activation so an omitted allowlist clears a restriction
+	// left by the prior model-activated skill. Explicit empty remains restrictive.
+	if t.onActivated != nil {
+		t.onActivated(activation.AllowedTools, activation.AllowedToolsPresent)
 	}
 
-	// Generate the activation response
-	response := skills.GenerateActivationResponse(skill, a.Prompt)
+	response := skills.GenerateActivationResponse(activation.Skill, a.Prompt)
 
 	return llm.TextOutput(response), nil
 }

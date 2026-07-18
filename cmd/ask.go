@@ -2940,8 +2940,17 @@ var (
 // runOnCompleteCapture executes the on_complete shell command with input piped to stdin
 // and captures stdout/stderr. Runs in the git repo root if available, else cwd.
 func runOnCompleteCapture(command, input string) (onCompleteResult, error) {
-	dir := "."
-	if gitInfo := tools.DetectGitRepo("."); gitInfo.IsRepo {
+	return runOnCompleteCaptureInDir(command, input, ".")
+}
+
+// runOnCompleteCaptureInDir executes an on_complete hook relative to baseDir,
+// using that checkout's git root when available.
+func runOnCompleteCaptureInDir(command, input, baseDir string) (onCompleteResult, error) {
+	dir := strings.TrimSpace(baseDir)
+	if dir == "" {
+		dir = "."
+	}
+	if gitInfo := tools.DetectGitRepo(dir); gitInfo.IsRepo {
 		dir = gitInfo.Root
 	}
 

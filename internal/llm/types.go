@@ -161,22 +161,27 @@ type Request struct {
 	ToolChoice               ToolChoice
 	LastTurnToolChoice       *ToolChoice // If set, force this tool choice on the last agentic turn
 	ParallelToolCalls        bool
-	Search                   bool
-	ForceExternalSearch      bool // If true, use external search even if provider supports native
-	DisableExternalWebFetch  bool // If true, do not inject external read_url even when provider lacks native fetch
-	ReasoningEffort          string
-	Responses                *ResponsesOptions // Advanced Responses API controls; nil uses provider defaults.
-	MaxOutputTokens          int
-	Temperature              float32
-	TemperatureSet           bool // If true, Temperature was explicitly provided, including zero
-	TopP                     float32
-	TopPSet                  bool              // If true, TopP was explicitly provided, including zero
-	ServiceTier              string            // Optional Responses API service tier; "priority" enables ChatGPT fast mode
-	ServiceTierSet           bool              // If true, ServiceTier overrides any provider-level default; empty clears it
-	MaxTurns                 int               // Max agentic turns for tool execution (0 = use default)
-	ToolMap                  map[string]string // Maps client tool names to server tool names (e.g. "WebSearch" → "search")
-	Debug                    bool
-	DebugRaw                 bool
+	// AllowedToolsPresent applies an internal, request-scoped execution filter.
+	// It is consumed by runtimes before calling Engine.Stream and is not provider metadata.
+	// A present empty AllowedTools slice intentionally blocks every callable tool.
+	AllowedTools            []string
+	AllowedToolsPresent     bool
+	Search                  bool
+	ForceExternalSearch     bool // If true, use external search even if provider supports native
+	DisableExternalWebFetch bool // If true, do not inject external read_url even when provider lacks native fetch
+	ReasoningEffort         string
+	Responses               *ResponsesOptions // Advanced Responses API controls; nil uses provider defaults.
+	MaxOutputTokens         int
+	Temperature             float32
+	TemperatureSet          bool // If true, Temperature was explicitly provided, including zero
+	TopP                    float32
+	TopPSet                 bool              // If true, TopP was explicitly provided, including zero
+	ServiceTier             string            // Optional Responses API service tier; "priority" enables ChatGPT fast mode
+	ServiceTierSet          bool              // If true, ServiceTier overrides any provider-level default; empty clears it
+	MaxTurns                int               // Max agentic turns for tool execution (0 = use default)
+	ToolMap                 map[string]string // Maps client tool names to server tool names (e.g. "WebSearch" → "search")
+	Debug                   bool
+	DebugRaw                bool
 }
 
 // Role identifies a message role.
@@ -201,12 +206,13 @@ const (
 type PartType string
 
 const (
-	PartText           PartType = "text"
-	PartImage          PartType = "image"
-	PartFile           PartType = "file"
-	PartToolCall       PartType = "tool_call"
-	PartToolResult     PartType = "tool_result"
-	PartProviderReplay PartType = "provider_replay" // Hidden provider protocol state; never rendered/exported.
+	PartText            PartType = "text"
+	PartImage           PartType = "image"
+	PartFile            PartType = "file"
+	PartToolCall        PartType = "tool_call"
+	PartToolResult      PartType = "tool_result"
+	PartProviderReplay  PartType = "provider_replay"  // Hidden provider protocol state; never rendered/exported.
+	PartSkillActivation PartType = "skill_activation" // Persisted direct-activation provenance; never sent to providers.
 )
 
 // Message holds a role with structured parts.
@@ -312,7 +318,31 @@ type Part struct {
 	FilePath                  string         // Local filesystem path to the file (when available)
 	ToolCall                  *ToolCall
 	ToolResult                *ToolResult
-	ProviderReplay            *ProviderReplayItem // Opaque Responses output item used only for stateless continuation.
+	ProviderReplay            *ProviderReplayItem        // Opaque Responses output item used only for stateless continuation.
+	SkillActivation           *SkillActivationProvenance // Direct user activation metadata; persisted but not provider content.
+}
+
+// SkillActivationProvenance records the exact direct invocation and resolved
+// skill source used for a historical turn. The expanded instructions are stored
+// in the containing developer message's text part, so later on-disk edits cannot
+// rewrite session history.
+type SkillActivationProvenance struct {
+	Name                string   `json:"name"`
+	Source              string   `json:"source"`
+	SourcePath          string   `json:"source_path"`
+	Origin              string   `json:"origin"`
+	Execution           string   `json:"execution"`
+	RawArguments        string   `json:"raw_arguments,omitempty"`
+	Agent               string   `json:"agent,omitempty"`
+	Model               string   `json:"model,omitempty"`
+	AllowedTools        []string `json:"allowed_tools,omitempty"`
+	AllowedToolsPresent bool     `json:"allowed_tools_present,omitempty"`
+	RunID               string   `json:"run_id,omitempty"`
+	ChildSessionID      string   `json:"child_session_id,omitempty"`
+	Status              string   `json:"status,omitempty"`
+	StartedAt           string   `json:"started_at,omitempty"`
+	CompletedAt         string   `json:"completed_at,omitempty"`
+	ActivatedAt         string   `json:"activated_at"`
 }
 
 // ProviderReplayItem preserves a completed Responses output item byte-for-byte.

@@ -299,6 +299,10 @@ func (m *Model) cancelActiveForInterrupt() (bool, tea.Cmd) {
 		cancelled = true
 	}
 
+	if m.cancelActiveSkillRuns() {
+		cancelled = true
+	}
+
 	if (m.streaming || m.streamCancelFunc != nil) && !m.isStreamCancelRequested() {
 		m.phase = "Stopping..."
 		if m.streamCancelFunc != nil {
@@ -351,7 +355,7 @@ func (m *Model) quitFromInterrupt() (tea.Model, tea.Cmd) {
 func (m *Model) handleCtrlC() (tea.Model, tea.Cmd) {
 	if cancelled, cancelCmd := m.cancelActiveForInterrupt(); cancelled {
 		m.ctrlCExitArmedUntil = time.Time{}
-		_, footerCmd := m.showFooterWarning("Interrupted current response/tool.")
+		_, footerCmd := m.showFooterWarning("Interrupted current response/tool/skill.")
 		return m, tea.Batch(cancelCmd, footerCmd, m.terminalTitleCmd())
 	}
 
@@ -688,7 +692,7 @@ func (m *Model) handleKeyMsg(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				// composer only after validation succeeds so failed commands remain editable.
 				input := m.textarea.Value()
 				m.completions.Hide()
-				clearBeforeExecute := !strings.HasPrefix(selected.Name, "worktree")
+				clearBeforeExecute := selected.Kind != SlashEntrySkill && !strings.HasPrefix(selected.Name, "worktree")
 				if clearBeforeExecute {
 					m.setTextareaValue("")
 				}
@@ -925,7 +929,13 @@ func (m *Model) handleKeyMsg(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				m.setTextareaValue(strings.TrimSuffix(raw, "\\") + "\n")
 				return m, nil
 			}
-			if strings.HasPrefix(raw, "/") && isStreamingLocalSlashCommand(raw) {
+			if strings.HasPrefix(raw, "/") {
+				if updated, cmd, handled := m.queueMainSkillDuringStream(raw); handled {
+					m.invalidateAltScreenStreamingViewportCache()
+					return updated, tea.Sequence(tea.ClearScreen, cmd)
+				}
+			}
+			if strings.HasPrefix(raw, "/") && m.isStreamingSlashCommand(raw) {
 				m.setTextareaValue("")
 				m.completions.Hide()
 				m.invalidateAltScreenStreamingViewportCache()
@@ -1099,7 +1109,7 @@ func (m *Model) handleKeyMsg(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		// Check for slash commands. If the leading token isn't a known command or
 		// command prefix, treat the text as a normal chat message so pasted absolute
 		// paths like /tmp/foo do not trap the composer behind command handling.
-		if strings.HasPrefix(content, "/") && isSlashCommandLike(content) {
+		if strings.HasPrefix(content, "/") && m.isSlashCommandLike(content) {
 			return m.handleSlashCommand(content)
 		}
 

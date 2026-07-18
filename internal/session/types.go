@@ -243,12 +243,29 @@ func (m *Message) ToLLMMessage() llm.Message {
 	}
 	msg := llm.Message{
 		Role:  m.Role,
-		Parts: m.Parts,
+		Parts: providerMessageParts(m.Parts),
 	}
 	if m.isInternalCompactionSummary() {
 		msg.CacheAnchor = true
 	}
 	return msg
+}
+
+func providerMessageParts(parts []llm.Part) []llm.Part {
+	for i, part := range parts {
+		if part.Type != llm.PartSkillActivation {
+			continue
+		}
+		filtered := make([]llm.Part, 0, len(parts)-1)
+		filtered = append(filtered, parts[:i]...)
+		for _, candidate := range parts[i+1:] {
+			if candidate.Type != llm.PartSkillActivation {
+				filtered = append(filtered, candidate)
+			}
+		}
+		return filtered
+	}
+	return parts
 }
 
 func (m *Message) isInternalCompactionSummary() bool {

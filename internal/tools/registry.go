@@ -504,6 +504,23 @@ func (r *LocalToolRegistry) RegisterSkillTools(defs []skills.SkillToolDef, skill
 	return r.RegisterCustomTools(agentDefs, skillDir)
 }
 
+// RestoreSkillTools removes tools registered for a skill turn and restores any
+// same-named tools that were present before that turn.
+func (r *LocalToolRegistry) RestoreSkillTools(names []string, previous map[string]llm.Tool) {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, name := range names {
+		if tool := previous[name]; tool != nil {
+			r.tools[name] = tool
+		} else {
+			delete(r.tools, name)
+		}
+	}
+}
+
 // GetSkillTool returns the activate_skill tool if registered.
 func (r *LocalToolRegistry) GetSkillTool() *ActivateSkillTool {
 	r.mu.RLock()

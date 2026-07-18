@@ -81,10 +81,11 @@ type Skill struct {
 	Description string `yaml:"description"`
 
 	// Optional standard fields
-	License       string            `yaml:"license,omitempty"`
-	Compatibility string            `yaml:"compatibility,omitempty"`
-	AllowedTools  []string          `yaml:"-"` // Parsed from allowed-tools
-	Metadata      map[string]string `yaml:"metadata,omitempty"`
+	License             string            `yaml:"license,omitempty"`
+	Compatibility       string            `yaml:"compatibility,omitempty"`
+	AllowedTools        []string          `yaml:"-"` // Parsed from allowed-tools
+	AllowedToolsPresent bool              `yaml:"-"` // Distinguishes omitted from an explicit empty allowlist
+	Metadata            map[string]string `yaml:"metadata,omitempty"`
 
 	// Tools declares script-backed tools that are registered when this skill is activated.
 	Tools []SkillToolDef `yaml:"-"`

@@ -131,7 +131,7 @@ func (c *CompletionsModel) View() string {
 	// Find longest command name for alignment
 	maxNameLen := 0
 	for _, item := range items {
-		nameLen := len(item.Name) + 1 // +1 for "/"
+		nameLen := len(completionDisplayName(item))
 		if nameLen > maxNameLen {
 			maxNameLen = nameLen
 		}
@@ -158,7 +158,7 @@ func (c *CompletionsModel) View() string {
 
 	// Items with aligned descriptions
 	for i, item := range items {
-		name := "/" + item.Name
+		name := completionDisplayName(item)
 		padding := strings.Repeat(" ", maxNameLen-len(name)+2)
 
 		if i == c.cursor {
@@ -185,6 +185,10 @@ func (c *CompletionsModel) View() string {
 	}
 
 	return borderStyle.Render(b.String())
+}
+
+func completionDisplayName(item Command) string {
+	return "/" + item.Name + completionHintSuffix(item.ArgumentHint)
 }
 
 // itoa converts int to string without importing strconv

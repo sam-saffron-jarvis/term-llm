@@ -646,6 +646,43 @@ func TestViewAltScreen_FirstRenderAnchorsToBottom(t *testing.T) {
 	}
 }
 
+func TestActiveIsolatedSkillRun_AltScreenFollowsBottom(t *testing.T) {
+	m := newTestChatModel(true)
+	_, _ = m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	for i := 0; i < 80; i++ {
+		text := "message " + strconv.Itoa(i) + " " + strings.Repeat("content ", 20)
+		m.messages = append(m.messages, session.Message{
+			ID:          int64(i + 1),
+			SessionID:   m.sess.ID,
+			Role:        llm.RoleUser,
+			TextContent: text,
+			Parts:       []llm.Part{{Type: llm.PartText, Text: text}},
+			CreatedAt:   time.Now(),
+			Sequence:    i,
+		})
+	}
+	_ = m.View()
+	if !m.viewport.AtBottom() {
+		t.Fatal("precondition: expected viewport at bottom after history render")
+	}
+
+	const callID = "isolated-skill-1"
+	m.skillRuns = map[string]*skillRunState{
+		"skill-1": {ID: "skill-1", Name: "review", Agent: "reviewer", Status: "running", StartedAt: time.Now(), TrackerCallID: callID},
+	}
+	args, err := json.Marshal(map[string]string{"agent_name": "reviewer", "prompt": "Review changes"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.tracker.HandleToolStart(callID, tools.SpawnAgentToolName, "reviewer", args)
+	ui.HandleSubagentProgress(m.tracker, m.subagentTracker, callID, tools.SubagentEvent{Type: tools.SubagentEventInit})
+	_ = m.View()
+
+	if !m.viewport.AtBottom() {
+		t.Fatal("active isolated skill progress should keep viewport pinned at bottom")
+	}
+}
+
 func TestSendMessage_AltScreen_ScrollsToBottomEvenWhenScrolledUp(t *testing.T) {
 	m := newTestChatModel(true)
 	_, _ = m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})

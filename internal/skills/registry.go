@@ -441,6 +441,80 @@ func (r *Registry) List() ([]*Skill, error) {
 	return cloneSkillSlice(skills), nil
 }
 
+// InvocationDiagnostic reports malformed invocation client metadata discovered
+// while building a user- or model-facing catalog.
+type InvocationDiagnostic struct {
+	Name       string
+	SourcePath string
+	Err        error
+}
+
+func (d InvocationDiagnostic) Error() string {
+	if d.Err == nil {
+		return d.Name
+	}
+	return fmt.Sprintf("skill %s (%s): %v", d.Name, d.SourcePath, d.Err)
+}
+
+// ListUserInvocable returns unshadowed skills available to explicit user
+// activation. Malformed known client extensions are returned as diagnostics and
+// omitted from the executable catalog.
+func (r *Registry) ListUserInvocable() ([]*Skill, []InvocationDiagnostic, error) {
+	all, err := r.List()
+	if err != nil {
+		return nil, nil, err
+	}
+	visible, diagnostics := r.filterInvocable(all, SkillActivationUser)
+	return visible, diagnostics, nil
+}
+
+// ListModelInvocable returns unshadowed skills available to model discovery and
+// activation. It honors auto_invoke, never_auto, and disable-model-invocation.
+func (r *Registry) ListModelInvocable() ([]*Skill, []InvocationDiagnostic, error) {
+	all, err := r.List()
+	if err != nil {
+		return nil, nil, err
+	}
+	visible, diagnostics := r.filterInvocable(all, SkillActivationModel)
+	return visible, diagnostics, nil
+}
+
+func (r *Registry) filterInvocable(all []*Skill, origin SkillActivationOrigin) ([]*Skill, []InvocationDiagnostic) {
+	if origin == SkillActivationModel && !r.ModelInvocationEnabled() {
+		return nil, nil
+	}
+
+	visible := make([]*Skill, 0, len(all))
+	var diagnostics []InvocationDiagnostic
+	for _, skill := range all {
+		metadata, err := InvocationFor(skill)
+		if err != nil {
+			diagnostics = append(diagnostics, InvocationDiagnostic{Name: skill.Name, SourcePath: skill.SourcePath, Err: err})
+			continue
+		}
+
+		switch origin {
+		case SkillActivationUser:
+			if !metadata.UserInvocable {
+				continue
+			}
+		case SkillActivationModel:
+			if metadata.DisableModelInvocation || r.IsNeverAuto(skill.Name) {
+				continue
+			}
+		default:
+			continue
+		}
+		visible = append(visible, skill)
+	}
+	return visible, diagnostics
+}
+
+// ModelInvocationEnabled reports whether config permits model-driven skill use.
+func (r *Registry) ModelInvocationEnabled() bool {
+	return r != nil && r.config.AutoInvoke
+}
+
 // ListAll returns all skills from all paths without shadowing.
 // Use this when you want to see every installed copy of a skill.
 func (r *Registry) ListAll() ([]*Skill, error) {
@@ -681,11 +755,12 @@ func (r *Registry) scanDirWithFingerprint(dir string, source SkillSource, finger
 	return skills, nil
 }
 
-// Search finds skills matching a query string by fuzzy matching on name and description.
-// Skills in the never_auto set are excluded since this is called by the model, not the user.
+// Search finds model-invocable skills matching a query string by fuzzy matching
+// on name and description. Manual-only, never_auto, and malformed skills are
+// excluded so search_skills cannot reveal entries the model cannot activate.
 // Returns up to maxResults matches, sorted by relevance.
 func (r *Registry) Search(query string, maxResults int) ([]*Skill, error) {
-	allSkills, err := r.List()
+	allSkills, _, err := r.ListModelInvocable()
 	if err != nil {
 		return nil, err
 	}
@@ -704,10 +779,6 @@ func (r *Registry) Search(query string, maxResults int) ([]*Skill, error) {
 
 	var matches []scored
 	for _, skill := range allSkills {
-		// Respect never_auto — these skills require explicit user activation
-		if r.IsNeverAuto(skill.Name) {
-			continue
-		}
 		nameLower := strings.ToLower(skill.Name)
 		descLower := strings.ToLower(skill.Description)
 

@@ -4454,7 +4454,85 @@ async function testMCPPatchConflictDoesNotOptimisticallyEnable() {
   pass(name);
 }
 
+function testSanitizeMessagePreservesSkillRunState() {
+  const name = 'sanitizeMessage preserves isolated skill run state';
+  return createSessionsHarness().then(({ app }) => {
+    const sanitized = app.sanitizeMessage({
+      id: 'skill-run-1', role: 'skill-run', runId: 'skill-1', sessionId: 'parent-1', skill: 'review', agent: 'reviewer',
+      status: 'cancelling', progress: 'Stopping', output: 'partial', error: '', childSessionId: 'child-1', durationMs: 1200, created: 1000,
+    });
+    if (sanitized?.runId !== 'skill-1' || sanitized.status !== 'cancelling' || sanitized.output !== 'partial' || sanitized.childSessionId !== 'child-1') {
+      fail(name, 'skill run state was discarded', JSON.stringify(sanitized));
+      return;
+    }
+    pass(name);
+  });
+}
+
+function testSkillProvenanceEventConvertsToLinkedRunBlock() {
+  const name = 'skill provenance event converts to linked run block';
+  return createSessionsHarness().then(({ app }) => {
+    const converted = app.convertServerMessages([{
+      id: 42,
+      sequence: 8,
+      role: 'event',
+      created_at: Date.now(),
+      parts: [
+        {
+          type: 'skill_activation',
+          skill_activation: {
+            name: 'review', execution: 'isolated', agent: 'reviewer', run_id: 'skill-1',
+            child_session_id: 'child-1', status: 'complete', started_at: '2026-07-18T00:00:00Z', completed_at: '2026-07-18T00:00:02Z',
+          },
+        },
+        { type: 'text', text: '↳ Skill /review · complete\n\nLooks good.' },
+      ],
+    }]);
+    const message = converted[0];
+    if (message?.role !== 'skill-run' || message.runId !== 'skill-1' || message.childSessionId !== 'child-1' || message.output !== 'Looks good.' || message.durationMs !== 2000) {
+      fail(name, 'unexpected skill run conversion', JSON.stringify(converted));
+      return;
+    }
+    pass(name);
+  });
+}
+
+async function testSessionSwitchRefreshesSkillsAndDraftClearsThem() {
+  const name = 'session switch refreshes skills and draft clears catalog';
+  const refreshes = [];
+  const { app } = await createSessionsHarness({
+    appOverrides: {
+      async refreshSkillCommands(sessionId) {
+        refreshes.push(String(sessionId || ''));
+      },
+      async syncActiveSessionFromServer() {},
+    },
+  });
+  const session = {
+    id: 'session-skills',
+    title: 'Skills',
+    messages: [],
+    activeResponseId: null,
+    lastResponseId: null,
+    lastSequenceNumber: 0,
+  };
+  app.state.sessions.push(session);
+
+  await app.switchToSession(session.id, { closeSidebar: false });
+  await app.switchToDraftSession({ closeSidebar: false });
+
+  const tail = refreshes.slice(-2);
+  if (JSON.stringify(tail) !== JSON.stringify([session.id, ''])) {
+    fail(name, 'unexpected skill catalog refresh sequence', JSON.stringify(refreshes));
+    return;
+  }
+  pass(name);
+}
+
 (async () => {
+  await testSanitizeMessagePreservesSkillRunState();
+  await testSkillProvenanceEventConvertsToLinkedRunBlock();
+  await testSessionSwitchRefreshesSkillsAndDraftClearsThem();
   await testSwitchingSessionsStagesCurrentComposerBeforeRestore();
   await testSwitchingSessionsClearsEmptyComposerDraft();
   await testNewChatClearsExistingDraftComposer();

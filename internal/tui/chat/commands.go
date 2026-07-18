@@ -27,13 +27,25 @@ import (
 	"github.com/samsaffron/term-llm/internal/ui"
 )
 
-// Command represents a slash command
+// SlashEntryKind distinguishes fixed built-ins from dynamically discovered
+// user-invocable skills.
+type SlashEntryKind int
+
+const (
+	SlashEntryBuiltIn SlashEntryKind = iota
+	SlashEntrySkill
+)
+
+// Command represents a slash completion/resolution entry.
 type Command struct {
-	Name        string
-	Aliases     []string
-	Description string
-	Usage       string
-	Subcommands []Subcommand // Optional subcommands
+	Name         string
+	Aliases      []string
+	Description  string
+	Usage        string
+	Subcommands  []Subcommand // Optional subcommands
+	Kind         SlashEntryKind
+	ArgumentHint string
+	Source       string
 }
 
 // Subcommand represents a subcommand of a slash command
@@ -209,8 +221,15 @@ func AllCommands() []Command {
 		{
 			Name:        "skills",
 			Aliases:     []string{"sk"},
-			Description: "Show available skills",
-			Usage:       "/skills",
+			Description: "List, inspect, invoke, and cancel skills",
+			Usage:       "/skills [list|show|run|active|cancel]",
+			Subcommands: []Subcommand{
+				{Name: "list", Description: "List user-invocable skills"},
+				{Name: "show", Description: "Show skill metadata and resources"},
+				{Name: "run", Description: "Invoke a skill by exact name"},
+				{Name: "active", Description: "List active isolated skill runs"},
+				{Name: "cancel", Description: "Cancel an isolated skill run"},
+			},
 		},
 		{
 			Name:        "inspect",
@@ -258,10 +277,14 @@ func (c CommandSource) Len() int {
 	return len(c)
 }
 
-// FilterCommands returns commands matching the query using fuzzy search
-// If query contains a space (e.g., "mcp "), it returns subcommands for that command
+// FilterCommands returns built-in commands matching the query using fuzzy search.
 func FilterCommands(query string) []Command {
-	commands := AllCommands()
+	return filterCommandEntries(AllCommands(), query)
+}
+
+// filterCommandEntries filters a supplied static/dynamic slash catalog. If query
+// contains a space (for example, "mcp "), it returns subcommands for the parent.
+func filterCommandEntries(commands []Command, query string) []Command {
 	if query == "" {
 		return commands
 	}
@@ -423,25 +446,37 @@ func (m *Model) ExecuteCommand(input string) (tea.Model, tea.Cmd) {
 	args := parts[1:]
 	rawArgs := rawCommandArgs(input)
 
-	// Find matching command - first try exact match
+	// Resolution order is fixed built-in canonical, built-in alias, exact
+	// user-invocable skill, then the existing built-in unique-prefix behavior.
 	var cmd *Command
-	for _, c := range AllCommands() {
-		if c.Name == cmdName {
-			cmd = &c
-			break
-		}
-		for _, alias := range c.Aliases {
-			if alias == cmdName {
-				cmd = &c
-				break
-			}
-		}
-		if cmd != nil {
+	for _, candidate := range AllCommands() {
+		if candidate.Name == cmdName {
+			copy := candidate
+			cmd = &copy
 			break
 		}
 	}
+	if cmd == nil {
+		for _, candidate := range AllCommands() {
+			for _, alias := range candidate.Aliases {
+				if alias == cmdName {
+					copy := candidate
+					cmd = &copy
+					break
+				}
+			}
+			if cmd != nil {
+				break
+			}
+		}
+	}
+	if cmd == nil {
+		if _, _, ok := m.userInvocableSkill(cmdName); ok {
+			return m.executeSkill(cmdName, rawArgs, strings.TrimSpace(input))
+		}
+	}
 
-	// If no exact match, try prefix matching
+	// If no exact match, try built-in prefix matching.
 	if cmd == nil {
 		var prefixMatches []Command
 		for _, c := range AllCommands() {
@@ -522,7 +557,7 @@ func (m *Model) ExecuteCommand(input string) (tea.Model, tea.Cmd) {
 	case "mcp":
 		return m.cmdMcp(args)
 	case "skills":
-		return m.cmdSkills()
+		return m.cmdSkills(args, rawArgs)
 	case "inspect":
 		return m.cmdInspect()
 	case "compact":
@@ -1019,7 +1054,12 @@ func (m *Model) cmdQuit() (tea.Model, tea.Cmd) {
 		m.streamCancelFunc()
 		m.streamCancelFunc = nil
 	}
+	m.cancelActiveSkillRuns()
 	m.quitting = true
+	if m.activeSkillRunCount() > 0 {
+		m.quitAfterSkillRuns = true
+		return m, nil
+	}
 	if !hadActiveStream {
 		if summary := m.exitStatsSummary(); summary != "" {
 			return m, m.quitCmd(tea.Println(summary))
@@ -1037,6 +1077,11 @@ func (m *Model) cmdReload() (tea.Model, tea.Cmd) {
 	m.reloadRequested = true
 	if m.sess != nil {
 		m.reloadSessionID = m.sess.ID
+	}
+	m.cancelActiveSkillRuns()
+	if m.activeSkillRunCount() > 0 {
+		m.quitAfterSkillRuns = true
+		return m, nil
 	}
 	return m, m.quitCmd()
 }
@@ -2709,34 +2754,8 @@ func (m *Model) showBundledServersList() (tea.Model, tea.Cmd) {
 	return m.showSystemMessage(b.String())
 }
 
-func (m *Model) cmdSkills() (tea.Model, tea.Cmd) {
-	var b strings.Builder
-	b.WriteString("## Skills System\n\n")
-	b.WriteString("Skills are reusable prompt templates that can be activated to help with specific tasks.\n\n")
-
-	b.WriteString("**How to use skills:**\n")
-	b.WriteString("- Ask the AI to use a specific skill: \"use the code-review skill\"\n")
-	b.WriteString("- The AI can also activate skills automatically when relevant\n")
-	b.WriteString("- Skills are loaded from: `~/.config/term-llm/skills/`, `.skills/`, `.agents/skills/`, and ecosystem/project directories\n\n")
-
-	b.WriteString("**Manage skills with CLI:**\n")
-	b.WriteString("- `term-llm skills list` - List available skills\n")
-	b.WriteString("- `term-llm skills new <name>` - Create a new skill\n")
-	b.WriteString("- `term-llm skills show <name>` - View skill details\n")
-	b.WriteString("- `term-llm skills edit <name>` - Edit an existing skill\n\n")
-
-	b.WriteString("**Create skills:**\n")
-	b.WriteString("Skills are defined in SKILL.md files with YAML frontmatter:\n\n")
-	b.WriteString("```yaml\n")
-	b.WriteString("---\n")
-	b.WriteString("name: my-skill\n")
-	b.WriteString("description: A helpful skill\n")
-	b.WriteString("---\n")
-	b.WriteString("Instructions for the AI when this skill is activated...\n")
-	b.WriteString("```\n")
-
-	m.setTextareaValue("")
-	return m.showSystemMessage(b.String())
+func (m *Model) cmdSkills(args []string, rawArgs string) (tea.Model, tea.Cmd) {
+	return m.executeSkillsCommand(args, rawArgs)
 }
 
 func (m *Model) newInspectorConfig() *inspector.Config {

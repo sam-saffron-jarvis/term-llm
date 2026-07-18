@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -29,7 +30,7 @@ type SpawnAgentRunner struct {
 	parentBaseDir     string        // Fallback BaseDir for legacy callers
 	parentBaseDirFunc func() string // Returns the parent's current per-session BaseDir
 	warnFunc          func(format string, args ...any)
-	wg                *sync.WaitGroup // tracks in-flight agent runs so callers can drain before closing the store
+	wg                sync.WaitGroup // tracks in-flight agent runs so callers can drain before closing the store
 }
 
 // NewSpawnAgentRunner creates a new SpawnAgentRunner.
@@ -59,7 +60,6 @@ func NewSpawnAgentRunnerWithStore(cfg *config.Config, yoloMode bool, parentAppro
 		parentApprovalMgr: parentApprovalMgr,
 		store:             store,
 		parentSessionID:   parentSessionID,
-		wg:                &sync.WaitGroup{},
 	}, nil
 }
 
@@ -137,52 +137,114 @@ func (r *SpawnAgentRunner) RunAgentWithCallbackAndOptions(ctx context.Context, a
 }
 
 func (r *SpawnAgentRunner) buildRunRequest(ctx context.Context, agentName, prompt, childSessionID string, depth int, search bool, opts tools.SpawnAgentRunOptions) runpkg.Request {
-	parentSessionID := r.parentSessionID
-	if contextSessionID := llm.SessionIDFromContext(ctx); contextSessionID != "" {
-		parentSessionID = contextSessionID
+	request := runpkg.ChildRunRequest{
+		Kind:          runpkg.ChildRunSpawnAgent,
+		AgentName:     agentName,
+		Prompt:        prompt,
+		ModelOverride: opts.ModelOverride,
+		Depth:         depth,
+	}
+	return r.buildChildExecutionRequest(ctx, request, childSessionID, search)
+}
+
+func (r *SpawnAgentRunner) buildChildExecutionRequest(ctx context.Context, request runpkg.ChildRunRequest, childSessionID string, search bool) runpkg.Request {
+	parentSessionID := strings.TrimSpace(request.ParentSessionID)
+	if parentSessionID == "" {
+		parentSessionID = r.parentSessionID
+		if contextSessionID := llm.SessionIDFromContext(ctx); contextSessionID != "" {
+			parentSessionID = contextSessionID
+		}
+	}
+	baseDir := strings.TrimSpace(request.BaseDir)
+	if baseDir == "" {
+		baseDir = r.currentBaseDir()
+	}
+	approvalRole := "parent_agent_task"
+	if request.Kind == runpkg.ChildRunIsolatedSkill {
+		approvalRole = "user_skill_activation"
+	}
+	sessionName := fmt.Sprintf("@%s: %s", request.AgentName, session.TruncateSummary(request.Prompt))
+	if request.Skill != nil {
+		sessionName = fmt.Sprintf("/%s @%s: %s", request.Skill.Name, request.AgentName, session.TruncateSummary(request.Prompt))
 	}
 	return runpkg.Request{
 		Platform:                 runpkg.PlatformConsole,
-		AgentName:                agentName,
-		Prompt:                   prompt,
+		AgentName:                request.AgentName,
+		Prompt:                   request.Prompt,
 		SessionID:                childSessionID,
-		SessionName:              fmt.Sprintf("@%s: %s", agentName, session.TruncateSummary(prompt)),
+		SessionName:              sessionName,
 		Persist:                  r.store != nil,
-		Model:                    strings.TrimSpace(opts.ModelOverride),
-		Cwd:                      r.currentBaseDir(),
+		Model:                    strings.TrimSpace(request.ModelOverride),
+		Cwd:                      baseDir,
 		Search:                   &search,
 		ParentSessionID:          parentSessionID,
 		IsSubagent:               true,
-		Depth:                    depth,
-		ApprovalRole:             "parent_agent_task",
+		Depth:                    request.Depth,
+		ApprovalRole:             approvalRole,
 		ApprovalTranscriptPrefix: subagentApprovalTranscriptPrefix(ctx),
+		ChildSkill:               request.Skill,
 	}
 }
 
-// runAgentInternal is the shared implementation for running sub-agents.
+// RunChild executes the generic child-runtime contract used by direct isolated
+// skills. spawn_agent is an adapter over the same internal path.
+func (r *SpawnAgentRunner) RunChild(ctx context.Context, request runpkg.ChildRunRequest, callback runpkg.ChildRunEventCallback) (runpkg.ChildRunResult, error) {
+	return r.runChildInternal(ctx, request, callback)
+}
+
+// runAgentInternal adapts the model-facing spawn_agent contract to ChildRunner.
 func (r *SpawnAgentRunner) runAgentInternal(ctx context.Context, agentName string, prompt string, depth int,
 	callID string, cb tools.SubagentEventCallback, opts tools.SpawnAgentRunOptions) (tools.SpawnAgentRunResult, error) {
+	request := runpkg.ChildRunRequest{
+		Kind:          runpkg.ChildRunSpawnAgent,
+		RunID:         callID,
+		AgentName:     agentName,
+		Prompt:        prompt,
+		ModelOverride: opts.ModelOverride,
+		Depth:         depth,
+	}
+	var callback runpkg.ChildRunEventCallback
+	if cb != nil {
+		callback = func(runID string, event tools.SubagentEvent) { cb(runID, event) }
+	}
+	result, err := r.runChildInternal(ctx, request, callback)
+	return tools.SpawnAgentRunResult{Output: result.Output, SessionID: result.ChildSessionID}, err
+}
+
+func (r *SpawnAgentRunner) runChildInternal(ctx context.Context, request runpkg.ChildRunRequest, callback runpkg.ChildRunEventCallback) (runpkg.ChildRunResult, error) {
 	r.wg.Add(1)
 	defer r.wg.Done()
 
-	emptyResult := tools.SpawnAgentRunResult{}
-
+	startedAt := time.Now()
+	emptyResult := runpkg.ChildRunResult{RunID: request.RunID, StartedAt: startedAt}
+	agentName := strings.TrimSpace(request.AgentName)
+	if agentName == "" {
+		agentName = "developer"
+	}
 	agent, err := r.registry.Get(agentName)
 	if err != nil {
 		return emptyResult, fmt.Errorf("load agent '%s': %w", agentName, err)
 	}
-	if strings.TrimSpace(opts.ModelOverride) != "" {
+	if strings.TrimSpace(request.ModelOverride) != "" {
 		agentCopy := *agent
-		agentCopy.Model = strings.TrimSpace(opts.ModelOverride)
+		agentCopy.Model = strings.TrimSpace(request.ModelOverride)
 		agent = &agentCopy
 	}
 	if err := agent.Validate(); err != nil {
 		return emptyResult, fmt.Errorf("invalid agent '%s': %w", agentName, err)
 	}
+	request.AgentName = agentName
 
-	childSessionID := session.NewID()
+	childSessionID := strings.TrimSpace(request.ChildSessionID)
+	if childSessionID == "" {
+		childSessionID = session.NewID()
+	}
 	providerName, modelName := r.previewAgentProviderModel(agent)
-	sink := &spawnRunSink{callID: callID, cb: cb, provider: providerName, model: modelName}
+	sinkCallback := tools.SubagentEventCallback(nil)
+	if callback != nil {
+		sinkCallback = func(runID string, event tools.SubagentEvent) { callback(runID, event) }
+	}
+	sink := &spawnRunSink{callID: request.RunID, cb: sinkCallback, provider: providerName, model: modelName}
 	sink.Start()
 	defer sink.Done()
 
@@ -195,15 +257,28 @@ func (r *SpawnAgentRunner) runAgentInternal(ctx context.Context, agentName strin
 		Store:             r.store,
 		ParentApprovalMgr: r.parentApprovalMgr,
 	})
-	result, err := runner.Run(ctx, r.buildRunRequest(ctx, agentName, prompt, childSessionID, depth, search, opts), sink)
+	executionRequest := r.buildChildExecutionRequest(ctx, request, childSessionID, search)
+	result, err := runner.Run(ctx, executionRequest, sink)
 
-	output := sink.Output()
-	if output == "" {
-		output = result.Response
+	output, completionErr := completeChildAgent(agent, result, sink.Output(), executionRequest.Cwd)
+	if completionErr != nil {
+		r.warn("agent %q on_complete failed: %v", agentName, completionErr)
+	}
+	completedAt := time.Now()
+	childResult := runpkg.ChildRunResult{
+		RunID:          request.RunID,
+		ChildSessionID: childSessionID,
+		Output:         output,
+		Provider:       providerName,
+		Model:          modelName,
+		StartedAt:      startedAt,
+		CompletedAt:    completedAt,
 	}
 	if r.store != nil {
 		status := session.StatusComplete
-		if err != nil {
+		if errors.Is(err, context.Canceled) {
+			status = session.StatusInterrupted
+		} else if err != nil {
 			status = session.StatusError
 		}
 		dbCtx, dbCancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
@@ -212,10 +287,29 @@ func (r *SpawnAgentRunner) runAgentInternal(ctx context.Context, agentName strin
 		}
 		dbCancel()
 	}
-	if err != nil {
-		return tools.SpawnAgentRunResult{Output: output, SessionID: childSessionID}, err
+	return childResult, err
+}
+
+// completeChildAgent resolves the agent's semantic result before presentation.
+// Agents with an output tool use that captured value as their required return
+// channel; streamed prose is only a fallback for ordinary agents.
+func completeChildAgent(agent *agents.Agent, result runpkg.Result, streamedOutput, baseDir string) (string, error) {
+	output := streamedOutput
+	if output == "" {
+		output = result.Response
 	}
-	return tools.SpawnAgentRunResult{Output: output, SessionID: childSessionID}, nil
+	if agent != nil && agent.OutputTool.IsConfigured() && result.Engine != nil {
+		if registered, ok := result.Engine.Tools().Get(agent.OutputTool.Name); ok {
+			if outputTool, ok := registered.(*tools.SetOutputTool); ok && outputTool.Captured() {
+				output = outputTool.Value()
+			}
+		}
+	}
+	if agent == nil || strings.TrimSpace(agent.OnComplete) == "" || output == "" {
+		return output, nil
+	}
+	_, err := runOnCompleteCaptureInDir(agent.OnComplete, output, baseDir)
+	return output, err
 }
 
 func (r *SpawnAgentRunner) previewAgentProviderModel(agent *agents.Agent) (string, string) {

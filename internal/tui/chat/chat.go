@@ -23,6 +23,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/mcp"
 	runpkg "github.com/samsaffron/term-llm/internal/run"
 	"github.com/samsaffron/term-llm/internal/session"
+	"github.com/samsaffron/term-llm/internal/skills"
 
 	internalreasoning "github.com/samsaffron/term-llm/internal/reasoning"
 	render "github.com/samsaffron/term-llm/internal/render/chat"
@@ -67,6 +68,7 @@ type promptHistoryState struct {
 type RuntimeSystemContext struct {
 	SystemPrompt string
 	ApplySkills  func(engine *llm.Engine, toolMgr *tools.ToolManager)
+	Skills       *skills.Setup
 }
 
 type Model struct {
@@ -178,18 +180,23 @@ type Model struct {
 	askUserDoneCh chan<- []tools.AskUserAnswer
 
 	// LLM context
-	rootCtx             context.Context
-	provider            llm.Provider
-	fastProvider        llm.Provider
-	sideProviderFactory func(providerKey, model string) (llm.Provider, error)
-	sideQuestion        SideQuestionState
-	engine              *llm.Engine
-	runner              runpkg.Runner
-	config              *config.Config
-	providerName        string
-	providerKey         string
-	modelName           string
-	agentName           string
+	rootCtx                    context.Context
+	provider                   llm.Provider
+	fastProvider               llm.Provider
+	sideProviderFactory        func(providerKey, model string) (llm.Provider, error)
+	sideQuestion               SideQuestionState
+	engine                     *llm.Engine
+	runner                     runpkg.Runner
+	childRunner                runpkg.ChildRunner
+	skillRuns                  map[string]*skillRunState
+	skillRunSeq                uint64
+	pendingSkillResults        []skillRunDoneMsg
+	queuedMainSkillActivations []queuedMainSkillActivation
+	config                     *config.Config
+	providerName               string
+	providerKey                string
+	modelName                  string
+	agentName                  string
 
 	platformDeveloperMessage string
 	currentOrigin            session.SessionOrigin
@@ -200,6 +207,13 @@ type Model struct {
 	handoverSystemPromptResolver func(agent *agents.Agent, providerKey, modelName string) (string, error)
 	runtimeSystemContextResolver func(agent *agents.Agent, providerKey, modelName, dir string) (RuntimeSystemContext, error)
 	runtimeSystemContext         RuntimeSystemContext
+	skillsSetup                  *skills.Setup
+	skillFilterRestoreTools      []string
+	skillFilterRestorePresent    bool
+	skillFilterPending           bool
+	skillDynamicToolNames        []string
+	skillDynamicEnginePrevious   map[string]llm.Tool
+	skillDynamicRegistryPrevious map[string]llm.Tool
 	systemPromptOverridden       bool
 	systemPromptOverride         string
 	guardianReviewerRefresh      func(providerKey, modelName string) error
@@ -255,9 +269,10 @@ type Model struct {
 	viewportRows int
 
 	// UI state
-	quitting bool
-	err      error
-	yolo     bool
+	quitting           bool
+	quitAfterSkillRuns bool
+	err                error
+	yolo               bool
 
 	// reloadRequested signals the caller to re-exec the binary (e.g. after an upgrade).
 	// The session ID to resume is stored in reloadSessionID.
@@ -1405,6 +1420,14 @@ func (m *Model) SetHandoverSystemPromptResolver(resolver func(agent *agents.Agen
 func (m *Model) SetRuntimeSystemContextResolver(resolver func(agent *agents.Agent, providerKey, modelName, dir string) (RuntimeSystemContext, error), current RuntimeSystemContext) {
 	m.runtimeSystemContextResolver = resolver
 	m.runtimeSystemContext = current
+	m.SetSkillsSetup(current.Skills)
+}
+
+// SetSkillsSetup installs the session-bound skill registry used for slash
+// discovery and direct activation. The setup is reused across keystrokes; its
+// registry cache notices ordinary SKILL.md edits through file fingerprints.
+func (m *Model) SetSkillsSetup(setup *skills.Setup) {
+	m.skillsSetup = setup
 }
 
 // SetGuardianReviewerRefresh configures reviewer replacement after model changes.
@@ -1447,6 +1470,12 @@ func (m *Model) SetRootContext(ctx context.Context) {
 // SetRunner configures the shared execution runner used for chat turns.
 func (m *Model) SetRunner(runner runpkg.Runner) {
 	m.runner = runner
+}
+
+// SetChildRunner configures fresh child-agent execution for direct isolated
+// skills. It is independent of whether the current agent exposes spawn_agent.
+func (m *Model) SetChildRunner(runner runpkg.ChildRunner) {
+	m.childRunner = runner
 }
 
 // SetProgram gives the model a handle to the running Bubble Tea program for
@@ -1642,6 +1671,15 @@ func (m *Model) Update(msg tea.Msg) (model tea.Model, cmd tea.Cmd) {
 	var cmds []tea.Cmd
 	var flushCmds []tea.Cmd
 
+	if progress, ok := msg.(skillRunProgressMsg); ok {
+		return m, m.handleSkillRunProgress(progress)
+	}
+	if done, ok := msg.(skillRunDoneMsg); ok {
+		return m, m.handleSkillRunDone(done)
+	}
+	if _, ok := msg.(queuedMainSkillRetryMsg); ok {
+		return m, m.startNextQueuedMainSkill()
+	}
 	if sideMsg, ok := msg.(sideQuestionEventMsg); ok {
 		return m, m.updateSideQuestion(sideMsg)
 	}
@@ -2137,6 +2175,7 @@ func (m *Model) Update(msg tea.Msg) (model tea.Model, cmd tea.Cmd) {
 				salvageResult := m.salvageInterruptedAssistantMessage()
 				m.resetCurrentReasoning()
 				m.streaming = false
+				m.restoreSkillAllowedTools()
 				m.releaseStreamCancelFunc()
 				m.setStreamCancelRequested(false)
 				m.err = nil
@@ -2175,7 +2214,11 @@ func (m *Model) Update(msg tea.Msg) (model tea.Model, cmd tea.Cmd) {
 					}
 				}
 
+				m.flushPendingSkillResults()
 				if cmd := m.applyPendingStreamModelSwitch(); cmd != nil {
+					errorOutputCmds = append(errorOutputCmds, cmd)
+				}
+				if cmd := m.startNextQueuedMainSkill(); cmd != nil {
 					errorOutputCmds = append(errorOutputCmds, cmd)
 				}
 
@@ -2543,6 +2586,7 @@ func (m *Model) Update(msg tea.Msg) (model tea.Model, cmd tea.Cmd) {
 
 			m.persistContextEstimate(context.Background())
 			m.streaming = false
+			m.restoreSkillAllowedTools()
 			m.releaseStreamCancelFunc()
 			m.setStreamCancelRequested(false)
 
@@ -2654,7 +2698,11 @@ func (m *Model) Update(msg tea.Msg) (model tea.Model, cmd tea.Cmd) {
 				m.streamPerf.EmitSummaryIfActive(time.Now())
 			}
 
+			m.flushPendingSkillResults()
 			if cmd := m.applyPendingStreamModelSwitch(); cmd != nil {
+				cmds = append(cmds, cmd)
+			}
+			if cmd := m.startNextQueuedMainSkill(); cmd != nil {
 				cmds = append(cmds, cmd)
 			}
 

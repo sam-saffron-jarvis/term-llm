@@ -3,11 +3,14 @@ package cmd
 import (
 	"context"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/samsaffron/term-llm/internal/agents"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
+	runpkg "github.com/samsaffron/term-llm/internal/run"
 	"github.com/samsaffron/term-llm/internal/tools"
 )
 
@@ -36,6 +39,39 @@ func (r *capturingSpawnRunner) RunAgentWithOptions(ctx context.Context, agentNam
 
 func (r *capturingSpawnRunner) RunAgentWithCallbackAndOptions(ctx context.Context, agentName string, prompt string, depth int, callID string, cb tools.SubagentEventCallback, opts tools.SpawnAgentRunOptions) (tools.SpawnAgentRunResult, error) {
 	return r.RunAgentWithOptions(ctx, agentName, prompt, depth, opts)
+}
+
+func TestCompleteChildAgentUsesOutputToolAndRunsHookInChildDirectory(t *testing.T) {
+	baseDir := t.TempDir()
+	outputTool := tools.NewSetOutputTool("set_commit_message", "message", "Set the commit message")
+	args, err := json.Marshal(map[string]string{"message": "feat: show isolated skill output"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := outputTool.Execute(context.Background(), args); err != nil {
+		t.Fatal(err)
+	}
+	engine := llm.NewEngine(llm.NewMockProvider("mock"), nil)
+	engine.RegisterTool(outputTool)
+	agent := &agents.Agent{
+		OutputTool: agents.OutputToolConfig{Name: "set_commit_message", Param: "message"},
+		OnComplete: "cat > child-output.txt",
+	}
+
+	output, err := completeChildAgent(agent, runpkg.Result{Engine: engine, Response: "ignored prose"}, "streamed prose", baseDir)
+	if err != nil {
+		t.Fatalf("completeChildAgent() error = %v", err)
+	}
+	if output != "feat: show isolated skill output" {
+		t.Fatalf("output = %q, want captured output-tool value", output)
+	}
+	written, err := os.ReadFile(filepath.Join(baseDir, "child-output.txt"))
+	if err != nil {
+		t.Fatalf("read on_complete output: %v", err)
+	}
+	if string(written) != output {
+		t.Fatalf("on_complete input = %q, want %q", written, output)
+	}
 }
 
 func TestSpawnRunnerBuildRunRequestInheritsParentBaseDir(t *testing.T) {

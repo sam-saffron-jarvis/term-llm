@@ -453,6 +453,9 @@ function createHarness(options = {}) {
       const session = state.sessions.find((item) => item.id === id) || null;
       return Boolean(session?.__optimisticBusy || session?.__serverActiveRun);
     },
+    matchSkillInvocation: typeof options.matchSkillInvocation === 'function'
+      ? options.matchSkillInvocation
+      : () => null,
   };
 
   const windowObj = {
@@ -5267,7 +5270,183 @@ async function testCompressCommandCompactsWithoutSendingMessage() {
   pass(name);
 }
 
+async function testUnknownSlashTextRemainsNormalMessage() {
+  const name = 'unknown slash text remains a normal message';
+  const harness = createHarness({ matchSkillInvocation: () => null });
+  const { app, elements, state, fetchCalls, cleanup } = harness;
+  const session = { id: 'session_unknown_slash', title: 'Slash', messages: [], activeResponseId: null, lastResponseId: null, lastSequenceNumber: 0 };
+  state.sessions.push(session);
+  state.activeSessionId = session.id;
+  elements.promptInput.value = '/tmp/file should be explained';
+
+  await app.sendMessage();
+
+  const normalPost = fetchCalls.find((call) => call.url === '/ui/v1/responses' && call.method === 'POST');
+  const skillPost = fetchCalls.find((call) => call.url.endsWith('/skills/invoke'));
+  if (!normalPost || skillPost || !String(normalPost.body || '').includes('/tmp/file should be explained')) {
+    fail(name, 'unknown slash text was not sent as ordinary input', JSON.stringify(fetchCalls));
+    await cleanup();
+    return;
+  }
+  await cleanup();
+  pass(name);
+}
+
+async function testMainSkillUsesStructuredInvocationAndResponseStream() {
+  const name = 'main skill uses structured invocation and normal response stream';
+  const responseId = 'resp_skill_main';
+  const harness = createHarness({
+    responseId,
+    matchSkillInvocation(value) {
+      return value === '/explain src/main.go'
+        ? { name: 'explain', arguments: 'src/main.go', execution: 'main', invocation: value }
+        : null;
+    },
+    fetchImpl: async (url, requestOptions, { Response, ReadableStream, encoder }) => {
+      if (url === '/ui/v1/sessions/session_skill_main/skills/invoke') {
+        return new Response(JSON.stringify({ execution: 'main', response_id: responseId, events_url: `/v1/responses/${responseId}/events` }), {
+          status: 202,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      if (url === `/ui/v1/responses/${responseId}/events?after=0`) {
+        const body = [
+          'id: 1\n',
+          'event: response.created\n',
+          `data: {"response":{"id":"${responseId}","status":"in_progress"},"sequence_number":1}\n\n`,
+          'id: 2\n',
+          'event: response.output_text.delta\n',
+          'data: {"delta":"explained","sequence_number":2}\n\n',
+          'id: 3\n',
+          'event: response.completed\n',
+          `data: {"response":{"id":"${responseId}","status":"completed"},"sequence_number":3}\n\n`,
+        ].join('');
+        return new Response(new ReadableStream({ start(controller) { controller.enqueue(encoder.encode(body)); controller.close(); } }), {
+          status: 200,
+          headers: { 'Content-Type': 'text/event-stream' },
+        });
+      }
+      throw new Error(`unexpected fetch: ${url}`);
+    },
+  });
+  const { app, elements, state, fetchCalls, cleanup } = harness;
+  const session = { id: 'session_skill_main', title: 'Skills', messages: [], activeResponseId: null, lastResponseId: null, lastSequenceNumber: 0 };
+  state.sessions.push(session);
+  state.activeSessionId = session.id;
+  elements.promptInput.value = '/explain src/main.go';
+
+  await app.sendMessage();
+
+  const invoke = fetchCalls.find((call) => call.url.endsWith('/skills/invoke'));
+  const body = invoke?.body ? JSON.parse(invoke.body) : null;
+  if (!invoke || invoke.method !== 'POST' || body?.name !== 'explain' || body?.arguments !== 'src/main.go') {
+    fail(name, 'structured invocation request was not sent', JSON.stringify(fetchCalls));
+    await cleanup();
+    return;
+  }
+  if (!session.messages.some((message) => message.role === 'user' && message.content === '/explain src/main.go')) {
+    fail(name, 'concise slash invocation was not displayed', JSON.stringify(session.messages));
+    await cleanup();
+    return;
+  }
+  if (!session.messages.some((message) => message.role === 'assistant' && message.content === 'explained')) {
+    fail(name, 'normal response event stream was not consumed', JSON.stringify(session.messages));
+    await cleanup();
+    return;
+  }
+  await cleanup();
+  pass(name);
+}
+
+async function testIsolatedSkillStreamsIndependentlyAndCancelsIndependently() {
+  const name = 'isolated skill streams and cancels independently of parent';
+  const runId = 'skill_run_1';
+  let cancelCalled = false;
+  let releaseRun;
+  const runDone = new Promise((resolve) => { releaseRun = resolve; });
+  const harness = createHarness({
+    matchSkillInvocation(value) {
+      return value === '/review staged'
+        ? { name: 'review', arguments: 'staged', execution: 'isolated', invocation: value }
+        : null;
+    },
+    fetchImpl: async (url, requestOptions, { Response, ReadableStream, encoder }) => {
+      if (url === '/ui/v1/sessions/session_skill_child/skills/invoke') {
+        return new Response(JSON.stringify({
+          execution: 'isolated',
+          run_id: runId,
+          child_session_id: 'child_1',
+          events_url: `/v1/sessions/session_skill_child/skill-runs/${runId}/events`,
+        }), { status: 202, headers: { 'Content-Type': 'application/json' } });
+      }
+      if (url.startsWith(`/ui/v1/sessions/session_skill_child/skill-runs/${runId}/events?after=`)) {
+        return new Response(new ReadableStream({
+          async start(controller) {
+            controller.enqueue(encoder.encode([
+              'id: 1\n',
+              'event: skill_run.created\n',
+              `data: {"sequence":1,"type":"skill_run.created","data":{"run_id":"${runId}","skill":"review","agent":"reviewer","child_session_id":"child_1"}}\n\n`,
+              'id: 2\n',
+              'event: skill_run.progress\n',
+              'data: {"sequence":2,"type":"skill_run.progress","data":{"Type":"phase","Phase":"checking diff"}}\n\n',
+            ].join('')));
+            await runDone;
+            controller.enqueue(encoder.encode([
+              'id: 3\n',
+              'event: skill_run.completed\n',
+              'data: {"sequence":3,"type":"skill_run.completed","data":{"status":"cancelled","output":"partial review","child_session_id":"child_1"}}\n\n',
+            ].join('')));
+            controller.close();
+          },
+        }), { status: 200, headers: { 'Content-Type': 'text/event-stream' } });
+      }
+      if (url === `/ui/v1/sessions/session_skill_child/skill-runs/${runId}` && requestOptions.method === 'DELETE') {
+        cancelCalled = true;
+        releaseRun();
+        return new Response(JSON.stringify({ id: runId, status: 'cancelling' }), { status: 202, headers: { 'Content-Type': 'application/json' } });
+      }
+      throw new Error(`unexpected fetch: ${url}`);
+    },
+  });
+  const { app, elements, state, cleanup } = harness;
+  const session = { id: 'session_skill_child', title: 'Skills', messages: [], activeResponseId: 'resp_parent', lastResponseId: null, lastSequenceNumber: 0 };
+  state.sessions.push(session);
+  state.activeSessionId = session.id;
+  state.streaming = true;
+  state.currentStreamSessionId = session.id;
+  state.currentStreamResponseId = 'resp_parent';
+  elements.promptInput.value = '/review staged';
+
+  await app.sendMessage();
+  const progressVisible = await waitFor(() => session.messages.some((message) => message.role === 'skill-run' && message.progress === 'checking diff'), 500);
+  if (!progressVisible || !state.streaming || state.currentStreamResponseId !== 'resp_parent') {
+    fail(name, 'child progress disturbed or failed to coexist with parent stream', JSON.stringify({ state, messages: session.messages }));
+    releaseRun();
+    await cleanup();
+    return;
+  }
+
+  await app.cancelSkillRun(session.id, runId);
+  const terminal = await waitFor(() => session.messages.some((message) => message.runId === runId && message.status === 'cancelled'), 500);
+  const message = session.messages.find((entry) => entry.runId === runId);
+  if (!cancelCalled || !terminal || message?.output !== 'partial review') {
+    fail(name, 'cancel did not preserve the isolated partial result', JSON.stringify({ cancelCalled, message }));
+    await cleanup();
+    return;
+  }
+  if (!state.streaming || state.currentStreamResponseId !== 'resp_parent') {
+    fail(name, 'isolated cancellation changed parent stream state', JSON.stringify(state));
+    await cleanup();
+    return;
+  }
+  await cleanup();
+  pass(name);
+}
+
 (async () => {
+  await testUnknownSlashTextRemainsNormalMessage();
+  await testMainSkillUsesStructuredInvocationAndResponseStream();
+  await testIsolatedSkillStreamsIndependentlyAndCancelsIndependently();
   await testModelEffortOptionsFollowMetadata();
   await testResponseCompletedForcesSidebarStatusRefresh();
   await testStaleTerminalStreamDoesNotRefreshStatus();

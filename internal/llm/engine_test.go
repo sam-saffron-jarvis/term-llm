@@ -1479,6 +1479,89 @@ func (t *finishingNamedTool) IsFinishingTool() bool {
 	return true
 }
 
+func TestEngineStripsSkillProvenanceFromProviderRequest(t *testing.T) {
+	provider := NewMockProvider("mock").AddTextResponse("ok")
+	engine := NewEngine(provider, nil)
+	stream, err := engine.Stream(context.Background(), Request{Messages: []Message{{
+		Role: RoleDeveloper,
+		Parts: []Part{
+			{Type: PartSkillActivation, SkillActivation: &SkillActivationProvenance{Name: "review", SourcePath: "/private/skill"}},
+			{Type: PartText, Text: "instructions"},
+		},
+	}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stream.Close()
+	for {
+		_, recvErr := stream.Recv()
+		if recvErr == io.EOF {
+			break
+		}
+		if recvErr != nil {
+			t.Fatal(recvErr)
+		}
+	}
+	requests := provider.RecordedRequests()
+	if len(requests) != 1 || len(requests[0].Messages) != 1 || len(requests[0].Messages[0].Parts) != 1 {
+		t.Fatalf("provider requests = %#v", requests)
+	}
+	if part := requests[0].Messages[0].Parts[0]; part.Type != PartText || part.Text != "instructions" {
+		t.Fatalf("provider part = %#v", part)
+	}
+}
+
+func TestEngineExplicitEmptyAllowedToolsFilter(t *testing.T) {
+	t.Parallel()
+
+	registry := NewToolRegistry()
+	registry.Register(&namedTool{name: "tool_a"})
+	engine := NewEngine(&fakeProvider{}, registry)
+
+	engine.SetAllowedToolsFilter([]string{})
+	if engine.IsToolAllowed("tool_a") {
+		t.Fatal("explicit empty filter should block every tool")
+	}
+	if specs := engine.FilterAllowedToolSpecs(registry.AllSpecs()); len(specs) != 0 || specs == nil {
+		t.Fatalf("explicit empty provider tool specs = %#v, want non-nil empty", specs)
+	}
+	tools, present := engine.AllowedToolsFilter()
+	if !present || len(tools) != 0 {
+		t.Fatalf("AllowedToolsFilter() = %#v, %v; want explicit empty", tools, present)
+	}
+
+	engine.RestoreAllowedToolsFilter(nil, false)
+	if !engine.IsToolAllowed("tool_a") {
+		t.Fatal("restoring an omitted filter should allow registered tools")
+	}
+
+	engine.SetAllowedToolsFilter([]string{"tool_a"})
+	tools, present = engine.AllowedToolsFilter()
+	if !present || len(tools) != 1 || tools[0] != "tool_a" {
+		t.Fatalf("AllowedToolsFilter() = %#v, %v; want tool_a", tools, present)
+	}
+}
+
+func TestEngineFiltersProviderToolSpecsUnderAllowedToolsPolicy(t *testing.T) {
+	t.Parallel()
+
+	registry := NewToolRegistry()
+	registry.Register(&namedTool{name: "tool_a"})
+	registry.Register(&namedTool{name: "tool_b"})
+	provider := &fakeProvider{script: func(_ int, _ Request) []Event { return []Event{{Type: EventDone}} }}
+	engine := NewEngine(provider, registry)
+	engine.SetAllowedToolsFilter([]string{"tool_a"})
+	stream, err := engine.Stream(context.Background(), Request{Tools: registry.AllSpecs()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stream.Close()
+	drainStream(t, stream)
+	if len(provider.calls) != 1 || len(provider.calls[0].Tools) != 1 || provider.calls[0].Tools[0].Name != "tool_a" {
+		t.Fatalf("provider tool specs = %#v", provider.calls)
+	}
+}
+
 // TestEngineAllowedToolsEnforcement verifies that the engine blocks tools not in the allowed list.
 func TestEngineAllowedToolsEnforcement(t *testing.T) {
 	t.Parallel()

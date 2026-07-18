@@ -84,8 +84,13 @@ func parseSkillFrontmatter(frontmatter, body string, loadBody bool) (*Skill, err
 		Tools:         fm.Tools,
 	}
 
-	// Parse allowed-tools from various formats
+	// Parse allowed-tools from various formats while preserving whether the field
+	// was omitted. An explicit empty allowlist means no callable tools.
+	skill.AllowedToolsPresent = yamlMappingHasKey(frontmatterNode, "allowed-tools")
 	skill.AllowedTools = parseAllowedTools(fm.AllowedTools)
+	if skill.AllowedToolsPresent && skill.AllowedTools == nil {
+		skill.AllowedTools = []string{}
+	}
 
 	// Load body if requested
 	if loadBody {
@@ -100,6 +105,19 @@ func yamlDocumentRoot(node *yaml.Node) *yaml.Node {
 		return node.Content[0]
 	}
 	return node
+}
+
+func yamlMappingHasKey(node *yaml.Node, key string) bool {
+	node = yamlDocumentRoot(node)
+	if node == nil || node.Kind != yaml.MappingNode {
+		return false
+	}
+	for i := 0; i+1 < len(node.Content); i += 2 {
+		if node.Content[i].Kind == yaml.ScalarNode && node.Content[i].Value == key {
+			return true
+		}
+	}
+	return false
 }
 
 // splitFrontmatter extracts YAML frontmatter and Markdown body.

@@ -523,6 +523,26 @@ async function run(name, fn) {
     assertEqual(turns[2].lastAssistantId, 'a2', 'second user-bounded turn target');
   });
 
+  await run('renders isolated skill run with cancel and child link', async () => {
+    let cancelled = null;
+    const { app } = createHarness({
+      cancelSkillRun(sessionId, runId) { cancelled = { sessionId, runId }; },
+    });
+    const node = app.createMessageNode({
+      id: 'skill-run-1', role: 'skill-run', runId: 'skill-1', sessionId: 'parent-1', skill: 'review', agent: 'reviewer',
+      status: 'running', progress: 'checking diff', output: 'partial review', childSessionId: 'child-1', created: Date.now(),
+    });
+    assert(node.classList.contains('skill-run'), 'expected distinct skill-run node');
+    const button = node.querySelector('button');
+    const link = node.querySelector('a');
+    const output = node.querySelector('pre');
+    assert(button && link && output, 'expected cancel, child link, and output');
+    assertEqual(link.href, '/chat/child-1', 'child transcript link');
+    assertEqual(output.textContent, 'partial review', 'partial output');
+    await button.dispatchEvent({ type: 'click' });
+    assertEqual(JSON.stringify(cancelled), JSON.stringify({ sessionId: 'parent-1', runId: 'skill-1' }), 'cancel target');
+  });
+
   await run('rebases assistant markdown image and file links before decoration opens them', () => {
     const { app } = createHarness({
       rebaseHubAssetURL(url) {

@@ -385,6 +385,7 @@ func (m *Model) applyRuntimeDirectory(dir, worktreeDir string) error {
 	if candidate.ApplySkills != nil {
 		candidate.ApplySkills(m.engine, m.toolMgr)
 	}
+	m.SetSkillsSetup(candidate.Skills)
 	m.runtimeSystemContext = candidate
 	if m.config != nil && !m.systemPromptOverridden {
 		m.config.Chat.Instructions = prompt
@@ -440,6 +441,7 @@ func (m *Model) rollbackRuntimeDirectory(rollbackBase, oldCWD, oldWorktree strin
 	if oldContext.ApplySkills != nil {
 		oldContext.ApplySkills(m.engine, m.toolMgr)
 	}
+	m.SetSkillsSetup(oldContext.Skills)
 }
 
 func (m *Model) cmdWorktreeDiff(args []string) (tea.Model, tea.Cmd) {

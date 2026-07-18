@@ -818,3 +818,42 @@ tools:
 		t.Fatalf("expected %q to be disallowed by skill allowlist", tools.ReadFileToolName)
 	}
 }
+
+func TestRegisterSkillToolWithEngineDoesNotWidenActiveToolPolicy(t *testing.T) {
+	setup, _ := serveSkillTestSetup(t)
+	engine := llm.NewEngine(llm.NewMockProvider("mock"), nil)
+	engine.RegisterTool(tools.NewReadFileTool(nil, tools.OutputLimits{}))
+	engine.RegisterTool(tools.NewGrepTool(nil, tools.OutputLimits{}))
+	RegisterSkillToolWithEngine(engine, nil, setup)
+	engine.SetAllowedToolsFilter([]string{tools.ReadFileToolName, tools.ActivateSkillToolName})
+
+	activateTool, ok := engine.Tools().Get(tools.ActivateSkillToolName)
+	if !ok {
+		t.Fatalf("expected %q tool to be registered", tools.ActivateSkillToolName)
+	}
+	if _, err := activateTool.Execute(context.Background(), json.RawMessage(`{"name":"compact"}`)); err != nil {
+		t.Fatalf("activate unrestricted skill: %v", err)
+	}
+	if !engine.IsToolAllowed(tools.ReadFileToolName) || engine.IsToolAllowed(tools.GrepToolName) {
+		t.Fatalf("omitted allowed-tools changed active policy: read=%v grep=%v", engine.IsToolAllowed(tools.ReadFileToolName), engine.IsToolAllowed(tools.GrepToolName))
+	}
+
+	if _, err := activateTool.Execute(context.Background(), json.RawMessage(`{"name":"grep-only"}`)); err != nil {
+		t.Fatalf("activate restricted skill: %v", err)
+	}
+	if engine.IsToolAllowed(tools.ReadFileToolName) || engine.IsToolAllowed(tools.GrepToolName) {
+		t.Fatalf("skill restriction widened or failed to use baseline policy: read=%v grep=%v", engine.IsToolAllowed(tools.ReadFileToolName), engine.IsToolAllowed(tools.GrepToolName))
+	}
+	if _, err := activateTool.Execute(context.Background(), json.RawMessage(`{"name":"read-only"}`)); err != nil {
+		t.Fatalf("activate second restricted skill: %v", err)
+	}
+	if !engine.IsToolAllowed(tools.ReadFileToolName) || engine.IsToolAllowed(tools.GrepToolName) {
+		t.Fatalf("second restriction did not reapply against baseline policy: read=%v grep=%v", engine.IsToolAllowed(tools.ReadFileToolName), engine.IsToolAllowed(tools.GrepToolName))
+	}
+	if _, err := activateTool.Execute(context.Background(), json.RawMessage(`{"name":"compact"}`)); err != nil {
+		t.Fatalf("restore baseline with unrestricted skill: %v", err)
+	}
+	if !engine.IsToolAllowed(tools.ReadFileToolName) || engine.IsToolAllowed(tools.GrepToolName) {
+		t.Fatalf("unrestricted skill did not restore baseline policy: read=%v grep=%v", engine.IsToolAllowed(tools.ReadFileToolName), engine.IsToolAllowed(tools.GrepToolName))
+	}
+}

@@ -1909,6 +1909,22 @@ const sanitizeMessage = (msg) => {
     return base;
   }
 
+  if (role === 'skill-run') {
+    base.runId = String(msg.runId || '');
+    base.sessionId = String(msg.sessionId || '');
+    base.skill = String(msg.skill || 'skill');
+    base.agent = String(msg.agent || '');
+    base.status = String(msg.status || 'running');
+    base.progress = String(msg.progress || '');
+    base.output = String(msg.output || '');
+    base.error = String(msg.error || '');
+    base.childSessionId = String(msg.childSessionId || '');
+    base.durationMs = Number.isFinite(Number(msg.durationMs)) ? Math.max(0, Number(msg.durationMs)) : 0;
+    base.content = String(msg.content || '');
+    if (Number.isFinite(Number(msg.serverSeq))) base.serverSeq = Number(msg.serverSeq);
+    return base.runId ? base : null;
+  }
+
   if (role === 'model-swap') {
     base.content = String(msg.content || '↔ Model switch');
     base.stage = String(msg.stage || '');

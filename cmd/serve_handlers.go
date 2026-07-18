@@ -858,14 +858,15 @@ func parseSessionMessagesBeforeSeq(raw string) int {
 }
 
 type sessionMessagePartEntry struct {
-	Type       string   `json:"type"`
-	Text       string   `json:"text,omitempty"`
-	ToolName   string   `json:"tool_name,omitempty"`
-	ToolArgs   string   `json:"tool_arguments,omitempty"`
-	ToolCallID string   `json:"tool_call_id,omitempty"`
-	ImageURL   string   `json:"image_url,omitempty"`
-	Images     []string `json:"images,omitempty"`
-	MimeType   string   `json:"mime_type,omitempty"`
+	Type            string                         `json:"type"`
+	Text            string                         `json:"text,omitempty"`
+	SkillActivation *llm.SkillActivationProvenance `json:"skill_activation,omitempty"`
+	ToolName        string                         `json:"tool_name,omitempty"`
+	ToolArgs        string                         `json:"tool_arguments,omitempty"`
+	ToolCallID      string                         `json:"tool_call_id,omitempty"`
+	ImageURL        string                         `json:"image_url,omitempty"`
+	Images          []string                       `json:"images,omitempty"`
+	MimeType        string                         `json:"mime_type,omitempty"`
 }
 
 type sessionMessageEntry struct {
@@ -1238,8 +1239,17 @@ func (s *serveServer) sessionMessageEntries(msgs []session.Message) []sessionMes
 				entry.Parts = append(entry.Parts, sessionMessagePartEntry{Type: "error", Text: marker.Message})
 			} else {
 				for _, p := range msg.Parts {
-					if p.Type == llm.PartText && p.Text != "" {
-						entry.Parts = append(entry.Parts, sessionMessagePartEntry{Type: "text", Text: p.Text})
+					switch p.Type {
+					case llm.PartSkillActivation:
+						if p.SkillActivation != nil {
+							copyProvenance := *p.SkillActivation
+							copyProvenance.AllowedTools = append([]string(nil), p.SkillActivation.AllowedTools...)
+							entry.Parts = append(entry.Parts, sessionMessagePartEntry{Type: "skill_activation", SkillActivation: &copyProvenance})
+						}
+					case llm.PartText:
+						if p.Text != "" {
+							entry.Parts = append(entry.Parts, sessionMessagePartEntry{Type: "text", Text: p.Text})
+						}
 					}
 				}
 			}
@@ -1343,6 +1353,11 @@ func (s *serveServer) handleSessionByID(w http.ResponseWriter, r *http.Request) 
 	suffix := ""
 	if len(parts) > 1 {
 		suffix = parts[1]
+	}
+
+	if suffix == "skills" || suffix == "skills/invoke" || strings.HasPrefix(suffix, "skill-runs/") {
+		s.handleSessionSkills(w, r, sessionID, suffix)
+		return
 	}
 
 	if suffix == "" && r.Method == http.MethodPatch {

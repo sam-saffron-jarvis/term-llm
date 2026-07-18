@@ -251,6 +251,7 @@ const switchToDraftSession = async (options = {}) => {
     restoreDraftMessageForSession('', { replace: true });
   }
   app.activateDiffSidebar?.('');
+  void app.refreshSkillCommands?.('');
 
   if (options.focusPrompt) {
     elements.promptInput.focus();
@@ -398,6 +399,8 @@ const switchToSession = async (sessionId, options = {}) => {
     if (!isCurrentSwitch()) return null;
   }
   if (!isCurrentSwitch()) return null;
+  await app.refreshSkillCommands?.(session.id);
+  if (!isCurrentSwitch()) return null;
   if (syncSelectedRuntimeFromSession(session)) {
     app.updateHeader();
   }
@@ -478,6 +481,9 @@ const responseCompactionMetadata = (data = {}) => {
 
 const messageDedupeKey = (message) => {
   if (!message || typeof message !== 'object') return '';
+  if (message.role === 'skill-run') {
+    return JSON.stringify({ role: message.role, runId: message.runId || '' });
+  }
   if (message.role === 'tool-group') {
     return JSON.stringify({
       role: message.role,
@@ -681,6 +687,33 @@ const convertServerMessages = (serverMessages, options = {}) => {
 
     if (msg.role === 'event') {
       flushGroup();
+      const skillMarker = parts.find((part) => part.type === 'skill_activation' && part.skill_activation?.run_id);
+      if (skillMarker) {
+        const provenance = skillMarker.skill_activation;
+        const textMarker = parts.find((part) => part.type === 'text');
+        const text = String(textMarker?.text || '');
+        const outputBreak = text.indexOf('\n\n');
+        const started = Date.parse(provenance.started_at || '');
+        const completed = Date.parse(provenance.completed_at || '');
+        const skillRun = {
+          id: `skill-run-${provenance.run_id}`,
+          role: 'skill-run',
+          runId: provenance.run_id,
+          skill: provenance.name || 'skill',
+          agent: provenance.agent || '',
+          status: provenance.status || 'running',
+          output: outputBreak >= 0 ? text.slice(outputBreak + 2) : '',
+          childSessionId: provenance.child_session_id || '',
+          durationMs: Number.isFinite(started) && Number.isFinite(completed) && completed >= started ? completed - started : 0,
+          provenance,
+          created,
+          ...(seq !== null ? { serverSeq: seq } : {})
+        };
+        const previousIndex = result.findIndex((entry) => entry.role === 'skill-run' && entry.runId === provenance.run_id);
+        if (previousIndex >= 0) result[previousIndex] = skillRun;
+        else result.push(skillRun);
+        continue;
+      }
       const errorMarker = parts.find((part) => part.type === 'error');
       if (errorMarker) {
         result.push({
@@ -1246,6 +1279,9 @@ const isPreservableLocalTailMessage = (message) => {
   }
   if (message.role === 'tool-group') {
     return Array.isArray(message.tools) && message.tools.length > 0;
+  }
+  if (message.role === 'skill-run') {
+    return Boolean(message.runId);
   }
   if (message.role === 'model-swap') {
     return String(message.content || '').trim().length > 0;
@@ -2253,6 +2289,7 @@ const hydrateActiveSessionAfterStartup = async () => {
   }
 
   await statePromise;
+  await app.refreshSkillCommands?.(active.id);
   if (syncSelectedRuntimeFromSession(active)) {
     app.updateHeader();
   }

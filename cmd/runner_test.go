@@ -63,6 +63,7 @@ func TestCmdRunnerPrepareUsesRequestWorkingDirForSkills(t *testing.T) {
 		},
 		Skills: config.SkillsConfig{
 			Enabled:              true,
+			AutoInvoke:           true,
 			IncludeProjectSkills: true,
 			MetadataBudgetTokens: 1000,
 			MaxVisibleSkills:     10,

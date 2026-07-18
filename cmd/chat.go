@@ -558,6 +558,35 @@ func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent 
 
 	RegisterSkillToolWithEngine(engine, toolMgr, skillsSetup)
 
+	// Direct isolated skills use the generic child runner even when the current
+	// agent does not expose the model-facing spawn_agent tool.
+	if skillsSetup != nil && spawnRunner == nil {
+		parentSessionID := ""
+		if sess != nil {
+			parentSessionID = sess.ID
+		}
+		spawnRunner, err = NewSpawnAgentRunnerWithStore(cfg, chatYolo, approvalMgr, store, parentSessionID)
+		if err != nil {
+			return "", "", fmt.Errorf("initialize isolated skill runner: %w", err)
+		}
+		spawnRunner.SetBaseDirFunc(func() string {
+			if toolMgr != nil {
+				if dir := strings.TrimSpace(toolMgr.BaseDir()); dir != "" {
+					return dir
+				}
+			}
+			if sess != nil {
+				if dir := strings.TrimSpace(sess.WorktreeDir); dir != "" {
+					return dir
+				}
+				if dir := strings.TrimSpace(sess.CWD); dir != "" {
+					return dir
+				}
+			}
+			return runtimeDir
+		})
+	}
+
 	// Determine model name
 	modelName := getModelName(cfg)
 	if modelName == "" {
@@ -657,6 +686,7 @@ func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent 
 		Store:              store,
 		ParentApprovalMgr:  approvalMgr,
 	}))
+	model.SetChildRunner(spawnRunner)
 
 	// Wire handover auto-send if pending from previous iteration
 	if handoverAutoSend != "" {
@@ -676,6 +706,7 @@ func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent 
 	currentRuntimeContext := chat.RuntimeSystemContext{
 		SystemPrompt: cfg.Chat.Instructions,
 		ApplySkills:  skillContextApplier(skillsSetup),
+		Skills:       skillsSetup,
 	}
 	model.SetRuntimeSystemContextResolver(func(targetAgent *agents.Agent, providerKey, modelName, dir string) (chat.RuntimeSystemContext, error) {
 		systemMessage := chatSystemMessage
@@ -964,6 +995,7 @@ func resolveChatRuntimeSystemContextWithConfig(cmd *cobra.Command, cfg *config.C
 	return chat.RuntimeSystemContext{
 		SystemPrompt: InjectSkillsMetadata(settings.SystemPrompt, skillsSetup),
 		ApplySkills:  skillContextApplier(skillsSetup),
+		Skills:       skillsSetup,
 	}, nil
 }
 
