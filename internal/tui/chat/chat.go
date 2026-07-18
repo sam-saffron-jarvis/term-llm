@@ -174,16 +174,18 @@ type Model struct {
 	askUserDoneCh chan<- []tools.AskUserAnswer
 
 	// LLM context
-	rootCtx      context.Context
-	provider     llm.Provider
-	fastProvider llm.Provider
-	engine       *llm.Engine
-	runner       runpkg.Runner
-	config       *config.Config
-	providerName string
-	providerKey  string
-	modelName    string
-	agentName    string
+	rootCtx             context.Context
+	provider            llm.Provider
+	fastProvider        llm.Provider
+	sideProviderFactory func(providerKey, model string) (llm.Provider, error)
+	sideQuestion        SideQuestionState
+	engine              *llm.Engine
+	runner              runpkg.Runner
+	config              *config.Config
+	providerName        string
+	providerKey         string
+	modelName           string
+	agentName           string
 
 	platformDeveloperMessage string
 	currentOrigin            session.SessionOrigin
@@ -1027,6 +1029,7 @@ func (m *Model) applyWindowSize(msg tea.WindowSizeMsg) {
 	m.viewportRows = ui.RemainingLines(m.height, 8)
 	m.textarea.SetWidth(m.width)
 	m.updateTextareaHeight()
+	m.resizeSideComposer()
 	if m.completions != nil {
 		m.completions.SetSize(m.width, m.height)
 	}
@@ -1626,6 +1629,19 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmds []tea.Cmd
 	var flushCmds []tea.Cmd
 
+	if sideMsg, ok := msg.(sideQuestionEventMsg); ok {
+		return m, m.updateSideQuestion(sideMsg)
+	}
+	if pasteMsg, ok := msg.(tea.PasteMsg); ok && m.sideQuestion.Visible {
+		m.focusSideComposer()
+		var cmd tea.Cmd
+		m.sideQuestion.Composer, cmd = m.sideQuestion.Composer.Update(pasteMsg)
+		return m, cmd
+	}
+	if keyMsg, ok := msg.(tea.KeyPressMsg); ok && m.sideQuestion.Visible {
+		return m.handleSideQuestionKey(keyMsg)
+	}
+
 	// The yolo toggle is intentionally global so it works while streaming,
 	// inspecting, or browsing embedded views.
 	if keyMsg, ok := msg.(tea.KeyPressMsg); ok && m.isYoloToggleKey(keyMsg) {
@@ -1696,6 +1712,14 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 		}
+		if m.sideQuestion.Visible {
+			if m.handleSideQuestionMouseWheel(msg) {
+				return m, nil
+			}
+			if m.altScreen && m.handleSideQuestionSelectionMouse(msg) {
+				return m, nil
+			}
+		}
 		// Single-clicking a reasoning header toggles just that block. This runs
 		// before drag-selection, and only consumes clicks on recognized headers.
 		if m.handleReasoningMouseClick(msg) {
@@ -1737,7 +1761,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case spinner.TickMsg:
-		if m.streaming && !m.pausedForExternalUI {
+		if (m.streaming || m.sideQuestion.Running) && !m.pausedForExternalUI {
 			var cmd tea.Cmd
 			m.spinner, cmd = m.spinner.Update(msg)
 			cmds = append(cmds, cmd)

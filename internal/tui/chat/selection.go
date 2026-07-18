@@ -20,10 +20,11 @@ type ContentPos struct {
 
 // Selection tracks mouse-drag selection state in the viewport.
 type Selection struct {
-	Active   bool       // true once a drag has started
-	Anchor   ContentPos // drag start (fixed)
-	Cursor   ContentPos // drag end (follows mouse)
-	Dragging bool       // true between press and release
+	Active       bool       // true once a drag has started
+	Anchor       ContentPos // drag start (fixed)
+	Cursor       ContentPos // drag end (follows mouse)
+	Dragging     bool       // true between press and release
+	SideQuestion bool       // positions refer to the visible side-question panel
 }
 
 // Normalized returns the selection range ordered so start <= end.
@@ -33,6 +34,37 @@ func (s Selection) Normalized() (start, end ContentPos) {
 		return s.Anchor, s.Cursor
 	}
 	return s.Cursor, s.Anchor
+}
+
+func (m *Model) beginSelection(pos ContentPos, sideQuestion bool) {
+	m.copyStatus = ""
+	m.selection = Selection{
+		Active:       true,
+		Anchor:       pos,
+		Cursor:       pos,
+		Dragging:     true,
+		SideQuestion: sideQuestion,
+	}
+}
+
+func (m *Model) moveSelection(pos ContentPos) bool {
+	if !m.selection.Dragging {
+		return false
+	}
+	m.selection.Cursor = pos
+	return true
+}
+
+func (m *Model) finishSelection(pos ContentPos) bool {
+	if !m.moveSelection(pos) {
+		return false
+	}
+	m.selection.Dragging = false
+	start, end := m.selection.Normalized()
+	if start == end {
+		m.selection = Selection{}
+	}
+	return true
 }
 
 // handleSelectionMouse processes mouse events for text selection in the viewport.
@@ -49,38 +81,16 @@ func (m *Model) handleSelectionMouse(msg tea.MouseMsg) bool {
 			return false
 		}
 		contentLine, col := m.screenToContent(mouse.X, mouse.Y)
-		m.copyStatus = "" // Clear stale copy status
-		m.selection = Selection{
-			Active:   true,
-			Anchor:   ContentPos{Line: contentLine, Col: col},
-			Cursor:   ContentPos{Line: contentLine, Col: col},
-			Dragging: true,
-		}
+		m.beginSelection(ContentPos{Line: contentLine, Col: col}, false)
 		return true
 
 	case tea.MouseMotionMsg:
-		if !m.selection.Dragging {
-			return false
-		}
 		contentLine, col := m.screenToContent(mouse.X, mouse.Y)
-		m.selection.Cursor = ContentPos{Line: contentLine, Col: col}
-		return true
+		return m.moveSelection(ContentPos{Line: contentLine, Col: col})
 
 	case tea.MouseReleaseMsg:
-		if !m.selection.Dragging {
-			return false
-		}
 		contentLine, col := m.screenToContent(mouse.X, mouse.Y)
-		m.selection.Cursor = ContentPos{Line: contentLine, Col: col}
-		m.selection.Dragging = false
-		// Keep selection visible; user copies explicitly with ctrl+y
-		start, end := m.selection.Normalized()
-		if start.Line != end.Line || start.Col != end.Col {
-			return true
-		}
-		// Click with no drag — clear selection
-		m.selection = Selection{}
-		return true
+		return m.finishSelection(ContentPos{Line: contentLine, Col: col})
 	}
 
 	return false
@@ -98,35 +108,46 @@ func (m *Model) screenToContent(x, y int) (line, col int) {
 	return
 }
 
-// applySelectionHighlight overlays reverse-video highlighting on the viewport output.
-func (m *Model) applySelectionHighlight(viewOutput string) string {
-	if !m.selection.Active {
+// applySelectionHighlight overlays selection styling on rendered lines. lineOffset
+// maps output row zero to the selection's content line; columnOffset/lineWidth
+// constrain modal selections to their content area rather than their borders.
+func applySelectionHighlight(viewOutput string, selection Selection, lineOffset, columnOffset, lineWidth int) string {
+	if !selection.Active {
 		return viewOutput
 	}
-
-	start, end := m.selection.Normalized()
+	start, end := selection.Normalized()
 	lines := strings.Split(viewOutput, "\n")
-	yOff := m.viewport.YOffset()
-
+	lineEnd := -1
+	if lineWidth >= 0 {
+		lineEnd = columnOffset + lineWidth
+	}
 	for i, line := range lines {
-		contentLine := yOff + i
+		contentLine := lineOffset + i
 		if contentLine < start.Line || contentLine > end.Line {
 			continue
 		}
-
-		if start.Line == end.Line {
-			// Single line selection
-			lines[i] = ansisafe.ApplyPartialReverseVideo(line, start.Col, end.Col)
-		} else if contentLine == start.Line {
-			lines[i] = ansisafe.ApplyPartialReverseVideo(line, start.Col, -1)
-		} else if contentLine == end.Line {
-			lines[i] = ansisafe.ApplyPartialReverseVideo(line, 0, end.Col)
-		} else {
+		switch {
+		case start.Line == end.Line:
+			lines[i] = ansisafe.ApplyPartialReverseVideo(line, columnOffset+start.Col, columnOffset+end.Col)
+		case contentLine == start.Line:
+			lines[i] = ansisafe.ApplyPartialReverseVideo(line, columnOffset+start.Col, lineEnd)
+		case contentLine == end.Line:
+			lines[i] = ansisafe.ApplyPartialReverseVideo(line, columnOffset, columnOffset+end.Col)
+		case lineWidth >= 0:
+			lines[i] = ansisafe.ApplyPartialReverseVideo(line, columnOffset, lineEnd)
+		default:
 			lines[i] = ansisafe.ApplyReverseVideo(line)
 		}
 	}
-
 	return strings.Join(lines, "\n")
+}
+
+// applySelectionHighlight overlays reverse-video highlighting on the viewport output.
+func (m *Model) applySelectionHighlight(viewOutput string) string {
+	if !m.selection.Active || m.selection.SideQuestion {
+		return viewOutput
+	}
+	return applySelectionHighlight(viewOutput, m.selection, m.viewport.YOffset(), 0, -1)
 }
 
 // copySelectionToClipboard extracts selected text and copies to clipboard.
@@ -164,21 +185,24 @@ func (m *Model) extractSelectedText() string {
 	if start.Line == end.Line && start.Col == end.Col {
 		return ""
 	}
-	// Lazily rebuild content lines from stored content string (avoids
-	// splitting the full content on every frame — only when selection needs it).
-	if m.contentLines == nil && m.viewCache.lastContentStr != "" {
-		m.contentLines = strings.Split(m.viewCache.lastContentStr, "\n")
+	// Lazily rebuild base viewport content only when that is the selection source.
+	contentLines := m.sideQuestion.selectionLines
+	if !m.selection.SideQuestion {
+		if m.contentLines == nil && m.viewCache.lastContentStr != "" {
+			m.contentLines = strings.Split(m.viewCache.lastContentStr, "\n")
+		}
+		contentLines = m.contentLines
 	}
-	if len(m.contentLines) == 0 {
+	if len(contentLines) == 0 {
 		return ""
 	}
 
 	var b strings.Builder
 	for line := start.Line; line <= end.Line; line++ {
-		if line < 0 || line >= len(m.contentLines) {
+		if line < 0 || line >= len(contentLines) {
 			continue
 		}
-		stripped := strings.TrimRight(ansi.Strip(m.contentLines[line]), " ")
+		stripped := strings.TrimRight(ansi.Strip(contentLines[line]), " ")
 		w := ansi.StringWidth(stripped)
 
 		if start.Line == end.Line {

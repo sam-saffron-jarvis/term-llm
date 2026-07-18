@@ -145,6 +145,28 @@ func (m *Model) renderStatsModal() string {
 		b.WriteString("No token usage recorded yet.\n")
 	}
 
+	var sideUsage llm.Usage
+	sideRequests := 0
+	if m.stats != nil {
+		calls, _ := m.stats.UsageCalls()
+		for _, call := range calls {
+			if !call.SideQuestion {
+				continue
+			}
+			sideRequests++
+			sideUsage.Add(llm.Usage{
+				InputTokens: call.InputTokens, OutputTokens: call.OutputTokens,
+				CachedInputTokens: call.CachedInputTokens, CacheWriteTokens: call.CacheWriteTokens,
+			})
+		}
+	}
+	b.WriteString("\nPrivate Side-Question Usage\n")
+	b.WriteString(fmt.Sprintf("Requests:           %d\n", sideRequests))
+	b.WriteString(fmt.Sprintf("Successful history: %d\n", len(m.sideQuestion.History)))
+	b.WriteString(fmt.Sprintf("Fresh input tokens: %s\n", ui.FormatTokenCount(sideUsage.InputTokens)))
+	b.WriteString(fmt.Sprintf("Cache read tokens:  %s\n", ui.FormatTokenCount(sideUsage.CachedInputTokens)))
+	b.WriteString(fmt.Sprintf("Output tokens:      %s\n", ui.FormatTokenCount(sideUsage.OutputTokens)))
+
 	b.WriteString("\nCumulative Session Activity\n")
 	if m.stats != nil {
 		b.WriteString(fmt.Sprintf("LLM calls:          %d\n", m.stats.LLMCallCount))

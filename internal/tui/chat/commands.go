@@ -72,6 +72,11 @@ func AllCommands() []Command {
 			},
 		},
 		{
+			Name:        "side",
+			Description: "Ask a private one-turn question about this conversation",
+			Usage:       "/side <question>",
+		},
+		{
 			Name:        "share",
 			Description: "Share this session as a GitHub Gist",
 			Usage:       "/share [new] [public]",
@@ -376,6 +381,7 @@ func isStreamingLocalSlashCommand(input string) bool {
 	// replace the active provider/engine must either be blocked or explicitly
 	// defer their side effects until the current stream has ended.
 	localCommands := map[string]bool{
+		"side":      true,
 		"thinking":  true,
 		"reasoning": true,
 		"help":      true,
@@ -469,6 +475,8 @@ func (m *Model) ExecuteCommand(input string) (tea.Model, tea.Cmd) {
 	switch cmd.Name {
 	case "help":
 		return m.cmdHelp()
+	case "side":
+		return m.cmdSide(rawArgs)
 	case "stats":
 		return m.cmdStats()
 	case "goal":
@@ -914,6 +922,7 @@ func (m *Model) showHelpModal() (tea.Model, tea.Cmd) {
 }
 
 func (m *Model) cmdClear() (tea.Model, tea.Cmd) {
+	m.clearSideQuestionHistory()
 	m.clearPendingStreamModelSwitch()
 	// Mark the old session as complete before creating a new one
 	if m.store != nil && m.sess != nil {
@@ -995,6 +1004,7 @@ func (m *Model) cmdClear() (tea.Model, tea.Cmd) {
 }
 
 func (m *Model) cmdQuit() (tea.Model, tea.Cmd) {
+	m.cancelSideQuestion()
 	hadActiveStream := m.streaming || m.streamCancelFunc != nil
 	// Signal tool-initiated handover (if any) right before quitting.
 	// The session is about to restart so the tool result is moot,
@@ -1812,6 +1822,7 @@ func (m *Model) cmdFast() (tea.Model, tea.Cmd) {
 }
 
 func (m *Model) cmdNew() (tea.Model, tea.Cmd) {
+	m.clearSideQuestionHistory()
 	m.pauseGoalForLocalAction("paused because a new session was started")
 	m.clearPendingStreamModelSwitch()
 	// Mark the old session as complete before creating a new one

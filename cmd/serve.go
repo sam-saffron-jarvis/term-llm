@@ -462,6 +462,10 @@ func runServeLegacy(parentCtx context.Context, cmd *cobra.Command, args []string
 		runtime.toolMap = toolMap
 		runtime.platform = "web"
 		runtime.platformMessages = agentPlatformMsgs
+		runtime.sideProviderFactory = func(providerKey, model string) (llm.Provider, error) {
+			return llm.NewProviderByName(cfg, providerKey, model)
+		}
+		runtime.configureSideQuestionContext()
 
 		// Validate --tool-map targets exist as registered server tools.
 		// This runs after MCP registration so mapped MCP tools are visible.
@@ -1173,6 +1177,7 @@ func (s *serveServer) httpHandler() http.Handler {
 	inner.HandleFunc("/v1/worktrees/promote", s.auth(s.cors(s.handleWorktreePromote)))
 	inner.HandleFunc("/v1/worktrees", s.auth(s.cors(s.handleWorktrees)))
 	inner.HandleFunc("/v1/sessions/", s.auth(s.cors(s.handleSessionByID)))
+	inner.HandleFunc("/api/sessions/", s.auth(s.cors(s.handleSideQuestion)))
 	inner.HandleFunc("/v1/push/subscribe", s.auth(s.cors(s.handlePushSubscribe)))
 
 	if s.store != nil {

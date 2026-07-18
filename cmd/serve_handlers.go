@@ -1368,6 +1368,20 @@ func (s *serveServer) handleSessionByID(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	if suffix == "runtime/compact" {
+		if r.Method != http.MethodPost {
+			w.Header().Set("Allow", "POST")
+			writeOpenAIError(w, http.StatusMethodNotAllowed, "invalid_request_error", "method not allowed")
+			return
+		}
+		if err := requireJSONContentType(r); err != nil {
+			writeOpenAIError(w, http.StatusUnsupportedMediaType, "invalid_request_error", err.Error())
+			return
+		}
+		s.handleSessionRuntimeCompact(w, r, sessionID)
+		return
+	}
+
 	if suffix == "runtime/effort" {
 		if r.Method != http.MethodPost {
 			w.Header().Set("Allow", "POST")

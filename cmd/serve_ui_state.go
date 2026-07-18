@@ -6,6 +6,18 @@ func (rt *serveRuntime) hasActiveRun() bool {
 	return rt.activeInterrupt != nil
 }
 
+func (rt *serveRuntime) hasActiveSideQuestion() bool {
+	rt.sideQuestion.mu.Lock()
+	defer rt.sideQuestion.mu.Unlock()
+	return rt.sideQuestion.running
+}
+
+// hasActiveActivity protects runtime lifecycle operations from retiring a
+// runtime while either its main response or private side request is active.
+func (rt *serveRuntime) hasActiveActivity() bool {
+	return rt.compacting.Load() || rt.hasActiveRun() || rt.hasActiveSideQuestion()
+}
+
 func (rt *serveRuntime) clearLastUIRunError() {
 	rt.uiStateMu.Lock()
 	defer rt.uiStateMu.Unlock()

@@ -926,7 +926,15 @@ func (m *Model) handleKeyMsg(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			if strings.HasPrefix(raw, "/") && isStreamingLocalSlashCommand(raw) {
-				return m.handleSlashCommand(raw)
+				m.setTextareaValue("")
+				m.completions.Hide()
+				m.invalidateAltScreenStreamingViewportCache()
+				updated, cmd := m.handleSlashCommand(raw)
+				// Rebuild the cleared composer over a freshly rendered alt-screen
+				// background before the command opens a panel or waits for an
+				// asynchronous result. ClearScreen remains ordered after term-llm's
+				// own viewport/append cache has been invalidated.
+				return updated, tea.Sequence(tea.ClearScreen, cmd)
 			}
 			content := m.expandPastePlaceholders(raw)
 			parts := m.imagePartList()

@@ -3220,6 +3220,7 @@ Object.assign(app, {
 initialize();
 
 Object.assign(app, {
+  createAndSwitchToFreshSession,
   convertServerMessages,
   loadServerSessionMessages,
   refreshActiveSessionMessagesFromServer,

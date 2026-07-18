@@ -662,6 +662,12 @@ func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent 
 	if handoverAutoSend != "" {
 		model.SetHandoverAutoSend(handoverAutoSend)
 	}
+	model.SetSideQuestionProviderFactory(func(providerKey, modelName string) (llm.Provider, error) {
+		if strings.TrimSpace(providerKey) == "" {
+			providerKey = provider.Name()
+		}
+		return llm.NewProviderByName(cfg, providerKey, modelName)
+	})
 	model.SetHandoverApprovalManager(approvalMgr)
 	model.PersistApprovalModeActive()
 

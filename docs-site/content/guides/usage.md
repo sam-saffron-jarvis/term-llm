@@ -94,10 +94,21 @@ Pasting an image from the clipboard attaches it as an image when the terminal/cl
 | `/fast` | Toggle fast/priority service tier for supported OpenAI/ChatGPT models |
 | `/mcp` | Manage MCP servers |
 | `/goal` | Set, edit, pause, resume, clear, or show the persistent session goal |
+| `/side <question>` | Ask a private, tool-less one-turn question without interrupting or changing the main conversation |
 | `/share [new] [public]` | Share the session as a GitHub Gist; repeat to update or create a new gist |
 | `/quit` | Exit chat |
 
 When web search is enabled, the chat status line shows `web`; when fast service tier is enabled, it shows `fast`.
+
+In the web UI, typing `/` opens an alphabetized command menu. `/compact` and `/compress` manually compress the active conversation context without adding a user message; `/goal`, `/mcp`, and `/model` open their existing controls; `/new` starts a fresh conversation; and `/side` opens a side question.
+
+### Side questions
+
+`/side <question>` opens an overlay over the current TUI or web conversation and sends immediately. `/side` alone opens or reopens the overlay with its dedicated `Ask a follow-up…` composer focused. The main answer keeps running and remains visible. Each send is an independent one-turn provider request with no local tools, MCP, search, approvals, attachments, model picker, slash commands, queue, or subagents. It forks from the current completed provider boundary, including complete tool-call/result cycles already produced during the active main turn while excluding the pending assistant response. Existing cache anchors are preserved so the shared main prefix remains cacheable. Up to 20 successful side exchanges are kept only in the active runtime's memory. Side questions are never added to the transcript, resume state, exports, search index, compaction input, title input, or session message count.
+
+Side exchanges appear chronologically in one compact scrollable transcript, using the same user-message and Markdown assistant styling as the main conversation without redundant role labels. After an answer completes, the pinned single-line side composer accepts a follow-up with Enter. While answering, the composer is unavailable and `Esc` cancels only the side request while leaving the overlay open. When idle, `Esc` first clears a non-empty side draft, then closes the overlay when the draft is empty. In the TUI, PageUp/PageDown or Ctrl+Up/Ctrl+Down scroll the transcript, mouse drag selects visible overlay text, Ctrl+C closes the overlay unless text is selected (in which case it copies the selection), and Ctrl+X twice clears history. In the web overlay, text uses native browser selection and the close button cancels an active side request before closing. Main composer draft, session, transcript position, and main cancellation remain independent.
+
+Side history is intentionally lost on a new/cleared/resumed session, runtime eviction, or process/server restart. Promotion or merging a side answer into the main transcript is not supported; copy it or restate the conclusion in the main conversation.
 
 ### Persistent goals
 

@@ -5181,6 +5181,92 @@ function testCompletedResponseClearsUnappliedQueuedEffort() {
   pass(name);
 }
 
+async function testWebSlashCommandsInvokeExistingControls() {
+  const name = 'web slash commands invoke existing controls';
+  const harness = createHarness();
+  const { app, elements, cleanup } = harness;
+  const calls = [];
+  app.openGoalModal = () => { calls.push('goal'); };
+  app.openSessionMCPModal = async () => { calls.push('mcp'); };
+  elements.chipModelTrigger.click = () => { calls.push('model'); };
+  app.createAndSwitchToFreshSession = async () => { calls.push('new'); };
+
+  for (const command of ['/goal', '/mcp', '/model', '/new']) {
+    elements.promptInput.value = command;
+    await app.sendMessage();
+    if (elements.promptInput.value !== '') {
+      fail(name, `${command} did not clear the composer`);
+      await cleanup();
+      return;
+    }
+  }
+  await cleanup();
+
+  if (JSON.stringify(calls) !== JSON.stringify(['goal', 'mcp', 'model', 'new'])) {
+    fail(name, 'commands did not invoke their existing controls', JSON.stringify(calls));
+    return;
+  }
+  pass(name);
+}
+
+async function testCompressCommandCompactsWithoutSendingMessage() {
+  const name = '/compress compacts active context without sending a chat message';
+  const harness = createHarness({
+    fetchImpl: async (url, requestOptions, { Response }) => {
+      if (url === '/ui/v1/sessions/session_compress/runtime/compact' && requestOptions.method === 'POST') {
+        return new Response(JSON.stringify({ ok: true }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      return new Response('unexpected request', { status: 500 });
+    },
+  });
+  const { app, elements, state, fetchCalls, cleanup } = harness;
+  const session = {
+    id: 'session_compress',
+    title: 'Compress',
+    messages: [],
+    lastResponseId: null,
+    activeResponseId: null,
+    lastSequenceNumber: 0,
+    number: 1,
+  };
+  state.sessions.push(session);
+  state.activeSessionId = session.id;
+  elements.promptInput.value = '/compress';
+  let refreshOptions = null;
+  app.refreshActiveSessionMessagesFromServer = async (_session, options) => {
+    refreshOptions = options;
+    return true;
+  };
+
+  await app.sendMessage();
+  elements.promptInput.value = '/compact';
+  await app.sendMessage();
+  await cleanup();
+
+  const compactCalls = fetchCalls.filter((call) => call.url === '/ui/v1/sessions/session_compress/runtime/compact');
+  const responseCalls = fetchCalls.filter((call) => call.url === '/ui/v1/responses');
+  if (compactCalls.length !== 2 || compactCalls.some((call) => call.method !== 'POST' || call.body !== '{}')) {
+    fail(name, 'expected /compress and /compact to issue compact POSTs', JSON.stringify(fetchCalls));
+    return;
+  }
+  if (responseCalls.length !== 0 || session.messages.length !== 0) {
+    fail(name, 'command was sent as a normal conversation message', JSON.stringify({ responseCalls, messages: session.messages }));
+    return;
+  }
+  if (!refreshOptions?.force || refreshOptions?.useEtag !== false || elements.promptInput.value !== '') {
+    fail(name, 'successful compression did not force-refresh and clear the composer', JSON.stringify({ refreshOptions, prompt: elements.promptInput.value }));
+    return;
+  }
+  if (state.compressing || elements.sendBtn.classList.contains('loading')) {
+    fail(name, 'compression left the composer busy');
+    return;
+  }
+  pass(name);
+}
+
 (async () => {
   await testModelEffortOptionsFollowMetadata();
   await testResponseCompletedForcesSidebarStatusRefresh();
@@ -5205,6 +5291,8 @@ function testCompletedResponseClearsUnappliedQueuedEffort() {
   await testSendMessageRefreshesHeaderAfterCompletionUnlocksModelPicker();
   await testSendMessageLazilyMaterializesAttachmentDataURLs();
   await testSendMessageKeepsComposerWhenAttachmentMaterializationFails();
+  await testWebSlashCommandsInvokeExistingControls();
+  await testCompressCommandCompactsWithoutSendingMessage();
   await testStaleInterrupt404RefreshesAndSendsMessage();
   await testStaleInterruptRecoveryFailedPostKeepsDraft();
   await testFailedSendKeepsSessionDraftAndRestagesComposer();

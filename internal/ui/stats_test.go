@@ -28,6 +28,37 @@ func TestSessionStatsSeedTotals(t *testing.T) {
 	}
 }
 
+func TestAddSideQuestionUsagePreservesMainContextHintsAndPendingTiming(t *testing.T) {
+	stats := NewSessionStats()
+	stats.SetModel("main-model")
+	stats.AddUsage(100, 20, 5, 0)
+	lastInput, lastOutput, peak := stats.lastInputTokens, stats.lastOutputTokens, stats.peakInputTokens
+	requestStart := time.Now().Add(-time.Second)
+	stats.requestStartTime = requestStart
+
+	stats.AddSideQuestionUsageForModel("side-model", 1000, 50, 100, 10)
+
+	if stats.lastInputTokens != lastInput || stats.lastOutputTokens != lastOutput || stats.peakInputTokens != peak {
+		t.Fatalf("side usage changed main context hints: last=%d/%d peak=%d", stats.lastInputTokens, stats.lastOutputTokens, stats.peakInputTokens)
+	}
+	if stats.requestStartTime != requestStart {
+		t.Fatal("side usage disturbed pending main request timing")
+	}
+	if stats.InputTokens != 1100 || stats.OutputTokens != 70 || stats.CachedInputTokens != 105 || stats.CacheWriteTokens != 10 || stats.LLMCallCount != 2 {
+		t.Fatalf("side usage missing from aggregate totals: %+v", stats)
+	}
+	calls, _ := stats.UsageCalls()
+	if len(calls) != 2 || !calls[1].SideQuestion || calls[1].Model != "side-model" {
+		t.Fatalf("side usage call = %+v", calls)
+	}
+
+	stats.DiscardUsage(100, 20, 5, 0, 1)
+	calls, _ = stats.UsageCalls()
+	if len(calls) != 1 || !calls[0].SideQuestion {
+		t.Fatalf("main retry discard removed side usage: %+v", calls)
+	}
+}
+
 func TestAddUsageSetsLastAndPeak(t *testing.T) {
 	stats := NewSessionStats()
 

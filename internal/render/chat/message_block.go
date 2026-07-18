@@ -170,41 +170,44 @@ func (r *MessageBlockRenderer) noteRenderedSegment(segmentType ui.SegmentType) {
 	r.lastSegmentType = segmentType
 }
 
+// RenderUserTextBlock renders user text using the shared conversation visual
+// language: an accented prompt and a full-width themed background.
+func RenderUserTextBlock(content string, width int, theme *ui.Theme) string {
+	if theme == nil {
+		theme = sharedTheme
+	}
+	if width < 1 {
+		width = 1
+	}
+	userMsgBg := theme.UserMsgBg
+	promptStyle := lipgloss.NewStyle().Foreground(theme.Primary).Bold(true).Background(userMsgBg)
+	userMsgStyle := lipgloss.NewStyle().Background(userMsgBg)
+	wrappedContent := wordwrap.String(content, max(1, width-2))
+	lines := strings.Split(wrappedContent, "\n")
+	var b strings.Builder
+	for i, line := range lines {
+		if i == 0 {
+			b.WriteString(renderUserMessageLine("❯ ", promptStyle, line, userMsgStyle, width))
+		} else {
+			b.WriteString(renderUserMessageLine("  ", userMsgStyle, line, userMsgStyle, width))
+		}
+		if i < len(lines)-1 {
+			b.WriteByte('\n')
+		}
+	}
+	return b.String()
+}
+
 // renderUserMessage renders a user message with prompt styling.
 func (r *MessageBlockRenderer) renderUserMessage(msg *session.Message) string {
 	var b strings.Builder
 	userMsgBg := r.userMessageBackground()
 	displayContent, attachmentMeta := r.userDisplayParts(msg)
-
-	promptStyle := lipgloss.NewStyle().
-		Foreground(r.theme.Primary).
-		Bold(true).
-		Background(userMsgBg)
 	userMsgStyle := lipgloss.NewStyle().Background(userMsgBg)
-	userMetaStyle := lipgloss.NewStyle().
-		Foreground(r.theme.Muted).
-		Background(userMsgBg)
+	userMetaStyle := lipgloss.NewStyle().Foreground(r.theme.Muted).Background(userMsgBg)
 
-	// Wrap content to fit terminal width minus prompt
-	promptWidth := 2 // "❯ " is 2 cells
-	wrapWidth := r.width - promptWidth
-	if wrapWidth < 20 {
-		wrapWidth = 20
-	}
-	wrappedContent := wordwrap.String(displayContent, wrapWidth)
-
-	// Render with prompt on first line, indent continuation lines.
-	// Each row is padded while the background style is active so the user
-	// message block has a clean rectangular background across the terminal.
-	lines := strings.Split(wrappedContent, "\n")
-	for i, line := range lines {
-		if i == 0 {
-			b.WriteString(renderUserMessageLine("❯ ", promptStyle, line, userMsgStyle, r.width))
-		} else {
-			b.WriteString(renderUserMessageLine("  ", userMsgStyle, line, userMsgStyle, r.width))
-		}
-		b.WriteString("\n")
-	}
+	b.WriteString(RenderUserTextBlock(displayContent, r.width, r.theme))
+	b.WriteString("\n")
 	if attachmentMeta != "" {
 		b.WriteString(renderUserMessageLine("  ", userMsgStyle, attachmentMeta, userMetaStyle, r.width))
 		b.WriteString("\n")

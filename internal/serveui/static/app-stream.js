@@ -3948,6 +3948,76 @@ const sendMessage = async (options = {}) => {
     return;
   }
 
+  if (/^\/(goal|mcp|model|new)$/i.test(prompt)) {
+    const command = prompt.toLowerCase();
+    elements.promptInput.value = '';
+    app.hideSlashCommands?.();
+    autoGrowPrompt();
+    switch (command) {
+      case '/goal':
+        app.openGoalModal?.();
+        break;
+      case '/mcp':
+        await app.openSessionMCPModal?.();
+        break;
+      case '/model':
+        elements.chipModelTrigger?.click();
+        break;
+      case '/new':
+        await app.createAndSwitchToFreshSession?.();
+        break;
+    }
+    return;
+  }
+
+  if (/^\/(compact|compress)$/i.test(prompt)) {
+    elements.promptInput.value = '';
+    app.hideSlashCommands?.();
+    autoGrowPrompt();
+    const session = getActiveSession();
+    if (!session || state.draftSessionActive) {
+      window.alert('Start the conversation before compressing it.');
+      return;
+    }
+    if (state.compressing) return;
+    state.compressing = true;
+    elements.sendBtn.classList.add('loading');
+    elements.sendBtn.disabled = true;
+    elements.sendBtn.title = 'Compressing conversation';
+    try {
+      const response = await fetch(`${UI_PREFIX}/v1/sessions/${encodeURIComponent(session.id)}/runtime/compact`, {
+        method: 'POST',
+        headers: requestHeaders(session.id),
+        body: '{}'
+      });
+      if (!response.ok) {
+        const payload = await response.json().catch(() => ({}));
+        throw new Error(payload?.error?.message || `Compression failed (${response.status})`);
+      }
+      await app.refreshActiveSessionMessagesFromServer?.(session, {
+        force: true,
+        useEtag: false,
+        forceScroll: true
+      });
+    } catch (err) {
+      addErrorMessage(err?.message || String(err), session);
+    } finally {
+      state.compressing = false;
+      elements.sendBtn.classList.remove('loading');
+      elements.sendBtn.disabled = false;
+      updateSendButtonState();
+    }
+    return;
+  }
+
+  if (/^\/side(?:\s|$)/i.test(prompt)) {
+    const question = prompt.replace(/^\/side\b/i, '').trim();
+    elements.promptInput.value = '';
+    app.hideSlashCommands?.();
+    if (typeof app.openSideQuestion === 'function') await app.openSideQuestion(question);
+    return;
+  }
+
   let session = getActiveSession();
   const heartbeatPostRetryCount = Math.max(0, Number(options._heartbeatPostRetry || 0));
   const retryingHeartbeatPost = heartbeatPostRetryCount > 0 && typeof options.reuseMessageId === 'string';

@@ -54,6 +54,7 @@ type serveRuntime struct {
 	skipProviderCleanup  bool
 	defaultModel         string
 	yoloMode             bool
+	compacting           atomic.Bool
 	lastUsedUnixNano     atomic.Int64
 	activeInterrupt      *runtimeInterruptState
 	interjectionCalls    map[string]*runtimeInterjectionCall
@@ -73,6 +74,8 @@ type serveRuntime struct {
 	platform             string
 	platformMessages     agents.PlatformMessagesConfig
 	lastInjectedPlatform string
+	sideQuestion         sideQuestionRuntime
+	sideProviderFactory  func(providerKey, model string) (llm.Provider, error)
 }
 
 type runtimeInterruptState struct {
@@ -244,6 +247,9 @@ func (rt *serveRuntime) Close() {
 }
 
 func (rt *serveRuntime) CloseContext(ctx context.Context) {
+	sideCtx, sideCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	rt.sideQuestion.close(sideCtx)
+	sideCancel()
 	rt.interruptMu.Lock()
 	state := rt.activeInterrupt
 	rt.interruptMu.Unlock()
@@ -991,9 +997,6 @@ func (rt *serveRuntime) runOnce(ctx context.Context, stateful bool, replaceHisto
 		return serveRunResult{}, errServeSessionBusy
 	}
 	defer rt.mu.Unlock()
-	if onStart != nil {
-		onStart()
-	}
 	rt.Touch()
 	persisted := rt.ensurePersistedSession(ctx, req.SessionID, inputMessages)
 	if persisted {
@@ -1016,12 +1019,28 @@ func (rt *serveRuntime) runOnce(ctx context.Context, stateful bool, replaceHisto
 
 	baseHistory := make([]llm.Message, len(rt.history))
 	copy(baseHistory, rt.history)
+	rt.initializeSideQuestionSnapshot(baseHistory)
+	rt.updateSideQuestionConfig(req)
 	replacingExistingHistory := replaceHistory && len(baseHistory) > 0
 	replaceHistoryBackup := baseHistory
 	replaceUsageBackup := rt.cumulativeUsage
 	replacePlatformBackup := rt.lastInjectedPlatform
 	replacePersistedBackup := rt.historyPersisted
+	replaceSideQuestionBackup := sideQuestionStateBackup{}
 	if replaceHistory {
+		replaceSideQuestionBackup = rt.sideQuestion.backup()
+	}
+	restoreReplaceHistory := func() {
+		rt.history = replaceHistoryBackup
+		rt.cumulativeUsage = replaceUsageBackup
+		rt.lastInjectedPlatform = replacePlatformBackup
+		rt.historyPersisted = replacePersistedBackup
+		rt.sideQuestion.restore(replaceSideQuestionBackup)
+	}
+	if replaceHistory {
+		rt.sideQuestion.cancelActive()
+		rt.sideQuestion.clearHistory()
+		rt.refreshSideQuestionSnapshot(nil)
 		baseHistory = nil
 		rt.history = nil
 		rt.engine.ResetConversation()
@@ -1039,6 +1058,20 @@ func (rt *serveRuntime) runOnce(ctx context.Context, stateful bool, replaceHisto
 		devMsg := llm.Message{Role: llm.RoleDeveloper, Parts: []llm.Part{{Type: llm.PartText, Text: devText}}}
 		inputMessages = append([]llm.Message{devMsg}, inputMessages...)
 		injectedPlatform = rt.platform
+	}
+
+	if stateful {
+		initialBoundary := make([]llm.Message, 0, len(baseHistory)+len(inputMessages)+1)
+		if rt.systemPrompt != "" && !containsSystemMessage(baseHistory) && !containsSystemMessage(inputMessages) {
+			initialBoundary = append(initialBoundary, llm.SystemText(rt.systemPrompt))
+		}
+		initialBoundary = append(initialBoundary, baseHistory...)
+		initialBoundary = append(initialBoundary, inputMessages...)
+		rt.refreshSideQuestionSnapshot(initialBoundary)
+	}
+
+	if onStart != nil {
+		onStart()
 	}
 
 	runCtx, runCancel := context.WithCancel(ctx)
@@ -1325,6 +1358,7 @@ func (rt *serveRuntime) runOnce(ctx context.Context, stateful bool, replaceHisto
 		if stateful {
 			rt.history = append([]llm.Message(nil), compacted...)
 			rt.historyPersisted = persisted
+			rt.refreshSideQuestionSnapshot(compacted)
 		}
 		rt.engine.SetContextEstimateBaseline(0, 0)
 		persistPlatformInjectionLocked()
@@ -1462,6 +1496,9 @@ func (rt *serveRuntime) runOnce(ctx context.Context, stateful bool, replaceHisto
 			pendingAssistantIdx = -1
 			pendingAssistantMsgID = 0
 			pendingAssistantTextPersisted = false
+			if stateful {
+				rt.refreshSideQuestionSnapshot(buildSnapshotLocked())
+			}
 		}()
 
 		rt.persistTurnAccounting(cbCtx, persisted, req.SessionID, msgs, metrics)
@@ -1485,10 +1522,7 @@ func (rt *serveRuntime) runOnce(ctx context.Context, stateful bool, replaceHisto
 		}
 		if !persisted {
 			if replaceHistory {
-				rt.history = replaceHistoryBackup
-				rt.cumulativeUsage = replaceUsageBackup
-				rt.lastInjectedPlatform = replacePlatformBackup
-				rt.historyPersisted = replacePersistedBackup
+				restoreReplaceHistory()
 			}
 			return
 		}
@@ -1500,10 +1534,7 @@ func (rt *serveRuntime) runOnce(ctx context.Context, stateful bool, replaceHisto
 		producedMu.Unlock()
 		if !hasProduced {
 			if replaceHistory && !initialPersisted {
-				rt.history = replaceHistoryBackup
-				rt.cumulativeUsage = replaceUsageBackup
-				rt.lastInjectedPlatform = replacePlatformBackup
-				rt.historyPersisted = replacePersistedBackup
+				restoreReplaceHistory()
 			}
 			return
 		}
@@ -1609,6 +1640,8 @@ func (rt *serveRuntime) runOnce(ctx context.Context, stateful bool, replaceHisto
 	if stateful {
 		rt.history = newHistory
 		rt.historyPersisted = false
+		rt.refreshSideQuestionSnapshot(newHistory)
+		rt.updateSideQuestionConfig(req)
 	}
 	needFinalSnapshot = false
 	if persisted {

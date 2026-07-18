@@ -38,6 +38,7 @@ func (m *Model) requestResumeSession(sessionID string) (tea.Model, tea.Cmd) {
 	if sessionID == "" {
 		return m, nil
 	}
+	m.clearSideQuestionHistory()
 	if m.store != nil {
 		_ = m.store.SetCurrent(context.Background(), sessionID)
 	}

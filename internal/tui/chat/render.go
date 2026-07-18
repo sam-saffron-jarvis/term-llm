@@ -61,7 +61,11 @@ func (m *Model) View() tea.View {
 
 	// Alt screen mode: use viewport for scrollable content
 	if m.altScreen {
-		return m.newView(m.viewAltScreen())
+		content := m.viewAltScreen()
+		if m.sideQuestion.Visible {
+			content = m.renderSideQuestionOverlay(content)
+		}
+		return m.newView(content)
 	}
 
 	// Auto-send mode: minimal rendering for benchmarking (skip expensive UI)
@@ -120,7 +124,11 @@ func (m *Model) View() tea.View {
 	m.applyFooterLayout(renderedLines, footer)
 	b.WriteString(footer.view)
 
-	return m.newView(b.String())
+	content := b.String()
+	if m.sideQuestion.Visible {
+		content += "\n" + m.renderSideQuestionPanel()
+	}
+	return m.newView(content)
 }
 
 // newView wraps content in a tea.View with the model's declarative flags.
@@ -146,7 +154,7 @@ func (m *Model) composerCursor() *tea.Cursor {
 	if m == nil || !m.textareaBoundsValid || !m.textarea.Focused() {
 		return nil
 	}
-	if m.autoSendQueue != nil || m.quitting {
+	if m.autoSendQueue != nil || m.quitting || m.sideQuestion.Visible {
 		return nil
 	}
 	if m.dialog != nil && m.dialog.IsOpen() {

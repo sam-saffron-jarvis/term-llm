@@ -58,7 +58,7 @@ func (m *serveSessionManager) evictExpired() {
 
 	m.mu.Lock()
 	for id, rt := range m.sessions {
-		if now.Sub(rt.LastUsed()) > m.ttl && !rt.hasActiveRun() {
+		if now.Sub(rt.LastUsed()) > m.ttl && !rt.hasActiveActivity() {
 			delete(m.sessions, id)
 			stale = append(stale, rt)
 		}
@@ -81,7 +81,7 @@ func (m *serveSessionManager) evictOldestIdleLocked() *serveRuntime {
 	oldestID := ""
 	var oldestTime time.Time
 	for sid, srt := range m.sessions {
-		if srt.hasActiveRun() {
+		if srt.hasActiveActivity() {
 			continue
 		}
 		t := srt.LastUsed()
@@ -307,7 +307,7 @@ func (m *serveSessionManager) ReplaceIdleWith(ctx context.Context, id string, sh
 			m.mu.Unlock()
 			return rt, nil
 		}
-		if rt.hasActiveRun() {
+		if rt.hasActiveActivity() {
 			m.mu.Unlock()
 			return nil, errServeSessionBusy
 		}
@@ -416,7 +416,7 @@ func (m *serveSessionManager) BeginSwap(ctx context.Context, id string, create f
 			return nil, nil, nil, nil, fmt.Errorf("session manager closed")
 		}
 		previous = m.sessions[id]
-		if previous != nil && previous.hasActiveRun() {
+		if previous != nil && previous.hasActiveActivity() {
 			m.mu.Unlock()
 			return nil, nil, nil, nil, errServeSessionBusy
 		}
@@ -452,7 +452,7 @@ func (m *serveSessionManager) BeginSwap(ctx context.Context, id string, create f
 			if current != previous {
 				previous = current
 			}
-			if previous != nil && previous.hasActiveRun() {
+			if previous != nil && previous.hasActiveActivity() {
 				inflight.err = errServeSessionBusy
 				closeCandidate = rt
 			} else {

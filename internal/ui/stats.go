@@ -19,6 +19,7 @@ type UsageCall struct {
 	GenerationTime    time.Duration
 	ObservedOutput    bool
 	Compaction        bool
+	SideQuestion      bool
 }
 
 // SessionStats tracks statistics for a session.
@@ -157,6 +158,27 @@ func (s *SessionStats) AddCompactionUsageForModel(model string, input, output, c
 	s.CompactionLLMCallCount++
 }
 
+// AddSideQuestionUsageForModel records side-question usage in aggregate token,
+// call, and pricing totals without disturbing main-request timing or context hints.
+func (s *SessionStats) AddSideQuestionUsageForModel(model string, input, output, cached, cacheWrite int) {
+	if input == 0 && output == 0 && cached == 0 && cacheWrite == 0 {
+		return
+	}
+	s.InputTokens += input
+	s.OutputTokens += output
+	s.CachedInputTokens += cached
+	s.CacheWriteTokens += cacheWrite
+	s.LLMCallCount++
+	s.usageCalls = append(s.usageCalls, UsageCall{
+		Model:             strings.TrimSpace(model),
+		InputTokens:       input,
+		OutputTokens:      output,
+		CachedInputTokens: cached,
+		CacheWriteTokens:  cacheWrite,
+		SideQuestion:      true,
+	})
+}
+
 // DiscardUsage removes provisional usage calls from the tail and resets any
 // uncompleted attempt activity. Performance is always derived from retained
 // call records, so TTFT and throughput are restored exactly after a retry.
@@ -168,7 +190,7 @@ func (s *SessionStats) DiscardUsage(input, output, cached, cacheWrite, calls int
 	s.LLMCallCount = max(0, s.LLMCallCount-calls)
 	remaining := calls
 	for i := len(s.usageCalls) - 1; i >= 0 && remaining > 0; i-- {
-		if s.usageCalls[i].Compaction {
+		if s.usageCalls[i].Compaction || s.usageCalls[i].SideQuestion {
 			continue
 		}
 		s.usageCalls = append(s.usageCalls[:i], s.usageCalls[i+1:]...)
@@ -183,6 +205,9 @@ func (s *SessionStats) rebuildPerCallHints() {
 	s.lastInputTokens, s.lastOutputTokens, s.peakInputTokens = 0, 0, 0
 	s.hasPerCallUsage = false
 	for _, call := range s.usageCalls {
+		if call.SideQuestion {
+			continue
+		}
 		total := call.InputTokens + call.CachedInputTokens + call.OutputTokens
 		s.lastInputTokens, s.lastOutputTokens, s.hasPerCallUsage = total, call.OutputTokens, true
 		if total > s.peakInputTokens {
