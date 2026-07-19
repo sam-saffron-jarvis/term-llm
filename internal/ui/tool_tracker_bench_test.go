@@ -15,47 +15,61 @@ const (
 
 var streamingRenderBenchmarkSink int
 
-// BenchmarkTUIStreamingRender replays a growing Markdown response through the
+// BenchmarkTUIStreamingRender replays growing Markdown responses through the
 // same ToolTracker -> TextSegmentRenderer -> StreamRenderer path used for live
 // TUI responses. Every token-like append is followed by a View render and the
 // normal incremental scrollback flush check.
 //
-// The corpus contains exactly the requested number of top-level blocks. It
-// cycles through ATX headings, inline-rich paragraphs, fenced code blocks,
-// tables, and thematic breaks. Chunk sizes cycle through 17, 31, 47, and 73
-// bytes, deliberately splitting lines and inline markup as a token stream does.
+// FastPath cycles through ATX headings, inline-rich paragraphs, fenced code
+// blocks, well-formed tables, and thematic breaks. ListHeavy alternates
+// multi-item lists with other common blocks. EarlyUnsafe starts with a reference
+// definition, latching the full-document fallback before otherwise fast-path
+// content. Chunk sizes cycle through 17, 31, 47, and 73 bytes, deliberately
+// splitting lines and inline markup as a token stream does.
 func BenchmarkTUIStreamingRender(b *testing.B) {
-	for _, blocks := range []int{32, 128, 512, 1024} {
-		b.Run(fmt.Sprintf("blocks=%d", blocks), func(b *testing.B) {
-			corpus := streamingRenderBenchmarkCorpus(blocks)
-			chunks := streamingRenderBenchmarkChunks(corpus)
+	workloads := []struct {
+		name   string
+		corpus func(int) string
+	}{
+		{name: "FastPath", corpus: streamingRenderBenchmarkFastPathCorpus},
+		{name: "ListHeavy", corpus: streamingRenderBenchmarkListHeavyCorpus},
+		{name: "EarlyUnsafe", corpus: streamingRenderBenchmarkEarlyUnsafeCorpus},
+	}
+	for _, workload := range workloads {
+		b.Run(workload.name, func(b *testing.B) {
+			for _, blocks := range []int{32, 128, 512, 1024} {
+				b.Run(fmt.Sprintf("blocks=%d", blocks), func(b *testing.B) {
+					corpus := workload.corpus(blocks)
+					chunks := streamingRenderBenchmarkChunks(corpus)
 
-			// Warm the Markdown renderer's internal caches and collect a separate
-			// representative frame-latency sample without contaminating ns/op.
-			streamingRenderBenchmarkReplay(b, chunks, nil)
-			frameDurations := make([]time.Duration, 0, len(chunks))
-			streamingRenderBenchmarkReplay(b, chunks, &frameDurations)
-			sort.Slice(frameDurations, func(i, j int) bool {
-				return frameDurations[i] < frameDurations[j]
-			})
+					// Warm the Markdown renderer's internal caches and collect a
+					// separate warmed frame-latency sample without contaminating ns/op.
+					streamingRenderBenchmarkReplay(b, chunks, nil)
+					frameDurations := make([]time.Duration, 0, len(chunks))
+					streamingRenderBenchmarkReplay(b, chunks, &frameDurations)
+					sort.Slice(frameDurations, func(i, j int) bool {
+						return frameDurations[i] < frameDurations[j]
+					})
 
-			p50FrameNS := float64(framePercentile(frameDurations, 50).Nanoseconds())
-			p95FrameNS := float64(framePercentile(frameDurations, 95).Nanoseconds())
-			p99FrameNS := float64(framePercentile(frameDurations, 99).Nanoseconds())
-			maxFrameNS := float64(frameDurations[len(frameDurations)-1].Nanoseconds())
+					p50FrameNS := float64(framePercentile(frameDurations, 50).Nanoseconds())
+					p95FrameNS := float64(framePercentile(frameDurations, 95).Nanoseconds())
+					p99FrameNS := float64(framePercentile(frameDurations, 99).Nanoseconds())
+					maxFrameNS := float64(frameDurations[len(frameDurations)-1].Nanoseconds())
 
-			b.ReportAllocs()
-			b.SetBytes(int64(len(corpus)))
-			b.ResetTimer()
-			for i := 0; i < b.N; i++ {
-				streamingRenderBenchmarkReplay(b, chunks, nil)
+					b.ReportAllocs()
+					b.SetBytes(int64(len(corpus)))
+					b.ResetTimer()
+					for i := 0; i < b.N; i++ {
+						streamingRenderBenchmarkReplay(b, chunks, nil)
+					}
+					b.StopTimer()
+					b.ReportMetric(float64(len(chunks)), "frames/op")
+					b.ReportMetric(p50FrameNS, "p50-frame-ns")
+					b.ReportMetric(p95FrameNS, "p95-frame-ns")
+					b.ReportMetric(p99FrameNS, "p99-frame-ns")
+					b.ReportMetric(maxFrameNS, "max-frame-ns")
+				})
 			}
-			b.StopTimer()
-			b.ReportMetric(float64(len(chunks)), "frames/op")
-			b.ReportMetric(p50FrameNS, "p50-frame-ns")
-			b.ReportMetric(p95FrameNS, "p95-frame-ns")
-			b.ReportMetric(p99FrameNS, "p99-frame-ns")
-			b.ReportMetric(maxFrameNS, "max-frame-ns")
 		})
 	}
 }
@@ -94,24 +108,58 @@ func streamingRenderBenchmarkReplay(b *testing.B, chunks []string, frameDuration
 	streamingRenderBenchmarkSink += len(remaining.ToPrint) + maxTailBytes
 }
 
-func streamingRenderBenchmarkCorpus(blocks int) string {
+func streamingRenderBenchmarkFastPathCorpus(blocks int) string {
 	var corpus strings.Builder
 	corpus.Grow(blocks * 120)
 	for i := 0; i < blocks; i++ {
-		switch i % 5 {
-		case 0:
-			fmt.Fprintf(&corpus, "## Streaming renderer phase %d\n\n", i/5+1)
-		case 1:
-			fmt.Fprintf(&corpus, "The agent inspected **%d files**, compared `rendered` snapshots, and linked the [profiling guide](https://go.dev/pprof) before continuing.\n\n", 40+i)
-		case 2:
-			fmt.Fprintf(&corpus, "```go\nfunc renderFrame%d(markdown string) string {\nreturn render(markdown)\n}\n```\n\n", i)
-		case 3:
-			fmt.Fprintf(&corpus, "| sample | blocks | status |\n| ---: | ---: | :--- |\n| %d | %d | stable |\n\n", i/5+1, i+1)
-		case 4:
-			corpus.WriteString("***\n\n")
+		writeStreamingRenderBenchmarkFastPathBlock(&corpus, i)
+	}
+	return corpus.String()
+}
+
+func streamingRenderBenchmarkListHeavyCorpus(blocks int) string {
+	var corpus strings.Builder
+	corpus.Grow(blocks * 180)
+	for i := 0; i < blocks; i++ {
+		if i%2 == 0 {
+			fmt.Fprintf(&corpus, "- inspect **batch %d**\n- compare `rendered` output\n- record the [profile](https://go.dev/pprof)\n- continue streaming\n\n", i/2+1)
+			continue
+		}
+		if i%4 == 1 {
+			fmt.Fprintf(&corpus, "## List checkpoint %d\n\n", i/2+1)
+		} else {
+			fmt.Fprintf(&corpus, "Checkpoint %d keeps the response representative between list blocks.\n\n", i/2+1)
 		}
 	}
 	return corpus.String()
+}
+
+func streamingRenderBenchmarkEarlyUnsafeCorpus(blocks int) string {
+	if blocks <= 0 {
+		return ""
+	}
+	var corpus strings.Builder
+	corpus.Grow(blocks * 120)
+	corpus.WriteString("[streaming-guide]: https://example.com/streaming\n\n")
+	for i := 1; i < blocks; i++ {
+		writeStreamingRenderBenchmarkFastPathBlock(&corpus, i)
+	}
+	return corpus.String()
+}
+
+func writeStreamingRenderBenchmarkFastPathBlock(corpus *strings.Builder, i int) {
+	switch i % 5 {
+	case 0:
+		fmt.Fprintf(corpus, "## Streaming renderer phase %d\n\n", i/5+1)
+	case 1:
+		fmt.Fprintf(corpus, "The agent inspected **%d files**, compared `rendered` snapshots, and linked the [profiling guide](https://go.dev/pprof) before continuing.\n\n", 40+i)
+	case 2:
+		fmt.Fprintf(corpus, "```go\nfunc renderFrame%d(markdown string) string {\nreturn render(markdown)\n}\n```\n\n", i)
+	case 3:
+		fmt.Fprintf(corpus, "| sample | blocks | status |\n| ---: | ---: | :--- |\n| %d | %d | stable |\n\n", i/5+1, i+1)
+	case 4:
+		corpus.WriteString("***\n\n")
+	}
 }
 
 func streamingRenderBenchmarkChunks(corpus string) []string {

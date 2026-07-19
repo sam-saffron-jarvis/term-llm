@@ -571,6 +571,26 @@ func TestTableCommitUsesBlockLocalRenderWhenSafe(t *testing.T) {
 	}
 }
 
+func TestPseudoTableCommitUsesFullDocumentRender(t *testing.T) {
+	var buf bytes.Buffer
+	renderer := &recordingRenderer{}
+	sr, err := NewRenderer(&buf, renderer)
+	if err != nil {
+		t.Fatalf("NewRenderer failed: %v", err)
+	}
+
+	input := "Alpha beta\nuse `a | b` to pipe\n\n"
+	if _, err := sr.Write([]byte(input)); err != nil {
+		t.Fatalf("write prose containing pipe: %v", err)
+	}
+	if len(renderer.calls) != 2 {
+		t.Fatalf("render calls = %d, want 2", len(renderer.calls))
+	}
+	if got, want := string(renderer.calls[1]), strings.TrimSuffix(input, "\n"); got != want {
+		t.Fatalf("final render source = %q, want full document %q", got, want)
+	}
+}
+
 func TestApplyRenderedSnapshot_NonResettableWriterErrorsOnPrefixChange(t *testing.T) {
 	writer := &nonResettableWriter{}
 	sr, err := NewRenderer(writer, newTestMarkdownRenderer(testRenderWidth))

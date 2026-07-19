@@ -98,9 +98,6 @@ func (r *TextSegmentRenderer) RenderedAll() string {
 // RenderedCommitted returns the latest rendered snapshot that contains only
 // committed markdown blocks and excludes any active partial preview.
 func (r *TextSegmentRenderer) RenderedCommitted() string {
-	if r.sr == nil {
-		return ""
-	}
 	return r.sr.CommittedRendered()
 }
 
@@ -118,10 +115,6 @@ func (r *TextSegmentRenderer) RenderedUnflushed() string {
 // MarkFlushed marks the current committed rendered output as flushed.
 // Call this after successfully flushing content to scrollback.
 func (r *TextSegmentRenderer) MarkFlushed() {
-	if r.sr == nil {
-		r.flushedRenderedPos = 0
-		return
-	}
 	r.flushedRenderedPos = len(r.sr.CommittedRendered())
 }
 
@@ -133,34 +126,22 @@ func (r *TextSegmentRenderer) FlushedRenderedPos() int {
 // CommittedMarkdownLen returns the number of raw markdown bytes that have been
 // committed as complete blocks by the streaming renderer.
 func (r *TextSegmentRenderer) CommittedMarkdownLen() int {
-	if r.sr == nil {
-		return 0
-	}
 	return r.sr.CommittedMarkdownLen()
 }
 
 // PendingMarkdown returns the markdown that belongs to the current incomplete block.
 func (r *TextSegmentRenderer) PendingMarkdown() string {
-	if r.sr == nil {
-		return ""
-	}
 	return r.sr.PendingMarkdown()
 }
 
 // PendingIsTable reports whether the current incomplete block is a table.
 func (r *TextSegmentRenderer) PendingIsTable() bool {
-	if r.sr == nil {
-		return false
-	}
 	return r.sr.PendingIsTable()
 }
 
 // PendingIsList reports whether the current incomplete block should be treated
 // as a list for preview purposes.
 func (r *TextSegmentRenderer) PendingIsList() bool {
-	if r.sr == nil {
-		return false
-	}
 	return r.sr.PendingIsList()
 }
 

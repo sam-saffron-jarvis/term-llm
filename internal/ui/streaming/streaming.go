@@ -744,7 +744,11 @@ func (sr *StreamRenderer) handleTable(content, rawLine string) error {
 		return sr.handleList(content, rawLine)
 	}
 	sr.state = stateReady
-	if err := sr.commitPendingLinesIncremental(); err != nil {
+	if sr.pendingLinesFormTable() {
+		if err := sr.commitPendingLinesIncremental(); err != nil {
+			return err
+		}
+	} else if err := sr.commitPendingLines(); err != nil {
 		return err
 	}
 
@@ -1177,6 +1181,58 @@ func isThematicBreak(trimmed string) bool {
 	}
 
 	return count >= 3
+}
+
+// pendingLinesFormTable reports whether the current table-shaped block is a
+// well-formed GFM table. A pipe in prose is not enough: the header must be
+// followed immediately by a delimiter row with the same number of cells.
+func (sr *StreamRenderer) pendingLinesFormTable() bool {
+	if len(sr.pendingLines) < 2 {
+		return false
+	}
+	headerCells := tableRowCellCount(sr.pendingLines[0])
+	delimiterCells := tableDelimiterCellCount(sr.pendingLines[1])
+	return headerCells > 0 && headerCells == delimiterCells
+}
+
+func tableRowCellCount(line string) int {
+	trimmed := strings.TrimSpace(line)
+	if !strings.Contains(trimmed, "|") {
+		return 0
+	}
+	trimmed = strings.TrimPrefix(trimmed, "|")
+	trimmed = strings.TrimSuffix(trimmed, "|")
+	if trimmed == "" {
+		return 0
+	}
+
+	cells := 1
+	for i := 0; i < len(trimmed); i++ {
+		if trimmed[i] == '|' && (i == 0 || trimmed[i-1] != '\\') {
+			cells++
+		}
+	}
+	return cells
+}
+
+func tableDelimiterCellCount(line string) int {
+	trimmed := strings.TrimSpace(line)
+	trimmed = strings.TrimPrefix(trimmed, "|")
+	trimmed = strings.TrimSuffix(trimmed, "|")
+	if trimmed == "" {
+		return 0
+	}
+
+	cells := strings.Split(trimmed, "|")
+	for _, cell := range cells {
+		cell = strings.TrimSpace(cell)
+		cell = strings.TrimPrefix(cell, ":")
+		cell = strings.TrimSuffix(cell, ":")
+		if len(cell) < 3 || strings.Trim(cell, "-") != "" {
+			return 0
+		}
+	}
+	return len(cells)
 }
 
 // isTableLine returns true if the line appears to be part of a table.
