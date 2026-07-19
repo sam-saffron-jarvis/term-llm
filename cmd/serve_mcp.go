@@ -75,6 +75,7 @@ var (
 	serveMCPReadDirs   []string
 	serveMCPWriteDirs  []string
 	serveMCPShellAllow []string
+	serveMCPApproval   string
 	serveMCPYolo       bool
 	serveMCPAuto       bool
 	serveMCPDebug      bool
@@ -113,12 +114,28 @@ func init() {
 	serveMCPCmd.Flags().StringArrayVar(&serveMCPReadDirs, "read-dir", nil, "Allowed read directories (repeatable)")
 	serveMCPCmd.Flags().StringArrayVar(&serveMCPWriteDirs, "write-dir", nil, "Allowed write directories (repeatable)")
 	serveMCPCmd.Flags().StringArrayVar(&serveMCPShellAllow, "shell-allow", nil, "Allowed shell patterns (repeatable, glob syntax)")
+	AddApprovalFlag(serveMCPCmd, &serveMCPApproval)
 	serveMCPCmd.Flags().BoolVar(&serveMCPYolo, "yolo", false, "Auto-approve all tool actions")
 	serveMCPCmd.Flags().BoolVar(&serveMCPAuto, "auto", false, "Use guardian LLM review for unmatched shell approvals (requires reviewer wiring)")
-	serveMCPCmd.MarkFlagsMutuallyExclusive("yolo", "auto")
+	serveMCPCmd.MarkFlagsMutuallyExclusive("approval", "yolo", "auto")
 	serveMCPCmd.Flags().BoolVarP(&serveMCPDebug, "debug", "d", false, "Verbose logging")
 
 	_ = serveMCPCmd.RegisterFlagCompletionFunc("tools", MCPToolsFlagCompletion)
+}
+
+func resolveServeMCPApprovalMode(cmd *cobra.Command, cfg *config.Config) (resolvedApprovalMode, error) {
+	childExplicit := cmd != nil && (cmd.Flags().Changed("approval") || cmd.Flags().Changed("auto") || cmd.Flags().Changed("yolo"))
+	// Pre-command normalization rewrites `term-llm --approval auto serve mcp`
+	// to a flag on the parent serve command. Preserve that explicit choice for
+	// the distinct serve_mcp surface while rejecting a second child-level mode.
+	parentExplicit := serveCmd.Flags().Changed("approval") || serveCmd.Flags().Changed("auto") || serveCmd.Flags().Changed("yolo")
+	if childExplicit && parentExplicit {
+		return resolvedApprovalMode{}, fmt.Errorf("--approval, --auto, and --yolo are mutually exclusive across serve and serve mcp")
+	}
+	if parentExplicit {
+		return resolveCommandApprovalMode(serveCmd, approvalSurfaceServeMCP, cfg, nil, serveApproval, serveAuto, serveYolo)
+	}
+	return resolveCommandApprovalMode(cmd, approvalSurfaceServeMCP, cfg, nil, serveMCPApproval, serveMCPAuto, serveMCPYolo)
 }
 
 func runServeMCP(cmd *cobra.Command, args []string) error {
@@ -136,6 +153,13 @@ func runServeMCP(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
 	}
+	resolvedApproval, err := resolveServeMCPApprovalMode(cmd, cfg)
+	if err != nil {
+		return err
+	}
+	serveMCPApproval = resolvedApproval.Mode.String()
+	serveMCPYolo = resolvedApproval.Mode == tools.ModeYolo
+	serveMCPAuto = resolvedApproval.Mode == tools.ModeAuto
 
 	// Resolve requested tool names.
 	requestedTools := parseMCPToolsFlag(serveMCPTools)
@@ -177,13 +201,10 @@ func runServeMCP(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("build permissions: %w", err)
 	}
 	approvalMgr := tools.NewApprovalManager(perms)
-	if serveMCPYolo {
-		approvalMgr.SetYoloMode(true)
-	} else if serveMCPAuto {
-		if err := installGuardianReviewer(cfg, approvalMgr, cfg.DefaultProvider, getModelName(cfg), true); err != nil {
-			return fmt.Errorf("auto approval unavailable: %w", err)
-		}
+	if err := applyResolvedApprovalMode(cfg, approvalMgr, resolvedApproval, cfg.DefaultProvider, getModelName(cfg), approvalRuntimeOptions{Headless: true}); err != nil {
+		return err
 	}
+	reportApprovalMode(cmd.ErrOrStderr(), serveMCPDebug, resolvedApproval, approvalMgr)
 
 	registry, err := tools.NewLocalToolRegistry(&toolConfig, cfg, approvalMgr)
 	if err != nil {

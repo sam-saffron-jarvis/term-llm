@@ -2792,9 +2792,8 @@ func (s *serveServer) handleRunV2ByID(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, run)
 }
 
-func newServeJobsV2Manager(cfg *config.Config, workers int, notifyDone jobsV2RunDoneNotifier) (*jobsV2Manager, error) {
-	_ = cfg
-	return newJobsV2ManagerWithNotifier("", workers, newServeJobsExecutor(cfg), notifyDone)
+func newServeJobsV2Manager(cfg *config.Config, workers int, approval resolvedApprovalMode, notifyDone jobsV2RunDoneNotifier) (*jobsV2Manager, error) {
+	return newJobsV2ManagerWithNotifier("", workers, newServeJobsExecutor(cfg, approval), notifyDone)
 }
 
 func queryBool(r *http.Request, key string) bool {
@@ -2959,7 +2958,32 @@ func resolveJobLLMSettings(jobCfg *config.Config, agent *agents.Agent, cfg jobsV
 	return settings, cfg.Instructions, nil
 }
 
-func newServeJobsExecutor(baseCfg *config.Config) serveJobsExecutor {
+func serveJobsRunnerOptions(approval resolvedApprovalMode) cmdRunnerOptions {
+	return cmdRunnerOptions{
+		Provider:         serveProvider,
+		Tools:            serveTools,
+		ReadDirs:         append([]string(nil), serveReadDirs...),
+		WriteDirs:        append([]string(nil), serveWriteDirs...),
+		ShellAllow:       append([]string(nil), serveShellAllow...),
+		MCP:              serveMCP,
+		SystemMessage:    serveSystemMessage,
+		MaxTurns:         serveMaxTurns,
+		Search:           serveSearch,
+		NoSearch:         serveNoSearch,
+		NativeSearch:     serveNativeSearch,
+		NoNativeSearch:   serveNoNativeSearch,
+		ApprovalMode:     approval.Mode,
+		ApprovalModeSet:  true,
+		ApprovalSource:   approval.Source,
+		ApprovalHeadless: true,
+		Debug:            serveDebug,
+		DebugRaw:         debugRaw,
+		ErrWriter:        io.Discard,
+		WireSpawn:        WireSpawnAgentRunner,
+	}
+}
+
+func newServeJobsExecutor(baseCfg *config.Config, approval resolvedApprovalMode) serveJobsExecutor {
 	return func(ctx context.Context, cfg jobsV2LLMConfig, onEvent func(llm.Event)) (serveJobsExecResult, error) {
 		var search *bool
 		if cfg.Search {
@@ -2975,26 +2999,7 @@ func newServeJobsExecutor(baseCfg *config.Config) serveJobsExecutor {
 			}
 		}
 
-		runner := newCmdRunner(baseCfg, cmdRunnerOptions{
-			Provider:       serveProvider,
-			Tools:          serveTools,
-			ReadDirs:       append([]string(nil), serveReadDirs...),
-			WriteDirs:      append([]string(nil), serveWriteDirs...),
-			ShellAllow:     append([]string(nil), serveShellAllow...),
-			MCP:            serveMCP,
-			SystemMessage:  serveSystemMessage,
-			MaxTurns:       serveMaxTurns,
-			Search:         serveSearch,
-			NoSearch:       serveNoSearch,
-			NativeSearch:   serveNativeSearch,
-			NoNativeSearch: serveNoNativeSearch,
-			Yolo:           serveYolo,
-			Auto:           serveAuto,
-			Debug:          serveDebug,
-			DebugRaw:       debugRaw,
-			ErrWriter:      io.Discard,
-			WireSpawn:      WireSpawnAgentRunner,
-		})
+		runner := newCmdRunner(baseCfg, serveJobsRunnerOptions(approval))
 
 		result, err := runner.Run(ctx, runpkg.Request{
 			Platform:        runpkg.PlatformJob,

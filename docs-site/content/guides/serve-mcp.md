@@ -101,10 +101,20 @@ Tools whose backing provider isn't configured are skipped with a warning.
 | `--read-dir` | *(none)* | Allowed read directories (repeatable) |
 | `--write-dir` | *(none)* | Allowed write directories (repeatable) |
 | `--shell-allow` | *(none)* | Allowed shell command patterns (repeatable, glob syntax) |
-| `--yolo` | `false` | Auto-approve all tool operations |
+| `--approval` | `prompt` | Approval mode: `prompt`, guardian-reviewed `auto`, or `yolo` |
+| `--auto` | `false` | Alias for `--approval auto` |
+| `--yolo` | `false` | Alias for `--approval yolo`; bypass all prompts |
 | `--debug` | `false` | Verbose HTTP request logging |
 
 Shell allow patterns are matched per command and shell word. A final standalone `*` allows remaining arguments. Within a word, `*` does not cross `/`; use `**` to match recursive path segments. Compound commands are allowed only when every command is covered.
+
+Set a persistent mode for this server without changing other serve surfaces:
+
+```yaml
+serve:
+  mcp:
+    approval_mode: auto # prompt or auto; yolo is CLI-only
+```
 
 ## Edit format
 
@@ -123,8 +133,9 @@ term-llm serve mcp --tools all --edit-format diff
 - **Auth**: Bearer token authentication on every request (constant-time comparison). Token is auto-generated if not provided.
 - **Localhost by default**: Binds to `127.0.0.1`. You must explicitly pass `--host 0.0.0.0` to accept remote connections.
 - **Transport security**: The server uses plain HTTP. When exposing beyond localhost, use an SSH tunnel, VPN, or TLS-terminating reverse proxy to protect traffic in transit.
-- **Permissions**: `--read-dir`, `--write-dir`, and `--shell-allow` restrict what the tools can access. Without these flags (and without `--yolo`), tools will prompt for approval. Since the server is non-interactive, you should pre-configure permissions via flags.
-- **No `ask_user`**: The server runs non-interactively. Use `--yolo` or permission flags to pre-authorize operations.
+- **Permissions**: `--read-dir`, `--write-dir`, and `--shell-allow` restrict what the tools can access. The built-in mode is prompt. Since the server has no interactive approval UI, pre-configure permissions or select an explicit approval policy.
+- **Auto**: `--approval auto` asks Guardian to review supported unmatched operations. Guardian must initialize before the server starts; review errors deny the operation.
+- **No `ask_user`**: The server runs non-interactively. Use deterministic permission flags, guardian-reviewed auto, or explicit yolo as appropriate.
 
 ## Examples
 
@@ -139,8 +150,11 @@ term-llm serve mcp --tools all \
   --write-dir ~/project \
   --shell-allow "go *" --shell-allow "git *" --shell-allow "make *"
 
-# CI/container use: auto-approve everything
-term-llm serve mcp --tools all --yolo
+# Guardian-reviewed unattended operation
+term-llm serve mcp --tools all --approval auto
+
+# CI/container use: explicitly bypass approvals
+term-llm serve mcp --tools all --approval yolo
 
 # Custom port and token
 term-llm serve mcp --tools all --port 9090 --token my-secret-token

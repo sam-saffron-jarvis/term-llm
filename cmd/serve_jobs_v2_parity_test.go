@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/samsaffron/term-llm/internal/config"
+	"github.com/samsaffron/term-llm/internal/tools"
 )
 
 func sliceHasString(items []string, want string) bool {
@@ -455,18 +456,15 @@ func TestJobsV2LLMJobCwdRootsShellExecutionWithoutChdir(t *testing.T) {
 	runCwd := t.TempDir()
 	const sentinel = "rooted_here.txt"
 
-	// Auto-approve shell so the run is non-interactive.
-	prevYolo := serveYolo
-	serveYolo = true
-	defer func() { serveYolo = prevYolo }()
-
+	// Explicit resolved yolo keeps the test non-interactive without relying on
+	// mutable serve command globals.
 	wd0, err := os.Getwd()
 	if err != nil {
 		t.Fatalf("getwd: %v", err)
 	}
 
 	persist := false
-	executor := newServeJobsExecutor(&config.Config{})
+	executor := newServeJobsExecutor(&config.Config{}, resolvedApprovalMode{Mode: tools.ModeYolo, Source: approvalModeSourceCLI})
 	if _, err := executor(context.Background(), jobsV2LLMConfig{
 		AgentName:      agentDir, // contains a path separator → loaded from disk
 		Instructions:   "shell touch " + sentinel,

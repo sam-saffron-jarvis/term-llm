@@ -3,6 +3,7 @@ package cmd
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -70,6 +71,38 @@ func TestConfigSet_AtomicWritePreservesExistingMode(t *testing.T) {
 	}
 }
 
+func TestEffectiveApprovalConfigValue(t *testing.T) {
+	if got, ok, err := effectiveApprovalConfigValue("chat.approval_mode", &config.Config{}); err != nil || !ok || got != "auto (builtin_default)" {
+		t.Fatalf("blank chat effective value = %q, %t, %v; want auto builtin_default", got, ok, err)
+	}
+	cfg := &config.Config{Approval: config.ApprovalConfig{DefaultMode: "prompt"}, Ask: config.AskConfig{ApprovalMode: "auto"}}
+	for _, tc := range []struct {
+		key  string
+		want string
+	}{
+		{key: "chat.approval_mode", want: "prompt (global_config)"},
+		{key: "ask.approval_mode", want: "auto (surface_config)"},
+		{key: "serve.mcp.approval_mode", want: "prompt (global_config)"},
+	} {
+		got, ok, err := effectiveApprovalConfigValue(tc.key, cfg)
+		if err != nil {
+			t.Fatalf("effectiveApprovalConfigValue(%q): %v", tc.key, err)
+		}
+		if !ok || got != tc.want {
+			t.Fatalf("effectiveApprovalConfigValue(%q) = %q, %t; want %q, true", tc.key, got, ok, tc.want)
+		}
+	}
+}
+
+func TestApprovalConfigValueCompletionsExcludeYolo(t *testing.T) {
+	for _, key := range []string{"approval.default_mode", "chat.approval_mode", "serve.mcp.approval_mode"} {
+		got := configValueCompletions(key, "")
+		if !reflect.DeepEqual(got, []string{"prompt", "auto"}) {
+			t.Fatalf("configValueCompletions(%q) = %v, want [prompt auto]", key, got)
+		}
+	}
+}
+
 func TestDefaultConfigContentContainsEveryDefault(t *testing.T) {
 	content := defaultConfigContent()
 	var root yaml.Node
@@ -99,6 +132,14 @@ func TestDefaultConfigContentContainsEveryDefault(t *testing.T) {
 	} {
 		if !strings.Contains(content, want) {
 			t.Fatalf("generated default config missing %q", want)
+		}
+	}
+	for _, unwanted := range []string{
+		"approval:",
+		"approval_mode:",
+	} {
+		if strings.Contains(content, unwanted) {
+			t.Fatalf("generated default config unexpectedly materialized optional approval key %q", unwanted)
 		}
 	}
 }

@@ -4,8 +4,45 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/tools"
+	"github.com/spf13/pflag"
 )
+
+func TestResolveServeMCPApprovalModeAcceptsNormalizedParentFlagAndDetectsCrossLevelConflict(t *testing.T) {
+	parentApproval, childApproval := serveCmd.Flags().Lookup("approval"), serveMCPCmd.Flags().Lookup("approval")
+	parentAuto, parentYolo := serveCmd.Flags().Lookup("auto"), serveCmd.Flags().Lookup("yolo")
+	childAuto, childYolo := serveMCPCmd.Flags().Lookup("auto"), serveMCPCmd.Flags().Lookup("yolo")
+	flags := []*pflag.Flag{parentApproval, parentAuto, parentYolo, childApproval, childAuto, childYolo}
+	changed := make([]bool, len(flags))
+	for i, flag := range flags {
+		changed[i] = flag.Changed
+		flag.Changed = false
+	}
+	oldServeApproval, oldMCPApproval := serveApproval, serveMCPApproval
+	t.Cleanup(func() {
+		serveApproval, serveMCPApproval = oldServeApproval, oldMCPApproval
+		for i, flag := range flags {
+			flag.Changed = changed[i]
+		}
+	})
+
+	serveApproval = "auto"
+	parentApproval.Changed = true
+	got, err := resolveServeMCPApprovalMode(serveMCPCmd, &config.Config{Serve: config.ServeConfig{MCP: config.ServeMCPConfig{ApprovalMode: "prompt"}}})
+	if err != nil {
+		t.Fatalf("resolve parent-normalized approval: %v", err)
+	}
+	if got.Mode != tools.ModeAuto || got.Source != approvalModeSourceCLI {
+		t.Fatalf("resolved = {%v %s}, want CLI auto", got.Mode, got.Source)
+	}
+
+	serveMCPApproval = "prompt"
+	childApproval.Changed = true
+	if _, err := resolveServeMCPApprovalMode(serveMCPCmd, &config.Config{}); err == nil || !strings.Contains(err.Error(), "mutually exclusive across serve and serve mcp") {
+		t.Fatalf("cross-level conflict error = %v", err)
+	}
+}
 
 func TestParseMCPToolsFlag(t *testing.T) {
 	tests := []struct {

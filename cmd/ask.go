@@ -61,9 +61,10 @@ var (
 	askSystemMessage string
 	// Agent flag
 	askAgent string
-	// Yolo/auto modes
-	askYolo bool
-	askAuto bool
+	// Approval modes
+	askApproval string
+	askYolo     bool
+	askAuto     bool
 	// Fast provider flag
 	askFast bool
 	// Skills flag
@@ -145,6 +146,7 @@ func init() {
 			Files:            &askFiles,
 			FilesDescription: "File(s) to include as context (supports globs, line ranges like file.go:10-20, 'clipboard')",
 			Agent:            &askAgent,
+			Approval:         &askApproval,
 			Yolo:             &askYolo,
 			Auto:             &askAuto,
 			Skills:           &askSkills,
@@ -196,6 +198,14 @@ func runAsk(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
+	resolvedApproval, err := resolveCommandApprovalMode(cmd, approvalSurfaceAsk, cfg, nil, askApproval, askAuto, askYolo)
+	if err != nil {
+		return err
+	}
+	resolvedYolo := resolvedApproval.Mode == tools.ModeYolo
+	askApproval = resolvedApproval.Mode.String()
+	askYolo = resolvedYolo
+	askAuto = resolvedApproval.Mode == tools.ModeAuto
 
 	// Load agent if specified
 	agent, err := LoadAgent(askAgent, cfg)
@@ -350,26 +360,22 @@ func runAsk(cmd *cobra.Command, args []string) error {
 	}
 	var outputTool *tools.SetOutputTool
 	if toolMgr != nil {
-		// Enable approval mode if flag is set
-		if askYolo {
-			toolMgr.ApprovalMgr.SetYoloMode(true)
-		} else if askAuto {
-			providerCfg := cfg.GetActiveProviderConfig()
-			model := ""
-			if providerCfg != nil {
-				model = providerCfg.Model
-			}
-			if err := installGuardianReviewer(cfg, toolMgr.ApprovalMgr, cfg.DefaultProvider, model, false); err != nil {
-				return err
-			}
+		providerCfg := cfg.GetActiveProviderConfig()
+		model := ""
+		if providerCfg != nil {
+			model = providerCfg.Model
 		}
+		if err := applyResolvedApprovalMode(cfg, toolMgr.ApprovalMgr, resolvedApproval, cfg.DefaultProvider, model, approvalRuntimeOptions{WarningWriter: cmd.ErrOrStderr()}); err != nil {
+			return err
+		}
+		reportApprovalMode(cmd.ErrOrStderr(), askDebug, resolvedApproval, toolMgr.ApprovalMgr)
 
 		// PromptFunc is set in streamWithRenderer to use bubbletea UI
 
 		// Wire spawn_agent runner if enabled (with session tracking)
 		parentSessionID := sessionID
 		var wireErr error
-		spawnRunner, wireErr = WireSpawnAgentRunnerWithStore(cfg, toolMgr, askYolo, store, parentSessionID)
+		spawnRunner, wireErr = WireSpawnAgentRunnerWithStore(cfg, toolMgr, resolvedYolo, store, parentSessionID)
 		if wireErr != nil {
 			return wireErr
 		}
@@ -387,7 +393,7 @@ func runAsk(cmd *cobra.Command, args []string) error {
 	if settings.MCP != "" {
 		mcpOpts := &MCPOptions{
 			Provider: provider,
-			YoloMode: askYolo,
+			YoloMode: resolvedYolo,
 		}
 		if providerCfg := cfg.GetActiveProviderConfig(); providerCfg != nil {
 			mcpOpts.Model = providerCfg.Model
@@ -435,17 +441,18 @@ func runAsk(cmd *cobra.Command, args []string) error {
 			agentName = agent.Name
 		}
 		sess = &session.Session{
-			ID:        sessionID,
-			Provider:  provider.Name(),
-			Model:     modelName,
-			Mode:      session.ModeAsk,
-			Agent:     agentName,
-			CreatedAt: time.Now(),
-			UpdatedAt: time.Now(),
-			Search:    settings.Search,
-			Tools:     settings.Tools,
-			MCP:       settings.MCP,
-			Status:    session.StatusActive,
+			ID:           sessionID,
+			Provider:     provider.Name(),
+			Model:        modelName,
+			Mode:         session.ModeAsk,
+			Agent:        agentName,
+			CreatedAt:    time.Now(),
+			UpdatedAt:    time.Now(),
+			Search:       settings.Search,
+			Tools:        settings.Tools,
+			MCP:          settings.MCP,
+			ApprovalMode: approvalModeForColdPersistence(resolvedApproval.Mode),
+			Status:       session.StatusActive,
 		}
 		if cwd, cwdErr := os.Getwd(); cwdErr == nil {
 			sess.CWD = cwd
@@ -745,7 +752,7 @@ func runAsk(cmd *cobra.Command, args []string) error {
 			Agent:     agentName,
 			Tools:     settings.Tools,
 			MCP:       settings.MCP,
-			Yolo:      askYolo,
+			Yolo:      resolvedYolo,
 			Search:    settings.Search,
 			Resuming:  resuming,
 		}
@@ -779,8 +786,9 @@ func runAsk(cmd *cobra.Command, args []string) error {
 		NoSearch:           askNoSearch,
 		NativeSearch:       askNativeSearch,
 		NoNativeSearch:     askNoNativeSearch,
-		Yolo:               askYolo,
-		Auto:               askAuto,
+		ApprovalMode:       resolvedApproval.Mode,
+		ApprovalModeSet:    true,
+		ApprovalSource:     resolvedApproval.Source,
 		Debug:              askDebug,
 		DebugRaw:           debugRaw,
 		ErrWriter:          cmd.ErrOrStderr(),
@@ -817,8 +825,6 @@ func runAsk(cmd *cobra.Command, args []string) error {
 		MaxTurnsSet:                 true,
 		MaxOutputTokens:             settings.MaxOutputTokens,
 		Search:                      &searchEnabled,
-		Yolo:                        askYolo,
-		Auto:                        askAuto,
 		Debug:                       debugMode,
 		DebugRaw:                    debugRaw,
 		ForceExternalSearch:         &forceExternalSearch,

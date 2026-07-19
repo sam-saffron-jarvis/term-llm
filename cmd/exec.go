@@ -37,7 +37,8 @@ var (
 	execWriteDirs     []string
 	execShellAllow    []string
 	execSystemMessage string
-	// Yolo/auto modes
+	// Approval modes
+	execApproval     string
 	execYolo         bool
 	execAutoApproval bool
 	// Skills flag
@@ -94,6 +95,7 @@ func init() {
 			SystemMessage:    &execSystemMessage,
 			Files:            &execFiles,
 			FilesDescription: "File(s) to include as context (supports globs, 'clipboard')",
+			Approval:         &execApproval,
 			Yolo:             &execYolo,
 			Auto:             &execAutoApproval,
 			Skills:           &execSkills,
@@ -116,6 +118,13 @@ func runExec(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
+	resolvedApproval, err := resolveCommandApprovalMode(cmd, approvalSurfaceExec, cfg, nil, execApproval, execAutoApproval, execYolo)
+	if err != nil {
+		return err
+	}
+	execApproval = resolvedApproval.Mode.String()
+	execYolo = resolvedApproval.Mode == tools.ModeYolo
+	execAutoApproval = resolvedApproval.Mode == tools.ModeAuto
 
 	if execNoSearch {
 		execSearch = false
@@ -188,8 +197,9 @@ func runExec(cmd *cobra.Command, args []string) error {
 		NoSearch:           execNoSearch,
 		NativeSearch:       execNativeSearch,
 		NoNativeSearch:     execNoNativeSearch,
-		Yolo:               execYolo,
-		Auto:               execAutoApproval,
+		ApprovalMode:       resolvedApproval.Mode,
+		ApprovalModeSet:    true,
+		ApprovalSource:     resolvedApproval.Source,
 		Debug:              execDebug,
 		DebugRaw:           debugRaw,
 		ErrWriter:          cmd.ErrOrStderr(),
@@ -206,8 +216,6 @@ func runExec(cmd *cobra.Command, args []string) error {
 		MaxTurns:                execMaxTurns,
 		Search:                  execBoolPtr(execSearch),
 		NoSearch:                execNoSearch,
-		Yolo:                    execYolo,
-		Auto:                    execAutoApproval,
 		Debug:                   debugMode,
 		DebugRaw:                debugRaw,
 		ForceExternalSearch:     execBoolPtr(resolveForceExternalSearch(cfg, execNativeSearch, execNoNativeSearch)),

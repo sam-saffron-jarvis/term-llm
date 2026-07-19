@@ -177,6 +177,10 @@ func isChaosMonkeyKey(msg tea.KeyPressMsg) bool {
 }
 
 func (m *Model) setApprovalMode(mode tools.ApprovalMode) {
+	if m.requestedApprovalMode != mode {
+		m.requestedApprovalChanged = true
+	}
+	m.requestedApprovalMode = mode
 	m.yolo = mode == tools.ModeYolo
 	if m.approvalMgr != nil {
 		m.approvalMgr.SetApprovalMode(mode)

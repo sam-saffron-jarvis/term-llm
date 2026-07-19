@@ -48,9 +48,11 @@ var (
 	chatSkills string
 	// Session resume flag
 	chatResume string
-	// Yolo/auto approval modes
-	chatYolo         bool
-	chatAutoApproval bool
+	// Approval modes
+	chatApproval             string
+	chatYolo                 bool
+	chatAutoApproval         bool
+	chatHandoverApprovalMode *tools.ApprovalMode
 	// Auto-send mode (for benchmarking) - queue of messages to send
 	chatAutoSend []string
 	// Text mode (no markdown rendering)
@@ -87,7 +89,7 @@ Keyboard shortcuts:
   Ctrl+L       - Switch model
   Ctrl+R       - Cycle reasoning effort
   Ctrl+S       - Toggle web search
-  Shift+Tab    - Toggle yolo mode
+  Shift+Tab    - Cycle approval mode (prompt/auto/yolo)
   Ctrl+T       - MCP servers (tools)
   Ctrl+O       - Inspect conversation context
   Ctrl+E       - Expand/collapse tool and reasoning details
@@ -146,6 +148,7 @@ func init() {
 			SystemMessage:   &chatSystemMessage,
 			Agent:           &chatAgent,
 			Skills:          &chatSkills,
+			Approval:        &chatApproval,
 			Yolo:            &chatYolo,
 			Auto:            &chatAutoApproval,
 		})
@@ -179,6 +182,7 @@ func runChat(cmd *cobra.Command, args []string) error {
 	resumeID := strings.TrimSpace(chatResume)
 
 	handoverAutoSend := ""
+	chatHandoverApprovalMode = nil
 	for {
 		nextResumeID, nextAutoSend, err := runChatOnce(ctx, cmd, initialText, cliAgent, resumeRequested, resumeID, handoverAutoSend)
 		if err != nil {
@@ -410,9 +414,28 @@ func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent 
 		}
 	}
 
-	// Apply provider/model overrides.
-	desiredApprovalMode := resolveChatApprovalMode(cmd, cfg, sess)
-	chatYolo = desiredApprovalMode == tools.ModeYolo
+	// Resolve requested approval policy before runtime guardian setup so a
+	// temporary interactive fallback does not change what the session persists.
+	var persistedApprovalMode *session.SessionApprovalMode
+	if sess != nil {
+		persistedApprovalMode = &sess.ApprovalMode
+	}
+	cliApprovalMode, err := approvalModeFromCommand(cmd, chatApproval, chatAutoApproval, chatYolo)
+	if err != nil {
+		return "", "", err
+	}
+	if cliApprovalMode == nil && chatHandoverApprovalMode != nil {
+		carriedMode := *chatHandoverApprovalMode
+		cliApprovalMode = &carriedMode
+	}
+	resolvedApproval, err := resolveApprovalMode(approvalModeResolutionInput{Surface: approvalSurfaceChat, Config: cfg, CLI: cliApprovalMode, Session: persistedApprovalMode})
+	if err != nil {
+		return "", "", err
+	}
+	desiredApprovalMode := resolvedApproval.Mode
+	resolvedYolo := desiredApprovalMode == tools.ModeYolo
+	chatApproval = desiredApprovalMode.String()
+	chatYolo = resolvedYolo
 	chatAutoApproval = desiredApprovalMode == tools.ModeAuto
 
 	if sess != nil {
@@ -496,19 +519,11 @@ func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent 
 	}
 	if toolMgr != nil {
 		approvalMgr = toolMgr.ApprovalMgr
-		guardianAvailable := true
-		if err := installGuardianReviewerCallbacks(cfg, approvalMgr, cfg.DefaultProvider, getModelName(cfg), false); err != nil {
-			guardianAvailable = false
-			fmt.Fprintf(cmd.ErrOrStderr(), "warning: guardian auto-approval unavailable; using prompt mode: %v\n", err)
-		}
-		// Enable approval mode if flag/session state requests it.
-		switch desiredApprovalMode {
-		case tools.ModeYolo:
-			approvalMgr.SetYoloMode(true)
-		case tools.ModeAuto:
-			if guardianAvailable {
-				approvalMgr.SetApprovalMode(tools.ModeAuto)
-			}
+		if err := applyResolvedApprovalMode(cfg, approvalMgr, resolvedApproval, cfg.DefaultProvider, getModelName(cfg), approvalRuntimeOptions{
+			PrepareCallbacks: true,
+			WarningWriter:    cmd.ErrOrStderr(),
+		}); err != nil {
+			return "", "", err
 		}
 
 		// output_tool defines a single-shot return channel for ask. Chat has no
@@ -523,7 +538,7 @@ func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent 
 			parentSessionID = sess.ID
 		}
 		var wireErr error
-		spawnRunner, wireErr = WireSpawnAgentRunnerWithStore(cfg, toolMgr, chatYolo, store, parentSessionID)
+		spawnRunner, wireErr = WireSpawnAgentRunnerWithStore(cfg, toolMgr, resolvedYolo, store, parentSessionID)
 		if wireErr != nil {
 			if debugLogger != nil {
 				debugLogger.Close()
@@ -531,20 +546,14 @@ func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent 
 			return "", "", wireErr
 		}
 	} else {
-		guardianAvailable := true
-		if err := installGuardianReviewerCallbacks(cfg, approvalMgr, cfg.DefaultProvider, getModelName(cfg), false); err != nil {
-			guardianAvailable = false
-			fmt.Fprintf(cmd.ErrOrStderr(), "warning: guardian auto-approval unavailable; using prompt mode: %v\n", err)
-		}
-		switch desiredApprovalMode {
-		case tools.ModeYolo:
-			approvalMgr.SetYoloMode(true)
-		case tools.ModeAuto:
-			if guardianAvailable {
-				approvalMgr.SetApprovalMode(tools.ModeAuto)
-			}
+		if err := applyResolvedApprovalMode(cfg, approvalMgr, resolvedApproval, cfg.DefaultProvider, getModelName(cfg), approvalRuntimeOptions{
+			PrepareCallbacks: true,
+			WarningWriter:    cmd.ErrOrStderr(),
+		}); err != nil {
+			return "", "", err
 		}
 	}
+	reportApprovalMode(cmd.ErrOrStderr(), chatDebug, resolvedApproval, approvalMgr)
 
 	// Initialize skills system
 	agentSkills := ""
@@ -565,7 +574,7 @@ func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent 
 		if sess != nil {
 			parentSessionID = sess.ID
 		}
-		spawnRunner, err = NewSpawnAgentRunnerWithStore(cfg, chatYolo, approvalMgr, store, parentSessionID)
+		spawnRunner, err = NewSpawnAgentRunnerWithStore(cfg, resolvedYolo, approvalMgr, store, parentSessionID)
 		if err != nil {
 			return "", "", fmt.Errorf("initialize isolated skill runner: %w", err)
 		}
@@ -630,7 +639,7 @@ func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent 
 	}
 
 	// Set up MCP sampling provider (for sampling/createMessage requests)
-	mcpManager.SetSamplingProvider(provider, modelName, chatYolo)
+	mcpManager.SetSamplingProvider(provider, modelName, resolvedYolo)
 
 	// Resolve force external search setting
 	forceExternalSearch := resolveForceExternalSearch(cfg, chatNativeSearch, chatNoNativeSearch)
@@ -645,7 +654,7 @@ func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent 
 	if agent != nil {
 		chatPlatformMessage = agent.PlatformMessages.For("chat")
 	}
-	model := chat.NewWithFastProvider(cfg, provider, fastProvider, engine, providerKey, modelName, mcpManager, settings.MaxTurns, forceExternalSearch, chatNoWebFetch, settings.Search, enabledLocalTools, settings.Tools, settings.MCP, false, initialText, store, sess, useAltScreen, chatAutoSend, autoSendMode, chatTextMode, agentName, chatPlatformMessage, chatYolo, toolMgr)
+	model := chat.NewWithFastProviderAndApproval(cfg, provider, fastProvider, engine, providerKey, modelName, mcpManager, settings.MaxTurns, forceExternalSearch, chatNoWebFetch, settings.Search, enabledLocalTools, settings.Tools, settings.MCP, false, initialText, store, sess, useAltScreen, chatAutoSend, autoSendMode, chatTextMode, agentName, chatPlatformMessage, resolvedYolo, desiredApprovalMode, toolMgr)
 	model.ConfigureTerminalTitleEnvironment(chat.TerminalTitleEnvironmentFromEnv())
 	terminalTitleRestored := false
 	restoreTerminalTitle := func() {
@@ -678,8 +687,9 @@ func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent 
 		NoSearch:           chatNoSearch,
 		NativeSearch:       chatNativeSearch,
 		NoNativeSearch:     chatNoNativeSearch,
-		Yolo:               chatYolo,
-		Auto:               chatAutoApproval,
+		ApprovalMode:       resolvedApproval.Mode,
+		ApprovalModeSet:    true,
+		ApprovalSource:     resolvedApproval.Source,
 		Debug:              chatDebug,
 		DebugRaw:           debugRaw,
 		ErrWriter:          cmd.ErrOrStderr(),
@@ -699,7 +709,7 @@ func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent 
 		return llm.NewProviderByName(cfg, providerKey, modelName)
 	})
 	model.SetHandoverApprovalManager(approvalMgr)
-	model.PersistApprovalModeActive()
+	model.PersistApprovalMode(desiredApprovalMode)
 
 	// Wire agent resolver, lister, and current agent for /handover support
 	model.SetAgentResolver(LoadAgent)
@@ -901,10 +911,11 @@ func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent 
 	if m, ok := finalModel.(*chat.Model); ok {
 		nextResumeID = m.RequestedResumeSessionID()
 		nextHandoverAutoSend = m.RequestedHandoverAutoSend()
-		// Preserve interactive approval-mode toggles across handover/relaunch. The next
-		// runChatOnce iteration reads these while constructing approvals,
-		// sub-agent runners, MCP sampling, and the replacement chat model.
-		mode := m.ApprovalModeActive()
+		// Carry a user-selected mode only into an actual handover. Ordinary /resume
+		// and /new relaunches must resolve the target session/config independently.
+		mode := m.ApprovalModeRequested()
+		chatHandoverApprovalMode = chatApprovalCarryForRelaunch(m.ApprovalModeChanged(), nextHandoverAutoSend, mode)
+		chatApproval = mode.String()
 		chatYolo = mode == tools.ModeYolo
 		chatAutoApproval = mode == tools.ModeAuto
 	}

@@ -21,6 +21,11 @@ func TestNormalizePreCommandFlags(t *testing.T) {
 			want: []string{"chat", "-p", "openai", "--yolo"},
 		},
 		{
+			name: "approval before ask preserves value",
+			args: []string{"--approval", "prompt", "ask", "hello"},
+			want: []string{"ask", "--approval", "prompt", "hello"},
+		},
+		{
 			name: "long provider with inline value",
 			args: []string{"--provider=openai", "chat"},
 			want: []string{"chat", "--provider=openai"},
@@ -141,6 +146,7 @@ func TestRootPreCommandFlagNameCompletions(t *testing.T) {
 	for _, want := range []string{
 		"--provider\t",
 		"-p\t",
+		"--approval\t",
 		"--yolo\t",
 		"--tools\t",
 		"--read-dir\t",

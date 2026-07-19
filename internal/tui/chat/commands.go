@@ -967,17 +967,18 @@ func (m *Model) cmdClear() (tea.Model, tea.Cmd) {
 	// Create a new session to clear the conversation
 	// This preserves the old session in history while starting fresh
 	m.sess = &session.Session{
-		ID:          session.NewID(),
-		Provider:    m.providerName,
-		ProviderKey: m.providerKey,
-		Model:       m.modelName,
-		Mode:        session.ModeChat,
-		Agent:       m.agentName,
-		CreatedAt:   time.Now(),
-		UpdatedAt:   time.Now(),
-		Search:      m.searchEnabled,
-		Tools:       m.toolsStr,
-		MCP:         m.mcpStr,
+		ID:           session.NewID(),
+		Provider:     m.providerName,
+		ProviderKey:  m.providerKey,
+		Model:        m.modelName,
+		Mode:         session.ModeChat,
+		Agent:        m.agentName,
+		CreatedAt:    time.Now(),
+		UpdatedAt:    time.Now(),
+		Search:       m.searchEnabled,
+		Tools:        m.toolsStr,
+		MCP:          m.mcpStr,
+		ApprovalMode: sessionApprovalModeFromTools(m.requestedApprovalMode),
 	}
 	if cwd, err := os.Getwd(); err == nil {
 		m.sess.CWD = cwd
@@ -1878,17 +1879,18 @@ func (m *Model) cmdNew() (tea.Model, tea.Cmd) {
 
 	// Create new session with current settings
 	m.sess = &session.Session{
-		ID:          session.NewID(),
-		Provider:    m.providerName,
-		ProviderKey: m.providerKey,
-		Model:       m.modelName,
-		Mode:        session.ModeChat,
-		Agent:       m.agentName,
-		CreatedAt:   time.Now(),
-		UpdatedAt:   time.Now(),
-		Search:      m.searchEnabled,
-		Tools:       m.toolsStr,
-		MCP:         m.mcpStr,
+		ID:           session.NewID(),
+		Provider:     m.providerName,
+		ProviderKey:  m.providerKey,
+		Model:        m.modelName,
+		Mode:         session.ModeChat,
+		Agent:        m.agentName,
+		CreatedAt:    time.Now(),
+		UpdatedAt:    time.Now(),
+		Search:       m.searchEnabled,
+		Tools:        m.toolsStr,
+		MCP:          m.mcpStr,
+		ApprovalMode: sessionApprovalModeFromTools(m.requestedApprovalMode),
 	}
 	if cwd, err := os.Getwd(); err == nil {
 		m.sess.CWD = cwd
@@ -3823,6 +3825,7 @@ func (m *Model) buildHandoverSession(pending *handoverDoneMsg, targetAgent *agen
 		Search:        searchEnabled,
 		Tools:         toolsStr,
 		MCP:           mcpStr,
+		ApprovalMode:  sessionApprovalModeFromTools(m.requestedApprovalMode),
 		Status:        session.StatusActive,
 		CompactionSeq: -1,
 	}

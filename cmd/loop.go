@@ -38,9 +38,10 @@ var (
 	loopSystemMessage string
 	// Agent flag
 	loopAgent string
-	// Yolo/auto modes
-	loopYolo bool
-	loopAuto bool
+	// Approval modes
+	loopApproval string
+	loopYolo     bool
+	loopAuto     bool
 	// Loop-specific flags
 	loopDone     string // Command that returns 0 when done
 	loopDoneFile string // FILE:TEXT - done when file contains text
@@ -109,6 +110,7 @@ func init() {
 			ShellAllow:      &loopShellAllow,
 			SystemMessage:   &loopSystemMessage,
 			Agent:           &loopAgent,
+			Approval:        &loopApproval,
 			Yolo:            &loopYolo,
 			Auto:            &loopAuto,
 		})
@@ -240,6 +242,14 @@ func runLoop(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
+	resolvedApproval, err := resolveCommandApprovalMode(cmd, approvalSurfaceLoop, cfg, nil, loopApproval, loopAuto, loopYolo)
+	if err != nil {
+		return err
+	}
+	resolvedYolo := resolvedApproval.Mode == tools.ModeYolo
+	loopApproval = resolvedApproval.Mode.String()
+	loopYolo = resolvedYolo
+	loopAuto = resolvedApproval.Mode == tools.ModeAuto
 
 	// Load agent if specified
 	agent, err := LoadAgent(loopAgent, cfg)
@@ -302,25 +312,23 @@ func runLoop(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	if toolMgr != nil {
-		// In loop mode, use explicit approval mode.
-		if loopYolo {
-			toolMgr.ApprovalMgr.SetYoloMode(true)
-		} else if loopAuto {
-			providerCfg := cfg.GetActiveProviderConfig()
-			model := ""
-			if providerCfg != nil {
-				model = providerCfg.Model
-			}
-			if err := installGuardianReviewer(cfg, toolMgr.ApprovalMgr, cfg.DefaultProvider, model, true); err != nil {
-				return err
-			}
-		} else {
-			// Non-yolo mode: use huh approval prompts
+		providerCfg := cfg.GetActiveProviderConfig()
+		model := ""
+		if providerCfg != nil {
+			model = providerCfg.Model
+		}
+		// Loop auto is treated as unattended: Guardian must initialize before the
+		// loop starts rather than degrading to an interactive prompt policy.
+		if err := applyResolvedApprovalMode(cfg, toolMgr.ApprovalMgr, resolvedApproval, cfg.DefaultProvider, model, approvalRuntimeOptions{Headless: true}); err != nil {
+			return err
+		}
+		reportApprovalMode(cmd.ErrOrStderr(), loopDebug, resolvedApproval, toolMgr.ApprovalMgr)
+		if resolvedApproval.Mode == tools.ModePrompt {
 			toolMgr.ApprovalMgr.PromptFunc = tools.HuhApprovalPrompt
 		}
 
 		// Wire spawn_agent runner if enabled
-		if err := WireSpawnAgentRunner(cfg, toolMgr, loopYolo); err != nil {
+		if err := WireSpawnAgentRunner(cfg, toolMgr, resolvedYolo); err != nil {
 			return err
 		}
 	}
@@ -330,7 +338,7 @@ func runLoop(cmd *cobra.Command, args []string) error {
 	if settings.MCP != "" {
 		mcpOpts := &MCPOptions{
 			Provider: provider,
-			YoloMode: loopYolo,
+			YoloMode: resolvedYolo,
 		}
 		if providerCfg := cfg.GetActiveProviderConfig(); providerCfg != nil {
 			mcpOpts.Model = providerCfg.Model

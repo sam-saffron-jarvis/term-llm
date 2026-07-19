@@ -4729,6 +4729,7 @@ func TestSwitchEffortRefreshesGuardianAndFailsClosed(t *testing.T) {
 	m.modelName = "old"
 	m.approvalMgr = tools.NewApprovalManager(tools.NewToolPermissions())
 	m.approvalMgr.SetApprovalMode(tools.ModeAuto)
+	m.PersistApprovalMode(tools.ModeAuto)
 	m.approvalMgr.PolicyReviewFunc = func(context.Context, tools.PolicyReviewRequest) (tools.PolicyDecision, error) {
 		return tools.PolicyDecision{Allowed: true}, nil
 	}
@@ -4745,6 +4746,9 @@ func TestSwitchEffortRefreshesGuardianAndFailsClosed(t *testing.T) {
 	}
 	if got.approvalMgr.PolicyReviewFunc != nil || got.approvalMgr.ApprovalMode() != tools.ModePrompt {
 		t.Fatal("guardian refresh failure retained stale reviewer or auto mode")
+	}
+	if got.ApprovalModeRequested() != tools.ModeAuto {
+		t.Fatalf("requested approval mode = %v, want auto after temporary refresh fallback", got.ApprovalModeRequested())
 	}
 }
 

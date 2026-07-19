@@ -452,6 +452,7 @@ type Config struct {
 	Ask             AskConfig                 `mapstructure:"ask"`
 	Chat            ChatConfig                `mapstructure:"chat"`
 	Edit            EditConfig                `mapstructure:"edit"`
+	Loop            LoopConfig                `mapstructure:"loop"`
 	Image           ImageConfig               `mapstructure:"image"`
 	Audio           AudioConfig               `mapstructure:"audio"`
 	Music           MusicConfig               `mapstructure:"music"`
@@ -471,8 +472,8 @@ type Config struct {
 
 // ApprovalConfig configures default approval behavior.
 type ApprovalConfig struct {
-	// DefaultMode controls the approval mode for new chat sessions when no CLI flag
-	// or resumed session value overrides it. Valid values: prompt, auto.
+	// DefaultMode controls approval mode for surfaces without an explicit
+	// per-surface override. Valid values: prompt, auto. Empty means unset.
 	// yolo is intentionally not accepted as a config default.
 	DefaultMode string `mapstructure:"default_mode" yaml:"default_mode,omitempty"`
 }
@@ -488,6 +489,7 @@ type GuardianConfig struct {
 // ServeConfig holds configuration for the serve command platforms.
 type ServeConfig struct {
 	Platforms              []string            `mapstructure:"platforms" yaml:"platforms,omitempty"`
+	ApprovalMode           string              `mapstructure:"approval_mode" yaml:"approval_mode,omitempty"`
 	BasePath               string              `mapstructure:"base_path" yaml:"base_path,omitempty"`
 	Title                  string              `mapstructure:"title" yaml:"title,omitempty"`
 	DisableLocationSharing bool                `mapstructure:"disable_location_sharing" yaml:"disable_location_sharing,omitempty"`
@@ -496,6 +498,12 @@ type ServeConfig struct {
 	ResponseTimeout        string              `mapstructure:"response_timeout" yaml:"response_timeout,omitempty"` // Go duration string, e.g. "30m" or "1h"
 	Telegram               TelegramServeConfig `mapstructure:"telegram" yaml:"telegram,omitempty"`
 	WebPush                WebPushConfig       `mapstructure:"web_push" yaml:"web_push,omitempty"`
+	MCP                    ServeMCPConfig      `mapstructure:"mcp" yaml:"mcp,omitempty"`
+}
+
+// ServeMCPConfig configures the standalone term-llm serve mcp surface.
+type ServeMCPConfig struct {
+	ApprovalMode string `mapstructure:"approval_mode" yaml:"approval_mode,omitempty"`
 }
 
 // WebPushConfig holds VAPID keys for Web Push notifications.
@@ -626,37 +634,79 @@ type ThemeConfig struct {
 }
 
 type ExecConfig struct {
-	Provider     string `mapstructure:"provider"`     // Override provider for exec
-	Model        string `mapstructure:"model"`        // Override model for exec
-	Suggestions  int    `mapstructure:"suggestions"`  // Number of command suggestions (default 3)
-	Instructions string `mapstructure:"instructions"` // Custom context for suggestions
+	Provider     string `mapstructure:"provider"`                                     // Override provider for exec
+	Model        string `mapstructure:"model"`                                        // Override model for exec
+	Suggestions  int    `mapstructure:"suggestions"`                                  // Number of command suggestions (default 3)
+	Instructions string `mapstructure:"instructions"`                                 // Custom context for suggestions
+	ApprovalMode string `mapstructure:"approval_mode" yaml:"approval_mode,omitempty"` // Optional approval mode: prompt or auto
 }
 
 type AskConfig struct {
-	Provider     string `mapstructure:"provider"`     // Override provider for ask only
-	Model        string `mapstructure:"model"`        // Override model for ask only
-	Instructions string `mapstructure:"instructions"` // Custom system prompt for ask
-	MaxTurns     int    `mapstructure:"max_turns"`    // Max agentic turns (default 20)
+	Provider     string `mapstructure:"provider"`                                     // Override provider for ask only
+	Model        string `mapstructure:"model"`                                        // Override model for ask only
+	Instructions string `mapstructure:"instructions"`                                 // Custom system prompt for ask
+	MaxTurns     int    `mapstructure:"max_turns"`                                    // Max agentic turns (default 20)
+	ApprovalMode string `mapstructure:"approval_mode" yaml:"approval_mode,omitempty"` // Optional approval mode: prompt or auto
 }
 
 type ChatConfig struct {
-	Provider            string `mapstructure:"provider"`              // Override provider for chat only
-	Model               string `mapstructure:"model"`                 // Override model for chat only
-	Instructions        string `mapstructure:"instructions"`          // Custom system prompt for chat
-	MaxTurns            int    `mapstructure:"max_turns"`             // Max agentic turns (default 200)
-	TerminalTitle       string `mapstructure:"terminal_title"`        // smart, basic, or off (default smart)
-	TerminalTitleFormat string `mapstructure:"terminal_title_format"` // Optional custom terminal title template
-	TerminalProgress    bool   `mapstructure:"terminal_progress"`     // Enable terminal progress indicators (default false)
+	Provider            string `mapstructure:"provider"`                                     // Override provider for chat only
+	Model               string `mapstructure:"model"`                                        // Override model for chat only
+	Instructions        string `mapstructure:"instructions"`                                 // Custom system prompt for chat
+	MaxTurns            int    `mapstructure:"max_turns"`                                    // Max agentic turns (default 200)
+	TerminalTitle       string `mapstructure:"terminal_title"`                               // smart, basic, or off (default smart)
+	TerminalTitleFormat string `mapstructure:"terminal_title_format"`                        // Optional custom terminal title template
+	TerminalProgress    bool   `mapstructure:"terminal_progress"`                            // Enable terminal progress indicators (default false)
+	ApprovalMode        string `mapstructure:"approval_mode" yaml:"approval_mode,omitempty"` // Optional approval mode: prompt or auto
 }
 
 type EditConfig struct {
-	Provider        string `mapstructure:"provider"`          // Override provider for edit
-	Model           string `mapstructure:"model"`             // Override model for edit
-	Instructions    string `mapstructure:"instructions"`      // Custom instructions for edits
-	ShowLineNumbers bool   `mapstructure:"show_line_numbers"` // Show line numbers in diff
-	ContextLines    int    `mapstructure:"context_lines"`     // Lines of context in diff
-	Editor          string `mapstructure:"editor"`            // Override $EDITOR
-	DiffFormat      string `mapstructure:"diff_format"`       // "auto", "udiff", or "replace" (default: auto)
+	Provider        string `mapstructure:"provider"`                                     // Override provider for edit
+	Model           string `mapstructure:"model"`                                        // Override model for edit
+	Instructions    string `mapstructure:"instructions"`                                 // Custom instructions for edits
+	ShowLineNumbers bool   `mapstructure:"show_line_numbers"`                            // Show line numbers in diff
+	ContextLines    int    `mapstructure:"context_lines"`                                // Lines of context in diff
+	Editor          string `mapstructure:"editor"`                                       // Override $EDITOR
+	DiffFormat      string `mapstructure:"diff_format"`                                  // "auto", "udiff", or "replace" (default: auto)
+	ApprovalMode    string `mapstructure:"approval_mode" yaml:"approval_mode,omitempty"` // Optional approval mode: prompt or auto
+}
+
+type LoopConfig struct {
+	ApprovalMode string `mapstructure:"approval_mode" yaml:"approval_mode,omitempty"`
+}
+
+// ValidateApprovalModes rejects persistent modes that would bypass approval or
+// silently fall back because of a typo. Empty values are intentionally valid
+// and mean "inherit".
+func (c *Config) ValidateApprovalModes() error {
+	if c == nil {
+		return nil
+	}
+	values := []struct {
+		path  string
+		value string
+	}{
+		{"approval.default_mode", c.Approval.DefaultMode},
+		{"chat.approval_mode", c.Chat.ApprovalMode},
+		{"ask.approval_mode", c.Ask.ApprovalMode},
+		{"edit.approval_mode", c.Edit.ApprovalMode},
+		{"exec.approval_mode", c.Exec.ApprovalMode},
+		{"loop.approval_mode", c.Loop.ApprovalMode},
+		{"serve.approval_mode", c.Serve.ApprovalMode},
+		{"serve.mcp.approval_mode", c.Serve.MCP.ApprovalMode},
+	}
+	for _, item := range values {
+		value := strings.TrimSpace(item.value)
+		if value == "" {
+			continue
+		}
+		switch strings.ToLower(value) {
+		case "prompt", "auto":
+		default:
+			return fmt.Errorf("invalid %s %q: expected prompt or auto", item.path, item.value)
+		}
+	}
+	return nil
 }
 
 // ImageConfig configures image generation settings
@@ -916,6 +966,9 @@ func Load() (*Config, error) {
 	}
 	applyProviderModelConfigs(&cfg, providerModelConfigsFromViper(viper.GetViper()))
 	markReasoningConfigPresence(&cfg.Reasoning, viper.GetViper())
+	if err := cfg.ValidateApprovalModes(); err != nil {
+		return nil, err
+	}
 
 	if err := overlayProviderEnvFromRawConfig(&cfg); err != nil {
 		return nil, fmt.Errorf("failed to load raw provider env config: %w", err)

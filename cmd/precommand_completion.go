@@ -181,6 +181,8 @@ func rootPreCommandFlagNameCompletions(toComplete string, noDesc bool, existingB
 
 func preCommandFlagValueCompletions(meta commonFlagMeta, toComplete string) ([]string, cobra.ShellCompDirective) {
 	switch meta.Name {
+	case "approval":
+		return approvalFlagCompletion(rootCmd, nil, toComplete)
 	case "provider":
 		return ProviderFlagCompletion(rootCmd, nil, toComplete)
 	case "mcp":

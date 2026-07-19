@@ -154,31 +154,37 @@ When a tool needs access outside approved directories, term-llm prompts for appr
 
 ### Approval modes
 
-Interactive chat has three approval modes, shown in the status line when active:
+Approval mode is visible in the chat status line. With no approval configuration, `chat` and `ask` start in **Auto**; `edit`, `exec`, `loop`, `serve`, and `serve mcp` start in **Prompt**.
 
-- **Prompt** (default): unapproved tool actions ask before proceeding.
-- **Auto**: unmatched shell commands are reviewed by a guardian model before falling back to the human prompt. Path/file/MCP approvals still prompt.
-- **Yolo**: tool approvals auto-approve without prompting.
+- **Prompt**: unapproved tool actions ask before proceeding.
+- **Auto**: unmatched shell commands are reviewed by a guardian model before falling back to a human prompt in interactive runtimes. Path/file/MCP approvals still follow their existing policy. Auto is not yolo.
+- **Yolo**: tool approvals auto-approve without prompting. This mode is CLI-only.
 
-Use flags for one run:
+Use the canonical flag for one run:
 
 ```bash
-term-llm chat --auto
-term-llm chat --yolo
+term-llm chat --approval prompt
+term-llm ask --approval auto "inspect this"
+term-llm chat --approval yolo
 ```
 
-In the TUI, Shift+Tab cycles `prompt → auto → yolo → prompt`. If no guardian reviewer is configured, Shift+Tab skips auto and tells you why.
+`--auto` and `--yolo` remain aliases. In the TUI, Shift+Tab cycles `prompt → auto → yolo → prompt`. If no guardian reviewer is available, Shift+Tab skips auto and tells you why.
 
-Auto mode is intentionally narrow. It does not turn shell approval into a glob pattern and does not grant broad shell access. The guardian reviews the exact command and working directory, transcript/tool evidence, and deterministic approval context such as configured/session read and write directories. That lets it recognize narrow shell equivalents of already-approved first-party file operations while still denying or escalating unrelated shell side effects, network transfer, process control, or credential disclosure.
+Auto mode is intentionally narrow. It does not turn shell approval into a glob pattern and does not grant broad shell or filesystem access. The guardian reviews the exact command and working directory, transcript/tool evidence, and deterministic approval context such as configured/session read and write directories. That lets it recognize narrow shell equivalents of already-approved first-party file operations while still denying or escalating unrelated shell side effects, network transfer, process control, or credential disclosure.
 
 Guardian outcomes are added to scrollback. In terminal chat, if guardian denies or cannot review and a human approval prompt appears, the guardian rationale is repeated immediately above the prompt so you can scroll up and read why you are approving. In web/serve mode, guardian review messages are emitted into the response stream before any approval prompt.
 
-To make new chat sessions start in auto mode:
+To replace the built-in matrix globally or per surface:
 
 ```yaml
 approval:
-  default_mode: auto
+  default_mode: prompt
+
+chat:
+  approval_mode: auto
 ```
+
+Persistent config accepts only `prompt` and `auto`; yolo cannot be configured or restored on cold resume.
 
 Optional guardian overrides:
 

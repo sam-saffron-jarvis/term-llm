@@ -49,8 +49,6 @@ type ProviderSpec struct {
 const (
 	DefaultConfigProvider = "anthropic"
 
-	DefaultApprovalMode = "prompt"
-
 	DefaultAskMaxTurns     = 50
 	DefaultChatMaxTurns    = 200
 	DefaultExecSuggestions = 3
@@ -143,7 +141,7 @@ var keySpecs = []KeySpec{
 	def("default_provider", DefaultConfigProvider),
 	def("auto_compact", DefaultAutoCompact),
 
-	def("approval.default_mode", DefaultApprovalMode),
+	optional("approval.default_mode", withoutResetTemplate()),
 
 	optional("guardian.provider"),
 	optional("guardian.model"),
@@ -152,16 +150,19 @@ var keySpecs = []KeySpec{
 
 	optional("exec.provider"),
 	optional("exec.model"),
+	optional("exec.approval_mode", withoutResetTemplate()),
 	def("exec.suggestions", DefaultExecSuggestions),
 	def("exec.instructions", ""),
 
 	optional("ask.provider"),
 	optional("ask.model"),
+	optional("ask.approval_mode", withoutResetTemplate()),
 	def("ask.instructions", DefaultAssistantInstructions),
 	def("ask.max_turns", DefaultAskMaxTurns),
 
 	optional("chat.provider"),
 	optional("chat.model"),
+	optional("chat.approval_mode", withoutResetTemplate()),
 	def("chat.instructions", DefaultAssistantInstructions),
 	def("chat.max_turns", DefaultChatMaxTurns),
 	def("chat.terminal_title", DefaultChatTerminalTitle),
@@ -170,6 +171,7 @@ var keySpecs = []KeySpec{
 
 	optional("edit.provider"),
 	optional("edit.model"),
+	optional("edit.approval_mode", withoutResetTemplate()),
 	def("edit.instructions", ""),
 	def("edit.show_line_numbers", true),
 	def("edit.context_lines", DefaultEditContextLines),
@@ -333,8 +335,11 @@ var keySpecs = []KeySpec{
 	def("debug_logs.enabled", false),
 	def("debug_logs.dir", ""),
 
+	optional("loop.approval_mode", withoutResetTemplate()),
+
 	def("serve.base_path", DefaultServeBasePath),
 	optional("serve.platforms", withPlaceholder([]string{})),
+	optional("serve.approval_mode", withoutResetTemplate()),
 	optional("serve.title"),
 	def("serve.disable_location_sharing", false),
 	optional("serve.files_dir"),
@@ -348,6 +353,7 @@ var keySpecs = []KeySpec{
 	optional("serve.web_push.vapid_public_key", sensitive()),
 	optional("serve.web_push.vapid_private_key", sensitive()),
 	optional("serve.web_push.subject"),
+	optional("serve.mcp.approval_mode", withoutResetTemplate()),
 
 	def("file_tracking.enabled", false),
 	def("file_tracking.max_file_bytes", DefaultFileTrackingMaxFileBytes),
@@ -503,6 +509,10 @@ func sensitive() specOpt {
 
 func withPlaceholder(v any) specOpt {
 	return func(s *KeySpec) { s.Placeholder = v }
+}
+
+func withoutResetTemplate() specOpt {
+	return func(s *KeySpec) { s.ResetTemplate = false }
 }
 
 // ConfigKeySpecs returns the ordered canonical key schema.

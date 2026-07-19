@@ -27,7 +27,7 @@ const (
 	CommonMCP
 	CommonTools
 	CommonSystemMessage
-	CommonYolo
+	CommonApproval
 	CommonSkills
 	// Tier 2 / non-position-0 flags. These can use the common registration
 	// helper without becoming eligible for pre-command normalization.
@@ -38,7 +38,7 @@ const (
 )
 
 const (
-	CommonCoreFlags   = CommonProvider | CommonDebug | CommonMCP | CommonTools | CommonSystemMessage | CommonYolo
+	CommonCoreFlags   = CommonProvider | CommonDebug | CommonMCP | CommonTools | CommonSystemMessage | CommonApproval
 	CommonSearchFlags = CommonSearch | CommonNativeSearch | CommonNoWebFetch
 )
 
@@ -57,6 +57,7 @@ type CommonFlagBindings struct {
 	WriteDirs        *[]string
 	ShellAllow       *[]string
 	SystemMessage    *string
+	Approval         *string
 	Yolo             *bool
 	Auto             *bool
 	Skills           *string
@@ -96,8 +97,9 @@ var commonFlagMetas = []commonFlagMeta{
 	{Name: "write-dir", Kind: flagKindStringArray, PreCommand: true, Bit: CommonTools},
 	{Name: "shell-allow", Kind: flagKindStringArray, PreCommand: true, Bit: CommonTools},
 	{Name: "system-message", Shorthand: "m", Kind: flagKindString, PreCommand: true, Bit: CommonSystemMessage},
-	{Name: "yolo", Kind: flagKindBool, PreCommand: true, Bit: CommonYolo},
-	{Name: "auto", Kind: flagKindBool, PreCommand: true, Bit: CommonYolo},
+	{Name: "approval", Kind: flagKindString, PreCommand: true, Bit: CommonApproval},
+	{Name: "yolo", Kind: flagKindBool, PreCommand: true, Bit: CommonApproval},
+	{Name: "auto", Kind: flagKindBool, PreCommand: true, Bit: CommonApproval},
 	{Name: "skills", Kind: flagKindString, PreCommand: true, Bit: CommonSkills},
 	{Name: "max-turns", Kind: flagKindString, Bit: CommonMaxTurns},
 	{Name: "max-output-tokens", Kind: flagKindString, Bit: CommonMaxOutputTokens},
@@ -169,12 +171,14 @@ func AddCommonFlags(cmd *cobra.Command, set CommonFlagSet, b CommonFlagBindings)
 		requireStringFlagBinding("agent", b.Agent)
 		AddAgentFlag(cmd, b.Agent)
 	}
-	if set.has(CommonYolo) {
+	if set.has(CommonApproval) {
+		requireStringFlagBinding("approval", b.Approval)
 		requireBoolFlagBinding("yolo", b.Yolo)
 		requireBoolFlagBinding("auto", b.Auto)
+		AddApprovalFlag(cmd, b.Approval)
 		AddYoloFlag(cmd, b.Yolo)
 		AddAutoFlag(cmd, b.Auto)
-		cmd.MarkFlagsMutuallyExclusive("yolo", "auto")
+		cmd.MarkFlagsMutuallyExclusive("approval", "yolo", "auto")
 	}
 	if set.has(CommonSkills) {
 		requireStringFlagBinding("skills", b.Skills)
@@ -281,6 +285,47 @@ func AddAgentFlag(cmd *cobra.Command, dest *string) {
 	if err := cmd.RegisterFlagCompletionFunc("agent", AgentFlagCompletionWithPaths); err != nil {
 		panic("failed to register agent completion: " + err.Error())
 	}
+}
+
+// approvalFlagValue validates the CLI-only approval enum while retaining a
+// plain string binding for shared command resolution.
+type approvalFlagValue struct {
+	dest *string
+}
+
+func (v approvalFlagValue) String() string {
+	if v.dest == nil {
+		return ""
+	}
+	return *v.dest
+}
+
+func (v approvalFlagValue) Set(value string) error {
+	if _, err := parseCLIApprovalMode(value); err != nil {
+		return err
+	}
+	*v.dest = strings.ToLower(strings.TrimSpace(value))
+	return nil
+}
+
+func (approvalFlagValue) Type() string { return "approval" }
+
+// AddApprovalFlag adds the canonical approval mode flag.
+func AddApprovalFlag(cmd *cobra.Command, dest *string) {
+	cmd.Flags().Var(approvalFlagValue{dest: dest}, "approval", "Approval mode: prompt, auto (guardian-reviewed), or yolo")
+	if err := cmd.RegisterFlagCompletionFunc("approval", approvalFlagCompletion); err != nil {
+		panic("failed to register approval completion: " + err.Error())
+	}
+}
+
+func approvalFlagCompletion(_ *cobra.Command, _ []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+	var matches []string
+	for _, value := range cliApprovalModeNames {
+		if strings.HasPrefix(value, toComplete) {
+			matches = append(matches, value)
+		}
+	}
+	return matches, cobra.ShellCompDirectiveNoFileComp
 }
 
 // AddYoloFlag adds the --yolo flag for auto-approving all tool operations

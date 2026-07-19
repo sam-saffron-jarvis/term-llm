@@ -36,9 +36,10 @@ var (
 	editWriteDirs     []string
 	editShellAllow    []string
 	editSystemMessage string
-	// Yolo/auto modes
-	editYolo bool
-	editAuto bool
+	// Approval modes
+	editApproval string
+	editYolo     bool
+	editAuto     bool
 	// Skills flag
 	editSkills string
 )
@@ -89,6 +90,7 @@ func init() {
 			WriteDirs:     &editWriteDirs,
 			ShellAllow:    &editShellAllow,
 			SystemMessage: &editSystemMessage,
+			Approval:      &editApproval,
 			Yolo:          &editYolo,
 			Auto:          &editAuto,
 			Skills:        &editSkills,
@@ -132,6 +134,14 @@ func runEdit(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
+	resolvedApproval, err := resolveCommandApprovalMode(cmd, approvalSurfaceEdit, cfg, nil, editApproval, editAuto, editYolo)
+	if err != nil {
+		return err
+	}
+	resolvedYolo := resolvedApproval.Mode == tools.ModeYolo
+	editApproval = resolvedApproval.Mode.String()
+	editYolo = resolvedYolo
+	editAuto = resolvedApproval.Mode == tools.ModeAuto
 
 	if err := applyProviderOverrides(cfg, cfg.Edit.Provider, cfg.Edit.Model, editProvider); err != nil {
 		return err
@@ -170,19 +180,15 @@ func runEdit(cmd *cobra.Command, args []string) error {
 		// edit runs without a session ID, so file-change recording no-ops;
 		// wiring is kept so recording activates if this flow gains sessions.
 		wireFileRecorder(toolMgr.Registry, cfg)
-		// Enable approval mode if flag is set
-		if editYolo {
-			toolMgr.ApprovalMgr.SetYoloMode(true)
-		} else if editAuto {
-			providerCfg := cfg.GetActiveProviderConfig()
-			model := ""
-			if providerCfg != nil {
-				model = providerCfg.Model
-			}
-			if err := installGuardianReviewer(cfg, toolMgr.ApprovalMgr, cfg.DefaultProvider, model, false); err != nil {
-				return err
-			}
+		providerCfg := cfg.GetActiveProviderConfig()
+		model := ""
+		if providerCfg != nil {
+			model = providerCfg.Model
 		}
+		if err := applyResolvedApprovalMode(cfg, toolMgr.ApprovalMgr, resolvedApproval, cfg.DefaultProvider, model, approvalRuntimeOptions{WarningWriter: cmd.ErrOrStderr()}); err != nil {
+			return err
+		}
+		reportApprovalMode(cmd.ErrOrStderr(), editDebug, resolvedApproval, toolMgr.ApprovalMgr)
 		// Set up the improved approval UI with git-aware heuristics
 		toolMgr.ApprovalMgr.PromptUIFunc = func(path string, isWrite bool, isShell bool, workDir string) (tools.ApprovalResult, error) {
 			if isShell {
@@ -193,7 +199,7 @@ func runEdit(cmd *cobra.Command, args []string) error {
 		toolMgr.SetupEngine(engine)
 
 		// Wire spawn_agent runner if enabled
-		if err := WireSpawnAgentRunner(cfg, toolMgr, editYolo); err != nil {
+		if err := WireSpawnAgentRunner(cfg, toolMgr, resolvedYolo); err != nil {
 			return err
 		}
 	}
@@ -204,7 +210,7 @@ func runEdit(cmd *cobra.Command, args []string) error {
 		engine := newEngine(provider, cfg)
 		mcpOpts := &MCPOptions{
 			Provider: provider,
-			YoloMode: editYolo,
+			YoloMode: resolvedYolo,
 		}
 		if providerCfg := cfg.GetActiveProviderConfig(); providerCfg != nil {
 			mcpOpts.Model = providerCfg.Model

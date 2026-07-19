@@ -16,6 +16,53 @@ import (
 
 var newGuardianProviderByName = llm.NewProviderByName
 
+func preflightHeadlessApproval(cfg *config.Config, resolved resolvedApprovalMode, providerName, modelName string) error {
+	if resolved.Mode != tools.ModeAuto {
+		return nil
+	}
+	mgr := tools.NewApprovalManager(tools.NewToolPermissions())
+	return applyResolvedApprovalMode(cfg, mgr, resolved, providerName, modelName, approvalRuntimeOptions{Headless: true})
+}
+
+// applyResolvedApprovalMode applies requested policy to the actual runtime
+// manager. Interactive auto setup degrades to prompt with one warning; headless
+// setup fails before work begins. The resolved value remains unchanged so
+// callers can persist the requested policy rather than a temporary fallback.
+func applyResolvedApprovalMode(cfg *config.Config, approvalMgr *tools.ApprovalManager, resolved resolvedApprovalMode, providerName, modelName string, opts approvalRuntimeOptions) error {
+	if approvalMgr == nil {
+		// A runtime with no approval-bearing tools has nothing to initialize or
+		// review, so even headless auto can start without a manager.
+		return nil
+	}
+	approvalMgr.SetApprovalMode(tools.ModePrompt)
+	if resolved.Mode == tools.ModeYolo {
+		approvalMgr.SetApprovalMode(tools.ModeYolo)
+		return nil
+	}
+
+	needsGuardian := resolved.Mode == tools.ModeAuto || opts.PrepareCallbacks
+	guardianAvailable := true
+	if needsGuardian {
+		if err := installGuardianReviewerCallbacks(cfg, approvalMgr, providerName, modelName, opts.Headless); err != nil {
+			guardianAvailable = false
+			if resolved.Mode == tools.ModeAuto {
+				if opts.Headless {
+					return fmt.Errorf("auto approval unavailable: %w", err)
+				}
+				if opts.WarningWriter != nil {
+					fmt.Fprintf(opts.WarningWriter, "warning: guardian auto-approval unavailable; using prompt mode: %v\n", err)
+				}
+			} else if opts.PrepareCallbacks && opts.WarningWriter != nil {
+				fmt.Fprintf(opts.WarningWriter, "warning: guardian auto-approval unavailable; auto toggle disabled: %v\n", err)
+			}
+		}
+	}
+	if resolved.Mode == tools.ModeAuto && guardianAvailable {
+		approvalMgr.SetApprovalMode(tools.ModeAuto)
+	}
+	return nil
+}
+
 func addGuardianUsage(stats *ui.SessionStats, event tools.GuardianEvent) bool {
 	if stats == nil || event.Usage.BillableCountersZero() {
 		return false
@@ -25,17 +72,16 @@ func addGuardianUsage(stats *ui.SessionStats, event tools.GuardianEvent) bool {
 	return true
 }
 
-func installGuardianReviewer(cfg *config.Config, approvalMgr *tools.ApprovalManager, providerName string, modelName string, headless bool) error {
-	if err := installGuardianReviewerCallbacks(cfg, approvalMgr, providerName, modelName, headless); err != nil {
-		return err
-	}
-	approvalMgr.SetApprovalMode(tools.ModeAuto)
-	return nil
-}
-
 func installGuardianReviewerCallbacks(cfg *config.Config, approvalMgr *tools.ApprovalManager, providerName string, modelName string, headless bool) error {
-	if approvalMgr == nil || cfg == nil {
+	if approvalMgr == nil {
 		return nil
+	}
+	if cfg == nil {
+		approvalMgr.PolicyReviewFunc = nil
+		if approvalMgr.ApprovalMode() == tools.ModeAuto {
+			approvalMgr.SetApprovalMode(tools.ModePrompt)
+		}
+		return fmt.Errorf("auto approval requires configuration and an LLM provider")
 	}
 	approvalMgr.SetAutoHeadless(headless)
 	model := resolveGuardianModelName(cfg, modelName)

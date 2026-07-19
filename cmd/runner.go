@@ -40,10 +40,15 @@ type cmdRunnerOptions struct {
 	NativeSearch   bool
 	NoNativeSearch bool
 
-	Yolo     bool
-	Auto     bool
-	Debug    bool
-	DebugRaw bool
+	Yolo                bool // Deprecated compatibility input; prefer ApprovalMode.
+	Auto                bool // Deprecated compatibility input; prefer ApprovalMode.
+	ApprovalMode        tools.ApprovalMode
+	ApprovalModeSet     bool
+	ApprovalSource      approvalModeSource
+	ApprovalHeadless    bool
+	ApprovalDiagnostics bool
+	Debug               bool
+	DebugRaw            bool
 
 	ErrWriter         io.Writer
 	WireSpawn         func(*config.Config, *tools.ToolManager, bool) error
@@ -124,6 +129,25 @@ func (r *cmdRunner) Run(ctx context.Context, req runpkg.Request, sink runpkg.Eve
 		result.Response = serveResult.Text.String()
 	}
 	return result, err
+}
+
+// resolvedRunnerApprovalMode keeps runpkg.Request Auto/Yolo compatibility for
+// generic top-level runners. Owning surfaces set ApprovalModeSet, while child
+// runners with a parent manager always stay locally prompt and inherit policy.
+func resolvedRunnerApprovalMode(defaults cmdRunnerOptions, req runpkg.Request) tools.ApprovalMode {
+	if defaults.ParentApprovalMgr != nil {
+		return tools.ModePrompt
+	}
+	if defaults.ApprovalModeSet {
+		return defaults.ApprovalMode
+	}
+	if defaults.Yolo || req.Yolo {
+		return tools.ModeYolo
+	}
+	if defaults.Auto || req.Auto {
+		return tools.ModeAuto
+	}
+	return tools.ModePrompt
 }
 
 func (r *cmdRunner) prepare(ctx context.Context, req runpkg.Request, sink runpkg.EventSink) (*cmdRunEnvironment, error) {
@@ -225,13 +249,8 @@ func (r *cmdRunner) prepare(ctx context.Context, req runpkg.Request, sink runpkg
 		}
 	}()
 
-	yoloMode := r.defaults.Yolo || req.Yolo
-	autoMode := r.defaults.Auto || req.Auto
-	toolYoloMode := yoloMode
-	if r.defaults.ParentApprovalMgr != nil {
-		// Sub-agents inherit approval/yolo state dynamically from the parent manager.
-		toolYoloMode = false
-	}
+	approvalMode := resolvedRunnerApprovalMode(r.defaults, req)
+	yoloMode := approvalMode == tools.ModeYolo
 	wireSpawn := r.defaults.WireSpawn
 	if wireSpawn == nil {
 		wireSpawn = func(cfg *config.Config, toolMgr *tools.ToolManager, _ bool) error {
@@ -245,7 +264,14 @@ func (r *cmdRunner) prepare(ctx context.Context, req runpkg.Request, sink runpkg
 	if borrowedEngine {
 		engine.ConfigureContextManagement(provider, cfg.DefaultProvider, modelName, cfg.AutoCompact)
 	} else {
-		engine, toolMgr, err = newServeEngineWithTools(cfg, settings, provider, cfg.DefaultProvider, modelName, toolYoloMode, autoMode, wireSpawn, skillsSetup)
+		source := r.defaults.ApprovalSource
+		if source == "" {
+			source = approvalModeSourceCLI
+		}
+		engine, toolMgr, err = newServeEngineWithToolsMode(cfg, settings, provider, cfg.DefaultProvider, modelName, resolvedApprovalMode{Mode: approvalMode, Source: source}, approvalRuntimeOptions{
+			Headless:      r.defaults.ApprovalHeadless,
+			WarningWriter: r.errWriter(),
+		}, wireSpawn, skillsSetup)
 		if err != nil {
 			return nil, err
 		}
@@ -263,6 +289,12 @@ func (r *cmdRunner) prepare(ctx context.Context, req runpkg.Request, sink runpkg
 		if err := toolMgr.ApprovalMgr.SetParent(r.defaults.ParentApprovalMgr); err != nil {
 			return nil, fmt.Errorf("set parent approval manager: %w", err)
 		}
+	} else if toolMgr != nil {
+		source := r.defaults.ApprovalSource
+		if source == "" {
+			source = approvalModeSourceCLI
+		}
+		reportApprovalMode(r.errWriter(), r.defaults.ApprovalDiagnostics || r.defaults.Debug || req.Debug, resolvedApprovalMode{Mode: approvalMode, Source: source}, toolMgr.ApprovalMgr)
 	}
 	configureInteractiveSink(toolMgr, sink)
 

@@ -150,7 +150,9 @@ Changing sessions, compacting, handing over, or switching models pauses the curr
 | `--session-db` | | Override sessions database path (supports `:memory:`) |
 | `--max-turns` | | Max agentic turns for tool execution (default: 50 for ask/exec, 200 for chat) |
 | Tool concurrency | | When a model emits many parallel tool calls in one turn, term-llm runs at most 20 tool calls concurrently and queues the rest for that turn. |
-| `--yolo` | | Auto-approve all tool operations (for unattended runs) |
+| `--approval` | | Approval mode for this run: `prompt`, guardian-reviewed `auto`, or `yolo` |
+| `--auto` | | Compatibility alias for `--approval auto` |
+| `--yolo` | | Compatibility alias for `--approval yolo`; bypasses approval prompts |
 
 **Note:** The `-a` short flag has different meanings:
 - In `exec`: `-a` is `--auto-pick` (auto-execute best suggestion)

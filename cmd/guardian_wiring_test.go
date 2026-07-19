@@ -1,7 +1,9 @@
 package cmd
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -35,6 +37,86 @@ func (p *deadlineCapturingProvider) Capabilities() llm.Capabilities {
 func (p *deadlineCapturingProvider) Stream(ctx context.Context, req llm.Request) (llm.Stream, error) {
 	p.deadline, p.ok = ctx.Deadline()
 	return p.delegate.Stream(ctx, req)
+}
+
+func TestPreflightHeadlessApproval(t *testing.T) {
+	calls := 0
+	withGuardianProviderFactory(t, func(*config.Config, string, string) (llm.Provider, error) {
+		calls++
+		return nil, errors.New("guardian unavailable")
+	})
+	cfg := &config.Config{DefaultProvider: "mock"}
+	if err := preflightHeadlessApproval(cfg, resolvedApprovalMode{Mode: tools.ModePrompt}, "mock", "model"); err != nil {
+		t.Fatalf("prompt preflight: %v", err)
+	}
+	if calls != 0 {
+		t.Fatalf("prompt preflight initialized guardian %d times", calls)
+	}
+	if err := preflightHeadlessApproval(cfg, resolvedApprovalMode{Mode: tools.ModeAuto}, "mock", "model"); err == nil || !strings.Contains(err.Error(), "auto approval unavailable") {
+		t.Fatalf("auto preflight error = %v", err)
+	}
+	if calls != 1 {
+		t.Fatalf("auto preflight guardian calls = %d, want 1", calls)
+	}
+}
+
+func TestApplyResolvedApprovalModeInteractiveFailureWarnsOnceAndFallsBack(t *testing.T) {
+	calls := 0
+	withGuardianProviderFactory(t, func(*config.Config, string, string) (llm.Provider, error) {
+		calls++
+		return nil, errors.New("guardian unavailable")
+	})
+	mgr := tools.NewApprovalManager(tools.NewToolPermissions())
+	var warnings bytes.Buffer
+	resolved := resolvedApprovalMode{Mode: tools.ModeAuto, Source: approvalModeSourceBuiltinDefault}
+
+	if err := applyResolvedApprovalMode(&config.Config{DefaultProvider: "mock"}, mgr, resolved, "mock", "model", approvalRuntimeOptions{WarningWriter: &warnings}); err != nil {
+		t.Fatalf("applyResolvedApprovalMode() error = %v", err)
+	}
+	if mgr.ApprovalMode() != tools.ModePrompt {
+		t.Fatalf("actual mode = %v, want prompt fallback", mgr.ApprovalMode())
+	}
+	if resolved.Mode != tools.ModeAuto {
+		t.Fatalf("requested mode mutated to %v, want auto", resolved.Mode)
+	}
+	if calls != 1 || strings.Count(warnings.String(), "guardian auto-approval unavailable") != 1 {
+		t.Fatalf("calls=%d warnings=%q, want one initialization and warning", calls, warnings.String())
+	}
+}
+
+func TestApplyResolvedApprovalModePromptPreparationFailureWarnsOnce(t *testing.T) {
+	withGuardianProviderFactory(t, func(*config.Config, string, string) (llm.Provider, error) {
+		return nil, errors.New("guardian unavailable")
+	})
+	mgr := tools.NewApprovalManager(tools.NewToolPermissions())
+	var warnings bytes.Buffer
+	resolved := resolvedApprovalMode{Mode: tools.ModePrompt, Source: approvalModeSourceSession}
+
+	if err := applyResolvedApprovalMode(&config.Config{DefaultProvider: "mock"}, mgr, resolved, "mock", "model", approvalRuntimeOptions{PrepareCallbacks: true, WarningWriter: &warnings}); err != nil {
+		t.Fatalf("applyResolvedApprovalMode() error = %v", err)
+	}
+	if mgr.ApprovalMode() != tools.ModePrompt {
+		t.Fatalf("actual mode = %v, want prompt", mgr.ApprovalMode())
+	}
+	if strings.Count(warnings.String(), "auto toggle disabled") != 1 {
+		t.Fatalf("warnings = %q, want one auto-toggle warning", warnings.String())
+	}
+}
+
+func TestApplyResolvedApprovalModeHeadlessFailureIsStartupError(t *testing.T) {
+	withGuardianProviderFactory(t, func(*config.Config, string, string) (llm.Provider, error) {
+		return nil, errors.New("guardian unavailable")
+	})
+	mgr := tools.NewApprovalManager(tools.NewToolPermissions())
+	resolved := resolvedApprovalMode{Mode: tools.ModeAuto, Source: approvalModeSourceBuiltinDefault}
+
+	err := applyResolvedApprovalMode(&config.Config{DefaultProvider: "mock"}, mgr, resolved, "mock", "model", approvalRuntimeOptions{Headless: true})
+	if err == nil || !strings.Contains(err.Error(), "auto approval unavailable") {
+		t.Fatalf("applyResolvedApprovalMode() error = %v, want startup error", err)
+	}
+	if mgr.ApprovalMode() != tools.ModePrompt {
+		t.Fatalf("actual mode = %v, want prompt after failed startup", mgr.ApprovalMode())
+	}
 }
 
 func TestInstallGuardianReviewerCallbacksDoesNotActivateModeButSupportsLaterAutoToggle(t *testing.T) {

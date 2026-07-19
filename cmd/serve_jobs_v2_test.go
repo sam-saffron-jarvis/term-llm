@@ -16,6 +16,18 @@ import (
 	"github.com/samsaffron/term-llm/internal/tools"
 )
 
+func TestServeJobsRunnerOptionsUseCapturedResolvedApproval(t *testing.T) {
+	oldAuto, oldYolo := serveAuto, serveYolo
+	serveAuto, serveYolo = false, true
+	t.Cleanup(func() { serveAuto, serveYolo = oldAuto, oldYolo })
+
+	resolved := resolvedApprovalMode{Mode: tools.ModeAuto, Source: approvalModeSourceSurfaceConfig}
+	opts := serveJobsRunnerOptions(resolved)
+	if opts.ApprovalMode != tools.ModeAuto || opts.ApprovalSource != approvalModeSourceSurfaceConfig || !opts.ApprovalModeSet || !opts.ApprovalHeadless {
+		t.Fatalf("serve jobs approval options = mode:%v source:%s set:%t headless:%t", opts.ApprovalMode, opts.ApprovalSource, opts.ApprovalModeSet, opts.ApprovalHeadless)
+	}
+}
+
 func TestNewJobsV2ManagerLimitsFileBackedDBConnections(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "jobs_v2.db")
 	mgr, err := newJobsV2Manager(dbPath, 0, nil)

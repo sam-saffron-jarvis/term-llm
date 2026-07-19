@@ -90,10 +90,10 @@ chat:
   # off: do not touch terminal/window titles at all.
   terminal_title: smart
 
-approval:
-  # New chat sessions start in prompt mode by default.
-  # Set to auto to have unmatched shell commands reviewed by guardian first.
-  default_mode: prompt
+# Optional global approval override. When omitted, chat and ask use auto;
+# edit, exec, loop, serve, and serve mcp use prompt.
+# approval:
+#   default_mode: prompt
 
 guardian:
   # Optional: override the provider/model used for auto approval review.
@@ -122,30 +122,56 @@ tools:
 
 ## Approval modes
 
-Tool access normally uses **prompt** mode: if a command or path is outside the configured allowlists, term-llm asks before proceeding.
+A blank configuration uses these built-in defaults:
 
-Interactive chat also supports **auto** mode for shell commands. In auto mode, deterministic approvals still run first (`--shell-allow`, session approvals, project approvals, and exact guardian cache hits). If a shell command is still unmatched, term-llm asks a guardian reviewer model to evaluate the exact command, working directory, transcript evidence, and existing read/write/tool approval context. Guardian approvals are cached only for the exact command and working directory. Guardian denials or review failures fall back to the human prompt in interactive chat and fail closed in headless runs.
+| Surface | Default |
+|---------|---------|
+| `chat`, `ask` | `auto` |
+| `edit`, `exec`, `loop`, `serve`, `serve mcp` | `prompt` |
 
-You can enable auto mode per run:
+In **prompt** mode, actions outside deterministic file/directory and shell allowlists ask before proceeding. In **auto** mode, those deterministic checks still run first. Unmatched shell commands are reviewed by a guardian model using the exact command, working directory, transcript evidence, and current approval context. Auto does not grant broader filesystem access and is not yolo. Guardian approvals are cached only for the exact command and working directory.
+
+Choose a mode for one invocation with `--approval`:
 
 ```bash
-term-llm chat --auto
+term-llm chat --approval prompt   # conservative override of chat's auto default
+term-llm ask --approval auto "fix this"
+term-llm loop --approval yolo --done "go test ./..." "fix tests"
 ```
 
-Or make new chat and web/serve sessions start in auto mode:
+`--auto` and `--yolo` remain compatibility aliases for `--approval auto` and `--approval yolo`. The three flags are mutually exclusive. Yolo is CLI-only: it cannot be configured and is never restored on a cold resume.
+
+Set one persistent global default for all surfaces:
+
+```yaml
+approval:
+  default_mode: prompt # prompt or auto
+```
+
+Or override individual surfaces:
 
 ```yaml
 approval:
   default_mode: auto
+
+edit:
+  approval_mode: prompt
+
+serve:
+  approval_mode: auto
+  mcp:
+    approval_mode: prompt
 ```
 
-Explicit flags still win. `--yolo` starts yolo mode, `--auto` starts auto mode, and resumed sessions restore their saved `prompt`/`auto` mode. Stored `yolo` is not restored on cold resume for safety.
+Configuration accepts only `prompt` and `auto`. An omitted or empty surface value inherits an explicitly configured `approval.default_mode`; if neither is set, the built-in matrix applies. `term-llm config show` lists each effective surface mode and its resolution source, and `term-llm config get chat.approval_mode` reports the effective value when the key is unset. Resolution precedence is explicit CLI mode, persisted session mode (for chat resume), per-surface config, global config, then the built-in default. A legacy resumed chat with no stored mode resumes in prompt, and stored yolo is downgraded to prompt.
 
 Auto mode is intentionally narrower than yolo:
 
 - `prompt`: ask before unapproved tool actions.
-- `auto`: guardian-review unmatched shell commands; other approvals still prompt.
-- `yolo`: auto-approve tool actions without prompting.
+- `auto`: guardian-review supported unmatched operations; other approvals still prompt.
+- `yolo`: auto-approve tool actions without prompting (explicit CLI use only).
+
+Interactive Guardian initialization failure produces one warning and temporarily uses prompt mode; the requested auto policy remains saved so a later resume can retry. Headless auto runtimes fail startup if Guardian cannot initialize. Runtime review errors remain fail-closed.
 
 Configure guardian review with:
 

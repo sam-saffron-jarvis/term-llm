@@ -27,7 +27,8 @@ term-llm loop --done-file TODO.md:COMPLETE \
 | `--done-file FILE:TEXT` | Exit when file contains TEXT |
 | `--max N` | Maximum iterations (0 = unlimited) |
 | `--history N` | Inject last N iteration summaries to avoid repeating mistakes |
-| `--yolo` | Auto-approve all tool operations (for unattended runs) |
+| `--approval MODE` | Approval mode: `prompt` (default), guardian-reviewed `auto`, or explicit `yolo` |
+| `--yolo` | Compatibility alias for `--approval yolo` |
 
 All standard flags work: `--tools`, `--mcp`, `--agent`, `--provider`, `--search`, etc.
 

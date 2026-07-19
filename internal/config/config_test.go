@@ -650,7 +650,6 @@ func TestProviderSchemaCoversProviderConfigFields(t *testing.T) {
 func TestCanonicalDefaultsCoverage(t *testing.T) {
 	defaults := GetDefaults()
 	checks := map[string]any{
-		"approval.default_mode":         DefaultApprovalMode,
 		"audio.gemini.model":            DefaultAudioGeminiModel,
 		"audio.gemini.voice":            DefaultAudioGeminiVoice,
 		"audio.gemini.format":           DefaultAudioGeminiFormat,
@@ -678,6 +677,14 @@ func TestCanonicalDefaultsCoverage(t *testing.T) {
 		}
 	}
 	optionalKnown := []string{
+		"approval.default_mode",
+		"chat.approval_mode",
+		"ask.approval_mode",
+		"edit.approval_mode",
+		"exec.approval_mode",
+		"loop.approval_mode",
+		"serve.approval_mode",
+		"serve.mcp.approval_mode",
 		"guardian.provider",
 		"guardian.model",
 		"music.venice.api_key",
@@ -1272,13 +1279,44 @@ func TestResolveSearchCredentialsExaMCPEnvFallbackOnlyForOfficialURL(t *testing.
 	}
 }
 
-func TestApprovalDefaultModeDefaultIsPrompt(t *testing.T) {
+func TestApprovalModesAreOptionalAndValidated(t *testing.T) {
 	defaults := GetDefaults()
-	got, ok := defaults["approval.default_mode"].(string)
-	if !ok {
-		t.Fatalf("approval.default_mode default missing or not string: %#v", defaults["approval.default_mode"])
+	if _, ok := defaults["approval.default_mode"]; ok {
+		t.Fatalf("approval.default_mode should be optional, got default %#v", defaults["approval.default_mode"])
 	}
-	if got != "prompt" {
-		t.Fatalf("approval.default_mode = %q, want prompt", got)
+	for _, key := range []string{
+		"approval.default_mode",
+		"chat.approval_mode",
+		"ask.approval_mode",
+		"edit.approval_mode",
+		"exec.approval_mode",
+		"loop.approval_mode",
+		"serve.approval_mode",
+		"serve.mcp.approval_mode",
+	} {
+		if !IsKnownKey(key) {
+			t.Fatalf("optional approval key %s is not known", key)
+		}
+	}
+
+	blank := &Config{}
+	if err := blank.ValidateApprovalModes(); err != nil {
+		t.Fatalf("blank config validation failed: %v", err)
+	}
+	if blank.Approval.DefaultMode != "" || blank.Chat.ApprovalMode != "" || blank.Ask.ApprovalMode != "" || blank.Edit.ApprovalMode != "" || blank.Exec.ApprovalMode != "" || blank.Loop.ApprovalMode != "" || blank.Serve.ApprovalMode != "" || blank.Serve.MCP.ApprovalMode != "" {
+		t.Fatalf("blank approval values were materialized: %#v", blank)
+	}
+
+	valid := &Config{
+		Approval: ApprovalConfig{DefaultMode: "prompt"},
+		Chat:     ChatConfig{ApprovalMode: "auto"},
+	}
+	if err := valid.ValidateApprovalModes(); err != nil {
+		t.Fatalf("valid config rejected: %v", err)
+	}
+
+	invalid := &Config{Serve: ServeConfig{MCP: ServeMCPConfig{ApprovalMode: "yolo"}}}
+	if err := invalid.ValidateApprovalModes(); err == nil || !strings.Contains(err.Error(), `invalid serve.mcp.approval_mode "yolo": expected prompt or auto`) {
+		t.Fatalf("invalid config error = %v", err)
 	}
 }

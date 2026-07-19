@@ -166,10 +166,12 @@ type Model struct {
 	newlineCompactor        *ui.StreamingNewlineCompactor
 
 	// External UI state
-	pausedForExternalUI   bool // True when paused for ask_user or approval prompts
-	externalProcessActive bool // True while Bubble Tea is handing the terminal to /shell
-	approvalMgr           *tools.ApprovalManager
-	toolMgr               *tools.ToolManager
+	pausedForExternalUI      bool // True when paused for ask_user or approval prompts
+	externalProcessActive    bool // True while Bubble Tea is handing the terminal to /shell
+	approvalMgr              *tools.ApprovalManager
+	requestedApprovalMode    tools.ApprovalMode
+	requestedApprovalChanged bool
+	toolMgr                  *tools.ToolManager
 
 	// Embedded inline approval UI (alt screen mode only)
 	approvalModel  *tools.ApprovalModel
@@ -684,8 +686,21 @@ func New(cfg *config.Config, provider llm.Provider, engine *llm.Engine, provider
 }
 
 // NewWithFastProvider creates a new chat model with an optional fast provider
-// for control-plane classification tasks.
+// for control-plane classification tasks. Callers that distinguish requested
+// policy from runtime fallback should use NewWithFastProviderAndApproval.
 func NewWithFastProvider(cfg *config.Config, provider llm.Provider, fastProvider llm.Provider, engine *llm.Engine, providerKey string, modelName string, mcpManager *mcp.Manager, maxTurns int, forceExternalSearch bool, disableExternalWebFetch bool, searchEnabled bool, localTools []string, toolsStr string, mcpStr string, showStats bool, initialText string, store session.Store, sess *session.Session, altScreen bool, autoSendQueue []string, autoSendExitOnDone bool, textMode bool, agentName string, platformDeveloperMessage string, yolo bool, toolMgrs ...*tools.ToolManager) *Model {
+	requested := tools.ModePrompt
+	if yolo {
+		requested = tools.ModeYolo
+	} else if len(toolMgrs) > 0 && toolMgrs[0] != nil && toolMgrs[0].ApprovalMgr != nil {
+		requested = toolMgrs[0].ApprovalMgr.ApprovalMode()
+	}
+	return NewWithFastProviderAndApproval(cfg, provider, fastProvider, engine, providerKey, modelName, mcpManager, maxTurns, forceExternalSearch, disableExternalWebFetch, searchEnabled, localTools, toolsStr, mcpStr, showStats, initialText, store, sess, altScreen, autoSendQueue, autoSendExitOnDone, textMode, agentName, platformDeveloperMessage, yolo, requested, toolMgrs...)
+}
+
+// NewWithFastProviderAndApproval preserves requested policy independently from
+// the approval manager's actual mode after an interactive Guardian fallback.
+func NewWithFastProviderAndApproval(cfg *config.Config, provider llm.Provider, fastProvider llm.Provider, engine *llm.Engine, providerKey string, modelName string, mcpManager *mcp.Manager, maxTurns int, forceExternalSearch bool, disableExternalWebFetch bool, searchEnabled bool, localTools []string, toolsStr string, mcpStr string, showStats bool, initialText string, store session.Store, sess *session.Session, altScreen bool, autoSendQueue []string, autoSendExitOnDone bool, textMode bool, agentName string, platformDeveloperMessage string, yolo bool, requestedApprovalMode tools.ApprovalMode, toolMgrs ...*tools.ToolManager) *Model {
 	// Get terminal size
 	width := 80
 	height := 24
@@ -742,18 +757,19 @@ func NewWithFastProvider(cfg *config.Config, provider llm.Provider, fastProvider
 	// Use provided session or create a new one
 	if sess == nil {
 		sess = &session.Session{
-			ID:          session.NewID(),
-			Provider:    provider.Name(),
-			ProviderKey: providerKey,
-			Model:       modelName,
-			Mode:        session.ModeChat,
-			Origin:      session.OriginTUI,
-			Agent:       agentName,
-			CreatedAt:   time.Now(),
-			UpdatedAt:   time.Now(),
-			Search:      searchEnabled,
-			Tools:       toolsStr,
-			MCP:         mcpStr,
+			ID:           session.NewID(),
+			Provider:     provider.Name(),
+			ProviderKey:  providerKey,
+			Model:        modelName,
+			Mode:         session.ModeChat,
+			Origin:       session.OriginTUI,
+			Agent:        agentName,
+			CreatedAt:    time.Now(),
+			UpdatedAt:    time.Now(),
+			Search:       searchEnabled,
+			Tools:        toolsStr,
+			MCP:          mcpStr,
+			ApprovalMode: sessionApprovalModeFromTools(requestedApprovalMode),
 		}
 		// Get current working directory
 		if cwd, err := os.Getwd(); err == nil {
@@ -884,6 +900,7 @@ func NewWithFastProvider(cfg *config.Config, provider llm.Provider, fastProvider
 		platformDeveloperMessage:   strings.TrimSpace(platformDeveloperMessage),
 		currentOrigin:              session.OriginTUI,
 		yolo:                       yolo,
+		requestedApprovalMode:      requestedApprovalMode,
 		phase:                      "Thinking",
 		reasoningConfig:            reasoningCfg,
 		viewportRows:               ui.RemainingLines(height, 8), // Reserve space for input and status
@@ -1584,9 +1601,28 @@ func (m *Model) ApprovalModeActive() tools.ApprovalMode {
 	return m.currentApprovalMode()
 }
 
-// PersistApprovalModeActive stores the model's current effective approval mode on the session.
-func (m *Model) PersistApprovalModeActive() {
-	m.persistApprovalMode(m.currentApprovalMode())
+// ApprovalModeRequested returns the policy selected by resolution or a runtime
+// user toggle, even if the actual manager temporarily fell back to prompt.
+func (m *Model) ApprovalModeRequested() tools.ApprovalMode {
+	if m == nil {
+		return tools.ModePrompt
+	}
+	return m.requestedApprovalMode
+}
+
+// ApprovalModeChanged reports whether the user changed approval policy during
+// this model's lifetime. Initial resolution and temporary runtime fallback do
+// not count as user changes.
+func (m *Model) ApprovalModeChanged() bool {
+	return m != nil && m.requestedApprovalChanged
+}
+
+// PersistApprovalMode stores a requested approval policy separately from the
+// manager's actual runtime mode, preserving requested auto when guardian
+// initialization temporarily falls back to prompt.
+func (m *Model) PersistApprovalMode(mode tools.ApprovalMode) {
+	m.requestedApprovalMode = mode
+	m.persistApprovalMode(mode)
 }
 
 // WaitStreamDone blocks until the engine streaming goroutine has exited.

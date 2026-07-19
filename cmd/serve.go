@@ -56,6 +56,7 @@ var (
 	serveShellAllow             []string
 	serveSystemMessage          string
 	serveAgent                  string
+	serveApproval               string
 	serveYolo                   bool
 	serveAuto                   bool
 	serveTelegramCarryoverChars int
@@ -181,6 +182,7 @@ func init() {
 			ShellAllow:      &serveShellAllow,
 			SystemMessage:   &serveSystemMessage,
 			Agent:           &serveAgent,
+			Approval:        &serveApproval,
 			Yolo:            &serveYolo,
 			Auto:            &serveAuto,
 		})
@@ -294,6 +296,14 @@ func runServeLegacy(parentCtx context.Context, cmd *cobra.Command, args []string
 	if err != nil {
 		return err
 	}
+	resolvedApproval, err := resolveCommandApprovalMode(cmd, approvalSurfaceServe, cfg, nil, serveApproval, serveAuto, serveYolo)
+	if err != nil {
+		return err
+	}
+	resolvedYolo := resolvedApproval.Mode == tools.ModeYolo
+	serveApproval = resolvedApproval.Mode.String()
+	serveYolo = resolvedYolo
+	serveAuto = resolvedApproval.Mode == tools.ModeAuto
 
 	platformNames, err := resolvePlatforms(args, cfg.Serve.Platforms)
 	if err != nil {
@@ -424,30 +434,38 @@ func runServeLegacy(parentCtx context.Context, cmd *cobra.Command, args []string
 		toolMap[parts[0]] = parts[1]
 	}
 
-	autoMode := serveAuto || (!serveYolo && approvalModeFromConfig(cfg) == tools.ModeAuto)
-
 	modelName := activeModel(cfg)
+	if err := preflightHeadlessApproval(cfg, resolvedApproval, cfg.DefaultProvider, modelName); err != nil {
+		return err
+	}
+	var approvalErrWriter io.Writer = io.Discard
+	if serveDebug || serveVerbose {
+		approvalErrWriter = cmd.ErrOrStderr()
+	}
 	runtimeFactory := func(ctx context.Context, providerName string, providerModel string) (*serveRuntime, error) {
 		runner := &cmdRunner{baseCfg: cfg, defaults: cmdRunnerOptions{
-			Provider:       serveProvider,
-			Tools:          serveTools,
-			ReadDirs:       append([]string(nil), serveReadDirs...),
-			WriteDirs:      append([]string(nil), serveWriteDirs...),
-			ShellAllow:     append([]string(nil), serveShellAllow...),
-			MCP:            serveMCP,
-			SystemMessage:  serveSystemMessage,
-			MaxTurns:       serveMaxTurns,
-			Search:         serveSearch,
-			NoSearch:       serveNoSearch,
-			NativeSearch:   serveNativeSearch,
-			NoNativeSearch: serveNoNativeSearch,
-			Yolo:           serveYolo,
-			Auto:           autoMode,
-			Debug:          serveDebug,
-			DebugRaw:       debugRaw,
-			ErrWriter:      io.Discard,
-			WireSpawn:      WireSpawnAgentRunner,
-			Store:          store,
+			Provider:            serveProvider,
+			Tools:               serveTools,
+			ReadDirs:            append([]string(nil), serveReadDirs...),
+			WriteDirs:           append([]string(nil), serveWriteDirs...),
+			ShellAllow:          append([]string(nil), serveShellAllow...),
+			MCP:                 serveMCP,
+			SystemMessage:       serveSystemMessage,
+			MaxTurns:            serveMaxTurns,
+			Search:              serveSearch,
+			NoSearch:            serveNoSearch,
+			NativeSearch:        serveNativeSearch,
+			NoNativeSearch:      serveNoNativeSearch,
+			ApprovalMode:        resolvedApproval.Mode,
+			ApprovalModeSet:     true,
+			ApprovalSource:      resolvedApproval.Source,
+			ApprovalHeadless:    true,
+			ApprovalDiagnostics: serveVerbose,
+			Debug:               serveDebug,
+			DebugRaw:            debugRaw,
+			ErrWriter:           approvalErrWriter,
+			WireSpawn:           WireSpawnAgentRunner,
+			Store:               store,
 		}}
 		env, err := runner.prepare(ctx, runpkg.Request{
 			Platform:     runpkg.PlatformWeb,
@@ -488,7 +506,7 @@ func runServeLegacy(parentCtx context.Context, cmd *cobra.Command, args []string
 				imageBaseURL = strings.TrimRight(serveBasePath, "/") + "/images/"
 			}
 			runtime.toolMgr.Registry.SetServeMode(true, imageBaseURL)
-			if !serveYolo {
+			if !resolvedYolo {
 				runtime.toolMgr.ApprovalMgr.IgnoreProjectApprovals = true
 				runtime.toolMgr.ApprovalMgr.DebugApproval = serveDebug
 				runtime.toolMgr.ApprovalMgr.PromptUIFunc = func(path string, isWrite bool, isShell bool, workDir string) (tools.ApprovalResult, error) {
@@ -530,24 +548,27 @@ func runServeLegacy(parentCtx context.Context, cmd *cobra.Command, args []string
 		PlatformMessages:       agentPlatformMsgs,
 		Store:                  store,
 		Runner: newCmdRunner(cfg, cmdRunnerOptions{
-			Provider:       serveProvider,
-			Tools:          serveTools,
-			ReadDirs:       append([]string(nil), serveReadDirs...),
-			WriteDirs:      append([]string(nil), serveWriteDirs...),
-			ShellAllow:     append([]string(nil), serveShellAllow...),
-			MCP:            serveMCP,
-			SystemMessage:  serveSystemMessage,
-			MaxTurns:       serveMaxTurns,
-			Search:         serveSearch,
-			NoSearch:       serveNoSearch,
-			NativeSearch:   serveNativeSearch,
-			NoNativeSearch: serveNoNativeSearch,
-			Yolo:           serveYolo,
-			Auto:           autoMode,
-			Debug:          serveDebug,
-			DebugRaw:       debugRaw,
-			ErrWriter:      io.Discard,
-			WireSpawn:      WireSpawnAgentRunner,
+			Provider:            serveProvider,
+			Tools:               serveTools,
+			ReadDirs:            append([]string(nil), serveReadDirs...),
+			WriteDirs:           append([]string(nil), serveWriteDirs...),
+			ShellAllow:          append([]string(nil), serveShellAllow...),
+			MCP:                 serveMCP,
+			SystemMessage:       serveSystemMessage,
+			MaxTurns:            serveMaxTurns,
+			Search:              serveSearch,
+			NoSearch:            serveNoSearch,
+			NativeSearch:        serveNativeSearch,
+			NoNativeSearch:      serveNoNativeSearch,
+			ApprovalMode:        resolvedApproval.Mode,
+			ApprovalModeSet:     true,
+			ApprovalSource:      resolvedApproval.Source,
+			ApprovalHeadless:    true,
+			ApprovalDiagnostics: serveVerbose,
+			Debug:               serveDebug,
+			DebugRaw:            debugRaw,
+			ErrWriter:           approvalErrWriter,
+			WireSpawn:           WireSpawnAgentRunner,
 		}),
 		NewSession: func(ctx context.Context) (*serve.SessionRuntime, error) {
 			rt, err := factory(ctx)
@@ -644,7 +665,7 @@ func runServeLegacy(parentCtx context.Context, cmd *cobra.Command, args []string
 			widgetsMgr:     widgetsMgr,
 		}
 		if hasJobs {
-			jobsV2, err = newServeJobsV2Manager(cfg, serveJobsWorkers, s.notifyJobsV2RunDone)
+			jobsV2, err = newServeJobsV2Manager(cfg, serveJobsWorkers, resolvedApproval, s.notifyJobsV2RunDone)
 			if err != nil {
 				return fmt.Errorf("initialize jobs v2 manager: %w", err)
 			}
@@ -766,6 +787,16 @@ func runServeLegacy(parentCtx context.Context, cmd *cobra.Command, args []string
 // <available_skills> metadata into the system prompt — the caller must do that
 // before constructing serveRuntime/serveSettings so the mutation is not lost.
 func newServeEngineWithTools(cfg *config.Config, settings SessionSettings, provider llm.Provider, providerName, modelName string, yoloMode bool, autoMode bool, wireSpawn func(*config.Config, *tools.ToolManager, bool) error, skillsSetup *skills.Setup) (*llm.Engine, *tools.ToolManager, error) {
+	mode := tools.ModePrompt
+	if yoloMode {
+		mode = tools.ModeYolo
+	} else if autoMode {
+		mode = tools.ModeAuto
+	}
+	return newServeEngineWithToolsMode(cfg, settings, provider, providerName, modelName, resolvedApprovalMode{Mode: mode, Source: approvalModeSourceCLI}, approvalRuntimeOptions{Headless: true}, wireSpawn, skillsSetup)
+}
+
+func newServeEngineWithToolsMode(cfg *config.Config, settings SessionSettings, provider llm.Provider, providerName, modelName string, resolved resolvedApprovalMode, runtimeOpts approvalRuntimeOptions, wireSpawn func(*config.Config, *tools.ToolManager, bool) error, skillsSetup *skills.Setup) (*llm.Engine, *tools.ToolManager, error) {
 	engine := newEngine(provider, cfg)
 	settings.Provider = providerName
 	settings.Model = modelName
@@ -775,15 +806,11 @@ func newServeEngineWithTools(cfg *config.Config, settings SessionSettings, provi
 		return nil, nil, err
 	}
 	if toolMgr != nil {
-		if yoloMode {
-			toolMgr.ApprovalMgr.SetYoloMode(true)
-		} else if autoMode {
-			if err := installGuardianReviewer(cfg, toolMgr.ApprovalMgr, providerName, modelName, false); err != nil {
-				return nil, nil, err
-			}
+		if err := applyResolvedApprovalMode(cfg, toolMgr.ApprovalMgr, resolved, providerName, modelName, runtimeOpts); err != nil {
+			return nil, nil, err
 		}
 		if wireSpawn != nil {
-			if err := wireSpawn(cfg, toolMgr, yoloMode); err != nil {
+			if err := wireSpawn(cfg, toolMgr, resolved.Mode == tools.ModeYolo); err != nil {
 				return nil, nil, err
 			}
 		}

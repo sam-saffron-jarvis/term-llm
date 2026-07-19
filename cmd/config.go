@@ -140,10 +140,38 @@ func configShow(cmd *cobra.Command, args []string) error {
 	}
 	fmt.Println()
 
+	// Print effective approval defaults before the raw/effective config tree so
+	// optional unset keys remain discoverable without materializing them.
+	printEffectiveApprovalModes(os.Stdout, cfg)
+
 	// Print annotated config
 	printAnnotatedConfig(os.Stdout, defaults, rawKeys, unknownKeys, &rawRoot, readErr == nil, cfg)
 
 	return nil
+}
+
+func printEffectiveApprovalModes(out io.Writer, cfg *config.Config) {
+	if out == nil || cfg == nil {
+		return
+	}
+	fmt.Fprintln(out, "# Effective approval modes (mode and resolution source):")
+	for _, item := range []struct {
+		label string
+		key   string
+	}{
+		{"chat", "chat.approval_mode"},
+		{"ask", "ask.approval_mode"},
+		{"edit", "edit.approval_mode"},
+		{"exec", "exec.approval_mode"},
+		{"loop", "loop.approval_mode"},
+		{"serve", "serve.approval_mode"},
+		{"serve mcp", "serve.mcp.approval_mode"},
+	} {
+		if value, ok, err := effectiveApprovalConfigValue(item.key, cfg); err == nil && ok {
+			fmt.Fprintf(out, "#   %s: %s\n", item.label, value)
+		}
+	}
+	fmt.Fprintln(out)
 }
 
 // extractConfigKeys walks a yaml.Node tree and extracts all key paths
@@ -187,6 +215,10 @@ func extractConfigKeys(node *yaml.Node, prefix string, rawKeys, unknownKeys map[
 
 // printAnnotatedConfig outputs the effective config with annotations.
 func printAnnotatedConfig(out io.Writer, defaults map[string]any, rawKeys, unknownKeys map[string]bool, rawRoot *yaml.Node, hasFile bool, cfg *config.Config) {
+	printAnnotatedConfigFiltered(out, defaults, rawKeys, unknownKeys, rawRoot, hasFile, cfg, false)
+}
+
+func printAnnotatedConfigFiltered(out io.Writer, defaults map[string]any, rawKeys, unknownKeys map[string]bool, rawRoot *yaml.Node, hasFile bool, cfg *config.Config, resetTemplate bool) {
 	// Get raw values from the config file for comparison
 	rawValues := make(map[string]string)
 	if hasFile && rawRoot != nil {
@@ -216,7 +248,7 @@ func printAnnotatedConfig(out io.Writer, defaults map[string]any, rawKeys, unkno
 
 	var keys []renderKey
 	for _, spec := range config.ConfigKeySpecs() {
-		if !spec.ShowInConfig {
+		if !spec.ShowInConfig || (resetTemplate && !spec.ResetTemplate) {
 			continue
 		}
 		keys = append(keys, renderKeyFromSpec(spec))
@@ -803,7 +835,7 @@ func defaultConfigContent() string {
 	var buf bytes.Buffer
 	buf.WriteString("# term-llm configuration\n")
 	buf.WriteString("# Run 'term-llm config edit' to modify\n\n")
-	printAnnotatedConfig(&buf, config.GetDefaults(), map[string]bool{}, map[string]bool{}, nil, false, nil)
+	printAnnotatedConfigFiltered(&buf, config.GetDefaults(), map[string]bool{}, map[string]bool{}, nil, false, nil, true)
 	return buf.String()
 }
 
@@ -922,6 +954,11 @@ func installShellCompletion(shell string) error {
 func configSet(cmd *cobra.Command, args []string) error {
 	key := args[0]
 	value := args[1]
+	if isApprovalConfigKey(key) {
+		if _, err := parseConfiguredApprovalMode(key, value); err != nil {
+			return err
+		}
+	}
 
 	configPath, err := config.GetConfigPath()
 	if err != nil {
@@ -1050,6 +1087,20 @@ func setYAMLValue(root *yaml.Node, path []string, value string) error {
 // configGet gets a configuration value
 func configGet(cmd *cobra.Command, args []string) error {
 	key := args[0]
+	printEffectiveApproval := func() (bool, error) {
+		cfg, loadErr := config.Load()
+		if loadErr != nil {
+			return false, loadErr
+		}
+		value, ok, resolveErr := effectiveApprovalConfigValue(key, cfg)
+		if resolveErr != nil {
+			return false, resolveErr
+		}
+		if ok {
+			fmt.Println(value)
+		}
+		return ok, nil
+	}
 
 	configPath, err := config.GetConfigPath()
 	if err != nil {
@@ -1059,6 +1110,11 @@ func configGet(cmd *cobra.Command, args []string) error {
 	data, err := os.ReadFile(configPath)
 	if err != nil {
 		if os.IsNotExist(err) {
+			if printed, effectiveErr := printEffectiveApproval(); effectiveErr != nil {
+				return effectiveErr
+			} else if printed {
+				return nil
+			}
 			return fmt.Errorf("config file does not exist")
 		}
 		return fmt.Errorf("failed to read config: %w", err)
@@ -1071,6 +1127,11 @@ func configGet(cmd *cobra.Command, args []string) error {
 
 	value, err := getYAMLValue(&root, strings.Split(key, "."))
 	if err != nil {
+		if printed, effectiveErr := printEffectiveApproval(); effectiveErr != nil {
+			return effectiveErr
+		} else if printed {
+			return nil
+		}
 		return err
 	}
 
@@ -1173,11 +1234,23 @@ func configKeyCompletions(toComplete string) []string {
 	return completions
 }
 
+func isApprovalConfigKey(key string) bool {
+	switch key {
+	case "approval.default_mode", "chat.approval_mode", "ask.approval_mode", "edit.approval_mode", "exec.approval_mode", "loop.approval_mode", "serve.approval_mode", "serve.mcp.approval_mode":
+		return true
+	default:
+		return false
+	}
+}
+
 // configValueCompletions returns completions for config values based on key
 func configValueCompletions(key, toComplete string) []string {
 	cfg, _ := config.Load()
 
 	switch key {
+	case "approval.default_mode", "chat.approval_mode", "ask.approval_mode", "edit.approval_mode", "exec.approval_mode", "loop.approval_mode", "serve.approval_mode", "serve.mcp.approval_mode":
+		return filterPrefix([]string{"prompt", "auto"}, toComplete)
+
 	case "default_provider", "exec.provider", "ask.provider", "chat.provider", "edit.provider", "guardian.provider":
 		// Provider names
 		names := llm.GetProviderNames(cfg)
