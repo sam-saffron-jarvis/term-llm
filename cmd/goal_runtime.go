@@ -184,13 +184,22 @@ func (rt *serveRuntime) runActiveGoalLoop(ctx context.Context, stateful bool, re
 	var aggregate serveRunResult
 	autoPasses := 0
 	budgetWrapupPending := false
+	planCallable := false
+	if rt.provider != nil && rt.provider.Capabilities().ToolCalls {
+		for _, spec := range rt.engine.FilterAllowedToolSpecs(req.Tools) {
+			if spec.Name == toolpkg.UpdatePlanToolName {
+				planCallable = true
+				break
+			}
+		}
+	}
 
 	appendSynthetic := func(kind prompt.GoalPromptKind) error {
 		promptGoal := goalState.Clone()
 		if promptGoal == nil || !promptGoal.Exists() {
 			return nil
 		}
-		text := prompt.BuildGoalPrompt(goalPromptData(promptGoal), kind)
+		text := prompt.BuildGoalPromptWithPlan(goalPromptData(promptGoal), kind, planCallable)
 		msg := llm.UserText(text)
 		currentInput = append(currentInput, msg)
 		if rt.syntheticUserCB != nil && rt.store == nil {

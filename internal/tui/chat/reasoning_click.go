@@ -160,6 +160,7 @@ func (m *Model) trackerReasoningLineSnapshot(historyLines int) map[int]int {
 	lineBySegment := make(map[int]int)
 	runningLines := 0
 	lastType := ui.SegmentText
+	lastPlan := false
 	hasPrev := false
 	leadingInitialized := false
 	trackerExpanded := m.tracker.Expanded()
@@ -174,6 +175,7 @@ func (m *Model) trackerReasoningLineSnapshot(historyLines int) map[int]int {
 		if !leadingInitialized {
 			if m.tracker.HasFlushed && seg.FlushedPos == 0 {
 				lastType = m.tracker.LastFlushedType
+				lastPlan = m.tracker.LastFlushedPlan
 				hasPrev = true
 			}
 			leadingInitialized = true
@@ -183,13 +185,14 @@ func (m *Model) trackerReasoningLineSnapshot(historyLines int) map[int]int {
 			continue
 		}
 		if hasPrev {
-			runningLines += strings.Count(ui.SegmentSeparator(lastType, seg.Type), "\n")
+			runningLines += strings.Count(ui.SegmentSeparatorAfter(lastType, seg.Type, lastPlan), "\n")
 		}
 		if seg.Reasoning != nil && seg.Rendered != "" {
 			lineBySegment[historyLines+runningLines] = i
 		}
 		runningLines += strings.Count(rendered, "\n")
 		lastType = seg.Type
+		lastPlan = ui.IsPlanChecklistSegment(seg)
 		hasPrev = true
 	}
 	if len(lineBySegment) == 0 {

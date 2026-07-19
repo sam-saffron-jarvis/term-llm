@@ -173,7 +173,7 @@ func MCPFlagCompletion(cmd *cobra.Command, args []string, toComplete string) ([]
 // When typing "read_file,wr<TAB>", completes to "read_file,write_file".
 func ToolsFlagCompletion(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 	// Get all available tool names (spec names)
-	allTools := tools.AllToolNames()
+	allTools := tools.ValidToolNames()
 	sort.Strings(allTools)
 
 	// Parse comma-separated list

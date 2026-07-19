@@ -2564,6 +2564,70 @@
       word-break: break-word;
     }
 
+    .plan-card {
+      padding: 0.75rem;
+      border-top: 1px solid var(--border);
+      background: color-mix(in srgb, var(--surface-2) 55%, transparent);
+    }
+
+    .plan-card-header {
+      color: var(--text);
+      font-size: 0.9rem;
+      font-weight: 650;
+    }
+
+    .plan-card.running .plan-card-header {
+      color: var(--accent-amber);
+    }
+
+    .plan-explanation {
+      margin-top: 0.2rem;
+      color: var(--text-muted);
+      font-size: 0.8rem;
+      line-height: 1.4;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+    }
+
+    .plan-checklist {
+      display: grid;
+      gap: 0.3rem;
+      margin-top: 0.55rem;
+    }
+
+    .plan-step {
+      display: grid;
+      grid-template-columns: 1.1rem minmax(0, 1fr);
+      gap: 0.35rem;
+      align-items: start;
+      color: var(--text-muted);
+      font-size: 0.85rem;
+      line-height: 1.4;
+    }
+
+    .plan-step-marker {
+      text-align: center;
+      font-weight: 700;
+    }
+
+    .plan-step-completed .plan-step-marker {
+      color: var(--accent-green);
+    }
+
+    .plan-step-completed .plan-step-text {
+      color: var(--text-muted);
+      text-decoration: line-through;
+      text-decoration-color: color-mix(in srgb, var(--text-muted) 55%, transparent);
+    }
+
+    .plan-step-in_progress {
+      color: var(--text);
+    }
+
+    .plan-step-in_progress .plan-step-marker {
+      color: var(--accent-amber);
+    }
+
     .tool-group-card {
       border: 1px solid var(--border);
       border-radius: 8px;
@@ -2637,6 +2701,10 @@
 
     .tool-group-entry .tool-entry-status.done {
       color: var(--accent-green);
+    }
+
+    .tool-group-entry .tool-entry-status.error {
+      color: var(--accent-red, #ef4444);
     }
 
     .tool-entry-args {

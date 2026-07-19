@@ -258,7 +258,7 @@ func (m *Model) streamCompactionCallback(streamSess *session.Session) llm.Compac
 			m.engine.SetContextEstimateBaseline(0, 0)
 		}
 		if result != nil {
-			m.setStreamingContextMessages(result.NewMessages)
+			m.setStreamingContextMessages(result.ActiveMessages())
 		}
 		m.invalidateHistoryCache()
 		// Any pending assistant row that snapshot had upserted is now stale:

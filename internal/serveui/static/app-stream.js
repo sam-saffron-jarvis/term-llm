@@ -637,7 +637,9 @@ const createResponseStreamState = (session) => {
 
   const closeToolGroup = () => {
     if (!currentToolGroup) return;
-    currentToolGroup.tools.forEach((tool) => { tool.status = 'done'; });
+    currentToolGroup.tools.forEach((tool) => {
+      if (tool.status === 'running') tool.status = 'done';
+    });
     currentToolGroup.status = 'done';
     updateVisibleToolGroupNode(session, currentToolGroup);
     currentToolGroup = null;
@@ -1016,10 +1018,10 @@ const applyResponseStreamEvent = (session, streamState, event, payload) => {
       const callId = payload.call_id;
       const entry = streamState.currentToolGroup.tools.find((tool) => tool.id === callId);
       if (entry) {
-        entry.status = 'done';
+        entry.status = payload.success === false ? 'error' : 'done';
         updateVisibleToolGroupNode(session, streamState.currentToolGroup);
       }
-      if (streamState.currentToolGroup.tools.every((tool) => tool.status === 'done')) {
+      if (streamState.currentToolGroup.tools.every((tool) => tool.status !== 'running')) {
         streamState.currentToolGroup.status = 'done';
         updateVisibleToolGroupNode(session, streamState.currentToolGroup);
       }
@@ -4220,7 +4222,9 @@ const queueMainSkillInvocation = (session, invocation) => {
 const markToolGroupsDone = (session) => {
   session.messages.forEach(m => {
     if (m.role === 'tool-group' && m.status === 'running') {
-      m.tools.forEach(t => { t.status = 'done'; });
+      m.tools.forEach(t => {
+        if (t.status === 'running') t.status = 'done';
+      });
       m.status = 'done';
       updateVisibleToolGroupNode(session, m);
     }

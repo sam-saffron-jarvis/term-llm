@@ -650,13 +650,17 @@ const convertServerMessages = (serverMessages, options = {}) => {
 
   const attachToolResultImages = (part, created, msg, partIndex) => {
     const images = normalizeImages(part.images);
-    if (images.length === 0) return;
-    const group = ensureToolGroup(created, msg, partIndex);
     const callId = part.tool_call_id || '';
-    let tool = callId ? group.tools.find((entry) => entry.id === callId) : null;
-    if (!tool && part.tool_name) {
+    let group = currentGroup;
+    let tool = group && callId ? group.tools.find((entry) => entry.id === callId) : null;
+    if (!tool && group && part.tool_name) {
       tool = group.tools.find((entry) => entry.name === part.tool_name);
     }
+    // Error-only results can be separated from their call by a page boundary.
+    // Do not invent a generic row; conversion will correlate them once the page
+    // containing the call is loaded. Image results still need a fallback card.
+    if (!tool && images.length === 0) return;
+    if (!group) group = ensureToolGroup(created, msg, partIndex);
     if (!tool) {
       tool = {
         id: callId || fallbackToolId(msg, partIndex),
@@ -667,7 +671,7 @@ const convertServerMessages = (serverMessages, options = {}) => {
       };
       group.tools.push(tool);
     }
-    tool.status = 'done';
+    tool.status = (part.tool_error || part.is_error) ? 'error' : 'done';
     appendUniqueImages(tool, images);
   };
 
@@ -800,14 +804,14 @@ const convertServerMessages = (serverMessages, options = {}) => {
             id: toolId,
             name: part.tool_name || 'tool',
             arguments: part.tool_arguments || '',
-            status: 'done',
+            status: part.tool_error ? 'error' : 'done',
             created
           };
           group.tools.push(toolEntry);
         } else {
           toolEntry.name = part.tool_name || toolEntry.name || 'tool';
           toolEntry.arguments = part.tool_arguments || toolEntry.arguments || '';
-          toolEntry.status = 'done';
+          toolEntry.status = part.tool_error ? 'error' : 'done';
         }
         appendUniqueImages(toolEntry, normalizeImages(part.images));
       } else if (part.type === 'tool_result') {

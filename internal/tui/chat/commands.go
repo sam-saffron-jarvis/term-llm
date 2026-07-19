@@ -3348,7 +3348,7 @@ func resolveAgentTools(agent *agents.Agent) string {
 		return strings.Join(agent.Tools.Enabled, ",")
 	}
 	if agent.HasDisabledList() {
-		allTools := tools.AllToolNames()
+		allTools := tools.StandardToolNames()
 		enabled := agent.GetEnabledTools(allTools)
 		return strings.Join(enabled, ",")
 	}

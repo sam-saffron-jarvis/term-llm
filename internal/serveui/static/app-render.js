@@ -1707,7 +1707,9 @@ const createToolGroupNode = (message) => {
   details.className = `tool-group-details${message.expanded ? ' open' : ''}`;
 
   message.tools.forEach(tool => {
-    details.appendChild(createToolEntryNode(tool));
+    if (!parseUpdatePlanSnapshot(tool)) {
+      details.appendChild(createToolEntryNode(tool));
+    }
   });
 
   toggle.addEventListener('click', () => {
@@ -1720,6 +1722,10 @@ const createToolGroupNode = (message) => {
   card.appendChild(toggle);
   const groupArtifacts = createToolArtifactsNode(message);
   if (groupArtifacts) card.appendChild(groupArtifacts);
+  message.tools.forEach((tool) => {
+    const snapshot = parseUpdatePlanSnapshot(tool);
+    if (snapshot) card.appendChild(createPlanCardNode(tool, snapshot));
+  });
   card.appendChild(details);
   wrapper.appendChild(card);
   wrapper.appendChild(createMetaNode(message.created));
@@ -1819,6 +1825,90 @@ const formatToolArgs = (tool) => {
   return entries.slice(0, TOOL_SUMMARY_ARG_LIMIT); // Keep tool summaries bounded without hiding useful context
 };
 
+const parseUpdatePlanSnapshot = (tool) => {
+  if (!tool || tool.name !== 'update_plan' || tool.status === 'error') return null;
+  let parsed;
+  try {
+    parsed = JSON.parse(String(tool.arguments || ''));
+  } catch {
+    return null;
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed) || !Array.isArray(parsed.plan)) return null;
+  if (Object.keys(parsed).some((key) => key !== 'plan' && key !== 'explanation')) return null;
+  if (Object.prototype.hasOwnProperty.call(parsed, 'explanation') && typeof parsed.explanation !== 'string') return null;
+  const explanation = typeof parsed.explanation === 'string' ? parsed.explanation.trim() : '';
+  if ([...explanation].length > 500 || parsed.plan.length > 20) return null;
+  const statuses = new Set(['pending', 'in_progress', 'completed']);
+  const seen = new Set();
+  let inProgress = 0;
+  const steps = [];
+  for (const candidate of parsed.plan) {
+    if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) return null;
+    if (Object.keys(candidate).some((key) => key !== 'step' && key !== 'status')) return null;
+    const step = typeof candidate.step === 'string' ? candidate.step.trim() : '';
+    const status = typeof candidate.status === 'string' ? candidate.status : '';
+    if (!step || [...step].length > 240 || !statuses.has(status)) return null;
+    if (status === 'in_progress') inProgress += 1;
+    const normalized = step.toLowerCase().replace(/\s+/g, ' ');
+    if (seen.has(normalized)) return null;
+    seen.add(normalized);
+    steps.push({ step, status });
+  }
+  if (inProgress > 1) return null;
+  return { explanation, plan: steps };
+};
+
+const planStepMarker = (status) => {
+  if (status === 'completed') return '✓';
+  if (status === 'in_progress') return '→';
+  return '○';
+};
+
+const updatePlanCardContent = (card, tool, snapshot) => {
+  card.replaceChildren();
+  card.className = `plan-card${tool.status === 'done' ? ' done' : ' running'}`;
+
+  const header = document.createElement('div');
+  header.className = 'plan-card-header';
+  header.textContent = snapshot.plan.length === 0
+    ? (tool.status === 'done' ? 'Plan cleared' : 'Clearing plan…')
+    : (tool.status === 'done' ? 'Plan updated' : 'Updating plan…');
+  card.appendChild(header);
+
+  if (snapshot.explanation) {
+    const explanation = document.createElement('div');
+    explanation.className = 'plan-explanation';
+    explanation.textContent = snapshot.explanation;
+    card.appendChild(explanation);
+  }
+
+  if (snapshot.plan.length > 0) {
+    const checklist = document.createElement('div');
+    checklist.className = 'plan-checklist';
+    snapshot.plan.forEach((item) => {
+      const row = document.createElement('div');
+      row.className = `plan-step plan-step-${item.status}`;
+      const marker = document.createElement('span');
+      marker.className = 'plan-step-marker';
+      marker.textContent = planStepMarker(item.status);
+      const text = document.createElement('span');
+      text.className = 'plan-step-text';
+      text.textContent = item.step;
+      row.appendChild(marker);
+      row.appendChild(text);
+      checklist.appendChild(row);
+    });
+    card.appendChild(checklist);
+  }
+};
+
+const createPlanCardNode = (tool, snapshot) => {
+  const card = document.createElement('div');
+  card.dataset.toolId = tool.id;
+  updatePlanCardContent(card, tool, snapshot);
+  return card;
+};
+
 const buildArgsNode = (tool) => {
   const entries = formatToolArgs(tool);
   if (!entries || entries.length === 0) return null;
@@ -1861,8 +1951,8 @@ const createToolEntryNode = (tool) => {
   name.textContent = tool.name || 'tool';
 
   const status = document.createElement('span');
-  status.className = `tool-entry-status${tool.status === 'done' ? ' done' : ''}`;
-  status.textContent = tool.status === 'done' ? '✓' : '…';
+  status.className = `tool-entry-status${tool.status === 'done' ? ' done' : (tool.status === 'error' ? ' error' : '')}`;
+  status.textContent = tool.status === 'done' ? '✓' : (tool.status === 'error' ? '×' : '…');
 
   entry.appendChild(icon);
   entry.appendChild(name);
@@ -2196,15 +2286,29 @@ const updateToolGroupNode = (message) => {
   if (details) {
     // Update existing entries or add new ones
     message.tools.forEach(tool => {
+      const snapshot = parseUpdatePlanSnapshot(tool);
       let entry = details.querySelector(`[data-tool-id="${CSS.escape(tool.id)}"]`);
+      const planCard = card
+        ? Array.from(card.querySelectorAll('.plan-card')).find((candidate) => candidate.dataset.toolId === tool.id)
+        : null;
+      if (snapshot) {
+        if (entry) entry.remove();
+        if (planCard) {
+          updatePlanCardContent(planCard, tool, snapshot);
+        } else if (card) {
+          card.insertBefore(createPlanCardNode(tool, snapshot), details);
+        }
+        return;
+      }
+      if (planCard) planCard.remove();
       if (!entry) {
         entry = createToolEntryNode(tool);
         details.appendChild(entry);
       } else {
         const status = entry.querySelector('.tool-entry-status');
         if (status) {
-          status.className = `tool-entry-status${tool.status === 'done' ? ' done' : ''}`;
-          status.textContent = tool.status === 'done' ? '✓' : '…';
+          status.className = `tool-entry-status${tool.status === 'done' ? ' done' : (tool.status === 'error' ? ' error' : '')}`;
+          status.textContent = tool.status === 'done' ? '✓' : (tool.status === 'error' ? '×' : '…');
         }
         // Update or add arguments display. Once the response stream has
         // finalized a completed tool's arguments, they are immutable; keep the

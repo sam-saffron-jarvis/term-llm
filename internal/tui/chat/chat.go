@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"strconv"
 	"strings"
@@ -1942,6 +1943,21 @@ func (m *Model) Update(msg tea.Msg) (model tea.Model, cmd tea.Cmd) {
 		if msg.result == nil {
 			return m.showFooterError("Compaction failed: no result returned.")
 		}
+		if m.engine != nil {
+			sessionID := sessionIDOf(m.sess)
+			var toolSpecs []llm.ToolSpec
+			for _, specName := range m.localTools {
+				if tool, ok := m.engine.Tools().Get(specName); ok {
+					toolSpecs = append(toolSpecs, tool.Spec())
+				}
+			}
+			restoreCtx, cancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
+			err := m.engine.PrepareCompactionContext(restoreCtx, sessionID, toolSpecs, msg.result)
+			cancel()
+			if err != nil {
+				slog.Warn("plan restoration after manual compaction failed; continuing without it", "error", err)
+			}
+		}
 		m.messagesMu.Lock()
 		full := append([]session.Message(nil), m.messages...)
 		m.messagesMu.Unlock()
@@ -1965,6 +1981,7 @@ func (m *Model) Update(msg tea.Msg) (model tea.Model, cmd tea.Cmd) {
 		m.messages = updated
 		m.compactionIdx = activeStart
 		m.messagesMu.Unlock()
+		m.setStreamingContextMessages(msg.result.ActiveMessages())
 		m.invalidateHistoryCache()
 
 		if m.engine != nil {

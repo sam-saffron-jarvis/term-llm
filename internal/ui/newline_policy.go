@@ -41,6 +41,18 @@ func SegmentBoundaryTrailingNewlines(prevType, currType SegmentType) int {
 	}
 }
 
+// SegmentBoundaryTrailingNewlinesAfter returns the target trailing newline run
+// after a rendered segment. Plan checklists are multi-line blocks, so always
+// leave one blank line before a following block without changing ordinary
+// compact tool-to-tool spacing.
+func SegmentBoundaryTrailingNewlinesAfter(prevType, currType SegmentType, previousPlan bool) int {
+	target := SegmentBoundaryTrailingNewlines(prevType, currType)
+	if previousPlan && target < FinalSpacerTrailingNewlines {
+		return FinalSpacerTrailingNewlines
+	}
+	return target
+}
+
 // StreamingNewlineCompactor incrementally compacts excessive newline runs across chunks.
 type StreamingNewlineCompactor struct {
 	maxRun int

@@ -440,6 +440,7 @@ func (r *SpawnAgentRunner) setupAgentTools(cfg *config.Config, engine *llm.Engin
 	if err != nil || toolMgr == nil {
 		return toolMgr, err
 	}
+	toolMgr.Registry.SetPlanStore(r.store)
 	if r.yoloMode && r.parentApprovalMgr == nil {
 		toolMgr.ApprovalMgr.SetYoloMode(true)
 	}

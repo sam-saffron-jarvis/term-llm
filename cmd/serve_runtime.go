@@ -1351,6 +1351,9 @@ func (rt *serveRuntime) runOnce(ctx context.Context, stateful bool, replaceHisto
 		}
 		var compacted []llm.Message
 		if handledByPlatform {
+			// Platform callbacks persist only durable replacement history. Keep the
+			// runtime snapshot durable too; Engine keeps ActiveMessages in its
+			// in-flight request and restores ephemeral plan context on later streams.
 			compacted = append(compacted, result.NewMessages...)
 		} else {
 			updated, _, refreshed, err := session.ApplyCompaction(cbCtx, rt.store, rt.sessionMeta, nil, result)
@@ -1378,7 +1381,7 @@ func (rt *serveRuntime) runOnce(ctx context.Context, stateful bool, replaceHisto
 				rt.sessionMeta.CacheWriteTokens += result.Usage.CacheWriteTokens
 			}
 		}
-		if len(compacted) == 0 {
+		if !handledByPlatform && len(compacted) == 0 {
 			compacted = append(compacted, result.NewMessages...)
 		}
 		baseHistory = compacted

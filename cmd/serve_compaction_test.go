@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -13,6 +14,23 @@ import (
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/session"
 )
+
+type serveCompactionContextTool struct{}
+
+func (*serveCompactionContextTool) Spec() llm.ToolSpec {
+	return llm.ToolSpec{Name: "test_context", Schema: map[string]any{"type": "object"}}
+}
+func (*serveCompactionContextTool) Execute(context.Context, json.RawMessage) (llm.ToolOutput, error) {
+	return llm.TextOutput("ok"), nil
+}
+func (*serveCompactionContextTool) Preview(json.RawMessage) string { return "" }
+func (*serveCompactionContextTool) PrepareRequestContext(_ context.Context, _ string, messages []llm.Message) ([]llm.Message, error) {
+	return messages, nil
+}
+func (*serveCompactionContextTool) PrepareCompactionContext(_ context.Context, _ string, result *llm.CompactionResult) error {
+	result.EphemeralMessages = append(result.EphemeralMessages, llm.Message{Role: llm.RoleDeveloper, Parts: []llm.Part{{Type: llm.PartText, Text: "ephemeral plan"}}})
+	return nil
+}
 
 func TestServeRuntimeCompactSessionPersistsAndReplacesActiveHistory(t *testing.T) {
 	ctx := context.Background()
@@ -46,9 +64,11 @@ func TestServeRuntimeCompactSessionPersistsAndReplacesActiveHistory(t *testing.T
 		Text:  "Continue from the second answer.",
 		Usage: llm.Usage{InputTokens: 20, OutputTokens: 5},
 	})
+	engine := llm.NewEngine(provider, nil)
+	engine.RegisterTool(&serveCompactionContextTool{})
 	rt := &serveRuntime{
 		provider: provider, providerKey: "mock", defaultModel: "mock-model",
-		engine: llm.NewEngine(provider, nil), store: store, sessionMeta: sess,
+		engine: engine, store: store, sessionMeta: sess,
 		history: history, historyPersisted: true,
 	}
 
@@ -58,6 +78,14 @@ func TestServeRuntimeCompactSessionPersistsAndReplacesActiveHistory(t *testing.T
 	}
 	if result == nil || result.OriginalCount != len(history) {
 		t.Fatalf("result = %+v, want original count %d", result, len(history))
+	}
+	if len(result.EphemeralMessages) != 1 {
+		t.Fatalf("ephemeral messages = %#v", result.EphemeralMessages)
+	}
+	for _, message := range rt.history {
+		if message.Role == llm.RoleDeveloper || strings.Contains(llm.MessageText(message), "ephemeral plan") {
+			t.Fatalf("request-only compaction context leaked into runtime history: %#v", rt.history)
+		}
 	}
 	if len(rt.history) == 0 || !rt.historyPersisted {
 		t.Fatalf("runtime history was not replaced: persisted=%v history=%+v", rt.historyPersisted, rt.history)

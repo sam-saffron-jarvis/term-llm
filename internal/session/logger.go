@@ -5,6 +5,8 @@ import (
 	"errors"
 	"sync"
 	"time"
+
+	planpkg "github.com/samsaffron/term-llm/internal/plan"
 )
 
 // WarnFunc is a function that logs warnings.
@@ -57,6 +59,46 @@ func (s *LoggingStore) Create(ctx context.Context, sess *Session) error {
 func (s *LoggingStore) Update(ctx context.Context, sess *Session) error {
 	err := s.Store.Update(ctx, sess)
 	s.logOnce("Update", err)
+	return err
+}
+
+// LoadPlanSnapshot delegates the optional latest-plan capability when available.
+func (s *LoggingStore) LoadPlanSnapshot(ctx context.Context, sessionID string) (planpkg.Snapshot, int64, error) {
+	store, ok := s.Store.(PlanSnapshotStore)
+	if !ok {
+		return planpkg.Snapshot{}, 0, nil
+	}
+	snapshot, version, err := store.LoadPlanSnapshot(ctx, sessionID)
+	if err != nil {
+		s.logOnce("LoadPlanSnapshot", err)
+	}
+	return snapshot, version, err
+}
+
+// SavePlanSnapshot delegates the optional latest-plan capability when available.
+// Unsupported custom stores retain the controller's in-memory state only.
+func (s *LoggingStore) SavePlanSnapshot(ctx context.Context, sessionID string, snapshot planpkg.Snapshot) (int64, error) {
+	store, ok := s.Store.(PlanSnapshotStore)
+	if !ok {
+		return 0, nil
+	}
+	version, err := store.SavePlanSnapshot(ctx, sessionID, snapshot)
+	if err != nil {
+		s.logOnce("SavePlanSnapshot", err)
+	}
+	return version, err
+}
+
+// DeletePlanSnapshot delegates the optional latest-plan capability when available.
+func (s *LoggingStore) DeletePlanSnapshot(ctx context.Context, sessionID string) error {
+	store, ok := s.Store.(PlanSnapshotStore)
+	if !ok {
+		return nil
+	}
+	err := store.DeletePlanSnapshot(ctx, sessionID)
+	if err != nil {
+		s.logOnce("DeletePlanSnapshot", err)
+	}
 	return err
 }
 

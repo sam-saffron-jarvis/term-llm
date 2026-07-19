@@ -333,17 +333,17 @@ func TestHubDelegationToolsRegistered(t *testing.T) {
 func TestAllToolNamesIncludesHubDelegationOnlyWhenConfigured(t *testing.T) {
 	restore := resetHubDelegationForTest()
 	defer restore()
-	for _, name := range AllToolNames() {
+	for _, name := range StandardToolNames() {
 		if name == HubDelegateToolName || name == HubCheckDelegationToolName {
 			t.Fatalf("hub delegation tool %q should not be in all tools without hub config", name)
 		}
 	}
 	ConfigureHubDelegation("http://127.0.0.1:8090", "alpha", "alpha-token")
 	seen := map[string]bool{}
-	for _, name := range AllToolNames() {
+	for _, name := range StandardToolNames() {
 		seen[name] = true
 	}
 	if !seen[HubDelegateToolName] || !seen[HubCheckDelegationToolName] {
-		t.Fatalf("hub delegation tools missing after hub config: %v", AllToolNames())
+		t.Fatalf("hub delegation tools missing after hub config: %v", StandardToolNames())
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 
 	"github.com/samsaffron/term-llm/internal/llm"
@@ -70,6 +71,11 @@ func (rt *serveRuntime) compactSession(ctx context.Context, sessionID string) (*
 	if result == nil {
 		return nil, fmt.Errorf("compress conversation: empty result")
 	}
+	if rt.engine != nil {
+		if err := rt.engine.PrepareCompactionContext(ctx, sessionID, rt.selectTools(nil), result); err != nil {
+			slog.Warn("plan restoration after manual serve compaction failed; continuing without it", "error", err)
+		}
+	}
 
 	updated, _, refreshed, err := session.ApplyCompaction(ctx, rt.store, rt.sessionMeta, nil, result)
 	if err != nil {
@@ -85,6 +91,8 @@ func (rt *serveRuntime) compactSession(ctx context.Context, sessionID string) (*
 	if len(compacted) == 0 {
 		compacted = append(compacted, result.NewMessages...)
 	}
+	// rt.history is a snapshottable durable view. The next Engine.Stream call
+	// reconstructs request-only plan context from session_plans.
 	rt.history = compacted
 	rt.historyPersisted = true
 	rt.cumulativeUsage.Add(result.Usage)

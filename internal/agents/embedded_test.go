@@ -161,6 +161,33 @@ func TestBuiltinAgentConfigs(t *testing.T) {
 	}
 }
 
+func TestOnlyDeveloperBuiltinOptsIntoUpdatePlan(t *testing.T) {
+	entries, err := fs.ReadDir(builtinFS, "builtin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		agent, err := getBuiltinAgent(entry.Name())
+		if err != nil {
+			t.Fatal(err)
+		}
+		hasPlan := stringSliceContains(agent.Tools.Enabled, "update_plan")
+		if entry.Name() == "developer" {
+			if !hasPlan {
+				t.Fatalf("developer update_plan opt-in missing")
+			}
+			if strings.Contains(agent.SystemPrompt, "update_plan") {
+				t.Fatalf("developer prompt contains ungated update_plan guidance")
+			}
+		} else if hasPlan || strings.Contains(agent.SystemPrompt, "update_plan") {
+			t.Fatalf("builtin %s unexpectedly opts into update_plan", entry.Name())
+		}
+	}
+}
+
 func TestBuiltinPromptsAvoidVolatileDirectoryContext(t *testing.T) {
 	entries, err := fs.ReadDir(builtinFS, "builtin")
 	if err != nil {

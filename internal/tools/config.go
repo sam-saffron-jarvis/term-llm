@@ -26,6 +26,7 @@ type ToolConfig struct {
 	ImageProvider   string      `mapstructure:"image_provider"`     // Override for image provider
 	Spawn           SpawnConfig `mapstructure:"spawn"`              // Spawn agent configuration
 	AgentDir        string      `mapstructure:"-"`                  // Agent source directory (set at runtime)
+	PlanGuidance    bool        `mapstructure:"-"`                  // Add built-in developer guidance only when update_plan is callable
 	// BaseDir, when set, is the per-run/session working directory used to
 	// resolve relative tool paths and default process-spawn directories. It is
 	// deliberately implemented through explicit path resolution / exec.Cmd.Dir;
@@ -161,6 +162,9 @@ func (c ToolConfig) Merge(other ToolConfig) ToolConfig {
 
 	if other.AgentDir != "" {
 		result.AgentDir = other.AgentDir
+	}
+	if other.PlanGuidance {
+		result.PlanGuidance = true
 	}
 	if other.BaseDir != "" {
 		result.BaseDir = other.BaseDir
@@ -393,7 +397,7 @@ func ParseToolsFlag(value string) []string {
 	// Handle "all" or "*" to enable all tools
 	trimmed := strings.TrimSpace(value)
 	if trimmed == "all" || trimmed == "*" {
-		return AllToolNames()
+		return StandardToolNames()
 	}
 	parts := strings.Split(value, ",")
 	var tools []string

@@ -110,9 +110,17 @@ type GoalPromptData struct {
 	TimeUsedSeconds int
 }
 
+const goalPlanGuidance = "If the remaining work is meaningfully multi-step, use `update_plan` to show a concise plan tied to the real objective. Keep it current as steps complete or the next best action changes."
+
 // BuildGoalPrompt renders one of the persistent-goal steering prompts. The
 // objective is XML-escaped because it is user-provided data inside an XML-ish tag.
 func BuildGoalPrompt(goal GoalPromptData, kind GoalPromptKind) string {
+	return BuildGoalPromptWithPlan(goal, kind, false)
+}
+
+// BuildGoalPromptWithPlan conditionally adds update_plan guidance. Passing false
+// is byte-for-byte equivalent to BuildGoalPrompt's historical output.
+func BuildGoalPromptWithPlan(goal GoalPromptData, kind GoalPromptKind, planCallable bool) string {
 	tmpl := goalContinuationTemplate
 	switch kind {
 	case GoalPromptBudgetLimit:
@@ -129,6 +137,9 @@ func BuildGoalPrompt(goal GoalPromptData, kind GoalPromptKind) string {
 	}
 	for key, value := range replacements {
 		tmpl = strings.ReplaceAll(tmpl, "{{ "+key+" }}", value)
+	}
+	if planCallable {
+		tmpl += "\n\n" + goalPlanGuidance
 	}
 	return tmpl
 }

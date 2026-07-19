@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/appdata"
+	planpkg "github.com/samsaffron/term-llm/internal/plan"
 )
 
 // ErrNotFound is returned when a lookup or update targets a row that does not
@@ -166,6 +167,15 @@ func UpdateStreamingMessage(ctx context.Context, store Store, sessionID string, 
 		return updater.UpdateStreamingMessage(ctx, sessionID, msg, finalizeText)
 	}
 	return store.UpdateMessage(ctx, sessionID, msg)
+}
+
+// PlanSnapshotStore is an optional Store capability for the authoritative latest
+// update_plan snapshot. Transcript tool-call/result parts remain the durable
+// replay record; this narrow store supports efficient resume restoration.
+type PlanSnapshotStore interface {
+	LoadPlanSnapshot(ctx context.Context, sessionID string) (planpkg.Snapshot, int64, error)
+	SavePlanSnapshot(ctx context.Context, sessionID string, snapshot planpkg.Snapshot) (int64, error)
+	DeletePlanSnapshot(ctx context.Context, sessionID string) error
 }
 
 // ProviderStateStore is an optional Store capability for provider-specific

@@ -27,6 +27,22 @@ func TestBuildSubagentPreview_EmptyProgress(t *testing.T) {
 	}
 }
 
+func TestBuildSubagentPreview_UpdatePlanChecklist(t *testing.T) {
+	args := json.RawMessage(`{"explanation":"moving to tests","plan":[{"step":"Inspect","status":"completed"},{"step":"Test","status":"in_progress"}]}`)
+	progress := &SubagentProgress{CompletedTools: []ToolSegment{{Name: "update_plan", Args: args, Done: true, Success: true}}}
+
+	collapsed := strings.Join(BuildSubagentPreview(progress, 4), "\n")
+	if !strings.Contains(collapsed, "Plan updated · 1/2 completed · Test") || strings.Contains(collapsed, "update_plan") {
+		t.Fatalf("collapsed plan preview = %q", collapsed)
+	}
+	expanded := strings.Join(BuildSubagentPreview(progress, 0), "\n")
+	for _, want := range []string{"Plan updated — moving to tests", "✓ Inspect", "→ Test"} {
+		if !strings.Contains(expanded, want) {
+			t.Fatalf("expanded plan preview missing %q: %q", want, expanded)
+		}
+	}
+}
+
 func TestBuildSubagentPreview_ActiveTools(t *testing.T) {
 	p := &SubagentProgress{
 		ActiveTools: []ToolSegment{

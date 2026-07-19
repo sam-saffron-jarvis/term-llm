@@ -1260,6 +1260,55 @@ func imageReferenceText(part Part) string {
 	return fmt.Sprintf("[User uploaded image: %s (%s) — use view_image with this file_path to inspect it.]", path, mediaType)
 }
 
+// PrepareCompactionContext lets available request-context tools attach
+// request-only restoration state after durable compaction is generated. Callers
+// use this for manual compaction paths; automatic engine compaction calls it
+// with the already-filtered request specs.
+func (e *Engine) PrepareCompactionContext(ctx context.Context, sessionID string, specs []ToolSpec, result *CompactionResult) error {
+	if e == nil || e.provider == nil || result == nil || !e.provider.Capabilities().ToolCalls {
+		return nil
+	}
+	specs = e.FilterAllowedToolSpecs(specs)
+	for _, spec := range specs {
+		tool, ok := e.tools.Get(spec.Name)
+		if !ok {
+			continue
+		}
+		contextTool, ok := tool.(RequestContextTool)
+		if !ok {
+			continue
+		}
+		if err := contextTool.PrepareCompactionContext(ctx, sessionID, result); err != nil {
+			return fmt.Errorf("restore %s context after compaction: %w", spec.Name, err)
+		}
+	}
+	return nil
+}
+
+func (e *Engine) prepareRequestContext(ctx context.Context, req *Request) {
+	if e == nil || req == nil {
+		return
+	}
+	for _, spec := range req.Tools {
+		tool, ok := e.tools.Get(spec.Name)
+		if !ok {
+			continue
+		}
+		contextTool, ok := tool.(RequestContextTool)
+		if !ok {
+			continue
+		}
+		messages, err := contextTool.PrepareRequestContext(ctx, req.SessionID, req.Messages)
+		if err != nil {
+			// Restored tool state is an optional context enhancement. A stale or
+			// temporarily unavailable state store must not prevent the request.
+			slog.Warn("request context restoration failed; continuing without it", "tool", spec.Name, "error", err)
+			continue
+		}
+		req.Messages = messages
+	}
+}
+
 // Stream returns a stream, applying external tools when needed.
 func (e *Engine) Stream(ctx context.Context, req Request) (Stream, error) {
 	req.Messages = FilterConversationMessages(req.Messages)
@@ -1310,6 +1359,13 @@ func (e *Engine) Stream(ctx context.Context, req Request) (Stream, error) {
 		req.LastTurnToolChoice = nil
 	} else if req.ToolChoice.Mode == ToolChoiceName && !hasToolNamed(req.Tools, req.ToolChoice.Name) {
 		return nil, fmt.Errorf("selected tool %q is not allowed by the active tool filter", req.ToolChoice.Name)
+	}
+
+	// Restorable session context is capability-gated by the final filtered specs
+	// and provider support. Requests without such a configured tool never touch
+	// its controller or store.
+	if caps.ToolCalls {
+		e.prepareRequestContext(ctx, &req)
 	}
 
 	if req.DebugRaw {
@@ -1808,6 +1864,12 @@ func (e *Engine) runLoop(ctx context.Context, req Request, send eventSender) err
 		return len(nonSystem) > 1
 	}
 	applyCompaction := func(result *CompactionResult) bool {
+		if err := e.PrepareCompactionContext(ctx, req.SessionID, req.Tools, result); err != nil {
+			// Plan restoration is optional context enhancement. Never discard an
+			// already-generated compaction result or wedge a session at its limit
+			// because the plan store is temporarily unavailable.
+			slog.Warn("compaction plan restoration failed; continuing without it", "error", err)
+		}
 		if cb := e.getCompactionCallback(); cb != nil {
 			if cbErr := cb(ctx, result); cbErr != nil {
 				slog.Debug("compaction callback failed", "error", cbErr)
@@ -1819,7 +1881,7 @@ func (e *Engine) runLoop(ctx context.Context, req Request, send eventSender) err
 		// the next request sends the compacted summary instead of continuing from a
 		// stale pre-compaction server transcript.
 		resetProviderConversation(e.provider)
-		req.Messages = result.NewMessages
+		req.Messages = result.ActiveMessages()
 		resumeAfterCompaction = true
 		e.callbackMu.Lock()
 		e.lastTotalTokens = 0

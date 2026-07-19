@@ -569,6 +569,7 @@ func runServeLegacy(parentCtx context.Context, cmd *cobra.Command, args []string
 			DebugRaw:            debugRaw,
 			ErrWriter:           approvalErrWriter,
 			WireSpawn:           WireSpawnAgentRunner,
+			Store:               store,
 		}),
 		NewSession: func(ctx context.Context) (*serve.SessionRuntime, error) {
 			rt, err := factory(ctx)

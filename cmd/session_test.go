@@ -19,6 +19,29 @@ import (
 	"github.com/samsaffron/term-llm/internal/tools"
 )
 
+func TestResolveSettingsEnablesPlanGuidanceOnlyForBuiltinDeveloper(t *testing.T) {
+	cfg := &config.Config{}
+	for _, tc := range []struct {
+		name  string
+		agent *agents.Agent
+		want  bool
+	}{
+		{name: "builtin developer", agent: &agents.Agent{Name: "developer", Source: agents.SourceBuiltin}, want: true},
+		{name: "custom developer", agent: &agents.Agent{Name: "developer", Source: agents.SourceUser}, want: false},
+		{name: "other builtin", agent: &agents.Agent{Name: "codebase", Source: agents.SourceBuiltin}, want: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			settings, err := ResolveSettingsInDir(cfg, tc.agent, CLIFlags{}, "", "", "", 0, 50, t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if settings.PlanGuidance != tc.want {
+				t.Fatalf("PlanGuidance = %v, want %v", settings.PlanGuidance, tc.want)
+			}
+		})
+	}
+}
+
 func TestResolveSettings_ConfigSystemPromptExpandsIncludeThenTemplate(t *testing.T) {
 	origWD, err := os.Getwd()
 	if err != nil {

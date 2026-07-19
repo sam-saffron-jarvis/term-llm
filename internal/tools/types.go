@@ -4,20 +4,23 @@ package tools
 import (
 	"encoding/json"
 	"fmt"
+
+	planpkg "github.com/samsaffron/term-llm/internal/plan"
 )
 
 // ToolKind categorizes tools for permission grouping.
 type ToolKind string
 
 const (
-	KindRead        ToolKind = "read"
-	KindEdit        ToolKind = "edit"
-	KindSearch      ToolKind = "search"
-	KindExecute     ToolKind = "execute"
-	KindImage       ToolKind = "image"
-	KindInteractive ToolKind = "interactive"
-	KindAgent       ToolKind = "agent" // For spawn_agent tool
-	KindSkill       ToolKind = "skill" // For activate_skill tool
+	KindRead         ToolKind = "read"
+	KindEdit         ToolKind = "edit"
+	KindSearch       ToolKind = "search"
+	KindExecute      ToolKind = "execute"
+	KindImage        ToolKind = "image"
+	KindInteractive  ToolKind = "interactive"
+	KindAgent        ToolKind = "agent"         // For spawn_agent tool
+	KindSkill        ToolKind = "skill"         // For activate_skill tool
+	KindSessionState ToolKind = "session_state" // For session-scoped state such as update_plan
 )
 
 // MutatorKinds are tool kinds that can modify the filesystem.
@@ -129,17 +132,18 @@ const (
 	WaitForJobsToolName      = "wait_for_jobs"
 	RunAgentScriptToolName   = "run_agent_script"
 	InitiateHandoverToolName = "initiate_handover"
+	UpdatePlanToolName       = planpkg.ToolName
 
 	HubDelegateToolName        = "hub_delegate"
 	HubCheckDelegationToolName = "hub_check_delegation"
 )
 
-// AllToolNames returns standard tool spec names that can be registered directly.
+// StandardToolNames returns the implicit tool set used by --tools all and
+// disabled-list agents. Behavior-changing opt-in tools are intentionally absent.
 // Hub delegation tools are included only when this process has Hub delegation
-// credentials, so --tools all and disabled-list agents do not advertise
-// inoperable hub tools on standalone nodes.
+// credentials, so implicit tool lists do not advertise inoperable hub tools.
 // Note: activate_skill is excluded as it requires a skills registry and is registered separately.
-func AllToolNames() []string {
+func StandardToolNames() []string {
 	names := []string{
 		ReadFileToolName,
 		WriteFileToolName,
@@ -164,6 +168,26 @@ func AllToolNames() []string {
 	return names
 }
 
+// ValidToolNames returns every accepted built-in tool name for validation and
+// shell completion. Hub names remain valid even on standalone nodes so explicit
+// configuration behaves consistently with the historical allowlist.
+func ValidToolNames() []string {
+	names := StandardToolNames()
+	for _, name := range []string{HubDelegateToolName, HubCheckDelegationToolName, UpdatePlanToolName} {
+		found := false
+		for _, existing := range names {
+			if existing == name {
+				found = true
+				break
+			}
+		}
+		if !found {
+			names = append(names, name)
+		}
+	}
+	return names
+}
+
 // validToolNames is a set of valid tool spec names for fast lookup.
 // Note: activate_skill is excluded as it requires a skills registry and is registered separately.
 var validToolNames = map[string]bool{
@@ -183,6 +207,7 @@ var validToolNames = map[string]bool{
 	WaitForJobsToolName:        true,
 	RunAgentScriptToolName:     true,
 	InitiateHandoverToolName:   true,
+	UpdatePlanToolName:         true,
 	HubDelegateToolName:        true,
 	HubCheckDelegationToolName: true,
 }
@@ -212,6 +237,8 @@ func GetToolKind(specName string) ToolKind {
 		return KindAgent
 	case RunAgentScriptToolName:
 		return KindExecute
+	case UpdatePlanToolName:
+		return KindSessionState
 	case ActivateSkillToolName:
 		return KindSkill
 	default:

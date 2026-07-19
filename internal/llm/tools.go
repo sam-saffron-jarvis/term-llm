@@ -31,6 +31,16 @@ type Tool interface {
 	Preview(args json.RawMessage) string
 }
 
+// RequestContextTool is an optional interface for explicitly configured tools
+// that own restorable, session-scoped model context. Engine invokes it only when
+// that exact tool survives final request filtering and the provider supports
+// tool calls.
+type RequestContextTool interface {
+	Tool
+	PrepareRequestContext(ctx context.Context, sessionID string, messages []Message) ([]Message, error)
+	PrepareCompactionContext(ctx context.Context, sessionID string, result *CompactionResult) error
+}
+
 // FinishingTool is an optional interface for tools that signal agent completion.
 // When a finishing tool is executed, the agentic loop should stop after this turn.
 // Example: output capture tools like set_commit_message.

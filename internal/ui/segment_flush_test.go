@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
@@ -126,6 +127,36 @@ func TestFlushToolToTool_NoBlankLine(t *testing.T) {
 	if newlines != 1 {
 		t.Errorf("expected 1 newline between tool segments, got %d\nbetween: %q\nfull output: %q",
 			newlines, between, stripped)
+	}
+}
+
+func TestFlushUpdatePlanToTool_OneBlankLine(t *testing.T) {
+	tracker := NewToolTracker()
+	args := json.RawMessage(`{"plan":[{"step":"Review changes","status":"in_progress"}]}`)
+	tracker.HandleToolStart("plan", "update_plan", "", args)
+	tracker.HandleToolEnd("plan", true)
+
+	planFlush := tracker.FlushCompletedNow(80, nil)
+	if planFlush.ToPrint == "" {
+		t.Fatal("expected plan to flush")
+	}
+
+	tracker.HandleToolStart("next", "spawn_agent", "codebase", nil)
+	tracker.HandleToolEnd("next", true)
+	nextFlush := tracker.FlushCompletedNow(80, nil)
+	if nextFlush.ToPrint == "" {
+		t.Fatal("expected following tool to flush")
+	}
+
+	output := stripAnsiForTest(planFlush.ToPrint + "\n" + nextFlush.ToPrint + "\n")
+	planEnd := strings.Index(output, "→ Review changes")
+	nextBlock := strings.Index(output, "spawn_agent")
+	if planEnd < 0 || nextBlock < 0 || nextBlock <= planEnd {
+		t.Fatalf("unexpected output: %q", output)
+	}
+	between := output[planEnd+len("→ Review changes") : nextBlock]
+	if got := strings.Count(between, "\n"); got != 2 {
+		t.Fatalf("expected exactly one blank line after flushed plan, got %d newlines in %q", got, between)
 	}
 }
 

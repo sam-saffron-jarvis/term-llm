@@ -1046,6 +1046,48 @@ async function run(name, fn) {
     );
   });
 
+  await run('update_plan renders a safe visible checklist card and updates in place', () => {
+    const { app, messages } = createHarness();
+    const tool = {
+      id: 'plan_1',
+      name: 'update_plan',
+      status: 'done',
+      arguments: JSON.stringify({
+        explanation: '<img src=x onerror=alert(1)> moving to tests',
+        plan: [
+          { step: 'Inspect patterns', status: 'completed' },
+          { step: 'Add tests', status: 'in_progress' },
+          { step: 'Run suite', status: 'pending' },
+        ],
+      }),
+      argumentsFinalized: true,
+    };
+    const group = { id: 'plan_group', role: 'tool-group', status: 'done', tools: [tool], expanded: false };
+    messages.appendChild(app.createToolGroupNode(group));
+
+    const card = messages.querySelector('.plan-card');
+    assert(card, 'plan card should be visible outside collapsed generic details');
+    assertEqual(messages.querySelectorAll('.plan-card').length, 1, 'one plan card');
+    assertEqual(messages.querySelectorAll('.tool-group-entry').length, 0, 'no duplicate generic row');
+    assertEqual(card.querySelector('.plan-explanation').textContent, '<img src=x onerror=alert(1)> moving to tests', 'explanation uses text content');
+    const rows = card.querySelectorAll('.plan-step');
+    assertEqual(rows.length, 3, 'three checklist rows');
+    assertEqual(rows[1].querySelector('.plan-step-marker').textContent, '→', 'in-progress marker');
+    assertEqual(rows[1].querySelector('.plan-step-text').textContent, 'Add tests', 'step text');
+
+    const originalCard = card;
+    tool.arguments = JSON.stringify({ plan: [{ step: 'All done', status: 'completed' }] });
+    app.updateToolGroupNode(group);
+    const updatedCard = messages.querySelector('.plan-card');
+    assertEqual(updatedCard, originalCard, 'plan card DOM is reused');
+    assertEqual(updatedCard.querySelector('.plan-step-text').textContent, 'All done', 'updated checklist text');
+
+    tool.status = 'error';
+    app.updateToolGroupNode(group);
+    assertEqual(messages.querySelectorAll('.plan-card').length, 0, 'failed plan card removed');
+    assertEqual(messages.querySelectorAll('.tool-group-entry').length, 1, 'failed call uses generic tool row');
+  });
+
   await run('done finalized tool args are not rebuilt on later group updates', () => {
     const { app, messages } = createHarness();
     const tool = {

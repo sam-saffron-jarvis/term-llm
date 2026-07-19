@@ -10,6 +10,36 @@ import (
 	"github.com/samsaffron/term-llm/internal/llm"
 )
 
+func TestApplyCompactionDoesNotPersistEphemeralMessages(t *testing.T) {
+	ctx := context.Background()
+	store := newContextStateTestStore(t)
+	sess := seedContextStateSession(t, ctx, store)
+	full, err := store.GetMessages(ctx, sess.ID, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := &llm.CompactionResult{
+		NewMessages:       []llm.Message{llm.UserText("durable summary"), llm.AssistantText("ack")},
+		EphemeralMessages: []llm.Message{{Role: llm.RoleDeveloper, Parts: []llm.Part{{Type: llm.PartText, Text: "restored plan"}}}},
+	}
+	if _, _, _, err := ApplyCompaction(ctx, store, sess, full, result); err != nil {
+		t.Fatal(err)
+	}
+	refreshed, err := store.Get(ctx, sess.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	persisted, err := LoadActiveMessages(ctx, store, refreshed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, message := range persisted {
+		if strings.Contains(message.TextContent, "restored plan") {
+			t.Fatalf("ephemeral context persisted: %#v", persisted)
+		}
+	}
+}
+
 func newContextStateTestStore(t *testing.T) Store {
 	t.Helper()
 	store, err := NewSQLiteStore(Config{Enabled: true, Path: ":memory:"})

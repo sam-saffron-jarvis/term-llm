@@ -275,6 +275,9 @@ func (r *cmdRunner) prepare(ctx context.Context, req runpkg.Request, sink runpkg
 		if err != nil {
 			return nil, err
 		}
+		if toolMgr != nil {
+			toolMgr.Registry.SetPlanStore(store)
+		}
 		if agent != nil && agent.OutputTool.IsConfigured() && req.Platform != runpkg.PlatformChat {
 			registerAgentOutputTool(agent.OutputTool, toolMgr, engine)
 		}

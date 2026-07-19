@@ -817,7 +817,7 @@ func (m *Model) renderStreamingInline() string {
 			if len(active) > 0 && m.tracker != nil {
 				completed := m.tracker.CompletedSegments()
 				if len(completed) > 0 {
-					b.WriteString(ui.SegmentSeparator(completed[len(completed)-1].Type, active[0].Type))
+					b.WriteString(ui.SegmentSeparatorBetween(completed[len(completed)-1], active[0]))
 				}
 			} else {
 				b.WriteString("\n")
@@ -838,6 +838,7 @@ func (m *Model) renderStreamingInline() string {
 			ToolsExpanded:   m.toolsExpanded,
 			HasFlushed:      !hasContent && m.tracker != nil && m.tracker.HasFlushed,
 			LastFlushedType: m.tracker.LastFlushedType,
+			LastFlushedPlan: m.tracker.LastFlushedPlan,
 		}
 		b.WriteString(indicator.Render(m.styles))
 		b.WriteString("\n")
@@ -1295,7 +1296,7 @@ func (m *Model) statusLineToolsParts(successStyle lipgloss.Style) (string, strin
 		return "", ""
 	}
 	shortText := fmt.Sprintf("tools:%d", len(m.localTools))
-	if len(m.localTools) == len(tools.AllToolNames()) {
+	if len(m.localTools) == len(tools.StandardToolNames()) {
 		shortText = "tools:all"
 	}
 	short := successStyle.Render(shortText)

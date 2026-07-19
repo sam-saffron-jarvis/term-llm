@@ -795,6 +795,54 @@ async function testResponseCompletedForcesSidebarStatusRefresh() {
   pass(name);
 }
 
+async function testResponseCompletedPreservesFailedToolStatus() {
+  const name = 'response.completed preserves failed tool status while closing running tools';
+  const harness = createHarness();
+  const { app, state, cleanup } = harness;
+  const failedTool = { id: 'call_failed', name: 'update_plan', status: 'error' };
+  const runningTool = { id: 'call_running', name: 'read_file', status: 'running' };
+  const toolGroup = {
+    id: 'tools_1',
+    role: 'tool-group',
+    status: 'running',
+    tools: [failedTool, runningTool],
+    created: 1000,
+  };
+  const session = {
+    id: 'session_failed_tool_status',
+    title: 'Failed tool status',
+    messages: [toolGroup],
+    lastResponseId: null,
+    activeResponseId: 'resp_failed_tool_status',
+    lastSequenceNumber: 0,
+    number: 1,
+  };
+  state.sessions.push(session);
+  state.activeSessionId = session.id;
+  state.currentStreamSessionId = session.id;
+  state.currentStreamResponseId = session.activeResponseId;
+
+  const streamState = app.createResponseStreamState(session);
+  app.applyResponseStreamEvent(session, streamState, 'response.completed', {
+    response: { id: session.activeResponseId, model: 'test-model', status: 'completed' },
+    sequence_number: 3,
+  });
+
+  if (failedTool.status !== 'error') {
+    fail(name, `failed tool status = ${JSON.stringify(failedTool.status)}, want "error"`);
+    await cleanup();
+    return;
+  }
+  if (runningTool.status !== 'done' || toolGroup.status !== 'done') {
+    fail(name, 'running tool group was not closed', JSON.stringify(toolGroup));
+    await cleanup();
+    return;
+  }
+
+  await cleanup();
+  pass(name);
+}
+
 async function testStaleTerminalStreamDoesNotRefreshStatus() {
   const name = 'stale terminal stream events do not request active transcript refresh';
   const harness = createHarness();
@@ -5449,6 +5497,7 @@ async function testIsolatedSkillStreamsIndependentlyAndCancelsIndependently() {
   await testIsolatedSkillStreamsIndependentlyAndCancelsIndependently();
   await testModelEffortOptionsFollowMetadata();
   await testResponseCompletedForcesSidebarStatusRefresh();
+  await testResponseCompletedPreservesFailedToolStatus();
   await testStaleTerminalStreamDoesNotRefreshStatus();
   await testInactiveSessionStreamEventsDoNotAppendToVisibleDOM();
   await testInactiveExistingMessageUpdatesDoNotTouchVisibleDOM();

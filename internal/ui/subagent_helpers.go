@@ -2,10 +2,12 @@ package ui
 
 import (
 	"encoding/json"
+	"fmt"
 	"slices"
 	"strings"
 	"time"
 
+	planpkg "github.com/samsaffron/term-llm/internal/plan"
 	"github.com/samsaffron/term-llm/internal/tools"
 )
 
@@ -224,6 +226,13 @@ func BuildSubagentPreview(p *SubagentProgress, maxCalls int) []string {
 				circle = ErrorCircle()
 			}
 		}
+		if item.tool.Name == planpkg.ToolName && (item.active || item.tool.Success) {
+			if planLines, ok := renderSubagentPlanPreview(item.tool.Args, item.active, circle, maxCalls); ok {
+				preview = append(preview, planLines...)
+				preview = append(preview, renderSubagentGuardian(item.tool.Guardian)...)
+				continue
+			}
+		}
 		line := circle + " " + item.tool.Name
 		if item.tool.Info != "" {
 			line += " " + item.tool.Info
@@ -245,6 +254,44 @@ func BuildSubagentPreview(p *SubagentProgress, maxCalls int) []string {
 	}
 
 	return preview
+}
+
+func renderSubagentPlanPreview(args json.RawMessage, active bool, circle string, maxCalls int) ([]string, bool) {
+	snapshot, err := planpkg.Parse(args)
+	if err != nil {
+		return nil, false
+	}
+	if maxCalls > 0 {
+		if len(snapshot.Plan) == 0 {
+			label := "Plan cleared"
+			if active {
+				label = "Clearing plan…"
+			}
+			return []string{circle + " " + label}, true
+		}
+		summary := snapshot.Summary()
+		label := "Plan updated"
+		if active {
+			label = "Updating plan…"
+		}
+		line := fmt.Sprintf("%s %s · %d/%d completed", circle, label, summary.Completed, summary.Total)
+		if summary.CurrentStep != "" {
+			line += " · " + summary.CurrentStep
+		}
+		return []string{line}, true
+	}
+
+	lines := strings.Split(snapshot.ChecklistText(active), "\n")
+	if len(lines) == 0 {
+		return nil, false
+	}
+	lines[0] = circle + " " + lines[0]
+	for i := 1; i < len(lines); i++ {
+		if lines[i] != "" {
+			lines[i] = "  " + lines[i]
+		}
+	}
+	return lines, true
 }
 
 func renderSubagentGuardian(event *tools.GuardianEvent) []string {

@@ -11,6 +11,74 @@ import (
 	"github.com/samsaffron/term-llm/internal/tools"
 )
 
+func TestUpdatePlanRendersDedicatedChecklist(t *testing.T) {
+	args := json.RawMessage(`{"explanation":"moving to tests","plan":[{"step":"Inspect patterns","status":"completed"},{"step":"Add tests","status":"in_progress"},{"step":"Run suite","status":"pending"}]}`)
+	tc := &llm.ToolCall{Name: "update_plan", Arguments: args}
+
+	historical := RenderToolCallFromPartWithStatus(tc, 100, false, ToolSuccess)
+	for lineNo, line := range strings.Split(StripANSI(historical), "\n") {
+		if !strings.HasPrefix(line, "▌ ") {
+			t.Fatalf("historical plan line %d missing gutter and padding: %q", lineNo, line)
+		}
+	}
+	for _, want := range []string{"Plan updated — moving to tests", "✓ Inspect patterns", "→ Add tests", "○ Run suite"} {
+		if !strings.Contains(historical, want) {
+			t.Fatalf("historical checklist missing %q:\n%s", want, historical)
+		}
+	}
+	if strings.Contains(historical, "update_plan") {
+		t.Fatalf("historical checklist included generic tool row: %s", historical)
+	}
+
+	live := RenderToolSegment(&Segment{Type: SegmentTool, ToolName: "update_plan", ToolArgs: args, ToolStatus: ToolSuccess}, -1, 100, false)
+	if !strings.Contains(live, "→ Add tests") || strings.Contains(live, "update_plan") {
+		t.Fatalf("live checklist = %s", live)
+	}
+
+	if strings.HasSuffix(live, "\n") {
+		t.Fatalf("standalone plan render has pointless trailing spacing: %q", live)
+	}
+
+	following := &Segment{Type: SegmentTool, ToolName: "spawn_agent", ToolStatus: ToolSuccess, ToolInfo: "codebase"}
+	combined := StripANSI(RenderSegments([]*Segment{
+		{Type: SegmentTool, ToolName: "update_plan", ToolArgs: args, ToolStatus: ToolSuccess},
+		following,
+	}, 100, -1, nil, true, false))
+	planEnd := strings.Index(combined, "○ Run suite")
+	nextBlock := strings.Index(combined, "spawn_agent")
+	if planEnd < 0 || nextBlock < 0 || nextBlock <= planEnd {
+		t.Fatalf("combined plan/tool render = %q", combined)
+	}
+	between := combined[planEnd+len("○ Run suite") : nextBlock]
+	if got := strings.Count(between, "\n"); got != 2 {
+		t.Fatalf("plan should have exactly one blank line before next block; got %d newlines in %q", got, between)
+	}
+
+	failed := RenderToolCallFromPartWithStatus(tc, 100, false, ToolError)
+	if !strings.Contains(failed, "update_plan") {
+		t.Fatalf("failed call did not use generic fallback: %s", failed)
+	}
+	invalid := RenderToolSegment(&Segment{Type: SegmentTool, ToolName: "update_plan", ToolArgs: json.RawMessage(`{`), ToolStatus: ToolSuccess}, -1, 100, false)
+	if !strings.Contains(invalid, "update_plan") {
+		t.Fatalf("invalid live call did not use generic fallback: %s", invalid)
+	}
+}
+
+func TestUpdatePlanGutterReservesWrappingWidth(t *testing.T) {
+	const width = 24
+	args := json.RawMessage(`{"explanation":"moving through a deliberately long explanation","plan":[{"step":"Review a deliberately long implementation step","status":"in_progress"}]}`)
+	rendered := RenderToolSegment(&Segment{Type: SegmentTool, ToolName: "update_plan", ToolArgs: args, ToolStatus: ToolSuccess}, -1, width, false)
+	for lineNo, line := range strings.Split(rendered, "\n") {
+		plain := StripANSI(line)
+		if !strings.HasPrefix(plain, "▌ ") {
+			t.Fatalf("plan line %d missing gutter and padding: %q", lineNo, plain)
+		}
+		if got := xansi.StringWidth(line); got > width {
+			t.Fatalf("plan line %d exceeds width %d (got %d): %q", lineNo, width, got, plain)
+		}
+	}
+}
+
 func TestSafeANSISlice(t *testing.T) {
 	tests := []struct {
 		name string

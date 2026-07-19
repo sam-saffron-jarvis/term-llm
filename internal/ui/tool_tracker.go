@@ -107,6 +107,7 @@ type ToolTracker struct {
 
 	// Flush state for consistent spacing
 	LastFlushedType SegmentType
+	LastFlushedPlan bool
 	HasFlushed      bool
 }
 
@@ -117,6 +118,16 @@ func NewToolTracker() *ToolTracker {
 		LastActivity:    time.Now(),
 		pendingGuardian: make(map[string]tools.GuardianEvent),
 	}
+}
+
+func (t *ToolTracker) setLastFlushedSegment(seg *Segment) {
+	if seg == nil {
+		t.LastFlushedType = SegmentText
+		t.LastFlushedPlan = false
+		return
+	}
+	t.LastFlushedType = seg.Type
+	t.LastFlushedPlan = IsPlanChecklistSegment(seg)
 }
 
 func (t *ToolTracker) DiscardAttempt() {
@@ -141,10 +152,10 @@ done:
 	t.WavePaused = false
 	t.LastActivity = time.Now()
 	if keep == 0 {
-		t.LastFlushedType = SegmentText
+		t.setLastFlushedSegment(nil)
 		t.HasFlushed = false
 	} else {
-		t.LastFlushedType = t.Segments[keep-1].Type
+		t.setLastFlushedSegment(&t.Segments[keep-1])
 	}
 	t.Version++
 }
@@ -703,7 +714,7 @@ func (t *ToolTracker) FlushStreamingText(threshold int, width int, renderMd func
 		}
 		contentBuilder.WriteString(toolContent)
 		t.HasFlushed = true
-		t.LastFlushedType = toolsToFlush[len(toolsToFlush)-1].Type
+		t.setLastFlushedSegment(toolsToFlush[len(toolsToFlush)-1])
 	}
 
 	if blockedByPendingBarrier {
@@ -809,6 +820,7 @@ func (t *ToolTracker) FlushStreamingText(threshold int, width int, renderMd func
 		seg.FlushedPos = safeBoundary
 		t.HasFlushed = true
 		t.LastFlushedType = SegmentText
+		t.LastFlushedPlan = false
 		seg.StreamRenderer.MarkFlushed()
 		seg.FlushedRenderedPos = seg.StreamRenderer.FlushedRenderedPos()
 
@@ -909,6 +921,7 @@ func (t *ToolTracker) FlushStreamingText(threshold int, width int, renderMd func
 	seg.FlushedRenderedPos = len(renderedAll)
 	t.HasFlushed = true
 	t.LastFlushedType = SegmentText
+	t.LastFlushedPlan = false
 	debugFlushf("stream flush seg=%d safeBoundary=%d flushedPos=%d toFlushLen=%d renderedLen=%d", segIdx, safeBoundary, seg.FlushedPos, len(toFlush), len(rendered))
 
 	return FlushStreamingTextResult{
@@ -1035,7 +1048,7 @@ func (t *ToolTracker) FlushToScrollback(
 		if content != "" {
 			contentBuilder.WriteString(content)
 			t.HasFlushed = true
-			t.LastFlushedType = toFlush[len(toFlush)-1].Type
+			t.setLastFlushedSegment(toFlush[len(toFlush)-1])
 			debugFlushf("scrollback flushed lastType=%d contentLen=%d", t.LastFlushedType, len(content))
 			// Ensure streaming renderer matches flush state if this was a text segment
 			for _, seg := range toFlush {
@@ -1145,7 +1158,7 @@ func (t *ToolTracker) FlushAllRemaining(
 	}
 
 	t.HasFlushed = true
-	t.LastFlushedType = toFlush[len(toFlush)-1].Type
+	t.setLastFlushedSegment(toFlush[len(toFlush)-1])
 	debugFlushf("flush-all flushed count=%d lastType=%d contentLen=%d", len(toFlush), t.LastFlushedType, len(content))
 
 	return FlushToScrollbackResult{
@@ -1212,7 +1225,7 @@ func (t *ToolTracker) FlushCompletedNow(
 	}
 
 	t.HasFlushed = true
-	t.LastFlushedType = toFlush[len(toFlush)-1].Type
+	t.setLastFlushedSegment(toFlush[len(toFlush)-1])
 	debugFlushf("flush-now flushed count=%d lastType=%d contentLen=%d", len(toFlush), t.LastFlushedType, len(content))
 
 	return FlushToScrollbackResult{
@@ -1287,7 +1300,7 @@ func (t *ToolTracker) FlushBeforeExternalUI(
 	}
 
 	t.HasFlushed = true
-	t.LastFlushedType = toFlush[len(toFlush)-1].Type
+	t.setLastFlushedSegment(toFlush[len(toFlush)-1])
 	// Ensure streaming renderer matches flush state if this was a text segment
 	for _, seg := range toFlush {
 		if seg.StreamRenderer != nil {
@@ -1366,7 +1379,7 @@ func (t *ToolTracker) RenderUnflushedWithImageRenderer(width int, renderMd func(
 		leading = &Segment{Type: t.LastFlushedType}
 	}
 
-	return RenderSegmentsWithLeadingAndImageRenderer(leading, unflushed, width, -1, renderMd, includeImages, t.expanded, renderer)
+	return renderSegmentsWithLeadingState(leading, t.LastFlushedPlan, unflushed, width, -1, renderMd, includeImages, t.expanded, renderer)
 }
 
 // LeadingSeparator returns the full spacing before a segment of the given type,
@@ -1377,7 +1390,7 @@ func (t *ToolTracker) LeadingSeparator(nextType SegmentType) string {
 	if !t.HasFlushed {
 		return ""
 	}
-	return SegmentSeparator(t.LastFlushedType, nextType)
+	return SegmentSeparatorAfter(t.LastFlushedType, nextType, t.LastFlushedPlan)
 }
 
 // FlushLeadingSeparator returns the spacing before a flushed segment,
@@ -1388,5 +1401,5 @@ func (t *ToolTracker) FlushLeadingSeparator(nextType SegmentType) string {
 	if !t.HasFlushed {
 		return ""
 	}
-	return FlushSegmentSeparator(t.LastFlushedType, nextType)
+	return FlushSegmentSeparatorAfter(t.LastFlushedType, nextType, t.LastFlushedPlan)
 }

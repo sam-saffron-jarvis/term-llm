@@ -60,6 +60,7 @@ type StreamingIndicator struct {
 	// Flush state for leading spacing
 	HasFlushed      bool
 	LastFlushedType SegmentType
+	LastFlushedPlan bool
 }
 
 // Render returns the formatted streaming indicator string
@@ -69,7 +70,7 @@ func (s StreamingIndicator) Render(styles *Styles) string {
 	// Render active tools if any
 	if len(s.Segments) > 0 {
 		if s.HasFlushed {
-			b.WriteString(FlushSegmentSeparator(s.LastFlushedType, s.Segments[0].Type))
+			b.WriteString(FlushSegmentSeparatorAfter(s.LastFlushedType, s.Segments[0].Type, s.LastFlushedPlan))
 		}
 		b.WriteString(RenderSegments(s.Segments, s.Width, s.WavePos, s.RenderMarkdown, false, s.ToolsExpanded))
 		// When tools are active, we don't show the spinner/phase line

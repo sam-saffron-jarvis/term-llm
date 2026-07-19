@@ -8,6 +8,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/agents"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/skills"
 )
 
@@ -185,6 +186,10 @@ func (r *LocalToolRegistry) registerTool(specName string) error {
 		tool = NewRunAgentScriptTool(r.config, r.limits)
 	case InitiateHandoverToolName:
 		tool = NewInitiateHandoverTool()
+	case UpdatePlanToolName:
+		controller := NewPlanController(nil)
+		controller.SetPromptGuidance(r.config.PlanGuidance)
+		tool = NewUpdatePlanTool(controller)
 	default:
 		return NewToolErrorf(ErrInvalidParams, "unimplemented tool: %s", specName)
 	}
@@ -222,7 +227,25 @@ func (r *LocalToolRegistry) RegisterWithEngine(engine *llm.Engine) {
 	defer r.mu.RUnlock()
 
 	for _, tool := range r.tools {
-		engine.Tools().Register(tool)
+		engine.RegisterTool(tool)
+	}
+}
+
+// SetPlanStore wires durable latest-snapshot persistence only when update_plan
+// was explicitly configured and registered.
+func (r *LocalToolRegistry) SetPlanStore(store session.Store) {
+	if r == nil || store == nil {
+		return
+	}
+	planStore, ok := store.(session.PlanSnapshotStore)
+	if !ok {
+		return
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	tool, ok := r.tools[UpdatePlanToolName].(*UpdatePlanTool)
+	if ok {
+		tool.controller.SetStore(planStore)
 	}
 }
 

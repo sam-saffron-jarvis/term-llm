@@ -866,6 +866,7 @@ type sessionMessagePartEntry struct {
 	ToolCallID      string                         `json:"tool_call_id,omitempty"`
 	ImageURL        string                         `json:"image_url,omitempty"`
 	Images          []string                       `json:"images,omitempty"`
+	ToolError       bool                           `json:"tool_error,omitempty"`
 	MimeType        string                         `json:"mime_type,omitempty"`
 }
 
@@ -1219,6 +1220,14 @@ func (s *serveServer) getSessionMessagesPageDescending(ctx context.Context, sess
 }
 
 func (s *serveServer) sessionMessageEntries(msgs []session.Message) []sessionMessageEntry {
+	failedToolCalls := make(map[string]bool)
+	for _, msg := range msgs {
+		for _, part := range msg.Parts {
+			if part.Type == llm.PartToolResult && part.ToolResult != nil && part.ToolResult.IsError && part.ToolResult.ID != "" {
+				failedToolCalls[part.ToolResult.ID] = true
+			}
+		}
+	}
 	result := make([]sessionMessageEntry, 0, len(msgs))
 	for _, msg := range msgs {
 		// System and developer messages contain internal prompts — never expose to UI clients.
@@ -1286,6 +1295,7 @@ func (s *serveServer) sessionMessageEntries(msgs []session.Message) []sessionMes
 						Type:       "tool_call",
 						ToolName:   p.ToolCall.Name,
 						ToolCallID: p.ToolCall.ID,
+						ToolError:  failedToolCalls[p.ToolCall.ID],
 					}
 					if len(p.ToolCall.Arguments) > 0 {
 						pe.ToolArgs = string(p.ToolCall.Arguments)
@@ -1293,14 +1303,18 @@ func (s *serveServer) sessionMessageEntries(msgs []session.Message) []sessionMes
 					entry.Parts = append(entry.Parts, pe)
 				}
 			case llm.PartToolResult:
-				if p.ToolResult != nil && len(p.ToolResult.Images) > 0 {
-					if imageURLs := s.toolImageURLs(p.ToolResult.Images); len(imageURLs) > 0 {
-						entry.Parts = append(entry.Parts, sessionMessagePartEntry{
-							Type:       "tool_result",
-							ToolName:   p.ToolResult.Name,
-							ToolCallID: p.ToolResult.ID,
-							Images:     imageURLs,
-						})
+				if p.ToolResult != nil && (p.ToolResult.IsError || len(p.ToolResult.Images) > 0) {
+					pe := sessionMessagePartEntry{
+						Type:       "tool_result",
+						ToolName:   p.ToolResult.Name,
+						ToolCallID: p.ToolResult.ID,
+						ToolError:  p.ToolResult.IsError,
+					}
+					if len(p.ToolResult.Images) > 0 {
+						pe.Images = s.toolImageURLs(p.ToolResult.Images)
+					}
+					if p.ToolResult.IsError || len(pe.Images) > 0 {
+						entry.Parts = append(entry.Parts, pe)
 					}
 				}
 			}

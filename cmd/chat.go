@@ -505,6 +505,9 @@ func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent 
 		}
 		return "", "", err
 	}
+	if toolMgr != nil {
+		toolMgr.Registry.SetPlanStore(store)
+	}
 	if sess != nil && toolMgr != nil {
 		if err := RestoreWorktreeBinding(context.Background(), store, sess, toolMgr); err != nil {
 			fmt.Fprintf(cmd.ErrOrStderr(), "warning: failed to restore worktree binding: %v\n", err)

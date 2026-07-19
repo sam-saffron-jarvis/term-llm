@@ -18,6 +18,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/huh/v2"
 	"charm.land/lipgloss/v2"
+	"github.com/samsaffron/term-llm/internal/agents"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/input"
 	"github.com/samsaffron/term-llm/internal/llm"
@@ -334,6 +335,11 @@ func runAsk(cmd *cobra.Command, args []string) error {
 		if !cmd.Flags().Changed("mcp") {
 			settings.MCP = sess.MCP
 		}
+		if agent == nil && strings.TrimSpace(sess.Agent) != "" {
+			if resumedAgent, loadAgentErr := LoadAgent(sess.Agent, cfg); loadAgentErr == nil && resumedAgent != nil {
+				settings.PlanGuidance = resumedAgent.Name == "developer" && resumedAgent.Source == agents.SourceBuiltin
+			}
+		}
 
 		// Load active session history (post-compaction when a boundary exists).
 		if sessionMsgs, loadErr := session.LoadActiveMessages(ctx, store, sess); loadErr == nil {
@@ -357,6 +363,9 @@ func runAsk(cmd *cobra.Command, args []string) error {
 	toolMgr, err := settings.SetupToolManager(cfg, engine)
 	if err != nil {
 		return err
+	}
+	if toolMgr != nil {
+		toolMgr.Registry.SetPlanStore(store)
 	}
 	var outputTool *tools.SetOutputTool
 	if toolMgr != nil {
@@ -2719,7 +2728,7 @@ func (m askStreamModel) View() tea.View {
 			if len(active) > 0 {
 				completed := m.tracker.CompletedSegments()
 				if len(completed) > 0 {
-					b.WriteString(ui.SegmentSeparator(completed[len(completed)-1].Type, active[0].Type))
+					b.WriteString(ui.SegmentSeparatorBetween(completed[len(completed)-1], active[0]))
 				}
 			} else {
 				b.WriteString("\n")
@@ -2743,6 +2752,7 @@ func (m askStreamModel) View() tea.View {
 			RenderMarkdown:  renderMd,
 			HasFlushed:      !hasContent && m.tracker.HasFlushed,
 			LastFlushedType: m.tracker.LastFlushedType,
+			LastFlushedPlan: m.tracker.LastFlushedPlan,
 		}.Render(m.styles)
 		b.WriteString(indicator)
 	}

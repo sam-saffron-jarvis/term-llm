@@ -35,7 +35,8 @@ type SessionSettings struct {
 	Model    string
 
 	// Agent name (if any)
-	AgentName string
+	AgentName    string
+	PlanGuidance bool // Built-in developer's callable-only update_plan guidance
 
 	// Session ID (if any)
 	SessionID string
@@ -177,6 +178,7 @@ func ResolveSettingsInDir(cfg *config.Config, agent *agents.Agent, cli CLIFlags,
 	s := SessionSettings{}
 	if agent != nil {
 		s.AgentName = agent.Name
+		s.PlanGuidance = agent.Name == "developer" && agent.Source == agents.SourceBuiltin
 	}
 
 	// Provider/model: CLI > agent > config
@@ -199,7 +201,7 @@ func ResolveSettingsInDir(cfg *config.Config, agent *agents.Agent, cli CLIFlags,
 		if agent.HasEnabledList() {
 			s.Tools = strings.Join(agent.Tools.Enabled, ",")
 		} else if agent.HasDisabledList() {
-			allTools := tools.AllToolNames()
+			allTools := tools.StandardToolNames()
 			enabledTools := agent.GetEnabledTools(allTools)
 			s.Tools = strings.Join(enabledTools, ",")
 		}
@@ -479,6 +481,7 @@ func (s *SessionSettings) SetupToolManager(cfg *config.Config, engine *llm.Engin
 		toolConfig.Enabled = appendUniqueString(toolConfig.Enabled, tools.ViewImageToolName)
 	}
 	toolConfig.AgentDir = s.AgentDir
+	toolConfig.PlanGuidance = s.PlanGuidance
 	if strings.TrimSpace(s.BaseDir) != "" {
 		toolConfig.BaseDir = s.BaseDir
 		toolConfig.ReadDirs = append(toolConfig.ReadDirs, s.BaseDir)

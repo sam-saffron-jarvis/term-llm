@@ -14,6 +14,7 @@ import (
 	"github.com/muesli/reflow/wordwrap"
 	"github.com/muesli/reflow/wrap"
 	"github.com/samsaffron/term-llm/internal/llm"
+	planpkg "github.com/samsaffron/term-llm/internal/plan"
 	"github.com/samsaffron/term-llm/internal/tools"
 	"github.com/samsaffron/term-llm/internal/ui/ansisafe"
 )
@@ -213,6 +214,7 @@ func RenderWaveText(text string, wavePos int) string {
 var paramStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("250"))
 
 var toolExpandHintStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
+var planGutterStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("242"))
 
 func appendToolExpandHint(rendered string, seg *Segment, expanded bool) string {
 	if rendered == "" || seg == nil || !seg.ToolExpandHint || expanded {
@@ -309,6 +311,11 @@ func RenderToolSegment(seg *Segment, wavePos int, width int, expanded bool) stri
 }
 
 func renderToolSegmentBase(seg *Segment, wavePos int, width int, expanded bool) string {
+	if seg != nil && seg.ToolName == planpkg.ToolName && seg.ToolStatus != ToolError {
+		if rendered, ok := renderUpdatePlanChecklist(seg.ToolArgs, seg.ToolStatus == ToolPending, width); ok {
+			return rendered
+		}
+	}
 	info := seg.ToolInfo
 	expandedShellInfo := ""
 	if expanded && seg.ToolName == "shell" && len(seg.ToolArgs) > 0 {
@@ -384,6 +391,49 @@ func renderToolSegmentBase(seg *Segment, wavePos int, width int, expanded bool) 
 	return ""
 }
 
+// IsPlanChecklistSegment reports whether seg uses the dedicated multi-line plan renderer.
+func IsPlanChecklistSegment(seg *Segment) bool {
+	if seg == nil || seg.Type != SegmentTool || seg.ToolName != planpkg.ToolName || seg.ToolStatus == ToolError {
+		return false
+	}
+	_, err := planpkg.Parse(seg.ToolArgs)
+	return err == nil
+}
+
+func renderUpdatePlanChecklist(args json.RawMessage, running bool, width int) (string, bool) {
+	snapshot, err := planpkg.Parse(args)
+	if err != nil {
+		return "", false
+	}
+	rendered := snapshot.ChecklistText(running)
+	const gutter = "▌ "
+	gutterWidth := runewidth.StringWidth(gutter)
+	if width > 0 && width <= gutterWidth {
+		return planGutterStyle.Render("▌"), true
+	}
+	contentWidth := width
+	if contentWidth > 0 {
+		contentWidth -= gutterWidth
+	}
+	lines := strings.Split(rendered, "\n")
+	for i, line := range lines {
+		if contentWidth > 0 && runewidth.StringWidth(line) > contentWidth {
+			wrapped := wordwrap.String(line, contentWidth)
+			if strings.HasPrefix(line, "✓ ") || strings.HasPrefix(line, "→ ") || strings.HasPrefix(line, "○ ") {
+				wrapped = strings.ReplaceAll(wrapped, "\n", "\n  ")
+			}
+			line = wrapped
+		}
+		wrappedLines := strings.Split(line, "\n")
+		for j := range wrappedLines {
+			wrappedLines[j] = planGutterStyle.Render("▌") + " " + wrappedLines[j]
+		}
+		lines[i] = strings.Join(wrappedLines, "\n")
+	}
+	rendered = strings.Join(lines, "\n")
+	return rendered, rendered != ""
+}
+
 // RenderToolCallFromPart renders a historical tool call from an llm.ToolCall.
 // Uses success styling since historical calls without matching results are assumed completed.
 // width is the terminal width used to truncate long lines (0 = no truncation).
@@ -397,6 +447,11 @@ func RenderToolCallFromPart(tc *llm.ToolCall, width int, expanded bool) string {
 func RenderToolCallFromPartWithStatus(tc *llm.ToolCall, width int, expanded bool, status ToolStatus) string {
 	if tc == nil {
 		return ""
+	}
+	if tc.Name == planpkg.ToolName && status != ToolError {
+		if rendered, ok := renderUpdatePlanChecklist(tc.Arguments, false, width); ok {
+			return rendered
+		}
 	}
 
 	circle := SuccessCircle()
@@ -627,14 +682,34 @@ func renderAskUserResult(text string, width int) string {
 
 // SegmentSeparator returns the vertical spacing (newlines) required between two segments.
 func SegmentSeparator(prevType, currType SegmentType) string {
-	return strings.Repeat("\n", SegmentBoundaryTrailingNewlines(prevType, currType))
+	return SegmentSeparatorAfter(prevType, currType, false)
+}
+
+// SegmentSeparatorAfter returns boundary spacing and can preserve a blank line
+// after a rendered plan checklist.
+func SegmentSeparatorAfter(prevType, currType SegmentType, previousPlan bool) string {
+	return strings.Repeat("\n", SegmentBoundaryTrailingNewlinesAfter(prevType, currType, previousPlan))
+}
+
+// SegmentSeparatorBetween returns spacing for two concrete segments.
+func SegmentSeparatorBetween(previous, current *Segment) string {
+	if previous == nil || current == nil {
+		return ""
+	}
+	return SegmentSeparatorAfter(previous.Type, current.Type, IsPlanChecklistSegment(previous))
 }
 
 // FlushSegmentSeparator returns the spacing before a segment when the previous
 // content was printed by a separate tea.Printf/tea.Println call, which already
 // contributed one trailing newline.
 func FlushSegmentSeparator(prevType, currType SegmentType) string {
-	sep := SegmentSeparator(prevType, currType)
+	return FlushSegmentSeparatorAfter(prevType, currType, false)
+}
+
+// FlushSegmentSeparatorAfter is SegmentSeparatorAfter adjusted for the newline
+// automatically emitted by a separate tea.Printf/tea.Println call.
+func FlushSegmentSeparatorAfter(prevType, currType SegmentType, previousPlan bool) string {
+	sep := SegmentSeparatorAfter(prevType, currType, previousPlan)
 	if len(sep) > 0 && sep[0] == '\n' {
 		return sep[1:]
 	}
@@ -801,11 +876,17 @@ func RenderSegmentsWithLeading(leading *Segment, segments []*Segment, width int,
 // RenderSegmentsWithLeadingAndImageRenderer renders a list of segments, optionally
 // using a leading segment for initial spacing and renderer for image segments.
 func RenderSegmentsWithLeadingAndImageRenderer(leading *Segment, segments []*Segment, width int, wavePos int, renderMarkdown func(string, int) string, includeImages bool, expanded bool, renderer ImageArtifactRenderer) string {
+	return renderSegmentsWithLeadingState(leading, IsPlanChecklistSegment(leading), segments, width, wavePos, renderMarkdown, includeImages, expanded, renderer)
+}
+
+func renderSegmentsWithLeadingState(leading *Segment, leadingPlan bool, segments []*Segment, width int, wavePos int, renderMarkdown func(string, int) string, includeImages bool, expanded bool, renderer ImageArtifactRenderer) string {
 	var b strings.Builder
 	lastType := SegmentText
+	lastPlan := false
 	hasPrev := false
 	if leading != nil {
 		lastType = leading.Type
+		lastPlan = leadingPlan
 		hasPrev = true
 	}
 
@@ -905,10 +986,11 @@ func RenderSegmentsWithLeadingAndImageRenderer(leading *Segment, segments []*Seg
 
 		if rendered != "" {
 			if hasPrev {
-				b.WriteString(SegmentSeparator(lastType, seg.Type))
+				b.WriteString(SegmentSeparatorAfter(lastType, seg.Type, lastPlan))
 			}
 			b.WriteString(rendered)
 			lastType = seg.Type
+			lastPlan = IsPlanChecklistSegment(seg)
 			hasPrev = true
 		}
 	}

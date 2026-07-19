@@ -1273,6 +1273,56 @@ async function testConvertServerMessagesAttachesToolResultImages() {
   pass(name);
 }
 
+async function testConvertServerMessagesAttachesToolErrorsWithoutPhantoms() {
+  const name = 'server tool_result errors update matching calls without phantom rows';
+  const { app } = await createSessionsHarness();
+
+  const converted = app.convertServerMessages([
+    {
+      role: 'assistant',
+      created_at: 1000,
+      parts: [{
+        type: 'tool_call',
+        tool_name: 'update_plan',
+        tool_call_id: 'call_plan',
+        tool_arguments: '{"plan":[]}',
+      }],
+    },
+    {
+      role: 'tool',
+      created_at: 2000,
+      parts: [{
+        type: 'tool_result',
+        tool_name: 'update_plan',
+        tool_call_id: 'call_plan',
+        tool_error: true,
+      }],
+    },
+  ]);
+  const tool = converted.find((message) => message.role === 'tool-group')?.tools?.[0];
+  if (!tool || tool.status !== 'error') {
+    fail(name, 'matching tool call was not marked as failed', JSON.stringify(converted));
+    return;
+  }
+
+  const orphaned = app.convertServerMessages([{
+    role: 'tool',
+    created_at: 3000,
+    parts: [{
+      type: 'tool_result',
+      tool_name: 'update_plan',
+      tool_call_id: 'call_from_older_page',
+      tool_error: true,
+    }],
+  }]);
+  if (orphaned.some((message) => message.role === 'tool-group')) {
+    fail(name, 'orphaned error-only result created a phantom tool row', JSON.stringify(orphaned));
+    return;
+  }
+
+  pass(name);
+}
+
 async function testConvertServerMessagesRebasesHubImageURLs() {
   const name = 'server message conversion rebases hub image URLs';
   const { app } = await createSessionsHarness({
@@ -4552,6 +4602,7 @@ async function testSessionSwitchRefreshesSkillsAndDraftClearsThem() {
   await testConvertServerMessagesHandlesMixedLegacyAndAuthoritativeCompactionTails();
   await testConvertServerMessagesInsertsBoundaryWhenSummaryNotLoaded();
   await testConvertServerMessagesAttachesToolResultImages();
+  await testConvertServerMessagesAttachesToolErrorsWithoutPhantoms();
   await testConvertServerMessagesRebasesHubImageURLs();
   await testConvertServerMessagesSuppressesNonBubbleAssistantRows();
   await testMergeServerMessagesPreservesLocalStoppedAssistantTailWhenServerLags();

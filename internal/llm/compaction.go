@@ -71,12 +71,45 @@ func effectiveCompactionThresholdRatios(config *CompactionConfig) (soft, hard fl
 
 // CompactionResult describes what happened during compaction.
 type CompactionResult struct {
-	Summary        string
-	NewMessages    []Message
-	OriginalCount  int
-	CompactedCount int
-	Model          string // Model used by the helper LLM call.
-	Usage          Usage  // Token usage/cost of the helper LLM call that produced the summary.
+	Summary           string
+	NewMessages       []Message
+	EphemeralMessages []Message
+	OriginalCount     int
+	CompactedCount    int
+	Model             string // Model used by the helper LLM call.
+	Usage             Usage  // Token usage/cost of the helper LLM call that produced the summary.
+}
+
+// ActiveMessages returns the durable replacement history plus request-only
+// restoration context. Developer context is placed before the latest user turn
+// so providers without a native developer role can fold it into that turn. The
+// ordinary no-ephemeral path returns NewMessages directly, preserving allocation
+// and identity behavior for existing agents.
+func (r *CompactionResult) ActiveMessages() []Message {
+	if r == nil {
+		return nil
+	}
+	if len(r.EphemeralMessages) == 0 {
+		return r.NewMessages
+	}
+	active := append([]Message(nil), r.NewMessages...)
+	for _, ephemeral := range r.EphemeralMessages {
+		if ephemeral.Role != RoleDeveloper {
+			active = append(active, ephemeral)
+			continue
+		}
+		insertAt := len(active)
+		for i := len(active) - 1; i >= 0; i-- {
+			if active[i].Role == RoleUser {
+				insertAt = i
+				break
+			}
+		}
+		active = append(active, Message{})
+		copy(active[insertAt+1:], active[insertAt:])
+		active[insertAt] = ephemeral
+	}
+	return active
 }
 
 // EstimateTokens returns an approximate token count for a string using a

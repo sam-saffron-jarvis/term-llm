@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/llm"
+	planpkg "github.com/samsaffron/term-llm/internal/plan"
 	"github.com/samsaffron/term-llm/internal/sqlitefts"
 	_ "modernc.org/sqlite"
 )
@@ -120,6 +122,13 @@ CREATE TABLE IF NOT EXISTS session_provider_state (
     state BLOB NOT NULL,
     updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (session_id, provider_key)
+);
+
+CREATE TABLE IF NOT EXISTS session_plans (
+    session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
+    snapshot TEXT NOT NULL,
+    version INTEGER NOT NULL DEFAULT 1,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
 -- Metadata table for current session tracking
@@ -254,7 +263,7 @@ func NewSQLiteStore(cfg Config) (*SQLiteStore, error) {
 // - Fresh databases get the full schema from `schema` const and start at this version
 // - Existing databases run migrations to reach this version
 // Increment when adding new migrations.
-const schemaVersion = 39
+const schemaVersion = 40
 
 // migration represents a schema migration.
 type migration struct {
@@ -1084,6 +1093,19 @@ var migrations = []migration{
 			return nil
 		},
 	},
+	{
+		version:     40,
+		description: "create session plan snapshots table",
+		up: func(db schemaExecutor) error {
+			_, err := db.Exec(`CREATE TABLE IF NOT EXISTS session_plans (
+				session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
+				snapshot TEXT NOT NULL,
+				version INTEGER NOT NULL DEFAULT 1,
+				updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+			)`)
+			return err
+		},
+	},
 }
 
 // Keep in sync with llm.IsInternalCompactionSummaryText. SQLite migrations and
@@ -1752,6 +1774,111 @@ func (s *SQLiteStore) MarkTitleSkipped(ctx context.Context, id string, t time.Ti
 		return fmt.Errorf("mark title skipped: %w", err)
 	}
 	return nil
+}
+
+// LoadPlanSnapshot loads the authoritative latest update_plan snapshot.
+func (s *SQLiteStore) LoadPlanSnapshot(ctx context.Context, sessionID string) (planpkg.Snapshot, int64, error) {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return planpkg.Snapshot{}, 0, nil
+	}
+	var raw string
+	var version int64
+	err := retryOnBusy(ctx, 5, func() error {
+		return s.db.QueryRowContext(ctx, `
+			SELECT snapshot, version FROM session_plans WHERE session_id = ?
+		`, sessionID).Scan(&raw, &version)
+	})
+	if errors.Is(err, sql.ErrNoRows) {
+		return planpkg.Snapshot{}, 0, nil
+	}
+	if err != nil {
+		return planpkg.Snapshot{}, 0, fmt.Errorf("load plan snapshot: %w", err)
+	}
+	snapshot, err := planpkg.Parse(json.RawMessage(raw))
+	if err != nil {
+		decodeErr := fmt.Errorf("decode stored plan snapshot: %w", err)
+		deleted, deleteErr := s.deletePlanSnapshotVersion(ctx, sessionID, version)
+		if deleteErr != nil {
+			return planpkg.Snapshot{}, 0, fmt.Errorf("%v; discard invalid plan snapshot: %w", decodeErr, deleteErr)
+		}
+		if deleted {
+			slog.Warn("discarded invalid stored plan snapshot", "session_id", sessionID, "version", version, "error", decodeErr)
+		} else {
+			slog.Warn("stored plan snapshot was invalid; cleanup skipped because the version changed", "session_id", sessionID, "version", version, "error", decodeErr)
+		}
+		return planpkg.Snapshot{}, 0, nil
+	}
+	return snapshot, version, nil
+}
+
+// SavePlanSnapshot atomically replaces the current snapshot and increments the
+// existing row's version. Saving after a clear creates a new row at version 1.
+func (s *SQLiteStore) SavePlanSnapshot(ctx context.Context, sessionID string, snapshot planpkg.Snapshot) (int64, error) {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return 0, nil
+	}
+	raw, err := snapshot.CanonicalJSON()
+	if err != nil {
+		return 0, fmt.Errorf("encode plan snapshot: %w", err)
+	}
+	var version int64
+	err = retryOnBusy(ctx, 5, func() error {
+		return s.db.QueryRowContext(ctx, `
+			INSERT INTO session_plans (session_id, snapshot, version, updated_at)
+			VALUES (?, ?, 1, CURRENT_TIMESTAMP)
+			ON CONFLICT(session_id) DO UPDATE SET
+			    snapshot = excluded.snapshot,
+			    version = session_plans.version + 1,
+			    updated_at = CURRENT_TIMESTAMP
+			RETURNING version
+		`, sessionID, string(raw)).Scan(&version)
+	})
+	if err != nil {
+		return 0, fmt.Errorf("save plan snapshot: %w", err)
+	}
+	return version, nil
+}
+
+func (s *SQLiteStore) deletePlanSnapshotVersion(ctx context.Context, sessionID string, version int64) (bool, error) {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" || version <= 0 {
+		return false, nil
+	}
+	var deleted bool
+	err := retryOnBusy(ctx, 5, func() error {
+		result, err := s.db.ExecContext(ctx, `
+			DELETE FROM session_plans WHERE session_id = ? AND version = ?
+		`, sessionID, version)
+		if err != nil {
+			return err
+		}
+		rows, err := result.RowsAffected()
+		if err != nil {
+			return err
+		}
+		deleted = rows > 0
+		return nil
+	})
+	if err != nil {
+		return false, fmt.Errorf("delete plan snapshot version: %w", err)
+	}
+	return deleted, nil
+}
+
+// DeletePlanSnapshot clears the current snapshot row for a session.
+func (s *SQLiteStore) DeletePlanSnapshot(ctx context.Context, sessionID string) error {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return nil
+	}
+	return retryOnBusy(ctx, 5, func() error {
+		if _, err := s.db.ExecContext(ctx, `DELETE FROM session_plans WHERE session_id = ?`, sessionID); err != nil {
+			return fmt.Errorf("delete plan snapshot: %w", err)
+		}
+		return nil
+	})
 }
 
 // SaveProviderState stores opaque provider-owned resume state for a session.
