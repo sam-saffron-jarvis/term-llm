@@ -1,6 +1,7 @@
 package markdown
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -19,6 +20,31 @@ var testPalette = Palette{
 	Warning:   "#fabd2f",
 	Muted:     "#928374",
 	Text:      "#ebdbb2",
+}
+
+func TestANSIRenderReturnsCallerOwnedStableBytes(t *testing.T) {
+	renderer := NewANSI(Config{Palette: testPalette, Width: 80})
+	first, err := renderer.Render([]byte("First **render**."))
+	if err != nil {
+		t.Fatalf("first Render failed: %v", err)
+	}
+	wantFirst := bytes.Clone(first)
+
+	if _, err := renderer.Render([]byte("A later render with different content.")); err != nil {
+		t.Fatalf("second Render failed: %v", err)
+	}
+	if !bytes.Equal(first, wantFirst) {
+		t.Fatalf("later Render mutated previous result: got %q, want %q", first, wantFirst)
+	}
+
+	first[0] ^= 0xff
+	again, err := renderer.Render([]byte("First **render**."))
+	if err != nil {
+		t.Fatalf("Render after caller mutation failed: %v", err)
+	}
+	if !bytes.Equal(again, wantFirst) {
+		t.Fatalf("caller mutation affected renderer state: got %q, want %q", again, wantFirst)
+	}
 }
 
 func TestRenderString_GoldenVisibleOutput(t *testing.T) {

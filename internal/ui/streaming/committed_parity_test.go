@@ -55,15 +55,21 @@ func TestCommittedRenderedMatchesDirectAtStreamingBoundaries(t *testing.T) {
 func TestCorpusCommittedRenderedMatchesDirectAtStreamingBoundaries(t *testing.T) {
 	for _, doc := range loadCorpusDocuments(t) {
 		for _, partial := range []bool{false, true} {
-			name := doc.name
+			mode := "plain"
 			if partial {
-				name += "/partial"
-			} else {
-				name += "/plain"
+				mode = "partial"
 			}
-			t.Run(name, func(t *testing.T) {
-				assertCommittedRenderedMatchesDirectForChunks(t, doc.content, fixedSizeChunks(doc.content, 1), partial)
-			})
+			for _, chunks := range []struct {
+				name   string
+				chunks [][]byte
+			}{
+				{name: "byte-by-byte", chunks: fixedSizeChunks(doc.content, 1)},
+				{name: "adversarial-markdown-cuts", chunks: adversarialMarkdownChunks(doc.content)},
+			} {
+				t.Run(doc.name+"/"+mode+"/"+chunks.name, func(t *testing.T) {
+					assertCommittedRenderedMatchesDirectForChunks(t, doc.content, chunks.chunks, partial)
+				})
+			}
 		}
 	}
 }

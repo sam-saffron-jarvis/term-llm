@@ -27,6 +27,8 @@ import (
 // Renderer renders complete markdown content for a terminal target.
 // Implementations must treat source as read-only and must not retain it after
 // Render returns; streaming callers may pass slices backed by reusable buffers.
+// Render returns caller-owned bytes that the implementation must not mutate or
+// reuse, including during later Render calls.
 type Renderer interface {
 	Render(source []byte) ([]byte, error)
 	Resize(width int)
