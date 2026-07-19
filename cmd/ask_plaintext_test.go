@@ -1,12 +1,14 @@
 package cmd
 
 import (
+	"bytes"
 	"context"
 	"io"
 	"os"
 	"strings"
 	"testing"
 
+	"github.com/samsaffron/term-llm/internal/tools"
 	"github.com/samsaffron/term-llm/internal/ui"
 )
 
@@ -26,7 +28,7 @@ func captureStreamPlainTextOutput(t *testing.T, events []ui.StreamEvent, suppres
 	}
 	os.Stdout = w
 
-	err = streamPlainText(context.Background(), ch, suppressToolStatus)
+	err = streamPlainText(context.Background(), ch, suppressToolStatus, io.Discard)
 	_ = w.Close()
 	os.Stdout = oldStdout
 	if err != nil {
@@ -38,6 +40,35 @@ func captureStreamPlainTextOutput(t *testing.T, events []ui.StreamEvent, suppres
 		t.Fatalf("read stdout: %v", readErr)
 	}
 	return string(out)
+}
+
+func captureStreamPlainTextStderr(t *testing.T, events []ui.StreamEvent, suppressToolStatus bool) string {
+	t.Helper()
+
+	ch := make(chan ui.StreamEvent, len(events))
+	for _, event := range events {
+		ch <- event
+	}
+	close(ch)
+
+	var stderr bytes.Buffer
+	if err := streamPlainText(context.Background(), ch, suppressToolStatus, &stderr); err != nil {
+		t.Fatalf("streamPlainText returned error: %v", err)
+	}
+	return stderr.String()
+}
+
+func TestStreamPlainText_GuardianReviewUsesOrderedStderr(t *testing.T) {
+	event := tools.GuardianEvent{ToolCallID: "call-1", Message: "guardian: approved", Outcome: tools.GuardianApproved}
+	stderr := captureStreamPlainTextStderr(t, []ui.StreamEvent{
+		ui.ToolStartEvent("call-1", "shell", "(git status)", nil),
+		ui.GuardianReviewEvent(event),
+		ui.ToolEndEvent("call-1", "shell", "(git status)", true),
+		ui.DoneEvent(0),
+	}, false)
+	if stderr != event.Message+"\n" {
+		t.Fatalf("guardian stderr = %q, want %q", stderr, event.Message+"\n")
+	}
 }
 
 func countTrailingNewlines(s string) int {

@@ -6,10 +6,12 @@ import (
 	"encoding/json"
 	"io"
 	"strings"
+	"sync"
 
 	"github.com/samsaffron/term-llm/internal/diff"
 	"github.com/samsaffron/term-llm/internal/llm"
 	internalreasoning "github.com/samsaffron/term-llm/internal/reasoning"
+	"github.com/samsaffron/term-llm/internal/tools"
 )
 
 // DefaultStreamBufferSize is the default buffer size for the event channel.
@@ -22,6 +24,13 @@ const DefaultStreamBufferSize = 100
 type StreamAdapter struct {
 	events chan StreamEvent
 	stats  *SessionStats
+
+	sendMu    sync.Mutex
+	closed    bool
+	stopSend  chan struct{}
+	closeDone chan struct{}
+	senders   sync.WaitGroup
+	statsMu   sync.Mutex
 
 	seenToolStarts map[string]struct{}
 	seenToolEnds   map[string]struct{}
@@ -43,6 +52,8 @@ func NewStreamAdapter(bufSize int) *StreamAdapter {
 	return &StreamAdapter{
 		events:         make(chan StreamEvent, bufSize),
 		stats:          NewSessionStats(),
+		stopSend:       make(chan struct{}),
+		closeDone:      make(chan struct{}),
 		seenToolStarts: make(map[string]struct{}),
 		seenToolEnds:   make(map[string]struct{}),
 	}
@@ -66,8 +77,68 @@ func (a *StreamAdapter) Events() <-chan StreamEvent {
 // EmitErrorAndClose sends an error event and closes the channel.
 // Use this when stream creation fails before ProcessStream can be called.
 func (a *StreamAdapter) EmitErrorAndClose(err error) {
-	a.events <- ErrorEvent(err)
+	a.emit(context.Background(), ErrorEvent(err))
+	a.closeEvents()
+}
+
+// EmitGuardian inserts a guardian review into the same ordered event stream as
+// tool start/end events. It returns false after the adapter closes or when the
+// supplied context is canceled.
+func (a *StreamAdapter) EmitGuardian(ctx context.Context, event tools.GuardianEvent) bool {
+	if !event.Usage.BillableCountersZero() {
+		u := event.Usage
+		a.updateStats(func(stats *SessionStats) {
+			stats.AddGuardianUsageForModel(event.Model, u.InputTokens, u.OutputTokens, u.CachedInputTokens, u.CacheWriteTokens)
+		})
+	}
+	return a.emit(ctx, GuardianReviewEvent(event))
+}
+
+func (a *StreamAdapter) updateStats(update func(*SessionStats)) {
+	a.statsMu.Lock()
+	defer a.statsMu.Unlock()
+	update(a.stats)
+}
+
+func (a *StreamAdapter) emit(ctx context.Context, event StreamEvent) bool {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	a.sendMu.Lock()
+	if a.closed {
+		a.sendMu.Unlock()
+		return false
+	}
+	a.senders.Add(1)
+	stopSend := a.stopSend
+	a.sendMu.Unlock()
+	defer a.senders.Done()
+
+	select {
+	case a.events <- event:
+		return true
+	case <-stopSend:
+		return false
+	case <-ctx.Done():
+		return false
+	}
+}
+
+func (a *StreamAdapter) closeEvents() {
+	a.sendMu.Lock()
+	if a.closed {
+		closeDone := a.closeDone
+		a.sendMu.Unlock()
+		<-closeDone
+		return
+	}
+	a.closed = true
+	close(a.stopSend)
+	a.sendMu.Unlock()
+
+	a.senders.Wait()
 	close(a.events)
+	close(a.closeDone)
 }
 
 // Stats returns the session stats being tracked.
@@ -86,19 +157,11 @@ func (a *StreamAdapter) ProcessStream(ctx context.Context, stream llm.Stream) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	defer close(a.events)
-	a.stats.RequestStart()
+	defer a.closeEvents()
+	a.updateStats(func(stats *SessionStats) { stats.RequestStart() })
 
 	emit := func(event StreamEvent) bool {
-		if ctx.Err() != nil {
-			return false
-		}
-		select {
-		case a.events <- event:
-			return true
-		case <-ctx.Done():
-			return false
-		}
+		return a.emit(ctx, event)
 	}
 
 	var totalTokens int
@@ -133,7 +196,7 @@ func (a *StreamAdapter) ProcessStream(ctx context.Context, stream llm.Stream) {
 		case llm.EventTextDelta:
 			a.attemptUsageCommitted = false
 			if event.Text != "" {
-				a.stats.ObserveOutput()
+				a.updateStats(func(stats *SessionStats) { stats.ObserveOutput() })
 				if !emit(TextEvent(event.Text)) {
 					return
 				}
@@ -143,7 +206,7 @@ func (a *StreamAdapter) ProcessStream(ctx context.Context, stream llm.Stream) {
 			a.attemptUsageCommitted = false
 			kind := llm.NormalizeReasoningKind(event.ReasoningKind)
 			if llm.IsEncryptedReasoningDelta(event) {
-				a.stats.ObserveOutput()
+				a.updateStats(func(stats *SessionStats) { stats.ObserveOutput() })
 				// Preserve generation timing without exposing encrypted replay data.
 				if !emit(GenerationActivityEvent()) {
 					return
@@ -154,7 +217,7 @@ func (a *StreamAdapter) ProcessStream(ctx context.Context, stream llm.Stream) {
 				continue
 			}
 			if event.Text != "" {
-				a.stats.ObserveOutput()
+				a.updateStats(func(stats *SessionStats) { stats.ObserveOutput() })
 			}
 			title := ""
 			displayable := kind == llm.ReasoningKindSummary
@@ -195,7 +258,7 @@ func (a *StreamAdapter) ProcessStream(ctx context.Context, stream llm.Stream) {
 				if !emit(uiEvent) {
 					return
 				}
-				a.stats.ToolStart()
+				a.updateStats(func(stats *SessionStats) { stats.ToolStart() })
 			}
 
 		case llm.EventToolExecStart:
@@ -212,7 +275,7 @@ func (a *StreamAdapter) ProcessStream(ctx context.Context, stream llm.Stream) {
 			if !emit(uiEvent) {
 				return
 			}
-			a.stats.ToolStart()
+			a.updateStats(func(stats *SessionStats) { stats.ToolStart() })
 
 		case llm.EventToolExecEnd:
 			// Skip if already seen. If toolCallID is empty, don't dedupe - treat as unique.
@@ -226,7 +289,7 @@ func (a *StreamAdapter) ProcessStream(ctx context.Context, stream llm.Stream) {
 			if !emit(uiEvent) {
 				return
 			}
-			a.stats.ToolEnd()
+			a.updateStats(func(stats *SessionStats) { stats.ToolEnd() })
 			a.resetAttemptUsage()
 
 			// Emit image events from structured data
@@ -249,27 +312,31 @@ func (a *StreamAdapter) ProcessStream(ctx context.Context, stream llm.Stream) {
 			}
 
 		case llm.EventRetry:
-			a.stats.ScheduleRetryStart(event.RetryWaitSecs)
+			a.updateStats(func(stats *SessionStats) { stats.ScheduleRetryStart(event.RetryWaitSecs) })
 			if !emit(RetryEvent(event.RetryAttempt, event.RetryMaxAttempts, event.RetryWaitSecs)) {
 				return
 			}
 
 		case llm.EventAttemptDiscard:
-			a.stats.DiscardUsage(a.attemptInput, a.attemptOutput, a.attemptCached, a.attemptCacheWrite, a.attemptUsageCalls)
+			a.updateStats(func(stats *SessionStats) {
+				stats.DiscardUsage(a.attemptInput, a.attemptOutput, a.attemptCached, a.attemptCacheWrite, a.attemptUsageCalls)
+			})
 			a.resetAttemptUsage()
 			if !emit(AttemptDiscardEvent()) {
 				return
 			}
 
 		case llm.EventUsage:
-			a.stats.GenerationEnd()
+			a.updateStats(func(stats *SessionStats) { stats.GenerationEnd() })
 			if event.Use != nil {
 				totalTokens = event.Use.OutputTokens
 				usageEvent := UsageEvent(event.Use.InputTokens, event.Use.OutputTokens, event.Use.CachedInputTokens, event.Use.CacheWriteTokens)
 				if !emit(usageEvent) {
 					return
 				}
-				a.stats.AddUsage(event.Use.InputTokens, event.Use.OutputTokens, event.Use.CachedInputTokens, event.Use.CacheWriteTokens)
+				a.updateStats(func(stats *SessionStats) {
+					stats.AddUsage(event.Use.InputTokens, event.Use.OutputTokens, event.Use.CachedInputTokens, event.Use.CacheWriteTokens)
+				})
 				if !event.Use.BillableCountersZero() && !a.attemptUsageCommitted {
 					a.attemptInput += event.Use.InputTokens
 					a.attemptOutput += event.Use.OutputTokens
@@ -292,7 +359,7 @@ func (a *StreamAdapter) ProcessStream(ctx context.Context, stream llm.Stream) {
 				model = event.Text
 			}
 			if model != "" {
-				a.stats.SetModel(model)
+				a.updateStats(func(stats *SessionStats) { stats.SetModel(model) })
 				if !emit(ModelSwitchEvent(model, event.ReasoningEffort)) {
 					return
 				}

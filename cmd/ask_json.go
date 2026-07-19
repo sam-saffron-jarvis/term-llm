@@ -188,6 +188,22 @@ func emitStreamEvent(e *jsonEmitter, ev ui.StreamEvent) error {
 			"success": ev.ToolSuccess,
 		})
 
+	case ui.StreamEventGuardian:
+		guardian := ev.Guardian
+		u := guardian.Usage
+		return e.emit("guardian.review", map[string]any{
+			"call_id":             guardian.ToolCallID,
+			"command":             guardian.Command,
+			"workdir":             guardian.WorkDir,
+			"message":             guardian.Message,
+			"outcome":             guardian.Outcome,
+			"model":               guardian.Model,
+			"input_tokens":        u.InputTokens,
+			"output_tokens":       u.OutputTokens,
+			"cached_input_tokens": u.CachedInputTokens,
+			"cache_write_tokens":  u.CacheWriteTokens,
+		})
+
 	case ui.StreamEventUsage:
 		return e.emit("usage", map[string]any{
 			"input_tokens":        ev.InputTokens,

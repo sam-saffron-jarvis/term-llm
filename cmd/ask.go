@@ -535,13 +535,11 @@ func runAsk(cmd *cobra.Command, args []string) error {
 	adapter.Stats().SetModel(activeModel(cfg))
 	if !askProgressive && toolMgr != nil {
 		toolMgr.ApprovalMgr.GuardianEventFunc = func(event tools.GuardianEvent) {
-			if addGuardianUsage(adapter.Stats(), event) && store != nil && sess != nil {
+			if !event.Usage.BillableCountersZero() && store != nil && sess != nil {
 				u := event.Usage
 				_ = store.UpdateMetrics(context.Background(), sess.ID, 0, 0, u.InputTokens, u.OutputTokens, u.CachedInputTokens, u.CacheWriteTokens)
 			}
-			if strings.TrimSpace(event.Message) != "" {
-				fmt.Fprintln(cmd.ErrOrStderr(), event.Message)
-			}
+			adapter.EmitGuardian(ctx, event)
 		}
 	}
 
@@ -857,22 +855,25 @@ func runAsk(cmd *cobra.Command, args []string) error {
 	}
 
 	if askProgressive {
-		var bridge *askProgressiveBridge
-		var events <-chan ui.StreamEvent
-		if !askPorcelain || askJSON || showStats || needsCollector {
-			bridge = newAskProgressiveBridge(ui.DefaultStreamBufferSize)
-			if sess != nil {
-				bridge.Stats().SeedTotals(sess.InputTokens, sess.OutputTokens, sess.CachedInputTokens, sess.CacheWriteTokens, sess.ToolCalls, sess.LLMTurns+sess.CompactionCount)
-			}
-			bridge.Stats().SetModel(activeModel(cfg))
-			stats = bridge.Stats()
-			events = wrapStreamEvents(bridge.Events())
-			if askPorcelain && !askJSON {
-				go func() {
-					for range events {
+		bridge := newAskProgressiveBridge(ui.DefaultStreamBufferSize)
+		if sess != nil {
+			bridge.Stats().SeedTotals(sess.InputTokens, sess.OutputTokens, sess.CachedInputTokens, sess.CacheWriteTokens, sess.ToolCalls, sess.LLMTurns+sess.CompactionCount)
+		}
+		bridge.Stats().SetModel(activeModel(cfg))
+		stats = bridge.Stats()
+		events := wrapStreamEvents(bridge.Events())
+		var porcelainDrainDone <-chan struct{}
+		if askPorcelain && !askJSON {
+			drained := make(chan struct{})
+			porcelainDrainDone = drained
+			go func() {
+				defer close(drained)
+				for event := range events {
+					if event.Type == ui.StreamEventGuardian {
+						writeGuardianStatus(cmd.ErrOrStderr(), event.Guardian)
 					}
-				}()
-			}
+				}
+			}()
 		}
 
 		progressiveRunReq := baseRunReq
@@ -882,23 +883,15 @@ func runAsk(cmd *cobra.Command, args []string) error {
 			ContinueWith: progressiveOpts.ContinueWith,
 		}
 		runProgressive := func() askProgressiveRunResult {
-			if bridge != nil {
-				bridge.Stats().RequestStart()
-			}
-			sink := runpkg.EventSink(eventSinkFunc(func(llm.Event) {}))
-			if bridge != nil {
-				sink = askProgressiveRunnerSink{
-					bridge: bridge,
-					guardian: func(event tools.GuardianEvent) {
-						if !event.Usage.BillableCountersZero() && store != nil && sess != nil {
-							u := event.Usage
-							_ = store.UpdateMetrics(context.Background(), sess.ID, 0, 0, u.InputTokens, u.OutputTokens, u.CachedInputTokens, u.CacheWriteTokens)
-						}
-						if strings.TrimSpace(event.Message) != "" {
-							fmt.Fprintln(cmd.ErrOrStderr(), event.Message)
-						}
-					},
-				}
+			bridge.Stats().RequestStart()
+			sink := askProgressiveRunnerSink{
+				bridge: bridge,
+				onGuardian: func(event tools.GuardianEvent) {
+					if !event.Usage.BillableCountersZero() && store != nil && sess != nil {
+						u := event.Usage
+						_ = store.UpdateMetrics(context.Background(), sess.ID, 0, 0, u.InputTokens, u.OutputTokens, u.CachedInputTokens, u.CacheWriteTokens)
+					}
+				},
 			}
 			runResult, runErr := askRunner.Run(ctx, progressiveRunReq, sink)
 			applyRunResult(runResult)
@@ -906,12 +899,10 @@ func runAsk(cmd *cobra.Command, args []string) error {
 			if runResult.Progressive != nil {
 				result = *progressiveFromRunResult(runResult.Progressive)
 			}
-			if bridge != nil {
-				if runErr != nil {
-					bridge.CloseError(runErr)
-				} else {
-					bridge.CloseSuccess()
-				}
+			if runErr != nil {
+				bridge.CloseError(runErr)
+			} else {
+				bridge.CloseSuccess()
 			}
 			return askProgressiveRunResult{Result: result, Err: runErr}
 		}
@@ -929,6 +920,9 @@ func runAsk(cmd *cobra.Command, args []string) error {
 		}
 		if askPorcelain && !askJSON {
 			progressiveRun = runProgressive()
+			if porcelainDrainDone != nil {
+				<-porcelainDrainDone
+			}
 		} else {
 			runCh := make(chan askProgressiveRunResult, 1)
 			go func() {
@@ -943,9 +937,9 @@ func runAsk(cmd *cobra.Command, args []string) error {
 			case useRichRenderer:
 				err = runRenderer(displayCtx, events)
 			default:
-				err = streamPlainText(displayCtx, events, false)
+				err = streamPlainText(displayCtx, events, false, cmd.ErrOrStderr())
 			}
-			if err != nil && bridge != nil {
+			if err != nil {
 				// The consumer died; unblock the producer so <-runCh
 				// cannot deadlock behind a full bridge buffer.
 				bridge.Stop()
@@ -1081,7 +1075,7 @@ func runAsk(cmd *cobra.Command, args []string) error {
 		case useRichRenderer:
 			err = runRenderer(streamCtx, streamEvents)
 		default:
-			err = streamPlainText(streamCtx, streamEvents, askPorcelain)
+			err = streamPlainText(streamCtx, streamEvents, askPorcelain, cmd.ErrOrStderr())
 		}
 		tools.ClearAskUserHooks() // Safe to call even if hooks weren't set
 
@@ -1515,8 +1509,20 @@ func ensureOutputToolSpec(specs []llm.ToolSpec, outputSpec llm.ToolSpec) []llm.T
 	return append(out, outputSpec)
 }
 
+func writeGuardianStatus(w io.Writer, event tools.GuardianEvent) {
+	if w == nil {
+		return
+	}
+	if message := strings.TrimSpace(event.Message); message != "" {
+		fmt.Fprintln(w, message)
+	}
+}
+
 // streamPlainText streams text directly without formatting
-func streamPlainText(ctx context.Context, events <-chan ui.StreamEvent, suppressToolStatus bool) error {
+func streamPlainText(ctx context.Context, events <-chan ui.StreamEvent, suppressToolStatus bool, stderr io.Writer) error {
+	if stderr == nil {
+		stderr = os.Stderr
+	}
 	// Track pending tools with their status
 	type toolEntry struct {
 		callID  string
@@ -1603,14 +1609,14 @@ func streamPlainText(ctx context.Context, events <-chan ui.StreamEvent, suppress
 
 			switch ev.Type {
 			case ui.StreamEventAttemptDiscard:
-				fmt.Fprint(os.Stderr, "\nInterrupted response discarded; retrying...\n")
+				fmt.Fprint(stderr, "\nInterrupted response discarded; retrying...\n")
 				pendingText.Reset()
 				newlineCompactor = ui.NewStreamingNewlineCompactor(ui.MaxStreamingConsecutiveNewlines)
 				afterToolBoundary = false
 				trailingNewlines = 0
 				continue
 			case ui.StreamEventRetry:
-				fmt.Fprintf(os.Stderr, "\r%s\n", ev.RetryStatus("Rate limited", 0, "..."))
+				fmt.Fprintf(stderr, "\r%s\n", ev.RetryStatus("Rate limited", 0, "..."))
 
 			case ui.StreamEventUsage:
 				// Skip usage events in plain text mode
@@ -1619,7 +1625,7 @@ func streamPlainText(ctx context.Context, events <-chan ui.StreamEvent, suppress
 			case ui.StreamEventPhase:
 				// Print WARNING phases to stderr, skip others
 				if strings.HasPrefix(ev.Phase, llm.WarningPhasePrefix) {
-					fmt.Fprintf(os.Stderr, "\n%s\n", ev.Phase)
+					fmt.Fprintf(stderr, "\n%s\n", ev.Phase)
 				}
 				continue
 
@@ -1671,6 +1677,9 @@ func streamPlainText(ctx context.Context, events <-chan ui.StreamEvent, suppress
 					name:   ev.ToolName,
 					info:   ev.ToolInfo,
 				})
+
+			case ui.StreamEventGuardian:
+				writeGuardianStatus(stderr, ev.Guardian)
 
 			case ui.StreamEventText:
 				text := newlineCompactor.CompactChunk(ev.Text)
@@ -1846,6 +1855,10 @@ type askApprovalRequestMsg struct {
 	ToolName    string
 	ToolInfo    string
 	ResponseCh  chan<- bool
+}
+
+type askGuardianReviewMsg struct {
+	Event tools.GuardianEvent
 }
 
 // Subagent progress messages
@@ -2186,6 +2199,8 @@ func (m askStreamModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			innerMsg = askToolEndMsg{CallID: ev.ToolCallID, Success: ev.ToolSuccess}
 		case ui.StreamEventToolStart:
 			innerMsg = askToolStartMsg{CallID: ev.ToolCallID, Name: ev.ToolName, Info: ev.ToolInfo, ToolArgs: ev.ToolArgs}
+		case ui.StreamEventGuardian:
+			innerMsg = askGuardianReviewMsg{Event: ev.Guardian}
 		case ui.StreamEventText:
 			innerMsg = askContentMsg(ev.Text)
 		case ui.StreamEventReasoning:
@@ -2535,6 +2550,20 @@ func (m askStreamModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if !m.tracker.HasPending() {
 			return m, m.spinner.Tick
 		}
+
+	case askGuardianReviewMsg:
+		event := msg.Event
+		message := strings.TrimSpace(event.Message)
+		if message == "" {
+			break
+		}
+		if event.ToolCallID != "" {
+			m.tracker.HandleGuardianEvent(event)
+		} else {
+			// Session-level guardian notices have no tool row to annotate.
+			m.tracker.AddExternalUIResult(message)
+		}
+		m.contentDirty = true
 
 	case askSubagentProgressMsg:
 		// Handle subagent progress events and update segment stats

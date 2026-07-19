@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/tools"
 	"github.com/samsaffron/term-llm/internal/ui"
 )
 
@@ -203,6 +204,40 @@ func TestStreamJSON_ToolStartAndCompletedEvents(t *testing.T) {
 	}
 	if completed["success"] != true {
 		t.Errorf("tool.completed.success = %v", completed["success"])
+	}
+}
+
+func TestStreamJSON_GuardianReviewEvent(t *testing.T) {
+	out := captureStreamJSONOutput(t, []ui.StreamEvent{
+		ui.ToolStartEvent("call-1", "shell", "(git status)", nil),
+		ui.GuardianReviewEvent(tools.GuardianEvent{
+			ToolCallID: "call-1",
+			Command:    "git status",
+			Message:    "guardian: approved (low risk)",
+			Outcome:    tools.GuardianApproved,
+			Model:      "guardian-model",
+			Usage:      llm.Usage{InputTokens: 9, OutputTokens: 3, CachedInputTokens: 4, CacheWriteTokens: 1},
+		}),
+		ui.ToolEndEvent("call-1", "shell", "(git status)", true),
+		ui.DoneEvent(0),
+	}, defaultTestSessionInfo())
+
+	events := parseJSONL(t, out)
+	var guardian map[string]any
+	for _, event := range events {
+		if event["type"] == "guardian.review" {
+			guardian = event
+			break
+		}
+	}
+	if guardian == nil {
+		t.Fatal("missing guardian.review event")
+	}
+	if guardian["call_id"] != "call-1" || guardian["message"] != "guardian: approved (low risk)" || guardian["outcome"] != "approved" || guardian["model"] != "guardian-model" {
+		t.Fatalf("guardian.review payload = %+v", guardian)
+	}
+	if guardian["input_tokens"] != float64(9) || guardian["output_tokens"] != float64(3) || guardian["cached_input_tokens"] != float64(4) || guardian["cache_write_tokens"] != float64(1) {
+		t.Fatalf("guardian.review usage = %+v", guardian)
 	}
 }
 

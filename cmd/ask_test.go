@@ -14,6 +14,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/session"
+	"github.com/samsaffron/term-llm/internal/tools"
 	"github.com/samsaffron/term-llm/internal/ui"
 )
 
@@ -345,7 +346,7 @@ func TestStreamPlainTextReturnsContextErrorOnCancel(t *testing.T) {
 	ch := make(chan ui.StreamEvent)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if err := streamPlainText(ctx, ch, true); !errors.Is(err, context.Canceled) {
+	if err := streamPlainText(ctx, ch, true, io.Discard); !errors.Is(err, context.Canceled) {
 		t.Fatalf("streamPlainText err = %v, want context.Canceled", err)
 	}
 }
@@ -507,6 +508,51 @@ func TestAskToolStartFlushesCompletedTextBoundary(t *testing.T) {
 	}
 	if toolSeg.ToolStatus != ui.ToolPending {
 		t.Fatalf("expected tool to be pending, got %v", toolSeg.ToolStatus)
+	}
+}
+
+func TestAskGuardianReviewAttachesToPendingTool(t *testing.T) {
+	model := newAskStreamModel()
+	model.width = 80
+
+	updated, _ := model.Update(askToolStartMsg{CallID: "call-1", Name: "shell", Info: "(git status)"})
+	model = updated.(askStreamModel)
+	updated, _ = model.Update(askBoundaryFlushedMsg{CallID: "call-1", Name: "shell"})
+	model = updated.(askStreamModel)
+
+	event := tools.GuardianEvent{
+		ToolCallID: "call-1",
+		Message:    "guardian: approved (low risk; clearly user-authorized)",
+		Outcome:    tools.GuardianApproved,
+	}
+	updated, _ = model.Update(askStreamEventMsg{event: ui.GuardianReviewEvent(event)})
+	model = updated.(askStreamModel)
+
+	if got := model.tracker.Segments[0].Guardian; got == nil || got.Message != event.Message {
+		t.Fatalf("guardian event not attached to tool segment: %+v", got)
+	}
+	plain := stripAnsi(model.View().Content)
+	if !strings.Contains(plain, "shell(git status)") || !strings.Contains(plain, "\n  Guardian: approved") {
+		t.Fatalf("guardian review not rendered beneath matching tool: %q", plain)
+	}
+}
+
+func TestAskGuardianReviewBeforeToolStartIsBuffered(t *testing.T) {
+	model := newAskStreamModel()
+	model.width = 80
+	event := tools.GuardianEvent{
+		ToolCallID: "call-later",
+		Message:    "guardian: approved before start",
+		Outcome:    tools.GuardianApproved,
+	}
+
+	updated, _ := model.Update(askStreamEventMsg{event: ui.GuardianReviewEvent(event)})
+	model = updated.(askStreamModel)
+	updated, _ = model.Update(askToolStartMsg{CallID: "call-later", Name: "shell", Info: "(pwd)"})
+	model = updated.(askStreamModel)
+
+	if got := model.tracker.Segments[0].Guardian; got == nil || got.Message != event.Message {
+		t.Fatalf("buffered guardian event not attached at tool start: %+v", got)
 	}
 }
 

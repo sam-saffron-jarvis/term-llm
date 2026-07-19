@@ -17,8 +17,13 @@ func TestAskProgressiveRunnerSinkAccountsGuardianUsage(t *testing.T) {
 	sink := askProgressiveRunnerSink{bridge: bridge}
 	usage := llm.Usage{InputTokens: 13, OutputTokens: 4, CachedInputTokens: 8, CacheWriteTokens: 2}
 
-	sink.GuardianEvent(tools.GuardianEvent{Model: "guardian-model", Usage: usage})
+	event := tools.GuardianEvent{ToolCallID: "call-1", Model: "guardian-model", Message: "guardian: approved", Usage: usage}
+	sink.GuardianEvent(event)
 
+	got := <-bridge.Events()
+	if got.Type != ui.StreamEventGuardian || got.Guardian.ToolCallID != event.ToolCallID || got.Guardian.Message != event.Message {
+		t.Fatalf("progressive guardian event = %+v", got)
+	}
 	calls, _ := bridge.Stats().UsageCalls()
 	if bridge.stats.InputTokens != 13 || bridge.stats.OutputTokens != 4 || bridge.stats.CachedInputTokens != 8 || bridge.stats.CacheWriteTokens != 2 || len(calls) != 1 || !calls[0].Guardian || calls[0].Model != "guardian-model" {
 		t.Fatalf("progressive guardian stats = %+v calls=%+v", bridge.stats, calls)

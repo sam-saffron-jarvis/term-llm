@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/tools"
 )
 
 type testStream struct {
@@ -27,6 +28,100 @@ func (s *testStream) Recv() (llm.Event, error) {
 
 func (s *testStream) Close() error {
 	return nil
+}
+
+type gatedToolStream struct {
+	index       int
+	continueEnd <-chan struct{}
+}
+
+func (s *gatedToolStream) Recv() (llm.Event, error) {
+	switch s.index {
+	case 0:
+		s.index++
+		return llm.Event{Type: llm.EventToolExecStart, ToolCallID: "call-1", ToolName: "shell", ToolInfo: "(git status)"}, nil
+	case 1:
+		s.index++
+		<-s.continueEnd
+		return llm.Event{Type: llm.EventToolExecEnd, ToolCallID: "call-1", ToolName: "shell", ToolInfo: "(git status)", ToolSuccess: true}, nil
+	default:
+		return llm.Event{}, io.EOF
+	}
+}
+
+func (s *gatedToolStream) Close() error { return nil }
+
+func TestStreamAdapterCloseUnblocksBlockedGuardianEmit(t *testing.T) {
+	adapter := NewStreamAdapter(1)
+	if !adapter.emit(context.Background(), TextEvent("fill")) {
+		t.Fatal("failed to fill adapter buffer")
+	}
+
+	emitDone := make(chan bool, 1)
+	go func() {
+		emitDone <- adapter.EmitGuardian(context.Background(), tools.GuardianEvent{Message: "guardian: approved"})
+	}()
+	// Give the emitter time to block behind the full channel before closing.
+	time.Sleep(20 * time.Millisecond)
+
+	closeDone := make(chan struct{})
+	go func() {
+		adapter.closeEvents()
+		close(closeDone)
+	}()
+
+	select {
+	case <-closeDone:
+	case <-time.After(time.Second):
+		t.Fatal("adapter close blocked behind guardian emit")
+	}
+	select {
+	case accepted := <-emitDone:
+		if accepted {
+			t.Fatal("blocked guardian emit succeeded while adapter was closing")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("guardian emit did not unblock when adapter closed")
+	}
+}
+
+func TestStreamAdapterSerializesGuardianBeforeToolEnd(t *testing.T) {
+	continueEnd := make(chan struct{})
+	adapter := NewStreamAdapter(10)
+	go adapter.ProcessStream(context.Background(), &gatedToolStream{continueEnd: continueEnd})
+
+	start := <-adapter.Events()
+	if start.Type != StreamEventToolStart {
+		t.Fatalf("first event = %v, want tool start", start.Type)
+	}
+	guardian := tools.GuardianEvent{
+		ToolCallID: "call-1",
+		Message:    "guardian: approved",
+		Outcome:    tools.GuardianApproved,
+		Model:      "guardian-model",
+		Usage:      llm.Usage{InputTokens: 7, OutputTokens: 2},
+	}
+	if !adapter.EmitGuardian(context.Background(), guardian) {
+		t.Fatal("guardian event was not accepted")
+	}
+	close(continueEnd)
+
+	review := <-adapter.Events()
+	if review.Type != StreamEventGuardian || review.Guardian.ToolCallID != guardian.ToolCallID {
+		t.Fatalf("second event = %+v, want guardian review", review)
+	}
+	end := <-adapter.Events()
+	if end.Type != StreamEventToolEnd {
+		t.Fatalf("third event = %v, want tool end", end.Type)
+	}
+	for range adapter.Events() {
+	}
+	if adapter.Stats().GuardianInputTokens != 7 || adapter.Stats().GuardianOutputTokens != 2 || adapter.Stats().GuardianLLMCallCount != 1 {
+		t.Fatalf("guardian usage not accounted in adapter stats: %+v", adapter.Stats())
+	}
+	if adapter.EmitGuardian(context.Background(), tools.GuardianEvent{Message: "guardian: late"}) {
+		t.Fatal("guardian event was accepted after adapter closed")
+	}
 }
 
 func TestStreamAdapterDedupesToolEvents(t *testing.T) {

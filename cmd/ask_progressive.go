@@ -18,16 +18,16 @@ type askProgressiveRunResult struct {
 }
 
 type askProgressiveRunnerSink struct {
-	bridge   *askProgressiveBridge
-	guardian func(tools.GuardianEvent)
+	bridge     *askProgressiveBridge
+	onGuardian func(tools.GuardianEvent)
 }
 
 func (s askProgressiveRunnerSink) GuardianEvent(event tools.GuardianEvent) {
 	if s.bridge != nil {
-		addGuardianUsage(s.bridge.stats, event)
+		_ = s.bridge.HandleGuardianEvent(event)
 	}
-	if s.guardian != nil {
-		s.guardian(event)
+	if s.onGuardian != nil {
+		s.onGuardian(event)
 	}
 }
 
@@ -49,6 +49,7 @@ type askProgressiveBridge struct {
 
 	seenToolStarts map[string]struct{}
 	seenToolEnds   map[string]struct{}
+	eventMu        sync.Mutex
 	stopOnce       sync.Once
 	closeOnce      sync.Once
 
@@ -108,10 +109,22 @@ func (b *askProgressiveBridge) send(event ui.StreamEvent) error {
 	}
 }
 
+func (b *askProgressiveBridge) HandleGuardianEvent(event tools.GuardianEvent) error {
+	if b == nil {
+		return nil
+	}
+	b.eventMu.Lock()
+	defer b.eventMu.Unlock()
+	addGuardianUsage(b.stats, event)
+	return b.send(ui.GuardianReviewEvent(event))
+}
+
 func (b *askProgressiveBridge) HandleEvent(event llm.Event) error {
 	if b == nil {
 		return nil
 	}
+	b.eventMu.Lock()
+	defer b.eventMu.Unlock()
 	switch event.Type {
 	case llm.EventError:
 		if event.Err != nil {
@@ -248,6 +261,8 @@ func (b *askProgressiveBridge) HandleEvent(event llm.Event) error {
 
 func (b *askProgressiveBridge) CloseSuccess() {
 	b.closeOnce.Do(func() {
+		b.eventMu.Lock()
+		defer b.eventMu.Unlock()
 		_ = b.send(ui.DoneEvent(b.stats.OutputTokens))
 		b.Stop()
 		close(b.events)
@@ -256,6 +271,8 @@ func (b *askProgressiveBridge) CloseSuccess() {
 
 func (b *askProgressiveBridge) CloseError(err error) {
 	b.closeOnce.Do(func() {
+		b.eventMu.Lock()
+		defer b.eventMu.Unlock()
 		if err != nil {
 			_ = b.send(ui.ErrorEvent(err))
 		}

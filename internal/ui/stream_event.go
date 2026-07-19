@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/tools"
 )
 
 // StreamEventType identifies the type of stream event
@@ -27,6 +28,7 @@ const (
 	StreamEventReasoning          // Classified, non-encrypted reasoning text/metadata
 	StreamEventGenerationActivity // Hidden generation activity (for timing only)
 	StreamEventFileChange         // Recorded file change metadata (file tracking)
+	StreamEventGuardian           // Guardian review correlated with a tool call
 )
 
 // StreamEvent represents a unified event from the LLM stream.
@@ -50,6 +52,9 @@ type StreamEvent struct {
 	ToolInfo    string
 	ToolArgs    json.RawMessage
 	ToolSuccess bool
+
+	// Guardian review (for StreamEventGuardian)
+	Guardian tools.GuardianEvent
 
 	// Usage/stats (for StreamEventUsage)
 	InputTokens  int
@@ -143,6 +148,11 @@ func ToolEndEvent(callID, name, info string, success bool) StreamEvent {
 		ToolInfo:    info,
 		ToolSuccess: success,
 	}
+}
+
+// GuardianReviewEvent creates a guardian review event correlated with a tool call.
+func GuardianReviewEvent(event tools.GuardianEvent) StreamEvent {
+	return StreamEvent{Type: StreamEventGuardian, Guardian: event}
 }
 
 // UsageEvent creates a usage/token update event
