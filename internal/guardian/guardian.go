@@ -71,6 +71,51 @@ type Reviewer struct {
 	reviewTurnCount       int
 }
 
+// ReviewerPool bounds concurrent reviews while keeping each provider and its
+// conversation state isolated. Idle reviewers are reused in LIFO order so the
+// usual sequential path keeps using its warm delta session.
+type ReviewerPool struct {
+	mu    sync.Mutex
+	idle  []*Reviewer
+	slots chan struct{}
+}
+
+func NewReviewerPool(reviewers ...*Reviewer) *ReviewerPool {
+	pool := &ReviewerPool{}
+	for _, reviewer := range reviewers {
+		if reviewer != nil {
+			pool.idle = append(pool.idle, reviewer)
+		}
+	}
+	pool.slots = make(chan struct{}, len(pool.idle))
+	return pool
+}
+
+func (p *ReviewerPool) Review(ctx context.Context, req Request) (Decision, error) {
+	if p == nil || cap(p.slots) == 0 {
+		return Decision{}, fmt.Errorf("guardian reviewer pool is empty")
+	}
+	select {
+	case p.slots <- struct{}{}:
+	case <-ctx.Done():
+		return Decision{}, ctx.Err()
+	}
+
+	p.mu.Lock()
+	last := len(p.idle) - 1
+	reviewer := p.idle[last]
+	p.idle = p.idle[:last]
+	p.mu.Unlock()
+
+	defer func() {
+		p.mu.Lock()
+		p.idle = append(p.idle, reviewer)
+		p.mu.Unlock()
+		<-p.slots
+	}()
+	return reviewer.Review(ctx, req)
+}
+
 func (r *Reviewer) Review(ctx context.Context, req Request) (Decision, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()

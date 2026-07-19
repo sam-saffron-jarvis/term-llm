@@ -20,6 +20,13 @@ type deadlineCapturingProvider struct {
 	ok       bool
 }
 
+type delayedGuardianProvider struct {
+	delegate *llm.MockProvider
+	started  chan<- struct{}
+	release  <-chan struct{}
+	delay    time.Duration
+}
+
 func withGuardianProviderFactory(t *testing.T, fn func(*config.Config, string, string) (llm.Provider, error)) {
 	t.Helper()
 	orig := newGuardianProviderByName
@@ -36,6 +43,34 @@ func (p *deadlineCapturingProvider) Capabilities() llm.Capabilities {
 }
 func (p *deadlineCapturingProvider) Stream(ctx context.Context, req llm.Request) (llm.Stream, error) {
 	p.deadline, p.ok = ctx.Deadline()
+	return p.delegate.Stream(ctx, req)
+}
+
+func (p *delayedGuardianProvider) Name() string { return "delayed-guardian" }
+func (p *delayedGuardianProvider) Credential() string {
+	return "mock"
+}
+func (p *delayedGuardianProvider) Capabilities() llm.Capabilities {
+	return p.delegate.Capabilities()
+}
+func (p *delayedGuardianProvider) Stream(ctx context.Context, req llm.Request) (llm.Stream, error) {
+	select {
+	case p.started <- struct{}{}:
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	select {
+	case <-p.release:
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	timer := time.NewTimer(p.delay)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
 	return p.delegate.Stream(ctx, req)
 }
 
@@ -177,6 +212,69 @@ func TestInstallGuardianReviewerCallbacksUsesDefaultTimeoutWhenUnset(t *testing.
 		t.Fatalf("PolicyReviewFunc: %v", err)
 	}
 	assertDeadlineNear(t, provider.deadline, provider.ok, guardian.DefaultTimeout)
+}
+
+func TestInstallGuardianReviewerCallbacksRunsParallelReviewsConcurrently(t *testing.T) {
+	const providerDelay = 200 * time.Millisecond
+	started := make(chan struct{}, guardianReviewerPoolSize)
+	release := make(chan struct{})
+	factoryCalls := 0
+	withGuardianProviderFactory(t, func(*config.Config, string, string) (llm.Provider, error) {
+		factoryCalls++
+		return &delayedGuardianProvider{
+			delegate: llm.NewMockProvider("mock").AddTextResponse(`{"risk_level":"low","user_authorization":"high","outcome":"allow","rationale":"safe"}`),
+			started:  started,
+			release:  release,
+			delay:    providerDelay,
+		}, nil
+	})
+	mgr := tools.NewApprovalManager(tools.NewToolPermissions())
+	cfg := &config.Config{DefaultProvider: "mock", Providers: map[string]config.ProviderConfig{"mock": {Model: "mock-model"}}}
+	if err := installGuardianReviewerCallbacks(cfg, mgr, "mock", "mock-model", true); err != nil {
+		t.Fatalf("installGuardianReviewerCallbacks: %v", err)
+	}
+	if factoryCalls != guardianReviewerPoolSize {
+		t.Fatalf("provider factory calls = %d, want %d independent reviewers", factoryCalls, guardianReviewerPoolSize)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	errs := make(chan error, guardianReviewerPoolSize)
+	commands := []string{"echo one", "echo two", "echo three"}
+	start := time.Now()
+	for _, command := range commands {
+		go func() {
+			decision, err := mgr.PolicyReviewFunc(ctx, tools.PolicyReviewRequest{Command: command})
+			if err == nil && !decision.Allowed {
+				err = errors.New("guardian unexpectedly denied command")
+			}
+			errs <- err
+		}()
+	}
+
+	allStarted := true
+	for range commands {
+		select {
+		case <-started:
+		case <-time.After(time.Second):
+			allStarted = false
+		}
+		if !allStarted {
+			break
+		}
+	}
+	close(release)
+	for range commands {
+		if err := <-errs; err != nil {
+			t.Fatalf("PolicyReviewFunc: %v", err)
+		}
+	}
+	if !allStarted {
+		t.Fatal("parallel reviews did not reach independent providers concurrently")
+	}
+	if elapsed := time.Since(start); elapsed >= 2*providerDelay {
+		t.Fatalf("parallel reviews took %v, want near one %v provider delay", elapsed, providerDelay)
+	}
 }
 
 func TestInstallGuardianReviewerCallbacksUsesPassedProviderNameWhenGuardianUnset(t *testing.T) {

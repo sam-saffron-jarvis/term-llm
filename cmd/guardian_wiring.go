@@ -16,6 +16,8 @@ import (
 
 var newGuardianProviderByName = llm.NewProviderByName
 
+const guardianReviewerPoolSize = 3
+
 func preflightHeadlessApproval(cfg *config.Config, resolved resolvedApprovalMode, providerName, modelName string) error {
 	if resolved.Mode != tools.ModeAuto {
 		return nil
@@ -122,16 +124,39 @@ func installGuardianReviewerCallbacks(cfg *config.Config, approvalMgr *tools.App
 		}
 		return fmt.Errorf("load guardian policy: %w", err)
 	}
-	reviewer := &guardian.Reviewer{Provider: reviewProvider, Model: model, Policy: policy}
-	if cfg.Guardian.TimeoutSeconds > 0 {
-		reviewer.Timeout = time.Duration(cfg.Guardian.TimeoutSeconds) * time.Second
+	reviewers := make([]*guardian.Reviewer, 0, guardianReviewerPoolSize)
+	for i := 0; i < guardianReviewerPoolSize; i++ {
+		provider := reviewProvider
+		if i > 0 {
+			provider, err = newGuardianProviderByName(cfg, guardianName, model)
+			if err != nil {
+				approvalMgr.PolicyReviewFunc = nil
+				if approvalMgr.ApprovalMode() == tools.ModeAuto {
+					approvalMgr.SetApprovalMode(tools.ModePrompt)
+				}
+				return fmt.Errorf("guardian provider: %w", err)
+			}
+			if provider == nil {
+				approvalMgr.PolicyReviewFunc = nil
+				if approvalMgr.ApprovalMode() == tools.ModeAuto {
+					approvalMgr.SetApprovalMode(tools.ModePrompt)
+				}
+				return fmt.Errorf("auto approval requires an LLM provider")
+			}
+		}
+		reviewer := &guardian.Reviewer{Provider: provider, Model: model, Policy: policy}
+		if cfg.Guardian.TimeoutSeconds > 0 {
+			reviewer.Timeout = time.Duration(cfg.Guardian.TimeoutSeconds) * time.Second
+		}
+		reviewers = append(reviewers, reviewer)
 	}
+	reviewerPool := guardian.NewReviewerPool(reviewers...)
 	approvalMgr.PolicyReviewFunc = func(ctx context.Context, req tools.PolicyReviewRequest) (tools.PolicyDecision, error) {
 		transcript := make([]guardian.TranscriptEntry, 0, len(req.Transcript))
 		for _, e := range req.Transcript {
 			transcript = append(transcript, guardian.TranscriptEntry{Role: e.Role, Text: e.Text})
 		}
-		decision, err := reviewer.Review(ctx, guardian.Request{Command: req.Command, WorkDir: req.WorkDir, Transcript: transcript, ApprovalContext: req.ApprovalContext, ScopeID: req.ScopeID})
+		decision, err := reviewerPool.Review(ctx, guardian.Request{Command: req.Command, WorkDir: req.WorkDir, Transcript: transcript, ApprovalContext: req.ApprovalContext, ScopeID: req.ScopeID})
 		result := tools.PolicyDecision{Allowed: decision.Allowed(), RiskLevel: decision.RiskLevel, UserAuthorization: decision.UserAuthorization, Rationale: decision.Rationale, Model: decision.Model, Usage: decision.Usage}
 		if err != nil {
 			return result, err
