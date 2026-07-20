@@ -627,6 +627,9 @@ func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent 
 		fmt.Fprintf(cmd.ErrOrStderr(), "Warning: failed to load MCP config: %v\n", err)
 	}
 
+	// Set up MCP sampling provider before enabling servers so clients advertise sampling support.
+	mcpManager.SetSamplingProvider(provider, modelName, resolvedYolo)
+
 	// Enable MCP servers
 	if settings.MCP != "" {
 		servers := strings.Split(settings.MCP, ",")
@@ -640,9 +643,6 @@ func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent 
 			}
 		}
 	}
-
-	// Set up MCP sampling provider (for sampling/createMessage requests)
-	mcpManager.SetSamplingProvider(provider, modelName, resolvedYolo)
 
 	// Resolve force external search setting
 	forceExternalSearch := resolveForceExternalSearch(cfg, chatNativeSearch, chatNoNativeSearch)
