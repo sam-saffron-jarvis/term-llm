@@ -23,13 +23,14 @@ func NewVLLMProvider(baseURL, apiKey, model, name string) *VLLMProvider {
 	return NewVLLMProviderFull(baseURL, "", apiKey, model, name)
 }
 
-func vLLMThinkingSettings(model, effort, paramOverride string) (map[string]interface{}, int) {
+func vLLMThinkingSettings(model, effort, paramOverride string) (map[string]interface{}, int, string) {
 	key := vLLMThinkingParam(model, paramOverride)
 	if key == "thinking" {
-		return vLLMDeepSeekThinkingSettings(effort), 0
+		kwargs, reasoningEffort := vLLMDeepSeekThinkingSettings(effort)
+		return kwargs, 0, reasoningEffort
 	}
 	enableThinking, budget := vLLMQwenThinkingSettings(effort)
-	return map[string]interface{}{key: enableThinking}, budget
+	return map[string]interface{}{key: enableThinking}, budget, ""
 }
 
 func vLLMThinkingParam(model, override string) string {
@@ -45,17 +46,18 @@ func vLLMThinkingParam(model, override string) string {
 	return "enable_thinking"
 }
 
-func vLLMDeepSeekThinkingSettings(effort string) map[string]interface{} {
+func vLLMDeepSeekThinkingSettings(effort string) (map[string]interface{}, string) {
 	switch strings.ToLower(strings.TrimSpace(effort)) {
 	case "", "default", "minimal", "none", "off", "false":
-		return map[string]interface{}{"thinking": false}
+		// thinking=false is sufficient to select chat mode. Omit the top-level
+		// reasoning_effort rather than redundantly sending "none" as well.
+		return map[string]interface{}{"thinking": false}, ""
 	case "max", "xhigh":
-		return map[string]interface{}{"thinking": true, "reasoning_effort": "max"}
+		return map[string]interface{}{"thinking": true}, "max"
 	default:
 		// DeepSeek/vLLM exposes only Think High and Think Max. DeepSeek's
-		// official API maps low and medium to high for compatibility, and vLLM's
-		// DeepSeek V4 tokenizer does the same for any non-max effort.
-		return map[string]interface{}{"thinking": true, "reasoning_effort": "high"}
+		// official API maps low and medium to high for compatibility.
+		return map[string]interface{}{"thinking": true}, "high"
 	}
 }
 

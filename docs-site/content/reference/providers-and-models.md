@@ -184,10 +184,10 @@ DeepSeek effort mapping follows the official DeepSeek/vLLM behavior: DeepSeek ex
 | term-llm effort | Request fields sent to vLLM for DeepSeek |
 |---|---|
 | default / empty / `minimal` / `none` | `chat_template_kwargs.thinking: false` |
-| `low` / `medium` / `high` | `chat_template_kwargs.thinking: true`, `chat_template_kwargs.reasoning_effort: high` |
-| `xhigh` / `max` | `chat_template_kwargs.thinking: true`, `chat_template_kwargs.reasoning_effort: max` |
+| `low` / `medium` / `high` | `chat_template_kwargs.thinking: true`, top-level `reasoning_effort: high` |
+| `xhigh` / `max` | `chat_template_kwargs.thinking: true`, top-level `reasoning_effort: max` |
 
-DeepSeek requests do not send `thinking_token_budget`. The `reasoning_effort` value is nested inside `chat_template_kwargs`, matching vLLM's DeepSeek recipes, rather than sent as top-level OpenAI `reasoning_effort`.
+DeepSeek requests do not send `thinking_token_budget`. vLLM's current native DeepSeek V4 renderer reads `thinking` from `chat_template_kwargs` and `reasoning_effort` from the top-level Chat Completions request. `high` is the normal thinking mode; `max` adds the model's maximum-effort prompt prefix.
 
 Notes:
 

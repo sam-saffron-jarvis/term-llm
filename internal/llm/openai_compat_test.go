@@ -1188,6 +1188,100 @@ func TestBuildCompatMessages_ToolResultStructuredImageParts(t *testing.T) {
 	}
 }
 
+func TestBuildCompatMessages_ParallelToolResultImagesStayAfterToolBlock(t *testing.T) {
+	messages := []Message{
+		{
+			Role: RoleAssistant,
+			Parts: []Part{
+				{Type: PartToolCall, ToolCall: &ToolCall{ID: "call-1", Name: "view_image", Arguments: []byte(`{"path":"one.png"}`)}},
+				{Type: PartToolCall, ToolCall: &ToolCall{ID: "call-2", Name: "read_file", Arguments: []byte(`{"path":"notes.txt"}`)}},
+			},
+		},
+		{
+			Role: RoleTool,
+			Parts: []Part{
+				{
+					Type: PartToolResult,
+					ToolResult: &ToolResult{
+						ID:      "call-1",
+						Name:    "view_image",
+						Content: "Image loaded",
+						ContentParts: []ToolContentPart{
+							{Type: ToolContentPartText, Text: "Image loaded"},
+							{Type: ToolContentPartImageData, ImageData: &ToolImageData{MediaType: "image/png", Base64: "aGVsbG8="}},
+						},
+					},
+				},
+				{
+					Type:       PartToolResult,
+					ToolResult: &ToolResult{ID: "call-2", Name: "read_file", Content: "notes"},
+				},
+			},
+		},
+	}
+
+	oaiMsgs := buildCompatMessages(messages)
+	if len(oaiMsgs) != 4 {
+		t.Fatalf("expected assistant + 2 contiguous tools + image user, got %d messages: %#v", len(oaiMsgs), oaiMsgs)
+	}
+	wantRoles := []string{"assistant", "tool", "tool", "user"}
+	for i, want := range wantRoles {
+		if got := oaiMsgs[i].Role; got != want {
+			t.Fatalf("message %d role = %q, want %q (all messages: %#v)", i, got, want, oaiMsgs)
+		}
+	}
+	if oaiMsgs[1].ToolCallID != "call-1" || oaiMsgs[2].ToolCallID != "call-2" {
+		t.Fatalf("tool result IDs not preserved: %#v", oaiMsgs)
+	}
+	parts, ok := oaiMsgs[3].Content.([]oaiContentPart)
+	if !ok || len(parts) != 1 || parts[0].Type != "image_url" {
+		t.Fatalf("expected one trailing image part, got %#v", oaiMsgs[3].Content)
+	}
+}
+
+func TestBuildCompatMessages_ToolResultImagesFlushBeforeNextConversationTurn(t *testing.T) {
+	messages := []Message{
+		{
+			Role: RoleAssistant,
+			Parts: []Part{{
+				Type:     PartToolCall,
+				ToolCall: &ToolCall{ID: "call-1", Name: "view_image", Arguments: []byte(`{"path":"one.png"}`)},
+			}},
+		},
+		{
+			Role: RoleTool,
+			Parts: []Part{{
+				Type: PartToolResult,
+				ToolResult: &ToolResult{
+					ID:   "call-1",
+					Name: "view_image",
+					ContentParts: []ToolContentPart{
+						{Type: ToolContentPartText, Text: "Image loaded"},
+						{Type: ToolContentPartImageData, ImageData: &ToolImageData{MediaType: "image/png", Base64: "aGVsbG8="}},
+					},
+				},
+			}},
+		},
+		{Role: RoleAssistant, Parts: []Part{{Type: PartText, Text: "I inspected the image."}}},
+		{Role: RoleUser, Parts: []Part{{Type: PartText, Text: "Continue."}}},
+	}
+
+	oaiMsgs := buildCompatMessages(messages)
+	wantRoles := []string{"assistant", "tool", "user", "assistant", "user"}
+	if len(oaiMsgs) != len(wantRoles) {
+		t.Fatalf("messages len = %d, want %d: %#v", len(oaiMsgs), len(wantRoles), oaiMsgs)
+	}
+	for i, want := range wantRoles {
+		if got := oaiMsgs[i].Role; got != want {
+			t.Fatalf("message %d role = %q, want %q (all messages: %#v)", i, got, want, oaiMsgs)
+		}
+	}
+	parts, ok := oaiMsgs[2].Content.([]oaiContentPart)
+	if !ok || len(parts) != 1 || parts[0].Type != "image_url" {
+		t.Fatalf("expected image user message immediately after tool block, got %#v", oaiMsgs[2])
+	}
+}
+
 func TestNormalizeSchemaForOpenAI_FreeFormMapProperty(t *testing.T) {
 	// Regression: env parameter uses additionalProperties: {type: string} to represent
 	// a free-form string map. The normalizer must not clobber it with false.
@@ -2013,16 +2107,17 @@ func TestOpenAICompatProviderStreamSendsReasoningEffort(t *testing.T) {
 	}
 }
 
-func TestVLLMProviderStreamSendsQwenThinkingControls(t *testing.T) {
+func TestVLLMProviderStreamSendsThinkingControls(t *testing.T) {
 	tests := []struct {
-		name          string
-		providerModel string
-		model         string
-		effort        string
-		paramOverride string
-		wantModel     string
-		wantKwargs    map[string]interface{}
-		wantBudget    *int
+		name                string
+		providerModel       string
+		model               string
+		effort              string
+		paramOverride       string
+		wantModel           string
+		wantKwargs          map[string]interface{}
+		wantReasoningEffort string
+		wantBudget          *int
 	}{
 		{name: "default disables thinking", model: "Qwen/Qwen3.5-122B-A10B", wantModel: "Qwen/Qwen3.5-122B-A10B", wantKwargs: map[string]interface{}{"enable_thinking": false}},
 		{name: "provider model suffix", providerModel: "Qwen/Qwen3.5-122B-A10B-high", wantModel: "Qwen/Qwen3.5-122B-A10B", wantKwargs: map[string]interface{}{"enable_thinking": true}, wantBudget: intPtr(10000)},
@@ -2030,10 +2125,10 @@ func TestVLLMProviderStreamSendsQwenThinkingControls(t *testing.T) {
 		{name: "medium budget", effort: "medium", wantModel: "Qwen/Qwen3.5-122B-A10B", wantKwargs: map[string]interface{}{"enable_thinking": true}, wantBudget: intPtr(4096)},
 		{name: "high budget", effort: "high", wantModel: "Qwen/Qwen3.5-122B-A10B", wantKwargs: map[string]interface{}{"enable_thinking": true}, wantBudget: intPtr(10000)},
 		{name: "deepseek default uses thinking kwarg", providerModel: "deepseek-ai/DeepSeek-V3.1", wantModel: "deepseek-ai/DeepSeek-V3.1", wantKwargs: map[string]interface{}{"thinking": false}},
-		{name: "deepseek low maps to high without budget", providerModel: "deepseek-ai/DeepSeek-V3.2-low", wantModel: "deepseek-ai/DeepSeek-V3.2", wantKwargs: map[string]interface{}{"thinking": true, "reasoning_effort": "high"}},
-		{name: "deepseek effort uses high without budget", providerModel: "deepseek-ai/DeepSeek-V3.2-high", wantModel: "deepseek-ai/DeepSeek-V3.2", wantKwargs: map[string]interface{}{"thinking": true, "reasoning_effort": "high"}},
-		{name: "deepseek max uses max without budget", providerModel: "deepseek-ai/DeepSeek-V3.2-max", wantModel: "deepseek-ai/DeepSeek-V3.2", wantKwargs: map[string]interface{}{"thinking": true, "reasoning_effort": "max"}},
-		{name: "override supports mistitled deepseek", providerModel: "cdck_qwen-high", paramOverride: "thinking", wantModel: "cdck_qwen", wantKwargs: map[string]interface{}{"thinking": true, "reasoning_effort": "high"}},
+		{name: "deepseek low maps to top-level high", providerModel: "deepseek-ai/DeepSeek-V3.2-low", wantModel: "deepseek-ai/DeepSeek-V3.2", wantKwargs: map[string]interface{}{"thinking": true}, wantReasoningEffort: "high"},
+		{name: "deepseek effort uses top-level high", providerModel: "deepseek-ai/DeepSeek-V3.2-high", wantModel: "deepseek-ai/DeepSeek-V3.2", wantKwargs: map[string]interface{}{"thinking": true}, wantReasoningEffort: "high"},
+		{name: "deepseek max uses top-level max", providerModel: "deepseek-ai/DeepSeek-V3.2-max", wantModel: "deepseek-ai/DeepSeek-V3.2", wantKwargs: map[string]interface{}{"thinking": true}, wantReasoningEffort: "max"},
+		{name: "override supports mistitled deepseek", providerModel: "cdck_qwen-high", paramOverride: "thinking", wantModel: "cdck_qwen", wantKwargs: map[string]interface{}{"thinking": true}, wantReasoningEffort: "high"},
 	}
 
 	for _, tt := range tests {
@@ -2074,8 +2169,16 @@ func TestVLLMProviderStreamSendsQwenThinkingControls(t *testing.T) {
 				}
 			}
 
-			if _, ok := raw["reasoning_effort"]; ok {
-				t.Fatalf("reasoning_effort should not be sent to vLLM: %#v", raw["reasoning_effort"])
+			gotEffort, effortPresent := raw["reasoning_effort"]
+			if tt.wantReasoningEffort == "" {
+				if effortPresent {
+					t.Fatalf("reasoning_effort should be omitted, got %#v", gotEffort)
+				}
+			} else {
+				got, ok := gotEffort.(string)
+				if !ok || got != tt.wantReasoningEffort {
+					t.Fatalf("reasoning_effort = %#v, want %q", gotEffort, tt.wantReasoningEffort)
+				}
 			}
 			if got := raw["model"]; got != tt.wantModel {
 				t.Fatalf("model = %#v, want %#v", got, tt.wantModel)

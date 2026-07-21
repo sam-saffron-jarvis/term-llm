@@ -658,7 +658,7 @@ providers:
     vllm_thinking_param: thinking
 ```
 
-DeepSeek efforts map to `chat_template_kwargs.thinking` and nested `chat_template_kwargs.reasoning_effort`: default/off sends `thinking=false`, `low`/`medium`/`high` send `thinking=true, reasoning_effort=high`, and `xhigh`/`max` send `thinking=true, reasoning_effort=max`. DeepSeek requests do not send `thinking_token_budget`.
+DeepSeek efforts map to `chat_template_kwargs.thinking` plus top-level `reasoning_effort`: default/off sends `thinking=false`, `low`/`medium`/`high` send `thinking=true, reasoning_effort=high`, and `xhigh`/`max` send `thinking=true, reasoning_effort=max`. DeepSeek requests do not send `thinking_token_budget`.
 
 term-llm persists streamed reasoning and replays it as assistant `reasoning` on future vLLM turns so vLLM's chat template and prefix cache can see the same prior reasoning. vLLM may still report `reasoning_tokens: 0` in usage metadata even when reasoning text is present; that is a vLLM accounting limitation.
 

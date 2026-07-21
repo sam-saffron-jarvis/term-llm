@@ -379,7 +379,7 @@ term-llm ask -p my-qwen-low "hard"    # Qwen budget 1024
 term-llm ask -p my-qwen-high "harder" # Qwen budget 10000
 ```
 
-DeepSeek-on-vLLM uses the official DeepSeek shape instead: `chat_template_kwargs.thinking`, plus nested `reasoning_effort: high` or `max` for thinking modes. If your served model name contains `deepseek`, term-llm auto-detects this; if the deployment is aliased, force it:
+DeepSeek-on-vLLM uses the native DeepSeek shape instead: `chat_template_kwargs.thinking` controls thinking, while `reasoning_effort: high` or `max` is sent as a top-level request field. If your served model name contains `deepseek`, term-llm auto-detects this; if the deployment is aliased, force it:
 
 ```yaml
 providers:

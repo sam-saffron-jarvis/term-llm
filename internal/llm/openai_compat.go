@@ -580,8 +580,8 @@ func (p *OpenAICompatProvider) Stream(ctx context.Context, req Request) (Stream,
 		ReasoningEffort: effort,
 	}
 	if p.vllmThinking {
-		kwargs, budget := vLLMThinkingSettings(model, effort, p.vllmThinkingParam)
-		chatReq.ReasoningEffort = ""
+		kwargs, budget, vllmReasoningEffort := vLLMThinkingSettings(model, effort, p.vllmThinkingParam)
+		chatReq.ReasoningEffort = vllmReasoningEffort
 		chatReq.ChatTemplateKwargs = kwargs
 		if budget > 0 {
 			chatReq.ThinkingTokenBudget = &budget
@@ -771,7 +771,20 @@ func buildCompatMessages(messages []Message) []oaiMessage {
 
 	var result []oaiMessage
 	var pendingDev string
+	var pendingToolImages []oaiContentPart
+	flushToolImages := func() {
+		if len(pendingToolImages) == 0 {
+			return
+		}
+		result = append(result, oaiMessage{Role: "user", Content: pendingToolImages})
+		pendingToolImages = nil
+	}
 	for _, msg := range messages {
+		if msg.Role != RoleTool {
+			// Keep every result for one assistant tool-call turn contiguous. vLLM's
+			// DeepSeek renderer merges and orders only contiguous tool messages.
+			flushToolImages()
+		}
 		switch msg.Role {
 		case RoleDeveloper:
 			// OpenAI-compatible backends have no native developer role.
@@ -855,14 +868,14 @@ func buildCompatMessages(messages []Message) []oaiMessage {
 					imageParts = append(imageParts, oaiContentPart{Type: "image_url", ImageURL: &oaiImageURL{URL: dataURL, Detail: imageDetailWithDefault(contentPart.ImageData.Detail, "auto")}})
 				}
 				if len(imageParts) > 0 {
-					result = append(result, oaiMessage{
-						Role:    "user",
-						Content: imageParts,
-					})
+					pendingToolImages = append(pendingToolImages, imageParts...)
 				}
 			}
 		}
 	}
+	// Flush trailing tool images before a synthetic trailing developer turn so
+	// the images stay adjacent to the tool results that produced them.
+	flushToolImages()
 	// Trailing developer message with no following user turn.
 	if pendingDev != "" {
 		result = append(result, oaiMessage{
