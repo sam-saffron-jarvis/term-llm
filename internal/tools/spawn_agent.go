@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"github.com/samsaffron/term-llm/internal/llm"
 )
@@ -17,7 +18,7 @@ type SpawnAgentArgs struct {
 	AgentName string `json:"agent_name"`        // Required: name of the agent to spawn
 	Prompt    string `json:"prompt"`            // Required: task/prompt for the sub-agent
 	Timeout   int    `json:"timeout,omitempty"` // Optional: timeout in seconds (default 300)
-	Model     string `json:"model,omitempty"`   // Optional: per-call model override (model, alias, or provider:model)
+	Model     string `json:"model,omitempty"`   // Optional: exact provider:model override
 }
 
 // SpawnAgentResult is the result returned by spawn_agent.
@@ -188,7 +189,7 @@ Guidelines:
 - Each agent runs with its own context and tools
 - Results are returned when the agent completes
 - Use descriptive prompts that give the agent clear objectives
-- Optionally set model when the user explicitly asks for a specific model/provider for this sub-agent`,
+- Only set model when the user explicitly asks for a specific model/provider, and use exact provider:model format`,
 		Schema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -208,13 +209,21 @@ Guidelines:
 				},
 				"model": map[string]any{
 					"type":        "string",
-					"description": "Optional model override for this sub-agent call. Supports a model name, an alias, or provider:model format. If omitted, the agent default/configured spawn model is used.",
+					"description": "Optional model override in exact provider:model format. If omitted, the sub-agent uses its configured/default model.",
+					"pattern":     `^[^:\s]+:\S+$`,
 				},
 			},
 			"required":             []string{"agent_name", "prompt"},
 			"additionalProperties": false,
 		},
 	}
+}
+
+func isQualifiedSpawnModel(model string) bool {
+	provider, modelName, found := strings.Cut(model, ":")
+	return found && provider != "" && modelName != "" &&
+		!strings.ContainsFunc(provider, unicode.IsSpace) &&
+		!strings.ContainsFunc(modelName, unicode.IsSpace)
 }
 
 // Execute runs the spawn_agent tool.
@@ -230,6 +239,10 @@ func (t *SpawnAgentTool) Execute(ctx context.Context, args json.RawMessage) (llm
 	}
 	if a.Prompt == "" {
 		return llm.TextOutput(t.formatError(ErrInvalidParams, "prompt is required")), nil
+	}
+	requestedModel := a.Model
+	if requestedModel != "" && !isQualifiedSpawnModel(requestedModel) {
+		return llm.TextOutput(t.formatError(ErrInvalidParams, "model must use exact provider:model format; omit it to use the configured/default model")), nil
 	}
 
 	// Check depth limit
@@ -299,7 +312,7 @@ func (t *SpawnAgentTool) Execute(ctx context.Context, args json.RawMessage) (llm
 	// Get callback and call ID for event bubbling
 	cb := t.GetEventCallback()
 	callID := llm.CallIDFromContext(ctx)
-	modelOverride := strings.TrimSpace(a.Model)
+	modelOverride := requestedModel
 	if modelOverride == "" {
 		modelOverride = strings.TrimSpace(t.config.AgentModels[a.AgentName])
 	}

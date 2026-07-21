@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -185,7 +186,7 @@ func TestSpawnAgentTool_ModelArgumentOverridesConfiguredAgentModel(t *testing.T)
 	runner := newMockRunner()
 	tool.SetRunner(runner)
 
-	result, err := tool.Execute(context.Background(), makeSpawnArgsWithModel("reviewer", "inspect", 0, " requested-model "))
+	result, err := tool.Execute(context.Background(), makeSpawnArgsWithModel("reviewer", "inspect", 0, "provider:requested-model:variant"))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -197,8 +198,46 @@ func TestSpawnAgentTool_ModelArgumentOverridesConfiguredAgentModel(t *testing.T)
 	if len(calls) != 1 {
 		t.Fatalf("runner call count = %d, want 1", len(calls))
 	}
-	if calls[0].ModelOverride != "requested-model" {
-		t.Fatalf("ModelOverride = %q, want requested-model", calls[0].ModelOverride)
+	if calls[0].ModelOverride != "provider:requested-model:variant" {
+		t.Fatalf("ModelOverride = %q, want provider:requested-model:variant", calls[0].ModelOverride)
+	}
+}
+
+func TestSpawnAgentTool_ModelArgumentRequiresProviderModel(t *testing.T) {
+	tests := []struct {
+		name  string
+		model string
+	}{
+		{name: "bare model", model: "requested-model"},
+		{name: "missing provider", model: ":requested-model"},
+		{name: "missing model", model: "provider:"},
+		{name: "leading whitespace", model: " provider:requested-model"},
+		{name: "trailing whitespace", model: "provider:requested-model "},
+		{name: "provider whitespace", model: "pro vider:requested-model"},
+		{name: "model whitespace", model: "provider:requested model"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tool := NewSpawnAgentTool(SpawnConfig{MaxDepth: 5, DefaultTimeout: 300}, 0)
+			runner := newMockRunner()
+			tool.SetRunner(runner)
+
+			result, err := tool.Execute(context.Background(), makeSpawnArgsWithModel("reviewer", "inspect", 0, tt.model))
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			r := parseResult(t, result.Content)
+			if r.Type != string(ErrInvalidParams) {
+				t.Fatalf("error type = %q, want %q (%s)", r.Type, ErrInvalidParams, r.Error)
+			}
+			if !strings.Contains(r.Error, "provider:model") {
+				t.Fatalf("error = %q, want provider:model guidance", r.Error)
+			}
+			if calls := runner.GetCalls(); len(calls) != 0 {
+				t.Fatalf("runner call count = %d, want 0", len(calls))
+			}
+		})
 	}
 }
 
@@ -950,6 +989,9 @@ func TestSpawnAgentTool_Spec(t *testing.T) {
 	if spec.Description == "" {
 		t.Error("spec should have a description")
 	}
+	if !strings.Contains(spec.Description, "exact provider:model format") {
+		t.Errorf("spec description should state the exact provider:model requirement: %q", spec.Description)
+	}
 
 	if spec.Schema == nil {
 		t.Error("spec should have a schema")
@@ -978,6 +1020,17 @@ func TestSpawnAgentTool_Spec(t *testing.T) {
 		}
 	} else {
 		t.Fatal("timeout property should be an object")
+	}
+	modelProp, ok := props["model"].(map[string]any)
+	if !ok {
+		t.Fatal("model property should be an object")
+	}
+	modelDescription, _ := modelProp["description"].(string)
+	if !strings.Contains(modelDescription, "exact provider:model format") {
+		t.Errorf("model description = %q, want exact provider:model requirement", modelDescription)
+	}
+	if strings.Contains(strings.ToLower(modelDescription), "alias") {
+		t.Errorf("model description should not advertise aliases: %q", modelDescription)
 	}
 
 	required, ok := schema["required"].([]string)
