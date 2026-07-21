@@ -46,7 +46,7 @@ const worktreeApp = window.TermLLMApp || (window.TermLLMApp = {});
     if (elements.chipWorktreeTrigger) {
       elements.chipWorktreeTrigger.title = state.draftSessionActive
         ? 'Choose worktree for this draft session'
-        : (dir ? 'Open worktree diff/actions' : 'Root checkout');
+        : (dir ? 'Open worktree diff/actions' : 'Manage worktrees');
       elements.chipWorktreeTrigger.classList.toggle('locked', !state.draftSessionActive);
     }
   };
@@ -74,8 +74,10 @@ const worktreeApp = window.TermLLMApp || (window.TermLLMApp = {});
   };
 
   const closeMenu = () => {
-    if (menu) menu.remove();
+    if (!menu) return;
+    menu.remove();
     menu = null;
+    if (elements.chipPopoverBackdrop) elements.chipPopoverBackdrop.hidden = true;
     if (elements.chipWorktreeTrigger) elements.chipWorktreeTrigger.setAttribute('aria-expanded', 'false');
   };
 
@@ -182,22 +184,25 @@ const worktreeApp = window.TermLLMApp || (window.TermLLMApp = {});
   };
 
   const openMenu = async () => {
-    if (!state.draftSessionActive) {
-      const session = activeSession();
-      await openDiffActions(session?.worktreeDir || '');
+    const session = activeSession();
+    const isDraft = state.draftSessionActive;
+    const activeDir = !isDraft ? (session?.worktreeDir || '') : '';
+    if (!isDraft && activeDir) {
+      await openDiffActions(activeDir);
       return;
     }
     const rows = await loadWorktrees();
     closeMenu();
     menu = document.createElement('div');
     menu.className = 'chip-popover chip-popover-runtime worktree-popover';
-    menu.setAttribute('role', 'listbox');
-    const addRow = (labelText, metaText, onClick, selected = false) => {
+    menu.setAttribute('role', isDraft ? 'listbox' : 'menu');
+    const addRow = (labelText, metaText, onClick, selected = false, disabled = false) => {
       const btn = document.createElement('button');
       btn.type = 'button';
       btn.className = 'chip-popover-item worktree-option';
-      btn.setAttribute('role', 'option');
-      if (selected) btn.setAttribute('aria-selected', 'true');
+      btn.setAttribute('role', isDraft ? 'option' : 'menuitem');
+      if (isDraft && selected) btn.setAttribute('aria-selected', 'true');
+      btn.disabled = disabled;
       const label = document.createElement('span');
       label.className = 'chip-popover-item-label';
       label.textContent = labelText;
@@ -211,16 +216,28 @@ const worktreeApp = window.TermLLMApp || (window.TermLLMApp = {});
       btn.addEventListener('click', onClick);
       menu.appendChild(btn);
     };
-    const selectedDir = state.selectedWorktreeDir || '';
-    addRow('root checkout', '', () => chooseWorktree(null), !selectedDir);
+    const selectedDir = isDraft ? (state.selectedWorktreeDir || '') : activeDir;
+    addRow('root checkout', isDraft ? '' : 'current session', () => {
+      if (isDraft) chooseWorktree(null); else closeMenu();
+    }, !selectedDir, !isDraft);
     rows.filter((r) => !r.root).forEach((row) => {
       const ref = row.branch || (row.head_sha ? `detached@${row.head_sha.slice(0, 8)}` : 'detached');
-      addRow(row.name, `±${row.dirty_files || 0} · ${ref}`, () => chooseWorktree(row), row.dir === selectedDir);
+      addRow(row.name, `±${row.dirty_files || 0} · ${ref}`, () => {
+        if (isDraft) {
+          chooseWorktree(row);
+        } else {
+          closeMenu();
+          void openDiffActions(row.dir);
+        }
+      }, row.dir === selectedDir);
     });
-    addRow(loading ? 'creating…' : '+ new worktree…', '', () => { void createWorktree(); });
+    if (isDraft) {
+      addRow(loading ? 'creating…' : '+ new worktree…', '', () => { void createWorktree(); });
+    }
     document.body.appendChild(menu);
+    if (elements.chipPopoverBackdrop) elements.chipPopoverBackdrop.hidden = false;
     if (typeof worktreeApp.positionChipPopover === 'function') {
-      worktreeApp.positionChipPopover(elements.chipWorktreeTrigger, menu);
+      worktreeApp.positionChipPopover(elements.chipWorktreeTrigger, menu, { mobileSheet: true });
     }
     elements.chipWorktreeTrigger.setAttribute('aria-expanded', 'true');
   };
@@ -233,9 +250,10 @@ const worktreeApp = window.TermLLMApp || (window.TermLLMApp = {});
   }
   document.addEventListener('click', (event) => {
     if (!menu) return;
-    if (event.target === elements.chipWorktreeTrigger || menu.contains(event.target)) return;
+    if (elements.chipWorktreeTrigger?.contains?.(event.target) || menu.contains(event.target)) return;
     closeMenu();
   });
+  elements.chipPopoverBackdrop?.addEventListener('click', closeMenu);
   document.addEventListener('keydown', (event) => {
     if (event.key !== 'Escape' || !menu) return;
     closeMenu();
@@ -244,7 +262,7 @@ const worktreeApp = window.TermLLMApp || (window.TermLLMApp = {});
 
   const repositionMenu = () => {
     if (!menu || typeof worktreeApp.positionChipPopover !== 'function') return;
-    worktreeApp.positionChipPopover(elements.chipWorktreeTrigger, menu);
+    worktreeApp.positionChipPopover(elements.chipWorktreeTrigger, menu, { mobileSheet: true });
   };
   window.addEventListener('resize', repositionMenu);
   window.addEventListener('orientationchange', repositionMenu);

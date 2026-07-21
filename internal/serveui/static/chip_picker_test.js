@@ -852,6 +852,47 @@ function testMobilePopoverUsesVisualViewportSafeBounds() {
   }
   pass(name);
 }
+function testMobileWorktreePopoverUsesBottomSheetPosition() {
+  const name = 'mobile worktree popover is anchored as a bottom sheet';
+  const visualViewport = {
+    width: 390,
+    height: 720,
+    offsetTop: 12,
+    offsetLeft: 0,
+    addEventListener() {},
+    removeEventListener() {},
+  };
+  const { app } = loadCoreAndStream({
+    window: {
+      innerWidth: 390,
+      innerHeight: 844,
+      visualViewport,
+    },
+  });
+  const trigger = makeNode({
+    getBoundingClientRect() {
+      return { left: 300, top: 20, right: 350, bottom: 44, width: 50, height: 24 };
+    },
+  });
+  const popover = makeNode();
+
+  app.positionChipPopover(trigger, popover, { mobileSheet: true });
+
+  if (popover.style.top !== 'auto') {
+    fail(name, `expected top auto, got ${popover.style.top}`);
+    return;
+  }
+  if (popover.style.bottom !== 'calc(112px + 0.5rem + var(--safe-bottom))') {
+    fail(name, `expected visual viewport bottom anchoring, got ${popover.style.bottom}`);
+    return;
+  }
+  if (popover.style.maxHeight !== 'calc(432px - 1rem - var(--safe-top) - var(--safe-bottom))') {
+    fail(name, `expected a 60% visual viewport height cap, got ${popover.style.maxHeight}`);
+    return;
+  }
+  pass(name);
+}
+
 async function main() {
   testSplitHeaderModelEffortDetectsKnownEffortSuffix();
   testRenderModelOptionsCanonicalizesStaleEffortSuffix();
@@ -868,6 +909,7 @@ async function main() {
   testFilterInputHidesNonMatchingItems();
   testCompressedModelChipOpensRuntimeControls();
   testMobilePopoverUsesVisualViewportSafeBounds();
+  testMobileWorktreePopoverUsesBottomSheetPosition();
 
   if (failures > 0) {
     console.error(`\n${failures} test(s) failed`);

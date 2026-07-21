@@ -2731,7 +2731,7 @@ const buildChipOptionLabel = (opt) => {
   return { primary: text, meta: '' };
 };
 
-const positionChipPopover = (triggerEl, pop = elements.chipPopover) => {
+const positionChipPopover = (triggerEl, pop = elements.chipPopover, options = {}) => {
   if (!pop || !triggerEl?.getBoundingClientRect) return;
   pop.hidden = false;
 
@@ -2740,6 +2740,20 @@ const positionChipPopover = (triggerEl, pop = elements.chipPopover) => {
   const viewportHeight = vv ? Math.round(vv.height) : window.innerHeight;
   const viewportOffsetLeft = vv ? Math.max(0, Math.round(vv.offsetLeft)) : 0;
   const viewportOffsetTop = vv ? Math.max(0, Math.round(vv.offsetTop)) : 0;
+
+  if (viewportWidth <= 540 && options.mobileSheet) {
+    const viewportBottomInset = Math.max(0, window.innerHeight - viewportOffsetTop - viewportHeight);
+    const sheetMaxHeight = Math.round(viewportHeight * 0.6);
+    pop.style.left = `calc(${viewportOffsetLeft}px + 0.5rem + var(--safe-left))`;
+    pop.style.top = 'auto';
+    pop.style.right = 'auto';
+    pop.style.bottom = `calc(${viewportBottomInset}px + 0.5rem + var(--safe-bottom))`;
+    pop.style.width = `calc(${viewportWidth}px - 1rem - var(--safe-left) - var(--safe-right))`;
+    pop.style.minWidth = '';
+    pop.style.maxWidth = 'none';
+    pop.style.maxHeight = `calc(${sheetMaxHeight}px - 1rem - var(--safe-top) - var(--safe-bottom))`;
+    return;
+  }
 
   if (viewportWidth <= 540) {
     // On iPhone Safari the on-screen keyboard shrinks the visual viewport, but

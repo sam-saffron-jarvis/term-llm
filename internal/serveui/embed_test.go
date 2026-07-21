@@ -395,6 +395,28 @@ func TestChipPickerJS(t *testing.T) {
 	}
 }
 
+func TestWorktreeJS(t *testing.T) {
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("node not found in PATH, skipping JS worktree tests")
+	}
+
+	_, thisFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("could not determine test file path")
+	}
+	script := filepath.Join(filepath.Dir(thisFile), "static", "app_worktrees_test.js")
+	if _, err := os.Stat(script); err != nil {
+		t.Fatalf("app_worktrees_test.js not found at %s: %v", script, err)
+	}
+
+	out, err := exec.Command(node, script).CombinedOutput()
+	t.Log(string(out))
+	if err != nil {
+		t.Fatalf("app_worktrees_test.js failed: %v", err)
+	}
+}
+
 func TestWorktreePopoverUsesResponsiveChipUI(t *testing.T) {
 	worktreesJS, err := StaticAsset("app-worktrees.js")
 	if err != nil {
@@ -404,11 +426,19 @@ func TestWorktreePopoverUsesResponsiveChipUI(t *testing.T) {
 	for _, want := range []string{
 		"chip-popover chip-popover-runtime worktree-popover",
 		"chip-popover-item worktree-option",
-		"worktreeApp.positionChipPopover(elements.chipWorktreeTrigger, menu)",
+		"worktreeApp.positionChipPopover(elements.chipWorktreeTrigger, menu, { mobileSheet: true })",
 	} {
 		if !strings.Contains(src, want) {
 			t.Fatalf("app-worktrees.js missing responsive popover integration %q", want)
 		}
+	}
+
+	appCSS, err := StaticAsset("app.css")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := `.header-controls-row .model-chip[data-chip="worktree"] .chip-trigger:not(.header-action)`; !strings.Contains(string(appCSS), want) {
+		t.Fatalf("app.css missing mobile worktree trigger padding selector %q", want)
 	}
 }
 

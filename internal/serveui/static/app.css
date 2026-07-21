@@ -1714,6 +1714,12 @@
       white-space: nowrap;
     }
 
+    .worktree-option:disabled,
+    .worktree-option:disabled:hover {
+      cursor: default;
+      background: transparent;
+    }
+
     .runtime-popover-header {
       margin-bottom: 0.7rem;
     }
@@ -4196,6 +4202,18 @@
       .header-controls-row .chip-trigger:not(.header-action):not(.narrow-header-action):focus-visible,
       .header-controls-row .chip-trigger:not(.header-action):not(.narrow-header-action)[aria-expanded="true"] {
         background: transparent;
+      }
+
+      .header-controls-row .model-chip[data-chip="worktree"] .chip-trigger:not(.header-action) {
+        min-height: 32px;
+        padding: 0 0.5rem;
+        border-radius: 7px;
+      }
+
+      .header-controls-row .model-chip[data-chip="worktree"] .chip-trigger:not(.header-action):hover,
+      .header-controls-row .model-chip[data-chip="worktree"] .chip-trigger:not(.header-action):focus-visible,
+      .header-controls-row .model-chip[data-chip="worktree"] .chip-trigger:not(.header-action)[aria-expanded="true"] {
+        background: var(--surface-3);
       }
 
       .header-tokens,
