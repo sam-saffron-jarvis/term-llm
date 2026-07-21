@@ -4,16 +4,18 @@
 # Usage:
 #   ./scripts/release.sh v1.0.0
 #   ./scripts/release.sh --auto
+#   ./scripts/release.sh --auto --wait
 
 set -euo pipefail
 
 usage() {
     cat <<USAGE
-Usage: $0 [--auto | <version>]
+Usage: $0 [--wait] (--auto | <version>)
 
 Examples:
-  $0 v1.0.0        # release explicit version
-  $0 --auto        # bump patch version based on latest GitHub release
+  $0 v1.0.0               # release explicit version
+  $0 --auto               # bump patch version based on latest GitHub release
+  $0 --auto --wait        # release and wait for GitHub Actions to finish
 USAGE
 }
 
@@ -56,13 +58,49 @@ compute_next_patch_version() {
     printf 'v%d.%d.%d\n' "$major" "$minor" "$patch"
 }
 
+wait_for_release_workflow() {
+    local version=$1
+    local run_id=""
+    local attempt=1
+    local max_attempts=60
+
+    echo "Waiting for the GitHub Actions release workflow to start..."
+    while [ "$attempt" -le "$max_attempts" ]; do
+        if ! run_id=$(gh run list \
+            --workflow release.yml \
+            --branch "$version" \
+            --event push \
+            --limit 1 \
+            --json databaseId \
+            --jq '.[0].databaseId'); then
+            echo "Error: Could not query GitHub Actions runs." >&2
+            return 1
+        fi
+        if [ -n "$run_id" ]; then
+            echo "Watching GitHub Actions run $run_id..."
+            gh run watch "$run_id" --exit-status
+            return
+        fi
+        sleep 2
+        attempt=$((attempt + 1))
+    done
+
+    echo "Error: Timed out waiting for the release workflow to start." >&2
+    return 1
+}
+
 AUTO=false
+WAIT=false
 VERSION=""
 
 while [ $# -gt 0 ]; do
     case "$1" in
         --auto)
             AUTO=true
+            shift
+            ;;
+        --wait)
+            WAIT=true
             shift
             ;;
         -h|--help)
@@ -107,6 +145,11 @@ if [[ ! $VERSION =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
     exit 1
 fi
 
+if [ "$WAIT" = "true" ] && ! command -v gh >/dev/null 2>&1; then
+    echo "Error: --wait requires the GitHub CLI (gh)." >&2
+    exit 1
+fi
+
 echo "Creating release $VERSION..."
 
 # Ensure we're on main branch
@@ -127,6 +170,11 @@ echo "Creating tag $VERSION..."
 git tag -a "$VERSION" -m "Release $VERSION"
 git push origin "$VERSION"
 
-echo "Release $VERSION created successfully!"
-echo "GitHub Actions will now build and publish the release automatically."
-echo "Check the Actions tab in your GitHub repository to monitor progress."
+if [ "$WAIT" = "true" ]; then
+    wait_for_release_workflow "$VERSION"
+    echo "Release $VERSION built and published successfully!"
+else
+    echo "Release $VERSION created successfully!"
+    echo "GitHub Actions will now build and publish the release automatically."
+    echo "Check the Actions tab in your GitHub repository to monitor progress."
+fi
