@@ -4,7 +4,7 @@
 const app = window.TermLLMApp;
 const {
   UI_PREFIX, STORAGE_KEYS, state, elements, generateId, truncate, asTimestamp, loadSessions, saveSessions, getActiveSession, createSession, ensureActiveSession,
-  sessionIdFromURL, sessionSlug, findSessionBySlug, updateURL, updateDocumentTitle, scrollToBottom, setConnectionState, setStartupStatus, hideStartupSplash, persistAndRefreshShell, refreshRelativeTimes,
+  sessionIdFromURL, sessionSlug, findSessionBySlug, updateURL, updateDocumentTitle, scrollToBottom, setConnectionState, setStartupStatus, hideStartupSplash, clearProviderRetryStatus, persistAndRefreshShell, refreshRelativeTimes,
   splitHeaderModelEffort, updateMCPStatusDisplay, setElementHidden,
   openAuthModal, closeAuthModal, handleAuthFailure, closeAskUserModal, openAskUserModal, setActiveResponseTracking,
   clearActiveResponseTracking, setStreaming, resumeActiveResponse, renderSidebar, renderMessages, renderProviderOptions, renderModelOptions, normalizeSelectedProvider,
@@ -300,6 +300,19 @@ const stageCurrentComposerForSession = (sessionId) => {
   clearDraftMessageForSession(sessionId);
 };
 
+const clearSessionProviderRetryOwner = (sessionId) => {
+  const ownerSessionId = String(sessionId || '').trim();
+  if (!ownerSessionId) return false;
+  const session = state.sessions.find((item) => String(item?.id || '').trim() === ownerSessionId) || null;
+  const responseId = String(session?.activeResponseId || (
+    String(state.currentStreamSessionId || '').trim() === ownerSessionId
+      ? state.currentStreamResponseId
+      : ''
+  ) || '').trim();
+  if (!responseId) return false;
+  return clearProviderRetryStatus(ownerSessionId, responseId);
+};
+
 const invalidateSessionStateForSelection = (sessionId = '') => {
   state.sessionStateRequestGeneration = Number(state.sessionStateRequestGeneration || 0) + 1;
   state.lastAppliedSessionStateRequestGeneration = state.sessionStateRequestGeneration;
@@ -325,6 +338,7 @@ const switchToDraftSession = async (options = {}) => {
   closeAskUserModal();
   closeApprovalModal();
   closeMCPModal();
+  clearSessionProviderRetryOwner(previousActiveSessionId);
   if (state.currentStreamSessionId) {
     detachResponseStream();
   } else if (previousActiveSessionId && state.currentStreamSessionId !== previousActiveSessionId) {
@@ -450,6 +464,9 @@ const switchToSession = async (sessionId, options = {}) => {
   }
   if (mcpModalSessionId && mcpModalSessionId !== nextId) {
     closeMCPModal();
+  }
+  if (previousActiveSessionId && previousActiveSessionId !== nextId) {
+    clearSessionProviderRetryOwner(previousActiveSessionId);
   }
   if (state.currentStreamSessionId && state.currentStreamSessionId !== nextId) {
     detachResponseStream();

@@ -172,7 +172,11 @@ function defaultAppStubs(app, overrides = {}) {
       if (!session) return;
       const normalized = String(responseId || '').trim();
       if (!normalized) return;
-      if (session.activeResponseId !== normalized) {
+      const currentId = String(session.activeResponseId || '').trim();
+      if (currentId && currentId !== normalized) {
+        app.clearProviderRetryStatus(String(session.id || '').trim(), currentId);
+      }
+      if (currentId !== normalized) {
         session.activeResponseId = normalized;
         if (sequenceNumber === null) {
           session.lastSequenceNumber = 0;
@@ -189,11 +193,21 @@ function defaultAppStubs(app, overrides = {}) {
       if (!session) return;
       const currentId = String(session.activeResponseId || '').trim();
       const targetId = String(responseId || '').trim();
-      if (!targetId || currentId === targetId) {
+      const retryOwnerId = targetId || currentId;
+      if (retryOwnerId) {
+        app.clearProviderRetryStatus(String(session.id || '').trim(), retryOwnerId);
+      }
+      if (!targetId || currentId === targetId || targetId.startsWith('resp_msg_')) {
         session.activeResponseId = null;
         session.lastSequenceNumber = 0;
       }
-      if (!targetId || app.state.currentStreamResponseId === targetId) {
+      if (
+        !targetId
+        || (
+          app.state.currentStreamSessionId === String(session.id || '').trim()
+          && (!app.state.currentStreamResponseId || app.state.currentStreamResponseId === targetId || targetId.startsWith('resp_msg_'))
+        )
+      ) {
         app.state.currentStreamSessionId = '';
         app.state.currentStreamResponseId = '';
       }
@@ -5496,6 +5510,87 @@ async function testSessionSwitchClearsPlanBeforeRejectingOldResponse() {
   pass(name);
 }
 
+async function testSessionSwitchClearsProviderRetryOwner() {
+  const name = 'session switching clears the previous provider retry owner';
+  const clears = [];
+  const { app } = await createSessionsHarness({
+    fetchImpl: async () => new Response(JSON.stringify({ sessions: [] }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    }),
+    appOverrides: {
+      clearProviderRetryStatus(sessionId, responseId) {
+        clears.push({ sessionId, responseId });
+        return true;
+      },
+    },
+  });
+  app.stopSidebarStatusPoll();
+  const oldSession = { id: 'session-retry-old', title: 'Old', messages: [], activeResponseId: 'resp-retry-old', lastSequenceNumber: 2 };
+  const nextSession = { id: 'session-retry-next', title: 'Next', messages: [], activeResponseId: null, lastSequenceNumber: 0 };
+  app.state.sessions = [oldSession, nextSession];
+  app.state.activeSessionId = oldSession.id;
+  app.state.draftSessionActive = false;
+  clears.length = 0;
+
+  await app.switchToSession(nextSession.id, { sync: false, closeSidebar: false });
+
+  if (!clears.some((entry) => entry.sessionId === oldSession.id && entry.responseId === oldSession.activeResponseId)) {
+    fail(name, 'previous session retry owner was not cleared', JSON.stringify(clears));
+    return;
+  }
+  pass(name);
+}
+
+async function testStoppedRunReconciliationClearsProviderRetryOwner() {
+  const name = 'stopped-run reconciliation clears matching provider retry owner';
+  const clears = [];
+  const { app } = await createSessionsHarness({
+    fetchImpl: async (url) => {
+      if (url === '/ui/v1/sessions/session-retry-stopped/state') {
+        return new Response(JSON.stringify({ active_run: false, active_response_id: '' }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      return new Response(JSON.stringify({ sessions: [] }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    },
+    appOverrides: {
+      clearProviderRetryStatus(sessionId, responseId) {
+        clears.push({ sessionId, responseId });
+        return true;
+      },
+    },
+  });
+  app.stopSidebarStatusPoll();
+  const session = {
+    id: 'session-retry-stopped',
+    title: 'Stopped',
+    messages: [],
+    activeResponseId: 'resp-retry-stopped',
+    lastSequenceNumber: 4,
+  };
+  app.state.sessions = [session];
+  app.state.activeSessionId = session.id;
+  app.state.draftSessionActive = false;
+  app.state.abortController = null;
+  clears.length = 0;
+
+  await app.syncActiveSessionFromServer(session, false, { skipMessagesFetch: true });
+
+  const matchingClears = clears.filter((entry) => (
+    entry.sessionId === session.id && entry.responseId === 'resp-retry-stopped'
+  ));
+  if (matchingClears.length !== 1) {
+    fail(name, 'stopped run should clear its retry owner once through active-response tracking', JSON.stringify(clears));
+    return;
+  }
+  pass(name);
+}
+
 (async () => {
   await testSanitizeMessagePreservesSkillRunState();
   await testSanitizeMessagePreservesPlanExecutionEvidence();
@@ -5505,6 +5600,8 @@ async function testSessionSwitchClearsPlanBeforeRejectingOldResponse() {
   await testSessionStatePlanRequestsIgnoreOlderOverlaps();
   await testSessionStatePlanRequestsKeepNewerAuthoritativeClear();
   await testSessionSwitchClearsPlanBeforeRejectingOldResponse();
+  await testSessionSwitchClearsProviderRetryOwner();
+  await testStoppedRunReconciliationClearsProviderRetryOwner();
   await testSwitchingSessionsStagesCurrentComposerBeforeRestore();
   await testSwitchingSessionsClearsEmptyComposerDraft();
   await testNewChatClearsExistingDraftComposer();
