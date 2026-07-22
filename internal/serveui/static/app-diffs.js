@@ -914,8 +914,30 @@ const scrollFileIntoView = (path) => {
   }
 };
 
+const allDiffFilesExpanded = (ds) => {
+  if (ds.files.size === 0) return false;
+  for (const path of ds.files.keys()) {
+    if (!ds.expanded.has(path)) return false;
+  }
+  return true;
+};
+
+const updateDiffBulkToggle = (ds) => {
+  const button = elements.diffBulkToggleBtn;
+  if (!button) return;
+  const collapse = allDiffFilesExpanded(ds);
+  const action = collapse ? 'collapse' : 'expand';
+  const label = collapse ? 'Collapse all' : 'Expand all';
+  button.dataset.action = action;
+  button.setAttribute('aria-label', `${label} files`);
+  button.setAttribute('title', label);
+  const actionElement = button.querySelector?.('.diff-bulk-toggle-action');
+  if (actionElement) actionElement.textContent = collapse ? 'Collapse' : 'Expand';
+};
+
 const renderDiffSidebarContent = (sessionId, ds) => {
   renderDiffTotals(ds);
+  updateDiffBulkToggle(ds);
   renderDiffAccordion(sessionId, ds);
   if (ds.pendingScrollPath) {
     scrollFileIntoView(ds.pendingScrollPath);
@@ -927,6 +949,7 @@ const renderDiffSidebar = (sessionId) => {
   if (sessionId !== state.activeSessionId) return;
   const ds = sessionDiffState(sessionId);
   applyDiffSidebarVisibility(ds);
+  updateDiffBulkToggle(ds);
   if (ds.files.size === 0) return;
   renderDiffTotals(ds);
   // Skip the accordion (and its lazy diff fetches) while hidden; it renders
@@ -983,6 +1006,14 @@ const collapseAllDiffFiles = () => {
   // Live changes must not immediately re-open what the user just closed.
   ds.files.forEach((_, path) => ds.userCollapsed.add(path));
   renderDiffSidebar(sessionId);
+};
+
+const toggleAllDiffFiles = () => {
+  const sessionId = state.activeSessionId;
+  if (!sessionId) return;
+  const ds = sessionDiffState(sessionId);
+  if (allDiffFilesExpanded(ds)) collapseAllDiffFiles();
+  else expandAllDiffFiles();
 };
 
 const setDiffFilter = (value) => {
@@ -1298,8 +1329,7 @@ elements.diffSidebarCloseBtn?.addEventListener?.('click', () => {
   if (isDiffDrawerViewport()) closeDiffDrawer();
   else setDiffSidebarHidden(true);
 });
-elements.diffExpandAllBtn?.addEventListener?.('click', expandAllDiffFiles);
-elements.diffCollapseAllBtn?.addEventListener?.('click', collapseAllDiffFiles);
+elements.diffBulkToggleBtn?.addEventListener?.('click', toggleAllDiffFiles);
 elements.diffFilterInput?.addEventListener?.('input', (event) => {
   setDiffFilter(event.target?.value ?? elements.diffFilterInput.value ?? '');
 });
