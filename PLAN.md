@@ -168,12 +168,21 @@ whole transaction, keeping I1 under contention.
 
 ```go
 type TranscriptIndexer interface {
-    // GetTranscriptIndex returns rev + every index row (role NOT IN
-    // ('system','developer')), ordered by sequence, in one read transaction.
+    // GetTranscriptSnapshot returns rev + compaction envelope + every index row
+    // (role NOT IN ('system','developer')), ordered by sequence, in one read
+    // transaction. GetTranscriptIndex is a convenience projection used by
+    // non-HTTP callers.
+    GetTranscriptSnapshot(ctx, sessionID string) (TranscriptSnapshot, error)
     GetTranscriptIndex(ctx, sessionID string) (rev int64, items []TranscriptIndexItem, err error)
     // GetMessagesByIDs returns rev + full rows for the durable row IDs, one transaction.
     GetMessagesByIDs(ctx, sessionID string, ids []int64) (rev int64, msgs []Message, err error)
     TranscriptRev(ctx, sessionID string) (int64, error)
+}
+
+type TranscriptSnapshot struct {
+    Rev int64
+    CompactionSeq, CompactionCount int
+    Items []TranscriptIndexItem
 }
 
 type TranscriptIndexItem struct {

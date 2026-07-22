@@ -204,11 +204,21 @@ type TranscriptIndexItem struct {
 	Flags uint8
 }
 
+// TranscriptSnapshot is the complete compact identity stream and its session
+// envelope read from one database snapshot.
+type TranscriptSnapshot struct {
+	Rev             int64
+	CompactionSeq   int
+	CompactionCount int
+	Items           []TranscriptIndexItem
+}
+
 // TranscriptIndexer is an optional Store capability for coherent revisioned
 // transcript reads. Implementations return each revision and its rows from one
 // read transaction.
 type TranscriptIndexer interface {
 	GetTranscriptIndex(ctx context.Context, sessionID string) (rev int64, items []TranscriptIndexItem, err error)
+	GetTranscriptSnapshot(ctx context.Context, sessionID string) (TranscriptSnapshot, error)
 	GetMessagesByIDs(ctx context.Context, sessionID string, ids []int64) (rev int64, messages []Message, err error)
 	TranscriptRev(ctx context.Context, sessionID string) (int64, error)
 }

@@ -276,6 +276,17 @@ func (s *LoggingStore) GetTranscriptIndex(ctx context.Context, sessionID string)
 	return rev, items, err
 }
 
+// GetTranscriptSnapshot delegates coherent transcript envelope reads.
+func (s *LoggingStore) GetTranscriptSnapshot(ctx context.Context, sessionID string) (TranscriptSnapshot, error) {
+	indexer, ok := s.Store.(TranscriptIndexer)
+	if !ok {
+		return TranscriptSnapshot{}, ErrNotFound
+	}
+	snapshot, err := indexer.GetTranscriptSnapshot(ctx, sessionID)
+	s.logOnce("GetTranscriptSnapshot", err)
+	return snapshot, err
+}
+
 // GetMessagesByIDs delegates coherent transcript body reads.
 func (s *LoggingStore) GetMessagesByIDs(ctx context.Context, sessionID string, ids []int64) (int64, []Message, error) {
 	indexer, ok := s.Store.(TranscriptIndexer)

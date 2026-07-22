@@ -3242,12 +3242,12 @@ func transcriptRowHasDisplayBody(role llm.Role, parts []llm.Part) bool {
 	return false
 }
 
-// GetTranscriptIndex returns every durable non-internal row and the revision
-// describing it from one SQLite read transaction.
-func (s *SQLiteStore) GetTranscriptIndex(ctx context.Context, sessionID string) (int64, []TranscriptIndexItem, error) {
+// GetTranscriptSnapshot returns the complete transcript envelope from one
+// SQLite read transaction.
+func (s *SQLiteStore) GetTranscriptSnapshot(ctx context.Context, sessionID string) (TranscriptSnapshot, error) {
 	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
-		return 0, nil, fmt.Errorf("begin transcript index read: %w", err)
+		return TranscriptSnapshot{}, fmt.Errorf("begin transcript index read: %w", err)
 	}
 	defer tx.Rollback()
 
@@ -3255,11 +3255,19 @@ func (s *SQLiteStore) GetTranscriptIndex(ctx context.Context, sessionID string) 
 	if s.hasTranscriptRev {
 		revExpr = "transcript_rev"
 	}
-	var rev int64
-	if err := tx.QueryRowContext(ctx, "SELECT "+revExpr+" FROM sessions WHERE id = ?", sessionID).Scan(&rev); errors.Is(err, sql.ErrNoRows) {
-		return 0, nil, ErrNotFound
+	compactionSeqExpr := "-1"
+	if s.hasCompactionSeq {
+		compactionSeqExpr = "COALESCE(compaction_seq, -1)"
+	}
+	compactionCountExpr := "0"
+	if s.hasCompactionCount {
+		compactionCountExpr = "COALESCE(compaction_count, 0)"
+	}
+	snapshot := TranscriptSnapshot{CompactionSeq: -1}
+	if err := tx.QueryRowContext(ctx, "SELECT "+revExpr+", "+compactionSeqExpr+", "+compactionCountExpr+" FROM sessions WHERE id = ?", sessionID).Scan(&snapshot.Rev, &snapshot.CompactionSeq, &snapshot.CompactionCount); errors.Is(err, sql.ErrNoRows) {
+		return TranscriptSnapshot{}, ErrNotFound
 	} else if err != nil {
-		return 0, nil, fmt.Errorf("read transcript revision: %w", err)
+		return TranscriptSnapshot{}, fmt.Errorf("read transcript revision: %w", err)
 	}
 	compactionTailCol := "FALSE"
 	if s.hasMessageCompactionTail {
@@ -3271,39 +3279,49 @@ func (s *SQLiteStore) GetTranscriptIndex(ctx context.Context, sessionID string) 
 		WHERE session_id = ? AND role NOT IN ('system', 'developer')
 		ORDER BY sequence ASC, id ASC`, sessionID)
 	if err != nil {
-		return 0, nil, fmt.Errorf("query transcript index: %w", err)
+		return TranscriptSnapshot{}, fmt.Errorf("query transcript index: %w", err)
 	}
 	defer rows.Close()
-	items := make([]TranscriptIndexItem, 0)
+	snapshot.Items = make([]TranscriptIndexItem, 0)
 	for rows.Next() {
 		var item TranscriptIndexItem
 		var partsJSON string
 		var compactionTail bool
 		if err := rows.Scan(&item.ID, &item.Seq, &item.Role, &partsJSON, &compactionTail); err != nil {
-			return 0, nil, fmt.Errorf("scan transcript index: %w", err)
+			return TranscriptSnapshot{}, fmt.Errorf("scan transcript index: %w", err)
 		}
 		if compactionTail {
 			item.Flags |= TranscriptFlagCompactionTail
 		}
 		var parts []llm.Part
 		if err := json.Unmarshal([]byte(partsJSON), &parts); err != nil {
-			return 0, nil, fmt.Errorf("decode transcript index parts: %w", err)
+			return TranscriptSnapshot{}, fmt.Errorf("decode transcript index parts: %w", err)
 		}
 		if !transcriptRowHasDisplayBody(llm.Role(item.Role), parts) {
 			item.Flags |= TranscriptFlagEmptyBody
 		}
-		items = append(items, item)
+		snapshot.Items = append(snapshot.Items, item)
 	}
 	if err := rows.Err(); err != nil {
-		return 0, nil, fmt.Errorf("iterate transcript index: %w", err)
+		return TranscriptSnapshot{}, fmt.Errorf("iterate transcript index: %w", err)
 	}
 	if err := rows.Close(); err != nil {
-		return 0, nil, fmt.Errorf("close transcript index: %w", err)
+		return TranscriptSnapshot{}, fmt.Errorf("close transcript index: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
-		return 0, nil, fmt.Errorf("commit transcript index read: %w", err)
+		return TranscriptSnapshot{}, fmt.Errorf("commit transcript index read: %w", err)
 	}
-	return rev, items, nil
+	return snapshot, nil
+}
+
+// GetTranscriptIndex returns every durable non-internal row and the revision
+// describing it from one SQLite read transaction.
+func (s *SQLiteStore) GetTranscriptIndex(ctx context.Context, sessionID string) (int64, []TranscriptIndexItem, error) {
+	snapshot, err := s.GetTranscriptSnapshot(ctx, sessionID)
+	if err != nil {
+		return 0, nil, err
+	}
+	return snapshot.Rev, snapshot.Items, nil
 }
 
 // GetMessagesByIDs returns requested durable rows in authoritative sequence

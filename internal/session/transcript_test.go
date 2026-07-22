@@ -2,6 +2,8 @@ package session
 
 import (
 	"context"
+	"fmt"
+	"sync"
 	"testing"
 
 	"github.com/samsaffron/term-llm/internal/llm"
@@ -139,6 +141,47 @@ func TestSQLiteStoreTranscriptIndexAndBodiesUseDurableIdentity(t *testing.T) {
 	}
 	if len(bodies) != 2 || bodies[0].ID != messages[1].ID || bodies[1].ID != messages[3].ID {
 		t.Fatalf("bodies not authoritative sequence order: %#v", bodies)
+	}
+}
+
+func TestSQLiteStoreTranscriptSnapshotIsCoherentDuringConcurrentWrites(t *testing.T) {
+	store, sess := newTranscriptTestStore(t)
+	ctx := context.Background()
+	const writes = 80
+	var wg sync.WaitGroup
+	wg.Add(1)
+	writerErr := make(chan error, 1)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < writes; i++ {
+			if err := store.AddMessage(ctx, sess.ID, NewMessage(sess.ID, llm.UserText(fmt.Sprintf("row-%d", i)), -1)); err != nil {
+				writerErr <- err
+				return
+			}
+		}
+	}()
+
+	for i := 0; i < writes; i++ {
+		snapshot, err := store.GetTranscriptSnapshot(ctx, sess.ID)
+		if err != nil {
+			t.Fatalf("GetTranscriptSnapshot: %v", err)
+		}
+		if snapshot.Rev != int64(len(snapshot.Items)) {
+			t.Fatalf("incoherent snapshot: rev=%d rows=%d", snapshot.Rev, len(snapshot.Items))
+		}
+	}
+	wg.Wait()
+	select {
+	case err := <-writerErr:
+		t.Fatalf("writer: %v", err)
+	default:
+	}
+	final, err := store.GetTranscriptSnapshot(ctx, sess.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if final.Rev != writes || len(final.Items) != writes {
+		t.Fatalf("final snapshot rev=%d rows=%d want=%d", final.Rev, len(final.Items), writes)
 	}
 }
 

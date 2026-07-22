@@ -1539,6 +1539,20 @@ func (s *serveServer) handleSessionByID(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	if suffix == "transcript" || suffix == "transcript/bodies" {
+		if r.Method != http.MethodGet {
+			w.Header().Set("Allow", "GET")
+			writeOpenAIError(w, http.StatusMethodNotAllowed, "invalid_request_error", "method not allowed")
+			return
+		}
+		if suffix == "transcript" {
+			s.handleSessionTranscript(w, r, sessionID)
+		} else {
+			s.handleSessionTranscriptBodies(w, r, sessionID)
+		}
+		return
+	}
+
 	if r.Method != http.MethodGet {
 		w.Header().Set("Allow", "GET, POST")
 		writeOpenAIError(w, http.StatusMethodNotAllowed, "invalid_request_error", "method not allowed")

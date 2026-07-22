@@ -42,6 +42,9 @@ func TestHandleSessionsStatusTranscriptUpdatedAtChangesOnMessageUpdate(t *testin
 	}
 
 	first := readStatusEntryForSession(t, store, sess.ID)
+	if first.TranscriptRev <= 0 {
+		t.Fatalf("transcript_rev = %d, want positive", first.TranscriptRev)
+	}
 	if first.TranscriptUpdatedAt <= 0 {
 		t.Fatalf("transcript_updated_at = %d, want positive", first.TranscriptUpdatedAt)
 	}
@@ -61,6 +64,9 @@ func TestHandleSessionsStatusTranscriptUpdatedAtChangesOnMessageUpdate(t *testin
 	}
 
 	second := readStatusEntryForSession(t, store, sess.ID)
+	if second.TranscriptRev <= first.TranscriptRev {
+		t.Fatalf("transcript_rev did not advance after UpdateMessage: before=%d after=%d", first.TranscriptRev, second.TranscriptRev)
+	}
 	if second.TranscriptUpdatedAt <= first.TranscriptUpdatedAt {
 		t.Fatalf("transcript_updated_at did not advance after UpdateMessage: before=%d after=%d", first.TranscriptUpdatedAt, second.TranscriptUpdatedAt)
 	}
@@ -131,6 +137,7 @@ type sessionsStatusTestEntry struct {
 	ID                  string `json:"id"`
 	MsgCount            int    `json:"message_count"`
 	LastMessageAt       int64  `json:"last_message_at"`
+	TranscriptRev       int64  `json:"transcript_rev"`
 	TranscriptUpdatedAt int64  `json:"transcript_updated_at"`
 }
 
