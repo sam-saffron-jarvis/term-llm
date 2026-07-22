@@ -590,9 +590,9 @@ func TestHandleKeyMsg_StreamingCommandPaletteShowsLocalCompletions(t *testing.T)
 func TestHandleKeyMsg_ShiftTabTogglesYoloDuringStreaming(t *testing.T) {
 	m := newTestChatModel(false)
 	approvalMgr := tools.NewApprovalManager(tools.NewToolPermissions())
-	approvalMgr.PolicyReviewFunc = func(ctx context.Context, req tools.PolicyReviewRequest) (tools.PolicyDecision, error) {
+	approvalMgr.SetPolicyReviewFunc(func(ctx context.Context, req tools.PolicyReviewRequest) (tools.PolicyDecision, error) {
 		return tools.PolicyDecision{Allowed: true, Rationale: "ok"}, nil
-	}
+	}, nil)
 	m.SetApprovalManager(approvalMgr)
 	m.streaming = true
 	m.phase = "Thinking"

@@ -61,6 +61,26 @@ var (
 
 var chatOpenTTY = tea.OpenTTY
 
+type chatMCPManager interface {
+	SetSamplingProvider(provider llm.Provider, model string, yoloMode bool)
+	Enable(ctx context.Context, name string) error
+}
+
+func configureChatMCPServers(ctx context.Context, manager chatMCPManager, provider llm.Provider, model string, yoloMode bool, serversCSV string, warnings io.Writer) {
+	// Sampling capability is negotiated during MCP initialization, so the handler
+	// must exist before the first client is enabled.
+	manager.SetSamplingProvider(provider, model, yoloMode)
+	for _, server := range strings.Split(serversCSV, ",") {
+		server = strings.TrimSpace(server)
+		if server == "" {
+			continue
+		}
+		if err := manager.Enable(ctx, server); err != nil && warnings != nil {
+			fmt.Fprintf(warnings, "Warning: failed to enable MCP server '%s': %v\n", server, err)
+		}
+	}
+}
+
 var chatCmd = &cobra.Command{
 	Use:   "chat [@agent]",
 	Short: "Start an interactive chat session",
@@ -520,6 +540,13 @@ func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent 
 		}
 		return "", "", err
 	}
+	// Error-path safety net. The normal exit path closes Guardian explicitly
+	// before the debug logger so provider cleanup can still emit diagnostics.
+	defer func() {
+		if approvalMgr != nil {
+			approvalMgr.Close()
+		}
+	}()
 	if toolMgr != nil {
 		approvalMgr = toolMgr.ApprovalMgr
 		if err := applyResolvedApprovalMode(cfg, approvalMgr, resolvedApproval, cfg.DefaultProvider, getModelName(cfg), approvalRuntimeOptions{
@@ -627,22 +654,7 @@ func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent 
 		fmt.Fprintf(cmd.ErrOrStderr(), "Warning: failed to load MCP config: %v\n", err)
 	}
 
-	// Enable MCP servers
-	if settings.MCP != "" {
-		servers := strings.Split(settings.MCP, ",")
-		for _, server := range servers {
-			server = strings.TrimSpace(server)
-			if server == "" {
-				continue
-			}
-			if err := mcpManager.Enable(ctx, server); err != nil {
-				fmt.Fprintf(cmd.ErrOrStderr(), "Warning: failed to enable MCP server '%s': %v\n", server, err)
-			}
-		}
-	}
-
-	// Set up MCP sampling provider (for sampling/createMessage requests)
-	mcpManager.SetSamplingProvider(provider, modelName, resolvedYolo)
+	configureChatMCPServers(ctx, mcpManager, provider, modelName, resolvedYolo, settings.MCP, cmd.ErrOrStderr())
 
 	// Resolve force external search setting
 	forceExternalSearch := resolveForceExternalSearch(cfg, chatNativeSearch, chatNoNativeSearch)
@@ -895,8 +907,9 @@ func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent 
 	finalModel, err = p.Run()
 	restoreTerminalTitle()
 
-	// Cleanup MCP servers
+	// Cleanup MCP servers and Guardian-owned providers before closing logging.
 	mcpManager.StopAll()
+	approvalMgr.Close()
 
 	// Close debug logger
 	if debugLogger != nil {

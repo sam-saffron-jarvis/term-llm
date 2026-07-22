@@ -317,6 +317,9 @@ func (rt *serveRuntime) closeLocked() {
 		rt.mcpManager.StopAll()
 		rt.mcpManager = nil
 	}
+	if rt.toolMgr != nil && rt.toolMgr.ApprovalMgr != nil {
+		rt.toolMgr.ApprovalMgr.Close()
+	}
 	if !rt.skipProviderCleanup {
 		if cleaner, ok := rt.provider.(interface{ CleanupMCP() }); ok {
 			cleaner.CleanupMCP()

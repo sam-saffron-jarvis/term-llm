@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
@@ -13,6 +14,37 @@ import (
 	"github.com/samsaffron/term-llm/internal/tools"
 	"github.com/spf13/cobra"
 )
+
+func TestConfigureChatMCPServersInstallsSamplingBeforeEnable(t *testing.T) {
+	manager := &recordingChatMCPManager{}
+	var warnings strings.Builder
+	configureChatMCPServers(context.Background(), manager, llm.NewMockProvider("mock"), "model", true, " first, second ", &warnings)
+	want := []string{"sampling:model:true", "enable:first", "enable:second"}
+	if len(manager.events) != len(want) {
+		t.Fatalf("events = %#v, want %#v", manager.events, want)
+	}
+	for i := range want {
+		if manager.events[i] != want[i] {
+			t.Fatalf("events = %#v, want %#v", manager.events, want)
+		}
+	}
+	if warnings.Len() != 0 {
+		t.Fatalf("unexpected warnings: %s", warnings.String())
+	}
+}
+
+type recordingChatMCPManager struct {
+	events []string
+}
+
+func (m *recordingChatMCPManager) SetSamplingProvider(_ llm.Provider, model string, yolo bool) {
+	m.events = append(m.events, "sampling:"+model+":"+map[bool]string{true: "true", false: "false"}[yolo])
+}
+
+func (m *recordingChatMCPManager) Enable(_ context.Context, name string) error {
+	m.events = append(m.events, "enable:"+name)
+	return nil
+}
 
 func TestBuildChatHandoverApprovalManager_SeedsShellPolicy(t *testing.T) {
 	cfg := &config.Config{}

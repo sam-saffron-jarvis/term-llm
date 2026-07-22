@@ -201,6 +201,7 @@ func runServeMCP(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("build permissions: %w", err)
 	}
 	approvalMgr := tools.NewApprovalManager(perms)
+	defer approvalMgr.Close()
 	if err := applyResolvedApprovalMode(cfg, approvalMgr, resolvedApproval, cfg.DefaultProvider, getModelName(cfg), approvalRuntimeOptions{Headless: true}); err != nil {
 		return err
 	}

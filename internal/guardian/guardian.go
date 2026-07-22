@@ -71,6 +71,180 @@ type Reviewer struct {
 	reviewTurnCount       int
 }
 
+// ReviewerFactory constructs an independently stateful reviewer. A provider
+// instance must not be shared by multiple reviewers returned by the factory.
+type ReviewerFactory func() (*Reviewer, error)
+
+// ReviewerPool bounds parallel policy checks while preserving each reviewer's
+// provider conversation state. It creates one primary reviewer eagerly, expands
+// lazily under contention, and reuses idle reviewers in LIFO order so sequential
+// reviews keep a warm delta session.
+type ReviewerPool struct {
+	mu                sync.Mutex
+	max               int
+	total             int
+	idle              []*Reviewer
+	all               []*Reviewer
+	factory           ReviewerFactory
+	expansionDisabled bool
+	changed           chan struct{}
+	closed            bool
+	closeCtx          context.Context
+	cancel            context.CancelFunc
+	wg                sync.WaitGroup
+	closeOnce         sync.Once
+}
+
+func NewReviewerPool(max int, factory ReviewerFactory) (*ReviewerPool, error) {
+	if max <= 0 {
+		return nil, fmt.Errorf("guardian reviewer pool size must be positive")
+	}
+	if factory == nil {
+		return nil, fmt.Errorf("guardian reviewer factory is nil")
+	}
+	primary, err := factory()
+	if err != nil {
+		return nil, err
+	}
+	if primary == nil {
+		return nil, fmt.Errorf("guardian reviewer factory returned nil")
+	}
+	closeCtx, cancel := context.WithCancel(context.Background())
+	return &ReviewerPool{
+		max:      max,
+		total:    1,
+		idle:     []*Reviewer{primary},
+		all:      []*Reviewer{primary},
+		factory:  factory,
+		changed:  make(chan struct{}),
+		closeCtx: closeCtx,
+		cancel:   cancel,
+	}, nil
+}
+
+func (p *ReviewerPool) Review(ctx context.Context, req Request) (Decision, error) {
+	if p == nil {
+		return Decision{}, fmt.Errorf("guardian reviewer pool is nil")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	reviewer, err := p.acquire(ctx)
+	if err != nil {
+		return Decision{}, err
+	}
+	defer p.release(reviewer)
+
+	reviewCtx, cancel := context.WithCancel(ctx)
+	stopCloseCancel := context.AfterFunc(p.closeCtx, cancel)
+	defer func() {
+		stopCloseCancel()
+		cancel()
+	}()
+	return reviewer.Review(reviewCtx, req)
+}
+
+func (p *ReviewerPool) acquire(ctx context.Context) (*Reviewer, error) {
+	for {
+		p.mu.Lock()
+		if p.closed {
+			p.mu.Unlock()
+			return nil, fmt.Errorf("guardian reviewer pool is closed")
+		}
+		if last := len(p.idle) - 1; last >= 0 {
+			reviewer := p.idle[last]
+			p.idle = p.idle[:last]
+			p.wg.Add(1)
+			p.mu.Unlock()
+			return reviewer, nil
+		}
+		if !p.expansionDisabled && p.total < p.max {
+			p.total++ // Reserve capacity before constructing outside the lock.
+			p.wg.Add(1)
+			p.mu.Unlock()
+
+			reviewer, err := p.factory()
+			p.mu.Lock()
+			if err != nil || reviewer == nil {
+				p.total--
+				// A usable primary already exists. Degrade to that capacity instead
+				// of failing all Guardian setup because optional expansion failed.
+				p.expansionDisabled = true
+				p.notifyChangedLocked()
+				p.mu.Unlock()
+				p.wg.Done()
+				continue
+			}
+			if p.closed {
+				p.total--
+				p.mu.Unlock()
+				p.wg.Done()
+				cleanupReviewer(reviewer)
+				return nil, fmt.Errorf("guardian reviewer pool is closed")
+			}
+			p.all = append(p.all, reviewer)
+			p.mu.Unlock()
+			return reviewer, nil
+		}
+		changed := p.changed
+		closeCtx := p.closeCtx
+		p.mu.Unlock()
+
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-closeCtx.Done():
+			return nil, fmt.Errorf("guardian reviewer pool is closed")
+		case <-changed:
+		}
+	}
+}
+
+func (p *ReviewerPool) release(reviewer *Reviewer) {
+	p.mu.Lock()
+	if !p.closed {
+		p.idle = append(p.idle, reviewer)
+	}
+	p.notifyChangedLocked()
+	p.mu.Unlock()
+	p.wg.Done()
+}
+
+func (p *ReviewerPool) notifyChangedLocked() {
+	close(p.changed)
+	p.changed = make(chan struct{})
+}
+
+// Close cancels in-flight checks, waits for their reviewer locks to be released,
+// then resets and cleans every provider owned by the pool. It is idempotent.
+func (p *ReviewerPool) Close() {
+	if p == nil {
+		return
+	}
+	p.closeOnce.Do(func() {
+		p.mu.Lock()
+		p.closed = true
+		p.cancel()
+		p.notifyChangedLocked()
+		p.mu.Unlock()
+
+		p.wg.Wait()
+		for _, reviewer := range p.all {
+			cleanupReviewer(reviewer)
+		}
+	})
+}
+
+func cleanupReviewer(reviewer *Reviewer) {
+	if reviewer == nil {
+		return
+	}
+	reviewer.Reset()
+	if cleaner, ok := reviewer.Provider.(llm.ProviderCleaner); ok {
+		cleaner.CleanupMCP()
+	}
+}
+
 func (r *Reviewer) Review(ctx context.Context, req Request) (Decision, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()

@@ -54,6 +54,7 @@ type serveSkillRun struct {
 	Activation        *skills.Activation
 	cancel            context.CancelFunc
 	events            []serveSkillRunEvent
+	eventHead         int
 	nextSequence      int
 	subscribers       map[int]chan serveSkillRunEvent
 	subscriberDropped map[int]bool
@@ -86,10 +87,11 @@ func (run *serveSkillRun) appendEvent(eventType string, data any) {
 func (run *serveSkillRun) appendEventLocked(eventType string, data any) {
 	run.nextSequence++
 	event := serveSkillRunEvent{Sequence: run.nextSequence, Type: eventType, Data: data, At: time.Now().UTC()}
-	run.events = append(run.events, event)
-	if len(run.events) > serveSkillRunEventHistoryLimit {
-		copy(run.events, run.events[len(run.events)-serveSkillRunEventHistoryLimit:])
-		run.events = run.events[:serveSkillRunEventHistoryLimit]
+	if len(run.events) < serveSkillRunEventHistoryLimit {
+		run.events = append(run.events, event)
+	} else {
+		run.events[run.eventHead] = event
+		run.eventHead = (run.eventHead + 1) % len(run.events)
 	}
 	for id, subscriber := range run.subscribers {
 		select {
@@ -139,10 +141,28 @@ func errorString(err error) string {
 	return err.Error()
 }
 
+func (run *serveSkillRun) eventRangesLocked() ([]serveSkillRunEvent, []serveSkillRunEvent) {
+	if run.eventHead == 0 {
+		return run.events, nil
+	}
+	return run.events[run.eventHead:], run.events[:run.eventHead]
+}
+
+func (run *serveSkillRun) eventHistoryLocked() []serveSkillRunEvent {
+	if len(run.events) == 0 {
+		return nil
+	}
+	first, second := run.eventRangesLocked()
+	events := make([]serveSkillRunEvent, 0, len(run.events))
+	events = append(events, first...)
+	events = append(events, second...)
+	return events
+}
+
 func (run *serveSkillRun) snapshot() map[string]any {
 	run.mu.Lock()
 	defer run.mu.Unlock()
-	events := append([]serveSkillRunEvent(nil), run.events...)
+	events := run.eventHistoryLocked()
 	return map[string]any{
 		"id":               run.ID,
 		"session_id":       run.SessionID,
@@ -161,9 +181,12 @@ func (run *serveSkillRun) subscribe(after int) ([]serveSkillRunEvent, int, <-cha
 	run.mu.Lock()
 	defer run.mu.Unlock()
 	var replay []serveSkillRunEvent
-	for _, event := range run.events {
-		if event.Sequence > after {
-			replay = append(replay, event)
+	first, second := run.eventRangesLocked()
+	for _, events := range [][]serveSkillRunEvent{first, second} {
+		for _, event := range events {
+			if event.Sequence > after {
+				replay = append(replay, event)
+			}
 		}
 	}
 	terminal := run.Status != "running" && run.Status != "cancelling"

@@ -176,6 +176,7 @@ func runEdit(cmd *cobra.Command, args []string) error {
 		if err != nil {
 			return fmt.Errorf("failed to initialize tools: %w", err)
 		}
+		defer toolMgr.ApprovalMgr.Close()
 		wireImageRecorder(toolMgr.Registry, "", "")
 		// edit runs without a session ID, so file-change recording no-ops;
 		// wiring is kept so recording activates if this flow gains sessions.

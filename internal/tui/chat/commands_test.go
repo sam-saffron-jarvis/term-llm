@@ -4730,9 +4730,9 @@ func TestSwitchEffortRefreshesGuardianAndFailsClosed(t *testing.T) {
 	m.approvalMgr = tools.NewApprovalManager(tools.NewToolPermissions())
 	m.approvalMgr.SetApprovalMode(tools.ModeAuto)
 	m.PersistApprovalMode(tools.ModeAuto)
-	m.approvalMgr.PolicyReviewFunc = func(context.Context, tools.PolicyReviewRequest) (tools.PolicyDecision, error) {
+	m.approvalMgr.SetPolicyReviewFunc(func(context.Context, tools.PolicyReviewRequest) (tools.PolicyDecision, error) {
 		return tools.PolicyDecision{Allowed: true}, nil
-	}
+	}, nil)
 	var gotProvider, gotModel string
 	m.guardianReviewerRefresh = func(provider, model string) error {
 		gotProvider, gotModel = provider, model
@@ -4744,7 +4744,7 @@ func TestSwitchEffortRefreshesGuardianAndFailsClosed(t *testing.T) {
 	if gotProvider != "openai" || gotModel != "new" {
 		t.Fatalf("guardian refresh = %q/%q, want openai/new", gotProvider, gotModel)
 	}
-	if got.approvalMgr.PolicyReviewFunc != nil || got.approvalMgr.ApprovalMode() != tools.ModePrompt {
+	if got.approvalMgr.GuardianReviewerAvailable() || got.approvalMgr.ApprovalMode() != tools.ModePrompt {
 		t.Fatal("guardian refresh failure retained stale reviewer or auto mode")
 	}
 	if got.ApprovalModeRequested() != tools.ModeAuto {

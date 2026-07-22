@@ -542,18 +542,59 @@ func TestServeSkillRunSubscriberOverflowReconnectsThroughReplay(t *testing.T) {
 	}
 }
 
-func TestServeSkillRunEventHistoryIsBounded(t *testing.T) {
+func TestServeSkillRunEventHistoryIsBoundedAndOrderedAcrossWraps(t *testing.T) {
 	run := newServeSkillRun("skill-history", "sess-history", "child-history", &skills.Activation{Skill: &skills.Skill{Name: "review"}}, func() {})
-	for i := 0; i < serveSkillRunEventHistoryLimit+50; i++ {
+	total := serveSkillRunEventHistoryLimit*4 + 137
+	for i := 0; i < total; i++ {
 		run.appendEvent("skill_run.progress", map[string]any{"index": i})
 	}
-	run.mu.Lock()
-	defer run.mu.Unlock()
-	if len(run.events) != serveSkillRunEventHistoryLimit {
-		t.Fatalf("retained events = %d, want %d", len(run.events), serveSkillRunEventHistoryLimit)
+
+	snapshotEvents, ok := run.snapshot()["events"].([]serveSkillRunEvent)
+	if !ok {
+		t.Fatal("snapshot events have unexpected type")
 	}
-	if run.events[0].Sequence != 51 || run.events[len(run.events)-1].Sequence != serveSkillRunEventHistoryLimit+50 {
-		t.Fatalf("retained sequence range = %d..%d", run.events[0].Sequence, run.events[len(run.events)-1].Sequence)
+	assertServeSkillEventWindow(t, snapshotEvents, total)
+
+	replay, subscriberID, _, terminal := run.subscribe(0)
+	defer run.unsubscribe(subscriberID)
+	if terminal {
+		t.Fatal("running skill unexpectedly returned a terminal subscription")
+	}
+	assertServeSkillEventWindow(t, replay, total)
+
+	none, secondSubscriberID, _, terminal := run.subscribe(total)
+	defer run.unsubscribe(secondSubscriberID)
+	if terminal || len(none) != 0 {
+		t.Fatalf("replay after newest event = %#v terminal=%v, want empty/non-terminal", none, terminal)
+	}
+}
+
+func assertServeSkillEventWindow(t *testing.T, events []serveSkillRunEvent, total int) {
+	t.Helper()
+	if len(events) != serveSkillRunEventHistoryLimit {
+		t.Fatalf("retained events = %d, want %d", len(events), serveSkillRunEventHistoryLimit)
+	}
+	firstSequence := total - serveSkillRunEventHistoryLimit + 1
+	for i, event := range events {
+		wantSequence := firstSequence + i
+		if event.Sequence != wantSequence {
+			t.Fatalf("event %d sequence = %d, want %d", i, event.Sequence, wantSequence)
+		}
+		data, ok := event.Data.(map[string]any)
+		if !ok || data["index"] != wantSequence-1 {
+			t.Fatalf("event %d payload = %#v, want index %d", i, event.Data, wantSequence-1)
+		}
+	}
+}
+
+func BenchmarkServeSkillRunAppendEvents(b *testing.B) {
+	activation := &skills.Activation{Skill: &skills.Skill{Name: "review"}}
+	b.ReportAllocs()
+	for b.Loop() {
+		run := newServeSkillRun("skill-benchmark", "sess-benchmark", "child-benchmark", activation, func() {})
+		for range 10_000 {
+			run.appendEvent("skill_run.progress", nil)
+		}
 	}
 }
 

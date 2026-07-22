@@ -719,25 +719,122 @@ func (s *stubbornSideStream) Recv() (llm.Event, error) {
 }
 func (*stubbornSideStream) Close() error { return nil }
 
-type burstSideProvider struct{}
-
-func (burstSideProvider) Name() string                   { return "burst" }
-func (burstSideProvider) Credential() string             { return "test" }
-func (burstSideProvider) Capabilities() llm.Capabilities { return llm.Capabilities{} }
-func (burstSideProvider) Stream(context.Context, llm.Request) (llm.Stream, error) {
-	return &burstSideStream{}, nil
+type attemptDiscardSideProvider struct {
+	paused  chan struct{}
+	release chan struct{}
 }
 
-type burstSideStream struct{ index int }
+func (p *attemptDiscardSideProvider) Name() string                   { return "attempt-discard" }
+func (p *attemptDiscardSideProvider) Credential() string             { return "test" }
+func (p *attemptDiscardSideProvider) Capabilities() llm.Capabilities { return llm.Capabilities{} }
+func (p *attemptDiscardSideProvider) Stream(context.Context, llm.Request) (llm.Stream, error) {
+	return &attemptDiscardSideStream{paused: p.paused, release: p.release}, nil
+}
+
+type attemptDiscardSideStream struct {
+	index   int
+	paused  chan struct{}
+	release <-chan struct{}
+}
+
+func (s *attemptDiscardSideStream) Recv() (llm.Event, error) {
+	events := []llm.Event{
+		{Type: llm.EventTextDelta, Text: "discarded"},
+		{Type: llm.EventAttemptDiscard},
+		{Type: llm.EventTextDelta, Text: "kept "},
+		{Type: llm.EventTextDelta, Text: "世界"},
+	}
+	if s.index < len(events) {
+		event := events[s.index]
+		s.index++
+		return event, nil
+	}
+	if s.paused != nil {
+		close(s.paused)
+		s.paused = nil
+	}
+	<-s.release
+	return llm.Event{}, io.EOF
+}
+
+func (*attemptDiscardSideStream) Close() error { return nil }
+
+func TestServeSideQuestionLiveResponseDropsDiscardedAttempt(t *testing.T) {
+	provider := &attemptDiscardSideProvider{paused: make(chan struct{}), release: make(chan struct{})}
+	rt := &serveRuntime{providerKey: "attempt-discard", defaultModel: "m"}
+	rt.configureSideQuestionContext()
+	rt.sideProviderFactory = func(_, _ string) (llm.Provider, error) { return provider, nil }
+
+	events, err := rt.startSideQuestion(sideQuestionStart{Question: "question"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-provider.paused:
+	case <-time.After(time.Second):
+		t.Fatal("side stream did not reach pause")
+	}
+	view := rt.sideQuestion.view()
+	if !view.Running || view.Response != "kept 世界" {
+		t.Fatalf("live side response = %#v, want retained retry only", view)
+	}
+
+	close(provider.release)
+	for range events {
+	}
+	view = rt.sideQuestion.view()
+	if view.Running || len(view.History) != 1 || view.History[0].Response != "kept 世界" || view.Response != "" {
+		t.Fatalf("completed side response = %#v", view)
+	}
+}
+
+type burstSideProvider struct {
+	deltas int
+}
+
+func (p burstSideProvider) Name() string                   { return "burst" }
+func (p burstSideProvider) Credential() string             { return "test" }
+func (p burstSideProvider) Capabilities() llm.Capabilities { return llm.Capabilities{} }
+func (p burstSideProvider) Stream(context.Context, llm.Request) (llm.Stream, error) {
+	deltas := p.deltas
+	if deltas == 0 {
+		deltas = 100
+	}
+	return &burstSideStream{remaining: deltas}, nil
+}
+
+type burstSideStream struct{ remaining int }
 
 func (s *burstSideStream) Recv() (llm.Event, error) {
-	if s.index == 100 {
+	if s.remaining == 0 {
 		return llm.Event{}, io.EOF
 	}
-	s.index++
+	s.remaining--
 	return llm.Event{Type: llm.EventTextDelta, Text: "x"}, nil
 }
 func (*burstSideStream) Close() error { return nil }
+
+func BenchmarkStartSideQuestionTextDeltas(b *testing.B) {
+	const deltas = 10_000
+	provider := burstSideProvider{deltas: deltas}
+	b.ReportAllocs()
+	b.SetBytes(deltas)
+	for b.Loop() {
+		rt := &serveRuntime{providerKey: "burst", defaultModel: "m"}
+		rt.configureSideQuestionContext()
+		rt.sideProviderFactory = func(_, _ string) (llm.Provider, error) { return provider, nil }
+		events, err := rt.startSideQuestion(sideQuestionStart{Question: "question"})
+		if err != nil {
+			b.Fatal(err)
+		}
+		for range events {
+		}
+		view := rt.sideQuestion.view()
+		if len(view.History) != 1 || len(view.History[0].Response) != deltas {
+			b.Fatalf("completed response = %#v", view)
+		}
+	}
+}
 
 func TestServeSideQuestionTerminalEventSurvivesBackpressure(t *testing.T) {
 	rt := &serveRuntime{providerKey: "burst", defaultModel: "m"}

@@ -812,6 +812,7 @@ func newServeEngineWithToolsMode(cfg *config.Config, settings SessionSettings, p
 		}
 		if wireSpawn != nil {
 			if err := wireSpawn(cfg, toolMgr, resolved.Mode == tools.ModeYolo); err != nil {
+				toolMgr.ApprovalMgr.Close()
 				return nil, nil, err
 			}
 		}

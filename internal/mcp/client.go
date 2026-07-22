@@ -185,6 +185,33 @@ func (t *headerTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	return t.base.RoundTrip(req)
 }
 
+func (c *Client) currentSession() *mcp.ClientSession {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.session
+}
+
+// clearTerminatedSession clears only the exact active session observed by its
+// watcher. An old watcher therefore cannot disrupt a replacement session.
+func (c *Client) clearTerminatedSession(session *mcp.ClientSession) bool {
+	c.mu.Lock()
+	if c.session != session || !c.running {
+		c.mu.Unlock()
+		return false
+	}
+	processCancel := c.processCancel
+	c.session = nil
+	c.processCancel = nil
+	c.running = false
+	c.tools = nil
+	c.mu.Unlock()
+
+	if processCancel != nil {
+		processCancel()
+	}
+	return true
+}
+
 // Stop closes the MCP server connection.
 func (c *Client) Stop() error {
 	c.mu.Lock()

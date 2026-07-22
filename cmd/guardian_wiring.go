@@ -16,11 +16,14 @@ import (
 
 var newGuardianProviderByName = llm.NewProviderByName
 
+const guardianReviewerPoolSize = 3
+
 func preflightHeadlessApproval(cfg *config.Config, resolved resolvedApprovalMode, providerName, modelName string) error {
 	if resolved.Mode != tools.ModeAuto {
 		return nil
 	}
 	mgr := tools.NewApprovalManager(tools.NewToolPermissions())
+	defer mgr.Close()
 	return applyResolvedApprovalMode(cfg, mgr, resolved, providerName, modelName, approvalRuntimeOptions{Headless: true})
 }
 
@@ -76,12 +79,15 @@ func installGuardianReviewerCallbacks(cfg *config.Config, approvalMgr *tools.App
 	if approvalMgr == nil {
 		return nil
 	}
-	if cfg == nil {
-		approvalMgr.PolicyReviewFunc = nil
+	fail := func(err error) error {
+		approvalMgr.SetPolicyReviewFunc(nil, nil)
 		if approvalMgr.ApprovalMode() == tools.ModeAuto {
 			approvalMgr.SetApprovalMode(tools.ModePrompt)
 		}
-		return fmt.Errorf("auto approval requires configuration and an LLM provider")
+		return err
+	}
+	if cfg == nil {
+		return fail(fmt.Errorf("auto approval requires configuration and an LLM provider"))
 	}
 	approvalMgr.SetAutoHeadless(headless)
 	model := resolveGuardianModelName(cfg, modelName)
@@ -93,51 +99,42 @@ func installGuardianReviewerCallbacks(cfg *config.Config, approvalMgr *tools.App
 		guardianName = strings.TrimSpace(cfg.DefaultProvider)
 	}
 	if guardianName == "" {
-		approvalMgr.PolicyReviewFunc = nil
-		if approvalMgr.ApprovalMode() == tools.ModeAuto {
-			approvalMgr.SetApprovalMode(tools.ModePrompt)
-		}
-		return fmt.Errorf("auto approval requires an LLM provider")
-	}
-	reviewProvider, err := newGuardianProviderByName(cfg, guardianName, model)
-	if err != nil {
-		approvalMgr.PolicyReviewFunc = nil
-		if approvalMgr.ApprovalMode() == tools.ModeAuto {
-			approvalMgr.SetApprovalMode(tools.ModePrompt)
-		}
-		return fmt.Errorf("guardian provider: %w", err)
-	}
-	if reviewProvider == nil {
-		approvalMgr.PolicyReviewFunc = nil
-		if approvalMgr.ApprovalMode() == tools.ModeAuto {
-			approvalMgr.SetApprovalMode(tools.ModePrompt)
-		}
-		return fmt.Errorf("auto approval requires an LLM provider")
+		return fail(fmt.Errorf("auto approval requires an LLM provider"))
 	}
 	policy, err := guardian.LoadPolicy(cfg.Guardian.PolicyPath)
 	if err != nil {
-		approvalMgr.PolicyReviewFunc = nil
-		if approvalMgr.ApprovalMode() == tools.ModeAuto {
-			approvalMgr.SetApprovalMode(tools.ModePrompt)
+		return fail(fmt.Errorf("load guardian policy: %w", err))
+	}
+
+	newReviewer := func() (*guardian.Reviewer, error) {
+		provider, err := newGuardianProviderByName(cfg, guardianName, model)
+		if err != nil {
+			return nil, fmt.Errorf("guardian provider: %w", err)
 		}
-		return fmt.Errorf("load guardian policy: %w", err)
+		if provider == nil {
+			return nil, fmt.Errorf("auto approval requires an LLM provider")
+		}
+		reviewer := &guardian.Reviewer{Provider: provider, Model: model, Policy: policy}
+		if cfg.Guardian.TimeoutSeconds > 0 {
+			reviewer.Timeout = time.Duration(cfg.Guardian.TimeoutSeconds) * time.Second
+		}
+		return reviewer, nil
 	}
-	reviewer := &guardian.Reviewer{Provider: reviewProvider, Model: model, Policy: policy}
-	if cfg.Guardian.TimeoutSeconds > 0 {
-		reviewer.Timeout = time.Duration(cfg.Guardian.TimeoutSeconds) * time.Second
+	reviewerPool, err := guardian.NewReviewerPool(guardianReviewerPoolSize, newReviewer)
+	if err != nil {
+		return fail(err)
 	}
-	approvalMgr.PolicyReviewFunc = func(ctx context.Context, req tools.PolicyReviewRequest) (tools.PolicyDecision, error) {
+
+	reviewFunc := func(ctx context.Context, req tools.PolicyReviewRequest) (tools.PolicyDecision, error) {
 		transcript := make([]guardian.TranscriptEntry, 0, len(req.Transcript))
 		for _, e := range req.Transcript {
 			transcript = append(transcript, guardian.TranscriptEntry{Role: e.Role, Text: e.Text})
 		}
-		decision, err := reviewer.Review(ctx, guardian.Request{Command: req.Command, WorkDir: req.WorkDir, Transcript: transcript, ApprovalContext: req.ApprovalContext, ScopeID: req.ScopeID})
+		decision, err := reviewerPool.Review(ctx, guardian.Request{Command: req.Command, WorkDir: req.WorkDir, Transcript: transcript, ApprovalContext: req.ApprovalContext, ScopeID: req.ScopeID})
 		result := tools.PolicyDecision{Allowed: decision.Allowed(), RiskLevel: decision.RiskLevel, UserAuthorization: decision.UserAuthorization, Rationale: decision.Rationale, Model: decision.Model, Usage: decision.Usage}
-		if err != nil {
-			return result, err
-		}
-		return result, nil
+		return result, err
 	}
+	approvalMgr.SetPolicyReviewFunc(reviewFunc, reviewerPool.Close)
 	if approvalMgr.GuardianEventFunc == nil {
 		approvalMgr.GuardianEventFunc = func(event tools.GuardianEvent) {
 			fmt.Fprintln(os.Stderr, event.Message)

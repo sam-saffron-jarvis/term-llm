@@ -57,6 +57,9 @@ const (
 	jobsV2RunCancelRequested jobsV2RunStatus = jobsV2RunStatus(jobs.RunCancelRequested)
 	jobsV2RunTimedOut        jobsV2RunStatus = jobsV2RunStatus(jobs.RunTimedOut)
 	jobsV2RunSkipped         jobsV2RunStatus = jobsV2RunStatus(jobs.RunSkipped)
+
+	jobsV2MisfireSkip = "skip"
+	jobsV2MisfireRun  = "run"
 )
 
 const (
@@ -702,6 +705,10 @@ func newJobsV2ManagerWithNotifier(dbPath string, workers int, llmExec serveJobsE
 		_ = db.Close()
 		return nil, err
 	}
+	if err := mgr.reconcileMisfiredSchedules(time.Now().UTC()); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
 
 	mgr.wg.Add(1)
 	go mgr.schedulerLoop()
@@ -785,6 +792,103 @@ func (m *jobsV2Manager) recoverRuns() error {
 		}
 	}
 
+	return nil
+}
+
+type jobsV2MisfiredCron struct {
+	id               string
+	triggerConfig    string
+	scheduleTimezone string
+	observedNextRun  time.Time
+	nextRun          time.Time
+}
+
+// reconcileMisfiredSchedules applies startup-only misfire semantics before the
+// scheduler can observe overdue rows. Policies set to run remain overdue so the
+// normal scheduler queues one catch-up run.
+func (m *jobsV2Manager) reconcileMisfiredSchedules(cutoff time.Time) error {
+	cutoff = cutoff.UTC()
+	rows, err := m.db.Query(`
+		SELECT id, trigger_config, schedule_timezone, next_run_at
+		FROM jobs_v2
+		WHERE enabled = 1
+			AND misfire_policy = ?
+			AND trigger_type = ?
+			AND next_run_at IS NOT NULL
+			AND next_run_at <= ?
+		ORDER BY next_run_at, id`, jobsV2MisfireSkip, jobsV2TriggerCron, cutoff)
+	if err != nil {
+		return fmt.Errorf("load skipped cron misfires: %w", err)
+	}
+
+	var crons []jobsV2MisfiredCron
+	for rows.Next() {
+		var cron jobsV2MisfiredCron
+		var timezone sql.NullString
+		if err := rows.Scan(&cron.id, &cron.triggerConfig, &timezone, &cron.observedNextRun); err != nil {
+			_ = rows.Close()
+			return fmt.Errorf("scan skipped cron misfire: %w", err)
+		}
+		cron.scheduleTimezone = timezone.String
+		cfg, err := parseTriggerConfig(jobsV2TriggerCron, json.RawMessage(cron.triggerConfig), cron.scheduleTimezone)
+		if err != nil {
+			_ = rows.Close()
+			return fmt.Errorf("parse skipped cron misfire %s: %w", cron.id, err)
+		}
+		cron.nextRun, err = nextCronTime(cfg.Expression, effectiveCronTimezone(cfg.Timezone, cron.scheduleTimezone), cutoff)
+		if err != nil {
+			_ = rows.Close()
+			return fmt.Errorf("advance skipped cron misfire %s: %w", cron.id, err)
+		}
+		cron.nextRun = cron.nextRun.UTC()
+		crons = append(crons, cron)
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return fmt.Errorf("scan skipped cron misfires: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return fmt.Errorf("close skipped cron misfires: %w", err)
+	}
+
+	tx, err := m.db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin misfire reconciliation: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	for _, cron := range crons {
+		// Compare every schedule input observed above. If another process edits the
+		// row between selection and this update, leave its newer state untouched.
+		if _, err := tx.Exec(`
+			UPDATE jobs_v2
+			SET next_run_at = ?, updated_at = CURRENT_TIMESTAMP
+			WHERE id = ?
+				AND enabled = 1
+				AND misfire_policy = ?
+				AND trigger_type = ?
+				AND trigger_config = ?
+				AND COALESCE(schedule_timezone, '') = ?
+				AND next_run_at = ?
+				AND next_run_at <= ?`,
+			cron.nextRun, cron.id, jobsV2MisfireSkip, jobsV2TriggerCron,
+			cron.triggerConfig, cron.scheduleTimezone, cron.observedNextRun.UTC(), cutoff); err != nil {
+			return fmt.Errorf("advance skipped cron misfire %s: %w", cron.id, err)
+		}
+	}
+	if _, err := tx.Exec(`
+		UPDATE jobs_v2
+		SET enabled = 0, next_run_at = NULL, updated_at = CURRENT_TIMESTAMP
+		WHERE enabled = 1
+			AND misfire_policy = ?
+			AND trigger_type = ?
+			AND next_run_at IS NOT NULL
+			AND next_run_at <= ?`, jobsV2MisfireSkip, jobsV2TriggerOnce, cutoff); err != nil {
+		return fmt.Errorf("disable skipped once misfires: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit misfire reconciliation: %w", err)
+	}
 	return nil
 }
 
@@ -1645,6 +1749,15 @@ func computeRetryDelay(policy jobsV2RetryPolicy, attempt int) time.Duration {
 	return delay
 }
 
+func validateJobsV2MisfirePolicy(policy string) error {
+	switch policy {
+	case jobsV2MisfireSkip, jobsV2MisfireRun:
+		return nil
+	default:
+		return fmt.Errorf("misfire_policy must be one of: skip, run")
+	}
+}
+
 func (m *jobsV2Manager) CreateJob(req jobsV2Job) (jobsV2Job, error) {
 	if strings.TrimSpace(req.Name) == "" {
 		return jobsV2Job{}, fmt.Errorf("name is required")
@@ -1667,8 +1780,12 @@ func (m *jobsV2Manager) CreateJob(req jobsV2Job) (jobsV2Job, error) {
 	if req.ConcurrencyPolicy == "" {
 		req.ConcurrencyPolicy = "forbid"
 	}
+	req.MisfirePolicy = strings.TrimSpace(req.MisfirePolicy)
 	if req.MisfirePolicy == "" {
-		req.MisfirePolicy = "skip"
+		req.MisfirePolicy = jobsV2MisfireSkip
+	}
+	if err := validateJobsV2MisfirePolicy(req.MisfirePolicy); err != nil {
+		return jobsV2Job{}, err
 	}
 
 	cfg, err := parseTriggerConfig(req.TriggerType, req.TriggerConfig, req.ScheduleTimezone)
@@ -1850,7 +1967,7 @@ func (m *jobsV2Manager) UpdateJobPatch(id string, req jobsV2JobRequest) (jobsV2J
 		current.TimeoutSeconds = req.TimeoutSeconds
 	}
 	if req.MisfirePolicy != "" {
-		current.MisfirePolicy = req.MisfirePolicy
+		current.MisfirePolicy = strings.TrimSpace(req.MisfirePolicy)
 	}
 	if len(req.Labels) > 0 {
 		current.Labels = req.Labels
@@ -1861,6 +1978,9 @@ func (m *jobsV2Manager) UpdateJobPatch(id string, req jobsV2JobRequest) (jobsV2J
 
 	cfg, err := parseTriggerConfig(current.TriggerType, current.TriggerConfig, current.ScheduleTimezone)
 	if err != nil {
+		return jobsV2Job{}, err
+	}
+	if err := validateJobsV2MisfirePolicy(current.MisfirePolicy); err != nil {
 		return jobsV2Job{}, err
 	}
 	if err := validateJobsV2RunnerConfig(current.RunnerType, current.RunnerConfig); err != nil {

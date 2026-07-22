@@ -364,6 +364,9 @@ func runAsk(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
+	if toolMgr != nil && toolMgr.ApprovalMgr != nil {
+		defer toolMgr.ApprovalMgr.Close()
+	}
 	if toolMgr != nil {
 		toolMgr.Registry.SetPlanStore(store)
 	}

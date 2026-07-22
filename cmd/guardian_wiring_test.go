@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -18,6 +19,35 @@ type deadlineCapturingProvider struct {
 	delegate *llm.MockProvider
 	deadline time.Time
 	ok       bool
+}
+
+type delayedGuardianProvider struct {
+	delegate *llm.MockProvider
+	started  chan<- struct{}
+	release  <-chan struct{}
+	cleaned  *atomic.Int32
+}
+
+func (p *delayedGuardianProvider) Name() string                   { return "delayed-guardian" }
+func (p *delayedGuardianProvider) Credential() string             { return "mock" }
+func (p *delayedGuardianProvider) Capabilities() llm.Capabilities { return p.delegate.Capabilities() }
+func (p *delayedGuardianProvider) Stream(ctx context.Context, req llm.Request) (llm.Stream, error) {
+	select {
+	case p.started <- struct{}{}:
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	select {
+	case <-p.release:
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	return p.delegate.Stream(ctx, req)
+}
+func (p *delayedGuardianProvider) CleanupMCP() {
+	if p.cleaned != nil {
+		p.cleaned.Add(1)
+	}
 }
 
 func withGuardianProviderFactory(t *testing.T, fn func(*config.Config, string, string) (llm.Provider, error)) {
@@ -131,8 +161,8 @@ func TestInstallGuardianReviewerCallbacksDoesNotActivateModeButSupportsLaterAuto
 	if mgr.ApprovalMode() != tools.ModePrompt {
 		t.Fatalf("mode = %v, want prompt", mgr.ApprovalMode())
 	}
-	if mgr.PolicyReviewFunc == nil {
-		t.Fatal("PolicyReviewFunc was not installed")
+	if !mgr.GuardianReviewerAvailable() {
+		t.Fatal("policy reviewer was not installed")
 	}
 
 	mgr.SetApprovalMode(tools.ModeAuto)
@@ -158,7 +188,7 @@ func TestInstallGuardianReviewerCallbacksAppliesConfiguredTimeout(t *testing.T) 
 	if err := installGuardianReviewerCallbacks(cfg, mgr, "mock", "mock-model", true); err != nil {
 		t.Fatalf("installGuardianReviewerCallbacks: %v", err)
 	}
-	if _, err := mgr.PolicyReviewFunc(context.Background(), tools.PolicyReviewRequest{Command: "echo ok"}); err != nil {
+	if _, err := mgr.ReviewPolicy(context.Background(), tools.PolicyReviewRequest{Command: "echo ok"}); err != nil {
 		t.Fatalf("PolicyReviewFunc: %v", err)
 	}
 	assertDeadlineNear(t, provider.deadline, provider.ok, 7*time.Second)
@@ -173,10 +203,101 @@ func TestInstallGuardianReviewerCallbacksUsesDefaultTimeoutWhenUnset(t *testing.
 	if err := installGuardianReviewerCallbacks(cfg, mgr, "mock", "mock-model", true); err != nil {
 		t.Fatalf("installGuardianReviewerCallbacks: %v", err)
 	}
-	if _, err := mgr.PolicyReviewFunc(context.Background(), tools.PolicyReviewRequest{Command: "echo ok"}); err != nil {
+	defer mgr.Close()
+	if _, err := mgr.ReviewPolicy(context.Background(), tools.PolicyReviewRequest{Command: "echo ok"}); err != nil {
 		t.Fatalf("PolicyReviewFunc: %v", err)
 	}
 	assertDeadlineNear(t, provider.deadline, provider.ok, guardian.DefaultTimeout)
+}
+
+func TestInstallGuardianReviewerCallbacksRunsParallelReviewsConcurrently(t *testing.T) {
+	started := make(chan struct{}, guardianReviewerPoolSize)
+	release := make(chan struct{})
+	var factoryCalls atomic.Int32
+	var cleaned atomic.Int32
+	withGuardianProviderFactory(t, func(*config.Config, string, string) (llm.Provider, error) {
+		factoryCalls.Add(1)
+		return &delayedGuardianProvider{
+			delegate: llm.NewMockProvider("mock").AddTextResponse(`{"risk_level":"low","user_authorization":"high","outcome":"allow","rationale":"safe"}`),
+			started:  started,
+			release:  release,
+			cleaned:  &cleaned,
+		}, nil
+	})
+	mgr := tools.NewApprovalManager(tools.NewToolPermissions())
+	cfg := &config.Config{DefaultProvider: "mock", Providers: map[string]config.ProviderConfig{"mock": {Model: "mock-model"}}}
+	if err := installGuardianReviewerCallbacks(cfg, mgr, "mock", "mock-model", true); err != nil {
+		t.Fatalf("installGuardianReviewerCallbacks: %v", err)
+	}
+	if got := factoryCalls.Load(); got != 1 {
+		t.Fatalf("provider factory calls at install = %d, want one eager primary", got)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	errs := make(chan error, guardianReviewerPoolSize)
+	for _, command := range []string{"echo one", "echo two", "echo three"} {
+		go func(command string) {
+			decision, err := mgr.ReviewPolicy(ctx, tools.PolicyReviewRequest{Command: command})
+			if err == nil && !decision.Allowed {
+				err = errors.New("guardian unexpectedly denied command")
+			}
+			errs <- err
+		}(command)
+	}
+	for i := 0; i < guardianReviewerPoolSize; i++ {
+		select {
+		case <-started:
+		case <-ctx.Done():
+			t.Fatalf("only %d parallel reviews reached providers: %v", i, ctx.Err())
+		}
+	}
+	if got := factoryCalls.Load(); got != guardianReviewerPoolSize {
+		t.Fatalf("provider factory calls under contention = %d, want %d", got, guardianReviewerPoolSize)
+	}
+	close(release)
+	for i := 0; i < guardianReviewerPoolSize; i++ {
+		if err := <-errs; err != nil {
+			t.Fatalf("PolicyReviewFunc: %v", err)
+		}
+	}
+	mgr.Close()
+	if got := cleaned.Load(); got != guardianReviewerPoolSize {
+		t.Fatalf("provider cleanup calls = %d, want %d", got, guardianReviewerPoolSize)
+	}
+}
+
+func TestInstallGuardianReviewerCallbacksCleansReplacedPool(t *testing.T) {
+	var cleaned atomic.Int32
+	withGuardianProviderFactory(t, func(*config.Config, string, string) (llm.Provider, error) {
+		return &delayedGuardianProvider{
+			delegate: llm.NewMockProvider("mock").AddTextResponse(`{"outcome":"allow"}`),
+			started:  make(chan struct{}, 1),
+			release:  closedChannel(),
+			cleaned:  &cleaned,
+		}, nil
+	})
+	mgr := tools.NewApprovalManager(tools.NewToolPermissions())
+	cfg := &config.Config{DefaultProvider: "mock"}
+	if err := installGuardianReviewerCallbacks(cfg, mgr, "mock", "first", false); err != nil {
+		t.Fatalf("first install: %v", err)
+	}
+	if err := installGuardianReviewerCallbacks(cfg, mgr, "mock", "second", false); err != nil {
+		t.Fatalf("second install: %v", err)
+	}
+	if got := cleaned.Load(); got != 1 {
+		t.Fatalf("cleanup after replacement = %d, want 1", got)
+	}
+	mgr.Close()
+	if got := cleaned.Load(); got != 2 {
+		t.Fatalf("cleanup after manager close = %d, want 2", got)
+	}
+}
+
+func closedChannel() <-chan struct{} {
+	ch := make(chan struct{})
+	close(ch)
+	return ch
 }
 
 func TestInstallGuardianReviewerCallbacksUsesPassedProviderNameWhenGuardianUnset(t *testing.T) {
@@ -219,7 +340,7 @@ func TestInstallGuardianReviewerCallbacksUsesDedicatedProviderInstance(t *testin
 	if err := installGuardianReviewerCallbacks(cfg, mgr, "claude-bin", "sonnet", true); err != nil {
 		t.Fatalf("installGuardianReviewerCallbacks: %v", err)
 	}
-	if _, err := mgr.PolicyReviewFunc(context.Background(), tools.PolicyReviewRequest{Command: "echo ok"}); err != nil {
+	if _, err := mgr.ReviewPolicy(context.Background(), tools.PolicyReviewRequest{Command: "echo ok"}); err != nil {
 		t.Fatalf("PolicyReviewFunc: %v", err)
 	}
 	if gotName != "claude-bin" || gotModel != "sonnet" {

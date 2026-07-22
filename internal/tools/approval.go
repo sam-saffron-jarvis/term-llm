@@ -346,9 +346,13 @@ type ApprovalManager struct {
 	shellCache    *ShellApprovalCache
 	guardianMu    sync.RWMutex
 	guardianExact map[guardianShellKey]struct{} // exact shell actions approved by guardian
-	permissions   *ToolPermissions
-	projectCache  map[string]*ProjectApprovals // repo root -> approvals
-	projectMu     sync.Mutex
+
+	policyReviewMu      sync.RWMutex
+	policyReviewFunc    func(context.Context, PolicyReviewRequest) (PolicyDecision, error)
+	policyReviewCleanup func()
+	permissions         *ToolPermissions
+	projectCache        map[string]*ProjectApprovals // repo root -> approvals
+	projectMu           sync.Mutex
 
 	toolAllowMu  sync.RWMutex
 	toolReadDirs map[string][]string // per-tool read allowlist, e.g. routed view_image uploads
@@ -386,10 +390,6 @@ type ApprovalManager struct {
 	// (non-empty for shell commands to show where the command will run).
 	// If nil, falls back to PromptFunc.
 	PromptUIFunc func(path string, isWrite bool, isShell bool, workDir string) (ApprovalResult, error)
-
-	// PolicyReviewFunc is called in auto mode for shell commands that missed all
-	// deterministic approvals. It must fail closed: errors never imply allow.
-	PolicyReviewFunc func(ctx context.Context, req PolicyReviewRequest) (PolicyDecision, error)
 
 	// GuardianEventFunc receives structured audit events for auto approvals/denials.
 	GuardianEventFunc func(event GuardianEvent)
@@ -524,11 +524,54 @@ func (m *ApprovalManager) lookupPromptFunc() func(req *ApprovalRequest) (Confirm
 
 func (m *ApprovalManager) lookupPolicyReviewFunc() func(context.Context, PolicyReviewRequest) (PolicyDecision, error) {
 	for cur := m; cur != nil; cur = cur.parent {
-		if cur.PolicyReviewFunc != nil {
-			return cur.PolicyReviewFunc
+		cur.policyReviewMu.RLock()
+		reviewFunc := cur.policyReviewFunc
+		cur.policyReviewMu.RUnlock()
+		if reviewFunc != nil {
+			return reviewFunc
 		}
 	}
 	return nil
+}
+
+// SetPolicyReviewFunc installs a policy reviewer and atomically retires the
+// previous reviewer's resources. Cleanup runs outside the manager lock so an
+// in-flight callback can finish or observe cancellation without deadlocking.
+func (m *ApprovalManager) SetPolicyReviewFunc(reviewFunc func(context.Context, PolicyReviewRequest) (PolicyDecision, error), cleanup func()) {
+	if m == nil {
+		if cleanup != nil {
+			cleanup()
+		}
+		return
+	}
+	m.policyReviewMu.Lock()
+	previousCleanup := m.policyReviewCleanup
+	m.policyReviewFunc = reviewFunc
+	m.policyReviewCleanup = cleanup
+	m.policyReviewMu.Unlock()
+	if previousCleanup != nil {
+		previousCleanup()
+	}
+}
+
+// ReviewPolicy invokes the installed policy reviewer, including an inherited
+// parent reviewer. Callers cannot replace the callback without going through
+// SetPolicyReviewFunc and its resource-cleanup contract.
+func (m *ApprovalManager) ReviewPolicy(ctx context.Context, req PolicyReviewRequest) (PolicyDecision, error) {
+	if m == nil {
+		return PolicyDecision{}, fmt.Errorf("guardian policy reviewer is not configured")
+	}
+	reviewFunc := m.lookupPolicyReviewFunc()
+	if reviewFunc == nil {
+		return PolicyDecision{}, fmt.Errorf("guardian policy reviewer is not configured")
+	}
+	return reviewFunc(ctx, req)
+}
+
+// Close releases resources owned by the installed policy reviewer. It is safe
+// to call repeatedly and leaves the manager without an auto-review callback.
+func (m *ApprovalManager) Close() {
+	m.SetPolicyReviewFunc(nil, nil)
 }
 
 func (m *ApprovalManager) lookupGuardianEventFunc() func(event GuardianEvent) {

@@ -1545,7 +1545,7 @@ func (m *Model) refreshGuardianReviewer(providerKey, modelName string) error {
 	}
 	if err := m.guardianReviewerRefresh(providerKey, modelName); err != nil {
 		if m.approvalMgr != nil {
-			m.approvalMgr.PolicyReviewFunc = nil
+			m.approvalMgr.SetPolicyReviewFunc(nil, nil)
 			if m.approvalMgr.ApprovalMode() == tools.ModeAuto {
 				m.approvalMgr.SetApprovalMode(tools.ModePrompt)
 			}

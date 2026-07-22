@@ -44,10 +44,10 @@ func TestApprovalManagerAutoReviewerOnlyAfterDeterministicMiss(t *testing.T) {
 	mgr := newApprovalAutoTestManager(perms)
 	mgr.SetApprovalMode(ModeAuto)
 	calls := 0
-	mgr.PolicyReviewFunc = func(ctx context.Context, req PolicyReviewRequest) (PolicyDecision, error) {
+	mgr.SetPolicyReviewFunc(func(ctx context.Context, req PolicyReviewRequest) (PolicyDecision, error) {
 		calls++
 		return PolicyDecision{Allowed: true, Rationale: "ok"}, nil
-	}
+	}, nil)
 	outcome, err := mgr.CheckShellApproval("git status", "")
 	if err != nil || outcome != ProceedOnce {
 		t.Fatalf("deterministic outcome = %v, err=%v", outcome, err)
@@ -103,10 +103,10 @@ func TestApprovalManagerLazyTranscriptSupplierSkipsFastPaths(t *testing.T) {
 		}
 		mgr := newApprovalAutoTestManager(perms)
 		mgr.SetApprovalMode(ModeAuto)
-		mgr.PolicyReviewFunc = func(ctx context.Context, req PolicyReviewRequest) (PolicyDecision, error) {
+		mgr.SetPolicyReviewFunc(func(ctx context.Context, req PolicyReviewRequest) (PolicyDecision, error) {
 			t.Fatal("guardian reviewer should not be called for deterministic allow")
 			return PolicyDecision{}, nil
-		}
+		}, nil)
 		calls := 0
 		outcome, err := mgr.checkShellApprovalWithContext(context.Background(), "git status", "", func() []TranscriptEntry {
 			calls++
@@ -125,12 +125,12 @@ func TestApprovalManagerLazyTranscriptSupplierInvokedForGuardian(t *testing.T) {
 	mgr := newApprovalAutoTestManager(NewToolPermissions())
 	mgr.SetApprovalMode(ModeAuto)
 	wantTranscript := TranscriptEntry{Role: "user", Text: "please inspect before running"}
-	mgr.PolicyReviewFunc = func(ctx context.Context, req PolicyReviewRequest) (PolicyDecision, error) {
+	mgr.SetPolicyReviewFunc(func(ctx context.Context, req PolicyReviewRequest) (PolicyDecision, error) {
 		if len(req.Transcript) != 1 || req.Transcript[0] != wantTranscript {
 			t.Fatalf("review transcript = %#v, want %#v", req.Transcript, []TranscriptEntry{wantTranscript})
 		}
 		return PolicyDecision{Allowed: true, RiskLevel: "low", UserAuthorization: "high", Rationale: "ok"}, nil
-	}
+	}, nil)
 	calls := 0
 	outcome, err := mgr.checkShellApprovalWithContext(context.Background(), "echo hi", t.TempDir(), func() []TranscriptEntry {
 		calls++
@@ -148,10 +148,10 @@ func TestApprovalManagerGuardianExactCacheDoesNotTreatStarAsPattern(t *testing.T
 	mgr := newApprovalAutoTestManager(NewToolPermissions())
 	mgr.SetApprovalMode(ModeAuto)
 	calls := 0
-	mgr.PolicyReviewFunc = func(ctx context.Context, req PolicyReviewRequest) (PolicyDecision, error) {
+	mgr.SetPolicyReviewFunc(func(ctx context.Context, req PolicyReviewRequest) (PolicyDecision, error) {
 		calls++
 		return PolicyDecision{Allowed: true, Rationale: "ok"}, nil
-	}
+	}, nil)
 	if outcome, err := mgr.CheckShellApproval("git add *", ""); err != nil || outcome != ProceedAlways {
 		t.Fatalf("first approval = %v, %v", outcome, err)
 	}
@@ -167,9 +167,9 @@ func TestApprovalManagerGuardianCircuitBreakerTripsParentFromChild(t *testing.T)
 	parent := newApprovalAutoTestManager(NewToolPermissions())
 	parent.SetApprovalMode(ModeAuto)
 	parent.SetAutoHeadless(true)
-	parent.PolicyReviewFunc = func(ctx context.Context, req PolicyReviewRequest) (PolicyDecision, error) {
+	parent.SetPolicyReviewFunc(func(ctx context.Context, req PolicyReviewRequest) (PolicyDecision, error) {
 		return PolicyDecision{Allowed: false, Rationale: "blocked"}, nil
-	}
+	}, nil)
 	child := newApprovalAutoTestManager(NewToolPermissions())
 	if err := child.SetParent(parent); err != nil {
 		t.Fatal(err)
@@ -199,9 +199,9 @@ func TestApprovalManagerAutoReviewerFailureFallback(t *testing.T) {
 			mgr := newApprovalAutoTestManager(NewToolPermissions())
 			mgr.SetApprovalMode(ModeAuto)
 			mgr.SetAutoHeadless(tt.headless)
-			mgr.PolicyReviewFunc = func(ctx context.Context, req PolicyReviewRequest) (PolicyDecision, error) {
+			mgr.SetPolicyReviewFunc(func(ctx context.Context, req PolicyReviewRequest) (PolicyDecision, error) {
 				return PolicyDecision{}, reviewErr
-			}
+			}, nil)
 			mgr.PromptUIFunc = func(path string, isWrite bool, isShell bool, workDir string) (ApprovalResult, error) {
 				return ApprovalResult{Choice: ApprovalChoiceOnce}, nil
 			}
@@ -223,10 +223,10 @@ func TestApprovalManagerAutoDenialPromptsHumanInInteractiveMode(t *testing.T) {
 	mgr := newApprovalAutoTestManager(NewToolPermissions())
 	mgr.SetApprovalMode(ModeAuto)
 	calls := 0
-	mgr.PolicyReviewFunc = func(ctx context.Context, req PolicyReviewRequest) (PolicyDecision, error) {
+	mgr.SetPolicyReviewFunc(func(ctx context.Context, req PolicyReviewRequest) (PolicyDecision, error) {
 		calls++
 		return PolicyDecision{Allowed: false, Rationale: "not requested"}, nil
-	}
+	}, nil)
 	prompted := false
 	mgr.PromptUIFunc = func(path string, isWrite bool, isShell bool, workDir string) (ApprovalResult, error) {
 		prompted = true
@@ -248,9 +248,9 @@ func TestApprovalManagerAutoDenialIncludesNoWorkaroundsInHeadlessMode(t *testing
 	mgr := newApprovalAutoTestManager(NewToolPermissions())
 	mgr.SetApprovalMode(ModeAuto)
 	mgr.SetAutoHeadless(true)
-	mgr.PolicyReviewFunc = func(ctx context.Context, req PolicyReviewRequest) (PolicyDecision, error) {
+	mgr.SetPolicyReviewFunc(func(ctx context.Context, req PolicyReviewRequest) (PolicyDecision, error) {
 		return PolicyDecision{Allowed: false, Rationale: "not requested"}, nil
-	}
+	}, nil)
 	outcome, err := mgr.CheckShellApproval("rm -rf important", "")
 	if outcome != Cancel || err == nil {
 		t.Fatalf("outcome=%v err=%v, want denial", outcome, err)
@@ -264,10 +264,10 @@ func TestApprovalManagerGuardianExactCacheIsScopedToWorkdir(t *testing.T) {
 	mgr := newApprovalAutoTestManager(NewToolPermissions())
 	mgr.SetApprovalMode(ModeAuto)
 	calls := 0
-	mgr.PolicyReviewFunc = func(ctx context.Context, req PolicyReviewRequest) (PolicyDecision, error) {
+	mgr.SetPolicyReviewFunc(func(ctx context.Context, req PolicyReviewRequest) (PolicyDecision, error) {
 		calls++
 		return PolicyDecision{Allowed: true, Rationale: "ok"}, nil
-	}
+	}, nil)
 	if outcome, err := mgr.CheckShellApproval("rm -rf ./build", t.TempDir()); err != nil || outcome != ProceedAlways {
 		t.Fatalf("first approval = %v, %v", outcome, err)
 	}
@@ -283,10 +283,10 @@ func TestApprovalManagerGuardianExactCacheClearedWhenLeavingAuto(t *testing.T) {
 	mgr := newApprovalAutoTestManager(NewToolPermissions())
 	mgr.SetApprovalMode(ModeAuto)
 	calls := 0
-	mgr.PolicyReviewFunc = func(ctx context.Context, req PolicyReviewRequest) (PolicyDecision, error) {
+	mgr.SetPolicyReviewFunc(func(ctx context.Context, req PolicyReviewRequest) (PolicyDecision, error) {
 		calls++
 		return PolicyDecision{Allowed: true, Rationale: "ok"}, nil
-	}
+	}, nil)
 	workDir := t.TempDir()
 	if outcome, err := mgr.CheckShellApproval("echo cached", workDir); err != nil || outcome != ProceedAlways {
 		t.Fatalf("guardian approval = %v, %v", outcome, err)
@@ -312,10 +312,10 @@ func TestApprovalManagerNestedChildFindsRootGuardianCallbacks(t *testing.T) {
 	root := newApprovalAutoTestManager(NewToolPermissions())
 	root.SetApprovalMode(ModeAuto)
 	calls := 0
-	root.PolicyReviewFunc = func(ctx context.Context, req PolicyReviewRequest) (PolicyDecision, error) {
+	root.SetPolicyReviewFunc(func(ctx context.Context, req PolicyReviewRequest) (PolicyDecision, error) {
 		calls++
 		return PolicyDecision{Allowed: true, Rationale: "ok"}, nil
-	}
+	}, nil)
 	child := newApprovalAutoTestManager(NewToolPermissions())
 	if err := child.SetParent(root); err != nil {
 		t.Fatal(err)
@@ -369,9 +369,9 @@ func TestApprovalManagerGuardianContradictoryAllowEscalatesOrDenies(t *testing.T
 			mgr := newApprovalAutoTestManager(NewToolPermissions())
 			mgr.SetApprovalMode(ModeAuto)
 			mgr.SetAutoHeadless(tt.headless)
-			mgr.PolicyReviewFunc = func(ctx context.Context, req PolicyReviewRequest) (PolicyDecision, error) {
+			mgr.SetPolicyReviewFunc(func(ctx context.Context, req PolicyReviewRequest) (PolicyDecision, error) {
 				return PolicyDecision{Allowed: true, RiskLevel: "critical", UserAuthorization: "unknown", Rationale: "too risky"}, nil
-			}
+			}, nil)
 			prompted := false
 			mgr.PromptUIFunc = func(path string, isWrite bool, isShell bool, workDir string) (ApprovalResult, error) {
 				prompted = true
@@ -400,10 +400,10 @@ func TestApprovalManagerGuardianReceivesApprovalContext(t *testing.T) {
 	mgr := newApprovalAutoTestManager(perms)
 	mgr.SetApprovalMode(ModeAuto)
 	var got PolicyReviewRequest
-	mgr.PolicyReviewFunc = func(ctx context.Context, req PolicyReviewRequest) (PolicyDecision, error) {
+	mgr.SetPolicyReviewFunc(func(ctx context.Context, req PolicyReviewRequest) (PolicyDecision, error) {
 		got = req
 		return PolicyDecision{Allowed: true, RiskLevel: "medium", UserAuthorization: "high", Rationale: "equivalent approved write"}, nil
-	}
+	}, nil)
 	if outcome, err := mgr.CheckShellApproval("cat >> file.go <<'EOF'\nhi\nEOF", writeDir); err != nil || outcome != ProceedAlways {
 		t.Fatalf("approval = %v, %v", outcome, err)
 	}

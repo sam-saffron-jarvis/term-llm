@@ -11,9 +11,9 @@ func TestGuardianEventRetainsShellCorrelation(t *testing.T) {
 	mgr := NewApprovalManager(nil)
 	mgr.SetAutoHeadless(true)
 	wantUsage := llm.Usage{InputTokens: 31, OutputTokens: 7, CachedInputTokens: 20, CacheWriteTokens: 4}
-	mgr.PolicyReviewFunc = func(context.Context, PolicyReviewRequest) (PolicyDecision, error) {
+	mgr.SetPolicyReviewFunc(func(context.Context, PolicyReviewRequest) (PolicyDecision, error) {
 		return PolicyDecision{Allowed: true, RiskLevel: "low", UserAuthorization: "high", Model: "guardian-model", Usage: wantUsage}, nil
-	}
+	}, nil)
 	var got GuardianEvent
 	mgr.GuardianEventFunc = func(event GuardianEvent) { got = event }
 	ctx := llm.ContextWithCallID(context.Background(), "shell-call")

@@ -41,6 +41,143 @@ func TestNewJobsV2ManagerLimitsFileBackedDBConnections(t *testing.T) {
 	}
 }
 
+func TestJobsV2ReconcileMisfiredSchedulesHonorsPolicyAndTrigger(t *testing.T) {
+	mgr := newJobsV2ManagerWithoutLoops(t)
+	cutoff := time.Date(2026, time.July, 22, 12, 7, 0, 0, time.UTC)
+	past := cutoff.Add(-10 * time.Minute)
+	future := cutoff.Add(10 * time.Minute)
+
+	tests := []struct {
+		id            string
+		enabled       bool
+		triggerType   jobsV2TriggerType
+		triggerConfig string
+		policy        string
+		nextRun       time.Time
+		wantEnabled   bool
+		wantNext      *time.Time
+	}{
+		{id: "skip_cron", enabled: true, triggerType: jobsV2TriggerCron, triggerConfig: `{"expression":"*/5 * * * *","timezone":"UTC"}`, policy: "skip", nextRun: past, wantEnabled: true, wantNext: timePointer(time.Date(2026, time.July, 22, 12, 10, 0, 0, time.UTC))},
+		{id: "skip_once", enabled: true, triggerType: jobsV2TriggerOnce, triggerConfig: `{"run_at":"2026-07-22T11:57:00Z"}`, policy: "skip", nextRun: past, wantEnabled: false},
+		{id: "run_cron", enabled: true, triggerType: jobsV2TriggerCron, triggerConfig: `{"expression":"*/5 * * * *","timezone":"UTC"}`, policy: "run", nextRun: past, wantEnabled: true, wantNext: timePointer(past)},
+		{id: "run_once", enabled: true, triggerType: jobsV2TriggerOnce, triggerConfig: `{"run_at":"2026-07-22T11:57:00Z"}`, policy: "run", nextRun: past, wantEnabled: true, wantNext: timePointer(past)},
+		{id: "future_skip", enabled: true, triggerType: jobsV2TriggerCron, triggerConfig: `{"expression":"*/5 * * * *","timezone":"UTC"}`, policy: "skip", nextRun: future, wantEnabled: true, wantNext: timePointer(future)},
+		{id: "disabled_skip", enabled: false, triggerType: jobsV2TriggerCron, triggerConfig: `{"expression":"*/5 * * * *","timezone":"UTC"}`, policy: "skip", nextRun: past, wantEnabled: false, wantNext: timePointer(past)},
+		{id: "manual_skip", enabled: true, triggerType: jobsV2TriggerManual, triggerConfig: `{}`, policy: "skip", nextRun: past, wantEnabled: true, wantNext: timePointer(past)},
+	}
+	for _, tc := range tests {
+		_, err := mgr.db.Exec(`INSERT INTO jobs_v2 (id, name, enabled, runner_type, runner_config, trigger_type, trigger_config, schedule_timezone, concurrency_policy, max_concurrent_runs, timeout_seconds, misfire_policy, next_run_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'UTC', 'forbid', 1, 30, ?, ?, ?, ?)`,
+			tc.id, tc.id, boolToInt(tc.enabled), jobsV2RunnerProgram, `{"command":"true"}`, tc.triggerType, tc.triggerConfig, tc.policy, tc.nextRun, cutoff, cutoff)
+		if err != nil {
+			t.Fatalf("insert %s: %v", tc.id, err)
+		}
+	}
+
+	if err := mgr.reconcileMisfiredSchedules(cutoff); err != nil {
+		t.Fatalf("reconcileMisfiredSchedules: %v", err)
+	}
+	if err := mgr.reconcileMisfiredSchedules(cutoff); err != nil {
+		t.Fatalf("second reconcileMisfiredSchedules: %v", err)
+	}
+
+	for _, tc := range tests {
+		var enabled bool
+		var next *time.Time
+		if err := mgr.db.QueryRow(`SELECT enabled, next_run_at FROM jobs_v2 WHERE id = ?`, tc.id).Scan(&enabled, &next); err != nil {
+			t.Fatalf("read %s: %v", tc.id, err)
+		}
+		if enabled != tc.wantEnabled {
+			t.Errorf("%s enabled = %v, want %v", tc.id, enabled, tc.wantEnabled)
+		}
+		if tc.wantNext == nil {
+			if next != nil {
+				t.Errorf("%s next_run_at = %v, want nil", tc.id, next)
+			}
+		} else if next == nil || !next.Equal(*tc.wantNext) {
+			t.Errorf("%s next_run_at = %v, want %v", tc.id, next, tc.wantNext)
+		}
+	}
+	var runs int
+	if err := mgr.db.QueryRow(`SELECT COUNT(*) FROM job_runs_v2`).Scan(&runs); err != nil {
+		t.Fatalf("count runs: %v", err)
+	}
+	if runs != 0 {
+		t.Fatalf("reconciliation created %d runs, want 0", runs)
+	}
+}
+
+func TestNewJobsV2ManagerReconcilesSkippedMisfiresBeforeSchedulerStarts(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "jobs_v2.db")
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	if err := execJobsV2Schema(db); err != nil {
+		_ = db.Close()
+		t.Fatalf("execJobsV2Schema: %v", err)
+	}
+	past := time.Now().UTC().Add(-10 * time.Minute)
+	_, err = db.Exec(`INSERT INTO jobs_v2 (id, name, enabled, runner_type, runner_config, trigger_type, trigger_config, schedule_timezone, concurrency_policy, max_concurrent_runs, timeout_seconds, misfire_policy, next_run_at, created_at, updated_at) VALUES ('startup_skip', 'startup_skip', 1, ?, '{"command":"true"}', ?, '{"expression":"*/5 * * * *","timezone":"UTC"}', 'UTC', 'forbid', 1, 30, ?, ?, ?, ?)`, jobsV2RunnerProgram, jobsV2TriggerCron, jobsV2MisfireSkip, past, past, past)
+	if err != nil {
+		_ = db.Close()
+		t.Fatalf("insert startup job: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close seed database: %v", err)
+	}
+
+	startedAt := time.Now().UTC()
+	mgr, err := newJobsV2Manager(dbPath, 0, nil)
+	if err != nil {
+		t.Fatalf("newJobsV2Manager: %v", err)
+	}
+	defer func() { _ = mgr.Close() }()
+	// Give the zero-delay scheduler pass enough time to expose an ordering bug:
+	// without synchronous reconciliation it would enqueue the stale run.
+	time.Sleep(100 * time.Millisecond)
+
+	job, err := mgr.GetJob("startup_skip")
+	if err != nil {
+		t.Fatalf("GetJob: %v", err)
+	}
+	if job.NextRunAt == nil || !job.NextRunAt.After(startedAt) {
+		t.Fatalf("next_run_at = %v, want after startup %v", job.NextRunAt, startedAt)
+	}
+	var runs int
+	if err := mgr.db.QueryRow(`SELECT COUNT(*) FROM job_runs_v2 WHERE job_id = 'startup_skip'`).Scan(&runs); err != nil {
+		t.Fatalf("count startup runs: %v", err)
+	}
+	if runs != 0 {
+		t.Fatalf("startup created %d stale runs, want 0", runs)
+	}
+}
+
+func TestJobsV2RejectsInvalidMisfirePolicy(t *testing.T) {
+	mgr := newJobsV2ManagerWithoutLoops(t)
+	base := jobsV2Job{
+		Name: "invalid-misfire", Enabled: true, RunnerType: jobsV2RunnerProgram,
+		RunnerConfig: json.RawMessage(`{"command":"true"}`), TriggerType: jobsV2TriggerManual,
+		TriggerConfig: json.RawMessage(`{}`), MisfirePolicy: "later",
+	}
+	if _, err := mgr.CreateJob(base); err == nil || !strings.Contains(err.Error(), "misfire_policy") {
+		t.Fatalf("CreateJob invalid policy error = %v", err)
+	}
+
+	base.Name = "valid-misfire"
+	base.MisfirePolicy = "skip"
+	created, err := mgr.CreateJob(base)
+	if err != nil {
+		t.Fatalf("CreateJob valid policy: %v", err)
+	}
+	if _, err := mgr.UpdateJobPatch(created.ID, jobsV2JobRequest{MisfirePolicy: "later"}); err == nil || !strings.Contains(err.Error(), "misfire_policy") {
+		t.Fatalf("UpdateJobPatch invalid policy error = %v", err)
+	}
+}
+
+func timePointer(value time.Time) *time.Time {
+	return &value
+}
+
 func TestJobsV2RunSummaryUsesCoveringIndex(t *testing.T) {
 	mgr, err := newJobsV2Manager(":memory:", 0, nil)
 	if err != nil {
