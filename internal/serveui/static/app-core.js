@@ -472,8 +472,7 @@ const elements = {
   diffFileList: document.getElementById('diffFileList'),
   diffToggleBtn: document.getElementById('diffToggleBtn'),
   diffToggleBadge: document.getElementById('diffToggleBadge'),
-  diffExpandAllBtn: document.getElementById('diffExpandAllBtn'),
-  diffCollapseAllBtn: document.getElementById('diffCollapseAllBtn'),
+  diffBulkToggleBtn: document.getElementById('diffBulkToggleBtn'),
   diffFilterRow: document.getElementById('diffFilterRow'),
   diffFilterInput: document.getElementById('diffFilterInput')
 };

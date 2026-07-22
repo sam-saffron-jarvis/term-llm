@@ -124,14 +124,19 @@ function createHarness(options = {}) {
     diffFileList: new Element('div'),
     diffToggleBtn: new Element('button'),
     diffToggleBadge: new Element('span'),
-    diffExpandAllBtn: new Element('button'),
-    diffCollapseAllBtn: new Element('button'),
+    diffBulkToggleBtn: new Element('button'),
     diffFilterRow: new Element('div'),
     diffFilterInput: new Element('input')
   };
   elements.diffSidebar.hidden = true;
   elements.diffToggleBtn.hidden = true;
   elements.diffFilterRow.hidden = true;
+  const diffBulkToggleLabel = new Element('span');
+  diffBulkToggleLabel.className = 'diff-bulk-toggle-label';
+  const diffBulkToggleAction = new Element('span');
+  diffBulkToggleAction.className = 'diff-bulk-toggle-action';
+  diffBulkToggleLabel.appendChild(diffBulkToggleAction);
+  elements.diffBulkToggleBtn.appendChild(diffBulkToggleLabel);
 
   const state = {
     token: '',
@@ -925,23 +930,35 @@ async function run(name, fn) {
     assertEqual(elements.diffFileList.querySelectorAll('.diff-file-row').length, 8, 'clearing the filter restores all rows');
   });
 
-  await run('expand-all and collapse-all act on every file and stick', async () => {
+  await run('adaptive bulk toggle expands, collapses, and sticks', async () => {
     const { app, elements, flushTimers } = createHarness();
+    const bulkLabel = () => `${elements.diffBulkToggleBtn.querySelector('.diff-bulk-toggle-action')?.textContent} all`;
     app.toggleDiffSidebar();
     for (let i = 1; i <= 3; i += 1) {
       app.handleFileChangeEvent({ id: 's1' }, { path: `/f${i}`, kind: 'modify', adds: 1, dels: 0, seq: i });
     }
     await flushTimers();
 
-    await elements.diffCollapseAllBtn.dispatchEvent({ type: 'click' });
-    assertEqual(elements.diffFileList.querySelectorAll('.diff-file-body').length, 0, 'collapse-all closes every body');
+    assertEqual(bulkLabel(), 'Expand all', 'mixed accordion offers to expand all');
+    assertEqual(elements.diffBulkToggleBtn.dataset.action, 'expand', 'expand icon state selected');
+    assertEqual(elements.diffBulkToggleBtn.getAttribute('aria-label'), 'Expand all files', 'expand action announced');
+
+    await elements.diffBulkToggleBtn.dispatchEvent({ type: 'click' });
+    assertEqual(elements.diffFileList.querySelectorAll('.diff-file-body').length, 3, 'first click opens every body');
+    assertEqual(bulkLabel(), 'Collapse all', 'fully expanded accordion offers to collapse all');
+    assertEqual(elements.diffBulkToggleBtn.dataset.action, 'collapse', 'collapse icon state selected');
+    assertEqual(elements.diffBulkToggleBtn.getAttribute('aria-label'), 'Collapse all files', 'collapse action announced');
+
+    await elements.diffBulkToggleBtn.dispatchEvent({ type: 'click' });
+    assertEqual(elements.diffFileList.querySelectorAll('.diff-file-body').length, 0, 'second click closes every body');
+    assertEqual(bulkLabel(), 'Expand all', 'collapsed accordion returns to expand action');
 
     app.handleFileChangeEvent({ id: 's1' }, { path: '/f1', kind: 'modify', adds: 2, dels: 0, seq: 4 });
     await flushTimers();
     assertEqual(elements.diffFileList.querySelectorAll('.diff-file-body').length, 0, 'live changes do not undo collapse-all');
 
-    await elements.diffExpandAllBtn.dispatchEvent({ type: 'click' });
-    assertEqual(elements.diffFileList.querySelectorAll('.diff-file-body').length, 3, 'expand-all opens every body');
+    await elements.diffBulkToggleBtn.dispatchEvent({ type: 'click' });
+    assertEqual(elements.diffFileList.querySelectorAll('.diff-file-body').length, 3, 'expand action remains available after live updates');
   });
 
   await run('escape closes the diff drawer but leaves inputs alone', async () => {

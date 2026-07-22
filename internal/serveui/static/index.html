@@ -340,9 +340,20 @@
       <div class="diff-sidebar-header">
         <span class="diff-sidebar-title">Changes</span>
         <span class="diff-sidebar-totals" id="diffSidebarTotals"></span>
-        <button class="icon-btn" id="diffExpandAllBtn" type="button" aria-label="Expand all files" title="Expand all">⌄</button>
-        <button class="icon-btn" id="diffCollapseAllBtn" type="button" aria-label="Collapse all files" title="Collapse all">⌃</button>
-        <button class="icon-btn" id="diffSidebarCloseBtn" type="button" aria-label="Hide changes" title="Hide changes">✕</button>
+        <button class="diff-bulk-toggle" id="diffBulkToggleBtn" type="button" aria-label="Expand all files" title="Expand all" data-action="expand">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <g class="diff-bulk-expand-icon">
+              <path d="m7 9 5-5 5 5"></path>
+              <path d="m7 15 5 5 5-5"></path>
+            </g>
+            <g class="diff-bulk-collapse-icon">
+              <path d="m7 4 5 5 5-5"></path>
+              <path d="m7 20 5-5 5 5"></path>
+            </g>
+          </svg>
+          <span class="diff-bulk-toggle-label"><span class="diff-bulk-toggle-action">Expand</span><span class="diff-bulk-toggle-all"> all</span></span>
+        </button>
+        <button class="icon-btn diff-sidebar-close" id="diffSidebarCloseBtn" type="button" aria-label="Hide changes" title="Hide changes">✕</button>
       </div>
       <div class="diff-filter-row" id="diffFilterRow" hidden>
         <input class="diff-filter-input" id="diffFilterInput" type="search" placeholder="Filter files…" aria-label="Filter changed files" autocomplete="off" spellcheck="false">
