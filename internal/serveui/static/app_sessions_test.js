@@ -3456,7 +3456,7 @@ async function testSidebarStatusPollRecoversIdempotentlyAfterPageShow() {
       });
     },
   });
-  app.stopSidebarStatusPoll();
+  await app.stopSidebarStatusPoll();
   scheduled.length = 0;
   statusCalls = 0;
   holdRecoveryStatus = true;
@@ -3569,7 +3569,7 @@ async function testHiddenInFlightSidebarPollCannotRescheduleOrApplyStaleStatus()
       });
     },
   });
-  app.stopSidebarStatusPoll();
+  await app.stopSidebarStatusPoll();
   scheduled.length = 0;
   staleSidebarUpdates = 0;
   await Promise.resolve();

@@ -110,11 +110,13 @@ const clearSidebarStatusTimer = () => {
 };
 
 const stopSidebarStatusPoll = () => {
+  const pending = sidebarStatusPollPromise;
   sidebarStatusPollEnabled = false;
   sidebarStatusImmediatePending = false;
   sidebarStatusPollGeneration += 1;
   clearSidebarStatusTimer();
   sidebarStatusPollController?.abort();
+  return pending || Promise.resolve(false);
 };
 
 const scheduleSidebarStatusPoll = (delay) => {
