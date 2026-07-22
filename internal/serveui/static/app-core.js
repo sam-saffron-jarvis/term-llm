@@ -1618,6 +1618,7 @@ const scrollToBottom = (force = false) => {
 };
 
 let legacyConnectionWarning = '';
+let legacyConnectionWarningOwner = null;
 let providerRetryStatus = null;
 
 function hideConnectionState() {
@@ -1673,8 +1674,19 @@ const setConnectionState = (text, mode = '') => {
   // Keep the header quiet during normal operation. The legacy connection state
   // remains reserved for actionable warnings, while provider retries use their
   // own lower-priority source below.
+  const owner = {};
   legacyConnectionWarning = mode === 'bad' ? String(text || '').trim() : '';
+  legacyConnectionWarningOwner = owner;
   renderHeaderStatus();
+  return owner;
+};
+
+const clearConnectionStateOwner = (owner) => {
+  if (!owner || legacyConnectionWarningOwner !== owner) return false;
+  legacyConnectionWarning = '';
+  legacyConnectionWarningOwner = null;
+  renderHeaderStatus();
+  return true;
 };
 
 const setProviderRetryStatus = (sessionId, responseId, text) => {
@@ -2489,6 +2501,7 @@ Object.assign(app, {
   shouldDisableAutoScrollForKey,
   scrollToBottom,
   setConnectionState,
+  clearConnectionStateOwner,
   setProviderRetryStatus,
   clearProviderRetryStatus,
   setStartupStatus,

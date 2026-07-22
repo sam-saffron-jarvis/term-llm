@@ -806,6 +806,47 @@ pendingAsyncTests.push((async function testClipboardWriterFallsBackToExecCommand
   pass(name);
 })();
 
+(function testConnectionStateOwnerCannotClearNewerWarning() {
+  const name = 'connection state owners clear only the warning they set';
+  const connectionNode = Object.assign(makeNode(), { hidden: true });
+  const testApp = loadAppCoreWith({
+    nodeOverrides: { connectionState: connectionNode },
+    navigatorOverrides: { onLine: true },
+  });
+
+  const staleCatchUpOwner = testApp.setConnectionState('Catching up with this session…', 'bad');
+  const currentCatchUpOwner = testApp.setConnectionState('Catching up with this session…', 'bad');
+  if (testApp.clearConnectionStateOwner(staleCatchUpOwner)) {
+    fail(name, 'stale owner reported clearing a newer warning');
+    return;
+  }
+  if (connectionNode.hidden || connectionNode.textContent !== 'Catching up with this session…') {
+    fail(name, 'stale owner cleared a newer same-text catch-up warning', connectionNode.textContent);
+    return;
+  }
+
+  testApp.setConnectionState('Transport unavailable', 'bad');
+  if (testApp.clearConnectionStateOwner(currentCatchUpOwner)) {
+    fail(name, 'superseded catch-up owner reported clearing a transport warning');
+    return;
+  }
+  if (connectionNode.hidden || connectionNode.textContent !== 'Transport unavailable') {
+    fail(name, 'catch-up owner cleared a newer transport warning', connectionNode.textContent);
+    return;
+  }
+
+  const ownedWarning = testApp.setConnectionState('Catching up with this session…', 'bad');
+  if (!testApp.clearConnectionStateOwner(ownedWarning)) {
+    fail(name, 'current owner did not clear its warning');
+    return;
+  }
+  if (!connectionNode.hidden || connectionNode.textContent) {
+    fail(name, 'matching owner left its warning visible', connectionNode.textContent);
+    return;
+  }
+  pass(name);
+})();
+
 (function testProviderRetryStatusIsOwnedAndLegacyWarningHasPriority() {
   const name = 'provider retry status is response-owned and lower priority than legacy warnings';
   const classes = new Set();

@@ -4139,6 +4139,10 @@ async function testForegroundCatchUpRetriesBeforeAttachingExternalRun() {
     fail(name, 'failed catch-up attached the external response instead of leaving it pending', JSON.stringify({ messageCalls, stateCalls, resumeCalls, activeResponseId: session.activeResponseId }));
     return;
   }
+  if (app.elements.connectionState.hidden || app.elements.connectionState.textContent !== 'Catching up with this session…') {
+    fail(name, 'failed catch-up did not show its pending header warning', app.elements.connectionState.textContent);
+    return;
+  }
 
   await app.startSidebarStatusPoll();
   await Promise.resolve();
@@ -4151,6 +4155,255 @@ async function testForegroundCatchUpRetriesBeforeAttachingExternalRun() {
   }
   if (session.messages.length !== 1 || session.messages[0].content !== 'caught up after retry') {
     fail(name, 'successful retry attached without applying the authoritative transcript', JSON.stringify(session.messages));
+    return;
+  }
+  if (!app.elements.connectionState.hidden || app.elements.connectionState.textContent) {
+    fail(name, 'successful catch-up retry left its header warning visible', app.elements.connectionState.textContent);
+    return;
+  }
+
+  pass(name);
+}
+
+async function testAlreadyReconciledPendingCatchUpClearsWarning() {
+  const name = 'already-reconciled pending catch-up marker clears its owned warning';
+  let testReady = false;
+  let statusCalls = 0;
+  let messageCalls = 0;
+  const { app, windowObj } = await createSessionsHarness({
+    fetchImpl: async (url) => {
+      if (url === '/ui/v1/sessions/status') {
+        statusCalls += 1;
+        if (statusCalls > 1) {
+          return new Response(null, { status: 304 });
+        }
+        return new Response(JSON.stringify({
+          sessions: testReady ? [{
+            id: 'sess_already_reconciled',
+            short_title: 'Already reconciled',
+            active_run: false,
+            transcript_updated_at: 2000,
+          }] : []
+        }), { status: 200, headers: { 'Content-Type': 'application/json', ETag: '"status-v1"' } });
+      }
+      if (isTailMessagesURL(url, 'sess_already_reconciled')) {
+        messageCalls += 1;
+        return new Response('temporary failure', { status: 503 });
+      }
+      return new Response(JSON.stringify({ sessions: [] }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' }
+      });
+    },
+  });
+  await app.stopSidebarStatusPoll();
+
+  const session = {
+    id: 'sess_already_reconciled',
+    title: 'Already reconciled',
+    origin: 'web',
+    created: 1,
+    transcriptUpdatedAt: 1000,
+    messages: [],
+    activeResponseId: null,
+  };
+  app.state.sessions = [session];
+  app.state.activeSessionId = session.id;
+  app.state.draftSessionActive = false;
+  testReady = true;
+  statusCalls = 0;
+
+  const visibilityHandler = (windowObj.document.listeners.visibilitychange || [])[0];
+  windowObj.document.visibilityState = 'hidden';
+  await visibilityHandler({ type: 'visibilitychange' });
+  windowObj.document.visibilityState = 'visible';
+  await visibilityHandler({ type: 'visibilitychange' });
+
+  if (messageCalls !== 1 || session._pendingTranscriptUpdatedAt !== 2000
+      || app.elements.connectionState.textContent !== 'Catching up with this session…') {
+    fail(name, 'failed catch-up did not leave the expected marker and warning', JSON.stringify({ messageCalls, pending: session._pendingTranscriptUpdatedAt, warning: app.elements.connectionState.textContent }));
+    return;
+  }
+
+  // Another authoritative path can reconcile the same transcript while the
+  // status marker remains. A subsequent 304 must retire both without refetching.
+  session.transcriptUpdatedAt = 2000;
+  await app.startSidebarStatusPoll();
+  app.stopSidebarStatusPoll();
+
+  if (Object.prototype.hasOwnProperty.call(session, '_pendingTranscriptUpdatedAt')) {
+    fail(name, 'already-reconciled pending marker was not removed', String(session._pendingTranscriptUpdatedAt));
+    return;
+  }
+  if (messageCalls !== 1) {
+    fail(name, `already-reconciled marker unexpectedly fetched messages again (${messageCalls})`);
+    return;
+  }
+  if (!app.elements.connectionState.hidden || app.elements.connectionState.textContent) {
+    fail(name, 'already-reconciled marker left its catch-up warning visible', app.elements.connectionState.textContent);
+    return;
+  }
+
+  pass(name);
+}
+
+async function testStaleCatchUpCompletionPreservesNewerPendingMarker() {
+  const name = 'stale catch-up completion preserves a newer pending transcript before attach';
+  let appRef = null;
+  let testReady = false;
+  let resolveMessages = null;
+  let stateCalls = 0;
+  const { app } = await createSessionsHarness({
+    fetchImpl: async (url) => {
+      if (url === '/ui/v1/sessions/status') {
+        return new Response(JSON.stringify({
+          sessions: testReady ? [{
+            id: 'sess_newer_pending',
+            short_title: 'Newer pending',
+            active_run: true,
+            transcript_updated_at: 2000,
+          }] : []
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      if (isTailMessagesURL(url, 'sess_newer_pending')) {
+        return new Promise((resolve) => {
+          resolveMessages = () => resolve(new Response(JSON.stringify({ messages: [] }), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' }
+          }));
+        });
+      }
+      if (url === '/ui/v1/sessions/sess_newer_pending/state') {
+        stateCalls += 1;
+        return new Response(JSON.stringify({
+          active_run: true,
+          active_response_id: 'resp_newer_pending',
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      return new Response(JSON.stringify({ sessions: [] }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' }
+      });
+    },
+    appOverrides: {
+      updateSidebarStatus(entries) {
+        if (!appRef) return;
+        for (const entry of entries) {
+          appRef.setSessionServerActiveRun(entry.id, Boolean(entry.active_run));
+        }
+      },
+    },
+  });
+  appRef = app;
+  await app.stopSidebarStatusPoll();
+
+  const session = {
+    id: 'sess_newer_pending',
+    title: 'Newer pending',
+    origin: 'web',
+    created: 1,
+    transcriptUpdatedAt: 1000,
+    messages: [],
+    activeResponseId: null,
+  };
+  app.state.sessions = [session];
+  app.state.activeSessionId = session.id;
+  app.state.draftSessionActive = false;
+  testReady = true;
+
+  const pollPromise = app.startSidebarStatusPoll();
+  for (let i = 0; i < 20 && typeof resolveMessages !== 'function'; i += 1) {
+    await Promise.resolve();
+  }
+  if (typeof resolveMessages !== 'function' || session._pendingTranscriptUpdatedAt !== 2000) {
+    fail(name, 'expected the older transcript refresh to be in flight', JSON.stringify({ pending: session._pendingTranscriptUpdatedAt }));
+    return;
+  }
+
+  session._pendingTranscriptUpdatedAt = 3000;
+  resolveMessages();
+  await pollPromise;
+  app.stopSidebarStatusPoll();
+
+  if (session.transcriptUpdatedAt !== 2000 || session._pendingTranscriptUpdatedAt !== 3000) {
+    fail(name, 'older completion erased or regressed the newer pending marker', JSON.stringify({ transcriptUpdatedAt: session.transcriptUpdatedAt, pending: session._pendingTranscriptUpdatedAt }));
+    return;
+  }
+  if (stateCalls !== 0 || session.activeResponseId) {
+    fail(name, 'older completion attached a response before the newer transcript caught up', JSON.stringify({ stateCalls, activeResponseId: session.activeResponseId }));
+    return;
+  }
+
+  pass(name);
+}
+
+async function testCatchUpWarningClearsOnSessionSwitchWithoutClearingNewerWarning() {
+  const name = 'session switch retires only the previous session catch-up warning';
+  let testReady = false;
+  const { app, windowObj } = await createSessionsHarness({
+    fetchImpl: async (url) => {
+      if (url === '/ui/v1/sessions/status') {
+        return new Response(JSON.stringify({
+          sessions: testReady ? [{
+            id: 'sess_switch_catch_up_a',
+            short_title: 'Catch-up A',
+            active_run: false,
+            transcript_updated_at: 2000,
+          }] : []
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      if (isTailMessagesURL(url, 'sess_switch_catch_up_a')) {
+        return new Response('temporary failure', { status: 503 });
+      }
+      return new Response(JSON.stringify({ sessions: [] }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' }
+      });
+    },
+  });
+  await app.stopSidebarStatusPoll();
+
+  const sessionA = {
+    id: 'sess_switch_catch_up_a', title: 'Catch-up A', origin: 'web', created: 1,
+    transcriptUpdatedAt: 1000, messages: [], activeResponseId: null,
+  };
+  const sessionB = {
+    id: 'sess_switch_catch_up_b', title: 'Catch-up B', origin: 'web', created: 2,
+    transcriptUpdatedAt: 1000, messages: [], activeResponseId: null,
+  };
+  app.state.sessions = [sessionA, sessionB];
+  app.state.activeSessionId = sessionA.id;
+  app.state.draftSessionActive = false;
+  testReady = true;
+
+  const visibilityHandler = (windowObj.document.listeners.visibilitychange || [])[0];
+  windowObj.document.visibilityState = 'hidden';
+  await visibilityHandler({ type: 'visibilitychange' });
+  windowObj.document.visibilityState = 'visible';
+  await visibilityHandler({ type: 'visibilitychange' });
+  app.stopSidebarStatusPoll();
+
+  if (app.elements.connectionState.textContent !== 'Catching up with this session…') {
+    fail(name, 'expected session A catch-up warning before switching', app.elements.connectionState.textContent);
+    return;
+  }
+  await app.switchToSession(sessionB.id, { sync: false });
+  if (!app.elements.connectionState.hidden || app.elements.connectionState.textContent) {
+    fail(name, 'session A catch-up warning leaked into session B', app.elements.connectionState.textContent);
+    return;
+  }
+
+  // A warning established after catch-up ownership changed must survive stale
+  // cleanup from that old owner.
+  app.state.activeSessionId = sessionA.id;
+  app.state.draftSessionActive = false;
+  windowObj.document.visibilityState = 'visible';
+  await visibilityHandler({ type: 'visibilitychange' });
+  app.stopSidebarStatusPoll();
+  app.setConnectionState('Transport unavailable', 'bad');
+  await app.switchToSession(sessionB.id, { sync: false });
+  if (app.elements.connectionState.hidden || app.elements.connectionState.textContent !== 'Transport unavailable') {
+    fail(name, 'session switch catch-up cleanup erased a newer transport warning', app.elements.connectionState.textContent);
     return;
   }
 
@@ -5663,6 +5916,9 @@ async function testStoppedRunReconciliationClearsProviderRetryOwner() {
   await testLateActiveMessagesResponseIgnoredAfterSessionSwitch();
   await testForegroundCatchUpRefreshesTranscriptBeforeResumingExternalRun();
   await testForegroundCatchUpRetriesBeforeAttachingExternalRun();
+  await testAlreadyReconciledPendingCatchUpClearsWarning();
+  await testStaleCatchUpCompletionPreservesNewerPendingMarker();
+  await testCatchUpWarningClearsOnSessionSwitchWithoutClearingNewerWarning();
   await testForegroundCatchUpStopsWhenPageIsRehidden();
   await testReconnectBackoffWakeSignalsReuseExistingLoop();
   await testLoadServerSessionStateUsesExplicitResultContract();
