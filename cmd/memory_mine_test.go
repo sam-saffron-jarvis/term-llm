@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -29,6 +30,54 @@ type trackingMemoryMineStore struct {
 		fromSeq int
 		limit   int
 	}
+}
+
+type candidateDiscoveryStore struct {
+	session.NoopStore
+	maxSequenceCalls     int
+	getCalls             int
+	getMessagesCalls     int
+	getMessagesFromCalls int
+}
+
+func (s *candidateDiscoveryStore) MaxMessageSequences(_ context.Context, sessionIDs []string) (map[string]int, error) {
+	s.maxSequenceCalls++
+	sequences := make(map[string]int, len(sessionIDs))
+	for _, sessionID := range sessionIDs {
+		sequences[sessionID] = 9
+	}
+	return sequences, nil
+}
+
+func (s *candidateDiscoveryStore) Get(_ context.Context, id string) (*session.Session, error) {
+	s.getCalls++
+	return nil, nil
+}
+
+func (s *candidateDiscoveryStore) GetMessages(_ context.Context, sessionID string, limit, offset int) ([]session.Message, error) {
+	s.getMessagesCalls++
+	return nil, nil
+}
+
+func (s *candidateDiscoveryStore) GetMessagesFrom(_ context.Context, sessionID string, fromSeq, limit int) ([]session.Message, error) {
+	s.getMessagesFromCalls++
+	return nil, nil
+}
+
+type candidateDiscoveryStateStore struct {
+	states         []memorydb.MiningState
+	listStateCalls int
+	getStateCalls  int
+}
+
+func (s *candidateDiscoveryStateStore) ListStates(_ context.Context) ([]memorydb.MiningState, error) {
+	s.listStateCalls++
+	return s.states, nil
+}
+
+func (s *candidateDiscoveryStateStore) GetState(_ context.Context, sessionID string) (*memorydb.MiningState, error) {
+	s.getStateCalls++
+	return nil, nil
 }
 
 func (s *trackingMemoryMineStore) GetMessages(_ context.Context, sessionID string, limit, offset int) ([]session.Message, error) {
@@ -185,6 +234,44 @@ func TestValidateFragmentPath(t *testing.T) {
 		if got != tc.want {
 			t.Fatalf("validateFragmentPath(%q) = %q, want %q", tc.path, got, tc.want)
 		}
+	}
+}
+
+func TestCollectMineCandidatesSkipsFullyMinedSessionsWithoutPointReads(t *testing.T) {
+	const sessionCount = 5000
+
+	oldLimit := memoryMineLimit
+	oldSince := memoryMineSince
+	memoryMineLimit = 0
+	memoryMineSince = 0
+	t.Cleanup(func() {
+		memoryMineLimit = oldLimit
+		memoryMineSince = oldSince
+	})
+
+	complete := make([]session.SessionSummary, sessionCount)
+	states := make([]memorydb.MiningState, sessionCount)
+	for i := 0; i < sessionCount; i++ {
+		sessionID := fmt.Sprintf("session-%d", i)
+		complete[i] = session.SessionSummary{ID: sessionID}
+		states[i] = memorydb.MiningState{SessionID: sessionID, LastMinedOffset: 10}
+	}
+
+	sessStore := &candidateDiscoveryStore{}
+	stateStore := &candidateDiscoveryStateStore{states: states}
+	got, err := collectMineCandidates(context.Background(), sessStore, stateStore, complete, "")
+	if err != nil {
+		t.Fatalf("collectMineCandidates: %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("candidate count = %d, want 0", len(got))
+	}
+	if sessStore.maxSequenceCalls != 1 || stateStore.listStateCalls != 1 {
+		t.Fatalf("batch calls = max sequences %d, states %d; want 1 each", sessStore.maxSequenceCalls, stateStore.listStateCalls)
+	}
+	if sessStore.getCalls != 0 || stateStore.getStateCalls != 0 || sessStore.getMessagesCalls != 0 || sessStore.getMessagesFromCalls != 0 {
+		t.Fatalf("point reads = Get %d, GetState %d, GetMessages %d, GetMessagesFrom %d; want all zero",
+			sessStore.getCalls, stateStore.getStateCalls, sessStore.getMessagesCalls, sessStore.getMessagesFromCalls)
 	}
 }
 

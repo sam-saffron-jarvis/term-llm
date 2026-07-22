@@ -2215,6 +2215,30 @@ func (s *Store) SetMeta(ctx context.Context, key, value string) error {
 	return nil
 }
 
+// ListStates returns all session mining states in one query.
+func (s *Store) ListStates(ctx context.Context) ([]MiningState, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT session_id, agent, last_mined_offset, mined_at
+		FROM memory_mining_state`)
+	if err != nil {
+		return nil, fmt.Errorf("list mining states: %w", err)
+	}
+	defer rows.Close()
+
+	states := make([]MiningState, 0)
+	for rows.Next() {
+		var state MiningState
+		if err := rows.Scan(&state.SessionID, &state.Agent, &state.LastMinedOffset, &state.MinedAt); err != nil {
+			return nil, fmt.Errorf("scan mining state: %w", err)
+		}
+		states = append(states, state)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate mining states: %w", err)
+	}
+	return states, nil
+}
+
 // GetState returns mining state for a session.
 func (s *Store) GetState(ctx context.Context, sessionID string) (*MiningState, error) {
 	row := s.db.QueryRowContext(ctx, `

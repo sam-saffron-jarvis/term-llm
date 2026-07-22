@@ -985,6 +985,14 @@ func TestStoreMiningState(t *testing.T) {
 	if got.LastMinedOffset != 100 {
 		t.Fatalf("offset after update = %d, want 100", got.LastMinedOffset)
 	}
+
+	states, err := store.ListStates(ctx)
+	if err != nil {
+		t.Fatalf("ListStates() error = %v", err)
+	}
+	if len(states) != 1 || states[0].SessionID != "sess-1" || states[0].LastMinedOffset != 100 {
+		t.Fatalf("ListStates() = %+v, want updated sess-1 state", states)
+	}
 }
 
 func TestStoreMetaGetSet(t *testing.T) {

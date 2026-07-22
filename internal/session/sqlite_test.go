@@ -592,6 +592,42 @@ func TestSQLiteStoreGetMessagesFromHonorsLimit(t *testing.T) {
 	}
 }
 
+func TestSQLiteStoreMaxMessageSequencesBatchesSessions(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+
+	store, err := NewSQLiteStore(DefaultConfig())
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+	sess := &Session{ID: NewID(), Provider: "test", Model: "test-model", Mode: ModeChat}
+	if err := store.Create(ctx, sess); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := store.AddMessage(ctx, sess.ID, NewMessage(sess.ID, llm.UserText("latest"), 7)); err != nil {
+		t.Fatalf("AddMessage: %v", err)
+	}
+
+	sessionIDs := make([]string, 501)
+	for i := range sessionIDs {
+		sessionIDs[i] = fmt.Sprintf("missing-%d", i)
+	}
+	sessionIDs[len(sessionIDs)-1] = sess.ID
+
+	got, err := store.MaxMessageSequences(ctx, sessionIDs)
+	if err != nil {
+		t.Fatalf("MaxMessageSequences: %v", err)
+	}
+	if got[sessionIDs[0]] != -1 {
+		t.Fatalf("missing session max = %d, want -1", got[sessionIDs[0]])
+	}
+	if got[sess.ID] != 7 {
+		t.Fatalf("persisted session max = %d, want 7", got[sess.ID])
+	}
+}
+
 func TestSQLiteStoreGetMessagesPageDescendingHonorsBeforeSeqAndLimit(t *testing.T) {
 	t.Setenv("XDG_DATA_HOME", t.TempDir())
 

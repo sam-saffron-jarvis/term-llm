@@ -188,6 +188,12 @@ type ProviderStateStore interface {
 	DeleteProviderState(ctx context.Context, sessionID, providerKey string) error
 }
 
+// MessageSequenceStore is an optional Store capability for fetching the latest
+// message sequence for many sessions without issuing one query per session.
+type MessageSequenceStore interface {
+	MaxMessageSequences(ctx context.Context, sessionIDs []string) (map[string]int, error)
+}
+
 // MessagesDescendingPager is an optional Store capability for efficient reverse
 // pagination over session messages. Implementations return messages ordered by
 // descending sequence and, when beforeSeq > 0, only rows with sequence < beforeSeq.

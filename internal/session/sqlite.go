@@ -3126,6 +3126,52 @@ func (s *SQLiteStore) GetMessagesFrom(ctx context.Context, sessionID string, fro
 	return scanMessageRows(rows)
 }
 
+// MaxMessageSequences returns the greatest persisted message sequence for each
+// requested session. Sessions without messages are returned with sequence -1.
+func (s *SQLiteStore) MaxMessageSequences(ctx context.Context, sessionIDs []string) (map[string]int, error) {
+	const batchSize = 500
+
+	result := make(map[string]int, len(sessionIDs))
+	for start := 0; start < len(sessionIDs); start += batchSize {
+		end := min(start+batchSize, len(sessionIDs))
+		values := make([]string, 0, end-start)
+		args := make([]any, 0, end-start)
+		for _, sessionID := range sessionIDs[start:end] {
+			result[sessionID] = -1
+			values = append(values, "(?)")
+			args = append(args, sessionID)
+		}
+
+		query := `
+			WITH requested(session_id) AS (VALUES ` + strings.Join(values, ",") + `)
+			SELECT requested.session_id, COALESCE((
+				SELECT MAX(messages.sequence)
+				FROM messages
+				WHERE messages.session_id = requested.session_id
+			), -1)
+			FROM requested`
+		rows, err := s.db.QueryContext(ctx, query, args...)
+		if err != nil {
+			return nil, fmt.Errorf("query maximum message sequences: %w", err)
+		}
+		for rows.Next() {
+			var sessionID string
+			var maxSequence int
+			if err := rows.Scan(&sessionID, &maxSequence); err != nil {
+				rows.Close()
+				return nil, fmt.Errorf("scan maximum message sequence: %w", err)
+			}
+			result[sessionID] = maxSequence
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return nil, fmt.Errorf("iterate maximum message sequences: %w", err)
+		}
+		rows.Close()
+	}
+	return result, nil
+}
+
 func scanMessageRows(rows *sql.Rows) ([]Message, error) {
 	var messages []Message
 	for rows.Next() {

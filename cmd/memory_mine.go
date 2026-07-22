@@ -61,7 +61,12 @@ When finished, reply briefly with plain text like "done".`
 type memoryMineCandidate struct {
 	Summary session.SessionSummary
 	Session *session.Session
+	State   *memorydb.MiningState
 	Agent   string
+}
+
+type memoryMiningStateStore interface {
+	ListStates(ctx context.Context) ([]memorydb.MiningState, error)
 }
 
 type memoryAgentFragmentStore interface {
@@ -260,7 +265,7 @@ func runMemoryMine(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("list complete sessions: %w", err)
 	}
 
-	candidates, err := collectMineCandidates(ctx, sessStore, complete, currentID)
+	candidates, err := collectMineCandidates(ctx, sessStore, memStore, complete, currentID)
 	if err != nil {
 		return err
 	}
@@ -287,14 +292,9 @@ func runMemoryMine(cmd *cobra.Command, args []string) error {
 	fragmentCache := newMemoryAgentFragmentCache(memoryMineTaxonomyMaxTokens)
 
 	for i, candidate := range candidates {
-		state, err := memStore.GetState(ctx, candidate.Session.ID)
-		if err != nil {
-			return fmt.Errorf("get mining state for session %s: %w", candidate.Session.ID, err)
-		}
-
 		startOffset := 0
-		if state != nil {
-			startOffset = state.LastMinedOffset
+		if candidate.State != nil {
+			startOffset = candidate.State.LastMinedOffset
 		}
 
 		existing, taxonomyMap, err := fragmentCache.get(ctx, memStore, candidate.Agent)
@@ -500,16 +500,45 @@ func minePromoteAgents(globalAgent string, candidates []memoryMineCandidate) []s
 	return agents
 }
 
-func collectMineCandidates(ctx context.Context, store session.Store, complete []session.SessionSummary, currentID string) ([]memoryMineCandidate, error) {
-	out := make([]memoryMineCandidate, 0, len(complete))
+func collectMineCandidates(ctx context.Context, store session.Store, stateStore memoryMiningStateStore, complete []session.SessionSummary, currentID string) ([]memoryMineCandidate, error) {
+	states, err := stateStore.ListStates(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list mining states: %w", err)
+	}
+	statesBySession := make(map[string]memorydb.MiningState, len(states))
+	for _, state := range states {
+		statesBySession[state.SessionID] = state
+	}
 
+	var maxSequences map[string]int
+	if sequenceStore, ok := store.(session.MessageSequenceStore); ok {
+		sessionIDs := make([]string, 0, len(complete))
+		for _, summary := range complete {
+			sessionIDs = append(sessionIDs, summary.ID)
+		}
+		maxSequences, err = sequenceStore.MaxMessageSequences(ctx, sessionIDs)
+		if err != nil {
+			return nil, fmt.Errorf("get maximum message sequences: %w", err)
+		}
+	}
+
+	out := make([]memoryMineCandidate, 0, len(complete))
 	for _, summary := range complete {
+		state, hasState := statesBySession[summary.ID]
+		maxSequence, hasMaxSequence := maxSequences[summary.ID]
+		if hasState && hasMaxSequence && state.LastMinedOffset > maxSequence {
+			continue
+		}
+
 		candidate, ok, err := buildMemoryMineCandidate(ctx, store, summary, currentID)
 		if err != nil {
 			return nil, err
 		}
 		if !ok {
 			continue
+		}
+		if hasState {
+			candidate.State = &state
 		}
 
 		out = append(out, candidate)
