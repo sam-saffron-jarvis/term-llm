@@ -3417,6 +3417,190 @@ async function testSanitizeSessionPreservesTranscriptUpdatedAt() {
   pass(name);
 }
 
+async function testSidebarStatusPollRecoversIdempotentlyAfterPageShow() {
+  const name = 'pageshow and transport recovery restart one immediate sidebar poll';
+  const scheduled = [];
+  let statusCalls = 0;
+  let holdRecoveryStatus = false;
+  let resolveRecoveryStatus = null;
+  const { app, windowObj } = await createSessionsHarness({
+    setTimeout(fn, delay) {
+      const handle = { fn, delay, cleared: false, fired: false };
+      scheduled.push(handle);
+      return handle;
+    },
+    clearTimeout(handle) {
+      if (handle) handle.cleared = true;
+    },
+    fetchImpl: async (url) => {
+      if (url === '/ui/v1/sessions/status') {
+        statusCalls += 1;
+        if (holdRecoveryStatus && statusCalls === 1) {
+          return new Promise((resolve) => {
+            resolveRecoveryStatus = () => resolve(new Response(JSON.stringify({ sessions: [] }), {
+              status: 200,
+              headers: { 'Content-Type': 'application/json' },
+            }));
+          });
+        }
+      }
+      if (url.endsWith('/state')) {
+        return new Response(JSON.stringify({ active_run: false, active_response_id: '' }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      return new Response(JSON.stringify({ sessions: [] }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    },
+  });
+  app.stopSidebarStatusPoll();
+  scheduled.length = 0;
+  statusCalls = 0;
+  holdRecoveryStatus = true;
+
+  const session = {
+    id: 'sess_pageshow_poll',
+    title: 'Page show poll',
+    origin: 'web',
+    created: 1,
+    messages: [],
+    activeResponseId: null,
+  };
+  app.state.sessions = [session];
+  app.state.activeSessionId = session.id;
+  app.state.draftSessionActive = false;
+
+  const visibilityHandler = (windowObj.document.listeners.visibilitychange || [])[0];
+  const pageshowHandlers = windowObj.listeners.pageshow || [];
+  const pageshowHandler = pageshowHandlers[pageshowHandlers.length - 1];
+  if (!visibilityHandler || !pageshowHandler) {
+    fail(name, 'expected visibilitychange and pageshow listeners');
+    return;
+  }
+
+  windowObj.document.visibilityState = 'hidden';
+  await visibilityHandler({ type: 'visibilitychange' });
+  windowObj.document.visibilityState = 'visible';
+  // BFCache restoration does not reliably emit another visibilitychange.
+  pageshowHandler({ type: 'pageshow', persisted: true });
+
+  if (typeof app.handleFetchTransportFallback !== 'function') {
+    fail(name, 'expected an app-level transport fallback hook');
+    return;
+  }
+  const repeatedRecovery = app.handleFetchTransportFallback();
+  app.handleFetchTransportFallback();
+
+  if (statusCalls !== 1 || typeof resolveRecoveryStatus !== 'function') {
+    fail(name, `expected exactly one immediate status request, got ${statusCalls}`);
+    return;
+  }
+  const liveBeforeResolve = scheduled.filter((handle) => !handle.cleared && !handle.fired);
+  if (liveBeforeResolve.length !== 0) {
+    fail(name, 'status timer was scheduled while the immediate request was in flight', JSON.stringify(liveBeforeResolve.map(({ delay }) => delay)));
+    return;
+  }
+
+  resolveRecoveryStatus();
+  await repeatedRecovery;
+  await Promise.resolve();
+
+  let liveTimers = scheduled.filter((handle) => !handle.cleared && !handle.fired);
+  if (liveTimers.length !== 1 || liveTimers[0].delay !== 5000) {
+    fail(name, 'expected exactly one continued visible-session poll timer', JSON.stringify(liveTimers.map(({ delay }) => delay)));
+    return;
+  }
+
+  const nextTimer = liveTimers[0];
+  nextTimer.fired = true;
+  await nextTimer.fn();
+  await Promise.resolve();
+  if (statusCalls !== 2) {
+    fail(name, `continued polling issued ${statusCalls} total requests, want 2`);
+    return;
+  }
+  liveTimers = scheduled.filter((handle) => !handle.cleared && !handle.fired);
+  if (liveTimers.length !== 1 || liveTimers[0].delay !== 5000) {
+    fail(name, 'continued poll did not leave exactly one next timer', JSON.stringify(liveTimers.map(({ delay }) => delay)));
+    return;
+  }
+
+  app.stopSidebarStatusPoll();
+  pass(name);
+}
+
+async function testHiddenInFlightSidebarPollCannotRescheduleOrApplyStaleStatus() {
+  const name = 'hidden in-flight sidebar status callback is stale and cannot restart polling';
+  const scheduled = [];
+  let statusCalls = 0;
+  let resolveStatus = null;
+  let staleSidebarUpdates = 0;
+  const { app, windowObj } = await createSessionsHarness({
+    setTimeout(fn, delay) {
+      const handle = { fn, delay, cleared: false };
+      scheduled.push(handle);
+      return handle;
+    },
+    clearTimeout(handle) {
+      if (handle) handle.cleared = true;
+    },
+    appOverrides: {
+      updateSidebarStatus(sessions) {
+        if (sessions.some((session) => session.id === 'stale_session')) staleSidebarUpdates += 1;
+      },
+    },
+    fetchImpl: async (url) => {
+      if (url === '/ui/v1/sessions/status') {
+        statusCalls += 1;
+        if (statusCalls > 1) {
+          return new Promise((resolve) => {
+            resolveStatus = () => resolve(new Response(JSON.stringify({
+              sessions: [{ id: 'stale_session', short_title: 'Stale' }],
+            }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+          });
+        }
+      }
+      return new Response(JSON.stringify({ sessions: [] }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    },
+  });
+  app.stopSidebarStatusPoll();
+  scheduled.length = 0;
+  staleSidebarUpdates = 0;
+  await Promise.resolve();
+  await Promise.resolve();
+
+  const pollPromise = app.startSidebarStatusPoll();
+  await Promise.resolve();
+  if (typeof resolveStatus !== 'function') {
+    fail(name, 'expected a status request to remain in flight');
+    return;
+  }
+  const visibilityHandler = (windowObj.document.listeners.visibilitychange || [])[0];
+  windowObj.document.visibilityState = 'hidden';
+  await visibilityHandler({ type: 'visibilitychange' });
+  resolveStatus();
+  await pollPromise;
+  await Promise.resolve();
+
+  if (staleSidebarUpdates !== 0) {
+    fail(name, `hidden stale response applied ${staleSidebarUpdates} sidebar updates`);
+    return;
+  }
+  const liveTimers = scheduled.filter((handle) => !handle.cleared);
+  if (liveTimers.length !== 0) {
+    fail(name, 'hidden stale response restarted the background poll loop', JSON.stringify(liveTimers.map(({ delay }) => delay)));
+    return;
+  }
+
+  pass(name);
+}
+
 async function testStatusPollAdvancementRefreshesActiveMessagesOnce() {
   const name = 'status poll transcript advancement refreshes active messages exactly once';
   const fetchCalls = [];
@@ -4844,6 +5028,8 @@ async function testSessionSwitchRefreshesSkillsAndDraftClearsThem() {
   await testMergeServerMessagesBumpsLastMessageAt();
   await testSanitizeSessionPreservesLastMessageAt();
   await testSanitizeSessionPreservesTranscriptUpdatedAt();
+  await testSidebarStatusPollRecoversIdempotentlyAfterPageShow();
+  await testHiddenInFlightSidebarPollCannotRescheduleOrApplyStaleStatus();
   await testStatusPollAdvancementRefreshesActiveMessagesOnce();
   await testStatusPollUnchangedTranscriptDoesNotFetchMessages();
   await testActiveTranscriptRefreshSkipsBusyStates();

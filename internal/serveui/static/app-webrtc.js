@@ -107,6 +107,22 @@
     }
   }
 
+  function restoreHTTPSFetch(reason) {
+    const wasWebRTCTransport = window.fetch === patchedFetch;
+    window.fetch = originalFetch;
+    if (!wasWebRTCTransport) return;
+
+    diag(reason + ' — restoring original fetch');
+    const app = termApp();
+    if (app && typeof app.handleFetchTransportFallback === 'function') {
+      try {
+        app.handleFetchTransportFallback();
+      } catch (_e) {
+        diag('app transport fallback hook failed');
+      }
+    }
+  }
+
   // ---------------------------------------------------------------------------
   // Initialisation
   // ---------------------------------------------------------------------------
@@ -228,8 +244,8 @@
       // 8. Connected — wire up handlers and patch fetch.
       dataChannel = dc;
       dc.onmessage = handleMessage;
-      dc.onclose = onChannelClose;
-      dc.onerror = onChannelClose;
+      dc.onclose = () => onChannelClose(dc);
+      dc.onerror = () => onChannelClose(dc);
 
       window.fetch = patchedFetch;
 
@@ -313,10 +329,10 @@
   // Channel close / error
   // ---------------------------------------------------------------------------
 
-  function onChannelClose() {
+  function onChannelClose(closedChannel) {
+    if (closedChannel !== dataChannel) return;
     dataChannel = null;
-    diag('data channel closed — restoring original fetch');
-    window.fetch = originalFetch;
+    restoreHTTPSFetch('data channel closed');
     drainPendingToHTTPS('channel closed');
   }
 
@@ -329,11 +345,12 @@
     renegotiating = true;
 
     // Tear down the current channel so new requests route to HTTPS immediately.
-    if (dataChannel) {
-      try { dataChannel.close(); } catch (_e) { /* ignore */ }
-    }
+    const previousChannel = dataChannel;
     dataChannel = null;
-    window.fetch = originalFetch;
+    if (previousChannel) {
+      try { previousChannel.close(); } catch (_e) { /* ignore */ }
+    }
+    restoreHTTPSFetch('data channel degraded');
 
     // Rescue any other in-flight requests stuck on the dead channel.
     drainPendingToHTTPS('renegotiation');

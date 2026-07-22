@@ -72,6 +72,13 @@ const SESSION_STATE_POLL_RETRY = 5000;
 let sidebarStatusTimer = null;
 let sidebarStatusEtag = null;
 let sidebarHasActive = false;
+let sidebarStatusPollEnabled = false;
+let sidebarStatusPollPromise = null;
+let sidebarStatusPollController = null;
+let sidebarStatusPollGeneration = 0;
+let sidebarStatusPollInFlightGeneration = -1;
+let sidebarStatusPollIsRecovery = false;
+let sidebarStatusImmediatePending = false;
 
 const refreshWidgetsSidebar = async () => {
   if (!app.renderWidgetSidebar) return;
@@ -95,16 +102,28 @@ const refreshWidgetsSidebar = async () => {
   }
 };
 
-const stopSidebarStatusPoll = () => {
+const clearSidebarStatusTimer = () => {
   if (sidebarStatusTimer !== null) {
     clearTimeout(sidebarStatusTimer);
     sidebarStatusTimer = null;
   }
 };
 
+const stopSidebarStatusPoll = () => {
+  sidebarStatusPollEnabled = false;
+  sidebarStatusImmediatePending = false;
+  sidebarStatusPollGeneration += 1;
+  clearSidebarStatusTimer();
+  sidebarStatusPollController?.abort();
+};
+
 const scheduleSidebarStatusPoll = (delay) => {
-  stopSidebarStatusPoll();
-  sidebarStatusTimer = setTimeout(pollSidebarStatus, delay);
+  clearSidebarStatusTimer();
+  if (!sidebarStatusPollEnabled || document.visibilityState === 'hidden') return;
+  sidebarStatusTimer = setTimeout(() => {
+    sidebarStatusTimer = null;
+    return pollSidebarStatus(false);
+  }, delay);
 };
 
 const sidebarStatusPollDelay = () => {
@@ -116,64 +135,135 @@ const sidebarStatusPollDelay = () => {
   return SIDEBAR_POLL_IDLE;
 };
 
-const pollSidebarStatus = async () => {
-  stopSidebarStatusPoll();
-  if (document.visibilityState === 'hidden') return;
+const pollSidebarStatus = (isRecovery = false) => {
+  if (!sidebarStatusPollEnabled || document.visibilityState === 'hidden') return Promise.resolve(false);
+  if (sidebarStatusPollPromise) return sidebarStatusPollPromise;
 
-  try {
-    const params = new URLSearchParams();
-    const categories = state.sidebarSessionCategories;
-    if (Array.isArray(categories) && categories.length > 0 && !categories.includes('all')) {
-      params.set('categories', categories.join(','));
-    }
-    if (state.showHiddenSessions) params.set('include_archived', '1');
-    const query = params.toString();
+  clearSidebarStatusTimer();
+  const generation = sidebarStatusPollGeneration;
+  const controller = new AbortController();
+  sidebarStatusPollController = controller;
+  sidebarStatusPollInFlightGeneration = generation;
+  sidebarStatusPollIsRecovery = isRecovery;
 
-    const headers = requestHeaders('');
-    if (sidebarStatusEtag) headers['If-None-Match'] = sidebarStatusEtag;
+  const isCurrent = () => (
+    sidebarStatusPollEnabled
+    && document.visibilityState !== 'hidden'
+    && sidebarStatusPollGeneration === generation
+    && sidebarStatusPollController === controller
+  );
 
-    const resp = await fetch(`${UI_PREFIX}/v1/sessions/status${query ? `?${query}` : ''}`, { headers });
+  const request = (async () => {
+    try {
+      const params = new URLSearchParams();
+      const categories = state.sidebarSessionCategories;
+      if (Array.isArray(categories) && categories.length > 0 && !categories.includes('all')) {
+        params.set('categories', categories.join(','));
+      }
+      if (state.showHiddenSessions) params.set('include_archived', '1');
+      const query = params.toString();
 
-    if (resp.status === 304) {
-      // No metadata change. If a prior status response revealed an active
-      // transcript update but the detail fetch was deferred or failed, retry the
-      // pending active-session reconciliation without issuing another status
-      // request.
-      await reconcilePendingActiveTranscriptRefresh();
-    } else if (resp.ok) {
+      const headers = requestHeaders('');
+      if (sidebarStatusEtag) headers['If-None-Match'] = sidebarStatusEtag;
+
+      const resp = await fetch(`${UI_PREFIX}/v1/sessions/status${query ? `?${query}` : ''}`, {
+        headers,
+        signal: controller.signal,
+      });
+      if (!isCurrent()) return false;
+
+      if (resp.status === 304) {
+        // No metadata change. If a prior status response revealed an active
+        // transcript update but the detail fetch was deferred or failed, retry the
+        // pending active-session reconciliation without issuing another status
+        // request.
+        await reconcilePendingActiveTranscriptRefresh();
+        return isCurrent();
+      }
+      if (!resp.ok) return false;
+
+      const data = await resp.json();
+      if (!isCurrent()) return false;
       const etag = resp.headers.get('ETag');
       if (etag) sidebarStatusEtag = etag;
-      const data = await resp.json();
       if (Array.isArray(data.sessions)) {
         updateSidebarStatus(data.sessions);
         await reconcileActiveTranscriptFromStatus(data.sessions);
+        if (!isCurrent()) return false;
         recordTranscriptVersionsFromStatus(data.sessions);
         // Discover sessions created in other tabs/devices
         const localIds = new Set(state.sessions.map((s) => s.id));
         const hasUnknown = data.sessions.some((entry) => !localIds.has(entry.id));
         if (hasUnknown) mergeServerSessions();
       }
+      return true;
+    } catch (_e) {
+      // Network error or an intentional visibility abort — recover below when visible.
+      return false;
     }
-  } catch (_e) {
-    // Network error — just retry on next interval
+  })();
+
+  const trackedRequest = request.finally(() => {
+    if (sidebarStatusPollPromise !== trackedRequest) return;
+    sidebarStatusPollPromise = null;
+    sidebarStatusPollIsRecovery = false;
+    if (sidebarStatusPollController === controller) sidebarStatusPollController = null;
+
+    if (!sidebarStatusPollEnabled || document.visibilityState === 'hidden') return;
+    if (sidebarStatusImmediatePending) {
+      sidebarStatusImmediatePending = false;
+      sidebarStatusEtag = null;
+      void pollSidebarStatus(true);
+      return;
+    }
+    if (sidebarStatusPollGeneration === generation) {
+      scheduleSidebarStatusPoll(sidebarStatusPollDelay());
+    }
+  });
+  sidebarStatusPollPromise = trackedRequest;
+  return trackedRequest;
+};
+
+const ensureSidebarStatusPoll = () => {
+  if (document.visibilityState === 'hidden') {
+    stopSidebarStatusPoll();
+    return Promise.resolve(false);
   }
 
-  scheduleSidebarStatusPoll(sidebarStatusPollDelay());
+  sidebarStatusPollEnabled = true;
+  clearSidebarStatusTimer();
+  if (sidebarStatusPollPromise) {
+    if (sidebarStatusPollInFlightGeneration !== sidebarStatusPollGeneration) {
+      sidebarStatusImmediatePending = true;
+      return sidebarStatusPollPromise.then(() => sidebarStatusPollPromise || false);
+    }
+    return sidebarStatusPollPromise;
+  }
+
+  sidebarStatusImmediatePending = false;
+  sidebarStatusEtag = null;
+  return pollSidebarStatus(true);
 };
 
-const startSidebarStatusPoll = () => {
-  stopSidebarStatusPoll();
-  sidebarStatusEtag = null;
-  return pollSidebarStatus();
-};
+const startSidebarStatusPoll = () => ensureSidebarStatusPoll();
 
 const refreshSidebarStatusPoll = (forceNow = false) => {
   if (document.visibilityState === 'hidden') return Promise.resolve(false);
-  if (forceNow) {
-    return startSidebarStatusPoll();
-  }
-  scheduleSidebarStatusPoll(sidebarStatusPollDelay());
+  if (forceNow) return ensureSidebarStatusPoll();
+
+  sidebarStatusPollEnabled = true;
+  if (!sidebarStatusPollPromise) scheduleSidebarStatusPoll(sidebarStatusPollDelay());
   return Promise.resolve(false);
+};
+
+const handleFetchTransportFallback = () => {
+  if (document.visibilityState !== 'hidden' && sidebarStatusPollPromise && !sidebarStatusPollIsRecovery) {
+    sidebarStatusPollEnabled = true;
+    clearSidebarStatusTimer();
+    sidebarStatusImmediatePending = true;
+    return sidebarStatusPollPromise.then(() => sidebarStatusPollPromise || false);
+  }
+  return ensureSidebarStatusPoll();
 };
 
 const createAndSwitchToFreshSession = async () => {
@@ -3253,6 +3343,7 @@ document.addEventListener('visibilitychange', async () => {
 
 window.addEventListener('pagehide', () => {
   flushStreamPersistence();
+  stopSidebarStatusPoll();
 });
 
 window.addEventListener('online', async () => {
@@ -3290,6 +3381,7 @@ window.addEventListener('offline', () => {
 });
 
 window.addEventListener('pageshow', (event) => {
+  void ensureSidebarStatusPoll();
   const session = getActiveSession();
   if (!session) return;
   if (session.activeResponseId && app.wakeResponseReconnect?.({
@@ -3360,6 +3452,7 @@ Object.assign(app, {
   startSidebarStatusPoll,
   stopSidebarStatusPoll,
   refreshSidebarStatusPoll,
+  handleFetchTransportFallback,
   promptRenameSession,
   refineSessionTitle,
   setSessionArchived,
