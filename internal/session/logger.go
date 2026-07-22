@@ -265,6 +265,39 @@ func (s *LoggingStore) GetMessagesPageDescending(ctx context.Context, sessionID 
 	return page, nil
 }
 
+// GetTranscriptIndex delegates coherent transcript identity reads.
+func (s *LoggingStore) GetTranscriptIndex(ctx context.Context, sessionID string) (int64, []TranscriptIndexItem, error) {
+	indexer, ok := s.Store.(TranscriptIndexer)
+	if !ok {
+		return 0, nil, ErrNotFound
+	}
+	rev, items, err := indexer.GetTranscriptIndex(ctx, sessionID)
+	s.logOnce("GetTranscriptIndex", err)
+	return rev, items, err
+}
+
+// GetMessagesByIDs delegates coherent transcript body reads.
+func (s *LoggingStore) GetMessagesByIDs(ctx context.Context, sessionID string, ids []int64) (int64, []Message, error) {
+	indexer, ok := s.Store.(TranscriptIndexer)
+	if !ok {
+		return 0, nil, ErrNotFound
+	}
+	rev, messages, err := indexer.GetMessagesByIDs(ctx, sessionID, ids)
+	s.logOnce("GetMessagesByIDs", err)
+	return rev, messages, err
+}
+
+// TranscriptRev delegates durable transcript revision reads.
+func (s *LoggingStore) TranscriptRev(ctx context.Context, sessionID string) (int64, error) {
+	indexer, ok := s.Store.(TranscriptIndexer)
+	if !ok {
+		return 0, nil
+	}
+	rev, err := indexer.TranscriptRev(ctx, sessionID)
+	s.logOnce("TranscriptRev", err)
+	return rev, err
+}
+
 // PreviousUserPrompt delegates the optional PromptHistoryStore capability when
 // the wrapped store supports it.
 func (s *LoggingStore) PreviousUserPrompt(ctx context.Context, agent string, beforeID int64) (*PromptHistoryEntry, error) {

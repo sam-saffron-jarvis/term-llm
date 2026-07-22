@@ -188,6 +188,31 @@ type ProviderStateStore interface {
 	DeleteProviderState(ctx context.Context, sessionID, providerKey string) error
 }
 
+// Transcript index flags describe durable rows without materializing bodies.
+const (
+	TranscriptFlagCompactionTail uint8 = 1 << iota
+	TranscriptFlagEmptyBody
+)
+
+// TranscriptIndexItem is the compact durable identity and ordering metadata for
+// one UI-visible transcript row. IDs are stable identities; Seq is only the
+// current ordering key.
+type TranscriptIndexItem struct {
+	Seq   int
+	ID    int64
+	Role  string
+	Flags uint8
+}
+
+// TranscriptIndexer is an optional Store capability for coherent revisioned
+// transcript reads. Implementations return each revision and its rows from one
+// read transaction.
+type TranscriptIndexer interface {
+	GetTranscriptIndex(ctx context.Context, sessionID string) (rev int64, items []TranscriptIndexItem, err error)
+	GetMessagesByIDs(ctx context.Context, sessionID string, ids []int64) (rev int64, messages []Message, err error)
+	TranscriptRev(ctx context.Context, sessionID string) (int64, error)
+}
+
 // MessagesDescendingPager is an optional Store capability for efficient reverse
 // pagination over session messages. Implementations return messages ordered by
 // descending sequence and, when beforeSeq > 0, only rows with sequence < beforeSeq.
