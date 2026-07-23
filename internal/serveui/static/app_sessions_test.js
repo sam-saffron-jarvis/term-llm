@@ -318,6 +318,7 @@ async function createSessionsHarness(options = {}) {
 
   const windowObj = {
     TERM_LLM_UI_PREFIX: options.uiPrefix || '/ui',
+    TERM_LLM_STARTUP_HYDRATION_TIMEOUT_MS: options.startupHydrationTimeoutMS,
     TERM_LLM_SIDEBAR_SESSIONS: 'all',
     TERM_LLM_HUB: options.hub || null,
     TERM_LLM_LOCATION_SHARING_ENABLED: options.locationSharingEnabled !== false,
@@ -407,6 +408,9 @@ async function createSessionsHarness(options = {}) {
   Object.assign(app, defaultAppStubs(app, options.appOverrides || {}));
 
   vm.runInContext(sessionsSource, context, { filename: 'app-sessions.js' });
+  if (typeof options.onInitializeStarted === 'function') {
+    options.onInitializeStarted({ app, windowObj, storage, elementMap });
+  }
   await windowObj.__termllmInitializePromise;
 
   return { app, storage, windowObj, elementMap };
@@ -602,7 +606,7 @@ async function testArchivingActiveSessionClearsItsComposerDraft() {
   const drafts = new Map([['', 'blank draft']]);
   const { app, windowObj } = await createSessionsHarness({
     fetchImpl: async (url, options = {}) => {
-      if (url === '/ui/v1/sessions') {
+      if (parsedTestURL(url)?.pathname === '/ui/v1/sessions') {
         return new Response(JSON.stringify({ sessions: [] }), {
           status: 200,
           headers: { 'Content-Type': 'application/json' }
@@ -783,13 +787,22 @@ async function testSwitchToSessionSyncsSelectedRuntime() {
 async function testNumericDeepLinkResolvesRealSessionId() {
   const name = 'numeric deep link resolves server session id';
   const fetchCalls = [];
-  const { app, storage } = await createSessionsHarness({
+  let appliedDiffSummary = null;
+  const { app, storage, elementMap } = await createSessionsHarness({
     pathname: '/ui/1291',
+    appOverrides: {
+      applySessionDiffSummary(sessionId, summary) {
+        appliedDiffSummary = { sessionId, summary };
+        return true;
+      },
+    },
     fetchImpl: async (url) => {
       fetchCalls.push(url);
-      if (url === '/ui/v1/sessions') {
+      const parsed = parsedTestURL(url);
+      if (parsed?.pathname === '/ui/v1/sessions' && parsed.searchParams.get('selected_session') === '1291') {
         return new Response(JSON.stringify({
-          sessions: [{
+          sessions: [],
+          selected_session: {
             id: 'sess_real',
             number: 1291,
             short_title: 'Real session',
@@ -800,7 +813,9 @@ async function testNumericDeepLinkResolvesRealSessionId() {
             pinned: false,
             created_at: 1710000000000,
             message_count: 1,
-          }]
+            file_change_summary: { file_count: 2, adds: 7, dels: 3 },
+            plan_summary: { version: 4, step_count: 3, completed_steps: 1, position: 2, state: 'in_progress' },
+          }
         }), { status: 200, headers: { 'Content-Type': 'application/json' } });
       }
       if (isTranscriptIndexURL(url, 'sess_real')) {
@@ -844,12 +859,270 @@ async function testNumericDeepLinkResolvesRealSessionId() {
     fail(name, 'should load transcript index via resolved server session id', JSON.stringify(fetchCalls));
     return;
   }
+  const unresolvedScopedCalls = fetchCalls.filter((url) => {
+    const parsed = parsedTestURL(url);
+    return Boolean(parsed && (
+      parsed.pathname.includes('/v1/sessions/1291/')
+      || parsed.pathname.includes('/api/sessions/1291/')
+    ));
+  });
+  if (unresolvedScopedCalls.length > 0) {
+    fail(name, 'numeric route stub reached a session-scoped endpoint before identity reconciliation', JSON.stringify(fetchCalls));
+    return;
+  }
+  if (!appliedDiffSummary
+    || appliedDiffSummary.sessionId !== 'sess_real'
+    || appliedDiffSummary.summary.file_count !== 2
+    || appliedDiffSummary.summary.adds !== 7
+    || appliedDiffSummary.summary.dels !== 3) {
+    fail(name, 'selected diff aggregate was not applied during session merge', JSON.stringify(appliedDiffSummary));
+    return;
+  }
+  const planToggle = elementMap.get('planToggleBtn');
+  if (planToggle.hidden
+    || elementMap.get('planToggleWord').textContent !== 'Plan'
+    || elementMap.get('planToggleProgress').textContent !== '2/3') {
+    fail(name, 'selected plan summary did not render the initial affordance');
+    return;
+  }
+  if (fetchCalls.some((url) => String(url).includes('/file-changes'))) {
+    fail(name, 'startup must not fetch the full file-change list', JSON.stringify(fetchCalls));
+    return;
+  }
+  const sessionsIndex = fetchCalls.findIndex((url) => {
+    const parsed = parsedTestURL(url);
+    return parsed?.pathname === '/ui/v1/sessions' && parsed.searchParams.get('selected_session') === '1291';
+  });
+  const transcriptIndex = fetchCalls.findIndex((url) => isTranscriptIndexURL(url, 'sess_real'));
+  if (sessionsIndex < 0 || transcriptIndex <= sessionsIndex) {
+    fail(name, 'canonical transcript request did not wait for session identity lookup', JSON.stringify(fetchCalls));
+    return;
+  }
   if (fetchCalls.some((url) => isSessionMessagesURL(url, 'pending_1291'))) {
     fail(name, 'should not use pending_ prefix in session id', JSON.stringify(fetchCalls));
     return;
   }
   if ([...storage.values()].some((value) => String(value).includes('hello from server'))) {
     fail(name, 'durable transcript bodies must not be written to localStorage', JSON.stringify([...storage.entries()]));
+    return;
+  }
+  pass(name);
+}
+
+async function testStartupSplashWaitsForDeepLinkedTranscriptRender() {
+  const name = 'deep-linked startup hides splash after transcript render without waiting for skills';
+  const events = [];
+  let releaseBodies;
+  let releaseSkills;
+  let markBodiesStarted;
+  let markSkillsStarted;
+  let markSplashHidden;
+  const bodiesStarted = new Promise((resolve) => { markBodiesStarted = resolve; });
+  const skillsStarted = new Promise((resolve) => { markSkillsStarted = resolve; });
+  const splashHidden = new Promise((resolve) => { markSplashHidden = resolve; });
+  const bodiesGate = new Promise((resolve) => { releaseBodies = resolve; });
+  const skillsGate = new Promise((resolve) => { releaseSkills = resolve; });
+
+  const harnessPromise = createSessionsHarness({
+    pathname: '/ui/3347',
+    fetchImpl: async (url) => {
+      if (parsedTestURL(url)?.pathname === '/ui/v1/sessions') {
+        return new Response(JSON.stringify({
+          sessions: [{
+            id: 'sess_3347',
+            number: 3347,
+            short_title: 'Hydrated session',
+            long_title: 'Hydrated session',
+            mode: 'chat',
+            origin: 'web',
+            archived: false,
+            pinned: false,
+            created_at: 1710000000000,
+            message_count: 2,
+            transcript_rev: 2,
+          }]
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      if (isTranscriptIndexURL(url, 'sess_3347')) {
+        return new Response(JSON.stringify({
+          rev: 2,
+          compaction_seq: -1,
+          compaction_count: 0,
+          rows: { ids: [31, 32], seqs: [0, 1], roles: 'ua', flags: [0, 0] }
+        }), { status: 200, headers: { 'Content-Type': 'application/json', ETag: '"startup-2"' } });
+      }
+      if (isTranscriptBodiesURL(url, 'sess_3347')) {
+        events.push('bodies-started');
+        markBodiesStarted();
+        await bodiesGate;
+        events.push('bodies-resolved');
+        return new Response(JSON.stringify({
+          rev: 2,
+          messages: [
+            { id: 31, sequence: 0, role: 'user', created_at: 1000, parts: [{ type: 'text', text: 'question' }] },
+            { id: 32, sequence: 1, role: 'assistant', created_at: 2000, parts: [{ type: 'text', text: 'answer' }] }
+          ]
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      if (String(url) === '/ui/v1/sessions/sess_3347/state') {
+        return new Response(JSON.stringify({ active_run: false, transcript_rev: 2 }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' }
+        });
+      }
+      return new Response(JSON.stringify([]), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    },
+    appOverrides: {
+      hideStartupSplash() {
+        events.push('splash-hidden');
+        markSplashHidden();
+      },
+      renderMessages() { events.push('messages-rendered'); },
+      async refreshSkillCommands() {
+        events.push('skills-started');
+        markSkillsStarted();
+        await skillsGate;
+        events.push('skills-resolved');
+      },
+    },
+  });
+
+  await bodiesStarted;
+  const hiddenBeforeBodies = events.includes('splash-hidden');
+  releaseBodies();
+  await skillsStarted;
+  const splashWonRace = await Promise.race([
+    splashHidden.then(() => true),
+    new Promise((resolve) => setTimeout(() => resolve(false), 50)),
+  ]);
+  const skillsPendingWhenSplashHid = !events.includes('skills-resolved');
+  releaseSkills();
+  const { app } = await harnessPromise;
+
+  if (hiddenBeforeBodies) {
+    fail(name, 'startup splash hid while canonical transcript bodies were still pending', JSON.stringify(events));
+    return;
+  }
+  const bodiesResolvedIndex = events.indexOf('bodies-resolved');
+  const hydratedRenderIndex = events.indexOf('messages-rendered', bodiesResolvedIndex + 1);
+  const splashHiddenIndex = events.indexOf('splash-hidden');
+  if (bodiesResolvedIndex < 0 || hydratedRenderIndex < 0 || splashHiddenIndex <= hydratedRenderIndex) {
+    fail(name, 'startup splash did not hide after the hydrated transcript render boundary', JSON.stringify(events));
+    return;
+  }
+  if (!splashWonRace || !skillsPendingWhenSplashHid) {
+    fail(name, 'startup splash waited for the delayed skill-command refresh', JSON.stringify(events));
+    return;
+  }
+  const session = app.state.sessions.find((item) => item.id === 'sess_3347');
+  if (!session || session.messages.map((message) => message.content).join(',') !== 'question,answer') {
+    fail(name, 'startup completed without the canonical transcript projection', JSON.stringify(session?.messages || []));
+    return;
+  }
+  pass(name);
+}
+
+async function testStartupHydrationTimeoutDoesNotBlockIndefinitely() {
+  const name = 'deep-linked startup hydration has a bounded splash fallback';
+  let releaseBodies;
+  let bodiesPending = false;
+  let splashHidden = false;
+  const bodiesGate = new Promise((resolve) => { releaseBodies = resolve; });
+
+  const { app } = await createSessionsHarness({
+    pathname: '/ui/3348',
+    startupHydrationTimeoutMS: 0,
+    fetchImpl: async (url) => {
+      if (parsedTestURL(url)?.pathname === '/ui/v1/sessions') {
+        return new Response(JSON.stringify({
+          sessions: [{
+            id: 'sess_3348',
+            number: 3348,
+            short_title: 'Slow session',
+            mode: 'chat',
+            origin: 'web',
+            created_at: 1710000000000,
+            message_count: 1,
+            transcript_rev: 1,
+          }]
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      if (isTranscriptIndexURL(url, 'sess_3348')) {
+        return new Response(JSON.stringify({
+          rev: 1,
+          compaction_seq: -1,
+          compaction_count: 0,
+          rows: { ids: [41], seqs: [0], roles: 'u', flags: [0] }
+        }), { status: 200, headers: { 'Content-Type': 'application/json', ETag: '"startup-slow-1"' } });
+      }
+      if (isTranscriptBodiesURL(url, 'sess_3348')) {
+        bodiesPending = true;
+        await bodiesGate;
+        bodiesPending = false;
+        return new Response(JSON.stringify({
+          rev: 1,
+          messages: [{ id: 41, sequence: 0, role: 'user', created_at: 1000, parts: [{ type: 'text', text: 'eventually' }] }]
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      if (String(url) === '/ui/v1/sessions/sess_3348/state') {
+        return new Response(JSON.stringify({ active_run: false, transcript_rev: 1 }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' }
+        });
+      }
+      return new Response(JSON.stringify([]), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    },
+    appOverrides: {
+      hideStartupSplash() { splashHidden = true; },
+    },
+  });
+
+  if (!splashHidden || !bodiesPending) {
+    releaseBodies();
+    fail(name, 'startup did not leave the splash through the bound while hydration remained pending', JSON.stringify({ splashHidden, bodiesPending }));
+    return;
+  }
+
+  releaseBodies();
+  for (let attempts = 0; attempts < 10 && app.state.sessions[0]?._serverOnly; attempts += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+  pass(name);
+}
+
+async function testUnresolvedNumericDeepLinkSkipsSessionScopedStartupRequests() {
+  const name = 'unresolved numeric deep link waits before session-scoped startup requests';
+  const fetchCalls = [];
+  const { app } = await createSessionsHarness({
+    pathname: '/ui/3347',
+    fetchImpl: async (url) => {
+      fetchCalls.push(String(url));
+      if (parsedTestURL(url)?.pathname === '/ui/v1/sessions') {
+        return new Response(JSON.stringify({ sessions: [] }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' }
+        });
+      }
+      return new Response(JSON.stringify({}), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' }
+      });
+    }
+  });
+
+  if (app.state.activeSessionId !== '3347') {
+    fail(name, `numeric route stub unexpectedly changed identity to ${JSON.stringify(app.state.activeSessionId)}`);
+    return;
+  }
+  const scopedCalls = fetchCalls.filter((url) => {
+    const parsed = parsedTestURL(url);
+    return Boolean(parsed && (
+      parsed.pathname.includes('/v1/sessions/3347/')
+      || parsed.pathname.includes('/api/sessions/3347/')
+    ));
+  });
+  if (scopedCalls.length > 0) {
+    fail(name, 'startup issued requests against an unresolved numeric identity', JSON.stringify(fetchCalls));
     return;
   }
   pass(name);
@@ -865,7 +1138,7 @@ async function testNewQueryStartsDraftInsteadOfLastSession() {
       term_llm_draft_session_active: '0',
     },
     fetchImpl: async (url) => {
-      if (url === '/ui/v1/sessions') {
+      if (parsedTestURL(url)?.pathname === '/ui/v1/sessions') {
         return new Response(JSON.stringify({
           sessions: [{
             id: 'sess_old',
@@ -942,7 +1215,7 @@ async function testMergeServerSessionsMigratesInterruptBuffersToRealSessionId() 
   const name = 'session id reconciliation migrates interrupt buffers to real session id';
   const { app } = await createSessionsHarness({
     fetchImpl: async (url) => {
-      if (url === '/ui/v1/sessions') {
+      if (parsedTestURL(url)?.pathname === '/ui/v1/sessions') {
         return new Response(JSON.stringify({
           sessions: [{
             id: 'sess_real',
@@ -997,7 +1270,7 @@ async function testDeveloperMessagesAreHidden() {
   const { app } = await createSessionsHarness({
     pathname: '/ui/42',
     fetchImpl: async (url) => {
-      if (url === '/ui/v1/sessions') {
+      if (parsedTestURL(url)?.pathname === '/ui/v1/sessions') {
         return new Response(JSON.stringify({
           sessions: [{
             id: 'sess_dev',
@@ -1569,7 +1842,7 @@ async function testSwitchToSessionSyncsWithoutTokenAndResumes() {
     },
     fetchImpl: async (url) => {
       fetchCalls.push(url);
-      if (url === '/ui/v1/sessions') {
+      if (parsedTestURL(url)?.pathname === '/ui/v1/sessions') {
         return new Response(JSON.stringify({
           sessions: [
             {
@@ -1701,7 +1974,7 @@ async function testSwitchToSessionAttachesChangedActiveResponseFromStartedRevisi
       term_llm_active_session: 'sess_other',
     },
     fetchImpl: async (url) => {
-      if (url === '/ui/v1/sessions') {
+      if (parsedTestURL(url)?.pathname === '/ui/v1/sessions') {
         return new Response(JSON.stringify({
           sessions: [
             {
@@ -1806,7 +2079,7 @@ async function testIdleSessionSyncRescuesPendingInterruptCommit() {
 
   const { app } = await createSessionsHarness({
     fetchImpl: async (url) => {
-      if (url === '/ui/v1/sessions') {
+      if (parsedTestURL(url)?.pathname === '/ui/v1/sessions') {
         return new Response(JSON.stringify({ sessions: [] }), {
           status: 200,
           headers: { 'Content-Type': 'application/json' }
@@ -1974,7 +2247,7 @@ async function testResumeAndDrainFiringViaSync() {
 
   const { app } = await createSessionsHarness({
     fetchImpl: async (url) => {
-      if (url === '/ui/v1/sessions') {
+      if (parsedTestURL(url)?.pathname === '/ui/v1/sessions') {
         return new Response(JSON.stringify({ sessions: [] }), {
           status: 200,
           headers: { 'Content-Type': 'application/json' }
@@ -2075,7 +2348,7 @@ async function testTerminalSyncRequeuesPendingInterjectionAsFollowUp() {
 
   const { app } = await createSessionsHarness({
     fetchImpl: async (url) => {
-      if (url === '/ui/v1/sessions') {
+      if (parsedTestURL(url)?.pathname === '/ui/v1/sessions') {
         return new Response(JSON.stringify({ sessions: [] }), {
           status: 200,
           headers: { 'Content-Type': 'application/json' }
@@ -2340,6 +2613,72 @@ async function testSanitizeSessionPreservesLastMessageAt() {
     return;
   }
 
+  pass(name);
+}
+
+async function testPreConnectedVisibilityDoesNotStartSidebarStatusPoll() {
+  const name = 'pre-connected visibility changes wait for initial session merge before status polling';
+  let releaseSessions;
+  let visibilityHandler = null;
+  let statusCalls = 0;
+  const sessionsGate = new Promise((resolve) => {
+    releaseSessions = () => resolve(new Response(JSON.stringify({ sessions: [] }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    }));
+  });
+
+  const harnessPromise = createSessionsHarness({
+    fetchImpl: async (url) => {
+      if (String(url) === '/ui/v1/sessions') return sessionsGate;
+      if (String(url) === '/ui/v1/sessions/status') statusCalls += 1;
+      return new Response(JSON.stringify({ sessions: [] }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    },
+    onInitializeStarted({ windowObj }) {
+      visibilityHandler = (windowObj.document.listeners.visibilitychange || [])[0] || null;
+      if (!visibilityHandler) return;
+      windowObj.document.visibilityState = 'hidden';
+      void visibilityHandler({ type: 'visibilitychange' });
+      windowObj.document.visibilityState = 'visible';
+      void visibilityHandler({ type: 'visibilitychange' });
+    },
+  });
+
+  if (!visibilityHandler) {
+    releaseSessions();
+    await harnessPromise;
+    fail(name, 'expected visibilitychange listener during initialization');
+    return;
+  }
+  if (statusCalls !== 0) {
+    releaseSessions();
+    await harnessPromise;
+    fail(name, `pre-connected visibility started ${statusCalls} status requests`);
+    return;
+  }
+
+  releaseSessions();
+  const { app, windowObj } = await harnessPromise;
+  if (!app.state.connected || statusCalls !== 1) {
+    app.stopSidebarStatusPoll();
+    fail(name, 'initial merge did not start exactly one connected status poll', JSON.stringify({ connected: app.state.connected, statusCalls }));
+    return;
+  }
+
+  windowObj.document.visibilityState = 'hidden';
+  await visibilityHandler({ type: 'visibilitychange' });
+  windowObj.document.visibilityState = 'visible';
+  await visibilityHandler({ type: 'visibilitychange' });
+  if (statusCalls !== 2) {
+    app.stopSidebarStatusPoll();
+    fail(name, `later visibility change did not restart normal polling; got ${statusCalls} status requests`);
+    return;
+  }
+
+  app.stopSidebarStatusPoll();
   pass(name);
 }
 
@@ -2813,7 +3152,7 @@ async function testLateActiveRunSyncDoesNotMarkDraftStreaming() {
   const name = 'late active-run sync does not mark New Chat draft as streaming';
   const { app } = await createSessionsHarness({
     fetchImpl: async (url) => {
-      if (url === '/ui/v1/sessions') {
+      if (parsedTestURL(url)?.pathname === '/ui/v1/sessions') {
         return new Response(JSON.stringify({ sessions: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
       }
       if (url === '/ui/v1/sessions/sess_late_busy/state') {
@@ -4002,6 +4341,127 @@ async function testTerminalTranscriptSyncQueuesBehindInflightRequest() {
   pass(name);
 }
 
+async function testSatisfiedTerminalSyncDoesNotRefetchTranscript() {
+  const name = 'terminal force with a satisfied positive target is absorbed in flight';
+  let resolveFirst;
+  let indexRequests = 0;
+  const { app, windowObj } = await createSessionsHarness({
+    fetchImpl: async (url) => {
+      if (isTranscriptIndexURL(url, 'satisfied-terminal-sync')) {
+        indexRequests += 1;
+        if (indexRequests === 1) {
+          return new Promise((resolve) => { resolveFirst = resolve; });
+        }
+        return new Response(null, { status: 304, headers: { ETag: '"terminal-2"' } });
+      }
+      return new Response(JSON.stringify({ sessions: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }
+  });
+  const session = { id: 'satisfied-terminal-sync', messages: [] };
+  session.transcript = new windowObj.TranscriptStore(session.id);
+  app.state.sessions = [session];
+  app.state.activeSessionId = session.id;
+  app.state.draftSessionActive = false;
+
+  const activation = app.syncTranscript(session, { reason: 'activation' });
+  while (typeof resolveFirst !== 'function') await new Promise((resolve) => setTimeout(resolve, 0));
+  const terminal = app.noteTranscriptTerminal(session, 2);
+  resolveFirst(new Response(JSON.stringify({
+    rev: 2, compaction_seq: -1, compaction_count: 0,
+    rows: { ids: [], seqs: [], roles: '', flags: [] }
+  }), { status: 200, headers: { 'Content-Type': 'application/json', ETag: '"terminal-2"' } }));
+
+  const [activationLoaded, terminalLoaded] = await Promise.all([activation, terminal]);
+  if (!activationLoaded || !terminalLoaded || session.transcript.rev !== 2) {
+    fail(name, 'the completed request did not satisfy the terminal target', JSON.stringify({ activationLoaded, terminalLoaded, rev: session.transcript.rev }));
+    return;
+  }
+  if (indexRequests !== 1) {
+    fail(name, `satisfied terminal target caused ${indexRequests} transcript index requests`);
+    return;
+  }
+  pass(name);
+}
+
+async function testUntargetedForceQueuesBehindInflightRequest() {
+  const name = 'force without a positive target still follows an in-flight request';
+  let resolveFirst;
+  let indexRequests = 0;
+  const { app, windowObj } = await createSessionsHarness({
+    fetchImpl: async (url) => {
+      if (isTranscriptIndexURL(url, 'untargeted-force-sync')) {
+        indexRequests += 1;
+        if (indexRequests === 1) {
+          return new Promise((resolve) => { resolveFirst = resolve; });
+        }
+        return new Response(JSON.stringify({
+          rev: 1, compaction_seq: -1, compaction_count: 0,
+          rows: { ids: [], seqs: [], roles: '', flags: [] }
+        }), { status: 200, headers: { 'Content-Type': 'application/json', ETag: '"untargeted-1"' } });
+      }
+      return new Response(JSON.stringify({ sessions: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }
+  });
+  const session = { id: 'untargeted-force-sync', messages: [] };
+  session.transcript = new windowObj.TranscriptStore(session.id);
+  app.state.sessions = [session];
+  app.state.activeSessionId = session.id;
+  app.state.draftSessionActive = false;
+
+  const activation = app.syncTranscript(session, { reason: 'activation' });
+  while (typeof resolveFirst !== 'function') await new Promise((resolve) => setTimeout(resolve, 0));
+  const staleBodies = app.syncTranscript(session, { reason: 'stale-bodies', force: true, targetRev: 0 });
+  resolveFirst(new Response(JSON.stringify({
+    rev: 1, compaction_seq: -1, compaction_count: 0,
+    rows: { ids: [], seqs: [], roles: '', flags: [] }
+  }), { status: 200, headers: { 'Content-Type': 'application/json', ETag: '"untargeted-1"' } }));
+
+  const [activationLoaded, staleBodiesLoaded] = await Promise.all([activation, staleBodies]);
+  if (!activationLoaded || !staleBodiesLoaded || indexRequests !== 2) {
+    fail(name, 'untargeted force was incorrectly absorbed', JSON.stringify({ activationLoaded, staleBodiesLoaded, indexRequests }));
+    return;
+  }
+  pass(name);
+}
+
+async function testForceScrollQueuesBehindSatisfiedInflightRequest() {
+  const name = 'forceScroll still follows an in-flight request with a satisfied target';
+  let resolveFirst;
+  let indexRequests = 0;
+  const { app, windowObj } = await createSessionsHarness({
+    fetchImpl: async (url) => {
+      if (isTranscriptIndexURL(url, 'force-scroll-sync')) {
+        indexRequests += 1;
+        if (indexRequests === 1) {
+          return new Promise((resolve) => { resolveFirst = resolve; });
+        }
+        return new Response(null, { status: 304, headers: { ETag: '"force-scroll-1"' } });
+      }
+      return new Response(JSON.stringify({ sessions: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }
+  });
+  const session = { id: 'force-scroll-sync', messages: [] };
+  session.transcript = new windowObj.TranscriptStore(session.id);
+  app.state.sessions = [session];
+  app.state.activeSessionId = session.id;
+  app.state.draftSessionActive = false;
+
+  const activation = app.syncTranscript(session, { reason: 'activation' });
+  while (typeof resolveFirst !== 'function') await new Promise((resolve) => setTimeout(resolve, 0));
+  const forceScroll = app.syncTranscript(session, { reason: 'terminal-view', forceScroll: true, targetRev: 1 });
+  resolveFirst(new Response(JSON.stringify({
+    rev: 1, compaction_seq: -1, compaction_count: 0,
+    rows: { ids: [], seqs: [], roles: '', flags: [] }
+  }), { status: 200, headers: { 'Content-Type': 'application/json', ETag: '"force-scroll-1"' } }));
+
+  const [activationLoaded, forceScrollLoaded] = await Promise.all([activation, forceScroll]);
+  if (!activationLoaded || !forceScrollLoaded || indexRequests !== 2) {
+    fail(name, 'forceScroll request was incorrectly absorbed', JSON.stringify({ activationLoaded, forceScrollLoaded, indexRequests }));
+    return;
+  }
+  pass(name);
+}
+
 async function testActiveStatusDefersInRunTranscriptRevisionsUntilTerminal() {
   const name = 'active status attaches at started_rev without reconciling in-run revisions';
   const fetchCalls = [];
@@ -4016,7 +4476,7 @@ async function testActiveStatusDefersInRunTranscriptRevisionsUntilTerminal() {
           rows: { ids: [], seqs: [], roles: '', flags: [] }
         }), { status: 200, headers: { 'Content-Type': 'application/json', ETag: '"active-9"' } });
       }
-      if (String(url) === '/ui/v1/sessions') {
+      if (parsedTestURL(url)?.pathname === '/ui/v1/sessions') {
         return new Response(JSON.stringify({ sessions: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
       }
       return new Response(JSON.stringify({ sessions: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
@@ -4299,7 +4759,7 @@ async function testTranscriptSyncCommitsOneRenderedProjection() {
 }
 
 async function testSatisfiedInflightRevisionDoesNotRefetchTranscript() {
-  const name = 'in-flight sync absorbs status target satisfied by its response';
+  const name = 'in-flight sync absorbs forced active-status target satisfied by its response';
   const sessionId = 'coalesced-revision-sync';
   let indexRequests = 0;
   let releaseFirstIndex;
@@ -4342,14 +4802,16 @@ async function testSatisfiedInflightRevisionDoesNotRefetchTranscript() {
   app.state.sessions = [session];
   app.state.activeSessionId = sessionId;
   app.state.draftSessionActive = false;
+  app.state.streaming = true;
 
   const activation = app.syncTranscript(session, { reason: 'activation' });
   await firstIndexStarted;
   const statusSync = app.reconcileTranscriptFromStatus([{
     id: sessionId,
-    transcript_rev: 2,
-    active_response_id: '',
-    started_rev: 0
+    transcript_rev: 9,
+    active_response_id: 'resp_inflight',
+    started_rev: 2,
+    active_run: true
   }]);
   releaseFirstIndex();
   const [loaded] = await Promise.all([activation, statusSync]);
@@ -4359,6 +4821,59 @@ async function testSatisfiedInflightRevisionDoesNotRefetchTranscript() {
   }
   if (indexRequests !== 1) {
     fail(name, `satisfied revision caused ${indexRequests} transcript index requests`);
+    return;
+  }
+  pass(name);
+}
+
+async function testInflightSyncAbsorbsQueuedZeroRevisionActivation() {
+  const name = 'in-flight sync absorbs queued non-forced targetRev zero activation';
+  const sessionId = 'coalesced-zero-revision-sync';
+  let indexRequests = 0;
+  let releaseFirstIndex;
+  let markFirstIndexStarted;
+  const firstIndexStarted = new Promise((resolve) => { markFirstIndexStarted = resolve; });
+  const firstIndexGate = new Promise((resolve) => { releaseFirstIndex = resolve; });
+  const { app } = await createSessionsHarness({
+    fetchImpl: async (url) => {
+      if (isTranscriptIndexURL(url, sessionId)) {
+        indexRequests += 1;
+        if (indexRequests === 1) {
+          markFirstIndexStarted();
+          await firstIndexGate;
+          return new Response(JSON.stringify({
+            rev: 1,
+            compaction_seq: -1,
+            compaction_count: 0,
+            rows: { ids: [], seqs: [], roles: '', flags: [] }
+          }), { status: 200, headers: { 'Content-Type': 'application/json', ETag: '"coalesced-zero-1"' } });
+        }
+        return new Response(null, { status: 304, headers: { ETag: '"coalesced-zero-1"' } });
+      }
+      return new Response(JSON.stringify({ sessions: [] }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' }
+      });
+    }
+  });
+  app.stopSidebarStatusPoll();
+  const session = { id: sessionId, messages: [] };
+  app.state.sessions = [session];
+  app.state.activeSessionId = sessionId;
+  app.state.draftSessionActive = false;
+
+  const stateSync = app.syncTranscript(session, { reason: 'state', targetRev: 0 });
+  await firstIndexStarted;
+  const activationSync = app.syncTranscript(session, { reason: 'activation', targetRev: 0 });
+  releaseFirstIndex();
+  const [stateLoaded, activationLoaded] = await Promise.all([stateSync, activationSync]);
+
+  if (!stateLoaded || !activationLoaded || session.transcript.rev !== 1) {
+    fail(name, 'the completed request did not satisfy both zero-revision callers', JSON.stringify({ stateLoaded, activationLoaded, rev: session.transcript.rev }));
+    return;
+  }
+  if (indexRequests !== 1) {
+    fail(name, `queued targetRev=0 activation caused ${indexRequests} transcript index requests`);
     return;
   }
   pass(name);
@@ -4383,6 +4898,9 @@ async function testSatisfiedInflightRevisionDoesNotRefetchTranscript() {
   await testSwitchingSessionsDiscardsPendingAttachments();
   await testSwitchToSessionSyncsSelectedRuntime();
   await testNumericDeepLinkResolvesRealSessionId();
+  await testStartupSplashWaitsForDeepLinkedTranscriptRender();
+  await testStartupHydrationTimeoutDoesNotBlockIndefinitely();
+  await testUnresolvedNumericDeepLinkSkipsSessionScopedStartupRequests();
   await testNewQueryStartsDraftInsteadOfLastSession();
   await testNewQueryRefreshesHeaderAfterRuntimeMetadataLoads();
   await testMergeServerSessionsMigratesInterruptBuffersToRealSessionId();
@@ -4404,9 +4922,13 @@ async function testSatisfiedInflightRevisionDoesNotRefetchTranscript() {
   await testReloadMaterializesPersistedOptimisticToolTurnsBeforeTerminalReconciliation();
   await testTranscriptSyncCommitsOneRenderedProjection();
   await testSatisfiedInflightRevisionDoesNotRefetchTranscript();
+  await testInflightSyncAbsorbsQueuedZeroRevisionActivation();
   await testGroupedToolRowsPreserveDurableRangesAndLaterAnchors();
   await testLargeToolTurnLoadsAsOneSegmentWithFarEndGrouping();
   await testTerminalTranscriptSyncQueuesBehindInflightRequest();
+  await testSatisfiedTerminalSyncDoesNotRefetchTranscript();
+  await testUntargetedForceQueuesBehindInflightRequest();
+  await testForceScrollQueuesBehindSatisfiedInflightRequest();
   await testSwitchToSessionSyncsWithoutTokenAndResumes();
   await testSwitchToSessionAttachesChangedActiveResponseFromStartedRevision();
   await testActiveStatusDefersInRunTranscriptRevisionsUntilTerminal();
@@ -4418,6 +4940,7 @@ async function testSatisfiedInflightRevisionDoesNotRefetchTranscript() {
   await testSyncUsesServerProvidedPendingInterjectionId();
   await testApplyServerSessionSummaryMapsLastMessageAt();
   await testSanitizeSessionPreservesLastMessageAt();
+  await testPreConnectedVisibilityDoesNotStartSidebarStatusPoll();
   await testSidebarStatusPollRecoversIdempotentlyAfterPageShow();
   await testHiddenInFlightSidebarPollCannotRescheduleOrApplyStaleStatus();
   await testReconnectBackoffWakeSignalsReuseExistingLoop();

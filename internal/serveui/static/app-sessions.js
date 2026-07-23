@@ -4,7 +4,7 @@
 const app = window.TermLLMApp;
 const {
   UI_PREFIX, STORAGE_KEYS, state, elements, generateId, truncate, asTimestamp, loadSessions, saveSessions, getActiveSession, createSession, ensureActiveSession,
-  sessionIdFromURL, sessionSlug, findSessionBySlug, updateURL, updateDocumentTitle, scrollToBottom, setConnectionState, setStartupStatus, hideStartupSplash, clearProviderRetryStatus, persistAndRefreshShell, refreshRelativeTimes,
+  sessionIdFromURL, isSessionIdentityResolved, sessionSlug, findSessionBySlug, updateURL, updateDocumentTitle, scrollToBottom, setConnectionState, setStartupStatus, hideStartupSplash, clearProviderRetryStatus, persistAndRefreshShell, refreshRelativeTimes,
   splitHeaderModelEffort, updateMCPStatusDisplay, setElementHidden,
   openAuthModal, closeAuthModal, handleAuthFailure, closeAskUserModal, openAskUserModal, setActiveResponseTracking,
   clearActiveResponseTracking, setStreaming, resumeActiveResponse, renderSidebar, renderMessages, renderProviderOptions, renderModelOptions, normalizeSelectedProvider,
@@ -460,6 +460,12 @@ const switchToSession = async (sessionId, options = {}) => {
   updateURL(sessionSlug(session));
   refreshPendingInterjectionBanner();
 
+  const needsSelectedMetadata = !Object.prototype.hasOwnProperty.call(session, 'fileChangeSummary')
+    || !Object.prototype.hasOwnProperty.call(session, 'planSummary');
+  const selectedMetadataPromise = needsSelectedMetadata && isSessionIdentityResolved(session)
+    ? mergeServerSessions({ selectedSession: session.id, selectedOnly: true })
+    : null;
+
   let preloadServerMessagesPromise = null;
   if (session._serverOnly) {
     preloadServerMessagesPromise = loadServerSessionMessages(session.id);
@@ -483,6 +489,11 @@ const switchToSession = async (sessionId, options = {}) => {
     }
   }
 
+  if (selectedMetadataPromise) {
+    await selectedMetadataPromise;
+    if (!isCurrentSwitch()) return null;
+  }
+
   if (options.sync !== false) {
     await syncActiveSessionFromServer(session, true, {
       skipMessagesFetch: didPreloadServerMessages,
@@ -491,7 +502,9 @@ const switchToSession = async (sessionId, options = {}) => {
     if (!isCurrentSwitch()) return null;
   }
   if (!isCurrentSwitch()) return null;
-  await app.refreshSkillCommands?.(session.id);
+  if (isSessionIdentityResolved(session)) {
+    await app.refreshSkillCommands?.(session.id);
+  }
   if (!isCurrentSwitch()) return null;
   if (syncSelectedRuntimeFromSession(session)) {
     app.updateHeader();
@@ -1387,17 +1400,26 @@ const syncTranscriptOnce = async (session, options = {}) => {
 };
 
 const mergeTranscriptSyncRequest = (session, options = {}) => {
-  const pending = session._transcriptSyncPending || { force: false, forceScroll: false, targetRev: 0, reason: '' };
-  pending.force = pending.force || options.force === true;
+  const pending = session._transcriptSyncPending || {
+    force: false,
+    forceWithoutTarget: false,
+    forceScroll: false,
+    targetRev: 0,
+    reason: ''
+  };
+  const targetRev = Math.max(0, Number(options.targetRev) || 0);
+  const force = options.force === true;
+  pending.force = pending.force || force;
+  pending.forceWithoutTarget = pending.forceWithoutTarget || (force && targetRev === 0);
   pending.forceScroll = pending.forceScroll || options.forceScroll === true;
-  pending.targetRev = Math.max(Number(pending.targetRev) || 0, Number(options.targetRev) || 0);
+  pending.targetRev = Math.max(Number(pending.targetRev) || 0, targetRev);
   if (options.reason) pending.reason = String(options.reason);
   session._transcriptSyncPending = pending;
   return pending;
 };
 
 const syncTranscript = async (session, options = {}) => {
-  if (!session || !ensureSessionTranscript(session)) return false;
+  if (!session || !isSessionIdentityResolved(session) || !ensureSessionTranscript(session)) return false;
   mergeTranscriptSyncRequest(session, options);
   if (session._transcriptSyncPromise) return session._transcriptSyncPromise;
 
@@ -1415,16 +1437,18 @@ const syncTranscript = async (session, options = {}) => {
         mergeTranscriptSyncRequest(session, { reason: 'target-revision', force: true, targetRev });
       }
       const pending = session._transcriptSyncPending;
+      const pendingTargetRev = Math.max(0, Number(pending?.targetRev) || 0);
+      const pendingForceNeedsFetch = Boolean(pending?.force)
+        && (Boolean(pending?.forceWithoutTarget) || pendingTargetRev === 0);
       if (pending
-          && !pending.force
+          && !pendingForceNeedsFetch
           && !pending.forceScroll
-          && Number(pending.targetRev) > 0
           && transcript
-          && transcript.rev >= Number(pending.targetRev)) {
-        // A status poll can discover a revision while an activation request is
-        // already in flight. If that response reached the queued target, the
-        // queued request carries no new work and must not manufacture a 304
-        // index round-trip plus another client reconciliation.
+          && transcript.rev >= pendingTargetRev) {
+        // A completed response absorbs queued ordinary requests and forced
+        // requests whose positive target revision is now satisfied. Preserve
+        // untargeted force (for example stale body recovery) and forceScroll:
+        // neither semantic can be proven complete from transcript.rev alone.
         delete session._transcriptSyncPending;
       }
       if (!session._transcriptSyncPending) return true;
@@ -1640,7 +1664,7 @@ const scheduleSessionStatePoll = (sessionId, delay = 1200) => {
 };
 
 const syncActiveSessionFromServer = async (session, pollOnActive = false, { skipMessagesFetch = false, expectedSwitchGeneration = null } = {}) => {
-  if (!session) return SESSION_STATE_RETRY_RESULT;
+  if (!session || !isSessionIdentityResolved(session)) return SESSION_STATE_RETRY_RESULT;
 
   const requestSessionId = String(session.id || '').trim();
   if (!requestSessionId) return SESSION_STATE_RETRY_RESULT;
@@ -1904,6 +1928,16 @@ const applyServerSessionSummary = (target, serverSession) => {
   if (Object.prototype.hasOwnProperty.call(serverSession, 'goal')) {
     target.goal = serverSession.goal && typeof serverSession.goal === 'object' ? { ...serverSession.goal } : null;
   }
+  if (Object.prototype.hasOwnProperty.call(serverSession, 'file_change_summary')) {
+    target.fileChangeSummary = serverSession.file_change_summary && typeof serverSession.file_change_summary === 'object'
+      ? { ...serverSession.file_change_summary }
+      : null;
+  }
+  if (Object.prototype.hasOwnProperty.call(serverSession, 'plan_summary')) {
+    target.planSummary = serverSession.plan_summary && typeof serverSession.plan_summary === 'object'
+      ? { ...serverSession.plan_summary }
+      : null;
+  }
   return target;
 };
 
@@ -1949,6 +1983,13 @@ const mergeServerSessions = async (options = {}) => {
     if (includeArchived) {
       params.set('include_archived', '1');
     }
+    const selectedSession = String(options.selectedSession || '').trim();
+    if (selectedSession) {
+      params.set('selected_session', selectedSession);
+    }
+    if (options.selectedOnly === true) {
+      params.set('selected_only', '1');
+    }
     const query = params.toString();
     const resp = await fetch(`${UI_PREFIX}/v1/sessions${query ? `?${query}` : ''}`, {
       headers: requestHeaders('')
@@ -1964,7 +2005,8 @@ const mergeServerSessions = async (options = {}) => {
         .map(s => [Number(s.number), s])
     );
 
-    for (const serverSession of data.sessions) {
+    const mergeServerSession = (serverSession) => {
+      if (!serverSession || typeof serverSession !== 'object') return null;
       const sNum = Number(serverSession.number || 0);
       let local = localById.get(serverSession.id) ||
         (sNum > 0 ? localByNumber.get(sNum) : null) ||
@@ -1972,7 +2014,9 @@ const mergeServerSessions = async (options = {}) => {
       if (local) {
         reconcileServerSessionIdentity(local, serverSession);
         applyServerSessionSummary(local, serverSession);
-        continue;
+        localById.set(local.id, local);
+        if (Number(local.number) > 0) localByNumber.set(Number(local.number), local);
+        return local;
       }
 
       local = applyServerSessionSummary({
@@ -1995,6 +2039,21 @@ const mergeServerSessions = async (options = {}) => {
         _serverOnly: true
       }, serverSession);
       state.sessions.push(local);
+      localById.set(local.id, local);
+      if (Number(local.number) > 0) localByNumber.set(Number(local.number), local);
+      return local;
+    };
+
+    for (const serverSession of data.sessions) mergeServerSession(serverSession);
+
+    const selected = mergeServerSession(data.selected_session);
+    if (selected && selected.id === state.activeSessionId && !state.draftSessionActive) {
+      if (selected.fileChangeSummary) {
+        app.applySessionDiffSummary?.(selected.id, selected.fileChangeSummary);
+      }
+      if (Object.prototype.hasOwnProperty.call(selected, 'planSummary')) {
+        app.applyCurrentPlanSummary?.(selected.id, selected.planSummary);
+      }
     }
 
     persistAndRefreshShell();
@@ -2277,9 +2336,21 @@ const setSessionPinned = async (session, pinned) => {
 };
 
 // ===== Initialization =====
+const configuredStartupHydrationTimeout = Number(window.TERM_LLM_STARTUP_HYDRATION_TIMEOUT_MS);
+const STARTUP_HYDRATION_TIMEOUT_MS = Number.isFinite(configuredStartupHydrationTimeout)
+  && configuredStartupHydrationTimeout >= 0
+  ? configuredStartupHydrationTimeout
+  : 10000;
+
+const refreshSkillCommandsAfterStartup = (sessionId) => {
+  Promise.resolve()
+    .then(() => app.refreshSkillCommands?.(sessionId))
+    .catch(() => {});
+};
+
 const hydrateActiveSessionAfterStartup = async () => {
   const active = getActiveSession();
-  if (!active) return;
+  if (!active || !isSessionIdentityResolved(active)) return;
 
   // Start state sync immediately so the server round-trip overlaps with the
   // messages fetch instead of serialising after it. For server-only sessions,
@@ -2301,10 +2372,24 @@ const hydrateActiveSessionAfterStartup = async () => {
   }
 
   await statePromise;
-  await app.refreshSkillCommands?.(active.id);
   if (syncSelectedRuntimeFromSession(active)) {
     app.updateHeader();
   }
+  refreshSkillCommandsAfterStartup(active.id);
+};
+
+const waitForStartupHydration = async () => {
+  const active = getActiveSession();
+  if (!active || !isSessionIdentityResolved(active)) return;
+
+  setStartupStatus('Loading conversation…');
+  const hydration = hydrateActiveSessionAfterStartup().catch(() => {});
+  let timeoutID = null;
+  const timeout = new Promise((resolve) => {
+    timeoutID = window.setTimeout(resolve, STARTUP_HYDRATION_TIMEOUT_MS);
+  });
+  await Promise.race([hydration, timeout]);
+  if (timeoutID !== null) window.clearTimeout(timeoutID);
 };
 
 const initialize = async () => {
@@ -2367,7 +2452,7 @@ const initialize = async () => {
     setStartupStatus(state.token ? 'Checking your token…' : 'Connecting…');
     setConnectionState(state.token ? 'Validating token…' : 'Connecting…');
 
-    const sessionsPromise = mergeServerSessions();
+    const sessionsPromise = mergeServerSessions({ selectedSession: urlSlug });
 
     // Start a speculative models fetch immediately using the provider stored in
     // localStorage. For returning users this runs in parallel with fetchProviders,
@@ -2415,8 +2500,7 @@ const initialize = async () => {
       subscribeToPush();
     }
 
-    hideStartupSplash();
-    await hydrateActiveSessionAfterStartup().catch(() => {});
+    await waitForStartupHydration();
   } catch (err) {
     const message = err?.message || 'Unable to validate token.';
     setStartupStatus(message);
@@ -3187,6 +3271,7 @@ document.addEventListener('visibilitychange', async () => {
     stopSidebarStatusPoll();
     return;
   }
+  if (!state.connected) return;
   // Reconcile the authoritative transcript before looking for an active
   // response. Another tab may have completed several turns and started a new
   // one while this page was hidden; attaching first would only replay the new

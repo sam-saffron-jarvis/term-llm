@@ -516,6 +516,44 @@ func TestCustomBasePath_EndToEnd(t *testing.T) {
 	}
 }
 
+func TestBuildIndexHTMLBootstrapsWorktreeCapabilityAndReusesGitRoot(t *testing.T) {
+	tests := []struct {
+		name       string
+		cwd        string
+		wantGlobal string
+		wantStatus int
+	}{
+		{name: "git cwd", cwd: newGitRepoForBindingTest(t), wantGlobal: `window.TERM_LLM_WORKTREES_ENABLED=true`, wantStatus: http.StatusOK},
+		{name: "non-git cwd", cwd: t.TempDir(), wantGlobal: `window.TERM_LLM_WORKTREES_ENABLED=false`, wantStatus: http.StatusConflict},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rootCalls := 0
+			srv := &serveServer{
+				cfg: serveServerConfig{basePath: "/ui"},
+				worktreeRootFn: func() (string, error) {
+					rootCalls++
+					return tt.cwd, nil
+				},
+			}
+
+			body := string(srv.renderIndexHTML())
+			if !strings.Contains(body, tt.wantGlobal) {
+				t.Fatalf("index missing %q", tt.wantGlobal)
+			}
+
+			rec := httptest.NewRecorder()
+			srv.handleWorktrees(rec, httptest.NewRequest(http.MethodGet, "/v1/worktrees", nil))
+			if rec.Code != tt.wantStatus {
+				t.Fatalf("worktree list status = %d body=%s, want %d", rec.Code, rec.Body.String(), tt.wantStatus)
+			}
+			if rootCalls != 1 {
+				t.Fatalf("worktree root detection called %d times, want once across bootstrap and request", rootCalls)
+			}
+		})
+	}
+}
+
 func TestBuildIndexHTMLDisablesLocationSharing(t *testing.T) {
 	srv := &serveServer{cfg: serveServerConfig{basePath: "/ui", locationSharingDisabled: true}}
 	body := string(srv.buildIndexHTML())
