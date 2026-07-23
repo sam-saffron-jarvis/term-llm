@@ -757,6 +757,18 @@ const clearProviderRetryForEvent = (session, payload = null) => {
   return clearProviderRetryStatus(String(session?.id || '').trim(), responseId);
 };
 
+const rehydrateResponseStreamState = (session, streamState) => {
+  if (!session || !streamState) return;
+  const currentToolGroup = session.messages.findLast((message) => (
+    message.role === 'tool-group' && message.status === 'running'
+  )) || null;
+  streamState.currentToolGroup = currentToolGroup;
+  const lastMessage = session.messages[session.messages.length - 1];
+  streamState.currentAssistantMessage = !currentToolGroup && lastMessage?.role === 'assistant'
+    ? lastMessage
+    : null;
+};
+
 const createResponseStreamState = (session) => {
   let currentToolGroup = session.messages.findLast((message) => (
     message.role === 'tool-group' && message.status === 'running'
@@ -1427,6 +1439,18 @@ const consumeResponseStream = async (stream, session, streamState, options = {})
     }
     const seq = eventSequenceNumber(payload);
     const currentSeq = Number(session.lastSequenceNumber || 0);
+    // Reconnects and overlapping POST/event streams can replay an event that is
+    // already reflected in the local projection. Applying it again duplicates
+    // text and can append phase/tool nodes after newer output. Stream overflow
+    // is the one transport control event that intentionally reuses the latest
+    // sequence number and still needs to trigger snapshot recovery.
+    if (seq > 0 && (seq < currentSeq || (seq === currentSeq && event !== 'response.stream_error'))) {
+      // This transport may have attached before another transport projected the
+      // replayed event. Align its mutable cursor with the shared transcript so
+      // the next fresh delta continues the existing assistant/tool node.
+      rehydrateResponseStreamState(session, streamState);
+      return true;
+    }
     if (seq > currentSeq + 1) {
       terminalError = {
         message: `response event stream gap: expected sequence ${currentSeq + 1}, received ${seq}`,

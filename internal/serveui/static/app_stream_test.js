@@ -1020,6 +1020,170 @@ async function testStaleTerminalStreamDoesNotRefreshStatus() {
   pass(name);
 }
 
+async function testConsumeResponseStreamIgnoresAlreadyProjectedEvents() {
+  const name = 'response stream ignores replayed events that would duplicate or reorder messages';
+  const harness = createHarness();
+  const { app, state, cleanup } = harness;
+  const session = {
+    id: 'session_replayed_events',
+    title: 'Replayed events',
+    messages: [],
+    lastResponseId: null,
+    activeResponseId: 'resp_replayed_events',
+    lastSequenceNumber: 0,
+    number: 1,
+  };
+  state.sessions.push(session);
+  state.activeSessionId = session.id;
+  state.currentStreamSessionId = session.id;
+  state.currentStreamResponseId = session.activeResponseId;
+
+  const stream = new ReadableStream({
+    start(controller) {
+      controller.enqueue(new TextEncoder().encode([
+        'event: response.output_text.delta\n',
+        'data: {"delta":"first","sequence_number":1}\n\n',
+        'event: response.output_text.delta\n',
+        'data: {"delta":" duplicate","sequence_number":1}\n\n',
+        'event: response.phase\n',
+        'data: {"text":"stale phase","sequence_number":1}\n\n',
+        'event: response.output_text.delta\n',
+        'data: {"delta":" last","sequence_number":2}\n\n',
+        'data: [DONE]\n\n',
+      ].join('')));
+      controller.close();
+    },
+  });
+
+  await app.consumeResponseStream(stream, session, app.createResponseStreamState(session), {
+    generation: state.streamGeneration,
+    responseId: session.activeResponseId,
+  });
+
+  const projected = session.messages.map((message) => `${message.role}:${message.content || ''}`);
+  if (JSON.stringify(projected) !== JSON.stringify(['assistant:first last'])) {
+    fail(name, 'replayed sequence numbers changed the projected transcript order', JSON.stringify(projected));
+    await cleanup();
+    return;
+  }
+  if (session.lastSequenceNumber !== 2) {
+    fail(name, `last sequence = ${session.lastSequenceNumber}, want 2`);
+    await cleanup();
+    return;
+  }
+
+  await cleanup();
+  pass(name);
+}
+
+async function testConsumeResponseStreamPreservesOverflowRecoverySequenceException() {
+  const name = 'response stream applies current overflow recovery but ignores stale overflow replay';
+  const harness = createHarness();
+  const { app, state, cleanup } = harness;
+  const session = {
+    id: 'session_overflow_sequence',
+    title: 'Overflow sequence',
+    messages: [],
+    activeResponseId: 'resp_overflow_sequence',
+    lastSequenceNumber: 0,
+  };
+  state.sessions.push(session);
+  state.activeSessionId = session.id;
+  state.currentStreamSessionId = session.id;
+  state.currentStreamResponseId = session.activeResponseId;
+
+  const stream = new ReadableStream({
+    start(controller) {
+      controller.enqueue(new TextEncoder().encode([
+        'event: response.output_text.delta\n',
+        'data: {"delta":"before","sequence_number":1}\n\n',
+        'event: response.output_text.delta\n',
+        'data: {"delta":" overflow","sequence_number":2}\n\n',
+        'event: response.stream_error\n',
+        'data: {"error":{"type":"stream_buffer_overflow"},"sequence_number":2,"recovery":{"sequence_number":2,"messages":[{"id":"recovered","role":"assistant","content":"recovered"}]}}\n\n',
+        'event: response.stream_error\n',
+        'data: {"error":{"type":"stream_buffer_overflow"},"sequence_number":1,"recovery":{"sequence_number":1,"messages":[{"id":"stale","role":"assistant","content":"stale"}]}}\n\n',
+        'data: [DONE]\n\n',
+      ].join('')));
+      controller.close();
+    },
+  });
+
+  await app.consumeResponseStream(stream, session, app.createResponseStreamState(session), {
+    generation: state.streamGeneration,
+    responseId: session.activeResponseId,
+  });
+
+  const projected = session.messages.map((message) => `${message.role}:${message.content || ''}`);
+  if (JSON.stringify(projected) !== JSON.stringify(['assistant:recovered'])) {
+    fail(name, 'overflow sequence exception applied the wrong recovery snapshot', JSON.stringify(projected));
+    await cleanup();
+    return;
+  }
+  if (session.lastSequenceNumber !== 2) {
+    fail(name, `last sequence = ${session.lastSequenceNumber}, want 2`);
+    await cleanup();
+    return;
+  }
+
+  await cleanup();
+  pass(name);
+}
+
+async function testSkippedReplayRehydratesStreamProjectionState() {
+  const name = 'skipped replay rehydrates stream state before fresh tool deltas';
+  const harness = createHarness();
+  const { app, state, cleanup } = harness;
+  const session = {
+    id: 'session_replay_tool_state',
+    title: 'Replay tool state',
+    messages: [],
+    activeResponseId: 'resp_replay_tool_state',
+    lastSequenceNumber: 0,
+  };
+  state.sessions.push(session);
+  state.activeSessionId = session.id;
+  state.currentStreamSessionId = session.id;
+  state.currentStreamResponseId = session.activeResponseId;
+
+  // This stream attached before an overlapping transport projected the tool.
+  const streamState = app.createResponseStreamState(session);
+  const projectedState = app.createResponseStreamState(session);
+  app.applyResponseStreamEvent(session, projectedState, 'response.output_item.added', {
+    sequence_number: 1,
+    output_index: 0,
+    item: { type: 'function_call', call_id: 'call_replayed', name: 'read_file', arguments: '' },
+  });
+
+  const stream = new ReadableStream({
+    start(controller) {
+      controller.enqueue(new TextEncoder().encode([
+        'event: response.output_item.added\n',
+        'data: {"sequence_number":1,"output_index":0,"item":{"type":"function_call","call_id":"call_replayed","name":"read_file","arguments":""}}\n\n',
+        'event: response.function_call_arguments.delta\n',
+        'data: {"sequence_number":2,"output_index":0,"delta":"{\\"path\\":\\"README.md\\"}"}\n\n',
+        'data: [DONE]\n\n',
+      ].join('')));
+      controller.close();
+    },
+  });
+
+  await app.consumeResponseStream(stream, session, streamState, {
+    generation: state.streamGeneration,
+    responseId: session.activeResponseId,
+  });
+
+  const tools = session.messages.flatMap((message) => message.role === 'tool-group' ? message.tools || [] : []);
+  if (tools.length !== 1 || tools[0].arguments !== '{"path":"README.md"}') {
+    fail(name, 'fresh tool delta was not applied to the already projected call', JSON.stringify(session.messages));
+    await cleanup();
+    return;
+  }
+
+  await cleanup();
+  pass(name);
+}
+
 async function testInactiveSessionStreamEventsDoNotAppendToVisibleDOM() {
   const name = 'stream events for inactive session update data without appending to visible DOM';
   const harness = createHarness();
@@ -6553,6 +6717,9 @@ async function testIsolatedSkillStreamsIndependentlyAndCancelsIndependently() {
   await testResponseCompletedForcesSidebarStatusRefresh();
   await testResponseCompletedPreservesFailedToolStatus();
   await testStaleTerminalStreamDoesNotRefreshStatus();
+  await testConsumeResponseStreamIgnoresAlreadyProjectedEvents();
+  await testConsumeResponseStreamPreservesOverflowRecoverySequenceException();
+  await testSkippedReplayRehydratesStreamProjectionState();
   await testInactiveSessionStreamEventsDoNotAppendToVisibleDOM();
   await testInactiveExistingMessageUpdatesDoNotTouchVisibleDOM();
   await testInactiveInterruptHelpersDoNotTouchVisibleDOM();
