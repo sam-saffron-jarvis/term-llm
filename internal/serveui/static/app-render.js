@@ -1658,9 +1658,12 @@ const observeTranscriptGap = (node, _message, sessionId) => {
   if (!transcriptGapObserver) {
     transcriptGapObserver = new IntersectionObserver((entries) => {
       entries.forEach((entry) => {
-        if (!entry.isIntersecting) return;
+        if (!entry.isIntersecting || state.autoScroll) return;
         transcriptGapObserver.unobserve(entry.target);
-        loadTranscriptGap(entry.target, entry.target.dataset?.sessionId, null, entry.boundingClientRect);
+        window.requestAnimationFrame(() => {
+          if (entry.target.isConnected === false) return;
+          loadTranscriptGap(entry.target, entry.target.dataset?.sessionId);
+        });
       });
     }, { root: elements.chatScroll || null, rootMargin: '800px 0px' });
   }
