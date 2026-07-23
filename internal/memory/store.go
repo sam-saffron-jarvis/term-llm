@@ -2215,6 +2215,30 @@ func (s *Store) SetMeta(ctx context.Context, key, value string) error {
 	return nil
 }
 
+// ListStates returns all session mining states in one query.
+func (s *Store) ListStates(ctx context.Context) ([]MiningState, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT session_id, agent, last_mined_offset, mined_at
+		FROM memory_mining_state`)
+	if err != nil {
+		return nil, fmt.Errorf("list mining states: %w", err)
+	}
+	defer rows.Close()
+
+	states := make([]MiningState, 0)
+	for rows.Next() {
+		var state MiningState
+		if err := rows.Scan(&state.SessionID, &state.Agent, &state.LastMinedOffset, &state.MinedAt); err != nil {
+			return nil, fmt.Errorf("scan mining state: %w", err)
+		}
+		states = append(states, state)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate mining states: %w", err)
+	}
+	return states, nil
+}
+
 // GetState returns mining state for a session.
 func (s *Store) GetState(ctx context.Context, sessionID string) (*MiningState, error) {
 	row := s.db.QueryRowContext(ctx, `
@@ -2247,13 +2271,21 @@ func (s *Store) UpsertState(ctx context.Context, st *MiningState) error {
 		st.MinedAt = time.Now()
 	}
 
+	// Mining cursors are monotonic. A stale concurrent miner must not replace
+	// the cursor or its associated agent/timestamp metadata.
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO memory_mining_state(session_id, agent, last_mined_offset, mined_at)
 		VALUES(?, ?, ?, ?)
 		ON CONFLICT(session_id) DO UPDATE SET
-			agent = excluded.agent,
-			last_mined_offset = excluded.last_mined_offset,
-			mined_at = excluded.mined_at`,
+			agent = CASE
+				WHEN excluded.last_mined_offset > memory_mining_state.last_mined_offset THEN excluded.agent
+				ELSE memory_mining_state.agent
+			END,
+			last_mined_offset = MAX(memory_mining_state.last_mined_offset, excluded.last_mined_offset),
+			mined_at = CASE
+				WHEN excluded.last_mined_offset > memory_mining_state.last_mined_offset THEN excluded.mined_at
+				ELSE memory_mining_state.mined_at
+			END`,
 		st.SessionID, st.Agent, st.LastMinedOffset, st.MinedAt)
 	if err != nil {
 		return fmt.Errorf("upsert mining state: %w", err)

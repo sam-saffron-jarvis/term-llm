@@ -985,6 +985,44 @@ func TestStoreMiningState(t *testing.T) {
 	if got.LastMinedOffset != 100 {
 		t.Fatalf("offset after update = %d, want 100", got.LastMinedOffset)
 	}
+
+	states, err := store.ListStates(ctx)
+	if err != nil {
+		t.Fatalf("ListStates() error = %v", err)
+	}
+	if len(states) != 1 || states[0].SessionID != "sess-1" || states[0].LastMinedOffset != 100 {
+		t.Fatalf("ListStates() = %+v, want updated sess-1 state", states)
+	}
+
+	preservedAgent := got.Agent
+	preservedMinedAt := got.MinedAt
+	st.Agent = "stale-agent"
+	st.LastMinedOffset = 80
+	st.MinedAt = preservedMinedAt.Add(time.Hour)
+	if err := store.UpsertState(ctx, st); err != nil {
+		t.Fatalf("UpsertState(stale update) error = %v", err)
+	}
+	got, err = store.GetState(ctx, "sess-1")
+	if err != nil {
+		t.Fatalf("GetState(stale update) error = %v", err)
+	}
+	if got.LastMinedOffset != 100 || got.Agent != preservedAgent || !got.MinedAt.Equal(preservedMinedAt) {
+		t.Fatalf("state after stale update = %+v, want offset=100 agent=%q mined_at=%v", got, preservedAgent, preservedMinedAt)
+	}
+
+	st.Agent = "equal-agent"
+	st.LastMinedOffset = 100
+	st.MinedAt = preservedMinedAt.Add(2 * time.Hour)
+	if err := store.UpsertState(ctx, st); err != nil {
+		t.Fatalf("UpsertState(equal update) error = %v", err)
+	}
+	got, err = store.GetState(ctx, "sess-1")
+	if err != nil {
+		t.Fatalf("GetState(equal update) error = %v", err)
+	}
+	if got.LastMinedOffset != 100 || got.Agent != preservedAgent || !got.MinedAt.Equal(preservedMinedAt) {
+		t.Fatalf("state after equal update = %+v, want offset=100 agent=%q mined_at=%v", got, preservedAgent, preservedMinedAt)
+	}
 }
 
 func TestStoreMetaGetSet(t *testing.T) {

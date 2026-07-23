@@ -64,6 +64,10 @@ type memoryMineCandidate struct {
 	Agent   string
 }
 
+type memoryMiningStateStore interface {
+	ListStates(ctx context.Context) ([]memorydb.MiningState, error)
+}
+
 type memoryAgentFragmentStore interface {
 	ListFragments(ctx context.Context, opts memorydb.ListOptions) ([]memorydb.Fragment, error)
 	GetFragment(ctx context.Context, agent, path string) (*memorydb.Fragment, error)
@@ -157,7 +161,7 @@ type transcriptMessage struct {
 func init() {
 	memoryMineCmd.Flags().StringVar(&memoryMineModel, "model", "", "Override model used for memory extraction")
 	memoryMineCmd.Flags().DurationVar(&memoryMineSince, "since", 0, "Only mine sessions updated within this duration (e.g. 24h)")
-	memoryMineCmd.Flags().IntVar(&memoryMineLimit, "limit", 0, "Maximum number of sessions to mine (0 = all)")
+	memoryMineCmd.Flags().IntVar(&memoryMineLimit, "limit", 0, "Maximum number of extraction attempts (0 = all)")
 	memoryMineCmd.Flags().IntVar(&memoryMineBatchSize, "batch-size", 10, "Number of messages to fetch per pagination request")
 	memoryMineCmd.Flags().BoolVar(&memoryMineIncludeSubagents, "include-subagents", false, "Include subagent sessions")
 	memoryMineCmd.Flags().IntVar(&memoryMineMaxMessages, "max-messages", 0, "Maximum newly mined messages per session (0 = all)")
@@ -260,14 +264,6 @@ func runMemoryMine(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("list complete sessions: %w", err)
 	}
 
-	candidates, err := collectMineCandidates(ctx, sessStore, complete, currentID)
-	if err != nil {
-		return err
-	}
-	if len(candidates) == 0 {
-		fmt.Println("No sessions eligible for memory mining.")
-	}
-
 	modelName = strings.TrimSpace(modelName)
 	if modelName == "" {
 		modelName = activeModel(cfg)
@@ -275,8 +271,14 @@ func runMemoryMine(cmd *cobra.Command, args []string) error {
 	if modelName == "" {
 		modelName = "(default model)"
 	}
-	if len(candidates) > 0 {
-		fmt.Printf("Mining %d session(s) with %s / %s\n", len(candidates), provider.Name(), modelName)
+	if len(complete) > 0 {
+		if memoryMineLimit > 0 {
+			fmt.Printf("Scanning %d completed session(s) for up to %d extraction attempt(s) with %s / %s\n",
+				len(complete), memoryMineLimit, provider.Name(), modelName)
+		} else {
+			fmt.Printf("Scanning %d completed session(s) for extraction with %s / %s\n",
+				len(complete), provider.Name(), modelName)
+		}
 	}
 	if memoryDryRun {
 		fmt.Println("Dry run mode: no database writes will be performed.")
@@ -286,10 +288,15 @@ func runMemoryMine(cmd *cobra.Command, args []string) error {
 	var summaryStats memoryMineSummaryStats
 	fragmentCache := newMemoryAgentFragmentCache(memoryMineTaxonomyMaxTokens)
 
-	for i, candidate := range candidates {
+	walkResult, err := walkMineCandidates(ctx, sessStore, memStore, complete, currentID, func(position, total int, candidate memoryMineCandidate) (memoryMineCandidateVisitResult, error) {
+		visitResult := memoryMineCandidateVisitResult{}
+
+		// Discovery uses a snapshot only to prune completed work. Refresh state at
+		// processing time to narrow the stale-state window; monotonic state updates
+		// prevent a concurrent miner's newer cursor from being overwritten.
 		state, err := memStore.GetState(ctx, candidate.Session.ID)
 		if err != nil {
-			return fmt.Errorf("get mining state for session %s: %w", candidate.Session.ID, err)
+			return visitResult, fmt.Errorf("get mining state for session %s: %w", candidate.Session.ID, err)
 		}
 
 		startOffset := 0
@@ -299,17 +306,18 @@ func runMemoryMine(cmd *cobra.Command, args []string) error {
 
 		existing, taxonomyMap, err := fragmentCache.get(ctx, memStore, candidate.Agent)
 		if err != nil {
-			return fmt.Errorf("list existing fragments for agent %s: %w", candidate.Agent, err)
+			return visitResult, fmt.Errorf("list existing fragments for agent %s: %w", candidate.Agent, err)
 		}
 
 		loadResult, err := loadMessagesForMining(ctx, sessStore, candidate, startOffset, taxonomyMap)
 		if err != nil {
-			return fmt.Errorf("load messages for session %s: %w", candidate.Session.ID, err)
+			return visitResult, fmt.Errorf("load messages for session %s: %w", candidate.Session.ID, err)
 		}
 		if len(loadResult.Messages) == 0 {
-			fmt.Printf("[%d/%d] #%d no new messages to mine\n", i+1, len(candidates), candidate.Summary.Number)
-			continue
+			fmt.Printf("[%d/%d] #%d no new messages to mine\n", position, total, candidate.Summary.Number)
+			return visitResult, nil
 		}
+		visitResult.Attempted = true
 
 		promptParts := buildExtractionPromptParts(candidate, startOffset, loadResult.NextOffset, loadResult.Messages, taxonomyMap)
 		batchStats := newMemoryExtractionStats(candidate, startOffset, loadResult.NextOffset, len(existing), loadResult, promptParts)
@@ -318,7 +326,7 @@ func runMemoryMine(cmd *cobra.Command, args []string) error {
 		if err != nil {
 			fragmentCache.invalidate(candidate.Agent)
 			fmt.Fprintf(os.Stderr, "warning: skipping session %s batch at offset %d: %v\n", candidate.Session.ID, startOffset, err)
-			continue
+			return visitResult, nil
 		}
 		batchStats.Duration = time.Since(batchStart)
 
@@ -336,7 +344,7 @@ func runMemoryMine(cmd *cobra.Command, args []string) error {
 				LastMinedOffset: loadResult.NextOffset,
 				MinedAt:         time.Now(),
 			}); err != nil {
-				return fmt.Errorf("update mining state for session %s: %w", candidate.Session.ID, err)
+				return visitResult, fmt.Errorf("update mining state for session %s: %w", candidate.Session.ID, err)
 			}
 			if err := fragmentCache.applyChanges(ctx, memStore, candidate.Agent, affectedPaths); err != nil {
 				fragmentCache.invalidate(candidate.Agent)
@@ -349,11 +357,19 @@ func runMemoryMine(cmd *cobra.Command, args []string) error {
 		totalSkipped += skipped
 
 		fmt.Printf("[%d/%d] #%d mined messages [%d,%d): create=%d update=%d skip=%d\n",
-			i+1, len(candidates), candidate.Summary.Number, startOffset, loadResult.NextOffset, created, updated, skipped)
+			position, total, candidate.Summary.Number, startOffset, loadResult.NextOffset, created, updated, skipped)
 		if memoryMineShowStats {
-			fmt.Printf("[%d/%d] #%d %s\n", i+1, len(candidates), candidate.Summary.Number, batchStats.oneLine())
+			fmt.Printf("[%d/%d] #%d %s\n", position, total, candidate.Summary.Number, batchStats.oneLine())
 			summaryStats.add(batchStats)
 		}
+		visitResult.Successful = true
+		return visitResult, nil
+	})
+	if err != nil {
+		return err
+	}
+	if walkResult.Eligible == 0 {
+		fmt.Println("No sessions eligible for memory mining.")
 	}
 
 	if memoryDryRun {
@@ -382,7 +398,7 @@ func runMemoryMine(cmd *cobra.Command, args []string) error {
 		if memoryDryRun {
 			fmt.Println("Dry run mode: skipping PROMOTE phase.")
 		} else {
-			for _, promoteAgent := range minePromoteAgents(memoryAgent, candidates) {
+			for _, promoteAgent := range minePromoteAgents(memoryAgent, walkResult.SuccessfulCandidates) {
 				shouldPromote := promoteMode == "always"
 				if promoteMode == "auto" {
 					shouldPromote, err = shouldRunAutoPromote(ctx, memStore, promoteAgent, memoryMinePromoteEvery)
@@ -480,7 +496,12 @@ func resolveMemoryMineFastModelName(cfg *config.Config) string {
 
 func minePromoteAgents(globalAgent string, candidates []memoryMineCandidate) []string {
 	if strings.TrimSpace(globalAgent) != "" {
+		// An explicit agent keeps promotion independently schedulable even when
+		// this run found no new fragments to extract.
 		return []string{strings.TrimSpace(globalAgent)}
+	}
+	if len(candidates) == 0 {
+		return nil
 	}
 
 	seen := map[string]struct{}{}
@@ -500,37 +521,108 @@ func minePromoteAgents(globalAgent string, candidates []memoryMineCandidate) []s
 	return agents
 }
 
-func collectMineCandidates(ctx context.Context, store session.Store, complete []session.SessionSummary, currentID string) ([]memoryMineCandidate, error) {
-	out := make([]memoryMineCandidate, 0, len(complete))
+type memoryMineCandidateVisitResult struct {
+	Attempted  bool
+	Successful bool
+}
 
-	for _, summary := range complete {
-		candidate, ok, err := buildMemoryMineCandidate(ctx, store, summary, currentID)
+type memoryMineCandidateWalkResult struct {
+	Eligible             int
+	Attempts             int
+	SuccessfulCandidates []memoryMineCandidate
+}
+
+func walkMineCandidates(
+	ctx context.Context,
+	store session.Store,
+	stateStore memoryMiningStateStore,
+	complete []session.SessionSummary,
+	currentID string,
+	visit func(position, total int, candidate memoryMineCandidate) (memoryMineCandidateVisitResult, error),
+) (memoryMineCandidateWalkResult, error) {
+	var result memoryMineCandidateWalkResult
+	states, err := stateStore.ListStates(ctx)
+	if err != nil {
+		return result, fmt.Errorf("list mining states: %w", err)
+	}
+	statesBySession := make(map[string]memorydb.MiningState, len(states))
+	for _, state := range states {
+		statesBySession[state.SessionID] = state
+	}
+
+	cutoff := memoryMineCutoff()
+	// Maximum-sequence lookup is an optional optimization. Limit its input to
+	// sessions that have mining state and pass filters available from summaries;
+	// sessions without state cannot be proven fully mined by this fast path.
+	maxSequences := map[string]int(nil)
+	if sequenceStore, ok := store.(session.MessageSequenceStore); ok {
+		sessionIDs := make([]string, 0, len(statesBySession))
+		for _, summary := range complete {
+			if _, hasState := statesBySession[summary.ID]; !hasState {
+				continue
+			}
+			if currentID != "" && summary.ID == currentID {
+				continue
+			}
+			if !cutoff.IsZero() && summary.UpdatedAt.Before(cutoff) {
+				continue
+			}
+			sessionIDs = append(sessionIDs, summary.ID)
+		}
+		if len(sessionIDs) > 0 {
+			maxSequences, err = sequenceStore.MaxMessageSequences(ctx, sessionIDs)
+			if err != nil {
+				return result, fmt.Errorf("get maximum message sequences: %w", err)
+			}
+		}
+	}
+
+	for i, summary := range complete {
+		if memoryMineLimit > 0 && result.Attempts >= memoryMineLimit {
+			break
+		}
+
+		state, hasState := statesBySession[summary.ID]
+		maxSequence, hasMaxSequence := maxSequences[summary.ID]
+		if hasState && hasMaxSequence && state.LastMinedOffset > maxSequence {
+			continue
+		}
+
+		candidate, ok, err := buildMemoryMineCandidate(ctx, store, summary, currentID, cutoff)
 		if err != nil {
-			return nil, err
+			return result, err
 		}
 		if !ok {
 			continue
 		}
+		result.Eligible++
 
-		out = append(out, candidate)
-
-		if memoryMineLimit > 0 && len(out) >= memoryMineLimit {
-			break
+		visitResult, err := visit(i+1, len(complete), candidate)
+		if err != nil {
+			return result, err
+		}
+		if !visitResult.Attempted {
+			continue
+		}
+		result.Attempts++
+		if visitResult.Successful {
+			result.SuccessfulCandidates = append(result.SuccessfulCandidates, candidate)
 		}
 	}
 
-	return out, nil
+	return result, nil
 }
 
 func collectInsightCandidates(ctx context.Context, store session.Store, memStore *memorydb.Store, complete []session.SessionSummary, currentID string) ([]memoryMineCandidate, error) {
 	out := make([]memoryMineCandidate, 0, len(complete))
+	cutoff := memoryMineCutoff()
 
 	for _, summary := range complete {
 		if summary.MessageCount > 0 && summary.MessageCount < 4 {
 			continue
 		}
 
-		candidate, ok, err := buildMemoryMineCandidate(ctx, store, summary, currentID)
+		candidate, ok, err := buildMemoryMineCandidate(ctx, store, summary, currentID, cutoff)
 		if err != nil {
 			return nil, err
 		}
@@ -548,6 +640,8 @@ func collectInsightCandidates(ctx context.Context, store session.Store, memStore
 
 		out = append(out, candidate)
 
+		// Insight candidates have already passed their persisted mined-state check,
+		// so each selected session represents an extraction attempt.
 		if memoryMineLimit > 0 && len(out) >= memoryMineLimit {
 			break
 		}
@@ -556,12 +650,14 @@ func collectInsightCandidates(ctx context.Context, store session.Store, memStore
 	return out, nil
 }
 
-func buildMemoryMineCandidate(ctx context.Context, store session.Store, summary session.SessionSummary, currentID string) (memoryMineCandidate, bool, error) {
-	cutoff := time.Time{}
-	if memoryMineSince > 0 {
-		cutoff = time.Now().Add(-memoryMineSince)
+func memoryMineCutoff() time.Time {
+	if memoryMineSince <= 0 {
+		return time.Time{}
 	}
+	return time.Now().Add(-memoryMineSince)
+}
 
+func buildMemoryMineCandidate(ctx context.Context, store session.Store, summary session.SessionSummary, currentID string, cutoff time.Time) (memoryMineCandidate, bool, error) {
 	if !cutoff.IsZero() && summary.UpdatedAt.Before(cutoff) {
 		return memoryMineCandidate{}, false, nil
 	}

@@ -188,6 +188,13 @@ type ProviderStateStore interface {
 	DeleteProviderState(ctx context.Context, sessionID, providerKey string) error
 }
 
+// MessageSequenceStore is an optional Store capability for fetching the latest
+// message sequence for many sessions without issuing one query per session.
+// Callers must preserve behavior when a store does not implement this fast path.
+type MessageSequenceStore interface {
+	MaxMessageSequences(ctx context.Context, sessionIDs []string) (map[string]int, error)
+}
+
 // Transcript index flags describe durable rows without materializing bodies.
 const (
 	TranscriptFlagCompactionTail uint8 = 1 << iota

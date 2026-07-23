@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -19,6 +20,47 @@ type fakeMemoryAgentFragmentStore struct {
 	getCalls  int
 	listByKey map[string][]memorydb.Fragment
 	getByKey  map[string]map[string]memorydb.Fragment
+}
+
+type candidateDiscoveryStore struct {
+	session.NoopStore
+	sessions              map[string]*session.Session
+	maxSequences          map[string]int
+	maxSequenceCalls      int
+	maxSequenceSessionIDs []string
+	getCalls              int
+}
+
+func (s *candidateDiscoveryStore) MaxMessageSequences(_ context.Context, sessionIDs []string) (map[string]int, error) {
+	s.maxSequenceCalls++
+	s.maxSequenceSessionIDs = append([]string(nil), sessionIDs...)
+	return s.maxSequences, nil
+}
+
+func (s *candidateDiscoveryStore) Get(_ context.Context, id string) (*session.Session, error) {
+	s.getCalls++
+	return s.sessions[id], nil
+}
+
+type candidateDiscoveryFallbackStore struct {
+	session.NoopStore
+	sessions map[string]*session.Session
+	getCalls int
+}
+
+func (s *candidateDiscoveryFallbackStore) Get(_ context.Context, id string) (*session.Session, error) {
+	s.getCalls++
+	return s.sessions[id], nil
+}
+
+type candidateDiscoveryStateStore struct {
+	states    []memorydb.MiningState
+	listCalls int
+}
+
+func (s *candidateDiscoveryStateStore) ListStates(_ context.Context) ([]memorydb.MiningState, error) {
+	s.listCalls++
+	return s.states, nil
 }
 
 type trackingMemoryMineStore struct {
@@ -185,6 +227,215 @@ func TestValidateFragmentPath(t *testing.T) {
 		if got != tc.want {
 			t.Fatalf("validateFragmentPath(%q) = %q, want %q", tc.path, got, tc.want)
 		}
+	}
+}
+
+func TestWalkMineCandidatesSkipsFullyMinedSessionsBeforePointReads(t *testing.T) {
+	const sessionCount = 5000
+
+	oldLimit := memoryMineLimit
+	oldSince := memoryMineSince
+	memoryMineLimit = 1
+	memoryMineSince = 0
+	t.Cleanup(func() {
+		memoryMineLimit = oldLimit
+		memoryMineSince = oldSince
+	})
+
+	complete := make([]session.SessionSummary, sessionCount)
+	states := make([]memorydb.MiningState, sessionCount)
+	maxSequences := make(map[string]int, sessionCount)
+	for i := range sessionCount {
+		sessionID := fmt.Sprintf("session-%d", i)
+		complete[i] = session.SessionSummary{ID: sessionID}
+		states[i] = memorydb.MiningState{SessionID: sessionID, LastMinedOffset: 10}
+		maxSequences[sessionID] = 9
+	}
+
+	sessStore := &candidateDiscoveryStore{maxSequences: maxSequences}
+	stateStore := &candidateDiscoveryStateStore{states: states}
+	visited := 0
+	result, err := walkMineCandidates(context.Background(), sessStore, stateStore, complete, "", func(_ int, _ int, _ memoryMineCandidate) (memoryMineCandidateVisitResult, error) {
+		visited++
+		return memoryMineCandidateVisitResult{Attempted: true, Successful: true}, nil
+	})
+	if err != nil {
+		t.Fatalf("walkMineCandidates: %v", err)
+	}
+	if result.Eligible != 0 || visited != 0 {
+		t.Fatalf("walk result = %+v, visited = %d; want no eligible candidates", result, visited)
+	}
+	if stateStore.listCalls != 1 || sessStore.maxSequenceCalls != 1 {
+		t.Fatalf("batch calls = states %d, max sequences %d; want 1 each", stateStore.listCalls, sessStore.maxSequenceCalls)
+	}
+	if len(sessStore.maxSequenceSessionIDs) != sessionCount {
+		t.Fatalf("maximum sequence IDs = %d, want %d", len(sessStore.maxSequenceSessionIDs), sessionCount)
+	}
+	if sessStore.getCalls != 0 {
+		t.Fatalf("Get calls = %d, want 0", sessStore.getCalls)
+	}
+}
+
+func TestWalkMineCandidatesDoesNotSpendLimitBeforeAttempt(t *testing.T) {
+	oldLimit := memoryMineLimit
+	oldAgent := memoryAgent
+	oldSince := memoryMineSince
+	oldIncludeSubagents := memoryMineIncludeSubagents
+	memoryMineLimit = 1
+	memoryAgent = "jarvis"
+	memoryMineSince = 0
+	memoryMineIncludeSubagents = false
+	t.Cleanup(func() {
+		memoryMineLimit = oldLimit
+		memoryAgent = oldAgent
+		memoryMineSince = oldSince
+		memoryMineIncludeSubagents = oldIncludeSubagents
+	})
+
+	sessions := make(map[string]*session.Session, 51)
+	complete := make([]session.SessionSummary, 0, 51)
+	for number := int64(51); number >= 1; number-- {
+		id := fmt.Sprintf("session-%d", number)
+		sessions[id] = &session.Session{ID: id, Number: number, Agent: "jarvis", Status: session.StatusComplete}
+		complete = append(complete, session.SessionSummary{ID: id, Number: number})
+	}
+
+	sessStore := &candidateDiscoveryStore{sessions: sessions}
+	stateStore := &candidateDiscoveryStateStore{}
+	visited := 0
+	result, err := walkMineCandidates(context.Background(), sessStore, stateStore, complete, "", func(_ int, _ int, candidate memoryMineCandidate) (memoryMineCandidateVisitResult, error) {
+		visited++
+		attempted := candidate.Session.ID == "session-1"
+		return memoryMineCandidateVisitResult{Attempted: attempted, Successful: attempted}, nil
+	})
+	if err != nil {
+		t.Fatalf("walkMineCandidates: %v", err)
+	}
+	if visited != 51 || result.Eligible != 51 || result.Attempts != 1 {
+		t.Fatalf("walk result = %+v, visited = %d; want 51 eligible visits and 1 attempt", result, visited)
+	}
+	if len(result.SuccessfulCandidates) != 1 || result.SuccessfulCandidates[0].Session.ID != "session-1" {
+		t.Fatalf("successful candidates = %+v, want only session-1", result.SuccessfulCandidates)
+	}
+	if sessStore.getCalls != 51 {
+		t.Fatalf("Get calls = %d, want discovery to stop immediately after the first attempt", sessStore.getCalls)
+	}
+	if sessStore.maxSequenceCalls != 0 {
+		t.Fatalf("maximum sequence calls = %d, want 0 without mining states", sessStore.maxSequenceCalls)
+	}
+}
+
+func TestWalkMineCandidatesFallbackPreservesLimitSemantics(t *testing.T) {
+	oldLimit := memoryMineLimit
+	oldSince := memoryMineSince
+	memoryMineLimit = 1
+	memoryMineSince = 0
+	t.Cleanup(func() {
+		memoryMineLimit = oldLimit
+		memoryMineSince = oldSince
+	})
+
+	sessStore := &candidateDiscoveryFallbackStore{sessions: map[string]*session.Session{
+		"newer-mined":   {ID: "newer-mined", Status: session.StatusComplete},
+		"older-pending": {ID: "older-pending", Status: session.StatusComplete},
+	}}
+	stateStore := &candidateDiscoveryStateStore{states: []memorydb.MiningState{{SessionID: "newer-mined", LastMinedOffset: 10}}}
+	complete := []session.SessionSummary{{ID: "newer-mined"}, {ID: "older-pending"}}
+	visited := 0
+	result, err := walkMineCandidates(context.Background(), sessStore, stateStore, complete, "", func(_ int, _ int, candidate memoryMineCandidate) (memoryMineCandidateVisitResult, error) {
+		visited++
+		attempted := candidate.Session.ID == "older-pending"
+		return memoryMineCandidateVisitResult{Attempted: attempted, Successful: attempted}, nil
+	})
+	if err != nil {
+		t.Fatalf("walkMineCandidates: %v", err)
+	}
+	if visited != 2 || result.Attempts != 1 {
+		t.Fatalf("walk result = %+v, visited = %d; want both candidates checked and one attempt", result, visited)
+	}
+	if sessStore.getCalls != 2 {
+		t.Fatalf("Get calls = %d, want fallback point reads for both candidates", sessStore.getCalls)
+	}
+}
+
+func TestWalkMineCandidatesStopsDiscoveryAtAttemptLimit(t *testing.T) {
+	oldLimit := memoryMineLimit
+	oldSince := memoryMineSince
+	memoryMineLimit = 2
+	memoryMineSince = 0
+	t.Cleanup(func() {
+		memoryMineLimit = oldLimit
+		memoryMineSince = oldSince
+	})
+
+	const sessionCount = 20000
+	sessions := make(map[string]*session.Session, sessionCount)
+	complete := make([]session.SessionSummary, sessionCount)
+	for i := range sessionCount {
+		id := fmt.Sprintf("session-%d", i)
+		sessions[id] = &session.Session{ID: id, Status: session.StatusComplete}
+		complete[i] = session.SessionSummary{ID: id}
+	}
+
+	sessStore := &candidateDiscoveryFallbackStore{sessions: sessions}
+	stateStore := &candidateDiscoveryStateStore{}
+	result, err := walkMineCandidates(context.Background(), sessStore, stateStore, complete, "", func(_ int, _ int, candidate memoryMineCandidate) (memoryMineCandidateVisitResult, error) {
+		return memoryMineCandidateVisitResult{
+			Attempted:  true,
+			Successful: candidate.Session.ID == "session-1",
+		}, nil
+	})
+	if err != nil {
+		t.Fatalf("walkMineCandidates: %v", err)
+	}
+	if sessStore.getCalls != 2 || result.Eligible != 2 || result.Attempts != 2 {
+		t.Fatalf("walk result = %+v, Get calls = %d; want discovery bounded at 2 attempts", result, sessStore.getCalls)
+	}
+	if len(result.SuccessfulCandidates) != 1 || result.SuccessfulCandidates[0].Session.ID != "session-1" {
+		t.Fatalf("successful candidates = %+v, want only successful session-1", result.SuccessfulCandidates)
+	}
+}
+
+func TestWalkMineCandidatesKeepsCursorAtMaximumSequence(t *testing.T) {
+	oldLimit := memoryMineLimit
+	oldSince := memoryMineSince
+	memoryMineLimit = 1
+	memoryMineSince = 0
+	t.Cleanup(func() {
+		memoryMineLimit = oldLimit
+		memoryMineSince = oldSince
+	})
+
+	const sessionID = "pending-equality"
+	sessStore := &candidateDiscoveryStore{
+		sessions:     map[string]*session.Session{sessionID: {ID: sessionID, Status: session.StatusComplete}},
+		maxSequences: map[string]int{sessionID: 9},
+	}
+	stateStore := &candidateDiscoveryStateStore{states: []memorydb.MiningState{{SessionID: sessionID, LastMinedOffset: 9}}}
+	visited := 0
+	result, err := walkMineCandidates(context.Background(), sessStore, stateStore, []session.SessionSummary{{ID: sessionID}}, "", func(_ int, _ int, _ memoryMineCandidate) (memoryMineCandidateVisitResult, error) {
+		visited++
+		return memoryMineCandidateVisitResult{Attempted: true, Successful: true}, nil
+	})
+	if err != nil {
+		t.Fatalf("walkMineCandidates: %v", err)
+	}
+	if visited != 1 || result.Attempts != 1 {
+		t.Fatalf("walk result = %+v, visited = %d; want sequence 9 to remain pending", result, visited)
+	}
+}
+
+func TestMinePromoteAgentsUsesSuccessfulCandidatesForImplicitAgents(t *testing.T) {
+	if got := minePromoteAgents("", nil); len(got) != 0 {
+		t.Fatalf("minePromoteAgents with no successes = %v, want none", got)
+	}
+	if got := minePromoteAgents("jarvis", nil); len(got) != 1 || got[0] != "jarvis" {
+		t.Fatalf("minePromoteAgents with explicit agent = %v, want [jarvis]", got)
+	}
+	candidates := []memoryMineCandidate{{Agent: "jarvis"}, {Agent: "reviewer"}, {Agent: "jarvis"}}
+	got := minePromoteAgents("", candidates)
+	if len(got) != 2 || got[0] != "jarvis" || got[1] != "reviewer" {
+		t.Fatalf("minePromoteAgents = %v, want [jarvis reviewer]", got)
 	}
 }
 
