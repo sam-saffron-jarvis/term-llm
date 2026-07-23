@@ -1050,7 +1050,7 @@ const refreshSessionMessagesFromTranscript = (session) => {
         startOrdinal: run.startOrdinal,
         endOrdinal: run.endOrdinal,
         estimatedHeight: run.height,
-        segmentIndexes: run.segmentIndexes.slice()
+        segmentIndexes: run.segmentIndexes.filter((index) => transcript.requiredBodyIDs(index).length > 0)
       });
       continue;
     }
@@ -1124,7 +1124,7 @@ const fetchTranscriptSegments = async (session, segmentIndexes) => {
   if (!transcript) return false;
   const requested = [];
   for (const index of new Set(segmentIndexes)) {
-    if (transcript.segments[index]?.state === 'materialized') continue;
+    if (transcript.segments[index]?.state === 'materialized' || transcript.requiredBodyIDs(index).length === 0) continue;
     const id = transcript.ids[transcript.segments[index]?.startOrdinal];
     if (id != null) requested.push(id);
   }

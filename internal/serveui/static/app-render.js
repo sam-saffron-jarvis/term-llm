@@ -1613,9 +1613,11 @@ const createSkillRunNode = (message) => {
 let transcriptGapObserver = null;
 
 const observeTranscriptGap = (node, message, sessionId) => {
+  const segmentIndexes = Array.isArray(message.segmentIndexes) ? message.segmentIndexes : [];
+  if (segmentIndexes.length === 0) return;
   const load = () => {
     const session = state.sessions.find((item) => item?.id === sessionId) || null;
-    if (session) void app.materializeTranscriptSegments?.(session, message.segmentIndexes || []);
+    if (session) void app.materializeTranscriptSegments?.(session, segmentIndexes);
   };
   node.addEventListener?.('click', load);
   if (typeof IntersectionObserver !== 'function') return;

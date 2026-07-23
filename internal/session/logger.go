@@ -278,8 +278,11 @@ func (s *LoggingStore) GetTranscriptIndex(ctx context.Context, sessionID string)
 
 // TranscriptVersioned reports whether the wrapped store has a revisioned schema.
 func (s *LoggingStore) TranscriptVersioned() bool {
-	reporter, ok := s.Store.(TranscriptVersionReporter)
-	return ok && reporter.TranscriptVersioned()
+	if reporter, ok := s.Store.(TranscriptVersionReporter); ok {
+		return reporter.TranscriptVersioned()
+	}
+	_, ok := s.Store.(TranscriptIndexer)
+	return ok
 }
 
 // GetTranscriptSnapshot delegates coherent transcript envelope reads.
