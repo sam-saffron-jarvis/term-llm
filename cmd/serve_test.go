@@ -3531,6 +3531,60 @@ func TestHandleResponses_GeneratesSessionIDHeaderWhenMissing(t *testing.T) {
 	}
 }
 
+func TestHandleResponses_UIFollowUpClaimsQueuedInterjection(t *testing.T) {
+	const (
+		sessionID = "sess_interjection_handoff"
+		messageID = "msg_interjection_handoff"
+	)
+
+	provider := llm.NewMockProvider("mock").AddTextResponse("follow-up response")
+	engine := llm.NewEngine(provider, nil)
+	runtime := &serveRuntime{
+		provider:     provider,
+		providerKey:  provider.Name(),
+		engine:       engine,
+		defaultModel: "mock-model",
+	}
+	runtime.Touch()
+	engine.QueueInterjection(llm.QueuedInterjection{
+		ID:          messageID,
+		Message:     llm.UserText("same logical message"),
+		DisplayText: "same logical message",
+	})
+
+	manager := newServeSessionManager(time.Minute, 10, nil)
+	defer manager.Close()
+	putTestSession(manager, sessionID, runtime)
+
+	srv := &serveServer{
+		sessionMgr:   manager,
+		responseRuns: newServeResponseRunManager(),
+	}
+	defer srv.responseRuns.Close()
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	req.Header.Set("X-Term-LLM-UI-Version", "test")
+	rr := httptest.NewRecorder()
+	srv.handleResolvedResponses(rr, req, req.Context(), resolvedResponsesRequest{
+		req:                responsesCreateRequest{Stream: true},
+		inputMessages:      []llm.Message{llm.UserText("same logical message")},
+		sessionID:          sessionID,
+		previousResponseID: "resp_previous",
+		previousDurable:    true,
+		idempotencyKey:     messageID,
+	})
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", rr.Code, rr.Body.String())
+	}
+	if pending := engine.ListPendingInterjections(); len(pending) != 0 {
+		t.Fatalf("pending interjections after follow-up handoff = %#v, want none", pending)
+	}
+	if len(provider.Requests) != 1 {
+		t.Fatalf("provider request count = %d, want 1", len(provider.Requests))
+	}
+}
+
 func TestHandleResponses_StreamIdempotencyKeyReplaysExistingRun(t *testing.T) {
 	const (
 		sessionID      = "sess_stream_idempotent"
