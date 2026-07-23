@@ -1381,17 +1381,19 @@ const reconcileTranscriptFromStatus = async (statusSessions) => {
   const transcript = ensureSessionTranscript(active);
   if (!transcript) return false;
   const incomingRev = Math.max(0, Number(entry.transcript_rev) || 0);
-  let refreshed = false;
-  if (incomingRev > transcript.rev) {
-    refreshed = await syncTranscript(active, { reason: 'status', targetRev: incomingRev });
-  }
   const activeResponseId = String(entry.active_response_id || '').trim();
   const startedRev = Math.max(0, Number(entry.started_rev) || 0);
+  const targetRev = activeResponseId ? startedRev : incomingRev;
+  let refreshed = false;
+  if (targetRev > transcript.rev) {
+    refreshed = await syncTranscript(active, {
+      reason: activeResponseId ? 'attach' : 'status',
+      targetRev,
+      force: Boolean(activeResponseId)
+    });
+  }
   if (activeResponseId) {
     transcript.setActiveRun(activeResponseId, startedRev);
-    if (transcript.rev < startedRev) {
-      refreshed = await syncTranscript(active, { reason: 'attach', targetRev: startedRev, force: true }) || refreshed;
-    }
     if (transcript.rev >= startedRev
       && !state.abortController
       && !state.streaming
@@ -1564,12 +1566,17 @@ const syncActiveSessionFromServer = async (session, pollOnActive = false, { skip
 
   const transcript = ensureSessionTranscript(session);
   const runtimeTranscriptRev = Math.max(0, Number(runtimeState.transcript_rev) || 0);
+  const activeResponseId = String(runtimeState.active_response_id || '').trim();
   const startedRev = Math.max(0, Number(runtimeState.started_rev) || 0);
-  if (transcript && runtimeTranscriptRev > transcript.rev && isStillActive()) {
-    await syncTranscript(session, { reason: 'state', targetRev: runtimeTranscriptRev });
+  const targetTranscriptRev = activeResponseId ? startedRev : runtimeTranscriptRev;
+  if (transcript && targetTranscriptRev > transcript.rev && isStillActive()) {
+    await syncTranscript(session, {
+      reason: activeResponseId ? 'attach' : 'state',
+      targetRev: targetTranscriptRev,
+      force: Boolean(activeResponseId)
+    });
   }
 
-  const activeResponseId = String(runtimeState.active_response_id || '').trim();
   const activeRun = Boolean(runtimeState.active_run);
   setSessionServerActiveRun(session, activeRun || Boolean(activeResponseId));
   const updateBusySidebar = () => {
@@ -1582,9 +1589,6 @@ const syncActiveSessionFromServer = async (session, pollOnActive = false, { skip
   if (activeResponseId) {
     if (transcript) {
       transcript.setActiveRun(activeResponseId, startedRev);
-      if (transcript.rev < startedRev && isStillActive()) {
-        await syncTranscript(session, { reason: 'attach', targetRev: startedRev, force: true });
-      }
     }
     const responseChanged = session.activeResponseId !== activeResponseId;
     const recoverFromSnapshot = false;
@@ -3098,6 +3102,7 @@ Object.assign(app, {
   compactionDuplicateTailRange,
   loadServerSessionMessages,
   syncTranscript,
+  reconcileTranscriptFromStatus,
   materializeTranscriptSegments,
   trackTranscriptOptimistic,
   persistTranscriptOptimistic,

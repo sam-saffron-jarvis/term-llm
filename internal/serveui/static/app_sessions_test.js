@@ -3568,6 +3568,53 @@ async function testStoppedRunReconciliationClearsProviderRetryOwner() {
   pass(name);
 }
 
+async function testActiveStatusDefersInRunTranscriptRevisionsUntilTerminal() {
+  const name = 'active status attaches at started_rev without reconciling in-run revisions';
+  const fetchCalls = [];
+  const { app, windowObj } = await createSessionsHarness({
+    fetchImpl: async (url) => {
+      fetchCalls.push(String(url));
+      if (isTranscriptIndexURL(url, 'sess_active_rev')) {
+        return new Response(JSON.stringify({
+          rev: 9,
+          compaction_seq: -1,
+          compaction_count: 0,
+          rows: { ids: [], seqs: [], roles: '', flags: [] }
+        }), { status: 200, headers: { 'Content-Type': 'application/json', ETag: '"active-9"' } });
+      }
+      if (String(url) === '/ui/v1/sessions') {
+        return new Response(JSON.stringify({ sessions: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      return new Response(JSON.stringify({ sessions: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }
+  });
+  const session = { id: 'sess_active_rev', messages: [], activeResponseId: null, lastSequenceNumber: 0 };
+  session.transcript = new windowObj.TranscriptStore(session.id);
+  session.transcript.applyIndex({ rev: 5, compaction_seq: -1, compaction_count: 0, rows: { ids: [], seqs: [], roles: '', flags: [] } });
+  app.state.sessions = [session];
+  app.state.activeSessionId = session.id;
+  app.state.draftSessionActive = false;
+  app.state.streaming = true;
+  fetchCalls.length = 0;
+
+  await app.reconcileTranscriptFromStatus([{
+    id: session.id,
+    active_response_id: 'resp_active',
+    started_rev: 5,
+    transcript_rev: 9,
+    active_run: true
+  }]);
+  if (fetchCalls.some((url) => isTranscriptIndexURL(url, session.id))) {
+    fail(name, 'status poll reconciled rows persisted after started_rev while the run was active', JSON.stringify(fetchCalls));
+    return;
+  }
+  if (session.transcript.activeRun?.startedRev !== 5) {
+    fail(name, 'active run attachment did not retain started_rev', JSON.stringify(session.transcript.activeRun));
+    return;
+  }
+  pass(name);
+}
+
 (async () => {
   await testSanitizeMessagePreservesSkillRunState();
   await testSanitizeMessagePreservesPlanExecutionEvidence();
@@ -3605,6 +3652,7 @@ async function testStoppedRunReconciliationClearsProviderRetryOwner() {
   await testConvertServerMessagesSuppressesNonBubbleAssistantRows();
   await testSwitchToSessionSyncsWithoutTokenAndResumes();
   await testSwitchToSessionAttachesChangedActiveResponseFromStartedRevision();
+  await testActiveStatusDefersInRunTranscriptRevisionsUntilTerminal();
   await testIdleSessionSyncRescuesPendingInterruptCommit();
   await testSessionProgressStatePrefersLocalAndServerSignals();
   await testResumeAndDrainFiringViaSync();
