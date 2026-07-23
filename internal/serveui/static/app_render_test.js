@@ -2002,6 +2002,23 @@ async function run(name, fn) {
     assertEqual(messages.children.length, 0, 'fast path does not re-query or create a new node');
   });
 
+  await run('renderMessages bounds transcript DOM by turn containers and explicit gaps', () => {
+    const { app, session, messages } = createHarness();
+    session.transcript = {};
+    session.messages = [
+      { id: 'u1', role: 'user', content: 'one', durable: true, durableRowId: 1, transcriptSegmentIndex: 0, created: Date.now() },
+      { id: 'a1', role: 'assistant', content: 'answer', durable: true, durableRowId: 2, transcriptSegmentIndex: 0, created: Date.now() },
+      { id: 'gap', role: 'transcript-gap', transcriptGap: true, startOrdinal: 2, endOrdinal: 1000, estimatedHeight: 5000, segmentIndexes: [1, 2, 3] },
+      { id: 'u2', role: 'user', content: 'later', durable: true, durableRowId: 1002, transcriptSegmentIndex: 4, created: Date.now() },
+    ];
+    app.renderMessages();
+    assertEqual(messages.children.length, 3, 'two materialized turns plus one contiguous gap are the only top-level DOM nodes');
+    assert(messages.children[0].classList.contains('transcript-turn'), 'first durable turn is grouped');
+    assertEqual(messages.children[0].children.length, 2, 'rows in one turn share a container');
+    assert(messages.children[1].classList.contains('transcript-gap'), 'unloaded ordinals render as an explicit gap');
+    assertEqual(messages.children[1].dataset.segmentIndexes, '1,2,3', 'gap retains materialization target segments');
+  });
+
   if (failures > 0) {
     process.exit(1);
   }

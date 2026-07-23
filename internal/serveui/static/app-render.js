@@ -1610,7 +1610,46 @@ const createSkillRunNode = (message) => {
   return article;
 };
 
+let transcriptGapObserver = null;
+
+const observeTranscriptGap = (node, message, sessionId) => {
+  const load = () => {
+    const session = state.sessions.find((item) => item?.id === sessionId) || null;
+    if (session) void app.materializeTranscriptSegments?.(session, message.segmentIndexes || []);
+  };
+  node.addEventListener?.('click', load);
+  if (typeof IntersectionObserver !== 'function') return;
+  if (!transcriptGapObserver) {
+    transcriptGapObserver = new IntersectionObserver((entries) => {
+      entries.forEach((entry) => {
+        if (!entry.isIntersecting) return;
+        transcriptGapObserver.unobserve(entry.target);
+        const session = state.sessions.find((item) => item?.id === entry.target.dataset?.sessionId) || null;
+        const indexes = String(entry.target.dataset?.segmentIndexes || '').split(',').map(Number).filter(Number.isFinite);
+        if (session) void app.materializeTranscriptSegments?.(session, indexes);
+      });
+    }, { root: elements.chatScroll || null, rootMargin: '800px 0px' });
+  }
+  transcriptGapObserver.observe(node);
+};
+
+const createTranscriptGapNode = (message) => {
+  const gap = document.createElement('div');
+  gap.className = 'transcript-gap';
+  gap.dataset.messageId = message.id;
+  gap.dataset.segmentIndexes = (message.segmentIndexes || []).join(',');
+  gap.style.height = `${Math.max(1, Number(message.estimatedHeight) || 1)}px`;
+  gap.setAttribute('role', 'button');
+  gap.setAttribute('tabindex', '0');
+  gap.setAttribute('aria-label', `Load transcript rows ${Number(message.startOrdinal) + 1} through ${Number(message.endOrdinal) + 1}`);
+  const label = document.createElement('span');
+  label.textContent = 'Load earlier transcript';
+  gap.appendChild(label);
+  return gap;
+};
+
 const createMessageNode = (message) => {
+  if (message.role === 'transcript-gap') return createTranscriptGapNode(message);
   if (message.role === 'skill-run') return createSkillRunNode(message);
   if (message.role === 'tool') return createToolCard(message);
   if (message.role === 'tool-group') return createToolGroupNode(message);
@@ -2584,6 +2623,46 @@ const recordMountedConversationDiagnostics = (startedAt, messageCount, renderMod
   elements.messages.dataset.renderMode = renderMode;
 };
 
+const renderTranscriptMessages = (session, messages, forceScroll, renderStartedAt) => {
+  elements.messages.innerHTML = '';
+  let currentContainer = null;
+  let currentSegmentIndex = null;
+  for (const message of messages) {
+    if (message.role === 'transcript-gap') {
+      currentContainer = null;
+      currentSegmentIndex = null;
+      const gap = stampMessageNodeSession(createTranscriptGapNode(message), session.id);
+      elements.messages.appendChild(gap);
+      observeTranscriptGap(gap, message, session.id);
+      continue;
+    }
+    const node = stampMessageNodeSession(createMessageNode(message), session.id);
+    if (message.durableRowId != null && node?.dataset) node.dataset.durableId = String(message.durableRowId);
+    if (message.durable && message.transcriptSegmentIndex != null) {
+      if (!currentContainer || currentSegmentIndex !== message.transcriptSegmentIndex) {
+        currentContainer = document.createElement('section');
+        currentContainer.className = 'transcript-turn';
+        currentContainer.dataset.segmentIndex = String(message.transcriptSegmentIndex);
+        elements.messages.appendChild(currentContainer);
+        currentSegmentIndex = message.transcriptSegmentIndex;
+      }
+      currentContainer.appendChild(node);
+    } else {
+      currentContainer = null;
+      currentSegmentIndex = null;
+      elements.messages.appendChild(node);
+    }
+  }
+  _lastRenderedSessionId = session.id;
+  _lastRenderedMessageIds = messages.map((message) => message.id);
+  _lastRenderedMessageKeys = new Map(messages.map((message) => [message.id, messageRenderKey(message)]));
+  syncTurnActionPanels();
+  refreshRelativeTimes();
+  scrollToBottom(forceScroll);
+  updateHeader();
+  recordMountedConversationDiagnostics(renderStartedAt, messages.length, 'transcript');
+};
+
 const renderMessages = (forceScroll = false) => {
   const renderStartedAt = renderDiagnosticsNow();
   const session = ensureActiveSession();
@@ -2610,6 +2689,11 @@ const renderMessages = (forceScroll = false) => {
     scrollToBottom(forceScroll);
     updateHeader();
     recordMountedConversationDiagnostics(renderStartedAt, messages.length, 'empty');
+    return;
+  }
+
+  if (session?.transcript) {
+    renderTranscriptMessages(session, messages, forceScroll, renderStartedAt);
     return;
   }
 

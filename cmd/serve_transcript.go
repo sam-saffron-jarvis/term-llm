@@ -54,6 +54,9 @@ func transcriptIndexerForWeb(store session.Store) (session.TranscriptIndexer, bo
 	if store == nil {
 		return nil, false
 	}
+	if reporter, ok := store.(session.TranscriptVersionReporter); ok && !reporter.TranscriptVersioned() {
+		return nil, false
+	}
 	if loggingStore, ok := store.(*session.LoggingStore); ok {
 		if _, supported := transcriptIndexerForWeb(loggingStore.Store); !supported {
 			return nil, false

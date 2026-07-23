@@ -3185,6 +3185,12 @@ func (s *SQLiteStore) messageSelectCols() string {
 	return `id, session_id, role, parts, text_content, duration_ms, turn_index, created_at, sequence, ` + compactionTailCol
 }
 
+// TranscriptVersioned reports whether this database has durable transcript
+// revisions. It is false only for old schemas opened read-only without migration.
+func (s *SQLiteStore) TranscriptVersioned() bool {
+	return s != nil && s.hasTranscriptRev
+}
+
 // TranscriptRev returns the current durable transcript revision. Old read-only
 // databases without the revision column are explicitly unversioned (revision 0).
 func (s *SQLiteStore) TranscriptRev(ctx context.Context, sessionID string) (int64, error) {

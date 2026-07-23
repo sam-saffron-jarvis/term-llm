@@ -28,7 +28,8 @@ const STORAGE_BASE_KEYS = {
   showWidgetsSidebar: 'term_llm_show_widgets_sidebar',
   notificationsEnabled: 'term_llm_notifications_enabled',
   lastNotifiedResponseId: 'term_llm_last_notified_response_id',
-  draftMessages: 'term_llm_draft_messages'
+  draftMessages: 'term_llm_draft_messages',
+  optimisticTranscript: 'term_llm_optimistic_transcript'
 };
 
 const parseSidebarSessionCategories = (raw) => {

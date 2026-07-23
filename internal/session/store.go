@@ -223,6 +223,12 @@ type TranscriptIndexer interface {
 	TranscriptRev(ctx context.Context, sessionID string) (int64, error)
 }
 
+// TranscriptVersionReporter distinguishes a current revisioned schema from an
+// older read-only database where TranscriptIndexer exposes revision zero only.
+type TranscriptVersionReporter interface {
+	TranscriptVersioned() bool
+}
+
 // MessagesDescendingPager is an optional Store capability for efficient reverse
 // pagination over session messages. Implementations return messages ordered by
 // descending sequence and, when beforeSeq > 0, only rows with sequence < beforeSeq.

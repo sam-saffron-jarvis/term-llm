@@ -179,6 +179,12 @@ type TranscriptIndexer interface {
     TranscriptRev(ctx, sessionID string) (int64, error)
 }
 
+type TranscriptVersionReporter interface {
+    // False only for an older database opened read-only without the migration;
+    // the serve layer then exposes the documented /messages fallback instead.
+    TranscriptVersioned() bool
+}
+
 type TranscriptSnapshot struct {
     Rev int64
     CompactionSeq, CompactionCount int

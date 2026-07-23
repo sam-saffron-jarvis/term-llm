@@ -360,12 +360,11 @@
       const clientKey = String(entry.clientKey || entry.id || `optimistic-${Date.now()}-${this.optimistic.length}`);
       const existing = this.optimistic.find((item) => String(item.clientKey || item.id || '') === clientKey);
       if (existing) return existing;
-      const optimistic = Object.assign({}, entry, {
-        clientKey,
-        optimistic: true,
-        revAtSend: finiteInt(entry.revAtSend, finiteInt(revAtSend, this.rev)),
-        durableSeqAtSend: finiteInt(entry.durableSeqAtSend, this.seqs.length ? this.seqs[this.seqs.length - 1] : -1)
-      });
+      const optimistic = entry;
+      optimistic.clientKey = clientKey;
+      optimistic.optimistic = true;
+      optimistic.revAtSend = finiteInt(entry.revAtSend, finiteInt(revAtSend, this.rev));
+      optimistic.durableSeqAtSend = finiteInt(entry.durableSeqAtSend, this.seqs.length ? this.seqs[this.seqs.length - 1] : -1);
       this.optimistic.push(optimistic);
       return optimistic;
     }
