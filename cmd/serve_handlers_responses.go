@@ -356,6 +356,15 @@ func (s *serveServer) handleResolvedResponses(w http.ResponseWriter, r *http.Req
 		s.syncPersistedSessionRuntime(ctx, sessionID, runtime, req.Model, req.ReasoningEffort, reasoningMode, true, req.WorktreeDir)
 	}
 
+	// A first-party web interjection that reaches a text-only response boundary is
+	// re-sent as a normal follow-up with the same logical message ID. Transfer
+	// ownership before starting that follow-up: otherwise the engine retains the
+	// queued interjection and can inject it again at the new run's first tool
+	// boundary, persisting the user's message twice.
+	if stateful && idempotencyKey != "" && isFirstPartyUIResponseRequest(r) && runtime.engine != nil {
+		runtime.engine.CancelInterjection(idempotencyKey)
+	}
+
 	cleanupRuntime := !stateful
 	if cleanupRuntime {
 		defer func() {
