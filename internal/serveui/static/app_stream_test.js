@@ -3615,6 +3615,27 @@ function testModelSwapProgressEventUpdatesTransientMarker() {
   pass(name);
 }
 
+function testGuardianReviewEventIsDisplayOnlyTransient() {
+  const name = 'guardian review event is display-only and transient';
+  const { app, state } = createHarness();
+  const session = {
+    id: 'session_guardian', title: 'Guardian', messages: [], lastResponseId: null,
+    activeResponseId: null, lastSequenceNumber: 0, number: 1,
+  };
+  state.sessions.push(session);
+  state.activeSessionId = session.id;
+  const streamState = app.createResponseStreamState(session);
+  app.applyResponseStreamEvent(session, streamState, 'response.guardian.review', {
+    message: 'Guardian approved command', sequence_number: 1,
+  });
+  const marker = session.messages[0];
+  if (!marker || marker.role !== 'event' || !marker.transient) {
+    fail(name, 'guardian marker can leak into durable optimistic recovery', JSON.stringify(marker));
+    return;
+  }
+  pass(name);
+}
+
 function testResponsePhaseEventUpdatesTransientMarker() {
   const name = 'response phase event updates transient marker without assistant text';
   const harness = createHarness();
@@ -6350,6 +6371,7 @@ async function testIsolatedSkillStreamsIndependentlyAndCancelsIndependently() {
   testResponseModelSwitchStabilizesEffortAndClearsPending();
   testCompletedResponseClearsUnappliedQueuedEffort();
   testModelSwapProgressEventUpdatesTransientMarker();
+  testGuardianReviewEventIsDisplayOnlyTransient();
   testResponsePhaseEventUpdatesTransientMarker();
   testResponseRetryEventUpdatesOwnedHeaderStatus();
   testProviderRetryClearsOnMeaningfulProgress();

@@ -2182,6 +2182,7 @@ let _savedActiveSessionId = /** @type {string|null} */ (null);
 let _savedDraftActive = /** @type {string|null} */ (null);
 
 const saveSessions = () => {
+  const sessionsBeforePrune = state.sessions.slice();
   if (state.sessions.length > 100) {
     const activeSessionId = state.activeSessionId || '';
     const activeSession = activeSessionId
@@ -2201,6 +2202,10 @@ const saveSessions = () => {
     if (!state.draftSessionActive && !state.sessions.find((s) => s.id === state.activeSessionId)) {
       state.activeSessionId = '';
     }
+  }
+  const retainedSessionIDs = new Set(state.sessions.map((session) => session.id));
+  for (const removed of sessionsBeforePrune) {
+    if (!retainedSessionIDs.has(removed.id)) removed.transcript?.destroy?.();
   }
   evictStaleSessionMessages();
   const nextActiveId = state.activeSessionId || '';

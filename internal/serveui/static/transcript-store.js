@@ -71,6 +71,8 @@
       const seqs = Array.isArray(rows.seqs) ? rows.seqs.map((seq) => finiteInt(seq, -1)) : [];
       const flags = Array.isArray(rows.flags) ? rows.flags.map((flag) => finiteInt(flag, 0)) : [];
       const roles = String(rows.roles || '');
+      const incomingRev = finiteInt(envelope?.rev, this.rev);
+      const rollback = incomingRev < this.rev;
       if (ids.length !== seqs.length || ids.length !== flags.length || ids.length !== roles.length) {
         throw new Error('invalid transcript index parallel arrays');
       }
@@ -88,10 +90,14 @@
       }
       const compactionChanged = this.compactionSeq !== finiteInt(envelope?.compaction_seq, -1)
         || this.compactionCount !== finiteInt(envelope?.compaction_count, 0);
-      const changed = divergence !== this.ids.length || divergence !== ids.length || compactionChanged;
-      const appendOnly = !compactionChanged && divergence === this.ids.length && ids.length >= this.ids.length;
+      const changed = rollback || divergence !== this.ids.length || divergence !== ids.length || compactionChanged;
+      const appendOnly = !rollback && !compactionChanged && divergence === this.ids.length && ids.length >= this.ids.length;
       if (changed && !appendOnly) this.stats.rewrites += 1;
 
+      if (rollback) {
+        this.bodies.clear();
+        for (const local of this.optimistic) local.revAtSend = incomingRev;
+      }
       const surviving = new Set(ids);
       for (const id of this.bodies.keys()) {
         if (!surviving.has(id)) this.bodies.delete(id);
@@ -104,11 +110,11 @@
       this.compactionSeq = finiteInt(envelope?.compaction_seq, -1);
       this.compactionCount = finiteInt(envelope?.compaction_count, 0);
       this.rebuildSegments(oldSegmentState);
-      this.rev = Math.max(this.rev, finiteInt(envelope?.rev, this.rev));
+      this.rev = incomingRev;
       if (etag) this.etag = String(etag);
       this.refreshPinnedSegments();
       this.enforceBudget();
-      return { changed, appendOnly, divergence };
+      return { changed, appendOnly, divergence, rollback };
     }
 
     segmentStateByDurableRange() {
@@ -195,7 +201,9 @@
     refreshSegmentState(segment) {
       const index = this.segments.indexOf(segment);
       const required = this.requiredBodyIDs(index);
-      segment.state = required.length > 0 && required.every((id) => this.bodies.has(id)) ? 'materialized' : 'evicted';
+      segment.state = required.length === 0
+        ? 'empty'
+        : (required.every((id) => this.bodies.has(id)) ? 'materialized' : 'evicted');
       if (segment.state === 'evicted') {
         for (let ordinal = segment.startOrdinal; ordinal <= segment.endOrdinal; ordinal += 1) {
           this.bodies.delete(this.ids[ordinal]);
@@ -303,6 +311,11 @@
       const runs = [];
       for (let index = 0; index < this.segments.length; index += 1) {
         const segment = this.segments[index];
+        if (segment.state === 'empty') {
+          const previous = runs[runs.length - 1];
+          if (previous?.type === 'gap') previous.endOrdinal = segment.endOrdinal;
+          continue;
+        }
         if (segment.state === 'materialized') {
           runs.push({
             type: 'segment',
@@ -438,6 +451,12 @@
       return removed;
     }
 
+    clearTransientOptimistic() {
+      const removed = this.optimistic.filter((entry) => entry?.transient);
+      this.optimistic = this.optimistic.filter((entry) => !entry?.transient);
+      return removed;
+    }
+
     withViewportAnchor(adapter, mutation) {
       const anchor = adapter?.capture?.() || null;
       const oldIDs = this.ids.slice();
@@ -485,7 +504,16 @@
 
     releaseBodies() {
       this.bodies.clear();
-      for (const segment of this.segments) segment.state = 'evicted';
+      for (const segment of this.segments) this.refreshSegmentState(segment);
+    }
+
+    rekey(sessionId) {
+      const next = String(sessionId || '');
+      if (!next || next === this.sessionId) return this;
+      if (storesBySession.get(this.sessionId) === this) storesBySession.delete(this.sessionId);
+      this.sessionId = next;
+      storesBySession.set(this.sessionId, this);
+      return this;
     }
 
     destroy() {
@@ -511,7 +539,9 @@
         nextOrdinal = segment.endOrdinal + 1;
         const required = this.requiredBodyIDs(index);
         const complete = required.length > 0 && required.every((id) => this.bodies.has(id));
-        if ((segment.state === 'materialized') !== complete) {
+        if (required.length === 0) {
+          if (segment.state !== 'empty') throw new Error(`segment ${index} with no display rows is not stable-empty`);
+        } else if ((segment.state === 'materialized') !== complete) {
           throw new Error(`segment ${index} has partial materialization`);
         }
         if (segment.state === 'evicted') {

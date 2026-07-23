@@ -1103,7 +1103,8 @@ const applyResponseStreamEvent = (session, streamState, event, payload) => {
         id: generateId('msg'),
         role: 'event',
         content: text,
-        created: Date.now()
+        created: Date.now(),
+        transient: true
       };
       session.messages.push(message);
       app.trackTranscriptOptimistic?.(session, message);
@@ -4135,7 +4136,8 @@ const addErrorMessage = (text, session) => {
     id: generateId('msg'),
     role: 'error',
     content: text,
-    created: Date.now()
+    created: Date.now(),
+    transient: true
   };
   session.messages.push(message);
   app.trackTranscriptOptimistic?.(session, message);

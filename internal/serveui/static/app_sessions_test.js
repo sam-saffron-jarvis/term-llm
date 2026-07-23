@@ -3568,6 +3568,131 @@ async function testStoppedRunReconciliationClearsProviderRetryOwner() {
   pass(name);
 }
 
+async function testSessionPruningDestroysTranscriptStores() {
+  const name = 'session pruning destroys transcript stores for removed sessions';
+  const { app } = await createSessionsHarness();
+  const destroyed = [];
+  app.state.sessions = Array.from({ length: 101 }, (_, index) => ({
+    id: `prune-${index}`,
+    created: index,
+    messages: [],
+    transcript: { destroy() { destroyed.push(index); } }
+  }));
+  app.state.activeSessionId = 'prune-100';
+  app.state.draftSessionActive = false;
+  app.saveSessions();
+  if (app.state.sessions.length !== 100 || destroyed.length !== 1 || destroyed[0] !== 0) {
+    fail(name, 'removed session retained its transcript store', JSON.stringify({ count: app.state.sessions.length, destroyed }));
+    return;
+  }
+  pass(name);
+}
+
+async function testOptimisticTranscriptStorageIsPerSession() {
+  const name = 'optimistic transcript storage keeps independent per-session entries';
+  const { app, storage } = await createSessionsHarness();
+  const first = { id: 'optimistic-a', messages: [] };
+  const second = { id: 'optimistic-b', messages: [] };
+  app.trackTranscriptOptimistic(first, { id: 'local-a', clientKey: 'send-a', role: 'user', content: 'a' });
+  app.trackTranscriptOptimistic(second, { id: 'local-b', clientKey: 'send-b', role: 'user', content: 'b' });
+  app.trackTranscriptOptimistic(first, { id: 'guardian-a', clientKey: 'guardian-a', role: 'event', content: 'review' });
+
+  const saved = JSON.parse(storage.get('term_llm_optimistic_transcript') || 'null');
+  const firstEntries = saved?.sessions?.[first.id] || [];
+  const secondEntries = saved?.sessions?.[second.id] || [];
+  if (firstEntries.length !== 1 || firstEntries[0].clientKey !== 'send-a' || secondEntries.length !== 1 || secondEntries[0].clientKey !== 'send-b') {
+    fail(name, 'one session clobbered another or persisted a display-only row', JSON.stringify(saved));
+    return;
+  }
+  pass(name);
+}
+
+async function testGroupedToolRowsPreserveDurableRangesAndLaterAnchors() {
+  const name = 'grouped tool conversion preserves source range and later durable anchors';
+  const { app, windowObj } = await createSessionsHarness();
+  const raw = [
+    { id: 101, sequence: 1, role: 'user', created_at: 1000, parts: [{ type: 'text', text: 'run it' }] },
+    { id: 102, sequence: 2, role: 'assistant', created_at: 2000, parts: [{ type: 'tool_call', tool_name: 'read_file', tool_call_id: 'call-1' }] },
+    { id: 103, sequence: 3, role: 'tool', created_at: 3000, parts: [{ type: 'tool_result', tool_name: 'read_file', tool_call_id: 'call-1' }] },
+    { id: 104, sequence: 4, role: 'assistant', created_at: 4000, parts: [{ type: 'text', text: 'done' }] },
+  ];
+  const session = { id: 'durable-groups', messages: [] };
+  session.transcript = new windowObj.TranscriptStore(session.id);
+  session.transcript.applyIndex({
+    rev: 4,
+    compaction_seq: -1,
+    compaction_count: 0,
+    rows: { ids: [101, 102, 103, 104], seqs: [1, 2, 3, 4], roles: 'uata', flags: [0, 0, 2, 0] }
+  });
+  session.transcript.materialize(raw);
+  app.state.sessions = [session];
+  app.state.activeSessionId = session.id;
+  app.state.draftSessionActive = false;
+  app.refreshSessionMessagesFromTranscript(session);
+
+  const group = session.messages.find((message) => message.role === 'tool-group');
+  const later = session.messages.find((message) => message.role === 'assistant' && message.content === 'done');
+  const anchorIDs = session.messages.map((message) => message.durableRowId).filter((id) => id != null);
+  if (!group || group.durableRowStartId !== 102 || group.durableRowEndId !== 103) {
+    fail(name, 'tool group did not retain its complete durable source range', JSON.stringify(session.messages));
+    return;
+  }
+  if (!later || later.durableRowId !== 104) {
+    fail(name, 'later assistant inherited the grouped tool result row ID', JSON.stringify(session.messages));
+    return;
+  }
+  if (new Set(anchorIDs).size !== anchorIDs.length) {
+    fail(name, 'DOM durable anchors are not unique', JSON.stringify(anchorIDs));
+    return;
+  }
+  pass(name);
+}
+
+async function testTerminalTranscriptSyncQueuesBehindInflightRequest() {
+  const name = 'terminal transcript sync follows an in-flight request until final revision';
+  let resolveFirst;
+  const transcriptRequests = [];
+  const { app, windowObj } = await createSessionsHarness({
+    fetchImpl: async (url, options = {}) => {
+      if (isTranscriptIndexURL(url, 'sync-race')) {
+        transcriptRequests.push({ url: String(url), headers: options.headers || {} });
+        if (transcriptRequests.length === 1) {
+          return new Promise((resolve) => { resolveFirst = resolve; });
+        }
+        return new Response(JSON.stringify({
+          rev: 2, compaction_seq: -1, compaction_count: 0,
+          rows: { ids: [], seqs: [], roles: '', flags: [] }
+        }), { status: 200, headers: { 'Content-Type': 'application/json', ETag: '"rev-2"' } });
+      }
+      return new Response(JSON.stringify({ sessions: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }
+  });
+  const session = { id: 'sync-race', messages: [] };
+  session.transcript = new windowObj.TranscriptStore(session.id);
+  app.state.sessions = [session];
+  app.state.activeSessionId = session.id;
+  app.state.draftSessionActive = false;
+
+  const ordinary = app.syncTranscript(session, { reason: 'ordinary' });
+  while (typeof resolveFirst !== 'function') await new Promise((resolve) => setTimeout(resolve, 0));
+  const terminal = app.noteTranscriptTerminal(session, 2);
+  resolveFirst(new Response(JSON.stringify({
+    rev: 1, compaction_seq: -1, compaction_count: 0,
+    rows: { ids: [], seqs: [], roles: '', flags: [] }
+  }), { status: 200, headers: { 'Content-Type': 'application/json', ETag: '"rev-1"' } }));
+
+  const [ordinaryResult, terminalResult] = await Promise.all([ordinary, terminal]);
+  if (!ordinaryResult || !terminalResult || session.transcript.rev !== 2 || transcriptRequests.length !== 2) {
+    fail(name, 'coalescing swallowed the forced final revision sync', JSON.stringify({ ordinaryResult, terminalResult, rev: session.transcript.rev, requests: transcriptRequests.length }));
+    return;
+  }
+  if (Object.keys(transcriptRequests[1].headers).some((key) => key.toLowerCase() === 'if-none-match')) {
+    fail(name, 'queued terminal follow-up was not forced', JSON.stringify(transcriptRequests[1].headers));
+    return;
+  }
+  pass(name);
+}
+
 async function testActiveStatusDefersInRunTranscriptRevisionsUntilTerminal() {
   const name = 'active status attaches at started_rev without reconciling in-run revisions';
   const fetchCalls = [];
@@ -3650,6 +3775,10 @@ async function testActiveStatusDefersInRunTranscriptRevisionsUntilTerminal() {
   await testConvertServerMessagesCorrelatesSuccessfulPlanResults();
   await testConvertServerMessagesRebasesHubImageURLs();
   await testConvertServerMessagesSuppressesNonBubbleAssistantRows();
+  await testSessionPruningDestroysTranscriptStores();
+  await testOptimisticTranscriptStorageIsPerSession();
+  await testGroupedToolRowsPreserveDurableRangesAndLaterAnchors();
+  await testTerminalTranscriptSyncQueuesBehindInflightRequest();
   await testSwitchToSessionSyncsWithoutTokenAndResumes();
   await testSwitchToSessionAttachesChangedActiveResponseFromStartedRevision();
   await testActiveStatusDefersInRunTranscriptRevisionsUntilTerminal();

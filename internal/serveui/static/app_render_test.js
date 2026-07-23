@@ -2002,6 +2002,27 @@ async function run(name, fn) {
     assertEqual(messages.children.length, 0, 'fast path does not re-query or create a new node');
   });
 
+  await run('renderMessages reuses unchanged transcript nodes during incremental streaming updates', () => {
+    const { app, session, messages } = createHarness();
+    session.transcript = {};
+    session.messages = [
+      { id: 'tu1', role: 'user', content: 'one', durable: true, durableRowId: 1, transcriptSegmentIndex: 0, created: Date.now() },
+      { id: 'ta1', role: 'assistant', content: 'stable', durable: true, durableRowId: 2, transcriptSegmentIndex: 0, created: Date.now() },
+    ];
+    app.renderMessages();
+    const turn = messages.children[0];
+    const userNode = turn.children[0];
+    const assistantNode = turn.children[1];
+
+    session.messages.push({ id: 'stream-tail', role: 'assistant', content: 'growing', optimistic: true, created: Date.now() });
+    app.renderMessages();
+
+    assert(messages.children[0] === turn, 'turn container should survive the stream append');
+    assert(turn.children[0] === userNode, 'unchanged durable user node should survive the stream append');
+    assert(turn.children[1] === assistantNode, 'unchanged durable assistant node should survive the stream append');
+    assertEqual(messages.children[1].dataset.messageId, 'stream-tail', 'stream tail should append after materialized turn');
+  });
+
   await run('renderMessages bounds transcript DOM by turn containers and explicit gaps', () => {
     const { app, session, messages } = createHarness();
     session.transcript = {};

@@ -1639,6 +1639,8 @@ const createTranscriptGapNode = (message) => {
   const gap = document.createElement('div');
   gap.className = 'transcript-gap';
   gap.dataset.messageId = message.id;
+  gap.dataset.startOrdinal = String(message.startOrdinal);
+  gap.dataset.endOrdinal = String(message.endOrdinal);
   gap.dataset.segmentIndexes = (message.segmentIndexes || []).join(',');
   gap.style.height = `${Math.max(1, Number(message.estimatedHeight) || 1)}px`;
   gap.setAttribute('role', 'button');
@@ -2625,36 +2627,116 @@ const recordMountedConversationDiagnostics = (startedAt, messageCount, renderMod
   elements.messages.dataset.renderMode = renderMode;
 };
 
-const renderTranscriptMessages = (session, messages, forceScroll, renderStartedAt) => {
-  elements.messages.innerHTML = '';
-  let currentContainer = null;
-  let currentSegmentIndex = null;
+const stampTranscriptDurableRange = (node, message) => {
+  if (!node?.dataset) return;
+  if (message.durableRowId != null) node.dataset.durableId = String(message.durableRowId);
+  else delete node.dataset.durableId;
+  if (message.durableRowStartId != null) node.dataset.durableStartId = String(message.durableRowStartId);
+  else delete node.dataset.durableStartId;
+  if (message.durableRowEndId != null) node.dataset.durableEndId = String(message.durableRowEndId);
+  else delete node.dataset.durableEndId;
+};
+
+const reconcileTranscriptMessageNode = (existing, message, sessionId) => {
+  const renderKey = messageRenderKey(message);
+  let node = existing;
+  if (!node || !messageNodeMatchesRole(node, message) || _lastRenderedMessageKeys.get(message.id) !== renderKey) {
+    const replacement = stampMessageNodeSession(createMessageNode(message), sessionId);
+    if (node) node.replaceWith(replacement);
+    node = replacement;
+  } else {
+    stampMessageNodeSession(node, sessionId);
+  }
+  stampTranscriptDurableRange(node, message);
+  return node;
+};
+
+const reconcileTranscriptTurn = (turn, descriptor, sessionId) => {
+  const existing = new Map(Array.from(turn.children || [])
+    .filter((node) => node.dataset?.messageId)
+    .map((node) => [node.dataset.messageId, node]));
+  descriptor.messages.forEach((message, index) => {
+    const node = reconcileTranscriptMessageNode(existing.get(message.id) || null, message, sessionId);
+    const current = turn.children[index] || null;
+    if (current !== node) turn.insertBefore(node, current);
+    existing.delete(message.id);
+  });
+  existing.forEach((node) => node.remove());
+};
+
+const transcriptRenderDescriptors = (messages) => {
+  const descriptors = [];
+  let currentTurn = null;
   for (const message of messages) {
     if (message.role === 'transcript-gap') {
-      currentContainer = null;
-      currentSegmentIndex = null;
-      const gap = stampMessageNodeSession(createTranscriptGapNode(message), session.id);
-      elements.messages.appendChild(gap);
-      observeTranscriptGap(gap, message, session.id);
-      continue;
-    }
-    const node = stampMessageNodeSession(createMessageNode(message), session.id);
-    if (message.durableRowId != null && node?.dataset) node.dataset.durableId = String(message.durableRowId);
-    if (message.durable && message.transcriptSegmentIndex != null) {
-      if (!currentContainer || currentSegmentIndex !== message.transcriptSegmentIndex) {
-        currentContainer = document.createElement('section');
-        currentContainer.className = 'transcript-turn';
-        currentContainer.dataset.segmentIndex = String(message.transcriptSegmentIndex);
-        elements.messages.appendChild(currentContainer);
-        currentSegmentIndex = message.transcriptSegmentIndex;
+      currentTurn = null;
+      descriptors.push({ key: `gap:${message.startOrdinal}:${message.endOrdinal}`, type: 'gap', message });
+    } else if (message.durable && message.transcriptSegmentIndex != null) {
+      const key = `turn:${message.transcriptSegmentIndex}`;
+      if (!currentTurn || currentTurn.key !== key) {
+        currentTurn = { key, type: 'turn', segmentIndex: message.transcriptSegmentIndex, messages: [] };
+        descriptors.push(currentTurn);
       }
-      currentContainer.appendChild(node);
+      currentTurn.messages.push(message);
     } else {
-      currentContainer = null;
-      currentSegmentIndex = null;
-      elements.messages.appendChild(node);
+      currentTurn = null;
+      descriptors.push({ key: `message:${message.id}`, type: 'message', message });
     }
   }
+  return descriptors;
+};
+
+const transcriptTopLevelKey = (node) => {
+  if (node?.dataset?.transcriptKey) return node.dataset.transcriptKey;
+  if (node?.classList?.contains('transcript-turn')) return `turn:${node.dataset?.segmentIndex || ''}`;
+  if (node?.classList?.contains('transcript-gap')) return `gap:${node.dataset?.startOrdinal || ''}:${node.dataset?.endOrdinal || ''}`;
+  if (node?.dataset?.messageId) return `message:${node.dataset.messageId}`;
+  return '';
+};
+
+const renderTranscriptMessages = (session, messages, forceScroll, renderStartedAt) => {
+  if (_lastRenderedSessionId !== null && _lastRenderedSessionId !== session.id) {
+    elements.messages.replaceChildren();
+  }
+  const descriptors = transcriptRenderDescriptors(messages);
+  const existing = new Map(Array.from(elements.messages.children || [])
+    .map((node) => [transcriptTopLevelKey(node), node])
+    .filter(([key]) => key));
+  const retained = new Set();
+
+  descriptors.forEach((descriptor, index) => {
+    let node = existing.get(descriptor.key) || null;
+    if (descriptor.type === 'gap') {
+      if (!node || !node.classList?.contains('transcript-gap')) {
+        node = stampMessageNodeSession(createTranscriptGapNode(descriptor.message), session.id);
+        observeTranscriptGap(node, descriptor.message, session.id);
+      } else {
+        node.style.height = `${Math.max(1, Number(descriptor.message.estimatedHeight) || 1)}px`;
+        node.dataset.startOrdinal = String(descriptor.message.startOrdinal);
+        node.dataset.endOrdinal = String(descriptor.message.endOrdinal);
+        node.dataset.segmentIndexes = (descriptor.message.segmentIndexes || []).join(',');
+      }
+    } else if (descriptor.type === 'turn') {
+      if (!node || !node.classList?.contains('transcript-turn')) {
+        node = document.createElement('section');
+        node.className = 'transcript-turn';
+        node.dataset.segmentIndex = String(descriptor.segmentIndex);
+      }
+      stampMessageNodeSession(node, session.id);
+      reconcileTranscriptTurn(node, descriptor, session.id);
+    } else {
+      node = reconcileTranscriptMessageNode(node, descriptor.message, session.id);
+    }
+    node.dataset.transcriptKey = descriptor.key;
+    retained.add(node);
+    const current = elements.messages.children[index] || null;
+    if (current !== node) elements.messages.insertBefore(node, current);
+    existing.delete(descriptor.key);
+  });
+  Array.from(elements.messages.children || []).forEach((node) => {
+    if (!retained.has(node)) node.remove();
+  });
+
   _lastRenderedSessionId = session.id;
   _lastRenderedMessageIds = messages.map((message) => message.id);
   _lastRenderedMessageKeys = new Map(messages.map((message) => [message.id, messageRenderKey(message)]));
@@ -2662,13 +2744,13 @@ const renderTranscriptMessages = (session, messages, forceScroll, renderStartedA
   refreshRelativeTimes();
   scrollToBottom(forceScroll);
   updateHeader();
-  recordMountedConversationDiagnostics(renderStartedAt, messages.length, 'transcript');
+  recordMountedConversationDiagnostics(renderStartedAt, messages.length, 'transcript-reconcile');
 };
 
 const renderMessages = (forceScroll = false) => {
   const renderStartedAt = renderDiagnosticsNow();
   const session = ensureActiveSession();
-  resetAssistantStreamRenders();
+  if (!session?.transcript) resetAssistantStreamRenders();
 
   const sessionId = session ? session.id : '';
   const messages = session ? session.messages : [];

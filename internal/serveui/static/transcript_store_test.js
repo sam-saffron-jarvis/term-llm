@@ -42,6 +42,29 @@ const materializeOrdinals = (store, ordinals, estHeight = 20) => {
 };
 
 (() => {
+  const store = new TranscriptStore('rollback', { maxMaterializedTurns: 10, overscanTurns: 0 });
+  store.applyIndex(envelope([1, 2], { rev: 9, roles: 'ua' }), 'etag-newer');
+  materializeOrdinals(store, [0]);
+  assert.equal(store.bodies.size, 2);
+  const result = store.applyIndex(envelope([1, 2], { rev: 3, roles: 'ua' }), 'etag-restored');
+  assert.equal(result.rollback, true, 'lower server revision must be reported as a restore');
+  assert.equal(store.rev, 3, 'restored revision must replace, not be masked by, the newer revision');
+  assert.equal(store.bodies.size, 0, 'durable IDs can be reused by a restore, so cached bodies must be retired');
+  assert.equal(store.etag, 'etag-restored');
+})();
+
+(() => {
+  const store = new TranscriptStore('all-empty', { maxMaterializedTurns: 10, overscanTurns: 0 });
+  store.applyIndex(envelope([1, 2], { rev: 1, roles: 'ue', flags: [TRANSCRIPT_FLAG_EMPTY_BODY, TRANSCRIPT_FLAG_EMPTY_BODY] }));
+  assert.equal(store.segments.length, 1);
+  assert.equal(store.segments[0].state, 'empty', 'all-empty turn should settle without a fetch spacer');
+  assert.deepEqual(store.requiredBodyIDs(0), []);
+  assert.equal(store.renderRuns().some((run) => run.type === 'gap'), false, 'all-empty turn must not render an inert gap');
+  assert.deepEqual(store.renderedMessages(), []);
+  store._checkInvariants();
+})();
+
+(() => {
   const store = new TranscriptStore('diffs', { maxMaterializedTurns: 20, overscanTurns: 0 });
   let result = store.applyIndex(envelope([1, 2], { rev: 1, roles: 'ua' }), 'etag-1');
   assert.equal(result.appendOnly, true);
@@ -202,6 +225,18 @@ const materializeOrdinals = (store, ordinals, estHeight = 20) => {
     body(22, 2, 'tool', [{ type: 'tool_result', tool_call_id: 'call-a' }, { type: 'tool_result', tool_call_id: 'call-b' }])
   ]);
   assert.equal(tools.reconcileOptimistic().length, 1, 'interleaved durable tool evidence must replace optimistic group');
+
+  const displayOnly = new TranscriptStore('display-only');
+  displayOnly.addOptimistic({ clientKey: 'guardian', role: 'event', transient: true });
+  displayOnly.addOptimistic({ clientKey: 'pending-user', role: 'user' });
+  assert.equal(displayOnly.clearTransientOptimistic().length, 1, 'terminal lifecycle removes display-only rows explicitly');
+  assert.deepEqual(displayOnly.optimistic.map((entry) => entry.clientKey), ['pending-user']);
+  assert(__transcriptStats('display-only'));
+  displayOnly.rekey('display-only-rekeyed');
+  assert.equal(__transcriptStats('display-only'), null, 'rekeyed session retained its old diagnostics registry entry');
+  assert(__transcriptStats('display-only-rekeyed'));
+  displayOnly.destroy();
+  assert.equal(__transcriptStats('display-only-rekeyed'), null, 'destroyed sessions must leave the global diagnostics registry');
 })();
 
 (() => {

@@ -717,6 +717,20 @@ const convertServerMessages = (serverMessages, options = {}) => {
       : []
   );
 
+  const durableSourceID = (msg) => {
+    const id = msg?.id ?? msg?.ID;
+    return id == null || id === '' ? null : id;
+  };
+
+  const addDurableSource = (entry, msg) => {
+    if (!entry) return entry;
+    const id = durableSourceID(msg);
+    if (id == null) return entry;
+    if (!Array.isArray(entry.durableSourceRowIds)) entry.durableSourceRowIds = [];
+    if (!entry.durableSourceRowIds.includes(id)) entry.durableSourceRowIds.push(id);
+    return entry;
+  };
+
   const appendUniqueImages = (tool, images) => {
     if (!tool || images.length === 0) return;
     const existing = Array.isArray(tool.images) ? tool.images : [];
@@ -758,6 +772,7 @@ const convertServerMessages = (serverMessages, options = {}) => {
         ...(serverMessageSequence(msg) !== null ? { serverSeq: serverMessageSequence(msg) } : {})
       };
     }
+    addDurableSource(currentGroup, msg);
     return currentGroup;
   };
 
@@ -765,6 +780,7 @@ const convertServerMessages = (serverMessages, options = {}) => {
     const images = normalizeImages(part.images);
     const callId = part.tool_call_id || '';
     let group = currentGroup;
+    if (group) addDurableSource(group, msg);
     let tool = group && callId ? group.tools.find((entry) => entry.id === callId) : null;
     if (!tool && group && part.tool_name) {
       tool = group.tools.find((entry) => entry.name === part.tool_name);
@@ -802,6 +818,10 @@ const convertServerMessages = (serverMessages, options = {}) => {
       markAuthoritativeCompactionTailSuppressed();
       continue;
     }
+    if (msg.transcriptEmptyBody && msg.role !== 'tool') {
+      if (msg.role === 'user' || msg.role === 'event') flushGroup();
+      continue;
+    }
     clearPendingCompactionTail();
 
     if (msg.role === 'event') {
@@ -828,30 +848,37 @@ const convertServerMessages = (serverMessages, options = {}) => {
           created,
           ...(seq !== null ? { serverSeq: seq } : {})
         };
+        addDurableSource(skillRun, msg);
         const previousIndex = result.findIndex((entry) => entry.role === 'skill-run' && entry.runId === provenance.run_id);
-        if (previousIndex >= 0) result[previousIndex] = skillRun;
-        else result.push(skillRun);
+        if (previousIndex >= 0) {
+          const previous = result[previousIndex];
+          if (!Array.isArray(skillRun.durableSourceRowIds)) skillRun.durableSourceRowIds = [];
+          for (const id of previous?.durableSourceRowIds || []) {
+            if (!skillRun.durableSourceRowIds.includes(id)) skillRun.durableSourceRowIds.unshift(id);
+          }
+          result[previousIndex] = skillRun;
+        } else result.push(skillRun);
         continue;
       }
       const errorMarker = parts.find((part) => part.type === 'error');
       if (errorMarker) {
-        result.push({
+        result.push(addDurableSource({
           id: baseId,
           role: 'error',
           content: errorMarker.text || 'The response failed.',
           created,
           ...(seq !== null ? { serverSeq: seq } : {})
-        });
+        }, msg));
         continue;
       }
       const marker = parts.find((part) => part.type === 'model_swap') || parts.find((part) => part.type === 'text');
-      result.push({
+      result.push(addDurableSource({
         id: baseId,
         role: 'model-swap',
         content: marker?.text || '↔ Model switch',
         created,
         ...(seq !== null ? { serverSeq: seq } : {})
-      });
+      }, msg));
       continue;
     }
 
@@ -874,7 +901,7 @@ const convertServerMessages = (serverMessages, options = {}) => {
 
       const content = textParts.join('\n');
       if (isInternalCompactionSummaryText(content)) {
-        result.push({
+        result.push(addDurableSource({
           id: baseId,
           role: 'compaction',
           content: 'Context compacted',
@@ -882,19 +909,19 @@ const convertServerMessages = (serverMessages, options = {}) => {
           lineCount: lineCount(compactionSummaryDisplayText(content)),
           created,
           ...(seq !== null ? { serverSeq: seq, compactionSeq: seq } : {})
-        });
+        }, msg));
         pendingCompactionMarkerIndex = result.length - 1;
         continue;
       }
 
-      result.push({
+      result.push(addDurableSource({
         id: baseId,
         role: 'user',
         content,
         created,
         ...(seq !== null ? { serverSeq: seq } : {}),
         ...(attachments.length > 0 ? { attachments } : {})
-      });
+      }, msg));
       continue;
     }
 
@@ -903,13 +930,13 @@ const convertServerMessages = (serverMessages, options = {}) => {
       const part = parts[partIndex];
       if (part.type === 'text' && part.text && String(part.text).trim() !== '') {
         flushGroup();
-        result.push({
+        result.push(addDurableSource({
           id: `${baseId}_text_${partIndex}`,
           role: 'assistant',
           content: part.text,
           created,
           ...(seq !== null ? { serverSeq: seq } : {})
-        });
+        }, msg));
       } else if (part.type === 'tool_call') {
         const group = ensureToolGroup(created, msg, partIndex);
         const toolId = part.tool_call_id || fallbackToolId(msg, partIndex);
@@ -944,19 +971,44 @@ const convertServerMessages = (serverMessages, options = {}) => {
 
 const TRANSCRIPT_RECENT_SKELETONS = [];
 const TRANSCRIPT_OPTIMISTIC_LIMIT = 256;
+const TRANSCRIPT_EMPTY_BODY_FLAG = Number(window.TRANSCRIPT_FLAG_EMPTY_BODY || 2);
 const findSessionById = (sessionId) => state.sessions.find((item) => item?.id === sessionId) || null;
+
+const readTranscriptOptimisticRegistry = () => {
+  try {
+    const saved = JSON.parse(localStorage.getItem(STORAGE_KEYS.optimisticTranscript) || 'null');
+    if (saved?.sessions && typeof saved.sessions === 'object') return saved.sessions;
+    if (saved?.sessionId && Array.isArray(saved.entries)) {
+      return { [saved.sessionId]: saved.entries };
+    }
+  } catch {
+    // Optimistic recovery is best-effort; durable transcript bodies never live here.
+  }
+  return {};
+};
+
+const rekeyTranscriptOptimisticStorage = (previousId, nextId) => {
+  if (!previousId || !nextId || previousId === nextId) return;
+  try {
+    const sessions = readTranscriptOptimisticRegistry();
+    if (!Array.isArray(sessions[previousId])) return;
+    const merged = [...(sessions[nextId] || []), ...sessions[previousId]];
+    const unique = new Map(merged.map((entry) => [String(entry?.clientKey || entry?.id || ''), entry]));
+    sessions[nextId] = [...unique.values()].slice(-TRANSCRIPT_OPTIMISTIC_LIMIT);
+    delete sessions[previousId];
+    localStorage.setItem(STORAGE_KEYS.optimisticTranscript, JSON.stringify({ version: 1, sessions }));
+  } catch {
+    // Identity reconciliation must succeed even when storage is unavailable.
+  }
+};
 
 const ensureSessionTranscript = (session) => {
   if (!session || typeof window.TranscriptStore !== 'function') return null;
   if (!(session.transcript instanceof window.TranscriptStore)) {
     session.transcript = new window.TranscriptStore(session.id);
-    try {
-      const saved = JSON.parse(localStorage.getItem(STORAGE_KEYS.optimisticTranscript) || 'null');
-      if (saved?.sessionId === session.id && Array.isArray(saved.entries)) {
-        saved.entries.slice(-TRANSCRIPT_OPTIMISTIC_LIMIT).forEach((entry) => session.transcript.addOptimistic(entry, entry.revAtSend));
-      }
-    } catch {
-      // Optimistic recovery is best-effort; durable transcript bodies never live here.
+    const saved = readTranscriptOptimisticRegistry()[session.id];
+    if (Array.isArray(saved)) {
+      saved.slice(-TRANSCRIPT_OPTIMISTIC_LIMIT).forEach((entry) => session.transcript.addOptimistic(entry, entry.revAtSend));
     }
   }
   return session.transcript;
@@ -964,13 +1016,20 @@ const ensureSessionTranscript = (session) => {
 
 const persistTranscriptOptimistic = (session) => {
   const transcript = session?.transcript;
+  if (!session?.id) return;
   try {
-    if (!transcript || transcript.optimistic.length === 0) {
+    const sessions = readTranscriptOptimisticRegistry();
+    const entries = transcript?.optimistic
+      ?.filter((entry) => !entry?.transient)
+      .slice(-TRANSCRIPT_OPTIMISTIC_LIMIT)
+      .map((entry) => ({ ...entry, optimistic: true })) || [];
+    if (entries.length > 0) sessions[session.id] = entries;
+    else delete sessions[session.id];
+    if (Object.keys(sessions).length === 0) {
       localStorage.removeItem(STORAGE_KEYS.optimisticTranscript);
       return;
     }
-    const entries = transcript.optimistic.slice(-TRANSCRIPT_OPTIMISTIC_LIMIT).map((entry) => ({ ...entry, optimistic: true }));
-    localStorage.setItem(STORAGE_KEYS.optimisticTranscript, JSON.stringify({ sessionId: session.id, entries }));
+    localStorage.setItem(STORAGE_KEYS.optimisticTranscript, JSON.stringify({ version: 1, sessions }));
   } catch {
     // Storage pressure must not interrupt a response.
   }
@@ -980,6 +1039,7 @@ const trackTranscriptOptimistic = (session, message) => {
   if (!session || !message || message.durable) return null;
   const transcript = ensureSessionTranscript(session);
   if (!transcript) return null;
+  if (!['user', 'assistant', 'tool', 'tool-group'].includes(message.role)) message.transient = true;
   const tracked = transcript.addOptimistic(message, transcript.rev);
   persistTranscriptOptimistic(session);
   return tracked;
@@ -997,7 +1057,7 @@ const noteTranscriptRunCreated = (session, responseId, startedRev) => {
 const noteTranscriptTerminal = (session, finalRev) => {
   const transcript = ensureSessionTranscript(session);
   if (!transcript) return Promise.resolve(false);
-  transcript.optimistic = transcript.optimistic.filter((entry) => !entry?.transient);
+  transcript.clearTransientOptimistic();
   transcript.setActiveRun('', 0);
   persistTranscriptOptimistic(session);
   return syncTranscript(session, {
@@ -1010,6 +1070,17 @@ const noteTranscriptTerminal = (session, finalRev) => {
 const transcriptViewportAdapter = (session) => {
   if (!session || session.id !== state.activeSessionId || !elements.messages || !elements.chatScroll) return null;
   const scrollRect = () => elements.chatScroll.getBoundingClientRect?.() || { top: 0, bottom: Number(elements.chatScroll.clientHeight) || 0 };
+  const durableNodeForID = (id) => {
+    const exact = elements.messages.querySelector?.(`[data-durable-id="${String(id)}"]`);
+    if (exact) return exact;
+    const target = Number(id);
+    if (!Number.isFinite(target)) return null;
+    return Array.from(elements.messages.querySelectorAll?.('[data-durable-start-id]') || []).find((candidate) => {
+      const start = Number(candidate.dataset?.durableStartId);
+      const end = Number(candidate.dataset?.durableEndId);
+      return Number.isFinite(start) && Number.isFinite(end) && target >= start && target <= end;
+    }) || null;
+  };
   return {
     capture: () => {
       const viewport = scrollRect();
@@ -1027,7 +1098,7 @@ const transcriptViewportAdapter = (session) => {
       renderMessages(false);
     },
     topForID: (id) => {
-      const node = elements.messages.querySelector?.(`[data-durable-id="${String(id)}"]`);
+      const node = durableNodeForID(id);
       if (!node) return null;
       return node.getBoundingClientRect().top - scrollRect().top;
     },
@@ -1057,18 +1128,30 @@ const refreshSessionMessagesFromTranscript = (session) => {
     const raw = [];
     for (let ordinal = run.startOrdinal; ordinal <= run.endOrdinal; ordinal += 1) {
       const entry = transcript.bodies.get(transcript.ids[ordinal]);
-      if (entry) raw.push(entry);
+      if (!entry) continue;
+      raw.push((transcript.flags[ordinal] & TRANSCRIPT_EMPTY_BODY_FLAG) !== 0
+        ? { ...entry, transcriptEmptyBody: true }
+        : entry);
     }
     const converted = convertServerMessages(raw, {
       compactionSeq: transcript.compactionSeq,
       compactionCount: transcript.compactionCount
     });
-    converted.forEach((message, index) => {
-      const durable = raw[Math.min(index, Math.max(0, raw.length - 1))];
+    const claimedAnchors = new Set();
+    converted.forEach((message) => {
+      const sourceIDs = Array.isArray(message.durableSourceRowIds)
+        ? message.durableSourceRowIds.filter((id) => id != null)
+        : [];
+      const durableRowId = sourceIDs.find((id) => !claimedAnchors.has(String(id)));
+      sourceIDs.forEach((id) => claimedAnchors.add(String(id)));
       display.push({
         ...message,
         durable: true,
-        durableRowId: durable?.id,
+        ...(durableRowId != null ? { durableRowId } : {}),
+        ...(sourceIDs.length > 0 ? {
+          durableRowStartId: sourceIDs[0],
+          durableRowEndId: sourceIDs[sourceIDs.length - 1]
+        } : {}),
         transcriptSegmentIndex: run.segmentIndex
       });
     });
@@ -1163,49 +1246,14 @@ const materializeTranscriptSegments = async (session, segmentIndexes) => {
   return true;
 };
 
-const syncTranscript = async (session, options = {}) => {
-  if (!session) return false;
+const syncTranscriptOnce = async (session, options = {}) => {
   const transcript = ensureSessionTranscript(session);
   if (!transcript) return false;
-  if (session._transcriptSyncPromise) return session._transcriptSyncPromise;
-  const promise = (async () => {
-    const headers = requestHeaders(session.id);
-    if (transcript.etag && !options.force) headers['If-None-Match'] = transcript.etag;
-    const resp = await fetch(`${UI_PREFIX}/v1/sessions/${encodeURIComponent(session.id)}/transcript`, { headers });
-    transcript.noteIndexFetch(resp.status === 304, resp.headers?.get?.('ETag') || '');
-    if (resp.status === 304) {
-      if (transcript.ids.length > 0 && transcript.viewport.firstOrdinal < 0) {
-        const last = transcript.ids.length - 1;
-        transcript.setViewport(last, last);
-      }
-      const wanted = new Set(transcript.pinnedSegments);
-      if (transcript.segments.length > 0) wanted.add(transcript.segments.length - 1);
-      const loaded = await fetchTranscriptSegments(session, [...wanted]);
-      if (loaded) {
-        refreshSessionMessagesFromTranscript(session);
-        if (session.id === state.activeSessionId) renderMessages(options.forceScroll === true);
-      }
-      return loaded;
-    }
-    if (resp.status === 404) {
-      const pages = await fetchLegacyTranscriptPages(session.id);
-      if (!pages) return false;
-      transcript.destroy();
-      session.transcript = window.transcriptStoreFromMessages(session.id, pages);
-      session.transcript.setViewport(Math.max(0, session.transcript.ids.length - 1), Math.max(0, session.transcript.ids.length - 1));
-      session.transcript.enforceBudget();
-      refreshSessionMessagesFromTranscript(session);
-      renderMessages(options.forceScroll === true);
-      touchTranscriptSkeleton(session);
-      return true;
-    }
-    if (!resp.ok) return false;
-    const data = await resp.json().catch(() => null);
-    if (!data?.rows) return false;
-    const adapter = transcriptViewportAdapter(session);
-    transcript.withViewportAnchor(adapter, () => transcript.applyIndex(data, resp.headers?.get?.('ETag') || ''));
-    if (data.active_response_id) transcript.setActiveRun(data.active_response_id, data.started_rev);
-
+  const headers = requestHeaders(session.id);
+  if (transcript.etag && !options.force) headers['If-None-Match'] = transcript.etag;
+  const resp = await fetch(`${UI_PREFIX}/v1/sessions/${encodeURIComponent(session.id)}/transcript`, { headers });
+  transcript.noteIndexFetch(resp.status === 304, resp.headers?.get?.('ETag') || '');
+  if (resp.status === 304) {
     if (transcript.ids.length > 0 && transcript.viewport.firstOrdinal < 0) {
       const last = transcript.ids.length - 1;
       transcript.setViewport(last, last);
@@ -1213,18 +1261,82 @@ const syncTranscript = async (session, options = {}) => {
     const wanted = new Set(transcript.pinnedSegments);
     if (transcript.segments.length > 0) wanted.add(transcript.segments.length - 1);
     const loaded = await fetchTranscriptSegments(session, [...wanted]);
-    if (!loaded) {
-      transcript.etag = '';
-      return false;
-    }
-    transcript.withViewportAnchor(adapter, () => {
-      transcript.reconcileOptimistic();
+    if (loaded) {
       refreshSessionMessagesFromTranscript(session);
-    });
-    persistTranscriptOptimistic(session);
+      if (session.id === state.activeSessionId) renderMessages(options.forceScroll === true);
+    }
+    return loaded;
+  }
+  if (resp.status === 404) {
+    const pages = await fetchLegacyTranscriptPages(session.id);
+    if (!pages) return false;
+    transcript.destroy();
+    session.transcript = window.transcriptStoreFromMessages(session.id, pages);
+    session.transcript.setViewport(Math.max(0, session.transcript.ids.length - 1), Math.max(0, session.transcript.ids.length - 1));
+    session.transcript.enforceBudget();
+    refreshSessionMessagesFromTranscript(session);
+    renderMessages(options.forceScroll === true);
     touchTranscriptSkeleton(session);
-    if (session.id === state.activeSessionId) renderMessages(options.forceScroll === true);
-    return transcript.rev >= Number(options.targetRev || 0);
+    return true;
+  }
+  if (!resp.ok) return false;
+  const data = await resp.json().catch(() => null);
+  if (!data?.rows) return false;
+  const adapter = transcriptViewportAdapter(session);
+  transcript.withViewportAnchor(adapter, () => transcript.applyIndex(data, resp.headers?.get?.('ETag') || ''));
+  if (data.active_response_id) transcript.setActiveRun(data.active_response_id, data.started_rev);
+
+  if (transcript.ids.length > 0 && transcript.viewport.firstOrdinal < 0) {
+    const last = transcript.ids.length - 1;
+    transcript.setViewport(last, last);
+  }
+  const wanted = new Set(transcript.pinnedSegments);
+  if (transcript.segments.length > 0) wanted.add(transcript.segments.length - 1);
+  const loaded = await fetchTranscriptSegments(session, [...wanted]);
+  if (!loaded) {
+    transcript.etag = '';
+    return false;
+  }
+  transcript.withViewportAnchor(adapter, () => {
+    transcript.reconcileOptimistic();
+    refreshSessionMessagesFromTranscript(session);
+  });
+  persistTranscriptOptimistic(session);
+  touchTranscriptSkeleton(session);
+  if (session.id === state.activeSessionId) renderMessages(options.forceScroll === true);
+  return true;
+};
+
+const mergeTranscriptSyncRequest = (session, options = {}) => {
+  const pending = session._transcriptSyncPending || { force: false, forceScroll: false, targetRev: 0, reason: '' };
+  pending.force = pending.force || options.force === true;
+  pending.forceScroll = pending.forceScroll || options.forceScroll === true;
+  pending.targetRev = Math.max(Number(pending.targetRev) || 0, Number(options.targetRev) || 0);
+  if (options.reason) pending.reason = String(options.reason);
+  session._transcriptSyncPending = pending;
+  return pending;
+};
+
+const syncTranscript = async (session, options = {}) => {
+  if (!session || !ensureSessionTranscript(session)) return false;
+  mergeTranscriptSyncRequest(session, options);
+  if (session._transcriptSyncPromise) return session._transcriptSyncPromise;
+
+  const promise = (async () => {
+    for (;;) {
+      const request = session._transcriptSyncPending || { force: false, forceScroll: false, targetRev: 0 };
+      delete session._transcriptSyncPending;
+      const loaded = await syncTranscriptOnce(session, request);
+      if (!loaded) return false;
+
+      const transcript = ensureSessionTranscript(session);
+      const queuedTarget = Number(session._transcriptSyncPending?.targetRev) || 0;
+      const targetRev = Math.max(Number(request.targetRev) || 0, queuedTarget);
+      if (transcript && transcript.rev < targetRev) {
+        mergeTranscriptSyncRequest(session, { reason: 'target-revision', force: true, targetRev });
+      }
+      if (!session._transcriptSyncPending) return true;
+    }
   })().finally(() => {
     if (session._transcriptSyncPromise === promise) delete session._transcriptSyncPromise;
   });
@@ -1710,6 +1822,8 @@ const reconcileServerSessionIdentity = (session, serverSession) => {
   const previousId = String(session.id || '').trim();
   if (!nextId || nextId === previousId) return session;
 
+  session.transcript?.rekey?.(nextId);
+  rekeyTranscriptOptimisticStorage(previousId, nextId);
   session.id = nextId;
   if (state.activeSessionId === previousId) state.activeSessionId = nextId;
   if (state.renameSessionId === previousId) state.renameSessionId = nextId;
