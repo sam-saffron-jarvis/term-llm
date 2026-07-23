@@ -766,7 +766,7 @@ async function testModelEffortOptionsFollowMetadata() {
       if (url === '/ui/v1/models?provider=chatgpt') {
         return new Response(JSON.stringify({
           data: [
-            { id: 'gpt-5.5', reasoning_efforts: ['minimal', 'low', 'medium', 'high', 'xhigh'] },
+            { id: 'gpt-5.5', reasoning_efforts: ['minimal', 'low', 'medium', 'high', 'xhigh'], default_reasoning_effort: 'medium' },
             { id: 'listed-no-metadata' },
             { id: 'opus', reasoning_efforts: ['low', 'medium', 'high', 'xhigh', 'max'] },
           ],
@@ -784,6 +784,11 @@ async function testModelEffortOptionsFollowMetadata() {
 
   if (state.selectedEffort !== '') {
     fail(name, `invalid max effort was not cleared: ${JSON.stringify(state.selectedEffort)}`);
+    await cleanup();
+    return;
+  }
+  if (state.modelInfoByID['gpt-5.5']?.default_reasoning_effort !== 'medium') {
+    fail(name, `gpt-5.5 default effort metadata was dropped: ${JSON.stringify(state.modelInfoByID['gpt-5.5'])}`);
     await cleanup();
     return;
   }
@@ -3416,6 +3421,55 @@ async function testSendMessageOmitsModelSwapWhenTargetUnchanged() {
   pass(name);
 }
 
+async function testSendMessageTreatsImplicitDefaultEffortAsEquivalent() {
+  const name = 'sendMessage treats implicit model default effort as unchanged';
+  const harness = createHarness();
+  const { app, elements, state, fetchCalls, cleanup } = harness;
+  const session = {
+    id: 'session_implicit_effort',
+    title: 'Implicit effort test',
+    provider: 'chatgpt',
+    activeModel: 'gpt-5.6-sol',
+    activeEffort: '',
+    messages: [
+      { id: 'u1', role: 'user', content: 'hello', created: 1 },
+      { id: 'a1', role: 'assistant', content: 'hi', created: 2 },
+    ],
+    lastResponseId: 'resp_previous',
+    activeResponseId: null,
+    lastSequenceNumber: 0,
+    number: 1,
+  };
+  state.sessions.push(session);
+  state.activeSessionId = session.id;
+  state.selectedProvider = 'chatgpt';
+  state.selectedModel = 'gpt-5.6-sol';
+  state.selectedEffort = 'medium';
+  state.modelInfoByID = {
+    'gpt-5.6-sol': {
+      id: 'gpt-5.6-sol',
+      reasoning_efforts: ['low', 'medium', 'high'],
+      default_reasoning_effort: 'medium',
+    },
+  };
+  elements.promptInput.value = 'continue';
+
+  await app.sendMessage();
+  await cleanup();
+
+  const postCall = fetchCalls.find((call) => call.url === '/ui/v1/responses' && call.method === 'POST');
+  if (!postCall || !postCall.body) {
+    fail(name, 'missing POST /ui/v1/responses body', JSON.stringify(fetchCalls));
+    return;
+  }
+  const body = JSON.parse(postCall.body);
+  if (body.model_swap) {
+    fail(name, 'implicit medium → explicit medium must not request a model swap', postCall.body);
+    return;
+  }
+  pass(name);
+}
+
 async function testSendMessageGatesReasoningModeByModelMetadata() {
   const supportedName = 'sendMessage sends Pro mode only for supporting models';
   {
@@ -5812,6 +5866,45 @@ async function testQueueEffortWhileStreamingPostsRuntimeEffortAndShowsPending() 
   pass(name);
 }
 
+async function testEquivalentImplicitEffortWhileStreamingDoesNotQueue() {
+  const name = 'implicit default effort does not queue an equivalent runtime switch';
+  const harness = createHarness();
+  const { app, state, fetchCalls, cleanup } = harness;
+  const session = {
+    id: 'sess_effort_implicit',
+    title: 'Implicit effort',
+    messages: [{ id: 'u1', role: 'user', content: 'run', created: 1 }],
+    activeResponseId: 'resp_effort_implicit',
+    activeModel: 'gpt-5.6-sol',
+    activeEffort: '',
+    provider: 'chatgpt',
+  };
+  state.sessions.push(session);
+  state.activeSessionId = session.id;
+  state.currentStreamSessionId = session.id;
+  state.streaming = true;
+  state.selectedModel = 'gpt-5.6-sol';
+  state.modelInfoByID = {
+    'gpt-5.6-sol': { id: 'gpt-5.6-sol', default_reasoning_effort: 'medium' },
+  };
+
+  await app.applyEffortChange('medium');
+
+  const effortCall = fetchCalls.find(call => call.url === '/ui/v1/sessions/sess_effort_implicit/runtime/effort');
+  if (effortCall) {
+    fail(name, 'equivalent implicit medium → explicit medium queued a runtime switch', effortCall.body);
+    await cleanup();
+    return;
+  }
+  if (session.pendingEffortQueued) {
+    fail(name, 'equivalent effort was marked pending');
+    await cleanup();
+    return;
+  }
+  await cleanup();
+  pass(name);
+}
+
 function testResponseModelSwitchStabilizesEffortAndClearsPending() {
   const name = 'response.model_switch updates effort and clears queued marker';
   const harness = createHarness();
@@ -6213,8 +6306,10 @@ async function testIsolatedSkillStreamsIndependentlyAndCancelsIndependently() {
   await testResumeActiveResponseClearsTerminalTrackingWhen409SnapshotHasNoRecovery();
   await testSendMessageIncludesModelSwapForChangedTarget();
   await testSendMessageOmitsModelSwapWhenTargetUnchanged();
+  await testSendMessageTreatsImplicitDefaultEffortAsEquivalent();
   await testSendMessageGatesReasoningModeByModelMetadata();
   await testQueueEffortWhileStreamingPostsRuntimeEffortAndShowsPending();
+  await testEquivalentImplicitEffortWhileStreamingDoesNotQueue();
   testResponseModelSwitchStabilizesEffortAndClearsPending();
   testCompletedResponseClearsUnappliedQueuedEffort();
   testModelSwapProgressEventUpdatesTransientMarker();
