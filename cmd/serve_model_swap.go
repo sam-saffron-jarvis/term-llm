@@ -144,6 +144,29 @@ func (p responseModelSwapPlan) targetLabel(candidate *serveRuntime) string {
 	return providerModelLabel(p.requestedProvider, model)
 }
 
+func modelSwapEffortLabel(effort string) string {
+	effort = normalizeReasoningEffort(effort)
+	if effort == "" {
+		return "auto"
+	}
+	return effort
+}
+
+func (p responseModelSwapPlan) startMessage(candidate *serveRuntime) string {
+	previous := p.previousLabel()
+	target := p.targetLabel(candidate)
+	sameRuntime := previous == target
+	effortChanged := !strings.EqualFold(normalizeReasoningEffort(p.previousEffort), normalizeReasoningEffort(p.requestedEffort))
+	if sameRuntime && effortChanged {
+		return fmt.Sprintf("Switching reasoning effort on %s: %s → %s; trying existing context…", previous, modelSwapEffortLabel(p.previousEffort), modelSwapEffortLabel(p.requestedEffort))
+	}
+	if effortChanged {
+		previous = fmt.Sprintf("%s / %s", previous, modelSwapEffortLabel(p.previousEffort))
+		target = fmt.Sprintf("%s / %s", target, modelSwapEffortLabel(p.requestedEffort))
+	}
+	return fmt.Sprintf("Switching model: %s → %s; trying existing context…", previous, target)
+}
+
 func providerModelLabel(provider, model string) string {
 	provider = strings.TrimSpace(provider)
 	model = strings.TrimSpace(model)
@@ -542,7 +565,7 @@ func (s *serveServer) executeResponseRunModelSwap(runCtx context.Context, runtim
 		}
 	}
 
-	appendProgress("naive_start", fmt.Sprintf("Switching model: %s → %s; trying existing context…", exec.plan.previousLabel(), exec.plan.targetLabel(runtime)))
+	appendProgress("naive_start", exec.plan.startMessage(runtime))
 	visible := false
 	streamState := &responseRunStreamState{}
 	result, err := runtime.RunWithEventsAndStart(runCtx, true, false, inputMessages, llmReq, func() {

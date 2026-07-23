@@ -77,8 +77,18 @@ const hasSessionContinuationContext = (session) => Boolean(
 );
 
 const normalizeEffortForCompare = (value) => {
-  const normalized = String(value || '').trim();
-  return normalized.toLowerCase() === 'default' ? '' : normalized;
+  const normalized = String(value || '').trim().toLowerCase();
+  return normalized === 'default' ? '' : normalized;
+};
+
+const effectiveEffortForCompare = (model, effort) => {
+  const explicit = normalizeEffortForCompare(effort);
+  if (explicit) return explicit;
+  const id = String(model || '').trim();
+  const info = id && state.modelInfoByID
+    ? state.modelInfoByID[id]
+    : null;
+  return normalizeEffortForCompare(info?.default_reasoning_effort || '');
 };
 
 const sessionHasQueueableActiveRun = (session) => Boolean(
@@ -152,7 +162,13 @@ const normalizeModelMetadata = (items) => {
     const modes = Array.isArray(m?.reasoning_modes)
       ? m.reasoning_modes.map((v) => String(v || '').trim()).filter(Boolean)
       : [];
-    byID[id] = { id, reasoning_efforts: efforts, reasoning_modes: modes };
+    const defaultEffort = String(m?.default_reasoning_effort || '').trim();
+    byID[id] = {
+      id,
+      reasoning_efforts: efforts,
+      reasoning_modes: modes,
+      ...(defaultEffort ? { default_reasoning_effort: defaultEffort } : {})
+    };
   });
   return { ids, byID };
 };
@@ -2790,7 +2806,7 @@ const queueActiveRunEffortChange = async (session, effort) => {
   persistRuntimeSelection();
   syncSettingsSelectValues();
 
-  if (normalizeEffortForCompare(queuedEffort) === normalizeEffortForCompare(session.activeEffort || '')) {
+  if (effectiveEffortForCompare(model, queuedEffort) === effectiveEffortForCompare(model, session.activeEffort || '')) {
     clearSessionPendingEffort(session);
   } else {
     setSessionPendingEffort(session, queuedEffort);
@@ -2802,6 +2818,18 @@ const queueActiveRunEffortChange = async (session, effort) => {
 
 const applyEffortChange = async (effort) => {
   const session = getActiveSession();
+  const model = String(session?.activeModel || state.selectedModel || '').trim();
+  if (sessionHasQueueableActiveRun(session)
+      && effectiveEffortForCompare(model, effort) === effectiveEffortForCompare(model, session.activeEffort || '')) {
+    state.selectedEffort = effort;
+    clearSessionPendingEffort(session);
+    canonicalizeSelectedModelEffort();
+    persistRuntimeSelection();
+    syncSettingsSelectValues();
+    updateSessionUsageDisplay(session);
+    app.updateHeader();
+    return;
+  }
   if (sessionHasQueueableActiveRun(session)) {
     try {
       const queued = await queueActiveRunEffortChange(session, effort);
@@ -4722,7 +4750,8 @@ const sendMessage = async (options = {}) => {
     const targetDiffers = hasPriorContext && Boolean(
       (targetProvider || '') !== (currentProvider || '')
       || (targetModel || '') !== (currentModel || '')
-      || normalizeEffortForCompare(targetEffort) !== normalizeEffortForCompare(currentEffort)
+      || effectiveEffortForCompare(targetModel || currentModel, targetEffort)
+        !== effectiveEffortForCompare(currentModel || targetModel, currentEffort)
     );
 
     const modeInfo = modelMetadataFor(targetModel || currentModel);

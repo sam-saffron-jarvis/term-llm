@@ -36,6 +36,38 @@ func (s *blockingModelSwapReplaceStore) ReplaceMessages(ctx context.Context, ses
 	}
 }
 
+func TestModelSwapStartMessageNamesEffortOnlyChange(t *testing.T) {
+	plan := responseModelSwapPlan{
+		previousProvider:  "chatgpt",
+		previousModel:     "gpt-5.6-sol",
+		previousEffort:    "medium",
+		requestedProvider: "chatgpt",
+		requestedModel:    "gpt-5.6-sol",
+		requestedEffort:   "high",
+	}
+	got := plan.startMessage(nil)
+	want := "Switching reasoning effort on chatgpt:gpt-5.6-sol: medium → high; trying existing context…"
+	if got != want {
+		t.Fatalf("startMessage() = %q, want %q", got, want)
+	}
+}
+
+func TestModelSwapStartMessageIncludesEffortWhenModelAlsoChanges(t *testing.T) {
+	plan := responseModelSwapPlan{
+		previousProvider:  "chatgpt",
+		previousModel:     "gpt-5.6-sol",
+		previousEffort:    "",
+		requestedProvider: "chatgpt",
+		requestedModel:    "gpt-5.6-luna",
+		requestedEffort:   "high",
+	}
+	got := plan.startMessage(nil)
+	want := "Switching model: chatgpt:gpt-5.6-sol / auto → chatgpt:gpt-5.6-luna / high; trying existing context…"
+	if got != want {
+		t.Fatalf("startMessage() = %q, want %q", got, want)
+	}
+}
+
 func TestInsertModelSwapMarkerFallsBackToLatestUser(t *testing.T) {
 	history := []llm.Message{
 		llm.UserText("original trigger"),
