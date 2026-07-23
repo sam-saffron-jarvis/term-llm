@@ -188,6 +188,60 @@ func TestCtrlCFirstCancelsStreamingThenRequiresConfirmation(t *testing.T) {
 	assertQuitCommand(t, cmd)
 }
 
+func TestStreamDoneWhileInspectorOpenSettlesChatAndRestoresComposer(t *testing.T) {
+	m := newTestChatModel(true)
+	m.messages = append(m.messages, session.Message{Role: llm.RoleUser, TextContent: "inspect me"})
+	updated, _ := m.cmdInspect()
+	m = updated.(*Model)
+	m.streaming = true
+	m.streamStartTime = time.Now().Add(-time.Second)
+	m.streamCancelFunc = func() {}
+
+	updated, _ = m.Update(streamEventMsg{event: ui.DoneEvent(0)})
+	m = updated.(*Model)
+
+	if m.streaming {
+		t.Fatal("stream should settle while inspector is open")
+	}
+	if !m.textarea.Focused() {
+		t.Fatal("composer should be focused after stream completion")
+	}
+	if !m.inspectorMode {
+		t.Fatal("background stream completion should not close inspector")
+	}
+}
+
+func TestApprovalLifecycleWhileInspectorOpenReachesChat(t *testing.T) {
+	m := newTestChatModel(true)
+	m.messages = append(m.messages, session.Message{Role: llm.RoleUser, TextContent: "inspect me"})
+	updated, _ := m.cmdInspect()
+	m = updated.(*Model)
+	flushDone := make(chan struct{})
+
+	updated, _ = m.Update(FlushBeforeApprovalMsg{Done: flushDone})
+	m = updated.(*Model)
+
+	select {
+	case <-flushDone:
+	default:
+		t.Fatal("approval flush was swallowed while inspector was open")
+	}
+	if !m.pausedForExternalUI {
+		t.Fatal("approval flush should pause chat external UI rendering")
+	}
+
+	approvalDone := make(chan tools.ApprovalResult, 1)
+	updated, _ = m.Update(ApprovalRequestMsg{Path: "/tmp/review.go", DoneCh: approvalDone})
+	m = updated.(*Model)
+
+	if m.inspectorMode || m.inspectorModel != nil {
+		t.Fatal("interactive approval should close the inspector")
+	}
+	if m.approvalModel == nil || m.approvalDoneCh == nil {
+		t.Fatal("interactive approval should be visible and receive input in chat")
+	}
+}
+
 func TestCtrlCRequiresConfirmationAfterStreamDone(t *testing.T) {
 	m := newTestChatModel(true)
 	m.streaming = true

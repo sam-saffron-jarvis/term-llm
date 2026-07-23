@@ -1697,6 +1697,59 @@ func (m *Model) shouldIgnoreStreamEvent(msg streamEventMsg) bool {
 	}
 }
 
+// isParentChatMessage identifies background messages owned by the chat model.
+// Embedded full-screen views may consume their own input and result messages,
+// but must let these pass so parent stream and UI handshakes keep progressing.
+// Add new asynchronous chat messages here unless an embedded child owns them.
+func isParentChatMessage(msg tea.Msg) bool {
+	switch msg.(type) {
+	case streamEventMsg,
+		tickMsg,
+		streamRenderTickMsg,
+		ui.SmoothTickMsg,
+		ui.WaveTickMsg,
+		ui.WavePauseMsg,
+		footerMessageClearMsg,
+		interruptClassifiedMsg,
+		compactStartedMsg,
+		compactDoneMsg,
+		handoverDoneMsg,
+		handoverRenameDoneMsg,
+		sessionSavedMsg,
+		sessionLoadedMsg,
+		shellExitedMsg,
+		titleGeneratedMsg,
+		mcpStatusUpdateMsg,
+		GuardianReviewMsg,
+		chatGPTModelsLoadedMsg,
+		FlushBeforeAskUserMsg,
+		FlushBeforeApprovalMsg,
+		ResumeFromExternalUIMsg,
+		ApprovalRequestMsg,
+		AskUserRequestMsg,
+		HandoverRequestMsg,
+		SubagentProgressMsg:
+		return true
+	default:
+		return false
+	}
+}
+
+func (m *Model) closeEmbeddedViewsForInteractivePrompt() {
+	m.inspectorMode = false
+	m.inspectorModel = nil
+	m.resumeBrowserMode = false
+	m.resumeBrowserModel = nil
+	m.worktreeBrowserMode = false
+	m.worktreeBrowserModel = nil
+	m.worktreeBrowserRoot = ""
+	m.worktreeBrowserOperation = ""
+	m.sideQuestion.Visible = false
+	m.sideQuestion.ConfirmClear = false
+	m.selection = Selection{}
+	m.textarea.Focus()
+}
+
 // Update handles messages
 func (m *Model) Update(msg tea.Msg) (model tea.Model, cmd tea.Cmd) {
 	defer func() {
@@ -1754,19 +1807,25 @@ func (m *Model) Update(msg tea.Msg) (model tea.Model, cmd tea.Cmd) {
 	// so it appears frozen after returning to chat.
 	_, isSpinnerTick := msg.(spinner.TickMsg)
 
+	// Parent chat lifecycle messages must not be swallowed by an embedded view.
+	// In particular, the inspector can be opened while a response is streaming;
+	// losing its terminal event or approval handshake leaves the composer gated
+	// behind stale streaming/external-UI state until the user interrupts it.
+	parentChatMsg := isParentChatMessage(msg)
+
 	// Handle worktree browser mode. Its operation completion messages must be
 	// routed back to the child rather than the normal slash-command handler.
-	if m.worktreeBrowserMode && !isSpinnerTick {
+	if m.worktreeBrowserMode && !isSpinnerTick && !parentChatMsg {
 		return m.updateWorktreeBrowserMode(msg)
 	}
 
 	// Handle resume browser mode
-	if m.resumeBrowserMode && !isSpinnerTick {
+	if m.resumeBrowserMode && !isSpinnerTick && !parentChatMsg {
 		return m.updateResumeBrowserMode(msg)
 	}
 
 	// Handle inspector mode
-	if m.inspectorMode && !isSpinnerTick {
+	if m.inspectorMode && !isSpinnerTick && !parentChatMsg {
 		return m.updateInspectorMode(msg)
 	}
 
@@ -2956,6 +3015,7 @@ func (m *Model) Update(msg tea.Msg) (model tea.Model, cmd tea.Cmd) {
 			return m, nil
 		}
 
+		m.closeEmbeddedViewsForInteractivePrompt()
 		// In alt screen mode, render approval UI inline
 		if m.altScreen {
 			m.pausedForExternalUI = true
@@ -2980,6 +3040,7 @@ func (m *Model) Update(msg tea.Msg) (model tea.Model, cmd tea.Cmd) {
 		return m, nil
 
 	case AskUserRequestMsg:
+		m.closeEmbeddedViewsForInteractivePrompt()
 		// In alt screen mode, render ask_user UI inline
 		if m.altScreen {
 			m.pausedForExternalUI = true
@@ -3000,6 +3061,7 @@ func (m *Model) Update(msg tea.Msg) (model tea.Model, cmd tea.Cmd) {
 		return m, nil
 
 	case HandoverRequestMsg:
+		m.closeEmbeddedViewsForInteractivePrompt()
 		// Tool-initiated handover: trigger the same flow as /handover @agent.
 		// Keep streaming paused until the handover is confirmed, cancelled,
 		// or fails — the render path needs !m.streaming to show the preview.
