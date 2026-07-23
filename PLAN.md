@@ -436,10 +436,12 @@ only enabled path):
   skew that needs a fallback, and it is served by keeping the old endpoint,
   not by keeping the old client engine. Document this in the handler comment.
 - New client fallback for the inverse skew (new cached JS, older server, e.g.
-  behind hub proxies): if `/transcript` 404s, build skeleton+bodies from
-  `/messages?tail=1` through a converter into the *same* transcript store.
-  One code path, one correctness engine; remove the fallback when the hub
-  minimum server version passes this release.
+  behind hub proxies): if `/transcript` 404s, walk `/messages?tail=1` and its
+  `before_seq` pages to completion, then build skeleton+bodies through a
+  converter into the *same* transcript store. Walking every page is required
+  to preserve I0 even on the fallback path. One code path, one correctness
+  engine; remove the fallback when the hub minimum server version passes this
+  release.
 
 **Deleted in this PR (checkpoint 4):**
 - Timestamp reconciliation: `showActiveTranscriptCatchUpWarning`,
