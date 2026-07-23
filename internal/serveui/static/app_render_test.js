@@ -426,6 +426,7 @@ function createHarness(appOverrides = {}) {
     CSS: { escape(value) { return String(value); } },
     setTimeout: windowObj.setTimeout.bind(windowObj),
     clearTimeout: windowObj.clearTimeout.bind(windowObj),
+    ...(appOverrides.IntersectionObserver ? { IntersectionObserver: appOverrides.IntersectionObserver } : {}),
   };
   context.globalThis = context;
   windowObj.document = document;
@@ -2021,6 +2022,54 @@ async function run(name, fn) {
     assert(turn.children[0] === userNode, 'unchanged durable user node should survive the stream append');
     assert(turn.children[1] === assistantNode, 'unchanged durable assistant node should survive the stream append');
     assertEqual(messages.children[1].dataset.messageId, 'stream-tail', 'stream tail should append after materialized turn');
+  });
+
+  await run('transcript gap observer uses current geometry after initial auto-scroll', async () => {
+    const loads = [];
+    let observerCallback = null;
+    class FakeIntersectionObserver {
+      constructor(callback) { observerCallback = callback; }
+      observe() {}
+      unobserve() {}
+    }
+    const { app, session, messages, timers } = createHarness({
+      IntersectionObserver: FakeIntersectionObserver,
+      materializeTranscriptSegments(targetSession, range) { loads.push({ targetSession, range }); }
+    });
+    app.elements.chatScroll = { getBoundingClientRect: () => ({ top: 0, bottom: 600 }) };
+    session.transcript = {};
+    session.messages = [
+      { id: 'gap', role: 'transcript-gap', transcriptGap: true, startOrdinal: 0, endOrdinal: 1000, estimatedHeight: 5000, startSegmentIndex: 0, endSegmentIndex: 1000 },
+      { id: 'u2', role: 'user', content: 'latest', durable: true, durableRowId: 1002, transcriptSegmentIndex: 1001, created: Date.now() },
+    ];
+    app.renderMessages(true);
+    const gap = messages.children[0];
+    // The observer captured this gap before renderMessages' forced scroll to the
+    // latest turn. By callback time the gap is above the viewport.
+    gap.getBoundingClientRect = () => ({ top: -5000, bottom: -100 });
+    app.state.autoScroll = true;
+    observerCallback([{
+      isIntersecting: true,
+      target: gap,
+      boundingClientRect: { top: 0, bottom: 5000 }
+    }]);
+    assertEqual(loads.length, 0, 'initial bottom-pinned render does not materialize an earlier gap');
+    assertEqual(timers.filter((timer) => !timer.cleared).length, 0, 'bottom-pinned gap does not queue deferred work');
+
+    app.state.autoScroll = false;
+    observerCallback([{
+      isIntersecting: true,
+      target: gap,
+      boundingClientRect: { top: 0, bottom: 5000 }
+    }]);
+    assertEqual(loads.length, 0, 'user-initiated intersection waits for post-scroll layout before materializing');
+    runNextTimer(timers);
+    await flushMicrotasks();
+
+    assertEqual(loads.length, 1, 'intersection requests one bounded materialization');
+    assertEqual(loads[0].targetSession, session, 'intersection targets the active session');
+    assertEqual(loads[0].range.targetOrdinal, 1000, 'callback remeasures the gap after forced scrolling');
+    assertEqual(loads[0].range.direction, 'backward', 'gap above the current viewport loads from its trailing edge');
   });
 
   await run('renderMessages bounds transcript DOM with compact clickable gap ranges', async () => {
