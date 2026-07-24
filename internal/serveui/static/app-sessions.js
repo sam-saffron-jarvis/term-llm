@@ -407,6 +407,45 @@ const syncSelectedRuntimeFromSession = (session) => {
   return true;
 };
 
+const selectedTranscriptReady = (session) => {
+  if (!session || session._serverOnly) return false;
+  const transcript = session.transcript;
+  if (transcript) {
+    return transcriptSyncSegmentIndexes(transcript).every((index) => (
+      ['materialized', 'empty'].includes(transcript.segments[index]?.state)
+    ));
+  }
+  if (Array.isArray(session.messages) && session.messages.length > 0) return true;
+  return Math.max(0, Number(session.messageCount) || 0) === 0;
+};
+
+const continueSessionSwitchHydration = (session, switchGeneration, options = {}) => {
+  if (!session) return;
+  const sessionId = String(session.id || '').trim();
+  const isCurrent = () => state.sessionSwitchGeneration === switchGeneration
+    && String(state.activeSessionId || '').trim() === sessionId
+    && !state.draftSessionActive;
+
+  if (options.sync !== false) {
+    const statePromise = syncActiveSessionFromServer(session, true, {
+      // Conversation readiness is owned by the selected sideload or its single
+      // fallback. State still fetches a transcript when it reports a newer rev.
+      skipMessagesFetch: true,
+      expectedSwitchGeneration: switchGeneration
+    });
+    void Promise.resolve(statePromise).then(() => {
+      if (isCurrent() && syncSelectedRuntimeFromSession(session)) app.updateHeader();
+    }).catch(() => {});
+  }
+
+  if (isSessionIdentityResolved(session)) {
+    void Promise.resolve().then(() => {
+      if (!isCurrent()) return null;
+      return app.refreshSkillCommands?.(sessionId);
+    }).catch(() => {});
+  }
+};
+
 const switchToSession = async (sessionId, options = {}) => {
   const nextId = String(sessionId || '').trim();
   if (!nextId) return null;
@@ -466,55 +505,38 @@ const switchToSession = async (sessionId, options = {}) => {
   updateURL(sessionSlug(session));
   refreshPendingInterjectionBanner();
 
-  const needsSelectedMetadata = !Object.prototype.hasOwnProperty.call(session, 'fileChangeSummary')
-    || !Object.prototype.hasOwnProperty.call(session, 'planSummary');
-  const selectedMetadataPromise = needsSelectedMetadata && isSessionIdentityResolved(session)
-    ? mergeServerSessions({ selectedSession: session.id, selectedOnly: true })
+  const needsSelectedPayload = isSessionIdentityResolved(session) && !selectedTranscriptReady(session);
+  const selectedPayloadPromise = needsSelectedPayload
+    ? mergeServerSessions({
+      selectedSession: session.id,
+      selectedOnly: true,
+      includeTranscript: true,
+      expectedSwitchGeneration: switchGeneration
+    })
     : null;
-
-  let preloadServerMessagesPromise = null;
-  if (session._serverOnly) {
-    preloadServerMessagesPromise = loadServerSessionMessages(session.id);
-  }
 
   persistAndRefreshShell();
   renderMessages(true);
   restoreDraftMessageForSession(session.id, { replace: true });
   app.activateDiffSidebar?.(session.id);
 
-  let didPreloadServerMessages = false;
-  if (preloadServerMessagesPromise) {
-    const msgs = await preloadServerMessagesPromise;
+  let conversationReady = selectedTranscriptReady(session);
+  if (selectedPayloadPromise) {
+    const selectedResult = await selectedPayloadPromise;
     if (!isCurrentSwitch()) return null;
-    if (Array.isArray(msgs)) {
-      persistAndRefreshShell();
-      if (isCurrentSwitch()) {
-        renderMessages(true);
-      }
-      didPreloadServerMessages = true;
-    }
+    conversationReady = selectedResult?.selectedTranscriptApplied === true || selectedTranscriptReady(session);
   }
 
-  if (selectedMetadataPromise) {
-    await selectedMetadataPromise;
+  // Missing, malformed, or legacy selected payloads use the established
+  // transcript path once. syncTranscript owns its single final render.
+  if (!conversationReady && isSessionIdentityResolved(session)) {
+    await loadServerSessionMessages(session.id);
     if (!isCurrentSwitch()) return null;
   }
 
-  if (options.sync !== false) {
-    await syncActiveSessionFromServer(session, true, {
-      skipMessagesFetch: didPreloadServerMessages,
-      expectedSwitchGeneration: switchGeneration
-    });
-    if (!isCurrentSwitch()) return null;
-  }
   if (!isCurrentSwitch()) return null;
-  if (isSessionIdentityResolved(session)) {
-    await app.refreshSkillCommands?.(session.id);
-  }
-  if (!isCurrentSwitch()) return null;
-  if (syncSelectedRuntimeFromSession(session)) {
-    app.updateHeader();
-  }
+  if (syncSelectedRuntimeFromSession(session)) app.updateHeader();
+  continueSessionSwitchHydration(session, switchGeneration, options);
   if (options.focusPrompt) {
     elements.promptInput.focus();
   }
@@ -1696,7 +1718,7 @@ const syncActiveSessionFromServer = async (session, pollOnActive = false, { skip
   if (loadResult.kind !== 'ok') return SESSION_STATE_RETRY_RESULT;
   const runtimeState = loadResult.state;
   const belongsToSelectedSession = requestSessionId === String(state.activeSessionId || '').trim() && !state.draftSessionActive;
-  if (belongsToSelectedSession && !selectedResponseApplies()) return loadResult;
+  if ((hasExpectedGeneration || belongsToSelectedSession) && !selectedResponseApplies()) return loadResult;
   if (selectedResponseApplies()) {
     state.lastAppliedSessionStateRequestGeneration = requestGeneration;
     app.applyCurrentPlanState?.(requestSessionId, runtimeState);
@@ -1947,7 +1969,7 @@ const applyServerSessionSummary = (target, serverSession) => {
   return target;
 };
 
-const applySelectedTranscriptSideload = (session, sideload) => {
+const applySelectedTranscriptSideload = (session, sideload, options = {}) => {
   if (!session || !sideload || typeof sideload !== 'object' || typeof window.TranscriptStore !== 'function') return false;
   const index = sideload.index;
   const bodies = sideload.bodies;
@@ -2017,10 +2039,10 @@ const applySelectedTranscriptSideload = (session, sideload) => {
     current._checkInvariants?.();
     refreshSessionMessagesFromTranscript(session);
     touchTranscriptSkeleton(session);
-    session._startupTranscriptSideloaded = true;
+    if (options.startup === true) session._startupTranscriptSideloaded = true;
     if (session.id === state.activeSessionId && !state.draftSessionActive) {
       renderMessages(true);
-      session._startupTranscriptRendered = true;
+      if (options.startup === true) session._startupTranscriptRendered = true;
     }
     return true;
   } catch (_) {
@@ -2060,6 +2082,11 @@ const reconcileServerSessionIdentity = (session, serverSession) => {
 };
 
 const mergeServerSessions = async (options = {}) => {
+  const result = {
+    selectedSession: null,
+    selectedTranscriptApplied: false,
+    selectedResponseCurrent: false
+  };
   try {
     const categories = Array.isArray(options.categories) ? options.categories : state.sidebarSessionCategories;
     const includeArchived = typeof options.includeArchived === 'boolean'
@@ -2089,9 +2116,9 @@ const mergeServerSessions = async (options = {}) => {
     const resp = await fetch(`${UI_PREFIX}/v1/sessions${query ? `?${query}` : ''}`, {
       headers: requestHeaders('')
     });
-    if (!resp.ok) return;
+    if (!resp.ok) return result;
     const data = await resp.json();
-    if (!Array.isArray(data.sessions)) return;
+    if (!Array.isArray(data.sessions)) return result;
     if (options.includeWidgetStatus === true) {
       applyWidgetStatus(data.widget_status);
     }
@@ -2145,10 +2172,19 @@ const mergeServerSessions = async (options = {}) => {
     for (const serverSession of data.sessions) mergeServerSession(serverSession);
 
     const selected = mergeServerSession(data.selected_session);
-    if (selected && options.includeTranscript === true) {
-      applySelectedTranscriptSideload(selected, data.selected_transcript);
+    result.selectedSession = selected;
+    const expectedSwitchGeneration = Number(options.expectedSwitchGeneration);
+    const hasExpectedSwitchGeneration = Number.isFinite(expectedSwitchGeneration) && expectedSwitchGeneration > 0;
+    result.selectedResponseCurrent = Boolean(selected)
+      && selected.id === state.activeSessionId
+      && !state.draftSessionActive
+      && (!hasExpectedSwitchGeneration || state.sessionSwitchGeneration === expectedSwitchGeneration);
+    if (result.selectedResponseCurrent && options.includeTranscript === true) {
+      result.selectedTranscriptApplied = applySelectedTranscriptSideload(selected, data.selected_transcript, {
+        startup: options.startupTranscript === true
+      });
     }
-    if (selected && selected.id === state.activeSessionId && !state.draftSessionActive) {
+    if (result.selectedResponseCurrent && selected.id === state.activeSessionId && !state.draftSessionActive) {
       if (selected.fileChangeSummary) {
         app.applySessionDiffSummary?.(selected.id, selected.fileChangeSummary);
       }
@@ -2158,8 +2194,10 @@ const mergeServerSessions = async (options = {}) => {
     }
 
     persistAndRefreshShell();
+    return result;
   } catch {
     // Gracefully fall back to in-memory-only
+    return result;
   }
 };
 
@@ -2578,6 +2616,7 @@ const initialize = async () => {
     const sessionsPromise = mergeServerSessions({
       selectedSession: urlSlug,
       includeTranscript: Boolean(urlSlug),
+      startupTranscript: true,
       includeWidgetStatus: true
     });
     // Session selection owns conversation readiness. Begin transcript fallback
