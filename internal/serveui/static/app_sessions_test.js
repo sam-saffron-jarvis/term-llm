@@ -940,7 +940,8 @@ async function testStartupSplashWaitsForDeepLinkedTranscriptRender() {
             created_at: 1710000000000,
             message_count: 2,
             transcript_rev: 2,
-          }]
+          }],
+          widget_status: { widgets: [] },
         }), { status: 200, headers: { 'Content-Type': 'application/json' } });
       }
       if (isTranscriptIndexURL(url, 'sess_3347')) {
@@ -1017,6 +1018,164 @@ async function testStartupSplashWaitsForDeepLinkedTranscriptRender() {
   const session = app.state.sessions.find((item) => item.id === 'sess_3347');
   if (!session || session.messages.map((message) => message.content).join(',') !== 'question,answer') {
     fail(name, 'startup completed without the canonical transcript projection', JSON.stringify(session?.messages || []));
+    return;
+  }
+  pass(name);
+}
+
+async function testStartupSideloadsWidgetsBeforeFirstPaint() {
+  const name = 'startup sideloads authoritative widget status before first paint without widget requests';
+  const events = [];
+  const fetchCalls = [];
+  const sideloadedWidgets = [
+    { id: 'metrics', mount: 'metrics', title: 'Metrics', description: 'Local metrics', state: 'stopped' },
+  ];
+
+  let appRef = null;
+  const { app } = await createSessionsHarness({
+    fetchImpl: async (url) => {
+      fetchCalls.push(String(url));
+      if (parsedTestURL(url)?.pathname === '/ui/v1/sessions') {
+        return new Response(JSON.stringify({
+          sessions: [],
+          selected_session: null,
+          widget_status: { widgets: sideloadedWidgets },
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      return new Response(JSON.stringify({ sessions: [] }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    },
+    appOverrides: {
+      renderWidgetSidebar() {
+        events.push({
+          type: 'widgets-rendered',
+          loaded: Boolean(appRef?.state.widgetsLoaded),
+          widgets: JSON.parse(JSON.stringify(appRef?.state.widgets || [])),
+        });
+      },
+      hideStartupSplash() { events.push({ type: 'splash-hidden' }); },
+    },
+    onInitializeStarted({ app: startedApp }) { appRef = startedApp; },
+  });
+  app.stopSidebarStatusPoll();
+
+  const widgetRender = events.find((event) => event.type === 'widgets-rendered');
+  const widgetRenderIndex = events.indexOf(widgetRender);
+  const splashIndex = events.findIndex((event) => event.type === 'splash-hidden');
+  const startupSessionsURL = fetchCalls.find((url) => parsedTestURL(url)?.pathname === '/ui/v1/sessions');
+  if (!startupSessionsURL || parsedTestURL(startupSessionsURL)?.searchParams.get('include_widget_status') !== '1') {
+    fail(name, 'primary startup request did not opt into widget status sideload', JSON.stringify(fetchCalls));
+    return;
+  }
+  if (!widgetRender || !widgetRender.loaded || JSON.stringify(widgetRender.widgets) !== JSON.stringify(sideloadedWidgets)) {
+    fail(name, 'first widget render did not use the authoritative sideload', JSON.stringify(events));
+    return;
+  }
+  if (widgetRenderIndex < 0 || splashIndex <= widgetRenderIndex) {
+    fail(name, 'widget sidebar did not render before the startup splash was hidden', JSON.stringify(events));
+    return;
+  }
+  if (fetchCalls.some((url) => parsedTestURL(url)?.pathname === '/ui/admin/widgets/status')) {
+    fail(name, 'startup requested the deferred widget status endpoint', JSON.stringify(fetchCalls));
+    return;
+  }
+  if (fetchCalls.some((url) => parsedTestURL(url)?.pathname.startsWith('/ui/widgets/'))) {
+    fail(name, 'startup eagerly requested full widget app content', JSON.stringify(fetchCalls));
+    return;
+  }
+  pass(name);
+}
+
+async function testStartupSideloadsEmptyWidgetList() {
+  const name = 'startup treats an empty sideloaded widget list as authoritative';
+  let statusRequests = 0;
+  const renders = [];
+  let appRef = null;
+
+  const { app } = await createSessionsHarness({
+    fetchImpl: async (url) => {
+      const parsed = parsedTestURL(url);
+      if (parsed?.pathname === '/ui/admin/widgets/status') statusRequests += 1;
+      if (parsed?.pathname === '/ui/v1/sessions') {
+        return new Response(JSON.stringify({
+          sessions: [],
+          selected_session: null,
+          widget_status: { widgets: [] },
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      return new Response(JSON.stringify({ sessions: [] }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    },
+    appOverrides: {
+      renderWidgetSidebar() {
+        renders.push({
+          loaded: Boolean(appRef?.state.widgetsLoaded),
+          count: appRef?.state.widgets.length || 0,
+        });
+      },
+    },
+    onInitializeStarted({ app: startedApp }) { appRef = startedApp; },
+  });
+  app.stopSidebarStatusPoll();
+
+  if (statusRequests !== 0 || !app.state.widgetsLoaded || app.state.widgets.length !== 0) {
+    fail(name, 'empty widget sideload was not final at startup', JSON.stringify({ statusRequests, state: app.state }));
+    return;
+  }
+  if (renders.length !== 1 || !renders[0].loaded || renders[0].count !== 0) {
+    fail(name, 'empty widget sideload caused a provisional or duplicate render', JSON.stringify(renders));
+    return;
+  }
+  pass(name);
+}
+
+async function testExplicitWidgetRefreshStillUsesStatusEndpoint() {
+  const name = 'explicit widget refresh uses the status endpoint after startup';
+  let statusRequests = 0;
+  const initialWidget = { id: 'one', mount: 'one', title: 'One', state: 'stopped' };
+  const refreshedWidget = { id: 'two', mount: 'two', title: 'Two', state: 'running' };
+
+  const { app } = await createSessionsHarness({
+    fetchImpl: async (url) => {
+      const parsed = parsedTestURL(url);
+      if (parsed?.pathname === '/ui/v1/sessions') {
+        return new Response(JSON.stringify({
+          sessions: [],
+          selected_session: null,
+          widget_status: { widgets: [initialWidget] },
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      if (parsed?.pathname === '/ui/admin/widgets/status') {
+        statusRequests += 1;
+        return new Response(JSON.stringify({ widgets: [refreshedWidget] }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      return new Response(JSON.stringify({ sessions: [] }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    },
+    appOverrides: { renderWidgetSidebar() {} },
+  });
+  app.stopSidebarStatusPoll();
+
+  if (statusRequests !== 0 || app.state.widgets[0]?.id !== 'one') {
+    fail(name, 'startup did not remain request-free with sideloaded status', JSON.stringify({ statusRequests, widgets: app.state.widgets }));
+    return;
+  }
+  if (typeof app.refreshWidgetsSidebar !== 'function') {
+    fail(name, 'explicit widget refresh is not available');
+    return;
+  }
+  await app.refreshWidgetsSidebar();
+  if (statusRequests !== 1 || app.state.widgets[0]?.id !== 'two' || !app.state.widgetsLoaded) {
+    fail(name, 'explicit refresh did not update from the status endpoint', JSON.stringify({ statusRequests, widgets: app.state.widgets }));
     return;
   }
   pass(name);
@@ -2675,6 +2834,68 @@ async function testPreConnectedVisibilityDoesNotStartSidebarStatusPoll() {
   if (statusCalls !== 2) {
     app.stopSidebarStatusPoll();
     fail(name, `later visibility change did not restart normal polling; got ${statusCalls} status requests`);
+    return;
+  }
+
+  app.stopSidebarStatusPoll();
+  pass(name);
+}
+
+async function testPageshowWaitsForInitialConnectionBeforeStatusPoll() {
+  const name = 'pageshow waits for initial session merge before starting status polling';
+  let releaseSessions;
+  let pageshowHandler = null;
+  let statusCalls = 0;
+  const sessionsGate = new Promise((resolve) => {
+    releaseSessions = () => resolve(new Response(JSON.stringify({ sessions: [] }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    }));
+  });
+
+  const harnessPromise = createSessionsHarness({
+    fetchImpl: async (url) => {
+      if (String(url) === '/ui/v1/sessions') return sessionsGate;
+      if (String(url) === '/ui/v1/sessions/status') statusCalls += 1;
+      return new Response(JSON.stringify({ sessions: [] }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    },
+    onInitializeStarted({ windowObj }) {
+      const pageshowHandlers = windowObj.listeners.pageshow || [];
+      pageshowHandler = pageshowHandlers[pageshowHandlers.length - 1] || null;
+      pageshowHandler?.({ type: 'pageshow', persisted: false });
+    },
+  });
+
+  if (!pageshowHandler) {
+    releaseSessions();
+    await harnessPromise;
+    fail(name, 'expected pageshow listener during initialization');
+    return;
+  }
+  if (statusCalls !== 0) {
+    releaseSessions();
+    const { app } = await harnessPromise;
+    app.stopSidebarStatusPoll();
+    fail(name, `pre-connected pageshow started ${statusCalls} status requests`);
+    return;
+  }
+
+  releaseSessions();
+  const { app } = await harnessPromise;
+  if (!app.state.connected || statusCalls !== 1) {
+    app.stopSidebarStatusPoll();
+    fail(name, 'initial merge did not start exactly one connected status poll', JSON.stringify({ connected: app.state.connected, statusCalls }));
+    return;
+  }
+
+  await app.stopSidebarStatusPoll();
+  pageshowHandler({ type: 'pageshow', persisted: true });
+  if (statusCalls !== 2) {
+    app.stopSidebarStatusPoll();
+    fail(name, `connected BFCache pageshow did not restart normal polling; got ${statusCalls} status requests`);
     return;
   }
 
@@ -4899,6 +5120,9 @@ async function testInflightSyncAbsorbsQueuedZeroRevisionActivation() {
   await testSwitchToSessionSyncsSelectedRuntime();
   await testNumericDeepLinkResolvesRealSessionId();
   await testStartupSplashWaitsForDeepLinkedTranscriptRender();
+  await testStartupSideloadsWidgetsBeforeFirstPaint();
+  await testStartupSideloadsEmptyWidgetList();
+  await testExplicitWidgetRefreshStillUsesStatusEndpoint();
   await testStartupHydrationTimeoutDoesNotBlockIndefinitely();
   await testUnresolvedNumericDeepLinkSkipsSessionScopedStartupRequests();
   await testNewQueryStartsDraftInsteadOfLastSession();
@@ -4941,6 +5165,7 @@ async function testInflightSyncAbsorbsQueuedZeroRevisionActivation() {
   await testApplyServerSessionSummaryMapsLastMessageAt();
   await testSanitizeSessionPreservesLastMessageAt();
   await testPreConnectedVisibilityDoesNotStartSidebarStatusPoll();
+  await testPageshowWaitsForInitialConnectionBeforeStatusPoll();
   await testSidebarStatusPollRecoversIdempotentlyAfterPageShow();
   await testHiddenInFlightSidebarPollCannotRescheduleOrApplyStaleStatus();
   await testReconnectBackoffWakeSignalsReuseExistingLoop();

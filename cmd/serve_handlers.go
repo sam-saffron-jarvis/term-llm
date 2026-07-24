@@ -1158,6 +1158,8 @@ func (s *serveServer) handleSessions(w http.ResponseWriter, r *http.Request) {
 
 	selectedOnly := strings.EqualFold(strings.TrimSpace(r.URL.Query().Get("selected_only")), "1") ||
 		strings.EqualFold(strings.TrimSpace(r.URL.Query().Get("selected_only")), "true")
+	includeWidgetStatus := strings.EqualFold(strings.TrimSpace(r.URL.Query().Get("include_widget_status")), "1") ||
+		strings.EqualFold(strings.TrimSpace(r.URL.Query().Get("include_widget_status")), "true")
 	selectedSelector := strings.TrimSpace(r.URL.Query().Get("selected_session"))
 	if selectedOnly && selectedSelector == "" {
 		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "selected_session is required with selected_only")
@@ -1197,10 +1199,16 @@ func (s *serveServer) handleSessions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSONConditional(w, r, http.StatusOK, map[string]any{
+	payload := map[string]any{
 		"sessions":         result,
 		"selected_session": selected,
-	})
+	}
+	if includeWidgetStatus {
+		// The shell HTML is public and process-wide cached so mutable widget
+		// status belongs in this primary authenticated startup response instead.
+		payload["widget_status"] = s.currentWidgetStatus()
+	}
+	writeJSONConditional(w, r, http.StatusOK, payload)
 }
 
 func (s *serveServer) handleSessionsSearch(w http.ResponseWriter, r *http.Request) {

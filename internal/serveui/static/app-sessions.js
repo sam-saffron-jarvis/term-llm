@@ -50,6 +50,12 @@ let sidebarStatusPollInFlightGeneration = -1;
 let sidebarStatusPollIsRecovery = false;
 let sidebarStatusImmediatePending = false;
 
+const applyWidgetStatus = (data) => {
+  state.widgets = Array.isArray(data?.widgets) ? data.widgets : [];
+  state.widgetsLoaded = true;
+  app.renderWidgetSidebar?.();
+};
+
 const refreshWidgetsSidebar = async () => {
   if (!app.renderWidgetSidebar) return;
   try {
@@ -63,10 +69,7 @@ const refreshWidgetsSidebar = async () => {
       return;
     }
     if (!resp.ok) return;
-    const data = await resp.json();
-    state.widgets = Array.isArray(data.widgets) ? data.widgets : [];
-    state.widgetsLoaded = true;
-    app.renderWidgetSidebar?.();
+    applyWidgetStatus(await resp.json());
   } catch (_) {
     // Widgets are optional; leave the section hidden if the admin route is unavailable.
   }
@@ -91,7 +94,7 @@ const stopSidebarStatusPoll = () => {
 
 const scheduleSidebarStatusPoll = (delay) => {
   clearSidebarStatusTimer();
-  if (!sidebarStatusPollEnabled || document.visibilityState === 'hidden') return;
+  if (!state.connected || !sidebarStatusPollEnabled || document.visibilityState === 'hidden') return;
   sidebarStatusTimer = setTimeout(() => {
     sidebarStatusTimer = null;
     return pollSidebarStatus(false);
@@ -108,7 +111,7 @@ const sidebarStatusPollDelay = () => {
 };
 
 const pollSidebarStatus = (isRecovery = false) => {
-  if (!sidebarStatusPollEnabled || document.visibilityState === 'hidden') return Promise.resolve(false);
+  if (!state.connected || !sidebarStatusPollEnabled || document.visibilityState === 'hidden') return Promise.resolve(false);
   if (sidebarStatusPollPromise) return sidebarStatusPollPromise;
 
   clearSidebarStatusTimer();
@@ -119,7 +122,8 @@ const pollSidebarStatus = (isRecovery = false) => {
   sidebarStatusPollIsRecovery = isRecovery;
 
   const isCurrent = () => (
-    sidebarStatusPollEnabled
+    state.connected
+    && sidebarStatusPollEnabled
     && document.visibilityState !== 'hidden'
     && sidebarStatusPollGeneration === generation
     && sidebarStatusPollController === controller
@@ -193,6 +197,7 @@ const ensureSidebarStatusPoll = () => {
     stopSidebarStatusPoll();
     return Promise.resolve(false);
   }
+  if (!state.connected) return Promise.resolve(false);
 
   sidebarStatusPollEnabled = true;
   clearSidebarStatusTimer();
@@ -212,7 +217,7 @@ const ensureSidebarStatusPoll = () => {
 const startSidebarStatusPoll = () => ensureSidebarStatusPoll();
 
 const refreshSidebarStatusPoll = (forceNow = false) => {
-  if (document.visibilityState === 'hidden') return Promise.resolve(false);
+  if (!state.connected || document.visibilityState === 'hidden') return Promise.resolve(false);
   if (forceNow) return ensureSidebarStatusPoll();
 
   sidebarStatusPollEnabled = true;
@@ -221,6 +226,7 @@ const refreshSidebarStatusPoll = (forceNow = false) => {
 };
 
 const handleFetchTransportFallback = () => {
+  if (!state.connected) return Promise.resolve(false);
   if (document.visibilityState !== 'hidden' && sidebarStatusPollPromise && !sidebarStatusPollIsRecovery) {
     sidebarStatusPollEnabled = true;
     clearSidebarStatusTimer();
@@ -1990,6 +1996,9 @@ const mergeServerSessions = async (options = {}) => {
     if (options.selectedOnly === true) {
       params.set('selected_only', '1');
     }
+    if (options.includeWidgetStatus === true) {
+      params.set('include_widget_status', '1');
+    }
     const query = params.toString();
     const resp = await fetch(`${UI_PREFIX}/v1/sessions${query ? `?${query}` : ''}`, {
       headers: requestHeaders('')
@@ -1997,6 +2006,9 @@ const mergeServerSessions = async (options = {}) => {
     if (!resp.ok) return;
     const data = await resp.json();
     if (!Array.isArray(data.sessions)) return;
+    if (options.includeWidgetStatus === true) {
+      applyWidgetStatus(data.widget_status);
+    }
 
     const localById = new Map(state.sessions.map(s => [s.id, s]));
     const localByNumber = new Map(
@@ -2439,7 +2451,6 @@ const initialize = async () => {
   ensureActiveSession();
 
   renderSidebar();
-  app.renderWidgetSidebar?.();
   renderMessages(true);
   renderProviderOptions();
   renderModelOptions();
@@ -2452,7 +2463,7 @@ const initialize = async () => {
     setStartupStatus(state.token ? 'Checking your token…' : 'Connecting…');
     setConnectionState(state.token ? 'Validating token…' : 'Connecting…');
 
-    const sessionsPromise = mergeServerSessions({ selectedSession: urlSlug });
+    const sessionsPromise = mergeServerSessions({ selectedSession: urlSlug, includeWidgetStatus: true });
 
     // Start a speculative models fetch immediately using the provider stored in
     // localStorage. For returning users this runs in parallel with fetchProviders,
@@ -2484,7 +2495,6 @@ const initialize = async () => {
     app.updateHeader?.();
     setConnectionState('', '');
     startSidebarStatusPoll();
-    void refreshWidgetsSidebar();
     if (!state.draftSessionActive && !getActiveSession()) {
       ensureActiveSession();
       renderMessages(true);
@@ -3348,7 +3358,7 @@ window.addEventListener('offline', () => {
 });
 
 window.addEventListener('pageshow', (event) => {
-  void ensureSidebarStatusPoll();
+  if (state.connected) void ensureSidebarStatusPoll();
   const session = getActiveSession();
   if (!session) return;
   if (session.activeResponseId && app.wakeResponseReconnect?.({
@@ -3425,6 +3435,7 @@ Object.assign(app, {
   syncSelectedRuntimeFromSession,
   applyServerSessionSummary,
   mergeServerSessions,
+  refreshWidgetsSidebar,
   startSidebarStatusPoll,
   stopSidebarStatusPoll,
   refreshSidebarStatusPoll,
