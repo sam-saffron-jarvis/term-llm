@@ -2018,7 +2018,10 @@ const applySelectedTranscriptSideload = (session, sideload) => {
     refreshSessionMessagesFromTranscript(session);
     touchTranscriptSkeleton(session);
     session._startupTranscriptSideloaded = true;
-    if (session.id === state.activeSessionId && !state.draftSessionActive) renderMessages(true);
+    if (session.id === state.activeSessionId && !state.draftSessionActive) {
+      renderMessages(true);
+      session._startupTranscriptRendered = true;
+    }
     return true;
   } catch (_) {
     // The detached validation above makes this path defensive only. Leave the
@@ -2439,6 +2442,13 @@ const STARTUP_HYDRATION_TIMEOUT_MS = Number.isFinite(configuredStartupHydrationT
   && configuredStartupHydrationTimeout >= 0
   ? configuredStartupHydrationTimeout
   : 10000;
+let startupSplashReleased = false;
+
+const releaseStartupSplash = () => {
+  if (startupSplashReleased) return;
+  startupSplashReleased = true;
+  hideStartupSplash();
+};
 
 const refreshSkillCommandsAfterStartup = (sessionId) => {
   Promise.resolve()
@@ -2448,49 +2458,62 @@ const refreshSkillCommandsAfterStartup = (sessionId) => {
 
 const hydrateActiveSessionAfterStartup = async () => {
   const active = getActiveSession();
-  if (!active || !isSessionIdentityResolved(active)) return;
+  if (!active || !isSessionIdentityResolved(active)) return false;
 
   const hasTranscriptSideload = active._startupTranscriptSideloaded === true;
+  const hasRenderedTranscriptSideload = active._startupTranscriptRendered === true;
   // Start state sync immediately so the server round-trip overlaps with a
-  // fallback transcript fetch. A valid startup sideload already owns the first
-  // projection, so state only refreshes it when the server reports a newer rev.
+  // fallback transcript fetch. Runtime metadata and active-response recovery
+  // continue independently after the selected transcript is ready to reveal.
   const statePromise = syncActiveSessionFromServer(active, true, {
     skipMessagesFetch: Boolean(active._serverOnly) || hasTranscriptSideload
   });
+  void (async () => {
+    try {
+      await statePromise;
+      if (syncSelectedRuntimeFromSession(active)) {
+        app.updateHeader();
+      }
+    } catch (_) {
+      // Runtime state is best-effort during startup and must not create an
+      // unhandled rejection after transcript readiness releases the splash.
+    } finally {
+      delete active._startupTranscriptSideloaded;
+      delete active._startupTranscriptRendered;
+      refreshSkillCommandsAfterStartup(active.id);
+    }
+  })();
+
+  if (hasRenderedTranscriptSideload) return true;
 
   const preloadMessagesPromise = active._serverOnly && !hasTranscriptSideload
     ? loadServerSessionMessages(active.id)
     : null;
+  if (!preloadMessagesPromise) return false;
 
-  if (preloadMessagesPromise) {
-    const msgs = await preloadMessagesPromise;
-    if (Array.isArray(msgs)) {
-      saveSessions();
-      renderSidebar();
-      renderMessages(true);
-    }
-  }
-
-  await statePromise;
-  delete active._startupTranscriptSideloaded;
-  if (syncSelectedRuntimeFromSession(active)) {
-    app.updateHeader();
-  }
-  refreshSkillCommandsAfterStartup(active.id);
+  const msgs = await preloadMessagesPromise;
+  if (!Array.isArray(msgs)) return false;
+  saveSessions();
+  renderSidebar();
+  // This force-scroll render is the fallback transcript's final startup
+  // projection and bottom-position boundary.
+  renderMessages(true);
+  return true;
 };
 
 const waitForStartupHydration = async () => {
   const active = getActiveSession();
-  if (!active || !isSessionIdentityResolved(active)) return;
+  if (!active || !isSessionIdentityResolved(active)) return false;
 
   setStartupStatus('Loading conversation…');
-  const hydration = hydrateActiveSessionAfterStartup().catch(() => {});
+  const hydration = hydrateActiveSessionAfterStartup().catch(() => false);
   let timeoutID = null;
   const timeout = new Promise((resolve) => {
-    timeoutID = window.setTimeout(resolve, STARTUP_HYDRATION_TIMEOUT_MS);
+    timeoutID = window.setTimeout(() => resolve(false), STARTUP_HYDRATION_TIMEOUT_MS);
   });
-  await Promise.race([hydration, timeout]);
+  const rendered = await Promise.race([hydration, timeout]);
   if (timeoutID !== null) window.clearTimeout(timeoutID);
+  return rendered === true;
 };
 
 const initialize = async () => {
@@ -2557,6 +2580,15 @@ const initialize = async () => {
       includeTranscript: Boolean(urlSlug),
       includeWidgetStatus: true
     });
+    // Session selection owns conversation readiness. Begin transcript fallback
+    // and runtime state as soon as the authoritative merge lands, without
+    // waiting for providers or models. Only an actual selected transcript
+    // render releases the splash here; draft/unresolved/error paths retain the
+    // existing final or bounded fallback.
+    const startupHydrationPromise = sessionsPromise.then(() => waitForStartupHydration());
+    void startupHydrationPromise.then((rendered) => {
+      if (rendered) releaseStartupSplash();
+    }).catch(() => {});
 
     // Start a speculative models fetch immediately using the provider stored in
     // localStorage. For returning users this runs in parallel with fetchProviders,
@@ -2606,7 +2638,7 @@ const initialize = async () => {
       subscribeToPush();
     }
 
-    await waitForStartupHydration();
+    await startupHydrationPromise;
   } catch (err) {
     const message = err?.message || 'Unable to validate token.';
     setStartupStatus(message);
@@ -2615,7 +2647,7 @@ const initialize = async () => {
       handleAuthFailure();
     }
   } finally {
-    hideStartupSplash();
+    releaseStartupSplash();
   }
 };
 

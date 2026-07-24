@@ -973,7 +973,19 @@ async function testStartupTranscriptSideloadRendersBoundedFirstPaintWithoutTrans
   const events = [];
   const scheduled = [];
   let appRef = null;
-  const { app } = await createSessionsHarness({
+  let releaseState;
+  let releaseModels;
+  let markStateStarted;
+  let markModelsStarted;
+  let markSideloadRendered;
+  let stateResolved = false;
+  let modelsResolved = false;
+  const stateGate = new Promise((resolve) => { releaseState = resolve; });
+  const modelsGate = new Promise((resolve) => { releaseModels = resolve; });
+  const stateStarted = new Promise((resolve) => { markStateStarted = resolve; });
+  const modelsStarted = new Promise((resolve) => { markModelsStarted = resolve; });
+  const sideloadRendered = new Promise((resolve) => { markSideloadRendered = resolve; });
+  const harnessPromise = createSessionsHarness({
     pathname: '/ui/3347',
     setTimeout(fn, delay) {
       const handle = { fn, delay, cleared: false };
@@ -996,6 +1008,9 @@ async function testStartupTranscriptSideloadRendersBoundedFirstPaintWithoutTrans
         }), { status: 200, headers: { 'Content-Type': 'application/json' } });
       }
       if (parsed?.pathname === '/ui/v1/sessions/sess_3347/state') {
+        markStateStarted();
+        await stateGate;
+        stateResolved = true;
         return new Response(JSON.stringify({ active_run: false, transcript_rev: 20 }), {
           status: 200, headers: { 'Content-Type': 'application/json' },
         });
@@ -1003,14 +1018,29 @@ async function testStartupTranscriptSideloadRendersBoundedFirstPaintWithoutTrans
       return new Response(JSON.stringify({ sessions: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
     },
     appOverrides: {
+      async fetchModels() {
+        markModelsStarted();
+        await modelsGate;
+        modelsResolved = true;
+        return [];
+      },
       renderMessages() {
         const session = appRef?.state.sessions.find((item) => item.id === 'sess_3347');
-        events.push({ type: 'render', contents: session?.messages.map((message) => message.content) || [] });
+        const contents = session?.messages.map((message) => message.content) || [];
+        events.push({ type: 'render', contents });
+        if (contents.filter((content) => typeof content === 'string').length === 9) markSideloadRendered();
       },
-      hideStartupSplash() { events.push({ type: 'splash' }); },
+      hideStartupSplash() { events.push({ type: 'splash', stateResolved, modelsResolved }); },
     },
     onInitializeStarted({ app: startedApp }) { appRef = startedApp; },
   });
+
+  await Promise.all([sideloadRendered, stateStarted, modelsStarted]);
+  await new Promise((resolve) => setImmediate(resolve));
+  const splashBeforeState = events.some((event) => event.type === 'splash' && !event.stateResolved && !event.modelsResolved);
+  releaseState();
+  releaseModels();
+  const { app } = await harnessPromise;
 
   const startupURL = fetchCalls.find((url) => parsedTestURL(url)?.pathname === '/ui/v1/sessions');
   if (parsedTestURL(startupURL)?.searchParams.get('include_transcript') !== '1') {
@@ -1026,6 +1056,10 @@ async function testStartupTranscriptSideloadRendersBoundedFirstPaintWithoutTrans
   const hydratedRender = events.findIndex((event) => event.type === 'render'
     && event.contents.filter((content) => typeof content === 'string').length === 9);
   const splash = events.findIndex((event) => event.type === 'splash');
+  if (!splashBeforeState) {
+    fail(name, 'splash remained coupled to delayed runtime state or models after the sideload render', JSON.stringify(events));
+    return;
+  }
   if (!session || hydratedRender < 0 || splash <= hydratedRender) {
     fail(name, 'bounded sideload was not rendered atomically before splash hide', JSON.stringify(events));
     return;
@@ -1136,6 +1170,7 @@ async function testStartupTranscriptSideloadRevisionRaceFetchesOnlyNewerRevision
       return new Response(JSON.stringify({ sessions: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
     },
   });
+  await new Promise((resolve) => setImmediate(resolve));
   app.stopSidebarStatusPoll();
   const session = app.state.sessions.find((item) => item.id === 'sess_52');
   if (indexRequests !== 1 || bodyRequests !== 1 || session?.transcript.rev !== 3 || session?.messages.at(-1)?.content !== '3') {
@@ -1146,11 +1181,20 @@ async function testStartupTranscriptSideloadRevisionRaceFetchesOnlyNewerRevision
 }
 
 async function testStartupActiveSideloadAvoidsDuplicateStateAfterScheduledStatus() {
-  const name = 'scheduled status reconciliation does not duplicate startup state for sideloaded active run';
+  const name = 'active startup reveals rendered sideload before state and resumes without duplicate state';
   const scheduled = [];
+  const events = [];
   let stateRequests = 0;
   let statusRequests = 0;
-  const { app } = await createSessionsHarness({
+  let stateResolved = false;
+  let appRef = null;
+  let releaseState;
+  let markStateStarted;
+  let markSideloadRendered;
+  const stateGate = new Promise((resolve) => { releaseState = resolve; });
+  const stateStarted = new Promise((resolve) => { markStateStarted = resolve; });
+  const sideloadRendered = new Promise((resolve) => { markSideloadRendered = resolve; });
+  const harnessPromise = createSessionsHarness({
     pathname: '/ui/63',
     setTimeout(fn, delay) {
       const handle = { fn, delay, cleared: false };
@@ -1176,6 +1220,9 @@ async function testStartupActiveSideloadAvoidsDuplicateStateAfterScheduledStatus
       }
       if (parsed?.pathname === '/ui/v1/sessions/sess_63/state') {
         stateRequests += 1;
+        markStateStarted();
+        await stateGate;
+        stateResolved = true;
         return new Response(JSON.stringify({ active_run: true, active_response_id: 'resp_63', started_rev: 5, transcript_rev: 6 }), {
           status: 200, headers: { 'Content-Type': 'application/json' },
         });
@@ -1188,8 +1235,37 @@ async function testStartupActiveSideloadAvoidsDuplicateStateAfterScheduledStatus
       }
       return new Response(JSON.stringify({ sessions: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
     },
+    appOverrides: {
+      renderMessages() {
+        const contents = appRef?.state.sessions.find((item) => item.id === 'sess_63')?.messages
+          .map((message) => message.content) || [];
+        events.push({ type: 'render', contents, stateResolved });
+        if (contents.includes('active')) markSideloadRendered();
+      },
+      hideStartupSplash() { events.push({ type: 'splash', stateResolved }); },
+      async resumeActiveResponse(session, options) {
+        events.push({ type: 'resume', sessionId: session.id, responseId: options?.responseId, stateResolved });
+      },
+    },
+    onInitializeStarted({ app: startedApp }) { appRef = startedApp; },
   });
 
+  await Promise.all([sideloadRendered, stateStarted]);
+  await new Promise((resolve) => setImmediate(resolve));
+  const splashBeforeState = events.some((event) => event.type === 'splash' && !event.stateResolved);
+  releaseState();
+  const { app } = await harnessPromise;
+  await new Promise((resolve) => setImmediate(resolve));
+
+  if (!splashBeforeState) {
+    fail(name, 'active transcript render remained blocked on runtime state', JSON.stringify(events));
+    return;
+  }
+  const resumeEvent = events.find((event) => event.type === 'resume');
+  if (!resumeEvent || resumeEvent.sessionId !== 'sess_63' || resumeEvent.responseId !== 'resp_63' || !resumeEvent.stateResolved) {
+    fail(name, 'delayed runtime state did not resume the active response after reveal', JSON.stringify(events));
+    return;
+  }
   if (stateRequests !== 1 || statusRequests !== 0) {
     fail(name, 'startup issued immediate status or duplicate state request', JSON.stringify({ stateRequests, statusRequests }));
     return;
@@ -1211,17 +1287,22 @@ async function testStartupActiveSideloadAvoidsDuplicateStateAfterScheduledStatus
 }
 
 async function testStartupSplashWaitsForDeepLinkedTranscriptRender() {
-  const name = 'deep-linked startup hides splash after transcript render without waiting for skills';
+  const name = 'fallback transcript render reveals startup before delayed state and skills';
   const events = [];
   let releaseBodies;
+  let releaseState;
   let releaseSkills;
   let markBodiesStarted;
+  let markStateStarted;
+  let markHydratedRendered;
   let markSkillsStarted;
-  let markSplashHidden;
+  let stateResolved = false;
   const bodiesStarted = new Promise((resolve) => { markBodiesStarted = resolve; });
+  const stateStarted = new Promise((resolve) => { markStateStarted = resolve; });
+  const hydratedRendered = new Promise((resolve) => { markHydratedRendered = resolve; });
   const skillsStarted = new Promise((resolve) => { markSkillsStarted = resolve; });
-  const splashHidden = new Promise((resolve) => { markSplashHidden = resolve; });
   const bodiesGate = new Promise((resolve) => { releaseBodies = resolve; });
+  const stateGate = new Promise((resolve) => { releaseState = resolve; });
   const skillsGate = new Promise((resolve) => { releaseSkills = resolve; });
 
   const harnessPromise = createSessionsHarness({
@@ -1267,6 +1348,9 @@ async function testStartupSplashWaitsForDeepLinkedTranscriptRender() {
         }), { status: 200, headers: { 'Content-Type': 'application/json' } });
       }
       if (String(url) === '/ui/v1/sessions/sess_3347/state') {
+        markStateStarted();
+        await stateGate;
+        stateResolved = true;
         return new Response(JSON.stringify({ active_run: false, transcript_rev: 2 }), {
           status: 200,
           headers: { 'Content-Type': 'application/json' }
@@ -1277,9 +1361,11 @@ async function testStartupSplashWaitsForDeepLinkedTranscriptRender() {
     appOverrides: {
       hideStartupSplash() {
         events.push('splash-hidden');
-        markSplashHidden();
       },
-      renderMessages() { events.push('messages-rendered'); },
+      renderMessages() {
+        events.push('messages-rendered');
+        if (events.includes('bodies-resolved')) markHydratedRendered();
+      },
       async refreshSkillCommands() {
         events.push('skills-started');
         markSkillsStarted();
@@ -1289,14 +1375,14 @@ async function testStartupSplashWaitsForDeepLinkedTranscriptRender() {
     },
   });
 
-  await bodiesStarted;
+  await Promise.all([bodiesStarted, stateStarted]);
   const hiddenBeforeBodies = events.includes('splash-hidden');
   releaseBodies();
+  await hydratedRendered;
+  await new Promise((resolve) => setImmediate(resolve));
+  const splashBeforeState = events.includes('splash-hidden') && !stateResolved;
+  releaseState();
   await skillsStarted;
-  const splashWonRace = await Promise.race([
-    splashHidden.then(() => true),
-    new Promise((resolve) => setTimeout(() => resolve(false), 50)),
-  ]);
   const skillsPendingWhenSplashHid = !events.includes('skills-resolved');
   releaseSkills();
   const { app } = await harnessPromise;
@@ -1312,8 +1398,8 @@ async function testStartupSplashWaitsForDeepLinkedTranscriptRender() {
     fail(name, 'startup splash did not hide after the hydrated transcript render boundary', JSON.stringify(events));
     return;
   }
-  if (!splashWonRace || !skillsPendingWhenSplashHid) {
-    fail(name, 'startup splash waited for the delayed skill-command refresh', JSON.stringify(events));
+  if (!splashBeforeState || !skillsPendingWhenSplashHid) {
+    fail(name, 'startup splash waited for delayed runtime state or skill-command refresh', JSON.stringify(events));
     return;
   }
   const session = app.state.sessions.find((item) => item.id === 'sess_3347');
