@@ -2309,3 +2309,35 @@ func TestClaudeMCPToolSpecsPublishClaudeCodeHints(t *testing.T) {
 		}
 	}
 }
+
+func TestClaudeBinProvider_BuildCommandEnvPrecedenceHasNoDuplicateKeys(t *testing.T) {
+	origGetEuid := getEuid
+	defer func() { getEuid = origGetEuid }()
+	getEuid = func() int { return 1000 }
+
+	t.Setenv("CLAUDE_CODE_EFFORT_LEVEL", "low")
+	t.Setenv("ENABLE_TOOL_SEARCH", "true")
+	p := NewClaudeBinProvider("opus", map[string]string{
+		"CLAUDE_CODE_EFFORT_LEVEL": "high",
+		"ENABLE_TOOL_SEARCH":       "true",
+	})
+	env := p.buildCommandEnv("max")
+	count := func(key string) (int, string) {
+		n, value := 0, ""
+		for _, entry := range env {
+			if k, v, _ := strings.Cut(entry, "="); k == key {
+				n, value = n+1, v
+			}
+		}
+		return n, value
+	}
+	for key, want := range map[string]string{
+		"CLAUDE_CODE_EFFORT_LEVEL": "max",   // requested effort beats inherited and provider
+		"ENABLE_TOOL_SEARCH":       "false", // forced isolation beats inherited and provider
+		"MAX_MCP_OUTPUT_TOKENS":    claudeCodeDefaultEnv["MAX_MCP_OUTPUT_TOKENS"],
+	} {
+		if n, got := count(key); n != 1 || got != want {
+			t.Fatalf("%s appears %d times with %q, want once with %q", key, n, got, want)
+		}
+	}
+}

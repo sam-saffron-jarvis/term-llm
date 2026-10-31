@@ -277,3 +277,20 @@ func TestClaudeBinModelListEnvIgnoresSimpleMode(t *testing.T) {
 		t.Fatalf("inherited CLAUDE_CODE_SIMPLE survived model listing as %q", got)
 	}
 }
+
+func TestClaudeBinModelListEnvKeepsExplicitSimpleMode(t *testing.T) {
+	t.Setenv("CLAUDE_CODE_SIMPLE", "inherited")
+	p := NewClaudeBinProvider("opus", map[string]string{"CLAUDE_CODE_SIMPLE": "1"})
+	n := 0
+	for _, entry := range p.buildModelListEnv() {
+		if k, v, _ := strings.Cut(entry, "="); k == "CLAUDE_CODE_SIMPLE" {
+			n++
+			if v != "1" {
+				t.Fatalf("CLAUDE_CODE_SIMPLE = %q, want explicit provider value", v)
+			}
+		}
+	}
+	if n != 1 {
+		t.Fatalf("CLAUDE_CODE_SIMPLE appears %d times, want 1", n)
+	}
+}
