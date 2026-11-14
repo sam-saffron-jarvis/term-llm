@@ -170,7 +170,7 @@ term-llm models --provider grok
 term-llm ask --provider grok:grok-4.6 "review this code"
 ```
 
-Credentials are stored separately at `$XDG_CONFIG_HOME/term-llm/grok_oauth.json` (normally `~/.config/term-llm/grok_oauth.json`) with owner-only permissions and refreshed automatically. HTTP/SSE is always used with `store: false`; server-side response chaining and WebSockets are disabled.
+Credentials are stored separately at `$XDG_CONFIG_HOME/term-llm/grok_oauth.json` by default (normally `~/.config/term-llm/grok_oauth.json`), or directly in [`TERM_LLM_CREDENTIALS_DIR`](/reference/configuration/#native-oauth-credential-directory) when set, with owner-only permissions and refreshed automatically. HTTP/SSE is always used with `store: false`; server-side response chaining and WebSockets are disabled.
 
 ```yaml
 default_provider: grok
@@ -637,7 +637,7 @@ term-llm models --provider copilot
 term-llm ask --provider copilot "Explain this code"
 ```
 
-Credentials are stored in `$XDG_CONFIG_HOME/term-llm/copilot_oauth.json` (normally `~/.config/term-llm/copilot_oauth.json`) and refreshed automatically. The shipped default model is `gpt-4.1`; it is a fallback selection, not a promise that every account or organization enables it.
+Credentials are stored in `$XDG_CONFIG_HOME/term-llm/copilot_oauth.json` by default (normally `~/.config/term-llm/copilot_oauth.json`), or directly in [`TERM_LLM_CREDENTIALS_DIR`](/reference/configuration/#native-oauth-credential-directory) when set, and refreshed automatically. The shipped default model is `gpt-4.1`; it is a fallback selection, not a promise that every account or organization enables it.
 
 ```yaml
 default_provider: copilot

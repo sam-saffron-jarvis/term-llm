@@ -13,7 +13,7 @@ import (
 	"runtime"
 	"strings"
 
-	"github.com/term-llm/term-llm/internal/config"
+	"github.com/term-llm/term-llm/internal/credentials"
 	"golang.org/x/term"
 )
 
@@ -273,11 +273,11 @@ func addChatGPTOAuthTemplateValue(values map[string]string) error {
 	if values["provider"] != "chatgpt" {
 		return nil
 	}
-	configDir, err := config.GetConfigDir()
+	credentialsPath, err := credentials.ChatGPTCredentialsPath()
 	if err != nil {
 		return err
 	}
-	data, err := os.ReadFile(filepath.Join(configDir, "chatgpt_oauth.json"))
+	data, err := os.ReadFile(credentialsPath)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil

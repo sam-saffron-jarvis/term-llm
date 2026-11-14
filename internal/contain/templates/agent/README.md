@@ -22,6 +22,24 @@ credential files into the container before running the recipe command. Treat
 workspace recipes as trusted code: `copy_files` can read declared host files and
 commands run inside the container.
 
+Host ChatGPT credentials used to hydrate `.env` at workspace creation, and host
+ChatGPT/Copilot files used by these seed recipes, honor `TERM_LLM_CREDENTIALS_DIR`.
+A nonempty override is authoritative: it must be an absolute directory (or use
+`~/` for the current user's home), and missing files never fall back to the
+default config directory. Invalid directory overrides are reported as errors.
+The seed recipes use `[[host_credentials_dir]]`, resolved on the host at
+`contain exec` time, so changing the host override after creation takes effect
+on the next seed. Unlike creation-time double-brace placeholders, this runtime
+placeholder survives workspace rendering.
+
+The host override is **not** forwarded into the container. Configurable container
+credential bootstrap paths and seed destinations are deferred; the existing
+container destination defaults remain unchanged. Existing generated workspaces
+are not automatically rewritten: update their recipe `from` paths to use
+`[[host_credentials_dir]]/chatgpt_oauth.json` and
+`[[host_credentials_dir]]/copilot_oauth.json` to opt in. Seeding does not rewrite
+an existing workspace's `.env` or its persisted bootstrap configuration.
+
 ## Commands
 
 Start:

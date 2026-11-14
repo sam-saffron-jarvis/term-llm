@@ -26,6 +26,7 @@ HOME="$tmp/home" \
 	XDG_CONFIG_HOME="$tmp/config" \
 	XDG_DATA_HOME="$tmp/data" \
 	XDG_CACHE_HOME="$tmp/cache" \
+	TERM_LLM_CREDENTIALS_DIR= \
 	TMPDIR="$tmp/tmp" \
 	GOMODCACHE="$gomodcache" \
 	GOCACHE="$gocache" \

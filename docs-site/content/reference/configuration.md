@@ -26,6 +26,24 @@ The main config file is `$XDG_CONFIG_HOME/term-llm/config.yaml`. Without `XDG_CO
 ~/.config/term-llm/config.yaml
 ```
 
+## Native OAuth credential directory
+
+ChatGPT, Grok, and GitHub Copilot store their native OAuth files in the config directory by default: `$XDG_CONFIG_HOME/term-llm`, or `~/.config/term-llm` when `XDG_CONFIG_HOME` is unset. To keep these stores together under a separate credential root, set one directory-path environment variable for every process that uses them:
+
+```bash
+export TERM_LLM_CREDENTIALS_DIR="$HOME/creds/oauth"
+term-llm auth login chatgpt
+term-llm auth status
+```
+
+The directory contains `chatgpt_oauth.json`, `grok_oauth.json`, and `copilot_oauth.json` directly, together with any credential lock files. This variable contains **a directory path, not a token or secret reference**. It accepts an absolute path, `~`, or a leading `~/` for the current user's home. Relative paths, `~otheruser`, and secret-resolution syntax are not supported; environment references are not expanded by term-llm. Missing directories are created privately on writes; an existing regular file is not a valid directory.
+
+Unset or empty preserves the default. A nonempty override is authoritative: missing, unreadable, or corrupt credentials there never fall back to the default store. Login, logout, automatic refresh, doctor, and native ChatGPT live voice all use the selected directory. New credential files use owner-only permissions, as do newly created directories; Windows relies on profile ACLs.
+
+This does not move `config.yaml`, API keys, MCP OAuth, AWS credentials, or companion CLI stores such as Claude Code, Codex, and Grok Build. There is no automatic migration. Stop all processes sharing a store before an operator-controlled move, and set the same directory in every shell/service before restarting them. Do not keep independently refreshed copies of rotating OAuth tokens or symlink individual token files: atomic refresh replaces files.
+
+Managed services capture this variable when installed; existing service environments are retained on reinstall unless `--refresh-env` is used. For external service managers, configure the environment explicitly. Container host-side credential seeding honors the selected host store; container destinations and first-boot hydration still use their default config directory and do not inherit the host path. Existing generated contain workspaces are not automatically rewritten.
+
 ## Configuration shape
 
 A typical config has a few major parts:

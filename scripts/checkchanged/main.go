@@ -221,6 +221,7 @@ func isolatedEnv(tmp string) ([]string, error) {
 		"XDG_CONFIG_HOME="+filepath.Join(tmp, "config"),
 		"XDG_DATA_HOME="+filepath.Join(tmp, "data"),
 		"XDG_CACHE_HOME="+filepath.Join(tmp, "cache"),
+		"TERM_LLM_CREDENTIALS_DIR=",
 		"GOMODCACHE="+modcache,
 		"GOCACHE="+gocache,
 		"GOPATH="+gopath,

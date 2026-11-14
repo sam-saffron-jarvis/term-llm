@@ -1,2 +1,2 @@
-// Package credentials stores and refreshes provider OAuth credentials under the config directory.
+// Package credentials stores and refreshes native provider OAuth credentials in a configurable directory.
 package credentials

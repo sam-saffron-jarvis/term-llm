@@ -33,15 +33,7 @@ func (c *ChatGPTCredentials) IsExpired() bool {
 
 // getChatGPTCredentialsPath returns the path to the ChatGPT credentials file
 func getChatGPTCredentialsPath() (string, error) {
-	configDir := os.Getenv("XDG_CONFIG_HOME")
-	if configDir == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return "", fmt.Errorf("failed to get home directory: %w", err)
-		}
-		configDir = filepath.Join(home, ".config")
-	}
-	return filepath.Join(configDir, "term-llm", "chatgpt_oauth.json"), nil
+	return credentialPath("chatgpt_oauth.json")
 }
 
 // ChatGPTCredentialsPath returns where ChatGPT OAuth credentials are stored.

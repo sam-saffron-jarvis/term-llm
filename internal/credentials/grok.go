@@ -44,15 +44,7 @@ func (c *GrokCredentials) IsExpired() bool {
 }
 
 func getGrokCredentialsPath() (string, error) {
-	configDir := os.Getenv("XDG_CONFIG_HOME")
-	if configDir == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return "", fmt.Errorf("get home directory: %w", err)
-		}
-		configDir = filepath.Join(home, ".config")
-	}
-	return filepath.Join(configDir, "term-llm", grokCredentialsFile), nil
+	return credentialPath(grokCredentialsFile)
 }
 
 // GrokCredentialsPath returns where Grok OAuth credentials are stored.

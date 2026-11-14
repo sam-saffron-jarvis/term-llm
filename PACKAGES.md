@@ -84,7 +84,7 @@ One line per root-module package, generated from package doc comments by `make d
 - `internal/config` — defines term-llm's persisted settings and resolves providers, models and credentials.
 - `internal/contain` — manages named Docker Compose workspaces for `term-llm contain`.
 - `internal/copilot` — reads GitHub Copilot AI-credit billing usage for the usage command.
-- `internal/credentials` — stores and refreshes provider OAuth credentials under the config directory.
+- `internal/credentials` — stores and refreshes native provider OAuth credentials in a configurable directory.
 - `internal/debuglog` — reads, formats, exports and searches term-llm debug-log sessions.
 - `internal/diagnostics` — writes edit-retry diagnostic dumps for failed tool edits.
 - `internal/diff` — provides shared constants for diff handling across packages.

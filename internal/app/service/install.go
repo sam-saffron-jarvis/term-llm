@@ -266,6 +266,11 @@ func (a App) buildServiceInstallSpec(e serviceEnvironment, kind string, args []s
 			return userservice.Spec{}, fmt.Errorf("%s must be absolute", key)
 		}
 	}
+	if old == nil || opts.RefreshEnv {
+		if err := normalizeServiceCredentialsDir(spec.Environment); err != nil {
+			return userservice.Spec{}, err
+		}
+	}
 	spec.Directory = e.home
 	if old != nil {
 		spec.Directory = old.Directory

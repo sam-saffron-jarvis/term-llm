@@ -28,15 +28,7 @@ func (c *CopilotCredentials) IsExpired() bool {
 
 // getCopilotCredentialsPath returns the path to the Copilot credentials file
 func getCopilotCredentialsPath() (string, error) {
-	configDir := os.Getenv("XDG_CONFIG_HOME")
-	if configDir == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return "", fmt.Errorf("failed to get home directory: %w", err)
-		}
-		configDir = filepath.Join(home, ".config")
-	}
-	return filepath.Join(configDir, "term-llm", "copilot_oauth.json"), nil
+	return credentialPath("copilot_oauth.json")
 }
 
 // CopilotCredentialsPath returns where Copilot OAuth credentials are stored.
