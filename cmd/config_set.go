@@ -19,6 +19,9 @@ func configSet(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	value := args[1]
+	if err := config.ValidateCredentialsDirEdit(key, value); err != nil {
+		return err
+	}
 	var policyAgents []string
 	if strings.EqualFold(strings.Split(key, ".")[0], "mcp") {
 		var err error
@@ -40,7 +43,10 @@ func configSet(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	configPath, err := config.GetConfigPath()
+	configPath, err := config.FindConfigFile()
+	if err == nil && configPath == "" {
+		configPath, err = config.GetConfigPath()
+	}
 	if err != nil {
 		return fmt.Errorf("failed to get config path: %w", err)
 	}

@@ -441,7 +441,7 @@ func NewChatGPTResponsesClient(creds *credentials.ChatGPTCredentials) *Responses
 					return fmt.Errorf("failed to refresh ChatGPT session: %w", err)
 				}
 				failedRefreshToken := creds.RefreshToken
-				if clearErr := credentials.ClearChatGPTCredentialsIfRefreshToken(failedRefreshToken); clearErr != nil {
+				if clearErr := credentials.ClearCredentialsAfterRefresh(err, failedRefreshToken); clearErr != nil {
 					return fmt.Errorf("ChatGPT session expired and failed to clear credentials: %w", clearErr)
 				}
 				return fmt.Errorf("ChatGPT session expired — please re-run your command to re-authenticate")

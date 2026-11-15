@@ -2,6 +2,7 @@ package auth
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -22,7 +23,11 @@ func TestAuthCredentialDirectory(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("TERM_LLM_CREDENTIALS_DIR", filepath.Join(t.TempDir(), "oauth"))
+	custom := filepath.Join(t.TempDir(), "oauth")
+	configPath := filepath.Join(os.Getenv("XDG_CONFIG_HOME"), "term-llm", "config.yaml")
+	if err := os.WriteFile(configPath, []byte(fmt.Sprintf("credentials_dir: %q\n", custom)), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	var output bytes.Buffer
 	cmd := &cobra.Command{}
 	cmd.SetOut(&output)

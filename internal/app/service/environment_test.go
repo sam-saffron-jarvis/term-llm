@@ -1,6 +1,8 @@
 package service
 
 import (
+	"fmt"
+	"github.com/term-llm/term-llm/internal/config"
 	"os"
 	"path/filepath"
 	"strings"
@@ -101,6 +103,35 @@ func TestServiceReinstallCredentialsDir(t *testing.T) {
 					t.Fatal("mutated recorded environment")
 				}
 			}
+		}
+	}
+}
+
+func TestServiceKeepsYAMLCredentialsDirOutOfEnvironment(t *testing.T) {
+	home := isolatedServiceHome(t)
+	t.Setenv("TERM_LLM_CREDENTIALS_DIR", "")
+	dir, err := config.GetConfigDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "config.yaml")
+	first, second := t.TempDir(), t.TempDir()
+	for _, selected := range []string{first, second} {
+		if err := os.WriteFile(path, []byte(fmt.Sprintf("credentials_dir: %q\n", selected)), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		spec, err := testApp().buildServiceInstallSpec(serviceEnvironment{home: home}, "web", nil, InstallOptions{}, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if spec.Environment["TERM_LLM_CREDENTIALS_DIR"] != "" {
+			t.Fatal("YAML choice was frozen as an overriding service environment value")
+		}
+		if got, err := config.NativeCredentialsDir(); err != nil || got != selected {
+			t.Fatalf("service config selection = %q, %v", got, err)
 		}
 	}
 }

@@ -3,6 +3,7 @@ package contain
 import (
 	"context"
 	"encoding/base64"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -21,7 +22,7 @@ func writeOAuthFixture(t *testing.T, dir, filename, payload string) {
 }
 
 func TestCreateWorkspaceCredentialOverrideHydratesEnv(t *testing.T) {
-	for _, override := range []string{"custom", "home", "missing", "missing-file", "relative", "file"} {
+	for _, override := range []string{"custom", "yaml", "home", "missing", "missing-file", "relative", "file"} {
 		t.Run(override, func(t *testing.T) {
 			home := t.TempDir()
 			t.Setenv("HOME", home)
@@ -49,10 +50,10 @@ func TestCreateWorkspaceCredentialOverrideHydratesEnv(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			if override == "custom" || override == "home" {
+			if override == "custom" || override == "home" || override == "yaml" {
 				writeOAuthFixture(t, custom, "chatgpt_oauth.json", want)
 			}
-			t.Setenv("TERM_LLM_CREDENTIALS_DIR", value)
+			setContainCredentialSource(t, xdg, value, override == "yaml")
 			dir, err := CreateWorkspace("oauthbox", CreateOptions{Template: "agent", CWD: t.TempDir(), NoInput: true, Values: map[string]string{"provider": "chatgpt"}})
 			if override == "relative" || override == "file" {
 				if err == nil || !strings.Contains(err.Error(), "TERM_LLM_CREDENTIALS_DIR") {
@@ -77,7 +78,7 @@ func TestCreateWorkspaceCredentialOverrideHydratesEnv(t *testing.T) {
 
 func TestExecBuiltinSeedCredentialOverride(t *testing.T) {
 	for _, provider := range []string{"chatgpt", "copilot"} {
-		for _, override := range []string{"custom", "missing", "missing-file", "relative", "file"} {
+		for _, override := range []string{"custom", "yaml", "missing", "missing-file", "relative", "file"} {
 			t.Run(provider+"/"+override, func(t *testing.T) {
 				t.Setenv("HOME", t.TempDir())
 				xdg := t.TempDir()
@@ -102,7 +103,7 @@ func TestExecBuiltinSeedCredentialOverride(t *testing.T) {
 				custom := filepath.Join(t.TempDir(), "oauth")
 				value := custom
 				switch override {
-				case "custom":
+				case "custom", "yaml":
 					writeOAuthFixture(t, custom, filename, "exec-time-secret")
 				case "missing-file":
 					if err := os.MkdirAll(custom, 0o700); err != nil {
@@ -116,10 +117,10 @@ func TestExecBuiltinSeedCredentialOverride(t *testing.T) {
 						t.Fatal(err)
 					}
 				}
-				t.Setenv("TERM_LLM_CREDENTIALS_DIR", value)
+				setContainCredentialSource(t, xdg, value, override == "yaml")
 				runner := &fakeRunner{}
 				err = Exec(context.Background(), runner, "seedbox", []string{"seed-" + provider + "-auth"}, nil, io.Discard, io.Discard)
-				if override != "custom" {
+				if override != "custom" && override != "yaml" {
 					if err == nil || len(runner.runs) != 0 {
 						t.Fatalf("Exec = %v, runs = %v; want failure before any container copy", err, runner.runs)
 					}
@@ -155,5 +156,18 @@ func TestRecipeContextOnlyResolvesCredentialsWhenUsed(t *testing.T) {
 	}
 	if _, err := newRecipeTemplateContext("box", t.TempDir(), "/home/agent", "[[host_credentials_dir]]/chatgpt_oauth.json"); err == nil {
 		t.Fatal("credential recipe ignored invalid override")
+	}
+}
+
+func setContainCredentialSource(t *testing.T, xdg, value string, fromYAML bool) {
+	t.Helper()
+	if !fromYAML {
+		t.Setenv("TERM_LLM_CREDENTIALS_DIR", value)
+		return
+	}
+	t.Setenv("TERM_LLM_CREDENTIALS_DIR", "")
+	path := filepath.Join(xdg, "term-llm", "config.yaml")
+	if err := os.WriteFile(path, []byte(fmt.Sprintf("credentials_dir: %q\n", value)), 0o600); err != nil {
+		t.Fatal(err)
 	}
 }

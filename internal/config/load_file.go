@@ -223,6 +223,9 @@ func mergeSettings(dst, src map[string]any) {
 // that, for example, a quoted "5" fills an int field. The native memory policy
 // is checked strictly first to avoid coercing or ignoring security options.
 func decodeSettings(settings map[string]any, cfg *Config, path string) error {
+	if err := prepareCredentialsDirSetting(settings); err != nil {
+		return err
+	}
 	if err := validateMemorySettings(settings); err != nil {
 		return err
 	}

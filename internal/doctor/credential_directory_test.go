@@ -2,6 +2,7 @@ package doctor
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -15,7 +16,10 @@ func TestCredentialsCheckDirectoryOverride(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", root)
 	writeCredFile(t, root, "chatgpt_oauth.json", map[string]any{"access_token": "default-fixture"}, 0o600)
 	custom := filepath.Join(t.TempDir(), "oauth")
-	t.Setenv("TERM_LLM_CREDENTIALS_DIR", custom)
+	t.Setenv("TERM_LLM_CREDENTIALS_DIR", "")
+	if err := os.WriteFile(filepath.Join(root, "term-llm", "config.yaml"), []byte(fmt.Sprintf("credentials_dir: %q\n", custom)), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	check := CredentialsCheck{Config: &config.Config{DefaultProvider: "chatgpt"}}
 	findings := check.Run(context.Background())
 	missing := credentialsFindingWithTitle(t, findings, "chatgpt: not signed in")

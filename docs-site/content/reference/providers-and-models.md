@@ -140,7 +140,7 @@ These are **text/agent providers**. [Image](/guides/image-generation/), [audio](
 
 ## Credentials
 
-Config paths below are relative to `$XDG_CONFIG_HOME/term-llm/`, normally `~/.config/term-llm/`. Use `term-llm config path` to locate your file. Native ChatGPT, Grok, and Copilot OAuth files default to this directory but can be relocated together with [`TERM_LLM_CREDENTIALS_DIR`](/reference/configuration/#native-oauth-credential-directory); config files and external CLI stores are unchanged. Provider-specific API keys can also be supplied in `providers.<name>.api_key` with the normal [deferred credential resolution](/guides/secret-management/).
+Use `term-llm config path` to locate configuration. Native OAuth uses [`credentials_dir`](/reference/configuration/#native-oauth-credential-directory); API keys support [deferred resolution](/guides/secret-management/).
 
 <!-- BEGIN GENERATED: providers -->
 | Provider | Type | Credentials / environment | Model listing |

@@ -2,6 +2,7 @@ package live
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -18,7 +19,11 @@ func TestChatGPTAuthCredentialDirectory(t *testing.T) {
 	if err := credentials.SaveChatGPTCredentials(creds); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("TERM_LLM_CREDENTIALS_DIR", filepath.Join(t.TempDir(), "oauth"))
+	custom := filepath.Join(t.TempDir(), "oauth")
+	configPath := filepath.Join(os.Getenv("XDG_CONFIG_HOME"), "term-llm", "config.yaml")
+	if err := os.WriteFile(configPath, []byte(fmt.Sprintf("credentials_dir: %q\n", custom)), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	provider := NewChatGPTProvider(config.LiveConfig{}, nil, nil)
 	if provider.Ready(context.Background()) == nil {
 		t.Fatal("readiness fell back to default credentials")
