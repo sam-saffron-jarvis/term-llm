@@ -7,17 +7,18 @@
     "node": ">=24"
   },
   "scripts": {
-    "build": "npm run build:chat && npm run build:hub && npm run build:compress",
+    "build": "npm run build:chat && npm run build:hub && npm run build:proxy && npm run build:compress",
+    "build:proxy": "tsc --noEmit && vite build --config vite.proxy.config.ts",
     "build:chat": "vite build",
     "build:hub": "vite build --config vite.hub.config.ts",
     "build:compress": "go run ../cmd/precompressui",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "lint": "npm run lint:ts && npm run lint:css",
-    "lint:css": "stylelint \"src/**/*.css\"",
+    "lint:css": "stylelint \"{src,proxy}/**/*.css\"",
     "lint:ts": "oxlint . --deny-warnings",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run",
+    "test": "vitest run && vitest run --config vite.proxy.config.ts",
     "test:e2e": "playwright test"
   },
   "dependencies": {

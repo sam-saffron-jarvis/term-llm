@@ -1,0 +1,30 @@
+services:
+  proxy:
+    # Build a local image from verified release archives; never copy an installed binary.
+    build:
+      context: ${PROXY_IMAGE_CONTEXT:?Prepare a verified release context first}
+    image: term-llm-proxy:local
+    user: "65532:65532"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    ports: ["127.0.0.1:8082:8082"]
+    volumes:
+      - ./state:/state
+      - ./secrets/admin:/run/secrets/proxy_admin:ro
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=16m,mode=1777
+    environment:
+      XDG_RUNTIME_DIR: /tmp/runtime
+      TERM_LLM_SKIP_UPDATE_CHECK: "1"
+    healthcheck:
+      test: [CMD, /usr/local/bin/term-llm, serve, proxy, health, --port, "8082"]
+      interval: 30s
+      timeout: 5s
+      start_period: 5s
+      retries: 3
+    stop_grace_period: 30s
+    pids_limit: 128
+    mem_limit: 256m
+    cpus: 2
+    restart: "no"

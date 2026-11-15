@@ -75,6 +75,8 @@ jobs:
         # go:embed only fails when dist/ is missing entirely; a missing source
         # archive would build silently.
         run: |
+          test -s internal/serveui/static/dist/proxy.js.gz
+          test -s internal/serveui/static/dist/proxy.css.gz
           test -s internal/serveui/static/dist/asset-manifest.json.gz
           test -s internal/uisource/assets/term-llm-ui-source.tar.gz
 

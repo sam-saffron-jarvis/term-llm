@@ -47,11 +47,22 @@ var UpdateCheckCmd = &cobra.Command{
 	},
 }
 
+type checksDisabledKey struct{}
+
+// WithoutChecks marks a standalone command that must not read update state or start network work.
+func WithoutChecks(ctx context.Context) context.Context {
+	return context.WithValue(ctx, checksDisabledKey{}, true)
+}
+
+func checksDisabled(ctx context.Context) bool {
+	return ctx != nil && ctx.Value(checksDisabledKey{}) == true
+}
+
 // SetupUpdateChecks initializes update checking on CLI startup
 func SetupUpdateChecks(rootCmd *cobra.Command, version string) {
 	rootCmd.AddCommand(UpdateCheckCmd)
 	cobra.OnInitialize(func() {
-		if os.Getenv(SkipUpdateEnvVar) != "" {
+		if os.Getenv(SkipUpdateEnvVar) != "" || checksDisabled(rootCmd.Context()) {
 			return
 		}
 		if version == "dev" {

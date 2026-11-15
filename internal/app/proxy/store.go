@@ -1,0 +1,392 @@
+package proxy
+
+import (
+	"context"
+	"crypto/rand"
+	"crypto/sha256"
+	"database/sql"
+	"encoding/hex"
+	"encoding/json"
+	"fmt"
+	"log"
+	"net/url"
+	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/term-llm/term-llm/internal/fileprivacy"
+	"github.com/term-llm/term-llm/internal/sqliteutil"
+	_ "modernc.org/sqlite"
+)
+
+type store struct{ db *sql.DB }
+
+const schema = `
+CREATE TABLE configuration (id INTEGER PRIMARY KEY CHECK(id=1), revision INTEGER NOT NULL, data TEXT NOT NULL);
+INSERT INTO configuration VALUES(1,0,'{"routes":[]}');
+CREATE TABLE secrets (name TEXT PRIMARY KEY, origin TEXT NOT NULL, value TEXT NOT NULL);
+CREATE TABLE callers (id TEXT PRIMARY KEY, name TEXT NOT NULL, hash TEXT UNIQUE NOT NULL, created INTEGER NOT NULL, revoked INTEGER NOT NULL DEFAULT 0);
+CREATE TABLE grants (caller TEXT NOT NULL, route TEXT NOT NULL, authority TEXT NOT NULL, PRIMARY KEY(caller,route));
+CREATE TABLE requests (seq INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT UNIQUE NOT NULL, started INTEGER NOT NULL, caller TEXT NOT NULL, route TEXT NOT NULL, method TEXT NOT NULL, path TEXT NOT NULL, outcome TEXT NOT NULL, data TEXT NOT NULL);
+CREATE INDEX requests_time ON requests(started,seq);
+CREATE INDEX requests_caller ON requests(caller,seq);
+CREATE INDEX requests_route ON requests(route,seq);
+PRAGMA user_version=2;`
+
+func openStore(dir string) (*store, error) {
+	if err := fileprivacy.MkdirAll(dir); err != nil {
+		return nil, fmt.Errorf("create private proxy state: %w", err)
+	}
+	st, err := os.Stat(dir)
+	if err != nil || !st.IsDir() || fileprivacy.CheckDir(st) != nil {
+		return nil, fmt.Errorf("state directory must be private (0700)")
+	}
+	path := filepath.Join(dir, "proxy.db")
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0600)
+	if err != nil {
+		return nil, fmt.Errorf("open proxy database: %w", err)
+	}
+	f.Close()
+	st, err = os.Stat(path)
+	if err != nil || !st.Mode().IsRegular() || fileprivacy.CheckFile(st) != nil {
+		return nil, fmt.Errorf("database must be a private regular file")
+	}
+	dsn := sqliteutil.FileURI(path) + "?_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)&_pragma=busy_timeout(3000)"
+	db, err := sql.Open("sqlite", dsn)
+	if err != nil {
+		return nil, fmt.Errorf("open proxy store: %w", err)
+	}
+	db.SetMaxOpenConns(1)
+	s := &store{db: db}
+	if err = s.initialize(); err != nil {
+		db.Close()
+		return nil, err
+	}
+	return s, nil
+}
+func randomToken(prefix string) string {
+	var b [32]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		panic(err)
+	}
+	return prefix + hex.EncodeToString(b[:])
+}
+func hashToken(token string) string {
+	h := sha256.Sum256([]byte(token))
+	return hex.EncodeToString(h[:])
+}
+func (s *store) load() (Config, int64, map[string]material, error) {
+	var data string
+	var revision int64
+	var c Config
+	if err := s.db.QueryRow("SELECT revision,data FROM configuration WHERE id=1").Scan(&revision, &data); err != nil {
+		return c, 0, nil, err
+	}
+	if err := json.Unmarshal([]byte(data), &c); err != nil {
+		return c, 0, nil, err
+	}
+	secrets, err := s.materials()
+	return c, revision, secrets, err
+}
+func (s *store) materials() (map[string]material, error) {
+	rows, err := s.db.Query("SELECT name,origin,value FROM secrets")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]material{}
+	for rows.Next() {
+		var name string
+		var m material
+		if err := rows.Scan(&name, &m.Origin, &m.Value); err != nil {
+			return nil, err
+		}
+		out[name] = m
+	}
+	return out, rows.Err()
+}
+func reconcileGrants(tx *sql.Tx, snap *snapshot) (int64, error) {
+	rows, err := tx.Query("SELECT DISTINCT route,authority FROM grants")
+	if err != nil {
+		return 0, err
+	}
+	type pair struct{ name, authority string }
+	var stale []pair
+	for rows.Next() {
+		var p pair
+		if err := rows.Scan(&p.name, &p.authority); err != nil {
+			rows.Close()
+			return 0, err
+		}
+		found := false
+		for _, r := range snap.routes {
+			found = found || r.Name == p.name && r.authority == p.authority
+		}
+		if !found {
+			stale = append(stale, p)
+		}
+	}
+	err = rows.Err()
+	rows.Close()
+	if err != nil {
+		return 0, err
+	}
+	var dropped int64
+	for _, p := range stale {
+		result, err := tx.Exec("DELETE FROM grants WHERE route=? AND authority=?", p.name, p.authority)
+		if err != nil {
+			return 0, err
+		}
+		n, err := result.RowsAffected()
+		if err != nil {
+			return 0, err
+		}
+		dropped += n
+	}
+	return dropped, nil
+}
+func (s *store) saveConfig(snap *snapshot, fileMode bool) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	dropped, err := reconcileGrants(tx, snap)
+	if err != nil {
+		return err
+	}
+	if fileMode {
+		_, err = tx.Exec("UPDATE configuration SET revision=? WHERE id=1", snap.revision)
+	} else {
+		b, e := json.Marshal(snap.config)
+		if e != nil {
+			return e
+		}
+		_, err = tx.Exec("UPDATE configuration SET revision=?,data=? WHERE id=1", snap.revision, string(b))
+	}
+	if err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	if dropped > 0 {
+		log.Printf("proxy: activation removed %d incompatible route grants; regrant explicitly in Callers", dropped)
+	}
+	return nil
+}
+
+type Caller struct {
+	ID       string   `json:"id"`
+	Name     string   `json:"name"`
+	Created  int64    `json:"created"`
+	LastUsed int64    `json:"last_used"`
+	Revoked  bool     `json:"revoked"`
+	Grants   []string `json:"grants"`
+}
+
+// The latest admission is an indexed tail lookup, not an aggregate over retained history.
+const callersQuery = "SELECT c.id,c.name,c.created,c.revoked,COALESCE((SELECT r.started FROM requests r WHERE r.caller=c.id ORDER BY r.seq DESC LIMIT 1),0) FROM callers c ORDER BY c.created,c.id"
+
+func (s *store) callers() ([]Caller, error) {
+	rows, err := s.db.Query(callersQuery)
+	if err != nil {
+		return nil, err
+	}
+	out := []Caller{}
+	for rows.Next() {
+		c := Caller{Grants: []string{}}
+		if err := rows.Scan(&c.ID, &c.Name, &c.Created, &c.Revoked, &c.LastUsed); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		out = append(out, c)
+	}
+	err = rows.Err()
+	rows.Close()
+	if err != nil {
+		return nil, err
+	}
+	rows, err = s.db.Query("SELECT caller,route FROM grants ORDER BY route")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id, route string
+		if err := rows.Scan(&id, &route); err != nil {
+			return nil, err
+		}
+		for i := range out {
+			if out[i].ID == id {
+				out[i].Grants = append(out[i].Grants, route)
+			}
+		}
+	}
+	return out, rows.Err()
+}
+func (s *store) createCaller(name string, grants []string, snap *snapshot) (Caller, string, error) {
+	c := Caller{ID: randomToken("c_")[:26], Name: name, Created: time.Now().UnixMilli(), Grants: grants}
+	token := randomToken("sk-tlp-")
+	tx, err := s.db.Begin()
+	if err != nil {
+		return c, "", err
+	}
+	defer tx.Rollback()
+	var n int
+	if err = tx.QueryRow("SELECT count(*) FROM callers").Scan(&n); err != nil {
+		return c, "", err
+	}
+	if n >= 1024 {
+		return c, "", inputError("Caller limit reached (1024); revoke unused clients or use a separate proxy state directory")
+	}
+	if _, err = tx.Exec("INSERT INTO callers(id,name,hash,created) VALUES(?,?,?,?)", c.ID, c.Name, hashToken(token), c.Created); err != nil {
+		return c, "", err
+	}
+	if err = writeGrants(tx, c.ID, grants, snap); err != nil {
+		return c, "", err
+	}
+	if err = tx.Commit(); err != nil {
+		return c, "", err
+	}
+	return c, token, nil
+}
+func (s *store) authorize(token string, r activeRoute) (Caller, error) {
+	var c Caller
+	err := s.db.QueryRow(`SELECT c.id,c.name FROM callers c JOIN grants g ON c.id=g.caller WHERE c.hash=? AND c.revoked=0 AND g.route=? AND g.authority=?`, hashToken(token), r.Name, r.authority).Scan(&c.ID, &c.Name)
+	return c, err
+}
+
+type Record struct {
+	ID          string `json:"id"`
+	Seq         int64  `json:"seq"`
+	Started     int64  `json:"started"`
+	Ended       int64  `json:"ended"`
+	CallerID    string `json:"caller_id"`
+	CallerName  string `json:"caller_name"`
+	Route       string `json:"route"`
+	Revision    int64  `json:"revision"`
+	Method      string `json:"method"`
+	Path        string `json:"path"`
+	LocalPrefix string `json:"local_prefix"`
+	Peer        string `json:"peer"`
+	Status      int    `json:"status"`
+	Outcome     string `json:"outcome"`
+	Sent        int64  `json:"sent"`
+	Received    int64  `json:"received"`
+	HeaderMS    int64  `json:"header_ms"`
+	FirstByteMS int64  `json:"first_byte_ms"`
+	TotalMS     int64  `json:"total_ms"`
+	UpstreamID  string `json:"upstream_id"`
+}
+
+func (s *store) start(ctx context.Context, r *Record) error {
+	b, err := json.Marshal(r)
+	if err != nil {
+		return err
+	}
+	result, err := s.db.ExecContext(ctx, "INSERT INTO requests(id,started,caller,route,method,path,outcome,data) VALUES(?,?,?,?,?,?,?,?)", r.ID, r.Started, r.CallerID, r.Route, r.Method, r.Path, "unknown", string(b))
+	if err != nil {
+		return err
+	}
+	r.Seq, err = result.LastInsertId()
+	return err
+}
+func (s *store) finish(r Record) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	b, err := json.Marshal(r)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.ExecContext(ctx, "UPDATE requests SET outcome=?,data=? WHERE id=?", r.Outcome, string(b), r.ID)
+	return err
+}
+func (s *store) records(q url.Values, limit int) ([]Record, int64, error) {
+	where, args, err := requestWhere(q)
+	if err != nil {
+		return nil, 0, err
+	}
+	args = append(args, limit+1)
+	rows, err := s.db.Query("SELECT seq,data FROM requests WHERE "+where+" ORDER BY seq DESC LIMIT ?", args...)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+	out := []Record{}
+	var next int64
+	for rows.Next() {
+		var seq int64
+		var data string
+		if err = rows.Scan(&seq, &data); err != nil {
+			return nil, 0, err
+		}
+		if len(out) == limit {
+			next = out[len(out)-1].Seq
+			break
+		}
+		var r Record
+		if err = json.Unmarshal([]byte(data), &r); err != nil {
+			return nil, 0, err
+		}
+		r.Seq = seq
+		if !strings.HasPrefix(r.Path, "/") {
+			r.Path = "/" + r.Path
+		}
+		out = append(out, r)
+	}
+	return out, next, rows.Err()
+}
+func (s *store) retain(ctx context.Context, days int) error {
+	_, err := s.db.ExecContext(ctx, "DELETE FROM requests WHERE seq IN (SELECT seq FROM requests WHERE started<? ORDER BY seq LIMIT 500)", time.Now().Add(-time.Duration(days)*24*time.Hour).UnixMilli())
+	return err
+}
+
+func requestWhere(q url.Values) (string, []any, error) {
+	where := []string{"1=1"}
+	args := []any{}
+	for _, f := range []struct{ key, col string }{{"id", "id"}, {"caller", "caller"}, {"route", "route"}, {"method", "method"}, {"outcome", "outcome"}} {
+		if v := q.Get(f.key); v != "" {
+			if f.key == "outcome" && v == "active" {
+				v = "unknown"
+			}
+			where = append(where, f.col+"=?")
+			args = append(args, v)
+		}
+	}
+	if outcome := q.Get("outcome"); outcome == "active" || outcome == "unknown" {
+		ids := q["_active"]
+		if len(ids) > 0 {
+			placeholders := strings.TrimSuffix(strings.Repeat("?,", len(ids)), ",")
+			clause := "id IN (" + placeholders + ")"
+			if outcome == "unknown" {
+				clause = "NOT (" + clause + ")"
+			}
+			where = append(where, clause)
+			for _, id := range ids {
+				args = append(args, id)
+			}
+		} else if outcome == "active" {
+			where = append(where, "0=1")
+		}
+	}
+	for _, f := range []struct{ key, clause string }{{"before", "seq < ?"}, {"since", "started >= ?"}, {"until", "started <= ?"}} {
+		if v := q.Get(f.key); v != "" {
+			n, err := strconv.ParseInt(v, 10, 64)
+			if err != nil {
+				return "", nil, fmt.Errorf("invalid filter")
+			}
+			if n > 0 {
+				where = append(where, f.clause)
+				args = append(args, n)
+			}
+		}
+	}
+	if v := q.Get("path"); v != "" {
+		where = append(where, "(instr(CASE WHEN substr(path,1,1)='/' THEN path ELSE '/'||path END,?)>0 OR instr(COALESCE(json_extract(data,'$.local_prefix'),'')||ltrim(path,'/'),?)>0)")
+		args = append(args, v, v)
+	}
+	return strings.Join(where, " AND "), args, nil
+}

@@ -39,13 +39,13 @@ var (
 	renderServiceWorker     []byte
 )
 
-// AssetVersion returns a stable hash of the chat UI assets. The standalone Hub
-// entry has an independent version so changes to either application do not
-// rotate the other application's cache identity.
+// AssetVersion returns a stable hash of the chat UI assets. Standalone Hub and
+// proxy assets are excluded so they do not rotate the chat cache identity.
 func AssetVersion() string {
 	assetVersionOnce.Do(func() {
 		assetVersion = embeddedAssetVersion(func(path string) bool {
-			return path != "static/dist/hub.js" && path != "static/dist/hub.css"
+			return path != "static/dist/hub.js" && path != "static/dist/hub.css" &&
+				path != "static/dist/proxy.js" && path != "static/dist/proxy.css"
 		})
 	})
 	return assetVersion
@@ -270,7 +270,9 @@ func EncodedAsset(name string) (data []byte, gzipped bool, err error) {
 func SourceAssetPaths() []string {
 	paths := []string{"index.html", "sw.js"}
 	for _, p := range logicalPaths("static/dist") {
-		if !strings.HasSuffix(p, "/hub.js") && !strings.HasSuffix(p, "/hub.css") && (strings.HasSuffix(p, ".css") || strings.HasSuffix(p, ".js")) {
+		if !strings.HasSuffix(p, "/hub.js") && !strings.HasSuffix(p, "/hub.css") &&
+			!strings.HasSuffix(p, "/proxy.js") && !strings.HasSuffix(p, "/proxy.css") &&
+			(strings.HasSuffix(p, ".css") || strings.HasSuffix(p, ".js")) {
 			paths = append(paths, strings.TrimPrefix(p, "static/"))
 		}
 	}

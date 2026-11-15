@@ -1302,6 +1302,32 @@ Run an MCP server exposing term-llm tools over HTTP
 | `--write-dir` | stringArray | Allowed write directories (repeatable) |
 | `--yolo` | bool | Auto-approve all tool actions |
 
+### `term-llm serve proxy`
+
+Run a standalone configuration-driven credential proxy
+
+| Flag | Type | Description |
+|---|---|---|
+| `--admin-token-file` | string | Private file containing a strong separate admin token (required) |
+| `--config` | string | Operator-owned route YAML; omit for editable UI-managed routes |
+| `--host` | string | Listen host |
+| `--max-body-bytes` | int64 | Maximum streamed request body bytes |
+| `--max-concurrent` | int | Maximum active forwarding requests (no queue) |
+| `--port` | int | Listen port |
+| `--public-url` | string | HTTPS admin origin behind a trusted reverse proxy |
+| `--request-timeout` | duration | Total request deadline (including streaming) |
+| `--retention-days` | int | Request metadata retention in days (batched deletion) |
+| `--state-dir` | string | Private proxy state directory (required; not agent state) |
+
+### `term-llm serve proxy health`
+
+Probe local proxy/store readiness without contacting upstreams
+
+| Flag | Type | Description |
+|---|---|---|
+| `--host` | string | Loopback readiness host |
+| `--port` | int | Readiness port |
+
 ### `term-llm service`
 
 Install and manage per-user Web and Hub services

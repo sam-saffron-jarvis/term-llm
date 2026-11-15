@@ -8,7 +8,7 @@ Vite emits deterministic, minified production files into `internal/serveui/stati
 
 Source builds use Node 24 or newer and npm. The Go build step also writes the deterministic private UI-authoring source archive, which is embedded in release binaries for on-demand extension builder inspection, not downloaded by ordinary browser sessions. The test setup supplies isolated Web Storage implementations for Node 25+, whose process-level `localStorage`/`sessionStorage` globals otherwise depend on runtime flags. CI installs dependencies from `package-lock.json` with `npm ci`.
 
-From the repository root, the normal build command installs locked frontend dependencies when needed, generates both applications, and builds `./term-llm`:
+From the repository root, the normal build command installs locked frontend dependencies when needed, generates all three applications, and builds `./term-llm`:
 
 ```sh
 make build
@@ -17,7 +17,7 @@ make build
 ## Commands
 
 ```sh
-make frontend             # chat build, then standalone Hub build
+make frontend             # chat, standalone Hub, standalone proxy, then precompression
 npm --prefix frontend run format:check
 npm --prefix frontend run lint
 npm --prefix frontend run typecheck
@@ -71,6 +71,79 @@ those overrides when the loop analysis is fixed.
 The payload baseline's historical `app-interject.js` entry describes a previous measured asset set; it is not an active chunk name. The current Vite build emits a hashed entry and named hashed chunks, including lazy steering actions and queue presentation. Do not rename baseline entries by guessing or relax its budget to mask growth.
 
 Do not edit generated `static/dist` files directly. Change TypeScript/CSS and run `make frontend`; only source and package manifests are committed.
+
+## Standalone proxy administration
+
+`frontend/proxy/` owns the plain TypeScript DOM administration UI. It does not
+use Preact, chat modules, browser storage, inline scripts, or HTML insertion.
+All displayed API content is inserted as text. The backend shell at `/_proxy/`
+provides `#proxy-app`, an external module at `/_proxy/assets/proxy.js`, and the
+external stylesheet at `/_proxy/assets/proxy.css`. `vite.proxy.config.ts` emits
+exactly those two standalone assets into dist without clearing the chat/Hub
+outputs. The normal build includes proxy typechecking and builds it before
+precompression; no new dependencies are required.
+
+The proxy assets are excluded from the chat asset version, hashed manifest,
+service worker graph, and chat authoring asset list. Stable proxy asset URLs must
+be served with revalidation (not immutable caching). No proxy service worker is
+registered. Keep proxy transport in `src/api/proxy-client.ts`, even though its DOM
+entry is outside `src/`.
+
+`/_proxy/api/state` is authoritative for CSRF, revision and mode. All mutations
+use `X-CSRF-Token` and same-origin session credentials. Configuration writes
+submit the loaded revision and replace routes only; conflicts are visible and
+require an explicit refresh rather than silently overwriting newer state.
+File-managed routes and file-sourced secrets are read-only, with explicit file
+reload. Stored secrets can still be rotated. The UI never offers file-reference
+editing. YAML import/export is collapsed by default and uses the server's
+secret-free format; there is no browser YAML parser. Switching/reloading file
+configuration drops incompatible caller grants fail-closed.
+
+Secrets are write-only and origin-bound. Creating a duplicate name is rejected;
+rotation requires an explicit Replace action (`replace: true`) and confirmation.
+Same-name secret-byte rotation preserves grants. The route editor defaults header
+substitutions to stored secrets and offers only secrets matching the upstream
+origin. Literal values are public configuration, not a credential store.
+
+Administrator tokens, secret values and caller tokens are never persisted.
+Caller grants are unchecked by default; create/edit submits the state revision
+to reject stale grants. Grant edits do not reissue a token. Tokens are shown once
+with one Copy action; route curl examples reference `$TOKEN` rather than repeating
+the literal credential. Tabs, refresh and sign-out require confirmation while a
+token is shown, and browser leave requests a native warning. Browser/OS shutdown
+can still discard the token: save it before dismissing.
+
+Upstream origin/base-path or canonical substitution changes invalidate grants;
+local-prefix, enabled and local-auth-format changes preserve them. The editor
+warns before authority-bearing changes. Revoke, delete and disable block new
+requests only: already dispatched requests may continue until finish or deadline.
+Saving never sends an automatic upstream probe.
+
+Requests show full local paths using the recorded local-prefix snapshot, human
+outcomes/dates, and grouped metadata details inline under the selected row.
+Filters collapse initially on narrow screens; paging uses stable older sequence
+cursors, and authenticated JSON export is bounded to 1,000 rows. Bodies and
+headers are not captured. Errors/incomplete results can still mean upstream work
+happened, so the UI does not recommend automatic retries.
+
+Only curated JSON `{error: string}` responses for 400/409 are shown (as text,
+limited to 512 characters). Error reads are bounded and arbitrary HTML, non-JSON
+bodies and other statuses keep generic messages.
+
+Run the standalone coverage and checks from the repository root:
+
+```sh
+(cd frontend && npx vitest run --config vite.proxy.config.ts)
+npm --prefix frontend run typecheck
+(cd frontend && npx stylelint 'proxy/**/*.css')
+make test PKG=./internal/serveui
+```
+
+The proxy suite uses its own Vite configuration because the chat suite's include
+list intentionally covers `src/`; `npm test` runs both suites. The standard
+`typecheck` and CSS lint include `proxy/` as well.
+Manual accessibility checks should cover keyboard-only sign-in, route editing,
+show-once token dismissal, request filters/detail, and narrow/mobile layouts.
 
 ## Static caching and deployments
 

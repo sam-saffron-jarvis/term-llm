@@ -4,6 +4,8 @@ version: 2
 builds:
   - id: term-llm
     binary: term-llm
+    env:
+      - CGO_ENABLED=0
     goos:
       - linux
       - darwin

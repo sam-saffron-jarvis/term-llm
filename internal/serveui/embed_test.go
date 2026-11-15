@@ -16,7 +16,7 @@ import (
 
 func TestGeneratedBundleAssets(t *testing.T) {
 	for _, name := range []string{
-		"dist/app.js", "dist/app.css", "dist/hub.js", "dist/hub.css", "dist/chunks/vendor.js",
+		"dist/app.js", "dist/app.css", "dist/hub.js", "dist/hub.css", "dist/proxy.js", "dist/proxy.css", "dist/chunks/vendor.js",
 		"dist/chunks/rich-highlight.js", "dist/chunks/rich-katex.js",
 		"dist/chunks/highlight.js", "dist/chunks/katex.js", "dist/chunks/katex.css", "dist/chunks/mcp.js",
 		"dist/chunks/MarkdownFilePreview.js", "dist/chunks/markdown-preview-store.js",
@@ -61,7 +61,7 @@ func TestGeneratedImportsPreloadsAndCSSURLsResolveToEmbeddedAssets(t *testing.T)
 
 func TestTextBundleAssetsArePrecompressed(t *testing.T) {
 	manifest := ChatAssetManifest()
-	for _, name := range []string{manifest.EntryJS, manifest.EntryCSS[0], "dist/hub.js", "dist/hub.css", "dist/asset-manifest.json"} {
+	for _, name := range []string{manifest.EntryJS, manifest.EntryCSS[0], "dist/hub.js", "dist/hub.css", "dist/proxy.js", "dist/proxy.css", "dist/asset-manifest.json"} {
 		stored, gzipped, err := EncodedAsset(name)
 		if err != nil {
 			t.Fatalf("EncodedAsset(%q): %v", name, err)
@@ -275,6 +275,17 @@ func TestProductionBundleSizeBudgets(t *testing.T) {
 		// retain modest gzip headroom for the updated runtime and bundler.
 		"dist/hub.js":  {raw: 107_500, gzip: 35_500},
 		"dist/hub.css": {raw: 20_500, gzip: 5_500},
+		// Accepted proxy refinements add the caller grant editor, show-once token
+		// guards, contextual onboarding/validation, and accessible inline request
+		// details. Observed final JS is ~29.8 kB raw /11.4 kB gzip; retain a
+		// bounded 12 kB ceiling. The separate +1% whole-binary gate still applies.
+		"dist/proxy.js": {raw: 35_000, gzip: 12_000},
+		// Actual Opus frame review required primary actions, aligned filters,
+		// route authority badges, compact request rows and usable mobile details.
+		// Those styles measure 6.3/2.03 kB raw/gzip (the initial unreviewed UI
+		// estimated 4/1.5). These are new proxy-only ceilings, not relaxed chat/Hub
+		// baselines; the measured complete feature remains below +1% binary size.
+		"dist/proxy.css": {raw: 6_500, gzip: 2_250},
 	}
 	for name, budget := range budgets {
 		body, err := testBuildAsset(name)
@@ -489,7 +500,8 @@ func TestChatAndHubAssetVersionScopes(t *testing.T) {
 		return hex.EncodeToString(hash.Sum(nil))[:12]
 	}
 	chat := versionFor(func(path string) bool {
-		return path != "static/dist/hub.js" && path != "static/dist/hub.css"
+		return path != "static/dist/hub.js" && path != "static/dist/hub.css" &&
+			path != "static/dist/proxy.js" && path != "static/dist/proxy.css"
 	})
 	hub := versionFor(func(path string) bool {
 		return path == "static/dist/hub.js" || path == "static/dist/hub.css"
@@ -650,7 +662,7 @@ func TestChatManifestCompleteAndContentAddressed(t *testing.T) {
 	}
 	for _, name := range logicalPaths("static/dist") {
 		file := strings.TrimPrefix(name, "static/")
-		if file == "dist/hub.js" || file == "dist/hub.css" || file == "dist/asset-manifest.json" {
+		if file == "dist/hub.js" || file == "dist/hub.css" || file == "dist/proxy.js" || file == "dist/proxy.css" || file == "dist/asset-manifest.json" {
 			continue
 		}
 		if !IsHashedAsset(file) {
@@ -691,6 +703,41 @@ func TestSourceAssetPathsAndManifestCopies(t *testing.T) {
 			if index == len(sourcePaths) || sourcePaths[index] != file {
 				t.Errorf("hashed source omitted: %s", file)
 			}
+		}
+	}
+}
+
+func TestProxyAssetsStayStandalone(t *testing.T) {
+	for _, name := range []string{"dist/proxy.js", "dist/proxy.css"} {
+		if IsHashedAsset(name) {
+			t.Errorf("proxy asset classified as chat: %s", name)
+		}
+		if slices.Contains(SourceAssetPaths(), name) {
+			t.Errorf("proxy asset included in chat sources: %s", name)
+		}
+		if bytes.Contains(RenderServiceWorker(), []byte(name)) {
+			t.Errorf("proxy asset included in chat SW: %s", name)
+		}
+	}
+	js, err := StaticAsset("dist/proxy.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, marker := range []string{"preact", "DOMPurify", "KaTeX", "@xterm", "chunks/", "sourceMappingURL"} {
+		if bytes.Contains(js, []byte(marker)) {
+			t.Errorf("proxy contains dependency marker %q", marker)
+		}
+	}
+	if _, err := StaticAsset("dist/proxy.js.map"); err == nil {
+		t.Fatal("proxy source map embedded")
+	}
+}
+
+func TestServiceWorkerBypassesCredentialProxy(t *testing.T) {
+	worker := string(RenderServiceWorker())
+	for _, guard := range []string{"url.pathname === '/_proxy'", "url.pathname.startsWith('/_proxy/')", `^dist\/(hub|proxy)\.(js|css)$`} {
+		if !strings.Contains(worker, guard) {
+			t.Errorf("service worker missing proxy bypass %q", guard)
 		}
 	}
 }

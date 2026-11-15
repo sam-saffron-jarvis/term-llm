@@ -68,6 +68,8 @@ self.addEventListener('fetch', (event) => {
 
   const url = new URL(request.url);
   if (url.origin !== self.location.origin) return;
+  // Standalone credential administration is never a chat/offline cache surface.
+  if (url.pathname === '/_proxy' || url.pathname.startsWith('/_proxy/')) return;
 
   const scopePath = new URL(self.registration.scope).pathname;
   const isAppRequest = url.pathname.startsWith(scopePath);
@@ -76,7 +78,7 @@ self.addEventListener('fetch', (event) => {
   const relativePath = url.pathname.slice(scopePath.length);
   if (relativePath.startsWith('extensions/') || relativePath.startsWith('api/') || relativePath.startsWith('v1/')) return;
 
-  if (/^dist\/hub\.(js|css)$/.test(url.pathname.slice(scopePath.length))) return;
+  if (/^dist\/(hub|proxy)\.(js|css)$/.test(url.pathname.slice(scopePath.length))) return;
   // Navigations are authoritative. A cached application shell can mask login,
   // logout, deployment, and reverse-proxy redirects, so only cache versioned
   // static assets; the application is not useful offline without its API.

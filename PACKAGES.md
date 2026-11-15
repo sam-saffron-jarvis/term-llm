@@ -28,6 +28,7 @@ One line per root-module package, generated from package doc comments by `make d
 - `internal/app/notify` — implements the `term-llm notify` command family.
 - `internal/app/process` — owns the execution and progress rendering of the `term-llm process` commands; cmd keeps only the Cobra definitions.
 - `internal/app/providers` — implements the providers command.
+- `internal/app/proxy` — runs a standalone configuration-driven credential proxy and private administration UI.
 - `internal/app/reload` — owns private successor state and process replacement.
 - `internal/app/runtime` — holds run plumbing shared by the CLI and serve: model selection and child ownership.
 - `internal/app/runtime/approval` — resolves command and session approval policy without depending on cmd.
