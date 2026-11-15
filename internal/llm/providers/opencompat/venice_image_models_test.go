@@ -11,6 +11,7 @@ import (
 
 	"github.com/term-llm/term-llm/internal/cache"
 	"github.com/term-llm/term-llm/internal/config"
+	"github.com/term-llm/term-llm/internal/venice"
 )
 
 func TestVeniceImageModelDeferredCredentials(t *testing.T) {
@@ -56,10 +57,16 @@ func TestVeniceImageCompletionCustomAndDeferredBaseURL(t *testing.T) {
 	cfg := &config.Config{Providers: map[string]config.ProviderConfig{"venice": {BaseURL: "https://unused.example"}}}
 	cfg.Image.Venice.APIKey = "test"
 	cfg.Image.Venice.BaseURL = server.URL + "/proxy/"
+	if got := GetVeniceImageModelIDs(cfg, "image"); len(got) != 0 {
+		t.Fatalf("public cache leaked: %v", got)
+	}
+	if err := cache.WriteModelInfoCache(venice.MediaCacheKey(server.URL+"/proxy"), []cache.CachedModel{{ID: "private", Type: "image"}}); err != nil {
+		t.Fatal(err)
+	}
 	if got := GetVeniceImageModelIDs(cfg, "image"); !reflect.DeepEqual(got, []string{"private"}) {
 		t.Fatalf("models = %v", got)
 	}
-	if seen != 1 {
+	if seen != 0 {
 		t.Fatalf("requests = %d", seen)
 	}
 	cached, err := cache.ReadModelCache(veniceImageCacheKey)
@@ -75,7 +82,7 @@ func TestVeniceImageCompletionCustomAndDeferredBaseURL(t *testing.T) {
 	if _, err := os.Stat(marker); !os.IsNotExist(err) {
 		t.Fatalf("completion executed deferred URL: %v", err)
 	}
-	if seen != 1 {
+	if seen != 0 {
 		t.Fatalf("unexpected request for deferred endpoint")
 	}
 }

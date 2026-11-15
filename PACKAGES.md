@@ -23,6 +23,7 @@ One line per root-module package, generated from package doc comments by `make d
 - `internal/app/ask` — implements the `term-llm ask` command: prompt input, model execution and persistence.
 - `internal/app/auth` — implements `term-llm auth` login, status and logout for OAuth providers.
 - `internal/app/chat` — runs the interactive `term-llm chat` TUI: orchestration, sessions, handover and reload.
+- `internal/app/image` — implements image operation validation and request preparation.
 - `internal/app/memory` — implements the `term-llm memory` command family.
 - `internal/app/models` — implements `term-llm models`, listing and caching provider model catalogs.
 - `internal/app/notify` — implements the `term-llm notify` command family.
@@ -60,6 +61,7 @@ One line per root-module package, generated from package doc comments by `make d
 - `internal/app/uploads` — validates and reads first-party web attachments and resizes images for models.
 - `internal/app/usage` — implements `term-llm usage`: local token reports plus provider billing and limit checks.
 - `internal/app/version` — implements `term-llm version` over linker-injected build metadata.
+- `internal/app/video` — implements recoverable video generation and existing-job retrieval.
 - `internal/appdata` — resolves term-llm's XDG data directory.
 - `internal/atomicfile` — replaces files atomically and flushes the containing directory where the platform supports it.
 - `internal/audio` — implements the text-to-speech providers behind `term-llm audio`.
@@ -227,7 +229,7 @@ One line per root-module package, generated from package doc comments by `make d
 - `internal/update` — checks GitHub releases and performs the term-llm self-upgrade.
 - `internal/usage` — loads, aggregates and prices term-llm and Claude Code usage logs.
 - `internal/userservice` — manages native per-user service definitions, not processes.
-- `internal/venice` — shares Venice model discovery between completion and image requests.
+- `internal/venice` — shares Venice's explicit media catalog and offline constraints.
 - `internal/video` — implements the Venice video generation client and its output handling.
 - `internal/widgets` — supervises serve widget processes and proxies their HTTP mounts.
 - `internal/worktree` — manages git worktrees for term-llm sessions.

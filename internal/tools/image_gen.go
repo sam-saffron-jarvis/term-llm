@@ -73,7 +73,7 @@ func (t *ImageGenerateTool) Spec() core.ToolSpec {
 		"input_images": map[string]interface{}{
 			"type":        "array",
 			"items":       map[string]interface{}{"type": "string"},
-			"description": "Paths to multiple input images for multi-image editing (optional, supported by Gemini and OpenRouter)",
+			"description": "Paths to multiple input images for multi-image editing (optional, supported by Gemini, OpenRouter and Venice)",
 		},
 		"size": map[string]interface{}{
 			"type":        "string",

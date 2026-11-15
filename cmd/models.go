@@ -39,5 +39,9 @@ func init() {
 	modelsCmd.Flags().StringVarP(&modelsOptions.Provider, "provider", "p", "", "Provider to list models from ("+strings.Join(modelsapp.SupportedModelListProviderTypes(), ", ")+")")
 	modelsCmd.Flags().BoolVar(&modelsOptions.JSON, "json", false, "Output as JSON")
 	modelsCmd.Flags().BoolVar(&modelsOptions.Refresh, "refresh", false, "Force a fresh ChatGPT model catalog fetch (report fetch errors)")
+	modelsCmd.Flags().StringVar(&modelsOptions.Type, "type", "", "Venice media catalog: image, inpaint, video (uses image.venice credentials/root)")
+	modelsCmd.RegisterFlagCompletionFunc("type", func(*cobra.Command, []string, string) ([]string, cobra.ShellCompDirective) {
+		return []string{"image", "inpaint", "video"}, cobra.ShellCompDirectiveNoFileComp
+	})
 	modelsCmd.RegisterFlagCompletionFunc("provider", ProviderFlagCompletion)
 }

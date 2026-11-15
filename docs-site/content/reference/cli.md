@@ -560,22 +560,36 @@ Translate natural language to CLI commands
 
 ### `term-llm image`
 
-Generate or edit images using AI
+Generate, edit or process images using AI
 
 | Flag | Type | Description |
 |---|---|---|
 | `--aspect-ratio` | string | Image aspect ratio (for example 1:1, 16:9, or 9:16) |
 | `--background` | string | Image background (auto, opaque, or transparent) |
+| `--cfg-scale` | float64 | Venice generation CFG scale (finite) |
 | `--debug, -d` | bool | Show debug information |
-| `--input, -i` | stringArray | Input image(s) to edit (can be specified multiple times) |
+| `--edit-model` | string | Per-call Venice editor (overrides configured edit_model) |
+| `--enhance-creativity` | float64 | Upscale enhancement creativity (finite) |
+| `--enhance-prompt` | string | Upscale enhancement prompt |
+| `--enhance` | bool | Enable upscale enhancement |
+| `--height` | int | Venice generation height; requires --width |
+| `--input, -i` | stringArray | Input path/clipboard, or Venice HTTP(S) URL (repeatable) |
+| `--negative-prompt` | string | Venice generation negative prompt |
 | `--no-clipboard` | bool | Skip clipboard copy |
 | `--no-display` | bool | Skip terminal display |
 | `--no-save` | bool | Don't save to default location (use with -o) |
 | `--no-spinner` | bool | Disable interactive progress display |
+| `--operation` | string | Local processing: upscale or background-remove (no prompt) |
 | `--output, -o` | string | Custom output path |
 | `--provider, -p` | string | Override image provider (built-in or configured openai_compatible name) |
 | `--quality, -q` | string | Image quality (auto, low, medium, high, xhigh, or max) |
-| `--size, -s` | string | Image resolution (must be 1K, 2K, or 4K) |
+| `--replication` | float64 | Upscale replication (finite) |
+| `--safe-mode` | bool | Enable Venice generation safe mode |
+| `--scale` | int | Upscale factor (positive) |
+| `--size, -s` | string | Image resolution: 1K, 2K, 4K; native omits resolution (Venice only) |
+| `--steps` | int | Venice generation steps (positive) |
+| `--timeout` | duration | Provider-neutral request deadline; timeout does not undo remote work |
+| `--width` | int | Venice generation width; requires --height, conflicts with --size/--aspect-ratio |
 
 ### `term-llm jobs`
 
@@ -1060,6 +1074,7 @@ List available models from a provider
 | `--json` | bool | Output as JSON |
 | `--provider, -p` | string | Provider to list models from (agy-bin, anthropic, chatgpt, claude-bin, copilot, cursor-bin, grok, grok-bin, nearai, obscurify, ollama, openai, openai_compatible, opencode-go, openrouter, sambanova, venice, vllm, xai, zen) |
 | `--refresh` | bool | Force a fresh ChatGPT model catalog fetch (report fetch errors) |
+| `--type` | string | Venice media catalog: image, inpaint, video (uses image.venice credentials/root) |
 
 ### `term-llm music`
 
@@ -1635,18 +1650,21 @@ Generate videos with Venice AI
 | `--aspect-ratio` | string | Aspect ratio, e.g. 16:9 or 9:16 |
 | `--audio` | bool | Request audio when the model supports it |
 | `--debug, -d` | bool | Show debug information |
-| `--delete-remote` | bool | Delete remote media after successful retrieval |
-| `--duration` | string | Video duration (5s or 10s) |
-| `--input, -i` | string | Input image for image-to-video |
+| `--delete-remote` | bool | Delete remote media separately, only after durable local save |
+| `--duration` | string | Video duration in seconds, e.g. 5s |
+| `--input, -i` | string | Input image path, HTTP(S) URL, or - for stdin |
 | `--json` | bool | Emit machine-readable JSON to stdout |
 | `--model` | string | Venice video model to use |
-| `--negative-prompt` | string | Negative prompt |
-| `--no-wait` | bool | Queue the job and exit without waiting for completion |
+| `--negative-prompt` | string | Negative prompt (absent uses provider default) |
+| `--no-wait` | bool | Queue and exit, or retrieve existing status once |
 | `--output, -o` | string | Custom output path |
 | `--poll-interval` | duration | Polling interval while waiting for completion |
 | `--provider, -p` | string | Video provider override (currently only venice) |
+| `--queue-id` | string | Retrieve an existing job; requires --model, no prompt or generation options |
 | `--quote-only` | bool | Quote the job and exit without queueing |
-| `--reference, -r` | stringArray | Reference image(s) for models that support multi-reference consistency (repeatable) |
-| `--resolution` | string | Video resolution (480p, 720p, 1080p) |
+| `--reference, -r` | stringArray | Reference image path/HTTP(S) URL/- for stdin (repeatable) |
+| `--resolution` | string | Video resolution (e.g. 360p, 720p, 4k; absent uses provider default) |
+| `--seedance-consent` | bool | Attest to Seedance terms/privacy, legal rights, and screening acknowledgement for this queue |
+| `--skip-quote` | bool | Queue without the usual price quote (never retries a queue) |
 | `--timeout` | duration | Maximum time to wait for video generation |
 <!-- END GENERATED: cli -->

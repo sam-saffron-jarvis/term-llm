@@ -1,109 +1,36 @@
 ---
 title: "Video generation"
 weight: 4
-description: "Generate videos with Venice AI using text-to-video or image-to-video models."
+description: "Quote, queue and recover Venice video jobs."
 kicker: "Media"
 ---
 
-Generate videos using Venice AI's native video API.
-
-```bash
+```sh
 term-llm video "a corgi surfing at sunset"
+term-llm video "animate it" -i photo.png --aspect-ratio 9:16
+term-llm video "combine references" -i https://example.org/start.png -r pose.png -r https://example.org/ref.png
+term-llm video "astronaut on mars" --model MODEL --quote-only --json
+term-llm video "city lights" --model MODEL --skip-quote --no-wait --json
+term-llm video --model MODEL --queue-id ID --no-wait --json
+term-llm video --model MODEL --queue-id ID -o recovered.mp4
 ```
 
-By default, videos are:
-- Saved to `~/Pictures/term-llm/` with timestamped filenames
-- Quoted before queueing so you can see the estimated cost
-- Polled until completion and written as `.mp4`
+Models in these examples are caller-selected, not availability guarantees. Defaults remain `longcat-distilled-text-to-video` or, with `--input`, `longcat-distilled-image-to-video`; duration remains `5s`. Normally the command quotes, queues once, polls, and saves under `~/Pictures/term-llm/`. `--quote-only` never reads input files; `--skip-quote` explicitly bypasses pricing. Neither permits automatic queue retries.
 
-### Video Flags
+**Changed defaults:** absent `--resolution` and `--negative-prompt` now omit those fields instead of forcing 720p and a canned prompt. Provider defaults can change price; inspect the quote. Explicit `--audio=false` and `--negative-prompt=''` remain explicit. Results omit unrequested resolution. Durations accept positive seconds and resolutions accept forms such as `360p` or `4k`; actual model support remains authoritative. Fresh explicitly cached constraints reject known unsupported choices; missing/stale metadata never blocks or triggers discovery.
 
-| Flag | Short | Description |
-|------|-------|-------------|
-| `--input` | `-i` | Input image for image-to-video |
-| `--reference` | `-r` | Reference image(s) for models that support `reference_image_urls` (repeatable) |
-| `--output` | `-o` | Custom output path |
-| `--provider` | `-p` | Video backend; currently only `venice`. |
-| `--delete-remote` | | Delete provider-side media after successful retrieval (default `true`; use `--delete-remote=false` to retain it). |
-| `--model` | | Venice video model override |
-| `--duration` | | Video duration (`5s`, `10s`) |
-| `--aspect-ratio` | | Aspect ratio, e.g. `16:9`, `9:16` |
-| `--resolution` | | Output resolution (`480p`, `720p`, `1080p`) |
-| `--negative-prompt` | | Negative prompt |
-| `--audio` | | Request audio for models that support it |
-| `--quote-only` | | Quote the job and exit |
-| `--no-wait` | | Queue the job and exit without polling |
-| `--json` | | Emit machine-readable JSON to stdout |
-| `--poll-interval` | | Poll interval while waiting |
-| `--timeout` | | Maximum wait time |
-| `--debug` | `-d` | Show debug information |
+For Seedance, `--seedance-consent` attests to terms/privacy, legal rights and screening acknowledgement for this queue only. Consent is never inferred, persisted, or claimed by a quote.
 
-### Video Examples
+### Recovery and storage
 
-```bash
-# Text-to-video
-term-llm video "a neon train passing through Tokyo at night"
-term-llm video "a corgi surfing at sunset" --model kling-v3-pro-text-to-video
+`--queue-id` requires `--model`, rejects prompts and explicitly supplied generation flags, and never quotes, queues or reads original inputs. `--no-wait` retrieves status once in this mode; otherwise polling uses `--poll-interval` and `--timeout`.
 
-# Image-to-video
-term-llm video "make Romeo blink and wag his tail" -i romeo.png
-term-llm image "robot cat" -o - | term-llm video "animate it" -i -
-term-llm video "cute dog, influencer reacts" -i romeo.png --aspect-ratio 9:16 --duration 10s
+The queue receipt always appears immediately on stderr, including with `--json`. JSON stdout remains one document; timeout, cancellation, retrieve/save failure preserve `model`, `job.queue_id`, `status` and a shell-quoted `recovery` command, with nonzero exit. A queue connection failure may already have created a paid job: **do not requeue blindly**. Unknown statuses remain visible until the deadline; invalid statuses and failed responses stop.
 
-# Multi-reference image-to-video (model support varies)
-term-llm video "keep Romeo's face consistent while a Japanese influencer reacts" \
-  -i romeo.png \
-  -r romeo-closeup.png \
-  -r romeo-profile.jpg \
-  --model kling-o3-pro-image-to-video
+Remote deletion is **off by default**. Output is preflighted before spending; downloads keep remote media and stream to a same-directory temporary file, bounded to 1 GiB, then sync and rename. `--delete-remote` calls the documented `/video/complete` endpoint only after durable local success. Cleanup failure warns with job identity without invalidating the saved result. JSON/catalog responses are capped at 8 MiB; all Venice media/catalog redirects are refused.
 
-# Planning and batch workflows
-term-llm video "astronaut on mars" --quote-only
-term-llm video "astronaut on mars" --quote-only --json
-term-llm video "cyberpunk city" --no-wait --json
-```
+### Inputs and configuration
 
-### JSON Output
+`--input` and repeatable `--reference` accept local files, HTTP(S) URLs, or stdin (`-`, once). With media on stdin, supply the prompt as an argument. Remote references pass through to Venice, never a local fetcher; local video inputs use data URLs. URLs must have a host and no credentials, fragments or whitespace. Model-specific advanced fields remain unsupported.
 
-`--json` prints a single structured object to stdout, which is useful for scripts.
-Human progress lines stay on stderr when JSON mode is off.
-
-Example:
-
-```json
-{
-  "provider": "venice",
-  "prompt": "astronaut on mars",
-  "model": "longcat-distilled-text-to-video",
-  "duration": "5s",
-  "resolution": "720p",
-  "status": "queued",
-  "quote": {
-    "amount": 0.09
-  },
-  "job": {
-    "queue_id": "123e4567-e89b-12d3-a456-426614174000"
-  }
-}
-```
-
-### Credentials
-
-`term-llm video` currently uses Venice AI and reads credentials from `VENICE_API_KEY` or `image.venice.api_key` in your config.
-
-### Defaults
-
-If you do not specify a model, term-llm uses these shipped defaults (check the returned quote and current provider availability):
-- `longcat-distilled-text-to-video` for text-to-video
-- `longcat-distilled-image-to-video` for image-to-video
-
-### Model-specific inputs
-
-Venice exposes advanced fields like `reference_image_urls`, `scene_image_urls`, `end_image_url`, and element-based references, but support is model-dependent.
-This command currently exposes the portable subset:
-- primary `--input` image
-- repeatable `--reference` images
-
-If a chosen Venice model rejects reference images, the API will return that error directly instead of term-llm pretending otherwise.
-
-Use stdin for at most one media input: either `--input -` or a single `--reference -`. Supply the prompt as an argument when stdin contains image bytes. `--no-wait` does not retrieve the result, so successful-retrieval cleanup has not happened yet.
+Video and typed `models --provider venice --type video --json` use `image.venice.api_key` (then `VENICE_API_KEY`) and `image.venice.base_url` (then `providers.venice.base_url`, then public default). Untyped model listing retains inference credentials. Explicit typed listing alone refreshes root-scoped media metadata; operations/completion never fetch catalogs. These contracts have offline fixture coverage, **not live-provider certification**.

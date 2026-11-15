@@ -43,22 +43,16 @@ func TestImageFactoryConfiguredRoots(t *testing.T) {
 			_, _ = p.Generate(context.Background(), GenerateRequest{Prompt: "test"})
 			want := map[string]string{"gemini": "/nested/v1/models/test-model:generateContent", "xai": "/nested/v1/images/generations", "venice": "/nested/v1/image/generate", "openrouter": "/nested/v1/chat/completions"}[name]
 			found := false
-			metadata := false
 			close(paths)
 			for path := range paths {
 				if path == want {
 					found = true
-				} else if name == "venice" && path == "/nested/v1/models" {
-					metadata = true
 				} else {
 					t.Errorf("unexpected path %q", path)
 				}
 			}
 			if !found {
 				t.Errorf("missing request to %s", want)
-			}
-			if name == "venice" && !metadata {
-				t.Error("missing configured models request")
 			}
 		})
 	}

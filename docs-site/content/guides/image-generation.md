@@ -1,126 +1,61 @@
 ---
 title: "Image generation"
 weight: 3
-description: "Generate and edit images with Gemini, OpenAI, ChatGPT, xAI, Venice, Flux, or OpenRouter."
+description: "Generate, edit and process images through configured providers."
 kicker: "Media"
 source_readme_heading: "Image Generation"
 next:
   label: Text embeddings
   url: /guides/text-embeddings/
 ---
-Generate and edit images using AI models from Gemini, OpenAI, ChatGPT, xAI, Venice, Flux (Black Forest Labs), and OpenRouter.
-
-```bash
-term-llm image "a robot cat on a rainbow"
-```
-
-By default, images are:
-- Saved to `~/Pictures/term-llm/` with timestamped filenames
-- Displayed in terminal via `icat` (if available)
-- Copied to clipboard (actual image data, pasteable in apps)
-
-### Image Flags
-
-| Flag | Short | Description |
-|------|-------|-------------|
-| `--input` | `-i` | Input image to edit; repeat for providers that support multiple inputs. |
-| `--provider` | `-p` | Override a built-in image provider or configured OpenAI-compatible provider name |
-| `--output` | `-o` | Custom output path; `-` writes image bytes to stdout for pipelines. |
-| `--size` | `-s` | Requested resolution: `1K`, `2K`, or `4K`; provider/model support varies. |
-| `--aspect-ratio` | | Requested ratio such as `1:1`, `16:9`, or `9:16`; provider/model support varies. |
-| `--quality` | `-q` | `auto`, `low`, `medium`, `high`, `xhigh`, or `max`; provider/model support varies. |
-| `--background` | | `auto`, `opaque`, or `transparent`; provider/model support varies. |
-| `--no-spinner` | | Disable the interactive progress display. |
-| `--no-display` | | Skip terminal display |
-| `--no-clipboard` | | Skip clipboard copy |
-| `--no-save` | | Don't save to default location |
-| `--debug` | `-d` | Show debug information |
-
-### Image Examples
-
-```bash
-# Generate
-term-llm image "cyberpunk cityscape at night"
-term-llm image "minimalist logo" --provider flux
-term-llm image "futuristic city" --provider xai              # uses Grok image model
-term-llm image "storybook fox in the snow" --provider chatgpt:gpt-image-2.5-sunburst
-term-llm image "fast transparent icon" --provider chatgpt --quality low --background transparent
-term-llm image "cinematic skyline" --provider chatgpt --aspect-ratio 16:9 --quality high
-term-llm image "watercolor painting" -o ./art.png
-
-# Edit existing image (not supported by xAI)
-term-llm image "add a hat" -i photo.png
-term-llm image "make it look vintage" -i input.png --provider gemini
-term-llm image "add sparkles" -i clipboard       # edit from clipboard
-term-llm image "combine these references" -p venice -i a.png -i b.png
-term-llm image "robot cat" -o - | term-llm video "animate it" -i -
-
-# Options
-term-llm image "portrait" --no-clipboard        # don't copy to clipboard
-term-llm image "landscape" --no-display         # don't show in terminal
-```
-
-### Image Providers
-
-| Provider | Models | Environment Variable | Config Key |
-|----------|--------|---------------------|------------|
-| Gemini (default) | gemini-2.5-flash-image | `GEMINI_API_KEY` | `image.gemini.api_key` |
-| OpenAI | gpt-image-2.5-flare, gpt-image-2.5-sunburst, gpt-image-2, gpt-image-1.5, gpt-image-1-mini | `OPENAI_API_KEY` | `image.openai.api_key` |
-| ChatGPT | gpt-image-2.5-flare (default), gpt-image-2.5-sunburst, gpt-image-2 | — (uses ChatGPT OAuth) | `image.chatgpt.model` |
-| xAI | grok-2-image-1212 | `XAI_API_KEY` | `image.xai.api_key` |
-| Venice | nano-banana-pro | `VENICE_API_KEY` | `image.venice.api_key` |
-| Flux | flux-2-pro, flux-2-max, flux-kontext-pro | `BFL_API_KEY` | `image.flux.api_key` |
-| OpenRouter | various | `OPENROUTER_API_KEY` | `image.openrouter.api_key` |
-
-Image generation has its own provider selection and config. Where supported, image-specific keys can differ from text-provider keys; normal environment/config fallback still applies. ChatGPT reuses the same OAuth login as text. The listed model names are shipped defaults or examples, not a live availability or pricing guarantee.
-
-**ChatGPT image provider:** log in with `term-llm auth login chatgpt`, then use `term-llm image --provider chatgpt "..."` for subscription-backed GPT Image 2.5 Flare generation without an API key. Select Sunburst for more precise, slower work with `--provider chatgpt:gpt-image-2.5-sunburst`. Existing `gpt-5.4-mini` and `gpt-5.4` image settings are migrated to the Flare default because those language-model values belonged to the retired Responses API hop.
-
-Both the CLI and the `image_generate` tool can request quality, background mode, size, and aspect ratio. The built-in ChatGPT and OpenAI image providers pass quality and background through. Venice also forwards `low`, `medium`, and `high` quality for generation and editing, treats `auto` as unspecified, and rejects unsupported qualities such as `xhigh` and `max`; models without quality support may ignore the field. Other providers retain their provider-specific quality defaults, and providers other than ChatGPT and OpenAI retain their background defaults. Size and aspect ratio remain requests rather than guarantees: the ChatGPT subscription backend may return its native dimensions.
-
-**Editing limits:** xAI does not support editing. ChatGPT accepts one input image. Venice supports one-image editing and multi-image editing with up to three inputs, subject to the selected model. Venice uses `image.venice.edit_model` when set; otherwise it derives the edit model by appending `-edit` to the generation model (unless already present). Gemini and OpenRouter also expose multi-image editing; upstream model limits still apply.
-
-### Local and OpenAI-compatible image providers
-
-An existing named `providers` entry with `type: openai_compatible` can also
-serve images. Set its `base_url` to the API root (including `/v1` when required)
-and select it through `image.provider` or `--provider`:
-
-```yaml
-providers:
-  janus:
-    type: openai_compatible
-    base_url: http://127.0.0.1:8080/janus/v1
-    model: Janus-Pro-1B
-  demo:
-    type: openai_compatible
-    base_url: http://127.0.0.1:8080/demo/v1
-    model: demo
-
-image:
-  provider: janus
-```
 
 ```sh
-term-llm image "A pelican riding a bike." -o pelican.png
-term-llm image "A cat" --provider demo -o demo.png
-term-llm config set image.provider demo
+term-llm image "a robot cat on a rainbow"
+term-llm image "add a hat" -i photo.png
+term-llm image "add sparkles" -i clipboard
+term-llm image "robot cat" -o - | term-llm video "animate it" -i -
 ```
 
-These are example endpoints: you must run a server implementing the Images API.
-term-llm does not bundle Janus weights or a demo server. This is normal provider
-configuration, not a different image command or an automatic fallback.
+Images save under `~/Pictures/term-llm/`, display through `icat` and copy to clipboard when interactive. Use `-o PATH` or `-o -` for bytes on stdout; `--no-display`, `--no-clipboard`, `--no-save` and `--no-spinner` control presentation. `--timeout 10m` sets a provider-neutral context deadline; cancellation does not undo remote work.
 
-The client posts to `<base_url>/images/generations` with `model`, `prompt`,
-`n: 1`, and `response_format: b64_json`. The server returns an OpenAI-format
-`data` array containing `b64_json` or an image `url`. No size is sent unless
-requested; `--size`/aspect-ratio requests are converted to pixel dimensions.
-OpenAI-specific quality and output-format options are not imposed. Editing is
-not supported by this generic adapter; built-in providers retain their existing
-editing capabilities.
+### Providers and portable options
 
-`api_key` is optional for local servers. When provided it uses normal provider
-credential resolution (including environment variables and deferred secrets).
-Unrelated `OPENAI_API_KEY` credentials are not forwarded. The full chat-only
-`url` field is not accepted: use `base_url`. Built-in provider names keep their
-existing image configuration, so choose a distinct custom name.
+Select `--provider NAME[:MODEL]` or `image.provider`. Gemini is the default. API credentials use each `image.<provider>.api_key`, with its usual environment fallback:
+
+| Provider | Environment | Editing |
+|---|---|---|
+| Gemini | `GEMINI_API_KEY` | Multiple inputs |
+| OpenAI | `OPENAI_API_KEY` | Supported |
+| ChatGPT | OAuth (`term-llm auth login chatgpt`) | One input |
+| xAI | `XAI_API_KEY` | Unsupported |
+| Venice | `VENICE_API_KEY` | Up to three inputs, model-dependent |
+| Flux | `BFL_API_KEY` | Supported |
+| OpenRouter | `OPENROUTER_API_KEY` | Multiple inputs |
+
+`--size 1K|2K|4K`, `--aspect-ratio 16:9`, `--quality` and `--background` remain requests, not guarantees. OpenAI/ChatGPT support quality and background controls; Venice forwards `low|medium|high` quality, treats `auto` as unspecified and rejects `xhigh|max`. Other providers retain their existing translation/default behavior. ChatGPT defaults to GPT Image 2.5 Flare; `--provider chatgpt:gpt-image-2.5-sunburst` selects slower precision. Legacy language-model image settings migrate to Flare.
+
+### Venice CLI capabilities
+
+```sh
+term-llm image "poster" -p venice --width 768 --height 1024 --steps 20 --cfg-scale 7 --negative-prompt blur --safe-mode
+term-llm image "edit" -p venice -i https://example.org/image.png --edit-model EDITOR --size native
+term-llm image "combine" -p venice -i local.png -i https://example.org/ref.png
+term-llm image -p venice -i photo.png --operation upscale --scale 2 --enhance --enhance-prompt detail --enhance-creativity 0.3 --replication 0.5
+term-llm image -p venice -i photo.png --operation background-remove
+term-llm models --provider venice --type image --json
+term-llm models --provider venice --type inpaint --json
+```
+
+Generation controls are typed and generation-only. Width/height must be paired and positive; pixel dimensions conflict with size/aspect ratio and suppress inherited resolution. Steps must be positive; numeric controls finite. New Venice controls, remote inputs and editor overrides error on unsupported providers rather than being ignored.
+
+Editor precedence is `--edit-model` > `image.venice.edit_model` > the existing generation-model-derived editor (`-edit` suffix). `provider:model` still selects the generation model; use the explicit editor flag to override configured editing selection.
+
+Processing requires exactly one **local file**, no prompt and no stdin/clipboard; it uses input-derived output names. Upscale-only options cannot accompany generation or background removal; processing rejects sizing/quality/background/editor flags. Background removal is not `--background transparent`.
+
+HTTP(S) references pass through to Venice without local fetching. URLs reject credentials, fragments, whitespace and missing hosts. Single URL edits use JSON; mixed edits preserve raw base64 for local images, unlike video's data URLs. The `image_generate` tool remains local-only with its existing approvals; these new controls are CLI-only.
+
+Typed listings use media credentials/root: `image.venice.api_key`, then `VENICE_API_KEY`; `image.venice.base_url`, then `providers.venice.base_url`, then public default. Untyped listing retains inference authority. Explicit listing alone refreshes the normalized-root cache, preserving other types' freshness. Image calls/completion never discover implicitly. Sizing now always preserves explicit/configured/default resolution, independent of cache freshness; cached native-size hints no longer silently discard it. For native-size models use `--size native`, including editing: it deterministically omits resolution. This CLI-only selector errors on other providers; default/requested tier sizes remain explicit. Missing/stale constraints do not reject requests. Catalog/JSON bodies are bounded to 8 MiB, raw images to 64 MiB, and all Venice media/catalog redirects are refused. Verification is offline fixtures, not live-model certification.
+
+### OpenAI-compatible servers
+
+A named `providers` entry with `type: openai_compatible`, `base_url` (including `/v1` when required) and `model` can serve images through `--provider NAME`. Built-in names retain their native configuration. The generic adapter posts `/images/generations` with `model`, `prompt`, `n: 1`, `response_format: b64_json`; servers return `data[].b64_json` or `url`. Size is sent only when requested; editing is unsupported. Optional keys use normal credential resolution; unrelated `OPENAI_API_KEY` is never forwarded. Use `base_url`, not chat-only `url`; term-llm bundles no server or model weights.

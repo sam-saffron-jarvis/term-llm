@@ -2,7 +2,6 @@ package cmd
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -12,6 +11,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/spf13/cobra"
+	imageapp "github.com/term-llm/term-llm/internal/app/image"
 	"github.com/term-llm/term-llm/internal/image"
 	"github.com/term-llm/term-llm/internal/input"
 	"github.com/term-llm/term-llm/internal/signal"
@@ -21,18 +21,23 @@ import (
 )
 
 var (
-	imageInputs      []string
-	imageProvider    string
-	imageOutput      string
-	imageSize        string
-	imageAspectRatio string
-	imageQuality     string
-	imageBackground  string
-	imageNoDisplay   bool
-	imageNoClipboard bool
-	imageNoSave      bool
-	imageNoSpinner   bool
-	imageDebug       bool
+	imageOperation, imageEditModel, imageNegative, imageEnhancePrompt string
+	imageWidth, imageHeight, imageSteps, imageScale                   int
+	imageCFG, imageCreativity, imageReplication                       float64
+	imageSafeMode, imageEnhance                                       bool
+	imageTimeout                                                      time.Duration
+	imageInputs                                                       []string
+	imageProvider                                                     string
+	imageOutput                                                       string
+	imageSize                                                         string
+	imageAspectRatio                                                  string
+	imageQuality                                                      string
+	imageBackground                                                   string
+	imageNoDisplay                                                    bool
+	imageNoClipboard                                                  bool
+	imageNoSave                                                       bool
+	imageNoSpinner                                                    bool
+	imageDebug                                                        bool
 )
 
 var (
@@ -42,7 +47,7 @@ var (
 
 var imageCmd = &cobra.Command{
 	Use:   "image <prompt>",
-	Short: "Generate or edit images using AI",
+	Short: "Generate, edit or process images using AI",
 	Long: `Generate images from text prompts or edit existing images.
 
 By default:
@@ -50,28 +55,36 @@ By default:
   - Displays via icat (if available)
   - Copies to clipboard
 
-Multi-image editing (Gemini, OpenRouter only):
+Multi-image editing (Gemini, OpenRouter, Venice):
   Use -i multiple times to combine or work with multiple images.
 
 Examples:
   term-llm image "a robot cat on a rainbow"
   term-llm image "make it purple" -i photo.png
   term-llm image "add a hat" -i clipboard           # edit from clipboard
-  term-llm image "combine these" -i a.png -i b.png  # multi-image (Gemini/OpenRouter)
+  term-llm image "combine these" -i a.png -i b.png  # multi-image (Gemini/OpenRouter/Venice)
   term-llm image "sunset over mountains" --provider flux
   term-llm image "a pelican riding a bike" --provider local-images
   term-llm image "logo design" -o ./output.png --no-display
   term-llm image "robot cat" -o - | term-llm video "animate it" -i -
-  echo "a sunset" | term-llm image                  # prompt from stdin`,
+  echo "a sunset" | term-llm image                  # prompt from stdin
+  term-llm image -p venice -i photo.png --operation upscale --scale 2
+  term-llm image -p venice -i photo.png --operation background-remove
+
+Venice generation: --width/--height, --steps, --cfg-scale, --negative-prompt, --safe-mode.
+Editing: --edit-model overrides configured editor; Venice accepts HTTP(S) inputs.
+Local processing: --operation, with upscale-only --scale/--enhance/--enhance-prompt/
+--enhance-creativity/--replication. Processing accepts one local file, no prompt.
+--timeout is provider-neutral; cancellation does not roll back remote work.`,
 	Args: cobra.ArbitraryArgs,
 	RunE: runImage,
 }
 
 func init() {
-	imageCmd.Flags().StringArrayVarP(&imageInputs, "input", "i", nil, "Input image(s) to edit (can be specified multiple times)")
+	imageCmd.Flags().StringArrayVarP(&imageInputs, "input", "i", nil, "Input path/clipboard, or Venice HTTP(S) URL (repeatable)")
 	imageCmd.Flags().StringVarP(&imageProvider, "provider", "p", "", "Override image provider (built-in or configured openai_compatible name)")
 	imageCmd.Flags().StringVarP(&imageOutput, "output", "o", "", "Custom output path")
-	imageCmd.Flags().StringVarP(&imageSize, "size", "s", "", "Image resolution (must be 1K, 2K, or 4K)")
+	imageCmd.Flags().StringVarP(&imageSize, "size", "s", "", "Image resolution: 1K, 2K, 4K; native omits resolution (Venice only)")
 	imageCmd.Flags().StringVar(&imageAspectRatio, "aspect-ratio", "", "Image aspect ratio (for example 1:1, 16:9, or 9:16)")
 	imageCmd.Flags().StringVarP(&imageQuality, "quality", "q", "", "Image quality (auto, low, medium, high, xhigh, or max)")
 	imageCmd.Flags().StringVar(&imageBackground, "background", "", "Image background (auto, opaque, or transparent)")
@@ -83,14 +96,38 @@ func init() {
 
 	imageCmd.RegisterFlagCompletionFunc("provider", ImageProviderFlagCompletion)
 
+	imageCmd.Flags().StringVar(&imageOperation, "operation", "", "Local processing: upscale or background-remove (no prompt)")
+	imageCmd.Flags().StringVar(&imageEditModel, "edit-model", "", "Per-call Venice editor (overrides configured edit_model)")
+	imageCmd.Flags().IntVar(&imageWidth, "width", 0, "Venice generation width; requires --height, conflicts with --size/--aspect-ratio")
+	imageCmd.Flags().IntVar(&imageHeight, "height", 0, "Venice generation height; requires --width")
+	imageCmd.Flags().IntVar(&imageSteps, "steps", 0, "Venice generation steps (positive)")
+	imageCmd.Flags().Float64Var(&imageCFG, "cfg-scale", 0, "Venice generation CFG scale (finite)")
+	imageCmd.Flags().StringVar(&imageNegative, "negative-prompt", "", "Venice generation negative prompt")
+	imageCmd.Flags().BoolVar(&imageSafeMode, "safe-mode", false, "Enable Venice generation safe mode")
+	imageCmd.Flags().DurationVar(&imageTimeout, "timeout", 5*time.Minute, "Provider-neutral request deadline; timeout does not undo remote work")
+	imageCmd.Flags().IntVar(&imageScale, "scale", 0, "Upscale factor (positive)")
+	imageCmd.Flags().BoolVar(&imageEnhance, "enhance", false, "Enable upscale enhancement")
+	imageCmd.Flags().StringVar(&imageEnhancePrompt, "enhance-prompt", "", "Upscale enhancement prompt")
+	imageCmd.Flags().Float64Var(&imageCreativity, "enhance-creativity", 0, "Upscale enhancement creativity (finite)")
+	imageCmd.Flags().Float64Var(&imageReplication, "replication", 0, "Upscale replication (finite)")
+	imageCmd.RegisterFlagCompletionFunc("size", func(*cobra.Command, []string, string) ([]string, cobra.ShellCompDirective) {
+		return []string{"1K", "2K", "4K", "native"}, cobra.ShellCompDirectiveNoFileComp
+	})
+	imageCmd.RegisterFlagCompletionFunc("operation", func(*cobra.Command, []string, string) ([]string, cobra.ShellCompDirective) {
+		return []string{"upscale", "background-remove"}, cobra.ShellCompDirectiveNoFileComp
+	})
 	rootCmd.AddCommand(imageCmd)
 }
 
 func runImage(cmd *cobra.Command, args []string) error {
+	options := captureImageOptions(cmd)
+	if err := options.Validate(len(args) > 0); err != nil {
+		return err
+	}
 	var prompt string
 	if len(args) > 0 {
 		prompt = strings.Join(args, " ")
-	} else {
+	} else if imageOperation == "" {
 		stdinContent, err := input.ReadStdin()
 		if err != nil {
 			return fmt.Errorf("failed to read stdin: %w", err)
@@ -98,12 +135,14 @@ func runImage(cmd *cobra.Command, args []string) error {
 		prompt = strings.TrimSpace(stdinContent)
 	}
 
-	if prompt == "" {
+	if prompt == "" && imageOperation == "" {
 		return fmt.Errorf("prompt required: provide as argument or via stdin")
 	}
 
 	ctx, stop := signal.NotifyContext()
 	defer stop()
+	ctx, cancel := context.WithTimeout(ctx, imageTimeout)
+	defer cancel()
 
 	// Load config (requires setup wizard if no config exists)
 	cfg, err := loadConfigWithSetup()
@@ -115,7 +154,7 @@ func runImage(cmd *cobra.Command, args []string) error {
 	initThemeFromConfig(cfg)
 
 	// Validate --size flag
-	if err := image.ValidateSize(imageSize); err != nil {
+	if err := imageapp.ValidateSize(imageSize); err != nil {
 		return err
 	}
 	if err := image.ValidateAspectRatio(imageAspectRatio); err != nil {
@@ -139,90 +178,25 @@ func runImage(cmd *cobra.Command, args []string) error {
 		fmt.Fprintf(os.Stderr, "Prompt: %q\n", prompt)
 	}
 
-	var result *image.ImageResult
-
-	if len(imageInputs) > 0 {
-		// Edit mode
-		if !provider.SupportsEdit() {
-			return fmt.Errorf("provider %s does not support image editing", provider.Name())
+	label, generate, err := options.Prepare(provider, prompt, func(path string) ([]byte, error) {
+		if path == "clipboard" {
+			return image.ReadFromClipboard()
 		}
-
-		// Check multi-image support
-		if len(imageInputs) > 1 && !provider.SupportsMultiImage() {
-			return fmt.Errorf("provider %s does not support multiple input images", provider.Name())
-		}
-
-		// Read all input images
-		var inputImages []image.InputImage
-		for _, inputPath := range imageInputs {
-			var inputData []byte
-			var resolvedPath string
-
-			if inputPath == "clipboard" {
-				// Read from clipboard
-				inputData, err = image.ReadFromClipboard()
-				if err != nil {
-					return fmt.Errorf("failed to read from clipboard: %w", err)
-				}
-				resolvedPath = "clipboard.png" // for MIME type detection
-				if imageDebug {
-					fmt.Fprintf(os.Stderr, "Input image: clipboard (%d bytes)\n", len(inputData))
-				}
-			} else {
-				// Read from file
-				inputData, err = os.ReadFile(inputPath)
-				if err != nil {
-					return fmt.Errorf("failed to read input image %s: %w", inputPath, err)
-				}
-				resolvedPath = inputPath
-				if imageDebug {
-					fmt.Fprintf(os.Stderr, "Input image: %s (%d bytes)\n", inputPath, len(inputData))
-				}
-			}
-
-			inputImages = append(inputImages, image.InputImage{
-				Data: inputData,
-				Path: resolvedPath,
-			})
-		}
-
-		result, err = runImageWithSpinner(ctx, provider, func(generateCtx context.Context) (*image.ImageResult, error) {
-			return provider.Edit(generateCtx, image.EditRequest{
-				Prompt:      prompt,
-				InputImages: inputImages,
-				Size:        imageSize,
-				AspectRatio: imageAspectRatio,
-				Quality:     imageQuality,
-				Background:  imageBackground,
-				Debug:       imageDebug,
-				DebugRaw:    debugRaw,
-			})
-		}, "Editing image")
+		data, err := os.ReadFile(path)
 		if err != nil {
-			if errors.Is(err, context.Canceled) {
-				return nil
-			}
-			return fmt.Errorf("image editing failed: %w", err)
+			return nil, fmt.Errorf("read input image: %w", err)
 		}
-	} else {
-		// Generate mode
-		result, err = runImageWithSpinner(ctx, provider, func(generateCtx context.Context) (*image.ImageResult, error) {
-			return provider.Generate(generateCtx, image.GenerateRequest{
-				Prompt:      prompt,
-				Size:        imageSize,
-				AspectRatio: imageAspectRatio,
-				Quality:     imageQuality,
-				Background:  imageBackground,
-				Debug:       imageDebug,
-				DebugRaw:    debugRaw,
-			})
-		}, "Generating image")
-		if err != nil {
-			if errors.Is(err, context.Canceled) {
-				return nil
-			}
-			return fmt.Errorf("image generation failed: %w", err)
-		}
+		return data, nil
+	})
+	if err != nil {
+		return err
+	}
+	result, err := runImageWithSpinner(ctx, provider, generate, label)
+	if err != nil {
+		return fmt.Errorf("image request failed (remote outcome may be uncertain): %w", err)
+	}
+	if imageOperation != "" {
+		prompt = options.OutputName()
 	}
 
 	// Determine output path

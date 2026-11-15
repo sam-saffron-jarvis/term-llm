@@ -17,6 +17,7 @@ type ImageResult struct {
 
 // GenerateRequest contains parameters for image generation
 type GenerateRequest struct {
+	Venice      *VeniceControls
 	Prompt      string
 	Size        string // Normalized resolution: "1K", "2K", "4K"; providers translate or ignore
 	AspectRatio string // e.g. "1:1", "16:9", "9:16"; providers translate or ignore
@@ -28,12 +29,14 @@ type GenerateRequest struct {
 
 // InputImage represents a single input image for editing
 type InputImage struct {
+	URL  string // Remote URL passed through to capable providers
 	Data []byte // Image data
 	Path string // Path for MIME type detection
 }
 
 // EditRequest contains parameters for image editing
 type EditRequest struct {
+	Model       string // Explicit per-call edit model
 	Prompt      string
 	InputImages []InputImage // Input images for editing (supports multiple for some providers)
 	Size        string       // Normalized resolution: "1K", "2K", "4K"; providers translate or ignore

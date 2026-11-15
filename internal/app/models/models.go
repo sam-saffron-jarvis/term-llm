@@ -23,6 +23,7 @@ import (
 
 // Options holds model-listing flags and the application's config loader.
 type Options struct {
+	Type       string
 	Provider   string
 	JSON       bool
 	Refresh    bool
@@ -63,6 +64,10 @@ func (o *Options) Run(cmd *cobra.Command, args []string) error {
 	cfg, err := load()
 	if err != nil {
 		return err
+	}
+
+	if o.Type != "" {
+		return o.runMedia(cmd, cfg)
 	}
 
 	// Determine which provider to query

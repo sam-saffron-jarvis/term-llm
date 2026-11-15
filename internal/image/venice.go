@@ -7,17 +7,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
-	"mime/multipart"
 	"net/http"
-	"net/textproto"
-	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/term-llm/term-llm/internal/config"
-	"github.com/term-llm/term-llm/internal/providerhttp"
 	"github.com/term-llm/term-llm/internal/runtimeoutput"
+	"github.com/term-llm/term-llm/internal/venice"
 )
 
 const (
@@ -25,14 +21,13 @@ const (
 	veniceGenerateEndpoint  = veniceBaseURL + "/image/generate"
 	veniceEditEndpoint      = veniceBaseURL + "/image/edit"
 	veniceMultiEditEndpoint = veniceBaseURL + "/image/multi-edit"
-	veniceHTTPTimeout       = 5 * time.Minute
 )
 
 var (
 	veniceDefaultModel      = config.DefaultImageVeniceModel
 	veniceDefaultResolution = config.DefaultImageVeniceResolution
 	veniceHTTPClient        = &http.Client{
-		Timeout: veniceHTTPTimeout,
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 	}
 )
 
@@ -69,6 +64,8 @@ func (p *VeniceProvider) Name() string {
 	return "Venice"
 }
 
+func (p *VeniceProvider) SupportsVeniceControls() bool { return true }
+
 func (p *VeniceProvider) SupportsEdit() bool {
 	return true
 }
@@ -93,7 +90,10 @@ func (p *VeniceProvider) editModel() string {
 // Generate calls POST /image/generate — text-to-image.
 // Response: JSON { "images": ["<base64>"] }
 func (p *VeniceProvider) Generate(ctx context.Context, req GenerateRequest) (*ImageResult, error) {
-	options, err := p.requestOptions(ctx, p.model, req.Size, req.AspectRatio, req.Quality)
+	if err := ValidateVeniceControls(p, req.Venice, req.Size, req.AspectRatio); err != nil {
+		return nil, err
+	}
+	options, err := p.requestOptions(req.Size, req.AspectRatio, req.Quality)
 	if err != nil {
 		return nil, err
 	}
@@ -105,6 +105,17 @@ func (p *VeniceProvider) Generate(ctx context.Context, req GenerateRequest) (*Im
 		SafeMode:           false,
 		HideWatermark:      true,
 		Format:             "png",
+	}
+
+	if c := req.Venice; c != nil {
+		genReq.Width, genReq.Height, genReq.Steps = c.Width, c.Height, c.Steps
+		genReq.CFGScale, genReq.NegativePrompt = c.CFGScale, c.NegativePrompt
+		if c.SafeMode != nil {
+			genReq.SafeMode = *c.SafeMode
+		}
+		if c.Width != nil {
+			genReq.Resolution = ""
+		}
 	}
 
 	jsonBody, err := json.Marshal(genReq)
@@ -139,7 +150,10 @@ func (p *VeniceProvider) Edit(ctx context.Context, req EditRequest) (*ImageResul
 		return nil, fmt.Errorf("Venice supports at most 3 input images, got %d", len(req.InputImages))
 	}
 
-	options, err := p.requestOptions(ctx, p.editModel(), req.Size, req.AspectRatio, req.Quality)
+	if err := ValidateEditInputs(p, req.InputImages); err != nil {
+		return nil, err
+	}
+	options, err := p.requestOptions(req.Size, req.AspectRatio, req.Quality)
 	if err != nil {
 		return nil, err
 	}
@@ -147,6 +161,9 @@ func (p *VeniceProvider) Edit(ctx context.Context, req EditRequest) (*ImageResul
 	// its docs. Multi-edit accepts one input and honors quality; route explicitly
 	// rather than silently dropping the option or retrying a billable request.
 	if len(req.InputImages) == 1 && options.Quality == "" {
+		if req.InputImages[0].URL != "" {
+			return p.singleURLEdit(ctx, req, options)
+		}
 		return p.singleEdit(ctx, req, options)
 	}
 	return p.multiEdit(ctx, req, options)
@@ -158,50 +175,19 @@ func (p *VeniceProvider) singleEdit(ctx context.Context, req EditRequest, option
 	img := req.InputImages[0]
 	debugRaw := req.Debug || req.DebugRaw
 
-	var body bytes.Buffer
-	writer := multipart.NewWriter(&body)
-
-	mimeType := getMimeType(img.Path)
-	h := make(textproto.MIMEHeader)
-	h.Set("Content-Disposition", fmt.Sprintf(`form-data; name="image"; filename="%s"`, filepath.Base(img.Path)))
-	h.Set("Content-Type", mimeType)
-	part, err := writer.CreatePart(h)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create form part: %w", err)
-	}
-	if _, err := part.Write(img.Data); err != nil {
-		return nil, fmt.Errorf("failed to write image data: %w", err)
-	}
-
 	fields := map[string]string{
-		"modelId":       p.editModel(),
-		"prompt":        req.Prompt,
-		"resolution":    options.Resolution,
-		"aspect_ratio":  options.AspectRatio,
-		"output_format": "png",
+		"modelId": p.callEditModel(req), "prompt": req.Prompt,
+		"resolution": options.Resolution, "aspect_ratio": options.AspectRatio, "output_format": "png",
 	}
-	for key, value := range fields {
-		if value == "" {
-			continue
-		}
-		if err := writer.WriteField(key, value); err != nil {
-			return nil, fmt.Errorf("failed to write form field %q: %w", key, err)
+	for k, v := range fields {
+		if v == "" && k != "prompt" {
+			delete(fields, k)
 		}
 	}
-
-	if err := writer.Close(); err != nil {
-		return nil, fmt.Errorf("failed to close multipart writer: %w", err)
-	}
-
-	debugRawImageLog(debugRaw, "Venice Request", "POST %s\nmultipart/form-data modelId=%s prompt=%q resolution=%s aspect_ratio=%s image=%s (%d bytes, %s)",
-		p.baseURL+"/image/edit", p.editModel(), req.Prompt, options.Resolution, options.AspectRatio, filepath.Base(img.Path), len(img.Data), mimeType)
-
-	httpReq, err := http.NewRequestWithContext(ctx, "POST", p.baseURL+"/image/edit", &body)
+	httpReq, err := p.multipartRequest(ctx, "/image/edit", img, fields)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
+		return nil, err
 	}
-	httpReq.Header.Set("Content-Type", writer.FormDataContentType())
-	httpReq.Header.Set("Authorization", "Bearer "+p.apiKey)
 
 	return p.doRawRequest(httpReq, debugRaw)
 }
@@ -213,12 +199,16 @@ func (p *VeniceProvider) multiEdit(ctx context.Context, req EditRequest, options
 
 	images := make([]string, len(req.InputImages))
 	for i, img := range req.InputImages {
-		images[i] = base64.StdEncoding.EncodeToString(img.Data)
+		if img.URL != "" {
+			images[i] = img.URL
+		} else {
+			images[i] = base64.StdEncoding.EncodeToString(img.Data)
+		}
 	}
 
 	multiReq := veniceMultiEditRequest{
 		veniceImageOptions: options,
-		ModelID:            p.editModel(),
+		ModelID:            p.callEditModel(req),
 		Images:             images,
 		Prompt:             req.Prompt,
 		OutputFormat:       "png",
@@ -231,7 +221,7 @@ func (p *VeniceProvider) multiEdit(ctx context.Context, req EditRequest, options
 
 	// Log truncated body (base64 images are huge)
 	debugRawImageLog(debugRaw, "Venice Request", "POST %s\nmodelId=%s prompt=%q resolution=%s aspect_ratio=%s quality=%s images=%d (body %d bytes)",
-		p.baseURL+"/image/multi-edit", p.editModel(), req.Prompt, options.Resolution, options.AspectRatio, options.Quality, len(images), len(jsonBody))
+		p.baseURL+"/image/multi-edit", p.callEditModel(req), req.Prompt, options.Resolution, options.AspectRatio, options.Quality, len(images), len(jsonBody))
 
 	httpReq, err := http.NewRequestWithContext(ctx, "POST", p.baseURL+"/image/multi-edit", bytes.NewReader(jsonBody))
 	if err != nil {
@@ -245,25 +235,29 @@ func (p *VeniceProvider) multiEdit(ctx context.Context, req EditRequest, options
 
 // doJSONRequest handles responses with JSON { "images": ["<base64>"] }
 func (p *VeniceProvider) doJSONRequest(httpReq *http.Request, debugRaw bool) (*ImageResult, error) {
-	resp, err := veniceHTTPClient.Do(httpReq)
+	httpReq, cancel := veniceRequestDeadline(httpReq)
+	defer cancel()
+	client := *veniceHTTPClient
+	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	resp, err := client.Do(httpReq)
 	if err != nil {
 		debugRawImageLog(debugRaw, "Venice Error", "request failed: %v", err)
 		return nil, veniceRequestError(err)
 	}
 	defer resp.Body.Close()
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := readVeniceBody(resp.Body, veniceJSONLimit)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read response: %w", err)
 	}
 
 	if debugRaw {
-		debugRawImageLog(debugRaw, "Venice Response", "status=%d content-type=%s body_len=%d\n%s",
-			resp.StatusCode, resp.Header.Get("Content-Type"), len(body), truncateBase64InJSON(body))
+		debugRawImageLog(debugRaw, "Venice Response", "status=%d content-type=%s body_len=%d",
+			resp.StatusCode, resp.Header.Get("Content-Type"), len(body))
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, providerhttp.NewStatusError("Venice", resp, body)
+		return nil, venice.StatusError(resp, body, p.apiKey)
 	}
 
 	var apiResp veniceGenerateResponse
@@ -284,14 +278,22 @@ func (p *VeniceProvider) doJSONRequest(httpReq *http.Request, debugRaw bool) (*I
 
 // doRawRequest handles responses that contain raw image bytes.
 func (p *VeniceProvider) doRawRequest(httpReq *http.Request, debugRaw bool) (*ImageResult, error) {
-	resp, err := veniceHTTPClient.Do(httpReq)
+	httpReq, cancel := veniceRequestDeadline(httpReq)
+	defer cancel()
+	client := *veniceHTTPClient
+	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	resp, err := client.Do(httpReq)
 	if err != nil {
 		debugRawImageLog(debugRaw, "Venice Error", "request failed: %v", err)
 		return nil, veniceRequestError(err)
 	}
 	defer resp.Body.Close()
 
-	body, err := io.ReadAll(resp.Body)
+	limit := int64(veniceImageLimit)
+	if resp.StatusCode != http.StatusOK || strings.Contains(resp.Header.Get("Content-Type"), "json") {
+		limit = veniceJSONLimit
+	}
+	body, err := readVeniceBody(resp.Body, limit)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read response: %w", err)
 	}
@@ -301,11 +303,25 @@ func (p *VeniceProvider) doRawRequest(httpReq *http.Request, debugRaw bool) (*Im
 
 	if resp.StatusCode != http.StatusOK {
 		if debugRaw {
-			debugRawImageLog(debugRaw, "Venice Error Body", "%s", truncateDebugBody(body, 1024))
+			debugRawImageLog(debugRaw, "Venice Error Body", "[redacted; %d bytes]", len(body))
 		}
-		return nil, providerhttp.NewStatusError("Venice", resp, body)
+		return nil, venice.StatusError(resp, body, p.apiKey)
 	}
 
+	if strings.Contains(resp.Header.Get("Content-Type"), "json") {
+		var failure struct {
+			Error   json.RawMessage `json:"error"`
+			Message string          `json:"message"`
+		}
+		if json.Unmarshal(body, &failure) == nil {
+			if failure.Message != "" {
+				return nil, fmt.Errorf("Venice image error: %s", failure.Message)
+			}
+			if len(failure.Error) != 0 {
+				return nil, fmt.Errorf("Venice image error: %s", truncateDebugBody(failure.Error, 1024))
+			}
+		}
+	}
 	return veniceImageResult(body)
 }
 
@@ -328,7 +344,7 @@ type veniceImageOptions struct {
 	Quality     string `json:"quality,omitempty"`
 }
 
-func (p *VeniceProvider) requestOptions(ctx context.Context, model, size, aspectRatio, quality string) (veniceImageOptions, error) {
+func (p *VeniceProvider) requestOptions(size, aspectRatio, quality string) (veniceImageOptions, error) {
 	switch quality {
 	case "", "auto":
 		quality = ""
@@ -337,21 +353,25 @@ func (p *VeniceProvider) requestOptions(ctx context.Context, model, size, aspect
 	default:
 		return veniceImageOptions{}, fmt.Errorf("unsupported Venice image quality %q (valid: auto, low, medium, high)", quality)
 	}
-	if size == "" {
+	if size == NativeSize {
+		size = ""
+	} else if size == "" {
 		size = p.resolution
 	}
-	// Native-size models (such as Muse) reject resolution, even "1K".
-	// Only known constraints justify omitting it; unavailable metadata must
-	// not silently discard a requested size for a tiered model.
-	if constraints := p.modelConstraints(ctx, model); constraints != nil && len(constraints.Resolutions) == 0 {
-		size = ""
-	}
+	// Sizing is stable across catalog states. Always preserve explicit sizing
+	// or the configured/default resolution; catalog expiry must not change cost
+	// or silently discard a caller's requested size.
 	return veniceImageOptions{Resolution: size, AspectRatio: aspectRatio, Quality: quality}, nil
 }
 
 // Venice API request/response types
 
 type veniceGenerateRequest struct {
+	Width          *int     `json:"width,omitempty"`
+	Height         *int     `json:"height,omitempty"`
+	Steps          *int     `json:"steps,omitempty"`
+	CFGScale       *float64 `json:"cfg_scale,omitempty"`
+	NegativePrompt *string  `json:"negative_prompt,omitempty"`
 	veniceImageOptions
 	Model         string `json:"model"`
 	Prompt        string `json:"prompt"`
@@ -375,10 +395,10 @@ type veniceGenerateResponse struct {
 // veniceRequestError returns a clean error message for HTTP client failures.
 func veniceRequestError(err error) error {
 	if errors.Is(err, context.DeadlineExceeded) {
-		return fmt.Errorf("Venice API request timed out after %s", veniceHTTPTimeout)
+		return fmt.Errorf("Venice API request timed out; remote outcome may be uncertain: %w", err)
 	}
 	if errors.Is(err, context.Canceled) {
-		return fmt.Errorf("cancelled")
+		return fmt.Errorf("Venice API request cancelled; remote outcome may be uncertain: %w", err)
 	}
 	return fmt.Errorf("Venice API request failed: %w", err)
 }
@@ -423,4 +443,14 @@ func truncateDebugBody(body []byte, maxLen int) string {
 		return s[:maxLen] + fmt.Sprintf("...[truncated, %d total bytes]", len(body))
 	}
 	return s
+}
+
+// Preserve the historical fallback for direct/tool callers without capping a
+// caller-specified longer deadline. The deadline covers response-body reads too.
+func veniceRequestDeadline(req *http.Request) (*http.Request, context.CancelFunc) {
+	if _, ok := req.Context().Deadline(); ok {
+		return req, func() {}
+	}
+	ctx, cancel := context.WithTimeout(req.Context(), 5*time.Minute)
+	return req.Clone(ctx), cancel
 }

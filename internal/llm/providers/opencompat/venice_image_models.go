@@ -1,10 +1,8 @@
 package opencompat
 
 import (
-	"context"
 	"slices"
 	"strings"
-	"time"
 
 	"github.com/term-llm/term-llm/internal/cache"
 	"github.com/term-llm/term-llm/internal/config"
@@ -12,45 +10,21 @@ import (
 )
 
 const (
-	veniceImageCacheKey          = venice.ImageCacheKey
-	veniceImageCompletionTimeout = 2 * time.Second
+	veniceImageCacheKey = venice.ImageCacheKey
 )
 
-// GetVeniceImageModelIDs returns live model suggestions filtered by API type:
-// "image" for generation, "inpaint" for editing, or "" for both. Missing or
-// stale catalogs are refreshed synchronously with a short timeout: background
-// goroutines cannot reliably finish in a short-lived shell completion process.
-// Deferred credentials are deliberately not executed by shell completion;
-// cached and configured models remain available without unlocking a vault.
+// GetVeniceImageModelIDs offers cached/configured media IDs without resolving
+// credentials or fetching catalogs. Explicit models --type refreshes the cache.
 func GetVeniceImageModelIDs(cfg *config.Config, modelType string) []string {
-	baseURL, custom, safe := veniceCompletionBaseURL(cfg)
+	baseURL, _, safe := veniceCompletionBaseURL(cfg)
 	var cached *cache.ModelCache
-	if !custom {
-		cached, _ = cache.ReadModelCache(veniceImageCacheKey)
-	}
-	if safe && (!cache.IsCacheValid(cached) || len(cached.ModelInfos) == 0) {
-		ref := config.Cred("", "VENICE_API_KEY")
-		if cfg != nil {
-			ref = cfg.Image.VeniceKey()
-		}
-		if !ref.IsDeferred() {
-			if apiKey, err := ref.Resolve(); err == nil && apiKey != "" {
-				ctx, cancel := context.WithTimeout(context.Background(), veniceImageCompletionTimeout)
-				models, _ := venice.FetchImageModelsAt(ctx, httpClient(), apiKey, baseURL)
-				cancel()
-				if len(models) > 0 {
-					if !custom {
-						_ = cache.WriteModelInfoCache(veniceImageCacheKey, models)
-					}
-					cached = &cache.ModelCache{ModelInfos: models}
-				}
-			}
-		}
+	if safe {
+		cached, _ = cache.ReadModelCache(venice.MediaCacheKey(baseURL))
 	}
 	var ids []string
 	if cached != nil {
 		for _, model := range cached.ModelInfos {
-			if modelType == "" || model.Type == modelType {
+			if (model.Type == "image" || model.Type == "inpaint") && (modelType == "" || model.Type == modelType) {
 				ids = append(ids, model.ID)
 			}
 		}
