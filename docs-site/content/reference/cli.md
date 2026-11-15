@@ -1308,13 +1308,16 @@ Run a standalone configuration-driven credential proxy
 
 | Flag | Type | Description |
 |---|---|---|
-| `--admin-token-file` | string | Private file containing a strong separate admin token (required) |
+| `--admin-token-file` | string | Private administrator token file (only with --auth token) |
+| `--auth` | string | Browser admin authentication: passkey or token (explicit legacy/local mode) |
 | `--config` | string | Operator-owned route YAML; omit for editable UI-managed routes |
 | `--host` | string | Listen host |
 | `--max-body-bytes` | int64 | Maximum streamed request body bytes |
 | `--max-concurrent` | int | Maximum active forwarding requests (no queue) |
+| `--passkey-bootstrap-token-file` | string | Private one-use first-passkey enrollment secret file |
+| `--passkey-recovery-token-file` | string | Private one-use passkey recovery secret file (existing enrollment only) |
 | `--port` | int | Listen port |
-| `--public-url` | string | HTTPS admin origin behind a trusted reverse proxy |
+| `--public-url` | string | Exact browser HTTPS origin behind external TLS (required for passkeys; http://localhost allowed for development) |
 | `--request-timeout` | duration | Total request deadline (including streaming) |
 | `--retention-days` | int | Request metadata retention in days (batched deletion) |
 | `--state-dir` | string | Private proxy state directory (required; not agent state) |

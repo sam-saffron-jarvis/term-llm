@@ -24,7 +24,7 @@ func testService(t *testing.T) *Service {
 	if err := os.WriteFile(admin, []byte(strings.Repeat("a", 64)), 0600); err != nil {
 		t.Fatal(err)
 	}
-	s, err := Open(Options{StateDir: state, AdminTokenFile: admin})
+	s, err := Open(Options{Auth: "token", StateDir: state, AdminTokenFile: admin})
 	if err != nil {
 		t.Fatal(err)
 	}

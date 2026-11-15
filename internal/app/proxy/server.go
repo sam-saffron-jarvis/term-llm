@@ -15,18 +15,21 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/term-llm/term-llm/internal/passkeyauth"
 	"github.com/term-llm/term-llm/internal/secrettext"
 )
 
 type Options struct {
-	StateDir, AdminTokenFile, ConfigFile, PublicURL, Host string
-	Port, MaxConcurrent, RetentionDays                    int
-	MaxBody                                               int64
-	RequestTimeout                                        time.Duration
+	StateDir, AdminTokenFile, ConfigFile, PublicURL, Host     string
+	Auth, PasskeyBootstrapTokenFile, PasskeyRecoveryTokenFile string
+	Port, MaxConcurrent, RetentionDays                        int
+	MaxBody                                                   int64
+	RequestTimeout                                            time.Duration
 }
 type session struct {
-	csrf    string
-	expires time.Time
+	csrf      string
+	expires   time.Time
+	principal passkeyauth.Principal
 }
 type Service struct {
 	mu        sync.RWMutex
@@ -34,6 +37,7 @@ type Service struct {
 	snap      *snapshot
 	opts      Options
 	adminHash string
+	passkey   *proxyPasskeys
 	transport *http.Transport
 	slots     chan struct{}
 	active    sync.Map
@@ -47,30 +51,9 @@ type attempt struct {
 }
 
 func Open(opts Options) (*Service, error) {
-	if opts.StateDir == "" || opts.AdminTokenFile == "" {
-		return nil, fmt.Errorf("--state-dir and --admin-token-file are required")
-	}
-	b, err := privateFile(opts.AdminTokenFile, 4096)
+	adminHash, err := prepareAuthOptions(&opts)
 	if err != nil {
 		return nil, err
-	}
-	token := strings.TrimSpace(string(b))
-	if len(token) < 32 || strings.ContainsAny(token, " \t\r\n") {
-		return nil, fmt.Errorf("admin token must have at least 32 non-whitespace characters; provision 256 random bits")
-	}
-	if opts.PublicURL != "" {
-		u, e := url.Parse(opts.PublicURL)
-		if e != nil || u.Scheme != "https" || u.Host == "" || u.User != nil || (u.Path != "" && u.Path != "/") || u.RawQuery != "" || u.Fragment != "" {
-			return nil, fmt.Errorf("public URL must be an HTTPS origin")
-		}
-		host := strings.ToLower(u.Hostname())
-		if strings.Contains(host, ":") {
-			host = "[" + host + "]"
-		}
-		if port := u.Port(); port != "" && port != "443" {
-			host = net.JoinHostPort(u.Hostname(), port)
-		}
-		opts.PublicURL = "https://" + host
 	}
 	if opts.MaxConcurrent < 0 || opts.MaxBody < 0 || opts.RequestTimeout < 0 || opts.RetentionDays < 0 {
 		return nil, fmt.Errorf("proxy bounds must be positive")
@@ -97,10 +80,17 @@ func Open(opts Options) (*Service, error) {
 	if err != nil {
 		return nil, err
 	}
-	s := &Service{store: st, opts: opts, adminHash: hashToken(token), slots: make(chan struct{}, opts.MaxConcurrent), sessions: map[string]session{}, attempts: map[string]attempt{}}
+	s := &Service{store: st, opts: opts, adminHash: adminHash, slots: make(chan struct{}, opts.MaxConcurrent), sessions: map[string]session{}, attempts: map[string]attempt{}}
 	s.transport = &http.Transport{Proxy: nil, DialContext: (&net.Dialer{Timeout: 15 * time.Second, KeepAlive: 30 * time.Second}).DialContext, DisableCompression: true, ForceAttemptHTTP2: true, TLSHandshakeTimeout: 15 * time.Second, IdleConnTimeout: 90 * time.Second, MaxIdleConns: 128, MaxIdleConnsPerHost: 16, MaxConnsPerHost: opts.MaxConcurrent, MaxResponseHeaderBytes: 1 << 20}
+	if opts.Auth == "passkey" {
+		s.passkey, err = openProxyPasskeys(opts)
+		if err != nil {
+			s.Close()
+			return nil, err
+		}
+	}
 	if err = s.activateInitial(); err != nil {
-		st.db.Close()
+		s.Close()
 		return nil, err
 	}
 	return s, nil
@@ -116,7 +106,7 @@ func (s *Service) activateInitial() error {
 			return err
 		}
 	}
-	secrets, err := resolveSecrets(c, stored, s.opts.AdminTokenFile, s.opts.ConfigFile != "")
+	secrets, err := s.resolveSecrets(c, stored, s.opts.ConfigFile != "")
 	if err != nil {
 		return err
 	}
@@ -130,7 +120,13 @@ func (s *Service) activateInitial() error {
 	s.snap = snap
 	return nil
 }
-func (s *Service) Close() error { s.transport.CloseIdleConnections(); return s.store.db.Close() }
+func (s *Service) Close() error {
+	s.transport.CloseIdleConnections()
+	if s.passkey != nil {
+		_ = s.passkey.unlock()
+	}
+	return s.store.db.Close()
+}
 func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path == "/healthz" {
 		if r.Method != http.MethodGet {

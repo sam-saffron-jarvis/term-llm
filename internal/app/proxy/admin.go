@@ -107,7 +107,15 @@ func (s *Service) admin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	path := strings.TrimPrefix(r.URL.Path, "/_proxy/api/")
-	if path == "login" && r.Method == "POST" {
+	if path == "auth/status" && r.Method == "GET" {
+		s.authStatus(w, r)
+		return
+	}
+	if s.passkey != nil && strings.HasPrefix(path, "auth/") {
+		s.passkeyAPI(w, r, strings.TrimPrefix(path, "auth/"))
+		return
+	}
+	if s.passkey == nil && path == "login" && r.Method == "POST" {
 		s.login(w, r)
 		return
 	}
@@ -126,6 +134,11 @@ func (s *Service) admin(w http.ResponseWriter, r *http.Request) {
 const adminShell = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="light dark"><title>Credential proxy · term-llm</title><link rel="stylesheet" href="/_proxy/assets/proxy.css"><script type="module" src="/_proxy/assets/proxy.js"></script></head><body><div id="proxy-app"><p>Loading credential proxy…</p></div><noscript>This administration UI requires JavaScript. Forwarding does not.</noscript></body></html>`
 
 func (s *Service) getSession(r *http.Request) (session, bool) {
+	if s.passkey != nil {
+		s.passkey.mu.Lock()
+		defer s.passkey.mu.Unlock()
+		return s.passkeySession(r)
+	}
 	cookie, err := r.Cookie("tlp_admin")
 	if err != nil {
 		return session{}, false
@@ -258,6 +271,10 @@ func (s *Service) adminAPI(w http.ResponseWriter, r *http.Request, path string, 
 	case (path == "requests" || path == "requests/export") && r.Method == "GET":
 		s.requests(w, r, path == "requests/export")
 	case path == "logout" && r.Method == "POST":
+		if s.passkey != nil {
+			s.passkeyLogout(w, r, sess)
+			return
+		}
 		if c, err := r.Cookie("tlp_admin"); err == nil {
 			s.authMu.Lock()
 			delete(s.sessions, hashToken(c.Value))
@@ -307,7 +324,7 @@ func (s *Service) state(w http.ResponseWriter, sess session) {
 	if s.opts.ConfigFile != "" {
 		mode = "file"
 	}
-	jsonReply(w, 200, map[string]any{"mode": mode, "revision": s.snap.revision, "routes": s.snap.config.Routes, "secrets": secrets, "callers": callers, "csrf": sess.csrf, "retention_days": s.opts.RetentionDays})
+	jsonReply(w, 200, map[string]any{"mode": mode, "auth": s.opts.Auth, "revision": s.snap.revision, "routes": s.snap.config.Routes, "secrets": secrets, "callers": callers, "csrf": sess.csrf, "retention_days": s.opts.RetentionDays})
 }
 func (s *Service) updateConfig(w http.ResponseWriter, c Config, revision int64) {
 	s.mu.Lock()
@@ -325,7 +342,7 @@ func (s *Service) updateConfig(w http.ResponseWriter, c Config, revision int64) 
 		fail(w, 503, "Could not read secret store")
 		return
 	}
-	secrets, err := resolveSecrets(c, stored, s.opts.AdminTokenFile, false)
+	secrets, err := s.resolveSecrets(c, stored, false)
 	if err != nil {
 		fail(w, 400, err.Error())
 		return
@@ -359,7 +376,7 @@ func (s *Service) reload(w http.ResponseWriter) {
 		fail(w, 503, "Could not read secret store")
 		return
 	}
-	secrets, err := resolveSecrets(c, stored, s.opts.AdminTokenFile, true)
+	secrets, err := s.resolveSecrets(c, stored, true)
 	if err != nil {
 		fail(w, 400, err.Error())
 		return
@@ -559,7 +576,7 @@ func (s *Service) prepareSecretChange(in secretInput, deleting bool, stored map[
 func (s *Service) updatedSecretMaterials(stored map[string]material) (map[string]material, error) {
 	c := s.snap.config
 	if s.opts.ConfigFile == "" {
-		return resolveSecrets(c, stored, s.opts.AdminTokenFile, false)
+		return s.resolveSecrets(c, stored, false)
 	}
 	c.Secrets = make(map[string]SecretRef)
 	for name, ref := range s.snap.config.Secrets {
@@ -567,7 +584,7 @@ func (s *Service) updatedSecretMaterials(stored map[string]material) (map[string
 			c.Secrets[name] = ref
 		}
 	}
-	materials, err := resolveSecrets(c, stored, s.opts.AdminTokenFile, true)
+	materials, err := s.resolveSecrets(c, stored, true)
 	if err != nil {
 		return nil, err
 	}

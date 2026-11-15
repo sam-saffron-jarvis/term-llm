@@ -14,38 +14,95 @@ There are no provider presets, model policies, JSON/body inspectors, retries,
 tunnels or native API assumptions. Two unrelated services with different base
 paths and auth headers use exactly the same configuration mechanism.
 
-## Start locally
+## Start with passkey administration (default)
 
-Provision a separate admin credential and an independent private state directory:
+Provision a one-use host enrollment secret and an independent private state directory:
 
 ```sh
 install -d -m 0700 ./proxy-state ./proxy-secrets
-(umask 077; openssl rand -hex 32 > ./proxy-secrets/admin)
+(umask 077; openssl rand -hex 32 > ./proxy-secrets/bootstrap)
 term-llm serve proxy --state-dir ./proxy-state \
+  --public-url http://localhost:8082 \
+  --passkey-bootstrap-token-file ./proxy-secrets/bootstrap \
+  --host 127.0.0.1 --port 8082
+```
+
+Visit **http://localhost:8082/_proxy/** (not the IP address). Choose **Set up a
+passkey**, exchange the private file's contents and enroll a named passkey through
+your browser. User verification is required. The host secret is not a permanent
+admin password or a caller credential. Never put it in a URL, browser storage,
+agent workspace or source control. The proxy never prints generated credentials.
+
+The host secret is available for **10 minutes from startup** and can be exchanged
+only once for a five-minute HttpOnly enrollment grant. An interrupted browser
+ceremony can be retried while that grant remains valid. If it expires or the
+grant cookie is lost, restart explicitly with a fresh private secret file. After
+first enrollment, remove the bootstrap flag and securely remove its file; normal
+startup with enrolled credentials requires neither bootstrap nor recovery files.
+An old bootstrap flag cannot enable enrollment once a credential exists.
+
+`--auth passkey` is the default and requires an exact `--public-url`. A stable
+HTTPS **domain origin** is required for remote use; `http://localhost[:port]` is
+only a development exception. IP origins and mount paths are rejected. Passkeys
+are scoped to the hostname: choose it before enrollment. Credentials live in
+`<state-dir>/admin-auth/credentials.json`, separately from agent/Hub state, guarded
+by an exclusive process lock. The directory must be 0700 and credential/host
+secret files private regular files (0600 or stricter). Bootstrap/recovery files
+cannot be symlinks. On Windows, Go file modes do not verify ACLs: provision an
+owner-only directory/profile ACL explicitly. Provision at least 256 random bits;
+there is no default password. Keep state, WAL/SHM files and backups private.
+
+Without `--config`, routes and write-only secrets are managed in the UI and
+persisted in independent `proxy.db`, alongside caller hashes/grants and request
+metadata. Committed changes affect **new** requests immediately; dispatched work
+continues with its admitted configuration. Browser authentication, logout,
+recovery and process restarts do not change machine caller tokens or grants.
+Do not run two proxy processes against the same state directory: live
+configuration is process-local.
+
+### Explicit token compatibility mode
+
+For a local/legacy deployment that intentionally does not use passkeys:
+
+```sh
+(umask 077; openssl rand -hex 32 > ./proxy-secrets/admin)
+term-llm serve proxy --auth token --state-dir ./proxy-state \
   --admin-token-file ./proxy-secrets/admin --host 127.0.0.1 --port 8082
 ```
 
-Visit **http://127.0.0.1:8082/_proxy/** and paste the admin file's contents into the
-sign-in form. Never put credentials in URLs. Admin credentials are not caller
-credentials and cannot authorize forwarding. Keep the state and credentials out
-of agent workspaces and source control. Files containing credentials must be
-private regular files (0600 or stricter); the state directory must be 0700.
-On Windows, Go file modes do not verify ACLs; provision an owner-only profile or
-directory ACL explicitly (the shared platform privacy policy applies). Provision
-at least 256 random bits; there is no default password or generated credential
-printed to logs. Use a cryptographically random token, not a human-chosen password.
-A valid credential is checked even when a shared peer's bad-attempt bucket is
-exhausted, so another client behind your reverse proxy cannot lock you out;
-failed-login throttling is not a substitute for token entropy.
+Visit `http://127.0.0.1:8082/_proxy/` and exchange the file's contents. **There is no
+silent token fallback or admin-token bypass in passkey mode:** that mode rejects
+`--admin-token-file`; token mode rejects passkey enrollment/recovery flags. Changing
+modes requires an explicit operator restart and invalidates browser sessions.
+Token-mode admin credentials cannot authorize forwarding. Rotate a token by
+replacing its private file and restarting. Treat both modes' OS operator as trusted.
 
-Without `--config`, routes and write-only secrets are managed in the UI and
-persisted in the independent `proxy.db`, alongside caller hashes/grants and request
-metadata. Committed changes affect **new** requests immediately; dispatched work
-continues with its admitted configuration. Restart invalidates admin sessions,
-not callers or persisted configuration. To rotate the admin credential, replace
-its private file and restart the process (this also invalidates all admin
-sessions). Do not run two proxy processes against the same state directory: live
-configuration is process-local.
+### Passkeys, sessions and recovery
+
+The **Passkeys** view lists named credentials and last-use times. Add a spare
+passkey before losing your primary one. Each additional enrollment, credential
+revocation or **Sign out other browsers** action requires a fresh passkey assertion
+and consumes a one-use recent-auth authorization (five-minute maximum). The final
+credential cannot be deleted. Revoking a credential revokes every session issued
+with it, including your current session when applicable; signing out other browsers
+keeps the current browser. Already admitted requests can finish.
+
+Passkey sessions use the shared authentication engine's **12-hour idle / seven-day
+absolute** limits and bounded 1,024-session registry, but are intentionally
+**in memory**: restart signs out all browsers and clears pending ceremonies/grants.
+Logout immediately revokes the current server session, not merely its cookie.
+
+If every enrolled device is unavailable, an OS operator can restart the same proxy
+with `--passkey-recovery-token-file ./proxy-secrets/recovery` (a newly provisioned
+private random secret). This is available only with an already enrolled store.
+Choose **Recover access**, exchange the one-use secret, and enroll a replacement.
+Recovery adds a key, invalidates **all** sessions and pending challenges, and then
+requires an ordinary passkey login; it never creates an admin-token session.
+Old keys remain enrolled so you can inspect and explicitly revoke them after login.
+Remove the recovery flag/file after use. Recovery has the same 10-minute exchange /
+five-minute grant limits as bootstrap. Reusing a file in an explicit restart rearms
+its host grant; always use a fresh secret instead. No recovery endpoint changes
+routes, machine caller tokens/grants or upstream credentials.
 
 ### A short setup journey
 
@@ -110,7 +167,7 @@ or a vault.
 
 ```sh
 term-llm serve proxy --state-dir ./proxy-state \
-  --admin-token-file ./proxy-secrets/admin --config ./proxy.yaml
+  --public-url https://proxy.example.test --config ./proxy.yaml
 ```
 
 The file is authoritative and the route UI is read-only even if the mount is
@@ -130,8 +187,8 @@ hidden grant namespace.
 
 Only operator-authored configuration may reference files. File values are loaded
 at activation, not per request; trailing CR/LF used as a text-file terminator is
-removed. The admin-token file and aliases/hardlinks to it are forbidden as upstream
-material. Every file source requires an explicit `origin` (scheme, host and
+removed. Admin-token, bootstrap/recovery files, passkey state and aliases/hardlinks to
+them are forbidden as upstream material. Every file source requires an explicit `origin` (scheme, host and
 effective port; no base path), normalized and enforced just like stored-secret
 bindings. An absent or mismatched binding refuses activation. File sources
 require private regular files and a maximum of 16 KiB. A trusted OS operator can change files/processes and is outside the browser's
@@ -284,18 +341,69 @@ request-ID metadata is bounded and redacted too.
 
 ## Administration and operations
 
-Admin login is a POST token exchange for an HttpOnly, SameSite=Strict, in-memory
-session (absolute eight-hour expiry; 64-session bound). Sessions use separate CSRF
-values and expire on restart. No query auth, browser localStorage secrets or raw
-admin-token cookies exist. Invalid login guesses are throttled per peer and the
-tracking map is bounded globally. A valid strong admin token is checked safely
-before those bad-attempt buckets, so attackers sharing a reverse proxy's peer IP
-cannot exhaust a bucket to lock out the administrator.
-Admin Host/Origin checks accept loopback browser origins (including SSH forwarded
-ports); `--public-url https://proxy.example.test` declares the single remote HTTPS
-admin origin and enables Secure cookies. Only a trusted TLS reverse proxy should
-terminate that origin. Host is not authentication: network clients can spoof it.
-Caller routes are not restricted to browser admin Hosts.
+Admin sessions use HttpOnly, SameSite=Strict cookies scoped to `/_proxy/`, Secure
+on HTTPS, with separate CSRF values. All mutations require the configured exact
+Origin and session CSRF (or a pre-authentication CSRF cookie/value for passkey
+setup/login). There is no query authentication, browser localStorage secret or raw
+host-secret cookie. Passkey challenges are one-use and bound to ceremony kind,
+host enrollment grant or session and user identity. Invalid host-secret guesses
+are throttled with bounded peer tracking; valid strong secrets cannot be locked
+out by another client sharing the reverse proxy's peer IP.
+
+Unauthenticated login challenges have a separate bounded registry from all
+session/grant-protected ceremonies. At public-login capacity, a new begin replaces
+the oldest pending login (for the shared peer, or globally when only that bound
+is full); evicted challenges fail closed and every challenge is still one-use.
+This avoids a fixed five-minute capacity lockout behind a TLS terminator without
+letting public login consume reauthentication/enrollment/recovery capacity.
+A sustained flood can still evict a legitimate pending login or consume network /
+CPU resources: this is not DoS immunity. Apply appropriate network restrictions,
+connection/rate controls and monitoring at the TLS terminator. Token compatibility
+sessions expire after eight hours, have a 64-session bound and are also invalidated
+on restart. Invalid token guesses use the same bounded lockout-resistant policy.
+
+### HTTPS termination and hostname routing
+
+The proxy has **no built-in TLS**. For remote use, configure a stable
+`--public-url https://proxy.example.test` and put an externally managed TLS reverse
+proxy in front of a **private** HTTP listener. Route the **whole hostname at its
+root**, preserve the public Host header and pass paths unchanged: `/` redirects to
+`/_proxy/`, while caller routes and `/healthz` remain at the root. Mounting the
+application under a rewritten subpath is unsupported. The reverse proxy should
+expose readiness only where appropriate. Proxy startup does not provision DNS,
+issue certificates, install trust roots or manage that reverse proxy.
+
+Host and Origin must match the configured origin exactly (including non-default
+port); `Forwarded`, `X-Forwarded-Host` and `X-Forwarded-Proto` are **not trusted**.
+TLS is determined by explicit public-url policy, not arbitrary forwarded headers.
+Only the declared localhost HTTP origin gets non-Secure development cookies. In
+explicit token mode without public-url, only loopback browser Hosts are accepted
+(including SSH forwarded ports). Host is not authentication: network clients can
+spoof it. Caller routes are not restricted to browser admin Hosts, so protect their
+network path with TLS too. Do not expose the private backend as an alternate entry.
+
+A minimal Caddy configuration (run/manage it separately) is:
+
+```caddyfile
+proxy.example.test {
+    reverse_proxy 127.0.0.1:8082 {
+        # Preserve streaming/SSE delivery; do not buffer an entire response.
+        flush_interval -1
+    }
+}
+```
+
+Use a real domain and publicly trusted certificate issuer for real browsers;
+Caddy's normal public ACME flow requires appropriate DNS/reachability and operator
+approval. `.test` names are examples, not publicly issued domains. An isolated
+deployment test can instead supply an ephemeral private-CA certificate trusted
+**only in the test browser**; this does not prove public certificate issuance.
+Do not disable HTTPS verification. Chromium virtual WebAuthn authenticators test
+protocol/browser integration, not physical-device support or vendor attestation
+(the shared engine requests no attestation). On all terminators, disable response
+buffering for SSE, preserve cancellation, and choose response/idle/total timeouts
+long enough for the proxy's configured streaming deadline. Do not add automatic
+upstream retries for these authenticated requests.
 
 The standalone command and its health subcommand refuse raw-debug and CPU/heap/
 pprof options, including `TERM_LLM_PPROF`, before those facilities can start. It
@@ -329,3 +437,12 @@ For a local-only demonstration, `python3 examples/proxy/mock_upstreams.py` start
 two synthetic servers with unrelated auth headers and bases. It prints their
 nonsecret fixture credentials; use UI-managed routes to connect them. No provider
 credentials, billable calls or registry access are needed.
+
+For source-level browser acceptance against an already running isolated fixture,
+`scripts/proxy_passkey_smoke.sh --help` describes a reusable URL/private-state/
+secret-file driven Chromium virtual-WebAuthn smoke. Its `enroll`, `restart` and
+`recovery` phases require operator-controlled server lifecycle. It keeps HTTPS
+verification enabled and never installs trust or starts/stops the server. Optional
+synthetic route/caller-file inputs check machine-only forwarding. Use disposable
+fixtures only; saved browser cookies and virtual private credentials are private
+test artifacts, not production backup material.

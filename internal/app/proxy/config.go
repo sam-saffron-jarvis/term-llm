@@ -10,7 +10,6 @@ import (
 	"net/netip"
 	"net/url"
 	"os"
-	"path/filepath"
 	"regexp"
 	"sort"
 	"strconv"
@@ -206,9 +205,9 @@ func fileConfig(path string) (Config, error) {
 	}
 	return decodeConfig(b)
 }
-func resolveSecrets(c Config, stored map[string]material, adminFile string, fileMode bool) (map[string]material, error) {
+func resolveSecrets(c Config, stored map[string]material, adminFile string, fileMode bool, protected ...string) (map[string]material, error) {
 	out := make(map[string]material)
-	adminInfo, _ := os.Stat(adminFile)
+	protected = append(protected, adminFile)
 	for name, ref := range c.Secrets {
 		if !slug.MatchString(name) {
 			return nil, fmt.Errorf("invalid secret name")
@@ -228,13 +227,8 @@ func resolveSecrets(c Config, stored map[string]material, adminFile string, file
 				return nil, fmt.Errorf("file secret references are operator-only")
 			}
 			info, e := os.Stat(ref.File)
-			if e != nil || adminInfo == nil || os.SameFile(adminInfo, info) {
+			if e != nil || forbiddenSecretFile(ref.File, info, protected) {
 				return nil, fmt.Errorf("secret file unavailable or forbidden")
-			}
-			abs, _ := filepath.Abs(ref.File)
-			a, _ := filepath.Abs(adminFile)
-			if abs == a {
-				return nil, fmt.Errorf("admin credential cannot be an upstream secret")
 			}
 			b, e := privateFile(ref.File, 16<<10)
 			if e != nil {

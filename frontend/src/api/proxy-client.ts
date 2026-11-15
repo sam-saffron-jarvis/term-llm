@@ -1,3 +1,27 @@
+import type {
+  SerializedPublicKeyCredential,
+  WebAuthnCreationWireOptions,
+  WebAuthnRequestWireOptions,
+} from '../hub/domain/types';
+
+export interface ProxyAuthStatus {
+  auth: 'passkey' | 'token';
+  setup_required: boolean;
+  bootstrap_available: boolean;
+  recovery_available: boolean;
+  bootstrap_verified: boolean;
+  recovery_verified: boolean;
+  csrf: string;
+  origin: string;
+}
+export interface ProxyCredential {
+  id: string;
+  name: string;
+  created_at: string;
+  last_used_at?: string;
+}
+export type Enrollment = 'bootstrap' | 'recovery' | 'enroll';
+export type Assertion = 'login' | 'reauth';
 export interface ProxyRoute {
   name: string;
   local_prefix: string;
@@ -22,6 +46,7 @@ export interface ProxyCaller {
   grants: string[];
 }
 export interface ProxyState {
+  auth: 'passkey' | 'token';
   mode: 'ui' | 'file';
   revision: number;
   routes: ProxyRoute[];
@@ -129,7 +154,8 @@ export class ProxyClient {
       // Never echo arbitrary response bodies: a failed write may contain a credential.
       const messages: Record<number, string> = {
         400: 'Invalid input. Check the fields and try again.',
-        401: 'Please sign in with the proxy administrator token.',
+        401: 'Please sign in to proxy administration.',
+        429: 'Too many attempts. Wait before trying again.',
         403: 'Not authorized. Refresh your session and try again.',
         409: 'Conflict: configuration changed, is file-managed, or this secret is still referenced. Refresh state before retrying.',
       };
@@ -144,6 +170,36 @@ export class ProxyClient {
     if (response.status === 204) return undefined as T;
     const raw = await response.text();
     return (raw ? JSON.parse(raw) : undefined) as T;
+  }
+  async authStatus(): Promise<ProxyAuthStatus> {
+    const status = await this.request<ProxyAuthStatus>('auth/status');
+    this.csrf = status.csrf;
+    return status;
+  }
+  verifySecret(kind: 'bootstrap' | 'recovery', token: string): Promise<void> {
+    return this.request(`auth/${kind}/verify`, 'POST', { token });
+  }
+  beginEnrollment(kind: Enrollment, name: string): Promise<WebAuthnCreationWireOptions> {
+    return this.request(`auth/${kind}/begin`, 'POST', { name });
+  }
+  beginAssertion(kind: Assertion): Promise<WebAuthnRequestWireOptions> {
+    return this.request(`auth/${kind}/begin`, 'POST', {});
+  }
+  async finishPasskey(
+    kind: Enrollment | Assertion,
+    credential: SerializedPublicKeyCredential,
+  ): Promise<void> {
+    const result = await this.request<{ csrf: string }>(`auth/${kind}/finish`, 'POST', credential);
+    this.csrf = result.csrf;
+  }
+  credentials(): Promise<{ credentials: ProxyCredential[]; sessions: number }> {
+    return this.request('auth/credentials');
+  }
+  deleteCredential(id: string): Promise<void> {
+    return this.request('auth/credentials', 'DELETE', { id });
+  }
+  revokeSessions(): Promise<void> {
+    return this.request('auth/sessions/revoke', 'POST', {});
   }
   async state(): Promise<ProxyState> {
     const state = await this.request<ProxyState>('state');

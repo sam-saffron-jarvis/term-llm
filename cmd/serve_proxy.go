@@ -20,9 +20,12 @@ func newServeProxyCommand() *cobra.Command {
 	opts := appproxy.Options{}
 	c := &cobra.Command{Use: "proxy", Short: "Run a standalone configuration-driven credential proxy", Args: cobra.NoArgs, Annotations: map[string]string{"isolated-startup": "true"}, PersistentPreRunE: proxyPreRun, RunE: func(c *cobra.Command, _ []string) error { return appproxy.Run(c.Context(), opts, c.OutOrStdout()) }}
 	c.Flags().StringVar(&opts.StateDir, "state-dir", "", "Private proxy state directory (required; not agent state)")
-	c.Flags().StringVar(&opts.AdminTokenFile, "admin-token-file", "", "Private file containing a strong separate admin token (required)")
+	c.Flags().StringVar(&opts.Auth, "auth", "passkey", "Browser admin authentication: passkey or token (explicit legacy/local mode)")
+	c.Flags().StringVar(&opts.PasskeyBootstrapTokenFile, "passkey-bootstrap-token-file", "", "Private one-use first-passkey enrollment secret file")
+	c.Flags().StringVar(&opts.PasskeyRecoveryTokenFile, "passkey-recovery-token-file", "", "Private one-use passkey recovery secret file (existing enrollment only)")
+	c.Flags().StringVar(&opts.AdminTokenFile, "admin-token-file", "", "Private administrator token file (only with --auth token)")
 	c.Flags().StringVar(&opts.ConfigFile, "config", "", "Operator-owned route YAML; omit for editable UI-managed routes")
-	c.Flags().StringVar(&opts.PublicURL, "public-url", "", "HTTPS admin origin behind a trusted reverse proxy")
+	c.Flags().StringVar(&opts.PublicURL, "public-url", "", "Exact browser HTTPS origin behind external TLS (required for passkeys; http://localhost allowed for development)")
 	c.Flags().StringVar(&opts.Host, "host", "127.0.0.1", "Listen host")
 	c.Flags().IntVar(&opts.Port, "port", 8082, "Listen port")
 	c.Flags().IntVar(&opts.MaxConcurrent, "max-concurrent", 64, "Maximum active forwarding requests (no queue)")

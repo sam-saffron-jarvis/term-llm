@@ -1,12 +1,24 @@
-import { ProxyAPIError, ProxyClient, type ProxyState } from '../src/api/proxy-client';
+import { browserPasskeyPlatform, type PasskeyPlatform } from '../src/hub/platform/passkeys';
+import { passkeyLogin, passkeysView } from './passkeys';
+import {
+  ProxyAPIError,
+  ProxyClient,
+  type ProxyState,
+  type ProxyAuthStatus,
+} from '../src/api/proxy-client';
 import { actions, button, card, el, field, input, submit, type UIContext } from './dom';
 import { routesView } from './routes';
 import { callersView, secretsView } from './security';
 import { requestsView } from './requests';
 
-type Tab = 'Routes' | 'Secrets' | 'Callers' | 'Requests';
-export function mountProxy(root: HTMLElement, api = new ProxyClient()): () => void {
+type Tab = 'Routes' | 'Secrets' | 'Callers' | 'Requests' | 'Passkeys';
+export function mountProxy(
+  root: HTMLElement,
+  api = new ProxyClient(),
+  platform: PasskeyPlatform = browserPasskeyPlatform(),
+): () => void {
   let state: ProxyState | undefined;
+  let authStatus: ProxyAuthStatus | undefined;
   let tab: Tab = 'Routes';
   let secretOrigin: string | undefined;
   let tokenProtected = false;
@@ -98,6 +110,15 @@ export function mountProxy(root: HTMLElement, api = new ProxyClient()): () => vo
           ++epoch;
           state = undefined;
           tokenProtected = false;
+          tokenPending = false;
+          authStatus = undefined;
+          tools.replaceChildren();
+          content.replaceChildren(el('p', 'Loading sign in…'));
+          try {
+            authStatus = await api.authStatus();
+          } catch {
+            // No fallback when authentication status is unavailable.
+          }
           login();
         }
         status.textContent =
@@ -131,8 +152,41 @@ export function mountProxy(root: HTMLElement, api = new ProxyClient()): () => vo
     (row?.querySelector('h2') ?? content.querySelector('h2'))?.focus();
   }
   function login() {
+    if (disposed) return;
+    tab = 'Routes';
     tools.replaceChildren();
     mode.textContent = 'Administration';
+    if (authStatus?.auth === 'passkey') {
+      content.replaceChildren(
+        passkeyLogin(
+          authStatus,
+          api,
+          context,
+          async () => {
+            await context.refresh();
+            context.announce('Signed in.');
+          },
+          async () => {
+            authStatus = await api.authStatus();
+            login();
+          },
+          platform,
+        ),
+      );
+      focus();
+      return;
+    }
+    if (authStatus?.auth !== 'token') {
+      content.replaceChildren(
+        card(
+          'Sign in unavailable',
+          button('Retry', () => {
+            void context.run(start);
+          }),
+        ),
+      );
+      return;
+    }
     const token = input('', 'password');
     token.required = true;
     token.autocomplete = 'off';
@@ -165,7 +219,10 @@ export function mountProxy(root: HTMLElement, api = new ProxyClient()): () => vo
     mode.textContent = `${snapshot.mode === 'file' ? 'File-managed' : 'UI-managed'} · Revision ${snapshot.revision}`;
     const nav = el('nav');
     nav.setAttribute('aria-label', 'Proxy administration');
-    for (const name of ['Routes', 'Secrets', 'Callers', 'Requests'] as const) {
+    const tabs: Tab[] = ['Routes', 'Secrets', 'Callers', 'Requests'];
+    if (snapshot.auth === 'passkey') tabs.push('Passkeys');
+    if (!tabs.includes(tab)) tab = 'Routes';
+    for (const name of tabs) {
       const item = button(name, () => context.navigate(name));
       if (name === tab) item.setAttribute('aria-current', 'page');
       nav.append(item);
@@ -184,7 +241,13 @@ export function mountProxy(root: HTMLElement, api = new ProxyClient()): () => vo
         ++epoch;
         state = undefined;
         tokenProtected = false;
-        login();
+        authStatus = undefined;
+        tools.replaceChildren();
+        try {
+          authStatus = await api.authStatus();
+        } finally {
+          login();
+        }
         context.announce('Signed out.');
       }, logout);
     });
@@ -215,11 +278,22 @@ export function mountProxy(root: HTMLElement, api = new ProxyClient()): () => vo
       Secrets: () => secretsView(snapshot, api, context, origin),
       Callers: () => callersView(snapshot, api, context),
       Requests: () => requestsView(snapshot, api, context),
+      Passkeys: () => passkeysView(api, context, platform),
     };
     content.replaceChildren(nav, views[tab]());
   }
   content.append(el('p', 'Loading proxy state…'));
-  void context.run(() => context.refresh());
+  async function start() {
+    try {
+      authStatus = await api.authStatus();
+    } catch (error) {
+      authStatus = undefined;
+      login();
+      throw error;
+    }
+    if (!disposed) await context.refresh();
+  }
+  void context.run(start);
   return () => {
     disposed = true;
     ++epoch;

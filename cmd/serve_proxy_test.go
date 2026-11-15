@@ -52,3 +52,33 @@ func TestProxyCommandIsolationAndHealth(t *testing.T) {
 		})
 	}
 }
+
+func TestProxyPasskeyFlagsAndExplicitTokenMode(t *testing.T) {
+	c := newServeProxyCommand()
+	if got := c.Flags().Lookup("auth").DefValue; got != "passkey" {
+		t.Fatalf("auth default = %q", got)
+	}
+	for _, name := range []string{"public-url", "passkey-bootstrap-token-file", "passkey-recovery-token-file", "admin-token-file"} {
+		if c.Flags().Lookup(name) == nil {
+			t.Fatalf("missing flag %s", name)
+		}
+	}
+	for _, test := range []struct {
+		args []string
+		want string
+	}{
+		{[]string{"--state-dir", t.TempDir(), "--admin-token-file", "not-read"}, "requires explicit --auth token"},
+		{[]string{"--state-dir", t.TempDir(), "--auth", "token"}, "--admin-token-file is required"},
+		{[]string{"--state-dir", t.TempDir(), "--public-url", "https://proxy.example.test/custom/"}, "without a mount path"},
+	} {
+		root := &cobra.Command{Use: "test"}
+		root.SetContext(context.Background())
+		root.AddCommand(newServeProxyCommand())
+		root.SetArgs(append([]string{"proxy"}, test.args...))
+		root.SetOut(&bytes.Buffer{})
+		root.SetErr(&bytes.Buffer{})
+		if err := root.Execute(); err == nil || !strings.Contains(err.Error(), test.want) {
+			t.Fatalf("%v: %v", test.args, err)
+		}
+	}
+}

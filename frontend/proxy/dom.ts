@@ -74,7 +74,10 @@ export interface UIContext {
   run: (action: () => Promise<void>, source?: HTMLElement) => Promise<boolean>;
   refresh: (focusKey?: string) => Promise<void>;
   announce: (message: string) => void;
-  navigate: (tab: 'Routes' | 'Secrets' | 'Callers' | 'Requests', origin?: string) => void;
+  navigate: (
+    tab: 'Routes' | 'Secrets' | 'Callers' | 'Requests' | 'Passkeys',
+    origin?: string,
+  ) => void;
   protectToken: (shown: boolean, pending?: boolean) => void;
 }
 export function submit(

@@ -223,12 +223,27 @@ func NewCeremonies(now func() time.Time, random io.Reader) *Ceremonies {
 	return &Ceremonies{now: now, random: random, records: map[[32]byte]*ceremonyRecord{}, peerCounts: map[string]int{}}
 }
 func (c *Ceremonies) Create(kind CeremonyKind, peer, grantID, sessionID, meta string, userHandle []byte, data webauthn.SessionData) (Ceremony, error) {
+	return c.create(kind, peer, grantID, sessionID, meta, userHandle, data, false)
+}
+
+// CreateReplacingOldest admits a new ceremony at capacity by evicting the oldest
+// pending ceremony for that peer (or globally if only the global bound is full).
+// Use only with a dedicated registry for unauthenticated, restartable ceremonies;
+// never mix protected session/grant ceremonies into that registry. All normal
+// one-use, expiry and binding checks remain unchanged. Create keeps its original
+// fail-at-capacity behavior for every existing caller.
+func (c *Ceremonies) CreateReplacingOldest(kind CeremonyKind, peer, grantID, sessionID, meta string, userHandle []byte, data webauthn.SessionData) (Ceremony, error) {
+	return c.create(kind, peer, grantID, sessionID, meta, userHandle, data, true)
+}
+
+func (c *Ceremonies) create(kind CeremonyKind, peer, grantID, sessionID, meta string, userHandle []byte, data webauthn.SessionData, replace bool) (Ceremony, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	now := c.now().UTC()
 	c.prune(now)
 	peer = normalizePeer(peer)
-	if len(c.records) >= MaxCeremonies || c.peerCounts[peer] >= MaxCeremoniesPerPeer {
+	full := len(c.records) >= MaxCeremonies || c.peerCounts[peer] >= MaxCeremoniesPerPeer
+	if full && !replace {
 		return Ceremony{}, ErrCapacity
 	}
 	token, err := randomToken(c.random, 32)
@@ -239,6 +254,9 @@ func (c *Ceremonies) Create(kind CeremonyKind, peer, grantID, sessionID, meta st
 	if err != nil {
 		return Ceremony{}, err
 	}
+	if full {
+		c.evictOldest(peer, c.peerCounts[peer] >= MaxCeremoniesPerPeer)
+	}
 	x := Ceremony{ID: id, CookieToken: token, Peer: peer, Kind: kind, GrantID: grantID, SessionID: sessionID, Meta: meta, UserHandle: append([]byte(nil), userHandle...), Data: data, ExpiresAt: now.Add(CeremonyLifetime)}
 	h := sha256.Sum256([]byte(token))
 	stored := x
@@ -247,6 +265,24 @@ func (c *Ceremonies) Create(kind CeremonyKind, peer, grantID, sessionID, meta st
 	c.peerCounts[peer]++
 	return x, nil
 }
+
+// Caller holds mu. The map scan is bounded by MaxCeremonies.
+func (c *Ceremonies) evictOldest(peer string, samePeer bool) {
+	var oldest *ceremonyRecord
+	var key [32]byte
+	for h, record := range c.records {
+		if samePeer && record.Peer != peer {
+			continue
+		}
+		if oldest == nil || record.ExpiresAt.Before(oldest.ExpiresAt) {
+			oldest, key = record, h
+		}
+	}
+	if oldest != nil {
+		c.delete(key, oldest)
+	}
+}
+
 func (c *Ceremonies) Consume(token string, kind CeremonyKind, grantID, sessionID string) (Ceremony, error) {
 	h := sha256.Sum256([]byte(token))
 	c.mu.Lock()

@@ -5,4 +5,4 @@ COPY --chmod=0555 linux_${TARGETARCH}/term-llm /usr/local/bin/term-llm
 USER 65532:65532
 EXPOSE 8082
 ENTRYPOINT ["/usr/local/bin/term-llm", "serve", "proxy"]
-CMD ["--host", "0.0.0.0", "--port", "8082", "--state-dir", "/state", "--admin-token-file", "/run/secrets/proxy_admin"]
+CMD ["--host", "0.0.0.0", "--port", "8082", "--state-dir", "/state"]

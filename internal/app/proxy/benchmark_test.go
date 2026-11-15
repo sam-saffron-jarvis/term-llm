@@ -37,7 +37,7 @@ func BenchmarkForward(b *testing.B) {
 			if err := os.WriteFile(admin, bytes.Repeat([]byte("a"), 64), 0600); err != nil {
 				b.Fatal(err)
 			}
-			s, err := Open(Options{StateDir: filepath.Join(dir, "state"), AdminTokenFile: admin})
+			s, err := Open(Options{Auth: "token", StateDir: filepath.Join(dir, "state"), AdminTokenFile: admin})
 			if err != nil {
 				b.Fatal(err)
 			}

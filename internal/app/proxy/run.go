@@ -30,7 +30,11 @@ func Run(ctx context.Context, opts Options, out io.Writer) error {
 	server := &http.Server{Handler: s, ReadHeaderTimeout: 15 * time.Second, IdleTimeout: 90 * time.Second, MaxHeaderBytes: 64 << 10, BaseContext: func(net.Listener) context.Context { return serving }}
 	done := make(chan error, 1)
 	go func() { done <- server.Serve(listener) }()
-	fmt.Fprintf(out, "Credential proxy ready at http://%s/_proxy/ (%s mode)\n", listener.Addr(), map[bool]string{true: "operator-file", false: "UI-managed"}[opts.ConfigFile != ""])
+	adminURL := "http://" + listener.Addr().String() + "/_proxy/"
+	if s.opts.PublicURL != "" {
+		adminURL = s.opts.PublicURL + "/_proxy/"
+	}
+	fmt.Fprintf(out, "Credential proxy ready at %s (%s mode; %s admin; HTTP backend %s)\n", adminURL, map[bool]string{true: "operator-file", false: "UI-managed"}[opts.ConfigFile != ""], s.opts.Auth, listener.Addr())
 	tick := time.NewTicker(time.Minute)
 	defer tick.Stop()
 	for {

@@ -275,11 +275,11 @@ func TestProductionBundleSizeBudgets(t *testing.T) {
 		// retain modest gzip headroom for the updated runtime and bundler.
 		"dist/hub.js":  {raw: 107_500, gzip: 35_500},
 		"dist/hub.css": {raw: 20_500, gzip: 5_500},
-		// Accepted proxy refinements add the caller grant editor, show-once token
-		// guards, contextual onboarding/validation, and accessible inline request
-		// details. Observed final JS is ~29.8 kB raw /11.4 kB gzip; retain a
-		// bounded 12 kB ceiling. The separate +1% whole-binary gate still applies.
-		"dist/proxy.js": {raw: 35_000, gzip: 12_000},
+		// Complete passkey administration adds bootstrap/recovery, credential/session
+		// management and the existing shared browser WebAuthn codec. The reviewed
+		// bundle is 37.6/13.9 kB raw/gzip; retain bounded proxy-only headroom.
+		// Whole-feature matched builds remain below the requested +1% binary cap.
+		"dist/proxy.js": {raw: 40_000, gzip: 15_000},
 		// Actual Opus frame review required primary actions, aligned filters,
 		// route authority badges, compact request rows and usable mobile details.
 		// Those styles measure 6.3/2.03 kB raw/gzip (the initial unreviewed UI

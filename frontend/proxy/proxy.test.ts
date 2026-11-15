@@ -27,6 +27,7 @@ const route: ProxyRoute = {
 };
 function state(overrides: Partial<ProxyState> = {}): ProxyState {
   return {
+    auth: 'token',
     mode: 'ui',
     revision: 7,
     routes: [],
@@ -39,6 +40,16 @@ function state(overrides: Partial<ProxyState> = {}): ProxyState {
 const disposals: (() => void)[] = [];
 function setup(snapshot = state()) {
   const api = new ProxyClient(vi.fn());
+  vi.spyOn(api, 'authStatus').mockResolvedValue({
+    auth: 'token',
+    setup_required: false,
+    bootstrap_available: false,
+    recovery_available: false,
+    bootstrap_verified: false,
+    recovery_verified: false,
+    csrf: 'preauth',
+    origin: 'https://proxy.example',
+  });
   vi.spyOn(api, 'state').mockResolvedValue(snapshot);
   const root = document.createElement('div');
   document.body.append(root);
