@@ -12,6 +12,10 @@ test('creates a Dracula workspace, manages extensions, and repairs a broken them
   const configPath = process.env.TERM_LLM_EXTENSION_CONFIG!;
   const mainConfigPath = process.env.TERM_LLM_EXTENSION_MAIN_CONFIG!;
   const mainConfig = await readFile(mainConfigPath, 'utf8');
+  const capture = async (name: string) => {
+    if (process.env.TERM_LLM_E2E_ARTIFACTS === 'off') return;
+    await page.screenshot({ path: testInfo.outputPath(name), fullPage: true });
+  };
   const api = async (route: string, body?: unknown) => {
     const response =
       body === undefined
@@ -24,7 +28,7 @@ test('creates a Dracula workspace, manages extensions, and repairs a broken them
   await api('config', { enabled: [], revision: initial.config_revision });
   await page.goto('./');
   await expect(page.getByRole('textbox', { name: 'Message' })).toBeVisible();
-  await page.screenshot({ path: testInfo.outputPath('01-default.png'), fullPage: true });
+  await capture('01-default.png');
   if (!(await page.locator('#settingsBtn').isVisible()))
     await page.getByRole('button', { name: 'Open sidebar' }).click();
   await page.locator('#settingsBtn').click();
@@ -40,16 +44,13 @@ test('creates a Dracula workspace, manages extensions, and repairs a broken them
   ]);
   if (testInfo.project.name === 'desktop')
     expect((await settings.boundingBox())!.width).toBeGreaterThan(700);
-  await page.screenshot({ path: testInfo.outputPath('01-settings-model.png'), fullPage: true });
+  await capture('01-settings-model.png');
   await settings.getByRole('tab', { name: 'Extensions', exact: true }).click();
   await expect(settings.getByText('Dracula', { exact: true })).toBeVisible();
   expect(await settings.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(
     true,
   );
-  await page.screenshot({
-    path: testInfo.outputPath('01-settings-extensions.png'),
-    fullPage: true,
-  });
+  await capture('01-settings-extensions.png');
   await page.getByRole('button', { name: 'Close Settings', exact: true }).click();
 
   // Act like the extension builder: files were installed in the isolated extension root,
@@ -93,7 +94,7 @@ test('creates a Dracula workspace, manages extensions, and repairs a broken them
   await page
     .getByRole('textbox', { name: 'Message' })
     .fill('My midnight workspace: calm colors, clear code, and a little room to think.');
-  await page.screenshot({ path: testInfo.outputPath('02-dracula.png'), fullPage: true });
+  await capture('02-dracula.png');
 
   if (!(await page.locator('#settingsBtn').isVisible()))
     await page.getByRole('button', { name: 'Open sidebar' }).click();
@@ -102,7 +103,7 @@ test('creates a Dracula workspace, manages extensions, and repairs a broken them
   const section = page.getByRole('region', { name: 'Extensions', exact: true });
   await expect(section.getByText('Dracula', { exact: true })).toBeVisible();
   await section.scrollIntoViewIfNeeded();
-  await page.screenshot({ path: testInfo.outputPath('03-interface-settings.png'), fullPage: true });
+  await capture('03-interface-settings.png');
   await section.getByRole('button', { name: /Make UI Mine/ }).click();
   await expect(page.getByRole('textbox', { name: 'Message' })).toBeVisible();
 
