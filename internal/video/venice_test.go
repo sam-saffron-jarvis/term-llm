@@ -39,13 +39,13 @@ func TestValidateEnums(t *testing.T) {
 	if err := ValidateDuration("5s"); err != nil {
 		t.Fatalf("ValidateDuration(5s): %v", err)
 	}
-	if err := ValidateDuration("3s"); err == nil {
+	if err := ValidateDuration("-3s"); err == nil {
 		t.Fatal("expected invalid duration error")
 	}
 	if err := ValidateResolution("720p"); err != nil {
 		t.Fatalf("ValidateResolution(720p): %v", err)
 	}
-	if err := ValidateResolution("4k"); err == nil {
+	if err := ValidateResolution("bad"); err == nil {
 		t.Fatal("expected invalid resolution error")
 	}
 	if err := ValidateAspectRatio("16:9"); err != nil {
@@ -113,7 +113,7 @@ func TestVeniceProviderQuoteQueueRetrieve(t *testing.T) {
 		Model:       veniceDefaultImageModel,
 		Duration:    "5s",
 		AspectRatio: "16:9",
-		Resolution:  "720p",
+		Resolution:  ptr("720p"),
 	})
 	if err != nil {
 		t.Fatalf("Quote error: %v", err)
@@ -127,7 +127,7 @@ func TestVeniceProviderQuoteQueueRetrieve(t *testing.T) {
 		Prompt:      "romeo being adorable",
 		Duration:    "5s",
 		AspectRatio: "16:9",
-		Resolution:  "720p",
+		Resolution:  ptr("720p"),
 		ImagePath:   "romeo.png",
 		ImageData:   []byte{0x89, 'P', 'N', 'G'},
 		ReferenceImages: []InputImage{
@@ -148,7 +148,7 @@ func TestVeniceProviderQuoteQueueRetrieve(t *testing.T) {
 		t.Fatal("expected queue request to include reference_image_urls")
 	}
 
-	processing, err := provider.Retrieve(context.Background(), *job, true, false)
+	processing, err := provider.Retrieve(context.Background(), *job, false, false)
 	if err != nil {
 		t.Fatalf("Retrieve processing error: %v", err)
 	}
@@ -156,7 +156,7 @@ func TestVeniceProviderQuoteQueueRetrieve(t *testing.T) {
 		t.Fatalf("processing response = %+v", processing)
 	}
 
-	complete, err := provider.Retrieve(context.Background(), *job, true, false)
+	complete, err := provider.Retrieve(context.Background(), *job, false, false)
 	if err != nil {
 		t.Fatalf("Retrieve complete error: %v", err)
 	}
@@ -170,3 +170,5 @@ func TestVeniceProviderQuoteQueueRetrieve(t *testing.T) {
 		t.Fatalf("unexpected data %q", string(complete.Data))
 	}
 }
+
+func ptr[T any](v T) *T { return &v }

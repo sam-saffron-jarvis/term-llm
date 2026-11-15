@@ -24,6 +24,15 @@ type ImageModelConstraints struct {
 	Resolutions []string `json:"resolutions,omitempty"`
 }
 
+// MediaModelMetadata holds typed media-only catalog details and per-entry freshness.
+type MediaModelMetadata struct {
+	Privacy     string    `json:"privacy,omitempty"`
+	ModelType   string    `json:"model_type,omitempty"`
+	Durations   []string  `json:"durations,omitempty"`
+	Resolutions []string  `json:"resolutions,omitempty"`
+	FetchedAt   time.Time `json:"fetched_at"`
+}
+
 type CachedModel struct {
 	ID                string           `json:"id"`
 	Type              string           `json:"type,omitempty"`
@@ -41,6 +50,7 @@ type CachedModel struct {
 	Protocol          string           `json:"protocol,omitempty"`
 	Deprecated        bool             `json:"deprecated,omitempty"`
 
+	Media            *MediaModelMetadata    `json:"media,omitempty"`
 	ImageConstraints *ImageModelConstraints `json:"image_constraints,omitempty"`
 }
 
