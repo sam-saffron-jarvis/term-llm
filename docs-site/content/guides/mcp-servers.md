@@ -22,7 +22,7 @@ term-llm mcp add https://developers.openai.com/mcp
 # Add a bundled remote server
 term-llm mcp add exa                     # Exa search/fetch MCP
 
-# Use with any command
+# Use with ask, exec, or chat
 term-llm exec --mcp playwright "take a screenshot of google.com"
 term-llm ask --mcp github "list my open PRs"
 term-llm chat --mcp playwright,filesystem
@@ -313,19 +313,20 @@ Session routes return `409` while that session is generating a response. A sign-
 
 ### Using MCP Tools
 
-The `--mcp` flag works with all commands (`ask`, `exec`, `edit`, `chat`):
+The `--mcp` flag makes MCP tools available to `ask`, `exec`, and `chat`:
 
 ```bash
 # Single server
 term-llm ask --mcp fetch "summarize https://example.com"
 term-llm exec --mcp playwright "take a screenshot of google.com"
-term-llm edit --mcp github -f main.go "update based on latest API"
 
 # Multiple servers (comma-separated)
 term-llm chat --mcp playwright,filesystem,github
 
 # In chat, open the MCP picker with Ctrl+T; press Enter to toggle a server.
 ```
+
+`edit` currently accepts `--mcp` and starts the selected servers, but does not expose their tools to its editing model. For MCP-assisted file edits, use `chat` or `ask` with an agent that has file-editing tools, such as `--agent developer`.
 
 ### Running Tools Directly
 
