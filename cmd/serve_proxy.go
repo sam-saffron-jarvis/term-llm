@@ -1,8 +1,6 @@
 package cmd
 
 import (
-	"fmt"
-	"os"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -11,10 +9,7 @@ import (
 
 func init() { serveCmd.AddCommand(newServeProxyCommand()) }
 func proxyPreRun(cmd *cobra.Command, args []string) error {
-	if debugRaw || cpuProfile != "" || memProfile != "" || pprofFlag != "" || os.Getenv("TERM_LLM_PPROF") != "" {
-		return fmt.Errorf("standalone credential proxy refuses --debug-raw, CPU/heap profiles and TERM_LLM_PPROF/--pprof")
-	}
-	return nil
+	return appproxy.ValidateProfiling(debugRaw, cpuProfile, memProfile, pprofFlag)
 }
 func newServeProxyCommand() *cobra.Command {
 	opts := appproxy.Options{}

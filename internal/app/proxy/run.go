@@ -6,11 +6,21 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"os"
 	"os/signal"
 	"strconv"
 	"syscall"
 	"time"
 )
+
+// ValidateProfiling rejects diagnostics that could expose proxied credentials.
+// Call it before starting any profiling or raw logging.
+func ValidateProfiling(debugRaw bool, cpuProfile, memProfile, pprof string) error {
+	if debugRaw || cpuProfile != "" || memProfile != "" || pprof != "" || os.Getenv("TERM_LLM_PPROF") != "" {
+		return fmt.Errorf("standalone credential proxy refuses --debug-raw, CPU/heap profiles and TERM_LLM_PPROF/--pprof")
+	}
+	return nil
+}
 
 // Run starts only the proxy, without loading agent/provider configuration.
 func Run(ctx context.Context, opts Options, out io.Writer) error {
