@@ -142,16 +142,23 @@ func Fetch(ctx context.Context, provider string) (*Report, error) {
 // FetchWithAPIKey fetches live usage with an explicitly resolved
 // API key when the provider requires one. OAuth providers ignore apiKey.
 func FetchWithAPIKey(ctx context.Context, provider, apiKey string) (*Report, error) {
+	return FetchWithBaseURL(ctx, provider, apiKey, "")
+}
+
+// FetchWithBaseURL uses the inference API root for Grok and OpenCode Go usage.
+// ChatGPT usage is a separate wham account service, not the Codex API.
+func FetchWithBaseURL(ctx context.Context, provider, apiKey, baseURL string) (*Report, error) {
+	baseURL = strings.TrimRight(strings.TrimSpace(baseURL), "/")
 	switch strings.ToLower(strings.TrimSpace(provider)) {
 	case "chatgpt":
 		return fetchChatGPTProviderUsage(ctx)
 	case "grok":
-		return fetchGrokProviderUsage(ctx)
+		return fetchGrokProviderUsage(ctx, baseURL)
 	case "opencode-go":
 		if strings.TrimSpace(apiKey) == "" {
 			apiKey = os.Getenv("OPENCODE_API_KEY")
 		}
-		return fetchOpenCodeGoProviderUsage(ctx, apiKey)
+		return fetchOpenCodeGoProviderUsage(ctx, apiKey, baseURL)
 	default:
 		return nil, fmt.Errorf("live usage is not supported for provider %q", provider)
 	}
@@ -168,7 +175,11 @@ func fetchChatGPTProviderUsage(ctx context.Context) (*Report, error) {
 		}
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, chatGPTUsageURL, nil)
+	base, err := providerhttp.EnvBaseURL("CHATGPT_USAGE_BASE_URL", "https://chatgpt.com/backend-api")
+	if err != nil {
+		return nil, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/wham/usage", nil)
 	if err != nil {
 		return nil, fmt.Errorf("create ChatGPT usage request: %w", err)
 	}
@@ -204,7 +215,7 @@ func fetchChatGPTProviderUsage(ctx context.Context) (*Report, error) {
 	return normalizeChatGPTProviderUsage(decoded), nil
 }
 
-func fetchGrokProviderUsage(ctx context.Context) (*Report, error) {
+func fetchGrokProviderUsage(ctx context.Context, baseURL string) (*Report, error) {
 	creds, err := credentials.GetGrokCredentials()
 	if err != nil {
 		return nil, fmt.Errorf("load Grok credentials: %w (run 'term-llm auth login grok')", err)
@@ -215,7 +226,7 @@ func fetchGrokProviderUsage(ctx context.Context) (*Report, error) {
 		}
 	}
 
-	resp, err := requestGrokProviderUsage(ctx, creds)
+	resp, err := requestGrokProviderUsage(ctx, creds, baseURL)
 	if err != nil {
 		return nil, err
 	}
@@ -227,7 +238,7 @@ func fetchGrokProviderUsage(ctx context.Context) (*Report, error) {
 		return nil, fmt.Errorf("refresh rejected Grok credentials: %w", err)
 	}
 
-	resp, err = requestGrokProviderUsage(ctx, creds)
+	resp, err = requestGrokProviderUsage(ctx, creds, baseURL)
 	if err != nil {
 		return nil, err
 	}
@@ -246,8 +257,12 @@ func closeGrokUsageResponse(resp *http.Response) {
 	_ = resp.Body.Close()
 }
 
-func requestGrokProviderUsage(ctx context.Context, creds *credentials.GrokCredentials) (*http.Response, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, grokUsageURL, nil)
+func requestGrokProviderUsage(ctx context.Context, creds *credentials.GrokCredentials, baseURL string) (*http.Response, error) {
+	endpoint := grokUsageURL
+	if baseURL != "" {
+		endpoint = baseURL + "/billing?format=credits"
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
 		return nil, fmt.Errorf("create Grok usage request: %w", err)
 	}
@@ -427,12 +442,16 @@ func formatGrokUsageDollars(cents int64) string {
 	return "$" + formatGrokUsageDollarAmount(cents)
 }
 
-func fetchOpenCodeGoProviderUsage(ctx context.Context, apiKey string) (*Report, error) {
+func fetchOpenCodeGoProviderUsage(ctx context.Context, apiKey, baseURL string) (*Report, error) {
 	apiKey = strings.TrimSpace(apiKey)
 	if apiKey == "" {
 		return nil, fmt.Errorf("OpenCode Go usage requires an API key (configure providers.opencode-go.api_key or set OPENCODE_API_KEY)")
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, openCodeGoUsageURL, nil)
+	endpoint := openCodeGoUsageURL
+	if baseURL != "" {
+		endpoint = baseURL + "/usage"
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
 		return nil, fmt.Errorf("create OpenCode Go usage request: %w", err)
 	}

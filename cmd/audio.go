@@ -159,7 +159,6 @@ func runAudio(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("unsupported audio provider %q (allowed: venice, gemini, elevenlabs)", providerName)
 	}
 }
-
 func runVeniceAudio(cmd *cobra.Command, cfg *config.Config, text string, temperature, topP *float64) error {
 	apiKey, err := config.ResolveFirstCredential(cfg.Audio.VeniceKey(), cfg.Image.VeniceKey())
 	if err != nil {
@@ -168,17 +167,18 @@ func runVeniceAudio(cmd *cobra.Command, cfg *config.Config, text string, tempera
 	if apiKey == "" {
 		return fmt.Errorf("VENICE_API_KEY not configured. Set environment variable or add to audio.venice.api_key in config")
 	}
-
 	model := firstNonEmpty(audioModel, cfg.Audio.Venice.Model, audio.DefaultModel)
 	voice := firstNonEmpty(audioVoice, cfg.Audio.Venice.Voice, audio.DefaultVoice)
 	format := firstNonEmpty(audioFormat, cfg.Audio.Venice.Format, audio.DefaultFormat)
 	if err := audio.ValidateFormat(format); err != nil {
 		return err
 	}
-
 	ctx, stop := signal.NotifyContext()
 	defer stop()
-	provider := audio.NewVeniceProvider(apiKey)
+	provider, err := audio.NewConfiguredVeniceProvider(cfg, apiKey)
+	if err != nil {
+		return fmt.Errorf("venice audio base_url: %w", err)
+	}
 	result, err := provider.Generate(ctx, audio.Request{
 		Input:          text,
 		Model:          model,
@@ -222,17 +222,18 @@ func runGeminiAudio(cmd *cobra.Command, cfg *config.Config, text string, tempera
 	if audioSpeed != 0 && audioSpeed != audio.DefaultSpeed {
 		return fmt.Errorf("Gemini TTS does not support --speed; use --prompt for pacing instructions")
 	}
-
 	model := firstNonEmpty(audioModel, cfg.Audio.Gemini.Model, config.DefaultAudioGeminiModel)
 	voice := firstNonEmpty(audioVoice, cfg.Audio.Gemini.Voice, config.DefaultAudioGeminiVoice)
 	format := firstNonEmpty(audioFormat, cfg.Audio.Gemini.Format, config.DefaultAudioGeminiFormat)
 	if err := audio.ValidateGeminiFormat(format); err != nil {
 		return err
 	}
-
 	ctx, stop := signal.NotifyContext()
 	defer stop()
-	provider := audio.NewGeminiProvider(apiKey)
+	provider, err := audio.NewConfiguredGeminiProvider(cfg, apiKey)
+	if err != nil {
+		return fmt.Errorf("gemini audio base_url: %w", err)
+	}
 	result, err := provider.Generate(ctx, audio.Request{
 		Input:          text,
 		Model:          model,
@@ -278,17 +279,18 @@ func runElevenLabsAudio(cmd *cobra.Command, cfg *config.Config, text string) err
 	if audioTemperature >= 0 || audioTopP >= 0 {
 		return fmt.Errorf("ElevenLabs TTS does not support --temperature or --top-p")
 	}
-
 	model := firstNonEmpty(audioModel, cfg.Audio.ElevenLabs.Model, config.DefaultAudioElevenLabsModel)
 	voice := firstNonEmpty(audioVoice, cfg.Audio.ElevenLabs.Voice, config.DefaultAudioElevenLabsVoice)
 	format := firstNonEmpty(audioFormat, cfg.Audio.ElevenLabs.Format, config.DefaultAudioElevenLabsFormat)
 	if err := audio.ValidateElevenLabsFormat(format); err != nil {
 		return err
 	}
-
 	ctx, stop := signal.NotifyContext()
 	defer stop()
-	provider := audio.NewElevenLabsProvider(apiKey)
+	provider, err := audio.NewConfiguredElevenLabsProvider(cfg, apiKey)
+	if err != nil {
+		return fmt.Errorf("elevenlabs audio base_url: %w", err)
+	}
 	result, err := provider.Generate(ctx, audio.Request{
 		Input:                          text,
 		Model:                          model,

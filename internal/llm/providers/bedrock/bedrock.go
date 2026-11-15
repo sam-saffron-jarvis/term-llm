@@ -119,6 +119,11 @@ func resolveBedrockAuth(region, profile, accessKey, secretKey, sessionToken, bea
 // headers are extra HTTP headers; anthropic-beta values are moved into the
 // request body as Bedrock requires, and the rest are SigV4-signed.
 func New(model, region, profile, accessKey, secretKey, sessionToken string, modelMap, headers map[string]string) (*Provider, error) {
+	return NewWithBaseURL(model, region, profile, accessKey, secretKey, sessionToken, modelMap, headers, "")
+}
+
+// NewWithBaseURL configures a custom Bedrock runtime API root.
+func NewWithBaseURL(model, region, profile, accessKey, secretKey, sessionToken string, modelMap, headers map[string]string, baseURL string) (*Provider, error) {
 	extraHeaders, err := anthropic.NewExtraHeaders(headers)
 	if err != nil {
 		return nil, err
@@ -141,6 +146,7 @@ func New(model, region, profile, accessKey, secretKey, sessionToken string, mode
 	}
 	inner := anthropic.NewTransportProvider(model, extraHeaders, &bedrockTransport{
 		region:      resolvedRegion,
+		baseURL:     strings.TrimRight(baseURL, "/"),
 		credentials: credentials,
 		bearerToken: bearerToken,
 		now:         time.Now,

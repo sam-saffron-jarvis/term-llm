@@ -139,3 +139,18 @@ func TestCopilotHTTPClientUsesHTTP2WithLargerIdlePool(t *testing.T) {
 		t.Fatalf("response protocol = %s, want HTTP/2", response.Proto)
 	}
 }
+
+func TestCopilotCustomBaseURLSurvivesTokenRefresh(t *testing.T) {
+	requests := stubCopilotSessionRefresh(t, "https://api.business.githubcopilot.com")
+	provider := NewCopilotProviderWithCreds(&credentials.CopilotCredentials{AccessToken: "oauth-token"}, "")
+	provider.SetBaseURL("https://gateway.example/proxy/v1///")
+	if err := provider.ensureValidSession(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if *requests != 1 {
+		t.Fatalf("token exchange requests = %d", *requests)
+	}
+	if provider.apiBaseURL != "https://gateway.example/proxy/v1" {
+		t.Fatalf("API root = %q", provider.apiBaseURL)
+	}
+}

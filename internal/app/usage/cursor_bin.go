@@ -19,6 +19,7 @@ import (
 
 	"github.com/spf13/pflag"
 	"github.com/term-llm/term-llm/internal/llm/providerusage"
+	"github.com/term-llm/term-llm/internal/providerhttp"
 )
 
 const cursorBinUsageURL = "https://api2.cursor.sh/aiserver.v1.DashboardService/GetCurrentPeriodUsage"
@@ -224,7 +225,15 @@ func runCursorUsageStatusCommand(ctx context.Context, binary string) ([]byte, er
 }
 
 func fetchCursorBinUsage(ctx context.Context, token string) (json.RawMessage, cursorBinUsageReport, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, cursorUsageEndpoint, strings.NewReader("{}"))
+	endpoint := cursorUsageEndpoint
+	if os.Getenv("CURSOR_USAGE_BASE_URL") != "" {
+		base, err := providerhttp.EnvBaseURL("CURSOR_USAGE_BASE_URL", "https://api2.cursor.sh")
+		if err != nil {
+			return nil, cursorBinUsageReport{}, err
+		}
+		endpoint = base + "/aiserver.v1.DashboardService/GetCurrentPeriodUsage"
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader("{}"))
 	if err != nil {
 		return nil, cursorBinUsageReport{}, fmt.Errorf("create Cursor usage API request: %w", err)
 	}

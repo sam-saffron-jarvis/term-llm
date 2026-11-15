@@ -3,6 +3,7 @@ package usage
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/term-llm/term-llm/internal/providerhttp"
 	"io"
 	"net/http"
 	"os"
@@ -14,9 +15,8 @@ import (
 )
 
 const (
-	liteLLMPricingURL = "https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json"
-	pricingCacheTTL   = 5 * time.Minute
-	tieredThreshold   = 200_000 // Token threshold for tiered pricing
+	pricingCacheTTL = 5 * time.Minute
+	tieredThreshold = 200_000 // Token threshold for tiered pricing
 )
 
 // ModelPricing contains pricing information for a model
@@ -414,7 +414,11 @@ func (p *PricingFetcher) fetch() error {
 	}
 
 	// Fetch from network
-	resp, err := p.httpClient.Get(liteLLMPricingURL)
+	base, err := providerhttp.EnvBaseURL("LITELLM_PRICING_BASE_URL", "https://raw.githubusercontent.com")
+	if err != nil {
+		return err
+	}
+	resp, err := p.httpClient.Get(base + "/BerriAI/litellm/main/model_prices_and_context_window.json")
 	if err != nil {
 		// Try disk cache even if stale
 		if data, err := os.ReadFile(cacheFile); err == nil {

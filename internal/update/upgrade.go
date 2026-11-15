@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/term-llm/term-llm/internal/providerhttp"
 	"io"
 	"os"
 	"path/filepath"
@@ -59,7 +60,11 @@ func RunUpgrade(ctx context.Context, currentVersion, targetVersion string, stdou
 
 	assetVersion := strings.TrimPrefix(targetTag, "v")
 	assetName := releaseArchiveName(assetVersion)
-	releaseURL := fmt.Sprintf("https://github.com/%s/%s/releases/download/%s", RepoOwner, RepoName, targetTag)
+	base, err := providerhttp.EnvBaseURL("TERM_LLM_RELEASE_BASE_URL", releaseBaseURL)
+	if err != nil {
+		return err
+	}
+	releaseURL := fmt.Sprintf("%s/%s/%s/releases/download/%s", base, RepoOwner, RepoName, targetTag)
 
 	tmpDir, err := os.MkdirTemp("", "term-llm-upgrade-*")
 	if err != nil {

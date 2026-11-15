@@ -46,13 +46,14 @@ var defaultHTTPClient = newStreamingHTTPClient()
 // OpenAICompatProvider implements Provider for OpenAI-compatible APIs
 // Used by Ollama, LM Studio, and other compatible servers.
 type OpenAICompatProvider struct {
-	baseURL string // Base URL - /chat/completions is appended
-	chatURL string // Full chat URL - used as-is (optional, overrides baseURL)
-	apiKey  string // Optional, most servers ignore it
-	model   string
-	effort  string // reasoning effort: "low", "medium", "high", "xhigh", or ""
-	name    string // Display name: "Ollama", "LM Studio", etc.
-	headers map[string]string
+	customBaseURL bool
+	baseURL       string // Base URL - /chat/completions is appended
+	chatURL       string // Full chat URL - used as-is (optional, overrides baseURL)
+	apiKey        string // Optional, most servers ignore it
+	model         string
+	effort        string // reasoning effort: "low", "medium", "high", "xhigh", or ""
+	name          string // Display name: "Ollama", "LM Studio", etc.
+	headers       map[string]string
 	// requestHeaders supplies per-request headers that are unknown when the
 	// provider is constructed (for example a gateway's per-conversation session
 	// attribution). Values here override the static headers above.
@@ -83,9 +84,9 @@ func NewOpenAICompatProviderFull(baseURL, chatURL, apiKey, model, name string, h
 	// Normalize baseURL - strip trailing slash and common endpoint paths
 	// This allows users to paste the full URL from documentation
 	if baseURL != "" {
-		baseURL = strings.TrimSuffix(baseURL, "/")
+		baseURL = strings.TrimRight(baseURL, "/")
 		baseURL = strings.TrimSuffix(baseURL, "/chat/completions")
-		baseURL = strings.TrimSuffix(baseURL, "/") // In case URL was .../v1/chat/completions
+		baseURL = strings.TrimRight(baseURL, "/") // In case URL was .../v1/chat/completions
 		// Local LLM servers (Ollama, LM Studio, vLLM, etc.) bind to 127.0.0.1
 		// (IPv4) by default. If the user passes "localhost", Go may resolve it to
 		// ::1 (IPv6) on dual-stack systems, causing connection refused even when

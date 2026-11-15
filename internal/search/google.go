@@ -16,9 +16,10 @@ import (
 
 // GoogleSearcher implements Searcher using Google Custom Search API.
 type GoogleSearcher struct {
-	client *http.Client
-	apiKey string
-	cx     string // Custom Search Engine ID
+	baseURL string
+	client  *http.Client
+	apiKey  string
+	cx      string // Custom Search Engine ID
 }
 
 func NewGoogleSearcher(apiKey, cx string, client *http.Client) *GoogleSearcher {
@@ -26,9 +27,10 @@ func NewGoogleSearcher(apiKey, cx string, client *http.Client) *GoogleSearcher {
 		client = &http.Client{Timeout: 30 * time.Second}
 	}
 	return &GoogleSearcher{
-		client: client,
-		apiKey: apiKey,
-		cx:     cx,
+		baseURL: "https://www.googleapis.com/customsearch/v1",
+		client:  client,
+		apiKey:  apiKey,
+		cx:      cx,
 	}
 }
 
@@ -65,7 +67,7 @@ func (g *GoogleSearcher) Search(ctx context.Context, query string, maxResults in
 	params.Set("q", query)
 	params.Set("num", strconv.Itoa(maxResults))
 
-	reqURL := "https://www.googleapis.com/customsearch/v1?" + params.Encode()
+	reqURL := g.baseURL + "?" + params.Encode()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
 	if err != nil {
 		return nil, err

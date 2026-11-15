@@ -78,6 +78,10 @@ func (p *GrokProvider) ListModels(ctx context.Context) ([]ModelInfo, error) {
 }
 
 func (p *GrokProvider) ListModelsWithFreshness(ctx context.Context) ([]ModelInfo, bool, error) {
+	if p.baseURL != "" {
+		models, err := p.fetchGrokModels(ctx)
+		return models, err == nil, err
+	}
 	if cache, err := loadGrokModelsCache(p.creds.AccountID); err == nil && time.Since(cache.FetchedAt) <= grokModelsCacheTTL {
 		return cache.Models, true, nil
 	}
@@ -104,7 +108,11 @@ func (p *GrokProvider) fetchGrokModels(ctx context.Context) ([]ModelInfo, error)
 		defer cancel()
 	}
 	for attempt := 0; attempt < 2; attempt++ {
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, grokModelsURL, nil)
+		endpoint := grokModelsURL
+		if p.baseURL != "" {
+			endpoint = p.baseURL + "/models"
+		}
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 		if err != nil {
 			return nil, err
 		}

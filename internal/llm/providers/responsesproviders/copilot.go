@@ -53,7 +53,8 @@ var copilotHTTPClient = newStreamingHTTPClient()
 type CopilotProvider struct {
 	creds              *credentials.CopilotCredentials
 	model              string
-	effort             string            // reasoning effort: "low", "medium", "high", "xhigh", or ""
+	effort             string // reasoning effort: "low", "medium", "high", "xhigh", or ""
+	overrideBaseURL    string
 	apiBaseURL         string            // Set from token exchange (business vs individual)
 	sessionToken       string            // Copilot session token (different from OAuth token)
 	sessionTokenExpiry time.Time         // When the session token expires
@@ -695,7 +696,9 @@ func (p *CopilotProvider) refreshSession(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	if tokenResp.Endpoints.API != "" {
+	if p.overrideBaseURL != "" {
+		p.apiBaseURL = p.overrideBaseURL
+	} else if tokenResp.Endpoints.API != "" {
 		p.apiBaseURL = tokenResp.Endpoints.API
 	} else {
 		p.apiBaseURL = copilotDefaultAPIURL
@@ -760,4 +763,12 @@ func (p *CopilotProvider) fetchCopilotTokenInfo(ctx context.Context) (*copilotSe
 	}
 
 	return &tokenResp, nil
+}
+
+// SetBaseURL overrides the inference API, not the GitHub token exchange.
+func (p *CopilotProvider) SetBaseURL(baseURL string) {
+	p.overrideBaseURL = strings.TrimRight(strings.TrimSpace(baseURL), "/")
+	if p.overrideBaseURL != "" {
+		p.apiBaseURL = p.overrideBaseURL
+	}
 }

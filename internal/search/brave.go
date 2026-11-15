@@ -16,8 +16,9 @@ import (
 
 // BraveSearcher implements Searcher using the Brave Search API.
 type BraveSearcher struct {
-	client *http.Client
-	apiKey string
+	baseURL string
+	client  *http.Client
+	apiKey  string
 }
 
 func NewBraveSearcher(apiKey string, client *http.Client) *BraveSearcher {
@@ -25,8 +26,9 @@ func NewBraveSearcher(apiKey string, client *http.Client) *BraveSearcher {
 		client = &http.Client{Timeout: 30 * time.Second}
 	}
 	return &BraveSearcher{
-		client: client,
-		apiKey: apiKey,
+		baseURL: "https://api.search.brave.com/res/v1",
+		client:  client,
+		apiKey:  apiKey,
 	}
 }
 
@@ -59,7 +61,7 @@ func (b *BraveSearcher) Search(ctx context.Context, query string, maxResults int
 	params.Set("q", query)
 	params.Set("count", strconv.Itoa(maxResults))
 
-	reqURL := "https://api.search.brave.com/res/v1/web/search?" + params.Encode()
+	reqURL := b.baseURL + "/web/search?" + params.Encode()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
 	if err != nil {
 		return nil, err

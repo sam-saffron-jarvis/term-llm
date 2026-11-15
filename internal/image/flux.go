@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
+	"strings"
 	"time"
 
 	"github.com/term-llm/term-llm/internal/config"
@@ -30,12 +32,14 @@ var (
 
 // FluxProvider implements ImageProvider using Black Forest Labs' Flux API
 type FluxProvider struct {
-	apiKey string
-	model  string // model override (empty = use defaults)
+	apiKey     string
+	model      string // model override (empty = use defaults)
+	baseURL    string
+	pinPolling bool // An explicit factory root pins API polling, even if equal to the default.
 }
 
 func NewFluxProvider(apiKey, model string) *FluxProvider {
-	return &FluxProvider{apiKey: apiKey, model: model}
+	return &FluxProvider{apiKey: apiKey, model: model, baseURL: fluxBaseURL}
 }
 
 func (p *FluxProvider) Name() string {
@@ -64,7 +68,7 @@ func (p *FluxProvider) Generate(ctx context.Context, req GenerateRequest) (*Imag
 	if model == "" {
 		model = fluxDefaultGenerateModel
 	}
-	endpoint := fluxBaseURL + "/" + model
+	endpoint := p.baseURL + "/" + url.PathEscape(model)
 
 	pollingURL, err := p.submitRequest(ctx, endpoint, genReq)
 	if err != nil {
@@ -99,7 +103,7 @@ func (p *FluxProvider) Edit(ctx context.Context, req EditRequest) (*ImageResult,
 	if model == "" {
 		model = fluxDefaultEditModel
 	}
-	endpoint := fluxBaseURL + "/" + model
+	endpoint := p.baseURL + "/" + url.PathEscape(model)
 
 	pollingURL, err := p.submitRequest(ctx, endpoint, editReq)
 	if err != nil {
@@ -123,7 +127,7 @@ func (p *FluxProvider) submitRequest(ctx context.Context, endpoint string, reqBo
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("x-key", p.apiKey)
 
-	resp, err := fluxHTTPClient.Do(httpReq)
+	resp, err := fluxAuthenticatedClient().Do(httpReq)
 	if err != nil {
 		return "", fmt.Errorf("request failed: %w", err)
 	}
@@ -143,7 +147,44 @@ func (p *FluxProvider) submitRequest(ctx context.Context, endpoint string, reqBo
 		return "", fmt.Errorf("failed to parse response: %w", err)
 	}
 
-	return taskResp.PollingURL, nil
+	return p.pollURL(taskResp.PollingURL)
+}
+
+// pollURL preserves BFL regional endpoints for the default API, but never
+// sends a provider key to a URL outside the trusted BFL polling API.
+func (p *FluxProvider) pollURL(raw string) (string, error) {
+	poll, err := url.Parse(raw)
+	if err != nil || poll.Path == "" || poll.Fragment != "" || poll.User != nil {
+		return "", fmt.Errorf("invalid Flux polling URL")
+	}
+	if p.pinPolling || p.baseURL != fluxBaseURL {
+		return p.baseURL + "/get_result?" + poll.RawQuery, nil
+	}
+	host := strings.ToLower(poll.Hostname())
+	if poll.Scheme != "https" || !strings.HasSuffix(host, ".bfl.ai") || host == ".bfl.ai" || (poll.Port() != "" && poll.Port() != "443") || (poll.EscapedPath() != "/v1/get_result" && poll.EscapedPath() != "/get_result") {
+		return "", fmt.Errorf("invalid Flux polling URL")
+	}
+	return poll.String(), nil
+}
+
+// fluxAuthenticatedClient prevents x-key being forwarded by redirects to a
+// different origin, including redirects from a configured gateway.
+func fluxAuthenticatedClient() *http.Client {
+	client := *fluxHTTPClient
+	previous := client.CheckRedirect
+	client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		if len(via) > 0 && (req.URL.Scheme != via[0].URL.Scheme || !strings.EqualFold(req.URL.Host, via[0].URL.Host)) {
+			return fmt.Errorf("Flux API redirect to a different origin")
+		}
+		if previous != nil {
+			return previous(req, via)
+		}
+		if len(via) >= 10 {
+			return fmt.Errorf("stopped after 10 redirects")
+		}
+		return nil
+	}
+	return &client
 }
 
 func (p *FluxProvider) pollAndDownload(ctx context.Context, pollingURL string) (*ImageResult, error) {
@@ -169,7 +210,7 @@ func (p *FluxProvider) pollAndDownload(ctx context.Context, pollingURL string) (
 		}
 		httpReq.Header.Set("x-key", p.apiKey)
 
-		resp, err := fluxHTTPClient.Do(httpReq)
+		resp, err := fluxAuthenticatedClient().Do(httpReq)
 		if err != nil {
 			return nil, fmt.Errorf("poll request failed: %w", err)
 		}

@@ -69,7 +69,11 @@ func (p *GeminiProvider) Start(ctx context.Context, _ string, opts SessionOption
 	if diagnostics != nil {
 		diagnostics.apiKey = apiKey
 	}
-	endpoint, err := geminiLiveURL(p.baseURL(), apiKey)
+	base, err := resolveLiveEndpoint("live.gemini.base_url", p.cfg.Gemini.BaseURL, config.DefaultLiveGeminiBaseURL)
+	if err != nil {
+		return nil, err
+	}
+	endpoint, err := geminiLiveURL(base, apiKey)
 	if err != nil {
 		diagnostics.connectionError("endpoint", err)
 		return nil, err

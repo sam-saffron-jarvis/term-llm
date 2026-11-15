@@ -24,7 +24,12 @@ const (
 // constraints so the completion catalog can also guide provider requests.
 // It does not write the cache; callers retain stale data on failed refreshes.
 func FetchImageModels(ctx context.Context, client *http.Client, apiKey string) ([]cache.CachedModel, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, BaseURL+"/models?type=all", nil)
+	return FetchImageModelsAt(ctx, client, apiKey, BaseURL)
+}
+
+// FetchImageModelsAt discovers models at the supplied API root.
+func FetchImageModelsAt(ctx context.Context, client *http.Client, apiKey, baseURL string) ([]cache.CachedModel, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(baseURL, "/")+"/models?type=all", nil)
 	if err != nil {
 		return nil, fmt.Errorf("create Venice models request: %w", err)
 	}

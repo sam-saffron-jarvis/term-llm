@@ -12,6 +12,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/term-llm/term-llm/internal/providerhttp"
 )
 
 const (
@@ -159,9 +161,13 @@ func (c *GitHubClient) DiscoverSkills(ctx context.Context, ref GitHubRepoRef) ([
 }
 
 func (c *GitHubClient) discoverSkillsWithBranch(ctx context.Context, ref GitHubRepoRef, branch string) ([]DiscoveredSkill, error) {
+	base, err := providerhttp.EnvBaseURL("GITHUB_API_URL", githubAPIBase)
+	if err != nil {
+		return nil, err
+	}
 	// Fetch contents of the skills directory
 	apiURL := fmt.Sprintf("%s/repos/%s/%s/contents/%s?ref=%s",
-		githubAPIBase, ref.Owner, ref.Repo, ref.Path, branch)
+		base, url.PathEscape(ref.Owner), ref.Repo, ref.Path, url.QueryEscape(branch))
 
 	contents, err := c.fetchContents(ctx, apiURL)
 	if err != nil {
@@ -177,7 +183,7 @@ func (c *GitHubClient) discoverSkillsWithBranch(ctx context.Context, ref GitHubR
 		// Check if this directory contains a SKILL.md
 		skillPath := item.Path
 		skillMDURL := fmt.Sprintf("%s/repos/%s/%s/contents/%s/SKILL.md?ref=%s",
-			githubAPIBase, ref.Owner, ref.Repo, skillPath, branch)
+			base, url.PathEscape(ref.Owner), ref.Repo, skillPath, url.QueryEscape(branch))
 
 		req, err := http.NewRequestWithContext(ctx, "HEAD", skillMDURL, nil)
 		if err != nil {
@@ -196,7 +202,7 @@ func (c *GitHubClient) discoverSkillsWithBranch(ctx context.Context, ref GitHubR
 		}
 
 		// Count files in this skill directory
-		fileCount, _ := c.countFiles(ctx, ref, skillPath, branch)
+		fileCount, _ := c.countFiles(ctx, ref, skillPath, url.QueryEscape(branch))
 
 		skill := DiscoveredSkill{
 			Name:      item.Name,
@@ -217,10 +223,14 @@ func (c *GitHubClient) discoverSkillsWithBranch(ctx context.Context, ref GitHubR
 }
 
 func (c *GitHubClient) countFiles(ctx context.Context, ref GitHubRepoRef, path, branch string) (int, error) {
+	base, err := providerhttp.EnvBaseURL("GITHUB_API_URL", githubAPIBase)
+	if err != nil {
+		return 0, err
+	}
 	// Use the Git Trees API for efficient recursive listing
 	// First get the tree SHA for this path
 	apiURL := fmt.Sprintf("%s/repos/%s/%s/contents/%s?ref=%s",
-		githubAPIBase, ref.Owner, ref.Repo, path, branch)
+		base, url.PathEscape(ref.Owner), ref.Repo, path, url.QueryEscape(branch))
 
 	contents, err := c.fetchContents(ctx, apiURL)
 	if err != nil {
@@ -345,8 +355,12 @@ func (c *GitHubClient) DownloadSkillDir(ctx context.Context, skill DiscoveredSki
 }
 
 func (c *GitHubClient) listFilesRecursive(ctx context.Context, ref GitHubRepoRef, path string) ([]GitHubContent, error) {
+	base, err := providerhttp.EnvBaseURL("GITHUB_API_URL", githubAPIBase)
+	if err != nil {
+		return nil, err
+	}
 	apiURL := fmt.Sprintf("%s/repos/%s/%s/contents/%s?ref=%s",
-		githubAPIBase, ref.Owner, ref.Repo, path, ref.Branch)
+		base, url.PathEscape(ref.Owner), ref.Repo, path, url.QueryEscape(ref.Branch))
 
 	contents, err := c.fetchContents(ctx, apiURL)
 	if err != nil {
@@ -397,8 +411,12 @@ func (c *GitHubClient) downloadFile(ctx context.Context, url, destPath string) e
 
 // FetchSkillMD downloads and returns the SKILL.md content for a discovered skill.
 func (c *GitHubClient) FetchSkillMD(ctx context.Context, skill DiscoveredSkill) ([]byte, error) {
+	base, err := providerhttp.EnvBaseURL("TERM_LLM_GITHUB_RAW_BASE_URL", githubRawBase)
+	if err != nil {
+		return nil, err
+	}
 	url := fmt.Sprintf("%s/%s/%s/%s/%s/SKILL.md",
-		githubRawBase, skill.RepoRef.Owner, skill.RepoRef.Repo, skill.RepoRef.Branch, skill.Path)
+		base, skill.RepoRef.Owner, skill.RepoRef.Repo, skill.RepoRef.Branch, skill.Path)
 
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {

@@ -56,6 +56,13 @@ func (p *OpenAIProvider) Start(ctx context.Context, offerSDP string, opts Sessio
 	if strings.TrimSpace(offerSDP) == "" {
 		return nil, errors.New("live: empty sdp offer")
 	}
+	resolved := *p
+	base, err := config.ResolveBaseURL("live.openai.base_url", p.cfg.OpenAI.BaseURL, config.DefaultLiveOpenAIBaseURL)
+	if err != nil {
+		return nil, err
+	}
+	resolved.cfg.OpenAI.BaseURL = base
+	p = &resolved
 	apiKey, err := p.apiKey()
 	if err != nil {
 		return nil, err

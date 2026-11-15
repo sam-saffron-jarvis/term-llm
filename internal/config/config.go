@@ -61,8 +61,8 @@ func ValidateProviderCompatibility(name string, cfg *ProviderConfig) error {
 	if cfg == nil {
 		return nil
 	}
-	if InferProviderType(name, cfg.Type) == ProviderTypeGrok && (strings.TrimSpace(cfg.APIKey) != "" || strings.TrimSpace(cfg.ResolvedAPIKey) != "" || strings.TrimSpace(cfg.BaseURL) != "" || strings.TrimSpace(cfg.URL) != "") {
-		return fmt.Errorf("provider %q now selects Grok subscription OAuth and cannot use api_key/base_url/url; set explicit type: xai for the public xAI API or type: openai_compatible for a custom endpoint", name)
+	if InferProviderType(name, cfg.Type) == ProviderTypeGrok && (strings.TrimSpace(cfg.APIKey) != "" || strings.TrimSpace(cfg.ResolvedAPIKey) != "" || strings.TrimSpace(cfg.URL) != "" || (strings.TrimSpace(cfg.BaseURL) != "" && cfg.Type != ProviderTypeGrok)) {
+		return fmt.Errorf("provider %q now selects Grok subscription OAuth and cannot use api_key/url or a legacy implicit base_url; set explicit type: grok to override the subscription API; set explicit type: xai for the public xAI API or type: openai_compatible for a custom endpoint", name)
 	}
 	if len(cfg.Headers) > 0 {
 		switch InferProviderType(name, cfg.Type) {
@@ -170,7 +170,7 @@ type ProviderConfig struct {
 	MaxOutputTokens int `mapstructure:"max_output_tokens"`
 
 	// Custom endpoint configuration
-	BaseURL string `mapstructure:"base_url"` // API root for Anthropic/OpenAI-compatible providers, including compatible Images APIs
+	BaseURL string `mapstructure:"base_url"` // HTTP API root including API version and optional proxy path prefix
 
 	// OpenAI-compatible specific
 	URL               string `mapstructure:"url"`                 // Full URL - used as-is without appending endpoint
@@ -771,147 +771,6 @@ func (c *Config) ValidateApprovalModes() error {
 	return nil
 }
 
-// ImageConfig configures image generation settings
-type ImageConfig struct {
-	Provider   string                `mapstructure:"provider"`   // built-in image provider or named providers entry with type: openai_compatible
-	OutputDir  string                `mapstructure:"output_dir"` // default save directory
-	Gemini     ImageGeminiConfig     `mapstructure:"gemini"`
-	OpenAI     ImageOpenAIConfig     `mapstructure:"openai"`
-	ChatGPT    ImageChatGPTConfig    `mapstructure:"chatgpt"`
-	XAI        ImageXAIConfig        `mapstructure:"xai"`
-	Venice     ImageVeniceConfig     `mapstructure:"venice"`
-	Flux       ImageFluxConfig       `mapstructure:"flux"`
-	OpenRouter ImageOpenRouterConfig `mapstructure:"openrouter"`
-	Debug      ImageDebugConfig      `mapstructure:"debug"`
-}
-
-// ImageGeminiConfig configures Gemini image generation
-type ImageGeminiConfig struct {
-	APIKey    string `mapstructure:"api_key"`
-	Model     string `mapstructure:"model"`
-	ImageSize string `mapstructure:"image_size"` // Default image size: 1K, 2K, 4K
-}
-
-// ImageOpenAIConfig configures OpenAI image generation
-type ImageOpenAIConfig struct {
-	APIKey string `mapstructure:"api_key"`
-	Model  string `mapstructure:"model"`
-}
-
-// ImageChatGPTConfig configures subscription-backed image generation through
-// the ChatGPT Codex Images API (OAuth, no API key required).
-type ImageChatGPTConfig struct {
-	Model string `mapstructure:"model"` // e.g., gpt-image-2.5-flare (default) or gpt-image-2.5-sunburst
-}
-
-// ImageXAIConfig configures xAI (Grok) image generation
-type ImageXAIConfig struct {
-	APIKey string `mapstructure:"api_key"`
-	Model  string `mapstructure:"model"` // grok-2-image or grok-2-image-1212
-}
-
-// ImageVeniceConfig configures Venice AI image generation
-type ImageVeniceConfig struct {
-	APIKey     string `mapstructure:"api_key"`
-	Model      string `mapstructure:"model"`
-	EditModel  string `mapstructure:"edit_model"`
-	Resolution string `mapstructure:"resolution"`
-}
-
-// ImageFluxConfig configures Flux (Black Forest Labs) image generation
-type ImageFluxConfig struct {
-	APIKey string `mapstructure:"api_key"`
-	Model  string `mapstructure:"model"` // flux-2-pro for generation, flux-kontext-pro for editing
-}
-
-// ImageOpenRouterConfig configures OpenRouter image generation
-type ImageOpenRouterConfig struct {
-	APIKey string `mapstructure:"api_key"`
-	Model  string `mapstructure:"model"` // e.g., google/gemini-2.5-flash-image
-}
-
-// ImageDebugConfig configures the debug image provider (local random images)
-type ImageDebugConfig struct {
-	Delay float64 `mapstructure:"delay"` // delay in seconds before returning (e.g., 1.5)
-}
-
-// AudioConfig configures speech/audio generation settings.
-type AudioConfig struct {
-	Provider   string                `mapstructure:"provider"`   // default audio provider: venice, gemini, or elevenlabs
-	OutputDir  string                `mapstructure:"output_dir"` // default save directory
-	Venice     AudioVeniceConfig     `mapstructure:"venice"`
-	Gemini     AudioGeminiConfig     `mapstructure:"gemini"`
-	ElevenLabs AudioElevenLabsConfig `mapstructure:"elevenlabs"`
-}
-
-// AudioVeniceConfig configures Venice AI text-to-speech generation.
-type AudioVeniceConfig struct {
-	APIKey string `mapstructure:"api_key"`
-	Model  string `mapstructure:"model"`
-	Voice  string `mapstructure:"voice"`
-	Format string `mapstructure:"format"`
-}
-
-// AudioGeminiConfig configures Gemini text-to-speech generation.
-type AudioGeminiConfig struct {
-	APIKey string `mapstructure:"api_key"`
-	Model  string `mapstructure:"model"`
-	Voice  string `mapstructure:"voice"`
-	Format string `mapstructure:"format"`
-}
-
-// AudioElevenLabsConfig configures ElevenLabs text-to-speech generation.
-type AudioElevenLabsConfig struct {
-	APIKey string `mapstructure:"api_key"`
-	Model  string `mapstructure:"model"`
-	Voice  string `mapstructure:"voice"`
-	Format string `mapstructure:"format"`
-}
-
-// MusicConfig configures music and sound-effect generation settings.
-type MusicConfig struct {
-	Provider   string                `mapstructure:"provider"`   // default music provider: venice or elevenlabs
-	OutputDir  string                `mapstructure:"output_dir"` // default save directory
-	Venice     MusicVeniceConfig     `mapstructure:"venice"`
-	ElevenLabs MusicElevenLabsConfig `mapstructure:"elevenlabs"`
-}
-
-// MusicVeniceConfig configures Venice music/audio generation.
-type MusicVeniceConfig struct {
-	APIKey string `mapstructure:"api_key"`
-	Model  string `mapstructure:"model"`
-	Format string `mapstructure:"format"`
-}
-
-// MusicElevenLabsConfig configures ElevenLabs music generation.
-type MusicElevenLabsConfig struct {
-	APIKey string `mapstructure:"api_key"`
-	Model  string `mapstructure:"model"`
-	Format string `mapstructure:"format"`
-}
-
-// TranscriptionConfig configures audio transcription settings.
-type TranscriptionConfig struct {
-	Provider   string                        `mapstructure:"provider"`   // named provider from providers map; default "openai"
-	Model      string                        `mapstructure:"model"`      // optional model override
-	SaveDir    string                        `mapstructure:"save_dir"`   // if set, persist each uploaded audio file here
-	Timestamps bool                          `mapstructure:"timestamps"` // Request timestamp metadata where supported
-	Venice     TranscriptionVeniceConfig     `mapstructure:"venice"`
-	ElevenLabs TranscriptionElevenLabsConfig `mapstructure:"elevenlabs"`
-}
-
-// TranscriptionVeniceConfig configures Venice speech-to-text.
-type TranscriptionVeniceConfig struct {
-	APIKey string `mapstructure:"api_key"`
-	Model  string `mapstructure:"model"`
-}
-
-// TranscriptionElevenLabsConfig configures ElevenLabs speech-to-text.
-type TranscriptionElevenLabsConfig struct {
-	APIKey string `mapstructure:"api_key"`
-	Model  string `mapstructure:"model"`
-}
-
 // LiveControlPlane selects the host-side router for live delegations.
 type LiveControlPlane string
 
@@ -1147,47 +1006,6 @@ func (c *Config) ValidateLive() error {
 	}
 }
 
-// EmbedConfig configures text embedding generation
-type EmbedConfig struct {
-	Provider  string            `mapstructure:"provider"`   // default embedding provider: gemini, openai, chatgpt, venice, jina, voyage, ollama
-	BatchSize int               `mapstructure:"batch_size"` // document embedding batch size; default 32
-	OpenAI    EmbedOpenAIConfig `mapstructure:"openai"`
-	Gemini    EmbedGeminiConfig `mapstructure:"gemini"`
-	Jina      EmbedJinaConfig   `mapstructure:"jina"`
-	Voyage    EmbedVoyageConfig `mapstructure:"voyage"`
-	Ollama    EmbedOllamaConfig `mapstructure:"ollama"`
-}
-
-// EmbedOpenAIConfig configures OpenAI embedding generation
-type EmbedOpenAIConfig struct {
-	APIKey string `mapstructure:"api_key"`
-	Model  string `mapstructure:"model"` // text-embedding-3-small (default), text-embedding-3-large
-}
-
-// EmbedGeminiConfig configures Gemini embedding generation
-type EmbedGeminiConfig struct {
-	APIKey string `mapstructure:"api_key"`
-	Model  string `mapstructure:"model"` // gemini-embedding-001 (default)
-}
-
-// EmbedJinaConfig configures Jina AI embedding generation
-type EmbedJinaConfig struct {
-	APIKey string `mapstructure:"api_key"`
-	Model  string `mapstructure:"model"` // jina-embeddings-v3 (default), jina-embeddings-v4
-}
-
-// EmbedVoyageConfig configures Voyage AI embedding generation
-type EmbedVoyageConfig struct {
-	APIKey string `mapstructure:"api_key"`
-	Model  string `mapstructure:"model"` // voyage-3.5 (default), voyage-3-large, voyage-code-3
-}
-
-// EmbedOllamaConfig configures Ollama embedding generation
-type EmbedOllamaConfig struct {
-	BaseURL string `mapstructure:"base_url"` // default: http://127.0.0.1:11434
-	Model   string `mapstructure:"model"`    // nomic-embed-text (default)
-}
-
 // ClassifyConfig selects a provider for the classification capability.
 type ClassifyConfig struct {
 	DefaultProvider string                            `mapstructure:"default_provider" yaml:"default_provider,omitempty"`
@@ -1210,64 +1028,6 @@ type ClassifyProviderConfig struct {
 	// OpenAI-Organization/OpenAI-Project fall back to OPENAI_ORG_ID/OPENAI_PROJECT_ID.
 	// Values support ${ENV}, $(), op://, file://.
 	Headers map[string]string `mapstructure:"headers" yaml:"headers,omitempty"`
-}
-
-// SearchConfig configures web search providers
-type SearchConfig struct {
-	Provider      string                 `mapstructure:"provider"`       // exa_mcp (default), exa, perplexity, parallel, tavily, brave, google, youcom, duckduckgo
-	FetchProvider string                 `mapstructure:"fetch_provider"` // jina (default), exa_mcp, none
-	ForceExternal bool                   `mapstructure:"force_external"` // force external search for all providers
-	Exa           SearchExaConfig        `mapstructure:"exa"`
-	ExaMCP        SearchExaMCPConfig     `mapstructure:"exa_mcp"`
-	Perplexity    SearchPerplexityConfig `mapstructure:"perplexity"`
-	Parallel      SearchParallelConfig   `mapstructure:"parallel"`
-	Tavily        SearchTavilyConfig     `mapstructure:"tavily"`
-	Brave         SearchBraveConfig      `mapstructure:"brave"`
-	Google        SearchGoogleConfig     `mapstructure:"google"`
-	YouCom        SearchYouComConfig     `mapstructure:"youcom"`
-}
-
-// SearchExaConfig configures Exa search
-type SearchExaConfig struct {
-	APIKey string `mapstructure:"api_key"`
-}
-
-// SearchExaMCPConfig configures Exa MCP search/fetch
-type SearchExaMCPConfig struct {
-	URL    string `mapstructure:"url"`
-	APIKey string `mapstructure:"api_key"`
-}
-
-// SearchPerplexityConfig configures Perplexity search
-type SearchPerplexityConfig struct {
-	APIKey string `mapstructure:"api_key"`
-}
-
-// SearchParallelConfig configures Parallel search
-type SearchParallelConfig struct {
-	APIKey string `mapstructure:"api_key"`
-}
-
-// SearchTavilyConfig configures Tavily search
-type SearchTavilyConfig struct {
-	APIKey string `mapstructure:"api_key"`
-}
-
-// SearchBraveConfig configures Brave search
-type SearchBraveConfig struct {
-	APIKey string `mapstructure:"api_key"`
-}
-
-// SearchYouComConfig configures You.com search. The API key is optional:
-// without one, the keyless free tier is used.
-type SearchYouComConfig struct {
-	APIKey string `mapstructure:"api_key"`
-}
-
-// SearchGoogleConfig configures Google Custom Search
-type SearchGoogleConfig struct {
-	APIKey string `mapstructure:"api_key"`
-	CX     string `mapstructure:"cx"` // Custom Search Engine ID
 }
 
 // Load reads the config file (if any), applies schema defaults, validates the

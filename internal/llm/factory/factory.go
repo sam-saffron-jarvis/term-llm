@@ -69,6 +69,13 @@ func Create(name string, cfg *config.ProviderConfig, opts Options) (Provider, er
 	}
 
 	providerType := config.InferProviderType(name, cfg.Type)
+	if _, isBin := binProviderConstructors[providerType]; !isBin && strings.TrimSpace(cfg.BaseURL) != "" {
+		base, err := config.ResolveBaseURL("providers."+name+".base_url", cfg.BaseURL, "")
+		if err != nil {
+			return nil, fmt.Errorf("%w (must include scheme and host)", err)
+		}
+		cfg.BaseURL = base
+	}
 	if err := config.ValidateProviderCompatibility(name, cfg); err != nil {
 		return nil, err
 	}
@@ -129,28 +136,42 @@ func NewBinProvider(providerType config.ProviderType, cfg *config.ProviderConfig
 
 var apiKeyProviderConstructors = map[config.ProviderType]func(string, string, *config.ProviderConfig, Options) (Provider, error){
 	config.ProviderTypeOpenRouter: func(name, key string, cfg *config.ProviderConfig, _ Options) (Provider, error) {
-		return opencompat.NewOpenRouterProvider(key, cfg.Model, cfg.AppURL, cfg.AppTitle), nil
+		p := opencompat.NewOpenRouterProvider(key, cfg.Model, cfg.AppURL, cfg.AppTitle)
+		p.SetBaseURL(cfg.BaseURL)
+		return p, nil
 	},
 	config.ProviderTypeGemini: func(name, key string, cfg *config.ProviderConfig, opts Options) (Provider, error) {
-		return gemini.NewWithOptions(key, cfg.Model, gemini.Options{Client: opts.HTTPClient, ClampOutputTokens: opts.ClampOutputTokens}), nil
+		return gemini.NewWithOptions(key, cfg.Model, gemini.Options{BaseURL: geminiModelsURL(cfg.BaseURL), Client: opts.HTTPClient, ClampOutputTokens: opts.ClampOutputTokens}), nil
 	},
 	config.ProviderTypeXAI: func(name, key string, cfg *config.ProviderConfig, _ Options) (Provider, error) {
-		return opencompat.NewXAIProvider(key, cfg.Model), nil
+		p := opencompat.NewXAIProvider(key, cfg.Model)
+		p.SetBaseURL(cfg.BaseURL)
+		return p, nil
 	},
 	config.ProviderTypeZen: func(name, key string, cfg *config.ProviderConfig, _ Options) (Provider, error) {
-		return rp.NewZenProvider(key, cfg.Model), nil
+		p := rp.NewZenProvider(key, cfg.Model)
+		p.SetBaseURL(cfg.BaseURL)
+		return p, nil
 	},
 	config.ProviderTypeVenice: func(name, key string, cfg *config.ProviderConfig, _ Options) (Provider, error) {
-		return opencompat.NewVeniceProvider(key, cfg.Model), nil
+		p := opencompat.NewVeniceProvider(key, cfg.Model)
+		p.SetBaseURL(cfg.BaseURL)
+		return p, nil
 	},
 	config.ProviderTypeNearAI: func(name, key string, cfg *config.ProviderConfig, _ Options) (Provider, error) {
-		return opencompat.NewNearAIProvider(key, cfg.Model), nil
+		p := opencompat.NewNearAIProvider(key, cfg.Model)
+		p.SetBaseURL(cfg.BaseURL)
+		return p, nil
 	},
 	config.ProviderTypeSambaNova: func(name, key string, cfg *config.ProviderConfig, _ Options) (Provider, error) {
-		return opencompat.NewSambaNovaProvider(key, cfg.Model), nil
+		p := opencompat.NewSambaNovaProvider(key, cfg.Model)
+		p.SetBaseURL(cfg.BaseURL)
+		return p, nil
 	},
 	providerspec.TypeObscurify: func(name, key string, cfg *config.ProviderConfig, _ Options) (Provider, error) {
-		return opencompat.NewObscurifyProvider(key, cfg.Model), nil
+		p := opencompat.NewObscurifyProvider(key, cfg.Model)
+		p.SetBaseURL(cfg.BaseURL)
+		return p, nil
 	},
 	config.ProviderTypeOpenCodeGo: func(name, key string, cfg *config.ProviderConfig, _ Options) (Provider, error) {
 		if strings.TrimSpace(cfg.URL) != "" {
@@ -196,10 +217,10 @@ func buildConstructors() map[config.ProviderType]Constructor {
 	}
 	m[config.ProviderTypeChatGPT] = func(name string, _ config.ProviderType, cfg *config.ProviderConfig, opts Options) (Provider, error) {
 		// ChatGPT uses native OAuth with interactive authentication
-		return rp.NewChatGPTProviderWithOptions(cfg.Model, rp.ChatGPTProviderOptions{UseWebSocket: cfg.UseWebSocket, ServiceTier: cfg.ServiceTier, FileUploadPolicy: opts.uploadPolicy(name, cfg), Responses: responses.OptionsFromConfig(cfg.Responses)})
+		return rp.NewChatGPTProviderWithOptions(cfg.Model, rp.ChatGPTProviderOptions{BaseURL: cfg.BaseURL, UseWebSocket: cfg.UseWebSocket, ServiceTier: cfg.ServiceTier, FileUploadPolicy: opts.uploadPolicy(name, cfg), Responses: responses.OptionsFromConfig(cfg.Responses)})
 	}
 	m[config.ProviderTypeGrok] = func(name string, _ config.ProviderType, cfg *config.ProviderConfig, opts Options) (Provider, error) {
-		return rp.NewGrokProviderWithOptions(cfg.Model, rp.GrokProviderOptions{FileUploadPolicy: opts.uploadPolicy(name, cfg)})
+		return rp.NewGrokProviderWithOptions(cfg.Model, rp.GrokProviderOptions{BaseURL: cfg.BaseURL, FileUploadPolicy: opts.uploadPolicy(name, cfg)})
 	}
 	m[config.ProviderTypeCopilot] = func(name string, _ config.ProviderType, cfg *config.ProviderConfig, opts Options) (Provider, error) {
 		// Copilot uses GitHub device code OAuth with interactive authentication
@@ -207,6 +228,7 @@ func buildConstructors() map[config.ProviderType]Constructor {
 		if err != nil {
 			return nil, err
 		}
+		provider.SetBaseURL(cfg.BaseURL)
 		provider.SetFileUploadPolicy(opts.uploadPolicy(name, cfg))
 		return provider, nil
 	}
@@ -219,7 +241,7 @@ func buildConstructors() map[config.ProviderType]Constructor {
 		m[t] = apiKey
 	}
 	m[config.ProviderTypeBedrock] = func(name string, _ config.ProviderType, cfg *config.ProviderConfig, _ Options) (Provider, error) {
-		return bedrock.New(cfg.Model, cfg.Region, cfg.Profile, cfg.AccessKey, cfg.SecretKey, cfg.SessionToken, cfg.ModelMap, cfg.Headers)
+		return bedrock.NewWithBaseURL(cfg.Model, cfg.Region, cfg.Profile, cfg.AccessKey, cfg.SecretKey, cfg.SessionToken, cfg.ModelMap, cfg.Headers, cfg.BaseURL)
 	}
 	bin := func(name string, providerType config.ProviderType, cfg *config.ProviderConfig, _ Options) (Provider, error) {
 		return NewBinProvider(providerType, cfg)
@@ -276,4 +298,11 @@ func buildConstructors() map[config.ProviderType]Constructor {
 	m[config.ProviderTypeOpenAICompat] = compat
 	m[config.ProviderTypeVLLM] = compat
 	return m
+}
+
+func geminiModelsURL(base string) string {
+	if strings.TrimSpace(base) == "" {
+		return ""
+	}
+	return strings.TrimRight(strings.TrimSpace(base), "/") + "/models"
 }

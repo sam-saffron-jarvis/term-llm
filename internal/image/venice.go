@@ -45,6 +45,7 @@ type VeniceProvider struct {
 	model      string
 	editMdl    string
 	resolution string
+	baseURL    string
 }
 
 func NewVeniceProvider(apiKey, model, editModel, resolution string) *VeniceProvider {
@@ -60,6 +61,7 @@ func NewVeniceProvider(apiKey, model, editModel, resolution string) *VeniceProvi
 		model:      model,
 		editMdl:    editModel,
 		resolution: resolution,
+		baseURL:    veniceBaseURL,
 	}
 }
 
@@ -112,10 +114,10 @@ func (p *VeniceProvider) Generate(ctx context.Context, req GenerateRequest) (*Im
 
 	debugRaw := req.Debug || req.DebugRaw
 	if debugRaw {
-		debugRawImageLog(debugRaw, "Venice Request", "POST %s\n%s", veniceGenerateEndpoint, string(jsonBody))
+		debugRawImageLog(debugRaw, "Venice Request", "POST %s\n%s", p.baseURL+"/image/generate", string(jsonBody))
 	}
 
-	httpReq, err := http.NewRequestWithContext(ctx, "POST", veniceGenerateEndpoint, bytes.NewReader(jsonBody))
+	httpReq, err := http.NewRequestWithContext(ctx, "POST", p.baseURL+"/image/generate", bytes.NewReader(jsonBody))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
@@ -192,9 +194,9 @@ func (p *VeniceProvider) singleEdit(ctx context.Context, req EditRequest, option
 	}
 
 	debugRawImageLog(debugRaw, "Venice Request", "POST %s\nmultipart/form-data modelId=%s prompt=%q resolution=%s aspect_ratio=%s image=%s (%d bytes, %s)",
-		veniceEditEndpoint, p.editModel(), req.Prompt, options.Resolution, options.AspectRatio, filepath.Base(img.Path), len(img.Data), mimeType)
+		p.baseURL+"/image/edit", p.editModel(), req.Prompt, options.Resolution, options.AspectRatio, filepath.Base(img.Path), len(img.Data), mimeType)
 
-	httpReq, err := http.NewRequestWithContext(ctx, "POST", veniceEditEndpoint, &body)
+	httpReq, err := http.NewRequestWithContext(ctx, "POST", p.baseURL+"/image/edit", &body)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
@@ -229,9 +231,9 @@ func (p *VeniceProvider) multiEdit(ctx context.Context, req EditRequest, options
 
 	// Log truncated body (base64 images are huge)
 	debugRawImageLog(debugRaw, "Venice Request", "POST %s\nmodelId=%s prompt=%q resolution=%s aspect_ratio=%s quality=%s images=%d (body %d bytes)",
-		veniceMultiEditEndpoint, p.editModel(), req.Prompt, options.Resolution, options.AspectRatio, options.Quality, len(images), len(jsonBody))
+		p.baseURL+"/image/multi-edit", p.editModel(), req.Prompt, options.Resolution, options.AspectRatio, options.Quality, len(images), len(jsonBody))
 
-	httpReq, err := http.NewRequestWithContext(ctx, "POST", veniceMultiEditEndpoint, bytes.NewReader(jsonBody))
+	httpReq, err := http.NewRequestWithContext(ctx, "POST", p.baseURL+"/image/multi-edit", bytes.NewReader(jsonBody))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}

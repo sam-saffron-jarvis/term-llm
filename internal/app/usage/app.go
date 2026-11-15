@@ -204,8 +204,8 @@ func copilotUsageFlagsChanged(cmd *cobra.Command) bool {
 }
 
 var (
-	fetchDirectProviderUsage = providerusage.FetchWithAPIKey
-	loadProviderUsageConfig  = config.Load
+	fetchDirectProviderUsage = fetchConfiguredDirectProviderUsage
+	loadProviderUsageConfig  = config.LoadWithoutCredentials
 )
 
 func (o *Options) runDirectProviderUsage(cmd *cobra.Command, provider string) error {

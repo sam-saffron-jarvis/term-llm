@@ -178,6 +178,9 @@ func refreshZenCompletionCache(toComplete string, cfg *config.Config) {
 		if len(providerCfg.Models) > 0 {
 			return
 		}
+		if strings.TrimSpace(providerCfg.BaseURL) != "" {
+			return
+		}
 		_ = cfg.ResolveProviderCredentials(provider)
 		providerCfg = cfg.Providers[provider]
 	}
@@ -207,6 +210,13 @@ func refreshEndpointCompletionCache(toComplete string, cfg *config.Config) {
 	if !llm.UsesEndpointModelCatalog(provider, providerCfg) {
 		return
 	}
+	switch config.InferProviderType(provider, providerCfg.Type) {
+	case config.ProviderTypeOpenRouter, config.ProviderTypeVenice, config.ProviderTypeZen:
+		if config.Cred(providerCfg.BaseURL).IsDeferred() || config.Cred(providerCfg.APIKey).IsDeferred() {
+			return
+		}
+	}
+
 	if err := cfg.ResolveProviderCredentials(provider); err != nil {
 		return
 	}

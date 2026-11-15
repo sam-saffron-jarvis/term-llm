@@ -59,7 +59,7 @@ func (p *OllamaProvider) Embed(ctx context.Context, req EmbedRequest) (*Embeddin
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
 
-	url := p.baseURL + "/api/embed"
+	url := strings.TrimRight(p.baseURL, "/") + "/api/embed"
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(jsonBody))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)

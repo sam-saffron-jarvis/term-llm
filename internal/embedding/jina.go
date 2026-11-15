@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/term-llm/term-llm/internal/config"
@@ -23,14 +24,16 @@ const (
 // Jina uses an OpenAI-compatible format at api.jina.ai/v1/embeddings and
 // offers a free tier with 10M tokens (no credit card required).
 type JinaProvider struct {
-	apiKey string
-	model  string
+	apiKey  string
+	model   string
+	baseURL string
 }
 
 func NewJinaProvider(apiKey string) *JinaProvider {
 	return &JinaProvider{
-		apiKey: apiKey,
-		model:  jinaDefaultModel,
+		apiKey:  apiKey,
+		model:   jinaDefaultModel,
+		baseURL: strings.TrimSuffix(jinaEndpoint, "/embeddings"),
 	}
 }
 
@@ -68,7 +71,7 @@ func (p *JinaProvider) Embed(ctx context.Context, req EmbedRequest) (*EmbeddingR
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
 
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, jinaEndpoint, bytes.NewReader(jsonBody))
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(p.baseURL, "/")+"/embeddings", bytes.NewReader(jsonBody))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}

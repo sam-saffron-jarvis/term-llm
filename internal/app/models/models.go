@@ -182,10 +182,10 @@ var modelListerConstructors = map[providerspec.ModelListing]modelListerConstruct
 		return newAPIKeyModelLister(providerType, providerCfg)
 	},
 	providerspec.ModelListingChatGPT: func(providerName string, providerType config.ProviderType, providerCfg config.ProviderConfig, configured bool) (ModelLister, error) {
-		return newChatGPTModelLister(providerCfg.Model)
+		return newChatGPTModelLister(providerCfg.Model, providerCfg.BaseURL)
 	},
 	providerspec.ModelListingCopilot: func(providerName string, providerType config.ProviderType, providerCfg config.ProviderConfig, configured bool) (ModelLister, error) {
-		return newCopilotModelLister(providerCfg.Model, configured)
+		return newCopilotModelLister(providerCfg.Model, configured, providerCfg.BaseURL)
 	},
 	providerspec.ModelListingCursorBin: func(providerName string, providerType config.ProviderType, providerCfg config.ProviderConfig, configured bool) (ModelLister, error) {
 		return clibin.NewCursorBinProvider(providerCfg.Model, providerCfg.Env), nil
@@ -206,7 +206,9 @@ var modelListerConstructors = map[providerspec.ModelListing]modelListerConstruct
 		return ollama.New(providerCfg.BaseURL, providerCfg.Model, ollama.Options{}), nil
 	},
 	providerspec.ModelListingZen: func(providerName string, providerType config.ProviderType, providerCfg config.ProviderConfig, configured bool) (ModelLister, error) {
-		return responsesproviders.NewZenProvider(providerCfg.ResolvedAPIKey, ""), nil
+		p := responsesproviders.NewZenProvider(providerCfg.ResolvedAPIKey, "")
+		p.SetBaseURL(providerCfg.BaseURL)
+		return p, nil
 	},
 	providerspec.ModelListingOpenCodeGo: func(providerName string, providerType config.ProviderType, providerCfg config.ProviderConfig, configured bool) (ModelLister, error) {
 		apiKey := modelListAPIKey(providerCfg.ResolvedAPIKey, "OPENCODE_API_KEY")
@@ -215,15 +217,24 @@ var modelListerConstructors = map[providerspec.ModelListing]modelListerConstruct
 		return responsesproviders.NewOpenCodeGoProviderWithBaseURL(apiKey, providerCfg.Model, providerCfg.BaseURL), nil
 	},
 	providerspec.ModelListingGrok: func(providerName string, providerType config.ProviderType, providerCfg config.ProviderConfig, configured bool) (ModelLister, error) {
-		return newGrokModelLister(providerCfg.Model)
+		return newGrokModelLister(providerCfg.Model, providerCfg.BaseURL)
 	},
 	providerspec.ModelListingNearAI: func(providerName string, providerType config.ProviderType, providerCfg config.ProviderConfig, configured bool) (ModelLister, error) {
 		apiKey := modelListAPIKey(providerCfg.ResolvedAPIKey, "NEARAI_API_KEY")
-		return opencompat.NewNearAIProvider(apiKey, providerCfg.Model), nil
+		p := opencompat.NewNearAIProvider(apiKey, providerCfg.Model)
+		p.SetBaseURL(providerCfg.BaseURL)
+		return p, nil
 	},
 }
 
 func newModelLister(providerName string, providerType config.ProviderType, providerCfg config.ProviderConfig, configured bool) (ModelLister, error) {
+	if providerCfg.BaseURL != "" {
+		base, err := config.ResolveBaseURL("providers."+providerName+".base_url", providerCfg.BaseURL, "")
+		if err != nil {
+			return nil, err
+		}
+		providerCfg.BaseURL = base
+	}
 	spec, registered := providerspec.ByType(providerType)
 	if !registered {
 		return nil, nil
@@ -267,15 +278,15 @@ func (l claudeBinModelLister) ListModels(ctx context.Context) ([]core.ModelInfo,
 	return fallback, nil
 }
 
-func newChatGPTModelLister(model string) (ModelLister, error) {
-	provider, err := responsesproviders.NewChatGPTProvider(model)
+func newChatGPTModelLister(model, baseURL string) (ModelLister, error) {
+	provider, err := responsesproviders.NewChatGPTProviderWithOptions(model, responsesproviders.ChatGPTProviderOptions{BaseURL: baseURL})
 	if err != nil {
 		return nil, fmt.Errorf("chatgpt provider: %w", err)
 	}
 	return provider, nil
 }
 
-func newCopilotModelLister(configuredModel string, configured bool) (ModelLister, error) {
+func newCopilotModelLister(configuredModel string, configured bool, baseURL string) (ModelLister, error) {
 	// Copilot uses OAuth - create provider which will prompt for auth if needed
 	model := ""
 	if configured {
@@ -285,6 +296,7 @@ func newCopilotModelLister(configuredModel string, configured bool) (ModelLister
 	if err != nil {
 		return nil, fmt.Errorf("copilot provider: %w", err)
 	}
+	provider.SetBaseURL(baseURL)
 	return provider, nil
 }
 
@@ -295,8 +307,8 @@ func newOpenAICompatibleModelLister(providerName string, providerCfg config.Prov
 	return opencompat.NewOpenAICompatProvider(providerCfg.BaseURL, providerCfg.ResolvedAPIKey, "", providerName), nil
 }
 
-func newGrokModelLister(model string) (ModelLister, error) {
-	provider, err := responsesproviders.NewGrokProvider(model)
+func newGrokModelLister(model, baseURL string) (ModelLister, error) {
+	provider, err := responsesproviders.NewGrokProviderWithOptions(model, responsesproviders.GrokProviderOptions{BaseURL: baseURL})
 	if err != nil {
 		return nil, fmt.Errorf("grok provider: %w", err)
 	}
@@ -317,32 +329,42 @@ var apiKeyModelListers = map[config.ProviderType]func(config.ProviderConfig) (Mo
 		if err != nil {
 			return nil, err
 		}
-		return opencompat.NewOpenRouterProvider(apiKey, "", providerCfg.AppURL, providerCfg.AppTitle), nil
+		p := opencompat.NewOpenRouterProvider(apiKey, "", providerCfg.AppURL, providerCfg.AppTitle)
+		p.SetBaseURL(providerCfg.BaseURL)
+		return p, nil
 	},
 	config.ProviderTypeXAI: func(providerCfg config.ProviderConfig) (ModelLister, error) {
 		apiKey, err := requiredModelListAPIKey(providerCfg.ResolvedAPIKey, "XAI_API_KEY", "xAI")
 		if err != nil {
 			return nil, err
 		}
-		return opencompat.NewXAIProvider(apiKey, providerCfg.Model), nil
+		p := opencompat.NewXAIProvider(apiKey, providerCfg.Model)
+		p.SetBaseURL(providerCfg.BaseURL)
+		return p, nil
 	},
 	config.ProviderTypeVenice: func(providerCfg config.ProviderConfig) (ModelLister, error) {
 		apiKey, err := requiredModelListAPIKey(providerCfg.ResolvedAPIKey, "VENICE_API_KEY", "Venice")
 		if err != nil {
 			return nil, err
 		}
-		return opencompat.NewVeniceProvider(apiKey, providerCfg.Model), nil
+		p := opencompat.NewVeniceProvider(apiKey, providerCfg.Model)
+		p.SetBaseURL(providerCfg.BaseURL)
+		return p, nil
 	},
 	config.ProviderTypeSambaNova: func(providerCfg config.ProviderConfig) (ModelLister, error) {
 		apiKey, err := requiredModelListAPIKey(providerCfg.ResolvedAPIKey, "SAMBANOVA_API_KEY", "SambaNova")
 		if err != nil {
 			return nil, err
 		}
-		return opencompat.NewSambaNovaProvider(apiKey, providerCfg.Model), nil
+		p := opencompat.NewSambaNovaProvider(apiKey, providerCfg.Model)
+		p.SetBaseURL(providerCfg.BaseURL)
+		return p, nil
 	},
 	providerspec.TypeObscurify: func(providerCfg config.ProviderConfig) (ModelLister, error) {
 		apiKey := modelListAPIKey(providerCfg.ResolvedAPIKey, "OBSCURIFY_API_KEY")
-		return opencompat.NewObscurifyProvider(apiKey, providerCfg.Model), nil
+		p := opencompat.NewObscurifyProvider(apiKey, providerCfg.Model)
+		p.SetBaseURL(providerCfg.BaseURL)
+		return p, nil
 	},
 }
 
@@ -380,7 +402,11 @@ func refreshModelListCaches(providerName string, providerCfg config.ProviderConf
 	providerType := config.InferProviderType(providerName, providerCfg.Type)
 	switch providerType {
 	case config.ProviderTypeOpenRouter:
-		opencompat.RefreshOpenRouterCacheSync(providerCfg.ResolvedAPIKey, models)
+		if providerCfg.BaseURL == "" {
+			opencompat.RefreshOpenRouterCacheSync(providerCfg.ResolvedAPIKey, models)
+		} else {
+			llm.RefreshEndpointCacheSync(providerCfg, models)
+		}
 	case config.ProviderTypeCursorBin:
 		clibin.RefreshCursorBinCacheSync(models)
 	case config.ProviderTypeGrokBin:

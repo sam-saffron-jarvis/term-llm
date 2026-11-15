@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/term-llm/term-llm/internal/providerhttp"
 )
 
 // OpenRouterOptions selects an inclusive/exclusive UTC period. APIKey is resolved
@@ -79,10 +81,14 @@ type OpenRouterDailyUsage struct {
 	OpenRouterAmounts
 }
 
-// FetchOpenRouterUsage queries only the fixed OpenRouter API origin. It never
+// FetchOpenRouterUsage queries the OpenRouter account API. It never
 // reads configuration or credentials itself and never follows redirects.
 func FetchOpenRouterUsage(ctx context.Context, options OpenRouterOptions) (*OpenRouterReport, error) {
-	return fetchOpenRouterUsage(ctx, options, &http.Client{Timeout: 20 * time.Second}, "https://openrouter.ai/api/v1")
+	base, err := providerhttp.EnvBaseURL("OPENROUTER_USAGE_BASE_URL", "https://openrouter.ai/api/v1")
+	if err != nil {
+		return nil, err
+	}
+	return fetchOpenRouterUsage(ctx, options, &http.Client{Timeout: 20 * time.Second}, base)
 }
 
 func fetchOpenRouterUsage(ctx context.Context, o OpenRouterOptions, client *http.Client, base string) (*OpenRouterReport, error) {

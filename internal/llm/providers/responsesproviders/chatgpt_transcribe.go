@@ -43,6 +43,11 @@ const chatGPTTranscribeLoginHint = "ChatGPT transcription is not configured: run
 // TranscribeChatGPT transcribes an audio file through the ChatGPT backend
 // using the stored ChatGPT OAuth session (term-llm auth login chatgpt).
 func TranscribeChatGPT(ctx context.Context, filePath, language string) (string, error) {
+	return TranscribeChatGPTWithBaseURL(ctx, filePath, language, "")
+}
+
+// TranscribeChatGPTWithBaseURL uses a custom API root while keeping OAuth refresh unchanged.
+func TranscribeChatGPTWithBaseURL(ctx context.Context, filePath, language, baseURL string) (string, error) {
 	contentType, err := chatGPTAudioContentType(filePath)
 	if err != nil {
 		return "", err
@@ -68,7 +73,7 @@ func TranscribeChatGPT(ctx context.Context, filePath, language string) (string, 
 		}
 	}
 
-	upload := chatGPTTranscriptionUpload{filePath: filePath, contentType: contentType, language: language}
+	upload := chatGPTTranscriptionUpload{filePath: filePath, contentType: contentType, language: language, baseURL: strings.TrimRight(strings.TrimSpace(baseURL), "/")}
 	resp, err := upload.send(ctx, creds)
 	if err != nil {
 		return "", err
@@ -105,7 +110,7 @@ func chatGPTTranscribeRefreshError(creds *credentials.ChatGPTCredentials, err er
 }
 
 type chatGPTTranscriptionUpload struct {
-	filePath, contentType, language string
+	filePath, contentType, language, baseURL string
 }
 
 func (u chatGPTTranscriptionUpload) send(ctx context.Context, creds *credentials.ChatGPTCredentials) (*http.Response, error) {
@@ -120,7 +125,11 @@ func (u chatGPTTranscriptionUpload) send(ctx context.Context, creds *credentials
 		_ = pw.CloseWithError(writeChatGPTTranscriptionBody(mw, filepath.Base(u.filePath), u.contentType, f, u.language))
 	}()
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, chatGPTTranscribeEndpoint, pr)
+	endpoint := chatGPTTranscribeEndpoint
+	if u.baseURL != "" {
+		endpoint = u.baseURL + "/transcribe"
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, pr)
 	if err != nil {
 		_ = pr.CloseWithError(err)
 		return nil, fmt.Errorf("build chatgpt transcription request: %w", err)

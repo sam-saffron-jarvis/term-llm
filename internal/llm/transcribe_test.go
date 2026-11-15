@@ -2,8 +2,10 @@ package llm
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -82,6 +84,16 @@ func TestTranscribeWithConfig_UsesResolvedURLForBuiltins(t *testing.T) {
 				},
 			},
 			wantURL: "https://resolved.mistral.test/v1/audio/transcriptions",
+		},
+		{
+			name: "venice modality override", providerOverride: "venice",
+			cfg:     &config.Config{Transcription: config.TranscriptionConfig{Venice: config.TranscriptionVeniceConfig{APIKey: "test-key", BaseURL: "https://feature.example/v1/"}}, Providers: map[string]config.ProviderConfig{"venice": {BaseURL: "https://provider.example/v1"}}},
+			wantURL: "https://feature.example/v1/audio/transcriptions",
+		},
+		{
+			name: "elevenlabs modality override", providerOverride: "elevenlabs",
+			cfg:     &config.Config{Transcription: config.TranscriptionConfig{ElevenLabs: config.TranscriptionElevenLabsConfig{APIKey: "test-key", BaseURL: "https://feature.example/v1/"}}, Providers: map[string]config.ProviderConfig{"elevenlabs": {BaseURL: "https://provider.example/v1"}}},
+			wantURL: "https://feature.example/v1/speech-to-text",
 		},
 		{
 			name:             "local",
@@ -319,6 +331,158 @@ func TestTranscribeWithConfig_OpenAIUsesSharedEndpoint(t *testing.T) {
 			if got.URL.String() != tt.wantURL || got.Header.Get("Authorization") != tt.wantAuth ||
 				got.Header.Get("OpenAI-Organization") != tt.wantOrg || got.Header.Get("OpenAI-Project") != tt.wantProj {
 				t.Fatalf("request = %s auth=%q org=%q project=%q", got.URL, got.Header.Get("Authorization"), got.Header.Get("OpenAI-Organization"), got.Header.Get("OpenAI-Project"))
+			}
+		})
+	}
+}
+
+func TestChatGPTTranscriptionUsesDedicatedBaseURL(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	audio := filepath.Join(t.TempDir(), "memo.ogg")
+	if err := os.WriteFile(audio, []byte("audio"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.Config{Providers: map[string]config.ProviderConfig{"chatgpt": {BaseURL: "not-an-http-url"}}}
+	_, err := TranscribeWithConfig(context.Background(), cfg, audio, "", "chatgpt")
+	if err == nil || !strings.Contains(err.Error(), "ChatGPT transcription is not configured") {
+		t.Fatalf("inference root should not affect transcription: %v", err)
+	}
+	cfg.Transcription.ChatGPT.BaseURL = "not-an-http-url"
+	_, err = TranscribeWithConfig(context.Background(), cfg, audio, "", "chatgpt")
+	if err == nil || !strings.Contains(err.Error(), "transcription.chatgpt.base_url") {
+		t.Fatalf("dedicated root error = %v", err)
+	}
+}
+
+func TestTranscriptionLocalRoutingAndLazyPrecedence(t *testing.T) {
+	t.Setenv("VENICE_API_KEY", "")
+	t.Setenv("ELEVENLABS_API_KEY", "")
+	t.Setenv("XI_API_KEY", "")
+	t.Setenv("MISTRAL_API_KEY", "")
+	t.Setenv("OPENAI_API_KEY", "")
+	oldProbe := probeAudioDuration
+	probeAudioDuration = func(context.Context, string) (time.Duration, error) { return time.Minute, nil }
+	t.Cleanup(func() { probeAudioDuration = oldProbe })
+	file := filepath.Join(t.TempDir(), "audio.wav")
+	if err := os.WriteFile(file, []byte("audio"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	paths := make(chan string, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseMultipartForm(1 << 20); err != nil {
+			t.Errorf("multipart: %v", err)
+		}
+		paths <- r.URL.Path
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{"text":"ok"}`)
+	}))
+	defer server.Close()
+	broken := "$(exit 7)"
+	for _, kind := range []string{"venice", "elevenlabs"} {
+		t.Run(kind+" feature wins", func(t *testing.T) {
+			cfg := &config.Config{Providers: map[string]config.ProviderConfig{kind: {BaseURL: broken, URL: broken, APIKey: broken}}}
+			want := "/prefix/audio/transcriptions"
+			if kind == "venice" {
+				cfg.Transcription.Venice.BaseURL = server.URL + "/prefix/"
+				cfg.Transcription.Venice.APIKey = "feature-key"
+			} else {
+				cfg.Transcription.ElevenLabs.BaseURL = server.URL + "/prefix/"
+				cfg.Transcription.ElevenLabs.APIKey = "feature-key"
+				want = "/prefix/speech-to-text"
+			}
+			if _, err := TranscribeWithConfig(context.Background(), cfg, file, "", kind); err != nil {
+				t.Fatal(err)
+			}
+			if got := <-paths; got != want {
+				t.Fatalf("path = %q, want %q", got, want)
+			}
+		})
+	}
+	for _, kind := range []string{"local", "mistral", "venice", "elevenlabs", "custom", "openai"} {
+		for _, deferred := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s legacy deferred=%v", kind, deferred), func(t *testing.T) {
+				root := server.URL + "/legacy/"
+				if deferred {
+					root = "$(printf %s '" + root + "')"
+				}
+				name := kind
+				if kind == "local" {
+					name = "local_whisper"
+				}
+				entry := config.ProviderConfig{URL: root, APIKey: "test-key"}
+				if kind == "openai" {
+					entry.Type = config.ProviderTypeOpenAICompat
+				}
+				cfg := &config.Config{Providers: map[string]config.ProviderConfig{name: entry}}
+				want := "/legacy/audio/transcriptions"
+				if kind == "local" {
+					want = "/legacy/inference"
+				}
+				if kind == "elevenlabs" {
+					want = "/legacy/speech-to-text"
+				}
+				if _, err := TranscribeWithConfig(context.Background(), cfg, file, "", kind); err != nil {
+					t.Fatal(err)
+				}
+				if got := <-paths; got != want {
+					t.Fatalf("path = %q, want %q", got, want)
+				}
+			})
+		}
+	}
+}
+
+func TestTranscriptionNamedProviderRequiresEndpoint(t *testing.T) {
+	t.Setenv("OPENAI_API_KEY", "")
+	file := filepath.Join(t.TempDir(), "audio.wav")
+	if err := os.WriteFile(file, []byte("audio"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	old := defaultHTTPClient
+	defaultHTTPClient = &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		t.Error("unexpected HTTP request")
+		return nil, fmt.Errorf("unexpected request")
+	})}
+	t.Cleanup(func() { defaultHTTPClient = old })
+	for _, name := range []string{"custom", "openai"} {
+		for _, root := range []string{"", "$(printf '')"} {
+			t.Run(name+"/"+root, func(t *testing.T) {
+				cfg := &config.Config{Providers: map[string]config.ProviderConfig{name: {Type: config.ProviderTypeOpenAICompat, APIKey: "private-key", BaseURL: root}}}
+				_, err := TranscribeWithConfig(context.Background(), cfg, file, "", name)
+				if err == nil || !(strings.Contains(err.Error(), "requires a non-empty") || strings.Contains(err.Error(), "resolved to an empty endpoint")) {
+					t.Fatalf("error = %v", err)
+				}
+			})
+		}
+	}
+}
+
+func TestTranscriptionExplicitEmptyRootDoesNotUsePublicFallback(t *testing.T) {
+	t.Setenv("OPENAI_API_KEY", "")
+	t.Setenv("VENICE_API_KEY", "")
+	t.Setenv("ELEVENLABS_API_KEY", "")
+	t.Setenv("XI_API_KEY", "")
+	t.Setenv("MISTRAL_API_KEY", "")
+	file := filepath.Join(t.TempDir(), "audio.wav")
+	if err := os.WriteFile(file, []byte("audio"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	old := defaultHTTPClient
+	defaultHTTPClient = &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		t.Error("unexpected HTTP request")
+		return nil, fmt.Errorf("unexpected request")
+	})}
+	t.Cleanup(func() { defaultHTTPClient = old })
+	for _, name := range []string{"local", "mistral", "venice", "elevenlabs", "openai"} {
+		t.Run(name, func(t *testing.T) {
+			entryName := name
+			if name == "local" {
+				entryName = "local_whisper"
+			}
+			cfg := &config.Config{Providers: map[string]config.ProviderConfig{entryName: {URL: "$(printf '')", APIKey: "private-key"}}}
+			_, err := TranscribeWithConfig(context.Background(), cfg, file, "", name)
+			if err == nil || !strings.Contains(err.Error(), "empty endpoint") {
+				t.Fatalf("error = %v", err)
 			}
 		})
 	}

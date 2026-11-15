@@ -90,7 +90,13 @@ func NewImageProvider(cfg *config.Config, providerOverride string) (ImageProvide
 		if err := ValidateSize(cfg.Image.Gemini.ImageSize); err != nil {
 			return nil, fmt.Errorf("invalid image.gemini.image_size config: %w", err)
 		}
-		return NewGeminiProvider(apiKey, model, cfg.Image.Gemini.ImageSize), nil
+		baseURL, err := cfg.ProviderBaseURL("gemini", cfg.Image.Gemini.BaseURL, strings.TrimSuffix(geminiBaseURL, "/models/"))
+		if err != nil {
+			return nil, fmt.Errorf("image.gemini.base_url: %w", err)
+		}
+		p := NewGeminiProvider(apiKey, model, cfg.Image.Gemini.ImageSize)
+		p.baseURL = baseURL
+		return p, nil
 
 	case "openai":
 		apiKey, err := cfg.Image.OpenAIKey().Resolve()
@@ -103,17 +109,28 @@ func NewImageProvider(cfg *config.Config, providerOverride string) (ImageProvide
 		if model == "" {
 			model = cfg.Image.OpenAI.Model
 		}
-		endpoint, err := cfg.OpenAIEndpoint()
+		endpoint, err := cfg.OpenAIEndpointWithBaseURL("image.openai.base_url", cfg.Image.OpenAI.BaseURL)
 		if err != nil {
 			return nil, fmt.Errorf("OpenAI image endpoint: %w", err)
 		}
+
 		return NewOpenAIProviderWithEndpoint(apiKey, model, endpoint), nil
 
 	case "chatgpt":
 		if model == "" {
 			model = cfg.Image.ChatGPT.Model
 		}
-		return NewChatGPTProvider(model)
+		baseURL, err := cfg.ProviderBaseURL("chatgpt", cfg.Image.ChatGPT.BaseURL, strings.TrimSuffix(chatGPTImageGenerateEndpoint, "/images/generations"))
+		if err != nil {
+			return nil, fmt.Errorf("image.chatgpt.base_url: %w", err)
+		}
+		p, err := NewChatGPTProvider(model)
+		if err != nil {
+			return nil, err
+		}
+		p.generateEndpoint = baseURL + "/images/generations"
+		p.editEndpoint = baseURL + "/images/edits"
+		return p, nil
 
 	case "xai", "grok":
 		apiKey, err := cfg.Image.XAIKey().Resolve()
@@ -126,7 +143,13 @@ func NewImageProvider(cfg *config.Config, providerOverride string) (ImageProvide
 		if model == "" {
 			model = cfg.Image.XAI.Model
 		}
-		return NewXAIProvider(apiKey, model), nil
+		baseURL, err := cfg.ProviderBaseURL("xai", cfg.Image.XAI.BaseURL, strings.TrimSuffix(xaiImageEndpoint, "/images/generations"))
+		if err != nil {
+			return nil, fmt.Errorf("image.xai.base_url: %w", err)
+		}
+		p := NewXAIProvider(apiKey, model)
+		p.baseURL = baseURL
+		return p, nil
 
 	case "venice":
 		apiKey, err := cfg.Image.VeniceKey().Resolve()
@@ -140,7 +163,13 @@ func NewImageProvider(cfg *config.Config, providerOverride string) (ImageProvide
 			model = cfg.Image.Venice.Model
 		}
 		editModel := cfg.Image.Venice.EditModel
-		return NewVeniceProvider(apiKey, model, editModel, cfg.Image.Venice.Resolution), nil
+		baseURL, err := cfg.ProviderBaseURL("venice", cfg.Image.Venice.BaseURL, veniceBaseURL)
+		if err != nil {
+			return nil, fmt.Errorf("image.venice.base_url: %w", err)
+		}
+		p := NewVeniceProvider(apiKey, model, editModel, cfg.Image.Venice.Resolution)
+		p.baseURL = baseURL
+		return p, nil
 
 	case "flux", "bfl":
 		apiKey, err := cfg.Image.FluxKey().Resolve()
@@ -150,7 +179,14 @@ func NewImageProvider(cfg *config.Config, providerOverride string) (ImageProvide
 		if apiKey == "" {
 			return nil, fmt.Errorf("BFL_API_KEY not configured. Set environment variable or add to image.flux.api_key in config")
 		}
-		return NewFluxProvider(apiKey, model), nil
+		baseURL, err := cfg.ProviderBaseURL("flux", cfg.Image.Flux.BaseURL, fluxBaseURL)
+		if err != nil {
+			return nil, fmt.Errorf("image.flux.base_url: %w", err)
+		}
+		p := NewFluxProvider(apiKey, model)
+		p.baseURL = baseURL
+		p.pinPolling = strings.TrimSpace(cfg.Image.Flux.BaseURL) != ""
+		return p, nil
 
 	case "openrouter":
 		apiKey, err := cfg.Image.OpenRouterKey().Resolve()
@@ -163,7 +199,13 @@ func NewImageProvider(cfg *config.Config, providerOverride string) (ImageProvide
 		if model == "" {
 			model = cfg.Image.OpenRouter.Model
 		}
-		return NewOpenRouterProvider(apiKey, model), nil
+		baseURL, err := cfg.ProviderBaseURL("openrouter", cfg.Image.OpenRouter.BaseURL, strings.TrimSuffix(openrouterImageEndpoint, "/chat/completions"))
+		if err != nil {
+			return nil, fmt.Errorf("image.openrouter.base_url: %w", err)
+		}
+		p := NewOpenRouterProvider(apiKey, model)
+		p.baseURL = baseURL
+		return p, nil
 
 	case "debug":
 		return NewDebugProvider(cfg.Image.Debug.Delay), nil

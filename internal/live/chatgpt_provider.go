@@ -60,6 +60,18 @@ func (p *ChatGPTProvider) Start(ctx context.Context, offerSDP string, opts Sessi
 	if strings.TrimSpace(offerSDP) == "" {
 		return nil, errors.New("live: empty sdp offer")
 	}
+	resolved := *p
+	callBase, err := config.ResolveBaseURL("live.chatgpt.call_base_url", p.cfg.ChatGPT.CallBaseURL, config.DefaultLiveChatGPTCallBaseURL)
+	if err != nil {
+		return nil, err
+	}
+	sideBase, err := resolveLiveEndpoint("live.chatgpt.sideband_base_url", p.cfg.ChatGPT.SidebandBaseURL, config.DefaultLiveChatGPTSidebandBaseURL)
+	if err != nil {
+		return nil, err
+	}
+	resolved.cfg.ChatGPT.CallBaseURL = callBase
+	resolved.cfg.ChatGPT.SidebandBaseURL = sideBase
+	p = &resolved
 	sessionJSON, err := SessionJSON(p.cfg, opts)
 	if err != nil {
 		return nil, err

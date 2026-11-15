@@ -29,8 +29,9 @@ const (
 // YouComSearcher implements Searcher using You.com search. It works without an
 // API key on the free keyless tier; with a key it calls the Web Search API.
 type YouComSearcher struct {
-	client *http.Client
-	apiKey string
+	baseURL string
+	client  *http.Client
+	apiKey  string
 }
 
 func NewYouComSearcher(apiKey string, client *http.Client) *YouComSearcher {
@@ -132,7 +133,7 @@ func (y *YouComSearcher) newRequest(ctx context.Context, query string, maxResult
 		if merr != nil {
 			return nil, merr
 		}
-		req, err = http.NewRequestWithContext(ctx, http.MethodPost, youcomKeyedURL, bytes.NewReader(jsonBody))
+		req, err = http.NewRequestWithContext(ctx, http.MethodPost, y.endpoint(youcomKeyedURL, "/search"), bytes.NewReader(jsonBody))
 		if err != nil {
 			return nil, err
 		}
@@ -143,7 +144,7 @@ func (y *YouComSearcher) newRequest(ctx context.Context, query string, maxResult
 		params := url.Values{}
 		params.Set("query", query)
 		params.Set("count", strconv.Itoa(count))
-		req, err = http.NewRequestWithContext(ctx, http.MethodGet, youcomKeylessURL+"?"+params.Encode(), nil)
+		req, err = http.NewRequestWithContext(ctx, http.MethodGet, y.endpoint(youcomKeylessURL, "/agents/search")+"?"+params.Encode(), nil)
 		if err != nil {
 			return nil, err
 		}
@@ -151,4 +152,11 @@ func (y *YouComSearcher) newRequest(ctx context.Context, query string, maxResult
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("User-Agent", youcomUserAgent)
 	return req, nil
+}
+
+func (y *YouComSearcher) endpoint(fallback, path string) string {
+	if y.baseURL == "" {
+		return fallback
+	}
+	return y.baseURL + path
 }

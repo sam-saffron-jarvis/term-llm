@@ -175,7 +175,11 @@ func runVeniceMusic(cmd *cobra.Command, cfg *config.Config, req music.Request) e
 	}
 	ctx, stop := signal.NotifyContext()
 	defer stop()
-	result, err := music.NewVeniceProvider(apiKey).Generate(ctx, req)
+	provider, err := music.NewConfiguredVeniceProvider(cfg, apiKey)
+	if err != nil {
+		return fmt.Errorf("venice music base_url: %w", err)
+	}
+	result, err := provider.Generate(ctx, req)
 	if err != nil {
 		return fmt.Errorf("music generation failed: %w", err)
 	}
@@ -205,7 +209,11 @@ func runElevenLabsMusic(cmd *cobra.Command, cfg *config.Config, req music.Reques
 	}
 	ctx, stop := signal.NotifyContext()
 	defer stop()
-	result, err := music.NewElevenLabsProvider(apiKey).Generate(ctx, req)
+	provider, err := music.NewConfiguredElevenLabsProvider(cfg, apiKey)
+	if err != nil {
+		return fmt.Errorf("elevenlabs music base_url: %w", err)
+	}
+	result, err := provider.Generate(ctx, req)
 	if err != nil {
 		return fmt.Errorf("music generation failed: %w", err)
 	}

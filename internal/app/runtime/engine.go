@@ -15,11 +15,15 @@ import (
 func DefaultToolRegistry(cfg *config.Config) *engine.ToolRegistry {
 	registry := engine.NewToolRegistry()
 	var searcher search.Searcher = search.NewLazySearcher(cfg)
-	if err := search.Available(cfg); err != nil {
+	if err := search.Available(cfg); err != nil && !search.HasBaseURLOverride(cfg) {
 		// Preserve the existing fallback for absent configuration, but never
 		// substitute a provider when an explicitly deferred secret fails.
 		runtimeoutput.Logf("Warning: search provider error: %v, falling back to DuckDuckGo", err)
-		searcher = search.NewDuckDuckGoLite(nil)
+		if cfg.Search.DuckDuckGo.BaseURL == "" {
+			searcher = search.NewDuckDuckGoLite(nil)
+		} else {
+			searcher = search.NewLazySearcher(&config.Config{Search: config.SearchConfig{Provider: "duckduckgo", DuckDuckGo: cfg.Search.DuckDuckGo}})
+		}
 	}
 	registry.Register(llm.NewWebSearchTool(searcher))
 	if readURLTool := NewReadURLToolForConfig(cfg); readURLTool != nil {
@@ -31,7 +35,9 @@ func DefaultToolRegistry(cfg *config.Config) *engine.ToolRegistry {
 func NewReadURLToolForConfig(cfg *config.Config) *llm.ReadURLTool {
 	switch cfg.Search.FetchProvider {
 	case "", "jina":
-		return llm.NewReadURLTool()
+		return llm.NewReadURLToolWithJinaBaseURL(func() (string, error) {
+			return config.ResolveBaseURL("search.jina.base_url", cfg.Search.Jina.BaseURL, "https://r.jina.ai")
+		})
 	case "exa_mcp":
 		return llm.NewReadURLToolWithFetcher(search.NewLazyExaMCPClient(func() (string, string, error) {
 			url, err := cfg.Search.ExaMCPURLRef().Resolve()
@@ -48,7 +54,9 @@ func NewReadURLToolForConfig(cfg *config.Config) *llm.ReadURLTool {
 		return nil
 	default:
 		runtimeoutput.Logf("Warning: unknown fetch provider %q, falling back to Jina", cfg.Search.FetchProvider)
-		return llm.NewReadURLTool()
+		return llm.NewReadURLToolWithJinaBaseURL(func() (string, error) {
+			return config.ResolveBaseURL("search.jina.base_url", cfg.Search.Jina.BaseURL, "https://r.jina.ai")
+		})
 	}
 }
 

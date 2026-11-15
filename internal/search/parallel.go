@@ -13,12 +13,11 @@ import (
 	"github.com/term-llm/term-llm/internal/providerhttp"
 )
 
-const parallelSearchURL = "https://api.parallel.ai/v1/search"
-
 // ParallelSearcher implements Searcher using the Parallel Search API.
 type ParallelSearcher struct {
-	client *http.Client
-	apiKey string
+	baseURL string
+	client  *http.Client
+	apiKey  string
 }
 
 func NewParallelSearcher(apiKey string, client *http.Client) *ParallelSearcher {
@@ -26,8 +25,9 @@ func NewParallelSearcher(apiKey string, client *http.Client) *ParallelSearcher {
 		client = &http.Client{Timeout: 30 * time.Second}
 	}
 	return &ParallelSearcher{
-		client: client,
-		apiKey: apiKey,
+		baseURL: "https://api.parallel.ai/v1",
+		client:  client,
+		apiKey:  apiKey,
 	}
 }
 
@@ -82,7 +82,7 @@ func (p *ParallelSearcher) Search(ctx context.Context, query string, maxResults 
 		return nil, fmt.Errorf("marshal request: %w", err)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, parallelSearchURL, bytes.NewReader(jsonBody))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, p.baseURL+"/search", bytes.NewReader(jsonBody))
 	if err != nil {
 		return nil, fmt.Errorf("create request: %w", err)
 	}

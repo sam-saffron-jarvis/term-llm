@@ -171,3 +171,23 @@ func TestInferEmbeddingProvider(t *testing.T) {
 		})
 	}
 }
+
+func TestOllamaEmbeddingDoesNotInheritInferenceEndpoint(t *testing.T) {
+	t.Setenv("OLLAMA_HOST", "https://env.invalid")
+	cfg := &config.Config{Providers: map[string]config.ProviderConfig{"ollama": {BaseURL: "https://shared.invalid"}}}
+	p, err := NewEmbeddingProvider(cfg, "ollama")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := p.(*OllamaProvider).baseURL; got != config.DefaultEmbedOllamaBaseURL {
+		t.Fatalf("baseURL = %q", got)
+	}
+	cfg.Embed.Ollama.BaseURL = "https://feature.example/prefix/"
+	p, err = NewEmbeddingProvider(cfg, "ollama")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := p.(*OllamaProvider).baseURL; got != "https://feature.example/prefix" {
+		t.Fatalf("feature baseURL = %q", got)
+	}
+}

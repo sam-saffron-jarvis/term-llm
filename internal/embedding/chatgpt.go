@@ -19,14 +19,20 @@ type ChatGPTProvider struct {
 }
 
 func NewChatGPTProvider() *ChatGPTProvider {
+	return NewChatGPTProviderWithBaseURL(openaiapi.DefaultBaseURL)
+}
+
+// NewChatGPTProviderWithBaseURL uses a dedicated embeddings API root. It does
+// not apply OpenAI Platform environment settings to the OAuth token.
+func NewChatGPTProviderWithBaseURL(baseURL string) *ChatGPTProvider {
 	return &ChatGPTProvider{
 		model:           openaiDefaultModel,
 		loadCredentials: credentials.GetChatGPTCredentials,
 		refresh:         credentials.RefreshChatGPTCredentials,
 		embed: func(ctx context.Context, accessToken, model string, req EmbedRequest) (*EmbeddingResult, error) {
 			// ChatGPT OAuth tokens are not Platform API keys: always use the
-			// public root and never apply OPENAI_* org/project scoping.
-			provider := NewOpenAIProviderWithEndpoint(accessToken, openaiapi.Public())
+			// dedicated root and never apply OPENAI_* org/project scoping.
+			provider := NewOpenAIProviderWithEndpoint(accessToken, openaiapi.Endpoint{BaseURL: baseURL})
 			provider.model = model
 			return provider.Embed(ctx, req)
 		},

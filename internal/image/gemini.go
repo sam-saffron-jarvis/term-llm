@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"path/filepath"
 	"strings"
 	"time"
@@ -32,13 +33,14 @@ type GeminiProvider struct {
 	apiKey      string
 	model       string
 	defaultSize string
+	baseURL     string
 }
 
 func NewGeminiProvider(apiKey, model, defaultSize string) *GeminiProvider {
 	if model == "" {
 		model = geminiDefaultModel
 	}
-	return &GeminiProvider{apiKey: apiKey, model: model, defaultSize: defaultSize}
+	return &GeminiProvider{apiKey: apiKey, model: model, defaultSize: defaultSize, baseURL: strings.TrimSuffix(geminiBaseURL, "/models/")}
 }
 
 func (p *GeminiProvider) Name() string {
@@ -91,7 +93,7 @@ func (p *GeminiProvider) doRequest(ctx context.Context, parts []geminiPart, size
 		genCfg.ImageConfig = &geminiImageConfig{ImageSize: effectiveSize}
 	}
 
-	endpoint := geminiBaseURL + p.model + ":generateContent"
+	endpoint := p.baseURL + "/models/" + url.PathEscape(p.model) + ":generateContent"
 
 	var bodyReader io.Reader
 	if debug || !geminiHasInlineData(parts) {

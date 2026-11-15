@@ -506,8 +506,12 @@ func (m *AddModel) installSkills() tea.Cmd {
 					skillDir := filepath.Join(p.Path, skill.Name)
 					skillMDPath := filepath.Join(skillDir, "SKILL.md")
 					if content, err := os.ReadFile(skillMDPath); err == nil {
-						updatedContent := skills.InjectGitHubProvenance(content, skill)
-						os.WriteFile(skillMDPath, updatedContent, 0644)
+						updatedContent, provenanceErr := skills.InjectGitHubProvenance(content, skill)
+						if provenanceErr != nil {
+							result.err = provenanceErr
+						} else {
+							result.err = os.WriteFile(skillMDPath, updatedContent, 0644)
+						}
 					}
 				}
 

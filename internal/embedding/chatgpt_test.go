@@ -3,9 +3,14 @@ package embedding
 import (
 	"context"
 	"errors"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/term-llm/term-llm/internal/config"
 	"github.com/term-llm/term-llm/internal/credentials"
 )
 
@@ -73,3 +78,68 @@ func TestChatGPTProviderReportsCredentialFailure(t *testing.T) {
 		t.Fatal("expected credential error")
 	}
 }
+
+func TestChatGPTFactoryDedicatedEndpoint(t *testing.T) {
+	t.Setenv("OPENAI_BASE_URL", "https://platform.invalid/v1")
+	t.Setenv("OPENAI_ORG_ID", "platform-org")
+	t.Setenv("OPENAI_PROJECT_ID", "platform-project")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/proxy/v1/embeddings" {
+			t.Errorf("path = %q", r.URL.Path)
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer oauth-test" {
+			t.Errorf("authorization = %q", got)
+		}
+		if r.Header.Get("OpenAI-Organization") != "" || r.Header.Get("OpenAI-Project") != "" {
+			t.Error("platform headers leaked")
+		}
+		_, _ = w.Write([]byte(`{"data":[{"index":0,"embedding":[1]}]}`))
+	}))
+	defer server.Close()
+	cfg := &config.Config{Providers: map[string]config.ProviderConfig{"chatgpt": {BaseURL: "https://codex.invalid/backend-api/codex"}}}
+	cfg.Embed.ChatGPT.BaseURL = server.URL + "/proxy/v1/"
+	provider, err := NewEmbeddingProvider(cfg, "chatgpt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := provider.(*ChatGPTProvider)
+	p.loadCredentials = func() (*credentials.ChatGPTCredentials, error) {
+		return &credentials.ChatGPTCredentials{AccessToken: "oauth-test", ExpiresAt: time.Now().Add(time.Hour).Unix()}, nil
+	}
+	if _, err := p.Embed(context.Background(), EmbedRequest{Texts: []string{"hello"}}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestChatGPTFactoryDefaultsIgnorePlatformAndCodex(t *testing.T) {
+	t.Setenv("OPENAI_BASE_URL", "https://platform.invalid/v1")
+	t.Setenv("OPENAI_ORG_ID", "platform-org")
+	t.Setenv("OPENAI_PROJECT_ID", "platform-project")
+	old := http.DefaultTransport
+	t.Cleanup(func() { http.DefaultTransport = old })
+	http.DefaultTransport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		if r.URL.String() != "https://api.openai.com/v1/embeddings" {
+			t.Errorf("url = %q", r.URL)
+		}
+		if r.Header.Get("OpenAI-Organization") != "" || r.Header.Get("OpenAI-Project") != "" {
+			t.Error("platform headers leaked")
+		}
+		return &http.Response{StatusCode: 200, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"data":[{"index":0,"embedding":[1]}]}`)), Request: r}, nil
+	})
+	cfg := &config.Config{Providers: map[string]config.ProviderConfig{"chatgpt": {BaseURL: "https://codex.invalid/backend-api/codex"}}}
+	provider, err := NewEmbeddingProvider(cfg, "chatgpt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := provider.(*ChatGPTProvider)
+	p.loadCredentials = func() (*credentials.ChatGPTCredentials, error) {
+		return &credentials.ChatGPTCredentials{AccessToken: "oauth-test", ExpiresAt: time.Now().Add(time.Hour).Unix()}, nil
+	}
+	if _, err := p.Embed(context.Background(), EmbedRequest{Texts: []string{"hello"}}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }

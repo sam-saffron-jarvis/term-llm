@@ -61,7 +61,11 @@ func SendTelegramMessage(ctx context.Context, token string, chatID int64, messag
 		return fmt.Errorf("marshal telegram request: %w", err)
 	}
 
-	url := fmt.Sprintf("https://api.telegram.org/bot%s/sendMessage", token)
+	base, err := providerhttp.EnvBaseURL("TELEGRAM_BASE_URL", "https://api.telegram.org")
+	if err != nil {
+		return err
+	}
+	url := fmt.Sprintf("%s/bot%s/sendMessage", base, token)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
 		return fmt.Errorf("create telegram request: %w", err)

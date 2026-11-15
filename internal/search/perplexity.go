@@ -15,8 +15,9 @@ import (
 
 // PerplexitySearcher implements Searcher using the Perplexity Search API.
 type PerplexitySearcher struct {
-	client *http.Client
-	apiKey string
+	baseURL string
+	client  *http.Client
+	apiKey  string
 }
 
 func NewPerplexitySearcher(apiKey string, client *http.Client) *PerplexitySearcher {
@@ -24,8 +25,9 @@ func NewPerplexitySearcher(apiKey string, client *http.Client) *PerplexitySearch
 		client = &http.Client{Timeout: 30 * time.Second}
 	}
 	return &PerplexitySearcher{
-		client: client,
-		apiKey: apiKey,
+		baseURL: "https://api.perplexity.ai",
+		client:  client,
+		apiKey:  apiKey,
 	}
 }
 
@@ -65,7 +67,7 @@ func (p *PerplexitySearcher) Search(ctx context.Context, query string, maxResult
 		return nil, fmt.Errorf("marshal request: %w", err)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://api.perplexity.ai/search", bytes.NewReader(jsonBody))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, p.baseURL+"/search", bytes.NewReader(jsonBody))
 	if err != nil {
 		return nil, err
 	}

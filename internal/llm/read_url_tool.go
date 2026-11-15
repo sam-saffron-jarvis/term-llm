@@ -42,8 +42,9 @@ type URLFetcher interface {
 
 // ReadURLTool fetches web pages using Jina AI Reader by default.
 type ReadURLTool struct {
-	client  *http.Client
-	fetcher URLFetcher
+	client             *http.Client
+	fetcher            URLFetcher
+	resolveJinaBaseURL func() (string, error)
 }
 
 func NewReadURLTool() *ReadURLTool {
@@ -119,7 +120,14 @@ func (t *ReadURLTool) Execute(ctx context.Context, args json.RawMessage) (core.T
 	}
 
 	// Fetch via Jina AI Reader
-	jinaURL := "https://r.jina.ai/" + url
+	base := "https://r.jina.ai"
+	if t.resolveJinaBaseURL != nil {
+		base, err = t.resolveJinaBaseURL()
+		if err != nil {
+			return core.ToolOutput{}, err
+		}
+	}
+	jinaURL := strings.TrimRight(base, "/") + "/" + url
 
 	req, err := http.NewRequestWithContext(ctx, "GET", jinaURL, nil)
 	if err != nil {
@@ -369,4 +377,11 @@ func (*ReadURLTool) CodeModeExposure() core.CodeModeExposure {
 // ToolOrigin identifies the trusted local implementation, not its public spelling.
 func (*ReadURLTool) ToolOrigin() core.ToolOrigin {
 	return core.ToolOrigin{Class: core.ToolOriginWeb, ID: "read_url"}
+}
+
+// NewReadURLToolWithJinaBaseURL resolves the Reader API root only when used.
+func NewReadURLToolWithJinaBaseURL(resolve func() (string, error)) *ReadURLTool {
+	tool := NewReadURLTool()
+	tool.resolveJinaBaseURL = resolve
+	return tool
 }

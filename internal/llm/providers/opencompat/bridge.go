@@ -3,6 +3,7 @@ package opencompat
 import (
 	"context"
 	"net/http"
+	"strings"
 )
 
 // Exported names for wire types and helpers that the root llm package still
@@ -65,3 +66,11 @@ func (p *OpenAICompatProvider) APIKey() string { return p.apiKey }
 
 // Model returns the xAI provider's resolved model name.
 func (p *XAIProvider) Model() string { return p.model }
+
+// SetBaseURL overrides the API root without changing provider-specific behavior.
+func (p *OpenAICompatProvider) SetBaseURL(baseURL string) {
+	if strings.TrimSpace(baseURL) != "" {
+		p.baseURL = strings.TrimRight(strings.TrimSpace(baseURL), "/")
+		p.customBaseURL = true
+	}
+}

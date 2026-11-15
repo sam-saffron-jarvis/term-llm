@@ -12,6 +12,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"github.com/term-llm/term-llm/internal/providerhttp"
 	"io"
 	"io/fs"
 	"net/http"
@@ -285,6 +286,14 @@ func published(ctx context.Context, version string) (*Reference, error) {
 	var c catalog
 	raw, _ := os.ReadFile(filepath.Join(dir, "releases.json"))
 	_ = json.Unmarshal(raw, &c)
+	apiBase, err := providerhttp.EnvBaseURL("GITHUB_API_URL", "https://api.github.com")
+	if err != nil {
+		return nil, err
+	}
+	releaseBase, err := providerhttp.EnvBaseURL("TERM_LLM_RELEASE_BASE_URL", "https://github.com")
+	if err != nil {
+		return nil, err
+	}
 	if time.Since(c.Fetched) > 24*time.Hour {
 		var releases []release
 		etag := ""
@@ -293,7 +302,7 @@ func published(ctx context.Context, version string) (*Reference, error) {
 			if page == 1 {
 				conditional = c.ETag
 			}
-			b, status, nextETag, err := downloadConditional(ctx, fmt.Sprintf("https://api.github.com/repos/term-llm/term-llm/releases?per_page=100&page=%d", page), 4<<20, conditional)
+			b, status, nextETag, err := downloadConditional(ctx, fmt.Sprintf("%s/repos/term-llm/term-llm/releases?per_page=100&page=%d", apiBase, page), 4<<20, conditional)
 			if status == http.StatusNotModified {
 				releases = c.Releases
 				etag = c.ETag
@@ -342,7 +351,7 @@ func published(ctx context.Context, version string) (*Reference, error) {
 				}
 			}
 		}
-		url := "https://github.com/term-llm/term-llm/releases/download/" + tag + "/"
+		url := releaseBase + "/term-llm/term-llm/releases/download/" + tag + "/"
 		checks, err := download(ctx, url+"checksums.txt", 1<<20)
 		if err != nil {
 			continue

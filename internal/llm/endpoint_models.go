@@ -47,6 +47,8 @@ func UsesEndpointModelCatalog(provider string, providerCfg config.ProviderConfig
 	switch config.InferProviderType(provider, providerCfg.Type) {
 	case config.ProviderTypeOpenAICompat, config.ProviderTypeVLLM:
 		return true
+	case config.ProviderTypeOpenRouter, config.ProviderTypeVenice, config.ProviderTypeZen:
+		return strings.TrimSpace(providerCfg.BaseURL) != ""
 	case config.ProviderTypeOpenAI:
 		return endpointModelBaseURL(providerCfg) != openaiapi.DefaultBaseURL
 	default:

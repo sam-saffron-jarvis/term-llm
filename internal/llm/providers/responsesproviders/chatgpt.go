@@ -33,6 +33,7 @@ var chatGPTHTTPClient = defaultHTTPClient
 
 // ChatGPTProvider implements Provider using the ChatGPT backend API with native OAuth.
 type ChatGPTProvider struct {
+	baseURL          string
 	creds            *credentials.ChatGPTCredentials
 	model            string
 	effort           string // reasoning effort: "low", "medium", "high", "xhigh", or ""
@@ -44,6 +45,7 @@ type ChatGPTProvider struct {
 }
 
 type ChatGPTProviderOptions struct {
+	BaseURL          string
 	UseWebSocket     bool
 	ServiceTier      string
 	FileUploadPolicy *FileUploadPolicy
@@ -101,6 +103,7 @@ func NewChatGPTProviderWithCredsAndOptions(creds *credentials.ChatGPTCredentials
 	model, tier := chatGPTModelServiceTier(model)
 	actualModel, effort := parseModelEffortForProvider("chatgpt", model)
 	return &ChatGPTProvider{
+		baseURL:          strings.TrimRight(strings.TrimSpace(opts.BaseURL), "/"),
 		creds:            creds,
 		model:            actualModel,
 		effort:           effort,
@@ -252,6 +255,10 @@ func (p *ChatGPTProvider) Stream(ctx context.Context, req Request) (Stream, erro
 	// Reuse client across requests
 	if p.responsesClient == nil {
 		p.responsesClient = NewChatGPTResponsesClient(p.creds)
+		if p.baseURL != "" {
+			p.responsesClient.BaseURL = p.baseURL + "/responses"
+			p.responsesClient.WebSocketPoolKey = "chatgpt:" + p.creds.AccountID + ":" + p.responsesClient.BaseURL
+		}
 		p.responsesClient.UseWebSocket = p.useWebSocket
 		if p.useWebSocket {
 			// ChatGPT's HTTP Responses path historically sends full history because

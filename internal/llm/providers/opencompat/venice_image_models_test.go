@@ -1,6 +1,9 @@
 package opencompat
 
 import (
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -33,5 +36,46 @@ func TestVeniceImageModelDeferredCredentials(t *testing.T) {
 		if _, err := os.Stat(marker); !os.IsNotExist(err) {
 			t.Fatalf("completion executed deferred credential: %v", err)
 		}
+	}
+}
+
+func TestVeniceImageCompletionCustomAndDeferredBaseURL(t *testing.T) {
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	if err := cache.WriteModelInfoCache(veniceImageCacheKey, []cache.CachedModel{{ID: "public", Type: "image"}}); err != nil {
+		t.Fatal(err)
+	}
+	seen := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen++
+		if r.URL.Path != "/proxy/models" || r.URL.RawQuery != "type=all" {
+			t.Errorf("request URL = %s", r.URL)
+		}
+		io.WriteString(w, `{"data":[{"id":"private","type":"image"}]}`)
+	}))
+	defer server.Close()
+	cfg := &config.Config{Providers: map[string]config.ProviderConfig{"venice": {BaseURL: "https://unused.example"}}}
+	cfg.Image.Venice.APIKey = "test"
+	cfg.Image.Venice.BaseURL = server.URL + "/proxy/"
+	if got := GetVeniceImageModelIDs(cfg, "image"); !reflect.DeepEqual(got, []string{"private"}) {
+		t.Fatalf("models = %v", got)
+	}
+	if seen != 1 {
+		t.Fatalf("requests = %d", seen)
+	}
+	cached, err := cache.ReadModelCache(veniceImageCacheKey)
+	if err != nil || len(cached.ModelInfos) != 1 || cached.ModelInfos[0].ID != "public" {
+		t.Fatalf("public cache = %+v, %v", cached, err)
+	}
+	marker := filepath.Join(t.TempDir(), "executed")
+	cfg.Image.Venice.BaseURL = "$(touch " + marker + "; echo " + server.URL + ")"
+	cfg.Image.Venice.Model = "configured"
+	if got := GetVeniceImageModelIDs(cfg, "image"); !reflect.DeepEqual(got, []string{"configured"}) {
+		t.Fatalf("deferred models = %v", got)
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatalf("completion executed deferred URL: %v", err)
+	}
+	if seen != 1 {
+		t.Fatalf("unexpected request for deferred endpoint")
 	}
 }

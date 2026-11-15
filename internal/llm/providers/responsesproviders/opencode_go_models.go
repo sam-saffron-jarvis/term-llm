@@ -273,6 +273,11 @@ func unknownOpenCodeGoModel(id string) opencodeGoModel {
 }
 
 func fetchOpenCodeGoModels(ctx context.Context, client *http.Client, apiKey, baseURL, catalogURL string) (opencodeGoFetchResult, error) {
+	var err error
+	catalogURL, err = configuredOpenCodeCatalogURL(catalogURL)
+	if err != nil {
+		return opencodeGoFetchResult{}, err
+	}
 	if client == nil {
 		client = defaultHTTPClient
 	}
@@ -314,7 +319,11 @@ func fetchOpenCodeGoModels(ctx context.Context, client *http.Client, apiKey, bas
 	liveCh, catalogCh := make(chan result, 1), make(chan result, 1)
 	go fetch(strings.TrimRight(baseURL, "/")+"/models", liveAuth, true, liveCh)
 	// Never forward the subscription credential to the separate catalog origin.
-	go fetch(catalogURL, "", false, catalogCh)
+	if catalogURL != "" {
+		go fetch(catalogURL, "", false, catalogCh)
+	} else {
+		catalogCh <- result{err: fmt.Errorf("external catalog disabled for custom base URL")}
+	}
 	liveResult, catalogResult := <-liveCh, <-catalogCh
 	if liveResult.err != nil {
 		return opencodeGoFetchResult{}, fmt.Errorf("list OpenCode Go models: %w", liveResult.err)

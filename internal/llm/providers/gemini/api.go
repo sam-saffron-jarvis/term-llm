@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 
 	"github.com/term-llm/term-llm/internal/llm/core/stream"
@@ -190,7 +191,7 @@ func streamGeminiResponses(ctx context.Context, client *http.Client, baseURL, ap
 		return fmt.Errorf("marshal request: %w", err)
 	}
 	model = strings.TrimPrefix(model, "models/")
-	endpoint := fmt.Sprintf("%s/%s:streamGenerateContent?alt=sse", strings.TrimRight(baseURL, "/"), model)
+	endpoint := fmt.Sprintf("%s/%s:streamGenerateContent?alt=sse", strings.TrimRight(baseURL, "/"), url.PathEscape(model))
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
 	if err != nil {
 		return fmt.Errorf("create request: %w", err)

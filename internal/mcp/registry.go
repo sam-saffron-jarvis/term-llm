@@ -9,6 +9,8 @@ import (
 	"net/url"
 	"strconv"
 	"time"
+
+	"github.com/term-llm/term-llm/internal/providerhttp"
 )
 
 const (
@@ -123,7 +125,11 @@ func (r *RegistryClient) Search(ctx context.Context, opts SearchOptions) (*Searc
 		opts.Limit = 100
 	}
 
-	u, err := url.Parse(r.baseURL + "/v0/servers")
+	base, err := providerhttp.EnvBaseURL("MCP_REGISTRY_BASE_URL", r.baseURL)
+	if err != nil {
+		return nil, err
+	}
+	u, err := url.Parse(base + "/v0/servers")
 	if err != nil {
 		return nil, err
 	}

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -111,7 +112,7 @@ func (p *GeminiProvider) Embed(ctx context.Context, req EmbedRequest) (*Embeddin
 	if err != nil {
 		return nil, fmt.Errorf("Gemini embedding request error: %w", err)
 	}
-	endpoint := fmt.Sprintf("%s/%s:batchEmbedContents", strings.TrimRight(p.baseURL, "/"), model)
+	endpoint := fmt.Sprintf("%s/%s:batchEmbedContents", strings.TrimRight(p.baseURL, "/"), url.PathEscape(model))
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("Gemini embedding request error: %w", err)

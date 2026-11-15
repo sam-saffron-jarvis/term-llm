@@ -119,51 +119,66 @@ The index below follows the canonical config schema. A dash means no default or 
 | `edit.diff_format` | string | `auto` | — |
 | `image.provider` | string | `gemini` | — |
 | `image.output_dir` | string | `~/Pictures/term-llm` | — |
+| `image.gemini.base_url` | string | — | — |
 | `image.gemini.api_key` | string | — | — |
 | `image.gemini.model` | string | `gemini-2.5-flash-image` | — |
 | `image.gemini.image_size` | string | — | — |
+| `image.openai.base_url` | string | — | — |
 | `image.openai.api_key` | string | — | — |
 | `image.openai.model` | string | `gpt-image-2` | — |
+| `image.chatgpt.base_url` | string | — | — |
 | `image.chatgpt.model` | string | `gpt-image-2.5-flare` | — |
+| `image.xai.base_url` | string | — | — |
 | `image.xai.api_key` | string | — | — |
 | `image.xai.model` | string | `grok-2-image-1212` | — |
+| `image.venice.base_url` | string | — | — |
 | `image.venice.api_key` | string | — | — |
 | `image.venice.model` | string | `nano-banana-pro` | — |
 | `image.venice.edit_model` | string | — | — |
 | `image.venice.resolution` | string | `2K` | — |
+| `image.flux.base_url` | string | — | — |
 | `image.flux.api_key` | string | — | — |
 | `image.flux.model` | string | `flux-2-pro` | — |
+| `image.openrouter.base_url` | string | — | — |
 | `image.openrouter.api_key` | string | — | — |
 | `image.openrouter.model` | string | `google/gemini-2.5-flash-image` | — |
 | `image.debug.delay` | number | `0` | — |
 | `audio.provider` | string | `venice` | — |
 | `audio.output_dir` | string | `~/Music/term-llm` | — |
+| `audio.venice.base_url` | string | — | — |
 | `audio.venice.api_key` | string | — | — |
 | `audio.venice.model` | string | `tts-kokoro` | — |
 | `audio.venice.voice` | string | `af_sky` | — |
 | `audio.venice.format` | string | `mp3` | — |
+| `audio.gemini.base_url` | string | — | — |
 | `audio.gemini.api_key` | string | — | — |
 | `audio.gemini.model` | string | `gemini-3.1-flash-tts-preview` | — |
 | `audio.gemini.voice` | string | `Kore` | — |
 | `audio.gemini.format` | string | `wav` | — |
+| `audio.elevenlabs.base_url` | string | — | — |
 | `audio.elevenlabs.api_key` | string | — | — |
 | `audio.elevenlabs.model` | string | `eleven_multilingual_v2` | — |
 | `audio.elevenlabs.voice` | string | `JBFqnCBsd6RMkjVDRZzb` | — |
 | `audio.elevenlabs.format` | string | `mp3_44100_128` | — |
 | `music.provider` | string | `venice` | — |
 | `music.output_dir` | string | `~/Music/term-llm` | — |
+| `music.venice.base_url` | string | — | — |
 | `music.venice.api_key` | string | — | — |
 | `music.venice.model` | string | `elevenlabs-sound-effects-v2` | — |
 | `music.venice.format` | string | `mp3` | — |
+| `music.elevenlabs.base_url` | string | — | — |
 | `music.elevenlabs.api_key` | string | — | — |
 | `music.elevenlabs.model` | string | `music_v1` | — |
 | `music.elevenlabs.format` | string | `mp3_44100_128` | — |
 | `transcription.provider` | string | `openai` | — |
+| `transcription.chatgpt.base_url` | string | — | — |
 | `transcription.model` | string | — | — |
 | `transcription.save_dir` | string | `""` | — |
 | `transcription.timestamps` | boolean | `false` | — |
+| `transcription.venice.base_url` | string | — | — |
 | `transcription.venice.api_key` | string | — | — |
 | `transcription.venice.model` | string | `nvidia/parakeet-tdt-0.6b-v3` | — |
+| `transcription.elevenlabs.base_url` | string | — | — |
 | `transcription.elevenlabs.api_key` | string | — | — |
 | `transcription.elevenlabs.model` | string | `scribe_v2` | — |
 | `live.enabled` | boolean | `false` | — |
@@ -195,13 +210,18 @@ The index below follows the canonical config schema. A dash means no default or 
 | `live.chatgpt.call_base_url` | string | `https://chatgpt.com/backend-api/codex` | — |
 | `live.chatgpt.sideband_base_url` | string | `https://api.openai.com/v1` | — |
 | `embed.provider` | string | — | — |
+| `embed.chatgpt.base_url` | string | — | — |
 | `embed.batch_size` | integer | `32` | — |
+| `embed.openai.base_url` | string | — | — |
 | `embed.openai.api_key` | string | — | — |
 | `embed.openai.model` | string | `text-embedding-3-small` | — |
+| `embed.gemini.base_url` | string | — | — |
 | `embed.gemini.api_key` | string | — | — |
 | `embed.gemini.model` | string | `gemini-embedding-001` | — |
+| `embed.jina.base_url` | string | — | — |
 | `embed.jina.api_key` | string | — | — |
 | `embed.jina.model` | string | `jina-embeddings-v3` | — |
+| `embed.voyage.base_url` | string | — | — |
 | `embed.voyage.api_key` | string | — | — |
 | `embed.voyage.model` | string | `voyage-3.5` | — |
 | `embed.ollama.base_url` | string | `http://127.0.0.1:11434` | — |
@@ -209,15 +229,24 @@ The index below follows the canonical config schema. A dash means no default or 
 | `search.provider` | string | `exa_mcp` | — |
 | `search.fetch_provider` | string | `jina` | — |
 | `search.force_external` | boolean | `false` | — |
+| `search.duckduckgo.base_url` | string | — | — |
+| `search.jina.base_url` | string | — | — |
+| `search.exa.base_url` | string | — | — |
 | `search.exa.api_key` | string | — | — |
 | `search.exa_mcp.url` | string | `https://mcp.exa.ai/mcp` | — |
 | `search.exa_mcp.api_key` | string | — | — |
+| `search.perplexity.base_url` | string | — | — |
 | `search.perplexity.api_key` | string | — | — |
+| `search.parallel.base_url` | string | — | — |
 | `search.parallel.api_key` | string | — | — |
+| `search.tavily.base_url` | string | — | — |
 | `search.tavily.api_key` | string | — | — |
+| `search.brave.base_url` | string | — | — |
 | `search.brave.api_key` | string | — | — |
+| `search.google.base_url` | string | — | — |
 | `search.google.api_key` | string | — | — |
 | `search.google.cx` | string | — | — |
+| `search.youcom.base_url` | string | — | — |
 | `search.youcom.api_key` | string | — | — |
 | `classify.default_provider` | string | `typesafe` | — |
 | `classify.providers.typesafe.type` | string | — | — |
@@ -1099,6 +1128,8 @@ transcription:
 embed:
   provider: gemini
 ```
+
+HTTP integrations support configurable API roots, including nested gateway path prefixes. See the [HTTP endpoint audit and precedence rules](/reference/http-api-endpoints/) for feature overrides, ancillary environment settings, and authentication/download boundaries.
 
 Each feature block can hold provider-specific credentials and defaults. The image, audio, music, transcription, and embedding providers are independent of the main text provider. `image.provider` also accepts a named `providers` entry with `type: openai_compatible`, an API `base_url`, and a `model`; see [local image providers](/guides/image-generation/#local-and-openai-compatible-image-providers).
 

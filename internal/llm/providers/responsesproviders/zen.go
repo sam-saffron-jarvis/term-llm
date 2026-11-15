@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/term-llm/term-llm/internal/config"
+	"github.com/term-llm/term-llm/internal/providerhttp"
 )
 
 const (
@@ -30,6 +31,7 @@ var (
 // ZenProvider wraps OpenAICompatProvider with models.dev pricing data.
 type ZenProvider struct {
 	*OpenAICompatProvider
+	customBaseURL bool
 }
 
 // NewZenProvider creates a ZenProvider preconfigured for OpenCode Zen.
@@ -80,6 +82,10 @@ type modelsDevModel struct {
 // ListModels returns available models with pricing from models.dev and
 // reasoning-effort metadata from the shared OpenCode catalog.
 func (p *ZenProvider) ListModels(ctx context.Context) ([]ModelInfo, error) {
+	if p.customBaseURL {
+		models, err := p.OpenAICompatProvider.ListModels(ctx)
+		return filterZenModels(models), err
+	}
 	// Reasoning-effort metadata is fetched concurrently with the model list;
 	// failures are non-fatal and simply leave efforts unset.
 	effortsCh := make(chan map[string][]string, 1)
@@ -161,7 +167,15 @@ func fetchModelsDevPricing(ctx context.Context) (map[string]modelsDevModel, erro
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
-	req, err := http.NewRequestWithContext(ctx, "GET", modelsDevURL, nil)
+	endpoint := modelsDevURL
+	if modelsDevURL == "https://models.dev/api.json" {
+		base, err := providerhttp.EnvBaseURL("MODELS_DEV_BASE_URL", "https://models.dev")
+		if err != nil {
+			return nil, err
+		}
+		endpoint = base + "/api.json"
+	}
+	req, err := http.NewRequestWithContext(ctx, "GET", endpoint, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -199,7 +213,11 @@ func fetchZenReasoningEfforts(ctx context.Context) map[string][]string {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
-	req, err := http.NewRequestWithContext(ctx, "GET", zenCatalogURL, nil)
+	endpoint, err := configuredOpenCodeCatalogURL(zenCatalogURL)
+	if err != nil {
+		return nil
+	}
+	req, err := http.NewRequestWithContext(ctx, "GET", endpoint, nil)
 	if err != nil {
 		return nil
 	}
@@ -258,4 +276,12 @@ func filterZenModels(models []ModelInfo) []ModelInfo {
 		}
 	}
 	return filtered
+}
+
+// SetBaseURL configures the Zen API without consulting external metadata services.
+func (p *ZenProvider) SetBaseURL(baseURL string) {
+	if strings.TrimSpace(baseURL) != "" {
+		p.customBaseURL = true
+		p.OpenAICompatProvider.SetBaseURL(baseURL)
+	}
 }

@@ -88,7 +88,6 @@ func runVideo(cmd *cobra.Command, args []string) error {
 	if (videoInput == "-" || referencesUseStdin(videoReferences)) && len(args) == 0 {
 		return fmt.Errorf("prompt required as an argument when stdin is used for media input")
 	}
-
 	prompt, err := resolveVideoPrompt(args)
 	if err != nil {
 		return err
@@ -111,16 +110,13 @@ func runVideo(cmd *cobra.Command, args []string) error {
 	if !videoQuoteOnly && videoTimeout <= 0 && !videoNoWait {
 		return fmt.Errorf("timeout must be greater than 0")
 	}
-
 	ctx, stop := signal.NotifyContext()
 	defer stop()
-
 	cfg, err := loadConfigWithSetup()
 	if err != nil {
 		return err
 	}
 	initThemeFromConfig(cfg)
-
 	apiKey, err := cfg.Image.VeniceKey().Resolve()
 	if err != nil {
 		return fmt.Errorf("image.venice.api_key: %w", err)
@@ -128,7 +124,6 @@ func runVideo(cmd *cobra.Command, args []string) error {
 	if apiKey == "" {
 		return fmt.Errorf("VENICE_API_KEY not configured. Set environment variable or add to image.venice.api_key in config")
 	}
-
 	var inputData []byte
 	if videoInput != "" {
 		inputData, err = loadVideoInput(cmd, videoInput)
@@ -136,12 +131,10 @@ func runVideo(cmd *cobra.Command, args []string) error {
 			return err
 		}
 	}
-
 	references, err := loadVideoReferences(cmd, videoReferences)
 	if err != nil {
 		return err
 	}
-
 	model := video.ResolveModel(videoModel, len(inputData) > 0)
 	request := video.Request{
 		Prompt:          prompt,
@@ -157,8 +150,10 @@ func runVideo(cmd *cobra.Command, args []string) error {
 		Debug:           videoDebug,
 		DebugRaw:        debugRaw,
 	}
-
-	provider := video.NewVeniceProvider(apiKey)
+	provider, err := video.NewConfiguredVeniceProvider(cfg, apiKey)
+	if err != nil {
+		return fmt.Errorf("venice video base_url: %w", err)
+	}
 	quote, err := provider.Quote(ctx, request)
 	if err != nil {
 		return fmt.Errorf("video quote failed: %w", err)
@@ -181,7 +176,6 @@ func runVideo(cmd *cobra.Command, args []string) error {
 			References: append([]string(nil), videoReferences...),
 		})
 	}
-
 	job, err := provider.Queue(ctx, request)
 	if err != nil {
 		return fmt.Errorf("video queue failed: %w", err)
@@ -207,13 +201,11 @@ func runVideo(cmd *cobra.Command, args []string) error {
 			References: append([]string(nil), videoReferences...),
 		})
 	}
-
 	deadline := time.Now().Add(videoTimeout)
 	for {
 		if time.Now().After(deadline) {
 			return fmt.Errorf("video generation timed out after %s", videoTimeout)
 		}
-
 		retrieval, err := provider.Retrieve(ctx, *job, videoDeleteRemote, videoDebug || debugRaw)
 		if err != nil {
 			return fmt.Errorf("video retrieve failed: %w", err)
@@ -248,12 +240,10 @@ func runVideo(cmd *cobra.Command, args []string) error {
 				References: append([]string(nil), videoReferences...),
 			})
 		}
-
 		eta := formatETA(retrieval.AverageExecutionTime, retrieval.ExecutionDuration)
 		if !videoJSON {
 			fmt.Fprintf(os.Stderr, "Status: %s (%s elapsed%s)\n", retrieval.Status, formatMillis(retrieval.ExecutionDuration), eta)
 		}
-
 		select {
 		case <-ctx.Done():
 			return fmt.Errorf("cancelled")

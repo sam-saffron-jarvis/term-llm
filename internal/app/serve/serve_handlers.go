@@ -2882,7 +2882,7 @@ func (s *serveServer) handleModels(w http.ResponseWriter, r *http.Request) {
 	// fallback when upstream listing is unavailable or fails.
 	pc, hasCfg := s.cfgRef.Providers[effectiveName]
 	isOpenRouter := effectiveName == "openrouter" || (hasCfg && string(pc.Type) == "openrouter")
-	if isOpenRouter {
+	if isOpenRouter && (!hasCfg || strings.TrimSpace(pc.BaseURL) == "") {
 		apiKey := ""
 		if hasCfg {
 			apiKey = pc.ResolvedAPIKey

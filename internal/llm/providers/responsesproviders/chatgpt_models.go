@@ -173,17 +173,23 @@ func (p *ChatGPTProvider) refreshChatGPTModelFacts(ctx context.Context) ([]Model
 	if len(models) == 0 {
 		return nil, fmt.Errorf("ChatGPT models request returned no models")
 	}
-	_ = saveChatGPTModelsCache(chatGPTModelsCache{
-		AccountID:     p.creds.AccountID,
-		FetchedAt:     time.Now(),
-		ETag:          etag,
-		ClientVersion: chatGPTModelsClientVersion,
-		Models:        models,
-	})
+	if p.baseURL == "" {
+		_ = saveChatGPTModelsCache(chatGPTModelsCache{
+			AccountID:     p.creds.AccountID,
+			FetchedAt:     time.Now(),
+			ETag:          etag,
+			ClientVersion: chatGPTModelsClientVersion,
+			Models:        models,
+		})
+	}
 	return models, nil
 }
 
 func (p *ChatGPTProvider) chatGPTModelFacts(ctx context.Context) ([]ModelInfo, bool, error) {
+	if p.baseURL != "" {
+		models, err := p.refreshChatGPTModelFacts(ctx)
+		return models, err == nil, err
+	}
 	if cache, err := loadChatGPTModelsCacheForAccount(chatGPTModelsClientVersion, p.creds.AccountID); err == nil && time.Since(cache.FetchedAt) <= chatGPTModelsCacheTTL {
 		return cache.Models, true, nil
 	}
@@ -210,7 +216,11 @@ func (p *ChatGPTProvider) fetchChatGPTModels(ctx context.Context) ([]ModelInfo, 
 		defer cancel()
 	}
 
-	u, err := url.Parse(chatGPTModelsBaseURL)
+	endpoint := chatGPTModelsBaseURL
+	if p.baseURL != "" {
+		endpoint = p.baseURL + "/models"
+	}
+	u, err := url.Parse(endpoint)
 	if err != nil {
 		return nil, "", err
 	}

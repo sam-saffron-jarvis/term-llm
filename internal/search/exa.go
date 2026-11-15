@@ -15,8 +15,9 @@ import (
 
 // ExaSearcher implements Searcher using the Exa API.
 type ExaSearcher struct {
-	client *http.Client
-	apiKey string
+	baseURL string
+	client  *http.Client
+	apiKey  string
 }
 
 func NewExaSearcher(apiKey string, client *http.Client) *ExaSearcher {
@@ -24,8 +25,9 @@ func NewExaSearcher(apiKey string, client *http.Client) *ExaSearcher {
 		client = &http.Client{Timeout: 30 * time.Second}
 	}
 	return &ExaSearcher{
-		client: client,
-		apiKey: apiKey,
+		baseURL: "https://api.exa.ai",
+		client:  client,
+		apiKey:  apiKey,
 	}
 }
 
@@ -68,7 +70,7 @@ func (e *ExaSearcher) Search(ctx context.Context, query string, maxResults int) 
 		return nil, fmt.Errorf("marshal request: %w", err)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://api.exa.ai/search", bytes.NewReader(jsonBody))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, e.baseURL+"/search", bytes.NewReader(jsonBody))
 	if err != nil {
 		return nil, err
 	}

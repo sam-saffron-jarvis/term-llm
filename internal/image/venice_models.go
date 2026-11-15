@@ -14,6 +14,17 @@ const veniceModelLookupTimeout = 5 * time.Second
 // metadata triggers a refresh even if the cached ID list is still fresh. A
 // failed refresh retains stale capabilities rather than guessing native sizing.
 func (p *VeniceProvider) modelConstraints(ctx context.Context, model string) *cache.ImageModelConstraints {
+	// The shared catalog cache belongs to the public endpoint, not an
+	// independently configured gateway with potentially different models.
+	if p.baseURL != venice.BaseURL {
+		ctx, cancel := context.WithTimeout(ctx, veniceModelLookupTimeout)
+		defer cancel()
+		models, err := venice.FetchImageModelsAt(ctx, veniceHTTPClient, p.apiKey, p.baseURL)
+		if err != nil {
+			return nil
+		}
+		return veniceConstraintsForModel(models, model)
+	}
 	cached, _ := cache.ReadModelCache(venice.ImageCacheKey)
 	var stale *cache.ImageModelConstraints
 	if cached != nil {
@@ -24,7 +35,7 @@ func (p *VeniceProvider) modelConstraints(ctx context.Context, model string) *ca
 	}
 	ctx, cancel := context.WithTimeout(ctx, veniceModelLookupTimeout)
 	defer cancel()
-	models, err := venice.FetchImageModels(ctx, veniceHTTPClient, p.apiKey)
+	models, err := venice.FetchImageModelsAt(ctx, veniceHTTPClient, p.apiKey, p.baseURL)
 	if err != nil || len(models) == 0 {
 		return stale
 	}

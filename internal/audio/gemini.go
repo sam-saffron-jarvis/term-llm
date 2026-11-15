@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -149,7 +150,7 @@ func (p *GeminiProvider) do(ctx context.Context, model string, payload any, debu
 	if err != nil {
 		return nil, "", fmt.Errorf("marshal Gemini request: %w", err)
 	}
-	endpoint := fmt.Sprintf("%s/%s:generateContent", p.baseURL, model)
+	endpoint := fmt.Sprintf("%s/%s:generateContent", p.baseURL, url.PathEscape(model))
 	if debug {
 		debugLog("Gemini Audio Request", "POST %s\n%s", endpoint, string(jsonBody))
 	}

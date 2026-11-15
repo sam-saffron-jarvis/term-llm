@@ -15,8 +15,9 @@ import (
 
 // TavilySearcher implements Searcher using the Tavily Search API.
 type TavilySearcher struct {
-	client *http.Client
-	apiKey string
+	baseURL string
+	client  *http.Client
+	apiKey  string
 }
 
 func NewTavilySearcher(apiKey string, client *http.Client) *TavilySearcher {
@@ -24,8 +25,9 @@ func NewTavilySearcher(apiKey string, client *http.Client) *TavilySearcher {
 		client = &http.Client{Timeout: 30 * time.Second}
 	}
 	return &TavilySearcher{
-		client: client,
-		apiKey: apiKey,
+		baseURL: "https://api.tavily.com",
+		client:  client,
+		apiKey:  apiKey,
 	}
 }
 
@@ -72,7 +74,7 @@ func (t *TavilySearcher) Search(ctx context.Context, query string, maxResults in
 		return nil, fmt.Errorf("marshal request: %w", err)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://api.tavily.com/search", bytes.NewReader(jsonBody))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, t.baseURL+"/search", bytes.NewReader(jsonBody))
 	if err != nil {
 		return nil, err
 	}

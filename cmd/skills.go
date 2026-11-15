@@ -879,8 +879,13 @@ func runSkillsAddCLI(ref skills.GitHubRepoRef) error {
 		skillDir := filepath.Join(destPath, skill.Name)
 		skillMDPath := filepath.Join(skillDir, "SKILL.md")
 		if content, err := os.ReadFile(skillMDPath); err == nil {
-			updatedContent := skills.InjectGitHubProvenance(content, skill)
-			os.WriteFile(skillMDPath, updatedContent, 0644)
+			updatedContent, err := skills.InjectGitHubProvenance(content, skill)
+			if err != nil {
+				return fmt.Errorf("skill %s provenance: %w", skill.Name, err)
+			}
+			if err := os.WriteFile(skillMDPath, updatedContent, 0644); err != nil {
+				return fmt.Errorf("write skill %s provenance: %w", skill.Name, err)
+			}
 		}
 
 		fmt.Println("OK")
@@ -984,7 +989,13 @@ func runSkillsUpdate(cmd *cobra.Command, args []string) error {
 		// Determine fetch URL
 		fetchURL := c.rawURL
 		if fetchURL == "" && c.repository != "" {
-			fetchURL = constructRawGitHubURL(c.repository)
+			var err error
+			fetchURL, err = skills.RawGitHubURL(c.repository)
+			if err != nil {
+				fmt.Printf("  %-30s FAIL (%v)\n", localName, err)
+				failed++
+				continue
+			}
 		}
 		if fetchURL == "" {
 			fmt.Printf("  %-30s SKIP (no fetch URL)\n", localName)
@@ -1089,29 +1100,4 @@ func contentHash(description, body string) string {
 	content := strings.TrimSpace(description) + "\n" + strings.TrimSpace(body)
 	hash := sha256.Sum256([]byte(content))
 	return hex.EncodeToString(hash[:])
-}
-
-// constructRawGitHubURL converts a GitHub repo URL to a raw content URL
-func constructRawGitHubURL(repoURL string) string {
-	// Handle various GitHub URL formats
-	// https://github.com/user/repo -> https://raw.githubusercontent.com/user/repo/main/SKILL.md
-	if !strings.Contains(repoURL, "github.com") {
-		return ""
-	}
-
-	// Extract path from URL
-	repoURL = strings.TrimPrefix(repoURL, "https://")
-	repoURL = strings.TrimPrefix(repoURL, "http://")
-	repoURL = strings.TrimPrefix(repoURL, "github.com/")
-	repoURL = strings.TrimSuffix(repoURL, "/")
-
-	// Handle /tree/ paths
-	if idx := strings.Index(repoURL, "/tree/"); idx != -1 {
-		parts := repoURL[:idx]
-		rest := repoURL[idx+6:] // Skip "/tree/"
-		return fmt.Sprintf("https://raw.githubusercontent.com/%s/%s/SKILL.md", parts, rest)
-	}
-
-	// Simple repo URL - assume main branch
-	return fmt.Sprintf("https://raw.githubusercontent.com/%s/main/SKILL.md", repoURL)
 }

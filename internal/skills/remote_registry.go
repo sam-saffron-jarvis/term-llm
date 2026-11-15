@@ -10,6 +10,8 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	"github.com/term-llm/term-llm/internal/providerhttp"
 )
 
 const (
@@ -85,7 +87,11 @@ func (r *RemoteRegistryClient) AISearch(ctx context.Context, query string) (*Rem
 }
 
 func (r *RemoteRegistryClient) doSearch(ctx context.Context, endpoint, query string) (*RemoteSearchResult, error) {
-	u, err := url.Parse(r.baseURL + endpoint)
+	base, err := providerhttp.EnvBaseURL("SKILLSMP_BASE_URL", r.baseURL)
+	if err != nil {
+		return nil, err
+	}
+	u, err := url.Parse(base + endpoint)
 	if err != nil {
 		return nil, err
 	}
@@ -182,7 +188,11 @@ func (r *RemoteRegistryClient) DownloadSkill(ctx context.Context, skill *RemoteS
 		}
 		// Assume GitHub and construct raw URL
 		// e.g., https://github.com/user/repo -> https://raw.githubusercontent.com/user/repo/main/SKILL.md
-		skill.RawURL = constructRawGitHubURL(skill.Repository)
+		raw, err := RawGitHubURL(skill.Repository)
+		if err != nil {
+			return nil, err
+		}
+		skill.RawURL = raw
 	}
 
 	req, err := http.NewRequestWithContext(ctx, "GET", skill.RawURL, nil)
@@ -274,7 +284,12 @@ func (r *RemoteRegistryClient) FetchRawURL(ctx context.Context, rawURL string) (
 
 // InjectGitHubProvenance adds GitHub-specific provenance metadata to SKILL.md content.
 // It also updates the skill name to match the directory name for validation.
-func InjectGitHubProvenance(content []byte, skill DiscoveredSkill) []byte {
+func InjectGitHubProvenance(content []byte, skill DiscoveredSkill) ([]byte, error) {
+	base, err := providerhttp.EnvBaseURL("TERM_LLM_GITHUB_RAW_BASE_URL", githubRawBase)
+	if err != nil {
+		return nil, err
+	}
+	rawURL := base + strings.TrimPrefix(skill.RawURL(), githubRawBase)
 	contentStr := string(content)
 
 	// Find the closing --- of frontmatter
@@ -282,7 +297,7 @@ func InjectGitHubProvenance(content []byte, skill DiscoveredSkill) []byte {
 	parts := splitByDelimiter(contentStr, "---", 3)
 	if len(parts) < 3 {
 		// No valid frontmatter, return as-is
-		return content
+		return content, nil
 	}
 
 	frontmatter := parts[1]
@@ -322,7 +337,7 @@ func InjectGitHubProvenance(content []byte, skill DiscoveredSkill) []byte {
 	provenance.WriteString(fmt.Sprintf("  _provenance_branch: %s\n", skill.RepoRef.Branch))
 	provenance.WriteString(fmt.Sprintf("  _provenance_path: %s\n", skill.Path))
 	provenance.WriteString(fmt.Sprintf("  _provenance_remote_name: %s\n", remoteNameForProvenance))
-	provenance.WriteString(fmt.Sprintf("  _provenance_raw_url: %s\n", skill.RawURL()))
+	provenance.WriteString(fmt.Sprintf("  _provenance_raw_url: %s\n", rawURL))
 	provenance.WriteString(fmt.Sprintf("  _provenance_installed_at: %s\n", time.Now().UTC().Format(time.RFC3339)))
 
 	// Check if metadata already exists in frontmatter
@@ -350,7 +365,7 @@ func InjectGitHubProvenance(content []byte, skill DiscoveredSkill) []byte {
 					fmt.Sprintf("  _provenance_branch: %s", skill.RepoRef.Branch),
 					fmt.Sprintf("  _provenance_path: %s", skill.Path),
 					fmt.Sprintf("  _provenance_remote_name: %s", remoteNameForProvenance),
-					fmt.Sprintf("  _provenance_raw_url: %s", skill.RawURL()),
+					fmt.Sprintf("  _provenance_raw_url: %s", rawURL),
 					fmt.Sprintf("  _provenance_installed_at: %s", time.Now().UTC().Format(time.RFC3339)),
 				)
 				provenanceAdded = true
@@ -362,7 +377,7 @@ func InjectGitHubProvenance(content []byte, skill DiscoveredSkill) []byte {
 		frontmatter = strings.TrimRight(frontmatter, "\n") + "\n" + provenance.String()
 	}
 
-	return []byte("---" + frontmatter + "---" + body)
+	return []byte("---" + frontmatter + "---" + body), nil
 }
 
 // splitByDelimiter splits a string by a delimiter up to n parts.

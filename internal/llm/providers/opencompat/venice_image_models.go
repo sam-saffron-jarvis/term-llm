@@ -3,6 +3,7 @@ package opencompat
 import (
 	"context"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/term-llm/term-llm/internal/cache"
@@ -22,8 +23,12 @@ const (
 // Deferred credentials are deliberately not executed by shell completion;
 // cached and configured models remain available without unlocking a vault.
 func GetVeniceImageModelIDs(cfg *config.Config, modelType string) []string {
-	cached, _ := cache.ReadModelCache(veniceImageCacheKey)
-	if !cache.IsCacheValid(cached) || len(cached.ModelInfos) == 0 {
+	baseURL, custom, safe := veniceCompletionBaseURL(cfg)
+	var cached *cache.ModelCache
+	if !custom {
+		cached, _ = cache.ReadModelCache(veniceImageCacheKey)
+	}
+	if safe && (!cache.IsCacheValid(cached) || len(cached.ModelInfos) == 0) {
 		ref := config.Cred("", "VENICE_API_KEY")
 		if cfg != nil {
 			ref = cfg.Image.VeniceKey()
@@ -31,11 +36,12 @@ func GetVeniceImageModelIDs(cfg *config.Config, modelType string) []string {
 		if !ref.IsDeferred() {
 			if apiKey, err := ref.Resolve(); err == nil && apiKey != "" {
 				ctx, cancel := context.WithTimeout(context.Background(), veniceImageCompletionTimeout)
-				models, _ := venice.FetchImageModels(ctx, httpClient(), apiKey)
+				models, _ := venice.FetchImageModelsAt(ctx, httpClient(), apiKey, baseURL)
 				cancel()
-				// Failed or empty responses must not erase a usable stale catalog.
 				if len(models) > 0 {
-					_ = cache.WriteModelInfoCache(veniceImageCacheKey, models)
+					if !custom {
+						_ = cache.WriteModelInfoCache(veniceImageCacheKey, models)
+					}
 					cached = &cache.ModelCache{ModelInfos: models}
 				}
 			}
@@ -67,4 +73,26 @@ func GetVeniceImageModelIDs(cfg *config.Config, modelType string) []string {
 		ids = ids[1:]
 	}
 	return ids
+}
+
+// Completion never evaluates deferred endpoint references or falls back to the
+// public cache when an explicit endpoint has been configured.
+func veniceCompletionBaseURL(cfg *config.Config) (base string, custom, safe bool) {
+	raw := ""
+	if cfg != nil {
+		raw = strings.TrimSpace(cfg.Image.Venice.BaseURL)
+		if raw == "" {
+			if pc := cfg.GetProviderConfig("venice"); pc != nil && config.InferProviderType("venice", pc.Type) == config.ProviderTypeVenice {
+				raw = strings.TrimSpace(pc.BaseURL)
+			}
+		}
+	}
+	if raw == "" {
+		return venice.BaseURL, false, true
+	}
+	if config.Cred(raw).IsDeferred() {
+		return "", true, false
+	}
+	base, err := config.ResolveBaseURL("image.venice.base_url", raw, "")
+	return base, true, err == nil && base != ""
 }

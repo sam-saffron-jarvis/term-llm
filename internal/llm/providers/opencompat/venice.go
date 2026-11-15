@@ -41,6 +41,9 @@ func (p *VeniceProvider) ListModels(ctx context.Context) ([]ModelInfo, error) {
 	if err != nil {
 		return nil, err
 	}
+	if p.customBaseURL {
+		return models, nil
+	}
 	for i := range models {
 		// Venice's /models response includes context_length. Keep the live value and
 		// fall back only to a previously fetched Venice cache entry for compatible

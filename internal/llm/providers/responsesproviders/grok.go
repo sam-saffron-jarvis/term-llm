@@ -48,6 +48,7 @@ type grokOAuthAPI interface {
 }
 
 type GrokProvider struct {
+	baseURL          string
 	creds            *credentials.GrokCredentials
 	model            string
 	effort           string
@@ -56,6 +57,7 @@ type GrokProvider struct {
 }
 
 type GrokProviderOptions struct {
+	BaseURL          string
 	FileUploadPolicy *FileUploadPolicy
 }
 
@@ -105,6 +107,7 @@ func NewGrokProviderWithCredsAndOptions(creds *credentials.GrokCredentials, mode
 	}
 	actualModel, effort := parseModelEffortForProvider("grok", model)
 	return &GrokProvider{
+		baseURL:          strings.TrimRight(strings.TrimSpace(opts.BaseURL), "/"),
 		creds:            creds,
 		model:            actualModel,
 		effort:           effort,
@@ -213,6 +216,9 @@ func (p *GrokProvider) Stream(ctx context.Context, req Request) (Stream, error) 
 	}
 	if p.responsesClient == nil {
 		p.responsesClient = newGrokResponsesClient(p.creds)
+		if p.baseURL != "" {
+			p.responsesClient.BaseURL = p.baseURL + "/responses"
+		}
 	}
 	reqModel, reqEffort := parseModelEffortForProvider("grok", req.Model)
 	model := chooseModel(reqModel, p.model)

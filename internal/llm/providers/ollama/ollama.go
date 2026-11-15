@@ -78,7 +78,7 @@ func New(baseURL, model string, opts Options) *Provider {
 			baseURL = ollamaChatDefaultBaseURL
 		}
 	}
-	baseURL = strings.TrimSuffix(baseURL, "/")
+	baseURL = strings.TrimRight(baseURL, "/")
 	// Ollama binds to 127.0.0.1 (IPv4) by default. If the caller passes
 	// "localhost", Go may resolve it to ::1 (IPv6) on dual-stack systems,
 	// causing "connect: connection refused" even when Ollama is running.

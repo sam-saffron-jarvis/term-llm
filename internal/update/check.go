@@ -16,6 +16,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/term-llm/term-llm/internal/config"
+	"github.com/term-llm/term-llm/internal/providerhttp"
 	"github.com/term-llm/term-llm/internal/runtimeoutput"
 )
 
@@ -147,7 +148,11 @@ var releaseBaseURL = "https://github.com"
 // releases/latest redirect. This avoids the GitHub API rate limit (60 req/hour
 // for unauthenticated requests).
 func FetchLatestRelease(ctx context.Context) (*ReleaseInfo, error) {
-	releaseURL := fmt.Sprintf("%s/%s/%s/releases/latest", releaseBaseURL, RepoOwner, RepoName)
+	base, err := providerhttp.EnvBaseURL("TERM_LLM_RELEASE_BASE_URL", releaseBaseURL)
+	if err != nil {
+		return nil, err
+	}
+	releaseURL := fmt.Sprintf("%s/%s/%s/releases/latest", base, RepoOwner, RepoName)
 	client := &http.Client{
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			return http.ErrUseLastResponse
@@ -176,7 +181,8 @@ func FetchLatestRelease(ctx context.Context) (*ReleaseInfo, error) {
 		return nil, fmt.Errorf("invalid redirect URL: %w", err)
 	}
 	// Expect path like /<owner>/<repo>/releases/tag/<tag>
-	expectedPrefix := fmt.Sprintf("/%s/%s/releases/tag/", RepoOwner, RepoName)
+	root, _ := url.Parse(base)
+	expectedPrefix := strings.TrimRight(root.Path, "/") + fmt.Sprintf("/%s/%s/releases/tag/", RepoOwner, RepoName)
 	if !strings.HasPrefix(parsed.Path, expectedPrefix) {
 		return nil, fmt.Errorf("unexpected redirect path: %s", parsed.Path)
 	}

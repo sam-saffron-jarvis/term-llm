@@ -21,8 +21,9 @@ const (
 // Uses OpenAI-compatible chat completions for tool calling,
 // and the Responses API for native web/X search.
 type XAIProvider struct {
-	apiKey string
-	model  string
+	apiKey  string
+	model   string
+	baseURL string
 }
 
 // NewXAIProvider creates a new xAI provider.
@@ -31,8 +32,9 @@ func NewXAIProvider(apiKey, model string) *XAIProvider {
 		model = config.DefaultProviderModel("xai")
 	}
 	return &XAIProvider{
-		apiKey: apiKey,
-		model:  model,
+		apiKey:  apiKey,
+		model:   model,
+		baseURL: xaiBaseURL,
 	}
 }
 
@@ -101,7 +103,7 @@ func (p *XAIProvider) streamStandard(ctx context.Context, req Request) (Stream, 
 	}
 
 	if req.Debug {
-		runtimeoutput.Printf("=== DEBUG: xAI Stream Request ===\nProvider: %s\nURL: %s/chat/completions\nMessages: %d\nTools: %d\n=================================\n", p.Name(), xaiBaseURL, len(messages), len(tools))
+		runtimeoutput.Printf("=== DEBUG: xAI Stream Request ===\nProvider: %s\nURL: %s/chat/completions\nMessages: %d\nTools: %d\n=================================\n", p.Name(), p.baseURL, len(messages), len(tools))
 	}
 
 	resp, err := p.makeChatRequest(ctx, chatReq)
@@ -277,7 +279,7 @@ func (p *XAIProvider) streamWithSearch(ctx context.Context, req Request) (Stream
 	}
 
 	if req.Debug {
-		runtimeoutput.Printf("=== DEBUG: xAI Responses API Request ===\nProvider: %s\nURL: %s/responses\nInput items: %d\nTools: web_search, x_search\n========================================\n", p.Name(), xaiBaseURL, len(input))
+		runtimeoutput.Printf("=== DEBUG: xAI Responses API Request ===\nProvider: %s\nURL: %s/responses\nInput items: %d\nTools: web_search, x_search\n========================================\n", p.Name(), p.baseURL, len(input))
 	}
 
 	resp, err := p.makeResponsesRequest(ctx, responsesReq)
@@ -374,7 +376,7 @@ func (p *XAIProvider) makeChatRequest(ctx context.Context, req oaiChatRequest) (
 	if err != nil {
 		return nil, err
 	}
-	return p.makeHTTPRequest(ctx, xaiBaseURL+"/chat/completions", body)
+	return p.makeHTTPRequest(ctx, p.baseURL+"/chat/completions", body)
 }
 
 func (p *XAIProvider) makeResponsesRequest(ctx context.Context, req xaiResponsesRequest) (*http.Response, error) {
@@ -382,7 +384,7 @@ func (p *XAIProvider) makeResponsesRequest(ctx context.Context, req xaiResponses
 	if err != nil {
 		return nil, err
 	}
-	return p.makeHTTPRequest(ctx, xaiBaseURL+"/responses", body)
+	return p.makeHTTPRequest(ctx, p.baseURL+"/responses", body)
 }
 
 func (p *XAIProvider) makeHTTPRequest(ctx context.Context, url string, body []byte) (*http.Response, error) {
@@ -397,7 +399,7 @@ func (p *XAIProvider) makeHTTPRequest(ctx context.Context, url string, body []by
 
 // ListModels returns available models from the xAI API.
 func (p *XAIProvider) ListModels(ctx context.Context) ([]ModelInfo, error) {
-	httpReq, err := http.NewRequestWithContext(ctx, "GET", xaiBaseURL+"/models", nil)
+	httpReq, err := http.NewRequestWithContext(ctx, "GET", p.baseURL+"/models", nil)
 	if err != nil {
 		return nil, err
 	}
@@ -567,4 +569,11 @@ func (s *xaiTagStripper) Flush() string {
 		result = strings.ReplaceAll(result, tag, "")
 	}
 	return result
+}
+
+// SetBaseURL overrides the xAI API root.
+func (p *XAIProvider) SetBaseURL(baseURL string) {
+	if strings.TrimSpace(baseURL) != "" {
+		p.baseURL = strings.TrimRight(strings.TrimSpace(baseURL), "/")
+	}
 }

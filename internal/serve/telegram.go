@@ -99,10 +99,6 @@ func newTelegramBotHTTPClient(requestTimeout, longPollTimeout time.Duration) *te
 	}
 }
 
-func newTelegramBotAPI(token string) (*tgbotapi.BotAPI, error) {
-	return tgbotapi.NewBotAPIWithClient(token, tgbotapi.APIEndpoint, newTelegramBotHTTPClient(telegramBotAPIRequestTimeout, telegramBotAPILongPollTimeout))
-}
-
 func (c *telegramBotHTTPClient) Do(req *http.Request) (*http.Response, error) {
 	timeout := c.requestTimeout
 	if telegramBotAPIIsLongPoll(req) {
@@ -208,7 +204,7 @@ func downloadTelegramPhoto(fileGetter botFileGetter, photos []tgbotapi.PhotoSize
 		return "", "", "", fmt.Errorf("get file URL: %w", err)
 	}
 
-	resp, err := telegramDownloadHTTPClient.Get(directURL)
+	resp, err := downloadTelegramFile(directURL)
 	if err != nil {
 		return "", "", "", fmt.Errorf("download photo: %w", err)
 	}
@@ -270,7 +266,7 @@ func downloadTelegramVoice(fileGetter botFileGetter, voice *tgbotapi.Voice) (fil
 		return "", fmt.Errorf("get voice file URL: %w", err)
 	}
 
-	resp, err := telegramDownloadHTTPClient.Get(directURL)
+	resp, err := downloadTelegramFile(directURL)
 	if err != nil {
 		return "", fmt.Errorf("download voice: %w", err)
 	}

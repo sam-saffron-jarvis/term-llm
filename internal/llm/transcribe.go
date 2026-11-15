@@ -33,8 +33,8 @@ func transcribeAndTruncate(ctx context.Context, filePath string, opts transcript
 	return TruncateTranscriptIfImplausible(ctx, filePath, transcript), nil
 }
 
-func transcribeChatGPTAndTruncate(ctx context.Context, filePath, language string) (string, error) {
-	transcript, err := rp.TranscribeChatGPT(ctx, filePath, language)
+func transcribeChatGPTAndTruncate(ctx context.Context, filePath, language, baseURL string) (string, error) {
+	transcript, err := rp.TranscribeChatGPTWithBaseURL(ctx, filePath, language, baseURL)
 	if err != nil {
 		return "", err
 	}
@@ -75,12 +75,12 @@ func TranscribeWithConfig(ctx context.Context, cfg *config.Config, filePath, lan
 			return "", err
 		}
 		if providerCfg != nil {
-			baseURL := providerCfg.ResolvedURL
-			if baseURL == "" {
-				baseURL = providerCfg.BaseURL
+			baseURL, err := transcriptionProviderRoot("local_whisper", providerCfg)
+			if err != nil {
+				return "", err
 			}
 			if baseURL != "" {
-				endpoint = strings.TrimRight(baseURL, "/") + "/inference"
+				endpoint = baseURL + "/inference"
 			}
 		}
 		return transcribeAndTruncate(ctx, filePath, transcription.Options{
@@ -97,7 +97,10 @@ func TranscribeWithConfig(ctx context.Context, cfg *config.Config, filePath, lan
 		if mistralCfg == nil {
 			mistralCfg = &config.ProviderConfig{}
 		}
-		apiKey := mistralCfg.ResolvedAPIKey
+		apiKey, err := transcriptionProviderKey(mistralCfg)
+		if err != nil {
+			return "", err
+		}
 		if apiKey == "" {
 			apiKey = os.Getenv("MISTRAL_API_KEY")
 		}
@@ -105,9 +108,9 @@ func TranscribeWithConfig(ctx context.Context, cfg *config.Config, filePath, lan
 			return "", fmt.Errorf("transcription provider %q has no API key configured (providers.mistral.api_key or MISTRAL_API_KEY)", providerName)
 		}
 		endpoint := "https://api.mistral.ai/v1/audio/transcriptions"
-		baseURL := mistralCfg.ResolvedURL
-		if baseURL == "" {
-			baseURL = mistralCfg.BaseURL
+		baseURL, err := transcriptionProviderRoot("mistral", mistralCfg)
+		if err != nil {
+			return "", err
 		}
 		if baseURL != "" {
 			endpoint = strings.TrimRight(baseURL, "/") + "/audio/transcriptions"
@@ -124,10 +127,6 @@ func TranscribeWithConfig(ctx context.Context, cfg *config.Config, filePath, lan
 		})
 
 	case "venice":
-		veniceProvider, err := getProviderConfig("venice")
-		if err != nil {
-			return "", err
-		}
 		apiKey, err := config.ResolveFirstCredential(
 			cfg.Transcription.VeniceKey(),
 			cfg.Audio.VeniceKey(),
@@ -136,22 +135,20 @@ func TranscribeWithConfig(ctx context.Context, cfg *config.Config, filePath, lan
 		if err != nil {
 			return "", fmt.Errorf("venice transcription credentials: %w", err)
 		}
-		if apiKey == "" && veniceProvider != nil {
-			apiKey = veniceProvider.ResolvedAPIKey
+		if apiKey == "" {
+			apiKey, err = transcriptionProviderKey(cfg.GetProviderConfig("venice"))
+			if err != nil {
+				return "", fmt.Errorf("venice transcription credentials: %w", err)
+			}
 		}
 		if apiKey == "" {
 			return "", fmt.Errorf("transcription provider %q has no API key configured (transcription.venice.api_key, VENICE_API_KEY, audio.venice.api_key, image.venice.api_key, or providers.venice.api_key)", providerName)
 		}
-		endpoint := "https://api.venice.ai/api/v1/audio/transcriptions"
-		if veniceProvider != nil {
-			baseURL := veniceProvider.ResolvedURL
-			if baseURL == "" {
-				baseURL = veniceProvider.BaseURL
-			}
-			if baseURL != "" {
-				endpoint = strings.TrimRight(baseURL, "/") + "/audio/transcriptions"
-			}
+		baseURL, err := transcriptionFeatureRoot(cfg, "venice", cfg.Transcription.Venice.BaseURL, "https://api.venice.ai/api/v1")
+		if err != nil {
+			return "", fmt.Errorf("venice transcription base URL: %w", err)
 		}
+		endpoint := baseURL + "/audio/transcriptions"
 		model := firstNonEmptyString(modelOverride, cfg.Transcription.Venice.Model, config.DefaultTranscriptionVeniceModel)
 		return transcribeAndTruncate(ctx, filePath, transcription.Options{
 			APIKey:     apiKey,
@@ -163,10 +160,6 @@ func TranscribeWithConfig(ctx context.Context, cfg *config.Config, filePath, lan
 		})
 
 	case "elevenlabs":
-		elevenLabsProvider, err := getProviderConfig("elevenlabs")
-		if err != nil {
-			return "", err
-		}
 		apiKey, err := config.ResolveFirstCredential(
 			cfg.Transcription.ElevenLabsKey(),
 			cfg.Audio.ElevenLabsKey(),
@@ -174,22 +167,20 @@ func TranscribeWithConfig(ctx context.Context, cfg *config.Config, filePath, lan
 		if err != nil {
 			return "", fmt.Errorf("elevenlabs transcription credentials: %w", err)
 		}
-		if apiKey == "" && elevenLabsProvider != nil {
-			apiKey = elevenLabsProvider.ResolvedAPIKey
+		if apiKey == "" {
+			apiKey, err = transcriptionProviderKey(cfg.GetProviderConfig("elevenlabs"))
+			if err != nil {
+				return "", fmt.Errorf("elevenlabs transcription credentials: %w", err)
+			}
 		}
 		if apiKey == "" {
 			return "", fmt.Errorf("transcription provider %q has no API key configured (transcription.elevenlabs.api_key, ELEVENLABS_API_KEY, XI_API_KEY, audio.elevenlabs.api_key, or providers.elevenlabs.api_key)", providerName)
 		}
-		endpoint := "https://api.elevenlabs.io/v1/speech-to-text"
-		if elevenLabsProvider != nil {
-			baseURL := elevenLabsProvider.ResolvedURL
-			if baseURL == "" {
-				baseURL = elevenLabsProvider.BaseURL
-			}
-			if baseURL != "" {
-				endpoint = strings.TrimRight(baseURL, "/") + "/speech-to-text"
-			}
+		baseURL, err := transcriptionFeatureRoot(cfg, "elevenlabs", cfg.Transcription.ElevenLabs.BaseURL, "https://api.elevenlabs.io/v1")
+		if err != nil {
+			return "", fmt.Errorf("elevenlabs transcription base URL: %w", err)
 		}
+		endpoint := baseURL + "/speech-to-text"
 		model := firstNonEmptyString(modelOverride, cfg.Transcription.ElevenLabs.Model, config.DefaultTranscriptionElevenLabsModel)
 		return transcribeAndTruncate(ctx, filePath, transcription.Options{
 			APIKey:     apiKey,
@@ -203,13 +194,36 @@ func TranscribeWithConfig(ctx context.Context, cfg *config.Config, filePath, lan
 	case "chatgpt":
 		// ChatGPT OAuth session; the backend chooses the model, so
 		// transcription.model and timestamps are not applicable.
-		return transcribeChatGPTAndTruncate(ctx, filePath, language)
+		baseURL, err := config.ResolveBaseURL("transcription.chatgpt.base_url", cfg.Transcription.ChatGPT.BaseURL, "https://chatgpt.com/backend-api")
+		if err != nil {
+			return "", fmt.Errorf("chatgpt transcription base URL: %w", err)
+		}
+		return transcribeChatGPTAndTruncate(ctx, filePath, language, baseURL)
 
 	case "openai":
 		// Named provider entry takes precedence over env var
 		openAIProvider, err := getProviderConfig(string(config.ProviderTypeOpenAI))
 		if err != nil {
 			return "", err
+		}
+		if openAIProvider != nil {
+			key, err := transcriptionProviderKey(openAIProvider)
+			if err != nil {
+				return "", err
+			}
+			openAIProvider.ResolvedAPIKey = key
+			if openAIProvider.ResolvedURL == "" && strings.TrimSpace(openAIProvider.URL) == "" && strings.TrimSpace(openAIProvider.BaseURL) != "" {
+				if _, err := resolveTranscriptionRoot("providers.openai.base_url", openAIProvider.BaseURL); err != nil {
+					return "", err
+				}
+			}
+			if openAIProvider.ResolvedURL == "" && openAIProvider.URL != "" {
+				root, err := resolveTranscriptionRoot("providers.openai.url", openAIProvider.URL)
+				if err != nil {
+					return "", err
+				}
+				openAIProvider.ResolvedURL = root
+			}
 		}
 		endpoint, apiKey, err := openAITranscriptionTarget(cfg, openAIProvider)
 		if err != nil {
@@ -233,17 +247,21 @@ func TranscribeWithConfig(ctx context.Context, cfg *config.Config, filePath, lan
 			return "", err
 		}
 		if providerCfg != nil {
-			apiKey := providerCfg.ResolvedAPIKey
+			apiKey, err := transcriptionProviderKey(providerCfg)
+			if err != nil {
+				return "", err
+			}
 			if apiKey == "" {
 				return "", fmt.Errorf("transcription provider %q has no API key configured", providerName)
 			}
-			endpoint := ""
-			resolvedURL := providerCfg.ResolvedURL
-			if resolvedURL != "" {
-				endpoint = strings.TrimRight(resolvedURL, "/") + "/audio/transcriptions"
-			} else if providerCfg.BaseURL != "" {
-				endpoint = strings.TrimRight(providerCfg.BaseURL, "/") + "/audio/transcriptions"
+			base, err := transcriptionProviderRoot(providerName, providerCfg)
+			if err != nil {
+				return "", err
 			}
+			if base == "" {
+				return "", fmt.Errorf("transcription provider %q requires a non-empty url or base_url", providerName)
+			}
+			endpoint := base + "/audio/transcriptions"
 			return transcribeAndTruncate(ctx, filePath, transcription.Options{
 				APIKey:   apiKey,
 				Endpoint: endpoint,
@@ -267,9 +285,14 @@ func openAITranscriptionTarget(cfg *config.Config, entry *config.ProviderConfig)
 		if entry.ResolvedAPIKey == "" {
 			return endpoint, os.Getenv("OPENAI_API_KEY"), nil
 		}
-		if base := firstNonEmptyString(entry.ResolvedURL, entry.BaseURL); base != "" {
-			endpoint.BaseURL = base
+		base, err := transcriptionProviderRoot(name, entry)
+		if err != nil {
+			return openaiapi.Endpoint{}, "", err
 		}
+		if base == "" {
+			return openaiapi.Endpoint{}, "", fmt.Errorf("transcription provider %q requires a non-empty url or base_url", name)
+		}
+		endpoint.BaseURL = base
 		return endpoint, entry.ResolvedAPIKey, nil
 	}
 	endpoint, err := cfg.OpenAIEndpoint()
@@ -286,4 +309,61 @@ func openAITranscriptionTarget(cfg *config.Config, entry *config.ProviderConfig)
 		}
 	}
 	return endpoint, apiKey, nil
+}
+
+// transcriptionProviderRoot treats the legacy url as an API root, just as
+// base_url, and appends the transcription operation at the call site.
+func transcriptionProviderRoot(name string, entry *config.ProviderConfig) (string, error) {
+	if entry == nil {
+		return "", nil
+	}
+	root, err := resolveTranscriptionRoot("providers."+name+".url", firstNonEmptyString(entry.ResolvedURL, entry.URL))
+	if err != nil || root != "" {
+		return root, err
+	}
+	return resolveTranscriptionRoot("providers."+name+".base_url", entry.BaseURL)
+}
+
+func transcriptionProviderKey(entry *config.ProviderConfig) (string, error) {
+	if entry == nil {
+		return "", nil
+	}
+	if entry.ResolvedAPIKey != "" {
+		return entry.ResolvedAPIKey, nil
+	}
+	return config.Cred(entry.APIKey).Resolve()
+}
+
+func transcriptionFeatureRoot(cfg *config.Config, name, override, fallback string) (string, error) {
+	root, err := resolveTranscriptionRoot("transcription."+name+".base_url", override)
+	if err != nil || root != "" {
+		return root, err
+	}
+	entry := cfg.GetProviderConfig(name)
+	if entry != nil {
+		// A legacy url on the named transcription entry historically supplied
+		// the endpoint even when that entry had an explicit compatible type.
+		if legacy := firstNonEmptyString(entry.ResolvedURL, entry.URL); legacy != "" {
+			root, err = resolveTranscriptionRoot("providers."+name+".url", legacy)
+			if err != nil || root != "" {
+				return root, err
+			}
+		}
+		if entry.Type == "" || string(config.InferProviderType(name, entry.Type)) == name {
+			root, err = transcriptionProviderRoot(name, entry)
+			if err != nil || root != "" {
+				return root, err
+			}
+		}
+	}
+	return fallback, nil
+}
+
+// Explicit but empty lazy endpoints must not fall through to a public host.
+func resolveTranscriptionRoot(path, raw string) (string, error) {
+	root, err := config.ResolveBaseURL(path, raw, "")
+	if err == nil && root == "" && strings.TrimSpace(raw) != "" {
+		return "", fmt.Errorf("%s resolved to an empty endpoint", path)
+	}
+	return root, err
 }

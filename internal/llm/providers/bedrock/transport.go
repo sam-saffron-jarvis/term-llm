@@ -31,6 +31,7 @@ const bedrockAnthropicVersion = "bedrock-2023-05-31"
 // API key bearer token), and the binary event stream is unwrapped back into
 // Anthropic stream events.
 type bedrockTransport struct {
+	baseURL     string
 	region      string
 	credentials awsauth.CredentialsProvider
 	bearerToken string // AWS_BEARER_TOKEN_BEDROCK
@@ -80,7 +81,16 @@ func (t *bedrockTransport) invokeURL(model string, beta bool) string {
 		Scheme:  "https",
 		Host:    host,
 		Path:    "/model/" + model + "/invoke-with-response-stream",
-		RawPath: "/model/" + url.QueryEscape(model) + "/invoke-with-response-stream",
+		RawPath: "/model/" + strings.ReplaceAll(url.QueryEscape(model), "+", "%20") + "/invoke-with-response-stream",
+	}
+	if t.baseURL != "" {
+		base, err := url.Parse(t.baseURL)
+		if err == nil {
+			prefix := strings.TrimRight(base.Path, "/")
+			u.Scheme, u.Host = base.Scheme, base.Host
+			u.Path = prefix + u.Path
+			u.RawPath = strings.TrimRight(base.EscapedPath(), "/") + u.RawPath
+		}
 	}
 	if beta {
 		u.RawQuery = "beta=true"

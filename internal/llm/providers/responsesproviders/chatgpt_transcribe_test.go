@@ -273,3 +273,25 @@ func TestTranscribeChatGPT_RejectsInvalidInputBeforeRequest(t *testing.T) {
 		t.Fatalf("requests = %d, want none", len(fx.requests))
 	}
 }
+
+func TestChatGPTTranscriptionCustomBackendRoot(t *testing.T) {
+	setupChatGPTTranscribeTest(t, func(w http.ResponseWriter, _ chatGPTTranscribeRequest) { t.Error("default backend called") })
+	var path string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		path = r.URL.Path
+		io.Copy(io.Discard, r.Body)
+		io.WriteString(w, `{"text":"hello"}`)
+	}))
+	defer server.Close()
+	file := filepath.Join(t.TempDir(), "audio.ogg")
+	if err := os.WriteFile(file, []byte("audio"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := TranscribeChatGPTWithBaseURL(context.Background(), file, "en", server.URL+"/nested/")
+	if err != nil || got != "hello" {
+		t.Fatalf("transcription = %q, %v", got, err)
+	}
+	if path != "/nested/transcribe" {
+		t.Fatalf("path = %q", path)
+	}
+}

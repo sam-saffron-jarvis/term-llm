@@ -83,10 +83,12 @@ func NewOpenCodeGoProvider(apiKey, model string) *OpenCodeGoProvider {
 // NewOpenCodeGoProviderWithBaseURL creates an OpenCode Go provider using an
 // optional compatible proxy base URL.
 func NewOpenCodeGoProviderWithBaseURL(apiKey, model, baseURL string) *OpenCodeGoProvider {
+	catalogURL := ""
 	if strings.TrimSpace(baseURL) == "" {
 		baseURL = opencodeGoBaseURL
+		catalogURL = opencodeGoCatalogURL
 	}
-	return newOpenCodeGoProvider(apiKey, model, baseURL, opencodeGoCatalogURL, defaultHTTPClient)
+	return newOpenCodeGoProvider(apiKey, model, baseURL, catalogURL, defaultHTTPClient)
 }
 
 func newOpenCodeGoProvider(apiKey, model, baseURL, catalogURL string, client *http.Client) *OpenCodeGoProvider {

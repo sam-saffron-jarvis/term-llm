@@ -8,7 +8,7 @@ import (
 
 // NewSearcher creates a Searcher based on the config.
 // Returns Exa MCP as the default if no provider is specified.
-func NewSearcher(cfg *config.Config) (Searcher, error) {
+func newSearcher(cfg *config.Config) (Searcher, error) {
 	provider := cfg.Search.Provider
 	if provider == "" {
 		provider = config.DefaultSearchProvider

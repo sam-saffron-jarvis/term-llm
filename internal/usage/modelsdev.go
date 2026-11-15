@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/term-llm/term-llm/internal/providerhttp"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -209,7 +210,15 @@ func (p *PricingFetcher) RefreshModelsDevPricing(ctx context.Context) error {
 }
 
 func fetchModelsDevPricing(ctx context.Context, client *http.Client) (map[string]ModelPricing, error) {
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, modelsDevURL, nil)
+	endpoint := modelsDevURL
+	if os.Getenv("MODELS_DEV_BASE_URL") != "" {
+		base, err := providerhttp.EnvBaseURL("MODELS_DEV_BASE_URL", "https://models.dev")
+		if err != nil {
+			return nil, err
+		}
+		endpoint = base + "/api.json"
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
 		return nil, err
 	}

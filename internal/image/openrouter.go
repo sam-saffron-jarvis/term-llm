@@ -19,15 +19,16 @@ const openrouterImageEndpoint = "https://openrouter.ai/api/v1/chat/completions"
 
 // OpenRouterProvider implements ImageProvider using OpenRouter's API
 type OpenRouterProvider struct {
-	apiKey string
-	model  string
+	apiKey  string
+	model   string
+	baseURL string
 }
 
 func NewOpenRouterProvider(apiKey, model string) *OpenRouterProvider {
 	if model == "" {
 		model = config.DefaultImageOpenRouterModel
 	}
-	return &OpenRouterProvider{apiKey: apiKey, model: model}
+	return &OpenRouterProvider{apiKey: apiKey, model: model, baseURL: strings.TrimSuffix(openrouterImageEndpoint, "/chat/completions")}
 }
 
 func (p *OpenRouterProvider) Name() string {
@@ -83,7 +84,7 @@ func (p *OpenRouterProvider) doRequest(ctx context.Context, content []orMessageC
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
 
-	httpReq, err := http.NewRequestWithContext(ctx, "POST", openrouterImageEndpoint, bytes.NewReader(jsonBody))
+	httpReq, err := http.NewRequestWithContext(ctx, "POST", p.baseURL+"/chat/completions", bytes.NewReader(jsonBody))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}

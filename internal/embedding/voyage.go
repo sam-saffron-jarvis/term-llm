@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/term-llm/term-llm/internal/config"
@@ -23,14 +24,16 @@ const (
 // Voyage AI (acquired by MongoDB, Feb 2025) is Anthropic's recommended
 // embedding provider. The API remains fully available at api.voyageai.com.
 type VoyageProvider struct {
-	apiKey string
-	model  string
+	apiKey  string
+	model   string
+	baseURL string
 }
 
 func NewVoyageProvider(apiKey string) *VoyageProvider {
 	return &VoyageProvider{
-		apiKey: apiKey,
-		model:  voyageDefaultModel,
+		apiKey:  apiKey,
+		model:   voyageDefaultModel,
+		baseURL: strings.TrimSuffix(voyageEndpoint, "/embeddings"),
 	}
 }
 
@@ -68,7 +71,7 @@ func (p *VoyageProvider) Embed(ctx context.Context, req EmbedRequest) (*Embeddin
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
 
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, voyageEndpoint, bytes.NewReader(jsonBody))
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(p.baseURL, "/")+"/embeddings", bytes.NewReader(jsonBody))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}

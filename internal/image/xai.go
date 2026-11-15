@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/term-llm/term-llm/internal/config"
@@ -28,8 +29,9 @@ var (
 
 // XAIProvider implements ImageProvider using xAI's Grok image API
 type XAIProvider struct {
-	apiKey string
-	model  string
+	apiKey  string
+	model   string
+	baseURL string
 }
 
 func NewXAIProvider(apiKey, model string) *XAIProvider {
@@ -37,8 +39,9 @@ func NewXAIProvider(apiKey, model string) *XAIProvider {
 		model = xaiImageModel
 	}
 	return &XAIProvider{
-		apiKey: apiKey,
-		model:  model,
+		apiKey:  apiKey,
+		model:   model,
+		baseURL: strings.TrimSuffix(xaiImageEndpoint, "/images/generations"),
 	}
 }
 
@@ -67,7 +70,7 @@ func (p *XAIProvider) Generate(ctx context.Context, req GenerateRequest) (*Image
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
 
-	httpReq, err := http.NewRequestWithContext(ctx, "POST", xaiImageEndpoint, bytes.NewReader(jsonBody))
+	httpReq, err := http.NewRequestWithContext(ctx, "POST", p.baseURL+"/images/generations", bytes.NewReader(jsonBody))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
