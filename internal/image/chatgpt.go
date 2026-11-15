@@ -7,25 +7,24 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
-	"time"
 
 	"github.com/term-llm/term-llm/internal/buildinfo"
 	"github.com/term-llm/term-llm/internal/config"
 	"github.com/term-llm/term-llm/internal/credentials"
+	"github.com/term-llm/term-llm/internal/mediautil"
 	"github.com/term-llm/term-llm/internal/providerhttp"
 )
 
 const (
 	chatGPTImageGenerateEndpoint = "https://chatgpt.com/backend-api/codex/images/generations"
 	chatGPTImageEditEndpoint     = "https://chatgpt.com/backend-api/codex/images/edits"
-	chatGPTImageHTTPTimeout      = 10 * time.Minute
 	chatGPTImageQualityAuto      = "auto"
 	chatGPTImageBackgroundAuto   = "auto"
 )
 
 var (
 	chatGPTImageDefaultModel = config.DefaultImageChatGPTModel
-	chatGPTImageHTTPClient   = &http.Client{Timeout: chatGPTImageHTTPTimeout}
+	chatGPTImageHTTPClient   = &http.Client{}
 )
 
 // ChatGPTProvider implements ImageProvider using the Codex Images API,
@@ -68,6 +67,8 @@ func (p *ChatGPTProvider) SupportsEdit() bool       { return true }
 func (p *ChatGPTProvider) SupportsMultiImage() bool { return false }
 
 func (p *ChatGPTProvider) Generate(ctx context.Context, req GenerateRequest) (*ImageResult, error) {
+	ctx, cancel := mediautil.WithMediaTimeout(ctx)
+	defer cancel()
 	payload := chatGPTImageGenerationRequest{
 		Model:      p.model,
 		Prompt:     req.Prompt,
@@ -82,6 +83,8 @@ func (p *ChatGPTProvider) Generate(ctx context.Context, req GenerateRequest) (*I
 }
 
 func (p *ChatGPTProvider) Edit(ctx context.Context, req EditRequest) (*ImageResult, error) {
+	ctx, cancel := mediautil.WithMediaTimeout(ctx)
+	defer cancel()
 	if len(req.InputImages) == 0 {
 		return nil, fmt.Errorf("no input image provided")
 	}

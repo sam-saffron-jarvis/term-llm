@@ -11,22 +11,19 @@ import (
 	"net/url"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"github.com/term-llm/term-llm/internal/config"
+	"github.com/term-llm/term-llm/internal/mediautil"
 	"github.com/term-llm/term-llm/internal/providerhttp"
 )
 
 const (
-	geminiBaseURL     = "https://generativelanguage.googleapis.com/v1beta/models/"
-	geminiHTTPTimeout = 3 * time.Minute
+	geminiBaseURL = "https://generativelanguage.googleapis.com/v1beta/models/"
 )
 
 var geminiDefaultModel = config.DefaultImageGeminiModel
 
-var geminiHTTPClient = &http.Client{
-	Timeout: geminiHTTPTimeout,
-}
+var geminiHTTPClient = &http.Client{}
 
 // GeminiProvider implements ImageProvider using Google's Gemini API
 type GeminiProvider struct {
@@ -56,11 +53,15 @@ func (p *GeminiProvider) SupportsMultiImage() bool {
 }
 
 func (p *GeminiProvider) Generate(ctx context.Context, req GenerateRequest) (*ImageResult, error) {
+	ctx, cancel := mediautil.WithMediaTimeout(ctx)
+	defer cancel()
 	parts := []geminiPart{{Text: req.Prompt}}
 	return p.doRequest(ctx, parts, req.Size, req.Debug || req.DebugRaw)
 }
 
 func (p *GeminiProvider) Edit(ctx context.Context, req EditRequest) (*ImageResult, error) {
+	ctx, cancel := mediautil.WithMediaTimeout(ctx)
+	defer cancel()
 	var parts []geminiPart
 
 	// Add all input images as parts

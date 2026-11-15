@@ -25,3 +25,20 @@ func ValidateRemoteURL(value string) error {
 	}
 	return nil
 }
+
+// DiagnosticReference retains useful reference identity but never signed query
+// tokens, userinfo or fragments in persisted/output diagnostics.
+func DiagnosticReference(value string) string {
+	if !IsRemoteReference(value) {
+		return value
+	}
+	u, err := url.Parse(value)
+	if err != nil || u.Hostname() == "" || (u.Scheme != "https" && u.Scheme != "http") {
+		return "[remote reference]"
+	}
+	u.User = nil
+	u.RawQuery = ""
+	u.ForceQuery = false
+	u.Fragment = ""
+	return u.String()
+}

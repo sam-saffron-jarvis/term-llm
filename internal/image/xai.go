@@ -9,22 +9,19 @@ import (
 	"io"
 	"net/http"
 	"strings"
-	"time"
 
 	"github.com/term-llm/term-llm/internal/config"
+	"github.com/term-llm/term-llm/internal/mediautil"
 	"github.com/term-llm/term-llm/internal/providerhttp"
 )
 
 const (
 	xaiImageEndpoint = "https://api.x.ai/v1/images/generations"
-	xaiImageTimeout  = 10 * time.Minute
 )
 
 var (
 	xaiImageModel = config.DefaultImageXAIModel
-	xaiHTTPClient = &http.Client{
-		Timeout: xaiImageTimeout,
-	}
+	xaiHTTPClient = &http.Client{}
 )
 
 // XAIProvider implements ImageProvider using xAI's Grok image API
@@ -58,6 +55,8 @@ func (p *XAIProvider) SupportsMultiImage() bool {
 }
 
 func (p *XAIProvider) Generate(ctx context.Context, req GenerateRequest) (*ImageResult, error) {
+	ctx, cancel := mediautil.WithMediaTimeout(ctx)
+	defer cancel()
 	genReq := xaiGenerateRequest{
 		Model:          p.model,
 		Prompt:         req.Prompt,
@@ -147,6 +146,8 @@ func (p *XAIProvider) Generate(ctx context.Context, req GenerateRequest) (*Image
 }
 
 func (p *XAIProvider) Edit(ctx context.Context, req EditRequest) (*ImageResult, error) {
+	ctx, cancel := mediautil.WithMediaTimeout(ctx)
+	defer cancel()
 	return nil, fmt.Errorf("xAI does not support image editing")
 }
 

@@ -6,7 +6,7 @@ import (
 )
 
 func captureImageOptions(cmd *cobra.Command) imageapp.Options {
-	o := imageapp.Options{Operation: imageOperation, EditModel: imageEditModel, Timeout: imageTimeout, Inputs: imageInputs, Size: imageSize, AspectRatio: imageAspectRatio, Quality: imageQuality, Background: imageBackground, Debug: imageDebug, DebugRaw: debugRaw}
+	o := imageapp.Options{Operation: imageOperation, EditModel: imageEditModel, Timeout: imageTimeout, TimeoutExplicit: cmd.Flags().Changed("timeout"), Inputs: imageInputs, Size: imageSize, AspectRatio: imageAspectRatio, Quality: imageQuality, Background: imageBackground, Debug: imageDebug, DebugRaw: debugRaw}
 	for _, name := range []string{"edit-model", "width", "height", "steps", "cfg-scale", "negative-prompt", "safe-mode", "scale", "enhance", "enhance-prompt", "enhance-creativity", "replication", "size", "aspect-ratio", "quality", "background"} {
 		if cmd.Flags().Changed(name) {
 			o.Changed = append(o.Changed, name)

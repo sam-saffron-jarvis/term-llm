@@ -9,9 +9,9 @@ import (
 	"io"
 	"net/http"
 	"strings"
-	"time"
 
 	"github.com/term-llm/term-llm/internal/config"
+	"github.com/term-llm/term-llm/internal/mediautil"
 	"github.com/term-llm/term-llm/internal/providerhttp"
 )
 
@@ -44,6 +44,8 @@ func (p *OpenRouterProvider) SupportsMultiImage() bool {
 }
 
 func (p *OpenRouterProvider) Generate(ctx context.Context, req GenerateRequest) (*ImageResult, error) {
+	ctx, cancel := mediautil.WithMediaTimeout(ctx)
+	defer cancel()
 	content := []orMessageContent{
 		{Type: "text", Text: req.Prompt},
 	}
@@ -51,6 +53,8 @@ func (p *OpenRouterProvider) Generate(ctx context.Context, req GenerateRequest) 
 }
 
 func (p *OpenRouterProvider) Edit(ctx context.Context, req EditRequest) (*ImageResult, error) {
+	ctx, cancel := mediautil.WithMediaTimeout(ctx)
+	defer cancel()
 	var content []orMessageContent
 
 	// Add all input images first
@@ -94,7 +98,7 @@ func (p *OpenRouterProvider) doRequest(ctx context.Context, content []orMessageC
 	httpReq.Header.Set("HTTP-Referer", "https://github.com/term-llm/term-llm")
 	httpReq.Header.Set("X-Title", "term-llm")
 
-	client := &http.Client{Timeout: 10 * time.Minute}
+	client := &http.Client{}
 	resp, err := client.Do(httpReq)
 	if err != nil {
 		return nil, fmt.Errorf("request failed: %w", err)

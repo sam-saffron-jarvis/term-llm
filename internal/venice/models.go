@@ -73,13 +73,9 @@ func FetchMediaModels(ctx context.Context, client *http.Client, key, root, kind 
 			ID        string `json:"id"`
 			Type      string `json:"type"`
 			ModelSpec struct {
-				Name        string `json:"name"`
-				Privacy     string `json:"privacy"`
-				Constraints *struct {
-					ModelType   string   `json:"model_type"`
-					Durations   []string `json:"durations"`
-					Resolutions []string `json:"resolutions"`
-				} `json:"constraints"`
+				Name        string          `json:"name"`
+				Privacy     string          `json:"privacy"`
+				Constraints json.RawMessage `json:"constraints"`
 			} `json:"model_spec"`
 		} `json:"data"`
 	}
@@ -96,12 +92,16 @@ func FetchMediaModels(ctx context.Context, client *http.Client, key, root, kind 
 		seen[m.Type+"/"+id] = true
 		meta := &cache.MediaModelMetadata{Privacy: m.ModelSpec.Privacy, FetchedAt: time.Now()}
 		model := cache.CachedModel{ID: id, Type: m.Type, DisplayName: m.ModelSpec.Name, Media: meta}
-		if c := m.ModelSpec.Constraints; c != nil {
+		if c := parseConstraints(m.ModelSpec.Constraints); c != nil {
 			meta.ModelType = c.ModelType
-			meta.Durations = c.Durations
-			meta.Resolutions = c.Resolutions
+			meta.Durations = constraintValues(c.Durations, normalizeSeconds)
+			if m.Type == "video" {
+				meta.Resolutions = constraintValues(c.Resolutions, normalizeResolution)
+			} else {
+				meta.Resolutions = constraintValues(c.Resolutions, func(s string) (string, bool) { return s, strings.TrimSpace(s) != "" })
+			}
 			if m.Type != "video" {
-				model.ImageConstraints = &cache.ImageModelConstraints{Resolutions: c.Resolutions}
+				model.ImageConstraints = &cache.ImageModelConstraints{Resolutions: meta.Resolutions}
 			}
 		}
 		models = append(models, model)
@@ -177,10 +177,17 @@ func ValidateVideoOptions(root, model, duration string, resolution *string) erro
 		if m.Type != "video" || m.ID != model || m.Media == nil {
 			continue
 		}
-		if len(m.Media.Durations) > 0 && !slices.Contains(m.Media.Durations, duration) {
+		durations := normalizedStrings(m.Media.Durations, normalizeSeconds)
+		requested, _ := normalizeSeconds(duration)
+		if len(durations) > 0 && !slices.Contains(durations, requested) {
 			return fmt.Errorf("duration %s is not in the cached constraints for %s", duration, model)
 		}
-		if resolution != nil && len(m.Media.Resolutions) > 0 && !slices.Contains(m.Media.Resolutions, *resolution) {
+		resolutions := normalizedStrings(m.Media.Resolutions, normalizeResolution)
+		requestedResolution := ""
+		if resolution != nil {
+			requestedResolution, _ = normalizeResolution(*resolution)
+		}
+		if resolution != nil && len(resolutions) > 0 && !slices.Contains(resolutions, requestedResolution) {
 			return fmt.Errorf("resolution %s is not in the cached constraints for %s", *resolution, model)
 		}
 	}

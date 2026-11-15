@@ -14,16 +14,14 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/term-llm/term-llm/internal/config"
+	"github.com/term-llm/term-llm/internal/mediautil"
 	"github.com/term-llm/term-llm/internal/openaiapi"
 	"github.com/term-llm/term-llm/internal/providerhttp"
 )
 
 const (
-	openaiHTTPTimeout = 10 * time.Minute
-
 	openaiMinPixels   = 655_360
 	openaiMaxPixels   = 8_294_400
 	openaiMaxEdge     = 3_840
@@ -37,9 +35,7 @@ const (
 
 var (
 	openaiDefaultModel = config.DefaultImageOpenAIModel
-	openaiHTTPClient   = &http.Client{
-		Timeout: openaiHTTPTimeout,
-	}
+	openaiHTTPClient   = &http.Client{}
 )
 
 // OpenAIProvider implements ImageProvider using OpenAI's Image API.
@@ -82,6 +78,8 @@ func (p *OpenAIProvider) SupportsMultiImage() bool {
 }
 
 func (p *OpenAIProvider) Generate(ctx context.Context, req GenerateRequest) (*ImageResult, error) {
+	ctx, cancel := mediautil.WithMediaTimeout(ctx)
+	defer cancel()
 	genReq := openaiGenerateRequest{
 		Model:        p.model,
 		Prompt:       req.Prompt,
@@ -110,6 +108,8 @@ func (p *OpenAIProvider) Generate(ctx context.Context, req GenerateRequest) (*Im
 }
 
 func (p *OpenAIProvider) Edit(ctx context.Context, req EditRequest) (*ImageResult, error) {
+	ctx, cancel := mediautil.WithMediaTimeout(ctx)
+	defer cancel()
 	if len(req.InputImages) == 0 {
 		return nil, fmt.Errorf("no input image provided")
 	}

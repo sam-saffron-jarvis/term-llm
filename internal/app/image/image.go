@@ -16,6 +16,7 @@ import (
 
 // Options captures explicit CLI presence independently of default values.
 type Options struct {
+	TimeoutExplicit                        bool
 	Operation, EditModel                   string
 	Controls                               media.VeniceControls
 	Upscale                                media.UpscaleRequest
@@ -167,4 +168,13 @@ func ValidateSize(size string) error {
 		return nil
 	}
 	return media.ValidateSize(size)
+}
+
+// RequestContext starts only after setup/local preparation. An explicit CLI
+// timeout overrides the fallback; otherwise an existing caller deadline wins.
+func (o Options) RequestContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	if o.TimeoutExplicit {
+		return context.WithTimeout(ctx, o.Timeout)
+	}
+	return mediautil.WithMediaTimeout(ctx)
 }

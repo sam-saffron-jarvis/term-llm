@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/term-llm/term-llm/internal/config"
+	"github.com/term-llm/term-llm/internal/mediautil"
 )
 
 // OpenAICompatibleProvider generates images through a configured Images API.
@@ -57,6 +58,8 @@ func (p *OpenAICompatibleProvider) Edit(context.Context, EditRequest) (*ImageRes
 	return nil, fmt.Errorf("image provider %s does not support editing", p.name)
 }
 func (p *OpenAICompatibleProvider) Generate(ctx context.Context, req GenerateRequest) (*ImageResult, error) {
+	ctx, cancel := mediautil.WithMediaTimeout(ctx)
+	defer cancel()
 	// Size is optional: local models can retain their native resolution. No GPT
 	// quality/output_format parameters are imposed on compatible implementations.
 	payload := struct {

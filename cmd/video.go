@@ -3,14 +3,14 @@ package cmd
 import (
 	"encoding/json"
 	"fmt"
-	videoapp "github.com/term-llm/term-llm/internal/app/video"
-	"github.com/term-llm/term-llm/internal/mediautil"
 	"io"
 	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
+	videoapp "github.com/term-llm/term-llm/internal/app/video"
 	"github.com/term-llm/term-llm/internal/input"
+	"github.com/term-llm/term-llm/internal/mediautil"
 	"github.com/term-llm/term-llm/internal/signal"
 	"github.com/term-llm/term-llm/internal/video"
 )
@@ -84,7 +84,7 @@ func init() {
 	videoCmd.Flags().BoolVar(&videoNoWait, "no-wait", false, "Queue and exit, or retrieve existing status once")
 	videoCmd.Flags().BoolVar(&videoJSON, "json", false, "Emit machine-readable JSON to stdout")
 	videoCmd.Flags().DurationVar(&videoPollInterval, "poll-interval", video.DefaultPollInterval, "Polling interval while waiting for completion")
-	videoCmd.Flags().DurationVar(&videoTimeout, "timeout", video.DefaultTimeout, "Maximum time to wait for video generation")
+	videoCmd.Flags().DurationVar(&videoTimeout, "timeout", video.DefaultTimeout, "Overall paid-job wait budget (default 1h); local timeout does not cancel upstream")
 	videoCmd.Flags().BoolVarP(&videoDebug, "debug", "d", false, "Show debug information")
 
 	videoCmd.Flags().StringVar(&videoQueueID, "queue-id", "", "Retrieve an existing job; requires --model, no prompt or generation options")
@@ -139,7 +139,7 @@ func runVideo(cmd *cobra.Command, args []string) error {
 	if videoQueueID != "" {
 		request.Model = videoModel
 	}
-	ctx, stop := signal.NotifyContext()
+	ctx, stop := signal.NotifyContextWithParent(cmd.Context())
 	defer stop()
 	cfg, err := loadConfigWithSetup()
 	if err != nil {
@@ -158,6 +158,9 @@ func runVideo(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	options := videoapp.Options{Request: request, QueueID: videoQueueID, Output: videoOutput, OutputDir: cfg.Image.OutputDir, QuoteOnly: videoQuoteOnly, SkipQuote: videoSkipQuote, NoWait: videoNoWait, DeleteRemote: videoDeleteRemote, PollInterval: videoPollInterval, Timeout: videoTimeout, Stderr: cmd.ErrOrStderr()}
+	if !cmd.Flags().Changed("timeout") {
+		options.Timeout = 0
+	}
 	options.ReferencePaths = append([]string(nil), videoReferences...)
 	options.LoadInputs = func(r *video.Request) error {
 		if videoInput != "" {

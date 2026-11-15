@@ -19,7 +19,7 @@ func TestConfiguredProviderRequests(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, _ = p.Quote(context.Background(), Request{})
+	_, _ = p.Quote(context.Background(), Request{Model: "synthetic"})
 	if path != "/proxy/video/quote" {
 		t.Fatalf("path %q", path)
 	}

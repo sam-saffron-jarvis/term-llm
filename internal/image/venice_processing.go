@@ -3,6 +3,7 @@ package image
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"github.com/term-llm/term-llm/internal/mediautil"
@@ -18,6 +19,9 @@ import (
 const (
 	veniceJSONLimit  int64 = 8 << 20
 	veniceImageLimit int64 = 64 << 20
+	// Base64 encodes 3 raw bytes in 4 characters. Allow JSON/metadata slack,
+	// then independently enforce the decoded image bound before allocation.
+	veniceEncodedImageLimit int64 = ((veniceImageLimit+2)/3)*4 + (1 << 20)
 )
 
 func readVeniceBody(r io.Reader, limit int64) ([]byte, error) {
@@ -100,6 +104,8 @@ func validateLocalProcessingImage(img InputImage) error {
 }
 
 func (p *VeniceProvider) Upscale(ctx context.Context, req UpscaleRequest) (*ImageResult, error) {
+	ctx, cancel := mediautil.WithMediaTimeout(ctx)
+	defer cancel()
 	if err := validateLocalProcessingImage(req.Image); err != nil {
 		return nil, err
 	}
@@ -135,6 +141,8 @@ func (p *VeniceProvider) Upscale(ctx context.Context, req UpscaleRequest) (*Imag
 }
 
 func (p *VeniceProvider) RemoveBackground(ctx context.Context, req BackgroundRemovalRequest) (*ImageResult, error) {
+	ctx, cancel := mediautil.WithMediaTimeout(ctx)
+	defer cancel()
 	if err := validateLocalProcessingImage(req.Image); err != nil {
 		return nil, err
 	}
@@ -143,4 +151,32 @@ func (p *VeniceProvider) RemoveBackground(ctx context.Context, req BackgroundRem
 		return nil, err
 	}
 	return p.doRawRequest(httpReq, req.Debug || req.DebugRaw)
+}
+
+// decodeVeniceImage bounds the decoded allocation as well as the encoded body.
+func decodeVeniceImage(encoded string, limit int64) ([]byte, error) {
+	n, padding := 0, 0
+	for _, c := range encoded {
+		if c == '\r' || c == '\n' {
+			continue
+		}
+		n++
+		if c == '=' {
+			padding++
+		}
+	}
+	if padding > 2 {
+		return nil, fmt.Errorf("invalid image base64 padding; paid outcome unknown")
+	}
+	if int64(base64.StdEncoding.DecodedLen(n)-padding) > limit {
+		return nil, fmt.Errorf("decoded Venice image exceeds %d bytes; paid outcome unknown", limit)
+	}
+	data, err := base64.StdEncoding.DecodeString(encoded)
+	if err != nil {
+		return nil, fmt.Errorf("decode Venice image; paid outcome unknown: %w", err)
+	}
+	if int64(len(data)) > limit {
+		return nil, fmt.Errorf("decoded Venice image exceeds %d bytes; paid outcome unknown", limit)
+	}
+	return data, nil
 }

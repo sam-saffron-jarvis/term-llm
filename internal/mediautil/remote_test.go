@@ -17,3 +17,11 @@ func TestRemoteURLValidation(t *testing.T) {
 		}
 	}
 }
+
+func TestDiagnosticReferenceRemovesSignedTokens(t *testing.T) {
+	for _, tc := range []struct{ in, want string }{{"https://example.org/image.png?token=secret#fragment", "https://example.org/image.png"}, {"https://user:secret@example.org/image?sig=secret", "https://example.org/image"}, {"input.png", "input.png"}, {"http://%secret", "[remote reference]"}} {
+		if got := DiagnosticReference(tc.in); got != tc.want {
+			t.Errorf("diagnostic=%q want=%q", got, tc.want)
+		}
+	}
+}

@@ -14,6 +14,7 @@ import (
 	imageapp "github.com/term-llm/term-llm/internal/app/image"
 	"github.com/term-llm/term-llm/internal/image"
 	"github.com/term-llm/term-llm/internal/input"
+	"github.com/term-llm/term-llm/internal/mediautil"
 	"github.com/term-llm/term-llm/internal/signal"
 	"github.com/term-llm/term-llm/internal/terminalpolicy"
 	"github.com/term-llm/term-llm/internal/ui"
@@ -43,6 +44,7 @@ var (
 var (
 	imageIsTerminal = term.IsTerminal
 	openImageTTY    = os.OpenFile
+	imageLoadConfig = loadConfigWithSetup
 )
 
 var imageCmd = &cobra.Command{
@@ -104,7 +106,7 @@ func init() {
 	imageCmd.Flags().Float64Var(&imageCFG, "cfg-scale", 0, "Venice generation CFG scale (finite)")
 	imageCmd.Flags().StringVar(&imageNegative, "negative-prompt", "", "Venice generation negative prompt")
 	imageCmd.Flags().BoolVar(&imageSafeMode, "safe-mode", false, "Enable Venice generation safe mode")
-	imageCmd.Flags().DurationVar(&imageTimeout, "timeout", 5*time.Minute, "Provider-neutral request deadline; timeout does not undo remote work")
+	imageCmd.Flags().DurationVar(&imageTimeout, "timeout", mediautil.DefaultMediaTimeout, "Paid request budget (default 1h); shorter deadlines risk losing paid output")
 	imageCmd.Flags().IntVar(&imageScale, "scale", 0, "Upscale factor (positive)")
 	imageCmd.Flags().BoolVar(&imageEnhance, "enhance", false, "Enable upscale enhancement")
 	imageCmd.Flags().StringVar(&imageEnhancePrompt, "enhance-prompt", "", "Upscale enhancement prompt")
@@ -139,13 +141,11 @@ func runImage(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("prompt required: provide as argument or via stdin")
 	}
 
-	ctx, stop := signal.NotifyContext()
+	ctx, stop := signal.NotifyContextWithParent(cmd.Context())
 	defer stop()
-	ctx, cancel := context.WithTimeout(ctx, imageTimeout)
-	defer cancel()
 
 	// Load config (requires setup wizard if no config exists)
-	cfg, err := loadConfigWithSetup()
+	cfg, err := imageLoadConfig()
 	if err != nil {
 		return err
 	}
@@ -191,9 +191,12 @@ func runImage(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
+	// Setup, credentials, approvals and local preparation do not consume the paid request budget.
+	ctx, cancel := options.RequestContext(ctx)
+	defer cancel()
 	result, err := runImageWithSpinner(ctx, provider, generate, label)
 	if err != nil {
-		return fmt.Errorf("image request failed (remote outcome may be uncertain): %w", err)
+		return fmt.Errorf("image request failed: %w", image.RequestError(err))
 	}
 	if imageOperation != "" {
 		prompt = options.OutputName()

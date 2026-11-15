@@ -13,21 +13,19 @@ import (
 	"time"
 
 	"github.com/term-llm/term-llm/internal/config"
+	"github.com/term-llm/term-llm/internal/mediautil"
 	"github.com/term-llm/term-llm/internal/providerhttp"
 )
 
 const (
-	fluxBaseURL     = "https://api.bfl.ai/v1"
-	fluxHTTPTimeout = 10 * time.Minute
+	fluxBaseURL = "https://api.bfl.ai/v1"
 )
 
 var (
 	fluxDefaultGenerateModel = config.DefaultImageFluxModel
 	fluxDefaultEditModel     = config.DefaultImageFluxEditModel
-	// fluxHTTPClient is a shared HTTP client with reasonable timeouts
-	fluxHTTPClient = &http.Client{
-		Timeout: fluxHTTPTimeout,
-	}
+	// Whole-response timing belongs to the paid operation context, not the client.
+	fluxHTTPClient = &http.Client{}
 )
 
 // FluxProvider implements ImageProvider using Black Forest Labs' Flux API
@@ -55,6 +53,8 @@ func (p *FluxProvider) SupportsMultiImage() bool {
 }
 
 func (p *FluxProvider) Generate(ctx context.Context, req GenerateRequest) (*ImageResult, error) {
+	ctx, cancel := mediautil.WithMediaTimeout(ctx)
+	defer cancel()
 	ar := req.AspectRatio
 	if ar == "" {
 		ar = "1:1"
@@ -79,6 +79,8 @@ func (p *FluxProvider) Generate(ctx context.Context, req GenerateRequest) (*Imag
 }
 
 func (p *FluxProvider) Edit(ctx context.Context, req EditRequest) (*ImageResult, error) {
+	ctx, cancel := mediautil.WithMediaTimeout(ctx)
+	defer cancel()
 	// Flux only supports single image editing
 	if len(req.InputImages) == 0 {
 		return nil, fmt.Errorf("no input image provided")
@@ -188,8 +190,9 @@ func fluxAuthenticatedClient() *http.Client {
 }
 
 func (p *FluxProvider) pollAndDownload(ctx context.Context, pollingURL string) (*ImageResult, error) {
+	ctx, cancel := mediautil.WithMediaTimeout(ctx)
+	defer cancel()
 	const (
-		maxAttempts       = 60          // Maximum number of poll attempts
 		initialBackoff    = time.Second // Start with 1 second
 		maxBackoff        = 5 * time.Second
 		backoffMultiplier = 1.5
@@ -197,7 +200,7 @@ func (p *FluxProvider) pollAndDownload(ctx context.Context, pollingURL string) (
 
 	backoff := initialBackoff
 
-	for i := 0; i < maxAttempts; i++ {
+	for {
 		select {
 		case <-ctx.Done():
 			return nil, ctx.Err()
@@ -233,7 +236,9 @@ func (p *FluxProvider) pollAndDownload(ctx context.Context, pollingURL string) (
 			}
 			return p.downloadImage(ctx, pollResp.Result.Sample)
 		case "Pending", "Processing":
-			time.Sleep(backoff)
+			if err := fluxPollWait(ctx, backoff); err != nil {
+				return nil, fmt.Errorf("Flux wait ended; remote outcome unknown: %w", err)
+			}
 			// Exponential backoff with cap
 			backoff = time.Duration(float64(backoff) * backoffMultiplier)
 			if backoff > maxBackoff {
@@ -243,8 +248,6 @@ func (p *FluxProvider) pollAndDownload(ctx context.Context, pollingURL string) (
 			return nil, fmt.Errorf("unexpected status: %s (body: %s)", pollResp.Status, string(body))
 		}
 	}
-
-	return nil, fmt.Errorf("timeout waiting for result")
 }
 
 func (p *FluxProvider) downloadImage(ctx context.Context, url string) (*ImageResult, error) {
@@ -298,4 +301,17 @@ type fluxPollResponse struct {
 
 type fluxPollResult struct {
 	Sample string `json:"sample"`
+}
+
+// Separate poll cadence from the paid operation deadline. The cadence must not
+// become a fixed attempt-count lifetime limit for slow jobs.
+var fluxPollWait = func(ctx context.Context, delay time.Duration) error {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }

@@ -27,21 +27,18 @@ import (
 )
 
 const (
-	veniceBaseURL                = "https://api.venice.ai/api/v1"
-	veniceVideoQuoteEndpoint     = "/video/quote"
-	veniceVideoQueueEndpoint     = "/video/queue"
-	veniceVideoRetrieveEndpoint  = "/video/retrieve"
-	veniceDefaultTextModel       = "longcat-distilled-text-to-video"
-	veniceDefaultImageModel      = "longcat-distilled-image-to-video"
-	veniceDefaultDuration        = "5s"
-	veniceDefaultResolution      = ""
-	veniceDefaultAspectRatio     = "16:9"
-	veniceDefaultNegativePrompt  = ""
-	veniceDefaultPollInterval    = 5 * time.Second
-	veniceDefaultTimeout         = 10 * time.Minute
-	veniceQuoteRequestTimeout    = 30 * time.Second
-	veniceQueueRequestTimeout    = 2 * time.Minute
-	veniceRetrieveRequestTimeout = 2 * time.Minute
+	veniceBaseURL               = "https://api.venice.ai/api/v1"
+	veniceVideoQuoteEndpoint    = "/video/quote"
+	veniceVideoQueueEndpoint    = "/video/queue"
+	veniceVideoRetrieveEndpoint = "/video/retrieve"
+	veniceDefaultTextModel      = "longcat-distilled-text-to-video"
+	veniceDefaultImageModel     = "longcat-distilled-image-to-video"
+	veniceDefaultDuration       = "5s"
+	veniceDefaultResolution     = ""
+	veniceDefaultAspectRatio    = "16:9"
+	veniceDefaultNegativePrompt = ""
+	veniceDefaultPollInterval   = 5 * time.Second
+	veniceDefaultTimeout        = mediautil.DefaultMediaTimeout
 )
 
 const (
@@ -109,7 +106,7 @@ func NewVeniceProvider(apiKey string) *VeniceProvider {
 }
 
 func (p *VeniceProvider) Quote(ctx context.Context, req Request) (*Quote, error) {
-	ctx, cancel := withDefaultTimeout(ctx, veniceQuoteRequestTimeout)
+	ctx, cancel := mediautil.WithMediaTimeout(ctx)
 	defer cancel()
 
 	payload, err := p.options(req)
@@ -130,7 +127,7 @@ func (p *VeniceProvider) Quote(ctx context.Context, req Request) (*Quote, error)
 }
 
 func (p *VeniceProvider) Queue(ctx context.Context, req Request) (*QueuedJob, error) {
-	ctx, cancel := withDefaultTimeout(ctx, veniceQueueRequestTimeout)
+	ctx, cancel := mediautil.WithMediaTimeout(ctx)
 	defer cancel()
 
 	payload, err := p.options(req)
@@ -147,9 +144,6 @@ func (p *VeniceProvider) Queue(ctx context.Context, req Request) (*QueuedJob, er
 		}}
 	}
 	if req.ImageURL != "" {
-		if err := mediautil.ValidateRemoteURL(req.ImageURL); err != nil {
-			return nil, err
-		}
 		payload["image_url"] = req.ImageURL
 	} else if len(req.ImageData) > 0 {
 		payload["image_url"] = dataURL(req.ImagePath, req.ImageData)
@@ -158,9 +152,6 @@ func (p *VeniceProvider) Queue(ctx context.Context, req Request) (*QueuedJob, er
 		references := make([]string, 0, len(req.ReferenceImages))
 		for _, img := range req.ReferenceImages {
 			if img.URL != "" {
-				if err := mediautil.ValidateRemoteURL(img.URL); err != nil {
-					return nil, err
-				}
 				references = append(references, img.URL)
 			} else {
 				references = append(references, dataURL(img.Path, img.Data))
@@ -211,7 +202,7 @@ func (p *VeniceProvider) retrieveTo(ctx context.Context, job QueuedJob, dst io.W
 	if !validIdentifier(job.Model) || !validIdentifier(job.QueueID) {
 		return nil, fmt.Errorf("model and queue_id are required valid identifiers")
 	}
-	ctx, cancel := withDefaultTimeout(ctx, veniceRetrieveRequestTimeout)
+	ctx, cancel := mediautil.WithMediaTimeout(ctx)
 	defer cancel()
 	opts := p.requestOptions(http.MethodPost, veniceVideoRetrieveEndpoint, map[string]any{"model": job.Model, "queue_id": job.QueueID, "delete_media_on_completion": false}, debug)
 	resp, err := providerhttp.OpenJSONRequest(ctx, opts)
@@ -270,6 +261,8 @@ func (p *VeniceProvider) retrieveTo(ctx context.Context, job QueuedJob, dst io.W
 // Complete uses the documented delete-only endpoint; call only after saving.
 // https://docs.venice.ai/api-reference/endpoint/video/complete
 func (p *VeniceProvider) Complete(ctx context.Context, job QueuedJob) error {
+	ctx, cancel := mediautil.WithMediaTimeout(ctx)
+	defer cancel()
 	var result struct {
 		Success bool `json:"success"`
 	}
@@ -372,13 +365,6 @@ func generateVideoFilename(prompt string) string {
 	return fmt.Sprintf("%s-%s.mp4", timestamp, safe)
 }
 
-func withDefaultTimeout(ctx context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
-	if _, ok := ctx.Deadline(); ok {
-		return ctx, func() {}
-	}
-	return context.WithTimeout(ctx, timeout)
-}
-
 func dataURL(path string, data []byte) string {
 	mimeType := mime.TypeByExtension(strings.ToLower(filepath.Ext(path)))
 	if mimeType == "" {
@@ -423,18 +409,7 @@ func (p *VeniceProvider) options(req Request) (map[string]any, error) {
 	if duration == "" {
 		duration = DefaultDuration
 	}
-	if err := ValidateDuration(duration); err != nil {
-		return nil, err
-	}
-	if req.Resolution != nil {
-		if err := ValidateResolution(*req.Resolution); err != nil {
-			return nil, err
-		}
-	}
-	if err := ValidateAspectRatio(req.AspectRatio); err != nil {
-		return nil, err
-	}
-	if err := venice.ValidateVideoOptions(p.baseURL, req.Model, duration, req.Resolution); err != nil {
+	if err := p.ValidateRequest(req); err != nil {
 		return nil, err
 	}
 	payload := map[string]any{"model": req.Model, "duration": duration}

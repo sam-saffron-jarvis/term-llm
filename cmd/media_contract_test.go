@@ -398,3 +398,19 @@ func TestVideoCLIAtomicSaveAndCleanupWire(t *testing.T) {
 		})
 	}
 }
+
+func TestVideoCLIInvalidBeforePreflightOrSpend(t *testing.T) {
+	resetMediaFlags(t, videoCmd)
+	calls := 0
+	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { calls++; t.Error("invalid request sent", r.URL.Path) }))
+	defer s.Close()
+	mediaConfig(t, s.URL)
+	output := filepath.Join(t.TempDir(), "not-created", "video.mp4")
+	out, _, err := runMediaCommand(t, videoCmd, "hello", "--model=synthetic", "--skip-quote", "--duration=5", "--json", "--output", output)
+	if err == nil || !strings.Contains(out, `"status": "invalid"`) || strings.Contains(out, "do not requeue") || calls != 0 {
+		t.Fatal(out, err, calls)
+	}
+	if _, err := os.Stat(filepath.Dir(output)); !os.IsNotExist(err) {
+		t.Fatal("local preflight before validation", err)
+	}
+}

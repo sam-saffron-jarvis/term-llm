@@ -13,6 +13,7 @@ import (
 
 	"github.com/term-llm/term-llm/internal/atomicfile"
 	"github.com/term-llm/term-llm/internal/mediautil"
+	"github.com/term-llm/term-llm/internal/providerhttp"
 	media "github.com/term-llm/term-llm/internal/video"
 )
 
@@ -69,7 +70,7 @@ type Result struct {
 }
 
 func initial(o Options) Result {
-	r := Result{Provider: "venice", Prompt: o.Request.Prompt, Model: o.Request.Model, Duration: o.Request.Duration, AspectRatio: o.Request.AspectRatio, Status: "pending", Input: strings.TrimSpace(o.Request.ImagePath), References: append([]string(nil), o.ReferencePaths...)}
+	r := Result{Provider: "venice", Prompt: o.Request.Prompt, Model: o.Request.Model, Duration: o.Request.Duration, AspectRatio: o.Request.AspectRatio, Status: "pending", Input: mediautil.DiagnosticReference(strings.TrimSpace(o.Request.ImagePath)), References: diagnosticReferences(o.ReferencePaths)}
 	if o.Request.Resolution != nil {
 		r.Resolution = *o.Request.Resolution
 	}
@@ -80,6 +81,20 @@ func initial(o Options) Result {
 // when stdout is reserved for JSON. A failed queue is never automatically retried.
 func Generate(ctx context.Context, p Provider, o Options) (Result, error) {
 	r := initial(o)
+	if err := media.ValidateRequest(o.Request); err != nil {
+		return fail(r, "invalid", err)
+	}
+	if validator, ok := p.(interface{ ValidateRequest(media.Request) error }); ok {
+		if err := validator.ValidateRequest(o.Request); err != nil {
+			return fail(r, "invalid", err)
+		}
+	}
+	if o.Timeout < 0 {
+		return fail(r, "invalid", fmt.Errorf("timeout must not be negative"))
+	}
+	if o.DeleteRemote && (o.NoWait || o.QuoteOnly) {
+		return fail(r, "invalid", fmt.Errorf("--delete-remote requires waiting for a durable save; conflicts with --no-wait/--quote-only"))
+	}
 	if o.SkipQuote && o.QuoteOnly {
 		return fail(r, "invalid", fmt.Errorf("--skip-quote conflicts with --quote-only"))
 	}
@@ -98,7 +113,7 @@ func Generate(ctx context.Context, p Provider, o Options) (Result, error) {
 		}
 		defer discard(file)
 	}
-	ctx, cancel := context.WithTimeout(ctx, o.Timeout)
+	ctx, cancel := requestContext(ctx, o.Timeout)
 	defer cancel()
 	if !o.SkipQuote {
 		q, err := p.Quote(ctx, o.Request)
@@ -121,6 +136,13 @@ func Generate(ctx context.Context, p Provider, o Options) (Result, error) {
 	}
 	job, err := p.Queue(ctx, o.Request)
 	if err != nil {
+		var notSent *media.RequestNotSentError
+		if errors.As(err, &notSent) {
+			return fail(r, "invalid", err)
+		}
+		if queueRejected(err) {
+			return fail(r, "queue_rejected", fmt.Errorf("video queue rejected: %w", err))
+		}
 		return fail(r, "queue_outcome_unknown", fmt.Errorf("video queue outcome unknown: a paid job may already exist; do not requeue: %w", err))
 	}
 	r = withJob(r, *job)
@@ -151,7 +173,7 @@ func RetrieveExisting(ctx context.Context, p Retriever, o Options) (Result, erro
 		return fail(r, "save_failed", err)
 	}
 	defer discard(file)
-	ctx, cancel := context.WithTimeout(ctx, o.Timeout)
+	ctx, cancel := requestContext(ctx, o.Timeout)
 	defer cancel()
 	return poll(ctx, p, o, r, job, file, path)
 }
@@ -330,4 +352,33 @@ func (w *saveWriter) Write(p []byte) (int, error) {
 		w.err = err
 	}
 	return n, err
+}
+
+func requestContext(ctx context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
+	if timeout > 0 {
+		return context.WithTimeout(ctx, timeout)
+	}
+	return mediautil.WithMediaTimeout(ctx)
+}
+
+func queueRejected(err error) bool {
+	var status *providerhttp.StatusError
+	if !errors.As(err, &status) {
+		return false
+	}
+	switch status.StatusCode {
+	case 400, 401, 402, 403, 404, 405, 413, 415, 422:
+		return true
+	}
+	return false
+}
+func diagnosticReferences(paths []string) []string {
+	if len(paths) == 0 {
+		return nil
+	}
+	refs := make([]string, len(paths))
+	for i, path := range paths {
+		refs[i] = mediautil.DiagnosticReference(path)
+	}
+	return refs
 }

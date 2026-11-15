@@ -588,7 +588,7 @@ Generate, edit or process images using AI
 | `--scale` | int | Upscale factor (positive) |
 | `--size, -s` | string | Image resolution: 1K, 2K, 4K; native omits resolution (Venice only) |
 | `--steps` | int | Venice generation steps (positive) |
-| `--timeout` | duration | Provider-neutral request deadline; timeout does not undo remote work |
+| `--timeout` | duration | Paid request budget (default 1h); shorter deadlines risk losing paid output |
 | `--width` | int | Venice generation width; requires --height, conflicts with --size/--aspect-ratio |
 
 ### `term-llm jobs`
@@ -1666,5 +1666,5 @@ Generate videos with Venice AI
 | `--resolution` | string | Video resolution (e.g. 360p, 720p, 4k; absent uses provider default) |
 | `--seedance-consent` | bool | Attest to Seedance terms/privacy, legal rights, and screening acknowledgement for this queue |
 | `--skip-quote` | bool | Queue without the usual price quote (never retries a queue) |
-| `--timeout` | duration | Maximum time to wait for video generation |
+| `--timeout` | duration | Overall paid-job wait budget (default 1h); local timeout does not cancel upstream |
 <!-- END GENERATED: cli -->

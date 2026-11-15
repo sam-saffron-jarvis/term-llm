@@ -137,7 +137,7 @@ func TestVeniceDeadlineFallbackAndExplicitLongerDeadline(t *testing.T) {
 				var want time.Time
 				if explicit {
 					var cancel context.CancelFunc
-					want = time.Now().Add(10 * time.Minute)
+					want = time.Now().Add(2 * time.Hour)
 					ctx, cancel = context.WithDeadline(ctx, want)
 					defer cancel()
 				}
@@ -153,7 +153,7 @@ func TestVeniceDeadlineFallbackAndExplicitLongerDeadline(t *testing.T) {
 						}
 					} else {
 						remaining := time.Until(deadline)
-						if remaining < 4*time.Minute+50*time.Second || remaining > 5*time.Minute {
+						if remaining < time.Hour-10*time.Second || remaining > time.Hour {
 							t.Errorf("fallback deadline=%s", remaining)
 						}
 					}

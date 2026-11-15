@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/term-llm/term-llm/internal/config"
+	"github.com/term-llm/term-llm/internal/mediautil"
 	"github.com/term-llm/term-llm/internal/runtimeoutput"
 	"github.com/term-llm/term-llm/internal/venice"
 )
@@ -90,6 +91,8 @@ func (p *VeniceProvider) editModel() string {
 // Generate calls POST /image/generate — text-to-image.
 // Response: JSON { "images": ["<base64>"] }
 func (p *VeniceProvider) Generate(ctx context.Context, req GenerateRequest) (*ImageResult, error) {
+	ctx, cancel := mediautil.WithMediaTimeout(ctx)
+	defer cancel()
 	if err := ValidateVeniceControls(p, req.Venice, req.Size, req.AspectRatio); err != nil {
 		return nil, err
 	}
@@ -143,6 +146,8 @@ func (p *VeniceProvider) Generate(ctx context.Context, req GenerateRequest) (*Im
 // - Explicit quality or 2-3 images → POST /image/multi-edit (JSON)
 // Both request PNG output; response bytes determine the actual MIME type.
 func (p *VeniceProvider) Edit(ctx context.Context, req EditRequest) (*ImageResult, error) {
+	ctx, cancel := mediautil.WithMediaTimeout(ctx)
+	defer cancel()
 	if len(req.InputImages) == 0 {
 		return nil, fmt.Errorf("no input image provided")
 	}
@@ -235,7 +240,8 @@ func (p *VeniceProvider) multiEdit(ctx context.Context, req EditRequest, options
 
 // doJSONRequest handles responses with JSON { "images": ["<base64>"] }
 func (p *VeniceProvider) doJSONRequest(httpReq *http.Request, debugRaw bool) (*ImageResult, error) {
-	httpReq, cancel := veniceRequestDeadline(httpReq)
+	ctx, cancel := mediautil.WithMediaTimeout(httpReq.Context())
+	httpReq = httpReq.Clone(ctx)
 	defer cancel()
 	client := *veniceHTTPClient
 	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
@@ -246,9 +252,13 @@ func (p *VeniceProvider) doJSONRequest(httpReq *http.Request, debugRaw bool) (*I
 	}
 	defer resp.Body.Close()
 
-	body, err := readVeniceBody(resp.Body, veniceJSONLimit)
+	limit := veniceEncodedImageLimit
+	if resp.StatusCode != http.StatusOK {
+		limit = veniceJSONLimit
+	}
+	body, err := readVeniceBody(resp.Body, limit)
 	if err != nil {
-		return nil, fmt.Errorf("failed to read response: %w", err)
+		return nil, fmt.Errorf("Venice image response unavailable; paid outcome unknown: %w", err)
 	}
 
 	if debugRaw {
@@ -268,7 +278,7 @@ func (p *VeniceProvider) doJSONRequest(httpReq *http.Request, debugRaw bool) (*I
 		return nil, fmt.Errorf("no image data in response")
 	}
 
-	imageData, err := base64.StdEncoding.DecodeString(apiResp.Images[0])
+	imageData, err := decodeVeniceImage(apiResp.Images[0], veniceImageLimit)
 	if err != nil {
 		return nil, fmt.Errorf("failed to decode image: %w", err)
 	}
@@ -278,7 +288,8 @@ func (p *VeniceProvider) doJSONRequest(httpReq *http.Request, debugRaw bool) (*I
 
 // doRawRequest handles responses that contain raw image bytes.
 func (p *VeniceProvider) doRawRequest(httpReq *http.Request, debugRaw bool) (*ImageResult, error) {
-	httpReq, cancel := veniceRequestDeadline(httpReq)
+	ctx, cancel := mediautil.WithMediaTimeout(httpReq.Context())
+	httpReq = httpReq.Clone(ctx)
 	defer cancel()
 	client := *veniceHTTPClient
 	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
@@ -295,7 +306,7 @@ func (p *VeniceProvider) doRawRequest(httpReq *http.Request, debugRaw bool) (*Im
 	}
 	body, err := readVeniceBody(resp.Body, limit)
 	if err != nil {
-		return nil, fmt.Errorf("failed to read response: %w", err)
+		return nil, fmt.Errorf("Venice image response unavailable; paid outcome unknown: %w", err)
 	}
 
 	debugRawImageLog(debugRaw, "Venice Response", "status=%d content-type=%s body_len=%d",
@@ -443,14 +454,4 @@ func truncateDebugBody(body []byte, maxLen int) string {
 		return s[:maxLen] + fmt.Sprintf("...[truncated, %d total bytes]", len(body))
 	}
 	return s
-}
-
-// Preserve the historical fallback for direct/tool callers without capping a
-// caller-specified longer deadline. The deadline covers response-body reads too.
-func veniceRequestDeadline(req *http.Request) (*http.Request, context.CancelFunc) {
-	if _, ok := req.Context().Deadline(); ok {
-		return req, func() {}
-	}
-	ctx, cancel := context.WithTimeout(req.Context(), 5*time.Minute)
-	return req.Clone(ctx), cancel
 }
