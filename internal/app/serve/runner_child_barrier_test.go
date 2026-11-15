@@ -33,6 +33,10 @@ type barrierGrandchildRunner struct {
 	release     chan struct{}
 	enteredOnce sync.Once
 
+	// spawnDelivered holds a run until spawn_agent has returned its running
+	// result, preventing an instant child from being collected by wait=0.
+	spawnDelivered chan struct{}
+
 	mu    sync.Mutex
 	calls int
 }
@@ -52,6 +56,13 @@ func (r *barrierGrandchildRunner) RunAgentWithCallback(ctx context.Context, name
 	if release != nil {
 		select {
 		case <-release:
+		case <-ctx.Done():
+			return tools.SpawnAgentRunResult{}, ctx.Err()
+		}
+	}
+	if r.spawnDelivered != nil {
+		select {
+		case <-r.spawnDelivered:
 		case <-ctx.Done():
 			return tools.SpawnAgentRunResult{}, ctx.Err()
 		}
@@ -136,7 +147,11 @@ func (f *childBarrierFixture) runChildContext(ctx context.Context, t *testing.T,
 		ProviderInstance: f.mock,
 		MaxTurns:         maxTurns,
 		MaxTurnsSet:      true,
-	}, eventSinkFunc(func(core.Event) {}))
+	}, eventSinkFunc(func(event core.Event) {
+		if f.grandchild.spawnDelivered != nil && event.Type == core.EventToolExecEnd && event.ToolName == "spawn_agent" && event.ToolSuccess {
+			f.grandchild.spawnDelivered <- struct{}{}
+		}
+	}))
 }
 
 // requestWithLifecycleNotice returns the recorded request that carried the
@@ -370,7 +385,9 @@ func TestChildBarrierLimitTurnIsAcknowledgedAndReserveWakesNewChild(t *testing.T
 		AddTextResponse("child: spawned A without waiting").
 		AddToolCall("call-spawn-c", "spawn_agent", map[string]any{"agent_name": "developer", "prompt": "second grandchild", "wait": 0}).
 		AddTextResponse("reserve report: C delivered")
-	grandchild := &barrierGrandchildRunner{output: "grandchild output"}
+	grandchild := &barrierGrandchildRunner{
+		output: "grandchild output", spawnDelivered: make(chan struct{}, 2),
+	}
 	f := newChildBarrierFixture(t, mock, grandchild)
 
 	// The child's own turn spends two of three turns, so its first lifecycle
@@ -461,7 +478,9 @@ func TestChildBarrierBudgetTurnCanSpawnAgain(t *testing.T) {
 		AddToolCall("call-spawn-more", "spawn_agent", map[string]any{"agent_name": "developer", "prompt": "follow-up work", "wait": 0}).
 		AddTextResponse("barrier: delegated follow-up").
 		AddTextResponse("barrier: every child reported")
-	grandchild := &barrierGrandchildRunner{output: "grandchild output"}
+	grandchild := &barrierGrandchildRunner{
+		output: "grandchild output", spawnDelivered: make(chan struct{}, 2),
+	}
 	f := newChildBarrierFixture(t, mock, grandchild)
 
 	result, err := f.runChild(t, 12)
