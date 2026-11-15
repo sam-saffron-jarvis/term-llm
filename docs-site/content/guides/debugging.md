@@ -54,7 +54,7 @@ Deferred value resolution executes the same code the loader runs lazily, includi
 
 #### `credentials` — stored OAuth credentials
 
-Offline checks over `chatgpt_oauth.json`, `grok_oauth.json`, and `copilot_oauth.json`: file permissions (`--fix` restores `0600`), parse failures, missing access tokens, and expiry. An expired token with a refresh token is informational because the next request renews it; an expired token without one needs `term-llm auth login`.
+Checks the [selected native OAuth store](/reference/configuration/#native-oauth-credential-directory) for permissions (`--fix` restores `0600`), parse errors, missing access tokens, and expiry. Expired tokens with refresh tokens renew automatically; otherwise run `term-llm auth login`.
 
 #### `mcp` — MCP servers
 

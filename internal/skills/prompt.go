@@ -29,7 +29,7 @@ How to invoke:
 
 Usage notes:
 - Only use skills listed below or found via search_skills
-- Do not invoke a skill that is already loaded in your context
+- Avoid redundant activation of loaded skills; explicit reloads are allowed
 </usage>
 
 `)

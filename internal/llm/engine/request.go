@@ -393,6 +393,7 @@ func (e *Engine) prepareRequestContext(ctx context.Context, req *core.Request) {
 		if !ok {
 			continue
 		}
+		before := e.tools.AllSpecs()
 		messages, err := contextTool.PrepareRequestContext(ctx, req.SessionID, req.Messages)
 		if err != nil {
 			// Restored tool state is an optional context enhancement. A stale or
@@ -401,5 +402,11 @@ func (e *Engine) prepareRequestContext(ctx context.Context, req *core.Request) {
 			continue
 		}
 		req.Messages = messages
+		// Context preparation may register skill capabilities before the run starts.
+		for _, added := range e.tools.AllSpecs() {
+			if !hasToolNamed(before, added.Name) && !hasToolNamed(req.Tools, added.Name) && e.IsToolAllowed(added.Name) {
+				req.Tools = append(req.Tools, added)
+			}
+		}
 	}
 }

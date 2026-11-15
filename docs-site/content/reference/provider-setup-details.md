@@ -162,7 +162,7 @@ Codex's product-level **Ultra** option combines `max` effort with subagents; it 
 
 ### Grok subscription OAuth
 
-If you have an eligible Grok subscription, use the native `grok` provider. It uses xAI's device OAuth flow and the Grok CLI Responses proxy; it does not use `XAI_API_KEY` or read the Grok Build CLI's `~/.grok/auth.json`.
+Native `grok` uses subscription device OAuth and the Grok CLI Responses proxy, not `XAI_API_KEY` or Grok Build credentials.
 
 ```bash
 term-llm auth login grok
@@ -170,7 +170,7 @@ term-llm models --provider grok
 term-llm ask --provider grok:grok-4.6 "review this code"
 ```
 
-Credentials are stored separately at `$XDG_CONFIG_HOME/term-llm/grok_oauth.json` (normally `~/.config/term-llm/grok_oauth.json`) with owner-only permissions and refreshed automatically. HTTP/SSE is always used with `store: false`; server-side response chaining and WebSockets are disabled.
+OAuth uses the [shared credential directory](/reference/configuration/#native-oauth-credential-directory) and automatic refresh. HTTP/SSE always uses `store: false`; response chaining and WebSockets are disabled.
 
 ```yaml
 default_provider: grok
@@ -629,7 +629,7 @@ term-llm forces a dedicated `VIBE_HOME` at `$XDG_CACHE_HOME/term-llm/vibe-bin/ho
 
 ### Option 12: Use GitHub Copilot
 
-The `copilot` provider uses GitHub device-flow OAuth. Sign in and inspect the models available to your account:
+Sign in with GitHub device-flow OAuth:
 
 ```bash
 term-llm auth login copilot
@@ -637,7 +637,7 @@ term-llm models --provider copilot
 term-llm ask --provider copilot "Explain this code"
 ```
 
-Credentials are stored in `$XDG_CONFIG_HOME/term-llm/copilot_oauth.json` (normally `~/.config/term-llm/copilot_oauth.json`) and refreshed automatically. The shipped default model is `gpt-4.1`; it is a fallback selection, not a promise that every account or organization enables it.
+OAuth uses the [shared credential directory](/reference/configuration/#native-oauth-credential-directory). The default `gpt-4.1` is a fallback, not an account entitlement; check the authenticated catalog.
 
 ```yaml
 default_provider: copilot

@@ -33,7 +33,7 @@ var (
 	loadChatGPTTranscribeCreds            = credentials.GetChatGPTCredentials
 	refreshChatGPTTranscribeCreds         = credentials.RefreshChatGPTCredentials
 	refreshRejectedChatGPTTranscribeCreds = credentials.RefreshRejectedChatGPTCredentials
-	clearChatGPTTranscribeCreds           = credentials.ClearChatGPTCredentialsIfRefreshToken
+	clearChatGPTTranscribeCreds           = credentials.ClearCredentialsAfterRefresh
 )
 
 // The "not configured" wording lets callers such as the Telegram bot classify
@@ -98,7 +98,7 @@ func chatGPTTranscribeRefreshError(creds *credentials.ChatGPTCredentials, err er
 	if !errors.Is(err, oauth.ErrChatGPTRefreshTokenInvalid) {
 		return fmt.Errorf("refresh ChatGPT session: %w", err)
 	}
-	if clearErr := clearChatGPTTranscribeCreds(creds.RefreshToken); clearErr != nil {
+	if clearErr := clearChatGPTTranscribeCreds(err, creds.RefreshToken); clearErr != nil {
 		return fmt.Errorf("ChatGPT session expired and clearing stored credentials failed: %w", clearErr)
 	}
 	return fmt.Errorf("ChatGPT session expired; %s again: %w", chatGPTTranscribeLoginHint, err)

@@ -90,6 +90,7 @@ type childBarrierFixture struct {
 	mock       *mockprovider.MockProvider
 	grandchild *barrierGrandchildRunner
 	runner     *cmdRunner
+	onEvent    func(core.Event)
 }
 
 func newChildBarrierFixture(t *testing.T, mock *mockprovider.MockProvider, grandchild *barrierGrandchildRunner) *childBarrierFixture {
@@ -150,6 +151,9 @@ func (f *childBarrierFixture) runChildContext(ctx context.Context, t *testing.T,
 	}, eventSinkFunc(func(event core.Event) {
 		if f.grandchild.spawnDelivered != nil && event.Type == core.EventToolExecEnd && event.ToolName == "spawn_agent" && event.ToolSuccess {
 			f.grandchild.spawnDelivered <- struct{}{}
+		}
+		if f.onEvent != nil {
+			f.onEvent(event)
 		}
 	}))
 }
@@ -287,8 +291,19 @@ func TestChildBarrierReserveTurnCannotSpawn(t *testing.T) {
 		AddTextResponse("child: spawned, out of turns").
 		AddToolCall("call-spawn-again", "spawn_agent", map[string]any{"agent_name": "developer", "prompt": "more work", "wait": 0}).
 		AddTextResponse("reserve report: results acknowledged")
-	grandchild := &barrierGrandchildRunner{output: "grandchild output"}
+	release := make(chan struct{})
+	var once sync.Once
+	unblock := func() { once.Do(func() { close(release) }) }
+	grandchild := &barrierGrandchildRunner{output: "grandchild output", release: release}
 	f := newChildBarrierFixture(t, mock, grandchild)
+	t.Cleanup(unblock)
+	// wait:0 may collect an already completed child. Keep it running until
+	// spawn returns its receipt, so the reserve turn actually has work to deliver.
+	f.onEvent = func(event core.Event) {
+		if event.Type == core.EventToolExecEnd {
+			unblock()
+		}
+	}
 
 	// Two provider turns consume the whole allowance: the barrier turn runs on
 	// the lifecycle reserve.

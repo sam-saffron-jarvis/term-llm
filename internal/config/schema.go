@@ -218,6 +218,7 @@ func DefaultLinkedDevicesICEServers() []LinkedDevicesICEServerConfig {
 
 var keySpecs = []KeySpec{
 	def("default_provider", DefaultConfigProvider),
+	{Path: "credentials_dir", Default: "", HasDefault: true, Description: "Native ChatGPT/Grok/Copilot OAuth directory; TERM_LLM_CREDENTIALS_DIR overrides; empty uses the config directory", ShowInConfig: true, ResetTemplate: true},
 	def("provider_discovery", ProviderDiscoveryAuto),
 	def("auto_compact", DefaultAutoCompact),
 	def("memory.secrets.disable", []string{}, described("Built-in memory secret detector names to disable; all disables every built-in")),

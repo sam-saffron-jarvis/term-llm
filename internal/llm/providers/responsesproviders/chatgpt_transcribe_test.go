@@ -103,7 +103,7 @@ func setupChatGPTTranscribeTest(t *testing.T, handler func(w http.ResponseWriter
 		}
 		return nil
 	}
-	clearChatGPTTranscribeCreds = func(refreshToken string) error {
+	clearChatGPTTranscribeCreds = func(_ error, refreshToken string) error {
 		fx.cleared = append(fx.cleared, refreshToken)
 		return nil
 	}

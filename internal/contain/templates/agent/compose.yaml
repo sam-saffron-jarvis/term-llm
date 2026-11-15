@@ -16,7 +16,7 @@ x-term-llm:
     seed-chatgpt-auth:
       description: "Copy host ChatGPT OAuth credentials into this workspace"
       copy_files:
-        - from: "{{config_dir}}/chatgpt_oauth.json"
+        - from: "[[host_credentials_dir]]/chatgpt_oauth.json"
           to: "{{workspace}}/.config/term-llm/chatgpt_oauth.json"
           mode: "0600"
           missing_hint: "Run `term-llm auth login chatgpt` on the host first."
@@ -26,7 +26,7 @@ x-term-llm:
     seed-copilot-auth:
       description: "Copy host GitHub Copilot OAuth credentials into this workspace"
       copy_files:
-        - from: "{{config_dir}}/copilot_oauth.json"
+        - from: "[[host_credentials_dir]]/copilot_oauth.json"
           to: "{{workspace}}/.config/term-llm/copilot_oauth.json"
           mode: "0600"
           missing_hint: "Run `term-llm auth login copilot` on the host first."

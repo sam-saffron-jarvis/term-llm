@@ -27,13 +27,14 @@ func Setup() (cleanup func(), err error) {
 	for key, value := range map[string]string{
 		// No test may reach the network for a rate card, and none may have its
 		// prices swapped by a refresh that lands mid-run.
-		"TERM_LLM_OFFLINE":    "1",
-		"GIT_CONFIG_GLOBAL":   "/dev/null",
-		"GIT_CONFIG_NOSYSTEM": "1",
-		"GIT_AUTHOR_NAME":     "Test User",
-		"GIT_AUTHOR_EMAIL":    "test@example.com",
-		"GIT_COMMITTER_NAME":  "Test User",
-		"GIT_COMMITTER_EMAIL": "test@example.com",
+		"TERM_LLM_CREDENTIALS_DIR": "", // Never inherit a real OAuth store.
+		"TERM_LLM_OFFLINE":         "1",
+		"GIT_CONFIG_GLOBAL":        "/dev/null",
+		"GIT_CONFIG_NOSYSTEM":      "1",
+		"GIT_AUTHOR_NAME":          "Test User",
+		"GIT_AUTHOR_EMAIL":         "test@example.com",
+		"GIT_COMMITTER_NAME":       "Test User",
+		"GIT_COMMITTER_EMAIL":      "test@example.com",
 	} {
 		if err := os.Setenv(key, value); err != nil {
 			fmt.Fprintf(os.Stderr, "set %s: %v\n", key, err)

@@ -5,6 +5,8 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+
+	"github.com/term-llm/term-llm/internal/llm/core"
 )
 
 // SkillActivationOrigin identifies who requested a skill activation. Invocation
@@ -233,4 +235,27 @@ func ExpandInvocationArguments(body, raw string) (string, error) {
 		return arguments[index]
 	})
 	return expanded, nil
+}
+
+// InlineSkillContext returns slash references in the latest user message and
+// visible transcript text, so hosts can preload without duplicating instructions.
+func InlineSkillContext(messages []core.Message) (names []string, present string) {
+	var latest string
+	var transcript strings.Builder
+	for _, message := range messages {
+		transcript.WriteString(core.MessageText(message))
+		transcript.WriteString(core.CollectToolResultText(message.Parts))
+		transcript.WriteByte('\n')
+		if message.Role == core.RoleUser {
+			latest = core.MessageText(message)
+		}
+	}
+	if !strings.HasPrefix(strings.TrimSpace(latest), "/") {
+		for _, word := range strings.Fields(latest) {
+			if name, reference := strings.CutPrefix(strings.TrimRight(word, ".,!?;:)]}"), "/"); reference {
+				names = append(names, name)
+			}
+		}
+	}
+	return names, transcript.String()
 }

@@ -2,6 +2,7 @@ package credentials
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -33,15 +34,7 @@ func (c *ChatGPTCredentials) IsExpired() bool {
 
 // getChatGPTCredentialsPath returns the path to the ChatGPT credentials file
 func getChatGPTCredentialsPath() (string, error) {
-	configDir := os.Getenv("XDG_CONFIG_HOME")
-	if configDir == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return "", fmt.Errorf("failed to get home directory: %w", err)
-		}
-		configDir = filepath.Join(home, ".config")
-	}
-	return filepath.Join(configDir, "term-llm", "chatgpt_oauth.json"), nil
+	return credentialPath("chatgpt_oauth.json")
 }
 
 // ChatGPTCredentialsPath returns where ChatGPT OAuth credentials are stored.
@@ -119,7 +112,15 @@ func ClearChatGPTCredentials() error {
 // contain the refresh token that was rejected. A concurrent refresh or login
 // therefore cannot be deleted by a stale provider's authentication retry.
 func ClearChatGPTCredentialsIfRefreshToken(refreshToken string) error {
-	return withChatGPTCredentialsLock(func(credPath string) error {
+	credPath, err := getChatGPTCredentialsPath()
+	if err != nil {
+		return err
+	}
+	return clearChatGPTCredentialsIfRefreshTokenAtPath(credPath, refreshToken)
+}
+
+func clearChatGPTCredentialsIfRefreshTokenAtPath(credPath, refreshToken string) error {
+	return withChatGPTCredentialsLockAtPath(credPath, func(credPath string) error {
 		stored, err := readChatGPTCredentials(credPath)
 		if err != nil {
 			if os.IsNotExist(err) {
@@ -188,7 +189,7 @@ func refreshChatGPTCredentials(creds *ChatGPTCredentials, rejectedAccessToken st
 
 	base := *creds
 	hadStored := false
-	if err := withChatGPTCredentialsLock(func(credPath string) error {
+	if err := withChatGPTCredentialsLockAtPath(credPath, func(credPath string) error {
 		stored, err := readChatGPTCredentials(credPath)
 		if err != nil && !os.IsNotExist(err) {
 			return fmt.Errorf("failed to reload ChatGPT credentials: %w", err)
@@ -215,7 +216,7 @@ func refreshChatGPTCredentials(creds *ChatGPTCredentials, rejectedAccessToken st
 	}
 
 	tokenResp, refreshErr := refreshChatGPTToken(base.RefreshToken)
-	return withChatGPTCredentialsLock(func(credPath string) error {
+	return withChatGPTCredentialsLockAtPath(credPath, func(credPath string) error {
 		stored, readErr := readChatGPTCredentials(credPath)
 		if readErr != nil && !os.IsNotExist(readErr) {
 			return fmt.Errorf("failed to reload ChatGPT credentials: %w", readErr)
@@ -237,6 +238,11 @@ func refreshChatGPTCredentials(creds *ChatGPTCredentials, rejectedAccessToken st
 		}
 		if refreshErr != nil {
 			*creds = base
+			if errors.Is(refreshErr, oauth.ErrChatGPTRefreshTokenInvalid) {
+				return &refreshFailure{cause: refreshErr, clear: func(token string) error {
+					return clearChatGPTCredentialsIfRefreshTokenAtPath(credPath, token)
+				}}
+			}
 			return refreshErr
 		}
 		replacement := base
@@ -261,14 +267,18 @@ func sameChatGPTCredentialGeneration(a, b *ChatGPTCredentials) bool {
 		a.AccountID == b.AccountID
 }
 
-func withChatGPTCredentialsLock(fn func(credPath string) error) (err error) {
-	chatGPTCredentialsMu.Lock()
-	defer chatGPTCredentialsMu.Unlock()
-
+func withChatGPTCredentialsLock(fn func(credPath string) error) error {
 	credPath, err := getChatGPTCredentialsPath()
 	if err != nil {
 		return err
 	}
+	return withChatGPTCredentialsLockAtPath(credPath, fn)
+}
+
+// withChatGPTCredentialsLockAtPath keeps refresh commits on their originally selected store.
+func withChatGPTCredentialsLockAtPath(credPath string, fn func(string) error) (err error) {
+	chatGPTCredentialsMu.Lock()
+	defer chatGPTCredentialsMu.Unlock()
 	if err := fileprivacy.MkdirAll(filepath.Dir(credPath)); err != nil {
 		return fmt.Errorf("failed to create credentials directory: %w", err)
 	}

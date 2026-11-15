@@ -45,6 +45,7 @@ func Save(cfg *Config) error {
 	type saveConfig struct {
 		MCP             *MCPConfig              `yaml:"mcp,omitempty"`
 		DefaultProvider string                  `yaml:"default_provider,omitempty"`
+		CredentialsDir  string                  `yaml:"credentials_dir,omitempty"`
 		Exec            saveExec                `yaml:"exec"`
 		Image           *saveImage              `yaml:"image,omitempty"`
 		Providers       map[string]saveProvider `yaml:"providers,omitempty"`
@@ -52,8 +53,17 @@ func Save(cfg *Config) error {
 
 	saved := saveConfig{
 		DefaultProvider: cfg.DefaultProvider,
+		CredentialsDir:  cfg.CredentialsDir,
 		Exec:            saveExec{Suggestions: cfg.Exec.Suggestions},
 		Providers:       make(map[string]saveProvider, len(cfg.Providers)),
+	}
+	if saved.CredentialsDir == "" {
+		// Setup creates a fresh Config: preserve the YAML path, never bake in
+		// an effective environment override or erase an existing selection.
+		saved.CredentialsDir, err = ReadCredentialsDir()
+		if err != nil {
+			return fmt.Errorf("preserve credentials_dir: %w", err)
+		}
 	}
 	policy := cfg.MCP
 	if len(policy.Servers) == 0 {

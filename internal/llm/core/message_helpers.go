@@ -53,3 +53,27 @@ func IsDirectSkillActivation(role Role, parts []Part) bool {
 	}
 	return false
 }
+
+// InsertRequestContext restores request-only instructions before their admitting
+// user turn (one-based), preserving native delivery cursors as history grows.
+// Zero or an absent turn falls back to the leading system/developer prefix.
+func InsertRequestContext(messages []Message, contextMessage Message, userTurn int) []Message {
+	insertAt := 0
+	for insertAt < len(messages) && (messages[insertAt].Role == RoleSystem || messages[insertAt].Role == RoleDeveloper) {
+		insertAt++
+	}
+	seen := 0
+	for i, message := range messages {
+		if message.Role == RoleUser {
+			seen++
+			if seen == userTurn {
+				insertAt = i
+				break
+			}
+		}
+	}
+	out := make([]Message, 0, len(messages)+1)
+	out = append(out, messages[:insertAt]...)
+	out = append(out, contextMessage)
+	return append(out, messages[insertAt:]...)
+}

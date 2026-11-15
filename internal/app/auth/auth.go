@@ -68,6 +68,9 @@ func authProviders() []authProvider {
 }
 
 func RunLogin(cmd *cobra.Command, args []string) error {
+	if _, err := credentials.Dir(); err != nil {
+		return err
+	}
 	p, err := resolveAuthProvider(args, "Sign in to which provider?")
 	if err != nil {
 		return err
@@ -76,6 +79,9 @@ func RunLogin(cmd *cobra.Command, args []string) error {
 }
 
 func RunLogout(cmd *cobra.Command, args []string) error {
+	if _, err := credentials.Dir(); err != nil {
+		return err
+	}
 	p, err := resolveAuthProvider(args, "Sign out of which provider?")
 	if err != nil {
 		return err
@@ -103,6 +109,9 @@ func RunLogout(cmd *cobra.Command, args []string) error {
 }
 
 func RunStatus(cmd *cobra.Command, args []string) error {
+	if _, err := credentials.Dir(); err != nil {
+		return err
+	}
 	for _, p := range authProviders() {
 		line, err := p.describe()
 		if err != nil {

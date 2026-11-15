@@ -26,6 +26,23 @@ The main config file is `$XDG_CONFIG_HOME/term-llm/config.yaml`. Without `XDG_CO
 ~/.config/term-llm/config.yaml
 ```
 
+## Native OAuth credential directory
+
+Keep ChatGPT, Grok, and Copilot OAuth files under one credential root:
+
+```yaml
+# config.yaml
+credentials_dir: /home/agent/creds/oauth
+```
+
+Precedence: nonempty `TERM_LLM_CREDENTIALS_DIR` → `credentials_dir` → `$XDG_CONFIG_HOME/term-llm` (normally `~/.config/term-llm`). Absolute paths, `~`, and `~/` are accepted; other expansion is unsupported. Invalid settings fail; missing or corrupt stores never fall back.
+
+Auth commands, refresh, doctor, live voice, and contain host seeding share this selection. Files and locks stay together with existing private permissions. Each refresh keeps its starting path even if YAML changes mid-flight.
+
+Services read YAML using their recorded HOME/XDG paths. An installed environment override takes precedence until removed with `--refresh-env`. Container destinations stay unchanged; existing workspaces need updated seed sources.
+
+No automatic migration occurs. Stop sharing processes before moving credentials; avoid token-file symlinks or independently refreshed copies. Config files, API keys, MCP OAuth, AWS, and external CLI stores are unaffected.
+
 ## Configuration shape
 
 A typical config has a few major parts:
@@ -46,6 +63,7 @@ The index below follows the canonical config schema. A dash means no default or 
 | Key | Type | Default | Description |
 |---|---|---|---|
 | `default_provider` | string | `openrouter` | — |
+| `credentials_dir` | string | `""` | Native ChatGPT/Grok/Copilot OAuth directory; TERM_LLM_CREDENTIALS_DIR overrides; empty uses the config directory |
 | `provider_discovery` | string | `auto` | — |
 | `auto_compact` | boolean | `true` | — |
 | `memory.secrets.disable` | list of string | `[]` | Built-in memory secret detector names to disable; all disables every built-in |

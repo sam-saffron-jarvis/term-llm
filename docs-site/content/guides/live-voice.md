@@ -22,7 +22,7 @@ See [the `live.*` reference](/reference/configuration/#live-voice) for every liv
 
 When live voice is available and the composer is empty, the send button becomes the **Live** button. Click it, allow microphone access, and talk. Typing while a call is open sends the text into the same conversation instead of starting a separate turn. Starting from a new chat first creates its persistent session with the selected project, provider, model, and agent, so spoken work requests have a real session to run in.
 
-The default `chatgpt` provider connects directly using term-llm's stored OAuth credentials. It does not require a Codex executable.
+The default `chatgpt` provider uses the [shared OAuth store](/reference/configuration/#native-oauth-credential-directory), not a Codex executable.
 
 ## Who owns what
 

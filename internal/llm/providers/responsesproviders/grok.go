@@ -333,7 +333,7 @@ func refreshGrokSession(ctx context.Context, creds *credentials.GrokCredentials,
 	}
 	if err := credentials.RefreshGrokCredentialsWithClient(ctx, creds, force, grokOAuthClient); err != nil {
 		if errors.Is(err, oauth.ErrGrokRefreshTokenInvalid) {
-			if clearErr := credentials.ClearGrokCredentialsIfRefreshToken(failedRefreshToken); clearErr != nil {
+			if clearErr := credentials.ClearCredentialsAfterRefresh(err, failedRefreshToken); clearErr != nil {
 				return fmt.Errorf("%w; clear stale Grok credentials: %v; run 'term-llm auth login grok'", err, clearErr)
 			}
 			_ = clearGrokModelsCache()

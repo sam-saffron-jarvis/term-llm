@@ -250,7 +250,7 @@ func (c *PlanController) prepareRequestContext(ctx context.Context, sessionID st
 	if len(contextParts) == 0 {
 		return messages, nil
 	}
-	return insertPlanContextAtStablePrefix(messages, planContextMessage(strings.Join(contextParts, "\n\n"))), nil
+	return core.InsertRequestContext(messages, planContextMessage(strings.Join(contextParts, "\n\n")), 0), nil
 }
 
 func (c *PlanController) prepareCompactionContext(ctx context.Context, sessionID string, result *engine.CompactionResult) error {
@@ -313,28 +313,6 @@ func containsPromptGuidance(messages []core.Message) bool {
 		}
 	}
 	return false
-}
-
-func insertPlanContextAtStablePrefix(messages []core.Message, contextMessage core.Message) []core.Message {
-	// Request context is ephemeral and is rebuilt from durable history on every
-	// run. Keep it beside the leading system/developer context so stateful
-	// providers see the same delivered prefix on follow-up turns. Inserting it
-	// before the latest user message moves it past prior conversation turns and
-	// invalidates provider continuation boundaries.
-	insertAt := 0
-	for insertAt < len(messages) {
-		role := messages[insertAt].Role
-		if role != core.RoleSystem && role != core.RoleDeveloper {
-			break
-		}
-		insertAt++
-	}
-
-	out := make([]core.Message, 0, len(messages)+1)
-	out = append(out, messages[:insertAt]...)
-	out = append(out, contextMessage)
-	out = append(out, messages[insertAt:]...)
-	return out
 }
 
 func planContextMessage(text string) core.Message {

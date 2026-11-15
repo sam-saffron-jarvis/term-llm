@@ -140,7 +140,7 @@ These are **text/agent providers**. [Image](/guides/image-generation/), [audio](
 
 ## Credentials
 
-Config paths below are relative to `$XDG_CONFIG_HOME/term-llm/`, normally `~/.config/term-llm/`. Use `term-llm config path` to locate your file. Provider-specific API keys can also be supplied in `providers.<name>.api_key` with the normal [deferred credential resolution](/guides/secret-management/).
+Use `term-llm config path` to locate configuration. Native OAuth uses [`credentials_dir`](/reference/configuration/#native-oauth-credential-directory); API keys support [deferred resolution](/guides/secret-management/).
 
 <!-- BEGIN GENERATED: providers -->
 | Provider | Type | Credentials / environment | Model listing |

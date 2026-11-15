@@ -94,7 +94,7 @@ func wrapPreloadedInstructions(instructions []string) string {
 	if len(instructions) == 0 {
 		return ""
 	}
-	return "<preloaded_skills>\nThe following skill instructions are already loaded. Do not activate them again.\n\n" + strings.Join(instructions, "\n\n") + "\n</preloaded_skills>"
+	return "<preloaded_skills>\nThe following skill instructions are already loaded. Avoid redundant activation; explicit reloads are allowed.\n\n" + strings.Join(instructions, "\n\n") + "\n</preloaded_skills>"
 }
 
 func promptOnlyPreloadInstructions(activation *Activation) string {

@@ -224,6 +224,7 @@ type ProviderConfig struct {
 type Config struct {
 	MCP             MCPConfig                 `mapstructure:"mcp" yaml:"mcp,omitempty"`
 	DefaultProvider string                    `mapstructure:"default_provider"`
+	CredentialsDir  string                    `mapstructure:"credentials_dir" yaml:"credentials_dir,omitempty"`
 	Providers       map[string]ProviderConfig `mapstructure:"providers"`
 	Diagnostics     DiagnosticsConfig         `mapstructure:"diagnostics"`
 	Memory          MemoryConfig              `mapstructure:"memory" yaml:"memory,omitempty"`
@@ -2257,28 +2258,6 @@ func NormalizeVeniceAPIKey(apiKey string) string {
 		apiKey = strings.TrimSpace(apiKey[len("Bearer "):])
 	}
 	return apiKey
-}
-
-// GetConfigDir returns the XDG config directory for term-llm.
-// Uses $XDG_CONFIG_HOME if set, otherwise ~/.config
-func GetConfigDir() (string, error) {
-	if xdgHome := os.Getenv("XDG_CONFIG_HOME"); xdgHome != "" {
-		return filepath.Join(xdgHome, "term-llm"), nil
-	}
-	homeDir, err := os.UserHomeDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(homeDir, ".config", "term-llm"), nil
-}
-
-// GetConfigPath returns the path where the config file should be located
-func GetConfigPath() (string, error) {
-	configDir, err := GetConfigDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(configDir, "config.yaml"), nil
 }
 
 // GetDiagnosticsDir returns the XDG data directory for term-llm diagnostics.

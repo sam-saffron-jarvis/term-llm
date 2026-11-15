@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"github.com/term-llm/term-llm/internal/llm/mockprovider"
+	"os"
 	"sync"
 	"testing"
 
@@ -55,11 +56,13 @@ type testNonRecoverableStreamError struct{ Err error }
 func (e *testNonRecoverableStreamError) Error() string { return e.Err.Error() }
 func (e *testNonRecoverableStreamError) Unwrap() error { return e.Err }
 
-func init() {
+func TestMain(m *testing.M) {
+	isNonRecoverable := env.IsNonRecoverableStreamError
 	env.IsNonRecoverableStreamError = func(err error) bool {
 		var target *testNonRecoverableStreamError
-		return errors.As(err, &target)
+		return errors.As(err, &target) || (isNonRecoverable != nil && isNonRecoverable(err))
 	}
+	os.Exit(m.Run())
 }
 
 func testWebSearchToolSpec() core.ToolSpec {

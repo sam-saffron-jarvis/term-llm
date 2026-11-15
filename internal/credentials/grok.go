@@ -44,15 +44,7 @@ func (c *GrokCredentials) IsExpired() bool {
 }
 
 func getGrokCredentialsPath() (string, error) {
-	configDir := os.Getenv("XDG_CONFIG_HOME")
-	if configDir == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return "", fmt.Errorf("get home directory: %w", err)
-		}
-		configDir = filepath.Join(home, ".config")
-	}
-	return filepath.Join(configDir, "term-llm", grokCredentialsFile), nil
+	return credentialPath(grokCredentialsFile)
 }
 
 // GrokCredentialsPath returns where Grok OAuth credentials are stored.
@@ -143,7 +135,15 @@ func ClearGrokCredentials() error {
 }
 
 func ClearGrokCredentialsIfRefreshToken(refreshToken string) error {
-	return withGrokCredentialsLock(func(path string) error {
+	path, err := getGrokCredentialsPath()
+	if err != nil {
+		return err
+	}
+	return clearGrokCredentialsIfRefreshTokenAtPath(path, refreshToken)
+}
+
+func clearGrokCredentialsIfRefreshTokenAtPath(path, refreshToken string) error {
+	return withGrokCredentialsLockAtPath(path, func(path string) error {
 		stored, err := readGrokCredentials(path)
 		if os.IsNotExist(err) {
 			return nil
@@ -177,11 +177,19 @@ func RefreshGrokCredentialsWithClient(ctx context.Context, creds *GrokCredential
 		return errors.New("missing Grok OAuth client")
 	}
 
+	path, err := getGrokCredentialsPath()
+	if err != nil {
+		return err
+	}
+	// Pin all reloads, checkpoints, reconciliation and commits to this path.
+	withLock := func(fn func(string) error) error {
+		return withGrokCredentialsLockAtPath(path, fn)
+	}
 	requested := *creds
 	base := requested
 	hadStored := false
 	needsRefresh := true
-	if err := withGrokCredentialsLock(func(path string) error {
+	if err := withLock(func(path string) error {
 		stored, err := readGrokCredentials(path)
 		if err != nil && !os.IsNotExist(err) {
 			return fmt.Errorf("reload Grok credentials: %w", err)
@@ -214,7 +222,13 @@ func RefreshGrokCredentialsWithClient(ctx context.Context, creds *GrokCredential
 	// credential lock while it is in flight.
 	token, refreshErr := client.RefreshToken(ctx, base.RefreshToken)
 	if refreshErr != nil {
-		return reconcileGrokRefreshFailure(creds, &base, requested.AccessToken, force, refreshErr)
+		refreshErr = reconcileGrokRefreshFailure(path, creds, &base, requested.AccessToken, force, refreshErr)
+		if errors.Is(refreshErr, oauth.ErrGrokRefreshTokenInvalid) {
+			return &refreshFailure{cause: refreshErr, clear: func(token string) error {
+				return clearGrokCredentialsIfRefreshTokenAtPath(path, token)
+			}}
+		}
+		return refreshErr
 	}
 	refreshToken := base.RefreshToken
 	if token.RefreshToken != "" {
@@ -234,7 +248,7 @@ func RefreshGrokCredentialsWithClient(ctx context.Context, creds *GrokCredential
 		AccountID:    base.AccountID,
 	}
 	checkpointed := false
-	if err := withGrokCredentialsLock(func(path string) error {
+	if err := withLock(func(path string) error {
 		stored, readErr := readGrokCredentials(path)
 		if readErr != nil && !os.IsNotExist(readErr) {
 			return fmt.Errorf("reload Grok credentials: %w", readErr)
@@ -270,7 +284,7 @@ func RefreshGrokCredentialsWithClient(ctx context.Context, creds *GrokCredential
 	}
 
 	accountID, verifyErr := client.UserInfo(ctx, token.AccessToken)
-	return withGrokCredentialsLock(func(path string) error {
+	return withLock(func(path string) error {
 		stored, readErr := readGrokCredentials(path)
 		if readErr != nil {
 			if os.IsNotExist(readErr) {
@@ -317,8 +331,8 @@ func grokGenerationSatisfiesRefresh(stored *GrokCredentials, rejectedAccess stri
 	return stored != nil && ((force && stored.AccessToken != rejectedAccess) || (!force && !stored.IsExpired()))
 }
 
-func reconcileGrokRefreshFailure(creds, base *GrokCredentials, rejectedAccess string, force bool, refreshErr error) error {
-	return withGrokCredentialsLock(func(path string) error {
+func reconcileGrokRefreshFailure(path string, creds, base *GrokCredentials, rejectedAccess string, force bool, refreshErr error) error {
+	return withGrokCredentialsLockAtPath(path, func(path string) error {
 		stored, err := readGrokCredentials(path)
 		if err == nil && !sameGrokCredentialGeneration(stored, base) {
 			if grokGenerationSatisfiesRefresh(stored, rejectedAccess, force) {
@@ -334,13 +348,17 @@ func reconcileGrokRefreshFailure(creds, base *GrokCredentials, rejectedAccess st
 	})
 }
 
-func withGrokCredentialsLock(fn func(path string) error) (err error) {
-	grokCredentialsMu.Lock()
-	defer grokCredentialsMu.Unlock()
+func withGrokCredentialsLock(fn func(path string) error) error {
 	path, err := getGrokCredentialsPath()
 	if err != nil {
 		return err
 	}
+	return withGrokCredentialsLockAtPath(path, fn)
+}
+
+func withGrokCredentialsLockAtPath(path string, fn func(string) error) (err error) {
+	grokCredentialsMu.Lock()
+	defer grokCredentialsMu.Unlock()
 	if err := fileprivacy.MkdirAll(filepath.Dir(path)); err != nil {
 		return fmt.Errorf("create Grok credentials directory: %w", err)
 	}

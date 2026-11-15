@@ -18,6 +18,7 @@ import (
 
 	"github.com/term-llm/term-llm/internal/clipboard"
 	"github.com/term-llm/term-llm/internal/config"
+	"github.com/term-llm/term-llm/internal/credentials"
 )
 
 type Runner interface {
@@ -235,7 +236,7 @@ func Exec(ctx context.Context, runner Runner, name string, cmdArgs []string, std
 		return err
 	}
 	if recipe != nil && strings.TrimSpace(recipe.PostRunHint) != "" {
-		vars, err := newRecipeTemplateContext(name, dir, info.Hints.Workspace)
+		vars, err := newRecipeTemplateContext(name, dir, info.Hints.Workspace, recipe.PostRunHint)
 		if err != nil {
 			return err
 		}
@@ -291,7 +292,11 @@ func copyRecipeFiles(ctx context.Context, runner Runner, name string, composeArg
 	if len(files) == 0 {
 		return nil
 	}
-	vars, err := newRecipeTemplateContext(name, dir, workspace)
+	var templates []string
+	for _, spec := range files {
+		templates = append(templates, spec.From, spec.To, spec.Mode, spec.MissingHint)
+	}
+	vars, err := newRecipeTemplateContext(name, dir, workspace, templates...)
 	if err != nil {
 		return err
 	}
@@ -374,32 +379,48 @@ func validateRecipeCopyMode(mode string) error {
 }
 
 type recipeTemplateContext struct {
-	name      string
-	dir       string
-	configDir string
-	home      string
-	workspace string
+	name           string
+	dir            string
+	configDir      string
+	credentialsDir string
+	home           string
+	workspace      string
 }
 
-func newRecipeTemplateContext(name, dir, workspace string) (recipeTemplateContext, error) {
+func newRecipeTemplateContext(name, dir, workspace string, templates ...string) (recipeTemplateContext, error) {
 	configDir, err := config.GetConfigDir()
 	if err != nil {
 		return recipeTemplateContext{}, fmt.Errorf("locate host config dir: %w", err)
+	}
+	// Only credential-consuming recipes should depend on this setting.
+	credentialsDir := ""
+	for _, value := range templates {
+		if !strings.Contains(value, "[[host_credentials_dir]]") {
+			continue
+		}
+		credentialsDir, err = credentials.Dir()
+		if err != nil {
+			return recipeTemplateContext{}, fmt.Errorf("locate host credentials dir: %w", err)
+		}
+		break
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return recipeTemplateContext{}, fmt.Errorf("locate host home dir: %w", err)
 	}
-	return recipeTemplateContext{name: name, dir: dir, configDir: configDir, home: home, workspace: strings.TrimSpace(workspace)}, nil
+	return recipeTemplateContext{name: name, dir: dir, configDir: configDir, credentialsDir: credentialsDir, home: home, workspace: strings.TrimSpace(workspace)}, nil
 }
 
 func expandRecipeTemplate(value string, vars recipeTemplateContext) string {
 	replacements := map[string]string{
-		"{{name}}":        vars.name,
-		"{{contain_dir}}": vars.dir,
-		"{{config_dir}}":  vars.configDir,
-		"{{home}}":        vars.home,
-		"{{workspace}}":   vars.workspace,
+		// Square brackets defer host credential resolution until exec, rather than
+		// freezing the host path during CreateWorkspace template rendering.
+		"[[host_credentials_dir]]": vars.credentialsDir,
+		"{{name}}":                 vars.name,
+		"{{contain_dir}}":          vars.dir,
+		"{{config_dir}}":           vars.configDir,
+		"{{home}}":                 vars.home,
+		"{{workspace}}":            vars.workspace,
 	}
 	out := value
 	for old, replacement := range replacements {
