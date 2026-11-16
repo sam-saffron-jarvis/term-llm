@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/term-llm/term-llm/internal/proxyclient"
 	"io"
 	"mime"
 	"net/http"
@@ -61,7 +62,7 @@ func (t *bedrockTransport) StreamMessages(ctx context.Context, tr anthropic.Tran
 	if err := t.authorize(ctx, req, body); err != nil {
 		return nil, err
 	}
-	resp, err := tr.HTTPClient.Do(req)
+	resp, err := proxyclient.Do(tr.HTTPClient, req)
 	if err != nil {
 		return nil, err
 	}

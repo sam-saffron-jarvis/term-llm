@@ -10,14 +10,16 @@ import { actions, button, card, el, field, input, submit, type UIContext } from 
 import { routesView } from './routes';
 import { callersView, secretsView } from './security';
 import { requestsView } from './requests';
+import { homeView } from './home';
+import { connectView, type ClaudeConnectView } from './connect';
 
-type Tab = 'Routes' | 'Secrets' | 'Clients' | 'Requests' | 'Passkeys';
-const tabs: Tab[] = ['Routes', 'Secrets', 'Clients', 'Requests', 'Passkeys'];
+type Tab = 'Home' | 'Routes' | 'Secrets' | 'Clients' | 'Requests' | 'Passkeys';
+const tabs: Tab[] = ['Home', 'Routes', 'Secrets', 'Clients', 'Requests', 'Passkeys'];
 function tabFromURL(): Tab {
   const value = new URL(window.location.href).searchParams.get('tab');
   // Preserve bookmarks from before the user-facing Clients rename.
   if (value === 'callers') return 'Clients';
-  return tabs.find((name) => name.toLowerCase() === value) ?? 'Routes';
+  return tabs.find((name) => name.toLowerCase() === value) ?? 'Home';
 }
 export function mountProxy(
   root: HTMLElement,
@@ -27,12 +29,22 @@ export function mountProxy(
   let state: ProxyState | undefined;
   let authStatus: ProxyAuthStatus | undefined;
   let tab = tabFromURL();
+  let connecting = new URL(window.location.href).searchParams.has('connect');
+  let connector: ClaudeConnectView | undefined;
+  function closeConnector() {
+    connector?.dispose();
+    connector = undefined;
+  }
   const savedIndex: unknown = window.history.state?.proxyNavigationIndex;
   let historyIndex = typeof savedIndex === 'number' ? savedIndex : 0;
   let currentURL = window.location.href;
   function writeTab(push = false) {
     const url = new URL(window.location.href);
-    if (tab === 'Routes') url.searchParams.delete('tab');
+    if (!connecting && url.searchParams.has('connect')) {
+      url.searchParams.delete('connect');
+      url.searchParams.delete('code');
+    }
+    if (tab === 'Home') url.searchParams.delete('tab');
     else url.searchParams.set('tab', tab.toLowerCase());
     if (push) historyIndex++;
     window.history[push ? 'pushState' : 'replaceState'](
@@ -95,6 +107,8 @@ export function mountProxy(
       return;
     }
     if (typeof nextIndex === 'number') historyIndex = nextIndex;
+    closeConnector();
+    connecting = new URL(window.location.href).searchParams.has('connect');
     tab = tabFromURL();
     currentURL = window.location.href;
     tokenProtected = false;
@@ -106,6 +120,7 @@ export function mountProxy(
   const pending = new WeakSet<HTMLElement>();
   const context: UIContext = {
     announce(message) {
+      status.dataset.quiet = String(message === 'Signed in.');
       status.textContent = message;
     },
     protectToken(shown, pending = false) {
@@ -113,7 +128,9 @@ export function mountProxy(
       tokenPending = pending;
     },
     navigate(next) {
-      if (next === tab || !confirmLeave()) return;
+      if ((next === tab && !connecting) || !confirmLeave()) return;
+      closeConnector();
+      connecting = false;
       tokenProtected = false;
       tab = next;
       writeTab(true);
@@ -135,6 +152,7 @@ export function mountProxy(
       return snapshot;
     },
     async run(action, source) {
+      status.dataset.quiet = 'false';
       if (source && pending.has(source)) return false;
       status.textContent = '';
       const controls = source
@@ -268,13 +286,13 @@ export function mountProxy(
     const snapshot = state;
     const nav = el('nav');
     nav.setAttribute('aria-label', 'Proxy administration');
-    const tabs: Tab[] = ['Routes', 'Secrets', 'Clients', 'Requests'];
+    const tabs: Tab[] = ['Home', 'Routes', 'Secrets', 'Clients', 'Requests'];
     if (snapshot.auth === 'passkey') tabs.push('Passkeys');
-    if (!tabs.includes(tab)) tab = 'Routes';
+    if (!tabs.includes(tab)) tab = 'Home';
     writeTab();
     for (const name of tabs) {
       const item = button(name, () => context.navigate(name));
-      if (name === tab) item.setAttribute('aria-current', 'page');
+      if (name === tab && !connecting) item.setAttribute('aria-current', 'page');
       nav.append(item);
     }
     const refresh = button('Refresh', () => {
@@ -287,6 +305,7 @@ export function mountProxy(
       if (!confirmLeave()) return;
       void context.run(async () => {
         await api.logout();
+        closeConnector();
         ++epoch;
         state = undefined;
         tokenProtected = false;
@@ -300,8 +319,16 @@ export function mountProxy(
         context.announce('Signed out.');
       }, logout);
     });
-    tools.replaceChildren(refresh, logout);
-    if (snapshot.mode === 'file') {
+    const connect = button('Connect Claude', () => {
+      if (connecting || !confirmLeave()) return;
+      connecting = true;
+      status.textContent = '';
+      render();
+      focus();
+    });
+    if (connecting) connect.setAttribute('aria-current', 'page');
+    tools.replaceChildren(connect, refresh, logout);
+    if (snapshot.mode === 'file' && tab !== 'Home') {
       const reload = button('Reload file', () => {
         if (
           !confirmLeave() ||
@@ -321,13 +348,24 @@ export function mountProxy(
       tools.append(reload);
     }
     const views: Record<Tab, () => HTMLElement> = {
-      Routes: () => routesView(snapshot, api, context),
+      Home: () => homeView(snapshot, api, context),
+      Routes: () => routesView(snapshot, api, context, platform),
       Secrets: () => secretsView(snapshot, api, context),
       Clients: () => callersView(snapshot, api, context),
       Requests: () => requestsView(snapshot, api, context),
       Passkeys: () => passkeysView(api, context, platform),
     };
-    content.replaceChildren(nav, views[tab]());
+    if (connecting) {
+      if (!connector) {
+        const query = new URL(window.location.href).searchParams;
+        const id = query.get('connect');
+        connector = connectView(snapshot, api, context, platform, {
+          ...(id === null ? {} : { link: { id } }),
+        });
+      }
+      content.replaceChildren(nav, connector.element);
+      connector.resume();
+    } else content.replaceChildren(nav, views[tab]());
   }
   content.append(el('p', 'Loading proxy state…'));
   async function start() {
@@ -343,6 +381,7 @@ export function mountProxy(
   void context.run(start);
   return () => {
     disposed = true;
+    closeConnector();
     ++epoch;
     state = undefined;
     tokenProtected = false;

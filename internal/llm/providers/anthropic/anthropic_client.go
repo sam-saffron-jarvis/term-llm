@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/term-llm/term-llm/internal/proxyclient"
 	"io"
 	"net/http"
 	"net/url"
@@ -231,7 +232,7 @@ func (c *anthropicClient) streamMessages(ctx context.Context, params *anthropicM
 		return nil, err
 	}
 	applyAnthropicCallHeaders(req.Header, call)
-	resp, err := c.httpClient.Do(req)
+	resp, err := proxyclient.Do(c.httpClient, req)
 	if err != nil {
 		return nil, err
 	}
@@ -349,7 +350,7 @@ func (c *anthropicClient) listModelsPage(ctx context.Context, path string) (*ant
 	if err != nil {
 		return nil, err
 	}
-	resp, err := c.httpClient.Do(req)
+	resp, err := proxyclient.Do(c.httpClient, req)
 	if err != nil {
 		return nil, err
 	}

@@ -326,6 +326,9 @@ func (p *AgyBinProvider) Stream(ctx context.Context, req core.Request) (core.Str
 		if err := p.writeAgentConfig(); err != nil {
 			return err
 		}
+		if err := rejectAgyProxyEnvironment(p.buildCommandEnv()); err != nil {
+			return err
+		}
 		wireAudit, err := startCLIWireServer("agy-bin", p.buildCommandEnv())
 		if err != nil {
 			return err

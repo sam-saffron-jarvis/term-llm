@@ -224,7 +224,7 @@ func buildConstructors() map[config.ProviderType]Constructor {
 	}
 	m[config.ProviderTypeCopilot] = func(name string, _ config.ProviderType, cfg *config.ProviderConfig, opts Options) (Provider, error) {
 		// Copilot uses GitHub device code OAuth with interactive authentication
-		provider, err := rp.NewCopilotProvider(cfg.Model)
+		provider, err := rp.NewCopilotProviderWithBaseURL(cfg.Model, cfg.BaseURL)
 		if err != nil {
 			return nil, err
 		}

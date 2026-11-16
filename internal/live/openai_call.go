@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/term-llm/term-llm/internal/proxyclient"
 	"io"
 	"mime/multipart"
 	"net/http"
@@ -229,7 +230,7 @@ func createOpenAICall(ctx context.Context, client *http.Client, baseURL string, 
 	if client == nil {
 		client = http.DefaultClient
 	}
-	resp, err := client.Do(req)
+	resp, err := proxyclient.Do(client, req)
 	if err != nil {
 		return openAICallResponse{}, fmt.Errorf("create OpenAI Realtime call: %w", err)
 	}
@@ -280,7 +281,7 @@ func createOpenAILiveCall(ctx context.Context, client *http.Client, baseURL stri
 	if client == nil {
 		client = http.DefaultClient
 	}
-	resp, err := client.Do(req)
+	resp, err := proxyclient.Do(client, req)
 	if err != nil {
 		return openAICallResponse{}, fmt.Errorf("create OpenAI GPT-Live session: %w", err)
 	}

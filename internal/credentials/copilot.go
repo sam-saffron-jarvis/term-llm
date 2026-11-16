@@ -12,6 +12,7 @@ import (
 
 // CopilotCredentials holds the OAuth token for GitHub Copilot
 type CopilotCredentials struct {
+	delegated   bool
 	AccessToken string `json:"access_token"`
 	ExpiresAt   int64  `json:"expires_at"` // Unix timestamp in seconds, 0 = no expiry
 }
@@ -66,6 +67,9 @@ func GetCopilotCredentials() (*CopilotCredentials, error) {
 
 // SaveCopilotCredentials saves Copilot OAuth credentials to storage.
 func SaveCopilotCredentials(creds *CopilotCredentials) error {
+	if creds.Delegated() {
+		return nil
+	}
 	credPath, err := getCopilotCredentialsPath()
 	if err != nil {
 		return err

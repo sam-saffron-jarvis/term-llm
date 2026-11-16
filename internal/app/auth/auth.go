@@ -75,6 +75,9 @@ func RunLogin(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
+	if err := refuseManagedAuth(p.id); err != nil {
+		return err
+	}
 	return p.login()
 }
 
@@ -84,6 +87,9 @@ func RunLogout(cmd *cobra.Command, args []string) error {
 	}
 	p, err := resolveAuthProvider(args, "Sign out of which provider?")
 	if err != nil {
+		return err
+	}
+	if err := refuseManagedAuth(p.id); err != nil {
 		return err
 	}
 	if !p.exists() {
@@ -113,6 +119,12 @@ func RunStatus(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	for _, p := range authProviders() {
+		if managed, err := managedProxy(p.id); err != nil {
+			return err
+		} else if managed != "" {
+			fmt.Fprintf(cmd.OutOrStdout(), "%s: managed by proxy — %s\n", p.name, managed)
+			continue
+		}
 		line, err := p.describe()
 		if err != nil {
 			fmt.Fprintf(cmd.OutOrStdout(), "%-18s ERROR: %v\n", p.name, err)
@@ -147,7 +159,13 @@ func resolveAuthProvider(args []string, prompt string) (authProvider, error) {
 	options := make([]huh.Option[string], 0, len(providers))
 	for _, p := range providers {
 		label := p.name
-		if p.exists() {
+		managed, err := managedProxy(p.id)
+		if err != nil {
+			return authProvider{}, err
+		}
+		if managed != "" {
+			label += " (managed by proxy)"
+		} else if p.exists() {
 			label += " ✓"
 		} else {
 			label += " (not signed in)"

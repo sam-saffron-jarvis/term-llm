@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/term-llm/term-llm/internal/proxyclient"
 	"io"
 	"net/http"
 	"net/url"
@@ -92,7 +93,7 @@ func CreateCall(ctx context.Context, client *http.Client, baseURL string, auth A
 	httpReq.Header.Set("Content-Type", "application/json")
 	auth.apply(httpReq.Header, sessionID)
 
-	resp, err := client.Do(httpReq)
+	resp, err := proxyclient.Do(client, httpReq)
 	if err != nil {
 		return CallResponse{}, fmt.Errorf("create live call: %w", err)
 	}

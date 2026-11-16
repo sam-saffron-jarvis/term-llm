@@ -91,6 +91,9 @@ func validateClaudeBinUsageFlags(cmd interface{ Flags() *pflag.FlagSet }) error 
 }
 
 func runClaudeBinUsage(parent context.Context, cmdOut io.Writer, jsonOutput bool) error {
+	if err := refuseLocalProxyAllowance("claude-bin"); err != nil {
+		return err
+	}
 	binary, err := exec.LookPath("claude")
 	if err != nil {
 		return errors.New("claude-bin usage requires the Claude Code CLI in PATH")

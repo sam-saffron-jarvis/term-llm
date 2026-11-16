@@ -297,7 +297,7 @@ func newCopilotModelLister(configuredModel string, configured bool, baseURL stri
 	if configured {
 		model = configuredModel
 	}
-	provider, err := responsesproviders.NewCopilotProvider(model)
+	provider, err := responsesproviders.NewCopilotProviderWithBaseURL(model, baseURL)
 	if err != nil {
 		return nil, fmt.Errorf("copilot provider: %w", err)
 	}

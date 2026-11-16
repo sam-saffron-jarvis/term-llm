@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/term-llm/term-llm/internal/proxyclient"
 	"io"
 	"net/http"
 	"strings"
@@ -121,7 +122,7 @@ func (p *OpenAIProvider) ListModels(ctx context.Context) ([]ModelInfo, error) {
 	p.endpoint.Apply(httpReq.Header)
 	httpReq.Header.Set("Authorization", "Bearer "+p.apiKey)
 
-	resp, err := defaultHTTPClient.Do(httpReq)
+	resp, err := proxyclient.Do(defaultHTTPClient, httpReq)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list models: %w", err)
 	}

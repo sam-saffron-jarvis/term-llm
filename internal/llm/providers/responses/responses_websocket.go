@@ -1456,7 +1456,7 @@ func (c *ResponsesClient) ensureWebSocket(ctx context.Context, req ResponsesRequ
 		EnableCompression: false,
 	}
 	dialOnce := func(dialCtx context.Context, h http.Header) (*websocket.Conn, *http.Response, error) {
-		return dialer.DialContext(dialCtx, wsURL, h)
+		return dialResponsesWebSocket(&dialer, dialCtx, wsURL, h)
 	}
 	conn, resp, err := dialOnce(dialCtx, header)
 	if err != nil {

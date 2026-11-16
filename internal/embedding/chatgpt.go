@@ -26,9 +26,11 @@ func NewChatGPTProvider() *ChatGPTProvider {
 // not apply OpenAI Platform environment settings to the OAuth token.
 func NewChatGPTProviderWithBaseURL(baseURL string) *ChatGPTProvider {
 	return &ChatGPTProvider{
-		model:           openaiDefaultModel,
-		loadCredentials: credentials.GetChatGPTCredentials,
-		refresh:         credentials.RefreshChatGPTCredentials,
+		model: openaiDefaultModel,
+		loadCredentials: func() (*credentials.ChatGPTCredentials, error) {
+			return credentials.GetChatGPTCredentialsForEndpoint(baseURL)
+		},
+		refresh: credentials.RefreshChatGPTCredentials,
 		embed: func(ctx context.Context, accessToken, model string, req EmbedRequest) (*EmbeddingResult, error) {
 			// ChatGPT OAuth tokens are not Platform API keys: always use the
 			// dedicated root and never apply OPENAI_* org/project scoping.

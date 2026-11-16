@@ -217,6 +217,9 @@ func DefaultLinkedDevicesICEServers() []LinkedDevicesICEServerConfig {
 }
 
 var keySpecs = []KeySpec{
+	optional("proxy.url"),
+	optional("proxy.token", sensitive()),
+	optional("proxy.direct", withPlaceholder([]string{})),
 	def("default_provider", DefaultConfigProvider),
 	{Path: "credentials_dir", Default: "", HasDefault: true, Description: "Native ChatGPT/Grok/Copilot OAuth directory; TERM_LLM_CREDENTIALS_DIR overrides; empty uses the config directory", ShowInConfig: true, ResetTemplate: true},
 	def("provider_discovery", ProviderDiscoveryAuto),

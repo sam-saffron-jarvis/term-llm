@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   fireEvent,
   getByLabelText,
@@ -37,6 +37,8 @@ function state(overrides: Partial<ProxyState> = {}): ProxyState {
     ...overrides,
   };
 }
+// Route-editor tests opt into the preserved legacy link; Home has its own suite.
+beforeEach(() => window.history.replaceState(null, '', '/?tab=routes'));
 const disposals: (() => void)[] = [];
 function setup(snapshot = state()) {
   const api = new ProxyClient(vi.fn());
@@ -51,6 +53,14 @@ function setup(snapshot = state()) {
     origin: 'https://proxy.example',
   });
   vi.spyOn(api, 'state').mockResolvedValue(snapshot);
+  vi.spyOn(api, 'timeline').mockResolvedValue({
+    timezone: 'UTC',
+    range: '30d',
+    start: '2026-10-18T00:00:00Z',
+    end: '2026-11-17T00:00:00Z',
+    currencies: [],
+    buckets: [],
+  });
   const root = document.createElement('div');
   document.body.append(root);
   const dispose = mountProxy(root, api);
@@ -76,6 +86,21 @@ afterEach(() => {
 });
 
 describe('proxy navigation', () => {
+  it('lands on Home by default and preserves the explicit Routes bookmark', async () => {
+    window.history.replaceState(null, '', '/_proxy/');
+    const { root, api } = setup();
+    await waitFor(() =>
+      expect(getByRole(root, 'button', { name: 'Home' })).toHaveAttribute('aria-current', 'page'),
+    );
+    await waitFor(() => expect(api.timeline).toHaveBeenCalledOnce());
+    await click(root, 'Refresh state');
+    await waitFor(() => expect(api.timeline).toHaveBeenCalledTimes(2));
+    await click(root, 'Routes');
+    expect(window.location.search).toBe('?tab=routes');
+    await click(root, 'Home');
+    expect(window.location.search).toBe('');
+  });
+
   function activeTab(root: HTMLElement, name: string) {
     expect(getByRole(root, 'button', { name })).toHaveAttribute('aria-current', 'page');
   }
@@ -95,7 +120,7 @@ describe('proxy navigation', () => {
     await waitFor(() => activeTab(root, 'Requests'));
     expect(window.history.state).toEqual(historyState);
     window.history.back();
-    await waitFor(() => activeTab(root, 'Routes'));
+    await waitFor(() => activeTab(root, 'Home'));
     window.history.forward();
     await waitFor(() => activeTab(root, 'Requests'));
   });
@@ -150,7 +175,7 @@ describe('proxy navigation', () => {
   it.each(['unknown', 'passkeys'])('falls back safely from unavailable tab %s', async (tab) => {
     window.history.replaceState(null, '', `/_proxy/?tab=${tab}`);
     const { root } = setup();
-    await waitFor(() => activeTab(root, 'Routes'));
+    await waitFor(() => activeTab(root, 'Home'));
     expect(window.location.search).toBe('');
   });
   it('preserves the requested tab through sign in', async () => {
@@ -504,6 +529,49 @@ describe('proxy admin DOM', () => {
 });
 
 describe('proxy configuration and credential operations', () => {
+  it.each(['pay_as_you_go', 'plan', 'local', 'unspecified'] as const)(
+    'edits billing to %s without dropping hidden route security policy',
+    async (billing) => {
+      const original: ProxyRoute = {
+        ...route,
+        account: 'trusted',
+        websocket: true,
+        allow: ['POST /responses'],
+        redirects: 'refuse',
+        usage: 'auto',
+        billing: 'plan',
+      };
+      const { root, api } = setup(state({ routes: [original] }));
+      const config = vi.spyOn(api, 'config').mockResolvedValue();
+      const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
+      await click(root, 'Edit Example');
+      fireEvent.change(getByLabelText(root, 'How do you pay for this provider?'), {
+        target: { value: billing },
+      });
+      await click(root, 'Save route');
+      await waitFor(() =>
+        expect(config).toHaveBeenCalledWith(7, [expect.objectContaining({ ...original, billing })]),
+      );
+      expect(confirm).not.toHaveBeenCalled();
+    },
+  );
+  it('defaults new routes to unspecified billing, not an assumed API price', async () => {
+    const { root, api } = setup();
+    const config = vi.spyOn(api, 'config').mockResolvedValue();
+    await click(root, 'Add route');
+    expect(
+      (getByLabelText(root, 'How do you pay for this provider?') as HTMLSelectElement).value,
+    ).toBe('unspecified');
+    fireEvent.input(getByLabelText(root, 'Name'), { target: { value: 'new-api' } });
+    fireEvent.input(getByLabelText(root, 'Upstream base URL'), {
+      target: { value: 'https://example.com/' },
+    });
+    await click(root, 'Save route');
+    await waitFor(() =>
+      expect(config).toHaveBeenCalledWith(7, [expect.objectContaining({ billing: 'unspecified' })]),
+    );
+  });
+
   it('handles null empty-install collections from Go', async () => {
     const fetcher = vi.fn<typeof fetch>().mockResolvedValue(
       new Response(
@@ -1226,4 +1294,15 @@ describe('route pagination', () => {
     expect(root.querySelectorAll('.route-accordion-item')).toHaveLength(5);
     expect(getByRole(root, 'button', { name: 'Next' })).toHaveProperty('disabled', true);
   });
+});
+
+it('keeps reload off Home while security and operator controls remain accessible', async () => {
+  window.history.replaceState(null, '', '/_proxy/');
+  const { root } = setup(state({ mode: 'file', routes: [route] }));
+  await waitFor(() => expect(root.textContent).toContain('Spending'));
+  expect(queryByRole(root, 'button', { name: 'Reload file' })).toBeNull();
+  expect(getByRole(root, 'button', { name: 'Sign out' })).toBeTruthy();
+  expect(getByRole(root, 'button', { name: 'Secrets' })).toBeTruthy();
+  await click(root, 'Routes');
+  expect(getByRole(root, 'button', { name: 'Reload file' })).toBeTruthy();
 });

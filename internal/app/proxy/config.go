@@ -34,6 +34,12 @@ type HeaderRule struct {
 	Value  *string `json:"value,omitempty" yaml:"value,omitempty"`
 }
 type Route struct {
+	Billing         string                `json:"billing,omitempty" yaml:"billing,omitempty"`
+	Account         string                `json:"account,omitempty" yaml:"account,omitempty"`
+	WebSocket       bool                  `json:"websocket,omitempty" yaml:"websocket,omitempty"`
+	Allow           []string              `json:"allow,omitempty" yaml:"allow,omitempty"`
+	Redirects       string                `json:"redirects,omitempty" yaml:"redirects,omitempty"`
+	Usage           string                `json:"usage,omitempty" yaml:"usage,omitempty"`
 	Name            string                `json:"name" yaml:"name"`
 	LocalPrefix     string                `json:"local_prefix" yaml:"local_prefix"`
 	Upstream        string                `json:"upstream" yaml:"upstream"`
@@ -49,8 +55,10 @@ type SecretRef struct {
 	Stored string `json:"stored,omitempty" yaml:"stored,omitempty"`
 }
 type Config struct {
-	Routes  []Route              `json:"routes" yaml:"routes"`
-	Secrets map[string]SecretRef `json:"secrets" yaml:"secrets,omitempty"`
+	Accounts map[string]AccountRef `json:"accounts,omitempty" yaml:"accounts,omitempty"`
+	Money    MoneySettings         `json:"money,omitempty" yaml:"money,omitempty"`
+	Routes   []Route               `json:"routes" yaml:"routes"`
+	Secrets  map[string]SecretRef  `json:"secrets" yaml:"secrets,omitempty"`
 }
 type material struct{ Origin, Value string }
 type activeRoute struct {
@@ -262,6 +270,16 @@ func resolveSecrets(c Config, stored map[string]material, adminFile string, file
 	return out, nil
 }
 func compile(c Config, revision int64, secrets map[string]material) (*snapshot, error) {
+	if err := ValidateMoneySettings(c.Money); err != nil {
+		return nil, err
+	}
+	for _, r := range c.Routes {
+		switch r.Billing {
+		case "", "unspecified", "pay_as_you_go", "plan", "local":
+		default:
+			return nil, fmt.Errorf("invalid route billing")
+		}
+	}
 	if len(c.Routes) > 128 || len(c.Secrets) > 256 {
 		return nil, fmt.Errorf("at most 128 routes and 256 secret references")
 	}
@@ -276,6 +294,9 @@ func compile(c Config, revision int64, secrets map[string]material) (*snapshot, 
 			return nil, fmt.Errorf("route names must be unique immutable slugs")
 		}
 		names[r.Name] = true
+		if err := validatePolicy(r); err != nil {
+			return nil, err
+		}
 		if err := validatePrefix(*r, s.routes); err != nil {
 			return nil, err
 		}
@@ -397,7 +418,10 @@ func routeAuthority(r Route, origin string, u *url.URL) string {
 	b, _ := json.Marshal(struct {
 		Origin, Base string
 		Rules        []rule
-	}{origin, string(encoded), rules})
+		Account      string   `json:",omitempty"`
+		WebSocket    bool     `json:",omitempty"`
+		Allow        []string `json:",omitempty"`
+	}{origin, string(encoded), rules, r.Account, r.WebSocket, r.Allow})
 	return hashToken(string(b))
 }
 func upperHex(b byte) byte {

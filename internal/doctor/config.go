@@ -198,6 +198,21 @@ func (c *ConfigCheck) providerFindings(declared map[string]bool) []Finding {
 	var findings []Finding
 	for _, name := range names {
 		providerCfg := cfg.Providers[name]
+		if providerCfg.ProxyBinding != "" {
+			finding := Finding{
+				Title:    fmt.Sprintf("provider %q uses the trusted proxy", name),
+				Severity: SeverityInfo,
+				Detail:   "Vendor credentials stay on the proxy; local login checks are not applicable. Route grants and connectivity are not checked offline.",
+			}
+			if reason, gated := strings.CutPrefix(providerCfg.ProxyBinding, "gated:"); gated {
+				finding.Title = fmt.Sprintf("provider %q is blocked in proxy mode", name)
+				finding.Severity = SeverityWarn
+				finding.Detail = reason
+				finding.Remedy = "use a supported gateway adapter; choose proxy.direct only if local credential custody is intended"
+			}
+			findings = append(findings, finding)
+			continue
+		}
 		if err := config.ValidateProviderCompatibility(name, &providerCfg); err != nil {
 			findings = append(findings, Finding{
 				Title:    fmt.Sprintf("provider %q has an unsupported configuration", name),

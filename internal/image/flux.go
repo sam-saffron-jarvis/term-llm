@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"github.com/term-llm/term-llm/internal/proxyclient"
 	"io"
 	"net/http"
 	"net/url"
@@ -129,7 +130,7 @@ func (p *FluxProvider) submitRequest(ctx context.Context, endpoint string, reqBo
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("x-key", p.apiKey)
 
-	resp, err := fluxAuthenticatedClient().Do(httpReq)
+	resp, err := proxyclient.Do(fluxAuthenticatedClient(), httpReq)
 	if err != nil {
 		return "", fmt.Errorf("request failed: %w", err)
 	}
@@ -213,7 +214,7 @@ func (p *FluxProvider) pollAndDownload(ctx context.Context, pollingURL string) (
 		}
 		httpReq.Header.Set("x-key", p.apiKey)
 
-		resp, err := fluxAuthenticatedClient().Do(httpReq)
+		resp, err := proxyclient.Do(fluxAuthenticatedClient(), httpReq)
 		if err != nil {
 			return nil, fmt.Errorf("poll request failed: %w", err)
 		}
@@ -256,7 +257,7 @@ func (p *FluxProvider) downloadImage(ctx context.Context, url string) (*ImageRes
 		return nil, fmt.Errorf("failed to create download request: %w", err)
 	}
 
-	resp, err := fluxHTTPClient.Do(httpReq)
+	resp, err := proxyclient.Do(fluxHTTPClient, httpReq)
 	if err != nil {
 		return nil, fmt.Errorf("failed to download image: %w", err)
 	}

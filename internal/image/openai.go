@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"github.com/term-llm/term-llm/internal/proxyclient"
 	"io"
 	"math"
 	"mime/multipart"
@@ -170,7 +171,7 @@ func (p *OpenAIProvider) doRequest(httpReq *http.Request) (*ImageResult, error) 
 }
 
 func doOpenAIImageRequest(client *http.Client, httpReq *http.Request) (*ImageResult, error) {
-	resp, err := client.Do(httpReq)
+	resp, err := proxyclient.Do(client, httpReq)
 	if err != nil {
 		return nil, fmt.Errorf("request failed: %w", err)
 	}

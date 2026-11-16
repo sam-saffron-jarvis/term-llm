@@ -35,11 +35,13 @@ func NewChatGPTProvider(cfg config.LiveConfig, auth AuthFunc, client *http.Clien
 		return err
 	}
 	if auth == nil {
-		auth = ChatGPTAuth
+		auth = func(ctx context.Context, refresh bool) (Auth, error) {
+			return chatGPTAuthForEndpoint(ctx, refresh, cfg.ChatGPT.CallBaseURL)
+		}
 		// Capability checks run on every UI bootstrap, so readiness only looks
 		// for stored credentials; refreshing is left to session start.
 		ready = func(context.Context) error {
-			_, err := credentials.GetChatGPTCredentials()
+			_, err := credentials.GetChatGPTCredentialsForEndpoint(cfg.ChatGPT.CallBaseURL)
 			return err
 		}
 	}
@@ -123,8 +125,12 @@ func (p *ChatGPTProvider) sidebandBaseURL() string {
 
 // ChatGPTAuth resolves the stored OAuth session, refreshing when the token is
 // expired or the provider rejected it.
-func ChatGPTAuth(_ context.Context, refresh bool) (Auth, error) {
-	creds, err := credentials.GetChatGPTCredentials()
+func ChatGPTAuth(ctx context.Context, refresh bool) (Auth, error) {
+	return chatGPTAuthForEndpoint(ctx, refresh, "")
+}
+
+func chatGPTAuthForEndpoint(_ context.Context, refresh bool, endpoint string) (Auth, error) {
+	creds, err := credentials.GetChatGPTCredentialsForEndpoint(endpoint)
 	if err != nil {
 		return Auth{}, err
 	}

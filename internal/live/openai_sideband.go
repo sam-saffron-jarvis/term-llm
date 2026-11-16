@@ -225,7 +225,7 @@ func (s *openAISideband) dial(ctx context.Context, endpoint string) (*websocket.
 	if dialer == nil {
 		dialer = websocket.DefaultDialer
 	}
-	conn, resp, err := dialer.DialContext(ctx, endpoint, header)
+	conn, resp, err := dialAttributedWebSocket(dialer, ctx, endpoint, header)
 	if err == nil {
 		return conn, nil
 	}

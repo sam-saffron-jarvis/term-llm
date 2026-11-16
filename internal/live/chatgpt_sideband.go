@@ -165,7 +165,7 @@ func (s *sideband) dial(ctx context.Context, endpoint string, refresh bool) (*we
 	if dialer == nil {
 		dialer = websocket.DefaultDialer
 	}
-	conn, resp, err := dialer.DialContext(ctx, endpoint, header)
+	conn, resp, err := dialAttributedWebSocket(dialer, ctx, endpoint, header)
 	if err != nil {
 		if resp != nil {
 			defer resp.Body.Close()

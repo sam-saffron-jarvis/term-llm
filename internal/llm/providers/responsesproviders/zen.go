@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/term-llm/term-llm/internal/proxyclient"
 	"io"
 	"net/http"
 	"sort"
@@ -180,7 +181,7 @@ func fetchModelsDevPricing(ctx context.Context) (map[string]modelsDevModel, erro
 		return nil, err
 	}
 
-	resp, err := defaultHTTPClient.Do(req)
+	resp, err := proxyclient.Do(defaultHTTPClient, req)
 	if err != nil {
 		return nil, err
 	}
@@ -222,7 +223,7 @@ func fetchZenReasoningEfforts(ctx context.Context) map[string][]string {
 		return nil
 	}
 
-	resp, err := defaultHTTPClient.Do(req)
+	resp, err := proxyclient.Do(defaultHTTPClient, req)
 	if err != nil {
 		return nil
 	}

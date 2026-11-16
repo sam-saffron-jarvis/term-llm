@@ -989,7 +989,7 @@ func (p *GrokBinProvider) startGrokACPProcess(ctx context.Context, req core.Requ
 		return nil, fmt.Errorf("Grok ACP negotiated unsupported protocol version %d", initialize.ProtocolVersion)
 	}
 	process.capabilities = initialize.AgentCapabilities
-	methodID := p.selectGrokACPAuth(initialize.AuthMethods)
+	methodID := p.selectGrokACPAuthMethod(initialize.AuthMethods)
 	if methodID == "" {
 		return nil, &UserFacingProviderError{Summary: "Grok CLI is not logged in", Detail: "Run `grok login` and try again."}
 	}

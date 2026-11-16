@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/term-llm/term-llm/internal/proxyclient"
 	"io"
 	"mime"
 	"mime/multipart"
@@ -279,7 +280,7 @@ func (p *VeniceProvider) do(ctx context.Context, endpoint string, payload any, d
 	}
 	httpReq.Header.Set("Authorization", "Bearer "+p.apiKey)
 	httpReq.Header.Set("Content-Type", "application/json")
-	resp, err := p.client.Do(httpReq)
+	resp, err := proxyclient.Do(p.client, httpReq)
 	if err != nil {
 		return nil, "", requestError(err)
 	}
@@ -395,7 +396,7 @@ func (p *ElevenLabsProvider) do(ctx context.Context, endpoint string, payload an
 	httpReq.Header.Set("xi-api-key", p.apiKey)
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Accept", "audio/*")
-	resp, err := p.client.Do(httpReq)
+	resp, err := proxyclient.Do(p.client, httpReq)
 	if err != nil {
 		return nil, "", requestError(err)
 	}
@@ -491,7 +492,7 @@ func fetchURL(ctx context.Context, rawURL string) ([]byte, string, error) {
 	if err != nil {
 		return nil, "", fmt.Errorf("create audio download request: %w", err)
 	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := proxyclient.Do(http.DefaultClient, req)
 	if err != nil {
 		return nil, "", requestError(err)
 	}

@@ -95,6 +95,9 @@ func validateCursorBinUsageFlags(cmd interface{ Flags() *pflag.FlagSet }) error 
 }
 
 func runCursorBinUsage(parent context.Context, out io.Writer, jsonOutput bool) error {
+	if err := refuseLocalProxyAllowance("cursor-bin"); err != nil {
+		return err
+	}
 	if parent == nil {
 		parent = context.Background()
 	}

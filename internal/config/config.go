@@ -74,17 +74,6 @@ func ValidateProviderCompatibility(name string, cfg *ProviderConfig) error {
 	return nil
 }
 
-// FileUploadConfig controls how user-uploaded files are forwarded to a provider.
-// Native MIME types may be sent as provider-native file/document parts when the
-// provider implementation supports them. Text-embed MIME types may be converted
-// to ordinary prompt text as a portable fallback.
-type FileUploadConfig struct {
-	NativeMimeTypes    []string `mapstructure:"native_mime_types" yaml:"native_mime_types,omitempty"`
-	MaxNativeBytes     int64    `mapstructure:"max_native_bytes" yaml:"max_native_bytes,omitempty"`
-	TextEmbedMimeTypes []string `mapstructure:"text_embed_mime_types" yaml:"text_embed_mime_types,omitempty"`
-	MaxTextEmbedBytes  int64    `mapstructure:"max_text_embed_bytes" yaml:"max_text_embed_bytes,omitempty"`
-}
-
 // ResponsesConfig controls advanced OpenAI Responses API execution features.
 // It is separate from ReasoningConfig, which only governs display/export.
 type ResponsesConfig struct {
@@ -140,6 +129,7 @@ type ProviderConfig struct {
 	Type ProviderType `mapstructure:"type"`
 
 	// Common fields
+	ProxyBinding              string                `mapstructure:"-" yaml:"-"` // Runtime route or fail-closed transport gate.
 	APIKey                    string                `mapstructure:"api_key"`
 	Model                     string                `mapstructure:"model"`
 	FastModel                 string                `mapstructure:"fast_model"`                  // Lightweight model for control-plane tasks
@@ -222,6 +212,7 @@ type ProviderConfig struct {
 }
 
 type Config struct {
+	Proxy           ProxyConfig               `mapstructure:"proxy" yaml:"proxy,omitempty"`
 	MCP             MCPConfig                 `mapstructure:"mcp" yaml:"mcp,omitempty"`
 	DefaultProvider string                    `mapstructure:"default_provider"`
 	CredentialsDir  string                    `mapstructure:"credentials_dir" yaml:"credentials_dir,omitempty"`
@@ -1072,6 +1063,9 @@ func loadUnresolved() (*Config, error) {
 	}
 	markReasoningConfigPresence(&cfg.Reasoning, file)
 	markProviderConfigPresence(&cfg, file)
+	if err := cfg.materializeProxy(file); err != nil {
+		return nil, err
+	}
 	if err := cfg.ValidateCommit(); err != nil {
 		return nil, err
 	}
@@ -1749,6 +1743,9 @@ func needsLazyResolve(value string) bool {
 // resolveProviderCredentials resolves credentials for a provider based on its type.
 // Expensive operations (op://, file://, srv://, $()) are deferred - call ResolveForInference() before use.
 func resolveProviderCredentials(name string, cfg *ProviderConfig) error {
+	if cfg.ProxyBinding != "" {
+		return cfg.resolveProxyCredentials(name)
+	}
 	if cfg.credentialsResolved || cfg.ResolvedAPIKey != "" || cfg.ResolvedURL != "" {
 		cfg.credentialsResolved = true
 		return nil
@@ -1859,8 +1856,8 @@ func resolveProviderHeaders(cfg *ProviderConfig) {
 // ResolveForInference performs lazy resolution of expensive config values (op://, file://, srv://, $()).
 // Call this before creating a provider for inference.
 func (cfg *ProviderConfig) ResolveForInference() error {
-	if !cfg.needsLazyResolution {
-		return nil
+	if cfg.ProxyBinding != "" || !cfg.needsLazyResolution {
+		return cfg.inferenceReadyError()
 	}
 
 	var err error

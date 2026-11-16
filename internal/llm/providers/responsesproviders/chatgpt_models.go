@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/term-llm/term-llm/internal/proxyclient"
 	"io"
 	"net/http"
 	"net/url"
@@ -111,8 +112,10 @@ func CachedChatGPTModels() (models []ModelInfo, fresh bool, err error) {
 
 func cachedChatGPTModelFacts() (models []ModelInfo, fresh bool, err error) {
 	accountID := ""
-	if creds, credErr := credentials.GetChatGPTCredentials(); credErr == nil {
-		accountID = creds.AccountID
+	if !proxyclient.KindActive("chatgpt") {
+		if creds, credErr := credentials.GetChatGPTCredentials(); credErr == nil {
+			accountID = creds.AccountID
+		}
 	}
 	cache, err := loadChatGPTModelsCacheForAccount(chatGPTModelsClientVersion, accountID)
 	if err != nil {
@@ -243,7 +246,7 @@ func (p *ChatGPTProvider) fetchChatGPTModels(ctx context.Context) ([]ModelInfo, 
 	if client == nil {
 		client = http.DefaultClient
 	}
-	resp, err := client.Do(req)
+	resp, err := proxyclient.Do(client, req)
 	if err != nil {
 		return nil, "", err
 	}

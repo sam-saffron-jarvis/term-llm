@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/term-llm/term-llm/internal/proxyclient"
 	"io"
 	"net/http"
 	"os"
@@ -419,7 +420,7 @@ func (p *Provider) showModel(ctx context.Context, model string) (ollamaShowRespo
 		return ollamaShowResponse{}, err
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
-	resp, err := currentHTTPClient().Do(httpReq)
+	resp, err := proxyclient.Do(currentHTTPClient(), httpReq)
 	if err != nil {
 		return ollamaShowResponse{}, fmt.Errorf("Ollama show request failed for %q: %w", model, err)
 	}
@@ -629,7 +630,7 @@ func (p *Provider) Stream(ctx context.Context, req core.Request) (core.Stream, e
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 
-	resp, err := currentHTTPClient().Do(httpReq)
+	resp, err := proxyclient.Do(currentHTTPClient(), httpReq)
 	if err != nil {
 		return nil, fmt.Errorf("Ollama request failed (is Ollama running at %s?): %w", p.baseURL, err)
 	}
@@ -748,7 +749,7 @@ func (p *Provider) ListModels(ctx context.Context) ([]core.ModelInfo, error) {
 		return nil, err
 	}
 
-	resp, err := currentHTTPClient().Do(httpReq)
+	resp, err := proxyclient.Do(currentHTTPClient(), httpReq)
 	if err != nil {
 		return nil, fmt.Errorf("Ollama request failed (is Ollama running at %s?): %w", p.baseURL, err)
 	}

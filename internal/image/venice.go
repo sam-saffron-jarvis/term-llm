@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/term-llm/term-llm/internal/proxyclient"
 	"net/http"
 	"strings"
 	"time"
@@ -245,7 +246,7 @@ func (p *VeniceProvider) doJSONRequest(httpReq *http.Request, debugRaw bool) (*I
 	defer cancel()
 	client := *veniceHTTPClient
 	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
-	resp, err := client.Do(httpReq)
+	resp, err := proxyclient.Do(&client, httpReq)
 	if err != nil {
 		debugRawImageLog(debugRaw, "Venice Error", "request failed: %v", err)
 		return nil, veniceRequestError(err)
@@ -293,7 +294,7 @@ func (p *VeniceProvider) doRawRequest(httpReq *http.Request, debugRaw bool) (*Im
 	defer cancel()
 	client := *veniceHTTPClient
 	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
-	resp, err := client.Do(httpReq)
+	resp, err := proxyclient.Do(&client, httpReq)
 	if err != nil {
 		debugRawImageLog(debugRaw, "Venice Error", "request failed: %v", err)
 		return nil, veniceRequestError(err)

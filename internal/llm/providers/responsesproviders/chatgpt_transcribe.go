@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/term-llm/term-llm/internal/proxyclient"
 	"io"
 	"mime/multipart"
 	"net/http"
@@ -63,7 +64,12 @@ func TranscribeChatGPTWithBaseURL(ctx context.Context, filePath, language, baseU
 		return "", fmt.Errorf("chatgpt transcription: audio file is %d bytes; the limit is %d bytes", info.Size(), chatGPTTranscribeMaxBytes)
 	}
 
-	creds, err := loadChatGPTTranscribeCreds()
+	var creds *credentials.ChatGPTCredentials
+	if b, ok := proxyclient.Lookup(baseURL); ok && b.Kind == "chatgpt" {
+		creds, err = credentials.GetChatGPTCredentialsForEndpoint(baseURL)
+	} else {
+		creds, err = loadChatGPTTranscribeCreds()
+	}
 	if err != nil {
 		return "", fmt.Errorf("%s: %w", chatGPTTranscribeLoginHint, err)
 	}
@@ -84,7 +90,7 @@ func TranscribeChatGPTWithBaseURL(ctx context.Context, filePath, language, baseU
 		if err := refreshRejectedChatGPTTranscribeCreds(creds, rejected); err != nil {
 			return "", chatGPTTranscribeRefreshError(creds, err)
 		}
-		if creds.AccessToken == rejected {
+		if creds.AccessToken == rejected && !creds.Delegated() {
 			return "", fmt.Errorf("chatgpt transcription: ChatGPT rejected the session (HTTP 401); %s again", chatGPTTranscribeLoginHint)
 		}
 		resp, err = upload.send(ctx, creds)
@@ -141,7 +147,7 @@ func (u chatGPTTranscriptionUpload) send(ctx context.Context, creds *credentials
 	req.Header.Set("Content-Type", mw.FormDataContentType())
 	req.Header.Set("Accept", "application/json")
 
-	resp, err := chatGPTHTTPClient.Do(req)
+	resp, err := proxyclient.Do(chatGPTHTTPClient, req)
 	if err != nil {
 		_ = pr.CloseWithError(err)
 		return nil, fmt.Errorf("chatgpt transcription request: %w", err)

@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"context"
+	"fmt"
 	"github.com/term-llm/term-llm/internal/fileprivacy"
 	"net/http"
 	"net/http/httptest"
@@ -147,7 +148,7 @@ func TestConfigDefaultsAndFutureSchema(t *testing.T) {
 		t.Fatal("literal escaped percent rejected")
 	}
 	s := testService(t)
-	if _, err := s.store.db.Exec("PRAGMA user_version=3"); err != nil {
+	if _, err := s.store.db.Exec(fmt.Sprintf("PRAGMA user_version=%d", schemaVersion+1)); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.store.initialize(); err == nil {

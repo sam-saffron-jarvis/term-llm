@@ -30,6 +30,8 @@ One line per root-module package, generated from package doc comments by `make d
 - `internal/app/process` — owns the execution and progress rendering of the `term-llm process` commands; cmd keeps only the Cobra definitions.
 - `internal/app/providers` — implements the providers command.
 - `internal/app/proxy` — runs a standalone configuration-driven credential proxy and private administration UI.
+- `internal/app/proxy/usagetap` — observes bounded provider response events without I/O or retaining response bodies.
+- `internal/app/proxyconnect` — enrolls standalone Claude Code with an explicitly approved credential proxy, preserving unrelated user settings and provider configuration.
 - `internal/app/reload` — owns private successor state and process replacement.
 - `internal/app/runtime` — holds run plumbing shared by the CLI and serve: model selection and child ownership.
 - `internal/app/runtime/approval` — resolves command and session approval policy without depending on cmd.
@@ -166,6 +168,8 @@ One line per root-module package, generated from package doc comments by `make d
 - `internal/prompt` — builds system and user prompts for ask, edit, suggest, help and goal flows.
 - `internal/providerhttp` — owns shared provider HTTP requests, status errors and Retry-After parsing.
 - `internal/providerspec` — owns declarative metadata for inference provider types.
+- `internal/proxyclient` — tracks explicit, endpoint-bound delegated proxy credentials for native clients.
+- `internal/proxyprofile` — describes credential-proxy routes and client bindings without performing I/O.
 - `internal/qrcode` — implements a QR Code encoder.
 - `internal/qrcode/bitset` — implements an append only bit array.
 - `internal/qrcode/reedsolomon` — provides error correction encoding for QR Code 2005.

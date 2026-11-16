@@ -59,7 +59,7 @@ func TestPreparedAuthorizationObservesCurrentAuthority(t *testing.T) {
 
 	// A prepared authorization must also survive the same live schema changes
 	// used by migration recovery, without retaining the invalidated grant.
-	if _, err := s.store.db.Exec("ALTER TABLE grants RENAME COLUMN authority TO origin; PRAGMA user_version=1;"); err != nil {
+	if _, err := s.store.db.Exec("DROP TABLE connect_requests; DROP TABLE connect_managed; DROP TABLE accounts; DROP TABLE money_history; DROP TABLE money_settings; ALTER TABLE grants RENAME COLUMN authority TO origin; PRAGMA user_version=1;"); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.store.initialize(); err != nil {

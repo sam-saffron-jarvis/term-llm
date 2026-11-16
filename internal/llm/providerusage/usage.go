@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/term-llm/term-llm/internal/proxyclient"
 	"io"
 	"math"
 	"net/http"
@@ -151,7 +152,7 @@ func FetchWithBaseURL(ctx context.Context, provider, apiKey, baseURL string) (*R
 	baseURL = strings.TrimRight(strings.TrimSpace(baseURL), "/")
 	switch strings.ToLower(strings.TrimSpace(provider)) {
 	case "chatgpt":
-		return fetchChatGPTProviderUsage(ctx)
+		return fetchChatGPTProviderUsageWithRoot(ctx, baseURL)
 	case "grok":
 		return fetchGrokProviderUsage(ctx, baseURL)
 	case "opencode-go":
@@ -165,7 +166,22 @@ func FetchWithBaseURL(ctx context.Context, provider, apiKey, baseURL string) (*R
 }
 
 func fetchChatGPTProviderUsage(ctx context.Context) (*Report, error) {
-	creds, err := credentials.GetChatGPTCredentials()
+	return fetchChatGPTProviderUsageWithRoot(ctx, "")
+}
+
+func fetchChatGPTProviderUsageWithRoot(ctx context.Context, apiRoot string) (*Report, error) {
+	base, err := providerhttp.EnvBaseURL("CHATGPT_USAGE_BASE_URL", "https://chatgpt.com/backend-api")
+	if err != nil {
+		return nil, err
+	}
+	if b, ok := proxyclient.Lookup(apiRoot); ok && b.Kind == "chatgpt" {
+		sibling, ok := proxyclient.Related(apiRoot, "chatgpt-backend")
+		if !ok {
+			return nil, fmt.Errorf("ChatGPT account usage needs an explicit chatgpt-backend proxy grant")
+		}
+		base = sibling.Root
+	}
+	creds, err := credentials.GetChatGPTCredentialsForEndpoint(base)
 	if err != nil {
 		return nil, fmt.Errorf("load ChatGPT credentials: %w (run 'term-llm auth login chatgpt')", err)
 	}
@@ -175,10 +191,6 @@ func fetchChatGPTProviderUsage(ctx context.Context) (*Report, error) {
 		}
 	}
 
-	base, err := providerhttp.EnvBaseURL("CHATGPT_USAGE_BASE_URL", "https://chatgpt.com/backend-api")
-	if err != nil {
-		return nil, err
-	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/wham/usage", nil)
 	if err != nil {
 		return nil, fmt.Errorf("create ChatGPT usage request: %w", err)
@@ -194,7 +206,7 @@ func fetchChatGPTProviderUsage(ctx context.Context) (*Report, error) {
 	if client == nil {
 		client = http.DefaultClient
 	}
-	resp, err := client.Do(req)
+	resp, err := proxyclient.Do(client, req)
 	if err != nil {
 		return nil, fmt.Errorf("fetch ChatGPT usage: %w", err)
 	}
@@ -216,7 +228,7 @@ func fetchChatGPTProviderUsage(ctx context.Context) (*Report, error) {
 }
 
 func fetchGrokProviderUsage(ctx context.Context, baseURL string) (*Report, error) {
-	creds, err := credentials.GetGrokCredentials()
+	creds, err := credentials.GetGrokCredentialsForEndpoint(baseURL)
 	if err != nil {
 		return nil, fmt.Errorf("load Grok credentials: %w (run 'term-llm auth login grok')", err)
 	}
@@ -280,7 +292,7 @@ func requestGrokProviderUsage(ctx context.Context, creds *credentials.GrokCreden
 	if client == nil {
 		client = http.DefaultClient
 	}
-	resp, err := client.Do(req)
+	resp, err := proxyclient.Do(client, req)
 	if err != nil {
 		return nil, fmt.Errorf("fetch Grok usage: %w", err)
 	}
@@ -462,7 +474,7 @@ func fetchOpenCodeGoProviderUsage(ctx context.Context, apiKey, baseURL string) (
 	if client == nil {
 		client = http.DefaultClient
 	}
-	resp, err := client.Do(req)
+	resp, err := proxyclient.Do(client, req)
 	if err != nil {
 		return nil, fmt.Errorf("fetch OpenCode Go usage: %w", err)
 	}

@@ -81,7 +81,7 @@ export interface UIContext {
   run: (action: () => Promise<unknown>, source?: HTMLElement) => Promise<boolean>;
   refresh: (focusKey?: string, preserveView?: boolean) => Promise<ProxyState | undefined>;
   announce: (message: string) => void;
-  navigate: (tab: 'Routes' | 'Secrets' | 'Clients' | 'Requests' | 'Passkeys') => void;
+  navigate: (tab: 'Home' | 'Routes' | 'Secrets' | 'Clients' | 'Requests' | 'Passkeys') => void;
   protectToken: (shown: boolean, pending?: boolean) => void;
 }
 export function submit(

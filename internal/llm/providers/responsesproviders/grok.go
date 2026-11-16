@@ -73,7 +73,7 @@ func NewGrokProviderWithOptions(model string, opts GrokProviderOptions) (*GrokPr
 	if err := validateGrokModel(actualModel); err != nil {
 		return nil, err
 	}
-	creds, err := credentials.GetGrokCredentials()
+	creds, err := credentials.GetGrokCredentialsForEndpoint(opts.BaseURL)
 	if err != nil {
 		creds, err = PromptForGrokAuth()
 		if err != nil {

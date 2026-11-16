@@ -80,7 +80,7 @@ func normalizeCursorListedModelID(id string) string {
 }
 
 func defaultCursorModelsCommandOutput(ctx context.Context, p *CursorBinProvider, home string) ([]byte, error) {
-	cmd, err := newCLICommand(ctx, "cursor-agent", []string{"models"}, filepath.Join(home, "cwd"))
+	cmd, err := newCLICommand(ctx, "cursor-agent", p.cursorProxyArgs([]string{"models"}), filepath.Join(home, "cwd"))
 	if err != nil {
 		return nil, err
 	}

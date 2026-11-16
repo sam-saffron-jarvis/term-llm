@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/term-llm/term-llm/internal/proxyclient"
 	"io"
 	"net/http"
 	"net/url"
@@ -201,7 +202,7 @@ func streamGeminiResponses(ctx context.Context, client *http.Client, baseURL, ap
 	httpReq.Header.Set("x-goog-api-key", apiKey)
 	setNonEmptyHeaders(httpReq.Header, extraHeaders)
 
-	resp, err := client.Do(httpReq)
+	resp, err := proxyclient.Do(client, httpReq)
 	if err != nil {
 		return fmt.Errorf("request failed: %w", err)
 	}

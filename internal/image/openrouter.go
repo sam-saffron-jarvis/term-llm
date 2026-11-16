@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"github.com/term-llm/term-llm/internal/proxyclient"
 	"io"
 	"net/http"
 	"strings"
@@ -99,7 +100,7 @@ func (p *OpenRouterProvider) doRequest(ctx context.Context, content []orMessageC
 	httpReq.Header.Set("X-Title", "term-llm")
 
 	client := &http.Client{}
-	resp, err := client.Do(httpReq)
+	resp, err := proxyclient.Do(client, httpReq)
 	if err != nil {
 		return nil, fmt.Errorf("request failed: %w", err)
 	}

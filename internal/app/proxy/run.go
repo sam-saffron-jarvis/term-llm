@@ -65,6 +65,7 @@ func Run(ctx context.Context, opts Options, out io.Writer) error {
 			_ = s.store.retain(cleanup, s.opts.RetentionDays)
 			c()
 		case <-ctx.Done():
+			s.closeSockets()
 			drain, c := context.WithTimeout(context.Background(), 20*time.Second)
 			err := server.Shutdown(drain)
 			c()

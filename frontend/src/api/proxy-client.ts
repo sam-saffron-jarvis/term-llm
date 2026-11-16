@@ -1,3 +1,4 @@
+import type { ChartRange, ChartGroup, MoneyTimeline } from './proxy-timeline';
 import type {
   SerializedPublicKeyCredential,
   WebAuthnCreationWireOptions,
@@ -22,7 +23,14 @@ export interface ProxyCredential {
 }
 export type Enrollment = 'bootstrap' | 'recovery' | 'enroll';
 export type Assertion = 'login' | 'reauth';
+export type ProxyBilling = 'pay_as_you_go' | 'plan' | 'local' | 'unspecified';
 export interface ProxyRoute {
+  billing?: ProxyBilling;
+  account?: string;
+  websocket?: boolean;
+  allow?: string[];
+  redirects?: 'passthrough' | 'refuse';
+  usage?: 'off' | 'auto';
   name: string;
   local_prefix: string;
   upstream: string;
@@ -51,8 +59,42 @@ export interface ProxyPreset {
   upstream: string;
   auth: ProxyRoute['caller_auth'];
   note?: string;
+  billing?: ProxyBilling;
+  usage?: 'auto';
+  websocket?: boolean;
+  /** A trusted account of this kind replaces the static key substitution. */
+  account_kind?: ProxyAccount['kind'];
+}
+export interface ProxyAccount {
+  name: string;
+  kind: 'chatgpt' | 'grok' | 'copilot' | 'claude-code' | 'aws-sigv4';
+  state: string;
+  generation: number;
+  auth_mode?: 'token_only' | 'rotating';
+  expires_at?: number;
+  updated: number;
+}
+export interface ProxyAccountInput {
+  name: string;
+  kind: ProxyAccount['kind'];
+  region?: string;
+  replace?: boolean;
+  credentials: {
+    mode?: 'token_only' | 'rotating';
+    access_token?: string;
+    refresh_token?: string;
+    github_token?: string;
+    account_id?: string;
+    expires_at?: number;
+    access_key_id?: string;
+    secret_access_key?: string;
+    session_token?: string;
+    scopes?: string[];
+  };
 }
 export interface ProxyState {
+  accounts?: ProxyAccount[];
+  money?: ProxyMoneySettings;
   presets?: ProxyPreset[];
   auth: 'passkey' | 'token';
   mode: 'ui' | 'file';
@@ -63,7 +105,87 @@ export interface ProxyState {
   csrf: string;
   retention_days?: number;
 }
+export interface ProxyMoneyRate {
+  provider: string;
+  model: string;
+  tier: string;
+  currency: string;
+  source: string;
+  asof: string;
+  input_micros_per_million: number;
+  output_micros_per_million: number;
+  cache_read_micros_per_million?: number;
+  cache_write_micros_per_million?: number;
+}
+export interface ProxyMoney {
+  rate?: ProxyMoneyRate;
+  billing: 'pay_as_you_go' | 'plan' | 'local' | 'unspecified';
+  kind:
+    | 'charged'
+    | 'estimated'
+    | 'estimated_floor'
+    | 'unpriced'
+    | 'unmeasured'
+    | 'included'
+    | 'none'
+    | 'no_charge_expected'
+    | 'unspecified';
+  amount_micros?: number;
+  currency?: string;
+  source?: string;
+  asof?: string;
+  reason?: string;
+}
+export interface MoneyTotal {
+  currency: string;
+  charged_micros: number;
+  estimated_micros: number;
+  floor_micros: number;
+  total_micros: number;
+  qualifier: 'charged' | 'about' | 'at_least';
+  sources: { source: string; asof: string; kind: string }[];
+}
+export interface MoneyPeriod {
+  plan_unmeasured: number;
+  totals: MoneyTotal[];
+  requests: number;
+  included: number;
+  local: number;
+  unpriced: number;
+  unmeasured: number;
+  unspecified: number;
+  no_charge_expected: number;
+}
+export interface MoneyBreakdown {
+  name: string;
+  paused: boolean;
+  period: MoneyPeriod;
+}
+export interface MoneySummary {
+  asof: string;
+  timezone: string;
+  month_label: string;
+  month: MoneyPeriod;
+  today: MoneyPeriod;
+  budget?: {
+    currency: string;
+    limit_micros: number;
+    remaining_micros: number;
+    used_percent: number;
+    warning_only: boolean;
+    incomplete: boolean;
+  };
+  devices: MoneyBreakdown[];
+  apps: MoneyBreakdown[];
+  providers: MoneyBreakdown[];
+}
+export interface ProxyMoneySettings {
+  timezone: string;
+  budget?: { currency: string; limit_micros: number };
+  rates?: ProxyMoneyRate[];
+}
 export interface ProxyRequest {
+  money?: ProxyMoney;
   id: string;
   seq: number;
   started: string | number;
@@ -268,6 +390,28 @@ export class ProxyClient {
   }
   revokeCaller(id: string): Promise<void> {
     return this.request('callers', 'DELETE', { id });
+  }
+  async accounts(): Promise<ProxyAccount[]> {
+    const result = await this.request<{ accounts: ProxyAccount[] | null }>('accounts');
+    return result.accounts ?? [];
+  }
+  saveAccount(input: ProxyAccountInput): Promise<{ account: ProxyAccount }> {
+    return this.request('accounts', input.replace ? 'PUT' : 'POST', input);
+  }
+  signOutAccount(name: string): Promise<{ account: ProxyAccount }> {
+    return this.request('accounts', 'DELETE', { name });
+  }
+  timeline(range: ChartRange = '30d', group: ChartGroup = 'total'): Promise<MoneyTimeline> {
+    return this.request(`timeline?range=${range}&group=${group}`);
+  }
+  summary(): Promise<MoneySummary> {
+    return this.request('summary');
+  }
+  moneySettings(): Promise<ProxyMoneySettings> {
+    return this.request('money');
+  }
+  money(settings: ProxyMoneySettings): Promise<void> {
+    return this.request('money', 'PUT', settings);
   }
   requests(filters: RequestFilters): Promise<RequestPage> {
     return this.request(`requests?${this.query(filters)}`);

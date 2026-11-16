@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/term-llm/term-llm/internal/proxyclient"
 	"io"
 	"net/http"
 	"os"
@@ -61,6 +62,9 @@ type grokModelsCache struct {
 }
 
 func CachedGrokModels() ([]ModelInfo, bool, error) {
+	if proxyclient.KindActive("grok") {
+		return nil, false, nil
+	}
 	creds, err := credentials.GetGrokCredentials()
 	if err != nil {
 		return nil, false, err
@@ -129,7 +133,7 @@ func (p *GrokProvider) fetchGrokModels(ctx context.Context) ([]ModelInfo, error)
 		if client == nil {
 			client = defaultHTTPClient
 		}
-		resp, err := client.Do(req)
+		resp, err := proxyclient.Do(client, req)
 		if err != nil {
 			return nil, fmt.Errorf("Grok models request failed: %w", err)
 		}

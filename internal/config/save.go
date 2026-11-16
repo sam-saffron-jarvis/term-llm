@@ -10,6 +10,13 @@ import (
 
 // Save writes the config to disk
 func Save(cfg *Config) error {
+	// Materialized roots and scoped credentials are runtime-only. Saving a
+	// loaded delegated configuration would erase its original routing intent.
+	for _, provider := range cfg.Providers {
+		if provider.ProxyBinding != "" {
+			return fmt.Errorf("cannot save a materialized proxy configuration; edit the source configuration instead")
+		}
+	}
 	path, err := GetConfigPath()
 	if err != nil {
 		return err

@@ -62,6 +62,9 @@ The index below follows the canonical config schema. A dash means no default or 
 <!-- BEGIN GENERATED: configuration -->
 | Key | Type | Default | Description |
 |---|---|---|---|
+| `proxy.url` | string | — | — |
+| `proxy.token` | string | — | — |
+| `proxy.direct` | list of string | — | — |
 | `default_provider` | string | `openrouter` | — |
 | `credentials_dir` | string | `""` | Native ChatGPT/Grok/Copilot OAuth directory; TERM_LLM_CREDENTIALS_DIR overrides; empty uses the config directory |
 | `provider_discovery` | string | `auto` | — |

@@ -33,6 +33,7 @@ type GrokOAuthClient interface {
 }
 
 type GrokCredentials struct {
+	delegated    bool
 	AccessToken  string `json:"access_token"`
 	RefreshToken string `json:"refresh_token"`
 	ExpiresAt    int64  `json:"expires_at"`
@@ -111,6 +112,9 @@ func validateGrokCredentials(creds *GrokCredentials) error {
 }
 
 func SaveGrokCredentials(creds *GrokCredentials) error {
+	if creds.Delegated() {
+		return nil
+	}
 	if err := validateGrokCredentials(creds); err != nil {
 		return err
 	}
@@ -170,6 +174,9 @@ func RefreshGrokCredentials(ctx context.Context, creds *GrokCredentials, force b
 }
 
 func RefreshGrokCredentialsWithClient(ctx context.Context, creds *GrokCredentials, force bool, client GrokOAuthClient) error {
+	if creds.Delegated() {
+		return nil
+	}
 	if creds == nil {
 		return errors.New("missing Grok credentials")
 	}

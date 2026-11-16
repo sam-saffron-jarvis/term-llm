@@ -32,7 +32,8 @@ CREATE TABLE requests (seq INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT UNIQUE NOT
 CREATE INDEX requests_time ON requests(started,seq);
 CREATE INDEX requests_caller ON requests(caller,seq);
 CREATE INDEX requests_route ON requests(route,seq);
-PRAGMA user_version=2;`
+` + accountSchema + moneySchema + connectSchema + `
+PRAGMA user_version=4;`
 
 func openStore(dir string) (*store, error) {
 	if err := fileprivacy.MkdirAll(dir); err != nil {
@@ -261,49 +262,55 @@ func (s *store) authorize(token string, r activeRoute) (Caller, error) {
 }
 
 type Record struct {
-	ID          string `json:"id"`
-	Seq         int64  `json:"seq"`
-	Started     int64  `json:"started"`
-	Ended       int64  `json:"ended"`
-	CallerID    string `json:"caller_id"`
-	CallerName  string `json:"caller_name"`
-	Route       string `json:"route"`
-	Revision    int64  `json:"revision"`
-	Method      string `json:"method"`
-	Path        string `json:"path"`
-	LocalPrefix string `json:"local_prefix"`
-	Peer        string `json:"peer"`
-	Status      int    `json:"status"`
-	Outcome     string `json:"outcome"`
-	Sent        int64  `json:"sent"`
-	Received    int64  `json:"received"`
-	HeaderMS    int64  `json:"header_ms"`
-	FirstByteMS int64  `json:"first_byte_ms"`
-	TotalMS     int64  `json:"total_ms"`
-	UpstreamID  string `json:"upstream_id"`
+	Usage       *ObservedUsage `json:"usage,omitempty"`
+	Money       *Money         `json:"money,omitempty"`
+	Provider    string         `json:"provider,omitempty"`
+	App         string         `json:"app,omitempty"`
+	ID          string         `json:"id"`
+	Seq         int64          `json:"seq"`
+	Started     int64          `json:"started"`
+	Ended       int64          `json:"ended"`
+	CallerID    string         `json:"caller_id"`
+	CallerName  string         `json:"caller_name"`
+	Route       string         `json:"route"`
+	Revision    int64          `json:"revision"`
+	Method      string         `json:"method"`
+	Path        string         `json:"path"`
+	LocalPrefix string         `json:"local_prefix"`
+	Peer        string         `json:"peer"`
+	Status      int            `json:"status"`
+	Outcome     string         `json:"outcome"`
+	Sent        int64          `json:"sent"`
+	Received    int64          `json:"received"`
+	HeaderMS    int64          `json:"header_ms"`
+	FirstByteMS int64          `json:"first_byte_ms"`
+	TotalMS     int64          `json:"total_ms"`
+	UpstreamID  string         `json:"upstream_id"`
 }
 
 func (s *store) start(ctx context.Context, r *Record) error {
+	r.Provider, r.App = boundedAttribution(r.Provider), boundedAttribution(r.App)
+	billing := "unspecified"
+	if r.Money != nil {
+		billing = r.Money.Billing
+	}
+	r.Money = pendingRequestMoney(billing)
 	b, err := json.Marshal(r)
 	if err != nil {
 		return err
 	}
-	result, err := s.startStmt.ExecContext(ctx, r.ID, r.Started, r.CallerID, r.Route, r.Method, r.Path, "unknown", string(b))
-	if err != nil {
-		return err
-	}
-	r.Seq, err = result.LastInsertId()
-	return err
+	return s.startRequestAndMoney(ctx, r, b)
 }
+
 func (s *store) finish(r Record) error {
+	r.Provider, r.App = boundedAttribution(r.Provider), boundedAttribution(r.App)
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	b, err := json.Marshal(r)
 	if err != nil {
 		return err
 	}
-	_, err = s.finishStmt.ExecContext(ctx, r.Outcome, string(b), r.ID)
-	return err
+	return s.finishRequestAndMoney(ctx, r, b)
 }
 func (s *store) records(q url.Values, limit int) ([]Record, int64, error) {
 	where, args, err := requestWhere(q)
@@ -346,7 +353,13 @@ func readRequestRecords(rows *sql.Rows, limit int) ([]Record, int64, error) {
 }
 func (s *store) retain(ctx context.Context, days int) error {
 	_, err := s.db.ExecContext(ctx, "DELETE FROM requests WHERE seq IN (SELECT seq FROM requests WHERE started<? ORDER BY seq LIMIT 500)", time.Now().Add(-time.Duration(days)*24*time.Hour).UnixMilli())
-	return err
+	if err != nil {
+		return err
+	}
+	if err = s.retainMoney(ctx); err != nil {
+		return err
+	}
+	return s.retainConnect(ctx)
 }
 
 func requestWhere(q url.Values) (string, []any, error) {

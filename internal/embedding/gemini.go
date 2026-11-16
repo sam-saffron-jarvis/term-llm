@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/term-llm/term-llm/internal/proxyclient"
 	"net"
 	"net/http"
 	"net/url"
@@ -120,7 +121,7 @@ func (p *GeminiProvider) Embed(ctx context.Context, req EmbedRequest) (*Embeddin
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("x-goog-api-key", p.apiKey)
 
-	resp, err := p.client.Do(httpReq)
+	resp, err := proxyclient.Do(p.client, httpReq)
 	if err != nil {
 		return nil, fmt.Errorf("Gemini embedding API error: %w", err)
 	}

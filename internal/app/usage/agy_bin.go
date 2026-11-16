@@ -79,6 +79,9 @@ func validateAgyBinUsageFlags(cmd interface{ Flags() *pflag.FlagSet }) error {
 }
 
 func runAgyBinUsage(parent context.Context, out io.Writer, jsonOutput bool) error {
+	if err := refuseLocalProxyAllowance("agy-bin"); err != nil {
+		return err
+	}
 	binary, err := agyUsageLookPath("agy")
 	if err != nil {
 		return errors.New("agy-bin usage requires the Antigravity CLI (`agy`) in PATH")

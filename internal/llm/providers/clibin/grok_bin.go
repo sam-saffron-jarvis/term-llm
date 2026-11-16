@@ -1088,7 +1088,7 @@ func (p *GrokBinProvider) writeConfig(url, token string) error {
 	if strings.TrimSpace(p.grokHome) == "" {
 		return fmt.Errorf("write grok-bin config: GROK_HOME is not initialized")
 	}
-	data := []byte(renderGrokConfig(url, token, p.grokHome))
+	data := []byte(renderGrokConfig(url, token, p.grokHome) + p.grokProxyConfig())
 	tmp, err := os.CreateTemp(p.grokHome, ".config-*.toml")
 	if err != nil {
 		return fmt.Errorf("create grok-bin config: %w", err)

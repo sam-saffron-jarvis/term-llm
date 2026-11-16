@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/term-llm/term-llm/internal/proxyclient"
 	"io"
 	"net/http"
 	"net/url"
@@ -183,7 +184,7 @@ func (p *ElevenLabsProvider) doSpeech(ctx context.Context, voiceID, format strin
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Accept", "audio/*")
 
-	resp, err := p.client.Do(httpReq)
+	resp, err := proxyclient.Do(p.client, httpReq)
 	if err != nil {
 		return nil, "", elevenLabsRequestError(err)
 	}
@@ -238,7 +239,7 @@ func (p *ElevenLabsProvider) listVoices(ctx context.Context, debug bool) ([]elev
 		return nil, fmt.Errorf("create ElevenLabs voices request: %w", err)
 	}
 	httpReq.Header.Set("xi-api-key", p.apiKey)
-	resp, err := p.client.Do(httpReq)
+	resp, err := proxyclient.Do(p.client, httpReq)
 	if err != nil {
 		return nil, elevenLabsRequestError(err)
 	}

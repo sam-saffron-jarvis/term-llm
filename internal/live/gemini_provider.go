@@ -14,6 +14,7 @@ import (
 	"github.com/gorilla/websocket"
 
 	"github.com/term-llm/term-llm/internal/config"
+	"github.com/term-llm/term-llm/internal/proxyclient"
 )
 
 const (
@@ -87,7 +88,18 @@ func (p *GeminiProvider) Start(ctx context.Context, _ string, opts SessionOption
 	if dialer == nil {
 		dialer = websocket.DefaultDialer
 	}
-	conn, resp, err := dialer.DialContext(ctx, endpoint, nil)
+	header := http.Header(nil)
+	if _, delegated := proxyclient.Lookup(base); delegated {
+		// The official Go GenAI Live client authenticates with this header.
+		// A scoped proxy token must never appear in a URL or its diagnostics.
+		parsed, _ := url.Parse(endpoint)
+		query := parsed.Query()
+		query.Del("key")
+		parsed.RawQuery = query.Encode()
+		endpoint = parsed.String()
+		header = http.Header{"X-Goog-Api-Key": {apiKey}}
+	}
+	conn, resp, err := dialAttributedWebSocket(dialer, ctx, endpoint, header)
 	if err != nil {
 		classified := classifyGeminiDialError(resp, err)
 		diagnostics.connectionError("dial failed", classified)

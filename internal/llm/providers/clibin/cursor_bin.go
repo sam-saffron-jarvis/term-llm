@@ -423,7 +423,7 @@ func (p *CursorBinProvider) runCursorCommand(ctx context.Context, args []string,
 	}
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	cmd, err := newCLICommand(runCtx, "cursor-agent", args, neutralCWD)
+	cmd, err := newCLICommand(runCtx, "cursor-agent", p.cursorProxyArgs(args), neutralCWD)
 	if err != nil {
 		return nil, fmt.Errorf("prepare Cursor command: %w", err)
 	}
@@ -741,6 +741,7 @@ func (p *CursorBinProvider) cursorDiagnosticRedactor() func(string) string {
 	if p.mcpToken != "" {
 		secrets = append(secrets, p.mcpToken)
 	}
+	secrets = append(secrets, p.cursorProxySecrets()...)
 	return func(text string) string {
 		for _, secret := range secrets {
 			text = strings.ReplaceAll(text, secret, "[redacted]")
@@ -758,7 +759,7 @@ func (p *CursorBinProvider) effectiveEnv(key string) string {
 
 func (p *CursorBinProvider) prepareHomeCredentials(home string) error {
 	privateHome := filepath.Join(home, cursorUserHomeDir)
-	switch strings.ToLower(p.effectiveEnv("AGENT_CLI_CREDENTIAL_STORE")) {
+	switch p.cursorCredentialStore() {
 	case "file":
 		return prepareCursorFileCredentials(p.realHome, privateHome)
 	case "memory":

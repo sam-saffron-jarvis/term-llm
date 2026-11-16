@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/term-llm/term-llm/internal/proxyclient"
 	"io"
 	"net/http"
 	"strings"
@@ -126,7 +127,7 @@ func embedOpenAICompatible(ctx context.Context, call openAICompatibleEmbedCall) 
 	if client == nil {
 		client = http.DefaultClient
 	}
-	resp, err := client.Do(httpReq)
+	resp, err := proxyclient.Do(client, httpReq)
 	if err != nil {
 		return nil, fmt.Errorf("%s embedding request: %w", call.label, err)
 	}

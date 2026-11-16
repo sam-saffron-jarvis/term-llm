@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/term-llm/term-llm/internal/proxyclient"
 	"io"
 	"net/http"
 )
@@ -90,7 +91,7 @@ func OpenJSONRequest(ctx context.Context, opts JSONRequestOptions) (*http.Respon
 	if client == nil {
 		client = http.DefaultClient
 	}
-	resp, err := client.Do(req)
+	resp, err := proxyclient.Do(client, req)
 	if err != nil {
 		if opts.WrapRequestError != nil {
 			return nil, opts.WrapRequestError(err)

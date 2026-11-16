@@ -1,7 +1,10 @@
+import { accountsView } from './accounts';
+import { browserPasskeyPlatform, type PasskeyPlatform } from '../src/hub/platform/passkeys';
 import { secretForm } from './security';
 import {
   ProxyAPIError,
   type ProxyClient,
+  type ProxyBilling,
   type ProxyPreset,
   type ProxyRoute,
   type ProxyState,
@@ -34,9 +37,22 @@ function authority(route: ProxyRoute): string {
       rule.value ?? null,
     ])
     .sort((a, b) => String(a[0]).localeCompare(String(b[0])));
-  return JSON.stringify([url.origin, url.pathname.replace(/\/$/, ''), headers]);
+  return JSON.stringify([
+    url.origin,
+    url.pathname.replace(/\/$/, ''),
+    headers,
+    route.account || '',
+    !!route.websocket,
+    [...(route.allow ?? [])].sort(),
+    route.redirects || 'passthrough',
+  ]);
 }
-export function routesView(state: ProxyState, api: ProxyClient, context: UIContext): HTMLElement {
+export function routesView(
+  state: ProxyState,
+  api: ProxyClient,
+  context: UIContext,
+  platform: PasskeyPlatform = browserPasskeyPlatform(),
+): HTMLElement {
   const view = el('div');
   const readonly = state.mode === 'file';
   const addSlot = el('div');
@@ -158,6 +174,16 @@ export function routesView(state: ProxyState, api: ProxyClient, context: UIConte
       relationships.className = 'route-badges';
       relationships.append(
         badge(route.enabled ? 'Enabled' : 'Disabled', route.enabled ? 'enabled' : 'muted'),
+        badge(
+          (
+            {
+              pay_as_you_go: 'Pay as you go',
+              plan: 'Included in a plan',
+              local: 'Runs at home',
+              unspecified: 'Billing not specified',
+            } as const
+          )[route.billing || 'unspecified'],
+        ),
       );
       if (route.upstream.startsWith('http:'))
         relationships.append(badge('HTTP · unencrypted', 'caution'));
@@ -242,7 +268,9 @@ export function routesView(state: ProxyState, api: ProxyClient, context: UIConte
   }
 
   renderRoutes();
-  view.append(routesSection, yamlView());
+  view.append(routesSection);
+  if (state.accounts !== undefined) view.append(accountsView(state, api, context, platform));
+  view.append(yamlView());
   function edit(route?: ProxyRoute, host: HTMLElement = addSlot, preset?: ProxyPreset) {
     view
       .querySelectorAll('.route-accordion-item.expanded')
@@ -268,9 +296,12 @@ export function routesView(state: ProxyState, api: ProxyClient, context: UIConte
       caller_auth: preset?.auth.header
         ? preset.auth
         : { header: 'Authorization', prefix: 'Bearer ' },
-      set_headers: preset?.auth.header
-        ? { [preset.auth.header]: { secret: '', prefix: preset.auth.prefix } }
-        : {},
+      // A trusted account supplies the upstream credential itself; never invent
+      // a static secret substitution beside it.
+      set_headers:
+        preset?.auth.header && !preset.account_kind
+          ? { [preset.auth.header]: { secret: '', prefix: preset.auth.prefix } }
+          : {},
     };
     const form = el('form');
     form.className = 'route-form';
@@ -306,7 +337,7 @@ export function routesView(state: ProxyState, api: ProxyClient, context: UIConte
         field(
           'Provider',
           provider,
-          'Editable API-key defaults. Add a key here or choose a stored secret. OAuth/CLI integrations, Bedrock and FLUX are not presets in this release.',
+          'Editable API-key defaults: add a key here or choose a stored secret. Plan and Bedrock providers use a trusted account from Accounts instead. Local CLI integrations that are not verified through the proxy are not offered.',
         ),
       );
       if (preset?.note) form.append(el('small', preset.note));
@@ -330,6 +361,40 @@ export function routesView(state: ProxyState, api: ProxyClient, context: UIConte
     header.required = true;
     const prefix = input(initial.caller_auth.prefix);
     const requestID = input(route?.request_id_header);
+    const billing = select(
+      [
+        ['unspecified', 'Not sure yet — exclude from spending'],
+        ['pay_as_you_go', 'Pay as you go — API usage charges'],
+        ['plan', 'Plan — allowance and possible extra usage unknown'],
+        ['local', 'Runs at home — no provider charge'],
+      ],
+      route?.billing || preset?.billing || 'unspecified',
+    );
+    // Offered only where the route needs custody: a new account-kind provider,
+    // or an existing route that already names an account.
+    const currentAccount = (state.accounts ?? []).find((a) => a.name === route?.account);
+    const accountKind = route ? currentAccount?.kind : preset?.account_kind;
+    const needsAccount = !!(route?.account || preset?.account_kind);
+    const candidates = (state.accounts ?? []).filter((a) => a.kind === accountKind);
+    const accountOptions: [string, string][] = candidates.map((a) => [
+      a.name,
+      `${a.name} · ${a.state.replaceAll('_', ' ')}`,
+    ]);
+    if (route?.account && !currentAccount)
+      accountOptions.unshift([route.account, `${route.account} · unavailable`]);
+    const account = select([['', 'Choose account'], ...accountOptions], route?.account ?? '');
+    account.required = needsAccount;
+    const websocket = check(
+      'Forward WebSocket upgrades',
+      route ? !!route.websocket : !!preset?.websocket,
+    );
+    const usage = select(
+      [
+        ['off', 'Off — forward responses without reading them'],
+        ['auto', 'Automatic — read token counts from responses'],
+      ],
+      (route ? route.usage : preset?.usage) || 'off',
+    );
     const [enabledLabel, enabled] = check('Enabled', route?.enabled ?? true);
     const [httpLabel, http] = check(
       'Allow insecure HTTP upstream (credentials may travel unencrypted)',
@@ -338,6 +403,12 @@ export function routesView(state: ProxyState, api: ProxyClient, context: UIConte
     httpLabel.classList.add('insecure-option');
     const advanced = disclosure(
       'Advanced · local auth and request ID',
+      websocket[0],
+      field(
+        'Usage measurement',
+        usage,
+        'Automatic asks the upstream for uncompressed responses and reads only reported token counts and model names; request and response content is never stored. Needed for spending estimates.',
+      ),
       field('Local client authentication header', header),
       field(
         'Local client authentication prefix',
@@ -359,7 +430,24 @@ export function routesView(state: ProxyState, api: ProxyClient, context: UIConte
         'Suggested from the name; editable. A unique non-root path ending in /.',
       ),
       field('Upstream base URL', upstream, 'HTTPS recommended. No credentials, query or fragment.'),
+      field(
+        'How do you pay for this provider?',
+        billing,
+        'Used for future spending records only; never changes your provider bill or sets a spending limit. Choose Not sure if you do not know. Price cards on Home match this exact route name as their provider.',
+      ),
     );
+    if (needsAccount)
+      coreGrid.append(
+        field(
+          'Trusted account',
+          account,
+          candidates.length
+            ? `The proxy signs in upstream with this ${accountKind} account. No API key is stored on the route.`
+            : accountKind
+              ? `No ${accountKind} account exists yet. Add one under Accounts below, then return here.`
+              : 'This account is unavailable. Restore it under Accounts before choosing another.',
+        ),
+      );
     coreGrid.className = 'route-form-grid';
     form.append(coreGrid, httpLabel);
     if (route) form.append(enabledLabel);
@@ -386,7 +474,7 @@ export function routesView(state: ProxyState, api: ProxyClient, context: UIConte
     }
     function previewRoute() {
       httpLabel.hidden = !upstream.value.toLowerCase().startsWith('http:');
-      preview.textContent = `Client → ${location.origin}${local.value || '/…/'}… · ${header.value}: ${JSON.stringify(prefix.value)} + <token>\nUpstream ← ${upstream.value || 'choose a base URL'}${rows.length ? ' · ' + rows.map((r) => `${r.header.value || 'Header'}: ${r.kind.value === 'secret' ? JSON.stringify(r.prefix.value) + ' + ••••' : '(public literal)'}`).join(', ') : ' · no substitutions'}`;
+      preview.textContent = `Client → ${location.origin}${local.value || '/…/'}… · ${header.value}: ${JSON.stringify(prefix.value)} + <token>\nUpstream ← ${upstream.value || 'choose a base URL'}${needsAccount ? ` · account ${account.value || '(choose one)'}` : ''}${rows.length ? ' · ' + rows.map((r) => `${r.header.value || 'Header'}: ${r.kind.value === 'secret' ? JSON.stringify(r.prefix.value) + ' + ••••' : '(public literal)'}`).join(', ') : needsAccount ? '' : ' · no substitutions'}`;
     }
     function addHeader(key = '', config: ProxyRoute['set_headers'][string] = { secret: '' }) {
       const keyInput = input(key);
@@ -644,7 +732,24 @@ export function routesView(state: ProxyState, api: ProxyClient, context: UIConte
             setHeaders[row.header.value.trim()] = { secret: secret.name, prefix: row.prefix.value };
           } else setHeaders[row.header.value.trim()] = { value: row.value.value };
         }
+        // An untouched account keeps its saved value even when it is unavailable;
+        // any new choice must be an existing account of the required kind.
+        if (needsAccount && account.value !== route?.account) {
+          const chosen = (state.accounts ?? []).find((a) => a.name === account.value);
+          if (!chosen || chosen.kind !== accountKind)
+            throw new Error(
+              `Choose an existing ${accountKind ?? 'trusted'} account. Add one under Accounts first.`,
+            );
+        }
         const next: ProxyRoute = {
+          // Preserve server-owned admission policy (allow rules, redirects) and
+          // future opaque metadata that this editor does not expose.
+          ...route,
+          billing: billing.value as ProxyBilling,
+          ...(needsAccount ? { account: account.value } : {}),
+          // Untouched controls keep the saved representation exactly.
+          websocket: websocket[1].checked || (route?.websocket === false ? false : undefined),
+          usage: usage.value === 'auto' ? 'auto' : route?.usage === 'off' ? 'off' : undefined,
           name: name.value.trim(),
           local_prefix: local.value,
           upstream: upstream.value,
@@ -652,7 +757,7 @@ export function routesView(state: ProxyState, api: ProxyClient, context: UIConte
           allow_insecure_http: http.checked,
           caller_auth: { header: header.value, prefix: prefix.value },
           set_headers: setHeaders,
-          ...(requestID.value ? { request_id_header: requestID.value } : {}),
+          request_id_header: requestID.value || undefined,
         };
         if (
           route &&

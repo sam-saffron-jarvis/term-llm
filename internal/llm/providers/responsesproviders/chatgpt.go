@@ -62,7 +62,7 @@ func NewChatGPTProvider(model string) (*ChatGPTProvider, error) {
 // If credentials are not available or expired, it will prompt the user to authenticate.
 func NewChatGPTProviderWithOptions(model string, opts ChatGPTProviderOptions) (*ChatGPTProvider, error) {
 	// Try to load existing credentials
-	creds, err := credentials.GetChatGPTCredentials()
+	creds, err := credentials.GetChatGPTCredentialsForEndpoint(opts.BaseURL)
 	if err != nil {
 		// No credentials - prompt user to authenticate
 		creds, err = PromptForChatGPTAuth()

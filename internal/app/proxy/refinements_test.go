@@ -231,7 +231,7 @@ func TestGrantSchemaMigrationIsFailClosedAndPreservesCaller(t *testing.T) {
 	}
 	s := testService(t)
 	// Faithful synthetic fixture of the initial feature's v1 schema and data.
-	if _, err := s.store.db.Exec("ALTER TABLE grants RENAME COLUMN authority TO origin; PRAGMA user_version=1;"); err != nil {
+	if _, err := s.store.db.Exec("DROP TABLE connect_requests; DROP TABLE connect_managed; DROP TABLE accounts; DROP TABLE money_history; DROP TABLE money_settings; ALTER TABLE grants RENAME COLUMN authority TO origin; PRAGMA user_version=1;"); err != nil {
 		t.Fatal(err)
 	}
 	token := "sk-tlp-synthetic-original-token"
@@ -382,7 +382,7 @@ func TestValidAdminBypassesFullInvalidPeerMap(t *testing.T) {
 
 func TestGrantMigrationRollsBackAndRetries(t *testing.T) {
 	s := testService(t)
-	_, err := s.store.db.Exec(`ALTER TABLE grants RENAME COLUMN authority TO origin;
+	_, err := s.store.db.Exec(`DROP TABLE connect_requests; DROP TABLE connect_managed; DROP TABLE accounts; DROP TABLE money_history; DROP TABLE money_settings; ALTER TABLE grants RENAME COLUMN authority TO origin;
  PRAGMA user_version=1;
  INSERT INTO grants VALUES('legacy','route','https://example.test:443');
  CREATE TRIGGER stop_grant_migration BEFORE DELETE ON grants BEGIN SELECT RAISE(FAIL,'synthetic fault'); END;`)

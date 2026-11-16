@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/term-llm/term-llm/internal/proxyclient"
 	"io"
 	"net/http"
 	"strings"
@@ -79,7 +80,7 @@ func (p *JinaProvider) Embed(ctx context.Context, req EmbedRequest) (*EmbeddingR
 	httpReq.Header.Set("Authorization", "Bearer "+p.apiKey)
 
 	client := &http.Client{Timeout: jinaEmbedTimeout}
-	resp, err := client.Do(httpReq)
+	resp, err := proxyclient.Do(client, httpReq)
 	if err != nil {
 		return nil, fmt.Errorf("Jina request failed: %w", err)
 	}

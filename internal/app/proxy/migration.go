@@ -8,7 +8,7 @@ import (
 	"github.com/term-llm/term-llm/internal/sqliteutil"
 )
 
-const schemaVersion = 2
+const schemaVersion = 4
 
 // Version 1 was the initial acceptance build, not a released schema. Its grants
 // knew only an origin, so their original delegated base/key scope cannot be
@@ -22,7 +22,13 @@ var migrations = []sqliteutil.Migration{{
 		_, err := tx.Exec("DELETE FROM grants")
 		return err
 	},
-}}
+}, {Version: 3, Description: "durable renewable account custody", Up: func(tx sqliteutil.Executor) error {
+	if _, err := tx.Exec(accountSchema); err != nil {
+		return err
+	}
+	return initializeMoneySchema(tx)
+}}, {Version: 4, Description: "bounded fresh-approved Claude connect receipts", Up: func(tx sqliteutil.Executor) error { _, err := tx.Exec(connectSchema); return err }},
+}
 
 func (s *store) initialize() error {
 	var invalidated int
@@ -40,8 +46,10 @@ func (s *store) initialize() error {
 		if v == 0 {
 			return createSchema(tx)
 		}
-		if err := tx.QueryRow("SELECT count(*) FROM grants").Scan(&invalidated); err != nil {
-			return err
+		if v < 2 {
+			if err := tx.QueryRow("SELECT count(*) FROM grants").Scan(&invalidated); err != nil {
+				return err
+			}
 		}
 		for _, migration := range migrations {
 			if migration.Version <= v {
@@ -69,6 +77,8 @@ func createSchema(tx sqliteutil.Executor) error {
 	if n != 0 {
 		return fmt.Errorf("unknown unversioned proxy schema")
 	}
-	_, err := tx.Exec(schema)
-	return err
+	if _, err := tx.Exec(schema); err != nil {
+		return err
+	}
+	return nil
 }

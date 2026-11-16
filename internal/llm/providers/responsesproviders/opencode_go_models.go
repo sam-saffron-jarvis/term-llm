@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/term-llm/term-llm/internal/proxyclient"
 	"io"
 	"net/http"
 	"sort"
@@ -299,7 +300,7 @@ func fetchOpenCodeGoModels(ctx context.Context, client *http.Client, apiKey, bas
 			// catalog mirror gets no client or session attribution.
 			applyOpenCodeGoAttributionHeaders(req.Header, "")
 		}
-		resp, err := client.Do(req)
+		resp, err := proxyclient.Do(client, req)
 		if err != nil {
 			ch <- result{err: err}
 			return

@@ -200,7 +200,7 @@ describe('numbered request pagination', () => {
     });
     fireEvent.click(getByRole(pager(root), 'button', { name: 'Page 89' }));
     await waitFor(() =>
-      expect(pager(root).textContent).toContain('1–1 of 1 requests · Page 1 of 1'),
+      expect(pager(root).textContent).toContain('1–1 of 1 request · Page 1 of 1'),
     );
     await ready(root);
     expect(getByRole(pager(root), 'button', { name: 'Next' })).toBeDisabled();

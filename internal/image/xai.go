@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"github.com/term-llm/term-llm/internal/proxyclient"
 	"io"
 	"net/http"
 	"strings"
@@ -77,7 +78,7 @@ func (p *XAIProvider) Generate(ctx context.Context, req GenerateRequest) (*Image
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Authorization", "Bearer "+p.apiKey)
 
-	resp, err := xaiHTTPClient.Do(httpReq)
+	resp, err := proxyclient.Do(xaiHTTPClient, httpReq)
 	if err != nil {
 		return nil, fmt.Errorf("request failed: %w", err)
 	}

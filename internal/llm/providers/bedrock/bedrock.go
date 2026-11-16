@@ -128,8 +128,7 @@ func NewWithBaseURL(model, region, profile, accessKey, secretKey, sessionToken s
 	if err != nil {
 		return nil, err
 	}
-	bearerToken := os.Getenv("AWS_BEARER_TOKEN_BEDROCK")
-	resolvedRegion, credentials, err := resolveBedrockAuth(region, profile, accessKey, secretKey, sessionToken, bearerToken)
+	resolvedRegion, credentials, bearerToken, err := resolveEndpointAuth(baseURL, region, profile, accessKey, secretKey, sessionToken)
 	if err != nil {
 		return nil, err
 	}

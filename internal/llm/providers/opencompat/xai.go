@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/term-llm/term-llm/internal/proxyclient"
 	"io"
 	"net/http"
 	"strings"
@@ -403,7 +404,7 @@ func (p *XAIProvider) makeHTTPRequest(ctx context.Context, url string, body []by
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Authorization", "Bearer "+p.apiKey)
-	return httpClient().Do(httpReq)
+	return proxyclient.Do(httpClient(), httpReq)
 }
 
 // ListModels returns available models from the xAI API.
@@ -414,7 +415,7 @@ func (p *XAIProvider) ListModels(ctx context.Context) ([]ModelInfo, error) {
 	}
 	httpReq.Header.Set("Authorization", "Bearer "+p.apiKey)
 
-	resp, err := httpClient().Do(httpReq)
+	resp, err := proxyclient.Do(httpClient(), httpReq)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list models: %w", err)
 	}

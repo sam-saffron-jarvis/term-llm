@@ -127,7 +127,7 @@ func NewImageProvider(cfg *config.Config, providerOverride string) (ImageProvide
 		if err != nil {
 			return nil, fmt.Errorf("image.chatgpt.base_url: %w", err)
 		}
-		p, err := NewChatGPTProvider(model)
+		p, err := NewChatGPTProviderWithBaseURL(model, baseURL)
 		if err != nil {
 			return nil, err
 		}

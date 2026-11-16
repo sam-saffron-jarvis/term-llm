@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/term-llm/term-llm/internal/proxyclient"
 	"io"
 	"net/http"
 	"strings"
@@ -67,7 +68,7 @@ func (p *OllamaProvider) Embed(ctx context.Context, req EmbedRequest) (*Embeddin
 	httpReq.Header.Set("Content-Type", "application/json")
 
 	client := &http.Client{Timeout: ollamaEmbedTimeout}
-	resp, err := client.Do(httpReq)
+	resp, err := proxyclient.Do(client, httpReq)
 	if err != nil {
 		return nil, fmt.Errorf("Ollama request failed (is Ollama running at %s?): %w", p.baseURL, err)
 	}

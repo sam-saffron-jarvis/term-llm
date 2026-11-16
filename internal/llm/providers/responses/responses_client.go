@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/term-llm/term-llm/internal/proxyclient"
 	"io"
 	"net/http"
 	"strings"
@@ -320,7 +321,7 @@ func (c *ResponsesClient) streamHTTPPrepared(ctx context.Context, httpPayload Re
 		httpClient = defaultHTTPClient()
 	}
 
-	resp, err := httpClient.Do(httpReq)
+	resp, err := proxyclient.Do(httpClient, httpReq)
 	if err != nil {
 		return nil, fmt.Errorf("Responses API request failed: %w", err)
 	}
@@ -363,7 +364,7 @@ func (c *ResponsesClient) streamHTTPPrepared(ctx context.Context, httpPayload Re
 				httpReq.Header.Set("session_id", retryPayload.SessionID)
 			}
 			applyResponsesHeaders(httpReq.Header, c.ExtraHeaders, retryPayload.ExtraHeaders)
-			resp, err = httpClient.Do(httpReq)
+			resp, err = proxyclient.Do(httpClient, httpReq)
 			if err != nil {
 				return nil, fmt.Errorf("Responses API retry request failed: %w", err)
 			}
@@ -390,7 +391,7 @@ func (c *ResponsesClient) streamHTTPPrepared(ctx context.Context, httpPayload Re
 					httpReq.Header.Set("session_id", httpPayload.SessionID)
 				}
 				applyResponsesHeaders(httpReq.Header, c.ExtraHeaders, httpPayload.ExtraHeaders)
-				resp, err = httpClient.Do(httpReq)
+				resp, err = proxyclient.Do(httpClient, httpReq)
 				if err != nil {
 					return nil, fmt.Errorf("Responses API auth retry request failed: %w", err)
 				}

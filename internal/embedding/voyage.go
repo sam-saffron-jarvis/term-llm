@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/term-llm/term-llm/internal/proxyclient"
 	"io"
 	"net/http"
 	"strings"
@@ -79,7 +80,7 @@ func (p *VoyageProvider) Embed(ctx context.Context, req EmbedRequest) (*Embeddin
 	httpReq.Header.Set("Authorization", "Bearer "+p.apiKey)
 
 	client := &http.Client{Timeout: voyageEmbedTimeout}
-	resp, err := client.Do(httpReq)
+	resp, err := proxyclient.Do(client, httpReq)
 	if err != nil {
 		return nil, fmt.Errorf("Voyage request failed: %w", err)
 	}

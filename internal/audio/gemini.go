@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/term-llm/term-llm/internal/proxyclient"
 	"io"
 	"net/http"
 	"net/url"
@@ -162,7 +163,7 @@ func (p *GeminiProvider) do(ctx context.Context, model string, payload any, debu
 	httpReq.Header.Set("x-goog-api-key", p.apiKey)
 	httpReq.Header.Set("Content-Type", "application/json")
 
-	resp, err := p.client.Do(httpReq)
+	resp, err := proxyclient.Do(p.client, httpReq)
 	if err != nil {
 		return nil, "", geminiRequestError(err)
 	}

@@ -20,6 +20,7 @@ var (
 
 // ChatGPTCredentials holds the OAuth tokens for ChatGPT
 type ChatGPTCredentials struct {
+	delegated    bool
 	AccessToken  string `json:"access_token"`
 	RefreshToken string `json:"refresh_token"`
 	ExpiresAt    int64  `json:"expires_at"` // Unix timestamp in seconds
@@ -80,6 +81,9 @@ func readChatGPTCredentials(credPath string) (*ChatGPTCredentials, error) {
 
 // SaveChatGPTCredentials saves ChatGPT OAuth credentials to storage.
 func SaveChatGPTCredentials(creds *ChatGPTCredentials) error {
+	if creds.Delegated() {
+		return nil
+	}
 	return withChatGPTCredentialsLock(func(credPath string) error {
 		return saveChatGPTCredentials(credPath, creds)
 	})
@@ -161,6 +165,9 @@ func RefreshRejectedChatGPTCredentials(creds *ChatGPTCredentials, rejectedAccess
 }
 
 func refreshChatGPTCredentials(creds *ChatGPTCredentials, rejectedAccessToken string) (err error) {
+	if creds.Delegated() {
+		return nil
+	}
 	needsRefresh := func(c *ChatGPTCredentials) bool {
 		return c.IsExpired() || (rejectedAccessToken != "" && c.AccessToken == rejectedAccessToken)
 	}

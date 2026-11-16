@@ -717,7 +717,7 @@ func (p *VibeBinProvider) startVibeACPProcess(ctx context.Context, debug bool, m
 			return nil, errVibeResumeUnavailable
 		}
 		process.sessionID = resumeID
-		if err := checkVibeModel(loaded.ConfigOptions, model); err != nil {
+		if err := checkVibeModel(loaded.ConfigOptions, p.vibeSelectedModel(model)); err != nil {
 			return nil, err
 		}
 	} else {
@@ -729,7 +729,7 @@ func (p *VibeBinProvider) startVibeACPProcess(ctx context.Context, debug bool, m
 		if process.sessionID == "" {
 			return nil, fmt.Errorf("create Vibe ACP session: empty session ID")
 		}
-		if err := checkVibeModel(session.ConfigOptions, model); err != nil {
+		if err := checkVibeModel(session.ConfigOptions, p.vibeSelectedModel(model)); err != nil {
 			return nil, err
 		}
 	}

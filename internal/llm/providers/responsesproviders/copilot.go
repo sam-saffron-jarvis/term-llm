@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/term-llm/term-llm/internal/proxyclient"
 	"io"
 	"net/http"
 	"os"
@@ -309,7 +310,7 @@ func (p *CopilotProvider) streamChatCompletions(ctx context.Context, req Request
 		httpReq.Header.Set("Copilot-Vision-Request", "true")
 		httpReq.Header.Set("Accept", "text/event-stream")
 
-		resp, err := copilotHTTPClient.Do(httpReq)
+		resp, err := proxyclient.Do(copilotHTTPClient, httpReq)
 		if err != nil {
 			return fmt.Errorf("Copilot API request failed: %w", err)
 		}
@@ -616,7 +617,7 @@ func (p *CopilotProvider) ListModels(ctx context.Context) ([]ModelInfo, error) {
 	p.setCopilotAPIHeaders(httpReq, p.sessionToken)
 	httpReq.Header.Set("Accept", "application/json")
 
-	resp, err := copilotHTTPClient.Do(httpReq)
+	resp, err := proxyclient.Do(copilotHTTPClient, httpReq)
 	if err != nil {
 		return nil, fmt.Errorf("Copilot models request failed: %w", err)
 	}
@@ -683,6 +684,9 @@ func (e *copilotAPIError) Is404() bool {
 // ensureValidSession ensures we have a valid session token, refreshing if needed.
 // Session tokens typically expire after ~25 minutes.
 func (p *CopilotProvider) ensureValidSession(ctx context.Context) error {
+	if p.creds.Delegated() {
+		return p.refreshSession(ctx)
+	}
 	// Check if we need to refresh (no token, missing expiry, or close to expiry).
 	if p.sessionToken == "" || p.sessionTokenExpiry.IsZero() || time.Until(p.sessionTokenExpiry) <= copilotSessionRefreshSkew {
 		return p.refreshSession(ctx)
@@ -692,6 +696,11 @@ func (p *CopilotProvider) ensureValidSession(ctx context.Context) error {
 
 // refreshSession fetches a new session token from the Copilot API.
 func (p *CopilotProvider) refreshSession(ctx context.Context) error {
+	if p.creds.Delegated() {
+		p.sessionToken = p.creds.AccessToken
+		p.sessionTokenExpiry = time.Unix(p.creds.ExpiresAt, 0)
+		return nil
+	}
 	tokenResp, err := p.fetchCopilotTokenInfo(ctx)
 	if err != nil {
 		return err
@@ -742,7 +751,7 @@ func (p *CopilotProvider) fetchCopilotTokenInfo(ctx context.Context) (*copilotSe
 	// Set required GitHub API headers (using OAuth token)
 	p.setGitHubAPIHeaders(httpReq)
 
-	resp, err := copilotHTTPClient.Do(httpReq)
+	resp, err := proxyclient.Do(copilotHTTPClient, httpReq)
 	if err != nil {
 		return nil, fmt.Errorf("Copilot token request failed: %w", err)
 	}

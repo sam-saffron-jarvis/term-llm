@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"bufio"
 	"context"
 	"crypto/subtle"
 	"errors"
@@ -35,16 +36,24 @@ type session struct {
 	principal passkeyauth.Principal
 }
 type Service struct {
-	mu          sync.RWMutex
-	store       *store
-	snap        *snapshot
-	opts        Options
-	adminHash   string
-	passkey     *proxyPasskeys
-	transport   *http.Transport
-	copyBuffers *copyBufferPool
-	slots       chan struct{}
-	active      sync.Map
+	mu                sync.RWMutex
+	store             *store
+	snap              *snapshot
+	opts              Options
+	adminHash         string
+	passkey           *proxyPasskeys
+	transport         *http.Transport
+	copyBuffers       *copyBufferPool
+	slots             chan struct{}
+	active            sync.Map
+	sockets           sync.Map
+	accountLocks      sync.Map
+	accountRejected   sync.Map
+	accountRedactions sync.Map
+	socketWG          sync.WaitGroup
+	closing           bool
+	// ResponseTap observes opt-in responses; set before serving.
+	ResponseTap ResponseBodyTap
 	authMu      sync.Mutex
 	sessions    map[string]session
 	attempts    map[string]attempt
@@ -93,10 +102,38 @@ func Open(opts Options) (*Service, error) {
 			return nil, err
 		}
 	}
+	if err = s.store.interruptAccounts(context.Background()); err != nil {
+		s.Close()
+		return nil, fmt.Errorf("recover account refresh fence: %w", errAccountUnavailable)
+	}
+	infos, e := s.store.accountInfos()
+	if e != nil {
+		s.Close()
+		return nil, errAccountUnavailable
+	}
+	for _, info := range infos {
+		a, e := s.store.account(info.Name)
+		if e != nil {
+			s.Close()
+			return nil, errAccountUnavailable
+		}
+		s.rememberAccount(a.Name, a.credentials)
+	}
 	if err = s.activateInitial(); err != nil {
 		s.Close()
 		return nil, err
 	}
+	// Recover older/crashed request evidence before Run can delete technical
+	// history. Keep the full independent 400-day money retention window.
+	now := time.Now()
+	recovery, cancelRecovery := context.WithTimeout(context.Background(), 30*time.Second)
+	err = s.store.reconcileMoneyHistory(recovery, now.AddDate(0, 0, -400).UnixMilli(), now.UnixMilli())
+	cancelRecovery()
+	if err != nil {
+		s.Close()
+		return nil, fmt.Errorf("recover retained money history: %w", err)
+	}
+	s.ResponseTap = ObserveResponseUsage
 	return s, nil
 }
 func (s *Service) activateInitial() error {
@@ -110,12 +147,18 @@ func (s *Service) activateInitial() error {
 			return err
 		}
 	}
+	if err := s.bootstrapAccounts(context.Background(), c); err != nil {
+		return err
+	}
 	secrets, err := s.resolveSecrets(c, stored, s.opts.ConfigFile != "")
 	if err != nil {
 		return err
 	}
 	snap, err := compile(c, rev+1, secrets)
 	if err != nil {
+		return err
+	}
+	if err = s.validateAccounts(snap); err != nil {
 		return err
 	}
 	if err = s.store.saveConfig(snap, s.opts.ConfigFile != ""); err != nil {
@@ -125,6 +168,7 @@ func (s *Service) activateInitial() error {
 	return nil
 }
 func (s *Service) Close() error {
+	s.closeSockets()
 	s.transport.CloseIdleConnections()
 	var authErr error
 	if s.passkey != nil {
@@ -136,6 +180,10 @@ func (s *Service) Close() error {
 	return errors.Join(authErr, s.store.close())
 }
 func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path == "/_proxy/client/v1/whoami" {
+		s.whoami(w, r)
+		return
+	}
 	if r.URL.Path == "/healthz" {
 		if r.Method != http.MethodGet {
 			http.Error(w, "method not allowed", 405)
@@ -158,8 +206,13 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	s.forward(w, r)
 }
 func (s *Service) forward(w http.ResponseWriter, r *http.Request) {
-	if len(r.Method) > 64 || r.URL.IsAbs() || r.Host == "" || !safePath(r.URL.EscapedPath()) || r.Method == "CONNECT" || r.Header.Get("Upgrade") != "" || hasConnectionToken(r.Header, "upgrade") {
+	if len(r.Method) > 64 || r.URL.IsAbs() || r.Host == "" || !safePath(r.URL.EscapedPath()) || r.Method == "CONNECT" {
 		http.Error(w, "unsupported request target or upgrade", 400)
+		return
+	}
+	upgrade := len(r.Header.Values("Upgrade")) != 0 || hasConnectionToken(r.Header, "upgrade")
+	if upgrade && !validWebsocketRequest(r) {
+		http.Error(w, "unsupported upgrade", 400)
 		return
 	}
 	// Bound admission before authentication/store work; rejected traffic must not
@@ -175,6 +228,11 @@ func (s *Service) forward(w http.ResponseWriter, r *http.Request) {
 	// mutation must not race between grant checking and admission. SQLite's busy
 	// timeout bounds store waits; the admission slots also bound waiting readers.
 	s.mu.RLock()
+	if s.closing {
+		s.mu.RUnlock()
+		http.Error(w, "proxy shutting down", 503)
+		return
+	}
 	var route *activeRoute
 	for i := range s.snap.routes {
 		candidate := &s.snap.routes[i]
@@ -186,6 +244,11 @@ func (s *Service) forward(w http.ResponseWriter, r *http.Request) {
 	if route == nil {
 		s.mu.RUnlock()
 		http.NotFound(w, r)
+		return
+	}
+	if upgrade && !route.WebSocket {
+		s.mu.RUnlock()
+		http.Error(w, "unsupported upgrade", 400)
 		return
 	}
 	values := r.Header.Values(route.CallerAuth.Header)
@@ -206,6 +269,11 @@ func (s *Service) forward(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "unauthorized or route not granted", 401)
 		return
 	}
+	if route.Account != "" && !validAccountHeaders(r.Header) {
+		s.mu.RUnlock()
+		http.Error(w, "duplicate account credential or identity header", 400)
+		return
+	}
 	for key := range route.headers {
 		if len(r.Header.Values(key)) > 1 {
 			s.mu.RUnlock()
@@ -224,15 +292,35 @@ func (s *Service) forward(w http.ResponseWriter, r *http.Request) {
 	peer, _, _ := net.SplitHostPort(r.RemoteAddr)
 	path := strings.TrimPrefix(r.URL.EscapedPath(), ar.LocalPrefix)
 	started := time.Now()
-	rec := Record{ID: id, Started: started.UnixMilli(), CallerID: caller.ID, CallerName: caller.Name, Route: ar.Name, Revision: snap.revision, Method: r.Method, Path: s.redactPath("/"+path, token, snap), LocalPrefix: ar.LocalPrefix, Peer: peer, Outcome: "unknown"}
+	rec := Record{App: s.redactPath(boundedAttribution(r.Header.Get("X-Term-LLM-Proxy-App")), token, snap), ID: id, Started: started.UnixMilli(), CallerID: caller.ID, CallerName: caller.Name, Route: ar.Name, Revision: snap.revision, Method: r.Method, Path: s.redactPath("/"+path, token, snap), LocalPrefix: ar.LocalPrefix, Peer: peer, Outcome: "unknown"}
+	rec.Money = pendingRequestMoney(ar.Route.Billing)
 	if err = s.store.start(r.Context(), &rec); err != nil {
 		s.mu.RUnlock()
 		http.Error(w, "request ledger unavailable; not dispatched", 503)
 		return
 	}
 	s.active.Store(id, true)
+	if upgrade {
+		ctx, cancel := context.WithCancelCause(r.Context())
+		defer cancel(nil)
+		r = r.Clone(ctx)
+		s.sockets.Store(id, &activeSocket{caller: caller.ID, route: ar.Name, authority: ar.authority, account: ar.Account, cancel: cancel})
+		s.socketWG.Add(1)
+		defer func() { s.sockets.Delete(id); s.socketWG.Done() }()
+	}
 	s.mu.RUnlock()
 	w.Header().Set("X-Term-LLM-Proxy-Request-ID", id)
+	if !s.routePolicyAllows(ar, r.Method, "/"+path) {
+		http.Error(w, "route policy denied request", 403)
+		rec.Status, rec.Outcome, rec.Ended = 403, "denied", time.Now().UnixMilli()
+		rec.TotalMS = time.Since(started).Milliseconds()
+		s.finalizeMoney(&rec, ar.Route)
+		if err := s.store.finish(rec); err != nil {
+			log.Print("proxy: denied ledger write failed")
+		}
+		s.active.Delete(id)
+		return
+	}
 	s.dispatch(w, r, ar, path, &rec, snap, started)
 }
 func hasConnectionToken(h http.Header, token string) bool {
@@ -258,6 +346,7 @@ func (s *Service) redactPath(path, token string, snap *snapshot) string {
 		}
 	}
 	// Decoded metadata avoids encoded known-secret bypasses; wire path remains untouched.
+	decoded = s.redactAccountMaterial(decoded)
 	decoded = secrettext.Redact(decoded)
 	if len(decoded) > 2048 {
 		decoded = decoded[:2048]
@@ -320,6 +409,16 @@ func (w *responseStats) Write(p []byte) (int, error) {
 	w.bytes += int64(n)
 	return n, err
 }
+func (w *responseStats) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	conn, rw, err := http.NewResponseController(w.ResponseWriter).Hijack()
+	if err == nil {
+		w.status, w.first = http.StatusSwitchingProtocols, time.Now()
+	}
+	if err == nil {
+		conn = &upgradedConn{Conn: conn}
+	}
+	return conn, rw, err
+}
 func (w *responseStats) Flush() {
 	_ = http.NewResponseController(w.ResponseWriter).Flush()
 }
@@ -334,8 +433,35 @@ func stripHeaders(h http.Header, auth string) {
 	}
 }
 func (s *Service) dispatch(w http.ResponseWriter, r *http.Request, ar activeRoute, path string, rec *Record, snap *snapshot, started time.Time) {
-	ctx, cancel := context.WithDeadline(r.Context(), started.Add(s.opts.RequestTimeout))
+	timeout := s.opts.RequestTimeout
+	upgrade := validWebsocketRequest(r) && ar.WebSocket
+	if upgrade && timeout > websocketLifetime {
+		timeout = websocketLifetime
+	}
+	parent := r.Context()
+	var streamCancel context.CancelCauseFunc
+	trackedStream := false
+	if !upgrade && (ar.Account != "" || ar.Usage == "auto") {
+		parent, streamCancel = context.WithCancelCause(parent)
+		defer streamCancel(nil)
+		defer func() {
+			if trackedStream {
+				s.sockets.Delete(rec.ID)
+				s.socketWG.Done()
+			}
+		}()
+	}
+	ctx, cancel := context.WithDeadline(parent, started.Add(timeout))
 	defer cancel()
+	// SigV4 must buffer before dispatch. Bound the server-side body read too;
+	// canceling a context alone does not interrupt a blocked incoming Body.Read.
+	if ar.Account != "" {
+		if a, e := s.store.account(ar.Account); e == nil && a.Kind == "aws-sigv4" {
+			controller := http.NewResponseController(w)
+			_ = controller.SetReadDeadline(started.Add(timeout))
+			defer controller.SetReadDeadline(time.Time{})
+		}
+	}
 	// Keep only declared safe trailers and populate them after the incoming body
 	// has been read. Request.Clone otherwise loses late-arriving trailer values.
 	source := r.Trailer
@@ -358,22 +484,56 @@ func (s *Service) dispatch(w http.ResponseWriter, r *http.Request, ar activeRout
 	r.GetBody = nil
 	stats := &responseStats{ResponseWriter: w}
 	outcome := "complete"
+	var socket *countingSocket
+	var custody *accountTransport
 	defer func() {
 		panicked := recover()
+		// ReverseProxy closes an upgraded backend asynchronously. Close it here too
+		// (idempotently) so observer finalization precedes the terminal ledger write.
+		if socket != nil {
+			_ = socket.Close()
+		}
 		if panicked != nil {
 			outcome = "incomplete"
 		}
 		if ctx.Err() != nil {
 			outcome = "canceled_or_timeout"
 		}
+		if socket != nil && ctx.Err() == nil {
+			outcome = "closed_by_client"
+			if socket.ended.Load() == 2 {
+				outcome = "closed_by_upstream"
+			}
+		}
+		if upgrade || streamCancel != nil {
+			if cause := context.Cause(ctx); cause == errSocketRevoked || cause == errSocketShutdown {
+				outcome = cause.Error()
+			} else if upgrade && ctx.Err() == context.DeadlineExceeded {
+				outcome = "lifetime_exceeded"
+			}
+		}
+		if custody != nil && !custody.dispatched {
+			outcome = "not_dispatched"
+		}
 		rec.Status = stats.status
 		rec.Sent = counter.n.Load()
 		rec.Received = stats.bytes
+		if socket != nil {
+			rec.Sent += socket.sent.Load()
+			rec.Received += socket.received.Load()
+		}
 		rec.Ended = time.Now().UnixMilli()
 		rec.TotalMS = time.Since(started).Milliseconds()
 		rec.Outcome = outcome
 		if !stats.first.IsZero() {
 			rec.FirstByteMS = stats.first.Sub(started).Milliseconds()
+		}
+		s.finalizeMoney(rec, ar.Route)
+		if rec.Outcome == "not_dispatched" {
+			// This transport evidence is stronger than missing usage/price settings.
+			// Never apply it to failures after the inference RoundTripper was called.
+			money := CalculateMoney(MoneyInput{Billing: ar.Billing, RefusedBeforeDispatch: true}, nil)
+			rec.Money = &money
 		}
 		if err := s.store.finish(*rec); err != nil {
 			log.Print("proxy: terminal ledger write failed; outcome remains unknown")
@@ -383,8 +543,18 @@ func (s *Service) dispatch(w http.ResponseWriter, r *http.Request, ar activeRout
 			panic(panicked)
 		}
 	}()
+	baseTransport := s.transport
+	if upgrade {
+		baseTransport = websocketTransport(s.transport)
+		defer baseTransport.CloseIdleConnections()
+	}
+	var transport http.RoundTripper = baseTransport
+	if ar.Account != "" {
+		custody = &accountTransport{service: s, base: baseTransport, route: ar}
+		transport = custody
+	}
 	proxy := httputil.ReverseProxy{
-		Transport: s.transport, BufferPool: s.copyBuffers, FlushInterval: -1, ErrorLog: log.New(io.Discard, "", 0),
+		Transport: transport, BufferPool: s.copyBuffers, FlushInterval: -1, ErrorLog: log.New(io.Discard, "", 0),
 		Rewrite: func(pr *httputil.ProxyRequest) {
 			escaped := strings.TrimSuffix(ar.target.EscapedPath(), "/") + "/" + path
 			decoded, _ := url.PathUnescape(escaped)
@@ -396,15 +566,51 @@ func (s *Service) dispatch(w http.ResponseWriter, r *http.Request, ar activeRout
 			pr.Out.Trailer = trailers
 			pr.Out.GetBody = nil
 			stripHeaders(pr.Out.Header, ar.CallerAuth.Header)
+			if upgrade {
+				pr.Out.Header.Set("Connection", "Upgrade")
+				pr.Out.Header.Set("Upgrade", "websocket")
+			}
+			if ar.Usage == "auto" {
+				pr.Out.Header.Del("Sec-WebSocket-Extensions")
+				pr.Out.Header.Set("Accept-Encoding", "identity")
+			}
 			for key, values := range ar.headers {
 				pr.Out.Header[key] = append([]string(nil), values...)
 			}
 		},
 		ModifyResponse: func(resp *http.Response) error {
 			rec.HeaderMS = time.Since(started).Milliseconds()
+			if streamCancel != nil && livePolicyStream(ar.Route, resp) {
+				if err := s.trackPolicyStream(ar, rec, streamCancel, custody); err != nil {
+					return err
+				}
+				trackedStream = true
+			}
 			resp.Header.Del("Set-Cookie")
 			resp.Trailer.Del("Set-Cookie")
-			resp.Body = &cookieFreeBody{ReadCloser: resp.Body, response: resp}
+			if ar.Redirects == "refuse" && resp.StatusCode >= 300 && resp.StatusCode < 400 {
+				resp.Body.Close()
+				resp.StatusCode, resp.Status = 502, "502 Bad Gateway"
+				resp.Header = http.Header{"Content-Type": {"text/plain; charset=utf-8"}, "X-Term-LLM-Proxy-Redirect": {"refused"}}
+				resp.Trailer = nil
+				resp.Body = io.NopCloser(strings.NewReader("upstream redirect refused\n"))
+				resp.ContentLength = -1
+				resp.TransferEncoding = nil
+			}
+			if s.ResponseTap != nil && ar.Usage == "auto" {
+				s.ResponseTap(ar.Route, resp, rec)
+			}
+			if resp.StatusCode == http.StatusSwitchingProtocols {
+				duplex, ok := resp.Body.(io.ReadWriteCloser)
+				if !upgrade || !ok {
+					return fmt.Errorf("unsupported upstream upgrade")
+				}
+				socket = &countingSocket{ReadWriteCloser: duplex}
+				socket.stop = context.AfterFunc(ctx, func() { _ = socket.closeBody() })
+				resp.Body = socket
+			} else {
+				resp.Body = &cookieFreeBody{ReadCloser: resp.Body, response: resp}
+			}
 			resp.Header.Set("X-Term-LLM-Proxy-Request-ID", rec.ID)
 			if resp.StatusCode >= 400 {
 				outcome = "http_error"
@@ -417,6 +623,9 @@ func (s *Service) dispatch(w http.ResponseWriter, r *http.Request, ar activeRout
 						rec.UpstreamID = strings.ReplaceAll(rec.UpstreamID, m.Value, "[redacted]")
 					}
 				}
+				if custody != nil {
+					rec.UpstreamID = s.redactAccountMaterial(rec.UpstreamID, custody.used...)
+				}
 				if len(rec.UpstreamID) > 256 {
 					rec.UpstreamID = rec.UpstreamID[:256]
 				}
@@ -425,6 +634,11 @@ func (s *Service) dispatch(w http.ResponseWriter, r *http.Request, ar activeRout
 		},
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
 			outcome = "transport_error"
+			if errors.Is(err, errAccountUnavailable) {
+				outcome = "upstream_auth"
+				http.Error(w, "trusted account unavailable; sign in or check configuration", 502)
+				return
+			}
 			http.Error(w, "upstream connection failed; outcome may be unknown", 502)
 		},
 	}

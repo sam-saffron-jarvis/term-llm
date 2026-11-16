@@ -12,6 +12,10 @@ import (
 const cliWireStopTimeout = 5 * time.Second
 
 func startCLIWireAudit(provider string, env []string) ([]string, *cliwire.Server, error) {
+	env, err := prepareCLIProxyEnvironment(provider, env)
+	if err != nil {
+		return nil, nil, err
+	}
 	server, err := startCLIWireServer(provider, env)
 	if err != nil || server == nil {
 		return env, server, err

@@ -15,6 +15,10 @@ import (
 
 // Info describes a provider for external consumption
 type Info struct {
+	Routing    string `json:"routing,omitempty"` // proxy_configured, proxy_blocked or direct_exception
+	ProxyRoute string `json:"proxy_route,omitempty"`
+	ProxyGate  string `json:"proxy_gate,omitempty"`
+
 	Name               string   `json:"name"`
 	Type               string   `json:"type"`
 	Credential         string   `json:"credential"`        // "api_key", "oauth", "aws", "none"
@@ -138,6 +142,20 @@ func newInfo(cfg *config.Config, name string, spec config.ProviderSpec, hasLocal
 		ConfiguredVia:      cfg.ProviderConfiguredVia(name, hasLocalCredentials),
 	}
 	info.Configured = info.ConfiguredVia != ""
+	if cfg != nil && cfg.Proxy.URL != "" && !info.Disabled {
+		if pc, ok := cfg.Providers[name]; ok {
+			switch {
+			case strings.HasPrefix(pc.ProxyBinding, "gated:"):
+				info.Routing, info.ProxyGate = "proxy_blocked", strings.TrimPrefix(pc.ProxyBinding, "gated:")
+				info.RequiresKey, info.EnvVar = false, ""
+			case pc.ProxyBinding != "":
+				info.Routing, info.ProxyRoute = "proxy_configured", pc.ProxyBinding
+				info.RequiresKey, info.EnvVar = false, ""
+			default:
+				info.Routing = "direct_exception"
+			}
+		}
+	}
 	return info
 }
 
@@ -164,6 +182,15 @@ func showProviderDetails(opts Options, name string, providers []Info) error {
 	w := opts.stdout()
 	fmt.Fprintf(w, "Provider: %s\n", provider.Name)
 	fmt.Fprintf(w, "  Type:           %s\n", provider.Type)
+	if provider.Routing != "" {
+		fmt.Fprintf(w, "  Routing:        %s\n", providerSourceLabel(*provider))
+		if provider.ProxyRoute != "" {
+			fmt.Fprintf(w, "  Proxy route:    %s (grants/connectivity not checked)\n", provider.ProxyRoute)
+		}
+		if provider.ProxyGate != "" {
+			fmt.Fprintf(w, "  Proxy blocked:  %s\n", provider.ProxyGate)
+		}
+	}
 
 	if spec, ok := config.BuiltinProvider(provider.Name); ok {
 		fmt.Fprintf(w, "  Description:    %s\n", spec.Description)
@@ -332,6 +359,14 @@ func writeProvidersText(w io.Writer, providers []Info, defaultProvider, mode str
 
 // providerSourceLabel describes, in user terms, why a provider is configured.
 func providerSourceLabel(p Info) string {
+	switch p.Routing {
+	case "proxy_configured":
+		return "trusted proxy (configured only)"
+	case "proxy_blocked":
+		return "proxy blocked (see provider details)"
+	case "direct_exception":
+		return "direct exception (local credential custody)"
+	}
 	switch p.ConfiguredVia {
 	case config.ConfiguredViaConfig:
 		return "config.yaml"

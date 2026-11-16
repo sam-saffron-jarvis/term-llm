@@ -4,6 +4,7 @@ import type {
   ProxyState,
   RequestFilters,
 } from '../src/api/proxy-client';
+import { moneyAmount, moneyLabel } from './home';
 import {
   actions,
   button,
@@ -60,6 +61,67 @@ export function requestDetail(request: ProxyRequest): HTMLElement {
   });
   const result = card(
     'Request details',
+    group('Money', [
+      ['Cost', moneyLabel(request.money)],
+      [
+        'Price source',
+        request.money?.billing === 'pay_as_you_go'
+          ? request.money.source || 'Not available'
+          : 'Not applicable',
+      ],
+      [
+        'Price date',
+        request.money?.billing === 'pay_as_you_go'
+          ? request.money.asof || 'Not available'
+          : 'Not applicable',
+      ],
+      [
+        'Note',
+        (request.money?.billing === 'plan'
+          ? 'Plan allowance and possible extra usage are not reported. Configured plan activity does not establish zero marginal billing.'
+          : request.money?.billing === 'pay_as_you_go'
+            ? request.money.reason
+            : undefined) ||
+          'Estimates are before tax, fees, discounts and credits. Incomplete or canceled work can still cost money.',
+      ],
+    ]),
+    ...(request.money?.billing === 'pay_as_you_go' && request.money.rate
+      ? [
+          group('Price used', [
+            ['Provider / model', `${request.money.rate.provider} / ${request.money.rate.model}`],
+            ['Service / context tier', request.money.rate.tier || 'Default (exact match)'],
+            [
+              'Input / million tokens',
+              moneyAmount(request.money.rate.input_micros_per_million, request.money.rate.currency),
+            ],
+            [
+              'Output / million tokens',
+              moneyAmount(
+                request.money.rate.output_micros_per_million,
+                request.money.rate.currency,
+              ),
+            ],
+            [
+              'Cache read / million',
+              request.money.rate.cache_read_micros_per_million === undefined
+                ? 'Not priced'
+                : moneyAmount(
+                    request.money.rate.cache_read_micros_per_million,
+                    request.money.rate.currency,
+                  ),
+            ],
+            [
+              'Cache write / million',
+              request.money.rate.cache_write_micros_per_million === undefined
+                ? 'Not priced'
+                : moneyAmount(
+                    request.money.rate.cache_write_micros_per_million,
+                    request.money.rate.currency,
+                  ),
+            ],
+          ]),
+        ]
+      : []),
     group('Summary', [
       ['Started', dateTime(request.started, '—')],
       ['Ended', dateTime(request.ended, 'In progress')],
@@ -192,7 +254,7 @@ export function requestsView(state: ProxyState, api: ProxyClient, context: UICon
   function updatePagination() {
     const pages = Math.max(1, Math.ceil(total / pageSize));
     const first = shown ? (currentPage - 1) * pageSize + 1 : 0;
-    count.textContent = `${first.toLocaleString()}–${(first ? first + shown - 1 : 0).toLocaleString()} of ${total.toLocaleString()} requests · Page ${currentPage} of ${pages}`;
+    count.textContent = `${first.toLocaleString()}–${(first ? first + shown - 1 : 0).toLocaleString()} of ${total.toLocaleString()} request${total === 1 ? '' : 's'} · Page ${currentPage} of ${pages}`;
     bottomCount.textContent = count.textContent;
     for (const controls of [topControls, bottomControls]) {
       const previous = button('Previous', () => {

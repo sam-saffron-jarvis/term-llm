@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/term-llm/term-llm/internal/proxyclient"
 	"io"
 	"net"
 	"net/http"
@@ -357,7 +358,7 @@ func (p *OpenAICompatProvider) makeRequest(ctx context.Context, method, endpoint
 
 	p.applyHeaders(ctx, httpReq)
 
-	return httpClient().Do(httpReq)
+	return proxyclient.Do(httpClient(), httpReq)
 }
 
 // applyHeaders sets the common request headers: content type, optional bearer
@@ -407,7 +408,7 @@ func (p *OpenAICompatProvider) makeRequestToURL(ctx context.Context, method, url
 
 	p.applyHeaders(ctx, httpReq)
 
-	return httpClient().Do(httpReq)
+	return proxyclient.Do(httpClient(), httpReq)
 }
 
 // ListModels returns available models from the server.

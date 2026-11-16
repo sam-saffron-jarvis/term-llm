@@ -41,9 +41,14 @@ type ChatGPTProvider struct {
 // logged in with ChatGPT OAuth; image generation never starts an interactive
 // authentication flow.
 func NewChatGPTProvider(model string) (*ChatGPTProvider, error) {
+	return NewChatGPTProviderWithBaseURL(model, strings.TrimSuffix(chatGPTImageGenerateEndpoint, "/images/generations"))
+}
+
+// NewChatGPTProviderWithBaseURL resolves delegated authentication before local login.
+func NewChatGPTProviderWithBaseURL(model, baseURL string) (*ChatGPTProvider, error) {
 	model = normalizeChatGPTImageModel(model)
 
-	creds, err := credentials.GetChatGPTCredentials()
+	creds, err := credentials.GetChatGPTCredentialsForEndpoint(baseURL)
 	if err != nil {
 		return nil, fmt.Errorf("chatgpt image provider requires ChatGPT login — run 'term-llm auth login chatgpt' first: %w", err)
 	}
@@ -57,8 +62,8 @@ func NewChatGPTProvider(model string) (*ChatGPTProvider, error) {
 		creds:            creds,
 		client:           chatGPTImageHTTPClient,
 		model:            model,
-		generateEndpoint: chatGPTImageGenerateEndpoint,
-		editEndpoint:     chatGPTImageEditEndpoint,
+		generateEndpoint: strings.TrimRight(baseURL, "/") + "/images/generations",
+		editEndpoint:     strings.TrimRight(baseURL, "/") + "/images/edits",
 	}, nil
 }
 

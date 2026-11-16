@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/term-llm/term-llm/internal/proxyclient"
 	"io"
 	"mime/multipart"
 	"net"
@@ -101,7 +102,7 @@ func TranscribeFile(ctx context.Context, filePath string, opts Options) (string,
 	if client == nil {
 		client = defaultClient
 	}
-	resp, err := client.Do(req)
+	resp, err := proxyclient.Do(client, req)
 	if err != nil {
 		return "", fmt.Errorf("whisper request: %w", err)
 	}

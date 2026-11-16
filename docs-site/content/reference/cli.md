@@ -1207,6 +1207,37 @@ List available LLM providers
 | `--configured` | bool | Show only configured providers |
 | `--json` | bool | Output as JSON |
 
+### `term-llm proxy`
+
+Connect standalone clients to a credential proxy
+
+### `term-llm proxy connect`
+
+Pair a standalone client with browser administrator consent
+
+### `term-llm proxy connect claude`
+
+Pair Claude Code; keep subscription credentials on the proxy
+
+| Flag | Type | Description |
+|---|---|---|
+| `--account` | string | Claude connection name (default: claude, or this connector's existing account) |
+| `--cancel` | bool | Cancel this user's existing pending enrollment; never revoke or remint a committed client |
+| `--claude-command` | string | Official Claude executable to run for setup-token |
+| `--name` | string | Name of this scoped client (default: hostname) |
+| `--no-browser` | bool | Print the proxy approval link without opening it automatically |
+| `--paste-token` | bool | Use masked subscription-token paste instead of official claude setup-token, only if approved setup/reconnect needs it |
+| `--reconnect` | bool | Explicitly replace the Claude subscription token after browser approval; existing clients keep their grants |
+| `--url` | string | Exact proxy HTTPS origin (saved connector URL or prompt when omitted) |
+
+### `term-llm proxy disconnect`
+
+Undo a standalone client's local gateway settings
+
+### `term-llm proxy disconnect claude`
+
+Restore Claude-only gateway settings without overwriting unrelated settings
+
 ### `term-llm serve`
 
 Run the agent as a server (web, api, jobs, Telegram, or any combination)

@@ -29,6 +29,7 @@ const (
 // OpenCodeGoProvider routes OpenCode Go models to the wire protocol advertised
 // by the live OpenCode model catalog.
 type OpenCodeGoProvider struct {
+	proxyError error
 	apiKey     string
 	model      string
 	baseURL    string
@@ -117,8 +118,10 @@ func newOpenCodeGoProvider(apiKey, model, baseURL, catalogURL string, client *ht
 	p.chat.SetRequestHeaders(func(ctx context.Context) map[string]string {
 		return p.requestHeaders(openCodeGoSessionFromContext(ctx))
 	})
-	p.messages = newOpenCodeGoAnthropicProvider(apiKey, baseURL, model, client)
-	p.gemini = newOpenCodeGoGeminiProvider(apiKey, baseURL, model, client)
+	messagesBase, geminiBase, proxyErr := openCodeGoProtocolRoots(baseURL)
+	p.proxyError = proxyErr
+	p.messages = newOpenCodeGoAnthropicProvider(apiKey, messagesBase, model, client)
+	p.gemini = newOpenCodeGoGeminiProvider(apiKey, geminiBase, model, client)
 	p.responses = &ResponsesClient{
 		BaseURL:            baseURL + "/responses",
 		GetAuthHeader:      func() string { return "Bearer " + apiKey },
@@ -246,6 +249,9 @@ func (p *OpenCodeGoProvider) RefreshModelMetadata(ctx context.Context) error {
 }
 
 func (p *OpenCodeGoProvider) Stream(ctx context.Context, req Request) (Stream, error) {
+	if p.proxyError != nil {
+		return nil, p.proxyError
+	}
 	selected := chooseModel(req.Model, p.model)
 	if strings.TrimSpace(selected) == "" {
 		return nil, fmt.Errorf("OpenCode Go model is required")
