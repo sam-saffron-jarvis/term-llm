@@ -83,7 +83,7 @@ jobs:
         run: scripts/wasm-smoke.sh
 
       - name: Test
-        run: go test ./...
+        run: go test -tags webauthn_no_es256k ./...
 
       - name: Vet
         run: go vet ./...
@@ -239,6 +239,8 @@ jobs:
 
   passkey-smoke:
     runs-on: ubuntu-latest
+    env:
+      GOFLAGS: -tags=webauthn_no_es256k
     steps:
       - uses: actions/checkout@v7
 

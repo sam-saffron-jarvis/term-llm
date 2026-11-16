@@ -18,6 +18,8 @@ builds:
       - goos: windows
         goarch: arm64
     main: ./main.go
+    tags:
+      - webauthn_no_es256k
     ldflags:
       - -s -w
       - -X github.com/term-llm/term-llm/cmd.Version={{.Version}}

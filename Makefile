@@ -44,7 +44,7 @@ build: frontend
 			identity=$$(codesign -dvv ./term-llm 2>&1 | sed -n 's/^Authority=//p' | head -n 1); \
 		fi; \
 	fi; \
-	go build -ldflags "$(TERM_LLM_LDFLAGS)" -o term-llm .; \
+	go build -tags webauthn_no_es256k -ldflags "$(TERM_LLM_LDFLAGS)" -o term-llm .; \
 	if [ "$$macos" = true ]; then \
 		codesign --force --sign "$${identity:--}" --identifier com.term-llm.cli ./term-llm; \
 	fi

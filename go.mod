@@ -32,7 +32,7 @@ require (
 	github.com/fxamacker/cbor/v2 v2.10.0
 	github.com/go-telegram-bot-api/telegram-bot-api/v5 v5.5.1
 	github.com/go-viper/mapstructure/v2 v2.5.0
-	github.com/go-webauthn/webauthn v0.18.2
+	github.com/go-webauthn/webauthn v0.18.3-0.20261116074106-5573ab95072a
 	github.com/google/uuid v1.6.0
 	github.com/gorilla/websocket v1.5.3
 	github.com/mattn/go-runewidth v0.0.31
