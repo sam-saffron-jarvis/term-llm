@@ -49,6 +49,16 @@ build: frontend
 		codesign --force --sign "$${identity:--}" --identifier com.term-llm.cli ./term-llm; \
 	fi
 
+# Experimental Linux/amd64 single-file bundle; does not change the default build.
+PROXY_PROTOTYPE_BIN ?= tmp/term-llm-rust-proxy
+.PHONY: rust-proxy-prototype
+rust-proxy-prototype: frontend
+	@test "$$(go env GOOS)/$$(go env GOARCH)" = linux/amd64
+	@test "$$(uname -s)/$$(uname -m)" = Linux/x86_64
+	cargo build --locked --release --manifest-path prototype/rust-proxy/Cargo.toml --target-dir tmp/target-rust-proxy
+	gzip -n -9 -c tmp/target-rust-proxy/release/term-llm-proxy > proxy_rust_payload.gz
+	CGO_ENABLED=0 go build -tags rustproxy -ldflags '$(TERM_LLM_LDFLAGS)' -o '$(PROXY_PROTOTYPE_BIN)' .
+
 frontend: frontend-deps
 	npm --prefix frontend run build
 	go run ./cmd/builduisource

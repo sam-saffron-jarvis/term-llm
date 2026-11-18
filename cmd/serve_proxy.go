@@ -1,3 +1,5 @@
+//go:build !linux || !amd64 || !rustproxy
+
 package cmd
 
 import (
@@ -8,9 +10,6 @@ import (
 )
 
 func init() { serveCmd.AddCommand(newServeProxyCommand()) }
-func proxyPreRun(cmd *cobra.Command, args []string) error {
-	return appproxy.ValidateProfiling(debugRaw, cpuProfile, memProfile, pprofFlag)
-}
 func newServeProxyCommand() *cobra.Command {
 	opts := appproxy.Options{}
 	c := &cobra.Command{Use: "proxy", Short: "Run a standalone configuration-driven credential proxy", Args: cobra.NoArgs, Annotations: map[string]string{"isolated-startup": "true"}, PersistentPreRunE: proxyPreRun, RunE: func(c *cobra.Command, _ []string) error { return appproxy.Run(c.Context(), opts, c.OutOrStdout()) }}

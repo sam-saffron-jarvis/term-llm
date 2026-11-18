@@ -5,6 +5,9 @@ term-llm
 tmp/*
 *.lock
 !frontend/package-lock.json
+!/prototype/rust-proxy/Cargo.lock
+/proxy_rust_payload.gz
+/prototype/rust-proxy/target/
 node_modules/
 docs-site/test-results/
 frontend/test-results/

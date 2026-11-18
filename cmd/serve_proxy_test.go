@@ -1,3 +1,5 @@
+//go:build !linux || !amd64 || !rustproxy
+
 package cmd
 
 import (

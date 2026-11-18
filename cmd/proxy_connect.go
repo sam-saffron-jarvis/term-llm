@@ -8,7 +8,12 @@ import (
 	"github.com/term-llm/term-llm/internal/app/proxyconnect"
 	"github.com/term-llm/term-llm/internal/app/proxyrun"
 	"github.com/term-llm/term-llm/internal/exitcode"
+	"github.com/term-llm/term-llm/internal/proxyclient"
 )
+
+func proxyPreRun(_ *cobra.Command, _ []string) error {
+	return proxyclient.ValidateProfiling(debugRaw, cpuProfile, memProfile, pprofFlag)
+}
 
 func init() { rootCmd.AddCommand(newProxyCommand()) }
 
