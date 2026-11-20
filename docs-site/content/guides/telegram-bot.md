@@ -11,7 +11,7 @@ next:
 
 ## What this gives you
 
-The bot runs your agent and streams replies to messages sent from your phone or desktop. History persists per chat until you run `/reset`. Conversations use the same session database as web and CLI interactions.
+The bot runs your agent and streams replies to messages sent from your phone or desktop. Conversations use the same session database as web and CLI interactions. Running `/reset` starts a new session for the chat without deleting the previous transcript. Recent messages can still carry over as context unless you start the bot with `--telegram-carryover-chars 0`.
 
 ## Step 1: Create a bot with BotFather
 
@@ -81,7 +81,7 @@ term-llm serve telegram web
 |---------|-------------|
 | `/start` | Show welcome message and command list |
 | `/help`  | Same as `/start` |
-| `/reset` | Clear conversation history and start a fresh session |
+| `/reset` | Start a new session without deleting the previous transcript. Recent messages can carry over as context unless the bot was started with `--telegram-carryover-chars 0`. |
 | `/status` | Show message count and last activity time for the current session |
 
 ## Configuration reference
