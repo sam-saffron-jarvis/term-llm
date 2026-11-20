@@ -223,6 +223,41 @@ select {
   height: 2.15rem;
 }
 
+.password-control {
+  position: relative;
+  min-width: 0;
+}
+
+.password-control > input {
+  padding-inline-end: 3rem;
+}
+
+.password-control > input::-ms-reveal {
+  display: none;
+}
+
+.password-control > button {
+  position: absolute;
+  inset-block: 0;
+  inset-inline-end: 0;
+  display: grid;
+  width: 44px;
+  padding: 0;
+  place-items: center;
+  border-color: transparent;
+  background: transparent;
+  color: var(--muted);
+}
+
+.password-control > button:focus-visible {
+  outline-offset: -3px;
+}
+
+.password-control svg {
+  width: 20px;
+  height: 20px;
+}
+
 textarea {
   min-height: 7rem;
   resize: vertical;

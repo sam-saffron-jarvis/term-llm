@@ -5,7 +5,18 @@ import type {
   ProxyState,
 } from '../src/api/proxy-client';
 import { accountDialog, accountStateLabel } from './accounts';
-import { actions, button, check, el, field, input, select, submit, type UIContext } from './dom';
+import {
+  actions,
+  button,
+  clearPassword,
+  check,
+  el,
+  field,
+  input,
+  select,
+  submit,
+  type UIContext,
+} from './dom';
 import { requireProviderName, slugPattern } from './provider-name';
 import { presetUpstreamHint } from './route-presets';
 
@@ -92,7 +103,7 @@ export function providerForm(
     const update = () => {
       value.required = source.value === 'new';
       keyField.hidden = !value.required;
-      if (!value.required) value.value = '';
+      if (!value.required) clearPassword(value);
       secret.required = source.value === 'existing';
       secretField.hidden = !secret.required;
     };
@@ -133,7 +144,7 @@ export function providerForm(
             `A secret named ${id} already exists. Choose an existing secret or a different provider name.`,
           );
         request.value = value.value;
-        value.value = '';
+        clearPassword(value);
       } else if (usesKey && source.value === 'existing') request.secret = secret.value;
       if (kind || upstream.value !== preset.upstream || allowHTTP.checked) {
         // The server picks companion routes in the common case. Explicit route

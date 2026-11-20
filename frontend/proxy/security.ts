@@ -19,6 +19,7 @@ import {
   actions,
   button,
   card,
+  clearPassword,
   confirmAction,
   dateTime,
   el,
@@ -53,7 +54,7 @@ export function secretForm(
   const form = el(
     'form',
     field('Secret name', name),
-    field('New secret value', value, 'Write-only: replace it any time, never view it.'),
+    field('New secret value', value, 'Write-only: the stored value cannot be viewed.'),
   );
   submit(
     form,
@@ -71,7 +72,7 @@ export function secretForm(
       )
         return;
       const credential = value.value;
-      value.value = '';
+      clearPassword(value);
       await api.secret(name.value.trim(), credential, !!existing);
       if (options.stored) await options.stored(name.value.trim());
       else {
@@ -85,7 +86,7 @@ export function secretForm(
   );
   form.append(
     button('Cancel', () => {
-      value.value = '';
+      clearPassword(value);
       options.cancel();
     }),
   );

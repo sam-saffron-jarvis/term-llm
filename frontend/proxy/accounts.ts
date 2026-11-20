@@ -9,6 +9,7 @@ import {
   actions,
   button,
   card,
+  clearPassword,
   dateTime,
   el,
   field,
@@ -148,7 +149,7 @@ export function accountForm(deps: AccountDeps, options: AccountFormOptions): HTM
     context,
     async () => {
       const raw = credentials.value;
-      credentials.value = '';
+      clearPassword(credentials);
       const parsed = parseAccountCredentials(raw);
       const payload: ProxyAccountInput = {
         name: name.value.trim(),
@@ -174,7 +175,7 @@ export function accountForm(deps: AccountDeps, options: AccountFormOptions): HTM
   );
   form.append(
     button('Cancel account edit', () => {
-      credentials.value = '';
+      clearPassword(credentials);
       options.cancel();
     }),
   );

@@ -5,7 +5,18 @@ import {
   type ProxyAuthStatus,
 } from '../src/api/proxy-client';
 import { browserPasskeyPlatform, type PasskeyPlatform } from '../src/hub/platform/passkeys';
-import { actions, button, card, dateTime, el, field, input, submit, type UIContext } from './dom';
+import {
+  actions,
+  button,
+  clearPassword,
+  card,
+  dateTime,
+  el,
+  field,
+  input,
+  submit,
+  type UIContext,
+} from './dom';
 
 // Browser exceptions may contain arbitrary credential data. Never display their message.
 async function browserOperation<T>(operation: () => Promise<T>): Promise<T> {
@@ -107,7 +118,7 @@ export function passkeyLogin(
       async () => {
         if (!verified) {
           const secret = token.value;
-          token.value = '';
+          clearPassword(token);
           await api.verifySecret(kind, secret);
           verified = true;
           status[verifiedKey] = true;

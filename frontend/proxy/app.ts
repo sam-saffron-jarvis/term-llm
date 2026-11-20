@@ -6,7 +6,17 @@ import {
   type ProxyState,
   type ProxyAuthStatus,
 } from '../src/api/proxy-client';
-import { actions, button, card, el, field, input, submit, type UIContext } from './dom';
+import {
+  actions,
+  button,
+  clearPassword,
+  card,
+  el,
+  field,
+  input,
+  submit,
+  type UIContext,
+} from './dom';
 import { routesView } from './routes';
 import { adminView } from './admin';
 import { callersView, secretsView } from './security';
@@ -294,7 +304,7 @@ export function mountProxy(
       context,
       async () => {
         const credential = token.value;
-        token.value = '';
+        clearPassword(token);
         await api.login(credential);
         await context.refresh();
         context.announce('Signed in.');

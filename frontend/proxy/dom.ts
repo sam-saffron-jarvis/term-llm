@@ -32,13 +32,59 @@ export function input(value = '', type = 'text'): HTMLInputElement {
   node.value = value;
   return node;
 }
+const passwordConcealers = new WeakMap<HTMLInputElement, () => void>();
+export function clearPassword(input: HTMLInputElement): void {
+  input.value = '';
+  passwordConcealers.get(input)?.();
+}
+function passwordControl(input: HTMLInputElement, label: string): HTMLElement {
+  input.setAttribute('spellcheck', 'false');
+  input.setAttribute('autocorrect', 'off');
+  input.setAttribute('autocapitalize', 'off');
+  const ns = 'http://www.w3.org/2000/svg';
+  const icon = document.createElementNS(ns, 'svg');
+  icon.setAttribute('viewBox', '0 0 24 24');
+  icon.setAttribute('aria-hidden', 'true');
+  icon.setAttribute('fill', 'none');
+  icon.setAttribute('stroke', 'currentColor');
+  icon.setAttribute('stroke-width', '1.7');
+  icon.setAttribute('stroke-linecap', 'round');
+  icon.setAttribute('stroke-linejoin', 'round');
+  const shape = document.createElementNS(ns, 'path');
+  icon.append(shape);
+  const toggle = button('', () => setVisible(input.type === 'password'));
+  toggle.setAttribute('aria-controls', input.id);
+  toggle.append(icon);
+  function setVisible(visible: boolean) {
+    // Keep the original input, including its value and native form behavior.
+    input.type = visible ? 'text' : 'password';
+    const action = `${visible ? 'Hide' : 'Show'} ${label.toLowerCase()}`;
+    toggle.setAttribute('aria-label', action);
+    toggle.title = action;
+    shape.setAttribute(
+      'd',
+      visible
+        ? 'M2 10c2.6 3.3 6 5 10 5s7.4-1.7 10-5M5.6 13l-2 2.8M12 15v3.5M18.4 13l2 2.8'
+        : 'M2 12s4-6 10-6 10 6 10 6-4 6-10 6S2 12 2 12Zm10-2.6a2.6 2.6 0 1 0 0 5.2 2.6 2.6 0 0 0 0-5.2Z',
+    );
+  }
+  setVisible(false);
+  passwordConcealers.set(input, () => setVisible(false));
+  const wrapper = el('div', input, toggle);
+  wrapper.className = 'password-control';
+  return wrapper;
+}
 let fieldSequence = 0;
 export function field(label: string, control: HTMLElement, hint = ''): HTMLDivElement {
   const id = control.id || `proxy-field-${++fieldSequence}`;
   control.id = id;
   const caption = el('label', label);
   caption.htmlFor = id;
-  const wrapper = el('div', caption, control);
+  const body =
+    control instanceof HTMLInputElement && control.type === 'password'
+      ? passwordControl(control, label)
+      : control;
+  const wrapper = el('div', caption, body);
   wrapper.className = 'field';
   if (hint) {
     const description = el('small', hint);
