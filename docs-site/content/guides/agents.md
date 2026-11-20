@@ -96,7 +96,7 @@ term-llm agents list --builtin               # Only built-in agents
 term-llm agents list --user                  # Only user agents
 term-llm agents new my-agent                 # Create new agent
 term-llm agents show reviewer                # Show agent configuration
-term-llm agents edit reviewer                # Edit agent configuration
+term-llm agents edit my-agent                # Edit agent configuration
 term-llm agents copy reviewer my-reviewer    # Copy an agent to customize
 term-llm agents path                         # Print agents directory
 term-llm agents export gist my-reviewer      # Publish the copied agent as a gist
