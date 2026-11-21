@@ -108,6 +108,7 @@ func BenchmarkForward(b *testing.B) {
 // BenchmarkAuditedShortChat uses a fixed number of closed-loop clients, independent
 // of GOMAXPROCS. The HTTP p99 measures the client round trip; elapsed time and
 // pool waits include draining terminal ledger writes after the last response.
+// Pool wait sums database/sql reader and writer waits, not time in the ledger queue.
 func BenchmarkAuditedShortChat(b *testing.B) {
 	const reply = `{"model":"fixture","choices":[{"message":{"role":"assistant","content":"ok"}}],"usage":{"prompt_tokens":25,"completion_tokens":35,"total_tokens":60}}`
 	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -174,12 +175,12 @@ func BenchmarkAuditedShortChat(b *testing.B) {
 				return
 			}
 			latencies := make([]time.Duration, b.N)
-			before := s.store.db.Stats()
+			writeBefore, readBefore := s.store.db.Stats(), s.store.readDB.Stats()
 			b.ReportAllocs()
 			b.ResetTimer()
 			run(b.N, latencies)
 			b.StopTimer()
-			after := s.store.db.Stats()
+			writeAfter, readAfter := s.store.db.Stats(), s.store.readDB.Stats()
 			var completed, moneyRows int
 			if err := s.store.db.QueryRow(`SELECT (SELECT count(*) FROM requests WHERE outcome='complete'), (SELECT count(*) FROM money_history)`).Scan(&completed, &moneyRows); err != nil || completed != b.N+2*c || moneyRows != completed {
 				b.Fatalf("lost ledger records: completed=%d money=%d want=%d err=%v", completed, moneyRows, b.N+2*c, err)
@@ -189,8 +190,8 @@ func BenchmarkAuditedShortChat(b *testing.B) {
 			}
 			slices.Sort(latencies)
 			b.ReportMetric(float64(latencies[(b.N-1)*99/100].Nanoseconds())/1e3, "us/p99")
-			b.ReportMetric(float64((after.WaitDuration-before.WaitDuration).Nanoseconds())/1e3/float64(b.N), "db-wait-us/op")
-			b.ReportMetric(float64(after.WaitCount-before.WaitCount)/float64(b.N), "db-waits/op")
+			b.ReportMetric(float64((writeAfter.WaitDuration-writeBefore.WaitDuration+readAfter.WaitDuration-readBefore.WaitDuration).Nanoseconds())/1e3/float64(b.N), "db-wait-us/op")
+			b.ReportMetric(float64(writeAfter.WaitCount-writeBefore.WaitCount+readAfter.WaitCount-readBefore.WaitCount)/float64(b.N), "db-waits/op")
 		})
 	}
 }

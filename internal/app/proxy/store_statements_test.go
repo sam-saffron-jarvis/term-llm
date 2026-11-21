@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 func TestPreparedAuthorizationObservesCurrentAuthority(t *testing.T) {
@@ -204,7 +205,7 @@ func assertStoreResourcesClosed(t *testing.T, s *store) {
 	if n := s.db.Stats().OpenConnections; n != 0 {
 		t.Fatalf("closed database retained %d connections", n)
 	}
-	for name, stmt := range map[string]*sql.Stmt{"authorization": s.authorizeStmt, "start": s.startStmt, "finish": s.finishStmt, "money history": s.moneyStmt} {
+	for name, stmt := range map[string]*sql.Stmt{"authorization": s.authorizeStmt, "stream authorization": s.streamGrantStmt, "settings": s.settingsStmt, "start": s.startStmt, "finish": s.finishStmt, "money history": s.moneyStmt} {
 		if stmt == nil {
 			continue
 		}
@@ -234,5 +235,50 @@ func TestOpenStoreReportsPrepareFailure(t *testing.T) {
 	}
 	if err == nil || !strings.Contains(err.Error(), "prepare proxy request start statement") {
 		t.Fatalf("missing startup prepare context: %v", err)
+	}
+}
+
+// A reader must not queue behind a write or observe its uncommitted state. The
+// next read must see the committed revocation/price, not a cached decision.
+func TestProxyReadersFollowCommittedWAL(t *testing.T) {
+	s := testService(t)
+	r := route("r", "/r/", "https://example.test/base/", "X-Local", "key")
+	configure(t, s, Config{Routes: []Route{r}}, map[string]material{"key": boundMaterial(t, r.Upstream, "real")})
+	caller, token, err := s.store.createCaller("wal", []string{"r"}, s.snap)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st := s.store
+	if _, err := st.readDB.Exec("UPDATE callers SET revoked=1 WHERE 0"); err == nil {
+		t.Fatal("read-only pool accepted a write")
+	}
+	tx, err := st.db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	if _, err = tx.Exec("UPDATE callers SET revoked=1 WHERE id=?", caller.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = tx.Exec(`UPDATE money_settings SET data='{"timezone":"UTC"}' WHERE id=1`); err != nil {
+		t.Fatal(err)
+	}
+	// A deadline makes an accidental read on the occupied writer fail, not hang.
+	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
+	defer cancel()
+	if settings, err := st.loadMoneySettings(ctx); err != nil || settings.Timezone == "UTC" {
+		t.Fatalf("uncommitted price view %+v, %v", settings, err)
+	}
+	if _, err = st.authorize(token, s.snap.routes[0]); err != nil {
+		t.Fatal(err)
+	}
+	if err = tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	if settings, err := st.loadMoneySettings(ctx); err != nil || settings.Timezone != "UTC" {
+		t.Fatalf("stale price view %+v, %v", settings, err)
+	}
+	if _, err = st.authorize(token, s.snap.routes[0]); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("revoked grant: %v", err)
 	}
 }

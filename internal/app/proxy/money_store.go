@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/term-llm/term-llm/internal/app/proxy/ledger"
 	"github.com/term-llm/term-llm/internal/app/proxy/usagetap"
 	"github.com/term-llm/term-llm/internal/sqliteutil"
 )
@@ -103,37 +104,11 @@ func (s *store) finishRequestAndMoney(ctx context.Context, rec Record, data []by
 	if err != nil {
 		return err
 	}
-	conn, err := s.db.Conn(ctx)
-	if err != nil {
-		return err
-	}
-	defer conn.Close()
-	tx, err := conn.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-	result, err := tx.StmtContext(ctx, s.finishStmt).ExecContext(ctx, rec.Outcome, string(data), rec.ID)
-	if err != nil {
-		return err
-	}
-	n, err := result.RowsAffected()
-	if err != nil {
-		return err
-	}
-	if n != 1 {
-		return fmt.Errorf("terminal request row is missing")
-	}
-	if err = writeMoneyRecord(ctx, tx.StmtContext(ctx, s.moneyStmt), rec, moneyData); err != nil {
-		return err
-	}
-	if err = tx.Commit(); err != nil {
-		cleanup, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-		_, _ = conn.ExecContext(cleanup, "ROLLBACK")
-		cancel()
-		return err
-	}
-	return nil
+	return s.ledger.Finish(ctx, ledgerPair(rec, data, moneyData))
+}
+
+func ledgerPair(rec Record, data []byte, money string) ledger.Pair {
+	return ledger.Pair{ID: rec.ID, Started: rec.Started, CallerID: rec.CallerID, Route: rec.Route, Method: rec.Method, Path: rec.Path, Outcome: rec.Outcome, Data: string(data), Money: money}
 }
 
 // pendingRequestMoney is also the admission hook: the server should attach this
@@ -150,27 +125,11 @@ func (s *store) startRequestAndMoney(ctx context.Context, rec *Record, data []by
 	if err != nil {
 		return err
 	}
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
+	seq, err := s.ledger.Start(ctx, ledgerPair(*rec, data, moneyData))
+	if err == nil {
+		rec.Seq = seq
 	}
-	defer tx.Rollback()
-	result, err := tx.StmtContext(ctx, s.startStmt).ExecContext(ctx, rec.ID, rec.Started, rec.CallerID, rec.Route, rec.Method, rec.Path, "unknown", string(data))
-	if err != nil {
-		return err
-	}
-	seq, err := result.LastInsertId()
-	if err != nil {
-		return err
-	}
-	if err = writeMoneyRecord(ctx, tx.StmtContext(ctx, s.moneyStmt), *rec, moneyData); err != nil {
-		return err
-	}
-	if err = tx.Commit(); err != nil {
-		return err
-	}
-	rec.Seq = seq
-	return nil
+	return err
 }
 
 // Reconcile missing pre-fix money rows without repricing terminal evidence.
@@ -298,7 +257,7 @@ func prepareUsageBackfill(rows interface{ Scan(...any) error }) (usageBackfill, 
 }
 func (s *store) loadMoneySettings(ctx context.Context) (MoneySettings, error) {
 	var data string
-	if err := s.db.QueryRowContext(ctx, "SELECT data FROM money_settings WHERE id=1").Scan(&data); err != nil {
+	if err := s.settingsStmt.QueryRowContext(ctx).Scan(&data); err != nil {
 		return MoneySettings{}, err
 	}
 	var settings MoneySettings

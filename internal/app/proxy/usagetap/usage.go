@@ -196,9 +196,13 @@ func (p *Parser) set(u Usage) {
 	p.evidence = true
 }
 
+func terminalResponseType(typ string) bool {
+	return typ == "response.completed" || typ == "response.incomplete" || typ == "response.failed" || typ == "response.done"
+}
+
 func (p *Parser) response(o object, turns *webSocketTurns) {
 	typ := textValue(o["type"])
-	terminal := typ == "response.completed" || typ == "response.incomplete" || typ == "response.failed" || typ == "response.done"
+	terminal := terminalResponseType(typ)
 	if p.wsStarts != nil && !terminal {
 		switch typ {
 		case "response.created", "response.in_progress":

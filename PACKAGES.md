@@ -32,6 +32,7 @@ One line per root-module package, generated from package doc comments by `make d
 - `internal/app/proxy` — runs a standalone configuration-driven credential proxy and private administration UI.
 - `internal/app/proxy/debugheaders` — produces bounded, redacted proxy HTTP header previews.
 - `internal/app/proxy/grantscope` — fingerprints the upstream scope of proxy client approvals.
+- `internal/app/proxy/ledger` — commits proxy request and money-history row pairs together.
 - `internal/app/proxy/legacyconfig` — converts v8 credential-proxy configuration into stored providers.
 - `internal/app/proxy/moneytimeline` — builds chart responses and calendar buckets for proxy usage.
 - `internal/app/proxy/usagetap` — observes bounded provider response events without I/O or retaining response bodies.

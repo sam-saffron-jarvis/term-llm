@@ -19,8 +19,8 @@ func livePolicyStream(route Route, resp *http.Response) bool {
 // waiting for upstream headers cannot create a new uncancellable paid stream.
 // Legacy opaque HTTP routes retain their admission-only revocation semantics.
 func (s *Service) trackPolicyStream(route activeRoute, rec *Record, cancel context.CancelCauseFunc, custody *accountTransport) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	if s.closing {
 		cancel(errSocketShutdown)
 		return errSocketShutdown
@@ -42,7 +42,7 @@ func (s *Service) trackPolicyStream(route activeRoute, rec *Record, cancel conte
 		}
 	}
 	var caller string
-	if !valid || s.store.db.QueryRow("SELECT c.id FROM callers c JOIN grants g ON c.id=g.caller WHERE c.id=? AND c.revoked=0 AND g.route=? AND g.authority=?", rec.CallerID, route.Name, route.authority).Scan(&caller) != nil {
+	if !valid || s.store.streamGrantStmt.QueryRow(rec.CallerID, route.Name, route.authority).Scan(&caller) != nil {
 		cancel(errSocketRevoked)
 		return errSocketRevoked
 	}

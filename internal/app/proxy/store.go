@@ -63,6 +63,13 @@ func openStore(dir string, fileConfig ...*Config) (*store, error) {
 	if err = s.initialize(fileConfig...); err != nil {
 		return nil, errors.Join(fmt.Errorf("initialize proxy store: %w", err), s.close())
 	}
+	// WAL readers can observe the latest committed grants and prices without
+	// queuing behind a ledger write. They cannot change custody PRAGMAs or write.
+	s.readDB, err = sql.Open("sqlite", sqliteutil.FileURI(path)+"?mode=ro&_pragma=query_only(ON)&_pragma=busy_timeout(3000)")
+	if err != nil {
+		return nil, errors.Join(err, s.close())
+	}
+	s.readDB.SetMaxOpenConns(2)
 	if err = s.prepareStatements(); err != nil {
 		return nil, err
 	}

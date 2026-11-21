@@ -2,6 +2,7 @@ package usagetap
 
 import (
 	"bytes"
+	jsonv2 "encoding/json/v2"
 	"strings"
 )
 
@@ -272,11 +273,26 @@ func (p *Parser) resetEvent() {
 	p.lineNonEmpty = false
 	p.skip = false
 }
+
 func (p *Parser) dispatch() {
-	if !p.skip && len(bytes.TrimSpace(p.event)) > 0 {
-		p.FeedEvent(p.event)
+	data := bytes.TrimSpace(p.event)
+	if !p.skip && len(data) > 0 {
+		if p.protocol != Responses || p.wsStarts != nil || !ordinaryResponseEvent(data) {
+			p.FeedEvent(p.event)
+		}
 	}
 	p.resetEvent()
+}
+
+// Only HTTP Responses ignores every non-empty, nonterminal type. Decode just
+// the discriminator, not e.g. the delta text or tool arguments. v2 validates
+// the entire input and matches case-sensitively; duplicate names and any other
+// decode failures go through the original decoder with its compatibility rules.
+func ordinaryResponseEvent(data []byte) bool {
+	var event struct {
+		Type string `json:"type"`
+	}
+	return jsonv2.Unmarshal(data, &event) == nil && event.Type != "" && !terminalResponseType(event.Type)
 }
 
 // Snapshot returns current evidence without closing the observer. Evidence is
