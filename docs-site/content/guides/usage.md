@@ -33,8 +33,8 @@ its earlier authors, so one conversation can contain turns from many people.
 
 ```bash
 term-llm ask --user "nick kroll" --agent reviewer "Review the tests"
-term-llm ask --resume SESSION_ID --user sam "Check the edge cases too"
-term-llm chat --resume SESSION_ID --user "nick kroll"
+term-llm ask --resume=SESSION_ID --user sam "Check the edge cases too"
+term-llm chat --resume=SESSION_ID --user "nick kroll"
 ```
 
 Inside terminal chat, `/user sam` switches subsequent turns to `sam`, `/user`
