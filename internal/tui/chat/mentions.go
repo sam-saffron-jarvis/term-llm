@@ -51,8 +51,10 @@ type mentionPopupModel struct {
 	indexing       bool
 	refreshing     bool
 	searching      bool
-	truncated      bool
-	err            error
+	// A refresh cleared previously visible rows; Enter still belongs to the picker.
+	replacingRows bool
+	truncated     bool
+	err           error
 }
 
 func (p *mentionPopupModel) selectableCount() int {
@@ -182,6 +184,7 @@ func (p *mentionPopupModel) Hide() {
 		return
 	}
 	p.visible = false
+	p.replacingRows = false
 	p.clearMatches()
 	p.err = nil
 }
@@ -281,6 +284,9 @@ func (m *Model) handleMentionMessage(msg tea.Msg) (bool, tea.Cmd) {
 			return true, nil
 		}
 		m.mentionIndex = msg.snapshot
+		if m.mentionPopup.selectableCount() > 0 {
+			m.mentionPopup.replacingRows = true
+		}
 		m.mentionPopup.clearMatches()
 		m.mentionPopup.searching = m.mentionPopup.visible
 		m.mentionPopup.truncated = msg.snapshot.Truncated
@@ -322,6 +328,7 @@ func (m *Model) handleMentionMessage(msg tea.Msg) (bool, tea.Cmd) {
 			m.mentionQueryCancel = nil
 		}
 		m.mentionPopup.searching = false
+		m.mentionPopup.replacingRows = false
 		m.mentionPopup.matches = msg.matches
 		m.mentionPopup.agentMatches = msg.agentMatches
 		m.mentionPopup.mode = msg.mode
@@ -419,7 +426,7 @@ func (m *Model) handleMentionPopupKey(msg tea.KeyPressMsg) (bool, tea.Cmd) {
 	}
 	count := m.mentionPopup.selectableCount()
 	if step := pickerStep(msg); step != 0 {
-		if count > 0 {
+		if count > 0 && !m.mentionPopup.searching {
 			m.mentionPopup.selected = (m.mentionPopup.selected + count + step) % count
 		}
 		return true, nil
@@ -429,14 +436,14 @@ func (m *Model) handleMentionPopupKey(msg tea.KeyPressMsg) (bool, tea.Cmd) {
 		m.hideMentionPopup()
 		return true, nil
 	case "enter", "tab":
+		// Don't turn a pending selection into a send, even if an index swap
+		// had to discard the old rows before searching the new snapshot.
+		if m.mentionPopup.replacingRows || (count > 0 && m.mentionPopup.searching) {
+			return true, nil
+		}
 		if count == 0 {
 			m.hideMentionPopup()
 			return msg.String() == "tab", nil
-		}
-		// Retained rows belong to the previous query. Don't insert one or send
-		// the draft; let the outstanding search replace them.
-		if m.mentionPopup.searching {
-			return true, nil
 		}
 		accepted, cmd := m.acceptMentionSelection()
 		if !accepted {
@@ -528,7 +535,7 @@ func (m *Model) renderMentionPopup() string {
 		for i := start; i < end; i++ {
 			prefix := "  "
 			baseStyle := muted
-			isSelected := i == p.selected
+			isSelected := i == p.selected && !p.searching
 			if isSelected {
 				prefix = "› "
 				baseStyle = selected

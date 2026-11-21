@@ -711,6 +711,36 @@ func TestMentionPopupWithNoSelectionDoesNotConsumeSubmission(t *testing.T) {
 	}
 }
 
+func TestMentionIndexRefreshDoesNotSubmitWhileReplacingRows(t *testing.T) {
+	for _, tt := range []struct {
+		name      string
+		streaming bool
+	}{{"idle", false}, {"streaming", true}} {
+		t.Run(tt.name, func(t *testing.T) {
+			m := newTestChatModel(false)
+			m.streaming = tt.streaming
+			const draft = "review @"
+			prepareMentionPopup(m, t.TempDir(), draft, testMentionCandidate("apple.txt"))
+			m.handleMentionMessage(mentionIndexReadyMsg{
+				root: m.mentionRoot, generation: m.mentionIndexGeneration,
+				snapshot: &mentions.Snapshot{Candidates: []mentions.Candidate{testMentionCandidate("berry.txt")}},
+			})
+			_, _ = m.handleKeyMsg(tea.KeyPressMsg{Code: tea.KeyEnter})
+			if !m.mentionPopup.IsVisible() || m.textarea.Value() != draft || len(m.messages) != 0 || len(m.pendingSteering) != 0 {
+				t.Fatalf("Enter during refresh: popup=%v draft=%q messages=%d steering=%d", m.mentionPopup.IsVisible(), m.textarea.Value(), len(m.messages), len(m.pendingSteering))
+			}
+			m.handleMentionMessage(mentionMatchesMsg{
+				root: m.mentionRoot, generation: m.mentionIndexGeneration, request: m.mentionQueryRequest,
+				token: m.mentionPopup.token, cursor: len(draft), matches: []mentions.Match{{Candidate: 0}},
+			})
+			_, _ = m.handleKeyMsg(tea.KeyPressMsg{Code: tea.KeyEnter})
+			if m.textarea.Value() != "review @berry.txt " || m.mentionPopup.IsVisible() {
+				t.Fatalf("Enter after refresh: popup=%v draft=%q", m.mentionPopup.IsVisible(), m.textarea.Value())
+			}
+		})
+	}
+}
+
 func TestMentionMatchesStayVisibleButBecomeInvalidWhenQueryChanges(t *testing.T) {
 	m := newTestChatModel(false)
 	m.width = 80
@@ -728,6 +758,9 @@ func TestMentionMatchesStayVisibleButBecomeInvalidWhenQueryChanges(t *testing.T)
 		t.Fatalf("results disappeared during debounce: %#v", m.mentionPopup.matches)
 	}
 	afterPopup := m.renderMentionPopup()
+	if strings.Contains(ui.StripANSI(afterPopup), "› ") {
+		t.Fatal("retained rows still look selectable during debounce")
+	}
 	if afterHeight := lipgloss.Height(afterPopup); afterHeight != beforeHeight {
 		t.Fatalf("popup height changed during debounce: %d -> %d\nbefore: %q\nafter:  %q", beforeHeight, afterHeight, ui.StripANSI(beforePopup), ui.StripANSI(afterPopup))
 	}
