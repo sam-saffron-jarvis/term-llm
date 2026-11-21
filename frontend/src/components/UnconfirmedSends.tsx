@@ -155,7 +155,7 @@ export function UnconfirmedSendNotice({
             </p>
           ) : (
             <p class="unconfirmed-send-copy" role="status">
-              Could not confirm whether this was sent. It may still be running.
+              Could not confirm whether this was sent. Check status before sending it again.
             </p>
           )}
         </div>

@@ -328,7 +328,11 @@ export class StatusReconciler {
                   committedClientMessageId,
                 ),
             );
-          else if (activeResponseId !== session.activeResponseId && !locallyAdmittingResponse)
+          else if (
+            (activeResponseId !== session.activeResponseId ||
+              projectedRun?.status === 'unconfirmed') &&
+            !locallyAdmittingResponse
+          )
             followUps.push(() => void this.host.resumeResponse(session.id, activeResponseId));
         }
         if (stoppedResponseId && this.host.isLocallyStopped(stoppedResponseId)) {
@@ -359,11 +363,19 @@ export class StatusReconciler {
             );
           });
         }
+        const hasPendingIntents = Boolean(this.host.pendingIntents.peek()[session.id]?.length);
         if (
-          !serverActiveResponseId &&
-          !idleStatusCannotDisproveProjectedRun &&
-          (session.activeResponseId || this.host.pendingIntents.peek()[session.id]?.length) &&
-          transcriptRev >= (projectedRun?.finalRev || 0)
+          transcriptRev >= (projectedRun?.finalRev || 0) &&
+          ((!serverActiveResponseId &&
+            !idleStatusCannotDisproveProjectedRun &&
+            (session.activeResponseId || hasPendingIntents)) ||
+            // Once attached to a run, status may only know its own initiating
+            // ID. New durable rows can still confirm a different pending send.
+            (serverActiveResponseId &&
+              session.id === activeSessionId &&
+              hasPendingIntents &&
+              !needsTranscriptSyncBeforeAttach &&
+              serverTranscriptRev > installedTranscriptRev))
         )
           followUps.push(() => void this.host.refreshSessionMessages(session.id, transcriptRev));
         const titleRefreshAllowed = this.host.renameTarget.peek()?.id !== session.id;

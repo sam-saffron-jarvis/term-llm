@@ -4,6 +4,7 @@ import { StoreContext } from '../app/context';
 import { AppStore } from '../stores/app-store';
 import { testConfig, testSession } from '../stores/store-test-fixtures';
 import { Composer } from './Composer';
+import { Transcript } from './Transcript';
 import { DraftBlobStore } from '../platform/draft-blobs';
 import { DEFAULT_ATTACHMENT_POLICY } from '../domain/attachments';
 
@@ -313,5 +314,34 @@ it('exposes an ambiguous real new-chat send under its original local owner after
     getBlob.mockRestore();
     history.replaceState(null, '', route);
     vi.useRealTimers();
+  }
+});
+
+it('opens an hour-old unconfirmed send with an enabled composer and dismisses its transcript badge', async () => {
+  const store = activeUnconfirmedStore();
+  store.runEngine.trackIntent('s1', {
+    ...unconfirmed('client-one', 'possibly sent'),
+    created: Date.now() - 3_600_000,
+  });
+  store.prompt.value = 'A different message';
+  const view = render(
+    <StoreContext.Provider value={store}>
+      <Transcript />
+      <Composer />
+    </StoreContext.Provider>,
+  );
+  try {
+    expect(screen.getByRole('button', { name: 'Send message' })).toBeEnabled();
+    expect(screen.getByText('delivery unconfirmed')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Dismiss warning' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Dismiss anyway' }));
+    expect(screen.queryByText('delivery unconfirmed')).not.toBeInTheDocument();
+    expect(screen.getByText('possibly sent')).toBeInTheDocument();
+    expect(screen.getByRole('textbox', { name: 'Message' })).toHaveValue('A different message');
+    expect(store.endpoints.createResponse).not.toHaveBeenCalled();
+    expect(store.endpoints.cancelResponse).not.toHaveBeenCalled();
+  } finally {
+    view.unmount();
+    store.dispose();
   }
 });

@@ -1055,7 +1055,7 @@ function MessageMeta({
     {
       evaluating: ['pending', '', 'evaluating…'],
       checking_send: ['pending', 'clock', 'checking whether this was sent'],
-      unconfirmed_send: ['error', 'alert-circle', 'send unconfirmed — it may still be running'],
+      unconfirmed_send: ['error', 'alert-circle', 'delivery unconfirmed'],
       pending_steer: ['pending', 'clock', 'will incorporate'],
       steer: ['steer', 'check', 'injected'],
       cancel: ['cancel', 'stop', 'cancelled + queued'],
@@ -1715,13 +1715,14 @@ export function Transcript() {
     activeOutput.content &&
     store.thinking.visible(activeOutput),
   );
+  const livenessUnknown = store.runLivenessUnknown.value;
   const showActivity = Boolean(
     store.streaming.value &&
+    !livenessUnknown &&
     activity &&
     !(streamingText && activity.kind === 'working') &&
     !(thoughtShown && activity.kind === 'thinking'),
   );
-  const livenessUnknown = store.runLivenessUnknown.value;
   const livenessText = activeRun?.run.responseId.startsWith('pending_')
     ? 'Waiting for server confirmation…'
     : 'Response stream interrupted — reconnecting…';

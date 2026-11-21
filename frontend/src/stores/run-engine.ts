@@ -60,6 +60,7 @@ const loadSteeringActions = () => import('./steering-actions');
 // thirty seconds without a successfully attached response transport.
 const STALE_RESPONSE_RECOVERY_FAILURES = 7;
 const RESPONSE_STREAM_CONNECT_TIMEOUT_MS = 15_000;
+const UNCONFIRMED_SEND_GRACE_MS = 60_000;
 // The server may still be releasing the finished run's turn.
 const CONTINUATION_BUSY_RETRY_MS = [300, 800, 1_500];
 
@@ -142,6 +143,7 @@ export class RunEngine {
 
   private readonly supervisors = new StreamSupervisors();
   private readonly disposeParking: () => void;
+  private readonly disposeSendGrace: () => void;
   private readonly activeResponseTransports = signal<
     Record<string, { responseId: string; generation: number }>
   >({});
@@ -185,12 +187,44 @@ export class RunEngine {
       () => this.activeProjection.value?.messages || emptyMessages,
     );
     const activeIntents = computed(
-      () => this.pendingIntents.value[sessionStore.activeSession.value?.id || ''] || emptyIntents,
+      () => this.pendingIntents.value[sessionStore.activeSessionId.value] || emptyIntents,
     );
+    const unconfirmedSendBlocked = signal(false);
+    this.disposeSendGrace = effect(() => {
+      // Recompute on return to a suspended page, even if its timer did not run.
+      void services.backgrounded.value;
+      const now = Date.now();
+      const deadline = activeIntents.value.reduce(
+        (latest, intent) =>
+          intent.state === 'unconfirmed'
+            ? Math.max(latest, Math.min(now, intent.created) + UNCONFIRMED_SEND_GRACE_MS)
+            : latest,
+        0,
+      );
+      unconfirmedSendBlocked.value = deadline > now;
+      if (deadline <= now) return;
+      const timer = window.setTimeout(() => (unconfirmedSendBlocked.value = false), deadline - now);
+      return () => window.clearTimeout(timer);
+    });
     this.visibleMessages = computed(() => {
+      const intents = activeIntents.value;
+      const unconfirmed = new Set(
+        intents
+          .filter((intent) => intent.state === 'unconfirmed')
+          .map((intent) => intent.clientMessageId),
+      );
       const messages = mergeDurableProjection(durableMessages.value, projectedMessages.value);
-      const clientIDs = new Set(messages.map((message) => message.clientMessageId).filter(Boolean));
-      const pending = activeIntents.value
+      const clientIDs = new Set<string>();
+      for (const [index, message] of messages.entries()) {
+        if (message.clientMessageId) clientIDs.add(message.clientMessageId);
+        // A retained optimistic row can outlive its local warning state.
+        if (
+          message.interruptState === 'unconfirmed_send' &&
+          !unconfirmed.has(message.clientMessageId || '')
+        )
+          messages[index] = { ...message, interruptState: undefined };
+      }
+      const pending = intents
         .filter((intent) => intent.kind !== 'tool-output' && !clientIDs.has(intent.clientMessageId))
         .map((intent) => ({
           id: intent.id,
@@ -202,9 +236,7 @@ export class RunEngine {
           attachments: intent.attachments,
           pending: true,
           ...(intent.state === 'checking' ? { interruptState: 'checking_send' } : {}),
-          ...(['unconfirmed', 'dismissed-unconfirmed'].includes(intent.state || '')
-            ? { interruptState: 'unconfirmed_send' }
-            : {}),
+          ...(intent.state === 'unconfirmed' ? { interruptState: 'unconfirmed_send' } : {}),
         }));
       return [...messages, ...pending];
     });
@@ -295,9 +327,7 @@ export class RunEngine {
       const projection = this.activeProjection.value;
       const projectedRunPending = Boolean(
         projection &&
-        ['connecting', 'checking', 'unconfirmed', 'streaming', 'cancelling'].includes(
-          projection.run.status,
-        ) &&
+        ['connecting', 'checking', 'streaming', 'cancelling'].includes(projection.run.status) &&
         !this.canSteer.value,
       );
       return (
@@ -306,11 +336,8 @@ export class RunEngine {
         runningClientTools.value ||
         projectedRunPending ||
         Boolean(sessionStore.activeSession.value?.activeRun && !this.canSteer.value) ||
-        Boolean(
-          this.pendingIntents.value[sessionStore.activeSessionId.value]?.some(
-            (intent) => intent.state === 'checking' || intent.state === 'unconfirmed',
-          ),
-        )
+        unconfirmedSendBlocked.value ||
+        activeIntents.value.some((intent) => intent.state === 'checking')
       );
     });
     // Leaving a conversation or hiding the tab releases response transports;
@@ -348,7 +375,7 @@ export class RunEngine {
     if (!session) return;
     const run = this.runs.peek()[session.id]?.run;
     // Admission owns its stream; replacing its supervisor would abort the POST.
-    if (run?.responseId.startsWith('pending_')) return;
+    if (run?.responseId.startsWith('pending_') && run.status !== 'unconfirmed') return;
     const projected = run && ['connecting', 'streaming'].includes(run.status) ? run.responseId : '';
     const responseId = projected || session.activeResponseId || '';
     if (responseId) void this.attachResponse(session.id, responseId);
@@ -1069,7 +1096,7 @@ export class RunEngine {
         ...this.runs.peek(),
         [owner.sessionId]: {
           ...projection,
-          phase: 'Could not confirm whether this was sent. It may still be running.',
+          phase: undefined,
           run: { ...projection.run, status: 'unconfirmed' },
         },
       };
@@ -2067,6 +2094,7 @@ export class RunEngine {
           : String(snapshot.continuation_response_id || '').trim() || null;
       batch(() => {
         this.runs.value = { ...this.runs.peek(), [sessionId]: next };
+        this.retireCommittedIntents(sessionId, projected);
         this.sessionStore.patch(sessionId, {
           ...(snapshot.provider ? { activeProvider: String(snapshot.provider) } : {}),
           ...(snapshot.model ? { activeModel: String(snapshot.model) } : {}),
@@ -2583,7 +2611,15 @@ export class RunEngine {
       [sessionId]?.find((intent) => intent.clientMessageId === clientMessageId);
     if (retiring && ['unconfirmed', 'dismissed-unconfirmed'].includes(retiring.state || '')) {
       const projection = this.runs.peek()[sessionId];
-      if (projection?.run.status === 'unconfirmed') {
+      if (
+        projection?.run.status === 'unconfirmed' &&
+        !this.pendingIntents
+          .peek()
+          [sessionId]?.some(
+            (intent) =>
+              intent.clientMessageId !== clientMessageId && intent.state === 'unconfirmed',
+          )
+      ) {
         const runs = { ...this.runs.peek() };
         delete runs[sessionId];
         this.runs.value = runs;
@@ -2611,6 +2647,7 @@ export class RunEngine {
   dispose(): void {
     this.disposed = true;
     this.disposeParking();
+    this.disposeSendGrace();
     this.clientTools.dispose();
     for (const timers of this.titleRefreshTimers.values())
       timers.forEach((timer) => window.clearTimeout(timer));

@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { APIError } from '../api/client';
+import { initialProjection } from '../domain/response';
 import { persistPendingIntent, readPendingIntents, readDrafts } from '../platform/storage';
 import { AppStore } from './app-store';
 import { testConfig, testSession } from './store-test-fixtures';
@@ -50,11 +51,17 @@ describe('bounded unknown send admission', () => {
       );
       expect(store.visibleMessages.value[0].interruptState).toBe('unconfirmed_send');
       expect(store.endpoints.cancelResponse).not.toHaveBeenCalled();
-      await vi.advanceTimersByTimeAsync(300_000);
+      await vi.advanceTimersByTimeAsync(55_999);
+      expect(store.sendBlocked.value).toBe(true);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(store.sendBlocked.value).toBe(false);
+      expect(store.pendingIntents.value.s1[0].state).toBe('unconfirmed');
       expect(store.endpoints.createResponse).toHaveBeenCalledTimes(3);
       store.runEngine.dismissUnconfirmed('s1');
       expect(store.sendBlocked.value).toBe(false);
       expect(store.pendingIntents.value.s1[0].state).toBe('dismissed-unconfirmed');
+      expect(store.visibleMessages.value[0]).toMatchObject({ content: 'Only send this once' });
+      expect(store.visibleMessages.value[0].interruptState).toBeUndefined();
       expect(store.prompt.value).toBe('');
       expect(store.endpoints.cancelResponse).not.toHaveBeenCalled();
     } finally {
@@ -265,6 +272,67 @@ describe('bounded unknown send admission', () => {
       await vi.advanceTimersByTimeAsync(1);
       expect(store.endpoints.sessionStatus).toHaveBeenCalledTimes(2);
       expect(store.endpoints.createResponse).toHaveBeenCalledOnce();
+    } finally {
+      store.dispose();
+    }
+  });
+
+  it('finds the committed send even when a different response is now active', async () => {
+    const store = chat(false);
+    store.sessions.value = [testSession({ activeRun: true, activeResponseId: 'current' })];
+    store.runs.value = {
+      s1: initialProjection({
+        responseId: 'current',
+        sessionId: 's1',
+        epoch: 1,
+        status: 'streaming',
+        lastSequence: 0,
+        startedRev: 1,
+        reconnects: 0,
+      }),
+    };
+    store.runEngine.markResponseTransportActive('s1', 'current');
+    store.runEngine.trackIntent('s1', {
+      id: 'pending-earlier',
+      clientMessageId: 'earlier',
+      content: 'Earlier message',
+      created: Date.now() - 3_600_000,
+      state: 'unconfirmed',
+    });
+    store.endpoints.createResponse = vi.fn();
+    store.endpoints.sessionStatus = vi.fn(async () => ({
+      sessions: [
+        { id: 's1', active_response_id: 'current', client_message_id: 'later', transcript_rev: 2 },
+      ],
+    }));
+    store.endpoints.selectedSession = vi.fn(async () => ({
+      selected_session: { id: 's1', transcript_rev: 2 },
+      selected_transcript: {
+        bodies: {
+          rev: 2,
+          messages: [
+            {
+              id: 'committed',
+              role: 'user',
+              client_message_id: 'earlier',
+              text: 'Earlier message',
+            },
+          ],
+        },
+      },
+    }));
+    store.endpoints.sessionState = vi.fn(async () => ({}));
+    vi.spyOn(store, 'refreshSidebar').mockResolvedValue(undefined);
+    try {
+      expect(store.visibleMessages.value[0].interruptState).toBe('unconfirmed_send');
+      await store.checkSendStatus();
+      await vi.waitFor(() => expect(store.pendingIntents.value.s1).toBeUndefined());
+      expect(store.runs.value.s1.run).toMatchObject({ responseId: 'current', status: 'streaming' });
+      expect(store.visibleMessages.value).toEqual([
+        expect.objectContaining({ clientMessageId: 'earlier', interruptState: undefined }),
+      ]);
+      expect(store.endpoints.createResponse).not.toHaveBeenCalled();
+      expect(store.endpoints.cancelResponse).not.toHaveBeenCalled();
     } finally {
       store.dispose();
     }

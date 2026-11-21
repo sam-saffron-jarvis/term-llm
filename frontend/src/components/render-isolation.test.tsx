@@ -279,7 +279,8 @@ describe('render isolation', () => {
       };
     });
     expect(counts.count('ConversationComposer')).toBeGreaterThan(0);
-    expect(screen.getByRole('button', { name: 'Send unconfirmed' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Check status' })).toBeInTheDocument();
+    expect(store.sendBlocked.value).toBe(false);
     await act(() => {
       const projection = store.runs.peek().s1;
       store.runs.value = {
@@ -287,7 +288,7 @@ describe('render isolation', () => {
         s1: { ...projection, run: { ...projection.run, status: 'streaming' } },
       };
     });
-    expect(screen.queryByRole('button', { name: 'Send unconfirmed' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Check status' })).not.toBeInTheDocument();
   });
 
   it('tracks unconfirmed intents across session switches without subscribing to text deltas', async () => {
