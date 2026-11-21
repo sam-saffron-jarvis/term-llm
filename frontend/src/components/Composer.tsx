@@ -23,7 +23,7 @@ import type { LiveStore } from '../stores/live-store';
 import { Icon } from './Icon';
 import { useMenuKeyboard } from './Menu';
 import { requestTranscriptScrollToTail } from './transcript-scroll';
-import { LocalUnconfirmedSends, UnconfirmedSendNotice } from './UnconfirmedSends';
+import { lazyComponent } from './lazyComponent';
 
 // Typical OS double-click interval.
 const STOP_CLICK_GUARD_MS = 500;
@@ -282,6 +282,47 @@ function LiveStatus({ live }: { live: LiveStore }) {
 
 let loadedQueuePreview: ComponentType<{ selectedSteering: string | null }> | null = null;
 let queuePreviewImport: Promise<ComponentType<{ selectedSteering: string | null }>> | null = null;
+
+// Recovery UI is only needed after an ambiguous send, not to open a chat.
+export const UnconfirmedSendNotice = lazyComponent(() =>
+  import('./UnconfirmedSends')
+    .then((module) => module.UnconfirmedSendNotice)
+    .catch(() => () => (
+      <div class="unconfirmed-send" role="status">
+        Could not load send status controls. Reload the page to check or dismiss the warning.
+      </div>
+    )),
+);
+
+/**
+ * New-chat runtime IDs have no server/sidebar owner after a reload, so their
+ * unconfirmed sends stay listed above whichever conversation is open.
+ */
+function LocalUnconfirmedSends({ standalone = false }: { standalone?: boolean }) {
+  const store = useStore();
+  const active = store.activeSessionId.value;
+  const owners = Object.entries(store.pendingIntents.value).flatMap(([ownerId, intents]) => {
+    if (!ownerId.startsWith('draft_') || ownerId === active) return [];
+    const unconfirmed = intents.filter((intent) => intent.state === 'unconfirmed');
+    return unconfirmed.length ? [{ ownerId, intents: unconfirmed }] : [];
+  });
+  if (!owners.length) return null;
+  const section = (
+    <section class="unconfirmed-sends" aria-label="Unconfirmed new conversations">
+      {owners.map(({ ownerId, intents }) => (
+        <UnconfirmedSendNotice key={ownerId} ownerId={ownerId} intents={intents} />
+      ))}
+    </section>
+  );
+  // A delegated child view has no composer, but the warning keeps its place.
+  return standalone ? (
+    <div class="composer">
+      <div class="composer-inner">{section}</div>
+    </div>
+  ) : (
+    section
+  );
+}
 
 export function Composer() {
   const store = useStore();

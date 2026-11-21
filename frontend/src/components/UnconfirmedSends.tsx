@@ -21,36 +21,6 @@ function attachmentIcon(attachment: Attachment) {
     : attachmentIconName(attachment.type, attachment.name);
 }
 
-/**
- * New-chat runtime IDs have no server/sidebar owner after a reload, so their
- * unconfirmed sends stay listed above whichever conversation is open.
- */
-export function LocalUnconfirmedSends({ standalone = false }: { standalone?: boolean }) {
-  const store = useStore();
-  const active = store.activeSessionId.value;
-  const owners = Object.entries(store.pendingIntents.value).flatMap(([ownerId, intents]) => {
-    if (!ownerId.startsWith('draft_') || ownerId === active) return [];
-    const unconfirmed = intents.filter((intent) => intent.state === 'unconfirmed');
-    return unconfirmed.length ? [{ ownerId, intents: unconfirmed }] : [];
-  });
-  if (!owners.length) return null;
-  const section = (
-    <section class="unconfirmed-sends" aria-label="Unconfirmed new conversations">
-      {owners.map(({ ownerId, intents }) => (
-        <UnconfirmedSendNotice key={ownerId} ownerId={ownerId} intents={intents} />
-      ))}
-    </section>
-  );
-  // A delegated child view has no composer, but the warning keeps its place.
-  return standalone ? (
-    <div class="composer">
-      <div class="composer-inner">{section}</div>
-    </div>
-  ) : (
-    section
-  );
-}
-
 function UnconfirmedPreview({ intent }: { intent: PendingIntent }) {
   const attachments = intent.attachments || [];
   const hidden = attachments.length - PREVIEW_ATTACHMENTS;

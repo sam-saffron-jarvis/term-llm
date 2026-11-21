@@ -1,12 +1,16 @@
 import { act, fireEvent, render, screen, within } from '@testing-library/preact';
-import { expect, it, vi } from 'vitest';
+import { beforeAll, expect, it, vi } from 'vitest';
 import { StoreContext } from '../app/context';
 import { AppStore } from '../stores/app-store';
 import { testConfig, testSession } from '../stores/store-test-fixtures';
-import { Composer } from './Composer';
+import { Composer, UnconfirmedSendNotice } from './Composer';
 import { Transcript } from './Transcript';
 import { DraftBlobStore } from '../platform/draft-blobs';
 import { DEFAULT_ATTACHMENT_POLICY } from '../domain/attachments';
+
+beforeAll(async () => {
+  await UnconfirmedSendNotice.preload();
+});
 
 const unconfirmed = (clientMessageId: string, content: string) => ({
   id: `pending-${clientMessageId}`,

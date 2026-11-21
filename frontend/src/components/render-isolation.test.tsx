@@ -279,7 +279,7 @@ describe('render isolation', () => {
       };
     });
     expect(counts.count('ConversationComposer')).toBeGreaterThan(0);
-    expect(screen.getByRole('button', { name: 'Check status' })).toBeInTheDocument();
+    expect(await screen.findByRole('button', { name: 'Check status' })).toBeInTheDocument();
     expect(store.sendBlocked.value).toBe(false);
     await act(() => {
       const projection = store.runs.peek().s1;
@@ -314,7 +314,7 @@ describe('render isolation', () => {
     await act(() => {
       store.activeSessionId.value = 's2';
     });
-    expect(screen.getByRole('button', { name: 'Check status' })).toBeInTheDocument();
+    expect(await screen.findByRole('button', { name: 'Check status' })).toBeInTheDocument();
     counts.clear();
     await act(() => textUpdate(store, 's2', 'Still streaming'));
     expect(counts.count('ConversationComposer')).toBe(0);
