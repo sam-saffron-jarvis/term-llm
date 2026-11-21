@@ -16,7 +16,7 @@ type WebSocket struct {
 	opcode                                     byte
 	fin, masked, discard, disabled, fragmented bool
 	message                                    []byte
-	started                                    bool
+	started, oversized                         bool
 	turns                                      *webSocketTurns
 }
 
@@ -71,7 +71,7 @@ func (w *WebSocket) Feed(data []byte) {
 		if uint64(n) > w.remaining {
 			n = int(w.remaining)
 		}
-		if !w.discard {
+		if !w.discard && !w.oversized {
 			w.message = append(w.message, data[:n]...)
 		}
 		data = data[n:]
@@ -135,16 +135,28 @@ func (w *WebSocket) startFrame() {
 		w.fail()
 		return
 	}
-	if length > uint64(MaxEventBytes-len(w.message)) {
-		w.fail()
-		return
+	// The header still tells us exactly where the next frame starts. Skip
+	// this message, including continuations, without disabling the next one.
+	if !w.oversized && length > uint64(MaxEventBytes-len(w.message)) {
+		w.oversized = true
+		w.message = nil
+		w.parser.MarkUnknown()
+		if w.turns != nil && !w.turns.gap() {
+			// No known pending turn can record this gap. A later reported turn
+			// must not replace the connection's only evidence of unknown usage.
+			w.fail()
+			return
+		}
 	}
 	w.discard = false
 }
 func (w *WebSocket) endFrame() {
 	if !w.discard {
 		if w.fin {
-			w.parser.feedEvent(w.message, w.turns)
+			if !w.oversized {
+				w.parser.feedEvent(w.message, w.turns)
+			}
+			w.oversized = false
 			w.message = nil
 			w.fragmented = false
 		} else {

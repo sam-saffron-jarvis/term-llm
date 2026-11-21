@@ -24,7 +24,11 @@ func TestWebsocketTLSHTTP1RawBytesAndLifecycle(t *testing.T) {
 			replyWire := wire
 			if action == "usage" {
 				wire = nil
+				// A large server event must pass through byte-for-byte without
+				// preventing independent later turns from reaching the ledger.
+				large := []byte(`{"type":"response.output_text.delta","delta":"` + strings.Repeat("x", usagetap.MaxEventBytes) + `"}`)
 				replyWire = observerFrame(1, true, []byte(`{"type":"response.created","response":{"id":"r"}}`))
+				replyWire = append(replyWire, observerFrame(1, true, large)...)
 				replyWire = append(replyWire, observerFrame(1, true, []byte(observedResponseJSON))...)
 				second := strings.ReplaceAll(observedResponseJSON, `"id":"r"`, `"id":"r2"`)
 				replyWire = append(replyWire, observerFrame(1, true, []byte(`{"type":"response.created","response":{"id":"r2"}}`))...)
@@ -242,7 +246,8 @@ func assertSocketTurns(t *testing.T, s *Service, connectionID string, want int) 
 				if rec.WebSocketConnectionID != connectionID || rec.ID == connectionID || rec.Status != 101 || rec.Usage == nil || rec.Usage.Protocol != usagetap.Responses || rec.Usage.Usage.Turns != 1 || rec.Sent != -1 {
 					t.Fatalf("not a single WebSocket turn: %+v", rec)
 				}
-				if want == 3 && i == 0 {
+				// Oldest: oversized turn. Newest after close: unfinished start.
+				if i == want-1 || (want == 3 && i == 0) {
 					if rec.Outcome != "incomplete" || rec.Usage.Usage.Source != usagetap.Unknown {
 						t.Fatalf("unfinished turn reported known: %+v", rec)
 					}

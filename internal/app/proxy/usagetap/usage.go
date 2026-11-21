@@ -105,12 +105,8 @@ func (p *Parser) feedEvent(data []byte, turns *webSocketTurns) {
 		}
 		return
 	}
-	if !json.Valid(data) {
-		p.MarkUnknown()
-		return
-	}
-	o := obj(data)
-	if o == nil {
+	var o object
+	if err := json.Unmarshal(data, &o); err != nil || o == nil {
 		p.MarkUnknown()
 		return
 	}
@@ -199,7 +195,7 @@ func (p *Parser) response(o object, turns *webSocketTurns) {
 			id := textValue(obj(o["response"])["id"])
 			p.noteWebSocketStart(id)
 			if turns != nil {
-				turns.start(id)
+				turns.start(id, typ == "response.created")
 			}
 		case "response.cancelled", "response.canceled":
 			p.partial = true

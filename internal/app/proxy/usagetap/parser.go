@@ -149,7 +149,8 @@ func (p *Parser) MarkUnknown() {
 // Feed observes arbitrary byte chunks. JSON bodies are decoded at Finish;
 // SSE and NDJSON events are decoded as soon as their delimiters arrive.
 func (p *Parser) Feed(data []byte) {
-	if p.finished {
+	// Without an endpoint schema no body can supply usage evidence.
+	if p.finished || p.protocol == "" {
 		return
 	}
 	switch p.format {
@@ -221,7 +222,6 @@ func (p *Parser) line() {
 		return
 	}
 	line := p.buf
-	p.buf = nil
 	if bytes.HasPrefix(line, []byte("data:")) {
 		value := line[5:]
 		if len(value) > 0 && value[0] == ' ' {
@@ -233,16 +233,28 @@ func (p *Parser) line() {
 		if len(value) > MaxEventBytes-len(p.event) {
 			p.MarkUnknown()
 			p.skip = true
+			p.buf = nil
 			p.event = nil
 			return
 		}
 		p.event = append(p.event, value...)
 	}
+	p.buf = resetScratch(p.buf)
+}
+
+// Reuse small buffers only within this parser, without retaining old payload
+// bytes or pinning a large event for the remaining lifetime of the stream.
+func resetScratch(b []byte) []byte {
+	if cap(b) > 4<<10 {
+		return nil
+	}
+	clear(b)
+	return b[:0]
 }
 
 func (p *Parser) resetEvent() {
-	p.buf = nil
-	p.event = nil
+	p.buf = resetScratch(p.buf)
+	p.event = resetScratch(p.event)
 	p.eventBytes = 0
 	p.lineBytes = 0
 	p.skip = false

@@ -208,11 +208,15 @@ func observerFrame(op byte, fin bool, data []byte) []byte {
 	if fin {
 		b[0] |= 128
 	}
-	if len(data) < 126 {
+	switch {
+	case len(data) < 126:
 		b[1] = byte(len(data))
-	} else {
+	case len(data) <= 65535:
 		b[1] = 126
 		b = binary.BigEndian.AppendUint16(b, uint16(len(data)))
+	default:
+		b[1] = 127
+		b = binary.BigEndian.AppendUint64(b, uint64(len(data)))
 	}
 	return append(b, data...)
 }

@@ -243,6 +243,37 @@ func TestUnknownCountsAndOverflow(t *testing.T) {
 		t.Fatal(got)
 	}
 }
+func TestUnknownEndpointDoesNotBuffer(t *testing.T) {
+	for _, media := range []string{"application/json", "text/event-stream", ""} {
+		p := ForResponse("/v1/models", media)
+		p.Feed([]byte(responseJSON))
+		if cap(p.buf) != 0 || cap(p.event) != 0 || p.Finish(true) != emptyUsage() {
+			t.Fatalf("%q: buffered or attributed an unrecognized endpoint", media)
+		}
+	}
+}
+
+func TestStreamScratchReleased(t *testing.T) {
+	for _, format := range []Format{SSE, NDJSON} {
+		p := New(Responses, format)
+		for _, n := range []int{100, 16 << 10} {
+			event := `{"type":"response.output_text.delta","delta":"` + strings.Repeat("x", n) + `"}`
+			if format == SSE {
+				event = "data: " + event + "\n"
+			}
+			p.Feed([]byte(event + "\n"))
+			for _, buf := range [][]byte{p.buf, p.event} {
+				if len(buf) != 0 || cap(buf) > 4<<10 {
+					t.Fatalf("%s: retained oversized scratch (len=%d cap=%d)", format, len(buf), cap(buf))
+				}
+				if bytes.Count(buf[:cap(buf)], []byte{0}) != cap(buf) {
+					t.Fatalf("%s: retained payload in scratch", format)
+				}
+			}
+		}
+	}
+}
+
 func TestSelection(t *testing.T) {
 	cases := []struct {
 		path, ct string
