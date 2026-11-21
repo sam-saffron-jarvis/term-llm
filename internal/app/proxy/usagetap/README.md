@@ -13,10 +13,9 @@ Instances are single-owner. `Snapshot` returns a value; `Finish` is idempotent.
 `FeedEvent` accepts decoded events; `NewWebSocket` observes uncompressed server
 frames. Do not mix event feeds with buffered partial byte feeds.
 
-JSON bodies, SSE events, NDJSON lines and assembled frames are bounded to 1 MiB.
-When an upstream omits `Content-Type`, a response prefix of at most 64 bytes
-selects JSON or SSE framing without changing forwarded bytes or headers. Explicit
-unsupported media types still remain unknown; no request body is inspected.
+Observation is limited to 1 MiB per JSON body, SSE event, NDJSON line or WebSocket message.
+Without `Content-Type`, at most 64 bytes distinguish JSON from SSE. Unknown endpoints skip
+body parsing; unsupported media types remain unknown. Forwarded bytes never change.
 Responses retain at most 128 IDs; repeated IDs replace snapshots, distinct IDs
 sum. Missing IDs cannot establish multiple turns. Overflow, malformed identities,
 unsupported encoding/compression or lost observability remains unknown.
@@ -40,15 +39,13 @@ legacy aggregate behavior. At most `MaxWebSocketTurns` (128) distinct IDs can
 emit per socket, including pending starts emitted by `Finish`. Once full, new
 IDs are ignored so replayed terminal events cannot become new rows.
 
-The first terminal event wins even if it has no usage; later snapshots can
-revise only the aggregate. `Started` is the local time of the first observed
-`response.created` or `response.in_progress` event, or zero if no start was
-seen. `Ended` is the local terminal observation time, or the `Finish` time for
-unmatched starts. `Outcome` is `complete`, `incomplete` (including failed,
-cancelled, and unmatched starts), or `unknown` (terminal status not established).
-Usage counts come only from that turn's first terminal snapshot, never client
-frames. Outcome and usage evidence are independent: a completed response may
-have no counters.
+The first terminal wins, even without counts. Later snapshots may revise only the aggregate.
+`Started` records the first `response.created` or `response.in_progress` (zero if absent);
+`Ended` records the terminal or observation cutoff. Failed, cancelled and unmatched turns are
+incomplete. An oversized text message leaves aggregate usage unknown and pending turns
+incomplete, without stopping forwarding. Only a fresh `response.created` can establish a
+subsequent measurable turn; a terminal or progress event alone cannot. Without a pending turn
+to record the gap, turn observation stops. Invalid framing still disables observation.
 
 ## Venice provider-reported charges
 

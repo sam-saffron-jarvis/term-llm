@@ -83,6 +83,10 @@ func (s *store) insertWebSocketTurn(rec Record, replaceConnection bool) error {
 	if err != nil {
 		return err
 	}
+	moneyData, err := marshalMoneyRecord(rec)
+	if err != nil {
+		return err
+	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -91,7 +95,7 @@ func (s *store) insertWebSocketTurn(rec Record, replaceConnection bool) error {
 	if _, err := tx.StmtContext(ctx, s.startStmt).ExecContext(ctx, rec.ID, rec.Started, rec.CallerID, rec.Route, rec.Method, rec.Path, rec.Outcome, string(data)); err != nil {
 		return err
 	}
-	if err := writeMoneyRecord(tx, rec); err != nil {
+	if err := writeMoneyRecord(ctx, tx.StmtContext(ctx, s.moneyStmt), rec, moneyData); err != nil {
 		return err
 	}
 	if replaceConnection {

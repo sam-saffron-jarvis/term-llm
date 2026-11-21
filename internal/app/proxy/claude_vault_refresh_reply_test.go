@@ -62,6 +62,7 @@ func TestClaudeVaultRefreshOmissionsRetainCustodyWithoutScopeEscalation(t *testi
 				t.Fatal("shared request could not renew expiring custody", code)
 			}
 			conn.Close()
+			claudeForwardWaitSockets(t, f.service)
 			a, err := f.service.store.account("claude")
 			if err != nil {
 				t.Fatal(err)

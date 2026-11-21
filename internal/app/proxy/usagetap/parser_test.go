@@ -243,6 +243,37 @@ func TestUnknownCountsAndOverflow(t *testing.T) {
 		t.Fatal(got)
 	}
 }
+func TestUnknownEndpointDoesNotBuffer(t *testing.T) {
+	for _, media := range []string{"application/json", "text/event-stream", ""} {
+		p := ForResponse("/v1/models", media)
+		p.Feed([]byte(responseJSON))
+		if cap(p.buf) != 0 || cap(p.event) != 0 || p.Finish(true) != emptyUsage() {
+			t.Fatalf("%q: buffered or attributed an unrecognized endpoint", media)
+		}
+	}
+}
+
+func TestStreamScratchReleased(t *testing.T) {
+	for _, format := range []Format{SSE, NDJSON} {
+		p := New(Responses, format)
+		for _, n := range []int{100, 16 << 10} {
+			event := `{"type":"response.output_text.delta","delta":"` + strings.Repeat("x", n) + `"}`
+			if format == SSE {
+				event = "data: " + event + "\n"
+			}
+			p.Feed([]byte(event + "\n"))
+			for _, buf := range [][]byte{p.buf, p.event} {
+				if len(buf) != 0 || cap(buf) > 4<<10 {
+					t.Fatalf("%s: retained oversized scratch (len=%d cap=%d)", format, len(buf), cap(buf))
+				}
+				if bytes.Count(buf[:cap(buf)], []byte{0}) != cap(buf) {
+					t.Fatalf("%s: retained payload in scratch", format)
+				}
+			}
+		}
+	}
+}
+
 func TestSelection(t *testing.T) {
 	cases := []struct {
 		path, ct string
@@ -362,5 +393,40 @@ func TestEventBoundaryLimits(t *testing.T) {
 	p.Feed([]byte("data: " + responseJSON + "\n\n"))
 	if !p.evidence || p.Finish(true).Source != Unknown {
 		t.Fatal(p.Snapshot())
+	}
+}
+
+func BenchmarkOpenAIUsageEvent(b *testing.B) {
+	for _, tc := range []struct {
+		protocol Protocol
+		event    string
+	}{{ChatCompletions, chatJSON}, {Responses, responseJSON}} {
+		b.Run(string(tc.protocol), func(b *testing.B) {
+			data := []byte(tc.event)
+			b.ReportAllocs()
+			for b.Loop() {
+				p := New(tc.protocol, JSON)
+				p.FeedEvent(data)
+				if u := p.Finish(true); u.Source != Reported || u.Total != 19 {
+					b.Fatal(u)
+				}
+			}
+		})
+	}
+}
+
+func TestOpenAIDetailCounterValidity(t *testing.T) {
+	for _, tc := range []struct {
+		details string
+		want    int64
+		bad     bool
+	}{
+		{`{}`, -1, false}, {`{"cached_tokens":0}`, 0, false}, {`{"cached_tokens":null}`, -1, true}, {`{"cached_tokens":"2"}`, -1, true}, {`{"cached_tokens":-1}`, -1, true},
+	} {
+		o := obj([]byte(`{"usage":{"prompt_tokens":1,"prompt_tokens_details":` + tc.details + `}}`))
+		u, bad := readOpenAIUsage(o, false)
+		if bad != tc.bad || u.CachedInput != tc.want || u.Input != 1 || u.Output != -1 {
+			t.Fatalf("%s: cached=%d input=%d output=%d bad=%v", tc.details, u.CachedInput, u.Input, u.Output, bad)
+		}
 	}
 }

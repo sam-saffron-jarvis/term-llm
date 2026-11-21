@@ -35,8 +35,9 @@ func (w *WebSocket) SetTurnObserver(observe func(WebSocketTurn)) {
 }
 
 type webSocketTurns struct {
-	observe func(WebSocketTurn)
-	starts  map[string]time.Time // A zero time is a terminal tombstone, not an open turn.
+	observe  func(WebSocketTurn)
+	starts   map[string]time.Time // A zero time is a tombstone, not an open turn.
+	afterGap bool
 }
 
 func (t *webSocketTurns) lookup(id string) (start time.Time, eligible bool) {
@@ -50,8 +51,13 @@ func (t *webSocketTurns) lookup(id string) (start time.Time, eligible bool) {
 	return time.Time{}, len(t.starts) < MaxWebSocketTurns
 }
 
-func (t *webSocketTurns) start(id string) {
+func (t *webSocketTurns) start(id string, created bool) {
 	if started, eligible := t.lookup(id); eligible && started.IsZero() {
+		if t.afterGap && !created {
+			// This ID may have started or even finished in the skipped message.
+			t.starts[id] = time.Time{}
+			return
+		}
 		t.starts[id] = time.Now()
 	}
 }
@@ -62,6 +68,9 @@ func (t *webSocketTurns) end(id, outcome string, u Usage, bad bool) {
 		return
 	}
 	t.starts[id] = time.Time{}
+	if t.afterGap && started.IsZero() {
+		return // A terminal alone is no longer reliable first-terminal evidence.
+	}
 	ended := time.Now()
 	if u.Ambiguous {
 		u.Model, u.Tier = "", ""
@@ -76,15 +85,26 @@ func (t *webSocketTurns) end(id, outcome string, u Usage, bad bool) {
 	t.observe(WebSocketTurn{Started: started, Ended: ended, Usage: u, Outcome: outcome})
 }
 
-func (t *webSocketTurns) finish() {
+// A skipped message could have ended any pending turn. Finalize each as
+// incomplete once; only a fresh, explicit creation can establish a new turn.
+func (t *webSocketTurns) gap() bool {
+	t.afterGap = true
+	return t.finish()
+}
+
+func (t *webSocketTurns) finish() bool {
+	emitted := false
 	ended := time.Now()
 	u := emptyUsage()
 	u.Turns = 1
-	for _, started := range t.starts {
+	for id, started := range t.starts {
 		if !started.IsZero() {
+			emitted = true
+			t.starts[id] = time.Time{}
 			t.observe(WebSocketTurn{Started: started, Ended: ended, Usage: u, Outcome: "incomplete"})
 		}
 	}
+	return emitted
 }
 
 func webSocketTurnOutcome(typ, status string) string {

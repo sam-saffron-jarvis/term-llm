@@ -12,6 +12,7 @@ type store struct {
 	authorizeStmt *sql.Stmt
 	startStmt     *sql.Stmt
 	finishStmt    *sql.Stmt
+	moneyStmt     *sql.Stmt
 	closeOnce     sync.Once
 	closeErr      error
 }
@@ -29,6 +30,7 @@ func (s *store) prepareStatements() error {
 		{"authorization", "SELECT c.id,c.name FROM callers c JOIN grants g ON c.id=g.caller WHERE c.hash=? AND c.revoked=0 AND g.route=? AND g.authority=?", &s.authorizeStmt},
 		{"request start", "INSERT INTO requests(id,started,caller,route,method,path,outcome,data) VALUES(?,?,?,?,?,?,?,?)", &s.startStmt},
 		{"request finish", "UPDATE requests SET outcome=?,data=? WHERE id=?", &s.finishStmt},
+		{"money history", "INSERT INTO money_history(request_id,started,caller,route,data) VALUES(?,?,?,?,?) ON CONFLICT(request_id) DO UPDATE SET data=excluded.data", &s.moneyStmt},
 	} {
 		stmt, err := s.db.Prepare(item.query)
 		if err != nil {
@@ -51,6 +53,7 @@ func (s *store) close() error {
 			{"authorization", s.authorizeStmt},
 			{"request start", s.startStmt},
 			{"request finish", s.finishStmt},
+			{"money history", s.moneyStmt},
 		} {
 			if item.stmt != nil {
 				if err := item.stmt.Close(); err != nil {

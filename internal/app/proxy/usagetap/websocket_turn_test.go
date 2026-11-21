@@ -167,3 +167,59 @@ func TestWebSocketTurnsResponsesOnly(t *testing.T) {
 	feedTurnEvent(w, responseJSON)
 	w.Finish(true)
 }
+
+func TestWebSocketTurnRecoveryAfterOversizedMessage(t *testing.T) {
+	w := NewWebSocket(New(Responses, JSON))
+	var turns []WebSocketTurn
+	w.SetTurnObserver(func(turn WebSocketTurn) { turns = append(turns, turn) })
+	event := func(kind, id string) {
+		feedTurnEvent(w, fmt.Sprintf(`{"type":"response.%s","response":{"id":%q,"usage":{"input_tokens":12}}}`, kind, id))
+	}
+	event("created", "open")
+	w.Feed(frame(1, false, make([]byte, MaxEventBytes)))
+	w.Feed(frame(0, false, []byte{'x'})) // Cumulative size crosses the limit.
+	w.Feed(frame(9, true, []byte("ping")))
+	w.Feed(frame(0, true, []byte(responseJSON))) // Still part of the skipped message.
+	if w.message != nil || len(turns) != 1 || turns[0].Outcome != "incomplete" || turns[0].Usage.Source != Unknown || turns[0].Usage.Input != UnknownTokens {
+		t.Fatalf("gap did not close the pending turn conservatively: %+v", turns)
+	}
+	for _, tc := range []struct{ kind, id string }{{"completed", "open"}, {"completed", "terminal-only"}, {"in_progress", "already-running"}} {
+		event(tc.kind, tc.id)
+		event("created", tc.id) // Replays can't turn ambiguous evidence into charges.
+		event("completed", tc.id)
+	}
+	event("created", "new")
+	event("completed", "new")
+	event("completed", "new")
+	if u := w.Finish(true); u.Source != Unknown || len(turns) != 2 || turns[1].Outcome != "complete" || turns[1].Usage.Source != Reported || turns[1].Usage.Input != 12 {
+		t.Fatalf("aggregate=%+v turns=%+v", u, turns)
+	}
+}
+
+func TestWebSocketSkipsOnlyWellFramedOversizedMessages(t *testing.T) {
+	w := NewWebSocket(New(Responses, JSON))
+	var turns []WebSocketTurn
+	w.SetTurnObserver(func(turn WebSocketTurn) { turns = append(turns, turn) })
+	feedTurnEvent(w, `{"type":"response.created","response":{"id":"pending"}}`)
+	w.Feed(frame(1, false, make([]byte, MaxEventBytes+1)))
+	if w.disabled || w.message != nil || !w.fragmented {
+		t.Fatal("did not skip the oversized fragment at bounded memory")
+	}
+	// A text start instead of a continuation is still a protocol error.
+	feedTurnEvent(w, `{"type":"response.created","response":{"id":"r1"}}`)
+	feedTurnEvent(w, responseJSON)
+	if u := w.Finish(true); !w.disabled || u.Source != Unknown || len(turns) != 1 || turns[0].Outcome != "incomplete" {
+		t.Fatalf("invalid frame sequence did not disable observation: %+v", u)
+	}
+}
+
+func TestWebSocketUnattributableGapStaysUnknown(t *testing.T) {
+	w := NewWebSocket(New(Responses, JSON))
+	w.SetTurnObserver(func(turn WebSocketTurn) { t.Fatalf("unattributed gap hidden by %+v", turn) })
+	w.Feed(frame(1, true, make([]byte, MaxEventBytes+1)))
+	feedTurnEvent(w, `{"type":"response.created","response":{"id":"r1"}}`)
+	feedTurnEvent(w, responseJSON)
+	if u := w.Finish(true); u.Source != Unknown || u.Turns != 0 {
+		t.Fatalf("gap reported usage: %+v", u)
+	}
+}

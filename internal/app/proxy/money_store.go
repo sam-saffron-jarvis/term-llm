@@ -3,6 +3,7 @@ package proxy
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -86,19 +87,22 @@ func requestMoneyRecord(rec Record) MoneyRecord {
 	return MoneyRecord{Started: time.UnixMilli(rec.Started), DeviceID: rec.CallerID, Device: rec.CallerName, Tag: rec.Tag, App: rec.App, Provider: provider, Money: money, Usage: rec.Usage}
 }
 
-// writeMoneyRecord shares the admission or terminal request transaction. The
-// request ID makes replacement and repeated terminal persistence idempotent. It never reprices previous rows.
-func writeMoneyRecord(tx sqliteutil.Executor, rec Record) error {
-	row := requestMoneyRecord(rec)
-	data, err := json.Marshal(row)
-	if err != nil {
-		return err
-	}
-	_, err = tx.Exec("INSERT INTO money_history(request_id,started,caller,route,data) VALUES(?,?,?,?,?) ON CONFLICT(request_id) DO UPDATE SET data=excluded.data", rec.ID, rec.Started, rec.CallerID, rec.Route, string(data))
+func marshalMoneyRecord(rec Record) (string, error) {
+	data, err := json.Marshal(requestMoneyRecord(rec))
+	return string(data), err
+}
+
+// The transaction-bound upsert replaces only the evidence, never its index keys.
+func writeMoneyRecord(ctx context.Context, stmt *sql.Stmt, rec Record, data string) error {
+	_, err := stmt.ExecContext(ctx, rec.ID, rec.Started, rec.CallerID, rec.Route, data)
 	return err
 }
 
 func (s *store) finishRequestAndMoney(ctx context.Context, rec Record, data []byte) error {
+	moneyData, err := marshalMoneyRecord(rec)
+	if err != nil {
+		return err
+	}
 	conn, err := s.db.Conn(ctx)
 	if err != nil {
 		return err
@@ -120,7 +124,7 @@ func (s *store) finishRequestAndMoney(ctx context.Context, rec Record, data []by
 	if n != 1 {
 		return fmt.Errorf("terminal request row is missing")
 	}
-	if err = writeMoneyRecord(tx, rec); err != nil {
+	if err = writeMoneyRecord(ctx, tx.StmtContext(ctx, s.moneyStmt), rec, moneyData); err != nil {
 		return err
 	}
 	if err = tx.Commit(); err != nil {
@@ -142,6 +146,10 @@ func pendingRequestMoney(billing string) *Money {
 	return &Money{Billing: billing, Kind: "unmeasured", Reason: "In flight or outcome unknown; usage and any provider charge are not yet known."}
 }
 func (s *store) startRequestAndMoney(ctx context.Context, rec *Record, data []byte) error {
+	moneyData, err := marshalMoneyRecord(*rec)
+	if err != nil {
+		return err
+	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -155,7 +163,7 @@ func (s *store) startRequestAndMoney(ctx context.Context, rec *Record, data []by
 	if err != nil {
 		return err
 	}
-	if err = writeMoneyRecord(tx, *rec); err != nil {
+	if err = writeMoneyRecord(ctx, tx.StmtContext(ctx, s.moneyStmt), *rec, moneyData); err != nil {
 		return err
 	}
 	if err = tx.Commit(); err != nil {
@@ -174,6 +182,7 @@ func (s *store) reconcileMoneyHistory(ctx context.Context, since, until int64) e
 		return err
 	}
 	defer tx.Rollback()
+	moneyStmt := tx.StmtContext(ctx, s.moneyStmt)
 	var after int64
 	for {
 		rows, err := tx.QueryContext(ctx, `SELECT r.seq,r.id,r.started,r.caller,r.route,r.data FROM requests r LEFT JOIN money_history m ON m.request_id=r.id WHERE r.seq>? AND r.started>=? AND r.started<=? AND m.request_id IS NULL ORDER BY r.seq LIMIT 128`, after, since, until)
@@ -208,7 +217,11 @@ func (s *store) reconcileMoneyHistory(ctx context.Context, since, until int64) e
 			return err
 		}
 		for _, rec := range records {
-			if err = writeMoneyRecord(tx, rec); err != nil {
+			moneyData, err := marshalMoneyRecord(rec)
+			if err != nil {
+				return err
+			}
+			if err = writeMoneyRecord(ctx, moneyStmt, rec, moneyData); err != nil {
 				return err
 			}
 		}

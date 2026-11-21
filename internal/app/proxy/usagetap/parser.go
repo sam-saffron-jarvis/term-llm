@@ -77,7 +77,8 @@ type Parser struct {
 	protocol                               Protocol
 	format                                 Format
 	buf, event                             []byte
-	eventBytes, lineBytes                  int
+	eventBytes                             int
+	lineNonEmpty                           bool // A skipped oversize line is still not an SSE event delimiter.
 	skip, bad, finished, evidence, partial bool
 	afterCR                                bool
 	geminiWrapped                          bool // Cloud Code wraps each Gemini reply in a response field.
@@ -149,7 +150,8 @@ func (p *Parser) MarkUnknown() {
 // Feed observes arbitrary byte chunks. JSON bodies are decoded at Finish;
 // SSE and NDJSON events are decoded as soon as their delimiters arrive.
 func (p *Parser) Feed(data []byte) {
-	if p.finished {
+	// Without an endpoint schema no body can supply usage evidence.
+	if p.finished || p.protocol == "" {
 		return
 	}
 	switch p.format {
@@ -167,39 +169,51 @@ func (p *Parser) Feed(data []byte) {
 		}
 		p.buf = append(p.buf, data...)
 	case SSE, NDJSON:
-		for _, b := range data {
-			p.feedByte(b)
-		}
+		p.feedLines(data)
 	}
 }
 
-func (p *Parser) feedByte(b byte) {
-	if p.afterCR {
-		p.afterCR = false
-		if b == '\n' {
+func (p *Parser) feedLines(data []byte) {
+	for len(data) > 0 {
+		if p.afterCR {
+			p.afterCR = false
+			if data[0] == '\n' {
+				data = data[1:]
+				continue
+			}
+		}
+		n := 0
+		for n < len(data) && data[n] != '\r' && data[n] != '\n' {
+			n++
+		}
+		if n != 0 {
+			p.lineNonEmpty = true
+			p.addEventBytes(n)
+			if !p.skip {
+				p.buf = append(p.buf, data[:n]...)
+			}
+		}
+		if n == len(data) {
 			return
 		}
-	}
-	if b == '\r' || b == '\n' {
 		p.line()
-		p.afterCR = b == '\r'
-		return
-	}
-	p.lineBytes = min(p.lineBytes+1, MaxEventBytes+1)
-	p.addEventByte()
-	if !p.skip {
-		p.buf = append(p.buf, b)
+		p.afterCR = data[n] == '\r'
+		data = data[n+1:]
 	}
 }
 
-func (p *Parser) addEventByte() {
-	p.eventBytes = min(p.eventBytes+1, MaxEventBytes+1)
-	if p.eventBytes > MaxEventBytes {
+func (p *Parser) addEventBytes(n int) {
+	if p.skip {
+		return
+	}
+	if n > MaxEventBytes-p.eventBytes {
 		p.MarkUnknown()
 		p.skip = true
 		p.buf = nil
 		p.event = nil
+		return
 	}
+	p.eventBytes += n
 }
 
 func (p *Parser) line() {
@@ -210,18 +224,17 @@ func (p *Parser) line() {
 		p.resetEvent()
 		return
 	}
-	if p.lineBytes == 0 {
+	if !p.lineNonEmpty {
 		p.dispatch()
 		return
 	}
-	p.lineBytes = 0
+	p.lineNonEmpty = false
 	// Count a normalized line delimiter, including non-data SSE fields.
-	p.addEventByte()
+	p.addEventBytes(1)
 	if p.skip {
 		return
 	}
 	line := p.buf
-	p.buf = nil
 	if bytes.HasPrefix(line, []byte("data:")) {
 		value := line[5:]
 		if len(value) > 0 && value[0] == ' ' {
@@ -233,18 +246,30 @@ func (p *Parser) line() {
 		if len(value) > MaxEventBytes-len(p.event) {
 			p.MarkUnknown()
 			p.skip = true
+			p.buf = nil
 			p.event = nil
 			return
 		}
 		p.event = append(p.event, value...)
 	}
+	p.buf = resetScratch(p.buf)
+}
+
+// Reuse small buffers only within this parser, without retaining old payload
+// bytes or pinning a large event for the remaining lifetime of the stream.
+func resetScratch(b []byte) []byte {
+	if cap(b) > 4<<10 {
+		return nil
+	}
+	clear(b)
+	return b[:0]
 }
 
 func (p *Parser) resetEvent() {
-	p.buf = nil
-	p.event = nil
+	p.buf = resetScratch(p.buf)
+	p.event = resetScratch(p.event)
 	p.eventBytes = 0
-	p.lineBytes = 0
+	p.lineNonEmpty = false
 	p.skip = false
 }
 func (p *Parser) dispatch() {
