@@ -1,4 +1,4 @@
-import { uploadAttachment } from './upload-attachment';
+import { uploadAttachment, uploadLinkedAttachment } from './upload-attachment';
 import type { SessionInspect, SessionInspectBodies } from '../domain/inspect';
 import type {
   CreateWebSessionRequest,
@@ -225,6 +225,11 @@ export const endpoints = (api: APIClient) => ({
     }),
   uploadAttachment: (blob: Blob, filename: string, controls?: import('./client').UploadControls) =>
     uploadAttachment(api, blob, filename, controls),
+  uploadLinkedAttachment: (
+    blob: Blob,
+    filename: string,
+    controls?: import('./client').UploadControls,
+  ) => uploadLinkedAttachment(api, blob, filename, controls),
   capabilities: () => api.get<Record<string, unknown>>('/v1/capabilities'),
   sharingCapabilities: () => api.get<SharingCapabilitiesResponse>('/v1/sharing/capabilities'),
   providers: () => api.get<Record<string, unknown>>('/v1/providers'),

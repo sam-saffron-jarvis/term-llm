@@ -199,7 +199,9 @@ export class AppStore {
   readonly runs: Signal<Record<string, ResponseProjection>>;
   readonly connected: Signal<boolean>;
   readonly authRequired: Signal<boolean>;
+  readonly linkedComposerActions = signal({ mcp: false, goals: false });
   readonly linkedDevicesMode = signal(false);
+  readonly linkedMCPManage = signal(false);
   readonly startup = signal('Loading your chat shell…');
   readonly startupFailed = signal(false);
   readonly startupDone = signal(false);
@@ -420,6 +422,7 @@ export class AppStore {
     this.automaticAgentLabel = this.runtime.automaticAgentLabel;
     this.draftApprovalActions = this.runtime.draftApprovalActions;
     this.composer = new ComposerStore(this.services, {
+      linkedDevicesMode: this.linkedDevicesMode,
       activeSessionId: this.activeSessionId,
       activeProjectId: this.activeProjectId,
       draftActive: this.draftActive,
@@ -456,6 +459,7 @@ export class AppStore {
     });
     this.sideQuestion = this.sideQuestions.state;
     this.mcpStore = new MCPStore(this.services, {
+      linked: () => this.linkedDevicesMode.value,
       activeSession: this.activeSession,
       draftSessionId: () => this.composer.runtimeDraftId(),
       patchSession: (id, patch) => this.sessionStore.patch(id, patch),
@@ -1386,6 +1390,7 @@ export class AppStore {
     const linkedDevicesActive =
       this.config.linkedDevicesScope === 'web-v1' || linkedDevices?.active === true;
     this.linkedDevicesMode.value = linkedDevicesActive;
+    this.linkedMCPManage.value = linkedDevicesActive && linkedDevices?.mcp_manage === true;
     const projects =
       data.projects && typeof data.projects === 'object'
         ? (data.projects as Record<string, unknown>)
@@ -1408,22 +1413,28 @@ export class AppStore {
       admission?.version === 1 && typeof admission.instance_id === 'string'
         ? admission.instance_id
         : '';
-    const attachments = recordValue(data.attachments);
-    if (attachments) {
-      const maxCount = Number(attachments.max_count);
-      const maxBytes = Number(attachments.max_bytes);
-      this.composer.applyAttachmentPolicy({
-        uploadRefs: recordValue(attachments.upload_refs)?.version === 1,
-        maxCount: maxCount > 0 ? maxCount : DEFAULT_ATTACHMENT_POLICY.maxCount,
-        maxBytes: maxBytes > 0 ? maxBytes : DEFAULT_ATTACHMENT_POLICY.maxBytes,
-        mimeTypes: Array.isArray(attachments.mime_types)
-          ? attachments.mime_types.map(String)
-          : DEFAULT_ATTACHMENT_POLICY.mimeTypes,
-        extensions: Array.isArray(attachments.extensions)
-          ? attachments.extensions.map((entry) => String(entry).toLowerCase())
-          : DEFAULT_ATTACHMENT_POLICY.extensions,
-      });
-    }
+    this.linkedComposerActions.value = {
+      mcp: linkedDevices?.mcp === true,
+      goals: linkedDevices?.goals === true,
+    };
+    const attachments = recordValue(data.attachments) || {};
+    const uploadRefs =
+      recordValue(attachments.upload_refs)?.version === 1 &&
+      (!linkedDevicesActive || linkedDevices?.uploads === true);
+    const maxCount = Number(attachments.max_count);
+    const maxBytes = Number(attachments.max_bytes);
+    this.composer.applyAttachmentPolicy({
+      linkedUploads: linkedDevicesActive && uploadRefs,
+      uploadRefs,
+      maxCount: maxCount > 0 ? maxCount : DEFAULT_ATTACHMENT_POLICY.maxCount,
+      maxBytes: maxBytes > 0 ? maxBytes : DEFAULT_ATTACHMENT_POLICY.maxBytes,
+      mimeTypes: Array.isArray(attachments.mime_types)
+        ? attachments.mime_types.map(String)
+        : DEFAULT_ATTACHMENT_POLICY.mimeTypes,
+      extensions: Array.isArray(attachments.extensions)
+        ? attachments.extensions.map((entry) => String(entry).toLowerCase())
+        : DEFAULT_ATTACHMENT_POLICY.extensions,
+    });
     this.widgetStore.applyRead(data.widget_status ?? data.widgets, widgetRevision);
   }
 

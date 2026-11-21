@@ -24,7 +24,7 @@ export type JobsV2RunEvent = { "id": number; "run_id": string; "event_type": str
 
 export type LinkedDevicesAuthorityStatement = { "agent_name"?: string; "description": string; "same_uid_note": string; };
 
-export type LinkedDevicesDeviceStatus = { "id": string; "name": string; "approved_at"?: string; "last_seen_at"?: string; "connection": string; };
+export type LinkedDevicesDeviceStatus = { "manage_mcp"?: boolean; "id": string; "name": string; "approved_at"?: string; "last_seen_at"?: string; "connection": string; };
 
 export type LinkedDevicesInvitationStatus = { "url": string; "qr_data_url": string; "expires_at": string; };
 

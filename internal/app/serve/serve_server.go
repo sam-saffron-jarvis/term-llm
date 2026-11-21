@@ -34,6 +34,7 @@ type serveServer struct {
 	admissionInstanceOnce    sync.Once
 	admissionInstanceID      string
 	uploadHandler            uploads.ReferenceHandler
+	linkedUploads            uploads.LinkedUploads
 	mcpRegistry              mcpRegistrySearcher
 	reloadRunsUnregister     func()
 	browserAuth              *browserPasskeyHandler

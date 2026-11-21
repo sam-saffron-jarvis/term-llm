@@ -93,7 +93,7 @@ func mcpLogin(cmd *cobra.Command, args []string) error {
 			http.NotFound(w, r)
 			return
 		}
-		_, accepted := mcpoauth.DefaultCoordinator().CompleteCallback(
+		_, accepted := mcpoauth.CompletePublicCallback(
 			r.URL.Query().Get("state"), r.URL.Query().Get("code"),
 			r.URL.Query().Get("iss"), r.URL.Query().Get("error"),
 		)
@@ -124,7 +124,7 @@ func mcpLogin(cmd *cobra.Command, args []string) error {
 
 	waitCtx, waitCancel := context.WithTimeout(cmd.Context(), 10*time.Minute)
 	defer waitCancel()
-	completed, err := mcpoauth.DefaultCoordinator().Wait(waitCtx, flow.ID)
+	completed, err := mcpoauth.OwnerFlowCoordinator(flow.ID).Wait(waitCtx, flow.ID)
 	if err != nil {
 		if errors.Is(err, context.DeadlineExceeded) {
 			return fmt.Errorf("authorization timed out")

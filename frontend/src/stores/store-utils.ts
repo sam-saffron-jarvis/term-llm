@@ -88,6 +88,8 @@ export const normalizeMCPState = (value: unknown): { servers: MCPServer[]; enabl
         authIssuer: String(server.auth_issuer || '').trim(),
         authScopes: Array.isArray(server.auth_scopes) ? server.auth_scopes.map(String) : [],
         authExpiresAt: String(server.auth_expires_at || '').trim(),
+        ...(server.can_remove ? { canRemove: true } : {}),
+        ...(server.host_callback_needed ? { hostCallbackNeeded: true } : {}),
         canSignIn: Boolean(server.can_sign_in),
         canSignOut: Boolean(server.can_sign_out),
       };

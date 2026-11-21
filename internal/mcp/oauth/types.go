@@ -1,6 +1,7 @@
 package oauth
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"time"
@@ -21,9 +22,11 @@ var (
 
 // Options configures the SDK authorization-code handler for an MCP endpoint.
 type Options struct {
-	ClientID     string
-	ClientSecret string
-	Scopes       []string
+	// GrantLifetime bounds a delegated interactive flow independently of its HTTP request.
+	GrantLifetime context.Context
+	ClientID      string
+	ClientSecret  string
+	Scopes        []string
 	// ScopesConfigured distinguishes an explicitly empty scope list from an
 	// omitted list. When omitted, login requests every scope advertised by the
 	// authorization server.

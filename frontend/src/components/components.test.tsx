@@ -5502,6 +5502,44 @@ describe('Preact-owned chat surfaces', () => {
     );
   });
 
+  it.each([
+    [{ uploads: true }, ['Upload file', 'Take photo']],
+    [{ mcp: true }, ['MCP servers']],
+    [{ goals: true }, ['Set goal…']],
+    [{}, []],
+  ] as const)('shows only granted linked composer actions: %j', async (grants, items) => {
+    const store = createStore({
+      linkedDevicesScope: 'web-v1',
+      locationSharing: true,
+      worktrees: true,
+    });
+    (store as any).applyCapabilities({
+      linked_devices: grants,
+      attachments: { upload_refs: { version: 1 } },
+    });
+    store.addAttachments = vi.fn();
+    const { container } = render(
+      <StoreContext.Provider value={store}>
+        <Composer />
+      </StoreContext.Provider>,
+    );
+    const add = screen.queryByRole('button', { name: 'Add' });
+    if (items.length) {
+      await userEvent.click(add!);
+      expect(screen.getAllByRole('menuitem').map((item) => item.textContent)).toEqual(items);
+    } else expect(add).toBeNull();
+    const file = new File(['test'], 'note.txt');
+    const pickers = container.querySelectorAll('input[type=file]');
+    for (const picker of pickers) fireEvent.change(picker, { target: { files: [file] } });
+    fireEvent.paste(screen.getByRole('textbox', { name: 'Message' }), {
+      clipboardData: { items: [{ kind: 'file', getAsFile: () => file }] },
+    });
+    fireEvent.drop(container.querySelector('footer')!, { dataTransfer: { files: [file] } });
+    const uploads = 'uploads' in grants;
+    expect(pickers).toHaveLength(uploads ? 2 : 0);
+    expect(store.addAttachments).toHaveBeenCalledTimes(uploads ? 4 : 0);
+  });
+
   it('offers Live to a linked-device client when the host advertises it', async () => {
     const store = createStore();
     store.linkedDevicesMode.value = true;
@@ -5518,7 +5556,7 @@ describe('Preact-owned chat surfaces', () => {
       </StoreContext.Provider>,
     );
 
-    // Dictation and uploads remain restricted to the host device.
+    // Dictation remains native-only and this host did not grant uploads.
     expect(screen.queryByRole('button', { name: 'Add' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'Record voice message' })).toBeNull();
     const live = screen.getByRole('button', { name: 'Start live voice' });

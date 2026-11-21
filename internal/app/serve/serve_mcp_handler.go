@@ -11,6 +11,7 @@ import (
 	"time"
 
 	mcpstart "github.com/term-llm/term-llm/internal/app/runtime/mcpstart"
+	"github.com/term-llm/term-llm/internal/linkeddevices"
 	"github.com/term-llm/term-llm/internal/llm/core"
 	"github.com/term-llm/term-llm/internal/llm/engine"
 	"github.com/term-llm/term-llm/internal/mcp"
@@ -656,6 +657,11 @@ func (s *serveServer) handleSessionMCP(w http.ResponseWriter, r *http.Request, s
 	if r.Method != http.MethodGet && r.Method != http.MethodPatch {
 		w.Header().Set("Allow", "GET, PATCH")
 		writeOpenAIError(w, http.StatusMethodNotAllowed, "invalid_request_error", "method not allowed")
+		return
+	}
+
+	if _, linked := linkeddevices.DeviceFromRequest(r); linked {
+		s.handleLinkedMCP(w, r, sessionID)
 		return
 	}
 

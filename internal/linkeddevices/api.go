@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/url"
 	"strings"
@@ -53,6 +54,8 @@ func (r *Runtime) handleOwner(w http.ResponseWriter, request *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	case strings.HasPrefix(path, "/requests/") && request.Method == http.MethodPost:
 		r.handleRequestAction(w, request, strings.TrimPrefix(path, "/requests/"))
+	case strings.HasPrefix(path, "/devices/") && request.Method == http.MethodPost:
+		r.handleDevicePermission(w, request, strings.TrimPrefix(path, "/devices/"))
 	case strings.HasPrefix(path, "/devices/") && request.Method == http.MethodDelete:
 		id, err := url.PathUnescape(strings.TrimPrefix(path, "/devices/"))
 		if err != nil || id == "" || strings.Contains(id, "/") {
@@ -85,6 +88,34 @@ func (r *Runtime) handleOwner(w http.ResponseWriter, request *http.Request) {
 	default:
 		http.NotFound(w, request)
 	}
+}
+
+func (r *Runtime) handleDevicePermission(w http.ResponseWriter, request *http.Request, rest string) {
+	id, action, ok := strings.Cut(rest, "/")
+	if !ok || id == "" || action != "mcp-management" {
+		http.NotFound(w, request)
+		return
+	}
+	var body struct {
+		Enabled *bool `json:"enabled"`
+	}
+	d := json.NewDecoder(http.MaxBytesReader(w, request.Body, 1024))
+	d.DisallowUnknownFields()
+	if d.Decode(&body) != nil || body.Enabled == nil || d.Decode(&struct{}{}) != io.EOF {
+		http.Error(w, "expected an enabled boolean", http.StatusBadRequest)
+		return
+	}
+	r.mu.Lock()
+	err := r.grants.SetManageMCP(id, *body.Enabled)
+	if err == nil && !*body.Enabled {
+		r.cancelMCPLocked(id)
+	}
+	r.mu.Unlock()
+	if err != nil {
+		writeOwnerError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (r *Runtime) handleRequestAction(w http.ResponseWriter, request *http.Request, rest string) {

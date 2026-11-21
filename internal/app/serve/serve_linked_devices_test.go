@@ -85,8 +85,13 @@ func TestPeerCapabilitiesDisableOwnerAndDeviceOnlyControls(t *testing.T) {
 	}
 	linked := payload["linked_devices"].(map[string]any)
 	if linked["active"] != true || linked["scope"] != linkeddevices.ScopeWebV1 || linked["owner_controls"] != false ||
-		linked["uploads"] != false || linked["voice"] != false || linked["push_notifications"] != false || linked["device_tools"] != false {
+		linked["uploads"] != true || linked["mcp"] != true || linked["goals"] != true ||
+		linked["voice"] != false || linked["push_notifications"] != false || linked["device_tools"] != false {
 		t.Fatalf("linked-device capabilities = %#v", linked)
+	}
+	attachments := payload["attachments"].(map[string]any)
+	if attachments["upload_refs"].(map[string]any)["version"] != float64(1) || attachments["max_bytes"].(float64) <= 32<<10 {
+		t.Errorf("paired composer lost host attachment policy: %#v", attachments)
 	}
 	for _, feature := range []string{"projects", "worktrees", "shell", "live"} {
 		value, _ := payload[feature].(map[string]any)

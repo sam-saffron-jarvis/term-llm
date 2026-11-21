@@ -155,16 +155,18 @@ func TestServeMCPOAuthCompletionReconnectsSelectedServer(t *testing.T) {
 		return
 	}
 	for _, tc := range []struct {
-		name    string
-		mode    string
-		initial bool
-		final   bool
+		name                  string
+		mode                  string
+		initial               bool
+		revokeBeforeReconnect bool
+		final                 bool
 	}{
 		{name: "default planner", initial: true, final: true},
 		{name: "eager planner", mode: "eager", initial: true, final: true},
 		{name: "deferred planner", mode: "deferred", initial: true, final: true},
 		{name: "deselected during flow", initial: true},
 		{name: "selected during flow", final: true},
+		{name: "revoked before reconnect", initial: true, final: true, revokeBeforeReconnect: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			mcpServer := sdkmcp.NewServer(&sdkmcp.Implementation{Name: "protected", Version: "1"}, nil)
@@ -226,7 +228,23 @@ func TestServeMCPOAuthCompletionReconnectsSelectedServer(t *testing.T) {
 			}
 			updates := make(chan mcp.StatusUpdate, 10)
 			rt.mcpManager.SetStatusChannel(updates)
-			srv.publishMCPOAuthCompletion("sess_oauth_completion", "protected", flow.ID, rt.mcpManager)
+			grant, revoke := context.WithCancel(ctx)
+			defer revoke()
+			if tc.revokeBeforeReconnect {
+				revoke()
+			}
+			srv.publishMCPOAuthCompletion(grant, "sess_oauth_completion", "protected", flow.ID, rt.mcpManager)
+			if tc.revokeBeforeReconnect {
+				if tools := rt.mcpManager.AllTools(); len(tools) != 0 {
+					t.Fatalf("revoked completion attached tools: %v", tools)
+				}
+				select {
+				case update := <-updates:
+					t.Fatalf("revoked completion restarted server: %v", update)
+				default:
+				}
+				return
+			}
 			if !tc.final {
 				if status, _ := rt.mcpManager.ServerStatus("protected"); status != mcp.StatusStopped {
 					t.Fatalf("deselected server restarted: %s", status)

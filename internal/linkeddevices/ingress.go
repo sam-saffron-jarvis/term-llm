@@ -17,6 +17,10 @@ type DevicePrincipal struct {
 	ApprovedBy *pairing.Person
 	DeviceID   string
 	Scope      string
+	ManageMCP  bool // Owner-delegated MCP management, never general owner authority.
+	// MCPGrantLifetime is non-nil only for a verified manager. Unlike Lifetime,
+	// it survives peer reconnects but ends on permission removal, revoke or stop.
+	MCPGrantLifetime context.Context
 	// Lifetime is the trusted peer connection's context, not an HTTP request's.
 	// It is cancelled on revocation, disconnect, replacement and host shutdown.
 	Lifetime context.Context
@@ -116,6 +120,18 @@ func RouteAllowed(method, path string) bool {
 	if method == http.MethodOptions || strings.HasPrefix(path, "/v1/linked-devices") {
 		return false
 	}
+	// Composer mutations target one conversation, not arbitrary suffix matches.
+	if tail, ok := strings.CutPrefix(path, "/v1/sessions/"); ok {
+		id, action, hasAction := strings.Cut(tail, "/")
+		if hasAction && id != "" && id != "." && id != ".." {
+			switch action {
+			case "mcp":
+				return method == http.MethodGet || method == http.MethodPatch
+			case "runtime/goal":
+				return method == http.MethodPost
+			}
+		}
+	}
 	if method == http.MethodGet && shellPath(path) {
 		return true
 	}
@@ -139,7 +155,7 @@ func RouteAllowed(method, path string) bool {
 	}
 	if method == http.MethodPost {
 		switch path {
-		case "/v1/sessions", "/v1/responses", "/v1/mentions/search":
+		case "/v1/sessions", "/v1/responses", "/v1/mentions/search", "/v1/linked-uploads":
 			return true
 		}
 		if strings.HasPrefix(path, "/v1/responses/") && strings.HasSuffix(path, "/cancel") {

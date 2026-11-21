@@ -115,6 +115,66 @@ describe('upload reference attachments', () => {
     }
   });
 
+  it('sends the finalized linked upload through the ordinary response path', async () => {
+    const store = storeWithRefs();
+    const fetch = vi
+      .fn()
+      .mockResolvedValueOnce(Response.json({ token: 'part' }, { status: 202 }))
+      .mockResolvedValueOnce(Response.json(result(0), { status: 201 }));
+    vi.stubGlobal('fetch', fetch);
+    try {
+      (store as any).applyCapabilities({
+        linked_devices: { active: true, uploads: true },
+        attachments: { upload_refs: { version: 1 } },
+      });
+      store.endpoints.createResponse = vi.fn(async () => new Response('rejected', { status: 400 }));
+      store.addAttachments([
+        new File([new Uint8Array(32769)], 'linked.pdf', { type: 'application/pdf' }),
+      ]);
+      await vi.waitFor(() => expect(store.attachments.value[0]?.status).toBe('ready'));
+      expect(fetch).toHaveBeenCalledTimes(2);
+      await store.send();
+      const body = vi.mocked(store.endpoints.createResponse).mock.calls[0][0];
+      expect((body as any).input[0].content).toContainEqual({
+        type: 'input_upload',
+        upload_id: uploadID(0),
+      });
+      expect(JSON.stringify(body)).not.toMatch(/base64|file_data|image_url/);
+    } finally {
+      store.dispose();
+    }
+  });
+
+  it.each([
+    [undefined, 1],
+    [false, 1],
+    [true, undefined],
+    [true, 2],
+    [true, '1'],
+  ])(
+    'does not fall back to inline on linked hosts (uploads=%s, version=%s)',
+    async (uploads, version) => {
+      const store = new AppStore({ ...testConfig, linkedDevicesScope: 'web-v1' });
+      try {
+        (store as any).applyCapabilities({
+          linked_devices: { uploads },
+          attachments: { upload_refs: { version } },
+        });
+        store.addAttachments([image(0)]);
+        expect(store.attachments.value).toEqual([]);
+        await expect(
+          store.attachmentInput({
+            name: 'restored',
+            type: 'text/plain',
+            dataURL: 'data:text/plain,abc',
+          }),
+        ).rejects.toThrow('does not support uploads');
+      } finally {
+        store.dispose();
+      }
+    },
+  );
+
   it('keeps local image bytes in the optimistic row across acceptance without base64', async () => {
     const store = storeWithRefs();
     const base64 = vi.spyOn(blobs, 'blobToDataURL');

@@ -11,6 +11,8 @@ import (
 	"time"
 
 	mcpstart "github.com/term-llm/term-llm/internal/app/runtime/mcpstart"
+	"github.com/term-llm/term-llm/internal/app/serve/mcpweb"
+	"github.com/term-llm/term-llm/internal/linkeddevices"
 	"github.com/term-llm/term-llm/internal/mcp"
 	mcpoauth "github.com/term-llm/term-llm/internal/mcp/oauth"
 	"github.com/term-llm/term-llm/internal/terminaltext"
@@ -43,6 +45,14 @@ func parseSessionMCPOAuthSuffix(suffix string) (server, action string, ok bool) 
 }
 
 func (s *serveServer) handleSessionMCPOAuth(w http.ResponseWriter, r *http.Request, sessionID, serverName, action string) {
+	peer, linked := linkeddevices.DeviceFromRequest(r)
+	if linked {
+		w.Header().Set("Cache-Control", "no-store")
+		if !peer.ManageMCP || peer.MCPGrantLifetime == nil || peer.MCPGrantLifetime.Err() != nil || action == "logout" {
+			writeOpenAIError(w, 403, "permission_error", "MCP account is managed on the host")
+			return
+		}
+	}
 	wantMethod := http.MethodPost
 	if action == "logout" {
 		wantMethod = http.MethodDelete
@@ -74,6 +84,21 @@ func (s *serveServer) handleSessionMCPOAuth(w http.ResponseWriter, r *http.Reque
 		writeOpenAIError(w, http.StatusConflict, "conflict_error", "cannot change MCP authentication while a response is running")
 		return
 	}
+	if linked {
+		if rt.refreshMCPManagerLocked() != nil {
+			writeOpenAIError(w, 500, "server_error", "MCP unavailable")
+			return
+		}
+		cfg := rt.mcpManager.Config().Servers[serverName]
+		if cfg.LinkedInstaller != peer.DeviceID || rt.mcpManager.CheckAccess(serverName) != nil {
+			writeOpenAIError(w, 403, "permission_error", "not an account managed by this device")
+			return
+		}
+		if !mcpweb.PublicCallback(s.cfg.publicURL) {
+			writeOpenAIError(w, 409, "conflict_error", "Configure a public HTTPS callback on the host first.")
+			return
+		}
+	}
 	if err := rt.ensureMCPManagerLocked(); err != nil {
 		writeOpenAIError(w, http.StatusInternalServerError, "server_error", err.Error())
 		return
@@ -100,13 +125,25 @@ func (s *serveServer) handleSessionMCPOAuth(w http.ResponseWriter, r *http.Reque
 		startCtx, cancel := context.WithTimeout(r.Context(), 45*time.Second)
 		defer cancel()
 		flow, err := rt.mcpManager.StartOAuth(startCtx, serverName, mcp.OAuthStartOptions{
-			RedirectURL: redirectURL, Force: req.Force, SkipReconnect: true,
+			GrantLifetime: peer.MCPGrantLifetime, RedirectURL: redirectURL, Force: req.Force, SkipReconnect: true,
 		})
 		if err != nil {
+			if linked {
+				writeOpenAIError(w, 502, "oauth_error", "account connection failed")
+				return
+			}
 			writeOpenAIError(w, http.StatusBadGateway, "oauth_error", safeServeOAuthError(err))
 			return
 		}
-		go s.publishMCPOAuthCompletion(sessionID, serverName, flow.ID, rt.mcpManager)
+		lifetime := context.Background()
+		if linked {
+			lifetime = peer.MCPGrantLifetime
+		}
+		go s.publishMCPOAuthCompletion(lifetime, sessionID, serverName, flow.ID, rt.mcpManager)
+		if linked {
+			mcpweb.WriteFlow(w, 202, flow)
+			return
+		}
 		writeJSON(w, http.StatusAccepted, flow)
 	case "cancel":
 		var req serveMCPOAuthCancelRequest
@@ -135,10 +172,10 @@ func (s *serveServer) handleSessionMCPOAuth(w http.ResponseWriter, r *http.Reque
 	}
 }
 
-func (s *serveServer) publishMCPOAuthCompletion(sessionID, serverName, flowID string, manager *mcp.Manager) {
-	ctx, cancel := context.WithTimeout(context.Background(), 11*time.Minute)
+func (s *serveServer) publishMCPOAuthCompletion(lifetime context.Context, sessionID, serverName, flowID string, manager *mcp.Manager) {
+	ctx, cancel := context.WithTimeout(lifetime, 11*time.Minute)
 	defer cancel()
-	flow, err := mcpoauth.DefaultCoordinator().Wait(ctx, flowID)
+	flow, err := mcpoauth.OwnerFlowCoordinator(flowID).Wait(ctx, flowID)
 	if err == nil && flow != nil && flow.State == mcpoauth.FlowSucceeded {
 		if manager != nil && s.sessionMgr != nil {
 			if rt, ok := s.sessionMgr.Get(sessionID); ok {
@@ -149,8 +186,8 @@ func (s *serveServer) publishMCPOAuthCompletion(sessionID, serverName, flowID st
 						selected = containsMCPServer(mcpstart.ParseServerList(session.MCP), serverName)
 					}
 				}
-				if selected && rt.mcpManager == manager {
-					if err := manager.Restart(context.Background(), serverName); err == nil {
+				if selected && rt.mcpManager == manager && lifetime.Err() == nil {
+					if err := manager.Restart(lifetime, serverName); err == nil {
 						delete(rt.mcpAuthRequiredGrants, serverName)
 					}
 				}
@@ -181,7 +218,21 @@ func (s *serveServer) handleMCPOAuthFlow(w http.ResponseWriter, r *http.Request)
 		http.NotFound(w, r)
 		return
 	}
-	flow, ok := mcpoauth.DefaultCoordinator().Flow(id)
+	if peer, linked := linkeddevices.DeviceFromRequest(r); linked {
+		w.Header().Set("Cache-Control", "no-store")
+		if !peer.ManageMCP {
+			writeOpenAIError(w, 403, "permission_error", "not permitted")
+			return
+		}
+		flow, ok := mcpoauth.ForInstaller(peer.DeviceID).Flow(id)
+		if !ok {
+			http.NotFound(w, r)
+			return
+		}
+		mcpweb.WriteFlow(w, 200, flow)
+		return
+	}
+	flow, ok := mcpoauth.OwnerFlowCoordinator(id).Flow(id)
 	if !ok {
 		writeOpenAIError(w, http.StatusNotFound, "not_found_error", "OAuth flow was not found")
 		return
@@ -195,7 +246,7 @@ func (s *serveServer) handleMCPOAuthCallback(w http.ResponseWriter, r *http.Requ
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	flowID, accepted := mcpoauth.DefaultCoordinator().CompleteCallback(
+	flowID, accepted := mcpoauth.CompletePublicCallback(
 		r.URL.Query().Get("state"), r.URL.Query().Get("code"),
 		r.URL.Query().Get("iss"), r.URL.Query().Get("error"),
 	)

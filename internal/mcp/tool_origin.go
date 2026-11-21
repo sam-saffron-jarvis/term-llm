@@ -31,13 +31,14 @@ func (t *MCPTool) ToolOrigin() core.ToolOrigin {
 // which authority an MCP tool call reaches. Presentation-only settings
 // (AlwaysLoad, Sampling) do not invalidate a binding.
 type mcpServerBindingConfig struct {
-	Type    string            `json:"type,omitempty"`
-	URL     string            `json:"url,omitempty"`
-	Command string            `json:"command,omitempty"`
-	Args    []string          `json:"args,omitempty"`
-	Env     map[string]string `json:"env,omitempty"`
-	Headers map[string]string `json:"headers,omitempty"`
-	OAuth   *OAuthConfig      `json:"oauth,omitempty"`
+	LinkedInstaller string            `json:"linked_installer,omitempty"`
+	Type            string            `json:"type,omitempty"`
+	URL             string            `json:"url,omitempty"`
+	Command         string            `json:"command,omitempty"`
+	Args            []string          `json:"args,omitempty"`
+	Env             map[string]string `json:"env,omitempty"`
+	Headers         map[string]string `json:"headers,omitempty"`
+	OAuth           *OAuthConfig      `json:"oauth,omitempty"`
 }
 
 // ToolBindingID is stable across an identical catalogue refresh of the same
@@ -88,12 +89,13 @@ func (t *MCPTool) serverBindingConfig() (*mcpServerBindingConfig, bool) {
 		return nil, false
 	}
 	return &mcpServerBindingConfig{
-		Type:    server.Type,
-		URL:     server.URL,
-		Command: server.Command,
-		Args:    append([]string(nil), server.Args...),
-		Env:     cloneStringMap(server.Env),
-		Headers: cloneStringMap(server.Headers),
-		OAuth:   server.OAuth,
+		LinkedInstaller: server.LinkedInstaller,
+		Type:            server.Type,
+		URL:             server.URL,
+		Command:         server.Command,
+		Args:            append([]string(nil), server.Args...),
+		Env:             cloneStringMap(server.Env),
+		Headers:         cloneStringMap(server.Headers),
+		OAuth:           server.OAuth,
 	}, true
 }

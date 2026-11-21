@@ -16,6 +16,7 @@ import { uuid } from './store-utils';
 type ComposerOwner = 'draft' | 'session';
 
 export interface ComposerStoreHost {
+  linkedDevicesMode: ReadonlySignal<boolean>;
   activeSessionId: ReadonlySignal<string>;
   activeProjectId: ReadonlySignal<string>;
   draftActive: ReadonlySignal<boolean>;
@@ -38,6 +39,9 @@ export class ComposerStore {
   readonly attachments = signal<Attachment[]>([]);
   readonly sendPending = signal(false);
   readonly attachmentPolicy = signal<AttachmentPolicy>(DEFAULT_ATTACHMENT_POLICY);
+  readonly attachmentsAllowed = computed(
+    () => !this.host.linkedDevicesMode.value || this.attachmentPolicy.value.linkedUploads === true,
+  );
   readonly attachmentAccept = computed(() => attachmentAccept(this.attachmentPolicy.value));
   readonly selectedDraftWorktree = signal('');
   /**
@@ -371,6 +375,8 @@ export class ComposerStore {
   }
 
   async attachmentInput(attachment: Attachment): Promise<Record<string, unknown>> {
+    if (!this.attachmentsAllowed.peek())
+      throw new Error('This linked device does not support uploads.');
     if (attachment.status && attachment.status !== 'ready')
       throw new Error(attachment.error || `${attachment.name} is not ready to send.`);
     if (this.attachmentPolicy.peek().uploadRefs) {
@@ -398,6 +404,7 @@ export class ComposerStore {
   }
 
   addAttachments(files: FileList | File[]): void {
+    if (!this.attachmentsAllowed.peek()) return;
     let count = this.attachments.peek().length;
     for (const file of Array.from(files)) {
       const validation = validateAttachmentFile(file, count, this.attachmentPolicy.peek());
@@ -438,17 +445,23 @@ export class ComposerStore {
           reject(controller.signal.reason);
           return;
         }
+        if (!this.attachmentsAllowed.peek()) {
+          reject(new Error('This linked device does not support uploads.'));
+          return;
+        }
+        const upload = this.host.linkedDevicesMode.peek()
+          ? this.services.endpoints.uploadLinkedAttachment
+          : this.services.endpoints.uploadAttachment;
         this.activeUploads += 1;
-        void this.services.endpoints
-          .uploadAttachment(blob, attachment.name, {
-            signal: controller.signal,
-            onProgress: (loaded, total) => {
-              if (!controller.signal.aborted)
-                this.updateAttachment(attachment.id!, {
-                  progress: Math.min(0.99, loaded / (total || blob.size || 1)),
-                });
-            },
-          })
+        void upload(blob, attachment.name, {
+          signal: controller.signal,
+          onProgress: (loaded, total) => {
+            if (!controller.signal.aborted)
+              this.updateAttachment(attachment.id!, {
+                progress: Math.min(0.99, loaded / (total || blob.size || 1)),
+              });
+          },
+        })
           .then((result) => {
             if (!/^upl_[A-Za-z0-9_-]{43}$/.test(result.upload_id))
               throw new Error('Server returned an invalid upload ID.');
@@ -505,7 +518,7 @@ export class ComposerStore {
       const refs = this.attachmentPolicy.peek().uploadRefs;
       const dataURL = refs ? undefined : await blobToDataURL(source);
       if (!owns()) return;
-      this.updateAttachment(attachmentId, { progress: 0.5 });
+      if (!refs) this.updateAttachment(attachmentId, { progress: 0.5 });
       let width: number | undefined;
       let height: number | undefined;
       if (isNativeImageType(source.type)) {
@@ -665,6 +678,7 @@ export class ComposerStore {
   }
 
   retryAttachment(id: string | undefined): void {
+    if (!this.attachmentsAllowed.peek()) return;
     const attachment = this.attachments.peek().find((entry) => entry.id === id);
     if (!attachment?.id || (!attachment.file && !attachment.blobRef)) return;
     const validation = validateAttachmentFile(

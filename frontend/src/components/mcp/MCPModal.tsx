@@ -13,6 +13,8 @@ import { MCPServerList } from './MCPServerList';
  */
 export function MCP() {
   const store = useStore();
+  const linked = store.linkedDevicesMode.value;
+  const canManage = !linked || store.linkedMCPManage.value;
   const [view, setView] = useState<'list' | 'add'>('list');
   const [notice, setNotice] = useState('');
   const addButton = useRef<HTMLButtonElement>(null);
@@ -42,7 +44,7 @@ export function MCP() {
     back();
   };
 
-  if (view === 'add')
+  if (canManage && view === 'add')
     return (
       <Overlay
         title="Add server"
@@ -68,12 +70,21 @@ export function MCP() {
       title="MCP servers"
       className="mcp-modal"
       titleActions={
-        <button ref={addButton} class="mcp-button" type="button" onClick={openAdd}>
-          <Icon name="add" />
-          Add
-        </button>
+        canManage && (
+          <button ref={addButton} class="mcp-button" type="button" onClick={openAdd}>
+            <Icon name="add" />
+            Add
+          </button>
+        )
       }
     >
+      {linked && (
+        <p>
+          {canManage
+            ? 'Choose tools for this conversation. You can add public HTTPS servers and connect accounts for your own installations.'
+            : 'Choose host-shared tools for this conversation. Installation and sign-in are managed on the host.'}
+        </p>
+      )}
       <MCPServerList notice={notice} onAdd={openAdd} />
     </Overlay>
   );

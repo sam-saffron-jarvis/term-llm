@@ -41,6 +41,14 @@ export function revokeLinkedDevicesDevice(api: APIClient, id: string): Promise<v
   return api.delete<void>(`${root}/devices/${encodeURIComponent(id)}`);
 }
 
+export function setDeviceMCPManagement(
+  api: APIClient,
+  id: string,
+  enabled: boolean,
+): Promise<void> {
+  return api.post<void>(`${root}/devices/${encodeURIComponent(id)}/mcp-management`, { enabled });
+}
+
 export function stopLinkedDevices(api: APIClient): Promise<void> {
   return api.post<void>(`${root}/stop`, {});
 }

@@ -19,6 +19,7 @@ const ScopeWebV1 = "web-v1"
 // Grant is durable until explicitly revoked or its state is reset. The raw
 // reconnect capability is never persisted, only its SHA-256 hash.
 type Grant struct {
+	ManageMCP               bool       `json:"manage_mcp,omitempty"`
 	ApprovedBy              *Person    `json:"approved_by,omitempty"`
 	DeviceID                string     `json:"device_id"`
 	DeviceKey               B64        `json:"device_key"`
@@ -136,8 +137,24 @@ func (s *GrantStore) Add(g Grant) error {
 				return fmt.Errorf("%w: duplicate device id", ErrInvalid)
 			}
 		}
+		// Pairing never confers management rights. Only a later owner action can.
+		g.ManageMCP = false
 		f.Grants = append(f.Grants, g)
 		return nil
+	})
+}
+
+// SetManageMCP changes one active grant without replacing its device identity.
+func (s *GrantStore) SetManageMCP(id string, enabled bool) error {
+	return s.update(func(f *grantFile) error {
+		for i := range f.Grants {
+			g := &f.Grants[i]
+			if g.DeviceID == id && g.RevokedAt == nil {
+				g.ManageMCP = enabled
+				return nil
+			}
+		}
+		return ErrGrantNotFound
 	})
 }
 func (s *GrantStore) Revoke(deviceID string, now time.Time) error {

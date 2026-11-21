@@ -39,6 +39,7 @@ export interface MCPRemovedServer {
 }
 
 export interface MCPStoreOptions {
+  linked?: () => boolean;
   activeSession: ReadonlySignal<Session | null>;
   draftSessionId: () => string;
   patchSession: (id: string, patch: Partial<Session>) => void;
@@ -88,7 +89,14 @@ export class MCPStore {
     const sessionId = this.sessionId();
     if (!sessionId) return;
     this.pruneOAuth(sessionId);
-    this.state.value = { ...this.state.value, ownerId: sessionId, loading: true, error: '' };
+    this.state.value = {
+      ...this.state.value,
+      ownerId: sessionId,
+      servers: [],
+      enabled: [],
+      loading: true,
+      error: '',
+    };
     try {
       const data = await this.services.endpoints.getMCP(sessionId);
       if (this.sessionId() !== sessionId) return;
@@ -198,7 +206,7 @@ export class MCPStore {
     }
     try {
       const removed = await this.services.endpoints.removeMCPServer(name);
-      this.removed.value = { name, config: removed.config, wasEnabled };
+      this.removed.value = removed.config ? { name, config: removed.config, wasEnabled } : null;
     } catch (error) {
       this.state.value = { ...this.state.value, error: errorMessage(error) };
       return false;
@@ -233,7 +241,9 @@ export class MCPStore {
 
     // Open synchronously from the click gesture. Navigation happens after the
     // authenticated start response supplies the authorization URL.
-    const popup = window.open('', '_blank', 'popup=yes,width=560,height=720');
+    const popup = this.options.linked?.()
+      ? null
+      : window.open('', '_blank', 'popup=yes,width=560,height=720');
     this.flowSessions.set(name, sessionId);
     this.setOAuth(name, {
       flowId: '',

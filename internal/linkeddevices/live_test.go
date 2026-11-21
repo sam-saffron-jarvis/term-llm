@@ -69,7 +69,7 @@ func TestShapeCapabilitiesPreservesActualLinkedLive(t *testing.T) {
 					t.Fatalf("delegation modes = %v; original = %v", live, original)
 				}
 				linked := payload["linked_devices"].(map[string]any)
-				if linked["voice"] != enabled || linked["device_tools"] != false || linked["uploads"] != false || response.Header().Get("Cache-Control") != "no-store" {
+				if linked["voice"] != enabled || linked["device_tools"] != false || linked["uploads"] != true || response.Header().Get("Cache-Control") != "no-store" {
 					t.Fatalf("linked capabilities = %v, headers = %v", linked, response.Header())
 				}
 			})

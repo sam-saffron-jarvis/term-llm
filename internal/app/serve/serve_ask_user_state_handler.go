@@ -8,6 +8,7 @@ import (
 
 	appruntime "github.com/term-llm/term-llm/internal/app/runtime"
 	mcpstart "github.com/term-llm/term-llm/internal/app/runtime/mcpstart"
+	"github.com/term-llm/term-llm/internal/linkeddevices"
 	"github.com/term-llm/term-llm/internal/llm/core"
 	"github.com/term-llm/term-llm/internal/llm/engine"
 	planpkg "github.com/term-llm/term-llm/internal/plan"
@@ -129,6 +130,11 @@ func (s *serveServer) handleSessionState(w http.ResponseWriter, r *http.Request,
 	// the opposite order could publish idle plus a stale pre-final revision.
 	s.addSessionStateTranscriptRev(state.response, r, sessionID)
 
+	// Peer MCP state comes only from the reduced conversation selector.
+	if _, linked := linkeddevices.DeviceFromRequest(r); linked {
+		delete(state.response, "mcp_servers")
+		delete(state.response, "mcp_enabled")
+	}
 	writeJSON(w, http.StatusOK, state.response)
 }
 

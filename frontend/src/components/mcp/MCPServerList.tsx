@@ -125,7 +125,12 @@ function AuthActions({ server }: { server: MCPServer }) {
   if (oauth?.state === 'starting' || oauth?.state === 'pending')
     return (
       <>
-        {oauth.authorizationURL && (
+        {store.linkedMCPManage.value && oauth.authorizationURL.startsWith('https://') && (
+          <a href={oauth.authorizationURL} target="_blank" rel="noopener noreferrer">
+            Open sign-in link
+          </a>
+        )}
+        {!store.linkedDevicesMode.value && oauth.authorizationURL && (
           <button
             class="mcp-inline-action"
             type="button"
@@ -224,14 +229,25 @@ function ServerRow({ server, disabled }: { server: MCPServer; disabled: boolean 
   return (
     <SwitchRow
       name={server.name}
-      meta={rowMeta(server, store.mcp.value.oauth?.[server.name])}
+      meta={
+        store.linkedDevicesMode.value
+          ? server.hostCallbackNeeded
+            ? 'Sign-in requires an HTTPS public callback on the host'
+            : server.status === 'auth_required' && !server.canSignIn
+              ? 'Sign in on the host'
+              : ''
+          : rowMeta(server, store.mcp.value.oauth?.[server.name])
+      }
       tone={mcpServerTone(server)}
       checked={store.mcp.value.enabled.includes(server.name)}
       disabled={disabled}
       onToggle={() => void store.toggleMCP(server.name)}
     >
-      <AuthActions server={server} />
-      {server.configured && <ServerMenu server={server} disabled={disabled} />}
+      {(!store.linkedDevicesMode.value || (store.linkedMCPManage.value && server.canSignIn)) && (
+        <AuthActions server={server} />
+      )}
+      {(!store.linkedDevicesMode.value || (store.linkedMCPManage.value && server.canRemove)) &&
+        server.configured && <ServerMenu server={server} disabled={disabled} />}
     </SwitchRow>
   );
 }
@@ -274,12 +290,21 @@ function UndoBar() {
 }
 
 function EmptyState({ onAdd }: { onAdd: () => void }) {
-  const state = useStore().mcp.value;
+  const store = useStore();
+  const state = store.mcp.value;
   if (state.error)
     return (
       <div class="mcp-empty" role="status">
         <strong>Unable to load MCP servers</strong>
         <span>The configured server list could not be read. See the error below.</span>
+      </div>
+    );
+  if (store.linkedDevicesMode.value)
+    return (
+      <div class="mcp-empty" role="status">
+        {store.linkedMCPManage.value
+          ? 'No configured servers. Choose Add to connect a public HTTPS server.'
+          : 'No servers shared by the host.'}
       </div>
     );
   return (
@@ -350,7 +375,7 @@ export function MCPServerList({ notice, onAdd }: { notice: string; onAdd: () => 
   const normalized = query.trim().toLocaleLowerCase();
   const matches = (name: string) => !normalized || name.toLocaleLowerCase().includes(normalized);
   const visible = state.servers.filter((server) => matches(server.name));
-  const pageTools = store.webMCP.available.value;
+  const pageTools = !store.linkedDevicesMode.value && store.webMCP.available.value;
   const showPageTools = pageTools && matches(pageToolsName(store.webMCP.providerName.value));
   const disabled = state.loading || Boolean(state.pending) || store.streaming.value;
   const total = state.servers.length + (pageTools ? 1 : 0);
@@ -399,7 +424,7 @@ export function MCPServerList({ notice, onAdd }: { notice: string; onAdd: () => 
       </div>
       <ErrorPanel />
       <Feedback notice={notice} />
-      <UndoBar />
+      {!store.linkedDevicesMode.value && <UndoBar />}
     </>
   );
 }

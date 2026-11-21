@@ -38,19 +38,22 @@ function useMountFocus<T extends HTMLElement>() {
 }
 
 function SourceTabs({ value, onChange }: { value: Source; onChange: (next: Source) => void }) {
+  const sources = useStore().linkedDevicesMode.value
+    ? SOURCES.filter((s) => s.id !== 'command')
+    : SOURCES;
   const move = (event: KeyboardEvent) => {
     const step = event.key === 'ArrowRight' ? 1 : event.key === 'ArrowLeft' ? -1 : 0;
     if (!step) return;
     event.preventDefault();
-    const index = SOURCES.findIndex((source) => source.id === value);
-    const next = SOURCES[(index + step + SOURCES.length) % SOURCES.length];
+    const index = sources.findIndex((source) => source.id === value);
+    const next = sources[(index + step + sources.length) % sources.length];
     onChange(next.id);
     const tabs = (event.currentTarget as HTMLElement).querySelectorAll<HTMLElement>('[role="tab"]');
-    tabs[SOURCES.indexOf(next)]?.focus();
+    tabs[sources.indexOf(next)]?.focus();
   };
   return (
     <div class="mcp-tabs" role="tablist" aria-label="Server source" onKeyDown={move}>
-      {SOURCES.map((source) => (
+      {sources.map((source) => (
         <button
           key={source.id}
           type="button"
@@ -192,7 +195,7 @@ function CataloguePanel({ onAdded, enable }: AddProps & { enable: boolean }) {
         ) : entries.length === 0 && !catalogue.loading ? (
           <div class="mcp-empty" role="status">
             <strong>No servers match “{query.trim()}”</strong>
-            <span>Try another name, or add it by URL or command.</span>
+            <span>Try another name, or add a remote URL.</span>
           </div>
         ) : (
           entries.map((entry) => (
@@ -338,18 +341,25 @@ function CustomPanel({
             onInput={(event) => setName(event.currentTarget.value)}
           />
         </label>
-        <details class="mcp-disclosure" open={Boolean(pairsText)}>
-          <summary>{isURL ? 'Headers' : 'Environment variables'}</summary>
-          <textarea
-            class="mono"
-            rows={3}
-            spellcheck={false}
-            aria-label={isURL ? 'Headers' : 'Environment variables'}
-            value={pairsText}
-            placeholder={isURL ? 'Authorization: Bearer …' : 'API_KEY=op://vault/item/field'}
-            onInput={(event) => setPairsText(event.currentTarget.value)}
-          />
-        </details>
+        {!store.linkedDevicesMode.value && (
+          <details class="mcp-disclosure" open={Boolean(pairsText)}>
+            <summary>{isURL ? 'Headers' : 'Environment variables'}</summary>
+            <textarea
+              class="mono"
+              rows={3}
+              spellcheck={false}
+              aria-label={isURL ? 'Headers' : 'Environment variables'}
+              value={pairsText}
+              placeholder={isURL ? 'Authorization: Bearer …' : 'API_KEY=op://vault/item/field'}
+              onInput={(event) => setPairsText(event.currentTarget.value)}
+            />
+          </details>
+        )}
+        {store.linkedDevicesMode.value && (
+          <p class="mcp-callout">
+            Public HTTPS only. For protected servers, connect your account after adding the server.
+          </p>
+        )}
         {!isURL && (
           <p class="mcp-callout">
             Runs on the machine hosting term-llm, with your user’s permissions.

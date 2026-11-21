@@ -32,6 +32,12 @@ term-llm chat --mcp playwright,filesystem
 
 Adding a server does not enable it for every conversation. Select servers per run with `--mcp`, or set per-agent defaults with `term-llm agents set developer mcp=github,playwright`; see [default MCP servers per agent](/guides/agents/#default-mcp-servers-per-agent).
 
+### Select servers from a linked device
+
+Set `"linked_devices": true` on an `mcp.json` server to let ordinary paired devices select its tools for a conversation. Share only tools you trust every device to use. Existing entries are not shared by default.
+
+With **Manage MCP** granted on the host, a device can select shared servers and add public HTTPS servers by URL or catalogue. It can connect accounts for its own installations using **Open sign-in link**. Configure serve’s HTTPS `--public-url` for the provider callback. Host OAuth accounts, arbitrary commands, headers and environment variables remain host-managed. Agent access rules still apply.
+
 ### MCP Commands
 
 | Command | Description |

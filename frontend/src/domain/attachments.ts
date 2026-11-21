@@ -3,6 +3,7 @@ import type { IconName } from '../components/Icon';
 export interface AttachmentPolicy {
   /** Only protocol version 1 enables binary uploads. */
   uploadRefs?: boolean;
+  linkedUploads?: boolean;
   maxCount: number;
   maxBytes: number;
   mimeTypes: string[];

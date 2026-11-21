@@ -135,6 +135,8 @@ func (s *serveServer) httpHandler() http.Handler {
 	inner.HandleFunc("/images/", s.auth(s.cors(s.handleImage)))
 	inner.HandleFunc("/media/", s.auth(s.cors(s.handleMedia)))
 	inner.HandleFunc("/uploads", s.auth(s.cors(s.handleUploadCreate)))
+	linkedUpload := appserver.LinkedUploadHandler(&s.linkedUploads, &s.uploadHandler, s.cfg.hubURL)
+	inner.HandleFunc("POST /v1/linked-uploads", s.auth(linkedUpload))
 	inner.HandleFunc("/uploads/", s.auth(s.cors(s.handleUpload)))
 	if s.cfg.filesDir != "" {
 		inner.HandleFunc("/files/", s.auth(s.cors(s.handleFile)))

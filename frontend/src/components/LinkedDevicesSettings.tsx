@@ -9,6 +9,7 @@ import {
   resetLinkedDevices,
   resumeLinkedDevices,
   revokeLinkedDevicesDevice,
+  setDeviceMCPManagement,
   stopLinkedDevices,
   type LinkedDevicesStatus,
 } from '../api/linked-devices';
@@ -167,6 +168,7 @@ export function LinkedDevicesSettings({ active }: { active: boolean }) {
     setError('');
     try {
       await action();
+      statusEpoch.current += 1; // Ignore status polls that started before this mutation.
       if (mounted.current) await load();
     } catch (cause) {
       if (mounted.current) setError(errorMessage(cause));
@@ -418,6 +420,22 @@ export function LinkedDevicesSettings({ active }: { active: boolean }) {
                     <span class={`linked-devices-dot ${online ? 'is-online' : ''}`} />
                     {online ? 'Connected now' : deviceTime(device.last_seen_at)}
                   </small>
+                  <label>
+                    <input
+                      type="checkbox"
+                      checked={Boolean(device.manage_mcp)}
+                      disabled={disabled || isUnavailable}
+                      aria-label={`Allow ${device.name || 'this device'} to manage MCP servers`}
+                      onChange={(event) => {
+                        const enabled = event.currentTarget.checked;
+                        event.currentTarget.checked = Boolean(device.manage_mcp);
+                        void mutate(`mcp-${device.id}`, () =>
+                          setDeviceMCPManagement(store.api, device.id, enabled),
+                        );
+                      }}
+                    />{' '}
+                    Allow this device to manage MCP servers
+                  </label>
                 </div>
                 <button
                   class="btn"

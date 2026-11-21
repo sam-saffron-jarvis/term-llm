@@ -36,12 +36,22 @@ type ServerConfig struct {
 	// transports. An explicit Authorization header remains authoritative.
 	OAuth *OAuthConfig `json:"oauth,omitempty"`
 
+	// LinkedDevices lets paired web clients select this connection for a conversation.
+	LinkedDevices bool `json:"linked_devices,omitempty"`
+	// LinkedInstaller identifies a grant-managed installation, not a global share.
+	LinkedInstaller string `json:"linked_installer,omitempty"`
+
 	// Shared fields
 	Env        map[string]string `json:"env,omitempty"`
 	AlwaysLoad []string          `json:"always_load,omitempty"`
 
 	// Sampling configuration
 	Sampling *SamplingConfig `json:"sampling,omitempty"`
+}
+
+// AvailableToDevice limits a peer to explicitly shared or self-installed connections.
+func (s ServerConfig) AvailableToDevice(installer string) bool {
+	return s.LinkedDevices || installer != "" && s.LinkedInstaller == installer
 }
 
 // OAuthConfig customizes automatic OAuth for a remote MCP server. Client

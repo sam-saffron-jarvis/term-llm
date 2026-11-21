@@ -117,3 +117,82 @@ describe('binary upload endpoint', () => {
     );
   });
 });
+
+describe('linked binary uploads', () => {
+  const api = new APIClient(config, { getToken: () => '', onAuthRequired: vi.fn() });
+  const chunk = 32768;
+  const accepted = () => Response.json({ token: 'continuation' }, { status: 202 });
+  it.each([1, chunk, chunk * 2, chunk * 2 + 1])(
+    'sends exactly %i bytes with acknowledged offsets and no empty final request',
+    async (size) => {
+      const bytes = new Uint8Array(size).map((_, i) => i % 251);
+      const original = new Blob([bytes], { type: 'application/pdf' });
+      const ref = {
+        upload_id: `upl_${'a'.repeat(43)}`,
+        filename: '#é.pdf',
+        media_type: original.type,
+        size_bytes: size,
+      };
+      let offset = 0;
+      const send = vi.fn(async (url: string, init: RequestInit) => {
+        expect(url).toBe('/ui/v1/linked-uploads');
+        expect(init.method).toBe('POST');
+        const headers = new Headers(init.headers);
+        expect(headers.get('Content-Type')).toBe(original.type);
+        expect(headers.get('X-Term-LLM-Upload-Filename')).toBe(
+          offset ? null : encodeURIComponent(ref.filename),
+        );
+        expect(headers.get('X-Term-LLM-Upload-Size')).toBe(offset ? null : String(size));
+        expect(headers.get('X-Term-LLM-Upload-Offset')).toBe(String(offset));
+        expect(headers.get('X-Term-LLM-Upload-Token')).toBe(offset ? 'continuation' : null);
+        expect(init.body).toBeInstanceOf(Blob);
+        const body = init.body as Blob;
+        const end = Math.min(size, offset + chunk);
+        expect(body.size).toBe(end - offset);
+        expect(new Uint8Array(await body.arrayBuffer())).toEqual(bytes.slice(offset, end));
+        offset = end;
+        return offset === size ? Response.json(ref, { status: 201 }) : accepted();
+      });
+      vi.stubGlobal('fetch', send);
+      const onProgress = vi.fn();
+      await expect(
+        endpoints(api).uploadLinkedAttachment(original, ref.filename, { onProgress }),
+      ).resolves.toEqual(ref);
+      expect(send).toHaveBeenCalledTimes(Math.ceil(size / chunk));
+      expect(onProgress.mock.calls).toEqual(
+        Array.from({ length: Math.ceil(size / chunk) - 1 }, (_, i) => [(i + 1) * chunk, size]),
+      );
+    },
+  );
+  it.each(['network', '503', 'unexpected status', 'missing token'])(
+    'does not replay or skip an uncertain chunk: %s',
+    async (failure) => {
+      const send = vi.fn().mockResolvedValueOnce(accepted());
+      if (failure === 'network') send.mockRejectedValueOnce(new TypeError('disconnected'));
+      else
+        send.mockResolvedValueOnce(
+          Response.json(
+            {},
+            { status: failure === '503' ? 503 : failure === 'unexpected status' ? 201 : 202 },
+          ),
+        );
+      vi.stubGlobal('fetch', send);
+      await expect(
+        endpoints(api).uploadLinkedAttachment(new Blob([new Uint8Array(chunk * 3)]), 'data'),
+      ).rejects.toThrow();
+      expect(send).toHaveBeenCalledTimes(2);
+    },
+  );
+  it('stops before the next chunk when cancelled after an acknowledgement', async () => {
+    const controller = new AbortController();
+    const send = vi.fn().mockResolvedValue(accepted());
+    vi.stubGlobal('fetch', send);
+    await expect(
+      endpoints(api).uploadLinkedAttachment(new Blob([new Uint8Array(chunk + 1)]), 'data', {
+        signal: controller.signal,
+        onProgress: () => controller.abort(),
+      }),
+    ).rejects.toMatchObject({ name: 'AbortError' });
+    expect(send).toHaveBeenCalledOnce();
+  });
+});

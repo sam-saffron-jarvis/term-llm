@@ -225,6 +225,8 @@ export interface MCPServer {
   authIssuer?: string;
   authScopes?: string[];
   authExpiresAt?: string;
+  canRemove?: boolean;
+  hostCallbackNeeded?: boolean;
   canSignIn?: boolean;
   canSignOut?: boolean;
 }
@@ -282,7 +284,7 @@ export interface MCPAddResult {
 
 export interface MCPRemoveResult {
   name: string;
-  config: Record<string, unknown>;
+  config?: Record<string, unknown>;
 }
 
 export interface Goal {

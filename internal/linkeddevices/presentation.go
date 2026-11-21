@@ -28,10 +28,13 @@ func ShapeCapabilities(response http.ResponseWriter, request *http.Request, payl
 		voice, _ = live["enabled"].(bool)
 		payload["live"] = live
 	}
-	payload["attachments"] = map[string]any{"enabled": false}
+	// Preserve the host attachment policy and reference format; the peer client
+	// uploads in bounded chunks rather than through the ordinary upload route.
 	payload["linked_devices"] = map[string]any{
 		"active": true, "scope": principal.Scope, "owner_controls": false,
-		"transcript_sharing": false, "uploads": false, "voice": voice,
+		"transcript_sharing": false, "uploads": true, "voice": voice,
+		"mcp_manage": principal.ManageMCP,
+		"mcp": true, "goals": true,
 		"push_notifications": false, "device_tools": false,
 	}
 }

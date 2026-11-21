@@ -37,6 +37,7 @@ type callbackResult struct {
 }
 
 type flowRecord struct {
+	grant             context.Context
 	flow              Flow
 	callbackState     string
 	callbackDelivered bool
@@ -216,6 +217,9 @@ func (c *Coordinator) newHandler(endpoint string, options Options, redirectURL s
 			cancel()
 		}
 		saved, err := c.store.Update(canonical, func(current *Session) (*Session, error) {
+			if options.GrantLifetime != nil && options.GrantLifetime.Err() != nil {
+				return nil, context.Canceled
+			}
 			version := uint64(0)
 			if current != nil {
 				version = current.Version
@@ -427,6 +431,10 @@ func (c *Coordinator) Start(ctx context.Context, endpoint string, options Option
 	c.expireFlowsLocked(time.Now())
 	if id := c.byEndpoint[canonical]; id != "" {
 		if record := c.flows[id]; record != nil && (record.flow.State == FlowStarting || record.flow.State == FlowPending) {
+			if options.GrantLifetime != nil && record.grant != options.GrantLifetime {
+				c.mu.Unlock()
+				return nil, fmt.Errorf("another authorization is pending")
+			}
 			flow := record.flow
 			c.mu.Unlock()
 			return &flow, nil
@@ -437,9 +445,13 @@ func (c *Coordinator) Start(ctx context.Context, endpoint string, options Option
 		c.mu.Unlock()
 		return nil, fmt.Errorf("create OAuth flow ID: %w", err)
 	}
-	flowCtx, cancel := context.WithTimeout(context.Background(), flowLifetime)
+	parent := options.GrantLifetime
+	if parent == nil {
+		parent = context.Background()
+	}
+	flowCtx, cancel := context.WithTimeout(parent, flowLifetime)
 	record := &flowRecord{
-		flow:     Flow{ID: id, Endpoint: canonical, ExpiresAt: time.Now().Add(flowLifetime).UTC(), State: FlowStarting},
+		grant: options.GrantLifetime, flow: Flow{ID: id, Endpoint: canonical, ExpiresAt: time.Now().Add(flowLifetime).UTC(), State: FlowStarting},
 		callback: make(chan callbackResult, 1), ready: make(chan struct{}), done: make(chan struct{}), cancel: cancel,
 	}
 	c.flows[id] = record
@@ -532,7 +544,7 @@ func (c *Coordinator) CompleteCallback(state, code, issuer, oauthError string) (
 	c.mu.Lock()
 	id := c.byState[state]
 	record := c.flows[id]
-	if id == "" || record == nil || record.callbackState != state || record.flow.State != FlowPending || time.Now().After(record.flow.ExpiresAt) {
+	if id == "" || record == nil || (record.grant != nil && record.grant.Err() != nil) || record.callbackState != state || record.flow.State != FlowPending || time.Now().After(record.flow.ExpiresAt) {
 		c.mu.Unlock()
 		return "", false
 	}

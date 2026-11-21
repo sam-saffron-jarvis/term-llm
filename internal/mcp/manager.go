@@ -305,6 +305,20 @@ func (m *Manager) AvailableServers() []string {
 	return allowed
 }
 
+// LinkedDeviceServers returns only explicitly shared, policy-visible connections.
+func (m *Manager) LinkedDeviceServers(installer string) []string {
+	names := m.AvailableServers()
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	shared := names[:0]
+	for _, name := range names {
+		if cfg, ok := m.configServer(name); ok && cfg.AvailableToDevice(installer) && name != "" && name == strings.TrimSpace(name) && !strings.Contains(name, ",") {
+			shared = append(shared, name)
+		}
+	}
+	return shared
+}
+
 // EnabledServers returns the names of currently enabled (running or starting) servers.
 func (m *Manager) EnabledServers() []string {
 	return m.enabledServerNames()
@@ -370,7 +384,7 @@ func (m *Manager) Enable(ctx context.Context, name string) error {
 
 	// Create client and set status to starting.
 	client := NewClient(name, serverCfg)
-	client.oauthCoordinator = m.oauthCoordinator
+	client.oauthCoordinator = m.oauthCoordinatorFor(serverCfg)
 	client.maxToolsPerServer = m.maxToolsPerServer
 	client.SetCatalogueChangeHandler(func(oldSnapshot, newSnapshot *ToolSnapshot, err error) {
 		m.handleCatalogueChange(name, client, oldSnapshot, newSnapshot, err)
@@ -531,6 +545,7 @@ type AuthStatus = mcpoauth.AuthStatus
 // OAuthStartOptions selects the redirect frontend and whether an existing valid
 // grant should be replaced.
 type OAuthStartOptions struct {
+	GrantLifetime context.Context
 	RedirectURL   string
 	Force         bool
 	SkipReconnect bool
@@ -545,13 +560,12 @@ func (m *Manager) AuthStatuses() map[string]AuthStatus {
 	if cfg == nil {
 		return statuses
 	}
-	coordinator := m.oauthCoordinatorOrDefault()
 	for name, server := range cfg.Servers {
 		if server.TransportType() != "http" || !automaticOAuthForServer(server) {
 			statuses[name] = AuthStatus{State: mcpoauth.AuthNotNeeded}
 			continue
 		}
-		statuses[name] = coordinator.Status(server.URL)
+		statuses[name] = m.oauthCoordinatorFor(server).Status(server.URL)
 	}
 	return statuses
 }
@@ -581,7 +595,8 @@ func (m *Manager) StartOAuth(ctx context.Context, name string, startOptions ...O
 	if err != nil {
 		return nil, fmt.Errorf("mcp server %s: %w", name, err)
 	}
-	coordinator := m.oauthCoordinatorOrDefault()
+	oauthOptions.GrantLifetime = options.GrantLifetime
+	coordinator := m.oauthCoordinatorFor(server)
 	flow, err := coordinator.Start(ctx, server.URL, oauthOptions, options.RedirectURL, options.Force)
 	if err != nil {
 		return nil, err
@@ -620,7 +635,7 @@ func (m *Manager) CancelOAuth(name, flowID string) error {
 	if !ok {
 		return fmt.Errorf("unknown MCP server: %s", name)
 	}
-	if !m.oauthCoordinatorOrDefault().Cancel(server.URL, flowID) {
+	if !m.oauthCoordinatorFor(server).Cancel(server.URL, flowID) {
 		return fmt.Errorf("OAuth flow is not pending")
 	}
 	m.sendStatus(name, StatusAuthRequired, nil)
@@ -643,7 +658,7 @@ func (m *Manager) LogoutOAuth(ctx context.Context, name string, localOnly bool) 
 	if server.TransportType() != "http" || !automaticOAuthForServer(server) {
 		return nil
 	}
-	if err := m.oauthCoordinatorOrDefault().Logout(ctx, server.URL, localOnly); err != nil {
+	if err := m.oauthCoordinatorFor(server).Logout(ctx, server.URL, localOnly); err != nil {
 		return err
 	}
 	if selected {
@@ -653,7 +668,10 @@ func (m *Manager) LogoutOAuth(ctx context.Context, name string, localOnly bool) 
 	return nil
 }
 
-func (m *Manager) oauthCoordinatorOrDefault() *mcpoauth.Coordinator {
+func (m *Manager) oauthCoordinatorFor(server ServerConfig) *mcpoauth.Coordinator {
+	if server.LinkedInstaller != "" {
+		return mcpoauth.ForInstaller(server.LinkedInstaller)
+	}
 	if m.oauthCoordinator != nil {
 		return m.oauthCoordinator
 	}

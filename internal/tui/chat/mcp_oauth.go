@@ -34,7 +34,7 @@ func (m *Model) startMCPOAuthCmd(name string, force bool) tea.Cmd {
 				http.NotFound(w, r)
 				return
 			}
-			_, ok := mcpoauth.DefaultCoordinator().CompleteCallback(
+			_, ok := mcpoauth.CompletePublicCallback(
 				r.URL.Query().Get("state"), r.URL.Query().Get("code"),
 				r.URL.Query().Get("iss"), r.URL.Query().Get("error"),
 			)
@@ -62,7 +62,7 @@ func (m *Model) startMCPOAuthCmd(name string, force bool) tea.Cmd {
 			_ = m.mcpManager.CancelOAuth(name, flow.ID)
 			return mcpOAuthResultMsg{name: name, err: fmt.Errorf("open browser: %w; use `term-llm mcp login %s --no-browser`", err, name)}
 		}
-		completed, err := mcpoauth.DefaultCoordinator().Wait(ctx, flow.ID)
+		completed, err := mcpoauth.OwnerFlowCoordinator(flow.ID).Wait(ctx, flow.ID)
 		if err != nil {
 			return mcpOAuthResultMsg{name: name, err: err}
 		}

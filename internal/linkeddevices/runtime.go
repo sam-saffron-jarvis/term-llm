@@ -128,6 +128,7 @@ type Runtime struct {
 	invitation                 *invitation
 	invitationSeq              uint64
 	pending                    map[string]*pendingRequest
+	mcpGrants                  map[string]mcpLifetime
 	sessions                   map[string]*deviceSession
 	warnings                   []string
 	brokerProblem              string // current broker connection problem, shown first
@@ -676,6 +677,7 @@ func (r *Runtime) stopSharingLocked() {
 	if r.sharingCancel != nil {
 		r.sharingCancel()
 	}
+	r.mcpGrants = nil // sharingCancel ended every child grant lifetime.
 	r.sharingCtx, r.sharingCancel = nil, nil
 }
 
@@ -832,7 +834,7 @@ func (r *Runtime) deviceStatuses() []DeviceStatus {
 				}
 			}
 		}
-		out = append(out, DeviceStatus{ID: grant.DeviceID, Name: grant.DeviceName, ApprovedAt: grant.PairedAt, LastSeenAt: grant.LastSeenAt, Connection: connection})
+		out = append(out, DeviceStatus{ManageMCP: grant.ManageMCP, ID: grant.DeviceID, Name: grant.DeviceName, ApprovedAt: grant.PairedAt, LastSeenAt: grant.LastSeenAt, Connection: connection})
 	}
 	return out
 }

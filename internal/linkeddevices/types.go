@@ -35,6 +35,7 @@ type RequestStatus struct {
 }
 
 type DeviceStatus struct {
+	ManageMCP  bool       `json:"manage_mcp,omitempty"`
 	ID         string     `json:"id"`
 	Name       string     `json:"name"`
 	ApprovedAt time.Time  `json:"approved_at,omitempty"`

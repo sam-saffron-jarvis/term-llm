@@ -2,32 +2,17 @@
 title: Linked devices
 ---
 
-Linked devices is a preview feature for connecting a compatible client to one
-`term-llm serve web` target without exposing its HTTP listener to the internet.
-Open **Settings → Linked devices** to see the target's current state.
+Linked devices connects a compatible client to an authenticated `term-llm serve web` target without exposing its HTTP listener. Open **Settings → Linked devices** on the host.
 
 ## Availability
 
-Linked devices works out of the box for an authenticated `term-llm serve web`
-(bearer or passkey), including `term-llm contain` agents. With no
-configuration it uses term-llm's hosted linked-devices service (a rendezvous
-broker) at `https://broker.term-llm.com`, and the free STUN service
-`stun:stun.term-llm.com:3478`. No YAML, environment variable or private
-credential is needed.
-
-Availability is not consent to share. The server does not contact the
-linked-devices service until the owner selects **Connect**, and **Stop sharing**
-disconnects again. A server without authentication, or on an unsupported
-platform, shows **Not available** with the reason. The repository includes a
-synthetic Go/Pion client for protocol and local integration testing; it is
-not production client evidence.
+Bearer and passkey servers, including `term-llm contain` agents, use `https://broker.term-llm.com` for rendezvous and `stun:stun.term-llm.com:3478` for STUN by default. Neither needs configuration or private credentials. The server contacts the broker only when the owner selects **Connect**; **Stop sharing** disconnects. Unsupported platforms and unauthenticated servers show **Not available** with the reason.
 
 ## Pair a device
 
 1. Open **Settings → Linked devices**.
 2. Select **Connect**.
-3. Scan the five-minute, one-use QR code or copy the pairing link into a
-   compatible client.
+3. Scan the five-minute, one-use QR code or copy the pairing link into a client.
 4. Enter the six-digit confirmation code shown by that client before the pending card's
    two-minute approval countdown expires.
 5. Review the authority statement and approve.
@@ -46,28 +31,17 @@ reconnecting. **Stop sharing** disconnects devices but keeps approvals.
 identity. Recreating a deleted container volume produces a different identity;
 a client must not silently replace its pinned host key.
 
-Revoking a device closes its active stream and refuses reconnects. Revocation
+Revoking a device closes its stream and refuses reconnects. Revocation
 stops that device's future connections only. It cannot undo actions already
 taken or retrieve information already disclosed.
 
 ## Security boundary
 
-A paired device reaches a positive allowlist of this server's chat, session,
-event, Live voice, and read-only media routes over an authenticated WebRTC
-DataChannel. Live follows the host's real provider readiness and transport; it is
-not enabled when the host does not support it. PCM voice uses streamed HTTP/SSE
-output and finite microphone posts, as with a reverse Hub connection. Providers
-that advertise WebRTC keep their existing signaling path. Linked Live calls use
-server-owned execution, cannot register client/device tools, and are scoped to
-the device that started them. Disconnecting or revoking that peer ends its calls.
-The compatible client still needs a secure microphone context and user permission.
+The paired composer’s **+** menu supports files, photos, conversation goals, and [MCP servers](/guides/mcp-servers/). Uploads travel over the encrypted connection in small chunks; the message references the completed upload rather than embedding its bytes. MCP management is a per-device permission the host grants separately from pairing.
 
-A paired device cannot reach linked-device owner endpoints, auth, admin, MCP,
-jobs, shell, push, upload creation, transcript publishing, workspace file-content,
-worktree, or extension/widget management routes. Dictation uploads, WebSocket
-voice transport, and client-owned Live delegation/tool-result routes remain
-unavailable. The peer capability response hides or explains unsupported controls.
-This allowlist limits network management surfaces; it is not a tool sandbox.
+Live voice follows the host’s provider and transport. PCM uses streamed HTTP/SSE and bounded microphone posts; WebRTC providers retain their signaling path. Calls use server-owned tools, require microphone permission, and end when the device disconnects or is revoked.
+
+Pairing does not grant general administration, shell access, jobs, push, worktree management, transcript publishing, extension management, or unrestricted access to workspace files. Dictation uploads, WebSocket voice, and client-owned Live tools remain unavailable. The route allowlist is not a tool sandbox.
 
 The agent and sharing runtime run as the same OS user. In the standard contained
 agent the agent also has passwordless sudo, runs with `--yolo`, and can read the

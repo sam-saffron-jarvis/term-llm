@@ -10,6 +10,7 @@ import {
   resumeLinkedDevices,
   revokeLinkedDevicesDevice,
   stopLinkedDevices,
+  setDeviceMCPManagement,
 } from './linked-devices';
 
 function fixture() {
@@ -38,6 +39,7 @@ describe('linked devices API', () => {
     await stopLinkedDevices(api);
     await resumeLinkedDevices(api);
     await resetLinkedDevices(api);
+    await setDeviceMCPManagement(api, 'device/one', true);
 
     expect(get).toHaveBeenCalledWith('/v1/linked-devices', controller.signal, { auth: 'session' });
     expect(post).toHaveBeenNthCalledWith(1, '/v1/linked-devices/invitations', {});
@@ -48,6 +50,11 @@ describe('linked devices API', () => {
     expect(post).toHaveBeenNthCalledWith(4, '/v1/linked-devices/stop', {});
     expect(post).toHaveBeenNthCalledWith(5, '/v1/linked-devices/resume', {});
     expect(post).toHaveBeenNthCalledWith(6, '/v1/linked-devices/reset', {});
+    expect(post).toHaveBeenNthCalledWith(
+      7,
+      '/v1/linked-devices/devices/device%2Fone/mcp-management',
+      { enabled: true },
+    );
     expect(remove).toHaveBeenNthCalledWith(1, '/v1/linked-devices/invitations/current');
     expect(remove).toHaveBeenNthCalledWith(2, '/v1/linked-devices/devices/device%2Fone');
   });

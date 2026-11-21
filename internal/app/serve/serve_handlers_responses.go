@@ -810,6 +810,8 @@ func (s *serveServer) handleResolvedResponses(w http.ResponseWriter, r *http.Req
 	if !stateful {
 		runIdempotencyKey = ""
 	}
+	ctx = withLinkedMCPRunGuard(ctx, r, runtime)
+	r = r.WithContext(ctx)
 	llmReq := s.buildResponsesLLMRequest(req, runtime, sessionID, isFirstPartyUIResponseRequest(r))
 	if !freshConversation && req.Reasoning != nil {
 		if clearStaleReasoningMode || ((reasoningMode == "standard" || reasoningMode == "pro") && llm.SupportsReasoningMode(effectiveProvider, effectiveModel)) {

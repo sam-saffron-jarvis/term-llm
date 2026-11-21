@@ -17,6 +17,7 @@ vi.mock('../api/linked-devices', async (loadOriginal) => {
     approveLinkedDevicesRequest: vi.fn(),
     denyLinkedDevicesRequest: vi.fn(),
     revokeLinkedDevicesDevice: vi.fn(),
+    setDeviceMCPManagement: vi.fn(),
     stopLinkedDevices: vi.fn(),
     resumeLinkedDevices: vi.fn(),
     resetLinkedDevices: vi.fn(),
@@ -68,6 +69,44 @@ afterEach(() => {
 });
 
 describe('LinkedDevicesSettings', () => {
+  it('changes only the selected device’s MCP permission and refreshes its owner setting', async () => {
+    const devices = [
+      { id: 'one', name: 'Phone', connection: 'online', manage_mcp: false },
+      { id: 'two', name: 'Laptop', connection: 'offline', manage_mcp: false },
+    ];
+    vi.mocked(linkedDevicesAPI.getLinkedDevices).mockImplementation(async () => ({
+      ...offStatus,
+      devices: devices.map((d) => ({ ...d })),
+    }));
+    vi.mocked(linkedDevicesAPI.setDeviceMCPManagement).mockImplementation(
+      async (_api, id, enabled) => {
+        devices.find((d) => d.id === id)!.manage_mcp = enabled;
+      },
+    );
+    const { store } = view();
+    try {
+      const phone = await screen.findByRole('checkbox', {
+        name: 'Allow Phone to manage MCP servers',
+      });
+      const laptop = screen.getByRole('checkbox', { name: 'Allow Laptop to manage MCP servers' });
+      expect(phone).not.toBeChecked();
+      for (const enabled of [true, false]) {
+        fireEvent.click(phone);
+        await waitFor(() =>
+          expect(linkedDevicesAPI.setDeviceMCPManagement).toHaveBeenLastCalledWith(
+            store.api,
+            'one',
+            enabled,
+          ),
+        );
+        await waitFor(() => expect((phone as HTMLInputElement).checked).toBe(enabled));
+        expect(laptop).not.toBeChecked();
+      }
+    } finally {
+      store.dispose();
+    }
+  });
+
   it('polls only while its settings tab is active', async () => {
     vi.useFakeTimers();
     const { store, rerender } = view(false);
