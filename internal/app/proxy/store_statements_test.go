@@ -144,6 +144,7 @@ func TestStoreStatementCleanup(t *testing.T) {
 		name, change, failure string
 	}{
 		{"fully prepared", "", ""},
+		{"money history failure", "DROP TABLE money_history", "money history"},
 		{"authorization failure", "DROP TABLE grants", "authorization"},
 		{"start failure", "DROP TABLE requests", "request start"},
 		{"finish failure", `DROP TABLE requests;
@@ -203,7 +204,7 @@ func assertStoreResourcesClosed(t *testing.T, s *store) {
 	if n := s.db.Stats().OpenConnections; n != 0 {
 		t.Fatalf("closed database retained %d connections", n)
 	}
-	for name, stmt := range map[string]*sql.Stmt{"authorization": s.authorizeStmt, "start": s.startStmt, "finish": s.finishStmt} {
+	for name, stmt := range map[string]*sql.Stmt{"authorization": s.authorizeStmt, "start": s.startStmt, "finish": s.finishStmt, "money history": s.moneyStmt} {
 		if stmt == nil {
 			continue
 		}
