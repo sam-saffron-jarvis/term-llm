@@ -16,6 +16,7 @@ type serveWorkspaceRequest struct {
 	SessionID         string
 	ProjectID         string
 	WorktreeDir       string
+	ConstrainWorktree bool // Transport-authenticated device, irrespective of optional UI headers.
 	FirstPartyUI      bool
 	FreshConversation bool
 	AllowNoProject    bool
@@ -69,6 +70,20 @@ func (s *serveServer) resolveWorkspace(ctx context.Context, req serveWorkspaceRe
 		if req.ProjectID != "" {
 			return serveWorkspaceBinding{}, workspaceError(http.StatusBadRequest, "projects_disabled", "project_id is not accepted while project mode is disabled")
 		}
+		if req.WorktreeDir != "" && (req.FirstPartyUI || req.ConstrainWorktree) {
+			root, err := s.currentGitRoot()
+			if err != nil {
+				return serveWorkspaceBinding{}, workspaceError(http.StatusConflict, "worktrees_unavailable", "not a git repository")
+			}
+			if sameServePath(req.WorktreeDir, root) {
+				return serveWorkspaceBinding{RootDir: root, RuntimeDir: root, RepoRoot: root}, nil
+			}
+			wt, err := managedWorktreeForRoot(root, req.WorktreeDir)
+			if err != nil {
+				return serveWorkspaceBinding{}, workspaceError(http.StatusBadRequest, "invalid_worktree", err.Error())
+			}
+			return serveWorkspaceBinding{RootDir: root, RepoRoot: root, RuntimeDir: wt.Dir, WorktreeDir: wt.Dir}, nil
+		}
 		return serveWorkspaceBinding{}, nil
 	}
 	if req.ProjectID == "" && persisted != nil {
@@ -116,7 +131,7 @@ func (s *serveServer) resolveWorkspace(ctx context.Context, req serveWorkspaceRe
 		// Third-party omission retains its existing unbound/explicit behavior.
 		// A first-party UI may not use an arbitrary path
 		// as a substitute for selecting a registry project.
-		if req.WorktreeDir != "" && req.FirstPartyUI {
+		if req.WorktreeDir != "" && (req.FirstPartyUI || req.ConstrainWorktree) {
 			return serveWorkspaceBinding{}, workspaceError(http.StatusBadRequest, "project_required", "worktree_dir requires project_id")
 		}
 		return serveWorkspaceBinding{}, nil

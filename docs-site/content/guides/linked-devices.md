@@ -37,11 +37,11 @@ taken or retrieve information already disclosed.
 
 ## Security boundary
 
-The paired composer’s **+** menu supports files, photos, conversation goals, and [MCP servers](/guides/mcp-servers/). Uploads travel over the encrypted connection in small chunks; the message references the completed upload rather than embedding its bytes. MCP management is a per-device permission the host grants separately from pairing.
+Direct and linked chats offer the same **+** actions: files, photos, current location, goals, [MCP servers](/guides/mcp-servers/), and Worktrees on supported Git projects. Sharing location requires device permission and adds editable coordinates to the current unsent draft. Attachments transfer in chunks. The host grants MCP management per device.
 
 Live voice follows the host’s provider and transport. PCM uses streamed HTTP/SSE and bounded microphone posts; WebRTC providers retain their signaling path. Calls use server-owned tools, require microphone permission, and end when the device disconnects or is revoked.
 
-Pairing does not grant general administration, shell access, jobs, push, worktree management, transcript publishing, extension management, or unrestricted access to workspace files. Dictation uploads, WebSocket voice, and client-owned Live tools remain unavailable. The route allowlist is not a tool sandbox.
+Pairing does not grant general administration, shell access, jobs, push, transcript publishing, extension management, or unrestricted access to workspace files. Dictation uploads, WebSocket voice, and client-owned Live tools remain unavailable. The route allowlist is not a tool sandbox.
 
 The agent and sharing runtime run as the same OS user. In the standard contained
 agent the agent also has passwordless sudo, runs with `--yolo`, and can read the

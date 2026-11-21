@@ -489,6 +489,10 @@ export class AppStore {
     this.goalStore = new GoalStore(this.services, this.activeSession, this.modal);
     this.goal = this.goalStore.state;
     this.reviewStore = new ReviewStore(this.services, {
+      worktreeProjectId: () =>
+        this.projectsEnabled.value
+          ? this.activeSession.value?.projectId || this.activeProjectId.value
+          : '',
       activeSession: this.activeSession,
       activeSessionId: this.activeSessionId,
       streaming: streamingProxy,

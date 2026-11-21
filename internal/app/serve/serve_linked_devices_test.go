@@ -72,6 +72,7 @@ func TestPeerCapabilitiesDisableOwnerAndDeviceOnlyControls(t *testing.T) {
 	server := newTestServeServer()
 	defer server.sessionMgr.Close()
 	server.cfg.ui = true
+	server.startupDir = t.TempDir() // non-Git host
 	request := httptest.NewRequest(http.MethodGet, "/v1/capabilities", nil)
 	request = linkeddevices.WithDevicePrincipal(request, linkeddevices.DevicePrincipal{DeviceID: "device", Scope: linkeddevices.ScopeWebV1})
 	recorder := httptest.NewRecorder()

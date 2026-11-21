@@ -234,7 +234,7 @@ export class ReviewOperations {
     try {
       if (!this.isCurrentWorktree(owner, dir, epoch)) return;
       const data = await services.endpoints.worktreeDiff(
-        host.activeSession.value?.projectId || '',
+        host.worktreeProjectId?.() ?? (host.activeSession.value?.projectId || ''),
         dir,
       );
       if (!this.isCurrentWorktree(owner, dir, epoch)) return;

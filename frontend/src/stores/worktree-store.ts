@@ -50,6 +50,7 @@ export class WorktreeStore {
   }
 
   private projectId(): string {
+    if (!this.options.projectsEnabled.value) return '';
     return this.options.activeSession.value?.projectId || this.options.activeProjectId.value;
   }
 

@@ -382,13 +382,13 @@ func (s *SQLiteStore) SwitchSessionWorkspace(ctx context.Context, sessionID stri
 	binding.ProjectID = strings.TrimSpace(binding.ProjectID)
 	binding.CWD = strings.TrimSpace(binding.CWD)
 	binding.WorktreeDir = strings.TrimSpace(binding.WorktreeDir)
-	if sessionID == "" || binding.ProjectID == "" || binding.CWD == "" {
+	if sessionID == "" || binding.CWD == "" {
 		return nil, ErrWorkspaceConflict
 	}
 	result, err := s.db.ExecContext(ctx, `
 		UPDATE sessions
 		SET cwd = ?, worktree_dir = NULLIF(?, ''), updated_at = ?
-		WHERE id = ? AND project_id = ?`,
+		WHERE id = ? AND COALESCE(project_id, '') = ?`,
 		binding.CWD, binding.WorktreeDir, time.Now().UTC(), sessionID, binding.ProjectID)
 	if err != nil {
 		return nil, fmt.Errorf("switch session workspace: %w", err)

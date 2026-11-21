@@ -13,6 +13,7 @@ import (
 
 	"github.com/term-llm/term-llm/internal/agents"
 	"github.com/term-llm/term-llm/internal/app/uploads"
+	"github.com/term-llm/term-llm/internal/linkeddevices"
 	"github.com/term-llm/term-llm/internal/llm"
 	"github.com/term-llm/term-llm/internal/llm/core"
 	"github.com/term-llm/term-llm/internal/session"
@@ -545,9 +546,10 @@ func (s *serveServer) prepareResolvedResponseAdmission(w http.ResponseWriter, r 
 		}
 		release = admissionRelease
 	}
+	_, paired := linkeddevices.DeviceFromRequest(r)
 	binding, err := s.resolveWorkspace(ctx, serveWorkspaceRequest{
 		SessionID: sessionID, ProjectID: rr.req.ProjectID, WorktreeDir: rr.req.WorktreeDir,
-		FirstPartyUI: isFirstPartyUIResponseRequest(r), FreshConversation: rr.freshConversation, AllowNoProject: rr.req.NoProject,
+		ConstrainWorktree: paired, FirstPartyUI: isFirstPartyUIResponseRequest(r), FreshConversation: rr.freshConversation, AllowNoProject: rr.req.NoProject,
 	})
 	if err != nil {
 		writeWorkspaceError(w, err)
@@ -756,7 +758,7 @@ func (s *serveServer) handleResolvedResponses(w http.ResponseWriter, r *http.Req
 		}
 	}()
 	if freshConversation {
-		if workspaceBinding.ProjectID != "" || strings.TrimSpace(req.ProjectID) != "" || req.NoProject {
+		if workspaceBinding.RuntimeDir != "" || strings.TrimSpace(req.ProjectID) != "" || req.NoProject {
 			// Create only an unbound persistence shell first. Runtime/model metadata is
 			// updated after the selected project or explicit No project workspace is
 			// applied, so a conflicting project bind cannot mutate the winner's settings.

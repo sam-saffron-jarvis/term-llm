@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/term-llm/term-llm/internal/linkeddevices"
 	"github.com/term-llm/term-llm/internal/session"
 	"github.com/term-llm/term-llm/internal/worktree"
 	worktreerecovery "github.com/term-llm/term-llm/internal/worktree/recovery"
@@ -103,6 +104,10 @@ func (s *serveServer) currentGitRootOr409(w http.ResponseWriter, r ...*http.Requ
 		if root, ok := r[0].Context().Value(serveWorktreeRootContextKey{}).(string); ok && root != "" {
 			return root, true
 		}
+		if _, paired := linkeddevices.DeviceFromRequest(r[0]); paired && s.projectsEnabled {
+			writeProjectError(w, http.StatusForbidden, "project_required", "select a registered project")
+			return "", false
+		}
 	}
 	root, err := s.currentGitRoot()
 	if err != nil {
@@ -117,17 +122,6 @@ func managedWorktreeForRoot(root, dir string) (*worktree.Worktree, error) {
 	if dir == "" {
 		return nil, fmt.Errorf("dir is required")
 	}
-	abs, err := filepath.Abs(dir)
-	if err != nil {
-		return nil, fmt.Errorf("resolve worktree dir: %w", err)
-	}
-	wt, err := worktree.Get(abs)
-	if err != nil {
-		return nil, fmt.Errorf("invalid worktree dir: %w", err)
-	}
-	if !sameServePath(wt.RepoRoot, root) {
-		return nil, fmt.Errorf("worktree does not belong to the current repository")
-	}
 	managedRoot, err := worktree.ManagedRoot(root)
 	if err != nil {
 		return nil, fmt.Errorf("resolve managed worktree root: %w", err)
@@ -136,12 +130,17 @@ func managedWorktreeForRoot(root, dir string) (*worktree.Worktree, error) {
 	if err != nil {
 		return nil, fmt.Errorf("resolve managed worktree root: %w", err)
 	}
-	wtDir, err := canonicalizeWorktreeBoundary(wt.Dir)
+	wtDir, err := filepath.EvalSymlinks(filepath.Clean(dir))
 	if err != nil {
 		return nil, fmt.Errorf("resolve worktree dir: %w", err)
 	}
-	if !pathWithinDir(wtDir, managedRoot) || wtDir == managedRoot {
+	if !filepath.IsAbs(wtDir) || !sameServePath(filepath.Dir(wtDir), managedRoot) {
 		return nil, fmt.Errorf("worktree is not managed by term-llm")
+	}
+	// Only inspect Git metadata after confining the client path to this bucket.
+	wt, err := worktree.Get(wtDir)
+	if err != nil || !sameServePath(wt.RepoRoot, root) {
+		return nil, fmt.Errorf("worktree does not belong to the current repository")
 	}
 	wt.Dir = wtDir
 	return wt, nil
@@ -317,15 +316,25 @@ func (s *serveServer) handleWorktreeSwitch(w http.ResponseWriter, r *http.Reques
 		writeOpenAIError(w, http.StatusNotFound, "not_found_error", "session not found")
 		return
 	}
-	projects, ok := session.AsProjectReader(s.store)
-	if !ok || strings.TrimSpace(sess.ProjectID) == "" {
-		writeOpenAIError(w, http.StatusConflict, "conflict_error", "session is not bound to a project")
+	if _, scoped := r.Context().Value(serveWorktreeRootContextKey{}).(string); scoped {
+		projects, ok := session.AsProjectReader(s.store)
+		if !ok || strings.TrimSpace(sess.ProjectID) == "" {
+			writeOpenAIError(w, http.StatusConflict, "conflict_error", "session is not bound to a project")
+			return
+		}
+		project, err := projects.GetProject(r.Context(), sess.ProjectID)
+		if err != nil || project == nil || !sameServePath(project.CanonicalDir, root) {
+			writeOpenAIError(w, http.StatusConflict, "conflict_error", "session belongs to a different project")
+			return
+		}
+	} else if s.projectsEnabled || sess.ProjectID != "" || (sess.WorktreeDir == "" && sess.CWD != "" && !sameServePath(sess.CWD, root)) {
+		writeOpenAIError(w, http.StatusConflict, "conflict_error", "session belongs to a different workspace")
 		return
-	}
-	project, err := projects.GetProject(r.Context(), sess.ProjectID)
-	if err != nil || project == nil || !sameServePath(project.CanonicalDir, root) {
-		writeOpenAIError(w, http.StatusConflict, "conflict_error", "session belongs to a different project")
-		return
+	} else if sess.WorktreeDir != "" {
+		if _, err := managedWorktreeForRoot(root, sess.WorktreeDir); err != nil {
+			writeOpenAIError(w, http.StatusConflict, "conflict_error", "session belongs to a different workspace")
+			return
+		}
 	}
 	targetDir, worktreeDir := root, ""
 	if strings.TrimSpace(req.Dir) != "" {

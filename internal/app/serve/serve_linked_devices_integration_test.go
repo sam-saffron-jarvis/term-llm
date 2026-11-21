@@ -105,7 +105,7 @@ func TestLinkedDevicesDispatchesMountedServeHandler(t *testing.T) {
 	}
 }
 
-func mountedPeerServeFixture(t *testing.T, basePath string) (*http.Client, func()) {
+func mountedPeerServeFixture(t *testing.T, basePath string, configure ...func(*serveServer)) (*http.Client, func()) {
 	t.Helper()
 	brokerHandler, err := peerbroker.NewHandler(peerbroker.Config{})
 	if err != nil {
@@ -131,6 +131,9 @@ func mountedPeerServeFixture(t *testing.T, basePath string) (*http.Client, func(
 	server := newTestServeServer("mounted response")
 	server.cfg = serveServerConfig{ui: true, basePath: basePath, requireAuth: true, token: "owner-token"}
 	server.store = newSessionDirectoryTestStore(t)
+	for _, apply := range configure {
+		apply(server)
+	}
 	server.linkedDevices = &linkeddevices.ServeHost{Runtime: runtime}
 	_ = server.httpHandler()
 

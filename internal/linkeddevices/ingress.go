@@ -120,6 +120,9 @@ func RouteAllowed(method, path string) bool {
 	if method == http.MethodOptions || strings.HasPrefix(path, "/v1/linked-devices") {
 		return false
 	}
+	if worktreeRouteAllowed(method, path) {
+		return true
+	}
 	// Composer mutations target one conversation, not arbitrary suffix matches.
 	if tail, ok := strings.CutPrefix(path, "/v1/sessions/"); ok {
 		id, action, hasAction := strings.Cut(tail, "/")
@@ -164,6 +167,30 @@ func RouteAllowed(method, path string) bool {
 		if strings.HasPrefix(path, "/v1/sessions/") {
 			return hasAnySuffix(path, "/approval", "/ask_user", "/attention/seen", "/code-cells/cancel")
 		}
+	}
+	return false
+}
+
+// Project mode and single-workspace mode share the same worktree handlers.
+func worktreeRouteAllowed(method, path string) bool {
+	route, ok := strings.CutPrefix(path, "/v1/")
+	if !ok {
+		return false
+	}
+	if tail, project := strings.CutPrefix(route, "projects/"); project {
+		id, suffix, found := strings.Cut(tail, "/")
+		if !found || id == "" || id == "." || id == ".." {
+			return false
+		}
+		route = suffix
+	}
+	switch route {
+	case "worktrees":
+		return method == http.MethodGet || method == http.MethodPost || method == http.MethodDelete
+	case "worktrees/diff":
+		return method == http.MethodGet
+	case "worktrees/switch", "worktrees/merge", "worktrees/assisted-merge", "worktrees/promote":
+		return method == http.MethodPost
 	}
 	return false
 }

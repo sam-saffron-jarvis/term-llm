@@ -9,6 +9,7 @@ import type { DiffState, SendOptions } from './store-types';
  * import from the other.
  */
 export interface ReviewStoreHost {
+  worktreeProjectId?: () => string;
   activeSession: ReadonlySignal<Session | null>;
   activeSessionId: ReadonlySignal<string>;
   streaming: ReadonlySignal<boolean>;

@@ -6246,6 +6246,7 @@ describe('AppStore compatibility behavior', () => {
 
   it('loads managed worktree patches into the rich diff state', async () => {
     const store = new AppStore(config);
+    store.projectsEnabled.value = true;
     try {
       store.sessions.value = [{ ...session(), projectId: 'project-1' }];
       store.activeSessionId.value = 's1';

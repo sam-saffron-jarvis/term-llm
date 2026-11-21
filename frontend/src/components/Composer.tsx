@@ -536,10 +536,12 @@ function ConversationComposer() {
   const canAttach = store.composer.attachmentsAllowed.value;
   const canMCP = !linkedDevicesMode || store.linkedComposerActions.value.mcp;
   const canGoal = !linkedDevicesMode || store.linkedComposerActions.value.goals;
+  const canShareLocation = store.config.locationSharing;
+  const canUseWorktrees = store.worktreesAvailable();
   const commandAllowed = (command: string) =>
     (command !== '/mcp' || canMCP) &&
     (command !== '/goal' || canGoal) &&
-    (command !== '/worktree' || !linkedDevicesMode);
+    (command !== '/worktree' || !linkedDevicesMode || canUseWorktrees);
   const local = composerCompletions(
     store.prompt.value.slice(0, cursor),
     store.config.agentNames,
@@ -1100,7 +1102,7 @@ function ConversationComposer() {
           </div>
         )}
         <div class="composer-box">
-          {(canAttach || canMCP || canGoal) && (
+          {(canAttach || canShareLocation || canMCP || canGoal || canUseWorktrees) && (
             <>
               <button
                 ref={attach}
@@ -1147,7 +1149,7 @@ function ConversationComposer() {
                       </button>
                     </>
                   )}
-                  {!linkedDevicesMode && store.config.locationSharing && (
+                  {canShareLocation && (
                     <button
                       type="button"
                       role="menuitem"
@@ -1193,7 +1195,7 @@ function ConversationComposer() {
                       <span>Set goal…</span>
                     </button>
                   )}
-                  {!linkedDevicesMode && store.worktreesAvailable() && (
+                  {canUseWorktrees && (
                     <button
                       type="button"
                       role="menuitem"

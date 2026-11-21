@@ -3,6 +3,7 @@ package linkeddevices
 import (
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -149,5 +150,22 @@ func TestAdmitDevice(t *testing.T) {
 	handler(recorder, request)
 	if recorder.Code != http.StatusNoContent || ownerCalls != 1 {
 		t.Fatalf("device request = %d, owner calls %d", recorder.Code, ownerCalls)
+	}
+}
+
+func TestWorktreeRouteScope(t *testing.T) {
+	for _, base := range []string{"/v1/worktrees", "/v1/projects/prj_a/worktrees"} {
+		for action, methods := range map[string]string{"": "GET POST DELETE", "/switch": "POST", "/diff": "GET", "/merge": "POST", "/assisted-merge": "POST", "/promote": "POST", "/content": "", "/merge/other": ""} {
+			for _, method := range []string{"GET", "POST", "PATCH", "DELETE"} {
+				if got := RouteAllowed(method, base+action); got != strings.Contains(methods, method) {
+					t.Errorf("%s %s: %t", method, base+action, got)
+				}
+			}
+		}
+	}
+	for _, path := range []string{"/v1/projects/../worktrees", "/v1/projects//worktrees", "/v1/projects/a/nested/worktrees", "/v1/projects/a"} {
+		if RouteAllowed("DELETE", path) {
+			t.Errorf("unexpected admission: %s", path)
+		}
 	}
 }

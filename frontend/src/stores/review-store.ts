@@ -172,7 +172,7 @@ export class ReviewStore {
 
   async openWorktreeDiff(dir: string, title: string): Promise<void> {
     const owner = this.host.activeSessionId.peek();
-    if (!owner || !dir) return;
+    if (!dir) return;
     this.host.closePlan();
     const epoch = ++this.operationState.loadEpoch;
     this.diff.value = {
@@ -265,8 +265,8 @@ export class ReviewStore {
 
   async expandDiff(file: DiffFile, context = 0, refresh = false): Promise<void> {
     const session = this.host.activeSession.value;
-    if (!session) return;
-    const owner = session.id;
+    if (!session && !this.diff.peek().worktreeDir) return;
+    const owner = session?.id || this.host.activeSessionId.peek();
     const scope = normalizeDiffScope(this.diff.value.scope);
     const isRequestedVersion = (entry: DiffFile): boolean =>
       entry.path === file.path &&
