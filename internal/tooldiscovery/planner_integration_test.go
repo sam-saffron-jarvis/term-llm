@@ -675,12 +675,14 @@ func TestAutoModeDefersFormerlyEagerToolsAfterCatalogueGrowth(t *testing.T) {
 	if err := manager.Enable(context.Background(), "alpha"); err != nil {
 		t.Fatal(err)
 	}
-	waitReady := func(name string) {
+	waitReady := func(name string, planner *Planner) {
 		t.Helper()
 		deadline := time.Now().Add(5 * time.Second)
 		for time.Now().Before(deadline) {
 			status, err := manager.ServerStatus(name)
-			if status == internalmcp.StatusReady {
+			// Ready precedes the catalogue callback. For a live planner, wait
+			// until it has finished registering this catalogue generation.
+			if status == internalmcp.StatusReady && (planner == nil || planner.index.current.Load().generation == manager.CatalogueSnapshot().Generation) {
 				return
 			}
 			if status == internalmcp.StatusFailed {
@@ -690,11 +692,12 @@ func TestAutoModeDefersFormerlyEagerToolsAfterCatalogueGrowth(t *testing.T) {
 		}
 		t.Fatalf("timed out waiting for %s", name)
 	}
-	waitReady("alpha")
+	waitReady("alpha", nil)
 
 	provider := mockprovider.NewMockProvider("growth").AddTextResponse("eager").AddTextResponse("deferred")
 	eng := engine.NewEngine(provider, nil)
-	if _, err := NewPlanner(config.ToolDiscoveryConfig{Mode: "auto", Threshold: 25}, manager, eng); err != nil {
+	planner, err := NewPlanner(config.ToolDiscoveryConfig{Mode: "auto", Threshold: 25}, manager, eng)
+	if err != nil {
 		t.Fatal(err)
 	}
 	stream, err := eng.Stream(context.Background(), core.Request{EnableToolDiscovery: true, SessionID: "growth", Messages: []core.Message{core.UserText("first")}, MaxTurns: 1})
@@ -709,7 +712,7 @@ func TestAutoModeDefersFormerlyEagerToolsAfterCatalogueGrowth(t *testing.T) {
 	if err := manager.Enable(context.Background(), "beta"); err != nil {
 		t.Fatal(err)
 	}
-	waitReady("beta")
+	waitReady("beta", planner)
 	stream, err = eng.Stream(context.Background(), core.Request{EnableToolDiscovery: true, SessionID: "growth", Messages: []core.Message{core.UserText("second")}, MaxTurns: 3})
 	if err != nil {
 		t.Fatal(err)
