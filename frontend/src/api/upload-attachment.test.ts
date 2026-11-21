@@ -125,7 +125,7 @@ describe('linked binary uploads', () => {
   const api = new APIClient(config, { getToken: () => '', onAuthRequired: vi.fn() });
   const chunk = 32768;
   const accepted = () => Response.json({ token: 'continuation' }, { status: 202 });
-  it.each([1, chunk, chunk * 2, chunk * 2 + 1])(
+  it.each([0, 1, chunk, chunk * 2, chunk * 2 + 1])(
     'sends exactly %i bytes with acknowledged offsets and no empty final request',
     async (size) => {
       const bytes = new Uint8Array(size).map((_, i) => i % 251);
@@ -161,7 +161,7 @@ describe('linked binary uploads', () => {
       await expect(
         endpoints(api).uploadLinkedAttachment(original, ref.filename, { onProgress }),
       ).resolves.toEqual(ref);
-      expect(send).toHaveBeenCalledTimes(Math.ceil(size / chunk));
+      expect(send).toHaveBeenCalledTimes(Math.max(1, Math.ceil(size / chunk)));
       expect(onProgress.mock.calls).toEqual(
         Array.from({ length: Math.ceil(size / chunk) - 1 }, (_, i) => [(i + 1) * chunk, size]),
       );

@@ -7,6 +7,7 @@ import (
 	"github.com/term-llm/term-llm/internal/pairing"
 	"net/http"
 	"strings"
+	"sync"
 )
 
 type devicePrincipalKey struct{}
@@ -24,6 +25,7 @@ type DevicePrincipal struct {
 	// Lifetime is the trusted peer connection's context, not an HTTP request's.
 	// It is cancelled on revocation, disconnect, replacement and host shutdown.
 	Lifetime context.Context
+	mcpOps   *sync.RWMutex // held for reading by management requests
 }
 
 // WithDevicePrincipal marks a request as admitted by the peer ingress. It is

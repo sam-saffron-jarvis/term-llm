@@ -17,6 +17,9 @@ import (
 	"github.com/term-llm/term-llm/internal/config"
 	"github.com/term-llm/term-llm/internal/linkeddevices"
 	"github.com/term-llm/term-llm/internal/live"
+	"github.com/term-llm/term-llm/internal/llm/core"
+	"github.com/term-llm/term-llm/internal/llm/mockprovider"
+	"github.com/term-llm/term-llm/internal/mcp"
 )
 
 type linkedLiveTestProvider struct {
@@ -62,6 +65,37 @@ func newLinkedLiveTestServer(t *testing.T, providerName string) (*serveServer, *
 func linkedLiveRequest(method, path, body, device string, lifetime context.Context) *http.Request {
 	r := httptest.NewRequest(method, path, strings.NewReader(body))
 	return linkeddevices.WithDevicePrincipal(r, linkeddevices.DevicePrincipal{DeviceID: device, Scope: linkeddevices.ScopeWebV1, Lifetime: lifetime})
+}
+
+// A delegated Live turn does not pass through the HTTP responses handler.
+func TestLinkedLiveTurnChecksMCPBeforeCallingProvider(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	const id = "live-mcp-policy"
+	s := newTestServeServer()
+	defer s.sessionMgr.Close()
+	rt, _, err := s.runtimeForRequest(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	private := map[string]mcp.ServerConfig{"not-shared": {Type: "http", URL: "https://private.example/mcp"}}
+	writeServeMCPConfig(t, private)
+	rt.mcpManager = mcp.NewManagerWithConfig(&mcp.Config{Servers: private})
+	rt.mcpSetting = "not-shared"
+	record := newLiveSession("call", id)
+	record.linkedOwner = linkeddevices.NewLiveOwner(linkedLiveRequest(http.MethodPost, "/v1/live/sessions", "", "peer", ctx))
+	d := &serveLiveDelegator{server: s, live: record}
+	run, err := d.startDelegatedRun(rt, id, "", []core.Message{core.UserText("hello")}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = d.streamRun(ctx, run, func(live.DelegationChunk) {})
+	if err == nil || !strings.Contains(err.Error(), "not shared") {
+		t.Fatalf("delegation: %v", err)
+	}
+	if n := len(rt.provider.(*mockprovider.MockProvider).RecordedRequests()); n != 0 {
+		t.Fatalf("provider received %d requests", n)
+	}
 }
 
 func TestLinkedLiveStartRejectsDeviceAuthorityAndUnsupportedTransport(t *testing.T) {

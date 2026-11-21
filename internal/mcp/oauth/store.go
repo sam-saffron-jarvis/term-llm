@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/term-llm/term-llm/internal/atomicfile"
@@ -72,8 +73,9 @@ type storeFile struct {
 
 // FileStore stores all MCP grants in one private, versioned JSON file.
 type FileStore struct {
-	path string
-	mu   sync.Mutex
+	path    string
+	mu      sync.Mutex
+	retired atomic.Bool // set under mu; see Retire
 }
 
 func DefaultStorePath() (string, error) {
@@ -264,6 +266,9 @@ func (s *FileStore) Delete(endpoint string) (*Session, error) {
 func (s *FileStore) withLock(fn func() error) (err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.retired.Load() {
+		return ErrInstallerRetired
+	}
 	if s.path == "" {
 		return fmt.Errorf("MCP OAuth store path is empty")
 	}

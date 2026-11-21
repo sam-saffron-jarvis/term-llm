@@ -105,12 +105,17 @@ func (r *Runtime) handleDevicePermission(w http.ResponseWriter, request *http.Re
 		http.Error(w, "expected an enabled boolean", http.StatusBadRequest)
 		return
 	}
+	r.mcpDisposeMu.Lock()
 	r.mu.Lock()
 	err := r.grants.SetManageMCP(id, *body.Enabled)
 	if err == nil && !*body.Enabled {
 		r.cancelMCPLocked(id)
 	}
 	r.mu.Unlock()
+	if err == nil && !*body.Enabled {
+		r.disposeMCP(id) // Removing management removes what it installed.
+	}
+	r.mcpDisposeMu.Unlock()
 	if err != nil {
 		writeOwnerError(w, err)
 		return

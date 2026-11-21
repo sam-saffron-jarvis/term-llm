@@ -597,6 +597,9 @@ func (m *Manager) StartOAuth(ctx context.Context, name string, startOptions ...O
 	}
 	oauthOptions.GrantLifetime = options.GrantLifetime
 	coordinator := m.oauthCoordinatorFor(server)
+	if err := linkedInstallCurrent(name, server, coordinator); err != nil {
+		return nil, err
+	}
 	flow, err := coordinator.Start(ctx, server.URL, oauthOptions, options.RedirectURL, options.Force)
 	if err != nil {
 		return nil, err

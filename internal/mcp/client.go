@@ -98,11 +98,16 @@ type Client struct {
 
 // NewClient creates a new MCP client for the given server configuration.
 func NewClient(name string, config ServerConfig) *Client {
-	return &Client{
+	c := &Client{
 		name:              name,
 		config:            config,
 		toolRefreshSignal: make(chan struct{}, 1),
 	}
+	if config.LinkedInstaller != "" {
+		// Bound now: disposal retires this coordinator, never a later one.
+		c.oauthCoordinator = mcpoauth.ForInstaller(config.LinkedInstaller)
+	}
+	return c
 }
 
 // SetSamplingHandler sets the sampling handler for this client.
@@ -266,6 +271,9 @@ func (c *Client) createTransport(ctx context.Context) (mcp.Transport, error) {
 
 // createHTTPTransport creates an HTTP transport for URL-based servers.
 func (c *Client) createHTTPTransport() (mcp.Transport, error) {
+	if err := linkedInstallCurrent(c.name, c.config, c.oauthCoordinator); err != nil {
+		return nil, err
+	}
 	// Use a clone of the default transport so proxy, HTTP/2, and other standard
 	// settings are preserved while avoiding a whole-request http.Client timeout.
 	// Caller contexts control the full request lifetime, including long-running
@@ -283,7 +291,7 @@ func (c *Client) createHTTPTransport() (mcp.Transport, error) {
 	// and is replaced by headerTransport when configured headers are present.
 	var publicTransport http.RoundTripper = baseTransport
 	if c.config.LinkedInstaller != "" {
-		publicTransport = mcpoauth.LinkedTransport()
+		publicTransport = mcpoauth.LinkedTransport(baseTransport)
 	}
 	innerTransport := publicTransport
 
@@ -592,6 +600,9 @@ func (c *Client) CallTool(ctx context.Context, name string, args json.RawMessage
 
 	if !running || session == nil {
 		return core.ToolOutput{}, fmt.Errorf("MCP server %s is not running", c.name)
+	}
+	if c.config.LinkedInstaller != "" && (c.oauthCoordinator == nil || c.oauthCoordinator.Retired()) {
+		return core.ToolOutput{}, fmt.Errorf("MCP server %s was removed with its linked device", c.name)
 	}
 
 	// Parse arguments

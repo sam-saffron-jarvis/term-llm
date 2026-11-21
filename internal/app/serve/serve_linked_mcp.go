@@ -1,7 +1,6 @@
 package serve
 
 import (
-	"context"
 	"errors"
 	"github.com/term-llm/term-llm/internal/app/runtime/mcpstart"
 	"github.com/term-llm/term-llm/internal/app/serve/mcpweb"
@@ -31,7 +30,7 @@ func (s *serveServer) handleLinkedMCP(w http.ResponseWriter, r *http.Request, id
 		return
 	}
 	if r.Method == http.MethodGet {
-		if !mcpweb.Allows(mcpstart.ParseServerList(setting), stringSet(mgr.LinkedDeviceServers(installer))) {
+		if hostManagedMCP(mgr, mcpstart.ParseServerList(setting), stringSet(mgr.LinkedDeviceServers(installer))) {
 			writeOpenAIError(w, 409, "conflict_error", "This conversation’s MCP selection is managed on the host.")
 			return
 		}
@@ -86,12 +85,13 @@ func (s *serveServer) handleLinkedMCP(w http.ResponseWriter, r *http.Request, id
 		return
 	}
 	// Never remove (or implicitly start) an owner's non-shared selection.
+	// Unconfigured names are stale and are dropped by applying names.
 	sess, err = s.store.Get(ctx, id)
 	if err != nil {
 		failed()
 		return
 	}
-	if (sess != nil && !mcpweb.Allows(mcpstart.ParseServerList(sess.MCP), allowed)) || !mcpweb.Allows(mcpstart.ParseServerList(rt.mcpSetting), allowed) || !mcpweb.Allows(rt.mcpManager.EnabledServers(), allowed) {
+	if (sess != nil && hostManagedMCP(rt.mcpManager, mcpstart.ParseServerList(sess.MCP), allowed)) || hostManagedMCP(rt.mcpManager, mcpstart.ParseServerList(rt.mcpSetting), allowed) || hostManagedMCP(rt.mcpManager, rt.mcpManager.EnabledServers(), allowed) {
 		writeOpenAIError(w, 409, "conflict_error", "This conversation's MCP selection is managed on the host.")
 		return
 	}
@@ -109,42 +109,74 @@ func (s *serveServer) handleLinkedMCP(w http.ResponseWriter, r *http.Request, id
 
 // Bind the peer check to the runtime's run lock, not just the selector. The
 // owner may have changed this conversation since the panel was last opened.
-func withLinkedMCPRunGuard(ctx context.Context, r *http.Request, rt *serveRuntime) context.Context {
-	p, ok := linkeddevices.DeviceFromRequest(r)
-	if !ok {
-		return ctx
+func linkedMCPRunGuard(p linkeddevices.DevicePrincipal, rt *serveRuntime, next func(*core.Request) error) func(*core.Request) error {
+	if p.DeviceID == "" {
+		return next
 	}
-	previous := serveRuntimeSetupFromContext(ctx)
-	return withServeRuntimeSetup(ctx, func(req *core.Request) error {
-		if previous != nil {
-			if err := previous(req); err != nil {
-				return err
-			}
+	return func(req *core.Request) error {
+		if err := rt.checkDeviceMCP(p); err != nil {
+			return err
 		}
-		if rt.mcpManager == nil {
-			return nil
-		}
-		names := append(rt.mcpManager.EnabledServers(), mcpstart.ParseServerList(rt.mcpSetting)...)
-		if len(names) == 0 {
-			return nil
-		}
-		installer := ""
-		if p.ManageMCP && p.MCPGrantLifetime != nil && p.MCPGrantLifetime.Err() == nil {
-			installer = p.DeviceID
-		}
-		denied := errors.New("This conversation uses MCP servers that are not shared with this device.")
-		if !mcpweb.Allows(names, stringSet(rt.mcpManager.LinkedDeviceServers(installer))) {
-			return denied
-		}
-		cfg, err := mcp.LoadConfig()
-		if err != nil {
-			return denied
-		}
-		for _, name := range names {
-			if !cfg.Servers[name].AvailableToDevice(installer) {
-				return denied
-			}
+		if next != nil {
+			return next(req)
 		}
 		return nil
-	})
+	}
+}
+
+func (rt *serveRuntime) checkDeviceMCP(p linkeddevices.DevicePrincipal) error {
+	if rt.mcpManager == nil {
+		return nil
+	}
+	names, selected := rt.mcpManager.EnabledServers(), mcpstart.ParseServerList(rt.mcpSetting)
+	if len(names)+len(selected) == 0 {
+		return nil
+	}
+	installer := ""
+	if p.ManageMCP && p.MCPGrantLifetime != nil && p.MCPGrantLifetime.Err() == nil {
+		installer = p.DeviceID
+	}
+	denied := errors.New("This conversation uses MCP servers that are not shared with this device.")
+	cfg, err := mcp.LoadConfig()
+	if err != nil {
+		return denied
+	}
+	// A selected name missing from disk and memory cannot start; running ones are checked.
+	known := rt.mcpManager.Config()
+	for _, name := range selected {
+		_, onDisk := cfg.Servers[name]
+		if onDisk || known == nil {
+			names = append(names, name)
+		} else if _, inMemory := known.Servers[name]; inMemory {
+			names = append(names, name)
+		}
+	}
+	if !mcpweb.Allows(names, stringSet(rt.mcpManager.LinkedDeviceServers(installer))) {
+		return denied
+	}
+	for _, name := range names {
+		if !cfg.Servers[name].AvailableToDevice(installer) {
+			return denied
+		}
+	}
+	return nil
+}
+
+// hostManagedMCP reports a configured name the peer may not use. Unconfigured
+// names (a removed device installation, say) are stale: deselecting them is
+// safe and nothing can start them.
+func hostManagedMCP(mgr *mcp.Manager, names []string, allowed map[string]bool) bool {
+	cfg := mgr.Config()
+	for _, name := range names {
+		if allowed[name] {
+			continue
+		}
+		if cfg == nil {
+			return true
+		}
+		if _, configured := cfg.Servers[name]; configured {
+			return true
+		}
+	}
+	return false
 }

@@ -20,7 +20,7 @@ import type { Attachment } from '../domain/types';
 import { overlayManager } from '../platform/overlay-manager';
 import { VoiceOperation, type VoiceSnapshot } from '../platform/voice';
 import type { LiveStore } from '../stores/live-store';
-import { Icon } from './Icon';
+import { Icon, type IconName } from './Icon';
 import { useMenuKeyboard } from './Menu';
 import { requestTranscriptScrollToTail } from './transcript-scroll';
 import { lazyComponent } from './lazyComponent';
@@ -538,6 +538,21 @@ function ConversationComposer() {
   const canGoal = !linkedDevicesMode || store.linkedComposerActions.value.goals;
   const canShareLocation = store.config.locationSharing;
   const canUseWorktrees = store.worktreesAvailable();
+  const addItem = (icon: IconName, label: string, run: () => void) => (
+    <button
+      type="button"
+      role="menuitem"
+      onClick={() => {
+        run();
+        setMenu(false);
+      }}
+    >
+      <span class="composer-add-menu-icon">
+        <Icon name={icon} />
+      </span>
+      <span>{label}</span>
+    </button>
+  );
   const commandAllowed = (command: string) =>
     (command !== '/mcp' || canMCP) &&
     (command !== '/goal' || canGoal) &&
@@ -1119,98 +1134,24 @@ function ConversationComposer() {
               </button>
               {menu && (
                 <div ref={addMenu} class="composer-add-menu" id="addMenu" role="menu">
-                  {canAttach && (
-                    <>
-                      <button
-                        type="button"
-                        role="menuitem"
-                        onClick={() => {
-                          file.current?.click();
-                          setMenu(false);
-                        }}
-                      >
-                        <span class="composer-add-menu-icon">
-                          <Icon name="add" />
-                        </span>
-                        <span>Upload file</span>
-                      </button>
-                      <button
-                        type="button"
-                        role="menuitem"
-                        onClick={() => {
-                          camera.current?.click();
-                          setMenu(false);
-                        }}
-                      >
-                        <span class="composer-add-menu-icon">
-                          <Icon name="camera" />
-                        </span>
-                        <span>Take photo</span>
-                      </button>
-                    </>
-                  )}
-                  {canShareLocation && (
-                    <button
-                      type="button"
-                      role="menuitem"
-                      onClick={() => {
-                        void store.shareLocation();
-                        setMenu(false);
-                      }}
-                    >
-                      <span class="composer-add-menu-icon">
-                        <Icon name="map-pin" />
-                      </span>
-                      <span>Share current location</span>
-                    </button>
-                  )}
-                  {canMCP && (
-                    <button
-                      type="button"
-                      role="menuitem"
-                      onClick={() => {
-                        store.modal.value = 'mcp';
-                        void store.loadMCP();
-                        setMenu(false);
-                      }}
-                    >
-                      <span class="composer-add-menu-icon">
-                        <Icon name="widgets" />
-                      </span>
-                      <span>MCP servers</span>
-                    </button>
-                  )}
-                  {canGoal && (
-                    <button
-                      type="button"
-                      role="menuitem"
-                      onClick={() => {
-                        store.modal.value = 'goal';
-                        setMenu(false);
-                      }}
-                    >
-                      <span class="composer-add-menu-icon">
-                        <Icon name="target" />
-                      </span>
-                      <span>Set goal…</span>
-                    </button>
-                  )}
-                  {canUseWorktrees && (
-                    <button
-                      type="button"
-                      role="menuitem"
-                      onClick={() => {
-                        store.modal.value = 'worktrees';
-                        void store.loadWorktrees();
-                        setMenu(false);
-                      }}
-                    >
-                      <span class="composer-add-menu-icon">
-                        <Icon name="branch" />
-                      </span>
-                      <span>Worktrees</span>
-                    </button>
-                  )}
+                  {canAttach && addItem('add', 'Upload file', () => file.current?.click())}
+                  {canAttach && addItem('camera', 'Take photo', () => camera.current?.click())}
+                  {canShareLocation &&
+                    addItem('map-pin', 'Share current location', () => store.shareLocation())}
+                  {canMCP &&
+                    addItem('widgets', 'MCP servers', () => {
+                      store.modal.value = 'mcp';
+                      void store.loadMCP();
+                    })}
+                  {canGoal &&
+                    addItem('target', 'Set goal…', () => {
+                      store.modal.value = 'goal';
+                    })}
+                  {canUseWorktrees &&
+                    addItem('branch', 'Worktrees', () => {
+                      store.modal.value = 'worktrees';
+                      void store.loadWorktrees();
+                    })}
                 </div>
               )}
               {canAttach && (

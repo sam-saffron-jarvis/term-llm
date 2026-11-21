@@ -18,6 +18,7 @@ const (
 	msgInvitationReconnect  = "The connection was briefly lost, so the open invitation was cancelled. Select Connect to create a new one."
 	msgRevokeSyncPending    = "Device revoked on this server; the linked-devices service will be updated when it's reachable."
 	msgCancelledSyncPending = "The cancelled pairing will be removed from the linked-devices service when it's reachable."
+	msgMCPDisposePending    = "A removed device's MCP servers or sign-ins could not be fully deleted; restart serve to retry."
 )
 
 // brokerDisplayName returns host[:port][/path] for a broker URL, which is

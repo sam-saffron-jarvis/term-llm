@@ -46,7 +46,13 @@ func TestLinkedGrantIsolation(t *testing.T) {
 	}
 }
 func TestLinkedTransportRejectsNonPublicDestinations(t *testing.T) {
-	tr := LinkedTransport()
+	base := http.DefaultTransport.(*http.Transport).Clone()
+	base.ResponseHeaderTimeout = 2 * time.Minute
+	tr := LinkedTransport(base)
+	wrapped := tr.(linkedTransport).inner.(*http.Transport)
+	if wrapped.ResponseHeaderTimeout != base.ResponseHeaderTimeout || wrapped.Proxy != nil {
+		t.Fatal("linked policy must preserve client timeouts and disable proxies")
+	}
 	for _, raw := range []string{"http://public.example", "https://localhost/mcp", "https://203.0.113.1/mcp", "https://[2001:db8::1]/", "https://[::ffff:127.0.0.1]/", "https://169.254.169.254/", "https://100.100.100.200/", "https://user@target.example/", "https://remote.example:22/"} {
 		req, _ := http.NewRequest(http.MethodGet, raw, nil)
 		if _, err := tr.RoundTrip(req); err == nil {

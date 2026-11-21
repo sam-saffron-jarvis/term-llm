@@ -14,18 +14,25 @@ import (
 // Its zero/nil value represents an ordinary owner call, not a linked call.
 // Identity is immutable after construction; Finish may race lifetime shutdown.
 type LiveOwner struct {
-	deviceID string
-	lifetime context.Context
-	done     chan struct{}
-	finished sync.Once
+	principal DevicePrincipal
+	done      chan struct{}
+	finished  sync.Once
 }
 
 // NewLiveOwner captures authenticated device identity, never client body fields.
 func NewLiveOwner(r *http.Request) *LiveOwner {
 	if principal, ok := DeviceFromRequest(r); ok {
-		return &LiveOwner{deviceID: principal.DeviceID, lifetime: principal.Lifetime, done: make(chan struct{})}
+		return &LiveOwner{principal: principal, done: make(chan struct{})}
 	}
 	return nil
+}
+
+// Principal is the authority captured when the call started, including its revocable grant.
+func (owner *LiveOwner) Principal() DevicePrincipal {
+	if owner == nil {
+		return DevicePrincipal{}
+	}
+	return owner.principal
 }
 
 // Finish releases the lifetime watcher after the host removes a call.
@@ -39,14 +46,14 @@ func (owner *LiveOwner) Finish() {
 // disconnect. The creation request's context must not be used: it ends after
 // the SDP reply. The host callback owns controller/provider teardown.
 func (owner *LiveOwner) Watch(stop func(context.Context)) {
-	if owner == nil || owner.lifetime == nil {
+	if owner == nil || owner.principal.Lifetime == nil {
 		return
 	}
 	go func() {
 		select {
 		case <-owner.done:
 			return
-		case <-owner.lifetime.Done():
+		case <-owner.principal.Lifetime.Done():
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
 			stop(ctx)
@@ -128,7 +135,7 @@ func AuthorizeLiveRequest(r *http.Request, lookup func(string) *LiveOwner) *Live
 	id, _, _ := strings.Cut(strings.TrimPrefix(r.URL.Path, "/v1/live/sessions/"), "/")
 	owner := lookup(id)
 	if principal.Lifetime == nil || principal.Lifetime.Err() != nil || owner == nil ||
-		owner.deviceID != principal.DeviceID || owner.lifetime == nil || owner.lifetime.Err() != nil {
+		owner.principal.DeviceID != principal.DeviceID || owner.principal.Lifetime == nil || owner.principal.Lifetime.Err() != nil {
 		return &LiveAdmissionError{http.StatusNotFound, "invalid_request_error", "live session not found"}
 	}
 	return nil

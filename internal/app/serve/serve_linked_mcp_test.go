@@ -58,7 +58,8 @@ func TestLinkedMCPSelectionPromotesWorkingTool(t *testing.T) {
 		t.Fatal(err)
 	}
 	req := linkeddevices.WithDevicePrincipal(httptest.NewRequest("POST", "/v1/responses", nil), linkeddevices.DevicePrincipal{DeviceID: "peer", Scope: linkeddevices.ScopeWebV1})
-	guard := serveRuntimeSetupFromContext(withLinkedMCPRunGuard(req.Context(), req, rt))
+	peer, _ := linkeddevices.DeviceFromRequest(req)
+	guard := linkedMCPRunGuard(peer, rt, nil)
 	if err := guard(&core.Request{}); err != nil {
 		t.Fatal(err)
 	}

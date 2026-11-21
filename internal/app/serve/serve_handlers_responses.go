@@ -812,7 +812,8 @@ func (s *serveServer) handleResolvedResponses(w http.ResponseWriter, r *http.Req
 	if !stateful {
 		runIdempotencyKey = ""
 	}
-	ctx = withLinkedMCPRunGuard(ctx, r, runtime)
+	peer, _ := linkeddevices.DeviceFromRequest(r)
+	ctx = withServeRuntimeSetup(ctx, linkedMCPRunGuard(peer, runtime, serveRuntimeSetupFromContext(ctx)))
 	r = r.WithContext(ctx)
 	llmReq := s.buildResponsesLLMRequest(req, runtime, sessionID, isFirstPartyUIResponseRequest(r))
 	if !freshConversation && req.Reasoning != nil {

@@ -7,7 +7,10 @@ import (
 	"crypto/subtle"
 	"encoding/json"
 	"fmt"
+	"io/fs"
+	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"sync"
 	"time"
@@ -51,6 +54,19 @@ type grantFile struct {
 type GrantStore struct {
 	path string
 	mu   sync.Mutex
+	// Last locked read and the file it came from. Writers replace the file
+	// atomically under the file lock, so any write changes this signature.
+	cached   grantFile
+	cachedAs fs.FileInfo
+	cachedAt time.Time
+}
+
+// Like Git's racily-clean rule: a file modified within this window of being
+// read may change again without a visible mtime change, so it is not trusted.
+const grantCacheRacyWindow = 2 * time.Second
+
+func sameGrantFile(a, b fs.FileInfo) bool {
+	return os.SameFile(a, b) && a.Size() == b.Size() && a.Mode() == b.Mode() && a.ModTime().Equal(b.ModTime())
 }
 
 func OpenGrantStore(path string) (*GrantStore, error) {
@@ -84,6 +100,7 @@ func (s *GrantStore) load() (grantFile, error) {
 func (s *GrantStore) update(fn func(*grantFile) error) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.cachedAs = nil
 	return withFileLock(s.path, func() error {
 		f, err := s.load()
 		if err != nil {
@@ -99,11 +116,27 @@ func (s *GrantStore) update(fn func(*grantFile) error) error {
 		return writePrivateFile(s.path, data)
 	})
 }
+
+// read serves an unchanged file from memory. Any change to the file by any
+// process, including revocation, is seen by the next read.
 func (s *GrantStore) read() (grantFile, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if info, err := os.Lstat(s.path); err == nil && s.cachedAs != nil && sameGrantFile(s.cachedAs, info) && s.cachedAt.Sub(info.ModTime()) > grantCacheRacyWindow {
+		return grantFile{V: s.cached.V, Grants: slices.Clone(s.cached.Grants)}, nil
+	}
+	s.cachedAs = nil
 	var f grantFile
-	err := withFileLock(s.path, func() error { var err error; f, err = s.load(); return err })
+	err := withFileLock(s.path, func() error {
+		var err error
+		if f, err = s.load(); err != nil {
+			return err
+		}
+		if info, err := os.Lstat(s.path); err == nil { // Writers hold this lock.
+			s.cached, s.cachedAs, s.cachedAt = grantFile{V: f.V, Grants: slices.Clone(f.Grants)}, info, time.Now()
+		}
+		return nil
+	})
 	return f, err
 }
 func (s *GrantStore) List() ([]Grant, error) {

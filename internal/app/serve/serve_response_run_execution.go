@@ -78,8 +78,12 @@ func (s *serveServer) executeResponseRun(runCtx context.Context, releaseReload, 
 		runCtx = core.ContextWithClientToolRunner(runCtx, clientToolRunner)
 	}
 
+	// Live delegates directly to a detached run, without an HTTP response request.
+	if options.live != nil {
+		options.runtimeSetup = linkedMCPRunGuard(options.live.linkedOwner.Principal(), runtime, options.runtimeSetup)
+	}
 	if options.modelSwap != nil && options.modelSwap.plan.enabled {
-		s.executeResponseRunModelSwap(runCtx, runtime, run, stateful, replaceHistory, inputMessages, llmReq, sessionID, respID, model, created, options)
+		s.executeResponseRunModelSwap(withServeRuntimeSetup(runCtx, options.runtimeSetup), runtime, run, stateful, replaceHistory, inputMessages, llmReq, sessionID, respID, model, created, options)
 		return
 	}
 

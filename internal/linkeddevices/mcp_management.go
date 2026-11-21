@@ -6,7 +6,9 @@ import (
 	"net/http"
 	"regexp"
 	"strings"
+	"sync"
 
+	"github.com/term-llm/term-llm/internal/mcp"
 	"github.com/term-llm/term-llm/internal/pairing"
 )
 
@@ -52,6 +54,73 @@ func (r *Runtime) mcpLifetimeLocked(g pairing.Grant) context.Context {
 	r.mcpGrants[g.DeviceID] = mcpLifetime{ctx, cancel}
 	return ctx
 }
+
+// Management requests hold the device's read lock while they run; disposal
+// takes the write lock, so no admitted install or sign-in outlives it.
+func (r *Runtime) mcpOpsLocked(id string) *sync.RWMutex {
+	if r.mcpOps == nil {
+		r.mcpOps = make(map[string]*sync.RWMutex)
+	}
+	if r.mcpOps[id] == nil {
+		r.mcpOps[id] = new(sync.RWMutex)
+	}
+	return r.mcpOps[id]
+}
+
+// disposeMCP removes a device's MCP installations and accounts. The caller
+// holds mcpDisposeMu (not mu) and has already ended the grant lifetime.
+func (r *Runtime) disposeMCP(ids ...string) {
+	if len(ids) == 0 {
+		return
+	}
+	r.mu.Lock()
+	ops := make([]*sync.RWMutex, len(ids))
+	for i, id := range ids {
+		ops[i] = r.mcpOpsLocked(id)
+	}
+	r.mu.Unlock()
+	for _, lock := range ops {
+		lock.Lock()
+		defer lock.Unlock()
+	}
+	if err := mcp.DisposeInstallers(ids...); err != nil {
+		r.setWarning(msgMCPDisposePending)
+	}
+}
+
+// disposeUnmanagedMCP repairs an interrupted disposal at startup: only active
+// grants with management may own MCP installations or accounts.
+func (r *Runtime) disposeUnmanagedMCP() {
+	grants, err := r.grants.List()
+	if err != nil {
+		return
+	}
+	var ids []string
+	for _, g := range grants {
+		if g.RevokedAt != nil || !g.ManageMCP {
+			ids = append(ids, g.DeviceID)
+		}
+	}
+	if len(ids) > 0 && mcp.DisposeInstallers(ids...) != nil {
+		r.setWarning(msgMCPDisposePending)
+	}
+}
+
+func (r *Runtime) grantIDsLocked() []string {
+	if r.grants == nil {
+		return nil
+	}
+	grants, err := r.grants.List()
+	if err != nil {
+		return nil
+	}
+	ids := make([]string, len(grants))
+	for i, g := range grants {
+		ids[i] = g.DeviceID
+	}
+	return ids
+}
+
 func (r *Runtime) cancelMCPLocked(id string) {
 	if l, ok := r.mcpGrants[id]; ok {
 		l.cancel()
@@ -61,7 +130,7 @@ func (r *Runtime) cancelMCPLocked(id string) {
 
 // authorizePeerRequest binds this request (not the connection) to a freshly
 // authenticated grant. Management is never part of the ordinary web-v1 scope.
-func authorizePeerRequest(req *http.Request, basePath string, grant pairing.Grant, lifetime, management context.Context) error {
+func authorizePeerRequest(req *http.Request, basePath string, grant pairing.Grant, lifetime, management context.Context, ops *sync.RWMutex) error {
 	escaped := req.URL.EscapedPath() != req.URL.Path
 	if err := prepareMountedRequest(req, basePath); err != nil {
 		return err
@@ -73,6 +142,6 @@ func authorizePeerRequest(req *http.Request, basePath string, grant pairing.Gran
 	if !allowed || escaped && strings.HasPrefix(req.URL.Path, "/v1/live") {
 		return errors.New("route is not available to paired devices")
 	}
-	*req = *WithDevicePrincipal(req, DevicePrincipal{DeviceID: grant.DeviceID, Scope: grant.Scope, ApprovedBy: grant.ApprovedBy, Lifetime: lifetime, ManageMCP: grant.ManageMCP, MCPGrantLifetime: management})
+	*req = *WithDevicePrincipal(req, DevicePrincipal{DeviceID: grant.DeviceID, Scope: grant.Scope, ApprovedBy: grant.ApprovedBy, Lifetime: lifetime, ManageMCP: grant.ManageMCP, MCPGrantLifetime: management, mcpOps: ops})
 	return nil
 }

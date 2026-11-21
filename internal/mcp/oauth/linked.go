@@ -2,13 +2,11 @@ package oauth
 
 import (
 	"context"
-	"crypto/sha256"
 	"fmt"
 	"net"
 	"net/http"
 	"net/netip"
 	"net/url"
-	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -22,14 +20,13 @@ func ForInstaller(id string) *Coordinator {
 	if id == "" {
 		return DefaultCoordinator()
 	}
-	path, err := DefaultStorePath()
-	path = filepath.Join(filepath.Dir(path), "mcp-linked", fmt.Sprintf("%x.json", sha256.Sum256([]byte(id))))
+	path, err := installerStorePath(id)
 	if c, ok := linkedCoordinators.Load(path); ok {
 		return c.(*Coordinator)
 	}
 	c := NewCoordinator(NewFileStore(path))
 	c.initErr = err
-	c.client = &http.Client{Transport: LinkedTransport()}
+	c.client = &http.Client{Transport: LinkedTransport(http.DefaultTransport.(*http.Transport))}
 	v, _ := linkedCoordinators.LoadOrStore(path, c)
 	return v.(*Coordinator)
 }
@@ -97,10 +94,13 @@ func (t linkedTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 
 // LinkedTransport enforces the destination at dial time for MCP, OAuth
 // discovery, token exchange, redirects and refreshes; never use host proxies.
-func LinkedTransport() http.RoundTripper {
-	tr := http.DefaultTransport.(*http.Transport).Clone()
+func LinkedTransport(base *http.Transport) http.RoundTripper {
+	tr := base.Clone()
 	tr.Proxy = nil
-	dialer := &net.Dialer{Timeout: 30 * time.Second}
+	dial := tr.DialContext
+	if dial == nil {
+		dial = (&net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second}).DialContext
+	}
 	tr.DialContext = func(ctx context.Context, network, address string) (net.Conn, error) {
 		host, port, err := net.SplitHostPort(address)
 		if err != nil {
@@ -116,7 +116,7 @@ func LinkedTransport() http.RoundTripper {
 			}
 		}
 		for _, ip := range ips {
-			conn, err := dialer.DialContext(ctx, network, net.JoinHostPort(ip.String(), port))
+			conn, err := dial(ctx, network, net.JoinHostPort(ip.String(), port))
 			if err == nil {
 				return conn, nil
 			}

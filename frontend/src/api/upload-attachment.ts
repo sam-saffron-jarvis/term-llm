@@ -64,7 +64,7 @@ export async function uploadLinkedAttachment(
   let token = '';
   let offset = 0;
   const type = blob.type || 'application/octet-stream';
-  while (offset < blob.size) {
+  for (;;) {
     controls.signal?.throwIfAborted();
     const end = Math.min(offset + LINKED_CHUNK_BYTES, blob.size);
     const response = await api.request(
@@ -100,5 +100,4 @@ export async function uploadLinkedAttachment(
     offset = end;
     controls.onProgress?.(offset, blob.size);
   }
-  throw new Error('Empty files are not supported.');
 }

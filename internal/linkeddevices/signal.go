@@ -419,6 +419,10 @@ func (r *Runtime) acceptTransport(ctx context.Context, generation, connection ui
 				return
 			}
 			defer r.peerRequests.Done()
+			if p, ok := DeviceFromRequest(request); ok && p.mcpOps != nil && mcpManagementRoute(request.Method, request.URL.Path) {
+				p.mcpOps.RLock() // Handlers recheck MCPGrantLifetime under this lock.
+				defer p.mcpOps.RUnlock()
+			}
 			r.opts.Handler.ServeHTTP(w, request)
 		}),
 		SessionGate: func(context.Context) error { _, err := grants.Authorize(id, verified.DeviceKey); return err },
@@ -432,7 +436,7 @@ func (r *Runtime) acceptTransport(ctx context.Context, generation, connection ui
 			if err != nil {
 				return err
 			}
-			return authorizePeerRequest(request, basePath, grant, sessionCtx, r.mcpLifetimeLocked(grant))
+			return authorizePeerRequest(request, basePath, grant, sessionCtx, r.mcpLifetimeLocked(grant), r.mcpOpsLocked(id))
 		},
 		OnClose:     func() { r.removeSession(id, endpoint) },
 		MaxChannels: 1,
@@ -600,9 +604,11 @@ func (r *Runtime) CancelInvitation(ctx context.Context) error {
 }
 
 func (r *Runtime) Revoke(ctx context.Context, id string) error {
+	r.mcpDisposeMu.Lock()
 	r.mu.Lock()
 	if err := r.grants.Revoke(id, r.opts.Now()); err != nil {
 		r.mu.Unlock()
+		r.mcpDisposeMu.Unlock()
 		return err
 	}
 	r.cancelMCPLocked(id)
@@ -612,6 +618,8 @@ func (r *Runtime) Revoke(ctx context.Context, id string) error {
 		delete(r.sessions, id)
 	}
 	r.mu.Unlock()
+	r.disposeMCP(id)
+	r.mcpDisposeMu.Unlock()
 	if err := r.renewNow(ctx); err != nil {
 		r.setWarning(msgRevokeSyncPending)
 	}
@@ -621,9 +629,16 @@ func (r *Runtime) Revoke(ctx context.Context, id string) error {
 func (r *Runtime) Reset(ctx context.Context) error {
 	r.lifecycleMu.Lock()
 	defer r.lifecycleMu.Unlock()
+	r.mcpDisposeMu.Lock()
+	defer r.mcpDisposeMu.Unlock()
+	r.mu.Lock()
+	ids := r.grantIDsLocked()
+	r.mu.Unlock()
 	if err := r.stopLocked(); err != nil {
 		return err
 	}
+	// Reset forgets these devices; their MCP state goes even if re-creation fails.
+	defer r.disposeMCP(ids...)
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	for _, name := range []string{"identity.json", "devices.json", "identity.json.lock", "devices.json.lock"} {
