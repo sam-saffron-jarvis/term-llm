@@ -161,12 +161,22 @@ func readOpenAIUsage(o object, responses bool) (u Usage, bad bool) {
 	if responses {
 		input, output, inDetails, outDetails = "input_tokens", "output_tokens", "input_tokens_details", "output_tokens_details"
 	}
-	u.Input = count(m, input)
-	u.Output = count(m, output)
-	u.Total = count(m, "total_tokens")
-	u.CachedInput = count(obj(m[inDetails]), "cached_tokens")
-	u.Reasoning = count(obj(m[outDetails]), "reasoning_tokens")
-	return u, malformedCounts(m, input, output, "total_tokens") || malformedCounts(obj(m[inDetails]), "cached_tokens") || malformedCounts(obj(m[outDetails]), "reasoning_tokens")
+	// An absent counter is unknown. An explicitly malformed one also makes
+	// the usage unreliable. Check presence without decoding its value twice.
+	read := func(fields object, key string) int64 {
+		n := count(fields, key)
+		if n < 0 {
+			_, exists := fields[key]
+			bad = bad || exists
+		}
+		return n
+	}
+	u.Input = read(m, input)
+	u.Output = read(m, output)
+	u.Total = read(m, "total_tokens")
+	u.CachedInput = read(obj(m[inDetails]), "cached_tokens")
+	u.Reasoning = read(obj(m[outDetails]), "reasoning_tokens")
+	return u, bad
 }
 
 func (p *Parser) set(u Usage) {

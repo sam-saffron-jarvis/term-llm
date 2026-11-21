@@ -21,7 +21,7 @@ import (
 	"time"
 )
 
-func testService(t *testing.T) *Service {
+func testService(t testing.TB) *Service {
 	t.Helper()
 	dir := t.TempDir()
 	state := filepath.Join(dir, "state")
@@ -69,7 +69,7 @@ func fixtureProviders(c Config) Config {
 
 func canonicalTestProfile(id string) string { return proxyprofile.CanonicalParent(id) }
 
-func configure(t *testing.T, s *Service, c Config, secrets map[string]material) {
+func configure(t testing.TB, s *Service, c Config, secrets map[string]material) {
 	t.Helper()
 	snap, err := compile(fixtureProviders(c), s.snap.revision+1, secrets)
 	if err != nil {
@@ -83,7 +83,7 @@ func configure(t *testing.T, s *Service, c Config, secrets map[string]material) 
 func route(name, prefix, upstream, header, secret string) Route {
 	return Route{Name: name, LocalPrefix: prefix, Upstream: upstream, Enabled: true, AllowHTTP: true, CallerAuth: Auth{Header: header, Prefix: "Local "}, SetHeaders: map[string]HeaderRule{"X-Upstream-Key": {Secret: secret, Prefix: "Real "}}}
 }
-func caller(t *testing.T, s *Service, routes ...string) string {
+func caller(t testing.TB, s *Service, routes ...string) string {
 	t.Helper()
 	_, token, err := s.store.createCaller("test caller", routes, s.snap)
 	if err != nil {

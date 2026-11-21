@@ -395,3 +395,38 @@ func TestEventBoundaryLimits(t *testing.T) {
 		t.Fatal(p.Snapshot())
 	}
 }
+
+func BenchmarkOpenAIUsageEvent(b *testing.B) {
+	for _, tc := range []struct {
+		protocol Protocol
+		event    string
+	}{{ChatCompletions, chatJSON}, {Responses, responseJSON}} {
+		b.Run(string(tc.protocol), func(b *testing.B) {
+			data := []byte(tc.event)
+			b.ReportAllocs()
+			for b.Loop() {
+				p := New(tc.protocol, JSON)
+				p.FeedEvent(data)
+				if u := p.Finish(true); u.Source != Reported || u.Total != 19 {
+					b.Fatal(u)
+				}
+			}
+		})
+	}
+}
+
+func TestOpenAIDetailCounterValidity(t *testing.T) {
+	for _, tc := range []struct {
+		details string
+		want    int64
+		bad     bool
+	}{
+		{`{}`, -1, false}, {`{"cached_tokens":0}`, 0, false}, {`{"cached_tokens":null}`, -1, true}, {`{"cached_tokens":"2"}`, -1, true}, {`{"cached_tokens":-1}`, -1, true},
+	} {
+		o := obj([]byte(`{"usage":{"prompt_tokens":1,"prompt_tokens_details":` + tc.details + `}}`))
+		u, bad := readOpenAIUsage(o, false)
+		if bad != tc.bad || u.CachedInput != tc.want || u.Input != 1 || u.Output != -1 {
+			t.Fatalf("%s: cached=%d input=%d output=%d bad=%v", tc.details, u.CachedInput, u.Input, u.Output, bad)
+		}
+	}
+}

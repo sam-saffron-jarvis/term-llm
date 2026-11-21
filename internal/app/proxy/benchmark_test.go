@@ -2,13 +2,17 @@ package proxy
 
 import (
 	"bytes"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 )
 
 // BenchmarkForward compares the same local upstream and payload over real HTTP.
@@ -97,6 +101,96 @@ func BenchmarkForward(b *testing.B) {
 					}
 				})
 			}
+		})
+	}
+}
+
+// BenchmarkAuditedShortChat uses a fixed number of closed-loop clients, independent
+// of GOMAXPROCS. The HTTP p99 measures the client round trip; elapsed time and
+// pool waits include draining terminal ledger writes after the last response.
+func BenchmarkAuditedShortChat(b *testing.B) {
+	const reply = `{"model":"fixture","choices":[{"message":{"role":"assistant","content":"ok"}}],"usage":{"prompt_tokens":25,"completion_tokens":35,"total_tokens":60}}`
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.Copy(io.Discard, r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, reply)
+	}))
+	defer up.Close()
+	for _, c := range []int{1, 10} {
+		b.Run(fmt.Sprintf("c=%d", c), func(b *testing.B) {
+			s := testService(b)
+			r := route("fixture", "/fixture/", up.URL, "X-Local", "fixture-key")
+			r.Usage, r.Billing = "auto", "pay_as_you_go"
+			configure(b, s, Config{Routes: []Route{r}}, map[string]material{"fixture-key": {Value: "fixture-secret"}})
+			token := caller(b, s, r.Name)
+			var handlers sync.WaitGroup
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				handlers.Add(1)
+				defer handlers.Done()
+				s.ServeHTTP(w, r)
+			}))
+			defer server.Close()
+			client := &http.Client{Transport: &http.Transport{MaxIdleConnsPerHost: c, DisableCompression: true}, Timeout: 10 * time.Second}
+			defer client.CloseIdleConnections()
+			send := func() error {
+				req, err := http.NewRequest("POST", server.URL+"/fixture/v1/chat/completions", strings.NewReader(`{"model":"fixture","messages":[{"role":"user","content":"hi"}]}`))
+				if err != nil {
+					return err
+				}
+				req.Header.Set("X-Local", "Local "+token)
+				req.Header.Set("Content-Type", "application/json")
+				resp, err := client.Do(req)
+				if err != nil {
+					return err
+				}
+				defer resp.Body.Close()
+				n, err := io.Copy(io.Discard, resp.Body)
+				if err == nil && (n != int64(len(reply)) || resp.StatusCode != http.StatusOK) {
+					return fmt.Errorf("unexpected response: status %d, bytes %d", resp.StatusCode, n)
+				}
+				return err
+			}
+			run := func(n int, latencies []time.Duration) {
+				var workers sync.WaitGroup
+				for worker := 0; worker < min(c, n); worker++ {
+					workers.Go(func() {
+						for i := worker; i < n; i += c {
+							start := time.Now()
+							if err := send(); err != nil {
+								b.Error(err)
+								return
+							}
+							if latencies != nil {
+								latencies[i] = time.Since(start)
+							}
+						}
+					})
+				}
+				workers.Wait()
+				handlers.Wait()
+			}
+			run(2*c, nil)
+			if b.Failed() {
+				return
+			}
+			latencies := make([]time.Duration, b.N)
+			before := s.store.db.Stats()
+			b.ReportAllocs()
+			b.ResetTimer()
+			run(b.N, latencies)
+			b.StopTimer()
+			after := s.store.db.Stats()
+			var completed, moneyRows int
+			if err := s.store.db.QueryRow(`SELECT (SELECT count(*) FROM requests WHERE outcome='complete'), (SELECT count(*) FROM money_history)`).Scan(&completed, &moneyRows); err != nil || completed != b.N+2*c || moneyRows != completed {
+				b.Fatalf("lost ledger records: completed=%d money=%d want=%d err=%v", completed, moneyRows, b.N+2*c, err)
+			}
+			if b.Failed() {
+				return
+			}
+			slices.Sort(latencies)
+			b.ReportMetric(float64(latencies[(b.N-1)*99/100].Nanoseconds())/1e3, "us/p99")
+			b.ReportMetric(float64((after.WaitDuration-before.WaitDuration).Nanoseconds())/1e3/float64(b.N), "db-wait-us/op")
+			b.ReportMetric(float64(after.WaitCount-before.WaitCount)/float64(b.N), "db-waits/op")
 		})
 	}
 }
