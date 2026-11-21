@@ -56,7 +56,7 @@ Follow the browser authentication flow on first use. Available models and limits
 
 ## Use a local model
 
-Start your [Ollama](https://ollama.com) or [LM Studio](https://lmstudio.ai) server and load/download a model first. Ollama has a built-in native adapter; for LM Studio, first create the [OpenAI-compatible profile](/reference/providers-and-models/#lm-studio). Then list the models it exposes:
+Start your [Ollama](https://ollama.com) or [LM Studio](https://lmstudio.ai) server and load/download a model first. If you’re using Ollama and don’t have a term-llm config yet, save the [Ollama profile](/reference/provider-setup-details/#option-10-use-local-llms-ollama-lm-studio) in `$XDG_CONFIG_HOME/term-llm/config.yaml` (normally `~/.config/term-llm/config.yaml`). The first-run setup wizard doesn’t offer Ollama. For LM Studio, first create the [OpenAI-compatible profile](/reference/providers-and-models/#lm-studio). Then list the models your server exposes:
 
 ```bash
 term-llm models --provider ollama
