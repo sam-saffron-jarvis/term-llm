@@ -54,8 +54,9 @@ it.each([false, true])('offers only granted linked MCP actions (manager %s)', as
   expect(link).toHaveAttribute('target', '_blank');
   expect(link).toHaveAttribute('rel', expect.stringContaining('noopener'));
   fireEvent.click(screen.getByRole('button', { name: 'Add' }));
+  const remote = await screen.findByRole('tab', { name: 'Remote URL' });
   expect(screen.queryByRole('tab', { name: 'Local command' })).toBeNull();
-  fireEvent.click(screen.getByRole('tab', { name: 'Remote URL' }));
+  fireEvent.click(remote);
   expect(screen.getByLabelText('URL')).toBeVisible();
   expect(screen.queryByLabelText('Headers')).toBeNull();
 });

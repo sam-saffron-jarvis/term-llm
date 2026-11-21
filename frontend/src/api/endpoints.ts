@@ -1,4 +1,3 @@
-import { uploadAttachment, uploadLinkedAttachment } from './upload-attachment';
 import type { SessionInspect, SessionInspectBodies } from '../domain/inspect';
 import type {
   CreateWebSessionRequest,
@@ -179,6 +178,7 @@ export interface CreateBlankSessionResponse {
   session: Record<string, unknown>;
 }
 
+const attachmentAPI = () => import('./upload-attachment');
 const steeringAPI = () => import('./steering');
 const encoded = (value: string): string => encodeURIComponent(value);
 const worktreePath = (id: string) =>
@@ -226,12 +226,15 @@ export const endpoints = (api: APIClient) => ({
       body: JSON.stringify({ enabled, revision }),
     }),
   uploadAttachment: (blob: Blob, filename: string, controls?: import('./client').UploadControls) =>
-    uploadAttachment(api, blob, filename, controls),
+    attachmentAPI().then(({ uploadAttachment }) => uploadAttachment(api, blob, filename, controls)),
   uploadLinkedAttachment: (
     blob: Blob,
     filename: string,
     controls?: import('./client').UploadControls,
-  ) => uploadLinkedAttachment(api, blob, filename, controls),
+  ) =>
+    attachmentAPI().then(({ uploadLinkedAttachment }) =>
+      uploadLinkedAttachment(api, blob, filename, controls),
+    ),
   capabilities: () => api.get<Record<string, unknown>>('/v1/capabilities'),
   sharingCapabilities: () => api.get<SharingCapabilitiesResponse>('/v1/sharing/capabilities'),
   providers: () => api.get<Record<string, unknown>>('/v1/providers'),

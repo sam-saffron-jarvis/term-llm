@@ -4,8 +4,18 @@ import { useStore } from '../../app/context';
 import type { MCPAddResult } from '../../domain/types';
 import { Icon } from '../Icon';
 import { Overlay } from '../Overlay';
-import { MCPAddServer } from './MCPAddServer';
+import { lazyComponent } from '../lazyComponent';
 import { MCPServerList } from './MCPServerList';
+
+const MCPAddServer = lazyComponent(
+  () =>
+    import('./MCPAddServer')
+      .then(({ MCPAddServer }) => MCPAddServer)
+      .catch(() => () => (
+        <p role="alert">Could not load the add-server form. Reload the page to retry.</p>
+      )),
+  <p role="status">Loading add-server form…</p>,
+);
 
 /**
  * MCP servers dialog. One overlay hosts two views so switching between the

@@ -234,11 +234,13 @@ func TestProductionBundleSizeBudgets(t *testing.T) {
 		// 2.53/0.95 kB CSS; it loads on the meter's first hover, focus or open.
 		"dist/chunks/ContextCard.js":  {raw: 3_500, gzip: 1_500},
 		"dist/assets/ContextCard.css": {raw: 2_800, gzip: 1_100},
-		// The MCP servers dialog (flat list, row menu, and the add-server sheet
-		// with catalogue/URL/command sources) measured 14.0/5.0 kB JS and
-		// 11.1/2.7 kB CSS; it loads only when the dialog opens.
-		"dist/chunks/MCPModal.js":  {raw: 15_500, gzip: 5_600},
-		"dist/assets/MCPModal.css": {raw: 12_500, gzip: 3_100},
+		// Opening MCP loads the server list; only Add loads the install form.
+		"dist/chunks/MCPModal.js":     {raw: 10_950, gzip: 4_100},
+		"dist/chunks/MCPAddServer.js": {raw: 6_800, gzip: 2_900},
+		"dist/assets/MCPModal.css":    {raw: 12_500, gzip: 3_100},
+		// Attachment storage and transfer load only when a draft needs them.
+		"dist/chunks/draft-blobs.js":       {raw: 2_700, gzip: 1_050},
+		"dist/chunks/upload-attachment.js": {raw: 1_700, gzip: 900},
 		// The live panel's binding line, the transcript cross-fade that runs when a
 		// voice switch swaps the session in place, and the subagent breadcrumb /
 		// index / live-tail styling bring the sheet to ~178.1 kB. Same reasoning as
@@ -353,9 +355,13 @@ func TestCommitDialogRemainsLazy(t *testing.T) {
 	}
 }
 
-func TestMCPDialogAssetsRemainLazy(t *testing.T) {
+func TestComposerActionAssetsRemainLazy(t *testing.T) {
 	for _, asset := range []struct{ eager, lazy, marker string }{
-		{"dist/app.js", "dist/chunks/MCPModal.js", "Local command"},
+		{"dist/app.js", "dist/chunks/MCPModal.js", "No MCP servers yet"},
+		{"dist/chunks/MCPModal.js", "dist/chunks/MCPAddServer.js", "Local command"},
+		{"dist/app.js", "dist/chunks/MCPAddServer.js", "Local command"},
+		{"dist/app.js", "dist/chunks/draft-blobs.js", "term_llm_draft_blobs"},
+		{"dist/app.js", "dist/chunks/upload-attachment.js", "Missing linked upload token."},
 		{"dist/app.css", "dist/assets/MCPModal.css", ".mcp-row-menu"},
 	} {
 		eager, err := testBuildAsset(asset.eager)
@@ -367,10 +373,10 @@ func TestMCPDialogAssetsRemainLazy(t *testing.T) {
 			t.Fatal(err)
 		}
 		if bytes.Contains(eager, []byte(asset.marker)) {
-			t.Errorf("%s unexpectedly contains MCP dialog code/styles", asset.eager)
+			t.Errorf("%s unexpectedly contains %q", asset.eager, asset.marker)
 		}
 		if !bytes.Contains(lazy, []byte(asset.marker)) {
-			t.Errorf("%s is missing MCP dialog code/styles", asset.lazy)
+			t.Errorf("%s is missing %q", asset.lazy, asset.marker)
 		}
 	}
 }

@@ -9206,7 +9206,10 @@ describe('Preact-owned chat surfaces', () => {
     expect(await screen.findByText('No MCP servers yet')).toBeVisible();
     await userEvent.click(screen.getByRole('button', { name: 'Add server' }));
     expect(screen.getByRole('dialog', { name: 'Add server' })).toBeVisible();
-    expect(screen.getByRole('tab', { name: 'Catalogue' })).toHaveAttribute('aria-selected', 'true');
+    expect(await screen.findByRole('tab', { name: 'Catalogue' })).toHaveAttribute(
+      'aria-selected',
+      'true',
+    );
     expect(await screen.findByText('Web search')).toBeVisible();
     expect(screen.getByText('Added')).toBeVisible();
     expect(screen.queryByRole('button', { name: 'Add github' })).not.toBeInTheDocument();
@@ -9245,7 +9248,7 @@ describe('Preact-owned chat surfaces', () => {
     );
 
     await userEvent.click(await screen.findByRole('button', { name: 'Add' }));
-    await userEvent.click(screen.getByRole('tab', { name: 'Local command' }));
+    await userEvent.click(await screen.findByRole('tab', { name: 'Local command' }));
     expect(screen.getByText(/Runs on the machine hosting term-llm/)).toBeVisible();
     fireEvent.input(screen.getByLabelText('Command'), {
       target: { value: 'npx -y @sentry/mcp-server' },

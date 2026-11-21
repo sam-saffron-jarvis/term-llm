@@ -7,7 +7,7 @@ import {
   isNativeImageType,
   type AttachmentPolicy,
 } from '../domain/attachments';
-import { blobChecksum, blobToDataURL, DraftBlobStore } from '../platform/draft-blobs';
+import type { DraftBlobStore } from '../platform/draft-blobs';
 import { readDrafts, saveDraft, type DraftMessage } from '../platform/storage';
 import { errorMessage } from '../domain/text';
 import type { AppStoreServices } from './app-store-services';
@@ -50,7 +50,8 @@ export class ComposerStore {
    */
   readonly unsentNewChats = signal<DraftMessage[]>([]);
 
-  private readonly draftBlobs = new DraftBlobStore();
+  // A text-only conversation never opens IndexedDB or loads the blob helpers.
+  private draftBlobs?: DraftBlobStore;
   private readonly attachmentGenerations = new Map<string, number>();
   private readonly uploadAborts = new Map<string, AbortController>();
   private readonly uploadQueue: Array<() => void> = [];
@@ -374,6 +375,12 @@ export class ComposerStore {
       );
   }
 
+  private async attachmentStorage() {
+    const { DraftBlobStore, blobChecksum, blobToDataURL } = await import('../platform/draft-blobs');
+    if (this.services.isDisposed) throw new DOMException('Composer closed', 'AbortError');
+    return { storage: (this.draftBlobs ??= new DraftBlobStore()), blobChecksum, blobToDataURL };
+  }
+
   async attachmentInput(attachment: Attachment): Promise<Record<string, unknown>> {
     if (!this.attachmentsAllowed.peek())
       throw new Error('This linked device does not support uploads.');
@@ -384,12 +391,13 @@ export class ComposerStore {
         throw new Error(`${attachment.name} must finish uploading to this node before sending.`);
       return { type: 'input_upload', upload_id: attachment.uploadId };
     }
-    const blob =
-      !attachment.dataURL && attachment.blobRef
-        ? await this.draftBlobs.get(attachment.blobRef)
-        : null;
-    const data =
-      attachment.dataURL || (blob ? await blobToDataURL(blob.blob) : '') || attachment.url || '';
+    let data = attachment.dataURL;
+    if (!data && attachment.blobRef) {
+      const { storage, blobToDataURL } = await this.attachmentStorage();
+      const record = await storage.get(attachment.blobRef);
+      if (record) data = await blobToDataURL(record.blob);
+    }
+    data ||= attachment.url;
     if (!data) throw new Error(`Could not materialize ${attachment.name}`);
     if (isNativeImageType(attachment.type))
       return {
@@ -516,6 +524,8 @@ export class ComposerStore {
     controller.signal.addEventListener('abort', revokePreview, { once: true });
     try {
       const refs = this.attachmentPolicy.peek().uploadRefs;
+      const { storage, blobChecksum, blobToDataURL } = await this.attachmentStorage();
+      if (!owns()) return;
       const dataURL = refs ? undefined : await blobToDataURL(source);
       if (!owns()) return;
       if (!refs) this.updateAttachment(attachmentId, { progress: 0.5 });
@@ -554,7 +564,7 @@ export class ComposerStore {
         if (previewURL) URL.revokeObjectURL(previewURL);
         return;
       }
-      await this.draftBlobs.put({
+      await storage.put({
         id: attachmentId,
         draftId,
         blob: source,
@@ -629,7 +639,8 @@ export class ComposerStore {
       this.attachmentGenerations.get(id) === generation &&
       this.attachments.peek().some((entry) => entry.id === id);
     try {
-      const record = await this.draftBlobs.get(blobRef);
+      const { storage } = await this.attachmentStorage();
+      const record = await storage.get(blobRef);
       if (!owns()) return;
       if (!record || record.draftId !== draftId) {
         const attachment = this.attachments.peek().find((entry) => entry.id === id);
@@ -704,8 +715,8 @@ export class ComposerStore {
     else {
       const draftId = this.storageId();
       const generation = this.attachmentGenerations.get(attachment.id);
-      void this.draftBlobs
-        .get(attachment.blobRef!)
+      void this.attachmentStorage()
+        .then(({ storage }) => storage.get(attachment.blobRef!))
         .then((record) => {
           if (
             this.services.isDisposed ||
@@ -761,6 +772,6 @@ export class ComposerStore {
 
   dispose(): void {
     this.releaseAttachmentResources(this.attachments.peek(), false);
-    this.draftBlobs.close();
+    this.draftBlobs?.close();
   }
 }

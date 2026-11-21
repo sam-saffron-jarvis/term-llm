@@ -47,6 +47,7 @@ describe('binary upload endpoint', () => {
     const uploading = endpoints(api).uploadAttachment(blob, 'my photo #é.png', {
       onProgress: progress,
     });
+    await vi.waitFor(() => expect(requests).toHaveLength(1));
     const xhr = requests[0];
     expect(xhr.open).toHaveBeenCalledWith('POST', '/ui/uploads', true);
     expect(xhr.send).toHaveBeenCalledWith(blob);
@@ -74,6 +75,7 @@ describe('binary upload endpoint', () => {
     const result = endpoints(api)
       .uploadAttachment(blob, 'file.bin')
       .catch((error: unknown) => error);
+    await vi.dynamicImportSettled();
     await vi.advanceTimersByTimeAsync(1999);
     expect(api.upload).toHaveBeenCalledOnce();
     await vi.advanceTimersByTimeAsync(1);
@@ -95,6 +97,7 @@ describe('binary upload endpoint', () => {
     const result = endpoints(api)
       .uploadAttachment(new Blob(['bytes']), 'file', { signal: controller.signal })
       .catch((error: unknown) => error);
+    await vi.dynamicImportSettled();
     await vi.advanceTimersByTimeAsync(0);
     controller.abort();
     expect(await result).toMatchObject({ name: 'AbortError' });
