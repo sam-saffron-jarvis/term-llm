@@ -3,8 +3,6 @@ package chat
 import (
 	"strings"
 
-	"charm.land/bubbles/v2/key"
-	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/term-llm/term-llm/internal/ui"
 )
@@ -90,29 +88,10 @@ func (c *CompletionsModel) Selected() *Command {
 	return &c.filtered[c.cursor]
 }
 
-// Update handles messages
-func (c *CompletionsModel) Update(msg tea.Msg) (*CompletionsModel, tea.Cmd) {
-	if !c.visible {
-		return c, nil
+func (c *CompletionsModel) moveCursor(step int) {
+	if len(c.filtered) > 0 {
+		c.cursor = ui.ClampInt(c.cursor+step, 0, len(c.filtered)-1)
 	}
-
-	switch msg := msg.(type) {
-	case tea.KeyPressMsg:
-		switch {
-		case key.Matches(msg, key.NewBinding(key.WithKeys("up", "ctrl+p"))):
-			if c.cursor > 0 {
-				c.cursor--
-			}
-		case key.Matches(msg, key.NewBinding(key.WithKeys("down", "ctrl+n"))):
-			if c.cursor < len(c.filtered)-1 {
-				c.cursor++
-			}
-		case key.Matches(msg, key.NewBinding(key.WithKeys("esc"))):
-			c.Hide()
-		}
-	}
-
-	return c, nil
 }
 
 // View renders the completions popup
@@ -123,10 +102,8 @@ func (c *CompletionsModel) View() string {
 
 	theme := c.styles.Theme()
 	maxItems := 10
-	items := c.filtered
-	if len(items) > maxItems {
-		items = items[:maxItems]
-	}
+	start, end := ui.VisibleRange(len(c.filtered), c.cursor, maxItems)
+	items := c.filtered[start:end]
 
 	// Find longest command name for alignment
 	maxNameLen := 0
@@ -161,7 +138,7 @@ func (c *CompletionsModel) View() string {
 		name := completionDisplayName(item)
 		padding := strings.Repeat(" ", maxNameLen-len(name)+2)
 
-		if i == c.cursor {
+		if start+i == c.cursor {
 			b.WriteString(selectedCmdStyle.Render("❯ " + name))
 			b.WriteString(padding)
 			b.WriteString(descStyle.Render(item.Description))
@@ -179,9 +156,8 @@ func (c *CompletionsModel) View() string {
 
 	// Show count if more items
 	if len(c.filtered) > maxItems {
-		remaining := len(c.filtered) - maxItems
 		b.WriteString("\n")
-		b.WriteString(descStyle.Render("  ... " + itoa(remaining) + " more"))
+		b.WriteString(descStyle.Render("  " + itoa(start+1) + "–" + itoa(end) + " of " + itoa(len(c.filtered))))
 	}
 
 	return borderStyle.Render(b.String())

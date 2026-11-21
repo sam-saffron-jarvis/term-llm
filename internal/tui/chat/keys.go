@@ -1,6 +1,22 @@
 package chat
 
-import "charm.land/bubbles/v2/key"
+import (
+	"charm.land/bubbles/v2/key"
+	tea "charm.land/bubbletea/v2"
+)
+
+// pickerStep translates the navigation keys shared by searchable lists.
+// Printable keys stay available for filtering.
+func pickerStep(msg tea.KeyPressMsg) int {
+	switch msg.String() {
+	case "up", "ctrl+p":
+		return -1
+	case "down", "ctrl+n":
+		return 1
+	default:
+		return 0
+	}
+}
 
 // KeyMap defines keybindings for the chat TUI
 type KeyMap struct {

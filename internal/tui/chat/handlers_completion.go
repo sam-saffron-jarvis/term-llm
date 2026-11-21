@@ -8,6 +8,10 @@ import (
 )
 
 func (m *Model) handleCompletionKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) {
+	if step := pickerStep(msg); step != 0 {
+		m.completions.moveCursor(step)
+		return m, nil, true
+	}
 	switch {
 	case key.Matches(msg, key.NewBinding(key.WithKeys("enter"))):
 		// Enter executes the selected command; a partly typed skill that takes
@@ -72,12 +76,6 @@ func (m *Model) handleCompletionKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bo
 		return m, nil, true
 	case key.Matches(msg, key.NewBinding(key.WithKeys("esc"))):
 		m.completions.Hide()
-		return m, nil, true
-	case key.Matches(msg, key.NewBinding(key.WithKeys("up", "ctrl+p"))):
-		m.completions.Update(msg)
-		return m, nil, true
-	case key.Matches(msg, key.NewBinding(key.WithKeys("down", "ctrl+n"))):
-		m.completions.Update(msg)
 		return m, nil, true
 	}
 	// Typing and deletion edit the composer at the cursor; the composer key

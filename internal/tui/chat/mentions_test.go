@@ -744,8 +744,17 @@ func TestMentionMatchesStayVisibleButBecomeInvalidWhenQueryChanges(t *testing.T)
 	}
 	updated, _ = m.handleKeyMsg(tea.KeyPressMsg{Code: tea.KeyEnter})
 	m = updated.(*Model)
-	if len(m.messages) == 0 || m.messages[len(m.messages)-1].TextContent != "review @typz" {
-		t.Fatalf("stale result rewrote or blocked submission: %#v", m.messages)
+	if len(m.messages) != 0 || m.textarea.Value() != "review @typz" || !m.mentionPopup.IsVisible() {
+		t.Fatalf("Enter on a retained row should wait for fresh results: draft=%q messages=%d popup=%v", m.textarea.Value(), len(m.messages), m.mentionPopup.IsVisible())
+	}
+	// Once the new query returns no matches, Enter can submit the literal draft.
+	m.handleMentionMessage(mentionMatchesMsg{
+		root: m.mentionRoot, generation: m.mentionIndexGeneration, request: m.mentionQueryRequest,
+		token: m.mentionPopup.token, cursor: len(m.textarea.Value()),
+	})
+	_, _ = m.handleKeyMsg(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if len(m.messages) != 1 || m.messages[0].TextContent != "review @typz" {
+		t.Fatalf("Enter after no matches did not send the original draft: %#v", m.messages)
 	}
 }
 
@@ -789,8 +798,8 @@ func TestMentionAcceptanceRejectsStaleIndexGeneration(t *testing.T) {
 	m.mentionIndexGeneration++
 
 	consumed, _ := m.handleMentionPopupKey(tea.KeyPressMsg{Code: tea.KeyEnter})
-	if consumed {
-		t.Fatal("Enter consumed submission for a stale index selection")
+	if !consumed {
+		t.Fatal("Enter on a stale index selection fell through to submission")
 	}
 	if got := m.textarea.Value(); got != value {
 		t.Fatalf("stale index selection rewrote draft to %q", got)

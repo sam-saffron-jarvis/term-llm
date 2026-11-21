@@ -12,6 +12,13 @@ import (
 
 func (m *Model) handleDialogKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	switch m.dialog.Type() {
+	case DialogModelPicker, DialogMCPPicker, DialogBranchTree:
+		if step := pickerStep(msg); step != 0 {
+			m.dialog.SetCursor(m.dialog.Cursor() + step)
+			return m, nil
+		}
+	}
+	switch m.dialog.Type() {
 	case DialogContent:
 		m.dialog.Update(msg)
 		return m, nil
@@ -90,12 +97,6 @@ func (m *Model) handleBranchTreeDialogKey(msg tea.KeyPressMsg) (tea.Model, tea.C
 	case key.Matches(msg, key.NewBinding(key.WithKeys("ctrl+c"))):
 		m.dialog.Close()
 		return m, nil
-	case key.Matches(msg, key.NewBinding(key.WithKeys("up", "ctrl+p"))):
-		m.dialog.SetCursor(m.dialog.Cursor() - 1)
-		return m, nil
-	case key.Matches(msg, key.NewBinding(key.WithKeys("down", "ctrl+n"))):
-		m.dialog.SetCursor(m.dialog.Cursor() + 1)
-		return m, nil
 	case key.Matches(msg, key.NewBinding(key.WithKeys("pgup"))):
 		m.dialog.MoveTreeUserTurn(-1)
 		return m, nil
@@ -136,12 +137,6 @@ func (m *Model) handleModelPickerDialogKey(msg tea.KeyPressMsg) (tea.Model, tea.
 		return m, nil
 	case key.Matches(msg, key.NewBinding(key.WithKeys("esc", "ctrl+c"))):
 		m.dialog.Close()
-		return m, nil
-	case key.Matches(msg, key.NewBinding(key.WithKeys("up", "ctrl+p"))):
-		m.dialog.Update(msg)
-		return m, nil
-	case key.Matches(msg, key.NewBinding(key.WithKeys("down", "ctrl+n"))):
-		m.dialog.Update(msg)
 		return m, nil
 	case key.Matches(msg, key.NewBinding(key.WithKeys("backspace"))):
 		// Update query on backspace
@@ -189,10 +184,7 @@ func (m *Model) handleMCPPickerDialogKey(msg tea.KeyPressMsg) (tea.Model, tea.Cm
 	case key.Matches(msg, key.NewBinding(key.WithKeys("esc", "ctrl+c"))):
 		m.dialog.Close()
 		return m, nil
-	case key.Matches(msg, key.NewBinding(key.WithKeys("up", "k", "ctrl+p"))):
-		m.dialog.Update(msg)
-		return m, nil
-	case key.Matches(msg, key.NewBinding(key.WithKeys("down", "j", "ctrl+n"))):
+	case key.Matches(msg, key.NewBinding(key.WithKeys("k", "j"))):
 		m.dialog.Update(msg)
 		return m, nil
 	case key.Matches(msg, key.NewBinding(key.WithKeys("backspace"))):

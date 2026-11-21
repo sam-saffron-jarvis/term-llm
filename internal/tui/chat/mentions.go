@@ -14,6 +14,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/term-llm/term-llm/internal/mentions"
+	"github.com/term-llm/term-llm/internal/ui"
 )
 
 const (
@@ -416,28 +417,27 @@ func (m *Model) handleMentionPopupKey(msg tea.KeyPressMsg) (bool, tea.Cmd) {
 	if !m.mentionPopup.IsVisible() {
 		return false, nil
 	}
+	count := m.mentionPopup.selectableCount()
+	if step := pickerStep(msg); step != 0 {
+		if count > 0 {
+			m.mentionPopup.selected = (m.mentionPopup.selected + count + step) % count
+		}
+		return true, nil
+	}
 	switch msg.String() {
 	case "esc":
 		m.hideMentionPopup()
 		return true, nil
-	case "up", "ctrl+p":
-		if count := m.mentionPopup.selectableCount(); count > 0 {
-			m.mentionPopup.selected = (m.mentionPopup.selected - 1 + count) % count
-		}
-		return true, nil
-	case "down", "ctrl+n":
-		if count := m.mentionPopup.selectableCount(); count > 0 {
-			m.mentionPopup.selected = (m.mentionPopup.selected + 1) % count
-		}
-		return true, nil
-	case "enter":
-		accepted, cmd := m.acceptMentionSelection()
-		if !accepted {
+	case "enter", "tab":
+		if count == 0 {
 			m.hideMentionPopup()
-			return false, cmd
+			return msg.String() == "tab", nil
 		}
-		return true, cmd
-	case "tab":
+		// Retained rows belong to the previous query. Don't insert one or send
+		// the draft; let the outstanding search replace them.
+		if m.mentionPopup.searching {
+			return true, nil
+		}
 		accepted, cmd := m.acceptMentionSelection()
 		if !accepted {
 			m.hideMentionPopup()
@@ -505,24 +505,6 @@ func (m *Model) acceptMentionSelection() (bool, tea.Cmd) {
 	return true, nil
 }
 
-type mentionDisplayEntry struct {
-	agent       *agentMentionMatch
-	file        *mentions.Match
-	selectIndex int
-}
-
-func (m *Model) mentionDisplayEntries() []mentionDisplayEntry {
-	entries := make([]mentionDisplayEntry, 0, m.mentionPopup.selectableCount())
-	for i := range m.mentionPopup.agentMatches {
-		entries = append(entries, mentionDisplayEntry{agent: &m.mentionPopup.agentMatches[i], selectIndex: i})
-	}
-	for i := range m.mentionPopup.matches {
-		selection := len(m.mentionPopup.agentMatches) + i
-		entries = append(entries, mentionDisplayEntry{file: &m.mentionPopup.matches[i], selectIndex: selection})
-	}
-	return entries
-}
-
 func displayAgentMention(name string) string {
 	return "@" + strings.TrimPrefix(mentions.InsertAgentText(name), "@agent:")
 }
@@ -539,35 +521,28 @@ func (m *Model) renderMentionPopup() string {
 	popupStyle := lipgloss.NewStyle().Width(width).MaxWidth(width).Border(lipgloss.RoundedBorder()).BorderForeground(theme.Muted)
 	contentWidth := max(1, width-popupStyle.GetHorizontalFrameSize())
 	var rows []string
-	entries := m.mentionDisplayEntries()
-	_, fileQuery, _ := routeMentionQuery(m.mentionPopup.matchesToken)
-	if len(entries) > 0 {
-		selectedEntry := 0
-		for i := range entries {
-			if entries[i].selectIndex == m.mentionPopup.selected {
-				selectedEntry = i
-				break
-			}
-		}
-		start := max(0, selectedEntry-mentionDisplayLimit+1)
-		end := min(len(entries), start+mentionDisplayLimit)
-		for _, entry := range entries[start:end] {
+	p := &m.mentionPopup
+	_, fileQuery, _ := routeMentionQuery(p.matchesToken)
+	if count := p.selectableCount(); count > 0 {
+		start, end := ui.VisibleRange(count, p.selected, mentionDisplayLimit)
+		for i := start; i < end; i++ {
 			prefix := "  "
 			baseStyle := muted
-			isSelected := entry.selectIndex == m.mentionPopup.selected
+			isSelected := i == p.selected
 			if isSelected {
 				prefix = "› "
 				baseStyle = selected
 			}
-			if entry.agent != nil {
-				display := displayAgentMention(entry.agent.name) + "  agent"
+			if i < len(p.agentMatches) {
+				display := displayAgentMention(p.agentMatches[i].name) + "  agent"
 				rows = append(rows, baseStyle.Render(prefix+truncateMentionRow(display, max(4, contentWidth-lipgloss.Width(prefix)))))
 				continue
 			}
-			if entry.file == nil || m.mentionIndex == nil || entry.file.Candidate < 0 || entry.file.Candidate >= len(m.mentionIndex.Candidates) {
+			match := p.matches[i-len(p.agentMatches)]
+			if m.mentionIndex == nil || match.Candidate < 0 || match.Candidate >= len(m.mentionIndex.Candidates) {
 				continue
 			}
-			candidate := m.mentionIndex.Candidates[entry.file.Candidate]
+			candidate := m.mentionIndex.Candidates[match.Candidate]
 			displayPath := candidate.Path
 			if candidate.Kind == mentions.KindDirectory && !strings.HasSuffix(displayPath, "/") {
 				displayPath += "/"
