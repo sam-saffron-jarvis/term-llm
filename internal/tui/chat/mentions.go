@@ -431,9 +431,6 @@ func (m *Model) handleMentionPopupKey(msg tea.KeyPressMsg) (bool, tea.Cmd) {
 		}
 		return true, nil
 	case "enter":
-		if m.mentionPopup.token.Query == "" {
-			return false, nil
-		}
 		accepted, cmd := m.acceptMentionSelection()
 		if !accepted {
 			m.hideMentionPopup()

@@ -1129,21 +1129,36 @@ func TestMentionQueryCancellationAndRootReset(t *testing.T) {
 	}
 }
 
-func TestBareMentionEnterDoesNotRewriteDraft(t *testing.T) {
-	m := newTestChatModel(false)
-	m.mentionEnabled = true
-	m.mentionIndex = &mentions.Snapshot{Candidates: []mentions.Candidate{{Path: "a.go", Kind: mentions.KindFile}}}
-	m.setTextareaValue("ping me @")
-	m.textarea.MoveToEnd()
-	token, ok := mentions.ActiveTokenAt(m.textarea.Value(), len(m.textarea.Value()))
-	if !ok {
-		t.Fatal("bare token did not parse")
-	}
-	m.mentionPopup = mentionPopupModel{visible: true, token: token, matches: []mentions.Match{{Candidate: 0}}}
-	before := m.textarea.Value()
-	consumed, cmd := m.handleMentionPopupKey(tea.KeyPressMsg{Code: tea.KeyEnter})
-	if consumed || cmd != nil || m.textarea.Value() != before {
-		t.Fatalf("bare @ Enter consumed=%v value=%q", consumed, m.textarea.Value())
+func TestBareMentionEnterUsesHighlightedResult(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		key  rune
+		want string
+	}{
+		{"default row", 0, "review @apple.txt"},
+		{"second row", tea.KeyDown, "review @berry.txt"},
+		{"dismissed picker", tea.KeyEsc, "review @"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			m := newTestChatModel(false)
+			prepareMentionPopup(m, t.TempDir(), "review @", testMentionCandidate("apple.txt"))
+			m.mentionIndex.Candidates = append(m.mentionIndex.Candidates, testMentionCandidate("berry.txt"))
+			m.mentionPopup.matches = append(m.mentionPopup.matches, mentions.Match{Candidate: 1})
+			if tt.key != 0 {
+				_, _ = m.handleKeyMsg(tea.KeyPressMsg{Code: tt.key})
+			}
+			enter := tea.KeyPressMsg{Code: tea.KeyEnter}
+			if tt.key != tea.KeyEsc {
+				_, _ = m.handleKeyMsg(enter)
+				if m.mentionPopup.IsVisible() || len(m.messages) != 0 || m.textarea.Value() != tt.want+" " {
+					t.Fatalf("after selection: draft=%q, popup=%v, messages=%d", m.textarea.Value(), m.mentionPopup.IsVisible(), len(m.messages))
+				}
+			}
+			_, _ = m.handleKeyMsg(enter)
+			if len(m.messages) != 1 || m.messages[0].TextContent != tt.want {
+				t.Fatalf("submitted messages = %#v, want %q", m.messages, tt.want)
+			}
+		})
 	}
 }
 
