@@ -1371,6 +1371,7 @@ var migrations = []migration{
 	{version: 69, description: "display-only message authors and session starters", up: migrateAuthorsV69},
 	{version: 70, description: "persist last context window", up: migrateLastContextWindowV70},
 	{version: 71, description: "persist linked client tool handoff ownership", up: notificationdb.MigrateLinkedToolHandoffV71},
+	{version: 72, description: "persist linked tool handoff admission receipts", up: notificationdb.MigrateLinkedToolReceiptV72},
 }
 
 // backfillProjectOrderV61 freezes the order the sidebar last showed projects
@@ -1724,7 +1725,7 @@ func initSchema(db *sql.DB) error {
 			if userTables != 0 {
 				return fmt.Errorf("unknown unversioned session schema: found %d unrelated tables; restore a backup or move the database aside to recreate it", userTables)
 			}
-			if _, err := tx.Exec(canonicalSessionSchema + notificationdb.SchemaV68 + authorSchemaV69 + notificationdb.LinkedToolHandoffSchemaV71); err != nil {
+			if _, err := tx.Exec(canonicalSessionSchema + notificationdb.SchemaV68 + authorSchemaV69 + notificationdb.LinkedToolHandoffSchemaV71 + notificationdb.LinkedToolReceiptSchemaV72); err != nil {
 				return fmt.Errorf("bootstrap canonical session schema: %w", err)
 			}
 			if err := ensureCurrentSessionIndexes(tx); err != nil {

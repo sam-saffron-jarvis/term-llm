@@ -60,6 +60,7 @@ type NotificationTurnAdmission struct {
 	AwaitedEvents      []AgentRun
 }
 type ResponseRunAdmission struct {
+	LinkedToolClaim       *LinkedToolClaim
 	Turn                  *NotificationTurnAdmission
 	ResponseID, SessionID string
 	AgentEvents           []AgentRun

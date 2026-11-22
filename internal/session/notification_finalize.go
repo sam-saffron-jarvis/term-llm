@@ -115,7 +115,7 @@ func (s *SQLiteStore) FinalizeResponseRun(ctx context.Context, terminal Response
 		attention.Changed = true
 	}
 	attention.StoreInstanceID = storeID
-	if err := notificationdb.InsertCandidateTx(ctx, tx, notification, notificationAttention(attention), now); err != nil {
+	if err := notificationdb.InsertCandidateTx(ctx, tx, notification, notificationdb.AttentionState{Changed: attention.Changed, StoreInstanceID: attention.StoreInstanceID, LatestAttentionSeq: attention.LatestAttentionSeq, RunEpoch: attention.RunEpoch}, now); err != nil {
 		return AttentionState{}, err
 	}
 	if err := tx.Commit(); err != nil {

@@ -21,10 +21,18 @@ func (s *serveServer) allowResponseAdmission(w http.ResponseWriter, r *http.Requ
 		writeOpenAIError(w, http.StatusMethodNotAllowed, "invalid_request_error", "method not allowed")
 		return false
 	}
-	values := r.Header.Values(responseServerInstanceHeader)
-	if len(values) > 0 && (len(values) != 1 || values[0] != s.responseAdmissionInstance()) {
-		writeOpenAIError(w, http.StatusConflict, "server_instance_changed", "server instance changed; the earlier send may still be running")
+	if !s.matchesResponseAdmissionInstance(r) {
+		writeResponseAdmissionInstanceChanged(w)
 		return false
 	}
 	return true
+}
+
+func (s *serveServer) matchesResponseAdmissionInstance(r *http.Request) bool {
+	values := r.Header.Values(responseServerInstanceHeader)
+	return len(values) == 0 || len(values) == 1 && values[0] == s.responseAdmissionInstance()
+}
+
+func writeResponseAdmissionInstanceChanged(w http.ResponseWriter) {
+	writeOpenAIError(w, http.StatusConflict, "server_instance_changed", "server instance changed; the earlier send may still be running")
 }

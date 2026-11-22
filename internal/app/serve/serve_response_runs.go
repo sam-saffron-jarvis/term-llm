@@ -9,6 +9,7 @@ import (
 	"github.com/term-llm/term-llm/internal/llm/core"
 	"github.com/term-llm/term-llm/internal/runboundary"
 	"github.com/term-llm/term-llm/internal/session"
+	"github.com/term-llm/term-llm/internal/session/notificationdb"
 )
 
 type responseRunEvent struct {
@@ -194,6 +195,7 @@ type responseRun struct {
 }
 
 type startResponseRunOptions struct {
+	linkedToolClaim    *notificationdb.LinkedToolClaim
 	linkedDeviceID     string
 	live               *liveSession // pins settings authority to this call, not whichever call is current later
 	resume             *webRunContinuation

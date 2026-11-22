@@ -7,6 +7,7 @@ import (
 	"strconv"
 
 	"github.com/term-llm/term-llm/internal/llm/core"
+	"github.com/term-llm/term-llm/internal/session/notificationdb"
 )
 
 func (s *serveServer) streamUIResponses(w http.ResponseWriter, r *http.Request, runtime *serveRuntime, stateful bool, replaceHistory bool, inputMessages []core.Message, llmReq core.Request, sessionID string, previousResponseID string, resetResponseIDsOnSuccess bool, modelSwap *responseModelSwapExecution, idempotencyKey, idempotencyScope, requestFingerprint string, onDone, onAdmissionDone func()) {
@@ -47,6 +48,7 @@ func (s *serveServer) streamResponseRun(ctx context.Context, w http.ResponseWrit
 	if options.runtimeSetup == nil {
 		options.runtimeSetup = serveRuntimeSetupFromContext(ctx)
 	}
+	options.linkedToolClaim, _ = ctx.Value(linkedToolClaimKey{}).(*notificationdb.LinkedToolClaim)
 	options.linkedDeviceID = linkedRuntimePrincipal(ctx).DeviceID
 	options.effortChange, _ = ctx.Value(responseEffortChangeKey{}).(*responseEffortChange)
 	run, err := s.startResponseRun(runtime, stateful, replaceHistory, inputMessages, llmReq, sessionID, options)
@@ -54,6 +56,10 @@ func (s *serveServer) streamResponseRun(ctx context.Context, w http.ResponseWrit
 		if options.modelSwap != nil && options.modelSwap.plan.enabled {
 			options.modelSwap.markRolledBack()
 			s.restoreModelSwapRollback(ctx, sessionID, options.modelSwap, runtime, "failed", "naive")
+		}
+		if errors.Is(err, notificationdb.ErrLinkedToolClaimExists) {
+			writeLinkedToolReceipt(w, "running")
+			return false
 		}
 		status := http.StatusInternalServerError
 		errType := "server_error"

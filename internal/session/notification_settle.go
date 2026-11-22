@@ -13,6 +13,6 @@ func (s *SQLiteStore) PendingLinkedToolHandoff(ctx context.Context, messageID in
 	return notificationdb.PendingLinkedToolHandoff(ctx, s.queryDB(), messageID, deviceID)
 }
 
-func notificationAttention(a AttentionState) notificationdb.AttentionState {
-	return notificationdb.AttentionState{Changed: a.Changed, StoreInstanceID: a.StoreInstanceID, LatestAttentionSeq: a.LatestAttentionSeq, RunEpoch: a.RunEpoch}
+func (s *SQLiteStore) ReadLinkedToolReceipt(ctx context.Context, sessionID, deviceID, key string) (notificationdb.LinkedToolReceipt, error) {
+	return notificationdb.ReadLinkedToolReceipt(ctx, s.queryDB(), sessionID, deviceID, key)
 }

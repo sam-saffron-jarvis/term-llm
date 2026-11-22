@@ -47,29 +47,7 @@ func writeSSEEvent(w io.Writer, event string, payload any) error {
 	return wire.WriteSSEEvent(w, event, payload)
 }
 
-func extractMessageText(content json.RawMessage) string {
-	trimmed := strings.TrimSpace(string(content))
-	if trimmed == "" || trimmed == "null" {
-		return ""
-	}
-	var s string
-	if err := json.Unmarshal(content, &s); err == nil {
-		return s
-	}
-	var parts []map[string]json.RawMessage
-	if err := json.Unmarshal(content, &parts); err == nil {
-		var b strings.Builder
-		for _, p := range parts {
-			pType := strings.ToLower(strings.TrimSpace(jsonString(p["type"])))
-			switch pType {
-			case "text", "input_text", "output_text":
-				b.WriteString(jsonString(p["text"]))
-			}
-		}
-		return b.String()
-	}
-	return ""
-}
+var extractMessageText = wire.ExtractMessageText
 
 func extractItemContent(content json.RawMessage) string {
 	return extractMessageText(content)
@@ -300,16 +278,7 @@ func jsonImageURL(raw json.RawMessage) string {
 	return ""
 }
 
-func jsonString(raw json.RawMessage) string {
-	if len(raw) == 0 {
-		return ""
-	}
-	var s string
-	if err := json.Unmarshal(raw, &s); err == nil {
-		return s
-	}
-	return ""
-}
+var jsonString = wire.JSONStringValue
 
 func writeOpenAIError(w http.ResponseWriter, status int, errorType, message string) {
 	wire.WriteOpenAIError(w, status, errorType, message)

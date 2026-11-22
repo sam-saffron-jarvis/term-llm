@@ -61,6 +61,9 @@ func capturedTurnTx(ctx context.Context, q QueryExecer, sessionID, responseID st
 }
 
 func AdmitTx(ctx context.Context, tx *sql.Tx, a ResponseRunAdmission) error {
+	if err := ClaimLinkedToolTx(ctx, tx, a.SessionID, a.ResponseID, a.LinkedToolClaim); err != nil {
+		return err
+	}
 	if err := recordIncorporatedNotificationAgentsTx(ctx, tx, a); err != nil {
 		return err
 	}

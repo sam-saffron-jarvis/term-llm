@@ -990,6 +990,12 @@ export class RunEngine {
         `Response request returned ${response.status}`,
       );
       if (response.status === 409 && error.type === 'client_message_already_committed') {
+        if (!this.supervisors.owns(streamOwner)) return streamOwner.sessionId;
+        const runs = { ...this.runs.peek() };
+        if (runs[sessionId]?.run.responseId === streamOwner.responseId) {
+          delete runs[sessionId];
+          this.runs.value = runs;
+        }
         this.retireIntent(sessionId, clientMessageId);
         this.supervisors.retire(streamOwner);
         await this.host.loadSession(sessionId);

@@ -1,12 +1,10 @@
 package serve
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
-	"fmt"
 	"strings"
 
+	"github.com/term-llm/term-llm/internal/app/serve/wire"
 	"github.com/term-llm/term-llm/internal/llm"
 	"github.com/term-llm/term-llm/internal/llm/core"
 	"github.com/term-llm/term-llm/internal/tools"
@@ -71,110 +69,14 @@ type responsesCreateRequest struct {
 }
 
 func responseRequestFingerprint(req responsesCreateRequest) (string, error) {
-	// The claim key and transport request ID identify the operation; neither is
-	// part of its semantic body.
+	// Transport keys and viewport diagnostics are not semantic request data.
 	req.IdempotencyKey = ""
-	// Viewport/loaded-extension diagnostics do not change a submitted message's identity.
 	req.UIContext = nil
-	encoded, err := json.Marshal(req)
-	if err != nil {
-		return "", fmt.Errorf("encode response request fingerprint: %w", err)
-	}
-	// Decode and encode once so nested RawMessage objects are normalized too:
-	// insignificant whitespace and object member ordering must not turn a replay
-	// into a conflict.
-	var semantic any
-	if err := json.Unmarshal(encoded, &semantic); err != nil {
-		return "", fmt.Errorf("normalize response request fingerprint: %w", err)
-	}
-	canonical, err := json.Marshal(semantic)
-	if err != nil {
-		return "", fmt.Errorf("canonicalize response request fingerprint: %w", err)
-	}
-	digest := sha256.Sum256(canonical)
-	return hex.EncodeToString(digest[:]), nil
+	return wire.ResponseRequestFingerprint(req)
 }
 
 func parseResponsesInput(input json.RawMessage) ([]core.Message, bool, error) {
-	trimmed := strings.TrimSpace(string(input))
-	if trimmed == "" || trimmed == "null" {
-		return nil, false, fmt.Errorf("input is required")
-	}
-
-	// string shorthand
-	var inputText string
-	if err := json.Unmarshal(input, &inputText); err == nil {
-		if strings.TrimSpace(inputText) == "" {
-			return nil, false, fmt.Errorf("input is empty")
-		}
-		return []core.Message{core.UserText(inputText)}, false, nil
-	}
-
-	var items []map[string]json.RawMessage
-	if err := json.Unmarshal(input, &items); err != nil {
-		return nil, false, fmt.Errorf("invalid input format")
-	}
-
-	var messages []core.Message
-	callNameByID := map[string]string{}
-	allToolItems := len(items) > 0
-	for _, item := range items {
-		itemType := jsonString(item["type"])
-		if itemType != "function_call" && itemType != "function_call_output" {
-			allToolItems = false
-			break
-		}
-	}
-	replaceHistory := len(items) > 1 && !allToolItems
-	userCount := 0
-
-	for _, item := range items {
-		itemType := jsonString(item["type"])
-		switch itemType {
-		case "message":
-			role := strings.ToLower(strings.TrimSpace(jsonString(item["role"])))
-			switch role {
-			case "developer":
-				messages = append(messages, core.Message{Role: core.RoleDeveloper, Parts: []core.Part{{Type: core.PartText, Text: extractItemContent(item["content"])}}})
-				replaceHistory = true
-			case "system":
-				messages = append(messages, core.SystemText(extractItemContent(item["content"])))
-				replaceHistory = true
-			case "assistant":
-				messages = append(messages, core.AssistantText(extractItemContent(item["content"])))
-				replaceHistory = true
-			default:
-				msg, err := parseUserMessageContent(item["content"])
-				if err != nil {
-					return nil, false, fmt.Errorf("user message: %w", err)
-				}
-				msg.ClientMessageID = strings.TrimSpace(jsonString(item["client_message_id"]))
-				messages = append(messages, msg)
-				userCount++
-			}
-		case "function_call":
-			id := jsonString(item["call_id"])
-			name := jsonString(item["name"])
-			args := jsonString(item["arguments"])
-			if strings.TrimSpace(args) == "" {
-				args = "{}"
-			}
-			callNameByID[id] = name
-			messages = append(messages, core.Message{Role: core.RoleAssistant, Parts: []core.Part{{
-				Type:     core.PartToolCall,
-				ToolCall: &core.ToolCall{ID: id, Name: name, Arguments: json.RawMessage(args)},
-			}}})
-		case "function_call_output":
-			id := jsonString(item["call_id"])
-			out := jsonString(item["output"])
-			messages = append(messages, core.ToolResultMessage(id, callNameByID[id], out, nil))
-		}
-	}
-
-	if userCount > 1 {
-		replaceHistory = true
-	}
-	return messages, replaceHistory, nil
+	return wire.ParseResponsesInput(input, parseUserMessageContent)
 }
 
 // normalizeReasoningEffort trims whitespace and folds the literal "default"
@@ -220,62 +122,9 @@ func normalizeProviderModelEffort(provider, model, effort string) (string, strin
 	return base, effort
 }
 
-func parseRequestedTools(raw []json.RawMessage) (bool, bool, map[string]bool, []core.ToolSpec) {
-	search := false
-	ptc := false
-	toolNames := map[string]bool{}
-	passthrough := make([]core.ToolSpec, 0, len(raw))
-
-	for _, item := range raw {
-		var generic map[string]json.RawMessage
-		if err := json.Unmarshal(item, &generic); err != nil {
-			continue
-		}
-		typeName := strings.ToLower(strings.TrimSpace(jsonString(generic["type"])))
-		switch typeName {
-		case "web_search_preview", "web_search":
-			search = true
-		case "programmatic_tool_calling":
-			ptc = true
-		case "function":
-			spec, ok := parseRequestedFunctionTool(generic)
-			if !ok {
-				continue
-			}
-			toolNames[spec.Name] = true
-			passthrough = append(passthrough, spec)
-		}
-	}
-
-	return search, ptc, toolNames, passthrough
-}
-
-func parseRequestedFunctionTool(generic map[string]json.RawMessage) (core.ToolSpec, bool) {
-	return core.ParseClientFunctionTool(generic)
-}
-
-func responsesUsagePayload(usage core.Usage) map[string]any {
-	inputTokens := usage.ProviderRawInputTokens
-	if inputTokens <= 0 {
-		inputTokens = usage.InputTokens + usage.CachedInputTokens + usage.CacheWriteTokens
-	}
-	totalTokens := usage.ProviderTotalTokens
-	if totalTokens <= 0 {
-		totalTokens = inputTokens + usage.OutputTokens
-	}
-	return map[string]any{
-		"input_tokens":  inputTokens,
-		"output_tokens": usage.OutputTokens,
-		"total_tokens":  totalTokens,
-		"input_tokens_details": map[string]any{
-			"cached_tokens":      usage.CachedInputTokens,
-			"cache_write_tokens": usage.CacheWriteTokens,
-		},
-		"output_tokens_details": map[string]any{
-			"reasoning_tokens": usage.ReasoningTokens,
-		},
-	}
-}
+var parseRequestedTools = wire.ParseRequestedTools
+var parseRequestedFunctionTool = core.ParseClientFunctionTool
+var responsesUsagePayload = wire.ResponsesUsagePayload
 
 func responsesFinalResponse(result serveRunResult, model string, respID string, created int64) map[string]any {
 	output := []map[string]any{}

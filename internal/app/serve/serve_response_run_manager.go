@@ -674,6 +674,9 @@ func (m *responseRunManager) registerRun(run *responseRun, idempotencyKey string
 				return nil, false, errResponseRunKeyConflict
 			}
 			if existing, exists := m.runs[claim.runID]; exists && existing != nil {
+				if run.linkedDeviceID != "" && existing.linkedDeviceID != run.linkedDeviceID {
+					return nil, false, errResponseRunKeyConflict
+				}
 				m.idempotencyReplays.Add(1)
 				return existing, true, nil
 			}

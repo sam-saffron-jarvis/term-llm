@@ -22,7 +22,7 @@ func notificationAgentFacts(events []AgentRun) []notificationdb.AgentRun {
 	return result
 }
 func admitNotificationTurnTx(ctx context.Context, tx *sql.Tx, a ResponseRunAdmission) error {
-	value := notificationdb.ResponseRunAdmission{SessionID: a.SessionID, ResponseID: a.ResponseID, AgentEvents: notificationAgentFacts(a.AgentEvents)}
+	value := notificationdb.ResponseRunAdmission{LinkedToolClaim: a.LinkedToolClaim, SessionID: a.SessionID, ResponseID: a.ResponseID, AgentEvents: notificationAgentFacts(a.AgentEvents)}
 	if a.Turn != nil {
 		value.Turn = &notificationdb.NotificationTurnAdmission{ClientResultIDs: a.Turn.ClientResultIDs, Human: a.Turn.Human, PreviousResponseID: a.Turn.PreviousResponseID, Origin: a.Turn.Origin, AwaitedEvents: notificationAgentFacts(a.Turn.AwaitedEvents)}
 	}

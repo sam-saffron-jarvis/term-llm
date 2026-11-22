@@ -231,7 +231,8 @@ var (
 
 // ResponseRunAdmission durably accounts for a run before provider work starts.
 type ResponseRunAdmission struct {
-	Turn *NotificationTurnAdmission
+	Turn            *NotificationTurnAdmission
+	LinkedToolClaim *notificationdb.LinkedToolClaim
 	// AgentEvents fences a host wake against collection/stop/new generations
 	// in the same transaction as durable parent admission; only ID/generation matter.
 	AgentEvents []AgentRun

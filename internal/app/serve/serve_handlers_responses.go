@@ -81,7 +81,11 @@ func responseClientMessageIDs(messages []core.Message) []string {
 }
 
 func (s *serveServer) handleResponses(w http.ResponseWriter, r *http.Request) {
-	if !s.allowResponseAdmission(w, r) {
+	// Linked retries with an old instance may only read a durable receipt.
+	// All mutations, and all ordinary requests, keep the existing fence.
+	_, linked := linkeddevices.DeviceFromRequest(r)
+	replayOnly := linked && r.Method == http.MethodPost && len(r.Header.Values(responseServerInstanceHeader)) == 1 && !s.matchesResponseAdmissionInstance(r)
+	if !replayOnly && !s.allowResponseAdmission(w, r) {
 		return
 	}
 	if err := requireJSONContentType(r); err != nil {
@@ -115,14 +119,19 @@ func (s *serveServer) handleResponses(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !s.allowLinkedToolContinuation(w, r, req.PreviousResponseID, req.Branch, inputMessages) {
+	if replayOnly && (!wantsLinkedToolReceipt(r, req) || !req.Stream || req.Branch || len(wire.ToolResultIDs(inputMessages)) == 0) {
+		writeResponseAdmissionInstanceChanged(w)
 		return
 	}
-	s.authors.StampInputs(r, s.store, inputMessages)
 	admission, stop := s.prepareResponsesSessionAdmission(w, r, ctx, req)
 	if stop {
 		return
 	}
+	ctx, stop = s.prepareLinkedToolContinuation(w, r, ctx, req, inputMessages, admission, replayOnly)
+	if stop {
+		return
+	}
+	s.authors.StampInputs(r, s.store, inputMessages)
 	resolved, stop := s.resolveResponsesSession(w, r, ctx, req, inputMessages, identifiedUserBatch, admission, &replaceHistory)
 	if stop {
 		return
@@ -287,7 +296,7 @@ func (s *serveServer) prepareResponsesSessionAdmission(w http.ResponseWriter, r 
 	}
 	runIdempotencyKey := responseRunIdempotencyKey(r, req)
 	requestFingerprint := ""
-	if req.Stream && runIdempotencyKey != "" {
+	if req.Stream && (runIdempotencyKey != "" || wantsLinkedToolReceipt(r, req)) {
 		var fingerprintErr error
 		requestFingerprint, fingerprintErr = responseRequestFingerprint(req)
 		requestFingerprint = notificationRequestFingerprint(r, requestFingerprint)
@@ -499,6 +508,10 @@ func (s *serveServer) prepareResolvedResponseAdmission(w http.ResponseWriter, r 
 			return serveWorkspaceBinding{}, func() {}, true
 		}
 		if found {
+			if paired && run.linkedDeviceID != linkedRuntimePrincipal(ctx).DeviceID {
+				writeLinkedToolHandoffNotFound(w)
+				return serveWorkspaceBinding{}, func() {}, true
+			}
 			w.Header().Set("x-session-id", run.sessionID)
 			w.Header().Set("x-response-id", run.id)
 			s.setReplaySessionNumberHeader(ctx, w, run.sessionID)

@@ -511,6 +511,28 @@ describe('client tool continuation', () => {
     }
   });
 
+  it('refreshes Chat without rerunning a tool when the host confirms the handoff was committed', async () => {
+    const context = installDeviceTools(async () => 'pong');
+    const store = await chatStore();
+    const reload = vi.spyOn(store, 'loadSession').mockResolvedValue(undefined);
+    store.endpoints.createResponse = vi
+      .fn()
+      .mockResolvedValueOnce(sse('r1', callFrames('r1', 'webmcp__ping', '{}')))
+      .mockResolvedValueOnce(rejection(409, 'client_message_already_committed', 'results applied'));
+    try {
+      store.prompt.value = 'Ping it';
+      await store.send();
+      await vi.waitFor(() => expect(reload).toHaveBeenCalledWith('s1', undefined));
+      expect(store.sendBlocked.value).toBe(false);
+      expect(store.pendingIntents.value).toEqual({});
+      expect(store.endpoints.cancelResponse).not.toHaveBeenCalled();
+      expect(store.endpoints.createResponse).toHaveBeenCalledTimes(2);
+      expect(context.executeTool).toHaveBeenCalledTimes(1);
+    } finally {
+      store.dispose();
+    }
+  });
+
   it('refreshes a definitively stale admission fence and retries the exact tool handoff once', async () => {
     const context = installDeviceTools(async () => 'pong');
     const store = await chatStore();
