@@ -287,7 +287,7 @@ term-llm exec --provider openai:gpt-5.2-low "quick task"         # faster/cheape
 # With file context
 term-llm exec -f error.log "find the cause"     # analyze a file
 term-llm exec -f "*.go" "run tests for these"   # glob pattern
-git diff | term-llm exec "commit message"       # pipe stdin
+git diff | term-llm exec --print-only "commit message"  # print the first suggestion without executing it
 
 # Ask a question
 term-llm ask "What is the difference between TCP and UDP?"
