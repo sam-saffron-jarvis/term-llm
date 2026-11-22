@@ -57,3 +57,14 @@ func TestHandleSessionsSearchSort(t *testing.T) {
 		})
 	}
 }
+
+func TestHandleSessionsSearchPreservesTrailingWhitespace(t *testing.T) {
+	store := &searchSortStore{}
+	srv := &serveServer{store: store}
+	req := httptest.NewRequest(http.MethodGet, "/v1/sessions/search?q=discourse+githu+", nil)
+	rr := httptest.NewRecorder()
+	srv.handleSessionsSearch(rr, req)
+	if rr.Code != http.StatusOK || len(store.options) != 1 || store.options[0].Query != "discourse githu " {
+		t.Fatalf("status = %d, options = %#v", rr.Code, store.options)
+	}
+}

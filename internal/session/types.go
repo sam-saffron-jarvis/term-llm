@@ -246,7 +246,7 @@ type SearchResult struct {
 	CreatedBy           string             `json:"created_by_id,omitempty"`
 	SessionID           string             `json:"session_id"`
 	SessionNumber       int64              `json:"session_number"` // Sequential session number
-	MessageID           int64              `json:"message_id"`
+	MessageID           int64              `json:"message_id"`     // Zero for a title-only match
 	SessionName         string             `json:"session_name"`
 	Summary             string             `json:"summary"`
 	GeneratedShortTitle string             `json:"generated_short_title,omitempty"`
