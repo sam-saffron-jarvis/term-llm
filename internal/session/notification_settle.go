@@ -2,18 +2,17 @@ package session
 
 import (
 	"context"
-	"database/sql"
-	"time"
 
 	"github.com/term-llm/term-llm/internal/session/notificationdb"
 )
 
 func notificationTerminal(t ResponseRunTerminal) notificationdb.ResponseRunTerminal {
-	return notificationdb.ResponseRunTerminal{Recoverable: t.Recoverable, PendingClientCallIDs: t.PendingClientCallIDs, ResponseID: t.ResponseID, Outcome: t.Outcome, PendingClientCalls: t.PendingClientCalls, AwaitingAgentJoin: t.AwaitingAgentJoin, AwaitedEvents: notificationAgentFacts(t.AwaitedEvents)}
+	return notificationdb.ResponseRunTerminal{LinkedDeviceID: t.LinkedDeviceID, LinkedToolHandoffMessageID: t.LinkedToolHandoffMessageID, Recoverable: t.Recoverable, PendingClientCallIDs: t.PendingClientCallIDs, ResponseID: t.ResponseID, Outcome: t.Outcome, PendingClientCalls: t.PendingClientCalls, AwaitingAgentJoin: t.AwaitingAgentJoin, AwaitedEvents: notificationAgentFacts(t.AwaitedEvents)}
 }
-func prepareNotificationTerminalTx(ctx context.Context, tx *sql.Tx, t ResponseRunTerminal) (bool, error) {
-	return notificationdb.PrepareTerminalTx(ctx, tx, notificationTerminal(t))
+func (s *SQLiteStore) PendingLinkedToolHandoff(ctx context.Context, messageID int64, deviceID string) ([]string, error) {
+	return notificationdb.PendingLinkedToolHandoff(ctx, s.queryDB(), messageID, deviceID)
 }
-func insertNotificationCandidateTx(ctx context.Context, tx *sql.Tx, t ResponseRunTerminal, a AttentionState, now time.Time) error {
-	return notificationdb.InsertCandidateTx(ctx, tx, notificationTerminal(t), notificationdb.AttentionState{Changed: a.Changed, StoreInstanceID: a.StoreInstanceID, LatestAttentionSeq: a.LatestAttentionSeq, RunEpoch: a.RunEpoch}, now)
+
+func notificationAttention(a AttentionState) notificationdb.AttentionState {
+	return notificationdb.AttentionState{Changed: a.Changed, StoreInstanceID: a.StoreInstanceID, LatestAttentionSeq: a.LatestAttentionSeq, RunEpoch: a.RunEpoch}
 }

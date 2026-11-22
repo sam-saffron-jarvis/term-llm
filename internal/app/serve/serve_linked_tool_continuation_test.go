@@ -2,12 +2,21 @@ package serve
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/term-llm/term-llm/internal/app/serve/wire"
+	"github.com/term-llm/term-llm/internal/config"
 	"github.com/term-llm/term-llm/internal/llm/core"
+	"github.com/term-llm/term-llm/internal/llm/engine"
+	"github.com/term-llm/term-llm/internal/llm/mockprovider"
+	"github.com/term-llm/term-llm/internal/session"
 )
 
 func TestLinkedToolContinuationOwnership(t *testing.T) {
@@ -37,7 +46,7 @@ func TestLinkedToolContinuationOwnership(t *testing.T) {
 		if device != "" {
 			r = linkedLiveRequest(r.Method, r.URL.Path, "", device, lifetime)
 		}
-		if got := srv.allowLinkedToolContinuation(w, r, cursor, []core.Message{core.ToolResultMessage(id, "", "pong", nil)}); got != want || !want && w.Code != http.StatusNotFound {
+		if got := srv.allowLinkedToolContinuation(w, r, cursor, false, []core.Message{core.ToolResultMessage(id, "", "pong", nil)}); got != want || !want && w.Code != http.StatusNotFound {
 			t.Fatalf("device=%q cursor=%q call=%q: allowed=%t status=%d", device, cursor, id, got, w.Code)
 		}
 	}
@@ -49,4 +58,130 @@ func TestLinkedToolContinuationOwnership(t *testing.T) {
 	post("", ownerRun.id, callID, true)
 	revoke()
 	post("phone", run.id, callID, false)
+}
+
+func TestLinkedToolContinuationAfterEvictionAndRestart(t *testing.T) {
+	for _, mode := range []string{"evicted", "reopened", "owner-origin"} {
+		t.Run(mode, func(t *testing.T) {
+			provider := mockprovider.NewMockProvider("debug").
+				AddTurn(mockprovider.MockTurn{ToolCalls: []core.ToolCall{pendingTestCall("call-alpha", "webmcp__ping"), pendingTestCall("call-beta", "webmcp__ping")}}).
+				AddTextResponse("incorporated linked results")
+			path := filepath.Join(t.TempDir(), "sessions.db")
+			newHost := func(createSession bool) *serveServer {
+				store, err := session.NewSQLiteStore(session.Config{Enabled: true, Path: path})
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() { _ = store.Close() })
+				if createSession {
+					if err := store.Create(t.Context(), &session.Session{ID: "wake-parent", Provider: "debug", ProviderKey: "debug", Model: "fast", Origin: session.OriginWeb, Status: session.StatusActive}); err != nil {
+						t.Fatal(err)
+					}
+				}
+				factory := func(context.Context, serveRuntimeRequest) (*serveRuntime, error) {
+					return &serveRuntime{provider: provider, providerKey: "debug", engine: engine.NewEngine(provider, nil), store: store, defaultModel: "fast", platform: "web"}, nil
+				}
+				mgr := newServeSessionManager(time.Minute, 10, func(ctx context.Context) (*serveRuntime, error) { return factory(ctx, serveRuntimeRequest{}) })
+				host := &serveServer{cfg: serveServerConfig{ui: true}, cfgRef: &config.Config{DefaultProvider: "debug", Providers: map[string]config.ProviderConfig{"debug": {Model: "fast"}}}, store: session.NewLoggingStore(store, nil), runtimeFactory: factory, sessionMgr: mgr, responseRuns: newServeResponseRunManager(), shutdownCh: make(chan struct{})}
+				host.responseLifecycleOnce.Do(func() {})
+				t.Cleanup(func() {
+					close(host.shutdownCh)
+					host.responseRuns.Close()
+					host.agentWakeWG.Wait()
+					mgr.Close()
+				})
+				return host
+			}
+			srv := newHost(true)
+			const tools = `"tools":[{"type":"function","name":"webmcp__ping","parameters":{"type":"object"}}]`
+			post := func(host *serveServer, device, body string, lifetime context.Context) *httptest.ResponseRecorder {
+				t.Helper()
+				r := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(body))
+				if device != "" {
+					r = linkedLiveRequest(r.Method, r.URL.Path, body, device, lifetime)
+				}
+				r.Header.Set("Content-Type", "application/json")
+				r.Header.Set("X-Term-LLM-UI-Version", "test")
+				r.Header.Set(requestSessionIDHeader, "wake-parent")
+				w := httptest.NewRecorder()
+				host.handleResponses(w, r)
+				return w
+			}
+			origin := "phone"
+			if mode == "owner-origin" {
+				origin = ""
+			}
+			first := post(srv, origin, `{"input":"ping","stream":true,"client_message_id":"linked-first",`+tools+`}`, t.Context())
+			if first.Code != http.StatusOK {
+				t.Fatalf("first response: %d %s", first.Code, first.Body)
+			}
+			run := waitNotificationNativeRun(t, srv, first.Header().Get("x-response-id"))
+			cursor, _ := run.snapshot()["continuation_response_id"].(string)
+			if _, ok := parseDurableResponseMessageID(cursor); !ok {
+				t.Fatalf("missing durable cursor: %q", cursor)
+			}
+			<-run.settled
+			srv.responseRuns.delete(run.id)
+			if mode == "reopened" {
+				// A separate SQLite connection and an empty response manager/map:
+				// no handoff authority survives in the new host's memory.
+				srv = newHost(false)
+			}
+			revoked, revoke := context.WithCancel(t.Context())
+			revoke()
+			body := func(key string, branch bool, ids ...string) string {
+				input := make([]map[string]string, 0, len(ids))
+				for _, id := range ids {
+					input = append(input, map[string]string{"type": "function_call_output", "call_id": id, "output": "linked pong"})
+				}
+				data, _ := json.Marshal(input)
+				return fmt.Sprintf(`{"stream":true,"branch":%t,"previous_response_id":%q,"client_message_id":%q,"input":%s,%s}`, branch, cursor, key, data, tools)
+			}
+			for _, tc := range []struct {
+				name, device string
+				lifetime     context.Context
+				branch       bool
+				ids          []string
+			}{
+				{"foreign", "other-phone", t.Context(), false, []string{"call-alpha", "call-beta"}},
+				{"unknown", "phone", t.Context(), false, []string{"call-alpha", "not-pending"}},
+				{"subset", "phone", t.Context(), false, []string{"call-alpha"}},
+				{"duplicate", "phone", t.Context(), false, []string{"call-alpha", "call-alpha"}},
+				{"revoked", "phone", revoked, false, []string{"call-alpha", "call-beta"}},
+				{"branch", "phone", t.Context(), true, []string{"call-alpha", "call-beta"}},
+			} {
+				w := post(srv, tc.device, body(tc.name, tc.branch, tc.ids...), tc.lifetime)
+				if w.Code != http.StatusNotFound || !strings.Contains(w.Body.String(), "client tool handoff not found") {
+					t.Fatalf("%s handoff: %d %s", tc.name, w.Code, w.Body)
+				}
+			}
+			if mode == "owner-origin" {
+				if w := post(srv, "phone", body("owner-run", false, "call-alpha", "call-beta"), t.Context()); w.Code != http.StatusNotFound {
+					t.Fatalf("linked peer answered an owner handoff: %d %s", w.Code, w.Body)
+				}
+			}
+			accepted := post(srv, origin, body("exact", false, "call-beta", "call-alpha"), t.Context())
+			if accepted.Code != http.StatusOK || !strings.Contains(accepted.Body.String(), "event: response.completed") {
+				t.Fatalf("owner-device handoff: %d %s", accepted.Code, accepted.Body)
+			}
+			requests := provider.RecordedRequests()
+			if len(requests) != 2 {
+				t.Fatalf("provider received %d requests, want 2", len(requests))
+			}
+			results := map[string]bool{}
+			for _, msg := range requests[1].Messages {
+				for _, part := range msg.Parts {
+					if part.ToolResult != nil && strings.Contains(part.ToolResult.Content, "linked pong") {
+						results[part.ToolResult.ID] = true
+					}
+				}
+			}
+			if !results["call-alpha"] || !results["call-beta"] {
+				t.Fatalf("provider did not receive both linked results: %v", results)
+			}
+			if replay := post(srv, "phone", body("stale", false, "call-alpha", "call-beta"), t.Context()); replay.Code != http.StatusNotFound {
+				t.Fatalf("stale handoff: %d %s", replay.Code, replay.Body)
+			}
+		})
+	}
 }

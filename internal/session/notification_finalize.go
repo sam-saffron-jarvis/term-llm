@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"time"
+
+	"github.com/term-llm/term-llm/internal/session/notificationdb"
 )
 
 func (s *SQLiteStore) FinalizeResponseRun(ctx context.Context, terminal ResponseRunTerminal) (AttentionState, error) {
@@ -68,6 +70,10 @@ func (s *SQLiteStore) FinalizeResponseRun(ctx context.Context, terminal Response
 	if affected, _ := result.RowsAffected(); affected != 1 {
 		return AttentionState{}, ErrResponseRunLeaseLost
 	}
+	notification := notificationTerminal(terminal)
+	if err := notificationdb.RecordLinkedToolHandoffTx(ctx, tx, sessionID, notification); err != nil {
+		return AttentionState{}, err
+	}
 	if err := insertLifecycleChange(ctx, tx, sessionID, finalRev); err != nil {
 		return AttentionState{}, fmt.Errorf("publish response run terminal state: %w", err)
 	}
@@ -78,7 +84,7 @@ func (s *SQLiteStore) FinalizeResponseRun(ctx context.Context, terminal Response
 			return AttentionState{}, fmt.Errorf("acknowledge incorporated agent generations: %w", err)
 		}
 	}
-	intermediate, err := prepareNotificationTerminalTx(ctx, tx, terminal)
+	intermediate, err := notificationdb.PrepareTerminalTx(ctx, tx, notification)
 	if err != nil {
 		return AttentionState{}, fmt.Errorf("settle notification turn: %w", err)
 	}
@@ -109,7 +115,7 @@ func (s *SQLiteStore) FinalizeResponseRun(ctx context.Context, terminal Response
 		attention.Changed = true
 	}
 	attention.StoreInstanceID = storeID
-	if err := insertNotificationCandidateTx(ctx, tx, terminal, attention, now); err != nil {
+	if err := notificationdb.InsertCandidateTx(ctx, tx, notification, notificationAttention(attention), now); err != nil {
 		return AttentionState{}, err
 	}
 	if err := tx.Commit(); err != nil {

@@ -64,6 +64,13 @@ const UNCONFIRMED_SEND_GRACE_MS = 60_000;
 // The server may still be releasing the finished run's turn.
 const CONTINUATION_BUSY_RETRY_MS = [300, 800, 1_500];
 
+/** A stale server fence is rejected before the server can admit the POST. */
+function staleAdmissionInstance(error: unknown): boolean {
+  return (
+    error instanceof APIError && error.status === 409 && error.type === 'server_instance_changed'
+  );
+}
+
 /** The finished run may still hold the session's turn for a moment. */
 function sessionBusy(error: unknown): boolean {
   return (
@@ -771,11 +778,7 @@ export class RunEngine {
           this.pauseUnconfirmed(streamOwner, clientMessageId);
           return;
         }
-        if (
-          error instanceof APIError &&
-          error.status === 409 &&
-          error.type === 'server_instance_changed'
-        ) {
+        if (staleAdmissionInstance(error)) {
           // The first POST was rejected before admission. Only in this case
           // may we refresh its fence; an ambiguous POST must keep the old one.
           if (!refreshedAdmission) {
@@ -945,7 +948,7 @@ export class RunEngine {
       }
     } catch {
       // The POST was definitively rejected, even if refreshing capabilities
-      // fails. Let the caller restore the draft, not mark delivery unknown.
+      // fails. Let the caller handle the rejection, not mark delivery unknown.
     }
     return '';
   }
@@ -2392,7 +2395,8 @@ export class RunEngine {
     const session = this.sessionStore.sessions.peek().find((entry) => entry.id === sessionId);
     if (!session) return;
     const requestId = uuid();
-    const admissionInstance = this.admissionInstance.peek();
+    let admissionInstance = this.admissionInstance.peek();
+    let refreshedAdmission = false;
     // First-party requests need an idempotency key even without a user message.
     const clientMessageId = uuid();
     const run: ActiveRun = {
@@ -2433,7 +2437,8 @@ export class RunEngine {
     }
     const admissionDeadline = Date.now() + 100_000;
     let unknownAttempts = 0;
-    for (let attempt = 0; ; attempt += 1) {
+    let busyRetries = 0;
+    for (;;) {
       if (Date.now() >= admissionDeadline) {
         this.pauseUnconfirmed(streamOwner, clientMessageId);
         return;
@@ -2464,25 +2469,37 @@ export class RunEngine {
           this.scheduleSupervisorRetry(streamOwner, error);
           return;
         }
-        const busy = sessionBusy(error);
         if (unknownAttempts > 0 && this.definitiveSendRejection(error)) {
           this.pauseUnconfirmed(streamOwner, clientMessageId);
           return;
         }
+        // A stale fence proves this attempt was not admitted. Keep the original
+        // cursor, outputs and idempotency key; only replace the fence once.
+        if (admissionInstance && !refreshedAdmission && staleAdmissionInstance(error)) {
+          refreshedAdmission = true;
+          const instance = await this.refreshRejectedAdmissionInstance(admissionInstance);
+          if (!this.supervisors.owns(streamOwner)) return;
+          if (instance && Date.now() < admissionDeadline) {
+            admissionInstance = instance;
+            continue;
+          }
+        }
+        const busy = sessionBusy(error);
         if (
-          (busy && CONTINUATION_BUSY_RETRY_MS[attempt] === undefined) ||
+          (busy && CONTINUATION_BUSY_RETRY_MS[busyRetries] === undefined) ||
           (!busy && this.definitiveSendRejection(error))
         ) {
-          // Preserve the existing explicit rejection/abandonment behavior.
-          // This branch never runs after an ambiguous admission.
-          try {
-            await this.abortToolContinuation(responseId);
-          } catch (cancelError) {
-            this.services.toast(`Could not confirm stop: ${errorMessage(cancelError)}`, 'error');
-          }
+          // Surface the rejection before best-effort cleanup. A stalled cancel
+          // must not hide the failure or keep the composer locked.
           this.retireIntent(sessionId, clientMessageId);
           this.failRun(sessionId, error);
           this.supervisors.retire(streamOwner);
+          try {
+            await this.abortToolContinuation(responseId);
+          } catch (cancelError) {
+            if (!this.disposed)
+              this.services.toast(`Could not confirm stop: ${errorMessage(cancelError)}`, 'error');
+          }
           return;
         }
         // Unknown outcomes replay the same idempotency key and handoff lineage,
@@ -2492,7 +2509,7 @@ export class RunEngine {
           return;
         }
         const delay = busy
-          ? CONTINUATION_BUSY_RETRY_MS[attempt]
+          ? CONTINUATION_BUSY_RETRY_MS[busyRetries++]
           : unknownAttempts === 1
             ? 1_000
             : 3_000;

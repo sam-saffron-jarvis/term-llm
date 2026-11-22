@@ -60,6 +60,10 @@ Migration errors should identify the store, observed and supported versions, mig
 
 Unknown unversioned schemas fail closed with a structural description and recovery guidance, without user data. Full corruption checking belongs to `term-llm doctor` (see the [user-facing documentation](https://term-llm.com/guides/debugging/#check-the-install-with-term-llm-doctor) and [`internal/doctor/README.md`](../doctor/README.md) for contributor notes), which also compares each database against the schema its migrations produce on a fresh install, and must not be added to normal startup.
 
+- Session v71 adds a transcript-anchored table for verified linked device tool
+  handoffs. It does not backfill ownership from display authors. The previous
+  binary rejects the v71 marker for read-write use; restore a backup to downgrade.
+
 - Session v69 adds display-only message authors, session starters and an author
   directory. The v68 binary rejects v69 for read-write use; opened read-only it
   ignores the additional columns and table. Stop older writers before upgrading,

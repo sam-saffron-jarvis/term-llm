@@ -99,3 +99,48 @@ func PendingClientCallsValue(value any) []map[string]any {
 	}
 	return nil
 }
+
+// ToolResultIDs reports every supplied tool result, including duplicates.
+func ToolResultIDs(input []core.Message) []string {
+	var calls []string
+	for _, msg := range input {
+		for _, part := range msg.Parts {
+			if part.Type == core.PartToolResult && part.ToolResult != nil {
+				calls = append(calls, part.ToolResult.ID)
+			}
+		}
+	}
+	return calls
+}
+
+// ExactToolCallIDs compares non-empty sets of unique call IDs without relying on order.
+func ExactToolCallIDs(pending, calls []string) bool {
+	if len(pending) == 0 || len(pending) != len(calls) {
+		return false
+	}
+	ids := make(map[string]bool, len(pending))
+	for _, id := range pending {
+		if id == "" || ids[id] {
+			return false
+		}
+		ids[id] = true
+	}
+	for _, id := range calls {
+		if !ids[id] {
+			return false
+		}
+		delete(ids, id)
+	}
+	return true
+}
+
+// PendingClientCallIDs extracts the IDs in the published pending list.
+func PendingClientCallIDs(pending []map[string]any) []string {
+	var ids []string
+	for _, call := range pending {
+		if id, _ := call["call_id"].(string); id != "" {
+			ids = append(ids, id)
+		}
+	}
+	return ids
+}

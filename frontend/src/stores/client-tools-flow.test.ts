@@ -102,6 +102,16 @@ async function chatStore(): Promise<AppStore> {
 const requestBody = (store: AppStore, index: number) =>
   vi.mocked(store.endpoints.createResponse).mock.calls[index]?.[0] as Record<string, unknown>;
 
+const rejection = (status: number, type: string, message: string) =>
+  new Response(JSON.stringify({ error: { type, message } }), { status });
+
+const restarted = () =>
+  rejection(
+    409,
+    'server_instance_changed',
+    'server instance changed; the earlier send may still be running',
+  );
+
 beforeEach(() => localStorage.clear());
 afterEach(() => {
   delete (document as { modelContext?: unknown }).modelContext;
@@ -466,6 +476,84 @@ describe('client tool continuation', () => {
     store.dispose();
   });
 
+  it('shows a missing tool handoff as failed without waiting for predecessor cleanup', async () => {
+    installDeviceTools(async () => 'pong');
+    const store = await chatStore();
+    const message = 'client tool handoff not found';
+    store.runEngine.admissionInstance.value = 'old-process';
+    store.endpoints.capabilities = vi.fn();
+    let finishCleanup!: (result: Record<string, unknown>) => void;
+    store.endpoints.cancelResponse = vi.fn(
+      () => new Promise<Record<string, unknown>>((resolve) => (finishCleanup = resolve)),
+    );
+    store.endpoints.createResponse = vi
+      .fn()
+      .mockResolvedValueOnce(sse('r1', callFrames('r1', 'webmcp__ping', '{}')))
+      .mockResolvedValueOnce(rejection(404, 'invalid_request_error', message));
+    try {
+      store.prompt.value = 'Ping it';
+      await store.send();
+      await vi.waitFor(() => expect(store.endpoints.cancelResponse).toHaveBeenCalledWith('r1'));
+      expect(store.activeProjection.value?.run).toMatchObject({ status: 'failed', error: message });
+      expect(store.visibleMessages.value).toContainEqual(
+        expect.objectContaining({ role: 'error', content: message }),
+      );
+      expect(store.toasts.value).toContainEqual(
+        expect.objectContaining({ kind: 'error', message }),
+      );
+      expect(store.sendBlocked.value).toBe(false);
+      expect(store.pendingIntents.value).toEqual({});
+      expect(store.endpoints.capabilities).not.toHaveBeenCalled();
+      expect(store.endpoints.createResponse).toHaveBeenCalledTimes(2);
+    } finally {
+      finishCleanup?.({ status: 'cancelled' });
+      store.dispose();
+    }
+  });
+
+  it('refreshes a definitively stale admission fence and retries the exact tool handoff once', async () => {
+    const context = installDeviceTools(async () => 'pong');
+    const store = await chatStore();
+    store.runEngine.admissionInstance.value = 'old-process';
+    store.endpoints.capabilities = vi.fn(async () => ({
+      response_admission: { version: 1, instance_id: 'new-process' },
+    }));
+    const frames = callFrames('r1', 'webmcp__ping', '{}');
+    frames[3] = ['response.completed', { response: { id: 'resp_msg_42' }, final_rev: 1 }];
+    store.endpoints.createResponse = vi
+      .fn()
+      .mockResolvedValueOnce(sse('r1', frames))
+      .mockResolvedValueOnce(restarted())
+      .mockResolvedValueOnce(sse('r2', textFrames('r2', 'Your iPhone answered.')));
+    try {
+      store.prompt.value = 'Ping it';
+      await store.send();
+      await vi.waitFor(() =>
+        expect(store.activeProjection.value?.run).toMatchObject({
+          responseId: 'r2',
+          status: 'completed',
+        }),
+      );
+      expect(store.endpoints.capabilities).toHaveBeenCalledOnce();
+      const calls = vi.mocked(store.endpoints.createResponse).mock.calls;
+      expect(calls.map((call) => call[5]?.serverInstance)).toEqual([
+        'old-process',
+        'old-process',
+        'new-process',
+      ]);
+      expect(calls[2].slice(0, 3)).toEqual(calls[1].slice(0, 3));
+      expect(requestBody(store, 2)).toMatchObject({
+        previous_response_id: 'resp_msg_42',
+        input: [{ type: 'function_call_output', call_id: 'call_1', output: 'pong' }],
+      });
+      expect(context.executeTool).toHaveBeenCalledOnce();
+      expect(store.pendingIntents.value).toEqual({});
+      expect(store.endpoints.cancelResponse).not.toHaveBeenCalled();
+    } finally {
+      store.dispose();
+    }
+  });
+
   it('Stop during retryable client-output transport failure cancels the predecessor, not a pending fake response', async () => {
     installDeviceTools(async () => 'pong');
     const store = await chatStore();
@@ -529,17 +617,22 @@ describe('client tool continuation', () => {
     installDeviceTools(async () => 'pong');
     const store = await chatStore();
     store.runEngine.admissionInstance.value = 'process-one';
+    store.endpoints.capabilities = vi.fn(async () => ({
+      response_admission: { version: 1, instance_id: 'process-two' },
+    }));
     vi.useFakeTimers();
     store.endpoints.createResponse = vi
       .fn()
       .mockResolvedValueOnce(sse('r1', callFrames('r1', 'webmcp__ping', '{}')))
       .mockRejectedValueOnce(new TypeError('lost continuation reply'))
-      .mockRejectedValueOnce(new APIError('server instance changed', 409));
+      .mockResolvedValueOnce(restarted());
     try {
       store.prompt.value = 'Ping it';
       await store.send();
       await vi.advanceTimersByTimeAsync(1_000);
       expect(store.endpoints.createResponse).toHaveBeenCalledTimes(3);
+      expect(store.endpoints.capabilities).not.toHaveBeenCalled();
+      expect(store.activeProjection.value?.run.status).toBe('unconfirmed');
       expect(store.pendingIntents.value.s1[0]).toMatchObject({
         state: 'unconfirmed',
         kind: 'tool-output',

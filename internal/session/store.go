@@ -288,19 +288,21 @@ func ResponseRunFenceFromContext(ctx context.Context) (ResponseRunFence, bool) {
 }
 
 type ResponseRunTerminal struct {
-	PendingClientCallIDs []string
-	Recoverable          bool
-	AgentEvents          []AgentRun
-	PendingClientCalls   bool
-	AwaitingAgentJoin    bool
-	AwaitedEvents        []AgentRun
-	ResponseID           string
-	OwnerInstanceID      string
-	FencingToken         int64
-	Outcome              ResponseRunState
-	FinalRev             int64
-	DurableOutputCount   int
-	EndedAt              time.Time
+	LinkedDeviceID             string
+	LinkedToolHandoffMessageID int64
+	PendingClientCallIDs       []string
+	Recoverable                bool
+	AgentEvents                []AgentRun
+	PendingClientCalls         bool
+	AwaitingAgentJoin          bool
+	AwaitedEvents              []AgentRun
+	ResponseID                 string
+	OwnerInstanceID            string
+	FencingToken               int64
+	Outcome                    ResponseRunState
+	FinalRev                   int64
+	DurableOutputCount         int
+	EndedAt                    time.Time
 }
 
 // AttentionState is the authoritative per-session terminal-attention watermark.

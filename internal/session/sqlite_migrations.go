@@ -12,7 +12,7 @@ import (
 // Increment when adding new migrations.
 const (
 	projectSchemaVersion = 47
-	schemaVersion        = 70
+	schemaVersion        = 71
 )
 
 // migration represents a schema migration.

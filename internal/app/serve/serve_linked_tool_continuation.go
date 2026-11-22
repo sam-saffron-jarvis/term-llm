@@ -1,37 +1,36 @@
 package serve
 
 import (
+	"context"
 	"net/http"
 	"strings"
 
+	"github.com/term-llm/term-llm/internal/app/serve/wire"
 	"github.com/term-llm/term-llm/internal/linkeddevices"
 	"github.com/term-llm/term-llm/internal/llm/core"
+	"github.com/term-llm/term-llm/internal/session/transcript"
 )
 
 // Non-inline providers return tool calls at the end of a response. The page
 // posts their output as a new response rather than to the inline mailbox.
 // Apply the same ownership boundary to that handoff. Its cursor may be the
 // durable transcript ID published on completion, not the streaming run ID.
-func (s *serveServer) allowLinkedToolContinuation(w http.ResponseWriter, r *http.Request, previous string, input []core.Message) bool {
+func (s *serveServer) allowLinkedToolContinuation(w http.ResponseWriter, r *http.Request, previous string, branch bool, input []core.Message) bool {
 	peer, linked := linkeddevices.DeviceFromRequest(r)
 	if !linked {
 		return true
 	}
-	var calls []string
-	for _, msg := range input {
-		for _, part := range msg.Parts {
-			if part.Type == core.PartToolResult && part.ToolResult != nil {
-				calls = append(calls, part.ToolResult.ID)
-			}
-		}
-	}
+	calls := wire.ToolResultIDs(input)
 	if len(calls) == 0 {
 		return true
 	}
 	previous = strings.TrimSpace(previous)
-	if previous != "" && peer.Lifetime != nil && peer.Lifetime.Err() == nil &&
-		s.ensureResponseRuns().ownsLinkedToolHandoff(peer.DeviceID, previous, calls) {
-		return true
+	if !branch && previous != "" && peer.Lifetime != nil && peer.Lifetime.Err() == nil {
+		owned := s.ensureResponseRuns().ownsLinkedToolHandoff(peer.DeviceID, previous, calls) ||
+			s.ownsDurableLinkedToolHandoff(r.Context(), peer.DeviceID, previous, calls)
+		if owned && peer.Lifetime.Err() == nil {
+			return true
+		}
 	}
 	writeOpenAIError(w, http.StatusNotFound, "invalid_request_error", "client tool handoff not found")
 	return false
@@ -64,17 +63,15 @@ func (r *responseRun) matchesToolHandoff(previous string, calls []string) bool {
 	if r.status != "completed" || (previous != r.id && previous != r.continuationResponseID) {
 		return false
 	}
-	pending := make(map[string]bool, len(r.pendingClientCalls))
-	for _, call := range r.pendingClientCalls {
-		if id := stringValue(call["call_id"]); id != "" {
-			pending[id] = true
-		}
+	return wire.ExactToolCallIDs(wire.PendingClientCallIDs(r.pendingClientCalls), calls)
+}
+
+func (s *serveServer) ownsDurableLinkedToolHandoff(ctx context.Context, deviceID, previous string, calls []string) bool {
+	id, durable := parseDurableResponseMessageID(previous)
+	store, supported := transcript.AsLinkedToolHandoffReader(s.store)
+	if !durable || !supported {
+		return false
 	}
-	for _, id := range calls {
-		if !pending[id] {
-			return false
-		}
-		delete(pending, id)
-	}
-	return true
+	pending, err := store.PendingLinkedToolHandoff(ctx, id, deviceID)
+	return err == nil && wire.ExactToolCallIDs(pending, calls)
 }

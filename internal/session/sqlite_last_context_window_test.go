@@ -37,7 +37,7 @@ func TestLastContextWindowMigrationV70(t *testing.T) {
 		t.Fatal(err)
 	}
 	var v, w int
-	if err := db.QueryRow(`SELECT version FROM schema_version`).Scan(&v); err != nil || v != 70 {
+	if err := db.QueryRow(`SELECT version FROM schema_version`).Scan(&v); err != nil || v != schemaVersion {
 		t.Fatalf("version=%d err=%v", v, err)
 	}
 	if err := db.QueryRow(`SELECT last_context_window FROM sessions WHERE id='legacy'`).Scan(&w); err != nil || w != 0 {

@@ -65,6 +65,8 @@ type ResponseRunAdmission struct {
 	AgentEvents           []AgentRun
 }
 type ResponseRunTerminal struct {
+	LinkedToolHandoffMessageID            int64
+	LinkedDeviceID                        string
 	PendingClientCallIDs                  []string
 	Recoverable                           bool
 	ResponseID                            string

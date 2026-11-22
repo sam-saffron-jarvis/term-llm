@@ -106,3 +106,16 @@ func UpdateStreamingMessageWithTranscriptRev(ctx context.Context, store session.
 	}
 	return rev, err
 }
+
+// LinkedToolHandoffReader is an optional read capability for durable peer handoffs.
+type LinkedToolHandoffReader interface {
+	PendingLinkedToolHandoff(context.Context, int64, string) ([]string, error)
+}
+
+func AsLinkedToolHandoffReader(store session.Store) (LinkedToolHandoffReader, bool) {
+	if logging, ok := store.(*session.LoggingStore); ok {
+		return AsLinkedToolHandoffReader(logging.Store)
+	}
+	reader, ok := store.(LinkedToolHandoffReader)
+	return reader, ok
+}
