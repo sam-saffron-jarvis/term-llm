@@ -37,6 +37,7 @@ type callbackResult struct {
 }
 
 type flowRecord struct {
+	ctx               context.Context
 	grant             context.Context
 	flow              Flow
 	callbackState     string
@@ -217,7 +218,8 @@ func (c *Coordinator) newHandler(endpoint string, options Options, redirectURL s
 			cancel()
 		}
 		saved, err := c.store.Update(canonical, func(current *Session) (*Session, error) {
-			if options.GrantLifetime != nil && options.GrantLifetime.Err() != nil {
+			// The SDK supplies a detached refresh context here; fence the flow itself.
+			if interactive != nil && interactive.ctx.Err() != nil || options.GrantLifetime != nil && options.GrantLifetime.Err() != nil {
 				return nil, context.Canceled
 			}
 			version := uint64(0)
@@ -451,7 +453,7 @@ func (c *Coordinator) Start(ctx context.Context, endpoint string, options Option
 	}
 	flowCtx, cancel := context.WithTimeout(parent, flowLifetime)
 	record := &flowRecord{
-		grant: options.GrantLifetime, flow: Flow{ID: id, Endpoint: canonical, ExpiresAt: time.Now().Add(flowLifetime).UTC(), State: FlowStarting},
+		ctx: flowCtx, grant: options.GrantLifetime, flow: Flow{ID: id, Endpoint: canonical, ExpiresAt: time.Now().Add(flowLifetime).UTC(), State: FlowStarting},
 		callback: make(chan callbackResult, 1), ready: make(chan struct{}), done: make(chan struct{}), cancel: cancel,
 	}
 	c.flows[id] = record
@@ -564,10 +566,14 @@ func (c *Coordinator) CompleteCallback(state, code, issuer, oauthError string) (
 }
 
 func (c *Coordinator) Cancel(endpoint, flowID string) bool {
+	return c.cancelFlow(endpoint, flowID, false)
+}
+
+func (c *Coordinator) cancelFlow(endpoint, flowID string, disposal bool) bool {
 	canonical, _ := CanonicalEndpoint(endpoint)
 	c.mu.Lock()
 	record := c.flows[flowID]
-	if record == nil || record.callbackDelivered || (canonical != "" && record.flow.Endpoint != canonical) || (record.flow.State != FlowStarting && record.flow.State != FlowPending) {
+	if record == nil || (record.callbackDelivered && !disposal) || (canonical != "" && record.flow.Endpoint != canonical) || (record.flow.State != FlowStarting && record.flow.State != FlowPending) {
 		c.mu.Unlock()
 		return false
 	}

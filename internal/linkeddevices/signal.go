@@ -419,7 +419,7 @@ func (r *Runtime) acceptTransport(ctx context.Context, generation, connection ui
 				return
 			}
 			defer r.peerRequests.Done()
-			if p, ok := DeviceFromRequest(request); ok && p.mcpOps != nil && mcpManagementRoute(request.Method, request.URL.Path) {
+			if p, ok := DeviceFromRequest(request); ok && p.ManageMCP && p.mcpOps != nil && (mcpManagementRoute(request.Method, request.URL.Path) || strings.HasSuffix(request.URL.Path, "/mcp")) {
 				p.mcpOps.RLock() // Handlers recheck MCPGrantLifetime under this lock.
 				defer p.mcpOps.RUnlock()
 			}
@@ -631,18 +631,18 @@ func (r *Runtime) Reset(ctx context.Context) error {
 	defer r.lifecycleMu.Unlock()
 	r.mcpDisposeMu.Lock()
 	defer r.mcpDisposeMu.Unlock()
-	r.mu.Lock()
-	ids := r.grantIDsLocked()
-	r.mu.Unlock()
 	if err := r.stopLocked(); err != nil {
 		return err
 	}
-	// Reset forgets these devices; their MCP state goes even if re-creation fails.
-	defer r.disposeMCP(ids...)
+	if err := r.resetMCP(); err != nil {
+		return err
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	for _, name := range []string{"identity.json", "devices.json", "identity.json.lock", "devices.json.lock"} {
-		_ = os.Remove(filepath.Join(r.dir, name))
+		if err := os.Remove(filepath.Join(r.dir, name)); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("remove linked devices state %s: %w", name, err)
+		}
 	}
 	if err := writeJSONPrivate(filepath.Join(r.dir, "target.json"), targetState{Version: stateVersion, Target: r.opts.Target, StoreInstanceID: r.opts.StoreInstanceID, BrokerURL: r.opts.BrokerURL}); err != nil {
 		return err

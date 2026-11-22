@@ -19,7 +19,7 @@ func linkedRemoteURL(raw string) bool {
 
 func allowLinkedManagement(w http.ResponseWriter, peer linkeddevices.DevicePrincipal) bool {
 	w.Header().Set("Cache-Control", "no-store")
-	if !peer.ManageMCP || peer.DeviceID == "" || peer.MCPGrantLifetime == nil || peer.MCPGrantLifetime.Err() != nil {
+	if peer.MCPInstaller() == "" {
 		wire.WriteOpenAIError(w, 403, "permission_error", "MCP management is not granted")
 		return false
 	}

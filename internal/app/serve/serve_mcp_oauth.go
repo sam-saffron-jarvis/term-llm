@@ -48,7 +48,7 @@ func (s *serveServer) handleSessionMCPOAuth(w http.ResponseWriter, r *http.Reque
 	peer, linked := linkeddevices.DeviceFromRequest(r)
 	if linked {
 		w.Header().Set("Cache-Control", "no-store")
-		if !peer.ManageMCP || peer.MCPGrantLifetime == nil || peer.MCPGrantLifetime.Err() != nil || action == "logout" {
+		if peer.MCPInstaller() == "" || action == "logout" {
 			writeOpenAIError(w, 403, "permission_error", "MCP account is managed on the host")
 			return
 		}
@@ -220,7 +220,7 @@ func (s *serveServer) handleMCPOAuthFlow(w http.ResponseWriter, r *http.Request)
 	}
 	if peer, linked := linkeddevices.DeviceFromRequest(r); linked {
 		w.Header().Set("Cache-Control", "no-store")
-		if !peer.ManageMCP {
+		if peer.MCPInstaller() == "" {
 			writeOpenAIError(w, 403, "permission_error", "not permitted")
 			return
 		}

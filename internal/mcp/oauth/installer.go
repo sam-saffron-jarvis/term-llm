@@ -76,12 +76,13 @@ func (c *Coordinator) cancelFlows() {
 	}
 	c.mu.Unlock()
 	for id, endpoint := range pending {
-		c.Cancel(endpoint, id)
+		c.cancelFlow(endpoint, id, true)
 	}
 }
 
-// ForgetInstallation cancels one linked installation's pending sign-in and
-// deletes its local account without contacting the provider.
+// ForgetInstallation fences sign-in writes, including after callback delivery,
+// and deletes the installer's canonical endpoint account without contacting the
+// provider. Installations at that same resource share the account and flow.
 func ForgetInstallation(ctx context.Context, id, endpoint string) error {
 	if id == "" {
 		return nil
@@ -92,7 +93,7 @@ func ForgetInstallation(ctx context.Context, id, endpoint string) error {
 		flowID := c.byEndpoint[canonical]
 		c.mu.Unlock()
 		if flowID != "" {
-			c.Cancel(canonical, flowID)
+			c.cancelFlow(canonical, flowID, true)
 		}
 	}
 	return c.Logout(ctx, endpoint, true)

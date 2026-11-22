@@ -74,35 +74,35 @@ func OpenGrantStore(path string) (*GrantStore, error) {
 	if err := ensurePrivateDir(filepath.Dir(path)); err != nil {
 		return nil, err
 	}
-	if _, err := s.load(); err != nil {
+	if _, _, err := s.load(); err != nil {
 		return nil, err
 	}
 	return s, nil
 }
 func (s *GrantStore) Path() string { return s.path }
-func (s *GrantStore) load() (grantFile, error) {
-	data, err := readPrivateFile(s.path)
+func (s *GrantStore) load() (grantFile, fs.FileInfo, error) {
+	data, info, err := readPrivateFileInfo(s.path)
 	if isNotExist(err) {
-		return grantFile{V: StateVersion}, nil
+		return grantFile{V: StateVersion}, nil, nil
 	}
 	if err != nil {
-		return grantFile{}, fmt.Errorf("load grants: %w", err)
+		return grantFile{}, nil, fmt.Errorf("load grants: %w", err)
 	}
 	var f grantFile
 	if err := json.Unmarshal(data, &f); err != nil {
-		return grantFile{}, fmt.Errorf("decode grants %s: %w", s.path, err)
+		return grantFile{}, nil, fmt.Errorf("decode grants %s: %w", s.path, err)
 	}
 	if f.V != StateVersion {
-		return grantFile{}, fmt.Errorf("grants %s: unsupported state version %d", s.path, f.V)
+		return grantFile{}, nil, fmt.Errorf("grants %s: unsupported state version %d", s.path, f.V)
 	}
-	return f, nil
+	return f, info, nil
 }
 func (s *GrantStore) update(fn func(*grantFile) error) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.cachedAs = nil
 	return withFileLock(s.path, func() error {
-		f, err := s.load()
+		f, _, err := s.load()
 		if err != nil {
 			return err
 		}
@@ -122,20 +122,19 @@ func (s *GrantStore) update(fn func(*grantFile) error) error {
 func (s *GrantStore) read() (grantFile, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if info, err := os.Lstat(s.path); err == nil && s.cachedAs != nil && sameGrantFile(s.cachedAs, info) && s.cachedAt.Sub(info.ModTime()) > grantCacheRacyWindow {
+	if info, err := os.Lstat(s.path); err == nil && s.cachedAs != nil && sameGrantFile(s.cachedAs, info) && checkPrivateFile(s.path, info) == nil && s.cachedAt.Sub(info.ModTime()) > grantCacheRacyWindow {
 		return grantFile{V: s.cached.V, Grants: slices.Clone(s.cached.Grants)}, nil
 	}
 	s.cachedAs = nil
 	var f grantFile
 	err := withFileLock(s.path, func() error {
 		var err error
-		if f, err = s.load(); err != nil {
-			return err
-		}
-		if info, err := os.Lstat(s.path); err == nil { // Writers hold this lock.
+		var info fs.FileInfo
+		f, info, err = s.load()
+		if err == nil && info != nil {
 			s.cached, s.cachedAs, s.cachedAt = grantFile{V: f.V, Grants: slices.Clone(f.Grants)}, info, time.Now()
 		}
-		return nil
+		return err
 	})
 	return f, err
 }

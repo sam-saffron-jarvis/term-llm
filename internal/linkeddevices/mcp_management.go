@@ -3,7 +3,9 @@ package linkeddevices
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"sync"
@@ -69,9 +71,9 @@ func (r *Runtime) mcpOpsLocked(id string) *sync.RWMutex {
 
 // disposeMCP removes a device's MCP installations and accounts. The caller
 // holds mcpDisposeMu (not mu) and has already ended the grant lifetime.
-func (r *Runtime) disposeMCP(ids ...string) {
+func (r *Runtime) disposeMCP(ids ...string) error {
 	if len(ids) == 0 {
-		return
+		return nil
 	}
 	r.mu.Lock()
 	ops := make([]*sync.RWMutex, len(ids))
@@ -83,9 +85,11 @@ func (r *Runtime) disposeMCP(ids ...string) {
 		lock.Lock()
 		defer lock.Unlock()
 	}
-	if err := mcp.DisposeInstallers(ids...); err != nil {
+	err := mcp.DisposeInstallers(ids...)
+	if err != nil {
 		r.setWarning(msgMCPDisposePending)
 	}
+	return err
 }
 
 // disposeUnmanagedMCP repairs an interrupted disposal at startup: only active
@@ -106,19 +110,30 @@ func (r *Runtime) disposeUnmanagedMCP() {
 	}
 }
 
-func (r *Runtime) grantIDsLocked() []string {
-	if r.grants == nil {
-		return nil
-	}
-	grants, err := r.grants.List()
+// resetMCP retains revoked grants as a durable cleanup journal until disposal
+// succeeds. Open the on-disk store even when loadState stopped at a target or
+// broker mismatch and never populated r.grants. Sharing is already stopped and
+// the caller holds lifecycleMu and mcpDisposeMu, but not mu.
+func (r *Runtime) resetMCP() error {
+	grants, err := pairing.OpenGrantStore(filepath.Join(r.dir, "devices.json"))
 	if err != nil {
-		return nil
+		return fmt.Errorf("open grants for reset: %w", err)
 	}
-	ids := make([]string, len(grants))
-	for i, g := range grants {
-		ids[i] = g.DeviceID
+	devices, err := grants.List()
+	if err != nil {
+		return fmt.Errorf("list grants for reset: %w", err)
 	}
-	return ids
+	ids := make([]string, 0, len(devices))
+	for _, g := range devices {
+		if err := grants.Revoke(g.DeviceID, r.opts.Now()); err != nil {
+			return fmt.Errorf("revoke grant for reset: %w", err)
+		}
+		ids = append(ids, g.DeviceID)
+	}
+	if err := r.disposeMCP(ids...); err != nil {
+		return fmt.Errorf("dispose MCP installations for reset: %w", err)
+	}
+	return nil
 }
 
 func (r *Runtime) cancelMCPLocked(id string) {

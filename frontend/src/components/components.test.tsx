@@ -9099,6 +9099,20 @@ describe('Preact-owned chat surfaces', () => {
       await userEvent.click(screen.getByRole('button', { name: 'Cancel' }));
       expect(store.copyMCPOAuthLink).toHaveBeenCalledWith('protected');
       expect(store.cancelMCPOAuth).toHaveBeenCalledWith('protected');
+
+      store.linkedDevicesMode.value = true;
+      store.linkedMCPManage.value = true;
+      expect(await screen.findByText('waiting for authorization…')).toBeVisible();
+      expect(screen.getByRole('link', { name: 'Open sign-in link' })).toBeVisible();
+      const flow = store.mcp.value.oauth!.protected;
+      store.mcp.value = {
+        ...store.mcp.value,
+        oauth: {
+          protected: { ...flow, state: 'failed', error: 'Authorization was not completed' },
+        },
+      };
+      expect(await screen.findByText('Authorization was not completed')).toBeVisible();
+      expect(screen.getByRole('button', { name: 'Retry' })).toBeVisible();
     },
   );
 

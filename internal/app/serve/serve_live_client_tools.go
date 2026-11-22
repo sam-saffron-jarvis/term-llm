@@ -789,7 +789,7 @@ func (d *serveLiveDelegator) continueWithPageTools(ctx context.Context, sessionI
 			return nil, ctx.Err()
 		}
 	}
-	runtime, _, err := d.server.runtimeForRequest(ctx, sessionID)
+	runtime, _, err := d.server.linkedRuntimeForRequest(linkedLiveContext(ctx, d.live), sessionID)
 	if errors.Is(err, errServeSessionBusy) {
 		return nil, errLivePageToolsSuperseded
 	}

@@ -31,6 +31,7 @@ type cmdRunnerOptions struct {
 	ShellAllow         []string
 	MCP                string
 	LoadMCPConfig      mcpstart.ConfigLoader
+	CheckMCPSelection  func(*mcpstart.PreparedSelection) error // before provider/tool preparation or MCP startup
 	SystemMessage      string
 	MaxTurns           int
 	DefaultMaxTurns    int

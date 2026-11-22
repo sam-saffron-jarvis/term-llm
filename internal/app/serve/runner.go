@@ -275,6 +275,11 @@ func (r *cmdRunner) prepare(ctx context.Context, req runpkg.Request, sink runpkg
 			return nil, err
 		}
 		settings.MCP = preparedMCP.Durable
+		if r.defaults.CheckMCPSelection != nil {
+			if err := r.defaults.CheckMCPSelection(preparedMCP); err != nil {
+				return nil, err
+			}
+		}
 	}
 	settings.SessionID = req.SessionID
 	if suffix := strings.TrimSpace(req.SystemSuffix); suffix != "" {

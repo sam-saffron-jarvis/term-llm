@@ -489,23 +489,6 @@ func (rt *serveRuntime) mcpSelectionReadyLocked(names []string) bool {
 	return true
 }
 
-func (s *serveServer) ensureRuntimeMCPForSession(ctx context.Context, sessionID string, rt *serveRuntime) error {
-	if s == nil || rt == nil {
-		return nil
-	}
-	if rt.hasActiveRun() || !rt.mu.TryLock() {
-		return errServeSessionBusy
-	}
-	defer rt.mu.Unlock()
-	if rt.hasActiveRun() {
-		return errServeSessionBusy
-	}
-	if err := s.applyPersistedMCPSelectionLocked(ctx, sessionID, rt); err != nil {
-		log.Printf("[serve] restore MCP selection failed for %s: %v", sessionID, err)
-	}
-	return nil
-}
-
 func runtimeProviderName(rt *serveRuntime) string {
 	if rt == nil {
 		return "unknown"

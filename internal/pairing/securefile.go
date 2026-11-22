@@ -47,39 +47,46 @@ var testHookAfterLstat func(path string)
 // same file that was inspected, so a swap between Lstat and Open is rejected.
 // A missing file returns fs.ErrNotExist.
 func readPrivateFile(path string) ([]byte, error) {
+	data, _, err := readPrivateFileInfo(path)
+	return data, err
+}
+
+// Return the opened file's identity with its bytes. On Windows, Lstat can
+// defer resolving file identity by path until a later call to SameFile.
+func readPrivateFileInfo(path string) ([]byte, fs.FileInfo, error) {
 	info, err := os.Lstat(path)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if err := checkPrivateFile(path, info); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if testHookAfterLstat != nil {
 		testHookAfterLstat(path)
 	}
 	f, err := openNoFollow(path)
 	if err != nil {
-		return nil, fmt.Errorf("open %s: %w", path, err)
+		return nil, nil, fmt.Errorf("open %s: %w", path, err)
 	}
 	defer f.Close()
 	opened, err := f.Stat()
 	if err != nil {
-		return nil, fmt.Errorf("stat %s: %w", path, err)
+		return nil, nil, fmt.Errorf("stat %s: %w", path, err)
 	}
 	if !os.SameFile(info, opened) {
-		return nil, fmt.Errorf("%s: file changed while opening", path)
+		return nil, nil, fmt.Errorf("%s: file changed while opening", path)
 	}
 	if err := checkPrivateFile(path, opened); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	data, err := io.ReadAll(io.LimitReader(f, maxStateFileBytes+1))
 	if err != nil {
-		return nil, fmt.Errorf("read %s: %w", path, err)
+		return nil, nil, fmt.Errorf("read %s: %w", path, err)
 	}
 	if len(data) > maxStateFileBytes {
-		return nil, fmt.Errorf("%s: file too large", path)
+		return nil, nil, fmt.Errorf("%s: file too large", path)
 	}
-	return data, nil
+	return data, opened, nil
 }
 
 func checkPrivateFile(path string, info fs.FileInfo) error {

@@ -57,6 +57,12 @@ func TestLinkedMCPSelectionPromotesWorkingTool(t *testing.T) {
 	if _, err := tool.Execute(t.Context(), json.RawMessage(`{"name":"test"}`)); err != nil {
 		t.Fatal(err)
 	}
+	list := func() *httptest.ResponseRecorder {
+		return peerMCPRequest(srv.handleSessionByID, "GET", "/v1/sessions/sample_session/mcp", "", "peer", false)
+	}
+	if w := list(); w.Code != 200 || !strings.Contains(w.Body.String(), `"status":"ready"`) {
+		t.Fatalf("active shared server: %d %s", w.Code, w.Body)
+	}
 	req := linkeddevices.WithDevicePrincipal(httptest.NewRequest("POST", "/v1/responses", nil), linkeddevices.DevicePrincipal{DeviceID: "peer", Scope: linkeddevices.ScopeWebV1})
 	peer, _ := linkeddevices.DeviceFromRequest(req)
 	guard := linkedMCPRunGuard(peer, rt, nil)
@@ -70,6 +76,9 @@ func TestLinkedMCPSelectionPromotesWorkingTool(t *testing.T) {
 		return nil
 	}); err != nil {
 		t.Fatal(err)
+	}
+	if w := list(); w.Code != 409 || strings.Contains(w.Body.String(), "sample") {
+		t.Fatalf("unshared active selection: %d %s", w.Code, w.Body)
 	}
 	if err := guard(&core.Request{}); err == nil {
 		t.Fatal("linked response accepted revoked selection")
@@ -135,5 +144,29 @@ func TestLinkedMCPManagerRemoteInstallIsolation(t *testing.T) {
 		if w.Code != tc.code || strings.Contains(w.Body.String(), "config") {
 			t.Fatalf("remove: %d %s", w.Code, w.Body)
 		}
+	}
+}
+
+func TestLinkedMCPExpiredGrantUsesOnlySharedView(t *testing.T) {
+	writeServeMCPConfig(t, map[string]mcp.ServerConfig{
+		"shared":       {Command: "unused", LinkedDevices: true},
+		"installation": {Type: "http", URL: "https://example.test", LinkedInstaller: "one"},
+	})
+	srv, _ := newServeMCPHandlerTestServer(t, newServeMCPTestStore(t))
+	lifetime, end := context.WithCancel(t.Context())
+	end()
+	get := func(path string, handler http.HandlerFunc) *httptest.ResponseRecorder {
+		req := httptest.NewRequest("GET", path, nil)
+		w := httptest.NewRecorder()
+		handler(w, linkeddevices.WithDevicePrincipal(req, linkeddevices.DevicePrincipal{
+			DeviceID: "one", Scope: linkeddevices.ScopeWebV1, ManageMCP: true, MCPGrantLifetime: lifetime,
+		}))
+		return w
+	}
+	if w := get("/v1/sessions/draft_test/mcp", srv.handleSessionByID); w.Code != 200 || !strings.Contains(w.Body.String(), `"shared"`) || strings.Contains(w.Body.String(), `"installation"`) {
+		t.Fatalf("expired selection: %d %s", w.Code, w.Body)
+	}
+	if w := get("/v1/mcp/oauth/flows/test", srv.handleMCPOAuthFlow); w.Code != 403 {
+		t.Fatalf("expired flow lookup: %d", w.Code)
 	}
 }

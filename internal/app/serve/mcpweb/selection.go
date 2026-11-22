@@ -24,14 +24,20 @@ type linkedMCPServer struct {
 	CanRemove          bool   `json:"can_remove,omitempty"`
 }
 
-func WriteSelection(w http.ResponseWriter, mgr *mcp.Manager, setting, installer, publicURL string) {
+func WriteSelection(w http.ResponseWriter, mgr, live *mcp.Manager, setting, installer, publicURL string) {
 	selected := mcpstart.ParseServerList(setting)
+	if live != nil {
+		selected = append(selected, live.EnabledServers()...)
+	}
 	enabled := []string{}
 	servers := []linkedMCPServer{}
 	config := mgr.Config()
 	loginAvailable := PublicCallback(publicURL)
 	for _, name := range mgr.LinkedDeviceServers(installer) {
-		status, _ := mgr.ServerStatus(name)
+		status := mcp.StatusStopped
+		if live != nil {
+			status, _ = live.ServerStatus(name)
+		}
 		if slices.Contains(selected, name) {
 			enabled = append(enabled, name)
 		}
@@ -42,7 +48,7 @@ func WriteSelection(w http.ResponseWriter, mgr *mcp.Manager, setting, installer,
 			auth := mcpoauth.ForInstaller(installer).Status(cfg.URL)
 			view.AuthState = string(auth.State)
 			view.CanSignIn = loginAvailable && auth.CanSignIn
-			view.HostCallbackNeeded = !loginAvailable
+			view.HostCallbackNeeded = !loginAvailable && status == mcp.StatusAuthRequired
 		}
 		servers = append(servers, view)
 	}

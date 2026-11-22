@@ -28,6 +28,14 @@ type DevicePrincipal struct {
 	mcpOps   *sync.RWMutex // held for reading by management requests
 }
 
+// MCPInstaller returns the installer namespace only while the management grant is live.
+func (p DevicePrincipal) MCPInstaller() string {
+	if p.ManageMCP && p.MCPGrantLifetime != nil && p.MCPGrantLifetime.Err() == nil {
+		return p.DeviceID
+	}
+	return ""
+}
+
 // WithDevicePrincipal marks a request as admitted by the peer ingress. It is
 // intended only for Runtime's in-process dispatcher.
 func WithDevicePrincipal(r *http.Request, principal DevicePrincipal) *http.Request {

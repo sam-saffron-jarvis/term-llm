@@ -92,6 +92,7 @@ func newServeAgentRuntime(ctx context.Context, request serveRuntimeRequest, opts
 		approvalMode = *request.approvalMode
 	}
 	runner := &cmdRunner{baseCfg: opts.cfg, defaults: serveRuntimeRunnerDefaults(opts, request, approvalMode)}
+	runner.defaults.CheckMCPSelection = linkedMCPPreparationCheck(ctx)
 	runtimePlatform := runnerFirstNonEmpty(request.Platform, runpkg.PlatformWeb)
 	env, err := runner.prepare(ctx, runpkg.Request{
 		// Live session switching rejects child sessions in resolveLiveSwitchTarget;

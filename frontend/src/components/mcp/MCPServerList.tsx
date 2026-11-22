@@ -175,13 +175,15 @@ function AuthActions({ server }: { server: MCPServer }) {
   );
 }
 
-function rowMeta(server: MCPServer, oauth: MCPOAuthUIState | undefined): string {
+function rowMeta(server: MCPServer, oauth: MCPOAuthUIState | undefined, linked: boolean): string {
   if (oauth?.state === 'starting' || oauth?.state === 'pending')
-    return oauth.popupBlocked
+    return oauth.popupBlocked && !linked
       ? 'popup blocked — copy the sign-in link'
       : 'waiting for authorization…';
   if (oauth?.state === 'failed') return oauth.error || 'sign-in failed';
-  return mcpServerMeta(server);
+  if (!linked) return mcpServerMeta(server);
+  if (server.hostCallbackNeeded) return 'Sign-in requires an HTTPS public callback on the host';
+  return server.status === 'auth_required' && !server.canSignIn ? 'Sign in on the host' : '';
 }
 
 /** Dot + name + one muted line + actions + on/off switch. */
@@ -229,15 +231,7 @@ function ServerRow({ server, disabled }: { server: MCPServer; disabled: boolean 
   return (
     <SwitchRow
       name={server.name}
-      meta={
-        store.linkedDevicesMode.value
-          ? server.hostCallbackNeeded
-            ? 'Sign-in requires an HTTPS public callback on the host'
-            : server.status === 'auth_required' && !server.canSignIn
-              ? 'Sign in on the host'
-              : ''
-          : rowMeta(server, store.mcp.value.oauth?.[server.name])
-      }
+      meta={rowMeta(server, store.mcp.value.oauth?.[server.name], store.linkedDevicesMode.value)}
       tone={mcpServerTone(server)}
       checked={store.mcp.value.enabled.includes(server.name)}
       disabled={disabled}
