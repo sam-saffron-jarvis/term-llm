@@ -14,18 +14,9 @@ func ShapeCapabilities(response http.ResponseWriter, request *http.Request, payl
 	}
 	response.Header().Set("Cache-Control", "no-store")
 	payload["shell"] = map[string]any{"enabled": false, "reason": "not available through Linked devices"}
-	// Keep provider readiness and transport exactly as advertised by the host.
-	// Linked calls delegate only to the server, never to device/page tools.
-	voice := false
-	if advertised, ok := payload["live"].(map[string]any); ok {
-		live := make(map[string]any, len(advertised))
-		for key, value := range advertised {
-			live[key] = value
-		}
-		live["delegation_modes"] = []string{"server"}
-		voice, _ = live["enabled"].(bool)
-		payload["live"] = live
-	}
+	// Keep the provider's readiness, transport and delegation modes intact.
+	live, _ := payload["live"].(map[string]any)
+	voice, _ := live["enabled"].(bool)
 	// Preserve the host attachment policy and reference format; the peer client
 	// uploads in bounded chunks rather than through the ordinary upload route.
 	payload["linked_devices"] = map[string]any{
@@ -33,7 +24,7 @@ func ShapeCapabilities(response http.ResponseWriter, request *http.Request, payl
 		"transcript_sharing": false, "uploads": true, "voice": voice,
 		"mcp_manage": principal.ManageMCP,
 		"mcp":        true, "goals": true,
-		"push_notifications": false, "device_tools": false,
+		"push_notifications": false, "device_tools": true,
 	}
 }
 

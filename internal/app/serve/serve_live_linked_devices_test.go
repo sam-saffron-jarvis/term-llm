@@ -98,16 +98,13 @@ func TestLinkedLiveTurnChecksMCPBeforeCallingProvider(t *testing.T) {
 	}
 }
 
-func TestLinkedLiveStartRejectsDeviceAuthorityAndUnsupportedTransport(t *testing.T) {
+func TestLinkedLiveStartRejectsInvalidDeclarationsAndUnsupportedTransport(t *testing.T) {
 	cases := []struct {
 		name, provider, body string
 		lifetime             context.Context
 		want                 int
 	}{
-		{"client delegation", config.LiveProviderGemini, `{"audio_transport":"http_pcm","delegation_mode":"client"}`, context.Background(), http.StatusBadRequest},
-		{"context", config.LiveProviderGemini, `{"audio_transport":"http_pcm","delegation_context":"phone tools"}`, context.Background(), http.StatusBadRequest},
-		{"blank context", config.LiveProviderGemini, `{"audio_transport":"http_pcm","delegation_context":" "}`, context.Background(), http.StatusBadRequest},
-		{"client tools", config.LiveProviderGemini, `{"audio_transport":"http_pcm","client_tools":[{"type":"function","name":"device_shell","parameters":{"type":"object"}}]}`, context.Background(), http.StatusBadRequest},
+		{"context in server mode", config.LiveProviderGemini, `{"audio_transport":"http_pcm","delegation_context":"phone tools"}`, context.Background(), http.StatusBadRequest},
 		{"invalid tools", config.LiveProviderGemini, `{"audio_transport":"http_pcm","client_tools":[null]}`, context.Background(), http.StatusBadRequest},
 		{"websocket", config.LiveProviderGemini, `{"audio_transport":"websocket_pcm"}`, context.Background(), http.StatusBadRequest},
 		{"implicit websocket", config.LiveProviderGemini, `{}`, context.Background(), http.StatusBadRequest},
@@ -171,7 +168,7 @@ func TestLinkedLiveCapabilityReflectsReadinessAndTransport(t *testing.T) {
 				}
 				caps := payload["live"].(map[string]any)
 				linked := payload["linked_devices"].(map[string]any)
-				if caps["enabled"] != (state == "ready") || linked["voice"] != caps["enabled"] || caps["transport"] != owner["transport"] || caps["provider"] != owner["provider"] || !reflect.DeepEqual(caps["delegation_modes"], []any{"server"}) {
+				if caps["enabled"] != (state == "ready") || linked["voice"] != caps["enabled"] || caps["transport"] != owner["transport"] || caps["provider"] != owner["provider"] || !reflect.DeepEqual(caps["delegation_modes"], []any{"server", "client"}) {
 					t.Fatalf("linked = %v, live = %v, owner = %v", linked, caps, owner)
 				}
 			})
@@ -193,6 +190,7 @@ func TestLinkedLiveHandlerBoundariesDenyOwnerAndOtherDeviceCalls(t *testing.T) {
 			"": http.MethodDelete, "/events": http.MethodGet, "/audio/output": http.MethodGet,
 			"/audio/input": http.MethodPost, "/diagnostics": http.MethodPost,
 			"/text": http.MethodPost, "/session": http.MethodPost,
+			"/client_tools": http.MethodPost, "/tool_calls/r1/result": http.MethodPost, "/delegations/d1/result": http.MethodPost,
 		} {
 			response := httptest.NewRecorder()
 			srv.httpHandler().ServeHTTP(response, linkedLiveRequest(method, "/chat/v1/live/sessions/"+record.id+path, `{}`, "device-a", context.Background()))
@@ -214,10 +212,10 @@ func TestLinkedLiveHandlerBoundariesDenyOwnerAndOtherDeviceCalls(t *testing.T) {
 	}
 }
 
-func TestLinkedLiveHandlerBoundariesDenyToolsWebSocketAndAliases(t *testing.T) {
+func TestLinkedLiveHandlerBoundariesDenyWebSocketAndAliases(t *testing.T) {
 	srv, _, _ := newLinkedLiveTestServer(t, config.LiveProviderGemini)
 	for _, path := range []string{
-		"/live_own/audio", "/live_own/client_tools", "/live_own/delegations/d1/result", "/live_own/tool_calls/t1/result",
+		"/live_own/audio", "/live_own/client_tools/extra", "/live_own/delegations/d1/x/result", "/live_own/tool_calls/t1/other",
 		"/live_own/text/", "/live_own/extra/text", "/live_own/events/", "/live_own/", "/live_own/audio/output/extra",
 		"/live_bad.id/text", "/live_%6fwn/text",
 	} {
@@ -401,5 +399,63 @@ func TestLinkedLiveRevocationCancelsProviderStartup(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("revocation did not promptly cancel provider startup")
+	}
+}
+
+func TestLinkedLiveClientToolAndDelegationResults(t *testing.T) {
+	for _, mode := range []string{"server", "client"} {
+		t.Run(mode, func(t *testing.T) {
+			srv, _, _ := newLinkedLiveTestServer(t, config.LiveProviderGemini)
+			lifetime, revoke := context.WithCancel(t.Context())
+			defer revoke()
+			body := `{"session_id":"linked-tools","audio_transport":"http_pcm","client_tools":[` + string(pageToolDefinition("webmcp__ping")) + `]}`
+			if mode == "client" {
+				body = `{"session_id":"linked-tools","audio_transport":"http_pcm","delegation_mode":"client","delegation_context":"phone tools"}`
+			}
+			w := httptest.NewRecorder()
+			srv.handleLiveSessions(w, linkedLiveRequest(http.MethodPost, "/v1/live/sessions", body, "phone", lifetime))
+			var started map[string]any
+			if err := json.Unmarshal(w.Body.Bytes(), &started); err != nil || w.Code != http.StatusOK || started["delegation_mode"] != mode {
+				t.Fatalf("start = %d %s: %v", w.Code, w.Body.String(), err)
+			}
+			record, ok := srv.lookupLiveSession(stringValue(started["live_id"]))
+			if !ok {
+				t.Fatal("call was not registered")
+			}
+			post := func(device, path, body string, want int) {
+				t.Helper()
+				response := httptest.NewRecorder()
+				srv.httpHandler().ServeHTTP(response, linkedLiveRequest(http.MethodPost, "/chat/v1/live/sessions/"+record.id+path, body, device, lifetime))
+				if response.Code != want {
+					t.Fatalf("peer %s %s = %d %s", device, path, response.Code, response.Body.String())
+				}
+			}
+			var done <-chan struct{}
+			var err error
+			var action, answer string
+			if mode == "server" {
+				if len(record.declaredClientTools()) != 1 {
+					t.Fatal("start did not register the page tool")
+				}
+				post("phone", "/client_tools", `{"tools":[`+string(pageToolDefinition("webmcp__device_info"))+`]}`, http.StatusOK)
+				done, err = record.beginClientToolRequest("round", "linked-tools", "resp_voice", []liveClientToolCall{{CallID: "call_phone", Name: "webmcp__device_info"}})
+				action, answer = "/tool_calls/round/result", `{"outputs":[{"call_id":"call_phone","output":"pong"}]}`
+			} else {
+				done, err = record.beginClientDelegation("round", "linked-tools", "ping the phone")
+				action, answer = "/delegations/round/result", `{"output":"pong"}`
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			post("other-phone", action, answer, http.StatusNotFound)
+			post("phone", action, answer, http.StatusOK)
+			select {
+			case <-done:
+			default:
+				t.Fatal("result did not release the Live waiter")
+			}
+			revoke()
+			post("phone", action, answer, http.StatusNotFound)
+		})
 	}
 }

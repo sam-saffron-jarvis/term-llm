@@ -14,11 +14,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/term-llm/term-llm/internal/linkeddevices"
 	"github.com/term-llm/term-llm/internal/llm/core"
 	"github.com/term-llm/term-llm/internal/llm/engine"
 )
 
 type typedInlinePageProvider struct {
+	callID string
 	result chan core.ToolExecutionResponse
 }
 
@@ -31,7 +33,11 @@ func (p *typedInlinePageProvider) Stream(ctx context.Context, req core.Request) 
 	stream := &pendingTestStream{events: make(chan core.Event)}
 	go func() {
 		defer close(stream.events)
-		call := core.ToolCall{ID: "call_phone", Name: "webmcp__ping", Arguments: json.RawMessage(`{"message":"hello"}`)}
+		id := p.callID
+		if id == "" {
+			id = "call_phone"
+		}
+		call := core.ToolCall{ID: id, Name: "webmcp__ping", Arguments: json.RawMessage(`{"message":"hello"}`)}
 		response := make(chan core.ToolExecutionResponse, 1)
 		select {
 		case stream.events <- core.Event{Type: core.EventToolCall, Tool: &call, ToolResponse: response}:
@@ -173,9 +179,12 @@ func TestTypedInlinePageToolCancellationAndScope(t *testing.T) {
 	if !ok || len(pending) != 1 || pending[0]["call_id"] != "call/scoped" || pending[0]["name"] != "webmcp__ping" || pending[0]["arguments"] != "{}" {
 		t.Fatalf("recovery snapshot pending inline tools = %#v", pending)
 	}
-	post := func(id, callID, body string) int {
+	post := func(id, callID, body string, devices ...linkeddevices.DevicePrincipal) int {
 		req := httptest.NewRequest(http.MethodPost, "/v1/responses/"+id+"/client_tool_calls/"+url.PathEscape(callID)+"/result", strings.NewReader(body))
 		req.Header.Set("Content-Type", "application/json")
+		if len(devices) != 0 {
+			req = linkeddevices.WithDevicePrincipal(req, devices[0])
+		}
 		rr := httptest.NewRecorder()
 		srv.handleResponseByID(rr, req)
 		return rr.Code
@@ -185,6 +194,10 @@ func TestTypedInlinePageToolCancellationAndScope(t *testing.T) {
 	}
 	if code := post(run.id, "call_other", `{"output":"wrong"}`); code != http.StatusNotFound {
 		t.Fatalf("other call status %d", code)
+	}
+	peer := linkeddevices.DevicePrincipal{DeviceID: "phone", Scope: linkeddevices.ScopeWebV1, Lifetime: t.Context()}
+	if code := post(run.id, "call/scoped", `{"output":"wrong"}`, peer); code != http.StatusNotFound {
+		t.Fatalf("linked device answered an owner run: %d", code)
 	}
 	if code := post(run.id, "call/scoped", `{"output":"pong"}`); code != http.StatusOK {
 		t.Fatalf("answer status %d", code)
@@ -270,4 +283,100 @@ func TestTypedInlinePageToolCancellationAndScope(t *testing.T) {
 		t.Fatalf("cancelled result status %d", code)
 	}
 	cancel()
+}
+
+func TestLinkedTypedInlineToolOverPeer(t *testing.T) {
+	for _, action := range []string{"answer", "disconnect"} {
+		t.Run(action, func(t *testing.T) {
+			provider := &typedInlinePageProvider{callID: "call/phone", result: make(chan core.ToolExecutionResponse, 1)}
+			var srv *serveServer
+			client, closeFixture := mountedPeerServeFixture(t, "/deep/mount", func(s *serveServer) {
+				srv = s
+				s.sessionMgr = newServeSessionManager(time.Minute, 8, func(context.Context) (*serveRuntime, error) {
+					rt := &serveRuntime{provider: provider, providerKey: provider.Name(), engine: engine.NewEngine(provider, nil), defaultModel: "mock-model", maxTurns: 4}
+					rt.Touch()
+					return rt, nil
+				})
+			})
+			defer closeFixture()
+			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+			defer cancel()
+			body := `{"input":"ping my phone","client_message_id":"linked-inline-1","stream":true,"tools":[{"type":"function","name":"webmcp__ping","parameters":{"type":"object"}}]}`
+			r, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://peer/deep/mount/v1/responses", strings.NewReader(body))
+			if err != nil {
+				t.Fatal(err)
+			}
+			r.Header.Set("Content-Type", "application/json")
+			r.Header.Set("X-Term-LLM-UI-Version", "test")
+			resp, err := client.Do(r)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer resp.Body.Close()
+			id := resp.Header.Get("x-response-id")
+			if resp.StatusCode != http.StatusOK || id == "" {
+				b, _ := io.ReadAll(resp.Body)
+				t.Fatalf("start = %d %s", resp.StatusCode, b)
+			}
+			callID := readLinkedInlineCall(t, resp.Body)
+			path := "/deep/mount/v1/responses/" + id + "/client_tool_calls/" + url.PathEscape(callID) + "/result"
+			run, ok := srv.ensureResponseRuns().get(id)
+			if !ok || run.linkedDeviceID == "" {
+				t.Fatal("response has no verified peer origin")
+			}
+			assertDenied := func(device string, lifetime context.Context) {
+				t.Helper()
+				r := linkedLiveRequest(http.MethodPost, path, `{"output":"not this device"}`, device, lifetime)
+				r.Header.Set("Content-Type", "application/json")
+				w := httptest.NewRecorder()
+				srv.httpHandler().ServeHTTP(w, r)
+				if w.Code != http.StatusNotFound {
+					t.Fatalf("device %q answer = %d: %s", device, w.Code, w.Body.String())
+				}
+			}
+			assertDenied("another-device", t.Context())
+			revoked, revoke := context.WithCancel(t.Context())
+			revoke()
+			assertDenied(run.linkedDeviceID, revoked)
+			if action == "answer" {
+				assertPeerResponse(t, client, http.MethodPost, path, strings.NewReader(`{"output":"linked pong"}`), http.StatusOK, "application/json", `"ok":true`)
+			} else {
+				closeFixture()
+			}
+			select {
+			case result := <-provider.result:
+				if action == "answer" && !strings.Contains(result.Result.Content, "linked pong") {
+					t.Fatalf("device output did not reach the provider: %+v", result)
+				}
+				if action == "disconnect" && !errors.Is(result.Err, context.Canceled) && !result.Result.IsError {
+					t.Fatalf("disconnect did not fail the tool: %+v", result)
+				}
+			case <-ctx.Done():
+				t.Fatal("provider still waiting for linked device")
+			}
+		})
+	}
+}
+
+func readLinkedInlineCall(t *testing.T, body io.Reader) string {
+	t.Helper()
+	scanner := bufio.NewScanner(body)
+	for {
+		name, data, ok := readSSEEvent(t, scanner)
+		if !ok {
+			t.Fatal("stream ended before linked inline call")
+		}
+		if name != "response.client_tool.requested" {
+			continue
+		}
+		var payload struct {
+			CallID     string `json:"call_id"`
+			Name       string `json:"name"`
+			Foreground bool   `json:"foreground_only"`
+		}
+		if err := json.Unmarshal([]byte(data), &payload); err != nil || payload.CallID == "" || payload.Name != "webmcp__ping" || !payload.Foreground {
+			t.Fatalf("linked tool event = %s: %v", data, err)
+		}
+		return payload.CallID
+	}
 }

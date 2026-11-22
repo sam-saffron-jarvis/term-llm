@@ -47,6 +47,7 @@ func (s *serveServer) streamResponseRun(ctx context.Context, w http.ResponseWrit
 	if options.runtimeSetup == nil {
 		options.runtimeSetup = serveRuntimeSetupFromContext(ctx)
 	}
+	options.linkedDeviceID = linkedRuntimePrincipal(ctx).DeviceID
 	options.effortChange, _ = ctx.Value(responseEffortChangeKey{}).(*responseEffortChange)
 	run, err := s.startResponseRun(runtime, stateful, replaceHistory, inputMessages, llmReq, sessionID, options)
 	if err != nil {

@@ -202,6 +202,12 @@ export class AppStore {
   readonly linkedComposerActions = signal({ mcp: false, goals: false });
   readonly linkedDevicesMode = signal(false);
   readonly linkedMCPManage = signal(false);
+  /** The host explicitly granted this linked device its page (device) tools. */
+  readonly linkedDeviceTools = signal(false);
+  /** Page tools are offered to the owner, or to a linked device the host granted them. */
+  readonly pageToolsAllowed: ReadonlySignal<boolean> = computed(
+    () => !this.linkedDevicesMode.value || this.linkedDeviceTools.value,
+  );
   readonly startup = signal('Loading your chat shell…');
   readonly startupFailed = signal(false);
   readonly startupDone = signal(false);
@@ -466,7 +472,10 @@ export class AppStore {
     });
     this.mcp = this.mcpStore.state;
     this.mcpRemoved = this.mcpStore.removed;
-    this.webMCP = new WebMCPStore(this.services);
+    this.webMCP = new WebMCPStore(this.services, undefined, {
+      allowed: this.pageToolsAllowed,
+      linked: this.linkedDevicesMode,
+    });
     this.webMCP.start();
     this.webMCPEnabled = computed(() => this.webMCP.enabledFor(this.mcpSessionId()));
     this.worktreeStore = new WorktreeStore(this.services, {
@@ -1395,6 +1404,10 @@ export class AppStore {
       this.config.linkedDevicesScope === 'web-v1' || linkedDevices?.active === true;
     this.linkedDevicesMode.value = linkedDevicesActive;
     this.linkedMCPManage.value = linkedDevicesActive && linkedDevices?.mcp_manage === true;
+    // Only an explicit grant; an absent or malformed flag keeps the legacy
+    // fail-closed profile, and a refresh that drops it revokes it.
+    const deviceTools = linkedDevicesActive && linkedDevices?.device_tools === true;
+    this.linkedDeviceTools.value = deviceTools;
     const projects =
       data.projects && typeof data.projects === 'object'
         ? (data.projects as Record<string, unknown>)
@@ -1410,8 +1423,9 @@ export class AppStore {
     this.sessionStore.applyCapabilities(projectsEnabled, worktreesEnabled);
     this.shellStore.enabled.value = recordValue(data.shell)?.enabled === true;
     // A web-v1 peer is host-executed only even if the live map omits or
-    // overstates its delegation modes: the profile itself removes device tools.
-    this.liveStore.applyCapability(data.live, { linkedDevices: linkedDevicesActive });
+    // overstates its delegation modes, unless the host explicitly granted
+    // device tools: the profile itself removes them otherwise.
+    this.liveStore.applyCapability(data.live, { linkedDevices: linkedDevicesActive, deviceTools });
     const admission = recordValue(data.response_admission);
     this.runEngine.admissionInstance.value =
       admission?.version === 1 && typeof admission.instance_id === 'string'

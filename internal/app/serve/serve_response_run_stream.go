@@ -202,73 +202,6 @@ func (s *serveServer) steeringAttachmentsForEvent(msg core.Message) []map[string
 	return out
 }
 
-func (s *serveServer) storeCompletedResponseRun(runtime *serveRuntime, sessionID, previousResponseID, model string, created int64, result serveRunResult, resetResponseIDsOnSuccess bool) (string, error) {
-	mgr := s.ensureResponseRuns()
-
-	respID := "resp_" + randomSuffix()
-	run := newResponseRun(respID, sessionID, previousResponseID, model, created, nil)
-	s.configureResponseRunRevision(run, sessionID)
-	if err := mgr.create(run); err != nil {
-		return "", err
-	}
-
-	cleanup := func() {
-		mgr.delete(respID)
-	}
-	createdResponse := map[string]any{
-		"id":      respID,
-		"object":  "response",
-		"created": created,
-		"model":   model,
-		"status":  "in_progress",
-	}
-	if err := run.appendEvent("response.created", map[string]any{
-		"response": createdResponse,
-	}); err != nil {
-		cleanup()
-		return "", err
-	}
-	if result.Text.Len() > 0 {
-		if err := run.appendTextDeltaSegmentEvent(0, 0, result.Text.String()); err != nil {
-			cleanup()
-			return "", err
-		}
-	}
-	durableID := s.latestDurableResponseIDForSessionBestEffort(context.Background(), sessionID)
-	completedID := respID
-	if durableID != "" {
-		completedID = durableID
-	}
-	completedResponse := map[string]any{
-		"id":            completedID,
-		"object":        "response",
-		"created":       created,
-		"model":         model,
-		"status":        "completed",
-		"usage":         usagePayload(result.Usage),
-		"session_usage": usagePayload(result.SessionUsage),
-		"context_usage": result.ContextUsage,
-		// The client tool calls this response stopped on; authoritative even when empty.
-		"pending_client_calls": pendingClientCallsPayload(result.PendingClientCalls()),
-	}
-	if err := run.complete(map[string]any{
-		"response": completedResponse,
-	}, result.Usage, result.SessionUsage); err != nil {
-		cleanup()
-		return "", err
-	}
-
-	mgr.scheduleCleanup(respID)
-	if resetResponseIDsOnSuccess {
-		s.unregisterSessionResponseIDs(sessionID)
-	}
-	if completedID != respID {
-		s.registerResponseID(runtime, respID, sessionID)
-	}
-	s.registerResponseID(runtime, completedID, sessionID)
-	return completedID, nil
-}
-
 func (s *serveServer) streamFailedResponseRun(ctx context.Context, w http.ResponseWriter, sessionID, previousResponseID, model, errType, errMessage string) {
 	mgr := s.ensureResponseRuns()
 
@@ -778,6 +711,7 @@ func (s *serveServer) startResponseRun(runtime *serveRuntime, stateful bool, rep
 	}()
 	cancel := runTimer.stop
 	run := newResponseRun(respID, sessionID, options.previousResponseID, model, created, cancel)
+	run.linkedDeviceID = options.linkedDeviceID
 	if options.resume != nil {
 		run = restoreWebRun(options.resume, cancel)
 		created = run.created

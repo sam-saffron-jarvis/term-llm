@@ -387,8 +387,8 @@ type liveToolCallOutput struct {
 }
 
 // handleLiveToolCallsResult accepts the client's results for one round of page
-// tool calls. Authorization is the serve bearer token, as for every live route;
-// the request id is correlation, not a capability. Replays follow the delegation
+// tool calls. The Live router enforces peer ownership; the request ID is
+// correlation, not a capability. Replays follow the delegation
 // result contract: an identical one is a duplicate, a different one a conflict.
 func (s *serveServer) handleLiveToolCallsResult(w http.ResponseWriter, r *http.Request, liveID, requestID string) {
 	if r.Method != http.MethodPost {

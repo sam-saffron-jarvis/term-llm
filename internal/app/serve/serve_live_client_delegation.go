@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/term-llm/term-llm/internal/linkeddevices"
 	"github.com/term-llm/term-llm/internal/live"
 )
 
@@ -219,6 +220,9 @@ func (d *serveLiveClientDelegator) Run(ctx context.Context, request live.Delegat
 		// match one. Fail loudly rather than publish a request nobody can answer.
 		return errors.New("the voice delegation has no identifier the device can answer")
 	}
+	if d.live.linkedOwner != nil {
+		delegationID = linkeddevices.ToolResultID(delegationID)
+	}
 	sessionID := d.live.boundSession()
 	if sessionID == "" {
 		return errors.New("the live call is not bound to a chat session")
@@ -286,10 +290,8 @@ type liveDelegationResultRequest struct {
 
 // handleLiveDelegationResult accepts one client-executed delegation result.
 //
-// Authorization is the serve bearer token, applied by the same middleware as
-// every other live route. live_id and delegation_id are correlation, not
-// capabilities: delegation ids come from the provider and are broadcast on the
-// call's SSE stream, so treating one as a secret would be false comfort.
+// The Live router enforces peer ownership. The IDs correlate the result; they
+// are not credentials.
 func (s *serveServer) handleLiveDelegationResult(w http.ResponseWriter, r *http.Request, liveID, delegationID string) {
 	if r.Method != http.MethodPost {
 		w.Header().Set("Allow", http.MethodPost)

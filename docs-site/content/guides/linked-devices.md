@@ -39,9 +39,11 @@ taken or retrieve information already disclosed.
 
 Direct and linked chats offer the same **+** actions: files, photos, current location, goals, [MCP servers](/guides/mcp-servers/), and Worktrees on supported Git projects. Sharing location requires device permission and adds editable coordinates to the current unsent draft. Attachments transfer in chunks. The host grants MCP management per device.
 
-Live voice follows the host’s provider and transport. PCM uses streamed HTTP/SSE and bounded microphone posts; WebRTC providers retain their signaling path. Calls use server-owned tools, require microphone permission, and end when the device disconnects or is revoked.
+Compatible pages and apps can share device tools in typed chat and Live. On the native app, enable **Share device tools**, then turn on page tools for the conversation in the **MCP** dialog. The host advertises support as `linked_devices.device_tools`; older hosts leave these tools hidden. A linked device can answer tool calls only for responses and Live calls it started. Inline tool requests are tied to the original response stream and do not get replayed as runnable requests after it ends.
 
-Pairing does not grant general administration, shell access, jobs, push, transcript publishing, extension management, or unrestricted access to workspace files. Dictation uploads, WebSocket voice, and client-owned Live tools remain unavailable. The route allowlist is not a tool sandbox.
+Live voice follows the host’s provider and transport. PCM uses streamed HTTP/SSE and bounded microphone posts; WebRTC providers retain their signaling path. Calls require microphone permission and end when the device disconnects or is revoked. The same Live delegation modes and declaration validation apply as for direct connections.
+
+Pairing does not grant general administration, shell access, jobs, push, transcript publishing, extension management, or unrestricted access to workspace files. Dictation uploads and WebSocket voice remain unavailable. The route allowlist is not a tool sandbox.
 
 The agent and sharing runtime run as the same OS user. In the standard contained
 agent the agent also has passwordless sudo, runs with `--yolo`, and can read the

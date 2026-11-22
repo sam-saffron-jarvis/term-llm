@@ -107,29 +107,40 @@ export interface LiveSessionChange {
 
 /**
  * How this page is admitted. `linkedDevices` is the top-level web-v1 peer
- * profile, which is host-executed only: it can never declare page tools or run
- * device tool rounds, whatever else is advertised.
+ * profile, which is host-executed only unless the host explicitly advertised
+ * `linked_devices.device_tools` (`deviceTools`): without that flag it can never
+ * declare page tools or run device tool rounds, whatever else is advertised.
  */
 export interface LiveCapabilityOptions {
   linkedDevices?: boolean;
+  deviceTools?: boolean;
 }
 
 /**
  * Whether the host lets the authenticated page run delegated turns itself.
  *
  * The server advertises `delegation_modes` with the live capability. A web-v1
- * linked device is host-executed only: the host keeps `"server"` and omits
- * `"client"`, and it rejects page-tool declarations, tool-round results, and
- * device tools. That restriction is also forced by the caller's linked-device
- * profile, so an omitted or over-broad mode list cannot re-enable device
- * authority. Without either signal, ordinary mode allows client delegation.
+ * linked device is host-executed only by default: the host keeps `"server"` and
+ * omits `"client"`, and it rejects page-tool declarations, tool-round results,
+ * and device tools. That restriction is also forced by the caller's
+ * linked-device profile, so an omitted or over-broad mode list cannot re-enable
+ * device authority. A linked device gains client delegation only with both the
+ * explicit `device_tools` grant and an advertised `"client"` mode; an omitted
+ * list does not count. Ordinary mode allows client delegation unless the
+ * advertised modes exclude it.
  */
 function clientDelegationOffered(
   capability: Record<string, unknown> | undefined,
   options: LiveCapabilityOptions,
 ): boolean {
-  if (options.linkedDevices) return false;
   const modes = capability?.delegation_modes;
+  if (options.linkedDevices) {
+    return (
+      options.deviceTools === true &&
+      Array.isArray(modes) &&
+      modes.some((mode) => mode === 'client')
+    );
+  }
   if (!Array.isArray(modes)) return true;
   return modes.some((mode) => mode === 'client');
 }

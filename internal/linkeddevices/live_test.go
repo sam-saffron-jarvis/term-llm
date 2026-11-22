@@ -19,6 +19,8 @@ func TestLinkedLiveRouteAllowlist(t *testing.T) {
 		id + "/events": http.MethodGet, id + "/audio/output": http.MethodGet,
 		id + "/audio/input": http.MethodPost, id + "/diagnostics": http.MethodPost,
 		id + "/text": http.MethodPost, id + "/session": http.MethodPost,
+		id + "/client_tools": http.MethodPost, id + "/tool_calls/call_1/result": http.MethodPost,
+		id + "/delegations/d1/result": http.MethodPost,
 	}
 	for path, wantMethod := range allowed {
 		for _, method := range []string{http.MethodGet, http.MethodHead, http.MethodPost, http.MethodDelete, http.MethodPut, http.MethodPatch, http.MethodOptions} {
@@ -34,7 +36,8 @@ func TestLinkedLiveRouteAllowlist(t *testing.T) {
 		root + "/" + strings.Repeat("x", 129) + "/events",
 		id + "/", id + "/events/", id + "//events", id + "/extra/events",
 		id + "/audio", id + "/audio/", id + "/audio/input/extra", id + "/audio/output/extra",
-		id + "/client_tools", id + "/tool_calls/call_1/result", id + "/delegations/d1/result",
+		id + "/client_tools/extra", id + "/tool_calls//result", id + "/delegations/d1/nested/result",
+		id + "/tool_calls/call_1/result/", id + "/delegations/../result",
 		id + "/text/extra", id + "/session/extra", id + "/diagnostics/extra", "/v1/lives/sessions",
 	}
 	for _, path := range denied {
@@ -65,11 +68,11 @@ func TestShapeCapabilitiesPreservesActualLinkedLive(t *testing.T) {
 						t.Errorf("%s = %v, want %v", key, live[key], original[key])
 					}
 				}
-				if !reflect.DeepEqual(live["delegation_modes"], []string{"server"}) || !reflect.DeepEqual(original["delegation_modes"], []string{"server", "client"}) {
+				if !reflect.DeepEqual(live["delegation_modes"], []string{"server", "client"}) {
 					t.Fatalf("delegation modes = %v; original = %v", live, original)
 				}
 				linked := payload["linked_devices"].(map[string]any)
-				if linked["voice"] != enabled || linked["device_tools"] != false || linked["uploads"] != true || response.Header().Get("Cache-Control") != "no-store" {
+				if linked["voice"] != enabled || linked["device_tools"] != true || linked["uploads"] != true || response.Header().Get("Cache-Control") != "no-store" {
 					t.Fatalf("linked capabilities = %v, headers = %v", linked, response.Header())
 				}
 			})

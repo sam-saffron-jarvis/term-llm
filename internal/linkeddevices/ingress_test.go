@@ -62,6 +62,12 @@ func TestRouteAllowedDefaultDeny(t *testing.T) {
 		{http.MethodPost, "/v1/responses", true},
 		{http.MethodGet, "/v1/responses/r1/events", true},
 		{http.MethodPost, "/v1/responses/r1/cancel", true},
+		{http.MethodPost, "/v1/responses/r1/client_tool_calls/call_1/result", true},
+		{http.MethodPatch, "/v1/responses/r1/client_tool_calls/call_1/result", false},
+		{http.MethodPost, "/v1/responses/r1/client_tool_calls/call_1/result/", false},
+		{http.MethodPost, "/v1/responses/r1/client_tool_calls//result", false},
+		{http.MethodPost, "/v1/responses//client_tool_calls/call_1/result", false},
+		{http.MethodPost, "/v1/responses/r1/extra/client_tool_calls/call_1/result", false},
 		// Idle script Stop intentionally has the same paired-device authority as response Stop.
 		{http.MethodGet, "/v1/sessions/s1/code-cells", true},
 		{http.MethodPost, "/v1/sessions/s1/code-cells/cancel", true},

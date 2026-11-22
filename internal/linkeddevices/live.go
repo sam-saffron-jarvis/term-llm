@@ -104,12 +104,6 @@ func ValidateLiveStart(r *http.Request, request LiveStartRequest, provider strin
 }
 
 func linkedLiveStartProblem(request LiveStartRequest, provider string) string {
-	if mode := strings.TrimSpace(request.DelegationMode); mode != "" && mode != "server" {
-		return "Linked devices require server-owned Live delegation"
-	}
-	if request.DelegationContext != "" || len(request.ClientTools) != 0 {
-		return "Linked devices cannot provide Live delegation context or client tools"
-	}
 	transport := request.AudioTransport
 	if provider == config.LiveProviderGemini {
 		if transport != "http_pcm" {
@@ -121,9 +115,8 @@ func linkedLiveStartProblem(request LiveStartRequest, provider string) string {
 	return ""
 }
 
-// AuthorizeLiveRequest is the handler boundary after peer ingress. It excludes
-// WebSocket and client-owned result/tool routes even with direct dispatch. The
-// host supplies only a call lookup; device ownership remains private here.
+// AuthorizeLiveRequest enforces the route policy and call ownership at the
+// handler boundary after peer ingress, including declarations and results.
 func AuthorizeLiveRequest(r *http.Request, lookup func(string) *LiveOwner) *LiveAdmissionError {
 	principal, linked := DeviceFromRequest(r)
 	if !linked {

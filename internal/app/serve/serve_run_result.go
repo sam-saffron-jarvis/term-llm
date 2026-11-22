@@ -2,6 +2,7 @@ package serve
 
 import (
 	"bytes"
+	"github.com/term-llm/term-llm/internal/app/serve/wire"
 
 	"github.com/term-llm/term-llm/internal/llm/core"
 )
@@ -17,10 +18,10 @@ type serveRunResult struct {
 	ContextUsage *serveContextUsage
 	// clientCalls tracks passthrough calls the final provider turn left for
 	// the caller to answer; see PendingClientCalls.
-	clientCalls pendingClientCallTracker
+	clientCalls wire.PendingClientCallTracker
 }
 
 // PendingClientCalls returns the client tool calls this run stopped on.
 func (r *serveRunResult) PendingClientCalls() []core.ToolCall {
-	return r.clientCalls.pending()
+	return r.clientCalls.Pending()
 }

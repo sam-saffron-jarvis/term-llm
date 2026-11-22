@@ -41,6 +41,18 @@ export interface ClientToolBridge {
   run(call: PendingClientCall, signal: AbortSignal): Promise<ClientToolResult>;
 }
 
+/**
+ * Who may use the page's tools. Both default to the owner profile: allowed and
+ * not linked. A linked device is allowed only when the host explicitly
+ * advertised device tools, and it never inherits the owner's remembered default.
+ */
+export interface WebMCPAccess {
+  allowed: ReadonlySignal<boolean>;
+  linked: ReadonlySignal<boolean>;
+}
+
+const OWNER_ACCESS: WebMCPAccess = { allowed: signal(true), linked: signal(false) };
+
 /** A conversation's own page-tools choice, oldest first. */
 type SessionChoice = [sessionId: string, enabled: boolean];
 
@@ -58,6 +70,11 @@ type SessionChoice = [sessionId: string, enabled: boolean];
  * becomes the default for new ones, remembered per browser and per Hub node.
  * A conversation keeps the choice it first sent with, so changing the default
  * never adds or removes tools in the middle of an older conversation.
+ *
+ * A linked device may use them only when the host advertised device tools
+ * (`access.allowed`). There the choice is strictly per conversation and off
+ * until the user turns it on: the owner's remembered default is neither read
+ * nor written, and nothing is pinned while the host has not allowed them.
  */
 export class WebMCPStore implements ClientToolBridge {
   /** The page's tools whose names can be offered to a model. */
@@ -73,6 +90,7 @@ export class WebMCPStore implements ClientToolBridge {
   constructor(
     private readonly services: AppStoreServices,
     private readonly host: PageToolHost = pageToolHost(),
+    private readonly access: WebMCPAccess = OWNER_ACCESS,
   ) {
     this.migrateLegacyOptOuts();
     this.choices = signal(this.storedChoices());
@@ -116,14 +134,19 @@ export class WebMCPStore implements ClientToolBridge {
   }
 
   enabledFor(sessionId: string): boolean {
+    if (!this.access.allowed.value) return false;
     const choice = this.choices.value.find(([id]) => id === sessionId);
-    return choice ? choice[1] : this.defaultOn.value;
+    if (choice) return choice[1];
+    return !this.access.linked.value && this.defaultOn.value;
   }
 
-  /** Sets this conversation's choice; it also becomes the default for new ones. */
+  /**
+   * Sets this conversation's choice; on the owner's page it also becomes the
+   * default for new ones. A linked device's choice never becomes a default.
+   */
   setEnabled(sessionId: string, enabled: boolean): void {
-    if (!sessionId) return;
-    this.persistDefault(enabled);
+    if (!sessionId || !this.access.allowed.peek()) return;
+    if (!this.access.linked.peek()) this.persistDefault(enabled);
     this.remember(sessionId, enabled);
   }
 
@@ -144,17 +167,21 @@ export class WebMCPStore implements ClientToolBridge {
    * live calls in sync with page tools and per-conversation settings changes.
    */
   definitions(sessionId: string): ClientToolDefinition[] {
-    if (!this.available.value) return [];
+    if (!this.access.allowed.value || !this.available.value) return [];
+    const linked = this.access.linked.value;
     // Track settings, but read storage for the decision: another tab's storage
     // event may not have arrived yet.
     this.enabledFor(sessionId);
     const choice = this.storedChoices().find(([id]) => id === sessionId);
-    const enabled = choice ? choice[1] : this.storedDefault();
+    const enabled = choice ? choice[1] : !linked && this.storedDefault();
     if (sessionId && !choice) this.remember(sessionId, enabled);
     return enabled ? clientToolDefinitions(this.tools.value, this.providerName.value) : [];
   }
 
   async run(call: PendingClientCall, signal: AbortSignal): Promise<ClientToolResult> {
+    // Authority can be withdrawn while a call is in flight (capabilities refresh).
+    if (!this.access.allowed.peek())
+      return { ok: false, output: 'Error: this device does not allow page tools' };
     // Run only what the page offers now; the call's name comes from the model.
     if (!this.tools.peek().some((tool) => tool.name === call.name))
       return { ok: false, output: `Error: this page no longer provides the tool ${call.name}` };

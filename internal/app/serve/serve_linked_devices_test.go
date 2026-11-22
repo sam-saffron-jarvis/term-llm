@@ -68,7 +68,7 @@ func TestPasskeyHealthIdentityRejectsBearerButTrustsLinkedDevice(t *testing.T) {
 	}
 }
 
-func TestPeerCapabilitiesDisableOwnerAndDeviceOnlyControls(t *testing.T) {
+func TestPeerCapabilitiesAdvertiseDeviceToolsButNotOwnerControls(t *testing.T) {
 	server := newTestServeServer()
 	defer server.sessionMgr.Close()
 	server.cfg.ui = true
@@ -87,7 +87,7 @@ func TestPeerCapabilitiesDisableOwnerAndDeviceOnlyControls(t *testing.T) {
 	linked := payload["linked_devices"].(map[string]any)
 	if linked["active"] != true || linked["scope"] != linkeddevices.ScopeWebV1 || linked["owner_controls"] != false ||
 		linked["uploads"] != true || linked["mcp"] != true || linked["goals"] != true ||
-		linked["voice"] != false || linked["push_notifications"] != false || linked["device_tools"] != false {
+		linked["voice"] != false || linked["push_notifications"] != false || linked["device_tools"] != true {
 		t.Fatalf("linked-device capabilities = %#v", linked)
 	}
 	attachments := payload["attachments"].(map[string]any)

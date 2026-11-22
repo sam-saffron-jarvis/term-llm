@@ -369,7 +369,7 @@ export function MCPServerList({ notice, onAdd }: { notice: string; onAdd: () => 
   const normalized = query.trim().toLocaleLowerCase();
   const matches = (name: string) => !normalized || name.toLocaleLowerCase().includes(normalized);
   const visible = state.servers.filter((server) => matches(server.name));
-  const pageTools = !store.linkedDevicesMode.value && store.webMCP.available.value;
+  const pageTools = store.pageToolsAllowed.value && store.webMCP.available.value;
   const showPageTools = pageTools && matches(pageToolsName(store.webMCP.providerName.value));
   const disabled = state.loading || Boolean(state.pending) || store.streaming.value;
   const total = state.servers.length + (pageTools ? 1 : 0);

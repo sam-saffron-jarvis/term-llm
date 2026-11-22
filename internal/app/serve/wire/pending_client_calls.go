@@ -1,10 +1,10 @@
-package serve
+package wire
 
 import (
 	"github.com/term-llm/term-llm/internal/llm/core"
 )
 
-// pendingClientCallTracker records which client (passthrough) tool calls a run
+// PendingClientCallTracker records which client (passthrough) tool calls a run
 // hands back to its caller unanswered.
 //
 // The engine only stops on passthrough calls made by the final provider turn,
@@ -12,19 +12,20 @@ import (
 // client calls that share a turn with such a server tool are dropped. Callers cannot reliably reconstruct
 // this from the event stream, because tool-only turns emit no text boundary,
 // so the server reports the list explicitly on completion.
-type pendingClientCallTracker struct {
+type PendingClientCallTracker struct {
 	turn       int
 	turnSet    bool
 	serverTool bool
 	calls      []core.ToolCall
 }
 
-func (t *pendingClientCallTracker) resetTurn() {
+func (t *PendingClientCallTracker) resetTurn() {
 	t.serverTool = false
 	t.calls = nil
 }
 
-func (t *pendingClientCallTracker) observe(event core.Event, isServerTool func(string) bool) {
+// Observe records the provider turn that offered each passthrough call.
+func (t *PendingClientCallTracker) Observe(event core.Event, isServerTool func(string) bool) {
 	if event.ProviderTurnIndexSet && (!t.turnSet || event.ProviderTurnIndex > t.turn) {
 		t.turn, t.turnSet = event.ProviderTurnIndex, true
 		t.resetTurn()
@@ -55,17 +56,17 @@ func (t *pendingClientCallTracker) observe(event core.Event, isServerTool func(s
 	}
 }
 
-// pending returns the client calls awaiting results, in call order. It is
+// Pending returns the client calls awaiting results, in call order. It is
 // never nil so that callers can publish an authoritative, possibly empty, list.
-func (t *pendingClientCallTracker) pending() []core.ToolCall {
+func (t *PendingClientCallTracker) Pending() []core.ToolCall {
 	if t.serverTool || len(t.calls) == 0 {
 		return []core.ToolCall{}
 	}
 	return append([]core.ToolCall(nil), t.calls...)
 }
 
-// pendingClientCallsPayload is the wire form published on response.completed.
-func pendingClientCallsPayload(calls []core.ToolCall) []map[string]any {
+// PendingClientCallsPayload is the wire form published on response.completed.
+func PendingClientCallsPayload(calls []core.ToolCall) []map[string]any {
 	out := make([]map[string]any, 0, len(calls))
 	for _, call := range calls {
 		arguments := string(call.Arguments)
@@ -81,9 +82,9 @@ func pendingClientCallsPayload(calls []core.ToolCall) []map[string]any {
 	return out
 }
 
-// pendingClientCallsValue reads a published pending list, native or JSON
+// PendingClientCallsValue reads a published pending list, native or JSON
 // decoded. It returns nil when the value is not a list.
-func pendingClientCallsValue(value any) []map[string]any {
+func PendingClientCallsValue(value any) []map[string]any {
 	switch calls := value.(type) {
 	case []map[string]any:
 		return calls

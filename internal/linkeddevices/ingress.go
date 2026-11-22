@@ -3,11 +3,13 @@ package linkeddevices
 import (
 	"context"
 	"crypto/subtle"
+	"encoding/base64"
 	"errors"
-	"github.com/term-llm/term-llm/internal/pairing"
 	"net/http"
 	"strings"
 	"sync"
+
+	"github.com/term-llm/term-llm/internal/pairing"
 )
 
 type devicePrincipalKey struct{}
@@ -171,7 +173,7 @@ func RouteAllowed(method, path string) bool {
 		case "/v1/sessions", "/v1/responses", "/v1/mentions/search", "/v1/linked-uploads":
 			return true
 		}
-		if strings.HasPrefix(path, "/v1/responses/") && strings.HasSuffix(path, "/cancel") {
+		if responsePostAllowed(path) {
 			return true
 		}
 		if strings.HasPrefix(path, "/v1/sessions/") {
@@ -179,6 +181,18 @@ func RouteAllowed(method, path string) bool {
 		}
 	}
 	return false
+}
+
+func responsePostAllowed(path string) bool {
+	tail, ok := strings.CutPrefix(path, "/v1/responses/")
+	if !ok {
+		return false
+	}
+	if strings.HasSuffix(path, "/cancel") {
+		return true
+	}
+	id, action, _ := strings.Cut(tail, "/")
+	return routeID(id) && toolResultAction(action, "client_tool_calls/")
 }
 
 // Project mode and single-workspace mode share the same worktree handlers.
@@ -252,9 +266,21 @@ func hasAnySuffix(value string, suffixes ...string) bool {
 	return false
 }
 
-// liveRouteAllowed deliberately excludes WebSocket audio and all client-owned
-// tools/results. IDs are a single bounded ASCII identifier; action matching is
-// exact so nested paths, empty segments and suffix aliases cannot pass.
+func routeID(id string) bool {
+	return id != "" && id != "." && id != ".."
+}
+
+func toolResultAction(action, prefix string) bool {
+	tail, ok := strings.CutPrefix(action, prefix)
+	if !ok {
+		return false
+	}
+	id, rest, _ := strings.Cut(tail, "/")
+	return routeID(id) && rest == "result"
+}
+
+// liveRouteAllowed excludes WebSocket audio (unsupported by the peer bridge).
+// Session IDs and actions match exactly. The Live handler checks ownership.
 func liveRouteAllowed(method, path string) bool {
 	const root = "/v1/live/sessions"
 	if path == root {
@@ -278,9 +304,15 @@ func liveRouteAllowed(method, path string) bool {
 	switch action {
 	case "events", "audio/output":
 		return method == http.MethodGet
-	case "audio/input", "diagnostics", "text", "session":
+	case "audio/input", "diagnostics", "text", "session", "client_tools":
 		return method == http.MethodPost
 	default:
-		return false
+		return method == http.MethodPost && (toolResultAction(action, "tool_calls/") || toolResultAction(action, "delegations/"))
 	}
+}
+
+// ToolResultID encodes a provider correlation ID as one peer-safe path segment.
+// The provider's own ID is not changed; only the device-facing mailbox uses it.
+func ToolResultID(id string) string {
+	return base64.RawURLEncoding.EncodeToString([]byte(id))
 }

@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/term-llm/term-llm/internal/app/serve/wire"
 	"github.com/term-llm/term-llm/internal/llm/core"
 	"github.com/term-llm/term-llm/internal/llm/engine"
 	"github.com/term-llm/term-llm/internal/llm/mockprovider"
@@ -145,7 +146,7 @@ func TestPendingClientCallsFollowToolOnlyServerTurns(t *testing.T) {
 	if got, want := pendingClientCallIDs(result.PendingClientCalls()), []string{"call_c1", "call_c2"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("pending client calls = %v, want %v", got, want)
 	}
-	payload := pendingClientCallsPayload(result.PendingClientCalls())
+	payload := wire.PendingClientCallsPayload(result.PendingClientCalls())
 	if len(payload) != 2 || payload[0]["name"] != "webmcp__ping" || payload[0]["arguments"] != `{"message":"hi"}` {
 		t.Fatalf("payload = %#v", payload)
 	}
@@ -196,11 +197,11 @@ func TestPendingClientCallTrackerTurnBoundaries(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			var tracker pendingClientCallTracker
+			var tracker wire.PendingClientCallTracker
 			for _, event := range tc.events {
-				tracker.observe(event, isServer)
+				tracker.Observe(event, isServer)
 			}
-			if got := pendingClientCallIDs(tracker.pending()); !reflect.DeepEqual(got, tc.want) {
+			if got := pendingClientCallIDs(tracker.Pending()); !reflect.DeepEqual(got, tc.want) {
 				t.Fatalf("pending = %v, want %v", got, tc.want)
 			}
 		})
@@ -210,7 +211,7 @@ func TestPendingClientCallTrackerTurnBoundaries(t *testing.T) {
 func TestResponseRunSnapshotCarriesPendingClientCalls(t *testing.T) {
 	run := newResponseRun("resp-pending-client", "sess-pending-client", "", "test", time.Now().Unix(), nil)
 	run.finalRevReader = func() (int64, error) { return 1, nil }
-	calls := pendingClientCallsPayload([]core.ToolCall{pendingTestCall("call_c1", "webmcp__ping")})
+	calls := wire.PendingClientCallsPayload([]core.ToolCall{pendingTestCall("call_c1", "webmcp__ping")})
 	if err := run.complete(map[string]any{"response": map[string]any{"id": run.id, "pending_client_calls": calls}}, core.Usage{}, core.Usage{}); err != nil {
 		t.Fatalf("complete: %v", err)
 	}
@@ -224,7 +225,7 @@ func TestResponseRunSnapshotCarriesPendingClientCalls(t *testing.T) {
 }
 
 func TestPendingClientCallsValueAcceptsDecodedJSON(t *testing.T) {
-	native := pendingClientCallsPayload([]core.ToolCall{pendingTestCall("call_c1", "webmcp__ping")})
+	native := wire.PendingClientCallsPayload([]core.ToolCall{pendingTestCall("call_c1", "webmcp__ping")})
 	encoded, err := json.Marshal(native)
 	if err != nil {
 		t.Fatal(err)
@@ -233,14 +234,14 @@ func TestPendingClientCallsValueAcceptsDecodedJSON(t *testing.T) {
 	if err := json.Unmarshal(encoded, &decoded); err != nil {
 		t.Fatal(err)
 	}
-	got := pendingClientCallsValue(decoded)
+	got := wire.PendingClientCallsValue(decoded)
 	if len(got) != 1 || got[0]["call_id"] != "call_c1" || got[0]["name"] != "webmcp__ping" {
 		t.Fatalf("decoded pending calls = %#v", got)
 	}
-	if empty := pendingClientCallsValue([]any{}); empty == nil || len(empty) != 0 {
+	if empty := wire.PendingClientCallsValue([]any{}); empty == nil || len(empty) != 0 {
 		t.Fatalf("empty list = %#v, want empty non-nil", empty)
 	}
-	if pendingClientCallsValue(nil) != nil || pendingClientCallsValue("x") != nil {
+	if wire.PendingClientCallsValue(nil) != nil || wire.PendingClientCallsValue("x") != nil {
 		t.Fatal("non-list values must yield nil")
 	}
 }

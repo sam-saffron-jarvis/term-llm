@@ -63,7 +63,7 @@ func (r *responseRun) complete(payload map[string]any, usage core.Usage, session
 	r.errorType = ""
 	r.errorMessage = ""
 	if response := mapValue(payload["response"]); response != nil {
-		r.pendingClientCalls = pendingClientCallsValue(response["pending_client_calls"])
+		r.pendingClientCalls = wire.PendingClientCallsValue(response["pending_client_calls"])
 	}
 	r.usage = usage
 	r.sessionUsage = sessionUsage

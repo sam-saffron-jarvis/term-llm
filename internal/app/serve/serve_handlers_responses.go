@@ -115,6 +115,9 @@ func (s *serveServer) handleResponses(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if !s.allowLinkedToolContinuation(w, r, req.PreviousResponseID, inputMessages) {
+		return
+	}
 	s.authors.StampInputs(r, s.store, inputMessages)
 	admission, stop := s.prepareResponsesSessionAdmission(w, r, ctx, req)
 	if stop {

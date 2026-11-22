@@ -60,3 +60,51 @@ it.each([false, true])('offers only granted linked MCP actions (manager %s)', as
   expect(screen.getByLabelText('URL')).toBeVisible();
   expect(screen.queryByLabelText('Headers')).toBeNull();
 });
+
+it.each([
+  [false, false],
+  [true, true],
+])('shows page tools to a linked device only when granted (grant %s)', async (grant, shown) => {
+  const store = new AppStore({
+    prefix: '',
+    version: 'test',
+    sidebarCategories: [],
+    agentName: '',
+    agentNames: [],
+    title: '',
+    locationSharing: false,
+    worktrees: false,
+    hub: null,
+    vapidKey: '',
+  });
+  store.linkedDevicesMode.value = true;
+  store.linkedDeviceTools.value = grant;
+  store.webMCP.tools.value = [
+    {
+      name: 'ping',
+      title: 'Ping',
+      description: 'Ping',
+      inputSchema: { type: 'object', properties: {} },
+      readOnly: true,
+    },
+  ];
+  store.webMCP.providerName.value = 'iPhone';
+  store.mcp.value = {
+    ...store.mcp.value,
+    ...normalizeMCPState({ servers: [{ name: 'shared' }], enabled: [] }),
+  };
+  store.setWebMCPEnabled = vi.fn();
+  render(
+    <StoreContext.Provider value={store}>
+      <MCP />
+    </StoreContext.Provider>,
+  );
+  const row = screen.queryByRole('checkbox', { name: /iPhone/ });
+  if (!shown) {
+    expect(row).toBeNull();
+    return;
+  }
+  expect(row).not.toBeChecked();
+  fireEvent.click(row!);
+  expect(store.setWebMCPEnabled).toHaveBeenCalledWith(true);
+});

@@ -29,6 +29,7 @@ type webRunContinuation struct {
 	Stateful        bool
 	UI              bool
 	ClientTools     bool
+	LinkedDeviceID  string
 	AgentCompletion bool
 	AgentBarrier    bool
 	AgentEvents     []session.AgentRun
@@ -118,7 +119,7 @@ func snapshotWebRun(run *responseRun, stream *responseRunStreamState, engine *co
 	if run.persistence.failed || run.persistence.inflight != 0 {
 		return nil, errors.New("response persistence is not settled for reload")
 	}
-	saved := &webRunContinuation{Engine: engine, Provider: runtimeProviderKey(runtime), Stateful: stateful, UI: options.uiSession, ClientTools: run.typedClientTools != nil, AwaitedEvents: append([]session.AgentRun(nil), run.awaitedEvents...), AgentCompletion: options.agentCompletion, AgentBarrier: options.agentBarrier, AgentEvents: options.agentEvents,
+	saved := &webRunContinuation{Engine: engine, Provider: runtimeProviderKey(runtime), Stateful: stateful, UI: options.uiSession, ClientTools: run.typedClientTools != nil && run.typedClientTools.origin == nil, LinkedDeviceID: run.linkedDeviceID, AwaitedEvents: append([]session.AgentRun(nil), run.awaitedEvents...), AgentCompletion: options.agentCompletion, AgentBarrier: options.agentBarrier, AgentEvents: options.agentEvents,
 		Ledger: webLedgerView{run.persistence.maxRev, run.persistence.outputKeys, run.persistence.nextOutputID},
 		Stream: webStreamView{stream.outputIndex, stream.toolsSeen, stream.assistantBoundaryPending, stream.assistantSegmentOrdinal, stream.model, stream.reasoningEffort, stream.reasoningEffortSet, stream.toolStartedAt, stream.thought.NextIndex()},
 		View: webRunView{
@@ -181,6 +182,7 @@ func snapshotWebRun(run *responseRun, stream *responseRunStreamState, engine *co
 
 func restoreWebRun(saved *webRunContinuation, cancel context.CancelFunc) *responseRun {
 	run := newResponseRun(saved.View.Id, saved.View.SessionID, saved.View.PreviousResponseID, saved.View.Model, saved.View.Created, cancel)
+	run.linkedDeviceID = saved.LinkedDeviceID
 	run.awaitedEvents = append([]session.AgentRun(nil), saved.AwaitedEvents...)
 	run.recoverableNotification = saved.AgentCompletion
 	run.id = saved.View.Id
@@ -314,7 +316,9 @@ func (s *serveServer) resumeWebRun(saved *webRunContinuation, owner string) erro
 	request.Resume = saved.Engine
 	options := startResponseRunOptions{agentCompletion: saved.AgentCompletion, agentBarrier: saved.AgentBarrier, agentEvents: saved.AgentEvents, resume: saved, uiSession: saved.UI, previousResponseID: saved.View.PreviousResponseID}
 	if saved.ClientTools {
-		options.clientToolRunner = s.typedClientToolRunner(rt, request.Tools)
+		if names, specs := core.ClientToolSpecsWithPrefix(request.Tools, "webmcp__"); len(names) != 0 {
+			options.clientToolRunner = s.typedClientToolRunner(rt, names, specs, nil)
+		}
 	}
 	_, err = s.startResponseRun(rt, saved.Stateful, false, nil, request, saved.View.SessionID, options)
 	if err != nil && !saved.Stateful {

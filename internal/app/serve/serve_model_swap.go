@@ -10,6 +10,7 @@ import (
 
 	appruntime "github.com/term-llm/term-llm/internal/app/runtime"
 	"github.com/term-llm/term-llm/internal/app/serve/modelswap"
+	"github.com/term-llm/term-llm/internal/app/serve/wire"
 	"github.com/term-llm/term-llm/internal/llm"
 	"github.com/term-llm/term-llm/internal/llm/core"
 	"github.com/term-llm/term-llm/internal/llm/engine"
@@ -708,7 +709,7 @@ func (s *serveServer) executeResponseRunModelSwap(runCtx context.Context, runtim
 			"session_usage": usagePayload(result.SessionUsage),
 			"context_usage": result.ContextUsage,
 			// The client tool calls this response stopped on; authoritative even when empty.
-			"pending_client_calls": pendingClientCallsPayload(result.PendingClientCalls()),
+			"pending_client_calls": wire.PendingClientCallsPayload(result.PendingClientCalls()),
 		}
 		if effort := strings.TrimSpace(exec.plan.requestedEffort); effort != "" {
 			completeResponse["reasoning_effort"] = effort

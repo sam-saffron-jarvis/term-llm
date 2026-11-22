@@ -120,7 +120,7 @@ function pageTools(initial: ClientTool[] = [ping]) {
 function setup(
   bridge: LiveClientTools,
   capability: Record<string, unknown> = {},
-  options?: { linkedDevices?: boolean },
+  options?: { linkedDevices?: boolean; deviceTools?: boolean },
 ) {
   const events = eventStream();
   const endpoints = {
@@ -220,6 +220,21 @@ describe('LiveStore page tools', () => {
 
   it.each([
     ['omitted delegation modes', {}, { linkedDevices: true }],
+    [
+      'a device_tools grant but no advertised modes',
+      {},
+      { linkedDevices: true, deviceTools: true },
+    ],
+    [
+      'a device_tools grant but server-only modes',
+      { delegation_modes: ['server'] },
+      { linkedDevices: true, deviceTools: true },
+    ],
+    [
+      'client mode but no device_tools grant',
+      { delegation_modes: ['server', 'client'] },
+      { linkedDevices: true, deviceTools: false },
+    ],
     ['server-only delegation modes', { delegation_modes: ['server'] }, undefined],
     [
       'an over-broad mode list on a linked device',
@@ -243,6 +258,49 @@ describe('LiveStore page tools', () => {
     events.push(1, 'live.tool_calls_requested', round);
     events.push(2, 'live.transcript', { role: 'assistant', text: 'The host ran that.' });
     await vi.waitFor(() => expect(store.partialAssistant.value).toBe('The host ran that.'));
+    expect(endpoints.liveClientTools).not.toHaveBeenCalled();
+    expect(page.run).not.toHaveBeenCalled();
+    expect(endpoints.liveToolResult).not.toHaveBeenCalled();
+    store.dispose();
+    events.close();
+  });
+
+  it('declares and runs page tools on a linked device with an explicit device_tools grant', async () => {
+    const page = pageTools();
+    const { store, endpoints, events } = setup(
+      page.bridge,
+      { delegation_modes: ['server', 'client'] },
+      { linkedDevices: true, deviceTools: true },
+    );
+    expect(store.clientToolsAllowed.value).toBe(true);
+    await expect(store.start()).resolves.toBe(true);
+    expect(endpoints.liveStart).toHaveBeenCalledWith('offer-sdp', 'session-one', undefined, [
+      expect.objectContaining({ type: 'function', name: 'webmcp__ping' }),
+    ]);
+    events.push(1, 'live.tool_calls_requested', round);
+    await vi.waitFor(() => expect(endpoints.liveToolResult).toHaveBeenCalledTimes(1));
+    expect(page.run).toHaveBeenCalledTimes(2);
+    store.dispose();
+    events.close();
+  });
+
+  it('withdraws page tools when a refresh drops a linked device grant mid-call', async () => {
+    const page = pageTools();
+    const { store, endpoints, events } = setup(
+      page.bridge,
+      { delegation_modes: ['server', 'client'] },
+      { linkedDevices: true, deviceTools: true },
+    );
+    await expect(store.start()).resolves.toBe(true);
+    store.applyCapability(
+      { enabled: true, delegation_modes: ['server', 'client'] },
+      { linkedDevices: true, deviceTools: false },
+    );
+    expect(store.clientToolsAllowed.value).toBe(false);
+    page.tools.value = [ping, music];
+    events.push(1, 'live.tool_calls_requested', round);
+    events.push(2, 'live.transcript', { role: 'assistant', text: 'Handled by the host.' });
+    await vi.waitFor(() => expect(store.partialAssistant.value).toBe('Handled by the host.'));
     expect(endpoints.liveClientTools).not.toHaveBeenCalled();
     expect(page.run).not.toHaveBeenCalled();
     expect(endpoints.liveToolResult).not.toHaveBeenCalled();

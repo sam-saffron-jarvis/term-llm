@@ -6,6 +6,7 @@ import (
 	"log"
 	"strings"
 
+	"github.com/term-llm/term-llm/internal/app/serve/wire"
 	"github.com/term-llm/term-llm/internal/llm/core"
 	"github.com/term-llm/term-llm/internal/llm/engine"
 	"github.com/term-llm/term-llm/internal/session"
@@ -229,7 +230,7 @@ func (s *serveServer) executeResponseRun(runCtx context.Context, releaseReload, 
 		"session_usage": usagePayload(result.SessionUsage),
 		"context_usage": result.ContextUsage,
 		// The client tool calls this response stopped on; authoritative even when empty.
-		"pending_client_calls": pendingClientCallsPayload(result.PendingClientCalls()),
+		"pending_client_calls": wire.PendingClientCallsPayload(result.PendingClientCalls()),
 	}
 	if finalEffortSet {
 		completeResponse["reasoning_effort"] = finalEffort

@@ -1983,7 +1983,7 @@ func (rt *serveRuntime) runOnce(ctx context.Context, stateful bool, replaceHisto
 }
 
 func (rt *serveRuntime) accumulateRunEvent(ctx context.Context, stateful, persisted bool, sessionID string, event core.Event, result *serveRunResult) (bool, error) {
-	result.clientCalls.observe(event, rt.isServerExecutedTool)
+	result.clientCalls.Observe(event, rt.isServerExecutedTool)
 	switch event.Type {
 	case core.EventTextDelta:
 		result.Text.WriteString(event.Text)
