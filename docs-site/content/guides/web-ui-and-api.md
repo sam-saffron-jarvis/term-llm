@@ -865,8 +865,9 @@ term-llm serve api -p my_provider --search \
 
 The server intercepts calls to the client tool name and executes the mapped
 server tool instead. The client tool definition is sent to the backend LLM
-while the server tool is hidden. If a `--tool-map` target doesn't match a
-registered server tool, startup fails with the list of available tools.
+while the server tool is hidden. Malformed `--tool-map` entries fail at startup.
+If a mapping names an unregistered server tool, the error is reported when a
+request creates its runtime and lists the tools registered in that runtime.
 
 ## Native commit API
 
