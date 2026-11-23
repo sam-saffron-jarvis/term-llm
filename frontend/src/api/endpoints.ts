@@ -311,12 +311,14 @@ export const endpoints = (api: APIClient) => ({
     signal?: AbortSignal,
     sort: SessionSearchSort = 'relevance',
     createdBy = '',
+    options: { includeSnippet?: boolean } = {},
   ) => {
     const params = new URLSearchParams({ q: query, limit: '30' });
     if (createdBy === 'me') params.set('created_by', 'me');
     if (sort !== 'relevance') params.set('sort', sort);
     if (includeArchived) params.set('include_archived', '1');
     if (!categories.includes('all')) params.set('categories', categories.join(','));
+    if (options.includeSnippet === false) params.set('include_snippet', '0');
     return api.get<Record<string, unknown>>(`/v1/sessions/search?${params}`, signal);
   },
   sessions: (query = '') =>

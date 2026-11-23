@@ -33,7 +33,7 @@ describe('session search ordering', () => {
     });
     store.showArchived.value = true;
     const pending = store.search('needle');
-    await vi.advanceTimersByTimeAsync(180);
+    await vi.advanceTimersByTimeAsync(200);
     await pending;
     expect(search).toHaveBeenCalledWith(
       'needle',
@@ -42,6 +42,7 @@ describe('session search ordering', () => {
       expect.any(AbortSignal),
       'relevance',
       '',
+      { includeSnippet: false },
     );
     expect(store.searchResults.value?.map((session) => session.id)).toEqual([
       'server-first',
@@ -59,10 +60,10 @@ describe('session search ordering', () => {
         .mockReturnValueOnce(stale.promise)
         .mockReturnValueOnce(latest.promise);
       const first = store.search('needle');
-      await vi.advanceTimersByTimeAsync(180);
+      await vi.advanceTimersByTimeAsync(200);
       const second = store.sessionStore.setSearchSort('newest');
       expect(search.mock.calls[0][3]?.aborted).toBe(true);
-      await vi.advanceTimersByTimeAsync(180);
+      await vi.advanceTimersByTimeAsync(200);
       expect(search.mock.calls[1][4]).toBe('newest');
       latest.resolve({ sessions: [{ id: 'newest' }] });
       await second;
@@ -82,9 +83,9 @@ describe('session search ordering', () => {
       .mockReturnValueOnce(stale.promise)
       .mockReturnValueOnce(latest.promise);
     const first = store.search('needle');
-    await vi.advanceTimersByTimeAsync(180);
+    await vi.advanceTimersByTimeAsync(200);
     const second = store.sessionStore.setSearchSort('oldest');
-    await vi.advanceTimersByTimeAsync(180);
+    await vi.advanceTimersByTimeAsync(200);
     stale.resolve({ sessions: [{ id: 'stale' }] });
     await first;
     expect(store.searchLoading.value).toBe(true);
@@ -99,14 +100,14 @@ describe('session search ordering', () => {
     const pending = store.search('needle');
     const newest = store.sessionStore.setSearchSort('newest');
     const oldest = store.sessionStore.setSearchSort('oldest');
-    await vi.advanceTimersByTimeAsync(180);
+    await vi.advanceTimersByTimeAsync(200);
     await Promise.all([pending, newest, oldest]);
     expect(search).toHaveBeenCalledTimes(1);
     expect(search.mock.calls[0][4]).toBe('oldest');
     await store.search('');
     expect(store.searchResults.value).toBeNull();
     const next = store.search('next query');
-    await vi.advanceTimersByTimeAsync(180);
+    await vi.advanceTimersByTimeAsync(200);
     await next;
     expect(search.mock.calls[1][4]).toBe('oldest');
     await store.sessionStore.setSearchSort('oldest');
@@ -117,7 +118,7 @@ describe('session search ordering', () => {
     const stale = deferred();
     vi.spyOn(store.endpoints, 'searchSessions').mockReturnValue(stale.promise);
     const pending = store.search('needle');
-    await vi.advanceTimersByTimeAsync(180);
+    await vi.advanceTimersByTimeAsync(200);
     await store.search('');
     stale.resolve({ sessions: [{ id: 'stale' }] });
     await pending;

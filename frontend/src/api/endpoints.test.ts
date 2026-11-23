@@ -619,8 +619,8 @@ describe('inspect safe reads', () => {
   });
 });
 
-describe('session search sort endpoint', () => {
-  it('keeps legacy callers unchanged and adds non-default ordering alongside filters', async () => {
+describe('session search endpoint', () => {
+  it('preserves defaults and adds sort and snippet opt-out alongside filters', async () => {
     const api = new APIClient(readInjectedConfig({ TERM_LLM_UI_PREFIX: '/ui' } as Window), {
       getToken: () => '',
       onAuthRequired: vi.fn(),
@@ -631,15 +631,20 @@ describe('session search sort endpoint', () => {
     await endpoint.searchSessions('two words', true, ['web'], signal);
     let url = new URL(get.mock.calls[0][0], 'http://localhost');
     expect(url.searchParams.has('sort')).toBe(false);
+    expect(url.searchParams.has('include_snippet')).toBe(false);
     expect(get.mock.calls[0][1]).toBe(signal);
-    await endpoint.searchSessions('two words', true, ['web'], signal, 'oldest');
+    await endpoint.searchSessions('two words', true, ['web'], signal, 'oldest', 'me', {
+      includeSnippet: false,
+    });
     url = new URL(get.mock.calls[1][0], 'http://localhost');
     expect(Object.fromEntries(url.searchParams)).toEqual({
       q: 'two words',
       limit: '30',
+      created_by: 'me',
       sort: 'oldest',
       include_archived: '1',
       categories: 'web',
+      include_snippet: '0',
     });
     expect(get.mock.calls[1][1]).toBe(signal);
   });

@@ -20,8 +20,6 @@ func (s *SQLiteStore) Search(ctx context.Context, opts SearchOptions) ([]SearchR
 		return []SearchResult{}, nil
 	}
 
-	messageCountCol := s.conversationMessageCountSelectSQL("s")
-
 	originCol := "'tui'"
 	if s.hasOrigin {
 		originCol = "COALESCE(NULLIF(TRIM(s.origin), ''), 'tui')"
@@ -66,7 +64,7 @@ func (s *SQLiteStore) Search(ctx context.Context, opts SearchOptions) ([]SearchR
 		args = append(args, opts.ProjectID)
 	}
 	// Candidate ranking and result hydration use the same snapshot. Search also
-	// works on older read-only databases; it doesn't need an index migration.
+	// works on older read-only databases without the optional search index.
 	tx, err := s.queryDB().BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
 		return nil, fmt.Errorf("begin search: %w", err)
@@ -74,12 +72,12 @@ func (s *SQLiteStore) Search(ctx context.Context, opts SearchOptions) ([]SearchR
 	defer tx.Rollback()
 	shortTitle := "COALESCE(NULLIF(TRIM(s.name), ''), NULLIF(TRIM(" + generatedShortCol + "), ''), TRIM(s.summary), '')"
 	longTitle := "COALESCE(NULLIF(TRIM(s.name), ''), NULLIF(TRIM(" + generatedLongCol + "), ''), " + shortTitle + ")"
-	visible := "(m.role = 'assistant' OR " + realUserMessageSQL("m", false) + ")"
-	if s.hasMessageCompactionTail {
-		visible += " AND COALESCE(m.compaction_tail, FALSE) = FALSE"
+	source := searchrank.MessageSource{Visible: searchVisibleMessageSQL("m", s.hasMessageCompactionTail)}
+	if s.hasSearchMessageIndex {
+		source.Index = searchMessageIndexV73
 	}
 	matches, err := q.Collect(ctx, tx, `SELECT s.id, `+shortTitle+`, `+longTitle+`, `+lastMessageAtCol+`, s.created_at
-		FROM sessions s WHERE 1=1`+filterClause, visible, args, string(opts.Sort), opts.Limit)
+		FROM sessions s WHERE 1=1`+filterClause, args, source, string(opts.Sort), opts.Limit)
 	if err != nil || len(matches) == 0 {
 		return nil, err
 	}
@@ -87,18 +85,18 @@ func (s *SQLiteStore) Search(ctx context.Context, opts SearchOptions) ([]SearchR
 	if err != nil {
 		return nil, fmt.Errorf("encode search matches: %w", err)
 	}
+	snippet, hydrateArgs := q.SnippetSQL(opts.OmitSnippet, string(refs))
 	rows, err := tx.QueryContext(ctx, `
 		SELECT `+s.createdByColumn("s")+`, s.id, s.number, COALESCE(m.id, 0), COALESCE(s.name, ''), COALESCE(s.summary, ''),
 		       `+generatedShortCol+`, `+generatedLongCol+`, `+titleSourceCol+`,
-		       COALESCE(CASE WHEN m.id IS NOT NULL THEN (SELECT snippet(messages_fts, 0, '**', '**', '...', 32) FROM messages_fts
-		                 WHERE rowid = m.id AND messages_fts MATCH ?) END, sm.value->>'title', ''),
+		       `+snippet+`,
 		       s.provider, COALESCE(s.provider_key, ''), s.model, COALESCE(s.mode, ''), `+originCol+`, s.archived,
-		       `+s.pinnedSelectCols("s")+`, COALESCE(s.status, ''), `+messageCountCol+`, `+projectIDCol+`, `+projectNameCol+`,
+		       `+s.pinnedSelectCols("s")+`, COALESCE(s.status, ''), `+s.conversationMessageCountSelectSQL("s")+`, `+projectIDCol+`, `+projectNameCol+`,
 		       s.created_at, s.updated_at, `+lastMessageAtCol+`, m.created_at
 		FROM json_each(?) sm
 		JOIN sessions s ON s.id = sm.value->>'session_id'`+projectJoin+`
 		LEFT JOIN messages m ON m.id = sm.value->>'message_id'
-		ORDER BY sm.key`, q.Highlight, string(refs))
+		ORDER BY sm.key`, hydrateArgs...)
 	if err != nil {
 		return nil, fmt.Errorf("search messages: %w", err)
 	}

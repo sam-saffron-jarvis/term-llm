@@ -40,6 +40,7 @@ type SQLiteStore struct {
 	hasShare                 bool // true if sessions table has share column
 	hasTranscriptRev         bool // true if sessions table has transcript_rev column
 	hasMessagesTable         bool // true if the messages table exists
+	hasSearchMessageIndex    bool
 	hasMessageCompactionTail bool // true if messages table has compaction_tail column
 	hasMessageStreamIdentity bool // true if messages table has response-scoped segment identity columns
 	hasAuthors               bool

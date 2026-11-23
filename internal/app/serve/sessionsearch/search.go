@@ -71,6 +71,7 @@ func SearchHandler[T any](w http.ResponseWriter, r *http.Request, store session.
 		Categories:       categories,
 		Limit:            limit,
 		Archived:         includeArchived,
+		OmitSnippet:      r.URL.Query().Get("include_snippet") == "0",
 		ProjectID:        strings.TrimSpace(r.URL.Query().Get("project_id")),
 		ExcludeSubagents: true,
 	})

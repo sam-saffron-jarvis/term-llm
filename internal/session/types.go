@@ -239,6 +239,7 @@ type SearchOptions struct {
 	Archived         bool       // Include archived sessions
 	ProjectID        string     // Restrict to one stable project ID
 	ExcludeSubagents bool       // Hide machine-generated child-agent sessions
+	OmitSnippet      bool       // Skip excerpts for clients that do not display them
 }
 
 // SearchResult represents a search match.

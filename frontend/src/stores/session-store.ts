@@ -44,6 +44,8 @@ function orderSaveError(error: unknown, changedElsewhere: string, what: string):
 
 export type SidebarView = 'recent' | 'projects';
 
+const SIDEBAR_SEARCH_DEBOUNCE_MS = 200;
+
 function semanticEqual(left: unknown, right: unknown): boolean {
   if (Object.is(left, right)) return true;
   if (Array.isArray(left) || Array.isArray(right))
@@ -813,7 +815,7 @@ export class SessionStore {
     this.searchError.value = '';
     await new Promise<void>((resolve) => {
       this.searchDebounceResolve = resolve;
-      this.searchTimer = window.setTimeout(resolve, 180);
+      this.searchTimer = window.setTimeout(resolve, SIDEBAR_SEARCH_DEBOUNCE_MS);
     });
     if (abort.signal.aborted || this.disposed) return;
     this.searchDebounceResolve = null;
@@ -825,6 +827,7 @@ export class SessionStore {
         abort.signal,
         sort,
         this.authors.createdBy,
+        { includeSnippet: false },
       );
       if (!abort.signal.aborted)
         this.searchResults.value = listFrom(data, 'sessions', 'items').map((entry) =>

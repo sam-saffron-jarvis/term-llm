@@ -60,6 +60,11 @@ Migration errors should identify the store, observed and supported versions, mig
 
 Unknown unversioned schemas fail closed with a structural description and recovery guidance, without user data. Full corruption checking belongs to `term-llm doctor` (see the [user-facing documentation](https://term-llm.com/guides/debugging/#check-the-install-with-term-llm-doctor) and [`internal/doctor/README.md`](../doctor/README.md) for contributor notes), which also compares each database against the schema its migrations produce on a fresh install, and must not be added to normal startup.
 
+- Session v73 adds a partial covering index for visible-message search, without
+  rewriting transcript rows. Older binaries reject v73 for read-write use;
+  restore a backup to downgrade. New binaries read older databases without the
+  index when opened read-only.
+
 - Session v72 records device-bound idempotency receipts for streamed linked tool
   handoffs alongside response lifecycle admission. It does not backfill receipts.
   The previous binary rejects v72 for read-write use; restore a backup to downgrade.

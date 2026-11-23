@@ -134,15 +134,52 @@ type Candidate struct {
 	bestScore float64
 }
 
+// MessageSource specifies the session store's visible-message predicate and
+// optional covering index. Both are trusted SQL from the store's schema.
+type MessageSource struct {
+	Visible string
+	Index   string
+}
+
+func (s MessageSource) joinSQL() string {
+	index := ""
+	if s.Index != "" {
+		index = " INDEXED BY " + s.Index
+	}
+	return " FROM matched CROSS JOIN messages m" + index + " ON m.id = matched.message_id WHERE " + s.Visible
+}
+
+const userMessageWeight = 1.2
+
+func (c *Candidate) consider(id int64, terms int, score float64) {
+	if terms > c.bestTerms || (terms == c.bestTerms && (c.MessageID == 0 || score > c.bestScore || (score == c.bestScore && id < c.MessageID))) {
+		c.bestTerms, c.bestScore, c.MessageID = terms, score, id
+	}
+}
+
+func (q Query) minimum() int {
+	if q.strict {
+		return 1
+	}
+	if len(q.terms) > 2 {
+		return len(q.terms) - 1 // tolerate a missing term, but not weak OR-only hits
+	}
+	return len(q.terms)
+}
+
 // Collect ranks the sessions selected by titlesSQL (id, preferred short and
-// long titles, last-message time, creation time) and the indexed messages selected by visibleSQL.
-func (q Query) Collect(ctx context.Context, tx *sql.Tx, titlesSQL, visibleSQL string, args []any, sort string, limit int) ([]*Candidate, error) {
+// long titles, last-message time, creation time) and the indexed messages selected by the source.
+func (q Query) Collect(ctx context.Context, tx *sql.Tx, titlesSQL string, args []any, source MessageSource, sort string, limit int) ([]*Candidate, error) {
 	candidates, err := q.titles(ctx, tx, titlesSQL, args)
 	if err != nil {
 		return nil, fmt.Errorf("search titles: %w", err)
 	}
 	if len(candidates) > 0 {
-		if err := q.messages(ctx, tx, candidates, visibleSQL); err != nil {
+		collect := q.stagedMessages
+		if len(q.terms) == 1 || q.strict {
+			collect = q.messages
+		}
+		if err := collect(ctx, tx, candidates, source); err != nil {
 			return nil, fmt.Errorf("rank matching messages: %w", err)
 		}
 	}
@@ -182,7 +219,7 @@ func (q Query) titles(ctx context.Context, tx *sql.Tx, query string, args []any)
 	return candidates, rows.Err()
 }
 
-func (q Query) messages(ctx context.Context, tx *sql.Tx, candidates map[string]*Candidate, visibleSQL string) error {
+func (q Query) messages(ctx context.Context, tx *sql.Tx, candidates map[string]*Candidate, source MessageSource) error {
 	terms := q.terms
 	if q.strict {
 		terms = []sessionSearchTerm{{match: q.Highlight}}
@@ -200,8 +237,7 @@ func (q Query) messages(ctx context.Context, tx *sql.Tx, candidates map[string]*
 		matched AS (SELECT message_id, SUM(term_bit) AS coverage, COUNT(*) AS terms, SUM(rank) AS score
 			FROM raw GROUP BY message_id)
 		SELECT m.session_id, m.id, matched.coverage, matched.terms,
-		       -matched.score * CASE WHEN m.role = 'user' THEN 1.2 ELSE 1.0 END
-		FROM matched CROSS JOIN messages m ON m.id = matched.message_id WHERE `+visibleSQL, args...)
+		       -matched.score * CASE WHEN m.role = 'user' THEN ? ELSE 1.0 END`+source.joinSQL(), append(args, userMessageWeight)...)
 	if err != nil {
 		return err
 	}
@@ -217,9 +253,7 @@ func (q Query) messages(ctx context.Context, tx *sql.Tx, candidates map[string]*
 		}
 		if c := candidates[sid]; c != nil {
 			c.coverage |= coverage
-			if terms > c.bestTerms || (terms == c.bestTerms && (score > c.bestScore || (score == c.bestScore && mid < c.MessageID))) {
-				c.bestTerms, c.bestScore, c.MessageID = terms, score, mid
-			}
+			c.consider(mid, terms, score)
 		}
 	}
 	return rows.Err()
@@ -231,12 +265,7 @@ func (q Query) rank(candidates map[string]*Candidate, order string, limit int) (
 	default:
 		return nil, fmt.Errorf("invalid search sort: %q", order)
 	}
-	minimum := len(q.terms)
-	if q.strict {
-		minimum = 1
-	} else if minimum > 2 {
-		minimum-- // one missed term is tolerable, but weak OR-only hits are not
-	}
+	minimum := q.minimum()
 	var matches []*Candidate
 	for _, c := range candidates {
 		if bits.OnesCount64(c.coverage) >= minimum {
@@ -276,4 +305,14 @@ func phraseRank(phrase bool) int {
 		return 1
 	}
 	return 0
+}
+
+// SnippetSQL projects excerpts using the MATCH expression that selected the hit.
+// A caller that doesn't display excerpts can skip all of those FTS lookups.
+func (q Query) SnippetSQL(omit bool, refs string) (string, []any) {
+	if omit {
+		return "''", []any{refs}
+	}
+	return `COALESCE(CASE WHEN m.id IS NOT NULL THEN (SELECT snippet(messages_fts, 0, '**', '**', '...', 32) FROM messages_fts
+	                 WHERE rowid = m.id AND messages_fts MATCH ?) END, sm.value->>'title', '')`, []any{q.Highlight, refs}
 }

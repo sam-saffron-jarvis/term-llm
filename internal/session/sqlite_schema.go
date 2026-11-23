@@ -1372,6 +1372,7 @@ var migrations = []migration{
 	{version: 70, description: "persist last context window", up: migrateLastContextWindowV70},
 	{version: 71, description: "persist linked client tool handoff ownership", up: notificationdb.MigrateLinkedToolHandoffV71},
 	{version: 72, description: "persist linked tool handoff admission receipts", up: notificationdb.MigrateLinkedToolReceiptV72},
+	{version: 73, description: "index visible message metadata for session search", up: migrateSearchIndexV73},
 }
 
 // backfillProjectOrderV61 freezes the order the sidebar last showed projects
@@ -1739,6 +1740,9 @@ func initSchema(db *sql.DB) error {
 			}
 			if err := migrateProjectOrderV61(tx); err != nil {
 				return fmt.Errorf("bootstrap project order schema: %w", err)
+			}
+			if err := migrateSearchIndexV73(tx); err != nil {
+				return fmt.Errorf("bootstrap search index: %w", err)
 			}
 			if _, err := tx.Exec(`CREATE TABLE schema_version (id INTEGER PRIMARY KEY CHECK (id = 1), version INTEGER NOT NULL)`); err != nil {
 				return fmt.Errorf("create singleton session schema marker: %w", err)

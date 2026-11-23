@@ -28,7 +28,7 @@ func TestLinkedToolHandoffMigrationV71(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Reconstruct v70: the only v71 object is the new handoff table.
-	if _, err := legacy.Exec(`DROP TABLE linked_tool_receipts; DROP TABLE linked_tool_handoffs; UPDATE schema_version SET version=70;
+	if _, err := legacy.Exec(`DROP INDEX idx_messages_search_visible; DROP TABLE linked_tool_receipts; DROP TABLE linked_tool_handoffs; UPDATE schema_version SET version=70;
  INSERT INTO sessions(id,provider,model) VALUES('legacy','debug','fast');
  INSERT INTO messages(session_id,role,parts,sequence,response_id) VALUES('legacy','assistant','[]',0,'legacy-run');`); err != nil {
 		t.Fatal(err)
@@ -36,9 +36,15 @@ func TestLinkedToolHandoffMigrationV71(t *testing.T) {
 	original := migrations
 	defer func() { migrations = original }()
 	migrations = append([]migration(nil), original...)
-	last := &migrations[len(migrations)-2]
-	if last.version != 71 {
-		t.Fatalf("expected to inject failure into v71, got v%d", last.version)
+	var last *migration
+	for i := range migrations {
+		if migrations[i].version == 71 {
+			last = &migrations[i]
+			break
+		}
+	}
+	if last == nil {
+		t.Fatal("missing v71 migration")
 	}
 	up := last.up
 	last.up = func(db schemaExecutor) error {
