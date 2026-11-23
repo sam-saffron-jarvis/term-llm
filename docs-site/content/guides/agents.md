@@ -34,7 +34,7 @@ An agent's `skills` field uses the same selection syntax as [`--skills`](/guides
 List them anytime with:
 
 ```bash
-term-llm agents list --builtin
+term-llm agents --builtin
 ```
 
 term-llm ships with these built-in agents:
@@ -91,9 +91,8 @@ The built-in `sysadmin` agent uses `workspace: none`: its execution directory re
 
 ```bash
 term-llm agents                              # List all agents
-term-llm agents list                         # Same as above
-term-llm agents list --builtin               # Only built-in agents
-term-llm agents list --user                  # Only user agents
+term-llm agents --builtin                    # Only built-in agents
+term-llm agents --user                       # Only user agents
 term-llm agents new my-agent                 # Create new agent
 term-llm agents show reviewer                # Show agent configuration
 term-llm agents edit my-agent                # Edit agent configuration
