@@ -91,7 +91,7 @@ With the default base path of `/ui`, the web runtime exposes:
 - `POST /ui/v1/projects/:id/worktrees/promote`
 - `GET /ui/v1/sidebar`
 - `GET /ui/v1/sessions?project_id=prj_...&cursor=...`
-- `GET /ui/v1/sessions/search?q=...&project_id=prj_...`
+- `GET /ui/v1/sessions/search?q=...&project_id=...` (`prefix=1`: match an unfinished final word; `include_snippet=0`: skip excerpts)
 - `PATCH /ui/v1/sessions/pinned-order` (`{"session_ids": [...]}` moves the listed pinned conversations, in order, into the positions they already hold; other pins keep theirs)
 - `GET /ui/v1/sessions/:id/children` (direct-child projection)
 - `GET /ui/v1/sessions/:id/activity` (conversation-scoped descendant agents and related job runs)

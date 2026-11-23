@@ -18,10 +18,10 @@ const (
 )
 
 // sessionDirectoryQuery describes one session-directory lookup. A non-empty
-// Query switches the source from the activity-ordered session list to full-text
-// transcript search.
+// Query switches the source from the activity-ordered session list to ranked
+// title and conversation search.
 type sessionDirectoryQuery struct {
-	Query           string // non-empty => FTS transcript search via s.store.Search
+	Query           string
 	RunningOnly     bool
 	ProjectID       string
 	IncludeArchived bool

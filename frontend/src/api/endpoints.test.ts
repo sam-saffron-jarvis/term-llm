@@ -631,10 +631,12 @@ describe('session search endpoint', () => {
     await endpoint.searchSessions('two words', true, ['web'], signal);
     let url = new URL(get.mock.calls[0][0], 'http://localhost');
     expect(url.searchParams.has('sort')).toBe(false);
+    expect(url.searchParams.has('prefix')).toBe(false);
     expect(url.searchParams.has('include_snippet')).toBe(false);
     expect(get.mock.calls[0][1]).toBe(signal);
     await endpoint.searchSessions('two words', true, ['web'], signal, 'oldest', 'me', {
       includeSnippet: false,
+      prefix: true,
     });
     url = new URL(get.mock.calls[1][0], 'http://localhost');
     expect(Object.fromEntries(url.searchParams)).toEqual({
@@ -645,6 +647,7 @@ describe('session search endpoint', () => {
       include_archived: '1',
       categories: 'web',
       include_snippet: '0',
+      prefix: '1',
     });
     expect(get.mock.calls[1][1]).toBe(signal);
   });

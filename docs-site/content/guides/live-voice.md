@@ -99,7 +99,7 @@ The router is one inexpensive turn against an ephemeral engine with exactly five
 | Tool | Purpose |
 | --- | --- |
 | `live_settings` | Inspect the call, or request a supported voice with `{"voice":"maple"}`. Changes only the current call, never saved configuration. |
-| `session_directory` | List recently active sessions or search transcripts with filters such as `{"query":"reflow","running_only":true,"project":"prj_...","include_archived":true}`. Returns at most 10 sessions with their durable number, title, running or needs-input state, and a bounded snippet. `running_only` reports the complete running set regardless of age; `include_archived` reaches sessions that are no longer active. |
+| `session_directory` | Lists recent sessions or searches titles and visible messages. Returns up to 10 numbers, titles, statuses, and excerpts. Filters: `query`, `project`, `include_archived`, and `running_only` (without a query, covers running sessions of any age). |
 | `live_switch_session` | Bind the call to an existing session by durable number or full session ID. Both `{"session":42}` and `{"session":"20260917-130000-3f5c1a9b2d4e6f70"}` are accepted. Titles, descriptions, and partial IDs are not; use `session_directory` first. |
 | `live_new_session` | Start a new empty conversation and bind the call to it. Both arguments are optional. `project` and `agent` default to the current conversation's values, and a name the host cannot resolve exactly is refused with the available choices rather than guessed. |
 | `pass_to_workspace` | Hand the request to the workspace agent, for example `{"request":"run the session store tests"}`. This host-local tool is not in the registry, needs no authority context, and writes only to the routing turn that created it. |

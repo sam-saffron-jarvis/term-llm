@@ -69,7 +69,7 @@ func (*SessionDirectoryTool) Spec() core.ToolSpec {
 	return core.ToolSpec{
 		Name: SessionDirectoryToolName,
 		Description: "List or search this term-llm instance's chat sessions. With no query, returns the most recently active " +
-			"sessions; with query, searches full transcripts and returns matching excerpts. Sessions marked running are busy, " +
+			"sessions; with query, ranks titles and visible user/assistant text. A snippet is the best matching message, or the title for a title-only hit. Sessions marked running are busy, " +
 			"and needs_input ones are waiting for user approval or an answer. Use the returned session_id or number with " +
 			"live_switch_session, and set include_archived to find a session that is no longer active: archived sessions are " +
 			"hidden otherwise but can still be switched to. At most 10 sessions are returned, so narrow the query when there are " +
@@ -77,7 +77,7 @@ func (*SessionDirectoryTool) Spec() core.ToolSpec {
 		Schema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"query":            map[string]any{"type": "string", "description": "Optional words to search for in session transcripts. Omit to list recent sessions."},
+				"query":            map[string]any{"type": "string", "description": "Optional distinctive whole words to find in titles and visible messages. Terms may match across messages; omit to list recent sessions."},
 				"running_only":     map[string]any{"type": "boolean", "description": "Only report sessions with a task currently running."},
 				"project":          map[string]any{"type": "string", "description": "Optional stable project ID (for example prj_01f...) to restrict results to one project."},
 				"include_archived": map[string]any{"type": "boolean", "description": "Include archived sessions, which are hidden by default."},

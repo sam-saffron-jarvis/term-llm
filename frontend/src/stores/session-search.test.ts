@@ -42,7 +42,7 @@ describe('session search ordering', () => {
       expect.any(AbortSignal),
       'relevance',
       '',
-      { includeSnippet: false },
+      { includeSnippet: false, prefix: true },
     );
     expect(store.searchResults.value?.map((session) => session.id)).toEqual([
       'server-first',

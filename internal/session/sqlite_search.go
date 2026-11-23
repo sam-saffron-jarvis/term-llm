@@ -15,7 +15,7 @@ func (s *SQLiteStore) Search(ctx context.Context, opts SearchOptions) ([]SearchR
 		opts.Limit = 20
 	}
 
-	q := searchrank.Parse(opts.Query)
+	q := searchrank.Parse(opts.Query, opts.Prefix)
 	if q.Highlight == "" {
 		return []SearchResult{}, nil
 	}
@@ -70,14 +70,8 @@ func (s *SQLiteStore) Search(ctx context.Context, opts SearchOptions) ([]SearchR
 		return nil, fmt.Errorf("begin search: %w", err)
 	}
 	defer tx.Rollback()
-	shortTitle := "COALESCE(NULLIF(TRIM(s.name), ''), NULLIF(TRIM(" + generatedShortCol + "), ''), TRIM(s.summary), '')"
-	longTitle := "COALESCE(NULLIF(TRIM(s.name), ''), NULLIF(TRIM(" + generatedLongCol + "), ''), " + shortTitle + ")"
-	source := searchrank.MessageSource{Visible: searchVisibleMessageSQL("m", s.hasMessageCompactionTail)}
-	if s.hasSearchMessageIndex {
-		source.Index = searchMessageIndexV73
-	}
-	matches, err := q.Collect(ctx, tx, `SELECT s.id, `+shortTitle+`, `+longTitle+`, `+lastMessageAtCol+`, s.created_at
-		FROM sessions s WHERE 1=1`+filterClause, args, source, string(opts.Sort), opts.Limit)
+	matches, err := q.Collect(ctx, tx, `SELECT s.id, COALESCE(s.name, ''), COALESCE(s.summary, ''), `+generatedShortCol+`, `+generatedLongCol+`, `+lastMessageAtCol+`, s.created_at
+		FROM sessions s WHERE 1=1`+filterClause, args, s.searchMessageSource(), searchTitles, string(opts.Sort), opts.Limit)
 	if err != nil || len(matches) == 0 {
 		return nil, err
 	}
@@ -121,4 +115,9 @@ func (s *SQLiteStore) Search(ctx context.Context, opts SearchOptions) ([]SearchR
 		results = append(results, r)
 	}
 	return results, rows.Err()
+}
+
+func searchTitles(name, summary, short, long string) (string, string) {
+	s := SessionSummary{Name: name, Summary: summary, GeneratedShortTitle: short, GeneratedLongTitle: long}
+	return s.PreferredShortTitle(), s.PreferredLongTitle()
 }

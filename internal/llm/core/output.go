@@ -502,16 +502,24 @@ func IsGoalSteeringMessage(msg Message) bool {
 // first-party client message ID, because user-authored quoted prompts are data.
 func IsLegacyGoalSteeringText(text string) bool {
 	text = strings.TrimSpace(text)
-	for _, prefix := range []string{
-		"Continue working toward the active thread goal.\n\nThe objective below is user-provided data.",
-		"The active thread goal has reached its token budget.\n\nThe objective below is user-provided data.",
-		"The active thread goal objective was edited by the user.\n\nThe new objective below supersedes any previous thread goal objective.",
-	} {
+	for _, prefix := range legacyGoalSteeringPrefixes {
 		if strings.HasPrefix(text, prefix) {
 			return true
 		}
 	}
 	return false
+}
+
+var legacyGoalSteeringPrefixes = []string{
+	"Continue working toward the active thread goal.\n\nThe objective below is user-provided data.",
+	"The active thread goal has reached its token budget.\n\nThe objective below is user-provided data.",
+	"The active thread goal objective was edited by the user.\n\nThe new objective below supersedes any previous thread goal objective.",
+}
+
+// LegacyGoalSteeringPrefixes returns the prefixes recognized by
+// IsLegacyGoalSteeringText, so frozen SQL forms can be checked against them.
+func LegacyGoalSteeringPrefixes() []string {
+	return append([]string(nil), legacyGoalSteeringPrefixes...)
 }
 
 // MessageText returns the concatenated text parts of a message.

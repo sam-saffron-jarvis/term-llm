@@ -123,3 +123,15 @@ func TestHandleSessionsSearchPreservesTrailingWhitespace(t *testing.T) {
 		t.Fatalf("status = %d, options = %#v", rr.Code, store.options)
 	}
 }
+
+func TestHandleSessionsSearchPrefixOptIn(t *testing.T) {
+	for _, param := range []string{"", "&prefix=0", "&prefix=invalid", "&prefix=1"} {
+		store := &searchRequestStore{}
+		req := httptest.NewRequest(http.MethodGet, "/v1/sessions/search?q=design+form"+param, nil)
+		rr := httptest.NewRecorder()
+		(&serveServer{store: store}).handleSessionsSearch(rr, req)
+		if rr.Code != http.StatusOK || len(store.options) != 1 || store.options[0].Prefix != (param == "&prefix=1") {
+			t.Fatalf("%q: status %d, options %#v", param, rr.Code, store.options)
+		}
+	}
+}

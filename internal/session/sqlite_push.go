@@ -195,7 +195,7 @@ func (s *SQLiteStore) setCurrentColumns() {
 	s.hasShare = true
 	s.hasTranscriptRev = true
 	s.hasMessagesTable = true
-	s.hasSearchMessageIndex = true
+	s.probeSearchMessageIndex()
 	s.hasMessageCompactionTail = true
 	s.hasMessageStreamIdentity = true
 	s.hasMessageClientID = true
@@ -310,7 +310,7 @@ func (s *SQLiteStore) probeSessionColumns() {
 }
 
 func (s *SQLiteStore) probeMessageColumns() {
-	_ = s.db.QueryRow(`SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='index' AND tbl_name='messages' AND name=?)`, searchMessageIndexV73).Scan(&s.hasSearchMessageIndex)
+	s.probeSearchMessageIndex()
 	s.hasAuthors, _ = sqliteutil.ColumnExists(s.db, "messages", "author_id")
 	rows, err := s.db.Query("PRAGMA table_info(messages)")
 	if err != nil {

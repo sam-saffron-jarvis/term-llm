@@ -827,7 +827,7 @@ export class SessionStore {
         abort.signal,
         sort,
         this.authors.createdBy,
-        { includeSnippet: false },
+        { includeSnippet: false, prefix: true },
       );
       if (!abort.signal.aborted)
         this.searchResults.value = listFrom(data, 'sessions', 'items').map((entry) =>

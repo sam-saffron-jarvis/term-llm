@@ -48,6 +48,7 @@ describe('sidebar search field', () => {
     const url = new URL(get.mock.calls[0][0], 'http://localhost');
     expect(url.pathname).toBe('/v1/sessions/search');
     expect(url.searchParams.get('q')).toBe('abc');
+    expect(url.searchParams.get('prefix')).toBe('1');
     expect(url.searchParams.get('include_snippet')).toBe('0');
     await advance(200);
     expect(get).toHaveBeenCalledTimes(1);

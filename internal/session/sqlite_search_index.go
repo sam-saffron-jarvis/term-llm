@@ -1,18 +1,18 @@
 package session
 
-// The partial covering index saves one lookup into the wide messages table
-// per FTS hit. SQLite maintains it for all insert/update/delete paths.
-const searchMessageIndexV73 = "idx_messages_search_visible"
+import (
+	"github.com/term-llm/term-llm/internal/session/searchindex"
+	"github.com/term-llm/term-llm/internal/session/searchrank"
+)
 
-func searchVisibleMessageSQL(alias string, hasTail bool) string {
-	predicate := "(" + qualifiedMessageColumn(alias, "role") + " = 'assistant' OR " + realUserMessageSQL(alias, false) + ")"
-	if hasTail {
-		predicate += " AND COALESCE(" + qualifiedMessageColumn(alias, "compaction_tail") + ", FALSE) = FALSE"
-	}
-	return predicate
+func migrateSearchIndexV73(db schemaExecutor) error { return searchindex.MigrateV73(db) }
+
+func (s *SQLiteStore) probeSearchMessageIndex() {
+	s.hasSearchMessageIndex = searchindex.MatchesV73(s.db)
 }
 
-func migrateSearchIndexV73(db schemaExecutor) error {
-	_, err := db.Exec("CREATE INDEX IF NOT EXISTS " + searchMessageIndexV73 + " ON messages(id, session_id, role) WHERE " + searchVisibleMessageSQL("", true))
-	return err
+// searchMessageSource names the covering index only when its exact v73 definition exists.
+func (s *SQLiteStore) searchMessageSource() searchrank.MessageSource {
+	visible, index := searchindex.Source("m", s.hasMessageCompactionTail, s.hasMessageClientID, s.hasSearchMessageIndex)
+	return searchrank.MessageSource{Visible: visible, Index: index}
 }

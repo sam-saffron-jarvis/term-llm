@@ -34,14 +34,8 @@ type Query struct {
 	phrase    string
 }
 
-func searchTitleTokens(text string) []string {
-	return strings.FieldsFunc(strings.ToLower(text), func(r rune) bool {
-		return !unicode.IsLetter(r) && !unicode.IsNumber(r) && !unicode.Is(unicode.Co, r)
-	})
-}
-
 // Parse builds literal title and FTS terms from a free-form search query.
-func Parse(text string) Query {
+func Parse(text string, allowPrefix bool) Query {
 	var q Query
 	seen := make(map[string]bool)
 	var activeTerm string
@@ -52,12 +46,13 @@ func Parse(text string) Query {
 		if len(words) == 0 {
 			continue
 		}
-		term := " " + strings.Join(words, " ") + " "
+		literal := strings.Join(words, " ")
+		term := " " + literal + " "
 		if !seen[term] {
 			seen[term] = true
-			activeTerm = term
+			activeTerm = field
 			ordered.WriteString(strings.TrimSuffix(term, " "))
-			q.terms = append(q.terms, sessionSearchTerm{term, sqlitefts.QuoteString(field)})
+			q.terms = append(q.terms, sessionSearchTerm{term, sqlitefts.QuoteString(literal)})
 		}
 	}
 	if len(q.terms) > maxRankedSearchTerms {
@@ -66,12 +61,12 @@ func Parse(text string) Query {
 		q.phrase = ordered.String() + " "
 		return q
 	}
-	if n := len(q.terms); n > 1 && activeTerm != "" && !hasTrailingSpace(text) {
+	if n := len(q.terms); allowPrefix && n > 1 && activeTerm != "" && !hasTrailingSpace(text) {
 		last := &q.terms[n-1]
 		word := strings.TrimSpace(last.text)
 		// While typing, expand a substantial final word, not e.g. CI, an ID,
 		// or a multi-token literal such as src/main.go.
-		if utf8.RuneCountInString(word) >= 4 && strings.IndexFunc(word, func(r rune) bool { return !unicode.IsLetter(r) }) < 0 {
+		if utf8.RuneCountInString(word) >= 4 && strings.IndexFunc(activeTerm, func(r rune) bool { return !unicode.IsLetter(r) && !unicode61Diacritic(r) }) < 0 {
 			q.prefix = true
 			last.match += "*"
 		}
@@ -167,26 +162,20 @@ func (q Query) minimum() int {
 	return len(q.terms)
 }
 
-// Collect ranks the sessions selected by titlesSQL (id, preferred short and
-// long titles, last-message time, creation time) and the indexed messages selected by the source.
-func (q Query) Collect(ctx context.Context, tx *sql.Tx, titlesSQL string, args []any, source MessageSource, sort string, limit int) ([]*Candidate, error) {
-	candidates, err := q.titles(ctx, tx, titlesSQL, args)
+// Collect ranks the selected sessions. titlesSQL returns id, name, summary,
+// short and long titles, last-message time, and creation time, in that order.
+func (q Query) Collect(ctx context.Context, tx *sql.Tx, titlesSQL string, args []any, source MessageSource, preferredTitles func(name, summary, short, long string) (string, string), sort string, limit int) ([]*Candidate, error) {
+	candidates, err := q.titles(ctx, tx, titlesSQL, args, preferredTitles)
 	if err != nil {
 		return nil, fmt.Errorf("search titles: %w", err)
 	}
-	if len(candidates) > 0 {
-		collect := q.stagedMessages
-		if len(q.terms) == 1 || q.strict {
-			collect = q.messages
-		}
-		if err := collect(ctx, tx, candidates, source); err != nil {
-			return nil, fmt.Errorf("rank matching messages: %w", err)
-		}
+	if err := q.collectMessages(ctx, tx, candidates, source); err != nil {
+		return nil, fmt.Errorf("rank matching messages: %w", err)
 	}
 	return q.rank(candidates, sort, limit)
 }
 
-func (q Query) titles(ctx context.Context, tx *sql.Tx, query string, args []any) (map[string]*Candidate, error) {
+func (q Query) titles(ctx context.Context, tx *sql.Tx, query string, args []any, preferredTitles func(string, string, string, string) (string, string)) (map[string]*Candidate, error) {
 	rows, err := tx.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
@@ -195,14 +184,15 @@ func (q Query) titles(ctx context.Context, tx *sql.Tx, query string, args []any)
 	candidates := make(map[string]*Candidate)
 	for rows.Next() {
 		var c Candidate
-		var short, long string
+		var name, summary, short, long string
 		var activity sql.NullTime
-		if err := rows.Scan(&c.SessionID, &short, &long, &activity, &c.activity); err != nil {
+		if err := rows.Scan(&c.SessionID, &name, &summary, &short, &long, &activity, &c.activity); err != nil {
 			return nil, err
 		}
 		if activity.Valid {
 			c.activity = activity.Time
 		}
+		short, long = preferredTitles(name, summary, short, long)
 		shortBits, shortPhrase := q.titleMatch(short)
 		c.Title, c.titleBits, c.phrase = short, shortBits, shortPhrase
 		if long != short {
@@ -219,7 +209,7 @@ func (q Query) titles(ctx context.Context, tx *sql.Tx, query string, args []any)
 	return candidates, rows.Err()
 }
 
-func (q Query) messages(ctx context.Context, tx *sql.Tx, candidates map[string]*Candidate, source MessageSource) error {
+func (q Query) messages(ctx context.Context, tx *sql.Tx, candidates map[string]*Candidate, source MessageSource, scope messageScope) error {
 	terms := q.terms
 	if q.strict {
 		terms = []sessionSearchTerm{{match: q.Highlight}}
@@ -227,17 +217,17 @@ func (q Query) messages(ctx context.Context, tx *sql.Tx, candidates map[string]*
 	parts := make([]string, len(terms))
 	args := make([]any, 0, len(terms)*2)
 	for i, term := range terms {
-		parts[i] = `SELECT rowid AS message_id, ? AS term_bit, rank FROM messages_fts WHERE messages_fts MATCH ?`
+		parts[i] = `SELECT rowid AS message_id, ? AS term_bit, rank FROM messages_fts WHERE messages_fts MATCH ?` + scope.filterSQL()
 		args = append(args, 1<<i, term.match)
 	}
 	// Drive primary-key message lookups from the inverted index, not from a
 	// scan of messages. Read only one row per matching message, even when
 	// several terms matched; a term contributes once to session coverage.
-	rows, err := tx.QueryContext(ctx, `WITH raw AS (`+strings.Join(parts, " UNION ALL ")+`),
+	rows, err := tx.QueryContext(ctx, `WITH `+scope.cte()+`raw AS (`+strings.Join(parts, " UNION ALL ")+`),
 		matched AS (SELECT message_id, SUM(term_bit) AS coverage, COUNT(*) AS terms, SUM(rank) AS score
 			FROM raw GROUP BY message_id)
 		SELECT m.session_id, m.id, matched.coverage, matched.terms,
-		       -matched.score * CASE WHEN m.role = 'user' THEN ? ELSE 1.0 END`+source.joinSQL(), append(args, userMessageWeight)...)
+		       -matched.score * CASE WHEN m.role = 'user' THEN ? ELSE 1.0 END`+source.joinSQL(), append(scope.bind(args), userMessageWeight)...)
 	if err != nil {
 		return err
 	}

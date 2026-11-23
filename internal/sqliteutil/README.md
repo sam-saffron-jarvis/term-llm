@@ -4,15 +4,12 @@ SQLite schema versions are authoritative on normal read-write startup. A current
 
 ## Adding a migration
 
-1. Update the canonical fresh schema.
-2. Increment the store's target version.
-3. Append exactly one ordered migration with a positive version, a non-empty description, and a non-nil callback.
-4. Add or update a faithful fixture from a released schema. Label synthetic missing-object fixtures as synthetic.
-5. Compare fresh and migrated schemas with `sqliteutil.SchemaSignature`.
-6. Test representative data preservation, callback failure rollback, and retry from the previous marker.
-7. Write the marker only in the same `BEGIN IMMEDIATE` transaction as the change it publishes.
-8. Never add startup reconciliation in place of a versioned migration.
-9. Consider whether the immediately previous binary can still read the migrated file, and document any mixed-binary boundary.
+1. Update the fresh schema and bump the target version.
+2. Append one ordered migration: positive version, non-empty description, non-nil callback.
+3. Use a released-schema fixture; label synthetic fixtures. Compare fresh and migrated schemas with `sqliteutil.SchemaSignature`.
+4. Test data preservation, rollback, and retry from the previous marker.
+5. Publish the marker in the same `BEGIN IMMEDIATE` transaction as the migration. Never substitute startup reconciliation.
+6. Document compatibility with the previous binary.
 
 Migration lists must be checked with `sqliteutil.ValidateMigrations` in package tests. Slow paths acquire `sqliteutil.WithImmediateMigrationTx`, then re-read their marker and schema state on that locked connection before writing. A future marker is rejected before writes. Released migration numbers and meanings are immutable; production repairs always use a new version.
 
@@ -60,10 +57,7 @@ Migration errors should identify the store, observed and supported versions, mig
 
 Unknown unversioned schemas fail closed with a structural description and recovery guidance, without user data. Full corruption checking belongs to `term-llm doctor` (see the [user-facing documentation](https://term-llm.com/guides/debugging/#check-the-install-with-term-llm-doctor) and [`internal/doctor/README.md`](../doctor/README.md) for contributor notes), which also compares each database against the schema its migrations produce on a fresh install, and must not be added to normal startup.
 
-- Session v73 adds a partial covering index for visible-message search, without
-  rewriting transcript rows. Older binaries reject v73 for read-write use;
-  restore a backup to downgrade. New binaries read older databases without the
-  index when opened read-only.
+- Session v73 indexes visible messages without rewriting transcripts. Newer binaries read older databases without the index; restore a backup to downgrade writers.
 
 - Session v72 records device-bound idempotency receipts for streamed linked tool
   handoffs alongside response lifecycle admission. It does not backfill receipts.

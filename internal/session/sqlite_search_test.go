@@ -124,7 +124,7 @@ func TestSearchRanksVisibleConversationAndTitles(t *testing.T) {
 	custom := add("title-only", "Performance Discourse Specs GitHub", "Retired Title")
 
 	for _, query := range []string{"performance discourse specs github", "performance discourse specs githu", "PERFORMANCE discourse specs github discourse github"} {
-		results, err := store.Search(ctx, SearchOptions{Query: query, Limit: 10})
+		results, err := store.Search(ctx, SearchOptions{Query: query, Limit: 10, Prefix: true})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -153,12 +153,48 @@ func TestSearchRanksVisibleConversationAndTitles(t *testing.T) {
 	if err := store.Update(ctx, custom); err != nil {
 		t.Fatal(err)
 	}
-	results, err := store.Search(ctx, SearchOptions{Query: "renamed conv", Limit: 1})
+	results, err := store.Search(ctx, SearchOptions{Query: "renamed conv", Limit: 1, Prefix: true})
 	if err != nil || len(results) != 1 || results[0].SessionID != custom.ID {
 		t.Fatalf("renamed prefix search = %#v, %v", results, err)
 	}
-	results, err = store.Search(ctx, SearchOptions{Query: "renamed conv\t"})
+	results, err = store.Search(ctx, SearchOptions{Query: "renamed conv\t", Prefix: true})
 	if err != nil || len(results) != 0 {
 		t.Fatalf("completed query unexpectedly expanded a prefix: %#v, %v", results, err)
+	}
+}
+
+func TestSearchTitleUsesDisplayedFallback(t *testing.T) {
+	store, err := NewSQLiteStore(Config{Enabled: true, Path: filepath.Join(t.TempDir(), "sessions.db")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	s := &Session{ID: "title", Name: "\t\u00a0", GeneratedShortTitle: "Alpine", Provider: "test", Model: "test"}
+	if err := store.Create(t.Context(), s); err != nil {
+		t.Fatal(err)
+	}
+	got, err := store.Search(t.Context(), SearchOptions{Query: "alpine"})
+	if err != nil || len(got) != 1 || got[0].Snippet != s.PreferredShortTitle() {
+		t.Fatalf("search = %#v, %v, want displayed title %q", got, err, s.PreferredShortTitle())
+	}
+}
+
+func TestSearchRareTermScopeAllowsTitleAndSplitEvidence(t *testing.T) {
+	store, err := NewSQLiteStore(Config{Enabled: true, Path: filepath.Join(t.TempDir(), "sessions.db")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	_, err = store.db.Exec(`WITH RECURSIVE n(i) AS (VALUES(1) UNION ALL SELECT i+1 FROM n WHERE i<90)
+		INSERT INTO sessions(id,name,provider,model) SELECT printf('s%d',i), 'Work log','test','test' FROM n;
+		UPDATE sessions SET name='needle' WHERE id='s1';
+		INSERT INTO messages(session_id,role,parts,sequence,text_content) SELECT id,'user','[]',0,'common' FROM sessions;
+		INSERT INTO messages(session_id,role,parts,sequence,text_content) VALUES ('s2','assistant','[]',1,'needle'),('s3','system','[]',1,'needle');`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, err := store.Search(t.Context(), SearchOptions{Query: "common needle"})
+	if err != nil || len(r) != 2 || r[0].SessionID != "s1" || r[1].SessionID != "s2" {
+		t.Fatalf("scoped search = %#v, %v", r, err)
 	}
 }

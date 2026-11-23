@@ -19,8 +19,8 @@ type messageEvidence struct {
 // stagedMessages uses the same term coverage and BM25 tie-break as the
 // one-pass query. A message can't win if its session doesn't qualify or if a
 // different message in that session covers more terms.
-func (q Query) stagedMessages(ctx context.Context, tx *sql.Tx, candidates map[string]*Candidate, source MessageSource) error {
-	evidence, err := q.collectEvidence(ctx, tx, candidates, source)
+func (q Query) stagedMessages(ctx context.Context, tx *sql.Tx, candidates map[string]*Candidate, source MessageSource, scope messageScope) error {
+	evidence, err := q.collectEvidence(ctx, tx, candidates, source, scope)
 	if err != nil {
 		return err
 	}
@@ -56,16 +56,16 @@ func (q Query) stagedMessages(ctx context.Context, tx *sql.Tx, candidates map[st
 	return nil
 }
 
-func (q Query) collectEvidence(ctx context.Context, tx *sql.Tx, candidates map[string]*Candidate, source MessageSource) ([]messageEvidence, error) {
+func (q Query) collectEvidence(ctx context.Context, tx *sql.Tx, candidates map[string]*Candidate, source MessageSource, scope messageScope) ([]messageEvidence, error) {
 	parts := make([]string, len(q.terms))
 	args := make([]any, 0, len(q.terms)*2)
 	for i, term := range q.terms {
-		parts[i] = `SELECT rowid AS message_id, ? AS term_bit FROM messages_fts WHERE messages_fts MATCH ?`
+		parts[i] = `SELECT rowid AS message_id, ? AS term_bit FROM messages_fts WHERE messages_fts MATCH ?` + scope.filterSQL()
 		args = append(args, 1<<i, term.match)
 	}
-	rows, err := tx.QueryContext(ctx, `WITH raw AS (`+strings.Join(parts, " UNION ALL ")+`),
+	rows, err := tx.QueryContext(ctx, `WITH `+scope.cte()+`raw AS (`+strings.Join(parts, " UNION ALL ")+`),
 		matched AS (SELECT message_id, SUM(term_bit) AS coverage FROM raw GROUP BY message_id)
-		SELECT m.session_id, m.id, matched.coverage, m.role = 'user'`+source.joinSQL(), args...)
+		SELECT m.session_id, m.id, matched.coverage, m.role = 'user'`+source.joinSQL(), scope.bind(args)...)
 	if err != nil {
 		return nil, err
 	}
