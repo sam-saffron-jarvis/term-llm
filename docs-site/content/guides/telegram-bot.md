@@ -27,7 +27,9 @@ The fastest path is the setup wizard:
 term-llm serve telegram --setup
 ```
 
-This prompts for your token and saves it to `config.yaml` under `serve.telegram`. Re-run with `--setup` any time to update credentials.
+This prompts for your token and at least one numeric user ID or `@username` (comma-separated if you enter more than one). It saves the token and replaces both allowlists under `serve.telegram` in `config.yaml` with the entries you provide.
+
+If you re-run `--setup` to rotate the token, re-enter every user who should retain access. To rotate just the token and keep the existing allowlist, edit only `serve.telegram.token` in `config.yaml`.
 
 To configure manually, add to `~/.config/term-llm/config.yaml`:
 
@@ -37,7 +39,7 @@ serve:
     token: "123456789:ABCdef..."
 ```
 
-## Step 3: Restrict access
+## Step 3: Restrict access manually
 
 An allowlist is required: if both `allowed_user_ids` and `allowed_usernames` are empty, all incoming messages are rejected. Configure at least one user ID or username before starting the bot.
 
