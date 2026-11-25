@@ -365,4 +365,4 @@ This is the recommended pattern for skills that need API keys or other secrets. 
 | `timeout_seconds` | | Execution timeout in seconds (default 30, max 3600; an earlier parent deadline or cancellation still applies) |
 | `env` | | Extra environment variables when running the script |
 
-Scripts run with `TERM_LLM_AGENT_DIR` set to the skill's directory and `TERM_LLM_TOOL_NAME` set to the tool name. Symlinks are resolved and containment-checked. Scripts cannot escape the skill directory.
+Scripts run with `TERM_LLM_AGENT_DIR` set to the skill's directory and `TERM_LLM_TOOL_NAME` set to the tool name. The declared `script` path must resolve inside the skill directory, including after following symlinks. This check does not sandbox the running script: it can access files outside that directory with the same OS permissions as term-llm. Treat skill scripts as trusted local code.

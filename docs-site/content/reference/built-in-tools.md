@@ -264,7 +264,7 @@ Custom tools run from the session working directory when the session is bound to
 | `timeout_seconds` | | Execution timeout in seconds (default 30, max 3600; an earlier parent deadline or cancellation still applies) |
 | `env` | | Extra environment variables to set when running the script |
 
-Scripts run with `TERM_LLM_AGENT_DIR` and `TERM_LLM_TOOL_NAME` set. Symlinks are resolved and containment-checked. Scripts cannot escape the agent directory. No approval prompt is shown; scripts in the agent directory are implicitly trusted.
+Scripts run with `TERM_LLM_AGENT_DIR` and `TERM_LLM_TOOL_NAME` set. The declared `script` path must resolve inside the agent directory, including after following symlinks. This check does not sandbox the running script: it can access files outside that directory with the same OS permissions as term-llm. No approval prompt is shown, so only use custom tools whose scripts you trust to run as local code.
 
 ### Tool Permissions
 
