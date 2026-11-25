@@ -152,6 +152,8 @@ Replace `main.go` with a file in your project. `--dry-run` previews the change w
 
 **Choose and run a command in plain English:**
 
+On macOS and Linux, run this in an interactive terminal:
+
 ```bash
 term-llm exec "list files"
 ```
@@ -159,6 +161,14 @@ term-llm exec "list files"
 You’ll see an interactive picker with suggested commands and an explanation for each. Use **↑/↓** to highlight an option, **i** for more information, and **Enter** to run the selected command. Choose **“something else...”** to refine your request, or **Esc** to cancel.
 
 For this example, suggestions might include `ls`, `ls -la`, or `ls -lh`. Check the command before selecting it: Enter runs it, rather than just copying it. If you want to print the selected command instead of running it, add `--print-only`.
+
+On native Windows, the interactive picker is unavailable. In PowerShell, use:
+
+```powershell
+term-llm exec --print-only "list files"
+```
+
+This prints the highest-ranked suggestion without opening a picker or running the command. Review the suggestion and run it yourself if it does what you want.
 
 ## 5. Make it your own
 
