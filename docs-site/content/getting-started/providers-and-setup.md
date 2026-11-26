@@ -63,10 +63,11 @@ term-llm models --provider ollama
 # Or: term-llm models --provider lmstudio
 ```
 
-Use the returned model ID:
+Use the returned model ID with the same provider you used to list models:
 
 ```bash
 term-llm ask --provider ollama:MODEL_ID "Explain git rebase in three sentences"
+# Or: term-llm ask --provider lmstudio:MODEL_ID "Explain git rebase in three sentences"
 ```
 
 Replace `MODEL_ID` with an installed model. Model capability and your hardware determine which workflows work well; agent tasks need a model with suitable tool support.
