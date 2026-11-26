@@ -17,6 +17,7 @@ import (
 	"github.com/term-llm/term-llm/internal/restart"
 	"github.com/term-llm/term-llm/internal/runtimeoutput"
 	"github.com/term-llm/term-llm/internal/session"
+	"github.com/term-llm/term-llm/internal/tools/agentmailbox"
 	"github.com/term-llm/term-llm/internal/tools/agentrun"
 	"github.com/term-llm/term-llm/internal/tools/spawnmodel"
 )
@@ -98,7 +99,7 @@ func (m *agentManager) save(record session.AgentRun) bool {
 	return true
 }
 
-func (m *agentManager) start(ctx context.Context, name, prompt, requestedModel, callID string, cb SubagentEventCallback, external SubagentEventCallback, runner SpawnAgentRunner, depth int, resume bool, instructions string, existing session.AgentRun) (*agentEntry, error) {
+func (m *agentManager) start(ctx context.Context, name, prompt, requestedModel, callID string, cb SubagentEventCallback, external SubagentEventCallback, runner SpawnAgentRunner, depth int, resume bool, instructions string, existing session.AgentRun, mailbox *string) (*agentEntry, error) {
 	id := existing.ID
 	if id == "" {
 		id = session.NewID()
@@ -191,6 +192,10 @@ func (m *agentManager) start(ctx context.Context, name, prompt, requestedModel, 
 			return abort("agent is already running in this process")
 		}
 	}
+	detached, err := agentmailbox.Admit(detached, runner, parent, id, name, record.RunGeneration, mailbox)
+	if err != nil {
+		return abort("agent not started: " + err.Error())
+	}
 	e.childRemainingDepth = max(m.remainingDepth-1, 0) // Snapshot before a queued run can detach.
 	m.agents[id] = e
 	processAgentEntries.Store(id, e)
@@ -228,13 +233,13 @@ func (m *agentManager) run(ctx context.Context, e *agentEntry, runner SpawnAgent
 	case m.slots <- struct{}{}:
 		defer func() { <-m.slots }()
 	case <-ctx.Done():
-		m.finish(e, SpawnAgentRunResult{}, agentStopError(ctx, ctx.Err()))
+		m.finish(ctx, e, SpawnAgentRunResult{}, agentStopError(ctx, ctx.Err()))
 		return
 	}
 	m.mu.Lock()
 	if ctx.Err() != nil {
 		m.mu.Unlock()
-		m.finish(e, SpawnAgentRunResult{}, agentStopError(ctx, ctx.Err()))
+		m.finish(ctx, e, SpawnAgentRunResult{}, agentStopError(ctx, ctx.Err()))
 		return
 	}
 	e.queued = false
@@ -294,7 +299,7 @@ func (m *agentManager) run(ctx context.Context, e *agentEntry, runner SpawnAgent
 	} else {
 		result, err = runner.RunAgentWithCallback(ctx, e.record.AgentName, e.record.Prompt, depth, e.originCallID, cb)
 	}
-	m.finish(e, result, agentStopError(ctx, err))
+	m.finish(ctx, e, result, agentStopError(ctx, err))
 }
 
 // agentStopError attributes a stop caused by a reload's grace-period
@@ -312,7 +317,8 @@ func isTypedTurnLimit(err error) bool {
 	return errors.As(err, &limit)
 }
 
-func (m *agentManager) finish(e *agentEntry, result SpawnAgentRunResult, err error) {
+func (m *agentManager) finish(ctx context.Context, e *agentEntry, result SpawnAgentRunResult, err error) {
+	agentmailbox.Close(ctx)
 	m.mu.Lock()
 	e.result = result
 	e.err = err

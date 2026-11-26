@@ -3,6 +3,8 @@ package tools
 import (
 	"slices"
 	"testing"
+
+	"github.com/term-llm/term-llm/internal/tools/agentmailbox"
 )
 
 func TestBuiltinDescriptorsComplete(t *testing.T) {
@@ -50,7 +52,7 @@ func TestBuiltinDescriptorLegacyLists(t *testing.T) {
 	if got := StandardToolNames(); !slices.Equal(got, want) {
 		t.Fatalf("implicit tools = %v, want %v", got, want)
 	}
-	valid := append(append([]string(nil), want...), CodeExecToolName, CodeWaitToolName, CodeCancelToolName, HubDelegateToolName, HubCheckDelegationToolName, ManageWorkspaceToolName, UpdatePlanToolName, LiveSettingsToolName, UIGetSourceToolName, UIExtensionsToolName, UIActivateToolName)
+	valid := append(append([]string(nil), want...), CodeExecToolName, CodeWaitToolName, CodeCancelToolName, agentmailbox.SendToolName, agentmailbox.WaitToolName, HubDelegateToolName, HubCheckDelegationToolName, ManageWorkspaceToolName, UpdatePlanToolName, LiveSettingsToolName, UIGetSourceToolName, UIExtensionsToolName, UIActivateToolName)
 	if got := ValidToolNames(); !slices.Equal(got, valid) {
 		t.Fatalf("completion tools = %v, want %v", got, valid)
 	}

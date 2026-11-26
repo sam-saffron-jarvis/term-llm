@@ -471,15 +471,16 @@ func (s *SessionSettings) toolConfig(cfg *config.Config, visionTarget string) to
 		toolConfig.Enabled = nil
 	}
 	for _, toolName := range s.AutoTools {
-		toolConfig.Enabled = appendUniqueString(toolConfig.Enabled, toolName)
+		toolConfig.Enabled = appendUniqueStrings(toolConfig.Enabled, strings.TrimSpace(toolName))
 	}
 	if visionTarget != "" {
-		toolConfig.Enabled = appendUniqueString(toolConfig.Enabled, tools.ViewImageToolName)
+		toolConfig.Enabled = appendUniqueStrings(toolConfig.Enabled, tools.ViewImageToolName)
 	}
 	toolConfig.AgentDir = s.AgentDir
 	toolConfig.PlanGuidance = s.PlanGuidance
 	toolConfig.Workspace = s.Workspace
 	toolConfig.RequireExplicitWorkingDir = s.RequireExplicitWorkingDir
+	toolConfig.Mailbox = s.mailbox
 	if strings.TrimSpace(s.BaseDir) != "" {
 		toolConfig.BaseDir = s.BaseDir
 		if s.Workspace != "none" {
@@ -540,19 +541,6 @@ func newVisionProviderForTarget(cfg *config.Config, target string) (core.Provide
 }
 
 func uploadsReadDir() string { return uploads.ReadDir() }
-
-func appendUniqueString(values []string, value string) []string {
-	value = strings.TrimSpace(value)
-	if value == "" {
-		return values
-	}
-	for _, existing := range values {
-		if existing == value {
-			return values
-		}
-	}
-	return append(values, value)
-}
 
 func AlignSettingsToActiveProvider(settings *SessionSettings, cfg *config.Config, provider core.Provider) {
 	if settings == nil || cfg == nil {

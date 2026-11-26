@@ -1,10 +1,11 @@
 package tools
 
 import (
-	codemodetool "github.com/term-llm/term-llm/internal/codemode/tool"
 	"strings"
 
+	codemodetool "github.com/term-llm/term-llm/internal/codemode/tool"
 	"github.com/term-llm/term-llm/internal/llm/core"
+	"github.com/term-llm/term-llm/internal/tools/agentmailbox"
 )
 
 // ToolDescriptor is a read-only snapshot of a built-in tool's public metadata.
@@ -59,6 +60,12 @@ var builtinTools = []builtinDescriptor{
 	{ToolDescriptor: ToolDescriptor{Name: ContinueAgentToolName, CodeModeExposure: core.CodeModeExposure{Allowed: true}, Policy: KindAgent, DefaultEnabled: true}, requiresTool: SpawnAgentToolName, construct: agentControlConstructor(ContinueAgentToolName)},
 	{ToolDescriptor: ToolDescriptor{Name: CancelAgentToolName, CodeModeExposure: core.CodeModeExposure{Allowed: true}, Policy: KindAgent, DefaultEnabled: true}, requiresTool: SpawnAgentToolName, construct: agentControlConstructor(CancelAgentToolName)},
 	{ToolDescriptor: ToolDescriptor{Name: ListAgentsToolName, CodeModeExposure: core.CodeModeExposure{Allowed: true}, Policy: KindAgent, DefaultEnabled: true}, requiresTool: SpawnAgentToolName, construct: agentControlConstructor(ListAgentsToolName)},
+	{ToolDescriptor: ToolDescriptor{Name: agentmailbox.SendToolName, CodeModeExposure: core.CodeModeExposure{Allowed: true}, Policy: KindAgent}, construct: func(r *LocalToolRegistry) core.Tool {
+		return agentmailbox.Tool{Name: agentmailbox.SendToolName, Inbox: r.config.Mailbox}
+	}},
+	{ToolDescriptor: ToolDescriptor{Name: agentmailbox.WaitToolName, CodeModeExposure: core.CodeModeExposure{Allowed: true}, Policy: KindAgent}, construct: func(r *LocalToolRegistry) core.Tool {
+		return agentmailbox.Tool{Name: agentmailbox.WaitToolName, Inbox: r.config.Mailbox}
+	}},
 	{ToolDescriptor: ToolDescriptor{Name: QueueAgentToolName, CodeModeExposure: core.CodeModeExposure{Allowed: true}, Policy: KindAgent, DefaultEnabled: true, FlagLabel: QueueAgentToolName}, construct: func(r *LocalToolRegistry) core.Tool { return NewQueueAgentTool(r.approval, r.config) }},
 	{ToolDescriptor: ToolDescriptor{Name: WaitForJobsToolName, CodeModeExposure: core.CodeModeExposure{Allowed: true}, Policy: KindAgent, DefaultEnabled: true, FlagLabel: WaitForJobsToolName}, construct: func(*LocalToolRegistry) core.Tool { return NewWaitForJobsTool() }},
 	{ToolDescriptor: ToolDescriptor{Name: RunAgentScriptToolName, CodeModeExposure: core.CodeModeExposure{Allowed: true}, Policy: KindExecute, DefaultEnabled: true}, construct: func(r *LocalToolRegistry) core.Tool { return NewRunAgentScriptTool(r.config, r.limits) }},

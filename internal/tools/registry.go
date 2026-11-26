@@ -17,6 +17,7 @@ import (
 	"github.com/term-llm/term-llm/internal/runtimeoutput"
 	"github.com/term-llm/term-llm/internal/session"
 	"github.com/term-llm/term-llm/internal/skills"
+	"github.com/term-llm/term-llm/internal/tools/agentmailbox"
 )
 
 // LocalToolRegistry manages local tools and their registration with the engine.
@@ -225,7 +226,7 @@ func (r *LocalToolRegistry) HasVisibleShell() bool {
 func (r *LocalToolRegistry) registerEnabledTools() error {
 	hasPathTool := false
 	for _, specName := range r.config.Enabled {
-		if specName == ManageWorkspaceToolName {
+		if specName == ManageWorkspaceToolName || (agentmailbox.IsTool(specName) && !r.config.Mailbox.Available()) {
 			continue
 		}
 		if IsPathCapableTool(specName) {

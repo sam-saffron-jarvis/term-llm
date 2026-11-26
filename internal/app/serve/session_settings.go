@@ -4,6 +4,7 @@ import (
 	"github.com/term-llm/term-llm/internal/agents"
 	appmemory "github.com/term-llm/term-llm/internal/app/memory"
 	"github.com/term-llm/term-llm/internal/tools"
+	"github.com/term-llm/term-llm/internal/tools/agentmailbox"
 )
 
 // SessionSettings holds the resolved settings for a session, merged from
@@ -30,6 +31,7 @@ type SessionSettings struct {
 	ShellAutoRun bool
 	Scripts      []string
 	Spawn        tools.SpawnConfig
+	mailbox      *agentmailbox.Inbox
 
 	// BaseDir is the unified per-session working directory for all tools. It is
 	// threaded through ToolConfig and never applied with os.Chdir.

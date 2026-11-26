@@ -15,6 +15,7 @@ import (
 	"github.com/term-llm/term-llm/internal/llm/core"
 	"github.com/term-llm/term-llm/internal/llm/engine"
 	"github.com/term-llm/term-llm/internal/session"
+	"github.com/term-llm/term-llm/internal/tools/agentmailbox"
 	"github.com/term-llm/term-llm/internal/tools/agentwait"
 	"github.com/term-llm/term-llm/internal/tools/spawnmodel"
 )
@@ -28,6 +29,8 @@ type SpawnAgentArgs struct {
 	Model          string `json:"model,omitempty"`            // Optional: exact provider:model override
 	CWD            string `json:"cwd,omitempty"`              // Optional: existing child working directory
 	NotifyWhenDone bool   `json:"notify_when_done,omitempty"` // Reactivate parent session after completion
+
+	Mailbox *string `json:"mailbox,omitempty"` // Experimental sibling-mailbox address for this child.
 }
 
 // Interventions carry a delivery disposition because queue acceptance is not
@@ -371,6 +374,7 @@ Guidelines:
 					"description": "Optional model override in provider:model format. Use an exact model ID or a supported provider shorthand. If omitted, the sub-agent uses its configured/default model.",
 					"pattern":     `^[^:\s]+:\S+$`,
 				},
+				"mailbox": agentmailbox.SpawnSchema(),
 			},
 			"required":             []string{"agent_name", "prompt"},
 			"additionalProperties": false,
@@ -570,7 +574,7 @@ func (t *SpawnAgentTool) Execute(ctx context.Context, args json.RawMessage) (cor
 		emitExecutionSubagentEvent(executionCallback, callID, eventCallID, event)
 	}
 	initial := session.AgentRun{Model: strings.TrimSpace(t.config.AgentModels[a.AgentName]), BaseDir: baseDir, NotifyWhenDone: a.NotifyWhenDone, NotifyOrigin: origin}
-	entry, startErr := t.manager.start(ctx, a.AgentName, a.Prompt, requestedModel, callID, cb, t.GetEventCallback(), runner, currentDepth+1, false, "", initial)
+	entry, startErr := t.manager.start(ctx, a.AgentName, a.Prompt, requestedModel, callID, cb, t.GetEventCallback(), runner, currentDepth+1, false, "", initial, a.Mailbox)
 	if startErr != nil {
 		return spawnAgentErrorOutput(t.formatError(ErrExecutionFailed, startErr.Error()), false), nil
 	}

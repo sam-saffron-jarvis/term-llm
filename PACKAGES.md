@@ -232,6 +232,7 @@ One line per root-module package, generated from package doc comments by `make d
 - `internal/tooldiscovery/evalcmd` — runs tool-discovery evaluations against fixture MCP servers and catalogues.
 - `internal/tooldiscovery/evalfixture` — provides the deterministic ten-server, 200-tool MCP federation and its single-server aggregate used to evaluate deferred tool discovery with real transports.
 - `internal/tools` — provides a permission-aware local tool system for term-llm.
+- `internal/tools/agentmailbox` — implements the experimental, process-local sibling mailbox for immediate children of one delegated run.
 - `internal/tools/agentrun` — classifies child run statuses and their process owners.
 - `internal/tools/agentwait` — carries exact, generation-scoped child wait evidence for host turn finalization.
 - `internal/tools/gitidentity` — validates checkout membership before sharing a Git approval identity.

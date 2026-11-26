@@ -256,7 +256,7 @@ func TestAgentBarrierWithoutStoreAcknowledgesOnlyOfferedGeneration(t *testing.T)
 	if err != nil || e == nil || record.Output != "done" || !record.CollectedAt.IsZero() {
 		t.Fatalf("ACK discarded result: %+v %v", record, err)
 	}
-	entry, err := tool.manager.start(ctx, record.AgentName, record.Prompt, "", "", nil, nil, runner, 1, true, "follow up", record)
+	entry, err := tool.manager.start(ctx, record.AgentName, record.Prompt, "", "", nil, nil, runner, 1, true, "follow up", record, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

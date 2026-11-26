@@ -4,11 +4,13 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 
 	"github.com/term-llm/term-llm/internal/pathutil"
 	"github.com/term-llm/term-llm/internal/runtimeoutput"
+	"github.com/term-llm/term-llm/internal/tools/agentmailbox"
 )
 
 // ToolConfig holds configuration for the local tool system.
@@ -45,7 +47,8 @@ type ToolConfig struct {
 	// BaseDir for new code. When ShellWorkingDir is empty, shell execution falls
 	// back to BaseDir. Legacy callers then use process CWD; unbound daemon
 	// runtimes set RequireExplicitWorkingDir to reject that ambient fallback.
-	ShellWorkingDir string `mapstructure:"-"`
+	ShellWorkingDir string              `mapstructure:"-"`
+	Mailbox         *agentmailbox.Inbox `json:"-" mapstructure:"-"`
 }
 
 // DefaultToolConfig returns sensible defaults for tool configuration.
@@ -308,12 +311,7 @@ func (c *ToolConfig) IsToolEnabled(specName string) bool {
 	mu := c.mutex()
 	mu.RLock()
 	defer mu.RUnlock()
-	for _, name := range c.Enabled {
-		if name == specName {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(c.Enabled, specName) && (!agentmailbox.IsTool(specName) || c.Mailbox.Available())
 }
 
 // EnabledSpecNames returns the spec names for all enabled tools.

@@ -285,6 +285,9 @@ func (r *SpawnAgentRunner) RunAgentWithCallback(ctx context.Context, agentName s
 	return r.runAgentInternal(ctx, agentName, prompt, depth, callID, cb, tools.SpawnAgentRunOptions{})
 }
 
+// SupportsAgentMailbox reports that the runner preserves the host child context.
+func (*SpawnAgentRunner) SupportsAgentMailbox() bool { return true }
+
 // RunAgentWithCallbackAndOptions loads and runs a sub-agent with an event callback and call-specific overrides.
 func (r *SpawnAgentRunner) RunAgentWithCallbackAndOptions(ctx context.Context, agentName string, prompt string, depth int,
 	callID string, cb tools.SubagentEventCallback, opts tools.SpawnAgentRunOptions) (tools.SpawnAgentRunResult, error) {

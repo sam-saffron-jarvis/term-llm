@@ -24,6 +24,7 @@ import (
 	"github.com/term-llm/term-llm/internal/runtimeoutput"
 	"github.com/term-llm/term-llm/internal/session"
 	"github.com/term-llm/term-llm/internal/tools"
+	"github.com/term-llm/term-llm/internal/tools/agentmailbox"
 )
 
 type cmdRunner struct {
@@ -263,6 +264,13 @@ func (r *cmdRunner) prepare(ctx context.Context, req runpkg.Request, sink runpkg
 		settings.PrimaryWorkspace = selected.PrimaryWorkspace
 		settings.Workspace = selected.Workspace
 		settings.RequireExplicitWorkingDir = selected.RequireExplicitWorkingDir
+	}
+	settings.mailbox = nil
+	if req.IsSubagent {
+		settings.mailbox = agentmailbox.ForChild(ctx, req.SessionID, req.ParentSessionID)
+		if settings.mailbox != nil {
+			settings.AutoTools = appendUniqueStrings(settings.AutoTools, agentmailbox.SendToolName, agentmailbox.WaitToolName)
+		}
 	}
 	if r.defaults.RestoreAgentSkills != nil {
 		agentSkills = *r.defaults.RestoreAgentSkills

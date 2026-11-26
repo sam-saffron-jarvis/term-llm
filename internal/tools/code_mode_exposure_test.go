@@ -14,6 +14,7 @@ func TestBuiltinCodeModeExposureInventory(t *testing.T) {
 		"view_image", "show_media", "show_image", "image_generate", "spawn_agent",
 		"wait_agent", "continue_agent", "cancel_agent", "list_agents", "queue_agent",
 		"wait_for_jobs", "run_agent_script", "update_plan", "ui_get_source", "search_skills", "get_goal",
+		"message_agent", "wait_message",
 	}
 	direct := []string{
 		"code_mode", "spawn_script", "wait_script", "cancel_script", "ask_user", "initiate_handover",
