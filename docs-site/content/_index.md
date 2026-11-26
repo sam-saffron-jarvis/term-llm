@@ -88,7 +88,7 @@ workflows:
       command: 'term-llm chat @codebase'
       url: "/guides/agents/"
     - title: "Review before you commit"
-      text: "Ask a git-aware, read-only reviewer to look for bugs in your staged changes."
+      text: "Ask a git-aware reviewer to look for bugs in your staged changes."
       command: 'term-llm ask @reviewer "review the staged changes"'
       url: "/guides/agents/#built-in-agents"
     - title: "Implement a fix"
