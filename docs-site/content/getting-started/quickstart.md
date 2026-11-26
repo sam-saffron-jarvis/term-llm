@@ -134,13 +134,13 @@ Try asking: “Where does this application handle configuration?” Review works
 
 Choose a task that fits your work. These examples use your configured default provider.
 
-**Review staged changes without editing them:**
+**Review staged changes:**
 
 ```bash
 term-llm ask @reviewer "review the staged changes"
 ```
 
-Run it in a Git repository with staged changes. The built-in reviewer is read-only and git-aware. Expect observations tied to the code, not automatic fixes.
+Run it in a Git repository with staged changes. Expect observations tied to the code, not automatic fixes. The built-in reviewer has no dedicated file-editing tools, but it is not a read-only sandbox: permitted shell commands can make changes. For example, `git fetch` can update Git metadata.
 
 **Preview a targeted edit:**
 
