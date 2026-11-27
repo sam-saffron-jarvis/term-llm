@@ -330,13 +330,13 @@
   white-space: nowrap;
 }
 
+/* Another agent finished work not yet visited: the session row's unread blue. */
 .hub-agent-attention {
-  width: 0.48rem;
-  height: 0.48rem;
+  width: 7px;
+  height: 7px;
   justify-self: center;
   border-radius: var(--radius-full);
-  background: #22c55e;
-  box-shadow: 0 0 0 0.14rem rgb(34 197 94 / 12%);
+  background: var(--accent-blue);
 }
 
 .sidebar-search-wrap {

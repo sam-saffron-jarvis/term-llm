@@ -4,10 +4,10 @@ import type { ClipboardAdapter } from '../platform/clipboard';
 import { bindNodeFilterURL } from '../platform/node-filter-url';
 import type { HubStore } from '../stores/hub-store';
 import { AddNodeDialog } from './AddNodeDialog';
-import { AttentionPanels } from './AttentionPanels';
 import { DelegationsPanel } from './DelegationsPanel';
 import { HubHeader } from './HubHeader';
 import { NodeGrid } from './NodeCard';
+import { NowPanel } from './NowPanel';
 import { SecurityPanel } from './SecurityPanel';
 
 export function HubApp({
@@ -38,7 +38,7 @@ export function HubApp({
             {error}
           </div>
         )}
-        <AttentionPanels store={store} />
+        <NowPanel store={store} />
         <NodeGrid store={store} />
         <DelegationsPanel config={config} store={store} />
         {!store.initialLoading.value && !store.nodes.value.length && (

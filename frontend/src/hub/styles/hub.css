@@ -2,6 +2,19 @@
 @import '../../styles/base/typography.css';
 @import '../../styles/base/admin-theme.css';
 
+/* Conversation state uses the web UI sidebar's dots throughout the Hub: amber
+   waits on you, blue finished unread, and running pulses in a neutral. */
+:root {
+  --accent-blue: #60a5fa;
+  --session-running: color-mix(in oklab, var(--text) 35%, var(--bg));
+}
+
+@media (prefers-color-scheme: light) {
+  :root {
+    --accent-blue: #2563eb;
+  }
+}
+
 * {
   box-sizing: border-box;
   scrollbar-width: thin;
@@ -491,19 +504,25 @@ body {
 }
 
 .node-session-row.is-active .node-session-title::before,
-.node-session-row.is-input-required .node-session-title::before {
+.node-session-row.is-input-required .node-session-title::before,
+.node-session-row.is-unseen .node-session-title::before {
   content: '';
   display: inline-block;
   width: 7px;
   height: 7px;
   margin-right: 0.4rem;
   border-radius: 50%;
-  background: #22c55e;
+  background: var(--accent-blue);
   vertical-align: 0.08em;
 }
 
 .node-session-row.is-active .node-session-title::before {
+  background: var(--session-running);
   animation: hub-pulse-dot 1.8s ease-in-out infinite;
+}
+
+.node-session-row.is-input-required .node-session-title::before {
+  background: var(--warn);
 }
 
 @keyframes hub-pulse-dot {
@@ -987,17 +1006,6 @@ body {
   margin-bottom: 0.85rem;
 }
 
-.review-head,
-.attention-actions {
-  flex-wrap: wrap;
-}
-
-.attention-actions {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-}
-
 .delegations-head h2 {
   margin: 0;
   font-size: 1.02rem;
@@ -1064,10 +1072,17 @@ body {
   border-color: color-mix(in srgb, var(--down) 45%, var(--border));
 }
 
-.status-running,
-.status-queued {
-  color: var(--warn);
-  border-color: color-mix(in srgb, var(--warn) 45%, var(--border));
+/* A running delegation pulses in the same neutral as a running conversation. */
+.status-running::before {
+  content: '';
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-right: 0.35rem;
+  border-radius: 50%;
+  background: var(--session-running);
+  vertical-align: 0.1em;
+  animation: hub-pulse-dot 1.8s ease-in-out infinite;
 }
 
 .delegation-meta {
@@ -1184,88 +1199,244 @@ body {
   }
 }
 
-.attention-panel {
-  margin-bottom: 1.25rem;
-  padding: 1rem;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
-  background: var(--surface);
+/* The node card's activity dot shows its most urgent conversation, without
+   pulsing: amber waiting, then blue unread, then neutral running. */
+.attention-dot {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  flex: 0 0 7px;
+  border-radius: 50%;
+  background: var(--session-running);
 }
 
-.attention-list {
+.attention-dot.wait {
+  background: var(--warn);
+}
+
+.attention-dot.review {
+  background: var(--accent-blue);
+}
+
+/* Now: three quiet lanes above the node grid. */
+.now {
+  margin: 0.25rem 0 2.25rem;
+}
+
+.now-head {
+  display: flex;
+  align-items: baseline;
+  gap: 0.6rem;
+  margin-bottom: 0.85rem;
+}
+
+.now-head h2 {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.now-lanes {
   display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 2.5rem;
+}
+
+.now-lane {
+  min-width: 0;
+}
+
+.now-lane-head {
+  display: flex;
+  align-items: center;
   gap: 0.5rem;
-  margin: 0.75rem 0 0;
+  min-height: 28px;
+  margin-bottom: 0.3rem;
+  padding-bottom: 0.45rem;
+  border-bottom: 1px solid var(--border);
+  color: var(--muted);
+  font-size: 0.8rem;
+  font-weight: 650;
+}
+
+.now-lane-head h3 {
+  margin: 0;
+  font: inherit;
+}
+
+.now-count {
+  color: var(--muted-2);
+  font-variant-numeric: tabular-nums;
+}
+
+.now-lane-head .hub-btn {
+  min-height: 0;
+  margin: -0.3rem 0 -0.3rem auto;
+  padding-block: 0.1rem;
+  border-color: transparent;
+  background: transparent;
+}
+
+.now-list {
+  margin: 0;
   padding: 0;
   list-style: none;
 }
 
-.attention-row {
+.now-item {
   display: flex;
   align-items: center;
-  gap: 0.65rem;
-  padding: 0.7rem 0.8rem;
-  color: inherit;
-  text-decoration: none;
-  border-radius: var(--radius-md);
-  background: color-mix(in srgb, var(--surface) 80%, #22c55e 6%);
+  gap: 0.25rem;
 }
 
-.attention-item {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-}
-
-.attention-item > .attention-row {
-  flex: 1;
-  min-width: 0;
-}
-
-.attention-item-action {
-  flex: none;
-}
-
-.attention-row:hover {
-  background: color-mix(in srgb, var(--surface) 75%, #22c55e 12%);
-}
-
-.attention-row.is-stale {
-  opacity: 0.72;
-}
-
-.attention-row.is-stale .attention-dot {
-  background: var(--warn);
-}
-
-.input-required-panel {
-  border-color: color-mix(in srgb, #22c55e 32%, var(--border));
-}
-
-.attention-dot {
-  display: inline-block;
-  width: 8px;
-  height: 8px;
-  flex: 0 0 8px;
-  border-radius: 50%;
-  background: #22c55e;
-}
-
-.attention-body {
+.now-row {
   display: grid;
+  flex: 1;
+  grid-template-columns: 10px minmax(0, 1fr);
+  align-items: center;
+  gap: 0.05rem 0.7rem;
   min-width: 0;
-  gap: 0.2rem;
+  margin-left: -0.6rem;
+  padding: 0.45rem 0.6rem;
+  border-radius: var(--radius-md);
+  color: var(--text);
+  text-decoration: none;
 }
 
-.attention-title {
+.now-row:hover {
+  background: var(--surface-2);
+}
+
+.now-row.is-stale {
+  opacity: 0.7;
+}
+
+.now-title,
+.now-meta {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.attention-meta {
+.now-title {
+  font-size: 0.92rem;
+  font-weight: 600;
+}
+
+.now-meta {
+  grid-column: 2;
   color: var(--muted);
-  font-size: 0.82rem;
+  font-size: 0.8rem;
+}
+
+.now-wait {
+  color: color-mix(in srgb, var(--warn) 85%, var(--text));
+}
+
+.now-failed {
+  color: var(--down);
+}
+
+.now-glyph {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent-blue);
+}
+
+.now-glyph.wait {
+  background: var(--warn);
+}
+
+.now-glyph.run {
+  background: var(--session-running);
+  animation: hub-pulse-dot 1.8s ease-in-out infinite;
+}
+
+/* A lane's own marker is a label, and Hub aggregate indicators never move. */
+.now-lane-head .now-glyph {
+  animation: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .now-glyph.run {
+    animation: none;
+  }
+}
+
+.now-empty,
+.now-status {
+  color: var(--muted);
+  font-size: 0.84rem;
+}
+
+.now-empty {
+  padding: 0.45rem 0;
+}
+
+.now-status.hub-error {
+  margin: 0.4rem 0;
+}
+
+.now-seen,
+.now-more {
+  border: 0;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.now-seen {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+}
+
+.now-seen svg {
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: currentcolor;
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.now-seen:hover:not(:disabled),
+.now-more:hover {
+  background: var(--surface-2);
+  color: var(--text);
+}
+
+.now-seen:disabled {
+  cursor: not-allowed;
+  opacity: 0.4;
+}
+
+/* Where a pointer can hover, Mark seen appears with the row it acts on. */
+@media (hover: hover) {
+  .now-item:not(:hover, :focus-within) .now-seen {
+    opacity: 0;
+  }
+}
+
+.now-more {
+  margin: 0.2rem 0 0 -0.4rem;
+  padding: 0.25rem 0.4rem;
+  font: inherit;
+  font-size: 0.8rem;
+  font-weight: 600;
+}
+
+@media (width <= 900px) {
+  .now-lanes {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 1.5rem;
+  }
 }
 
 /* Authentication surfaces share the Hub palette without loading chat styles. */

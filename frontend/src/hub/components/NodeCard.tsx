@@ -61,11 +61,22 @@ export const NodeCard = memo(function NodeCard({
   ].filter(Boolean);
   const sessions = node.sessions;
   const resumePath = nodeResumePath(node);
-  const attention =
-    sessions &&
-    (Number(sessions.active_count) > 0 ||
-      Number(sessions.input_required_count) > 0 ||
-      Number(sessions.unseen_count) > 0);
+  // The most urgent conversation colours the node's dot, as a sidebar row would.
+  const attention = !sessions
+    ? ''
+    : Number(sessions.input_required_count) > 0
+      ? 'wait'
+      : Number(sessions.unseen_count) > 0
+        ? 'review'
+        : Number(sessions.active_count) > 0
+          ? 'run'
+          : '';
+  // Finished conversations not yet visited, from the authoritative review inbox.
+  const unread = new Set(
+    store.attentionVerified.value
+      ? store.inbox.value.filter((item) => item.node_id === node.id).map((item) => item.session_id)
+      : [],
+  );
   const keyShortcuts = reorderable ? 'Alt+ArrowUp Alt+ArrowDown' : undefined;
 
   const remove = async () => {
@@ -109,9 +120,9 @@ export const NodeCard = memo(function NodeCard({
           }
         />
         <h2 class="node-name">{node.name}</h2>
-        {!stale && attention && (
+        {!stale && sessions && attention && (
           <span
-            class="attention-dot"
+            class={`attention-dot ${attention}`}
             title={`${Number(sessions.input_required_count) || 0} waiting · ${Number(sessions.active_count) || 0} running · ${Number(sessions.unseen_count) || 0} ready to review`}
           />
         )}
@@ -128,7 +139,7 @@ export const NodeCard = memo(function NodeCard({
         </div>
       )}
       {stale && <div class="node-summary-line hub-cache-marker">Last seen · updating</div>}
-      <NodeSessions node={node} verified={!stale} />
+      <NodeSessions node={node} verified={!stale} unread={unread} />
       {!status.reachable && status.error && <div class="node-error">{status.error}</div>}
       {(node.diagnostics?.length ?? 0) > 0 && (
         <div class="node-diagnostics">

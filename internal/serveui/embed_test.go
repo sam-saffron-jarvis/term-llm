@@ -314,8 +314,12 @@ func TestProductionBundleSizeBudgets(t *testing.T) {
 		// retain modest gzip headroom for the updated runtime and bundler.
 		// The reorder hook's grid geometry, which only the Hub uses, moved to its
 		// own module so the chat graph drops it: 107.51/35.29 kB.
-		"dist/hub.js":  {raw: 107_700, gzip: 35_500},
-		"dist/hub.css": {raw: 20_500, gzip: 5_500},
+		// The dashboard's "Now" lanes (needs you, running across nodes, to
+		// review), replacing the two attention panels, plus the web UI
+		// sidebar's conversation dots on node cards and delegations, take JS
+		// to 109.16/36.15 kB and CSS from 20.35 to 22.33/5.66 kB.
+		"dist/hub.js":  {raw: 109_350, gzip: 36_350},
+		"dist/hub.css": {raw: 22_500, gzip: 5_850},
 		// The proxy admin UI is served separately from Chat and Hub. Give it
 		// room to grow without relaxing either of their download budgets.
 		"dist/proxy.js":  {raw: 313_000, gzip: 112_000},

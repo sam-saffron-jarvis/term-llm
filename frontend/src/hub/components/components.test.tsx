@@ -1,6 +1,6 @@
 import { observeRenders } from '../../test/render-counts';
 import { describe, expect, it, vi } from 'vitest';
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/preact';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/preact';
 import { HubAPIError, type HubClient } from '../../api/hub-client';
 import { LONG_PRESS_MS } from '../../components/useReorderableList';
 import { permuteOrder } from '../../stores/saved-order';
@@ -10,13 +10,13 @@ import type { PasskeyPlatform } from '../platform/passkeys';
 import { AuthStore } from '../stores/auth-store';
 import { HubStore } from '../stores/hub-store';
 import { AddNodeDialog } from './AddNodeDialog';
-import { AttentionPanels } from './AttentionPanels';
 import { AuthApp } from './AuthApp';
 import { BearerLogin } from './BearerLogin';
 import { DelegationsPanel } from './DelegationsPanel';
 import { HubApp } from './HubApp';
 import { NodeCard, NodeGrid } from './NodeCard';
 import { NodeSessions } from './NodeSessions';
+import { NowPanel } from './NowPanel';
 import { RegistrationHelp } from './RegistrationHelp';
 import { SecurityPanel } from './SecurityPanel';
 
@@ -114,9 +114,9 @@ describe('Hub components', () => {
     ];
     value.totalUnseen.value = 75;
     value.attentionHasMore.value = true;
-    render(<AttentionPanels store={value} />);
+    render(<NowPanel store={value} />);
     expect(screen.getByRole('button', { name: 'Clear all' })).toBeDisabled();
-    expect(screen.getByText('75 ready · showing newest')).toBeVisible();
+    expect(screen.getByText('75 · showing newest')).toBeVisible();
     fireEvent.click(screen.getByRole('button', { name: 'Clear all' }));
     expect(clearAttention).not.toHaveBeenCalled();
     await act(() => {
@@ -133,7 +133,7 @@ describe('Hub components', () => {
     expect(screen.getByRole('button', { name: 'Clear all' })).toBeEnabled();
     fireEvent.click(screen.getByRole('button', { name: 'Clear all' }));
     await waitFor(() =>
-      expect(screen.queryByRole('region', { name: 'Ready to review' })).not.toBeInTheDocument(),
+      expect(screen.queryByRole('region', { name: 'To review' })).not.toBeInTheDocument(),
     );
     expect(clearAttention).toHaveBeenCalledTimes(2);
     value.dispose();
@@ -159,7 +159,7 @@ describe('Hub components', () => {
         resume_path: '/node/alpha/chat/ready',
       },
     ];
-    render(<AttentionPanels store={value} />);
+    render(<NowPanel store={value} />);
     const button = screen.getByRole('button', { name: 'Mark Ready conversation as seen' });
     expect(button).toBeDisabled();
     await act(() => {
@@ -174,6 +174,180 @@ describe('Hub components', () => {
       }),
     );
     await waitFor(() => expect(screen.queryByText('Ready conversation')).not.toBeInTheDocument());
+    value.dispose();
+  });
+
+  it('lists running conversations across nodes, leaving blocked ones to Needs you', async () => {
+    const value = store();
+    const session = (id: string, extra = {}) => ({
+      id,
+      short_title: `Session ${id}`,
+      resume_path: `/hub/node/alpha/chat/${id}`,
+      active_run: true,
+      message_count: 4,
+      ...extra,
+    });
+    value.nodes.value = [
+      {
+        id: 'alpha',
+        name: 'Alpha',
+        proxy_path: '/hub/node/alpha/',
+        status: { reachable: true, state: 'ok', latency_ms: 1 },
+        sessions: {
+          count_label: '9 sessions',
+          active_count: 4,
+          active: [
+            session('run', { active_children: true }),
+            session('blocked', { interaction_required: true }),
+          ],
+        },
+      } as HubNode,
+    ];
+    value.nodesVerified.value = true;
+    value.attentionVerified.value = true;
+    value.inputRequired.value = [
+      {
+        node_id: 'alpha',
+        node_name: 'Alpha',
+        session_id: 'blocked',
+        title: 'Session blocked',
+        pending_interaction_count: 1,
+        pending_interaction_kinds: ['approval.shell'],
+        resume_path: '/hub/node/alpha/chat/blocked',
+      },
+    ];
+    render(<NowPanel store={value} />);
+
+    const running = within(screen.getByRole('region', { name: 'Running' }));
+    expect(running.getByText('3')).toBeVisible();
+    expect(running.getByRole('link', { name: /Session run/ })).toHaveAttribute(
+      'href',
+      '/hub/node/alpha/chat/run',
+    );
+    expect(running.getByText(/with subagents · 4 messages/)).toBeVisible();
+    expect(running.queryByText('Session blocked')).not.toBeInTheDocument();
+    expect(running.getByRole('link', { name: '2 more on Alpha' })).toHaveAttribute(
+      'href',
+      '/hub/node/alpha/',
+    );
+    const waiting = within(screen.getByRole('region', { name: 'Needs you' }));
+    expect(waiting.getByText('Session blocked')).toBeVisible();
+    expect(waiting.getByText('Shell approval')).toBeVisible();
+    expect(screen.getByRole('region', { name: 'To review' })).toHaveTextContent(
+      'Nothing to review',
+    );
+    value.dispose();
+  });
+
+  it('says when nothing is happening and folds long lanes', async () => {
+    const value = store();
+    expect(render(<NowPanel store={value} />).container).toBeEmptyDOMElement();
+    value.dispose();
+
+    const busy = store();
+    busy.nodes.value = [
+      {
+        id: 'idle',
+        name: 'Idle',
+        status: { reachable: true, state: 'ok', latency_ms: 1 },
+      } as HubNode,
+    ];
+    busy.nodesVerified.value = true;
+    busy.attentionVerified.value = true;
+    busy.inbox.value = Array.from({ length: 7 }, (_, index) => ({
+      node_id: 'idle',
+      node_name: 'Idle',
+      session_id: `done-${index}`,
+      title: `Finished ${index}`,
+      outcome: index ? 'completed' : 'failed',
+      attention_seq: index,
+      resume_path: `/hub/node/idle/chat/done-${index}`,
+    }));
+    render(<NowPanel store={busy} />);
+    expect(screen.getByRole('region', { name: 'Needs you' })).toHaveTextContent(
+      'Nothing waiting on you',
+    );
+    expect(screen.getByRole('region', { name: 'Running' })).toHaveTextContent('Nothing running');
+    const review = within(screen.getByRole('region', { name: 'To review' }));
+    expect(review.getAllByRole('link')).toHaveLength(5);
+    expect(review.getByText('failed')).toHaveClass('now-failed');
+    fireEvent.click(review.getByRole('button', { name: 'Show 2 more' }));
+    expect(review.getAllByRole('link')).toHaveLength(7);
+    expect(review.getByRole('button', { name: 'Show fewer' })).toHaveAttribute(
+      'aria-expanded',
+      'true',
+    );
+    busy.dispose();
+  });
+
+  it('colours a node by its most urgent conversation: waiting, then unread, then running', () => {
+    const value = store();
+    value.nodesVerified.value = true;
+    const card = (sessions: HubNode['sessions']) => (
+      <NodeCard
+        node={
+          {
+            id: 'alpha',
+            name: 'Alpha',
+            source: 'config',
+            status: { reachable: true, state: 'ok', latency_ms: 1 },
+            sessions,
+          } as HubNode
+        }
+        store={value}
+      />
+    );
+    const view = render(
+      card({ count_label: '', active_count: 1, unseen_count: 1, input_required_count: 1 }),
+    );
+    const dot = () => view.container.querySelector('.attention-dot');
+    expect(dot()).toHaveClass('wait');
+    view.rerender(card({ count_label: '', active_count: 1, unseen_count: 1 }));
+    expect(dot()).toHaveClass('review');
+    view.rerender(card({ count_label: '', active_count: 1 }));
+    expect(dot()).toHaveClass('run');
+    view.rerender(card({ count_label: '' }));
+    expect(dot()).toBeNull();
+    value.dispose();
+  });
+
+  it('marks node sessions waiting in the review inbox as unread', () => {
+    const value = store();
+    value.nodesVerified.value = true;
+    value.attentionVerified.value = true;
+    const item = (node_id: string, session_id: string) => ({
+      node_id,
+      node_name: node_id,
+      session_id,
+      title: session_id,
+      outcome: 'completed',
+      attention_seq: 1,
+      resume_path: `/hub/node/${node_id}/chat/${session_id}`,
+    });
+    value.inbox.value = [item('alpha', 'done'), item('beta', 'other')];
+    render(
+      <NodeCard
+        node={
+          {
+            id: 'alpha',
+            name: 'Alpha',
+            source: 'config',
+            status: { reachable: true, state: 'ok', latency_ms: 1 },
+            sessions: {
+              count_label: '2 sessions',
+              recent: [
+                { id: 'done', short_title: 'Done', resume_path: '/done', message_count: 2 },
+                { id: 'other', short_title: 'Other', resume_path: '/other' },
+              ],
+            },
+          } as HubNode
+        }
+        store={value}
+      />,
+    );
+    expect(screen.getByText('Done').closest('.node-session-row')).toHaveClass('is-unseen');
+    expect(screen.getByText('to review · 2 messages')).toBeVisible();
+    expect(screen.getByText('Other').closest('.node-session-row')).not.toHaveClass('is-unseen');
     value.dispose();
   });
 

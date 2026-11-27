@@ -4,8 +4,8 @@ import type { HubClient } from '../../api/hub-client';
 import type { HubConfig } from '../config';
 import type { HubAttentionInboxItem, HubDelegation, HubInputRequiredItem } from '../domain/types';
 import { HubStore } from '../stores/hub-store';
-import { AttentionPanels } from './AttentionPanels';
 import { DelegationsPanel } from './DelegationsPanel';
+import { NowPanel } from './NowPanel';
 
 const dashboardConfig: HubConfig = {
   page: 'dashboard',
@@ -97,19 +97,19 @@ describe('Hub panel row isolation', () => {
       }),
       inputItem({ session_id: 'healthy', title: 'Healthy conversation' }),
     ];
-    const { container } = render(<AttentionPanels store={value} />);
+    const { container } = render(<NowPanel store={value} />);
 
     expect(screen.getByText('Healthy conversation')).toBeVisible();
     expect(screen.queryByText('Broken conversation')).not.toBeInTheDocument();
-    expect(container.querySelectorAll('.attention-list .attention-row')).toHaveLength(1);
+    expect(container.querySelectorAll('.now-list .now-row')).toHaveLength(1);
     // The list keeps a row per conversation: only the broken row's body is replaced.
-    expect(container.querySelectorAll('.attention-list > li')).toHaveLength(2);
+    expect(container.querySelectorAll('.now-list > li')).toHaveLength(2);
     const alert = screen.getByRole('alert');
     expect(alert).toHaveTextContent(
       'Conversation could not be displayed. Other Hub data is still available.',
     );
-    expect(container.querySelector('.attention-list [role="alert"]')).toBe(alert);
-    expect(screen.getByText('Conversations blocked on a question or approval.')).toBeVisible();
+    expect(container.querySelector('.now-list [role="alert"]')).toBe(alert);
+    expect(screen.getByRole('region', { name: 'Needs you' })).toBeVisible();
     // The row is reported once, for the operator, without a message per poll.
     expect(reported).toHaveLength(1);
     expect(reported[0]).toContain('Conversation');
@@ -136,8 +136,8 @@ describe('Hub panel row isolation', () => {
     });
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
     expect(screen.getByText('Recovered conversation')).toBeVisible();
-    expect(screen.getByText(/Approval waiting/)).toBeVisible();
-    expect(container.querySelectorAll('.attention-list .attention-row')).toHaveLength(2);
+    expect(screen.getByText('Approval')).toBeVisible();
+    expect(container.querySelectorAll('.now-list .now-row')).toHaveLength(2);
     value.dispose();
   });
 
@@ -150,7 +150,7 @@ describe('Hub panel row isolation', () => {
       inboxItem({ session_id: 'broken', title: 'Broken review' }),
       inboxItem({ session_id: 'healthy', title: 'Healthy review' }),
     ];
-    const { container } = render(<AttentionPanels store={value} />);
+    const { container } = render(<NowPanel store={value} />);
     expect(screen.getByText('Healthy review')).toBeVisible();
 
     // An outcome the row cannot read joins the row's meta text, which throws.
@@ -164,7 +164,7 @@ describe('Hub panel row isolation', () => {
         value.inbox.peek()[1],
       ];
     });
-    expect(container.querySelectorAll('.attention-list > li')).toHaveLength(2);
+    expect(container.querySelectorAll('.now-list > li')).toHaveLength(2);
     expect(screen.queryByText('Broken review')).not.toBeInTheDocument();
     expect(screen.getByText('Healthy review')).toBeVisible();
     expect(screen.getByRole('alert')).toHaveTextContent(
@@ -246,7 +246,7 @@ describe('Hub panel row isolation', () => {
       listDelegations: vi.fn(async () => ({ delegations: [] })),
     } as unknown as HubClient);
     const reported = boundaryDiagnostics();
-    render(<AttentionPanels store={value} />);
+    render(<NowPanel store={value} />);
 
     await act(async () => {
       await value.refresh();
@@ -267,7 +267,7 @@ describe('Hub panel row isolation', () => {
     });
     await waitFor(() => expect(screen.queryByRole('alert')).not.toBeInTheDocument());
     expect(screen.getByText('Blocked conversation')).toBeVisible();
-    expect(screen.getByText(/Approval waiting/)).toBeVisible();
+    expect(screen.getByText('Approval')).toBeVisible();
     value.dispose();
   });
 });

@@ -4,8 +4,10 @@ import {
   buildRegistrationCommand,
   nodeResumePath,
   relativeSessionTime,
+  runningSessions,
   sessionMetaText,
   shellQuote,
+  waitingLabel,
 } from './formatting';
 import type { HubNode } from './types';
 
@@ -33,6 +35,12 @@ describe('Hub formatting', () => {
         { now },
       ),
     ).toBe('2 decisions waiting · 1 message');
+    expect(
+      sessionMetaText(
+        { id: 's', short_title: 'Session', resume_path: '/resume', message_count: 3 },
+        { unseen: true, now },
+      ),
+    ).toBe('to review · 3 messages');
   });
 
   it.each(['active_run', 'active_children'] as const)(
@@ -40,6 +48,7 @@ describe('Hub formatting', () => {
     (field) => {
       const session = { id: 's', short_title: 'Session', resume_path: '/resume', [field]: true };
       expect(sessionMetaText(session)).toBe('active now');
+      expect(sessionMetaText(session, { unseen: true })).toBe('active now');
       expect(sessionMetaText({ ...session, interaction_required: true })).toBe('waiting for input');
     },
   );
@@ -74,6 +83,57 @@ describe('Hub formatting', () => {
       active: { length: 100 },
     } as unknown as NonNullable<HubNode['sessions']>);
     expect(activeSessionCount([malformed, node({ count_label: '', active_count: 2 })])).toBe(2);
+  });
+
+  it.each([
+    [[], 1, 'Question'],
+    [['ask_user'], 1, 'Question'],
+    [['approval.shell'], 1, 'Shell approval'],
+    [['approval.workspace'], 1, 'Workspace access'],
+    [['approval.file_write'], 1, 'File write approval'],
+    [['approval'], 1, 'Approval'],
+    [['approval.future'], 1, 'Approval'],
+    [['approval.shell', 'ask_user'], 1, 'Question and approval'],
+    [['approval.shell', 'ask_user'], 3, '3 decisions'],
+  ])('names waiting kinds %j (count %i) as %s', (kinds, count, label) => {
+    expect(waitingLabel(kinds, count)).toBe(label);
+  });
+
+  it('lists running sessions in node order, leaving waiting ones and counting unlisted ones', () => {
+    const session = (id: string, extra = {}) => ({
+      id,
+      short_title: id,
+      resume_path: `/${id}`,
+      active_run: true,
+      ...extra,
+    });
+    const alpha = node({
+      count_label: '',
+      active_count: 5,
+      active: [session('a1'), session('a2', { interaction_required: true })],
+    });
+    const beta = node({ count_label: '', active: [session('b1')] });
+    const idle = node({ count_label: '', active_count: 0 });
+    const running = runningSessions([alpha, idle, beta]);
+    expect(running.sessions.map(({ session }) => session.id)).toEqual(['a1', 'b1']);
+    expect(running.more).toEqual([{ node: alpha, count: 3 }]);
+    expect(running.total).toBe(5);
+  });
+
+  it('ignores malformed active lists and counts when listing running sessions', () => {
+    const malformed = node({
+      count_label: '',
+      active_count: 'many',
+      active: { length: 4 },
+    } as unknown as NonNullable<HubNode['sessions']>);
+    const sparse = node({
+      count_label: '',
+      active: [null, { short_title: 'no id' }],
+    } as unknown as NonNullable<HubNode['sessions']>);
+    const running = runningSessions([malformed, sparse]);
+    expect(running.sessions).toEqual([]);
+    expect(running.more).toEqual([]);
+    expect(running.total).toBe(2);
   });
 
   it('shell-quotes apostrophes and builds a reverse registration command', () => {

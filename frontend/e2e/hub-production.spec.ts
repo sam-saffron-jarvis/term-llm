@@ -142,13 +142,12 @@ test('Hub Preact dashboard supports mounted refresh, registration, and node muta
   await expect(page.getByRole('heading', { name: 'term-llm Hub' })).toBeVisible();
   const production = page.locator('.node-card').filter({ hasText: 'Production Node' });
   await expect(production).toBeVisible();
-  await expect(page.getByRole('region', { name: 'Needs your input' })).toContainText(
-    'Fixture question',
+  await expect(page.getByRole('region', { name: 'Needs you' })).toContainText('Fixture question');
+  await expect(page.getByRole('region', { name: 'Running' })).toContainText(
+    'Fixture active session',
   );
-  await expect(page.getByRole('region', { name: 'Ready to review' })).toContainText(
-    'Fixture review',
-  );
-  const review = page.getByRole('region', { name: 'Ready to review' });
+  await expect(page.getByRole('region', { name: 'To review' })).toContainText('Fixture review');
+  const review = page.getByRole('region', { name: 'To review' });
   const clear = review.getByRole('button', { name: 'Clear all' });
   await expect(clear).toBeInViewport();
   const viewport = page.viewportSize()!;
@@ -161,11 +160,10 @@ test('Hub Preact dashboard supports mounted refresh, registration, and node muta
   expect(clearMethod).toBe('POST');
   expect(clearBody).toEqual({});
   await clear.click();
-  await expect(review).toHaveCount(0);
+  await expect(review).toContainText('Nothing to review');
+  await expect(clear).toHaveCount(0);
   await page.setViewportSize(viewport);
-  await expect(page.getByRole('region', { name: 'Needs your input' })).toContainText(
-    'Fixture question',
-  );
+  await expect(page.getByRole('region', { name: 'Needs you' })).toContainText('Fixture question');
   expect(clearRequests).toBe(2);
   await expect(page.getByText('No delegated work yet.')).toBeVisible();
   await expect(production.getByText('Fixture active session')).toBeVisible();

@@ -1,13 +1,20 @@
 import { relativeSessionTime, sessionMetaText } from '../domain/formatting';
 import type { HubNode, HubNodeSession } from '../domain/types';
 
-function SessionRows({ sessions }: { sessions: HubNodeSession[] }) {
+function SessionRows({
+  sessions,
+  unread,
+}: {
+  sessions: HubNodeSession[];
+  unread: ReadonlySet<string>;
+}) {
   if (!sessions.length) return null;
   return (
     <div class="node-session-group">
       {sessions.map((session) => {
         const active = Boolean(session.active_run || session.active_children);
-        const className = `node-session-row${session.interaction_required ? ' is-input-required' : active ? ' is-active' : ''}`;
+        const toReview = unread.has(session.id);
+        const className = `node-session-row${session.interaction_required ? ' is-input-required' : active ? ' is-active' : toReview ? ' is-unseen' : ''}`;
         const content = (
           <>
             <span class="node-session-title">
@@ -23,7 +30,9 @@ function SessionRows({ sessions }: { sessions: HubNodeSession[] }) {
                 </span>
               )}
             </span>
-            <span class="node-session-meta">{sessionMetaText(session, { active })}</span>
+            <span class="node-session-meta">
+              {sessionMetaText(session, { active, unseen: toReview })}
+            </span>
           </>
         );
         return session.resume_path ? (
@@ -60,7 +69,18 @@ function displayedSessions(node: HubNode) {
   return result;
 }
 
-export function NodeSessions({ node, verified = true }: { node: HubNode; verified?: boolean }) {
+const NONE: ReadonlySet<string> = new Set();
+
+export function NodeSessions({
+  node,
+  verified = true,
+  unread = NONE,
+}: {
+  node: HubNode;
+  verified?: boolean;
+  /** Sessions finished but not yet visited, shown with the review dot. */
+  unread?: ReadonlySet<string>;
+}) {
   if (!verified) return null;
   const sessions = node.sessions;
   if (!sessions) {
@@ -79,7 +99,7 @@ export function NodeSessions({ node, verified = true }: { node: HubNode; verifie
   const stale = !node.status.reachable || !checked || Date.now() - checked > 180_000;
   return (
     <div class="node-sessions">
-      <SessionRows sessions={displayed} />
+      <SessionRows sessions={displayed} unread={unread} />
       {!displayed.length && <div class="node-session-empty">No sessions yet</div>}
       {capability === 'unavailable' && (
         <div class="node-attention-freshness">Terminal attention unavailable</div>
