@@ -473,25 +473,20 @@ func (s *serveServer) validateRuntimePreviousResponse(w http.ResponseWriter, ctx
 	return true
 }
 
-func (s *serveServer) prepareResolvedResponseAdmission(w http.ResponseWriter, r *http.Request, ctx context.Context, rr resolvedResponsesRequest, inputMessages []core.Message, sessionID, idempotencyScope, idempotencyKey string) (serveWorkspaceBinding, func(), bool) {
-	release := func() {}
-	keepAdmission := false
-	defer func() {
-		if !keepAdmission {
-			release()
-		}
-	}()
+func (s *serveServer) prepareResolvedResponseAdmission(w http.ResponseWriter, r *http.Request, ctx context.Context, rr resolvedResponsesRequest, inputMessages []core.Message, sessionID, idempotencyScope, idempotencyKey string) (_ serveWorkspaceBinding, _ func(), stop bool) {
 	if isFirstPartyUIResponseRequest(r) && len(responseClientMessageIDs(inputMessages)) == 0 {
 		assignFinalResponseClientMessageID(inputMessages, rr.req.ClientMessageID)
 	}
-	if rr.req.Stream && idempotencyKey != "" {
-		admissionRelease, err := s.ensureResponseRuns().admitIdempotency(ctx, idempotencyScope, idempotencyKey)
-		if err != nil {
-			writeOpenAIError(w, http.StatusServiceUnavailable, "server_error", err.Error())
-			return serveWorkspaceBinding{}, func() {}, true
-		}
-		release = admissionRelease
+	release, err := s.claimResponsePreparation(ctx, rr, sessionID, idempotencyScope, idempotencyKey)
+	if err != nil {
+		writeOpenAIError(w, http.StatusServiceUnavailable, "server_error", err.Error())
+		return serveWorkspaceBinding{}, func() {}, true
 	}
+	defer func() {
+		if stop {
+			release()
+		}
+	}()
 	_, paired := linkeddevices.DeviceFromRequest(r)
 	binding, err := s.resolveWorkspace(ctx, serveWorkspaceRequest{
 		SessionID: sessionID, ProjectID: rr.req.ProjectID, WorktreeDir: rr.req.WorktreeDir,
@@ -515,7 +510,6 @@ func (s *serveServer) prepareResolvedResponseAdmission(w http.ResponseWriter, r 
 			w.Header().Set("x-session-id", run.sessionID)
 			w.Header().Set("x-response-id", run.id)
 			s.setReplaySessionNumberHeader(ctx, w, run.sessionID)
-			keepAdmission = true
 			release()
 			s.streamResponseRunEvents(ctx, w, run, 0)
 			return serveWorkspaceBinding{}, func() {}, true
@@ -530,7 +524,6 @@ func (s *serveServer) prepareResolvedResponseAdmission(w http.ResponseWriter, r 
 		writeOpenAIError(w, http.StatusConflict, "conflict_error", "a commit workflow is active for this session or checkout")
 		return serveWorkspaceBinding{}, func() {}, true
 	}
-	keepAdmission = true
 	return binding, release, false
 }
 
@@ -806,7 +799,7 @@ func (s *serveServer) handleResolvedResponses(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	s.executeSynchronousResponse(ctx, w, runtime, stateful, replaceHistory, inputMessages, llmReq, sessionID, previousResponseID, modelSwapExec, resetResponseIDsOnSuccess)
+	s.executeSynchronousResponse(ctx, w, runtime, stateful, replaceHistory, inputMessages, llmReq, sessionID, previousResponseID, modelSwapExec, resetResponseIDsOnSuccess, releaseAdmission)
 }
 func (s *serveServer) populateResponsesToolResultNames(ctx context.Context, sessionID string, runtime *serveRuntime, messages []core.Message) {
 	missing := missingResponsesToolResultNames(messages)

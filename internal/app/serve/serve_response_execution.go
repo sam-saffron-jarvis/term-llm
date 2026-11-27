@@ -12,7 +12,7 @@ import (
 	"github.com/term-llm/term-llm/internal/session"
 )
 
-func (s *serveServer) executeSynchronousResponse(ctx context.Context, w http.ResponseWriter, runtime *serveRuntime, stateful, replaceHistory bool, inputMessages []core.Message, llmReq core.Request, sessionID, previousResponseID string, modelSwapExec *responseModelSwapExecution, resetResponseIDsOnSuccess bool) {
+func (s *serveServer) executeSynchronousResponse(ctx context.Context, w http.ResponseWriter, runtime *serveRuntime, stateful, replaceHistory bool, inputMessages []core.Message, llmReq core.Request, sessionID, previousResponseID string, modelSwapExec *responseModelSwapExecution, resetResponseIDsOnSuccess bool, onAdmissionDone func()) {
 	if stateful && s.sessionMgr != nil {
 		var retained *serveRuntime
 		if modelSwapExec != nil {
@@ -25,6 +25,7 @@ func (s *serveServer) executeSynchronousResponse(ctx context.Context, w http.Res
 		}
 		defer releaseAdmission()
 	}
+	onAdmissionDone()
 	// Synchronous API invocations do not acquire an OS destination, but an
 	// admitted human must still retire prior held candidates. Runtime setup runs
 	// only after tryLockRun succeeds, never on busy/rejected handler paths.

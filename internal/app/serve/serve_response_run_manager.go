@@ -11,6 +11,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/term-llm/term-llm/internal/app/serve/server"
 	"github.com/term-llm/term-llm/internal/app/serve/wire"
 	"github.com/term-llm/term-llm/internal/llm/core"
 	"github.com/term-llm/term-llm/internal/restart"
@@ -28,7 +29,8 @@ type responseRunManager struct {
 	runs                  map[string]*responseRun
 	activeBySession       map[string]string
 	idempotencyByKey      map[string]responseRunIdempotencyClaim
-	idempotencyAdmissions map[string]chan struct{}
+	idempotencyAdmissions server.AdmissionGate
+	freshAdmissions       server.AdmissionGate
 	cleanupTimers         map[string]*time.Timer
 	nextEpochBySession    map[string]int64
 	terminalRetention     time.Duration
@@ -607,34 +609,7 @@ func responseRunClaimMatches(claim responseRunIdempotencyClaim, fingerprint stri
 // execution. The owner releases after run admission (or a preparation failure),
 // so retries can replay a live run without racing runtime/workspace setup.
 func (m *responseRunManager) admitIdempotency(ctx context.Context, scope, key string) (func(), error) {
-	claimKey := responseRunIdempotencyScope(scope, key)
-	for {
-		if err := ctx.Err(); err != nil {
-			return nil, err
-		}
-		m.mu.Lock()
-		if pending, ok := m.idempotencyAdmissions[claimKey]; ok {
-			m.mu.Unlock()
-			select {
-			case <-ctx.Done():
-				return nil, ctx.Err()
-			case <-pending:
-				continue
-			}
-		}
-		if m.idempotencyAdmissions == nil {
-			m.idempotencyAdmissions = make(map[string]chan struct{})
-		}
-		pending := make(chan struct{})
-		m.idempotencyAdmissions[claimKey] = pending
-		m.mu.Unlock()
-		return sync.OnceFunc(func() {
-			m.mu.Lock()
-			delete(m.idempotencyAdmissions, claimKey)
-			close(pending)
-			m.mu.Unlock()
-		}), nil
-	}
+	return m.idempotencyAdmissions.Acquire(ctx, responseRunIdempotencyScope(scope, key))
 }
 
 func (m *responseRunManager) createOrGetByIdempotency(run *responseRun, idempotencyKey string) (*responseRun, bool, error) {

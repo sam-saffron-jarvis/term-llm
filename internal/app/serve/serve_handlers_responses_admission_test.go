@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/term-llm/term-llm/internal/app/serve/branchnotes"
 )
@@ -309,13 +310,9 @@ func TestPrepareResolvedResponseAdmissionReleasesClaimOnWorkspaceRejection(t *te
 		t.Fatalf("response = %d %s", response.Code, response.Body.String())
 	}
 
-	manager.mu.Lock()
-	_, claimHeld := manager.idempotencyAdmissions[responseRunIdempotencyScope("scope", "key")]
-	manager.mu.Unlock()
-	if claimHeld {
-		t.Fatal("workspace rejection retained the idempotency admission claim")
-	}
-	retryRelease, err := manager.admitIdempotency(context.Background(), "scope", "key")
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	retryRelease, err := manager.admitIdempotency(ctx, "scope", "key")
 	if err != nil {
 		t.Fatalf("reacquire released claim: %v", err)
 	}

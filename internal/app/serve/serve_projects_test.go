@@ -1239,7 +1239,7 @@ func TestConcurrentFreshResponsesFirstBindingWinsAndLoserConflicts(t *testing.T)
 		}
 	}
 	provider := mockprovider.NewMockProvider("mock")
-	provider.AddTurn(mockprovider.MockTurn{Text: "winner", Delay: 150 * time.Millisecond})
+	provider.AddTextResponse("winner")
 	srv.sessionMgr = newServeSessionManager(time.Minute, 8, func(context.Context) (*serveRuntime, error) {
 		rt := &serveRuntime{provider: provider, engine: engine.NewEngine(provider, nil), defaultModel: "mock-model"}
 		rt.Touch()
@@ -1283,8 +1283,8 @@ func TestConcurrentFreshResponsesFirstBindingWinsAndLoserConflicts(t *testing.T)
 			loser = candidate
 		}
 	}
-	if winner.rr == nil || loser.rr == nil {
-		t.Fatalf("concurrent statuses = %d (%s), %d (%s); want one 200 and one 409", first.rr.Code, first.rr.Body.String(), second.rr.Code, second.rr.Body.String())
+	if winner.rr == nil || loser.rr == nil || !strings.Contains(loser.rr.Body.String(), `"code":"workspace_conflict"`) {
+		t.Fatalf("concurrent statuses = %d (%s), %d (%s); want one 200 and one 409 workspace_conflict", first.rr.Code, first.rr.Body.String(), second.rr.Code, second.rr.Body.String())
 	}
 	if len(provider.RecordedRequests()) != 1 {
 		t.Fatalf("provider requests = %d, want only winner", len(provider.RecordedRequests()))
