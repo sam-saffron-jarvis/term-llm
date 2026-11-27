@@ -681,10 +681,13 @@ identity metadata. This is not authentication or permissions.
 
 ### Quick start: Tailscale Serve
 
-Bind term-llm to loopback and let Tailscale Serve supply the identity:
+Bind term-llm to loopback and let Tailscale Serve supply the identity. Replace
+`node.example.ts.net` with the hostname from the HTTPS URL reported by
+`tailscale serve`, so term-llm accepts requests for that hostname:
 
 ```sh
 term-llm serve web --no-auth \
+  --public-url https://node.example.ts.net/ui/ \
   --identity-header Tailscale-User-Login --identity-name-header Tailscale-User-Name
 tailscale serve --https=443 http://127.0.0.1:8080
 ```
