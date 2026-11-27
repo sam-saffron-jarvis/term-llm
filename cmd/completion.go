@@ -44,8 +44,8 @@ var (
 
 // ProviderFlagCompletion handles --provider flag completion for LLM commands
 func ProviderFlagCompletion(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
-	// Try to load config for custom provider completions; nil is OK if it fails
-	cfg, _ := config.Load()
+	// Load provider aliases and reasoning metadata for effort completion.
+	cfg, _ := loadConfig()
 	refreshProviderCompletionCaches(toComplete, cfg)
 	completions := llm.GetProviderCompletions(toComplete, false, cfg)
 

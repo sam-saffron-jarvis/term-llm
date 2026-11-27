@@ -43,6 +43,45 @@ func TestShellCompletionSkipsInheritedPprofServer(t *testing.T) {
 	}
 }
 
+func TestShellCompletionOffersEffortsForNamedAnthropicProvider(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	t.Setenv("ANTHROPIC_BASE_URL", "")
+	t.Cleanup(func() { registerModelLimits(&config.Config{}) })
+	dir := filepath.Join(os.Getenv("XDG_CONFIG_HOME"), "term-llm")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	const yaml = `providers:
+  anthropic-work:
+    type: anthropic
+    api_key: sk-test
+    model: claude-haiku-5-5
+    models: [claude-haiku-5-5]
+`
+	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(yaml), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	oldOut := rootCmd.OutOrStdout()
+	var out bytes.Buffer
+	rootCmd.SetOut(&out)
+	t.Cleanup(func() {
+		rootCmd.SetArgs(nil)
+		rootCmd.SetOut(oldOut)
+	})
+
+	const model = "anthropic-work:claude-haiku-5-5"
+	if err := executeWithArgs([]string{cobra.ShellCompRequestCmd, "ask", "-p", model}); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{model, model + "-low", model + "-medium", model + "-high", model + "-xhigh", model + "-max", ":6"}
+	if got := strings.Fields(out.String()); !slices.Equal(got, want) {
+		t.Fatalf("completion = %v, want %v", got, want)
+	}
+}
+
 func TestRefreshAgyBinCompletionCache(t *testing.T) {
 	original := refreshAgyBinModelsForCompletion
 	t.Cleanup(func() { refreshAgyBinModelsForCompletion = original })
