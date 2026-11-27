@@ -46,7 +46,7 @@ func TestTimelineAPIScopeIntersection(t *testing.T) {
 		otherTag, otherProvider, otherModel := paid, paid, paid
 		otherTag.Tag = ""
 		otherTag.Money = timelineCharge("GBP", 9000).Money
-		otherProvider.Provider = "openai" // Same display label, different key.
+		otherProvider.Provider = "openai" // Similar name, different key.
 		otherProvider.Money = timelinePlanEstimate("estimated", window.currency, 9000)
 		otherModel.Usage = &ObservedUsage{Protocol: usagetap.Responses, Usage: usagetap.Usage{Model: "Model+V1"}}
 		otherModel.Money = Money{Billing: "pay_as_you_go", Kind: "unmeasured"}

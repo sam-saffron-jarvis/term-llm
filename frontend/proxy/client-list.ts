@@ -1,5 +1,5 @@
 import type { ProxyCaller, ProxyClient } from '../src/api/proxy-client';
-import type { ProviderGroup } from './provider-groups';
+import { providerName, providerTitle, type ProviderGroup } from './provider-groups';
 import { actions, confirmAction, dateTime, disclosure, el, type UIContext } from './dom';
 
 const byProviderName = new Intl.Collator(undefined, { sensitivity: 'accent', numeric: true });
@@ -107,7 +107,7 @@ function approvalLabels(caller: ProxyCaller, groups: ProviderGroup[]): ProviderL
     if (!covered) continue;
     const partial = covered < group.routes.length;
     labels.push({
-      name: group.label,
+      name: providerName(group),
       note: partial ? (caller.revoked ? ' (partial)' : ' (needs approval)') : '',
       caution: partial && !caller.revoked,
     });
@@ -338,11 +338,12 @@ function paintApprovalChoice(choice: ApprovalChoice): void {
     : choice.control.indeterminate
       ? ' (needs approval)'
       : '';
-  choice.text.textContent = choice.group.label + suffix;
+  choice.text.textContent = providerName(choice.group) + suffix;
   const routes = choice.group.routes.map((route) => route.name).join(', ');
+  const title = providerTitle(choice.group);
   choice.label.title = unavailable
-    ? `Enable and connect a shared subscription for ${choice.blocked.join(', ')} before approving ${choice.group.label}. Routes: ${routes}`
-    : routes;
+    ? `Enable and connect a shared subscription for ${choice.blocked.join(', ')} before approving ${title}. Routes: ${routes}`
+    : `${title}. Routes: ${routes}`;
 }
 
 /**

@@ -1,6 +1,11 @@
 import type { ProxyState } from '../src/api/proxy-client';
 import { button, el, input } from './dom';
-import { providerApproval, providerFamilies, type ProviderGroup } from './provider-groups';
+import {
+  providerApproval,
+  providerFamilies,
+  providerTitle,
+  type ProviderGroup,
+} from './provider-groups';
 
 /** Lists stay scannable without a filter until they outgrow one screen. */
 export const FILTER_THRESHOLD = 8;
@@ -115,7 +120,7 @@ export function providerList(options: ProviderListOptions): HTMLElement {
       item.append(sub);
     }
     const described = [
-      group.label === group.id ? group.id : `${group.label} (${group.id})`,
+      providerTitle(group),
       group.reason,
       `${clientCount(access)} with access`,
       partial ? `${partial} ${partial === 1 ? 'needs' : 'need'} approval` : '',

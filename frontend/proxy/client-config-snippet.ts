@@ -1,5 +1,5 @@
 import { clipboardButton, selectCopyField } from './clipboard';
-import type { ProviderGroup } from './provider-groups';
+import { providerName, type ProviderGroup } from './provider-groups';
 import { actions, el, field, type UIContext } from './dom';
 
 const DEFAULT_TOKEN_REF = 'file:///run/secrets/proxy-client-token';
@@ -138,7 +138,7 @@ export function termLLMConfigSection(
     seenVision.add(key);
     const note = el(
       'p',
-      `${groups.length === 1 ? 'This provider' : group.label} routes vision via ${visionRef}. Approve ${visionProvider} if clients use image inputs. If you use an explicit proxy.providers list, add it there too.`,
+      `${groups.length === 1 ? 'This provider' : providerName(group)} routes vision via ${visionRef}. Approve ${visionProvider} if clients use image inputs. If you use an explicit proxy.providers list, add it there too.`,
     );
     note.className = 'config-snippet-note';
     section.append(note);

@@ -14,7 +14,12 @@ import {
   type NativeProvider,
 } from './native';
 import { actions, badge, button, el, field, input, submit, type UIContext } from './dom';
-import { providerFamilies, type ProviderGroup } from './provider-groups';
+import {
+  providerFamilies,
+  providerName,
+  providerTitle,
+  type ProviderGroup,
+} from './provider-groups';
 import { approvalCounts, providerDot } from './provider-list';
 import { providerRouteAction } from './provider-onboarding';
 import { providerAccess } from './provider-access';
@@ -321,7 +326,11 @@ export function providerDetail(group: ProviderGroup, deps: ProviderDetailDeps): 
     const label = input(group.label);
     const labelForm = el(
       'form',
-      field('Provider label', label, `Shown in lists. The provider name ${group.id} is fixed.`),
+      field(
+        'Provider label',
+        label,
+        `Describes the provider beside its name, ${group.id}, which is fixed and is what lists show.`,
+      ),
     );
     labelForm.className = 'provider-label-form';
     submit(
@@ -359,7 +368,7 @@ export function providerDetail(group: ProviderGroup, deps: ProviderDetailDeps): 
       }, remove);
     });
     remove.className = 'danger';
-    remove.setAttribute('aria-label', `Delete provider ${group.label}`);
+    remove.setAttribute('aria-label', `Delete provider ${providerName(group)}`);
     const danger = el('div', el('p', deleteSummary(group, state)), remove);
     danger.className = 'provider-danger-zone';
     const labelSection = el('div', labelForm);
@@ -403,13 +412,13 @@ export function providerDetail(group: ProviderGroup, deps: ProviderDetailDeps): 
   const view = el(
     'section',
     head,
-    providerTabs(`${group.label} settings`, tabs, deps.tab, deps.onTab),
+    providerTabs(`${providerName(group)} settings`, tabs, deps.tab, deps.onTab),
   );
   view.className = 'provider-detail';
   view.dataset.provider = group.id;
   // Shared native setup refreshes with this key; focus lands on the heading.
   const native = group.routes.map((route) => routeNativeProvider(route, state)).find(Boolean);
   if (native) view.dataset.focus = `native:${native.launcher}`;
-  view.setAttribute('aria-label', group.label);
+  view.setAttribute('aria-label', providerTitle(group));
   return view;
 }

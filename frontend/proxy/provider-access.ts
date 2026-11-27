@@ -11,7 +11,7 @@ import { actions, button, check, dateTime, el, field, input, submit, type UICont
 import { clientLabel, duplicateSuffixes, lastSeen, sortCallers } from './client-list';
 import { termLLMConfigSection, tokenCopyRow } from './client-config-snippet';
 import { authLabel, joinLocalPrefix, routeRules } from './route-rules';
-import { providerApproval, type ProviderGroup } from './provider-groups';
+import { providerApproval, providerName, type ProviderGroup } from './provider-groups';
 import { callerCurl } from './security';
 
 // Keep endpoint instructions separate from approval: the token covers the
@@ -120,7 +120,7 @@ export function providerAccess(
         : '';
       if (
         !window.confirm(
-          `Remove ${name}’s access to ${group.label}? Access to other providers and its token stay unchanged. New requests to ${group.label} will be blocked; dispatched requests may continue.${sharedNote}`,
+          `Remove ${name}’s access to ${providerName(group)}? Access to other providers and its token stay unchanged. New requests to ${providerName(group)} will be blocked; dispatched requests may continue.${sharedNote}`,
         )
       )
         return;
@@ -133,11 +133,11 @@ export function providerAccess(
           ),
         );
         await context.refresh(focusKey);
-        context.announce(`Removed ${name}’s access to ${group.label}.`);
+        context.announce(`Removed ${name}’s access to ${providerName(group)}.`);
       }, remove);
     });
     remove.className = 'danger route-access-remove';
-    remove.setAttribute('aria-label', `Remove ${name}’s access to ${group.label}`);
+    remove.setAttribute('aria-label', `Remove ${name}’s access to ${providerName(group)}`);
     return remove;
   }
 
@@ -208,7 +208,7 @@ export function providerAccess(
     await context.refresh(focusKey);
     const names = chosen.map((caller) => caller.name).join(', ');
     context.announce(
-      `Approved ${names} for ${group.label}. ${chosen.length === 1 ? 'Its token and other approvals are' : 'Their tokens and other approvals are'} unchanged.`,
+      `Approved ${names} for ${providerName(group)}. ${chosen.length === 1 ? 'Its token and other approvals are' : 'Their tokens and other approvals are'} unchanged.`,
     );
   }
 
@@ -297,7 +297,7 @@ export function providerAccess(
       heading,
       el(
         'p',
-        `Shown once. Save it securely before dismissing; it cannot be retrieved later. Access is limited to the current routes for ${group.label}.`,
+        `Shown once. Save it securely before dismissing; it cannot be retrieved later. Access is limited to the current routes for ${providerName(group)}.`,
       ),
       tokenCopyRow(token, context),
       ...(configSnippet ? [configSnippet] : []),

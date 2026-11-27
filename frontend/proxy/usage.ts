@@ -151,18 +151,20 @@ function windowRow(
 
 function providerRows(
   provider: ProxyUsageProvider,
-  label: string,
+  description: string,
   id: string,
   isStale: (snapshotAt: number | undefined, now: number) => boolean,
   updates: UpdateRow[],
 ) {
   const body = el('tbody');
   const groups = provider.report?.groups ?? [];
-  const heading = el('th', label);
+  // The provider ID names the row; its label only describes it (see providerName).
+  const heading = el('th', provider.id);
   heading.className = 'usage-provider';
   heading.scope = 'rowgroup';
   heading.id = id;
-  if (provider.id !== label) heading.append(styled('code', 'usage-detail', provider.id));
+  if (description && provider.id !== description)
+    heading.append(styled('small', 'usage-detail', description));
   if (provider.route) heading.append(styled('small', 'usage-detail', provider.route));
   if (provider.report?.plan) heading.append(styled('small', 'usage-detail', provider.report.plan));
   const snapshotAt = usageTimestamp(provider.updated_at);
@@ -285,7 +287,7 @@ export function usageView(state: ProxyState, api: ProxyClient, context: UIContex
   matrix.hidden = foot.hidden = true;
 
   const providerLabels = new Map(state.providers.map(({ id, label }) => [id, label]));
-  function providerLabel(id: string) {
+  function providerDescription(id: string) {
     return (
       providerLabels.get(id) ||
       state.presets?.find((preset) => preset.id === id)?.label ||
@@ -340,7 +342,7 @@ export function usageView(state: ProxyState, api: ProxyClient, context: UIContex
       ...providers.map((provider, index) =>
         providerRows(
           provider,
-          providerLabel(provider.id),
+          providerDescription(provider.id),
           `usage-provider-${index}`,
           (snapshotAt, now) =>
             Boolean(readError) ||
@@ -353,13 +355,7 @@ export function usageView(state: ProxyState, api: ProxyClient, context: UIContex
     notes.replaceChildren(
       ...providers.flatMap(({ id, route, report }) =>
         report?.detail
-          ? [
-              el(
-                'p',
-                el('strong', `${providerLabel(id)}${route ? ` · ${route}` : ''}: `),
-                report.detail,
-              ),
-            ]
+          ? [el('p', el('strong', `${id}${route ? ` · ${route}` : ''}: `), report.detail)]
           : [],
       ),
     );

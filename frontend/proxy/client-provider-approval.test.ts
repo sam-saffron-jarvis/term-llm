@@ -142,14 +142,14 @@ describe('provider-wide client approval', () => {
     });
     const composer = root.querySelector<HTMLFormElement>('#client-composer')!;
     expect(composer.querySelectorAll('.grant-chip')).toHaveLength(2);
-    expect(getByLabelText(composer, 'ChatGPT')).not.toBeChecked();
-    expect(getByLabelText(composer, 'Venice')).not.toBeChecked();
+    expect(getByLabelText(composer, 'chatgpt')).not.toBeChecked();
+    expect(getByLabelText(composer, 'venice')).not.toBeChecked();
     expect(queryByLabelText(composer, 'chatgpt-backend')).toBeNull();
     // Opening the composer never grants anything by itself.
     expect(createProviderCaller).not.toHaveBeenCalled();
 
     fireEvent.input(getByLabelText(root, 'Client name'), { target: { value: 'Alpha' } });
-    fireEvent.click(getByLabelText(composer, 'ChatGPT'));
+    fireEvent.click(getByLabelText(composer, 'chatgpt'));
     fireEvent.click(getByRole(root, 'button', { name: 'Create client' }));
 
     await waitFor(() => expect(createProviderCaller).toHaveBeenCalledWith('Alpha', ['chatgpt'], 7));
@@ -186,8 +186,8 @@ describe('provider-wide client approval', () => {
     });
     const composer = root.querySelector<HTMLFormElement>('#client-composer')!;
     fireEvent.input(getByLabelText(composer, 'Client name'), { target: { value: 'Laptop' } });
-    fireEvent.click(getByLabelText(composer, 'ChatGPT'));
-    fireEvent.click(getByLabelText(composer, 'Venice'));
+    fireEvent.click(getByLabelText(composer, 'chatgpt'));
+    fireEvent.click(getByLabelText(composer, 'venice'));
     fireEvent.click(getByRole(composer, 'button', { name: 'Create client' }));
 
     await waitFor(() => getByLabelText(root, 'Client token'));
@@ -229,12 +229,12 @@ describe('provider-wide client approval', () => {
       snapshot({ callers: [caller({ id: 'c1', grants: ['chatgpt'] })] }),
     );
     const row = getByRole(root, 'button', { name: 'Workstation' }).closest('article')!;
-    expect(row).toHaveTextContent('ChatGPT (needs approval)');
+    expect(row).toHaveTextContent('chatgpt (needs approval)');
     const editor = openEditor(root);
-    const partial = getByLabelText(editor, 'ChatGPT (needs approval)') as HTMLInputElement;
+    const partial = getByLabelText(editor, 'chatgpt (needs approval)') as HTMLInputElement;
     expect(partial.checked).toBe(false);
     expect(partial.indeterminate).toBe(true);
-    expect(getByLabelText(editor, 'Venice')).not.toBeChecked();
+    expect(getByLabelText(editor, 'venice')).not.toBeChecked();
 
     fireEvent.click(getByRole(root, 'button', { name: 'Save approvals' }));
     expect(updateProviderApprovals).not.toHaveBeenCalled();
@@ -263,7 +263,7 @@ describe('provider-wide client approval', () => {
       snapshot({ callers: [caller({ id: 'c1', grants: ['chatgpt'] })] }),
     );
     const editor = openEditor(root);
-    fireEvent.click(getByLabelText(editor, 'Venice'));
+    fireEvent.click(getByLabelText(editor, 'venice'));
     fireEvent.click(getByRole(root, 'button', { name: 'Save approvals' }));
     await waitFor(() =>
       expect(updateProviderApprovals).toHaveBeenCalledWith(
@@ -280,7 +280,7 @@ describe('provider-wide client approval', () => {
     );
     const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false);
     const editor = openEditor(root);
-    fireEvent.click(getByLabelText(editor, 'ChatGPT'));
+    fireEvent.click(getByLabelText(editor, 'chatgpt'));
     fireEvent.click(getByRole(root, 'button', { name: 'Save approvals' }));
     expect(confirm).toHaveBeenCalledWith(
       expect.stringContaining('All of its routes (chatgpt, chatgpt-backend)'),
@@ -319,7 +319,7 @@ describe('provider-wide client approval', () => {
       }),
     );
     fireEvent.click(getByRole(root, 'button', { name: 'New client' }));
-    const blocked = getByLabelText(root, 'Claude Code (shared subscription not ready)');
+    const blocked = getByLabelText(root, 'claude (shared subscription not ready)');
     expect(blocked).toBeDisabled();
     expect(getByRole(root, 'button', { name: 'Create client' })).toBeDisabled();
     expect(root).toHaveTextContent(
@@ -350,7 +350,7 @@ describe('provider-wide client approval', () => {
       }),
     );
     const editor = openEditor(root);
-    fireEvent.click(getByLabelText(editor, 'Claude Code (needs approval)'));
+    fireEvent.click(getByLabelText(editor, 'claude (needs approval)'));
     fireEvent.click(getByRole(root, 'button', { name: 'Save approvals' }));
     expect(updateProviderApprovals).not.toHaveBeenCalled();
   });
@@ -386,7 +386,7 @@ describe('provider-wide client approval', () => {
       caller: caller({ id: 'c_native', name: 'Laptop', grants: ['claude'] }),
     });
     fireEvent.input(getByLabelText(root, 'Client name'), { target: { value: 'Laptop' } });
-    fireEvent.click(getByLabelText(root, 'Claude Code'));
+    fireEvent.click(getByLabelText(root, 'claude'));
     fireEvent.click(getByRole(root, 'button', { name: 'Create client' }));
     const command = await waitFor(
       () => getByLabelText(root, 'Launcher command') as HTMLTextAreaElement,
@@ -417,7 +417,7 @@ describe('provider-wide client approval', () => {
     );
     vi.spyOn(window, 'confirm').mockReturnValue(true);
     const editor = openEditor(root);
-    const approved = getByLabelText(editor, 'Claude Code');
+    const approved = getByLabelText(editor, 'claude');
     expect(approved).toBeChecked();
     expect(approved).toBeEnabled();
     fireEvent.click(approved);

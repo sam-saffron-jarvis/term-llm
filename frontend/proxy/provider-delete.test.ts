@@ -218,8 +218,10 @@ function openProvider(
 ): HTMLElement {
   const list = root.querySelector<HTMLElement>('.provider-list')!;
   const escaped = label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  fireEvent.click(getByRole(list, 'button', { name: new RegExp(`^${escaped}( \\(|,)`) }));
-  const detail = getByRole(root, 'region', { name: label });
+  // Providers are named by ID; the label follows it in parentheses.
+  const title = `^[^ ]+ \\(${escaped}\\)`;
+  fireEvent.click(getByRole(list, 'button', { name: new RegExp(`${title},`) }));
+  const detail = getByRole(root, 'region', { name: new RegExp(`${title}$`) });
   fireEvent.click(detail.querySelector<HTMLElement>(`[role="tab"][data-tab="${tab}"]`)!);
   return detail;
 }
@@ -236,7 +238,7 @@ it('deletes a single-route API-key provider after confirmation and respects canc
   expect(manage.querySelector('.provider-danger-zone p')).toHaveTextContent(
     'Removes 1 route and access for 1 client. Can’t be undone.',
   );
-  const remove = getByRole(manage, 'button', { name: 'Delete provider Venice' });
+  const remove = getByRole(manage, 'button', { name: 'Delete provider venice' });
   const confirm = vi.spyOn(window, 'confirm').mockReturnValueOnce(false).mockReturnValueOnce(true);
 
   fireEvent.click(remove);
@@ -262,7 +264,7 @@ it('deletes every route of a multi-route provider in one revision-checked write'
   const manage = openProvider(root, 'ChatGPT');
   const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
 
-  fireEvent.click(getByRole(manage, 'button', { name: 'Delete provider ChatGPT' }));
+  fireEvent.click(getByRole(manage, 'button', { name: 'Delete provider chatgpt' }));
   await waitFor(() => expect(deleteProvider).toHaveBeenCalledOnce());
   expect(confirm.mock.calls[0]?.[0]).toContain('Delete provider chatgpt?');
   expect(confirm.mock.calls[0]?.[0]).toContain(
@@ -297,7 +299,7 @@ it.each([
     const manage = openProvider(root, label);
     const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
 
-    fireEvent.click(getByRole(manage, 'button', { name: `Delete provider ${label}` }));
+    fireEvent.click(getByRole(manage, 'button', { name: `Delete provider ${id}` }));
     await waitFor(() => expect(deleteProvider).toHaveBeenCalledExactlyOnceWith(7, id));
     expect(confirm.mock.calls[0]?.[0]).toContain(`Delete provider ${id}?`);
     expect(clearNative).not.toHaveBeenCalled();
@@ -323,7 +325,7 @@ it('refuses provider deletion while a one-time launcher is displayed', async () 
   );
   announce.mockClear();
   fireEvent.click(
-    getByRole(manage, 'button', { name: 'Delete provider Claude Code', hidden: true }),
+    getByRole(manage, 'button', { name: 'Delete provider claude-bin', hidden: true }),
   );
   expect(confirm).not.toHaveBeenCalled();
   expect(deleteProvider).not.toHaveBeenCalled();
@@ -338,9 +340,7 @@ it('hides Delete provider in read-only file mode', () => {
   for (const label of ['Venice', 'Claude Code', 'ChatGPT']) {
     const manage = openProvider(root, label, 'access');
     expect(queryByRole(manage, 'tab', { name: 'Settings' })).toBeNull();
-    expect(
-      queryByRole(manage, 'button', { name: `Delete provider ${label}`, hidden: true }),
-    ).toBeNull();
+    expect(queryByRole(manage, 'button', { name: /^Delete provider /, hidden: true })).toBeNull();
   }
 });
 

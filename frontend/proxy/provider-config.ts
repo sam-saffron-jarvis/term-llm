@@ -5,7 +5,7 @@ import {
   type ProxyState,
 } from '../src/api/proxy-client';
 import { actions, button, confirmAction, el, field, submit, type UIContext } from './dom';
-import type { ProviderGroup } from './provider-groups';
+import { providerName, type ProviderGroup } from './provider-groups';
 
 export function providerConfigSummary(config?: ProxyProviderClientConfig): string {
   if (!config) return 'None configured.';
@@ -62,7 +62,7 @@ export function providerConfigSection(
   toggle.setAttribute('aria-expanded', 'false');
   toggle.setAttribute(
     'aria-label',
-    `${group.config ? 'Edit' : 'Add'} client config for ${group.label}`,
+    `${group.config ? 'Edit' : 'Add'} client config for ${providerName(group)}`,
   );
 
   const header = el('div', el('div', el('h3', 'Client config (term-llm)'), summary), toggle);
@@ -128,8 +128,8 @@ export function providerConfigSection(
       await context.refresh(focusKey);
       context.announce(
         textarea.value.trim()
-          ? `Saved client config for ${group.label}. Existing client approvals are unchanged.`
-          : `Cleared client config for ${group.label}. Existing client approvals are unchanged.`,
+          ? `Saved client config for ${providerName(group)}. Existing client approvals are unchanged.`
+          : `Cleared client config for ${providerName(group)}. Existing client approvals are unchanged.`,
       );
     },
     'Save client config',
@@ -147,11 +147,11 @@ export function providerConfigSection(
           await api.updateProviderConfig(state.revision, providerID, '');
           await context.refresh(focusKey);
           context.announce(
-            `Cleared client config for ${group.label}. Existing client approvals are unchanged.`,
+            `Cleared client config for ${providerName(group)}. Existing client approvals are unchanged.`,
           );
         },
         context,
-        `Clear term-llm client config for ${group.label}? Routes and client approvals stay unchanged.`,
+        `Clear term-llm client config for ${providerName(group)}? Routes and client approvals stay unchanged.`,
       ),
     );
   }

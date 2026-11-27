@@ -88,7 +88,7 @@ describe('proxy native usage tab', () => {
   it.each([
     ['claude-bin', 'Claude Code', false],
     ['claude-bin', 'Work Claude plan', true],
-  ] as const)('shows the Usage label for %s as %s', async (id, label, renamed) => {
+  ] as const)('names the Usage row %s and describes it as %s', async (id, label, renamed) => {
     const { root } = setup(
       () =>
         Response.json({
@@ -103,8 +103,10 @@ describe('proxy native usage tab', () => {
       },
     );
     const table = await waitFor(() => getByRole(root, 'table', { name: 'Native usage limits' }));
-    expect(within(table).getByRole('rowheader')).toHaveTextContent(label);
-    expect(getByText(root, `${label}:`, { exact: true })).toBeVisible();
+    const heading = within(table).getByRole('rowheader');
+    expect(heading.firstChild?.textContent).toBe(id);
+    expect(heading).toHaveTextContent(label);
+    expect(getByText(root, `${id}:`, { exact: true })).toBeVisible();
   });
 
   it('keeps every native window and description visible, including non-percent and disabled limits', async () => {

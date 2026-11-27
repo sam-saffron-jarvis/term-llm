@@ -38,8 +38,10 @@ func timelineGroupIdentity(rec MoneyRecord, caller, route, group string) (string
 		return key, label
 	}
 	if group == "provider" {
+		// Label by the configured name: brand names collide across distinct
+		// providers (anthropic and claude-bin, or two Anthropic accounts).
 		key := cmp.Or(rec.Provider, route)
-		return key, cmp.Or(timelineProviderLabels[strings.ToLower(strings.TrimSpace(key))], key, "Unknown provider")
+		return key, cmp.Or(strings.TrimSpace(key), "Unknown provider")
 	}
 	if group == "model" {
 		model := timelineModel(rec)
@@ -158,13 +160,4 @@ func accumulateTimelinePlanCost(a *timelineAggregate, e *APIEquivalent, currenci
 	}
 	a.planCost[e.Currency] = current
 	currencies[e.Currency] = true
-}
-
-var timelineProviderLabels = map[string]string{
-	"openai":    "OpenAI",
-	"anthropic": "Claude", "claude-code": "Claude", "claude-bin": "Claude",
-	"chatgpt": "ChatGPT",
-	"grok":    "Grok", "xai": "Grok", "grok-bin": "Grok",
-	"gemini": "Gemini", "google": "Gemini",
-	"copilot": "Copilot",
 }

@@ -558,9 +558,10 @@ test('Clients issues tokens for approved providers and shows copy toasts without
     .locator('.client-composer')
     .getByRole('group', { name: 'Providers' });
   await expect(providerFieldset).toBeVisible();
-  await expect(providerFieldset.getByText('Alpha', { exact: true })).toBeVisible();
-  await expect(providerFieldset.getByText('Beta', { exact: true })).toBeVisible();
-  await expect(providerFieldset.getByText('alpha', { exact: true })).toHaveCount(0);
+  // Providers are named by ID; route names and labels stay out of the chips.
+  await expect(providerFieldset.getByText('alpha', { exact: true })).toBeVisible();
+  await expect(providerFieldset.getByText('beta', { exact: true })).toBeVisible();
+  await expect(providerFieldset.getByText('Alpha', { exact: true })).toHaveCount(0);
   await expect(providerFieldset.getByText('alpha-extra', { exact: true })).toHaveCount(0);
   const geometry = await page.evaluate(() => {
     const composer = document.querySelector<HTMLElement>('.client-composer')!;
@@ -691,13 +692,13 @@ test('Clients issues tokens for approved providers and shows copy toasts without
 test('Clients fits the longest alphabetic provider summary as the row resizes', async ({
   page,
 }) => {
-  // The long third label forces truncation on mobile; the short last label
+  // The long third name forces truncation on mobile; the short last name
   // would fit, but must not be picked out of alphabetic order.
-  const longName = 'Gamma Worldwide Managed Model Workspace West';
+  const longName = 'Gamma-Worldwide-Managed-Model-Workspace-West';
   const labels = ['Zulu', longName, 'Beta', 'alpha'];
   const routes = labels.map((_, index) => ({
     name: `route-${index}`,
-    provider: `provider-${index}`,
+    provider: labels[index],
     enabled: true,
     profile: '',
     serves: [],
@@ -845,7 +846,7 @@ test('Clients preserves legacy partial approvals and edits only explicit provide
   });
   await page.goto('http://proxy.test/_proxy/?tab=clients');
   const row = page.locator('[data-focus="caller:legacy"]');
-  await expect(row.locator('.client-grants')).toContainText('Alpha (needs approval)');
+  await expect(row.locator('.client-grants')).toContainText('alpha (needs approval)');
   await expect(row).not.toContainText('alpha-extra');
   await row.locator('.client-toggle').click();
   const editor = row.locator('.client-detail form');
@@ -863,7 +864,7 @@ test('Clients preserves legacy partial approvals and edits only explicit provide
       revision: 5,
     },
   ]);
-  await expect(row.locator('.client-grants')).toContainText('Alpha');
+  await expect(row.locator('.client-grants')).toContainText('alpha');
   await expect(row.locator('.client-grants')).not.toContainText('needs approval');
 });
 
@@ -1350,10 +1351,10 @@ for (const width of [1440, 390]) {
       const claude = providerItem(page, 'native');
       const venice = providerItem(page, 'venice');
       await expect(claude).toHaveAccessibleName(
-        'Claude Code (native), Sign-in needed, 0 clients with access',
+        'native (Claude Code), Sign-in needed, 0 clients with access',
       );
       await expect(venice).toHaveAccessibleName(
-        `Venice (venice), ${disabled ? 'Disabled, ' : ''}0 clients with access`,
+        `venice (Venice), ${disabled ? 'Disabled, ' : ''}0 clients with access`,
       );
       await expect(claude.locator('.provider-list-note')).toHaveText('Sign-in needed');
       await expect(venice.locator('.provider-list-note')).toHaveText(
@@ -1385,13 +1386,13 @@ for (const width of [1440, 390]) {
         await expect(page.locator('.provider-detail')).toHaveCount(1);
         await expect(list.locator('.provider-list-item[aria-current="true"]')).toHaveCount(1);
         await expect(detail.getByRole('heading', { name: routeName, exact: true })).toBeVisible();
-        await expect(detail).toHaveAccessibleName(label);
+        await expect(detail).toHaveAccessibleName(`${routeName} (${label})`);
         await expect(detail.locator('.route-access-empty')).toHaveText('No clients approved yet.');
         await expect(
           detail.getByRole('heading', { name: 'Clients with access', exact: true }),
         ).toBeVisible();
         const remove = detail.getByRole('button', {
-          name: `Delete provider ${label}`,
+          name: `Delete provider ${routeName}`,
           exact: true,
         });
         await expect(remove).toBeHidden();
@@ -1601,7 +1602,7 @@ for (const width of [1440, 390]) {
 
       const detail = await openProvider(page, kind);
       const prefixCode = providerRoutePrefix(detail, kind);
-      await expect(detail).toHaveAccessibleName(provider);
+      await expect(detail).toHaveAccessibleName(`${kind} (${provider})`);
       await expect(detail.getByRole('heading', { name: kind, exact: true })).toBeVisible();
       await expect(prefixCode).toHaveText(prefix);
       await expect(detail.getByRole('img', { name: 'Status: red, Sign-in needed' })).toBeVisible();
@@ -1657,7 +1658,7 @@ for (const width of [1440, 390]) {
       await page.getByRole('button', { name: 'Providers', exact: true }).click();
       await openProvider(page, kind, 'settings');
       const removeProvider = detail.getByRole('button', {
-        name: `Delete provider ${provider}`,
+        name: `Delete provider ${kind}`,
         exact: true,
       });
       page.once('dialog', async (dialog) => {
@@ -2424,12 +2425,12 @@ test('Providers group ChatGPT routes under one OAuth account and keep OpenAI rou
   await expect(openaiItem).toHaveAttribute('data-routes', 'openai');
   // Partial grants count as access, without implying full approval.
   await expect(chatgptItem).toHaveAccessibleName(
-    'ChatGPT (chatgpt), 1 client with access, 1 needs approval',
+    'chatgpt (ChatGPT), 1 client with access, 1 needs approval',
   );
-  await expect(openaiItem).toHaveAccessibleName('OpenAI (openai), 1 client with access');
+  await expect(openaiItem).toHaveAccessibleName('openai (OpenAI), 1 client with access');
   await expect(chatgptItem).toHaveAttribute('aria-current', 'true');
   const chatgpt = page.locator('#provider-detail[data-provider="chatgpt"]');
-  await expect(chatgpt).toHaveAccessibleName('ChatGPT');
+  await expect(chatgpt).toHaveAccessibleName('chatgpt (ChatGPT)');
   await expect(chatgpt.locator('.provider-detail-meta')).toContainText('Account chatgpt-work');
   await expect(providerTab(chatgpt, 'access')).toHaveAttribute('aria-selected', 'true');
   await expect(chatgpt.getByRole('tabpanel')).toHaveCount(1);
@@ -2472,7 +2473,7 @@ test('Providers group ChatGPT routes under one OAuth account and keep OpenAI rou
   ]);
   await providerTab(chatgpt, 'settings').click();
   await expect(
-    chatgpt.getByRole('button', { name: 'Delete provider ChatGPT', exact: true }),
+    chatgpt.getByRole('button', { name: 'Delete provider chatgpt', exact: true }),
   ).toBeVisible();
 
   await providerTab(chatgpt, 'access').click();
@@ -2486,7 +2487,7 @@ test('Providers group ChatGPT routes under one OAuth account and keep OpenAI rou
   const grantForm = access.locator('.route-access-grant');
   await grantForm.getByLabel('jarvis (needs approval)', { exact: true }).check();
   await grantForm.getByRole('button', { name: 'Approve selected', exact: true }).click();
-  await expect(page.getByRole('status')).toContainText('Approved jarvis for ChatGPT');
+  await expect(page.getByRole('status')).toContainText('Approved jarvis for chatgpt');
   await expect(providerTab(chatgpt, 'access')).toHaveAttribute('aria-selected', 'true');
   await expect(current.locator('.route-access-client')).toHaveCount(1);
   await expect(current).toContainText('jarvis');
@@ -2498,7 +2499,7 @@ test('Providers group ChatGPT routes under one OAuth account and keep OpenAI rou
   expect(state.callers[0].grants).toEqual(chatgptRoutes.map((route) => route.name));
   const openai = await openProvider(page, 'openai');
   await expect(chatgpt).toHaveCount(0);
-  await expect(openai).toHaveAccessibleName('OpenAI');
+  await expect(openai).toHaveAccessibleName('openai (OpenAI)');
   await expect(openai.locator('.provider-detail-meta')).toContainText('API key openai-key');
   await expect(openai.locator('.route-access-client')).toHaveCount(1);
   await expect(openai.locator('.route-access-client')).toContainText('forge');
@@ -2518,7 +2519,7 @@ test('Providers group ChatGPT routes under one OAuth account and keep OpenAI rou
   await expect(routeFact(openaiConnection, /^Billing$/)).toHaveText('Pay as you go');
   await providerTab(openai, 'settings').click();
   await expect(
-    openai.getByRole('button', { name: 'Delete provider OpenAI', exact: true }),
+    openai.getByRole('button', { name: 'Delete provider openai', exact: true }),
   ).toBeVisible();
   await openProvider(page, 'chatgpt', 'connection');
   await expect(panels).toHaveCount(3);

@@ -45,7 +45,11 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-function setup(callers: ProxyCaller[], adminKeys: ProxyAdminKey[] = []) {
+function setup(
+  callers: ProxyCaller[],
+  adminKeys: ProxyAdminKey[] = [],
+  overrides: Partial<ProxyState> = {},
+) {
   const state: ProxyState = {
     defaults: null,
     providers: [],
@@ -57,6 +61,7 @@ function setup(callers: ProxyCaller[], adminKeys: ProxyAdminKey[] = []) {
     callers,
     admin_keys: adminKeys,
     csrf: 'csrf',
+    ...overrides,
   };
   const context: UIContext = {
     run: async (action) => {
@@ -172,6 +177,35 @@ it('labels API-created clients with their key name or revoked status and externa
   ).toHaveTextContent('Created by a revoked API key');
   const browser = getByRole(root, 'button', { name: 'Browser' }).closest('article');
   expect(browser).not.toHaveTextContent(/Created by|External ID/);
+});
+
+it('names providers by ID when several share a label', () => {
+  const provider = (id: string) => ({
+    family: 'inference' as const,
+    status: 'green' as const,
+    reason: '',
+    id,
+    label: 'Anthropic',
+    routes: [id],
+  });
+  const root = setup([caller({ id: 'c_work', name: 'Work', grants: ['anthropic-work'] })], [], {
+    routes: [route('anthropic'), route('anthropic-work')],
+    providers: [provider('anthropic'), provider('anthropic-work')],
+  }).root;
+  const grants = root.querySelector('.client-grants')!;
+  expect(grants).toHaveAccessibleName('Providers: anthropic-work');
+  expect(grants).not.toHaveTextContent('Anthropic');
+
+  fireEvent.click(getByRole(root, 'button', { name: 'Work' }));
+  const personal = getByRole(root, 'checkbox', { name: 'anthropic' });
+  const work = getByRole(root, 'checkbox', { name: 'anthropic-work' });
+  expect(personal).not.toBeChecked();
+  expect(work).toBeChecked();
+  // The shared label stays available on hover.
+  expect(work.closest('label')).toHaveAttribute(
+    'title',
+    'anthropic-work (Anthropic). Routes: anthropic-work',
+  );
 });
 
 it('keeps one active row expanded and folds revoked clients away by default', () => {

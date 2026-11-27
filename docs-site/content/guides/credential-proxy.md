@@ -38,6 +38,12 @@ Remote administration requires a stable HTTPS hostname and explicit enrollment.
 
 A provider is a stored entry with a unique name, a display label, and one or
 more routes. Use the exact name, not the label or family, in `proxy.providers`.
+The admin UI also names providers by this name (client lists, approval
+checkboxes and usage); the label is only a description shown beside it, because
+several providers can share a preset's default label, such as `anthropic` and
+`anthropic-work` both labelled **Anthropic**. The cost timeline's provider
+grouping shows route names, so a multi-route provider such as `chatgpt` can
+appear as `chatgpt` and `chatgpt-backend`.
 Presets group routes that share a key or account: for example, Exa REST and Exa
 MCP are two routes of provider `exa`. Each provider belongs to one family:
 **Inference**, **Search**, **Media**, **Embeddings** or **Classification**. The

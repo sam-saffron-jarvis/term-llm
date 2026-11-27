@@ -230,7 +230,7 @@ it('renders a Classification provider section without client inference config', 
   const list = getByRole(root, 'navigation', { name: 'Providers' });
   expect(within(list).getByRole('heading', { name: 'Classification' })).toBeVisible();
   const section = within(list).getByRole('list', { name: 'Classification' });
-  expect(within(section).getByRole('button', { name: /^TypeSafe \(typesafe\)/ })).toBeVisible();
+  expect(within(section).getByRole('button', { name: /^typesafe \(TypeSafe\)/ })).toBeVisible();
   const detail = openProvider(root, 'typesafe', 'connection');
   expect(within(detail).getByRole('heading', { name: 'typesafe' })).toBeVisible();
   expect(within(detail).queryByRole('tab', { name: 'Client config' })).toBeNull();

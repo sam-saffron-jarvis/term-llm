@@ -214,7 +214,7 @@ it('lists approved clients once and removes the whole provider approval without 
   expect(root.querySelector('.route-access-client')).toHaveTextContent('Laptop');
 
   const confirm = vi.spyOn(window, 'confirm').mockReturnValueOnce(false).mockReturnValueOnce(true);
-  const remove = getByRole(root, 'button', { name: /Remove Laptop’s access to OpenAI/ });
+  const remove = getByRole(root, 'button', { name: /Remove Laptop’s access to openai/ });
   fireEvent.click(remove);
   expect(updateProviderApprovals).not.toHaveBeenCalled();
   fireEvent.click(remove);
@@ -229,7 +229,7 @@ it('lists approved clients once and removes the whole provider approval without 
     expect.stringContaining('Access to other providers and its token stay unchanged.'),
   );
   await waitFor(() => expect(refresh).toHaveBeenCalledWith('route:openai'));
-  expect(announce).toHaveBeenLastCalledWith('Removed Laptop’s access to OpenAI.');
+  expect(announce).toHaveBeenLastCalledWith('Removed Laptop’s access to openai.');
   expect(updateCaller).not.toHaveBeenCalled();
   // The revoked client is neither counted nor offered another approval.
   expect(root).not.toHaveTextContent('Old laptop');
@@ -261,7 +261,7 @@ it('approves every route of a provider for an existing client in one explicit wr
   );
   expect(refresh).toHaveBeenCalledWith('route:chatgpt');
   expect(announce).toHaveBeenLastCalledWith(
-    'Approved Docs app for ChatGPT. Its token and other approvals are unchanged.',
+    'Approved Docs app for chatgpt. Its token and other approvals are unchanged.',
   );
   // Approval covers the provider; it never reissues or rewrites the client.
   expect(createProviderCaller).not.toHaveBeenCalled();
@@ -284,7 +284,7 @@ it('approves several clients in one submit, re-reading the revision between writ
   ]);
   expect(refresh.mock.calls).toEqual([[undefined, true], ['route:openai']]);
   expect(announce).toHaveBeenLastCalledWith(
-    'Approved Phone, Docs app for OpenAI. Their tokens and other approvals are unchanged.',
+    'Approved Phone, Docs app for openai. Their tokens and other approvals are unchanged.',
   );
 });
 
@@ -324,7 +324,7 @@ it('shows legacy partial approval as needing approval and covers all routes only
   );
   expect(refresh).toHaveBeenCalledWith('route:chatgpt');
   expect(announce).toHaveBeenLastCalledWith(
-    'Approved Laptop for ChatGPT. Its token and other approvals are unchanged.',
+    'Approved Laptop for chatgpt. Its token and other approvals are unchanged.',
   );
 });
 
@@ -356,7 +356,7 @@ it('creates a provider-scoped client, shows the token once, and guards dismissal
   expect(root).toHaveTextContent(`Base URL: ${location.origin}/openai/`);
   expect(root).toHaveTextContent('set TOKEN in your shell to this client token');
   expect(root).toHaveTextContent('Do not set a global HTTP_PROXY or HTTPS_PROXY');
-  expect(root).toHaveTextContent('Access is limited to the current routes for OpenAI.');
+  expect(root).toHaveTextContent('Access is limited to the current routes for openai.');
   expect(storageWrite).not.toHaveBeenCalled();
   expect(announce).toHaveBeenLastCalledWith(expect.stringContaining('Copy the token now'));
 
@@ -401,7 +401,7 @@ it('creates one provider-scoped client whose details cover every route in the gr
   expect(root).toHaveTextContent(`Base URL: ${location.origin}/chatgpt/`);
   expect(root).toHaveTextContent(`Base URL: ${location.origin}/chatgpt-backend/`);
   expect(root).toHaveTextContent(`Base URL: ${location.origin}/chatgpt-openai/`);
-  expect(root).toHaveTextContent('Access is limited to the current routes for ChatGPT.');
+  expect(root).toHaveTextContent('Access is limited to the current routes for chatgpt.');
 });
 
 async function issueProviderToken(
@@ -442,7 +442,7 @@ it.each([
     expect(root).toHaveTextContent(`Base URL: ${location.origin}${selected.local_prefix}`);
     expect(root.querySelector('pre:not(:has(code))')).toHaveTextContent('$TOKEN');
     expect(root.textContent).not.toContain('sk-tlp-route-scoped');
-    expect(root).toHaveTextContent(`Access is limited to the current routes for ${label}.`);
+    expect(root).toHaveTextContent(`Access is limited to the current routes for ${selected.name}.`);
   },
 );
 
@@ -499,7 +499,7 @@ it('points native Claude providers at the device launcher instead of a generic c
   expect(root.querySelector('pre:not(:has(code))')).toBeNull();
   expect(root).not.toHaveTextContent(`Base URL: ${location.origin}`);
   // Existing devices stay visible and revocable without touching other approvals.
-  expect(getByRole(root, 'button', { name: /Remove Mac’s access to Claude Code/ })).toBeVisible();
+  expect(getByRole(root, 'button', { name: /Remove Mac’s access to claude/ })).toBeVisible();
   expect(createProviderCaller).not.toHaveBeenCalled();
 });
 
@@ -517,7 +517,7 @@ it('warns that removing shared Claude access leaves the subscription and other c
     callers: [caller({ id: 'mac', name: 'Mac', grants: ['claude'] })],
   });
   const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
-  fireEvent.click(getByRole(root, 'button', { name: /Remove Mac’s access to Claude Code/ }));
+  fireEvent.click(getByRole(root, 'button', { name: /Remove Mac’s access to claude/ }));
   await waitFor(() =>
     expect(updateProviderApprovals).toHaveBeenCalledWith(
       'mac',
@@ -559,7 +559,7 @@ it('refuses creation, provider approval, and removal while another token is on s
   );
 
   vi.spyOn(window, 'confirm').mockReturnValue(true);
-  fireEvent.click(getByRole(root, 'button', { name: /Remove Laptop’s access to OpenAI/ }));
+  fireEvent.click(getByRole(root, 'button', { name: /Remove Laptop’s access to openai/ }));
   expect(updateProviderApprovals).not.toHaveBeenCalled();
   expect(announce).toHaveBeenLastCalledWith(
     'Save or dismiss the open one-time client token before removing access.',
@@ -574,7 +574,7 @@ it('writes provider approvals in passkey mode without a second passkey prompt', 
   });
   const begin = vi.spyOn(api, 'beginAssertion');
   vi.spyOn(window, 'confirm').mockReturnValue(true);
-  fireEvent.click(getByRole(root, 'button', { name: /Remove Laptop’s access to OpenAI/ }));
+  fireEvent.click(getByRole(root, 'button', { name: /Remove Laptop’s access to openai/ }));
   await waitFor(() =>
     expect(updateProviderApprovals).toHaveBeenCalledWith(
       'laptop',
@@ -594,7 +594,7 @@ it('refreshes provider state without replaying a stale approval write', async ()
     new ProxyAPIError(409, 'Provider configuration changed; refresh before changing access'),
   );
   vi.spyOn(window, 'confirm').mockReturnValue(true);
-  fireEvent.click(getByRole(root, 'button', { name: /Remove Laptop’s access to OpenAI/ }));
+  fireEvent.click(getByRole(root, 'button', { name: /Remove Laptop’s access to openai/ }));
   await waitFor(() => expect(refresh).toHaveBeenCalledWith('route:openai'));
   expect(updateProviderApprovals).toHaveBeenCalledOnce();
   expect(announce).toHaveBeenCalledWith(
@@ -651,9 +651,9 @@ it('puts approval first and lists approved clients by recent use with relative t
     );
     // Duplicate names keep their suffix in the action, too.
     expect(
-      getByRole(rows[0], 'button', { name: 'Remove Dupe #dupe1’s access to ChatGPT' }),
+      getByRole(rows[0], 'button', { name: 'Remove Dupe #dupe1’s access to chatgpt' }),
     ).toBeVisible();
-    const remove = getByRole(rows[2], 'button', { name: 'Remove Old’s access to ChatGPT' });
+    const remove = getByRole(rows[2], 'button', { name: 'Remove Old’s access to chatgpt' });
     expect(remove).toHaveTextContent(/^Remove$/);
     expect(remove).toHaveClass('route-access-remove');
     expect(panel).toHaveTextContent('Approval covers every current route of this provider.');

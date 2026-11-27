@@ -13,7 +13,7 @@ import {
 } from './client-list';
 import type { ProxyCaller, ProxyClient, ProxyRoute, ProxyState } from '../src/api/proxy-client';
 import { selectCopyField } from './clipboard';
-import { providerApproval, providerGroups } from './provider-groups';
+import { providerApproval, providerGroups, providerName } from './provider-groups';
 import { slugPattern } from './provider-name';
 import { authLabel, joinLocalPrefix, routeRules } from './route-rules';
 import {
@@ -432,7 +432,7 @@ export function callersView(state: ProxyState, api: ProxyClient, context: UICont
           .filter((change) => !change.approved)
           .flatMap((change) => groups.filter((group) => group.id === change.id));
         if (removed.length) {
-          const providers = removed.map((group) => group.label).join(', ');
+          const providers = removed.map((group) => providerName(group)).join(', ');
           const routes = removed.flatMap((group) => group.routes.map((route) => route.name));
           if (
             !window.confirm(

@@ -314,7 +314,7 @@ it('offers only shared Claude setup and presents an operator-only launcher', asy
   await click(root, 'I saved it — dismiss');
   await waitFor(() => expect(root).toHaveTextContent('Sign-in needed'));
   // The new provider is selected and its Access tab shows the shared sign-in.
-  const detail = getByRole(root, 'region', { name: 'Claude Code' });
+  const detail = getByRole(root, 'region', { name: `${route.provider} (Claude Code)` });
   expect(getByRole(detail, 'tab', { selected: true })).toHaveTextContent('Access');
   // The attention mark points at the tab holding the fix, not Connection.
   expect(getByRole(detail, 'tab', { name: /^Access \d+, needs attention$/ })).toBeVisible();
@@ -327,7 +327,7 @@ it('offers only shared Claude setup and presents an operator-only launcher', asy
   await click(root, 'Refresh state');
   await waitFor(() =>
     expect(
-      getByRole(getByRole(root, 'region', { name: 'Claude Code' }), 'img', {
+      getByRole(getByRole(root, 'region', { name: `${route.provider} (Claude Code)` }), 'img', {
         name: 'Status: green',
       }),
     ).toBeVisible(),
@@ -537,8 +537,8 @@ it('uses a native Claude launcher and curl examples for mixed provider approvals
   await click(root, 'Clients');
   await click(root, 'New client');
   fireEvent.input(getByLabelText(root, 'Client name'), { target: { value: 'mixed' } });
-  fireEvent.click(getByRole(root, 'checkbox', { name: 'Claude Code' }));
-  fireEvent.click(getByRole(root, 'checkbox', { name: 'OpenAI' }));
+  fireEvent.click(getByRole(root, 'checkbox', { name: 'claude-plan' }));
+  fireEvent.click(getByRole(root, 'checkbox', { name: 'openai-api' }));
   await click(root, 'Create client');
   expect(create).toHaveBeenCalledExactlyOnceWith('mixed', ['claude-plan', 'openai-api'], 7);
   await waitFor(() => expect(getByLabelText(root, 'Launcher command')).toBeVisible());
@@ -607,9 +607,9 @@ it.each(
     await click(root, 'Clients');
     await click(root, 'New client');
     const native = getByRole(root, 'checkbox', {
-      name: ready ? label : `${label} (shared subscription not ready)`,
+      name: ready ? 'native' : 'native (shared subscription not ready)',
     });
-    const openAI = getByRole(root, 'checkbox', { name: 'OpenAI' });
+    const openAI = getByRole(root, 'checkbox', { name: 'openai-api' });
     expect(openAI).toBeEnabled();
     if (ready) expect(native).toBeEnabled();
     else expect(native).toBeDisabled();
@@ -637,7 +637,7 @@ it('describes removing a shared grant without signing the subscription out', asy
   await click(root, 'Providers');
   fireEvent.click(await waitFor(() => providerItem(root, route.name)));
   const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false);
-  await click(root, `Remove ${caller.name}’s access to Claude Code`);
+  await click(root, `Remove ${caller.name}’s access to ${route.provider}`);
   expect(confirm).toHaveBeenCalledWith(
     expect.stringContaining('The shared Claude sign-in and other clients’ access are unchanged.'),
   );

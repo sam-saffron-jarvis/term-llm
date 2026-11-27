@@ -133,7 +133,7 @@ it('lists one row per provider and shows only the selected provider’s detail',
   const items = root.querySelectorAll<HTMLElement>('.provider-list-item');
   expect([...items].map((item) => item.dataset.provider)).toEqual(['chatgpt', 'openai']);
   const chatItem = getByRole(root, 'button', {
-    name: 'ChatGPT (chatgpt), 1 client with access, 1 needs approval',
+    name: 'chatgpt (ChatGPT), 1 client with access, 1 needs approval',
   });
   // The partial grant is the actionable note; the revoked client is ignored.
   expect(chatItem.querySelector('.provider-list-note')).toHaveTextContent(
@@ -141,10 +141,10 @@ it('lists one row per provider and shows only the selected provider’s detail',
   );
   expect(chatItem).toHaveAttribute('aria-current', 'true');
   expect(
-    getByRole(root, 'button', { name: 'OpenAI (openai), 0 clients with access' }),
+    getByRole(root, 'button', { name: 'openai (OpenAI), 0 clients with access' }),
   ).not.toHaveAttribute('aria-current');
   expect(root.querySelectorAll('.provider-detail')).toHaveLength(1);
-  const detail = getByRole(root, 'region', { name: 'ChatGPT' });
+  const detail = getByRole(root, 'region', { name: 'chatgpt (ChatGPT)' });
   expect(getByRole(detail, 'heading', { name: 'chatgpt' })).toBeVisible();
   expect(
     [...detail.querySelectorAll('.provider-detail-routes code')].map((n) => n.textContent),
@@ -349,7 +349,7 @@ it('groups providers by server family with status and reason, and filters long l
   // A compact list needs no pagination: every provider has a row.
   expect(getByRole(list, 'list', { name: 'Inference' }).querySelectorAll('li')).toHaveLength(11);
   const exaItem = providerItem(root, exa.name);
-  expect(exaItem).toHaveAccessibleName('Exa (exa), Sign-in needed, 0 clients with access');
+  expect(exaItem).toHaveAccessibleName('exa (Exa), Sign-in needed, 0 clients with access');
   expect(exaItem.querySelector('.provider-list-note')).toHaveClass('provider-list-note-red');
   // The row's accessible name carries the reason; its dot is decorative.
   expect(exaItem.querySelector('.provider-dot')).toHaveClass('provider-dot-red');
