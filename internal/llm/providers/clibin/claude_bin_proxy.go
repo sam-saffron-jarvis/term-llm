@@ -15,30 +15,34 @@ import (
 
 const claudeProxyRootEnv = "TERM_LLM_CLAUDE_PROXY_ROOT"
 
-func (p *ClaudeBinProvider) prepareClaudeCommand(ctx context.Context, args []string, effort, workingDir string) (*exec.Cmd, io.WriteCloser, *procutil.Command, error) {
+// prepareClaudeCommand also returns the account whose plan the process reports
+// on, or "" when its rate_limit_event readings cannot be attributed.
+func (p *ClaudeBinProvider) prepareClaudeCommand(ctx context.Context, args []string, effort, workingDir string) (*exec.Cmd, io.WriteCloser, *procutil.Command, string, error) {
 	cmd, err := newCLICommand(ctx, "claude", args, workingDir)
 	if err != nil {
-		return nil, nil, nil, fmt.Errorf("prepare claude command: %w", err)
+		return nil, nil, nil, "", fmt.Errorf("prepare claude command: %w", err)
 	}
 	cmd.WaitDelay = claudeCommandWaitDelay
 	cmd.Env = p.buildCommandEnv(effort)
+	// Read the account before launch preparation strips the proxy route marker.
+	account := p.claudeLaunchAccount(cmd.Env)
 	cleanup, err := prepareClaudeLaunch(ctx, "claude-bin", cmd)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, nil, "", err
 	}
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		cleanup()
-		return nil, nil, nil, fmt.Errorf("failed to get stdin pipe: %w", err)
+		return nil, nil, nil, "", fmt.Errorf("failed to get stdin pipe: %w", err)
 	}
 	owned, err := procutil.PrepareCommand(cmd)
 	if err != nil {
 		_ = stdin.Close()
 		cleanup()
-		return nil, nil, nil, fmt.Errorf("failed to prepare claude command: %w", err)
+		return nil, nil, nil, "", fmt.Errorf("failed to prepare claude command: %w", err)
 	}
 	owned.SetCloseHook(cleanup)
-	return cmd, stdin, owned, nil
+	return cmd, stdin, owned, account, nil
 }
 
 // prepareClaudeLaunch applies the final proxy environment and the credential

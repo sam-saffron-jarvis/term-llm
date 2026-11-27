@@ -62,15 +62,7 @@ func LiveReportWithConfig(ctx context.Context, cfg *config.Config, provider stri
 		})
 		return report, err
 	case config.ProviderTypeClaudeBin:
-		raw, source, err := loadClaudeBinUsageWithConfig(ctx, cfg, providerKey)
-		if err != nil {
-			return nil, err
-		}
-		report, err := decodeClaudeBinUsage(raw)
-		if err != nil {
-			return nil, err
-		}
-		return claudeBinProviderReport(report, source)
+		return claudeBinLiveReport(ctx, cfg, providerKey)
 	case config.ProviderTypeCursorBin:
 		_, report, err := loadCursorBinUsageWithConfig(ctx, cfg, providerKey)
 		if err != nil {

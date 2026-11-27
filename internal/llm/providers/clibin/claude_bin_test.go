@@ -222,7 +222,7 @@ func TestClaudeBinProvider_prepareClaudeCommand_ConfiguresProcessGroupWaitDelayA
 	// Production code cleans paths; TMPDIR may end in "/" (macOS).
 	workingDir := filepath.Clean(t.TempDir())
 
-	cmd, stdin, owned, err := provider.prepareClaudeCommand(context.Background(), []string{"--version"}, "", workingDir)
+	cmd, stdin, owned, _, err := provider.prepareClaudeCommand(context.Background(), []string{"--version"}, "", workingDir)
 	if err != nil {
 		t.Fatalf("prepareClaudeCommand failed: %v", err)
 	}

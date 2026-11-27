@@ -55,6 +55,10 @@ func canonicalRoot(raw string) (string, error) {
 	return strings.TrimRight(u.String(), "/"), nil
 }
 
+// CanonicalRoot returns the form SameRoot compares, so callers can key maps by
+// endpoint root. It rejects roots with a query or fragment.
+func CanonicalRoot(raw string) (string, error) { return canonicalRoot(raw) }
+
 // SameRoot compares exact endpoint roots with normal URL authority equivalence,
 // including default ports and WebSocket scheme counterparts. It never treats a
 // child path as the same root.

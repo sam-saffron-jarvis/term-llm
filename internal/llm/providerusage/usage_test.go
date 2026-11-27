@@ -602,3 +602,21 @@ func stubGrokOAuthToken(t *testing.T, status int, body string) {
 type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) { return f(req) }
+
+func TestFormatDuration(t *testing.T) {
+	for _, test := range []struct {
+		in   time.Duration
+		want string
+	}{
+		{-time.Minute, ""},
+		{29 * time.Second, ""},
+		{31 * time.Second, "1m"},
+		{time.Hour, "1h"},
+		{25*time.Hour + 4*time.Minute, "1d 1h 4m"},
+		{48 * time.Hour, "2d"},
+	} {
+		if got := FormatDuration(test.in); got != test.want {
+			t.Errorf("FormatDuration(%v) = %q, want %q", test.in, got, test.want)
+		}
+	}
+}

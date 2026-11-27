@@ -248,7 +248,7 @@ func TestClaudeProxyBootstrapFailureDoesNotFallBackToNativeCLI(t *testing.T) {
 		t.Fatal(err)
 	}
 	provider := NewClaudeBinProvider("opus", map[string]string{claudeProxyRootEnv: root})
-	_, _, _, err := provider.prepareClaudeCommand(t.Context(), nil, "", "")
+	_, _, _, _, err := provider.prepareClaudeCommand(t.Context(), nil, "", "")
 	if err == nil || !strings.Contains(err.Error(), "HTTP 500") {
 		t.Fatalf("bootstrap failure was not surfaced: %v", err)
 	}
@@ -272,5 +272,45 @@ func TestClaudeProxyLeavesUnboundLaunchUntouched(t *testing.T) {
 	defer cleanup()
 	if strings.Join(cmd.Env, "\n") != strings.Join(env, "\n") {
 		t.Fatalf("unbound environment changed: %v", cmd.Env)
+	}
+}
+
+// The proxy route marker is stripped while preparing the launch, so readings
+// must follow the route the launcher validated rather than the final child env.
+func TestClaudeRateLimitsFollowValidatedProxyLaunch(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell CLI fixture")
+	}
+	resetObservedClaudeRateLimits(t)
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("CLAUDE_CODE_OAUTH_TOKEN", "token-a")
+	bin := t.TempDir()
+	if err := os.WriteFile(filepath.Join(bin, "claude"), []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin)
+	server, _ := claudeProxyMetadataServer(t, claudeProxyTestCA(t), "claude-bin")
+	root := server.URL + "/mounted/claude-bin"
+	if err := proxyclient.Register([]proxyclient.Binding{{Root: root, Kind: "claude-bin", Token: claudeProxyTestToken}}); err != nil {
+		t.Fatal(err)
+	}
+	provider := NewClaudeBinProvider("opus", map[string]string{claudeProxyRootEnv: root})
+	cmd, stdin, owned, account, err := provider.prepareClaudeCommand(t.Context(), nil, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = stdin.Close()
+	defer owned.Close()
+	if envValue(cmd.Env, claudeProxyRootEnv) != "" || account == "" || account != proxyClaudeAccount(root) {
+		t.Fatalf("account = %q", account)
+	}
+
+	recordClaudeRateLimits(withClaudeAccount(t.Context(), account), claudeRateLimitEventLine)
+	if got, ok := ObservedClaudeRateLimits(root, nil); !ok || got.Windows["five_hour"].Utilization != 0.15 {
+		t.Fatalf("proxy reading = %+v ok=%v", got, ok)
+	}
+	if got, ok := ObservedClaudeRateLimits("", []string{"CLAUDE_CODE_OAUTH_TOKEN=token-a"}); ok {
+		t.Fatalf("proxy reading attributed to the direct login: %+v", got)
 	}
 }

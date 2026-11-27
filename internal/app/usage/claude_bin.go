@@ -98,7 +98,7 @@ var (
 )
 
 func runClaudeBinUsage(parent context.Context, cmdOut io.Writer, jsonOutput bool) error {
-	raw, source, err := loadClaudeBinUsage(parent)
+	raw, account, err := loadClaudeBinUsage(parent)
 	if err != nil {
 		return err
 	}
@@ -115,30 +115,37 @@ func runClaudeBinUsage(parent context.Context, cmdOut io.Writer, jsonOutput bool
 	if err != nil {
 		return err
 	}
-	return writeClaudeBinUsageWithSource(cmdOut, report, time.Now(), providerUsageFormatOptions(cmdOut), source)
+	return writeClaudeBinUsageWithSource(cmdOut, report, time.Now(), providerUsageFormatOptions(cmdOut), claudeBinUsageSource(account.proxyRoot))
 }
 
-// loadClaudeBinUsage returns Claude Code's raw get_usage response and the route used.
-func loadClaudeBinUsage(parent context.Context) (json.RawMessage, string, error) {
+// claudeBinUsageAccount says which account get_usage asked about: a
+// credential-proxy root, or the direct login started with env.
+type claudeBinUsageAccount struct {
+	proxyRoot string
+	env       []string
+}
+
+// loadClaudeBinUsage returns Claude Code's raw get_usage response and the account it describes.
+func loadClaudeBinUsage(parent context.Context) (json.RawMessage, claudeBinUsageAccount, error) {
 	connection, proxied, err := configuredClaudeUsageProxy()
 	if err != nil {
-		return nil, "", err
+		return nil, claudeBinUsageAccount{}, err
 	}
 	return loadClaudeBinUsageWithConnection(parent, connection, proxied)
 }
 
-func loadClaudeBinUsageWithConfig(parent context.Context, cfg *config.Config, providerName string) (json.RawMessage, string, error) {
+func loadClaudeBinUsageWithConfig(parent context.Context, cfg *config.Config, providerName string) (json.RawMessage, claudeBinUsageAccount, error) {
 	connection, proxied, err := configuredClaudeUsageProxyFor(cfg, providerName)
 	if err != nil {
-		return nil, "", err
+		return nil, claudeBinUsageAccount{}, err
 	}
 	return loadClaudeBinUsageWithConnection(parent, connection, proxied)
 }
 
-func loadClaudeBinUsageWithConnection(parent context.Context, connection proxyrun.Connection, proxied bool) (json.RawMessage, string, error) {
+func loadClaudeBinUsageWithConnection(parent context.Context, connection proxyrun.Connection, proxied bool) (json.RawMessage, claudeBinUsageAccount, error) {
 	binary, err := exec.LookPath("claude")
 	if err != nil {
-		return nil, "", errors.New("claude-bin usage requires the Claude Code CLI in PATH")
+		return nil, claudeBinUsageAccount{}, errors.New("claude-bin usage requires the Claude Code CLI in PATH")
 	}
 	if parent == nil {
 		parent = context.Background()
@@ -147,10 +154,19 @@ func loadClaudeBinUsageWithConnection(parent context.Context, connection proxyru
 	defer cancel()
 	if proxied {
 		raw, err := fetchClaudeBinProxiedUsage(ctx, binary, connection)
-		return raw, "Live through credential proxy", err
+		return raw, claudeBinUsageAccount{proxyRoot: connection.Root}, err
 	}
-	raw, err := fetchClaudeBinUsage(ctx, binary)
-	return raw, "Live from Claude Code", err
+	// ANTHROPIC_API_KEY would force API-key auth instead of the subscription login.
+	env := withoutEnvironmentVariable(os.Environ(), "ANTHROPIC_API_KEY")
+	raw, err := fetchClaudeBinUsage(ctx, binary, env)
+	return raw, claudeBinUsageAccount{env: env}, err
+}
+
+func claudeBinUsageSource(proxyRoot string) string {
+	if proxyRoot != "" {
+		return "Live through credential proxy"
+	}
+	return "Live from Claude Code"
 }
 
 func decodeClaudeBinUsage(raw json.RawMessage) (claudeBinUsageReport, error) {
@@ -161,12 +177,11 @@ func decodeClaudeBinUsage(raw json.RawMessage) (claudeBinUsageReport, error) {
 	return report, nil
 }
 
-// fetchClaudeBinUsage is the direct, unproxied native runner seam. It keeps
-// Claude Code's established environment except for ANTHROPIC_API_KEY, whose
-// presence would force API-key auth instead of the user's subscription login.
-var fetchClaudeBinUsage = func(ctx context.Context, binary string) (json.RawMessage, error) {
+// fetchClaudeBinUsage is the direct, unproxied native runner seam. It runs
+// get_usage with env, the established environment minus ANTHROPIC_API_KEY.
+var fetchClaudeBinUsage = func(ctx context.Context, binary string, env []string) (json.RawMessage, error) {
 	cmd := newClaudeUsageCommand(ctx, binary)
-	cmd.Env = withoutEnvironmentVariable(os.Environ(), "ANTHROPIC_API_KEY")
+	cmd.Env = env
 	return runClaudeUsageCommand(ctx, cmd)
 }
 

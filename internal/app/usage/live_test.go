@@ -6,11 +6,14 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/term-llm/term-llm/internal/config"
+	"github.com/term-llm/term-llm/internal/llm/providers/clibin"
 	"github.com/term-llm/term-llm/internal/llm/providerusage"
 	"github.com/term-llm/term-llm/internal/proxyclient"
 )
@@ -372,4 +375,105 @@ func TestNewLiveFetcherReusesConfigSnapshotWithoutReloadingOrRacing(t *testing.T
 		}()
 	}
 	wg.Wait()
+}
+
+func stubObservedClaudeRateLimits(t *testing.T, observe func(root string, env []string) (clibin.ClaudeRateLimits, bool)) {
+	t.Helper()
+	original := observedClaudeRateLimits
+	t.Cleanup(func() { observedClaudeRateLimits = original })
+	observedClaudeRateLimits = observe
+}
+
+func TestLiveReportClaudeBinFallsBackToObservedLimits(t *testing.T) {
+	installFakeClaudeUsage(t, `{"subscription_type":"team","rate_limits_available":false,"rate_limits":null}`)
+	t.Setenv("CLAUDE_CODE_OAUTH_TOKEN", "setup-token")
+	t.Setenv("ANTHROPIC_API_KEY", "sk-must-not-select-the-account")
+	now := time.Now()
+	stubObservedClaudeRateLimits(t, func(root string, env []string) (clibin.ClaudeRateLimits, bool) {
+		// The lookup must describe the same process environment get_usage ran with.
+		hasToken := slices.Contains(env, "CLAUDE_CODE_OAUTH_TOKEN=setup-token")
+		hasAPIKey := slices.ContainsFunc(env, func(v string) bool { return strings.HasPrefix(v, "ANTHROPIC_API_KEY=") })
+		if root != "" || !hasToken || hasAPIKey {
+			t.Fatalf("lookup root=%q has token=%v has API key=%v", root, hasToken, hasAPIKey)
+		}
+		return clibin.ClaudeRateLimits{ObservedAt: now.Add(-2 * time.Minute), Windows: map[string]clibin.ClaudeRateLimitWindow{
+			"five_hour":      {Utilization: 0.15, ResetsAt: now.Add(time.Hour)},
+			"seven_day":      {Utilization: 0.09, ResetsAt: now.Add(72 * time.Hour)},
+			"seven_day_opus": {Utilization: 0.8, ResetsAt: now.Add(-time.Minute)},
+		}}, true
+	})
+
+	report, err := LiveReport(context.Background(), "claude-bin")
+	if err != nil {
+		t.Fatalf("LiveReport: %v", err)
+	}
+	// get_usage's plan metadata is kept; only the missing windows come from the reading.
+	if report.Provider != "claude" || report.Plan != "team" || report.Source != "Last Claude Code response · 2m ago" {
+		t.Fatalf("report = %+v", report)
+	}
+	if len(report.Limits) != 2 || report.Limits[0].Name != "Current session" || report.Limits[0].PrimaryWindow.UsedPercent != 15 ||
+		report.Limits[1].Name != "Current week · all models" || report.Limits[1].PrimaryWindow.UsedPercent != 9 {
+		t.Fatalf("limits = %+v", report.Limits)
+	}
+}
+
+func TestLiveReportClaudeBinKeepsLiveOrMissingLimits(t *testing.T) {
+	now := time.Now()
+	for _, test := range []struct {
+		name, response, want string
+		observed             map[string]clibin.ClaudeRateLimitWindow
+	}{
+		{"live limits win", `{"rate_limits_available":true,"rate_limits":{"five_hour":{"utilization":25}}}`, "", map[string]clibin.ClaudeRateLimitWindow{
+			"five_hour": {Utilization: 0.5, ResetsAt: now.Add(time.Hour)},
+		}},
+		{"only expired windows", `{"rate_limits_available":false}`, "user:profile", map[string]clibin.ClaudeRateLimitWindow{
+			"five_hour": {Utilization: 0.5, ResetsAt: now.Add(-time.Second)},
+		}},
+		{"nothing observed", `{"rate_limits_available":false}`, "user:profile", nil},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			installFakeClaudeUsage(t, test.response)
+			stubObservedClaudeRateLimits(t, func(string, []string) (clibin.ClaudeRateLimits, bool) {
+				return clibin.ClaudeRateLimits{ObservedAt: now, Windows: test.observed}, test.observed != nil
+			})
+			report, err := LiveReport(context.Background(), "claude-bin")
+			if test.want != "" {
+				if err == nil || !strings.Contains(err.Error(), test.want) {
+					t.Fatalf("report=%+v err=%v, want %q", report, err, test.want)
+				}
+				return
+			}
+			if err != nil || report.Limits[0].PrimaryWindow.UsedPercent != 25 || report.Source != "Live from Claude Code" {
+				t.Fatalf("report=%+v err=%v", report, err)
+			}
+		})
+	}
+}
+
+// Chat resolves aliases through NewLiveFetcher; the reading must follow the
+// alias's own proxy route, not the default claude-bin login.
+func TestLiveFetcherClaudeBinAliasReadsObservationForItsProxyRoute(t *testing.T) {
+	isolateClaudeUsage(t)
+	t.Setenv("FAKE_USAGE_ENV_FILE", t.TempDir()+"/env")
+	t.Setenv("FAKE_USAGE_RESPONSE", `{"type":"control_response","response":{"subtype":"success","request_id":"term-llm-usage","response":{"rate_limits_available":true,"rate_limits":{"five_hour":null}}}}`)
+	installFakeClaude(t, fakeClaudeUsageScript)
+	server := usageProxyMetadataServer(t, usageProxyTestCA(t), "claude-bin")
+	root := server.URL + "/claude-bin"
+	if err := proxyclient.Register([]proxyclient.Binding{{Root: root, Kind: "claude-bin", Token: usageProxyTestToken}}); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	stubObservedClaudeRateLimits(t, func(got string, _ []string) (clibin.ClaudeRateLimits, bool) {
+		if got != root {
+			t.Fatalf("root = %q, want %q", got, root)
+		}
+		return clibin.ClaudeRateLimits{ObservedAt: now, Windows: map[string]clibin.ClaudeRateLimitWindow{"five_hour": {Utilization: 0.4, ResetsAt: now.Add(time.Hour)}}}, true
+	})
+	cfg := &config.Config{Providers: map[string]config.ProviderConfig{
+		"work-claude": {Type: config.ProviderTypeClaudeBin, ProxyBinding: root},
+	}}
+	report, err := NewLiveFetcher(cfg)(context.Background(), "work-claude")
+	if err != nil || report.Source != "Last Claude Code response via credential proxy · less than a minute ago" || report.Limits[0].PrimaryWindow.UsedPercent != 40 {
+		t.Fatalf("report=%+v err=%v", report, err)
+	}
 }

@@ -816,26 +816,35 @@ func formatUsageWindowDuration(minutes int) string {
 func formatUsageReset(reset, now time.Time) string {
 	remaining := reset.Sub(now)
 	if remaining > 0 {
-		totalMinutes := int64(remaining.Round(time.Minute) / time.Minute)
-		if totalMinutes < 1 {
-			return "in less than a minute"
+		if duration := FormatDuration(remaining); duration != "" {
+			return "in " + duration
 		}
-		days := totalMinutes / (24 * 60)
-		hours := totalMinutes % (24 * 60) / 60
-		minutes := totalMinutes % 60
-		parts := make([]string, 0, 3)
-		if days > 0 {
-			parts = append(parts, fmt.Sprintf("%dd", days))
-		}
-		if hours > 0 {
-			parts = append(parts, fmt.Sprintf("%dh", hours))
-		}
-		if minutes > 0 {
-			parts = append(parts, fmt.Sprintf("%dm", minutes))
-		}
-		return "in " + strings.Join(parts, " ")
+		return "in less than a minute"
 	}
 	return reset.Local().Format("Jan 2, 3:04 PM")
+}
+
+// FormatDuration renders d rounded to the minute as days, hours and minutes,
+// e.g. "1d 4h 5m", omitting zero parts. It returns "" below one minute.
+func FormatDuration(d time.Duration) string {
+	totalMinutes := int64(d.Round(time.Minute) / time.Minute)
+	if totalMinutes < 1 {
+		return ""
+	}
+	days := totalMinutes / (24 * 60)
+	hours := totalMinutes % (24 * 60) / 60
+	minutes := totalMinutes % 60
+	parts := make([]string, 0, 3)
+	if days > 0 {
+		parts = append(parts, fmt.Sprintf("%dd", days))
+	}
+	if hours > 0 {
+		parts = append(parts, fmt.Sprintf("%dh", hours))
+	}
+	if minutes > 0 {
+		parts = append(parts, fmt.Sprintf("%dm", minutes))
+	}
+	return strings.Join(parts, " ")
 }
 
 func providerUsageDisplayName(provider string) string {

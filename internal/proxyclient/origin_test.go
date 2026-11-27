@@ -46,3 +46,20 @@ func TestLiveRootCannotSilentlyBorrowAnotherCallerToken(t *testing.T) {
 		t.Fatal("failed principal change partially published another root")
 	}
 }
+
+func TestCanonicalRootMatchesSameRoot(t *testing.T) {
+	left, err := CanonicalRoot("https://Proxy.Example.test:443/claude-bin/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	right, err := CanonicalRoot("https://proxy.example.test/claude-bin")
+	if err != nil || left != right {
+		t.Fatalf("canonical roots %q and %q differ: %v", left, right, err)
+	}
+	if other, _ := CanonicalRoot("https://proxy.example.test/claude-bin/nested"); other == left {
+		t.Fatal("child path has the same canonical root")
+	}
+	if _, err := CanonicalRoot("https://proxy.example.test/root?query"); err == nil {
+		t.Fatal("accepted a root with a query")
+	}
+}

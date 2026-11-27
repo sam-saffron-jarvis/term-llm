@@ -173,6 +173,16 @@ limits with zero agent turns and zero tokens. term-llm checks the agy version
 before invoking it so older releases cannot accidentally send `/usage` to a
 model.
 
+In terminal chat, `/usage` shows the same live limits for the current provider.
+Claude Code reports plan limits to `term-llm usage` only when its sign-in has
+the `user:profile` scope, which a `claude setup-token` login
+(`CLAUDE_CODE_OAUTH_TOKEN`) lacks. In that case chat `/usage` shows the
+five-hour and weekly windows from the latest Claude Code response for the same
+login or credential-proxy route in this term-llm process, with their age.
+Direct readings require `CLAUDE_CODE_OAUTH_TOKEN` and no per-provider `env`;
+proxied readings are matched by credential-proxy route. `term-llm usage` starts
+no turn, so it has no such reading.
+
 For direct live providers (`chatgpt`, `grok`, and `opencode-go`), `--since`,
 `--until`, `--breakdown`, and `--include-external` are not supported. The
 CLI-backed `agy-bin`, `claude-bin`, and `cursor-bin` reports support only

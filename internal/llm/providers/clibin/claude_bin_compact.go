@@ -78,7 +78,7 @@ func (p *ClaudeBinProvider) NativeCompact(ctx context.Context, req core.NativeCo
 }
 
 func (p *ClaudeBinProvider) runNativeCompact(ctx context.Context, args []string, effort, workingDir, stdin string) ([]byte, error) {
-	cmd, stdinPipe, owned, err := p.prepareClaudeCommand(ctx, args, effort, workingDir)
+	cmd, stdinPipe, owned, _, err := p.prepareClaudeCommand(ctx, args, effort, workingDir)
 	if err != nil {
 		return nil, err
 	}

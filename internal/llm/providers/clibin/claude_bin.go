@@ -751,7 +751,7 @@ func (p *ClaudeBinProvider) runClaudeCommand(
 		runtimeoutput.Printf("=== DEBUG: Claude CLI Command ===\nclaude %s\nPrompt length: %d bytes (via stdin)\nCLAUDE_CODE_EFFORT_LEVEL=%s\n=================================\n", strings.Join(args, " "), len(userPrompt), level)
 	}
 
-	cmd, stdin, owned, err := p.prepareClaudeCommand(ctx, args, effort, workingDir)
+	cmd, stdin, owned, account, err := p.prepareClaudeCommand(ctx, args, effort, workingDir)
 	if err != nil {
 		return err
 	}
@@ -872,7 +872,7 @@ func (p *ClaudeBinProvider) runClaudeCommand(
 		scanErrCh <- scanner.Err()
 	}()
 
-	lastUsage, toolsExecuted, handledTerminalResult, err := p.dispatchClaudeEvents(ctx, lineCh, bridge.toolReqCh, debug, send, ephemeral)
+	lastUsage, toolsExecuted, handledTerminalResult, err := p.dispatchClaudeEvents(withClaudeAccount(ctx, account), lineCh, bridge.toolReqCh, debug, send, ephemeral)
 	if err != nil {
 		// Unblock the stdout scanner before waiting on scanErrCh. If the
 		// downstream event consumer stopped reading, the scanner may be stuck
@@ -1120,6 +1120,9 @@ func (p *ClaudeBinProvider) handleClaudeLine(
 
 	case "assistant":
 		bufferClaudeAssistantFallback(line, assistantFallbackText)
+
+	case "rate_limit_event":
+		recordClaudeRateLimits(ctx, line)
 
 	case "result":
 		var resultMsg claudeResultMessage
