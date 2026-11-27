@@ -202,6 +202,13 @@ describe('Hub components', () => {
           ],
         },
       } as HubNode,
+      {
+        id: 'beta',
+        name: 'Beta',
+        proxy_path: '/hub/node/beta/',
+        status: { reachable: true, state: 'ok', latency_ms: 1 },
+        sessions: { count_label: '1 session', active_count: 1 },
+      } as HubNode,
     ];
     value.nodesVerified.value = true;
     value.attentionVerified.value = true;
@@ -219,7 +226,7 @@ describe('Hub components', () => {
     render(<NowPanel store={value} />);
 
     const running = within(screen.getByRole('region', { name: 'Running' }));
-    expect(running.getByText('3')).toBeVisible();
+    expect(running.getByText('4')).toBeVisible();
     expect(running.getByRole('link', { name: /Session run/ })).toHaveAttribute(
       'href',
       '/hub/node/alpha/chat/run',
@@ -230,19 +237,32 @@ describe('Hub components', () => {
       'href',
       '/hub/node/alpha/',
     );
+    // A node that counts a run without listing it links to the node.
+    expect(running.getByRole('link', { name: '1 running on Beta' })).toHaveAttribute(
+      'href',
+      '/hub/node/beta/',
+    );
     const waiting = within(screen.getByRole('region', { name: 'Needs you' }));
     expect(waiting.getByText('Session blocked')).toBeVisible();
     expect(waiting.getByText('Shell approval')).toBeVisible();
-    expect(screen.getByRole('region', { name: 'To review' })).toHaveTextContent(
-      'Nothing to review',
-    );
+    expect(screen.queryByRole('region', { name: 'To review' })).not.toBeInTheDocument();
     value.dispose();
   });
 
-  it('says when nothing is happening and folds long lanes', async () => {
-    const value = store();
-    expect(render(<NowPanel store={value} />).container).toBeEmptyDOMElement();
-    value.dispose();
+  it('shows only lanes with something in them and folds long ones', async () => {
+    const quiet = store();
+    quiet.nodes.value = [
+      {
+        id: 'idle',
+        name: 'Idle',
+        status: { reachable: true, state: 'ok', latency_ms: 1 },
+        sessions: { count_label: '1 session', active_count: 0 },
+      } as HubNode,
+    ];
+    quiet.nodesVerified.value = true;
+    quiet.attentionVerified.value = true;
+    expect(render(<NowPanel store={quiet} />).container).toBeEmptyDOMElement();
+    quiet.dispose();
 
     const busy = store();
     busy.nodes.value = [
@@ -264,10 +284,8 @@ describe('Hub components', () => {
       resume_path: `/hub/node/idle/chat/done-${index}`,
     }));
     render(<NowPanel store={busy} />);
-    expect(screen.getByRole('region', { name: 'Needs you' })).toHaveTextContent(
-      'Nothing waiting on you',
-    );
-    expect(screen.getByRole('region', { name: 'Running' })).toHaveTextContent('Nothing running');
+    expect(screen.queryByRole('region', { name: 'Needs you' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('region', { name: 'Running' })).not.toBeInTheDocument();
     const review = within(screen.getByRole('region', { name: 'To review' }));
     expect(review.getAllByRole('link')).toHaveLength(5);
     expect(review.getByText('failed')).toHaveClass('now-failed');

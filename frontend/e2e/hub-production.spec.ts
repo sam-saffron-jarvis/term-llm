@@ -160,8 +160,7 @@ test('Hub Preact dashboard supports mounted refresh, registration, and node muta
   expect(clearMethod).toBe('POST');
   expect(clearBody).toEqual({});
   await clear.click();
-  await expect(review).toContainText('Nothing to review');
-  await expect(clear).toHaveCount(0);
+  await expect(review).toHaveCount(0);
   await page.setViewportSize(viewport);
   await expect(page.getByRole('region', { name: 'Needs you' })).toContainText('Fixture question');
   expect(clearRequests).toBe(2);

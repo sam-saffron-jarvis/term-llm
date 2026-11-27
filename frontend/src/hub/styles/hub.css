@@ -1364,14 +1364,9 @@ body {
   }
 }
 
-.now-empty,
 .now-status {
   color: var(--muted);
   font-size: 0.84rem;
-}
-
-.now-empty {
-  padding: 0.45rem 0;
 }
 
 .now-status.hub-error {

@@ -317,7 +317,7 @@ func TestProductionBundleSizeBudgets(t *testing.T) {
 		// The dashboard's "Now" lanes (needs you, running across nodes, to
 		// review), replacing the two attention panels, plus the web UI
 		// sidebar's conversation dots on node cards and delegations, take JS
-		// to 109.16/36.15 kB and CSS from 20.35 to 22.33/5.66 kB.
+		// to 109.11/36.14 kB and CSS from 20.35 to 22.29/5.65 kB.
 		"dist/hub.js":  {raw: 109_350, gzip: 36_350},
 		"dist/hub.css": {raw: 22_500, gzip: 5_850},
 		// The proxy admin UI is served separately from Chat and Hub. Give it

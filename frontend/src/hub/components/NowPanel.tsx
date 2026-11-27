@@ -166,7 +166,6 @@ function Lane({
   count,
   action,
   status,
-  empty,
   rows,
 }: {
   state: LaneState;
@@ -174,7 +173,6 @@ function Lane({
   count: ComponentChildren;
   action?: ComponentChildren;
   status?: ComponentChildren;
-  empty: string;
   rows: LaneRow[];
 }) {
   const [expanded, setExpanded] = useState(false);
@@ -190,7 +188,7 @@ function Lane({
         {action}
       </div>
       {status}
-      {rows.length > 0 ? (
+      {rows.length > 0 && (
         <ul class="now-list">
           {shown.map((row) => (
             <li key={row.key}>
@@ -200,8 +198,6 @@ function Lane({
             </li>
           ))}
         </ul>
-      ) : (
-        <div class="now-empty">{empty}</div>
       )}
       {rows.length > LANE_ROWS && (
         <button
@@ -220,8 +216,8 @@ function Lane({
 /**
  * What needs you, what is running, and what finished unread, across every
  * node. Waiting and review rows come from the Hub's attention projection;
- * running rows come from each node's active sessions. The node grid below is
- * unchanged.
+ * running rows come from each node's active sessions. Only lanes with
+ * something in them show, from the left, and nothing shows when all is quiet.
  */
 export function NowPanel({ store }: { store: HubStore }) {
   const stale = !store.attentionVerified.value || Boolean(store.attentionError.value);
@@ -230,9 +226,31 @@ export function NowPanel({ store }: { store: HubStore }) {
   const inbox = store.inbox.value;
   const clearing = store.clearingAttention.value;
   const clearStatus = store.attentionClearStatus.value;
-  const nodes = store.nodes.value;
-  if (!nodes.length && !waiting.length && !inbox.length && !clearing && !clearStatus) return null;
-  const running = runningSessions(nodes);
+  const running = runningSessions(store.nodes.value);
+  const listed = new Set(running.sessions.map(({ node }) => node.id));
+  const runningRows: LaneRow[] = [
+    ...running.sessions.map(({ node, session }) => ({
+      key: `${node.id}:${session.id}`,
+      resetKey: session,
+      row: <RunningRow node={node} session={session} stale={nodesStale} />,
+    })),
+    // Runs a node counts without listing them, such as ones only its
+    // attention snapshot reports, link to the node itself.
+    ...running.more.map(({ node, count }) => ({
+      key: `${node.id}:more`,
+      resetKey: node,
+      row: (
+        <Row
+          state="run"
+          href={node.sessions?.resume_path || node.proxy_path}
+          title={`${count} ${listed.has(node.id) ? 'more' : 'running'} on ${node.name}`}
+          stale={nodesStale}
+        />
+      ),
+    })),
+  ];
+  const reviewing = inbox.length > 0 || clearing || Boolean(clearStatus);
+  if (!waiting.length && !runningRows.length && !reviewing) return null;
   const more = store.attentionHasMore.value;
   const key = (item: { node_id: string; session_id: string }) =>
     `${item.node_id}:${item.session_id}`;
@@ -243,48 +261,29 @@ export function NowPanel({ store }: { store: HubStore }) {
         {(stale || nodesStale) && <span class="hub-cache-marker">last known · updating</span>}
       </div>
       <div class="now-lanes">
-        <Lane
-          state="wait"
-          label="Needs you"
-          count={`${Math.max(store.totalInputRequired.value, waiting.length)}${more ? ' · showing first' : ''}`}
-          empty="Nothing waiting on you"
-          rows={waiting.map((item) => ({
-            key: key(item),
-            resetKey: item,
-            row: <WaitingRow item={item} stale={stale} />,
-          }))}
-        />
-        <Lane
-          state="run"
-          label="Running"
-          count={running.total}
-          empty={nodesStale ? 'Checking nodes…' : 'Nothing running'}
-          rows={[
-            ...running.sessions.map(({ node, session }) => ({
-              key: `${node.id}:${session.id}`,
-              resetKey: session,
-              row: <RunningRow node={node} session={session} stale={nodesStale} />,
-            })),
-            ...running.more.map(({ node, count }) => ({
-              key: `${node.id}:more`,
-              resetKey: node,
-              row: (
-                <Row
-                  state="run"
-                  href={node.sessions?.resume_path || node.proxy_path}
-                  title={`${count} more on ${node.name}`}
-                  stale={nodesStale}
-                />
-              ),
-            })),
-          ]}
-        />
-        <Lane
-          state="review"
-          label="To review"
-          count={`${Math.max(store.totalUnseen.value, inbox.length)}${more ? ' · showing newest' : ''}`}
-          action={
-            (inbox.length > 0 || clearing || clearStatus) && (
+        {waiting.length > 0 && (
+          <Lane
+            key="wait"
+            state="wait"
+            label="Needs you"
+            count={`${Math.max(store.totalInputRequired.value, waiting.length)}${more ? ' · showing first' : ''}`}
+            rows={waiting.map((item) => ({
+              key: key(item),
+              resetKey: item,
+              row: <WaitingRow item={item} stale={stale} />,
+            }))}
+          />
+        )}
+        {runningRows.length > 0 && (
+          <Lane key="run" state="run" label="Running" count={running.total} rows={runningRows} />
+        )}
+        {reviewing && (
+          <Lane
+            key="review"
+            state="review"
+            label="To review"
+            count={`${Math.max(store.totalUnseen.value, inbox.length)}${more ? ' · showing newest' : ''}`}
+            action={
               <button
                 type="button"
                 class="hub-btn small ghost"
@@ -293,20 +292,19 @@ export function NowPanel({ store }: { store: HubStore }) {
               >
                 {clearing ? 'Clearing…' : 'Clear all'}
               </button>
-            )
-          }
-          status={
-            <div class={clearStatus ? 'hub-error now-status' : 'now-status'} role="status">
-              {clearing ? 'Clearing completed review notifications…' : clearStatus}
-            </div>
-          }
-          empty="Nothing to review"
-          rows={inbox.map((item) => ({
-            key: key(item),
-            resetKey: item,
-            row: <ReviewRow item={item} stale={stale} store={store} />,
-          }))}
-        />
+            }
+            status={
+              <div class={clearStatus ? 'hub-error now-status' : 'now-status'} role="status">
+                {clearing ? 'Clearing completed review notifications…' : clearStatus}
+              </div>
+            }
+            rows={inbox.map((item) => ({
+              key: key(item),
+              resetKey: item,
+              row: <ReviewRow item={item} stale={stale} store={store} />,
+            }))}
+          />
+        )}
       </div>
     </section>
   );
