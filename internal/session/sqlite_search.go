@@ -80,15 +80,16 @@ func (s *SQLiteStore) Search(ctx context.Context, opts SearchOptions) ([]SearchR
 		return nil, fmt.Errorf("encode search matches: %w", err)
 	}
 	snippet, hydrateArgs := q.SnippetSQL(opts.OmitSnippet, string(refs))
+	branchCols, branchJoins := s.branchParentProjection("s.id")
 	rows, err := tx.QueryContext(ctx, `
 		SELECT `+s.createdByColumn("s")+`, s.id, s.number, COALESCE(m.id, 0), COALESCE(s.name, ''), COALESCE(s.summary, ''),
 		       `+generatedShortCol+`, `+generatedLongCol+`, `+titleSourceCol+`,
 		       `+snippet+`,
 		       s.provider, COALESCE(s.provider_key, ''), s.model, COALESCE(s.mode, ''), `+originCol+`, s.archived,
 		       `+s.pinnedSelectCols("s")+`, COALESCE(s.status, ''), `+s.conversationMessageCountSelectSQL("s")+`, `+projectIDCol+`, `+projectNameCol+`,
-		       s.created_at, s.updated_at, `+lastMessageAtCol+`, m.created_at
+		       s.created_at, s.updated_at, `+lastMessageAtCol+`, m.created_at, `+branchCols+`
 		FROM json_each(?) sm
-		JOIN sessions s ON s.id = sm.value->>'session_id'`+projectJoin+`
+		JOIN sessions s ON s.id = sm.value->>'session_id'`+projectJoin+branchJoins+`
 		LEFT JOIN messages m ON m.id = sm.value->>'message_id'
 		ORDER BY sm.key`, hydrateArgs...)
 	if err != nil {
@@ -104,7 +105,7 @@ func (s *SQLiteStore) Search(ctx context.Context, opts SearchOptions) ([]SearchR
 		err := rows.Scan(&r.CreatedBy, &r.SessionID, &number, &r.MessageID, &r.SessionName, &r.Summary,
 			&r.GeneratedShortTitle, &r.GeneratedLongTitle, &r.TitleSource, &r.Snippet, &r.Provider, &r.ProviderKey,
 			&r.Model, &r.Mode, &r.Origin, &r.Archived, &r.Pinned, &pinOrder, &r.Status, &r.MessageCount, &r.ProjectID, &r.ProjectName,
-			&r.SessionCreatedAt, &r.UpdatedAt, &lastMessageAt, &messageCreatedAt)
+			&r.SessionCreatedAt, &r.UpdatedAt, &lastMessageAt, &messageCreatedAt, &r.BranchParentSessionID, &r.BranchParentNumber)
 		if err != nil {
 			return nil, fmt.Errorf("scan search result: %w", err)
 		}

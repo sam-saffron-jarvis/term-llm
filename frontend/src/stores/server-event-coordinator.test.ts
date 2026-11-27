@@ -78,6 +78,7 @@ function harness() {
   return {
     coordinator: new ServerEventCoordinator(services, host),
     services,
+    host,
     endpoints,
     diagnostics,
     calls,
@@ -87,6 +88,23 @@ function harness() {
 afterEach(() => vi.useRealTimers());
 
 describe('ServerEventCoordinator', () => {
+  it('falls back to normal transcript reconciliation when a path note refresh fails', async () => {
+    vi.useFakeTimers();
+    const { coordinator, host, calls } = harness();
+    host.reconcilePathNote = vi.fn(async () => false);
+    const route = coordinator as unknown as { route: (event: Record<string, unknown>) => void };
+    route.route({
+      type: 'session.transcript_changed',
+      reason: 'branch_path_note',
+      sessionId: 's1',
+      transcriptRev: 7,
+    });
+    await vi.advanceTimersByTimeAsync(100);
+    expect(host.reconcilePathNote).toHaveBeenCalledExactlyOnceWith('s1', 7);
+    expect(calls.active).toHaveBeenCalledExactlyOnceWith(7);
+    coordinator.dispose();
+  });
+
   it('reconnects SSE directly when interests change without reporting a poll fallback', async () => {
     const { coordinator, services, endpoints, diagnostics } = harness();
     const ready = new TextEncoder().encode(

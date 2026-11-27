@@ -56,7 +56,7 @@ func (f *FallbackTranscriptIndexer) read(ctx context.Context, sessionID string) 
 	visible := make([]Message, 0, len(messages))
 	for i := range messages {
 		msg := messages[i]
-		if msg.Role == core.RoleSystem || msg.Role == core.RoleDeveloper || msg.IsGoalSteering() {
+		if msg.hiddenFromTranscript() {
 			continue
 		}
 		visible = append(visible, msg)

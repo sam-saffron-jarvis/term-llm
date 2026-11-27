@@ -2,6 +2,8 @@ import { signal, type ReadonlySignal, type Signal } from '@preact/signals';
 import type { Attachment, Message, Session } from '../domain/types';
 import { errorMessage } from '../domain/text';
 import type { Modal } from './store-types';
+import type { BranchProgress, BranchStep, NotesJob } from './branch-progress';
+import type { WirePathNotesStatus } from '../api/generated/types';
 import { uuid } from './store-utils';
 import type { AppStoreServices } from './app-store-services';
 
@@ -20,6 +22,7 @@ export interface BranchStoreOptions {
   prependSession: (session: Session) => void;
   selectSession: (session: Session) => Promise<void>;
   send: () => Promise<void>;
+  loadSession: (id: string) => Promise<void>;
 }
 
 /** Owns branch tree presentation and branch/fork creation commands. */
@@ -28,15 +31,56 @@ export class BranchStore {
   readonly pathCount = signal(0);
   readonly target = signal('');
   readonly prefill = signal('');
+  /** Message a /thread command sends once its chosen context is in place. */
+  readonly autoSend = signal('');
+  /** Composer text of the /thread command that opened the dialog. */
+  private commandPrompt = '';
   readonly busy = signal(false);
   readonly error = signal('');
 
+  readonly notesJobs = signal<ReadonlyMap<string, NotesJob>>(new Map());
+  readonly step = signal<BranchStep | null>(null);
+  private readonly resuming = signal('');
+  private progress?: BranchProgress;
+  private disposed = false;
+  private openEarly?: () => void;
+  private modalEpoch = 0;
   private retryOperation: { signature: string; idempotencyKey: string } | null = null;
 
   constructor(
     private readonly services: AppStoreServices,
     private readonly options: BranchStoreOptions,
   ) {}
+
+  private async loadProgress() {
+    const module = await import('./branch-progress');
+    const progress = (this.progress ??= new module.BranchProgress(
+      this.notesJobs,
+      this.services,
+      this.options.activeSessionId,
+      this.options.activeSession,
+      this.tree,
+      this.options.loadSession,
+    ));
+    if (this.disposed) progress.dispose();
+    return { module, progress };
+  }
+
+  pending(id: string): boolean {
+    const job = this.notesJobs.value.get(id);
+    return (!!job && !job.state.value.outcome) || (!!id && this.resuming.value === id);
+  }
+
+  async notesChanged(id: string, rev?: number): Promise<boolean> {
+    if (this.disposed || this.options.activeSessionId.peek() !== id) return false;
+    const { progress } = await this.loadProgress();
+    return progress.onTranscriptChanged(id, rev);
+  }
+
+  dispose(): void {
+    this.disposed = true;
+    this.progress?.dispose();
+  }
 
   async refresh(
     sessionId = this.options.activeSessionId.peek(),
@@ -53,8 +97,19 @@ export class BranchStore {
         ? await this.services.endpoints.tree(sessionId, undefined, true)
         : await this.services.endpoints.tree(sessionId);
       if (this.options.activeSessionId.peek() !== sessionId) return null;
+
       this.tree.value = tree;
       this.pathCount.value = Math.max(1, Number(tree.path_count) || 1);
+      const status = tree.path_notes as WirePathNotesStatus | undefined;
+      if (status && status.state !== 'idle' && !this.pending(sessionId)) {
+        this.resuming.value = sessionId;
+        try {
+          const { progress } = await this.loadProgress();
+          progress.resume(sessionId, status);
+        } finally {
+          if (this.resuming.peek() === sessionId) this.resuming.value = '';
+        }
+      }
       return tree;
     } catch (error) {
       if (this.options.activeSessionId.peek() === sessionId) {
@@ -92,24 +147,122 @@ export class BranchStore {
       this.services.toast('Create the thread or fork before attaching files or images.', 'error');
       return;
     }
+    if (kind === 'thread') {
+      // A thread starts from anchor zero: the whole conversation is "later",
+      // so it offers the same context choices as forking from a message.
+      this.openContext('0', '', message.trim());
+      this.commandPrompt = this.options.prompt.peek();
+      return;
+    }
     const anchor =
-      kind === 'thread'
-        ? 0
-        : [...this.options.visibleMessages.value]
-            .reverse()
-            .find((entry) => Number(entry.durableRowId) > 0)?.durableRowId || 0;
+      [...this.options.visibleMessages.value]
+        .reverse()
+        .find((entry) => Number(entry.durableRowId) > 0)?.durableRowId || 0;
     const original = this.options.prompt.value;
     this.options.prompt.value = '';
     const created = await this.branchFrom(String(anchor), 'clean', '', message.trim());
     if (!created && !this.options.prompt.value) this.options.prompt.value = original;
   }
 
-  openContext(messageId: string, prefill = ''): void {
+  openContext(messageId: string, prefill = '', autoSend = ''): void {
+    this.modalEpoch++;
+    this.step.value = null;
     this.target.value = messageId;
     this.prefill.value = prefill;
+    this.autoSend.value = autoSend;
+    this.commandPrompt = '';
     this.error.value = '';
     this.options.modal.value = 'branch-context';
   }
+
+  /** Creates the path chosen in the context dialog. A /thread command leaves
+   *  the composer while the path is created and returns to it on failure. */
+  async choose(context: 'clean' | 'notes' | 'focused', focus = ''): Promise<boolean> {
+    const autoSend = this.autoSend.peek();
+    const original = this.commandPrompt;
+    const ownsPrompt = !!original && this.options.prompt.peek() === original;
+    if (ownsPrompt) this.options.prompt.value = '';
+    const created = await this.branchFrom(
+      this.target.peek(),
+      context,
+      focus,
+      autoSend,
+      this.prefill.peek(),
+    );
+    if (!created && ownsPrompt && !this.options.prompt.value) this.options.prompt.value = original;
+    return created;
+  }
+
+  openNow(skip = false): void {
+    const step = this.step.peek();
+    if (!step || step.opening != null) return;
+    if (skip && step.job) {
+      this.skipNotes(step.job);
+      return;
+    }
+    step.action.early = skip ? 'skip' : 'open';
+    this.step.value = { ...step };
+    this.openEarly?.();
+  }
+
+  retryNotes(job: NotesJob): void {
+    this.progress?.retry(job);
+  }
+
+  skipNotes(job: NotesJob): void {
+    this.progress?.skip(job);
+  }
+
+  dismissNotes(job: NotesJob): void {
+    this.progress?.dismiss(job);
+  }
+
+  private async refreshCreatedPath(target: Session): Promise<Session> {
+    try {
+      await this.options.refreshSidebar();
+    } catch (error) {
+      this.services.toast(
+        `New path created, but the sidebar could not refresh: ${errorMessage(error)}`,
+        'error',
+      );
+    }
+    const current = this.options.findSession(target.id);
+    if (!current) this.options.prependSession(target);
+    this.options.publishSessionChange();
+    return current || target;
+  }
+
+  private async openPath(
+    target: Session,
+    sourceID: string,
+    prefill: string,
+    autoSend: string,
+  ): Promise<void> {
+    if (this.options.activeSessionId.peek() !== sourceID) return;
+    try {
+      await this.options.selectSession(target);
+    } catch (error) {
+      this.services.toast(
+        `New path created, but it could not be opened: ${errorMessage(error)}`,
+        'error',
+      );
+      return;
+    }
+    if (autoSend) {
+      this.options.prompt.value = autoSend;
+      try {
+        await this.options.send();
+      } catch (error) {
+        this.services.toast(
+          `New path created, but its first message could not be sent: ${errorMessage(error)}`,
+          'error',
+        );
+      }
+    } else if (prefill && this.options.activeSessionId.peek() === target.id)
+      this.options.prompt.value = prefill;
+  }
+
+  retryModal?: () => void;
 
   async branchFrom(
     messageId: string,
@@ -131,19 +284,29 @@ export class BranchStore {
       this.retryOperation = { signature, idempotencyKey: uuid() };
     const operation = this.retryOperation;
     const modalTarget = this.target.peek();
+    const modalEpoch = this.modalEpoch;
     const ownsBranchModal =
       this.options.modal.peek() === 'branch-context' && modalTarget === messageId;
+    const ownsModal = () =>
+      ownsBranchModal &&
+      this.modalEpoch === modalEpoch &&
+      this.options.modal.value === 'branch-context' &&
+      this.target.value === modalTarget;
     const finishBranchModal = () => {
-      if (
-        ownsBranchModal &&
-        this.options.modal.peek() === 'branch-context' &&
-        this.target.peek() === modalTarget
-      ) {
+      if (ownsModal()) {
         this.target.value = '';
         this.prefill.value = '';
+        this.autoSend.value = '';
+        this.step.value = null;
         this.options.modal.value = '';
       }
     };
+    const mode = context === 'notes' || context === 'focused' ? context : null;
+    const initial: BranchStep | undefined =
+      mode && ownsBranchModal
+        ? { mode, source: session.number || 0, started: performance.now(), action: {} }
+        : undefined;
+    if (initial) this.step.value = initial;
     let createdID = '';
     this.busy.value = true;
     this.error.value = '';
@@ -166,63 +329,44 @@ export class BranchStore {
         target = this.options.createSession({ ...child, id });
         this.options.prependSession(target);
       }
-      try {
-        await this.options.refreshSidebar();
-      } catch (error) {
-        this.services.toast(
-          `New path created, but the sidebar could not refresh: ${errorMessage(error)}`,
-          'error',
-        );
-      }
-      target = this.options.findSession(id) || target;
-      if (!this.options.findSession(id)) this.options.prependSession(target);
-      this.options.publishSessionChange();
-
-      if (context === 'notes' || context === 'focused') {
-        try {
-          const result = await this.services.endpoints.pathNotes(id, {
-            mode: context,
-            ...(context === 'focused' ? { focus } : {}),
-          });
-          if (result.limited)
-            this.services.toast(
-              String(
-                result.message ||
-                  'Some source output was omitted from the new path context because it was not available yet.',
-              ),
-              'info',
-            );
-        } catch (error) {
-          this.services.toast(
-            `New path created, but its additional context could not be prepared: ${errorMessage(error)}`,
-            'error',
+      if (mode) {
+        const created = target;
+        const open = () =>
+          this.openPath(this.options.findSession(id) || created, session.id, prefill, autoSend);
+        void this.refreshCreatedPath(target);
+        if (!this.disposed) {
+          const { module, progress } = await this.loadProgress();
+          if (this.disposed) return true;
+          await module.trackNotes(
+            progress,
+            id,
+            target.number || 0,
+            mode,
+            focus,
+            {
+              sourceId: session.id,
+              anchor,
+            },
+            open,
+            initial && {
+              initial,
+              step: this.step,
+              owns: ownsModal,
+              close: finishBranchModal,
+              waitForAction: (fn) => {
+                this.openEarly = fn;
+              },
+              bindRetry: (fn) => {
+                this.retryModal = fn;
+              },
+            },
           );
         }
+      } else {
+        target = await this.refreshCreatedPath(target);
+        await this.openPath(target, session.id, prefill, autoSend);
+        finishBranchModal();
       }
-      let selected = false;
-      try {
-        await this.options.selectSession(target);
-        selected = true;
-      } catch (error) {
-        this.services.toast(
-          `New path created, but it could not be opened: ${errorMessage(error)}`,
-          'error',
-        );
-      }
-      if (selected && autoSend) {
-        this.options.prompt.value = autoSend;
-        try {
-          await this.options.send();
-        } catch (error) {
-          this.services.toast(
-            `New path created, but its first message could not be sent: ${errorMessage(error)}`,
-            'error',
-          );
-        }
-      } else if (selected && prefill) {
-        this.options.prompt.value = prefill;
-      }
-      finishBranchModal();
       return true;
     } catch (error) {
       const detail = errorMessage(error);
@@ -235,6 +379,7 @@ export class BranchStore {
         return true;
       }
       const message = detail || 'Could not create conversation path.';
+      if (ownsModal()) this.step.value = null;
       this.error.value = message;
       this.services.toast(message, 'error');
       return false;

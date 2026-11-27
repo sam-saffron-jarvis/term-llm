@@ -15,6 +15,7 @@ export interface ServerEventHost {
   activeSessionId: ReadonlySignal<string>;
   reconcileCatalog: () => Promise<void>;
   reconcileStatus: () => Promise<void>;
+  reconcilePathNote?: (id: string, revision?: number) => Promise<boolean>;
   reconcileActiveSession: (revision?: number) => Promise<void>;
   reconcileFiles: (sessionId: string) => Promise<void>;
   reconcileChildren: (parentSessionId: string) => Promise<void>;
@@ -415,15 +416,30 @@ export class ServerEventCoordinator {
         this.catalogPending = true;
         this.statusPending = true;
         if (event.sessionId === this.host.activeSessionId.peek()) {
-          this.activePending = true;
-          this.activeRevision = Math.max(this.activeRevision, event.transcriptRev || 0);
+          this.queueActive(event.transcriptRev);
         }
         break;
       case 'session.transcript_changed':
         this.statusPending = true;
+        if (event.reason === 'branch_path_note' && event.sessionId && this.host.reconcilePathNote) {
+          const { sessionId, transcriptRev } = event;
+          void this.host
+            .reconcilePathNote(sessionId, transcriptRev)
+            .catch(() => false)
+            .then((saved) => {
+              if (
+                !saved &&
+                !this.lifetime.signal.aborted &&
+                sessionId === this.host.activeSessionId.peek()
+              ) {
+                this.queueActive(transcriptRev);
+                this.scheduleFlush();
+              }
+            });
+          break;
+        }
         if (event.sessionId === this.host.activeSessionId.peek()) {
-          this.activePending = true;
-          this.activeRevision = Math.max(this.activeRevision, event.transcriptRev || 0);
+          this.queueActive(event.transcriptRev);
         }
         break;
       case 'session.attention_changed':
@@ -452,6 +468,15 @@ export class ServerEventCoordinator {
         this.recoveryReason = event.reason || event.type;
         break;
     }
+    this.scheduleFlush();
+  }
+
+  private queueActive(revision?: number): void {
+    this.activePending = true;
+    this.activeRevision = Math.max(this.activeRevision, revision || 0);
+  }
+
+  private scheduleFlush(): void {
     if (!this.flushTimer) this.flushTimer = window.setTimeout(() => void this.flush(), 100);
   }
 

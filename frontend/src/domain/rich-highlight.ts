@@ -1,3 +1,4 @@
+import '../styles/features/syntax-highlight.css';
 import highlight from 'highlight.js/lib/core';
 import { definer as terraform } from '@taga3s/highlightjs-terraform';
 import javascript from 'highlight.js/lib/languages/javascript';

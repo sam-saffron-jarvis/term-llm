@@ -1,3 +1,4 @@
+import '../styles/features/live-status.css';
 import { Icon } from './Icon';
 import { useLayoutEffect, useRef, useState } from 'preact/hooks';
 import type { LiveStore } from '../stores/live-store';

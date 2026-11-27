@@ -1,3 +1,4 @@
+import type { AppStore } from '../stores/app-store';
 import { showAudioMediaError } from '../domain/audio-media';
 
 const pauseTranscriptPlayers = new Set<() => void>();
@@ -46,4 +47,22 @@ export function bindTranscriptMedia(root: HTMLElement): () => void {
     observer.disconnect();
     pauseAll();
   };
+}
+
+export function openMediaGallery(store: AppStore, src: string, type: 'image' | 'video'): void {
+  const nodes = [...document.querySelectorAll<HTMLElement>('[data-lightbox-src]')];
+  const items = nodes
+    .map((node, index) => ({
+      key: node.dataset.lightboxKey || `${node.dataset.lightboxSrc}-${index}`,
+      src: node.dataset.lightboxSrc || '',
+      type: node.dataset.lightboxType === 'video' ? ('video' as const) : ('image' as const),
+      name: node.dataset.lightboxName || '',
+    }))
+    .filter((item) => item.src);
+  let index = items.findIndex((item) => item.src === src && item.type === type);
+  if (index < 0) {
+    items.push({ key: `${src}-${items.length}`, src, type, name: '' });
+    index = items.length - 1;
+  }
+  store.lightbox.value = { ...items[index], items, index };
 }

@@ -12,6 +12,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/term-llm/term-llm/internal/app/serve/branchnotes"
+	"github.com/term-llm/term-llm/internal/app/serve/wire"
 	"github.com/term-llm/term-llm/internal/llm/core"
 	"github.com/term-llm/term-llm/internal/llm/mockprovider"
 	"github.com/term-llm/term-llm/internal/session"
@@ -607,7 +609,7 @@ func TestSessionPathNotesUseLatestDurableActivePrefix(t *testing.T) {
 	if notesRR.Code != http.StatusOK {
 		t.Fatalf("active path notes status/body = %d %s", notesRR.Code, notesRR.Body.String())
 	}
-	var notes prepareSessionPathNotesResponse
+	var notes wire.PreparePathNotesResponse
 	if err := json.Unmarshal(notesRR.Body.Bytes(), &notes); err != nil {
 		t.Fatal(err)
 	}
@@ -735,7 +737,7 @@ func TestSessionBranchEndpointsCreateChildBeforePreparingContext(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	edge, ok := directBranchNode(tree, created.Session.ID)
+	edge, ok := branchnotes.DirectBranchNode(tree, created.Session.ID)
 	if !ok || edge.CopiedAnchorMessageID != created.CopiedAnchorMessageID {
 		t.Fatalf("tree copied anchor = %#v", edge)
 	}

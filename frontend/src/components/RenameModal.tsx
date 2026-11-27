@@ -1,3 +1,4 @@
+import '../styles/features/rename-modal.css';
 import { useState } from 'preact/hooks';
 import { useStore } from '../app/context';
 import { Overlay } from './Overlay';

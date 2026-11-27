@@ -41,13 +41,19 @@ Web response/conversation shares capture a point in time and are not persisted. 
 
 Use `/tree` in the TUI, or the per-turn branch actions in the Web UI, to continue from an earlier message without deleting the current conversation. Every path is stored as a normal resumable child session; the tree view can switch between all surviving alternatives.
 
+In the Web UI, the branch action on an assistant response keeps that turn; on one of your messages it keeps the message but not the reply, so the new path can redirect the same request. `/thread` starts an empty path and offers the same choices, with the whole conversation as the later context; text after `/thread` is sent as the first message once the path is ready.
+
 When starting a path, choose what it should retain from the later turns being left out:
 
 - **Start clean** copies only the conversation prefix through the selected branch point.
 - **Bring useful context** asks the current model for short, non-authoritative notes covering useful findings, attempts, test results, and files touched.
 - **Bring specific context…** adds your focus instructions to that same bounded note-generation policy.
 
-Path notes are inserted as internal developer context before the first new user turn and shown as an expandable/inspectable artifact. They do not count as user messages. Generation uses a one-turn ephemeral helper request with bounded input and output. In the TUI, the child path opens immediately and note creation appears as live transcript work; you can draft at once, and a message submitted before the notes finish is queued until they are inserted. If generation is cancelled or fails, the queued message is restored to the composer and the new path remains clean. The Web flow prepares the selected context as part of its branch request.
+Path notes are inserted as internal developer context before the first new user turn and shown as an expandable/inspectable artifact. They do not count as user messages. Generation uses a one-turn ephemeral helper request with bounded input and output. In the TUI, the child path opens immediately and note creation appears as live transcript work; you can draft at once, and a message submitted before the notes finish is queued until they are inserted. If generation is cancelled or fails, the queued message is restored to the composer and the new path remains clean.
+
+In the web UI, **Bring concise notes** and **Focused context** show a stepper with the source model and a draft preview when text is available. **Skip notes** cancels preparation and opens the new path without notes, unless they have already been saved. **Open now** opens the path while work continues; you can draft a message, but sending waits for the notes to finish or be skipped. Reloading the child path resumes progress display without restarting generation. If preparation fails, you can retry on the same path or continue without notes.
+
+The finished **Path notes** card identifies its source, shows what was read or changed, and starts expanded until the path continues. A fork divider marks where the path diverged; the header and sidebar identify the source even for clean forks.
 
 Conversation branching rewinds model context only. Filesystem changes, commands, network requests, and other tool side effects from the previous path are not undone.
 

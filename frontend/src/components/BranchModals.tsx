@@ -1,28 +1,52 @@
 import { useState } from 'preact/hooks';
 import { useStore } from '../app/context';
 import { SearchField } from './FormFields';
+import { BranchStepper } from './BranchStepper';
 import { Overlay } from './Overlay';
 
 export function BranchContext() {
   const store = useStore();
   const [focus, setFocus] = useState('');
   const [mode, setMode] = useState<'choices' | 'focused'>('choices');
-  const anchor = store.branchTarget.value;
-  const prefill = store.branchPrefill.value;
+  // Anchor zero is a /thread: an empty path whose "later" context is the
+  // whole conversation. Message anchors keep everything up to that message.
+  const thread = store.branchTarget.value === '0';
   const busy = store.branchBusy.value;
   const error = store.branchError.value;
+  const step = store.branchStore.step.value;
+  if (step)
+    return (
+      <Overlay
+        key="stepper"
+        title={
+          step.mode === 'focused' ? 'Creating path with focused notes' : 'Creating path with notes'
+        }
+        close={false}
+        dismissDisabled
+        onEscape={() => undefined}
+        className="branch-stepper-modal"
+      >
+        <BranchStepper
+          step={step}
+          onSkip={() => store.branchStore.openNow(true)}
+          onOpen={() => store.branchStore.openNow()}
+          onRetry={() => store.branchStore.retryModal?.()}
+        />
+        <p class="branch-tree-note">Filesystem and tool side effects are not undone.</p>
+      </Overlay>
+    );
   const choose = (context: 'clean' | 'notes' | 'focused') => {
     if (busy) return;
     if (context === 'focused' && mode !== 'focused') {
       setMode('focused');
       return;
     }
-    if (prefill) void store.branchFrom(anchor, context, focus.trim(), '', prefill);
-    else void store.branchFrom(anchor, context, focus.trim());
+    void store.branchStore.choose(context, focus.trim());
   };
   return (
     <Overlay
-      title="Start a conversation path"
+      key="choices"
+      title={thread ? 'Start a related thread' : 'Start a conversation path'}
       dismissDisabled={busy}
       onEscape={() => {
         if (!busy)
@@ -30,21 +54,37 @@ export function BranchContext() {
           else store.modal.value = '';
       }}
     >
-      <p>Choose how much context to carry after this turn.</p>
+      <p>
+        {thread
+          ? 'Choose what the new thread should know about this conversation.'
+          : 'Choose how much context to carry from after this message.'}
+      </p>
       <div aria-busy={busy ? 'true' : undefined}>
         {mode === 'choices' ? (
           <div class="branch-context-choices">
             <button type="button" disabled={busy} onClick={() => choose('clean')}>
-              <strong>Clean branch</strong>
-              <small>Continue only with context up to this turn.</small>
+              <strong>{thread ? 'Clean thread' : 'Clean branch'}</strong>
+              <small>
+                {thread
+                  ? 'Start with no earlier messages.'
+                  : 'Continue only with the conversation up to here.'}
+              </small>
             </button>
             <button type="button" disabled={busy} onClick={() => choose('notes')}>
               <strong>Bring concise notes</strong>
-              <small>Prepare a short summary of useful later discoveries.</small>
+              <small>
+                {thread
+                  ? 'Prepare a short summary of useful discoveries in this conversation.'
+                  : 'Prepare a short summary of useful later discoveries.'}
+              </small>
             </button>
             <button type="button" disabled={busy} onClick={() => choose('focused')}>
               <strong>Focused context</strong>
-              <small>Tell the agent which later information matters.</small>
+              <small>
+                {thread
+                  ? 'Tell the agent which information from this conversation matters.'
+                  : 'Tell the agent which later information matters.'}
+              </small>
             </button>
           </div>
         ) : (

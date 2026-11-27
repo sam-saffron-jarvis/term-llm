@@ -1,0 +1,54 @@
+/* Skills dialog. Loaded with the lazy chunk of components/SkillsModal.tsx, after app.css;
+   rules that tie with a later app.css rule on the same element stay in app.css. */
+
+.skill-provenance,
+.skill-execution {
+  display: block;
+  color: var(--muted);
+}
+
+.skill-execution strong {
+  color: var(--text);
+}
+
+.skill-run-blocked {
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+.skills-list {
+  display: grid;
+  gap: 0.3rem;
+}
+
+.skill-row {
+  appearance: none;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.2rem 0.75rem;
+  width: 100%;
+  padding: 0.65rem 0.7rem;
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.skill-row:hover,
+.skill-row.selected {
+  border-color: var(--border);
+  background: var(--surface-2);
+}
+
+.skill-row small {
+  grid-column: 1 / -1;
+  overflow: hidden;
+  color: var(--text-muted);
+  font-size: 0.75rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

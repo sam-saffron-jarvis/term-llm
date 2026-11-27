@@ -1,3 +1,4 @@
+import '../styles/features/widgets-modal.css';
 import type { Widget } from '../domain/types';
 
 export function widgetDetail(widget: Widget): string {

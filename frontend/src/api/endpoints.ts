@@ -1,6 +1,9 @@
 import type { SessionInspect, SessionInspectBodies } from '../domain/inspect';
 import type {
   CreateWebSessionRequest,
+  WirePathNotesStatus,
+  WirePathNotesCancellation,
+  WirePreparePathNotesResponse,
   ServeSessionActivity,
   WebSessionMetrics,
   ChildRunProjection,
@@ -724,10 +727,18 @@ export const endpoints = (api: APIClient) => ({
   branch: (id: string, body: unknown) =>
     api.post<Record<string, unknown>>(`/v1/sessions/${encoded(id)}/branches`, body),
   pathNotes: (id: string, body: unknown) =>
-    api.json<Record<string, unknown>>(
+    api.json<WirePreparePathNotesResponse>(
       `/v1/sessions/${encoded(id)}/path-notes`,
       { method: 'POST', body: JSON.stringify(body) },
       { policy: 'mutation', timeoutMs: 150_000 },
+    ),
+  pathNotesStatus: (id: string, signal?: AbortSignal) =>
+    api.get<WirePathNotesStatus>(`/v1/sessions/${encoded(id)}/path-notes`, signal),
+  cancelPathNotes: (id: string) =>
+    api.json<WirePathNotesCancellation>(
+      `/v1/sessions/${encoded(id)}/path-notes`,
+      { method: 'DELETE' },
+      'mutation',
     ),
   // A new chat has no session yet; list skills for the workspace it will bind to.
   draftSkills: (projectId: string, worktreeDir: string, noProject: boolean) => {

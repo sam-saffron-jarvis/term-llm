@@ -456,12 +456,6 @@ a.message-file:focus-visible {
   }
 }
 
-/* File changes */
-
-.diff-file-body {
-  overflow: hidden;
-}
-
 .diff-row {
   position: relative;
   display: grid;
@@ -469,54 +463,10 @@ a.message-file:focus-visible {
   align-items: stretch;
 }
 
-.diff-row .diff-ln {
-  width: auto;
-  padding: 0.08rem 0.45rem 0.08rem 0.2rem;
-}
-
-.diff-row .diff-code {
-  order: initial;
-  padding: 0.08rem 0.5rem;
-}
-
-.diff-row .diff-code::before {
-  content: none;
-}
-
 .diff-row .diff-comment-affordance {
   order: initial;
   align-self: center;
   margin: 0 0.15rem;
-}
-
-.diff-row.hunk {
-  grid-template-columns: 6.4em minmax(0, 1fr) 2rem;
-}
-
-.diff-row.hunk .diff-ln:nth-child(2) {
-  display: none;
-}
-
-.diff-comment-panel {
-  grid-column: 3 / -1;
-  width: auto;
-  white-space: normal;
-}
-
-.diff-loading,
-.diff-empty {
-  padding: 1rem 0.75rem;
-  color: var(--text-muted);
-  font-size: 0.8rem;
-}
-
-.diff-error {
-  padding: 0.75rem;
-  font-size: 0.8rem;
-}
-
-mark.diff-word {
-  color: inherit;
 }
 
 /* Modal and secondary surfaces */
@@ -532,47 +482,6 @@ mark.diff-word {
   min-width: 0;
   margin: 0.75rem 0 0;
   padding: 0;
-  border: 0;
-}
-
-.skills-list {
-  display: grid;
-  gap: 0.3rem;
-}
-
-.skill-row {
-  appearance: none;
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 0.2rem 0.75rem;
-  width: 100%;
-  padding: 0.65rem 0.7rem;
-  border: 1px solid transparent;
-  border-radius: var(--radius-md);
-  background: transparent;
-  color: var(--text);
-  font: inherit;
-  text-align: left;
-  text-decoration: none;
-  cursor: pointer;
-}
-
-.skill-row:hover,
-.skill-row.selected {
-  border-color: var(--border);
-  background: var(--surface-2);
-}
-
-.skill-row small {
-  grid-column: 1 / -1;
-  overflow: hidden;
-  color: var(--text-muted);
-  font-size: 0.75rem;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.lightbox-backdrop {
   border: 0;
 }
 

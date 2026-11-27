@@ -1,0 +1,289 @@
+.fork-divider {
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+  margin: 1rem 0 0.8rem;
+  color: var(--text-muted);
+  font-size: 0.78rem;
+  text-align: center;
+}
+
+.fork-divider::before,
+.fork-divider::after {
+  content: '';
+  flex: 1 0 0.8rem;
+  border-top: 1px dashed var(--border-strong);
+}
+
+.path-notes-card {
+  min-width: 0;
+  margin: 0 0 0.5rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+  box-shadow: var(--shadow-soft);
+}
+
+.path-notes-card-head {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  width: 100%;
+  padding: 0.7rem 0.9rem;
+  border: 0;
+  border-radius: inherit;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 0.92rem;
+  text-align: left;
+  cursor: pointer;
+}
+
+.path-notes-card-head small,
+.path-notes-chevron {
+  color: var(--text-muted);
+}
+
+.path-notes-chevron {
+  margin-left: auto;
+}
+
+.path-notes-glyph {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 1.7rem;
+  height: 1.7rem;
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--accent-blue) 12%, transparent);
+  color: var(--accent-blue);
+}
+
+.path-notes-card-body {
+  padding: 0 0.9rem 0.8rem 3.15rem;
+  font-size: 0.92rem;
+}
+
+.path-notes-card-chips,
+.path-notes-card-foot {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  margin-top: 0.55rem;
+  color: var(--text-muted);
+  font-size: 0.76rem;
+}
+
+.path-notes-card-foot {
+  gap: 0.5rem 0.8rem;
+}
+
+.path-notes-card-foot-end {
+  justify-content: flex-end;
+}
+
+.path-notes-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.14rem 0.5rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-full);
+  background: var(--surface-2);
+  overflow-wrap: anywhere;
+}
+
+.path-notes-link.text-action {
+  padding: 0;
+  color: var(--text);
+  font-size: inherit;
+  font-weight: 600;
+  text-decoration: underline;
+  text-decoration-color: var(--border-strong);
+  text-underline-offset: 2px;
+}
+
+@media (width <= 480px) {
+  .path-notes-card-body {
+    padding-left: 0.9rem;
+  }
+}
+
+.branch-stepper-modal {
+  max-height: min(86dvh, calc(var(--app-height) - 2rem - var(--safe-top) - var(--safe-bottom)));
+  overflow: auto;
+}
+
+.branch-steps {
+  display: grid;
+  gap: 0.15rem;
+  padding: 0;
+  margin: 1rem 0 0.6rem;
+  list-style: none;
+}
+
+.branch-step {
+  display: grid;
+  grid-template-columns: 1.4rem minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 0.25rem 0.4rem;
+  padding: 0.45rem 0.5rem;
+  border-radius: var(--radius-md);
+  color: var(--text-muted);
+  font-size: 0.9rem;
+}
+
+.branch-step.current {
+  background: var(--surface-2);
+  color: var(--text);
+  font-weight: 600;
+}
+
+.branch-step.done {
+  color: var(--text);
+}
+
+.branch-step-icon {
+  display: grid;
+  height: 1.3rem;
+  place-items: center;
+}
+
+.branch-step.done .branch-step-icon,
+.path-notes-chip.done {
+  color: var(--accent-green);
+}
+
+.branch-step-dot,
+.branch-note-spinner {
+  width: 0.55rem;
+  height: 0.55rem;
+  border: 1px solid var(--border-strong);
+  border-radius: 50%;
+}
+
+.branch-note-spinner {
+  display: inline-block;
+  width: 0.85rem;
+  height: 0.85rem;
+  border-top-color: currentcolor;
+  animation: branch-notes-spin 0.8s linear infinite;
+}
+
+@keyframes branch-notes-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.branch-step small,
+.branch-step-time,
+.branch-step-elapsed {
+  color: var(--text-muted);
+  font-size: 0.78rem;
+  font-weight: 400;
+}
+
+.branch-step small {
+  display: block;
+}
+
+.branch-step-time,
+.branch-step-elapsed {
+  font-variant-numeric: tabular-nums;
+}
+
+.branch-step-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.5rem;
+  margin-top: 0.4rem;
+}
+
+.branch-step-elapsed {
+  margin-right: auto;
+}
+
+.branch-step-actions .btn {
+  padding: 0.38rem 0.7rem;
+  font-size: 0.82rem;
+}
+
+.path-notes-draft {
+  grid-column: 2 / -1;
+  margin: 0.3rem 0 0;
+  padding: 0.5rem 0.7rem;
+  overflow: hidden;
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  color: var(--text-muted);
+  font-size: 0.78rem;
+  font-weight: 400;
+}
+
+.path-notes-draft-text {
+  max-height: 6rem;
+  overflow: auto;
+  color: var(--text);
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.path-notes-skeleton {
+  display: grid;
+  gap: 0.45rem;
+  margin: 0.4rem 0 0.25rem;
+}
+
+.path-notes-skeleton span {
+  height: 0.6rem;
+  border-radius: var(--radius-md);
+  background: linear-gradient(90deg, var(--surface-2), var(--surface-3), var(--surface-2));
+  background-size: 200% 100%;
+  animation: branch-notes-shimmer 1.3s linear infinite;
+}
+
+.path-notes-skeleton span:last-child {
+  width: 70%;
+}
+
+@keyframes branch-notes-shimmer {
+  to {
+    background-position: -200% 0;
+  }
+}
+
+.path-notes-pending {
+  padding: 0.75rem 0.9rem;
+  border-color: var(--state-active-border);
+  background: var(--state-active-bg);
+  font-size: 0.9rem;
+}
+
+.path-notes-pending .path-notes-chip[aria-current] {
+  border-color: var(--border-strong);
+  color: var(--text);
+}
+
+@media (width <= 480px) {
+  .branch-step-actions {
+    display: grid;
+    grid-template-columns: 1fr;
+    align-items: stretch;
+  }
+
+  .branch-step-actions .btn {
+    min-height: 2.75rem;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .branch-note-spinner,
+  .path-notes-skeleton span {
+    animation: none;
+  }
+}

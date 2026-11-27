@@ -436,6 +436,14 @@ export class SelectionStore {
           : this.sessionsStore.activeSession.peek()?.id === id
             ? this.sessionsStore.activeSession.peek() || undefined
             : undefined;
+      // A concurrent reload may already have installed newer durable bodies.
+      if (
+        Number.isFinite(selectedRevision) &&
+        selectedRevision < (current?.messageBodiesRev ?? current?.transcriptRev ?? 0)
+      ) {
+        this.setUnverified(id, false);
+        return 'loaded';
+      }
       // selected_transcript is authoritative here, including an empty transcript.
       // Session state is authoritative for its durable continuation anchor.
       const policy = recordValue(state.approval_policy);

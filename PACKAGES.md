@@ -56,6 +56,7 @@ One line per root-module package, generated from package doc comments by `make d
 - `internal/app/serve/agentcatalog` — lists discoverable agents for the Web UI's /agents catalog.
 - `internal/app/serve/approvalprompt` — builds the shared file, shell and cell approval presentation.
 - `internal/app/serve/authorship` — handles display-only proxy identity and author directory caching.
+- `internal/app/serve/branchnotes` — owns web fork note jobs and branch context preparation helpers.
 - `internal/app/serve/hub` — holds the Hub server implementation behind explicit options.
 - `internal/app/serve/hubnode` — registers a reverse Web node with its Hub and diagnoses node-to-Hub connectivity failures.
 - `internal/app/serve/jobs` — holds the serve job scheduler's persistence schema, migrations and cron math.
@@ -202,6 +203,7 @@ One line per root-module package, generated from package doc comments by `make d
 - `internal/serveui` — embeds and serves the built web UI assets, manifests and index shell.
 - `internal/session` — owns durable sessions, messages, steering persistence and SQLite storage.
 - `internal/session/authordb` — owns the additive display-attribution schema and batched directory queries.
+- `internal/session/branchtree` — defines and orders the persisted conversation fork tree.
 - `internal/session/notificationdb` — implements durable logical-turn ownership and fenced notification delivery on the session SQLite transaction.
 - `internal/session/searchindex` — owns the frozen visible-message predicate and covering index for session search.
 - `internal/session/searchrank` — ranks sessions by title and conversation matches.

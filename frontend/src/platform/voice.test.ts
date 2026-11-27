@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { VoiceOperation, selectVoiceMIME, voiceCapability, voiceFilename } from './voice';
+import { voiceCapability } from './voice';
+import { VoiceOperation, selectVoiceMIME, voiceFilename } from './voice-operation';
 
 class FakeRecorder extends EventTarget {
   static supported: string[] = [];

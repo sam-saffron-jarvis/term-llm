@@ -6,12 +6,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"sort"
+	"slices"
 	"strings"
 	"time"
 
 	"github.com/term-llm/term-llm/internal/llm/core"
 	"github.com/term-llm/term-llm/internal/llm/engine"
+	"github.com/term-llm/term-llm/internal/session/branchtree"
 )
 
 // GetBranchByIdempotencyKey returns an already-materialized child without
@@ -159,6 +160,9 @@ func (s *SQLiteStore) CreateBranch(ctx context.Context, sourceSessionID string, 
 			anchor := Message{Role: core.Role(anchorRole), TextContent: anchorText, CompactionTail: anchorCompactionTail}
 			if !IsBranchableMessage(anchor) {
 				return ErrNotFound
+			}
+			if err := conn.QueryRowContext(ctx, branchtree.TurnEndSQL, anchorSequence, sourceSessionID, anchorSequence, sourceSessionID, anchorSequence).Scan(&anchorSequence); err != nil {
+				return fmt.Errorf("resolve branch turn end: %w", err)
 			}
 			nullableAnchor = opts.AnchorMessageID
 		}
@@ -348,17 +352,14 @@ func (s *SQLiteStore) CreateBranch(ctx context.Context, sourceSessionID string, 
 func MessagesAfterBranchAnchor(messages []Message, anchorMessageID int64) ([]core.Message, error) {
 	anchorSequence := -1
 	if anchorMessageID > 0 {
-		found := false
-		for _, message := range messages {
-			if message.ID == anchorMessageID {
-				anchorSequence = message.Sequence
-				found = true
-				break
-			}
-		}
-		if !found {
+		i := slices.IndexFunc(messages, func(m Message) bool { return m.ID == anchorMessageID })
+		if i < 0 {
 			return nil, ErrNotFound
 		}
+		anchorSequence = branchtree.TurnEnd(messages[i].Sequence, func(yield func(int, bool) bool) {
+			for j := 0; j < len(messages) && yield(messages[j].Sequence, messages[j].Role == core.RoleTool); j++ {
+			}
+		})
 	}
 	out := make([]core.Message, 0, len(messages))
 	for i := range messages {
@@ -449,45 +450,5 @@ func (s *SQLiteStore) GetBranchTree(ctx context.Context, sessionID string) (Bran
 		return BranchTree{}, ErrNotFound
 	}
 
-	children := make(map[string][]BranchTreeNode)
-	roots := make([]BranchTreeNode, 0, 1)
-	for _, node := range byID {
-		if _, parentSurvives := byID[node.ParentSessionID]; node.ParentSessionID == "" || !parentSurvives {
-			roots = append(roots, node)
-		} else {
-			children[node.ParentSessionID] = append(children[node.ParentSessionID], node)
-		}
-	}
-	less := func(a, b BranchTreeNode) bool {
-		if a.CreatedAt.Equal(b.CreatedAt) {
-			return a.SessionNumber < b.SessionNumber
-		}
-		return a.CreatedAt.Before(b.CreatedAt)
-	}
-	sort.Slice(roots, func(i, j int) bool { return less(roots[i], roots[j]) })
-	for parent := range children {
-		sort.Slice(children[parent], func(i, j int) bool { return less(children[parent][i], children[parent][j]) })
-	}
-
-	tree := BranchTree{ActiveSessionID: sessionID}
-	visited := make(map[string]bool, len(byID))
-	var appendTree func(BranchTreeNode)
-	appendTree = func(node BranchTreeNode) {
-		if visited[node.SessionID] {
-			return
-		}
-		visited[node.SessionID] = true
-		tree.Nodes = append(tree.Nodes, node)
-		for _, child := range children[node.SessionID] {
-			appendTree(child)
-		}
-	}
-	for _, root := range roots {
-		if tree.RootSessionID == "" {
-			tree.RootSessionID = root.SessionID
-		}
-		appendTree(root)
-	}
-	tree.PathCount = len(tree.Nodes)
-	return tree, nil
+	return branchtree.Order(sessionID, byID), nil
 }

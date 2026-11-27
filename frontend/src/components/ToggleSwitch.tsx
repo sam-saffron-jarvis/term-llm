@@ -1,3 +1,4 @@
+import '../styles/features/toggle-switch.css';
 import type { InputHTMLAttributes } from 'preact';
 
 type ToggleSwitchProps = Pick<

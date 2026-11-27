@@ -1,3 +1,4 @@
+import '../styles/features/side-question-modal.css';
 import { memo } from './memo';
 import { useEffect, useLayoutEffect, useRef } from 'preact/hooks';
 import { useStore } from '../app/context';

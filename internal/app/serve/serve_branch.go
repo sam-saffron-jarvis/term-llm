@@ -6,24 +6,17 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/term-llm/term-llm/internal/llm/core"
-	"github.com/term-llm/term-llm/internal/llm/engine"
+	"github.com/term-llm/term-llm/internal/app/serve/branchnotes"
+	"github.com/term-llm/term-llm/internal/app/serve/wire"
 	"github.com/term-llm/term-llm/internal/session"
 )
 
-type webBranchTreePoint struct {
-	MessageID         int64  `json:"message_id"`
-	AnchorMessageID   int64  `json:"anchor_message_id,omitempty"`
-	Sequence          int    `json:"sequence"`
-	Role              string `json:"role"`
-	Preview           string `json:"preview"`
-	Prefill           string `json:"prefill,omitempty"`
-	LaterMessageCount int    `json:"later_message_count"`
-}
+type webBranchTreePoint = branchnotes.BranchTreePoint
 
 type webBranchTreeResponse struct {
 	session.BranchTree
-	BranchPoints []webBranchTreePoint `json:"branch_points"`
+	BranchPoints []webBranchTreePoint  `json:"branch_points"`
+	PathNotes    *wire.PathNotesStatus `json:"path_notes,omitempty"`
 }
 
 type createSessionBranchRequest struct {
@@ -43,29 +36,6 @@ type createSessionBranchResponse struct {
 	ForkAfterMessageID    int64           `json:"fork_after_message_id,omitempty"`
 	CopiedAnchorMessageID int64           `json:"copied_anchor_message_id,omitempty"`
 	Reused                bool            `json:"reused,omitempty"`
-}
-
-type prepareSessionPathNotesRequest struct {
-	Mode  string `json:"mode"`
-	Focus string `json:"focus,omitempty"`
-}
-
-type prepareSessionPathNotesResponse struct {
-	Ready   bool   `json:"ready"`
-	Reused  bool   `json:"reused,omitempty"`
-	Limited bool   `json:"limited,omitempty"`
-	Message string `json:"message,omitempty"`
-}
-
-func branchContextSourceMessage(message session.Message) bool {
-	if session.IsBranchableMessage(message) {
-		return true
-	}
-	if message.Role == core.RoleDeveloper {
-		_, ok := message.PathNoteProvenance()
-		return ok
-	}
-	return false
 }
 
 // activeWebBranchRun is one consistent sample of the source session's active
@@ -133,18 +103,7 @@ func activeWebBranchAnchorRowID(messages []session.Message, run activeWebBranchR
 }
 
 func pruneActiveWebBranchOutput(messages []session.Message, activeResponseID string, activeAnchorRowID int64) []session.Message {
-	if strings.TrimSpace(activeResponseID) == "" {
-		return messages
-	}
-	if activeAnchorRowID <= 0 {
-		return nil
-	}
-	for i := range messages {
-		if messages[i].ID == activeAnchorRowID {
-			return append([]session.Message(nil), messages[:i+1]...)
-		}
-	}
-	return nil
+	return branchnotes.PruneActiveBranchOutput(messages, activeResponseID, activeAnchorRowID)
 }
 
 type activeWebBranchAnchorStatus uint8
@@ -228,61 +187,7 @@ func (s *serveServer) loadWebBranchContextSnapshot(ctx context.Context, sessionI
 }
 
 func webBranchTreePointsForActiveRun(messages []session.Message, activeAnchorRowID int64) []webBranchTreePoint {
-	if activeAnchorRowID < 0 {
-		return nil
-	}
-	if activeAnchorRowID > 0 {
-		activeAnchorIndex := -1
-		for i := range messages {
-			if messages[i].ID == activeAnchorRowID {
-				activeAnchorIndex = i
-				break
-			}
-		}
-		if activeAnchorIndex < 0 {
-			return nil
-		}
-		messages = messages[:activeAnchorIndex+1]
-	}
-	after := make(map[int64]int, len(messages))
-	contextCount := 0
-	for i := len(messages) - 1; i >= 0; i-- {
-		after[messages[i].ID] = contextCount
-		if branchContextSourceMessage(messages[i]) {
-			contextCount++
-		}
-	}
-	points := make([]webBranchTreePoint, 0, len(messages))
-	previousContinuationID := int64(0)
-	for _, message := range messages {
-		if message.CompactionTail || engine.IsInternalCompactionSummaryText(message.TextContent) {
-			continue
-		}
-		if message.Role == core.RoleAssistant {
-			previousContinuationID = message.ID
-			continue
-		}
-		if message.Role != core.RoleUser {
-			continue
-		}
-		anchorID := previousContinuationID
-		laterCount := contextCount
-		if anchorID > 0 {
-			laterCount = after[anchorID]
-		}
-		if laterCount > 0 {
-			laterCount--
-		}
-		preview := session.TruncateSummary(strings.Join(strings.Fields(message.TextContent), " "))
-		if preview == "" {
-			preview = "(attachment content)"
-		}
-		points = append(points, webBranchTreePoint{
-			MessageID: message.ID, AnchorMessageID: anchorID, Sequence: message.Sequence,
-			Role: string(core.RoleUser), Preview: preview, Prefill: message.TextContent, LaterMessageCount: laterCount,
-		})
-	}
-	return points
+	return branchnotes.BranchTreePoints(messages, activeAnchorRowID)
 }
 
 func webBranchTreePoints(messages []session.Message) []webBranchTreePoint {
@@ -308,7 +213,7 @@ func (s *serveServer) handleSessionTree(w http.ResponseWriter, r *http.Request, 
 	case err != nil:
 		writeOpenAIError(w, http.StatusInternalServerError, "server_error", "failed to load conversation tree")
 	default:
-		response := webBranchTreeResponse{BranchTree: tree}
+		response := webBranchTreeResponse{BranchTree: tree, PathNotes: s.activePathNotesStatus(sessionID)}
 		if strings.EqualFold(strings.TrimSpace(r.URL.Query().Get("include_branch_points")), "1") ||
 			strings.EqualFold(strings.TrimSpace(r.URL.Query().Get("include_branch_points")), "true") {
 			snapshot, snapshotErr := s.loadWebBranchContextSnapshot(r.Context(), sessionID)
@@ -366,7 +271,7 @@ func (s *serveServer) handleCreateSessionBranch(w http.ResponseWriter, r *http.R
 				return
 			}
 			writeJSON(w, http.StatusOK, createSessionBranchResponse{
-				Session:               s.webSessionEntryFromSession(replay.Session),
+				Session:               s.webSessionEntryFromBranch(replay.Session, source),
 				ParentSessionID:       sourceSessionID,
 				ParentTitle:           source.PreferredShortTitle(),
 				ForkAfterMessageID:    replay.ForkAfterMessageID,
@@ -453,7 +358,7 @@ func (s *serveServer) handleCreateSessionBranch(w http.ResponseWriter, r *http.R
 			s.publishEvent(serveEventInput{Type: serveEventChildrenChanged, SessionID: result.Session.ID, ParentSessionID: sourceSessionID, Reason: "branch_created"})
 		}
 		writeJSON(w, http.StatusCreated, createSessionBranchResponse{
-			Session:               s.webSessionEntryFromSession(result.Session),
+			Session:               s.webSessionEntryFromBranch(result.Session, source),
 			ParentSessionID:       sourceSessionID,
 			ParentTitle:           source.PreferredShortTitle(),
 			ForkAfterMessageID:    result.ForkAfterMessageID,
@@ -486,122 +391,8 @@ func (s *serveServer) loadActiveWebBranchMessages(w http.ResponseWriter, r *http
 	return nil, false
 }
 
-func directBranchNode(tree session.BranchTree, childSessionID string) (session.BranchTreeNode, bool) {
-	for _, node := range tree.Nodes {
-		if node.SessionID == childSessionID && node.ParentSessionID != "" {
-			return node, true
-		}
-	}
-	return session.BranchTreeNode{}, false
-}
-
-func existingPathNote(messages []session.Message, sourceSessionID string, anchorMessageID int64) bool {
-	for i := range messages {
-		provenance, ok := messages[i].PathNoteProvenance()
-		if ok && provenance.SourceSessionID == sourceSessionID && provenance.AnchorMessageID == anchorMessageID {
-			return true
-		}
-	}
-	return false
-}
-
-func (s *serveServer) handleSessionPathNotes(w http.ResponseWriter, r *http.Request, childSessionID string) {
-	if s == nil || s.store == nil {
-		writeOpenAIError(w, http.StatusNotFound, "not_found_error", "session history is unavailable")
-		return
-	}
-	branchStore, ok := s.store.(session.ConversationBranchStore)
-	if !ok {
-		writeOpenAIError(w, http.StatusConflict, "conflict_error", "conversation branching is unavailable")
-		return
-	}
-	var req prepareSessionPathNotesRequest
-	if err := decodeJSONBody(r, &req); err != nil {
-		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", err.Error())
-		return
-	}
-	mode := strings.ToLower(strings.TrimSpace(req.Mode))
-	if mode != "notes" && mode != "focused" {
-		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "mode must be notes or focused")
-		return
-	}
-	if _, loaded := s.branchNotes.LoadOrStore(childSessionID, struct{}{}); loaded {
-		writeOpenAIError(w, http.StatusConflict, "conflict_error", "branch context generation is already active")
-		return
-	}
-	defer s.branchNotes.Delete(childSessionID)
-
-	tree, err := branchStore.GetBranchTree(r.Context(), childSessionID)
-	if err != nil {
-		writeOpenAIError(w, http.StatusNotFound, "not_found_error", "conversation branch was not found")
-		return
-	}
-	edge, ok := directBranchNode(tree, childSessionID)
-	if !ok {
-		writeOpenAIError(w, http.StatusConflict, "conflict_error", "session is not a conversation branch")
-		return
-	}
-	messages, err := s.store.GetMessages(r.Context(), childSessionID, 0, 0)
-	if err != nil {
-		writeOpenAIError(w, http.StatusInternalServerError, "server_error", "failed to inspect branch context")
-		return
-	}
-	if existingPathNote(messages, edge.ParentSessionID, edge.ForkAfterMessageID) {
-		writeJSON(w, http.StatusOK, prepareSessionPathNotesResponse{Ready: true, Reused: true})
-		return
-	}
-	mode, focus, status, message := branchContextRequestValues(&responsesBranchContextRequest{Mode: mode, Focus: req.Focus})
-	if status != 0 {
-		writeOpenAIError(w, status, "invalid_request_error", message)
-		return
-	}
-	workCtx, cancelWork := detachedBranchWorkContext(r.Context())
-	defer cancelWork()
-	snapshot, err := s.loadWebBranchContextSnapshot(workCtx, edge.ParentSessionID)
-	if errors.Is(err, errWebBranchSnapshotUnstable) {
-		writeOpenAIError(w, http.StatusConflict, "conflict_error", "branch context is changing; try again")
-		return
-	}
-	if err != nil {
-		writeOpenAIError(w, http.StatusInternalServerError, "server_error", "failed to load branch context")
-		return
-	}
-	source, sourceErr := session.MessagesAfterBranchAnchor(snapshot.messages, edge.ForkAfterMessageID)
-	if sourceErr != nil && !snapshot.limited {
-		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "branch source or anchor was not found")
-		return
-	}
-	limitedMessage := ""
-	if snapshot.limited {
-		limitedMessage = "Context was prepared from the latest durable completed part of the active source; in-progress output was omitted."
-	}
-	if sourceErr != nil || len(source) == 0 {
-		if snapshot.limited {
-			limitedMessage = "The path was created without additional notes because no later source context was available."
-		}
-		writeJSON(w, http.StatusOK, prepareSessionPathNotesResponse{Ready: true, Limited: snapshot.limited, Message: limitedMessage})
-		return
-	}
-	pathNote, status, message := s.generateBranchPathNote(workCtx, edge.ParentSessionID, source, mode, focus)
-	if status != 0 {
-		errType := "invalid_request_error"
-		if status == http.StatusConflict {
-			errType = "conflict_error"
-		} else if status >= http.StatusInternalServerError {
-			errType = "server_error"
-		}
-		writeOpenAIError(w, status, errType, message)
-		return
-	}
-	if pathNote != nil {
-		pathNote.Provenance.SourceSessionID = edge.ParentSessionID
-		pathNote.Provenance.AnchorMessageID = edge.ForkAfterMessageID
-		note := session.NewPathNoteMessage(childSessionID, pathNote.Text, pathNote.Provenance, -1)
-		if err := s.store.AddMessage(workCtx, childSessionID, note); err != nil {
-			writeOpenAIError(w, http.StatusInternalServerError, "server_error", "failed to save branch context")
-			return
-		}
-		s.publishEvent(serveEventInput{Type: serveEventSessionTranscriptChanged, SessionID: childSessionID, ParentSessionID: edge.ParentSessionID, Reason: "branch_path_note"})
-	}
-	writeJSON(w, http.StatusOK, prepareSessionPathNotesResponse{Ready: true, Limited: snapshot.limited, Message: limitedMessage})
+func (s *serveServer) webSessionEntryFromBranch(child, source *session.Session) webSessionEntry {
+	entry := s.webSessionEntryFromSession(child)
+	entry.BranchParentSessionID, entry.BranchParentNumber = source.ID, source.Number
+	return entry
 }

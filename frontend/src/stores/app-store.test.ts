@@ -2056,6 +2056,7 @@ describe('AppStore compatibility behavior', () => {
     store.endpoints.setMCP = vi.fn(() => request.promise);
 
     const toggling = store.toggleMCP('github');
+    await vi.waitFor(() => expect(store.endpoints.setMCP).toHaveBeenCalledTimes(1));
 
     expect(store.mcp.value).toMatchObject({
       enabled: ['github'],
@@ -3088,6 +3089,42 @@ describe('AppStore compatibility behavior', () => {
     expect(await first).toBe(true);
   });
 
+  it('opens the context choices for /thread and sends its message on the new path', async () => {
+    const store = new AppStore(config);
+    store.sessions.value = [session()];
+    store.activeSessionId.value = 's1';
+    store.draftActive.value = false;
+    store.prompt.value = '/thread follow up';
+    store.endpoints.branch = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('branch service unavailable'))
+      .mockResolvedValueOnce({ session: { id: 's2', title: 'Thread' } });
+    store.refreshSidebar = vi.fn(async () => undefined);
+    store.selectSession = vi.fn(async () => undefined);
+    const sent: string[] = [];
+    store.send = vi.fn(async () => {
+      sent.push(store.prompt.value);
+    });
+
+    await store.branchCommand('thread', 'follow up');
+
+    expect(store.endpoints.branch).not.toHaveBeenCalled();
+    expect(store.modal.value).toBe('branch-context');
+    expect(store.branchTarget.value).toBe('0');
+    expect(store.prompt.value).toBe('/thread follow up');
+
+    expect(await store.branchStore.choose('clean')).toBe(false);
+    expect(store.prompt.value).toBe('/thread follow up');
+
+    expect(await store.branchStore.choose('clean')).toBe(true);
+    expect(store.endpoints.branch).toHaveBeenLastCalledWith(
+      's1',
+      expect.objectContaining({ anchor_message_id: 0 }),
+    );
+    expect(sent).toEqual(['follow up']);
+    expect(store.modal.value).toBe('');
+  });
+
   it('treats an auto-send failure as follow-on work and clears branch retry identity', async () => {
     const store = new AppStore(config);
     store.sessions.value = [session()];
@@ -3171,6 +3208,7 @@ describe('AppStore compatibility behavior', () => {
       ready: true,
       limited: true,
       message: 'In-progress output was omitted.',
+      note_saved: true,
     }));
     store.refreshSidebar = vi.fn(async () => undefined);
     store.selectSession = vi.fn(async () => undefined);
@@ -3180,6 +3218,274 @@ describe('AppStore compatibility behavior', () => {
     expect(store.toasts.value.at(-1)).toMatchObject({
       message: 'In-progress output was omitted.',
       kind: 'info',
+    });
+  });
+
+  describe('path notes workflow', () => {
+    function forkFixture() {
+      const store = new AppStore(config);
+      store.sessions.value = [{ ...session(), number: 1 }];
+      store.activeSessionId.value = 's1';
+      store.draftActive.value = false;
+      store.endpoints.branch = vi.fn(async () => ({
+        session: { id: 's2', number: 2, title: 'Fork' },
+      }));
+      store.refreshSidebar = vi.fn(async () => undefined);
+      store.loadSession = vi.fn(async () => undefined);
+      store.selectSession = vi.fn(async (selected) => {
+        store.activeSessionId.value = selected.id;
+      });
+      store.openBranchContext('42');
+      return store;
+    }
+
+    it.each([false, true])('opens once on Skip before polling (save won: %s)', async (saveWon) => {
+      vi.useFakeTimers();
+      const store = forkFixture();
+      try {
+        const started = deferred<void>();
+        const post = deferred<{ ready: boolean; note_saved: boolean; cancelled?: boolean }>();
+        store.endpoints.pathNotes = vi.fn(() => {
+          started.resolve();
+          return post.promise;
+        });
+        store.endpoints.pathNotesStatus = vi.fn(async () => ({
+          state: 'writing',
+          preview: 'Draft',
+        }));
+        store.endpoints.cancelPathNotes = vi.fn(async () => ({
+          cancelled: !saveWon,
+          note_saved: saveWon,
+        }));
+        const opening = store.branchFrom('42', 'notes');
+        await started.promise;
+        expect(store.endpoints.pathNotesStatus).not.toHaveBeenCalled();
+        store.branchStore.openNow(true);
+        expect(await opening).toBe(true);
+        expect(store.endpoints.cancelPathNotes).toHaveBeenCalledExactlyOnceWith('s2');
+        expect(store.selectSession).toHaveBeenCalledOnce();
+        expect(store.activeSessionId.value).toBe('s2');
+        expect(store.modal.value).toBe('');
+        expect(store.toasts.value.some((toast) => /already saved/.test(toast.message))).toBe(
+          saveWon,
+        );
+        if (saveWon) post.resolve({ ready: true, note_saved: true });
+        else post.resolve({ ready: true, note_saved: false, cancelled: true });
+        await post.promise.catch(() => undefined);
+        expect(store.toasts.value.some((toast) => toast.kind === 'error')).toBe(false);
+      } finally {
+        store.dispose();
+        vi.useRealTimers();
+      }
+    });
+
+    it('opens before notes and never navigates on background completion', async () => {
+      const store = forkFixture();
+      const posted = deferred<void>();
+      const notes = deferred<{ ready: boolean; note_saved: boolean }>();
+      const sidebar = deferred<void>();
+      store.refreshSidebar = vi.fn(() => sidebar.promise);
+      store.endpoints.pathNotes = vi.fn(() => {
+        posted.resolve();
+        return notes.promise;
+      });
+      const opening = store.branchFrom('42', 'notes');
+      await posted.promise;
+      const job = store.branchStore.notesJobs.peek().get('s2')!;
+      store.branchStore.openNow();
+      expect(await opening).toBe(true);
+      expect(store.activeSessionId.value).toBe('s2');
+      expect(store.branchStore.pending('s2')).toBe(true);
+      store.prompt.value = 'keep this draft';
+      const send = vi.spyOn(store.runEngine, 'send');
+      await store.send();
+      expect(send).not.toHaveBeenCalled();
+      expect(store.prompt.value).toBe('keep this draft');
+      expect(store.toasts.value.at(-1)?.message).toBe('Waiting for path notes…');
+      store.activeSessionId.value = 's1';
+      store.modal.value = 'settings';
+      notes.resolve({ ready: true, note_saved: true });
+      expect(await job.done).toBe('saved');
+      sidebar.resolve();
+      expect(store.selectSession).toHaveBeenCalledOnce();
+      expect(store.activeSessionId.value).toBe('s1');
+      expect(store.modal.value).toBe('settings');
+      store.dispose();
+    });
+
+    it('keeps a durable note when the real initial selection load arrives late', async () => {
+      const store = new AppStore(config);
+      const source = session();
+      const child = { ...source, id: 's2', number: 2, branchParentSessionId: 's1' };
+      store.sessions.value = [source, child];
+      store.activeSessionId.value = 's1';
+      store.draftActive.value = false;
+      store.endpoints.sessionState = vi.fn(async () => ({}));
+      store.endpoints.skills = vi.fn(async () => ({ skills: [] }));
+      store.endpoints.tree = vi.fn(async () => ({
+        nodes: [{ session_id: 's2', parent_session_id: 's1', fork_after_message_id: 42 }],
+      }));
+      const response = (rev: number, anchor?: number) => ({
+        selected_session: { id: 's2', branch_parent_session_id: 's1' },
+        selected_transcript: {
+          bodies: {
+            rev,
+            messages:
+              anchor == null
+                ? []
+                : [
+                    {
+                      id: 51,
+                      role: 'path-note',
+                      parts: [
+                        {
+                          type: 'path_note',
+                          text: 'Durable finding',
+                          path_note: { source_session_id: 's1', anchor_message_id: anchor },
+                        },
+                      ],
+                    },
+                  ],
+          },
+        },
+      });
+      const stale = deferred<ReturnType<typeof response>>();
+      const refreshing = deferred<void>();
+      store.endpoints.selectedSession = vi
+        .fn()
+        .mockReturnValueOnce(stale.promise)
+        .mockImplementationOnce(async () => {
+          refreshing.resolve();
+          return response(3, 99);
+        })
+        .mockResolvedValueOnce(response(4, 42));
+      store.endpoints.branch = vi.fn(async () => ({ session: { id: 's2' } }));
+      store.refreshSidebar = vi.fn(async () => undefined);
+      const posting = deferred<void>();
+      const post = deferred<{ ready: boolean; note_saved: boolean }>();
+      store.endpoints.pathNotes = vi.fn(() => {
+        posting.resolve();
+        return post.promise;
+      });
+      store.openBranchContext('42');
+      try {
+        const opening = store.branchFrom('42', 'notes');
+        await posting.promise;
+        const job = store.branchStore.notesJobs.peek().get('s2')!;
+        store.branchStore.openNow();
+        await vi.waitFor(() => expect(store.endpoints.selectedSession).toHaveBeenCalledTimes(1));
+        post.resolve({ ready: true, note_saved: true });
+        await refreshing.promise;
+        await vi.waitFor(() => expect(store.activeSession.value?.messageBodiesRev).toBe(3));
+        expect(store.branchStore.pending('s2')).toBe(true);
+        expect(await store.branchStore.notesChanged('s2', 4)).toBe(true);
+        expect(await job.done).toBe('saved');
+        stale.resolve(response(1));
+        await opening;
+        expect(store.activeSession.value?.messageBodiesRev).toBe(4);
+        expect(store.activeSession.value?.messages).toEqual([
+          expect.objectContaining({ role: 'path-note', content: 'Durable finding' }),
+        ]);
+      } finally {
+        store.dispose();
+      }
+    });
+
+    it.each([false, true])(
+      'releases branch busy after losing the modal during creation (skipped: %s)',
+      async (skip) => {
+        const store = forkFixture();
+        const branch = deferred<Record<string, unknown>>();
+        const post = deferred<{ ready: boolean; note_saved: boolean }>();
+        store.endpoints.branch = vi.fn(() => branch.promise);
+        store.endpoints.pathNotes = vi.fn(() => post.promise);
+        store.endpoints.cancelPathNotes = vi.fn(async () => ({
+          cancelled: true,
+          note_saved: false,
+        }));
+        try {
+          const opening = store.branchFrom('42', 'notes');
+          if (skip) store.branchStore.openNow(true);
+          store.openBranchContext('7'); // Replace both the modal owner and its step.
+          branch.resolve({ session: { id: 's2' } });
+          expect(await opening).toBe(true);
+          expect(store.branchBusy.value).toBe(false);
+          expect(store.endpoints.pathNotes).toHaveBeenCalledTimes(skip ? 0 : 1);
+          expect(store.endpoints.cancelPathNotes).toHaveBeenCalledTimes(skip ? 1 : 0);
+          expect(store.selectSession).not.toHaveBeenCalled();
+          expect(store.branchTarget.value).toBe('7');
+        } finally {
+          store.dispose();
+        }
+      },
+    );
+
+    it('retries notes on the same confirmed child', async () => {
+      const store = forkFixture();
+      const posted = deferred<void>();
+      const notes = deferred<{ ready: boolean; note_saved: boolean }>();
+      store.endpoints.pathNotes = vi
+        .fn()
+        .mockImplementationOnce(() => {
+          posted.resolve();
+          return notes.promise;
+        })
+        .mockResolvedValueOnce({ ready: true, note_saved: true });
+      const opening = store.branchFrom('42', 'focused', 'preserve this');
+      await posted.promise;
+      const job = store.branchStore.notesJobs.peek().get('s2')!;
+      notes.reject(new Error('mock provider failed'));
+      expect(await job.done).toBe('failed');
+      expect(store.modal.value).toBe('branch-context');
+      await Promise.resolve(); // The dialog consumes the settled POST before handling retry.
+      expect(store.branchStore.retryModal).toBeTypeOf('function');
+      const retry = store.branchStore.retryModal!;
+      retry();
+      expect(store.branchStore.retryModal).toBeUndefined();
+      retry(); // A double invocation of the stale callback must not post again.
+      expect(await opening).toBe(true);
+      expect(store.endpoints.branch).toHaveBeenCalledOnce();
+      expect(vi.mocked(store.endpoints.pathNotes).mock.calls).toEqual([
+        ['s2', { mode: 'focused', focus: 'preserve this' }],
+        ['s2', { mode: 'focused', focus: 'preserve this' }],
+      ]);
+      store.dispose();
+    });
+
+    it('attaches on an already-active 409 and resumes snapshots without posting', async () => {
+      vi.useFakeTimers();
+      const store = forkFixture();
+      try {
+        store.endpoints.pathNotes = vi.fn(async () => {
+          throw new APIError('branch context generation is already active', 409);
+        });
+        store.endpoints.pathNotesStatus = vi
+          .fn()
+          .mockResolvedValueOnce({ state: 'writing', preview: 'Draft from the server' })
+          .mockResolvedValue({ state: 'idle' });
+        const opening = store.branchFrom('42', 'notes');
+        await vi.waitFor(() => expect(store.endpoints.pathNotes).toHaveBeenCalled());
+        await vi.advanceTimersByTimeAsync(700);
+        const job = store.branchStore.notesJobs.peek().get('s2')!;
+        expect(job.state.value.status.preview).toBe('Draft from the server');
+        store.branchStore.openNow();
+        await opening;
+        await vi.advanceTimersByTimeAsync(700);
+        expect(await job.done).toBe('failed');
+        store.endpoints.tree = vi.fn(async () => ({
+          nodes: [{ session_id: 's2', parent_session_id: 's1', fork_after_message_id: 42 }],
+          path_notes: { state: 'writing', mode: 'focused' },
+        }));
+        await store.refreshBranchTree('s2');
+        expect(store.branchStore.pending('s2')).toBe(true);
+        await vi.advanceTimersByTimeAsync(700);
+        expect(store.branchStore.pending('s2')).toBe(false);
+        expect(store.endpoints.pathNotes).toHaveBeenCalledOnce();
+        expect(store.modal.value).toBe('');
+      } finally {
+        store.dispose();
+        vi.useRealTimers();
+      }
     });
   });
 
@@ -7421,9 +7727,10 @@ describe('AppStore compatibility behavior', () => {
     const cancelling = store.cancelSkill('run-1');
     expect(store.skillStore.cancelling.value.has('run-1')).toBe(true);
     await store.cancelSkill('run-1');
-    expect(store.endpoints.cancelSkillRun).toHaveBeenCalledTimes(1);
+    await vi.waitFor(() => expect(store.endpoints.cancelSkillRun).toHaveBeenCalledTimes(1));
     pending.resolve({});
     await cancelling;
+    expect(store.endpoints.cancelSkillRun).toHaveBeenCalledTimes(1);
     expect(store.skillStore.cancelling.value.size).toBe(0);
     expect(store.toasts.value).toEqual([
       expect.objectContaining({

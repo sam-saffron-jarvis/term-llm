@@ -544,6 +544,7 @@ export class AppStore {
         applyResponseEvent: (sessionId, event, owner) =>
           this.applyResponseEvent(sessionId, event, owner),
         draftMCPEnabled: (draftId) => this.mcpStore.enabledFor(draftId),
+        pendingMCPSelection: (id) => this.mcpStore.pendingSelection(id),
         rekeyMCP: (oldId, newId) => {
           this.mcpStore.rekey(oldId, newId);
           this.webMCP.rekey(oldId, newId);
@@ -600,6 +601,7 @@ export class AppStore {
       prependSession: (session) => this.sessionStore.prepend(session),
       selectSession: (session) => this.selectSession(session),
       send: () => this.send(),
+      loadSession: (id) => this.loadSession(id),
     });
     this.branchTree = this.branchStore.tree;
     this.branchPathCount = this.branchStore.pathCount;
@@ -612,6 +614,7 @@ export class AppStore {
       activeSession: this.activeSession,
       activeSessionId: this.activeSessionId,
       draftActive: this.draftActive,
+      draftStorageId: () => this.draftStorageID(),
       activeProjectId: this.activeProjectId,
       projectsEnabled: this.projectsEnabled,
       currentWorktreeDir: this.currentWorktreeDir,
@@ -719,6 +722,7 @@ export class AppStore {
       reconcileCatalog: () => this.refreshSidebar(false),
       reconcileStatus: () => this.refreshStatus(true),
       reconcileActiveSession: (revision) => this.reconcileServerEventActive(revision),
+      reconcilePathNote: (id, revision) => this.branchStore.notesChanged(id, revision),
       reconcileFiles: async (sessionId) => {
         if (this.diff.peek().open && this.diff.peek().sessionId === sessionId)
           await this.reviewStore.refreshDiff();
@@ -1838,7 +1842,14 @@ export class AppStore {
     return outcome;
   }
 
+  warnIfPathNotesPending(): boolean {
+    if (!this.branchStore.pending(this.activeSessionId.peek())) return false;
+    this.toast('Waiting for path notes…', 'info');
+    return true;
+  }
+
   async send(options: SendOptions = {}): Promise<void> {
+    if (this.warnIfPathNotesPending()) return;
     if (this.sendBlocked.peek() && !this.runEngine.sendBlocked.peek()) return;
     // Sending a follow-up is unambiguous engagement with the selected outcome.
     this.attentionAck.evaluate({ immediate: true });
@@ -2316,6 +2327,7 @@ export class AppStore {
     this.attentionAck.dispose();
     this.lifecycleAbort.abort();
     this.sideQuestions.dispose();
+    this.branchStore.dispose();
     this.webMCP.dispose();
     this.runtime.dispose();
     this.sessionStore.dispose();

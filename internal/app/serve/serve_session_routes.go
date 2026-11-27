@@ -365,7 +365,11 @@ func (s *serveServer) routeSessionResources(w http.ResponseWriter, r *http.Reque
 		return true
 	}
 
-	if suffix == "branches" || suffix == "path-notes" {
+	if suffix == "path-notes" {
+		s.routeSessionPathNotes(w, r, sessionID)
+		return true
+	}
+	if suffix == "branches" {
 		if r.Method != http.MethodPost {
 			w.Header().Set("Allow", "POST")
 			writeOpenAIError(w, http.StatusMethodNotAllowed, "invalid_request_error", "method not allowed")
@@ -375,11 +379,7 @@ func (s *serveServer) routeSessionResources(w http.ResponseWriter, r *http.Reque
 			writeOpenAIError(w, http.StatusUnsupportedMediaType, "invalid_request_error", err.Error())
 			return true
 		}
-		if suffix == "branches" {
-			s.handleCreateSessionBranch(w, r, sessionID)
-		} else {
-			s.handleSessionPathNotes(w, r, sessionID)
-		}
+		s.handleCreateSessionBranch(w, r, sessionID)
 		return true
 	}
 

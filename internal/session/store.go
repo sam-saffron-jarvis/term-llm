@@ -14,6 +14,7 @@ import (
 	"github.com/term-llm/term-llm/internal/appdata"
 	"github.com/term-llm/term-llm/internal/llm/core"
 	planpkg "github.com/term-llm/term-llm/internal/plan"
+	"github.com/term-llm/term-llm/internal/session/branchtree"
 	"github.com/term-llm/term-llm/internal/session/notificationdb"
 	"github.com/term-llm/term-llm/internal/sqliteutil"
 )
@@ -1096,29 +1097,9 @@ type BranchResult struct {
 	Reused             bool     `json:"reused,omitempty"`
 }
 
-// BranchTreeNode is one normal session in a connected conversation tree.
-type BranchTreeNode struct {
-	SessionID             string    `json:"session_id"`
-	SessionNumber         int64     `json:"session_number,omitempty"`
-	ParentSessionID       string    `json:"parent_session_id,omitempty"`
-	ForkAfterMessageID    int64     `json:"fork_after_message_id,omitempty"`
-	ForkAfterSequence     int       `json:"fork_after_sequence"`
-	CopiedAnchorMessageID int64     `json:"copied_anchor_message_id,omitempty"`
-	Title                 string    `json:"title,omitempty"`
-	AnchorRole            string    `json:"anchor_role,omitempty"`
-	AnchorPreview         string    `json:"anchor_preview,omitempty"`
-	CreatedAt             time.Time `json:"created_at"`
-}
-
-// BranchTree is a connected component rooted at its oldest surviving ancestor.
-// PathCount counts independently resumable linear sessions in the component;
-// it intentionally equals len(Nodes), including non-leaf ancestor sessions.
-type BranchTree struct {
-	RootSessionID   string           `json:"root_session_id"`
-	ActiveSessionID string           `json:"active_session_id"`
-	PathCount       int              `json:"path_count"`
-	Nodes           []BranchTreeNode `json:"nodes"`
-}
+// BranchTreeNode and BranchTree are the persisted conversation tree projection.
+type BranchTreeNode = branchtree.Node
+type BranchTree = branchtree.Tree
 
 // ConversationBranchStore is an optional capability so old/read-only schemas
 // and custom stores can fail explicitly without expanding the core Store API.

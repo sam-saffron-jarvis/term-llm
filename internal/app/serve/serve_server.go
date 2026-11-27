@@ -11,6 +11,7 @@ import (
 	appmemory "github.com/term-llm/term-llm/internal/app/memory"
 	"github.com/term-llm/term-llm/internal/app/runtime"
 	"github.com/term-llm/term-llm/internal/app/serve/authorship"
+	"github.com/term-llm/term-llm/internal/app/serve/branchnotes"
 	"github.com/term-llm/term-llm/internal/app/uploads"
 	"github.com/term-llm/term-llm/internal/config"
 	"github.com/term-llm/term-llm/internal/filetrack"
@@ -74,7 +75,7 @@ type serveServer struct {
 	modelsCache              map[string]serveModelsCacheEntry
 	responseToSession        sync.Map // response_id (string) → session_id (string)
 	sessionToResponse        sync.Map // session_id (string) → latest response_id (string)
-	branchNotes              sync.Map // child session_id → in-flight path-note preparation
+	branchNotes              branchnotes.Registry
 	branchPathNoteFlights    sync.Map // source/idempotency key → shared path-note helper result
 	restoringWebRuns         bool
 	agentWakeMu              sync.Mutex

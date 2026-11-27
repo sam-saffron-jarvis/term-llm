@@ -1,0 +1,82 @@
+/* Chip picker popover contents. Loaded with the lazy chunk of components/ChipPicker.tsx, after app.css;
+   rules that tie with a later app.css rule on the same element stay in app.css. */
+
+.chip-popover-filter {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 0.4rem 0.55rem;
+  margin-bottom: 0.35rem;
+  border: 1px solid var(--surface-border, var(--surface-3));
+  border-radius: var(--radius-md);
+  background: var(--surface-1, transparent);
+  color: var(--text);
+  font: inherit;
+  font-size: 0.85rem;
+  outline: none;
+}
+
+.chip-popover-filter:focus {
+  border-color: var(--accent, var(--surface-3));
+}
+
+.chip-popover-check {
+  color: var(--accent, var(--text));
+  flex: none;
+  width: 1em;
+  text-align: center;
+}
+
+.chip-popover-item-meta {
+  color: var(--text-muted);
+  font-size: 0.78rem;
+  flex: none;
+}
+
+.chip-popover-separator {
+  height: 1px;
+  margin: 0.3rem 0.6rem;
+  background: var(--border);
+}
+
+.chip-popover-empty {
+  padding: 0.65rem 0.75rem;
+  color: var(--text-muted);
+  text-align: center;
+}
+
+.chip-popover.chip-popover-with-actions {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.chip-popover-with-actions .chip-popover-filter {
+  flex: none;
+}
+
+.chip-popover-with-actions .chip-popover-options {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.chip-popover-item-action {
+  color: var(--text-muted);
+}
+
+.chip-popover-item-action-icon {
+  display: grid;
+  flex: none;
+  width: 1em;
+  place-items: center;
+  color: var(--text);
+}
+
+@media (width <= 540px) {
+  /* 16px keeps iOS Safari from zooming the page when the filter takes focus. */
+  .chip-popover-filter {
+    min-height: 44px;
+    font-size: 16px;
+  }
+}

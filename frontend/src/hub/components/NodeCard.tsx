@@ -1,6 +1,7 @@
 import { memo } from '../../components/memo';
 import { useMemo, useRef, useState } from 'preact/hooks';
 import { Menu } from '../../components/Menu';
+import { reorderGridLayout } from '../../components/reorderGridLayout';
 import { reorderKeyOffset, useReorderableList } from '../../components/useReorderableList';
 import { nodeResumePath } from '../domain/formatting';
 import { mergeShownOrder } from '../domain/node-filter';
@@ -243,6 +244,7 @@ export function NodeGrid({ store }: { store: HubStore }) {
           ),
         report: (error) => store.reportNodeOrderError(error),
         focusTargets: { row: '.node-menu-toggle', menu: '.node-menu-toggle' },
+        gridLayout: reorderGridLayout,
       },
     );
   const reorder = useMemo<NodeReorder>(() => ({ press, move }), [press, move]);

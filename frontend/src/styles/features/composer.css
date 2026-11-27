@@ -78,11 +78,6 @@
   animation: spin 0.8s linear infinite;
 }
 
-.live-status-spinner {
-  width: 15px;
-  height: 15px;
-}
-
 .voice-status-spinner {
   border-top-color: var(--text);
 }
@@ -163,96 +158,8 @@
   color: var(--text);
 }
 
-.live-status-header {
-  display: flex;
-  align-items: center;
-  gap: 0.7rem;
-  width: 100%;
-}
-
-.live-status-copy {
-  flex: 1;
-  min-width: 0;
-  font-size: 0.9rem;
-  font-weight: 650;
-}
-
-/* Which session the voice drives. Only known once the server reports it. */
-.live-status-binding {
-  display: block;
-  overflow: hidden;
-  color: var(--text-muted);
-  font-size: 0.78rem;
-  font-weight: 500;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.live-status-transcript {
-  overflow: auto;
-  max-height: 5.6em;
-  color: var(--text-muted);
-  font-size: 0.9rem;
-  line-height: 1.4;
-  overflow-wrap: anywhere;
-  white-space: pre-wrap;
-  overscroll-behavior: contain;
-  scrollbar-gutter: stable;
-}
-
-.live-status-transcript-expanded {
-  min-height: min(25dvh, 12rem);
-  max-height: min(40dvh, 24rem);
-}
-
-.live-status-turn + .live-status-turn {
-  margin-top: 0.75rem;
-}
-
-.live-status-interrupted {
-  font-size: 0.85em;
-  font-style: italic;
-}
-
-.live-status-speaker {
-  font-weight: 650;
-}
-
-.live-status-transcript-actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: 0.5rem;
-}
-
 .live-status-transcript-actions .btn {
   font-size: 0.8rem;
-}
-
-.live-status-error {
-  color: var(--danger);
-  font-size: 0.82rem;
-  line-height: 1.35;
-}
-
-.live-status-dot,
-.live-status-spinner {
-  flex: 0 0 auto;
-  border-radius: var(--radius-full);
-}
-
-.live-status-dot {
-  width: 10px;
-  height: 10px;
-  background: var(--accent);
-}
-
-.live-status-listening .live-status-dot,
-.live-status-speaking .live-status-dot {
-  animation: voice-pulse 1.35s infinite;
-}
-
-.live-status-stop {
-  flex: 0 0 auto;
 }
 
 .live-status-failed {
@@ -291,45 +198,6 @@
   line-height: 1.3;
 }
 
-.pending-steering-row {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 0.5rem;
-  min-width: 0;
-  padding: 0.5rem 0.85rem;
-  border-radius: var(--radius-lg);
-  border: 1px solid var(--border);
-  background: var(--surface-2);
-}
-
-.pending-steering.hidden {
-  display: none;
-}
-
-.pending-steering-banner {
-  width: calc(100% - 0.6rem);
-}
-
-.pending-steering .pending-steering-icon {
-  flex-shrink: 0;
-  font-style: normal;
-}
-
-.pending-steering .pending-steering-text {
-  flex: 1 1 6rem;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.pending-steering .pending-steering-label {
-  flex-shrink: 0;
-  opacity: 0.75;
-  font-style: normal;
-}
-
 .steering-actions {
   display: flex;
   flex-shrink: 0;
@@ -337,25 +205,6 @@
   gap: inherit;
   max-width: 100%;
   margin-left: auto;
-}
-
-.pending-steering-action {
-  flex-shrink: 0;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-full);
-  background: var(--surface);
-  color: var(--text);
-  padding: 0.3rem 0.65rem;
-  font: inherit;
-  font-size: 0.8rem;
-  font-style: normal;
-  font-weight: 600;
-  cursor: pointer;
-}
-
-.pending-steering-action:hover {
-  background: var(--surface-3);
-  border-color: var(--border-strong);
 }
 
 /* A raised surface: lighter than the page, with a hairline ring and a soft shadow. */
@@ -847,17 +696,8 @@
     border-radius: var(--radius-xl);
   }
 
-  .live-status-transcript:not(.live-status-transcript-expanded) {
-    max-height: 4.2em;
-  }
-
   .live-status-transcript-actions .btn {
     min-height: 44px;
-  }
-
-  .live-status-stop {
-    min-height: 44px;
-    margin-left: auto;
   }
 
   .composer-box {
@@ -884,16 +724,6 @@
   .composer {
     padding-inline: calc(0.4rem + var(--safe-right)) calc(0.4rem + var(--safe-left));
   }
-}
-
-.steering-queue-footer {
-  padding: 0.25rem 0.75rem;
-  font-size: 0.8rem;
-}
-
-.pending-steering-row.selected {
-  outline: 1px solid currentcolor;
-  outline-offset: -1px;
 }
 
 /* Unconfirmed sends. A send whose outcome is unknown may still be running, so
@@ -931,65 +761,6 @@
   margin-bottom: 0;
 }
 
-/* Beside a taller preview, actions line up with the copy they act on. */
-.unconfirmed-send.has-preview {
-  align-items: flex-end;
-}
-
-.unconfirmed-send.is-confirming {
-  border-color: color-mix(in srgb, var(--danger) 45%, var(--border));
-}
-
-.unconfirmed-send-summary {
-  display: flex;
-  flex: 1 1 18rem;
-  align-items: flex-start;
-  gap: 0.55rem;
-  min-width: 0;
-}
-
-/* One copy line tall, so the mark stays level with the first line. */
-.unconfirmed-send-mark {
-  flex: none;
-  width: 1rem;
-  height: 1.4em;
-  color: var(--accent-amber);
-}
-
-.unconfirmed-send.is-confirming .unconfirmed-send-mark {
-  color: var(--danger);
-}
-
-.unconfirmed-send-content {
-  display: flex;
-  flex: 1 1 auto;
-  flex-direction: column;
-  gap: 0.3rem;
-  min-width: 0;
-}
-
-.unconfirmed-send-title {
-  font-weight: 650;
-}
-
-.unconfirmed-send-copy {
-  margin: 0;
-  overflow-wrap: anywhere;
-}
-
-/* The only copy of a new conversation's message: bounded, but still scrollable
-   and selectable. A partly visible last line shows there is more. */
-.unconfirmed-send-preview {
-  max-height: calc(1.4em * 3.5);
-  margin: 0;
-  padding-inline-start: 0.6rem;
-  border-inline-start: 3px solid color-mix(in srgb, var(--accent-amber) 45%, var(--border));
-  overflow-y: auto;
-  overscroll-behavior: contain;
-  overflow-wrap: anywhere;
-  white-space: pre-wrap;
-}
-
 .unconfirmed-send-attachments {
   display: flex;
   gap: 0.35rem;
@@ -998,24 +769,6 @@
   padding: 0;
   overflow: hidden;
   list-style: none;
-}
-
-.unconfirmed-send-attachment {
-  display: inline-flex;
-  flex: 0 1 auto;
-  align-items: center;
-  gap: 0.3rem;
-  min-width: 0;
-  padding: 0.15rem 0.55rem;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-full);
-  background: var(--surface);
-  color: var(--text-muted);
-  font-size: 0.78rem;
-}
-
-.unconfirmed-send-attachment.is-count {
-  flex: none;
 }
 
 .unconfirmed-send-attachment svg {
@@ -1031,82 +784,11 @@
   white-space: nowrap;
 }
 
-.unconfirmed-send-actions {
-  display: flex;
-  flex: none;
-  flex-wrap: wrap;
-  justify-content: flex-end;
-  gap: 0.4rem;
-  margin-inline-start: auto;
-}
-
-/* Scoped so these win over the generic .btn rules loaded later (modals.css).
-   Labels are not selectable, so a long press or quick second tap on iOS does
-   not start a text selection instead of pressing the button. */
-.unconfirmed-send .unconfirmed-send-actions .btn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 0.4rem;
-  min-height: 36px;
-  padding: 0.35rem 0.8rem;
-  border-radius: var(--radius-md);
-  font-size: 0.875rem;
-  line-height: 1.2;
-  white-space: nowrap;
-  touch-action: manipulation;
-  -webkit-touch-callout: none;
-  -webkit-user-select: none;
-  user-select: none;
-}
-
-.unconfirmed-send .unconfirmed-send-actions .btn:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
-}
-
-.unconfirmed-send .unconfirmed-send-actions .btn.unconfirmed-send-danger {
-  border-color: color-mix(in srgb, var(--danger) 45%, var(--border));
-  background: var(--surface);
-  color: var(--danger);
-}
-
-.unconfirmed-send .unconfirmed-send-actions .btn.unconfirmed-send-danger:hover:not(:disabled) {
-  border-color: var(--danger);
-  background: color-mix(in srgb, var(--danger) 8%, var(--surface));
-}
-
-.unconfirmed-send-check[aria-busy='true']::before {
-  content: '';
-  width: 0.8rem;
-  height: 0.8rem;
-  border: 2px solid var(--border-strong);
-  border-top-color: var(--text);
-  border-radius: 50%;
-  animation: spin 0.8s linear infinite;
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .unconfirmed-send-check[aria-busy='true']::before {
-    animation: none;
-  }
-}
-
 @media (width <= 700px) {
   .unconfirmed-send {
     margin: 0 0.15rem 0.4rem;
     padding: 0.55rem 0.5rem 0.5rem 0.65rem;
     border-radius: var(--radius-xl);
-  }
-
-  .unconfirmed-send-preview {
-    max-height: calc(1.4em * 2.5);
-  }
-}
-
-@media (width <= 700px), (hover: none), (pointer: coarse) {
-  .unconfirmed-send .unconfirmed-send-actions .btn {
-    min-height: 44px;
   }
 }
 

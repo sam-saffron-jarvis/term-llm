@@ -1,17 +1,17 @@
 import { signal, type ReadonlySignal, type Signal } from '@preact/signals';
-import { APIError, decodeSSE } from '../api/client';
-import { errorMessage } from '../domain/text';
-import { initialProjection } from '../domain/response';
-import type { Author, ActiveRun, Message, Session } from '../domain/types';
+import type { ResponseProjection } from '../domain/response';
+import type { Author, Session } from '../domain/types';
 import type { Modal } from './store-types';
 import type { AppStoreServices } from './app-store-services';
-import { listFrom, recordValue, uuid } from './store-utils';
+import { listFrom } from './store-utils';
+import type { SkillRunOperations } from './skill-run-operations';
 
 export interface SkillStoreHost {
   viewer?: ReadonlySignal<Author | undefined>;
   activeSession: ReadonlySignal<Session | null>;
   activeSessionId: ReadonlySignal<string>;
   draftActive: ReadonlySignal<boolean>;
+  draftStorageId: () => string;
   activeProjectId: ReadonlySignal<string>;
   projectsEnabled: ReadonlySignal<boolean>;
   currentWorktreeDir: ReadonlySignal<string>;
@@ -21,7 +21,7 @@ export interface SkillStoreHost {
   prompt: Signal<string>;
   modal: Signal<Modal>;
   updateSession: (id: string, updater: (session: Session) => Session) => void;
-  setRun: (sessionId: string, run: ReturnType<typeof initialProjection>) => void;
+  setRun: (sessionId: string, run: ResponseProjection) => void;
   patchSession: (id: string, patch: Partial<Session>) => void;
   refreshSessionMessages: (sessionId: string, propagateError?: boolean) => Promise<void>;
   trackIntent: (
@@ -38,11 +38,9 @@ export class SkillStore {
 
   readonly cancelling = signal<ReadonlySet<string>>(new Set());
 
-  private readonly runAborts = new Map<string, AbortController>();
-  private readonly runCursors = new Map<
-    string,
-    { sessionId: string; eventsURL: string; sequence: number }
-  >();
+  private operations?: SkillRunOperations;
+  private loading?: Promise<SkillRunOperations>;
+  private disposed = false;
   private epoch = 0;
 
   constructor(
@@ -73,243 +71,68 @@ export class SkillStore {
     if (epoch !== this.epoch || !this.host.draftActive.peek()) return;
     this.skills.value = listFrom(data, 'skills', 'items');
   }
-  private skillRunTerminal(status: unknown): boolean {
-    return ['complete', 'completed', 'failed', 'cancelled'].includes(
-      String(status || '').toLowerCase(),
-    );
+
+  private loadOperations(): Promise<SkillRunOperations> {
+    return (this.loading ??= import('./skill-run-operations')
+      .then(
+        ({ SkillRunOperations }) =>
+          (this.operations = new SkillRunOperations(this.services, this.host)),
+      )
+      .catch((cause: unknown) => {
+        this.loading = undefined;
+        throw new Error('Could not load skill controls. Reload the page to retry.', { cause });
+      }));
   }
-  private updateSkillRunMessage(
-    sessionId: string,
-    runId: string,
-    patch: Record<string, unknown>,
-  ): void {
-    this.host.updateSession(sessionId, (session) => {
-      const messages = session.messages.map((message) => {
-        if (message.role !== 'skill-run' || String(message.runId || '') !== runId) return message;
-        const status = String(patch.status || message.status || 'running');
-        const output = String(patch.output ?? message.output ?? '');
-        const error = String(patch.error ?? message.error ?? '');
-        const progress = String(patch.progress ?? message.progress ?? '');
-        return {
-          ...message,
-          ...patch,
-          status,
-          output,
-          error,
-          progress,
-          content: error || output || progress,
-        };
-      });
-      return { ...session, messages };
-    });
-  }
-  private applySkillRunEvent(runId: string, envelope: Record<string, unknown>): void {
-    const cursor = this.runCursors.get(runId);
-    if (!cursor) return;
-    const sequence = Number(envelope.sequence || envelope.sequence_number) || 0;
-    if (sequence && sequence <= cursor.sequence) return;
-    if (sequence) cursor.sequence = sequence;
-    const type = String(envelope.type || '');
-    const data = recordValue(envelope.data) || envelope;
-    const patch: Record<string, unknown> = {};
-    if (type === 'skill_run.created')
-      Object.assign(patch, {
-        status: 'running',
-        skill: String(data.skill || ''),
-        agent: String(data.agent || ''),
-        childSessionId: String(data.child_session_id || ''),
-      });
-    else if (type === 'skill_run.progress')
-      patch.progress = String(data.message || data.progress || data.stage || 'Working…');
-    else if (type === 'skill_run.completed')
-      Object.assign(patch, {
-        status: String(data.status || 'completed'),
-        output: String(data.output || ''),
-        error: String(data.error || ''),
-        progress: '',
-        childSessionId: String(data.child_session_id || ''),
-      });
-    else return;
-    this.updateSkillRunMessage(cursor.sessionId, runId, patch);
-    if (this.skillRunTerminal(patch.status)) {
-      this.runAborts.get(runId)?.abort();
-      this.runCursors.delete(runId);
-      void this.host.refreshSessionMessages(cursor.sessionId);
-    }
-  }
-  private async reconcileSkillRun(runId: string): Promise<void> {
-    const cursor = this.runCursors.get(runId);
-    if (!cursor) return;
-    const snapshot = await this.services.endpoints.skillRun(cursor.sessionId, runId);
-    if (this.services.isDisposed || this.runCursors.get(runId) !== cursor) return;
-    const events = Array.isArray(snapshot.events) ? snapshot.events : [];
-    events.forEach((event) => {
-      if (event && typeof event === 'object')
-        this.applySkillRunEvent(runId, event as Record<string, unknown>);
-    });
-    this.updateSkillRunMessage(cursor.sessionId, runId, {
-      status: String(snapshot.status || 'running'),
-      output: String(snapshot.output || ''),
-      error: String(snapshot.error || ''),
-      childSessionId: String(snapshot.child_session_id || ''),
-    });
-    if (this.skillRunTerminal(snapshot.status)) {
-      this.runCursors.delete(runId);
-      await this.host.refreshSessionMessages(cursor.sessionId);
-    }
-  }
-  private async followSkillRun(runId: string): Promise<void> {
-    const cursor = this.runCursors.get(runId);
-    if (!cursor || this.runAborts.has(runId)) return;
-    const controller = new AbortController();
-    this.runAborts.set(runId, controller);
-    try {
-      const separator = cursor.eventsURL.includes('?') ? '&' : '?';
-      const response = await this.services.api.request(
-        `${cursor.eventsURL}${separator}after=${encodeURIComponent(cursor.sequence)}`,
-        {
-          signal: controller.signal,
-          headers: { Accept: 'text/event-stream', 'X-Term-LLM-Session-ID': cursor.sessionId },
-        },
-        { policy: 'stream', retries: 0, timeoutMs: 0, auth: 'session' },
-      );
-      if (!response.ok || !response.body)
-        throw new APIError(
-          (await response.text()) || `Skill run stream returned ${response.status}`,
-          response.status,
-        );
-      for await (const frame of decodeSSE(response.body, controller.signal)) {
-        let envelope: Record<string, unknown>;
-        try {
-          envelope = JSON.parse(frame.data) as Record<string, unknown>;
-        } catch {
-          continue;
-        }
-        if (!envelope.type && frame.event !== 'message') envelope.type = frame.event;
-        this.applySkillRunEvent(runId, envelope);
-        if (!this.runCursors.has(runId)) return;
-      }
-    } catch (error) {
-      if (!controller.signal.aborted)
-        this.updateSkillRunMessage(cursor.sessionId, runId, {
-          progress:
-            navigator.onLine === false
-              ? 'Offline — run is safe; reconnecting when online'
-              : 'Reconnecting…',
-          streamError: String(error),
-        });
-    } finally {
-      if (this.runAborts.get(runId) === controller) this.runAborts.delete(runId);
-    }
-    if (!this.runCursors.has(runId)) return;
-    await this.reconcileSkillRun(runId).catch(() => undefined);
-    if (this.runCursors.has(runId))
-      this.services.schedule(() => void this.followSkillRun(runId), 1_000);
-  }
+
   async invokeSkill(name: string, args: string): Promise<void> {
+    const invocation = `/${name}${args.trim() ? ` ${args.trim()}` : ''}`;
+    const draft = this.host.draftActive.peek() ? this.host.draftStorageId() : null;
+    let session = draft === null ? this.host.activeSession.peek() : null;
+    const ownerUnchanged = () =>
+      draft !== null && !session
+        ? this.host.draftActive.peek() && this.host.draftStorageId() === draft
+        : !this.host.draftActive.peek() && this.host.activeSession.peek()?.id === session?.id;
     const restorePrompt = () => {
-      if (!this.host.prompt.value)
-        this.host.prompt.value = `/${name}${args.trim() ? ` ${args.trim()}` : ''}`;
+      if (ownerUnchanged() && !this.host.prompt.peek()) this.host.prompt.value = invocation;
     };
-    // A skill may be the first thing sent from a new chat, so create its session.
-    // ensureSession reports its own failure.
-    if (this.host.draftActive.peek() && !(await this.host.ensureSession())) {
-      restorePrompt();
-      return;
-    }
-    const session = this.host.draftActive.peek() ? null : this.host.activeSession.peek();
-    if (!session) {
+    if (draft === null && !session) {
       restorePrompt();
       this.services.toast('Start a conversation before running a skill.', 'error');
       return;
     }
-    const skill = this.skills.peek().find((entry) => String(entry.name || '') === name);
-    if (this.host.streaming.peek() && skill?.execution !== 'isolated') {
-      this.services.toast(
-        'This main-conversation skill cannot run while a response is active.',
-        'error',
-      );
-      return;
-    }
-    const id = uuid();
-    const invocation = `/${name}${args.trim() ? ` ${args.trim()}` : ''}`;
-    const optimistic: Message = {
-      id: `pending_${id}`,
-      role: 'user',
-      author: this.host.viewer?.value,
-      content: invocation,
-      clientMessageId: id,
-      created: Date.now(),
-    };
-    this.host.updateSession(session.id, (entry) => ({
-      ...entry,
-      messages: [...entry.messages, optimistic],
-      lastMessageAt: Date.now(),
-    }));
-    this.host.trackIntent(session.id, {
-      id: optimistic.id,
-      clientMessageId: id,
-      content: invocation,
-      created: optimistic.created,
-    });
+    const isolated =
+      this.skills.peek().find((entry) => String(entry.name || '') === name)?.execution ===
+      'isolated';
     try {
-      const data = await this.services.endpoints.invokeSkill(
-        session.id,
-        { name, arguments: args, client_message_id: id },
-        id,
-        skill?.execution !== 'isolated',
-      );
-      if (String(data.execution) === 'isolated' && data.run_id) {
-        const runId = String(data.run_id);
-        const eventsURL = String(
-          data.events_url ||
-            `/v1/sessions/${encodeURIComponent(session.id)}/skill-runs/${encodeURIComponent(runId)}/events`,
-        );
-        const message: Message = {
-          id: `skill-run-${runId}`,
-          role: 'skill-run',
-          content: '',
-          created: Date.now(),
-          runId,
-          skill: name,
-          status: String(data.status || 'running'),
-          childSessionId: String(data.child_session_id || ''),
-          eventsURL,
-        };
-        this.host.updateSession(session.id, (entry) => ({
-          ...entry,
-          messages: [...entry.messages, message],
-        }));
-        this.runCursors.set(runId, { sessionId: session.id, eventsURL, sequence: 0 });
-        void this.followSkillRun(runId);
-      } else {
-        const responseId = String(data.response_id || '');
-        const epoch = Number(data.run_epoch) || 0;
-        if (!responseId || !epoch)
-          throw new Error('Skill invocation did not return a response ID and run epoch.');
-        const run: ActiveRun = {
-          responseId,
-          sessionId: session.id,
-          epoch,
-          status: 'streaming',
-          lastSequence: 0,
-          startedRev: Number(data.started_rev) || session.transcriptRev || 0,
-          startedAt: Number(data.started_at) || Date.now(),
-          reconnects: 0,
-          requestId: id,
-        };
-        this.host.setRun(session.id, initialProjection(run));
-        this.host.patchSession(session.id, { activeResponseId: responseId });
-        void this.host.streamResponse(responseId, session.id, 0);
+      const operations = this.operations ?? (await this.loadOperations());
+      if (this.disposed) return;
+      if (!ownerUnchanged())
+        throw new Error('The conversation changed before the skill could start. Try again.');
+      if (draft !== null) {
+        // Materialize only after the handler is ready; an import failure must not create a chat.
+        const id = await this.host.ensureSession();
+        if (this.disposed) return;
+        if (!id) {
+          restorePrompt();
+          return;
+        }
+        session = this.host.activeSession.peek();
+        if (this.host.draftActive.peek() || session?.id !== id)
+          throw new Error('The conversation changed before the skill could start. Try again.');
       }
-      this.host.modal.value = '';
-      this.services.toast(`Started ${name}.`, 'success');
+      if (!session) throw new Error('Start a conversation before running a skill.');
+      if (this.host.streaming.peek() && !isolated) {
+        restorePrompt();
+        throw new Error('This main-conversation skill cannot run while a response is active.');
+      }
+      await operations.invokeSkill(session, name, args, invocation, isolated, restorePrompt);
     } catch (error) {
-      this.host.retireIntent(session.id, id);
-      if (!this.host.prompt.value) this.host.prompt.value = invocation;
+      if (this.disposed) return;
+      restorePrompt();
       this.services.toast(error, 'error');
     }
   }
+
   async cancelSkill(runId: string): Promise<void> {
     const session = this.host.activeSession.value;
     if (!session) {
@@ -319,29 +142,10 @@ export class SkillStore {
     if (this.cancelling.peek().has(runId)) return;
     this.cancelling.value = new Set([...this.cancelling.peek(), runId]);
     try {
-      // Do not claim cancellation is underway until the server accepts it.
-      try {
-        await this.services.endpoints.cancelSkillRun(session.id, runId);
-      } catch (error) {
-        this.services.toast(error, 'error');
-        return;
-      }
-      this.updateSkillRunMessage(session.id, runId, {
-        status: 'cancelling',
-        progress: 'Cancelling…',
-      });
-      try {
-        if (this.runCursors.has(runId))
-          await this.reconcileSkillRun(runId).catch(() =>
-            this.host.refreshSessionMessages(session.id, true),
-          );
-        else await this.host.refreshSessionMessages(session.id, true);
-      } catch (error) {
-        this.services.toast(
-          `Cancellation was accepted, but the transcript could not refresh: ${errorMessage(error)}`,
-          'error',
-        );
-      }
+      const operations = this.operations ?? (await this.loadOperations());
+      if (!this.disposed) await operations.cancelSkill(session.id, runId);
+    } catch (error) {
+      if (!this.disposed) this.services.toast(error, 'error');
     } finally {
       const pending = new Set(this.cancelling.peek());
       pending.delete(runId);
@@ -351,8 +155,7 @@ export class SkillStore {
 
   dispose(): void {
     this.epoch += 1;
-    this.runAborts.forEach((abort) => abort.abort());
-    this.runAborts.clear();
-    this.runCursors.clear();
+    this.disposed = true;
+    this.operations?.dispose();
   }
 }

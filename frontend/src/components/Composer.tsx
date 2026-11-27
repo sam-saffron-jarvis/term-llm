@@ -19,7 +19,8 @@ import {
 import { attachmentIconName, validateAttachmentFile } from '../domain/attachments';
 import type { Attachment } from '../domain/types';
 import { overlayManager } from '../platform/overlay-manager';
-import { VoiceOperation, type VoiceSnapshot } from '../platform/voice';
+import { DeferredVoiceOperation } from '../platform/deferred-voice';
+import type { VoiceSnapshot } from '../platform/voice';
 import type { LiveStore } from '../stores/live-store';
 import { Icon, type IconName } from './Icon';
 import { useMenuKeyboard } from './Menu';
@@ -169,7 +170,7 @@ function VoiceStatus({
   voice,
 }: {
   snapshot: ReadonlySignal<VoiceSnapshot>;
-  voice: VoiceOperation;
+  voice: DeferredVoiceOperation;
 }) {
   const state = snapshot.value;
   const busy = VOICE_BUSY_PHASES.includes(state.phase);
@@ -354,7 +355,11 @@ function ConversationComposer() {
   const [selectedSteering, setSelectedSteering] = useState<string | null>(null);
   const [menu, setMenu] = useState(false);
   const voice = useMemo(
-    () => new VoiceOperation((form, controls) => store.endpoints.transcribe(form, controls)),
+    () =>
+      new DeferredVoiceOperation(
+        (form, controls) => store.endpoints.transcribe(form, controls),
+        (owner) => owner === store.composerOwnerKey(),
+      ),
     [store],
   );
   const voiceSnapshot = useMemo(() => signal(voice.snapshot), [voice]);
@@ -368,23 +373,24 @@ function ConversationComposer() {
   const [dragging, setDragging] = useState(false);
   const [dragError, setDragError] = useState('');
   const addMenu = useMenuKeyboard(menu, () => setMenu(false), attach);
-  useEffect(
-    () =>
-      voice.subscribe((snapshot) => {
-        voiceSnapshot.value = snapshot;
-        setVoiceState((previous) =>
-          previous.phase === snapshot.phase &&
-          previous.generation === snapshot.generation &&
-          previous.owner === snapshot.owner &&
-          previous.transcript === snapshot.transcript &&
-          previous.capability === snapshot.capability
-            ? previous
-            : snapshot,
-        );
-      }),
-    [voice, voiceSnapshot],
-  );
-  useEffect(() => () => voice.dispose(), [voice]);
+  useLayoutEffect(() => {
+    const unsubscribe = voice.subscribe((snapshot) => {
+      voiceSnapshot.value = snapshot;
+      setVoiceState((previous) =>
+        previous.phase === snapshot.phase &&
+        previous.generation === snapshot.generation &&
+        previous.owner === snapshot.owner &&
+        previous.transcript === snapshot.transcript &&
+        previous.capability === snapshot.capability
+          ? previous
+          : snapshot,
+      );
+    });
+    return () => {
+      unsubscribe();
+      voice.dispose();
+    };
+  }, [voice, voiceSnapshot]);
   useEffect(
     () => () => {
       void store.liveStore.stop();
@@ -485,7 +491,7 @@ function ConversationComposer() {
         textarea.current?.setSelectionRange(inserted.caret, inserted.caret);
       });
     }
-  }, [voice, voiceState, store, cursor]);
+  }, [voiceState, store, cursor]);
   // Kept apart from the insertion effect: inserting moves the caret, which
   // re-runs that effect and would clear this timer before it fires.
   useEffect(() => {
@@ -724,7 +730,9 @@ function ConversationComposer() {
     );
     return skill ? { skill, name: match[1], args: match[2] || '' } : null;
   };
+  const pathNotesPending = store.branchStore.pending(store.activeSessionId.value);
   const sendOrCommand = () => {
+    if (store.warnIfPathNotesPending()) return;
     const value = store.prompt.value.trim();
     if (voiceBusy || (store.workspaceShown.peek() && !store.startupDone.peek())) return;
     const thinkingCommand = value.match(/^\/(thinking|reasoning)(?:\s+([\s\S]*))?$/i);
@@ -920,9 +928,7 @@ function ConversationComposer() {
         entry?.sessionId === store.activeSession.value?.id &&
         ['waiting', 'dismissed', 'failed'].includes(entry.state),
     );
-  const voiceBusy = ['requesting-permission', 'recording', 'preparing', 'transcribing'].includes(
-    voiceState.phase,
-  );
+  const voiceBusy = VOICE_BUSY_PHASES.includes(voiceState.phase);
   const liveActive = store.liveStore.active.value;
   const hasDraft = Boolean(store.prompt.value.trim()) || store.attachments.value.length > 0;
   // An empty composer has nothing to send, so the send control becomes the Live
@@ -977,8 +983,9 @@ function ConversationComposer() {
     sendOrCommand();
   };
   const compacting = store.runEngine.compacting.value;
-  const sendLabel =
-    compacting && !canSteer && !(liveButton && liveActive)
+  const sendLabel = pathNotesPending
+    ? 'Waiting for path notes…'
+    : compacting && !canSteer && !(liveButton && liveActive)
       ? 'Compacting conversation context'
       : connecting
         ? 'Connecting to term-llm'
@@ -1216,6 +1223,7 @@ function ConversationComposer() {
             This project is unavailable. Restore it or choose No project before sending.
           </div>
         )}
+        {pathNotesPending && <div class="branch-tree-note">Waiting for path notes…</div>}
         <div class="composer-box">
           {(canAttach || canShareLocation || canMCP || canGoal || canUseWorktrees) && (
             <>
@@ -1516,6 +1524,8 @@ function ConversationComposer() {
                   voiceState.phase === 'failed' ||
                   liveActive
                 }
+                onPointerEnter={() => voice.preload()}
+                onFocus={() => voice.preload()}
                 onClick={startVoice}
               >
                 <Icon name="microphone" />
@@ -1529,21 +1539,22 @@ function ConversationComposer() {
               aria-label={sendLabel}
               aria-pressed={liveButton ? liveActive : undefined}
               disabled={
-                !stopInSend &&
-                ((voiceBusy && thinkingCommandReady) ||
-                  connecting ||
-                  (!thinkingCommandReady &&
-                    ((compacting && !canSteer && !(liveButton && liveActive)) ||
-                      connecting ||
-                      (liveButton
-                        ? !liveActive && (voiceBusy || bindingBlocked)
-                        : liveTextMode
-                          ? false
-                          : (sendBlocked && !loading) ||
-                            voiceBusy ||
-                            bindingBlocked ||
-                            attachmentBlocked ||
-                            (!hasDraft && !loading)))))
+                pathNotesPending ||
+                (!stopInSend &&
+                  ((voiceBusy && thinkingCommandReady) ||
+                    connecting ||
+                    (!thinkingCommandReady &&
+                      ((compacting && !canSteer && !(liveButton && liveActive)) ||
+                        connecting ||
+                        (liveButton
+                          ? !liveActive && (voiceBusy || bindingBlocked)
+                          : liveTextMode
+                            ? false
+                            : (sendBlocked && !loading) ||
+                              voiceBusy ||
+                              bindingBlocked ||
+                              attachmentBlocked ||
+                              (!hasDraft && !loading))))))
               }
               onClick={liveButton ? toggleLiveCall : clickSend}
             >

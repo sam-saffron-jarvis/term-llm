@@ -1,3 +1,4 @@
+import '../styles/features/project-modals.css';
 import { useState } from 'preact/hooks';
 import { useStore } from '../app/context';
 import { errorMessage } from '../domain/text';

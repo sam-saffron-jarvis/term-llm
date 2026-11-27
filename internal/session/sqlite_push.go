@@ -421,7 +421,7 @@ func (s *SQLiteStore) sessionSelectCols() string {
 	} else {
 		base += ", NULL AS model_policy"
 	}
-	return base + ", " + s.createdByColumn("")
+	return base + ", " + s.createdByColumn("") + ", " + s.branchParentSessionColumns()
 }
 
 // scanSessionRow scans a session row into a Session struct. The flags
@@ -469,7 +469,7 @@ func scanSessionRow(row *sql.Row, hasGeneratedTitles, hasCacheWriteTokens, hasCo
 		scanArgs = append(scanArgs, &sess.CompactionCount)
 	}
 
-	scanArgs = append(scanArgs, &modelPolicyRaw, &sess.CreatedBy)
+	scanArgs = append(scanArgs, &modelPolicyRaw, &sess.CreatedBy, &sess.BranchParentSessionID, &sess.BranchParentNumber)
 	err := row.Scan(scanArgs...)
 	if err == sql.ErrNoRows {
 		return nil, nil

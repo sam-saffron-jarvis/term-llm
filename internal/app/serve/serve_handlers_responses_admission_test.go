@@ -6,6 +6,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/term-llm/term-llm/internal/app/serve/branchnotes"
 )
 
 func TestHandleResponsesRejectsInvalidAdmissionRequests(t *testing.T) {
@@ -249,7 +251,7 @@ func TestHandleResponsesRejectsResolvedSessionAdmission(t *testing.T) {
 	t.Run("branch context preparation", func(t *testing.T) {
 		t.Parallel()
 		server := &serveServer{}
-		server.branchNotes.Store("busy-session", struct{}{})
+		server.branchNotes.Start("busy-session", &branchnotes.Job{})
 		request := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{"input":"hello"}`))
 		request.Header.Set("Content-Type", "application/json")
 		request.Header.Set(requestSessionIDHeader, "busy-session")

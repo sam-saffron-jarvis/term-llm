@@ -1,3 +1,4 @@
+import '../styles/features/commit-modal.css';
 import { Icon } from './Icon';
 import { useEffect, useRef } from 'preact/hooks';
 import { useStore } from '../app/context';

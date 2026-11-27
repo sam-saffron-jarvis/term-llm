@@ -21,7 +21,7 @@ import (
 var Registry = []string{
 	"internal/app/serve/sessionactivity.SessionActivityResponse", "internal/app/serve/sessionactivity.ActivityJobRun", "internal/app/serve/sessionactivity.ActivityJobDetail",
 	"internal/app/serve.webAuthor",
-	"internal/app/serve/sessionactivity.ChildRunProjection", "internal/app/serve.webSessionEntry", "internal/app/serve.webSelectedSessionEntry", "internal/app/serve.createWebSessionRequest", "internal/app/serve.serveEvent", "internal/app/serve.serveSkillRunEvent", "internal/app/serve/jobs.RunEvent", "internal/app/serve.hubNodeView", "internal/app/serve/sessionactivity.WebSessionMetrics",
+	"internal/app/serve/wire.PathNotesStatus", "internal/app/serve/wire.PathNotesCancellation", "internal/app/serve/wire.PreparePathNotesResponse", "internal/app/serve/sessionactivity.ChildRunProjection", "internal/app/serve.webSessionEntry", "internal/app/serve.webSelectedSessionEntry", "internal/app/serve.createWebSessionRequest", "internal/app/serve.serveEvent", "internal/app/serve.serveSkillRunEvent", "internal/app/serve/jobs.RunEvent", "internal/app/serve.hubNodeView", "internal/app/serve/sessionactivity.WebSessionMetrics",
 	"internal/app/serve.serveMentionSearchRequest", "internal/app/serve.serveMentionSearchResponse",
 	"internal/app/serve.sessionShareRequest", "internal/app/serve.sessionShareResponse", "internal/app/serve.sharingCapabilitiesResponse",
 	"internal/app/serve.serveShellCreateRequest", "internal/app/serve.serveShellInputRequest", "internal/app/serve.sessionInterruptRequest", "internal/app/serve.sessionRuntimeGoalRequest",

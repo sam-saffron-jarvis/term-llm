@@ -88,11 +88,17 @@ export type WebPlanSummary = { "version": number; "step_count": number; "complet
 
 export type WebSelectedSessionEntry = WebSessionEntry & { "metrics"?: WebSessionMetrics; "file_change_summary": WebFileChangeSummary; "plan_summary": WebPlanSummary | null; "context_usage": ServeContextUsage | null; };
 
-export type WebSessionEntry = AuthorshipSessionFields & { "id": string; "number"?: number; "name"?: string; "short_title": string; "long_title": string; "mode"?: SessionSessionMode; "origin"?: SessionSessionOrigin; "provider"?: string; "model"?: string; "agent"?: string; "project_id"?: string; "project_name"?: string; "cwd"?: string; "worktree_dir"?: string; "archived": boolean; "pinned": boolean; "pin_order"?: number; "created_at": number; "last_message_at": number; "message_count": number; "attention_store_instance_id"?: string; "attention_seq"?: number; "attention_response_id"?: string; "attention_final_rev"?: number; "seen_through_seq"?: number; "seen_rev": number; "seen_source"?: string; "attention_unseen"?: boolean; "attention_outcome"?: SessionResponseRunState; "attention_terminal_at"?: number; "parent_session_id"?: string; "delegated"?: boolean; };
+export type WebSessionEntry = AuthorshipSessionFields & { "id": string; "number"?: number; "name"?: string; "short_title": string; "long_title": string; "mode"?: SessionSessionMode; "origin"?: SessionSessionOrigin; "provider"?: string; "model"?: string; "agent"?: string; "project_id"?: string; "project_name"?: string; "cwd"?: string; "worktree_dir"?: string; "archived": boolean; "pinned": boolean; "pin_order"?: number; "created_at": number; "last_message_at": number; "message_count": number; "attention_store_instance_id"?: string; "attention_seq"?: number; "attention_response_id"?: string; "attention_final_rev"?: number; "seen_through_seq"?: number; "seen_rev": number; "seen_source"?: string; "attention_unseen"?: boolean; "attention_outcome"?: SessionResponseRunState; "attention_terminal_at"?: number; "branch_parent_session_id"?: string; "branch_parent_number"?: number; "parent_session_id"?: string; "delegated"?: boolean; };
 
 export type WebSessionMetrics = SessionActivityMetrics;
 
 export type AuthorshipSessionFields = { "created_by"?: SessionAuthor; "participants"?: (SessionAuthor)[]; "participant_count"?: number; };
+
+export type WirePathNotesCancellation = { "cancelled": boolean; "note_saved": boolean; "status"?: WirePathNotesStatus; };
+
+export type WirePathNotesStatus = { "state": string; "mode"?: string; "focus"?: string; "source_session_id"?: string; "source_messages"?: number; "omitted_messages"?: number; "read_files"?: (string)[]; "modified_files"?: (string)[]; "model"?: string; "started_at"?: string; "writing_at"?: string; "preview"?: string; };
+
+export type WirePreparePathNotesResponse = { "ready": boolean; "reused"?: boolean; "limited"?: boolean; "message"?: string; "note_saved": boolean; "cancelled"?: boolean; };
 
 export type HubStatus = { "reachable": boolean; "state": string; "latency_ms": number; "version"?: string; "agent"?: string; "capabilities"?: (string)[]; "details"?: Record<string, string>; "error"?: string; };
 

@@ -1,6 +1,7 @@
 package serve
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -155,68 +156,28 @@ func branchContextRequestValues(requested *responsesBranchContextRequest) (strin
 	return mode, focus, 0, ""
 }
 
-func (s *serveServer) recordPathNoteUsage(ctx context.Context, sourceSessionID, model string, notes *engine.PathNotesResult) {
-	if notes == nil || notes.Usage.BillableCountersZero() {
-		return
-	}
-	if rt := s.peekStatsRuntime(sourceSessionID); rt != nil {
-		rt.recordHelperStats("path_note", model, notes.Usage)
-	}
-	if err := s.store.UpdateMetrics(ctx, sourceSessionID, 0, 0, notes.Usage.InputTokens, notes.Usage.OutputTokens, notes.Usage.CachedInputTokens, notes.Usage.CacheWriteTokens); err == nil {
-		appruntime.RecordStoreModelUsage(ctx, s.store, sourceSessionID, model, session.ModelUsageHandover, notes.Usage, 1, 0)
-	}
+func (s *serveServer) generateBranchPathNote(ctx context.Context, sourceID string, source []core.Message, mode string, config engine.PathNotesConfig) (*session.BranchPathNote, int, string) {
+	return appruntime.GenerateBranchPathNote(ctx, s.store, sourceID, source, mode, config, s.pathNotesProvider, func(model string, usage core.Usage) {
+		if rt := s.peekStatsRuntime(sourceID); rt != nil {
+			rt.recordHelperStats("path_note", model, usage)
+		}
+	})
 }
 
-func (s *serveServer) generateBranchPathNote(ctx context.Context, sourceSessionID string, source []core.Message, mode, focus string) (*session.BranchPathNote, int, string) {
-	if mode == "" || mode == "none" || mode == "clean" || len(source) == 0 {
-		return nil, 0, ""
+func (s *serveServer) pathNotesProvider(sess *session.Session) (core.Provider, error) {
+	name := cmp.Or(strings.TrimSpace(sess.ProviderKey), strings.TrimSpace(sess.Provider))
+	if s.pathNotesProviderFactory != nil {
+		return s.pathNotesProviderFactory(name, sess.Model)
 	}
-	sess, err := s.store.Get(ctx, sourceSessionID)
-	if err != nil || sess == nil {
-		return nil, http.StatusBadRequest, "branch source was not found"
+	if s.cfgRef != nil {
+		return llm.NewProviderByName(s.cfgRef, name, sess.Model)
 	}
-	providerName := strings.TrimSpace(sess.ProviderKey)
-	if providerName == "" {
-		providerName = strings.TrimSpace(sess.Provider)
-	}
-	var provider core.Provider
-	switch {
-	case s.pathNotesProviderFactory != nil:
-		provider, err = s.pathNotesProviderFactory(providerName, sess.Model)
-	case s.cfgRef != nil:
-		provider, err = llm.NewProviderByName(s.cfgRef, providerName, sess.Model)
-	case s.sessionMgr != nil:
-		// Tests and embedders without config may provide a runtime provider. The
-		// normal server path above always constructs a fresh helper instance.
-		if runtime, ok := s.sessionMgr.Get(sourceSessionID); ok && runtime != nil {
-			provider = runtime.provider
+	if s.sessionMgr != nil {
+		if rt, ok := s.sessionMgr.Get(sess.ID); ok && rt != nil {
+			return rt.provider, nil
 		}
 	}
-	if err != nil || provider == nil {
-		return nil, http.StatusConflict, "branch context generation is unavailable"
-	}
-	notes, err := engine.GeneratePathNotes(ctx, provider, sess.Model, source, engine.PathNotesConfig{Focus: focus})
-	s.recordPathNoteUsage(ctx, sourceSessionID, sess.Model, notes)
-	if err != nil {
-		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-			return nil, http.StatusRequestTimeout, "branch context generation was cancelled"
-		}
-		return nil, http.StatusBadGateway, "failed to prepare branch context"
-	}
-	if notes == nil || strings.TrimSpace(notes.Notes) == "" {
-		return nil, 0, ""
-	}
-	return &session.BranchPathNote{
-		Text: notes.Notes,
-		Provenance: core.PathNoteProvenance{
-			SourceMessages:  notes.SourceMessages,
-			OmittedMessages: notes.OmittedMessages,
-			ReadFiles:       notes.ReadFiles,
-			ModifiedFiles:   notes.ModifiedFiles,
-			Model:           notes.Model,
-			Focus:           focus,
-		},
-	}, 0, ""
+	return nil, nil
 }
 
 func (s *serveServer) prepareBranchPathNote(ctx context.Context, sourceSessionID string, anchorMessageID int64, requested *responsesBranchContextRequest) (*session.BranchPathNote, int, string) {
@@ -232,7 +193,7 @@ func (s *serveServer) prepareBranchPathNote(ctx context.Context, sourceSessionID
 	if err != nil {
 		return nil, http.StatusBadRequest, "branch source or anchor was not found"
 	}
-	return s.generateBranchPathNote(ctx, sourceSessionID, source, mode, focus)
+	return s.generateBranchPathNote(ctx, sourceSessionID, source, mode, engine.PathNotesConfig{Focus: focus})
 }
 
 func (s *serveServer) prepareBranchPathNoteOnce(ctx context.Context, sourceSessionID string, anchorMessageID int64, idempotencyKey string, requested *responsesBranchContextRequest) (*session.BranchPathNote, int, string, context.Context, func()) {

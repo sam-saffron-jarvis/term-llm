@@ -118,6 +118,7 @@ export interface RunEngineHost {
   streamResponse: (responseId: string, sessionId: string, sequence: number) => Promise<void>;
   applyResponseEvent: (sessionId: string, event: ResponseEvent, owner?: StreamSupervisor) => void;
   draftMCPEnabled: (draftId: string) => string[];
+  pendingMCPSelection: (sessionId: string) => Promise<boolean> | undefined;
   rekeyMCP: (oldId: string, newId: string) => void;
   clientTools: ClientToolBridge;
 }
@@ -596,6 +597,8 @@ export class RunEngine {
 
     let session = this.sessionStore.activeSession.value;
     const newSession = !session;
+    const mcpOwnerId = session?.id || this.composer.runtimeDraftId();
+    const pendingMCP = this.host.pendingMCPSelection(mcpOwnerId);
     const optimistic: Message = {
       id: `pending_${clientMessageId}`,
       role: 'user',
@@ -610,7 +613,7 @@ export class RunEngine {
     if (!session) {
       const project = this.sessionStore.activeProjectId.value;
       session = {
-        id: this.composer.runtimeDraftId(),
+        id: mcpOwnerId,
         name: '',
         title: content.slice(0, 72) || 'New chat',
         createdBy: this.sessionStore.authors.viewer.value,
@@ -623,7 +626,7 @@ export class RunEngine {
         projectId: project,
         projectName: this.sessionStore.projects.value.find((entry) => entry.id === project)?.name,
         worktreeDir: this.composer.selectedDraftWorktree.value || undefined,
-        mcpEnabled: this.host.draftMCPEnabled(this.composer.runtimeDraftId()),
+        mcpEnabled: this.host.draftMCPEnabled(mcpOwnerId),
         // Resolve the automatic project/no-project default once for this draft;
         // the optimistic session carries it into the first response request.
         agent: this.runtime.effectiveAgent.value,
@@ -636,6 +639,22 @@ export class RunEngine {
       attachmentParts = await Promise.all(
         attachments.map((entry) => this.composer.attachmentInput(entry)),
       );
+      // Draft MCP is promoted server-side when the response is admitted. Finish
+      // any selection edit that already started before that admission, without
+      // importing MCP for untouched drafts or ordinary sends.
+      const latestMCP = this.host.pendingMCPSelection(mcpOwnerId);
+      if (pendingMCP || latestMCP) {
+        const committed = await Promise.all([pendingMCP, latestMCP]);
+        if (committed.includes(false))
+          throw new Error('MCP settings were not applied. Message not sent.');
+        const currentOwnerId =
+          this.sessionStore.activeSession.peek()?.id || this.composer.runtimeDraftId();
+        if (this.disposed || currentOwnerId !== mcpOwnerId)
+          throw new Error(
+            'The conversation changed while applying MCP settings. Message not sent.',
+          );
+        if (newSession) session = { ...session, mcpEnabled: this.host.draftMCPEnabled(mcpOwnerId) };
+      }
     } catch (error) {
       this.composer.sendPending.value = false;
       this.services.toast(error, 'error');

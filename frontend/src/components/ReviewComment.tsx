@@ -1,3 +1,4 @@
+import '../styles/features/review-panels.css';
 import type { ComponentChildren } from 'preact';
 import { useEffect, useRef, useState } from 'preact/hooks';
 import type { DiffComment } from '../domain/types';

@@ -1,0 +1,70 @@
+/* Queued steering preview. Loaded with the lazy chunk of components/SteeringQueuePreview.tsx, after app.css;
+   rules that tie with a later app.css rule on the same element stay in app.css. */
+
+.pending-steering-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  min-width: 0;
+  padding: 0.5rem 0.85rem;
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+}
+
+.pending-steering.hidden {
+  display: none;
+}
+
+.pending-steering-banner {
+  width: calc(100% - 0.6rem);
+}
+
+.pending-steering .pending-steering-icon {
+  flex-shrink: 0;
+  font-style: normal;
+}
+
+.pending-steering .pending-steering-text {
+  flex: 1 1 6rem;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pending-steering .pending-steering-label {
+  flex-shrink: 0;
+  opacity: 0.75;
+  font-style: normal;
+}
+
+.pending-steering-action {
+  flex-shrink: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-full);
+  background: var(--surface);
+  color: var(--text);
+  padding: 0.3rem 0.65rem;
+  font: inherit;
+  font-size: 0.8rem;
+  font-style: normal;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.pending-steering-action:hover {
+  background: var(--surface-3);
+  border-color: var(--border-strong);
+}
+
+.steering-queue-footer {
+  padding: 0.25rem 0.75rem;
+  font-size: 0.8rem;
+}
+
+.pending-steering-row.selected {
+  outline: 1px solid currentcolor;
+  outline-offset: -1px;
+}

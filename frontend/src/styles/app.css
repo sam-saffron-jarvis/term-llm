@@ -1,7 +1,10 @@
 /* Manifest for the web UI stylesheet.
    Imports are inlined at build time and their order is the cascade order, so
    entries must stay sorted from most general to most specific. The Preact
-   integration layer overrides earlier legacy rules and must remain last. */
+   integration layer overrides earlier legacy rules and must remain last.
+   Rules only lazily loaded components use live in feature sheets those
+   components import; such sheets load after this file, so a rule stays here
+   when moving it would change which rule wins an equal-specificity tie. */
 @import './base/tokens.css';
 @import './base/typography.css';
 @import './base/reset.css';
@@ -12,7 +15,6 @@
 @import './features/sessions.css';
 @import './layout/header.css';
 @import './features/context-meter.css';
-@import './features/toggle-switch.css';
 @import './features/transcript.css';
 @import './features/authors.css';
 @import './features/composer.css';

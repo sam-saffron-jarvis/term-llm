@@ -224,47 +224,6 @@ func (s *SQLiteStore) addMessageExplicitSequence(ctx context.Context, sessionID 
 	return id, rev, nil
 }
 
-func (s *SQLiteStore) addMessageAutoSequence(ctx context.Context, sessionID string, msg *Message, partsJSON string) (int64, int, int64, error) {
-	conn, err := s.db.Conn(ctx)
-	if err != nil {
-		return 0, 0, 0, fmt.Errorf("get connection: %w", err)
-	}
-	defer conn.Close()
-
-	if _, err := conn.ExecContext(ctx, "BEGIN IMMEDIATE"); err != nil {
-		return 0, 0, 0, fmt.Errorf("begin immediate transaction: %w", err)
-	}
-	committed := false
-	defer func() {
-		if !committed {
-			_, _ = conn.ExecContext(context.Background(), "ROLLBACK")
-		}
-	}()
-
-	var maxSeq sql.NullInt64
-	if err := conn.QueryRowContext(ctx, `SELECT MAX(sequence) FROM messages WHERE session_id = ?`, sessionID).Scan(&maxSeq); err != nil {
-		return 0, 0, 0, fmt.Errorf("get max sequence: %w", err)
-	}
-	sequence := 0
-	if maxSeq.Valid {
-		sequence = int(maxSeq.Int64) + 1
-	}
-
-	id, rev, err := s.insertMessageAndBumpSession(ctx, conn, sessionID, msg, partsJSON, sequence)
-	if err != nil {
-		return 0, 0, 0, err
-	}
-	if err := checkpointResponseRunFenceTx(ctx, conn, sessionID, rev); err != nil {
-		return 0, 0, 0, err
-	}
-	if _, err := conn.ExecContext(ctx, "COMMIT"); err != nil {
-		return 0, 0, 0, fmt.Errorf("commit transaction: %w", err)
-	}
-	committed = true
-	s.noteOwnTranscriptRev(sessionID, rev)
-	return id, sequence, rev, nil
-}
-
 type sqliteExecer interface {
 	ExecContext(context.Context, string, ...any) (sql.Result, error)
 }
@@ -1480,7 +1439,7 @@ func (s *SQLiteStore) GetTranscriptSnapshot(ctx context.Context, sessionID strin
 	rows, err := tx.QueryContext(ctx, `
 		SELECT id, sequence, role, parts, `+compactionTailCol+`, `+clientMessageIDCol+`, `+streamIdentityCols+`
 		FROM messages
-		WHERE session_id = ? AND role NOT IN ('system', 'developer')
+		WHERE session_id = ? AND role <> 'system'
 		ORDER BY sequence ASC, id ASC`, sessionID)
 	if err != nil {
 		return TranscriptSnapshot{}, fmt.Errorf("query transcript index: %w", err)
@@ -1504,7 +1463,7 @@ func (s *SQLiteStore) GetTranscriptSnapshot(ctx context.Context, sessionID strin
 			return TranscriptSnapshot{}, fmt.Errorf("decode transcript index parts: %w", err)
 		}
 		candidate := Message{Role: core.Role(item.Role), Parts: parts, ClientMessageID: item.ClientMessageID}
-		if candidate.IsGoalSteering() {
+		if candidate.hiddenFromTranscript() {
 			continue
 		}
 		for _, part := range parts {
@@ -1593,7 +1552,7 @@ func (s *SQLiteStore) GetMessagesByTranscriptRanges(ctx context.Context, session
 			SELECT `+s.messageSelectCols()+`
 			FROM messages
 			WHERE session_id = ?
-				AND role NOT IN ('system', 'developer')
+				AND role <> 'system'
 				AND (`+strings.Join(clauses, " OR ")+`)
 			ORDER BY sequence ASC, id ASC`, args...)
 		if err != nil {
@@ -1609,7 +1568,7 @@ func (s *SQLiteStore) GetMessagesByTranscriptRanges(ctx context.Context, session
 		}
 		visible := messages[:0]
 		for i := range messages {
-			if !messages[i].IsGoalSteering() {
+			if !messages[i].hiddenFromTranscript() {
 				visible = append(visible, messages[i])
 			}
 		}

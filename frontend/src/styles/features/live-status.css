@@ -1,0 +1,106 @@
+/* Live voice session status. Loaded with the lazy chunk of components/LiveStatus.tsx, after app.css;
+   rules that tie with a later app.css rule on the same element stay in app.css. */
+
+.live-status-spinner {
+  width: 15px;
+  height: 15px;
+}
+
+.live-status-header {
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+  width: 100%;
+}
+
+.live-status-copy {
+  flex: 1;
+  min-width: 0;
+  font-size: 0.9rem;
+  font-weight: 650;
+}
+
+/* Which session the voice drives. Only known once the server reports it. */
+.live-status-binding {
+  display: block;
+  overflow: hidden;
+  color: var(--text-muted);
+  font-size: 0.78rem;
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.live-status-transcript {
+  overflow: auto;
+  max-height: 5.6em;
+  color: var(--text-muted);
+  font-size: 0.9rem;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+}
+
+.live-status-transcript-expanded {
+  min-height: min(25dvh, 12rem);
+  max-height: min(40dvh, 24rem);
+}
+
+.live-status-turn + .live-status-turn {
+  margin-top: 0.75rem;
+}
+
+.live-status-interrupted {
+  font-size: 0.85em;
+  font-style: italic;
+}
+
+.live-status-speaker {
+  font-weight: 650;
+}
+
+.live-status-transcript-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
+}
+
+.live-status-error {
+  color: var(--danger);
+  font-size: 0.82rem;
+  line-height: 1.35;
+}
+
+.live-status-dot,
+.live-status-spinner {
+  flex: 0 0 auto;
+  border-radius: var(--radius-full);
+}
+
+.live-status-dot {
+  width: 10px;
+  height: 10px;
+  background: var(--accent);
+}
+
+.live-status-listening .live-status-dot,
+.live-status-speaking .live-status-dot {
+  animation: voice-pulse 1.35s infinite;
+}
+
+.live-status-stop {
+  flex: 0 0 auto;
+}
+
+@media (width <= 700px) {
+  .live-status-transcript:not(.live-status-transcript-expanded) {
+    max-height: 4.2em;
+  }
+
+  .live-status-stop {
+    min-height: 44px;
+    margin-left: auto;
+  }
+}

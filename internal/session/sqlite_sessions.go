@@ -670,6 +670,7 @@ func (s *SQLiteStore) sessionCategoryFilter(categories []string) (string, []any)
 	return "", nil
 }
 
+// List queries a page of session summaries.
 func (s *SQLiteStore) List(ctx context.Context, opts ListOptions) ([]SessionSummary, error) {
 	cacheWriteCol := "0"
 	if s.hasCacheWriteTokens {
@@ -722,19 +723,14 @@ func (s *SQLiteStore) List(ctx context.Context, opts ListOptions) ([]SessionSumm
 	if s.hasTranscriptRev {
 		transcriptRevCol = "COALESCE(s.transcript_rev, 0)"
 	}
-	fromClause := "FROM sessions s"
-	if opts.SortByNumberDesc {
-		// Completed-session walks page by descending session number. Force the
-		// number index so SQLite can continue scanning from the last seen number
-		// instead of picking a filter-only index and re-sorting each page.
-		fromClause = "FROM sessions s INDEXED BY idx_sessions_number"
-	}
+	fromClause := listSessionSource(opts)
+	branchCols, branchJoins := s.branchParentProjection("s.id")
 	query := `
 		SELECT s.id, s.number, s.name, s.summary, ` + generatedShortCol + `, ` + generatedLongCol + `, ` + titleSourceCol + `,
 		       s.provider, COALESCE(s.provider_key, ''), s.model, s.mode, ` + originCol + `, COALESCE(s.agent, ''), s.archived, ` + s.pinnedSelectCols("s") + `, s.created_at, s.updated_at, ` + lastMessageAtCol + `, ` + lastUserMessageAtCol + `,
 		       ` + messageCountCol + ` as message_count, ` + transcriptRevCol + ` as transcript_rev,
-		       s.user_turns, s.llm_turns, s.tool_calls, s.input_tokens, s.cached_input_tokens, ` + cacheWriteCol + `, s.output_tokens, s.status, s.tags, COALESCE(s.cwd, ''), ` + worktreeDirCol + `, ` + projectIDCol + `, ` + projectNameCol + `, ` + goalCol + `, ` + shareCol + `, ` + s.createdByColumn("s") + `
-		` + fromClause + projectJoin + `
+		       s.user_turns, s.llm_turns, s.tool_calls, s.input_tokens, s.cached_input_tokens, ` + cacheWriteCol + `, s.output_tokens, s.status, s.tags, COALESCE(s.cwd, ''), ` + worktreeDirCol + `, ` + projectIDCol + `, ` + projectNameCol + `, ` + goalCol + `, ` + shareCol + `, ` + s.createdByColumn("s") + `, ` + branchCols + `
+		` + fromClause + projectJoin + branchJoins + `
 		WHERE 1=1`
 	args := []any{}
 	query, args = s.filterCreatedBy(query, args, opts.CreatedBy)
@@ -853,7 +849,7 @@ func (s *SQLiteStore) List(ctx context.Context, opts ListOptions) ([]SessionSumm
 		err := rows.Scan(&sum.ID, &number, &sum.Name, &sum.Summary, &generatedShortTitle, &generatedLongTitle, &titleSource, &sum.Provider, &sum.ProviderKey, &sum.Model, &mode,
 			&origin, &sum.Agent, &sum.Archived, &sum.Pinned, &pinOrder, &sum.CreatedAt, &sum.UpdatedAt, &lastMessageAt, &lastUserMessageAt, &sum.MessageCount, &sum.TranscriptRev,
 			&sum.UserTurns, &sum.LLMTurns, &sum.ToolCalls, &sum.InputTokens, &sum.CachedInputTokens, &sum.CacheWriteTokens, &sum.OutputTokens,
-			&status, &tags, &cwd, &worktreeDir, &projectID, &projectName, &goalRaw, &shareRaw, &sum.CreatedBy)
+			&status, &tags, &cwd, &worktreeDir, &projectID, &projectName, &goalRaw, &shareRaw, &sum.CreatedBy, &sum.BranchParentSessionID, &sum.BranchParentNumber)
 		if err != nil {
 			return nil, fmt.Errorf("scan session summary: %w", err)
 		}

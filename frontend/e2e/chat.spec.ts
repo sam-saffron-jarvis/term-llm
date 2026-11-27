@@ -2164,3 +2164,133 @@ test('Activity shows agents and jobs without scripts or usage help', async ({ pa
   await expect(dialog).toBeHidden();
   await expect(trigger).toHaveAttribute('aria-expanded', 'false');
 });
+
+test('web fork shows the stepper and opens durable path notes on a narrow screen', async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.emulateMedia({ reducedMotion: 'reduce' });
+  await mockAPI(page, {
+    extraMessages: [
+      { id: 42, sequence: 1, role: 'assistant', parts: [{ type: 'text', text: 'Copied answer' }] },
+    ],
+  });
+  const child = {
+    ...session('fork-child', 'First chat', 3),
+    branch_parent_session_id: 's1',
+    branch_parent_number: 1,
+  };
+  const writing = new Date().toISOString();
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let saved = false;
+  await page.route('**/v1/**', async (route) => {
+    const url = new URL(route.request().url());
+    const path = url.pathname;
+    const json = (value: unknown) => route.fulfill({ json: value });
+    if (path.endsWith('/s1/branches')) return json({ session: child });
+    if (path.endsWith('/fork-child/path-notes')) {
+      if (route.request().method() === 'POST') {
+        await gate;
+        saved = true;
+        return json({ ready: true, note_saved: true });
+      }
+      return json({
+        state: 'writing',
+        model: 'gpt-test',
+        source_messages: 3,
+        started_at: writing,
+        writing_at: writing,
+        preview: '- Finding in progress',
+      });
+    }
+    if (path.endsWith('/fork-child/state')) return json({ session: child });
+    if (path.endsWith('/fork-child/tree'))
+      return json({
+        active_session_id: child.id,
+        root_session_id: 's1',
+        path_count: 2,
+        nodes: [
+          { session_id: 's1', session_number: 1, title: child.title },
+          {
+            session_id: child.id,
+            session_number: 3,
+            parent_session_id: 's1',
+            copied_anchor_message_id: 142,
+            fork_after_message_id: 42,
+          },
+        ],
+      });
+    if (path.endsWith('/v1/sidebar') && saved)
+      return json({ recent_sessions: [child, session('s1', 'First chat', 1)], groups: [] });
+    if (path.endsWith('/v1/sessions') && url.searchParams.get('selected_session') === child.id)
+      return json({
+        selected_session: child,
+        selected_transcript: {
+          bodies: {
+            rev: saved ? 2 : 1,
+            messages: [
+              {
+                id: 142,
+                sequence: 0,
+                role: 'assistant',
+                parts: [{ type: 'text', text: 'Copied answer' }],
+              },
+              ...(saved
+                ? [
+                    {
+                      id: 143,
+                      sequence: 1,
+                      role: 'path-note',
+                      parts: [
+                        {
+                          type: 'path_note',
+                          text: '- **Durable finding**',
+                          path_note: {
+                            source_session_id: 's1',
+                            anchor_message_id: 42,
+                            source_messages: 3,
+                            model: 'gpt-test',
+                          },
+                        },
+                      ],
+                    },
+                  ]
+                : []),
+            ],
+          },
+        },
+      });
+    return route.fallback();
+  });
+  try {
+    await page.goto('./chat/s1');
+    await expect(page.locator('#startupSplash')).toBeHidden();
+    await page.getByRole('button', { name: 'Branch from here' }).click();
+    await page.getByRole('button', { name: /Bring concise notes/ }).click();
+    const dialog = page.getByRole('dialog', { name: 'Creating path with notes' });
+    const open = dialog.getByRole('button', { name: 'Open now' });
+    await expect(open).toBeFocused();
+    await expect(dialog.getByText('Read 3 later messages in #1')).toBeVisible();
+    await expect(dialog.getByText('- Finding in progress')).toBeVisible();
+    await expect(dialog.locator('.branch-step-actions')).toHaveCSS('display', 'grid');
+    await expect(dialog.locator('.branch-note-spinner')).toHaveCSS('animation-name', 'none');
+    await page.keyboard.press('Escape');
+    await expect(dialog).toBeVisible();
+    await open.click();
+    await expect(page.getByRole('region', { name: 'Path notes progress' })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Waiting for path notes…' })).toBeDisabled();
+    release();
+    await expect(page.getByRole('button', { name: /Path notes.*from #1/ })).toHaveAttribute(
+      'aria-expanded',
+      'true',
+    );
+    await expect(page.getByText('Durable finding')).toBeVisible();
+    await expect(page.locator('.fork-divider')).toContainText('3 later messages there');
+    await expect(page.getByRole('button', { name: 'Fork of #1', exact: true })).toBeVisible();
+  } finally {
+    release();
+  }
+});

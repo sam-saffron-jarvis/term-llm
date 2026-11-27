@@ -1,3 +1,4 @@
+import '../styles/features/worktree-modal.css';
 import type { TargetedKeyboardEvent } from 'preact';
 import { relativeTime } from '../domain/time';
 import { useEffect, useRef, useState } from 'preact/hooks';

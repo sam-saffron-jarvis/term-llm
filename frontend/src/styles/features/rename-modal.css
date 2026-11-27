@@ -1,0 +1,31 @@
+/* Rename session dialog. Loaded with the lazy chunk of components/RenameModal.tsx, after app.css;
+   rules that tie with a later app.css rule on the same element stay in app.css. */
+
+.rename-improve-btn {
+  width: auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 0.45rem;
+  margin-top: 0.15rem;
+  margin-bottom: 0.3rem;
+}
+
+.rename-improve-btn.is-loading::before {
+  content: '';
+  width: 0.9em;
+  height: 0.9em;
+  border-radius: 50%;
+  border: 2px solid currentcolor;
+  border-top-color: transparent;
+  animation: title-spin 0.8s linear infinite;
+}
+
+.rename-generated-note {
+  margin-top: -0.3rem !important;
+  font-size: 0.82rem !important;
+}
+
+.modal-error.modal-notice {
+  color: var(--text-muted);
+}

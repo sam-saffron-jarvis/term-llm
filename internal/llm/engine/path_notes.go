@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/term-llm/term-llm/internal/llm/core"
@@ -28,6 +29,18 @@ type PathNotesConfig struct {
 	InputTokenBudget  int
 	OutputTokenBudget int
 	MaxWords          int
+	OnPrepared        func(PathNotesPrepared)
+	OnText            func(delta string)
+	OnTextReset       func()
+}
+
+// PathNotesPrepared describes the input to the helper before streaming begins.
+type PathNotesPrepared struct {
+	SourceMessages  int
+	OmittedMessages int
+	ReadFiles       []string
+	ModifiedFiles   []string
+	Model           string
 }
 
 // PathNotesResult is a compact, non-authoritative account of work performed on
@@ -138,6 +151,12 @@ func GeneratePathNotes(ctx context.Context, provider core.Provider, model string
 	}
 	outputBudget = env.clampOutputTokens(outputBudget, model)
 
+	if config.OnPrepared != nil {
+		config.OnPrepared(PathNotesPrepared{
+			SourceMessages: result.SourceMessages, OmittedMessages: result.OmittedMessages,
+			ReadFiles: result.ReadFiles, ModifiedFiles: result.ModifiedFiles, Model: result.Model,
+		})
+	}
 	stream, err := env.isolatedProvider(provider).Stream(ctx, core.Request{
 		Model:                   model,
 		Messages:                []core.Message{core.SystemText(pathNotesSystemPrompt), core.UserText(prompt)},
@@ -151,14 +170,7 @@ func GeneratePathNotes(ctx context.Context, provider core.Provider, model string
 		return result, fmt.Errorf("generate path notes: stream: %w", err)
 	}
 	defer stream.Close()
-	collected, err := core.CollectTextStream(stream, func(event core.Event) error {
-		switch event.Type {
-		case core.EventToolCall, core.EventToolExecStart, core.EventToolExecEnd:
-			return fmt.Errorf("path notes helper attempted to use a tool")
-		default:
-			return nil
-		}
-	})
+	collected, err := core.CollectTextStream(stream, config.observeStream)
 	result.Usage = collected.Usage
 	if err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
@@ -396,10 +408,42 @@ func truncateRunesHeadTail(text string, maxRunes int) string {
 	return string(runes[:head]) + "\n[... middle truncated ...]\n" + string(runes[len(runes)-tail:])
 }
 
+// truncateWords keeps at most maxWords words while preserving the original
+// whitespace, so Markdown lists and paragraphs survive truncation.
 func truncateWords(text string, maxWords int) string {
-	words := strings.Fields(text)
-	if maxWords <= 0 || len(words) <= maxWords {
-		return strings.TrimSpace(text)
+	text = strings.TrimSpace(text)
+	if maxWords <= 0 {
+		return text
 	}
-	return strings.Join(words[:maxWords], " ") + " …"
+	words, inWord := 0, false
+	for i, r := range text {
+		if unicode.IsSpace(r) {
+			inWord = false
+			continue
+		}
+		if inWord {
+			continue
+		}
+		inWord = true
+		if words++; words > maxWords {
+			return strings.TrimRightFunc(text[:i], unicode.IsSpace) + " …"
+		}
+	}
+	return text
+}
+
+func (config PathNotesConfig) observeStream(event core.Event) error {
+	switch event.Type {
+	case core.EventToolCall, core.EventToolExecStart, core.EventToolExecEnd:
+		return fmt.Errorf("path notes helper attempted to use a tool")
+	case core.EventTextDelta:
+		if config.OnText != nil {
+			config.OnText(event.Text)
+		}
+	case core.EventAttemptDiscard:
+		if config.OnTextReset != nil {
+			config.OnTextReset()
+		}
+	}
+	return nil
 }

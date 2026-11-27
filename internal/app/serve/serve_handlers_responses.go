@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/term-llm/term-llm/internal/agents"
+	"github.com/term-llm/term-llm/internal/app/serve/branchnotes"
 	"github.com/term-llm/term-llm/internal/app/serve/wire"
 	"github.com/term-llm/term-llm/internal/app/uploads"
 	"github.com/term-llm/term-llm/internal/linkeddevices"
@@ -406,9 +407,8 @@ func (s *serveServer) resolveResponsesSession(w http.ResponseWriter, r *http.Req
 			sessionID = session.NewID()
 		}
 		w.Header().Set("x-session-id", sessionID)
-		// External Responses API semantics: no previous_response_id means the
-		// supplied input is the new whole conversation for this persisted ID.
-		*replaceHistory = true
+		// External Responses semantics: the input replaces this ID's conversation.
+		*replaceHistory = !branchnotes.AwaitsFirstTurn(ctx, s.store, sessionID)
 	}
 	return resolvedResponsesSession{
 		sessionID:          sessionID,

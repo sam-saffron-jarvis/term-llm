@@ -1,3 +1,4 @@
+import '../styles/features/widgets-modal.css';
 import { useState } from 'preact/hooks';
 import { useStore } from '../app/context';
 import type { Widget } from '../domain/types';

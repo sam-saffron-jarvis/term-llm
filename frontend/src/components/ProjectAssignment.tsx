@@ -1,3 +1,4 @@
+import '../styles/features/project-modals.css';
 import type { TargetedKeyboardEvent } from 'preact';
 import { useEffect, useState } from 'preact/hooks';
 import { useStore } from '../app/context';

@@ -1,3 +1,6 @@
+/* Toggle switch control. Loaded with the lazy chunk of components/ToggleSwitch.tsx, after app.css;
+   rules that tie with a later app.css rule on the same element stay in app.css. */
+
 .toggle-switch {
   position: relative;
   display: inline-flex;

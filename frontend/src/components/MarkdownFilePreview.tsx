@@ -1,3 +1,4 @@
+import '../styles/features/review-panels.css';
 import { memo } from './memo';
 import { useEventCallback } from './useEventCallback';
 import { useMemo } from 'preact/hooks';

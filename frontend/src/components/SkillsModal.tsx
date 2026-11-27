@@ -1,3 +1,4 @@
+import '../styles/features/skills-modal.css';
 import { useState } from 'preact/hooks';
 import { useStore } from '../app/context';
 import { skillExecutionDescription, skillExecutionLabel } from '../domain/completions';

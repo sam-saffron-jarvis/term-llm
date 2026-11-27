@@ -1,3 +1,4 @@
+import '../styles/features/unconfirmed-sends.css';
 import { useEffect, useId, useRef, useState } from 'preact/hooks';
 import { useStore } from '../app/context';
 import { attachmentIconName } from '../domain/attachments';

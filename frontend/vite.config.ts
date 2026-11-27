@@ -49,7 +49,14 @@ export default defineConfig({
         manualChunks(id) {
           if (id.includes('/katex/')) return 'katex';
           if (id.includes('/highlight.js/')) return 'highlight';
-          if (id.endsWith('/src/stores/mcp-store.ts')) return 'mcp';
+          // Keep shared transcript/response code independently cacheable without
+          // anchoring it to a feature (which would make that feature eager).
+          if (
+            id.endsWith('/src/domain/transcript.ts') ||
+            id.endsWith('/src/domain/response.ts') ||
+            id.endsWith('/src/stores/store-utils.ts')
+          )
+            return 'conversation-domain';
           if (
             id.includes('/node_modules/preact/') ||
             id.includes('/node_modules/@preact/signals/') ||

@@ -18,7 +18,7 @@ func TestGeneratedBundleAssets(t *testing.T) {
 	for _, name := range []string{
 		"dist/app.js", "dist/app.css", "dist/hub.js", "dist/hub.css", "dist/proxy.js", "dist/proxy.css", "dist/chunks/vendor.js",
 		"dist/chunks/rich-highlight.js", "dist/chunks/rich-katex.js",
-		"dist/chunks/highlight.js", "dist/chunks/katex.js", "dist/chunks/katex.css", "dist/chunks/mcp.js",
+		"dist/chunks/highlight.js", "dist/chunks/katex.js", "dist/chunks/katex.css", "dist/chunks/mcp-operations.js",
 		"dist/chunks/MarkdownFilePreview.js", "dist/chunks/markdown-preview-store.js",
 		"dist/chunks/ShellOverlay.js", "dist/chunks/markdown-document.js", "dist/chunks/file-text.js",
 		"dist/assets/MarkdownFilePreview.css", "dist/assets/ShellOverlay.css",
@@ -232,7 +232,16 @@ func TestProductionBundleSizeBudgets(t *testing.T) {
 		// Emoji suggestions keep only shortcode detection, the loader and composer
 		// wiring eager: +2.03/+0.93 kB over a 541.93/160.57 kB build, measuring
 		// 543.97/161.50 kB, inside the caps above.
-		"dist/app.js": {raw: 544_550, gzip: 161_650},
+		// Fork progress and views are lazy. Eager sidebar, transcript, tree
+		// discovery and send-gate hooks leave 548.87/163.30 kB measured, or
+		// 4.32/1.65 kB above the previous 544.55/161.65 kB caps.
+		// Branching after user messages and /thread's eager context-choice
+		// state measure 549.64/163.46 kB.
+		"dist/app.js":                    {raw: 549_850, gzip: 163_600},
+		"dist/chunks/branch-progress.js": {raw: 7_700, gzip: 2_800},
+		"dist/chunks/PathNotes.js":       {raw: 4_500, gzip: 1_800},
+		"dist/chunks/BranchModals.js":    {raw: 9_500, gzip: 3_650},
+		"dist/assets/path-notes.css":     {raw: 4_800, gzip: 1_550},
 		// Unicode/gemoji data and its search load at a composer shortcode's colon:
 		// measured 344.65/53.17 kB.
 		"dist/chunks/emoji-search.js": {raw: 345_000, gzip: 53_400},
@@ -241,9 +250,10 @@ func TestProductionBundleSizeBudgets(t *testing.T) {
 		// Pausing transcript media while a video is open brings it to 8.16/3.27 kB.
 		// Sprite icons for its arrow, zoom and download marks: 8.35/3.29 kB.
 		// Corner radius tokens (var(--radius-md) instead of 8px) take the CSS
-		// to 4.02/1.35 kB.
+		// to 4.02/1.35 kB. Its close-button and toolbar rules moved out of
+		// app.css measure 4.25/1.40 kB.
 		"dist/chunks/Lightbox.js":  {raw: 8_450, gzip: 3_350},
-		"dist/assets/Lightbox.css": {raw: 4_100, gzip: 1_400},
+		"dist/assets/Lightbox.css": {raw: 4_400, gzip: 1_450},
 		// The /agents catalog measured 2.69/1.22 kB JS and 2.98/1.04 kB CSS.
 		"dist/chunks/AgentsModal.js":  {raw: 3_200, gzip: 1_450},
 		"dist/assets/AgentsModal.css": {raw: 3_500, gzip: 1_250},
@@ -276,7 +286,9 @@ func TestProductionBundleSizeBudgets(t *testing.T) {
 		// The Hub node-switch view transition rules measure 181.45/35.32 kB.
 		// Corner radius tokens replace ~390 literal sizes; the longer var()
 		// references measure 183.40/35.21 kB, so only raw grows.
-		"dist/app.css": {raw: 184_000, gzip: 35_350},
+		// Rules that only lazily loaded components use moved to feature sheets
+		// those components import, measuring 119.34/24.54 kB.
+		"dist/app.css": {raw: 121_500, gzip: 25_000},
 		// Measured after the completed standalone port: 67.7/21.5 KiB JS and
 		// 16.7/4.1 KiB CSS. These limits retain modest growth headroom without
 		// allowing chat-only rendering dependencies into the Hub graph. The
@@ -300,7 +312,9 @@ func TestProductionBundleSizeBudgets(t *testing.T) {
 		// and reconciliation, takes JS to 105.5/34.5 KiB.
 		// Preact 11.0.2 and Vite 8.3.5 measure 107.0/35.0 kB raw/gzip;
 		// retain modest gzip headroom for the updated runtime and bundler.
-		"dist/hub.js":  {raw: 107_500, gzip: 35_500},
+		// The reorder hook's grid geometry, which only the Hub uses, moved to its
+		// own module so the chat graph drops it: 107.51/35.29 kB.
+		"dist/hub.js":  {raw: 107_700, gzip: 35_500},
 		"dist/hub.css": {raw: 20_500, gzip: 5_500},
 		// The proxy admin UI is served separately from Chat and Hub. Give it
 		// room to grow without relaxing either of their download budgets.
@@ -334,6 +348,50 @@ func TestBundlePolicy(t *testing.T) {
 	}
 	if bytes.Contains(js, []byte("__TERM_LLM_TEST__")) || bytes.Contains(js, []byte("__TERM_LLM_ENABLE_TEST_BRIDGE__")) {
 		t.Fatal("production bundle contains browser test bridge")
+	}
+}
+
+func TestPathNotesAssetsRemainLazy(t *testing.T) {
+	for _, asset := range []struct{ eager, lazy, marker string }{
+		{"dist/app.js", "dist/chunks/PathNotes.js", "path-notes-card-head"},
+		{"dist/app.js", "dist/chunks/branch-progress.js", "Path notes were already saved."},
+		{"dist/app.js", "dist/chunks/BranchModals.js", "branch-step-actions"},
+		{"dist/app.css", "dist/assets/path-notes.css", ".path-notes-draft"},
+	} {
+		eager, err := testBuildAsset(asset.eager)
+		if err != nil {
+			t.Fatal(err)
+		}
+		lazy, err := testBuildAsset(asset.lazy)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if bytes.Contains(eager, []byte(asset.marker)) || !bytes.Contains(lazy, []byte(asset.marker)) {
+			t.Errorf("%s must appear only in %s, not %s", asset.marker, asset.lazy, asset.eager)
+		}
+	}
+}
+
+func TestLazyFeatureStylesStayOutOfAppCSS(t *testing.T) {
+	for _, asset := range []struct{ lazy, marker string }{
+		{"dist/assets/Panels.css", ".diff-comment-send-menu"},
+		{"dist/assets/syntax-highlight.css", ".hljs-keyword"},
+		{"dist/assets/Worktrees.css", ".worktree-option-summary"},
+		{"dist/assets/project-modals.css", ".project-browser-row"},
+		{"dist/assets/SideQuestionModal.css", ".side-question-starters"},
+		{"dist/assets/UnconfirmedSends.css", ".unconfirmed-send-summary"},
+	} {
+		eager, err := testBuildAsset("dist/app.css")
+		if err != nil {
+			t.Fatal(err)
+		}
+		lazy, err := testBuildAsset(asset.lazy)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if bytes.Contains(eager, []byte(asset.marker)) || !bytes.Contains(lazy, []byte(asset.marker)) {
+			t.Errorf("%s must appear only in %s, not dist/app.css", asset.marker, asset.lazy)
+		}
 	}
 }
 

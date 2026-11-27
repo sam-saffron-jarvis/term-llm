@@ -1,3 +1,30 @@
+/* Moved from app.css (notifications.css); kept ahead of this file's own rules to preserve
+   their original cascade order. */
+.notification-settings {
+  display: grid;
+  gap: 0.5rem;
+}
+
+.notification-state {
+  display: grid;
+  gap: 0.2rem;
+  padding: 0.65rem 0.75rem;
+  border: 1px solid var(--border, rgb(127 127 127 / 30%));
+  border-radius: var(--radius-md);
+}
+
+.notification-state > span {
+  color: var(--text-muted, #737373);
+  font-size: 0.85rem;
+  line-height: 1.35;
+}
+
+.notification-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
 /* Settings is a fixed-size dialog with a section sidebar, so switching
    sections never moves the navigation or resizes the dialog. Each section
    scrolls its body above an optional footer of actions. */

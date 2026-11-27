@@ -1,3 +1,4 @@
+import { forkEdge } from '../domain/fork';
 import { useId, useLayoutEffect, useRef, useState } from 'preact/hooks';
 import { useStore } from '../app/context';
 import { resolveProjectContext } from '../domain/project-context';
@@ -138,6 +139,7 @@ export function HeaderBreadcrumb({ context }: { context: ProjectContext | null }
   const worktree =
     store.worktreesAvailable() && (dir !== '' || store.draftActive.value || !context);
   const paths = Boolean(session && store.branchPathCount.value > 1);
+  const source = forkEdge(store.branchTree.value, session?.id)?.source;
   const label = dir.split('/').pop() || 'root';
   return (
     <div class={`header-title-context${context || worktree || paths ? ' has-context' : ''}`}>
@@ -171,6 +173,15 @@ export function HeaderBreadcrumb({ context }: { context: ProjectContext | null }
           onClick={() => void store.loadBranchTree()}
         >
           {store.branchPathCount.value} paths
+        </button>
+      )}
+      {!!source?.number && (
+        <button
+          class="header-title-badge fork-of-badge"
+          type="button"
+          onClick={() => void store.resolveAndSelectSession(source.id)}
+        >
+          <Icon class="glyph-icon" name="fork" /> Fork of #{source.number}
         </button>
       )}
     </div>

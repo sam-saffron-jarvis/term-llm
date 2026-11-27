@@ -12,12 +12,13 @@ import { Sidebar } from './Sidebar';
 import { DiffSidebar } from './Panels';
 import { Composer } from './Composer';
 import * as clipboard from '../platform/clipboard';
-import { VoiceOperation, type VoiceSnapshot } from '../platform/voice';
+import type { VoiceSnapshot } from '../platform/voice';
 
 let renders: ReturnType<typeof observeRenders> | undefined;
 afterEach(() => {
   renders?.dispose();
   vi.useRealTimers();
+  vi.unstubAllGlobals();
 });
 const observe = () => (renders = observeRenders());
 
@@ -494,10 +495,25 @@ describe('render isolation', () => {
 
   it('updates voice progress without rerendering the composer and retains recording controls', async () => {
     const store = createStore();
+    const { VoiceOperation } = await import('../platform/voice-operation');
+    vi.stubGlobal('isSecureContext', true);
+    vi.stubGlobal(
+      'MediaRecorder',
+      class extends EventTarget {
+        start() {}
+        stop() {}
+      },
+    );
+    vi.stubGlobal(
+      'navigator',
+      Object.create(navigator, {
+        mediaDevices: { value: { getUserMedia: async () => ({ getTracks: () => [] }) } },
+      }),
+    );
     let publish!: (snapshot: VoiceSnapshot) => void;
     let snapshot!: VoiceSnapshot;
     vi.spyOn(VoiceOperation.prototype, 'subscribe').mockImplementation(function (
-      this: VoiceOperation,
+      this: InstanceType<typeof VoiceOperation>,
       listener,
     ) {
       publish = listener;
@@ -518,6 +534,10 @@ describe('render isolation', () => {
         (node) => node.nodeType === Node.TEXT_NODE && node.textContent === ' ',
       ),
     ).toBe(false);
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Record voice message' }));
+      await vi.waitFor(() => expect(publish).toBeTypeOf('function'));
+    });
     await act(() => {
       snapshot = { ...snapshot, phase: 'recording' };
       publish(snapshot);
@@ -537,10 +557,25 @@ describe('render isolation', () => {
 
   it('renders voice phase text and indicators while keeping progress out of announcements', async () => {
     const store = createStore();
+    const { VoiceOperation } = await import('../platform/voice-operation');
+    vi.stubGlobal('isSecureContext', true);
+    vi.stubGlobal(
+      'MediaRecorder',
+      class extends EventTarget {
+        start() {}
+        stop() {}
+      },
+    );
+    vi.stubGlobal(
+      'navigator',
+      Object.create(navigator, {
+        mediaDevices: { value: { getUserMedia: async () => ({ getTracks: () => [] }) } },
+      }),
+    );
     let publish!: (snapshot: VoiceSnapshot) => void;
     let snapshot!: VoiceSnapshot;
     vi.spyOn(VoiceOperation.prototype, 'subscribe').mockImplementation(function (
-      this: VoiceOperation,
+      this: InstanceType<typeof VoiceOperation>,
       listener,
     ) {
       publish = listener;
@@ -553,6 +588,11 @@ describe('render isolation', () => {
         <Composer />
       </StoreContext.Provider>,
     );
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Record voice message' }));
+      await vi.waitFor(() => expect(publish).toBeTypeOf('function'));
+    });
 
     const cases: Array<{
       state: Partial<VoiceSnapshot>;

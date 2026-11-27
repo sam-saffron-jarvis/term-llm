@@ -1,3 +1,4 @@
+import '../styles/features/new-chat-controls.css';
 import {
   AGENT_AUTO_VALUE,
   AGENT_CHAT_VALUE,

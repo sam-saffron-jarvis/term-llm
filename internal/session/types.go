@@ -58,11 +58,13 @@ const (
 
 // Session represents a chat session stored in the database.
 type Session struct {
-	CreatedBy string `json:"created_by_id,omitempty"`
-	ID        string `json:"id"`
-	Number    int64  `json:"number,omitempty"` // Sequential session number (1, 2, 3...)
-	Name      string `json:"name,omitempty"`
-	Summary   string `json:"summary,omitempty"` // First user message or auto-generated
+	BranchParentSessionID string `json:"branch_parent_session_id,omitempty"`
+	BranchParentNumber    int64  `json:"branch_parent_number,omitempty"`
+	CreatedBy             string `json:"created_by_id,omitempty"`
+	ID                    string `json:"id"`
+	Number                int64  `json:"number,omitempty"` // Sequential session number (1, 2, 3...)
+	Name                  string `json:"name,omitempty"`
+	Summary               string `json:"summary,omitempty"` // First user message or auto-generated
 
 	GeneratedShortTitle string             `json:"generated_short_title,omitempty"`
 	GeneratedLongTitle  string             `json:"generated_long_title,omitempty"`
@@ -145,6 +147,8 @@ type Message struct {
 
 // SessionSummary is a lightweight view of a session for listing.
 type SessionSummary struct {
+	BranchParentSessionID    string             `json:"branch_parent_session_id,omitempty"`
+	BranchParentNumber       int64              `json:"branch_parent_number,omitempty"`
 	CreatedBy                string             `json:"created_by_id,omitempty"`
 	ID                       string             `json:"id"`
 	Number                   int64              `json:"number,omitempty"` // Sequential session number
@@ -245,32 +249,34 @@ type SearchOptions struct {
 
 // SearchResult represents a search match.
 type SearchResult struct {
-	CreatedBy           string             `json:"created_by_id,omitempty"`
-	SessionID           string             `json:"session_id"`
-	SessionNumber       int64              `json:"session_number"` // Sequential session number
-	MessageID           int64              `json:"message_id"`     // Zero for a title-only match
-	SessionName         string             `json:"session_name"`
-	Summary             string             `json:"summary"`
-	GeneratedShortTitle string             `json:"generated_short_title,omitempty"`
-	GeneratedLongTitle  string             `json:"generated_long_title,omitempty"`
-	TitleSource         SessionTitleSource `json:"title_source,omitempty"`
-	Snippet             string             `json:"snippet"` // Matched text snippet
-	Provider            string             `json:"provider"`
-	ProviderKey         string             `json:"provider_key,omitempty"`
-	Model               string             `json:"model"`
-	Mode                SessionMode        `json:"mode,omitempty"`
-	Origin              SessionOrigin      `json:"origin,omitempty"`
-	Archived            bool               `json:"archived,omitempty"`
-	Pinned              bool               `json:"pinned,omitempty"`
-	PinOrder            int64              `json:"pin_order,omitempty"`
-	Status              SessionStatus      `json:"status,omitempty"`
-	ProjectID           string             `json:"project_id,omitempty"`
-	ProjectName         string             `json:"project_name,omitempty"`
-	MessageCount        int                `json:"message_count"`
-	SessionCreatedAt    time.Time          `json:"session_created_at"`
-	UpdatedAt           time.Time          `json:"updated_at"`
-	LastMessageAt       time.Time          `json:"last_message_at,omitempty"`
-	CreatedAt           time.Time          `json:"created_at"`
+	BranchParentSessionID string             `json:"branch_parent_session_id,omitempty"`
+	BranchParentNumber    int64              `json:"branch_parent_number,omitempty"`
+	CreatedBy             string             `json:"created_by_id,omitempty"`
+	SessionID             string             `json:"session_id"`
+	SessionNumber         int64              `json:"session_number"` // Sequential session number
+	MessageID             int64              `json:"message_id"`     // Zero for a title-only match
+	SessionName           string             `json:"session_name"`
+	Summary               string             `json:"summary"`
+	GeneratedShortTitle   string             `json:"generated_short_title,omitempty"`
+	GeneratedLongTitle    string             `json:"generated_long_title,omitempty"`
+	TitleSource           SessionTitleSource `json:"title_source,omitempty"`
+	Snippet               string             `json:"snippet"` // Matched text snippet
+	Provider              string             `json:"provider"`
+	ProviderKey           string             `json:"provider_key,omitempty"`
+	Model                 string             `json:"model"`
+	Mode                  SessionMode        `json:"mode,omitempty"`
+	Origin                SessionOrigin      `json:"origin,omitempty"`
+	Archived              bool               `json:"archived,omitempty"`
+	Pinned                bool               `json:"pinned,omitempty"`
+	PinOrder              int64              `json:"pin_order,omitempty"`
+	Status                SessionStatus      `json:"status,omitempty"`
+	ProjectID             string             `json:"project_id,omitempty"`
+	ProjectName           string             `json:"project_name,omitempty"`
+	MessageCount          int                `json:"message_count"`
+	SessionCreatedAt      time.Time          `json:"session_created_at"`
+	UpdatedAt             time.Time          `json:"updated_at"`
+	LastMessageAt         time.Time          `json:"last_message_at,omitempty"`
+	CreatedAt             time.Time          `json:"created_at"`
 }
 
 // NewMessage creates a new Message from an llm.Message with the given session ID and sequence.
@@ -344,6 +350,12 @@ func (m *Message) PathNoteDisplayText() string {
 	text = strings.TrimSpace(strings.TrimPrefix(text, "<path_notes>"))
 	text = strings.TrimSpace(strings.TrimSuffix(text, "</path_notes>"))
 	return strings.ReplaceAll(text, `<\/path_notes>`, "</path_notes>")
+}
+
+// hiddenFromTranscript reports provider-only rows; marked path notes stay visible.
+func (m *Message) hiddenFromTranscript() bool {
+	_, pathNote := m.PathNoteProvenance()
+	return m.Role == core.RoleSystem || (m.Role == core.RoleDeveloper && !pathNote) || m.IsGoalSteering()
 }
 
 // IsGoalSteering reports whether this row is an internal active-goal prompt.

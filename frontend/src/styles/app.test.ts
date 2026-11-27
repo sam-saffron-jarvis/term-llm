@@ -15,6 +15,20 @@ function readStylesheet(path: string): string {
 }
 
 const appCSS = readStylesheet(resolve(stylesRoot, 'app.css'));
+// Feature sheets outside the manifest load with their lazy component chunks,
+// after app.css. Feature assertions read both, as the production page does.
+const manifestSheets = new Set(
+  [...readFileSync(resolve(stylesRoot, 'app.css'), 'utf8').matchAll(/@import '\.\/([^']+)';/g)].map(
+    (match) => match[1],
+  ),
+);
+const lazySheets = readdirSync(resolve(stylesRoot, 'features'))
+  .filter((name) => name.endsWith('.css') && !manifestSheets.has(`features/${name}`))
+  .sort();
+const pageCSS = [
+  appCSS,
+  ...lazySheets.map((name) => readFileSync(resolve(stylesRoot, 'features', name), 'utf8')),
+].join('\n');
 const shellTerminalCSS = readFileSync(resolve(stylesRoot, 'features/shell-terminal.css'), 'utf8');
 const preactOverrides = readFileSync(
   resolve(stylesRoot, 'integration/preact-overrides.css'),
@@ -39,6 +53,18 @@ describe('stylesheet manifest', () => {
       .filter(Boolean);
     expect(statements).toHaveLength(imports.length);
     expect(statements.every((line) => line.startsWith('@import '))).toBe(true);
+  });
+});
+
+describe('lazy feature stylesheets', () => {
+  it('are each imported by a module, so they load with its chunk', () => {
+    const sourceRoot = resolve(process.cwd(), 'src');
+    const sources = readdirSync(sourceRoot, { recursive: true, encoding: 'utf8' })
+      .filter((name) => /\.tsx?$/.test(name) && !/\.test\.tsx?$/.test(name))
+      .map((name) => readFileSync(resolve(sourceRoot, name), 'utf8'))
+      .join('\n');
+    expect(lazySheets.length).toBeGreaterThan(0);
+    for (const name of lazySheets) expect(sources, name).toContain(`styles/features/${name}'`);
   });
 });
 
@@ -79,7 +105,7 @@ describe('compaction progress styles', () => {
 describe('running conversation status styles', () => {
   it('keeps waiting text static instead of continuously repainting a clipped gradient', () => {
     const start = preactOverrides.indexOf('.streaming-indicator {');
-    const end = preactOverrides.indexOf('/* File changes */', start);
+    const end = preactOverrides.indexOf('/* Modal and secondary surfaces */', start);
     const statusCSS = preactOverrides.slice(start, end);
 
     expect(start).toBeGreaterThanOrEqual(0);
@@ -100,7 +126,7 @@ describe('running conversation status styles', () => {
 
   it('pulses only the status dot, and only its opacity', () => {
     const start = preactOverrides.indexOf('.streaming-indicator {');
-    const end = preactOverrides.indexOf('/* File changes */', start);
+    const end = preactOverrides.indexOf('/* Modal and secondary surfaces */', start);
     const statusCSS = preactOverrides.slice(start, end);
     const pulseStart = statusCSS.indexOf('@keyframes streaming-status-pulse {');
     const pulse = statusCSS.slice(pulseStart, statusCSS.indexOf('@media', pulseStart));
@@ -152,11 +178,11 @@ describe('live voice motion styles', () => {
 
 describe('shared switch styles', () => {
   it('loads for settings without opening MCP and stays visible in forced colors', () => {
-    expect(appCSS).toContain('.toggle-switch-track');
-    expect(appCSS).toContain('@media (forced-colors: active)');
-    expect(appCSS).toContain('border: 1px solid CanvasText');
-    expect(appCSS).toContain('background: HighlightText');
-    expect(appCSS).toMatch(
+    expect(pageCSS).toContain('.toggle-switch-track');
+    expect(pageCSS).toContain('@media (forced-colors: active)');
+    expect(pageCSS).toContain('border: 1px solid CanvasText');
+    expect(pageCSS).toContain('background: HighlightText');
+    expect(pageCSS).toMatch(
       /\.toggle-switch-input:focus-visible \+ \.toggle-switch-track\s*\{[^}]*outline: 2px solid var\(--text\)/,
     );
   });
@@ -168,7 +194,9 @@ describe('commit modal styles', () => {
     expect(manifest.indexOf("@import './features/modals.css';")).toBeLessThan(
       manifest.indexOf("@import './features/commit.css';"),
     );
-    const commitCSS = readFileSync(resolve(stylesRoot, 'features/commit.css'), 'utf8');
+    const commitCSS = ['features/commit.css', 'features/commit-modal.css']
+      .map((name) => readFileSync(resolve(stylesRoot, name), 'utf8'))
+      .join('\n');
     expect(commitCSS).not.toContain('var(--muted)');
     expect(commitCSS).not.toContain('var(--mono)');
     expect(commitCSS).toContain('var(--text-muted)');
@@ -197,7 +225,7 @@ describe('shell layout', () => {
   });
 
   it('keeps queued comment controls visible in file fullscreen mode', () => {
-    expect(appCSS).toContain(
+    expect(pageCSS).toContain(
       '.diff-sidebar.file-fullscreen > :not(.diff-file-list, .diff-queue-bar)',
     );
   });
@@ -355,12 +383,12 @@ describe('header styles', () => {
 
 describe('widget launcher styles', () => {
   it('keeps the launcher bounded and its card grid independently scrollable', () => {
-    expect(appCSS).toMatch(
+    expect(pageCSS).toMatch(
       /\.modal\.widgets-modal\s*\{[^}]*max-height:[^;}]+;[^}]*overflow: hidden;/s,
     );
-    expect(appCSS).toMatch(/\.widget-grid\s*\{[^}]*min-height: 0;[^}]*overflow-y: auto;/s);
-    expect(appCSS).not.toContain('.widget-row');
-    expect(appCSS).not.toContain('.widgets-modal-list');
+    expect(pageCSS).toMatch(/\.widget-grid\s*\{[^}]*min-height: 0;[^}]*overflow-y: auto;/s);
+    expect(pageCSS).not.toContain('.widget-row');
+    expect(pageCSS).not.toContain('.widgets-modal-list');
   });
 });
 
@@ -378,7 +406,7 @@ describe('close buttons', () => {
 describe('touch affordances', () => {
   it('keeps hover-revealed controls visible without a precise hovering pointer', () => {
     const touchRules = [
-      ...appCSS.matchAll(/@media \(hover: none\), \(pointer: coarse\) \{([\s\S]*?)\n\}/g),
+      ...pageCSS.matchAll(/@media \(hover: none\), \(pointer: coarse\) \{([\s\S]*?)\n\}/g),
     ]
       .map((match) => match[1])
       .join('\n');
@@ -403,18 +431,18 @@ describe('touch affordances', () => {
   });
 
   it('uses hover alone to reveal file actions for precise pointers', () => {
-    expect(appCSS).toMatch(
+    expect(pageCSS).toMatch(
       /@media \(hover: hover\) and \(pointer: fine\) \{[\s\S]*?\.diff-file-row:hover \.diff-file-actions\s*\{[^}]*display: inline-flex;/,
     );
-    expect(appCSS).not.toContain('.diff-file-row:focus-within .diff-file-actions');
-    expect(appCSS).not.toContain('.diff-file-row:focus-within .diff-file-counts');
+    expect(pageCSS).not.toContain('.diff-file-row:focus-within .diff-file-actions');
+    expect(pageCSS).not.toContain('.diff-file-row:focus-within .diff-file-counts');
   });
 });
 
 describe('diff review styles', () => {
   it('uses compact source-code spacing without letting comment controls expand every row', () => {
-    expect(appCSS).toMatch(/\.diff-file-body\s*\{[^}]*line-height: 1\.3;/s);
-    expect(appCSS).toMatch(/\.diff-comment-affordance\s*\{[^}]*height: 1\.15rem;/s);
+    expect(pageCSS).toMatch(/\.diff-file-body\s*\{[^}]*line-height: 1\.3;/s);
+    expect(pageCSS).toMatch(/\.diff-comment-affordance\s*\{[^}]*height: 1\.15rem;/s);
   });
 
   it('uses the shared glyph size for file actions instead of an overridden legacy size', () => {
@@ -424,8 +452,8 @@ describe('diff review styles', () => {
   });
 
   it('anchors comment cards to code without pinning hunk text to the action column', () => {
-    expect(appCSS).toMatch(/\.diff-comment-panel\s*\{[^}]*grid-column: 3 \/ -1;/s);
-    expect(appCSS).not.toMatch(/\.diff-code\s*\{[^}]*grid-column:/s);
+    expect(pageCSS).toMatch(/\.diff-comment-panel\s*\{[^}]*grid-column: 3 \/ -1;/s);
+    expect(pageCSS).not.toMatch(/\.diff-code\s*\{[^}]*grid-column:/s);
   });
 });
 
@@ -441,11 +469,11 @@ describe('syntax theme', () => {
   });
 
   it('scopes tokens to highlighted markdown and diff code', () => {
-    expect(appCSS).toMatch(
+    expect(pageCSS).toMatch(
       /:is\(\.markdown-body,\s*\.diff-code\)\s*:is\(\s*\.hljs-doctag,\s*\.hljs-keyword/,
     );
-    expect(appCSS).toMatch(/\.diff-code\s*:is\(\s*\.hljs-addition,\s*\.hljs-deletion\)/);
-    expect(appCSS).toContain('background: transparent');
+    expect(pageCSS).toMatch(/\.diff-code\s*:is\(\s*\.hljs-addition,\s*\.hljs-deletion\)/);
+    expect(pageCSS).toContain('background: transparent');
   });
 });
 

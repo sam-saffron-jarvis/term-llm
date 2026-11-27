@@ -1,3 +1,4 @@
+import '../styles/features/chip-picker.css';
 import { Fragment } from 'preact';
 import { Icon } from './Icon';
 import type { ComponentChildren, TargetedKeyboardEvent } from 'preact';

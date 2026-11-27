@@ -1,3 +1,5 @@
+import '../styles/features/review-panels.css';
+import '../styles/features/syntax-highlight.css';
 import { lazyComponent } from './lazyComponent';
 import { useDiffHighlighting } from './useDiffHighlighting';
 import { computed } from '@preact/signals';

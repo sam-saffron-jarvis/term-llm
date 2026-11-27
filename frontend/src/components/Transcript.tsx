@@ -1,3 +1,6 @@
+import { Fragment } from 'preact';
+import { forkEdge, forkPlacement } from '../domain/fork';
+import { ForkDivider, PathNoteCard, PathNotesPending } from './PathNotesLoader';
 import { AuthorByline } from './AuthorByline';
 import { thinkingTranscript } from '../domain/thinking-transcript';
 import { ThoughtRow } from './ThoughtRow';
@@ -15,7 +18,7 @@ import { codeModeDisplayTool, isCodeModeTool } from '../domain/code-mode';
 import { AudioMedia } from './AudioMedia';
 import { useAttachmentPreview } from './useAttachmentPreview';
 import { isDocumentMedia, trustedPublishedMediaURL } from '../domain/published-media';
-import { bindTranscriptMedia } from './transcript-media';
+import { bindTranscriptMedia, openMediaGallery } from './transcript-media';
 import { lazyComponent } from './lazyComponent';
 import { Icon, type IconName } from './Icon';
 import { attachmentIconName, formatAttachmentSize } from '../domain/attachments';
@@ -59,24 +62,6 @@ function publishedMediaURL(store: AppStore, value: string, type: string): string
   return parsed.pathname.slice(0, parsed.pathname.lastIndexOf('/')) === `${mount}/media`
     ? parsed.href
     : '';
-}
-
-function openMediaGallery(store: AppStore, src: string, type: 'image' | 'video'): void {
-  const nodes = [...document.querySelectorAll<HTMLElement>('[data-lightbox-src]')];
-  const items = nodes
-    .map((node, index) => ({
-      key: node.dataset.lightboxKey || `${node.dataset.lightboxSrc}-${index}`,
-      src: node.dataset.lightboxSrc || '',
-      type: node.dataset.lightboxType === 'video' ? ('video' as const) : ('image' as const),
-      name: node.dataset.lightboxName || '',
-    }))
-    .filter((item) => item.src);
-  let index = items.findIndex((item) => item.src === src && item.type === type);
-  if (index < 0) {
-    items.push({ key: `${src}-${items.length}`, src, type, name: '' });
-    index = items.length - 1;
-  }
-  store.lightbox.value = { ...items[index], items, index };
 }
 
 // Argument layout and formatting are only needed inside expanded tool cards.
@@ -1287,20 +1272,6 @@ const MessageRow = memo(function MessageRow({
         <div class="message-body">{message.content}</div>
       </article>
     );
-  if (message.role === 'path-note')
-    return (
-      <article class="message path-note" data-message-id={message.id}>
-        <details>
-          <summary>Notes from an earlier path · not authoritative</summary>
-          <Markdown
-            value={message.content}
-            className="path-note-body markdown-body"
-            rebase={rebase}
-            onMedia={media}
-          />
-        </details>
-      </article>
-    );
   if (message.role === 'skill-run')
     return (
       <article
@@ -1413,6 +1384,20 @@ const MessageRow = memo(function MessageRow({
       <MessageMeta message={message} clock={clock}>
         {message.role === 'user' && message.content && (
           <TurnCopyButton text={message.content} label="Copy message" />
+        )}
+        {/* A user-message fork keeps the message and drops the reply, so the
+            new path can redirect the same ask. Live steering and queued rows
+            are not settled branch points yet. */}
+        {message.role === 'user' && message.durableRowId && !message.interruptState && (
+          <button
+            class="turn-action-btn turn-branch-btn"
+            type="button"
+            title="Branch after this message"
+            aria-label="Branch after this message"
+            onClick={() => store.openBranchContext(String(message.durableRowId))}
+          >
+            <Icon name="fork" />
+          </button>
         )}
       </MessageMeta>
     </article>
@@ -1687,6 +1672,25 @@ export function Transcript() {
     !(streamingText && activity.kind === 'working') &&
     !(thoughtShown && activity.kind === 'thinking'),
   );
+  const edge = forkEdge(store.branchTree.value, sessionId);
+  const placement = edge && forkPlacement(messages, edge);
+  const divider = edge && (
+    <ForkDivider
+      source={edge.source}
+      count={placement?.count}
+      hasNote={!!placement?.before}
+      pending={store.branchStore.pending(sessionId || '')}
+    />
+  );
+  const lastTurn = useMemo(
+    () =>
+      messages.reduce(
+        (last, message, index) =>
+          message.role === 'user' || message.role === 'assistant' ? index : last,
+        -1,
+      ),
+    [messages],
+  );
   const livenessText = activeRun?.run.responseId.startsWith('pending_')
     ? 'Waiting for server confirmation…'
     : 'Response stream interrupted — reconnecting…';
@@ -1754,6 +1758,7 @@ export function Transcript() {
             {store.draftActive.value && <NewChatControls />}
           </div>
         )}
+        {placement?.top && !hasEarlier && divider}
         {hasEarlier && (
           <button
             ref={historySentinel}
@@ -1783,25 +1788,37 @@ export function Transcript() {
                   message.responseId === activeRun.run.responseId &&
                   ['connecting', 'streaming'].includes(activeRun.run.status),
                 );
+                if (message.role === 'path-note')
+                  return (
+                    <Fragment key={`${sessionId}:${message.id}`}>
+                      {placement?.before === message && divider}
+                      <PathNoteCard message={message} latest={(context?.index ?? 0) >= lastTurn} />
+                    </Fragment>
+                  );
                 return (
-                  <MessageRow
-                    key={message.clientMessageId || message.id}
-                    message={message}
-                    streaming={messageStreaming}
-                    responseText={
-                      context?.copyTarget ? context.responseText || message.content : ''
-                    }
-                    copyTarget={context?.copyTarget === true}
-                    bylineAuthor={
-                      localGap && run.messages?.[0] === message
-                        ? message.author
-                        : bylines.get(message)
-                    }
-                    resolveMedia={resolverForMessage(message.id, mediaByReference)}
-                    clock={clock}
-                  />
+                  <Fragment key={message.clientMessageId || message.id}>
+                    <MessageRow
+                      message={message}
+                      streaming={messageStreaming}
+                      responseText={
+                        context?.copyTarget ? context.responseText || message.content : ''
+                      }
+                      copyTarget={context?.copyTarget === true}
+                      bylineAuthor={
+                        localGap && run.messages?.[0] === message
+                          ? message.author
+                          : bylines.get(message)
+                      }
+                      resolveMedia={resolverForMessage(message.id, mediaByReference)}
+                      clock={clock}
+                    />
+                    {placement?.after === message && divider}
+                  </Fragment>
                 );
               }),
+        )}
+        {sessionId && store.branchStore.notesJobs.value.has(sessionId) && (
+          <PathNotesPending sessionId={sessionId} />
         )}
         {activeRun?.phase && (
           <div class="message phase transient" role="status">

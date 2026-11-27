@@ -1188,9 +1188,9 @@ type webSessionEntry struct {
 	AttentionUnseen          bool                     `json:"attention_unseen,omitempty"`
 	AttentionOutcome         session.ResponseRunState `json:"attention_outcome,omitempty"`
 	AttentionTerminalAt      int64                    `json:"attention_terminal_at,omitempty"`
-	// ParentSessionID is read directly off the session row rather than derived
-	// by scanning the parent transcript. It is what lets a drilled-in subagent
-	// render a breadcrumb back to the conversation that delegated it.
+	BranchParentSessionID    string                   `json:"branch_parent_session_id,omitempty"`
+	BranchParentNumber       int64                    `json:"branch_parent_number,omitempty"`
+	// ParentSessionID is the delegating session, not the source of a fork.
 	ParentSessionID string `json:"parent_session_id,omitempty"`
 	// Delegated marks a run started by another session rather than by a person.
 	// The client uses it to explain a disabled composer; the server enforces the
@@ -1216,68 +1216,6 @@ func persistedContextUsage(sess *session.Session, provider string) *serveContext
 		InputLimit:        llm.SessionDisplayInputLimit(provider, sess.Model, sess.LastContextWindow),
 		CachedInputTokens: sess.CachedInputTokens,
 		Estimated:         true,
-	}
-}
-
-func (s *serveServer) webSessionEntryFromSummary(sess session.SessionSummary) webSessionEntry {
-	return webSessionEntry{
-		createdByID:   sess.CreatedBy,
-		Name:          sess.Name,
-		ID:            sess.ID,
-		Number:        sess.Number,
-		ShortTitle:    sess.PreferredShortTitle(),
-		LongTitle:     sess.PreferredLongTitle(),
-		Mode:          sess.Mode,
-		Origin:        sess.Origin,
-		Provider:      sessionSummaryProviderKey(s.cfgRef, sess),
-		Model:         sess.Model,
-		Agent:         sess.Agent,
-		ProjectID:     sess.ProjectID,
-		ProjectName:   sess.ProjectName,
-		CWD:           sess.CWD,
-		WorktreeDir:   sess.WorktreeDir,
-		Archived:      sess.Archived,
-		Pinned:        sess.Pinned,
-		PinOrder:      sess.PinOrder,
-		CreatedAt:     sess.CreatedAt.UnixMilli(),
-		LastMessageAt: sessionSummaryLastMessageAt(sess).UnixMilli(),
-		MsgCount:      sess.MessageCount,
-	}
-}
-
-func (s *serveServer) webSessionEntryFromSession(sess *session.Session) webSessionEntry {
-	lastMessageAt := sess.UpdatedAt
-	if lastMessageAt.IsZero() {
-		lastMessageAt = sess.CreatedAt
-	}
-	provider := strings.TrimSpace(sess.ProviderKey)
-	if provider == "" {
-		provider = appruntime.ResolveSessionProviderKey(s.cfgRef, sess)
-	}
-	return webSessionEntry{
-		createdByID:     sess.CreatedBy,
-		Name:            sess.Name,
-		ID:              sess.ID,
-		Number:          sess.Number,
-		ShortTitle:      sess.PreferredShortTitle(),
-		LongTitle:       sess.PreferredLongTitle(),
-		Mode:            sess.Mode,
-		Origin:          sess.Origin,
-		Provider:        provider,
-		Model:           sess.Model,
-		Agent:           sess.Agent,
-		ProjectID:       sess.ProjectID,
-		ProjectName:     sess.ProjectName,
-		CWD:             sess.CWD,
-		WorktreeDir:     sess.WorktreeDir,
-		Archived:        sess.Archived,
-		Pinned:          sess.Pinned,
-		PinOrder:        sess.PinOrder,
-		CreatedAt:       sess.CreatedAt.UnixMilli(),
-		LastMessageAt:   lastMessageAt.UnixMilli(),
-		MsgCount:        sess.MessageCount,
-		ParentSessionID: sess.ParentID,
-		Delegated:       sessionIsDelegatedChild(sess),
 	}
 }
 

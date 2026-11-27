@@ -89,6 +89,7 @@ const mediaArtifacts = (value: unknown, rebase: (value: string) => string): Medi
 };
 
 export interface ServerPart {
+  path_note?: Message['provenance'];
   type?: string;
   text?: string;
   name?: string;
@@ -955,6 +956,9 @@ export function sanitizeSession(
     mode: text(source.mode) || 'chat',
     origin: text(source.origin) || 'web',
     agent: text(source.agent),
+    branchParentSessionId: text(source.branch_parent_session_id || source.branchParentSessionId),
+    branchParentNumber:
+      Number(source.branch_parent_number || source.branchParentNumber) || undefined,
     parentSessionId: text(source.parent_session_id || source.parentSessionId),
     delegated: Boolean(source.delegated),
     archived,

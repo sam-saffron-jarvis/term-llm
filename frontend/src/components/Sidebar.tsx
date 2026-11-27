@@ -326,6 +326,11 @@ function SessionRow({
               : 'Completed, not yet visited'
         : '';
   const messageCount = sessionMessageCount(session);
+  const fork = session.branchParentSessionId
+    ? session.branchParentNumber
+      ? `Fork of #${session.branchParentNumber}`
+      : 'Fork of an earlier path'
+    : '';
   const activityAt = session.lastMessageAt || session.created;
   const archive = () => {
     if (store.showArchived.peek()) {
@@ -370,7 +375,7 @@ function SessionRow({
           shortcutEligible && !session.archived && !archiving ? '' : undefined
         }
         type="button"
-        aria-label={`${session.title || session.name || 'New chat'}${attentionLabel ? ` — ${attentionLabel}` : ''}${participantNames(session, store.viewer.value) ? ` — Participants: ${participantNames(session, store.viewer.value)}` : ''}`}
+        aria-label={`${session.title || session.name || 'New chat'}${fork ? ` — ${fork}` : ''}${attentionLabel ? ` — ${attentionLabel}` : ''}${participantNames(session, store.viewer.value) ? ` — Participants: ${participantNames(session, store.viewer.value)}` : ''}`}
         aria-current={active ? 'page' : undefined}
         aria-keyshortcuts={reorderable ? 'Alt+ArrowUp Alt+ArrowDown' : undefined}
         title={session.longTitle || session.title}
@@ -386,9 +391,16 @@ function SessionRow({
           pinned!.move(offset, 'row');
         }}
       >
-        <span class="session-title">{session.title || session.name || 'New chat'}</span>
+        <span class="session-title">
+          {fork && (
+            <>
+              <Icon name="fork" class="glyph-icon session-fork-icon" />{' '}
+            </>
+          )}
+          {session.title || session.name || 'New chat'}
+        </span>
         <span class="session-meta" title={new Date(activityAt).toLocaleString()}>
-          {messageCount} {messageCount === 1 ? 'message' : 'messages'} ·{' '}
+          {fork || `${messageCount} ${messageCount === 1 ? 'message' : 'messages'}`} ·{' '}
           {sessionRelativeTime(activityAt)}
           <Facepile session={session} viewer={store.viewer.value} />
           {showProject && (

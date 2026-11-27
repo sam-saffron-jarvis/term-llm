@@ -45,6 +45,9 @@ WebSelectedSessionEntry
 WebSessionEntry
 WebSessionMetrics
 AuthorshipSessionFields
+WirePathNotesCancellation
+WirePathNotesStatus
+WirePreparePathNotesResponse
 HubStatus
 CoreCodeModeCallOutcome
 CoreCodeModeCellSummary

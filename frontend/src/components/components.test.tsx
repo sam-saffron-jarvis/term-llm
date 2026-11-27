@@ -11,6 +11,7 @@ import { NewChatControls, ToolArguments, Transcript } from './Transcript';
 import { bindTranscriptMedia } from './transcript-media';
 import { Composer } from './Composer';
 import { DelegationContext, returnToParent } from './DelegationContext';
+import { preloadPathNotes } from './PathNotesLoader';
 import { Markdown } from './Markdown';
 import { Modals, preloadDeferredModals } from './Modals';
 import { Sidebar } from './Sidebar';
@@ -986,8 +987,11 @@ describe('Preact-owned chat surfaces', () => {
     expect(trigger).not.toHaveAttribute('title');
     // Without hover on phones, the chevron is what says the name opens a menu.
     expect(trigger.querySelector('svg[data-icon="chevron-down"]')).not.toBeNull();
-    await userEvent.click(trigger);
+    trigger.focus();
+    await userEvent.keyboard('{Enter}');
     const dialog = screen.getByRole('dialog', { name: 'Project Live project' });
+    expect(trigger).toHaveAttribute('aria-expanded', 'true');
+    expect(trigger).toHaveAttribute('aria-controls', dialog.id);
     expect(screen.getByRole('button', { name: 'New chat in Live project' })).toHaveFocus();
     expect(dialog).toHaveTextContent('/repo');
     fireEvent(dialog, new Event('cancel', { cancelable: true }));
@@ -1045,6 +1049,7 @@ describe('Preact-owned chat surfaces', () => {
         </StoreContext.Provider>,
       );
       await userEvent.click(screen.getByRole('button', { name: 'Project Project' }));
+      expect(screen.getByRole('dialog', { name: 'Project Project' })).toBeVisible();
       expect(screen.queryByRole('button', { name: 'Worktrees…' })).not.toBeInTheDocument();
       expect(screen.queryByRole('button', { name: 'Copy path' })).not.toBeInTheDocument();
       expect(Boolean(screen.queryByRole('button', { name: 'New chat in Project' }))).toBe(
@@ -1314,7 +1319,7 @@ describe('Preact-owned chat surfaces', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Project Project' }));
     await userEvent.click(screen.getByRole('button', { name: 'Worktrees…' }));
     expect(store.modal.value).toBe('worktrees');
-    expect(store.endpoints.projectWorktrees).toHaveBeenCalledWith('project-1');
+    await waitFor(() => expect(store.endpoints.projectWorktrees).toHaveBeenCalledWith('project-1'));
   });
 
   it('shows root after merging the active worktree, ignoring stale draft state', async () => {
@@ -5138,6 +5143,34 @@ describe('Preact-owned chat surfaces', () => {
     expect(button.querySelector('svg')).not.toBeNull();
     await userEvent.click(button);
     expect(store.openBranchContext).toHaveBeenCalledWith('42');
+  });
+
+  it('offers branching after settled user messages only', async () => {
+    const store = createStore();
+    store.sessions.value[0].messages = [
+      { id: 'u1', role: 'user', content: 'Question', created: 1, durableRowId: 41 },
+      { id: 'a1', role: 'assistant', content: 'Answer', created: 2, durableRowId: 42 },
+      {
+        id: 'u2',
+        role: 'user',
+        content: 'Queued follow up',
+        created: 3,
+        durableRowId: 43,
+        interruptState: 'queue',
+      },
+    ];
+    store.openBranchContext = vi.fn();
+
+    render(
+      <StoreContext.Provider value={store}>
+        <Transcript />
+      </StoreContext.Provider>,
+    );
+
+    const buttons = screen.getAllByRole('button', { name: 'Branch after this message' });
+    expect(buttons).toHaveLength(1);
+    await userEvent.click(buttons[0]);
+    expect(store.openBranchContext).toHaveBeenCalledWith('41');
   });
 
   it('renders share as a compact action for a completed durable assistant response', async () => {
@@ -9588,7 +9621,7 @@ describe('Preact-owned chat surfaces', () => {
     const store = createStore();
     store.branchTarget.value = '42';
     store.modal.value = 'branch-context';
-    store.branchFrom = vi.fn(async () => true);
+    const branchFrom = vi.spyOn(store.branchStore, 'branchFrom').mockResolvedValue(true);
     render(
       <StoreContext.Provider value={store}>
         <Modals />
@@ -9596,7 +9629,24 @@ describe('Preact-owned chat surfaces', () => {
     );
     expect(screen.getByRole('heading', { name: 'Start a conversation path' })).toBeInTheDocument();
     await userEvent.click(screen.getByRole('button', { name: /Bring concise notes/ }));
-    expect(store.branchFrom).toHaveBeenCalledWith('42', 'notes', '');
+    expect(branchFrom).toHaveBeenCalledWith('42', 'notes', '', '', '');
+  });
+
+  it('words the context choices for a thread started from the whole conversation', async () => {
+    const store = createStore();
+    store.branchStore.openContext('0', '', 'follow up');
+    const branchFrom = vi.spyOn(store.branchStore, 'branchFrom').mockResolvedValue(true);
+    render(
+      <StoreContext.Provider value={store}>
+        <Modals />
+      </StoreContext.Provider>,
+    );
+    expect(screen.getByRole('heading', { name: 'Start a related thread' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Clean thread/ })).toHaveTextContent(
+      'Start with no earlier messages.',
+    );
+    await userEvent.click(screen.getByRole('button', { name: /Bring concise notes/ }));
+    expect(branchFrom).toHaveBeenCalledWith('0', 'notes', '', 'follow up', '');
   });
 
   it('shows branch progress and a visible failure while blocking double-clicks', async () => {
@@ -9618,9 +9668,13 @@ describe('Preact-owned chat surfaces', () => {
     await userEvent.dblClick(notes);
 
     expect(store.endpoints.branch).toHaveBeenCalledOnce();
-    expect(notes).toBeDisabled();
-    expect(screen.getByRole('button', { name: 'Close Start a conversation path' })).toBeDisabled();
-    expect(screen.getByRole('status')).toHaveTextContent('Creating path…');
+    expect(notes).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /^Close/ })).not.toBeInTheDocument();
+    const dialog = screen.getByRole('dialog', { name: 'Creating path with notes' });
+    expect(within(dialog).getByRole('button', { name: 'Open now' })).toHaveFocus();
+    expect(dialog.querySelectorAll('[aria-live=polite]')).toHaveLength(1);
+    expect(dialog.querySelector('[aria-live=polite]')).toHaveTextContent('Create path');
+    expect(within(dialog).getByText(/elapsed/)).toHaveAttribute('aria-hidden', 'true');
 
     fireEvent.keyDown(screen.getByRole('dialog'), { key: 'Escape' });
     const backdrop = container.querySelector('.modal-overlay') as HTMLElement;
@@ -9630,7 +9684,148 @@ describe('Preact-owned chat surfaces', () => {
 
     await act(async () => rejectRequest(new Error('branch service unavailable')));
     expect(await screen.findByRole('alert')).toHaveTextContent('branch service unavailable');
-    expect(notes).toBeEnabled();
+    expect(screen.getByRole('button', { name: /Bring concise notes/ })).toBeEnabled();
+    await waitFor(() =>
+      expect(screen.getByRole('dialog')).toContainElement(document.activeElement as HTMLElement),
+    );
+  });
+
+  it('focuses Retry notes after helper failure', async () => {
+    const store = createStore();
+    store.openBranchContext('42');
+    store.endpoints.branch = vi.fn(async () => ({ session: { id: 'child', number: 2 } }));
+    store.refreshSidebar = vi.fn(async () => undefined);
+    store.endpoints.pathNotes = vi.fn(async () => {
+      throw new Error('helper offline');
+    });
+    render(
+      <StoreContext.Provider value={store}>
+        <Modals />
+      </StoreContext.Provider>,
+    );
+    await userEvent.click(screen.getByRole('button', { name: /Bring concise notes/ }));
+    expect(await screen.findByRole('button', { name: 'Retry notes' })).toHaveFocus();
+    store.modal.value = '';
+    store.dispose();
+  });
+
+  it('renders a durable path note expanded until the path continues', async () => {
+    await preloadPathNotes();
+    const store = createStore();
+    const note = {
+      id: 'note',
+      role: 'path-note' as const,
+      content: '- **Saved finding**',
+      created: 1,
+      provenance: {
+        source_session_id: 'parent',
+        anchor_message_id: 42,
+        source_messages: 7,
+        omitted_messages: 1,
+        read_files: ['a.go'],
+        modified_files: ['b.go', 'c.go'],
+        focus: 'keep the important finding',
+        model: 'source-model',
+      },
+    };
+    const child = {
+      ...store.sessions.value[0],
+      branchParentSessionId: 'parent',
+      branchParentNumber: 8,
+    };
+    const copied = { ...child.messages[0], durableRowId: 142 };
+    store.sessions.value = [{ ...child, messages: [copied, note] }];
+    store.branchTree.value = {
+      active_session_id: 's1',
+      nodes: [
+        { session_id: 'parent', session_number: 8, title: 'Parent' },
+        {
+          session_id: 's1',
+          parent_session_id: 'parent',
+          fork_after_message_id: 42,
+          copied_anchor_message_id: 142,
+        },
+      ],
+    };
+    store.branchPathCount.value = 2;
+    store.resolveAndSelectSession = vi.fn(async () => null);
+    const { container } = render(
+      <StoreContext.Provider value={store}>
+        <Header />
+        <Transcript />
+        <Sidebar />
+      </StoreContext.Provider>,
+    );
+    const card = screen.getByRole('article', { name: 'Path notes' });
+    const disclosure = within(card).getByRole('button', { name: /Path notes/ });
+    expect(disclosure).toHaveAttribute('aria-expanded', 'true');
+    expect(container.querySelector('.fork-divider')?.nextElementSibling).toBe(card);
+    expect(within(card).getByText('7 later messages read')).toBeVisible();
+    expect(within(card).getByText('1 omitted')).toBeVisible();
+    expect(within(card).getByText('2 files modified')).toHaveAttribute('title', 'b.go\nc.go');
+    expect(within(card).getByText('1 files read')).toHaveAttribute('title', 'a.go');
+    expect(within(card).getByText(/Focus:.*important finding/)).toBeVisible();
+    expect(within(card).getByText('source-model')).toBeVisible();
+    const badge = screen.getByRole('button', { name: 'Fork of #8' });
+    fireEvent.click(badge);
+    expect(store.resolveAndSelectSession).toHaveBeenCalledWith('parent');
+    expect(container.querySelector('.session-title [data-icon=fork]')).toHaveClass('glyph-icon');
+    expect(
+      [...container.querySelectorAll('.path-notes-card svg, .fork-divider svg')].every((icon) =>
+        icon.classList.contains('glyph-icon'),
+      ),
+    ).toBe(true);
+    expect(container.querySelector('.session-meta')).toHaveTextContent('Fork of #8');
+    await act(async () => {
+      store.sessions.value = [{ ...child, messages: [copied, note, child.messages[1]] }];
+    });
+    expect(disclosure).toHaveAttribute('aria-expanded', 'false');
+    fireEvent.click(disclosure);
+    expect(await within(card).findByText('Saved finding')).toBeVisible();
+  });
+
+  it('places the clean fork divider at the copied group, at zero, or nowhere if the anchor is missing', async () => {
+    await preloadPathNotes();
+    const store = createStore();
+    const child = store.sessions.value[0];
+    const messages = [
+      { ...child.messages[0], durableRowId: 42 },
+      { ...child.messages[1], durableRowId: 142 },
+      child.messages[2],
+    ];
+    store.sessions.value = [{ ...child, messages }];
+    const install = (anchor: number, copied: number) => {
+      store.branchTree.value = {
+        active_session_id: 's1',
+        nodes: [
+          { session_id: 'parent', session_number: 8 },
+          {
+            session_id: 's1',
+            parent_session_id: 'parent',
+            fork_after_message_id: anchor,
+            copied_anchor_message_id: copied,
+          },
+        ],
+      };
+    };
+    install(42, 142);
+    const { container } = render(
+      <StoreContext.Provider value={store}>
+        <Transcript />
+      </StoreContext.Provider>,
+    );
+    const divider = () => container.querySelector('.fork-divider');
+    expect(divider()).toHaveTextContent('clean, nothing carried');
+    expect(divider()?.previousElementSibling).toHaveAttribute('data-durable-id', '142');
+    await act(async () => install(42, 999));
+    expect(divider()).toBeNull();
+    await act(async () => install(0, 0));
+    expect(container.querySelector('.messages')?.firstElementChild).toBe(divider());
+    await act(async () => {
+      store.sessions.value = [{ ...child, messages, olderTranscriptAnchors: [1] }];
+    });
+    expect(screen.getByRole('button', { name: 'Load earlier messages' })).toBeInTheDocument();
+    expect(divider()).toBeNull();
   });
 
   it('opens a conversation path from anywhere on its row', async () => {
@@ -9723,7 +9918,7 @@ describe('Preact-owned chat surfaces', () => {
     await userEvent.click(point);
     expect(store.branchTarget.value).toBe('0');
     expect(store.branchPrefill.value).toBe('First question');
-    expect(screen.getByRole('dialog', { name: 'Start a conversation path' })).toBeVisible();
+    expect(screen.getByRole('dialog', { name: 'Start a related thread' })).toBeVisible();
   });
 
   it('makes large conversation trees searchable and reveals older messages in batches', async () => {

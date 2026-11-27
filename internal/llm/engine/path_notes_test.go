@@ -15,7 +15,21 @@ func TestGeneratePathNotesUsesBoundedIsolatedHelperRequest(t *testing.T) {
 		core.UserText(strings.Repeat("old context ", 4000)),
 		core.AssistantText("The useful recent finding"),
 	}
-	result, err := GeneratePathNotes(context.Background(), provider, "mock-model", source, PathNotesConfig{InputTokenBudget: 1200, MaxWords: 20})
+	var prepared PathNotesPrepared
+	var draft strings.Builder
+	result, err := GeneratePathNotes(context.Background(), provider, "mock-model", source, PathNotesConfig{
+		InputTokenBudget: 1200, MaxWords: 20,
+		OnPrepared: func(p PathNotesPrepared) {
+			if len(provider.Requests) != 0 {
+				t.Fatal("provider started before OnPrepared")
+			}
+			prepared = p
+		},
+		OnText: func(delta string) { draft.WriteString(delta) },
+	})
+	if prepared.Model != "mock-model" || prepared.SourceMessages != 2 || prepared.OmittedMessages != 1 || draft.String() != "- Found the parser bug.\n- `go test ./internal/parser` passes." {
+		t.Fatalf("prepared %+v, draft %q", prepared, draft.String())
+	}
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -111,5 +125,28 @@ func TestGeneratePathNotesNeutralizesTranscriptClosingDelimiter(t *testing.T) {
 	prompt := core.MessageText(provider.Requests[0].Messages[1])
 	if strings.Count(prompt, "</alternate_path_transcript>") != 1 || !strings.Contains(prompt, `<\/alternate_path_transcript>`) {
 		t.Fatalf("transcript delimiter was not neutralized: %q", prompt)
+	}
+}
+
+func TestGeneratePathNotesClearsDiscardedAttemptPreview(t *testing.T) {
+	provider := &streamProvider{stream: &sliceStream{events: []core.Event{
+		{Type: core.EventTextDelta, Text: "discard me"},
+		{Type: core.EventAttemptDiscard},
+		{Type: core.EventTextDelta, Text: "keep me"},
+	}}}
+	var preview strings.Builder
+	resets := 0
+	result, err := GeneratePathNotes(context.Background(), provider, "mock", []core.Message{core.UserText("source")}, PathNotesConfig{
+		OnText: func(text string) { preview.WriteString(text) },
+		OnTextReset: func() {
+			if preview.String() != "discard me" {
+				t.Fatalf("draft before reset: %q", preview.String())
+			}
+			resets++
+			preview.Reset()
+		},
+	})
+	if err != nil || result == nil || result.Notes != "keep me" || resets != 1 || preview.String() != "keep me" {
+		t.Fatalf("result=%+v err=%v resets=%d draft=%q", result, err, resets, preview.String())
 	}
 }

@@ -1,3 +1,5 @@
+import type { CorePathNoteProvenance } from '../api/generated/types';
+
 export interface Author {
   id: string;
   name: string;
@@ -187,6 +189,7 @@ export interface Message {
   usage?: Usage;
   status?: string;
   title?: string;
+  provenance?: CorePathNoteProvenance | null;
   rawContent?: string;
   lineCount?: number;
   expanded?: boolean;
@@ -322,6 +325,8 @@ export interface Session {
   agent?: string;
   /** Parent of a machine-delegated transcript; absent for top-level conversations. */
   parentSessionId?: string;
+  branchParentSessionId?: string;
+  branchParentNumber?: number;
   /** Delegated transcripts are readable but cannot start a top-level response. */
   delegated?: boolean;
   archived: boolean;

@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { expect, test } from '@playwright/test';
 import { buildSync } from 'esbuild';
@@ -12,7 +12,14 @@ function stylesheet(path: string): string {
   );
 }
 
-const css = stylesheet(resolve(import.meta.dirname, '../src/styles/app.css'));
+const stylesRoot = resolve(import.meta.dirname, '../src/styles');
+const manifest = readFileSync(resolve(stylesRoot, 'app.css'), 'utf8');
+// Feature sheets outside the manifest arrive with lazy chunks, after app.css.
+const lazySheets = readdirSync(resolve(stylesRoot, 'features'))
+  .filter((name) => name.endsWith('.css') && !manifest.includes(`'./features/${name}'`))
+  .sort()
+  .map((name) => readFileSync(resolve(stylesRoot, 'features', name), 'utf8'));
+const css = [stylesheet(resolve(stylesRoot, 'app.css')), ...lazySheets].join('\n');
 if (/@import\b/.test(css)) throw new Error('Unsupported CSS import in browser style fixture');
 
 // The production Markdown renderer as a page script, exposed as `markdownFixture`.

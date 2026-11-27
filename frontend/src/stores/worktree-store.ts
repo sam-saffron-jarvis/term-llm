@@ -1,9 +1,9 @@
 import { computed, signal, type ReadonlySignal, type Signal } from '@preact/signals';
-import { APIError } from '../api/client';
+import { errorMessage } from '../domain/text';
 import type { Project, Session } from '../domain/types';
 import { readDrafts, saveDraft } from '../platform/storage';
 import type { Modal, SendOptions } from './store-types';
-import { listFrom, recordValue, worktreeErrorMessage } from './store-utils';
+import type { WorktreeOperations } from './worktree-operations';
 import type { AppStoreServices } from './app-store-services';
 
 export interface WorktreeStoreOptions {
@@ -26,6 +26,8 @@ export class WorktreeStore {
   readonly worktrees = signal<Record<string, unknown>[]>([]);
   readonly error = signal('');
   readonly currentDir: ReadonlySignal<string>;
+  private operations?: WorktreeOperations;
+  private loading?: Promise<WorktreeOperations>;
 
   constructor(
     private readonly services: AppStoreServices,
@@ -47,54 +49,6 @@ export class WorktreeStore {
       this.options.activeSession.value?.projectId || this.options.activeProjectId.value;
     const project = this.options.projects.value.find((entry) => entry.id === projectId);
     return Boolean(project?.git && project.available !== false && !project.archived);
-  }
-
-  private projectId(): string {
-    if (!this.options.projectsEnabled.value) return '';
-    return this.options.activeSession.value?.projectId || this.options.activeProjectId.value;
-  }
-
-  async load(): Promise<void> {
-    const projectId = this.projectId();
-    this.error.value = '';
-    if (this.options.projectsEnabled.value && !projectId) {
-      this.worktrees.value = [];
-      this.error.value = 'Choose a project before selecting a worktree.';
-      return;
-    }
-    try {
-      const data = this.options.projectsEnabled.value
-        ? await this.services.endpoints.projectWorktrees(projectId)
-        : await this.services.endpoints.legacyWorktrees();
-      this.worktrees.value = listFrom(data, 'worktrees', 'items');
-    } catch (error) {
-      this.worktrees.value = [];
-      this.error.value = worktreeErrorMessage(error);
-    }
-  }
-
-  async create(name: string, clean = false): Promise<void> {
-    const projectId = this.projectId();
-    const draftId = this.options.draftActive.value ? this.options.draftStorageId() : null;
-    this.error.value = '';
-    try {
-      const data = this.options.projectsEnabled.value
-        ? await this.services.endpoints.createProjectWorktree(projectId, { name, clean })
-        : await this.services.api.post<Record<string, unknown>>('/v1/worktrees', { name, clean });
-      const dir = recordValue(data.worktree)?.dir;
-      if (
-        draftId !== null &&
-        this.options.draftActive.value &&
-        this.options.draftStorageId() === draftId &&
-        this.projectId() === projectId &&
-        typeof dir === 'string' &&
-        dir
-      )
-        this.chooseDraft(dir);
-      await this.load();
-    } catch (error) {
-      throw new Error(worktreeErrorMessage(error), { cause: error });
-    }
   }
 
   private setDraftSelection(dir: string, close: boolean): void {
@@ -120,142 +74,80 @@ export class WorktreeStore {
     this.setDraftSelection(dir, true);
   }
 
-  async switchTo(dir: string): Promise<void> {
-    const active = this.options.activeSession.value;
-    if (!active) throw new Error('Choose a conversation before switching worktrees.');
-    const data = await this.services.endpoints.switchWorktree(this.projectId(), dir, active.id);
-    this.options.patchSession(active.id, {
-      worktreeDir: String(data.worktree_dir || ''),
-      workingDir: String(data.cwd || ''),
-    });
-    await this.load();
-    this.services.toast(
-      dir ? 'Conversation switched to worktree.' : 'Conversation switched to root.',
-      'success',
-    );
+  private loadOperations(): Promise<WorktreeOperations> {
+    return (this.loading ??= import('./worktree-operations')
+      .then(
+        ({ WorktreeOperations }) =>
+          (this.operations = new WorktreeOperations(
+            this.services,
+            this.options,
+            this,
+            (dir, close) => this.setDraftSelection(dir, close),
+          )),
+      )
+      .catch((cause: unknown) => {
+        this.loading = undefined;
+        throw new Error('Could not load worktree controls. Reload the page to retry.', { cause });
+      }));
   }
 
-  private async finishMutation(
-    data: Record<string, unknown>,
-    action: 'merged' | 'promoted',
-    sourceDir: string,
-  ): Promise<Record<string, unknown>> {
-    await this.load();
-    const cleanup = recordValue(data.cleanup);
+  private projectScope(): string | null {
+    return this.options.projectsEnabled.peek()
+      ? this.options.activeSession.peek()?.projectId || this.options.activeProjectId.peek()
+      : null;
+  }
+
+  private async mutate<T>(action: (operations: WorktreeOperations) => Promise<T>): Promise<T> {
+    if (this.operations) return action(this.operations);
+    const project = this.projectScope();
+    const session = this.options.activeSession.peek()?.id;
+    const draft = this.options.draftActive.peek() ? this.options.draftStorageId() : null;
+    const operations = await this.loadOperations();
+    // Never apply a gesture from one workspace to whichever is open after import.
     if (
-      cleanup?.removed === true &&
-      this.options.draftActive.value &&
-      this.options.selectedDraftWorktree.value === sourceDir
+      this.services.isDisposed ||
+      project !== this.projectScope() ||
+      session !== this.options.activeSession.peek()?.id ||
+      draft !== (this.options.draftActive.peek() ? this.options.draftStorageId() : null)
     )
-      this.setDraftSelection('', false);
-    const result = recordValue(data.result);
-    const movedSession = recordValue(data.session);
-    const warning = String(data.warning || '');
-    const inUse = Array.isArray(cleanup?.in_use) ? cleanup.in_use.length : 0;
-    const active = this.options.activeSession.value;
-    if (active && movedSession && String(movedSession.id || '') === active.id)
-      this.options.patchSession(active.id, {
-        worktreeDir: String(movedSession.worktree_dir || ''),
-        workingDir: String(movedSession.cwd || result?.root_dir || active.workingDir || ''),
-      });
-    if (warning) this.services.toast(warning, 'info');
-    else if (cleanup?.removed === true) {
-      this.services.toast(`Worktree ${action} and old checkout removed.`, 'success');
-    } else if (inUse > 0)
-      this.services.toast(
-        `Worktree ${action}; old checkout kept because ${inUse} other ${inUse === 1 ? 'conversation uses' : 'conversations use'} it.`,
-        'info',
-      );
-    else this.services.toast(`Worktree ${action}.`, 'success');
-    return data;
+      throw new Error('The workspace changed before worktree controls were ready. Try again.');
+    return action(operations);
   }
 
-  async merge(dir: string, force = false): Promise<Record<string, unknown>> {
-    const sessionId = this.options.activeSession.value?.id || '';
-    const data = await this.services.endpoints.mergeWorktree(
-      this.projectId(),
-      dir,
-      sessionId,
-      force,
-    );
-    return this.finishMutation(data, 'merged', dir);
-  }
-
-  private applyMovedSession(data: Record<string, unknown>): void {
-    const active = this.options.activeSession.value;
-    const movedSession = recordValue(data.session);
-    const result = recordValue(data.result);
-    if (!active || !movedSession || String(movedSession.id || '') !== active.id) return;
-    this.options.patchSession(active.id, {
-      worktreeDir: String(movedSession.worktree_dir || ''),
-      workingDir: String(movedSession.cwd || result?.root_dir || active.workingDir || ''),
-    });
-  }
-
-  private movedSessionFromError(error: unknown): void {
-    if (!(error instanceof APIError) || !error.body) return;
+  async load(): Promise<void> {
+    const project = this.projectScope();
+    this.error.value = '';
     try {
-      this.applyMovedSession(JSON.parse(error.body) as Record<string, unknown>);
-    } catch {
-      // Preserve the original API error when the response is not JSON.
-    }
-  }
-
-  async recover(dir: string): Promise<Record<string, unknown>> {
-    const active = this.options.activeSession.value;
-    if (!active) throw new Error('Choose a conversation before starting assisted recovery.');
-    let data: Record<string, unknown>;
-    try {
-      data = await this.services.endpoints.assistedMergeWorktree(this.projectId(), dir, active.id);
+      const operations = this.operations ?? (await this.loadOperations());
+      if (!this.services.isDisposed && project === this.projectScope()) await operations.load();
     } catch (error) {
-      // The server follows the TUI ordering and moves the conversation to root
-      // before applying the snapshot. Keep the web projection in sync even if
-      // the apply then fails (for example, because root became dirty).
-      this.movedSessionFromError(error);
-      throw error;
+      if (this.services.isDisposed || project !== this.projectScope()) return;
+      this.worktrees.value = [];
+      this.error.value = errorMessage(error);
     }
-    // Update workspace ownership before send(). A first response otherwise
-    // includes the stale worktree_dir and re-binds the run to the source tree.
-    this.applyMovedSession(data);
-    await this.load();
-    this.options.modal.value = '';
-    const notice = String(data.notice || data.message || 'Assisted recovery started.');
-    this.services.toast(notice, data.prompt ? 'success' : 'info');
-    const prompt = String(data.prompt || '').trim();
-    if (prompt) {
-      try {
-        await this.options.send({ inputText: prompt, preserveComposer: true });
-      } catch (error) {
-        this.services.toast(
-          `Could not send the recovery prompt: ${worktreeErrorMessage(error)}`,
-          'error',
-        );
-        throw error;
-      }
-    }
-    return data;
   }
 
-  async promote(dir: string, branch: string): Promise<Record<string, unknown>> {
-    const sessionId = this.options.activeSession.value?.id || '';
-    const data = await this.services.endpoints.promoteWorktree(
-      this.projectId(),
-      dir,
-      branch,
-      sessionId,
-    );
-    return this.finishMutation(data, 'promoted', dir);
+  create(name: string, clean = false): Promise<void> {
+    return this.mutate((operations) => operations.create(name, clean));
   }
 
-  async remove(dir: string, force = false): Promise<Record<string, unknown>> {
-    const result = await this.services.endpoints.removeWorktree(this.projectId(), dir, force);
-    if (
-      this.options.draftActive.value &&
-      this.options.selectedDraftWorktree.value &&
-      this.options.selectedDraftWorktree.value === dir
-    )
-      this.setDraftSelection('', false);
-    await this.load();
-    return result || {};
+  switchTo(dir: string): Promise<void> {
+    return this.mutate((operations) => operations.switchTo(dir));
+  }
+
+  merge(dir: string, force = false): Promise<Record<string, unknown>> {
+    return this.mutate((operations) => operations.merge(dir, force));
+  }
+
+  recover(dir: string): Promise<Record<string, unknown>> {
+    return this.mutate((operations) => operations.recover(dir));
+  }
+
+  promote(dir: string, branch: string): Promise<Record<string, unknown>> {
+    return this.mutate((operations) => operations.promote(dir, branch));
+  }
+
+  remove(dir: string, force = false): Promise<Record<string, unknown>> {
+    return this.mutate((operations) => operations.remove(dir, force));
   }
 }

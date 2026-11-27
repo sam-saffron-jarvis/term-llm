@@ -480,6 +480,7 @@ func (s *SQLiteStore) Sidebar(ctx context.Context, opts SidebarOptions) ([]Sideb
 	archiveClause += s.sidebarVisibleClause(opts.SidebarVisible)
 	archiveClause, authorArgs := s.filterCreatedBy(archiveClause, nil, opts.CreatedBy)
 	authorArgs = append(authorArgs, opts.PerProject+1)
+	branchCols, branchJoins := s.branchParentProjection("ranked.id")
 	rows, err := s.queryDB().QueryContext(ctx, `
 		WITH ranked AS (
 			SELECT `+s.createdByColumn("s")+` AS created_by, s.id, s.number, s.name, s.summary, s.generated_short_title,
@@ -504,12 +505,12 @@ func (s *SQLiteStore) Sidebar(ctx context.Context, opts SidebarOptions) ([]Sideb
 			FROM sessions s LEFT JOIN projects p ON p.id = s.project_id
 			WHERE s.parent_id IS NULL `+archiveClause+`
 		)
-		SELECT created_by, id, number, name, summary, generated_short_title, generated_long_title,
-		       title_source, provider, provider_key, model, mode, origin, agent, archived, pinned, pin_order,
-		       message_count, transcript_rev, status, worktree_dir, project_id, project_name,
-		       created_at, updated_at, last_message_at, last_user_message_at, group_count, rn, activity_rn
-		FROM ranked WHERE rn <= ? OR activity_rn = 1
-		ORDER BY project_id, rn`, authorArgs...)
+		SELECT ranked.created_by, ranked.id, ranked.number, ranked.name, ranked.summary, ranked.generated_short_title, ranked.generated_long_title,
+		       ranked.title_source, ranked.provider, ranked.provider_key, ranked.model, ranked.mode, ranked.origin, ranked.agent, ranked.archived, ranked.pinned, ranked.pin_order,
+		       ranked.message_count, ranked.transcript_rev, ranked.status, ranked.worktree_dir, ranked.project_id, ranked.project_name,
+		       ranked.created_at, ranked.updated_at, ranked.last_message_at, ranked.last_user_message_at, group_count, rn, activity_rn, `+branchCols+`
+		FROM ranked`+branchJoins+` WHERE rn <= ? OR activity_rn = 1
+		ORDER BY ranked.project_id, rn`, authorArgs...)
 	if err != nil {
 		return nil, fmt.Errorf("query sidebar: %w", err)
 	}
@@ -525,7 +526,7 @@ func (s *SQLiteStore) Sidebar(ctx context.Context, opts SidebarOptions) ([]Sideb
 			&titleSource, &sum.Provider, &sum.ProviderKey, &sum.Model, &mode, &origin, &sum.Agent,
 			&sum.Archived, &sum.Pinned, &pinOrder, &sum.MessageCount, &sum.TranscriptRev, &status,
 			&sum.WorktreeDir, &projectID, &sum.ProjectName, &sum.CreatedAt, &sum.UpdatedAt,
-			&lastMessage, &lastUserMessage, &groupCount, &rank, &activityRank); err != nil {
+			&lastMessage, &lastUserMessage, &groupCount, &rank, &activityRank, &sum.BranchParentSessionID, &sum.BranchParentNumber); err != nil {
 			return nil, fmt.Errorf("scan sidebar session: %w", err)
 		}
 		sum.Number = number.Int64

@@ -71,14 +71,14 @@ interface Point {
 }
 
 /** A CSS transform moving an element by `offset`, or none. Vertical moves use translateY. */
-const translate = ({ x, y }: Point): string =>
+export const translate = ({ x, y }: Point): string =>
   x ? `translate(${x}px, ${y}px)` : y ? `translateY(${y}px)` : '';
 
 /**
  * Where a lifted row can land, measured once as it lifts. Offsets are
  * relative to the lifted row's place when it lifted.
  */
-interface LandingGeometry {
+export interface LandingGeometry {
   /** Whether rows flow into a grid of cells rather than one column. */
   readonly grid: boolean;
   /** Where the lifted row is shown for pointer travel `travel`: within the list's bounds. */
@@ -87,6 +87,13 @@ interface LandingGeometry {
   target: (offset: Point) => number;
   /** How far the row at `index` slides aside while the lifted row targets `to`. */
   shift: (index: number, to: number) => Point;
+}
+
+/** Optional support for layouts whose direct children wrap onto multiple columns. */
+export interface ReorderGridLayout {
+  singleColumn: (rects: readonly DOMRect[]) => boolean;
+  geometry: (rects: readonly DOMRect[], from: number) => LandingGeometry;
+  settle: (rows: readonly HTMLElement[], shown: readonly DOMRect[]) => void;
 }
 
 /**
@@ -131,46 +138,6 @@ function columnGeometry(rects: readonly DOMRect[], from: number): LandingGeometr
   };
 }
 
-/**
- * A grid whose rows wrap into several columns, such as the Hub's agent cards.
- * Landing at position i puts the lifted card in cell i, where the card at i
- * starts; the cards it passes each slide one cell along the reading order,
- * across row ends included, to open it.
- */
-function gridGeometry(rects: readonly DOMRect[], from: number): LandingGeometry {
-  const cells = rects.map((rect) => ({
-    x: rect.left - rects[from].left,
-    y: rect.top - rects[from].top,
-  }));
-  const span = (axis: 'x' | 'y', value: number) =>
-    Math.min(
-      Math.max(...cells.map((cell) => cell[axis])),
-      Math.max(Math.min(...cells.map((cell) => cell[axis])), value),
-    );
-  return {
-    grid: true,
-    clamp: (travel) => ({ x: span('x', travel.x), y: span('y', travel.y) }),
-    target: (offset) => {
-      let to = from;
-      let nearest = Infinity;
-      cells.forEach((cell, index) => {
-        const distance = Math.hypot(cell.x - offset.x, cell.y - offset.y);
-        if (distance < nearest) [to, nearest] = [index, distance];
-      });
-      return to;
-    },
-    shift: (index, to) => {
-      const cell =
-        from < index && index <= to ? index - 1 : to <= index && index < from ? index + 1 : index;
-      return { x: cells[cell].x - cells[index].x, y: cells[cell].y - cells[index].y };
-    },
-  };
-}
-
-/** Whether rows share one column, measured from their layout boxes. */
-const singleColumn = (rects: readonly DOMRect[]): boolean =>
-  rects.every((rect) => Math.abs(rect.left - rects[0].left) < 1);
-
 /** The scrolling that moves a list: an ancestor scroll container, or the page. */
 interface Scroller {
   /** Scroll offset, which a drag adds to the pointer's travel. */
@@ -213,28 +180,6 @@ function finishTransformTransitions(rows: readonly HTMLElement[]): void {
   );
 }
 
-/**
- * Settles dropped grid cards into their new cells. The list has re-rendered
- * in its new order, so each card starts from where it was shown (`shown`) and
- * slides home, exactly like the preview but ending in the real layout.
- */
-function settleCards(rows: readonly HTMLElement[], shown: readonly DOMRect[]): void {
-  rows.forEach((row, index) => {
-    const previous = shown[index];
-    if (!previous) return; // The list may have changed before the animation frame.
-    const now = row.getBoundingClientRect();
-    row.style.transform = translate({
-      x: previous.left - now.left,
-      y: previous.top - now.top,
-    });
-  });
-  rows[0]?.parentElement?.getBoundingClientRect();
-  rows.forEach((row) => {
-    row.style.removeProperty('transition');
-    row.style.removeProperty('transform');
-  });
-}
-
 interface DragGesture {
   /** Whether the pressed row is lifted and following the pointer. */
   readonly lifted: boolean;
@@ -260,6 +205,7 @@ function useDragReorder(
   onReorder: (orderedIds: string[], movedId: string, to: number) => void,
   orderKey: string,
   scrollContainer: string | undefined,
+  gridLayout: ReorderGridLayout | undefined,
 ) {
   const [draggingId, setDraggingId] = useState<string | null>(null);
   const reorder = useRef(onReorder);
@@ -309,7 +255,9 @@ function useDragReorder(
       const scroller = scrollerFor(root, scrollContainer);
       // A mouse lifts a row after vertical travel in a column, and after
       // travel in any direction in a grid, whose cards also move sideways.
-      const grid = !singleColumn([rows[0], rows[1]].map((entry) => entry.getBoundingClientRect()));
+      const grid =
+        gridLayout &&
+        !gridLayout.singleColumn([rows[0], rows[1]].map((entry) => entry.getBoundingClientRect()));
       const pointerId = event.pointerId;
       // Touch and pen drags scroll, so they lift a row only after resting still.
       const longPress = event.pointerType !== 'mouse';
@@ -344,7 +292,10 @@ function useDragReorder(
         window.clearTimeout(timer);
         finishTransformTransitions(rows);
         const rects = rows.map((entry) => entry.getBoundingClientRect());
-        geometry = singleColumn(rects) ? columnGeometry(rects, from) : gridGeometry(rects, from);
+        geometry =
+          gridLayout && !gridLayout.singleColumn(rects)
+            ? gridLayout.geometry(rects, from)
+            : columnGeometry(rects, from);
         startScroll = scroller?.top() ?? 0;
         lifted = true;
         held = true;
@@ -410,8 +361,8 @@ function useDragReorder(
           });
           root.getBoundingClientRect();
           requestAnimationFrame(() =>
-            shown
-              ? settleCards(rows, shown)
+            shown && gridLayout
+              ? gridLayout.settle(rows, shown)
               : rows.forEach((entry) => entry.style.removeProperty('transition')),
           );
           reorder.current(movedOrder(ids, from, to), id, to);
@@ -474,7 +425,7 @@ function useDragReorder(
       addEventListener('keydown', escape, true);
       if (longPress) timer = window.setTimeout(lift, LONG_PRESS_MS);
     },
-    [list, scrollContainer],
+    [gridLayout, list, scrollContainer],
   );
 
   return { draggingId, press };
@@ -509,6 +460,8 @@ export interface ReorderableListOptions {
    * sidebar; a drag near its edges scrolls it. Without one, the page scrolls.
    */
   scrollContainer?: string;
+  /** Specialize the drag preview for layouts that may wrap into multiple columns. */
+  gridLayout?: ReorderGridLayout;
 }
 
 /**
@@ -578,6 +531,7 @@ export function useReorderableList<ListElement extends HTMLElement = HTMLDivElem
     commit,
     ids.join('\0'),
     options.scrollContainer,
+    options.gridLayout,
   );
   /** Moves a row `offset` places, stopping at either end of the list. */
   const move = useCallback((id: string, offset: number, focus: 'row' | 'menu') => {
