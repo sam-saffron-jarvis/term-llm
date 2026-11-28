@@ -232,7 +232,13 @@ func (p *AnthropicProvider) Capabilities() core.Capabilities {
 func (p *AnthropicProvider) Stream(ctx context.Context, req core.Request) (core.Stream, error) {
 	spec := p.requestSpec(req)
 	if p.client.bedrock == nil {
-		req.MaxOutputTokens = anthropicClampOutputTokens(req.MaxOutputTokens, spec.model)
+		if req.MaxOutputTokens <= 0 && p.client.usesPublicAPI() {
+			// Thinking and the reply share this ceiling, including on models
+			// like Opus 5.5 that think even when the thinking field is omitted.
+			req.MaxOutputTokens = p.defaultOutputTokenLimit(ctx, spec.model)
+		} else {
+			req.MaxOutputTokens = anthropicClampOutputTokens(req.MaxOutputTokens, spec.model)
+		}
 	} else {
 		// Bedrock limits can differ from the direct API catalog.
 		req.MaxOutputTokens = clampOutputTokens(req.MaxOutputTokens, spec.model)

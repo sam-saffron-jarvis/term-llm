@@ -210,16 +210,37 @@ func anthropicCachedModelInfoForRequest(model string) (core.ModelInfo, bool) {
 	return core.ModelInfo{}, false
 }
 
-// anthropicClampOutputTokens caps requested output at the live catalog's
-// max_tokens when known, falling back to the curated tables.
-func anthropicClampOutputTokens(requested int, model string) int {
-	if info, ok := anthropicCachedModelInfoForRequest(model); ok && info.OutputLimit > 0 {
-		if requested > info.OutputLimit {
-			return info.OutputLimit
+// defaultOutputTokenLimit refreshes stale or missing public metadata once per
+// retry interval, without making inference depend on catalog availability.
+func (p *AnthropicProvider) defaultOutputTokenLimit(ctx context.Context, model string) int {
+	if !AnthropicModelCacheFresh() && ClaimAnthropicCatalogRefresh() {
+		catalogCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+		defer cancel()
+		if models, err := p.ListModels(catalogCtx); err == nil {
+			if info, ok := findAnthropicModelInfo(models, model); ok && info.OutputLimit > 0 {
+				return info.OutputLimit
+			}
 		}
-		return requested
 	}
-	return clampOutputTokens(requested, model)
+	return anthropicOutputLimitForRequest(model)
+}
+
+// anthropicOutputLimitForRequest prefers the public API catalog's max_tokens
+// when known, falling back to the curated tables.
+func anthropicOutputLimitForRequest(model string) int {
+	if info, ok := anthropicCachedModelInfoForRequest(model); ok && info.OutputLimit > 0 {
+		return info.OutputLimit
+	}
+	return outputLimitForModel(model)
+}
+
+func anthropicClampOutputTokens(requested int, model string) int {
+	if requested > 0 {
+		if limit := anthropicOutputLimitForRequest(model); limit > 0 && requested > limit {
+			return limit
+		}
+	}
+	return requested
 }
 
 func findAnthropicModelInfo(infos []core.ModelInfo, model string) (core.ModelInfo, bool) {
