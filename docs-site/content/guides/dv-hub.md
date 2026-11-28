@@ -32,12 +32,14 @@ Run the Hub. The flags that matter for dv:
 term-llm serve hub \
   --host 0.0.0.0 \
   --port 8090 \
+  --public-url http://host.docker.internal:8090/ \
   --auth bearer \
   --token hubdevtoken \
   --registration-token devreg
 ```
 
 - `--host 0.0.0.0` — **critical.** A dv container reaches the host via `host.docker.internal`, which resolves to the host's gateway address, **not** `127.0.0.1`. A Hub bound to loopback (the default) is invisible to the container. `0.0.0.0` makes it reachable.
+- `--public-url http://host.docker.internal:8090/` — tells the Hub to accept requests for `host.docker.internal`. The wildcard bind alone does not allow that hostname.
 - `--token hubdevtoken` — the **human/operator Hub bearer token** in this local example. It unlocks the dashboard but is never used by the reverse node. A public deployment may instead use `--auth passkey --public-url https://…`; that changes only human browser sign-in.
 - `--registration-token devreg` — a **separate machine token** that lets a container self-register itself as a node on startup. It is required regardless of whether humans use bearer or passkey authentication. The container must present the same value (see Step 2). Pick your own value.
 
@@ -62,7 +64,7 @@ term-llm serve web \
 
 | Flag | Purpose | Constraint |
 | --- | --- | --- |
-| `--hub-url` | Where the container dials. Use `host.docker.internal`, **not** `localhost` (inside the container `localhost` is the container itself). | Host + port of your Hub |
+| `--hub-url` | Where the container dials. Use `host.docker.internal`, **not** `localhost` (inside the container `localhost` is the container itself). | Use the Hub's port and the hostname declared by `--public-url` in Step 1. |
 | `--hub-registration-token` | Presented to `/api/register-node` so the node can self-register. Defaults to `$TERM_LLM_HUB_REGISTRATION_TOKEN`. | **Yes** — equals the Hub's `--registration-token` |
 | `--token` | This node's own bearer token. The Hub stores it on registration, then uses it to authenticate the reverse websocket and to inject auth when you open the node. | Stable per node |
 | `--hub-node-id` | Unique node id; drives the card and the `/node/<id>/` proxy path. | Unique on the Hub |
@@ -142,6 +144,7 @@ To avoid this entirely, never start `term-llm serve hub` without flags. A tiny s
 ```fish
 function hub
     term-llm serve hub --host 0.0.0.0 --port 8090 --auth bearer \
+        --public-url http://host.docker.internal:8090/ \
         --token hubdevtoken --registration-token devreg
 end
 ```
@@ -177,10 +180,11 @@ sv status term-llm-hub      # inside the container
 Then probe the Hub's public health endpoint **from inside the container** (no token needed):
 
 ```bash
-curl -sS -o /dev/null -w '%{http_code}\n' http://host.docker.internal:8090/healthz
+curl -i http://host.docker.internal:8090/healthz
 ```
 
 - `200` → the Hub is reachable, so the fault is auth: a token or registration-token mismatch (cases 1 or 3).
+- `403` with `unrecognized Host` → the container reached the Hub, but the Hub rejected the hostname before checking any tokens. Restart the Hub with `--public-url http://host.docker.internal:8090/` as shown in Step 1.
 - connection refused / timeout → the container can't reach the Hub: wrong URL, a loopback-only bind, or `host.docker.internal` not resolving (cases 2 or 4).
 
 To actually watch the `hub reverse connect:` retry lines (a successful connect logs `node "<id>" connected to <hub-url>`), stop the service and run its `serve web … --hub-connect reverse` command from `/etc/service/term-llm-hub/run` by hand in the foreground:
