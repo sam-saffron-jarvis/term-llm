@@ -302,7 +302,6 @@ func (m *Model) cmdSide(question string) (tea.Model, tea.Cmd) {
 	m.sideQuestion.Done = done
 	events := m.sideQuestion.events
 	go func() {
-		defer close(done)
 		defer close(events)
 		// The lane owns its provider across turns and releases it itself: on a
 		// replay turn, on a failed lane turn, and on teardown.
@@ -315,6 +314,9 @@ func (m *Model) cmdSide(question string) (tea.Model, tea.Cmd) {
 			default:
 			}
 		})
+		// Run has finished releasing the turn's resources. Mark it stopped before
+		// publishing the result so the UI can immediately accept a follow-up.
+		close(done)
 		select {
 		case events <- sideQuestionEventMsg{generation: generation, result: &result, err: runErr}:
 		case <-ctx.Done():
